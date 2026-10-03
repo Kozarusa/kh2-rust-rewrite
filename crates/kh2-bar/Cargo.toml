@@ -1,0 +1,8 @@
+[package]
+name = "kh2-bar"
+description = "BAR container parser (KH2)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

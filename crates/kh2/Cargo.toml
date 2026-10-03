@@ -1,0 +1,13 @@
+[package]
+name = "kh2"
+description = "kh2-rs command line: inspect and validate against the user's own Kingdom Hearts II disc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kh2-archive.workspace = true
+kh2-bar.workspace = true
+kh2-sheets.workspace = true
+kh2-tables.workspace = true
+serde_json.workspace = true

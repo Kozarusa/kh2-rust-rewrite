@@ -1,0 +1,20 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.85"
+
+[workspace.dependencies]
+kh2-iso = { path = "crates/kh2-iso" }
+kh2-archive = { path = "crates/kh2-archive" }
+kh2-bar = { path = "crates/kh2-bar" }
+kh2-sheets = { path = "crates/kh2-sheets" }
+kh2-tables = { path = "crates/kh2-tables" }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[profile.dev.package."*"]
+opt-level = 2

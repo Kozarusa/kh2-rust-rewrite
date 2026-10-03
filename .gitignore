@@ -1,0 +1,31 @@
+# WHITELIST. Everything is ignored unless listed below.
+# Only our own source, sheets (structure + status, never game data), docs and license texts are tracked.
+# Never tracked: the ISO, anything extracted or decompiled from it, caches, the OpenKH filename list
+# (downloaded by `kh2 fetch-names` into local/), build output, screenshots.
+/*
+!/.gitignore
+!/Cargo.toml
+!/Cargo.lock
+!/README.md
+!/CREDITS.md
+!/LICENSE-MIT
+!/LICENSE-APACHE
+!/rust-toolchain.toml
+!/crates/
+!/sheets/
+!/docs/
+!/third_party/
+
+# Inside tracked folders: still never commit binaries or game-derived files.
+*.iso
+*.bin
+*.img
+*.idx
+*.elf
+*.png
+*.dds
+*.wav
+*.exe
+*.dll
+target/
+**/local/

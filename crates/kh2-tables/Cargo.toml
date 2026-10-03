@@ -1,0 +1,13 @@
+[package]
+name = "kh2-tables"
+description = "Gameplay tables (00battle, 03system, 00objentry) decoded at runtime from the user's disc; code generated from sheets/"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kh2-archive.workspace = true
+kh2-bar.workspace = true
+
+[build-dependencies]
+kh2-sheets.workspace = true

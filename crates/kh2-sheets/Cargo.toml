@@ -1,0 +1,9 @@
+[package]
+name = "kh2-sheets"
+description = "Spreadsheet method: JSON sheets, preflight checklist, and struts (rows -> Rust code)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json.workspace = true

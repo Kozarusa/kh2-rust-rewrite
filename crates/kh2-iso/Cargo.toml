@@ -1,0 +1,8 @@
+[package]
+name = "kh2-iso"
+description = "Minimal ISO9660 reader for the user's own Kingdom Hearts II disc image"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

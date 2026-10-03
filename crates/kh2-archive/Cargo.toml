@@ -1,0 +1,9 @@
+[package]
+name = "kh2-archive"
+description = "KH2.IDX / KH2.IMG / OVL archive reader (hashes, LZ decompression) over the user's own disc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kh2-iso.workspace = true

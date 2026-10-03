@@ -1,16 +1,23 @@
-{"sheet":"systems","key":"id","strut":"rust_system","doc":"One row per game system. crate must exist under crates/. tables must be rows of tables.json. implemented = reader/feature exists (short note); validated = checked against the user's ISO by `kh2 validate` or a test. null = unchecked.","hand":["name","crate","tables","spec","implemented"],"columns":["id","name","crate","tables","spec","implemented","validated"],"types":["key","str","crate","refs:tables","str","str","str"],"rows":[
+{"sheet":"systems","key":"id","strut":"rust_system","doc":"One row per game system. crate must exist under crates/. tables must be rows of tables.json. implemented = reader/feature exists (short note); validated = checked against the user's ISO by `kh2 validate`, a test, or a kh2-game screenshot run. null = unchecked.","hand":["name","crate","tables","spec","implemented"],"columns":["id","name","crate","tables","spec","implemented","validated"],"types":["key","str","crate","refs:tables","str","str","str"],"rows":[
 ["fs.iso","ISO9660 disc reader","kh2-iso",[],"ECMA-119","yes","15 disc files"],
 ["fs.archive","KH2.IDX/IMG archive: hashes, LZ decompression, world sub-indexes","kh2-archive",[],"OpenKH docs/kh2/file/type/idx.md","yes","26461 entries, 26456 named, overlays decompress"],
 ["fs.bar","BAR container","kh2-bar",[],"OpenKH docs/kh2/file/type/bar.md","yes","00battle.bin: 20 subfiles"],
+["ps2.vif","VIF1 unpack into VU1 memory, DMA chains, VPU packets","kh2-ps2",[],"OpenKH docs/kh2/file/model.md, OpenKh.Ps2","yes","unit tests; tt02/tt04 + P_EX100 geometry renders"],
+["ps2.gs","GS swizzle (PSMCT32 upload, PSMT8/PSMT4 read), CLUT addressing","kh2-ps2",[],"OpenKH OpenKh.Kh2/Ps2.Reform*.cs, docs/kh2/file/raw-texture.md","yes","tt04 + P_EX100 textures decode correctly (PNG check)"],
 ["data.battle","00battle.bin tables","kh2-tables",["atkp","przt","vtbl","bons","btlv","enmp","plrp","limt","sumn","magc","fmlv","stop","lvup","lvpm","ptya","patn","vbrt"],"OpenKH docs/kh2/file/type/00battle.md",null,null],
 ["data.system","03system.bin tables","kh2-tables",["cmd","trsr","sklt","item","item_stat","memt","arif","went","wmst","ftst","rcct","evtp","pref","ipic","shop"],"OpenKH docs/kh2/file/type/03system.md",null,null],
 ["data.objentry","Object registry","kh2-tables",["objentry"],"OpenKH docs/kh2/file/type/00objentry.md","yes","1/1 tables decode"],
-["render.model","MDLX models (PS2 VIF packets)","kh2-mdlx",[],"OpenKH docs/kh2/file/type/mdlx.md, docs/kh2/file/model.md",null,null],
-["render.texture","Textures and images (imd, tm2, 2dd)","kh2-image",[],"OpenKH docs/kh2/file/type/image.md",null,null],
-["anim.motion","Animations (anb, mset)","kh2-anim",[],"OpenKH docs/kh2/file/anb/",null,null],
-["world.map","Maps and collision","kh2-map",[],"OpenKH docs/kh2/file/map.md, coct.md, doct.md",null,null],
-["world.event","Area scripts (ard) and AI (bdx)","kh2-ard",[],"OpenKH docs/kh2/file/type/areadata.md, ai.md",null,null],
+["render.model","Skeletal MDLX models in rest pose (bones, weighted vertices)","kh2-model",[],"OpenKH docs/kh2/file/type/mdlx.md, OpenKh.Kh2/Mdlx.Model.cs","yes","P_EX100 (Sora) renders textured in kh2-game"],
+["render.texture","Model textures (BAR type 7)","kh2-model",[],"OpenKH docs/kh2/file/raw-texture.md","yes","130 tt04 textures + 5 Sora textures"],
+["render.uvscroll","Texture animation (UVSC scroll, TEXA sprites)","kh2-model",[],"OpenKH docs/kh2/file/raw-texture.md",null,null],
+["ui.image","Standalone images (imd, imz, tm2, 2dd, 2ld)","kh2-image",[],"OpenKH docs/kh2/file/type/image.md, 2ld.md",null,null],
+["anim.motion","Animations (anb, mset): skinning at runtime","kh2-anim",[],"OpenKH docs/kh2/file/anb/",null,null],
+["world.map","Map geometry + sky (MAP/SK0)","kh2-model",[],"OpenKH docs/kh2/file/map.md, model.md","yes","tt02, tt04 render in kh2-game (screenshots)"],
+["world.collision","Map collision (COCT); kh2-game uses render triangles meanwhile","kh2-map",[],"OpenKH docs/kh2/file/type/coct.md, doct.md",null,null],
+["world.bob","Background objects (BOB/BOP)","kh2-map",[],"OpenKH docs/kh2/file/map.md",null,null],
+["world.event","Area scripts (ard): spawns, entrances, events; AI (bdx)","kh2-ard",[],"OpenKH docs/kh2/file/type/areadata.md, ai.md",null,null],
 ["ui.msg","Message text","kh2-msg",[],"OpenKH docs/kh2/file/type/msg.md",null,null],
 ["audio","Music, instruments, SFX, voice (bgm, wd, seb, vag)","kh2-audio",[],"OpenKH docs/kh2/file/type/bgm.md, seb.md",null,null],
-["app","Bevy application: window, asset source, game loop","kh2-app",[],"benilla structure (reference only)",null,null]
+["game.player","Player control: run/walk/jump, wall + ground collision, orbit camera with occlusion","kh2-app",[],"KH2 behaviour (approximation until motion + COCT land)","yes","KH2_WALK screenshot: walks, turns, stops at wall, camera stays out of walls"],
+["app","Bevy application: boots from the ISO, area switching, HUD","kh2-app",[],"benilla structure (reference only)","yes","tt02/tt04 load, 1-9/0 switch areas"]
 ]}

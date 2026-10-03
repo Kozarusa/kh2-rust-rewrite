@@ -1,0 +1,8 @@
+[package]
+name = "kh2-ps2"
+description = "Just enough PS2 hardware emulation to read KH2 assets: VIF1 unpack into VU1 memory, DMA chains, VPU packets, GS texture swizzling"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

@@ -11,6 +11,13 @@ kh2-rs is written from scratch. Nothing below is vendored as code. Where we reim
 | Gameplay table layouts (00battle, 03system, 00objentry) | OpenKH `OpenKh.Kh2/Battle/*.cs`, `SystemData/*.cs`, `Objentry.cs`, plus `docs/kh2/file/type/*.md` | Apache-2.0 | `sheets/tables.json` → `crates/kh2-tables` |
 | KH2 file-name list | OpenKH `OpenKh.Kh2/resources/kh2idx.txt`, **downloaded at runtime** by `kh2 fetch-names` and never committed | Apache-2.0 | `local/kh2idx.txt` |
 | Edition differences (USA vs JP/FM) | OpenKH `docs/kh2/editions.md` | Apache-2.0 | disc check in `kh2-archive` |
+| Model layouts: map models, skeletal MDLX, DMA chains, VPU packet layout, strip flags, weight groups, rest-pose rule | OpenKH `docs/kh2/file/model.md`, `docs/kh2/file/type/mdlx.md`, `OpenKh.Kh2/Mdlx.Model.cs`, `OpenKh.Ps2/VpuPacket.cs`, `OpenKh.Engine/Parsers/MdlxParser.cs` and `Kkdf2MdlxParser.cs` (which credit kenjiuno's khkh_xldM) | Apache-2.0 | `crates/kh2-ps2`, `crates/kh2-model` |
+| Model texture layout, CLUT addressing, GS swizzle tables (hardware block/column orders) | OpenKH `docs/kh2/file/raw-texture.md`, `OpenKh.Kh2/ModelTexture.cs`, `OpenKh.Kh2/Ps2.Reform{32,8,4}.cs` | Apache-2.0 | `crates/kh2-ps2/src/gs.rs`, `crates/kh2-model/src/texture.rs` |
+| VIF unpack semantics for undefined lanes (V2 → xyxy) | as noted in OpenKH `OpenKh.Ps2/VifUnpacker.cs`, following PCSX2's behaviour | Apache-2.0 | `crates/kh2-ps2/src/vif.rs` |
+
+## Dependencies
+
+[Bevy](https://bevyengine.org) (MIT OR Apache-2.0), [glam](https://github.com/bitshifter/glam-rs) (MIT OR Apache-2.0), [serde_json](https://github.com/serde-rs/json) (MIT OR Apache-2.0), [png](https://github.com/image-rs/image-png) (MIT OR Apache-2.0). Full license texts ship with each crate; `cargo tree` lists the rest.
 
 PS2 USA corrections that we verified against the disc and that differ from OpenKH's Final Mix layouts are recorded in the `notes` column of `sheets/tables.json`.
 

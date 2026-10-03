@@ -14,6 +14,8 @@ kh2-archive = { path = "crates/kh2-archive" }
 kh2-bar = { path = "crates/kh2-bar" }
 kh2-sheets = { path = "crates/kh2-sheets" }
 kh2-tables = { path = "crates/kh2-tables" }
+kh2-ps2 = { path = "crates/kh2-ps2" }
+kh2-model = { path = "crates/kh2-model" }
 serde_json = { version = "1", features = ["preserve_order"] }
 
 [profile.dev.package."*"]

@@ -140,6 +140,39 @@ fn run(args: &mut Vec<String>) -> Result<(), String> {
                 println!("{}", r.join("\t"));
             }
         }
+        "model" => {
+            let mut a = open(args)?;
+            let name = args.first().ok_or("model needs a file name")?.clone();
+            let data = a.read(&name).map_err(|e| e.to_string())?;
+            let m = if name.ends_with(".map") {
+                kh2_model::map_file(&data).map(|f| f.map)
+            } else {
+                kh2_model::mdlx(&data)
+            }
+            .ok_or("not a supported model")?;
+            let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+            for p in m.meshes.iter().flat_map(|x| &x.positions) {
+                for k in 0..3 {
+                    lo[k] = lo[k].min(p[k]);
+                    hi[k] = hi[k].max(p[k]);
+                }
+            }
+            let tris: usize = m.meshes.iter().map(|x| x.indices.len() / 3).sum();
+            println!("{name}: {} meshes, {tris} triangles, {} bones, {} textures", m.meshes.len(), m.bones.len(), m.textures.len());
+            println!("bounds {lo:?} .. {hi:?}");
+            if args.iter().any(|x| x == "--textures") {
+                let dir = local().join("tex").join(name.replace('/', "_"));
+                std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                for (i, t) in m.textures.iter().enumerate() {
+                    let f = std::fs::File::create(dir.join(format!("{i:03}.png"))).map_err(|e| e.to_string())?;
+                    let mut enc = png::Encoder::new(std::io::BufWriter::new(f), t.width, t.height);
+                    enc.set_color(png::ColorType::Rgba);
+                    enc.set_depth(png::BitDepth::Eight);
+                    enc.write_header().and_then(|mut w| w.write_image_data(&t.rgba)).map_err(|e| e.to_string())?;
+                }
+                println!("textures -> {}", dir.display());
+            }
+        }
         "validate" => validate(args)?,
         "preflight" => {
             let r = kh2_sheets::preflight(&root());

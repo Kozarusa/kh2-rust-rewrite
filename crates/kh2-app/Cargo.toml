@@ -1,0 +1,15 @@
+[package]
+name = "kh2-app"
+description = "kh2-rs game: Bevy application that runs on the user's own Kingdom Hearts II disc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "kh2-game"
+path = "src/main.rs"
+
+[dependencies]
+kh2-archive.workspace = true
+kh2-model.workspace = true
+bevy = "0.19"

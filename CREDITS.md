@@ -13,6 +13,10 @@ kh2-rs is written from scratch. Nothing below is vendored as code. Where we reim
 | Edition differences (USA vs JP/FM) | OpenKH `docs/kh2/editions.md` | Apache-2.0 | disc check in `kh2-archive` |
 | Model layouts: map models, skeletal MDLX, DMA chains, VPU packet layout, strip flags, weight groups, rest-pose rule | OpenKH `docs/kh2/file/model.md`, `docs/kh2/file/type/mdlx.md`, `OpenKh.Kh2/Mdlx.Model.cs`, `OpenKh.Ps2/VpuPacket.cs`, `OpenKh.Engine/Parsers/MdlxParser.cs` and `Kkdf2MdlxParser.cs` (which credit kenjiuno's khkh_xldM) | Apache-2.0 | `crates/kh2-ps2`, `crates/kh2-model` |
 | Model texture layout, CLUT addressing, GS swizzle tables (hardware block/column orders) | OpenKH `docs/kh2/file/raw-texture.md`, `OpenKh.Kh2/ModelTexture.cs`, `OpenKh.Kh2/Ps2.Reform{32,8,4}.cs` | Apache-2.0 | `crates/kh2-ps2/src/gs.rs`, `crates/kh2-model/src/texture.rs` |
+| Motion sets (slot = state + id × 4, state fallback, motion ID table), ANB container, interpolated motion layout (F-curves, keys, IK helpers), motion trigger IDs | OpenKH `docs/kh2/file/anb/{mset,anb,motion}.md`, which build on [kenjiuno's msetDoc](https://gitlab.com/kenjiuno/msetDoc) | Apache-2.0 | `crates/kh2-anim` |
+| Object collision shapes | OpenKH `docs/kh2/file/type/objectcollision.md` | Apache-2.0 | `crates/kh2-model/src/collision.rs` |
+| `pref` physics tables (plyr/prty/sstm/fmab), `lvup` and `lvpm` layouts | OpenKH `docs/kh2/file/type/preferences.md`, `OpenKh.Kh2/Battle/{Lvup,Lvpm}.cs` | Apache-2.0 | `sheets/tables.json` |
+| Enemy names for `enmp` ids (Shadow = 34, Soldier = 33) | OpenKH `OpenKh.Tools.Kh2BattleEditor/Services/EnemyNameProvider.cs` | Apache-2.0 | `crates/kh2-app/src/enemy.rs` |
 | VIF unpack semantics for undefined lanes (V2 → xyxy) | as noted in OpenKH `OpenKh.Ps2/VifUnpacker.cs`, following PCSX2's behaviour | Apache-2.0 | `crates/kh2-ps2/src/vif.rs` |
 
 ## Dependencies
@@ -20,6 +24,13 @@ kh2-rs is written from scratch. Nothing below is vendored as code. Where we reim
 [Bevy](https://bevyengine.org) (MIT OR Apache-2.0), [glam](https://github.com/bitshifter/glam-rs) (MIT OR Apache-2.0), [serde_json](https://github.com/serde-rs/json) (MIT OR Apache-2.0), [png](https://github.com/image-rs/image-png) (MIT OR Apache-2.0). Full license texts ship with each crate; `cargo tree` lists the rest.
 
 PS2 USA corrections that we verified against the disc and that differ from OpenKH's Final Mix layouts are recorded in the `notes` column of `sheets/tables.json`.
+
+## Behaviour studied in the game itself
+
+Some rules are not documented anywhere and were read from the game's own code in a **local** decompilation of the user's disc, which is never committed. They were reimplemented from behaviour only, with no code copied:
+- **Damage formula** (`crates/kh2-app/src/data.rs`): attacker Str or Mag chosen by `atkp`; physical damage = ⌈clamp(Str − Def, caps) × Power × resistance% × general% / 10⁶⌉; type 5 = % of max HP; type 6 = ignores Defense.
+- **Enemy stat setup:** HP = ⌈lvpm.HpMultiplier × enmp.Health / 100⌉; damage caps are per-ten-thousand of HP.
+- **Motion trigger timing:** triggers count global 60 Hz frames, while motions run at their own rate.
 
 ## Research references (consulted, nothing copied)
 

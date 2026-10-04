@@ -1137,7 +1137,7 @@ dependencies = [
  "arrayvec",
  "bevy_reflect",
  "derive_more",
- "glam 0.32.1",
+ "glam",
  "itertools",
  "libm",
  "rand",
@@ -1167,7 +1167,7 @@ dependencies = [
  "bytemuck",
  "derive_more",
  "encase",
- "glam 0.32.1",
+ "glam",
  "half",
  "hexasphere",
  "thiserror 2.0.21",
@@ -1317,7 +1317,7 @@ dependencies = [
  "downcast-rs 2.0.2",
  "erased-serde",
  "foldhash 0.2.0",
- "glam 0.32.1",
+ "glam",
  "indexmap",
  "inventory",
  "petgraph",
@@ -1379,7 +1379,7 @@ dependencies = [
  "derive_more",
  "downcast-rs 2.0.2",
  "encase",
- "glam 0.32.1",
+ "glam",
  "image",
  "indexmap",
  "itertools",
@@ -2720,12 +2720,6 @@ dependencies = [
 
 [[package]]
 name = "glam"
-version = "0.30.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19fc433e8437a212d1b6f1e68c7824af3aed907da60afa994e7f542d18d12aa9"
-
-[[package]]
-name = "glam"
 version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f70749695b063ecbf6b62949ccccde2e733ec3ecbbd71d467dca4e5c6c97cca0"
@@ -2934,7 +2928,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "177ea6330876de4ef08e184f827b98acc037614a4ce409902c5b0d53a9c2e951"
 dependencies = [
  "constgebra",
- "glam 0.32.1",
+ "glam",
  "tinyvec",
 ]
 
@@ -3246,6 +3240,7 @@ dependencies = [
 name = "kh2"
 version = "0.1.0"
 dependencies = [
+ "kh2-anim",
  "kh2-archive",
  "kh2-bar",
  "kh2-model",
@@ -3256,12 +3251,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "kh2-anim"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "kh2-bar",
+ "kh2-model",
+]
+
+[[package]]
 name = "kh2-app"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "kh2-anim",
  "kh2-archive",
  "kh2-model",
+ "kh2-tables",
 ]
 
 [[package]]
@@ -3283,7 +3289,7 @@ version = "0.1.0"
 name = "kh2-model"
 version = "0.1.0"
 dependencies = [
- "glam 0.30.10",
+ "glam",
  "kh2-bar",
  "kh2-ps2",
 ]

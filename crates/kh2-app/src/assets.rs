@@ -1,4 +1,4 @@
-//! Disc access and conversion of decoded KH2 models into Bevy meshes, materials and images.
+﻿//! Disc access and conversion of decoded KH2 models into Bevy meshes, materials and images.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -11,7 +11,7 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use kh2_archive::Archive;
 
 use crate::collision::Collider;
-use crate::player::Player;
+use crate::sora::Sora;
 use crate::SCALE;
 
 /// ISO path: $KH2_ISO, else `local/iso.txt` written by `kh2 set-iso`.
@@ -82,7 +82,7 @@ pub fn load_area(
     disc: Res<Disc>,
     mut area: ResMut<CurrentArea>,
     old: Query<Entity, With<AreaPart>>,
-    mut player: Query<(&mut Transform, &mut Player)>,
+    mut player: Query<(&mut Transform, &mut Sora)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
@@ -108,7 +108,7 @@ pub fn load_area(
     let collider = Collider::from_meshes(&map.map.meshes, SCALE);
     if let Ok((mut t, mut p)) = player.single_mut() {
         t.translation = collider.spawn_point();
-        p.velocity = Vec3::ZERO;
+        p.vel = Vec3::ZERO;
     }
     commands.insert_resource(collider);
     info!("{file}: {} meshes", map.map.meshes.len());
@@ -130,26 +130,30 @@ pub fn spawn_model(
     materials: &mut Assets<StandardMaterial>,
     images: &mut Assets<Image>,
 ) {
-    let textures: Vec<Handle<Image>> = model.textures.iter().map(|t| images.add(to_image(t))).collect();
+    let textures = texture_handles(model, images);
     // One material per (texture, transparency) pair.
     let mut mats = std::collections::HashMap::new();
     for m in &model.meshes {
-        let mat = mats
-            .entry((m.texture, m.transparent))
-            .or_insert_with(|| {
-                materials.add(StandardMaterial {
-                    base_color_texture: textures.get(m.texture).cloned(),
-                    unlit: true,
-                    cull_mode: None,
-                    double_sided: true,
-                    alpha_mode: if m.transparent { AlphaMode::Blend } else { AlphaMode::Mask(0.25) },
-                    ..default()
-                })
-            })
-            .clone();
+        let mat = mats.entry((m.texture, m.transparent)).or_insert_with(|| material_for(m, &textures, materials)).clone();
         let mesh = meshes.add(to_mesh(m));
         commands.spawn((Mesh3d(mesh), MeshMaterial3d(mat), Transform::default(), ChildOf(parent)));
     }
+}
+
+pub fn texture_handles(model: &kh2_model::Model, images: &mut Assets<Image>) -> Vec<Handle<Image>> {
+    model.textures.iter().map(|t| images.add(to_image(t))).collect()
+}
+
+/// PS2-style material: unlit, vertex colour Ã— texture, alpha-tested or blended.
+pub fn material_for(m: &kh2_model::Mesh, textures: &[Handle<Image>], materials: &mut Assets<StandardMaterial>) -> Handle<StandardMaterial> {
+    materials.add(StandardMaterial {
+        base_color_texture: textures.get(m.texture).cloned(),
+        unlit: true,
+        cull_mode: None,
+        double_sided: true,
+        alpha_mode: if m.transparent { AlphaMode::Blend } else { AlphaMode::Mask(0.25) },
+        ..default()
+    })
 }
 
 fn to_mesh(m: &kh2_model::Mesh) -> Mesh {

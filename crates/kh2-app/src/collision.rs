@@ -1,4 +1,4 @@
-//! Ground and wall queries against the map's render triangles (a stand-in until COCT collision
+﻿//! Ground and wall queries against the map's render triangles (a stand-in until COCT collision
 //! is parsed). Triangles are bucketed in a 2D grid over XZ.
 
 use bevy::prelude::*;
@@ -46,6 +46,9 @@ impl Collider {
 
     /// Highest walkable surface at (x, z) at or below `from_y`.
     pub fn ground(&self, x: f32, z: f32, from_y: f32) -> Option<f32> {
+        if !(x.is_finite() && z.is_finite() && from_y.is_finite()) {
+            return None;
+        }
         let mut best: Option<f32> = None;
         for &i in self.grid.get(&(cell(x), cell(z)))?.iter() {
             let [a, b, c] = self.tris[i as usize];
@@ -63,11 +66,56 @@ impl Collider {
         best
     }
 
-    /// Distance along the segment `p`→`q` to the first triangle hit (any orientation).
+    /// Moves a character: horizontal motion blocked by walls at knee height (sliding along axes),
+    /// then gravity-integrated vertical motion with step-up and ground snapping.
+    /// `gravity` is applied unless the caller zeroes it (motion triggers can suspend gravity).
+    pub fn step(&self, pos: &mut Vec3, vel: &mut Vec3, dt: f32, gravity: f32, fall_max: f32, grounded: &mut bool) {
+        const STEP: f32 = 0.45;
+        const KNEE: f32 = 0.5;
+        const RADIUS: f32 = 0.3;
+        if !pos.is_finite() || !vel.is_finite() {
+            warn!("non-finite motion: pos {pos:?} vel {vel:?}; resetting");
+            *vel = Vec3::ZERO;
+            if !pos.is_finite() {
+                *pos = self.spawn_point();
+            }
+        }
+        let d = Vec3::new(vel.x, 0.0, vel.z) * dt;
+        let here = *pos + Vec3::Y * KNEE;
+        for axis in [d, Vec3::new(d.x, 0.0, 0.0), Vec3::new(0.0, 0.0, d.z)] {
+            if axis != Vec3::ZERO && !self.blocked(here, here + axis + axis.normalize() * RADIUS) {
+                *pos += axis;
+                break;
+            }
+        }
+        vel.y = (vel.y - gravity * dt).max(-fall_max);
+        let next_y = pos.y + vel.y * dt;
+        match self.ground(pos.x, pos.z, pos.y + STEP) {
+            Some(g) if next_y <= g => {
+                pos.y = g;
+                vel.y = vel.y.max(0.0);
+                *grounded = true;
+            }
+            Some(g) if *grounded && vel.y <= 0.0 && pos.y - g < STEP => {
+                pos.y = g;
+                vel.y = 0.0;
+            }
+            _ => {
+                pos.y = next_y;
+                *grounded = false;
+            }
+        }
+        if pos.y < self.min.y - 50.0 {
+            *pos = self.spawn_point();
+            *vel = Vec3::ZERO;
+        }
+    }
+
+    /// Distance along the segment `p`â†’`q` to the first triangle hit (any orientation).
     pub fn first_hit(&self, p: Vec3, q: Vec3) -> Option<f32> {
         let d = q - p;
         let len = d.length();
-        if len < 1e-5 {
+        if len < 1e-5 || !p.is_finite() || !q.is_finite() || len > 200.0 {
             return None;
         }
         let dir = d / len;
@@ -89,7 +137,7 @@ impl Collider {
     pub fn blocked(&self, p: Vec3, q: Vec3) -> bool {
         let d = q - p;
         let len = d.length();
-        if len < 1e-5 {
+        if len < 1e-5 || !p.is_finite() || !q.is_finite() || len > 200.0 {
             return false;
         }
         let dir = d / len;
@@ -148,7 +196,7 @@ fn height_at(a: Vec3, b: Vec3, c: Vec3, x: f32, z: f32) -> Option<f32> {
     (v >= 0.0 && w >= 0.0 && v + w <= 1.0).then_some(a.y + v * (b.y - a.y) + w * (c.y - a.y))
 }
 
-/// Möller–Trumbore ray/triangle intersection (two-sided). Returns the hit distance.
+/// MÃ¶llerâ€“Trumbore ray/triangle intersection (two-sided). Returns the hit distance.
 fn ray_tri(o: Vec3, d: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
     let (e1, e2) = (b - a, c - a);
     let p = d.cross(e2);

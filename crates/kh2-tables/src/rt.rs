@@ -10,6 +10,12 @@ pub enum Header {
     Short,
     /// A `Table` that follows another `Table` in the same subfile.
     SecondTable,
+    /// No header: records fill the subfile.
+    List,
+    /// Level-up tables: magic, count, 14 dword offsets, then per character a count + records.
+    Lvup,
+    /// A `pref` sub-BAR entry: u32 count + count byte offsets, one record at each.
+    Pref(&'static str),
     /// Layout not modelled yet (unfinished sheet row).
     Unknown,
 }
@@ -107,8 +113,67 @@ fn header(b: &[u8], short: bool) -> Option<(u32, usize, usize)> {
     }
 }
 
+fn u32_at(b: &[u8], o: usize) -> Option<usize> {
+    Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?) as usize)
+}
+
+fn records<T: Record>(b: &[u8], at: usize, n: usize) -> Option<Vec<T>> {
+    let s = b.get(at..at + n * T::SIZE)?;
+    let mut r = Reader::new(s);
+    Some((0..n).map(|_| T::parse(&mut r)).collect())
+}
+
+/// Level-up tables per character (index 0 = Sora).
+pub fn decode_lvup<T: Record>(blob: &[u8]) -> Option<Vec<Vec<T>>> {
+    // `count` includes the unused first offset.
+    let n = u32_at(blob, 4)?.min(14);
+    (1..n)
+        .map_while(|k| {
+            let at = u32_at(blob, 8 + 4 * k)? * 4;
+            if at == 0 {
+                return None;
+            }
+            let count = u32_at(blob, at)?;
+            records(blob, at + 4, count)
+        })
+        .map(Some)
+        .collect()
+}
+
 pub fn decode<T: Record>(def: &TableDef, blob: &[u8]) -> Result<Decoded<T>, DecodeError> {
     let trunc = |need| DecodeError::Truncated { table: def.name, need, have: blob.len() };
+    match def.header {
+        Header::List => {
+            let n = blob.len() / T::SIZE;
+            let rows = records(blob, 0, n).ok_or(trunc(n * T::SIZE))?;
+            return Ok(Decoded { version: 0, rows, used: n * T::SIZE, len: blob.len() });
+        }
+        Header::Lvup => {
+            let chars = decode_lvup::<T>(blob).ok_or(trunc(64))?;
+            let used = 64 + chars.iter().map(|c| 4 + c.len() * T::SIZE).sum::<usize>();
+            let version = u32_at(blob, 0).unwrap_or(0) as u32;
+            return Ok(Decoded { version, rows: chars.into_iter().flatten().collect(), used, len: blob.len() });
+        }
+        Header::Pref(tag) => {
+            let entries = kh2_bar::parse(blob).map_err(|_| DecodeError::Archive("pref: not a BAR".into()))?;
+            let sub = kh2_bar::find(&entries, tag).ok_or_else(|| DecodeError::Archive(format!("pref: no {tag}")))?.data;
+            let n = u32_at(sub, 0).ok_or(trunc(4))?;
+            let rows = (0..n)
+                .map(|k| {
+                    // The last record of a subfile can be shorter than the full layout: zero-pad it.
+                    let at = u32_at(sub, 4 + 4 * k)?;
+                    let mut rec = vec![0u8; T::SIZE];
+                    let src = sub.get(at..)?;
+                    let n = src.len().min(T::SIZE);
+                    rec[..n].copy_from_slice(&src[..n]);
+                    records::<T>(&rec, 0, 1).and_then(|mut v| v.pop())
+                })
+                .collect::<Option<Vec<T>>>()
+                .ok_or(trunc(sub.len() + 1))?;
+            return Ok(Decoded { version: 0, rows, used: blob.len(), len: blob.len() });
+        }
+        _ => {}
+    }
     let start = match def.header {
         Header::Unknown => return Err(DecodeError::NoLayout(def.name)),
         Header::SecondTable => {

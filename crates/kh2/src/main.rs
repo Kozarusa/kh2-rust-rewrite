@@ -160,6 +160,20 @@ fn run(args: &mut Vec<String>) -> Result<(), String> {
             let tris: usize = m.meshes.iter().map(|x| x.indices.len() / 3).sum();
             println!("{name}: {} meshes, {tris} triangles, {} bones, {} textures", m.meshes.len(), m.bones.len(), m.textures.len());
             println!("bounds {lo:?} .. {hi:?}");
+            if args.iter().any(|x| x == "--shapes") {
+                for s in &m.shapes {
+                    println!(
+                        "group {:3} kind {:2} shape {} bone {:?} off {:?} r {} h {} parts {} arg {}",
+                        s.group, s.kind, s.shape, s.bone, s.offset, s.radius, s.height, s.parts, s.argument
+                    );
+                }
+            }
+            if args.iter().any(|x| x == "--bones") {
+                for (i, (b, m)) in m.bones.iter().zip(kh2_model::rest_pose(&m.bones)).enumerate() {
+                    let t = m.w_axis;
+                    println!("bone {i:3} parent {:3} rest ({:7.1} {:7.1} {:7.1})", b.parent, t.x, t.y, t.z);
+                }
+            }
             if args.iter().any(|x| x == "--textures") {
                 let dir = local().join("tex").join(name.replace('/', "_"));
                 std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -171,6 +185,30 @@ fn run(args: &mut Vec<String>) -> Result<(), String> {
                     enc.write_header().and_then(|mut w| w.write_image_data(&t.rgba)).map_err(|e| e.to_string())?;
                 }
                 println!("textures -> {}", dir.display());
+            }
+        }
+        "mset" => {
+            let mut a = open(args)?;
+            let name = args.first().ok_or("mset needs a file name")?.clone();
+            let filter = args.get(1).cloned().unwrap_or_default();
+            let m = kh2_anim::Mset::parse(&a.read(&name).map_err(|e| e.to_string())?).ok_or("not an MSET")?;
+            println!("{name}: {} slots, {} with motion", m.slots.len(), m.slots.iter().flatten().filter(|s| s.motion.is_some()).count());
+            for (i, s) in m.slots.iter().enumerate() {
+                let Some(s) = s else { continue };
+                let Some(mo) = &s.motion else { continue };
+                if !s.tag.contains(filter.as_str()) {
+                    continue;
+                }
+                let kind = match &mo.data {
+                    kh2_anim::motion::Data::Interpolated(ip) => format!("interp bones {}+{} curves {}", ip.bone_count, ip.total_count - ip.bone_count, ip.forward.len()),
+                    kh2_anim::motion::Data::Raw { bones, frames } => format!("raw bones {bones} frames {}", frames.len()),
+                };
+                let rt: Vec<String> = s.triggers.ranges.iter().map(|r| format!("{}[{}-{}]{:?}", r.id, r.start, r.end, r.params)).collect();
+                let ft: Vec<String> = s.triggers.frames.iter().map(|r| format!("{}@{}{:?}", r.id, r.frame, r.params)).collect();
+                println!(
+                    "{i:4} id{:3}.{} {} f{}..{} ret{} {}fps {kind} | R {} | F {}",
+                    i / 4, i % 4, s.tag, mo.frame_start, mo.frame_end, mo.frame_return, mo.fps, rt.join(" "), ft.join(" ")
+                );
             }
         }
         "validate" => validate(args)?,

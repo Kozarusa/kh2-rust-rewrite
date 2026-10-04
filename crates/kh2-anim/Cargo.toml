@@ -1,0 +1,11 @@
+﻿[package]
+name = "kh2-anim"
+description = "KH2 motion sets (MSET), ANB motions (interpolated + raw), motion triggers, and pose evaluation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kh2-bar.workspace = true
+kh2-model.workspace = true
+glam = "0.32"

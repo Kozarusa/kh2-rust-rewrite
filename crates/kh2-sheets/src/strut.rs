@@ -164,9 +164,12 @@ fn rust_table(sh: &Sheet) -> Result<String, String> {
                     "        \"{id}\" => Some(crate::rt::decode::<{ty}>(&{konst}, blob).map(crate::rt::DynTable::from)),"
                 ));
                 let header = match h {
-                    "table" => "Header::Table",
-                    "short" => "Header::Short",
-                    "table2" => "Header::SecondTable",
+                    "table" => "Header::Table".to_string(),
+                    "short" => "Header::Short".to_string(),
+                    "table2" => "Header::SecondTable".to_string(),
+                    "list" => "Header::List".to_string(),
+                    "lvup" => "Header::Lvup".to_string(),
+                    p if p.starts_with("pref:") => format!("Header::Pref({:?})", &p[5..]),
                     other => return Err(format!("tables[{id}]: unknown header '{other}'")),
                 };
                 let skip = if h == "table2" {
@@ -176,7 +179,7 @@ fn rust_table(sh: &Sheet) -> Result<String, String> {
                 };
                 (header, format!("Some({size})"), skip)
             }
-            _ => ("Header::Unknown", "None".to_string(), 0),
+            _ => ("Header::Unknown".to_string(), "None".to_string(), 0),
         };
         let _ = writeln!(
             o,

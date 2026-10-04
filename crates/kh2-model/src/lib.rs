@@ -7,6 +7,7 @@
 //! Layouts per OpenKH `docs/kh2/file/model.md`, `docs/kh2/file/type/mdlx.md`,
 //! `OpenKh.Kh2/Mdlx.Model.cs` and `OpenKh.Engine/Parsers/*` (Apache-2.0); see CREDITS.md.
 
+pub mod collision;
 pub mod texture;
 
 use glam::{Mat4, Quat, Vec3, Vec4};
@@ -51,6 +52,8 @@ pub struct Model {
     pub meshes: Vec<Mesh>,
     pub bones: Vec<Bone>,
     pub textures: Vec<Texture>,
+    /// Object collision shapes (MDLX only).
+    pub shapes: Vec<collision::Shape>,
 }
 
 fn u32_at(b: &[u8], o: usize) -> u32 {
@@ -157,7 +160,8 @@ pub fn mdlx(file: &[u8]) -> Option<Model> {
             meshes.push(mesh);
         }
     }
-    Some(Model { meshes, bones, textures })
+    let shapes = entries.iter().find(|e| e.kind == 23).map(|e| collision::parse(e.data)).unwrap_or_default();
+    Some(Model { meshes, bones, textures, shapes })
 }
 
 /// Absolute rest-pose matrices (rotation then translation; scale is not applied by the game here).
@@ -237,7 +241,11 @@ pub fn map_file(file: &[u8]) -> Option<MapFile> {
     let pair = |tag: &str| -> Option<Model> {
         let m = e.iter().find(|x| x.tag == tag && x.kind == 4)?;
         let t = e.iter().find(|x| x.tag == tag && x.kind == 7);
-        Some(Model { meshes: map_model(m.data), bones: Vec::new(), textures: t.map(|t| texture::decode(t.data)).unwrap_or_default() })
+        Some(Model {
+            meshes: map_model(m.data),
+            textures: t.map(|t| texture::decode(t.data)).unwrap_or_default(),
+            ..Default::default()
+        })
     };
     Some(MapFile { map: pair("MAP")?, sky: pair("SK0") })
 }

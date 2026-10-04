@@ -1,4 +1,4 @@
-[workspace]
+﻿[workspace]
 resolver = "3"
 members = ["crates/*"]
 
@@ -16,7 +16,11 @@ kh2-sheets = { path = "crates/kh2-sheets" }
 kh2-tables = { path = "crates/kh2-tables" }
 kh2-ps2 = { path = "crates/kh2-ps2" }
 kh2-model = { path = "crates/kh2-model" }
+kh2-anim = { path = "crates/kh2-anim" }
 serde_json = { version = "1", features = ["preserve_order"] }
+
+[profile.dev]
+opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 2

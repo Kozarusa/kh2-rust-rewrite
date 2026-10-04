@@ -16,6 +16,11 @@ fn f32_at(b: &[u8], o: usize) -> f32 {
     f32::from_bits(u32_at(b, o))
 }
 
+/// Number of joints whose "external effector" flag (bit 7) is set.
+fn joints_count_flagged(b: &[u8], joints_off: usize, n: usize) -> usize {
+    (0..n).filter(|i| b.get(joints_off + 4 * i + 2).is_some_and(|f| f & 0x80 != 0)).count()
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Key {
     pub interp: u8,
@@ -82,6 +87,90 @@ pub struct Interpolated {
     pub helpers: Vec<Bone>,
     /// Parent of each IK helper (index into the full joint list), or -1.
     pub helper_parent: Vec<i32>,
+    /// IK helper flags word (bit 0 terminate, 1 below, 2 enable bias, upper bits unknown).
+    pub helper_flags: Vec<u32>,
+    /// Evaluation order of bones + IK helpers with per-joint flags.
+    pub joints: Vec<Joint>,
+    /// Root position: base values plus forward F-curve indices driving its S/R/T channels.
+    pub root: Option<Root>,
+    pub constraints: Vec<Constraint>,
+    /// (time, active) entries addressed by constraints.
+    pub activations: Vec<(f32, i32)>,
+    pub limiters: Vec<Limiter>,
+    pub expressions: Vec<Expression>,
+    pub nodes: Vec<ExprNode>,
+    /// Joints flagged as external effectors.
+    pub effectors: Vec<i16>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Joint {
+    pub index: u16,
+    /// bits 0-1 ik, 2 translation, 3 rotation, 4 fixed, 5 calculated, 6 calculated matrix2 rotation, 7 external effector
+    pub flags: u8,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Root {
+    pub scale: Vec3,
+    pub rotation: Vec3,
+    pub translation: Vec3,
+    /// Forward F-curve index per channel (sx, sy, sz, rx, ry, rz, tx, ty, tz), -1 = static.
+    pub curves: [i32; 9],
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Constraint {
+    pub kind: u8,
+    pub temp_active: u8,
+    pub constrained: i16,
+    pub source: i16,
+    pub limiter: i16,
+    pub act_count: i16,
+    pub act_start: i16,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Limiter {
+    pub flags: u32,
+    pub damping_width: f32,
+    pub damping_strength: f32,
+    pub min: [f32; 4],
+    pub max: [f32; 4],
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Expression {
+    pub joint: i16,
+    pub channel: i16,
+    pub node: i16,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ExprNode {
+    pub kind: i8,
+    pub global: bool,
+    pub element: i16,
+    pub value: f32,
+    pub car: i16,
+    pub cdr: i16,
+}
+
+impl Interpolated {
+    /// Root translation at `frame` (base value + animated channels), in model units.
+    pub fn root_translation(&self, frame: f32) -> Vec3 {
+        let Some(r) = &self.root else { return Vec3::ZERO };
+        let ch = |k: usize, base: f32| -> f32 {
+            usize::try_from(r.curves[k]).ok().and_then(|i| self.forward.get(i)).map_or(base, |c| c.eval(frame))
+        };
+        Vec3::new(ch(6, r.translation.x), ch(7, r.translation.y), ch(8, r.translation.z))
+    }
+
+    /// Root yaw (rotation about Y) at `frame`.
+    pub fn root_yaw(&self, frame: f32) -> f32 {
+        let Some(r) = &self.root else { return 0.0 };
+        usize::try_from(r.curves[4]).ok().and_then(|i| self.forward.get(i)).map_or(r.rotation.y, |c| c.eval(frame))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -163,13 +252,83 @@ impl Motion {
                 let n_help = total_count - bone_count;
                 let mut helpers = Vec::with_capacity(n_help);
                 let mut helper_parent = Vec::with_capacity(n_help);
+                let mut helper_flags = Vec::with_capacity(n_help);
                 for i in 0..n_help {
                     let o = ik_off + 64 * i;
                     let v = |k: usize| Vec3::new(f32_at(b, o + k), f32_at(b, o + k + 4), f32_at(b, o + k + 8));
                     let parent = i16_at(b, o + 4) as i32;
                     helper_parent.push(parent);
+                    helper_flags.push(u32_at(b, o + 0x0C));
                     helpers.push(Bone { parent, scale: v(0x10), rotation: v(0x20), translation: v(0x30) });
                 }
+                let joints = (0..total_count)
+                    .map(|i| Joint { index: i16_at(b, joints_off + 4 * i) as u16, flags: b.get(joints_off + 4 * i + 2).copied().unwrap_or(0) })
+                    .collect();
+                let root_off = u32_at(b, h + 0x1C) as usize;
+                let root = (root_off != 0).then(|| {
+                    let v = |k: usize| Vec3::new(f32_at(b, root_off + k), f32_at(b, root_off + k + 4), f32_at(b, root_off + k + 8));
+                    Root {
+                        scale: v(0),
+                        rotation: v(0x10),
+                        translation: v(0x20),
+                        curves: std::array::from_fn(|k| u32_at(b, root_off + 0x30 + 4 * k) as i32),
+                    }
+                });
+                let (con_off, con_n) = (u32_at(b, h + 0x40) as usize, u32_at(b, h + 0x44) as usize);
+                let constraints: Vec<Constraint> = (0..con_n.min(10_000))
+                    .map(|i| {
+                        let o = con_off + 12 * i;
+                        Constraint {
+                            kind: b.get(o).copied().unwrap_or(0),
+                            temp_active: b.get(o + 1).copied().unwrap_or(0),
+                            constrained: i16_at(b, o + 2),
+                            source: i16_at(b, o + 4),
+                            limiter: i16_at(b, o + 6),
+                            act_count: i16_at(b, o + 8),
+                            act_start: i16_at(b, o + 10),
+                        }
+                    })
+                    .collect();
+                let act_off = u32_at(b, h + 0x48) as usize;
+                let act_n = constraints.iter().map(|c| (c.act_start.max(0) + c.act_count.max(0)) as usize).max().unwrap_or(0);
+                let activations = (0..act_n).map(|i| (f32_at(b, act_off + 8 * i), u32_at(b, act_off + 8 * i + 4) as i32)).collect();
+                let lim_off = u32_at(b, h + 0x4C) as usize;
+                let lim_n = constraints.iter().map(|c| c.limiter + 1).max().unwrap_or(0).max(0) as usize;
+                let limiters = (0..lim_n)
+                    .map(|i| {
+                        let o = lim_off + 0x30 * i;
+                        let v4 = |k: usize| std::array::from_fn(|j| f32_at(b, o + k + 4 * j));
+                        Limiter { flags: u32_at(b, o), damping_width: f32_at(b, o + 8), damping_strength: f32_at(b, o + 0x0C), min: v4(0x10), max: v4(0x20) }
+                    })
+                    .collect();
+                let (ex_off, ex_n) = (u32_at(b, h + 0x50) as usize, u32_at(b, h + 0x54) as usize);
+                let expressions = (0..ex_n.min(10_000))
+                    .map(|i| {
+                        let o = ex_off + 8 * i;
+                        Expression { joint: i16_at(b, o), channel: i16_at(b, o + 2), node: i16_at(b, o + 6) }
+                    })
+                    .collect();
+                let (nd_off, nd_n) = (u32_at(b, h + 0x58) as usize, u32_at(b, h + 0x5C) as usize);
+                let nodes = (0..nd_n.min(100_000))
+                    .map(|i| {
+                        let o = nd_off + 12 * i;
+                        ExprNode {
+                            kind: b.get(o).copied().unwrap_or(0) as i8,
+                            global: b.get(o + 1).copied().unwrap_or(0) & 1 != 0,
+                            element: i16_at(b, o + 2),
+                            value: f32_at(b, o + 4),
+                            car: i16_at(b, o + 8),
+                            cdr: i16_at(b, o + 10),
+                        }
+                    })
+                    .collect();
+                let eff_off = u32_at(b, h + 0x90) as usize;
+                let effectors = if eff_off == 0 {
+                    Vec::new()
+                } else {
+                    let n = joints_count_flagged(b, joints_off, total_count);
+                    (0..n).map(|i| i16_at(b, eff_off + 2 * i)).collect()
+                };
                 Some(Motion {
                     frame_start: f32_at(b, h + 0x80),
                     frame_end: f32_at(b, h + 0x84),
@@ -183,6 +342,15 @@ impl Motion {
                         inverse: curves(inv_off, inv_n),
                         helpers,
                         helper_parent,
+                        helper_flags,
+                        joints,
+                        root,
+                        constraints,
+                        activations,
+                        limiters,
+                        expressions,
+                        nodes,
+                        effectors,
                     }),
                 })
             }

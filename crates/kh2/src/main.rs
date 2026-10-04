@@ -1,4 +1,4 @@
-//! `kh2` - command line for kh2-rs. Everything it reads comes from the user's own disc at runtime;
+﻿//! `kh2` - command line for kh2-rs. Everything it reads comes from the user's own disc at runtime;
 //! anything it writes goes to `local/` (git-ignored), except `validate`, which writes checkmarks
 //! (status text, never game data) into `sheets/`.
 
@@ -185,6 +185,76 @@ fn run(args: &mut Vec<String>) -> Result<(), String> {
                     enc.write_header().and_then(|mut w| w.write_image_data(&t.rgba)).map_err(|e| e.to_string())?;
                 }
                 println!("textures -> {}", dir.display());
+            }
+        }
+        "motion" => {
+            let mut a = open(args)?;
+            let name = args.first().ok_or("motion needs an mset name")?.clone();
+            let slot: usize = args.get(1).and_then(|s| s.parse().ok()).ok_or("motion needs a slot")?;
+            let m = kh2_anim::Mset::parse(&a.read(&name).map_err(|e| e.to_string())?).ok_or("not an MSET")?;
+            let s = m.get(slot).ok_or("empty slot")?;
+            let mo = s.motion.as_ref().ok_or("no motion")?;
+            println!("{} slot {slot}: frames {}..{} ret {} @ {} fps", s.tag, mo.frame_start, mo.frame_end, mo.frame_return, mo.fps);
+            if let kh2_anim::motion::Data::Interpolated(ip) = &mo.data {
+                if let Some(r) = &ip.root {
+                    println!("root base T {:?} R {:?} S {:?} curves {:?}", r.translation, r.rotation, r.scale, r.curves);
+                    let (t0, t1) = (ip.root_translation(mo.frame_start), ip.root_translation(mo.frame_end));
+                    println!("root T at start {t0:?} end {t1:?} delta {:?}", t1 - t0);
+                    for f in [0.25f32, 0.5, 0.75] {
+                        let fr = mo.frame_start + (mo.frame_end - mo.frame_start) * f;
+                        println!("  root T @{fr:.1} {:?} yaw {:.3}", ip.root_translation(fr), ip.root_yaw(fr));
+                    }
+                }
+                let ikj: Vec<String> = ip.joints.iter().filter(|j| j.flags & 3 != 0).map(|j| format!("{}:{:#04x}", j.index, j.flags)).collect();
+                println!("joints {} (ik-flagged: {})", ip.joints.len(), ikj.join(" "));
+                for (i, (p, f)) in ip.helper_parent.iter().zip(&ip.helper_flags).enumerate() {
+                    let h = &ip.helpers[i];
+                    println!("  helper {} parent {p} flags {f:#x} T {:?} R {:?}", ip.bone_count + i, h.translation, h.rotation);
+                }
+                for c in &ip.constraints {
+                    let acts: Vec<String> = (0..c.act_count.max(0))
+                        .filter_map(|k| ip.activations.get((c.act_start + k) as usize).map(|(t, a)| format!("{t}:{a}")))
+                        .collect();
+                    println!("  constraint kind {:2} {} <- {} lim {} temp {} acts [{}]", c.kind, c.constrained, c.source, c.limiter, c.temp_active, acts.join(" "));
+                }
+                println!("limiters {} expressions {} nodes {} effectors {:?}", ip.limiters.len(), ip.expressions.len(), ip.nodes.len(), ip.effectors);
+                for e in &ip.expressions {
+                    println!("  expr joint {} ch {} node {}", e.joint, e.channel, e.node);
+                }
+            }
+        }
+        "coct" => {
+            let mut a = open(args)?;
+            let name = args.first().ok_or("coct needs a map file name")?.clone();
+            let c = kh2_map::Coct::from_map(&a.read(&name).map_err(|e| e.to_string())?).ok_or("no COCT")?;
+            let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+            let mut by_flags = std::collections::BTreeMap::new();
+            let mut bad_plane = 0;
+            for p in &c.polygons {
+                *by_flags.entry(p.flags).or_insert(0usize) += 1;
+                for v in &p.verts[..if p.quad { 4 } else { 3 }] {
+                    for k in 0..3 {
+                        lo[k] = lo[k].min(v[k]);
+                        hi[k] = hi[k].max(v[k]);
+                    }
+                    // vertices must lie on their plane
+                    let dist = p.normal[0] * v[0] + p.normal[1] * v[1] + p.normal[2] * v[2] + p.d;
+                    if dist.abs() > 1.0 {
+                        bad_plane += 1;
+                    }
+                }
+            }
+            println!("{name}: {} polygons, bounds {lo:?} .. {hi:?}, vertices off-plane: {bad_plane}", c.polygons.len());
+            for (f, n) in by_flags {
+                let (mut floor, mut wall, mut ceil) = (0, 0, 0);
+                for p in c.polygons.iter().filter(|p| p.flags == f) {
+                    match p.normal[1] {
+                        y if y > 0.5 => floor += 1,
+                        y if y < -0.5 => ceil += 1,
+                        _ => wall += 1,
+                    }
+                }
+                println!("  flags {f:#010x} ({f:032b}): {n:5}  floor {floor} wall {wall} ceiling {ceil}");
             }
         }
         "mset" => {

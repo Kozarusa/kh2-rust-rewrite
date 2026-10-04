@@ -1,4 +1,4 @@
-﻿//! Skinned characters: KH2 bones â†’ Bevy joint entities, GPU skinning, and motion playback.
+//! Skinned characters: KH2 bones → Bevy joint entities, GPU skinning, and motion playback.
 //!
 //! Each model bone becomes a joint entity under the character's `body`; every frame its Transform
 //! is set to the bone's model-space matrix from the current motion (crossfaded on transitions),

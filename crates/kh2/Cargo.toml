@@ -12,5 +12,6 @@ kh2-sheets.workspace = true
 kh2-tables.workspace = true
 kh2-model.workspace = true
 kh2-anim.workspace = true
+kh2-map.workspace = true
 serde_json.workspace = true
 png = "0.17"

@@ -1,4 +1,4 @@
-﻿//! Game data read from the disc at startup: attack parameters, enemy and player stats, level
+//! Game data read from the disc at startup: attack parameters, enemy and player stats, level
 //! curves and Sora's movement constants. Nothing here is hard-coded game data.
 
 use bevy::prelude::*;
@@ -8,7 +8,7 @@ use crate::assets::Disc;
 
 /// KH2 movement values are per frame at the game's 60 Hz logic rate, in centimetres.
 pub const LOGIC_HZ: f32 = 60.0;
-/// Gravity in m/sÂ². Not stored in the data files; tuned so a 185-unit jump lasts ~0.68 s.
+/// Gravity in m/s². Not stored in the data files; tuned so a 185-unit jump lasts ~0.68 s.
 pub const GRAVITY: f32 = 32.0;
 /// Character index of Sora in `prty`/`plyr` and in `lvup`.
 const SORA_PREF: usize = 1;
@@ -43,7 +43,7 @@ pub struct Stats {
     /// Damage this unit can deal per hit before resistances (enemies: `lvpm` Max/MinStrength).
     pub max_dealt: i32,
     pub min_dealt: i32,
-    /// Physical, fire, blizzard, thunder, dark, light, general â€” percent.
+    /// Physical, fire, blizzard, thunder, dark, light, general — percent.
     pub weakness: [i32; 7],
 }
 
@@ -105,7 +105,7 @@ impl GameData {
         }
     }
 
-    /// Enemy stats exactly as the game initialises them (HP per part = ceil(lvpm.HpMultiplier Ã—
+    /// Enemy stats exactly as the game initialises them (HP per part = ceil(lvpm.HpMultiplier ×
     /// enmp.Health / 100); damage caps are per-ten-thousand of HP; strength caps from lvpm).
     pub fn enemy_stats(&self, enmp_id: u16, world_level: i32) -> Stats {
         let e = self.enmp.iter().find(|e| e.id == enmp_id).or_else(|| self.enmp.first()).expect("enmp");

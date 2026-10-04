@@ -1,4 +1,4 @@
-﻿//! Disc access and conversion of decoded KH2 models into Bevy meshes, materials and images.
+//! Disc access and conversion of decoded KH2 models into Bevy meshes, materials and images.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -144,7 +144,7 @@ pub fn texture_handles(model: &kh2_model::Model, images: &mut Assets<Image>) -> 
     model.textures.iter().map(|t| images.add(to_image(t))).collect()
 }
 
-/// PS2-style material: unlit, vertex colour Ã— texture, alpha-tested or blended.
+/// PS2-style material: unlit, vertex colour × texture, alpha-tested or blended.
 pub fn material_for(m: &kh2_model::Mesh, textures: &[Handle<Image>], materials: &mut Assets<StandardMaterial>) -> Handle<StandardMaterial> {
     materials.add(StandardMaterial {
         base_color_texture: textures.get(m.texture).cloned(),

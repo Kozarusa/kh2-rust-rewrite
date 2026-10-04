@@ -1,4 +1,4 @@
-﻿# kh2-rs
+# kh2-rs
 
 An experimental, from-scratch Rust rewrite of **Kingdom Hearts II** (PS2, USA, `SLUS_210.05`).
 It reads all game data at runtime from **your own disc image**. No game assets, extracted files or decompiled code are in this repository, and none ever will be.
@@ -9,7 +9,7 @@ Sora:
 - **Movement:** runs, walks, turns and jumps with his real speeds and jump height from the game's `pref` tables.
 - **Animation:** plays his real motions (idle and battle stances, run, jump, fall, land, attacks, damage), GPU-skinned.
 - **Keyblade:** holds the Kingdom Key in his right hand; it runs its own motion set in lockstep with his.
-- **Combos:** a ground combo (A300 â†’ A301 â†’ A302 â†’ finisher A303/A304) and a hovering air combo (A310â€“A314). Each hit chains only inside the motions' own combo windows.
+- **Combos:** a ground combo (A300 → A301 → A302 → finisher A303/A304) and a hovering air combo (A310–A314). Each hit chains only inside the motions' own combo windows.
 - **Hitboxes:** the keyblade's motion triggers switch on its real collision shapes for exactly the authored frames.
 - **Damage:** comes from `atkp` with the game's formula, so damage numbers match the original.
 - **Guard and lock-on:** guards (A320, with the A321 counter on a frontal block), dodge-rolls, and locks on with KH2-style camera assist.
@@ -45,7 +45,7 @@ Controls:
 - **K or E:** guard. With a direction held, dodge roll.
 - **Q or Tab:** toggle lock-on.
 - **Right mouse drag or arrow keys:** orbit the camera. **Mouse wheel or PageUp/PageDown:** zoom.
-- **1â€“9, 0:** switch Twilight Town areas (tt01â€“tt09, tt00).
+- **1–9, 0:** switch Twilight Town areas (tt01–tt09, tt00).
 - **F1:** motion viewer for every Sora motion; step with **[** and **]**.
 - **F3:** spawn an enemy wave.
 - **F4:** show hit volumes (red = live attacks, green = hurtboxes).
@@ -79,7 +79,7 @@ Only the USA release is supported. Other discs are refused, because table layout
 | `crates/kh2-iso` | ISO9660 reader |
 | `crates/kh2-archive` | IDX/IMG + overlays: name hashes, LZ decompression |
 | `crates/kh2-bar` | BAR container |
-| `crates/kh2-sheets` | Spreadsheet method: preflight checklist and struts (rows â†’ Rust) |
+| `crates/kh2-sheets` | Spreadsheet method: preflight checklist and struts (rows → Rust) |
 | `crates/kh2-tables` | Gameplay tables. Their structs are generated from `sheets/tables.json` by `build.rs`, which runs preflight first. |
 | `crates/kh2-ps2` | PS2 hardware behaviour needed for assets: VIF1 unpacking into VU1 memory, DMA chains, VPU packets, GS swizzling |
 | `crates/kh2-model` | Map and skeletal models, plus model textures, decoded into plain meshes and RGBA images |
@@ -99,4 +99,4 @@ See [docs/METHOD.md](docs/METHOD.md). In short:
 ## Credits and licenses
 
 kh2-rs is dual-licensed under MIT or Apache-2.0, at your option. It builds on community research, credited in [CREDITS.md](CREDITS.md).
-Kingdom Hearts is Â© Disney / Square Enix. This is an unofficial fan project, not affiliated with or endorsed by them. You need your own legally obtained copy of the game.
+Kingdom Hearts is © Disney / Square Enix. This is an unofficial fan project, not affiliated with or endorsed by them. You need your own legally obtained copy of the game.

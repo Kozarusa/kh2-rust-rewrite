@@ -1,4 +1,4 @@
-﻿//! Ground and wall queries against the map's render triangles (a stand-in until COCT collision
+//! Ground and wall queries against the map's render triangles (a stand-in until COCT collision
 //! is parsed). Triangles are bucketed in a 2D grid over XZ.
 
 use bevy::prelude::*;
@@ -111,7 +111,7 @@ impl Collider {
         }
     }
 
-    /// Distance along the segment `p`â†’`q` to the first triangle hit (any orientation).
+    /// Distance along the segment `p`→`q` to the first triangle hit (any orientation).
     pub fn first_hit(&self, p: Vec3, q: Vec3) -> Option<f32> {
         let d = q - p;
         let len = d.length();
@@ -196,7 +196,7 @@ fn height_at(a: Vec3, b: Vec3, c: Vec3, x: f32, z: f32) -> Option<f32> {
     (v >= 0.0 && w >= 0.0 && v + w <= 1.0).then_some(a.y + v * (b.y - a.y) + w * (c.y - a.y))
 }
 
-/// MÃ¶llerâ€“Trumbore ray/triangle intersection (two-sided). Returns the hit distance.
+/// Möller–Trumbore ray/triangle intersection (two-sided). Returns the hit distance.
 fn ray_tri(o: Vec3, d: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
     let (e1, e2) = (b - a, c - a);
     let p = d.cross(e2);

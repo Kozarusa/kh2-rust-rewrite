@@ -1,4 +1,4 @@
-﻿//! Hit detection driven by motion triggers.
+//! Hit detection driven by motion triggers.
 //!
 //! An attack is live while a motion's range trigger 10 (attack) or 33 (combo attack) covers the
 //! current frame; its params are (atkp id, collision group[, combo id]). The hit volumes are the
@@ -39,7 +39,7 @@ pub struct Hit {
     pub attacker: Entity,
     pub target: Entity,
     pub atkp: i16,
-    /// Attacker â†’ target, horizontal.
+    /// Attacker → target, horizontal.
     pub dir: Vec3,
     pub point: Vec3,
 }

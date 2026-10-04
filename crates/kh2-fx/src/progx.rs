@@ -205,7 +205,7 @@ fn rand2(ctx: &mut Ctx, two: bool) -> f32 {
 
 fn rand_target(_obj: &mut Obj, p: &Program, e: usize) -> Option<usize> {
     let off = pw(p, e, 4);
-    (off != -1).then_some(off as usize + OBJ_WORK)
+    (off >= 0).then(|| off as usize + OBJ_WORK)
 }
 
 /// pppRandFV: target vector += p·r − p per component.

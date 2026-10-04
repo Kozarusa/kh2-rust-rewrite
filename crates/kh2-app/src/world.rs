@@ -237,6 +237,24 @@ impl World {
         Vec3::new(p.x, self.ground(p, p.y + 50.0, 500.0).map_or(p.y, |g| g.y), p.z)
     }
 
+    /// First triangle with any of `mask`'s collision flags that the capsule (segment `a`-`b`, radius
+    /// `r`, metres) touches: (contact point in metres, surface normal).
+    pub fn touching_m(&self, a: Vec3, b: Vec3, r: f32, mask: u32) -> Option<(Vec3, Vec3)> {
+        let (a, b, r) = (a * Self::M, b * Self::M, r * Self::M);
+        let mut ids = Vec::new();
+        self.near(a.min(b) - Vec3::splat(r), a.max(b) + Vec3::splat(r), &mut ids);
+        ids.iter()
+            .map(|&i| &self.tris[i as usize])
+            .filter(|t| t.flags & mask != 0 && t.n.y.abs() < FLOOR_NY)
+            .filter_map(|t| {
+                let (q, p) = closest_segment_triangle(a, b, t);
+                let d = q.distance(p);
+                (d <= r).then_some((d, q / Self::M, t.n))
+            })
+            .min_by(|x, y| x.0.total_cmp(&y.0))
+            .map(|(_, q, n)| (q, n))
+    }
+
     /// Distance along the segment to the first triangle (any orientation).
     pub fn raycast(&self, p: Vec3, q: Vec3) -> Option<f32> {
         let d = q - p;

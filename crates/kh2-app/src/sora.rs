@@ -699,6 +699,33 @@ pub fn respawn(s: &mut Sora, at: Vec3) {
 }
 
 /// Applies enemy hits to Sora: guard repels from the front, otherwise damage and reactions.
+/// Sora's attack bouncing off a wall: he is pushed back and flinches (the attack's `RefactSelf` 2).
+pub fn receive_wall_hits(
+    mut walls: MessageReader<crate::combat::WallHit>,
+    data: Res<GameData>,
+    mut sora_q: Query<(Entity, &mut Sora, &mut Fighter)>,
+    mut anims: Query<&mut Animator>,
+) {
+    let Ok((me, mut s, mut fighter)) = sora_q.single_mut() else { return };
+    for w in walls.read().filter(|w| w.attacker == me) {
+        if !matches!(s.state, State::Attack { .. }) || data.atkp(w.atkp).is_none_or(|a| a.refact_self != 2) {
+            continue;
+        }
+        let Ok([mut body, mut weapon]) = anims.get_many_mut([s.body, s.weapon]) else { return };
+        let rig = body.rig.clone();
+        let back = w.normal.with_y(0.0).normalize_or_zero();
+        // The surface normal's sign is arbitrary: push away from the wall, i.e. against Sora's facing side.
+        let away = if back.dot(s.motor.forward()) > 0.0 { -back } else { back };
+        s.motor.vel = away * 2.0;
+        s.state = State::Hurt;
+        s.combo = 0;
+        s.timer = 0.0;
+        body.restart(rig.mset.slot(id::DAMAGE_S_FRONT_HIGH, PlayerState::BattleWeapon), false, 2.0);
+        weapon.restart(None, false, 2.0);
+        fighter.landed.clear();
+    }
+}
+
 pub fn receive_hits(
     mut hits: MessageReader<Hit>,
     data: Res<GameData>,

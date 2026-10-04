@@ -8,6 +8,7 @@
 //! Gameplay runs in `FixedUpdate` at the game's 60 Hz logic rate.
 
 mod assets;
+mod audio;
 mod camera;
 mod combat;
 mod data;
@@ -57,6 +58,7 @@ fn main() {
             ..default()
         }))
         .add_message::<combat::Hit>()
+        .add_message::<combat::WallHit>()
         .add_message::<hud::DamagePopup>()
         .add_message::<fx::StartEffect>()
         .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.08)))
@@ -81,12 +83,16 @@ fn main() {
                 enemy::separate,
                 combat::detect_hits,
                 sora::receive_hits,
+                sora::receive_wall_hits,
                 enemy::receive_hits,
                 fx::weapon_trails,
                 fx::motion_effects,
                 fx::start_requests,
                 fx::hit_sparks,
                 fx::fx_test,
+                fx::effect_sounds,
+                audio::motion_sounds,
+                audio::wall_sounds,
                 fx::tick,
             )
                 .chain(),
@@ -97,6 +103,8 @@ fn main() {
         )
         .add_systems(Update, auto_screenshot)
         .add_plugins(FpsLog)
+        .add_plugins(audio::AudioPlugin)
+        .add_systems(Update, audio::area_bgm.after(assets::load_area))
         .run();
 }
 

@@ -36,6 +36,8 @@ pub struct Animator {
     pub frame: f32,
     /// Frame at the previous update (for trigger edges).
     pub prev_frame: f32,
+    /// True from a (re)start until its first tick, so frame triggers at the very first frame fire.
+    fresh: bool,
     pub speed: f32,
     pub looping: bool,
     pub finished: bool,
@@ -73,6 +75,7 @@ impl Animator {
         let start = self.motion().map_or(0.0, |m| m.frame_start);
         self.frame = start;
         self.prev_frame = start;
+        self.fresh = true;
         self.root = self.root_at(start);
         self.root_delta = (Vec3::ZERO, 0.0);
     }
@@ -86,7 +89,8 @@ impl Animator {
 
     /// Advances one 60 Hz tick: frame, looping, and root movement.
     pub fn tick(&mut self) {
-        self.prev_frame = self.frame;
+        // The first tick of a motion covers its first frame too (triggers at frame 0).
+        self.prev_frame = if std::mem::take(&mut self.fresh) { self.frame - 1.0 } else { self.frame };
         let Some(m) = self.motion().cloned_meta() else {
             self.root_delta = (Vec3::ZERO, 0.0);
             return;
@@ -186,6 +190,7 @@ pub fn spawn_skinned(
         slot: None,
         frame: 0.0,
         prev_frame: 0.0,
+        fresh: false,
         speed: 1.0,
         looping: true,
         finished: false,

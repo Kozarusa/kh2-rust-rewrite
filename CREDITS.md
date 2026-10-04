@@ -38,7 +38,11 @@ Some rules are not documented anywhere and were read from the game's own code in
 - **Effect runtime** (`crates/kh2-fx`): the effect manager's tick order, group birth, the per-program parameter cursor rule, loop restart with fast-forward, expiry; the value/matrix program handlers (integer angles over a 4096-entry sine table, Rz·Ry·Rx); sprites, models, random/loop programs, child spawners, sprite tails and the MegaBirth particle system; the hit-mark rule (attack effect bits + target type matched against PAX element categories); the weapon trail (bone-pair points at ratio × bone length along the bone's X, an 8-sample ring, natural cubic spline over the samples, first-pass alpha fade, UV spans).
 - **Motion rig evaluation** (`crates/kh2-anim/src/rig.rs`): joint order, constraint cursor, IK goal search, one/two-bone IK, look-at, limiters (including two of the game's quirks: the undamped sphere limit never clamps, the damped minimum side adds its soft term), Euler re-extraction, expression semantics, F-curve pre/post modes, 60 Hz key times. Verified joint by joint against the game's own routines run by `kh2-ee` (`kh2 rig`, `kh2 rig-sweep`).
 
+- **Sound** (`crates/kh2-audio`): the SSL driver's timing (240 Hz frames, tempo accumulator, 300-per-tick), sequence commands, slide/LFO units, the pitch/volume/pan chain written to the SPU2, SE numbering (`bank * 1000 + index`, object-private banks inside `*.apdx`), hit sounds (the victim's own bank, entry 0-3 by the attack's `EnemyReaction`), and the SeBlock/VSB layouts were read from a local disassembly of the user's `LIBSSL.IRX` and executable. The driver's pitch/pan lookup tables are read from the user's own `LIBSSL.IRX` at runtime, never shipped.
+
 ## Research references (consulted, nothing copied)
+
+- [VGMTrans](https://github.com/vgmtrans/vgmtrans), zlib license: the layout of the Square PS2 WD instrument banks and BGM headers (`src/main/formats/SquarePS2`). The SPU ADPCM decoder and ADSR envelope follow the public SPU2 hardware description.
 
 - [govanify/kh2](https://github.com/govanify/kh2) "dasein", MIT: a matching decompilation of the KH2 Final Mix ELF. It is a reference for function names and the original file layout.
 - [govanify.com: reverse engineering MDLX](https://govanify.com/post/re-3d-model-mdlx): background for the model format.

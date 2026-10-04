@@ -366,6 +366,8 @@ pub fn receive_hits(
     mut q: Query<(&mut Enemy, &mut Fighter)>,
     mut anims: Query<&mut Animator>,
     mut popups: MessageWriter<crate::hud::DamagePopup>,
+    mut sounds: MessageWriter<crate::audio::PlaySe>,
+    mut hit_count: Local<u8>,
 ) {
     let from = sora.single().map(|s| s.stats).ok();
     for h in hits.read() {
@@ -379,6 +381,10 @@ pub fn receive_hits(
         popups.write(crate::hud::DamagePopup { at: h.point, amount: dmg });
         let Ok(mut a) = anims.get_mut(e.body) else { continue };
         let rig = a.rig.clone();
+        if let Some(se) = crate::audio::PlaySe::hit(atk.enemy_reaction, *hit_count, rig.apdx.clone()) {
+            sounds.write(se);
+            *hit_count = hit_count.wrapping_add(1);
+        }
         let facing = Vec3::new(e.yaw.sin(), 0.0, e.yaw.cos());
         let from_front = facing.dot(h.dir) < 0.0;
         let blow = atk.enemy_reaction >= 5 || e.hp == 0;

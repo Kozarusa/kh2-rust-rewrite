@@ -1,0 +1,8 @@
+[package]
+name = "kh2-audio"
+description = "KH2 audio: SPU ADPCM, WD instrument banks, BGM sequences, SE blocks, and a software SPU2-style synthesizer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

@@ -44,6 +44,11 @@ impl Disc {
         Disc(Mutex::new(a))
     }
 
+    /// A file in the disc's root directory (executables, IOP modules).
+    pub fn read_root(&self, name: &str) -> Option<Vec<u8>> {
+        self.0.lock().ok()?.iso().read(name).map_err(|e| warn!("{name}: {e}")).ok()
+    }
+
     pub fn read(&self, name: &str) -> Option<Vec<u8>> {
         self.0.lock().ok()?.read(name).map_err(|e| warn!("{name}: {e}")).ok()
     }

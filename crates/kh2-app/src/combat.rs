@@ -34,6 +34,16 @@ pub struct Fighter {
     pub hittable: bool,
 }
 
+/// A player attack volume touching a wall that blocks attacks.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct WallHit {
+    pub attacker: Entity,
+    pub body: Entity,
+    pub atkp: i16,
+    pub point: Vec3,
+    pub normal: Vec3,
+}
+
 #[derive(Message, Clone, Copy, Debug)]
 pub struct Hit {
     pub attacker: Entity,
@@ -118,6 +128,8 @@ pub fn detect_hits(
     mut fighters: Query<(Entity, &mut Fighter, &GlobalTransform)>,
     bodies: Query<(&Animator, &GlobalTransform)>,
     mut hits: MessageWriter<Hit>,
+    mut wall_hits: MessageWriter<WallHit>,
+    world: Option<Res<crate::world::World>>,
 ) {
     // Snapshot defenders first.
     let defenders: Vec<(Entity, Team, Vec<Volume>, Vec3)> = fighters
@@ -130,6 +142,17 @@ pub fn detect_hits(
         for &body in &f.attack_bodies.clone() {
             let Ok((anim, bg)) = bodies.get(body) else { continue };
             for (atkp, start, vol) in live_attacks(anim, bg) {
+                if let (Some(world), Team::Player) = (world.as_ref(), f.team) {
+                    // Each attack window bounces off a wall once.
+                    let key = (Entity::PLACEHOLDER, body, start);
+                    still_live.insert(key);
+                    if !f.landed.contains(&key) {
+                        if let Some((point, normal)) = world.touching_m(vol.a, vol.b, vol.r, kh2_map::flags::ATTACK_COLLIDE) {
+                            f.landed.insert(key);
+                            wall_hits.write(WallHit { attacker: e, body, atkp, point, normal });
+                        }
+                    }
+                }
                 for (te, team, hurts, tpos) in &defenders {
                     if *team == f.team || *te == e {
                         continue;

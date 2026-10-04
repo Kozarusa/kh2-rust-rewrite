@@ -35,6 +35,8 @@ pub struct LoadedPax {
     pub pax: Pax,
     pub dpds: Vec<Arc<Dpd>>,
     pub vram: Vec<Arc<Vram>>,
+    /// The object file this came from (`obj/<name>.apdx`); `None` for the shared system effects.
+    pub apdx: Option<String>,
 }
 
 #[derive(Resource)]
@@ -116,7 +118,7 @@ pub fn load(disc: &Disc, name: &str, id: usize, common: Option<&Dpd>) -> Option<
         })
         .collect();
     let dpds = pax.dpds.iter().cloned().map(Arc::new).collect();
-    Some(LoadedPax { id, pax, dpds, vram })
+    Some(LoadedPax { id, pax, dpds, vram, apdx: name.ends_with(".apdx").then(|| name.to_string()) })
 }
 
 pub fn setup(mut commands: Commands, disc: Res<Disc>, rigs: Res<crate::sora::Rigs>) {
@@ -220,10 +222,12 @@ pub fn hit_sparks(
     lib: Res<EffectLib>,
     data: Res<crate::data::GameData>,
     mut hits: MessageReader<crate::combat::Hit>,
+    mut walls: MessageReader<crate::combat::WallHit>,
     mut seed: Local<u32>,
 ) {
-    for h in hits.read() {
-        let Some(atk) = data.atkp(h.atkp) else { continue };
+    let all = hits.read().map(|h| (h.atkp, h.point)).chain(walls.read().map(|w| (w.atkp, w.point)));
+    for (atkp, point) in all {
+        let Some(atk) = data.atkp(atkp) else { continue };
         if atk.effect_on_hit == 0 {
             continue;
         }
@@ -236,9 +240,18 @@ pub fn hit_sparks(
         let mask: u64 = 1 | 1u64 << (32 + bit);
         let Some(id) = lib.keyblade.pax.elements.iter().find(|e| e.category & mask == mask).map(|e| e.id) else { continue };
         if std::env::var_os("KH2_FXLOG").is_some() {
-            info!("hit atkp {} effect {} -> keyblade element id {id} at {:?}", h.atkp, atk.effect_on_hit, h.point);
+            info!("hit atkp {} effect {} -> keyblade element id {id} at {:?}", atkp, atk.effect_on_hit, point);
         }
-        start(&mut commands, &lib.keyblade, id, Bind::Fixed(Mat4::from_translation(h.point)));
+        start(&mut commands, &lib.keyblade, id, Bind::Fixed(Mat4::from_translation(point)));
+    }
+}
+
+/// An effect element that names a sound effect (`se` >= 0) plays it when the effect starts.
+pub fn effect_sounds(started: Query<&RunningEffect, Added<RunningEffect>>, mut out: MessageWriter<crate::audio::PlaySe>) {
+    for r in &started {
+        if r.element.se >= 0 {
+            out.write(crate::audio::PlaySe::number(r.element.se as u32, r.lib.apdx.clone()));
+        }
     }
 }
 

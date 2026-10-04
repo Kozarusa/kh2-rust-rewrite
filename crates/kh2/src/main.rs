@@ -20,11 +20,32 @@ kh2 <command> [--iso PATH]
   extract NAME [DIR]    write one archive file to DIR (default local/extract/)
   bar NAME              list the subfiles of a BAR archive
   pax NAME              dump a PAX effect (or every PAX in a BAR)
+  bgm NAME [SECONDS]    render a BGM with its WD bank to local/<name>.wav
   table NAME [LIMIT]    print a decoded gameplay table
   validate              decode every modelled table and write checkmarks into sheets/
   preflight [--strict]  overlap all sheets and print the checklist
 
 ISO path: --iso, else $KH2_ISO, else local/iso.txt";
+
+/// 16-bit stereo WAV.
+fn write_wav(path: &Path, pcm: &[f32], rate: u32) -> Result<(), String> {
+    let data: Vec<u8> = pcm.iter().flat_map(|s| ((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes()).collect();
+    let mut b = Vec::with_capacity(44 + data.len());
+    b.extend_from_slice(b"RIFF");
+    b.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
+    b.extend_from_slice(b"WAVEfmt ");
+    b.extend_from_slice(&16u32.to_le_bytes());
+    b.extend_from_slice(&1u16.to_le_bytes());
+    b.extend_from_slice(&2u16.to_le_bytes());
+    b.extend_from_slice(&rate.to_le_bytes());
+    b.extend_from_slice(&(rate * 4).to_le_bytes());
+    b.extend_from_slice(&4u16.to_le_bytes());
+    b.extend_from_slice(&16u16.to_le_bytes());
+    b.extend_from_slice(b"data");
+    b.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    b.extend_from_slice(&data);
+    std::fs::write(path, b).map_err(|e| e.to_string())
+}
 
 fn print_pax(pax: &kh2_fx::Pax) {
     use kh2_fx::ppp::name;
@@ -270,6 +291,93 @@ fn run(args: &mut Vec<String>) -> Result<(), String> {
                 }
                 println!("textures -> {}", dir.display());
             }
+        }
+        "disc" => {
+            // Files on the disc outside the KH2.IDX archive (executables, IOP modules).
+            let mut a = open(args)?;
+            for e in a.iso().entries() {
+                println!("{:10} {}", e.size, e.path);
+            }
+        }
+        "se" => {
+            // se se/seNNN.seb [INDEX [SECONDS]]: list a sound-effect block, or render one entry.
+            let mut a = open(args)?;
+            let name = args.first().ok_or("se needs a block name, e.g. se/se500.seb")?.clone();
+            let mut apdx_wd = None;
+            let block = if name.ends_with(".apdx") {
+                // An object's own sound bank: a `wave` WD and an `seNN` SeBlock inside its APDX.
+                let raw = a.read(&name).map_err(|e| e.to_string())?;
+                let bar = kh2_bar::parse(&raw).map_err(|e| format!("{e:?}"))?;
+                apdx_wd = bar.iter().find(|e| e.tag == "wave").and_then(|e| kh2_audio::Wd::parse(&e.data));
+                bar.iter().find(|e| e.tag.starts_with("se")).and_then(|e| kh2_audio::ssl::SeBlock::parse(&e.data)).ok_or("no SeBlock")?
+            } else {
+                kh2_audio::ssl::SeBlock::parse(&a.read(&name).map_err(|e| e.to_string())?).ok_or("not an SeBlock")?
+            };
+            let Some(index) = args.get(1).and_then(|s| s.parse::<usize>().ok()) else {
+                println!("bank {} entries {}", block.bank, block.entries.len());
+                for (i, e) in block.entries.iter().enumerate() {
+                    println!("{i:3} wd {:4} group {:3} flags {:#04x} tracks {}", e.wd, e.group, e.flags, e.tracks.len());
+                }
+                return Ok(());
+            };
+            let secs: f32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(3.0);
+            let e = block.entries.get(index).ok_or("no such entry")?;
+            let wd = match apdx_wd {
+                Some(w) => w,
+                None => {
+                    let wd_name = format!("se/wave{:04}.wd", e.wd);
+                    kh2_audio::Wd::parse(&a.read(&wd_name).map_err(|e| format!("{wd_name}: {e}"))?).ok_or("not a WD")?
+                }
+            };
+            let irx = a.iso().read("LIBSSL.IRX").map_err(|e| format!("LIBSSL.IRX: {e}"))?;
+            let tables = kh2_audio::ssl::Tables::from_irx(&irx).ok_or("LIBSSL.IRX is not the USA driver")?;
+            let mut driver = kh2_audio::ssl::Driver::new(std::sync::Arc::new(tables));
+            driver.mixer.master = 0.5;
+            if !driver.play_se(&block, index, std::sync::Arc::new(wd), 0x3fff, 0x40) {
+                return Err("entry is empty".into());
+            }
+            let frames = (secs * kh2_audio::RATE as f32) as usize;
+            let mut pcm = vec![0f32; frames * 2];
+            for chunk in pcm.chunks_mut(256 * 2) {
+                driver.render(chunk);
+            }
+            let peak = pcm.iter().fold(0f32, |m, s| m.max(s.abs()));
+            let out = local().join(format!("{}_{index}.wav", Path::new(&name).file_stem().unwrap().to_string_lossy()));
+            write_wav(&out, &pcm, kh2_audio::RATE)?;
+            println!("{} ({secs} s, peak {peak:.3})", out.display());
+        }
+        "bgm" => {
+            let mut a = open(args)?;
+            let name = args.first().ok_or("bgm needs a file name, e.g. bgm/music050.bgm")?.clone();
+            let secs: f32 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(20.0);
+            let bgm = kh2_audio::Bgm::parse(&a.read(&name).map_err(|e| e.to_string())?).ok_or("not a BGM")?;
+            let wd_name = format!("bgm/wave{:04}.wd", bgm.wd);
+            let wd = kh2_audio::Wd::parse(&a.read(&wd_name).map_err(|e| format!("{wd_name}: {e}"))?).ok_or("not a WD")?;
+            println!(
+                "{name}: seq {} wd {} ({} instruments, {} KB samples) tracks {} ppqn {}",
+                bgm.id,
+                bgm.wd,
+                wd.instruments.len(),
+                wd.samples.len() / 1024,
+                bgm.tracks.len(),
+                bgm.ppqn
+            );
+            let irx = a.iso().read("LIBSSL.IRX").map_err(|e| format!("LIBSSL.IRX: {e}"))?;
+            let tables = kh2_audio::ssl::Tables::from_irx(&irx).ok_or("LIBSSL.IRX is not the USA driver")?;
+            let raw = a.read(&name).map_err(|e| e.to_string())?;
+            let seq = kh2_audio::ssl::Sequence::bgm(&raw, std::sync::Arc::new(wd), 0).ok_or("not a BGM")?;
+            let mut driver = kh2_audio::ssl::Driver::new(std::sync::Arc::new(tables));
+            driver.mixer.master = 0.5;
+            driver.play_bgm(seq);
+            let frames = (secs * kh2_audio::RATE as f32) as usize;
+            let mut pcm = vec![0f32; frames * 2];
+            for chunk in pcm.chunks_mut(256 * 2) {
+                driver.render(chunk);
+            }
+            let peak = pcm.iter().fold(0f32, |m, s| m.max(s.abs()));
+            let out = local().join(format!("{}.wav", Path::new(&name).file_stem().unwrap().to_string_lossy()));
+            write_wav(&out, &pcm, kh2_audio::RATE)?;
+            println!("{} ({secs} s, peak {peak:.3})", out.display());
         }
         "triggers" => {
             let mut a = open(args)?;

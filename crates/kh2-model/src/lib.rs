@@ -38,6 +38,8 @@ pub struct Bone {
     pub scale: Vec3,
     pub rotation: Vec3,
     pub translation: Vec3,
+    /// Segment length used by IK chains (the scale vector's W).
+    pub length: f32,
 }
 
 impl Bone {
@@ -116,7 +118,7 @@ pub fn mdlx(file: &[u8]) -> Option<Model> {
         .map(|i| {
             let o = bone_off + 64 * i;
             let v = |k: usize| Vec3::new(f32_at(b, o + k), f32_at(b, o + k + 4), f32_at(b, o + k + 8));
-            Bone { parent: u32_at(b, o + 4) as i32, scale: v(0x10), rotation: v(0x20), translation: v(0x30) }
+            Bone { parent: u32_at(b, o + 4) as i32, scale: v(0x10), rotation: v(0x20), translation: v(0x30), length: f32_at(b, o + 0x1C) }
         })
         .collect();
     let rest = rest_pose(&bones);

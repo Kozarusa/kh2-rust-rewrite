@@ -18,6 +18,9 @@ kh2-rs is written from scratch. Nothing below is vendored as code. Where we reim
 | `pref` physics tables (plyr/prty/sstm/fmab), `lvup` and `lvpm` layouts | OpenKH `docs/kh2/file/type/preferences.md`, `OpenKh.Kh2/Battle/{Lvup,Lvpm}.cs` | Apache-2.0 | `sheets/tables.json` |
 | Enemy names for `enmp` ids (Shadow = 34, Soldier = 33) | OpenKH `OpenKh.Tools.Kh2BattleEditor/Services/EnemyNameProvider.cs` | Apache-2.0 | `crates/kh2-app/src/enemy.rs` |
 | VIF unpack semantics for undefined lanes (V2 → xyxy) | as noted in OpenKH `OpenKh.Ps2/VifUnpacker.cs`, following PCSX2's behaviour | Apache-2.0 | `crates/kh2-ps2/src/vif.rs` |
+| Rig tables (constraint kinds, limiter, expression node types, joint flags) | OpenKH `docs/kh2/file/anb/motion.md` | Apache-2.0 | `crates/kh2-anim/src/rig.rs` |
+| The game's motion-evaluation routines (setup / curves / solve, called at fixed addresses on a RAM image) | OpenKH `OpenKh.Engine/Motion/Mlink.cs`, kenjiuno's approach; we call the USA build's equivalents in our own interpreter on the user's executable | Apache-2.0 | `crates/kh2/src/oracle.rs` |
+| R5900 / VU0 instruction semantics; FPU and VU corner cases (no infinities, saturation, LWR sign extension) | Sony EE Core / VU user manuals; conventions documented by [PCSX2](https://github.com/PCSX2/pcsx2) | — (facts, no code) | `crates/kh2-ee` |
 
 ## Dependencies
 
@@ -31,6 +34,7 @@ Some rules are not documented anywhere and were read from the game's own code in
 - **Damage formula** (`crates/kh2-app/src/data.rs`): attacker Str or Mag chosen by `atkp`; physical damage = ⌈clamp(Str − Def, caps) × Power × resistance% × general% / 10⁶⌉; type 5 = % of max HP; type 6 = ignores Defense.
 - **Enemy stat setup:** HP = ⌈lvpm.HpMultiplier × enmp.Health / 100⌉; damage caps are per-ten-thousand of HP.
 - **Motion trigger timing:** triggers count global 60 Hz frames, while motions run at their own rate.
+- **Motion rig evaluation** (`crates/kh2-anim/src/rig.rs`): joint order, constraint cursor, IK goal search, one/two-bone IK, look-at, limiters (including two of the game's quirks: the undamped sphere limit never clamps, the damped minimum side adds its soft term), Euler re-extraction, expression semantics, F-curve pre/post modes, 60 Hz key times. Verified joint by joint against the game's own routines run by `kh2-ee` (`kh2 rig`, `kh2 rig-sweep`).
 
 ## Research references (consulted, nothing copied)
 

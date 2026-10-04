@@ -15,3 +15,16 @@ No Rust KH2 code exists, so every reader here is new.
 - `KH2.IDX` has 4,925 entries. With the 19 world sub-indexes (`000xx.idx`) there are 26,461; 26,456 are named by the OpenKH list.
 - `OVL.IDX`/`OVL.IMG`: 4 LZ-compressed code overlays, using the same IDX format.
 - 18 tables decode with exact sizes. PS2 differences from OpenKH: `stop` entries are 4 bytes (u16, u16). `atkp` has 277 trailing bytes that are not modelled yet.
+
+## Motion rig (checked against the game with `kh2 rig-sweep`)
+
+KH2 motions are a control rig, not plain FK. The USA motion entry point is `0x130ad8`, which runs setup, curves, constraint activations and the rig solve. The same three routines named in OpenKH's `Mlink.cs` for another build sit 0x30 lower in the USA executable. `kh2-ee` runs them on the user's own executable, and `kh2-anim/src/rig.rs` reproduces their behaviour:
+
+- Key times are **60 Hz ticks**: `tick = frame × 60 / fps`. Each curve has pre/post modes (hold, extrapolate along the end tangent, repeat, zero).
+- Joints are evaluated in joint-table order. A single cursor walks the constraint table, and an IK chain root consumes constraints while it searches for its goal.
+- Position constraints and limiters work in the parent's *final* (scaled) space. Children inherit rotation from the parent's *unscaled* world matrix, whose translation is only relative.
+- In two-bone IK, flag value 3 flips the knee or elbow. The second joint's translation is the first joint's length (the bone record's scale.w).
+- Limiter quirks reproduced: an undamped sphere limit never clamps, and the damped box's minimum side adds its soft term.
+- Expressions do trig in degrees; `AT_FRAME` reads a curve at `x × 60 / fps`; `VARIABLE_FC` is `frame_start + frame`.
+
+Result: every interpolated motion of Sora (base, Valor, Wisdom, Limit, Master, Final and Anti forms), the Kingdom Key, the Shadow and the Soldier matches within 0.08 units on a roughly 180-unit character. The one exception is a Soldier arm at full extension, at 0.15. The leftover difference is the game's polynomial sin/cos.

@@ -9,6 +9,7 @@
 //! kenjiuno's msetDoc; see CREDITS.md.
 
 pub mod motion;
+pub mod rig;
 pub mod triggers;
 
 pub use motion::{Motion, Pose};

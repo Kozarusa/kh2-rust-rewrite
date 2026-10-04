@@ -34,43 +34,59 @@ pub struct Key {
 pub struct FCurve {
     pub joint: usize,
     pub channel: usize,
+    /// Behaviour before the first key / after the last key: 0 hold, 1 extrapolate along the
+    /// end tangent, 2 repeat, 3 zero.
+    pub pre: u8,
+    pub post: u8,
     pub keys: Vec<Key>,
 }
 
 impl FCurve {
-    pub fn eval(&self, t: f32) -> f32 {
+    /// Value at key time `t` (60 Hz ticks).
+    pub fn eval(&self, mut t: f32) -> f32 {
         let k = &self.keys;
-        match k.len() {
-            0 => 0.0,
-            1 => k[0].value,
-            _ => {
-                if t <= k[0].time {
-                    return k[0].value;
-                }
-                if t >= k[k.len() - 1].time {
-                    return k[k.len() - 1].value;
-                }
-                let i = k.partition_point(|x| x.time <= t).saturating_sub(1).min(k.len() - 2);
-                let (a, b) = (k[i], k[i + 1]);
-                let dt = b.time - a.time;
-                if dt <= 0.0 {
-                    return a.value;
-                }
-                let s = (t - a.time) / dt;
-                match a.interp {
-                    0 => a.value,
-                    1 => a.value + (b.value - a.value) * s,
-                    _ => {
-                        // Cubic Hermite; tangents are per frame.
-                        let (s2, s3) = (s * s, s * s * s);
-                        let h1 = 2.0 * s3 - 3.0 * s2 + 1.0;
-                        let h2 = -2.0 * s3 + 3.0 * s2;
-                        let h3 = s3 - 2.0 * s2 + s;
-                        let h4 = s3 - s2;
-                        h1 * a.value + h2 * b.value + (h3 * a.tan_out + h4 * b.tan_in) * dt
-                    }
-                }
+        let (Some(first), Some(last)) = (k.first(), k.last()) else { return 0.0 };
+        let period = last.time - first.time;
+        if t <= first.time {
+            match self.pre {
+                0 => return first.value,
+                1 => return first.value - (first.time - t) * first.tan_in,
+                2 if period > 0.0 => t += ((first.time - t) / period).ceil() * period,
+                2 => return first.value,
+                _ => return 0.0,
             }
+        } else if t >= last.time {
+            match self.post {
+                0 => return last.value,
+                1 => return last.value + (t - last.time) * last.tan_out,
+                2 if period > 0.0 => t -= ((t - last.time) / period).ceil() * period,
+                2 => return last.value,
+                _ => return 0.0,
+            }
+        }
+        if k.len() == 1 {
+            return first.value;
+        }
+        let i = k.partition_point(|x| x.time <= t).saturating_sub(1).min(k.len() - 2);
+        let (a, b) = (k[i], k[i + 1]);
+        let dt = b.time - a.time;
+        if dt <= 0.0 || t == a.time {
+            return a.value;
+        }
+        let s = (t - a.time) / dt;
+        match a.interp {
+            0 => a.value,
+            1 => a.value + (b.value - a.value) * s,
+            2 => {
+                // Cubic Hermite; tangents are per tick.
+                let (s2, s3) = (s * s, s * s * s);
+                let h1 = 2.0 * s3 - 3.0 * s2 + 1.0;
+                let h2 = -2.0 * s3 + 3.0 * s2;
+                let h3 = s3 - 2.0 * s2 + s;
+                let h4 = s3 - s2;
+                h1 * a.value + h2 * b.value + (h3 * a.tan_out + h4 * b.tan_in) * dt
+            }
+            _ => 0.0,
         }
     }
 }
@@ -245,7 +261,7 @@ impl Motion {
                                     }
                                 })
                                 .collect();
-                            FCurve { joint, channel: (ch & 0xF) as usize, keys }
+                            FCurve { joint, channel: (ch & 0xF) as usize, pre: (ch >> 4) & 3, post: (ch >> 6) & 3, keys }
                         })
                         .collect()
                 };
@@ -259,7 +275,7 @@ impl Motion {
                     let parent = i16_at(b, o + 4) as i32;
                     helper_parent.push(parent);
                     helper_flags.push(u32_at(b, o + 0x0C));
-                    helpers.push(Bone { parent, scale: v(0x10), rotation: v(0x20), translation: v(0x30) });
+                    helpers.push(Bone { parent, scale: v(0x10), rotation: v(0x20), translation: v(0x30), length: f32_at(b, o + 0x1C) });
                 }
                 let joints = (0..total_count)
                     .map(|i| Joint { index: i16_at(b, joints_off + 4 * i) as u16, flags: b.get(joints_off + 4 * i + 2).copied().unwrap_or(0) })
@@ -385,8 +401,33 @@ impl Motion {
         (self.frame_end - self.frame_start).max(0.0) / self.fps.max(1.0)
     }
 
-    /// Model-space matrices for the model's bones at `frame` (local frame units).
+    /// Key time (60 Hz ticks) of local frame `frame`.
+    pub fn tick(&self, frame: f32) -> f32 {
+        frame * 60.0 / self.fps.max(1.0)
+    }
+
+    /// Model-space matrices for the model's bones at local frame `frame`, with the full control
+    /// rig (IK, constraints, expressions) evaluated from a fresh state.
     pub fn pose(&self, bones: &[Bone], frame: f32) -> Pose {
+        let mut st = crate::rig::RigState::default();
+        self.pose_with(bones, frame, &mut st)
+    }
+
+    /// Like [`Motion::pose`] but keeps the rig's work buffers in `st` between calls (the game
+    /// keeps them per object: channels the curves do not drive carry over).
+    pub fn pose_with(&self, bones: &[Bone], frame: f32, st: &mut crate::rig::RigState) -> Pose {
+        match &self.data {
+            Data::Interpolated(ip) => {
+                let tick = self.tick(frame);
+                crate::rig::evaluate(ip, bones, st, tick, self.frame_start + frame, self.fps.max(1.0));
+                st.fin.iter().take(bones.len()).copied().collect()
+            }
+            Data::Raw { .. } => self.pose_fk(bones, frame),
+        }
+    }
+
+    /// Forward kinematics only (no rig): bind values, initial pose, then curves.
+    pub fn pose_fk(&self, bones: &[Bone], frame: f32) -> Pose {
         match &self.data {
             Data::Raw { frames, .. } => {
                 let i = (frame.max(0.0) as usize).min(frames.len().saturating_sub(1));
@@ -395,6 +436,7 @@ impl Motion {
                 m
             }
             Data::Interpolated(ip) => {
+                let frame = self.tick(frame);
                 let n = ip.total_count.max(bones.len());
                 // Start from the model's bind values, then the initial pose, then the curves.
                 let mut srt: Vec<Srt> = (0..n)
@@ -460,14 +502,14 @@ mod tests {
 
     #[test]
     fn fcurve_interpolates_and_clamps() {
-        let lin = FCurve { joint: 0, channel: 6, keys: vec![key(1, 0.0, 0.0), key(1, 10.0, 10.0)] };
+        let lin = FCurve { joint: 0, channel: 6, pre: 0, post: 0, keys: vec![key(1, 0.0, 0.0), key(1, 10.0, 10.0)] };
         assert_eq!(lin.eval(-5.0), 0.0);
         assert!((lin.eval(2.5) - 2.5).abs() < 1e-6);
         assert_eq!(lin.eval(20.0), 10.0);
-        let step = FCurve { joint: 0, channel: 6, keys: vec![key(0, 0.0, 1.0), key(0, 10.0, 5.0)] };
+        let step = FCurve { joint: 0, channel: 6, pre: 0, post: 0, keys: vec![key(0, 0.0, 1.0), key(0, 10.0, 5.0)] };
         assert_eq!(step.eval(9.9), 1.0);
         // Hermite with flat tangents eases: halfway value is the midpoint, quarter is below linear.
-        let herm = FCurve { joint: 0, channel: 6, keys: vec![key(2, 0.0, 0.0), key(2, 10.0, 10.0)] };
+        let herm = FCurve { joint: 0, channel: 6, pre: 0, post: 0, keys: vec![key(2, 0.0, 0.0), key(2, 10.0, 10.0)] };
         assert!((herm.eval(5.0) - 5.0).abs() < 1e-5);
         assert!(herm.eval(2.5) < 2.5);
     }

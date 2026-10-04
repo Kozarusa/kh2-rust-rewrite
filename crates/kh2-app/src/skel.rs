@@ -38,6 +38,8 @@ pub struct Animator {
     blend_from: Vec<(Vec3, Quat, Vec3)>,
     blend_t: f32,
     blend_len: f32,
+    /// The motion rig's work buffers (persist like the game's per-object buffers).
+    rig_state: kh2_anim::rig::RigState,
 }
 
 impl Animator {
@@ -137,6 +139,7 @@ pub fn spawn_skinned(
         blend_from: Vec::new(),
         blend_t: 1.0,
         blend_len: 0.0,
+        rig_state: Default::default(),
         rig,
     });
     body
@@ -179,8 +182,10 @@ pub fn animate(time: Res<Time>, mut q: Query<&mut Animator>, mut joints: Query<&
                 a.finished = true;
             }
         }
-        let bones: &[Bone] = &a.rig.model.bones;
-        let mut pose = a.motion().map(|mo| mo.pose(bones, a.frame)).unwrap_or_else(|| a.pose.clone());
+        let rig = a.rig.clone();
+        let bones: &[Bone] = &rig.model.bones;
+        let motion = a.slot.and_then(|s| rig.mset.get(s)).and_then(|s| s.motion.as_ref());
+        let mut pose = motion.map(|mo| mo.pose_with(bones, a.frame, &mut a.rig_state)).unwrap_or_else(|| a.pose.clone());
         if a.blend_t < 1.0 && !a.blend_from.is_empty() {
             a.blend_t = if a.blend_len > 0.0 { (a.blend_t + dt / a.blend_len).min(1.0) } else { 1.0 };
             let s = a.blend_t * a.blend_t * (3.0 - 2.0 * a.blend_t);

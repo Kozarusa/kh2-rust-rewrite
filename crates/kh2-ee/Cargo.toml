@@ -1,0 +1,8 @@
+[package]
+name = "kh2-ee"
+description = "Minimal PS2 Emotion Engine (R5900 + VU0 macro mode) interpreter used as a test oracle: runs leaf routines of the user's own game executable to check native ports against"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

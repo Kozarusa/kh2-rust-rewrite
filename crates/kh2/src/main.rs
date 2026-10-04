@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use kh2_archive::Archive;
+
+mod oracle;
 use serde_json::Value;
 
 const USAGE: &str = "\
@@ -196,6 +198,9 @@ fn run(args: &mut Vec<String>) -> Result<(), String> {
             let mo = s.motion.as_ref().ok_or("no motion")?;
             println!("{} slot {slot}: frames {}..{} ret {} @ {} fps", s.tag, mo.frame_start, mo.frame_end, mo.frame_return, mo.fps);
             if let kh2_anim::motion::Data::Interpolated(ip) = &mo.data {
+                let times = ip.forward.iter().chain(&ip.inverse).flat_map(|c| c.keys.iter().map(|k| k.time));
+                let (lo, hi) = times.fold((f32::MAX, f32::MIN), |(a, b), t| (a.min(t), b.max(t)));
+                println!("key times {lo}..{hi}");
                 if let Some(r) = &ip.root {
                     println!("root base T {:?} R {:?} S {:?} curves {:?}", r.translation, r.rotation, r.scale, r.curves);
                     let (t0, t1) = (ip.root_translation(mo.frame_start), ip.root_translation(mo.frame_end));
@@ -205,7 +210,7 @@ fn run(args: &mut Vec<String>) -> Result<(), String> {
                         println!("  root T @{fr:.1} {:?} yaw {:.3}", ip.root_translation(fr), ip.root_yaw(fr));
                     }
                 }
-                let ikj: Vec<String> = ip.joints.iter().filter(|j| j.flags & 3 != 0).map(|j| format!("{}:{:#04x}", j.index, j.flags)).collect();
+                let ikj: Vec<String> = ip.joints.iter().filter(|j| j.flags != 0).map(|j| format!("{}:{:#04x}", j.index, j.flags)).collect();
                 println!("joints {} (ik-flagged: {})", ip.joints.len(), ikj.join(" "));
                 for (i, (p, f)) in ip.helper_parent.iter().zip(&ip.helper_flags).enumerate() {
                     let h = &ip.helpers[i];
@@ -221,6 +226,144 @@ fn run(args: &mut Vec<String>) -> Result<(), String> {
                 for e in &ip.expressions {
                     println!("  expr joint {} ch {} node {}", e.joint, e.channel, e.node);
                 }
+                if args.iter().any(|x| x == "--nodes") {
+                    for (i, nd) in ip.nodes.iter().enumerate() {
+                        println!("  node {i:3} kind {:3} global {} element {:4} value {:10.4} car {:4} cdr {:4}", nd.kind, nd.global as u8, nd.element, nd.value, nd.car, nd.cdr);
+                    }
+                    for (i, l) in ip.limiters.iter().enumerate() {
+                        println!("  limiter {i} flags {:#x} width {} strength {} min {:?} max {:?}", l.flags, l.damping_width, l.damping_strength, l.min, l.max);
+                    }
+                    for c in &ip.forward {
+                        if c.pre != 0 || c.post != 0 {
+                            println!("  curve joint {} ch {} pre {} post {} keys {}", c.joint, c.channel, c.pre, c.post, c.keys.len());
+                        }
+                    }
+                }
+            }
+        }
+        "rig-sweep" => {
+            // Every slot of an MSET at several frames: native rig vs the game's evaluator.
+            let mut a = open(args)?;
+            let [model, mset] = [0, 1].map(|i| args.get(i).cloned().unwrap_or_default());
+            let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok()).ok_or("executable not on disc")?;
+            let mdlx = a.read(&model).map_err(|e| e.to_string())?;
+            let msetb = a.read(&mset).map_err(|e| e.to_string())?;
+            let bones = oracle::bone_records(&mdlx).ok_or("no bones")?;
+            let m = kh2_model::mdlx(&mdlx).ok_or("model")?;
+            let set = kh2_anim::Mset::parse(&msetb).ok_or("not an MSET")?;
+            let mut o = oracle::Oracle::new(&elf)?;
+            let (mut worst, mut checked, mut bad) = (0f32, 0, 0);
+            for (slot, s) in set.slots.iter().enumerate() {
+                let Some(s) = s else { continue };
+                let Some(mo) = &s.motion else { continue };
+                if !matches!(mo.data, kh2_anim::motion::Data::Interpolated(_)) {
+                    continue;
+                }
+                let Some(mf) = oracle::motion_file(&msetb, slot) else { continue };
+                let mut slot_err = 0f32;
+                let mut fault = None;
+                for k in 0..4 {
+                    let f = mo.frame_start + (mo.frame_end - mo.frame_start) * k as f32 / 3.0;
+                    match o.pose(&bones, &mf, f) {
+                        Ok(game) => {
+                            let native = mo.pose(&m.bones, f);
+                            for (g, n) in game.bones.iter().zip(&native) {
+                                let d = (glam::Mat4::from_cols_array(g).w_axis - n.w_axis).truncate().length();
+                                if d.is_finite() {
+                                    slot_err = slot_err.max(d);
+                                } else {
+                                    slot_err = f32::INFINITY;
+                                }
+                            }
+                        }
+                        Err(e) => fault = Some(e),
+                    }
+                }
+                checked += 1;
+                worst = worst.max(slot_err);
+                if slot_err > 0.1 || fault.is_some() {
+                    bad += 1;
+                    println!("slot {slot:4} {} err {slot_err:.3} {}", s.tag, fault.unwrap_or_default());
+                }
+            }
+            println!("{checked} motions checked, {bad} over 0.1, worst {worst:.4}");
+        }
+        "rig" => {
+            let mut a = open(args)?;
+            let [model, mset] = [0, 1].map(|i| args.get(i).cloned().unwrap_or_default());
+            let slot: usize = args.get(2).and_then(|s| s.parse().ok()).ok_or("rig MDLX MSET SLOT [FRAME]")?;
+            let frame: f32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok()).ok_or("executable not on disc")?;
+            let mdlx = a.read(&model).map_err(|e| e.to_string())?;
+            let msetb = a.read(&mset).map_err(|e| e.to_string())?;
+            let bones = oracle::bone_records(&mdlx).ok_or("no bones")?;
+            let mf = oracle::motion_file(&msetb, slot).ok_or("no motion in slot")?;
+            let mut o = oracle::Oracle::new(&elf)?;
+            if std::env::var("KH2_ORACLE_DEBUG").is_ok() {
+                println!("rot x0.5 {:?}", o.rotation([0.5, 0.0, 0.0])?);
+                println!("rot y0.5 {:?}", o.rotation([0.0, 0.5, 0.0])?);
+            }
+            let t0 = std::time::Instant::now();
+            let game = o.pose(&bones, &mf, frame)?;
+            println!("game: {} bones, {} helpers, {} instructions, {:?}", game.bones.len(), game.helpers.len(), game.steps, t0.elapsed());
+            let m = kh2_model::mdlx(&mdlx).ok_or("model")?;
+            let native = kh2_anim::Motion::parse(&mf).ok_or("motion")?.pose(&m.bones, frame);
+            let mut errs: Vec<(f32, usize)> = game
+                .bones
+                .iter()
+                .zip(&native)
+                .enumerate()
+                .map(|(i, (g, n))| {
+                    let gm = glam::Mat4::from_cols_array(g);
+                    let d = (gm.w_axis - n.w_axis).truncate().length()
+                        + (0..3).map(|k| (gm.col(k) - n.col(k)).truncate().length()).sum::<f32>();
+                    (d, i)
+                })
+                .collect();
+            errs.sort_by(|a, b| b.0.total_cmp(&a.0));
+            println!("max error {:.4}, bones over 0.01: {}", errs[0].0, errs.iter().filter(|e| e.0 > 0.01).count());
+            // First divergence in evaluation order, helpers included.
+            let mo = kh2_anim::Motion::parse(&mf).ok_or("motion")?;
+            if let kh2_anim::motion::Data::Interpolated(ip) = &mo.data {
+                let mut st = kh2_anim::rig::RigState::default();
+                mo.pose_with(&m.bones, frame, &mut st);
+                let mut shown = 0;
+                for (order, jt) in ip.joints.iter().enumerate() {
+                    let j = jt.index as usize;
+                    let g = if j < ip.bone_count { game.bones.get(j) } else { game.helpers.get(j - ip.bone_count) };
+                    let (Some(g), Some(n)) = (g, st.fin.get(j)) else { continue };
+                    let gm = glam::Mat4::from_cols_array(g);
+                    let dt = (gm.w_axis - n.w_axis).truncate().length();
+                    let dr = (0..3).map(|k| (gm.col(k) - n.col(k)).truncate().length()).sum::<f32>();
+                    let gw = glam::Mat4::from_cols_array(&game.unscaled[j]);
+                    let dw = (gw.w_axis - st.world[j].w_axis).truncate().length();
+                    if dw > 0.05 && shown < 8 {
+                        shown += 1;
+                        println!("  order {order:3} joint {j:3} unscaled T differs: game {:?} native {:?}", gw.w_axis.truncate(), st.world[j].w_axis.truncate());
+                    }
+                    let watch = std::env::var("KH2_RIG_JOINTS").unwrap_or_default();
+                    let watched = watch.split(',').any(|w| w.parse() == Ok(j));
+                    if ((dt > 0.05 || dr > 0.01) && shown < 8) || watched {
+                        shown += 1;
+                        println!(
+                            "  order {order:3} joint {j:3} flags {:#04x} parent {:4} dT {dt:8.3} dR {dr:6.3}\n    game T {:?} X {:?}\n    nat  T {:?} X {:?}",
+                            jt.flags,
+                            if j < ip.bone_count { m.bones[j].parent } else { ip.helper_parent[j - ip.bone_count] },
+                            gm.w_axis.truncate(),
+                            gm.x_axis.truncate(),
+                            n.w_axis.truncate(),
+                            n.x_axis.truncate()
+                        );
+                    }
+                }
+            }
+            let verbose = args.iter().any(|x| x == "-v");
+            for &(d, i) in errs.iter().take(if verbose { errs.len() } else { 12 }) {
+                let g = glam::Mat4::from_cols_array(&game.bones[i]);
+                println!(
+                    "  bone {i:3} err {d:9.4} game T {:8.2} {:8.2} {:8.2} native T {:8.2} {:8.2} {:8.2}",
+                    g.w_axis.x, g.w_axis.y, g.w_axis.z, native[i].w_axis.x, native[i].w_axis.y, native[i].w_axis.z
+                );
             }
         }
         "coct" => {

@@ -18,6 +18,7 @@ kh2-ps2 = { path = "crates/kh2-ps2" }
 kh2-model = { path = "crates/kh2-model" }
 kh2-anim = { path = "crates/kh2-anim" }
 kh2-map = { path = "crates/kh2-map" }
+kh2-ee = { path = "crates/kh2-ee" }
 serde_json = { version = "1", features = ["preserve_order"] }
 
 [profile.dev]

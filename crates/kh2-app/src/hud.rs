@@ -77,7 +77,7 @@ pub fn update(
     mut gizmos: Gizmos,
 ) {
     let Ok((p, s)) = sora.single() else { return };
-    let tag = anims.get(s.body).map(|a| format!("{} slot{:?} f{:.2} fin{} g{} vy{:.2}", a.tag(), a.slot, a.frame, a.finished, s.grounded, s.vel.y)).unwrap_or_default();
+    let tag = anims.get(s.body).map(|a| format!("{} slot{:?} f{:.2} fin{} g{} jt{:.0}/{:.0}", a.tag(), a.slot, a.frame, a.finished, s.motor.grounded, s.motor.jump.t, s.motor.jump.rise)).unwrap_or_default();
     if let Ok(mut t) = text.single_mut() {
         let mode = if s.state == State::Viewer { "  [MOTION VIEWER: [ ] to step, F1 to exit]" } else { "" };
         t.0 = format!(

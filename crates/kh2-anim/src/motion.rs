@@ -128,6 +128,8 @@ pub struct Joint {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Root {
+    /// Root motion is evaluated only when this word (the scale vector's W) is non-zero.
+    pub enabled: bool,
     pub scale: Vec3,
     pub rotation: Vec3,
     pub translation: Vec3,
@@ -173,20 +175,28 @@ pub struct ExprNode {
 }
 
 impl Interpolated {
-    /// Root translation at `frame` (base value + animated channels), in model units.
-    pub fn root_translation(&self, frame: f32) -> Vec3 {
-        let Some(r) = &self.root else { return Vec3::ZERO };
-        let ch = |k: usize, base: f32| -> f32 {
-            usize::try_from(r.curves[k]).ok().and_then(|i| self.forward.get(i)).map_or(base, |c| c.eval(frame))
-        };
-        Vec3::new(ch(6, r.translation.x), ch(7, r.translation.y), ch(8, r.translation.z))
+    /// A curve addressed by a combined index: forward curves first, then IK-helper curves.
+    pub fn curve(&self, index: i32) -> Option<&FCurve> {
+        let i = usize::try_from(index).ok()?;
+        self.forward.get(i).or_else(|| self.inverse.get(i - self.forward.len()))
     }
 
-    /// Root yaw (rotation about Y) at `frame`.
-    pub fn root_yaw(&self, frame: f32) -> f32 {
-        let Some(r) = &self.root else { return 0.0 };
-        usize::try_from(r.curves[4]).ok().and_then(|i| self.forward.get(i)).map_or(r.rotation.y, |c| c.eval(frame))
+    /// Root transform at key time `tick` (60 Hz): base scale/rotation/translation with any
+    /// curve-driven channels, or `None` when the motion has no root motion.
+    pub fn root_at(&self, tick: f32) -> Option<RootPose> {
+        let r = self.root.as_ref().filter(|r| r.enabled)?;
+        let base = [r.scale.x, r.scale.y, r.scale.z, r.rotation.x, r.rotation.y, r.rotation.z, r.translation.x, r.translation.y, r.translation.z];
+        let ch: [f32; 9] = std::array::from_fn(|k| self.curve(r.curves[k]).map_or(base[k], |c| c.eval(tick)));
+        let rot = crate::rig::euler(Vec3::new(ch[3], ch[4], ch[5]));
+        Some(RootPose { translation: Vec3::new(ch[6], ch[7], ch[8]), yaw: rot.z_axis.x.atan2(rot.z_axis.z) })
     }
+}
+
+/// Root motion sample: model-space translation and heading.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct RootPose {
+    pub translation: Vec3,
+    pub yaw: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -284,6 +294,7 @@ impl Motion {
                 let root = (root_off != 0).then(|| {
                     let v = |k: usize| Vec3::new(f32_at(b, root_off + k), f32_at(b, root_off + k + 4), f32_at(b, root_off + k + 8));
                     Root {
+                        enabled: u32_at(b, root_off + 0x0C) != 0,
                         scale: v(0),
                         rotation: v(0x10),
                         translation: v(0x20),

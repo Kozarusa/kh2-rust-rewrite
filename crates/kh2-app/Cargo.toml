@@ -13,5 +13,6 @@ path = "src/main.rs"
 kh2-archive.workspace = true
 kh2-model.workspace = true
 kh2-anim.workspace = true
+kh2-map.workspace = true
 kh2-tables.workspace = true
 bevy = "0.19"

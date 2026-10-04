@@ -1,21 +1,26 @@
-﻿//! Sora: state machine over his real motion set, with movement constants from `pref`/`prty`
-//! and `plyr`, hitboxes from the Kingdom Key's motion triggers, and damage from `atkp`.
+//! Sora's player controller, run at the game's 60 Hz logic rate.
 //!
-//! Combo flow follows the motions' own trigger windows: range trigger 11 (allow combo) and
-//! 50 (allow finisher) open the next input; 3 suspends gravity; 2 allows blending out early.
+//! Movement comes from `motor` (the game's ground, jump, air and fall model), the growth
+//! abilities (High Jump, Quick Run, Aerial Dodge, Glide) use the `fmab` rows of their level, and
+//! motions carry their own root motion (attack lunges, finisher spins). Motion IDs and blend
+//! times are the game's (blends in ticks). Combo flow follows the motions' trigger windows:
+//! range trigger 11 (allow combo) and 50 (allow finisher) open the next input; 3 suspends
+//! gravity; 2 allows blending out early.
 
 use std::sync::Arc;
 
+use bevy::input::mouse::MouseButton;
 use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
 use bevy::prelude::*;
 use kh2_anim::{id, triggers::range, PlayerState};
 
 use crate::camera::OrbitCamera;
-use crate::collision::Collider;
 use crate::combat::{Fighter, Hit, Team};
-use crate::data::{GameData, Stats, GRAVITY, LOGIC_HZ};
+use crate::data::{GameData, Stats};
 use crate::enemy::Enemy;
+use crate::motor::{wrap_angle, Jump, Motor};
 use crate::skel::{spawn_skinned, Animator, Rig};
+use crate::world::World;
 use crate::SCALE;
 
 /// Sora's right-hand bone (mirror of the left hand, bone 86).
@@ -27,51 +32,114 @@ const AIR_FINISH: &str = "A314";
 const GUARD: &str = "A320";
 const GUARD_COUNTER: &str = "A321";
 const GUARD_AIR: &str = "A350";
-/// Dodge Roll: the tucked roll loop. Speed/length tuned to the game's ~3 m roll.
-const ROLL: &str = "A160";
-const ROLL_SPEED: f32 = 8.0;
-const ROLL_TIME: f32 = 0.45;
-const ROLL_INVULN: f32 = 0.3;
-/// Frames of A320 during which a hit is repelled (until its allow-combo window opens).
-const BLEND: f32 = 0.12;
+
+/// Motion IDs of the player motion set (state-independent part of the slot).
+mod mid {
+    pub const HIGH_JUMP: usize = 201;
+    pub const AERIAL_DODGE: usize = 202;
+    pub const QUICK_RUN: usize = 203;
+    pub const QUICK_RUN_END: usize = 204;
+    pub const GLIDE: usize = 205;
+    pub const GLIDE_LEFT: usize = 206;
+    pub const GLIDE_RIGHT: usize = 207;
+    pub const GLIDE_HOVER: usize = 208;
+}
+
+/// Blend lengths in ticks.
+const BLEND_LOCOMOTION: f32 = 8.0;
+const BLEND_FALL: f32 = 8.0;
+const BLEND_GLIDE: f32 = 16.0;
+const BLEND_ATTACK: f32 = 4.0;
+/// Stick magnitude below which Sora walks.
+const WALK_STICK: f32 = 0.8;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum State {
-    Move,
+    Ground,
     Air,
-    Land,
+    QuickRun,
+    Glide,
     Attack { air: bool, finisher: bool },
     Guard,
     Counter,
-    Roll,
     Hurt,
     Blown,
     Down,
     Viewer,
 }
 
+/// Growth-ability levels (0 = not learned, 5 = MAX).
+#[derive(Resource, Clone, Copy, Default, Debug)]
+pub struct Growth {
+    pub high_jump: u8,
+    pub quick_run: u8,
+    pub aerial_dodge: u8,
+    pub glide: u8,
+}
+
+/// Controller input, sampled every rendered frame and consumed by the 60 Hz tick.
+#[derive(Resource, Default, Debug)]
+pub struct Pad {
+    /// Camera-relative move direction (unit, or zero).
+    pub dir: Vec3,
+    /// Stick magnitude 0..1 (keyboard: 1, or 0.5 while walking).
+    pub stick: f32,
+    pub jump_held: bool,
+    pub square_held: bool,
+    attack: u8,
+    jump: u8,
+    square: u8,
+    lock: u8,
+    viewer: u8,
+    next: u8,
+    prev: u8,
+}
+
+impl Pad {
+    fn take(n: &mut u8) -> bool {
+        let p = *n > 0;
+        *n = n.saturating_sub(1);
+        p
+    }
+}
+
 #[derive(Component)]
 pub struct Sora {
     pub state: State,
-    pub vel: Vec3,
-    pub grounded: bool,
-    pub yaw: f32,
+    pub motor: Motor,
     pub combo: usize,
     pub air_combo: usize,
     pub queued_attack: bool,
     pub stats: Stats,
     pub hp: i32,
     pub mp: i32,
+    /// Invincible ticks left.
     pub invuln: f32,
     pub lock: Option<Entity>,
     pub target: Option<Entity>,
-    pub battle_timer: f32,
+    /// Battle mode ticks left (keyblade out).
+    pub battle: f32,
     pub body: Entity,
     pub weapon: Entity,
+    /// Ticks in the current state.
+    timer: f32,
+    /// Quick Run: ticks left while the button is held, and the per-tick brake.
+    dash_time: f32,
+    dash_brake: f32,
+    /// One Aerial Dodge per airtime below MAX.
+    aerial_dodge_ready: bool,
     lunge_left: f32,
     lunge_speed: f32,
-    timer: f32,
     viewer_slot: usize,
+}
+
+impl Sora {
+    pub fn grounded(&self) -> bool {
+        self.motor.grounded
+    }
+    pub fn yaw(&self) -> f32 {
+        self.motor.yaw
+    }
 }
 
 #[derive(Resource)]
@@ -101,10 +169,8 @@ pub fn setup(
     let stats = data.sora_stats(1);
     commands.entity(root).insert((
         Sora {
-            state: State::Move,
-            vel: Vec3::ZERO,
-            grounded: false,
-            yaw: 0.0,
+            state: State::Ground,
+            motor: Motor::default(),
             combo: 0,
             air_combo: 0,
             queued_attack: false,
@@ -114,16 +180,69 @@ pub fn setup(
             invuln: 0.0,
             lock: None,
             target: None,
-            battle_timer: 0.0,
+            battle: 0.0,
             body,
             weapon,
+            timer: 0.0,
+            dash_time: 0.0,
+            dash_brake: 0.0,
+            aerial_dodge_ready: false,
             lunge_left: 0.0,
             lunge_speed: 0.0,
-            timer: 0.0,
             viewer_slot: 0,
         },
         Fighter { team: Team::Player, attack_bodies: vec![weapon, body], hurt_body: body, landed: Default::default(), hittable: true },
     ));
+    let growth = std::env::var("KH2_GROWTH")
+        .ok()
+        .map(|v| {
+            let l: Vec<u8> = v.split(',').filter_map(|x| x.parse().ok()).collect();
+            Growth { high_jump: l.first().copied().unwrap_or(0), quick_run: l.get(1).copied().unwrap_or(0), aerial_dodge: l.get(2).copied().unwrap_or(0), glide: l.get(3).copied().unwrap_or(0) }
+        })
+        .unwrap_or_default();
+    commands.insert_resource(growth);
+}
+
+/// Samples keyboard and mouse into the pad (every rendered frame). WASD move, Ctrl walk,
+/// Space jump (Circle), J / left mouse attack (X), K / E guard and growth abilities (Square),
+/// Q / Tab lock-on, F1 motion viewer, F6 cycles growth-ability levels.
+pub fn read_pad(
+    keys: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    cam: Query<&OrbitCamera>,
+    mut pad: ResMut<Pad>,
+    mut growth: ResMut<Growth>,
+) {
+    let mut v = Vec2::ZERO;
+    for (k, d) in [(KeyCode::KeyW, Vec2::Y), (KeyCode::KeyS, -Vec2::Y), (KeyCode::KeyA, -Vec2::X), (KeyCode::KeyD, Vec2::X)] {
+        if keys.pressed(k) {
+            v += d;
+        }
+    }
+    let yaw = cam.single().map_or(0.0, |c| c.yaw);
+    let fwd = Vec3::new(-yaw.sin(), 0.0, -yaw.cos());
+    let right = Vec3::new(-fwd.z, 0.0, fwd.x);
+    pad.dir = (fwd * v.y + right * v.x).normalize_or_zero();
+    pad.stick = if pad.dir == Vec3::ZERO { 0.0 } else if keys.pressed(KeyCode::ControlLeft) { 0.5 } else { 1.0 };
+    pad.jump_held = keys.pressed(KeyCode::Space);
+    pad.square_held = keys.pressed(KeyCode::KeyK) || keys.pressed(KeyCode::KeyE);
+    let bump = |n: &mut u8, p: bool| {
+        if p {
+            *n = (*n + 1).min(2);
+        }
+    };
+    bump(&mut pad.attack, keys.just_pressed(KeyCode::KeyJ) || mouse.just_pressed(MouseButton::Left));
+    bump(&mut pad.jump, keys.just_pressed(KeyCode::Space));
+    bump(&mut pad.square, keys.just_pressed(KeyCode::KeyK) || keys.just_pressed(KeyCode::KeyE));
+    bump(&mut pad.lock, keys.just_pressed(KeyCode::KeyQ) || keys.just_pressed(KeyCode::Tab));
+    bump(&mut pad.viewer, keys.just_pressed(KeyCode::F1));
+    bump(&mut pad.next, keys.just_pressed(KeyCode::BracketRight));
+    bump(&mut pad.prev, keys.just_pressed(KeyCode::BracketLeft));
+    if keys.just_pressed(KeyCode::F6) {
+        let l = (growth.high_jump + 1) % 6;
+        *growth = Growth { high_jump: l, quick_run: l, aerial_dodge: l, glide: l };
+        info!("growth abilities: level {l}");
+    }
 }
 
 /// The keyblade's motion set mirrors Sora's slot for slot: lock it to Sora's slot and frame.
@@ -137,7 +256,7 @@ pub fn sync_weapon(sora: Query<&Sora>, mut anims: Query<&mut Animator>) {
     weapon.frame = body.frame;
     weapon.prev_frame = body.prev_frame;
     weapon.looping = body.looping;
-    weapon.speed = body.speed; // advances in lockstep within `animate`
+    weapon.speed = body.speed;
 }
 
 /// Marks the entity that follows Sora's right-hand joint.
@@ -156,91 +275,74 @@ fn slot_by_tag(rig: &Rig, tag: &str) -> Option<usize> {
     rig.mset.by_tag(tag).next()
 }
 
-fn input_dir(keys: &ButtonInput<KeyCode>, cam: &OrbitCamera) -> Vec3 {
-    let mut v = Vec2::ZERO;
-    for (k, d) in [(KeyCode::KeyW, Vec2::Y), (KeyCode::KeyS, -Vec2::Y), (KeyCode::KeyA, -Vec2::X), (KeyCode::KeyD, Vec2::X)] {
-        if keys.pressed(k) {
-            v += d;
-        }
-    }
-    let fwd = Vec3::new(-cam.yaw.sin(), 0.0, -cam.yaw.cos());
-    let right = Vec3::new(-fwd.z, 0.0, fwd.x);
-    (fwd * v.y + right * v.x).normalize_or_zero()
+/// Height of the ground below Sora (0 when standing on it or nothing is below).
+fn height_above_ground(world: &World, m: &Motor) -> f32 {
+    world.ground(m.pos, m.pos.y + 1.0, 100_000.0).map_or(0.0, |g| (m.pos.y - g.y).max(0.0))
 }
 
-fn turn_toward(yaw: &mut f32, dir: Vec3, max_step: f32) {
-    if dir.length_squared() < 1e-6 {
-        return;
-    }
-    let target = f32::atan2(dir.x, dir.z);
-    let mut d = (target - *yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
-    d = d.clamp(-max_step, max_step);
-    *yaw += d;
-}
-
+/// One 60 Hz tick of Sora's controller.
 #[allow(clippy::too_many_arguments)]
-pub fn control(
-    time: Res<Time>,
-    keys: Res<ButtonInput<KeyCode>>,
-    mouse: Res<ButtonInput<MouseButton>>,
+pub fn tick(
+    mut pad: ResMut<Pad>,
     data: Res<GameData>,
-    collider: Option<Res<Collider>>,
-    cam: Query<&OrbitCamera>,
+    growth: Res<Growth>,
+    world: Option<Res<World>>,
     enemies: Query<(Entity, &GlobalTransform, &Enemy)>,
     mut sora_q: Query<(&mut Transform, &mut Sora, &mut Fighter)>,
     mut anims: Query<&mut Animator>,
+    mut bodies: Query<&mut Transform, Without<Sora>>,
     mut vis: Query<&mut Visibility>,
 ) {
-    let (Ok(cam), Ok((mut tf, mut s, mut fighter)), Some(col)) = (cam.single(), sora_q.single_mut(), collider) else { return };
-    let dt = time.delta_secs().min(0.05);
+    let (Ok((mut tf, mut s, mut fighter)), Some(world)) = (sora_q.single_mut(), world) else { return };
     let s = &mut *s;
     let Ok([mut body, mut weapon]) = anims.get_many_mut([s.body, s.weapon]) else { return };
     let rig = body.rig.clone();
     let wrig = weapon.rig.clone();
-    let pos = tf.translation;
-    let dir = input_dir(&keys, cam);
-    let attack = keys.just_pressed(KeyCode::KeyJ) || mouse.just_pressed(MouseButton::Left);
-    let jump = keys.just_pressed(KeyCode::Space);
-    let guard = keys.just_pressed(KeyCode::KeyK) || keys.just_pressed(KeyCode::KeyE);
-    s.invuln = (s.invuln - dt).max(0.0);
-    s.timer += dt;
+    let pos_m = s.motor.pos * SCALE;
+    let dir = pad.dir;
+    let attack = Pad::take(&mut pad.attack);
+    let jump = Pad::take(&mut pad.jump);
+    let square = Pad::take(&mut pad.square);
+    let lock_pressed = Pad::take(&mut pad.lock);
+    s.invuln = (s.invuln - 1.0).max(0.0);
+    s.timer += 1.0;
     fighter.hittable = s.invuln <= 0.0 && !matches!(s.state, State::Down | State::Viewer);
+    let prty = &data.prty;
+    let move_speed = if pad.stick <= 0.0 { 0.0 } else if pad.stick < WALK_STICK { prty.walk_speed } else { prty.run_speed };
 
-    // Targets: lock-on (Q) within the system lock range; auto-target within the attack range.
+    // Targets: lock-on (sstm LockOnRange), auto-target (plyr AutoLockOnRange).
     let alive: Vec<(Entity, Vec3)> = enemies.iter().filter(|(_, _, e)| e.alive()).map(|(e, g, _)| (e, g.translation())).collect();
     let lock_range = data.sstm.lock_on_range * SCALE;
     let nearest = |range: f32| {
-        alive.iter().filter(|(_, p)| p.distance(pos) <= range).min_by(|a, b| a.1.distance(pos).total_cmp(&b.1.distance(pos))).map(|x| x.0)
+        alive.iter().filter(|(_, p)| p.distance(pos_m) <= range).min_by(|a, b| a.1.distance(pos_m).total_cmp(&b.1.distance(pos_m))).map(|x| x.0)
     };
-    if keys.just_pressed(KeyCode::KeyQ) || keys.just_pressed(KeyCode::Tab) {
+    if lock_pressed {
         s.lock = if s.lock.is_some() { None } else { nearest(lock_range) };
     }
     if let Some(l) = s.lock
-        && !alive.iter().any(|(e, p)| *e == l && p.distance(pos) <= data.sstm.lock_on_release_range * SCALE)
+        && !alive.iter().any(|(e, p)| *e == l && p.distance(pos_m) <= data.sstm.lock_on_release_range * SCALE)
     {
         s.lock = None;
     }
-    let auto_range = (data.plyr.auto_lock_on_range * SCALE).max(3.0);
-    s.target = s.lock.or_else(|| nearest(auto_range));
-    let target_pos = s.target.and_then(|t| alive.iter().find(|x| x.0 == t).map(|x| x.1));
+    s.target = s.lock.or_else(|| nearest(data.plyr.auto_lock_on_range * SCALE));
+    let target_pos = s.target.and_then(|t| alive.iter().find(|x| x.0 == t).map(|x| x.1 / SCALE));
 
     // Battle mode (keyblade out) while enemies are near or after attacking.
     if nearest(lock_range).is_some() {
-        s.battle_timer = 4.0;
+        s.battle = 240.0;
     }
-    s.battle_timer = (s.battle_timer - dt).max(0.0);
-    let battle = s.battle_timer > 0.0;
+    s.battle = (s.battle - 1.0).max(0.0);
+    let battle = s.battle > 0.0;
     let pstate = if battle { PlayerState::BattleWeapon } else { PlayerState::FieldNoWeapon };
     if let Ok(mut v) = vis.get_mut(s.weapon) {
-        *v = if battle { Visibility::Inherited } else { Visibility::Hidden };
+        *v = if battle || s.state == State::Viewer { Visibility::Inherited } else { Visibility::Hidden };
     }
     let motion = |id: usize| rig.mset.slot(id, pstate);
 
     // Motion viewer: F1 toggles, [ and ] step through every motion slot.
-    if keys.just_pressed(KeyCode::F1) {
-        s.state = if s.state == State::Viewer { State::Move } else { State::Viewer };
+    if Pad::take(&mut pad.viewer) {
+        s.state = if s.state == State::Viewer { State::Ground } else { State::Viewer };
     }
-    // Test hook: KH2_VIEW_SLOT=<slot> opens the viewer on that motion slot.
     if s.state != State::Viewer
         && let Some(want) = std::env::var("KH2_VIEW_SLOT").ok().and_then(|v| v.parse::<usize>().ok())
     {
@@ -249,19 +351,16 @@ pub fn control(
     }
     if s.state == State::Viewer {
         let slots: Vec<usize> = (0..rig.mset.slots.len()).filter(|&i| rig.mset.has(i)).collect();
-        if keys.just_pressed(KeyCode::BracketRight) {
+        if Pad::take(&mut pad.next) {
             s.viewer_slot = (s.viewer_slot + 1) % slots.len();
         }
-        if keys.just_pressed(KeyCode::BracketLeft) {
+        if Pad::take(&mut pad.prev) {
             s.viewer_slot = (s.viewer_slot + slots.len() - 1) % slots.len();
         }
         let slot = slots.get(s.viewer_slot).copied();
-        body.play(slot, true, BLEND);
-        weapon.play(slot.filter(|&x| wrig.mset.has(x)), true, BLEND);
-        if let Ok(mut v) = vis.get_mut(s.weapon) {
-            *v = Visibility::Inherited;
-        }
-        tf.rotation = Quat::from_rotation_y(s.yaw);
+        body.play(slot, true, BLEND_LOCOMOTION);
+        weapon.play(slot.filter(|&x| wrig.mset.has(x)), true, BLEND_LOCOMOTION);
+        place(&mut tf, s, &body, &mut bodies);
         return;
     }
 
@@ -278,100 +377,156 @@ pub fn control(
             (GROUND_FINISH[s.combo % 2], true, data.plyr.attack_finish_v0)
         };
         let slot = slot_by_tag(&rig, tag);
-        body.restart(slot, false, 0.06);
-        weapon.restart(slot.filter(|&x| wrig.mset.has(x)), false, 0.06);
+        body.restart(slot, false, BLEND_ATTACK);
+        weapon.restart(slot.filter(|&x| wrig.mset.has(x)), false, BLEND_ATTACK);
         if air {
             s.air_combo += 1;
-            s.vel.y = s.vel.y.max(0.0);
         } else {
             s.combo += 1;
         }
         s.state = State::Attack { air, finisher };
+        s.timer = 0.0;
         s.queued_attack = false;
-        s.battle_timer = 4.0;
-        // Lunge toward the target: plyr V0 (units/frame), stopping at weapon reach.
+        s.battle = 240.0;
+        s.motor.vel = Vec3::ZERO;
+        // Face the target; close distance beyond the swing's own root motion at plyr V0.
         s.lunge_left = 0.0;
         if let Some(tp) = target_pos {
-            let to = (tp - pos).with_y(0.0);
-            s.yaw = f32::atan2(to.x, to.z);
-            s.lunge_left = (to.length() - 1.1).max(0.0);
-            s.lunge_speed = v0 * LOGIC_HZ * SCALE;
+            let to = (tp - s.motor.pos).with_y(0.0);
+            s.motor.yaw = to.x.atan2(to.z);
+            s.lunge_left = (to.length() - data.plyr.attack_radius.max(100.0)).max(0.0);
+            s.lunge_speed = v0;
         } else if dir != Vec3::ZERO {
-            s.yaw = f32::atan2(dir.x, dir.z);
+            s.motor.yaw = dir.x.atan2(dir.z);
         }
     };
 
-    let mut gravity = GRAVITY;
+    let start_jump = |s: &mut Sora, body: &mut Animator| {
+        let high = data.fmab(growth.high_jump);
+        let h = high.map_or(prty.jump_height, |f| f.high_jump_height);
+        s.motor.vel = dir * move_speed;
+        s.motor.start_jump(h);
+        s.aerial_dodge_ready = true;
+        s.state = State::Air;
+        s.timer = 0.0;
+        body.restart(if high.is_some() { motion(mid::HIGH_JUMP).or(motion(id::JUMP)) } else { motion(id::JUMP) }, false, 0.0);
+    };
+
+    // Vertical motion this tick: None = follow the floor.
+    let mut airborne_dy: Option<f32> = None;
+    let fall_max = data.sstm.fall_max;
     match s.state {
-        State::Move | State::Land => {
+        State::Ground => {
             s.combo = 0;
             s.air_combo = 0;
-            let walk = keys.pressed(KeyCode::ControlLeft);
-            if dir != Vec3::ZERO {
-                let speed = if walk { data.walk_speed() } else { data.run_speed() };
-                s.vel = (dir * speed).with_y(s.vel.y);
-                turn_toward(&mut s.yaw, dir, data.turn_rate() * dt);
-                body.play(motion(if walk { id::WALK } else { id::RUN }), true, BLEND);
-                s.state = State::Move;
-            } else {
-                s.vel = Vec3::new(0.0, s.vel.y, 0.0);
-                if s.state == State::Land && !body.finished {
-                    // finish the landing motion
-                } else {
-                    s.state = State::Move;
-                    body.play(motion(id::IDLE), true, 0.2);
-                }
+            s.motor.ground_velocity(dir, move_speed);
+            if move_speed > 0.0 {
+                s.motor.turn_to(dir, prty.turn_speed);
             }
-            weapon.play(None, true, BLEND);
-            if !s.grounded {
-                s.state = State::Air;
-                body.play(motion(id::FALL), true, 0.15);
-            } else if jump {
-                s.vel.y = data.jump_velocity();
-                s.grounded = false;
-                s.state = State::Air;
-                body.restart(motion(id::JUMP), false, 0.06);
+            let landing = body.slot == motion(id::LAND) && !body.finished;
+            if move_speed > 0.0 || !landing {
+                let id = if move_speed <= 0.0 { id::IDLE } else if move_speed < prty.run_speed { id::WALK } else { id::RUN };
+                body.play(motion(id), true, BLEND_LOCOMOTION);
+            }
+            weapon.play(None, true, BLEND_LOCOMOTION);
+            if jump {
+                start_jump(s, &mut body);
             } else if attack {
                 start_attack(s, &mut body, &mut weapon, false);
-            } else if guard && dir != Vec3::ZERO {
-                // Guard button + direction = Dodge Roll (KH2 ability), invincible early on.
-                s.state = State::Roll;
-                s.timer = 0.0;
-                s.yaw = f32::atan2(dir.x, dir.z);
-                s.vel = (dir * ROLL_SPEED).with_y(s.vel.y);
-                s.invuln = ROLL_INVULN;
-                body.restart(slot_by_tag(&rig, ROLL), true, 0.04);
-                s.battle_timer = 4.0;
-            } else if guard {
-                s.state = State::Guard;
-                let slot = slot_by_tag(&rig, GUARD);
-                body.restart(slot, false, 0.05);
-                weapon.restart(slot.filter(|&x| wrig.mset.has(x)), false, 0.05);
-                s.vel = Vec3::new(0.0, s.vel.y, 0.0);
-                s.battle_timer = 4.0;
+            } else if square {
+                if let Some(f) = data.fmab(growth.quick_run).filter(|_| move_speed > 0.0) {
+                    // Quick Run: dash along the input at AirSlideSpeed while the button is held.
+                    s.state = State::QuickRun;
+                    s.timer = 0.0;
+                    s.motor.yaw = dir.x.atan2(dir.z);
+                    s.motor.vel = dir * f.air_slide_speed;
+                    s.dash_time = f.air_slide_time;
+                    s.dash_brake = f.air_slide_brake;
+                    s.invuln = f.air_slide_star_time;
+                    body.restart(motion(mid::QUICK_RUN), false, 0.0);
+                } else {
+                    s.state = State::Guard;
+                    s.timer = 0.0;
+                    let slot = slot_by_tag(&rig, GUARD);
+                    body.restart(slot, false, BLEND_ATTACK);
+                    weapon.restart(slot.filter(|&x| wrig.mset.has(x)), false, BLEND_ATTACK);
+                    s.motor.vel = Vec3::ZERO;
+                    s.battle = 240.0;
+                }
             }
         }
         State::Air => {
-            if dir != Vec3::ZERO {
-                s.vel = (dir * data.run_speed()).with_y(s.vel.y);
-                turn_toward(&mut s.yaw, dir, data.turn_rate() * dt);
-            } else {
-                s.vel = Vec3::new(s.vel.x * 0.9, s.vel.y, s.vel.z * 0.9);
+            s.motor.air_velocity(dir, move_speed);
+            if move_speed > 0.0 {
+                s.motor.turn_to(dir, prty.turn_speed);
             }
-            if s.vel.y < 0.0 && (body.finished || body.slot != motion(id::JUMP)) {
-                body.play(motion(id::FALL), true, 0.15);
+            if s.motor.jump_control(pad.jump_held) {
+                body.play(motion(id::FALL), true, BLEND_FALL);
             }
-            if attack && s.air_combo <= AIR_COMBO.len() {
+            let can_air_act = s.motor.jump.t > s.motor.jump.rise.max(0.0) + 6.0 || (s.motor.jump.rise == 0.0 && s.motor.jump.t > 15.0);
+            if jump && let Some(f) = data.fmab(growth.aerial_dodge).filter(|_| s.aerial_dodge_ready || growth.aerial_dodge >= 5) {
+                // Aerial Dodge: a second jump of AirDodgeHeight, moving at AirDodgeSpeed.
+                s.aerial_dodge_ready = false;
+                s.motor.vel = if move_speed > 0.0 { dir * f.air_dodge_speed } else { s.motor.vel };
+                s.motor.start_jump(f.air_dodge_height);
+                body.restart(motion(mid::AERIAL_DODGE), false, 0.0);
+            } else if square
+                && let Some(f) = data.fmab(growth.glide)
+                && can_air_act
+                && height_above_ground(&world, &s.motor) > f.glide_start_height
+            {
+                s.state = State::Glide;
+                s.timer = 0.0;
+                body.play(motion(if move_speed > 0.0 { mid::GLIDE } else { mid::GLIDE_HOVER }), true, BLEND_GLIDE);
+            } else if attack && s.air_combo <= AIR_COMBO.len() {
                 start_attack(s, &mut body, &mut weapon, true);
-            } else if guard {
+            } else if square {
                 s.state = State::Guard;
-                body.restart(slot_by_tag(&rig, GUARD_AIR), false, 0.05);
-            } else if s.grounded {
-                s.air_combo = 0;
-                s.state = State::Land;
-                if dir == Vec3::ZERO {
-                    body.restart(motion(id::LAND), false, 0.05);
+                s.timer = 0.0;
+                body.restart(slot_by_tag(&rig, GUARD_AIR), false, BLEND_ATTACK);
+            }
+            if s.state == State::Air {
+                airborne_dy = Some(s.motor.jump_dy(fall_max));
+            }
+        }
+        State::QuickRun => {
+            if pad.square_held {
+                s.dash_time -= 1.0;
+            } else {
+                s.dash_time = 0.0;
+            }
+            if s.dash_time <= 0.0 && body.slot != motion(mid::QUICK_RUN_END) {
+                let f = data.fmab(growth.quick_run.max(1)).unwrap();
+                s.dash_brake = f.air_slide_stop_brake;
+                body.restart(motion(mid::QUICK_RUN_END), false, 0.0);
+            }
+            s.motor.vel *= s.dash_brake;
+            if body.slot == motion(mid::QUICK_RUN_END) && (body.finished || s.motor.vel.length() < prty.walk_speed) {
+                s.state = State::Ground;
+            }
+        }
+        State::Glide => {
+            let f = data.fmab(growth.glide.max(1)).unwrap();
+            let h = height_above_ground(&world, &s.motor);
+            if !pad.square_held || h < f.glide_end_height {
+                s.state = State::Air;
+                s.motor.start_fall();
+                body.play(motion(id::FALL), true, BLEND_GLIDE);
+            } else {
+                if move_speed > 0.0 {
+                    // Glide: speed eases toward GlideSpeed, along facing, turning at GlideTurnSpeed.
+                    s.motor.turn_to(dir, f.glide_turn_speed);
+                    let speed = s.motor.vel.length() * f.glide_acceleration + f.glide_speed * (1.0 - f.glide_acceleration);
+                    s.motor.vel = s.motor.forward() * speed;
+                    let facing = s.motor.forward();
+                    let id = if facing.dot(dir) < 0.98 { if facing.cross(dir).y > 0.0 { mid::GLIDE_LEFT } else { mid::GLIDE_RIGHT } } else { mid::GLIDE };
+                    body.play(motion(id), true, BLEND_GLIDE);
+                } else {
+                    s.motor.vel *= 0.9;
+                    body.play(motion(mid::GLIDE_HOVER), true, BLEND_GLIDE);
                 }
+                let sink = ((h - f.glide_fall_height).max(0.0) * f.glide_fall_ratio).min(f.glide_fall_max);
+                airborne_dy = Some(-sink);
             }
         }
         State::Attack { air, .. } => {
@@ -379,90 +534,140 @@ pub fn control(
                 s.queued_attack = true;
             }
             let window = body.trigger(range::ALLOW_COMBO) || body.trigger(range::ALLOW_FINISHER);
-            // Aerial attacks hold Sora in the air for the whole swing (KH2 air combos hover);
-            // ground motions can also suspend gravity through their triggers.
-            if air || body.trigger(range::NO_GRAVITY) || body.trigger(range::NO_GRAVITY_KEEP_KINETICS) {
-                gravity = 0.0;
-                s.vel.y = 0.0;
-            }
-            // Lunge, then hold position.
-            let step = (s.lunge_speed * dt).min(s.lunge_left);
+            // Close the gap to the target at plyr V0, then let the motion's root motion carry.
+            let step = s.lunge_speed.min(s.lunge_left);
             s.lunge_left -= step;
-            let fwd = Vec3::new(s.yaw.sin(), 0.0, s.yaw.cos());
-            s.vel = (fwd * if step > 0.0 { s.lunge_speed } else { 0.0 }).with_y(s.vel.y);
+            s.motor.vel = s.motor.forward() * step;
             if let Some(tp) = target_pos
                 && (body.trigger(range::TURN_TO_LOCK) || body.trigger(range::TURN_TO_TARGET))
             {
-                turn_toward(&mut s.yaw, tp - pos, data.turn_rate() * dt);
+                s.motor.turn_to(tp - s.motor.pos, prty.turn_speed);
+            }
+            let hover = air || body.trigger(range::NO_GRAVITY) || body.trigger(range::NO_GRAVITY_KEEP_KINETICS);
+            if !s.motor.grounded {
+                airborne_dy = Some(if hover { 0.0 } else { s.motor.jump_dy(fall_max) });
+                if hover {
+                    s.motor.jump = Jump::fall(0.0, s.motor.pos.y);
+                }
             }
             let can_continue = if air { s.air_combo <= AIR_COMBO.len() } else { s.combo <= GROUND_COMBO.len() };
             if s.queued_attack && window && can_continue {
-                start_attack(s, &mut body, &mut weapon, air || !s.grounded);
-            } else if jump && window && s.grounded {
-                s.vel.y = data.jump_velocity();
-                s.grounded = false;
-                s.state = State::Air;
-                body.restart(motion(id::JUMP), false, 0.06);
+                start_attack(s, &mut body, &mut weapon, air || !s.motor.grounded);
+            } else if jump && window && s.motor.grounded {
+                start_jump(s, &mut body);
             } else if body.finished || (body.trigger(range::BLEND_TO_IDLE) && dir != Vec3::ZERO) {
-                s.state = if s.grounded { State::Move } else { State::Air };
-                if s.grounded {
-                    s.combo = 0;
+                s.state = if s.motor.grounded { State::Ground } else { State::Air };
+                if s.state == State::Air {
+                    s.motor.start_fall();
+                    body.play(motion(id::FALL), true, BLEND_FALL);
                 }
             }
         }
-        State::Roll => {
-            let fwd = Vec3::new(s.yaw.sin(), 0.0, s.yaw.cos());
-            s.vel = (fwd * ROLL_SPEED * (1.0 - (s.timer / ROLL_TIME).powi(2)).max(0.0)).with_y(s.vel.y);
-            if s.timer >= ROLL_TIME {
-                s.state = if s.grounded { State::Move } else { State::Air };
-            } else if attack && s.timer > ROLL_TIME * 0.6 {
-                start_attack(s, &mut body, &mut weapon, false);
-            }
-        }
         State::Guard | State::Counter => {
-            s.vel = Vec3::new(0.0, s.vel.y, 0.0);
+            s.motor.vel = Vec3::ZERO;
+            if !s.motor.grounded {
+                airborne_dy = Some(s.motor.jump_dy(fall_max));
+            }
             if body.finished || (body.trigger(range::ALLOW_COMBO) && (dir != Vec3::ZERO || attack)) {
-                s.state = if s.grounded { State::Move } else { State::Air };
-                if attack && s.grounded {
+                s.state = if s.motor.grounded { State::Ground } else { State::Air };
+                if attack && s.motor.grounded {
                     start_attack(s, &mut body, &mut weapon, false);
                 }
             }
         }
         State::Hurt => {
-            s.vel *= Vec3::new(0.85, 1.0, 0.85);
+            s.motor.vel *= 0.85;
+            if !s.motor.grounded {
+                airborne_dy = Some(s.motor.jump_dy(fall_max));
+            }
             if body.finished {
-                s.state = if s.grounded { State::Move } else { State::Air };
+                s.state = if s.motor.grounded { State::Ground } else { State::Air };
             }
         }
         State::Blown => {
-            if s.grounded && s.timer > 0.2 {
-                s.vel = Vec3::ZERO;
+            airborne_dy = (!s.motor.grounded).then(|| s.motor.jump_dy(fall_max));
+            if s.motor.grounded && s.timer > 12.0 {
+                s.motor.vel = Vec3::ZERO;
                 if s.hp <= 0 {
                     s.state = State::Down;
                     s.timer = 0.0;
                 } else {
                     s.state = State::Hurt;
-                    body.restart(motion(id::DAMAGE_BLOW_FRONT_LAND), false, 0.05);
+                    body.restart(motion(id::DAMAGE_BLOW_FRONT_LAND), false, 3.0);
                 }
             }
         }
         State::Down => {
-            s.vel = Vec3::ZERO;
-            if s.timer > 3.0 {
+            s.motor.vel = Vec3::ZERO;
+            if s.timer > 180.0 {
                 // KH2 shows the game-over screen here; kh2-rs revives in place.
                 s.hp = s.stats.max_hp;
-                s.invuln = 2.0;
+                s.invuln = 120.0;
                 s.state = State::Hurt;
-                body.restart(motion(id::DAMAGE_BLOW_RECOV), false, 0.1);
+                body.restart(motion(id::DAMAGE_BLOW_RECOV), false, 6.0);
             }
         }
         State::Viewer => {}
     }
 
-    let mut grounded = s.grounded;
-    col.step(&mut tf.translation, &mut s.vel, dt, gravity, data.fall_max(), &mut grounded);
-    s.grounded = grounded;
-    tf.rotation = Quat::from_rotation_y(s.yaw);
+    // Root motion: yaw turns the facing; translation is rotated by the facing the motion
+    // started from.
+    let (root_t, root_yaw) = body.root_delta;
+    s.motor.yaw = wrap_angle(s.motor.yaw + root_yaw);
+    let start_yaw = s.motor.yaw - body.root.yaw;
+    let root_move = Quat::from_rotation_y(start_yaw) * root_t;
+    let delta = s.motor.vel + root_move.with_y(0.0);
+    let dy = airborne_dy.map(|d| d + root_move.y);
+    let was_air = airborne_dy.is_some();
+    let landed = s.motor.move_by(&world, delta, dy);
+    if landed && was_air {
+        land(s, &mut body, motion(id::LAND), dir != Vec3::ZERO);
+    } else if !s.motor.grounded && s.state == State::Ground {
+        // Walked off a ledge.
+        s.state = State::Air;
+        s.motor.start_fall();
+        body.play(motion(id::FALL), true, BLEND_FALL);
+    }
+    if s.motor.pos.y < world.min.y - 5000.0 || !s.motor.pos.is_finite() {
+        s.motor = Motor { pos: world.spawn_point(), ..Motor::default() };
+    }
+    place(&mut tf, s, &body, &mut bodies);
+    if std::env::var("KH2_TRACE").is_ok() {
+        // Pelvis (bone 0) in world units vs the character position: root motion check.
+        let pelvis = body.pose.first().map_or(Vec3::ZERO, |m| m.w_axis.truncate());
+        let world = s.motor.pos + Quat::from_rotation_y(s.motor.yaw) * pelvis;
+        info!(
+            "trace {:?} {} f{:.1} pos ({:.0} {:.0} {:.0}) yaw {:.2} pelvis ({:.0} {:.0} {:.0}) root ({:.0} {:.2})",
+            s.state, body.tag(), body.frame, s.motor.pos.x, s.motor.pos.y, s.motor.pos.z, s.motor.yaw, world.x, world.y, world.z, body.root.translation.z, body.root.yaw
+        );
+    }
+}
+
+fn land(s: &mut Sora, body: &mut Animator, land_slot: Option<usize>, moving: bool) {
+    s.air_combo = 0;
+    match s.state {
+        State::Air | State::Glide | State::Blown => {
+            if s.state != State::Blown {
+                s.state = State::Ground;
+                if !moving {
+                    body.restart(land_slot, false, 0.0);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Writes Sora's transform (poses are root-relative, so the body needs no offset).
+fn place(tf: &mut Transform, s: &Sora, _body: &Animator, _bodies: &mut Query<&mut Transform, Without<Sora>>) {
+    tf.translation = s.motor.pos * SCALE;
+    tf.rotation = Quat::from_rotation_y(s.motor.yaw);
+}
+
+/// Puts Sora on an area's spawn point.
+pub fn respawn(s: &mut Sora, at: Vec3) {
+    s.motor = Motor { pos: at, ..Motor::default() };
+    s.state = State::Ground;
 }
 
 /// Applies enemy hits to Sora: guard repels from the front, otherwise damage and reactions.
@@ -480,16 +685,16 @@ pub fn receive_hits(
         }
         let Ok([mut body, mut weapon]) = anims.get_many_mut([s.body, s.weapon]) else { return };
         let rig = body.rig.clone();
-        let facing = Vec3::new(s.yaw.sin(), 0.0, s.yaw.cos());
+        let facing = s.motor.forward();
         let from_front = facing.dot(-h.dir) > 0.0;
         // Guard: repelled while A320's guard window is open (before its combo window).
         if s.state == State::Guard && !body.trigger(range::ALLOW_COMBO) && from_front {
             let slot = slot_by_tag(&rig, GUARD_COUNTER);
-            body.restart(slot, false, 0.03);
+            body.restart(slot, false, 2.0);
             let wslot = slot.filter(|&x| weapon.rig.mset.has(x));
-            weapon.restart(wslot, false, 0.03);
+            weapon.restart(wslot, false, 2.0);
             s.state = State::Counter;
-            s.invuln = 0.3;
+            s.invuln = 18.0;
             continue;
         }
         let Some(atk) = data.atkp(h.atkp) else { continue };
@@ -497,20 +702,21 @@ pub fn receive_hits(
         let dmg = data.damage(atk, &from, &s.stats).max(1);
         s.hp = (s.hp - dmg).max(0);
         let pstate = PlayerState::BattleWeapon;
-        let blow = atk.enemy_reaction >= 5 || s.hp == 0 || !s.grounded;
-        let kb = (atk.knockback_strength1 as f32).clamp(0.0, 400.0) * SCALE * 4.0;
-        s.vel = h.dir * kb + Vec3::Y * if blow { (2.0 * GRAVITY * (atk.knockback_strength2 as f32 * SCALE).max(0.6)).sqrt() } else { 0.0 };
+        let blow = atk.enemy_reaction >= 5 || s.hp == 0 || !s.motor.grounded;
+        // Knockback per tick from the attack's strengths (approximation of the reaction code).
+        let kb = (atk.knockback_strength1 as f32).clamp(0.0, 400.0) / 60.0;
+        s.motor.vel = h.dir.with_y(0.0).normalize_or_zero() * kb.max(2.0);
         if blow {
             s.state = State::Blown;
-            s.grounded = false;
+            s.motor.start_jump((atk.knockback_strength2 as f32).clamp(40.0, 300.0));
             s.timer = 0.0;
-            body.restart(rig.mset.slot(if from_front { id::DAMAGE_BLOW_FRONT } else { 18 }, pstate), false, 0.03);
+            body.restart(rig.mset.slot(if from_front { id::DAMAGE_BLOW_FRONT } else { 18 }, pstate), false, 2.0);
         } else {
             s.state = State::Hurt;
-            body.restart(rig.mset.slot(if from_front { id::DAMAGE_S_FRONT_HIGH } else { id::DAMAGE_S_BACK_HIGH }, pstate), false, 0.03);
+            body.restart(rig.mset.slot(if from_front { id::DAMAGE_S_FRONT_HIGH } else { id::DAMAGE_S_BACK_HIGH }, pstate), false, 2.0);
         }
-        weapon.restart(None, false, 0.03);
-        s.invuln = 0.6;
+        weapon.restart(None, false, 2.0);
+        s.invuln = 36.0;
         s.combo = 0;
         fighter.landed.clear();
     }

@@ -1,8 +1,12 @@
 //! Skinned characters: KH2 bones → Bevy joint entities, GPU skinning, and motion playback.
 //!
-//! Each model bone becomes a joint entity under the character's `body`; every frame its Transform
-//! is set to the bone's model-space matrix from the current motion (crossfaded on transitions),
-//! and Bevy skins the meshes on the GPU against the rest pose.
+//! Each model bone becomes a joint entity under the character's `body`; every 60 Hz tick its
+//! Transform is set to the bone's model-space matrix from the current motion (crossfaded on
+//! transitions), and Bevy skins the meshes on the GPU against the rest pose.
+//!
+//! Motions advance in game ticks: a 30 fps motion moves half a frame per tick. Motions with
+//! root motion report the root's per-tick movement (`root_delta`) for the character to apply,
+//! and their poses are stored relative to the root.
 
 use std::sync::Arc;
 
@@ -37,13 +41,18 @@ pub struct Animator {
     pub pose: Vec<Mat4>,
     blend_from: Vec<(Vec3, Quat, Vec3)>,
     blend_t: f32,
+    /// Crossfade length in ticks.
     blend_len: f32,
+    /// Current root pose of the motion (zero when it has no root motion).
+    pub root: kh2_anim::motion::RootPose,
+    /// Root movement over the last tick: model-space translation and yaw.
+    pub root_delta: (Vec3, f32),
     /// The motion rig's work buffers (persist like the game's per-object buffers).
     rig_state: kh2_anim::rig::RigState,
 }
 
 impl Animator {
-    /// Starts a motion slot. `blend` is the crossfade time in seconds.
+    /// Starts a motion slot. `blend` is the crossfade length in ticks (60 Hz).
     pub fn play(&mut self, slot: Option<usize>, looping: bool, blend: f32) {
         if slot == self.slot && !self.finished && looping == self.looping {
             return;
@@ -62,6 +71,48 @@ impl Animator {
         let start = self.motion().map_or(0.0, |m| m.frame_start);
         self.frame = start;
         self.prev_frame = start;
+        self.root = self.root_at(start);
+        self.root_delta = (Vec3::ZERO, 0.0);
+    }
+
+    fn root_at(&self, frame: f32) -> kh2_anim::motion::RootPose {
+        match self.motion().map(|m| (m, &m.data)) {
+            Some((m, kh2_anim::motion::Data::Interpolated(ip))) => ip.root_at(m.tick(frame)).unwrap_or_default(),
+            _ => Default::default(),
+        }
+    }
+
+    /// Advances one 60 Hz tick: frame, looping, and root movement.
+    pub fn tick(&mut self) {
+        self.prev_frame = self.frame;
+        let Some(m) = self.motion().cloned_meta() else {
+            self.root_delta = (Vec3::ZERO, 0.0);
+            return;
+        };
+        let before = self.root;
+        let mut moved = (Vec3::ZERO, 0.0);
+        self.frame += m.fps / crate::data::LOGIC_HZ * self.speed;
+        if self.frame >= m.end {
+            if self.looping {
+                // Root motion up to the end, then from the loop point.
+                let end = self.root_at(m.end);
+                moved.0 += end.translation - before.translation;
+                moved.1 += crate::motor::wrap_angle(end.yaw - before.yaw);
+                let span = (m.end - m.ret).max(1.0 / 64.0);
+                self.frame = m.ret + (self.frame - m.end) % span;
+                self.prev_frame = m.ret.min(self.prev_frame);
+                let back = self.root_at(m.ret);
+                self.root = back;
+            } else {
+                self.frame = m.end;
+                self.finished = true;
+            }
+        }
+        let now = self.root_at(self.frame);
+        moved.0 += now.translation - self.root.translation;
+        moved.1 += crate::motor::wrap_angle(now.yaw - self.root.yaw);
+        self.root = now;
+        self.root_delta = moved;
     }
 
     pub fn motion(&self) -> Option<&kh2_anim::Motion> {
@@ -139,6 +190,8 @@ pub fn spawn_skinned(
         blend_from: Vec::new(),
         blend_t: 1.0,
         blend_len: 0.0,
+        root: Default::default(),
+        root_delta: (Vec3::ZERO, 0.0),
         rig_state: Default::default(),
         rig,
     });
@@ -164,30 +217,28 @@ fn skinned_mesh(m: &kh2_model::Mesh) -> Mesh {
         .with_inserted_indices(Indices::U32(m.indices.clone()))
 }
 
-/// Advances every animator and writes joint transforms.
-pub fn animate(time: Res<Time>, mut q: Query<&mut Animator>, mut joints: Query<&mut Transform>) {
-    let dt = time.delta_secs();
+/// Advances every animator one tick and writes joint transforms (60 Hz fixed step).
+pub fn animate(mut q: Query<&mut Animator>, mut joints: Query<&mut Transform>) {
     for mut a in &mut q {
         let a = &mut *a;
-        a.prev_frame = a.frame;
-        let Some(m) = a.motion().cloned_meta() else { continue };
-        a.frame += dt * m.fps * a.speed;
-        if a.frame >= m.end {
-            if a.looping {
-                let span = (m.end - m.ret).max(1.0 / 64.0);
-                a.frame = m.ret + (a.frame - m.end) % span;
-                a.prev_frame = m.ret.min(a.prev_frame);
-            } else {
-                a.frame = m.end;
-                a.finished = true;
-            }
+        a.tick();
+        if a.motion().is_none() {
+            continue;
         }
         let rig = a.rig.clone();
         let bones: &[Bone] = &rig.model.bones;
         let motion = a.slot.and_then(|s| rig.mset.get(s)).and_then(|s| s.motion.as_ref());
         let mut pose = motion.map(|mo| mo.pose_with(bones, a.frame, &mut a.rig_state)).unwrap_or_else(|| a.pose.clone());
+        // Poses are kept relative to the motion's root: root motion moves the character
+        // instead, and crossfades between motions stay continuous.
+        if a.root != Default::default() {
+            let undo = (Mat4::from_translation(a.root.translation) * Mat4::from_rotation_y(a.root.yaw)).inverse();
+            for m in &mut pose {
+                *m = undo * *m;
+            }
+        }
         if a.blend_t < 1.0 && !a.blend_from.is_empty() {
-            a.blend_t = if a.blend_len > 0.0 { (a.blend_t + dt / a.blend_len).min(1.0) } else { 1.0 };
+            a.blend_t = if a.blend_len > 0.0 { (a.blend_t + 1.0 / a.blend_len).min(1.0) } else { 1.0 };
             let s = a.blend_t * a.blend_t * (3.0 - 2.0 * a.blend_t);
             for (p, (fs, fr, ft)) in pose.iter_mut().zip(&a.blend_from) {
                 let (ts, tr, tt) = p.to_scale_rotation_translation();

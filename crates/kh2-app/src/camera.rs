@@ -3,7 +3,7 @@
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
 
-use crate::collision::Collider;
+use crate::world::CameraWorld;
 use crate::sora::Sora;
 
 #[derive(Component)]
@@ -28,7 +28,7 @@ pub fn follow(
     buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
-    collider: Option<Res<Collider>>,
+    collider: Option<Res<CameraWorld>>,
     sora: Query<(&Transform, &Sora), Without<OrbitCamera>>,
     targets: Query<&GlobalTransform>,
     mut cam: Query<(&mut Transform, &mut OrbitCamera)>,
@@ -54,6 +54,6 @@ pub fn follow(
     }
     let focus = p.translation + Vec3::Y * 1.2;
     let dir = Vec3::new(o.yaw.sin() * o.pitch.cos(), o.pitch.sin(), o.yaw.cos() * o.pitch.cos());
-    let dist = collider.and_then(|c| c.first_hit(focus, focus + dir * o.distance)).map_or(o.distance, |hit| (hit - 0.25).max(0.4));
+    let dist = collider.and_then(|c| c.0.raycast_m(focus, focus + dir * o.distance)).map_or(o.distance, |hit| (hit - 0.25).max(0.4));
     *t = Transform::from_translation(focus + dir * dist).looking_at(focus, Vec3::Y);
 }

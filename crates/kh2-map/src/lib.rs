@@ -1,8 +1,10 @@
 //! COCT collision (map BAR type 6). Layout per OpenKH `docs/kh2/file/type/coct.md` (Apache-2.0).
 //!
 //! A bounding-volume tree (mesh groups → meshes) over polygons: each polygon is a triangle or a
-//! quad (triangle fan), with a precomputed plane and a surface-flag word. All coordinates are
-//! stored negated (-X, -Y, -Z); [`Coct::parse`] returns them in map-model space.
+//! quad (triangle fan), with a precomputed plane and a surface-flag word. Coordinates are stored
+//! in the game's world space, which is map-model space with Y and Z negated (the same flip the
+//! game applies to motion roots and object matrices); [`Coct::parse`] returns map-model space.
+//! Checked with `kh2 coct-check`: COCT floors coincide with the render mesh only this way.
 
 pub mod flags {
     pub const PARTY_STAND: u32 = 1 << 0;
@@ -68,7 +70,7 @@ impl Coct {
         let (t7, _) = table(6)?;
         let vertex = |i: i16| -> Option<[f32; 3]> {
             let o = t4 + 16 * i as usize;
-            Some([-f32_at(b, o)?, -f32_at(b, o + 4)?, -f32_at(b, o + 8)?])
+            Some([f32_at(b, o)?, -f32_at(b, o + 4)?, -f32_at(b, o + 8)?])
         };
         // Mesh of each polygon, from table 2's index ranges.
         let mut mesh_of = vec![0u16; l3 / 16];
@@ -89,8 +91,8 @@ impl Coct {
                 verts[k] = vertex(idx[k])?;
             }
             let po = t5 + 16 * i16_at(b, o + 10)? as u16 as usize;
-            let normal = [-f32_at(b, po)?, -f32_at(b, po + 4)?, -f32_at(b, po + 8)?];
-            // Stored plane: N·V + D = 0 with V = -v, so in map space (-N)·v + D = 0.
+            let normal = [f32_at(b, po)?, -f32_at(b, po + 4)?, -f32_at(b, po + 8)?];
+            // Stored plane N·V + D = 0 with V = (x, -y, -z): the same flip applies to N, D stays.
             let d = f32_at(b, po + 12)?;
             let flags = u32_at(b, t7 + 4 * i16_at(b, o + 14)? as u16 as usize)?;
             polygons.push(Polygon { verts, quad, normal, d, flags, mesh: mesh_of[i] });

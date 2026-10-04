@@ -2,14 +2,15 @@
 //! curves and Sora's movement constants. Nothing here is hard-coded game data.
 
 use bevy::prelude::*;
-use kh2_tables::tables::{self as t, Atkp, Enmp, Lvpm, Lvup, PrefPlyr, PrefPrty, PrefSstm};
+use kh2_tables::tables::{self as t, Atkp, Enmp, Lvpm, Lvup, PrefFmab, PrefPlyr, PrefPrty, PrefSstm};
 
 use crate::assets::Disc;
 
 /// KH2 movement values are per frame at the game's 60 Hz logic rate, in centimetres.
 pub const LOGIC_HZ: f32 = 60.0;
-/// Gravity in m/s². Not stored in the data files; tuned so a 185-unit jump lasts ~0.68 s.
-pub const GRAVITY: f32 = 32.0;
+/// Gravity in m/s² for the enemies' simple mover (the player uses the game's own jump model in
+/// `motor`: g = 20/49 units per tick²).
+pub const GRAVITY: f32 = crate::motor::G * LOGIC_HZ * LOGIC_HZ * crate::SCALE;
 /// Character index of Sora in `prty`/`plyr` and in `lvup`.
 const SORA_PREF: usize = 1;
 /// Kingdom Key item id.
@@ -28,6 +29,8 @@ pub struct GameData {
     pub prty: PrefPrty,
     pub plyr: PrefPlyr,
     pub sstm: PrefSstm,
+    /// Growth-ability parameters, one row per ability level (row = level - 1; row 4 = MAX).
+    pub fmab: Vec<PrefFmab>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -80,6 +83,7 @@ impl GameData {
             prty: pick(load(disc, &t::PREF_PRTY), SORA_PREF),
             plyr: pick(load(disc, &t::PREF_PLYR), SORA_PREF),
             sstm: pick(load(disc, &t::PREF_SSTM), 0),
+            fmab: load(disc, &t::PREF_FMAB),
         }
     }
 
@@ -150,6 +154,11 @@ impl GameData {
             }
         };
         dmg.max(0)
+    }
+
+    /// Growth-ability row for a level (1..=5), or `None` when the ability is not learned.
+    pub fn fmab(&self, level: u8) -> Option<&PrefFmab> {
+        (level > 0).then(|| self.fmab.get(level as usize - 1)).flatten()
     }
 
     pub fn run_speed(&self) -> f32 {

@@ -10,7 +10,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use kh2_archive::Archive;
 
-use crate::collision::Collider;
+use crate::world::World;
 use crate::sora::Sora;
 use crate::SCALE;
 
@@ -105,13 +105,23 @@ pub fn load_area(
         let s = commands.spawn((AreaPart, Sky, Transform::from_scale(Vec3::splat(SCALE)), Visibility::default())).id();
         spawn_model(&mut commands, s, sky, &mut meshes, &mut materials, &mut images);
     }
-    let collider = Collider::from_meshes(&map.map.meshes, SCALE);
+    let world = disc
+        .read(&file)
+        .and_then(|d| kh2_map::Coct::from_map(&d))
+        .filter(|c| !c.polygons.is_empty())
+        .map(|c| World::from_coct(&c))
+        .unwrap_or_else(|| World::from_meshes(&map.map.meshes));
+    let cam_world = World::from_meshes(&map.map.meshes);
     if let Ok((mut t, mut p)) = player.single_mut() {
-        t.translation = collider.spawn_point();
-        p.vel = Vec3::ZERO;
+        // Main floor from the render mesh, standing on the collision floor below it.
+        let near = cam_world.spawn_point_band();
+        let at = world.ground(near, near.y + 100.0, 400.0).map_or(near, |g| Vec3::new(near.x, g.y, near.z));
+        crate::sora::respawn(&mut p, at);
+        t.translation = at * SCALE;
     }
-    commands.insert_resource(collider);
-    info!("{file}: {} meshes", map.map.meshes.len());
+    info!("{file}: {} meshes, collision {} triangles ({})", map.map.meshes.len(), world.tris.len(), if world.coct { "COCT" } else { "render mesh" });
+    commands.insert_resource(world);
+    commands.insert_resource(crate::world::CameraWorld(cam_world));
 }
 
 pub fn sky_follow(cam: Query<&Transform, (With<Camera3d>, Without<Sky>)>, mut sky: Query<&mut Transform, With<Sky>>) {

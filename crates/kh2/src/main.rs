@@ -202,12 +202,16 @@ fn run(args: &mut Vec<String>) -> Result<(), String> {
                 let (lo, hi) = times.fold((f32::MAX, f32::MIN), |(a, b), t| (a.min(t), b.max(t)));
                 println!("key times {lo}..{hi}");
                 if let Some(r) = &ip.root {
-                    println!("root base T {:?} R {:?} S {:?} curves {:?}", r.translation, r.rotation, r.scale, r.curves);
-                    let (t0, t1) = (ip.root_translation(mo.frame_start), ip.root_translation(mo.frame_end));
-                    println!("root T at start {t0:?} end {t1:?} delta {:?}", t1 - t0);
-                    for f in [0.25f32, 0.5, 0.75] {
+                    println!("root enabled {} base T {:?} R {:?} S {:?} curves {:?}", r.enabled, r.translation, r.rotation, r.scale, r.curves);
+                    for &ci in r.curves.iter().filter(|&&c| c >= 0) {
+                        if let Some(c) = ip.curve(ci) {
+                            let ks: Vec<String> = c.keys.iter().map(|k| format!("{}:{:.2}", k.time, k.value)).collect();
+                            println!("  root curve {ci}: joint {} ch {} pre {} post {} keys {}", c.joint, c.channel, c.pre, c.post, ks.join(" "));
+                        }
+                    }
+                    for f in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
                         let fr = mo.frame_start + (mo.frame_end - mo.frame_start) * f;
-                        println!("  root T @{fr:.1} {:?} yaw {:.3}", ip.root_translation(fr), ip.root_yaw(fr));
+                        println!("  root @{fr:.1}: {:?}", ip.root_at(mo.tick(fr)));
                     }
                 }
                 let ikj: Vec<String> = ip.joints.iter().filter(|j| j.flags != 0).map(|j| format!("{}:{:#04x}", j.index, j.flags)).collect();
@@ -364,6 +368,46 @@ fn run(args: &mut Vec<String>) -> Result<(), String> {
                     "  bone {i:3} err {d:9.4} game T {:8.2} {:8.2} {:8.2} native T {:8.2} {:8.2} {:8.2}",
                     g.w_axis.x, g.w_axis.y, g.w_axis.z, native[i].w_axis.x, native[i].w_axis.y, native[i].w_axis.z
                 );
+            }
+        }
+        "coct-check" => {
+            // Do COCT floors coincide with render-mesh surfaces? Try each axis-sign convention.
+            let mut a = open(args)?;
+            let name = args.first().ok_or("coct-check needs a map file name")?.clone();
+            let data = a.read(&name).map_err(|e| e.to_string())?;
+            let c = kh2_map::Coct::from_map(&data).ok_or("no COCT")?;
+            let m = kh2_model::map_file(&data).ok_or("no map model")?.map;
+            let tris: Vec<[[f32; 3]; 3]> = m
+                .meshes
+                .iter()
+                .flat_map(|mesh| mesh.indices.chunks(3).filter(|t| t.len() == 3).map(|t| [0, 1, 2].map(|k| mesh.positions[t[k] as usize])).collect::<Vec<_>>())
+                .collect();
+            let height = |x: f32, z: f32, y0: f32| -> Option<f32> {
+                tris.iter()
+                    .filter_map(|t| {
+                        let (a, b, c) = (t[0], t[1], t[2]);
+                        let (v0, v1, v2) = ([b[0] - a[0], b[2] - a[2]], [c[0] - a[0], c[2] - a[2]], [x - a[0], z - a[2]]);
+                        let den = v0[0] * v1[1] - v1[0] * v0[1];
+                        if den.abs() < 1e-6 {
+                            return None;
+                        }
+                        let v = (v2[0] * v1[1] - v1[0] * v2[1]) / den;
+                        let w = (v0[0] * v2[1] - v2[0] * v0[1]) / den;
+                        (v >= 0.0 && w >= 0.0 && v + w <= 1.0).then(|| a[1] + v * (b[1] - a[1]) + w * (c[1] - a[1]))
+                    })
+                    .min_by(|p, q| (p - y0).abs().total_cmp(&(q - y0).abs()))
+            };
+            for (label, sx, sy, sz) in [("as parsed", 1.0, 1.0, 1.0), ("-x", -1.0, 1.0, 1.0), ("-y", 1.0, -1.0, 1.0), ("-z", 1.0, 1.0, -1.0)] {
+                let (mut n, mut close) = (0, 0);
+                for p in c.polygons.iter().filter(|p| p.normal[1] > 0.8).take(200) {
+                    let ctr: Vec<f32> = (0..3).map(|k| (p.verts[0][k] + p.verts[1][k] + p.verts[2][k]) / 3.0).collect();
+                    let (x, y, z) = (ctr[0] * sx, ctr[1] * sy, ctr[2] * sz);
+                    n += 1;
+                    if height(x, z, y).is_some_and(|h| (h - y).abs() < 20.0) {
+                        close += 1;
+                    }
+                }
+                println!("{label:8}: {close}/{n} COCT floor samples within 20 units of a render surface");
             }
         }
         "coct" => {

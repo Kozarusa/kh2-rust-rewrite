@@ -28,3 +28,21 @@ KH2 motions are a control rig, not plain FK. The USA motion entry point is `0x13
 - Expressions do trig in degrees; `AT_FRAME` reads a curve at `x × 60 / fps`; `VARIABLE_FC` is `frame_start + frame`.
 
 Result: every interpolated motion of Sora (base, Valor, Wisdom, Limit, Master, Final and Anti forms), the Kingdom Key, the Shadow and the Soldier matches within 0.08 units on a roughly 180-unit character. The one exception is a Soldier arm at full extension, at 0.15. The leftover difference is the game's polynomial sin/cos.
+
+## Player controller (behaviour read from the game's code; nothing copied)
+
+- **Coordinates:** the game's world is model space with Y and Z negated. This holds for COCT vertices and normals, motion roots, and object matrices.
+- **Logic rate:** 60 Hz. All `prty`/`fmab`/`sstm` speeds are units per tick.
+- **Input:** the stick maps camera-relative. Below 0.8 magnitude Sora walks, above it he runs; there are only two speeds. Ground velocity equals direction × speed instantly, with no acceleration.
+- **Turning:** at most prty TurnSpeed (0.2618 rad) per tick, snapping when the remaining angle is within that.
+- **Jump of height h:**
+  - T = sqrt(2h/g), with g = 20/49.
+  - Rise: y = base + h·sin(sin(t/T·π/2)·π/2). Fall: parabola ½g(t−T)², with each tick's drop capped at FallMax.
+  - Short hop: releasing jump between tick 6 and T−5 replaces the rest of the rise with a 250/49-unit bump. A ceiling ends the rise.
+- **Air control:** v = 0.9·v + 0.1·input, or ×0.95 with no input.
+- **Root motion:** motions with an enabled root block (word at root+0x0C) move the object by the root's per-tick delta, rotated by facing. Root yaw deltas turn the object, and poses are drawn relative to the root.
+- **Growth abilities** (level = the stats byte; the `fmab` row is level − 1; level 5 is MAX):
+  - **High Jump:** jump height HighJumpHeight, motion 201.
+  - **Aerial Dodge:** a second jump of AirDodgeHeight at AirDodgeSpeed, once per jump below MAX, motion 202.
+  - **Quick Run:** speed AirSlideSpeed, ×AirSlideBrake per tick while held, for at most AirSlideTime ticks. Then StopBrake and end motion 204; star time AirSlideStarTime.
+  - **Glide:** square in the air at least GlideStartHeight above the ground. Speed = speed·accel + GlideSpeed·(1−accel) along facing; turns at GlideTurnSpeed; sinks min((h−FallHeight)·FallRatio, FallMax); ends on release or below GlideEndHeight. Motions 205–208.

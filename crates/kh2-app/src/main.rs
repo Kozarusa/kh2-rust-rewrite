@@ -1,18 +1,22 @@
 ﻿//! kh2-rs game. Everything on screen is read from the user's own disc at startup.
 //!
-//! Controls: WASD move (camera-relative), Ctrl walk, Space jump, LMB/J attack (combo), K/E guard,
-//! Q/Tab lock-on, RMB drag / arrows orbit the camera, wheel zoom, 1-9/0 switch Twilight Town
-//! areas, F1 motion viewer ([ ] to step), F3 spawn enemies, F4 show hit volumes.
+//! Controls: WASD move (camera-relative), Ctrl walk, Space jump, LMB/J attack (combo), K/E guard
+//! and growth abilities (Quick Run, Glide), Q/Tab lock-on, RMB drag / arrows orbit the camera,
+//! wheel zoom, 1-9/0 switch Twilight Town areas, F1 motion viewer ([ ] to step), F3 spawn
+//! enemies, F4 show hit volumes, F6 cycle growth-ability levels.
+//!
+//! Gameplay runs in `FixedUpdate` at the game's 60 Hz logic rate.
 
 mod assets;
 mod camera;
-mod collision;
 mod combat;
 mod data;
 mod enemy;
 mod hud;
+mod motor;
 mod skel;
 mod sora;
+mod world;
 
 use std::sync::Arc;
 
@@ -58,29 +62,29 @@ fn main() {
         .insert_resource(rigs)
         .insert_resource(enemy::Waves::default())
         .insert_resource(assets::CurrentArea { name: start, loaded: None })
+        .insert_resource(Time::<Fixed>::from_hz(data::LOGIC_HZ as f64))
+        .init_resource::<sora::Pad>()
         .add_systems(Startup, (sora::setup, camera::setup, hud::setup))
+        .add_systems(Update, (assets::switch_area, assets::load_area, sora::read_pad).chain())
         .add_systems(
-            Update,
+            FixedUpdate,
             (
-                assets::switch_area,
-                assets::load_area,
-                sora::control,
-                enemy::spawn_waves,
-                enemy::think,
-                enemy::separate,
                 sora::sync_weapon,
                 skel::animate,
                 sora::follow_hand,
+                sora::tick,
+                enemy::spawn_waves,
+                enemy::think,
+                enemy::separate,
                 combat::detect_hits,
                 sora::receive_hits,
                 enemy::receive_hits,
-                camera::follow,
-                assets::sky_follow,
-                hud::update,
-                hud::popups,
-                combat::draw_volumes,
             )
                 .chain(),
+        )
+        .add_systems(
+            Update,
+            (camera::follow, assets::sky_follow, hud::update, hud::popups, combat::draw_volumes).chain().after(sora::read_pad),
         )
         .add_systems(Update, auto_screenshot)
         .add_plugins(FpsLog)
@@ -103,7 +107,8 @@ impl Plugin for FpsLog {
 
 /// `KH2_SCREENSHOT=<file.png>`: save one frame after 8 s, then quit (for automated checks).
 /// `KH2_YAW=<radians>` turns the camera; `KH2_WALK=1` holds W from 3-6 s;
-/// `KH2_KEYS=<t:key,...>` taps keys at times (e.g. `4:J,4.3:J,4.6:J`).
+/// `KH2_KEYS=<t:key[:hold],...>` presses keys at times for `hold` seconds (default 0.05),
+/// e.g. `4:J,4.3:J,4:Space:0.6`.
 fn auto_screenshot(
     mut commands: Commands,
     time: Res<Time>,
@@ -127,7 +132,9 @@ fn auto_screenshot(
     if let Ok(spec) = std::env::var("KH2_KEYS") {
         let dt = time.delta_secs();
         for item in spec.split(',') {
-            let Some((at, k)) = item.split_once(':') else { continue };
+            let mut parts = item.split(':');
+            let (Some(at), Some(k)) = (parts.next(), parts.next()) else { continue };
+            let hold: f32 = parts.next().and_then(|h| h.parse().ok()).unwrap_or(0.05);
             let Ok(at) = at.parse::<f32>() else { continue };
             let key = match k {
                 "J" => KeyCode::KeyJ,
@@ -137,11 +144,13 @@ fn auto_screenshot(
                 "F3" => KeyCode::F3,
                 "F4" => KeyCode::F4,
                 "W" => KeyCode::KeyW,
+                "E" => KeyCode::KeyE,
+                "F6" => KeyCode::F6,
                 _ => continue,
             };
             if t >= at && t - dt < at {
                 keys.press(key);
-            } else if t >= at + 0.05 && t - dt < at + 0.05 {
+            } else if t >= at + hold && t - dt < at + hold {
                 keys.release(key);
             }
         }

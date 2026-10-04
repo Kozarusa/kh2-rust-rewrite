@@ -11,7 +11,7 @@ use std::sync::Arc;
 use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
 use bevy::prelude::*;
 
-use crate::collision::Collider;
+use crate::world::World;
 use crate::combat::{Fighter, Hit, Team};
 use crate::data::{GameData, Stats, GRAVITY};
 use crate::skel::{spawn_skinned, Animator, Rig};
@@ -113,7 +113,7 @@ pub fn spawn_waves(
     mut waves: ResMut<Waves>,
     rigs: Res<Rigs>,
     data: Res<GameData>,
-    collider: Option<Res<Collider>>,
+    collider: Option<Res<World>>,
     sora: Query<&Transform, With<Sora>>,
     enemies: Query<&Enemy>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -143,9 +143,9 @@ pub fn spawn_waves(
         .filter_map(|(k, r)| {
             let ang = k as f32 / 24.0 * std::f32::consts::TAU + waves.count as f32 * 0.7;
             let (x, z) = (p.translation.x + ang.cos() * r, p.translation.z + ang.sin() * r);
-            let y = col.ground(x, z, p.translation.y + 1.5)?;
+            let y = col.ground_m(x, z, p.translation.y + 1.5)?;
             let at = Vec3::new(x, y, z);
-            ((y - p.translation.y).abs() < 1.5 && !col.blocked(p.translation + knee, at + knee)).then_some(at)
+            ((y - p.translation.y).abs() < 1.5 && !col.blocked_m(p.translation + knee, at + knee)).then_some(at)
         })
         .collect();
     let step = (spots.len() / n.max(1)).max(1);
@@ -182,7 +182,7 @@ pub fn think(
     mut commands: Commands,
     time: Res<Time>,
     data: Res<GameData>,
-    collider: Option<Res<Collider>>,
+    collider: Option<Res<World>>,
     sora: Query<&Transform, (With<Sora>, Without<Enemy>)>,
     mut q: Query<(Entity, &mut Transform, &mut Enemy, &mut Fighter)>,
     mut anims: Query<&mut Animator>,
@@ -313,7 +313,7 @@ pub fn think(
         }
         if !matches!(e.state, EState::Dying) || e.timer <= 0.6 {
             let mut g = e.grounded;
-            col.step(&mut tf.translation, &mut e.vel, dt, gravity, data.fall_max(), &mut g);
+            col.step_m(&mut tf.translation, &mut e.vel, dt, gravity, data.fall_max(), &mut g);
             e.grounded = g;
         }
         tf.rotation = Quat::from_rotation_y(e.yaw);

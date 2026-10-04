@@ -3269,6 +3269,7 @@ dependencies = [
  "bevy",
  "kh2-anim",
  "kh2-archive",
+ "kh2-map",
  "kh2-model",
  "kh2-tables",
 ]

@@ -29,7 +29,8 @@ pub const SCALE: f32 = 0.01;
 fn rig(disc: &assets::Disc, model: &str, mset: &str) -> Arc<skel::Rig> {
     let m = disc.read(model).and_then(|d| kh2_model::mdlx(&d)).unwrap_or_else(|| panic!("{model}: cannot load"));
     let s = disc.read(mset).and_then(|d| kh2_anim::Mset::parse(&d)).unwrap_or_else(|| panic!("{mset}: cannot load"));
-    Arc::new(skel::Rig { model: m, mset: s })
+    let apdx = model.strip_suffix(".mdlx").map(|b| format!("{b}.apdx")).filter(|a| disc.read(a).is_some());
+    Arc::new(skel::Rig { model: m, mset: s, apdx })
 }
 
 fn main() {
@@ -57,6 +58,7 @@ fn main() {
         }))
         .add_message::<combat::Hit>()
         .add_message::<hud::DamagePopup>()
+        .add_message::<fx::StartEffect>()
         .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.08)))
         .insert_resource(disc)
         .insert_resource(game_data)
@@ -81,6 +83,8 @@ fn main() {
                 sora::receive_hits,
                 enemy::receive_hits,
                 fx::weapon_trails,
+                fx::motion_effects,
+                fx::start_requests,
                 fx::hit_sparks,
                 fx::fx_test,
                 fx::tick,

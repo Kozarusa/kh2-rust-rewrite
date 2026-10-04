@@ -23,6 +23,8 @@ use crate::assets::{material_for, texture_handles};
 pub struct Rig {
     pub model: Model,
     pub mset: Mset,
+    /// The object's effect file (`obj/<name>.apdx`), for motion-triggered effects.
+    pub apdx: Option<String>,
 }
 
 #[derive(Component)]

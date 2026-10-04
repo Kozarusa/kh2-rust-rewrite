@@ -1,4 +1,4 @@
-﻿//! Heartless (Shadow M_EX020, Soldier M_EX010): models, motions, hitboxes and stats from the
+//! Heartless (Shadow M_EX020, Soldier M_EX010): models, motions, hitboxes and stats from the
 //! disc; behaviour is a compact state machine standing in for the game's BDX AI scripts (not
 //! parsed yet).
 //!
@@ -186,6 +186,7 @@ pub fn think(
     sora: Query<&Transform, (With<Sora>, Without<Enemy>)>,
     mut q: Query<(Entity, &mut Transform, &mut Enemy, &mut Fighter)>,
     mut anims: Query<&mut Animator>,
+    mut fx: MessageWriter<crate::fx::StartEffect>,
 ) {
     let (Some(col), Ok(sp)) = (collider, sora.single()) else { return };
     let dt = time.delta_secs().min(0.05);
@@ -224,6 +225,8 @@ pub fn think(
                     e.state = if dist < kind.reach + 0.2 && e.cooldown <= 0.0 {
                         EState::Attack
                     } else if kind.sink.is_some() && dist > 5.0 && e.rand() < 0.5 {
+                        // Shadow effect 2: the pool of darkness it sinks into.
+                        fx.write(crate::fx::StartEffect { owner: e.body, id: 2 });
                         EState::Sink
                     } else {
                         EState::Chase
@@ -259,6 +262,7 @@ pub fn think(
                 if dist < 2.0 || e.timer > 3.0 {
                     e.state = EState::Rise;
                     e.timer = 0.0;
+                    fx.write(crate::fx::StartEffect { owner: e.body, id: 2 });
                     a.restart(kind.sink.and_then(|s| slot(&rig, s.1)), false, 0.05);
                 }
             }

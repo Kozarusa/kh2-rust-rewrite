@@ -41,6 +41,14 @@ pub struct LoadedPax {
 pub struct EffectLib {
     pub keyblade: Arc<LoadedPax>,
     pub system: Arc<LoadedPax>,
+    /// Per-object effect files by name (`obj/<name>.apdx`).
+    pub objects: HashMap<String, Arc<LoadedPax>>,
+}
+
+impl EffectLib {
+    pub fn for_rig(&self, rig: &crate::skel::Rig) -> Option<&Arc<LoadedPax>> {
+        self.objects.get(rig.apdx.as_ref()?)
+    }
 }
 
 /// Decoded textures and materials, by (pax id, dpd, TEX0) and (texture, GS ALPHA).
@@ -111,12 +119,59 @@ pub fn load(disc: &Disc, name: &str, id: usize, common: Option<&Dpd>) -> Option<
     Some(LoadedPax { id, pax, dpds, vram })
 }
 
-pub fn setup(mut commands: Commands, disc: Res<Disc>) {
+pub fn setup(mut commands: Commands, disc: Res<Disc>, rigs: Res<crate::sora::Rigs>) {
     let common = disc.read("effect/texcommon.dpd").and_then(|b| Dpd::parse(&b).ok());
-    let keyblade = load(&disc, "obj/W_EX010.apdx", 0, common.as_ref()).expect("obj/W_EX010.apdx: no effects");
-    let system = load(&disc, "00effect.bar", 1, common.as_ref()).expect("00effect.bar: no effects");
-    commands.insert_resource(EffectLib { keyblade: Arc::new(keyblade), system: Arc::new(system) });
+    let system = Arc::new(load(&disc, "00effect.bar", 1, common.as_ref()).expect("00effect.bar: no effects"));
+    let mut objects = HashMap::new();
+    for rig in [&rigs.sora, &rigs.keyblade, &rigs.shadow, &rigs.soldier] {
+        if let Some(name) = &rig.apdx {
+            let id = 2 + objects.len();
+            if let Some(p) = load(&disc, name, id, common.as_ref()) {
+                objects.insert(name.clone(), Arc::new(p));
+            }
+        }
+    }
+    let keyblade = objects.get("obj/W_EX010.apdx").cloned().expect("obj/W_EX010.apdx: no effects");
+    commands.insert_resource(EffectLib { keyblade, system, objects });
     commands.init_resource::<FxCache>();
+}
+
+/// Request to start an object effect (element id of the owner's own effect file).
+#[derive(Message, Clone, Copy, Debug)]
+pub struct StartEffect {
+    pub owner: Entity,
+    pub id: u16,
+}
+
+pub fn start_requests(mut commands: Commands, lib: Res<EffectLib>, anims: Query<&Animator>, mut req: MessageReader<StartEffect>) {
+    for r in req.read() {
+        let Ok(a) = anims.get(r.owner) else { continue };
+        if let Some(pax) = lib.for_rig(&a.rig) {
+            start(&mut commands, pax, r.id, Bind::Owner(r.owner));
+        }
+    }
+}
+
+/// Motion frame trigger 1 ("effect caster"): starts the element id it names from the object's own
+/// effect file, bound to that object.
+pub fn motion_effects(mut commands: Commands, lib: Res<EffectLib>, anims: Query<(Entity, &Animator)>) {
+    for (e, a) in &anims {
+        let (Some(t), Some(m)) = (a.triggers(), a.motion()) else { continue };
+        if t.frames.is_empty() {
+            continue;
+        }
+        let Some(pax) = lib.for_rig(&a.rig) else { continue };
+        let g = |f: f32| f * crate::data::LOGIC_HZ / m.fps.max(1.0);
+        let (from, to) = (g(a.prev_frame), g(a.frame));
+        if from == to {
+            continue;
+        }
+        for ft in t.crossed(from, to).filter(|f| f.id == kh2_anim::triggers::frame::EFFECT_CASTER) {
+            if let Some(&id) = ft.params.first() {
+                start(&mut commands, pax, id as u16, Bind::Owner(e));
+            }
+        }
+    }
 }
 
 /// Starts every element of `lib` registered for game effect `id`.
@@ -211,7 +266,8 @@ pub fn tick(
                     continue;
                 };
                 let body = GlobalTransform::from(world_now(owner, &locals));
-                let bone = anim.bone_world(&body, el.bone.max(0) as usize);
+                // Bone numbers with 0x4000 set name special object matrices; the root for now.
+                let bone = if el.bone & 0x4000 != 0 { body.to_matrix() } else { anim.bone_world(&body, el.bone.max(0) as usize) };
                 env.bind = fx_space(bone) * element_matrix(&el);
                 if el.flags & element_flag::TWO_POINT != 0 {
                     let p = |b: u16, ratio: f32| {
@@ -374,10 +430,15 @@ fn build_mesh(b: &Batch) -> Mesh {
 /// (visual checks without needing a fight).
 pub fn fx_test(mut commands: Commands, lib: Res<EffectLib>, sora: Query<&Transform, With<crate::sora::Sora>>, mut ticks: Local<u32>) {
     let Some(spec) = std::env::var("KH2_FXTEST").ok() else { return };
-    // "k<id>": keyblade PAX, else the system PAX.
-    let (pax, id) = match spec.strip_prefix('k') {
-        Some(n) => (&lib.keyblade, n.parse::<u16>().unwrap_or(0)),
-        None => (&lib.system, spec.parse::<u16>().unwrap_or(0)),
+    // "<name>:<id>" (e.g. "M_EX020:4"), "k<id>" for the keyblade, else a system effect id.
+    let (pax, id) = if let Some((name, n)) = spec.split_once(':') {
+        let Some(p) = lib.objects.get(&format!("obj/{name}.apdx")) else { return };
+        (p, n.parse::<u16>().unwrap_or(0))
+    } else {
+        match spec.strip_prefix('k') {
+            Some(n) => (&lib.keyblade, n.parse::<u16>().unwrap_or(0)),
+            None => (&lib.system, spec.parse::<u16>().unwrap_or(0)),
+        }
     };
     *ticks += 1;
     if *ticks % 60 != 1 {

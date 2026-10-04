@@ -324,7 +324,7 @@ pub fn tick(
     {
         s.lock = None;
     }
-    s.target = s.lock.or_else(|| nearest(data.plyr.auto_lock_on_range * SCALE));
+    s.target = s.lock.or_else(|| auto_target(&data.plyr, &s.motor, &alive));
     let target_pos = s.target.and_then(|t| alive.iter().find(|x| x.0 == t).map(|x| x.1 / SCALE));
 
     // Battle mode (keyblade out) while enemies are near or after attacking.
@@ -641,6 +641,34 @@ pub fn tick(
             s.state, body.tag(), body.frame, s.motor.pos.x, s.motor.pos.y, s.motor.pos.z, s.motor.yaw, world.x, world.y, world.z, body.root.translation.z, body.root.yaw
         );
     }
+}
+
+/// The game's automatic target choice: among targets within AutoLockOnRange and the height
+/// window (plyr heights are Y-down: MinH above, MaxH below), the lowest
+/// (distance + |height| × HAdjust) × ((1 − facing·direction) / 2 × (1 − Inner) + Inner).
+fn auto_target(p: &kh2_tables::tables::PrefPlyr, m: &Motor, alive: &[(Entity, Vec3)]) -> Option<Entity> {
+    let facing = m.forward();
+    alive
+        .iter()
+        .filter_map(|&(e, at_m)| {
+            let at = at_m / SCALE;
+            let rel = at - m.pos;
+            let up = rel.y;
+            if up > -p.auto_lock_on_min_h || up < -p.auto_lock_on_max_h {
+                return None;
+            }
+            let flat = rel.with_y(0.0);
+            let dist = flat.length();
+            if dist > p.auto_lock_on_range {
+                return None;
+            }
+            let dir = flat.normalize_or_zero();
+            let inner = p.auto_lock_on_inner_adjust;
+            let score = (dist + up.abs() * p.auto_lock_on_h_adjust) * ((1.0 - facing.dot(dir)) * 0.5 * (1.0 - inner) + inner);
+            Some((e, score))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|x| x.0)
 }
 
 fn land(s: &mut Sora, body: &mut Animator, land_slot: Option<usize>, moving: bool) {

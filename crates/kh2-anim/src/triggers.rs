@@ -1,5 +1,6 @@
 //! Motion triggers: frame ranges and single frames that switch gameplay state during a motion
-//! (hitboxes, combo windows, gravity, turning, effects). IDs per OpenKH `docs/kh2/file/anb/anb.md`.
+//! (hitboxes, combo windows, gravity, turning, effects, sounds). IDs per OpenKH
+//! `docs/kh2/file/anb/anb.md`. Frames are global 60 Hz frames.
 
 #[derive(Debug, Clone)]
 pub struct RangeTrigger {
@@ -41,6 +42,18 @@ pub mod range {
     pub const ALLOW_FINISHER: u8 = 50;
 }
 
+/// Frame trigger IDs used by kh2-rs.
+pub mod frame {
+    pub const EFFECT_CASTER: u8 = 1;
+    pub const FOOTSTEP_SOUND: u8 = 2;
+    pub const SOUND_EFFECT: u8 = 8;
+    pub const VOICE: u8 = 13;
+    pub const VOICE2: u8 = 14;
+    pub const MAGIC_CAST: u8 = 17;
+    pub const FOOTSTEP_EFFECT: u8 = 19;
+    pub const WEAPON_APPEAR: u8 = 22;
+}
+
 fn i16_at(b: &[u8], o: usize) -> i16 {
     b.get(o..o + 2).map(|s| i16::from_le_bytes([s[0], s[1]])).unwrap_or(0)
 }
@@ -48,7 +61,7 @@ fn i16_at(b: &[u8], o: usize) -> i16 {
 impl Triggers {
     pub fn parse(b: &[u8]) -> Triggers {
         let (nr, nf) = (*b.first().unwrap_or(&0) as usize, *b.get(1).unwrap_or(&0) as usize);
-        let foff = i16_at(b, 2) as usize * 2; // offset in shorts
+        let foff = i16_at(b, 2) as u16 as usize; // byte offset of the frame triggers
         let mut t = Triggers::default();
         let mut p = 4;
         for _ in 0..nr {
@@ -82,6 +95,14 @@ impl Triggers {
     pub fn is_active(&self, frame: f32, id: u8) -> bool {
         self.active(frame).any(|r| r.id == id)
     }
+
+    /// Frame triggers crossed when time moves from `from` (exclusive) to `to` (inclusive).
+    pub fn crossed(&self, from: f32, to: f32) -> impl Iterator<Item = &FrameTrigger> {
+        self.frames.iter().filter(move |f| {
+            let x = f.frame as f32;
+            if to >= from { x > from && x <= to } else { x > from || x <= to }
+        })
+    }
 }
 
 #[cfg(test)]
@@ -105,5 +126,15 @@ mod tests {
         assert_eq!((t.ranges[0].start, t.ranges[0].end, t.ranges[0].id), (15, 23, 10));
         assert_eq!(t.ranges[0].params, vec![126, 1]);
         assert!(t.is_active(20.0, 10) && !t.is_active(24.0, 10));
+    }
+
+    #[test]
+    fn frame_trigger_offset_is_in_bytes() {
+        // 1 range (6 bytes) then 1 frame trigger at byte 10: frame 26, footstep sound (4, 0).
+        let b = [1u8, 1, 10, 0, 0, 0, 0xff, 0xff, 0, 0, 26, 0, 2, 2, 4, 0, 0, 0];
+        let t = Triggers::parse(&b);
+        assert_eq!(t.frames.len(), 1);
+        assert_eq!((t.frames[0].frame, t.frames[0].id), (26, 2));
+        assert_eq!(t.frames[0].params, vec![4, 0]);
     }
 }

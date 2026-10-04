@@ -7,4 +7,5 @@ license.workspace = true
 
 [dependencies]
 kh2-bar.workspace = true
+kh2-ps2.workspace = true
 glam = "0.32"

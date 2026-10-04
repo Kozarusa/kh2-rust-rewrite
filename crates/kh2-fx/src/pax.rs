@@ -84,8 +84,8 @@ pub struct DpxEffect {
 pub struct Dpd {
     pub particles: Vec<ParticleData>,
     pub textures: Vec<Texture>,
-    pub shapes: Vec<Vec<u8>>,
-    pub models: Vec<Vec<u8>>,
+    pub shapes: Vec<crate::shape::Shape>,
+    pub models: Vec<crate::omd::Model>,
     pub vsfs: Vec<Vsf>,
 }
 
@@ -161,12 +161,31 @@ impl Program {
 pub struct Texture {
     pub tex_dbp: i16,
     pub clut_dbp: i16,
+    /// Upload buffer width in 64-pixel units, and upload rectangle origin.
+    pub dbw: i16,
+    pub x: i16,
+    pub y: i16,
+    /// GS pixel format (0x13 PSMT8, 0x14 PSMT4).
     pub format: i16,
     pub width: usize,
     pub height: usize,
     pub tex0: u64,
+    /// Raw pixel indices as uploaded (8 bits, or 4 bits packed low nibble first).
+    pub indices: Vec<u8>,
+    /// Raw CLUT (RGBA, alpha 0..0x80) in upload order.
+    pub palette: Vec<u8>,
     /// RGBA8 pixels, alpha already expanded from the PS2 0..0x80 range.
     pub rgba: Vec<u8>,
+}
+
+impl Texture {
+    /// Uploads the pixels and CLUT into GS memory as the game does (BITBLT at the stored DBP).
+    pub fn upload(&self, vram: &mut kh2_ps2::gs::Vram) {
+        if self.format == 0x13 {
+            vram.write8(self.tex_dbp as u16 as usize, self.dbw.max(1) as usize, self.x as usize, self.y as usize, self.width, self.height, &self.indices);
+            vram.write32(self.clut_dbp as u16 as usize, 1, 0, 0, 16, 16, &self.palette);
+        }
+    }
 }
 
 /// VSF: a vertex-shape binding (`vsf_no`, model index, vertex index list).
@@ -246,6 +265,14 @@ impl Pax {
 }
 
 impl Dpd {
+    /// Shape registered under `number` (the game indexes shapes by their own number).
+    pub fn shape(&self, number: i32) -> Option<&crate::shape::Shape> {
+        self.shapes.iter().find(|s| s.number as i32 == number)
+    }
+    pub fn model(&self, number: i32) -> Option<&crate::omd::Model> {
+        self.models.iter().find(|m| m.number as i32 == number)
+    }
+
     pub fn parse(b: &[u8]) -> Result<Dpd, Error> {
         if i32_at(b, 0) != 0x96 {
             return Err(Error::BadMagic("DPD 0x96"));
@@ -266,8 +293,8 @@ impl Dpd {
         Ok(Dpd {
             particles: lists[0].iter().map(|&o| ParticleData::parse(slice(o))).collect::<Result<_, _>>()?,
             textures: lists[1].iter().map(|&o| Texture::parse(slice(o))).collect(),
-            shapes: lists[2].iter().map(|&o| slice(o).to_vec()).collect(),
-            models: lists[3].iter().map(|&o| slice(o).to_vec()).collect(),
+            shapes: lists[2].iter().map(|&o| crate::shape::Shape::parse(slice(o))).collect(),
+            models: lists[3].iter().map(|&o| crate::omd::Model::parse(slice(o))).collect(),
             vsfs: lists[4]
                 .iter()
                 .map(|&o| {
@@ -384,6 +411,20 @@ impl Texture {
             };
             rgba[i * 4..i * 4 + 4].copy_from_slice(&color(idx));
         }
-        Texture { tex_dbp: i16_at(b, 0), clut_dbp: i16_at(b, 2), format, width, height, tex0, rgba }
+        let n = if four { width * height / 2 } else { width * height };
+        Texture {
+            tex_dbp: i16_at(b, 0),
+            clut_dbp: i16_at(b, 2),
+            dbw: i16_at(b, 4),
+            x: i16_at(b, 8),
+            y: i16_at(b, 10),
+            format,
+            width,
+            height,
+            tex0,
+            indices: data.get(..n).unwrap_or(&[]).to_vec(),
+            palette: data.get(n..n + if four { 64 } else { 1024 }).unwrap_or(&[]).to_vec(),
+            rgba,
+        }
     }
 }

@@ -8,10 +8,9 @@
 
 use glam::{Mat4, Vec3, Vec4};
 
-use crate::omd::Model;
 use crate::pax::Program;
 use crate::rd::*;
-use crate::vm::{Ctx, Draw, OBJ_DRAW, OBJ_FRAME, OBJ_LOCAL, OBJ_WORK, Obj, Strip};
+use crate::vm::{Batch, Ctx, OBJ_DRAW, OBJ_LOCAL, OBJ_WORK, Obj, Vertex};
 
 pub type Frame = fn(&mut Ctx, &mut Obj, &Program, usize);
 pub type Init = fn(&mut Obj, &Program);
@@ -28,29 +27,93 @@ pub struct Handlers {
 }
 
 pub fn handlers(kind: u32) -> Handlers {
-    use crate::ppp::kind::*;
+    use crate::progx as x;
     let both = |frame: Frame, init: Init| Handlers { frame: Some(frame), init: Some(init), reset: Some(init), ..Default::default() };
-    match kind {
-        POINT => both(point, zero_v3_0),
-        MOVE => both(mover, zero_v3_1),
-        ACCELE => both(mover, zero_v3_1),
-        ANGLE => both(angle, zero_v3_0),
-        ANG_MOVE => both(ang_move, zero_v3_1),
-        ANG_ACCELE => both(ang_move, zero_v3_1),
-        SCALE => both(point, zero_v3_0),
-        SCL_MOVE => both(mover, zero_v3_1),
-        SCL_ACCELE => both(mover, zero_v3_1),
-        COLOR => both(color, zero_c4_0),
-        COL_MOVE => both(col_move, zero_c4_1),
-        COL_ACCELE => both(col_move, zero_c4_1),
-        MATRIX | MATRIX_XYZ => Handlers { frame: Some(matrix_xyz), ..Default::default() },
-        MATRIX_SCL => Handlers { frame: Some(matrix_scl), ..Default::default() },
-        DRAW_MATRIX => Handlers { frame: Some(draw_matrix), ..Default::default() },
-        DRAW_MATRIX_FRONT => Handlers { frame: Some(draw_matrix_front), ..Default::default() },
-        RYJ_DRAW_SHIPOLY_BONE => Handlers { draw: Some(trail_draw), init: Some(trail_init), ..Default::default() },
-        RYJ_MEGA_BIRTH | RYJ_MEGA_BIRTH_MODEL | EI_DRAW_SHIPOLY => Handlers { skip_in_fast_forward: true, ..Default::default() },
+    let frame = |frame: Frame| Handlers { frame: Some(frame), ..Default::default() };
+    match crate::ppp::name(kind) {
+        "pppPoint" | "pppScale" => both(point, zero_v3_0),
+        "pppMove" | "pppAccele" | "pppSclMove" | "pppSclAccele" => both(mover, zero_v3_1),
+        "pppAngle" => both(angle, zero_v3_0),
+        "pppAngMove" | "pppAngAccele" => both(ang_move, zero_v3_1),
+        "pppColor" => both(color, zero_c4_0),
+        "pppColMove" | "pppColAccele" => both(col_move, zero_c4_1),
+        "pppMatrix" | "pppMatrixXYZ" | "pppMatrixLoop" => frame(matrix_xyz),
+        "pppMatrixYXZ" => frame(x::matrix_yxz),
+        "pppMatrixZXY" => frame(x::matrix_zxy),
+        "pppMatrixYZX" => frame(x::matrix_yzx),
+        "pppMatrixXZY" => frame(x::matrix_xzy),
+        "pppMatrixZYX" => frame(x::matrix_zyx),
+        "pppMatrixScl" => frame(matrix_scl),
+        "pppRyjMatrixNoRot" => frame(x::matrix_no_rot),
+        "pppParMatrix" => frame(x::par_matrix),
+        "pppDrawMatrix" | "pppDrawMatrixLoop" => frame(draw_matrix),
+        "pppDrawMatrixFront" => frame(draw_matrix_front),
+        "pppDrawMatrixWood" => frame(x::draw_matrix_wood),
+        "pppKeDMatFr" => frame(x::ke_dmat_fr),
+        "pppRandFV" => frame(x::rand_fv),
+        "pppRandIV" => frame(x::rand_iv),
+        "pppRandFloat" => frame(x::rand_float),
+        "pppRandDownFV" => frame(x::rand_down_fv),
+        "pppPointLoop" | "pppScaleLoop" => Handlers {
+            frame: Some(x::point_loop),
+            init: Some(x::loop_init),
+            reset: Some(x::point_loop_reset),
+            ..Default::default()
+        },
+        "pppAngleLoop" => Handlers {
+            frame: Some(x::angle_loop),
+            init: Some(x::loop_init),
+            reset: Some(x::angle_loop_reset),
+            ..Default::default()
+        },
+        "pppAngMoveLoop" => both(x::ang_move_loop, zero_v3_1),
+        "pppDrawShapeX" | "pppDrawShape" => Handlers {
+            frame: Some(x::shape_frame),
+            draw: Some(x::shape_draw),
+            init: Some(x::shape_init),
+            reset: Some(x::shape_init),
+            ..Default::default()
+        },
+        "pppDrawMdl3" | "pppDrawMdlLoopZ" | "pppDrawMdl" | "pppDrawMdl2" => Handlers { draw: Some(x::mdl3_draw), ..Default::default() },
+        "pppDrawMdlTs3" => Handlers {
+            frame: Some(x::mdl_ts3_frame),
+            draw: Some(x::mdl_ts3_draw),
+            init: Some(x::mdl_ts3_init),
+            reset: Some(x::mdl_ts3_init),
+            ..Default::default()
+        },
+        "pppKeShpTail2X" => Handlers {
+            frame: Some(x::tail_frame),
+            draw: Some(x::tail_draw),
+            init: Some(x::tail_init),
+            ..Default::default()
+        },
+        "pppPointAp" => Handlers { frame: Some(x::point_ap), init: Some(x::point_ap_init), ..Default::default() },
+        "pppVertexAp" => Handlers { frame: Some(x::vertex_ap), init: Some(x::vertex_ap_init), ..Default::default() },
+        "pppVertexApLc" => Handlers { frame: Some(x::vertex_ap_lc), init: Some(x::vertex_ap_init), ..Default::default() },
+        "pppVertexApAt" => Handlers { frame: Some(x::vertex_ap_at), init: Some(x::vertex_ap_init), ..Default::default() },
+        "pppVertexAttend" => frame(x::vertex_attend),
+        "pppKeBornRnd5" => Handlers { frame: Some(x::born_rnd5), init: Some(x::born_rnd5_init), ..Default::default() },
+        "pppRyjDrawShipolyBone" => Handlers { draw: Some(trail_draw), init: Some(trail_init), ..Default::default() },
+        "pppRyjMegaBirth" => Handlers {
+            frame: Some(x::mega_frame),
+            draw: Some(x::mega_draw),
+            init: Some(x::mega_init),
+            destroy: Some(x::mega_destroy),
+            skip_in_fast_forward: true,
+            ..Default::default()
+        },
+        "pppRyjMegaBirthModel" | "pppEiDrawShipoly" => Handlers { skip_in_fast_forward: true, ..Default::default() },
+        // Depth-bias matrices for the VU1 programs and the shared-matrix pointer: no visible effect here.
+        "pppKeZCrct" | "pppKeZCrctShp" | "pppSMatrix" => Handlers::default(),
         _ => Handlers::default(),
     }
+}
+
+/// Program kinds without a port yet.
+pub fn unported(kind: u32) -> bool {
+    let h = handlers(kind);
+    h.frame.is_none() && h.draw.is_none() && !matches!(crate::ppp::name(kind), "pppKeZCrct" | "pppKeZCrctShp" | "pppSMatrix" | "pppDummyFunc")
 }
 
 fn work(p: &Program, k: usize) -> usize {
@@ -218,6 +281,10 @@ fn draw_matrix(ctx: &mut Ctx, obj: &mut Obj, _: &Program, _: usize) {
 
 /// pppDrawMatrixFront: camera-facing. In camera space the axes are the local axes scaled by the
 /// bind scale and the origin is the bound position; back to world space for us.
+pub(crate) fn draw_matrix_front_pub(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
+    draw_matrix_front(ctx, obj, p, e);
+}
+
 fn draw_matrix_front(ctx: &mut Ctx, obj: &mut Obj, _: &Program, _: usize) {
     let l = obj.mat(OBJ_LOCAL);
     let s = ctx.env.bind_scale;
@@ -275,9 +342,7 @@ fn trail_draw(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
     if model_no == 0xffff {
         return;
     }
-    let Some(raw) = ctx.dpd.models.iter().find(|m| i16_at(m, 0) as i32 == model_no) else { return };
-    let model = Model::parse(raw);
-    let model_index = ctx.dpd.models.iter().position(|m| i16_at(m, 0) as i32 == model_no).unwrap_or(0);
+    let Some(model) = ctx.dpd.model(model_no) else { return };
     let st = work(p, 1);
     let ring_size = u8_at(&p.params, e + 0xe).max(2) as usize;
     if obj.ring.is_empty() {
@@ -367,24 +432,20 @@ fn trail_draw(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
     if mat.w <= 0.0 {
         return;
     }
-    let tbp = (tex0 & 0x3fff) as i16;
-    let texture = ctx.dpd.textures.iter().position(|t| t.tex_dbp == tbp);
-    let quads = prims
-        .iter()
-        .map(|q| {
-            let mut c = [(Vec3::ZERO, Vec4::ZERO, [0.0; 2]); 4];
-            for k in 0..4 {
-                let v = verts.get(q.indices[k] as usize).copied().unwrap_or([0; 3]);
-                let pos = base + Vec3::new(v[0] as f32, v[1] as f32, v[2] as f32);
-                let col = Vec4::new(q.colors[k][0] as f32, q.colors[k][1] as f32, q.colors[k][2] as f32, q.colors[k][3] as f32) / 128.0 * mat;
-                let uv = [(q.uvs[k][0] & 0xfff) as f32 / 4096.0, (q.uvs[k][1] & 0xfff) as f32 / 4096.0];
-                c[k] = (pos, col, uv);
+    let mut batch = Batch { dpd: ctx.dpd_index, tex0: Some(tex0), alpha: model.alpha, ..Default::default() };
+    for q in &prims {
+        let corner = |k: usize| {
+            let v = verts.get(q.indices[k] as usize).copied().unwrap_or([0; 3]);
+            Vertex {
+                pos: base + Vec3::new(v[0] as f32, v[1] as f32, v[2] as f32),
+                color: Vec4::new(q.colors[k][0] as f32, q.colors[k][1] as f32, q.colors[k][2] as f32, q.colors[k][3] as f32) / 128.0
+                    * mat,
+                uv: [(q.uvs[k][0] & 0xfff) as f32 / 4096.0, (q.uvs[k][1] & 0xfff) as f32 / 4096.0],
             }
-            c
-        })
-        .collect();
-    ctx.draws.push(Draw::Strip(Strip { dpd: ctx.dpd_index, model: model_index, quads, texture, alpha_mode: model.alpha }));
-    let _ = OBJ_FRAME;
+        };
+        batch.quad([corner(0), corner(1), corner(2), corner(3)]);
+    }
+    ctx.draws.push(batch);
 }
 
 /// U span and V edges in 1/4096 from the trail's texture-division parameters (+0x10..+0x12).

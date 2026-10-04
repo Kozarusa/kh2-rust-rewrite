@@ -6,10 +6,12 @@
 
 pub mod omd;
 pub mod pax;
+pub mod shape;
 pub mod ppp;
 pub(crate) mod prog;
+pub(crate) mod progx;
 mod rd;
 pub mod vm;
 
 pub use pax::{Dpd, Element, Pax, ParticleData};
-pub use vm::{Draw, Effect, Env, Strip};
+pub use vm::{Batch, Draw, Effect, Env, Vertex};

@@ -81,6 +81,8 @@ fn main() {
                 sora::receive_hits,
                 enemy::receive_hits,
                 fx::weapon_trails,
+                fx::hit_sparks,
+                fx::fx_test,
                 fx::tick,
             )
                 .chain(),

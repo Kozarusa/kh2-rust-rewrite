@@ -3274,6 +3274,7 @@ dependencies = [
  "kh2-fx",
  "kh2-map",
  "kh2-model",
+ "kh2-ps2",
  "kh2-tables",
 ]
 
@@ -3298,6 +3299,7 @@ version = "0.1.0"
 dependencies = [
  "glam",
  "kh2-bar",
+ "kh2-ps2",
 ]
 
 [[package]]

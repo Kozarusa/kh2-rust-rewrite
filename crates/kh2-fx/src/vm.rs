@@ -55,23 +55,37 @@ impl Default for Env {
     }
 }
 
-/// What the draw handlers produced this tick, in world space.
-#[derive(Clone, Debug)]
-pub enum Draw {
-    /// A textured quad strip from a DPD model (weapon trails).
-    Strip(Strip),
+/// What the draw handlers produced this tick: textured triangles in fx space.
+#[derive(Clone, Debug, Default)]
+pub struct Batch {
+    pub dpd: usize,
+    /// GS TEX0 register of the texture (None: untextured).
+    pub tex0: Option<u64>,
+    /// GS ALPHA register value (0x44 blend, 0x48 additive, 0x42 subtractive).
+    pub alpha: u8,
+    pub verts: Vec<Vertex>,
+    pub indices: Vec<u32>,
 }
 
-#[derive(Clone, Debug)]
-pub struct Strip {
-    pub dpd: usize,
-    pub model: usize,
-    /// Quads as 4 corners each: (position, rgba 0..1, uv).
-    pub quads: Vec<[(Vec3, Vec4, [f32; 2]); 4]>,
-    pub texture: Option<usize>,
-    /// GS ALPHA register value from the model (0x48 = additive).
-    pub alpha_mode: u8,
+#[derive(Clone, Copy, Debug)]
+pub struct Vertex {
+    pub pos: Vec3,
+    /// RGBA with 1.0 = the GS's 0x80.
+    pub color: Vec4,
+    /// Normalised texture coordinates.
+    pub uv: [f32; 2],
 }
+
+impl Batch {
+    /// Adds a quad in GS strip order (corners 0, 1, 2, 3: triangles 0-1-2 and 1-3-2).
+    pub fn quad(&mut self, v: [Vertex; 4]) {
+        let b = self.verts.len() as u32;
+        self.verts.extend_from_slice(&v);
+        self.indices.extend_from_slice(&[b, b + 1, b + 2, b + 1, b + 3, b + 2]);
+    }
+}
+
+pub type Draw = Batch;
 
 pub(crate) struct Obj {
     pub group: usize,
@@ -81,8 +95,12 @@ pub(crate) struct Obj {
     /// Born this tick: skip the frame advance once.
     pub fresh: bool,
     pub restart: bool,
+    /// The object that spawned this one (the game's object +4), for Par/Attend programs.
+    pub parent: Option<usize>,
     /// Weapon-trail sample ring (the game allocates it from the effect heap).
     pub ring: Vec<[Vec3; 2]>,
+    /// Per-program heap blocks (particle pools, tail rings), keyed by program index.
+    pub heap: Vec<(usize, crate::progx::Heap)>,
 }
 
 impl Obj {
@@ -138,6 +156,42 @@ pub(crate) struct Ctx<'a> {
     pub rng: &'a mut u32,
     /// Running effect (the game skips value updates while the effect is paused).
     pub running: bool,
+    /// Inside a loop-restart fast-forward (the game's 0x1db11f4 flag).
+    pub fast_forward: bool,
+    pub obj_id: usize,
+    pub prog_index: usize,
+    /// Local matrix of the spawning object, if any.
+    pub parent_local: Option<Mat4>,
+    pub spawns: &'a mut Vec<Spawn>,
+}
+
+/// A child object to create after the current pass (the game creates it at once, but new objects
+/// skip the rest of the tick either way).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Spawn {
+    pub group: usize,
+    pub parent: usize,
+    pub init: SpawnInit,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum SpawnInit {
+    Vec3(usize, Vec3),
+    U16(usize, u16),
+}
+
+impl Ctx<'_> {
+    /// The game's VU0 random number: five rounds of R ^= 0x7fffff, R = next(R); returns R - 1.0.
+    pub fn rand(&mut self) -> f32 {
+        let mut r = *self.rng;
+        for _ in 0..5 {
+            r = (r ^ 0x007f_ffff) & 0x007f_ffff | 0x3f80_0000;
+            let bit = ((r >> 4) ^ (r >> 22)) & 1;
+            r = ((r << 1) ^ bit) & 0x007f_ffff | 0x3f80_0000;
+        }
+        *self.rng = r;
+        f32::from_bits(r) - 1.0
+    }
 }
 
 struct GroupRt {
@@ -249,7 +303,9 @@ impl Effect {
             cursors: vec![0; g.programs.len()],
             fresh: true,
             restart: false,
+            parent: None,
             ring: Vec::new(),
+            heap: Vec::new(),
         };
         let id = match self.objs.iter().position(|o| o.is_none()) {
             Some(i) => {
@@ -280,45 +336,97 @@ impl Effect {
         id
     }
 
-    fn ctx<'a>(&'a mut self, env: &'a Env, draws: &'a mut Vec<Draw>) -> (Ctx<'a>, &'a mut Vec<Option<Obj>>, &'a ParticleData) {
+    fn ctx<'a>(
+        &'a mut self,
+        env: &'a Env,
+        draws: &'a mut Vec<Draw>,
+        spawns: &'a mut Vec<Spawn>,
+    ) -> (Ctx<'a>, &'a mut Vec<Option<Obj>>, &'a ParticleData) {
         let running = !self.paused;
         (
-            Ctx { env, dpd: &self.dpd, dpd_index: self.dpd_index, draws, rng: &mut self.rng, running },
+            Ctx {
+                env,
+                dpd: &self.dpd,
+                dpd_index: self.dpd_index,
+                draws,
+                rng: &mut self.rng,
+                running,
+                fast_forward: false,
+                obj_id: 0,
+                prog_index: 0,
+                parent_local: None,
+                spawns,
+            },
             &mut self.objs,
             &self.pd,
         )
     }
 
+    fn apply_spawns(&mut self, spawns: Vec<Spawn>) {
+        let mut last: Option<usize> = None;
+        for s in spawns {
+            // group usize::MAX: one more initial value for the previous spawn.
+            if s.group == usize::MAX {
+                if let (Some(id), SpawnInit::Vec3(off, v)) = (last, s.init) {
+                    if let Some(Some(o)) = self.objs.get_mut(id) {
+                        o.set_vec3(off + OBJ_WORK, v);
+                    }
+                }
+                continue;
+            }
+            if s.group >= self.pd.groups.len() {
+                continue;
+            }
+            let id = self.spawn(s.group);
+            last = Some(id);
+            let o = self.objs[id].as_mut().unwrap();
+            o.parent = Some(s.parent);
+            match s.init {
+                SpawnInit::Vec3(off, v) => o.set_vec3(off + OBJ_WORK, v),
+                SpawnInit::U16(off, v) => o.mem[off + OBJ_WORK..off + OBJ_WORK + 2].copy_from_slice(&v.to_le_bytes()),
+            }
+        }
+    }
+
     fn run_programs(&mut self, env: &Env, draw_pass: bool, draws: &mut Vec<Draw>) {
         let order = self.order.clone();
-        let (mut ctx, objs, pd) = self.ctx(env, draws);
-        for (gi, g) in pd.groups.iter().enumerate() {
-            for (pi, prog) in g.programs.iter().enumerate() {
-                let h = prog::handlers(prog.kind);
-                if h.draw.is_some() != draw_pass || (h.frame.is_none() && h.draw.is_none()) {
-                    continue;
-                }
-                for &id in &order {
-                    let Some(obj) = objs[id].as_mut() else { continue };
-                    if obj.group != gi || obj.fresh {
+        let mut spawns = Vec::new();
+        {
+            let (mut ctx, objs, pd) = self.ctx(env, draws, &mut spawns);
+            for (gi, g) in pd.groups.iter().enumerate() {
+                for (pi, prog) in g.programs.iter().enumerate() {
+                    let h = prog::handlers(prog.kind);
+                    if h.draw.is_some() != draw_pass || (h.frame.is_none() && h.draw.is_none()) {
                         continue;
                     }
-                    if obj.restart && ctx.running {
-                        obj.set_i32(OBJ_FRAME, 0);
-                        reset_programs(obj, g, false);
-                        obj.restart = false;
-                    }
-                    advance_cursor(obj, prog, pi);
-                    let entry = obj.cursors[pi];
-                    if let Some(f) = h.frame {
-                        f(&mut ctx, obj, prog, entry);
-                    }
-                    if let Some(d) = h.draw {
-                        d(&mut ctx, obj, prog, entry);
+                    for &id in &order {
+                        let Some(mut obj) = objs[id].take() else { continue };
+                        if obj.group != gi || obj.fresh {
+                            objs[id] = Some(obj);
+                            continue;
+                        }
+                        if obj.restart && ctx.running {
+                            obj.set_i32(OBJ_FRAME, 0);
+                            reset_programs(&mut obj, g, false);
+                            obj.restart = false;
+                        }
+                        advance_cursor(&mut obj, prog, pi);
+                        let entry = obj.cursors[pi];
+                        ctx.obj_id = id;
+                        ctx.prog_index = pi;
+                        ctx.parent_local = obj.parent.and_then(|p| objs.get(p)?.as_ref()).map(|p| p.mat(OBJ_LOCAL));
+                        if let Some(f) = h.frame {
+                            f(&mut ctx, &mut obj, prog, entry);
+                        }
+                        if let Some(d) = h.draw {
+                            d(&mut ctx, &mut obj, prog, entry);
+                        }
+                        objs[id] = Some(obj);
                     }
                 }
             }
         }
+        self.apply_spawns(spawns);
     }
 
     fn advance_frames(&mut self) {
@@ -344,18 +452,26 @@ impl Effect {
             let frame = self.objs[id].as_ref().unwrap().frame();
             if !self.ending && frame >= g.loop_end && g.loop_start < NEVER && g.loop_end < NEVER {
                 let pd = self.pd.clone();
-                let (mut ctx, objs, _) = self.ctx(env, draws);
-                let obj = objs[id].as_mut().unwrap();
-                obj.set_i32(OBJ_FRAME, 0);
-                reset_programs(obj, &g, false);
-                if g.loop_start == 0 {
-                    fast_forward(&mut ctx, obj, &pd.groups[gi]);
-                    obj.restart = true;
-                } else {
-                    while obj.frame() < g.loop_start {
-                        fast_forward(&mut ctx, obj, &pd.groups[gi]);
+                let mut spawns = Vec::new();
+                {
+                    let (mut ctx, objs, _) = self.ctx(env, draws, &mut spawns);
+                    let mut obj = objs[id].take().unwrap();
+                    ctx.fast_forward = true;
+                    ctx.obj_id = id;
+                    ctx.parent_local = obj.parent.and_then(|p| objs.get(p)?.as_ref()).map(|p| p.mat(OBJ_LOCAL));
+                    obj.set_i32(OBJ_FRAME, 0);
+                    reset_programs(&mut obj, &g, false);
+                    if g.loop_start == 0 {
+                        fast_forward(&mut ctx, &mut obj, &pd.groups[gi]);
+                        obj.restart = true;
+                    } else {
+                        while obj.frame() < g.loop_start {
+                            fast_forward(&mut ctx, &mut obj, &pd.groups[gi]);
+                        }
                     }
+                    objs[id] = Some(obj);
                 }
+                self.apply_spawns(spawns);
                 all_never = false;
                 continue;
             }
@@ -378,6 +494,14 @@ impl Effect {
 
     fn kill(&mut self, id: usize) {
         let gi = self.objs[id].as_ref().unwrap().group;
+        let pd = self.pd.clone();
+        if let Some(o) = self.objs[id].as_mut() {
+            for p in &pd.groups[gi].programs {
+                if let Some(f) = prog::handlers(p.kind).destroy {
+                    f(o, p);
+                }
+            }
+        }
         self.order.retain(|&x| x != id);
         let g = &mut self.groups[gi];
         g.count -= 1;
@@ -415,6 +539,7 @@ fn fast_forward(ctx: &mut Ctx, obj: &mut Obj, g: &Group) {
     for (pi, prog) in g.programs.iter().enumerate() {
         let h = prog::handlers(prog.kind);
         advance_cursor(obj, prog, pi);
+        ctx.prog_index = pi;
         if let (Some(f), false) = (h.frame, h.skip_in_fast_forward) {
             f(ctx, obj, prog, obj.cursors[pi]);
         }

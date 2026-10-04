@@ -10,6 +10,7 @@ Sora:
 - **Animation:** plays his real motions (idle and battle stances, run, jump, fall, land, attacks, damage), GPU-skinned.
 - **Keyblade:** holds the Kingdom Key in his right hand; it runs its own motion set in lockstep with his.
 - **Combos:** a ground combo (A300 → A301 → A302 → finisher A303/A304) and a hovering air combo (A310–A314). Each hit chains only inside the motions' own combo windows.
+- **Weapon trail:** the keyblade's own trail effect from its PAX, run by a port of the game's particle program runtime, shown exactly while the keyblade motion's trail trigger is on.
 - **Hitboxes:** the keyblade's motion triggers switch on its real collision shapes for exactly the authored frames.
 - **Damage:** comes from `atkp` with the game's formula, so damage numbers match the original.
 - **Guard and lock-on:** guards (A320, with the A321 counter on a frontal block), dodge-rolls, and locks on with KH2-style camera assist.
@@ -24,7 +25,7 @@ Not done yet:
 - Magic, abilities, Drive Forms, Limits and reaction commands.
 - The game's real enemy AI scripts (BDX); a stand-in AI is used.
 - COCT collision; the render triangles are used instead.
-- Effects, audio, NPCs, events and menus.
+- Other effects (hit sparks, Heartless deaths, magic), audio, NPCs, events and menus.
 
 The open rows of `sheets/systems.json` are the to-do list.
 

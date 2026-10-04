@@ -12,6 +12,7 @@ mod camera;
 mod combat;
 mod data;
 mod enemy;
+mod fx;
 mod hud;
 mod motor;
 mod skel;
@@ -64,7 +65,7 @@ fn main() {
         .insert_resource(assets::CurrentArea { name: start, loaded: None })
         .insert_resource(Time::<Fixed>::from_hz(data::LOGIC_HZ as f64))
         .init_resource::<sora::Pad>()
-        .add_systems(Startup, (sora::setup, camera::setup, hud::setup))
+        .add_systems(Startup, (sora::setup, camera::setup, hud::setup, fx::setup))
         .add_systems(Update, (assets::switch_area, assets::load_area, sora::read_pad).chain())
         .add_systems(
             FixedUpdate,
@@ -79,6 +80,8 @@ fn main() {
                 combat::detect_hits,
                 sora::receive_hits,
                 enemy::receive_hits,
+                fx::weapon_trails,
+                fx::tick,
             )
                 .chain(),
         )

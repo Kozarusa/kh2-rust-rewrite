@@ -3245,6 +3245,7 @@ dependencies = [
  "kh2-archive",
  "kh2-bar",
  "kh2-ee",
+ "kh2-fx",
  "kh2-map",
  "kh2-model",
  "kh2-sheets",
@@ -3269,6 +3270,8 @@ dependencies = [
  "bevy",
  "kh2-anim",
  "kh2-archive",
+ "kh2-bar",
+ "kh2-fx",
  "kh2-map",
  "kh2-model",
  "kh2-tables",
@@ -3288,6 +3291,14 @@ version = "0.1.0"
 [[package]]
 name = "kh2-ee"
 version = "0.1.0"
+
+[[package]]
+name = "kh2-fx"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "kh2-bar",
+]
 
 [[package]]
 name = "kh2-iso"

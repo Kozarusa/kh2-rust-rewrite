@@ -14,6 +14,7 @@ kh2-model.workspace = true
 kh2-anim.workspace = true
 kh2-map.workspace = true
 kh2-ee.workspace = true
+kh2-fx.workspace = true
 glam = "0.32"
 serde_json.workspace = true
 png = "0.17"

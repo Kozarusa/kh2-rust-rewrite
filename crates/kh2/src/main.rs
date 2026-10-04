@@ -19,11 +19,80 @@ kh2 <command> [--iso PATH]
   ls [FILTER]           list archive files (names need fetch-names)
   extract NAME [DIR]    write one archive file to DIR (default local/extract/)
   bar NAME              list the subfiles of a BAR archive
+  pax NAME              dump a PAX effect (or every PAX in a BAR)
   table NAME [LIMIT]    print a decoded gameplay table
   validate              decode every modelled table and write checkmarks into sheets/
   preflight [--strict]  overlap all sheets and print the checklist
 
 ISO path: --iso, else $KH2_ISO, else local/iso.txt";
+
+fn print_pax(pax: &kh2_fx::Pax) {
+    use kh2_fx::ppp::name;
+    for (i, e) in pax.elements.iter().enumerate() {
+        println!(
+            "element {i}: id {} -> effect {} bone {} flags {:#x} se {} bonepos {:?}",
+            e.id, e.effect, e.bone, e.flags, e.se, e.bone_pos
+        );
+    }
+    for (i, e) in pax.effects.iter().enumerate() {
+        println!("effect {i}: number {} -> dpd {} particle data {}", e.number, e.dpd, e.particle_data);
+    }
+    for (di, d) in pax.dpds.iter().enumerate() {
+        println!(
+            "dpd {di}: {} particle data, {} textures, {} shapes, {} models, {} vsf",
+            d.particles.len(),
+            d.textures.len(),
+            d.shapes.len(),
+            d.models.len(),
+            d.vsfs.len()
+        );
+        for t in &d.textures {
+            println!("  texture {}x{} format {:#x} tex0 {:#x}", t.width, t.height, t.format, t.tex0);
+        }
+        for v in &d.vsfs {
+            println!("  vsf {} model {} indices {}", v.number, v.model, v.indices.len());
+        }
+        for (pi, p) in d.particles.iter().enumerate() {
+            let mp: Vec<&str> = p.program_kinds.iter().map(|&k| name(k)).collect();
+            println!(
+                "  particle data {pi}: life {} flags {:#x} work {} bone {} se {} kinds [{}]",
+                p.life as f32 / 4096.0,
+                p.flags,
+                p.work_mem,
+                p.bone,
+                p.se,
+                mp.join(" ")
+            );
+            for (gi, g) in p.groups.iter().enumerate() {
+                let f = |x: i32| if x >= kh2_fx::pax::NEVER { "-".to_string() } else { format!("{}", x as f32 / 4096.0) };
+                println!(
+                    "    group {gi}: start {} total {} loop {}..{} prio {} work {:#x}",
+                    f(g.start_frame),
+                    f(g.total_frame),
+                    f(g.loop_start),
+                    f(g.loop_end),
+                    g.priority,
+                    g.cursor_offset
+                );
+                for pr in &g.programs {
+                    println!(
+                        "      {:<24} {} x {}B use {:?}",
+                        name(pr.kind),
+                        pr.entries(),
+                        pr.param_size,
+                        pr.use_val
+                    );
+                    if std::env::var_os("KH2_RAW").is_some() {
+                        for c in pr.params.chunks(pr.param_size.max(4)) {
+                            let h: Vec<String> = c.chunks(4).map(|w| format!("{:08x}", u32::from_le_bytes(w.try_into().unwrap_or([0; 4])))).collect();
+                            println!("        {}", h.join(" "));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
@@ -131,6 +200,19 @@ fn run(args: &mut Vec<String>) -> Result<(), String> {
                 println!("{:4} type={:3} {:>8} bytes", e.tag, e.kind, e.data.len());
             }
         }
+        "pax" => {
+            let mut a = open(args)?;
+            let name = args.first().ok_or("pax needs a file name (a .pax, or a BAR holding one)")?.clone();
+            let data = a.read(&name).map_err(|e| e.to_string())?;
+            let paxes: Vec<&[u8]> = match kh2_bar::parse(&data) {
+                Ok(es) => es.iter().filter(|e| e.kind == 18).map(|e| e.data).collect(),
+                Err(_) => vec![&data[..]],
+            };
+            for p in paxes {
+                let pax = kh2_fx::Pax::parse(p).map_err(|e| format!("{e:?}"))?;
+                print_pax(&pax);
+            }
+        }
         "table" => {
             let mut a = open(args)?;
             let name = args.first().ok_or("table needs a name")?.clone();
@@ -187,6 +269,31 @@ fn run(args: &mut Vec<String>) -> Result<(), String> {
                     enc.write_header().and_then(|mut w| w.write_image_data(&t.rgba)).map_err(|e| e.to_string())?;
                 }
                 println!("textures -> {}", dir.display());
+            }
+        }
+        "triggers" => {
+            let mut a = open(args)?;
+            let name = args.first().ok_or("triggers needs an mset name")?.clone();
+            let only: Option<u8> = args.get(1).and_then(|s| s.parse().ok());
+            let m = kh2_anim::Mset::parse(&a.read(&name).map_err(|e| e.to_string())?).ok_or("not an MSET")?;
+            for slot in 0..m.slots.len() {
+                let Some(s) = m.get(slot) else { continue };
+                let t = &s.triggers;
+                let r: Vec<String> = t
+                    .ranges
+                    .iter()
+                    .filter(|r| only.is_none_or(|i| r.id == i))
+                    .map(|r| format!("R{}[{}..{}]{:?}", r.id, r.start, r.end, r.params))
+                    .collect();
+                let f: Vec<String> = t
+                    .frames
+                    .iter()
+                    .filter(|f| only.is_none_or(|i| f.id == i))
+                    .map(|f| format!("F{}@{}{:?}", f.id, f.frame, f.params))
+                    .collect();
+                if !r.is_empty() || !f.is_empty() {
+                    println!("{slot:4} {:5} {} {}", s.tag, r.join(" "), f.join(" "));
+                }
             }
         }
         "motion" => {

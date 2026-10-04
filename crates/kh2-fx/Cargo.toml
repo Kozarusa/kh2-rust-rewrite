@@ -1,0 +1,10 @@
+[package]
+name = "kh2-fx"
+description = "KH2 effects: PAX/DPX/DPD containers and the particle program (ppp) runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kh2-bar.workspace = true
+glam = "0.32"

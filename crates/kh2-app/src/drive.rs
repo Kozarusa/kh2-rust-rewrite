@@ -1252,6 +1252,14 @@ mod tests {
     }
 
     #[test]
+    fn anti_scales_generic_damage_only() {
+        let t = Tuning { point_units: 600.0, field_drain_scale: 0.5, form_hit_loss: 1.2, anti_level_basis: 5, anti_drop: 5, anti_damage: 1.5, final_base: 25.0, final_growth: 2.0, final_cap: 100.0, final_anti_drop: 10, form_boost: 0.8 };
+        assert_eq!(outgoing_damage(&t, form::ANTI, 0, 10), 15);
+        assert_eq!(outgoing_damage(&t, form::ANTI, 5, 10), 10);
+        assert_eq!(outgoing_damage(&t, form::VALOR, 0, 10), 10);
+    }
+
+    #[test]
     fn companions_and_entry_rules() {
         assert_eq!(companions(1), (false, true));
         assert_eq!(companions(2), (true, false));

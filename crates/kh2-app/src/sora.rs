@@ -1482,6 +1482,20 @@ mod tests {
     }
 
     #[test]
+    fn combo_block_counts_player_bits_and_form_grants() {
+        let mut a = Abilities { player: 1 << ABILITY_GUARD, form: vec![] };
+        assert_eq!(a.combo_block(), (3, 3, 1));
+        a.player |= 1 << ABILITY_COMBO_PLUS;
+        assert_eq!(a.combo_block(), (4, 3, 1));
+        // A form's grants count per copy and join the bits the table tests.
+        a.form = vec![(ID_COMBO_PLUS, ABILITY_COMBO_PLUS), (ID_AIR_COMBO_PLUS, ABILITY_AIR_COMBO_PLUS)];
+        assert_eq!(a.combo_block(), (5, 4, 1));
+        assert!(a.bits() >> ABILITY_AIR_COMBO_PLUS & 1 == 1);
+        a.form.push((ID_NEGATIVE_COMBO, ABILITY_NEGATIVE_COMBO));
+        assert_eq!(a.combo_block(), (4, 3, 1));
+    }
+
+    #[test]
     fn press_counters() {
         // The counters follow FUN_00176b00 whatever the table says.
         let mut c = chain(false, 1, &[]);

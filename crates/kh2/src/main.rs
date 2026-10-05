@@ -654,12 +654,13 @@ fn run(args: &mut Vec<String>) -> Result<(), String> {
                 }
             }
             println!("{name}: {} polygons, bounds {lo:?} .. {hi:?}, vertices off-plane: {bad_plane}", c.polygons.len());
+            // Ground material (byte 0 of the polygon record) against the flags word.
             let mut by_material = std::collections::BTreeMap::new();
             for p in &c.polygons {
-                *by_material.entry((p.material, (p.flags >> 8) & 0x1f)).or_insert(0usize) += 1;
+                *by_material.entry((p.material, p.flags)).or_insert(0usize) += 1;
             }
-            for ((m, h), n) in by_material {
-                println!("  material {m:3} (flags>>8&0x1f = {h:2}): {n:5}");
+            for ((m, f), n) in by_material {
+                println!("  material {m:3} flags {f:#07x}: {n:5}");
             }
             for (f, n) in by_flags {
                 let (mut floor, mut wall, mut ceil) = (0, 0, 0);

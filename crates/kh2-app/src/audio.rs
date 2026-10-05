@@ -533,12 +533,13 @@ mod tests {
     #[test]
     fn floors_pick_different_sounds_and_all_have_samples() {
         let Some(d) = disc() else { return };
-        for area in ["tt02", "tt00"] {
+        for area in ["tt02", "tt04"] {
             let record = area_soundinfo(&d, area).expect("record");
             let bank = record.bank(1).expect("Sora's bank");
             let block = kh2_audio::ssl::SeBlock::parse(&d.read(&format!("se/se{bank:03}.seb")).expect("bank")).expect("se block");
             let materials = floor_materials(&d, area);
-            assert!(materials.len() >= 2, "{area}: floors should differ: {materials:?}");
+            let audible = materials.iter().filter(|&&m| m != 0).count();
+            assert!(audible >= 2, "{area}: floors should differ: {materials:?}");
             for m in materials {
                 // Every floor material is silent (0) or has a walk sample in the area's bank.
                 let mut c = 0;

@@ -113,6 +113,22 @@ footstep logic is concerned (not verified in the descriptor itself).
   `KH2_SOUNDLOG=1` prints one `footstep` line per step with the kind, material, NeoStatus, SE
   number and the sample (WD id) it resolves to, and then the usual `se bank:index` line.
 
+### A sound driver fix the footsteps needed (verified in LIBSSL.IRX)
+
+Nearly every footstep entry starts with commands 0x78 and 0x79 (for example `78 00 08`, `78 01 14`,
+`78 04 09`, later `79 00`). The SSL driver reimplementation did not know them, read their
+arguments as commands (one of them was a tempo change to 0) and so most walk and run entries
+rendered silent (peak 0.000 for entries 16 to 20 of `se697`). The handlers are at 0x10a66c (0x78:
+two bytes, slot index and value, a value of 0 reads as 256) and 0x10a6e0 (0x79: one byte, slot
+index, clears the slot) in the IOP module. They set per-track random ranges that note-on applies
+through FUN_001091d8 (slot 0: pitch offset, `rand(R * 0x180000) - R * 0xc0000` in the 8.24 pitch
+sum), FUN_00109228 (slot 1: volume factor `0x3fff - rand(V * 0x40 - 1)`), FUN_00109270 (slot 2:
+pan offset `(rand(2P) - P) * 0x40`) and FUN_001092bc (slot 4: random addition to the attack rate
+bits of ADSR1). `kh2-audio` (`ssl.rs`) now implements slots 0 to 2 and consumes the arguments of
+the others: slot 3 (random delay time), slot 4 and slot 5 (random program) are not applied. After
+the fix every entry of `se697` that the footsteps reach renders audible (peaks 0.10 to 0.29).
+The fix also applies to BGM sequences that use the commands; no BGM was compared before and after.
+
 Deviations and gaps:
 
 - The floor under Sora is the highest floor polygon below his feet (`World::ground`), not the

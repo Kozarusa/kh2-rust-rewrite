@@ -350,7 +350,7 @@ impl Moveset {
             .enumerate()
             .map(|(index, a)| {
                 let mut verdict = match a.group {
-                    1 | 2 | 3 => match chain.check(a) {
+                    1..=3 => match chain.check(a) {
                         Err(r) => Verdict::Rejected(r),
                         Ok(()) if a.group == 3 => Verdict::Flagged,
                         Ok(()) => {

@@ -162,9 +162,35 @@ bit 100, group 3 finisher), key 40 (A344, bit 101, explicit key 40, not ported).
 * The ability system is not ported: bits come from `KH2_ABILITIES` (and Guard). Combo Plus and the
   others are one bit each, the game counts equipped copies.
 
+## The keyblade at A343 frame 18 (open)
+
+Not reproduced as a missing mesh, and no cause found. What was checked: the keyblade's own motion
+for the A343 slot (776) is non-degenerate at every frame (unit scales, finite matrices, a small
+swing of the blade bones); Sora's right hand bone (178) is finite with determinant 1 at every
+frame (it moves about 140 units in two motion frames around frame 16 to 18, a fast swing); the
+weapon motion carries no hide trigger (frame triggers are sound id 8 at 18, 32, 50, 62, 78; range
+12, the swing trail, 17 to 90); Sora's body motion starts effect 35 on the caster at frame 18 (range
+3, no gravity, 16 to 100); effect 35 is billboard quads only (no model), so it cannot replace the
+blade. In the motion viewer (`KH2_VIEW_SLOT=776`) the blade is drawn in the frames sampled, edge-on
+and thin when the hand is at the top of the swing, with and without effects (`KH2_FXONLY=9999`).
+The remaining candidates are a hand socket lagging the fast hand movement or the skinned mesh's
+rest-pose bounds, neither verified.
+
 ## Checks
 
-Unit tests (`cargo test -p kh2-app moveset`, `-p kh2-anim`): the pure rules against real rows of
-the user's `ptya` (skipped without `KH2_ISO`): ground hits 1 to 3, A301 vs A302, A303 vs A304, air
-chain, A333 vs A332, the gated records and the explicit actions, and the press counters.
-Log runs: `KH2_MOVELOG=1`, see the work package report for the scripted runs.
+Unit tests (`cargo test -p kh2-app sora`): the pure rules against real rows of the user's `ptya`
+(skipped without `KH2_ISO`): ground hits 1 to 3, A301 vs A302, A303 vs A304, air chain, A333 vs
+A332, the gated records and the explicit actions, and the press counters.
+
+Scripted runs with `KH2_MOVELOG=1` in tt00 against Shadows (hold W with `KH2_YAW=1.57`, Q, then J
+every 0.3 s):
+* ground: A301 (an enemy within 180 sets key 4 first), A300 (A301 is playing), then the finisher
+  A304 (key 3; no other enemy near enough for key 2): combo counters 1, 2, 3, the third press a
+  finisher, and the Shadow dies from it;
+* air (Space, then J): A330, A331 through key 9's alternative, A333 (key 7, another enemy inside its
+  window) with a landed hit each time; with no hit landed the press is refused in the combo window;
+* `KH2_ABILITIES=18,95` on the ground: A301, then A310 (Upper Slash, explicit key 12), then A316
+  (Finishing Leap, explicit key 37 one attack early);
+* `KH2_ABILITIES=98,100,99` in the air: A341 (key 36, group 1), then A342 (explicit key 38); with
+  `KH2_ABILITIES=100` key 29 (A343) is flagged on the third press but key 7 (A333) comes first in the
+  table when another enemy is in its window.

@@ -26,7 +26,7 @@ mod hud_text;
 use hud_gauge::{DriveGauge, DriveTables, FaceFile, MpRecharge, SoraPanel};
 use hud_gfx::{HudGfxPlugin, HudScene};
 use hud_menu::{CommandMenu, MenuFile, MenuNodes, MenuTables};
-use hud_target::TargetHud;
+use hud_target::{TargetBubble, TargetHud};
 
 pub struct HudPlugin;
 
@@ -37,6 +37,7 @@ impl Plugin for HudPlugin {
             .insert_resource(DebugHud(std::env::var("KH2_DEBUGHUD").is_ok_and(|v| v != "0")))
             .init_resource::<SoraPanel>()
             .init_resource::<TargetHud>()
+            .init_resource::<TargetBubble>()
             .init_resource::<FaceFile>()
             .init_resource::<DriveGauge>()
             .init_resource::<MpRecharge>()

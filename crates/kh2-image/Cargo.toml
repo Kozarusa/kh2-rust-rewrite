@@ -1,0 +1,13 @@
+[package]
+name = "kh2-image"
+description = "KH2 2D UI data: IMGD/IMGZ images and SEQD sequences (sprites, sprite groups, animations)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kh2-ps2.workspace = true
+
+[dev-dependencies]
+png = "0.17"
+kh2-bar.workspace = true

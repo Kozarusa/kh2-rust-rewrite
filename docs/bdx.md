@@ -122,8 +122,8 @@ Group 0 vector math, `fabs` and the random numbers are implemented inside the cr
 
 ## Named host functions
 
-265 of the 812 distinct host functions called by scripts on the disc are named (73 before work package 1E2); the table has 291 entries counting 26 that no script on the disc calls. The named ones account for 86 percent of all host calls in scripts on the disc and
-98.4 percent of the calls in the enemy and boss scripts (`obj/M_*`, `B_*`, `H_*`). Argument counts and return flags of every row are checked against the executable's table by a test (`signatures_match_the_executable`). Rows marked "role inferred" have their effect on the object read from the game code but
+273 of the 812 distinct host functions called by scripts on the disc are named (73 before work package 1E2); the table has 299 entries counting 26 that no script on the disc calls. The named ones account for 86 percent of all host calls in scripts on the disc and
+98.7 percent of the calls in the enemy and boss scripts (`obj/M_*`, `B_*`, `H_*`). Argument counts and return flags of every row are checked against the executable's table by a test (`signatures_match_the_executable`). Rows marked "role inferred" have their effect on the object read from the game code but
 their game-level meaning guessed from how scripts use them; rows without that mark that only describe a field ("word at +0xaa8") say what the wrapper does, not what the field is for. "Native" is the address of the host function's wrapper in the executable, "uses" the number of call sites in reachable script code on the disc. Object fields are offsets in the game object.
 Group 0 is the library (math, effect handles, flags), group 1 the scripted object, group 2 attacks and hit records (the layout of the hit record is in `docs/hit-reaction.md`), group 6 bosses and NPCs.
 
@@ -309,6 +309,8 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.196 | `global_byte_33e832() -> i` | 0x172108 | 128 | byte at 0x33e832 |
 | 1.200 | `set_field_600(Oi)` | 0x171b00 | 7 | bits 3 to 6 of the word at object +0x600 = value & 0xf |
 | 1.201 | `facing_vector(O) -> v` | 0x170710 | 1709 | facing vector of the object |
+| 1.202 | `entry_flag1_set(i)` | 0x174088 | 67 | set bit 0 of the flags (+4) of the entry whose halfword at +2 equals the argument in the table at 0x1c8af90 (0x38-byte entries, count at 0x35e468; FUN_00199c48); role inferred |
+| 1.203 | `entry_flag1_clear(i)` | 0x1740a0 | 49 | clear bit 0 of the same entry's flags (FUN_00199c70) |
 | 1.204 | `gflags_set_80()` | 0x173a70 | 5 | set bit 7 of the global flag word at 0x35d268 |
 | 1.205 | `gflags_clear_80()` | 0x173a88 | 6 | clear bit 7 of the global flag word at 0x35d268 |
 | 1.206 | `global_flag_80() -> b` | 0x173aa0 | 377 | bit 7 of the global flag word at 0x35d268 |
@@ -335,10 +337,13 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.240 | `nop_240(ppp)` | 0x1710d8 | 0 | empty function |
 | 1.241 | `broadcast_message(sf)` | 0x172098 | 0 | like send_message without a sender |
 | 1.246 | `nop_246()` | 0x1737d8 | 0 | empty function |
+| 1.247 | `random_free_point(vff) -> v` | 0x1726d8 | 68 | search around a position for a free point between two radii: samples a spiral with the game's second random generator and tests collisions (FUN_001a6068, FUN_001a6198); returns the point in a static buffer; role inferred |
+| 1.250 | `set_scale_250(f)` | 0x173af8 | 16 | store the argument at 0x1c8a7e8 and the argument times the float at 0x360130 + 0x50 at 0x1c8a7ec (FUN_00190808) |
 | 1.254 | `has_ptr_810(O) -> b` | 0x170ce0 | 4 | the pointer at object +0x810 is non-zero |
 | 1.262 | `obj_method_54(Opp)` | 0x1709c8 | 396 | virtual method +0x54 of the object with two arguments |
 | 1.264 | `gflags_clear_2()` | 0x173a10 | 1 | clear bit 1 of the global flag word at 0x35d268 |
 | 1.265 | `set_word_ac8(Oi)` | 0x171f98 | 2 | store a word at object +0xac8 |
+| 1.270 | `motion_register(Oi)` | 0x171730 | 41 | enter a motion id into the 16-entry list at the motion controller +0x14c unless it is already there (FUN_0017fb28) |
 | 1.272 | `flag_7f8_4(O) -> b` | 0x171cb0 | 11 | flag 4 of the word at object +0x7f8 |
 | 1.286 | `gflags_set_1000()` | 0x173b10 | 1 | set bit 12 of the global flag word at 0x35d268 |
 | 1.287 | `gflags_clear_1000()` | 0x173b28 | 1 | clear bit 12 of the global flag word at 0x35d268 |
@@ -370,6 +375,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 2.16 | `hit_flag1(p) -> b` | 0x18e1a8 | 0 | bit 0 of the flags at +0x18 (2.15 sets it) |
 | 2.17 | `attack_hit_object(pOip)` | 0x18e6e0 | 61 | when the attack may hit the object (FUN_0018c5f8): build the hit record (FUN_0018c6d0), mark it, call the object's virtual method +100 with it (delivers the damage) |
 | 2.20 | `request_2_20(pp) -> i` | 0x18e898 | 269 | sound or effect request (FUN_001a4738); role unknown |
+| 2.21 | `shared_block(ii) -> p` | 0x18e928 | 156 | the persistent buffer registered under a key (FUN_001a5040): the first call allocates and zeroes size + 1 bytes, every call sets the first byte to 1 and returns the buffer |
 | 2.22 | `attack_anchor(pO)` | 0x18e7c8 | 67 | set the attack's anchor (+0x24) to the other object's +0x80 |
 | 2.23 | `target(O) -> p` | 0x18ddb0 | 3225 | the object's current target record (+0x9f4) |
 | 2.24 | `hit_attacker_block(p) -> p` | 0x18e7e0 | 21 | the word at hit +0xc: pointer to a 16-byte block whose +4 holds the attacker's object (copied by scripts into a context); role inferred |
@@ -419,6 +425,8 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 2.88 | `last_attacker(O) -> o` | 0x18e080 | 46 | the last object that hit this one (+0xae4), the player when there is none |
 | 2.91 | `hit_reaction_class(p) -> i` | 0x18e260 | 11 | reaction class of the hit (FUN_0018b700 on the byte at +0x26) |
 | 2.92 | `hit_kind(p) -> i` | 0x18e290 | 21 | FUN_0018b748 of the byte at hit +0x27 |
+| 6.2 | `player_word_b50() -> i` | 0x2ee668 | 8 | word at +0xb50 of the player object (pointer at 0x35c998) |
+| 6.24 | `obj_vec_8a0(O) -> v` | 0x2ee960 | 12 | the 16 bytes at object +0x8a0 copied to a static buffer |
 | 6.58 | `queue_mode_remote(ps)` | 0x2ef018 | 3 | queue the named mode and mark the entry for another object: when it comes up the host switches that object to the mode instead (FUN_00186f50; see runtime.rs) |
 
 ### Not named
@@ -429,42 +437,41 @@ Group 5 is the NPC routine library (`*_RTN` scripts), group 4 the mission and ar
 ```
 5.34x2346 5.4x1368 5.11x912 5.0x684 1.174x683 5.17x682 5.6x456 5.5x456 5.2x456 5.16x456 3.35x452 4.55x352 4.54x350
 0.19x336 1.139x295 5.27x277 4.3x264 3.172x263 4.11x259 4.22x253 4.16x253 5.3x240 1.177x238 3.37x233 5.7x228 5.33x227
-5.26x227 3.23x169 3.39x167 4.37x166 2.21x156 4.4x134 4.36x118 6.48x117 4.35x116 3.24x115 4.29x110 4.5x109 1.41x108
-4.9x106 3.6x106 4.1x105 4.0x105 3.5x94 3.69x93 6.33x91 3.8x91 3.78x91 3.57x82 2.47x75 3.73x74 1.261x74 4.12x69
-1.247x68 3.44x67 1.202x67 10.31x66 3.38x65 1.183x65 6.5x63 4.38x62 3.74x62 3.75x59 3.63x59 1.17x59 3.66x57 1.276x57
-4.44x56 3.96x55 3.32x55 1.138x55 4.50x54 4.46x54 4.18x54 6.3x53 3.2x53 6.34x52 1.141x51 4.30x50 1.298x50 3.79x49
-3.4x49 1.203x49 4.33x46 3.17x46 4.20x45 3.9x45 3.11x45 3.25x44 3.77x43 3.10x43 4.43x42 3.76x42 3.53x42 1.299x42
-1.270x41 2.54x38 1.160x38 1.144x38 1.162x37 3.64x36 3.45x35 1.266x35 1.184x34 1.129x34 3.27x33 3.132x33 1.271x33
-3.18x32 1.248x32 4.6x31 3.21x31 1.190x30 1.181x29 3.80x28 3.72x28 10.55x28 3.70x27 3.42x27 4.40x26 3.90x26 0.46x26
-6.47x25 3.65x25 3.131x25 0.83x25 3.7x24 3.41x24 3.129x24 3.114x24 1.296x24 3.89x23 3.87x23 3.30x23 3.135x23 1.91x23
-6.4x22 10.14x22 1.213x22 3.113x21 3.86x20 3.71x20 1.73x20 1.263x20 1.185x20 6.51x19 6.1x19 3.166x19 1.93x19 1.323x19
-1.280x19 0.82x19 3.58x18 3.43x18 3.126x18 2.31x18 10.19x18 1.142x18 0.39x18 3.81x17 1.304x17 1.189x17 1.165x17 6.9x16
-1.305x16 1.302x16 1.295x16 1.250x16 1.220x16 1.100x16 0.75x16 0.69x16 6.16x15 5.14x15 3.84x15 3.54x15 3.102x15
-1.252x15 2.50x14 2.1x14 1.85x14 1.292x14 1.235x14 1.156x14 1.146x14 6.8x13 6.41x13 6.39x13 4.8x13 4.48x13 3.34x13
-3.148x13 3.112x13 1.75x13 1.306x13 6.54x12 6.24x12 3.88x12 3.85x12 3.29x12 1.343x12 1.186x12 1.164x12 1.126x12
-0.100x12 4.15x11 3.50x11 3.36x11 3.139x11 3.120x11 3.110x11 1.40x11 1.318x11 1.207x11 0.99x11 0.68x11 9.9x10 6.56x10
-4.41x10 4.17x10 3.134x10 2.58x10 2.4x10 1.255x10 0.97x10 0.84x10 3.60x9 3.178x9 3.127x9 3.111x9 3.101x9 10.40x9 1.76x9
-1.267x9 1.197x9 0.73x9 0.45x9 9.11x8 7.2x8 6.57x8 6.32x8 6.2x8 3.95x8 3.93x8 3.61x8 3.40x8 3.170x8 3.165x8 3.164x8
-3.16x8 3.12x8 3.109x8 3.106x8 10.35x8 1.45x8 1.325x8 0.61x8 7.0x7 6.53x7 5.32x7 5.30x7 4.27x7 3.62x7 3.31x7 3.167x7
-3.14x7 3.115x7 3.100x7 1.86x7 1.256x7 1.194x7 7.32x6 7.25x6 6.43x6 6.0x6 4.47x6 4.45x6 4.42x6 4.39x6 4.26x6 4.13x6
-3.98x6 3.94x6 3.68x6 3.52x6 3.163x6 3.162x6 3.150x6 3.137x6 3.130x6 3.13x6 3.125x6 3.124x6 3.117x6 2.86x6 2.59x6
-2.57x6 1.331x6 1.320x6 1.226x6 1.223x6 1.199x6 0.76x6 0.65x6 9.4x5 9.17x5 6.55x5 6.25x5 6.11x5 5.13x5 3.51x5 3.22x5
-3.19x5 3.171x5 3.128x5 3.119x5 3.107x5 3.0x5 2.37x5 10.39x5 10.17x5 10.12x5 1.274x5 1.153x5 1.117x5 0.96x5 0.91x5
-9.19x4 7.24x4 7.19x4 6.46x4 6.45x4 6.12x4 4.21x4 4.10x4 3.145x4 3.133x4 3.1x4 10.54x4 10.53x4 10.45x4 10.43x4 10.41x4
-10.4x4 10.29x4 10.25x4 10.18x4 1.340x4 1.339x4 1.337x4 1.332x4 1.328x4 1.290x4 1.285x4 1.279x4 1.278x4 1.269x4 1.268x4
-1.249x4 1.242x4 0.89x4 9.37x3 9.36x3 9.26x3 7.26x3 7.21x3 6.6x3 6.42x3 6.14x3 5.23x3 4.25x3 3.83x3 3.82x3 3.67x3
-3.59x3 3.159x3 3.146x3 3.121x3 3.108x3 3.104x3 3.103x3 2.89x3 2.18x3 10.3x3 10.28x3 10.27x3 10.1x3 1.95x3 1.44x3
-1.293x3 1.244x3 1.243x3 1.135x3 1.118x3 0.95x3 0.37x3 9.35x2 9.25x2 9.24x2 9.16x2 9.0x2 8.2x2 7.30x2 7.3x2 7.28x2
-7.11x2 6.63x2 6.59x2 6.49x2 6.44x2 6.30x2 6.29x2 6.28x2 6.27x2 6.26x2 6.21x2 4.53x2 4.52x2 4.51x2 4.49x2 3.33x2
-3.161x2 3.155x2 3.153x2 3.15x2 3.144x2 3.140x2 3.123x2 2.93x2 2.71x2 10.59x2 10.58x2 10.51x2 10.38x2 10.37x2 10.36x2
-10.33x2 10.21x2 10.20x2 10.10x2 1.355x2 1.349x2 1.342x2 1.329x2 1.291x2 1.260x2 1.259x2 1.258x2 1.257x2 1.251x2 1.2x2
-1.178x2 1.159x2 1.158x2 0.98x2 0.102x2 9.8x1 9.6x1 9.34x1 9.32x1 9.23x1 9.22x1 9.21x1 9.20x1 9.18x1 9.15x1 9.14x1
-9.13x1 9.10x1 9.1x1 8.7x1 8.6x1 8.3x1 8.0x1 7.33x1 7.27x1 6.66x1 6.60x1 6.40x1 6.36x1 6.20x1 6.19x1 6.18x1 5.8x1
-5.28x1 4.7x1 4.23x1 3.92x1 3.55x1 3.47x1 3.26x1 3.177x1 3.175x1 3.174x1 3.173x1 3.160x1 3.156x1 3.147x1 3.143x1
-3.138x1 3.116x1 2.19x1 2.0x1 10.9x1 10.8x1 10.7x1 10.56x1 10.5x1 10.48x1 10.42x1 10.34x1 10.32x1 10.30x1 10.26x1
-10.23x1 10.16x1 10.13x1 1.356x1 1.352x1 1.348x1 1.347x1 1.341x1 1.334x1 1.333x1 1.330x1 1.327x1 1.322x1 1.321x1
-1.319x1 1.316x1 1.315x1 1.314x1 1.313x1 1.312x1 1.297x1 1.283x1 1.281x1 1.277x1 1.245x1 1.236x1 1.221x1 1.113x1 0.94x1
-0.93x1 0.92x1 0.22x1 0.101x1
+5.26x227 3.23x169 3.39x167 4.37x166 4.4x134 4.36x118 6.48x117 4.35x116 3.24x115 4.29x110 4.5x109 1.41x108 4.9x106
+3.6x106 4.1x105 4.0x105 3.5x94 3.69x93 6.33x91 3.8x91 3.78x91 3.57x82 2.47x75 3.73x74 1.261x74 4.12x69 3.44x67
+10.31x66 3.38x65 1.183x65 6.5x63 4.38x62 3.74x62 3.75x59 3.63x59 1.17x59 3.66x57 1.276x57 4.44x56 3.96x55 3.32x55
+1.138x55 4.50x54 4.46x54 4.18x54 6.3x53 3.2x53 6.34x52 1.141x51 4.30x50 1.298x50 3.79x49 3.4x49 4.33x46 3.17x46
+4.20x45 3.9x45 3.11x45 3.25x44 3.77x43 3.10x43 4.43x42 3.76x42 3.53x42 1.299x42 2.54x38 1.160x38 1.144x38 1.162x37
+3.64x36 3.45x35 1.266x35 1.184x34 1.129x34 3.27x33 3.132x33 1.271x33 3.18x32 1.248x32 4.6x31 3.21x31 1.190x30 1.181x29
+3.80x28 3.72x28 10.55x28 3.70x27 3.42x27 4.40x26 3.90x26 0.46x26 6.47x25 3.65x25 3.131x25 0.83x25 3.7x24 3.41x24
+3.129x24 3.114x24 1.296x24 3.89x23 3.87x23 3.30x23 3.135x23 1.91x23 6.4x22 10.14x22 1.213x22 3.113x21 3.86x20 3.71x20
+1.73x20 1.263x20 1.185x20 6.51x19 6.1x19 3.166x19 1.93x19 1.323x19 1.280x19 0.82x19 3.58x18 3.43x18 3.126x18 2.31x18
+10.19x18 1.142x18 0.39x18 3.81x17 1.304x17 1.189x17 1.165x17 6.9x16 1.305x16 1.302x16 1.295x16 1.220x16 1.100x16
+0.75x16 0.69x16 6.16x15 5.14x15 3.84x15 3.54x15 3.102x15 1.252x15 2.50x14 2.1x14 1.85x14 1.292x14 1.235x14 1.156x14
+1.146x14 6.8x13 6.41x13 6.39x13 4.8x13 4.48x13 3.34x13 3.148x13 3.112x13 1.75x13 1.306x13 6.54x12 3.88x12 3.85x12
+3.29x12 1.343x12 1.186x12 1.164x12 1.126x12 0.100x12 4.15x11 3.50x11 3.36x11 3.139x11 3.120x11 3.110x11 1.40x11
+1.318x11 1.207x11 0.99x11 0.68x11 9.9x10 6.56x10 4.41x10 4.17x10 3.134x10 2.58x10 2.4x10 1.255x10 0.97x10 0.84x10
+3.60x9 3.178x9 3.127x9 3.111x9 3.101x9 10.40x9 1.76x9 1.267x9 1.197x9 0.73x9 0.45x9 9.11x8 7.2x8 6.57x8 6.32x8 3.95x8
+3.93x8 3.61x8 3.40x8 3.170x8 3.165x8 3.164x8 3.16x8 3.12x8 3.109x8 3.106x8 10.35x8 1.45x8 1.325x8 0.61x8 7.0x7 6.53x7
+5.32x7 5.30x7 4.27x7 3.62x7 3.31x7 3.167x7 3.14x7 3.115x7 3.100x7 1.86x7 1.256x7 1.194x7 7.32x6 7.25x6 6.43x6 6.0x6
+4.47x6 4.45x6 4.42x6 4.39x6 4.26x6 4.13x6 3.98x6 3.94x6 3.68x6 3.52x6 3.163x6 3.162x6 3.150x6 3.137x6 3.130x6 3.13x6
+3.125x6 3.124x6 3.117x6 2.86x6 2.59x6 2.57x6 1.331x6 1.320x6 1.226x6 1.223x6 1.199x6 0.76x6 0.65x6 9.4x5 9.17x5 6.55x5
+6.25x5 6.11x5 5.13x5 3.51x5 3.22x5 3.19x5 3.171x5 3.128x5 3.119x5 3.107x5 3.0x5 2.37x5 10.39x5 10.17x5 10.12x5 1.274x5
+1.153x5 1.117x5 0.96x5 0.91x5 9.19x4 7.24x4 7.19x4 6.46x4 6.45x4 6.12x4 4.21x4 4.10x4 3.145x4 3.133x4 3.1x4 10.54x4
+10.53x4 10.45x4 10.43x4 10.41x4 10.4x4 10.29x4 10.25x4 10.18x4 1.340x4 1.339x4 1.337x4 1.332x4 1.328x4 1.290x4 1.285x4
+1.279x4 1.278x4 1.269x4 1.268x4 1.249x4 1.242x4 0.89x4 9.37x3 9.36x3 9.26x3 7.26x3 7.21x3 6.6x3 6.42x3 6.14x3 5.23x3
+4.25x3 3.83x3 3.82x3 3.67x3 3.59x3 3.159x3 3.146x3 3.121x3 3.108x3 3.104x3 3.103x3 2.89x3 2.18x3 10.3x3 10.28x3
+10.27x3 10.1x3 1.95x3 1.44x3 1.293x3 1.244x3 1.243x3 1.135x3 1.118x3 0.95x3 0.37x3 9.35x2 9.25x2 9.24x2 9.16x2 9.0x2
+8.2x2 7.30x2 7.3x2 7.28x2 7.11x2 6.63x2 6.59x2 6.49x2 6.44x2 6.30x2 6.29x2 6.28x2 6.27x2 6.26x2 6.21x2 4.53x2 4.52x2
+4.51x2 4.49x2 3.33x2 3.161x2 3.155x2 3.153x2 3.15x2 3.144x2 3.140x2 3.123x2 2.93x2 2.71x2 10.59x2 10.58x2 10.51x2
+10.38x2 10.37x2 10.36x2 10.33x2 10.21x2 10.20x2 10.10x2 1.355x2 1.349x2 1.342x2 1.329x2 1.291x2 1.260x2 1.259x2
+1.258x2 1.257x2 1.251x2 1.2x2 1.178x2 1.159x2 1.158x2 0.98x2 0.102x2 9.8x1 9.6x1 9.34x1 9.32x1 9.23x1 9.22x1 9.21x1
+9.20x1 9.18x1 9.15x1 9.14x1 9.13x1 9.10x1 9.1x1 8.7x1 8.6x1 8.3x1 8.0x1 7.33x1 7.27x1 6.66x1 6.60x1 6.40x1 6.36x1
+6.20x1 6.19x1 6.18x1 5.8x1 5.28x1 4.7x1 4.23x1 3.92x1 3.55x1 3.47x1 3.26x1 3.177x1 3.175x1 3.174x1 3.173x1 3.160x1
+3.156x1 3.147x1 3.143x1 3.138x1 3.116x1 2.19x1 2.0x1 10.9x1 10.8x1 10.7x1 10.56x1 10.5x1 10.48x1 10.42x1 10.34x1
+10.32x1 10.30x1 10.26x1 10.23x1 10.16x1 10.13x1 1.356x1 1.352x1 1.348x1 1.347x1 1.341x1 1.334x1 1.333x1 1.330x1
+1.327x1 1.322x1 1.321x1 1.319x1 1.316x1 1.315x1 1.314x1 1.313x1 1.312x1 1.297x1 1.283x1 1.281x1 1.277x1 1.245x1
+1.236x1 1.221x1 1.113x1 0.94x1 0.93x1 0.92x1 0.22x1 0.101x1
 ```
 
 ## Host groups the executable's table lacks (signature inference)
@@ -526,7 +533,7 @@ Tests that read the disc and skip without `KH2_ISO`: `tests/disc.rs` (parsing, s
 ## Gaps and open questions
 
 - The code that registers the host tables of groups 3 and 9 and entries 4.0 and 4.1 is not in the executable file or in any file on the disc that this project can read; their signatures are inferred and what they do is unknown.
-- 547 host functions are unnamed. They are mostly in the NPC library (group 5), the mission and area scripts (group 4) and boss scripts. Several named ones only describe a field read or written by the wrapper.
+- 539 host functions are unnamed. They are mostly in the NPC library (group 5), the mission and area scripts (group 4) and boss scripts. Several named ones only describe a field read or written by the wrapper.
 - Roles marked "inferred"; the object fields named are the ones the wrappers touch, not a map of the object.
 - The mode manager ports `FUN_001869b8`, `00186900`, `00186cf0`, `001868a8`, `00186db0`, `00186ef8`, `00186ca8`, `00187040`, `00186e70`, `00186fa8`, `00186f50`, `001871d0`; the thread tree ports `FUN_0016c680`, `0016c8d8`, `0016c928`, `0016c3f0`, `0016d458`, `00172df0`; messages `FUN_00187170/00187190/00187250`.
   Not ported: the per-object thread count (+0x488, available as `Runtime::live_threads`), the order of the action thread relative to the script update, the identity of the "other object" of remote queue entries, children started by one object on another object's main thread through 1.82 with a foreign context (assumed to be the object's own), reading another thread's frame memory through a pointer.

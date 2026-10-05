@@ -607,7 +607,13 @@ impl Sequence {
             } else {
                 (vol * -(tables.pan_l[pan & 0xff] as i32) >> 14, vol * -(tables.pan_r[pan & 0xff] as i32) >> 14)
             };
-            let (l, rr) = ((l & 0x7fff) as f32 / 16384.0, (rr & 0x7fff) as f32 / 16384.0);
+            // The SPU takes a 15-bit signed volume: a negative law value (a source behind the
+            // listener) inverts the phase of that channel.
+            let spu = |v: i32| {
+                let v = v & 0x7fff;
+                (if v & 0x4000 != 0 { v - 0x8000 } else { v }) as f32 / 16384.0
+            };
+            let (l, rr) = (spu(l), spu(rr));
             match v.side {
                 -1 => v.set_lr(l + rr, 0.0),
                 1 => v.set_lr(0.0, l + rr),

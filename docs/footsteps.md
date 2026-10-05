@@ -133,8 +133,9 @@ Deviations and gaps:
 
 - The floor under Sora is the highest floor polygon below his feet (`World::ground`), not the
   game's last collision-sweep polygon. They agree on ordinary terrain.
-- Position and distance are ignored: the game passes the actor's position to the sound engine
-  (3D placement and attenuation); `PlaySe` plays at a fixed volume and centre pan.
+- Position and distance: the game passes the actor's position to the sound engine, which derives
+  volume and pan against the camera. Footsteps are now placed at Sora's feet with that formula
+  (`docs/audio.md`); it is computed once at the start of the step, not every tick.
 - Only Sora's footsteps are produced. The landing path of FUN_0017af10 (kind 8, with its
   conditions) is not ported; the footstep dust effect (trigger 19, FUN_001b1c90) is not ported.
 - The `NeoStatus` 0x12 material override and the soundinfo bytes before +0xe are not understood.

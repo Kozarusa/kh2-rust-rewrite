@@ -69,6 +69,8 @@ fn main() {
             combat::CombatPlugin,
             enemy::EnemyPlugin,
             enemy_ai::EnemyAiPlugin,
+        ))
+        .add_plugins((
             hud::HudPlugin,
             fx::FxPlugin,
             harness::HarnessPlugin,

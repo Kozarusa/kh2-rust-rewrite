@@ -3274,6 +3274,7 @@ dependencies = [
  "kh2-audio",
  "kh2-bar",
  "kh2-fx",
+ "kh2-image",
  "kh2-map",
  "kh2-model",
  "kh2-ps2",
@@ -3306,6 +3307,15 @@ dependencies = [
  "glam",
  "kh2-bar",
  "kh2-ps2",
+]
+
+[[package]]
+name = "kh2-image"
+version = "0.1.0"
+dependencies = [
+ "kh2-bar",
+ "kh2-ps2",
+ "png 0.17.16",
 ]
 
 [[package]]

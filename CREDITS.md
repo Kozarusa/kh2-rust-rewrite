@@ -21,6 +21,7 @@ kh2-rs is written from scratch. Nothing below is vendored as code. Where we reim
 | Effect containers: PAX elements, DPX effect list, DPD (particle data, textures, shapes, models, VSF), particle program file layout and program names | OpenKH `OpenKh.Kh2/Pax.cs`, `Dpx.cs`, `Dpd*.cs`, `DpdModel.cs`, `DpdPData.cs` (`PppProgramEnum`) | Apache-2.0 | `crates/kh2-fx` |
 | Rig tables (constraint kinds, limiter, expression node types, joint flags) | OpenKH `docs/kh2/file/anb/motion.md` | Apache-2.0 | `crates/kh2-anim/src/rig.rs` |
 | The game's motion-evaluation routines (setup / curves / solve, called at fixed addresses on a RAM image) | OpenKH `OpenKh.Engine/Motion/Mlink.cs`, kenjiuno's approach; we call the USA build's equivalents in our own interpreter on the user's executable | Apache-2.0 | `crates/kh2/src/oracle.rs` |
+| 2D UI images and sequences: IMGD/IMGZ header and pixel formats, SEQD sprite / sprite part / sprite group / animation / animation group layouts (container roles of `.2dd` and `.2ld`) | OpenKH `docs/kh2/file/type/image.md`, `docs/kh2/file/type/2ld.md`, `OpenKh.Kh2/Sequence.cs` | Apache-2.0 | `crates/kh2-image` |
 | R5900 / VU0 instruction semantics; FPU and VU corner cases (no infinities, saturation, LWR sign extension) | Sony EE Core / VU user manuals; conventions documented by [PCSX2](https://github.com/PCSX2/pcsx2) | — (facts, no code) | `crates/kh2-ee` |
 
 ## Dependencies
@@ -39,6 +40,8 @@ Some rules are not documented anywhere and were read from the game's own code in
 - **Motion rig evaluation** (`crates/kh2-anim/src/rig.rs`): joint order, constraint cursor, IK goal search, one/two-bone IK, look-at, limiters (including two of the game's quirks: the undamped sphere limit never clamps, the damped minimum side adds its soft term), Euler re-extraction, expression semantics, F-curve pre/post modes, 60 Hz key times. Verified joint by joint against the game's own routines run by `kh2-ee` (`kh2 rig`, `kh2 rig-sweep`).
 
 - **Sound** (`crates/kh2-audio`): the SSL driver's timing (240 Hz frames, tempo accumulator, 300-per-tick), sequence commands, slide/LFO units, the pitch/volume/pan chain written to the SPU2, SE numbering (`bank * 1000 + index`, object-private banks inside `*.apdx`), hit sounds (the victim's own bank, entry 0-3 by the attack's `EnemyReaction`), and the SeBlock/VSB layouts were read from a local disassembly of the user's `LIBSSL.IRX` and executable. The driver's pitch/pan lookup tables are read from the user's own `LIBSSL.IRX` at runtime, never shipped.
+
+- **HUD** (`crates/kh2-image`, `crates/kh2-app/src/hud*.rs`, docs/hud.md): the sequence player's frame stepping, interpolation and transform order, colour modulation, blend presets, parent/anchor placement, the party panel's HP ring/bar and MP bar rules, the target gauge's 200-per-segment rule and the munny popup were read from the game's own code in the local decompilation and reimplemented from behaviour.
 
 ## Research references (consulted, nothing copied)
 

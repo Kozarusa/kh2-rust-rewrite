@@ -19,4 +19,5 @@ kh2-fx.workspace = true
 kh2-audio.workspace = true
 kh2-ps2.workspace = true
 kh2-bar.workspace = true
+kh2-image.workspace = true
 bevy = "0.19"

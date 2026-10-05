@@ -12,8 +12,9 @@ use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
 use bevy::prelude::*;
 
 use crate::world::World;
-use crate::combat::{Fighter, Hit, Team};
-use crate::data::{GameData, Stats, GRAVITY};
+use crate::combat::{hit_is_ineffective, Fighter, Hit, IneffectiveHit, ReactionData, ReactionStatus, Team};
+use crate::data::{GameData, Stats, GRAVITY, LOGIC_HZ};
+use crate::reaction_rules::{self as rules, Blow, Push, VictimAction, VictimCtx};
 use crate::skel::{spawn_skinned, Animator, Rig};
 use crate::sora::{Rigs, Sora};
 use crate::SCALE;
@@ -21,7 +22,6 @@ use crate::SCALE;
 const IDLE: usize = 0;
 const WALK: usize = 1;
 const HURT_FRONT: usize = 10;
-const HURT_BACK: usize = 12;
 const BLOW: usize = 16;
 const SUNK_SPEED: f32 = 5.5;
 
@@ -76,6 +76,13 @@ pub struct Enemy {
     pub timer: f32,
     pub cooldown: f32,
     pub body: Entity,
+    /// Decaying push of a push reaction, added to the movement every tick.
+    push: Option<Push>,
+    /// Flight of the blow that put the enemy in `EState::Blown`, and whether it came from behind.
+    blow: Option<Blow>,
+    blown_back: bool,
+    /// Hit sounds played so far; the sound alternates between two entries (actor byte +0x7fc).
+    hit_sounds: u8,
     seed: u32,
 }
 
@@ -185,6 +192,10 @@ pub fn spawn_waves(
                 timer: 0.0,
                 cooldown: 1.0,
                 body,
+                push: None,
+                blow: None,
+                blown_back: false,
+                hit_sounds: 0,
                 seed: 0x9E37_79B9 ^ (waves.count * 31 + i),
             },
             Fighter { team: Team::Enemy, attack_bodies: vec![body], hurt_body: body, landed: Default::default(), hittable: false },
@@ -198,6 +209,7 @@ pub fn think(
     time: Res<Time>,
     data: Res<GameData>,
     collider: Option<Res<World>>,
+    reaction: Option<Res<ReactionData>>,
     sora: Query<&Transform, (With<Sora>, Without<Enemy>)>,
     mut q: Query<(Entity, &mut Transform, &mut Enemy, &mut Fighter)>,
     mut anims: Query<&mut Animator>,
@@ -309,11 +321,20 @@ pub fn think(
                 }
             }
             EState::Blown => {
+                // The flight of a blow (FUN_0019e4d8) is in units per tick; the mover takes m/s and
+                // gets the vertical speed directly, so it adds no gravity of its own.
+                if let (Some(b), Some(r)) = (e.blow.as_mut(), reaction.as_ref()) {
+                    let (h, vy) = b.step(&r.defaults, &r.consts);
+                    let k = SCALE * LOGIC_HZ;
+                    e.vel = (b.dir * h * k).with_y(vy * k);
+                    gravity = 0.0;
+                }
                 if e.grounded && e.timer > 0.25 {
                     e.vel = Vec3::ZERO;
+                    e.blow = None;
                     e.state = if e.hp <= 0 { EState::Dying } else { EState::Hurt };
                     e.timer = 0.0;
-                    a.restart(has(&rig, BLOW + 1), false, 0.05);
+                    a.restart(has(&rig, BLOW + if e.blown_back { 3 } else { 1 }).or(has(&rig, BLOW + 1)), false, 0.05);
                 }
             }
             EState::Dying => {
@@ -331,9 +352,19 @@ pub fn think(
             }
         }
         if !matches!(e.state, EState::Dying) || e.timer <= 0.6 {
+            // A push (hit reaction) moves the enemy on top of whatever else it does this tick.
+            let mut push_v = Vec3::ZERO;
+            if let (Some(p), Some(r)) = (e.push.as_mut(), reaction.as_ref()) {
+                push_v = p.step(&r.consts) * (SCALE * LOGIC_HZ);
+                if p.finished() {
+                    e.push = None;
+                }
+            }
+            e.vel += push_v;
             let mut g = e.grounded;
             col.step_m(&mut tf.translation, &mut e.vel, dt, gravity, data.fall_max(), &mut g);
             e.grounded = g;
+            e.vel -= push_v;
         }
         tf.rotation = Quat::from_rotation_y(e.yaw);
         // Sunk Shadows are only a puddle: hide the body.
@@ -373,48 +404,108 @@ pub fn separate(sora: Query<&Transform, (With<Sora>, Without<Enemy>)>, mut q: Qu
     }
 }
 
-/// Sora's hits on enemies: damage from atkp, flinch or blow-away by the attack's reaction type.
+/// Sora's hits on enemies: damage, then the victim reaction of the attack row
+/// (`reaction_rules::victim_outcome`): nothing, a push, a flinch, a flinch with a push, or a blow.
+#[allow(clippy::too_many_arguments)]
 pub fn receive_hits(
     mut hits: MessageReader<Hit>,
     data: Res<GameData>,
+    reaction: Option<Res<ReactionData>>,
     sora: Query<&Sora>,
-    mut q: Query<(&mut Enemy, &mut Fighter)>,
+    mut q: Query<(&mut Enemy, &mut Fighter, Option<&ReactionStatus>)>,
     mut anims: Query<&mut Animator>,
     mut popups: MessageWriter<crate::hud::DamagePopup>,
     mut sounds: MessageWriter<crate::audio::PlaySe>,
-    mut hit_count: Local<u8>,
+    mut ineffective: MessageWriter<IneffectiveHit>,
 ) {
     let from = sora.single().map(|s| s.stats).ok();
+    let Some(reaction) = reaction else { return };
     for h in hits.read() {
-        let (Ok((mut e, mut f)), Some(from)) = (q.get_mut(h.target), from) else { continue };
+        let (Ok((mut e, mut f, status)), Some(from)) = (q.get_mut(h.target), from) else { continue };
         if !e.alive() {
             continue;
         }
         let Some(atk) = data.atkp(h.atkp) else { continue };
+        let useless = hit_is_ineffective(atk, &e.stats);
         let dmg = data.damage(atk, &from, &e.stats);
         e.hp = (e.hp - dmg).max(0);
         popups.write(crate::hud::DamagePopup { at: h.point, amount: dmg });
+        if useless {
+            ineffective.write(IneffectiveHit { attacker: h.attacker, target: h.target, atkp: h.atkp, point: h.point });
+        }
         let Ok(mut a) = anims.get_mut(e.body) else { continue };
         let rig = a.rig.clone();
-        if let Some(se) = crate::audio::PlaySe::hit(atk.enemy_reaction, *hit_count, rig.apdx.clone()) {
+        // The victim's hit sound (FUN_001b2378): not for ineffective hits; the sound alternates
+        // between two entries per victim (the actor byte at +0x7fc).
+        if !useless && let Some(se) = crate::audio::PlaySe::hit(atk.enemy_reaction, e.hit_sounds, rig.apdx.clone()) {
             sounds.write(se);
-            *hit_count = hit_count.wrapping_add(1);
+            e.hit_sounds = e.hit_sounds.wrapping_add(1);
         }
         let facing = Vec3::new(e.yaw.sin(), 0.0, e.yaw.cos());
         let from_front = facing.dot(h.dir) < 0.0;
-        let blow = atk.enemy_reaction >= 5 || e.hp == 0;
-        let kb = (atk.knockback_strength1 as f32).clamp(0.0, 400.0) * SCALE * 4.0;
-        e.vel = h.dir * kb.max(1.0);
-        e.timer = 0.0;
-        f.landed.clear();
-        if blow {
-            e.vel.y = (2.0 * GRAVITY * (atk.knockback_strength2 as f32 * SCALE).max(0.8)).sqrt();
-            e.grounded = false;
-            e.state = EState::Blown;
-            a.restart(has(&rig, BLOW).or(has(&rig, HURT_FRONT)), false, 0.03);
-        } else {
-            e.state = EState::Hurt;
-            a.restart(has(&rig, if from_front { HURT_FRONT } else { HURT_BACK }), false, 0.03);
+        let ctx = VictimCtx {
+            status: status.map_or(0, |x| x.0),
+            grounded: e.grounded,
+            attacker_flag_4000: false,
+            from_front,
+            hit_part_plain: true,
+        };
+        let out = rules::victim_outcome(&rules::HitRow::from_atkp(atk), useless, &ctx, &reaction.patn, &reaction.defaults, &reaction.consts);
+        // Dying is not part of the reaction rules: the last hit always launches.
+        let d = &reaction.defaults;
+        let action = match out.action {
+            x @ VictimAction::Blow { .. } => x,
+            _ if e.hp == 0 => VictimAction::Blow { motion: rules::blow_motion(from_front), up: d.blow_up, horiz: d.blow_speed, face_attacker: from_front },
+            x => x,
+        };
+        info!(
+            "{} hit: atkp {} reaction {} effective {} ineffective {useless} {} -> {action:?}",
+            e.name,
+            h.atkp,
+            atk.enemy_reaction,
+            out.effective,
+            if from_front { "front" } else { "back" }
+        );
+        let away = h.dir.with_y(0.0).normalize_or_zero();
+        let push = |strength: f32| Push::new(away, strength, 0.0, &reaction.consts);
+        let first = |ids: &[usize]| ids.iter().find_map(|&i| has(&rig, i));
+        match action {
+            VictimAction::None | VictimAction::NotDecoded { .. } => {}
+            VictimAction::Push { strength } => e.push = push(strength),
+            VictimAction::Flinch { motion, fallback } | VictimAction::FlinchPush { motion, fallback, .. } => {
+                if let VictimAction::FlinchPush { strength, .. } = action {
+                    e.push = push(strength);
+                }
+                e.vel = Vec3::new(0.0, e.vel.y, 0.0);
+                e.timer = 0.0;
+                e.state = EState::Hurt;
+                a.restart(first(&[motion as usize, fallback as usize]), false, 0.03);
+            }
+            VictimAction::Class14 { motion, strength, face_attacker } => {
+                let to = if face_attacker { -away } else { away };
+                e.yaw = to.x.atan2(to.z);
+                e.push = push(strength);
+                e.vel = Vec3::new(0.0, e.vel.y, 0.0);
+                e.timer = 0.0;
+                e.state = EState::Hurt;
+                a.restart(first(&[motion as usize, HURT_FRONT]), false, 0.03);
+            }
+            VictimAction::Blow { motion, up, horiz, face_attacker } => {
+                // Faces the attacker when hit from the front, launched along the hit direction.
+                let to = if face_attacker { -away } else { away };
+                e.yaw = to.x.atan2(to.z);
+                e.blow = Some(Blow::new(away, up, horiz, d));
+                e.push = None;
+                e.blown_back = !from_front;
+                e.vel = Vec3::ZERO;
+                e.grounded = false;
+                e.timer = 0.0;
+                e.state = EState::Blown;
+                a.restart(first(&[motion as usize, BLOW, HURT_FRONT]), false, 0.03);
+            }
+        }
+        if !matches!(action, VictimAction::None | VictimAction::NotDecoded { .. } | VictimAction::Push { .. }) {
+            f.landed.clear();
         }
     }
 }

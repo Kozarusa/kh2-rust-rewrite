@@ -9,9 +9,10 @@
 //! executable (push scale, default recoil power, the flinch motion list) are read from the
 //! user's own `SLUS_210.05` at run time by [`ExeConsts::from_exe`], never stored here.
 
-// The rules are not wired into the game yet; the combat work packages will use them.
+// Some clash rules and fields are described and tested here but have no caller yet.
 #![allow(dead_code)]
 
+use bevy::math::Vec3;
 use kh2_tables::tables::{Atkp, PrefSstm};
 
 /// `atkp.Flags` bit 0 ("BG Hit"): the attack volume is tested against ATTACK_COLLIDE geometry
@@ -125,6 +126,8 @@ pub struct ExeConsts {
     pub reduced_scale: f32,
     /// Flinch motion IDs: [front a, front b, back a, back b] (u16 x4 at 0x35ce40).
     pub flinch_motions: [u16; 4],
+    /// Gravity of a blown actor in units per tick squared (0x37b408).
+    pub gravity: f32,
 }
 
 impl ExeConsts {
@@ -145,6 +148,7 @@ impl ExeConsts {
             push_decay: f(0x37a95c)?,
             reduced_scale: f(0x37ac74)?,
             flinch_motions,
+            gravity: f(0x37b408)?,
         })
     }
 }
@@ -348,6 +352,14 @@ pub struct ReactionDefaults {
     pub blow_up: f32,
     pub blow_speed: f32,
     pub blow_to_hit_back: f32,
+    /// Per-tick multiplier of a blow's horizontal speed, and the share of the launch speed it
+    /// never drops below (FUN_0019e4d8, FUN_0019e468).
+    pub blow_brake_xz: f32,
+    pub blow_min_xz: f32,
+    /// Per-tick multiplier of a blow's rising speed (FUN_0019e4d8).
+    pub blow_brake_up: f32,
+    /// Terminal falling speed.
+    pub fall_max: f32,
 }
 
 impl From<&PrefSstm> for ReactionDefaults {
@@ -358,6 +370,10 @@ impl From<&PrefSstm> for ReactionDefaults {
             blow_up: s.blow_up,
             blow_speed: s.blow_speed,
             blow_to_hit_back: s.blow_to_hit_back,
+            blow_brake_xz: s.blow_brake_xz,
+            blow_min_xz: s.blow_min_xz,
+            blow_brake_up: s.blow_brake_up,
+            fall_max: s.fall_max,
         }
     }
 }
@@ -475,6 +491,207 @@ pub fn effective_reaction(original: u8, rows: &[PatnRow], ctx: &PatnContext) -> 
     eff
 }
 
+// ---- Pushes and blows in motion ----
+
+/// A decaying horizontal push, as the game runs it: FUN_001857b0 stores a unit direction and a
+/// speed, FUN_001858b0 (called every logic tick) moves by the speed and then multiplies it by the
+/// decay, and stops once the speed is below the cutoff. Distances are game units (centimetres).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Push {
+    pub dir: Vec3,
+    pub speed: f32,
+}
+
+impl Push {
+    /// `power` negative reverses the direction and uses its magnitude. `actor_bonus` is the
+    /// per-actor term the game adds (stat block +0x1c8); its meaning is not known, callers pass 0.
+    /// `None` when there is no direction to push along.
+    pub fn new(dir: Vec3, power: f32, actor_bonus: f32, c: &ExeConsts) -> Option<Push> {
+        let mut dir = dir.with_y(0.0).normalize_or_zero();
+        let mut power = power;
+        if power < 0.0 {
+            power = -power;
+            dir = -dir;
+        }
+        (dir != Vec3::ZERO).then(|| Push { dir, speed: (power + actor_bonus) * c.push_scale })
+    }
+
+    /// One logic tick: the displacement to apply now.
+    pub fn step(&mut self, c: &ExeConsts) -> Vec3 {
+        if self.speed <= 0.0 {
+            return Vec3::ZERO;
+        }
+        if self.speed >= c.push_cutoff {
+            let d = self.dir * self.speed;
+            self.speed *= c.push_decay;
+            d
+        } else {
+            self.speed = 0.0;
+            Vec3::ZERO
+        }
+    }
+
+    pub fn finished(&self) -> bool {
+        self.speed <= 0.0
+    }
+}
+
+/// The flight of a blown actor (FUN_001855a8 sets the launch velocity, FUN_0019e468 the speed
+/// floor, FUN_0019e4d8 runs it every tick until the actor lands). The horizontal speed is
+/// multiplied by `blow_brake_xz` each tick but never falls below `blow_min_xz` of the launch speed;
+/// a rising speed is multiplied by `blow_brake_up`; gravity is added and the fall speed capped.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Blow {
+    /// Unit horizontal direction of the launch.
+    pub dir: Vec3,
+    /// Horizontal speed now, per tick.
+    pub horiz: f32,
+    horiz_floor: f32,
+    /// Vertical speed now (up is positive), per tick.
+    pub up: f32,
+}
+
+impl Blow {
+    /// `up` and `horiz` are the launch speeds in units per tick (see [`blow_launch`]).
+    pub fn new(dir: Vec3, up: f32, horiz: f32, d: &ReactionDefaults) -> Blow {
+        Blow { dir: dir.with_y(0.0).normalize_or_zero(), horiz, horiz_floor: horiz * d.blow_min_xz, up }
+    }
+
+    /// One logic tick: (horizontal speed, vertical speed) to move by now.
+    pub fn step(&mut self, d: &ReactionDefaults, c: &ExeConsts) -> (f32, f32) {
+        self.horiz = (self.horiz * d.blow_brake_xz).max(self.horiz_floor);
+        if self.up > 0.0 {
+            self.up *= d.blow_brake_up;
+        }
+        self.up = (self.up - c.gravity).max(-d.fall_max);
+        (self.horiz, self.up)
+    }
+}
+
+// ---- Which reaction a victim plays ----
+
+/// The hit-effectiveness rule (FUN_0018b618): a hit does nothing when the victim's multiplier for
+/// the attack's element times its general multiplier is zero. The hit record gets flag 4 and
+/// reaction 0, and the game starts effect 0x12 instead of the normal spark.
+pub fn is_ineffective(element_multiplier: i32, general_multiplier: i32) -> bool {
+    element_multiplier * general_multiplier == 0
+}
+
+/// Effect the game starts for an ineffective hit (FUN_0018d090).
+pub const INEFFECTIVE_SPARK_EFFECT: u32 = 0x12;
+
+/// The part of an `atkp` row the victim code reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HitRow {
+    /// `EnemyReaction`.
+    pub reaction: u8,
+    pub kb1: i16,
+    pub kb2: i16,
+}
+
+impl HitRow {
+    pub fn from_atkp(a: &Atkp) -> HitRow {
+        HitRow { reaction: a.enemy_reaction, kb1: a.knockback_strength1, kb2: a.knockback_strength2 }
+    }
+}
+
+/// What the victim code needs to know about the hit and the victim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VictimCtx {
+    /// Victim status mask for [`effective_reaction`]; the app has no status system, so 0.
+    pub status: u32,
+    pub grounded: bool,
+    pub attacker_flag_4000: bool,
+    /// The victim's facing opposes the hit direction (FUN_00184dd0).
+    pub from_front: bool,
+    /// Hit record byte +0x24 is one of 0, 2, 3, 4, 5 (meaning unknown; callers pass true).
+    pub hit_part_plain: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum VictimAction {
+    /// Class 0: nothing happens (damage may still apply).
+    None,
+    /// Class 1: pushed away, no motion.
+    Push { strength: f32 },
+    /// Class 2: a flinch motion; `fallback` when the victim has no `motion` (FUN_00185198).
+    Flinch { motion: u16, fallback: u16 },
+    /// Class 3: flinch plus push. `airborne` takes the air flinch (FUN_001853c0), which is not
+    /// decoded: callers play the same motion and push.
+    FlinchPush { motion: u16, fallback: u16, strength: f32, airborne: bool },
+    /// Class 4: launched. Faces the attacker when hit from the front.
+    Blow { motion: u8, up: f32, horiz: f32, face_attacker: bool },
+    /// Class 14: motion 0x17 (front) or 0x18 (back) plus push (FUN_001856a8).
+    Class14 { motion: u8, strength: f32, face_attacker: bool },
+    /// Classes 5 (FUN_001bf920, not decoded) and those without a handler.
+    NotDecoded { class: u8 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VictimOutcome {
+    pub ineffective: bool,
+    /// The reaction after the ineffective rule and the state conversion table.
+    pub effective: u8,
+    pub action: VictimAction,
+}
+
+/// The victim's reaction to one hit, in the order the game does it: ineffective rule, `patn`
+/// conversion by status, then the handler of the resulting class with its push strength or launch
+/// speeds (FUN_0018b618, FUN_001bff00, dispatcher 0x184e80, FUN_0018b7e8, FUN_0018b9e0).
+pub fn victim_outcome(
+    row: &HitRow,
+    ineffective: bool,
+    ctx: &VictimCtx,
+    patn: &[PatnRow],
+    d: &ReactionDefaults,
+    c: &ExeConsts,
+) -> VictimOutcome {
+    let effective = if ineffective {
+        0
+    } else {
+        effective_reaction(row.reaction, patn, &PatnContext { status: ctx.status, grounded: ctx.grounded, attacker_flag_4000: ctx.attacker_flag_4000 })
+    };
+    let class = ReactionClass::from_raw(effective);
+    // The strength formula follows the row's own class; a class made by the conversion table with
+    // no strength of its own (reaction 5 has a random one, not ported) falls back to the defaults.
+    let strength = |small: bool| {
+        push_strength(row.reaction, effective, Some(row.kb1), d, c).unwrap_or(if small { d.hit_back_small } else { d.hit_back })
+    };
+    let action = match class {
+        ReactionClass::None => VictimAction::None,
+        ReactionClass::Push => VictimAction::Push { strength: strength(false) },
+        ReactionClass::Flinch => {
+            let (motion, fallback) = flinch_pair(ctx.from_front, ctx.hit_part_plain, c);
+            VictimAction::Flinch { motion, fallback }
+        }
+        ReactionClass::FlinchPush => {
+            let (motion, fallback) = flinch_pair(ctx.from_front, ctx.hit_part_plain, c);
+            VictimAction::FlinchPush { motion, fallback, strength: strength(true), airborne: !ctx.grounded }
+        }
+        ReactionClass::Blow => {
+            let (up, horiz) = if reaction_class(row.reaction) == 4 { blow_launch(row.kb1, row.kb2, d) } else { (d.blow_up, d.blow_speed) };
+            VictimAction::Blow { motion: blow_motion(ctx.from_front), up, horiz, face_attacker: ctx.from_front }
+        }
+        ReactionClass::Special14 => VictimAction::Class14 {
+            motion: if ctx.from_front { motion::CLASS14_FRONT } else { motion::CLASS14_BACK },
+            strength: strength(false),
+            face_attacker: ctx.from_front,
+        },
+        ReactionClass::Special5 => VictimAction::NotDecoded { class: 5 },
+        ReactionClass::Unhandled(n) => VictimAction::NotDecoded { class: n },
+    };
+    VictimOutcome { ineffective, effective, action }
+}
+
+/// The flinch motion and the one used when the victim lacks it (FUN_00185198).
+fn flinch_pair(from_front: bool, hit_part_plain: bool, c: &ExeConsts) -> (u16, u16) {
+    let mut i = if from_front { 0 } else { 2 };
+    if !hit_part_plain {
+        i += 1;
+    }
+    (c.flinch_motions[i], c.flinch_motions[i ^ 1])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -535,6 +752,7 @@ mod tests {
             push_decay: 0.9,
             reduced_scale: 0.5,
             flinch_motions: [10, 11, 12, 13],
+            gravity: 0.5,
         };
         let s = push_speeds(50.0, &c);
         assert!((s[0] - 5.0).abs() < 1e-5);
@@ -709,5 +927,147 @@ mod tests {
         assert_eq!(effective_reaction(11, &rows, &ctx(1)), 0);
         assert_eq!(effective_reaction(12, &rows, &ctx(1)), 12);
         assert_eq!(effective_reaction(3, &rows, &PatnContext { status: 0, grounded: true, attacker_flag_4000: false }), 3);
+    }
+
+    /// Round numbers that are not the game's, so the shape of the rules is tested without them.
+    fn toy() -> (ExeConsts, ReactionDefaults) {
+        let c = ExeConsts {
+            wall_power: -1.0,
+            clash_power: -1.0,
+            default_power: 40.0,
+            guard_power: 100.0,
+            push_scale: 0.25,
+            push_cutoff: 1.0,
+            push_decay: 0.5,
+            reduced_scale: 0.5,
+            flinch_motions: [1, 2, 3, 4],
+            gravity: 1.0,
+        };
+        let d = ReactionDefaults {
+            hit_back: 80.0,
+            hit_back_small: 60.0,
+            blow_up: 10.0,
+            blow_speed: 20.0,
+            blow_to_hit_back: 0.0,
+            blow_brake_xz: 0.5,
+            blow_min_xz: 0.25,
+            blow_brake_up: 0.5,
+            fall_max: 6.0,
+        };
+        (c, d)
+    }
+
+    #[test]
+    fn push_runs_and_stops() {
+        let (c, _) = toy();
+        let mut p = Push::new(Vec3::new(3.0, 5.0, 0.0), 16.0, 0.0, &c).unwrap();
+        assert_eq!(p.dir, Vec3::X, "direction is horizontal and normalised");
+        let moved: Vec<f32> = std::iter::from_fn(|| (!p.finished()).then(|| p.step(&c).x)).collect();
+        // speed 4, 2, 1 move; at 0.5 (below the cutoff) the push ends without moving
+        assert_eq!(moved, vec![4.0, 2.0, 1.0, 0.0]);
+        assert_eq!(p.step(&c), Vec3::ZERO);
+        // A negative power pushes the other way with the same magnitude.
+        let mut q = Push::new(Vec3::X, -16.0, 0.0, &c).unwrap();
+        assert_eq!(q.step(&c), Vec3::new(-4.0, 0.0, 0.0));
+        assert!(Push::new(Vec3::Y, 10.0, 0.0, &c).is_none());
+        // The actor bonus adds to the power before the scale.
+        assert_eq!(Push::new(Vec3::Z, 8.0, 8.0, &c).unwrap().speed, 4.0);
+    }
+
+    #[test]
+    fn blow_decays_to_its_floor_and_falls() {
+        let (c, d) = toy();
+        let mut b = Blow::new(Vec3::new(0.0, 7.0, 2.0), 8.0, 16.0, &d);
+        assert_eq!(b.dir, Vec3::Z);
+        let (h1, v1) = b.step(&d, &c);
+        assert_eq!((h1, v1), (8.0, 8.0 * 0.5 - 1.0));
+        let (h2, _) = b.step(&d, &c);
+        let (h3, _) = b.step(&d, &c);
+        assert_eq!((h2, h3), (4.0, 4.0), "floor is a quarter of the launch speed");
+        for _ in 0..20 {
+            b.step(&d, &c);
+        }
+        assert_eq!(b.up, -6.0, "fall speed is capped");
+    }
+
+    #[test]
+    fn ineffective_rule() {
+        assert!(is_ineffective(0, 100));
+        assert!(is_ineffective(100, 0));
+        assert!(!is_ineffective(50, 100));
+    }
+
+    #[test]
+    fn outcome_by_class() {
+        let (c, d) = toy();
+        let front = VictimCtx { status: 0, grounded: true, from_front: true, hit_part_plain: true, attacker_flag_4000: false };
+        let back = VictimCtx { from_front: false, ..front };
+        let row = |reaction, kb1, kb2| HitRow { reaction, kb1, kb2 };
+        let run = |r: HitRow, ctx: &VictimCtx| victim_outcome(&r, false, ctx, &[], &d, &c).action;
+        assert_eq!(run(row(0, 5, 5), &front), VictimAction::None);
+        assert_eq!(run(row(1, 100, 0), &front), VictimAction::Push { strength: 100.0 });
+        // 0x7fff selects the sstm default; zero is no push at all.
+        assert_eq!(run(row(1, 0x7fff, 0), &front), VictimAction::Push { strength: 80.0 });
+        assert_eq!(run(row(1, 0, 0), &front), VictimAction::Push { strength: 0.0 });
+        assert_eq!(run(row(2, 0, 0), &front), VictimAction::Flinch { motion: 1, fallback: 2 });
+        assert_eq!(run(row(2, 0, 0), &back), VictimAction::Flinch { motion: 3, fallback: 4 });
+        assert_eq!(run(row(3, 0x7fff, 0), &front), VictimAction::FlinchPush { motion: 1, fallback: 2, strength: 60.0, airborne: false });
+        let air = VictimCtx { grounded: false, ..front };
+        assert!(matches!(run(row(6, 30, 0), &air), VictimAction::FlinchPush { airborne: true, strength, .. } if strength == 30.0));
+        // A blow: KnockbackStrength1 is the upward speed, KnockbackStrength2 the horizontal one.
+        assert_eq!(run(row(4, 20, 100), &front), VictimAction::Blow { motion: 16, up: 20.0, horiz: 100.0, face_attacker: true });
+        assert_eq!(run(row(4, 20, 100), &back), VictimAction::Blow { motion: 18, up: 20.0, horiz: 100.0, face_attacker: false });
+        assert_eq!(run(row(7, 0, 0), &front), VictimAction::Blow { motion: 16, up: 10.0, horiz: 20.0, face_attacker: true });
+        assert_eq!(run(row(14, 40, 0), &back), VictimAction::Class14 { motion: 0x18, strength: 40.0, face_attacker: false });
+        assert_eq!(run(row(5, 1, 2), &front), VictimAction::NotDecoded { class: 5 });
+        assert_eq!(run(row(19, 1, 2), &front), VictimAction::NotDecoded { class: 19 });
+        // Reaction 12 pushes at half strength.
+        assert_eq!(run(row(12, 100, 0), &front), VictimAction::Push { strength: 50.0 });
+    }
+
+    #[test]
+    fn ineffective_hit_has_no_reaction() {
+        let (c, d) = toy();
+        let ctx = VictimCtx { status: 0, grounded: true, from_front: true, hit_part_plain: true, attacker_flag_4000: false };
+        let o = victim_outcome(&HitRow { reaction: 4, kb1: 20, kb2: 100 }, true, &ctx, &[], &d, &c);
+        assert_eq!((o.ineffective, o.effective, o.action), (true, 0, VictimAction::None));
+    }
+
+    #[test]
+    fn status_conversion_changes_the_class() {
+        let (c, d) = toy();
+        let mut map = [0xffu8; 19];
+        map[4] = 14;
+        let rows = vec![PatnRow { status_bit: 3, map }];
+        let mut ctx = VictimCtx { status: 1 << 3, grounded: true, from_front: false, hit_part_plain: true, attacker_flag_4000: false };
+        let r = HitRow { reaction: 4, kb1: 20, kb2: 100 };
+        let o = victim_outcome(&r, false, &ctx, &rows, &d, &c);
+        assert_eq!(o.effective, 14);
+        assert!(matches!(o.action, VictimAction::Class14 { motion: 0x18, .. }));
+        ctx.status = 0;
+        assert!(matches!(victim_outcome(&r, false, &ctx, &rows, &d, &c).action, VictimAction::Blow { .. }));
+    }
+
+    #[test]
+    fn blow_and_push_from_the_game_files() {
+        let Some(mut a) = open_disc() else { return };
+        let Ok(exe) = a.iso().read("SLUS_210.05") else { return };
+        let c = ExeConsts::from_exe(&exe).unwrap();
+        let sstm = kh2_tables::load::<t::PrefSstm>(&mut a, &t::PREF_SSTM).expect("sstm").rows.remove(0);
+        let d = ReactionDefaults::from(&sstm);
+        assert!((c.gravity - 20.0 / 49.0).abs() < 1e-6, "same gravity as the jump model");
+        // Run a launch of the default blow to the end: it lands after a bounded flight.
+        let mut b = Blow::new(Vec3::X, d.blow_up, d.blow_speed, &d);
+        let (mut y, mut x, mut ticks) = (0.0f32, 0.0f32, 0);
+        loop {
+            let (h, v) = b.step(&d, &c);
+            y += v;
+            x += h;
+            ticks += 1;
+            if y <= 0.0 || ticks > 500 {
+                break;
+            }
+        }
+        assert!(ticks < 100 && x > 0.0, "ticks {ticks} x {x}");
     }
 }

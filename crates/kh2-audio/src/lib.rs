@@ -7,6 +7,7 @@ pub mod footstep;
 pub mod positional;
 pub mod ssl;
 pub mod synth;
+pub mod voice;
 pub mod vsb;
 pub mod wd;
 

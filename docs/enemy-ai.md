@@ -2,8 +2,7 @@
 
 Work package 2E. The Heartless of `enemy.rs` used to run a small state machine written for the app. Shadow (`obj/M_EX020.mdlx`) and
 Soldier (`obj/M_EX010.mdlx`) now run the game's own scripts (the BDX entry of each object file, see `docs/bdx.md`) through
-`kh2_bdx::Runtime`. The code is `crates/kh2-app/src/enemy_ai.rs`; `enemy.rs` keeps the hit reactions and the placeholder logic (the
-orchestrator removes the placeholder at integration). `KH2_NO_BDX=1` leaves the placeholder in charge, for comparison.
+`kh2_bdx::Runtime`. The code is `crates/kh2-app/src/enemy_ai.rs`; `enemy.rs` keeps only the hit reactions (WP-I1 removed the placeholder state machine and `KH2_NO_BDX`; an enemy whose script did not load only stands and reacts to hits).
 
 Nothing from the disc is stored in the repository: the scripts, the motion sets and the `objentry` row are read at start-up.
 

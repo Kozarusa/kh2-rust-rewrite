@@ -80,8 +80,8 @@ const CATEGORY_DAMAGE: u64 = 0x200;
 
 /// Effects the game's damage and death code starts, as requests (see `docs/effects-damage.md` for
 /// the hook points in `combat.rs` and `enemy.rs`). `fx.rs` itself turns every `combat::Hit` into
-/// `Damage` or `Ineffective`, and starts `Death` for an enemy whose HP reached 0 until the enemy
-/// code sends it; a second `Death` for the same victim is ignored.
+/// `Damage` or `Ineffective`. `enemy::receive_hits` sends `Death` when HP reaches 0 (the Heartless
+/// scripts' `dead` mode asks for it too, in `enemy_ai`); a second `Death` for the same victim is ignored.
 #[derive(Message, Clone, Copy, Debug)]
 pub enum GameEffect {
     /// Victim-side `DamageEffect` of a landed hit: the first element of the victim's own effect file
@@ -214,7 +214,6 @@ impl Plugin for FxPlugin {
                         start_requests,
                         hit_sparks,
                         fx_kill,
-                        enemy_deaths,
                         game_effects,
                         fx_test,
                         effect_sounds,
@@ -491,29 +490,21 @@ pub fn game_effects(
     }
 }
 
-/// Until the enemy code sends `GameEffect::Death` itself: an enemy whose HP is 0 dies.
-pub fn enemy_deaths(enemies: Query<(Entity, &Enemy), Without<DeathFx>>, mut out: MessageWriter<GameEffect>) {
-    for (e, enemy) in &enemies {
-        if enemy.hp <= 0 {
-            out.write(GameEffect::Death { victim: e });
-        }
-    }
-}
-
 /// `KH2_FXKILL=<seconds>[,<seconds>...]`: at each of those times every living enemy is defeated
-/// (HP 0, state dying), to look at the death effect without a fight. A time with no living enemy
-/// waits for the next wave.
-pub fn fx_kill(time: Res<Time>, mut enemies: Query<&mut Enemy>, mut done: Local<usize>) {
+/// (HP 0, the death effect requested as `enemy::receive_hits` does), to look at the death effect
+/// without a fight. A time with no living enemy waits for the next wave.
+pub fn fx_kill(time: Res<Time>, mut enemies: Query<(Entity, &mut Enemy)>, mut done: Local<usize>, mut out: MessageWriter<GameEffect>) {
     let Ok(spec) = std::env::var("KH2_FXKILL") else { return };
     let Some(at) = spec.split(',').filter_map(|v| v.trim().parse::<f32>().ok()).nth(*done) else { return };
-    if time.elapsed_secs() < at || !enemies.iter().any(|e| e.alive()) {
+    if time.elapsed_secs() < at || !enemies.iter().any(|(_, e)| e.alive()) {
         return;
     }
     *done += 1;
-    for mut e in &mut enemies {
-        e.hp = 0;
-        e.state = crate::enemy::EState::Dying;
-        e.timer = 0.0;
+    for (ent, mut e) in &mut enemies {
+        if e.alive() {
+            e.hp = 0;
+            out.write(GameEffect::Death { victim: ent });
+        }
     }
 }
 

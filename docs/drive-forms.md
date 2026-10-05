@@ -199,3 +199,8 @@ Messages other systems can use: `FormChanged { from, to }` (written when the bod
 - The special form field values 6 and 0xb and the battle flag's `FUN_001a4e70`.
 - Wisdom's menu swap (`FUN_001bc4c8`) and the Final-ready prompts (`FUN_001ce240`): the menu is not ported.
 - The frame unit: 1.0 per 60 Hz tick is inferred (see above).
+## Integration status (WP-I1)
+
+Done in sora.rs, enemy.rs and drive.rs: (1) `State::FormChange` holds the controller during A120 and A121 (no input, hit tests off, keyblade shown) and drive.rs ends it; (4) the ability block is the `Abilities` resource (sora.rs): the player's bits (`KH2_ABILITIES`, until the ability system exists) plus the form's grants, which drive.rs writes at the swap and clears on revert; combo length, air combo length and finishers per chain come from `Abilities::combo_block` (Combo Plus, Air Combo Plus and Finishing Plus count per copy from a form); (5) the `Battle` resource replaces `Sora::battle` and is read by the drive code; (6) Anti's multiplier is applied in `enemy::receive_hits` through `drive::rules::outgoing_damage` (generic damage branch only, as FUN_001a0610 does).
+
+Not done: (2) `setup()` still builds the base body and keyblade from the fixed P_EX100 and W_EX010 (the merged `memt` word 8 and `went`/`wmst` for the base are not wired; the outfit variants of the base body are therefore missing); (3) the weapon list in `Sora`: drive.rs still owns the left-hand socket (bone 86, `follow_left`, `sync_left`) and the visibility override that hides Anti's keyblade. Both need `Sora::weapon` replaced by a list in every system that reads it (sora.rs tick, receive_hits, receive_wall_hits, fx.rs weapon_trails, drive.rs).

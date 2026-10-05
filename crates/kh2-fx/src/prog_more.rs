@@ -16,11 +16,11 @@
 
 use glam::{Mat4, Vec3, Vec4};
 
-use crate::pax::Program;
+use crate::pax::{Dpd, Program};
 use crate::prog::{cos_turn, sin_turn};
 use crate::progx::{draw_frame, packed_color, pb, pf, pw, tail_pos, work};
 use crate::rd::*;
-use crate::vm::{Batch, Ctx, OBJ_LOCAL, Obj, Vertex};
+use crate::vm::{Batch, Ctx, Env, OBJ_LOCAL, Obj, Vertex};
 
 // ---- pppKeShpTail3X -------------------------------------------------------------------------------
 
@@ -102,13 +102,24 @@ fn t3_next(k: usize) -> usize {
     if k == T3_RING - 1 { 0 } else { k + 1 }
 }
 
-pub fn tail3_draw(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
+/// One sprite of the tail: the shape frame, the color bytes, the camera-space axes and centre.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct T3Instance {
+    pub frame: usize,
+    pub color: [u8; 4],
+    pub right: Vec3,
+    pub up: Vec3,
+    pub centre: Vec4,
+}
+
+/// The sprites the draw handler places this tick, newest first (pure: no state is written).
+pub(crate) fn tail3_instances(env: &Env, dpd: &Dpd, obj: &Obj, p: &Program, e: usize) -> Vec<T3Instance> {
+    let mut out = Vec::new();
     let shape_no = pw(p, e, 4);
     if shape_no == 0xffff {
-        return;
+        return out;
     }
-    let dpd = ctx.dpd;
-    let Some(shape) = dpd.shape(shape_no) else { return };
+    let Some(shape) = dpd.shape(shape_no) else { return out };
     let o = work(p, 0);
     // Start and end colors (channels 0-3 and 4-7, 7 fractional bits dropped); the alpha channels
     // are scaled by the object's color alpha.
@@ -130,8 +141,8 @@ pub fn tail3_draw(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
     let mut seed = u16_at(&obj.mem, o + T3_SEED) as u32;
     let world = pb(p, e, 0x53) != 0;
     let local = obj.mat(OBJ_LOCAL);
-    let (s, view_inv) = (ctx.env.bind_scale, ctx.env.view_inv);
-    let to_cam = if world { ctx.env.view } else { ctx.env.view * ctx.env.bind };
+    let s = env.bind_scale;
+    let to_cam = if world { env.view } else { env.view * env.bind };
     let enabled = pb(p, e, 0x1d) != 0;
     let rotate = u16_at(&p.params, e + 0x1e) != 0;
     let wait0 = shape.frames.first().map_or(0, |f| f.wait as i32 as u32);
@@ -153,22 +164,23 @@ pub fn tail3_draw(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
         if enabled {
             seed = (seed * 0x80d + 7) & 0xffff;
             // Frame from the time accumulator and the random value, size shrunk by the random value.
-            let k = if wait0 == 0 || seq == 0 { 0 } else { ((acc.wrapping_add(seed) / wait0) % seq) as usize };
-            if let Some(frame) = shape.frames.get(k) {
-                let byte = |c: f32| (c as i32) as u8 as f32;
-                let col = Vec4::new(byte(color.x), byte(color.y), byte(color.z), byte(color.w)) / 128.0;
-                let sz = size * (1.0 - seed as f32 / 65535.0 * rand_size);
-                let mut right = local.x_axis.truncate() * (s.x * sz);
-                let mut up = local.y_axis.truncate() * (s.y * sz);
-                if rotate {
-                    // A random turn about the view axis from the same random value.
-                    let (sn, cs) = (sin_turn(seed as i32), cos_turn(seed as i32));
-                    (right, up) = (right * cs + up * sn, up * cs - right * sn);
-                }
-                let centre = to_cam * pos.extend(1.0);
-                let cam = Mat4::from_cols(right.extend(0.0), up.extend(0.0), Vec4::ZERO, centre);
-                draw_frame(ctx, frame, view_inv * cam, col);
+            let frame = if wait0 == 0 || seq == 0 { 0 } else { ((acc.wrapping_add(seed) / wait0) % seq) as usize };
+            let byte = |c: f32| (c as i32) as u8;
+            let sz = size * (1.0 - seed as f32 / 65535.0 * rand_size);
+            let mut right = local.x_axis.truncate() * (s.x * sz);
+            let mut up = local.y_axis.truncate() * (s.y * sz);
+            if rotate {
+                // A random turn about the view axis from the same random value.
+                let (sn, cs) = (sin_turn(seed as i32), cos_turn(seed as i32));
+                (right, up) = (right * cs + up * sn, up * cs - right * sn);
             }
+            out.push(T3Instance {
+                frame,
+                color: [byte(color.x), byte(color.y), byte(color.z), byte(color.w)],
+                right,
+                up,
+                centre: to_cam * pos.extend(1.0),
+            });
         }
         if counter == 0 {
             break;
@@ -206,8 +218,26 @@ pub fn tail3_draw(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
             break;
         }
     }
+    out
+}
+
+pub fn tail3_draw(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
+    if pw(p, e, 4) == 0xffff {
+        return;
+    }
+    let dpd = ctx.dpd;
+    let Some(shape) = dpd.shape(pw(p, e, 4)) else { return };
+    let view_inv = ctx.env.view_inv;
+    for i in tail3_instances(ctx.env, dpd, obj, p, e) {
+        if let Some(frame) = shape.frames.get(i.frame) {
+            let col = Vec4::new(i.color[0] as f32, i.color[1] as f32, i.color[2] as f32, i.color[3] as f32) / 128.0;
+            let cam = Mat4::from_cols(i.right.extend(0.0), i.up.extend(0.0), Vec4::ZERO, i.centre);
+            draw_frame(ctx, frame, view_inv * cam, col);
+        }
+    }
     if ctx.running {
-        obj.set_i32(o + T3_ACC, (acc as i32).wrapping_add(pw(p, e, 8)));
+        let o = work(p, 0);
+        obj.set_i32(o + T3_ACC, obj.i32(o + T3_ACC).wrapping_add(pw(p, e, 8)));
     }
 }
 

@@ -572,6 +572,11 @@ impl Ee {
             0x1A | 0x1B => self.divide(wa[0], wb[0], funct == 0x1A, true),
             0x28 => self.mmi1(w, rd, wa, wb, a, b, sa),
             0x29 => self.mmi3(w, rd, wa, wb, a, b, sa),
+            // PMFHL.LW / .UW: the low or high pipe's product, as the soft-float multiply reads it.
+            0x30 if sa <= 1 => {
+                let (lo, hi) = (words(self.lo), words(self.hi));
+                self.set128(rd, if sa == 0 { from_words([lo[0], hi[0], lo[2], hi[2]]) } else { from_words([lo[1], hi[1], lo[3], hi[3]]) });
+            }
             0x34 | 0x36 | 0x37 => {
                 let h = halves(b).map(|x| match funct {
                     0x34 => x << sa,

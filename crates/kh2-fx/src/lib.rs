@@ -14,5 +14,8 @@ pub(crate) mod progx;
 mod rd;
 pub mod vm;
 
+#[cfg(test)]
+mod oracle_tests;
+
 pub use pax::{Dpd, Element, Pax, ParticleData};
 pub use vm::{Batch, Draw, Effect, Env, Vertex};

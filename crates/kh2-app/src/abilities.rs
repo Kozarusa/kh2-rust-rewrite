@@ -13,6 +13,9 @@
 //! `KH2_ABILITY_IDS=id,...` (item ids), `KH2_ABILITY_START=data` (no Guard baseline, see the doc),
 //! `KH2_ABILITYLOG=1` (log the active abilities and the stat block deltas).
 
+// The query API is for sora.rs and drive.rs, which are wired at integration (docs/abilities.md).
+#![allow(dead_code)]
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

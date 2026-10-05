@@ -175,6 +175,11 @@ fn fl(v: u32) -> f32 {
     f32::from_bits(v)
 }
 
+/// Signature of a function this crate has named.
+fn named(group: u16, index: u16) -> Option<(usize, bool)> {
+    names::lookup(group, index).map(|f| (f.args as usize, f.ret))
+}
+
 fn convert(v: Value, mem: &mut Mem<'_>) -> u32 {
     match v {
         Value::None => 0,
@@ -665,15 +670,23 @@ impl Default for Core {
     }
 }
 
-impl Env for CoreEnv<'_> {
-    fn signature(&self, group: u16, index: u16) -> Option<(usize, bool)> {
+impl Core {
+    /// Argument count and result flag of a host function: this crate's own table first, then the
+    /// executable's, then what `signatures.rs` worked out from the script.
+    pub fn signature(&self, group: u16, index: u16) -> Option<(usize, bool)> {
         if let Some(f) = names::lookup(group, index) {
             return Some((f.args as usize, f.ret));
         }
-        if let Some(s) = self.core.exe_table.as_ref().and_then(|t| t.get(group, index)) {
+        if let Some(s) = self.exe_table.as_ref().and_then(|t| t.get(group, index)) {
             return Some((s.nargs as usize, s.returns));
         }
-        self.core.inferred.get(&(group, index)).copied()
+        self.inferred.get(&(group, index)).copied()
+    }
+}
+
+impl Env for CoreEnv<'_> {
+    fn signature(&self, group: u16, index: u16) -> Option<(usize, bool)> {
+        self.core.signature(group, index)
     }
 
     fn ext_read(&mut self, addr: u32, out: &mut [u8]) -> bool {
@@ -912,8 +925,17 @@ impl Runtime {
         let code = prog.words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let shared = Shared::new(&prog);
         let mut core = Core::new();
-        core.inferred = crate::signatures::infer(&prog);
+        core.inferred = crate::signatures::infer_only(&prog, &named, &crate::signatures::absent_from_table);
         Runtime { prog, code, shared, core, main: None }
+    }
+
+    /// Gives the runtime the signatures read from the user's executable ([`HostTable::from_exe`]). The
+    /// entries the table lacks (see `signatures.rs`) are worked out again with the table's help, which
+    /// resolves calls nested in arguments of other functions.
+    pub fn set_host_table(&mut self, table: HostTable) {
+        let known = |g: u16, i: u16| named(g, i).or_else(|| table.get(g, i).map(|s| (s.nargs as usize, s.returns)));
+        self.core.inferred = crate::signatures::infer_only(&self.prog, &known, &|g, i| table.get(g, i).is_none());
+        self.core.exe_table = Some(table);
     }
 
     /// Creates the object's script thread: runs event 0 with the object, then makes event 1 the persistent

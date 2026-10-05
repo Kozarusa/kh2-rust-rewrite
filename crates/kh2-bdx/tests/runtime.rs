@@ -146,14 +146,14 @@ fn script() -> Script {
     let message = a.here();
     a.store_local(4).store_local(0).bump(MESSAGES).load_local(4).ldf(4).store_global(SENDER).ret();
     let ping = a.string("ping");
-    let foo = a.string("foo");
+    let stay = a.string("stay");
 
     let mut entry_pc = Vec::new();
     // event 0: remember the object in the context, attach it with the mode table, register two modes
     entry_pc.push((0u32, a.here() as u32));
     a.store_local(0).load_local(0).store_global(CTX + 4);
     a.lea_global(CTX).lea_global(TABLE).host(1, 7);
-    for (name, message_pc) in [(ping, message), (foo, 0)] {
+    for (name, message_pc) in [(ping, message), (stay, 0)] {
         a.lea_global(TABLE).lea_code(name).push_i(100).push_i(idle as i32);
         for slot in 1..9 {
             // exit, begin, end, damage, slot 5, message (slot 6), enter, slot 8
@@ -172,9 +172,9 @@ fn script() -> Script {
     // event 21: message "ping" to everybody after 2.5 frames, sent by the context's object
     entry_pc.push((21, a.here() as u32));
     a.lea_global(CTX).lea_code(ping).push_f(2.5).host(1, 90).ret();
-    // event 22: queue the mode "foo" for another object
+    // event 22: queue the mode "stay" for another object
     entry_pc.push((22, a.here() as u32));
-    a.lea_global(CTX).lea_code(foo).host(6, 58).ret();
+    a.lea_global(CTX).lea_code(stay).host(6, 58).ret();
     // event 23 / 24: start and stop the action thread
     entry_pc.push((23, a.here() as u32));
     a.lea_global(CTX).push_i(action as i32).push_i(0).host(1, 112).ret();
@@ -200,6 +200,35 @@ fn start() -> (Runtime, MockHost) {
     assert!(rt.spawn(&mut host, SELF_OBJ));
     assert_eq!(word(&rt, CTX + 4), SELF_OBJ);
     (rt, host)
+}
+
+/// A script that calls functions of group 9, whose table the executable does not fill in: the
+/// signatures come from the script's own code, so the arguments reach the host intact and the stack stays balanced.
+#[test]
+fn functions_missing_from_the_executable_table_get_their_signature_from_the_script() {
+    let mut a = Asm { w: vec![0; base(1)] };
+    let main = a.here();
+    // 9.1(5, 6) returns a value that is stored; 9.2(value) returns nothing; 9.3(1, 2, 3) returns nothing
+    // and is followed by a statement that starts with a push; 9.4(9.1(7, 8)) nests a call with a result.
+    a.push_i(5).push_i(6).host(9, 1).store_local(0);
+    a.load_local(0).host(9, 2);
+    a.push_i(1).push_i(2).push_i(3).host(9, 3);
+    a.push_i(7).push_i(8).host(9, 1).host(9, 4);
+    a.push_i(99).host(9, 2);
+    let spin = a.here();
+    a.yield_().jmp(spin);
+    let img = image(&[(1, main as u32)], &a.w[base(1)..], 0x40);
+    let prog = Program::parse(&img).expect("parse");
+    let mut rt = Runtime::new(prog);
+    let mut host = MockHost::new();
+    assert!(rt.spawn(&mut host, SELF_OBJ));
+    rt.update(&mut host);
+    assert!(rt.core.errors.is_empty(), "{:?}", rt.core.errors);
+    let calls: Vec<_> = host.calls().filter_map(|c| if let Call::Unknown { group, index, args } = c { Some((*group, *index, args.clone())) } else { None }).collect();
+    assert_eq!(
+        calls,
+        vec![(9, 1, vec![5, 6]), (9, 2, vec![0]), (9, 3, vec![1, 2, 3]), (9, 1, vec![7, 8]), (9, 4, vec![0]), (9, 2, vec![99])]
+    );
 }
 
 #[test]
@@ -280,11 +309,11 @@ fn a_remote_queue_entry_goes_to_the_host_instead_of_starting_a_mode() {
     rt.event(&mut host, 22, &[]);
     rt.update(&mut host);
     assert_eq!(rt.current_mode(), None, "the mode was not started here");
-    assert!(host.calls().any(|c| matches!(c, Call::RemoteSetMode { obj, name } if *obj == SELF_OBJ && name == "foo")));
+    assert!(host.calls().any(|c| matches!(c, Call::RemoteSetMode { obj, name } if *obj == SELF_OBJ && name == "stay")));
     // The host passes it on; the other object's runtime switches to the mode.
     let (mut other, mut host2) = start();
-    other.set_mode_named(&mut host2, "foo");
-    assert_eq!(other.current_mode().as_deref(), Some("foo"));
+    other.set_mode_named(&mut host2, "stay");
+    assert_eq!(other.current_mode().as_deref(), Some("stay"));
 }
 
 #[test]

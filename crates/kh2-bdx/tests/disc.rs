@@ -137,6 +137,57 @@ fn soldier_runs_its_whole_mode_cycle() {
     assert!(d.host.calls().any(|c| matches!(c, Call::Hide { .. })));
 }
 
+/// Every BDX on the disc (object scripts, mission and area scripts, 00common.bdx).
+fn all_scripts(a: &mut kh2_archive::Archive) -> Vec<(String, Vec<u8>)> {
+    if let Ok(names) = std::fs::read_to_string("../../local/kh2idx.txt") {
+        a.apply_names(names.lines()).unwrap();
+    }
+    let list: Vec<_> = a.entries().to_vec();
+    let mut out = Vec::new();
+    for l in &list {
+        let name = l.name.clone().unwrap_or_default();
+        let Ok(d) = a.read_entry(&l.entry) else { continue };
+        if name.ends_with(".bdx") {
+            out.push((name, d));
+        } else if kh2_bar::is_bar(&d) {
+            for e in kh2_bar::parse(&d).unwrap_or_default().iter().filter(|e| e.kind == 3 && !e.data.is_empty()) {
+                out.push((format!("{name}:{}", e.tag), e.data.to_vec()));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn every_host_call_on_the_disc_has_a_signature() {
+    let Some((mut a, elf)) = open() else { return };
+    if std::fs::metadata("../../local/kh2idx.txt").is_err() {
+        eprintln!("skipped: no file name list (kh2 fetch-names)");
+        return;
+    }
+    let table = HostTable::from_exe(&elf).expect("table");
+    let (mut scripts, mut calls, mut inferred_used) = (0, 0, std::collections::BTreeSet::new());
+    for (name, data) in all_scripts(&mut a) {
+        let p = Program::parse(&data).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let an = analyze(&p).unwrap();
+        let mut rt = Runtime::new(p);
+        rt.set_host_table(table.clone());
+        scripts += 1;
+        for (insn, _) in an.code.values() {
+            if let kh2_bdx::Insn::Host { group, index } = insn {
+                calls += 1;
+                assert!(rt.core.signature(*group, *index).is_some(), "{name}: host {group}.{index} has no signature");
+                if table.get(*group, *index).is_none() {
+                    inferred_used.insert((*group, *index));
+                }
+            }
+        }
+    }
+    eprintln!("{scripts} scripts, {calls} host calls, {} functions came from inference", inferred_used.len());
+    // Only the entries the table lacks are ever inferred.
+    assert!(inferred_used.iter().all(|&(g, i)| kh2_bdx::signatures::absent_from_table(g, i)), "{inferred_used:?}");
+}
+
 #[test]
 fn every_script_on_the_disc_parses() {
     let Some((mut a, _)) = open() else { return };

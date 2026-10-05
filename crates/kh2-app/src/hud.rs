@@ -18,11 +18,14 @@ mod hud_gauge;
 mod hud_gfx;
 #[path = "hud_target.rs"]
 mod hud_target;
+#[path = "hud_menu.rs"]
+mod hud_menu;
 #[path = "hud_text.rs"]
 mod hud_text;
 
 use hud_gauge::{FaceFile, SoraPanel};
 use hud_gfx::{HudGfxPlugin, HudScene};
+use hud_menu::{CommandMenu, MenuFile, MenuNodes, MenuTables};
 use hud_target::TargetHud;
 
 pub struct HudPlugin;
@@ -35,10 +38,14 @@ impl Plugin for HudPlugin {
             .init_resource::<SoraPanel>()
             .init_resource::<TargetHud>()
             .init_resource::<FaceFile>()
+            .init_resource::<CommandMenu>()
+            .init_resource::<MenuFile>()
+            .init_resource::<MenuTables>()
+            .init_resource::<MenuNodes>()
             .add_systems(Startup, (setup, load_files).chain())
             .add_systems(
                 Update,
-                (toggle_debug, (hud_gauge::update, hud_target::update, hud_text::demo).chain(), debug_text.run_if(debug_on)).in_set(Frame::Hud),
+                (toggle_debug, (hud_gauge::update, hud_target::update, hud_menu::update, hud_text::demo).chain(), debug_text.run_if(debug_on)).in_set(Frame::Hud),
             )
             .add_systems(Update, popups.in_set(Frame::Popups).run_if(debug_on));
     }
@@ -87,7 +94,16 @@ fn setup(mut commands: Commands, debug: Res<DebugHud>) {
 }
 
 /// Reads the world's field sequence file and Sora's face from the disc.
-fn load_files(disc: Res<Disc>, area: Res<CurrentArea>, mut images: ResMut<Assets<Image>>, mut scene: ResMut<HudScene>, mut face: ResMut<FaceFile>) {
+#[allow(clippy::too_many_arguments)]
+fn load_files(
+    disc: Res<Disc>,
+    area: Res<CurrentArea>,
+    mut images: ResMut<Assets<Image>>,
+    mut scene: ResMut<HudScene>,
+    mut face: ResMut<FaceFile>,
+    mut menu_file: ResMut<MenuFile>,
+    mut menu_tables: ResMut<MenuTables>,
+) {
     let world = area.name.get(..2).unwrap_or("tt");
     let mut files = hud_gfx::load_files(&disc, &format!("field2d/us/{world}0field.2dd"), &mut images);
     if files.is_empty() {
@@ -101,6 +117,16 @@ fn load_files(disc: Res<Disc>, area: Res<CurrentArea>, mut images: ResMut<Assets
     if let Some(f) = hud_gfx::load_files(&disc, "obj/P_EX100.apdx", &mut images).pop() {
         face.0 = Some(files.len());
         files.push(f);
+    }
+    // The command menu's art (one `comw` pair) and the group tables its code reads from the executable.
+    let mut cmd = hud_gfx::load_files(&disc, &format!("field2d/us/{world}0command.2dd"), &mut images);
+    if cmd.is_empty() {
+        cmd = hud_gfx::load_files(&disc, "field2d/us/zz0command.2dd", &mut images);
+    }
+    if !cmd.is_empty() {
+        menu_file.0 = Some(files.len());
+        files.extend(cmd);
+        menu_tables.0 = disc.read_root("SLUS_210.05").and_then(|e| hud_menu::Tables::from_exe(&e));
     }
     scene.text = hud_text::TextSys::load(&disc, world, &mut images, &mut files);
     scene.files = files;

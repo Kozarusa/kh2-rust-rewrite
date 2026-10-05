@@ -341,7 +341,7 @@ impl Places {
         let mut worlds = Vec::new();
         for e in entries.iter().filter(|e| e.kind == 2) {
             let tag = e.tag.trim_end_matches('\0').to_string();
-            let records = e.data.chunks_exact(4).map(|c| (u16::from_le_bytes([c[0], c[1]]), u16::from_le_bytes([c[2], c[3]]))).collect();
+            let records = (0..e.data.len() / 4).map(|i| (u16_at(e.data, i * 4), u16_at(e.data, i * 4 + 2))).collect();
             worlds.push((tag, records));
         }
         Some(Places { worlds })
@@ -707,7 +707,7 @@ mod tests {
         let b = [0x35, 0xa2, 0x11, 0x1e, 0x00, 0x1c, 0x00, 0x2e, 0x00];
         let t = tokens(&b);
         assert_eq!(t.len(), 5);
-        assert_eq!(t[2], Token::Command(0x11, vec![0x1e, 0, 0x1c, 0]));
+        assert_eq!(t[2], Token::Position(0x1e, 0x1c));
         assert_eq!(to_text(&t), "HiA");
     }
 

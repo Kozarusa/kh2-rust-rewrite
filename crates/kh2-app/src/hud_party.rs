@@ -171,12 +171,10 @@ pub fn update(mut scene: ResMut<HudScene>, mut party: ResMut<PartyMembers>, mut 
             }
         }
         // The member's own face, a child of the circle, added when its file is known.
-        if slot.face.is_none() {
-            if let Some(file) = m.face {
-                let i = scene.add(Node::new(file, Some(slot.circle)));
-                scene.set_group(i, super::hud_gauge::FACE_NORMAL);
-                slot.face = Some(i);
-            }
+        if let (None, Some(file)) = (slot.face, m.face) {
+            let i = scene.add(Node::new(file, Some(slot.circle)));
+            scene.set_group(i, super::hud_gauge::FACE_NORMAL);
+            slot.face = Some(i);
         }
         if let Some(f) = slot.face {
             scene.nodes[f].visible = true;

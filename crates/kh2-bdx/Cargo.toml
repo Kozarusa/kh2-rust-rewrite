@@ -1,0 +1,13 @@
+[package]
+name = "kh2-bdx"
+description = "BDX: KH2's bytecode scripts (enemy AI, area scripts). Parser, disassembler and a host-independent interpreter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+kh2-archive.workspace = true
+kh2-bar.workspace = true
+kh2-ee.workspace = true

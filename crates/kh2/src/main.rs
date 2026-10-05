@@ -7,6 +7,7 @@ use std::process::ExitCode;
 
 use kh2_archive::Archive;
 
+mod bdx;
 mod oracle;
 use serde_json::Value;
 
@@ -22,6 +23,8 @@ kh2 <command> [--iso PATH]
   pax NAME              dump a PAX effect (or every PAX in a BAR)
   bgm NAME [SECONDS]    render a BGM with its WD bank to local/<name>.wav
   table NAME [LIMIT]    print a decoded gameplay table
+  bdx NAME [--run [N]]  disassemble a BDX script (M_EX020, obj/M_EX020.mdlx, 00common.bdx); --run: dry run on a mock world
+  bdx --scan            parse every BDX on the disc, print opcode and host function statistics
   validate              decode every modelled table and write checkmarks into sheets/
   preflight [--strict]  overlap all sheets and print the checklist
 
@@ -291,6 +294,10 @@ fn run(args: &mut Vec<String>) -> Result<(), String> {
                 }
                 println!("textures -> {}", dir.display());
             }
+        }
+        "bdx" => {
+            let mut a = open(args)?;
+            bdx::run(&mut a, args)?;
         }
         "disc" => {
             // Files on the disc outside the KH2.IDX archive (executables, IOP modules).

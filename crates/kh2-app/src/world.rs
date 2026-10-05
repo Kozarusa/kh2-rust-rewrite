@@ -274,7 +274,7 @@ impl World {
     const M: f32 = 100.0;
 
     pub fn ground_m(&self, x: f32, z: f32, from_y: f32) -> Option<f32> {
-        self.ground(Vec3::new(x, 0.0, z) * Self::M, from_y * Self::M, 100_000.0).map(|g| g.y / Self::M)
+        self.ground(Vec3::new(x, 0.0, z) * Self::M, from_y * Self::M, 10_000.0).map(|g| g.y / Self::M)
     }
 
     pub fn blocked_m(&self, p: Vec3, q: Vec3) -> bool {

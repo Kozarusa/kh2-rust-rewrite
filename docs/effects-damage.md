@@ -82,33 +82,48 @@ conversion is `(int)(angle * 32768.0 / pi)` through the soft-float routines. 50 
 random, the axes, the zero and mixed cases) match the game within one unit
 (`mv_yp_eff_matches_the_game`).
 
-### pppSnoMdlDttNorm (amplitude verified, geometry inferred)
+### pppSnoMdlDttNorm (verified except culling, clipping and the depth bias)
 
 A model that shows the screen shifted along the model's normals: a lens or shock-wave ripple.
-Verified (state and arguments, same oracle test `sno_amplitude_matches_the_game`): work 0 holds an
-amplitude as three floats (value, rate, acceleration; init and reset zero them); every tick
-value += rate += acceleration, and on the entry's frame the entry's floats at +8, +0xc, +0x10 add
-to value, rate and acceleration. The draw is skipped for model 0xffff or a zero color alpha (byte
-+0xb of work 1). The model is drawn by FUN_0020ab40 with the matrix in work 2 (a draw-matrix program
-such as `pppKeDMatFr` copies its camera-space matrix there), the amplitude (times the bind's x scale
-when entry byte +0x16 is set), the taper flag (entry byte +0x15) and the GS ALPHA value of entry byte
-+0x1c (0 means 0x44). The handler also lowers the view matrix's z translation for the duration of the
-draw (the value is restored afterwards, checked in the oracle test) by what reads as
-`entry +0x18 * 1e7 / (matrix z)` (inferred from the soft-float calls): a depth bias, not ported.
+Verified by the oracle tests `sno_amplitude_matches_the_game` and `sno_geometry_matches_the_game`
+(the first runs the handler 0x20a7e8, the second also the model draw FUN_0020ab40 with its VU0 code,
+on a small model with stored normals that differ from the radial directions, in all four combinations of
+the two flag bytes; the 96 vertices' texture coordinates move by the screen displacement the port
+computes within 3e-5, which is about 0.03 pixel):
 
-Inferred from the disassembly of FUN_0020ab40 (the VU0 work was not run): the model's triangle
-blocks (type 1: three vertex colors, three vertex indices, three normal indices) are drawn with the
-frame buffer as the texture. For every vertex the displacement is the unit normal times the
-amplitude; the normal is the direction from the model's origin to the vertex when the model's flag
-word has bit 1 clear, else the stored normal (4.12 fixed) through the matrix. With the taper byte
-set the displacement's x and y are multiplied by the unit normal's view-space z. The texture
-coordinate of the vertex is the screen position of the displaced point and the triangle is
-drawn where the undisplaced vertex projects, tinted by the vertex color times the object color, with
-the entry's blend. The port produces exactly this as `Batch::offsets` and `fx.rs` draws it with the
-material `DistortMaterial` (`fx_distort.wgsl`), which reads the scene drawn so far through Bevy's
-transmission copy and blends by hand. What differs from the console: only what the opaque pass
-drew is seen (not other effects drawn before the lens), the sample is bilinear, and the displacement
-is interpolated per fragment instead of the screen position per vertex.
+* Work 0 holds an amplitude as three floats (value, rate, acceleration; init and reset zero them);
+  every tick value += rate += acceleration, and on the entry's frame the entry's floats at +8, +0xc,
+  +0x10 add to value, rate and acceleration. The draw is skipped for model 0xffff or a zero color
+  alpha (byte +0xb of work 1).
+* The model is drawn by FUN_0020ab40 with the matrix in work 2 (a draw-matrix program such as
+  `pppKeDMatFr` copies its camera-space matrix there), the amplitude, and the GS ALPHA value of entry
+  byte +0x1c (0 means 0x44). Entry byte +0x16 does two things: when set the amplitude is multiplied by
+  the bind's x scale and the displacement direction of a vertex is the unit vector from the model's
+  origin to the vertex (in view space); when clear the direction is the vertex's stored normal (4.12
+  fixed, through the matrix's 3x3 part and **not** normalised, so the matrix's scale shrinks the
+  displacement with it). Entry byte +0x15 (taper): the displacement's x and y are multiplied by the
+  unit direction's view-space z. Byte +0x14 only picks which frame-buffer size globals the packet
+  setup reads; byte +0x17 is copied into the draw's setup, its use was not found.
+* The texture coordinate of each vertex is the projected screen position of (view-space position +
+  displacement), in pixels, minus the frame buffer offset, divided by 1024; the triangle is drawn where
+  the undisplaced vertex projects. The frame buffer is the texture, tinted by the vertex color times
+  the object color, blended with the entry's ALPHA.
+
+Inferred, not run in the interpreter (it has no VU flag registers, so the game's tests never reject
+there): a model whose flag word has bit 1 clear is drawn with back faces dropped (every Sno model on
+the disc has flag word 5, culled, or 7, not culled: Sora's `P_EX100` model 5, the system model 17,
+`M_EX600`, `N_BB050_BTL`, `PO06-08_PLAYER`, `AL14_*` are culled), by the sign of the z of
+`(p1 - p0) x (p2 - p1)` on the projected vertices; the port culls where it is negative assuming
+positive projection scales. The handler also lowers the view matrix's z translation for the duration
+of the draw (the value is restored afterwards, checked) by what reads as
+`entry +0x18 * 1e7 / (matrix z)` (inferred from the soft-float calls), a depth bias that is not
+ported, and the VU clip tests are not modelled.
+
+The port produces the displaced geometry as `Batch::offsets`; `fx.rs` draws it with the material
+`DistortMaterial` (`fx_distort.wgsl`), which reads the scene drawn so far through Bevy's transmission
+copy and blends by hand. What differs from the console: only what the opaque pass drew is seen (not
+effects drawn before the lens), the sample is bilinear, and the displacement is interpolated per
+fragment instead of the screen position per vertex.
 
 ## Hit effects (FUN_0018d090, verified)
 
@@ -208,8 +223,8 @@ every living enemy at those times (both `M_EX020` and `M_EX010` die with their e
 
 ## What is not done
 
-* The VU0 geometry of `pppSnoMdlDttNorm` (FUN_0020ab40) was not run in `kh2-ee`; it is the inferred
-  reading above. The depth bias is not ported.
+* `pppSnoMdlDttNorm`: back-face culling and the clip tests (the interpreter has no VU flag registers)
+  and the depth bias; see its section.
 * The shape-draw flag bits of Tail3X, the draw-call budget in FUN_0021a660 and the GS state are not
   modelled (shared with the existing `pppDrawShapeX` port).
 * The rest of FUN_001b25d0 (munny and item payout), the hide-then-remove step after the `dead` mode

@@ -323,11 +323,13 @@ pub fn sno_draw(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
     let Some(model) = dpd.model(number) else { return };
     let tint = packed_color(obj, w1);
     // The displacement along each normal: the amplitude, optionally times the bind's scale (byte
-    // +0x16), and with byte +0x15 tapered by the normal's view-space z.
+    // +0x16, which also picks radial directions below), and with byte +0x15 tapered by the
+    // normal's view-space z.
     let amp = obj.f32(w0) * if pb(p, e, 0x16) != 0 { ctx.env.bind_scale.x } else { 1.0 };
     let taper = pb(p, e, 0x15) != 0;
-    // Models without flag 2 use the direction from the model's origin to the vertex as the normal.
-    let radial = model.flags & 2 == 0;
+    // Entry byte +0x16 also selects the direction from the model's origin to the vertex as the normal
+    // instead of the stored normals.
+    let radial = pb(p, e, 0x16) != 0;
     // The game keeps the model matrix in camera space.
     let m_cam = ctx.env.view * obj.mat(w2);
     let (view_inv, centre) = (ctx.env.view_inv, m_cam.w_axis.truncate());
@@ -335,13 +337,29 @@ pub fn sno_draw(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
         0 => 0x44,
         a => a,
     };
+    // A model whose flag word has bit 1 clear is drawn with back faces dropped: the game tests the sign of
+    // the z of (p1 - p0) x (p2 - p1) on the projected vertices (x and y over z, y down) and skips
+    // triangles where it is negative. The projection's own signs are not known here; positive scales
+    // are assumed.
+    let cull = model.flags & 2 == 0;
     let mut batch = Batch { dpd: ctx.dpd_index, tex0: None, alpha, ..Default::default() };
     for blk in model.blocks.iter().filter(|b| b.kind == 1) {
         for pr in &blk.prims {
             let base = batch.verts.len() as u32;
-            for k in 0..3 {
+            let pos = |k: usize| {
                 let v = model.vertices.get(pr.tri[k] as usize).copied().unwrap_or([0; 3]);
-                let pos_cam = m_cam.transform_point3(Vec3::new(v[0] as f32, v[1] as f32, v[2] as f32));
+                m_cam.transform_point3(Vec3::new(v[0] as f32, v[1] as f32, v[2] as f32))
+            };
+            if cull {
+                let p: Vec<Vec3> = (0..3).map(pos).collect();
+                let s = |v: Vec3| (v.x / v.z, v.y / v.z);
+                let (a, b, c) = (s(p[0]), s(p[1]), s(p[2]));
+                if (b.0 - a.0) * (c.1 - b.1) - (b.1 - a.1) * (c.0 - b.0) < 0.0 {
+                    continue;
+                }
+            }
+            for k in 0..3 {
+                let pos_cam = pos(k);
                 let dir = if radial {
                     (pos_cam - centre).normalize_or_zero()
                 } else {

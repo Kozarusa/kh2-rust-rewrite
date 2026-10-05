@@ -447,3 +447,185 @@ fn sno_amplitude_matches_the_game() {
         sync_obj(&mut ee, &obj);
     }
 }
+
+// ---- pppSnoMdlDttNorm geometry ----------------------------------------------------------------------
+
+thread_local! {
+    /// Per emitted triangle: the texture coordinates of its three vertices and their screen xyz words.
+    static TRIS: RefCell<Vec<([[f32; 2]; 3], [[u32; 3]; 3])>> = const { RefCell::new(Vec::new()) };
+    static BUMP: RefCell<u32> = const { RefCell::new(0) };
+}
+
+fn hook_bump(ee: &mut Ee) {
+    let size = ee.gpr[reg::A0] as u32;
+    let at = BUMP.with(|b| {
+        let mut b = b.borrow_mut();
+        let at = SCRATCH + *b;
+        *b += (size + 15) & !15;
+        at
+    });
+    ee.gpr[reg::V0] = at as u128;
+}
+
+fn hook_kick(ee: &mut Ee) {
+    let a0 = ee.gpr[reg::A0] as u32;
+    if ee.r32(a0) != 0x7000_000d {
+        return;
+    }
+    let uv = |ee: &mut Ee, at: u32| [ee.f32_at(a0 + at), ee.f32_at(a0 + at + 4)];
+    let xyz = |ee: &mut Ee, at: u32| [ee.r32(a0 + at), ee.r32(a0 + at + 4), ee.r32(a0 + at + 8)];
+    let t = ([uv(ee, 0x50), uv(ee, 0x80), uv(ee, 0xb0)], [xyz(ee, 0x70), xyz(ee, 0xa0), xyz(ee, 0xd0)]);
+    TRIS.with(|c| c.borrow_mut().push(t));
+}
+
+fn hook_zero(ee: &mut Ee) {
+    ee.gpr[reg::V0] = 0;
+}
+
+/// A raw OMD model (DPD model packet: 0x10 header, then the OMD) of triangles with normals.
+fn raw_model(flags: u32, verts: &[[i16; 3]], normals: &[[i16; 3]], tris: &[[u16; 3]]) -> Vec<u8> {
+    let mut b = vec![0u8; 0x600];
+    let omd = 0x10;
+    let put32 = |b: &mut Vec<u8>, o: usize, v: u32| b[o..o + 4].copy_from_slice(&v.to_le_bytes());
+    put32(&mut b, omd, flags);
+    put32(&mut b, omd + 4, 0x40);
+    put32(&mut b, omd + 8, 0x200);
+    put32(&mut b, omd + 12, 0x300);
+    b[omd + 0x10..omd + 0x12].copy_from_slice(&(tris.len() as i16).to_le_bytes());
+    b[omd + 0x12..omd + 0x14].copy_from_slice(&(verts.len() as i16).to_le_bytes());
+    let blk = omd + 0x40;
+    b[blk + 1] = 1;
+    b[blk + 2..blk + 4].copy_from_slice(&(tris.len() as i16).to_le_bytes());
+    for (i, t) in tris.iter().enumerate() {
+        let q = blk + 0x10 + 0x1c * i;
+        for c in 0..3 {
+            b[q + 4 * c..q + 4 * c + 4].copy_from_slice(&[0x60 + 8 * i as u8, 0x70 + 4 * c as u8, 0x80, 0x80]);
+            b[q + 0xc + 2 * c..q + 0xe + 2 * c].copy_from_slice(&t[c].to_le_bytes());
+            b[q + 0x14 + 2 * c..q + 0x16 + 2 * c].copy_from_slice(&t[c].to_le_bytes());
+        }
+    }
+    b[blk + 0x10 + 0x1c * tris.len() + 1] = 0xff;
+    for (i, v) in verts.iter().enumerate() {
+        for c in 0..3 {
+            b[omd + 0x200 + 6 * i + 2 * c..omd + 0x202 + 6 * i + 2 * c].copy_from_slice(&v[c].to_le_bytes());
+        }
+    }
+    for (i, n) in normals.iter().enumerate() {
+        for c in 0..3 {
+            b[omd + 0x300 + 6 * i + 2 * c..omd + 0x302 + 6 * i + 2 * c].copy_from_slice(&n[c].to_le_bytes());
+        }
+    }
+    b
+}
+
+/// The game's model draw (FUN_0020ab40, run in the interpreter) against `sno_draw`: for a small
+/// model with stored normals that differ from the radial directions, every vertex's texture
+/// coordinate moves by the screen displacement the port computes (the interpreter has no VU flag
+/// registers, so the game's back-face and clip tests never reject here; those are not compared).
+#[test]
+fn sno_geometry_matches_the_game() {
+    let Some(elf) = exe() else { return };
+    let r = 100i16;
+    let verts: Vec<[i16; 3]> = vec![[r, 0, 0], [-r, 0, 0], [0, r, 0], [0, -r, 0], [0, 0, r], [0, 0, -r]];
+    let normals: Vec<[i16; 3]> = verts
+        .iter()
+        .map(|v| {
+            let d = Vec3::new(v[0] as f32 + 30.0, v[1] as f32 + 20.0, v[2] as f32 + 10.0).normalize();
+            [(d.x * 4096.0) as i16, (d.y * 4096.0) as i16, (d.z * 4096.0) as i16]
+        })
+        .collect();
+    let tris: Vec<[u16; 3]> = vec![[0, 2, 4], [2, 1, 4], [1, 3, 4], [3, 0, 4], [2, 0, 5], [1, 2, 5], [3, 1, 5], [0, 3, 5]];
+    // A scaled, turned model in camera space (the game keeps its draw matrix there).
+    let m_cam = Mat4::from_scale_rotation_translation(Vec3::new(0.8, 0.8, 0.8), Quat::from_euler(EulerRot::ZYX, 0.4, 0.3, -0.2), Vec3::new(5.0, -8.0, 400.0));
+    let mut raw = raw_model(2, &verts, &normals, &tris);
+    raw[0..2].copy_from_slice(&3i16.to_le_bytes());
+    let dpd = Dpd { particles: vec![], textures: vec![], shapes: vec![], models: vec![crate::omd::Model::parse(&raw)], vsfs: vec![] };
+    let mut compared = 0;
+    for (e15, e16) in [(0u8, 0u8), (1, 0), (0, 1), (1, 1)] {
+        let mut game = Vec::new();
+        for amp in [0.0f32, 12.0] {
+            let Scene { mut ee, .. } = scene(&elf, Mat4::IDENTITY, Mat4::IDENTITY);
+            ee.hooks.remove(&0x20ab40);
+            ee.hooks.insert(0x20c110, hook_bump);
+            ee.hooks.insert(0x1e4a88, hook_kick);
+            ee.hooks.insert(0x2f8f60, hook_zero);
+            BUMP.with(|b| *b.borrow_mut() = 0);
+            TRIS.with(|c| c.borrow_mut().clear());
+            ee.write(SHAPE, &raw);
+            ee.w32(RES + 0x10, SHAPETAB);
+            ee.w32(SHAPETAB + 3 * 0x24 + 0x1c, SHAPE + 0x10);
+            // Projection rows: x and y scaled, w = z.
+            let proj = [300.0f32, 0.0, 0.0, 0.0, 0.0, 300.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0];
+            for (i, x) in proj.iter().enumerate() {
+                ee.wf32(0x1db1000 + 4 * i as u32, *x);
+            }
+            let p = sno_program(e15, e16);
+            put_program(&mut ee, &p);
+            let mut obj = sno_obj(amp, &m_cam);
+            sync_obj(&mut ee, &obj);
+            run(&mut ee, 0x20a7e8);
+            game.push(TRIS.with(|c| c.borrow().clone()));
+            let _ = &mut obj;
+        }
+        assert_eq!(game[0].len(), tris.len());
+        // The port's batch for the same amplitude: camera-space positions and displacements.
+        let p = sno_program(e15, e16);
+        let mut obj = sno_obj(12.0, &m_cam);
+        let env = Env::default();
+        let (mut draws, mut spawns, mut rng) = (Vec::new(), Vec::new(), 0u32);
+        let mut ctx = Ctx {
+            env: &env,
+            dpd: &dpd,
+            dpd_index: 0,
+            draws: &mut draws,
+            rng: &mut rng,
+            running: true,
+            fast_forward: false,
+            obj_id: 0,
+            prog_index: 0,
+            parent_local: None,
+            spawns: &mut spawns,
+        };
+        m::sno_draw(&mut ctx, &mut obj, &p, 0);
+        assert_eq!(draws.len(), 1);
+        let b = &draws[0];
+        assert_eq!(b.verts.len(), 3 * tris.len());
+        let screen = |v: Vec3| Vec3::new(300.0 * v.x / v.z, 300.0 * v.y / v.z, 0.0);
+        for (t, (g0, ga)) in game[0].iter().zip(&game[1]).enumerate() {
+            for k in 0..3 {
+                let i = 3 * t + k;
+                let (pos, off) = (b.verts[i].pos, b.offsets[i]);
+                let want = (screen(pos + off) - screen(pos)) / 1024.0;
+                let got = [ga.0[k][0] - g0.0[k][0], ga.0[k][1] - g0.0[k][1]];
+                assert!(
+                    (got[0] - want.x).abs() < 3e-5 && (got[1] - want.y).abs() < 3e-5,
+                    "e15 {e15} e16 {e16} tri {t} vertex {k}: game {got:?} port {:?} (offset {off:?})",
+                    [want.x, want.y]
+                );
+                compared += 1;
+            }
+        }
+    }
+    assert_eq!(compared, 4 * 24);
+}
+
+fn sno_program(e15: u8, e16: u8) -> Program {
+    let mut e = vec![0u8; 0x20];
+    e[4..8].copy_from_slice(&3u32.to_le_bytes());
+    e[0x15] = e15;
+    e[0x16] = e16;
+    e[0x1c] = 0x44;
+    e.extend_from_slice(&0xffff_f000u32.to_le_bytes());
+    Program { kind: 238, param_size: 0x20, params: e, use_val: vec![0x40, 0x60, 0x80] }
+}
+
+fn sno_obj(amp: f32, m_cam: &Mat4) -> Obj {
+    let mut obj = Obj { group: 0, mem: vec![0; OBJ_SIZE], cursors: vec![0], fresh: false, restart: false, parent: None, ring: Vec::new(), heap: Vec::new(), seed: 0 };
+    let (w0, w1, w2) = (OBJ_WORK + 0x40, OBJ_WORK + 0x60, OBJ_WORK + 0x80);
+    obj.mem[w1 + 8..w1 + 12].copy_from_slice(&[128, 128, 128, 128]);
+    obj.set_f32(w0, amp);
+    // The entry is for frame 0; the object is at frame 1, so the amplitude stays as set.
+    obj.set_i32(OBJ_FRAME, 0x1000);
+    obj.set_mat(w2, *m_cam);
+    obj
+}

@@ -54,7 +54,8 @@ pub fn offers_at(t: &Triggers, gframe: f32) -> Vec<Offer> {
         .collect()
 }
 
-/// Every offer a motion set can make: slot, command, position index, frame range.
+/// Every offer a motion set can make: slot, command, position index, frame range (the disc scan).
+#[cfg(test)]
 pub fn scan_mset(m: &kh2_anim::Mset) -> Vec<(usize, String, Offer, i16, i16)> {
     let mut out = Vec::new();
     for slot in 0..m.slots.len() {
@@ -121,7 +122,7 @@ impl From<&t::Cmd> for CmdRow {
             flags: c.flags,
             disable_form: c.disable_form,
             dist_range: c.dist_range,
-            message_id: c.message_id as i32,
+            message_id: c.message_id,
             cmd_action: c.cmd_action,
             reaction_count: c.reaction_count,
         }
@@ -193,6 +194,7 @@ pub struct ReactionUses(pub HashMap<u16, u16>);
 
 /// Sent when the player accepts an offer. Hook for the offering object's script (event 0xb with the
 /// arguments player, `cmd`, target record).
+#[allow(dead_code)]
 #[derive(Message, Clone, Copy, Debug)]
 pub struct ReactionAccepted {
     pub cmd: u16,

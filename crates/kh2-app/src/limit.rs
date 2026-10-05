@@ -230,6 +230,7 @@ impl Plugin for LimitPlugin {
 
 /// Key `L` tries the next limit command in table order; `KH2_LIMIT=<command id>` tries that one once
 /// at about 4 s. Both print the decision (every limit) and run an available limit.
+#[allow(clippy::too_many_arguments)]
 fn try_limit(
     time: Res<Time>,
     rules: Res<LimitRules>,
@@ -274,7 +275,7 @@ fn try_limit(
     // The first usable row of the command wins (FUN_001d2040); otherwise report the first row's refusal.
     let i = row_for_command(&rules.rows, command, &party.0).unwrap_or(i);
     let r = &rules.rows[i];
-    let desc = format!("limit {} command {command} {:?} (partners {:?}, file {}, cost {}, time {})", r.id, r.members, r.members, r.file, r.cost, r.time);
+    let desc = format!("limit {} command {command} (participant bytes {:?}, file {}, cost {}, time {})", r.id, r.members, r.file, r.cost, r.time);
     match available(r, &party.0) {
         Err(e) => info!("limit: {desc} refused: {e:?} (party {:?})", party.0.present),
         Ok(()) => {

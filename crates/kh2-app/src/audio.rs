@@ -194,7 +194,7 @@ impl Plugin for AudioPlugin {
             .add_systems(Startup, (start_stream, load_voice_table))
             .add_systems(Update, play_requests)
             .add_systems(Update, area_bgm.after(crate::assets::load_area))
-            .add_systems(FixedUpdate, (motion_sounds, wall_sounds).chain().in_set(crate::schedule::Sim::Sounds));
+            .add_systems(FixedUpdate, (motion_sounds, footsteps, wall_sounds).chain().in_set(crate::schedule::Sim::Sounds));
     }
 }
 
@@ -373,6 +373,83 @@ pub fn motion_sounds(
     }
 }
 
+/// The soundinfo record (`12soundinfo.bar`) of an area such as `tt02`: world entry by code, then
+/// the record of the area number.
+pub fn area_soundinfo(disc: &Disc, area: &str) -> Option<kh2_audio::footstep::SoundInfoRecord> {
+    let (world, number) = area.split_at(2);
+    let raw = disc.read("12soundinfo.bar")?;
+    let entry = kh2_bar::parse(&raw).ok()?.into_iter().find(|e| e.tag == world)?;
+    kh2_audio::footstep::WorldSoundInfo::parse(entry.data)?.area(number.parse().ok()?).copied()
+}
+
+/// `NeoStatus` of an object's `00objentry` row (picks the footstep bank).
+fn neo_status(disc: &Disc, model: &str) -> Option<u16> {
+    use kh2_tables::tables as t;
+    let mut a = disc.0.lock().ok()?;
+    kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).ok()?.rows.into_iter().find(|r| r.model_name == model).map(|r| r.neo_status)
+}
+
+/// Sora's model, whose `objentry` row names his `NeoStatus`.
+const SORA_MODEL: &str = "P_EX100";
+
+/// Motion frame trigger 2 (footstep sound): `params[0]` is the `kind` the game passes to
+/// FUN_0016baa0 (0 run, 4 walk, 8 land, 9..11 other steps, per Sora's motions). The sound is
+/// `bank * 1000 + material * 16 + variant`: bank from the area's soundinfo record by `NeoStatus`,
+/// material of the ground polygon under Sora's feet (byte 0 of its COCT record; 0 is silent).
+/// Only Sora's footsteps are handled: Shadow and Soldier motions carry no trigger 2.
+#[allow(clippy::too_many_arguments)]
+pub fn footsteps(
+    anims: Query<&Animator>,
+    sora: Query<&Sora>,
+    area: Res<CurrentArea>,
+    disc: Res<Disc>,
+    cache: Res<SeCache>,
+    mut info: Local<Option<(String, Option<kh2_audio::footstep::SoundInfoRecord>)>>,
+    mut neo: Local<Option<Option<u16>>>,
+    mut counter: Local<u8>,
+    mut out: MessageWriter<PlaySe>,
+) {
+    let Ok(s) = sora.single() else { return };
+    let Ok(a) = anims.get(s.body) else { return };
+    let (Some(t), Some(m)) = (a.triggers(), a.motion()) else { return };
+    if t.frames.is_empty() {
+        return;
+    }
+    let g = |f: f32| f * crate::data::LOGIC_HZ / m.fps.max(1.0);
+    let (from, to) = (g(a.prev_frame), g(a.frame));
+    if from == to {
+        return;
+    }
+    let steps: Vec<_> = t.crossed(from, to).filter(|f| f.id == kh2_anim::triggers::frame::FOOTSTEP_SOUND).collect();
+    if steps.is_empty() {
+        return;
+    }
+    let Some(name) = area.loaded.clone() else { return };
+    if info.as_ref().is_none_or(|(n, _)| *n != name) {
+        *info = Some((name.clone(), area_soundinfo(&disc, &name)));
+    }
+    let record = info.as_ref().and_then(|(_, r)| r.as_ref());
+    let neo_status = neo.get_or_insert_with(|| neo_status(&disc, SORA_MODEL)).unwrap_or(1);
+    // FUN_00183730: the ground material of the polygon in contact (0 in the air: no contact).
+    let material = s.motor.ground.map_or(0, |g| g.material);
+    let log = std::env::var_os("KH2_SOUNDLOG").is_some();
+    for ft in steps {
+        let kind = ft.params.first().copied().unwrap_or(0).max(0) as u16;
+        let number = kh2_audio::footstep::footstep_number(record, neo_status, material, kind, &mut counter);
+        if log {
+            let sample = number.and_then(|n| {
+                let bank = load_bank(&disc, &cache, (n / 1000) as u16, None)?;
+                let e = bank.block.entries.get((n % 1000) as usize)?;
+                Some(format!("wd {} tracks {}", e.wd, e.tracks.len()))
+            });
+            info!("footstep {} frame {} kind {kind} material {material} neo {neo_status} -> {number:?} {}", a.tag(), ft.frame, sample.as_deref().unwrap_or("no sample"));
+        }
+        if let Some(n) = number {
+            out.write(PlaySe::number(n, None));
+        }
+    }
+}
+
 /// World codes in the game's world order (OpenKH `docs/kh2/worlds.md`).
 const WORLDS: [&str; 19] = ["zz", "es", "tt", "di", "hb", "bb", "he", "al", "mu", "po", "lk", "lm", "dc", "wi", "nm", "wm", "ca", "tr", "eh"];
 
@@ -413,5 +490,65 @@ pub fn area_bgm(disc: Res<Disc>, audio: Res<Audio>, area: Res<crate::assets::Cur
             }
         }
         None => warn!("{loaded}: no area music"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kh2_audio::footstep::footstep_number;
+    use kh2_map::{Coct, flags};
+
+    fn disc() -> Option<Disc> {
+        let iso = crate::assets::iso_path().ok().filter(|p| p.exists());
+        if iso.is_none() {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+        }
+        iso.map(|p| Disc::open(&p))
+    }
+
+    /// Materials of the polygons Sora can stand on in an area.
+    fn floor_materials(disc: &Disc, area: &str) -> std::collections::BTreeSet<u8> {
+        let map = disc.read(&format!("map/us/{area}.map")).expect("map");
+        let coct = Coct::from_map(&map).expect("coct");
+        coct.polygons.iter().filter(|p| p.flags & flags::PARTY_STAND != 0).map(|p| p.material).collect()
+    }
+
+    #[test]
+    fn soundinfo_records_resolve() {
+        let Some(d) = disc() else { return };
+        // tt02 is area 2 of world tt: banks 697, 698, 699, none, 729; Sora's NeoStatus is 1.
+        let r = area_soundinfo(&d, "tt02").expect("tt02 record");
+        assert_eq!(r.banks, [697, 698, 699, -1, 729]);
+        assert_eq!(neo_status(&d, SORA_MODEL), Some(1));
+        assert_eq!(r.bank(1), Some(697));
+        // tt00 uses the 694 triple, so the same step sounds different there.
+        let r0 = area_soundinfo(&d, "tt00").expect("tt00 record");
+        assert_eq!(r0.bank(1), Some(694));
+        let (mut a, mut b) = (0, 0);
+        assert_eq!(footstep_number(Some(&r), 1, 1, 4, &mut a), Some(697_020));
+        assert_eq!(footstep_number(Some(&r0), 1, 1, 4, &mut b), Some(694_020));
+    }
+
+    #[test]
+    fn floors_pick_different_sounds_and_all_have_samples() {
+        let Some(d) = disc() else { return };
+        for area in ["tt02", "tt00"] {
+            let record = area_soundinfo(&d, area).expect("record");
+            let bank = record.bank(1).expect("Sora's bank");
+            let block = kh2_audio::ssl::SeBlock::parse(&d.read(&format!("se/se{bank:03}.seb")).expect("bank")).expect("se block");
+            let materials = floor_materials(&d, area);
+            assert!(materials.len() >= 2, "{area}: floors should differ: {materials:?}");
+            for m in materials {
+                // Every floor material is silent (0) or has a walk sample in the area's bank.
+                let mut c = 0;
+                let n = footstep_number(Some(&record), 1, m, 4, &mut c);
+                assert_eq!(n.is_some(), m != 0);
+                if let Some(n) = n {
+                    let e = block.entries.get((n % 1000) as usize).unwrap_or_else(|| panic!("{area}: material {m}: entry {} missing", n % 1000));
+                    assert!(!e.tracks.is_empty(), "{area}: material {m}: walk entry {} is empty", n % 1000);
+                }
+            }
+        }
     }
 }

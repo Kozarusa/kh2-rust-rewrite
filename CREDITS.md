@@ -17,6 +17,7 @@ kh2-rs is written from scratch. Nothing below is vendored as code. Where we reim
 | Object collision shapes | OpenKH `docs/kh2/file/type/objectcollision.md` | Apache-2.0 | `crates/kh2-model/src/collision.rs` |
 | `pref` physics tables (plyr/prty/sstm/fmab), `lvup` and `lvpm` layouts | OpenKH `docs/kh2/file/type/preferences.md`, `OpenKh.Kh2/Battle/{Lvup,Lvpm}.cs` | Apache-2.0 | `sheets/tables.json` |
 | `atkp` field meanings used by the hit reaction rules (Refact values 0 Reflect, 1 Guard, 2 Nothing; BG Hit flag bit 0; Type values) | OpenKH `docs/kh2/file/type/00battle.md` | Apache-2.0 | `crates/kh2-app/src/reaction_rules.rs`, `docs/hit-reaction.md` |
+| Motion trigger id names consulted while looking for a freeze trigger (range trigger 30, frame trigger 31); hint only | OpenKH `docs/kh2/file/anb/anb.md` | Apache-2.0 | `docs/hit-stop.md` |
 | Enemy names for `enmp` ids (Shadow = 34, Soldier = 33) | OpenKH `OpenKh.Tools.Kh2BattleEditor/Services/EnemyNameProvider.cs` | Apache-2.0 | `crates/kh2-app/src/enemy.rs` |
 | VIF unpack semantics for undefined lanes (V2 → xyxy) | as noted in OpenKH `OpenKh.Ps2/VifUnpacker.cs`, following PCSX2's behaviour | Apache-2.0 | `crates/kh2-ps2/src/vif.rs` |
 | Effect containers: PAX elements, DPX effect list, DPD (particle data, textures, shapes, models, VSF), particle program file layout and program names | OpenKH `OpenKh.Kh2/Pax.cs`, `Dpx.cs`, `Dpd*.cs`, `DpdModel.cs`, `DpdPData.cs` (`PppProgramEnum`) | Apache-2.0 | `crates/kh2-fx` |

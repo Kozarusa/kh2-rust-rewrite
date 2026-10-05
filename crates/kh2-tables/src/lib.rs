@@ -7,6 +7,8 @@
 //! println!("{} player rows", t.rows.len());
 //! ```
 
+pub mod msg;
+pub mod player;
 pub mod rt;
 
 pub mod tables {

@@ -140,3 +140,33 @@ Deviations and gaps:
 - The `NeoStatus` 0x12 material override and the soundinfo bytes before +0xe are not understood.
 - Nobody has listened to any of this. The rendered wav only shows that the entry has a sample and
   that it is not silent.
+- `World::ground` accepts every floor polygon, whatever its flags. In `tt04` and `tt05` Sora's
+  spawn floor has material 0, so he is silent there (logged: `material 0 ... -> None`); most
+  floor polygons of those maps carry flags 0x82 (no `PARTY_STAND` bit) and material 0, and the
+  polygons with bit 0 (`0x3f1`) carry the materials 1, 7 and 17. Whether the original lets Sora
+  stand on 0x82 floors was not checked. `tt00` and `tt01` have material 0 everywhere (tt00 is a
+  16-polygon test room).
+
+## Checks
+
+- Tests (`cargo test --workspace` with `KH2_ISO`): `audio::tests::soundinfo_records_resolve`
+  (tt02 is 697/698/699/-1/729, Sora's NeoStatus 1 picks 697; tt00 picks 694, so the same step is
+  694020 there and 697020 in tt02), `audio::tests::floors_pick_different_sounds_and_all_have_samples`
+  (tt02 and tt04: at least two distinct non-zero floor materials, and each has a walk sample in
+  the area's bank), and the synthetic tests in `footstep.rs` and `ssl.rs`.
+- `kh2 coct map/us/tt02.map` lists material against flags: floors (0x3f1) carry 1, 3, 7, 16, 17.
+- Walking in `tt02` (`KH2_SOUNDLOG=1 KH2_WALK=1 KH2_YAW=1.57 cargo run --release -p kh2-app -- tt02`),
+  run steps (A002, kind 0) cycle the variant with the counter and the number changes when the
+  floor changes:
+
+      footstep A002 frame 12 kind 0 material 1 neo 1 -> Some(697016) wd 627 tracks 1
+      footstep A002 frame 32 kind 0 material 1 neo 1 -> Some(697017) wd 627 tracks 1
+      footstep A002 frame 12 kind 0 material 1 neo 1 -> Some(697018) wd 627 tracks 1
+      footstep A002 frame 32 kind 0 material 1 neo 1 -> Some(697019) wd 627 tracks 1
+      footstep A002 frame 12 kind 0 material 3 neo 1 -> Some(697048) wd 627 tracks 1
+      footstep A002 frame 32 kind 0 material 3 neo 1 -> Some(697049) wd 627 tracks 1
+
+  In `tt03` (a second record: bank 688 for Sora) the same walk gives 688016, 688017, 688018.
+  Each is followed by the usual `se 697:16 (-) playing` line.
+- Rendering: `kh2 se se/se697.seb 52 1.5` writes `local/se697_52.wav` (material 3, run step 0;
+  peak 0.103). Nobody listened to it.

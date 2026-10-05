@@ -1350,7 +1350,9 @@ mod tests {
         // A longer combo with Combo Plus: the third press is still a normal hit.
         let mut plus = chain(false, 3, &[ABILITY_COMBO_PLUS]);
         plus.max_ground = 4;
-        assert_eq!(pick(&m, &plus, &near, 152), 4);
+        assert_eq!(pick(&m, &plus, &near, 151), 4);
+        // A motion is never picked again while it plays: with A301 playing key 5 (A300) is next.
+        assert_eq!(pick(&m, &plus, &near, 152), 5);
     }
 
     #[test]

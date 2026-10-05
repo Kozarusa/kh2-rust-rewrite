@@ -18,6 +18,8 @@ pub struct Model {
     pub alpha_fix: u8,
     pub blocks: Vec<PrimBlock>,
     pub vertices: Vec<[i16; 3]>,
+    /// Vertex normals (signed 4.12 fixed point), as many as the triangle blocks reference.
+    pub normals: Vec<[i16; 3]>,
 }
 
 #[derive(Clone, Debug)]
@@ -32,6 +34,9 @@ pub struct Prim {
     pub colors: [[u8; 4]; 4],
     pub indices: [u16; 4],
     pub uvs: [[u16; 2]; 4],
+    /// Type 1 (colored triangle with normals): vertex and normal indices.
+    pub tri: [u16; 3],
+    pub tri_normals: [u16; 3],
 }
 
 /// Primitive size in bytes per OMD primitive type.
@@ -67,6 +72,13 @@ impl Model {
                             p.colors[c][ch] = u8_at(b, q + c * 4 + ch);
                         }
                     }
+                    if kind == 1 {
+                        // Three vertex colors, then three vertex indices and three normal indices.
+                        for c in 0..3 {
+                            p.tri[c] = u16_at(b, q + 0xc + 2 * c);
+                            p.tri_normals[c] = u16_at(b, q + 0x14 + 2 * c);
+                        }
+                    }
                     if kind == 4 || kind == 6 {
                         for c in 0..4 {
                             p.indices[c] = u16_at(b, q + 0x10 + 2 * c);
@@ -83,6 +95,8 @@ impl Model {
             blocks.push(PrimBlock { kind, tex0, prims });
             o += 0x10 + size * n;
         }
+        let n_off = omd + i32_at(b, omd + 0xc).max(0) as usize;
+        let normal_count = blocks.iter().filter(|b| b.kind == 1).flat_map(|b| &b.prims).flat_map(|p| p.tri_normals).max().map_or(0, |m| m as usize + 1);
         Model {
             number: i16_at(b, 0),
             flags: u32_at(b, omd),
@@ -93,6 +107,9 @@ impl Model {
             blocks,
             vertices: (0..vertex_count)
                 .map(|k| [i16_at(b, v_off + 6 * k), i16_at(b, v_off + 6 * k + 2), i16_at(b, v_off + 6 * k + 4)])
+                .collect(),
+            normals: (0..normal_count)
+                .map(|k| [i16_at(b, n_off + 6 * k), i16_at(b, n_off + 6 * k + 2), i16_at(b, n_off + 6 * k + 4)])
                 .collect(),
         }
     }

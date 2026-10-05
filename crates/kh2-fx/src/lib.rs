@@ -9,9 +9,13 @@ pub mod pax;
 pub mod shape;
 pub mod ppp;
 pub(crate) mod prog;
+pub(crate) mod prog_more;
 pub(crate) mod progx;
 mod rd;
 pub mod vm;
+
+#[cfg(test)]
+mod oracle_tests;
 
 pub use pax::{Dpd, Element, Pax, ParticleData};
 pub use vm::{Batch, Draw, Effect, Env, Vertex};

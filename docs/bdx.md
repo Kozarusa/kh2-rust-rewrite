@@ -122,7 +122,7 @@ Group 0 vector math, `fabs` and the random numbers are implemented inside the cr
 
 ## Named host functions
 
-273 of the 812 distinct host functions called by scripts on the disc are named (73 before work package 1E2); the table has 299 entries counting 26 that no script on the disc calls. The named ones account for 86 percent of all host calls in scripts on the disc and
+272 of the 812 distinct host functions called by scripts on the disc are named (73 before work package 1E2); the table has 298 entries counting 26 that no script on the disc calls. The named ones account for 86 percent of all host calls in scripts on the disc and
 98.7 percent of the calls in the enemy and boss scripts (`obj/M_*`, `B_*`, `H_*`). Argument counts and return flags of every row are checked against the executable's table by a test (`signatures_match_the_executable`). Rows marked "role inferred" have their effect on the object read from the game code but
 their game-level meaning guessed from how scripts use them; rows without that mark that only describe a field ("word at +0xaa8") say what the wrapper does, not what the field is for. "Native" is the address of the host function's wrapper in the executable, "uses" the number of call sites in reachable script code on the disc. Object fields are offsets in the game object.
 Group 0 is the library (math, effect handles, flags), group 1 the scripted object, group 2 attacks and hit records (the layout of the hit record is in `docs/hit-reaction.md`), group 6 bosses and NPCs.
@@ -131,7 +131,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | --- | --- | --- | --- | --- |
 | 0.0 | `debug_print_0(pp)` | 0x16cbd8 | 252 | debug print; the retail build's function is an empty return |
 | 0.1 | `debug_print_1(pp)` | 0x16cbe0 | 193 | debug print stub (empty return) |
-| 0.2 | `debug_print(p)` | 0x16cbe8 | 2484 | debug print stub (empty return), the most used host function on the disc |
+| 0.2 | `debug_print(p)` | 0x16cbe8 | 2484 | debug print stub (empty return), called from many scripts |
 | 0.3 | `frame_time() -> f` | 0x16cc08 | 4926 | the per-frame unit, 1.0 (FUN_0016cc08 loads it from the executable's constants) |
 | 0.4 | `vec_add(vv) -> v` | 0x16cc78 | 611 | add the four lanes |
 | 0.5 | `vec_sub(vv) -> v` | 0x16cd00 | 6263 | subtract the four lanes |
@@ -155,7 +155,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 0.35 | `vec_scale_in_place(vf)` | 0x16d038 | 105 | multiply all four lanes of the vector by the scalar, in place |
 | 0.36 | `vec_scale(vf) -> v` | 0x16cd88 | 569 | multiply all four lanes by a scalar into a new vector |
 | 0.38 | `effect_set_position(pv)` | 0x16da90 | 78 | copy a vector into the effect's position (the 16 bytes behind FUN_001d9d00(handle)) |
-| 0.41 | `effect_set_rotation(pv)` | 0x16db50 | 32 | copy a vector (after FUN_0017be00) into the second vector of the effect instance (FUN_001d9d50); role inferred |
+| 0.41 | `effect_set_vec2(pv)` | 0x16db50 | 32 | copy a vector (through FUN_0017be00) into the second vector of the effect instance (the 16 bytes behind FUN_001d9d50(handle)); role unknown |
 | 0.42 | `angle_of(v) -> f` | 0x16d060 | 219 | atan2(v.x, v.z), the yaw of a direction |
 | 0.43 | `wrap_angle(f) -> f` | 0x16de78 | 140 | wrap an angle in radians into -pi..pi (FUN_0017bbc0) |
 | 0.44 | `effect_stop(p)` | 0x16dba0 | 114 | stop the effect instance of an effect handle (FUN_001e0298 on handle+0x1c, if it has one) |
@@ -218,7 +218,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.55 | `start_move(Ovifi)` | 0x1712d0 | 257 | set the direction, start the motion and, with the last flag, record motion + 1 and + 2 as the following motions |
 | 1.56 | `on_screen(O) -> b` | 0x172938 | 409 | the object is inside the camera frustum |
 | 1.57 | `airborne(O) -> b` | 0x172968 | 342 | bit 0 of the mover's flag word; role inferred |
-| 1.58 | `set_dash(Ovf)` | 0x172988 | 527 | store the direction normalised and scaled by its w component at object +0x20 and the argument at +0xf0, then raise the mover state 5 (FUN_0019e6b8) |
+| 1.58 | `set_dash(Ovf)` | 0x172988 | 527 | store the direction scaled by its w component at object +0x20 and the argument at +0xf0, then run the mover call with state 5 (FUN_0019e6b8, FUN_0016b698); role inferred |
 | 1.59 | `mover_bit1_or_busy(O) -> b` | 0x1729c0 | 36 | mover flag bit 1 (mover at +0xc, word +8) or object flag 0x40 at +0x160 |
 | 1.60 | `busy(O) -> b` | 0x1729f8 | 1274 | the object is in a hit reaction, knocked or locked (FUN_001729f8); role inferred |
 | 1.61 | `play_motion_at(oiff)` | 0x170378 | 657 | start a motion at a frame with a blend |
@@ -233,7 +233,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.70 | `set_flag(Oi)` | 0x172c68 | 2024 | set bit n of the flag array at object +0x108 |
 | 1.71 | `clear_flag(Oi)` | 0x172ca0 | 508 | clear bit n of the flag array at object +0x108 |
 | 1.72 | `test_flag(Oi) -> b` | 0x172ce0 | 0 | test bit n of the flag array at object +0x108 (1.70 sets, 1.71 clears) |
-| 1.74 | `remove_object(O)` | 0x171548 | 384 | if the object is in the object list, call its virtual method +4 (FUN_0016b698 with 0), role inferred: remove it |
+| 1.74 | `mover_reset(O)` | 0x171548 | 384 | call the mover's (+0xc) virtual method +4 with the object, then set mover state 0 (FUN_0016b698 with 0; the object-list test in front of it has no effect); role inferred: stop the movement |
 | 1.77 | `has_word_144(O) -> b` | 0x172d60 | 50 | the word at object +0x144 is non-zero |
 | 1.78 | `hit_stun_b(O) -> b` | 0x172d78 | 114 | bit 9 of +0x160 (the same test as 2.5) |
 | 1.79 | `face_toward(Ov)` | 0x172d98 | 977 | turn toward a direction (abrupt unless the object is locked, then the target direction is stored) |
@@ -258,8 +258,8 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.104 | `set_flag_768(O)` | 0x1731a8 | 9 | set bit 6 of the word at +0x768 |
 | 1.105 | `clear_flag_768(O)` | 0x1731c0 | 9 | clear bit 6 of the word at +0x768 |
 | 1.107 | `set_f_234(Of)` | 0x173260 | 78 | store a float at object +0x234 (564) |
-| 1.108 | `link_event_start(Op)` | 0x173278 | 173 | start the link record's (+0x670) event, virtual method +0x3c of its player with its slot (FUN_0011c580) |
-| 1.109 | `link_event_stop(Op)` | 0x173298 | 303 | virtual method +0x40 of the link record's player (FUN_0011c5b0) |
+| 1.108 | `link_method_3c(Op)` | 0x173278 | 173 | virtual method +0x3c of the object behind the link record (record at object +0x670, its +0x14) with the record's word +0x104 and the argument (FUN_0011c580) |
+| 1.109 | `link_method_40(Op)` | 0x173298 | 303 | the same with virtual method +0x40 (FUN_0011c5b0) |
 | 1.110 | `spawn_kind(O) -> i` | 0x1732b8 | 472 | spawn kind byte of the object's spawn record, -1 without one |
 | 1.111 | `set_move(Ovf)` | 0x1732e8 | 946 | set the movement vector at +0x10: direction normalised, speed in w |
 | 1.112 | `start_action(Oii)` | 0x171120 | 350 | start the object's action thread (see runtime.rs) |
@@ -296,7 +296,6 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.168 | `start_move_alt(Ovifi)` | 0x171460 | 112 | as start_move through the alternate setter (FUN_001b4ee0) |
 | 1.170 | `spawn_record_id(O) -> i` | 0x171b30 | 335 | halfword at +2 of the record at ((object +0x818) +8); role inferred |
 | 1.171 | `global_flag_4() -> b` | 0x173a28 | 371 | bit 2 of the global flag word at 0x35d268 |
-| 1.172 | `action_wait(OO) -> p` | 0x1718d0 | 644 | FUN_001af878(a, b) (builds a motion sync handle); not decoded |
 | 1.176 | `tween_to_zero(Oi)` | 0x1719a8 | 456 | ramp the value at object +0x4b0 to 0 over `frames` (FUN_001aec50) |
 | 1.179 | `set_word_100(Oi)` | 0x1713a8 | 29 | store at object +0x100 |
 | 1.180 | `set_word_104(Oi)` | 0x1713c0 | 23 | store at object +0x104 |
@@ -305,7 +304,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.188 | `gflags_clear_8()` | 0x173a58 | 24 | clear bit 3 of the global flag word at 0x35d268 |
 | 1.191 | `ptr_b40_4(O) -> p` | 0x1706f8 | 4 | the pointer at object +0xb40 plus 4 |
 | 1.192 | `flag_160_10(O) -> b` | 0x171650 | 3 | object flag 0x10 at +0x160 |
-| 1.195 | `link_event_set(Op)` | 0x171270 | 11 | FUN_0011c648 on the link record's player (+0x670) with the value |
+| 1.195 | `link_call_195(Op)` | 0x171270 | 11 | FUN_0011c648 on the link record at object +0x670 with the argument |
 | 1.196 | `global_byte_33e832() -> i` | 0x172108 | 128 | byte at 0x33e832 |
 | 1.200 | `set_field_600(Oi)` | 0x171b00 | 7 | bits 3 to 6 of the word at object +0x600 = value & 0xf |
 | 1.201 | `facing_vector(O) -> v` | 0x170710 | 1709 | facing vector of the object |
@@ -435,10 +434,10 @@ The rest are listed as `group.index xN` (N = call sites on the disc). They keep 
 Group 5 is the NPC routine library (`*_RTN` scripts), group 4 the mission and area script library (events, cutscenes), groups 6, 7, 8 and 10 bosses and special scripts.
 
 ```
-5.34x2346 5.4x1368 5.11x912 5.0x684 1.174x683 5.17x682 5.6x456 5.5x456 5.2x456 5.16x456 3.35x452 4.55x352 4.54x350
-0.19x336 1.139x295 5.27x277 4.3x264 3.172x263 4.11x259 4.22x253 4.16x253 5.3x240 1.177x238 3.37x233 5.7x228 5.33x227
-5.26x227 3.23x169 3.39x167 4.37x166 4.4x134 4.36x118 6.48x117 4.35x116 3.24x115 4.29x110 4.5x109 1.41x108 4.9x106
-3.6x106 4.1x105 4.0x105 3.5x94 3.69x93 6.33x91 3.8x91 3.78x91 3.57x82 2.47x75 3.73x74 1.261x74 4.12x69 3.44x67
+5.34x2346 5.4x1368 5.11x912 5.0x684 1.174x683 5.17x682 1.172x644 5.6x456 5.5x456 5.2x456 5.16x456 3.35x452 4.55x352
+4.54x350 0.19x336 1.139x295 5.27x277 4.3x264 3.172x263 4.11x259 4.22x253 4.16x253 5.3x240 1.177x238 3.37x233 5.7x228
+5.33x227 5.26x227 3.23x169 3.39x167 4.37x166 4.4x134 4.36x118 6.48x117 4.35x116 3.24x115 4.29x110 4.5x109 1.41x108
+4.9x106 3.6x106 4.1x105 4.0x105 3.5x94 3.69x93 6.33x91 3.8x91 3.78x91 3.57x82 2.47x75 3.73x74 1.261x74 4.12x69 3.44x67
 10.31x66 3.38x65 1.183x65 6.5x63 4.38x62 3.74x62 3.75x59 3.63x59 1.17x59 3.66x57 1.276x57 4.44x56 3.96x55 3.32x55
 1.138x55 4.50x54 4.46x54 4.18x54 6.3x53 3.2x53 6.34x52 1.141x51 4.30x50 1.298x50 3.79x49 3.4x49 4.33x46 3.17x46
 4.20x45 3.9x45 3.11x45 3.25x44 3.77x43 3.10x43 4.43x42 3.76x42 3.53x42 1.299x42 2.54x38 1.160x38 1.144x38 1.162x37
@@ -533,7 +532,7 @@ Tests that read the disc and skip without `KH2_ISO`: `tests/disc.rs` (parsing, s
 ## Gaps and open questions
 
 - The code that registers the host tables of groups 3 and 9 and entries 4.0 and 4.1 is not in the executable file or in any file on the disc that this project can read; their signatures are inferred and what they do is unknown.
-- 539 host functions are unnamed. They are mostly in the NPC library (group 5), the mission and area scripts (group 4) and boss scripts. Several named ones only describe a field read or written by the wrapper.
+- 540 host functions are unnamed. They are mostly in the NPC library (group 5), the mission and area scripts (group 4) and boss scripts. Several named ones only describe a field read or written by the wrapper.
 - Roles marked "inferred"; the object fields named are the ones the wrappers touch, not a map of the object.
 - The mode manager ports `FUN_001869b8`, `00186900`, `00186cf0`, `001868a8`, `00186db0`, `00186ef8`, `00186ca8`, `00187040`, `00186e70`, `00186fa8`, `00186f50`, `001871d0`; the thread tree ports `FUN_0016c680`, `0016c8d8`, `0016c928`, `0016c3f0`, `0016d458`, `00172df0`; messages `FUN_00187170/00187190/00187250`.
   Not ported: the per-object thread count (+0x488, available as `Runtime::live_threads`), the order of the action thread relative to the script update, the identity of the "other object" of remote queue entries, children started by one object on another object's main thread through 1.82 with a foreign context (assumed to be the object's own), reading another thread's frame memory through a pointer.

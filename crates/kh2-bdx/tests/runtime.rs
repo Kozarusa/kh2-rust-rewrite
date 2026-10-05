@@ -2,8 +2,8 @@
 //! disc needed). Event 20 starts a child thread, 21 sends a message, 22 queues a mode for another object,
 //! 23 / 24 start and stop the action thread, 25 starts a child that ends at once.
 
-use kh2_bdx::host::Call;
-use kh2_bdx::mock::{MockHost, SELF_OBJ};
+use kh2_bdx::host::{Arg, Call, ObjectKey};
+use kh2_bdx::mock::{MockHost, PLAYER, SELF_OBJ};
 use kh2_bdx::{Program, Runtime, analyze};
 
 #[derive(Default)]
@@ -120,7 +120,7 @@ const SHORT: u16 = 0x18; // runs of the child that ends at once
 const ACTION: u16 = 0x1c; // frames the action thread has run
 const TABLE: u16 = 0x100; // mode records
 
-const ENTRIES: usize = 8;
+const ENTRIES: usize = 12;
 
 struct Script {
     prog: Program,
@@ -147,14 +147,15 @@ fn script() -> Script {
     a.store_local(4).store_local(0).bump(MESSAGES).load_local(4).ldf(4).store_global(SENDER).ret();
     let ping = a.string("ping");
     let stay = a.string("stay");
+    let low = a.string("low");
 
     let mut entry_pc = Vec::new();
-    // event 0: remember the object in the context, attach it with the mode table, register two modes
+    // event 0: remember the object in the context, attach it with the mode table, register three modes
     entry_pc.push((0u32, a.here() as u32));
     a.store_local(0).load_local(0).store_global(CTX + 4);
     a.lea_global(CTX).lea_global(TABLE).host(1, 7);
-    for (name, message_pc) in [(ping, message), (stay, 0)] {
-        a.lea_global(TABLE).lea_code(name).push_i(100).push_i(idle as i32);
+    for (name, message_pc, priority) in [(ping, message, 100), (stay, 0, 100), (low, 0, 50)] {
+        a.lea_global(TABLE).lea_code(name).push_i(priority).push_i(idle as i32);
         for slot in 1..9 {
             // exit, begin, end, damage, slot 5, message (slot 6), enter, slot 8
             a.push_i(if slot == 6 { message_pc as i32 } else { 0 });
@@ -183,6 +184,16 @@ fn script() -> Script {
     // event 25: a child with tag 2 that ends at once
     entry_pc.push((25, a.here() as u32));
     a.push_i(2).push_i(short as i32).push_i(0).push_i(0).host(0, 9).pop().ret();
+    // event 26: a named function with decoded arguments (1.72 test_flag) and an object lookup (1.114)
+    entry_pc.push((26, a.here() as u32));
+    a.lea_global(CTX).push_i(3).host(1, 72).pop().lea_global(CTX).push_i(0x236).host(1, 114).ret();
+    // event 27 / 28 / 29: interrupt to "stay", switch to "ping" / "low" only when the priority allows
+    entry_pc.push((27, a.here() as u32));
+    a.lea_global(CTX).lea_code(stay).host(1, 81).ret();
+    entry_pc.push((28, a.here() as u32));
+    a.lea_global(CTX).lea_code(ping).host(1, 167).ret();
+    entry_pc.push((29, a.here() as u32));
+    a.lea_global(CTX).lea_code(low).host(1, 167).ret();
     assert_eq!(entry_pc.len(), ENTRIES);
     let img = image(&entry_pc, &a.w[base(ENTRIES)..], 0x1200);
     Script { prog: Program::parse(&img).expect("parse") }
@@ -229,6 +240,32 @@ fn functions_missing_from_the_executable_table_get_their_signature_from_the_scri
         calls,
         vec![(9, 1, vec![5, 6]), (9, 2, vec![0]), (9, 3, vec![1, 2, 3]), (9, 1, vec![7, 8]), (9, 4, vec![0]), (9, 2, vec![99])]
     );
+}
+
+#[test]
+fn named_functions_arrive_with_decoded_arguments_and_lookups_fill_the_context() {
+    let (mut rt, mut host) = start();
+    rt.event(&mut host, 26, &[]);
+    let funcs: Vec<_> = host.calls().filter_map(|c| if let Call::Func { group, index, args } = c { Some((*group, *index, args.clone())) } else { None }).collect();
+    assert_eq!(funcs, vec![(1, 72, vec![Arg::Obj(SELF_OBJ), Arg::Int(3)])]);
+    assert!(host.calls().any(|c| matches!(c, Call::FindObject { by: ObjectKey::Entity, value: 0x236 })));
+    // The answer went into the context the script passed.
+    assert_eq!(word(&rt, CTX + 4), PLAYER);
+}
+
+#[test]
+fn mode_machine_functions_interrupt_and_guard_by_priority() {
+    let (mut rt, mut host) = start();
+    rt.event(&mut host, 27, &[]);
+    assert_eq!(rt.current_mode(), None, "the interrupted mode waits at the front of the queue");
+    rt.update(&mut host);
+    assert_eq!(rt.current_mode().as_deref(), Some("stay"));
+    // A mode with a lower priority than the running one does not replace it...
+    rt.event(&mut host, 29, &[]);
+    assert_eq!(rt.current_mode().as_deref(), Some("stay"));
+    // ...one with at least the same priority does, at once.
+    rt.event(&mut host, 28, &[]);
+    assert_eq!(rt.current_mode().as_deref(), Some("ping"));
 }
 
 #[test]

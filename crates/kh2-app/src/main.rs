@@ -14,6 +14,7 @@ mod audio;
 mod camera;
 mod combat;
 mod data;
+mod drive;
 mod enemy;
 mod fx;
 mod harness;
@@ -67,6 +68,7 @@ fn main() {
             fx::FxPlugin,
             harness::HarnessPlugin,
             audio::AudioPlugin,
+            drive::DrivePlugin,
         ))
         .run();
 }

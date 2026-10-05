@@ -211,14 +211,18 @@ pub fn think(
     collider: Option<Res<World>>,
     reaction: Option<Res<ReactionData>>,
     sora: Query<&Transform, (With<Sora>, Without<Enemy>)>,
-    mut q: Query<(Entity, &mut Transform, &mut Enemy, &mut Fighter)>,
+    mut q: Query<(Entity, &mut Transform, &mut Enemy, &mut Fighter, Has<crate::enemy_ai::AiBrain>)>,
     mut anims: Query<&mut Animator>,
     mut fx: MessageWriter<crate::fx::StartEffect>,
 ) {
     let (Some(col), Ok(sp)) = (collider, sora.single()) else { return };
     let dt = time.delta_secs().min(0.05);
-    for (ent, mut tf, mut e, mut f) in &mut q {
+    for (ent, mut tf, mut e, mut f, scripted) in &mut q {
         let e = &mut *e;
+        // A BDX-driven enemy (enemy_ai.rs) moves and animates itself; only its hit reactions run here.
+        if scripted && !matches!(e.state, EState::Hurt | EState::Blown) {
+            continue;
+        }
         let Ok(mut a) = anims.get_mut(e.body) else { continue };
         let rig = a.rig.clone();
         let kind = e.kind;
@@ -418,6 +422,7 @@ pub fn receive_hits(
     mut popups: MessageWriter<crate::hud::DamagePopup>,
     mut sounds: MessageWriter<crate::audio::PlaySe>,
     mut ineffective: MessageWriter<IneffectiveHit>,
+    mut ai_hits: MessageWriter<crate::enemy_ai::AiHit>,
 ) {
     let from = sora.single().map(|s| s.stats).ok();
     let Some(reaction) = reaction else { return };
@@ -452,6 +457,7 @@ pub fn receive_hits(
             hit_part_plain: true,
         };
         let out = rules::victim_outcome(&rules::HitRow::from_atkp(atk), useless, &ctx, &reaction.patn, &reaction.defaults, &reaction.consts);
+        ai_hits.write(crate::enemy_ai::AiHit { target: h.target, real: rules::reaction_class(out.effective) >= 2 });
         // Dying is not part of the reaction rules: the last hit always launches.
         let d = &reaction.defaults;
         let action = match out.action {

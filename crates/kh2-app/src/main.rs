@@ -19,6 +19,7 @@ mod fx;
 mod harness;
 mod hud;
 mod motor;
+mod reaction_rules;
 mod schedule;
 mod skel;
 mod sora;

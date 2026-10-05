@@ -13,10 +13,11 @@ use std::f32::consts::{PI, TAU};
 pub const LOOK_HEIGHT: f32 = 170.0;
 /// The camera sits this far below the look-at point before the radius term (`FUN_0013f7a0`).
 const BASE_DROP: f32 = 150.0;
-/// Distance a collided camera is kept off the surface, along the surface normal (`FUN_0013f8f8`).
-const WALL_MARGIN: f32 = 5.0;
 /// Radius change per tick at full stick (`FUN_0013fd08`, 8 per tick).
 pub const ZOOM_RATE: f32 = 8.0;
+/// Most dynamic blockers the game keeps (`FUN_0015a358` allocates 0x800 bytes of 0x20-byte
+/// entries, `FUN_0015a3e8` fills at most 0x40).
+pub const MAX_BLOCKERS: usize = 64;
 
 /// One row of the camera parameter table (`FUN_00140d48` copies a row into the camera object).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -33,6 +34,57 @@ pub struct Row {
     pub height_k: f32,
 }
 
+/// Look-around (mode 1) constants.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LookParams {
+    /// Look-at point this far ahead of the eye (`FUN_00140418`, `DAT_00378e74`).
+    pub distance: f32,
+    /// Pitch range (`FUN_00140418`, `DAT_004842f0`/`DAT_004842f4` from 0x378f18/0x378f1c).
+    pub pitch_min: f32,
+    pub pitch_max: f32,
+    /// Player fade: value at entry, ticks to fade out, value at exit, ticks to fade in
+    /// (`FUN_0013fe20`, `FUN_00140f28`: 0x378e58, 0x378e54, 0x378f00, 0x378e78).
+    pub fade_from: f32,
+    pub fade_out_ticks: f32,
+    pub fade_to: f32,
+    pub fade_in_ticks: f32,
+}
+
+/// Overhead camera (mode 5, area camera type 1) constants (`FUN_00158eb0`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OverheadParams {
+    /// Floor probe above and below the player (`FUN_00158d88`, 0x37939c, 0x3793a0).
+    pub probe_up: f32,
+    pub probe_down: f32,
+    /// The look-at point sits this far above the floor hit (0x3793c8).
+    pub raise: f32,
+    /// Ease distance of the look-at point (0x3793cc).
+    pub ease: f32,
+    /// Camera offset from the look-at point, in world axes (0x3793a8, 0x3793b0; Y up here).
+    pub offset: Vec3,
+    /// The Select view: fixed position and look-at point (0x3793b4/b8, 0x3793bc/c0) and fov
+    /// (0x3793c4).
+    pub fixed_pos: Vec3,
+    pub fixed_look: Vec3,
+    pub fixed_fov: f32,
+    /// Field of view of the following view (`DAT_005204b0` from 0x3793d0).
+    pub fov: f32,
+}
+
+/// Spring constants of a scripted (event) camera (`FUN_0015cb70`, `FUN_0015cd20`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EventParams {
+    pub k: f32,
+    pub c: f32,
+    pub t_look: f32,
+    pub rest: f32,
+    pub t_pos: f32,
+    pub t_fov: f32,
+    pub k_fov: f32,
+    pub c_fov: f32,
+    pub rest_fov: f32,
+}
+
 /// The camera's numbers, read from the user's executable (see [`Params::from_exe`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Params {
@@ -42,8 +94,16 @@ pub struct Params {
     /// Auto-camera turn rate: `auto_base + auto_per_speed * (run speed - 8)` radians per tick.
     pub auto_base: f32,
     pub auto_per_speed: f32,
-    /// Right-stick yaw rate per tick at full tilt.
+    /// Right-stick yaw rate per tick at full tilt; the look-around pitch uses the same number
+    /// (`FUN_00141018` copies 0x378f14 to both `DAT_004842e8` and `DAT_004842ec`).
     pub stick_yaw: f32,
+    /// Distance a collided camera is kept off the surface along its normal (`FUN_0013f8f8`,
+    /// `DAT_00378e48`), and the larger margin for callers that ask for it (`DAT_00378e44`).
+    pub wall_margin: f32,
+    pub wall_margin_far: f32,
+    pub look: LookParams,
+    pub overhead: OverheadParams,
+    pub event: EventParams,
 }
 
 /// Virtual address of the first byte of the main executable image; file offset = VA - 0xff000.
@@ -60,6 +120,8 @@ impl Params {
         let row = |v: [usize; 6]| -> Option<Row> {
             Some(Row { fov: f(v[0])?, radius: f(v[1])?, lock_radius: f(v[2])?, min_radius: f(v[3])?, max_radius: f(v[4])?, height_k: f(v[5])? })
         };
+        // The game's vectors are (x, y, z) with Y down; the app is Y up: y and z negated.
+        let v = |x: usize, y: usize| -> Option<Vec3> { Some(Vec3::new(f(x)?, -f(y)?, 0.0)) };
         let p = Params {
             rows: [
                 row([0x378f34, 0x378f38, 0x378f3c, 0x378f40, 0x378f44, 0x378f48])?,
@@ -71,6 +133,39 @@ impl Params {
             auto_base: f(0x378f0c)?,
             auto_per_speed: f(0x378f10)?,
             stick_yaw: f(0x378f14)?,
+            wall_margin: f(0x378e48)?,
+            wall_margin_far: f(0x378e44)?,
+            look: LookParams {
+                distance: f(0x378e74)?,
+                pitch_min: f(0x378f18)?,
+                pitch_max: f(0x378f1c)?,
+                fade_from: f(0x378e58)?,
+                fade_out_ticks: f(0x378e54)?,
+                fade_to: f(0x378f00)?,
+                fade_in_ticks: f(0x378e78)?,
+            },
+            overhead: OverheadParams {
+                probe_up: f(0x37939c)?,
+                probe_down: f(0x3793a0)?,
+                raise: f(0x3793c8)?,
+                ease: f(0x3793cc)?,
+                offset: v(0x3793a8, 0x3793b0)?,
+                fixed_pos: v(0x3793b4, 0x3793b8)?,
+                fixed_look: v(0x3793bc, 0x3793c0)?,
+                fixed_fov: f(0x3793c4)?,
+                fov: f(0x3793d0)?,
+            },
+            event: EventParams {
+                k: f(0x379470)?,
+                c: f(0x379474)?,
+                t_look: f(0x379478)?,
+                rest: f(0x37947c)?,
+                t_pos: f(0x379480)?,
+                t_fov: f(0x379484)?,
+                k_fov: f(0x379488)?,
+                c_fov: f(0x37948c)?,
+                rest_fov: f(0x379490)?,
+            },
         };
         p.sane().then_some(p)
     }
@@ -91,6 +186,20 @@ impl Params {
             && self.stick_yaw > 0.0
             && self.auto_base.is_finite()
             && self.auto_per_speed.is_finite()
+            && self.wall_margin > 0.0
+            && self.wall_margin_far >= self.wall_margin
+            && self.look.distance > 0.0
+            && self.look.pitch_min < 0.0
+            && self.look.pitch_max > 0.0
+            && self.look.fade_out_ticks > 0.0
+            && self.look.fade_in_ticks > 0.0
+            && self.overhead.probe_down > 0.0
+            && self.overhead.ease > 0.0
+            && self.overhead.fov > 0.3
+            && self.overhead.fov < 3.0
+            && self.event.t_look > 0.0
+            && self.event.t_pos > 0.0
+            && self.event.t_fov > 0.0
     }
 }
 
@@ -186,48 +295,111 @@ pub fn screen_flags(p: Vec3, cam_pos: Vec3, cam_look: Vec3, hfov: f32) -> u32 {
     f
 }
 
-/// Distance along a segment to the first surface, or `None`.
-pub type Cast<'a> = &'a dyn Fn(Vec3, Vec3) -> Option<f32>;
+/// A camera ray's first surface: the point, the polygon's unit normal and its attribute word
+/// (the COCT flags word; the game reads it through `FUN_00143e40` and keeps the low four bits).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Hit {
+    pub point: Vec3,
+    pub normal: Vec3,
+    pub attr: u32,
+}
 
-/// Pulls a camera back from a surface between `look` and `pos` (`FUN_0013f8f8`): the new position
-/// is the hit point pushed 5 along the surface normal. The normal is found from two more rays
-/// offset sideways; the result is checked to be reachable from `look` and falls back to backing
-/// off along the ray. `None` when nothing is in the way.
-pub fn pull_in(look: Vec3, pos: Vec3, cast: Cast) -> Option<Vec3> {
-    let seg = pos - look;
-    let len = seg.length();
-    if len < 1e-3 {
+/// First surface on a segment, or `None`.
+pub type Cast<'a> = &'a dyn Fn(Vec3, Vec3) -> Option<Hit>;
+
+/// A dynamic blocker: a sphere an object registers for the camera (`FUN_001894d0` fills the
+/// list entry: centre at +0x10 from a joint of the object, radius at +4).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Blocker {
+    pub center: Vec3,
+    pub radius: f32,
+}
+
+/// Where a segment `a..b` enters a sphere, if it does (`FUN_00162ce0`): the closest point of the
+/// line to the centre is found from the segment's midpoint and half extent, the ends are checked
+/// when the closest point lies beyond them, and the entry point is the closest point moved back
+/// toward `a` by the chord half-length.
+pub fn sphere_entry(center: Vec3, radius: f32, a: Vec3, b: Vec3) -> Option<Vec3> {
+    let m = (a + b) * 0.5;
+    let h = b - m;
+    let c = center - m;
+    let hh = h.dot(h);
+    if hh < f32::MIN_POSITIVE {
         return None;
     }
-    let dir = seg / len;
-    let t0 = cast(look, pos)?;
-    let h0 = look + dir * t0;
-    let back = look + dir * (t0 - WALL_MARGIN).max(0.0);
-    let e1 = dir.any_orthonormal_vector();
-    let e2 = dir.cross(e1);
-    let probe = |e: Vec3| -> Option<Vec3> {
-        let off = e * 3.0;
-        cast(look + off, pos + off).map(|t| look + off + dir * t)
-    };
-    let n = match (probe(e1), probe(e2)) {
-        (Some(h1), Some(h2)) => {
-            let n = (h1 - h0).cross(h2 - h0);
-            // Reject probes that hit different surfaces (a corner or an edge).
-            let flat = (h1 - h0).dot(dir).abs() < 60.0 && (h2 - h0).dot(dir).abs() < 60.0;
-            (flat && n.length_squared() > 1e-6).then(|| {
-                let n = n.normalize();
-                if n.dot(look - h0) < 0.0 { -n } else { n }
-            })
-        }
-        _ => None,
-    };
-    let Some(n) = n else { return Some(back) };
-    let out = h0 + n * WALL_MARGIN;
-    // The pushed-out point must be on the look-at side of every surface.
-    match cast(look, out) {
-        None => Some(out),
-        Some(_) => Some(back),
+    let cc = c.dot(c);
+    let hc = h.dot(c);
+    let r2 = radius * radius;
+    let d2 = cc - hc * hc / hh;
+    if r2 < d2 {
+        return None;
     }
+    let q = m + h * (hc / hh);
+    if hc > hh {
+        if (center - b).length_squared() > r2 {
+            return None;
+        }
+    } else if hc < -hh && (center - a).length_squared() > r2 {
+        return None;
+    }
+    Some(q - h * ((r2 - d2) / hh).sqrt())
+}
+
+/// Clips a segment `a..b` against the blocker list (`FUN_0015a418`): the end moves to the nearest
+/// sphere entry point. A sphere that already contains `a` (`FUN_00162c88`) is skipped; the
+/// original then fails to advance its list pointer and re-tests that same sphere for the rest of
+/// the loop, so every later entry is ignored. That quirk is kept.
+pub fn blockers_clip(list: &[Blocker], a: Vec3, b: Vec3) -> Option<Vec3> {
+    let mut end = b;
+    let mut best = (b - a).length();
+    let mut hit = false;
+    let mut i = 0;
+    for _ in 0..list.len().min(MAX_BLOCKERS) {
+        let s = &list[i];
+        if (a - s.center).length() <= s.radius {
+            // The list pointer stays put in the original.
+            continue;
+        }
+        if let Some(p) = sphere_entry(s.center, s.radius, a, b) {
+            let d = (p - a).length();
+            if d < best {
+                best = d;
+                end = p;
+                hit = true;
+            }
+        }
+        i += 1;
+    }
+    hit.then_some(end)
+}
+
+/// Pulls a camera point back from what is between `from` and `to` (`FUN_0013f8f8`). The
+/// blocker list is tested first when given; then the map's camera collision. On a hit the result
+/// is the hit point pushed `margin` along the polygon's normal. A polygon whose attribute's low
+/// four bits are 5 makes a second cast from `from` to the point at `to`'s horizontal position
+/// and the hit's height: a hit there replaces the point (the first polygon's normal is kept),
+/// and the margin is always the small one. `far` asks for the larger margin (no field mode does).
+pub fn collide(p: &Params, from: Vec3, to: Vec3, cast: Cast, blockers: Option<&[Blocker]>, far: bool) -> Option<Vec3> {
+    let mut end = to;
+    let mut blocked = false;
+    if let Some(list) = blockers
+        && let Some(e) = blockers_clip(list, from, to)
+    {
+        end = e;
+        blocked = true;
+    }
+    let Some(h) = cast(from, end) else { return blocked.then_some(end) };
+    let mut point = h.point;
+    let mut second = false;
+    if h.attr & 0xf == 5 {
+        let end2 = Vec3::new(to.x, point.y, to.z);
+        if let Some(h2) = cast(from, end2) {
+            point = h2.point;
+        }
+        second = true;
+    }
+    let margin = if second || !far { p.wall_margin } else { p.wall_margin_far };
+    Some(point + h.normal * margin)
 }
 
 /// What the camera follows.
@@ -241,6 +413,12 @@ pub struct Subject {
     pub moved: bool,
     /// Current run speed in units per tick (`player + 0x114`; 8 for Sora without Quick Run).
     pub run_speed: f32,
+    /// Height of the eye above the feet for the look-around (`prty` row field +0x30,
+    /// `SubjectiveOffset`, through `FUN_0016be40`).
+    pub eye_height: f32,
+    /// The player's state allows the look-around (`FUN_0019ae30`: state flag 0x80, not in an
+    /// event or on a ride).
+    pub can_look: bool,
 }
 
 /// Pad sticks as the game reads them: directions are unit vectors (x right, y down), magnitudes
@@ -258,6 +436,8 @@ pub struct TickIn<'a> {
     pub sticks: Sticks,
     /// Camera reset button (R3) pressed this tick.
     pub reset: bool,
+    /// Select pressed this tick (the look-around, and the overhead camera's second view).
+    pub select: bool,
     pub subject: Subject,
     /// Lock-on target point, when locked on.
     pub lock: Option<Vec3>,
@@ -268,12 +448,144 @@ pub struct TickIn<'a> {
     /// The character jumped to a new place: skip smoothing.
     pub warp: bool,
     pub cast: Cast<'a>,
+    /// Dynamic blockers registered this tick (`FUN_0015a3e8` rebuilds the list every call).
+    pub blockers: &'a [Blocker],
+}
+
+/// The camera object's mode (`0x40`). The numbers are the game's. Mode 2 (lock-on,
+/// `FUN_0015a0f0`) is not a variant: the rig takes it from `TickIn::lock`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// Follow camera (`FUN_001402c8`).
+    Follow = 0,
+    /// Look-around from the player's eye (`FUN_00140678`).
+    Look = 1,
+    /// Overhead camera of area camera type 1 (`FUN_00158eb0`).
+    Overhead = 5,
+    /// Always-behind camera of area camera type 3 (`FUN_001581a0`).
+    Behind = 8,
+}
+
+/// Area camera type from the area script's camera opcode (`DAT_0035cd38`), mapped to a table
+/// row and a mode (`FUN_00177128`): 0 picks row 1 for an indoor area (arif bit 1) else row 0;
+/// 1 is row 0 with the overhead camera; 2 is row 2; 3 is row 3 with the always-behind camera.
+pub fn area_setup(camera_type: u8, indoor: bool) -> (usize, Mode) {
+    match camera_type {
+        1 => (0, Mode::Overhead),
+        2 => (2, Mode::Follow),
+        3 => (3, Mode::Behind),
+        _ => (usize::from(indoor), Mode::Follow),
+    }
+}
+
+/// A value stepping linearly toward a target (`FUN_001abf40` sets it, `FUN_001abf78` advances it
+/// and clamps to 0..1). The game keeps one on the player (+0x834) and multiplies it into the
+/// model's draw factor at +0x82c (`FUN_00193270`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fade {
+    pub value: f32,
+    pub step: f32,
+}
+
+impl Fade {
+    /// `FUN_001abf40(from, to, ticks)`: start at `from` and reach `to` after `ticks`; with no
+    /// ticks the value is `to` at once.
+    pub fn set(from: f32, to: f32, ticks: f32) -> Fade {
+        if ticks <= 0.0 { Fade { value: to, step: 0.0 } } else { Fade { value: from, step: (to - from) / ticks } }
+    }
+
+    /// One tick (`FUN_001abf78`): the step stops at 0 or 1.
+    pub fn advance(&mut self) {
+        if self.step == 0.0 {
+            return;
+        }
+        let v = self.value + self.step;
+        if v <= 0.0 {
+            *self = Fade { value: 0.0, step: 0.0 };
+        } else if v >= 1.0 {
+            *self = Fade { value: 1.0, step: 0.0 };
+        } else {
+            self.value = v;
+        }
+    }
+}
+
+/// What an event (cutscene) camera hands the field camera: a finished view.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct View {
+    pub look: Vec3,
+    pub pos: Vec3,
+    pub fov: f32,
+    pub roll: f32,
+}
+
+/// A scripted camera's smoothing state (`0x520660..0x5206ec`): the springs the event player runs
+/// on the position, the look-at point and (fov, roll) it is given each frame (`FUN_0015cb70`,
+/// `FUN_0015cd20`). `start` seeds every value from the field camera (`FUN_0015ca08`), `frame`
+/// is one event frame (`FUN_0015ce00`), and the field camera takes the final view back with
+/// [`Rig::handover`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EventCamera {
+    look: Vec3,
+    look_new: Vec3,
+    look_prev: Vec3,
+    pos: Vec3,
+    pos_new: Vec3,
+    pos_prev: Vec3,
+    fr: Vec3,
+    fr_new: Vec3,
+    fr_prev: Vec3,
+}
+
+// No map script drives an event camera yet (hook for the script runner); tested below.
+#[allow(dead_code)]
+impl EventCamera {
+    /// `FUN_0015ca08`: everything starts at the field camera's smoothed values.
+    pub fn start(rig: &Rig) -> EventCamera {
+        let fr = Vec3::new(rig.fov, rig.roll, 0.0);
+        EventCamera { look: rig.look, look_new: rig.look, look_prev: rig.look, pos: rig.pos, pos_new: rig.pos, pos_prev: rig.pos, fr, fr_new: fr, fr_prev: fr }
+    }
+
+    /// One frame of the event's camera track (`FUN_0015ce00`): the wanted values of last frame
+    /// become the previous ones (`FUN_0015cb08`); with `collide` the position is pulled in
+    /// against the map (and the blockers when `blockers` is given); with `smooth` the three
+    /// springs run, else the values are used as they are. Returns the view to draw.
+    pub fn frame(&mut self, p: &Params, pos: Vec3, look: Vec3, fov: f32, roll: f32, collide_map: Option<(Cast, Option<&[Blocker]>)>, smooth: bool) -> View {
+        self.look_prev = self.look_new;
+        self.pos_prev = self.pos_new;
+        self.fr_prev = self.fr_new;
+        let mut pos = pos;
+        if let Some((cast, blockers)) = collide_map
+            && let Some(c) = collide(p, look, pos, cast, blockers, false)
+        {
+            pos = c;
+        }
+        self.look_new = look;
+        self.pos_new = pos;
+        self.fr_new = Vec3::new(fov, roll, 0.0);
+        if smooth {
+            let e = &p.event;
+            self.look = spring(self.look, self.look_new, self.look_prev, e.t_look, e.k, e.c, e.rest);
+            self.pos = spring(self.pos, self.pos_new, self.pos_prev, e.t_pos, e.k, e.c, e.rest);
+            self.fr = spring(self.fr, self.fr_new, self.fr_prev, e.t_fov, e.k_fov, e.c_fov, e.rest_fov);
+        } else {
+            self.look = look;
+            self.pos = pos;
+            self.fr = self.fr_new;
+        }
+        View { look: self.look, pos: self.pos, fov: self.fr.x, roll: self.fr.y }
+    }
+
+    pub fn view(&self) -> View {
+        View { look: self.look, pos: self.pos, fov: self.fr.x, roll: self.fr.y }
+    }
 }
 
 /// The camera object's state (`0x355840`).
 #[derive(Clone, Debug)]
 pub struct Rig {
     pub row: Row,
+    pub mode: Mode,
     pub radius: f32,
     pub yaw: f32,
     pub target_yaw: f32,
@@ -281,6 +593,15 @@ pub struct Rig {
     pub look: Vec3,
     pub pos: Vec3,
     pub fov: f32,
+    pub roll: f32,
+    /// Look-around yaw and pitch (`0xc0`, `0xc4`), mode 1 only.
+    pub look_yaw: f32,
+    pub look_pitch: f32,
+    /// The player's draw fade the look-around drives (`player + 0x834`). The app's model does
+    /// not read it yet; the value is exposed for that hook.
+    pub fade: Fade,
+    /// Overhead camera: Select switched to the fixed view (`DAT_00358b08`).
+    pub overhead_fixed: bool,
     wanted_look: Vec3,
     prev_wanted_look: Vec3,
     wanted_pos: Vec3,
@@ -291,21 +612,27 @@ pub struct Rig {
 
 impl Rig {
     /// A camera placed straight behind the subject with no smoothing (`FUN_0013f470`).
-    pub fn new(row: Row, s: &Subject, cast: Cast) -> Rig {
+    pub fn new(p: &Params, row: Row, s: &Subject, cast: Cast) -> Rig {
         let yaw = behind_yaw(s.facing);
         let look = s.pos + Vec3::Y * LOOK_HEIGHT;
         let mut pos = wanted_position(look, row.radius, yaw, row.min_radius, row.height_k);
-        if let Some(c) = pull_in(look, pos, cast) {
+        if let Some(c) = collide(p, look, pos, cast, None, false) {
             pos = c;
         }
         Rig {
             row,
+            mode: Mode::Follow,
             radius: row.radius,
             yaw,
             target_yaw: yaw,
             look,
             pos,
             fov: row.fov,
+            roll: 0.0,
+            look_yaw: yaw + PI,
+            look_pitch: 0.0,
+            fade: Fade { value: 1.0, step: 0.0 },
+            overhead_fixed: false,
             wanted_look: look,
             prev_wanted_look: look,
             wanted_pos: pos,
@@ -325,6 +652,22 @@ impl Rig {
     pub fn pitch(&self) -> f32 {
         let d = self.pos - self.look;
         d.y.atan2(d.xz().length().max(1e-3))
+    }
+
+    /// The field camera takes over from an event camera (`FUN_0015c8f8` then `FUN_001406e8`):
+    /// it is placed behind the subject, runs one forced tick (no collision, warp smoothing), and
+    /// its smoothed values are then replaced by the event's final view, so the next ticks spring
+    /// from where the cutscene left the camera.
+    pub fn handover(&mut self, p: &Params, s: &Subject, v: View) {
+        let fresh = Rig::new(p, self.row, s, &|_, _| None);
+        let (mode, fixed) = (self.mode, self.overhead_fixed);
+        *self = fresh;
+        self.mode = if mode == Mode::Look { Mode::Follow } else { mode };
+        self.overhead_fixed = fixed;
+        self.look = v.look;
+        self.pos = v.pos;
+        self.fov = v.fov;
+        self.roll = v.roll;
     }
 
     fn clamp_radius(&mut self) {
@@ -373,63 +716,187 @@ impl Rig {
         }
     }
 
+    /// Select in the follow camera while the player may look around (`FUN_0013fe20`): mode 1,
+    /// pitch 0, and the player starts fading out.
+    fn enter_look(&mut self, p: &Params) {
+        self.mode = Mode::Look;
+        self.look_yaw = self.yaw + PI;
+        self.look_pitch = 0.0;
+        self.fade = Fade::set(p.look.fade_from, 0.0, p.look.fade_out_ticks);
+    }
+
+    /// Leaving the look-around (`FUN_00140f28`): the player fades back in and the mode is 0.
+    fn leave_look(&mut self, p: &Params) {
+        self.fade = Fade::set(0.0, p.look.fade_to, p.look.fade_in_ticks);
+        self.mode = Mode::Follow;
+    }
+
+    /// Look-around tick (`FUN_00140530`). The camera sits at the eye; its yaw is the player's
+    /// facing (the game sets `0xc0` from `FUN_0013fc28` plus pi every tick, so turning is the
+    /// player's job); the right stick's vertical tilts within the pitch range; the look-at point
+    /// is `distance` ahead (`FUN_00140418`).
+    fn look_tick(&mut self, p: &Params, i: &TickIn) {
+        let s = &i.subject;
+        if i.reset {
+            self.look_pitch = 0.0;
+        }
+        let eye = s.pos + Vec3::Y * s.eye_height;
+        self.wanted_pos = eye;
+        self.yaw = behind_yaw(s.facing);
+        self.target_yaw = self.yaw;
+        self.look_yaw = self.yaw + PI;
+        if i.sticks.right_mag > 0.0 && i.sticks.right.y != 0.0 {
+            // Stick up (y < 0) raises the pitch.
+            self.look_pitch -= i.sticks.right.y * i.sticks.right_mag * p.stick_yaw;
+        }
+        self.look_yaw = wrap(self.look_yaw);
+        self.look_pitch = wrap(self.look_pitch).clamp(p.look.pitch_min, p.look.pitch_max);
+        let (sy, cy) = self.look_yaw.sin_cos();
+        let (sp, cp) = self.look_pitch.sin_cos();
+        self.wanted_look = eye + Vec3::new(sy * cp, sp, cy * cp) * p.look.distance;
+    }
+
+    /// Overhead camera tick (`FUN_00158eb0`): the look-at point eases toward a point above the
+    /// floor under the player, the camera sits at a fixed world offset from it, and Select swaps
+    /// to a fixed view. Nothing is smoothed (`FUN_0013f560` copies the wanted values).
+    fn overhead_tick(&mut self, p: &Params, i: &TickIn) {
+        let o = &p.overhead;
+        if i.select {
+            self.overhead_fixed = !self.overhead_fixed;
+        }
+        let (look, pos, fov) = if self.overhead_fixed {
+            (o.fixed_look, o.fixed_pos, o.fixed_fov)
+        } else {
+            let s = &i.subject;
+            // A vertical probe from above the player to far below (`FUN_00158d88`); the player's
+            // own position when it finds nothing.
+            let above = s.pos + Vec3::Y * o.probe_up;
+            let below = s.pos - Vec3::Y * o.probe_down;
+            let floor = (i.cast)(above, below).map_or(s.pos, |h| h.point);
+            let target = floor + Vec3::Y * o.raise;
+            let d = target - self.look;
+            let len = d.length();
+            let f = len.clamp(0.0, o.ease);
+            let look = self.look + d * (f / o.ease);
+            (look, look + o.offset, o.fov)
+        };
+        self.wanted_look = look;
+        self.wanted_pos = pos;
+        self.wanted_fov = fov;
+        self.prev_wanted_look = look;
+        self.prev_wanted_pos = pos;
+        self.prev_wanted_fov = fov;
+        self.look = look;
+        self.pos = pos;
+        self.fov = fov;
+        self.roll = 0.0;
+    }
+
     /// One 60 Hz tick (`FUN_00140a80`).
     pub fn tick(&mut self, p: &Params, i: &TickIn) {
         self.prev_wanted_look = self.wanted_look;
         self.prev_wanted_pos = self.wanted_pos;
         self.prev_wanted_fov = self.wanted_fov;
+        self.fade.advance();
         let sub = &i.subject;
         // Where the camera looked last tick, for the lock-on screen tests.
         let (view_pos, view_look, view_fov) = (self.pos, self.look, self.fov);
         let chest = sub.pos + Vec3::Y * LOOK_HEIGHT;
         let mut snap_yaw = false;
-        // Both cameras orbit the character's chest; the lock-on look-at point is another matter.
-        let orbit_around = chest;
-        match i.lock {
-            None => {
-                // Follow camera (`FUN_001402c8`).
-                if i.reset {
-                    self.target_yaw = behind_yaw(sub.facing);
-                    self.radius = self.row.radius;
-                    self.pos = self.wanted_pos;
-                    snap_yaw = i.sticks.left_mag != 0.0;
-                } else {
-                    self.stick_turn(p, &i.sticks);
-                }
-                // Zoom runs whether or not the camera was reset.
-                self.stick_zoom(&i.sticks);
-                self.direct_zoom(i.zoom);
-                if !snap_yaw && i.auto && sub.moved && i.sticks.left_mag != 0.0 && i.sticks.right_mag == 0.0 && i.sticks.left.y < 0.9 {
-                    let step = auto_turn_step(p, i.sticks.left, i.sticks.left_mag, sub.run_speed);
-                    self.yaw = approach_angle(self.yaw, behind_yaw(sub.facing), step);
-                    self.target_yaw = self.yaw;
-                    self.relax_radius(self.row.radius);
-                }
-                self.wanted_look = chest;
-            }
-            Some(target) => {
-                // Lock-on camera (`FUN_0015a0f0`).
-                if i.reset {
-                    // Reset button: face along the player-to-look-at line, default lock radius.
-                    let d = sub.pos - self.wanted_look;
-                    self.target_yaw = d.x.atan2(d.z);
-                    self.radius = self.row.lock_radius;
-                } else {
-                    self.stick_turn(p, &i.sticks);
-                }
-                self.stick_zoom(&i.sticks);
-                self.direct_zoom(i.zoom);
-                self.lock_frame(i, target, chest, (view_pos, view_look, view_fov));
-            }
+        if self.mode == Mode::Overhead {
+            self.overhead_tick(p, i);
+            return;
         }
-        self.wanted_fov = self.row.fov;
-        // Wanted position (`FUN_0013f7a0`): the yaw swings toward its target, then the circle.
-        self.yaw = if snap_yaw || i.warp { self.target_yaw } else { approach_angle(self.yaw, self.target_yaw, p.yaw_step) };
-        let mut wp = wanted_position(orbit_around, self.radius, self.yaw, self.row.min_radius, self.row.height_k);
-        if let Some(c) = pull_in(orbit_around, wp, i.cast) {
-            wp = c;
+        // Lock-on starts by ending the look-around (`FUN_0015a180` calls `FUN_00140f28`).
+        // Select or a state that forbids it ends it too (`FUN_00140530`'s other branch: fade the
+        // player in, which sets the mode to 0 (`DAT_00355880` is the mode field, `0x355840 +
+        // 0x40`), turn the yaw behind the player, and frame this tick like the follow camera).
+        let mut select = i.select;
+        if self.mode == Mode::Look && (i.lock.is_some() || !sub.can_look || i.select) {
+            self.leave_look(p);
+            if i.lock.is_none() {
+                self.yaw = behind_yaw(sub.facing);
+                self.target_yaw = self.yaw;
+            }
+            select = false;
         }
-        self.wanted_pos = wp;
+        if self.mode == Mode::Look {
+            self.look_tick(p, i);
+            self.wanted_fov = self.row.fov;
+        } else {
+            match i.lock {
+                None => {
+                    if self.mode == Mode::Behind {
+                        // `FUN_00158130`: R3 resets the radius, else the stick zooms; the yaw is
+                        // always behind the player.
+                        if i.reset {
+                            self.radius = self.row.radius;
+                        } else {
+                            self.stick_zoom(&i.sticks);
+                        }
+                        self.direct_zoom(i.zoom);
+                        self.target_yaw = behind_yaw(sub.facing);
+                    } else {
+                        // Follow camera (`FUN_001402c8`).
+                        if select && sub.can_look {
+                            self.enter_look(p);
+                            self.look_tick(p, i);
+                            self.wanted_fov = self.row.fov;
+                            self.smooth_and_collide(p, i, chest, false);
+                            return;
+                        }
+                        if i.reset {
+                            self.target_yaw = behind_yaw(sub.facing);
+                            self.radius = self.row.radius;
+                            self.pos = self.wanted_pos;
+                            snap_yaw = i.sticks.left_mag != 0.0;
+                        } else {
+                            self.stick_turn(p, &i.sticks);
+                        }
+                        // Zoom runs whether or not the camera was reset.
+                        self.stick_zoom(&i.sticks);
+                        self.direct_zoom(i.zoom);
+                        if !snap_yaw && i.auto && sub.moved && i.sticks.left_mag != 0.0 && i.sticks.right_mag == 0.0 && i.sticks.left.y < 0.9 {
+                            let step = auto_turn_step(p, i.sticks.left, i.sticks.left_mag, sub.run_speed);
+                            self.yaw = approach_angle(self.yaw, behind_yaw(sub.facing), step);
+                            self.target_yaw = self.yaw;
+                            self.relax_radius(self.row.radius);
+                        }
+                    }
+                    self.wanted_look = chest;
+                }
+                Some(target) => {
+                    // Lock-on camera (`FUN_0015a0f0`).
+                    if i.reset {
+                        // Reset button: face along the player-to-look-at line, default lock radius.
+                        let d = sub.pos - self.wanted_look;
+                        self.target_yaw = d.x.atan2(d.z);
+                        self.radius = self.row.lock_radius;
+                    } else {
+                        self.stick_turn(p, &i.sticks);
+                    }
+                    self.stick_zoom(&i.sticks);
+                    self.direct_zoom(i.zoom);
+                    self.lock_frame(i, target, chest, (view_pos, view_look, view_fov));
+                }
+            }
+            self.wanted_fov = self.row.fov;
+            // Wanted position (`FUN_0013f7a0`): the yaw swings toward its target, then the circle.
+            self.yaw = if snap_yaw || i.warp { self.target_yaw } else { approach_angle(self.yaw, self.target_yaw, p.yaw_step) };
+            let mut wp = wanted_position(chest, self.radius, self.yaw, self.row.min_radius, self.row.height_k);
+            // The wanted position is tested with the blockers (`FUN_0013fbc0` passes 1).
+            if let Some(c) = collide(p, chest, wp, i.cast, Some(i.blockers), false) {
+                wp = c;
+            }
+            self.wanted_pos = wp;
+        }
+        self.smooth_and_collide(p, i, chest, i.lock.is_some());
+    }
+
+    /// The common tail (`FUN_001407b8`): smoothing, then the mode's collision of the smoothed
+    /// position (modes 0, 3, 6, 8: pull the position in, which also becomes the wanted one;
+    /// mode 1: pull the look-at point in; mode 2: from the chest).
+    fn smooth_and_collide(&mut self, p: &Params, i: &TickIn, chest: Vec3, lock: bool) {
         if i.warp {
             self.look = self.wanted_look;
             self.pos = self.wanted_pos;
@@ -437,14 +904,21 @@ impl Rig {
             self.prev_wanted_look = self.wanted_look;
             self.prev_wanted_pos = self.wanted_pos;
         }
-        // Smoothing (`FUN_001407b8`).
-        let t = smoothing_time(sub.run_speed, i.warp);
+        let t = smoothing_time(i.subject.run_speed, i.warp);
         self.look = spring(self.look, self.wanted_look, self.prev_wanted_look, t + 0.03, 2.5, 0.5, 1.0);
         self.pos = spring(self.pos, self.wanted_pos, self.prev_wanted_pos, t, 2.5, 0.5, 1.0);
         self.fov = spring(Vec3::new(self.fov, 0.0, 0.0), Vec3::new(self.wanted_fov, 0.0, 0.0), Vec3::new(self.prev_wanted_fov, 0.0, 0.0), t, 2.5, 0.5, 0.001).x;
-        // Collision on the smoothed position; a hit also becomes the wanted position.
-        let from = if i.lock.is_some() { chest } else { self.look };
-        if let Some(c) = pull_in(from, self.pos, i.cast) {
+        if self.mode == Mode::Look {
+            // `FUN_00140398`: a wall between the eye and the look-at point pulls the look-at point
+            // to it. The cast's direction (eye to look-at) is inferred: the decompiled call's end
+            // point is not recoverable and the game's polygon test is front-face only.
+            if let Some(h) = (i.cast)(self.pos, self.look) {
+                self.look = h.point;
+            }
+            return;
+        }
+        let from = if lock { chest } else { self.look };
+        if let Some(c) = collide(p, from, self.pos, i.cast, Some(i.blockers), false) {
             self.pos = c;
             self.wanted_pos = c;
         }
@@ -510,29 +984,54 @@ mod tests {
     }
 
     fn params() -> Params {
-        Params { rows: [row(); 4], yaw_step: 0.17, auto_base: 0.004, auto_per_speed: 0.0002, stick_yaw: 0.05 }
+        Params {
+            rows: [row(); 4],
+            yaw_step: 0.17,
+            auto_base: 0.004,
+            auto_per_speed: 0.0002,
+            stick_yaw: 0.05,
+            wall_margin: 5.0,
+            wall_margin_far: 30.0,
+            look: LookParams { distance: 350.0, pitch_min: -1.22, pitch_max: 1.22, fade_from: 1.0, fade_out_ticks: 30.0, fade_to: 1.0, fade_in_ticks: 30.0 },
+            overhead: OverheadParams {
+                probe_up: 100.0,
+                probe_down: 10000.0,
+                raise: 150.0,
+                ease: 200.0,
+                offset: Vec3::new(600.0, 500.0, 0.0),
+                fixed_pos: Vec3::new(51.0, 1492.0, 0.0),
+                fixed_look: Vec3::new(256.0, 1777.0, 0.0),
+                fixed_fov: 1.5,
+                fov: 1.05,
+            },
+            event: EventParams { k: 2.5, c: 0.5, t_look: 0.1, rest: 1.0, t_pos: 0.07, t_fov: 0.07, k_fov: 2.5, c_fov: 0.5, rest_fov: 0.001 },
+        }
     }
 
-    fn no_wall(_: Vec3, _: Vec3) -> Option<f32> {
+    fn no_wall(_: Vec3, _: Vec3) -> Option<Hit> {
         None
     }
 
-    /// An infinite wall on the plane x = 0 (both sides).
-    fn wall(a: Vec3, b: Vec3) -> Option<f32> {
+    /// An infinite wall on the plane x = 0, hit from either side, attribute 1.
+    fn wall(a: Vec3, b: Vec3) -> Option<Hit> {
+        plane_x0(a, b, 1)
+    }
+
+    fn plane_x0(a: Vec3, b: Vec3, attr: u32) -> Option<Hit> {
         let d = b - a;
         if d.x.abs() < 1e-6 {
             return None;
         }
         let t = -a.x / d.x;
-        (0.0..=1.0).contains(&t).then(|| t * d.length())
+        (0.0..=1.0).contains(&t).then(|| Hit { point: a + d * t, normal: Vec3::new(a.x.signum(), 0.0, 0.0), attr })
     }
 
     fn subject(pos: Vec3) -> Subject {
-        Subject { pos, facing: Vec3::NEG_Z, moved: false, run_speed: 8.0 }
+        Subject { pos, facing: Vec3::NEG_Z, moved: false, run_speed: 8.0, eye_height: 150.0, can_look: true }
     }
 
     fn input<'a>(s: Subject, cast: Cast<'a>) -> TickIn<'a> {
-        TickIn { sticks: Sticks::default(), reset: false, subject: s, lock: None, zoom: 0.0, auto: true, warp: false, cast }
+        TickIn { sticks: Sticks::default(), reset: false, select: false, subject: s, lock: None, zoom: 0.0, auto: true, warp: false, cast, blockers: &[] }
     }
 
     #[test]
@@ -605,49 +1104,72 @@ mod tests {
     }
 
     #[test]
-    fn pull_in_never_ends_beyond_the_wall() {
-        // Sweep many camera positions behind a wall at x = 0, from the look-at side.
-        let mut n = 0;
-        for ly in [20.0f32, 170.0] {
-            for lx in [30.0f32, 120.0, 400.0] {
-                for ang in 0..72 {
-                    let a = ang as f32 * 5.0f32.to_radians();
-                    let look = Vec3::new(lx, ly, 10.0);
-                    let want = look + Vec3::new(a.cos(), 0.3 * a.sin(), a.sin()) * 450.0;
-                    let out = pull_in(look, want, &wall).unwrap_or(want);
-                    assert!(out.x > 0.0, "ends past the wall: look {look} want {want} out {out}");
-                    n += 1;
-                    if want.x <= 0.0 {
-                        // The wall is in the way: the camera is pulled in, not left behind it.
-                        assert!(out.distance(look) < want.distance(look));
-                        assert!(out.x >= 0.0);
-                    } else {
-                        assert!(pull_in(look, want, &wall).is_none());
-                    }
-                }
-            }
-        }
-        assert!(n > 100);
-    }
-
-    #[test]
-    fn pull_in_keeps_the_margin_from_the_wall() {
+    fn collide_keeps_the_margin_along_the_normal() {
+        let p = params();
         let look = Vec3::new(100.0, 100.0, 0.0);
         let want = Vec3::new(-300.0, 140.0, 80.0);
-        let out = pull_in(look, want, &wall).unwrap();
-        assert!((out.x - WALL_MARGIN).abs() < 0.5, "{out}");
+        let out = collide(&p, look, want, &wall, None, false).unwrap();
+        assert!((out.x - 5.0).abs() < 1e-3, "{out}");
+        // The hit point keeps the ray's y and z.
+        let t = 100.0 / 400.0;
+        assert!((out.y - (100.0 + 40.0 * t)).abs() < 1e-3 && (out.z - 80.0 * t).abs() < 1e-3, "{out}");
+        assert!(collide(&p, Vec3::ZERO, Vec3::new(100.0, 0.0, 0.0), &no_wall, None, false).is_none());
+        // The far margin only without a second cast.
+        let far = collide(&p, look, want, &wall, None, true).unwrap();
+        assert!((far.x - 30.0).abs() < 1e-3, "{far}");
     }
 
     #[test]
-    fn pull_in_with_nothing_in_the_way() {
-        assert!(pull_in(Vec3::ZERO, Vec3::new(100.0, 0.0, 0.0), &no_wall).is_none());
+    fn attribute_five_casts_again_at_the_hit_height() {
+        let p = params();
+        // A slope: hit at height 200 wherever the ray crosses x = 0, attribute 5; the second cast
+        // ends at (to.x, 200, to.z) and hits the plane again (x = 0), so the point keeps the ray's
+        // z at the crossing but its y is the hit height.
+        let slope = |a: Vec3, b: Vec3| plane_x0(a, b, 5).map(|h| Hit { point: Vec3::new(h.point.x, 200.0, h.point.z), ..h });
+        let look = Vec3::new(100.0, 100.0, 0.0);
+        let want = Vec3::new(-300.0, 140.0, 80.0);
+        let out = collide(&p, look, want, &slope, None, true).unwrap();
+        assert!((out.y - 200.0).abs() < 1e-3, "{out}");
+        // Second cast: margin stays the small one even when the far margin was asked for.
+        assert!((out.x - 5.0).abs() < 1e-3, "{out}");
+        // Attribute 5 polygon whose second cast misses: the first hit stands.
+        let once = |a: Vec3, b: Vec3| if (b.y - 140.0).abs() > 1e-3 { None } else { plane_x0(a, b, 5) };
+        let out = collide(&p, look, want, &once, None, false).unwrap();
+        // The first hit stands: x = 5 off the wall, y = 110 where the ray crossed it.
+        assert!((out.x - 5.0).abs() < 1e-3 && (out.y - 110.0).abs() < 1e-3, "{out}");
+    }
+
+    #[test]
+    fn sphere_entry_points() {
+        let c = Vec3::new(0.0, 0.0, 0.0);
+        let e = sphere_entry(c, 10.0, Vec3::new(-50.0, 0.0, 0.0), Vec3::new(50.0, 0.0, 0.0)).unwrap();
+        assert!((e - Vec3::new(-10.0, 0.0, 0.0)).length() < 1e-3, "{e}");
+        assert!(sphere_entry(c, 10.0, Vec3::new(-50.0, 20.0, 0.0), Vec3::new(50.0, 20.0, 0.0)).is_none(), "misses above");
+        assert!(sphere_entry(c, 10.0, Vec3::new(-50.0, 0.0, 0.0), Vec3::new(-20.0, 0.0, 0.0)).is_none(), "stops short");
+        // The end inside the sphere still counts.
+        let e = sphere_entry(c, 10.0, Vec3::new(-50.0, 0.0, 0.0), Vec3::new(5.0, 0.0, 0.0)).unwrap();
+        assert!((e.x + 10.0).abs() < 1e-3, "{e}");
+    }
+
+    #[test]
+    fn blockers_clip_nearest_and_the_stall_quirk() {
+        let a = Vec3::ZERO;
+        let b = Vec3::new(100.0, 0.0, 0.0);
+        let near = Blocker { center: Vec3::new(40.0, 0.0, 0.0), radius: 5.0 };
+        let far = Blocker { center: Vec3::new(80.0, 0.0, 0.0), radius: 5.0 };
+        let e = blockers_clip(&[far, near], a, b).unwrap();
+        assert!((e.x - 35.0).abs() < 1e-3, "{e}");
+        // A sphere around the start stalls the walk: the one after it is never tested.
+        let around = Blocker { center: a, radius: 3.0 };
+        assert!(blockers_clip(&[around, near], a, b).is_none());
+        assert!(blockers_clip(&[near, around], a, b).is_some());
     }
 
     #[test]
     fn rig_settles_behind_a_standing_subject() {
         let p = params();
         let s = subject(Vec3::new(1000.0, 0.0, 1000.0));
-        let rig = &mut Rig::new(row(), &s, &no_wall);
+        let rig = &mut Rig::new(&p, row(), &s, &no_wall);
         for _ in 0..120 {
             rig.tick(&p, &input(s, &no_wall));
         }
@@ -660,7 +1182,7 @@ mod tests {
     fn rig_follows_a_runner_and_swings_behind_when_he_turns() {
         let p = params();
         let mut s = subject(Vec3::ZERO);
-        let rig = &mut Rig::new(row(), &s, &no_wall);
+        let rig = &mut Rig::new(&p, row(), &s, &no_wall);
         // Run to the right (+x): the auto-camera turns the camera behind him.
         s.facing = Vec3::X;
         s.moved = true;
@@ -681,7 +1203,7 @@ mod tests {
     fn stick_turns_and_zooms_within_range() {
         let p = params();
         let s = subject(Vec3::ZERO);
-        let rig = &mut Rig::new(row(), &s, &no_wall);
+        let rig = &mut Rig::new(&p, row(), &s, &no_wall);
         let mut inp = input(s, &no_wall);
         inp.sticks.right = Vec2::new(1.0, 0.0);
         inp.sticks.right_mag = 1.0;
@@ -705,7 +1227,7 @@ mod tests {
         let p = params();
         let mut s = subject(Vec3::new(300.0, 0.0, 0.0));
         s.facing = Vec3::X;
-        let rig = &mut Rig::new(row(), &s, &wall);
+        let rig = &mut Rig::new(&p, row(), &s, &wall);
         // He faces +x and backs toward the wall at x = 0, so the camera behind him is pushed into it.
         let mut closest = f32::MAX;
         for k in 0..300 {
@@ -724,7 +1246,7 @@ mod tests {
     fn lock_on_looks_toward_the_target_and_comes_in_to_the_lock_radius() {
         let p = params();
         let s = subject(Vec3::ZERO);
-        let rig = &mut Rig::new(row(), &s, &no_wall);
+        let rig = &mut Rig::new(&p, row(), &s, &no_wall);
         let target = Vec3::new(0.0, 100.0, -300.0);
         let mut inp = input(s, &no_wall);
         inp.lock = Some(target);
@@ -737,6 +1259,179 @@ mod tests {
     }
 
     #[test]
+    fn blockers_stop_the_wanted_position() {
+        let p = params();
+        let s = subject(Vec3::ZERO);
+        let rig = &mut Rig::new(&p, row(), &s, &no_wall);
+        // A sphere on the camera's circle behind him (he faces -z, the camera sits on +z).
+        // The wanted position is (0, 420, 400); the ray from the chest (0, 170, 0) is at
+        // (0, 357.5, 300) three quarters of the way.
+        let list = [Blocker { center: Vec3::new(0.0, 357.5, 300.0), radius: 50.0 }];
+        let mut inp = input(s, &no_wall);
+        inp.blockers = &list;
+        for _ in 0..200 {
+            rig.tick(&p, &inp);
+        }
+        assert!(rig.pos.z < 270.0 && rig.pos.z > 150.0, "{}", rig.pos);
+    }
+
+    #[test]
+    fn look_around_enters_on_select_and_tilts_with_the_stick() {
+        let p = params();
+        let mut s = subject(Vec3::new(0.0, 0.0, 0.0));
+        s.facing = Vec3::NEG_Z;
+        let rig = &mut Rig::new(&p, row(), &s, &no_wall);
+        let mut inp = input(s, &no_wall);
+        inp.select = true;
+        rig.tick(&p, &inp);
+        assert_eq!(rig.mode, Mode::Look);
+        assert!((rig.fade.value - 1.0).abs() < 0.05 && rig.fade.step < 0.0, "fading out: {:?}", rig.fade);
+        inp.select = false;
+        for _ in 0..120 {
+            rig.tick(&p, &inp);
+        }
+        // Camera at the eye, looking along the facing (-z), 350 ahead.
+        let eye = Vec3::new(0.0, 150.0, 0.0);
+        assert!(rig.pos.distance(eye) < 2.0, "{}", rig.pos);
+        assert!(rig.look.distance(eye + Vec3::NEG_Z * 350.0) < 3.0, "{}", rig.look);
+        assert_eq!(rig.fade.value, 0.0);
+        // Stick up raises the look-at point; the pitch stops at the limit.
+        inp.sticks.right = Vec2::new(0.0, -1.0);
+        inp.sticks.right_mag = 1.0;
+        for _ in 0..200 {
+            rig.tick(&p, &inp);
+        }
+        assert!((rig.look_pitch - p.look.pitch_max).abs() < 1e-5, "{}", rig.look_pitch);
+        assert!(rig.look.y > eye.y + 300.0, "{}", rig.look);
+        // Select again leaves: back behind him, fading in.
+        inp.sticks.right_mag = 0.0;
+        inp.select = true;
+        rig.tick(&p, &inp);
+        assert_eq!(rig.mode, Mode::Follow);
+        assert!(rig.fade.step > 0.0);
+        inp.select = false;
+        for _ in 0..200 {
+            rig.tick(&p, &inp);
+        }
+        assert!(rig.pos.z > 300.0, "{}", rig.pos);
+        assert_eq!(rig.fade.value, 1.0);
+        // Not allowed in a state without the flag.
+        s.can_look = false;
+        inp.subject = s;
+        inp.select = true;
+        rig.tick(&p, &inp);
+        assert_eq!(rig.mode, Mode::Follow);
+    }
+
+    #[test]
+    fn look_around_pulls_the_look_point_to_a_wall() {
+        let p = params();
+        let mut s = subject(Vec3::new(100.0, 0.0, 0.0));
+        s.facing = Vec3::NEG_X;
+        let rig = &mut Rig::new(&p, row(), &s, &wall);
+        let mut inp = input(s, &wall);
+        inp.select = true;
+        rig.tick(&p, &inp);
+        inp.select = false;
+        for _ in 0..120 {
+            rig.tick(&p, &inp);
+        }
+        assert!(rig.look.x.abs() < 1e-2, "look-at point sits on the wall: {}", rig.look);
+    }
+
+    #[test]
+    fn overhead_camera_follows_the_floor_point_and_select_swaps_the_view() {
+        let p = params();
+        let mut s = subject(Vec3::new(0.0, 0.0, 0.0));
+        let floor = |a: Vec3, b: Vec3| {
+            let d = b - a;
+            (d.y.abs() > 1e-6 && (a.y / -d.y) >= 0.0 && (a.y / -d.y) <= 1.0).then(|| Hit { point: Vec3::new(a.x, 0.0, a.z), normal: Vec3::Y, attr: 1 })
+        };
+        let rig = &mut Rig::new(&p, row(), &s, &floor);
+        rig.mode = Mode::Overhead;
+        let mut inp = input(s, &floor);
+        for _ in 0..300 {
+            rig.tick(&p, &inp);
+        }
+        let want = Vec3::new(0.0, 150.0, 0.0);
+        assert!(rig.look.distance(want) < 2.0, "{}", rig.look);
+        assert!(rig.pos.distance(want + p.overhead.offset) < 2.0, "{}", rig.pos);
+        assert_eq!(rig.fov, p.overhead.fov);
+        // A far target is reached in one step, a near one eases in.
+        s.pos = Vec3::new(1000.0, 0.0, 0.0);
+        inp.subject = s;
+        rig.tick(&p, &inp);
+        assert!(rig.look.distance(Vec3::new(1000.0, 150.0, 0.0)) < 1e-2, "{}", rig.look);
+        s.pos = Vec3::new(1100.0, 0.0, 0.0);
+        inp.subject = s;
+        rig.tick(&p, &inp);
+        assert!((rig.look.x - 1050.0).abs() < 1e-2, "half of a 100 gap: {}", rig.look);
+        inp.select = true;
+        rig.tick(&p, &inp);
+        assert_eq!(rig.pos, p.overhead.fixed_pos);
+        assert_eq!(rig.look, p.overhead.fixed_look);
+        assert_eq!(rig.fov, p.overhead.fixed_fov);
+    }
+
+    #[test]
+    fn behind_camera_ignores_the_stick_turn_and_tracks_the_facing() {
+        let p = params();
+        let mut s = subject(Vec3::ZERO);
+        let rig = &mut Rig::new(&p, row(), &s, &no_wall);
+        rig.mode = Mode::Behind;
+        let mut inp = input(s, &no_wall);
+        inp.sticks.right = Vec2::new(1.0, 0.0);
+        inp.sticks.right_mag = 1.0;
+        let y0 = rig.yaw;
+        for _ in 0..30 {
+            rig.tick(&p, &inp);
+        }
+        assert!((wrap(rig.yaw - y0)).abs() < 1e-5, "{}", rig.yaw);
+        s.facing = Vec3::X;
+        inp.subject = s;
+        inp.sticks.right_mag = 0.0;
+        for _ in 0..120 {
+            rig.tick(&p, &inp);
+        }
+        assert!(wrap(rig.yaw - behind_yaw(Vec3::X)).abs() < 1e-4, "{}", rig.yaw);
+    }
+
+    #[test]
+    fn area_types_pick_rows_and_modes() {
+        assert_eq!(area_setup(0, false), (0, Mode::Follow));
+        assert_eq!(area_setup(0, true), (1, Mode::Follow));
+        assert_eq!(area_setup(1, true), (0, Mode::Overhead));
+        assert_eq!(area_setup(2, false), (2, Mode::Follow));
+        assert_eq!(area_setup(3, false), (3, Mode::Behind));
+    }
+
+    #[test]
+    fn event_camera_springs_and_hands_over() {
+        let p = params();
+        let s = subject(Vec3::ZERO);
+        let rig = &mut Rig::new(&p, row(), &s, &no_wall);
+        let mut ev = EventCamera::start(rig);
+        assert_eq!(ev.view().pos, rig.pos);
+        let (pos, look) = (Vec3::new(2000.0, 500.0, 0.0), Vec3::new(2000.0, 100.0, -300.0));
+        let mut v = ev.view();
+        for _ in 0..400 {
+            v = ev.frame(&p, pos, look, 1.0, 0.1, None, true);
+        }
+        assert!(v.pos.distance(pos) < 1.5 && v.look.distance(look) < 1.5, "{v:?}");
+        assert!((v.fov - 1.0).abs() < 0.01 && (v.roll - 0.1).abs() < 0.01, "{v:?}");
+        // Without smoothing the values are used as given.
+        let v = ev.frame(&p, Vec3::ZERO, Vec3::X, 0.9, 0.0, None, false);
+        assert_eq!(v.pos, Vec3::ZERO);
+        // Handover: the field camera starts from the event's view and springs back behind him.
+        rig.handover(&p, &s, v);
+        assert_eq!(rig.pos, Vec3::ZERO);
+        for _ in 0..300 {
+            rig.tick(&p, &input(s, &no_wall));
+        }
+        assert!(rig.pos.z > 390.0, "{}", rig.pos);
+    }
+
+    #[test]
     fn exe_table_round_trip() {
         // A fake image with the table's addresses filled, to check the offsets are consistent.
         let mut exe = vec![0u8; 0x380000 - EXE_BIAS];
@@ -745,6 +1440,11 @@ mod tests {
             (0x378f34, 1.4), (0x378f38, 400.0), (0x378f3c, 350.0), (0x378f40, 200.0), (0x378f44, 500.0), (0x378f48, 0.01),
             (0x378f04, 1.0), (0x378f20, 600.0), (0x378f24, 520.0), (0x378f28, 400.0), (0x378f30, 700.0), (0x378f2c, 0.005),
             (0x378f4c, 633.0), (0x378f08, 0.17), (0x378f0c, 0.004), (0x378f10, 0.0002), (0x378f14, 0.05),
+            (0x378e48, 5.0), (0x378e44, 30.0), (0x378e74, 350.0), (0x378f18, -1.2), (0x378f1c, 1.2), (0x378e58, 1.0),
+            (0x378e54, 30.0), (0x378f00, 1.0), (0x378e78, 30.0), (0x37939c, 100.0), (0x3793a0, 10000.0), (0x3793c8, 150.0),
+            (0x3793cc, 200.0), (0x3793a8, 600.0), (0x3793b0, -500.0), (0x3793b4, 51.0), (0x3793b8, -1492.0), (0x3793bc, 256.0),
+            (0x3793c0, -1777.0), (0x3793c4, 1.5), (0x3793d0, 1.05), (0x379470, 2.5), (0x379474, 0.5), (0x379478, 0.1),
+            (0x37947c, 1.0), (0x379480, 0.07), (0x379484, 0.07), (0x379488, 2.5), (0x37948c, 0.5), (0x379490, 0.001),
         ] {
             put(va, v);
         }
@@ -752,6 +1452,8 @@ mod tests {
         assert_eq!(p.rows[0].radius, 400.0);
         assert_eq!(p.rows[2].max_radius, 633.0);
         assert_eq!(p.rows[1].fov, 1.0);
+        assert_eq!(p.overhead.offset, Vec3::new(600.0, 500.0, 0.0), "Y flipped to up");
+        assert_eq!(p.look.distance, 350.0);
         assert!(Params::from_exe(&exe[..1000]).is_none());
         assert!(Params::from_exe(&vec![0u8; 0x380000 - EXE_BIAS]).is_none());
     }

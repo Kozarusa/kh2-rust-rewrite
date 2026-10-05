@@ -9,6 +9,7 @@
 //! plugin that registers its own resources, messages and systems; the order between features is
 //! in `schedule`.
 
+mod abilities;
 mod assets;
 mod audio;
 mod camera;
@@ -71,6 +72,7 @@ fn main() {
             harness::HarnessPlugin,
             audio::AudioPlugin,
             drive::DrivePlugin,
+            abilities::AbilitiesPlugin,
         ))
         .run();
 }

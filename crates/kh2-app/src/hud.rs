@@ -23,7 +23,7 @@ mod hud_menu;
 #[path = "hud_text.rs"]
 mod hud_text;
 
-use hud_gauge::{DriveGauge, DriveTables, FaceFile, SoraPanel};
+use hud_gauge::{DriveGauge, DriveTables, FaceFile, MpRecharge, SoraPanel};
 use hud_gfx::{HudGfxPlugin, HudScene};
 use hud_menu::{CommandMenu, MenuFile, MenuNodes, MenuTables};
 use hud_target::TargetHud;
@@ -39,6 +39,7 @@ impl Plugin for HudPlugin {
             .init_resource::<TargetHud>()
             .init_resource::<FaceFile>()
             .init_resource::<DriveGauge>()
+            .init_resource::<MpRecharge>()
             .init_resource::<DriveTables>()
             .init_resource::<CommandMenu>()
             .init_resource::<MenuFile>()

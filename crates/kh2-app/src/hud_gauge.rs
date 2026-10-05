@@ -49,6 +49,19 @@ mod g {
 #[derive(Resource, Default)]
 pub struct FaceFile(pub Option<usize>);
 
+/// Sora's MP recharge state (player +0x1bc progress and +0x1c0 total, floats). The MP bar switches to its
+/// recharge look while `total > 0`: a full-size back bar and a fill that grows with `progress / total`
+/// (0x157628, 0x1556a0). The player module fills it in; `KH2_HUDMPRECHARGE=<progress>:<total>` shows it.
+#[derive(Resource, Clone, Copy, Debug, Default)]
+pub struct MpRecharge {
+    pub progress: f32,
+    pub total: f32,
+}
+
+/// MP bar groups (label, back, fill, cap): normal and recharge sets (0x157628).
+const MP_NORMAL: [usize; 4] = [116, 119, 115, 120];
+const MP_RECHARGE: [usize; 4] = [110, 113, 109, 114];
+
 /// Which art the drive gauge uses (the player's mode byte at +0x1af in the game: 0 normal, 2 and 3 the
 /// two form variants, 4 locked behind chains).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -133,6 +146,7 @@ mod dg {
 pub struct SoraPanel {
     drive: [usize; 5],
     drive_mode: Option<DriveMode>,
+    recharging: bool,
     drive_points: Option<u8>,
     built: bool,
     circle: usize,
@@ -162,6 +176,7 @@ pub fn update(
     face: Res<FaceFile>,
     data: Res<GameData>,
     mut drive: ResMut<DriveGauge>,
+    mut recharge: ResMut<MpRecharge>,
     drive_tables: Res<DriveTables>,
     sora: Query<&Sora>,
     mut demo: Local<bool>,
@@ -171,6 +186,9 @@ pub fn update(
         *demo = true;
         if let Some(d) = drive_test() {
             *drive = d;
+        }
+        if let Some(r) = recharge_test() {
+            *recharge = r;
         }
     }
     if scene.files.len() <= GAUG {
@@ -234,9 +252,25 @@ pub fn update(
         }
     }
     let (mp, mp_max) = (mp as f32, mp_max as f32);
-    scene.nodes[p.mp[1]].ext.scale[1] = mp_max / BAR_SPRITE;
-    scene.nodes[p.mp[2]].ext.scale[1] = mp / BAR_SPRITE;
-    scene.nodes[p.mp[3]].off = [-mp_max, 0.0];
+    let charging = recharge.total > 0.0;
+    if charging != p.recharging {
+        p.recharging = charging;
+        let set = if charging { MP_RECHARGE } else { MP_NORMAL };
+        for (node, g) in p.mp.into_iter().zip(set) {
+            scene.set_group(node, g);
+        }
+    }
+    if charging {
+        // A full-size back bar (scale 1.0 = 100 pixels) and a fill by the recharge ratio.
+        let ratio = (recharge.progress / recharge.total).clamp(0.0, 1.0);
+        scene.nodes[p.mp[1]].ext.scale[1] = 1.0;
+        scene.nodes[p.mp[2]].ext.scale[1] = ratio;
+        scene.nodes[p.mp[3]].off = [-BAR_SPRITE, 0.0];
+    } else {
+        scene.nodes[p.mp[1]].ext.scale[1] = mp_max / BAR_SPRITE;
+        scene.nodes[p.mp[2]].ext.scale[1] = mp / BAR_SPRITE;
+        scene.nodes[p.mp[3]].off = [-mp_max, 0.0];
+    }
     update_drive(&mut scene, p, &drive, &drive_tables);
 }
 
@@ -289,6 +323,12 @@ fn update_drive(scene: &mut HudScene, p: &mut SoraPanel, d: &DriveGauge, tables:
     for n in [bar, fill, digit] {
         scene.nodes[n].visible = true;
     }
+}
+
+fn recharge_test() -> Option<MpRecharge> {
+    let v = std::env::var("KH2_HUDMPRECHARGE").ok()?;
+    let mut it = v.split(':').filter_map(|x| x.parse::<f32>().ok());
+    Some(MpRecharge { progress: it.next()?, total: it.next()? })
 }
 
 /// `KH2_HUDDRIVE=<points>:<max>:<fraction>[:mode]`: draw the drive gauge with those values.

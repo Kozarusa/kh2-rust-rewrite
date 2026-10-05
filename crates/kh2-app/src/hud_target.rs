@@ -19,6 +19,8 @@ const SEGMENT: i32 = 200;
 /// Seconds an enemy's gauge stays up after it was last hit while not locked on. The game's rule
 /// for dropping the gauge was not found; this value is a stand-in.
 const HOLD: f32 = 5.0;
+/// Pips the row holds (0x153ff8 stops at 16).
+const PIPS: usize = 16;
 
 mod g {
     pub const TAG: usize = 38;
@@ -27,6 +29,10 @@ mod g {
     pub const CAP: usize = 40;
     pub const TRAIL: usize = 41;
     pub const CUR: usize = 43;
+    /// Pip row: the back (45), a filled pip (44) and a pip just emptied (46).
+    pub const PIP_BACK: usize = 45;
+    pub const PIP_FULL: usize = 44;
+    pub const PIP_LOST: usize = 46;
     pub const RETICLE: usize = 25;
 }
 
@@ -35,6 +41,8 @@ pub struct TargetHud {
     built: bool,
     /// tag, frame, back bar, cap, trail, current
     gauge: [usize; 6],
+    /// Back and fill node of each pip of the row (one pip per 200 HP segment past the first, at most 16).
+    pips: [[usize; 2]; PIPS],
     reticle: usize,
     /// The enemy hit last, and seconds its gauge stays up.
     shown: Option<Entity>,
@@ -79,17 +87,26 @@ pub fn update(
     h.hold -= time.delta_secs();
     let target = lock.or(if h.hold > 0.0 { h.shown } else { None }).and_then(|e| enemies.get(e).ok());
 
+    // `KH2_HUDTARGETTEST=<hp>:<max>` shows the gauge for those values without an enemy (display only).
+    let test = std::env::var("KH2_HUDTARGETTEST").ok().and_then(|v| {
+        let mut it = v.split(':').filter_map(|x| x.parse::<i32>().ok());
+        Some((it.next()?, it.next()?))
+    });
     // Gauge.
-    let Some((e, _, en)) = target else {
-        for &i in &h.gauge {
-            scene.nodes[i].visible = false;
-        }
-        scene.nodes[h.reticle].visible = false;
-        h.reticle_for = None;
-        h.bound = None;
-        return;
+    let (e, hp, max) = if let Some((hp, max)) = test {
+        (Entity::PLACEHOLDER, hp.max(0), max.max(1))
+    } else {
+        let Some((e, _, en)) = target else {
+            for &i in h.gauge.iter().chain(h.pips.iter().flatten()) {
+                scene.nodes[i].visible = false;
+            }
+            scene.nodes[h.reticle].visible = false;
+            h.reticle_for = None;
+            h.bound = None;
+            return;
+        };
+        (e, en.hp.max(0), en.stats.max_hp.max(1))
     };
-    let (hp, max) = (en.hp.max(0), en.stats.max_hp.max(1));
     if h.bound != Some(e) {
         // New target: the gauge starts at its HP with no trail.
         h.bound = Some(e);
@@ -122,6 +139,22 @@ pub fn update(
         n.off = [-(v as f32), 0.0];
     }
     scene.nodes[h.gauge[3]].off = [-(v_max as f32), 0.0];
+
+    // Pip row (0x153ff8, 0x1543f0, 0x154758): one back pip per segment below the top one, and a
+    // filled pip for each full segment left under the current one (a pip just emptied plays its own
+    // group), up to the segments the previous HP had.
+    let n_seg = (((max - 1) / SEGMENT).max(0) as usize).min(PIPS);
+    let (cur_seg, prev_seg) = (((hp - 1) / SEGMENT).max(0) as usize, ((h.prev_hp - 1) / SEGMENT).max(0) as usize);
+    for k in 0..PIPS {
+        let [back, fill] = h.pips[k];
+        scene.nodes[back].visible = k < n_seg;
+        let show = n_seg > 0 && k < prev_seg.max(cur_seg).min(PIPS);
+        scene.nodes[fill].visible = show;
+        let want = if k < cur_seg { g::PIP_FULL } else { g::PIP_LOST };
+        if show && scene.nodes[fill].player.group != Some(want) {
+            scene.set_group(fill, want);
+        }
+    }
 
     // Reticle at the locked enemy only.
     let locked = lock.filter(|&l| l == e);
@@ -159,6 +192,16 @@ fn build(scene: &mut HudScene, h: &mut TargetHud) {
         add(scene, GAUG, Some(tag), g::TRAIL),
         add(scene, GAUG, Some(tag), g::CUR),
     ];
+    // The pips sit left of the tag in a row, each one the back group's `unk20` field further (0x237698).
+    let step = scene.files.get(GAUG).and_then(|f| f.seq.groups.get(g::PIP_BACK)).map(|g| g.unk20 as f32).unwrap_or(0.0);
+    for k in 0..PIPS {
+        let back = add(scene, GAUG, Some(tag), g::PIP_BACK);
+        let fill = add(scene, GAUG, Some(tag), g::PIP_FULL);
+        for n in [back, fill] {
+            scene.nodes[n].off = [-step * k as f32, 0.0];
+        }
+        h.pips[k] = [back, fill];
+    }
     h.reticle = add(scene, FIEL, None, g::RETICLE);
     h.built = true;
 }

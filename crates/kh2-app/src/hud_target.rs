@@ -70,6 +70,7 @@ pub struct TargetHud {
 #[derive(Default)]
 pub struct Seen(std::collections::HashMap<Entity, i32>);
 
+#[allow(clippy::too_many_arguments)]
 pub fn update(
     time: Res<Time>,
     mut scene: ResMut<HudScene>,

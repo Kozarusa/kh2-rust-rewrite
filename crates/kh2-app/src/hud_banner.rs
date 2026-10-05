@@ -87,7 +87,7 @@ pub struct BannerNodes {
 }
 
 fn build(scene: &mut HudScene, n: &mut BannerNodes) {
-    let mut add = |scene: &mut HudScene, parent: Option<usize>| {
+    let add = |scene: &mut HudScene, parent: Option<usize>| {
         let mut node = Node::new(FIEL, parent);
         node.visible = false;
         scene.add(node)
@@ -107,7 +107,7 @@ fn advance(scene: &HudScene, group: usize) -> f32 {
 }
 
 pub fn update(mut scene: ResMut<HudScene>, mut banner: ResMut<HudBanner>, mut popups: ResMut<MunnyPopups>, mut nodes: ResMut<BannerNodes>, mut demo: Local<bool>) {
-    if scene.files.len() <= FIEL {
+    if scene.files.is_empty() {
         return;
     }
     if !*demo {
@@ -149,10 +149,8 @@ pub fn update(mut scene: ResMut<HudScene>, mut banner: ResMut<HudBanner>, mut po
             if nodes.shown != Some(kind) {
                 nodes.shown = Some(kind);
                 scene.set_group(b, open);
-            } else if let Some(idle) = idle {
-                if scene.nodes[b].player.group == Some(open) && scene.nodes[b].player.finished() {
-                    scene.set_group(b, idle);
-                }
+            } else if let Some(idle) = idle.filter(|_| scene.nodes[b].player.group == Some(open) && scene.nodes[b].player.finished()) {
+                scene.set_group(b, idle);
             }
             scene.nodes[b].pos = pos;
             scene.nodes[b].visible = true;

@@ -132,6 +132,32 @@ fn icon_group(icon: u8) -> Option<usize> {
     })
 }
 
+/// Left edge of page `p`'s bars: 28 pixels, 16 more per page (0x13c4b0).
+pub fn page_x(p: usize) -> f32 {
+    28.0 + 16.0 * p as f32
+}
+
+/// Centre line of bar `i` in a list of `n`: the list ends at 410 and grows upward (0x13c4b0).
+pub fn row_y(n: usize, i: usize) -> f32 {
+    410.0 - 22.0 * n as f32 + 22.0 * i as f32
+}
+
+/// Origin of a list's header banner (0x13bc50).
+pub fn header_y(n: usize) -> f32 {
+    388.0 - 22.0 * n as f32
+}
+
+/// Origin of the reaction capsule above a list of `n` (0x13cef8).
+pub fn capsule_y(n: usize) -> f32 {
+    377.0 - 22.0 * n as f32
+}
+
+/// The bar group for row `r` of `n` on page `p`: the selected bar, the last bar, or any other (0x13c4b0,
+/// 0x13c288), from a kind's 12 table words.
+fn bar_group(row: &[u32; 12], p: usize, r: usize, n: usize, selected: bool) -> usize {
+    (if selected { row[3 + p] } else if r + 1 == n { row[9 + p] } else { row[6 + p] }) as usize
+}
+
 /// The arrow beside the selected bar: group 20 for the first kind, 21 for the others (0x13bd48).
 const ARROW: [usize; 2] = [20, 21];
 /// Text offset inside a bar and the bar text's font and size (0x13abf0: +0x190 = 10, +0x194 = -7,
@@ -211,7 +237,7 @@ fn set(scene: &mut HudScene, node: usize, group: Option<usize>) {
 }
 
 fn build(scene: &mut HudScene, nodes: &mut MenuNodes, file: usize) {
-    let mut add = |scene: &mut HudScene| {
+    let add = |scene: &mut HudScene| {
         let mut n = Node::new(file, None);
         n.visible = false;
         scene.add(n)
@@ -268,7 +294,7 @@ pub fn update(
         let k = (page.kind as usize).min(KINDS - 1);
         let row = &tb.kind[k];
         let n = page.entries.len().min(ROWS);
-        let x = 28.0 + 16.0 * p as f32;
+        let x = page_x(p);
         // Header: the commands banner opens (0x355530) then idles (0x355540); the other menus keep their own group.
         let h = nodes.header[p];
         let animated = matches!(page.kind, 0 | 6);
@@ -285,7 +311,7 @@ pub fn update(
         } else {
             set(&mut scene, h, Some(want));
         }
-        scene.nodes[h].pos = [x, 388.0 - 22.0 * n as f32];
+        scene.nodes[h].pos = [x, header_y(n)];
         scene.nodes[h].visible = true;
         for r in 0..ROWS {
             let rn = nodes.rows[p][r];
@@ -298,8 +324,8 @@ pub fn update(
             }
             let e = &page.entries[r];
             let sel = r == page.cursor;
-            let y = 410.0 - 22.0 * n as f32 + 22.0 * r as f32;
-            let g = if sel { row[3 + p] } else if r + 1 == n { row[9 + p] } else { row[6 + p] } as usize;
+            let y = row_y(n, r);
+            let g = bar_group(row, p, r, n, sel);
             let bx = if sel { x + 8.0 } else { x };
             set(&mut scene, rn.bar, Some(g));
             scene.nodes[rn.bar].pos = [bx, y];
@@ -318,7 +344,7 @@ pub fn update(
     }
     // Reaction capsule above the list: at (36, 377 - 22 n) with the command's name.
     let c = nodes.capsule;
-    let y = 377.0 - 22.0 * last_count as f32;
+    let y = capsule_y(last_count);
     let group = match (&menu.reaction, show) {
         (Some(r), true) => Some(if r.kind7 { tb.reaction[1] } else if r.alt { tb.reaction[2] } else { tb.reaction[0] } as usize),
         (None, true) => Some(tb.reaction[3] as usize),
@@ -330,4 +356,52 @@ pub fn update(
         scene.text.as_ref().and_then(|t| t.message(r.message, Style { font: TEXT_FONT, size: Some(TEXT_SIZE), ..Style::default() }, TEXT_OFFSET))
     });
     scene.nodes[c].label = label;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lists_grow_upward_from_a_fixed_bottom() {
+        // The last bar of any list sits at the same place; each extra row moves the rest up by 22.
+        assert_eq!(row_y(4, 3), row_y(7, 6));
+        assert_eq!(row_y(4, 0) - row_y(5, 0), 22.0);
+        assert_eq!(row_y(4, 1) - row_y(4, 0), 22.0);
+        // The header sits 22 above the first bar, the capsule 33 above it.
+        assert_eq!(row_y(4, 0) - header_y(4), 22.0);
+        assert_eq!(row_y(4, 0) - capsule_y(4), 33.0);
+        assert_eq!(page_x(2) - page_x(0), 32.0);
+    }
+
+    #[test]
+    fn bar_groups_pick_by_state_and_page() {
+        let row = [18, 86, 31, 9, 77, 22, 16, 84, 29, 11, 79, 24];
+        assert_eq!(bar_group(&row, 0, 1, 4, true), 9);
+        assert_eq!(bar_group(&row, 1, 1, 4, true), 77);
+        assert_eq!(bar_group(&row, 0, 0, 4, false), 16);
+        assert_eq!(bar_group(&row, 2, 3, 4, false), 24);
+    }
+
+    #[test]
+    fn tables_read_from_a_synthetic_executable() {
+        // A fake image big enough to cover the highest table (0x3556b0), words counting up from their address.
+        let mut exe = vec![0u8; 0x3556c0 - 0xff000];
+        for (i, c) in exe.chunks_mut(4).enumerate() {
+            c.copy_from_slice(&(i as u32).to_le_bytes());
+        }
+        let t = Tables::from_exe(&exe).expect("tables");
+        assert_eq!(t.kind.len(), KINDS);
+        assert_eq!(t.kind[0][0], ((0x3551c0 - 0xff000) / 4) as u32);
+        assert_eq!(t.open[1] - t.open[0], 1);
+        assert!(Tables::from_exe(&exe[..0x1000]).is_none());
+    }
+
+    #[test]
+    fn icon_groups_follow_the_game_switch() {
+        assert_eq!(icon_group(1), Some(37));
+        assert_eq!(icon_group(4), Some(44));
+        assert_eq!(icon_group(0), None);
+        assert_eq!(icon_group(8), None);
+    }
 }

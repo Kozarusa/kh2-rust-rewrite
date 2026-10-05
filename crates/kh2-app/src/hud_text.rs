@@ -57,10 +57,7 @@ impl TextSys {
         for id in 0..6 {
             let f = Font::get(id);
             let key = (atlas_key(f.atlas), f.clut_row());
-            if !map.contains_key(&key) {
-                let file = add(set.atlas_rgba(f.atlas, f.clut_row()), files);
-                map.insert(key, file);
-            }
+            map.entry(key).or_insert_with(|| add(set.atlas_rgba(f.atlas, f.clut_row()), files));
         }
         let icon_file = add(set.icons_rgba(), files);
         let world = text::WORLDS.iter().position(|w| *w == world).unwrap_or(0);
@@ -71,21 +68,6 @@ impl TextSys {
     pub fn message(&self, id: u32, style: Style, offset: [f32; 2]) -> Option<Label> {
         let tokens = self.messages.as_ref()?.tokens(id)?;
         Some(Label { tokens, style: Style { world: self.world, ..style }, offset })
-    }
-
-    /// A label for text given as a string of the characters the font has (unknown ones are skipped).
-    pub fn literal(&self, s: &str, style: Style, offset: [f32; 2]) -> Label {
-        let mut tokens = Vec::new();
-        for c in s.chars() {
-            if c == ' ' {
-                tokens.push(Token::Space);
-            } else if c == '\n' {
-                tokens.push(Token::Newline);
-            } else if let Some(g) = (0..224u16).find(|&g| text::glyph_char(g) == Some(c)) {
-                tokens.push(Token::Glyph(g));
-            }
-        }
-        Label { tokens, style: Style { world: self.world, ..style }, offset }
     }
 
     /// The quads of `label` placed at `origin`, shadows first, with the scene file each one uses.

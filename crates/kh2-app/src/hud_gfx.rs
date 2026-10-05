@@ -253,7 +253,7 @@ impl HudScene {
     }
 
     /// All quads to draw, in draw order, with the texture file they use.
-    fn quads(&self) -> Vec<(usize, Quad, [f32; 2], Option<f32>, Option<f32>)> {
+    fn quads(&self) -> Vec<Drawn> {
         let mut out = Vec::new();
         for n in &self.nodes {
             if !n.visible {
@@ -281,6 +281,9 @@ impl HudScene {
         out
     }
 }
+
+/// One quad to draw: texture file, the quad, its node's origin, the ring sweep and the x limit.
+type Drawn = (usize, Quad, [f32; 2], Option<f32>, Option<f32>);
 
 #[derive(Component)]
 pub struct HudCamera;

@@ -170,6 +170,7 @@ fn fill(hp: i32) -> Fill {
     if hp < RING_HP { Fill::Ring(hp.max(0) as f32 * RING_PER_HP) } else { Fill::Bar((hp - RING_HP) as f32 * BAR_PER_HP) }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn update(
     mut scene: ResMut<HudScene>,
     mut panel: ResMut<SoraPanel>,

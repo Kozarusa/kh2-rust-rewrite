@@ -3325,6 +3325,7 @@ dependencies = [
 name = "kh2-image"
 version = "0.1.0"
 dependencies = [
+ "kh2-archive",
  "kh2-bar",
  "kh2-ps2",
  "png 0.17.16",

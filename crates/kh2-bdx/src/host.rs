@@ -161,6 +161,16 @@ pub enum Call {
     /// A mode that wants a check may start (FUN_001873d0).
     ModeMayStart { obj: u32 },
 
+    /// Host 1.90 / 1.241 (FUN_00187170, FUN_00187190): a message addressed to the modes named `name` of
+    /// every object. `sender` is the object that sent it, 0 for none. The game keeps the message in a
+    /// 64-entry queue and delivers it to all objects in a later pass; the host does the same with
+    /// [`crate::Runtime::receive_message`], choosing each receiver's delay with [`crate::message_delay`].
+    SendMessage { sender: u32, name: String, delay: f32 },
+    /// A mode queued with host 6.58 (FUN_00186f50) came up in `obj`'s queue: instead of starting it, the
+    /// game switches another object to the mode of that name (FUN_00186db0 on FUN_002f4398(1), role of
+    /// that object not determined). The host does it with [`crate::Runtime::set_mode_named`].
+    RemoteSetMode { obj: u32, name: String },
+
     /// A registered host function whose behaviour has not been analysed. Returns 0 unless the host knows better.
     Unknown { group: u16, index: u16, args: Vec<u32> },
 }

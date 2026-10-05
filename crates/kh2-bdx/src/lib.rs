@@ -12,6 +12,7 @@ pub mod mock;
 pub mod names;
 pub mod program;
 pub mod runtime;
+pub mod signatures;
 pub mod trig;
 pub mod vm;
 
@@ -20,5 +21,5 @@ pub use exe::HostTable;
 pub use host::{Call, Host, Value, Vec4};
 pub use insn::{BinaryOp, Insn, UnaryOp, decode};
 pub use program::{EntryPoint, Error, Program};
-pub use runtime::Runtime;
+pub use runtime::{Runtime, message_delay};
 pub use vm::VmError;

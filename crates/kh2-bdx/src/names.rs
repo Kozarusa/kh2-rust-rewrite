@@ -29,6 +29,7 @@ pub static HOST_FUNCS: &[HostFn] = &[
     h(0, 17, "rand_float", 1, true),
     h(0, 18, "rand_range", 2, true),
     h(0, 36, "vec_scale", 2, true),
+    h(0, 9, "spawn_thread", 4, true),
     h(0, 79, "release_effect", 1, false),
     // group 1: the object being scripted ("self")
     h(1, 3, "player", 0, true),
@@ -64,13 +65,16 @@ pub static HOST_FUNCS: &[HostFn] = &[
     h(1, 78, "hit_stun_b", 1, true),
     h(1, 79, "face_toward", 2, false),
     h(1, 80, "turn_toward", 3, true),
+    h(1, 82, "spawn_child_thread", 5, true),
     h(1, 87, "spawn_attached", 4, true),
     h(1, 89, "set_velocity", 3, false),
+    h(1, 90, "send_message", 3, false),
     h(1, 92, "ground_marker", 2, false),
     h(1, 104, "set_flag_768", 1, false),
     h(1, 105, "clear_flag_768", 1, false),
     h(1, 110, "spawn_kind", 1, true),
     h(1, 111, "set_move", 3, false),
+    h(1, 112, "start_action", 3, false),
     h(1, 119, "probe_ground", 4, true),
     h(1, 120, "target_position", 1, true),
     h(1, 121, "set_target_mode", 3, false),
@@ -85,6 +89,8 @@ pub static HOST_FUNCS: &[HostFn] = &[
     h(1, 171, "global_flag_4", 0, true),
     h(1, 201, "facing_vector", 1, true),
     h(1, 206, "global_flag_80", 0, true),
+    h(1, 214, "stop_action", 1, false),
+    h(1, 241, "broadcast_message", 2, false),
     h(1, 301, "global_byte_301", 0, true),
     h(1, 309, "flag_309", 1, true),
     // group 2: enemy-side functions
@@ -94,6 +100,8 @@ pub static HOST_FUNCS: &[HostFn] = &[
     h(2, 20, "request_2_20", 2, true),
     h(2, 23, "target", 1, true),
     h(2, 88, "last_attacker", 1, true),
+    // group 6: bosses and NPCs
+    h(6, 58, "queue_mode_remote", 2, false),
 ];
 
 pub fn lookup(group: u16, index: u16) -> Option<&'static HostFn> {

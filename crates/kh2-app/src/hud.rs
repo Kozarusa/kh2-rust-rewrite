@@ -23,7 +23,7 @@ mod hud_menu;
 #[path = "hud_text.rs"]
 mod hud_text;
 
-use hud_gauge::{FaceFile, SoraPanel};
+use hud_gauge::{DriveGauge, DriveTables, FaceFile, SoraPanel};
 use hud_gfx::{HudGfxPlugin, HudScene};
 use hud_menu::{CommandMenu, MenuFile, MenuNodes, MenuTables};
 use hud_target::TargetHud;
@@ -38,6 +38,8 @@ impl Plugin for HudPlugin {
             .init_resource::<SoraPanel>()
             .init_resource::<TargetHud>()
             .init_resource::<FaceFile>()
+            .init_resource::<DriveGauge>()
+            .init_resource::<DriveTables>()
             .init_resource::<CommandMenu>()
             .init_resource::<MenuFile>()
             .init_resource::<MenuTables>()
@@ -103,6 +105,7 @@ fn load_files(
     mut face: ResMut<FaceFile>,
     mut menu_file: ResMut<MenuFile>,
     mut menu_tables: ResMut<MenuTables>,
+    mut drive_tables: ResMut<DriveTables>,
 ) {
     let world = area.name.get(..2).unwrap_or("tt");
     let mut files = hud_gfx::load_files(&disc, &format!("field2d/us/{world}0field.2dd"), &mut images);
@@ -126,7 +129,10 @@ fn load_files(
     if !cmd.is_empty() {
         menu_file.0 = Some(files.len());
         files.extend(cmd);
-        menu_tables.0 = disc.read_root("SLUS_210.05").and_then(|e| hud_menu::Tables::from_exe(&e));
+    }
+    if let Some(exe) = disc.read_root("SLUS_210.05") {
+        menu_tables.0 = hud_menu::Tables::from_exe(&exe);
+        *drive_tables = DriveTables::from_exe(&exe);
     }
     scene.text = hud_text::TextSys::load(&disc, world, &mut images, &mut files);
     scene.files = files;

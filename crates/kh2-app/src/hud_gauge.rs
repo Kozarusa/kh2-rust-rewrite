@@ -49,8 +49,91 @@ mod g {
 #[derive(Resource, Default)]
 pub struct FaceFile(pub Option<usize>);
 
+/// Which art the drive gauge uses (the player's mode byte at +0x1af in the game: 0 normal, 2 and 3 the
+/// two form variants, 4 locked behind chains).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DriveMode {
+    #[default]
+    Normal,
+    FormA,
+    FormB,
+    Locked,
+}
+
+/// Game-state input of the drive gauge. The player module fills it in; `KH2_HUDDRIVE=<points>:<max>:<fraction>[:mode]`
+/// (mode 0 normal, 2, 3 or 4) shows it by hand. `enabled` is false until the player has a drive gauge.
+#[derive(Resource, Clone, Debug)]
+pub struct DriveGauge {
+    pub enabled: bool,
+    pub mode: DriveMode,
+    /// Whole drive points (player +0x1b1) and the most the gauge holds (+0x1b2).
+    pub points: u8,
+    pub max: u8,
+    /// Progress to the next point, 0 to 99 (+0x1b0).
+    pub fraction: u8,
+}
+
+impl Default for DriveGauge {
+    fn default() -> DriveGauge {
+        DriveGauge { enabled: false, mode: DriveMode::Normal, points: 0, max: 5, fraction: 0 }
+    }
+}
+
+/// Digit groups by drive points for the three art sets (executable tables 0x3589c0, 0x3589e8,
+/// 0x358998), read at run time.
+#[derive(Resource, Default)]
+pub struct DriveTables(pub Option<[[u32; 10]; 3]>);
+
+impl DriveTables {
+    pub fn from_exe(exe: &[u8]) -> DriveTables {
+        let w = |va: usize| exe.get(va - 0xff000..va - 0xff000 + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+        let table = |va: usize| {
+            let mut t = [0u32; 10];
+            for (i, v) in t.iter_mut().enumerate() {
+                *v = w(va + 4 * i)?;
+            }
+            Some(t)
+        };
+        DriveTables(table(0x3589c0).zip(table(0x3589e8)).zip(table(0x358998)).map(|((a, b), c)| [a, b, c]))
+    }
+}
+
+/// Drive gauge groups (gaug sequence) by mode: the bar's intro and idle groups (0x155a30, 0x155a88),
+/// the fill (0x155b08) and the MAX tag and gain burst.
+mod dg {
+    use super::DriveMode;
+    pub fn intro(m: DriveMode) -> usize {
+        match m {
+            DriveMode::FormA => 50,
+            DriveMode::FormB => 140,
+            DriveMode::Locked => 18,
+            DriveMode::Normal => 21,
+        }
+    }
+    pub fn idle(m: DriveMode) -> usize {
+        match m {
+            DriveMode::FormA => 51,
+            DriveMode::FormB => 141,
+            DriveMode::Locked => 19,
+            DriveMode::Normal => 23,
+        }
+    }
+    pub fn fill(m: DriveMode) -> usize {
+        match m {
+            DriveMode::FormA => 49,
+            DriveMode::FormB => 139,
+            _ => 25,
+        }
+    }
+    pub const MAX: usize = 20;
+    pub const BURST: usize = 22;
+}
+
 #[derive(Resource, Default)]
 pub struct SoraPanel {
+    drive: [usize; 5],
+    drive_mode: Option<DriveMode>,
+    drive_points: Option<u8>,
     built: bool,
     circle: usize,
     face: Option<usize>,
@@ -78,9 +161,18 @@ pub fn update(
     mut panel: ResMut<SoraPanel>,
     face: Res<FaceFile>,
     data: Res<GameData>,
+    mut drive: ResMut<DriveGauge>,
+    drive_tables: Res<DriveTables>,
     sora: Query<&Sora>,
+    mut demo: Local<bool>,
 ) {
     let Ok(s) = sora.single() else { return };
+    if !*demo {
+        *demo = true;
+        if let Some(d) = drive_test() {
+            *drive = d;
+        }
+    }
     if scene.files.len() <= GAUG {
         return;
     }
@@ -145,6 +237,72 @@ pub fn update(
     scene.nodes[p.mp[1]].ext.scale[1] = mp_max / BAR_SPRITE;
     scene.nodes[p.mp[2]].ext.scale[1] = mp / BAR_SPRITE;
     scene.nodes[p.mp[3]].off = [-mp_max, 0.0];
+    update_drive(&mut scene, p, &drive, &drive_tables);
+}
+
+/// The drive gauge (objects 12 to 15 of the panel, see docs/hud.md): the bar slides in, then idles;
+/// the orange fill follows the progress to the next point; the digit shows the whole points; MAX
+/// shows when the gauge is full; a burst plays when a point is gained.
+fn update_drive(scene: &mut HudScene, p: &mut SoraPanel, d: &DriveGauge, tables: &DriveTables) {
+    let [bar, fill, digit, max, burst] = p.drive;
+    let Some(table) = tables.0.as_ref() else { return };
+    if !d.enabled {
+        for n in p.drive {
+            scene.nodes[n].visible = false;
+        }
+        p.drive_mode = None;
+        p.drive_points = None;
+        return;
+    }
+    // A mode change restarts the bar from its intro group.
+    if p.drive_mode != Some(d.mode) {
+        p.drive_mode = Some(d.mode);
+        scene.nodes[bar].visible = true;
+        scene.set_group(bar, dg::intro(d.mode));
+        scene.set_group(fill, dg::fill(d.mode));
+        p.drive_points = None;
+    }
+    if scene.nodes[bar].player.group == Some(dg::intro(d.mode)) && scene.nodes[bar].player.finished() {
+        scene.set_group(bar, dg::idle(d.mode));
+    }
+    let set = match d.mode {
+        DriveMode::FormA => 1,
+        DriveMode::FormB => 2,
+        _ => 0,
+    };
+    let pts = d.points.min(9);
+    if p.drive_points != Some(pts) {
+        // A gain plays the burst (the game also plays sound 0x20 or 0x21, not ported here).
+        if p.drive_points.is_some_and(|old| pts > old) {
+            scene.set_group(burst, dg::BURST);
+            scene.nodes[burst].visible = true;
+        }
+        p.drive_points = Some(pts);
+        scene.set_group(digit, table[set][pts as usize] as usize);
+    }
+    if scene.nodes[burst].player.finished() {
+        scene.nodes[burst].visible = false;
+    }
+    let full = d.points >= d.max;
+    scene.nodes[fill].reveal = Some(if full { 1.0 } else { d.fraction.min(99) as f32 / 100.0 });
+    scene.nodes[max].visible = full && d.mode == DriveMode::Normal;
+    for n in [bar, fill, digit] {
+        scene.nodes[n].visible = true;
+    }
+}
+
+/// `KH2_HUDDRIVE=<points>:<max>:<fraction>[:mode]`: draw the drive gauge with those values.
+fn drive_test() -> Option<DriveGauge> {
+    let v = std::env::var("KH2_HUDDRIVE").ok()?;
+    let p: Vec<&str> = v.split(':').collect();
+    let n = |i: usize, d: u8| p.get(i).and_then(|x| x.parse::<u8>().ok()).unwrap_or(d);
+    let mode = match n(3, 0) {
+        2 => DriveMode::FormA,
+        3 => DriveMode::FormB,
+        4 => DriveMode::Locked,
+        _ => DriveMode::Normal,
+    };
+    Some(DriveGauge { enabled: true, mode, points: n(0, 0), max: n(1, 5), fraction: n(2, 0) })
 }
 
 fn test_values() -> Option<[i32; 4]> {
@@ -185,6 +343,15 @@ fn build(scene: &mut HudScene, p: &mut SoraPanel, face_file: Option<usize>, hp: 
     for i in p.bar {
         scene.nodes[i].ext.scale[1] = 0.0;
     }
+    // Drive gauge: the bar, its fill, the digit, the MAX tag and the gain burst (children of the bar).
+    let blank = |scene: &mut HudScene, parent: usize| {
+        let mut n = Node::new(GAUG, Some(parent));
+        n.visible = false;
+        scene.add(n)
+    };
+    let bar = blank(scene, p.circle);
+    p.drive = [bar, blank(scene, bar), blank(scene, bar), blank(scene, bar), blank(scene, bar)];
+    scene.set_group(p.drive[3], dg::MAX);
     p.last_hp = hp;
     p.lag_hp = hp;
     p.built = true;

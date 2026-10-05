@@ -15,6 +15,7 @@ mod camera;
 mod combat;
 mod data;
 mod enemy;
+mod enemy_ai;
 mod fx;
 mod harness;
 mod hud;
@@ -63,6 +64,7 @@ fn main() {
             skel::SkelPlugin,
             combat::CombatPlugin,
             enemy::EnemyPlugin,
+            enemy_ai::EnemyAiPlugin,
             hud::HudPlugin,
             fx::FxPlugin,
             harness::HarnessPlugin,

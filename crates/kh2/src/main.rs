@@ -697,6 +697,10 @@ fn run(args: &mut Vec<String>) -> Result<(), String> {
 }
 
 fn decode(a: &mut Archive, name: &str) -> Result<kh2_tables::DynTable, String> {
+    // Player-system tables and derived views (rcct, memt, sstm_full, abilities, drive_forms, ...).
+    if let Some(r) = kh2_tables::player::dump(a, name) {
+        return r.map_err(|e| e.to_string());
+    }
     let def = kh2_tables::tables::ALL.iter().find(|d| d.name == name).ok_or(format!("unknown table {name}"))?;
     let blob = kh2_tables::subfile(a, def).map_err(|e| e.to_string())?;
     kh2_tables::tables::decode_dyn(name, &blob)

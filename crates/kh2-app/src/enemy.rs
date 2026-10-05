@@ -330,6 +330,7 @@ pub fn think(
                     gravity = 0.0;
                 }
                 if e.grounded && e.timer > 0.25 {
+                    info!("{} lands from a blow after {:.2} s at {:?}", e.name, e.timer, tf.translation);
                     e.vel = Vec3::ZERO;
                     e.blow = None;
                     e.state = if e.hp <= 0 { EState::Dying } else { EState::Hurt };
@@ -459,9 +460,10 @@ pub fn receive_hits(
             x => x,
         };
         info!(
-            "{} hit: atkp {} reaction {} effective {} ineffective {useless} {} -> {action:?}",
+            "{} hit: atkp {} damage {dmg} hp {} reaction {} effective {} ineffective {useless} {} -> {action:?}",
             e.name,
             h.atkp,
+            e.hp,
             atk.enemy_reaction,
             out.effective,
             if from_front { "front" } else { "back" }

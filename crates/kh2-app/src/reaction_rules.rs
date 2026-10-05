@@ -1,6 +1,6 @@
 //! Pure rules for how an attack's reflect/refact fields and reaction class change what happens
 //! when a hit lands, hits a wall or clashes with another attack. No Bevy systems here: the
-//! combat, Sora and enemy modules will call these functions. The rules and where they come from
+//! combat, Sora and enemy modules call these functions. The rules and where they come from
 //! are written up in `docs/hit-reaction.md`; the addresses quoted below are functions in the
 //! game's main executable, studied in the local decompilation.
 //!

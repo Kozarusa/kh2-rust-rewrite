@@ -510,10 +510,10 @@ impl DriveState {
         let env = |k: &str| std::env::var(k).ok();
         let num = |k: &str| env(k).and_then(|v| v.trim().parse::<i32>().ok());
         let scripted = env("KH2_DRIVE").is_some();
-        // New game: 0 points of 3 (FUN_001cda78); the harness starts full so a form can be entered.
-        let mut points = rules::Points { whole: 0, fraction: 0, max: 3 };
-        points.whole = num("KH2_DRIVE_POINTS").map_or(if scripted { points.max } else { 0 }, |v| v.clamp(0, 9) as u8).min(points.max.max(9));
-        points.max = points.max.max(points.whole);
+        // New game: 0 points of 3 (FUN_001cda78). The harness starts with 9 so that any form can be
+        // entered (the maximum is raised by bonuses in the game, `bons` DriveGaugeUpgrade).
+        let want = num("KH2_DRIVE_POINTS").map_or(if scripted { 9 } else { 0 }, |v| v.clamp(0, 9) as u8);
+        let points = rules::Points { whole: want, fraction: 0, max: want.max(3) };
         let mut owned = [false; 6];
         match env("KH2_DRIVE_OWNED") {
             Some(v) => v.split(',').filter_map(|x| x.trim().parse::<usize>().ok()).filter(|&f| f < 6).for_each(|f| owned[f] = true),

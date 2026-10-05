@@ -20,7 +20,9 @@ mod enemy_ai;
 mod fx;
 mod harness;
 mod hud;
+mod limit;
 mod motor;
+mod reaction_cmd;
 mod reaction_rules;
 mod schedule;
 mod skel;
@@ -71,6 +73,8 @@ fn main() {
             harness::HarnessPlugin,
             audio::AudioPlugin,
             drive::DrivePlugin,
+            limit::LimitPlugin,
+            reaction_cmd::ReactionPlugin,
         ))
         .run();
 }

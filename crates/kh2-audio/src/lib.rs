@@ -3,6 +3,7 @@
 
 pub mod adpcm;
 pub mod bgm;
+pub mod footstep;
 pub mod ssl;
 pub mod synth;
 pub mod vsb;

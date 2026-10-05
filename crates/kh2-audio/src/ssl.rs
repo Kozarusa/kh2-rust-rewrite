@@ -292,6 +292,10 @@ struct Track {
     pitch_add: i32,
     pan_add: i32,
     vol_factor: i32,
+    /// Per-note random ranges set by command 0x78 (pitch, volume, pan); 0 = off.
+    rand_pitch: i32,
+    rand_vol: i32,
+    rand_pan: i32,
     adsr_override: Option<(u16, u16)>,
     volume: Slide,
     expression: Slide,
@@ -329,6 +333,9 @@ impl Track {
             pitch_add: 0,
             pan_add: 0,
             vol_factor: 0x3fff,
+            rand_pitch: 0,
+            rand_vol: 0,
+            rand_pan: 0,
             adsr_override: None,
             volume: Slide::default(),
             expression: Slide::default(),
@@ -432,7 +439,7 @@ impl Sequence {
         while self.acc < 0 {
             self.acc += 300;
             for ti in 0..self.tracks.len() {
-                self.track_tick(ti, mixer);
+                self.track_tick(ti, mixer, rng);
             }
         }
         for t in &mut self.tracks {
@@ -449,14 +456,14 @@ impl Sequence {
         }
     }
 
-    fn track_tick(&mut self, ti: usize, mixer: &mut Mixer) {
+    fn track_tick(&mut self, ti: usize, mixer: &mut Mixer, rng: &mut u32) {
         if self.tracks[ti].done {
             return;
         }
         let mut guard = 0;
         while self.tracks[ti].wait == 0 && !self.tracks[ti].done && guard < 512 {
             guard += 1;
-            self.event(ti, mixer);
+            self.event(ti, mixer, rng);
             if self.tracks[ti].done {
                 break;
             }
@@ -469,9 +476,20 @@ impl Sequence {
         self.tracks[ti].slides_tick();
     }
 
-    fn note_on(&mut self, ti: usize, key: u8, vel: u8, mixer: &mut Mixer) {
+    fn note_on(&mut self, ti: usize, key: u8, vel: u8, mixer: &mut Mixer, rng: &mut u32) {
         let tag = self.tag + ti as u32;
         let t = &mut self.tracks[ti];
+        // Per-note randomisation first, in the driver's order (FUN_00106fd0 calls 0x1091d8,
+        // 0x109228, 0x109270): pitch offset, volume factor, pan offset.
+        if t.rand_pitch != 0 {
+            t.pitch_add = rand(rng, t.rand_pitch * 0x18_0000) - t.rand_pitch * 0xc_0000;
+        }
+        if t.rand_vol != 0 {
+            t.vol_factor = 0x3fff - rand(rng, t.rand_vol * 0x40 - 1);
+        }
+        if t.rand_pan != 0 {
+            t.pan_add = (rand(rng, t.rand_pan * 2) - t.rand_pan) * 0x40;
+        }
         if t.porta && t.porta_time != 0 && t.last_key != 0xfe {
             let d = t.last_key as i32 - key as i32;
             t.glide.glide(t.porta_time, d);
@@ -598,7 +616,7 @@ impl Sequence {
         }
     }
 
-    fn event(&mut self, ti: usize, mixer: &mut Mixer) {
+    fn event(&mut self, ti: usize, mixer: &mut Mixer, rng: &mut u32) {
         let t = &mut self.tracks[ti];
         let cmd = t.byte();
         match cmd {
@@ -635,22 +653,22 @@ impl Sequence {
             0x08 => self.tempo = t.byte() as i32,
             0x10 => {
                 let (k, v) = (t.key, t.velocity);
-                self.note_on(ti, k, v, mixer);
+                self.note_on(ti, k, v, mixer, rng);
             }
             0x11 => {
                 let k = t.byte();
                 let v = t.byte();
-                self.note_on(ti, k, v, mixer);
+                self.note_on(ti, k, v, mixer, rng);
             }
             0x12 => {
                 let k = t.byte();
                 let v = t.velocity;
-                self.note_on(ti, k, v, mixer);
+                self.note_on(ti, k, v, mixer, rng);
             }
             0x13 => {
                 let v = t.byte();
                 let k = t.key;
-                self.note_on(ti, k, v, mixer);
+                self.note_on(ti, k, v, mixer, rng);
             }
             0x18 => {
                 let k = t.key;
@@ -826,6 +844,38 @@ impl Sequence {
                 let r = t.byte() as i32;
                 t.extra[i].rate.set(time, if r == 0 { 0x100 } else { r }, 16);
             }
+            // Per-track random ranges (handlers 0x10a66c / 0x10a6e0 in LIBSSL): 0x78 sets slot
+            // `index` to `value` (0 reads as 256), 0x79 clears it. Slots 0, 1, 2 are the random
+            // pitch, volume and pan ranges applied at every note on. Slot 3 (random delay time),
+            // 4 (random attack rate) and 5 (random program) are read and ignored here.
+            0x78 => {
+                let i = t.byte();
+                let v = match t.byte() {
+                    0 => 256,
+                    v => v as i32,
+                };
+                match i {
+                    0 => t.rand_pitch = v,
+                    1 => t.rand_vol = v,
+                    2 => t.rand_pan = v,
+                    _ => {}
+                }
+            }
+            0x79 => match t.byte() {
+                0 => {
+                    t.rand_pitch = 0;
+                    t.pitch_add = 0;
+                }
+                1 => {
+                    t.rand_vol = 0;
+                    t.vol_factor = 0x3fff;
+                }
+                2 => {
+                    t.rand_pan = 0;
+                    t.pan_add = 0;
+                }
+                _ => {}
+            },
             0x7c | 0x7d => {
                 // Jumps into other sound effects: treated as the end of this track.
                 t.byte();
@@ -970,5 +1020,43 @@ impl Driver {
             done += n;
             self.frame_acc -= n as u32;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wd::{Instrument, Region};
+
+    fn one_note_wd() -> Arc<Wd> {
+        let region = Region { key_high: 127, velocity_high: 127, ..Region::default() };
+        Arc::new(Wd { id: 0, instruments: vec![Instrument { regions: vec![region] }], samples: Vec::new() })
+    }
+
+    /// Command 0x78 takes (index, value) and 0x79 takes (index): a sequence that sets the random
+    /// volume range, plays a note and clears the range must keep its tempo (the old reading took
+    /// the arguments as commands, one of which was a tempo change to 0) and finish.
+    #[test]
+    fn random_range_commands_consume_their_arguments() {
+        let track: Arc<[u8]> = Arc::from(vec![0x00, 0x78, 0x01, 0x14, 0x00, 0x12, 0x3d, 0x10, 0x79, 0x01, 0x00, 0x00]);
+        let mut seq = Sequence::new(vec![track], one_note_wd(), 0x3fff, 0x40, 64);
+        let (mut mixer, mut rng) = (Mixer::new(), 0x1234_5678u32);
+        let mut seen = None;
+        for _ in 0..4 {
+            seq.track_tick(0, &mut mixer, &mut rng);
+            if seq.tracks[0].rand_vol != 0 {
+                seen = Some(seq.tracks[0].rand_vol);
+            }
+        }
+        assert_eq!(seq.tempo, 0x78);
+        assert_eq!(seen, Some(0x14));
+        // The note drew a volume factor inside the range (0x3fff minus up to 0x14 * 0x40 - 1).
+        assert!((0x3fff - 0x4ff..=0x3fff).contains(&seq.tracks[0].vol_factor) || seq.tracks[0].vol_factor == 0x3fff);
+        for _ in 0..40 {
+            seq.track_tick(0, &mut mixer, &mut rng);
+        }
+        assert!(seq.tracks[0].done);
+        assert_eq!(seq.tracks[0].rand_vol, 0);
+        assert_eq!(seq.tracks[0].vol_factor, 0x3fff);
     }
 }

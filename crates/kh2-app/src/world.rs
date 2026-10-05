@@ -16,6 +16,8 @@ pub struct Tri {
     pub v: [Vec3; 3],
     pub n: Vec3,
     pub flags: u32,
+    /// COCT ground material (0 for areas without COCT).
+    pub material: u8,
     pub lo: Vec3,
     pub hi: Vec3,
 }
@@ -35,6 +37,7 @@ pub struct Ground {
     pub y: f32,
     pub normal: Vec3,
     pub flags: u32,
+    pub material: u8,
 }
 
 fn cell(v: f32) -> i32 {
@@ -42,7 +45,7 @@ fn cell(v: f32) -> i32 {
 }
 
 impl World {
-    fn push(&mut self, v: [Vec3; 3], flags: u32) {
+    fn push(&mut self, v: [Vec3; 3], flags: u32, material: u8) {
         let n = (v[1] - v[0]).cross(v[2] - v[0]);
         if n.length_squared() < 1e-6 {
             return;
@@ -50,7 +53,7 @@ impl World {
         let lo = v[0].min(v[1]).min(v[2]);
         let hi = v[0].max(v[1]).max(v[2]);
         let id = self.tris.len() as u32;
-        self.tris.push(Tri { v, n: n.normalize(), flags, lo, hi });
+        self.tris.push(Tri { v, n: n.normalize(), flags, material, lo, hi });
         self.min = self.min.min(lo);
         self.max = self.max.max(hi);
         for x in cell(lo.x)..=cell(hi.x) {
@@ -74,7 +77,7 @@ impl World {
                 let n = (v[1] - v[0]).cross(v[2] - v[0]);
                 let pn = Vec3::from(p.normal);
                 let v = if n.dot(pn) < 0.0 { [v[0], v[2], v[1]] } else { v };
-                w.push(v, p.flags);
+                w.push(v, p.flags, p.material);
             }
         }
         w
@@ -85,7 +88,7 @@ impl World {
         for m in meshes.iter().filter(|m| !m.transparent) {
             for t in m.indices.as_chunks::<3>().0 {
                 let v = [t[0], t[1], t[2]].map(|i| Vec3::from(m.positions[i as usize]));
-                w.push(v, 0);
+                w.push(v, 0, 0);
             }
         }
         w
@@ -127,7 +130,7 @@ impl World {
                 && y >= from_y - down
                 && best.is_none_or(|b| y > b.y)
             {
-                best = Some(Ground { y, normal: t.n, flags: t.flags });
+                best = Some(Ground { y, normal: t.n, flags: t.flags, material: t.material });
             }
         }
         best

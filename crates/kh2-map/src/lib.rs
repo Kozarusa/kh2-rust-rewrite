@@ -27,6 +27,10 @@ pub struct Polygon {
     pub normal: [f32; 3],
     pub d: f32,
     pub flags: u32,
+    /// Ground material: byte 0 of the polygon record. The game copies it into the actor's ground
+    /// contact data (FUN_00143560 stores `*(u8 *)polygon` at actor +0x648) and the footstep sound
+    /// and dust code index by it (FUN_00183730, FUN_0016baa0, FUN_001b1c90). 0 plays no footstep.
+    pub material: u8,
     /// Index of the mesh (table 2 entry) the polygon belongs to.
     pub mesh: u16,
 }
@@ -95,7 +99,8 @@ impl Coct {
             // Stored plane N·V + D = 0 with V = (x, -y, -z): the same flip applies to N, D stays.
             let d = f32_at(b, po + 12)?;
             let flags = u32_at(b, t7 + 4 * i16_at(b, o + 14)? as u16 as usize)?;
-            polygons.push(Polygon { verts, quad, normal, d, flags, mesh: mesh_of[i] });
+            let material = *b.get(o)?;
+            polygons.push(Polygon { verts, quad, normal, d, flags, material, mesh: mesh_of[i] });
         }
         Some(Coct { polygons })
     }

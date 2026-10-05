@@ -19,6 +19,11 @@ const SEGMENT: i32 = 200;
 /// Seconds an enemy's gauge stays up after it was last hit while not locked on. The game's rule
 /// for dropping the gauge was not found; this value is a stand-in.
 const HOLD: f32 = 5.0;
+/// Pips the row holds (0x153ff8 stops at 16).
+const PIPS: usize = 16;
+/// Distance of the free-aim point from the camera in metres (the game uses 300 units; any distance on the
+/// camera's axis lands at the same screen point).
+const FREE_DISTANCE: f32 = 10.0;
 
 mod g {
     pub const TAG: usize = 38;
@@ -27,15 +32,31 @@ mod g {
     pub const CAP: usize = 40;
     pub const TRAIL: usize = 41;
     pub const CUR: usize = 43;
+    /// Pip row: the back (45), a filled pip (44) and a pip just emptied (46).
+    pub const PIP_BACK: usize = 45;
+    pub const PIP_FULL: usize = 44;
+    pub const PIP_LOST: usize = 46;
+    /// Lock-on reticle on a target, the free-aim reticle, and the alert bubble above the reticle.
     pub const RETICLE: usize = 25;
+    pub const FREE: usize = 3;
+    pub const BUBBLE: usize = 20;
 }
+
+/// Game-state input of the lock-on bubble: true while the locked target shows its alert bubble (the game
+/// shows it when the target's flag +0x588 bit 1 is set and one of its timers +0xac8 or +0xacc is positive,
+/// 0x19bbc0). The enemy module fills it in; `KH2_HUDBUBBLE=1` shows it.
+#[derive(Resource, Default, Clone, Copy)]
+pub struct TargetBubble(pub bool);
 
 #[derive(Resource, Default)]
 pub struct TargetHud {
     built: bool,
     /// tag, frame, back bar, cap, trail, current
     gauge: [usize; 6],
+    /// Back and fill node of each pip of the row (one pip per 200 HP segment past the first, at most 16).
+    pips: [[usize; 2]; PIPS],
     reticle: usize,
+    bubble: usize,
     /// The enemy hit last, and seconds its gauge stays up.
     shown: Option<Entity>,
     hold: f32,
@@ -43,18 +64,19 @@ pub struct TargetHud {
     bound: Option<Entity>,
     last_hp: i32,
     prev_hp: i32,
-    reticle_for: Option<Entity>,
 }
 
 /// HP bookkeeping: remembers each enemy's HP to see which one was hit.
 #[derive(Default)]
 pub struct Seen(std::collections::HashMap<Entity, i32>);
 
+#[allow(clippy::too_many_arguments)]
 pub fn update(
     time: Res<Time>,
     mut scene: ResMut<HudScene>,
     mut hud: ResMut<TargetHud>,
     mut seen: Local<Seen>,
+    bubble: Res<TargetBubble>,
     sora: Query<&Sora>,
     enemies: Query<(Entity, &GlobalTransform, &Enemy)>,
     cam: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
@@ -79,17 +101,47 @@ pub fn update(
     h.hold -= time.delta_secs();
     let target = lock.or(if h.hold > 0.0 { h.shown } else { None }).and_then(|e| enemies.get(e).ok());
 
-    // Gauge.
-    let Some((e, _, en)) = target else {
-        for &i in &h.gauge {
-            scene.nodes[i].visible = false;
+    // Reticle (0x11a9b0): on the locked enemy group 25, otherwise the free-aim point a fixed distance
+    // ahead of the camera (0x11a5f8, group 3). Both are projected with the 3D camera.
+    let locked = lock.filter(|&l| enemies.contains(l));
+    let want = if locked.is_some() { g::RETICLE } else { g::FREE };
+    let at = cam.single().ok().and_then(|(c, ct)| {
+        let point = match locked.and_then(|e| enemies.get(e).ok()) {
+            Some((_, gt, _)) => gt.translation() + Vec3::Y * 0.9,
+            None => ct.translation() + *ct.forward() * FREE_DISTANCE,
+        };
+        let vp = c.world_to_viewport(ct, point).ok()?;
+        Some(viewport_to_hud(vp, c.logical_viewport_size()?))
+    });
+    let shown_reticle = at.is_some();
+    scene.nodes[h.reticle].visible = shown_reticle;
+    if let Some(p) = at {
+        if scene.nodes[h.reticle].player.group != Some(want) {
+            scene.set_group(h.reticle, want);
         }
-        scene.nodes[h.reticle].visible = false;
-        h.reticle_for = None;
-        h.bound = None;
-        return;
+        scene.nodes[h.reticle].pos = [p.x, p.y];
+    }
+    let alert = bubble.0 || std::env::var("KH2_HUDBUBBLE").is_ok_and(|v| v != "0");
+    scene.nodes[h.bubble].visible = shown_reticle && locked.is_some() && alert;
+
+    // `KH2_HUDTARGETTEST=<hp>:<max>` shows the gauge for those values without an enemy (display only).
+    let test = std::env::var("KH2_HUDTARGETTEST").ok().and_then(|v| {
+        let mut it = v.split(':').filter_map(|x| x.parse::<i32>().ok());
+        Some((it.next()?, it.next()?))
+    });
+    // Gauge.
+    let (e, hp, max) = if let Some((hp, max)) = test {
+        (Entity::PLACEHOLDER, hp.max(0), max.max(1))
+    } else {
+        let Some((e, _, en)) = target else {
+            for &i in h.gauge.iter().chain(h.pips.iter().flatten()) {
+                scene.nodes[i].visible = false;
+            }
+            h.bound = None;
+            return;
+        };
+        (e, en.hp.max(0), en.stats.max_hp.max(1))
     };
-    let (hp, max) = (en.hp.max(0), en.stats.max_hp.max(1));
     if h.bound != Some(e) {
         // New target: the gauge starts at its HP with no trail.
         h.bound = Some(e);
@@ -123,23 +175,20 @@ pub fn update(
     }
     scene.nodes[h.gauge[3]].off = [-(v_max as f32), 0.0];
 
-    // Reticle at the locked enemy only.
-    let locked = lock.filter(|&l| l == e);
-    scene.nodes[h.reticle].visible = locked.is_some();
-    if locked.is_some() {
-        if h.reticle_for != Some(e) {
-            h.reticle_for = Some(e);
-            scene.set_group(h.reticle, g::RETICLE);
+    // Pip row (0x153ff8, 0x1543f0, 0x154758): one back pip per segment below the top one, and a
+    // filled pip for each full segment left under the current one (a pip just emptied plays its own
+    // group), up to the segments the previous HP had.
+    let n_seg = (((max - 1) / SEGMENT).max(0) as usize).min(PIPS);
+    let (cur_seg, prev_seg) = (((hp - 1) / SEGMENT).max(0) as usize, ((h.prev_hp - 1) / SEGMENT).max(0) as usize);
+    for k in 0..PIPS {
+        let [back, fill] = h.pips[k];
+        scene.nodes[back].visible = k < n_seg;
+        let show = n_seg > 0 && k < prev_seg.max(cur_seg).min(PIPS);
+        scene.nodes[fill].visible = show;
+        let want = if k < cur_seg { g::PIP_FULL } else { g::PIP_LOST };
+        if show && scene.nodes[fill].player.group != Some(want) {
+            scene.set_group(fill, want);
         }
-        let at = cam.single().ok().zip(enemies.get(e).ok()).and_then(|((c, ct), (_, gt, _))| {
-            let vp = c.world_to_viewport(ct, gt.translation() + Vec3::Y * 0.9).ok()?;
-            Some(viewport_to_hud(vp, c.logical_viewport_size()?))
-        });
-        if let Some(p) = at {
-            scene.nodes[h.reticle].pos = [p.x, p.y];
-        }
-    } else {
-        h.reticle_for = None;
     }
 }
 
@@ -159,6 +208,17 @@ fn build(scene: &mut HudScene, h: &mut TargetHud) {
         add(scene, GAUG, Some(tag), g::TRAIL),
         add(scene, GAUG, Some(tag), g::CUR),
     ];
-    h.reticle = add(scene, FIEL, None, g::RETICLE);
+    // The pips sit left of the tag in a row, each one the back group's `unk20` field further (0x237698).
+    let step = scene.files.get(GAUG).and_then(|f| f.seq.groups.get(g::PIP_BACK)).map(|g| g.unk20 as f32).unwrap_or(0.0);
+    for k in 0..PIPS {
+        let back = add(scene, GAUG, Some(tag), g::PIP_BACK);
+        let fill = add(scene, GAUG, Some(tag), g::PIP_FULL);
+        for n in [back, fill] {
+            scene.nodes[n].off = [-step * k as f32, 0.0];
+        }
+        h.pips[k] = [back, fill];
+    }
+    h.reticle = add(scene, FIEL, None, g::FREE);
+    h.bubble = add(scene, FIEL, Some(h.reticle), g::BUBBLE);
     h.built = true;
 }

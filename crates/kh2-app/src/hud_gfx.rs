@@ -19,6 +19,7 @@ use bevy::shader::ShaderRef;
 use bevy::sprite_render::{AlphaMode2d, Material2d, Material2dKey, Material2dPlugin, MeshMaterial2d};
 use kh2_image::seqd::{Ext, Player, Quad, Seqd};
 
+use super::hud_text::{Label, TextSys};
 use crate::assets::Disc;
 
 /// Render layer of the HUD camera and everything it draws.
@@ -154,6 +155,15 @@ pub struct Node {
     pub visible: bool,
     /// Clip to the wedge from the west direction clockwise by this many radians (a ring gauge).
     pub sweep: Option<f32>,
+    /// Show only this fraction of the node's width, from its left edge (a gauge fill; stands in for
+    /// the game's rotating mask where that was not ported).
+    pub reveal: Option<f32>,
+    /// Hold the node's sequence at this frame (a harness aid for screenshots of short animations).
+    pub freeze: Option<f32>,
+    /// Text drawn on top of the node's sequence, from the node's origin.
+    pub label: Option<Label>,
+    /// Alpha multiplier for the label (the node's fade).
+    pub label_fade: f32,
     /// Last anchor point the group's anchor animation produced.
     anchor: [f32; 2],
     base: [f32; 2],
@@ -171,6 +181,10 @@ impl Node {
             ext: Ext::default(),
             visible: true,
             sweep: None,
+            reveal: None,
+            freeze: None,
+            label: None,
+            label_fade: 1.0,
             anchor: [0.0; 2],
             base: [0.0; 2],
             origin: [0.0; 2],
@@ -182,6 +196,8 @@ impl Node {
 pub struct HudScene {
     pub files: Vec<SeqFile>,
     pub nodes: Vec<Node>,
+    /// Fonts and messages (None when the disc has none).
+    pub text: Option<TextSys>,
     acc: f32,
 }
 
@@ -205,7 +221,10 @@ impl HudScene {
         while self.acc >= STEP {
             self.acc -= STEP;
             for n in &mut self.nodes {
-                n.player.tick(1.0);
+                match n.freeze {
+                    Some(f) => n.player.seek(f),
+                    None => n.player.tick(1.0),
+                }
             }
         }
     }
@@ -234,22 +253,37 @@ impl HudScene {
     }
 
     /// All quads to draw, in draw order, with the texture file they use.
-    fn quads(&self) -> Vec<(usize, Quad, [f32; 2], Option<f32>)> {
+    fn quads(&self) -> Vec<Drawn> {
         let mut out = Vec::new();
         for n in &self.nodes {
-            let (Some(g), Some(f)) = (n.player.group, self.files.get(n.file)) else { continue };
             if !n.visible {
                 continue;
             }
-            let mut ext = n.ext;
-            ext.time = n.player.uv_time;
-            for q in f.seq.quads(g, n.player.frame(), n.origin, &ext) {
-                out.push((n.file, q, n.origin, n.sweep));
+            if let (Some(g), Some(f)) = (n.player.group, self.files.get(n.file)) {
+                let mut ext = n.ext;
+                ext.time = n.player.uv_time;
+                let qs = f.seq.quads(g, n.player.frame(), n.origin, &ext);
+                let max_x = n.reveal.map(|r| {
+                    let xs = qs.iter().flat_map(|q| q.pos.iter().map(|p| p[0]));
+                    let (lo, hi) = xs.fold((f32::MAX, f32::MIN), |(lo, hi), x| (lo.min(x), hi.max(x)));
+                    lo + (hi - lo) * r.clamp(0.0, 1.0)
+                });
+                for q in qs {
+                    out.push((n.file, q, n.origin, n.sweep, max_x));
+                }
+            }
+            if let (Some(label), Some(text)) = (&n.label, &self.text) {
+                for (file, q) in text.quads(label, n.origin, n.label_fade) {
+                    out.push((file, q, n.origin, None, None));
+                }
             }
         }
         out
     }
 }
+
+/// One quad to draw: texture file, the quad, its node's origin, the ring sweep and the x limit.
+type Drawn = (usize, Quad, [f32; 2], Option<f32>, Option<f32>);
 
 #[derive(Component)]
 pub struct HudCamera;
@@ -444,7 +478,7 @@ fn draw(
         col: Vec<[f32; 4]>,
     }
     let mut out: Vec<Batch> = Vec::new();
-    for (file, q, origin, sweep) in scene.quads() {
+    for (file, q, origin, sweep, max_x) in scene.quads() {
         let Some(f) = scene.files.get(file) else { continue };
         let key = (file, q.blend, q.nearest);
         // Quad corners are TL, TR, BL, BR; as a polygon: TL, TR, BR, BL.
@@ -457,10 +491,14 @@ fn draw(
                 col: [gamma22(q.color[i][0] as f32 / 128.0), gamma22(q.color[i][1] as f32 / 128.0), gamma22(q.color[i][2] as f32 / 128.0), q.color[i][3] as f32 / 128.0],
             })
             .collect();
-        let pieces = match sweep {
+        let mut pieces = match sweep {
             Some(s) => wedge(&poly, origin, s),
             None => vec![poly],
         };
+        if let Some(mx) = max_x {
+            // Keep x <= mx.
+            pieces = pieces.iter().map(|p| clip(p, [mx, 0.0], [-1.0, 0.0])).collect();
+        }
         if out.last().map(|b| b.key) != Some(key) {
             out.push(Batch { key, pos: Vec::new(), uv: Vec::new(), col: Vec::new() });
         }

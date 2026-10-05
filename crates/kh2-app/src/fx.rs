@@ -460,6 +460,9 @@ pub fn game_effects(
     for r in req.read() {
         match *r {
             GameEffect::Ineffective { point, dir } => {
+                if std::env::var_os("KH2_FXLOG").is_some() {
+                    info!("ineffective hit: system effect {EFFECT_INEFFECTIVE:#x} at {point:?}");
+                }
                 start_placed(&mut commands, &lib.system, EFFECT_INEFFECTIVE, Bind::Fixed(Mat4::from_translation(point)), Placement::hit(Some(dir)));
             }
             GameEffect::Damage { victim, effect, point } => {
@@ -497,14 +500,16 @@ pub fn enemy_deaths(enemies: Query<(Entity, &Enemy), Without<DeathFx>>, mut out:
     }
 }
 
-/// `KH2_FXKILL=<seconds>`: at that time every living enemy is defeated (HP 0, state dying), to
-/// look at the death effect without a fight.
-pub fn fx_kill(time: Res<Time>, mut enemies: Query<&mut Enemy>, mut done: Local<bool>) {
-    let Some(at) = std::env::var("KH2_FXKILL").ok().and_then(|v| v.parse::<f32>().ok()) else { return };
-    if *done || time.elapsed_secs() < at || !enemies.iter().any(|e| e.alive()) {
+/// `KH2_FXKILL=<seconds>[,<seconds>...]`: at each of those times every living enemy is defeated
+/// (HP 0, state dying), to look at the death effect without a fight. A time with no living enemy
+/// waits for the next wave.
+pub fn fx_kill(time: Res<Time>, mut enemies: Query<&mut Enemy>, mut done: Local<usize>) {
+    let Ok(spec) = std::env::var("KH2_FXKILL") else { return };
+    let Some(at) = spec.split(',').filter_map(|v| v.trim().parse::<f32>().ok()).nth(*done) else { return };
+    if time.elapsed_secs() < at || !enemies.iter().any(|e| e.alive()) {
         return;
     }
-    *done = true;
+    *done += 1;
     for mut e in &mut enemies {
         e.hp = 0;
         e.state = crate::enemy::EState::Dying;
@@ -781,4 +786,22 @@ pub fn fx_test(
         .map_or(t.rotation * Vec3::Z * dist + Vec3::Y, |v| Vec3::new(v[0], v[1], v[2]));
     let at = t.translation + off;
     start(&mut commands, &pax, id, Bind::Fixed(Mat4::from_translation(at)));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hit_rotation_follows_the_game_axes() {
+        // Straight along Bevy +Z is game -Z: yaw atan2(0, -1) = pi, no pitch.
+        let r = hit_rotation(Vec3::Z);
+        assert!((r[1].abs() - std::f32::consts::PI).abs() < 1e-5 && r[0].abs() < 1e-5 && r[2] == 0.0);
+        // Along +X: yaw pi/2 in both frames.
+        let r = hit_rotation(Vec3::X);
+        assert!((r[1] - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
+        // Straight up in Bevy is down in the game: pitch atan2(1, 0) = pi/2 about X.
+        let r = hit_rotation(Vec3::Y);
+        assert!((r[0] + std::f32::consts::FRAC_PI_2).abs() < 1e-5 || (r[0] - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
+    }
 }

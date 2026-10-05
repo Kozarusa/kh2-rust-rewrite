@@ -14,11 +14,13 @@ use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
 use bevy::prelude::*;
 use kh2_anim::{id, triggers::range, PlayerState};
 
+use crate::assets::Disc;
 use crate::camera::OrbitCamera;
 use crate::combat::{Fighter, Hit, Team};
 use crate::data::{GameData, Stats};
 use crate::enemy::Enemy;
 use crate::motor::{wrap_angle, Jump, Motor};
+use crate::schedule::{Frame, Sim};
 use crate::skel::{spawn_skinned, Animator, Rig};
 use crate::world::World;
 use crate::SCALE;
@@ -148,6 +150,44 @@ pub struct Rigs {
     pub keyblade: Arc<Rig>,
     pub shadow: Arc<Rig>,
     pub soldier: Arc<Rig>,
+}
+
+fn rig(disc: &Disc, model: &str, mset: &str) -> Arc<Rig> {
+    let m = disc.read(model).and_then(|d| kh2_model::mdlx(&d)).unwrap_or_else(|| panic!("{model}: cannot load"));
+    let s = disc.read(mset).and_then(|d| kh2_anim::Mset::parse(&d)).unwrap_or_else(|| panic!("{mset}: cannot load"));
+    let apdx = model.strip_suffix(".mdlx").map(|b| format!("{b}.apdx")).filter(|a| disc.read(a).is_some());
+    Arc::new(Rig { model: m, mset: s, apdx })
+}
+
+/// Sora, the pad and the character rigs (Sora, keyblade, Shadow, Soldier). Needs `Disc`, so it
+/// is added after `AssetsPlugin`.
+pub struct SoraPlugin;
+
+impl Plugin for SoraPlugin {
+    fn build(&self, app: &mut App) {
+        let rigs = {
+            let disc = app.world().resource::<Disc>();
+            Rigs {
+                sora: rig(disc, "obj/P_EX100.mdlx", "obj/P_EX100.mset"),
+                keyblade: rig(disc, "obj/W_EX010.mdlx", "obj/W_EX010.mset"),
+                shadow: rig(disc, "obj/M_EX020.mdlx", "obj/M_EX020.mset"),
+                soldier: rig(disc, "obj/M_EX010.mdlx", "obj/M_EX010.mset"),
+            }
+        };
+        crate::startup_log("rigs");
+        app.insert_resource(rigs)
+            .init_resource::<Pad>()
+            .add_systems(Startup, setup)
+            .add_systems(Update, read_pad.in_set(Frame::Pad))
+            .add_systems(
+                FixedUpdate,
+                (
+                    sync_weapon.in_set(Sim::Weapon),
+                    (follow_hand, tick).chain().in_set(Sim::Sora),
+                    (receive_hits, receive_wall_hits).chain().in_set(Sim::SoraHurt),
+                ),
+            );
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

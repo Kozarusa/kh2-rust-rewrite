@@ -10,9 +10,32 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use kh2_archive::Archive;
 
+use crate::data::GameData;
+use crate::schedule::Frame;
 use crate::world::World;
 use crate::sora::Sora;
 use crate::SCALE;
+
+/// The disc, the game's tables read from it, and the area that is loaded and switched at run time.
+/// Add this before any plugin that needs `Disc` or `GameData`.
+pub struct AssetsPlugin {
+    pub iso: PathBuf,
+    /// Area loaded at startup, e.g. `tt04`.
+    pub start: String,
+}
+
+impl Plugin for AssetsPlugin {
+    fn build(&self, app: &mut App) {
+        let disc = Disc::open(&self.iso);
+        crate::startup_log("disc");
+        let game_data = GameData::load(&disc);
+        crate::startup_log("tables");
+        app.insert_resource(disc)
+            .insert_resource(game_data)
+            .insert_resource(CurrentArea { name: self.start.clone(), loaded: None })
+            .add_systems(Update, ((switch_area, load_area).chain(), sky_follow.in_set(Frame::Sky)));
+    }
+}
 
 /// ISO path: $KH2_ISO, else `local/iso.txt` written by `kh2 set-iso`.
 pub fn iso_path() -> Result<PathBuf, String> {

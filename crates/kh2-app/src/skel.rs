@@ -224,6 +224,14 @@ fn skinned_mesh(m: &kh2_model::Mesh) -> Mesh {
         .with_inserted_indices(Indices::U32(m.indices.clone()))
 }
 
+pub struct SkelPlugin;
+
+impl Plugin for SkelPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(FixedUpdate, animate.in_set(crate::schedule::Sim::Pose));
+    }
+}
+
 /// Advances every animator one tick and writes joint transforms (60 Hz fixed step).
 pub fn animate(mut q: Query<&mut Animator>, mut joints: Query<&mut Transform>) {
     for mut a in &mut q {

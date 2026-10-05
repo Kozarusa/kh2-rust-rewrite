@@ -11,8 +11,20 @@ use bevy::prelude::*;
 use kh2_anim::triggers::range;
 use kh2_model::collision::{kind, Shape};
 
+use crate::schedule::{Frame, Sim};
 use crate::skel::Animator;
 use crate::SCALE;
+
+pub struct CombatPlugin;
+
+impl Plugin for CombatPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_message::<Hit>()
+            .add_message::<WallHit>()
+            .add_systems(FixedUpdate, detect_hits.in_set(Sim::Detect))
+            .add_systems(Update, draw_volumes.in_set(Frame::Volumes));
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Team {

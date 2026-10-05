@@ -5,8 +5,19 @@ use bevy::prelude::*;
 
 use crate::assets::CurrentArea;
 use crate::enemy::Enemy;
+use crate::schedule::Frame;
 use crate::skel::Animator;
 use crate::sora::{Sora, State};
+
+pub struct HudPlugin;
+
+impl Plugin for HudPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_message::<DamagePopup>()
+            .add_systems(Startup, setup)
+            .add_systems(Update, (update.in_set(Frame::Hud), popups.in_set(Frame::Popups)));
+    }
+}
 
 #[derive(Message, Clone, Copy)]
 pub struct DamagePopup {

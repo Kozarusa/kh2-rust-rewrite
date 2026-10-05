@@ -317,7 +317,7 @@ fn slot_by_tag(rig: &Rig, tag: &str) -> Option<usize> {
 
 /// Height of the ground below Sora (0 when standing on it or nothing is below).
 fn height_above_ground(world: &World, m: &Motor) -> f32 {
-    world.ground(m.pos, m.pos.y + 1.0, 100_000.0).map_or(0.0, |g| (m.pos.y - g.y).max(0.0))
+    world.ground(m.pos, m.pos.y + 1.0, 10_000.0).map_or(0.0, |g| (m.pos.y - g.y).max(0.0))
 }
 
 /// One 60 Hz tick of Sora's controller.

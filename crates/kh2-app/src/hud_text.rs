@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use kh2_image::font::{Atlas, Font, FontSet};
 use kh2_image::seqd::{Quad, Seqd};
-use kh2_image::text::{self, ColorTable, GlyphQuad, Kind, Messages, Style, Token};
+use kh2_image::text::{self, ColorTable, GlyphQuad, Kind, Messages, Places, Style, Token};
 
 use super::hud_gfx::SeqFile;
 use crate::assets::Disc;
@@ -15,6 +15,11 @@ use crate::assets::Disc;
 pub struct TextSys {
     pub set: FontSet,
     pub messages: Option<Messages>,
+    /// The world's own messages (`msg/us/<world>.bar`, 0x190dd0 builds the path; the game binds it
+    /// as message table 2 at 0x190e70 and 0x190c40 searches tables 0, 1, 2 in order).
+    pub world_messages: Option<Messages>,
+    /// The place-name table (`msg/us/place.bin`).
+    pub places: Option<Places>,
     pub colors: Option<ColorTable>,
     /// Scene file index by (atlas, palette row).
     files: HashMap<(u8, usize), usize>,
@@ -43,6 +48,8 @@ impl TextSys {
     pub fn load(disc: &Disc, world: &str, images: &mut Assets<Image>, files: &mut Vec<SeqFile>) -> Option<TextSys> {
         let set = FontSet::parse(&disc.read("msg/us/fontinfo.bar")?, &disc.read("msg/us/fontimage.bar")?)?;
         let messages = disc.read("msg/us/sys.bar").and_then(|b| Messages::from_bar(&b));
+        let world_messages = disc.read(&format!("msg/us/{world}.bar")).and_then(|b| Messages::from_bar(&b));
+        let places = disc.read("msg/us/place.bin").and_then(|b| Places::parse(&b));
         let colors = disc.read("03system.bin").and_then(|b| {
             let e = kh2_bar::parse(&b).ok()?;
             ColorTable::parse(e.iter().find(|e| e.tag == "ftst")?.data)
@@ -61,7 +68,7 @@ impl TextSys {
         }
         let icon_file = add(set.icons_rgba(), files);
         let world = text::WORLDS.iter().position(|w| *w == world).unwrap_or(0);
-        Some(TextSys { set, messages, colors, files: map, icon_file, world })
+        Some(TextSys { set, messages, world_messages, places, colors, files: map, icon_file, world })
     }
 
     /// A label for system message `id` (bit 15 of a table field is ignored).
@@ -70,12 +77,27 @@ impl TextSys {
         Some(Label { tokens, style: Style { world: self.world, ..style }, offset })
     }
 
+    /// The message lookup of 0x190c40: the system table first, then the world's table; a missing
+    /// id falls back to message 0x8adc.
+    pub fn lookup(&self, id: u32) -> Option<Vec<Token>> {
+        let tables = [self.messages.as_ref(), self.world_messages.as_ref()];
+        tables.iter().flatten().find_map(|m| m.tokens(id)).or_else(|| self.messages.as_ref()?.tokens(0x8adc))
+    }
+
+    /// The name of area `area` of the world with code `world`, through the place table.
+    pub fn place_name(&self, world: &str, area: usize) -> Option<Vec<Token>> {
+        let id = self.places.as_ref()?.message(world, area)?;
+        self.lookup(id as u32)
+    }
+
     /// The quads of `label` placed at `origin`, shadows first, with the scene file each one uses.
-    pub fn quads(&self, label: &Label, origin: [f32; 2], fade: f32) -> Vec<(usize, Quad)> {
+    /// `time` is how many draws the label has had (the typewriter budget, `Style::time`).
+    pub fn quads(&self, label: &Label, origin: [f32; 2], fade: f32, time: f32) -> Vec<(usize, Quad)> {
         let font = Font::get(label.style.font);
         let at = [origin[0] + label.offset[0], origin[1] + label.offset[1]];
-        let l = text::layout(&self.set, self.colors.as_ref(), &label.tokens, &label.style, at);
-        let mut all = text::shadows(&l.quads, font.mode);
+        let style = Style { time, ..label.style.clone() };
+        let l = text::layout(&self.set, self.colors.as_ref(), &label.tokens, &style, at);
+        let mut all = text::shadows(&l.quads, font.mode, label.style.color[3]);
         all.extend(l.quads.iter().copied());
         all.iter()
             .filter_map(|q| {
@@ -99,7 +121,9 @@ fn to_quad(q: &GlyphQuad, fade: f32) -> Quad {
     let [u0, v0, u1, v1] = q.uv;
     let mut c = q.color;
     c[3] = (c[3] as f32 * fade).min(255.0) as u8;
-    Quad { pos: [[x0, y0], [x1, y0], [x0, y1], [x1, y1]], uv: [[u0, v0], [u1, v0], [u0, v1], [u1, v1]], color: [c; 4], blend: 0, nearest: false }
+    // The skewed draw (0x1a9818) moves the top edge right and the bottom edge left.
+    let k = q.skew;
+    Quad { pos: [[x0 + k, y0], [x1 + k, y0], [x0 - k, y1], [x1 - k, y1]], uv: [[u0, v0], [u1, v0], [u0, v1], [u1, v1]], color: [c; 4], blend: 0, nearest: false }
 }
 
 /// `KH2_HUDTEXT=<hex message id>[:font[:size[:x:y]]]` (several separated by `,`): draws system

@@ -44,10 +44,39 @@ pub enum Token {
     Gap(u8),
     /// 0x0d: a value the caller substitutes (a name or a number).
     Variable,
+    /// 0x0e: skew of the glyph quads in half pixels (the draw of font mode 4 shifts the top edge
+    /// right and the bottom edge left by it; the other modes ignore it). 0x1a8210 case 0xe stores
+    /// `byte << 3` in 1/16 pixel units, 0x1a9818 applies it.
+    Skew(u8),
+    /// 0x11: set the pen: x and y in pixels from the message origin (two i16; 0x1a8210 case 0x11).
+    Position(i16, i16),
+    /// 0x14: take this much off the typewriter budget (a pause of so many units, u16).
+    Wait(u16),
+    /// 0x15: a 32 pixel slot the owning window fills (an item or button icon, callback +0x18 with
+    /// the slot's index and this value); the pen advances 32 pixels.
+    Slot(u16),
+    /// 0x16: a 32 pixel button icon drawn by the owning window (callback +0x30 with this value).
+    Button(u8),
+    /// 0x17: typewriter: `cost` units of budget per glyph or icon, and the budget span over which
+    /// the newest glyphs fade in (read at construction by 0x1a8978 into the message object +0x5c
+    /// and +0x4c).
+    Typewriter { cost: u8, fade: u8 },
+    /// A command forwarded to the window that owns the message and ignored by the layout: 0x05
+    /// (three u16, callback +0x1c, scanned when a page ends, 0x1a8b48), 0x06 (callback +0x24),
+    /// 0x08 (callback +0x28), 0x0f (callback +0x2c), 0x12 (0x197b70 with a u16), 0x13 (two u16
+    /// stored at the callback's +4 and +8).
+    Callback(u8, Vec<u8>),
     /// Any other command, kept so a message can be shown or re-encoded.
     Command(u8, Vec<u8>),
     /// 0x00 or 0x10.
     End,
+}
+
+/// Pixels the pen advances for a slot or button (0x1a8210 cases 0x15 and 0x16 add 0x200 GS units).
+pub const SLOT_ADVANCE: f32 = 32.0;
+
+fn u16_at(a: &[u8], k: usize) -> u16 {
+    u16::from_le_bytes([a.get(k).copied().unwrap_or(0), a.get(k + 1).copied().unwrap_or(0)])
 }
 
 /// Splits message bytes into tokens (ends at the first end command).
@@ -86,6 +115,13 @@ pub fn tokens(b: &[u8]) -> Vec<Token> {
             0xb => out.push(Token::Width(arg(0))),
             0xc => out.push(Token::Gap(arg(0))),
             0xd => out.push(Token::Variable),
+            0xe => out.push(Token::Skew(arg(0))),
+            0x11 => out.push(Token::Position(u16_at(a, 0) as i16, u16_at(a, 2) as i16)),
+            0x14 => out.push(Token::Wait(u16_at(a, 0))),
+            0x15 => out.push(Token::Slot(u16_at(a, 0))),
+            0x16 => out.push(Token::Button(arg(0))),
+            0x17 => out.push(Token::Typewriter { cost: arg(0), fade: arg(1) }),
+            0x05 | 0x06 | 0x08 | 0x0f | 0x12 | 0x13 => out.push(Token::Callback(c, a.to_vec())),
             _ => out.push(Token::Command(c, a.to_vec())),
         }
         i += len;
@@ -222,6 +258,8 @@ pub fn to_text(t: &[Token]) -> String {
             Token::Newline => s.push('\n'),
             Token::Icon(i) => s.push_str(&format!("[icon {i}]")),
             Token::Variable => s.push_str("{}"),
+            Token::Slot(v) => s.push_str(&format!("[slot {v}]")),
+            Token::Button(v) => s.push_str(&format!("[button {v}]")),
             _ => {}
         }
     }
@@ -236,10 +274,12 @@ pub struct Messages {
 }
 
 impl Messages {
-    /// Parses the BAR (`msg/<lang>/sys.bar`) whose `sys` entry holds the table.
+    /// Parses a message BAR: `msg/<lang>/sys.bar` (entry `sys`) or a world's `msg/<lang>/<world>.bar`.
+    /// The game binds the first type-2 entry whatever its tag (0x190b70 calls 0x1684c0 with type 2
+    /// and no tag); `sys` is preferred here when present.
     pub fn from_bar(bar: &[u8]) -> Option<Messages> {
         let entries = kh2_bar::parse(bar).ok()?;
-        let sys = entries.iter().find(|e| e.tag == "sys" && e.kind == 2)?.data;
+        let sys = entries.iter().find(|e| e.tag == "sys" && e.kind == 2).or_else(|| entries.iter().find(|e| e.kind == 2))?.data;
         Messages::from_entry(sys)
     }
 
@@ -286,6 +326,40 @@ impl Messages {
     }
 }
 
+/// The place-name table `msg/<lang>/place.bin` (path at 0x37b3f0, loaded by 0x19e088): a BAR whose
+/// type-2 entries are tagged with a world code (`tt`, `hb`, ...) and hold one 4-byte record per
+/// area: a u16 message id and a u16 offset to extra data (0x19e0c8 indexes it by area, 0x19e178
+/// looks the id up in the message tables, 0x19e1b8 follows the offset).
+#[derive(Debug, Clone, Default)]
+pub struct Places {
+    worlds: Vec<(String, Vec<(u16, u16)>)>,
+}
+
+impl Places {
+    pub fn parse(bar: &[u8]) -> Option<Places> {
+        let entries = kh2_bar::parse(bar).ok()?;
+        let mut worlds = Vec::new();
+        for e in entries.iter().filter(|e| e.kind == 2) {
+            let tag = e.tag.trim_end_matches('\0').to_string();
+            let records = (0..e.data.len() / 4).map(|i| (u16_at(e.data, i * 4), u16_at(e.data, i * 4 + 2))).collect();
+            worlds.push((tag, records));
+        }
+        Some(Places { worlds })
+    }
+
+    /// The message id of area `area` of `world` (a two-letter code), or None when the table has
+    /// no entry or the id is 0 (0x19e178 shows nothing for id 0).
+    pub fn message(&self, world: &str, area: usize) -> Option<u16> {
+        let w = self.worlds.iter().find(|w| w.0 == world)?;
+        let (id, _) = *w.1.get(area)?;
+        (id != 0).then_some(id)
+    }
+
+    pub fn worlds(&self) -> impl Iterator<Item = (&str, usize)> {
+        self.worlds.iter().map(|w| (w.0.as_str(), w.1.len()))
+    }
+}
+
 /// The font-style colour table (`ftst` in `03system.bin`): u32 version, u32 count, then count
 /// records of 0x50 bytes: a u32 id and one RGBA word per world.
 #[derive(Debug, Clone, Default)]
@@ -329,6 +403,9 @@ pub struct GlyphQuad {
     /// Left, top, right, bottom in the atlas, in texels.
     pub uv: [f32; 4],
     pub color: [u8; 4],
+    /// Pixels the top edge is moved right and the bottom edge left (font mode 4 with command
+    /// 0x0e; 0 for everything else).
+    pub skew: f32,
 }
 
 /// How to lay a message out.
@@ -347,11 +424,16 @@ pub struct Style {
     pub variable: Vec<Token>,
     /// Colour column of the `ftst` table.
     pub world: usize,
+    /// Draws of this message so far: the typewriter budget. The game keeps a float at +0x1c of the
+    /// message object that every draw (0x1a80d8) raises by 1.0 before the layout starts with it; a
+    /// glyph or icon costs the message's `Typewriter.cost`, a `Wait` its value, and the layout stops
+    /// when the budget goes negative. Without a `Typewriter` command the cost is 0 and nothing is cut.
+    pub time: f32,
 }
 
 impl Default for Style {
     fn default() -> Style {
-        Style { font: 0, size: None, color: [0x80; 4], align: 0, variable: Vec::new(), world: 0 }
+        Style { font: 0, size: None, color: [0x80; 4], align: 0, variable: Vec::new(), world: 0, time: 0.0 }
     }
 }
 
@@ -361,6 +443,8 @@ pub struct Layout {
     pub quads: Vec<GlyphQuad>,
     /// Width of the widest line and total height, in pixels.
     pub size: [f32; 2],
+    /// False when the typewriter budget ran out before the end of the text.
+    pub complete: bool,
 }
 
 /// Alpha of the shadow the game draws under shadowed fonts: black with alpha 0x60 (0x80 = 1.0),
@@ -377,13 +461,39 @@ struct State {
     x: f32,
     gap: f32,
     color: [u8; 4],
+    /// Skew in pixels (command 0x0e, half a pixel per unit).
+    skew: f32,
+}
+
+/// A run of quads placed on one baseline: a line, or the part of a line after a `Position`.
+#[derive(Default)]
+struct Line {
+    quads: Vec<GlyphQuad>,
+    width: f32,
+    height: f32,
+    /// The pen y of a `Position` (pixels from the origin): the baseline is `y - height` and no line
+    /// gap is added before it (0x1a8210 case 0x11 sets the state's y to `origin + y - line height`).
+    abs: Option<f32>,
+    /// The extra gap (command 0x0c) in force when the line ended.
+    gap_after: f32,
 }
 
 /// Lays a message out with its top-left at `origin` (pixels; the first line's top is `origin[1]`).
 pub fn layout(set: &FontSet, colors: Option<&ColorTable>, msg: &[Token], style: &Style, origin: [f32; 2]) -> Layout {
     let font = Font::get(style.font);
     let base_s = style.size.map(|v| v / font.size as f32).unwrap_or(1.0);
-    let mut st = State { s: base_s, x: 1.0, gap: 0.0, color: style.color };
+    let mut st = State { s: base_s, x: 1.0, gap: 0.0, color: style.color, skew: 0.0 };
+    // The typewriter command is read when the message object is built (0x1a8978), so it applies
+    // from the first glyph wherever it sits in the text.
+    let (mut cost, mut fade) = (0.0f32, 0.0f32);
+    for t in msg {
+        if let Token::Typewriter { cost: c, fade: f } = t {
+            cost = *c as f32;
+            fade = *f as f32;
+        }
+    }
+    // The draw raises the message's counter by one before it starts (0x1a80d8).
+    let mut budget = style.time + 1.0;
     // Expand the variable once.
     let mut flat: Vec<&Token> = Vec::with_capacity(msg.len());
     for t in msg {
@@ -394,12 +504,25 @@ pub fn layout(set: &FontSet, colors: Option<&ColorTable>, msg: &[Token], style: 
         }
     }
     // Split into lines (a newline ends a line), each laid out from the state the previous one left.
-    // Each line: its quads, width and height.
-    let mut lines: Vec<(Vec<GlyphQuad>, f32, f32)> = Vec::new();
-    let mut cur: Vec<GlyphQuad> = Vec::new();
+    let mut lines: Vec<Line> = Vec::new();
+    let mut cur = Line::default();
     let (mut x, mut line_h) = (0.0f32, font.size as f32 * st.s);
     let mut last_glyph: Option<u16> = None;
+    let mut complete = true;
+    // The colour of a glyph while it fades in: the budget over the fade span, as the alpha (0x1a8698).
+    let faded = |color: [u8; 4], budget: f32| {
+        let mut c = color;
+        if fade > 0.0 && budget / fade < 1.0 {
+            c[3] = (budget / fade * 128.0).max(0.0) as u8;
+        }
+        c
+    };
     for t in &flat {
+        // The budget is tested before every token; once it is negative the rest is not drawn.
+        if budget < 0.0 {
+            complete = false;
+            break;
+        }
         match t {
             Token::Glyph(g) => {
                 let mut g = *g;
@@ -417,20 +540,27 @@ pub fn layout(set: &FontSet, colors: Option<&ColorTable>, msg: &[Token], style: 
                 line_h = line_h.max(font.size as f32 * st.s);
                 if let Some((page, [u0, v0, u1, v1])) = font.cell(g as usize) {
                     let w = font.cell_w as f32 * st.s * st.x;
-                    cur.push(GlyphQuad {
+                    cur.quads.push(GlyphQuad {
                         kind: Kind::Glyph(page as u8),
                         pos: [x - shift, 0.0, x - shift + w, font.cell_h as f32 * st.s],
                         uv: [u0 as f32, v0 as f32, u1 as f32, v1 as f32],
-                        color: st.color,
+                        color: faded(st.color, budget),
+                        // Only the mode 4 draw (0x1a9818) takes the skew; 0x1a95a0 has no such input.
+                        skew: if font.mode == 4 { st.skew } else { 0.0 },
                     });
                 }
                 x += round(adv * st.s * st.x);
+                budget -= cost;
             }
             Token::Space => {
                 x += round((font.space_basis / 3) as f32 * st.s * st.x);
             }
             Token::Newline => {
-                lines.push((std::mem::take(&mut cur), x, line_h));
+                let mut line = std::mem::take(&mut cur);
+                line.width = x;
+                line.height = line_h;
+                line.gap_after = st.gap;
+                lines.push(line);
                 x = 0.0;
                 line_h = font.size as f32 * st.s;
                 last_glyph = None;
@@ -448,41 +578,71 @@ pub fn layout(set: &FontSet, colors: Option<&ColorTable>, msg: &[Token], style: 
             Token::Rgba(c) => st.color = *c,
             Token::Icon(i) => {
                 let [u0, v0, u1, v1] = set.icon_cell(*i as usize);
-                cur.push(GlyphQuad {
+                cur.quads.push(GlyphQuad {
                     kind: Kind::Icon,
                     // The icon spans 20 pixels above the baseline to 4 below it (y is relative to the
                     // baseline until the line is placed).
                     pos: [x, -20.0, x + ICON_CELL as f32, 4.0],
                     uv: [u0 as f32, v0 as f32, u1 as f32, v1 as f32],
                     color: st.color,
+                    skew: 0.0,
                 });
                 x += set.icon_width(*i as usize) as f32;
                 line_h = line_h.max(round(font.size as f32 * st.s));
+                budget -= cost;
             }
             Token::Size(v) => st.s = *v as f32 / font.size as f32,
             Token::Width(v) => st.x = *v as f32 / 100.0,
             Token::Gap(v) => st.gap = *v as f32,
+            Token::Skew(v) => st.skew = *v as f32 * 0.5,
+            Token::Position(dx, dy) => {
+                // What was drawn on this line keeps its place; the pen moves to (dx, dy) from the
+                // origin and the rest of the line sits on the baseline `dy - line height`.
+                if !cur.quads.is_empty() {
+                    let mut seg = std::mem::take(&mut cur);
+                    seg.width = x;
+                    seg.height = line_h;
+                    lines.push(seg);
+                }
+                cur.abs = Some(*dy as f32);
+                x = *dx as f32;
+                last_glyph = None;
+            }
+            Token::Wait(n) => budget -= *n as f32,
+            Token::Slot(_) | Token::Button(_) => {
+                // The owning window draws the icon; the pen moves 32 pixels (0x1a8210, and the
+                // measuring pass 0x191108 adds the same).
+                x += SLOT_ADVANCE;
+                line_h = line_h.max(round(font.size as f32 * st.s));
+            }
             _ => {}
         }
     }
-    if !cur.is_empty() || lines.is_empty() {
-        lines.push((cur, x, line_h));
+    if !cur.quads.is_empty() || lines.is_empty() {
+        cur.width = x;
+        cur.height = line_h;
+        lines.push(cur);
     }
     // Place the lines: the first baseline is the top plus its height; each next baseline is the
-    // previous plus the line gap, the extra gap and that line's height.
-    let mut out = Layout::default();
+    // previous plus the line gap, the extra gap and that line's height; a positioned segment's
+    // baseline is its pen y less its height.
+    let mut out = Layout { complete, ..Layout::default() };
     let mut baseline = 0.0;
-    let mut total_h = 0.0;
-    let max_w = lines.iter().map(|l| l.1).fold(0.0, f32::max);
-    for (i, (line, width, height)) in lines.iter().enumerate() {
-        baseline += if i == 0 { *height } else { font.line_gap as f32 + st.gap + *height };
+    let mut total_h = 0.0f32;
+    let max_w = lines.iter().map(|l| l.width).fold(0.0, f32::max);
+    for (i, line) in lines.iter().enumerate() {
+        baseline = match line.abs {
+            Some(y) => y - line.height,
+            None if i == 0 => line.height,
+            None => baseline + font.line_gap as f32 + lines[i - 1].gap_after + line.height,
+        };
         // Alignment within the block (per line, the game aligns each line on its own width).
         let dx = match style.align {
-            1 => -*width,
-            2..=4 => -(*width / 2.0).floor(),
+            1 => -line.width,
+            2..=4 => -(line.width / 2.0).floor(),
             _ => 0.0,
         };
-        for q in line {
+        for q in &line.quads {
             let mut q = *q;
             let (y0, y1) = match q.kind {
                 Kind::Icon => (baseline + q.pos[1], baseline + q.pos[3]),
@@ -491,7 +651,7 @@ pub fn layout(set: &FontSet, colors: Option<&ColorTable>, msg: &[Token], style: 
             q.pos = [origin[0] + dx + q.pos[0], origin[1] + y0, origin[0] + dx + q.pos[2], origin[1] + y1];
             out.quads.push(q);
         }
-        total_h = baseline;
+        total_h = total_h.max(baseline);
     }
     let dy = match style.align {
         3 => -(total_h / 2.0).floor(),
@@ -509,15 +669,18 @@ pub fn layout(set: &FontSet, colors: Option<&ColorTable>, msg: &[Token], style: 
 }
 
 /// Draws the shadow or outline the font's mode asks for: returns copies of the quads moved by the
-/// game's offsets and recoloured black with alpha `SHADOW_ALPHA` (scaled by the colour's alpha),
-/// to be drawn before the real quads. Mode 1 is one copy 2 pixels down and right; mode 2 four
-/// copies 2 pixels left, down, right, up.
-pub fn shadows(quads: &[GlyphQuad], mode: u8) -> Vec<GlyphQuad> {
+/// game's offsets and recoloured black with alpha `SHADOW_ALPHA` scaled by `alpha`, the alpha of
+/// the colour the message was drawn with (0x1a80d8 sets the shadow colour once from it through
+/// 0x1a8ce0, so a glyph's own colour commands and the typewriter fade do not change it), to be
+/// drawn before the real quads. Mode 1 is one copy 2 pixels down and right; mode 2 four copies 2
+/// pixels left, down, right, up; both are drawn without the skew (0x1a8698 uses the plain draw).
+pub fn shadows(quads: &[GlyphQuad], mode: u8, alpha: u8) -> Vec<GlyphQuad> {
     let offs: &[[f32; 2]] = match mode {
         1 => &[[2.0, 2.0]],
         2 => &[[-2.0, 0.0], [0.0, 2.0], [2.0, 0.0], [0.0, -2.0]],
         _ => &[],
     };
+    let a = ((SHADOW_ALPHA * alpha as u32) >> 7).min(255) as u8;
     let mut out = Vec::new();
     for q in quads {
         if matches!(q.kind, Kind::Icon) {
@@ -526,7 +689,8 @@ pub fn shadows(quads: &[GlyphQuad], mode: u8) -> Vec<GlyphQuad> {
         for o in offs {
             let mut s = *q;
             s.pos = [q.pos[0] + o[0], q.pos[1] + o[1], q.pos[2] + o[0], q.pos[3] + o[1]];
-            s.color = [0, 0, 0, ((SHADOW_ALPHA * q.color[3] as u32) >> 7).min(255) as u8];
+            s.color = [0, 0, 0, a];
+            s.skew = 0.0;
             out.push(s);
         }
     }
@@ -543,7 +707,7 @@ mod tests {
         let b = [0x35, 0xa2, 0x11, 0x1e, 0x00, 0x1c, 0x00, 0x2e, 0x00];
         let t = tokens(&b);
         assert_eq!(t.len(), 5);
-        assert_eq!(t[2], Token::Command(0x11, vec![0x1e, 0, 0x1c, 0]));
+        assert_eq!(t[2], Token::Position(0x1e, 0x1c));
         assert_eq!(to_text(&t), "HiA");
     }
 
@@ -579,11 +743,88 @@ mod tests {
 
     #[test]
     fn shadow_alpha_follows_the_colour() {
-        let q = GlyphQuad { kind: Kind::Glyph(0), pos: [0.0, 0.0, 10.0, 10.0], uv: [0.0; 4], color: [0x80, 0x80, 0x80, 0x40] };
-        let s = shadows(&[q], 1);
+        let q = GlyphQuad { kind: Kind::Glyph(0), pos: [0.0, 0.0, 10.0, 10.0], uv: [0.0; 4], color: [0x80, 0x80, 0x80, 0x10], skew: 3.0 };
+        let s = shadows(&[q], 1, 0x40);
         assert_eq!(s.len(), 1);
+        // 0x60 x 0x40 >> 7 from the message colour, not the glyph's own 0x10; shadows are not skewed.
         assert_eq!(s[0].color, [0, 0, 0, 0x30]);
-        assert_eq!(shadows(&[q], 2).len(), 4);
-        assert!(shadows(&[q], 0).is_empty());
+        assert_eq!(s[0].skew, 0.0);
+        assert_eq!(shadows(&[q], 2, 0x80).len(), 4);
+        assert!(shadows(&[q], 0, 0x80).is_empty());
+    }
+
+    #[test]
+    fn phase_three_commands_tokenise() {
+        // skew 4, position (-10, 300), wait 0x120, slot 7, button 3, typewriter (2, 6), callback 0x13.
+        let b = [0x0e, 4, 0x11, 0xf6, 0xff, 0x2c, 0x01, 0x14, 0x20, 0x01, 0x15, 7, 0, 0x16, 3, 0x17, 2, 6, 0x13, 1, 0, 2, 0, 0x00];
+        let t = tokens(&b);
+        assert_eq!(
+            t,
+            vec![
+                Token::Skew(4),
+                Token::Position(-10, 300),
+                Token::Wait(0x120),
+                Token::Slot(7),
+                Token::Button(3),
+                Token::Typewriter { cost: 2, fade: 6 },
+                Token::Callback(0x13, vec![1, 0, 2, 0]),
+                Token::End
+            ]
+        );
+        assert_eq!(to_text(&t), "[slot 7][button 3]");
+    }
+
+    /// A font set with every width 10 and empty atlases, for layout rules that need no pixels.
+    fn fake_fonts() -> FontSet {
+        FontSet::synthetic(10)
+    }
+
+    #[test]
+    fn typewriter_cuts_and_fades() {
+        let set = fake_fonts();
+        // Cost 1 per glyph, fade over 2 units: "ABCDE".
+        let msg: Vec<Token> = std::iter::once(Token::Typewriter { cost: 1, fade: 2 }).chain((14..19).map(Token::Glyph)).collect();
+        let at = |time: f32| layout(&set, None, &msg, &Style { time, ..Style::default() }, [0.0, 0.0]);
+        // Draw 0: budget 1 -> A (budget 1, alpha 1/2 x 128), B (budget 0, alpha 0), then C is refused.
+        let l = at(0.0);
+        assert_eq!(l.quads.len(), 2);
+        assert_eq!(l.quads[0].color[3], 64);
+        assert_eq!(l.quads[1].color[3], 0);
+        assert!(!l.complete);
+        // Draw 5: budget 6 -> all five glyphs, the first three at full alpha (budget / fade >= 1).
+        let l = at(5.0);
+        assert_eq!(l.quads.len(), 5);
+        assert_eq!(l.quads[2].color[3], 0x80);
+        // The last glyph is drawn with budget 2: 2 / 2 is not below 1, so it is not faded either.
+        assert_eq!(l.quads[4].color[3], 0x80);
+        assert!(l.complete);
+        // A wait takes from the budget: with 100 units nothing after it is drawn at time 0.
+        let msg2 = [Token::Glyph(14), Token::Wait(100), Token::Glyph(15)];
+        assert_eq!(layout(&set, None, &msg2, &Style::default(), [0.0, 0.0]).quads.len(), 1);
+        // Without a typewriter command nothing is cut whatever the time.
+        let msg3: Vec<Token> = (14..19).map(Token::Glyph).collect();
+        assert_eq!(layout(&set, None, &msg3, &Style::default(), [0.0, 0.0]).quads.len(), 5);
+    }
+
+    #[test]
+    fn position_slots_and_skew() {
+        let set = fake_fonts();
+        let font = Font::get(4);
+        // Font 4 (24x32 cells, size 24): "A", pen to (100, 200), "B" skewed by 3 units (1.5 px), a slot, "C".
+        let msg = [Token::Glyph(14), Token::Position(100, 200), Token::Skew(3), Token::Glyph(15), Token::Slot(1), Token::Glyph(16)];
+        let l = layout(&set, None, &msg, &Style { font: 4, ..Style::default() }, [0.0, 0.0]);
+        assert_eq!(l.quads.len(), 3);
+        // A sits on the first baseline (24) at x 0 with no skew.
+        assert_eq!(l.quads[0].pos[3], 24.0);
+        assert_eq!((l.quads[0].pos[0], l.quads[0].skew), (0.0, 0.0));
+        // B starts at x 100 on the baseline 200 - 24 (0x1a8210 case 0x11) and is skewed.
+        assert_eq!(l.quads[1].pos[0], 100.0);
+        assert_eq!(l.quads[1].pos[3], 200.0 - font.size as f32);
+        assert_eq!(l.quads[1].skew, 1.5);
+        // C is one advance (10) plus a 32 pixel slot further.
+        assert_eq!(l.quads[2].pos[0], 100.0 + 10.0 + SLOT_ADVANCE);
+        // Skew is only taken by mode 4: the same text in font 1 has none.
+        let l1 = layout(&set, None, &msg, &Style { font: 1, ..Style::default() }, [0.0, 0.0]);
+        assert_eq!(l1.quads[1].skew, 0.0);
     }
 }

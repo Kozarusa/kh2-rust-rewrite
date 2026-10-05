@@ -97,6 +97,21 @@ pub struct Waves {
     pub count: u32,
 }
 
+pub struct EnemyPlugin;
+
+impl Plugin for EnemyPlugin {
+    fn build(&self, app: &mut App) {
+        use crate::schedule::Sim;
+        app.insert_resource(Waves::default()).add_systems(
+            FixedUpdate,
+            (
+                (spawn_waves, think, separate).chain().in_set(Sim::Enemy),
+                receive_hits.in_set(Sim::EnemyHurt),
+            ),
+        );
+    }
+}
+
 fn slot(rig: &Rig, tag: &str) -> Option<usize> {
     rig.mset.by_tag(tag).next()
 }

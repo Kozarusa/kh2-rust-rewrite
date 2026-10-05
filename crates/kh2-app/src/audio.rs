@@ -141,7 +141,9 @@ impl Plugin for AudioPlugin {
             .add_message::<PlaySe>()
             .add_message::<PlayVoice>()
             .add_systems(Startup, start_stream)
-            .add_systems(Update, play_requests);
+            .add_systems(Update, play_requests)
+            .add_systems(Update, area_bgm.after(crate::assets::load_area))
+            .add_systems(FixedUpdate, (motion_sounds, wall_sounds).chain().in_set(crate::schedule::Sim::Sounds));
     }
 }
 

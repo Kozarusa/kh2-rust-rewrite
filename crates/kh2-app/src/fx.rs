@@ -121,6 +121,21 @@ pub fn load(disc: &Disc, name: &str, id: usize, common: Option<&Dpd>) -> Option<
     Some(LoadedPax { id, pax, dpds, vram, apdx: name.ends_with(".apdx").then(|| name.to_string()) })
 }
 
+pub struct FxPlugin;
+
+impl Plugin for FxPlugin {
+    fn build(&self, app: &mut App) {
+        use crate::schedule::Sim;
+        app.add_message::<StartEffect>().add_systems(Startup, setup).add_systems(
+            FixedUpdate,
+            (
+                (weapon_trails, motion_effects, start_requests, hit_sparks, fx_test, effect_sounds).chain().in_set(Sim::Effects),
+                tick.in_set(Sim::EffectTick),
+            ),
+        );
+    }
+}
+
 pub fn setup(mut commands: Commands, disc: Res<Disc>, rigs: Res<crate::sora::Rigs>) {
     let common = disc.read("effect/texcommon.dpd").and_then(|b| Dpd::parse(&b).ok());
     let system = Arc::new(load(&disc, "00effect.bar", 1, common.as_ref()).expect("00effect.bar: no effects"));

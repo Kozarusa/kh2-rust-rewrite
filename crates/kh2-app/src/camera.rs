@@ -13,6 +13,16 @@ pub struct OrbitCamera {
     pub distance: f32,
 }
 
+pub struct CameraPlugin;
+
+impl Plugin for CameraPlugin {
+    fn build(&self, app: &mut App) {
+        app.insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.08)))
+            .add_systems(Startup, setup)
+            .add_systems(Update, follow.in_set(crate::schedule::Frame::Camera));
+    }
+}
+
 pub fn setup(mut commands: Commands) {
     commands.spawn((
         Camera3d::default(),

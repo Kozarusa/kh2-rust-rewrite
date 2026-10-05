@@ -377,8 +377,8 @@ pub fn blockers_clip(list: &[Blocker], a: Vec3, b: Vec3) -> Option<Vec3> {
 /// blocker list is tested first when given; then the map's camera collision. On a hit the result
 /// is the hit point pushed `margin` along the polygon's normal. A polygon whose attribute's low
 /// four bits are 5 makes a second cast from `from` to the point at `to`'s horizontal position
-/// and the hit's height: a hit there replaces the point (the first polygon's normal is kept),
-/// and the margin is always the small one. `far` asks for the larger margin (no field mode does).
+/// and the hit's height: the point becomes that cast's hit, or that end point itself when it
+/// finds nothing (the first polygon's normal is kept), and the margin is always the small one. `far` asks for the larger margin (no field mode does).
 pub fn collide(p: &Params, from: Vec3, to: Vec3, cast: Cast, blockers: Option<&[Blocker]>, far: bool) -> Option<Vec3> {
     let mut end = to;
     let mut blocked = false;
@@ -389,13 +389,13 @@ pub fn collide(p: &Params, from: Vec3, to: Vec3, cast: Cast, blockers: Option<&[
         blocked = true;
     }
     let Some(h) = cast(from, end) else { return blocked.then_some(end) };
-    let mut point = h.point;
-    let mut second = false;
+    let point;
+    let second;
     if h.attr & 0xf == 5 {
         let end2 = Vec3::new(to.x, point.y, to.z);
-        if let Some(h2) = cast(from, end2) {
-            point = h2.point;
-        }
+        // The cast overwrites its end point only on a hit, so a miss leaves `end2` (read from
+        // `FUN_0013f8f8`: `afStack_110` is the cast's in/out end point).
+        point = cast(from, end2).map_or(end2, |h2| h2.point);
         second = true;
     }
     let margin = if second || !far { p.wall_margin } else { p.wall_margin_far };
@@ -1135,8 +1135,9 @@ mod tests {
         // Attribute 5 polygon whose second cast misses: the first hit stands.
         let once = |a: Vec3, b: Vec3| if (b.y - 140.0).abs() > 1e-3 { None } else { plane_x0(a, b, 5) };
         let out = collide(&p, look, want, &once, None, false).unwrap();
-        // The first hit stands: x = 5 off the wall, y = 110 where the ray crossed it.
-        assert!((out.x - 5.0).abs() < 1e-3 && (out.y - 110.0).abs() < 1e-3, "{out}");
+        // The second cast finds nothing, so the point is its end (to.x, hit y = 110, to.z)
+        // pushed 5 along the first polygon's normal.
+        assert!((out - Vec3::new(-295.0, 110.0, 80.0)).length() < 1e-3, "{out}");
     }
 
     #[test]

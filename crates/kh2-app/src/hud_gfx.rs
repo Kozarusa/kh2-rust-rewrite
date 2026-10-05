@@ -158,6 +158,8 @@ pub struct Node {
     /// Show only this fraction of the node's width, from its left edge (a gauge fill; stands in for
     /// the game's rotating mask where that was not ported).
     pub reveal: Option<f32>,
+    /// Hold the node's sequence at this frame (a harness aid for screenshots of short animations).
+    pub freeze: Option<f32>,
     /// Text drawn on top of the node's sequence, from the node's origin.
     pub label: Option<Label>,
     /// Alpha multiplier for the label (the node's fade).
@@ -180,6 +182,7 @@ impl Node {
             visible: true,
             sweep: None,
             reveal: None,
+            freeze: None,
             label: None,
             label_fade: 1.0,
             anchor: [0.0; 2],
@@ -218,7 +221,10 @@ impl HudScene {
         while self.acc >= STEP {
             self.acc -= STEP;
             for n in &mut self.nodes {
-                n.player.tick(1.0);
+                match n.freeze {
+                    Some(f) => n.player.seek(f),
+                    None => n.player.tick(1.0),
+                }
             }
         }
     }

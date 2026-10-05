@@ -18,6 +18,8 @@ mod hud_gauge;
 mod hud_gfx;
 #[path = "hud_target.rs"]
 mod hud_target;
+#[path = "hud_banner.rs"]
+mod hud_banner;
 #[path = "hud_menu.rs"]
 mod hud_menu;
 #[path = "hud_text.rs"]
@@ -25,6 +27,7 @@ mod hud_text;
 
 use hud_gauge::{DriveGauge, DriveTables, FaceFile, MpRecharge, SoraPanel};
 use hud_gfx::{HudGfxPlugin, HudScene};
+use hud_banner::{BannerNodes, HudBanner, MunnyPopups};
 use hud_menu::{CommandMenu, MenuFile, MenuNodes, MenuTables};
 use hud_target::{TargetBubble, TargetHud};
 
@@ -42,6 +45,9 @@ impl Plugin for HudPlugin {
             .init_resource::<DriveGauge>()
             .init_resource::<MpRecharge>()
             .init_resource::<DriveTables>()
+            .init_resource::<HudBanner>()
+            .init_resource::<MunnyPopups>()
+            .init_resource::<BannerNodes>()
             .init_resource::<CommandMenu>()
             .init_resource::<MenuFile>()
             .init_resource::<MenuTables>()
@@ -49,7 +55,7 @@ impl Plugin for HudPlugin {
             .add_systems(Startup, (setup, load_files).chain())
             .add_systems(
                 Update,
-                (toggle_debug, (hud_gauge::update, hud_target::update, hud_menu::update, hud_text::demo).chain(), debug_text.run_if(debug_on)).in_set(Frame::Hud),
+                (toggle_debug, (hud_gauge::update, hud_target::update, hud_menu::update, hud_banner::update, hud_text::demo).chain(), debug_text.run_if(debug_on)).in_set(Frame::Hud),
             )
             .add_systems(Update, popups.in_set(Frame::Popups).run_if(debug_on));
     }

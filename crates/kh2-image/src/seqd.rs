@@ -347,6 +347,14 @@ impl Player {
         }
     }
 
+    /// Jumps to `frame` of the current group and keeps playing from there (a harness aid).
+    pub fn seek(&mut self, frame: f32) {
+        if self.group.is_some() {
+            self.time = frame.clamp(0.0, (self.end - 1.0).max(0.0));
+            self.state = 2;
+        }
+    }
+
     /// The integer frame the group is evaluated at (the game truncates its float counter).
     pub fn frame(&self) -> i32 {
         self.time as i32

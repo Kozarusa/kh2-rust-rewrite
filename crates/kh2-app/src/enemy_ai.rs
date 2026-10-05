@@ -483,9 +483,12 @@ impl BevyHost<'_> {
     }
 
     fn start_move(&mut self, dir: Vec4, motion: i32, blend: f32, commit: bool) {
-        // FUN_0017b278: the height of the jump is the (negative, Y down) y of the direction; the rest,
-        // normalised and scaled by w, is the horizontal speed.
-        let h = -dir[1];
+        // FUN_0017b278 passes the y of the direction to FUN_0017b1e0, which reads a negative y as a rise
+        // of that many units (Y is down) and y >= 0 as a fall that starts that far above the object.
+        // The scripts (Shadow's pounce 100, Soldier's jump 260) pass positive values, then wait for
+        // `airborne`, so the app jumps |y|; the rest of the direction, normalised and scaled by w, is the
+        // horizontal speed.
+        let h = dir[1].abs();
         let d = from_game([dir[0], 0.0, dir[2], 0.0]).normalize_or_zero();
         self.obj.air_vel = Vec3::new(d.x, 0.0, d.z) * dir[3];
         if h > 0.0 {
@@ -493,12 +496,11 @@ impl BevyHost<'_> {
             self.obj.fall_pending = true;
         }
         self.play(motion, blend, None, false);
-        if commit {
-            // FUN_001712d0: the motions after this one, read by the landing and falling code
-            // (FUN_0017b9e0, FUN_0017b8f8).
-            self.obj.fall_motion = motion + 1;
-            self.obj.land_motion = motion + 2;
-        }
+        // FUN_0017b1b0 resets the follow-up motions (none for falling, 5 for landing); FUN_001712d0 with
+        // the commit flag sets them to motion + 1 and motion + 2. The landing and falling code reads
+        // them (FUN_0017b9e0, FUN_0017b8f8).
+        self.obj.fall_motion = if commit { motion + 1 } else { -1 };
+        self.obj.land_motion = if commit { motion + 2 } else { 5 };
     }
 
     fn exec(&mut self, c: &Call) -> (Value, St, &'static str) {
@@ -572,7 +574,7 @@ impl BevyHost<'_> {
             Call::SetVelocity { .. } => missing(Value::None, "secondary velocity vector at +0x880: consumer not found"),
             Call::StartMove { dir, motion, blend, commit, .. } => {
                 self.start_move(*dir, *motion, *blend, *commit);
-                approx(Value::None, "jump model of Motor; the falling and landing motions follow FUN_0017b9e0 / FUN_0017b8f8, the apex trigger is inferred")
+                approx(Value::None, "jump height is |y| (positive y reads as a fall in FUN_0017b1e0, the scripts mean a jump); falling and landing motions follow FUN_0017b9e0 / FUN_0017b8f8, the apex trigger is inferred")
             }
             Call::StartMoveAlt { dir, motion, blend, commit, .. } => {
                 self.start_move(*dir, *motion, *blend, *commit);
@@ -854,6 +856,11 @@ fn ai_update(
         for m in rt.core.mode_log.as_mut().map(std::mem::take).unwrap_or_default() {
             trace.line(tag, &format!("mode {m}"));
         }
+        if trace.level > 0 && trace.tick % 60 == 0 {
+            let mode = rt.current_mode().unwrap_or_default();
+            let dist = (obj.motor.pos - player).with_y(0.0).length();
+            trace.line(tag, &format!("status: mode {mode} slot {:?} distance {dist:.0} cm hp {} grounded {}", obj.slot, e.hp, obj.motor.grounded));
+        }
         for (_, err) in &rt.core.errors[*errors_seen..] {
             warn!("bdx {tag}: script error {err:?}");
         }
@@ -873,6 +880,9 @@ fn ai_update(
         }
         // Root motion of the playing motion, rotated by the facing the motion started with (as Sora's).
         let (root_t, root_yaw) = anim.root_delta;
+        if trace.level >= 2 && (root_t != Vec3::ZERO || root_yaw != 0.0) {
+            trace.line(tag, &format!("root motion slot {:?} frame {:.1} delta {root_t:?} yaw {root_yaw:.3} root {:?}", anim.slot, anim.frame, anim.root.translation));
+        }
         obj.motor.yaw = wrap_angle(obj.motor.yaw + root_yaw);
         let root_move = Quat::from_rotation_y(obj.motor.yaw - anim.root.yaw) * root_t;
         let was_air = !obj.motor.grounded;
@@ -885,6 +895,11 @@ fn ai_update(
         if let Some(w) = world.as_deref() {
             let dy = was_air.then(|| obj.motor.jump_dy(data.sstm.fall_max) + root_move.y);
             landed = obj.motor.move_by(w, delta, dy);
+        }
+        // Poses are kept relative to the motion's root, so a motion whose root rises (Soldier's appear
+        // motion) is followed by the origin: on the ground the root's height is an offset above the floor.
+        if !was_air && obj.motor.grounded {
+            obj.motor.pos.y += anim.root.translation.y;
         }
         // Falling and landing motions of a jump started with the commit flag.
         let mut follow = None;
@@ -941,6 +956,7 @@ fn ai_fade(
     children: Query<&Children>,
     handles: Query<&MeshMaterial3d<StandardMaterial>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    trace: Res<AiTrace>,
 ) {
     for (e, mut brain) in &mut q {
         let alpha = brain.obj.alpha.clamp(0.0, 1.0);
@@ -949,6 +965,9 @@ fn ai_fade(
         }
         brain.applied_alpha = alpha;
         let Ok(kids) = children.get(e.body) else { continue };
+        if trace.level >= 2 {
+            trace.line(&brain.tag, &format!("fade: alpha {alpha:.2} on {} parts", kids.iter().filter(|k| handles.contains(*k)).count()));
+        }
         for k in kids.iter() {
             let Ok(h) = handles.get(k) else { continue };
             let Some(mut m) = materials.get_mut(&h.0) else { continue };

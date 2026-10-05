@@ -22,10 +22,11 @@ use kh2_anim::{id, triggers::range, PlayerState};
 
 use crate::assets::Disc;
 use crate::camera::OrbitCamera;
-use crate::combat::{Fighter, Hit, Team};
+use crate::combat::{Fighter, Hit, IneffectiveHit, ReactionData, ReactionStatus, Team, WallHit};
 use crate::data::{GameData, Stats};
 use crate::enemy::Enemy;
 use crate::motor::{wrap_angle, Jump, Motor};
+use crate::reaction_rules::{self as rules, Blow, Push, ReflectFields, VictimAction, VictimCtx};
 use crate::schedule::{Frame, Sim};
 use crate::skel::{spawn_skinned, Animator, Rig};
 use crate::world::World;
@@ -143,6 +144,10 @@ pub struct Sora {
     pub abilities: u128,
     /// The blow that knocked Sora down came from behind (picks the matching landing motion).
     blown_back: bool,
+    /// Decaying push (wall recoil, push reactions), added to the movement every tick.
+    push: Option<Push>,
+    /// Flight of the blow that put Sora in `State::Blown`.
+    blow: Option<Blow>,
     pub stats: Stats,
     pub hp: i32,
     pub mp: i32,
@@ -291,6 +296,8 @@ pub fn setup(
             moves: Arc::new(load_moveset(&disc, "P_EX100")),
             abilities: start_abilities(),
             blown_back: false,
+            push: None,
+            blow: None,
             hp: stats.max_hp,
             mp: data.sora_max_mp,
             stats,
@@ -424,6 +431,7 @@ pub fn tick(
     data: Res<GameData>,
     growth: Res<Growth>,
     world: Option<Res<World>>,
+    reaction: Option<Res<ReactionData>>,
     enemies: Query<(Entity, &GlobalTransform, &Enemy)>,
     mut sora_q: Query<(&mut Transform, &mut Sora, &mut Fighter)>,
     mut anims: Query<&mut Animator>,
@@ -754,8 +762,17 @@ pub fn tick(
             }
         }
         State::Blown => {
-            airborne_dy = (!s.motor.grounded).then(|| s.motor.jump_dy(fall_max));
-            if s.motor.grounded && s.timer > 12.0 {
+            // The flight of a blow (FUN_0019e4d8): horizontal speed brakes down to a floor, the
+            // rise brakes, gravity pulls. Without the reaction data the jump model stands in.
+            if let (Some(b), Some(r)) = (s.blow.as_mut(), reaction.as_ref()) {
+                let (h, vy) = b.step(&r.defaults, &r.consts);
+                s.motor.vel = b.dir * h;
+                airborne_dy = Some(vy);
+            } else {
+                airborne_dy = (!s.motor.grounded).then(|| s.motor.jump_dy(fall_max));
+            }
+            if s.motor.grounded && s.timer > 2.0 {
+                s.blow = None;
                 s.motor.vel = Vec3::ZERO;
                 if s.hp <= 0 {
                     s.state = State::Down;
@@ -785,7 +802,13 @@ pub fn tick(
     s.motor.yaw = wrap_angle(s.motor.yaw + root_yaw);
     let start_yaw = s.motor.yaw - body.root.yaw;
     let root_move = Quat::from_rotation_y(start_yaw) * root_t;
-    let delta = s.motor.vel + root_move.with_y(0.0);
+    let mut delta = s.motor.vel + root_move.with_y(0.0);
+    if let (Some(p), Some(r)) = (s.push.as_mut(), reaction.as_ref()) {
+        delta += p.step(&r.consts);
+        if p.finished() {
+            s.push = None;
+        }
+    }
     let dy = airborne_dy.map(|d| d + root_move.y);
     let was_air = airborne_dy.is_some();
     let landed = s.motor.move_by(&world, delta, dy);
@@ -868,46 +891,78 @@ pub fn respawn(s: &mut Sora, at: Vec3) {
     s.state = State::Ground;
 }
 
-/// Applies enemy hits to Sora: guard repels from the front, otherwise damage and reactions.
-/// Sora's attack bouncing off a wall: he is pushed back and flinches (the attack's `RefactSelf` 2).
+/// Sora's attack volume touching a wall: the generic recoil of the actor class (FUN_00175668, then
+/// FUN_00185d30). It runs for rows with BG Hit (the wall message only exists for those), whatever
+/// the row's `RefactSelf` says: motion 41 (A320) or, in the air, 43 (A350), the combo counter goes
+/// down by one, and Sora is pushed backwards along his own facing. The spark and the sound are
+/// started by `fx::hit_sparks` and `audio::wall_sounds` from the same message.
 pub fn receive_wall_hits(
-    mut walls: MessageReader<crate::combat::WallHit>,
+    mut walls: MessageReader<WallHit>,
     data: Res<GameData>,
+    reaction: Option<Res<ReactionData>>,
     mut sora_q: Query<(Entity, &mut Sora, &mut Fighter)>,
     mut anims: Query<&mut Animator>,
 ) {
     let Ok((me, mut s, mut fighter)) = sora_q.single_mut() else { return };
+    let Some(reaction) = reaction else { return };
     for w in walls.read().filter(|w| w.attacker == me) {
-        if !matches!(s.state, State::Attack { .. }) || data.atkp(w.atkp).is_none_or(|a| a.refact_self != 2) {
+        let Some(row) = data.atkp(w.atkp) else { continue };
+        if !matches!(s.state, State::Attack { .. }) {
+            info!("wall recoil: atkp {} touched a wall while Sora is {:?}: no recoil", w.atkp, s.state);
             continue;
         }
+        let airborne = !s.motor.grounded;
+        let Some(rc) = rules::wall_recoil(&ReflectFields::from_atkp(row), false, airborne, &reaction.consts) else {
+            info!("wall recoil: atkp {} has no BG Hit: no recoil", w.atkp);
+            continue;
+        };
         let Ok([mut body, mut weapon]) = anims.get_many_mut([s.body, s.weapon]) else { return };
-        let rig = body.rig.clone();
-        let back = w.normal.with_y(0.0).normalize_or_zero();
-        // The surface normal's sign is arbitrary: push away from the wall, i.e. against Sora's facing side.
-        let away = if back.dot(s.motor.forward()) > 0.0 { -back } else { back };
-        s.motor.vel = away * 2.0;
+        let slot = body.rig.mset.slot(rc.motion as usize, PlayerState::BattleWeapon);
+        // The blend time of the game's motion request was not read; 2 ticks as for the other reactions.
+        body.restart(slot, false, 2.0);
+        let wslot = slot.filter(|&x| weapon.rig.mset.has(x));
+        weapon.restart(wslot, false, 2.0);
+        // Ground: FUN_001857b0. In the air the game calls FUN_00185978 instead (a jump-back push
+        // scaled by HitBackToJump, not decoded); the ground push stands in for it.
+        s.push = Push::new(-s.motor.forward(), rc.push_power, 0.0, &reaction.consts);
+        let hits_before = s.hits;
+        if rc.refund_combo_step {
+            s.hits = s.hits.saturating_sub(1);
+        }
+        info!(
+            "wall recoil: atkp {} (BG Hit, {}) -> motion id {} slot {} {}, push power {} speed {:.1}, combo {} -> {}",
+            w.atkp,
+            if w.weapon_volume { "keyblade volume" } else { "body volume" },
+            rc.motion,
+            slot.map_or(-1, |x| x as i32),
+            body.tag(),
+            rc.push_power,
+            s.push.map_or(0.0, |p| p.speed),
+            hits_before,
+            s.hits
+        );
         s.state = State::Hurt;
-        s.hits = 0;
+        s.motor.vel = Vec3::ZERO;
         s.finishers = 0;
+        s.queued_attack = false;
         s.timer = 0.0;
-        // The game's recoil routine (push back and a motion): ground 41 / air 43. When it runs for a
-        // wall bounce is not established (see the report); the trigger above is the earlier guess.
-        let recoil = if s.motor.grounded { id::REFLECT } else { id::REFLECT_AIR };
-        body.restart(rig.mset.slot(recoil, PlayerState::BattleWeapon), false, 2.0);
-        weapon.restart(None, false, 2.0);
         fighter.landed.clear();
     }
 }
 
+/// Applies enemy hits to Sora: guard repels from the front, otherwise the victim reaction of the
+/// attack row (`reaction_rules::victim_outcome`) after damage.
 pub fn receive_hits(
     mut hits: MessageReader<Hit>,
     data: Res<GameData>,
+    reaction: Option<Res<ReactionData>>,
     enemies: Query<&Enemy>,
-    mut sora_q: Query<(Entity, &mut Sora, &mut Fighter)>,
+    mut sora_q: Query<(Entity, &mut Sora, &mut Fighter, Option<&ReactionStatus>)>,
     mut anims: Query<&mut Animator>,
+    mut ineffective: MessageWriter<IneffectiveHit>,
 ) {
-    let Ok((me, mut s, mut fighter)) = sora_q.single_mut() else { return };
+    let Ok((me, mut s, mut fighter, status)) = sora_q.single_mut() else { return };
+    let Some(reaction) = reaction else { return };
     for h in hits.read().filter(|h| h.target == me) {
         if s.invuln > 0.0 || matches!(s.state, State::Down | State::Viewer) {
             continue;
@@ -929,27 +984,82 @@ pub fn receive_hits(
         }
         let Some(atk) = data.atkp(h.atkp) else { continue };
         let from = enemies.get(h.attacker).map(|e| e.stats).unwrap_or(s.stats);
-        let dmg = data.damage(atk, &from, &s.stats).max(1);
+        let useless = crate::combat::hit_is_ineffective(atk, &s.stats);
+        let dmg = if useless { data.damage(atk, &from, &s.stats) } else { data.damage(atk, &from, &s.stats).max(1) };
         s.hp = (s.hp - dmg).max(0);
-        let pstate = PlayerState::BattleWeapon;
-        let blow = atk.enemy_reaction >= 5 || s.hp == 0 || !s.motor.grounded;
-        // Knockback per tick from the attack's strengths (approximation of the reaction code).
-        let kb = (atk.knockback_strength1 as f32).clamp(0.0, 400.0) / 60.0;
-        s.motor.vel = h.dir.with_y(0.0).normalize_or_zero() * kb.max(2.0);
-        if blow {
-            s.state = State::Blown;
-            s.motor.start_jump((atk.knockback_strength2 as f32).clamp(40.0, 300.0));
-            s.timer = 0.0;
-            s.blown_back = !from_front;
-            body.restart(rig.mset.slot(if from_front { id::DAMAGE_BLOW_FRONT } else { id::DAMAGE_BLOW_BACK }, pstate), false, 2.0);
-        } else {
-            s.state = State::Hurt;
-            body.restart(rig.mset.slot(if from_front { id::DAMAGE_S_FRONT_HIGH } else { id::DAMAGE_S_BACK_HIGH }, pstate), false, 2.0);
+        if useless {
+            ineffective.write(IneffectiveHit { attacker: h.attacker, target: me, atkp: h.atkp, point: h.point });
         }
-        weapon.restart(None, false, 2.0);
+        let ctx = VictimCtx {
+            status: status.map_or(0, |x| x.0),
+            grounded: s.motor.grounded,
+            attacker_flag_4000: false,
+            from_front,
+            hit_part_plain: true,
+        };
+        let out = rules::victim_outcome(&rules::HitRow::from_atkp(atk), useless, &ctx, &reaction.patn, &reaction.defaults, &reaction.consts);
+        // Dying is not part of the reaction rules: the last hit always launches.
+        let d = &reaction.defaults;
+        let action = match out.action {
+            a @ VictimAction::Blow { .. } => a,
+            _ if s.hp == 0 => VictimAction::Blow { motion: rules::blow_motion(from_front), up: d.blow_up, horiz: d.blow_speed, face_attacker: from_front },
+            a => a,
+        };
+        info!(
+            "sora hit: atkp {} reaction {} effective {} ineffective {useless} {from_front_str} -> {action:?}",
+            h.atkp,
+            atk.enemy_reaction,
+            out.effective,
+            from_front_str = if from_front { "front" } else { "back" },
+        );
+        let pstate = PlayerState::BattleWeapon;
+        let first_slot = |ids: &[usize]| ids.iter().find_map(|&i| rig.mset.slot(i, pstate));
+        let away = h.dir.with_y(0.0).normalize_or_zero();
+        match action {
+            VictimAction::None | VictimAction::NotDecoded { .. } => {}
+            VictimAction::Push { strength } => {
+                s.push = Push::new(away, strength, 0.0, &reaction.consts);
+            }
+            VictimAction::Flinch { motion, fallback } | VictimAction::FlinchPush { motion, fallback, .. } => {
+                if let VictimAction::FlinchPush { strength, .. } = action {
+                    s.push = Push::new(away, strength, 0.0, &reaction.consts);
+                }
+                body.restart(first_slot(&[motion as usize, fallback as usize]), false, 2.0);
+                weapon.restart(None, false, 2.0);
+                s.state = State::Hurt;
+                s.motor.vel = Vec3::ZERO;
+            }
+            VictimAction::Class14 { motion, strength, face_attacker } => {
+                let to = if face_attacker { -away } else { away };
+                s.motor.yaw = to.x.atan2(to.z);
+                s.push = Push::new(away, strength, 0.0, &reaction.consts);
+                body.restart(first_slot(&[motion as usize, id::DAMAGE_S_FRONT_HIGH]), false, 2.0);
+                weapon.restart(None, false, 2.0);
+                s.state = State::Hurt;
+                s.motor.vel = Vec3::ZERO;
+            }
+            VictimAction::Blow { motion, up, horiz, face_attacker } => {
+                // The victim faces the attacker when hit from the front and is launched along the
+                // hit direction (FUN_00185460).
+                let to = if face_attacker { -away } else { away };
+                s.motor.yaw = to.x.atan2(to.z);
+                s.blow = Some(Blow::new(away, up, horiz, d));
+                s.push = None;
+                s.motor.vel = Vec3::ZERO;
+                s.motor.start_fall();
+                s.state = State::Blown;
+                s.timer = 0.0;
+                s.blown_back = !from_front;
+                body.restart(rig.mset.slot(motion as usize, pstate), false, 2.0);
+                weapon.restart(None, false, 2.0);
+            }
+        }
+        if !matches!(action, VictimAction::None | VictimAction::NotDecoded { .. } | VictimAction::Push { .. }) {
+            s.hits = 0;
+            s.finishers = 0;
+            fighter.landed.clear();
+        }
+        // The game's invulnerability after a hit was not found; the app keeps its own timer.
         s.invuln = 36.0;
-        s.hits = 0;
-        s.finishers = 0;
-        fighter.landed.clear();
     }
 }

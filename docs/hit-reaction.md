@@ -40,10 +40,19 @@ So a Sora swing whose `atkp` row has BG Hit set bounces off ATTACK_COLLIDE geome
 130, 147 do not, and 87, 88, 124, 125, 148 have `RefactSelf` 2 and no BG Hit, so none of those
 bounces. The user's observation is explained.
 
-Not the same as the current app: `sora.rs` recoils only for `RefactSelf == 2` (wrong: 2 means
-"nothing" in the clash rule, see below), pushes away along the wall normal, and uses a guessed
-speed. Sound: the app plays `ReflectHitSound` for walls; the code plays 500010 instead (see
-"ReflectHitSound").
+Implemented in the app (WP-2A, see "Implementation status" at the end).
+
+The wall sound is played only when the volume's owner object has flag 0x40 in its word at +0x588
+(FUN_0018ca78, the `& 0x40` test). Verified: the constructors FUN_00184190 and FUN_00184058 set that
+flag, they take an owner (stored at +0x9f4) and register their motion with the owner's motion
+component, so this is the attached-object (weapon) class; the party class sets 0x4 and 0x80
+instead (FUN_001746e0, FUN_00176e00). FUN_00197008, which plays every 500xxx sound, then looks the
+sound up in the bank named by the short at +2 of the record at actor +0x9b4: the object's own SE
+bank if it has flag 0x40, otherwise (flag 4) the bank of the weapon the party actor holds at
++0xaf8. So for Sora every 500xxx sound, the wall sound and `ReflectHitSound` alike, is an entry of
+the keyblade's bank (`obj/W_EX010.apdx`). Inferred: the volumes of Sora's swings belong to the
+keyblade object; in the app the weapon body carries the attack triggers of rows 126, 128 and 131,
+and a volume of the character body would play no wall sound.
 
 Inferred: motion ID 41 is named REFLECT in the project's `kh2_anim::id` (from the game's debug
 motion list, which I could not find again in the executable); 43 is not named there. FUN_0019aa28
@@ -89,7 +98,10 @@ Verified (FUN_0018c6d0, the hit record builder): when a hit lands, the attacker'
 `ReflectHitSound` (0x1c) if it is not negative, and a victim-side spark from `EffectOnHit` is
 spawned (variant 0x400 or 0x800 by victim flag 0x80 at +0x588). So it is the landed-hit sound
 (Sora's rows use 500000..500011), not the wall sound. No other reader of that field exists in the
-main executable.
+main executable. It is skipped for ineffective hits and when the victim's status word has 0x2000
+(meaning unknown). The sound number goes through FUN_00197008 (see above), so it comes from the
+keyblade's bank for Sora. The Shadow rows (atkp 9..12) have `ReflectHitSound` -1: Heartless
+attacks play nothing from this field.
 
 ## Victim reaction
 
@@ -144,6 +156,27 @@ when the hit record byte +0x24 is not one of 0, 2, 3, 4, 5. If the chosen slot h
 other of the pair is used. Class 3 in the air uses the air flinch (FUN_001853c0), and with owner
 type flag 0x10 a different routine (FUN_00185410).
 
+Blow flight (verified, FUN_001855a8 sets the launch, FUN_0019e468 the floor, FUN_0019e4d8 runs it
+every logic tick until the actor lands). Units are game units per tick, the same as pushes and the
+jump model's gravity. The launch velocity is the hit direction (y zeroed, normalised) times the
+horizontal speed, plus the upward speed. Each tick: the horizontal speed is multiplied by `sstm`
+BlowBrakeXZ and is not allowed below BlowMinXZ times the launch speed; a rising vertical speed is
+multiplied by BlowBrakeUp; then gravity 20/49 (0x37b408, equal to the jump model's) is added and
+the fall speed is capped (FallMax); then the actor moves by that velocity. With the USA `sstm`
+(BlowBrakeXZ 0.8, BlowMinXZ 0.1, BlowBrakeUp 0.8, defaults BlowUp 24, BlowSpeed 40) a default blow
+rises about 0.7 m and lands after 30 ticks (0.5 s); row 129 (KnockbackStrength1 3, 2 45) is a flat shove.
+
+Sora as a victim (verified by reading the receive path): the party class's method +0x64 is
+FUN_00179038 -> FUN_00175340, not the FUN_001b21f0 the enemy classes use. It runs the `patn`
+conversion (FUN_001bff00), the damage (FUN_00185a68, +0x78 = FUN_001792f0 -> FUN_00176c98) and the
+same reaction dispatcher, then calls FUN_0013dd20 / FUN_0013dd70 / FUN_0013ddc0 on the object at
+0x355768 with 1 (other classes), 2 (class 3) or 3 (class 4). Those play no sound; they look like
+the pad vibration request (inferred; frame trigger 31 is vibration). The path never calls
+FUN_001b2378, so Sora has no victim hit sound of the kind enemies have, and the Shadow attack rows
+have no `ReflectHitSound`: the data gives Sora no hit sound when he is hit. Gap: whatever he
+sounds like then comes from his motions (A200..A213 carry no sound trigger) or from the sound of
+the attack's `EffectOnHit` effect.
+
 State conversion (verified, FUN_001bff00; table `patn` of 00battle.bin, 15 records of 32 bytes
 after an 8 byte header: status bit, then a replacement per original reaction, 0xff = keep). For
 each record whose bit is set in the victim's status mask ((word +0xabc | +0xac0) & ~word +0xac4)
@@ -174,15 +207,60 @@ Not found. What was checked:
 So the rule is either in code that was not reached (overlay code for enemy classes, camera/time
 code), in motion trigger data, or it does not exist in the generic pipeline. Evidence stops here.
 
+## Implementation status (WP-2A)
+
+Code: `reaction_rules.rs` (pure rules, unit tests), `combat.rs` (wall sweep, messages, reaction
+data loaded from the disc), `sora.rs` and `enemy.rs` (the reactions), `audio.rs` (wall sound).
+
+Done:
+
+* Wall test only for rows with BG Hit, after the sweep against hurt volumes and not for a swing
+  that already hit a target (FUN_001a2cc0 sweeps targets first; FUN_0018c8e0 skips a volume with
+  flag 2). `KH2_HITLOG=1` logs the touches that the BG Hit rule rejects. In tt00 (Sora starts
+  against a wall): ground hit 1 (A300, atkp 126), hit 3 (A302, 128) and the first air hit (A330,
+  131) recoil; ground hit 2 (A301, 127) and the finisher A304 (129) touch the wall and do not.
+  Rows 130, 147 and 148 were not seen touching a wall; the rules test checks their flags.
+* Wall recoil as above: motion 41 (A320), or 43 (A350) in the air, combo counter minus one, push 50
+  backwards along the facing (initial speed 5.0, 16 ticks, about 41 units: Sora's z went from -35
+  to -76 in the run), sound 500010 from the keyblade bank (`se 500:10 (obj/W_EX010.apdx) playing`),
+  spark from `fx::hit_sparks`. Each decision is a log line (`wall recoil: ...`).
+* Victim reactions by class for enemies and Sora (`reaction_rules::victim_outcome`): none, push,
+  flinch, flinch plus push, blow (KnockbackStrength1 up, KnockbackStrength2 horizontal, with the
+  flight above, motion 16 or 18, faces the attacker when hit from the front), class 14. The push
+  strength follows FUN_0018b7e8 (0x7fff selects the `sstm` default, 0 means no push, reactions 12
+  and 13 halve it). Examples seen in the app: Sora's hit 126 flinches a Shadow with a push of 125,
+  hit 128 with 75 (motion 10, hit from the front); row 124 (reaction 0) does nothing; row 129 blows
+  with up 3 and horizontal 45; the Shadow rows 9 and 11 (reaction 3, KnockbackStrength1 0x7fff)
+  push Sora by the `sstm` default 200.
+* The `patn` conversion and the ineffective-hit rule run before the class handler. No status
+  bit is ever set in the app (the `ReactionStatus` component, absent by default, carries one), so
+  the conversion is exercised by unit tests only. `combat::IneffectiveHit` is written by both
+  receivers when the victim's element multiplier times its general multiplier is zero (no victim
+  in the data has that); it is the hook for effect 0x12 and carries a TODO for fx.rs.
+* The attacker plays `ReflectHitSound` when its hit lands (not when ineffective).
+* Enemy hit sounds alternate per victim instead of per run, and are skipped for ineffective hits.
+
+Approximations that are the app's, not the game's: the invulnerability timer after Sora is hit
+(36 ticks; the game's rule was not found), the last hit launching the victim whatever the row says
+(the game kills through other code), airborne class 3 using the ground flinch and push, the
+airborne wall recoil using the ground push, and a Sora hit that the game would not interrupt
+(classes 0 and 1) leaving his state alone.
+
 ## What stays unknown
 
 * Hit-stop: duration, who freezes. Nothing found.
 * Whether overlay classes (enemies) override the wall method +0x70 or the clash method +0x6c with
   more than the base behaviour. The vtables in the main executable that were checked all use the
-  base wall method; enemy objects defined in overlays were not examined.
-* Meaning of: the hit record byte +0x24; the actor stat block value +0x1c8 (added to recoil
-  power); owner word +0x588 flag 0x40 (wall sound) and 0x80; the status bits behind `patn`;
-  the surface type nibble (1 versus other) used for the spark variant.
-* The air recoil push (FUN_00185978) and the guard bounce details; class 5; the orb scatter.
-* Exact units of the push (game units per logic tick is the reading of the code; not measured).
-* Whether motion 43 (0x2b) exists in Sora's motion set and what it looks like.
+  base wall method; enemy objects defined in overlays were not examined. Enemy wall recoil and
+  the clash rules are not implemented.
+* Meaning of: the hit record byte +0x24 (the app assumes the plain value); the actor stat block
+  value +0x1c8 (added to every push power; the app adds 0); owner word +0x588 flag 0x80; the
+  status bits behind `patn`; the surface type nibble (1 versus other) used for the spark variant;
+  volume flag 0x100.
+* The air recoil push (FUN_00185978: a call of the owner's controller method +8 with the power
+  scaled by HitBackToJump) and the air flinch (FUN_001853c0), the guard bounce details, class 5,
+  the orb scatter, and the `FloorCheck` probe of FUN_0018c8e0 (a second sweep with the segment
+  moved by that many units when the first misses; every Sora combo row has FloorCheck 0).
+* The blend time of the recoil's motion request (FUN_0017e378 takes 0 on the ground and 4 in the
+  air; their meaning is unknown, the app blends over 2 ticks).
+* Motion 43 (0x2b) exists in Sora's motion set: it is A350 (slot 172).

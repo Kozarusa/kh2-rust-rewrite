@@ -308,18 +308,12 @@ fn play_requests(
     }
 }
 
-/// The attack's `ReflectHitSound` when it strikes a wall (an SE number, -1 = none).
-pub fn wall_sounds(
-    data: Res<crate::data::GameData>,
-    mut walls: MessageReader<crate::combat::WallHit>,
-    anims: Query<&Animator>,
-    mut out: MessageWriter<PlaySe>,
-) {
-    for w in walls.read() {
-        let Some(atk) = data.atkp(w.atkp) else { continue };
-        if atk.reflect_hit_sound >= 0 {
-            out.write(PlaySe::number(atk.reflect_hit_sound as u32, anims.get(w.body).ok().and_then(|a| a.rig.apdx.clone())));
-        }
+/// The fixed wall-hit sound 500010 (FUN_0018ca78), played from the object's own bank when the
+/// attack volume belongs to an attached object such as the keyblade (owner flag 0x40). Not the
+/// attack's `ReflectHitSound`, which is the sound of a hit that lands on a victim.
+pub fn wall_sounds(mut walls: MessageReader<crate::combat::WallHit>, anims: Query<&Animator>, mut out: MessageWriter<PlaySe>) {
+    for w in walls.read().filter(|w| w.weapon_volume) {
+        out.write(PlaySe::number(crate::combat::WALL_HIT_SOUND, anims.get(w.body).ok().and_then(|a| a.rig.apdx.clone())));
     }
 }
 

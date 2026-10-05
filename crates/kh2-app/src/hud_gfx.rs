@@ -153,8 +153,11 @@ pub struct Node {
     pub off: [f32; 2],
     pub ext: Ext,
     pub visible: bool,
-    /// Clip to the wedge from the west direction clockwise by this many radians (a ring gauge).
+    /// Clip to the wedge from `sweep_start` clockwise by this many radians (a ring gauge).
     pub sweep: Option<f32>,
+    /// Where the wedge starts: radians clockwise from the west direction (0 for Sora's ring, south
+    /// for the party rings; see `hud_party`).
+    pub sweep_start: f32,
     /// Show only this fraction of the node's width, from its left edge (a gauge fill; stands in for
     /// the game's rotating mask where that was not ported).
     pub reveal: Option<f32>,
@@ -164,6 +167,9 @@ pub struct Node {
     pub label: Option<Label>,
     /// Alpha multiplier for the label (the node's fade).
     pub label_fade: f32,
+    /// Logic ticks the label has been drawn for: the text engine's typewriter budget (the game's
+    /// message object counts its draws at +0x1c). Reset when a new label is set.
+    pub label_time: f32,
     /// Last anchor point the group's anchor animation produced.
     anchor: [f32; 2],
     base: [f32; 2],
@@ -181,10 +187,12 @@ impl Node {
             ext: Ext::default(),
             visible: true,
             sweep: None,
+            sweep_start: 0.0,
             reveal: None,
             freeze: None,
             label: None,
             label_fade: 1.0,
+            label_time: 0.0,
             anchor: [0.0; 2],
             base: [0.0; 2],
             origin: [0.0; 2],
@@ -224,6 +232,9 @@ impl HudScene {
                 match n.freeze {
                     Some(f) => n.player.seek(f),
                     None => n.player.tick(1.0),
+                }
+                if n.label.is_some() && n.visible {
+                    n.label_time += 1.0;
                 }
             }
         }
@@ -269,11 +280,11 @@ impl HudScene {
                     lo + (hi - lo) * r.clamp(0.0, 1.0)
                 });
                 for q in qs {
-                    out.push((n.file, q, n.origin, n.sweep, max_x));
+                    out.push((n.file, q, n.origin, n.sweep.map(|s| (n.sweep_start, s)), max_x));
                 }
             }
             if let (Some(label), Some(text)) = (&n.label, &self.text) {
-                for (file, q) in text.quads(label, n.origin, n.label_fade) {
+                for (file, q) in text.quads(label, n.origin, n.label_fade, n.label_time) {
                     out.push((file, q, n.origin, None, None));
                 }
             }
@@ -282,8 +293,9 @@ impl HudScene {
     }
 }
 
-/// One quad to draw: texture file, the quad, its node's origin, the ring sweep and the x limit.
-type Drawn = (usize, Quad, [f32; 2], Option<f32>, Option<f32>);
+/// One quad to draw: texture file, the quad, its node's origin, the ring wedge (start, sweep) and
+/// the x limit.
+type Drawn = (usize, Quad, [f32; 2], Option<(f32, f32)>, Option<f32>);
 
 #[derive(Component)]
 pub struct HudCamera;
@@ -348,9 +360,13 @@ fn clip(poly: &[Vert], c: [f32; 2], n: [f32; 2]) -> Vec<Vert> {
     out
 }
 
-/// The wedge of a ring gauge: from west, clockwise on screen, by `sweep` radians, around `c`.
-/// Returns convex pieces (HUD y points down, so clockwise on screen is a rotation by +angle).
-fn wedge(poly: &[Vert], c: [f32; 2], sweep: f32) -> Vec<Vec<Vert>> {
+/// The wedge of a ring gauge: from `start` (radians clockwise from west), clockwise on screen, by
+/// `sweep` radians, around `c`. Returns convex pieces (HUD y points down, so clockwise on screen
+/// is a rotation by +angle). This stands in for the game's depth-buffer masks (0x13e010): a
+/// square with a corner on the ring's centre, turned by the gauge's angle, plus a fixed rectangle,
+/// written to the depth buffer so the ring is hidden under them; the visible remainder is the
+/// wedge computed here (docs/hud.md, "Party panels").
+fn wedge(poly: &[Vert], c: [f32; 2], start: f32, sweep: f32) -> Vec<Vec<Vert>> {
     use std::f32::consts::PI;
     if sweep <= 0.0 {
         return Vec::new();
@@ -358,18 +374,17 @@ fn wedge(poly: &[Vert], c: [f32; 2], sweep: f32) -> Vec<Vec<Vert>> {
     // Direction at angle a clockwise from west: (-cos a, -sin a). The half-plane that holds the
     // directions up to 180 degrees before it is n = (-sin a, cos a).
     let edge = |a: f32| [-a.sin(), a.cos()];
-    if sweep >= 1.5 * PI {
+    if sweep >= 2.0 * PI {
         return vec![poly.to_vec()];
     }
+    // The half-plane of the directions from `start` clockwise to `start + pi`.
+    let first = clip(poly, c, edge(start + PI));
     if sweep <= PI {
-        // North half-plane (y < 0, i.e. n = (0, -1)) cut at the sweep edge.
-        let p = clip(poly, c, [0.0, -1.0]);
-        return vec![clip(&p, c, edge(sweep))];
+        return vec![clip(&first, c, edge(start + sweep))];
     }
-    // More than half a turn: the north half, plus the south half cut at the sweep edge.
-    let north = clip(poly, c, [0.0, -1.0]);
-    let south = clip(&clip(poly, c, [0.0, 1.0]), c, edge(sweep));
-    vec![north, south]
+    // More than half a turn: that half, plus the other half cut at the sweep edge.
+    let second = clip(&clip(poly, c, edge(start)), c, edge(start + sweep));
+    vec![first, second]
 }
 
 fn gamma22(v: f32) -> f32 {
@@ -400,19 +415,41 @@ mod tests {
     fn wedge_runs_clockwise_from_west() {
         use std::f32::consts::PI;
         // HUD y points down: north is -y. A quarter turn from west reaches north.
-        let q = wedge(&square(), [0.0, 0.0], PI / 2.0);
+        let q = wedge(&square(), [0.0, 0.0], 0.0, PI / 2.0);
         assert!(inside(&q, [-5.0, -5.0]));
         assert!(!inside(&q, [5.0, -5.0]));
         assert!(!inside(&q, [-5.0, 5.0]));
-        let half = wedge(&square(), [0.0, 0.0], PI);
+        let half = wedge(&square(), [0.0, 0.0], 0.0, PI);
         assert!(inside(&half, [5.0, -5.0]) && !inside(&half, [5.0, 5.0]));
         // 225 degrees: past east, into the south-east quadrant but not as far as south.
-        let more = wedge(&square(), [0.0, 0.0], PI * 1.25);
+        let more = wedge(&square(), [0.0, 0.0], 0.0, PI * 1.25);
         assert!(inside(&more, [9.0, 2.0]));
         assert!(!inside(&more, [2.0, 9.0]));
         assert!(!inside(&more, [-9.0, 2.0]));
-        assert!(wedge(&square(), [0.0, 0.0], 0.0).is_empty());
-        assert!(inside(&wedge(&square(), [0.0, 0.0], 1.5 * PI), [-9.0, 9.0]));
+        assert!(wedge(&square(), [0.0, 0.0], 0.0, 0.0).is_empty());
+        // 270 degrees from west ends at south: the south-west quadrant stays out, everything else is in.
+        let three = wedge(&square(), [0.0, 0.0], 0.0, 1.5 * PI);
+        assert!(!inside(&three, [-9.0, 9.0]));
+        assert!(inside(&three, [2.0, 9.0]) && inside(&three, [-9.0, -2.0]));
+        assert!(inside(&wedge(&square(), [0.0, 0.0], 0.0, 2.0 * PI), [-9.0, 9.0]));
+    }
+
+    #[test]
+    fn wedge_can_start_elsewhere() {
+        use std::f32::consts::PI;
+        // The party HP ring: from south clockwise. A quarter turn covers the south-west quadrant only.
+        let q = wedge(&square(), [0.0, 0.0], 1.5 * PI, PI / 2.0);
+        assert!(inside(&q, [-5.0, 5.0]));
+        assert!(!inside(&q, [-5.0, -5.0]) && !inside(&q, [5.0, 5.0]) && !inside(&q, [5.0, -5.0]));
+        // The party MP ring: from south counter-clockwise by a quarter is the wedge that starts at
+        // east and runs clockwise to south: the south-east quadrant.
+        let m = wedge(&square(), [0.0, 0.0], PI, PI / 2.0);
+        assert!(inside(&m, [5.0, 5.0]));
+        assert!(!inside(&m, [-5.0, 5.0]) && !inside(&m, [5.0, -5.0]));
+        // Three quarters from south: south-west, north-west and north-east.
+        let t = wedge(&square(), [0.0, 0.0], 1.5 * PI, 1.5 * PI);
+        assert!(inside(&t, [-5.0, 5.0]) && inside(&t, [-5.0, -5.0]) && inside(&t, [5.0, -5.0]));
+        assert!(!inside(&t, [5.0, 5.0]));
     }
 
     #[test]
@@ -492,7 +529,7 @@ fn draw(
             })
             .collect();
         let mut pieces = match sweep {
-            Some(s) => wedge(&poly, origin, s),
+            Some((start, s)) => wedge(&poly, origin, start, s),
             None => vec![poly],
         };
         if let Some(mx) = max_x {

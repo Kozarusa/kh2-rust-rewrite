@@ -195,9 +195,136 @@ pub fn update(mut scene: ResMut<HudScene>, mut banner: ResMut<HudBanner>, mut po
     }
 }
 
+/// The two strip-with-number objects of `fiel` (WP-4B3). Each is a strip group with six digit
+/// players (0x151970 and 0x151d48: `FUN_00236650` x 6, then 0x1518c8 / 0x151ca0 give digit `k` the
+/// group `table[digit]` and the running sum of the groups' `unk20` widths). The game formats the
+/// value with `%d` (0x15b010, format at 0x379430) and keeps at most six digits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StripKind {
+    /// Group 17 with digit groups 28 to 37 (table 0x3586e8), raised by the level-up routine
+    /// 0x1a39b0 through 0x14f2d8 (kind 0x11 in the popup registry 0x14f8b0).
+    LevelUp,
+    /// Group 48 with digit groups 38 to 47 (table 0x358730), raised when the number popup is
+    /// created (0x15b198 calls 0x14f2b8 with its third argument; kind 0xe).
+    PopupTotal,
+}
+
+impl StripKind {
+    fn groups(self) -> (usize, usize) {
+        match self {
+            StripKind::LevelUp => (17, 28),
+            StripKind::PopupTotal => (48, 38),
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<StripKind> {
+        Some(match s {
+            "levelup" => StripKind::LevelUp,
+            "popup" => StripKind::PopupTotal,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct NumberStrip {
+    pub kind: StripKind,
+    pub value: u32,
+    /// Screen position in HUD units; the game's placement (0x14f8b0 registers the object with the
+    /// group's own x from 0x237678) was not followed, so the owner gives it.
+    pub pos: [f32; 2],
+}
+
+/// Strips on screen. `KH2_HUDSTRIP=<levelup|popup>:<value>[:x:y]` shows one.
+#[derive(Resource, Default, Clone, Debug)]
+pub struct NumberStrips(pub Vec<NumberStrip>);
+
+const STRIP_DIGITS: usize = 6;
+const STRIPS: usize = 2;
+
+#[derive(Resource, Default)]
+pub struct StripNodes {
+    built: bool,
+    strips: [(usize, [usize; STRIP_DIGITS]); STRIPS],
+    drawn: [Option<(StripKind, u32)>; STRIPS],
+}
+
+/// The strip and its digits: the digits run to the right of the strip's origin, each advanced by
+/// its group's `unk20`. Where the digits sit relative to the strip is inferred: the sums 0x1518c8
+/// stores at +0xad0 are offsets, and the draw that applies them was not read.
+pub fn update_strips(mut scene: ResMut<HudScene>, mut strips: ResMut<NumberStrips>, mut nodes: ResMut<StripNodes>, mut demo: Local<bool>) {
+    if scene.files.is_empty() {
+        return;
+    }
+    if !*demo {
+        *demo = true;
+        if let Ok(v) = std::env::var("KH2_HUDSTRIP") {
+            let p: Vec<&str> = v.split(':').collect();
+            if let (Some(kind), Some(value)) = (p.first().and_then(|k| StripKind::parse(k)), p.get(1).and_then(|a| a.parse().ok())) {
+                let n = |i: usize, d: f32| p.get(i).and_then(|x| x.parse().ok()).unwrap_or(d);
+                strips.0.push(NumberStrip { kind, value, pos: [n(2, 256.0), n(3, 300.0)] });
+            }
+        }
+    }
+    if !nodes.built {
+        let add = |scene: &mut HudScene, parent: Option<usize>| {
+            let mut node = Node::new(FIEL, parent);
+            node.visible = false;
+            scene.add(node)
+        };
+        for s in 0..STRIPS {
+            let root = add(&mut scene, None);
+            let digits = std::array::from_fn(|_| add(&mut scene, Some(root)));
+            nodes.strips[s] = (root, digits);
+        }
+        nodes.built = true;
+    }
+    for i in 0..STRIPS {
+        let (root, digits) = nodes.strips[i];
+        let Some(s) = strips.0.get(i).copied() else {
+            scene.nodes[root].visible = false;
+            for d in digits {
+                scene.nodes[d].visible = false;
+            }
+            nodes.drawn[i] = None;
+            continue;
+        };
+        let (strip, base) = s.kind.groups();
+        let text: String = s.value.to_string().chars().take(STRIP_DIGITS).collect();
+        if nodes.drawn[i] != Some((s.kind, s.value)) {
+            nodes.drawn[i] = Some((s.kind, s.value));
+            scene.set_group(root, strip);
+            for (k, d) in digits.iter().enumerate() {
+                if let Some(c) = text.as_bytes().get(k) {
+                    scene.set_group(*d, base + (c - b'0') as usize);
+                }
+            }
+        }
+        scene.nodes[root].pos = s.pos;
+        scene.nodes[root].visible = true;
+        let mut x = 0.0;
+        for (k, d) in digits.iter().enumerate() {
+            let shown = k < text.len();
+            scene.nodes[*d].visible = shown;
+            if shown {
+                scene.nodes[*d].off = [x, 0.0];
+                x += advance(&scene, base + (text.as_bytes()[k] - b'0') as usize);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_kinds_use_their_own_digit_tables() {
+        assert_eq!(StripKind::LevelUp.groups(), (17, 28));
+        assert_eq!(StripKind::PopupTotal.groups(), (48, 38));
+        assert_eq!(StripKind::parse("popup"), Some(StripKind::PopupTotal));
+        assert_eq!(StripKind::parse("x"), None);
+    }
 
     #[test]
     fn banner_names_parse() {

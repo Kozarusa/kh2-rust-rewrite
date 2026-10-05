@@ -87,6 +87,11 @@ pub struct PlaySe {
     /// The requesting object's own effect/sound file (`obj/<name>.apdx`); it carries that
     /// object's private bank (e.g. the keyblade's 500).
     pub apdx: Option<String>,
+    /// World position in metres of the sound's source. The game starts every object sound at the
+    /// object's position (FUN_00197008, FUN_0016baa0) and derives volume and pan from it
+    /// (`kh2_audio::positional`); `None` plays at full volume and centre pan like its interface
+    /// sounds.
+    pub pos: Option<Vec3>,
 }
 
 /// A voice line: line `line` of the voice bank `file` (e.g. `voice/us/battle/tt0_sora.vsb`).
@@ -159,12 +164,28 @@ impl PlaySe {
             4 | 7 | 9 | 11 | 15 | 17 => 2,
             _ => return None,
         };
-        Some(PlaySe { bank: OWN_BANK, index: base + (counter & 1) as u16, apdx })
+        Some(PlaySe { bank: OWN_BANK, index: base + (counter & 1) as u16, apdx, pos: None })
     }
 
     pub fn number(n: u32, apdx: Option<String>) -> PlaySe {
-        PlaySe { bank: (n / 1000) as u16, index: (n % 1000) as u16, apdx }
+        PlaySe { bank: (n / 1000) as u16, index: (n % 1000) as u16, apdx, pos: None }
     }
+
+    /// The same sound placed at a world position (metres).
+    pub fn at(mut self, pos: Vec3) -> PlaySe {
+        self.pos = Some(pos);
+        self
+    }
+}
+
+/// Volume and pan of a request against the listener, which is the camera (the game transforms the
+/// position with the camera's view matrix, FUN_002c27b0): camera-space x is to the screen's right,
+/// z in front, distances in game units.
+pub fn placement(pos: Option<Vec3>, listener: Option<&Transform>) -> (i32, i32) {
+    use kh2_audio::positional::{CENTRE_PAN, FULL_VOLUME, volume_pan};
+    let (Some(p), Some(l)) = (pos, listener) else { return (FULL_VOLUME, CENTRE_PAN) };
+    let d = (p - l.translation) / crate::SCALE;
+    volume_pan([d.dot(*l.right()), d.dot(*l.up()), d.dot(*l.forward())])
 }
 
 /// An SE block with the WD it plays from (set for object-private banks; global banks pick the
@@ -264,12 +285,12 @@ fn load_wd(disc: &Disc, cache: &SeCache, id: u16) -> Option<Arc<Wd>> {
 }
 
 /// Plays a sound effect by bank and index.
-pub fn play_se(disc: &Disc, audio: &Audio, cache: &SeCache, req: &PlaySe) -> bool {
+pub fn play_se(disc: &Disc, audio: &Audio, cache: &SeCache, req: &PlaySe, volume_pan: (i32, i32)) -> bool {
     let Some(bank) = load_bank(disc, cache, req.bank, req.apdx.as_deref()) else { return false };
     let Some(entry) = bank.block.entries.get(req.index as usize) else { return false };
     let Some(wd) = bank.wd.clone().or_else(|| load_wd(disc, cache, entry.wd)) else { return false };
     let Ok(mut s) = audio.0.lock() else { return false };
-    s.driver.as_mut().is_some_and(|d| d.play_se(&bank.block, req.index as usize, wd, 0x3fff, 0x40))
+    s.driver.as_mut().is_some_and(|d| d.play_se(&bank.block, req.index as usize, wd, volume_pan.0, volume_pan.1))
 }
 
 fn play_voices(disc: &Disc, audio: &Audio, cache: &SeCache, v: &PlayVoice) -> bool {
@@ -285,6 +306,7 @@ fn play_requests(
     disc: Res<Disc>,
     audio: Res<Audio>,
     cache: Res<SeCache>,
+    listener: Query<&Transform, With<crate::camera::OrbitCamera>>,
     mut req: MessageReader<PlaySe>,
     mut voices: MessageReader<PlayVoice>,
 ) {
@@ -301,9 +323,19 @@ fn play_requests(
     }
     let log = std::env::var_os("KH2_SOUNDLOG").is_some();
     for r in req.read() {
-        let ok = play_se(&disc, &audio, &cache, r);
+        let vp = placement(r.pos, listener.single().ok());
+        let ok = play_se(&disc, &audio, &cache, r, vp);
         if log {
-            info!("se {}:{} ({}) {}", r.bank, r.index, r.apdx.as_deref().unwrap_or("-"), if ok { "playing" } else { "not found" });
+            info!(
+                "se {}:{} ({}) volume {:#x} pan {:#x}{} {}",
+                r.bank,
+                r.index,
+                r.apdx.as_deref().unwrap_or("-"),
+                vp.0,
+                vp.1,
+                if r.pos.is_some() { " (positional)" } else { "" },
+                if ok { "playing" } else { "not found" }
+            );
         }
     }
 }
@@ -311,16 +343,23 @@ fn play_requests(
 /// The fixed wall-hit sound 500010 (FUN_0018ca78), played from the object's own bank when the
 /// attack volume belongs to an attached object such as the keyblade (owner flag 0x40). Not the
 /// attack's `ReflectHitSound`, which is the sound of a hit that lands on a victim.
-pub fn wall_sounds(mut walls: MessageReader<crate::combat::WallHit>, anims: Query<&Animator>, mut out: MessageWriter<PlaySe>) {
+pub fn wall_sounds(
+    mut walls: MessageReader<crate::combat::WallHit>,
+    anims: Query<&Animator>,
+    places: Query<&GlobalTransform>,
+    mut out: MessageWriter<PlaySe>,
+) {
     for w in walls.read().filter(|w| w.weapon_volume) {
-        out.write(PlaySe::number(crate::combat::WALL_HIT_SOUND, anims.get(w.body).ok().and_then(|a| a.rig.apdx.clone())));
+        let mut se = PlaySe::number(crate::combat::WALL_HIT_SOUND, anims.get(w.body).ok().and_then(|a| a.rig.apdx.clone()));
+        se.pos = places.get(w.body).ok().map(|g| g.translation());
+        out.write(se);
     }
 }
 
 /// Motion frame trigger 8 ("sound effect"): params are [bank, index, ...]. Triggers 13 and 14
 /// name a voice ID (not a line): the voice table picks the line.
 pub fn motion_sounds(
-    anims: Query<(Entity, &Animator)>,
+    anims: Query<(Entity, &Animator, &GlobalTransform)>,
     sora: Query<&Sora>,
     area: Res<CurrentArea>,
     table: Res<VoiceTable>,
@@ -332,7 +371,7 @@ pub fn motion_sounds(
         *rng = 0x2545_f491;
     }
     let sora_body = sora.single().map(|s| s.body).ok();
-    for (e, a) in &anims {
+    for (e, a, place) in &anims {
         let is_sora = Some(e) == sora_body;
         let (Some(t), Some(m)) = (a.triggers(), a.motion()) else { continue };
         if t.frames.is_empty() {
@@ -347,7 +386,7 @@ pub fn motion_sounds(
         for ft in t.crossed(from, to) {
             match (ft.id, &ft.params[..]) {
                 (frame::SOUND_EFFECT, [bank, index, ..]) => {
-                    out.write(PlaySe { bank: *bank as u16, index: *index as u16, apdx: a.rig.apdx.clone() });
+                    out.write(PlaySe { bank: *bank as u16, index: *index as u16, apdx: a.rig.apdx.clone(), pos: Some(place.translation()) });
                 }
                 // Voice lines: the speaker's bank for the current world.
                 (frame::VOICE | frame::VOICE2, [voice, ..]) if is_sora => {
@@ -439,7 +478,8 @@ pub fn footsteps(
             info!("footstep {} frame {} kind {kind} material {material} neo {neo_status} -> {number:?} {}", a.tag(), ft.frame, sample.as_deref().unwrap_or("no sample"));
         }
         if let Some(n) = number {
-            out.write(PlaySe::number(n, None));
+            // FUN_0016baa0 passes the actor's position, so the step is placed at Sora's feet.
+            out.write(PlaySe::number(n, None).at(s.motor.pos * crate::SCALE));
         }
     }
 }
@@ -506,6 +546,20 @@ mod tests {
         let map = disc.read(&format!("map/us/{area}.map")).expect("map");
         let coct = Coct::from_map(&map).expect("coct");
         coct.polygons.iter().filter(|p| p.flags & flags::PARTY_STAND != 0).map(|p| p.material).collect()
+    }
+
+    #[test]
+    fn placement_uses_the_camera_axes() {
+        // Camera at the origin looking down -Z (Bevy's default), a source 6 m to its right and a
+        // metre ahead: far enough for a pan, on the right half of the circle.
+        let cam = Transform::IDENTITY;
+        let (v, p) = placement(Some(Vec3::new(6.0, 0.0, -1.0)), Some(&cam));
+        assert!(v < 0x3fff - 3000 && p > 0x40 && p <= 0x80, "{v} {p}");
+        let (_, left) = placement(Some(Vec3::new(-6.0, 0.0, -1.0)), Some(&cam));
+        assert!(left < 0x40);
+        // No position or no listener: full volume, centre.
+        assert_eq!(placement(None, Some(&cam)), (0x3fff, 0x40));
+        assert_eq!(placement(Some(Vec3::X), None), (0x3fff, 0x40));
     }
 
     #[test]

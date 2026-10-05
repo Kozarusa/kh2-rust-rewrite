@@ -4,6 +4,7 @@
 pub mod adpcm;
 pub mod bgm;
 pub mod footstep;
+pub mod positional;
 pub mod ssl;
 pub mod synth;
 pub mod vsb;

@@ -389,8 +389,8 @@ pub fn collide(p: &Params, from: Vec3, to: Vec3, cast: Cast, blockers: Option<&[
         blocked = true;
     }
     let Some(h) = cast(from, end) else { return blocked.then_some(end) };
-    let point;
-    let second;
+    let mut point = h.point;
+    let mut second = false;
     if h.attr & 0xf == 5 {
         let end2 = Vec3::new(to.x, point.y, to.z);
         // The cast overwrites its end point only on a hit, so a miss leaves `end2` (read from
@@ -550,6 +550,7 @@ impl EventCamera {
     /// become the previous ones (`FUN_0015cb08`); with `collide` the position is pulled in
     /// against the map (and the blockers when `blockers` is given); with `smooth` the three
     /// springs run, else the values are used as they are. Returns the view to draw.
+    #[allow(clippy::too_many_arguments)] // the event track entry's own fields
     pub fn frame(&mut self, p: &Params, pos: Vec3, look: Vec3, fov: f32, roll: f32, collide_map: Option<(Cast, Option<&[Blocker]>)>, smooth: bool) -> View {
         self.look_prev = self.look_new;
         self.pos_prev = self.pos_new;

@@ -18,6 +18,8 @@ mod hud_gauge;
 mod hud_gfx;
 #[path = "hud_target.rs"]
 mod hud_target;
+#[path = "hud_text.rs"]
+mod hud_text;
 
 use hud_gauge::{FaceFile, SoraPanel};
 use hud_gfx::{HudGfxPlugin, HudScene};
@@ -36,7 +38,7 @@ impl Plugin for HudPlugin {
             .add_systems(Startup, (setup, load_files).chain())
             .add_systems(
                 Update,
-                (toggle_debug, (hud_gauge::update, hud_target::update).chain(), debug_text.run_if(debug_on)).in_set(Frame::Hud),
+                (toggle_debug, (hud_gauge::update, hud_target::update, hud_text::demo).chain(), debug_text.run_if(debug_on)).in_set(Frame::Hud),
             )
             .add_systems(Update, popups.in_set(Frame::Popups).run_if(debug_on));
     }
@@ -100,6 +102,7 @@ fn load_files(disc: Res<Disc>, area: Res<CurrentArea>, mut images: ResMut<Assets
         face.0 = Some(files.len());
         files.push(f);
     }
+    scene.text = hud_text::TextSys::load(&disc, world, &mut images, &mut files);
     scene.files = files;
 }
 

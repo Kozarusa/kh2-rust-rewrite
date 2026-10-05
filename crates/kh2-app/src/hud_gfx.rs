@@ -19,6 +19,7 @@ use bevy::shader::ShaderRef;
 use bevy::sprite_render::{AlphaMode2d, Material2d, Material2dKey, Material2dPlugin, MeshMaterial2d};
 use kh2_image::seqd::{Ext, Player, Quad, Seqd};
 
+use super::hud_text::{Label, TextSys};
 use crate::assets::Disc;
 
 /// Render layer of the HUD camera and everything it draws.
@@ -154,6 +155,10 @@ pub struct Node {
     pub visible: bool,
     /// Clip to the wedge from the west direction clockwise by this many radians (a ring gauge).
     pub sweep: Option<f32>,
+    /// Text drawn on top of the node's sequence, from the node's origin.
+    pub label: Option<Label>,
+    /// Alpha multiplier for the label (the node's fade).
+    pub label_fade: f32,
     /// Last anchor point the group's anchor animation produced.
     anchor: [f32; 2],
     base: [f32; 2],
@@ -171,6 +176,8 @@ impl Node {
             ext: Ext::default(),
             visible: true,
             sweep: None,
+            label: None,
+            label_fade: 1.0,
             anchor: [0.0; 2],
             base: [0.0; 2],
             origin: [0.0; 2],
@@ -182,6 +189,8 @@ impl Node {
 pub struct HudScene {
     pub files: Vec<SeqFile>,
     pub nodes: Vec<Node>,
+    /// Fonts and messages (None when the disc has none).
+    pub text: Option<TextSys>,
     acc: f32,
 }
 
@@ -237,14 +246,20 @@ impl HudScene {
     fn quads(&self) -> Vec<(usize, Quad, [f32; 2], Option<f32>)> {
         let mut out = Vec::new();
         for n in &self.nodes {
-            let (Some(g), Some(f)) = (n.player.group, self.files.get(n.file)) else { continue };
             if !n.visible {
                 continue;
             }
-            let mut ext = n.ext;
-            ext.time = n.player.uv_time;
-            for q in f.seq.quads(g, n.player.frame(), n.origin, &ext) {
-                out.push((n.file, q, n.origin, n.sweep));
+            if let (Some(g), Some(f)) = (n.player.group, self.files.get(n.file)) {
+                let mut ext = n.ext;
+                ext.time = n.player.uv_time;
+                for q in f.seq.quads(g, n.player.frame(), n.origin, &ext) {
+                    out.push((n.file, q, n.origin, n.sweep));
+                }
+            }
+            if let (Some(label), Some(text)) = (&n.label, &self.text) {
+                for (file, q) in text.quads(label, n.origin, n.label_fade) {
+                    out.push((file, q, n.origin, None));
+                }
             }
         }
         out

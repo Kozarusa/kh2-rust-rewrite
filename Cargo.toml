@@ -22,6 +22,7 @@ kh2-ee = { path = "crates/kh2-ee" }
 kh2-fx = { path = "crates/kh2-fx" }
 kh2-audio = { path = "crates/kh2-audio" }
 kh2-image = { path = "crates/kh2-image" }
+kh2-bdx = { path = "crates/kh2-bdx" }
 serde_json = { version = "1", features = ["preserve_order"] }
 
 [profile.dev]

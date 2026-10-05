@@ -1,12 +1,13 @@
 //! Runs the game's own handlers of the three ported programs (`pppKeShpTail3X` frame 0x1fcf70 and
-//! draw 0x1fd388, `pppKeMvYpEff` 0x1f4628, `pppSnoMdlDttNorm` draw 0x20a7e8) in the `kh2-ee`
-//! interpreter on the user's executable and compares them with this crate's ports on the same
-//! objects, parameters and matrices. The three routines that would draw (0x21a660, 0x20ab40, and
-//! the packet allocator 0x20c110) are replaced by hooks that record their arguments. Skipped
-//! without a disc (KH2_ISO or local/iso.txt).
+//! draw 0x1fd388, `pppKeMvYpEff` 0x1f4628, `pppSnoMdlDttNorm` draw 0x20a7e8 and its model draw
+//! 0x20ab40) in the `kh2-ee` interpreter on the user's executable and compares them with this
+//! crate's ports on the same objects, parameters and matrices. The routines that would draw or
+//! allocate packets (0x21a660 shape draws, the packet allocator 0x20c110 and the DMA kick 0x1e4a88)
+//! are replaced by hooks that record their arguments. Skipped without a disc (KH2_ISO or
+//! local/iso.txt).
 //!
-//! What is not covered: the model geometry of `pppSnoMdlDttNorm` (the VU0 work inside 0x20ab40);
-//! the vertex displacement and the screen shift there were read from the disassembly only.
+//! What is not covered: the interpreter has no VU0 flag registers, so the back-face and clip tests
+//! of the Sno model draw never reject there; the port's culling is the reading of the disassembly.
 
 use std::cell::RefCell;
 

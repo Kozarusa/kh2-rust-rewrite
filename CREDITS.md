@@ -41,6 +41,8 @@ Some rules are not documented anywhere and were read from the game's own code in
 
 - **Sound** (`crates/kh2-audio`): the SSL driver's timing (240 Hz frames, tempo accumulator, 300-per-tick), sequence commands, slide/LFO units, the pitch/volume/pan chain written to the SPU2, SE numbering (`bank * 1000 + index`, object-private banks inside `*.apdx`), hit sounds (the victim's own bank, entry 0-3 by the attack's `EnemyReaction`), and the SeBlock/VSB layouts were read from a local disassembly of the user's `LIBSSL.IRX` and executable. The driver's pitch/pan lookup tables are read from the user's own `LIBSSL.IRX` at runtime, never shipped.
 
+- **Field camera** (`crates/kh2-app/src/camera.rs`, `camera_rules.rs`, `docs/camera.md`): the camera object's per-tick order, the radius-to-height parabola, the look-at offset, the spring smoothing, yaw swing limit, right-stick turn and zoom, the auto-camera turn rate, the lock-on framing and the wall pull-in rule (5 off the surface along its normal). The camera parameter table is read at run time from the user's `SLUS_210.05`, never shipped. The map's camera collision entry (BAR type 11) and the camera mode numbers are from OpenKH `docs/kh2/file/type/bar.md` and `areadata.md` (Apache-2.0); the area's indoor flag from `OpenKh.Kh2/SystemData/Arif.cs`.
+
 ## Research references (consulted, nothing copied)
 
 - [VGMTrans](https://github.com/vgmtrans/vgmtrans), zlib license: the layout of the Square PS2 WD instrument banks and BGM headers (`src/main/formats/SquarePS2`). The SPU ADPCM decoder and ADSR envelope follow the public SPU2 hardware description.

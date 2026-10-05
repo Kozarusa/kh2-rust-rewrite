@@ -61,6 +61,14 @@ fn auto_screenshot(
                 "W" => KeyCode::KeyW,
                 "E" => KeyCode::KeyE,
                 "F6" => KeyCode::F6,
+                "A" => KeyCode::KeyA,
+                "S" => KeyCode::KeyS,
+                "D" => KeyCode::KeyD,
+                "C" => KeyCode::KeyC,
+                "Left" => KeyCode::ArrowLeft,
+                "Right" => KeyCode::ArrowRight,
+                "Up" => KeyCode::ArrowUp,
+                "Down" => KeyCode::ArrowDown,
                 _ => continue,
             };
             if t >= at && t - dt < at {

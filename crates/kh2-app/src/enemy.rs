@@ -1,10 +1,10 @@
 //! Heartless (Shadow M_EX020, Soldier M_EX010): models, motions, hitboxes and stats from the
-//! disc; behaviour is a compact state machine standing in for the game's BDX AI scripts (not
-//! parsed yet).
+//! disc. What an enemy does runs under the game's own BDX script (`enemy_ai.rs`); this module
+//! spawns the waves and holds the hit reactions of the victim side (damage, flinch, push, blow).
 //!
-//! Enemy motion sets use the default mapping (slot = motion id): 0 idle, 1 walk,
-//! 10/12 small damage front/back, 16/17 blow + land; appear, sink/rise and attacks are found by
-//! tag. Attack motions carry attack triggers (atkp + collision group).
+//! Enemy motion sets use the default mapping (slot = motion id): 0 idle, 10/12 small damage
+//! front/back, 16/17 blow + land. Attack motions carry attack triggers (atkp + collision group).
+//! An enemy without a script (its BDX entry did not load) only stands and reacts to hits.
 
 use std::sync::Arc;
 
@@ -20,47 +20,25 @@ use crate::sora::{Rigs, Sora};
 use crate::SCALE;
 
 const IDLE: usize = 0;
-const WALK: usize = 1;
 const HURT_FRONT: usize = 10;
 const BLOW: usize = 16;
-const SUNK_SPEED: f32 = 5.5;
 
 pub struct Kind {
     pub name: &'static str,
     /// Row in `enmp`.
     pub enmp: u16,
-    pub appear: &'static str,
-    pub attacks: &'static [&'static str],
-    /// (sink, resurface) motion tags, for enemies that travel underground.
-    pub sink: Option<(&'static str, &'static str)>,
-    pub walk_speed: f32,
-    pub reach: f32,
 }
 
-pub const SHADOW: Kind = Kind {
-    name: "Shadow",
-    enmp: 34,
-    appear: "81A",
-    attacks: &["52A", "50A"],
-    sink: Some(("10A", "11A")),
-    walk_speed: 3.0,
-    reach: 1.7,
-};
+pub const SHADOW: Kind = Kind { name: "Shadow", enmp: 34 };
 
-pub const SOLDIER: Kind = Kind { name: "Soldier", enmp: 33, appear: "80A", attacks: &["52A", "53A"], sink: None, walk_speed: 2.4, reach: 2.0 };
+pub const SOLDIER: Kind = Kind { name: "Soldier", enmp: 33 };
 
+/// What the reaction code tracks: a hit reaction in progress, or nothing (the script is in charge).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EState {
-    Appear,
     Idle,
-    Chase,
-    Sink,
-    Sunk,
-    Rise,
-    Attack,
     Hurt,
     Blown,
-    Dying,
 }
 
 #[derive(Component)]
@@ -74,7 +52,6 @@ pub struct Enemy {
     pub grounded: bool,
     pub yaw: f32,
     pub timer: f32,
-    pub cooldown: f32,
     pub body: Entity,
     /// Decaying push of a push reaction, added to the movement every tick.
     push: Option<Push>,
@@ -83,18 +60,11 @@ pub struct Enemy {
     blown_back: bool,
     /// Hit sounds played so far; the sound alternates between two entries (actor byte +0x7fc).
     hit_sounds: u8,
-    seed: u32,
 }
 
 impl Enemy {
     pub fn alive(&self) -> bool {
-        !matches!(self.state, EState::Dying) && self.hp > 0
-    }
-    fn rand(&mut self) -> f32 {
-        self.seed ^= self.seed << 13;
-        self.seed ^= self.seed >> 17;
-        self.seed ^= self.seed << 5;
-        (self.seed % 10_000) as f32 / 10_000.0
+        self.hp > 0
     }
 }
 
@@ -117,10 +87,6 @@ impl Plugin for EnemyPlugin {
             ),
         );
     }
-}
-
-fn slot(rig: &Rig, tag: &str) -> Option<usize> {
-    rig.mset.by_tag(tag).next()
 }
 
 fn has(rig: &Rig, s: usize) -> Option<usize> {
@@ -183,139 +149,51 @@ pub fn spawn_waves(
             Enemy {
                 kind,
                 name: kind.name,
-                state: EState::Appear,
+                state: EState::Idle,
                 hp: stats.max_hp,
                 stats,
                 vel: Vec3::ZERO,
                 grounded: true,
                 yaw: { let d = p.translation - Vec3::new(x, y, z); f32::atan2(d.x, d.z) },
                 timer: 0.0,
-                cooldown: 1.0,
                 body,
                 push: None,
                 blow: None,
                 blown_back: false,
                 hit_sounds: 0,
-                seed: 0x9E37_79B9 ^ (waves.count * 31 + i),
             },
             Fighter { team: Team::Enemy, attack_bodies: vec![body], hurt_body: body, landed: Default::default(), hittable: false },
         ));
     }
 }
 
+/// The hit reactions of the enemies (`Hurt`, `Blown`) and the movement they need. A scripted enemy
+/// (`AiBrain`) moves and animates itself in `enemy_ai.rs` whenever no reaction plays.
 #[allow(clippy::too_many_arguments)]
 pub fn think(
-    mut commands: Commands,
     time: Res<Time>,
     data: Res<GameData>,
     collider: Option<Res<World>>,
     reaction: Option<Res<ReactionData>>,
     sora: Query<&Transform, (With<Sora>, Without<Enemy>)>,
-    mut q: Query<(Entity, &mut Transform, &mut Enemy, &mut Fighter, Has<crate::enemy_ai::AiBrain>)>,
+    mut q: Query<(&mut Transform, &mut Enemy, Has<crate::enemy_ai::AiBrain>)>,
     mut anims: Query<&mut Animator>,
-    mut fx: MessageWriter<crate::fx::StartEffect>,
 ) {
-    let (Some(col), Ok(sp)) = (collider, sora.single()) else { return };
+    let (Some(col), Ok(_)) = (collider, sora.single()) else { return };
     let dt = time.delta_secs().min(0.05);
-    for (ent, mut tf, mut e, mut f, scripted) in &mut q {
+    for (mut tf, mut e, scripted) in &mut q {
         let e = &mut *e;
-        // A BDX-driven enemy (enemy_ai.rs) moves and animates itself; only its hit reactions run here.
         if scripted && !matches!(e.state, EState::Hurt | EState::Blown) {
             continue;
         }
         let Ok(mut a) = anims.get_mut(e.body) else { continue };
         let rig = a.rig.clone();
-        let kind = e.kind;
         e.timer += dt;
-        e.cooldown -= dt;
-        let to = (sp.translation - tf.translation).with_y(0.0);
-        let dist = to.length();
-        let face = |e: &mut Enemy, rate: f32| {
-            if dist > 0.01 {
-                let target = f32::atan2(to.x, to.z);
-                let d = (target - e.yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
-                e.yaw += d.clamp(-rate * dt, rate * dt);
-            }
-        };
         let mut gravity = GRAVITY;
-        f.hittable = !matches!(e.state, EState::Sunk | EState::Dying | EState::Appear);
         match e.state {
-            EState::Appear => {
-                a.play(slot(&rig, kind.appear), false, 0.0);
-                if a.finished || e.timer > 2.5 {
-                    e.state = EState::Idle;
-                    e.timer = 0.0;
-                }
-            }
             EState::Idle => {
                 e.vel = Vec3::new(0.0, e.vel.y, 0.0);
                 a.play(has(&rig, IDLE), true, 0.2);
-                face(e, 4.0);
-                if e.timer > 0.4 + e.rand() * 0.6 {
-                    e.timer = 0.0;
-                    e.state = if dist < kind.reach + 0.2 && e.cooldown <= 0.0 {
-                        EState::Attack
-                    } else if kind.sink.is_some() && dist > 5.0 && e.rand() < 0.5 {
-                        // Shadow effect 2: the pool of darkness it sinks into.
-                        fx.write(crate::fx::StartEffect { owner: e.body, id: 2 });
-                        EState::Sink
-                    } else {
-                        EState::Chase
-                    };
-                    if e.state == EState::Attack {
-                        let pick = (e.rand() * kind.attacks.len() as f32) as usize % kind.attacks.len();
-                        a.restart(slot(&rig, kind.attacks[pick]), false, 0.1);
-                    }
-                }
-            }
-            EState::Chase => {
-                face(e, 5.0);
-                let fwd = Vec3::new(e.yaw.sin(), 0.0, e.yaw.cos());
-                e.vel = (fwd * kind.walk_speed).with_y(e.vel.y);
-                a.play(has(&rig, WALK), true, 0.2);
-                if dist < kind.reach || e.timer > 3.0 {
-                    e.state = EState::Idle;
-                    e.timer = 0.0;
-                }
-            }
-            EState::Sink => {
-                e.vel = Vec3::new(0.0, e.vel.y, 0.0);
-                a.play(kind.sink.and_then(|s| slot(&rig, s.0)), false, 0.1);
-                if a.finished || e.timer > 1.5 {
-                    e.state = EState::Sunk;
-                    e.timer = 0.0;
-                }
-            }
-            EState::Sunk => {
-                face(e, 8.0);
-                let fwd = Vec3::new(e.yaw.sin(), 0.0, e.yaw.cos());
-                e.vel = (fwd * SUNK_SPEED).with_y(e.vel.y);
-                if dist < 2.0 || e.timer > 3.0 {
-                    e.state = EState::Rise;
-                    e.timer = 0.0;
-                    fx.write(crate::fx::StartEffect { owner: e.body, id: 2 });
-                    a.restart(kind.sink.and_then(|s| slot(&rig, s.1)), false, 0.05);
-                }
-            }
-            EState::Rise => {
-                e.vel = Vec3::new(0.0, e.vel.y, 0.0);
-                if a.finished || e.timer > 1.5 {
-                    e.state = EState::Attack;
-                    e.timer = 0.0;
-                    face(e, 100.0);
-                    a.restart(slot(&rig, kind.attacks[0]), false, 0.05);
-                }
-            }
-            EState::Attack => {
-                // Lunge forward while the claw swipe's hitbox window is open.
-                let fwd = Vec3::new(e.yaw.sin(), 0.0, e.yaw.cos());
-                let live = a.trigger(kh2_anim::triggers::range::ATTACK);
-                e.vel = (fwd * if live && dist > 0.8 { 3.0 } else { 0.0 }).with_y(e.vel.y);
-                if a.finished || e.timer > 4.0 {
-                    e.state = EState::Idle;
-                    e.timer = 0.0;
-                    e.cooldown = 1.2 + e.rand() * 1.5;
-                }
             }
             EState::Hurt => {
                 e.vel *= Vec3::new(0.85, 1.0, 0.85);
@@ -337,46 +215,26 @@ pub fn think(
                     info!("{} lands from a blow after {:.2} s at {:?}", e.name, e.timer, tf.translation);
                     e.vel = Vec3::ZERO;
                     e.blow = None;
-                    e.state = if e.hp <= 0 { EState::Dying } else { EState::Hurt };
+                    e.state = EState::Hurt;
                     e.timer = 0.0;
                     a.restart(has(&rig, BLOW + if e.blown_back { 3 } else { 1 }).or(has(&rig, BLOW + 1)), false, 0.05);
                 }
             }
-            EState::Dying => {
-                e.vel = Vec3::new(0.0, e.vel.y, 0.0);
-                // Heartless dissolve: sink into the ground, then despawn.
-                if e.timer > 0.6 {
-                    tf.translation.y -= dt * 1.5;
-                    gravity = 0.0;
-                    e.vel.y = 0.0;
-                }
-                if e.timer > 1.6 {
-                    commands.entity(ent).despawn();
-                    continue;
-                }
+        }
+        // A push (hit reaction) moves the enemy on top of whatever else it does this tick.
+        let mut push_v = Vec3::ZERO;
+        if let (Some(p), Some(r)) = (e.push.as_mut(), reaction.as_ref()) {
+            push_v = p.step(&r.consts) * (SCALE * LOGIC_HZ);
+            if p.finished() {
+                e.push = None;
             }
         }
-        if !matches!(e.state, EState::Dying) || e.timer <= 0.6 {
-            // A push (hit reaction) moves the enemy on top of whatever else it does this tick.
-            let mut push_v = Vec3::ZERO;
-            if let (Some(p), Some(r)) = (e.push.as_mut(), reaction.as_ref()) {
-                push_v = p.step(&r.consts) * (SCALE * LOGIC_HZ);
-                if p.finished() {
-                    e.push = None;
-                }
-            }
-            e.vel += push_v;
-            let mut g = e.grounded;
-            col.step_m(&mut tf.translation, &mut e.vel, dt, gravity, data.fall_max(), &mut g);
-            e.grounded = g;
-            e.vel -= push_v;
-        }
+        e.vel += push_v;
+        let mut g = e.grounded;
+        col.step_m(&mut tf.translation, &mut e.vel, dt, gravity, data.fall_max(), &mut g);
+        e.grounded = g;
+        e.vel -= push_v;
         tf.rotation = Quat::from_rotation_y(e.yaw);
-        // Sunk Shadows are only a puddle: hide the body.
-        let sunk = e.state == EState::Sunk;
-        if let Ok(mut ec) = commands.get_entity(e.body) {
-            ec.insert(if sunk { Visibility::Hidden } else { Visibility::Inherited });
-        }
     }
 }
 
@@ -387,7 +245,7 @@ pub fn separate(sora: Query<&Transform, (With<Sora>, Without<Enemy>)>, mut q: Qu
     let sp = sora.single().map(|t| t.translation).ok();
     let pos: Vec<Vec3> = q.iter().map(|(t, _)| t.translation).collect();
     for (i, (mut t, e)) in q.iter_mut().enumerate() {
-        if !e.alive() || e.state == EState::Sunk {
+        if !e.alive() {
             continue;
         }
         let mut push = Vec3::ZERO;
@@ -423,6 +281,8 @@ pub fn receive_hits(
     mut sounds: MessageWriter<crate::audio::PlaySe>,
     mut ineffective: MessageWriter<IneffectiveHit>,
     mut ai_hits: MessageWriter<crate::enemy_ai::AiHit>,
+    mut game: MessageWriter<crate::fx::GameEffect>,
+    drive: (Option<Res<crate::drive::DriveRules>>, Option<Res<crate::drive::DriveState>>),
 ) {
     let from = sora.single().map(|s| s.stats).ok();
     let Some(reaction) = reaction else { return };
@@ -433,8 +293,17 @@ pub fn receive_hits(
         }
         let Some(atk) = data.atkp(h.atkp) else { continue };
         let useless = hit_is_ineffective(atk, &e.stats);
-        let dmg = data.damage(atk, &from, &e.stats);
+        let mut dmg = data.damage(atk, &from, &e.stats);
+        // Anti form multiplies the damage Sora deals (FUN_001a0610).
+        if let (Some(rules), Some(state)) = (&drive.0, &drive.1) {
+            dmg = crate::drive::rules::outgoing_damage(&rules.tuning, state.form, atk.r#type, dmg);
+        }
         e.hp = (e.hp - dmg).max(0);
+        if e.hp == 0 {
+            // The damage method starts the death at the moment HP reaches 0 (FUN_00186530 -> the
+            // `dead` mode); a second request for the same victim is ignored by `fx`.
+            game.write(crate::fx::GameEffect::Death { victim: h.target });
+        }
         popups.write(crate::hud::DamagePopup { at: h.point, amount: dmg });
         if useless {
             ineffective.write(IneffectiveHit { attacker: h.attacker, target: h.target, atkp: h.atkp, point: h.point });
@@ -462,7 +331,8 @@ pub fn receive_hits(
         let d = &reaction.defaults;
         let action = match out.action {
             x @ VictimAction::Blow { .. } => x,
-            _ if e.hp == 0 => VictimAction::Blow { motion: rules::blow_motion(from_front), up: d.blow_up, horiz: d.blow_speed, face_attacker: from_front },
+            // An ineffective hit has reaction 0 (flag 4): no flinch, push or blow.
+            _ if e.hp == 0 && !useless => VictimAction::Blow { motion: rules::blow_motion(from_front), up: d.blow_up, horiz: d.blow_speed, face_attacker: from_front },
             x => x,
         };
         info!(

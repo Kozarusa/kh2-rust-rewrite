@@ -49,6 +49,64 @@ const ABILITY_NEGATIVE_COMBO: u16 = 106;
 const BASE_HITS_GROUND: u8 = 3;
 const BASE_HITS_AIR: u8 = 3;
 const BASE_FINISHERS: u8 = 1;
+/// Ability item ids of the four abilities above (`FUN_001c0f40`: Combo Plus +1 ground, Air Combo
+/// Plus +1 air, Finishing Plus +1 finisher, Negative Combo -1 both lengths).
+const ID_COMBO_PLUS: u16 = 162;
+const ID_AIR_COMBO_PLUS: u16 = 163;
+const ID_FINISHING_PLUS: u16 = 393;
+const ID_NEGATIVE_COMBO: u16 = 394;
+/// Ticks the keyblade stays out after the last sign of a fight.
+const BATTLE_TICKS: f32 = 240.0;
+
+/// The battle flag every system reads (the game's `FUN_001903d8`, a tri-state set from the player's
+/// and the enemies' awareness). The app's stand-in: ticks left of the battle mode that Sora's
+/// controller raises while an enemy is within lock-on range or after an attack, and that drives
+/// the keyblade out. The drive code reads it too.
+#[derive(Resource, Default, Debug)]
+pub struct Battle {
+    pub ticks: f32,
+}
+
+impl Battle {
+    pub fn active(&self) -> bool {
+        self.ticks > 0.0
+    }
+}
+
+/// The ability block the controller reads (`FUN_001c0d88`, `FUN_001c0f40`): the ability bits that
+/// gate the attack table and the combo lengths. `player` holds the player's own bits (Guard, plus
+/// `KH2_ABILITIES` until the ability system exists); `form` the abilities the active drive form
+/// grants, as (ability id, ability bit) pairs, set by the drive code and cleared on revert.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct Abilities {
+    pub player: u128,
+    pub form: Vec<(u16, u16)>,
+}
+
+impl Abilities {
+    /// Every ability bit set, the player's and the form's.
+    pub fn bits(&self) -> u128 {
+        self.form.iter().filter(|(_, b)| *b < 128).fold(self.player, |m, (_, b)| m | 1u128 << b)
+    }
+
+    /// Attacks before the finisher on the ground and in the air, and finishers per chain. The
+    /// player's bits count once each (the app has one bit per ability); the form's grants count per copy.
+    pub fn combo_block(&self) -> (u8, u8, u8) {
+        let copies = |id: u16, bit: u16| (self.player >> bit & 1) as u8 + self.form.iter().filter(|(i, _)| *i == id).count() as u8;
+        let minus = copies(ID_NEGATIVE_COMBO, ABILITY_NEGATIVE_COMBO);
+        (
+            (BASE_HITS_GROUND + copies(ID_COMBO_PLUS, ABILITY_COMBO_PLUS)).saturating_sub(minus),
+            (BASE_HITS_AIR + copies(ID_AIR_COMBO_PLUS, ABILITY_AIR_COMBO_PLUS)).saturating_sub(minus),
+            BASE_FINISHERS + copies(ID_FINISHING_PLUS, ABILITY_FINISHING_PLUS),
+        )
+    }
+
+    /// The combo state the attack table's availability tests read.
+    fn chain(&self, hits: u8, finishers: u8, airborne: bool, finisher_window: bool) -> Chain {
+        let (max_ground, max_air, max_finishers) = self.combo_block();
+        Chain { airborne, abilities: self.bits(), combo: hits, finishers, max_ground, max_air, max_finishers, finisher_window }
+    }
+}
 
 /// `KH2_MOVELOG=1`: one log block per attack press (each record considered and why it was
 /// flagged or not, and the chosen motion).
@@ -90,6 +148,9 @@ pub enum State {
     Blown,
     Down,
     Viewer,
+    /// A drive form change is playing (motions A120 and A121): the drive code holds the controller,
+    /// there is no input, and the hit tests are off. It sets the state back when the change ends.
+    FormChange,
 }
 
 /// Growth-ability levels (0 = not learned, 5 = MAX).
@@ -140,9 +201,8 @@ pub struct Sora {
     pub connected: bool,
     /// The refused press was already logged.
     deny_logged: bool,
-    /// Sora's attack table and the ability bits that unlock gated actions.
+    /// Sora's attack table (the ability bits that unlock gated actions are the `Abilities` resource).
     pub moves: Arc<Moveset>,
-    pub abilities: u128,
     /// The blow that knocked Sora down came from behind (picks the matching landing motion).
     blown_back: bool,
     /// Decaying push (wall recoil, push reactions), added to the movement every tick.
@@ -156,8 +216,6 @@ pub struct Sora {
     pub invuln: f32,
     pub lock: Option<Entity>,
     pub target: Option<Entity>,
-    /// Battle mode ticks left (keyblade out).
-    pub battle: f32,
     pub body: Entity,
     pub weapon: Entity,
     /// Ticks in the current state.
@@ -180,27 +238,6 @@ impl Sora {
         self.motor.yaw
     }
 
-    fn has_ability(&self, bit: u16) -> bool {
-        bit == 0 || (bit < 128 && self.abilities >> bit & 1 != 0)
-    }
-
-    /// The combo state the table's availability tests read. Combo lengths start from the status
-    /// block's base values and change with the combo abilities (the app has one bit per ability, the
-    /// game one count per equipped copy).
-    fn chain(&self, airborne: bool, finisher_window: bool) -> Chain {
-        let has = |b: u16| self.has_ability(b) as u8;
-        let minus = has(ABILITY_NEGATIVE_COMBO);
-        Chain {
-            airborne,
-            abilities: self.abilities,
-            combo: self.hits,
-            finishers: self.finishers,
-            max_ground: (BASE_HITS_GROUND + has(ABILITY_COMBO_PLUS)).saturating_sub(minus),
-            max_air: (BASE_HITS_AIR + has(ABILITY_AIR_COMBO_PLUS)).saturating_sub(minus),
-            max_finishers: BASE_FINISHERS + has(ABILITY_FINISHING_PLUS),
-            finisher_window,
-        }
-    }
 }
 
 /// A target point of an enemy in game units (Y up here), from its target-kind collision shape.
@@ -295,6 +332,8 @@ impl Plugin for SoraPlugin {
         crate::startup_log("rigs");
         app.insert_resource(rigs)
             .init_resource::<Pad>()
+            .init_resource::<Battle>()
+            .insert_resource(Abilities { player: start_abilities(), form: Vec::new() })
             .add_systems(Startup, setup)
             .add_systems(Update, read_pad.in_set(Frame::Pad))
             .add_systems(
@@ -336,7 +375,6 @@ pub fn setup(
             connected: false,
             deny_logged: false,
             moves: Arc::new(load_moveset(&disc, "P_EX100")),
-            abilities: start_abilities(),
             blown_back: false,
             push: None,
             blow: None,
@@ -346,7 +384,6 @@ pub fn setup(
             invuln: 0.0,
             lock: None,
             target: None,
-            battle: 0.0,
             body,
             weapon,
             timer: 0.0,
@@ -472,6 +509,8 @@ pub fn tick(
     mut pad: ResMut<Pad>,
     data: Res<GameData>,
     growth: Res<Growth>,
+    abilities: Res<Abilities>,
+    mut battle: ResMut<Battle>,
     world: Option<Res<World>>,
     reaction: Option<Res<ReactionData>>,
     enemies: Query<(Entity, &GlobalTransform, &Enemy)>,
@@ -500,7 +539,9 @@ pub fn tick(
     let lock_pressed = Pad::take(&mut pad.lock);
     s.invuln = (s.invuln - 1.0).max(0.0);
     s.timer += 1.0;
-    fighter.hittable = s.invuln <= 0.0 && !matches!(s.state, State::Down | State::Viewer);
+    fighter.hittable = s.invuln <= 0.0 && !matches!(s.state, State::Down | State::Viewer | State::FormChange);
+    // Set by the attack and guard starts; applied to the battle flag at the end of the tick.
+    let keep_out = std::cell::Cell::new(false);
     let prty = &data.prty;
     let move_speed = if pad.stick <= 0.0 { 0.0 } else if pad.stick < WALK_STICK { prty.walk_speed } else { prty.run_speed };
 
@@ -523,13 +564,14 @@ pub fn tick(
 
     // Battle mode (keyblade out) while enemies are near or after attacking.
     if nearest(lock_range).is_some() {
-        s.battle = 240.0;
+        battle.ticks = BATTLE_TICKS;
     }
-    s.battle = (s.battle - 1.0).max(0.0);
-    let battle = s.battle > 0.0;
-    let pstate = if battle { PlayerState::BattleWeapon } else { PlayerState::FieldNoWeapon };
+    battle.ticks = (battle.ticks - 1.0).max(0.0);
+    let battle_on = battle.active();
+    let pstate = if battle_on { PlayerState::BattleWeapon } else { PlayerState::FieldNoWeapon };
     if let Ok(mut v) = vis.get_mut(s.weapon) {
-        *v = if battle || s.state == State::Viewer { Visibility::Inherited } else { Visibility::Hidden };
+        // The change motions are the battle-state ones (the drive code asks for that variant), so the keyblade is out.
+        *v = if battle_on || matches!(s.state, State::Viewer | State::FormChange) { Visibility::Inherited } else { Visibility::Hidden };
     }
     let motion = |id: usize| rig.mset.slot(id, pstate);
 
@@ -582,7 +624,7 @@ pub fn tick(
         s.deny_logged = false;
         // Starting an action clears the hit-landed latch.
         s.connected = false;
-        s.battle = 240.0;
+        keep_out.set(true);
         s.motor.vel = Vec3::ZERO;
         // Face the target; close distance beyond the swing's own root motion at plyr V0.
         s.lunge_left = 0.0;
@@ -608,7 +650,7 @@ pub fn tick(
         let playing = body.slot.map_or(usize::MAX, |sl| sl / 4);
         let tag_of = |id: u16| rig.mset.slot(id as usize, pstate).and_then(|sl| rig.mset.get(sl)).map_or("-", |x| x.tag.as_str());
         let mut lines: Vec<String> = Vec::new();
-        let mut chain = s.chain(air, fin_window);
+        let mut chain = abilities.chain(s.hits, s.finishers, air, fin_window);
         if w.free {
             chain.restart();
         }
@@ -752,7 +794,7 @@ pub fn tick(
                     s.dash_brake = f.air_slide_brake;
                     s.invuln = f.air_slide_star_time;
                     body.restart(motion(mid::QUICK_RUN), false, 0.0);
-                } else if let Some(g) = s.moves.by_key(key::GUARD).filter(|g| s.chain(false, false).check(g).is_ok()).cloned()
+                } else if let Some(g) = s.moves.by_key(key::GUARD).filter(|g| abilities.chain(s.hits, s.finishers, false, false).check(g).is_ok()).cloned()
                     && let Some(slot) = rig.mset.slot(g.motion as usize, pstate)
                 {
                     // The guard action is a ground action of the attack table.
@@ -762,7 +804,7 @@ pub fn tick(
                     weapon.restart(Some(slot).filter(|&x| wrig.mset.has(x)), false, BLEND_ATTACK);
                     info!("sora guard {} (key {}, motion id {})", body.tag(), g.key, g.motion);
                     s.motor.vel = Vec3::ZERO;
-                    s.battle = 240.0;
+                    keep_out.set(true);
                 }
             }
         }
@@ -890,7 +932,7 @@ pub fn tick(
             // after a guard hit answers with the counter action of the attack table (it needs its
             // ability), as the game does while the guard-hit motion plays.
             let counter = (s.state == State::Counter && attack)
-                .then(|| s.moves.by_key(key::COUNTER).filter(|c| s.chain(false, false).check(c).is_ok()).cloned())
+                .then(|| s.moves.by_key(key::COUNTER).filter(|c| abilities.chain(s.hits, s.finishers, false, false).check(c).is_ok()).cloned())
                 .flatten()
                 .and_then(|c| rig.mset.slot(c.motion as usize, pstate).map(|slot| (c, slot)));
             if let Some((c, slot)) = counter {
@@ -952,6 +994,16 @@ pub fn tick(
             }
         }
         State::Viewer => {}
+        State::FormChange => {
+            // No input: the drive code plays the change motions and ends the state. Gravity goes on.
+            s.motor.vel = Vec3::ZERO;
+            if !s.motor.grounded {
+                airborne_dy = Some(s.motor.jump_dy(fall_max));
+            }
+        }
+    }
+    if keep_out.get() {
+        battle.ticks = BATTLE_TICKS;
     }
 
     // Root motion: yaw turns the facing; translation is rotated by the facing the motion
@@ -1168,7 +1220,7 @@ pub fn receive_hits(
     let Ok((me, mut s, mut fighter, status)) = sora_q.single_mut() else { return };
     let Some(reaction) = reaction else { return };
     for h in hits.read().filter(|h| h.target == me) {
-        if s.invuln > 0.0 || matches!(s.state, State::Down | State::Viewer) {
+        if s.invuln > 0.0 || matches!(s.state, State::Down | State::Viewer | State::FormChange) {
             continue;
         }
         let Ok([mut body, mut weapon]) = anims.get_many_mut([s.body, s.weapon]) else { return };

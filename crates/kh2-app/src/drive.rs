@@ -23,7 +23,7 @@ use crate::data::{GameData, KINGDOM_KEY};
 use crate::fx::EffectLib;
 use crate::schedule::{Frame, Sim};
 use crate::skel::{spawn_skinned, Animator, Rig};
-use crate::sora::{self, Growth, HandSocket, Rigs, Sora, State};
+use crate::sora::{self, Abilities, Battle, Growth, HandSocket, Rigs, Sora, State};
 use crate::SCALE;
 
 #[path = "hud_drive.rs"]
@@ -189,6 +189,14 @@ pub mod rules {
     /// flag (`FUN_001903d8`) is clear, times the ability block's form multiplier.
     pub fn drain_per_tick(t: &Tuning, battle: bool, form_boost: f32) -> f32 {
         FRAME_UNIT * if battle { 1.0 } else { t.field_drain_scale } * form_boost
+    }
+
+    /// Anti form multiplies the damage Sora deals by `sstm[0x94]` (`FUN_001a0610`): in the generic
+    /// damage branch, not for the percentage-of-HP and fixed types (5 and 6). The game applies it to
+    /// the damage after its element and defence steps and before its last two adjustments
+    /// (`FUN_001a0a18`, `FUN_001a0aa8`, not ported).
+    pub fn outgoing_damage(t: &Tuning, form: u8, atk_type: u8, dmg: i32) -> i32 {
+        if form == player::form::ANTI && !matches!(atk_type, 5 | 6) { (dmg as f32 * t.anti_damage) as i32 } else { dmg }
     }
 
     /// The form timer multiplier of the abilities the form has granted: Form Boost multiplies by
@@ -419,6 +427,8 @@ pub struct DriveRules {
     objs: Vec<t::Objentry>,
     wmst: Vec<[String; 2]>,
     went: Vec<u8>,
+    /// Ability item id to its ability bit (the `abilities` table).
+    ability_bits: HashMap<u16, u16>,
     /// Slot of the equipped keyblade item (Kingdom Key), the `went` index of the weapon object.
     key_slot: u16,
 }
@@ -455,8 +465,14 @@ impl DriveRules {
             objs,
             wmst,
             went,
+            ability_bits: player::abilities(&items).into_iter().map(|a| (a.id, a.bit)).collect(),
             key_slot: key.flag1 as u16 | (key.rank as u16) << 8,
         })
+    }
+
+    /// The abilities a form has earned at `level` as (id, bit) pairs, for the controller's ability block.
+    pub fn granted_with_bits(&self, form: u8, level: u8) -> Vec<(u16, u16)> {
+        rules::granted_abilities(&self.levels, form, level).into_iter().filter_map(|id| Some((id, *self.ability_bits.get(&id)?))).collect()
     }
 
     pub fn form(&self, form: u8) -> Option<&DriveForm> {
@@ -608,7 +624,6 @@ struct FormCache(HashMap<(u8, u16), Arc<FormAssets>>);
 /// What base Sora was before the first form, for the revert.
 struct Base {
     moves: Arc<Moveset>,
-    abilities: u128,
     growth: Growth,
 }
 
@@ -631,6 +646,8 @@ struct Store<'w> {
     cache: ResMut<'w, FormCache>,
     base: ResMut<'w, BaseSora>,
     left: ResMut<'w, LeftWeapon>,
+    abilities: ResMut<'w, Abilities>,
+    battle: Res<'w, Battle>,
 }
 
 /// The asset stores a model spawn needs.
@@ -820,14 +837,14 @@ fn drive_tick(
     mut anims: Query<&mut Animator>,
     gfx: Gfx,
 ) {
-    let Store { mut state, mut queue, mut change, mut cache, mut base, mut left } = store;
+    let Store { mut state, mut queue, mut change, mut cache, mut base, mut left, mut abilities, battle: battle_flag } = store;
     let Gfx { mut meshes, mut materials, mut images, mut bindposes } = gfx;
     let Ok((root, mut s, mut fighter)) = sora_q.single_mut() else { return };
     let s = &mut *s;
     let st = &mut *state;
     st.ticks += 1;
     let tuning = rules.tuning;
-    let battle = st.force_battle || s.battle > 0.0;
+    let battle = st.force_battle || battle_flag.active();
 
     // Hits Sora lands: drive gain in the normal gauge, lost time in a form (FUN_00178748; the
     // victim flags 0x10 / 0x800 it tests are not modelled, so every enemy counts as 0x10 only).
@@ -922,7 +939,7 @@ fn drive_tick(
                     }
                 }
                 if base.0.is_none() {
-                    base.0 = Some(Base { moves: s.moves.clone(), abilities: s.abilities, growth: *growth });
+                    base.0 = Some(Base { moves: s.moves.clone(), growth: *growth });
                 }
                 st.form = entered;
                 let started = anims.get_many_mut([s.body, s.weapon]).ok().and_then(|[mut body, mut weapon]| {
@@ -934,7 +951,7 @@ fn drive_tick(
                 });
                 if let Some(slot) = started {
                     info!("drive: change motion {} (id {MOTION_LEAVE}, slot {slot}) on the old body", anims.get(s.body).map_or("-", |a| a.tag()));
-                    s.state = State::Hurt;
+                    s.state = State::FormChange;
                     s.motor.vel = Vec3::ZERO;
                     s.queued_attack = false;
                 }
@@ -949,7 +966,7 @@ fn drive_tick(
                 } else if !rules::can_revert(st.form, battle) {
                     info!("drive: revert refused: Anti form cannot be reverted by command while the battle flag is set");
                 } else {
-                    do_revert(&mut commands, root, s, &mut fighter, st, &base, &cache, &rigs, &mut growth, &mut left, &mut changed, &mut meshes, &mut materials, &mut images, &mut bindposes, "command");
+                    do_revert(&mut commands, root, s, &mut fighter, st, &base, &cache, &rigs, &mut growth, &mut abilities, &mut left, &mut changed, &mut meshes, &mut materials, &mut images, &mut bindposes, "command");
                 }
             }
         }
@@ -985,7 +1002,9 @@ fn drive_tick(
             }
             *growth = next;
             let granted = rules::granted_abilities(&rules.levels, to, level);
-            st.timer = rules::FormTimer::start(&tuning, to, level);
+            // The form's grants join the controller's ability block (Combo Plus and Air Combo Plus lengthen the chains).
+            abilities.form = rules.granted_with_bits(to, level);
+            st.timer =rules::FormTimer::start(&tuning, to, level);
             st.in_form = true;
             s.mp = data.sora_max_mp;
             info!(
@@ -1001,14 +1020,18 @@ fn drive_tick(
             changed.write(FormChanged { from: 0, to });
             task.phase = Phase::Arriving;
             task.ticks = 0;
-            // Held in the hurt state (it waits for the motion to finish) until the arrival motion
-            // starts: the new animator exists only after this system's commands apply.
-            s.state = State::Hurt;
+            // Held in the form-change state until the arrival motion has played: the new animator
+            // exists only after this system's commands apply.
+            s.state = State::FormChange;
             return;
         }
         if done && task.phase == Phase::Arriving {
             change.0 = None;
             s.invuln = 0.0;
+            s.state = if s.motor.grounded { State::Ground } else { State::Air };
+            if !s.motor.grounded {
+                s.motor.start_fall();
+            }
         } else if task.phase == Phase::Arriving && task.ticks == 1 {
             let started = anims.get_many_mut([s.body, s.weapon]).ok().and_then(|[mut body, mut weapon]| {
                 let slot = body.rig.mset.slot(MOTION_ARRIVE, kh2_anim::PlayerState::BattleWeapon)?;
@@ -1035,7 +1058,7 @@ fn drive_tick(
             info!("drive: {} timer {:.0}/{:.0} ({} points, battle {battle})", form_name(st.form), st.timer.left, st.timer.total, st.timer.whole_points(&tuning));
         }
         if st.timer.expired() {
-            do_revert(&mut commands, root, s, &mut fighter, st, &base, &cache, &rigs, &mut growth, &mut left, &mut changed, &mut meshes, &mut materials, &mut images, &mut bindposes, "timer ran out");
+            do_revert(&mut commands, root, s, &mut fighter, st, &base, &cache, &rigs, &mut growth, &mut abilities, &mut left, &mut changed, &mut meshes, &mut materials, &mut images, &mut bindposes, "timer ran out");
         }
     }
 
@@ -1070,6 +1093,7 @@ fn do_revert(
     _cache: &FormCache,
     rigs: &Rigs,
     growth: &mut Growth,
+    abilities: &mut Abilities,
     left: &mut LeftWeapon,
     changed: &mut MessageWriter<FormChanged>,
     meshes: &mut Assets<Mesh>,
@@ -1082,7 +1106,7 @@ fn do_revert(
     let from = st.form;
     let assets = FormAssets { body: rigs.sora.clone(), right: rigs.keyblade.clone(), left: None, moves: b.moves.clone(), has_weapon: true };
     swap_bodies(commands, root, s, fighter, &assets, left, meshes, materials, images, bindposes);
-    s.abilities = b.abilities;
+    abilities.form.clear();
     *growth = b.growth;
     st.in_form = false;
     st.form = 0;
@@ -1177,6 +1201,7 @@ mod tests {
             objs,
             wmst,
             went,
+            ability_bits: player::abilities(&items).into_iter().map(|a| (a.id, a.bit)).collect(),
             key_slot: key.flag1 as u16 | (key.rank as u16) << 8,
         })
     }

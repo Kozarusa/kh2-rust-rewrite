@@ -1,5 +1,5 @@
 //! Enemy AI runtime: Shadow and Soldier run under the game's own BDX scripts (`obj/M_EX020.mdlx`,
-//! `obj/M_EX010.mdlx`, read from the disc) instead of the placeholder state machine in `enemy.rs`.
+//! `obj/M_EX010.mdlx`, read from the disc).
 //!
 //! One `kh2_bdx::Runtime` per enemy runs once per 60 Hz tick (`Runtime::update`). The script talks to
 //! the world through `kh2_bdx::Host::call`; `BevyHost` below answers each `Call` from a small model of
@@ -747,7 +747,7 @@ fn load_programs(disc: Res<Disc>, mut programs: ResMut<AiPrograms>) {
                 info!("bdx: {kind} script {} ({} words), objentry flag 124 = {flags124}", prog.name, prog.words.len());
                 programs.by_kind.insert(kind, Script { prog, flags124 });
             }
-            Err(e) => warn!("bdx: {model}: {e}; {kind} keeps the placeholder AI"),
+            Err(e) => warn!("bdx: {model}: {e}; {kind} has no script and only stands"),
         }
     }
 }
@@ -755,10 +755,6 @@ fn load_programs(disc: Res<Disc>, mut programs: ResMut<AiPrograms>) {
 /// Gives every new Shadow and Soldier its script runtime. Runs right after the wave spawner, so the
 /// script's first frame is the frame the enemy appears in.
 fn ai_attach(mut commands: Commands, programs: Res<AiPrograms>, q: Query<(Entity, &Enemy), Without<AiBrain>>, mut serial: Local<u32>) {
-    // KH2_NO_BDX=1 keeps the placeholder AI of enemy.rs (for comparing the two).
-    if std::env::var_os("KH2_NO_BDX").is_some() {
-        return;
-    }
     for (ent, e) in &q {
         let Some(script) = programs.by_kind.get(e.kind.name) else { continue };
         *serial += 1;
@@ -867,7 +863,7 @@ fn ai_update(
         *errors_seen = rt.core.errors.len();
 
         // ---- carry out the requests
-        if !matches!(e.state, EState::Hurt | EState::Blown | EState::Dying) {
+        if !matches!(e.state, EState::Hurt | EState::Blown) {
             e.state = EState::Idle;
         }
         if let Some(req) = obj.motion_req.take() {

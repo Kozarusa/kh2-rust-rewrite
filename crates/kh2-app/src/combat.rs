@@ -125,8 +125,8 @@ pub struct Hit {
 /// game marks it ineffective (hit record flag 4), gives it no reaction and starts effect 0x12
 /// instead of the normal spark (FUN_0018b618, FUN_0018d090). Written by the victim's receiver.
 ///
-/// TODO(WP-1F2): fx.rs should start effect `rules::INEFFECTIVE_SPARK_EFFECT` (0x12) at `point` for
-/// each of these, and `fx::hit_sparks` should skip the normal `EffectOnHit` spark for the same hit.
+/// `fx::hit_sparks` applies the same rule on its own and starts effect 0x12 instead of the normal
+/// spark, so this message only cancels the landed-hit sound.
 #[derive(Message, Clone, Copy, Debug)]
 pub struct IneffectiveHit {
     pub attacker: Entity,

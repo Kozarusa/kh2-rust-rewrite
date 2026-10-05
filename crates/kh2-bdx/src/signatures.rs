@@ -70,7 +70,7 @@ pub fn infer_only(p: &Program, known: &dyn Fn(u16, u16) -> Option<Sig>, wanted: 
     if unknown.is_empty() {
         return HashMap::new();
     }
-    let ctx = Ctx::new(p, &an);
+    let ctx = Ctx::new(p, &an, known);
     // Functions with a call site that is a whole statement are certain; they count as known in the next
     // pass, which makes the stack depth right for calls nested in the arguments of other unknown calls.
     let mut certain: HashMap<(u16, u16), Sig> = HashMap::new();
@@ -138,7 +138,7 @@ struct Ctx<'a> {
 }
 
 impl<'a> Ctx<'a> {
-    fn new(p: &'a Program, an: &Analysis) -> Ctx<'a> {
+    fn new(p: &'a Program, an: &Analysis, known: &dyn Fn(u16, u16) -> Option<Sig>) -> Ctx<'a> {
         let items: Vec<(usize, Insn, usize)> = an.code.iter().map(|(&pc, &(insn, len))| (pc, insn, len)).collect();
         let starts: HashSet<usize> = an.routines.iter().copied().chain(p.entries.iter().map(|e| e.pc as usize)).collect();
         let mut routines = HashMap::new();
@@ -149,14 +149,18 @@ impl<'a> Ctx<'a> {
                 params += 1;
                 pc += len;
             }
-            // A routine returns a value when any of its `ret` instructions carries an operand type.
-            // Code runs on into the next routine when nothing separates them, so stop at its start.
+            // A routine returns a value when a `ret` carries an operand type (0xa9, 0xb9, 0x99), or, since
+            // the compiler writes a plain 0x89 after a host call's result too, when the instruction before
+            // it leaves a value on the stack. Code runs on into the next routine when nothing separates
+            // them, so stop at its start.
             let mut returns = false;
             let mut at = r;
+            let mut prev: Option<Insn> = None;
             while let Some((i, len)) = an.code.get(&at) {
-                if matches!(i, Insn::Ret) && ret_has_value(p, at) {
+                if matches!(i, Insn::Ret) && (ret_has_value(p, at) || prev.is_some_and(|v| produces_value(&v, known))) {
                     returns = true;
                 }
+                prev = Some(*i);
                 at += len;
                 if starts.contains(&at) {
                     break;
@@ -342,6 +346,16 @@ impl<'a> Ctx<'a> {
 /// call that comes right before it is dropped or stored.
 fn drops_value(i: &Insn) -> bool {
     matches!(i, Insn::Pop | Insn::Store(_) | Insn::StoreIndirect | Insn::CopyTo { .. } | Insn::CopyIndirect { .. } | Insn::JumpIfZero(_) | Insn::JumpIfNonZero(_))
+}
+
+/// The instruction leaves a value on the operand stack that nothing here takes again.
+fn produces_value(i: &Insn, known: &dyn Fn(u16, u16) -> Option<Sig>) -> bool {
+    match i {
+        Insn::PushInt(_) | Insn::PushFloat(_) | Insn::Lea(_) | Insn::Load(_) | Insn::LoadField(_) | Insn::Unary { .. } | Insn::Binary { .. } | Insn::Dup => true,
+        Insn::Sin | Insn::Cos | Insn::DegToRad | Insn::RadToDeg => true,
+        Insn::Host { group, index } => known(*group, *index).is_some_and(|(_, r)| r),
+        _ => false,
+    }
 }
 
 /// A `ret` carries an operand type when it returns a value (0x89 returns nothing, 0xa9 an address, 0xb9 a word).

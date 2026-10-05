@@ -92,6 +92,8 @@ impl Host for MockHost {
         match c {
             Call::Player | Call::LastAttacker { .. } => Value::Handle(PLAYER),
             Call::Target { .. } => Value::Handle(TARGET),
+            Call::FindObject { by: crate::host::ObjectKey::Entity, value: 0x236 } => Value::Handle(PLAYER),
+            Call::FindObject { .. } => Value::Handle(TARGET),
             Call::Position { obj } => Value::Vec(if *obj == PLAYER { self.player_position } else { self.position }),
             Call::TargetPosition { .. } => Value::Vec(self.player_position),
             Call::FacingVector { .. } => Value::Vec(self.facing),

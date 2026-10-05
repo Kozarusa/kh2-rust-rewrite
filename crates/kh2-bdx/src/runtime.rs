@@ -10,7 +10,7 @@
 //! receives the request as a [`Call`] and hands the message to every runtime with [`Runtime::receive_message`].
 
 use crate::exe::HostTable;
-use crate::host::{Call, Host, Value, Vec4};
+use crate::host::{Arg, Call, Host, ObjectKey, Value, Vec4};
 use crate::math::{self, VecAccess};
 use crate::names;
 use crate::program::Program;
@@ -519,6 +519,41 @@ impl Core {
         }
     }
 
+    /// Switches to the named mode only when its priority is at least that of the running one (FUN_00186e70).
+    pub fn set_mode_priority(&mut self, prog: &Program, code: &[u8], sh: &mut Shared, host: &mut dyn Host, name: u32) -> Result<(), VmError> {
+        if self.modes.flags & 1 != 0 || self.modes.table == 0 {
+            return Ok(());
+        }
+        let found = vm::with_shared(code, sh, |mem| -> Result<Option<(u32, i32)>, VmError> {
+            Ok(match self.modes.find(mem, name)? {
+                Some(rec) => Some((rec, ModeMachine::rec_u16(mem, rec, 4)? as i32)),
+                None => None,
+            })
+        })?;
+        if let Some((rec, prio)) = found
+            && self.modes.priority <= prio
+        {
+            self.switch_to(prog, code, sh, host, Some(rec));
+        }
+        Ok(())
+    }
+
+    /// Stops the running mode and puts the named one at the front of the queue, so it starts on the next
+    /// pass of the mode machine (FUN_00186fa8). The priority drops to zero.
+    pub fn interrupt_mode(&mut self, prog: &Program, code: &[u8], sh: &mut Shared, host: &mut dyn Host, name: u32) -> Result<(), VmError> {
+        if self.modes.table == 0 {
+            return Ok(());
+        }
+        if let Some(rec) = vm::with_shared(code, sh, |mem| self.modes.find(mem, name))? {
+            self.stop_mode(prog, code, sh, host);
+            let m = &mut self.modes;
+            m.read = (m.read + QUEUE_LEN - 1) % QUEUE_LEN;
+            m.queue[m.read] = (rec, 0);
+            m.priority = 0;
+        }
+        Ok(())
+    }
+
     /// Queues the named mode to start after the running one ends (FUN_00186ef8).
     pub fn queue_mode(&mut self, code: &[u8], sh: &mut Shared, name: u32) -> Result<(), VmError> {
         if self.modes.flags & 1 != 0 || self.modes.table == 0 {
@@ -724,6 +759,8 @@ impl CoreEnv<'_> {
                 let mut io = HostVec(&mut *self.host);
                 return math::call(mem, idx, a, &mut io);
             }
+            // Functions the retail executable implements as an empty return (debug prints and the like).
+            (0, 0 | 1 | 2 | 8 | 24 | 25 | 26 | 60) | (1, 103 | 122 | 163 | 240 | 246) | (2, 36) => return Ok(None),
             (0, 79) => Call::ReleaseEffect { handle: a[0] },
             // Start a thread under the thread this one runs for (FUN_0016d458): tag, routine, cleanup
             // routine, argument. Another start with the same tag bits kills the earlier thread first.
@@ -766,6 +803,16 @@ impl CoreEnv<'_> {
                 return Ok(None);
             }
             (1, 10) => return Ok(Some(self.core.mode_pending() as u32)),
+            (1, 81) => {
+                let (core, host) = (&mut *self.core, &mut *self.host);
+                core.interrupt_mode(p, code, mem.sh, host, a[1])?;
+                return Ok(None);
+            }
+            (1, 167) => {
+                let (core, host) = (&mut *self.core, &mut *self.host);
+                core.set_mode_priority(p, code, mem.sh, host, a[1])?;
+                return Ok(None);
+            }
             (1, 127) => {
                 let (core, host) = (&mut *self.core, &mut *self.host);
                 core.reset_modes(p, code, mem.sh, host);
@@ -878,10 +925,43 @@ impl CoreEnv<'_> {
                 return Ok(None);
             }
 
-            _ => Call::Unknown { group: g, index: i, args: a.to_vec() },
+            // Object lookups: the answer goes into the context the script passed (+4).
+            (1, 114) | (1, 143) | (1, 210) => {
+                let by = match i {
+                    114 => ObjectKey::Entity,
+                    143 => ObjectKey::SpawnGroup,
+                    _ => ObjectKey::NeoStatus,
+                };
+                let found = self.host.call(&Call::FindObject { by, value: a[1] as i32 }).int() as u32;
+                mem.write_u32(a[0].wrapping_add(4), found).map_err(outside)?;
+                return Ok(None);
+            }
+
+            // Everything else that has been named is decoded by its kinds.
+            _ => match names::lookup(g, i) {
+                Some(f) => Call::Func { group: g, index: i, args: self.decode_args(mem, f.kinds, a)? },
+                None => Call::Unknown { group: g, index: i, args: a.to_vec() },
+            },
         };
         let v = self.host.call(&call);
         Ok(Some(convert(v, mem)))
+    }
+
+    /// Turns argument words into typed arguments by the kind letters of `names::HostFn::kinds`.
+    fn decode_args(&mut self, mem: &mut Mem<'_>, kinds: &str, a: &[u32]) -> Result<Vec<Arg>, VmError> {
+        let mut out = Vec::with_capacity(a.len());
+        for (k, &w) in kinds.chars().zip(a) {
+            out.push(match k {
+                'O' => Arg::Obj(self.obj_of(mem, w)?),
+                'o' => Arg::Obj(w),
+                'i' => Arg::Int(w as i32),
+                'f' => Arg::Float(fl(w)),
+                'v' => Arg::Vec(self.vec(mem, w)?),
+                's' => Arg::Str(self.cstr(mem, w)?),
+                _ => Arg::Raw(w),
+            });
+        }
+        Ok(out)
     }
 
     /// Host function 1.6: writes a mode record (FUN_00186730). `a` = table, name, flags, then the routine words.

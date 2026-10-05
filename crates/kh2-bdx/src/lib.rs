@@ -18,7 +18,7 @@ pub mod vm;
 
 pub use disasm::{Analysis, analyze, listing};
 pub use exe::HostTable;
-pub use host::{Call, Host, Value, Vec4};
+pub use host::{Arg, Call, Host, ObjectKey, Value, Vec4};
 pub use insn::{BinaryOp, Insn, UnaryOp, decode};
 pub use program::{EntryPoint, Error, Program};
 pub use runtime::{Runtime, message_delay};

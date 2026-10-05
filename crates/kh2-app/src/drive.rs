@@ -40,6 +40,11 @@ const MOTION_ARRIVE: usize = 53;
 /// Safety stop for a change motion that never reports finished.
 const CHANGE_TIMEOUT: u32 = 600;
 
+/// A form's name for logs; id 0 is base Sora (`player::form::name(0)` names the summon curve).
+fn form_name(f: u8) -> &'static str {
+    if f == 0 { "base Sora" } else { form::name(f) }
+}
+
 /// Pure rules. Every function names the game routine it follows.
 pub mod rules {
     use super::*;
@@ -708,7 +713,7 @@ fn input(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, mut h: ResMut<Harness
     }
     if keys.just_pressed(KeyCode::F5) {
         h.chosen = h.chosen % 4 + 1;
-        info!("drive: form chosen {}", form::name(h.chosen));
+        info!("drive: form chosen {}", form_name(h.chosen));
     }
     if keys.just_pressed(KeyCode::F7) {
         queue.0.push(DriveRequest::Enter(h.chosen));
@@ -830,8 +835,10 @@ fn drive_tick(
         let Some(drain) = data.atkp(h.atkp).map(|a| a.drive_drain).filter(|&d| d != 0) else { continue };
         if st.in_form {
             st.timer.add(st.form, -(drain as f32) * tuning.form_hit_loss);
+            info!("drive: landed hit (atkp {}, DriveDrain {drain}): form timer now {:.0}", h.atkp, st.timer.left);
         } else if change.0.is_none() {
             st.points.gain(drain as i32);
+            info!("drive: landed hit (atkp {}, DriveDrain {drain}): gauge {} points + {}%", h.atkp, st.points.whole, st.points.fraction);
         }
     }
 
@@ -853,7 +860,7 @@ fn drive_tick(
                 let row = match row {
                     Ok(r) => r,
                     Err(e) => {
-                        info!("drive: cannot enter {}: {e:?} (points {}, cost {:?})", form::name(chosen), st.points.whole, rules.form(chosen).map(|f| f.cost));
+                        info!("drive: cannot enter {}: {e:?} (points {}, cost {:?})", form_name(chosen), st.points.whole, rules.form(chosen).map(|f| f.cost));
                         continue;
                     }
                 };
@@ -883,8 +890,8 @@ fn drive_tick(
                 st.uses[entered as usize] = (st.uses[entered as usize] + 1).min(999);
                 info!(
                     "drive: enter {} (chose {}, cost {cost}, points {} -> {}, level {}, anti counter {}, final counter {})",
-                    form::name(entered),
-                    form::name(chosen),
+                    form_name(entered),
+                    form_name(chosen),
                     before.whole,
                     st.points.whole,
                     st.level[entered as usize],
@@ -909,7 +916,7 @@ fn drive_tick(
                             cache.0.insert(key, Arc::new(a));
                         }
                         None => {
-                            warn!("drive: files of {} not loadable; the change is skipped", form::name(entered));
+                            warn!("drive: files of {} not loadable; the change is skipped", form_name(entered));
                             continue;
                         }
                     }
@@ -938,7 +945,7 @@ fn drive_tick(
             }
             DriveRequest::Revert => {
                 if !st.in_form || change.0.is_some() {
-                    info!("drive: revert refused (form {}, changing {})", form::name(st.form), change.0.is_some());
+                    info!("drive: revert refused (form {}, changing {})", form_name(st.form), change.0.is_some());
                 } else if !rules::can_revert(st.form, battle) {
                     info!("drive: revert refused: Anti form cannot be reverted by command while the battle flag is set");
                 } else {
@@ -983,7 +990,7 @@ fn drive_tick(
             s.mp = data.sora_max_mp;
             info!(
                 "drive: {} active, level {level}, timer {}/{} ({} points, drain {:.2}/tick in battle, {:.2} out of battle), growth level {g}, abilities granted {granted:?}, MP refilled to {}",
-                form::name(to),
+                form_name(to),
                 st.timer.left,
                 st.timer.total,
                 st.timer.whole_points(&tuning),
@@ -1025,7 +1032,7 @@ fn drive_tick(
         let drain = rules::drain_per_tick(&tuning, battle, rules::form_boost(&tuning, &granted));
         st.timer.add(st.form, -drain);
         if st.ticks % 60 == 0 {
-            info!("drive: {} timer {:.0}/{:.0} ({} points, battle {battle})", form::name(st.form), st.timer.left, st.timer.total, st.timer.whole_points(&tuning));
+            info!("drive: {} timer {:.0}/{:.0} ({} points, battle {battle})", form_name(st.form), st.timer.left, st.timer.total, st.timer.whole_points(&tuning));
         }
         if st.timer.expired() {
             do_revert(&mut commands, root, s, &mut fighter, st, &base, &cache, &rigs, &mut growth, &mut left, &mut changed, &mut meshes, &mut materials, &mut images, &mut bindposes, "timer ran out");
@@ -1084,14 +1091,14 @@ fn do_revert(
     if !s.motor.grounded {
         s.motor.start_fall();
     }
-    info!("drive: revert from {} ({why}); gauge mode normal, points {} + {}%", form::name(from), st.points.whole, st.points.fraction);
+    info!("drive: revert from {} ({why}); gauge mode normal, points {} + {}%", form_name(from), st.points.whole, st.points.fraction);
     changed.write(FormChanged { from, to: 0 });
 }
 
 /// Logs form changes (other systems read `FormChanged` for their own effects, sounds and camera).
 fn log_changes(mut changes: MessageReader<FormChanged>) {
     for c in changes.read() {
-        info!("drive: form changed {} -> {}", form::name(c.from), form::name(c.to));
+        info!("drive: form changed {} -> {}", form_name(c.from), form_name(c.to));
     }
 }
 

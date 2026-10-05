@@ -9,6 +9,7 @@
 //! kenjiuno's msetDoc; see CREDITS.md.
 
 pub mod motion;
+pub mod moveset;
 pub mod rig;
 pub mod triggers;
 
@@ -47,9 +48,14 @@ pub mod id {
     pub const DAMAGE_S_BACK_HIGH: usize = 12;
     pub const DAMAGE_BLOW_FRONT: usize = 16;
     pub const DAMAGE_BLOW_FRONT_LAND: usize = 17;
+    pub const DAMAGE_BLOW_BACK: usize = 18;
+    pub const DAMAGE_BLOW_BACK_LAND: usize = 19;
     pub const DAMAGE_BLOW_RECOV: usize = 40;
+    /// Recoil when an attack bounces off (ground); the game's recoil routine plays 41 on the ground
+    /// and 43 in the air by default.
     pub const REFLECT: usize = 41;
     pub const AUTOGUARD: usize = 42;
+    pub const REFLECT_AIR: usize = 43;
     pub const APPEAR: usize = 44;
     pub const DEAD_LAND: usize = 76;
 }

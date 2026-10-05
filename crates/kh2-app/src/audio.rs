@@ -96,6 +96,56 @@ pub struct PlayVoice {
     pub line: u16,
 }
 
+/// The voice table (`vtbl` of `00battle.bin`): a motion names a voice ID, and the table says which
+/// lines of the speaker's voice bank can answer it.
+#[derive(Resource, Default)]
+pub struct VoiceTable(Vec<kh2_tables::tables::Vtbl>);
+
+/// Sora's entry in the game's speaker list (`sora`, `donald`, `goofy`, ...); his voice bank is the
+/// `<world>0_sora.vsb` file.
+pub const SORA_SPEAKER: u8 = 1;
+
+impl VoiceTable {
+    /// The line the game plays for `voice` of `speaker`. The five (line, chance) pairs of the
+    /// record are tried in order: a pair with a chance wins when the percent roll runs out in it,
+    /// pairs without one form a pool that is drawn from at random when no chance pair won. A line
+    /// of -3 depends on the other party's speaker and is not resolved here. `rng` is the game's
+    /// multiplicative generator (x * 0x10dcd).
+    pub fn line(&self, speaker: u8, voice: u16, rng: &mut u32) -> Option<u16> {
+        let rec = self.0.iter().find(|r| r.character_id == speaker && r.id as u16 == voice)?;
+        *rng = rng.wrapping_mul(0x10dcd);
+        let mut roll = (*rng / 0x028f_5c29) as i32;
+        let mut pool = Vec::new();
+        for pair in rec.voices.chunks(2) {
+            let (line, chance) = (pair[0], pair[1]);
+            if line < 0 {
+                continue;
+            }
+            if chance <= 0 {
+                pool.push(line as u16);
+            } else {
+                roll -= chance as i32;
+                if roll < 0 {
+                    return Some(line as u16);
+                }
+            }
+        }
+        if pool.is_empty() {
+            return None;
+        }
+        *rng = rng.wrapping_mul(0x10dcd);
+        Some(pool[((*rng as u64 * pool.len() as u64) >> 32) as usize])
+    }
+}
+
+fn load_voice_table(disc: Res<Disc>, mut table: ResMut<VoiceTable>) {
+    let mut a = disc.0.lock().unwrap();
+    match kh2_tables::load::<kh2_tables::tables::Vtbl>(&mut a, &kh2_tables::tables::VTBL) {
+        Ok(t) => table.0 = t.rows,
+        Err(e) => warn!("vtbl: {e}; voices play by raw line number"),
+    }
+}
+
 /// `PlaySe::bank` value meaning "the requesting object's own bank".
 pub const OWN_BANK: u16 = 0xffff;
 
@@ -138,9 +188,10 @@ impl Plugin for AudioPlugin {
         app.add_audio_source::<Stream>()
             .insert_resource(Audio(Arc::new(Mutex::new(State::default()))))
             .init_resource::<SeCache>()
+            .init_resource::<VoiceTable>()
             .add_message::<PlaySe>()
             .add_message::<PlayVoice>()
-            .add_systems(Startup, start_stream)
+            .add_systems(Startup, (start_stream, load_voice_table))
             .add_systems(Update, play_requests)
             .add_systems(Update, area_bgm.after(crate::assets::load_area))
             .add_systems(FixedUpdate, (motion_sounds, wall_sounds).chain().in_set(crate::schedule::Sim::Sounds));
@@ -272,14 +323,20 @@ pub fn wall_sounds(
     }
 }
 
-/// Motion frame trigger 8 ("sound effect"): params are [bank, index, ...].
+/// Motion frame trigger 8 ("sound effect"): params are [bank, index, ...]. Triggers 13 and 14
+/// name a voice ID (not a line): the voice table picks the line.
 pub fn motion_sounds(
     anims: Query<(Entity, &Animator)>,
     sora: Query<&Sora>,
     area: Res<CurrentArea>,
+    table: Res<VoiceTable>,
+    mut rng: Local<u32>,
     mut out: MessageWriter<PlaySe>,
     mut voices: MessageWriter<PlayVoice>,
 ) {
+    if *rng == 0 {
+        *rng = 0x2545_f491;
+    }
     let sora_body = sora.single().map(|s| s.body).ok();
     for (e, a) in &anims {
         let is_sora = Some(e) == sora_body;
@@ -299,9 +356,15 @@ pub fn motion_sounds(
                     out.write(PlaySe { bank: *bank as u16, index: *index as u16, apdx: a.rig.apdx.clone() });
                 }
                 // Voice lines: the speaker's bank for the current world.
-                (frame::VOICE | frame::VOICE2, [line, ..]) if is_sora => {
+                (frame::VOICE | frame::VOICE2, [voice, ..]) if is_sora => {
                     if let Some(world) = area.loaded.as_deref().and_then(|n| n.get(..2)) {
-                        voices.write(PlayVoice { file: format!("voice/us/battle/{world}0_sora.vsb"), line: *line as u16 });
+                        let line = table.line(SORA_SPEAKER, *voice as u16, &mut rng);
+                        if std::env::var_os("KH2_SOUNDLOG").is_some() {
+                            info!("voice id {voice} ({}) -> line {line:?}", a.tag());
+                        }
+                        if let Some(line) = line {
+                            voices.write(PlayVoice { file: format!("voice/us/battle/{world}0_sora.vsb"), line });
+                        }
                     }
                 }
                 _ => {}

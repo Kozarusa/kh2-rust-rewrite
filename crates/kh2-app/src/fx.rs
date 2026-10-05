@@ -196,6 +196,12 @@ pub fn start(commands: &mut Commands, lib: &Arc<LoadedPax>, id: u16, bind: Bind)
     for el in lib.pax.elements_for(id) {
         let Some(fx) = lib.pax.effects.get(el.effect as usize) else { continue };
         let Some(effect) = kh2_fx::Effect::new(lib.dpds[fx.dpd].clone(), fx.dpd, fx.particle_data) else { continue };
+        // `KH2_FXONLY=<id,id,...>` runs only those effect IDs (isolating an effect in a screenshot).
+        if let Ok(only) = std::env::var("KH2_FXONLY")
+            && !only.split(',').any(|v| v.trim().parse::<u16>().ok() == Some(id))
+        {
+            continue;
+        }
         commands.spawn((
             Transform::default(),
             Visibility::default(),
@@ -296,7 +302,10 @@ pub fn tick(
                 let body = GlobalTransform::from(world_now(owner, &locals));
                 // Bone numbers with 0x4000 set name special object matrices; the root for now.
                 let bone = if el.bone & 0x4000 != 0 { body.to_matrix() } else { anim.bone_world(&body, el.bone.max(0) as usize) };
-                env.bind = fx_space(bone) * element_matrix(&el);
+                // The element's offset and rotation are in the game's Y-down frame: the same flip that
+                // takes the bone's world placement into fx space applies to its local axes (as for
+                // `Bind::Fixed`). Root-bound elements put their centre at negative Y (above the feet).
+                env.bind = fx_space(bone) * FLIP * element_matrix(&el);
                 if el.flags & element_flag::TWO_POINT != 0 {
                     let p = |b: u16, ratio: f32| {
                         let len = anim.rig.model.bones.get(b as usize).map_or(0.0, |x| x.length);

@@ -6,12 +6,18 @@
 //! times are the game's (blends in ticks). Combo flow follows the motions' trigger windows:
 //! range trigger 11 (allow combo) and 50 (allow finisher) open the next input; 3 suspends
 //! gravity; 2 allows blending out early.
+//!
+//! Which motion an attack plays comes from the game's player attack table (`ptya`, see
+//! `kh2_anim::moveset`): airborne-only and ground-only actions are told apart by the table's own
+//! flags, finishers need a long enough combo or an open finisher window, and ability-gated actions
+//! need their ability bit. Motion tags (A330, ...) are animation names; the table names motion IDs.
 
 use std::sync::Arc;
 
 use bevy::input::mouse::MouseButton;
 use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
 use bevy::prelude::*;
+use kh2_anim::moveset::{Action, Moveset};
 use kh2_anim::{id, triggers::range, PlayerState};
 
 use crate::assets::Disc;
@@ -27,13 +33,32 @@ use crate::SCALE;
 
 /// Sora's right-hand bone (mirror of the left hand, bone 86).
 const RIGHT_HAND: usize = 178;
-const GROUND_COMBO: [&str; 3] = ["A300", "A301", "A302"];
-const GROUND_FINISH: [&str; 2] = ["A303", "A304"];
-const AIR_COMBO: [&str; 4] = ["A310", "A311", "A312", "A313"];
-const AIR_FINISH: &str = "A314";
-const GUARD: &str = "A320";
-const GUARD_COUNTER: &str = "A321";
-const GUARD_AIR: &str = "A350";
+
+/// Action keys of the attack table that the game's code asks for by name.
+mod key {
+    /// The attack the game falls back to when nothing else qualifies, on the ground and in the air.
+    pub const GROUND_ATTACK: u8 = 5;
+    pub const AIR_ATTACK: u8 = 9;
+    /// The guard action (a ground action that needs the Guard ability).
+    pub const GUARD: u8 = 11;
+    /// The attack that answers a guard hit, chosen while the guard-hit motion plays.
+    pub const COUNTER: u8 = 39;
+}
+/// The ground combo's normal hits in order (keys of the attack table).
+///
+/// The game picks hits 2 and 3 by distance and direction to the targets (table groups 1 and 2);
+/// that selection is not ported, so the order follows the motions' own combo windows.
+const GROUND_COMBO_KEYS: [u8; 3] = [key::GROUND_ATTACK, 4, 6];
+/// Ability bits (the attack table's gate) that start set: Guard.
+const ABILITY_GUARD: u16 = 1;
+/// Ability bit that unlocks the guard counter attack.
+const ABILITY_COUNTER: u16 = 96;
+/// Normal hits before finishers qualify (the game reads these from the status block; the values
+/// follow the motions: ground hits A300-A302 and air hits A330-A331 carry the combo window, the
+/// finishers only the finisher window) and finishers per chain.
+const MAX_HITS_GROUND: u8 = 3;
+const MAX_HITS_AIR: u8 = 2;
+const MAX_FINISHERS: u8 = 1;
 
 /// Motion IDs of the player motion set (state-independent part of the slot).
 mod mid {
@@ -109,9 +134,15 @@ impl Pad {
 pub struct Sora {
     pub state: State,
     pub motor: Motor,
-    pub combo: usize,
-    pub air_combo: usize,
+    /// Attacks played in the current chain, and how many of them were finishers.
+    pub hits: u8,
+    pub finishers: u8,
     pub queued_attack: bool,
+    /// Sora's attack table and the ability bits that unlock gated actions.
+    pub moves: Arc<Moveset>,
+    pub abilities: u128,
+    /// The blow that knocked Sora down came from behind (picks the matching landing motion).
+    blown_back: bool,
     pub stats: Stats,
     pub hp: i32,
     pub mp: i32,
@@ -141,6 +172,48 @@ impl Sora {
     }
     pub fn yaw(&self) -> f32 {
         self.motor.yaw
+    }
+
+    fn has_ability(&self, bit: u16) -> bool {
+        bit == 0 || (bit < 128 && self.abilities >> bit & 1 != 0)
+    }
+
+    /// Finishers qualify once the chain has `max` normal hits (less the action's argument) or a
+    /// finisher window is open.
+    fn finisher_ready(&self, air: bool, window: bool, arg: u8) -> bool {
+        window || (if air { MAX_HITS_AIR } else { MAX_HITS_GROUND }) <= self.hits + arg
+    }
+
+    /// Whether the table action may be chosen now (the game's availability test): it has a motion,
+    /// its ability is set, it matches the airborne state, and a finisher is ready for finishers /
+    /// no finisher is done yet for the rest.
+    fn available(&self, a: &Action, air: bool, window: bool) -> bool {
+        a.motion != 0
+            && self.has_ability(a.ability)
+            && a.air_only() == air
+            && if a.finisher() { self.finisher_ready(air, window, a.arg) } else { !(self.finisher_ready(air, window, 0) && self.finishers > 0) }
+    }
+
+    /// The next attack: while the combo is short, the ground chain's next hit; otherwise the table's
+    /// choice among the always-candidate (group 3) actions, or the default attack. `playing` is the
+    /// motion ID now playing.
+    fn next_attack(&self, air: bool, window: bool, playing: usize) -> Option<&Action> {
+        let ready = self.finisher_ready(air, window, 0);
+        if !air
+            && !ready
+            && !self.has_finisher_played()
+            && let Some(a) = GROUND_COMBO_KEYS.get(self.hits as usize).and_then(|&k| self.moves.by_key(k))
+        {
+            return Some(a);
+        }
+        let default = if air { key::AIR_ATTACK } else { key::GROUND_ATTACK };
+        self.moves
+            .pick(|a| a.group == 3 && self.available(a, air, window), playing)
+            .or_else(|| self.moves.pick(|a| a.key == default && self.available(a, air, window), playing))
+    }
+
+    fn has_finisher_played(&self) -> bool {
+        self.finishers > 0
     }
 }
 
@@ -195,6 +268,7 @@ pub fn setup(
     mut commands: Commands,
     rigs: Res<Rigs>,
     data: Res<GameData>,
+    disc: Res<Disc>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
@@ -211,9 +285,12 @@ pub fn setup(
         Sora {
             state: State::Ground,
             motor: Motor::default(),
-            combo: 0,
-            air_combo: 0,
+            hits: 0,
+            finishers: 0,
             queued_attack: false,
+            moves: Arc::new(load_moveset(&disc, "P_EX100")),
+            abilities: start_abilities(),
+            blown_back: false,
             hp: stats.max_hp,
             mp: data.sora_max_mp,
             stats,
@@ -241,6 +318,30 @@ pub fn setup(
         })
         .unwrap_or_default();
     commands.insert_resource(growth);
+}
+
+/// The attack table of the object `model` (`NeoMoveset` of its `00objentry` row, an index into the
+/// `ptya` subfile of `00battle.bin`).
+fn load_moveset(disc: &Disc, model: &str) -> Moveset {
+    use kh2_tables::tables as t;
+    let mut a = disc.0.lock().unwrap();
+    let index = kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY)
+        .ok()
+        .and_then(|d| d.rows.into_iter().find(|r| r.model_name == model))
+        .map(|r| r.neo_moveset as usize);
+    let table = index.zip(kh2_tables::subfile(&mut a, &t::PTYA).ok()).and_then(|(i, blob)| Moveset::parse(&blob, i));
+    table.unwrap_or_else(|| {
+        warn!("{model}: no attack table; Sora cannot attack");
+        Moveset::default()
+    })
+}
+
+/// Ability bits Sora starts with: Guard, plus any listed in `KH2_ABILITIES` (comma separated bit
+/// numbers of the attack table's ability gate, e.g. `100` for the action behind the A343 finisher).
+/// The ability system itself is not ported.
+fn start_abilities() -> u128 {
+    let extra = std::env::var("KH2_ABILITIES").unwrap_or_default();
+    extra.split(',').filter_map(|v| v.trim().parse::<u32>().ok()).filter(|&b| b < 128).fold(1u128 << ABILITY_GUARD, |m, b| m | 1u128 << b)
 }
 
 /// Samples keyboard and mouse into the pad (every rendered frame). WASD move, Ctrl walk,
@@ -311,10 +412,6 @@ pub fn follow_hand(sora: Query<&Sora>, anims: Query<&Animator>, mut socket: Quer
     }
 }
 
-fn slot_by_tag(rig: &Rig, tag: &str) -> Option<usize> {
-    rig.mset.by_tag(tag).next()
-}
-
 /// Height of the ground below Sora (0 when standing on it or nothing is below).
 fn height_above_ground(world: &World, m: &Motor) -> f32 {
     world.ground(m.pos, m.pos.y + 1.0, 10_000.0).map_or(0.0, |g| (m.pos.y - g.y).max(0.0))
@@ -383,7 +480,11 @@ pub fn tick(
     if Pad::take(&mut pad.viewer) {
         s.state = if s.state == State::Viewer { State::Ground } else { State::Viewer };
     }
+    // `KH2_VIEW_SLOT=<slot>` opens the viewer on a slot; `KH2_VIEW_AFTER=<seconds>` delays that, so a
+    // screenshot run can catch the motion's effects after the renderer has warmed up.
+    let view_after: f32 = std::env::var("KH2_VIEW_AFTER").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
     if s.state != State::Viewer
+        && s.timer >= view_after * crate::data::LOGIC_HZ
         && let Some(want) = std::env::var("KH2_VIEW_SLOT").ok().and_then(|v| v.parse::<usize>().ok())
     {
         s.state = State::Viewer;
@@ -404,25 +505,26 @@ pub fn tick(
         return;
     }
 
-    let start_attack = |s: &mut Sora, body: &mut Animator, weapon: &mut Animator, air: bool| {
-        let (tag, finisher, v0) = if air {
-            if s.air_combo < AIR_COMBO.len() {
-                (AIR_COMBO[s.air_combo], false, if s.air_combo == 0 { data.plyr.attack_first_v0 } else { data.plyr.attack_combo_v0 })
-            } else {
-                (AIR_FINISH, true, data.plyr.attack_finish_v0)
-            }
-        } else if s.combo < GROUND_COMBO.len() {
-            (GROUND_COMBO[s.combo], false, if s.combo == 0 { data.plyr.attack_first_v0 } else { data.plyr.attack_combo_v0 })
+    // Starts the next attack of the chain; false when the table offers none. `window` is true while
+    // a finisher window of the playing motion is open.
+    let start_attack = |s: &mut Sora, body: &mut Animator, weapon: &mut Animator, air: bool, window: bool| -> bool {
+        let playing = body.slot.map_or(usize::MAX, |sl| sl / 4);
+        let Some(a) = s.next_attack(air, window, playing).cloned() else { return false };
+        let finisher = a.finisher();
+        let v0 = if finisher {
+            data.plyr.attack_finish_v0
+        } else if s.hits == 0 {
+            data.plyr.attack_first_v0
         } else {
-            (GROUND_FINISH[s.combo % 2], true, data.plyr.attack_finish_v0)
+            data.plyr.attack_combo_v0
         };
-        let slot = slot_by_tag(&rig, tag);
-        body.restart(slot, false, BLEND_ATTACK);
-        weapon.restart(slot.filter(|&x| wrig.mset.has(x)), false, BLEND_ATTACK);
-        if air {
-            s.air_combo += 1;
-        } else {
-            s.combo += 1;
+        let Some(slot) = rig.mset.slot(a.motion as usize, pstate) else { return false };
+        body.restart(Some(slot), false, BLEND_ATTACK);
+        weapon.restart(Some(slot).filter(|&x| wrig.mset.has(x)), false, BLEND_ATTACK);
+        info!("sora attack {} (key {}, motion id {}, air {air}, hit {}, finisher {finisher})", body.tag(), a.key, a.motion, s.hits + 1);
+        s.hits += 1;
+        if finisher {
+            s.finishers += 1;
         }
         s.state = State::Attack { air, finisher };
         s.timer = 0.0;
@@ -439,6 +541,7 @@ pub fn tick(
         } else if dir != Vec3::ZERO {
             s.motor.yaw = dir.x.atan2(dir.z);
         }
+        true
     };
 
     let start_jump = |s: &mut Sora, body: &mut Animator| {
@@ -457,8 +560,8 @@ pub fn tick(
     let fall_max = data.sstm.fall_max;
     match s.state {
         State::Ground => {
-            s.combo = 0;
-            s.air_combo = 0;
+            s.hits = 0;
+            s.finishers = 0;
             s.motor.ground_velocity(dir, move_speed);
             if move_speed > 0.0 {
                 s.motor.turn_to(dir, prty.turn_speed);
@@ -472,7 +575,7 @@ pub fn tick(
             if jump {
                 start_jump(s, &mut body);
             } else if attack {
-                start_attack(s, &mut body, &mut weapon, false);
+                start_attack(s, &mut body, &mut weapon, false, false);
             } else if square {
                 if let Some(f) = data.fmab(growth.quick_run).filter(|_| move_speed > 0.0) {
                     // Quick Run: dash along the input at AirSlideSpeed while the button is held.
@@ -484,18 +587,24 @@ pub fn tick(
                     s.dash_brake = f.air_slide_brake;
                     s.invuln = f.air_slide_star_time;
                     body.restart(motion(mid::QUICK_RUN), false, 0.0);
-                } else {
+                } else if let Some(g) = s.moves.by_key(key::GUARD).filter(|g| s.available(g, false, false)).cloned()
+                    && let Some(slot) = rig.mset.slot(g.motion as usize, pstate)
+                {
+                    // The guard action is a ground action of the attack table.
                     s.state = State::Guard;
                     s.timer = 0.0;
-                    let slot = slot_by_tag(&rig, GUARD);
-                    body.restart(slot, false, BLEND_ATTACK);
-                    weapon.restart(slot.filter(|&x| wrig.mset.has(x)), false, BLEND_ATTACK);
+                    body.restart(Some(slot), false, BLEND_ATTACK);
+                    weapon.restart(Some(slot).filter(|&x| wrig.mset.has(x)), false, BLEND_ATTACK);
+                    info!("sora guard {} (key {}, motion id {})", body.tag(), g.key, g.motion);
                     s.motor.vel = Vec3::ZERO;
                     s.battle = 240.0;
                 }
             }
         }
         State::Air => {
+            // Free fall counts as an idle motion: a new air chain may start.
+            s.hits = 0;
+            s.finishers = 0;
             s.motor.air_velocity(dir, move_speed);
             if move_speed > 0.0 {
                 s.motor.turn_to(dir, prty.turn_speed);
@@ -518,13 +627,11 @@ pub fn tick(
                 s.state = State::Glide;
                 s.timer = 0.0;
                 body.play(motion(if move_speed > 0.0 { mid::GLIDE } else { mid::GLIDE_HOVER }), true, BLEND_GLIDE);
-            } else if attack && s.air_combo <= AIR_COMBO.len() {
-                start_attack(s, &mut body, &mut weapon, true);
-            } else if square {
-                s.state = State::Guard;
-                s.timer = 0.0;
-                body.restart(slot_by_tag(&rig, GUARD_AIR), false, BLEND_ATTACK);
+            } else if attack {
+                start_attack(s, &mut body, &mut weapon, true, false);
             }
+            // No air guard: the guard action is ground-only in the attack table (A350 is the air
+            // recoil motion).
             if s.state == State::Air {
                 airborne_dy = Some(s.motor.jump_dy(fall_max));
             }
@@ -573,7 +680,9 @@ pub fn tick(
             if attack {
                 s.queued_attack = true;
             }
-            let window = body.trigger(range::ALLOW_COMBO) || body.trigger(range::ALLOW_FINISHER);
+            let combo_window = body.trigger(range::ALLOW_COMBO);
+            let finisher_window = body.trigger(range::ALLOW_FINISHER);
+            let window = combo_window || finisher_window;
             // Close the gap to the target at plyr V0, then let the motion's root motion carry.
             let step = s.lunge_speed.min(s.lunge_left);
             s.lunge_left -= step;
@@ -590,9 +699,13 @@ pub fn tick(
                     s.motor.jump = Jump::fall(0.0, s.motor.pos.y);
                 }
             }
-            let can_continue = if air { s.air_combo <= AIR_COMBO.len() } else { s.combo <= GROUND_COMBO.len() };
-            if s.queued_attack && window && can_continue {
-                start_attack(s, &mut body, &mut weapon, air || !s.motor.grounded);
+            // The attack table decides air or ground by Sora's state at this moment; a finisher
+            // needs its window (or enough hits) and is limited per chain.
+            let air_now = !s.motor.grounded || body.trigger(range::NO_GRAVITY);
+            let next = s.queued_attack.then(|| s.next_attack(air_now, finisher_window, body.slot.map_or(usize::MAX, |sl| sl / 4)).cloned()).flatten();
+            let continues = next.as_ref().is_some_and(|a| if a.finisher() { window && s.finishers < MAX_FINISHERS } else { combo_window });
+            if continues && start_attack(s, &mut body, &mut weapon, air_now, finisher_window) {
+                // Chained into the next attack.
             } else if jump && window && s.motor.grounded {
                 start_jump(s, &mut body);
             } else if body.finished || (body.trigger(range::BLEND_TO_IDLE) && dir != Vec3::ZERO) {
@@ -608,10 +721,26 @@ pub fn tick(
             if !s.motor.grounded {
                 airborne_dy = Some(s.motor.jump_dy(fall_max));
             }
-            if body.finished || (body.trigger(range::ALLOW_COMBO) && (dir != Vec3::ZERO || attack)) {
+            // The guard motion lets Sora out when its blend-to-idle range opens; an attack pressed
+            // after a guard hit answers with the counter action of the attack table (it needs its
+            // ability), as the game does while the guard-hit motion plays.
+            let counter = (s.state == State::Counter && attack && s.has_ability(ABILITY_COUNTER))
+                .then(|| s.moves.by_key(key::COUNTER).cloned())
+                .flatten()
+                .and_then(|c| rig.mset.slot(c.motion as usize, pstate).map(|slot| (c, slot)));
+            if let Some((c, slot)) = counter {
+                body.restart(Some(slot), false, BLEND_ATTACK);
+                weapon.restart(Some(slot).filter(|&x| wrig.mset.has(x)), false, BLEND_ATTACK);
+                info!("sora counter {} (key {}, motion id {})", body.tag(), c.key, c.motion);
+                s.state = State::Attack { air: false, finisher: false };
+                s.timer = 0.0;
+                s.hits = 1;
+                s.finishers = 0;
+                s.queued_attack = false;
+            } else if body.finished || (body.trigger(range::BLEND_TO_IDLE) && (dir != Vec3::ZERO || attack)) {
                 s.state = if s.motor.grounded { State::Ground } else { State::Air };
                 if attack && s.motor.grounded {
-                    start_attack(s, &mut body, &mut weapon, false);
+                    start_attack(s, &mut body, &mut weapon, false, false);
                 }
             }
         }
@@ -633,7 +762,7 @@ pub fn tick(
                     s.timer = 0.0;
                 } else {
                     s.state = State::Hurt;
-                    body.restart(motion(id::DAMAGE_BLOW_FRONT_LAND), false, 3.0);
+                    body.restart(motion(if s.blown_back { id::DAMAGE_BLOW_BACK_LAND } else { id::DAMAGE_BLOW_FRONT_LAND }), false, 3.0);
                 }
             }
         }
@@ -712,7 +841,8 @@ fn auto_target(p: &kh2_tables::tables::PrefPlyr, m: &Motor, alive: &[(Entity, Ve
 }
 
 fn land(s: &mut Sora, body: &mut Animator, land_slot: Option<usize>, moving: bool) {
-    s.air_combo = 0;
+    s.hits = 0;
+    s.finishers = 0;
     match s.state {
         State::Air | State::Glide | State::Blown => {
             if s.state != State::Blown {
@@ -758,9 +888,13 @@ pub fn receive_wall_hits(
         let away = if back.dot(s.motor.forward()) > 0.0 { -back } else { back };
         s.motor.vel = away * 2.0;
         s.state = State::Hurt;
-        s.combo = 0;
+        s.hits = 0;
+        s.finishers = 0;
         s.timer = 0.0;
-        body.restart(rig.mset.slot(id::DAMAGE_S_FRONT_HIGH, PlayerState::BattleWeapon), false, 2.0);
+        // The game's recoil routine (push back and a motion): ground 41 / air 43. When it runs for a
+        // wall bounce is not established (see the report); the trigger above is the earlier guess.
+        let recoil = if s.motor.grounded { id::REFLECT } else { id::REFLECT_AIR };
+        body.restart(rig.mset.slot(recoil, PlayerState::BattleWeapon), false, 2.0);
         weapon.restart(None, false, 2.0);
         fighter.landed.clear();
     }
@@ -782,9 +916,10 @@ pub fn receive_hits(
         let rig = body.rig.clone();
         let facing = s.motor.forward();
         let from_front = facing.dot(-h.dir) > 0.0;
-        // Guard: repelled while A320's guard window is open (before its combo window).
-        if s.state == State::Guard && !body.trigger(range::ALLOW_COMBO) && from_front {
-            let slot = slot_by_tag(&rig, GUARD_COUNTER);
+        // Guard: repelled while the guard motion has not reached its blend-to-idle range. The
+        // guard-hit motion is the auto-guard one (A321); no game routine for the block itself was found.
+        if s.state == State::Guard && !body.trigger(range::BLEND_TO_IDLE) && from_front {
+            let slot = rig.mset.slot(id::AUTOGUARD, PlayerState::BattleWeapon);
             body.restart(slot, false, 2.0);
             let wslot = slot.filter(|&x| weapon.rig.mset.has(x));
             weapon.restart(wslot, false, 2.0);
@@ -805,14 +940,16 @@ pub fn receive_hits(
             s.state = State::Blown;
             s.motor.start_jump((atk.knockback_strength2 as f32).clamp(40.0, 300.0));
             s.timer = 0.0;
-            body.restart(rig.mset.slot(if from_front { id::DAMAGE_BLOW_FRONT } else { 18 }, pstate), false, 2.0);
+            s.blown_back = !from_front;
+            body.restart(rig.mset.slot(if from_front { id::DAMAGE_BLOW_FRONT } else { id::DAMAGE_BLOW_BACK }, pstate), false, 2.0);
         } else {
             s.state = State::Hurt;
             body.restart(rig.mset.slot(if from_front { id::DAMAGE_S_FRONT_HIGH } else { id::DAMAGE_S_BACK_HIGH }, pstate), false, 2.0);
         }
         weapon.restart(None, false, 2.0);
         s.invuln = 36.0;
-        s.combo = 0;
+        s.hits = 0;
+        s.finishers = 0;
         fighter.landed.clear();
     }
 }

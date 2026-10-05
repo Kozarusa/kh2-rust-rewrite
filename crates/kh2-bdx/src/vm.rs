@@ -15,6 +15,8 @@ pub const FRAME_STRIDE: u32 = 0x1_0000;
 /// Small result buffers for host functions that return a pointer to a vector.
 pub const SCRATCH_ADDR: u32 = 0x6000_0000;
 const SCRATCH_SLOTS: usize = 16;
+/// Number of distinct frame regions (thread ids wrap at this value).
+const THREAD_IDS: u32 = 0x400;
 
 /// Extra bytes the game adds to the frame and operand stacks on top of the sizes in the header.
 const STACK_SLACK: usize = 0x100;
@@ -96,7 +98,7 @@ impl Shared {
         Shared {
             layout: Layout::default(),
             globals: vec![0; p.globals as usize],
-            scratch: vec![0; SCRATCH_SLOTS * 16],
+            scratch: vec![0; (SCRATCH_SLOTS + 1) * 16],
             scratch_next: 0,
             rng: 0,
             next_thread_id: 0,
@@ -108,6 +110,16 @@ impl Shared {
     pub fn next_rand(&mut self) -> u32 {
         self.rng = self.rng.wrapping_mul(0x10dcd);
         self.rng
+    }
+
+    /// Builds a stand-in for the context structure of another object (the game passes a pointer into the
+    /// sender's own script memory with a message) in a slot the vector results never reuse: word 1 is the
+    /// object, which is the only field scripts read from a sender. Returns its script address.
+    pub fn put_sender_ctx(&mut self, obj: u32) -> u32 {
+        let base = SCRATCH_SLOTS * 16;
+        self.scratch[base..base + 16].fill(0);
+        self.scratch[base + 4..base + 8].copy_from_slice(&obj.to_le_bytes());
+        self.layout.scratch + base as u32
     }
 
     /// Stores a 16-byte vector in the next scratch slot and returns its script address.
@@ -134,8 +146,11 @@ pub struct Thread {
 
 impl Thread {
     pub fn new(p: &Program, sh: &mut Shared) -> Thread {
+        // Ids pick the thread's frame region (`frames + id * stride`). A script that runs for a long time
+        // creates many short threads (every event hook is one), so ids wrap instead of growing out of the
+        // address space; a thousand live threads at once do not occur.
         let id = sh.next_thread_id;
-        sh.next_thread_id += 1;
+        sh.next_thread_id = (id + 1) % THREAD_IDS;
         Thread {
             id,
             pc: 0,

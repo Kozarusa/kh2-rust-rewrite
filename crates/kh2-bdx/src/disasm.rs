@@ -46,12 +46,86 @@ pub fn analyze(p: &Program) -> Result<Analysis, Error> {
                 }
             }
         }
+        // Host functions that start a thread take its routine (and a cleanup routine) as plain integers
+        // pushed just before the call: 0.9 tag, routine, cleanup, arg; 1.82 ctx, tag, routine, cleanup, arg;
+        // 1.112 ctx, routine, arg. Anything that is not a plain constant is left alone.
+        let spawns: Vec<(usize, u16, u16)> = a
+            .code
+            .iter()
+            .filter_map(|(pc, (i, _))| match i {
+                Insn::Host { group: 0, index: 9 } | Insn::Host { group: 1, index: 82 } | Insn::Host { group: 1, index: 112 } if !registered.contains(pc) => {
+                    if let Insn::Host { group, index } = i { Some((*pc, *group, *index)) } else { None }
+                }
+                _ => None,
+            })
+            .collect();
+        for (pc, group, index) in spawns {
+            registered.insert(pc);
+            // Positions of the routine words among the arguments, counted from the first pushed.
+            let (nargs, routines): (usize, &[usize]) = match (group, index) {
+                (0, 9) => (4, &[1, 2]),
+                (1, 82) => (5, &[2, 3]),
+                _ => (3, &[1]),
+            };
+            let consts = argument_constants(&a, pc, nargs);
+            for &r in routines {
+                if let Some(v) = consts[r]
+                    && v != 0
+                    && (v as usize) < end
+                {
+                    work.push(v as usize);
+                    a.routines.insert(v as usize);
+                }
+            }
+        }
         if work.is_empty() {
             break;
         }
         walk(p, &mut a, &mut work)?;
     }
     Ok(a)
+}
+
+/// Stack effect `(values popped, values pushed)` of an instruction that can sit inside an argument
+/// expression, `None` for anything whose effect is not known here (calls to script routines, stores...).
+fn expression_effect(i: &Insn) -> Option<(usize, usize)> {
+    Some(match i {
+        Insn::PushInt(_) | Insn::PushFloat(_) | Insn::Lea(_) | Insn::Load(_) => (0, 1),
+        Insn::LoadField(_) | Insn::Unary { .. } | Insn::Sin | Insn::Cos | Insn::DegToRad | Insn::RadToDeg => (1, 1),
+        Insn::Binary { .. } => (2, 1),
+        Insn::Dup => (1, 2),
+        Insn::Host { group, index } => {
+            let f = names::lookup(*group, *index)?;
+            (f.args as usize, f.ret as usize)
+        }
+        _ => return None,
+    })
+}
+
+/// For the call at `pc` with `nargs` arguments pushed just before it, the argument values that are a
+/// single constant push. Walks backwards over straight-line code counting stack effects, so arguments
+/// built from several instructions (a context loaded and dereferenced) do not shift the others.
+fn argument_constants(a: &Analysis, pc: usize, nargs: usize) -> Vec<Option<u32>> {
+    let mut out = vec![None; nargs];
+    let mut back = a.code.range(..pc).rev();
+    for k in (0..nargs).rev() {
+        // One argument: instructions back to the one that makes the count of values still owed zero.
+        let mut owed = 1usize;
+        let mut chain: Vec<&Insn> = Vec::new();
+        while owed > 0 {
+            let Some((_, (i, _))) = back.next() else { return out };
+            let Some((pops, pushes)) = expression_effect(i) else { return out };
+            chain.push(i);
+            if pushes > owed {
+                return out;
+            }
+            owed = owed - pushes + pops;
+        }
+        if let &[&Insn::PushInt(v)] = chain.as_slice() {
+            out[k] = Some(v);
+        }
+    }
+    out
 }
 
 fn walk(p: &Program, a: &mut Analysis, work: &mut Vec<usize>) -> Result<(), Error> {

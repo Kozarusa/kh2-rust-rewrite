@@ -7,6 +7,8 @@ use crate::host::{Call, Host, Value, Vec4};
 pub const SELF_OBJ: u32 = 0x100;
 pub const PLAYER: u32 = 0x200;
 pub const TARGET: u32 = 0x300;
+/// How long the toy world keeps an object in the air after a jump.
+pub const JUMP_FRAMES: u32 = 30;
 
 pub struct MockHost {
     pub frame: u32,
@@ -22,9 +24,19 @@ pub struct MockHost {
     pub flags: Vec<i32>,
     /// Hit reaction frames left.
     pub stun: u32,
+    /// Frames left in the air; a move that points upwards (a jump) sets it to [`JUMP_FRAMES`].
+    pub airborne: u32,
+    /// The scripted object's own memory (`SELF_OBJ..`), for scripts that write fields such as the
+    /// movement vector at +0x10 directly.
+    pub object: Vec<u8>,
     /// Every call made by the script, with the frame it happened on.
     pub log: Vec<(u32, Call)>,
 }
+
+/// Size of the scripted object's memory in the toy world.
+const OBJECT_SIZE: usize = 0x1000;
+/// Offset of the movement vector (direction and speed in w) in a game object.
+const MOVE_VECTOR: usize = 0x10;
 
 impl MockHost {
     pub fn new() -> MockHost {
@@ -40,6 +52,8 @@ impl MockHost {
             facing: [0.0, 0.0, 1.0, 0.0],
             flags: Vec::new(),
             stun: 0,
+            airborne: 0,
+            object: vec![0; OBJECT_SIZE],
             log: Vec::new(),
         }
     }
@@ -51,6 +65,7 @@ impl MockHost {
             self.motion_frames_left -= 1.0;
         }
         self.stun = self.stun.saturating_sub(1);
+        self.airborne = self.airborne.saturating_sub(1);
         for i in 0..3 {
             self.position[i] += self.move_dir[i] * self.move_speed;
         }
@@ -77,6 +92,8 @@ impl Host for MockHost {
         match c {
             Call::Player | Call::LastAttacker { .. } => Value::Handle(PLAYER),
             Call::Target { .. } => Value::Handle(TARGET),
+            Call::FindObject { by: crate::host::ObjectKey::Entity, value: 0x236 } => Value::Handle(PLAYER),
+            Call::FindObject { .. } => Value::Handle(TARGET),
             Call::Position { obj } => Value::Vec(if *obj == PLAYER { self.player_position } else { self.position }),
             Call::TargetPosition { .. } => Value::Vec(self.player_position),
             Call::FacingVector { .. } => Value::Vec(self.facing),
@@ -87,6 +104,9 @@ impl Host for MockHost {
                 Value::None
             }
             Call::StartMove { dir, motion, .. } | Call::StartMoveAlt { dir, motion, .. } => {
+                if dir[1] > 0.0 {
+                    self.airborne = JUMP_FRAMES;
+                }
                 self.move_dir = *dir;
                 self.motion = *motion;
                 self.motion_frames_left = self.motion_length;
@@ -109,7 +129,8 @@ impl Host for MockHost {
             Call::MotionState { .. } => Value::Int(0),
             Call::MotionLength { .. } | Call::MotionEnd { .. } => Value::Float(self.motion_length),
             Call::OnScreen { .. } => Value::Bool(true),
-            Call::Airborne { .. } | Call::Busy { .. } | Call::Flag124 { .. } | Call::Flag309 { .. } => Value::Bool(false),
+            Call::Airborne { .. } => Value::Bool(self.airborne > 0),
+            Call::Busy { .. } | Call::Flag124 { .. } | Call::Flag309 { .. } => Value::Bool(false),
             Call::HitStun { .. } => Value::Bool(self.stun > 0),
             Call::SpawnParam { .. } => Value::Int(99),
             Call::SpawnKind { .. } => Value::Int(0),
@@ -131,6 +152,30 @@ impl Host for MockHost {
             Call::Unknown { .. } => Value::Int(0),
             _ => Value::None,
         }
+    }
+
+    fn read_mem(&mut self, addr: u32, out: &mut [u8]) -> bool {
+        let o = addr.wrapping_sub(SELF_OBJ) as usize;
+        match self.object.get(o..o + out.len()) {
+            Some(b) => {
+                out.copy_from_slice(b);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn write_mem(&mut self, addr: u32, data: &[u8]) -> bool {
+        let o = addr.wrapping_sub(SELF_OBJ) as usize;
+        let Some(b) = self.object.get_mut(o..o + data.len()) else { return false };
+        b.copy_from_slice(data);
+        // A write that covers the movement vector steers the toy object like `set_move` does.
+        if o <= MOVE_VECTOR && o + data.len() >= MOVE_VECTOR + 16 {
+            let v: [f32; 4] = std::array::from_fn(|i| f32::from_le_bytes(self.object[MOVE_VECTOR + 4 * i..MOVE_VECTOR + 4 * i + 4].try_into().unwrap()));
+            self.move_dir = [v[0], v[1], v[2], 0.0];
+            self.move_speed = v[3];
+        }
+        true
     }
 }
 

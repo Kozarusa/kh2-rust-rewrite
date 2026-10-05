@@ -35,6 +35,49 @@ impl Value {
     }
 }
 
+/// What an object lookup (`Call::FindObject`) compares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObjectKey {
+    /// The entity id the game uses for objects (0x236 is the player), FUN_0016b078.
+    Entity,
+    /// The byte at +0x1e of the spawn record (FUN_0016b928).
+    SpawnGroup,
+    /// The object's NeoStatus value, the halfword at +0x4c of its object-entry row (FUN_001699a8).
+    NeoStatus,
+}
+
+/// One argument of a [`Call::Func`], decoded by the kind letter the function table gives it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Arg {
+    Int(i32),
+    Float(f32),
+    /// The object behind a context pointer (`O`) or an object handle (`o`).
+    Obj(u32),
+    Vec(Vec4),
+    Str(String),
+    /// A pointer or handle the script or the host owns.
+    Raw(u32),
+}
+
+impl Arg {
+    pub fn int(&self) -> i32 {
+        match self {
+            Arg::Int(i) => *i,
+            Arg::Float(f) => *f as i32,
+            Arg::Obj(o) | Arg::Raw(o) => *o as i32,
+            _ => 0,
+        }
+    }
+
+    pub fn float(&self) -> f32 {
+        match self {
+            Arg::Float(f) => *f,
+            Arg::Int(i) => *i as f32,
+            _ => 0.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Call {
     // ---- world queries -------------------------------------------------------------------
@@ -160,6 +203,25 @@ pub enum Call {
     ModeInterrupted { obj: u32 },
     /// A mode that wants a check may start (FUN_001873d0).
     ModeMayStart { obj: u32 },
+
+    /// Host 1.90 / 1.241 (FUN_00187170, FUN_00187190): a message addressed to the modes named `name` of
+    /// every object. `sender` is the object that sent it, 0 for none. The game keeps the message in a
+    /// 64-entry queue and delivers it to all objects in a later pass; the host does the same with
+    /// [`crate::Runtime::receive_message`], choosing each receiver's delay with [`crate::message_delay`].
+    SendMessage { sender: u32, name: String, delay: f32 },
+    /// A mode queued with host 6.58 (FUN_00186f50) came up in `obj`'s queue: instead of starting it, the
+    /// game switches another object to the mode of that name (FUN_00186db0 on FUN_002f4398(1), role of
+    /// that object not determined). The host does it with [`crate::Runtime::set_mode_named`].
+    RemoteSetMode { obj: u32, name: String },
+
+    /// Host 1.114, 1.143 and 1.210: find an object. The interpreter stores the answer in the context
+    /// (+4), where scripts read "their" object from, so the host only returns the handle (0 when none).
+    FindObject { by: ObjectKey, value: i32 },
+
+    /// Any other analysed function (see `names.rs`: kinds, return kind, notes), with its arguments
+    /// decoded according to the kinds the function table gives. The function is found by
+    /// `kh2_bdx::names::lookup(group, index)`.
+    Func { group: u16, index: u16, args: Vec<Arg> },
 
     /// A registered host function whose behaviour has not been analysed. Returns 0 unless the host knows better.
     Unknown { group: u16, index: u16, args: Vec<u32> },

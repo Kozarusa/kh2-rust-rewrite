@@ -59,7 +59,7 @@ fn length(v: [f32; 4]) -> f32 {
 
 /// True for the indexes of group 0 that this module implements.
 pub fn is_math(index: u16) -> bool {
-    matches!(index, 3 | 4 | 5 | 6 | 7 | 13 | 16 | 17 | 18 | 36)
+    matches!(index, 3 | 4 | 5 | 6 | 7 | 13 | 16 | 17 | 18 | 23 | 35 | 36)
 }
 
 /// Runs math function `index` of group 0. Vector results come back as a pointer into the scratch buffers.
@@ -107,6 +107,15 @@ pub fn call(mem: &mut Mem<'_>, index: u16, a: &[u32], io: &mut dyn VecAccess) ->
             let seed = mem.sh.next_rand();
             let (lo, hi) = (fl(a[0]), fl(a[1]));
             f(lo + seed as f32 * RAND_SCALE * (hi - lo))
+        }
+        // Absolute value: the game clears the sign bit.
+        23 => Ok(Some(a[0] & 0x7fff_ffff)),
+        // Multiply all four lanes by a scalar, in place.
+        35 => {
+            let v = io.read_vec(mem, a[0])?;
+            let s = fl(a[1]);
+            io.write_vec(mem, a[0], std::array::from_fn(|k| vm::ee_clamp(v[k] * s)))?;
+            Ok(None)
         }
         36 => {
             let v = io.read_vec(mem, a[0])?;

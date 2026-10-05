@@ -27,7 +27,7 @@ use bevy::prelude::*;
 use kh2_bdx::{Call, Host, Program, Runtime, Value, Vec4};
 use kh2_tables::tables as t;
 
-use crate::assets::{CurrentArea, Disc};
+use crate::assets::Disc;
 use crate::combat::Fighter;
 use crate::data::GameData;
 use crate::enemy::{EState, Enemy};
@@ -384,7 +384,6 @@ struct Env<'a> {
     player_yaw: f32,
     world: Option<&'a World>,
     rig: &'a Rig,
-    area: u8,
     flags124: bool,
     enmp: u16,
 }
@@ -695,7 +694,6 @@ pub struct AiBrain {
     obj: Obj,
     tag: String,
     enmp: u16,
-    area: u8,
     flags124: bool,
     started: bool,
     dead_sent: bool,
@@ -756,20 +754,18 @@ fn load_programs(disc: Res<Disc>, mut programs: ResMut<AiPrograms>) {
 
 /// Gives every new Shadow and Soldier its script runtime. Runs right after the wave spawner, so the
 /// script's first frame is the frame the enemy appears in.
-fn ai_attach(mut commands: Commands, programs: Res<AiPrograms>, area: Res<CurrentArea>, q: Query<(Entity, &Enemy), Without<AiBrain>>, mut serial: Local<u32>) {
+fn ai_attach(mut commands: Commands, programs: Res<AiPrograms>, q: Query<(Entity, &Enemy), Without<AiBrain>>, mut serial: Local<u32>) {
     for (ent, e) in &q {
         let Some(script) = programs.by_kind.get(e.kind.name) else { continue };
         *serial += 1;
         let mut rt = Runtime::new(script.prog.clone());
         rt.shared.rng = 0x9E37_79B9u32 ^ serial.wrapping_mul(0x85EB_CA6B);
         rt.core.mode_log = Some(Vec::new());
-        let area_byte = area.name.get(2..).and_then(|n| n.parse().ok()).unwrap_or(0);
         commands.entity(ent).insert(AiBrain {
             rt,
             obj: Obj::new(SELF_BASE + (*serial % 0x1000) * OBJ_SIZE as u32),
             tag: format!("{}#{}", e.name, *serial),
             enmp: e.kind.enmp,
-            area: area_byte,
             flags124: script.flags124,
             started: false,
             dead_sent: false,
@@ -799,7 +795,7 @@ fn ai_update(
     mut trace: ResMut<AiTrace>,
 ) {
     trace.tick += 1;
-    if trace.tick % SUMMARY_EVERY == 0 {
+    if trace.tick.is_multiple_of(SUMMARY_EVERY) {
         trace.summary();
     }
     let mut hits: HashMap<Entity, Vec<bool>> = HashMap::new();
@@ -814,7 +810,7 @@ fn ai_update(
         let Ok(mut anim) = anims.get_mut(e.body) else { continue };
         let rig = anim.rig.clone();
         let e = &mut *e;
-        let AiBrain { rt, obj, tag, enmp, area, flags124, started, dead_sent, errors_seen, last_frame, in_air, .. } = &mut *brain;
+        let AiBrain { rt, obj, tag, enmp, flags124, started, dead_sent, errors_seen, last_frame, in_air, .. } = &mut *brain;
 
         // The world as the script finds it this tick.
         obj.motor.pos = tf.translation / SCALE;
@@ -831,7 +827,7 @@ fn ai_update(
         let wrapped = anim.looping && anim.frame < *last_frame;
         obj.done = anim.slot.is_some() && (anim.finished || wrapped);
         obj.slot = anim.slot;
-        let env = Env { player, player_yaw, world: world.as_deref(), rig: &rig, area: *area, flags124: *flags124, enmp: *enmp };
+        let env = Env { player, player_yaw, world: world.as_deref(), rig: &rig, flags124: *flags124, enmp: *enmp };
         let handle = obj.handle;
         let mut host = BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() };
 
@@ -856,7 +852,7 @@ fn ai_update(
         for m in rt.core.mode_log.as_mut().map(std::mem::take).unwrap_or_default() {
             trace.line(tag, &format!("mode {m}"));
         }
-        if trace.level > 0 && trace.tick % 60 == 0 {
+        if trace.level > 0 && trace.tick.is_multiple_of(60) {
             let mode = rt.current_mode().unwrap_or_default();
             let dist = (obj.motor.pos - player).with_y(0.0).length();
             trace.line(tag, &format!("status: mode {mode} slot {:?} distance {dist:.0} cm hp {} grounded {}", obj.slot, e.hp, obj.motor.grounded));
@@ -971,9 +967,57 @@ fn ai_fade(
         for k in kids.iter() {
             let Ok(h) = handles.get(k) else { continue };
             let Some(mut m) = materials.get_mut(&h.0) else { continue };
-            let original = brain.original_modes.entry(h.0.id()).or_insert_with(|| m.alpha_mode.clone()).clone();
+            let original = *brain.original_modes.entry(h.0.id()).or_insert_with(|| m.alpha_mode);
             m.base_color = m.base_color.with_alpha(alpha);
             m.alpha_mode = if alpha < 1.0 { AlphaMode::Blend } else { original };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn game_space_is_the_apps_rotated_half_a_turn_about_x() {
+        let p = Vec3::new(1.0, 2.0, 3.0);
+        assert_eq!(to_game(p), [1.0, -2.0, -3.0, 1.0]);
+        assert_eq!(from_game([1.0, -2.0, -3.0, 0.0]), p);
+    }
+
+    #[test]
+    fn yaw_of_a_script_direction_is_the_apps_facing() {
+        // The app's facing for yaw a is (sin a, 0, cos a); the script sees it as (sin a, 0, -cos a).
+        for k in -7..8 {
+            let a = k as f32 * 0.4;
+            let d = to_game(Vec3::new(a.sin(), 0.0, a.cos()) * 300.0);
+            assert!(wrap_angle(yaw_of(d) - a).abs() < 1e-4, "{a}");
+        }
+        // atan2 of nothing is 0 in the game's space.
+        assert!(wrap_angle(yaw_of([0.0; 4]) - std::f32::consts::PI).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_fade_runs_its_length_and_stops() {
+        let mut o = Obj::new(SELF_BASE);
+        o.alpha = 0.0;
+        o.fade = Some(Fade { from: 0.0, to: 1.0, frames: 30.0, t: 0.0 });
+        for _ in 0..15 {
+            o.advance_fade();
+        }
+        assert!((o.alpha - 0.5).abs() < 1e-5);
+        for _ in 0..15 {
+            o.advance_fade();
+        }
+        assert_eq!(o.alpha, 1.0);
+        assert!(o.fade.is_none());
+    }
+
+    #[test]
+    fn the_movement_vector_is_horizontal_and_in_the_apps_axes() {
+        let mut o = Obj::new(SELF_BASE);
+        o.set_move([3.0, 0.0, -3.0, 0.0], 8.0);
+        let want = Vec3::new(1.0, 0.0, 1.0).normalize() * 8.0;
+        assert!((o.move_vel - want).length() < 1e-4, "{:?}", o.move_vel);
     }
 }

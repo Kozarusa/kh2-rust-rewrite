@@ -259,6 +259,7 @@ impl World {
     }
 
     /// Distance along the segment to the first triangle (any orientation).
+    #[allow(dead_code)]
     pub fn raycast(&self, p: Vec3, q: Vec3) -> Option<f32> {
         let d = q - p;
         let len = d.length();
@@ -292,6 +293,7 @@ impl World {
         })
     }
 
+    #[allow(dead_code)]
     pub fn raycast_m(&self, p: Vec3, q: Vec3) -> Option<f32> {
         self.raycast(p * Self::M, q * Self::M).map(|d| d / Self::M)
     }

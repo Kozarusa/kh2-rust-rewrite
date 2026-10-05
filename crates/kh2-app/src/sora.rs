@@ -17,8 +17,9 @@ use std::sync::Arc;
 use bevy::input::mouse::MouseButton;
 use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
 use bevy::prelude::*;
-use kh2_anim::moveset::{Action, Moveset};
+use kh2_anim::moveset::{self, key, Action, Chain, Evaluation, ExplicitMiss, Moveset, Probe, Scene, Verdict, Windows};
 use kh2_anim::{id, triggers::range, PlayerState};
+use kh2_model::collision::kind as shape_kind;
 
 use crate::assets::Disc;
 use crate::camera::OrbitCamera;
@@ -35,31 +36,26 @@ use crate::SCALE;
 /// Sora's right-hand bone (mirror of the left hand, bone 86).
 const RIGHT_HAND: usize = 178;
 
-/// Action keys of the attack table that the game's code asks for by name.
-mod key {
-    /// The attack the game falls back to when nothing else qualifies, on the ground and in the air.
-    pub const GROUND_ATTACK: u8 = 5;
-    pub const AIR_ATTACK: u8 = 9;
-    /// The guard action (a ground action that needs the Guard ability).
-    pub const GUARD: u8 = 11;
-    /// The attack that answers a guard hit, chosen while the guard-hit motion plays.
-    pub const COUNTER: u8 = 39;
-}
-/// The ground combo's normal hits in order (keys of the attack table).
-///
-/// The game picks hits 2 and 3 by distance and direction to the targets (table groups 1 and 2);
-/// that selection is not ported, so the order follows the motions' own combo windows.
-const GROUND_COMBO_KEYS: [u8; 3] = [key::GROUND_ATTACK, 4, 6];
 /// Ability bits (the attack table's gate) that start set: Guard.
 const ABILITY_GUARD: u16 = 1;
-/// Ability bit that unlocks the guard counter attack.
-const ABILITY_COUNTER: u16 = 96;
-/// Normal hits before finishers qualify (the game reads these from the status block; the values
-/// follow the motions: ground hits A300-A302 and air hits A330-A331 carry the combo window, the
-/// finishers only the finisher window) and finishers per chain.
-const MAX_HITS_GROUND: u8 = 3;
-const MAX_HITS_AIR: u8 = 2;
-const MAX_FINISHERS: u8 = 1;
+/// Bits of the abilities that change the combo length (the abilities table: Combo Plus, Air Combo
+/// Plus, Finishing Plus, Negative Combo). The game counts equipped copies; the bit says one.
+const ABILITY_COMBO_PLUS: u16 = 21;
+const ABILITY_AIR_COMBO_PLUS: u16 = 22;
+const ABILITY_FINISHING_PLUS: u16 = 105;
+const ABILITY_NEGATIVE_COMBO: u16 = 106;
+/// Base combo lengths of the status block (FUN_001c0d88): attacks before the finisher on the
+/// ground and in the air, and finishers per chain.
+const BASE_HITS_GROUND: u8 = 3;
+const BASE_HITS_AIR: u8 = 3;
+const BASE_FINISHERS: u8 = 1;
+
+/// `KH2_MOVELOG=1`: one log block per attack press (each record considered and why it was
+/// flagged or not, and the chosen motion).
+fn move_log() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("KH2_MOVELOG").is_some())
+}
 
 /// Motion IDs of the player motion set (state-independent part of the slot).
 mod mid {
@@ -135,10 +131,15 @@ impl Pad {
 pub struct Sora {
     pub state: State,
     pub motor: Motor,
-    /// Attacks played in the current chain, and how many of them were finishers.
+    /// The game's combo counters (actor +0xb04, +0xb05): attacks accepted in the current chain, and
+    /// finishers accepted (1 at the start of a chain).
     pub hits: u8,
     pub finishers: u8,
     pub queued_attack: bool,
+    /// A hit of the current swing landed (actor +0x108 bit 0x2000000): a chain only goes on after one.
+    pub connected: bool,
+    /// The refused press was already logged.
+    deny_logged: bool,
     /// Sora's attack table and the ability bits that unlock gated actions.
     pub moves: Arc<Moveset>,
     pub abilities: u128,
@@ -183,42 +184,81 @@ impl Sora {
         bit == 0 || (bit < 128 && self.abilities >> bit & 1 != 0)
     }
 
-    /// Finishers qualify once the chain has `max` normal hits (less the action's argument) or a
-    /// finisher window is open.
-    fn finisher_ready(&self, air: bool, window: bool, arg: u8) -> bool {
-        window || (if air { MAX_HITS_AIR } else { MAX_HITS_GROUND }) <= self.hits + arg
-    }
-
-    /// Whether the table action may be chosen now (the game's availability test): it has a motion,
-    /// its ability is set, it matches the airborne state, and a finisher is ready for finishers /
-    /// no finisher is done yet for the rest.
-    fn available(&self, a: &Action, air: bool, window: bool) -> bool {
-        a.motion != 0
-            && self.has_ability(a.ability)
-            && a.air_only() == air
-            && if a.finisher() { self.finisher_ready(air, window, a.arg) } else { !(self.finisher_ready(air, window, 0) && self.finishers > 0) }
-    }
-
-    /// The next attack: while the combo is short, the ground chain's next hit; otherwise the table's
-    /// choice among the always-candidate (group 3) actions, or the default attack. `playing` is the
-    /// motion ID now playing.
-    fn next_attack(&self, air: bool, window: bool, playing: usize) -> Option<&Action> {
-        let ready = self.finisher_ready(air, window, 0);
-        if !air
-            && !ready
-            && !self.has_finisher_played()
-            && let Some(a) = GROUND_COMBO_KEYS.get(self.hits as usize).and_then(|&k| self.moves.by_key(k))
-        {
-            return Some(a);
+    /// The combo state the table's availability tests read. Combo lengths start from the status
+    /// block's base values and change with the combo abilities (the app has one bit per ability, the
+    /// game one count per equipped copy).
+    fn chain(&self, airborne: bool, finisher_window: bool) -> Chain {
+        let has = |b: u16| self.has_ability(b) as u8;
+        let minus = has(ABILITY_NEGATIVE_COMBO);
+        Chain {
+            airborne,
+            abilities: self.abilities,
+            combo: self.hits,
+            finishers: self.finishers,
+            max_ground: (BASE_HITS_GROUND + has(ABILITY_COMBO_PLUS)).saturating_sub(minus),
+            max_air: (BASE_HITS_AIR + has(ABILITY_AIR_COMBO_PLUS)).saturating_sub(minus),
+            max_finishers: BASE_FINISHERS + has(ABILITY_FINISHING_PLUS),
+            finisher_window,
         }
-        let default = if air { key::AIR_ATTACK } else { key::GROUND_ATTACK };
-        self.moves
-            .pick(|a| a.group == 3 && self.available(a, air, window), playing)
-            .or_else(|| self.moves.pick(|a| a.key == default && self.available(a, air, window), playing))
     }
+}
 
-    fn has_finisher_played(&self) -> bool {
-        self.finishers > 0
+/// A target point of an enemy in game units (Y up here), from its target-kind collision shape.
+#[derive(Clone, Copy, Debug)]
+struct TargetPoint {
+    pos: Vec3,
+    radius: f32,
+    half_height: f32,
+}
+
+/// The target points of a body: its target shapes (kind 3) whose argument has bit 0 clear, on their
+/// bones, moved up by the shape's lift (FUN_001894d0).
+fn target_points(anim: &Animator, body: &GlobalTransform) -> Vec<TargetPoint> {
+    anim.rig
+        .model
+        .shapes
+        .iter()
+        .filter(|s| s.kind == shape_kind::TARGET && s.argument & 1 == 0)
+        .map(|s| {
+            let m = match s.bone {
+                Some(b) => anim.bone_world(body, b),
+                None => body.to_matrix(),
+            };
+            let mut pos = m.transform_point3(Vec3::from(s.offset)) / SCALE;
+            pos.y += s.lift;
+            TargetPoint { pos, radius: s.radius, half_height: s.height }
+        })
+        .collect()
+}
+
+/// How `p` lies from `from` (FUN_001cba68): horizontal distance less the radius, the Y-down height
+/// difference, and the dot product of the horizontal direction with `reference` (a unit vector).
+fn probe(p: &TargetPoint, from: Vec3, reference: Vec3) -> Probe {
+    let d = p.pos - from;
+    let flat = d.with_y(0.0);
+    let len = flat.length();
+    Probe {
+        dist: (len - p.radius).max(0.0),
+        dy: -d.y,
+        dot: (flat.normalize_or_zero().dot(reference)).min(1.0),
+        half_height: p.half_height,
+    }
+}
+
+/// Everything the table selection needs about the surroundings (FUN_001cb928): the target and its
+/// direction (the reference direction of the angle test; Sora's facing without a target), and the
+/// target points of every enemy.
+fn selection_scene(m: &Motor, target: Option<TargetPoint>, others: &[TargetPoint]) -> Scene {
+    let reference = target
+        .map(|t| (t.pos - m.pos).with_y(0.0).normalize_or_zero())
+        .filter(|d| *d != Vec3::ZERO)
+        .unwrap_or_else(|| m.forward().with_y(0.0).normalize_or_zero());
+    Scene {
+        target: target.map(|t| probe(&t, m.pos, reference)),
+        others: others.iter().map(|t| probe(t, m.pos, reference)).collect(),
+        wall_probe: false,
+        // The weapon reach that FUN_0016be20 adds for table flag 2 was not resolved.
+        reach: 0.0,
     }
 }
 
@@ -262,7 +302,7 @@ impl Plugin for SoraPlugin {
                 (
                     sync_weapon.in_set(Sim::Weapon),
                     (follow_hand, tick).chain().in_set(Sim::Sora),
-                    (receive_hits, receive_wall_hits).chain().in_set(Sim::SoraHurt),
+                    (track_connects, receive_hits, receive_wall_hits).chain().in_set(Sim::SoraHurt),
                 ),
             );
     }
@@ -293,6 +333,8 @@ pub fn setup(
             hits: 0,
             finishers: 0,
             queued_attack: false,
+            connected: false,
+            deny_logged: false,
             moves: Arc::new(load_moveset(&disc, "P_EX100")),
             abilities: start_abilities(),
             blown_back: false,
@@ -435,11 +477,18 @@ pub fn tick(
     enemies: Query<(Entity, &GlobalTransform, &Enemy)>,
     mut sora_q: Query<(&mut Transform, &mut Sora, &mut Fighter)>,
     mut anims: Query<&mut Animator>,
+    globals: Query<&GlobalTransform>,
     mut bodies: Query<&mut Transform, Without<Sora>>,
     mut vis: Query<&mut Visibility>,
 ) {
     let (Ok((mut tf, mut s, mut fighter)), Some(world)) = (sora_q.single_mut(), world) else { return };
     let s = &mut *s;
+    // The target points of the enemies, for the attack table's range tests.
+    let enemy_points: Vec<(Entity, Vec<TargetPoint>)> = enemies
+        .iter()
+        .filter(|(_, _, e)| e.alive())
+        .filter_map(|(en, _, e)| Some((en, target_points(anims.get(e.body).ok()?, globals.get(e.body).ok()?))))
+        .collect();
     let Ok([mut body, mut weapon]) = anims.get_many_mut([s.body, s.weapon]) else { return };
     let rig = body.rig.clone();
     let wrig = weapon.rig.clone();
@@ -513,15 +562,12 @@ pub fn tick(
         return;
     }
 
-    // Starts the next attack of the chain; false when the table offers none. `window` is true while
-    // a finisher window of the playing motion is open.
-    let start_attack = |s: &mut Sora, body: &mut Animator, weapon: &mut Animator, air: bool, window: bool| -> bool {
-        let playing = body.slot.map_or(usize::MAX, |sl| sl / 4);
-        let Some(a) = s.next_attack(air, window, playing).cloned() else { return false };
+    // Starts the table action `a` (FUN_00176050).
+    let start_attack = |s: &mut Sora, body: &mut Animator, weapon: &mut Animator, a: &Action, air: bool| -> bool {
         let finisher = a.finisher();
         let v0 = if finisher {
             data.plyr.attack_finish_v0
-        } else if s.hits == 0 {
+        } else if s.hits <= 1 {
             data.plyr.attack_first_v0
         } else {
             data.plyr.attack_combo_v0
@@ -529,14 +575,13 @@ pub fn tick(
         let Some(slot) = rig.mset.slot(a.motion as usize, pstate) else { return false };
         body.restart(Some(slot), false, BLEND_ATTACK);
         weapon.restart(Some(slot).filter(|&x| wrig.mset.has(x)), false, BLEND_ATTACK);
-        info!("sora attack {} (key {}, motion id {}, air {air}, hit {}, finisher {finisher})", body.tag(), a.key, a.motion, s.hits + 1);
-        s.hits += 1;
-        if finisher {
-            s.finishers += 1;
-        }
+        info!("sora attack {} (key {}, motion id {}, air {air}, hit {}, finisher {finisher})", body.tag(), a.key, a.motion, s.hits);
         s.state = State::Attack { air, finisher };
         s.timer = 0.0;
         s.queued_attack = false;
+        s.deny_logged = false;
+        // Starting an action clears the hit-landed latch.
+        s.connected = false;
         s.battle = 240.0;
         s.motor.vel = Vec3::ZERO;
         // Face the target; close distance beyond the swing's own root motion at plyr V0.
@@ -550,6 +595,118 @@ pub fn tick(
             s.motor.yaw = dir.x.atan2(dir.z);
         }
         true
+    };
+
+    // The attack button (FUN_00174cf8, command type 1): the explicit actions of FUN_00177ea0, the
+    // combo counters of FUN_00176b00, then the table selection of FUN_00177d58. False when the press
+    // is refused or the table offers nothing. `w` holds the playing motion's input windows and
+    // `fin_window` its finisher window.
+    let target_point = s.target.and_then(|t| enemy_points.iter().find(|(e, _)| *e == t)).and_then(|(_, p)| p.first().copied());
+    let all_points: Vec<TargetPoint> = enemy_points.iter().flat_map(|(_, p)| p.iter().copied()).collect();
+    let request = |s: &mut Sora, body: &mut Animator, weapon: &mut Animator, air: bool, w: Windows, fin_window: bool| -> bool {
+        let log = move_log();
+        let playing = body.slot.map_or(usize::MAX, |sl| sl / 4);
+        let tag_of = |id: u16| rig.mset.slot(id as usize, pstate).and_then(|sl| rig.mset.get(sl)).map_or("-", |x| x.tag.as_str());
+        let mut lines: Vec<String> = Vec::new();
+        let mut chain = s.chain(air, fin_window);
+        if w.free {
+            chain.restart();
+        }
+        let mut chosen: Option<Action> = None;
+        let mut how = "table";
+        let mut press = None;
+        for k in key::EXPLICIT {
+            match s.moves.explicit(k, &chain, w) {
+                Ok(a) => {
+                    let a = a.clone();
+                    let mut c = chain;
+                    if let Some(p) = c.press(w, s.connected) {
+                        chain = c;
+                        press = Some(p);
+                        chosen = Some(a);
+                        how = "explicit key";
+                        break;
+                    }
+                    if log {
+                        lines.push(format!("explicit key {k}: available, but the press is refused"));
+                    }
+                }
+                Err(m) => {
+                    if log {
+                        lines.push(format!("explicit key {k}: {}", explicit_text(m)));
+                    }
+                }
+            }
+        }
+        let scene = selection_scene(&s.motor, target_point, &all_points);
+        let mut evals: Vec<Evaluation> = Vec::new();
+        if chosen.is_none() {
+            press = chain.press(w, s.connected);
+            if press.is_none() {
+                if log && !s.deny_logged {
+                    info!(
+                        "move: attack press refused: motion {playing} ({}), windows free {} combo {} finisher {fin_window}, hit landed {}: no chain without a landed hit in the combo window, and no restart while the motion plays",
+                        tag_of(playing as u16),
+                        w.free,
+                        w.combo,
+                        s.connected
+                    );
+                    s.deny_logged = true;
+                }
+                return false;
+            }
+            let (ev, idx) = s.moves.select(&chain, &scene, playing);
+            evals = ev;
+            chosen = idx.map(|i| s.moves.actions[i].clone());
+        }
+        if log {
+            info!(
+                "move: attack press: {} (combo {}, finishers {}), {} at motion {playing} ({}), windows free {} combo {} finisher {fin_window}, hit landed {}",
+                press.map_or("-".to_string(), |p| format!("{p:?}")),
+                chain.combo,
+                chain.finishers,
+                if air { "airborne" } else { "grounded" },
+                tag_of(playing as u16),
+                w.free,
+                w.combo,
+                s.connected
+            );
+            for l in &lines {
+                info!("move:   {l}");
+            }
+            if !evals.is_empty() {
+                info!(
+                    "move:   target {}; {} enemy point(s) {}",
+                    scene.target.map_or("none".to_string(), |p| probe_text(&p)),
+                    scene.others.len(),
+                    scene.others.iter().map(probe_text).collect::<Vec<_>>().join(" | ")
+                );
+                for e in &evals {
+                    let a = &s.moves.actions[e.index];
+                    info!(
+                        "move:   #{} key {} motion {} ({}) group {} -> {}",
+                        e.index,
+                        a.key,
+                        a.motion,
+                        tag_of(a.motion),
+                        a.group,
+                        verdict_text(&e.verdict)
+                    );
+                }
+            }
+        }
+        let Some(a) = chosen else {
+            if log {
+                info!("move:   the table offers no attack");
+            }
+            return false;
+        };
+        if log {
+            info!("move:   chosen key {} motion {} ({}) by {how}", a.key, a.motion, tag_of(a.motion));
+        }
+        s.hits = chain.combo;
+        s.finishers = chain.finishers;
+        start_attack(s, body, weapon, &a, air)
     };
 
     let start_jump = |s: &mut Sora, body: &mut Animator| {
@@ -569,7 +726,7 @@ pub fn tick(
     match s.state {
         State::Ground => {
             s.hits = 0;
-            s.finishers = 0;
+            s.finishers = 1;
             s.motor.ground_velocity(dir, move_speed);
             if move_speed > 0.0 {
                 s.motor.turn_to(dir, prty.turn_speed);
@@ -583,7 +740,7 @@ pub fn tick(
             if jump {
                 start_jump(s, &mut body);
             } else if attack {
-                start_attack(s, &mut body, &mut weapon, false, false);
+                request(s, &mut body, &mut weapon, false, Windows { free: true, combo: false }, false);
             } else if square {
                 if let Some(f) = data.fmab(growth.quick_run).filter(|_| move_speed > 0.0) {
                     // Quick Run: dash along the input at AirSlideSpeed while the button is held.
@@ -595,7 +752,7 @@ pub fn tick(
                     s.dash_brake = f.air_slide_brake;
                     s.invuln = f.air_slide_star_time;
                     body.restart(motion(mid::QUICK_RUN), false, 0.0);
-                } else if let Some(g) = s.moves.by_key(key::GUARD).filter(|g| s.available(g, false, false)).cloned()
+                } else if let Some(g) = s.moves.by_key(key::GUARD).filter(|g| s.chain(false, false).check(g).is_ok()).cloned()
                     && let Some(slot) = rig.mset.slot(g.motion as usize, pstate)
                 {
                     // The guard action is a ground action of the attack table.
@@ -612,7 +769,7 @@ pub fn tick(
         State::Air => {
             // Free fall counts as an idle motion: a new air chain may start.
             s.hits = 0;
-            s.finishers = 0;
+            s.finishers = 1;
             s.motor.air_velocity(dir, move_speed);
             if move_speed > 0.0 {
                 s.motor.turn_to(dir, prty.turn_speed);
@@ -636,7 +793,7 @@ pub fn tick(
                 s.timer = 0.0;
                 body.play(motion(if move_speed > 0.0 { mid::GLIDE } else { mid::GLIDE_HOVER }), true, BLEND_GLIDE);
             } else if attack {
-                start_attack(s, &mut body, &mut weapon, true, false);
+                request(s, &mut body, &mut weapon, true, Windows { free: true, combo: false }, false);
             }
             // No air guard: the guard action is ground-only in the attack table (A350 is the air
             // recoil motion).
@@ -707,12 +864,12 @@ pub fn tick(
                     s.motor.jump = Jump::fall(0.0, s.motor.pos.y);
                 }
             }
-            // The attack table decides air or ground by Sora's state at this moment; a finisher
-            // needs its window (or enough hits) and is limited per chain.
+            // A pressed attack is tried every tick while a window of the motion is open (the game
+            // keeps the pending command and retries it); the table decides air or ground by Sora's
+            // state at this moment.
             let air_now = !s.motor.grounded || body.trigger(range::NO_GRAVITY);
-            let next = s.queued_attack.then(|| s.next_attack(air_now, finisher_window, body.slot.map_or(usize::MAX, |sl| sl / 4)).cloned()).flatten();
-            let continues = next.as_ref().is_some_and(|a| if a.finisher() { window && s.finishers < MAX_FINISHERS } else { combo_window });
-            if continues && start_attack(s, &mut body, &mut weapon, air_now, finisher_window) {
+            let windows = Windows { free: body.trigger(range::GROUNDED) || body.trigger(range::AIR) || body.trigger(range::BLEND_TO_IDLE), combo: combo_window };
+            if s.queued_attack && (windows.free || windows.combo || finisher_window) && request(s, &mut body, &mut weapon, air_now, windows, finisher_window) {
                 // Chained into the next attack.
             } else if jump && window && s.motor.grounded {
                 start_jump(s, &mut body);
@@ -732,8 +889,8 @@ pub fn tick(
             // The guard motion lets Sora out when its blend-to-idle range opens; an attack pressed
             // after a guard hit answers with the counter action of the attack table (it needs its
             // ability), as the game does while the guard-hit motion plays.
-            let counter = (s.state == State::Counter && attack && s.has_ability(ABILITY_COUNTER))
-                .then(|| s.moves.by_key(key::COUNTER).cloned())
+            let counter = (s.state == State::Counter && attack)
+                .then(|| s.moves.by_key(key::COUNTER).filter(|c| s.chain(false, false).check(c).is_ok()).cloned())
                 .flatten()
                 .and_then(|c| rig.mset.slot(c.motion as usize, pstate).map(|slot| (c, slot)));
             if let Some((c, slot)) = counter {
@@ -743,12 +900,13 @@ pub fn tick(
                 s.state = State::Attack { air: false, finisher: false };
                 s.timer = 0.0;
                 s.hits = 1;
-                s.finishers = 0;
+                s.finishers = 1;
                 s.queued_attack = false;
+                s.connected = false;
             } else if body.finished || (body.trigger(range::BLEND_TO_IDLE) && (dir != Vec3::ZERO || attack)) {
                 s.state = if s.motor.grounded { State::Ground } else { State::Air };
                 if attack && s.motor.grounded {
-                    start_attack(s, &mut body, &mut weapon, false, false);
+                    request(s, &mut body, &mut weapon, false, Windows { free: true, combo: false }, false);
                 }
             }
         }
@@ -865,7 +1023,7 @@ fn auto_target(p: &kh2_tables::tables::PrefPlyr, m: &Motor, alive: &[(Entity, Ve
 
 fn land(s: &mut Sora, body: &mut Animator, land_slot: Option<usize>, moving: bool) {
     s.hits = 0;
-    s.finishers = 0;
+    s.finishers = 1;
     match s.state {
         State::Air | State::Glide | State::Blown => {
             if s.state != State::Blown {
@@ -889,6 +1047,52 @@ fn place(tf: &mut Transform, s: &Sora, _body: &Animator, _bodies: &mut Query<&mu
 pub fn respawn(s: &mut Sora, at: Vec3) {
     s.motor = Motor { pos: at, ..Motor::default() };
     s.state = State::Ground;
+}
+
+fn probe_text(p: &Probe) -> String {
+    format!("(dist {:.1}, dy {:.1}, dot {:.3}, half height {:.1})", p.dist, p.dy, p.dot, p.half_height)
+}
+
+fn reject_text(r: moveset::Reject) -> String {
+    match r {
+        moveset::Reject::NoMotion => "no motion".into(),
+        moveset::Reject::Ability(b) => format!("ability bit {b} not set"),
+        moveset::Reject::State => "wrong airborne state".into(),
+        moveset::Reject::FinisherNotReady => "finisher, but the combo is not long enough and no finisher window is open".into(),
+        moveset::Reject::FinisherDone => "normal attack, but the finishers of the chain are used up".into(),
+    }
+}
+
+fn verdict_text(v: &Verdict) -> String {
+    match v {
+        Verdict::ByKeyOnly => "group 0: only chosen by key".into(),
+        Verdict::Rejected(r) => format!("not available: {}", reject_text(*r)),
+        Verdict::NoTarget => "no point to test".into(),
+        Verdict::Outside(m) => format!("outside the {} window", match m {
+            moveset::Miss::Distance => "distance",
+            moveset::Miss::Height => "height",
+            moveset::Miss::Angle => "angle",
+        }),
+        Verdict::Flagged => "FLAGGED".into(),
+    }
+}
+
+fn explicit_text(m: ExplicitMiss) -> String {
+    match m {
+        ExplicitMiss::NoRecord => "no such record".into(),
+        ExplicitMiss::Rejected(r) => format!("not available: {}", reject_text(r)),
+        ExplicitMiss::FinisherPossible => "a normal attack while a finisher is possible".into(),
+        ExplicitMiss::NoWindow => "no allow-combo or finisher window open".into(),
+    }
+}
+
+/// A hit of Sora's swing landed on something: the game sets a latch (FUN_0018c6d0) that the next
+/// attack press needs to continue the chain.
+pub fn track_connects(mut hits: MessageReader<Hit>, mut walls: MessageReader<WallHit>, mut sora_q: Query<(Entity, &mut Sora)>) {
+    let Ok((me, mut s)) = sora_q.single_mut() else { return };
+    if hits.read().any(|h| h.attacker == me) | walls.read().any(|w| w.attacker == me) {
+        s.connected = true;
+    }
 }
 
 /// Sora's attack volume touching a wall: the generic recoil of the actor class (FUN_00175668, then
@@ -943,7 +1147,7 @@ pub fn receive_wall_hits(
         );
         s.state = State::Hurt;
         s.motor.vel = Vec3::ZERO;
-        s.finishers = 0;
+        s.finishers = 1;
         s.queued_attack = false;
         s.timer = 0.0;
         fighter.landed.clear();
@@ -1056,10 +1260,198 @@ pub fn receive_hits(
         }
         if !matches!(action, VictimAction::None | VictimAction::NotDecoded { .. } | VictimAction::Push { .. }) {
             s.hits = 0;
-            s.finishers = 0;
+            s.finishers = 1;
             fighter.landed.clear();
         }
         // The game's invulnerability after a hit was not found; the app keeps its own timer.
         s.invuln = 36.0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kh2_anim::moveset::Press;
+    use kh2_tables::tables as t;
+
+    /// Sora's real attack table from the user's disc; None (test skipped) without one.
+    fn real_moves() -> Option<Moveset> {
+        let iso = std::env::var("KH2_ISO").ok().or_else(|| {
+            let f = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../local/iso.txt");
+            std::fs::read_to_string(f).ok().map(|s| s.trim().to_string())
+        });
+        let Some(iso) = iso else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return None;
+        };
+        let mut a = kh2_archive::Archive::open(&iso).map_err(|e| eprintln!("skipped: {iso}: {e}")).ok()?;
+        let index = kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).ok()?.rows.into_iter().find(|r| r.model_name == "P_EX100")?.neo_moveset as usize;
+        Moveset::parse(&kh2_tables::subfile(&mut a, &t::PTYA).ok()?, index)
+    }
+
+    fn chain(air: bool, combo: u8, abilities: &[u16]) -> Chain {
+        Chain {
+            airborne: air,
+            abilities: abilities.iter().fold(1u128 << ABILITY_GUARD, |m, b| m | 1 << b),
+            combo,
+            finishers: 1,
+            max_ground: BASE_HITS_GROUND,
+            max_air: BASE_HITS_AIR,
+            max_finishers: BASE_FINISHERS,
+            finisher_window: false,
+        }
+    }
+
+    /// A target point at horizontal distance `dist`, `up` above Sora (Y up), dead ahead.
+    fn point(dist: f32, up: f32) -> Probe {
+        Probe { dist, dy: -up, dot: 1.0, half_height: 45.0 }
+    }
+
+    /// Another enemy's point: off the target's direction, so a group 2 record can take it (group 2's
+    /// angle window ends just below 1: the target's own direction does not count).
+    fn other(dist: f32, up: f32) -> Probe {
+        Probe { dot: 0.5, ..point(dist, up) }
+    }
+
+    fn pick(m: &Moveset, c: &Chain, scene: &Scene, playing: usize) -> u8 {
+        let (_, i) = m.select(c, scene, playing);
+        m.actions[i.expect("something is chosen")].key
+    }
+
+    fn motion_of(m: &Moveset, key: u8) -> u16 {
+        m.by_key(key).unwrap().motion
+    }
+
+    #[test]
+    fn ground_combo_hits_follow_range_and_finisher() {
+        let Some(m) = real_moves() else { return };
+        // The table's own geometry: A301 key 4 (group 2, within 180, any enemy not behind), A302 key 6
+        // (group 1, target 180 to 300 away), finishers key 2 (A303, group 2) and key 3 (A304, group 3).
+        assert_eq!((motion_of(&m, 5), motion_of(&m, 4), motion_of(&m, 6), motion_of(&m, 2), motion_of(&m, 3)), (151, 152, 153, 154, 155));
+        let none = Scene::default();
+        // First hit from idle: the default attack.
+        assert_eq!(pick(&m, &chain(false, 1, &[]), &none, 0), 5);
+        // Second hit with no enemy about: A300's alternative, A302.
+        assert_eq!(pick(&m, &chain(false, 2, &[]), &none, 151), 6);
+        // An enemy within 180 in front: A301.
+        let near = Scene { others: vec![other(100.0, 50.0)], ..Scene::default() };
+        assert_eq!(pick(&m, &chain(false, 2, &[]), &near, 151), 4);
+        // The locked target 180 to 300 away: A302 directly (group 1 comes before key 4 in the table).
+        let far = Scene { target: Some(point(220.0, 50.0)), others: vec![point(220.0, 50.0)], ..Scene::default() };
+        assert_eq!(pick(&m, &chain(false, 2, &[]), &far, 151), 6);
+        // The same target while A301 plays and nothing is close: key 5 (A300) is next in the table order.
+        assert_eq!(pick(&m, &chain(false, 2, &[]), &none, 152), 5);
+        // Third hit: a finisher. A303 with an enemy in front within 180, else A304.
+        assert_eq!(pick(&m, &chain(false, 3, &[]), &near, 152), 2);
+        assert_eq!(pick(&m, &chain(false, 3, &[]), &none, 152), 3);
+        // An enemy behind Sora (dot below -0.707) does not count for the group 2 windows.
+        let behind = Scene { others: vec![Probe { dot: -0.9, ..other(100.0, 50.0) }], ..Scene::default() };
+        assert_eq!(pick(&m, &chain(false, 3, &[]), &behind, 152), 3);
+        // A longer combo with Combo Plus: the third press is still a normal hit.
+        let mut plus = chain(false, 3, &[ABILITY_COMBO_PLUS]);
+        plus.max_ground = 4;
+        assert_eq!(pick(&m, &plus, &near, 151), 4);
+        // A motion is never picked again while it plays: with A301 playing key 5 (A300) is next.
+        assert_eq!(pick(&m, &plus, &near, 152), 5);
+    }
+
+    #[test]
+    fn height_window_of_a_group_1_record() {
+        let Some(m) = real_moves() else { return };
+        let a6 = m.by_key(6).unwrap().clone();
+        // Heights are Y down: a target point 50 above Sora is dy -50; the window is (-110 - half, -20 + half].
+        assert_eq!(a6.window(&point(220.0, 50.0), 0.0), Ok(()));
+        assert_eq!(a6.window(&point(220.0, 190.0), 0.0), Err(moveset::Miss::Height));
+        assert_eq!(a6.window(&point(220.0, -80.0), 0.0), Err(moveset::Miss::Height));
+        assert_eq!(a6.window(&point(150.0, 50.0), 0.0), Err(moveset::Miss::Distance));
+        assert_eq!(a6.window(&point(300.0, 50.0), 0.0), Err(moveset::Miss::Distance));
+        // The angle window of group 1 only passes a point in the reference direction.
+        assert_eq!(a6.window(&Probe { dot: 0.9, ..point(220.0, 50.0) }, 0.0), Err(moveset::Miss::Angle));
+    }
+
+    #[test]
+    fn air_chain_a330_a331_then_a332_or_a333() {
+        let Some(m) = real_moves() else { return };
+        assert_eq!((motion_of(&m, 9), motion_of(&m, 10), motion_of(&m, 8), motion_of(&m, 7), motion_of(&m, 29)), (181, 182, 183, 184, 194));
+        let none = Scene::default();
+        // Press 1 in the air: A330. Press 2 while it plays: its alternative key 10, A331.
+        assert_eq!(pick(&m, &chain(true, 1, &[]), &none, 0), 9);
+        assert_eq!(pick(&m, &chain(true, 2, &[]), &none, 181), 10);
+        // Press 3 is the finisher: A333 (key 7) with an enemy within 260 and not behind, else A332 (key 8).
+        let near = Scene { others: vec![other(150.0, 0.0)], ..Scene::default() };
+        assert_eq!(pick(&m, &chain(true, 3, &[]), &near, 182), 7);
+        assert_eq!(pick(&m, &chain(true, 3, &[]), &none, 182), 8);
+        let far = Scene { others: vec![other(400.0, 0.0)], ..Scene::default() };
+        assert_eq!(pick(&m, &chain(true, 3, &[]), &far, 182), 8);
+        // A340 to A344 are gated on ability bits 97 to 101; Aerial Finish (100, key 29) comes before
+        // key 8 in the table but after key 7.
+        assert_eq!(pick(&m, &chain(true, 3, &[100]), &none, 182), 29);
+        assert_eq!(pick(&m, &chain(true, 3, &[100]), &near, 182), 7);
+    }
+
+    #[test]
+    fn gated_records_need_their_ability_and_window() {
+        let Some(m) = real_moves() else { return };
+        // A341 (key 36, bit 98): group 1 reaches a target up to 650 away at any height; group 2 needs an
+        // enemy 300 to 650 away within the angle.
+        let target = Scene { target: Some(point(500.0, 400.0)), ..Scene::default() };
+        let (ev, _) = m.select(&chain(true, 1, &[]), &target, 0);
+        let i = m.actions.iter().position(|a| a.key == 36).unwrap();
+        assert_eq!(ev[i].verdict, Verdict::Rejected(moveset::Reject::Ability(98)));
+        let (ev, chosen) = m.select(&chain(true, 1, &[98]), &target, 0);
+        assert_eq!(ev[i].verdict, Verdict::Flagged);
+        assert_eq!(m.actions[chosen.unwrap()].key, 36);
+        // A340 (key 33, bit 97) is a grounded action for a target 110 to 250 above within 260.
+        let high = Scene { target: Some(point(100.0, 200.0)), ..Scene::default() };
+        let (ev, _) = m.select(&chain(false, 1, &[97]), &high, 0);
+        let i = m.actions.iter().position(|a| a.key == 33).unwrap();
+        assert_eq!(ev[i].verdict, Verdict::Flagged);
+        let (ev, _) = m.select(&chain(false, 1, &[97]), &Scene { target: Some(point(100.0, 20.0)), ..Scene::default() }, 0);
+        assert_eq!(ev[i].verdict, Verdict::Outside(moveset::Miss::Height));
+        let (ev, _) = m.select(&chain(true, 1, &[97]), &high, 0);
+        assert_eq!(ev[i].verdict, Verdict::Rejected(moveset::Reject::State));
+    }
+
+    #[test]
+    fn explicit_actions_need_a_window_and_their_ability() {
+        let Some(m) = real_moves() else { return };
+        let w = Windows { free: false, combo: true };
+        // Finishing Leap (key 37, bit 95, finisher with argument 1): one attack early.
+        assert!(m.explicit(37, &chain(false, 1, &[95]), w).is_err());
+        assert_eq!(m.explicit(37, &chain(false, 2, &[95]), w).map(|a| a.motion), Ok(167));
+        assert_eq!(m.explicit(37, &chain(false, 2, &[]), w), Err(ExplicitMiss::Rejected(moveset::Reject::Ability(95))));
+        assert_eq!(m.explicit(37, &chain(false, 2, &[95]), Windows::default()), Err(ExplicitMiss::NoWindow));
+        // Upper Slash (key 12, bit 18): a normal attack, so only while no finisher is possible.
+        assert_eq!(m.explicit(12, &chain(false, 1, &[18]), w).map(|a| a.motion), Ok(161));
+        assert_eq!(m.explicit(12, &chain(false, 3, &[18]), w), Err(ExplicitMiss::FinisherPossible));
+        // Horizontal Slash (key 38, bit 99) is an airborne action.
+        assert_eq!(m.explicit(38, &chain(true, 1, &[99]), w).map(|a| a.motion), Ok(193));
+        assert_eq!(m.explicit(38, &chain(false, 1, &[99]), w), Err(ExplicitMiss::Rejected(moveset::Reject::State)));
+    }
+
+    #[test]
+    fn press_counters() {
+        // The counters follow FUN_00176b00 whatever the table says.
+        let mut c = chain(false, 1, &[]);
+        let idle = Windows { free: true, combo: false };
+        assert_eq!(c.press(idle, false), Some(Press::Restart));
+        assert_eq!((c.combo, c.finishers), (1, 1));
+        let window = Windows { free: false, combo: true };
+        // No hit landed: the press is refused in the combo window of a playing swing.
+        assert_eq!(c.press(window, false), None);
+        assert_eq!(c.press(window, true), Some(Press::Continue));
+        assert_eq!(c.combo, 2);
+        // An extra finisher needs Finishing Plus (max 2) and an open finisher window with a landed hit;
+        // with the base single finisher an open finisher window alone does nothing.
+        c.finisher_window = true;
+        assert_eq!(c.press(Windows::default(), true), None);
+        let mut plus = chain(false, 3, &[]);
+        plus.max_finishers = 2;
+        plus.finisher_window = true;
+        assert_eq!(plus.press(Windows::default(), true), Some(Press::ExtraFinisher));
+        assert_eq!(plus.finishers, 2);
+        // After it a normal attack is refused (finisher ready, finishers used up).
+        let normal = Action { key: 6, group: 1, alt: -1, arg: 0, flags: 0, motion: 153, next_motion: 0, distance: [0.0; 2], height: [0.0; 2], angle: [0.0; 2], ability: 0 };
+        assert_eq!(plus.check(&normal), Err(moveset::Reject::FinisherDone));
     }
 }

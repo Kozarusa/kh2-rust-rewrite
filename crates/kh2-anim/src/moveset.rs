@@ -14,7 +14,7 @@
 //! | 1 | candidate group: 3 = always a candidate, 1 = candidate for the locked target by range, 2 = candidate for other threatening enemies by range, 0 = only chosen explicitly by key |
 //! | 2 | alternative key (signed, -1 none): tried when this action's motion is already playing |
 //! | 3 | argument of the finisher test |
-//! | 4 | flags: bit 0 airborne only, bit 1 and bits 3, 4 adjust the height window, bit 2 finisher |
+//! | 4 | flags: bit 0 airborne only, bit 1 widens the height window's lower bound by the weapon reach, bits 3 and 4 pick the sign of the target's half-height added to the upper and lower bounds, bit 2 finisher |
 //! | 8 | motion ID played |
 //! | 10 | motion ID queued after it (4, the fall, for air attacks) |
 //! | 0x20, 0x24 | horizontal distance window (min inclusive, max exclusive) |
@@ -121,6 +121,322 @@ impl Moveset {
         }
         fallback
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Selection rules. The game's attack request (FUN_00174cf8, command type 1) runs the explicit-key
+// checks (FUN_00177ea0), the combo counter update (FUN_00176b00) and then the table selection
+// (FUN_00177d58 -> FUN_001cbcf8 builds a bit per record, FUN_001cbf48 picks). See
+// docs/moveset-selection.md for the evaluation order and the gaps.
+// ---------------------------------------------------------------------------------------------
+
+/// Action keys that the game's code asks for by name.
+pub mod key {
+    /// The attack chosen when nothing else qualifies, on the ground and in the air.
+    pub const GROUND_ATTACK: u8 = 5;
+    pub const AIR_ATTACK: u8 = 9;
+    /// Chosen by the wall probe (FUN_001cbcf8), whatever its group says.
+    pub const WALL_PROBE: u8 = 1;
+    pub const GUARD: u8 = 11;
+    /// Explicit actions tried on an attack press before the table selection, in this order
+    /// (FUN_00177ea0): Finishing Leap, Upper Slash, Horizontal Slash.
+    pub const EXPLICIT: [u8; 3] = [37, 12, 38];
+    /// The attack that answers a guard hit.
+    pub const COUNTER: u8 = 39;
+}
+
+/// The combo state the availability tests read (fields of the actor and its status block).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Chain {
+    /// Airborne in the sense of FUN_0019aa28 (also true while a no-gravity range is active).
+    pub airborne: bool,
+    /// Ability bits (the records' gate); bit 0 of a record means no gate.
+    pub abilities: u128,
+    /// Actor +0xb04: attacks accepted in the chain, counting the one being chosen.
+    pub combo: u8,
+    /// Actor +0xb05: finishers accepted in the chain, starts at 1.
+    pub finishers: u8,
+    /// Status block +0x28 / +0x29: attacks before the finisher on the ground / in the air.
+    pub max_ground: u8,
+    pub max_air: u8,
+    /// Status block +0x2a: finishers per chain.
+    pub max_finishers: u8,
+    /// A finisher window (range trigger 50) is open: actor +0x168 bit 0x20.
+    pub finisher_window: bool,
+}
+
+/// Why a record is not available (FUN_0019f1b0).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reject {
+    NoMotion,
+    /// The ability bit of the record is not set.
+    Ability(u16),
+    /// The record is for the other airborne state.
+    State,
+    /// A finisher while the combo is not long enough and no finisher window is open.
+    FinisherNotReady,
+    /// A normal attack after the combo is long enough and the finisher count is used up.
+    FinisherDone,
+}
+
+impl Chain {
+    pub fn has_ability(&self, bit: u16) -> bool {
+        bit == 0 || (bit < 128 && self.abilities >> bit & 1 != 0)
+    }
+
+    /// FUN_00176908: a finisher is possible now: a finisher window is open, or the chain is long
+    /// enough (`arg` counts attacks the finisher may be early by). The status flag 0x800 case of
+    /// FUN_001768b8 (which makes it false) is not modelled.
+    pub fn finisher_ready(&self, arg: u8) -> bool {
+        self.finisher_window || (if self.airborne { self.max_air } else { self.max_ground }) as i32 <= self.combo as i32 + arg as i32
+    }
+
+    /// FUN_0019f1b0.
+    pub fn check(&self, a: &Action) -> Result<(), Reject> {
+        if a.motion == 0 {
+            return Err(Reject::NoMotion);
+        }
+        if !self.has_ability(a.ability) {
+            return Err(Reject::Ability(a.ability));
+        }
+        if self.airborne != a.air_only() {
+            return Err(Reject::State);
+        }
+        if a.finisher() {
+            if !self.finisher_ready(a.arg) {
+                return Err(Reject::FinisherNotReady);
+            }
+        } else if self.finisher_ready(0) && self.finishers > 1 {
+            return Err(Reject::FinisherDone);
+        }
+        Ok(())
+    }
+
+    /// FUN_00176a70: a chain starts.
+    pub fn restart(&mut self) {
+        self.combo = 1;
+        self.finishers = 1;
+    }
+}
+
+/// Which input windows of the playing motion are open (the actor's range-trigger word, +0x160).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Windows {
+    /// A grounded, airborne or blend-to-idle range (bits 4, 8, 0x10): the actor is free to start.
+    pub free: bool,
+    /// The allow-combo range (bit 0x400).
+    pub combo: bool,
+}
+
+/// How an attack press was accepted (FUN_00176b00).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Press {
+    /// A new chain: the counters were reset.
+    Restart,
+    /// The chain goes on: the combo counter went up.
+    Continue,
+    /// An extra finisher in an open finisher window: the finisher counter went up.
+    ExtraFinisher,
+}
+
+impl Chain {
+    /// FUN_00176b00: whether an attack press is accepted now, updating the counters. `connected` is
+    /// the actor's "a hit landed" latch (+0x108 bit 0x2000000, set by FUN_0018c6d0 and the wall
+    /// recoil, cleared when an action starts).
+    pub fn press(&mut self, w: Windows, connected: bool) -> Option<Press> {
+        if self.finisher_window && connected && self.finishers < self.max_finishers {
+            self.finishers += 1;
+            return Some(Press::ExtraFinisher);
+        }
+        if !w.combo || !connected {
+            if w.free {
+                self.restart();
+                return Some(Press::Restart);
+            }
+            return None;
+        }
+        self.combo = (self.combo + 1).min(100);
+        Some(Press::Continue)
+    }
+}
+
+/// How a target point lies relative to the actor (the arguments of FUN_0019f090). Heights are the
+/// game's Y-down: a point above the actor has a negative `dy`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Probe {
+    /// Horizontal distance to the point less the point's radius, at least 0.
+    pub dist: f32,
+    /// The point's height less the actor's.
+    pub dy: f32,
+    /// Dot product of the horizontal direction to the point with the reference direction (the
+    /// direction to the actor's target, or its facing without one), at most 1.
+    pub dot: f32,
+    /// The point's half height (the target shape's height field).
+    pub half_height: f32,
+}
+
+/// Which part of a record's window a probe misses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Miss {
+    Distance,
+    Height,
+    Angle,
+}
+
+impl Action {
+    /// FUN_0019f090: the record's distance, height and angle windows against a probe. `reach` is
+    /// what FUN_0016be20 returns for flag bit 1 (the weapon's reach; not resolved by the app).
+    pub fn window(&self, p: &Probe, reach: f32) -> Result<(), Miss> {
+        let mut hi = self.height[0];
+        let mut lo = self.height[1];
+        if self.flags & 2 != 0 {
+            lo -= reach;
+        }
+        hi += if self.flags & 8 == 0 { p.half_height } else { -p.half_height };
+        lo += if self.flags & 0x10 == 0 { -p.half_height } else { p.half_height };
+        if !(self.distance[0] <= p.dist && p.dist < self.distance[1]) {
+            return Err(Miss::Distance);
+        }
+        if !(p.dy <= hi && lo < p.dy) {
+            return Err(Miss::Height);
+        }
+        if !(p.dot <= self.angle[1] && self.angle[0] < p.dot) {
+            return Err(Miss::Angle);
+        }
+        Ok(())
+    }
+}
+
+/// What the selection sees besides the chain.
+#[derive(Clone, Debug, Default)]
+pub struct Scene {
+    /// The actor's target (lock-on or automatic target), when it has one: group 1 records are tested
+    /// against it.
+    pub target: Option<Probe>,
+    /// Every target point of the other enemies (including the target's): group 2 records pass when
+    /// any of them is inside the window.
+    pub others: Vec<Probe>,
+    /// The wall probe of FUN_001cbcf8 hit something (it flags key 1; not ported).
+    pub wall_probe: bool,
+    pub reach: f32,
+}
+
+/// What became of one record in the selection.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Verdict {
+    /// Group 0: only chosen by key.
+    ByKeyOnly,
+    Rejected(Reject),
+    /// Group 1 without a target, or group 2 without other enemies.
+    NoTarget,
+    /// Outside the window of the best-fitting probe (the first one for group 2).
+    Outside(Miss),
+    Flagged,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Evaluation {
+    pub index: usize,
+    pub verdict: Verdict,
+}
+
+impl Moveset {
+    /// FUN_001cbcf8: one verdict per record. Group 3 records are flagged when available, group 1 when
+    /// available and the target is inside the window, group 2 when available and any other enemy's
+    /// target point is. Key 1 is also flagged by the wall probe.
+    pub fn evaluate(&self, chain: &Chain, scene: &Scene) -> Vec<Evaluation> {
+        self.actions
+            .iter()
+            .enumerate()
+            .map(|(index, a)| {
+                let mut verdict = match a.group {
+                    1..=3 => match chain.check(a) {
+                        Err(r) => Verdict::Rejected(r),
+                        Ok(()) if a.group == 3 => Verdict::Flagged,
+                        Ok(()) => {
+                            let probes: &[Probe] = if a.group == 1 { scene.target.as_slice() } else { &scene.others };
+                            let mut first_miss = None;
+                            let mut hit = false;
+                            for p in probes {
+                                match a.window(p, scene.reach) {
+                                    Ok(()) => {
+                                        hit = true;
+                                        break;
+                                    }
+                                    Err(m) => first_miss = first_miss.or(Some(m)),
+                                }
+                            }
+                            if hit {
+                                Verdict::Flagged
+                            } else {
+                                first_miss.map_or(Verdict::NoTarget, Verdict::Outside)
+                            }
+                        }
+                    },
+                    _ => Verdict::ByKeyOnly,
+                };
+                if a.key == key::WALL_PROBE && scene.wall_probe {
+                    verdict = Verdict::Flagged;
+                }
+                Evaluation { index, verdict }
+            })
+            .collect()
+    }
+
+    /// FUN_001cbf48 over the flagged records: the first whose motion is not the one playing, or whose
+    /// alternative key is its own; failing that, the first flagged record's alternative.
+    pub fn pick_flagged(&self, ev: &[Evaluation], playing: usize) -> Option<usize> {
+        let mut fallback = None;
+        for e in ev.iter().filter(|e| e.verdict == Verdict::Flagged) {
+            let a = &self.actions[e.index];
+            if a.alt as i32 == a.key as i32 || a.motion as usize != playing {
+                return Some(e.index);
+            }
+            if fallback.is_none() && a.alt >= 0 {
+                fallback = self.actions.iter().position(|b| b.key == a.alt as u8);
+            }
+        }
+        fallback
+    }
+
+    /// The whole selection: evaluate, pick, and when nothing was picked flag the default attack (key 5
+    /// on the ground, 9 in the air; flagged whatever its availability) and pick again. Returns the
+    /// verdicts (with the default flagged if it was needed) and the chosen record's index.
+    pub fn select(&self, chain: &Chain, scene: &Scene, playing: usize) -> (Vec<Evaluation>, Option<usize>) {
+        let mut ev = self.evaluate(chain, scene);
+        let mut chosen = self.pick_flagged(&ev, playing);
+        if chosen.is_none() {
+            let default = if chain.airborne { key::AIR_ATTACK } else { key::GROUND_ATTACK };
+            if let Some(i) = self.actions.iter().position(|a| a.key == default) {
+                ev[i].verdict = Verdict::Flagged;
+                chosen = self.pick_flagged(&ev, playing);
+            }
+        }
+        (ev, chosen)
+    }
+
+    /// FUN_00177fa8: an explicit-key action is possible: the record is available, a normal attack
+    /// only while no finisher is possible, and the chain is in an allow-combo or finisher window.
+    /// (The press itself, FUN_00176b00, is the caller's.)
+    pub fn explicit(&self, key: u8, chain: &Chain, w: Windows) -> Result<&Action, ExplicitMiss> {
+        let a = self.by_key(key).ok_or(ExplicitMiss::NoRecord)?;
+        chain.check(a).map_err(ExplicitMiss::Rejected)?;
+        if !a.finisher() && chain.finisher_ready(0) {
+            return Err(ExplicitMiss::FinisherPossible);
+        }
+        if !w.combo && !chain.finisher_window {
+            return Err(ExplicitMiss::NoWindow);
+        }
+        Ok(a)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExplicitMiss {
+    NoRecord,
+    Rejected(Reject),
+    FinisherPossible,
+    NoWindow,
 }
 
 /// A shared handle for components.

@@ -13,6 +13,8 @@ pub struct Shape {
     /// Model bone, or None when the shape follows the object root.
     pub bone: Option<usize>,
     pub offset: [f32; 3],
+    /// The short after the offset: the game moves a target point up by this much (FUN_001894d0).
+    pub lift: f32,
     pub radius: f32,
     pub height: f32,
 }
@@ -40,6 +42,7 @@ pub fn parse(b: &[u8]) -> Vec<Shape> {
                 shape: b[o + 5],
                 bone: (bone != 16384 && bone >= 0).then_some(bone as usize),
                 offset: [i16_at(o + 8) as f32, i16_at(o + 10) as f32, i16_at(o + 12) as f32],
+                lift: i16_at(o + 14) as f32,
                 radius: i16_at(o + 16) as f32,
                 height: i16_at(o + 18) as f32,
             })

@@ -120,6 +120,9 @@ pub struct Core {
     action: Option<Node>,
     /// Mode threads that were stopped; destroyed when the mode machine's pass ends (FUN_0016ca48).
     deferred: Vec<Node>,
+    /// When set, the name of every mode that starts is appended (modes that switch again within the
+    /// frame show up here but not in [`Runtime::current_mode`] sampled once per frame).
+    pub mode_log: Option<Vec<String>>,
 }
 
 pub struct Runtime {
@@ -264,6 +267,7 @@ impl Core {
             requests: Vec::new(),
             action: None,
             deferred: Vec::new(),
+            mode_log: None,
         }
     }
 
@@ -459,6 +463,12 @@ impl Core {
             )
         });
         let ctx = self.modes.ctx;
+        if self.mode_log.is_some() {
+            let name = vm::with_shared(code, sh, |mem| ModeMachine::rec_field(mem, rec, 0).ok().and_then(|n| mem.read_cstr(n).ok()));
+            if let (Some(log), Some(name)) = (self.mode_log.as_mut(), name) {
+                log.push(name);
+            }
+        }
         let handle = self.alloc_handle();
         let node = self.new_node(prog, sh, handle, main, &[ctx]);
         self.modes.cur_thread = Some(node);

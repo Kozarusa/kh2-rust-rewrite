@@ -58,6 +58,85 @@ fn shadow_and_soldier_parse_and_run() {
     }
 }
 
+/// What one enemy script does on the mock world: every mode it entered (in order of first appearance)
+/// and the host calls it made, for a player `distance` away, a random seed, and an optional damage event.
+struct Dry {
+    modes: Vec<String>,
+    host: MockHost,
+    errors: Vec<(usize, kh2_bdx::VmError)>,
+}
+
+fn dry_run(data: &[u8], seed: u32, distance: f32, frames: u32, damage_at: Option<u32>) -> Dry {
+    let p = Program::parse(data).unwrap();
+    analyze(&p).unwrap();
+    let mut rt = Runtime::new(p);
+    rt.shared.rng = seed;
+    rt.core.mode_log = Some(Vec::new());
+    let mut host = MockHost::new();
+    host.player_position = [distance, 0.0, 0.0, 1.0];
+    assert!(rt.spawn(&mut host, SELF_OBJ));
+    for frame in 0..frames {
+        if damage_at == Some(frame) {
+            rt.event(&mut host, 6, &[0x500]);
+        }
+        rt.update(&mut host);
+        host.tick();
+    }
+    Dry { modes: rt.core.mode_log.take().unwrap(), host, errors: rt.core.errors.clone() }
+}
+
+/// Every mode the script enters with the player at several distances, several random seeds, with and
+/// without being hit, and how many calls reached the host undecoded.
+fn mode_cycle(data: &[u8]) -> (std::collections::BTreeSet<String>, usize) {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut unknown = 0;
+    for distance in [150.0, 250.0, 450.0, 900.0] {
+        for seed in 1..=6 {
+            for damage_at in [None, Some(200)] {
+                let d = dry_run(data, seed, distance, 700, damage_at);
+                assert!(d.errors.is_empty(), "seed {seed} distance {distance}: {:?}", d.errors);
+                unknown += d.host.calls().filter(|c| matches!(c, Call::Unknown { .. })).count();
+                seen.extend(d.modes);
+            }
+        }
+    }
+    (seen, unknown)
+}
+
+#[test]
+fn shadow_runs_its_whole_mode_cycle() {
+    let Some((mut a, _)) = open() else { return };
+    let data = object_script(&mut a, "obj/M_EX020.mdlx");
+    let (seen, unknown) = mode_cycle(&data);
+    eprintln!("shadow modes: {seen:?}");
+    assert_eq!(unknown, 0, "every host function Shadow calls is decoded");
+    // (mode_revenge needs the attacker flag, host 1.309, which the mock leaves clear.)
+    for m in ["appear_shadow", "mode_battle", "battle_idle", "move_target", "btl_attack", "btl_short", "btl_long"] {
+        assert!(seen.contains(m), "mode {m} never ran: {seen:?}");
+    }
+    assert!(seen.iter().any(|m| m.starts_with("atk_craw")), "no claw attack: {seen:?}");
+    let d = dry_run(&data, 1, 6000.0, 400, None);
+    assert!(d.errors.is_empty(), "{:?}", d.errors);
+    assert!(d.modes.iter().any(|m| m == "leave"), "{:?}", d.modes);
+}
+
+#[test]
+fn soldier_runs_its_whole_mode_cycle() {
+    let Some((mut a, _)) = open() else { return };
+    let data = object_script(&mut a, "obj/M_EX010.mdlx");
+    let (seen, unknown) = mode_cycle(&data);
+    eprintln!("soldier modes: {seen:?}");
+    assert_eq!(unknown, 0, "every host function Soldier calls is decoded");
+    for m in ["appear", "mode_battle", "idle_time", "atk_craw", "atk_kick", "atk_jump", "move_target", "move_roll", "move_step", "move_back", "btl_attack", "btl_short", "btl_long", "rvg_short", "rvg_long", "mode_revenge", "fight"] {
+        assert!(seen.contains(m), "mode {m} never ran: {seen:?}");
+    }
+    // Far away from the player it gives up and leaves (fades out and hides).
+    let d = dry_run(&data, 1, 6000.0, 300, None);
+    assert!(d.errors.is_empty(), "{:?}", d.errors);
+    assert!(d.modes.iter().any(|m| m == "leave"), "{:?}", d.modes);
+    assert!(d.host.calls().any(|c| matches!(c, Call::Hide { .. })));
+}
+
 #[test]
 fn every_script_on_the_disc_parses() {
     let Some((mut a, _)) = open() else { return };

@@ -405,7 +405,7 @@ pub mod rules {
     /// set, empty when the hand holds none; `FUN_00184640`).
     pub fn parse_wmst(b: &[u8]) -> Vec<[String; 2]> {
         let name = |c: &[u8]| String::from_utf8_lossy(&c[..c.iter().position(|&x| x == 0).unwrap_or(c.len())]).into_owned();
-        b.chunks_exact(0x40).map(|c| [name(&c[..0x20]), name(&c[0x20..])]).collect()
+        b.as_chunks::<0x40>().0.iter().map(|c| [name(&c[..0x20]), name(&c[0x20..])]).collect()
     }
 }
 
@@ -903,7 +903,7 @@ fn drive_tick(
                 }
                 // The load happens now; the swap waits for the old body's change motion.
                 let key = (entered, world.0);
-                if !cache.0.contains_key(&key) {
+                if let std::collections::hash_map::Entry::Vacant(slot) = cache.0.entry(key) {
                     match load_assets(&disc, &rules, &rigs, entered, world.0) {
                         Some(a) => {
                             if let Some(l) = lib.as_deref_mut() {
@@ -913,7 +913,7 @@ fn drive_tick(
                                     register_effects(&disc, l, r);
                                 }
                             }
-                            cache.0.insert(key, Arc::new(a));
+                            slot.insert(Arc::new(a));
                         }
                         None => {
                             warn!("drive: files of {} not loadable; the change is skipped", form_name(entered));
@@ -929,7 +929,7 @@ fn drive_tick(
                     let slot = body.rig.mset.slot(MOTION_LEAVE, kh2_anim::PlayerState::BattleWeapon)?;
                     body.restart(Some(slot), false, 4.0);
                     let armed = weapon.rig.mset.has(slot);
-                    weapon.restart(Some(slot).filter(|_| armed), false, 4.0);
+                    weapon.restart(armed.then_some(slot), false, 4.0);
                     Some(slot)
                 });
                 if let Some(slot) = started {
@@ -1014,7 +1014,7 @@ fn drive_tick(
                 let slot = body.rig.mset.slot(MOTION_ARRIVE, kh2_anim::PlayerState::BattleWeapon)?;
                 body.restart(Some(slot), false, 0.0);
                 let armed = weapon.rig.mset.has(slot);
-                weapon.restart(Some(slot).filter(|_| armed), false, 0.0);
+                weapon.restart(armed.then_some(slot), false, 0.0);
                 info!("drive: arrival motion {} (id {MOTION_ARRIVE})", body.tag());
                 Some(())
             });
@@ -1139,7 +1139,7 @@ fn weapon_visibility(
     if !armed && let Ok(mut v) = vis.get_mut(s.weapon) {
         *v = Visibility::Hidden;
     }
-    let shown = vis.get(s.weapon).map(|v| *v).unwrap_or(Visibility::Hidden);
+    let shown = vis.get(s.weapon).copied().unwrap_or(Visibility::Hidden);
     if let Some(l) = left.0 && let Ok(mut v) = vis.get_mut(l) {
         *v = shown;
     }

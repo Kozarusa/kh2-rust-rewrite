@@ -595,7 +595,7 @@ impl BevyHost<'_> {
                 self.obj.fade = Some(Fade { from: 0.0, to: 1.0, frames: *frames, t: 0.0 });
                 imp(Value::None)
             }
-            Call::GroundMarker { .. } => missing(Value::None, "ground marker effect"),
+            Call::GroundMarker { .. } => missing(Value::None, "the drop: FUN_0016b738 finds the ground under the object, FUN_001a3cb0 spawns row `id` of the drop table (orbs, munny); the app has no pickups"),
             Call::SetFlag { bit, .. } => {
                 if (0..64).contains(bit) {
                     self.obj.flags |= 1 << bit;
@@ -755,6 +755,10 @@ fn load_programs(disc: Res<Disc>, mut programs: ResMut<AiPrograms>) {
 /// Gives every new Shadow and Soldier its script runtime. Runs right after the wave spawner, so the
 /// script's first frame is the frame the enemy appears in.
 fn ai_attach(mut commands: Commands, programs: Res<AiPrograms>, q: Query<(Entity, &Enemy), Without<AiBrain>>, mut serial: Local<u32>) {
+    // KH2_NO_BDX=1 keeps the placeholder AI of enemy.rs (for comparing the two).
+    if std::env::var_os("KH2_NO_BDX").is_some() {
+        return;
+    }
     for (ent, e) in &q {
         let Some(script) = programs.by_kind.get(e.kind.name) else { continue };
         *serial += 1;

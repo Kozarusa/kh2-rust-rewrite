@@ -65,6 +65,11 @@ pub struct Batch {
     pub alpha: u8,
     pub verts: Vec<Vertex>,
     pub indices: Vec<u32>,
+    /// Screen-distortion batches (`pppSnoMdlDttNorm`): one displacement per vertex, in the same
+    /// space as the positions. The triangles show the already drawn scene as seen through the
+    /// vertex position shifted by its displacement, tinted by the vertex color. Empty for every
+    /// other batch.
+    pub offsets: Vec<Vec3>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -101,6 +106,9 @@ pub(crate) struct Obj {
     pub ring: Vec<[Vec3; 2]>,
     /// Per-program heap blocks (particle pools, tail rings), keyed by program index.
     pub heap: Vec<(usize, crate::progx::Heap)>,
+    /// A random 16-bit value drawn when the object is born, for init handlers that call the game's
+    /// global `rand()` (the handlers have no access to the effect's own generator).
+    pub seed: u16,
 }
 
 impl Obj {
@@ -212,6 +220,8 @@ pub struct Effect {
     /// Object draw order (the game's priority-sorted object list).
     order: Vec<usize>,
     rng: u32,
+    /// Separate stream for the per-object birth seeds, so they do not disturb `rng`.
+    birth_rng: u32,
     pub paused: bool,
     pub done: bool,
 }
@@ -231,6 +241,7 @@ impl Effect {
             objs: Vec::new(),
             order: Vec::new(),
             rng: 0x3f80_1234,
+            birth_rng: 0x2545_f491,
             paused: false,
             done: false,
         })
@@ -297,7 +308,10 @@ impl Effect {
     fn spawn(&mut self, gi: usize) -> usize {
         let g = &self.pd.groups[gi];
         let size = g.cursor_offset.max(OBJ_WORK as i32) as usize + 4 * g.programs.len();
+        // A stand-in for the game's global `rand()`: any 32-bit linear congruential step, top half.
+        self.birth_rng = self.birth_rng.wrapping_mul(0x0019_660d).wrapping_add(0x3c6e_f35f);
         let obj = Obj {
+            seed: (self.birth_rng >> 16) as u16,
             group: gi,
             mem: vec![0; size.max(0x100)],
             cursors: vec![0; g.programs.len()],

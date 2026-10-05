@@ -27,6 +27,7 @@ pub struct Handlers {
 }
 
 pub fn handlers(kind: u32) -> Handlers {
+    use crate::prog_more as m;
     use crate::progx as x;
     let both = |frame: Frame, init: Init| Handlers { frame: Some(frame), init: Some(init), reset: Some(init), ..Default::default() };
     let frame = |frame: Frame| Handlers { frame: Some(frame), ..Default::default() };
@@ -88,6 +89,15 @@ pub fn handlers(kind: u32) -> Handlers {
             init: Some(x::tail_init),
             ..Default::default()
         },
+        "pppKeShpTail3X" => Handlers {
+            frame: Some(m::tail3_frame),
+            draw: Some(m::tail3_draw),
+            init: Some(m::tail3_init),
+            reset: Some(m::tail3_reset),
+            ..Default::default()
+        },
+        "pppKeMvYpEff" => frame(m::mv_yp_eff),
+        "pppSnoMdlDttNorm" => Handlers { draw: Some(m::sno_draw), init: Some(m::sno_init), reset: Some(m::sno_init), ..Default::default() },
         "pppPointAp" => Handlers { frame: Some(x::point_ap), init: Some(x::point_ap_init), ..Default::default() },
         "pppVertexAp" => Handlers { frame: Some(x::vertex_ap), init: Some(x::vertex_ap_init), ..Default::default() },
         "pppVertexApLc" => Handlers { frame: Some(x::vertex_ap_lc), init: Some(x::vertex_ap_init), ..Default::default() },

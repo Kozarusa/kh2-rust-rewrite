@@ -9,6 +9,7 @@ pub mod pax;
 pub mod shape;
 pub mod ppp;
 pub(crate) mod prog;
+pub(crate) mod prog_more;
 pub(crate) mod progx;
 mod rd;
 pub mod vm;

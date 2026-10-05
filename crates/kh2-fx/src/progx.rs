@@ -13,21 +13,21 @@ use crate::vm::{Batch, Ctx, OBJ_DRAW, OBJ_FRAME, OBJ_LOCAL, OBJ_WORK, Obj, Spawn
 pub(crate) fn work(p: &Program, k: usize) -> usize {
     (p.use_val.get(k).copied().unwrap_or(0) as usize) + OBJ_WORK
 }
-fn pb(p: &Program, e: usize, o: usize) -> u8 {
+pub(crate) fn pb(p: &Program, e: usize, o: usize) -> u8 {
     u8_at(&p.params, e + o)
 }
-fn ph(p: &Program, e: usize, o: usize) -> i16 {
+pub(crate) fn ph(p: &Program, e: usize, o: usize) -> i16 {
     i16_at(&p.params, e + o)
 }
-fn pw(p: &Program, e: usize, o: usize) -> i32 {
+pub(crate) fn pw(p: &Program, e: usize, o: usize) -> i32 {
     i32_at(&p.params, e + o)
 }
-fn pf(p: &Program, e: usize, o: usize) -> f32 {
+pub(crate) fn pf(p: &Program, e: usize, o: usize) -> f32 {
     f32_at(&p.params, e + o)
 }
 
 /// Color bytes packed by a color program (work + 8), as GS-scale floats (0x80 = 1.0).
-fn packed_color(obj: &Obj, color_work: usize) -> Vec4 {
+pub(crate) fn packed_color(obj: &Obj, color_work: usize) -> Vec4 {
     let o = color_work + 8;
     Vec4::new(obj.mem[o] as f32, obj.mem[o + 1] as f32, obj.mem[o + 2] as f32, obj.mem[o + 3] as f32) / 128.0
 }
@@ -57,7 +57,7 @@ pub(crate) fn draw_frame(ctx: &mut Ctx, frame: &Frame, m: Mat4, mat: Vec4) {
 }
 
 /// The batch for (texture, blend), appended if new.
-fn batch_for<'a>(ctx: &'a mut Ctx, tex0: Option<u64>, alpha: u8) -> &'a mut Batch {
+pub(crate) fn batch_for<'a>(ctx: &'a mut Ctx, tex0: Option<u64>, alpha: u8) -> &'a mut Batch {
     let dpd = ctx.dpd_index;
     let i = match ctx.draws.iter().rposition(|b| b.dpd == dpd && b.tex0 == tex0 && b.alpha == alpha) {
         Some(i) if i + 1 == ctx.draws.len() => i,
@@ -604,7 +604,7 @@ pub fn tail_init(obj: &mut Obj, p: &Program) {
     set_anim(obj, o + 2, Anim::default());
 }
 
-fn tail_pos(ctx: &Ctx, obj: &Obj, world: bool) -> Vec4 {
+pub(crate) fn tail_pos(ctx: &Ctx, obj: &Obj, world: bool) -> Vec4 {
     let t = obj.mat(OBJ_LOCAL).w_axis;
     let mut v = if world { ctx.env.bind * t } else { t };
     v.w = 1.0;

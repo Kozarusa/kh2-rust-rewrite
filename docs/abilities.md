@@ -10,7 +10,9 @@ gates of the attack table).
 ## What is implemented
 
 `AbilitiesPlugin` (one line in `main.rs`) inserts the `Abilities` resource, built from the disc
-(`item` type 19 rows, `item_stat`, `sstm`, `lvup`), and logs with `KH2_ABILITYLOG=1`.
+(`item` type 19 rows, `item_stat`, `sstm`, `lvup`), logs with `KH2_ABILITYLOG=1`, and keeps the
+controller's view (`sora::Abilities`, `sora::Growth`) in step with the block (`sync_controller`).
+`attacker_bonuses` is the damage routine's use of the element, combo and reaction boosts.
 
 - `Block` is the game's ability block (`status + 0x1cc`) with the defaults of `FUN_001c0d88`;
   `Block::apply` is `FUN_001c0f40` (all 27 stat effects of player-data.md, plus the ability bit).
@@ -84,23 +86,32 @@ ab.block().combo_boost, .defense_bonus, .form_drain, .mp_regen, ...   // every s
 
 The game counts equipped copies, so `ground_combo()` and the others are exact; `bits()` is only a set.
 
-## Hook points needed (not done: sora.rs, drive.rs and the others are another worker's)
+## Hook points (wired by WP-2B2 unless marked)
 
-1. `sora.rs` `start_abilities()` and `Sora::abilities`: replace by `Abilities::bits()`, refreshed whenever
-   `Abilities` changes (`resource_changed`). `Sora::chain()` takes `max_ground`, `max_air`, `max_finishers`
-   from the three combo queries and drops the four `ABILITY_*` constants.
-2. `sora.rs` `setup()` `Growth` from `KH2_GROWTH` / default: set from `Abilities::growth(0..4)` (keep
-   `KH2_GROWTH` as an override). `drive.rs` writes `Growth` in a form from the form's display level; the
-   equivalent here is `Abilities::set_form(Some(list))` with the form's granted abilities
-   (`rules::granted_abilities`) and the growth ability of the form's chain (94..97 for Valor, 98..101 Wisdom,
-   102..105 Master, 106..109 Final, levels by display level), and `set_form(None)` on revert. Then
-   `Growth` follows `Abilities` and the drive code does not have to save and restore it.
-3. `drive.rs` Form Boost: `granted_abilities` / `form_boost` could read `Abilities::block().form_drain`
-   (exact: applied per copy, in a form also the player's support abilities).
-4. Damage (`enemy.rs` / `data.rs::damage`): Combo Boost, Air Combo Boost, Reaction Boost, Berserk Charge,
-   the element boosts and Anti's multiplier read `block()`; where they are used in the damage routine was
-   not traced [GAP], so no formula is claimed here.
-5. HUD or menu code: `ap_used()` / `ap_max()` for an ability menu.
+1. Done: `sora::Abilities` is the controller's view (the bits and the three combo lengths), written by
+   `sync_controller` (FixedUpdate, after `Sim::Weapon` and before `Sim::Sora`, on `resource_changed`) from
+   `bits()`, `ground_combo()`, `air_combo()`, `finishers()`; `start_abilities()` and the `ABILITY_*`/`ID_*`
+   constants of sora.rs are gone (`KH2_ABILITIES` goes through this module). `Sora::chain()` is untouched:
+   it still reads `combo_block()` and `bits()`.
+2. Done: `Growth` follows the block's growth levels through the same system; `KH2_GROWTH` is kept as the
+   `GrowthOverride` resource and applies only while no form is active (in a form the form's growth ability
+   is the one the block holds). `drive.rs` calls `set_form(Some(list))` on the swap with the `fmlv` grants
+   up to the level plus `AbilityRules::growth_ability(form - 1, display level)` (the chain of 0x37c556 found
+   through the growth bits of the kind 3 rows: 94..97, 98..101, 102..105, 106..109), and `set_form(None)` on
+   revert; it no longer saves and restores `Growth`.
+3. Done: the form timer drain reads `block().form_drain` (`drive::rules::drain_per_tick`), so a copy of
+   Form Boost the player equips (a support ability) shortens the drain as well as the form's own grants.
+4. Done where the damage routine was read (`FUN_001a0610`, WP-2B2): after the generic formula and Anti's
+   multiplier, `FUN_001a0a18` scales a Fire, Blizzard or Thunder attack (`atkp.Element` 1, 2, 3) by the
+   block's percent for that element (`+0x40`, `+0x42`, `+0x44`), and `FUN_001a0aa8` adds, with the
+   first matching of: the Combo Boost bit (block word 3 bit 0x40 = ability bit 102) and `atkp.Kind` bit 0,
+   `combo_boost` percent times the actor's combo counter (+0xb04) capped at the ground length
+   (`FUN_00176be8`); the Air Combo Boost bit (103) and `Kind` bit 1, the same with the air length
+   (`FUN_00176c40`); the Reaction Boost bit (104) and `Kind` bit 2, `reaction_boost` percent. Each step
+   rounds up (`(x * p + 99) / 100`). Ported as `attacker_bonuses`, called by `enemy::receive_hits`; the
+   bits 102..104 are checked against the rows in the tests. Berserk Charge is read in the same routine as
+   an addition to the attack stat while MP-charging (`FUN_001a05d0`), not ported: the app has no MP charge.
+5. Open: HUD or menu code: `ap_used()` / `ap_max()` for an ability menu.
 
 ## Gaps
 
@@ -110,9 +121,9 @@ The game counts equipped copies, so `ground_combo()` and the others are exact; `
   Magic Lock-On, Second Chance, Once More, Auto Limit, Auto Change, Auto Healing, ...): the bit is
   provided (`has`, `has_bit`) but their consumers (`bit(FUN_001768a8(object))` readers) were not ported here.
   Only the attack table's own gates (docs/moveset-selection.md) read these bits in the app.
-- The consumers of the stat fields (damage bonuses, MP regeneration, drive gain, drop bonuses, experience
-  multiplier, Defender's low-HP rule) were not traced or ported; the app computes the numbers exactly but nothing
-  reads them yet.
+- The consumers of the stat fields other than the form drain and the damage boosts (MP regeneration, drive
+  gain while charging, Damage Drive, MP Rage, drop bonuses, experience multiplier, Defender's low-HP rule,
+  Berserk Charge) were not traced or ported; the app computes the numbers exactly but nothing reads them yet.
 - Resistance multipliers of equipment (`item_stat` fields at `+8..+0xe`) are not exposed.
 - `ap_used()` as the sum of the ability AP costs is inferred (the menu code that checks it was not read);
   the level-up growth that adds abilities (`lvup` Sword/Shield/Staff) is not simulated: there is no

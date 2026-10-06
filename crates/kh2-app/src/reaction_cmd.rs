@@ -261,8 +261,14 @@ fn offer(
     sora: Query<(&Sora, &Transform)>,
     enemies: Query<(Entity, &Enemy, &Transform)>,
     anims: Query<&Animator>,
+    drive: Option<Res<crate::drive::DriveState>>,
+    battle: Res<crate::sora::Battle>,
 ) {
     let before = slot.0;
+    // The player object's form field (+0xb50, read by FUN_001b7290 for DisableForm) and the
+    // battle flag (FUN_001903d8, Flags bit 16).
+    let form = drive.as_deref().map_or(0, |d| d.object_form());
+    let battle = battle.active() || drive.as_deref().is_some_and(|d| d.force_battle);
     slot.0 = None;
     let Ok((s, st)) = sora.single() else { return };
     // FUN_00188ad0's precondition on the player (FUN_0019a3f8): in the object list and not in the
@@ -281,7 +287,7 @@ fn offer(
         for o in found {
             let Some(c) = rules.cmd(o.cmd) else { continue };
             let d = (tr.translation - st.translation).with_y(0.0).length() / SCALE;
-            let ctx = Ctx { form: 0, distance: d, ..Default::default() };
+            let ctx = Ctx { form, battle, distance: d, ..Default::default() };
             let status = status(&rules.cmds, c, &ctx);
             slot.0 = Some(Active { cmd: o.cmd, pos: o.pos, from: e, status, message: c.message_id as u32 });
         }

@@ -345,18 +345,20 @@ pub fn weapon_trails(
     mut running: Query<&mut RunningEffect>,
 ) {
     let Ok(s) = sora.single() else { return };
-    let Ok(weapon) = anims.get(s.weapon) else { return };
-    let on = weapon.trigger(TRIGGER_TRAIL);
-    let mut have = false;
-    for mut r in running.iter_mut().filter(|r| r.owner() == Some(s.weapon) && r.game_id == EFFECT_TRAIL) {
-        if !on {
-            r.effect.end();
-        } else if !r.effect.is_ending() {
-            have = true;
+    for &w in &s.weapons {
+        let Ok(weapon) = anims.get(w) else { continue };
+        let on = weapon.trigger(TRIGGER_TRAIL);
+        let mut have = false;
+        for mut r in running.iter_mut().filter(|r| r.owner() == Some(w) && r.game_id == EFFECT_TRAIL) {
+            if !on {
+                r.effect.end();
+            } else if !r.effect.is_ending() {
+                have = true;
+            }
         }
-    }
-    if on && !have {
-        start(&mut commands, &lib.keyblade, EFFECT_TRAIL, Bind::Owner(s.weapon));
+        if on && !have {
+            start(&mut commands, &lib.keyblade, EFFECT_TRAIL, Bind::Owner(w));
+        }
     }
 }
 

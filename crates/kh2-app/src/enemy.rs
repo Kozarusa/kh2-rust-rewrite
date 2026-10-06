@@ -283,20 +283,25 @@ pub fn receive_hits(
     mut ai_hits: MessageWriter<crate::enemy_ai::AiHit>,
     mut game: MessageWriter<crate::fx::GameEffect>,
     drive: (Option<Res<crate::drive::DriveRules>>, Option<Res<crate::drive::DriveState>>),
+    abilities: Option<Res<crate::abilities::Abilities>>,
 ) {
-    let from = sora.single().map(|s| s.stats).ok();
+    let from = sora.single().map(|s| (s.stats, s.hits)).ok();
     let Some(reaction) = reaction else { return };
     for h in hits.read() {
-        let (Ok((mut e, mut f, status)), Some(from)) = (q.get_mut(h.target), from) else { continue };
+        let (Ok((mut e, mut f, status)), Some((from, combo_hits))) = (q.get_mut(h.target), from) else { continue };
         if !e.alive() {
             continue;
         }
         let Some(atk) = data.atkp(h.atkp) else { continue };
         let useless = hit_is_ineffective(atk, &e.stats);
         let mut dmg = data.damage(atk, &from, &e.stats);
-        // Anti form multiplies the damage Sora deals (FUN_001a0610).
+        // Anti form multiplies the damage Sora deals (FUN_001a0610), then the attacker's ability
+        // block adds its element and combo/reaction boosts (FUN_001a0a18, FUN_001a0aa8).
         if let (Some(rules), Some(state)) = (&drive.0, &drive.1) {
             dmg = crate::drive::rules::outgoing_damage(&rules.tuning, state.form, atk.r#type, dmg);
+        }
+        if let Some(ab) = &abilities {
+            dmg = crate::abilities::attacker_bonuses(ab.block(), combo_hits, atk, dmg);
         }
         e.hp = (e.hp - dmg).max(0);
         if e.hp == 0 {

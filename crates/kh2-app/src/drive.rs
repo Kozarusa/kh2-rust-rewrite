@@ -533,7 +533,11 @@ impl DriveRules {
         let weapon = |item: u16, hand: usize| -> Option<WeaponFiles> {
             let id = rules::weapon_object(&self.went, ms, self.item_slot(item)?)?;
             let w = self.objs.iter().find(|w| w.object_id == id)?;
-            Some(WeaponFiles { model: w.model_name.clone(), mset: mset_of(hand) })
+            // A hand whose `wmst` name is empty loads no motion set (`FUN_00184640` returns 0 and
+            // `FUN_00184190` skips the animation setup): such a weapon has nothing to animate and is
+            // not drawn [inferred]. Anti's row is the one such case (his went row is filled).
+            let mset = mset_of(hand)?;
+            Some(WeaponFiles { model: w.model_name.clone(), mset: Some(mset) })
         };
         Some(FormFiles {
             model: o.model_name.clone(),
@@ -1461,7 +1465,7 @@ mod tests {
         // Without a form keyblade the left hand is empty.
         assert_eq!(hands(&r.files(form::VALOR, 2, 0).unwrap())[1], None);
         // Wisdom: one keyblade (its form record holds no second item, `take_form_keyblade` gives 0);
-        // Anti: none (its moveset's went row and wmst row are empty).
+        // Anti: none (its went row names W_EX010 but its wmst row is empty, so no motion set loads).
         assert_eq!(hands(&r.files(form::WISDOM, 2, 0).unwrap())[1], None);
         assert!(hands(&r.files(form::WISDOM, 2, key).unwrap())[0].is_some());
         assert_eq!(hands(&r.files(form::ANTI, 2, key).unwrap()), [None, None]);

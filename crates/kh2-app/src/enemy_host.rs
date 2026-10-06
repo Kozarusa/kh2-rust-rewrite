@@ -74,6 +74,10 @@ pub struct Drop {
     /// launch velocity, FUN_001a3b28).
     pub launches: Vec<(u8, [u32; 3])>,
     pub items: Vec<u16>,
+    /// One entry per dropped item: its id and the four generator values its object takes when it is
+    /// made (`crate::prize::item_launch`): the yaw (FUN_001bd0d0), then X, Z and Y of the launch (the
+    /// enter of state 12, FUN_001bd580, which FUN_001bd0d0's `FUN_0016b698(obj, 0xc)` runs at once).
+    pub item_launches: Vec<(u16, [u32; 4])>,
 }
 
 /// FUN_001a3cb0 up to the prize objects: kind `k` drops `ceil(counts[k] * orb)` prizes (FUN_001a4240,
@@ -83,8 +87,10 @@ pub struct Drop {
 /// the pool gives it a slot (FUN_001c4d78 returns 0 when none is free; `free` slots are left). Then
 /// each item pair in turn: one step, and the item drops when `seed * 2^-32 * 100 < chance * item`
 /// (`item` 1.0 plus each member's Lucky Lucky float, +0x64; the seed read unsigned); a dropping item
-/// takes one more step (FUN_001bd490 -> FUN_001bd0d0, its launch). The flags of 0x35d268 (0x200 no
-/// prizes, 0x400 no items) and the player state of FUN_001ce6c0 are taken as clear.
+/// takes four more steps before the next roll (FUN_001bd490 -> FUN_001bd0d0: one for the object's yaw,
+/// then `FUN_0016b698(obj, 0xc)` enters state 12 whose enter FUN_001bd580 takes three for the launch).
+/// The flags of 0x35d268 (0x200 no prizes, 0x400 no items) and the player state of FUN_001ce6c0 are
+/// taken as clear.
 pub fn compute_drop(row: &PrizeRow, orb: f32, item: f32, seed: &mut u32, mut free: usize) -> Drop {
     let mut prizes = [0u32; 9];
     let mut launches = Vec::new();
@@ -104,14 +110,20 @@ pub fn compute_drop(row: &PrizeRow, orb: f32, item: f32, seed: &mut u32, mut fre
         }
     }
     let mut items = Vec::new();
+    let mut item_launches = Vec::new();
     for &(id, chance) in &row.items {
         *seed = seed.wrapping_mul(0x10dcd);
         if (*seed as f32) * 2.328_306_4e-10 * 100.0 < chance as f32 * item {
             items.push(id);
-            *seed = seed.wrapping_mul(0x10dcd);
+            let mut v = [0u32; 4];
+            for x in &mut v {
+                *seed = seed.wrapping_mul(0x10dcd);
+                *x = *seed;
+            }
+            item_launches.push((id, v));
         }
     }
-    Drop { row: row.id, prizes, launches, items }
+    Drop { row: row.id, prizes, launches, items, item_launches }
 }
 
 /// The bytes of the object's own target record (host 2.23, `TARGET`): the player, position index 0
@@ -825,6 +837,13 @@ impl BevyHost<'_> {
             Call::Unknown { group: 4, index: 29, .. } | Call::Func { group: 4, index: 29, .. } => {
                 approx(Value::Int(0), "the manager DAT_01d5dd20 (Struggle) does not exist in the app: FUN_001d6738 answers 0 without it")
             }
+            // 6.31 (wrapper FUN_002eece8, table entry 0x370f58, no arguments): FUN_001a40b8 draws every
+            // pickable prize into the player (FUN_001a3ad8, mode 1) and FUN_001bda98 hands every item
+            // object to the player (FUN_001bd1d8). No BDX script on the disc calls it (`kh2 bdx --scan`).
+            Call::Unknown { group: 6, index: 31, .. } | Call::Func { group: 6, index: 31, .. } => {
+                self.obj.collect_all = true;
+                imp(Value::None)
+            }
             _ => missing(Value::Int(0), "function not mapped"),
         }
     }
@@ -948,7 +967,8 @@ mod tests {
         let mut seed = 1u32;
         let d = compute_drop(&r, 1.5, 1.0, &mut seed, 256);
         assert_eq!(d.prizes, [0, 3, 0, 0, 5, 0, 0, 0, 2]);
-        // 10 prizes, 3 steps each (the launch values, in order), then 3 item steps, one more per drop.
+        // 10 prizes, 3 steps each (the launch values, in order), then 3 item steps, four more per drop
+        // (the item object's yaw and its three launch values).
         let mut s = 1u32;
         let mut values = Vec::new();
         for _ in 0..30 {
@@ -960,15 +980,22 @@ mod tests {
         assert_eq!(d.launches[3].0, 4);
         assert_eq!(d.launches[9], (8, [values[27], values[28], values[29]]));
         let mut want = Vec::new();
+        let mut want_launch = Vec::new();
         for (id, chance) in r.items {
             s = s.wrapping_mul(0x10dcd);
             if (s as f32) * 2.328_306_4e-10 * 100.0 < chance as f32 {
                 want.push(id);
-                s = s.wrapping_mul(0x10dcd);
+                let mut v = [0u32; 4];
+                for x in &mut v {
+                    s = s.wrapping_mul(0x10dcd);
+                    *x = s;
+                }
+                want_launch.push((id, v));
             }
         }
         assert_eq!(seed, s);
         assert_eq!(d.items, want);
+        assert_eq!(d.item_launches, want_launch);
         assert!(!d.items.contains(&10), "a chance of 0 never drops");
         assert!(d.items.contains(&11), "a chance of 100 always drops");
         // A full pool: no prize object, no launch steps (FUN_001c4d78 returns 0).

@@ -105,7 +105,8 @@ with a default, nothing in the app reads it; Missing = fails visibly. Addresses 
 | mode manager hooks | Approx | `ModeInterrupted` and `ModeMayStart` follow FUN_00186b70 and FUN_001873d0 read as "a hit reaction plays" and "not in hit stun"; `ModeFrozen` (FUN_00186b38, object flag 0x40000) is false because hit stop is not implemented |
 | 1.29 play_motion_with, 1.238 obj_word_158, 1.13 queue_motion, 1.89 set_velocity, 1.70 / 1.71 on the player, 1.14 on the player | Approx | the calls of Soldier's reaction thread on the player: handed to the player side as `PlayerReactionCmd` (no consumer yet), the paired motion's length gives the player's `motion_done` |
 | 0.47 alloc / 0.48 free, 2.20 start_request, 1.132 target_release | Impl / Stub | the script heap and the detached request thread are the runtime's own (see `docs/bdx.md`); target records are not pooled |
-| 1.92 ground_marker | Approx | the drop (WP-6G, below): row `id` of the prize table `przt` is looked up and the drop computed as FUN_001a3cb0 does; the result is logged and its prize objects run in `prize.rs` (WP-7B); dropped items are logged only |
+| 1.92 ground_marker | Approx | the drop (WP-6G, below): row `id` of the prize table `przt` is looked up and the drop computed as FUN_001a3cb0 does; the result is logged and its prize objects run in `prize.rs` (WP-7B), its item objects too (WP-7Bb, `ItemDrop`) |
+| 6.31 (no arguments) | Impl | wrapper FUN_002eece8: FUN_001a40b8 (every pickable prize drawn into the player in mode 1 and paid) and FUN_001bda98 (every item object handed to the player); sends `prize::CollectAll` (WP-7Bb). No BDX script on the disc calls it |
 | 1.133, 1.134, 1.128 | Missing | in the scripts but not reached in a fight: two virtual methods of the object, a virtual call on the mover (1.89 on the enemy itself too: the secondary velocity of a scripted object has no consumer). They would be logged when first called |
 | 1.90 send_message, 1.241 | Approx | the global message queue (WP-6G, below): every scripted enemy receives the message at the start of the next tick, with its own delay from the generator at 0x3716a0. Objects without a script (the player) draw no delay |
 | 0.42 angle_of | Approx | atan2(v.x, v.z) (FUN_0016d060 -> FUN_003003e8); the platform's atan2, not the game's routine |
@@ -244,15 +245,20 @@ the prize manager DAT_0035e7a0 exists:
 Bit 0x200 of 0x35d268 skips the prizes and items; the player state FUN_001ce6c0 (+0x588 bit 0x2000000) remaps the kinds
 (table 0x37b4a0) and skips the items. Both are taken as clear. `enemy_host::compute_drop` does this with Sora's Jackpot and
 Lucky Lucky from `abilities::Abilities` and logs `drop (host 1.92) asked row .., used row ..: prizes per kind [..],
-items [..] (n prize objects; item objects not ported)`; tests `a_drop_follows_fun_001a3cb0`,
+items [..] (n prize objects, m item objects)`; tests `a_drop_follows_fun_001a3cb0`,
 `prize_rows_parse_and_fall_back_to_row_0x48`, `real_przt`.
 
 WP-7B: a prize takes its three generator steps only when the pool (0x100 entries) has a free entry, and a
 dropping item takes one more step (FUN_001bd490 -> FUN_001bd0d0); `compute_drop` now returns each prize's kind
 and launch values, and `ai_update` hands them to `prize.rs` (message `PrizeDrop`), which runs the prize objects:
 flight, rest, pickup and the pickup table (docs/prizes.md). The three calls at the end serve the mini-game prize
-pools (PRIZE_MU, PRIZE_HE, PRIZE_COLOSSEUM), absent in Twilight Town (docs/prizes.md). Gaps: item objects, the
-flags and the generator's real state.
+pools (PRIZE_MU, PRIZE_HE, PRIZE_COLOSSEUM), absent in Twilight Town (docs/prizes.md). Gaps: the flags and the
+generator's real state.
+
+WP-7Bb: a dropping item takes four steps, not one: FUN_001bd0d0 takes one for the object's yaw and then enters state
+12 (`FUN_0016b698(obj, 0xc)` -> FUN_0016b648 -> the state object 0x1c88f70 with vtable 0x35f2b8, set by FUN_00179880),
+whose enter FUN_001bd580 takes three for the launch, all before the next item's roll. `compute_drop` returns them
+(`item_launches`) and `ai_update` sends `prize::ItemDrop`; the item objects are in docs/prizes.md.
 
 ## Acceptance run
 

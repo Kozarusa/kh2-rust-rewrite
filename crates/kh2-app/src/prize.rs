@@ -131,6 +131,14 @@ pub struct Consts {
     pub absorb_time: f32,
     /// 0x37bf88: largest turn per frame (copied to 0x1d5e2c4 by `FUN_001c59b0`).
     pub turn_max: f32,
+    /// The draw-in of mode 1 (`FUN_001a40b8` -> `FUN_001a3ad8` -> `FUN_001c5808(.., 1)`, update
+    /// `LAB_001c5748` -> `FUN_001c5588`): 0x37bf70 length, 0x37bf74 turn numerator, 0x37bf78 size
+    /// scale, 0x37bf80 frames, 0x37bf84 largest turn (copied to 0x1d5e2c0 by `FUN_001c59b0`).
+    pub absorb1_len: f32,
+    pub absorb1_turn: f32,
+    pub absorb1_scale: f32,
+    pub absorb1_time: f32,
+    pub turn_max1: f32,
     /// 0x37bc04: the drive multiplier `FUN_001ba040` returns outside its special case.
     pub drive_scale: f32,
 }
@@ -191,6 +199,11 @@ impl Consts {
             absorb_scale: f(0x37bf6c)?,
             absorb_time: f(0x37bf7c)?,
             turn_max: f(0x37bf88)?,
+            absorb1_len: f(0x37bf70)?,
+            absorb1_turn: f(0x37bf74)?,
+            absorb1_scale: f(0x37bf78)?,
+            absorb1_time: f(0x37bf80)?,
+            turn_max1: f(0x37bf84)?,
             drive_scale: f(0x37bc04)?,
         })
     }
@@ -233,6 +246,8 @@ pub struct Prize {
     /// +0x17: shape frame (0xff: not started).
     pub frame: u8,
     pub phase: Phase,
+    /// The draw-in's mode (`FUN_001c5808` third argument): 0 the pickup, 1 collect-all.
+    pub mode: u8,
 }
 
 /// What the floor sweep found: where the point ended and whether it stands on a floor (the mover's
@@ -261,6 +276,7 @@ pub fn launch(c: &Consts, kind: u8, v: [u32; 3], at: Vec3) -> Prize {
         size: 0xff,
         frame: 0xff,
         phase: Phase::Fall,
+        mode: 0,
     }
 }
 
@@ -337,8 +353,13 @@ pub fn age(p: &mut Prize) -> bool {
 /// `FUN_001a3700` with the default reach: horizontal distance at most `reach + extra` and vertical
 /// distance at most `height` between the prize's low point and the player's position (`FUN_0016b960`).
 pub fn in_reach(c: &Consts, p: &Prize, player: Vec3, extra: f32) -> bool {
-    let d = p.low_point(c) - player;
-    d.y.abs() <= c.height && Vec2::new(d.x, d.z).length() <= c.reach + extra
+    reach_test(p.low_point(c) - player, c.reach, c.height, extra)
+}
+
+/// `FUN_001a3700`'s test on the offset from the member's position: vertical at most `height`,
+/// horizontal at most `reach + extra`.
+pub fn reach_test(d: Vec3, reach: f32, height: f32, extra: f32) -> bool {
+    d.y.abs() <= height && Vec2::new(d.x, d.z).length() <= reach + extra
 }
 
 /// `FUN_001a3848` for the player (+0x588 bit 0x80): in Anti form (+0xb50 == 5) the HP kinds (0, 1)
@@ -349,24 +370,35 @@ pub fn player_takes(kind: u8, anti: bool) -> bool {
 
 /// `FUN_001c5808` mode 0: the prize turns toward the player's centre.
 pub fn start_absorb(p: &mut Prize, c: &Consts, centre: Vec3) {
+    start_absorb_mode(p, c, centre, 0);
+}
+
+/// `FUN_001c5808(entry, member, mode)`: the direction and distance from the member's centre, then
+/// the mode's frames (mode 0: 0x37bf7c, update `FUN_001c53a8`; mode 1: 0x37bf80, update `FUN_001c5588`).
+/// The pickable flag (+0x28 bit 0) is left as it was.
+pub fn start_absorb_mode(p: &mut Prize, c: &Consts, centre: Vec3, mode: u8) {
     let off = p.pos - centre;
     p.dist = off.length();
     p.vel = off.normalize_or_zero();
-    p.life = c.absorb_time;
+    p.life = if mode == 1 { c.absorb1_time } else { c.absorb_time };
+    p.mode = mode;
     p.phase = Phase::Absorb;
 }
 
-/// `FUN_001c53a8`: one frame of the draw-in. False when it is over (life out).
+/// `FUN_001c53a8` (mode 0) / `FUN_001c5588` (mode 1, the same steps with its own constants): one
+/// frame of the draw-in. False when it is over (life out).
 pub fn absorb_step(p: &mut Prize, c: &Consts, centre: Vec3) -> bool {
     p.life -= 1.0;
     if p.life <= 0.0 {
         return false;
     }
-    let frac = p.life / c.absorb_len;
-    let turn = (c.absorb_turn / (p.dist * frac)).min(c.turn_max);
+    let (len, turn_num, turn_max, scale) =
+        if p.mode == 1 { (c.absorb1_len, c.absorb1_turn, c.turn_max1, c.absorb1_scale) } else { (c.absorb_len, c.absorb_turn, c.turn_max, c.absorb_scale) };
+    let frac = p.life / len;
+    let turn = (turn_num / (p.dist * frac)).min(turn_max);
     p.vel = rot_y(turn, p.vel);
     p.pos = centre + p.vel * (p.dist * frac);
-    p.size = (frac * c.absorb_scale) as i32 as u8;
+    p.size = (frac * scale) as i32 as u8;
     true
 }
 
@@ -419,6 +451,274 @@ pub fn drive_gain(units: f32, charging: bool, sstm_78: f32, block_38: f32, scale
     (u * scale) as i32
 }
 
+/// The pickup glow of the player (`FUN_00175c28` starts it, `FUN_00175cb0` counts it down): object
+/// +0xae4 (the running effect's handle) and +0xae8 (frames left).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Glow {
+    pub running: bool,
+    pub left: f32,
+}
+
+impl Glow {
+    /// `FUN_00175c28(frames, player)`: without a running glow (and the player's +0x160 bit 0x4000
+    /// clear, `blocked` false) system effect 6 starts and the frames are set; otherwise the frames
+    /// left are raised to `frames` when that is more. True when the effect starts.
+    pub fn start(&mut self, frames: f32, blocked: bool) -> bool {
+        if !self.running && !blocked {
+            self.running = true;
+            self.left = frames;
+            return true;
+        }
+        if self.left < frames {
+            self.left = frames;
+        }
+        false
+    }
+
+    /// `FUN_00175cb0`: a frame off a running glow; at 0 or less (or +0x160 bit 0x4000) the effect is
+    /// stopped (`FUN_001d9f48`) and the handle cleared. True when it stops this frame.
+    pub fn tick(&mut self, blocked: bool) -> bool {
+        if !self.running {
+            return false;
+        }
+        self.left -= 1.0;
+        if blocked || self.left <= 0.0 {
+            self.running = false;
+            return true;
+        }
+        false
+    }
+}
+
+/// `FUN_001d3f88(player, amount)` on a form record: the experience grows by `amount`; while the
+/// level is below `cap` (`FUN_001d3bd0`, via `FUN_001d3c38`) and the experience reaches the current
+/// level's `fmlv` row (`FUN_001d3b90(form, level)` +4), the row's amount is taken off and the level
+/// rises (`FUN_001d3da8`); at the cap (or without a row) the experience is set to 0. Returns the new
+/// level and experience and the levels reached, in order.
+pub fn add_form_exp(levels: &kh2_tables::player::FormLevels, form: u8, level: u8, exp: i32, amount: i32, cap: u8) -> (u8, i32, Vec<u8>) {
+    let (mut level, mut exp) = (level, exp.wrapping_add(amount));
+    let mut ups = Vec::new();
+    loop {
+        let row = if level < cap { levels.get(form, level) } else { None };
+        let Some(r) = row else {
+            exp = 0;
+            break;
+        };
+        if exp < r.exp {
+            break;
+        }
+        level += 1;
+        ups.push(level);
+        exp -= r.exp;
+    }
+    (level, exp, ups)
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Item objects (FUN_001bd490): dropped items as objects PRIZE_BOX_YELLOW / RED / BLUE / GREEN
+
+/// The bounce sound of an item (`FUN_001bd7a0`: `FUN_002c32b8(0xe, position)` for the first two).
+pub const ITEM_BOUNCE_SE: u32 = 0xe;
+/// The sound when an item is taken (state 13's enter `FUN_001bd848`: sound 0x12 at the item).
+pub const ITEM_TAKE_SE: u32 = 0x12;
+/// Rows of the box table at 0x37bcb0 (12 of 8 bytes; the floats of 0x37bd10 follow).
+pub const BOX_ROWS: usize = 12;
+
+/// The numbers of the item object code, read from the executable.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ItemConsts {
+    /// 0x37bcb0 + 8 * n: the object (`00objentry` id) and its scale, by the item's byte +0x16 (`Icon1`).
+    pub boxes: Vec<(u32, f32)>,
+    /// 0x37bc54 / 0x37bc58 / 0x37bc5c: the yaw `FUN_001bd0d0` passes to `FUN_00168d30`: base + value * unit * span.
+    pub yaw_unit: f32,
+    pub yaw_span: f32,
+    pub yaw_base: f32,
+    /// 0x37bc6c (unit), 0x37bc70 / 0x37bc74 (X and Z span, base), 0x37bc78 / 0x37bc7c (Y span, base):
+    /// the launch of state 12's enter `FUN_001bd580` (+0x20, +0x28, +0x24 in that order; Y down).
+    pub unit: f32,
+    pub xz_span: f32,
+    pub xz_base: f32,
+    pub y_span: f32,
+    pub y_base: f32,
+    /// 0x37bc80 / 0x37bc84 / 0x37bc88: the fall speed cap, gravity per frame and the sideways factor
+    /// (`FUN_001bd700`, state 12's velocity).
+    pub fall_max: f32,
+    pub gravity: f32,
+    pub friction: f32,
+    /// 0x37bc8c / 0x37bc90: the slowest landing that still bounces and the bounce factor (`FUN_001bd7a0`).
+    pub bounce_min: f32,
+    pub bounce: f32,
+    /// 0x37bc60 / 0x37bc64 / 0x37bc68: the draw-in's frames = distance * 0.05 held in 30..60 (`FUN_001bd1d8`).
+    pub time_scale: f32,
+    pub time_min: f32,
+    pub time_max: f32,
+    /// 0x37bc94 / 0x37bc98 / 0x37bc9c / 0x37bca0 / 0x37bca4 / 0x37bca8 / 0x37bcac: `FUN_001bd878`'s
+    /// one, pi, half, arc height, turn per frame, shrink start and shrink scale.
+    pub one: f32,
+    pub pi: f32,
+    pub half: f32,
+    pub lift: f32,
+    pub spin: f32,
+    pub shrink_at: f32,
+    pub shrink_scale: f32,
+}
+
+impl ItemConsts {
+    pub fn from_exe(elf: &[u8]) -> Option<ItemConsts> {
+        let w = |va: u32| exe_bytes(elf, va, 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+        let f = |va: u32| w(va).map(f32::from_bits);
+        let boxes = (0..BOX_ROWS as u32).map(|n| Some((w(0x37bcb0 + 8 * n)?, f(0x37bcb4 + 8 * n)?))).collect::<Option<Vec<_>>>()?;
+        Some(ItemConsts {
+            boxes,
+            yaw_unit: f(0x37bc54)?,
+            yaw_span: f(0x37bc58)?,
+            yaw_base: f(0x37bc5c)?,
+            unit: f(0x37bc6c)?,
+            xz_span: f(0x37bc70)?,
+            xz_base: f(0x37bc74)?,
+            y_span: f(0x37bc78)?,
+            y_base: f(0x37bc7c)?,
+            fall_max: f(0x37bc80)?,
+            gravity: f(0x37bc84)?,
+            friction: f(0x37bc88)?,
+            bounce_min: f(0x37bc8c)?,
+            bounce: f(0x37bc90)?,
+            time_scale: f(0x37bc60)?,
+            time_min: f(0x37bc64)?,
+            time_max: f(0x37bc68)?,
+            one: f(0x37bc94)?,
+            pi: f(0x37bc98)?,
+            half: f(0x37bc9c)?,
+            lift: f(0x37bca0)?,
+            spin: f(0x37bca4)?,
+            shrink_at: f(0x37bca8)?,
+            shrink_scale: f(0x37bcac)?,
+        })
+    }
+}
+
+/// The draw-in of a taken item (state 13, `FUN_001bd878`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ItemAbsorb {
+    /// +0x9d0: the item's position minus the collector's centre at the pickup.
+    pub offset: Vec3,
+    /// +0x9bc / +0x9c0: frames left and frames in all.
+    pub left: f32,
+    pub total: f32,
+}
+
+/// An item object (the fields of the 0x9f0-byte object the rules use; game space, Y down).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Item {
+    /// +0x9b4: the item id.
+    pub id: u16,
+    /// +0x540: position (the object's foot).
+    pub pos: Vec3,
+    /// +0x20..+0x28: velocity.
+    pub vel: Vec3,
+    /// The yaw `FUN_00168d30` is given; turned while drawn in (`FUN_0016a7f0`, [inferred: the facing]).
+    pub yaw: f32,
+    /// +0x3c: scale; +0x9b8 the scale it started with (the box table's).
+    pub scale: f32,
+    pub base_scale: f32,
+    /// +0x108 bit 1 clear: `FUN_0019a4b0` lets it be taken (`FUN_001bd0d0` sets the bit, `FUN_001bd700`
+    /// clears it once the item falls, state 13's enter sets it again).
+    pub pickable: bool,
+    /// +0x9e0 bit 0: came to rest (`FUN_001bd7a0`).
+    pub rested: bool,
+    /// +0x9e0 bit 2: taken (`FUN_001bd1d8`).
+    pub taken: bool,
+    /// +0x9e4: bounces so far.
+    pub bounces: u32,
+    pub absorb: Option<ItemAbsorb>,
+}
+
+/// `FUN_001bd0d0` + state 12's enter `FUN_001bd580`: a new item object at `at` with the four generator
+/// values (yaw, then X, Z, Y of the launch; read unsigned as the decompilation's `(float)uint`).
+pub fn item_launch(c: &ItemConsts, id: u16, scale: f32, v: [u32; 4], at: Vec3) -> Item {
+    let s = |x: u32, unit: f32| x as f32 * unit;
+    Item {
+        id,
+        pos: at,
+        vel: Vec3::new(
+            c.xz_base + s(v[1], c.unit) * c.xz_span,
+            c.y_base + s(v[3], c.unit) * c.y_span,
+            c.xz_base + s(v[2], c.unit) * c.xz_span,
+        ),
+        yaw: c.yaw_base + s(v[0], c.yaw_unit) * c.yaw_span,
+        scale,
+        base_scale: scale,
+        pickable: false,
+        rested: false,
+        taken: false,
+        bounces: 0,
+        absorb: None,
+    }
+}
+
+/// One frame of a falling item: `FUN_001bd700` (velocity: a falling item becomes pickable; gravity
+/// to the cap; the sideways factor) moves it through the sweep, and a floor contact while falling
+/// runs `FUN_001bd7a0` (faster than 2.5: bounce, the sound for the first two; else rest, velocity 0).
+/// [inferred: the generic object mover that calls these two (state 12's base `FUN_0017b440`) is not
+/// ported; the app's sweep stands in for it as for the prizes.] Returns the bounce sound, if any.
+pub fn item_fall(o: &mut Item, c: &ItemConsts, sweep: impl Fn(Vec3, Vec3) -> Sweep) -> Option<u32> {
+    if o.vel.y > 0.0 {
+        o.pickable = true;
+    }
+    o.vel.y = (o.vel.y + c.gravity).min(c.fall_max);
+    o.vel.x *= c.friction;
+    o.vel.z *= c.friction;
+    let r = sweep(o.pos, o.vel);
+    o.pos = r.end;
+    let mut sound = None;
+    if r.on_floor && o.vel.y >= 0.0 {
+        if c.bounce_min < o.vel.y {
+            o.vel.y *= c.bounce;
+            if o.bounces < 2 {
+                sound = Some(ITEM_BOUNCE_SE);
+            }
+            o.bounces += 1;
+        } else {
+            o.rested = true;
+            o.vel = Vec3::ZERO;
+        }
+    }
+    sound
+}
+
+/// The tail of `FUN_001bd1d8` / `FUN_001bd358` once the item is taken: the offset from the
+/// collector's centre, the draw-in's frames (`|offset| * 0.05` held in 30..60) and state 13 (not
+/// pickable any more).
+pub fn item_take(o: &mut Item, c: &ItemConsts, centre: Vec3) {
+    o.taken = true;
+    o.pickable = false;
+    let offset = o.pos - centre;
+    let t = (offset.length() * c.time_scale).clamp(c.time_min, c.time_max);
+    o.absorb = Some(ItemAbsorb { offset, left: t, total: t });
+}
+
+/// `FUN_001bd878`: one frame of the draw-in. `g = sin((1 - left / total) * pi / 2)`, `f = 1 - g`: the
+/// item sits at the centre plus the offset times `f`, raised by `sin(f * pi) * 50`; its yaw grows by
+/// `g * 0.5236`; below `f` 0.1 its scale is the start scale times `f * 10`. False when the frames run
+/// out (the item is then destroyed after its message, `FUN_001a1f40` + `FUN_00138498`).
+pub fn item_absorb_step(o: &mut Item, c: &ItemConsts, centre: Vec3) -> bool {
+    let Some(a) = o.absorb.as_mut() else { return false };
+    a.left -= 1.0;
+    if a.left <= 0.0 {
+        return false;
+    }
+    let g = ((c.one - a.left / a.total) * c.pi * c.half).sin();
+    let f = c.one - g;
+    let mut off = a.offset * f;
+    off.y -= (f * c.pi).sin() * c.lift;
+    o.yaw += (c.one - f) * c.spin;
+    o.pos = centre + off;
+    if f < c.shrink_at {
+        o.scale = o.base_scale * f * c.shrink_scale;
+    }
+    true
+}
+
 // ---------------------------------------------------------------------------------------------------
 // App side
 
@@ -436,6 +736,24 @@ pub struct PrizeDrop {
 pub struct MunnyGained {
     pub amount: u32,
 }
+
+/// A drop's item objects (`FUN_001bd490` per item that won its roll), written by `enemy_ai`.
+#[derive(Message, Clone, Debug)]
+pub struct ItemDrop {
+    /// The enemy that dropped them (its lock-on point is the drop point, as for the prizes).
+    pub from: Entity,
+    /// Item id and the four generator values of its object (`enemy_host::Drop::item_launches`).
+    pub launches: Vec<(u16, [u32; 4])>,
+}
+
+/// Host 6.31 (`FUN_002eece8`): every pickable prize is drawn into the player in mode 1 and paid
+/// (`FUN_001a40b8`), every item object is handed to the player (`FUN_001bda98`).
+#[derive(Message, Clone, Copy, Debug)]
+pub struct CollectAll;
+
+/// The player's pickup glow (`Glow`).
+#[derive(Resource, Default)]
+pub struct PickupGlow(pub Glow);
 
 /// The kind's look from `pppRyjMegaBirthPrize`'s parameters (+4 + 12 * kind).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -516,17 +834,34 @@ pub struct PrizePlugin;
 
 impl Plugin for PrizePlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<PrizeDrop>().add_message::<MunnyGained>().init_resource::<PrizePool>();
+        app.add_message::<PrizeDrop>()
+            .add_message::<MunnyGained>()
+            .add_message::<ItemDrop>()
+            .add_message::<CollectAll>()
+            .init_resource::<PrizePool>()
+            .init_resource::<PickupGlow>();
         let Some(disc) = app.world().get_resource::<Disc>() else { return };
-        let Some(consts) = disc.read_root("SLUS_210.05").and_then(|e| Consts::from_exe(&e)) else {
-            warn!("prize: the prize constants are not readable from SLUS_210.05; drops make no prize objects");
+        let Some(elf) = disc.read_root("SLUS_210.05") else {
+            warn!("prize: SLUS_210.05 is not readable; drops make no prize or item objects");
             return;
         };
+        let items = ItemLib::load(disc, &elf);
+        let consts = Consts::from_exe(&elf);
         let sstm = {
             let mut a = disc.0.lock().unwrap();
             kh2_tables::player::load_sstm(&mut a).ok().map_or([0.0; 3], |s| [s.f32(0x70), s.f32(0x78), s.f32(0x7c)])
         };
-        let pax = crate::fx::load(disc, "obj/PRIZE.mdlx", usize::MAX - 7, None);
+        let pax = consts.as_ref().and_then(|_| crate::fx::load(disc, "obj/PRIZE.mdlx", usize::MAX - 7, None));
+        match items {
+            Some(lib) => {
+                app.insert_resource(lib).add_systems(FixedUpdate, (item_test, spawn_items, run_items).chain().in_set(Sim::EffectTick)).add_systems(Update, show_items);
+            }
+            None => warn!("prize: the item object constants or the item table are not readable; dropped items make no objects"),
+        }
+        let Some(consts) = consts else {
+            warn!("prize: the prize constants are not readable from SLUS_210.05; drops make no prize objects");
+            return;
+        };
         if pax.is_none() {
             warn!("prize: obj/PRIZE.mdlx has no readable effect file; prizes run but are not drawn");
         }
@@ -767,7 +1102,16 @@ fn prize_test(
     }
 }
 
-/// The prizes' frame: flight, rest, pickup and draw-in; the pickup applies `FUN_001a39b0`.
+/// The player-side state a pickup changes or reads.
+type PlayerState<'w> = (
+    Option<ResMut<'w, crate::magic::MagicState>>,
+    Option<ResMut<'w, crate::drive::DriveState>>,
+    Option<Res<'w, crate::abilities::Abilities>>,
+    Option<Res<'w, crate::drive::DriveRules>>,
+);
+
+/// The prizes' frame: flight, rest, pickup and draw-in; the pickup applies `FUN_001a39b0`. A
+/// `CollectAll` (host 6.31, `FUN_001a40b8`) first draws every pickable prize in (mode 1) and pays it.
 #[allow(clippy::too_many_arguments)]
 fn run_prizes(
     mut commands: Commands,
@@ -778,12 +1122,10 @@ fn run_prizes(
     mut prizes: Query<(Entity, &mut PrizeObj, &mut Transform), Without<Sora>>,
     mut sora: Query<(&Transform, &mut Sora)>,
     bodies: Query<(&Animator, &GlobalTransform)>,
-    mut magic: Option<ResMut<crate::magic::MagicState>>,
-    mut drive: Option<ResMut<crate::drive::DriveState>>,
-    abilities: Option<Res<crate::abilities::Abilities>>,
+    (mut magic, mut drive, abilities, rules): PlayerState<'_>,
     mut progress: Option<ResMut<crate::progress::Progress>>,
-    mut sounds: MessageWriter<crate::audio::PlaySe>,
-    mut munny: MessageWriter<MunnyGained>,
+    (mut sounds, mut munny): (MessageWriter<crate::audio::PlaySe>, MessageWriter<MunnyGained>),
+    (mut collect, mut glow): (MessageReader<CollectAll>, ResMut<PickupGlow>),
 ) {
     let c = &lib.consts;
     let Ok((st, mut s)) = sora.single_mut() else { return };
@@ -793,8 +1135,24 @@ fn run_prizes(
     let anti = drive.as_ref().is_some_and(|d| d.object_form() == kh2_tables::player::form::ANTI);
     let draw = abilities.as_ref().map_or(0.0, |a| a.block().draw_radius);
     let alive_player = s.hp > 0;
+    // FUN_00175cb0 (the player's update): the glow's frames run down.
+    if glow.0.tick(false) {
+        info!("prize: pickup glow (system effect 6) ends");
+    }
+    // FUN_001a40b8: every entry whose flag bit 0 is set, whatever its update (one already drawn in
+    // starts again in mode 1 and pays again: FUN_001a3ad8 does not look). Not while the player is gone
+    // [inferred: FUN_00175b68/FUN_0019a3f8 are not asked here, the member DAT_0035c998 is used as is].
+    let collect_all = collect.read().count() > 0;
+    let mut picked: Vec<(u8, u8)> = Vec::new();
     for (e, mut obj, mut t) in &mut prizes {
         let radius = c.kinds.get(obj.p.kind as usize).map_or(0.0, |k| k.radius);
+        if collect_all && obj.p.pickable {
+            start_absorb_mode(&mut obj.p, c, centre_g, 1);
+            picked.push((obj.p.kind, 1));
+            info!("prize: kind {} drawn toward Sora by collect-all from {:.0} away ({} frames)", obj.p.kind, obj.p.dist, c.absorb1_time);
+            t.translation = flip(obj.p.pos) * SCALE;
+            continue;
+        }
         let was = obj.p.phase;
         let w = world.as_deref();
         // +0x588 bit 4 is taken as set for Sora, so Draw's ability-block +0x30 widens the reach
@@ -812,59 +1170,8 @@ fn run_prizes(
             info!("prize: kind {} lost its floor and falls again", obj.p.kind);
         }
         if out.picked {
-            let k = obj.p.kind as usize;
-            let pick = c.pickups.get(k).copied().unwrap_or_default();
-            if let Some(se) = c.kinds.get(k).map(|x| x.pickup_se) {
-                sounds.write(crate::audio::PlaySe::number(se, None).at(centre * SCALE));
-            }
-            info!("prize: kind {} drawn toward Sora from {:.0} away ({} frames)", k, obj.p.dist, c.absorb_time);
-            // FUN_001a39b0, in its order: glow (not ported), HP, MP, drive, munny.
-            let hp0 = s.hp;
-            if pick.hp > 0 {
-                // Method +0x78 = FUN_001792f0 -> FUN_00176c98 -> FUN_00186238: HP + amount, held at the maximum.
-                s.hp = (s.hp + pick.hp as i32).min(s.stats.max_hp);
-            }
-            let (mp0, mut mp_note) = (s.mp, String::new());
-            if pick.mp > 0 {
-                // FUN_00186368 -> FUN_001a0180: during the MP charge the charge time drops by
-                // amount * sstm[0x7c] (FUN_001a0540; at 0 the charge ends, which `magic` does on its
-                // next tick [inferred one tick late]); otherwise MP + amount, held at the maximum.
-                match magic.as_deref_mut().filter(|m| m.charge.active()) {
-                    Some(m) => {
-                        m.charge.left = (m.charge.left - pick.mp as f32 * lib.sstm[2]).clamp(0.0, m.charge.total);
-                        mp_note = format!(" (charge left {:.0})", m.charge.left);
-                    }
-                    None => s.mp = (s.mp + pick.mp as i32).min(data.sora_max_mp),
-                }
-            }
-            let mut drive_note = String::new();
-            if pick.drive > 0
-                && let Some(d) = drive.as_deref_mut()
-            {
-                let units = pick.drive as f32;
-                if d.in_form {
-                    // FUN_001788d8, form mode: the timer gains units * sstm[0x70] (FUN_001a0358).
-                    let form = d.form;
-                    d.timer.add(form, units * lib.sstm[0]);
-                    drive_note = format!(" (form timer {:.0})", d.timer.left);
-                } else {
-                    let charging = magic.as_deref().is_some_and(|m| m.charge.active());
-                    let block_38 = abilities.as_ref().map_or(1.0, |a| a.block().drive_gain_charging);
-                    d.points.gain(drive_gain(units, charging, lib.sstm[1], block_38, c.drive_scale));
-                    drive_note = format!(" (gauge {}.{:02})", d.points.whole, d.points.fraction);
-                }
-            }
-            let mut munny_note = String::new();
-            if pick.munny > 0 {
-                munny.write(MunnyGained { amount: pick.munny as u32 });
-                if let Some(pr) = progress.as_deref_mut() {
-                    munny_note = format!(" (munny {})", pr.add_to_wallet(pick.munny as u32));
-                }
-            }
-            info!(
-                "prize: picked up kind {k}: HP +{} MP +{} drive +{} munny +{} -> HP {hp0}->{} MP {mp0}->{}{mp_note}{drive_note}{munny_note}",
-                pick.hp, pick.mp, pick.drive, pick.munny, s.hp, s.mp
-            );
+            picked.push((obj.p.kind, 0));
+            info!("prize: kind {} drawn toward Sora from {:.0} away ({} frames)", obj.p.kind, obj.p.dist, c.absorb_time);
         }
         if !out.alive {
             if was != Phase::Absorb && obj.p.phase != Phase::Absorb && log_on() {
@@ -876,6 +1183,109 @@ fn run_prizes(
         }
         t.translation = flip(obj.p.pos) * SCALE;
     }
+    for (kind, mode) in picked {
+        let k = kind as usize;
+        let pick = c.pickups.get(k).copied().unwrap_or_default();
+        // FUN_001c5808's sound, at the member's centre.
+        if let Some(se) = c.kinds.get(k).map(|x| x.pickup_se) {
+            sounds.write(crate::audio::PlaySe::number(se, None).at(centre * SCALE));
+        }
+        // FUN_001a39b0, in its order: glow, HP, MP, drive (and Master Form experience), munny.
+        let mut glow_note = String::new();
+        if pick.glow > 0.0 {
+            // FUN_00175c28: system effect 6 bound to the player [not drawn: `fx` has no owner-bound
+            // system effect with an end; the timer runs].
+            let started = glow.0.start(pick.glow, false);
+            glow_note = format!(" (glow {} for {:.0} frames, not drawn)", if started { "starts" } else { "extended" }, glow.0.left);
+        }
+        let hp0 = s.hp;
+        if pick.hp > 0 {
+            // Method +0x78 = FUN_001792f0 -> FUN_00176c98 -> FUN_00186238: HP + amount, held at the maximum.
+            s.hp = (s.hp + pick.hp as i32).min(s.stats.max_hp);
+        }
+        let (mp0, mut mp_note) = (s.mp, String::new());
+        if pick.mp > 0 {
+            // FUN_00186368 -> FUN_001a0180: during the MP charge the charge time drops by
+            // amount * sstm[0x7c] (FUN_001a0540; at 0 the charge ends, which `magic` does on its
+            // next tick [inferred one tick late]); otherwise MP + amount, held at the maximum.
+            match magic.as_deref_mut().filter(|m| m.charge.active()) {
+                Some(m) => {
+                    m.charge.left = (m.charge.left - pick.mp as f32 * lib.sstm[2]).clamp(0.0, m.charge.total);
+                    mp_note = format!(" (charge left {:.0})", m.charge.left);
+                }
+                None => s.mp = (s.mp + pick.mp as i32).min(data.sora_max_mp),
+            }
+        }
+        let mut drive_note = String::new();
+        if pick.drive > 0
+            && let Some(d) = drive.as_deref_mut()
+        {
+            let units = pick.drive as f32;
+            if d.in_form {
+                // FUN_001788d8, form mode: the timer gains units * sstm[0x70] (FUN_001a0358).
+                let form = d.form;
+                d.timer.add(form, units * lib.sstm[0]);
+                drive_note = format!(" (form timer {:.0})", d.timer.left);
+            } else {
+                let charging = magic.as_deref().is_some_and(|m| m.charge.active());
+                let block_38 = abilities.as_ref().map_or(1.0, |a| a.block().drive_gain_charging);
+                d.points.gain(drive_gain(units, charging, lib.sstm[1], block_38, c.drive_scale));
+                drive_note = format!(" (gauge {}.{:02})", d.points.whole, d.points.fraction);
+            }
+            // FUN_001d4148: in Master Form (+0xb50 == 3) the units are form experience (FUN_001d3f88).
+            if d.object_form() == kh2_tables::player::form::MASTER
+                && let (Some(pr), Some(r)) = (progress.as_deref_mut(), rules.as_deref())
+            {
+                drive_note += &master_form_exp(pr, d, &r.levels, pick.drive as i32);
+            }
+        }
+        let mut munny_note = String::new();
+        if pick.munny > 0 {
+            munny.write(MunnyGained { amount: pick.munny as u32 });
+            if let Some(pr) = progress.as_deref_mut() {
+                munny_note = format!(" (munny {})", pr.add_to_wallet(pick.munny as u32));
+            }
+        }
+        info!(
+            "prize: picked up kind {k}{}: HP +{} MP +{} drive +{} munny +{} -> HP {hp0}->{} MP {mp0}->{}{glow_note}{mp_note}{drive_note}{munny_note}",
+            if mode == 1 { " (collect-all)" } else { "" },
+            pick.hp,
+            pick.mp,
+            pick.drive,
+            pick.munny,
+            s.hp,
+            s.mp
+        );
+    }
+}
+
+/// `FUN_001d3f88(player, amount)` for Master Form (form 3) on the game state: the record's
+/// experience and level (`add_form_exp`; the cap `FUN_001d3bd0` = 2 + the owned forms 1..4, 7
+/// instead of 6), and for each level reached `FUN_001d3da8`'s ability of the new level's `fmlv` row
+/// given to Sora (`FUN_001a18d8(ability, 1, 0)`). The minigame flag of `FUN_001b9bd8` (the manager
+/// `DAT_01d5dd20`) is taken as clear: the app has no such manager. Returns the log note.
+fn master_form_exp(pr: &mut crate::progress::Progress, d: &mut crate::drive::DriveState, levels: &kh2_tables::player::FormLevels, amount: i32) -> String {
+    let form = kh2_tables::player::form::MASTER;
+    let owned = (1..=4u8).filter(|&f| pr.owns_form(f)).count() as u32;
+    let cap = kh2_tables::player::form_level_cap(owned);
+    let (level0, exp0) = (pr.form_level(form), pr.form_exp(form) as i32);
+    let (level, exp, ups) = add_form_exp(levels, form, level0, exp0, amount, cap);
+    pr.set_form_level(form, level);
+    pr.set_form_exp(form, exp as u32);
+    let mut note = format!(" (Master Form experience {exp0}->{exp}, level {level0}");
+    for &l in &ups {
+        // FUN_001d3da8: the row of the new level; its ability (+2) goes to Sora (FUN_001a18d8). The
+        // growth ability upgrade in the record lists (FUN_001d3f18), the level-up popups (FUN_001b5788),
+        // the stat rebuild (FUN_0019fb98) and the level-up effect 0x10 (FUN_001b5528) are not ported.
+        let ability = levels.get(form, l).map_or(0, |r| r.ability);
+        let given = ability != 0 && pr.give(ability, crate::progress::SORA, false);
+        note += &format!(" -> {l}{}", if ability != 0 { format!(" (ability {ability:#x}{})", if given { "" } else { " refused" }) } else { String::new() });
+    }
+    if let Some(slot) = d.level.get_mut(form as usize) {
+        *slot = level;
+    }
+    note += &format!(", cap {cap})");
+    note
 }
 
 /// The draw (`FUN_00203378` per pool entry): the kind's shape frame as a sprite facing the camera
@@ -923,6 +1333,250 @@ fn show_prizes(
             }
             obj.shown = Some(f as usize);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Item objects, app side
+
+/// What the item objects need from the disc: the constants, each item's box row (item +0x16,
+/// `Icon1`) and the four box models (`obj/PRIZE_BOX_*.mdlx`, objects 0x3b8..0x3bb of `00objentry`).
+#[derive(Resource)]
+pub struct ItemLib {
+    pub consts: ItemConsts,
+    /// 0x37b478 / 0x37b47c: the reach `FUN_001a3700` tests (the same as the prizes').
+    reach: f32,
+    height: f32,
+    icon: HashMap<u16, u8>,
+    models: HashMap<u32, Arc<kh2_model::Model>>,
+}
+
+impl ItemLib {
+    fn load(disc: &Disc, elf: &[u8]) -> Option<ItemLib> {
+        let consts = ItemConsts::from_exe(elf)?;
+        let f = |va: u32| exe_bytes(elf, va, 4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+        let (reach, height) = (f(0x37b478)?, f(0x37b47c)?);
+        let (items, objs) = {
+            let mut a = disc.0.lock().ok()?;
+            (
+                kh2_tables::load::<kh2_tables::tables::Item>(&mut a, &kh2_tables::tables::ITEM).ok()?.rows,
+                kh2_tables::load::<kh2_tables::tables::Objentry>(&mut a, &kh2_tables::tables::OBJENTRY).ok()?.rows,
+            )
+        };
+        let icon = items.iter().map(|i| (i.id, i.icon1)).collect();
+        let mut models = HashMap::new();
+        for &(obj, _) in &consts.boxes {
+            if models.contains_key(&obj) {
+                continue;
+            }
+            let Some(name) = objs.iter().find(|o| o.object_id == obj).map(|o| o.model_name.clone()) else {
+                warn!("prize: item box object {obj:#x} has no 00objentry row");
+                continue;
+            };
+            match disc.read(&format!("obj/{name}.mdlx")).and_then(|d| kh2_model::mdlx(&d)) {
+                Some(m) => {
+                    models.insert(obj, Arc::new(m));
+                }
+                None => warn!("prize: obj/{name}.mdlx is not a readable model; its items are not drawn"),
+            }
+        }
+        info!("prize: item boxes {:?}, {} models", consts.boxes.iter().map(|(o, s)| format!("{o:#x} x{s}")).collect::<Vec<_>>(), models.len());
+        Some(ItemLib { consts, reach, height, icon, models })
+    }
+
+    /// `FUN_001bd490`: the box row of an item (its byte +0x16), when the table has it.
+    pub fn box_of(&self, id: u16) -> Option<(u32, f32)> {
+        self.icon.get(&id).and_then(|&n| self.consts.boxes.get(n as usize)).copied()
+    }
+}
+
+/// `FUN_001bd1d8`'s gift: `FUN_001a1768(id, 1, 1)` finds the place for one copy (Sora's party id;
+/// a consumable into a free battle item slot, else the inventory up to 99), `FUN_001a18d8` gives it.
+/// `None` when there is no room (the item is lost).
+pub fn give_item(p: &mut crate::progress::Progress, id: u16) -> Option<u16> {
+    let to = p.room(id, crate::progress::SORA, 1);
+    (to != 0 && p.give(id, to, false)).then_some(to)
+}
+
+#[derive(Component)]
+pub struct ItemObj {
+    pub o: Item,
+}
+
+/// Makes this tick's dropped items (`FUN_001bd490`) at the dropping enemy's lock-on point.
+#[allow(clippy::too_many_arguments)]
+fn spawn_items(
+    mut commands: Commands,
+    lib: Res<ItemLib>,
+    mut drops: MessageReader<ItemDrop>,
+    enemies: Query<(&Transform, &Enemy)>,
+    bodies: Query<(&Animator, &GlobalTransform)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    for d in drops.read() {
+        let Ok((t, e)) = enemies.get(d.from) else { continue };
+        // FUN_001a3cb0 passes the same point as to the prizes (FUN_0016b738's lock-on point).
+        let at = bodies.get(e.body).ok().and_then(|(a, g)| shape_point(a, g, TARGET_SHAPE)).unwrap_or(t.translation / SCALE);
+        for &(id, v) in &d.launches {
+            spawn_item(&mut commands, &lib, id, v, at, (&mut meshes, &mut materials, &mut images));
+        }
+    }
+}
+
+/// One item object with its box model (app cm `at`).
+fn spawn_item(
+    commands: &mut Commands,
+    lib: &ItemLib,
+    id: u16,
+    v: [u32; 4],
+    at: Vec3,
+    (meshes, materials, images): (&mut Assets<Mesh>, &mut Assets<StandardMaterial>, &mut Assets<Image>),
+) {
+    let Some((object, scale)) = lib.box_of(id) else {
+        warn!("prize: item {id:#x} has no box row (item +0x16 outside the table); no object");
+        return;
+    };
+    let o = item_launch(&lib.consts, id, scale, v, flip(at));
+    let ent = commands.spawn((ItemObj { o }, Transform::from_translation(at * SCALE), Visibility::default())).id();
+    if let Some(m) = lib.models.get(&object) {
+        let model = commands.spawn((Transform::default(), Visibility::default(), ChildOf(ent))).id();
+        crate::assets::spawn_model(commands, model, m, meshes, materials, images);
+    }
+    info!("prize: item {id:#x} dropped at {at:.0?} as object {object:#x} (scale {scale}), launch {:.1?}, yaw {:.2}", flip(o.vel), o.yaw);
+}
+
+/// Harness aids, not game behaviour: `KH2_ITEMTEST=<id>,<id>,..[@<seconds>]` (hex ids with `0x`,
+/// default 4 s) drops those items once from `KH2_PRIZETEST_DIST` cm (default 300) in front of Sora,
+/// 100 cm up, with launch values from a fixed generator start; `KH2_COLLECTALL=<seconds>` sends one
+/// `CollectAll` (what host 6.31 does) at that time.
+#[allow(clippy::too_many_arguments)]
+fn item_test(
+    mut commands: Commands,
+    lib: Res<ItemLib>,
+    sora: Query<&Transform, With<Sora>>,
+    time: Res<Time>,
+    mut done: Local<(bool, bool)>,
+    mut collect: MessageWriter<CollectAll>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    if !done.1
+        && let Some(at) = std::env::var("KH2_COLLECTALL").ok().and_then(|v| v.parse::<f32>().ok())
+        && time.elapsed_secs() >= at
+    {
+        done.1 = true;
+        info!("prize: harness collect-all (host 6.31) at {at} s");
+        collect.write(CollectAll);
+    }
+    if done.0 {
+        return;
+    }
+    let Ok(v) = std::env::var("KH2_ITEMTEST") else {
+        done.0 = true;
+        return;
+    };
+    let (list, at) = v.split_once('@').map_or((v.as_str(), 4.0), |(l, t)| (l, t.parse().unwrap_or(4.0)));
+    if time.elapsed_secs() < at {
+        return;
+    }
+    done.0 = true;
+    let Ok(t) = sora.single() else { return };
+    let dist: f32 = std::env::var("KH2_PRIZETEST_DIST").ok().and_then(|d| d.parse().ok()).unwrap_or(300.0);
+    let fwd = (t.rotation * Vec3::Z).with_y(0.0).normalize_or(Vec3::Z);
+    let at = t.translation / SCALE + fwd * dist + Vec3::Y * 100.0;
+    let mut seed = 7u32;
+    let parse = |s: &str| s.trim().strip_prefix("0x").map_or_else(|| s.trim().parse::<u16>().ok(), |h| u16::from_str_radix(h, 16).ok());
+    for id in list.split(',').filter_map(parse) {
+        let mut v = [0u32; 4];
+        for x in &mut v {
+            seed = seed.wrapping_mul(0x10dcd);
+            *x = seed;
+        }
+        spawn_item(&mut commands, &lib, id, v, at, (&mut meshes, &mut materials, &mut images));
+    }
+}
+
+/// The item objects' frame: state 12 (fall, `FUN_001bd700` / `FUN_001bd7a0`), the pickup check
+/// (`FUN_001bd358`, the object's vtable slot 5 [inferred: run once per frame]) and state 13 (the
+/// draw-in, `FUN_001bd878`). A `CollectAll` hands every item to the player first (`FUN_001bda98` ->
+/// `FUN_001bd1d8`, which looks at nothing: an item already drawn in is given again).
+#[allow(clippy::too_many_arguments)]
+fn run_items(
+    mut commands: Commands,
+    lib: Res<ItemLib>,
+    world: Option<Res<World>>,
+    mut items: Query<(Entity, &mut ItemObj)>,
+    sora: Query<(&Transform, &Sora)>,
+    bodies: Query<(&Animator, &GlobalTransform)>,
+    abilities: Option<Res<crate::abilities::Abilities>>,
+    mut progress: Option<ResMut<crate::progress::Progress>>,
+    mut sounds: MessageWriter<crate::audio::PlaySe>,
+    mut collect: MessageReader<CollectAll>,
+) {
+    let c = &lib.consts;
+    let Ok((st, s)) = sora.single() else { return };
+    let feet = st.translation / SCALE;
+    let centre = bodies.get(s.body).ok().and_then(|(a, g)| shape_point(a, g, CENTRE_SHAPE)).unwrap_or(feet);
+    let (feet_g, centre_g) = (flip(feet), flip(centre));
+    let draw = abilities.as_ref().map_or(0.0, |a| a.block().draw_radius);
+    // FUN_0019a3f8(player) and +0x588 bit 0x2000000 clear [the bit is taken as clear].
+    let alive_player = s.hp > 0;
+    let collect_all = collect.read().count() > 0;
+    for (e, mut it) in &mut items {
+        let o = &mut it.o;
+        if o.absorb.is_some() && !collect_all {
+            // FUN_001bd878: the collector gone (FUN_0019a3f8) or the frames out: the message and the end.
+            if !alive_player || !item_absorb_step(o, c, centre_g) {
+                info!("prize: item {:#x} reached Sora (its 'obtained' message FUN_001a1f40 -> FUN_00138498 is not shown)", o.id);
+                commands.entity(e).despawn();
+            }
+            continue;
+        }
+        if !collect_all {
+            let w = world.as_deref();
+            let was_rested = o.rested;
+            if let Some(se) = item_fall(o, c, |a, v| sweep(w, 1.0, a, v)) {
+                sounds.write(crate::audio::PlaySe::number(se, None).at(flip(o.pos) * SCALE));
+            }
+            if o.rested && !was_rested && log_on() {
+                info!("prize: item {:#x} came to rest at {:.0?} after {} bounces", o.id, flip(o.pos), o.bounces);
+            }
+            // FUN_001bd358: the player alive, the item not taken and pickable (FUN_0019a4b0), within
+            // reach of the player's position (FUN_001a3700; Draw as for the prizes [inferred]). The
+            // instant-collection flags (FUN_001905e8 / FUN_00190610) are taken as clear; the item is
+            // no object 0x883 (FUN_001bdb10), so only the player is asked.
+            if !(alive_player && !o.taken && o.pickable && reach_test(o.pos - feet_g, lib.reach, lib.height, draw)) {
+                continue;
+            }
+        }
+        // FUN_001bd1d8 / the tail of FUN_001bd358: the room for one (FUN_001a1768 to the player's
+        // party id, NeoStatus 1 = Sora) and the gift (FUN_001a18d8); with no room nothing is given
+        // and the item is drawn in all the same. The obtained log FUN_001d0828 is not written.
+        let note = match progress.as_deref_mut() {
+            Some(p) => match give_item(p, o.id) {
+                Some(to) => format!("given to {} (count {})", if to == crate::progress::INVENTORY { "the inventory" } else { "Sora's battle item slots" }, p.item_count(o.id)),
+                None => format!("refused (no room, count {}): drawn in all the same", p.item_count(o.id)),
+            },
+            None => "no game state".to_string(),
+        };
+        item_take(o, c, centre_g);
+        // State 13's enter (FUN_001bd848): sound 0x12 at the item.
+        sounds.write(crate::audio::PlaySe::number(ITEM_TAKE_SE, None).at(flip(o.pos) * SCALE));
+        let frames = o.absorb.map_or(0.0, |a| a.total);
+        info!("prize: item {:#x} taken by Sora{}: {note}; drawn in over {frames:.0} frames", o.id, if collect_all { " (collect-all)" } else { "" });
+    }
+}
+
+/// The item objects' place, facing and size; the model faces its yaw [inferred: the game's yaw sign
+/// against the app's mirrored Z].
+fn show_items(mut items: Query<(&ItemObj, &mut Transform)>) {
+    for (it, mut t) in &mut items {
+        t.translation = flip(it.o.pos) * SCALE;
+        t.rotation = Quat::from_rotation_y(-it.o.yaw);
+        t.scale = Vec3::splat(it.o.scale * SCALE);
     }
 }
 
@@ -1232,5 +1886,188 @@ mod tests {
             assert!((l.shape as usize) < d.shapes.len(), "kind {k}: shape {} of {}", l.shape, d.shapes.len());
             assert!(l.scale > 0.0, "kind {k}");
         }
+    }
+
+    /// Shapes of the item object's real numbers (the disc test reads the real ones).
+    fn item_consts() -> ItemConsts {
+        ItemConsts {
+            boxes: vec![(0x3b9, 1.6); BOX_ROWS],
+            yaw_unit: 2f32.powi(-32),
+            yaw_span: std::f32::consts::TAU,
+            yaw_base: -std::f32::consts::PI,
+            unit: 2f32.powi(-32),
+            xz_span: 10.0,
+            xz_base: -5.0,
+            y_span: 5.0,
+            y_base: -15.0,
+            fall_max: 25.0,
+            gravity: 1.5,
+            friction: 0.97,
+            bounce_min: 2.5,
+            bounce: -0.8,
+            time_scale: 0.05,
+            time_min: 30.0,
+            time_max: 60.0,
+            one: 1.0,
+            pi: std::f32::consts::PI,
+            half: 0.5,
+            lift: 50.0,
+            spin: 0.5236,
+            shrink_at: 0.1,
+            shrink_scale: 10.0,
+        }
+    }
+
+    /// FUN_001bd0d0 + FUN_001bd580: value 0 is the yaw, values 1, 2, 3 go to X, Z and Y (+0x20, +0x28,
+    /// +0x24 in the order the enter writes them); the item starts not pickable.
+    #[test]
+    fn an_item_launch_takes_yaw_then_x_z_y() {
+        let c = item_consts();
+        let o = item_launch(&c, 1, 1.6, [0, u32::MAX, 0, 0x8000_0000], Vec3::new(1.0, -50.0, 2.0));
+        assert_eq!(o.yaw, -std::f32::consts::PI);
+        assert!((o.vel.x - 5.0).abs() < 1e-3, "{:?}", o.vel);
+        assert_eq!(o.vel.z, -5.0);
+        assert!((o.vel.y - -12.5).abs() < 1e-3, "{:?}", o.vel);
+        assert!(!o.pickable && !o.taken && o.absorb.is_none());
+        assert_eq!((o.scale, o.base_scale), (1.6, 1.6));
+    }
+
+    /// FUN_001bd700 + FUN_001bd7a0: upward first (not pickable), pickable once it falls, bounces while
+    /// faster than 2.5 (factor -0.8, the sound 0xe on the first two), then rests with no velocity.
+    #[test]
+    fn an_item_bounces_then_rests() {
+        let c = item_consts();
+        let mut o = item_launch(&c, 1, 1.6, [0, 0x8000_0000, 0x8000_0000, 0], Vec3::new(0.0, -100.0, 0.0));
+        item_fall(&mut o, &c, flat);
+        assert!(!o.pickable, "still rising");
+        let (mut sounds, mut frames) = (Vec::new(), 0);
+        while !o.rested && frames < 1000 {
+            if let Some(s) = item_fall(&mut o, &c, flat) {
+                sounds.push(s);
+            }
+            frames += 1;
+        }
+        assert!(o.rested, "rests within {frames} frames");
+        assert!(o.pickable);
+        assert_eq!(o.vel, Vec3::ZERO);
+        assert!(o.bounces >= 2, "{} bounces", o.bounces);
+        assert_eq!(sounds, vec![ITEM_BOUNCE_SE; 2]);
+        assert_eq!(o.pos.y, 0.0);
+        // At rest it stays on the floor.
+        item_fall(&mut o, &c, flat);
+        assert_eq!((o.pos.y, o.vel), (0.0, Vec3::ZERO));
+    }
+
+    /// FUN_001bd1d8 + FUN_001bd878: frames = distance * 0.05 held in 30..60; the item arcs up
+    /// (sin(f * pi) * 50) on its way in, spins faster as it nears, shrinks below f 0.1 and ends at the
+    /// centre when the frames run out.
+    #[test]
+    fn a_taken_item_arcs_into_the_collector() {
+        let c = item_consts();
+        let centre = Vec3::new(0.0, -100.0, 0.0);
+        let mut o = item_launch(&c, 1, 1.6, [0; 4], Vec3::new(200.0, -100.0, 0.0));
+        item_take(&mut o, &c, centre);
+        assert!(o.taken && !o.pickable);
+        let a = o.absorb.unwrap();
+        assert_eq!((a.left, a.total), (30.0, 30.0), "|offset| 200 * 0.05 = 10 is raised to 30");
+        let mut far = item_launch(&c, 1, 1.6, [0; 4], Vec3::new(2000.0, -100.0, 0.0));
+        item_take(&mut far, &c, centre);
+        assert_eq!(far.absorb.unwrap().total, 60.0, "2000 * 0.05 = 100 is held at 60");
+        let mut frames = 0;
+        let mut highest = 0.0f32;
+        let yaw0 = o.yaw;
+        while item_absorb_step(&mut o, &c, centre) {
+            frames += 1;
+            highest = highest.max(-(o.pos.y - centre.y));
+        }
+        assert_eq!(frames, 29, "the 30th frame ends it");
+        assert!(highest > 30.0, "the arc rises above the line: {highest}");
+        assert!(o.yaw > yaw0);
+        assert!(o.scale < 1.6, "shrunk at the end: {}", o.scale);
+        assert!((o.pos - centre).length() < 15.0, "{:?}", o.pos);
+    }
+
+    /// FUN_00175c28 / FUN_00175cb0: one start; a second pickup only raises the frames left.
+    #[test]
+    fn the_pickup_glow_starts_once_and_extends() {
+        let mut g = Glow::default();
+        assert!(g.start(20.0, false));
+        assert!(!g.start(10.0, false));
+        assert_eq!(g.left, 20.0);
+        assert!(!g.tick(false));
+        assert!(!g.start(30.0, false));
+        assert_eq!(g.left, 30.0);
+        for _ in 0..29 {
+            assert!(!g.tick(false));
+        }
+        assert!(g.tick(false), "ends at 0");
+        assert!(!g.running);
+        let mut b = Glow::default();
+        assert!(!b.start(20.0, true), "+0x160 bit 0x4000 blocks the start");
+    }
+
+    /// FUN_001d3f88: the experience carries over each level's amount, stops below the next one, and
+    /// at the cap is set to 0.
+    #[test]
+    fn master_form_experience_levels_up_to_the_cap() {
+        use kh2_tables::player::{FormLevel, FormLevels};
+        let row = |level: u8, exp: i32, ability: u16| FormLevel { form: 3, level, display_level: level, ability, exp };
+        let levels = FormLevels(vec![row(1, 10, 0), row(2, 20, 0x100), row(3, 30, 0x101), row(4, 40, 0), row(5, 50, 0), row(6, 60, 0), row(7, 0, 0x102)]);
+        assert_eq!(add_form_exp(&levels, 3, 1, 0, 9, 7), (1, 9, vec![]));
+        assert_eq!(add_form_exp(&levels, 3, 1, 9, 1, 7), (2, 0, vec![2]));
+        assert_eq!(add_form_exp(&levels, 3, 1, 5, 40, 7), (3, 15, vec![2, 3]));
+        // Cap 3 (one form owned): level 3 is the top; the experience is cleared there.
+        assert_eq!(add_form_exp(&levels, 3, 1, 0, 100, 3), (3, 0, vec![2, 3]));
+        assert_eq!(add_form_exp(&levels, 3, 3, 0, 5, 3), (3, 0, vec![]));
+    }
+
+    /// FUN_001c5808 mode 1 (collect-all) runs 80 frames with its own constants; mode 0 runs 40.
+    #[test]
+    fn collect_all_draws_in_over_its_own_frames() {
+        let mut c = consts();
+        c.absorb1_time = 80.0;
+        c.absorb1_len = 80.0;
+        c.absorb1_turn = 150.0;
+        c.absorb1_scale = 255.0;
+        c.turn_max1 = 0.5236;
+        let centre = Vec3::new(0.0, -100.0, 0.0);
+        for (mode, want) in [(0u8, 39), (1, 79)] {
+            let mut p = launch(&c, 2, [0; 3], Vec3::new(300.0, 0.0, 0.0));
+            start_absorb_mode(&mut p, &c, centre, mode);
+            let mut frames = 0;
+            while absorb_step(&mut p, &c, centre) {
+                frames += 1;
+            }
+            assert_eq!(frames, want, "mode {mode}");
+        }
+    }
+
+    /// The executable's item object numbers and the four box objects; the disc's items each name a box
+    /// row, and a dropped consumable goes through `Progress::give` up to 99, then is refused (skips
+    /// without an ISO).
+    #[test]
+    fn real_item_objects() {
+        let Some(elf) = exe() else { return eprintln!("skipped: no disc (set KH2_ISO)") };
+        let c = ItemConsts::from_exe(&elf).expect("item constants");
+        assert_eq!(c.boxes.len(), BOX_ROWS);
+        assert!(c.boxes.iter().all(|&(o, s)| (0x3b8..=0x3bb).contains(&o) && s > 0.0), "{:?}", c.boxes);
+        assert!(c.gravity > 0.0 && c.fall_max > c.gravity && c.bounce < 0.0 && c.time_min < c.time_max);
+        let o = item_launch(&c, 1, 1.0, [u32::MAX; 4], Vec3::ZERO);
+        assert!(o.vel.y < 0.0, "launched upward (Y down): {:?}", o.vel);
+        let iso = crate::assets::iso_path().unwrap();
+        let disc = Disc::open(&iso);
+        let lib = ItemLib::load(&disc, &elf).expect("item lib");
+        assert_eq!(lib.models.len(), 4, "PRIZE_BOX_YELLOW, RED, BLUE, GREEN");
+        let mut p = crate::progress::Progress::start(&disc).expect("state");
+        let potion = p.items().rows.iter().find(|r| r.kind == crate::progress::item_type::CONSUMABLE).map(|r| r.id).expect("a consumable");
+        assert!(lib.box_of(potion).is_some(), "item {potion:#x} names a box row");
+        let n0 = p.item_count(potion);
+        let mut given = 0;
+        while give_item(&mut p, potion).is_some() {
+            given += 1;
+            assert!(given < 200);
+        }
+        assert_eq!(p.item_count(potion), crate::progress::MAX_COUNT, "from {n0}, {given} given");
+        assert_eq!(give_item(&mut p, potion), None, "a full count refuses");
     }
 }

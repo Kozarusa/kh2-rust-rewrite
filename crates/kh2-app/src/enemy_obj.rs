@@ -120,6 +120,8 @@ pub(crate) struct Obj {
     pub(crate) volumes: Vec<(u32, i16)>,
     /// Prize rows of host 1.92 calls this tick.
     pub(crate) drops: Vec<i32>,
+    /// Host 6.31 ran this tick (FUN_002eece8: every prize and item collected by the player).
+    pub(crate) collect_all: bool,
     /// Spawn parameters 1 and 2 (object +0x820, +0x824, copied from the record by FUN_0016b870).
     pub(crate) spawn_params: Option<[i32; 2]>,
     /// The `enmp` row of this tick's `set_obj_param` when it is not the one the stats were built from.
@@ -185,6 +187,7 @@ impl Obj {
             outbox: Vec::new(),
             volumes: Vec::new(),
             drops: Vec::new(),
+            collect_all: false,
             spawn_params: None,
             param_row: None,
             hp_max: 1,

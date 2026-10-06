@@ -1157,6 +1157,52 @@ impl Runtime {
         entry.is_some()
     }
 
+    /// A script thread for `obj` whose code is event `event` of the program (FUN_0016c9b8 makes the
+    /// thread, FUN_0016c500 points it at the event): the way the cast start FUN_001a4798 runs a spell
+    /// (event 20 with the caster, the effect file, the kind and the `magi` row). The thread becomes the
+    /// runtime's persistent thread and runs one slice per [`update`](Self::update) (the magic task
+    /// FUN_001a4428 runs it with FUN_0016c680) until it ends. No event 0 runs. Returns false when the
+    /// program has no such event (the thread is then over at once, FUN_0016c4d8 -> FUN_0016c7c8).
+    pub fn start_thread(&mut self, obj: u32, event: u32, args: &[u32]) -> bool {
+        self.core.obj = obj;
+        self.core.spawned = true;
+        let handle = self.core.alloc_handle();
+        self.core.main_handle = handle;
+        let entry = self.prog.entry(event);
+        let mut node = self.core.new_node(&self.prog, &mut self.shared, handle, entry.unwrap_or(0), args);
+        node.finished = entry.is_none();
+        self.main = Some(node);
+        entry.is_some()
+    }
+
+    /// FUN_0016c500 on the persistent thread: its code becomes event `event` with `args` (FUN_0016c4d8
+    /// clears the thread's flags, so an ended thread runs again; FUN_001d7bb0 sets the program counter
+    /// and pushes four zero frame words and the arguments without resetting the frame or the operand
+    /// stack, `Thread::restart`). The thread's children stay. The new code runs at the next
+    /// [`update`](Self::update). Returns false (and ends the thread) when the program has no such
+    /// event or there is no thread.
+    pub fn restart_thread(&mut self, event: u32, args: &[u32]) -> bool {
+        let entry = self.prog.entry(event);
+        let Some(node) = self.main.as_mut() else { return false };
+        match entry {
+            Some(pc) => {
+                node.th.restart(pc as usize, args);
+                node.finished = false;
+                true
+            }
+            None => {
+                node.finished = true;
+                false
+            }
+        }
+    }
+
+    /// The persistent thread has ended and has no children left (FUN_0016c680 returning 1, after
+    /// which FUN_001a4428 destroys it).
+    pub fn thread_done(&self) -> bool {
+        self.main.as_ref().is_none_or(|n| n.finished && n.children.is_empty())
+    }
+
     /// Delivers a game event: runs its handler to the first yield. Returns false when the script has no handler.
     pub fn event(&mut self, host: &mut dyn Host, id: u32, args: &[u32]) -> bool {
         let Some(pc) = self.prog.entry(id) else { return false };

@@ -171,6 +171,21 @@ impl Thread {
         self.values.extend_from_slice(args);
     }
 
+    /// Points a thread that has already run at a new entry (FUN_001d7bb0 on a live thread, as
+    /// FUN_0016c500 -> FUN_0016c4d8 does to restart a thread at another event): the frame pointer and
+    /// the operand stack are not reset. Four zero words go on the frame stack above the current frame
+    /// and the arguments on top of the operand stack, so the new routine runs above whatever the old
+    /// one left, and returning from it ends the thread. On a fresh thread this is [`start`](Self::start).
+    pub fn restart(&mut self, pc: usize, args: &[u32]) {
+        self.pc = pc;
+        let fp = self.fp;
+        if fp + 16 <= self.frame.len() {
+            self.frame[fp..fp + 16].fill(0);
+        }
+        self.fp = fp + 16;
+        self.values.extend_from_slice(args);
+    }
+
     /// Script address of the thread's frame memory.
     pub fn frame_addr(&self, layout: &Layout) -> u32 {
         layout.frames + self.id * layout.frame_stride

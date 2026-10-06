@@ -113,7 +113,66 @@ from the main loop at 0x101908): while the delay counter (+0x6a) is below the de
 slot does nothing, then `volume += step; time -= 1` with `step = (target - volume) / time`
 (integer division), and at 0 the volume snaps to the target; a target of 0 stops the sequence
 (`FUN_108900(slot, 1)`) and keeps it for a resume. `kh2-audio` ports the ramps and slot handling
-(unit test `bgm_slot_ramps_delays_and_resumes`) and the app drives them from `Battle`.
+(unit test `bgm_slot_ramps_delays_and_resumes`) and the app drives them from the battle flag
+below (`audio_bgm::BattleFlag`).
+
+### The battle flag (WP-FIX-11; verified in the decompilation, implemented)
+
+The music follows the word at 0x1c8a7d8 (`FUN_001903d8` reads "not 0"). Before WP-FIX-11 the app fed
+the trigger with `sora::Battle`, the keyblade-out timer that Sora's attacks, guards and spells refill
+for 240 ticks: so every swing switched the music, with or without an enemy. The original's flag does
+not look at the player's actions at all.
+
+- **Desired state** (`FUN_001904e0`): false when the player object is not valid (`FUN_0019a3f8` on
+  `DAT_0035c998`; the hold timer below is also zeroed then). Otherwise true when any of three holds:
+  1. a limit task exists (`FUN_001b3c00`: `DAT_01d5d6b0`, created by the limit execution
+     `FUN_001b28a0`, cleared by `FUN_001b3178`, `FUN_001b32d8` and the area reset `FUN_001b2770`);
+  2. bit 0x10000 of `DAT_0035d268`, which `FUN_00190900` rebuilds every tick: cleared, then the
+     object list is walked (`FUN_00184ac8` over `FUN_001b7c88`: list `DAT_01d5d7a0` linked through
+     +0x8b4, skipping objects whose +0x108 has 0x80000 or 0x10000000 (`FUN_0019a440`), and keeping
+     only objects with +0x588 bit 0x10). The bit is set when such an object has +0x588 bit 0x400,
+     wherever it is, or when its team word +0x3b0 is 2 and its **horizontal** distance to the
+     player is **under 1200 units (12 m)**: the y component of the difference of the two positions
+     (`FUN_0016b960`: +0x70, or +0x540) is zeroed before the length; the threshold is the float at
+     0x37ad20 (1200.0 on the user's disc, read at run time).
+  3. `FUN_001a4e70`: a detached script thread (the list at 0x1c95518 that host 2.20 and the spell
+     start `FUN_001a4798` fill, docs/bdx.md) is running (its +0x1c lacks bit 4) for an owner that
+     is a valid friend (+0x588 bit 0x4000, set by the friend constructor `FUN_0017c718`) and not a
+     summon (bit 0x400000).
+- Who has those flags: object type 4 of `00objentry` (normal enemy) is built by `FUN_001b02b0` ->
+  `FUN_00184820` (+0x588 |= 0x10) -> `FUN_001d5c70` (+0x3b0 = 2, +0x588 |= 0x20000); types 3 and
+  0xc (bosses) by `FUN_001acf80` / `FUN_001ad0c0` -> `FUN_001acf20`, which add +0x588 bit 0x400
+  (dispatch in `FUN_0016e8c0` on the objentry type byte +4). Party members get team 1
+  (`FUN_001746e0`). So the music is about enemies within 12 m of Sora (any boss in the area), not
+  about lock-on range or attacks.
+- **Hysteresis** (`FUN_001903e8`, once per tick from the object update at 0x1b775c, unless the flag
+  is 2): `FUN_00190900` runs first; a grace timer (0x1c8a7dc) counts down by the tick scale
+  (`DAT_00356f40`, 1.0); when the desired state differs from the flag it is taken at once while
+  the grace timer is still above 0, else the hold timer (0x1c8a7e0) counts down and the flag
+  changes when it reaches 0. Whenever flag and desire agree the hold timer is reloaded: 120
+  (0x37ad18) while the flag is 1, 45 (0x37ad1c) while it is 0. So battle starts after 45 ticks of
+  an enemy in range and ends 120 ticks after the last one left. The flag setter `FUN_00190550` also
+  calls `FUN_001befc0(6)` / `FUN_001bef48(6)` (not traced) and, while the flag is 0, the update ends
+  with `FUN_001a1e68` (stores the party records); neither touches the music.
+- **Reset** (`FUN_00190370`, from the area setup `FUN_001689c0`): flag 0, hold timer 0, grace timer
+  30 (0x37ad14). Scripts force the flag to 2 (`FUN_001905a8`, from `FUN_00173478` and
+  `FUN_001b8d80`) and back to 0 (`FUN_001905c0`, from `FUN_001b99a0`); the per-tick update leaves a
+  2 alone.
+- **App** (`audio_bgm::BattleFlag`, `battle_flag_desire`; tests `battle_flag_rises_after_45_and_falls_after_120`,
+  `battle_flag_grace_after_reset_switches_at_once`, `battle_flag_desire_is_horizontal_distance_under_1200`,
+  `battle_flag_constants_from_exe`): the per-tick update and the reset are ported and the four
+  constants are read from `SLUS_210.05` at run time; the reset runs when an area finishes loading.
+  Term 2 uses the living enemies (`Enemy::alive`): every enemy the app spawns is an objentry type 4
+  object (`enemy::area_groups` takes only `KINDS`, all normal enemies; the app has no boss). Terms 1
+  and 3 are always false in the app: it has no limit task and no friends (`limit.rs` stops before
+  the task; no companion objects). The scripted state 2 is not driven (no script calls it yet). The
+  flag is updated even with `KH2_NO_MUSIC`. Log: `battle flag: 0 -> 1 (...)` / `battle flag: 1 -> 0`
+  on every change.
+- **[inferred]**: the app drops an enemy from the test when its HP reaches 0; the original keeps a
+  dead enemy object in the list until its script deletes it or the +0x108 bits above are set. The
+  writers of those +0x108 bits were not traced.
+- `sora::Battle` stays the keyblade-out timer of the player controller (not this flag); the drive
+  and reaction code still read that one.
 
 Inferred or not done:
 
@@ -123,13 +182,8 @@ Inferred or not done:
   quieter than before (0.75 of the old level at the same master gain).
 - Resume (mode 1) restores the game's last checkpoint (state at 0x1e35c0, saved by routine
   0x108068 at a counter event that was not traced). The port resumes where the field slot stopped.
-- The game's battle flag has its own hysteresis (`FUN_001903e8`: after the desired state differs
-  it needs 45 ticks to rise (the timer at 0x1c8a7e0 resets to 45 while the flag is 0 and to 120
-  while it is 1, so a fall needs 120), except in the first 30 ticks after a reset (0x1c8a7dc)).
-  What makes it desired is `FUN_001904e0`: the player alive and either a script flag (0x1b3c00)
-  or an awake hostile in `FUN_001a4e70`'s list (flag +0x588 bit 0x4000 and not 0x400000). The app
-  keeps its own `Battle` flag (ticks held after the last sign of a fight) and feeds it straight to
-  the trigger. Result in tt: the music switches 240 ticks after the last fight sign, not 120.
+- The battle flag: see the section above (before WP-FIX-11 this bullet described the app feeding
+  its own `Battle` timer to the trigger, which is what made attacks switch the music).
 - Area changes: slot 1 is stopped when a new area's field music starts.
 - Streams (`bgm/music118.vsb`, event BGM) are not handled.
 

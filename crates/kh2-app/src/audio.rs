@@ -230,6 +230,7 @@ impl Plugin for AudioPlugin {
             .init_resource::<VoiceInfo>()
             .init_resource::<LiveMixes>()
             .init_resource::<crate::audio_bgm::AreaMusic>()
+            .init_resource::<crate::audio_bgm::BattleFlag>()
             .add_message::<PlaySe>()
             .add_message::<PlayVoice>()
             .add_message::<SoraVoice>()

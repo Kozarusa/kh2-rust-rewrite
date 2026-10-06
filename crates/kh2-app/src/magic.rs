@@ -605,13 +605,14 @@ fn run(
                 let magi = rules::magi_row(&data.magi, kind).cloned().unwrap_or_default();
                 let cost = data.cmd(cmd).map_or(0, |c| c.cost);
                 mlog!(
-                    "magic: cast {} (command {cmd}, slot {}, level {}): {press:?}, combo {} finisher {finisher}, kind {kind}, motion {motion_id} ({}) blend {blend}, airborne {airborne}, cost {cost}, MP {}, voice {voice}, target record {target:?} (own {own}), magi {:?}",
+                    "magic: cast {} (command {cmd}, slot {}, level {}): {press:?}, combo {} finisher {finisher}, kind {kind}, motion {motion_id} ({}) blend {blend}, airborne {airborne}, cost {cost}, MP {}, voice {voice}, target record {target:?} (own {own}), lock-on {:?}, magi {:?}",
                     row.file_name,
                     row.id,
                     row.level,
                     chain.combo,
                     body.tag(),
                     s.mp,
+                    s.lock,
                     &magi.0[..magi.0.len().min(16)]
                 );
                 // Event 20 (FIRE/BLIZZARD/THUNDER/CURE): the charge effect of the cast. Wisdom and Final

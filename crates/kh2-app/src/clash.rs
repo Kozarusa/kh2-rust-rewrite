@@ -13,8 +13,10 @@
 //! `combat::live_attacks`), disables the volumes by marking their windows as landed so
 //! `combat::detect_hits` skips them, writes [`EnemyClash`] for the enemy side and [`Clash`] for the
 //! player's side (consumed by `player_reaction.rs`, which also starts the spark through
-//! `fx::StartSystemEffect`). Not done: the cone test for rows with `ReflectRange` (those pairs never
-//! clash here), `ReflectAction`, the hit registry tests of FUN_001be108.
+//! `fx::StartSystemEffect`). The cone test of FUN_0018d308 runs both ways for rows with `ReflectRange`
+//! (`reaction_rules::reflect_cone`). Not done: `ReflectAction` (FUN_0019e870 reads it as an offset from
+//! the row to an action record that 0x1b2478 hands to the actor's action system at +0x300,
+//! FUN_00186db0), the script event 0x13 the enemy handler sends, the hit registry tests of FUN_001be108.
 
 use std::collections::HashSet;
 
@@ -64,8 +66,8 @@ fn detect_clashes(
     bodies: Query<(&Animator, &GlobalTransform)>,
     data: Res<GameData>,
     reaction: Option<Res<ReactionData>>,
+    places: Query<&GlobalTransform, With<Fighter>>,
     mut done: Local<HashSet<(Entity, i16, Entity, i16)>>,
-    mut gap_noted: Local<bool>,
     mut enemy_out: MessageWriter<EnemyClash>,
     mut player_out: MessageWriter<Clash>,
 ) {
@@ -79,6 +81,15 @@ fn detect_clashes(
             }
         }
     }
+    // FUN_0018d308(A, B) with the owners' places: A's facing, and the flat unit vector from B's owner
+    // (its +0x730, taken as its position [inferred]) to A's owner (FUN_0018c4f8).
+    let log_cone = std::env::var("KH2_HITLOG").is_ok_and(|v| v != "0");
+    let cone = |me: &Live, other: &Live, row: &kh2_tables::tables::Atkp| {
+        let (Ok(pa), Ok(pb)) = (places.get(me.fighter), places.get(other.fighter)) else { return true };
+        let facing = pa.rotation() * Vec3::Z;
+        let from_other = (pa.translation() - pb.translation()).with_y(0.0).normalize_or(-facing);
+        rules::reflect_cone(row.reflect_range, row.reflect_angle, facing, from_other)
+    };
     done.retain(|(a, sa, b, sb)| live.iter().any(|l| l.fighter == *a && l.start == *sa) && live.iter().any(|l| l.fighter == *b && l.start == *sb));
     let mut disable: Vec<(Entity, Entity, i16)> = Vec::new();
     for (i, a) in live.iter().enumerate() {
@@ -90,11 +101,11 @@ fn detect_clashes(
             if !reaction.consts.types_clash(ra.r#type, rb.r#type) || !overlap(&a.vol, &b.vol) {
                 continue;
             }
-            // FUN_0018d308 for rows with a cone: not decoded far enough to run, so they never clash.
-            if ra.reflect_range != 0 || rb.reflect_range != 0 {
-                if !*gap_noted {
-                    *gap_noted = true;
-                    warn!("clash: attack rows {} and {} have a ReflectRange cone; the cone test is not ported, no clash", a.atkp, b.atkp);
+            // FUN_0018d308 both ways: a row with a ReflectRange cone clashes only with an attack whose
+            // owner stands inside the cone in front of its own owner.
+            if (ra.reflect_range != 0 || rb.reflect_range != 0) && !(cone(a, b, ra) && cone(b, a, rb)) {
+                if log_cone {
+                    info!("clash: attack {} against {}: outside the ReflectRange cone ({} / {}), no clash", a.atkp, b.atkp, ra.reflect_range, rb.reflect_range);
                 }
                 continue;
             }

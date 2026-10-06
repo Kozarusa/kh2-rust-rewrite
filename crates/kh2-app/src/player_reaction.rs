@@ -36,7 +36,7 @@ use crate::data::GameData;
 use crate::enemy::Enemy;
 use crate::fx::StartSystemEffect;
 use crate::reaction_cmd::{PlayerReaction, PlayerReactionCmd};
-use crate::reaction_rules::{self as rules, ClashReaction, ExeConsts, Push, ReflectFields};
+use crate::reaction_rules::{self as rules, ClashActor, ClashReaction, ExeConsts, Push, ReflectFields, RECOIL_BLEND};
 use crate::schedule::Sim;
 use crate::skel::Animator;
 use crate::sora::{Battle, Sora, State, WeaponCue};
@@ -343,18 +343,15 @@ pub enum PartyOutcome {
 /// Returns the outcome and the system effect id of the spark FUN_0018d560 starts (0xd for the spark
 /// alone and the recoil; for the guard bounce 0xb when the actor's +0x588 has bit 0x80, which the
 /// party class sets (FUN_001746e0, FUN_00176e00), else 0xc).
-pub fn party_clash(own: &ReflectFields, other: &ReflectFields, airborne: bool, c: &ExeConsts, g: Option<&GuardConsts>) -> (PartyOutcome, u16) {
-    match rules::party_clash(own.refact_self, other.refact_other, !airborne) {
+pub fn party_clash(own: &ReflectFields, other: &ReflectFields, actor: ClashActor, c: &ExeConsts, g: Option<&GuardConsts>) -> (PartyOutcome, u16) {
+    match rules::party_clash(own.refact_self, other.refact_other, actor.plain_ground()) {
         ClashReaction::None => (PartyOutcome::Spark, 0xd),
         ClashReaction::Guard if g.is_some() => {
             (PartyOutcome::GuardBounce { motion: rules::motion::AUTOGUARD, power: c.guard_power, star: g.map_or(0.0, |g| g.star_ticks) }, 0xb)
         }
         // Without the guard constants the bounce cannot be built; the recoil stands in (warned at start).
         ClashReaction::Reflect | ClashReaction::Guard => (
-            PartyOutcome::Recoil {
-                motion: if airborne { rules::motion::REFLECT_AIR } else { rules::motion::REFLECT_GROUND },
-                power: rules::recoil_power(c.clash_power, c),
-            },
+            PartyOutcome::Recoil { motion: actor.recoil_motion(), power: rules::recoil_power(c.clash_power, c) },
             0xd,
         ),
     }
@@ -379,10 +376,12 @@ fn receive_clashes(
     for k in clashes.read().filter(|k| k.player == me) {
         let (Some(own), Some(other)) = (data.atkp(k.player_atkp), data.atkp(k.enemy_atkp)) else { continue };
         let (own, other) = (ReflectFields::from_atkp(own), ReflectFields::from_atkp(other));
-        // FUN_0019aa28 stands for airborne (docs/hit-reaction.md); the owner-type flag 2 and +0x160
-        // bit 0x40 are not modelled (both read as clear).
-        let airborne = !s.motor.grounded;
-        let (outcome, spark) = party_clash(&own, &other, airborne, c, guard.as_deref());
+        // FUN_0019aa28: airborne (the mover's bit 1) or range trigger 3 / 30 of Sora's motion; +0x160
+        // bit 0x40: range trigger 24 (docs/hit-reaction.md). The mover's bit 2 reads as clear.
+        let ranges: Vec<u8> = anims.get(s.body).ok().and_then(|a| a.triggers().map(|t| t.active(a.gframe()).map(|r| r.id).collect())).unwrap_or_default();
+        let actor = ClashActor::new(!s.motor.grounded, ranges);
+        let airborne = actor.fun_0019aa28;
+        let (outcome, spark) = party_clash(&own, &other, actor, c, guard.as_deref());
         s.connected = true;
         // FUN_0018d560: the spark is element `spark` of the system effect file, at the own volume's
         // centre moved toward the other volume's centre by the own radius. The volume centre is the
@@ -413,10 +412,10 @@ fn receive_clashes(
             PartyOutcome::Recoil { motion, power } => {
                 let Ok(mut body) = anims.get_mut(s.body) else { return };
                 let slot = body.rig.mset.slot(motion as usize, PlayerState::BattleWeapon);
-                // The blend of the game's request was not read; 2 ticks as for the wall recoil.
-                body.restart(slot, false, 2.0);
+                // FUN_00185d30 requests the motion with blend 0 (RECOIL_BLEND).
+                body.restart(slot, false, RECOIL_BLEND);
                 let mut weapon = WeaponCue::default();
-                weapon.restart(slot, false, 2.0);
+                weapon.restart(slot, false, RECOIL_BLEND);
                 weapon.apply(&s.weapons, &mut anims);
                 let push = Push::new(-s.motor.forward(), power, 0.0, c);
                 let before = s.hits;
@@ -446,9 +445,9 @@ fn receive_clashes(
                 }
                 let Ok(mut body) = anims.get_mut(s.body) else { return };
                 let slot = body.rig.mset.slot(motion as usize, PlayerState::BattleWeapon);
-                body.restart(slot, false, 2.0);
+                body.restart(slot, false, RECOIL_BLEND);
                 let mut weapon = WeaponCue::default();
-                weapon.restart(slot, false, 2.0);
+                weapon.restart(slot, false, RECOIL_BLEND);
                 weapon.apply(&s.weapons, &mut anims);
                 s.enter(State::Hurt, Push::new(away, power, 0.0, c));
                 s.invuln = star;
@@ -505,7 +504,7 @@ mod tests {
     fn party_clash_follows_fun_001754a0() {
         use Refact::*;
         let (c, g) = consts();
-        let k = |own, other, air| party_clash(&fields(own, Reflect), &fields(Reflect, other), air, &c, Some(&g));
+        let k = |own, other, air| party_clash(&fields(own, Reflect), &fields(Reflect, other), ClashActor::new(air, []), &c, Some(&g));
         // RefactSelf 2 of the own row, or RefactOther 2 of the other: the spark alone (effect 0xd).
         assert_eq!(k(Nothing, Guard, false), (PartyOutcome::Spark, 0xd));
         assert_eq!(k(Guard, Nothing, true), (PartyOutcome::Spark, 0xd));
@@ -517,7 +516,7 @@ mod tests {
         assert_eq!(k(Reflect, Guard, false), (PartyOutcome::GuardBounce { motion: 0x2a, power: 200.0, star: 80.0 }, 0xb));
         assert_eq!(k(Guard, Reflect, false), (PartyOutcome::GuardBounce { motion: 0x2a, power: 200.0, star: 80.0 }, 0xb));
         // Without the guard constants the recoil stands in.
-        assert_eq!(party_clash(&fields(Guard, Reflect), &fields(Reflect, Reflect), false, &c, None).0, PartyOutcome::Recoil { motion: 0x29, power: 50.0 });
+        assert_eq!(party_clash(&fields(Guard, Reflect), &fields(Reflect, Reflect), ClashActor::default(), &c, None).0, PartyOutcome::Recoil { motion: 0x29, power: 50.0 });
     }
 
     #[test]

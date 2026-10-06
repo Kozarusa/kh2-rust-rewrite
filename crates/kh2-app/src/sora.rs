@@ -1694,10 +1694,10 @@ pub fn tick(
     if keep_out.get() {
         battle.ticks = BATTLE_TICKS;
     }
-    // An attack started this tick from another state while airborne (or a leap off the ground): the
-    // jump mover moves Sora on this tick too (without this the floor-follow below would end a leap
-    // and restart the fall).
-    if airborne_dy.is_none() && !s.motor.grounded && matches!(s.state, State::Attack { .. }) {
+    // A jump, a leap off the ground or an attack started this tick from another state while
+    // airborne: the jump mover moves Sora on this tick too. Without this the floor-follow below put
+    // him back on the floor (`grounded` stayed set through a jump's whole rise) and ended a leap.
+    if airborne_dy.is_none() && !s.motor.grounded && matches!(s.state, State::Attack { .. } | State::Air) {
         airborne_dy = Some(s.motor.jump_dy(fall_max));
     }
 

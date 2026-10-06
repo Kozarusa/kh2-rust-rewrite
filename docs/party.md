@@ -207,7 +207,8 @@ function at 0x2eec70 (FUN_00112260) sets it from scripts.
 - Removal (vtable +0x90, FUN_0010c6e0): AI object deleted (its slot +8), weapons released, slot freed
   (FUN_0017c9b8).
 - **Hidden members** (summon, drive form, limit): FUN_001c7600(fade frames, NeoStatus) fades the object out
-  (FUN_001abf40 on +0x82c, frames `DAT_0037c04c`/`DAT_0037c050`/`DAT_0037bff0` = 15 per caller), sets +0x7f8
+  (FUN_001abf40(1.0, 0, frames, +0x82c); the callers pass 15 frames: `DAT_0037c050` forms, `DAT_0037a564`
+  area spawn, `DAT_0037bff0` summons; the member swap FUN_001b3f78 fades over 8, `DAT_0037ba60`), sets +0x7f8
   bit 0x10 and appends its member index (FUN_001a7500: Sora/Roxas 0, Donald 1, Goofy 2, others 3) to the list
   at 0x1d5e380. They come back through FUN_001c79c8 -> FUN_001c7ab0 -> FUN_0017d290 with a fade-in.
 - **Auto swap** on KO [I: the Auto Change ability]: FUN_0017ce60 calls FUN_001b4170 when the KO'd member's
@@ -290,7 +291,8 @@ the member is free, the queued command (`+0xc30`: kind 1 attack/item -> FUN_0017
 
 FUN_00111070, while the member is free (+0x160 bits 4/8/0x10) or forced (bit 0x40000000):
 
-1. A KO'd Donald (class 12 only) leaves motion states 0x1f..0x20.
+1. A KO'd member of class 12 (Pride Lands Donald) in motion controller state 0x1f..0x20 is reset
+   (FUN_0016b698(obj, 0)).
 2. FUN_0010df08: refresh the relation to the player at `+0xb80` (FUN_0010b428: +0 `dy` = target Y minus own
    Y, game Y pointing down; +0x10 unit direction and +0x1c distance in 3D; +0x20 unit direction and +0x2c
    distance on the ground plane) and, in battle, the target (+0x9f4) by the battle style (section "Targets").

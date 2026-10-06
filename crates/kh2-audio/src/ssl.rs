@@ -1212,9 +1212,9 @@ impl Driver {
         let vol = volume.clamp(0, 0x3fff);
         let pan = (pan & 0x1ff) as usize;
         let (l, r) = if pan < 0x100 {
-            (vol * self.tables.pan_l[pan] as i32 >> 14, vol * self.tables.pan_r[pan] as i32 >> 14)
+            ((vol * self.tables.pan_l[pan] as i32) >> 14, (vol * self.tables.pan_r[pan] as i32) >> 14)
         } else {
-            (vol * -(self.tables.pan_l[pan & 0xff] as i32) >> 14, vol * -(self.tables.pan_r[pan & 0xff] as i32) >> 14)
+            ((vol * -(self.tables.pan_l[pan & 0xff] as i32)) >> 14, (vol * -(self.tables.pan_r[pan & 0xff] as i32)) >> 14)
         };
         let spu = |v: i32| {
             let v = v & 0x7fff;

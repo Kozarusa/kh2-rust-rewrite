@@ -164,8 +164,9 @@ old line and start the new one every tick).
 
 - **Bit 0x20 of `*(actor + 0xc) + 8`.** `FUN_00183730` returns 0x12 for it, else the ground
   material. The word is the class descriptor's flag word. `FUN_0016a2f0` (the per-tick actor
-  update) tests bits 2 and 0x20 of the same word together to decide whether to run the actor's
-  jump set-up. Which descriptors carry bit 0x20 and what sets it was not found (no writer in the
+  update) tests bits 2 and 0x20 of the same word together before a block that clears the
+  velocity fields and calls descriptor slot 4 (inferred: a jump or ground set-up; the purpose
+  of that block was not established). Which descriptors carry bit 0x20 and what sets it was not found (no writer in the
   main executable's decompilation). Port: `footstep::actor_material` (tested); Sora and the two
   ported enemies pass 0.
 - **Kind 8 landing.** `FUN_0017af10` is slot 6 of the descriptor class vtables at 0x35cbb0 and

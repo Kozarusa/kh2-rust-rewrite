@@ -72,7 +72,7 @@ pub fn pick_line(pairs: &[i8; 10], seed: &mut u32, mut resolve: impl FnMut(i8) -
         return -1;
     }
     let x = rng_next(seed) as u64;
-    let bucket = ((1u64 << 32) + n as u64 - 1) / n as u64;
+    let bucket = (1u64 << 32).div_ceil(n as u64);
     pool[(x / bucket) as usize]
 }
 

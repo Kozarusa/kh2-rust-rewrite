@@ -121,6 +121,76 @@ pub fn battle_music(battle: Res<Battle>, disc: Res<Disc>, audio: Res<Audio>, mut
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    fn write_wav(path: &std::path::Path, pcm: &[f32]) {
+        let data: Vec<u8> = pcm.iter().flat_map(|s| ((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes()).collect();
+        let mut b = Vec::new();
+        b.extend(b"RIFF");
+        b.extend((36 + data.len() as u32).to_le_bytes());
+        b.extend(b"WAVEfmt ");
+        b.extend(16u32.to_le_bytes());
+        b.extend(1u16.to_le_bytes());
+        b.extend(2u16.to_le_bytes());
+        b.extend(kh2_audio::RATE.to_le_bytes());
+        b.extend((kh2_audio::RATE * 4).to_le_bytes());
+        b.extend(4u16.to_le_bytes());
+        b.extend(16u16.to_le_bytes());
+        b.extend(b"data");
+        b.extend((data.len() as u32).to_le_bytes());
+        b.extend(data);
+        std::fs::write(path, b).unwrap();
+    }
+
+    /// Renders the field-to-battle-and-back switch of tt00 (music 118 / 119) and three of Sora's
+    /// voice lines into the untracked local/ folder for listening. Skipped without a disc.
+    #[test]
+    fn render_listening_wavs() {
+        let iso = crate::assets::iso_path().ok().filter(|p| p.exists());
+        let Some(iso) = iso else { return };
+        let disc = Disc::open(&iso);
+        let exe = disc.read_root("LIBSSL.IRX").expect("irx");
+        let tables = kh2_audio::ssl::Tables::from_irx(&exe).expect("tables");
+        let mut d = Driver::new(Arc::new(tables));
+        d.mixer.master = 0.6;
+        let field = crate::audio::load_sequence(&disc, 118).expect("field music");
+        d.play_bgm(field);
+        let mut m = AreaMusic::default();
+        m.set_area(118, 119);
+        let mut pcm = Vec::new();
+        let mut render = |d: &mut Driver, secs: f32| {
+            let mut buf = vec![0f32; (secs * kh2_audio::RATE as f32) as usize * 2];
+            for c in buf.chunks_mut(512) {
+                d.render(c);
+            }
+            pcm.extend(buf);
+        };
+        render(&mut d, 3.0);
+        apply(&mut d, m.step(true), || crate::audio::load_sequence(&disc, 119));
+        render(&mut d, 14.0);
+        apply(&mut d, m.step(false), || None);
+        render(&mut d, 14.0);
+        let dir = std::path::Path::new("../../local");
+        std::fs::create_dir_all(dir).unwrap();
+        write_wav(&dir.join("bgm_switch_tt00.wav"), &pcm);
+
+        // Voice lines through the driver's pan law, centred.
+        let mut v = Driver::new(d.tables.clone());
+        v.mixer.master = 0.8;
+        let bank = disc.read("voice/us/battle/tt0_sora.vsb").and_then(|b| kh2_audio::vsb::Vsb::parse(&b)).expect("bank");
+        let mut out = Vec::new();
+        for line in [9usize, 11, 16] {
+            let (s, rate) = bank.line(line).expect("line");
+            v.play_voice_at(Arc::new(s), rate, 0x3fff, 0x40);
+            let mut buf = vec![0f32; kh2_audio::RATE as usize * 2 * 2];
+            for c in buf.chunks_mut(512) {
+                v.render(c);
+            }
+            out.extend(buf);
+        }
+        write_wav(&dir.join("voice_sora_tt0_9_11_16.wav"), &out);
+        assert!(pcm.iter().any(|s| s.abs() > 0.01));
+    }
 
     #[test]
     fn rise_and_fall_switch_once_and_only_with_distinct_numbers() {

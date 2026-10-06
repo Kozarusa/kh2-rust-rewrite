@@ -127,10 +127,10 @@ impl VoiceTable {
         let rec = self.0.iter().find(|r| r.character_id as u16 == speaker && r.id as u16 == voice)?;
         let mut pairs = [0i8; 10];
         for (p, v) in pairs.iter_mut().zip(rec.voices.iter()) {
-            *p = *v as i8;
+            *p = *v;
         }
         let line = pick_line(&pairs, rng, |l| resolve_line(l, speaker, other, flags));
-        (line >= 0).then_some((line as u16, rec.priority as u8))
+        (line >= 0).then_some((line as u16, rec.priority))
     }
 }
 
@@ -269,11 +269,11 @@ pub fn load_sequence(disc: &Disc, number: u32) -> Option<Sequence> {
 /// Starts BGM `music<nnn>` in the field slot at the full level (replacing the current one).
 pub fn play_bgm(disc: &Disc, audio: &Audio, number: u32) -> bool {
     let Some(seq) = load_sequence(disc, number) else { return false };
-    if let Ok(mut s) = audio.0.lock() {
-        if let Some(d) = s.driver.as_mut() {
-            d.bgm_stop(1, false);
-            d.play_bgm(seq);
-        }
+    if let Ok(mut s) = audio.0.lock()
+        && let Some(d) = s.driver.as_mut()
+    {
+        d.bgm_stop(1, false);
+        d.play_bgm(seq);
     }
     true
 }
@@ -412,6 +412,7 @@ pub fn wall_sounds(
 
 /// Motion frame trigger 8 ("sound effect"): params are [bank, index, ...]. Triggers 13 and 14
 /// name a voice ID (not a line): the voice table picks the line.
+#[allow(clippy::too_many_arguments)]
 pub fn motion_sounds(
     anims: Query<(Entity, &Animator, &GlobalTransform)>,
     sora: Query<&Sora>,

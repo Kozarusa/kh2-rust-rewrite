@@ -110,6 +110,35 @@ fn texa_update_matches_the_game() {
         }
     }
     eprintln!("{checked} TEXA fields compared");
+
+    // FUN_00133058: a slot request (motion range trigger 23) selects an animation, then updates follow it.
+    stub_rand(&mut ee, 0x1234_5678);
+    let mut slots = 0;
+    for (t, block) in model.anims.texa.iter().zip(&raw) {
+        ee.write(TAG, block);
+        let body = TAG + 8;
+        for slot in 0..300u32 {
+            clear(&mut ee, OBJ, 0x290);
+            ee.w32(OBJ + 0x10, TAG);
+            ee.wf32(OBJ + 0x18, 1.0);
+            let mut p = TexaPlayer::new(t);
+            ee.w32(OBJ + 0x274, p.request.map_or(0, |r| body + r as u32));
+            let mut rand = || 0x1234_5678u32;
+            for field in 0..40 {
+                if field < 25 {
+                    ee.call(0x133058, &[OBJ as u64, slot as u64], &[], STACK).expect("FUN_00133058");
+                    p.play_slot(t, slot, &mut rand);
+                }
+                ee.call(0x132a80, &[OBJ as u64], &[1.0], STACK).expect("FUN_00132a80");
+                p.update(t, 1.0, &mut rand);
+                let got = (ee.r32(OBJ + 0x278), ee.r32(OBJ + 0x27c), ee.r32(OBJ + 0x14));
+                let want = (p.anim.map_or(0, |f| body + f as u32), p.frame.map_or(0, |f| body + f as u32), p.flags);
+                assert_eq!(got, want, "slot {slot} field {field}");
+                slots += 1;
+            }
+        }
+    }
+    eprintln!("{slots} slot-request fields compared");
 }
 
 fn sprite_shown(t: &Texa, p: &TexaPlayer) -> bool {

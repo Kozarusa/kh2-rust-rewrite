@@ -8,7 +8,8 @@
 //! FUN_0011f560 / FUN_00121a78); UV scrolls move the materials' UV transforms.
 //!
 //! Debug: `KH2_TEXLOG=1` logs per drawn mesh its texture, size, GS region and animations at load,
-//! and every sprite change; `KH2_TEXTINT=<i,j,..>` draws those texture indexes plain magenta.
+//! and every sprite change; `KH2_TEXTINT=<i,j,..>` draws those texture indexes plain magenta;
+//! `KH2_TEXA_PIN=<texa>:<sprite>` holds one sprite on screen.
 
 use std::sync::Arc;
 
@@ -21,7 +22,8 @@ pub struct TexAnimPlugin;
 
 impl Plugin for TexAnimPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(FixedUpdate, tick);
+        // After the pose step, so this tick's motion frame selects range-triggered animations.
+        app.add_systems(FixedUpdate, tick.after(crate::schedule::Sim::Pose));
     }
 }
 
@@ -32,6 +34,13 @@ fn texlog() -> bool {
 /// True if `KH2_TEXTINT` names texture index `i`.
 pub fn tinted(i: usize) -> bool {
     std::env::var("KH2_TEXTINT").is_ok_and(|v| v.split(',').any(|s| s.trim().parse() == Ok(i)))
+}
+
+/// `KH2_TEXA_PIN=<texa>:<sprite>`: show that sprite in every model's TEXA number `texa` (a look check).
+fn pinned(texa: usize) -> Option<usize> {
+    let v = std::env::var("KH2_TEXA_PIN").ok()?;
+    let (a, s) = v.split_once(':')?;
+    (a.trim().parse() == Ok(texa)).then(|| s.trim().parse().ok()).flatten()
 }
 
 /// `KH2_TEXLOG`: one line per drawn mesh of a model.
@@ -86,6 +95,8 @@ pub struct TexAnim {
     /// game shares, so its exact sequence cannot be reproduced here).
     rng: u64,
     tick: u64,
+    /// The TEXA slot a motion range trigger requested last field (for the log).
+    slot: Option<u32>,
 }
 
 impl TexAnim {
@@ -124,12 +135,23 @@ impl TexAnim {
             scrolls,
             rng: 1,
             tick: 0,
+            slot: None,
         })
     }
 
     fn rand(&mut self) -> u32 {
         self.rng = self.rng.wrapping_mul(6364136223846793005).wrapping_add(1);
         ((self.rng >> 32) & 0x7fff_ffff) as u32
+    }
+
+    /// FUN_0011e850: every TEXA that has `slot` in its slot table plays that animation this field.
+    fn play_slot(&mut self, slot: u32) {
+        let anims = self.anims.clone();
+        for (i, t) in anims.texa.iter().enumerate() {
+            let mut p = std::mem::take(&mut self.texa[i]);
+            p.play_slot(t, slot, &mut || self.rand());
+            self.texa[i] = p;
+        }
     }
 
     /// One field: advance every player; returns the textures whose sprites changed.
@@ -140,7 +162,7 @@ impl TexAnim {
         for (i, t) in anims.texa.iter().enumerate() {
             let mut p = std::mem::take(&mut self.texa[i]);
             p.update(t, 1.0, &mut || self.rand());
-            let now = p.sprite(t);
+            let now = pinned(i).filter(|&s| s < t.sprites.len()).or(p.sprite(t));
             self.texa[i] = p;
             if now != self.shown[i] {
                 if texlog() {
@@ -185,8 +207,32 @@ impl TexAnim {
     }
 }
 
-fn tick(mut q: Query<&mut TexAnim>, mut images: ResMut<Assets<Image>>, mut materials: ResMut<Assets<StandardMaterial>>) {
-    for mut a in &mut q {
+/// Motion range trigger 23: while its frame range covers the motion's frame, the model plays the
+/// TEXA animation its first parameter names by slot. The game's range dispatcher FUN_00188bd8
+/// calls the handler FUN_00188030 for every range containing the current frame (end 0xffff = open),
+/// and case 0x17 calls FUN_00192c80 → FUN_0011e850 → FUN_00133058 on every TEXA whose slot table
+/// has that slot. Outside the range the next update returns to the default animation.
+pub const RANGE_TEXA: u8 = 23;
+
+fn tick(
+    mut q: Query<(&mut TexAnim, Option<&crate::skel::Animator>)>,
+    mut images: ResMut<Assets<Image>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    for (mut a, anim) in &mut q {
+        let mut slot_now = None;
+        if let Some((tr, f)) = anim.and_then(|m| m.triggers().map(|t| (t, m.gframe()))) {
+            for r in tr.ranges.iter().filter(|r| r.id == RANGE_TEXA && r.start as f32 <= f && (r.end == -1 || f < r.end as f32)) {
+                if let Some(&slot) = r.params.first() {
+                    a.play_slot(slot as u16 as u32);
+                    slot_now = Some(slot as u16 as u32);
+                }
+            }
+        }
+        if slot_now != a.slot && texlog() {
+            info!("texlog tick {}: motion range trigger {RANGE_TEXA} slot {:?} -> {slot_now:?} ({})", a.tick, a.slot, anim.map_or("-", |m| m.tag()));
+        }
+        a.slot = slot_now;
         let dirty = a.advance();
         for k in 0..a.targets.len() {
             if dirty.contains(&a.targets[k].texture) {

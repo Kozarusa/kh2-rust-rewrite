@@ -36,7 +36,7 @@ use std::f32::consts::PI;
 use bevy::prelude::*;
 
 use super::hud_gauge::GAUG;
-use super::hud_gfx::{HudScene, Node};
+use super::hud_gfx::{Edge, HudScene, Node};
 
 /// Panels the game has (0x13d738 allocates two).
 pub const SLOTS: usize = 2;
@@ -104,6 +104,8 @@ fn build(scene: &mut HudScene, nodes: &mut PartyNodes) {
     for s in 0..SLOTS {
         let mut circle = Node::new(GAUG, None);
         circle.visible = false;
+        // Party panels sit beside Sora's ring: on the RIGHT screen edge (WP-FIX-12).
+        circle.edge = Edge::Right;
         // The panel's position is the circle group's own anchor; a later slot's is `unk20` below.
         circle.off = [0.0, step * s as f32];
         let circle = scene.add(circle);

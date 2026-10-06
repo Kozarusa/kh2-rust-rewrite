@@ -10,7 +10,7 @@
 use bevy::prelude::*;
 use kh2_image::text::Style;
 
-use super::hud_gfx::{HudScene, Node};
+use super::hud_gfx::{Edge, HudScene, Node};
 use super::hud_text::Label;
 use crate::assets::Disc;
 use crate::reaction_cmd::{ReactionOffer, ReactionRules, Status};
@@ -275,6 +275,8 @@ fn build(scene: &mut HudScene, nodes: &mut MenuNodes, file: usize) {
     let add = |scene: &mut HudScene| {
         let mut n = Node::new(file, None);
         n.visible = false;
+        // The command deck keeps its 4:3 distance from the LEFT screen edge (WP-FIX-12).
+        n.edge = Edge::Left;
         scene.add(n)
     };
     for p in 0..PAGES {

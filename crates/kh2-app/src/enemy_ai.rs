@@ -523,8 +523,8 @@ fn ai_update(
             let dist = (obj.motor.pos - player).with_y(0.0).length();
             trace.line(tag, &format!("status: mode {mode} slot {:?} distance {dist:.0} cm hp {} grounded {}", obj.slot, e.hp, obj.motor.grounded));
         }
-        for (_, err) in &rt.core.errors[*errors_seen..] {
-            warn!("bdx {tag}: script error {err:?}");
+        for (pc, err) in &rt.core.errors[*errors_seen..] {
+            warn!("bdx {tag}: script error {err:?} at {pc:#06x}");
         }
         *errors_seen = rt.core.errors.len();
 

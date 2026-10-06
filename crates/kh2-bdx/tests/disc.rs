@@ -180,6 +180,34 @@ fn n_ex570_btl_runs_its_mode_cycle() {
     assert!(all.iter().any(|m| m.starts_with("atk_")), "no attack: {all:?}");
 }
 
+/// The files an enemy kind needs (model with a non-empty BDX entry, motion set, effect file).
+fn assert_enemy_files(a: &mut kh2_archive::Archive, model: &str) {
+    for ext in ["mdlx", "mset", "apdx"] {
+        assert!(a.read(&format!("obj/{model}.{ext}")).is_ok(), "obj/{model}.{ext}");
+    }
+    let mdlx = a.read(&format!("obj/{model}.mdlx")).unwrap();
+    assert!(kh2_bar::parse(&mdlx).unwrap().iter().any(|e| e.kind == 3 && !e.data.is_empty()), "{model}: BDX entry");
+}
+
+/// The Nobody M_EX930 (WP-7D; "Dancer" from its mode names) of tt04's group b_21 (spawn kind 2 there,
+/// the app's own waves -1; host 1.110 picks between the two appear paths of R0568).
+#[test]
+fn m_ex930_runs_its_mode_cycle() {
+    let Some((mut a, _)) = open() else { return };
+    assert_enemy_files(&mut a, "M_EX930");
+    let data = object_script(&mut a, "obj/M_EX930.mdlx");
+    let (seen, unknown) = mode_cycle(&data);
+    eprintln!("M_EX930 modes: {seen:?}");
+    assert_eq!(unknown, 0, "every host function M_EX930 calls is decoded");
+    for m in ["appear", "mode_battle", "btl_attack", "move_target", "mode_revenge"] {
+        assert!(seen.contains(m), "mode {m} never ran: {seen:?}");
+    }
+    assert!(seen.iter().any(|m| m.starts_with("atk_spin")), "no spin attack: {seen:?}");
+    // Its status block comes from enmp row 48 (R0f13 at 0x0f3a).
+    let d = dry_run(&data, 1, 250.0, 60, None);
+    assert!(d.host.calls().any(|c| matches!(c, Call::SetObjParam { a: 48, .. })), "set_obj_param 48");
+}
+
 /// Every BDX on the disc (object scripts, mission and area scripts, 00common.bdx).
 fn all_scripts(a: &mut kh2_archive::Archive) -> Vec<(String, Vec<u8>)> {
     if let Ok(names) = std::fs::read_to_string("../../local/kh2idx.txt") {

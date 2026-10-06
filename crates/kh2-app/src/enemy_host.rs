@@ -97,6 +97,15 @@ pub fn compute_drop(row: &PrizeRow, orb: f32, item: f32, seed: &mut u32) -> Drop
     Drop { row: row.id, prizes, items }
 }
 
+/// The bytes of the object's own target record (host 2.23, `TARGET`): the player, position index 0
+/// [inferred], 0, -1, 0 (the layout of FUN_0018ed40 + FUN_0018f490).
+pub(crate) fn target_record() -> [u8; 20] {
+    let mut r = [0u8; 20];
+    r[0..4].copy_from_slice(&PLAYER.to_le_bytes());
+    r[12..16].copy_from_slice(&(-1i32).to_le_bytes());
+    r
+}
+
 /// Classification of a host call, for the trace and the summary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum St {
@@ -686,6 +695,30 @@ impl BevyHost<'_> {
             }
             // 1.132: the target record returns to a pool; the app's records are never reused.
             Call::Func { group: 1, index: 132, .. } => stub(Value::None, "target records are not pooled"),
+            // The Dancer's (M_EX930) force dance asks these of the player before it grabs him (BDX R0a48,
+            // R0b0a). 1.101 (0x1716d0): bit 0x4000 of the player's +0x160 (the same test as FUN_00179538);
+            // its writer was not found (the word is written through the motion controller's base).
+            Call::Func { group: 1, index: 101, args } if args[0].int() as u32 == PLAYER => {
+                approx(Value::Bool(false), "bit 0x4000 of the player's +0x160: writer not found, read clear")
+            }
+            // 1.225 (FUN_001708f8): 0 unless bit 2 of the player's +0x588 is set, then the result of his
+            // mover's (+4) virtual method +0x60. The bit's writer was not traced.
+            Call::Func { group: 1, index: 225, args } if args[0].int() as u32 == PLAYER => {
+                approx(Value::Int(0), "bit 2 of the player's +0x588: writer not traced, read clear (the mover is not asked)")
+            }
+            // 1.161 (FUN_001706c8 -> FUN_001beb00): the player's link (+0x570) is set. Links are not in the
+            // app (1.18 below is not carried out), so the player is never linked.
+            Call::Func { group: 1, index: 161, args } if args[0].int() as u32 == PLAYER => {
+                approx(Value::Bool(false), "the app has no object links (1.18 is not carried out): the player is never linked")
+            }
+            // 1.18 link_start (0x170dd8 -> FUN_001beb90): the first object (the player) gets the second as
+            // its parent (+0x570), the two halfwords (+0x574: 0x4002, +0x576: 1), its facing (+0x550) cleared
+            // and 8 or-ed into +0x7f8 (when bit 1 of the flags is clear), mover 3; FUN_00169ee8 breaks the link when bit 0 of
+            // +0x576 is set and the parent's +0x160 loses bit 0x8000. The player side has no link mover.
+            Call::Func { group: 1, index: 18, args } if args[0].int() as u32 == PLAYER => stub(
+                Value::None,
+                "the player-side link (FUN_001beb90: parent +0x570, mover 3) is not in the app: Sora is not attached to the Dancer during its force dance",
+            ),
             _ => missing(Value::Int(0), "function not mapped"),
         }
     }
@@ -751,6 +784,15 @@ impl Host for BevyHost<'_> {
         if self.obj.volume_word(addr, out) {
             return true;
         }
+        // The object's own target record (host 2.23: object +0x9f4), laid out like the records of
+        // event 11 (FUN_0018ed40 + FUN_0018f490: object, position index, 0, -1, 0). Its object is the
+        // player; the position index is taken as 0 [inferred: the app has no lock-on parts]. The
+        // Dusk's 0x136d reads word 0 when range trigger 16 is on (host 1.150 bit 1).
+        let t = addr.wrapping_sub(TARGET) as usize;
+        if t + out.len() <= 20 {
+            out.copy_from_slice(&target_record()[t..t + out.len()]);
+            return true;
+        }
         // The first 16 bytes of the player object: the Soldier's reaction thread copies them into its
         // request block and then uses the copy as a context, so the word at +4 must read as the player
         // object [inferred from that use; what the game keeps at object +4 was not read].
@@ -792,6 +834,14 @@ mod tests {
         assert!((game_wrap_angle(-3.0 * pi / 2.0) - pi / 2.0).abs() < 1e-5);
         assert!((game_wrap_angle(0.5) - 0.5).abs() < 1e-6);
         assert!((game_wrap_angle(-0.5) + 0.5).abs() < 1e-6);
+    }
+
+    /// The Dusk reads word 0 of its target record (BDX `M_EX990` 0x136d -> R0217 at 0x021b): the player.
+    #[test]
+    fn the_own_target_record_names_the_player() {
+        let r = target_record();
+        assert_eq!(u32::from_le_bytes(r[0..4].try_into().unwrap()), PLAYER);
+        assert_eq!(i32::from_le_bytes(r[12..16].try_into().unwrap()), -1);
     }
 
     fn row(id: u16, counts: [u8; 9], items: [(u16, u16); 3]) -> Vec<u8> {

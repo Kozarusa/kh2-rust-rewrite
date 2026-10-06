@@ -21,6 +21,8 @@ mod data;
 mod drive;
 mod enemy;
 mod enemy_ai;
+mod enemy_host;
+mod enemy_obj;
 mod fx;
 mod harness;
 mod hud;

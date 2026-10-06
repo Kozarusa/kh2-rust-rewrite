@@ -5,9 +5,42 @@
 // blend is done here: the vertex colour tints the displaced sample and its alpha is the blend
 // factor against what is already there (GS ALPHA 0x44: Cs * As + Cd * (1 - As), unclamped factor,
 // result saturated).
+//
+// Depth bias: the game lowers its projection's z translation for the draw, which depth-tests every
+// vertex as if it sat at a fixed factor of its distance from the camera (UV 1, y). The vertex stage
+// takes the clip position from the view-space position scaled by that factor: the perspective
+// divide leaves x and y where they are and only the depth moves.
 
-#import bevy_pbr::forward_io::VertexOutput
-#import bevy_pbr::mesh_view_bindings::{view, view_transmission_texture, view_transmission_sampler}
+#import bevy_pbr::{
+    mesh_functions,
+    forward_io::{Vertex, VertexOutput},
+    mesh_view_bindings::{view, view_transmission_texture, view_transmission_sampler},
+}
+
+@vertex
+fn vertex(vertex: Vertex) -> VertexOutput {
+    var out: VertexOutput;
+    let world_from_local = mesh_functions::get_world_from_local(vertex.instance_index);
+    out.world_position = mesh_functions::mesh_position_local_to_world(world_from_local, vec4<f32>(vertex.position, 1.0));
+    out.world_normal = vec3<f32>(0.0, 0.0, 1.0);
+#ifdef VERTEX_UVS_B
+    let depth_scale = vertex.uv_b.y;
+#else
+    let depth_scale = 1.0;
+#endif
+    let view_pos = view.view_from_world * out.world_position;
+    out.position = view.clip_from_view * vec4<f32>(view_pos.xyz * depth_scale, 1.0);
+#ifdef VERTEX_UVS_A
+    out.uv = vertex.uv;
+#endif
+#ifdef VERTEX_UVS_B
+    out.uv_b = vertex.uv_b;
+#endif
+#ifdef VERTEX_COLORS
+    out.color = vertex.color;
+#endif
+    return out;
+}
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {

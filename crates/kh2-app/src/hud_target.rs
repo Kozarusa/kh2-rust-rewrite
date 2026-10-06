@@ -113,7 +113,10 @@ pub fn update(
         let vp = c.world_to_viewport(ct, point).ok()?;
         Some(viewport_to_hud(vp, c.logical_viewport_size()?))
     });
-    let shown_reticle = at.is_some();
+    // The original creates the group 3 icon at the free-aim point (0x11a9b0), but nothing is visible
+    // there in play (user's observation of the original), and which picture group 3 is was only read
+    // from a screenshot. Until that is traced, only a locked target shows the reticle.
+    let shown_reticle = at.is_some() && locked.is_some();
     scene.nodes[h.reticle].visible = shown_reticle;
     if let Some(p) = at {
         if scene.nodes[h.reticle].player.group != Some(want) {

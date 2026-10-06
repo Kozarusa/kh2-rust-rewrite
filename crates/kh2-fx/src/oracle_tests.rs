@@ -6,8 +6,10 @@
 //! are replaced by hooks that record their arguments. Skipped without a disc (KH2_ISO or
 //! local/iso.txt).
 //!
-//! What is not covered: the interpreter has no VU0 flag registers, so the back-face and clip tests
-//! of the Sno model draw never reject there; the port's culling is the reading of the disassembly.
+//! The interpreter has no VU0 flag registers; the Sno model draw's clip and back-face tests read
+//! them (`cfc2` of the status and MAC flags), so [`install_vu_flags`] models them here: a probe on
+//! every FMAC instruction of the routine computes the zero and sign bits of its result the way the
+//! VU user's manual states them, before the interpreter runs the instruction.
 
 use std::cell::RefCell;
 
@@ -16,6 +18,7 @@ use kh2_ee::{Ee, reg};
 
 use crate::pax::{Dpd, Program};
 use crate::prog_more as m;
+use crate::projection::Projection;
 use crate::shape::Shape;
 use crate::vm::{Ctx, Env, OBJ_FRAME, OBJ_LOCAL, OBJ_WORK, Obj};
 
@@ -40,8 +43,116 @@ struct DrawCall {
 
 thread_local! {
     static CALLS: RefCell<Vec<DrawCall>> = const { RefCell::new(Vec::new()) };
-    /// Sno: (amplitude, taper flag byte as a word, alpha register argument) of each model draw.
-    static SNO: RefCell<Vec<(f32, u32, u32)>> = const { RefCell::new(Vec::new()) };
+    /// Sno: (amplitude, taper flag byte as a word, alpha register argument, the projection's z
+    /// translation at 0x1db1038 as the draw sees it) of each model draw.
+    static SNO: RefCell<Vec<(f32, u32, u32, f32)>> = const { RefCell::new(Vec::new()) };
+}
+
+// ---- VU0 flag model ---------------------------------------------------------------------------------
+
+/// The result and destination mask of the FMAC instruction `w` on the interpreter's current
+/// registers, for the instructions that update the MAC and status flags (VU user's manual: the
+/// add, sub, mul, madd, msub families with their broadcast, Q and I forms, their ACC forms, and the
+/// outer products; max, mini, abs, move and the conversions leave the flags alone).
+fn fmac_result(ee: &Ee, w: u32) -> Option<([f32; 4], u32)> {
+    if w >> 26 != 0x12 || w & (1 << 25) == 0 {
+        return None;
+    }
+    let dest = (w >> 21) & 15;
+    let (ft, fs) = (((w >> 16) & 31) as usize, ((w >> 11) & 31) as usize);
+    let funct = w & 63;
+    let (s, t, acc) = (ee.vf[fs], ee.vf[ft], ee.vacc);
+    let bc = t[(funct & 3) as usize];
+    let (q, i) = (ee.q, f32::from_bits(ee.vi[21]));
+    let v = |f: &dyn Fn(usize) -> f32| -> [f32; 4] { std::array::from_fn(f) };
+    let r = if funct < 0x3C {
+        match funct {
+            0x00..=0x03 => v(&|k| s[k] + bc),
+            0x04..=0x07 => v(&|k| s[k] - bc),
+            0x08..=0x0B => v(&|k| acc[k] + s[k] * bc),
+            0x0C..=0x0F => v(&|k| acc[k] - s[k] * bc),
+            0x18..=0x1B => v(&|k| s[k] * bc),
+            0x1C => v(&|k| s[k] * q),
+            0x1E => v(&|k| s[k] * i),
+            0x20 => v(&|k| s[k] + q),
+            0x21 => v(&|k| acc[k] + s[k] * q),
+            0x22 => v(&|k| s[k] + i),
+            0x23 => v(&|k| acc[k] + s[k] * i),
+            0x24 => v(&|k| s[k] - q),
+            0x25 => v(&|k| acc[k] - s[k] * q),
+            0x26 => v(&|k| s[k] - i),
+            0x27 => v(&|k| acc[k] - s[k] * i),
+            0x28 => v(&|k| s[k] + t[k]),
+            0x29 => v(&|k| acc[k] + s[k] * t[k]),
+            0x2A => v(&|k| s[k] * t[k]),
+            0x2C => v(&|k| s[k] - t[k]),
+            0x2D => v(&|k| acc[k] - s[k] * t[k]),
+            0x2E => [acc[0] - s[1] * t[2], acc[1] - s[2] * t[0], acc[2] - s[0] * t[1], 0.0],
+            _ => return None,
+        }
+    } else {
+        let op = (((w >> 6) & 31) << 2) | (funct & 3);
+        match op {
+            0x00..=0x03 => v(&|k| s[k] + bc),
+            0x04..=0x07 => v(&|k| s[k] - bc),
+            0x08..=0x0B => v(&|k| acc[k] + s[k] * bc),
+            0x0C..=0x0F => v(&|k| acc[k] - s[k] * bc),
+            0x18..=0x1B => v(&|k| s[k] * bc),
+            0x1C => v(&|k| s[k] * q),
+            0x1E => v(&|k| s[k] * i),
+            0x20 => v(&|k| s[k] + q),
+            0x21 => v(&|k| acc[k] + s[k] * q),
+            0x22 => v(&|k| s[k] + i),
+            0x23 => v(&|k| acc[k] + s[k] * i),
+            0x24 => v(&|k| s[k] - q),
+            0x25 => v(&|k| acc[k] - s[k] * q),
+            0x26 => v(&|k| s[k] - i),
+            0x27 => v(&|k| acc[k] - s[k] * i),
+            0x28 => v(&|k| s[k] + t[k]),
+            0x29 => v(&|k| acc[k] + s[k] * t[k]),
+            0x2A => v(&|k| s[k] * t[k]),
+            0x2C => v(&|k| s[k] - t[k]),
+            0x2D => v(&|k| acc[k] - s[k] * t[k]),
+            0x2E => [s[1] * t[2], s[2] * t[0], s[0] * t[1], 0.0],
+            _ => return None,
+        }
+    };
+    let dest = if funct == 0x2E || (funct >= 0x3C && (((w >> 6) & 31) << 2 | (funct & 3)) == 0x2E) { dest & 0xE } else { dest };
+    Some((r, dest))
+}
+
+/// Probe: the MAC flag (bits 0-3 zero for w, z, y, x; bits 4-7 sign) of the instruction about to
+/// run, and the status flag's zero and sign bits (0 and 1) with their sticky copies (6 and 7).
+fn vu_flags(ee: &mut Ee) {
+    let w = ee.r32(ee.pc);
+    let Some((r, dest)) = fmac_result(ee, w) else { return };
+    let mut mac = 0u32;
+    for (k, x) in r.iter().enumerate() {
+        if dest & (8 >> k) != 0 {
+            if *x == 0.0 {
+                mac |= 1 << (3 - k);
+            }
+            if *x < 0.0 {
+                mac |= 1 << (7 - k);
+            }
+        }
+    }
+    ee.vi[17] = mac;
+    let (z, s) = ((mac & 0xf != 0) as u32, (mac & 0xf0 != 0) as u32);
+    ee.vi[16] = (ee.vi[16] & 0xfc0) | z | s << 1 | z << 6 | s << 7;
+}
+
+/// Installs [`vu_flags`] on every flag-setting FMAC instruction in `[lo, hi)`.
+fn install_vu_flags(ee: &mut Ee, lo: u32, hi: u32) -> usize {
+    let mut n = 0;
+    for pc in (lo..hi).step_by(4) {
+        let w = ee.r32(pc);
+        if fmac_result(ee, w).is_some() {
+            ee.probes.insert(pc, vu_flags);
+            n += 1;
+        }
+    }
+    n
 }
 
 fn hook_shape_draw(ee: &mut Ee) {
@@ -60,7 +171,7 @@ fn hook_shape_draw(ee: &mut Ee) {
 fn hook_model_draw(ee: &mut Ee) {
     let a0 = ee.gpr[reg::A0] as u32;
     let a1 = ee.gpr[reg::A0 + 1] as u32;
-    let rec = (ee.f32_at(a0 + 0x20), ee.r32(a0 + 0x24), a1 as u32);
+    let rec = (ee.f32_at(a0 + 0x20), ee.r32(a0 + 0x24), a1 as u32, ee.f32_at(0x1db1038));
     SNO.with(|c| c.borrow_mut().push(rec));
 }
 
@@ -384,12 +495,17 @@ fn mv_yp_eff_matches_the_game() {
 fn sno_amplitude_matches_the_game() {
     let Some(elf) = exe() else { return };
     let bind = Mat4::from_scale_rotation_translation(Vec3::new(1.7, 1.0, 1.0), Quat::IDENTITY, Vec3::ZERO);
-    let Scene { mut ee, env } = scene(&elf, bind, Mat4::from_translation(Vec3::new(0.0, 0.0, 300.0)));
+    // The handler reads work 2 as a camera-space matrix (the port applies the view to it, so the
+    // view is the identity here and both see the same model depth).
+    let Scene { mut ee, mut env } = scene(&elf, bind, Mat4::IDENTITY);
     // Model table entry 3: a model whose first word has flag 2 clear.
     ee.w32(RES + 0x10, SHAPETAB);
     ee.w32(SHAPETAB + 3 * 0x24 + 0x1c, SHAPE);
     ee.w32(SHAPETAB + 3 * 0x24 + 0x18, 0);
-    ee.wf32(0x1db1038, 250.0);
+    // A projection whose z translation (0x1db1038) is 250.
+    let proj = Mat4::from_cols(Vec4::new(300.0, 0.0, 0.0, 0.0), Vec4::new(0.0, 300.0, 0.0, 0.0), Vec4::new(2048.0, 2048.0, -3.0, 1.0), Vec4::new(0.0, 0.0, 250.0, 0.0));
+    write_mat(&mut ee, 0x1db1000, &proj);
+    env.proj = Some(proj);
     let mut e = vec![0u8; 0x24];
     let w32 = |e: &mut Vec<u8>, o: usize, v: u32| e[o..o + 4].copy_from_slice(&v.to_le_bytes());
     w32(&mut e, 0, 0);
@@ -405,7 +521,10 @@ fn sno_amplitude_matches_the_game() {
     e.extend_from_slice(&0xffff_f000u32.to_le_bytes());
     let p = Program { kind: 238, param_size: 0x20, params: e, use_val: vec![0x40, 0x60, 0x80] };
     put_program(&mut ee, &p);
-    let dpd = dpd_with(&raw_shape());
+    // The port needs a model to make a batch (its depth factor is checked below).
+    let mut raw = raw_model(2, &[[50, 0, 0], [0, 50, 0], [0, 0, 50]], &[[4096, 0, 0], [0, 4096, 0], [0, 0, 4096]], &[[0, 1, 2]]);
+    raw[0..2].copy_from_slice(&3i16.to_le_bytes());
+    let dpd = Dpd { particles: vec![], textures: vec![], shapes: vec![], models: vec![crate::omd::Model::parse(&raw)], vsfs: vec![] };
     let mut obj = Obj { group: 0, mem: vec![0; OBJ_SIZE], cursors: vec![0], fresh: false, restart: false, parent: None, ring: Vec::new(), heap: Vec::new(), seed: 0 };
     let (w0, w1, w2) = (OBJ_WORK + 0x40, OBJ_WORK + 0x60, OBJ_WORK + 0x80);
     obj.mem[w1 + 8..w1 + 12].copy_from_slice(&[128, 128, 128, 90]);
@@ -443,10 +562,53 @@ fn sno_amplitude_matches_the_game() {
         assert!(near(rec[0].0, obj.f32(w0) * env.bind_scale.x), "tick {tick}: amplitude passed {} port {}", rec[0].0, obj.f32(w0) * env.bind_scale.x);
         assert_eq!(rec[0].1 & 0xff, 1);
         assert_eq!(rec[0].2 & 0xff, 0x48);
-        // The view matrix's z translation is restored after the draw (the game biases it during it).
+        // The projection's z translation the draw sees is biased by entry +0x18 (-80) times 1e7
+        // over the model's depth (300), and restored afterwards; the port's depth factor is the
+        // unbiased over the biased value.
+        assert_eq!(rec[0].3, m::f64_to_f32_trunc(250.0f64 - (-80.0f64 * 1.0e7 / 300.0)), "tick {tick}: biased z translation");
         assert_eq!(ee.f32_at(0x1db1038), 250.0);
+        assert_eq!(draws.len(), 1, "tick {tick}: the port draws the model");
+        assert!(near(draws[0].depth_scale, 250.0 / rec[0].3), "tick {tick}: depth factor {} vs {}", draws[0].depth_scale, 250.0 / rec[0].3);
+        assert!(draws[0].depth_test);
         sync_obj(&mut ee, &obj);
     }
+}
+
+/// The game's camera setup (FUN_001078f0 with the disc's constants, then FUN_00106c48 for the
+/// field of view and FUN_00106a68 for the matrix) against [`Projection`]: the 4 x 4 at 0x3b21f0
+/// for several horizontal fields of view, and the z row.
+#[test]
+fn projection_matches_the_game() {
+    let Some(elf) = exe() else { return };
+    let mut ee = Ee::new();
+    ee.load_elf(&elf).expect("elf");
+    // The three hardware setup calls at the start of FUN_001078f0 do nothing here.
+    for a in [0x1067f8, 0x106818, 0x106858] {
+        ee.hooks.insert(a, hook_nothing);
+    }
+    ee.call(0x1078f0, &[], &[], STACK).unwrap_or_else(|f| panic!("FUN_001078f0: {f:?}"));
+    let p = Projection::from_exe(&elf).expect("projection constants");
+    eprintln!("projection constants on the disc: {p:?}");
+    const CAM: u32 = 0x3b21f0;
+    for hfov in [1.5f32, 1.0, 0.7, 2.2] {
+        ee.call(0x106c48, &[CAM as u64, 0], &[hfov], STACK).unwrap_or_else(|f| panic!("FUN_00106c48: {f:?}"));
+        ee.call(0x106a68, &[CAM as u64], &[], STACK).unwrap_or_else(|f| panic!("FUN_00106a68: {f:?}"));
+        let want = p.matrix(hfov);
+        let got = Mat4::from_cols_array(&std::array::from_fn(|i| ee.f32_at(CAM + 4 * i as u32)));
+        for (i, (g, w)) in got.to_cols_array().iter().zip(want.to_cols_array()).enumerate() {
+            // Element 11 (the z row's w) is 0 in the game's stored matrix; the model draw adds the
+            // w = z term itself (the draw reads rows 0, 1 and 3 packed into one register and row 2
+            // separately, 0x20acf0..0x20ad20), so the port keeps 1 there.
+            if i == 11 {
+                continue;
+            }
+            assert!((g - w).abs() <= 1e-4 * (1.0 + w.abs()), "hfov {hfov}: element {i}: game {g} port {w}\n{got:?}\n{want:?}");
+        }
+        assert!(near(ee.f32_at(CAM + 0x40), p.focal(hfov)), "focal length");
+        assert!(near(ee.f32_at(CAM + 0x48), p.vfov(hfov)), "vertical field of view");
+    }
+    let (p22, p32) = p.z_row();
+    assert!(near(ee.f32_at(CAM + 0x60), p22) && near(ee.f32_at(CAM + 0x54), p32), "z row {p22} {p32}");
 }
 
 // ---- pppSnoMdlDttNorm geometry ----------------------------------------------------------------------
@@ -611,13 +773,177 @@ fn sno_geometry_matches_the_game() {
 }
 
 fn sno_program(e15: u8, e16: u8) -> Program {
+    sno_program_full(e15, e16, 0.0, 0)
+}
+
+fn sno_program_full(e15: u8, e16: u8, e18: f32, e17: u8) -> Program {
     let mut e = vec![0u8; 0x20];
     e[4..8].copy_from_slice(&3u32.to_le_bytes());
     e[0x15] = e15;
     e[0x16] = e16;
+    e[0x17] = e17;
+    e[0x18..0x1c].copy_from_slice(&e18.to_le_bytes());
     e[0x1c] = 0x44;
     e.extend_from_slice(&0xffff_f000u32.to_le_bytes());
     Program { kind: 238, param_size: 0x20, params: e, use_val: vec![0x40, 0x60, 0x80] }
+}
+
+/// The octahedron of [`sno_geometry_matches_the_game`] with the model flag word `flags`.
+fn octahedron(flags: u32) -> (Vec<u8>, usize) {
+    let r = 100i16;
+    let verts: Vec<[i16; 3]> = vec![[r, 0, 0], [-r, 0, 0], [0, r, 0], [0, -r, 0], [0, 0, r], [0, 0, -r]];
+    let normals: Vec<[i16; 3]> = verts
+        .iter()
+        .map(|v| {
+            let d = Vec3::new(v[0] as f32 + 30.0, v[1] as f32 + 20.0, v[2] as f32 + 10.0).normalize();
+            [(d.x * 4096.0) as i16, (d.y * 4096.0) as i16, (d.z * 4096.0) as i16]
+        })
+        .collect();
+    let tris: Vec<[u16; 3]> = vec![[0, 2, 4], [2, 1, 4], [1, 3, 4], [3, 0, 4], [2, 0, 5], [1, 2, 5], [3, 1, 5], [0, 3, 5]];
+    let mut raw = raw_model(flags, &verts, &normals, &tris);
+    raw[0..2].copy_from_slice(&3i16.to_le_bytes());
+    (raw, tris.len())
+}
+
+/// One run of the game's model draw with the VU flag model installed: the triangles it kicks
+/// (texture coordinates and screen xyz words), in order.
+fn sno_game_tris(elf: &[u8], raw: &[u8], proj: &Mat4, p: &Program, amp: f32, m_cam: &Mat4) -> Vec<([[f32; 2]; 3], [[u32; 3]; 3])> {
+    let Scene { mut ee, .. } = scene(elf, Mat4::IDENTITY, Mat4::IDENTITY);
+    ee.hooks.remove(&0x20ab40);
+    ee.hooks.insert(0x20c110, hook_bump);
+    ee.hooks.insert(0x1e4a88, hook_kick);
+    ee.hooks.insert(0x2f8f60, hook_zero);
+    let n = install_vu_flags(&mut ee, 0x20ab40, 0x20b3a0);
+    assert!(n >= 60, "{n} FMAC instructions found in the model draw");
+    BUMP.with(|b| *b.borrow_mut() = 0);
+    TRIS.with(|c| c.borrow_mut().clear());
+    ee.write(SHAPE, raw);
+    ee.w32(RES + 0x10, SHAPETAB);
+    ee.w32(SHAPETAB + 3 * 0x24 + 0x1c, SHAPE + 0x10);
+    write_mat(&mut ee, 0x1db1000, proj);
+    put_program(&mut ee, p);
+    let obj = sno_obj(amp, m_cam);
+    sync_obj(&mut ee, &obj);
+    run(&mut ee, 0x20a7e8);
+    TRIS.with(|c| c.borrow().clone())
+}
+
+/// The model draw's clip test, back-face test and depth bias against the port, with the VU0
+/// status and MAC flags modelled (see [`install_vu_flags`]): models in front of the camera with
+/// and without the cull flag, models partly outside the 4096-pixel window or in front of the
+/// near plane, and a biased z row. The triangles the game kicks must be the port's, in order, with
+/// the same screen x, y and z words (12.4 fixed) and the same displacement.
+#[test]
+fn sno_clip_and_cull_match_the_game() {
+    let Some(elf) = exe() else { return };
+    let disc = Projection::from_exe(&elf).expect("projection constants");
+    let (p22, p32) = disc.z_row();
+    // The disc's z row with a 300-pixel focal length.
+    let proj = Mat4::from_cols(Vec4::new(300.0, 0.0, 0.0, 0.0), Vec4::new(0.0, 300.0, 0.0, 0.0), Vec4::new(2048.0, 2048.0, p22, 1.0), Vec4::new(0.0, 0.0, p32, 0.0));
+    let rot = Quat::from_euler(EulerRot::ZYX, 0.4, 0.3, -0.2);
+    let centred = Mat4::from_scale_rotation_translation(Vec3::splat(0.8), rot, Vec3::new(5.0, -8.0, 400.0));
+    // Vertices from x 500 to 700 and z 0 to 200: the right side passes 4096 pixels, the nearest
+    // vertex sits in front of the near plane (w <= 1).
+    let clipped = Mat4::from_translation(Vec3::new(600.0, 0.0, 100.0));
+    // (name, model flags, matrix, entry +0x18, entry +0x17, expect some rejection)
+    let cases = [
+        ("front, not culled", 2u32, centred, 0.0f32, 0u8, false),
+        ("front, culled", 0, centred, -80.0, 0, true),
+        ("front, culled, biased, no depth test", 0, centred, 25.0, 1, true),
+        ("clipped, not culled", 2, clipped, 0.0, 0, true),
+        ("clipped, culled", 0, clipped, -80.0, 0, true),
+    ];
+    let mut compared = 0;
+    for (name, flags, m_cam, e18, e17, rejects) in cases {
+        let (raw, ntris) = octahedron(flags);
+        let mut kicked = 0;
+        let dpd = Dpd { particles: vec![], textures: vec![], shapes: vec![], models: vec![crate::omd::Model::parse(&raw)], vsfs: vec![] };
+        for (e15, e16) in [(0u8, 0u8), (1, 1)] {
+            let p = sno_program_full(e15, e16, e18, e17);
+            let g0 = sno_game_tris(&elf, &raw, &proj, &p, 0.0, &m_cam);
+            let ga = sno_game_tris(&elf, &raw, &proj, &p, 12.0, &m_cam);
+            assert_eq!(g0.len(), ga.len(), "{name}: the amplitude changes no triangle's fate");
+            let mut obj = sno_obj(12.0, &m_cam);
+            let env = Env { proj: Some(proj), ..Env::default() };
+            let (mut draws, mut spawns, mut rng) = (Vec::new(), Vec::new(), 0u32);
+            let mut ctx = Ctx { env: &env, dpd: &dpd, dpd_index: 0, draws: &mut draws, rng: &mut rng, running: true, fast_forward: false, obj_id: 0, prog_index: 0, parent_local: None, spawns: &mut spawns };
+            m::sno_draw(&mut ctx, &mut obj, &p, 0);
+            let port = draws.first().map_or(0, |b| b.indices.len() / 3);
+            kicked = port;
+            assert_eq!(g0.len(), port, "{name} (e15 {e15} e16 {e16}): triangles the game kicks vs the port's");
+            if rejects {
+                assert!(port < ntris, "{name}: nothing rejected");
+            } else {
+                assert_eq!(port, ntris, "{name}: everything drawn");
+            }
+            let Some(b) = draws.first() else { continue };
+            assert_eq!(b.depth_test, e17 == 0, "{name}: depth test");
+            let screen = |v: Vec3| {
+                let c = proj * v.extend(1.0);
+                c.truncate() / c.w
+            };
+            for (t, (g0, ga)) in g0.iter().zip(&ga).enumerate() {
+                for k in 0..3 {
+                    let i = 3 * t + k;
+                    let (pos, off) = (b.verts[i].pos, b.offsets[i]);
+                    let want = (screen(pos + off) - screen(pos)) / 1024.0;
+                    let got = [ga.0[k][0] - g0.0[k][0], ga.0[k][1] - g0.0[k][1]];
+                    assert!((got[0] - want.x).abs() < 3e-5 && (got[1] - want.y).abs() < 3e-5, "{name} tri {t} vertex {k}: displacement game {got:?} port {:?}", [want.x, want.y]);
+                    // Screen x, y as the game converts them (12.4 fixed, truncated), and z from the
+                    // biased z row (p32 / depth factor).
+                    let s = screen(pos);
+                    let (gx, gy, gz) = (g0.1[k][0] as i32 as f32 / 16.0, g0.1[k][1] as i32 as f32 / 16.0, g0.1[k][2] as i32 as f32 / 16.0);
+                    assert!((gx - s.x).abs() < 0.07 && (gy - s.y).abs() < 0.07, "{name} tri {t} vertex {k}: screen game ({gx}, {gy}) port ({}, {})", s.x, s.y);
+                    let z = p22 + (p32 / b.depth_scale) / pos.z;
+                    assert!((gz - z).abs() <= 0.07 + 1e-5 * z.abs(), "{name} tri {t} vertex {k}: screen z game {gz} port {z} (factor {})", b.depth_scale);
+                    compared += 1;
+                }
+            }
+        }
+        eprintln!("{name}: {kicked} of {ntris} triangles kicked by the game and the port");
+    }
+    assert!(compared >= 60, "only {compared} vertices compared");
+}
+
+/// What the disc holds for the Sno program and for the elements the app binds: the entries'
+/// bytes +0x17 (depth test off) and +0x18 (depth bias) over the known users, and the element
+/// flags and start waits of the files the app loads. Prints; asserts only that something was found.
+#[test]
+fn sno_entries_and_element_flags_on_the_disc() {
+    let path = std::env::var("KH2_ISO").ok().or_else(|| std::fs::read_to_string("../../local/iso.txt").ok().map(|s| s.trim().to_string()));
+    let Some(path) = path.filter(|p| std::path::Path::new(p).exists()) else { return };
+    let mut a = kh2_archive::Archive::open(&path).expect("iso");
+    let files = ["00effect.bar", "obj/P_EX100.apdx", "obj/P_EX120.apdx", "obj/M_EX600.apdx", "obj/N_BB050_BTL.apdx", "obj/B_EX130.apdx", "obj/B_EX140.apdx", "obj/N_HB630.apdx", "obj/W_EX010.apdx", "obj/M_EX020.apdx", "obj/M_EX010.apdx"];
+    let (mut entries, mut elements) = (0, 0);
+    for name in files {
+        let Ok(file) = a.read(name) else { continue };
+        let pax = match kh2_bar::parse(&file) {
+            Ok(bar) => bar.iter().find(|e| e.kind == 18).and_then(|e| crate::Pax::parse(e.data).ok()),
+            Err(_) => crate::Pax::parse(&file).ok(),
+        };
+        let Some(pax) = pax else { continue };
+        for (di, dpd) in pax.dpds.iter().enumerate() {
+            for (pi, pd) in dpd.particles.iter().enumerate() {
+                for g in &pd.groups {
+                    for prog in g.programs.iter().filter(|p| p.kind == 238) {
+                        for i in 0..prog.entries() {
+                            let o = i * prog.param_size;
+                            let e18 = f32::from_le_bytes(prog.params[o + 0x18..o + 0x1c].try_into().unwrap());
+                            eprintln!("{name} dpd {di} pdata {pi}: Sno entry model {} +0x14 {} +0x15 {} +0x16 {} +0x17 {} +0x18 {e18} alpha {:#x}", u16::from_le_bytes([prog.params[o + 4], prog.params[o + 5]]), prog.params[o + 0x14], prog.params[o + 0x15], prog.params[o + 0x16], prog.params[o + 0x17], prog.params[o + 0x1c]);
+                            entries += 1;
+                        }
+                    }
+                }
+            }
+        }
+        for el in &pax.elements {
+            if el.flags & 0x1 == 0 || el.flags & 0x2_0106 != 0 || el.start_wait != 0.0 || el.bone < 0 || (el.bone as u16) & 0xc000 != 0 {
+                eprintln!("{name}: element id {} effect {} bone {:#x} flags {:#x} start wait {} category {:#x}", el.id, el.effect, el.bone, el.flags, el.start_wait, el.category);
+            }
+            elements += 1;
+        }
+    }
+    assert!(entries > 0 && elements > 0, "{entries} Sno entries, {elements} elements");
 }
 
 fn sno_obj(amp: f32, m_cam: &Mat4) -> Obj {

@@ -12,7 +12,9 @@
 mod abilities;
 mod assets;
 mod audio;
+mod audio_bgm;
 mod camera;
+mod clash;
 mod combat;
 mod data;
 mod drive;
@@ -24,6 +26,7 @@ mod hud;
 mod limit;
 mod motor;
 mod reaction_cmd;
+mod reaction_parts;
 mod reaction_rules;
 mod schedule;
 mod skel;
@@ -79,6 +82,7 @@ fn main() {
             drive::DrivePlugin,
             limit::LimitPlugin,
             reaction_cmd::ReactionPlugin,
+            clash::ClashPlugin,
         ))
         .run();
 }

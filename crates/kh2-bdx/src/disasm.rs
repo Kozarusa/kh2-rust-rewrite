@@ -20,8 +20,19 @@ pub struct Analysis {
 /// Walks all code reachable from the entry points. Any word on the way that does not decode, or any
 /// jump that leaves the code area, is an error.
 pub fn analyze(p: &Program) -> Result<Analysis, Error> {
+    analyze_with(p, &[])
+}
+
+/// As [`analyze`], with extra routine starts the flow walk cannot see on its own: a routine number
+/// that reaches a thread-starting host function through a routine parameter rather than a constant
+/// pushed at the call (Soldier passes the routine of its reaction command through two calls).
+pub fn analyze_with(p: &Program, roots: &[usize]) -> Result<Analysis, Error> {
     let mut a = Analysis { code: BTreeMap::new(), routines: BTreeSet::new(), data_refs: BTreeSet::new() };
     let mut work: Vec<usize> = p.entries.iter().map(|e| e.pc as usize).collect();
+    for &r in roots {
+        work.push(r);
+        a.routines.insert(r);
+    }
     let end = p.words.len();
     let mut registered: BTreeSet<usize> = BTreeSet::new();
     loop {
@@ -48,12 +59,18 @@ pub fn analyze(p: &Program) -> Result<Analysis, Error> {
         }
         // Host functions that start a thread take its routine (and a cleanup routine) as plain integers
         // pushed just before the call: 0.9 tag, routine, cleanup, arg; 1.82 ctx, tag, routine, cleanup, arg;
-        // 1.112 ctx, routine, arg. Anything that is not a plain constant is left alone.
+        // 1.112 ctx, routine, arg; 2.20 routine, arg (a detached thread, FUN_001a4738). Anything that is
+        // not a plain constant is left alone.
         let spawns: Vec<(usize, u16, u16)> = a
             .code
             .iter()
             .filter_map(|(pc, (i, _))| match i {
-                Insn::Host { group: 0, index: 9 } | Insn::Host { group: 1, index: 82 } | Insn::Host { group: 1, index: 112 } if !registered.contains(pc) => {
+                Insn::Host { group: 0, index: 9 }
+                | Insn::Host { group: 1, index: 82 }
+                | Insn::Host { group: 1, index: 112 }
+                | Insn::Host { group: 2, index: 20 }
+                    if !registered.contains(pc) =>
+                {
                     if let Insn::Host { group, index } = i { Some((*pc, *group, *index)) } else { None }
                 }
                 _ => None,
@@ -65,6 +82,7 @@ pub fn analyze(p: &Program) -> Result<Analysis, Error> {
             let (nargs, routines): (usize, &[usize]) = match (group, index) {
                 (0, 9) => (4, &[1, 2]),
                 (1, 82) => (5, &[2, 3]),
+                (2, 20) => (2, &[0]),
                 _ => (3, &[1]),
             };
             let consts = argument_constants(&a, pc, nargs);
@@ -105,6 +123,10 @@ fn expression_effect(i: &Insn) -> Option<(usize, usize)> {
 /// For the call at `pc` with `nargs` arguments pushed just before it, the argument values that are a
 /// single constant push. Walks backwards over straight-line code counting stack effects, so arguments
 /// built from several instructions (a context loaded and dereferenced) do not shift the others.
+pub fn call_constants(a: &Analysis, pc: usize, nargs: usize) -> Vec<Option<u32>> {
+    argument_constants(a, pc, nargs)
+}
+
 fn argument_constants(a: &Analysis, pc: usize, nargs: usize) -> Vec<Option<u32>> {
     let mut out = vec![None; nargs];
     let mut back = a.code.range(..pc).rev();

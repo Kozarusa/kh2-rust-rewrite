@@ -11,12 +11,13 @@ pub mod math;
 pub mod mock;
 pub mod names;
 pub mod program;
+pub mod reaction;
 pub mod runtime;
 pub mod signatures;
 pub mod trig;
 pub mod vm;
 
-pub use disasm::{Analysis, analyze, listing};
+pub use disasm::{Analysis, analyze, analyze_with, call_constants, listing};
 pub use exe::HostTable;
 pub use host::{Arg, Call, Host, ObjectKey, Value, Vec4};
 pub use insn::{BinaryOp, Insn, UnaryOp, decode};

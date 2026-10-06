@@ -128,6 +128,8 @@ pub struct ExeConsts {
     pub flinch_motions: [u16; 4],
     /// Gravity of a blown actor in units per tick squared (0x37b408).
     pub gravity: f32,
+    /// Which pairs of attack volume types clash: byte `a * 7 + b` at 0x37ac98 (FUN_0018d808).
+    pub clash_pairs: [u8; 49],
 }
 
 impl ExeConsts {
@@ -149,6 +151,7 @@ impl ExeConsts {
             reduced_scale: f(0x37ac74)?,
             flinch_motions,
             gravity: f(0x37b408)?,
+            clash_pairs: exe_bytes(elf, 0x37ac98, 49)?.try_into().ok()?,
         })
     }
 }
@@ -243,6 +246,14 @@ pub fn push_speeds(power: f32, c: &ExeConsts) -> Vec<f32> {
 }
 
 // ---- Attack against attack ("clash") ----
+
+impl ExeConsts {
+    /// FUN_0018d808: two attack volumes of opposing teams can clash when the byte of the table at
+    /// `a.Type * 7 + b.Type` is non-zero. Types of 7 and up are outside the table and never clash.
+    pub fn types_clash(&self, a: u8, b: u8) -> bool {
+        a < 7 && b < 7 && self.clash_pairs[a as usize * 7 + b as usize] != 0
+    }
+}
 
 /// Outcome for a party member (Sora and friends, FUN_001754a0) whose attack volume `A` overlaps
 /// another attack `B`.
@@ -741,6 +752,19 @@ mod tests {
     }
 
     #[test]
+    fn clash_pair_table_from_the_exe() {
+        let Some(mut a) = open_disc() else { return };
+        let Ok(exe) = a.iso().read("SLUS_210.05") else { return };
+        let c = ExeConsts::from_exe(&exe).unwrap();
+        // Normal attacks (type 0) clash with each other and with types 2 and 3; type 1 only with type 3;
+        // the table is symmetric and types 4 to 6 never clash.
+        for (x, y, want) in [(0, 0, true), (0, 2, true), (0, 3, true), (0, 1, false), (1, 3, true), (1, 1, false), (2, 2, false), (4, 0, false), (6, 6, false), (7, 0, false)] {
+            assert_eq!(c.types_clash(x, y), want, "{x} {y}");
+            assert_eq!(c.types_clash(y, x), want, "{y} {x}");
+        }
+    }
+
+    #[test]
     fn push_profile_decays() {
         let c = ExeConsts {
             wall_power: -1.0,
@@ -753,6 +777,7 @@ mod tests {
             reduced_scale: 0.5,
             flinch_motions: [10, 11, 12, 13],
             gravity: 0.5,
+            clash_pairs: [0; 49],
         };
         let s = push_speeds(50.0, &c);
         assert!((s[0] - 5.0).abs() < 1e-5);
@@ -942,6 +967,7 @@ mod tests {
             reduced_scale: 0.5,
             flinch_motions: [1, 2, 3, 4],
             gravity: 1.0,
+            clash_pairs: [0; 49],
         };
         let d = ReactionDefaults {
             hit_back: 80.0,

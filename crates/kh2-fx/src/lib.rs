@@ -8,6 +8,7 @@ pub mod omd;
 pub mod pax;
 pub mod shape;
 pub mod ppp;
+pub mod projection;
 pub(crate) mod prog;
 pub(crate) mod prog_more;
 pub(crate) mod progx;
@@ -18,4 +19,5 @@ pub mod vm;
 mod oracle_tests;
 
 pub use pax::{Dpd, Element, Pax, ParticleData};
+pub use projection::Projection;
 pub use vm::{Batch, Draw, Effect, Env, Vertex};

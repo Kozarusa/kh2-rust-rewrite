@@ -36,6 +36,8 @@ mod menu_pages;
 mod menu_status;
 mod menu_text;
 mod motor;
+mod party;
+mod party_rules;
 mod player_reaction;
 mod prize;
 mod progress;
@@ -105,6 +107,6 @@ fn main() {
         // The third tuple: later plugins go here (the second is near the 15-entry limit).
         // `progress::ensure` lets the plugins above that read `Progress` while they build insert it
         // first, so its place here does not matter.
-        .add_plugins((progress::ProgressPlugin, prize::PrizePlugin, menu::MenuPlugin, menu_abilities::MenuAbilitiesPlugin))
+        .add_plugins((progress::ProgressPlugin, prize::PrizePlugin, menu::MenuPlugin, menu_abilities::MenuAbilitiesPlugin, party::PartyPlugin))
         .run();
 }

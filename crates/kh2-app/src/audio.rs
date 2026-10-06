@@ -535,13 +535,9 @@ pub fn motion_sounds(
                             .ok()
                             .and_then(|s| s.target)
                             .and_then(|t| enemies.get(t).ok())
-                            .and_then(|e| {
-                                let model = match e.name {
-                                    "Shadow" => "M_EX020",
-                                    "Soldier" => "M_EX010",
-                                    _ => return None,
-                                };
-                                Some(*neo_cache.entry(e.name).or_insert_with(|| neo_status(&disc, model).unwrap_or(0)))
+                            .map(|e| {
+                                let model = e.kind.model;
+                                *neo_cache.entry(e.name).or_insert_with(|| neo_status(&disc, model).unwrap_or(0))
                             })
                             .unwrap_or(0);
                         let picked = table.pick(SORA_SPEAKER, *voice as u16, other, &mut rng.0, &|_| false);

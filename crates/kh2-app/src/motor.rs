@@ -244,10 +244,11 @@ impl Motor {
 ///
 /// This is the shape of the game's probe (FUN_0019a8e8 -> FUN_00143840 -> FUN_00164138: the
 /// actor's collision sphere stepped along its delta in radius-sized steps against the polygons
-/// in the swept box). The game filters polygons by attribute (`(attr & 0xf) != 4`, then the
-/// handler of the probe's 4-bit mask index, 0 for actors); the app has no attribute test for the
-/// player and uses the wall class the movement collides with.
-pub fn sweep_wall(world: &World, a: Vec3, b: Vec3, r: f32) -> Option<(Vec3, Vec3)> {
+/// in the swept box). Polygons are filtered by attribute word: `(attr & 0xf) != 4` and `attr & mask`
+/// (the handler of mask index 0: flag 0x10, PARTY_COLLIDE). That the handler's third argument is
+/// the polygon word, and that the probe's mask index is 0, are inferences (the handler table is
+/// assembly and the decompiler dropped the argument); walls are told from floors by the normal.
+pub fn sweep_wall(world: &World, a: Vec3, b: Vec3, r: f32, mask: u32) -> Option<(Vec3, Vec3)> {
     if !(a.is_finite() && b.is_finite()) {
         return None;
     }
@@ -257,7 +258,10 @@ pub fn sweep_wall(world: &World, a: Vec3, b: Vec3, r: f32) -> Option<(Vec3, Vec3
     let len2 = ab.length_squared();
     let mut best: Option<(f32, Vec3, Vec3)> = None;
     for t in &world.tris {
-        if t.n.y.abs() >= crate::world::FLOOR_NY || t.hi.x < lo.x || t.lo.x > hi.x || t.hi.y < lo.y || t.lo.y > hi.y || t.hi.z < lo.z || t.lo.z > hi.z {
+        // Polygon filter of FUN_00141b50: the attribute nibble is not 4 and the handler of the
+        // probe's mask index (0 for a party member, FUN_0032e3b8 table at 0x378f7c: index 0 and 6
+        // test flag 0x10) accepts the word. Maps without COCT flags (flags 0) never match.
+        if t.flags & mask == 0 || t.flags & 0xf == 4 || t.n.y.abs() >= crate::world::FLOOR_NY || t.hi.x < lo.x || t.lo.x > hi.x || t.hi.y < lo.y || t.lo.y > hi.y || t.hi.z < lo.z || t.lo.z > hi.z {
             continue;
         }
         // Closest points between the segment and the triangle (a few alternating projections).
@@ -320,19 +324,26 @@ mod tests {
     #[test]
     fn sweep_finds_a_wall_ahead_and_ignores_floors() {
         // A floor square and a wall across x = 100 facing -x, from render-style meshes.
-        let mesh = |pos: Vec<[f32; 3]>, idx: Vec<u32>| kh2_model::Mesh { positions: pos, indices: idx, ..Default::default() };
-        let floor = mesh(vec![[-500.0, 0.0, -500.0], [500.0, 0.0, -500.0], [500.0, 0.0, 500.0], [-500.0, 0.0, 500.0]], vec![0, 2, 1, 0, 3, 2]);
-        let wall = mesh(vec![[100.0, 0.0, -200.0], [100.0, 300.0, -200.0], [100.0, 300.0, 200.0], [100.0, 0.0, 200.0]], vec![0, 1, 2, 0, 2, 3]);
-        let world = World::from_meshes(&[floor, wall]);
+        let tri = |v: [Vec3; 3], flags: u32| {
+            let n = (v[1] - v[0]).cross(v[2] - v[0]).normalize();
+            crate::world::Tri { v, n, flags, material: 0, lo: v[0].min(v[1]).min(v[2]), hi: v[0].max(v[1]).max(v[2]) }
+        };
+        let w = |x: f32, flags: u32| tri([Vec3::new(x, -200.0, -400.0), Vec3::new(x, -200.0, 400.0), Vec3::new(x, 600.0, 0.0)], flags);
+        let floor = tri([Vec3::new(-500.0, 0.0, -500.0), Vec3::new(500.0, 0.0, 500.0), Vec3::new(500.0, 0.0, -500.0)], 0x10);
+        let mut world = World::default();
+        world.tris = vec![floor, w(100.0, 0x10), w(300.0, 0x10 | 4), w(-100.0, 0x80)];
         let start = Vec3::new(0.0, 40.0, 0.0);
         // 35 + 30 of reach along +x from x = 0: the sphere's front reaches x = 100.
-        let hit = sweep_wall(&world, start, start + Vec3::X * 65.0, 35.0);
+        let hit = sweep_wall(&world, start, start + Vec3::X * 65.0, 35.0, 0x10);
         assert!(hit.is_some_and(|(q, _)| (q.x - 100.0).abs() < 1e-3), "{hit:?}");
         // Short of it by a unit: nothing.
-        assert!(sweep_wall(&world, start, start + Vec3::X * 64.0, 35.0).is_none());
+        assert!(sweep_wall(&world, start, start + Vec3::X * 64.0, 35.0, 0x10).is_none());
         // Facing away: nothing, and the floor never counts.
-        assert!(sweep_wall(&world, start, start - Vec3::X * 65.0, 35.0).is_none());
-        assert!(sweep_wall(&world, Vec3::new(0.0, 10.0, 0.0), Vec3::new(0.0, 10.0, 60.0), 35.0).is_none());
+        assert!(sweep_wall(&world, start, start - Vec3::X * 65.0, 35.0, 0x10).is_none());
+        // Attribute 4 and walls without the party flag do not count.
+        assert!(sweep_wall(&world, Vec3::new(240.0, 40.0, 0.0), Vec3::new(305.0, 40.0, 0.0), 35.0, 0x10).is_none());
+        assert!(sweep_wall(&world, Vec3::new(-40.0, 40.0, 0.0), Vec3::new(-105.0, 40.0, 0.0), 35.0, 0x10).is_none());
+        assert!(sweep_wall(&world, Vec3::new(0.0, 10.0, 0.0), Vec3::new(0.0, 10.0, 60.0), 35.0, 0x10).is_none());
     }
 
     #[test]

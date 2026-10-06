@@ -339,7 +339,13 @@ fn wall_probe(world: &World, m: &Motor, shape: Option<(f32, f32)>, reference: Ve
         return None;
     }
     let start = m.pos + Vec3::Y * lift;
-    crate::motor::sweep_wall(world, start, start + dir * (r + j_front), r).map(|(q, _)| q)
+    crate::motor::sweep_wall(world, start, start + dir * (r + j_front), r, kh2_map::flags::PARTY_COLLIDE)
+        .map(|(q, _)| q)
+        // APPROXIMATION: the game's sweep (FUN_00163f98) reports blocked travel; a polygon the
+        // big sphere (radius 90) already overlaps at the start, level with or behind the centre,
+        // blocks nothing ahead. Without this Sora, who starts beside a wall in tt00, would always
+        // take key 1.
+        .filter(|q| (*q - start).dot(dir) > 0.0)
 }
 
 /// A button press while Sora is blown (FUN_001758b0; the party controller runs it on every
@@ -830,7 +836,8 @@ pub fn tick(
                     scene.others.iter().map(probe_text).collect::<Vec<_>>().join(" | ")
                 );
                 info!(
-                    "move:   jump height {:.1} (flag-bit-1 reach); wall probe {}: body radius {} + AttackJFront {:.1} ahead on the ground",
+                    "move:   at ({:.0} {:.0} {:.0}) yaw {:.2}; jump height {:.1} (flag-bit-1 reach); wall probe {}: body radius {} + AttackJFront {:.1} ahead on the ground",
+                    s.motor.pos.x, s.motor.pos.y, s.motor.pos.z, s.motor.yaw,
                     scene.jump_height,
                     wall.map_or("missed".to_string(), |q| format!("HIT at ({:.0} {:.0} {:.0}), key 1 flagged", q.x, q.y, q.z)),
                     body_shape(&rig).map_or("none".to_string(), |(r, l)| format!("{r} (lift {l})")),
@@ -1581,6 +1588,29 @@ mod tests {
         assert_eq!(ev[i].verdict, Verdict::Outside(moveset::Miss::Height));
         let (ev, _) = m.select(&chain(true, 1, &[97]), &high, 0);
         assert_eq!(ev[i].verdict, Verdict::Rejected(moveset::Reject::State));
+    }
+
+    #[test]
+    fn wall_probe_flags_key_1_and_jump_height_widens_flag_bit_1() {
+        let Some(m) = real_moves() else { return };
+        // Key 1 is flagged by the wall probe on the ground whatever its group says.
+        let i = m.actions.iter().position(|a| a.key == key::WALL_PROBE).unwrap();
+        let none = Scene::default();
+        let (ev, _) = m.select(&chain(false, 1, &[]), &none, 0);
+        assert_ne!(ev[i].verdict, Verdict::Flagged);
+        let wall = Scene { wall_probe: true, ..Scene::default() };
+        let (ev, _) = m.select(&chain(false, 1, &[]), &wall, 0);
+        assert_eq!(ev[i].verdict, Verdict::Flagged);
+        // Key 33 (A340, bit 97) has flag bit 1: a target higher than its plain window is reached
+        // once the jump height lowers the window's bound.
+        let a = m.by_key(33).unwrap();
+        assert!(a.flags & 2 != 0);
+        let high = point(100.0, 400.0);
+        assert_eq!(a.window(&high, 0.0), Err(moveset::Miss::Height));
+        assert_eq!(a.window(&high, 235.0), Ok(()));
+        // Key 40 (A344) is an record (motion id 172) gated on bit 101 that only the blown press starts.
+        let k40 = m.by_key(key::RETALIATING).unwrap();
+        assert_eq!((k40.motion, k40.ability, k40.group), (172, 101, 0));
     }
 
     #[test]

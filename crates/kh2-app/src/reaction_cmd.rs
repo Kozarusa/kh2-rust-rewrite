@@ -325,6 +325,12 @@ struct Parts {
     player: Option<parts::Rec>,
 }
 
+/// The enemies whose collision tables the native offer reads: every kind the app spawns
+/// (`enemy::KINDS`), as (name, model).
+fn part_kinds() -> impl Iterator<Item = (&'static str, &'static str)> {
+    crate::enemy::KINDS.iter().map(|k| (k.name, k.model))
+}
+
 pub struct ReactionPlugin;
 
 impl Plugin for ReactionPlugin {
@@ -340,7 +346,7 @@ impl Plugin for ReactionPlugin {
         let log = std::env::var("KH2_REACTIONLOG").is_ok_and(|v| v != "0");
         let mut tables = Parts::default();
         if let Some(d) = app.world().get_resource::<Disc>() {
-            for (kind, model) in [("Shadow", "M_EX020"), ("Soldier", "M_EX010")] {
+            for (kind, model) in part_kinds() {
                 if let Some(t) = d.read(&format!("obj/{model}.mdlx")).and_then(|f| Table::from_mdlx(&f)) {
                     tables.by_kind.insert(kind, t);
                 }
@@ -721,6 +727,14 @@ mod tests {
         let mut sw = mk(0, 0, 0);
         sw.execute = 0x13c;
         assert_eq!(status(&[], &sw, &Ctx::default()), Status::NotPorted);
+    }
+
+    /// The native offer reads the collision table of every kind the app spawns, the Dusk included.
+    #[test]
+    fn part_kinds_follow_enemy_kinds() {
+        let k: Vec<_> = part_kinds().collect();
+        assert_eq!(k.len(), crate::enemy::KINDS.len());
+        assert!(k.contains(&("Dusk", "M_EX990")));
     }
 
     #[test]

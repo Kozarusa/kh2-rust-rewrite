@@ -31,7 +31,7 @@ use kh2_tables::tables as t;
 use crate::assets::Disc;
 use crate::combat::Fighter;
 use crate::data::GameData;
-use crate::enemy::{EState, Enemy};
+use crate::enemy::{EState, Enemy, EnemyClash};
 use crate::fx::{GameEffect, StartEffect, EFFECT_DEATH};
 use crate::motor::{wrap_angle, Motor};
 use crate::reaction_cmd::{PlayerReaction, PlayerReactionCmd, ReactionAccepted};
@@ -51,6 +51,12 @@ const HIT: u32 = 0x0500_0000;
 /// object, position index, 0, -1, 0), one per accepted command.
 const RECORD: u32 = 0x0600_0000;
 const RECORD_SIZE: u32 = 0x20;
+/// Attack volume objects handed to the clash hook and event 0x13 (0x1b2478), two per clash.
+const VOLUME: u32 = 0x0700_0000;
+const VOLUME_SIZE: u32 = 0x40;
+/// The word of a volume object that holds its owner (0x1b2478 passes word +8 of the other volume
+/// to FUN_001b21a0 as the other side's object). The other fields are not served.
+const VOLUME_OWNER: u32 = 8;
 const OBJ_SIZE: usize = 0x1000;
 /// Bit 3 of an object's flag array: "cannot be hit" (FUN_0019a4f0).
 const FLAG_BIT_UNHITTABLE: i32 = 3;
@@ -93,6 +99,110 @@ struct AiPrograms {
     by_kind: HashMap<&'static str, Script>,
     /// The player's objentry byte +7, which names the sub-motion of a paired motion.
     player_model: u8,
+    /// The prize table `przt` of `00battle.bin` (drops, host 1.92).
+    prizes: Vec<PrizeRow>,
+}
+
+/// The global message queue of host 1.90 / 1.241 (64 entries at 0x1c89738, FUN_00187170) and the
+/// game's second generator (0x3716a0, `seed * 0x10dcd`), which draws the message delays and the
+/// drops. FUN_002f5fc8 sets it to 1; many other users advance it, so its state at a given moment is
+/// not the game's.
+#[derive(Resource)]
+struct Mailbox {
+    queue: Vec<(u32, String, f32)>,
+    seed: u32,
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Drops (host 1.92)
+
+/// One row of the prize table `przt` (`00battle.bin`; FUN_00193610 hands it to FUN_001a41c8): 0x18
+/// bytes, sorted by the halfword id at +0 (the bsearch of FUN_001a41d8 compares it, 0x331c48).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PrizeRow {
+    pub id: u16,
+    /// Bytes +2..+0xb: how many prizes of each of the nine kinds (FUN_001a4240 reads byte +2 + kind).
+    pub counts: [u8; 9],
+    /// +0xc: three (item id, chance) halfword pairs.
+    pub items: [(u16, u16); 3],
+}
+
+/// The rows of a `przt` entry: count at +4, rows from +8.
+pub fn parse_przt(d: &[u8]) -> Vec<PrizeRow> {
+    let u16_at = |o: usize| d.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
+    let Some(n) = d.get(4..8).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize) else { return Vec::new() };
+    (0..n)
+        .map_while(|k| {
+            let o = 8 + k * 0x18;
+            let r = d.get(o..o + 0x18)?;
+            let mut counts = [0u8; 9];
+            counts.copy_from_slice(&r[2..11]);
+            let item = |j: usize| Some((u16_at(o + 0xc + 4 * j)?, u16_at(o + 0xe + 4 * j)?));
+            Some(PrizeRow { id: u16_at(o)?, counts, items: [item(0)?, item(1)?, item(2)?] })
+        })
+        .collect()
+}
+
+/// FUN_001a41d8: the row of `id`, else the row of 0x48.
+pub fn prize_row(rows: &[PrizeRow], id: i32) -> Option<&PrizeRow> {
+    let find = |k: i32| rows.iter().find(|r| r.id as i32 == k);
+    find(id).or_else(|| find(0x48))
+}
+
+/// What a drop is made of: prizes per kind and the items that won their roll.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Drop {
+    pub row: u16,
+    pub prizes: [u32; 9],
+    pub items: Vec<u16>,
+}
+
+/// FUN_001a3cb0 up to the prize objects: kind `k` drops `ceil(counts[k] * orb)` prizes (FUN_001a4240,
+/// FUN_00300008 is a ceiling), `orb` being 1.0 (DAT_01c8a7e4, reset by FUN_00190370) plus each party
+/// member's Jackpot float (ability block +0x60, FUN_00190788). Each prize object takes three steps of
+/// the generator (FUN_001a3b28: seed * 0x10dcd, * 0x10dcd^2, then seed *= 0x10dcd^3). Then each item
+/// pair in turn: one step, and the item drops when `seed * 2^-32 * 100 < chance * item` (`item` 1.0
+/// plus each member's Lucky Lucky float, +0x64; the seed read unsigned). The flags of 0x35d268 (0x200
+/// no prizes, 0x400 no items) and the player state of FUN_001ce6c0 are taken as clear.
+pub fn compute_drop(row: &PrizeRow, orb: f32, item: f32, seed: &mut u32) -> Drop {
+    let mut prizes = [0u32; 9];
+    for (k, p) in prizes.iter_mut().enumerate() {
+        *p = (row.counts[k] as f32 * orb).ceil().max(0.0) as u32;
+        for _ in 0..*p {
+            *seed = seed.wrapping_mul(0x10dcd).wrapping_mul(0x10dcd).wrapping_mul(0x10dcd);
+        }
+    }
+    let mut items = Vec::new();
+    for &(id, chance) in &row.items {
+        *seed = seed.wrapping_mul(0x10dcd);
+        if (*seed as f32) * 2.328_306_4e-10 * 100.0 < chance as f32 * item {
+            items.push(id);
+        }
+    }
+    Drop { row: row.id, prizes, items }
+}
+
+impl Default for Mailbox {
+    fn default() -> Self {
+        Mailbox { queue: Vec::new(), seed: 1 }
+    }
+}
+
+/// Size of the game's message queue (FUN_00187170 drops a message when all 0x40 entries are taken).
+const MAILBOX_LEN: usize = 0x40;
+
+/// FUN_00187250 for the app's objects: every queued message goes to every receiver in `order` (the
+/// object list, FUN_001b7c88), each drawing its own delay ([`kh2_bdx::message_delay`]); the queue
+/// empties. Returns the deliveries per receiver: (sender, name, delay).
+fn dispatch_messages<K: Copy + Eq + std::hash::Hash>(mailbox: &mut Mailbox, order: &[K]) -> HashMap<K, Vec<(u32, String, f32)>> {
+    let mut out: HashMap<K, Vec<(u32, String, f32)>> = HashMap::new();
+    for (sender, name, delay) in std::mem::take(&mut mailbox.queue) {
+        for &k in order {
+            let d = kh2_bdx::message_delay(&mut mailbox.seed, delay);
+            out.entry(k).or_default().push((sender, name.clone(), d));
+        }
+    }
+    out
 }
 
 /// Classification of a host call, for the trace and the summary.
@@ -348,6 +458,12 @@ struct Obj {
     player_serial: Option<i32>,
     /// The spawn kind byte of the object's spawn record (host 1.110), -1 without one.
     spawn_kind: i32,
+    /// Messages the script sent this tick (host 1.90 / 1.241): sender, mode name, delay in frames.
+    outbox: Vec<(u32, String, f32)>,
+    /// Volume objects of clashes (handle `VOLUME + k * VOLUME_SIZE`): owner and attack row.
+    volumes: Vec<(u32, i16)>,
+    /// Prize rows of host 1.92 calls this tick.
+    drops: Vec<i32>,
     /// The motion controller's time (+0x140 + 0x30 = object +0x170), in the motion's own frames: the
     /// `Animator` frame at the start of the tick, or the first frame of a motion requested in it.
     frame: f32,
@@ -391,6 +507,9 @@ impl Obj {
             player_cmds: Vec::new(),
             player_serial: None,
             spawn_kind: -1,
+            outbox: Vec::new(),
+            volumes: Vec::new(),
+            drops: Vec::new(),
             frame: 0.0,
             blend_left: 0.0,
             want_vel: Vec3::ZERO,
@@ -407,6 +526,30 @@ impl Obj {
         r[12..16].copy_from_slice(&(-1i32).to_le_bytes());
         self.records.push(r);
         RECORD + (self.records.len() as u32 - 1) * RECORD_SIZE
+    }
+
+    /// The two volume objects of a clash: the object's own attack volume and the player's (the only
+    /// other team in the app). Returns their handles (own, other).
+    fn new_volumes(&mut self, own_atkp: i16, other_atkp: i16) -> (u32, u32) {
+        let k = self.volumes.len() as u32;
+        self.volumes.push((self.handle, own_atkp));
+        self.volumes.push((PLAYER, other_atkp));
+        (VOLUME + k * VOLUME_SIZE, VOLUME + (k + 1) * VOLUME_SIZE)
+    }
+
+    /// Word +8 (the owner) of a clash volume object.
+    fn volume_word(&self, addr: u32, out: &mut [u8]) -> bool {
+        let v = addr.wrapping_sub(VOLUME);
+        let Some(&(owner, _)) = self.volumes.get((v / VOLUME_SIZE) as usize) else { return false };
+        let k = (v % VOLUME_SIZE).wrapping_sub(VOLUME_OWNER) as usize;
+        let b = owner.to_le_bytes();
+        match b.get(k..k + out.len()) {
+            Some(s) if out.len() <= 4 => {
+                out.copy_from_slice(s);
+                true
+            }
+            _ => false,
+        }
     }
 
     fn advance_fade(&mut self) {
@@ -688,7 +831,11 @@ impl BevyHost<'_> {
                 self.obj.fade = Some(Fade { from: 0.0, to: 1.0, frames: *frames, t: 0.0 });
                 imp(Value::None)
             }
-            Call::GroundMarker { .. } => missing(Value::None, "the drop: FUN_0016b738 finds the ground under the object, FUN_001a3cb0 spawns row `id` of the drop table (orbs, munny); the app has no pickups"),
+            // 1.92 (FUN_0016b738 -> FUN_001a3cb0): the drop of prize row `id`; computed after the tick.
+            Call::GroundMarker { id, .. } => {
+                self.obj.drops.push(*id);
+                approx(Value::None, "the drop is computed from `przt` (FUN_001a3cb0: prize counts, item rolls) and logged; the app has no prize objects, nothing appears")
+            }
             Call::SetFlag { obj, bit } | Call::ClearFlag { obj, bit } if *obj == PLAYER => {
                 let set = matches!(c, Call::SetFlag { .. });
                 if *bit == FLAG_BIT_UNHITTABLE {
@@ -746,7 +893,14 @@ impl BevyHost<'_> {
                     missing(Value::Handle(0), "object lookup other than the player")
                 }
             }
-            Call::SendMessage { .. } | Call::RemoteSetMode { .. } => missing(Value::None, "messages between objects"),
+            // 1.90 send_message (0x172fb8 -> FUN_00187170) / 1.241: an entry of the global 64-entry queue
+            // (name, sender's context, delay) that the per-frame task FUN_00187250 hands to every object.
+            Call::SendMessage { sender, name, delay } => {
+                self.trace.line(self.tag, &format!("send_message {name:?} delay {delay} from {sender:#x}"));
+                self.obj.outbox.push((*sender, name.clone(), *delay));
+                approx(Value::None, "delivered to every scripted enemy at the start of the next tick (Mailbox); objects without a script (the player) draw no delay from the generator")
+            }
+            Call::RemoteSetMode { .. } => missing(Value::None, "a mode queued for another object (host 6.58): not wired"),
             // 1.29 play_motion_with(from, to, entry, blend): entry `motion` of the first object's motion
             // set played on the second object (FUN_0017f160). Only the player as `to` is supported.
             Call::Func { group: 1, index: 29, args } => {
@@ -834,6 +988,9 @@ impl Host for BevyHost<'_> {
                 return true;
             }
         }
+        if self.obj.volume_word(addr, out) {
+            return true;
+        }
         // The first 16 bytes of the player object: the Soldier's reaction thread copies them into its
         // request block and then uses the copy as a context, so the word at +4 must read as the player
         // object [inferred from that use; what the game keeps at object +4 was not read].
@@ -897,6 +1054,7 @@ impl Plugin for EnemyAiPlugin {
         };
         app.insert_resource(AiTrace { level, tick: 0, calls: BTreeMap::new(), notes: HashSet::new() })
             .init_resource::<AiPrograms>()
+            .init_resource::<Mailbox>()
             .add_message::<AiHit>()
             .add_systems(Startup, load_programs)
             .add_systems(
@@ -922,6 +1080,13 @@ fn load_programs(disc: Res<Disc>, mut programs: ResMut<AiPrograms>) {
     // sub-motion per player model, named by `%03d0` of it (FUN_0017ef98 formats the key with the format
     // string at 0x37a598, FUN_0017ee40 looks the name up). Sora's row is P_EX100.
     programs.player_model = rows.iter().find(|r| r.model_name == "P_EX100").map_or(1, |r| r.weapon_joint);
+    programs.prizes = disc
+        .read("00battle.bin")
+        .and_then(|b| kh2_bar::parse(&b).ok().and_then(|e| e.iter().find(|x| x.tag == "przt").map(|x| parse_przt(x.data))))
+        .unwrap_or_default();
+    if programs.prizes.is_empty() {
+        warn!("bdx: 00battle.bin przt not readable; drops are not computed");
+    }
     for (kind, model) in entries {
         let paired = disc.read(&format!("obj/{model}.mset")).map(|m| paired_motions(&m)).unwrap_or_default();
         let Some(file) = disc.read(&format!("obj/{model}.mdlx")) else { continue };
@@ -1002,13 +1167,13 @@ fn ai_update(
     sora: Query<&Transform, (With<Sora>, Without<Enemy>)>,
     mut q: Query<(Entity, &mut Transform, &mut Enemy, &mut Fighter, &mut AiBrain)>,
     mut anims: Query<&mut Animator>,
-    mut hit_msgs: MessageReader<AiHit>,
-    mut accepted: MessageReader<ReactionAccepted>,
+    (mut hit_msgs, mut accepted, mut clash_msgs): (MessageReader<AiHit>, MessageReader<ReactionAccepted>, MessageReader<EnemyClash>),
     mut fx: MessageWriter<StartEffect>,
     mut game: MessageWriter<GameEffect>,
     mut player_cmds: MessageWriter<PlayerReactionCmd>,
     mut player_reaction: ResMut<PlayerReaction>,
-    mut trace: ResMut<AiTrace>,
+    (mut trace, mut mailbox): (ResMut<AiTrace>, ResMut<Mailbox>),
+    (programs, abilities): (Res<AiPrograms>, Option<Res<crate::abilities::Abilities>>),
 ) {
     trace.tick += 1;
     if trace.tick.is_multiple_of(SUMMARY_EVERY) {
@@ -1022,6 +1187,13 @@ fn ai_update(
     for r in accepted.read() {
         reactions.entry(r.target).or_default().push((r.cmd, r.pos));
     }
+    let mut clashes: HashMap<Entity, Vec<EnemyClash>> = HashMap::new();
+    for c in clash_msgs.read() {
+        clashes.entry(c.enemy).or_default().push(*c);
+    }
+    // Last tick's messages go to every scripted object (FUN_00187250), each with its own delay.
+    let order: Vec<Entity> = q.iter().map(|(e, ..)| e).collect();
+    let mut mail = dispatch_messages(&mut mailbox, &order);
     let Ok(sp) = sora.single() else { return };
     let player = sp.translation / SCALE;
     let player_yaw = sp.rotation.to_euler(EulerRot::YXZ).0;
@@ -1092,7 +1264,39 @@ fn ai_update(
                 info!("bdx {}: event 11 (reaction command {cmd}) delivered, handler {}", host.tag, if handled { "ran" } else { "absent" });
             }
         }
+        // A clash of one of its attack volumes (0x1b2478): the running mode's clash hook, then event
+        // 0x13 with (own volume, other volume).
+        for c in clashes.remove(&ent).unwrap_or_default() {
+            let (own, other) = host.obj.new_volumes(c.own_atkp, c.other_atkp);
+            let handled = rt.clash(&mut host, own, other);
+            host.trace.line(host.tag, &format!("event 19: clash, own attack {} against {} (volumes {own:#x}, {other:#x}); handler {}", c.own_atkp, c.other_atkp, if handled { "ran" } else { "absent" }));
+            if host.trace.level == 0 && std::env::var("KH2_HITLOG").is_ok_and(|v| v != "0") {
+                info!("bdx {}: event 19 (clash, attack {} against {}) delivered, handler {}", host.tag, c.own_atkp, c.other_atkp, if handled { "ran" } else { "absent" });
+            }
+        }
+        // Messages (host 1.90 of any object, this one included): the mode of that name gets them.
+        for (sender, name, delay) in mail.remove(&ent).unwrap_or_default() {
+            host.trace.line(host.tag, &format!("message {name:?} from {sender:#x}, delay {delay:.2}"));
+            rt.receive_message(&mut host, &name, sender, delay);
+        }
         rt.update(&mut host);
+        // The game's queue holds 0x40 entries; FUN_00187170 drops a message when it is full.
+        for m in obj.outbox.drain(..) {
+            if mailbox.queue.len() < MAILBOX_LEN {
+                mailbox.queue.push(m);
+            }
+        }
+        // Drops (host 1.92): the party is Sora alone, his ability block gives Jackpot and Lucky Lucky.
+        for id in obj.drops.drain(..) {
+            let (jackpot, lucky) = abilities.as_deref().map_or((0.0, 0.0), |a| (a.block().jackpot, a.block().lucky_lucky));
+            match prize_row(&programs.prizes, id) {
+                Some(row) => {
+                    let d = compute_drop(row, 1.0 + jackpot, 1.0 + lucky, &mut mailbox.seed);
+                    info!("bdx {tag}: drop (host 1.92) asked row {id}, used row {}: prizes per kind {:?}, items {:?} (no prize objects in the app)", d.row, d.prizes, d.items);
+                }
+                None => trace.note(tag, format!("drop row {id}: przt has neither it nor row 0x48")),
+            }
+        }
         for c in obj.player_cmds.drain(..) {
             let c = match c {
                 PlayerReactionCmd::PairedMotion { slot, blend, serial, ticks, .. } => {
@@ -1278,6 +1482,102 @@ mod tests {
         }
         assert_eq!(o.alpha, 1.0);
         assert!(o.fade.is_none());
+    }
+
+    /// FUN_00187250: every message goes to every object of the list, each drawing its own delay from
+    /// the generator in list order; a delay of 0 draws nothing.
+    #[test]
+    fn messages_go_to_every_object_with_their_own_delay() {
+        let mut m = Mailbox::default();
+        m.queue.push((SELF_BASE, "dusk_surprise".into(), 30.0));
+        m.queue.push((SELF_BASE, "now".into(), 0.0));
+        let out = dispatch_messages(&mut m, &[1u8, 2, 3]);
+        assert!(m.queue.is_empty());
+        let mut seed = 1u32;
+        for k in [1u8, 2, 3] {
+            let d = kh2_bdx::message_delay(&mut seed, 30.0);
+            assert_eq!(out[&k][0], (SELF_BASE, "dusk_surprise".to_string(), d));
+            assert_eq!(out[&k][1].2, 0.0);
+        }
+        assert_eq!(m.seed, seed);
+    }
+
+    /// A clash hands two volume objects to the script; word +8 of each is its owner.
+    #[test]
+    fn clash_volumes_hold_their_owners() {
+        let mut o = Obj::new(SELF_BASE);
+        let (own, other) = o.new_volumes(5, 7);
+        let w = |o: &Obj, a: u32| {
+            let mut b = [0u8; 4];
+            o.volume_word(a, &mut b).then(|| u32::from_le_bytes(b))
+        };
+        assert_eq!(w(&o, own + VOLUME_OWNER), Some(SELF_BASE));
+        assert_eq!(w(&o, other + VOLUME_OWNER), Some(PLAYER));
+        assert_eq!(w(&o, own), None, "other fields are not served");
+    }
+
+    fn row(id: u16, counts: [u8; 9], items: [(u16, u16); 3]) -> Vec<u8> {
+        let mut r = vec![0u8; 0x18];
+        r[0..2].copy_from_slice(&id.to_le_bytes());
+        r[2..11].copy_from_slice(&counts);
+        for (j, (i, c)) in items.iter().enumerate() {
+            r[0xc + 4 * j..0xe + 4 * j].copy_from_slice(&i.to_le_bytes());
+            r[0xe + 4 * j..0x10 + 4 * j].copy_from_slice(&c.to_le_bytes());
+        }
+        r
+    }
+
+    #[test]
+    fn prize_rows_parse_and_fall_back_to_row_0x48() {
+        let mut d = vec![0u8; 8];
+        d[4..8].copy_from_slice(&2u32.to_le_bytes());
+        d.extend(row(0x48, [1; 9], [(0, 0); 3]));
+        d.extend(row(0x60, [0, 2, 0, 0, 3, 0, 0, 0, 1], [(10, 5), (0, 0), (11, 100)]));
+        let rows = parse_przt(&d);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].counts[4], 3);
+        assert_eq!(rows[1].items[2], (11, 100));
+        assert_eq!(prize_row(&rows, 0x60).map(|r| r.id), Some(0x60));
+        assert_eq!(prize_row(&rows, 7).map(|r| r.id), Some(0x48));
+    }
+
+    /// FUN_001a3cb0 by hand: ceiling of count times the orb factor, three generator steps per prize,
+    /// then one step per item pair, compared against chance times the item factor.
+    #[test]
+    fn a_drop_follows_fun_001a3cb0() {
+        let r = PrizeRow { id: 1, counts: [0, 2, 0, 0, 3, 0, 0, 0, 1], items: [(10, 0), (11, 100), (12, 50)] };
+        let mut seed = 1u32;
+        let d = compute_drop(&r, 1.5, 1.0, &mut seed);
+        assert_eq!(d.prizes, [0, 3, 0, 0, 5, 0, 0, 0, 2]);
+        // 10 prizes, 3 steps each, then 3 item steps.
+        let mut s = 1u32;
+        for _ in 0..30 {
+            s = s.wrapping_mul(0x10dcd);
+        }
+        let mut want = Vec::new();
+        for (id, chance) in r.items {
+            s = s.wrapping_mul(0x10dcd);
+            if (s as f32) * 2.328_306_4e-10 * 100.0 < chance as f32 {
+                want.push(id);
+            }
+        }
+        assert_eq!(seed, s);
+        assert_eq!(d.items, want);
+        assert!(!d.items.contains(&10), "a chance of 0 never drops");
+        assert!(d.items.contains(&11), "a chance of 100 always drops");
+    }
+
+    /// The disc's prize table: sorted by id and holding the fallback row 0x48 (skips without an ISO).
+    #[test]
+    fn real_przt() {
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else { return eprintln!("skipped: no disc (set KH2_ISO)") };
+        let disc = Disc::open(&iso);
+        let bin = disc.read("00battle.bin").expect("00battle.bin");
+        let e = kh2_bar::parse(&bin).expect("bar");
+        let rows = parse_przt(e.iter().find(|x| x.tag == "przt").expect("przt").data);
+        assert!(rows.len() > 10, "{} rows", rows.len());
+        assert!(rows.windows(2).all(|w| w[0].id < w[1].id), "sorted by id (FUN_001a41d8 bisects)");
+        assert!(rows.iter().any(|r| r.id == 0x48));
     }
 
     #[test]

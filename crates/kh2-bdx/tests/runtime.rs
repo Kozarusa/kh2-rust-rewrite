@@ -353,6 +353,62 @@ fn a_remote_queue_entry_goes_to_the_host_instead_of_starting_a_mode() {
     assert_eq!(other.current_mode().as_deref(), Some("stay"));
 }
 
+/// The script part of the enemy clash handler (0x1b2478): the running mode's slot 8 hook with
+/// (context, own volume, other volume), then event 0x13 with (own volume, other volume).
+#[test]
+fn a_clash_runs_the_mode_hook_then_event_19() {
+    const SEQ: u16 = 0x00;
+    const HOOK_AT: u16 = 0x04;
+    const HOOK_OWN: u16 = 0x08;
+    const HOOK_OTHER: u16 = 0x0c;
+    const EV_AT: u16 = 0x14;
+    const EV_OWN: u16 = 0x18;
+    const EV_OTHER: u16 = 0x1c;
+    const CTX: u16 = 0x20;
+    const TABLE: u16 = 0x100;
+    let mut a = Asm { w: vec![0; base(3)] };
+    let idle = a.here();
+    a.yield_().jmp(idle);
+    let hook = a.here();
+    a.store_local(8).store_local(4).store_local(0).bump(SEQ).load_global(SEQ).store_global(HOOK_AT);
+    a.load_local(4).store_global(HOOK_OWN).load_local(8).store_global(HOOK_OTHER).ret();
+    let fight = a.string("fight");
+    let mut entries = Vec::new();
+    entries.push((0u32, a.here() as u32));
+    a.store_local(0).load_local(0).store_global(CTX + 4);
+    a.lea_global(CTX).lea_global(TABLE).host(1, 7);
+    a.lea_global(TABLE).lea_code(fight).push_i(100).push_i(idle as i32);
+    for slot in 1..9 {
+        a.push_i(if slot == 8 { hook as i32 } else { 0 });
+    }
+    a.host(1, 6).ret();
+    entries.push((1, a.here() as u32));
+    let main = a.here();
+    a.yield_().jmp(main);
+    entries.push((0x13, a.here() as u32));
+    a.store_local(4).store_local(0).bump(SEQ).load_global(SEQ).store_global(EV_AT);
+    a.load_local(0).store_global(EV_OWN).load_local(4).store_global(EV_OTHER).ret();
+    let img = image(&entries, &a.w[base(3)..], 0x1200);
+    let mut rt = Runtime::new(Program::parse(&img).expect("parse"));
+    let mut host = MockHost::new();
+    // Before the script thread exists nothing runs (0x1b2478 tests +0x484).
+    assert!(!rt.clash(&mut host, 0x70, 0x71));
+    assert!(rt.spawn(&mut host, SELF_OBJ));
+    // Without a running mode only the event runs.
+    assert!(rt.clash(&mut host, 0x70, 0x71));
+    assert_eq!((word(&rt, SEQ), word(&rt, HOOK_AT), word(&rt, EV_AT)), (1, 0, 1));
+    assert_eq!((word(&rt, EV_OWN), word(&rt, EV_OTHER)), (0x70, 0x71));
+    rt.set_mode_named(&mut host, "fight");
+    // A started mode whose record asks the host first (flag 4 of the machine) takes no hooks until
+    // the machine has run it (FUN_00187040 tests +0x9c bit 4).
+    rt.update(&mut host);
+    assert!(rt.clash(&mut host, 0x80, 0x81));
+    assert_eq!((word(&rt, HOOK_AT), word(&rt, EV_AT)), (2, 3), "the hook first, then the event");
+    assert_eq!((word(&rt, HOOK_OWN), word(&rt, HOOK_OTHER)), (0x80, 0x81));
+    assert_eq!((word(&rt, EV_OWN), word(&rt, EV_OTHER)), (0x80, 0x81));
+    assert!(rt.core.errors.is_empty(), "{:?}", rt.core.errors);
+}
+
 #[test]
 fn the_action_thread_runs_until_it_is_stopped() {
     let (mut rt, mut host) = start();

@@ -42,8 +42,11 @@ use crate::skel::Animator;
 use crate::sora::{Battle, Sora, State, WeaponCue};
 use crate::SCALE;
 
-/// The enemies whose motion sets the app reads for paired motions (the kinds the app spawns).
-const KINDS: [(&str, &str); 2] = [("Shadow", "M_EX020"), ("Soldier", "M_EX010")];
+/// The enemies whose motion sets the app reads for paired motions: every kind the app spawns
+/// (`enemy::KINDS`), as (name, model).
+pub fn paired_kinds() -> impl Iterator<Item = (&'static str, &'static str)> {
+    crate::enemy::KINDS.iter().map(|k| (k.name, k.model))
+}
 
 /// Ticks Sora holds the last frame of a paired motion that ended with nothing queued, waiting for
 /// the script's next request (it arrives one tick later, see the module notes), before control
@@ -134,7 +137,7 @@ impl Plugin for PlayerReactionPlugin {
             let rows = d.0.lock().ok().and_then(|mut a| kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).ok()).map(|x| x.rows).unwrap_or_default();
             // The player's objentry byte +7 (`WeaponJoint`) names the sub-motion; Sora's row is P_EX100.
             lib.model = rows.iter().find(|r| r.model_name == "P_EX100").map_or(1, |r| r.weapon_joint);
-            for (kind, model) in KINDS {
+            for (kind, model) in paired_kinds() {
                 let paired = d.read(&format!("obj/{model}.mset")).map(|m| paired_entries(&m)).unwrap_or_default();
                 if !paired.is_empty() {
                     lib.by_kind.insert(kind, paired);
@@ -554,6 +557,15 @@ mod tests {
     fn sub_motion_name_is_three_digits_and_zero() {
         assert_eq!(sub_name(1), "0010");
         assert_eq!(sub_name(12), "0120");
+    }
+
+    /// The paired-motion sources are every kind the app spawns, the Dusk included.
+    #[test]
+    fn paired_kinds_follow_enemy_kinds() {
+        let k: Vec<_> = paired_kinds().collect();
+        assert_eq!(k.len(), crate::enemy::KINDS.len());
+        assert!(k.contains(&("Dusk", "M_EX990")));
+        assert!(k.contains(&("Shadow", "M_EX020")) && k.contains(&("Soldier", "M_EX010")));
     }
 
     fn disc() -> Option<Disc> {

@@ -37,6 +37,11 @@ const HOOK_DAMAGE: u32 = 4;
 /// Called when a message addressed to the mode's name arrives (FUN_001871d0 reads +0x14).
 const HOOK_MESSAGE: u32 = 6;
 const HOOK_ENTER: u32 = 7;
+/// Run by the enemy clash handler (0x1b2478 -> FUN_00187130 -> FUN_00187040 with 7, which reads the
+/// halfword at record +10 + 2 * 7, slot 8) with (context, own volume, other volume).
+const HOOK_CLASH: u32 = 8;
+/// The script event the enemy clash handler delivers after the clash hook (0x1b2478: FUN_0016c620 with 0x13).
+pub const EVENT_CLASH: u32 = 0x13;
 
 /// A thread of an object's script together with the bookkeeping the game keeps in its thread object
 /// (FUN_0016c230): the tag children are killed by, the cleanup routine run when the thread is destroyed,
@@ -1169,6 +1174,20 @@ impl Runtime {
         }
         self.core.run_temp(&self.prog, &self.code, &mut self.shared, host, pc, args);
         true
+    }
+
+    /// The script's part of the enemy clash handler (0x1b2478), given the two attack volumes: when the
+    /// object has a script thread (+0x484), the running mode's clash hook (slot 8, FUN_00187130) with
+    /// (context, own volume, other volume), then event 0x13 with (own volume, other volume). The handler
+    /// does both before its own flag 0x40 / `RefactSelf` 2 tests, so every clash reaches the script.
+    /// Returns whether the script has an event 0x13 handler.
+    pub fn clash(&mut self, host: &mut dyn Host, own: u32, other: u32) -> bool {
+        if self.main.is_none() {
+            return false;
+        }
+        let ctx = self.core.modes.ctx;
+        self.core.mode_hook(&self.prog, &self.code, &mut self.shared, host, HOOK_CLASH, &[ctx, own, other]);
+        self.event(host, EVENT_CLASH, &[own, other])
     }
 
     /// One game frame of the script (FUN_0016a288): the main thread and its children run, then the mode

@@ -16,7 +16,8 @@
 //! `fx::StartSystemEffect`). The cone test of FUN_0018d308 runs both ways for rows with `ReflectRange`
 //! (`reaction_rules::reflect_cone`). Not done: `ReflectAction` (FUN_0019e870 reads it as an offset from
 //! the row to an action record that 0x1b2478 hands to the actor's action system at +0x300,
-//! FUN_00186db0), the script event 0x13 the enemy handler sends, the hit registry tests of FUN_001be108.
+//! FUN_00186db0), the hit registry tests of FUN_001be108. The script part of the enemy handler (the
+//! running mode's clash hook and event 0x13) is delivered by `enemy_ai.rs` from [`EnemyClash`].
 
 use std::collections::HashSet;
 
@@ -119,11 +120,17 @@ fn detect_clashes(
                 }
                 match me.team {
                     Team::Enemy => {
-                        if let Some(c) = rules::enemy_clash(mine, false) {
-                            enemy_out.write(EnemyClash { enemy: me.fighter, motion: c.motion, power: c.push_power });
-                            if let Some(action) = c.action {
-                                debug!("clash: enemy row {} would start script action {action} (not decoded)", me.atkp);
-                            }
+                        // Every clash: 0x1b2478 hands it to the script (event 0x13) before its own tests.
+                        let c = rules::enemy_clash(mine, false);
+                        enemy_out.write(EnemyClash {
+                            enemy: me.fighter,
+                            motion: c.and_then(|c| c.motion),
+                            power: c.map_or(0.0, |c| c.push_power),
+                            own_atkp: me.atkp,
+                            other_atkp: other.atkp,
+                        });
+                        if let Some(action) = c.and_then(|c| c.action) {
+                            debug!("clash: enemy row {} would start script action {action} (not decoded)", me.atkp);
                         }
                     }
                     Team::Player => {

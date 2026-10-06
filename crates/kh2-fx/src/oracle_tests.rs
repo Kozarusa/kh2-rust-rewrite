@@ -956,3 +956,162 @@ fn sno_obj(amp: f32, m_cam: &Mat4) -> Obj {
     obj.set_mat(w2, *m_cam);
     obj
 }
+
+// ---- shape draw: texture coordinates and palette offset (FUN_0021a660) ----------------------------
+
+const PKT: u32 = 0x01e0_0000;
+const SHAPE_REC: u32 = 0x01f0_4000;
+const SHAPE_MAT: u32 = 0x01f0_4100;
+const SHAPE_FRAME: u32 = 0x01f0_5000;
+const SPLICE: u32 = 0x01f0_6000;
+
+thread_local! {
+    /// The original words of the MMI instructions [`install_pext`] stands in for, by address.
+    static PEXT: RefCell<std::collections::HashMap<u32, u32>> = RefCell::new(std::collections::HashMap::new());
+}
+
+/// Probe: PEXTLB (MMI0 sa 26) or PEXTLH (sa 22), which the interpreter lacks, done here; the word
+/// in memory was replaced by a nop so the interpreter steps over it. PEXTLB interleaves the low 8
+/// bytes of rt (even) and rs (odd), PEXTLH the low 4 halfwords (R5900 manual).
+fn pext(ee: &mut Ee) {
+    let Some(w) = PEXT.with(|m| m.borrow().get(&ee.pc).copied()) else { return };
+    let (rs, rt, rd, sa) = (((w >> 21) & 31) as usize, ((w >> 16) & 31) as usize, ((w >> 11) & 31) as usize, (w >> 6) & 31);
+    let (a, b) = (ee.gpr[rs].to_le_bytes(), ee.gpr[rt].to_le_bytes());
+    let mut out = [0u8; 16];
+    if sa == 26 {
+        for i in 0..8 {
+            out[2 * i] = b[i];
+            out[2 * i + 1] = a[i];
+        }
+    } else {
+        for i in 0..4 {
+            out[4 * i..4 * i + 2].copy_from_slice(&b[2 * i..2 * i + 2]);
+            out[4 * i + 2..4 * i + 4].copy_from_slice(&a[2 * i..2 * i + 2]);
+        }
+    }
+    if rd != 0 {
+        ee.gpr[rd] = u128::from_le_bytes(out);
+    }
+}
+
+/// Puts [`pext`] on every PEXTLB / PEXTLH in `[lo, hi)`.
+fn install_pext(ee: &mut Ee, lo: u32, hi: u32) -> usize {
+    let mut n = 0;
+    for pc in (lo..hi).step_by(4) {
+        let w = ee.r32(pc);
+        if w >> 26 == 0x1c && w & 63 == 8 && matches!((w >> 6) & 31, 22 | 26) {
+            PEXT.with(|m| m.borrow_mut().insert(pc, w));
+            ee.w32(pc, 0);
+            ee.probes.insert(pc, pext);
+            n += 1;
+        }
+    }
+    n
+}
+
+/// A raw DPD shape of one frame: `quad` selects the free-quad sprite layout (frame flag 8). Each
+/// sprite is (corners or rectangle in 12.4, texture rectangle in 4.12, color record).
+fn raw_one_frame_shape(quad: bool, sprites: &[([i16; 8], [i16; 4], [u8; 8])]) -> Vec<u8> {
+    let mut b = vec![0u8; 0x400];
+    let a = 0x10;
+    b[a + 4..a + 6].copy_from_slice(&1i16.to_le_bytes());
+    b[a + 6..a + 8].copy_from_slice(&1i16.to_le_bytes());
+    let v = 0x40;
+    b[a + 0x10..a + 0x12].copy_from_slice(&((v - a) as i16).to_le_bytes());
+    b[a + 0x12..a + 0x14].copy_from_slice(&1i16.to_le_bytes());
+    b[v..v + 2].copy_from_slice(&(if quad { 8u16 } else { 0 }).to_le_bytes());
+    b[v + 2..v + 4].copy_from_slice(&(sprites.len() as u16).to_le_bytes());
+    let size = if quad { 24 } else { 16 };
+    let colors = 0x20 + sprites.len() * size;
+    b[v + 4..v + 8].copy_from_slice(&(colors as u32).to_le_bytes());
+    // TEX0: TBP 0x2a00, TBW 4, PSMT8, 256 x 512, TCC, CBP 0x2e34, CLD 2.
+    b[v + 0x10..v + 0x18].copy_from_slice(&0x4005_c686_6131_2a00u64.to_le_bytes());
+    for (i, (pos, st, col)) in sprites.iter().enumerate() {
+        let s = v + 0x20 + i * size;
+        let n = if quad { 8 } else { 4 };
+        for k in 0..n {
+            b[s + 2 * k..s + 2 * k + 2].copy_from_slice(&pos[k].to_le_bytes());
+        }
+        for k in 0..4 {
+            b[s + 2 * (n + k)..s + 2 * (n + k) + 2].copy_from_slice(&st[k].to_le_bytes());
+        }
+        b[v + colors + 8 * i..v + colors + 8 * i + 8].copy_from_slice(col);
+    }
+    b
+}
+
+/// FUN_0021a660, the shape draw behind every sprite program, run in the interpreter on sprite and
+/// free-quad frames: the texture coordinates it writes into the GS packet (ST, normalised floats,
+/// PRIM 0x56 / 0x54 with FST clear) are the sprite's raw values / 4096, the same as the port's
+/// `Sprite::st`, for every texture size; the TEX0 it writes per sprite is the frame's with the
+/// color record's byte 7 added to CBP, as `Sprite::tex0`. The port draws the same rectangles.
+#[test]
+fn shape_draw_texture_coordinates_match_the_game() {
+    let Some(elf) = exe() else { return };
+    let mut checked = 0;
+    for quad in [false, true] {
+        let mut ee = Ee::new();
+        ee.load_elf(&elf).expect("elf");
+        install_vu_flags(&mut ee, 0x21a660, 0x21b800);
+        install_pext(&mut ee, 0x21a660, 0x21b800);
+        let sprites: Vec<([i16; 8], [i16; 4], [u8; 8])> = vec![
+            ([-0x100, -0xf0, 0xf0, 0x110, -0x80, 0x120, 0x60, 0x90], [528, 16, 480, 464], [0x80, 0x40, 0x20, 0x80, 0x48, 0, 0, 0]),
+            ([-0x40, -0x40, 0x40, 0x40, -0x30, 0x50, 0x48, 0x38], [3 * 64, 2 * 64, 26 * 64, 26 * 64], [0x60, 0x70, 0x80, 0x40, 0x44, 0, 0, 3]),
+            ([0, -0x200, 0x200, 0, -0x200, 0, 0x10, 0x200], [4000, 64, 90, 4000], [0x10, 0x20, 0x30, 0x80, 0x42, 0x20, 0, 1]),
+        ];
+        let raw = raw_one_frame_shape(quad, &sprites);
+        let shape = Shape::parse(&raw);
+        let frame = &shape.frames[0];
+        ee.write(SHAPE_FRAME, &raw[0x40..]);
+        // The record: flags 0x80 (draw into the caller's packet memory at +0x14), color 0x80s, the
+        // matrix (an identity with the screen centre and the GS z as the translation).
+        ee.write(SHAPE_REC, &[0; 0x40]);
+        ee.write(SHAPE_REC + 2, &0x80u16.to_le_bytes());
+        ee.write(SHAPE_REC + 4, &[0x80, 0x80, 0x80, 0x80]);
+        ee.w32(SHAPE_REC + 0x10, SHAPE_MAT);
+        ee.w32(SHAPE_REC + 0x14, PKT);
+        let m = Mat4::from_cols(Vec4::X, Vec4::Y, Vec4::Z, Vec4::new(2048.0, 2048.0, 4_194_304.0, 1.0));
+        write_mat(&mut ee, SHAPE_MAT, &m);
+        ee.w32(0x360b58, 0);
+        ee.w32(0x1db11f0, 0x7fff_ffff);
+        ee.w32(0x1db11e8, 0);
+        ee.w32(0x1db11e4, PKT);
+        for k in 0..256u32 {
+            ee.w32(0x1dbec98 + 16 * k, SPLICE);
+        }
+        ee.call(0x21a660, &[SHAPE_FRAME as u64, SHAPE_REC as u64, 0x1000], &[], STACK).unwrap_or_else(|f| panic!("FUN_0021a660: {f:?}"));
+        // The port's quads.
+        let mut draws = Vec::new();
+        let (mut rng, mut spawns) = (0u32, Vec::new());
+        let env = Env::default();
+        let dpd = dpd_with(&raw);
+        {
+            let mut ctx = Ctx { env: &env, dpd: &dpd, dpd_index: 0, draws: &mut draws, rng: &mut rng, running: true, fast_forward: false, obj_id: 0, prog_index: 0, parent_local: None, spawns: &mut spawns };
+            crate::progx::draw_frame(&mut ctx, frame, Mat4::IDENTITY, Vec4::ONE);
+        }
+        let quads: Vec<(u64, [[f32; 2]; 4])> = draws.iter().flat_map(|b| b.verts.chunks(4).map(move |v| (b.tex0.unwrap(), [v[0].uv, v[1].uv, v[2].uv, v[3].uv]))).collect();
+        assert_eq!(quads.len(), sprites.len(), "quad {quad}: the port draws every sprite");
+        let size = if quad { 0xe0 } else { 0x70 };
+        let mut at = PKT + 0x50;
+        for (i, (s, (tex0, uv))) in frame.sprites.iter().zip(&quads).enumerate() {
+            let tex = ee.r64(at);
+            assert_eq!(tex, s.tex0(frame.tex0), "quad {quad} sprite {i}: TEX0 (palette offset {})", s.clut_add);
+            assert_eq!(*tex0, tex, "quad {quad} sprite {i}: the port's batch texture");
+            assert_eq!(ee.r64(at + 0x10) & 0xff, s.alpha as u64, "quad {quad} sprite {i}: ALPHA");
+            // ST of the vertices the game writes, against the port's corners (TL, TR, BL, BR).
+            let st = |ee: &mut Ee, o: u32| [ee.f32_at(at + o), ee.f32_at(at + o + 4)];
+            let game: Vec<([f32; 2], [f32; 2])> = if quad {
+                [0x20, 0x50, 0x80, 0xb0].iter().zip(uv).map(|(&o, p)| (st(&mut ee, o), *p)).collect()
+            } else {
+                vec![(st(&mut ee, 0x20), uv[0]), (st(&mut ee, 0x50), uv[3])]
+            };
+            for (k, (g, p)) in game.iter().enumerate() {
+                assert!((g[0] - p[0]).abs() < 1e-6 && (g[1] - p[1]).abs() < 1e-6, "quad {quad} sprite {i} vertex {k}: game ST {g:?} port {p:?}");
+            }
+            eprintln!("quad {quad} sprite {i}: game ST {:?}, TEX0 {tex:#x}", game.iter().map(|x| x.0).collect::<Vec<_>>());
+            checked += 1;
+            at += size;
+        }
+    }
+    assert_eq!(checked, 6);
+}

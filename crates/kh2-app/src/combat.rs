@@ -198,12 +198,21 @@ pub fn overlap(x: &Volume, y: &Volume) -> bool {
 
 /// Live attack volumes of one body: (atkp id, trigger start, volume).
 pub fn live_attacks(anim: &Animator, body: &GlobalTransform) -> Vec<(i16, i16, Volume)> {
+    live_attack_shapes(anim, body).into_iter().map(|(atkp, start, vol, _)| (atkp, start, vol)).collect()
+}
+
+/// `live_attacks` with each volume's centre as the hit code keeps it: the attack entry's volume
+/// record has the hurt records' layout (FUN_00189208 dispatches both on the kind word at +0), and
+/// FUN_0018ce18 reads its centre at +0x10, which FUN_001894d0 fills as the bone matrix times the
+/// shape offset, raised by the shape's lift. That the attack records are filled the same way is
+/// [inferred] (their writer was not traced).
+fn live_attack_shapes(anim: &Animator, body: &GlobalTransform) -> Vec<(i16, i16, Volume, Vec3)> {
     let Some(tr) = anim.triggers() else { return Vec::new() };
     let mut out = Vec::new();
     for r in tr.active(anim.gframe()).filter(|r| r.id == range::ATTACK || r.id == range::ATTACK_COMBO) {
         let (Some(&atkp), Some(&group)) = (r.params.first(), r.params.get(1)) else { continue };
         for s in anim.rig.model.shapes.iter().filter(|s| s.kind == kind::ATTACK && s.group as i16 == group) {
-            out.push((atkp, r.start, shape_volume(s, anim, body)));
+            out.push((atkp, r.start, shape_volume(s, anim, body), hurt_spheroid(s, anim, body).center));
         }
     }
     out
@@ -282,7 +291,7 @@ pub fn detect_hits(
         let hurt_body = f.hurt_body;
         for &body in &f.attack_bodies.clone() {
             let Ok((anim, bg)) = bodies.get(body) else { continue };
-            for (atkp, start, vol) in live_attacks(anim, bg) {
+            for (atkp, start, vol, centre) in live_attack_shapes(anim, bg) {
                 // Targets first: the game sweeps a volume against hurt volumes and only then
                 // against terrain, and a volume that has hit something skips the terrain test.
                 for (te, team, hurts, tpos) in &defenders {
@@ -299,7 +308,7 @@ pub fn detect_hits(
                     if let Some((_, sph)) = hurts.iter().find(|(h, _)| overlap(&vol, h)) {
                         f.landed.insert(key);
                         let dir = (*tpos - g.translation()).with_y(0.0).normalize_or(Vec3::Z);
-                        hits.write(Hit { attacker: e, target: *te, atkp, dir, point: victim_point(sph, vol.a) });
+                        hits.write(Hit { attacker: e, target: *te, atkp, dir, point: victim_point(sph, centre) });
                     }
                 }
                 if let (Some(world), Team::Player) = (world.as_ref(), f.team) {
@@ -378,6 +387,23 @@ mod tests {
         let flat = HurtSpheroid { half_height: 0.0, ..h };
         let p = victim_point(&flat, Vec3::new(1.0, 5.0, 0.0));
         assert!((p - Vec3::new(1.0, 2.0, 2.5)).length() < 1e-5, "{p:?}");
+    }
+
+    #[test]
+    fn victim_point_matches_fun_0018ce18_worked_by_hand() {
+        // C = (0, 1, 0), r = 0.3, h = 0.6; attacker centre A = (0.8, 1.3, -0.6).
+        // d = A - C = (0.8, 0.3, -0.6); dy = clamp(0.3, -0.6, 0.6) = 0.3; t = |0.3 / 0.6| = 0.5;
+        // r * sqrt(1 - t^2) = 0.3 * 0.8660254 = 0.2598076; normalise(0.8, 0, -0.6) = (0.8, 0, -0.6);
+        // point = C + (0.8 * 0.2598076, 0.3, -0.6 * 0.2598076) = (0.2078461, 1.3, -0.1558846).
+        let h = HurtSpheroid { center: Vec3::new(0.0, 1.0, 0.0), radius: 0.3, half_height: 0.6 };
+        let p = victim_point(&h, Vec3::new(0.8, 1.3, -0.6));
+        assert!((p - Vec3::new(0.207_846_1, 1.3, -0.155_884_6)).length() < 1e-6, "{p:?}");
+        // A far below: d = (-2, -6, 0); dy clamps to -0.6, t = 1, no horizontal part: (0, 0.4, 0).
+        let p = victim_point(&h, Vec3::new(-2.0, -5.0, 0.0));
+        assert!((p - Vec3::new(0.0, 0.4, 0.0)).length() < 1e-6, "{p:?}");
+        // A level, straight along -x at any distance: the equator, one radius out: (-0.3, 1, 0).
+        let p = victim_point(&h, Vec3::new(-7.0, 1.0, 0.0));
+        assert!((p - Vec3::new(-0.3, 1.0, 0.0)).length() < 1e-6, "{p:?}");
     }
 }
 

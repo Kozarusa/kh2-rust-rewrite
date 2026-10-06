@@ -374,6 +374,94 @@ the alternate GIF tag", +2 = sprite count). What the bits do, from the code:
   window and the near test); sprites outside are skipped. Whether `pppDrawShapeX` (the app's port) clips was not checked; the GPU clips the rest, so the visible
   difference is limited to sprites that straddle the near plane or the 4096 window (**inferred**).
 
+## Sprite texture coordinates, palettes and the weapon trail (WP-FIX-9, verified)
+
+The user saw hit sparks, spell sparks and ability particles as plain triangles and flat quads, and the sword
+trail as a choppy stripe. Two port errors caused it; both rules below are checked against the game's own code
+in `kh2-ee` (`crates/kh2-fx/src/oracle_tests.rs`).
+
+### Sprites (FUN_0021a660, the shape draw behind pppDrawShapeX, the tails and MegaBirth)
+
+* **Texture coordinates are fractions of the texture in 4.12 fixed point.** For every sprite the routine loads
+  the four 16-bit values after the corners (s, t, width, height), converts them with `vitof12` (divide by
+  4096) and writes them as the ST register of the GS packet; the packet's GIF tag sets PRIM 0x56 (sprite) or
+  0x54 (strip, for frames with flag 8) with FST clear, so the GS reads ST as normalised coordinates. The
+  sprite's ST are (s, t) and (s + width, t + height); a free quad gets all four corners. The value therefore
+  does not depend on the texture's size. The port divided raw / 16 by the texture's width and height, which
+  is the same only for a 256-texel side: on the 256 x 512 common page (`effect/texcommon.dpd`, where most hit
+  and spell sprites live) every sprite showed the top half of its 32 x 32 cell (the glow ball as a half disc,
+  the star as a "Y"), and on 128 x 64 pages (PRIZE, the Thunder arcs) a quarter cell or a neighbouring
+  texture's palette area. Data check: the hit-spark glow sprite of `W_EX010` has corners 31 x 30 units and
+  the raw rectangle (528, 16, 480, 464): / 4096 on 256 x 512 that is a 30 x 29 texel square cell, the old
+  reading a 30 x 14.5 strip. `Sprite::st` holds the game's reading; `Sprite::uv` keeps the old unit (raw / 16)
+  for its readers.
+* **Per-sprite palette.** Byte 7 of a sprite's 8-byte color record is shifted to bit 37 and added (`paddw`) to
+  the frame's TEX0 before it is written, so it moves CBP by that many blocks (`Sprite::tex0`). Bytes 0-3 are
+  the color (times the caller's color / 128), byte 4 the ALPHA register value, byte 5 its FIX (unchanged).
+* Test `shape_draw_texture_coordinates_match_the_game` runs FUN_0021a660 on a sprite frame and a free-quad
+  frame (three sprites each, one with palette offset 3) over a 256 x 512 TEX0 and compares the ST floats and
+  the TEX0 words it writes with the port's quads. The interpreter lacks PEXTLB / PEXTLH; a probe in the test
+  does them (R5900 manual semantics).
+* Not changed (difference noted): a sprite without flag 8 is a GS SPRITE between its two projected corners,
+  axis-aligned on the screen; the port draws the four corners through the full matrix, so a sprite drawn with
+  a rotation (MegaBirth particles with an angle) turns in the port and does not in the game [inferred from the
+  PRIM value and the two XYZ2 writes; not compared in the oracle].
+
+### The weapon trail (pppRyjDrawShipolyBone: frame 0x200a18 empty, draw 0x200d58, init 0x200fd8)
+
+The draw calls FUN_00200a20 first (before its own alpha test). That routine allocates the ring on first use
+(entry byte +0xe samples of the two points at `*0x3625a0`, both filled with the current pair), then **every
+tick** rewrites the model's primitives in place: the r, g, b bytes of all four vertex colors to 0xff and the
+quad indices to 2i..2i+3; the alpha bytes and the texture coordinates are not touched there. When the model has
+2 x primitives + 2 vertices it calls FUN_002002f8, which:
+
+1. stores the current pair at the ring head and builds, for each edge, the ring from newest to oldest minus
+   the current first point (FUN_002fb348);
+2. fits a natural cubic spline through those knots (FUN_00200000: `m[i-1] + 4 m[i] + m[i+1] = d[i] - d[i-1]`,
+   second derivatives over 6, `c[0] = 4`, `c[i] = 4 - 1/c[i-1]`, back substitution) and evaluates it at
+   `i / prims * (ring - 1)` for i = 0..prims (FUN_002001b8, Horner form with the constants 3 and 2 at
+   0x367010; the last knot comes back unchanged); the results are truncated to shorts in the model's vertex
+   buffer, edge e at vertex 2i + e;
+3. on the first pass only (work byte +5, set by init, cleared when the head wraps) counts the stationary tail
+   (trailing samples equal to their neighbour);
+4. when entry byte +0xf is set, narrows the trail: vertex 2i becomes `v[2i] * t + v[2i+1] * (1 - t)`
+   (FUN_002fb308) with t from 1 down by 1 / visible per sample, not below 0;
+5. on the first pass only, writes the alphas (128 down to 0 over the visible primitives, start and end
+   alpha per quad, 0 past the visible part; 128 is the float at 0x37e334) and, for type-6 primitives, the
+   texture coordinates (u stepped across the visible part, v from 0x10 to the division's end - 0x10;
+   FUN_00200238 reads the divisions +0x10..+0x12);
+6. advances the head unless entry byte +0xd is set or the effect is paused.
+
+Because the alphas and texture coordinates are written into the model and left there, after the ring has
+filled once they keep the last first-pass values. The port rebuilt every primitive from the file each tick
+with all four color bytes 0xff, so from the ninth tick of a swing (the keyblade trail `W_EX010` element 10 has a
+ring of 8 and 64 primitives) the trail lost its fade and showed the file's texture coordinates (a sliver at
+u = 0.98): the hard, choppy stripe. The port now keeps the first-pass values per object (`Obj::trail_prims`),
+narrows on +0xf, and solves and evaluates the spline in the game's order of operations (a different but
+equivalent formula rounded differently, which moved truncated vertices by one unit and with them the
+stationary-tail count). Tests `trail_matches_the_game` and `trail_narrowing_matches_the_game` run FUN_00200a20
+in `kh2-ee` for three ring lengths with the points held still for three ticks, then swinging, and compare
+every vertex, alpha byte and texture coordinate.
+
+### Decompile index (WP-FIX-9)
+
+| address | what |
+|---|---|
+| 0x362b10 + 4 + 0x48 * kind | program table entry: name, frame, draw, init, reset/destroy handlers |
+| 0x1fbcc0 / 0x1fbdb0 | pppDrawShapeX frame (animation step) / draw (record: flags, color, matrix; calls 0x21a660) |
+| 0x21a660 | shape draw: clip, ST = raw / 4096, TEX0 + (color byte 7 << 37), ALPHA = color byte 4, packet tags |
+| 0x200a18 / 0x200d58 / 0x200fd8 | trail frame (empty) / draw / init |
+| 0x200a20 | trail ring allocation, per-tick model reset (rgb 0xff, indices) |
+| 0x2002f8 | trail geometry, narrowing, first-pass alphas and UVs, head |
+| 0x200000 / 0x2001b8 | spline solve / evaluate |
+| 0x200238 | trail texture divisions |
+| 0x2fb308 / 0x2fb348 | lerp `a t + b (1 - t)` / vector subtract |
+| 0x3678a0..0x3678c0, 0x37e330, 0x37e334, 0x367000..0x36701c | clip window, 1.0, 128.0, spline constants (4, -1, 3, 2) |
+
+Gaps: the model draw FUN_0020c7f8 (and its four packet builders 0x2114c0, 0x213540, 0x20c950, 0x20f950) was
+not read; how it combines the 0xff vertex colors with the trail's material color is the port's earlier
+reading (vertex color / 128 times material). The GS SPRITE screen alignment above is not ported.
+
 ## What is not done
 
 * Hit-point accuracy: the rule is above; `combat.rs` needs the edit (not made, not in this package's ownership).

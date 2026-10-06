@@ -333,7 +333,7 @@ fn tail3_check(world: bool, count: u8, spacing: f32, rotate: u16) {
         fresh: false,
         restart: false,
         parent: None,
-        ring: Vec::new(),
+        ring: Vec::new(), trail_prims: Vec::new(),
         heap: Vec::new(),
         seed: 0,
     };
@@ -459,7 +459,7 @@ fn mv_yp_eff_matches_the_game() {
     // The axes and the zero cases.
     cases.extend([Vec3::X, -Vec3::X, Vec3::Y, -Vec3::Y, Vec3::Z, -Vec3::Z, Vec3::ZERO, Vec3::new(0.0, 0.0, 3.0), Vec3::new(2.0, 0.0, 0.0), Vec3::new(0.0, 5.0, 1.0)]);
     for v in cases {
-        let mut obj = Obj { group: 0, mem: vec![0; OBJ_SIZE], cursors: vec![0], fresh: false, restart: false, parent: None, ring: Vec::new(), heap: Vec::new(), seed: 0 };
+        let mut obj = Obj { group: 0, mem: vec![0; OBJ_SIZE], cursors: vec![0], fresh: false, restart: false, parent: None, ring: Vec::new(), trail_prims: Vec::new(), heap: Vec::new(), seed: 0 };
         let (w0, w1) = (OBJ_WORK + 0x40, OBJ_WORK + 0x60);
         obj.set_vec3(w1, v);
         // Angles start at a marker so "not touched" shows.
@@ -525,7 +525,7 @@ fn sno_amplitude_matches_the_game() {
     let mut raw = raw_model(2, &[[50, 0, 0], [0, 50, 0], [0, 0, 50]], &[[4096, 0, 0], [0, 4096, 0], [0, 0, 4096]], &[[0, 1, 2]]);
     raw[0..2].copy_from_slice(&3i16.to_le_bytes());
     let dpd = Dpd { particles: vec![], textures: vec![], shapes: vec![], models: vec![crate::omd::Model::parse(&raw)], vsfs: vec![] };
-    let mut obj = Obj { group: 0, mem: vec![0; OBJ_SIZE], cursors: vec![0], fresh: false, restart: false, parent: None, ring: Vec::new(), heap: Vec::new(), seed: 0 };
+    let mut obj = Obj { group: 0, mem: vec![0; OBJ_SIZE], cursors: vec![0], fresh: false, restart: false, parent: None, ring: Vec::new(), trail_prims: Vec::new(), heap: Vec::new(), seed: 0 };
     let (w0, w1, w2) = (OBJ_WORK + 0x40, OBJ_WORK + 0x60, OBJ_WORK + 0x80);
     obj.mem[w1 + 8..w1 + 12].copy_from_slice(&[128, 128, 128, 90]);
     obj.set_mat(w2, Mat4::from_translation(Vec3::new(1.0, 2.0, 300.0)));
@@ -947,7 +947,7 @@ fn sno_entries_and_element_flags_on_the_disc() {
 }
 
 fn sno_obj(amp: f32, m_cam: &Mat4) -> Obj {
-    let mut obj = Obj { group: 0, mem: vec![0; OBJ_SIZE], cursors: vec![0], fresh: false, restart: false, parent: None, ring: Vec::new(), heap: Vec::new(), seed: 0 };
+    let mut obj = Obj { group: 0, mem: vec![0; OBJ_SIZE], cursors: vec![0], fresh: false, restart: false, parent: None, ring: Vec::new(), trail_prims: Vec::new(), heap: Vec::new(), seed: 0 };
     let (w0, w1, w2) = (OBJ_WORK + 0x40, OBJ_WORK + 0x60, OBJ_WORK + 0x80);
     obj.mem[w1 + 8..w1 + 12].copy_from_slice(&[128, 128, 128, 128]);
     obj.set_f32(w0, amp);
@@ -955,4 +955,298 @@ fn sno_obj(amp: f32, m_cam: &Mat4) -> Obj {
     obj.set_i32(OBJ_FRAME, 0x1000);
     obj.set_mat(w2, *m_cam);
     obj
+}
+
+// ---- shape draw: texture coordinates and palette offset (FUN_0021a660) ----------------------------
+
+const PKT: u32 = 0x01e0_0000;
+const SHAPE_REC: u32 = 0x01f0_4000;
+const SHAPE_MAT: u32 = 0x01f0_4100;
+const SHAPE_FRAME: u32 = 0x01f0_5000;
+const SPLICE: u32 = 0x01f0_6000;
+
+thread_local! {
+    /// The original words of the MMI instructions [`install_pext`] stands in for, by address.
+    static PEXT: RefCell<std::collections::HashMap<u32, u32>> = RefCell::new(std::collections::HashMap::new());
+}
+
+/// Probe: PEXTLB (MMI0 sa 26) or PEXTLH (sa 22), which the interpreter lacks, done here; the word
+/// in memory was replaced by a nop so the interpreter steps over it. PEXTLB interleaves the low 8
+/// bytes of rt (even) and rs (odd), PEXTLH the low 4 halfwords (R5900 manual).
+fn pext(ee: &mut Ee) {
+    let Some(w) = PEXT.with(|m| m.borrow().get(&ee.pc).copied()) else { return };
+    let (rs, rt, rd, sa) = (((w >> 21) & 31) as usize, ((w >> 16) & 31) as usize, ((w >> 11) & 31) as usize, (w >> 6) & 31);
+    let (a, b) = (ee.gpr[rs].to_le_bytes(), ee.gpr[rt].to_le_bytes());
+    let mut out = [0u8; 16];
+    if sa == 26 {
+        for i in 0..8 {
+            out[2 * i] = b[i];
+            out[2 * i + 1] = a[i];
+        }
+    } else {
+        for i in 0..4 {
+            out[4 * i..4 * i + 2].copy_from_slice(&b[2 * i..2 * i + 2]);
+            out[4 * i + 2..4 * i + 4].copy_from_slice(&a[2 * i..2 * i + 2]);
+        }
+    }
+    if rd != 0 {
+        ee.gpr[rd] = u128::from_le_bytes(out);
+    }
+}
+
+/// Puts [`pext`] on every PEXTLB / PEXTLH in `[lo, hi)`.
+fn install_pext(ee: &mut Ee, lo: u32, hi: u32) -> usize {
+    let mut n = 0;
+    for pc in (lo..hi).step_by(4) {
+        let w = ee.r32(pc);
+        if w >> 26 == 0x1c && w & 63 == 8 && matches!((w >> 6) & 31, 22 | 26) {
+            PEXT.with(|m| m.borrow_mut().insert(pc, w));
+            ee.w32(pc, 0);
+            ee.probes.insert(pc, pext);
+            n += 1;
+        }
+    }
+    n
+}
+
+/// A raw DPD shape of one frame: `quad` selects the free-quad sprite layout (frame flag 8). Each
+/// sprite is (corners or rectangle in 12.4, texture rectangle in 4.12, color record).
+fn raw_one_frame_shape(quad: bool, sprites: &[([i16; 8], [i16; 4], [u8; 8])]) -> Vec<u8> {
+    let mut b = vec![0u8; 0x400];
+    let a = 0x10;
+    b[a + 4..a + 6].copy_from_slice(&1i16.to_le_bytes());
+    b[a + 6..a + 8].copy_from_slice(&1i16.to_le_bytes());
+    let v = 0x40;
+    b[a + 0x10..a + 0x12].copy_from_slice(&((v - a) as i16).to_le_bytes());
+    b[a + 0x12..a + 0x14].copy_from_slice(&1i16.to_le_bytes());
+    b[v..v + 2].copy_from_slice(&(if quad { 8u16 } else { 0 }).to_le_bytes());
+    b[v + 2..v + 4].copy_from_slice(&(sprites.len() as u16).to_le_bytes());
+    let size = if quad { 24 } else { 16 };
+    let colors = 0x20 + sprites.len() * size;
+    b[v + 4..v + 8].copy_from_slice(&(colors as u32).to_le_bytes());
+    // TEX0: TBP 0x2a00, TBW 4, PSMT8, 256 x 512, TCC, CBP 0x2e34, CLD 2.
+    b[v + 0x10..v + 0x18].copy_from_slice(&0x4005_c686_6131_2a00u64.to_le_bytes());
+    for (i, (pos, st, col)) in sprites.iter().enumerate() {
+        let s = v + 0x20 + i * size;
+        let n = if quad { 8 } else { 4 };
+        for k in 0..n {
+            b[s + 2 * k..s + 2 * k + 2].copy_from_slice(&pos[k].to_le_bytes());
+        }
+        for k in 0..4 {
+            b[s + 2 * (n + k)..s + 2 * (n + k) + 2].copy_from_slice(&st[k].to_le_bytes());
+        }
+        b[v + colors + 8 * i..v + colors + 8 * i + 8].copy_from_slice(col);
+    }
+    b
+}
+
+/// FUN_0021a660, the shape draw behind every sprite program, run in the interpreter on sprite and
+/// free-quad frames: the texture coordinates it writes into the GS packet (ST, normalised floats,
+/// PRIM 0x56 / 0x54 with FST clear) are the sprite's raw values / 4096, the same as the port's
+/// `Sprite::st`, for every texture size; the TEX0 it writes per sprite is the frame's with the
+/// color record's byte 7 added to CBP, as `Sprite::tex0`. The port draws the same rectangles.
+#[test]
+fn shape_draw_texture_coordinates_match_the_game() {
+    let Some(elf) = exe() else { return };
+    let mut checked = 0;
+    for quad in [false, true] {
+        let mut ee = Ee::new();
+        ee.load_elf(&elf).expect("elf");
+        install_vu_flags(&mut ee, 0x21a660, 0x21b800);
+        install_pext(&mut ee, 0x21a660, 0x21b800);
+        let sprites: Vec<([i16; 8], [i16; 4], [u8; 8])> = vec![
+            ([-0x100, -0xf0, 0xf0, 0x110, -0x80, 0x120, 0x60, 0x90], [528, 16, 480, 464], [0x80, 0x40, 0x20, 0x80, 0x48, 0, 0, 0]),
+            ([-0x40, -0x40, 0x40, 0x40, -0x30, 0x50, 0x48, 0x38], [3 * 64, 2 * 64, 26 * 64, 26 * 64], [0x60, 0x70, 0x80, 0x40, 0x44, 0, 0, 3]),
+            ([0, -0x200, 0x200, 0, -0x200, 0, 0x10, 0x200], [4000, 64, 90, 4000], [0x10, 0x20, 0x30, 0x80, 0x42, 0x20, 0, 1]),
+        ];
+        let raw = raw_one_frame_shape(quad, &sprites);
+        let shape = Shape::parse(&raw);
+        let frame = &shape.frames[0];
+        ee.write(SHAPE_FRAME, &raw[0x40..]);
+        // The record: flags 0x80 (draw into the caller's packet memory at +0x14), color 0x80s, the
+        // matrix (an identity with the screen centre and the GS z as the translation).
+        ee.write(SHAPE_REC, &[0; 0x40]);
+        ee.write(SHAPE_REC + 2, &0x80u16.to_le_bytes());
+        ee.write(SHAPE_REC + 4, &[0x80, 0x80, 0x80, 0x80]);
+        ee.w32(SHAPE_REC + 0x10, SHAPE_MAT);
+        ee.w32(SHAPE_REC + 0x14, PKT);
+        let m = Mat4::from_cols(Vec4::X, Vec4::Y, Vec4::Z, Vec4::new(2048.0, 2048.0, 4_194_304.0, 1.0));
+        write_mat(&mut ee, SHAPE_MAT, &m);
+        ee.w32(0x360b58, 0);
+        ee.w32(0x1db11f0, 0x7fff_ffff);
+        ee.w32(0x1db11e8, 0);
+        ee.w32(0x1db11e4, PKT);
+        for k in 0..256u32 {
+            ee.w32(0x1dbec98 + 16 * k, SPLICE);
+        }
+        ee.call(0x21a660, &[SHAPE_FRAME as u64, SHAPE_REC as u64, 0x1000], &[], STACK).unwrap_or_else(|f| panic!("FUN_0021a660: {f:?}"));
+        // The port's quads.
+        let mut draws = Vec::new();
+        let (mut rng, mut spawns) = (0u32, Vec::new());
+        let env = Env::default();
+        let dpd = dpd_with(&raw);
+        {
+            let mut ctx = Ctx { env: &env, dpd: &dpd, dpd_index: 0, draws: &mut draws, rng: &mut rng, running: true, fast_forward: false, obj_id: 0, prog_index: 0, parent_local: None, spawns: &mut spawns };
+            crate::progx::draw_frame(&mut ctx, frame, Mat4::IDENTITY, Vec4::ONE);
+        }
+        let quads: Vec<(u64, [[f32; 2]; 4])> = draws.iter().flat_map(|b| b.verts.chunks(4).map(move |v| (b.tex0.unwrap(), [v[0].uv, v[1].uv, v[2].uv, v[3].uv]))).collect();
+        assert_eq!(quads.len(), sprites.len(), "quad {quad}: the port draws every sprite");
+        let size = if quad { 0xe0 } else { 0x70 };
+        let mut at = PKT + 0x50;
+        for (i, (s, (tex0, uv))) in frame.sprites.iter().zip(&quads).enumerate() {
+            let tex = ee.r64(at);
+            assert_eq!(tex, s.tex0(frame.tex0), "quad {quad} sprite {i}: TEX0 (palette offset {})", s.clut_add);
+            assert_eq!(*tex0, tex, "quad {quad} sprite {i}: the port's batch texture");
+            assert_eq!(ee.r64(at + 0x10) & 0xff, s.alpha as u64, "quad {quad} sprite {i}: ALPHA");
+            // ST of the vertices the game writes, against the port's corners (TL, TR, BL, BR).
+            let st = |ee: &mut Ee, o: u32| [ee.f32_at(at + o), ee.f32_at(at + o + 4)];
+            let game: Vec<([f32; 2], [f32; 2])> = if quad {
+                [0x20, 0x50, 0x80, 0xb0].iter().zip(uv).map(|(&o, p)| (st(&mut ee, o), *p)).collect()
+            } else {
+                vec![(st(&mut ee, 0x20), uv[0]), (st(&mut ee, 0x50), uv[3])]
+            };
+            for (k, (g, p)) in game.iter().enumerate() {
+                assert!((g[0] - p[0]).abs() < 1e-6 && (g[1] - p[1]).abs() < 1e-6, "quad {quad} sprite {i} vertex {k}: game ST {g:?} port {p:?}");
+            }
+            eprintln!("quad {quad} sprite {i}: game ST {:?}, TEX0 {tex:#x}", game.iter().map(|x| x.0).collect::<Vec<_>>());
+            checked += 1;
+            at += size;
+        }
+    }
+    assert_eq!(checked, 6);
+}
+// ---- weapon trail (pppRyjDrawShipolyBone: FUN_00200a20 -> FUN_002002f8) -----------------------------
+
+const TRAIL_MODTAB: u32 = 0x01f0_7000;
+const TRAIL_OMD: u32 = 0x01f0_7100;
+const TRAIL_VBUF: u32 = 0x01f0_9000;
+const TRAIL_POINTS: u32 = 0x01f0_9800;
+const TRAIL_RING: u32 = 0x01f0_a000;
+
+fn hook_trail_ring(ee: &mut Ee) {
+    ee.gpr[reg::V0] = TRAIL_RING as u128;
+}
+
+/// A raw DPD model (0x10 header, then the OMD) of `segs` type-6 quads, as the trail uses it.
+fn raw_trail_model(segs: usize) -> Vec<u8> {
+    let mut b = vec![0u8; 0x40 + 0x28 * segs + 0x20];
+    let omd = 0x10;
+    b[omd + 4..omd + 8].copy_from_slice(&0x20u32.to_le_bytes());
+    b[omd + 0x10..omd + 0x12].copy_from_slice(&(segs as i16).to_le_bytes());
+    b[omd + 0x12..omd + 0x14].copy_from_slice(&((2 * segs + 2) as i16).to_le_bytes());
+    b[omd + 0x16] = 0x48;
+    let blk = omd + 0x20;
+    b[blk + 1] = 6;
+    b[blk + 2..blk + 4].copy_from_slice(&(segs as i16).to_le_bytes());
+    for i in 0..segs {
+        let q = blk + 0x10 + 0x28 * i;
+        // File values that the game overwrites (colors 0x40, uvs 0x123).
+        for k in 0..16 {
+            b[q + k] = 0x40;
+        }
+        for k in 0..8 {
+            b[q + 0x18 + 2 * k..q + 0x1a + 2 * k].copy_from_slice(&0x123u16.to_le_bytes());
+        }
+    }
+    b[blk + 0x10 + 0x28 * segs + 1] = 0xff;
+    b
+}
+
+/// The weapon trail against the game's FUN_00200a20 (called at the start of the draw handler
+/// 0x200d58), which allocates and fills the ring, resets the model's colors and indices and runs
+/// FUN_002002f8: the spline through the ring, the narrowing (entry +0xf), the stationary tail count,
+/// the alphas and texture coordinates of the first pass, and the ring head. Over more ticks than the
+/// ring holds, so the values kept after the first pass are compared too; the first ticks hold the
+/// points still. Every vertex, alpha byte and texture coordinate is compared.
+fn trail_check(n: u8, segs: usize, taper: u8, divs: [u8; 3]) {
+    let Some(elf) = exe() else { return };
+    let mut ee = Ee::new();
+    ee.load_elf(&elf).expect("elf");
+    let raw = raw_trail_model(segs);
+    let dpd = Dpd { particles: vec![], textures: vec![], shapes: vec![], models: vec![crate::omd::Model::parse(&raw)], vsfs: vec![] };
+    ee.w32(0x1db0e20, ZERO);
+    ee.w32(0x1db0e24, RES);
+    ee.w32(0x1db11dc, 0);
+    ee.w32(RES + 0x10, TRAIL_MODTAB);
+    ee.write(TRAIL_MODTAB, &[0; 0x24]);
+    ee.w32(TRAIL_MODTAB, (2 * segs + 2) as u32);
+    ee.w32(TRAIL_MODTAB + 8, segs as u32);
+    ee.w32(TRAIL_MODTAB + 0x14, TRAIL_VBUF);
+    ee.w32(TRAIL_MODTAB + 0x1c, TRAIL_OMD);
+    ee.write(TRAIL_OMD, &raw[0x10..]);
+    ee.w32(0x3625a0, TRAIL_POINTS);
+    ee.w32(0x3625a4, 1);
+    ee.hooks.insert(0x1e4cb0, hook_trail_ring);
+    let mut params = vec![0u8; 0x18];
+    params[0xd] = 0;
+    params[0xe] = n;
+    params[0xf] = taper;
+    params[0x10..0x13].copy_from_slice(&divs);
+    params[0x14..0x18].copy_from_slice(&0xffff_f000u32.to_le_bytes());
+    let p = Program { kind: 200, param_size: 0x14, params, use_val: vec![0x20, 0x40] };
+    put_program(&mut ee, &p);
+    let mut obj = Obj { group: 0, mem: vec![0; OBJ_SIZE], cursors: vec![0], fresh: false, restart: false, parent: None, ring: Vec::new(), trail_prims: Vec::new(), heap: Vec::new(), seed: 0 };
+    let c = OBJ_WORK + 0x20 + 8;
+    obj.mem[c..c + 4].copy_from_slice(&[0x80; 4]);
+    crate::prog::trail_init(&mut obj, &p);
+    sync_obj(&mut ee, &obj);
+    ee.call(0x200fd8, &[OBJ as u64, PROG as u64], &[], STACK).unwrap_or_else(|f| panic!("init: {f:?}"));
+    let mut rng = 0u32;
+    let mut compared = 0;
+    for tick in 0..(3 * n as usize + 4) {
+        // Held still for three ticks, then a swing: the base turns slowly, the tip sweeps an arc.
+        let t = tick.saturating_sub(3) as f32;
+        let a = Vec3::new(10.0 + t * 1.5, -100.0 + (t * 0.3).sin() * 8.0, 20.0 - t);
+        let b = a + Vec3::new((t * 0.45).cos() * 90.0, -60.0 + (t * 0.45).sin() * 70.0, (t * 0.2).sin() * 30.0);
+        for (k, v) in [a, b].iter().enumerate() {
+            let at = TRAIL_POINTS + 16 * k as u32;
+            ee.wf32(at, v.x);
+            ee.wf32(at + 4, v.y);
+            ee.wf32(at + 8, v.z);
+            ee.wf32(at + 12, 1.0);
+        }
+        ee.call(0x200a20, &[OBJ as u64, ENTRY as u64, PROG as u64], &[], STACK).unwrap_or_else(|f| panic!("tick {tick}: FUN_00200a20: {f:?}"));
+        let env = Env { two_point: Some([a, b]), ..Default::default() };
+        let (mut draws, mut spawns) = (Vec::new(), Vec::new());
+        {
+            let mut ctx = Ctx { env: &env, dpd: &dpd, dpd_index: 0, draws: &mut draws, rng: &mut rng, running: true, fast_forward: false, obj_id: 0, prog_index: 0, parent_local: None, spawns: &mut spawns };
+            crate::prog::trail_draw(&mut ctx, &mut obj, &p, 0);
+        }
+        let w1 = OBJ_WORK + 0x40;
+        assert_eq!(ee.r32(OBJ + w1 as u32), obj.i32(w1) as u32, "tick {tick}: ring head");
+        assert_eq!(ee.r8(OBJ + w1 as u32 + 5), obj.mem[w1 + 5], "tick {tick}: first-pass flag");
+        assert_eq!(draws.len(), 1, "tick {tick}: one batch");
+        let verts = &draws[0].verts;
+        for i in 0..segs {
+            let q = TRAIL_OMD + 0x20 + 0x10 + 0x28 * i as u32;
+            for k in 0..4 {
+                let v = verts[4 * i + k];
+                // Corner k of quad i is vertex 2i + k.
+                let vi = (2 * i + k) as u32;
+                let g = [ee.r16(TRAIL_VBUF + 6 * vi) as i16, ee.r16(TRAIL_VBUF + 6 * vi + 2) as i16, ee.r16(TRAIL_VBUF + 6 * vi + 4) as i16];
+                let port = v.pos - a;
+                assert!(
+                    (port.x - g[0] as f32).abs() < 0.01 && (port.y - g[1] as f32).abs() < 0.01 && (port.z - g[2] as f32).abs() < 0.01,
+                    "tick {tick} vertex {vi}: game {g:?} port {port:?}"
+                );
+                let alpha = ee.r8(q + 4 * k as u32 + 3);
+                assert_eq!((v.color.w * 128.0).round() as u8, alpha, "tick {tick} prim {i} corner {k}: alpha");
+                assert_eq!(v.color.x * 128.0, 255.0, "tick {tick} prim {i} corner {k}: red");
+                let (gu, gv) = (ee.r16(q + 0x18 + 4 * k as u32), ee.r16(q + 0x1a + 4 * k as u32));
+                assert_eq!(v.uv, [(gu & 0xfff) as f32 / 4096.0, (gv & 0xfff) as f32 / 4096.0], "tick {tick} prim {i} corner {k}: uv");
+                compared += 1;
+            }
+        }
+    }
+    eprintln!("trail (ring {n}, {segs} segments, taper {taper}, divisions {divs:?}): {compared} corners match the game");
+}
+
+#[test]
+fn trail_matches_the_game() {
+    trail_check(8, 16, 0, [0, 0, 0]);
+}
+
+#[test]
+fn trail_narrowing_matches_the_game() {
+    trail_check(6, 10, 1, [1, 2, 1]);
 }

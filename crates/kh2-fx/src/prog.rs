@@ -307,46 +307,61 @@ fn draw_matrix_front(ctx: &mut Ctx, obj: &mut Obj, _: &Program, _: usize) {
 
 /// Trail state in work memory at useVal[1]: ring head (u32 at +0), ring size (u8 at +4),
 /// "first pass" flag (u8 at +5, set until the ring wraps once). The ring itself is in `obj.ring`.
-fn trail_init(obj: &mut Obj, p: &Program) {
+pub(crate) fn trail_init(obj: &mut Obj, p: &Program) {
     let o = work(p, 1);
     obj.set_i32(o, 0);
     obj.set_i32(o + 8, 0);
     obj.mem[o + 4] = 0;
     obj.mem[o + 5] = 1;
     obj.ring.clear();
+    obj.trail_prims.clear();
 }
 
-/// Natural cubic spline second derivatives for unit-spaced knots.
+/// Natural cubic spline through unit-spaced knots, as FUN_00200000 solves it: the second
+/// derivatives over 6 (`m`), from `m[i-1] + 4 m[i] + m[i+1] = d[i] - d[i-1]` with `d[i] = p[i+1] - p[i]`
+/// and `m[0] = m[n-1] = 0`, by forward elimination (`c[0] = 4`, `c[i] = 4 - 1 / c[i-1]`) and back
+/// substitution, in the game's order of operations.
 fn spline(p: &[Vec3]) -> Vec<Vec3> {
     let n = p.len();
     let mut m = vec![Vec3::ZERO; n];
     if n < 3 {
         return m;
     }
-    // Tridiagonal system m[i-1] + 4 m[i] + m[i+1] = 6 (p[i+1] - 2 p[i] + p[i-1]), m[0] = m[n-1] = 0.
+    let d: Vec<Vec3> = (0..n - 1).map(|i| p[i + 1] - p[i]).collect();
     let mut c = vec![0f32; n];
-    let mut d = vec![Vec3::ZERO; n];
-    for i in 1..n - 1 {
-        let rhs = (p[i + 1] - 2.0 * p[i] + p[i - 1]) * 6.0;
-        let denom = 4.0 - c[i - 1];
-        c[i] = 1.0 / denom;
-        d[i] = (rhs - d[i - 1]) / denom;
+    m[1] = d[1] - d[0] - m[0];
+    c[0] = 4.0;
+    for i in 1..n - 2 {
+        let r = 1.0 / c[i - 1];
+        m[i + 1] = (d[i + 1] - d[i]) - m[i] * r;
+        c[i] = 4.0 - r;
     }
+    let last = m[n - 1];
+    m[n - 2] -= last;
     for i in (1..n - 1).rev() {
-        m[i] = d[i] - c[i] * m[i + 1];
+        m[i] = (m[i] - m[i + 1]) / c[i - 1];
     }
     m
 }
 
+/// FUN_002001b8: the spline at `t` (knot `t as usize`, fraction `t - knot`), in the game's
+/// Horner order. At the last knot the fraction is 0 and the knot itself comes back.
 fn spline_at(p: &[Vec3], m: &[Vec3], t: f32) -> Vec3 {
-    let i = (t as usize).min(p.len().saturating_sub(2));
-    let u = t - i as f32;
-    let (a, b) = (p[i], p[i + 1]);
-    let (ma, mb) = (m[i], m[i + 1]);
-    a + u * (b - a - (2.0 * ma + mb) / 6.0) + u * u * (ma / 2.0) + u * u * u * ((mb - ma) / 6.0)
+    let i = t as usize;
+    let f = t - i as f32;
+    if i + 1 >= p.len() {
+        return p[p.len() - 1];
+    }
+    let (p0, p1, m0, m1) = (p[i], p[i + 1], m[i], m[i + 1]);
+    let e = m1 - m0;
+    let s = m0 * 2.0 + m1;
+    let g = (p1 - p0) - s;
+    let h = e * f + m0 * 3.0;
+    let h = h * f + g;
+    h * f + p0
 }
 
-fn trail_draw(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
+pub(crate) fn trail_draw(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
     let Some(points) = ctx.env.two_point else { return };
     let model_no = i32_at(&p.params, e + 4);
     if model_no == 0xffff {
@@ -373,7 +388,11 @@ fn trail_draw(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
             verts[2 * i + edge] = [v.x as i16, v.y as i16, v.z as i16];
         }
     }
-    // Default primitives: white, opaque, quad indices 2i..2i+3.
+    // FUN_00200a20 rewrites the model in place every tick: the color bytes r, g, b of every
+    // primitive to 0xff and the quad indices to 2i..2i+3. The alpha bytes and the texture
+    // coordinates are only written by FUN_002002f8 while the ring fills for the first time and keep
+    // their last values after that (the model is the game's own copy, written in place); the port
+    // keeps them per object in `trail_prims`.
     let mut prims = Vec::new();
     let mut tex0 = 0;
     let mut kind = 6;
@@ -383,22 +402,48 @@ fn trail_draw(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
         for (i, pr) in b.prims.iter().enumerate() {
             let mut q = *pr;
             for c in 0..4 {
-                q.colors[c] = [0xff; 4];
+                q.colors[c] = [0xff, 0xff, 0xff, q.colors[c][3]];
             }
             let s = (2 * i) as u16;
             q.indices = [s, s + 1, s + 2, s + 3];
+            if let Some((alpha, uvs)) = obj.trail_prims.get(prims.len()) {
+                for (col, a) in q.colors.iter_mut().zip(alpha) {
+                    col[3] = *a;
+                }
+                q.uvs = *uvs;
+            }
             prims.push(q);
         }
     }
     let first_pass = obj.mem[st + 5] != 0;
+    // The stationary tail (trailing points equal to their neighbour) is only counted on the first
+    // pass; afterwards the whole trail counts as visible (FUN_002002f8).
+    let mut still = 0usize;
     if first_pass {
-        // Count the stationary tail (trailing points equal to their neighbour).
-        let mut still = 0;
         let mut i = segs;
         while i > 0 && verts[2 * i] == verts[2 * i - 2] {
             still += 1;
             i -= 1;
         }
+    }
+    // Entry byte +0xf: the trail narrows to its second edge toward the end. Vertex 2i of the first
+    // edge becomes `first * t + second * (1 - t)` (FUN_002fb308) with t going from 1 at the newest
+    // sample down by 1 / visible per sample, not below 0.
+    if u8_at(&p.params, e + 0xf) != 0 {
+        let visible = segs as i32 - still as i32;
+        let step = if visible > 0 { 1.0 / visible as f32 } else { 1.0 };
+        let mut t = 1.0f32;
+        for i in 0..=segs {
+            let (a, b) = (verts[2 * i], verts[2 * i + 1]);
+            let f = |k: usize| (a[k] as f32 * t + b[k] as f32 * (1.0 - t)) as i32 as i16;
+            verts[2 * i] = [f(0), f(1), f(2)];
+            t -= step;
+            if t <= 0.0 {
+                t = 0.0;
+            }
+        }
+    }
+    if first_pass {
         let visible = segs as i32 - still as i32;
         let (mut u, u_end, v_top, v_bottom) = uv_range(&p.params[e..]);
         let (du, da) = if visible < 1 { (0, 0.0) } else { ((u_end - u) / visible, 128.0 / visible as f32) };
@@ -426,6 +471,7 @@ fn trail_draw(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
                 u = next.min(u_end);
             }
         }
+        obj.trail_prims = prims.iter().map(|q| ([q.colors[0][3], q.colors[1][3], q.colors[2][3], q.colors[3][3]], q.uvs)).collect();
     }
     if ctx.running && u8_at(&p.params, e + 0xd) == 0 {
         let h = obj.i32(st) + 1;

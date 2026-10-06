@@ -59,6 +59,8 @@ const CENTRE_SHAPE: u8 = 1;
 const TARGET_SHAPE: u8 = 3;
 /// Index of `pppRyjMegaBirthPrize` in the particle program table.
 const PROGRAM: &str = "pppRyjMegaBirthPrize";
+/// The parsed shape UV that stands for a whole texture side (see `build_draws`).
+const UV_UNIT: f32 = 512.0;
 
 // ---------------------------------------------------------------------------------------------------
 // Constants from the executable
@@ -524,7 +526,7 @@ impl Plugin for PrizePlugin {
         app.insert_resource(PrizeLib { consts, sstm, draws: Vec::new() })
             .insert_resource(PrizePax(pax.map(Arc::new)))
             .add_systems(Startup, build_draws)
-            .add_systems(FixedUpdate, (spawn_drops, run_prizes).chain().in_set(Sim::EffectTick))
+            .add_systems(FixedUpdate, (prize_test, spawn_drops, run_prizes).chain().in_set(Sim::EffectTick))
             .add_systems(Update, show_prizes);
     }
 }
@@ -573,7 +575,7 @@ fn build_draws(
         };
         let mut frames = Vec::new();
         for f in &shape.frames {
-            let (tex, size) = textures
+            let (tex, _texels) = textures
                 .entry(f.tex0)
                 .or_insert_with(|| {
                     let (w, h, rgba) = pax.vram[dpd].texture8(f.tex0);
@@ -592,6 +594,10 @@ fn build_draws(
                     (images.add(img), [w as f32, h as f32])
                 })
                 .clone();
+            // The sprite UVs of this file, as parsed, fill their texture only when read as fractions
+            // of 512 on both axes: then every sprite covers one square cell of its 128x64 page,
+            // matching its square quad [inferred from the data; the VU1 code was not read].
+            let size = [UV_UNIT, UV_UNIT];
             let (mut pos, mut uv, mut col, mut idx) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
             for s in &f.sprites {
                 let base = pos.len() as u32;
@@ -703,6 +709,52 @@ fn spawn_drops(
             commands.spawn((PrizeObj { p, shown: None }, Transform::from_translation(at * SCALE), Visibility::Hidden));
         }
         info!("prize: drop of row {} at {:.0?}: {} objects, kinds {:?}", d.row, at, kinds.len(), kinds);
+    }
+}
+
+/// Harness aid, not game behaviour: `KH2_PRIZETEST=<kind>,<kind>,..[@<seconds>]` (default 4 s)
+/// launches those kinds once from `KH2_PRIZETEST_DIST` cm (default 300) in front of Sora, 100 cm up,
+/// with launch values from a fixed generator start, so each kind can be looked at without a fight.
+fn prize_test(
+    mut commands: Commands,
+    lib: Res<PrizeLib>,
+    mut pool: ResMut<PrizePool>,
+    sora: Query<&Transform, With<Sora>>,
+    time: Res<Time>,
+    mut done: Local<bool>,
+) {
+    if *done {
+        return;
+    }
+    let Ok(v) = std::env::var("KH2_PRIZETEST") else {
+        *done = true;
+        return;
+    };
+    let (list, at) = v.split_once('@').map_or((v.as_str(), 4.0), |(l, t)| (l, t.parse().unwrap_or(4.0)));
+    if time.elapsed_secs() < at {
+        return;
+    }
+    *done = true;
+    let Ok(t) = sora.single() else { return };
+    let dist: f32 = std::env::var("KH2_PRIZETEST_DIST").ok().and_then(|d| d.parse().ok()).unwrap_or(300.0);
+    let fwd = (t.rotation * Vec3::Z).with_y(0.0).normalize_or(Vec3::Z);
+    let at = t.translation / SCALE + fwd * dist + Vec3::Y * 100.0;
+    let mut seed = 1u32;
+    for kind in list.split(',').filter_map(|k| k.trim().parse::<u8>().ok()).filter(|&k| (k as usize) < KINDS) {
+        let mut v = [0u32; 3];
+        for x in &mut v {
+            seed = seed.wrapping_mul(0x10dcd);
+            *x = seed;
+        }
+        let mut p = launch(&lib.consts, kind, v, flip(at));
+        // `KH2_PRIZETEST_STILL=1`: no sideways launch, so the prize lands where it starts.
+        if std::env::var("KH2_PRIZETEST_STILL").is_ok_and(|v| v != "0") {
+            p.vel.x = 0.0;
+            p.vel.z = 0.0;
+        }
+        pool.live += 1;
+        commands.spawn((PrizeObj { p, shown: None }, Transform::from_translation(at * SCALE), Visibility::Hidden));
+        info!("prize: test launch of kind {kind} at {at:.0?}");
     }
 }
 
@@ -1153,6 +1205,15 @@ mod tests {
         let params = d.particles.iter().flat_map(|p| p.groups.iter()).flat_map(|g| g.programs.iter()).find(|p| p.kind == program).expect("program in PRIZE").params.clone();
         let looks = kind_looks(&params);
         eprintln!("looks {looks:?}; {} shapes", d.shapes.len());
+        // Every sprite's UV rectangle, read as fractions of UV_UNIT, lies inside its texture page.
+        for s in &d.shapes {
+            for f in &s.frames {
+                for sp in &f.sprites {
+                    let [u, v, w, h] = sp.uv;
+                    assert!(u >= 0.0 && v >= 0.0 && u + w <= UV_UNIT && v + h <= UV_UNIT, "{:?}", sp.uv);
+                }
+            }
+        }
         assert!(looks.len() >= KINDS);
         for (k, l) in looks.iter().take(KINDS).enumerate() {
             assert!((l.shape as usize) < d.shapes.len(), "kind {k}: shape {} of {}", l.shape, d.shapes.len());

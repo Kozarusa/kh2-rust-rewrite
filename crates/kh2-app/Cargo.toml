@@ -21,4 +21,5 @@ kh2-ps2.workspace = true
 kh2-bar.workspace = true
 kh2-bdx.workspace = true
 kh2-image.workspace = true
+kh2-ard = { path = "../kh2-ard" }
 bevy = "0.19"

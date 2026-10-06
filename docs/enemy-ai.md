@@ -1,4 +1,7 @@
-# Enemy AI runtime: Shadow and Soldier under their BDX scripts
+# Enemy AI runtime: Shadow, Soldier and Dusk under their BDX scripts
+
+(WP-6C added the Dusk, `obj/M_EX990.mdlx`; why that enemy, its stats and where it spawns are in `docs/enemies.md`.
+The kinds are `enemy::KINDS`; `load_programs` reads every kind's script.)
 
 Work package 2E. The Heartless of `enemy.rs` used to run a small state machine written for the app. Shadow (`obj/M_EX020.mdlx`) and
 Soldier (`obj/M_EX010.mdlx`) now run the game's own scripts (the BDX entry of each object file, see `docs/bdx.md`) through
@@ -72,7 +75,15 @@ with a default, nothing in the app reads it; Missing = fails visibly. Addresses 
 | 1.87 spawn_attached | Approx | element `id` of the object's effect file, bound to it; id 2 goes through `GameEffect::Death` (the death effect, `fx::EFFECT_DEATH`); the flag and extra arguments are ignored |
 | 0.79 release_effect | Stub | effects run to their end |
 | 2.9 set_obj_param | Impl | the game builds the object's status block from the `enmp` row (FUN_001b2148 -> FUN_0019f8a8); the app built it at spawn, the call checks the row number (Shadow 34, Soldier 33) |
-| 1.110 spawn_kind | Impl | -1: no spawn record |
+| 1.110 spawn_kind | Impl | byte +0x1c of the spawn record (FUN_0016b858): the area group's value for enemies spawned from an area script (`docs/enemies.md`), -1 for the app's own waves |
+| 0.15 progress_flag_test | Stub | a bit of the story progress array at 0x33f6b0 (FUN_001802e0); the app has no story progress, every flag reads clear. The Dusk uses flags 2267, 2256, 2122, 2091 only to pick its drop row |
+| 1.63 motion_near_end | Impl | FUN_0017f400: a motion plays, no blend left (the request's blend, run down per tick) and the controller time has reached the value of the motion's method +0x1c, read as the return frame [inferred: FUN_0017e3b8 wraps a loop to time - end + that value] |
+| 1.69 obj_f_170 | Impl | object +0x170 is the motion controller's (+0x140) time (+0x30): the playing frame, or the first frame of a motion requested this tick |
+| 1.66 set_flag_27 | Stub | bit 27 of +0x108, no consumer |
+| 1.74 mover_reset | Approx | FUN_00171548 ends the mover and installs mover type 0; the app clears the movement and jump speeds |
+| 1.98 ground_position | Impl | the object's position with the floor height under it: a line from 200 above down 100000 (FUN_00183750 with DAT_0037a894, DAT_0037a890); no floor keeps the height |
+| 1.150 spawn_bit_238 | Stub | bit n-1 of the byte at object +0x238 (0x171600); its writer was not found, read as 0 |
+| 1.64 / 1.62 obj_vec_850 / 860 | Approx | written each tick by the movement step FUN_00181e00: the displacement the object asked for and the one it made after collision, times the frame-step factor DAT_00356f48 (1.0 at start, taken as 1). The app gives the tick's horizontal request plus the jump/fall step, or for a grounded object the root's vertical change minus one tick of gravity [inferred: a grounded mover presses down]; the real one is new minus old position. The Dusk's sinking and landing loops end when the real downward movement is under a tenth of the asked one |
 | 1.39 spawn_param | Stub | 99: no spawn record (the area's event data is not read); 99 is the value Shadow tests for the plain behaviour |
 | 1.23 global_byte_33e830 | Approx | 2, the world number of Twilight Town |
 | 1.171, 1.206, 1.34, 1.301 | Stub | global flags and a global byte set by other scripts or the game: false and 0 |
@@ -81,7 +92,8 @@ with a default, nothing in the app reads it; Missing = fails visibly. Addresses 
 | 1.29 play_motion_with, 1.238 obj_word_158, 1.13 queue_motion, 1.89 set_velocity, 1.70 / 1.71 on the player, 1.14 on the player | Approx | the calls of Soldier's reaction thread on the player: handed to the player side as `PlayerReactionCmd` (no consumer yet), the paired motion's length gives the player's `motion_done` |
 | 0.47 alloc / 0.48 free, 2.20 start_request, 1.132 target_release | Impl / Stub | the script heap and the detached request thread are the runtime's own (see `docs/bdx.md`); target records are not pooled |
 | 1.92 ground_marker | Missing | not a marker: FUN_0016b738 finds the ground under the object and FUN_001a3cb0 spawns row `id` of the drop table (orbs, munny). The app has no pickups |
-| 1.62, 1.64, 1.133, 1.134, 1.128 | Missing | in the scripts but not reached in a fight: object vectors at +0x860 and +0x850, two virtual methods of the object, a virtual call on the mover (1.89 on the enemy itself too: the secondary velocity of a scripted object has no consumer). They would be logged when first called |
+| 1.133, 1.134, 1.128 | Missing | in the scripts but not reached in a fight: two virtual methods of the object, a virtual call on the mover (1.89 on the enemy itself too: the secondary velocity of a scripted object has no consumer). They would be logged when first called |
+| 1.90 send_message | Missing | the Dusk sends `dusk_surprise` to all objects from its event 11 handler (reaction commands 24 and 69), which no offer in the app triggers; messages between objects are not wired |
 
 ## Event 11: reaction commands (WP-2C2)
 
@@ -106,7 +118,8 @@ with a default, nothing in the app reads it; Missing = fails visibly. Addresses 
 - Root motion. The playing motion's root translation and yaw move the object, rotated by the facing the motion started with, exactly as for Sora
   (`root_delta`). This is what makes Shadow and Soldier walk: `move_target` only turns, probes and plays motion 2 (4.2 cm per tick of root motion).
   A grounded object also takes the root's height as an offset above the floor (the poses are stored relative to the root; Soldier's appear
-  motion raises its root).
+  motion raises its root). A root below the floor is held at the floor (the game's movement step collides the whole displacement;
+  the Dusk's sinking motion 181 otherwise put it under the floor, from where it fell for ever).
 - `set_move` is used for one tick, then cleared (inferred from the scripts, which set it again every frame of a lunge); `start_move` keeps
   its horizontal speed while airborne.
 - Jump (`Motor`, the model Sora uses: rise time sqrt(2h/g), eased height, parabola down, g = 20/49 per tick squared). FUN_0017b278 passes the direction's y to

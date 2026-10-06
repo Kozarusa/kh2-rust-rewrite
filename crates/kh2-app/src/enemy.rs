@@ -1,16 +1,26 @@
-//! Heartless (Shadow M_EX020, Soldier M_EX010): models, motions, hitboxes and stats from the
-//! disc. What an enemy does runs under the game's own BDX script (`enemy_ai.rs`); this module
-//! spawns the waves and holds the hit reactions of the victim side (damage, flinch, push, blow).
+//! Enemies (Heartless Shadow M_EX020 and Soldier M_EX010, the Nobody Dusk M_EX990): models,
+//! motions, hitboxes and stats from the disc. What an enemy does runs under the game's own BDX
+//! script (`enemy_ai.rs`); this module spawns the waves and holds the hit reactions of the victim
+//! side (damage, flinch, push, blow).
+//!
+//! Waves. In an area whose battle script (`ard/<area>.ard`, entry `btl`) loads spawn groups with
+//! enemies the app has, a wave is the next such group: its enemies at the places and with the
+//! spawn records the group gives (tt04: the Dusks, `docs/enemies.md`). Which of the script's
+//! programs the game runs depends on story progress, which the app does not have, so the groups
+//! take turns in script order. Elsewhere (and with `KH2_AREA_WAVES=0`) a wave is the app's own:
+//! Shadows around Sora, with a Soldier from the second wave on (not from the disc).
 //!
 //! Enemy motion sets use the default mapping (slot = motion id): 0 idle, 10/12 small damage
 //! front/back, 16/17 blow + land. Attack motions carry attack triggers (atkp + collision group).
 //! An enemy without a script (its BDX entry did not load) only stands and reacts to hits.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
 use bevy::prelude::*;
 
+use crate::assets::{CurrentArea, Disc};
 use crate::world::World;
 use crate::combat::{hit_is_ineffective, Fighter, Hit, IneffectiveHit, ReactionData, ReactionStatus, Team};
 use crate::data::{GameData, Stats, GRAVITY, LOGIC_HZ};
@@ -27,11 +37,139 @@ pub struct Kind {
     pub name: &'static str,
     /// Row in `enmp`.
     pub enmp: u16,
+    /// The object's model name (`obj/<model>.mdlx`, `.mset`, `.apdx`; its `00objentry` row).
+    pub model: &'static str,
 }
 
-pub const SHADOW: Kind = Kind { name: "Shadow", enmp: 34 };
+pub const SHADOW: Kind = Kind { name: "Shadow", enmp: 34, model: "M_EX020" };
 
-pub const SOLDIER: Kind = Kind { name: "Soldier", enmp: 33 };
+pub const SOLDIER: Kind = Kind { name: "Soldier", enmp: 33, model: "M_EX010" };
+
+/// The Dusk. Its `enmp` row is the constant its script hands to `set_obj_param` (host 2.9, the
+/// call that builds the status block from the row, FUN_001b2148): 41 (BDX `M_EX990` at 0x073c).
+pub const DUSK: Kind = Kind { name: "Dusk", enmp: 41, model: "M_EX990" };
+
+/// Every enemy kind the app has.
+pub const KINDS: [&Kind; 3] = [&SHADOW, &SOLDIER, &DUSK];
+
+/// The rigs of the enemy kinds, by `Kind::name` (Shadow and Soldier share `sora::Rigs`' copies).
+#[derive(Resource, Default)]
+pub struct EnemyRigs(pub HashMap<&'static str, Arc<Rig>>);
+
+impl EnemyRigs {
+    pub fn get(&self, kind: &Kind) -> Option<Arc<Rig>> {
+        self.0.get(kind.name).cloned()
+    }
+}
+
+fn load_rig(disc: &Disc, model: &str) -> Option<Arc<Rig>> {
+    let m = disc.read(&format!("obj/{model}.mdlx")).and_then(|d| kh2_model::mdlx(&d))?;
+    let s = disc.read(&format!("obj/{model}.mset")).and_then(|d| kh2_anim::Mset::parse(&d))?;
+    let apdx = Some(format!("obj/{model}.apdx")).filter(|a| disc.read(a).is_some());
+    Some(Arc::new(Rig { model: m, mset: s, apdx }))
+}
+
+/// Adds the effect files of the enemy rigs that `fx::setup` does not know (it loads Sora's,
+/// the keyblade's, the Shadow's and the Soldier's), so motion effects and the death effect of
+/// the Dusk find its `obj/M_EX990.apdx`.
+fn register_effects(disc: Res<Disc>, rigs: Res<EnemyRigs>, lib: Option<ResMut<crate::fx::EffectLib>>) {
+    let Some(mut lib) = lib else { return };
+    let common = disc.read("effect/texcommon.dpd").and_then(|b| kh2_fx::Dpd::parse(&b).ok());
+    for rig in rigs.0.values() {
+        let Some(name) = &rig.apdx else { continue };
+        if lib.objects.contains_key(name) {
+            continue;
+        }
+        let id = 2 + lib.objects.len();
+        match crate::fx::load(&disc, name, id, common.as_ref()) {
+            Some(p) => {
+                lib.objects.insert(name.clone(), Arc::new(p));
+            }
+            None => warn!("{name}: no effects"),
+        }
+    }
+}
+
+/// One enemy of an area's spawn group: the kind, where it stands (metres, the app's space), its
+/// facing and the spawn kind byte of its record (host 1.110).
+#[derive(Clone)]
+pub struct Member {
+    pub kind: &'static Kind,
+    pub at: Vec3,
+    pub yaw: f32,
+    pub spawn_kind: i32,
+}
+
+/// A spawn group of the area's battle script that holds enemies the app has.
+#[derive(Clone)]
+pub struct AreaGroup {
+    pub program: u16,
+    pub name: String,
+    pub members: Vec<Member>,
+    /// Enemies (`ObjectType` 4) of the group that the app does not have, by model name.
+    pub skipped: Vec<String>,
+    /// Where the group puts the player (its entity 0x236, the player's id, FUN_0016b078), metres.
+    pub player: Option<Vec3>,
+}
+
+/// The current area's enemy spawn groups (see the module header).
+#[derive(Resource, Default)]
+pub struct AreaWaves {
+    area: Option<String>,
+    pub groups: Vec<AreaGroup>,
+}
+
+/// `ObjectType` of enemies in `00objentry`.
+const OBJECT_ENEMY: u8 = 4;
+/// The player's entity id in spawn records (`00objentry` row `PLAYER`; FUN_0016b078 finds the player by it).
+const PLAYER_ENTITY: u32 = 0x236;
+
+/// The spawn groups that the area's battle script loads and that hold enemies of `KINDS`, in
+/// script order. The positions are the game's (centimetres, Y down, Z mirrored: the app's space is
+/// the game's turned half a turn about X); a game facing of yaw `r` (direction (sin r, 0, cos r),
+/// FUN_0016a7f0) is the app's yaw `PI - r`.
+pub fn area_groups(disc: &Disc, area: &str) -> Vec<AreaGroup> {
+    use kh2_tables::tables as t;
+    let Some(file) = disc.read(&format!("ard/{area}.ard")) else { return Vec::new() };
+    let Some((ard, _)) = kh2_ard::Area::parse(&file) else { return Vec::new() };
+    let rows = {
+        let Ok(mut a) = disc.0.lock() else { return Vec::new() };
+        kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).map(|d| d.rows).unwrap_or_default()
+    };
+    let mut out: Vec<AreaGroup> = Vec::new();
+    for p in ard.scripts.get("btl").into_iter().flatten() {
+        for name in p.spawns() {
+            if out.iter().any(|g| g.name == name) {
+                continue;
+            }
+            let mut g = AreaGroup { program: p.id, name: name.clone(), members: Vec::new(), skipped: Vec::new(), player: None };
+            for e in ard.spawns.get(&name).into_iter().flatten().flat_map(|g| &g.entities) {
+                if e.object == PLAYER_ENTITY && g.player.is_none() {
+                    let [x, y, z] = e.position;
+                    g.player = Some(Vec3::new(x, -y, -z) * SCALE);
+                }
+                let Some(row) = rows.iter().find(|r| r.object_id == e.object) else { continue };
+                match KINDS.iter().find(|k| k.model == row.model_name) {
+                    Some(kind) => {
+                        let [x, y, z] = e.position;
+                        g.members.push(Member {
+                            kind,
+                            at: Vec3::new(x, -y, -z) * SCALE,
+                            yaw: std::f32::consts::PI - e.rotation[1],
+                            spawn_kind: e.spawn_kind as i32,
+                        });
+                    }
+                    None if row.object_type == OBJECT_ENEMY => g.skipped.push(row.model_name.clone()),
+                    None => {}
+                }
+            }
+            if !g.members.is_empty() {
+                out.push(g);
+            }
+        }
+    }
+    out
+}
 
 /// What the reaction code tracks: a hit reaction in progress, or nothing (the script is in charge).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -60,6 +198,8 @@ pub struct Enemy {
     blown_back: bool,
     /// Hit sounds played so far; the sound alternates between two entries (actor byte +0x7fc).
     hit_sounds: u8,
+    /// The spawn kind byte of the enemy's spawn record (host 1.110), -1 without one.
+    pub spawn_kind: i32,
 }
 
 impl Enemy {
@@ -79,14 +219,75 @@ pub struct EnemyPlugin;
 impl Plugin for EnemyPlugin {
     fn build(&self, app: &mut App) {
         use crate::schedule::Sim;
-        app.insert_resource(Waves::default()).add_message::<EnemyClash>().add_systems(
-            FixedUpdate,
-            (
-                (spawn_waves, think, separate).chain().in_set(Sim::Enemy),
-                (receive_clashes, receive_hits).chain().in_set(Sim::EnemyHurt),
-            ),
-        );
+        let rigs = {
+            let (disc, shared) = (app.world().resource::<Disc>(), app.world().resource::<Rigs>());
+            let mut map = HashMap::new();
+            map.insert(SHADOW.name, shared.shadow.clone());
+            map.insert(SOLDIER.name, shared.soldier.clone());
+            for kind in KINDS.iter().filter(|k| ![SHADOW.name, SOLDIER.name].contains(&k.name)) {
+                match load_rig(disc, kind.model) {
+                    Some(r) => {
+                        map.insert(kind.name, r);
+                    }
+                    None => warn!("{}: obj/{}.mdlx or .mset not loadable; no {} spawns", kind.name, kind.model, kind.name),
+                }
+            }
+            EnemyRigs(map)
+        };
+        app.insert_resource(Waves::default())
+            .insert_resource(rigs)
+            .init_resource::<AreaWaves>()
+            .add_message::<EnemyClash>()
+            .add_systems(Startup, register_effects.after(crate::fx::setup))
+            .add_systems(
+                FixedUpdate,
+                (
+                    (spawn_waves, think, separate).chain().in_set(Sim::Enemy),
+                    (receive_clashes, receive_hits).chain().in_set(Sim::EnemyHurt),
+                ),
+            );
     }
+}
+
+/// The assets and the area a wave is made from.
+type WaveSource<'a> = (Res<'a, Disc>, Res<'a, CurrentArea>, ResMut<'a, AreaWaves>, Res<'a, EnemyRigs>);
+
+/// Spawns one enemy: its model under a new root at `at` (metres), stats from its `enmp` row.
+#[allow(clippy::too_many_arguments)]
+fn spawn_enemy(
+    commands: &mut Commands,
+    kind: &'static Kind,
+    rig: Arc<Rig>,
+    at: Vec3,
+    yaw: f32,
+    spawn_kind: i32,
+    data: &GameData,
+    assets: (&mut Assets<Mesh>, &mut Assets<StandardMaterial>, &mut Assets<Image>, &mut Assets<SkinnedMeshInverseBindposes>),
+) {
+    let stats = data.enemy_stats(kind.enmp, 1);
+    let root = commands.spawn((Transform::from_translation(at), Visibility::default())).id();
+    let (meshes, materials, images, bindposes) = assets;
+    let body = spawn_skinned(commands, root, rig, meshes, materials, images, bindposes, SCALE);
+    commands.entity(root).insert((
+        Enemy {
+            kind,
+            name: kind.name,
+            state: EState::Idle,
+            hp: stats.max_hp,
+            stats,
+            vel: Vec3::ZERO,
+            grounded: true,
+            yaw,
+            timer: 0.0,
+            body,
+            push: None,
+            blow: None,
+            blown_back: false,
+            hit_sounds: 0,
+            spawn_kind,
+        },
+        Fighter { team: Team::Enemy, attack_bodies: vec![body], hurt_body: body, landed: Default::default(), hittable: false },
+    ));
 }
 
 fn has(rig: &Rig, s: usize) -> Option<usize> {
@@ -99,17 +300,18 @@ pub fn spawn_waves(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     mut waves: ResMut<Waves>,
-    rigs: Res<Rigs>,
+    (disc, area, mut area_waves, rigs): WaveSource,
     data: Res<GameData>,
     collider: Option<Res<World>>,
-    sora: Query<&Transform, With<Sora>>,
+    mut sora: Query<(&mut Transform, &mut Sora)>,
     enemies: Query<&Enemy>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
 ) {
-    let (Some(col), Ok(p)) = (collider, sora.single()) else { return };
+    let (Some(col), Ok((mut sora_tf, mut sora))) = (collider, sora.single_mut()) else { return };
+    let p = *sora_tf;
     if std::env::var("KH2_NO_ENEMIES").is_ok() {
         return;
     }
@@ -123,6 +325,45 @@ pub fn spawn_waves(
     }
     waves.timer = 0.0;
     waves.count += 1;
+    // The area's own enemy groups, read once per loaded area.
+    if area_waves.area != area.loaded {
+        area_waves.area = area.loaded.clone();
+        area_waves.groups = area.loaded.as_deref().map(|a| area_groups(&disc, a)).unwrap_or_default();
+        for g in &area_waves.groups {
+            info!(
+                "area waves: {} btl program {:#x} group {}: {} (not in the app: {:?})",
+                area.loaded.as_deref().unwrap_or("-"),
+                g.program,
+                g.name,
+                g.members.iter().map(|m| m.kind.name).collect::<Vec<_>>().join(", "),
+                g.skipped
+            );
+        }
+    }
+    let area_on = !std::env::var("KH2_AREA_WAVES").is_ok_and(|v| v == "0");
+    // Harness: `KH2_WAVE_GROUP=<tag>` makes every wave that group and, when the group holds the
+    // player's entity, puts Sora there first (the record's place for the player; that the game
+    // moves the player there when such a battle starts is [inferred]).
+    let forced = std::env::var("KH2_WAVE_GROUP").ok();
+    if area_on && !area_waves.groups.is_empty() {
+        let k = (waves.count as usize - 1) % area_waves.groups.len();
+        let g = forced.as_deref().and_then(|f| area_waves.groups.iter().find(|g| g.name == f)).unwrap_or(&area_waves.groups[k]);
+        info!("wave {}: area group {} (btl program {:#x}), {} enemies", waves.count, g.name, g.program, g.members.len());
+        if let (Some(_), Some(at)) = (&forced, g.player) {
+            let y = col.ground_m(at.x, at.z, at.y + 1.0).unwrap_or(at.y);
+            crate::sora::respawn(&mut sora, at.with_y(y) / SCALE);
+            sora_tf.translation = at.with_y(y);
+            info!("wave {}: Sora placed at the group's player entry {:?}", waves.count, sora_tf.translation);
+        }
+        for m in &g.members {
+            let Some(rig) = rigs.get(m.kind) else { continue };
+            // On the floor under the record's point (the record's height is the game's own floor).
+            let y = col.ground_m(m.at.x, m.at.z, m.at.y + 1.0).unwrap_or(m.at.y);
+            let at = m.at.with_y(y);
+            spawn_enemy(&mut commands, m.kind, rig, at, m.yaw, m.spawn_kind, &data, (&mut meshes, &mut materials, &mut images, &mut bindposes));
+        }
+        return;
+    }
     let n = 3 + (waves.count % 3) as usize;
     // Candidate points around Sora with floor near his height and a clear path to him.
     let knee = Vec3::Y * 0.5;
@@ -140,30 +381,10 @@ pub fn spawn_waves(
     for (i, at) in spots.iter().step_by(step).take(n).enumerate() {
         let (x, y, z, i) = (at.x, at.y, at.z, i as u32);
         // Mostly Shadows, with a Soldier in every wave after the first.
-        let (kind, rig): (&'static Kind, Arc<Rig>) =
-            if waves.count > 1 && i == 0 { (&SOLDIER, rigs.soldier.clone()) } else { (&SHADOW, rigs.shadow.clone()) };
-        let stats = data.enemy_stats(kind.enmp, 1);
-        let root = commands.spawn((Transform::from_xyz(x, y, z), Visibility::default())).id();
-        let body = spawn_skinned(&mut commands, root, rig, &mut meshes, &mut materials, &mut images, &mut bindposes, SCALE);
-        commands.entity(root).insert((
-            Enemy {
-                kind,
-                name: kind.name,
-                state: EState::Idle,
-                hp: stats.max_hp,
-                stats,
-                vel: Vec3::ZERO,
-                grounded: true,
-                yaw: { let d = p.translation - Vec3::new(x, y, z); f32::atan2(d.x, d.z) },
-                timer: 0.0,
-                body,
-                push: None,
-                blow: None,
-                blown_back: false,
-                hit_sounds: 0,
-            },
-            Fighter { team: Team::Enemy, attack_bodies: vec![body], hurt_body: body, landed: Default::default(), hittable: false },
-        ));
+        let kind: &'static Kind = if waves.count > 1 && i == 0 { &SOLDIER } else { &SHADOW };
+        let Some(rig) = rigs.get(kind) else { continue };
+        let yaw = { let d = p.translation - Vec3::new(x, y, z); f32::atan2(d.x, d.z) };
+        spawn_enemy(&mut commands, kind, rig, Vec3::new(x, y, z), yaw, -1, &data, (&mut meshes, &mut materials, &mut images, &mut bindposes));
     }
 }
 

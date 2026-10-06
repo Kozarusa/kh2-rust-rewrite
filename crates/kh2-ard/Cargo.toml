@@ -1,0 +1,13 @@
+[package]
+name = "kh2-ard"
+description = "ARD area data (KH2): area scripts and spawn groups (which objects an area spawns, and where)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kh2-bar.workspace = true
+
+[dev-dependencies]
+kh2-archive.workspace = true
+kh2-tables.workspace = true

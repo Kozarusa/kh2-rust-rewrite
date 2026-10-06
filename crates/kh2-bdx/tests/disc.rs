@@ -137,6 +137,19 @@ fn soldier_runs_its_whole_mode_cycle() {
     assert!(d.host.calls().any(|c| matches!(c, Call::Hide { .. })));
 }
 
+#[test]
+fn dusk_runs_its_mode_cycle() {
+    let Some((mut a, _)) = open() else { return };
+    let data = object_script(&mut a, "obj/M_EX990.mdlx");
+    let (seen, unknown) = mode_cycle(&data);
+    eprintln!("dusk modes: {seen:?}");
+    assert_eq!(unknown, 0, "every host function the Dusk calls is decoded");
+    for m in ["appear", "mode_battle", "btl_attack", "move_target", "mode_revenge"] {
+        assert!(seen.contains(m), "mode {m} never ran: {seen:?}");
+    }
+    assert!(seen.iter().any(|m| m.starts_with("atk_")), "no attack: {seen:?}");
+}
+
 /// Every BDX on the disc (object scripts, mission and area scripts, 00common.bdx).
 fn all_scripts(a: &mut kh2_archive::Archive) -> Vec<(String, Vec<u8>)> {
     if let Ok(names) = std::fs::read_to_string("../../local/kh2idx.txt") {

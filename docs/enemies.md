@@ -227,3 +227,12 @@ reached twice, `first host call 1.95 ? [Approx]`); its blow 168 knocked Sora dow
 
 Not done for the three (WP-7D): the Struggle rules (WP-7E), enemy voice lines (1.262 stays a stub), event 13 and
 event 15. `docs/hit-reaction.md`: all three use the default reaction slots of their sets.
+
+## The Struggle (WP-7E)
+
+The Struggle rules are in `docs/struggle.md`. For the opponents: b_50, b_51 and b_52 (missions `TT04_MS00`,
+`TT04_MS02`, `TT04_MS01`) are the Struggle matches; b_42 (`TT04_MS108`) is not. Host 4.29 now answers the
+manager's counters (slot 0 the player's orbs, slot 1 the opponent's); every reaction an opponent takes knocks 3 or
+15 orbs out of slot 1 (`FUN_001caeb0`); the opponents pick orbs up for slot 1; their prize drops make nothing
+under the mission's header flag 0x40; global events reach their scripts as event 10, so the result 159 / 160 picks
+`gameset_voice_lose` / `gameset_voice_win`. `player_finish_struggle` still has no known receiver.

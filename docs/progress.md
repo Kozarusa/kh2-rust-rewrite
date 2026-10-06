@@ -143,7 +143,12 @@ therefore adds, on top of the new game and only where missing:
   through the original's give, so `FUN_001a2010` hands each of those forms a Kingdom Key as before;
 - the items of magic slots 0..3 (Fire, Blizzard, Thunder, Cure) at count 1 (level 1);
 - the Kingdom Key in Sora's hand 0;
-- Guard equipped in Sora's ability list, unless `KH2_ABILITY_START=data`.
+- Guard equipped in Sora's ability list, unless `KH2_ABILITY_START=data`;
+- Dodge Roll growth level 1 (`Progress::dodge_roll`, the user's wish 2026-10-06). The USA disc has no Dodge
+  Roll ability item (Final Mix has it as growth slot 4, docs/final-mix.md), so the level is an app field
+  beside the save block, not part of the original's records. `KH2_ABILITY_START=data` drops it with the
+  Guard, and a `KH2_STATE` file sets it with `"dodge_roll": <0..5>` (without the key it is 0). The
+  harness `KH2_GROWTH=a,b,c,d,e` fifth value overrides it (docs/movement.md section 2).
 
 This reproduces the previous defaults exactly (`progress::tests::baseline_gives_the_old_app_defaults`).
 
@@ -173,6 +178,7 @@ an error (logged; the app then falls back to the new game + baseline). Example: 
 | `weapon` | int | Sora's hand 0 item |
 | `armor`, `accessories` | array of item ids | Sora's slots (the slot count grows to fit, max 8) |
 | `abilities`, `abilities_off` | arrays of ability item ids | replaces Sora's ability list: equipped ones, then unequipped ones |
+| `dodge_roll` | int 0..5 | Sora's Dodge Roll growth level (app field, not an original record; docs/movement.md section 2) |
 | `forms` | object `"<form 1..9>": { "owned": bool, "level": int, "exp": int, "weapon": int }` | `owned: true` gives the form item through the original's give (so the form takes a keyblade by `FUN_001a2010` if the inventory has one); the others set the record |
 | `summon` | `{ "level": int, "exp": int }` | summon level and experience |
 | `outfits` | object `"<world>": outfit` | low 5 bits of the world record's byte 0 |

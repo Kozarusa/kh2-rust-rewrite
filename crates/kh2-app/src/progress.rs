@@ -263,6 +263,10 @@ pub struct Progress {
     pub source: Source,
     /// What the app baseline added on top of the new game (empty with `KH2_STATE`).
     pub baseline: Vec<String>,
+    /// Sora's Dodge Roll growth level (0 = not learned). The USA disc has no Dodge Roll ability item
+    /// (docs/final-mix.md: the Final Mix game has it as growth slot 4), so the level is an app field
+    /// beside the save block. 0 in the new game; the app baseline sets 1 (docs/progress.md).
+    pub dodge_roll: u8,
     /// The munny the prizes pay: save block `+0x1600` (`0x33fe60`, before the party block, so it is
     /// kept apart from `block`). `FUN_0023e620` adds to it and `FUN_0023e5e0` lets a sum through only
     /// below 1,000,000 (else 999,999). The word at `0x340e48` that `experience()` reads is raised by
@@ -325,7 +329,7 @@ impl Progress {
         let mut block = vec![0u8; off::LEN];
         let n = bytes.len().min(off::LEN);
         block[..n].copy_from_slice(&bytes[..n]);
-        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), wallet: 0 }
+        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0 }
     }
 
     // --- records ----------------------------------------------------------------------------
@@ -819,7 +823,7 @@ impl Progress {
     /// The new-game state: the party block after `FUN_00187b38` on the cleared save block and the
     /// `plrp` rows with `Id` 0 (`FUN_001c0cb0(0)`).
     pub fn new_game(items: Arc<ItemIndex>, plrp: &[Plrp]) -> Progress {
-        let mut p = Progress { block: vec![0; off::LEN], items, source: Source::NewGame, baseline: Vec::new(), wallet: 0 };
+        let mut p = Progress { block: vec![0; off::LEN], items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0 };
         p.init_party();
         p.apply_plrp(plrp, 0);
         p
@@ -965,6 +969,12 @@ impl Progress {
                 added.push(format!("Guard (item {guard_id}) equipped"));
             }
         }
+        // The user's wish (2026-10-06): Sora knows the Dodge Roll. It goes with the Guard switch:
+        // `KH2_ABILITY_START=data` (no Guard) starts without it too, so the original's rules are reachable.
+        if guard && self.dodge_roll == 0 {
+            self.dodge_roll = 1;
+            added.push("Dodge Roll growth level 1".to_string());
+        }
         self.baseline = added;
     }
 
@@ -1012,6 +1022,7 @@ impl Progress {
                     }
                 }
                 "abilities" | "abilities_off" => {}
+                "dodge_roll" => self.dodge_roll = int(v, "dodge_roll")?.clamp(0, 5) as u8,
                 "forms" => {
                     let Json::Obj(m) = v else { return Err("forms: expected an object of form id: {...}".into()) };
                     for (k, f) in m {
@@ -1425,12 +1436,16 @@ mod tests {
         assert_eq!((1..=5).map(|f| p.owns_form(f)).collect::<Vec<_>>(), [true, true, true, true, false]);
         assert_eq!(p.sora().weapons[0], KINGDOM_KEY);
         assert!(p.sora().abilities.contains(&(crate::abilities::id::GUARD, true)));
+        assert_eq!(p.dodge_roll, 1, "the baseline gives Sora the Dodge Roll");
         // Valor, Master and Final took the three spare Kingdom Keys (FUN_001a2010).
         assert_eq!((1..=4).map(|f| p.form(f).weapon).collect::<Vec<_>>(), [KINGDOM_KEY, 0, KINGDOM_KEY, KINGDOM_KEY]);
         assert!(!p.keyblades().contains(&KINGDOM_KEY));
         let mut q = Progress::new_game(p.items.clone(), &tb.plrp);
         q.apply_baseline(false);
         assert!(q.sora().abilities.is_empty(), "KH2_ABILITY_START=data: no Guard");
+        assert_eq!(q.dodge_roll, 0, "KH2_ABILITY_START=data: no Dodge Roll either");
+        q.apply_json(r#"{"dodge_roll": 3}"#).unwrap();
+        assert_eq!(q.dodge_roll, 3);
     }
 
     #[test]

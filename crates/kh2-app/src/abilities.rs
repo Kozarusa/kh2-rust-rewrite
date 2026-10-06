@@ -420,11 +420,15 @@ pub struct Abilities {
     raw_bits: Vec<u16>,
     pub level: usize,
     block: Block,
+    /// Dodge Roll level, the fifth growth kind (growth slot 4 of the Final Mix game, docs/final-mix.md).
+    /// The USA ability table has no row for it, so it is not derived from the block: it comes from
+    /// `Progress::dodge_roll`. Outside a form only (a form's growth is its own ability [inferred]).
+    pub dodge_roll: u8,
 }
 
 impl Abilities {
     pub fn new(rules: Arc<AbilityRules>) -> Abilities {
-        let mut s = Abilities { rules, learned: Vec::new(), equipment: vec![KINGDOM_KEY], form: None, raw_bits: Vec::new(), level: 1, block: Block::default() };
+        let mut s = Abilities { rules, learned: Vec::new(), equipment: vec![KINGDOM_KEY], form: None, raw_bits: Vec::new(), level: 1, block: Block::default(), dodge_roll: 0 };
         s.recompute();
         s
     }
@@ -439,8 +443,12 @@ impl Abilities {
             Some(p) => {
                 s.equipment = p.equipment();
                 s.learned = p.sora().abilities.iter().map(|&(id, equipped)| Slot { id, equipped }).collect();
+                s.dodge_roll = p.dodge_roll;
             }
-            None if std::env::var("KH2_ABILITY_START").as_deref() != Ok("data") => s.equip_ability(id::GUARD),
+            None if std::env::var("KH2_ABILITY_START").as_deref() != Ok("data") => {
+                s.equip_ability(id::GUARD);
+                s.dodge_roll = 1;
+            }
             None => {}
         }
         let list = |name: &str| -> Vec<u32> {
@@ -555,8 +563,12 @@ impl Abilities {
         self.block.finishers.max(0) as u8
     }
 
-    /// Growth level 0..=4 of a group: 0 High Jump, 1 Quick Run, 2 Aerial Dodge, 3 Glide.
+    /// Growth level 0..=4 of a group: 0 High Jump, 1 Quick Run, 2 Aerial Dodge, 3 Glide, 4 Dodge Roll
+    /// (the app's `dodge_roll`; hidden in a form).
     pub fn growth(&self, group: usize) -> u8 {
+        if group == 4 {
+            return if self.in_form() { 0 } else { self.dodge_roll };
+        }
         self.block.growth.get(group).copied().unwrap_or(0)
     }
 
@@ -600,7 +612,7 @@ impl Abilities {
             .collect();
         let d = self.block.deltas();
         format!(
-            "abilities: equipment [{}]; learned [{}]; form list {:?}; raw bits {:?}; AP {}/{}; combo {}+finisher x{}, air {}; growth {:?}; stat block {}",
+            "abilities: equipment [{}]; learned [{}]; form list {:?}; raw bits {:?}; AP {}/{}; combo {}+finisher x{}, air {}; growth (High Jump, Quick Run, Aerial Dodge, Glide, Dodge Roll) {:?}; stat block {}",
             gear.join(", "),
             learned.join(", "),
             self.form,
@@ -610,7 +622,7 @@ impl Abilities {
             self.ground_combo(),
             self.finishers(),
             self.air_combo(),
-            self.block.growth,
+            [self.growth(0), self.growth(1), self.growth(2), self.growth(3), self.growth(4)],
             if d.is_empty() { "unchanged".to_string() } else { d.join("; ") },
         )
     }
@@ -628,7 +640,7 @@ fn log_changes(a: Res<Abilities>) {
 
 /// The growth levels of the block as the controller's resource.
 pub fn growth_of(a: &Abilities) -> Growth {
-    Growth { high_jump: a.growth(0), quick_run: a.growth(1), aerial_dodge: a.growth(2), glide: a.growth(3) }
+    Growth { high_jump: a.growth(0), quick_run: a.growth(1), aerial_dodge: a.growth(2), glide: a.growth(3), dodge_roll: a.growth(4) }
 }
 
 /// Writes the block into the controller's view (`sora::Abilities`: the ability bits and the combo
@@ -773,6 +785,20 @@ mod tests {
         assert_eq!((a.ground_combo(), a.air_combo()), (4, 4));
         a.set_form(None);
         assert!(a.has(id::GUARD) && a.growth(0) == 1);
+    }
+
+    #[test]
+    fn dodge_roll_is_the_fifth_growth_kind_and_hidden_in_a_form() {
+        let Some(r) = rules() else { return };
+        let mut a = with(&r, &[id::GUARD]);
+        assert_eq!(a.growth(4), 0, "not learned by default");
+        a.dodge_roll = 1;
+        assert_eq!(a.growth(4), 1);
+        assert_eq!(growth_of(&a).dodge_roll, 1);
+        a.set_form(Some(vec![95]));
+        assert_eq!(a.growth(4), 0, "a form's growth is its own ability");
+        a.set_form(None);
+        assert_eq!(a.growth(4), 1);
     }
 
     #[test]

@@ -127,11 +127,12 @@ mod mid {
     pub const GLIDE_HOVER: usize = 208;
 }
 
-/// A Square press while moving that is released within this many ticks (0.2 s) is a tap: the dodge
-/// roll; held longer it is the Quick Run. [inferred] The user's rule (2026-10-06 report); the USA
-/// executable has no dodge roll (Dodge Roll is a Final Mix addition: no ability row, no motion in
-/// P_EX100, and `fmab` rows are 16 floats, see docs/movement.md), so no threshold could be read.
-const TAP_TICKS: f32 = 12.0;
+/// A Square press while moving (Dodge Roll learned) that is released before this many ticks is a
+/// tap: the dodge roll; still held at this tick it is the Quick Run. The number is the Final Mix
+/// executable's: the roll's motion A180 carries frame trigger type 34 at tick 10, whose handler
+/// (FM 0x189c78) starts Quick Run when Square is still held (docs/final-mix.md "Tap and hold").
+/// The USA executable has no roll, so the rule is a Final Mix research result [FM rule constant].
+const TAP_TICKS: f32 = 10.0;
 
 /// Range trigger 30: suspends gravity like trigger 3 (FUN_00188030 sets actor +0x160 bit
 /// 0x1000000 for it, which FUN_0017b6e0 and FUN_00169ee8 read together with bit 0x20 of trigger 3).
@@ -226,6 +227,34 @@ pub enum Dash {
     Run,
 }
 
+/// What a Square press on the ground (no explicit action started) does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SquareGround {
+    /// The guard (FUN_00178080; Final Mix FM 0x1790c0).
+    Guard,
+    /// The Dodge Roll start (FM 0x179530); the hold past `TAP_TICKS` turns it into the Quick Run.
+    Roll,
+    /// Quick Run at the press (FUN_00178108 = FM 0x179148).
+    QuickRun,
+}
+
+/// The Square decision after the explicit keys, in the Final Mix order (FM 0x178eb0, docs/final-mix.md):
+/// stick at rest: the guard first; then the Dodge Roll (growth slot 4); then Quick Run (slot 1;
+/// needs the stick pushed); then the guard again. With neither learned, a moving press therefore
+/// still guards, as the USA code does (it has no stick test in the guard). `moving` is the stick
+/// magnitude above 0 (actor +0x1c).
+pub fn square_ground(moving: bool, dodge_roll: u8, quick_run: u8) -> SquareGround {
+    if !moving {
+        SquareGround::Guard
+    } else if dodge_roll >= 1 {
+        SquareGround::Roll
+    } else if quick_run >= 1 {
+        SquareGround::QuickRun
+    } else {
+        SquareGround::Guard
+    }
+}
+
 /// One tick of a Square dash: `held` is the button, `ticks` the ticks since the press, `quick_run`
 /// the Quick Run level and `run_left` its clock (`AirSlideTime`, counted down while held). Returns
 /// the new phase and whether the dash stops now (the stop brake starts).
@@ -287,10 +316,14 @@ pub struct Growth {
     pub quick_run: u8,
     pub aerial_dodge: u8,
     pub glide: u8,
+    /// The fifth growth kind (growth slot 4 in Final Mix, docs/final-mix.md): from `Progress`.
+    pub dodge_roll: u8,
 }
 
-/// `KH2_GROWTH=a,b,c,d`: the harness's growth levels (up to 5, the forced MAX of `FUN_001c13b8`),
-/// used instead of the ability block's while no form is active.
+/// `KH2_GROWTH=a,b,c,d[,e]`: the harness's growth levels (High Jump, Quick Run, Aerial Dodge,
+/// Glide, Dodge Roll; up to 5, the forced MAX of `FUN_001c13b8`; an omitted value is 0, so
+/// `KH2_GROWTH=0,1,0,0` is the USA rules: no Dodge Roll), used instead of the ability block's while
+/// no form is active.
 #[derive(Resource, Clone, Copy, Default, Debug)]
 pub struct GrowthOverride(pub Option<Growth>);
 
@@ -892,7 +925,7 @@ pub fn setup(
     ));
     let growth = std::env::var("KH2_GROWTH").ok().map(|v| {
         let l: Vec<u8> = v.split(',').filter_map(|x| x.parse().ok()).collect();
-        Growth { high_jump: l.first().copied().unwrap_or(0), quick_run: l.get(1).copied().unwrap_or(0), aerial_dodge: l.get(2).copied().unwrap_or(0), glide: l.get(3).copied().unwrap_or(0) }
+        Growth { high_jump: l.first().copied().unwrap_or(0), quick_run: l.get(1).copied().unwrap_or(0), aerial_dodge: l.get(2).copied().unwrap_or(0), glide: l.get(3).copied().unwrap_or(0), dodge_roll: l.get(4).copied().unwrap_or(0) }
     });
     commands.insert_resource(GrowthOverride(growth));
     commands.insert_resource(growth.unwrap_or_default());
@@ -980,7 +1013,7 @@ pub fn read_pad(
     bump(&mut pad.prev, keys.just_pressed(KeyCode::BracketLeft));
     if keys.just_pressed(KeyCode::F6) {
         let l = (growth.high_jump + 1) % 6;
-        *growth = Growth { high_jump: l, quick_run: l, aerial_dodge: l, glide: l };
+        *growth = Growth { high_jump: l, quick_run: l, aerial_dodge: l, glide: l, dodge_roll: l };
         info!("growth abilities: level {l}");
     }
 }
@@ -1392,40 +1425,57 @@ pub fn tick(
             } else if square {
                 // FUN_00177ea0's order: the explicit actions first (they need a combo or finisher
                 // window, so from idle they never start), then the dash, then the guard.
-                // The user's rules (2026-10-06): the guard only while standing still; Square while
-                // moving dashes: a tap is the dodge roll, a hold the Quick Run (`Dash`, `dash_step`).
-                // The original (FUN_00178108 then FUN_00178080) starts Quick Run at the press when it
-                // is learned and the stick is pushed, and otherwise guards even while moving.
+                // The Final Mix order (`square_ground`, docs/final-mix.md): still = guard; moving with
+                // Dodge Roll learned = the roll (a hold of `TAP_TICKS` ticks becomes the Quick Run when
+                // that is learned); moving with only Quick Run learned = Quick Run at the press (USA
+                // FUN_00178108); moving with neither = the guard (USA FUN_00178080, no stick test).
+                let act = square_ground(move_speed > 0.0, growth.dodge_roll, growth.quick_run);
                 if square_explicit(s, &mut body, &mut weapon, false, Windows { free: true, combo: false }, false) {
                     // An explicit action started.
-                } else if move_speed > 0.0
+                } else if act != SquareGround::Guard
                     && let Some(f) = data.fmab(growth.quick_run.max(1))
                 {
                     // The dash starts at the press with FUN_00178108's numbers: AirSlideSpeed along the
                     // stick, AirSlideBrake per tick, AirSlideStarTime of invincibility (+0xb00), motion
-                    // 203 (0xcb). [inferred] Without Quick Run the roll uses the level 1 row: the disc
-                    // has no roll data.
+                    // 203 (0xcb, A150). [inferred] The roll (FM motion 209 = A180, FM only) is shown by
+                    // the Quick Run start motion, and with Quick Run not learned it uses the level 1 row:
+                    // the USA disc has no roll data (no motion, no 17th `fmab` column).
                     s.state = State::QuickRun;
                     s.timer = 0.0;
-                    s.dash = Dash::Pending;
+                    s.dash = if act == SquareGround::Roll { Dash::Pending } else { Dash::Run };
                     s.motor.yaw = dir.x.atan2(dir.z);
                     s.motor.vel = dir * f.air_slide_speed;
                     s.dash_time = f.air_slide_time;
                     s.dash_brake = f.air_slide_brake;
                     s.invuln = f.air_slide_star_time;
                     body.restart(motion(mid::QUICK_RUN), false, 0.0);
-                    info!("sora dash: Square pressed while moving (speed {:.1}, Quick Run level {})", f.air_slide_speed, growth.quick_run);
-                } else if move_speed <= 0.0
+                    info!(
+                        "sora square: moving, Dodge Roll level {}, Quick Run level {}: {} (speed {:.1})",
+                        growth.dodge_roll,
+                        growth.quick_run,
+                        if act == SquareGround::Roll { "dodge roll pending (tap = roll, hold = quick run)" } else { "quick run at the press (USA rule)" },
+                        f.air_slide_speed
+                    );
+                } else if act == SquareGround::Guard
                     && let Some(g) = s.moves.by_key(key::GUARD).filter(|g| abilities.chain(s.hits, s.finishers, false, false).check(g).is_ok()).cloned()
                     && let Some(slot) = rig.mset.slot(g.motion as usize, pstate)
                 {
                     // The guard action is a ground action of the attack table (FUN_00178080: key 11,
-                    // available, an idle range; it zeroes the stick). Only while standing still.
+                    // available, an idle range; it zeroes the stick). While standing still, or moving
+                    // with neither Dodge Roll nor Quick Run learned (the USA rule).
                     s.state = State::Guard;
                     s.timer = 0.0;
                     body.restart(Some(slot), false, BLEND_ATTACK);
                     weapon.restart(Some(slot).filter(|&x| wrig.mset.has(x)), false, BLEND_ATTACK);
-                    info!("sora guard {} (key {}, motion id {})", body.tag(), g.key, g.motion);
+                    info!(
+                        "sora guard {} (key {}, motion id {}; {}, Dodge Roll level {}, Quick Run level {})",
+                        body.tag(),
+                        g.key,
+                        g.motion,
+                        if move_speed > 0.0 { "stick pushed, neither learned" } else { "standing still" },
+                        growth.dodge_roll,
+                        growth.quick_run
+                    );
                     s.motor.vel = Vec3::ZERO;
                     keep_out.set(true);
                 }
@@ -2103,12 +2153,15 @@ mod tests {
 
     #[test]
     fn square_while_moving_tap_rolls_and_hold_runs() {
+        // The threshold is the Final Mix trigger's tick (type 34 at tick 10 of the roll motion).
+        assert_eq!(TAP_TICKS, 10.0);
         // Released within the tap window: a roll that runs TAP_TICKS ticks, then stops.
         assert_eq!(dash_step(Dash::Pending, false, 3.0, 1, 11.0), (Dash::Roll, false));
-        assert_eq!(dash_step(Dash::Roll, false, 11.0, 1, 11.0), (Dash::Roll, false));
+        assert_eq!(dash_step(Dash::Pending, false, TAP_TICKS - 1.0, 1, 11.0), (Dash::Roll, false));
+        assert_eq!(dash_step(Dash::Roll, false, TAP_TICKS - 1.0, 1, 11.0), (Dash::Roll, false));
         assert_eq!(dash_step(Dash::Roll, true, TAP_TICKS, 1, 11.0), (Dash::Roll, true));
         // Still held: undecided until the window ends, then the Quick Run.
-        assert_eq!(dash_step(Dash::Pending, true, 11.0, 1, 3.0), (Dash::Pending, false));
+        assert_eq!(dash_step(Dash::Pending, true, TAP_TICKS - 1.0, 1, 3.0), (Dash::Pending, false));
         assert_eq!(dash_step(Dash::Pending, true, TAP_TICKS, 1, 2.0), (Dash::Run, false));
         // The Quick Run runs while held and while its clock lasts (FUN_001c1660).
         assert_eq!(dash_step(Dash::Run, true, 13.0, 1, 1.0), (Dash::Run, false));
@@ -2116,6 +2169,31 @@ mod tests {
         assert_eq!(dash_step(Dash::Run, false, 13.0, 4, 20.0), (Dash::Run, true));
         // Held without Quick Run learned: it ends as a roll.
         assert_eq!(dash_step(Dash::Pending, true, TAP_TICKS, 0, 2.0), (Dash::Roll, true));
+    }
+
+    /// The decision table of a Square press on the ground: still / moving x Dodge Roll x Quick Run
+    /// x tap / hold (FM 0x178eb0 order, docs/final-mix.md; the tap/hold part is `dash_step`).
+    #[test]
+    fn square_decision_table() {
+        use SquareGround::{Guard, QuickRun, Roll};
+        for roll in [0u8, 1] {
+            for run in [0u8, 1] {
+                // Standing still: always the guard, whatever is learned.
+                assert_eq!(square_ground(false, roll, run), Guard, "still, roll {roll}, run {run}");
+            }
+        }
+        // Moving, neither learned: the guard (USA rule).
+        assert_eq!(square_ground(true, 0, 0), Guard);
+        // Moving, Quick Run only: Quick Run at the press (USA rule), no tap window.
+        assert_eq!(square_ground(true, 0, 1), QuickRun);
+        // Moving with Dodge Roll: always the roll start, with or without Quick Run.
+        assert_eq!(square_ground(true, 1, 0), Roll);
+        assert_eq!(square_ground(true, 1, 1), Roll);
+        // The roll start resolves by tap/hold: a tap rolls; a hold at tick 10 runs only with Quick Run.
+        assert_eq!(dash_step(Dash::Pending, false, 4.0, 1, 11.0).0, Dash::Roll, "roll + run, tap");
+        assert_eq!(dash_step(Dash::Pending, true, TAP_TICKS, 1, 11.0).0, Dash::Run, "roll + run, hold");
+        assert_eq!(dash_step(Dash::Pending, false, 4.0, 0, 11.0).0, Dash::Roll, "roll only, tap");
+        assert_eq!(dash_step(Dash::Pending, true, TAP_TICKS, 0, 11.0), (Dash::Roll, true), "roll only, hold: still a roll");
     }
 
     fn chain(air: bool, combo: u8, abilities: &[u16]) -> Chain {

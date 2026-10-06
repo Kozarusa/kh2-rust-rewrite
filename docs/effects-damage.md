@@ -199,8 +199,8 @@ Chain: the victim's damage method +0x78 (FUN_00186238, the same in all eight cla
 the receive function FUN_001b21f0 that were checked) clamps HP (FUN_001a0100); when gauge 0 reaches 0 it calls
 FUN_00186530, which calls the victim's method +0x5c: FUN_001b25d0 (or FUN_001d5df8, which then
 calls it). FUN_001b25d0 looks up the script mode named **"dead"** (string at 0x37ba30) in the
-object's mode table and switches to it; it also does munny and drop bookkeeping (calls to
-FUN_0015b198 and FUN_0016b738 that were not decoded) and sets the dead flag (bit 2 of word +0x7f8,
+object's mode table and switches to it; it also does experience and drop bookkeeping (calls to
+FUN_0015b198, the experience digit popup, and FUN_0016b738 that were not decoded) and sets the dead flag (bit 2 of word +0x7f8,
 FUN_00186580). So death starts at the
 moment HP reaches 0, together with the hit reaction, not when the body lands.
 
@@ -320,15 +320,15 @@ does not model either.
   cutscene lock) the payout is `ceil(table[+10] * stat block ushort +0x56 / 100)` where `table` is
   `DAT_0035f33c`; when the player is valid and has bit 0x80 of his word +0x588 and his HP fraction is at or
   below the float at `DAT_00360130 + 0x144`, the amount is multiplied by the byte at player stats +0x2b
-  (inference: a low-HP bonus ability); FUN_001b51e0 adds it to the munny at `DAT_00340e48` (capped at 9,999,999)
-  and loops over the 13 party slots (FUN_001b52f8; HP-orb or experience bookkeeping, not decoded), and when it
-  returns positive a pickup is created (FUN_0016bbe8 builds the position, FUN_0015b198 spawns the 0xae0-byte
-  prize object); (3) when the stat block's short +0x58 is non-zero FUN_0016b738 drops the ground marker
+  (inference: a low-HP bonus ability); FUN_001b51e0 adds it to the experience total at `DAT_00340e48` (capped at 9,999,999; it is the
+  experience, not the munny, see docs/prizes.md) and loops over the 13 party slots (FUN_001b52f8, the level-up check against
+  the level table), and when it returns positive a popup is created (FUN_0016bbe8 builds the position,
+  FUN_0015b198 spawns the 0xae0-byte experience digit popup, docs/hud.md; the orbs and munny come from the drop
+  call, docs/prizes.md); (3) when the stat block's short +0x58 is non-zero FUN_0016b738 drops the ground marker
   (the same call as the script's `ground_marker`; the point is the object's position with y above the floor
   found by a probe FUN_001d1648, handed to FUN_001a3cb3), and when its short +0x5a is non-zero FUN_001be6b8 sets a
   progress flag (bit in the array at 0x340e6c, count at 0x340e68) and runs the flag's side effects
-  (FUN_00180450); (4) FUN_00186568 -> FUN_00186580 sets the dead flag. **Gap**: munny, the pickup object, the
-  HP orbs and the flag are not ported (the app has no munny counter or pickup object to hand them to); the
+  (FUN_00180450); (4) FUN_00186568 -> FUN_00186580 sets the dead flag. **Gap**: the experience payout and its popup, and the flag, are not ported (the orbs and munny are, docs/prizes.md); the
   stat-block offsets are named by position only. The `enmp` Prize and Experience columns are the probable source.
 
 ## Hit point (FUN_0018ce18, for `combat.rs`; not edited here)
@@ -465,7 +465,7 @@ reading (vertex color / 128 times material). The GS SPRITE screen alignment abov
 ## What is not done
 
 * Hit-point accuracy: the rule is above; `combat.rs` needs the edit (not made, not in this package's ownership).
-* Munny and item payout of FUN_001b25d0, the camera-bound effect bind (flag 0x20000), the depth fade of sprites
+* Experience payout of FUN_001b25d0, the camera-bound effect bind (flag 0x20000), the depth fade of sprites
   (flags 0x400, 0x800) and the packet budget; see the sections above.
 * The Sno lens samples the opaque pass only, bilinear, with a per-fragment displacement (see above).
 * The `+0x17` depth-test-off mapping and the clock unit of the start wait are inferences.

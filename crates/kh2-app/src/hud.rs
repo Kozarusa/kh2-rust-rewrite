@@ -33,7 +33,7 @@ pub(crate) mod hud_msgwin;
 
 use hud_gauge::{DriveGauge, DriveTables, FaceFile, MpRecharge, SoraPanel};
 use hud_gfx::{HudGfxPlugin, HudScene};
-use hud_banner::{BannerNodes, HudBanner, MunnyPopups, NumberStrips, StripNodes};
+use hud_banner::{BannerNodes, ExperiencePopups, HudBanner, NumberStrips, StripNodes};
 use hud_card::{AreaCard, CardNodes};
 use hud_menu::{CommandMenu, MenuFile, MenuNodes, MenuTables};
 use hud_msgwin::{MsgWindow, WindowNodes};
@@ -55,7 +55,7 @@ impl Plugin for HudPlugin {
             .init_resource::<MpRecharge>()
             .init_resource::<DriveTables>()
             .init_resource::<HudBanner>()
-            .init_resource::<MunnyPopups>()
+            .init_resource::<ExperiencePopups>()
             .init_resource::<BannerNodes>()
             .init_resource::<CommandMenu>()
             .init_resource::<MenuFile>()

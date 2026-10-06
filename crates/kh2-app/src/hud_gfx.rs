@@ -228,7 +228,7 @@ pub struct HudScene {
     pub nodes: Vec<Node>,
     /// Fonts and messages (None when the disc has none).
     pub text: Option<TextSys>,
-    /// HUD units the window shows beyond the 4:3 screen on each side (0 at 4:3, or with `KH2_HUD_43=1`).
+    /// HUD units the window shows beyond the 512 wide screen on each side (0 at 8:7 or narrower, or with `KH2_HUD_43=1`).
     pub margin: f32,
     acc: f32,
 }
@@ -516,9 +516,11 @@ mod tests {
 
     #[test]
     fn side_margin_splits_the_extra_width() {
-        // 16:9: the 448 tall box is 796.4 wide, 142.2 more on each side; 4:3 and taller windows have none.
+        // 16:9: the 448 tall box is 796.4 wide, 142.2 more on each side. The HUD box itself is 8:7, so a
+        // 4:3 window has 42.7 on each side; only windows at 8:7 or narrower have none.
         assert!((side_margin(Vec2::new(1280.0, 720.0)) - 142.2).abs() < 0.1);
-        assert!(side_margin(Vec2::new(1024.0, 768.0)) < 1.0);
+        assert!((side_margin(Vec2::new(1024.0, 768.0)) - 42.67).abs() < 0.1);
+        assert!(side_margin(Vec2::new(512.0, 448.0)) < 1e-3);
         assert!(side_margin(Vec2::new(600.0, 800.0)) < 1e-3);
         assert_eq!(side_margin(Vec2::ZERO), 0.0);
     }

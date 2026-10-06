@@ -803,9 +803,9 @@ mod tests {
             ee.call(0x111670, &[], &[], STACK).expect("FUN_00111670");
             let d = follow_distance(&t, radius, &c);
             let port = follow_points(player, yaw, [Some((pos[0], d)), Some((pos[1], d))], &c);
-            for k in 0..2 {
+            for (k, p) in port.iter().enumerate() {
                 let game = rv(&mut ee, FOLLOW_POINTS + 16 * (1 + k as u32)).truncate();
-                assert!(close(game, port[k].unwrap()), "step {step} member {k}: {game} vs {:?}", port[k]);
+                assert!(close(game, p.unwrap()), "step {step} member {k}: {game} vs {p:?}");
             }
             let local = |p: Vec3| ((p - player).x * co - (p - player).z * s).signum();
             if local(pos[0]) == local(pos[1]) {

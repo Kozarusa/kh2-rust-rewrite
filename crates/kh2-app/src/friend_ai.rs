@@ -144,7 +144,7 @@ fn friend_update(
             player_model: 0,
         };
         let handle = obj.handle;
-        let mut host = BevyHost { obj, env: &env, trace: &mut *trace, tag: tag.as_str() };
+        let mut host = BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() };
         if !*started {
             *started = true;
             rt.spawn(&mut host, handle);

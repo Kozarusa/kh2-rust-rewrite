@@ -345,10 +345,10 @@ WP-6E ported the cone test of `FUN_0018d308` for the 70 rows with `ReflectRange`
 both ways in `clash::detect_clashes`; a pair outside the cone is logged with `KH2_HITLOG=1`), the owner flags of
 `FUN_001754a0` (`ClashActor`: Sora's range triggers 3, 30 and 24) and blend 0 for the recoil and guard-bounce
 motions; details in docs/hit-reaction.md. Not ported: `ReflectAction` (an offset from the atkp row to an action
-record for the action system at +0x300, `FUN_0019e870` / `FUN_00186db0`; the record format was not decoded), the
-enemy handler's script event 0x13, the hit-registry tests of `FUN_001be108` (a pair that already hit each other
+record for the action system at +0x300, `FUN_0019e870` / `FUN_00186db0`; the record format was not decoded), the hit-registry tests of `FUN_001be108` (a pair that already hit each other
 does not clash again), `ReflectRC`, the air push `FUN_00185978` (decoded up to the mover's method +8 and a run-time
-table, docs/hit-reaction.md; the ground push stands in).
+table, docs/hit-reaction.md; the ground push stands in). WP-6G added the enemy handler's script part (the running
+mode's slot 8 hook and event 0x13, on every clash, docs/enemy-ai.md); none of the app's three scripts handles it.
 
 Guard-bounce spark (effect 0xb): no real clash in the app's fights has produced a guard bounce (the rows met had
 `RefactSelf` 2 or both 0). `KH2_CLASH_FORCE_GUARD=<s>` (harness, `player_reaction::receive_clashes`) runs

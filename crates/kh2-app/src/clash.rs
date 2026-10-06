@@ -47,8 +47,24 @@ pub struct ClashPlugin;
 
 impl Plugin for ClashPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<Clash>().add_systems(FixedUpdate, detect_clashes.after(crate::enemy::think).in_set(Sim::Enemy));
+        app.add_message::<Clash>()
+            .add_systems(FixedUpdate, (detect_clashes, force_enemy_clash).after(crate::enemy::think).in_set(Sim::Enemy));
     }
+}
+
+/// Harness `KH2_CLASH_FORCE_ENEMY=<s>`: at that time the first living enemy gets one clash with no
+/// reaction of its own (rows 0 and 0), so the script part of 0x1b2478 (clash hook, event 0x13) runs
+/// once. Not the original's behaviour: the real pairing needs attack volumes that meet.
+fn force_enemy_clash(time: Res<Time>, enemies: Query<(Entity, &crate::enemy::Enemy)>, mut out: MessageWriter<EnemyClash>, mut at: Local<Option<Option<f32>>>) {
+    let t = *at.get_or_insert_with(|| std::env::var("KH2_CLASH_FORCE_ENEMY").ok().and_then(|v| v.trim().parse().ok()));
+    let Some(t) = t else { return };
+    if time.elapsed_secs() < t {
+        return;
+    }
+    let Some((e, en)) = enemies.iter().find(|(_, en)| en.alive()) else { return };
+    info!("clash: forced enemy clash on {} {e:?} (harness)", en.name);
+    out.write(EnemyClash { enemy: e, motion: None, power: 0.0, own_atkp: 0, other_atkp: 0 });
+    *at = Some(None);
 }
 
 /// One live attack window.

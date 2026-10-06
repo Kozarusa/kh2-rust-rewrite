@@ -25,7 +25,7 @@ Nothing from the disc is stored in the repository: the scripts, the motion sets 
 its arguments and result, every motion request, events, a status line once a second (mode, motion slot, distance to Sora, hp), the
 first use of each host function with its classification, and a table of all host calls with counts every 900 ticks.
 `KH2_BDXLOG=all` also prints the per-frame queries, the root motion of every playing motion and the fade. An unimplemented host
-function is always logged, once per function, with `group.index`: `unimplemented host call 1.92 (GroundMarker) ...`.
+function is always logged, once per function, with `group.index`: `unimplemented host call 1.133 (...) ...`.
 
 ## The object as the script sees it
 
@@ -91,9 +91,12 @@ with a default, nothing in the app reads it; Missing = fails visibly. Addresses 
 | mode manager hooks | Approx | `ModeInterrupted` and `ModeMayStart` follow FUN_00186b70 and FUN_001873d0 read as "a hit reaction plays" and "not in hit stun"; `ModeFrozen` (FUN_00186b38, object flag 0x40000) is false because hit stop is not implemented |
 | 1.29 play_motion_with, 1.238 obj_word_158, 1.13 queue_motion, 1.89 set_velocity, 1.70 / 1.71 on the player, 1.14 on the player | Approx | the calls of Soldier's reaction thread on the player: handed to the player side as `PlayerReactionCmd` (no consumer yet), the paired motion's length gives the player's `motion_done` |
 | 0.47 alloc / 0.48 free, 2.20 start_request, 1.132 target_release | Impl / Stub | the script heap and the detached request thread are the runtime's own (see `docs/bdx.md`); target records are not pooled |
-| 1.92 ground_marker | Missing | not a marker: FUN_0016b738 finds the ground under the object and FUN_001a3cb0 spawns row `id` of the drop table (orbs, munny). The app has no pickups |
+| 1.92 ground_marker | Approx | the drop (WP-6G, below): row `id` of the prize table `przt` is looked up and the drop computed as FUN_001a3cb0 does; the result is logged. The app has no prize objects, so nothing appears |
 | 1.133, 1.134, 1.128 | Missing | in the scripts but not reached in a fight: two virtual methods of the object, a virtual call on the mover (1.89 on the enemy itself too: the secondary velocity of a scripted object has no consumer). They would be logged when first called |
-| 1.90 send_message | Missing | the Dusk sends `dusk_surprise` to all objects from its event 11 handler (reaction commands 24 and 69), which no offer in the app triggers; messages between objects are not wired |
+| 1.90 send_message, 1.241 | Approx | the global message queue (WP-6G, below): every scripted enemy receives the message at the start of the next tick, with its own delay from the generator at 0x3716a0. Objects without a script (the player) draw no delay |
+| 0.42 angle_of | Approx | atan2(v.x, v.z) (FUN_0016d060 -> FUN_003003e8); the platform's atan2, not the game's routine |
+| 0.43 wrap_angle | Impl | FUN_0017bbc0: a positive angle `fmod(x + pi, 2 pi) - pi`, else `pi - fmod(pi - x, 2 pi)`, with the floats at 0x37a528 / 0x37a52c |
+| 1.94 obj_valid | Approx | 0x170150: 0 is false, else "in the object list and FUN_0019a440 clear" (FUN_0019a3f8). Self and the player are true (the +0x108 bits 0x80000 / 0x10000000 of FUN_0019a440 were not traced and read clear); any other handle reads absent |
 
 ## Event 11: reaction commands (WP-2C2)
 
@@ -143,10 +146,82 @@ the removal of hidden objects, Flag309 as "is the player".
 - The object's own turn rate (+0x11c, set by the mover's initialisation from a parameter block) and the probe tolerance record are not decoded.
 - The motion controller (blend queue, motion state variants for airborne objects) is not ported; requests restart the `Animator`.
 - Spawn records (spawn kind, spawn parameters) come from the areas' event data, which the app does not read; defaults are used.
-- Drops (orbs, munny) do not exist; the death's `ground_marker` call is the visible gap.
+- Drops are computed (WP-6G) but no prize objects (orbs, munny, items) exist: nothing appears and nothing is collected.
 - Hit stop is not implemented, so `ModeFrozen` is always false.
 - Target records are the player's origin, not the lock-on part.
-- Event 13 (event begin) is not delivered; messages between objects are not wired (neither script sends any). Event 11 (a reaction command accepted by the player) **is** delivered since WP-2C2, see below.
+- Event 13 (event begin) is not delivered. Event 11 (a reaction command accepted by the player) **is** delivered since WP-2C2; event 0x13 (clash) and messages between objects since WP-6G, see below.
+
+## Clash: mode hook slot 8 and event 0x13 (WP-6G)
+
+The enemy clash handler at 0x1b2478 (read from the disassembly) first calls FUN_001b21a0 (the other volume's owner into
++0xae4, and into +0xaec when it is in the object list with +0x3b0 == 1); then, only when the object has a script thread
+(+0x484): FUN_00187130(+0x300, own volume, other volume), which is FUN_00187040 with 7, i.e. the **running mode's hook in
+slot 8** (the halfword at record +10 + 2 * 7) with (context, own volume, other volume); then FUN_0016c620 delivers
+**event 0x13** with (own volume, other volume). Only after that come its own tests (volume flag 0x40, `RefactSelf` 2) and
+the recoil. `kh2_bdx::Runtime::clash` does the script part (hook, then event; no script thread, nothing). `clash.rs` now
+writes `enemy::EnemyClash` for every clash of an enemy volume (motion `None` when the handler's own part does nothing) and
+`ai_update` delivers it the next tick with two volume objects (handles `0x0700_0000 + k * 0x40`) whose word +8 is the
+owner (the enemy itself, and the player for the other one: the word 0x1b2478 reads); other fields are not served.
+FUN_00187040 also skips the hook while the machine's +0x9c bit 4 is set (a mode that still waits for `ModeMayStart`).
+
+Finding: none of the three scripts the app runs uses it. Shadow, Soldier and Dusk have no event 0x13 handler, and none
+of their 26, 26 and 30 mode registrations has a slot 8 routine (the last value before each `host 1.6`), so a clash
+changes nothing in their behaviour. Test `a_clash_runs_the_mode_hook_then_event_19` (kh2-bdx tests/runtime.rs) checks
+the order and arguments on a hand-made script. Harness: `KH2_CLASH_FORCE_ENEMY=<s>` gives the first living enemy one
+clash at that time (rows 0 and 0, no recoil); no natural enemy clash happened in the runs below (tt04 Dusks, tt00
+Shadows / Soldier).
+
+## Messages between objects: the Dusk's surprise (WP-6G)
+
+Host 1.90 (0x172fb8) is FUN_00187170(delay, sender's mode machine, name): the first free entry of the 64-entry queue at
+0x1c89738 gets (name, sender's context = machine +0x88, delay); a full queue drops the message. The per-frame task
+FUN_00187250 hands each entry to every object of the list (FUN_001b7c88: the list from 0x1d5d7a0 through +0x8b4,
+skipping objects where FUN_0019a440 is set): a delay of 0 or less runs the mode of that name's message hook at once
+(FUN_001871d0: slot 6 with (own context, sender's context)), a positive one goes into the object's pending slot with
+the delay times a fraction from the generator at 0x3716a0 (`seed * 0x10dcd`, times 2^-32 at 0x37a980). The runtime side
+was already in `kh2-bdx` (`Runtime::receive_message`, `message_delay`); `enemy_ai.rs` now keeps the queue (`Mailbox`)
+and at the start of each tick dispatches last tick's messages to every scripted enemy in query order. When the game's
+task runs relative to the object updates was not found; one tick of lateness is [inferred].
+
+The Dusk's event 11 handler, for command 24 or 69 only, runs a helper (alloc 0.47, target 2.23, free_target 1.131, then
+a request thread at word 0x6e via 2.20) and sends `dusk_surprise` with delay 0. Every Dusk (the sender too) gets the
+message hook of its mode `dusk_surprise`: if it is not busy (1.60) and the player is within 500 of it, it switches to
+that mode, which faces the player, plays motion 234, waits for its end and switches to `mode_revenge`. The request
+thread plays the Dusk's paired motion 241 or 242 on the player (by the sign of the wrapped angle between the Dusk's
+facing and the direction to the player), queues motion 0 behind it and, while a counter that starts at 30 is positive and the
+player's +0x158 is still that motion's serial, places the player relative to the Dusk's position (read while
+`obj_valid` holds). Oracle test
+`dusk_reaction_command_sends_dusk_surprise_like_the_game` (kh2-bdx tests/oracle.rs): commands 24 and 69 make the
+calls 0.47, 2.23, 1.131, 2.20, 1.90 with the script's own string `dusk_surprise` and delay 0.0, step for step equal to
+the game's interpreter; 34 and 0 make none. The request routine at 0x6e is not in the oracle (its address is a
+parameter).
+
+What offers 24 / 69 on a Dusk in the game was not traced here; the app's acceptance uses the harness offer
+(`KH2_REACTION_FAKE=24 KH2_REACTION_FAKE_ON=Dusk`). `reaction_cmd` now reads every kind's collision table, the Dusk's
+included, for the native offer.
+
+## Drops (WP-6G)
+
+Host 1.92 (0x171078 -> FUN_0016b738(object, id)): the point is the collision of a line from the object's position
+(+0x540, raised by +0x5fc) to its lock-on point (FUN_0016b6e0, FUN_001d1648 with 6), or that point; then
+FUN_001a3cb0(point, id). That function looks up row `id` of `przt` (`00battle.bin`, loaded by FUN_00193610 into
+DAT_01c95514; 0x18-byte rows sorted by the halfword id, bisected by FUN_001a41d8, falling back to row 0x48), and, when
+the prize manager DAT_0035e7a0 exists:
+
+- for each of nine prize kinds `k`: `ceil(byte[+2 + k] * orb)` prize objects (FUN_001a4240, FUN_00300008 is a ceiling;
+  FUN_001a3ef0 -> FUN_001a3b28 with the kind's 16-byte entry at 0x37b4b0 + 16k, three generator steps per object for its
+  launch). `orb` = DAT_01c8a7e4 (1.0, from 0x37ad10 by FUN_00190370; settable by the host function at 0x173ae0) plus each
+  party member's ability-block float +0x60 (Jackpot, FUN_00190788);
+- unless 0x35d268 bit 0x400: for each of the three (item, chance) pairs at +0xc: one generator step, and the item drops
+  (FUN_001bd490) when `seed * 2^-32 * 100 < chance * item`, `item` = 1.0 (0x37b494) plus each member's +0x64 (Lucky Lucky);
+  the seed is read unsigned (the disassembly's sign fix-up at 0x1a3ee0);
+- then FUN_001c5b10, FUN_001c8590 and FUN_001d54d8 with the point and the row (not read).
+
+Bit 0x200 of 0x35d268 skips the prizes and items; the player state FUN_001ce6c0 (+0x588 bit 0x2000000) remaps the kinds
+(table 0x37b4a0) and skips the items. Both are taken as clear. `enemy_ai::compute_drop` does this with Sora's Jackpot and
+Lucky Lucky from `abilities::Abilities` and logs `drop (host 1.92) asked row .., used row ..: prizes per kind [..],
+items [..]`; tests `a_drop_follows_fun_001a3cb0`, `prize_rows_parse_and_fall_back_to_row_0x48`, `real_przt`. Gaps: no
+prize objects (their flight, pickup and effects), the three calls at the end, the flags and the generator's real state.
 
 ## Acceptance run
 

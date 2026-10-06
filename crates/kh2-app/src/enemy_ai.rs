@@ -385,6 +385,13 @@ fn call_id(c: &Call) -> (u16, u16) {
 // ---------------------------------------------------------------------------------------------------
 // Game space
 
+/// FUN_0017bbc0 (host 0.43): an angle into -pi..pi with fmod by 2 pi, from above for a positive angle
+/// and from below otherwise (pi and 2 pi are the floats at 0x37a528 / 0x37a52c, 0x40490fdb / 0x40c90fdb).
+fn game_wrap_angle(x: f32) -> f32 {
+    let (pi, two_pi) = (f32::from_bits(0x4049_0fdb), f32::from_bits(0x40c9_0fdb));
+    if x > 0.0 { (x + pi) % two_pi - pi } else { pi - (pi - x) % two_pi }
+}
+
 /// A position in the app (centimetres, Y up) as the script sees it.
 fn to_game(p: Vec3) -> Vec4 {
     [p.x, -p.y, -p.z, 1.0]
@@ -956,6 +963,23 @@ impl BevyHost<'_> {
                 Some(p) => imp(Value::Vec(to_game(p))),
                 None => missing(Value::Vec([0.0; 4]), "ground position of an object other than self and the player"),
             },
+            // 0.42 angle_of (FUN_0016d060): atan2(v.x, v.z) through the game's FUN_003003e8.
+            Call::Func { group: 0, index: 42, args } => match args.first() {
+                Some(kh2_bdx::Arg::Vec(v)) => approx(Value::Float(v[0].atan2(v[2])), "the platform's atan2, not the game's FUN_003003e8 (same function, last-bit differences possible)"),
+                _ => missing(Value::Float(0.0), "angle_of without a vector"),
+            },
+            // 0.43 wrap_angle (FUN_0016de78 -> FUN_0017bbc0).
+            Call::Func { group: 0, index: 43, args } => imp(Value::Float(game_wrap_angle(args.first().map_or(0.0, |a| a.float())))),
+            // 1.94 obj_valid (0x170150): 0 is false, else FUN_0019a3f8: in the object list (FUN_001b80e8)
+            // and FUN_0019a440 clear (+0x108 bits 0x80000 / 0x10000000, not traced: read clear).
+            Call::Func { group: 1, index: 94, args } => {
+                let o = args.first().map_or(0, |a| a.int() as u32);
+                if o == me || o == PLAYER || o == TARGET {
+                    approx(Value::Bool(true), "self and the player are in the object list; the flags of FUN_0019a440 are read clear")
+                } else {
+                    approx(Value::Bool(false), "an object other than self and the player: not known to this host, read as absent")
+                }
+            }
             // 1.150 (0x171600): bit n-1 of the byte at object +0x238. Its writer was not found; a new
             // object's byte is taken as 0.
             Call::Func { group: 1, index: 150, .. } => stub(Value::Bool(false), "byte +0x238 of the object: writer not found, read as 0"),
@@ -1500,6 +1524,16 @@ mod tests {
             assert_eq!(out[&k][1].2, 0.0);
         }
         assert_eq!(m.seed, seed);
+    }
+
+    #[test]
+    fn wrap_angle_follows_fun_0017bbc0() {
+        let pi = f32::from_bits(0x4049_0fdb);
+        assert_eq!(game_wrap_angle(0.0), 0.0);
+        assert!((game_wrap_angle(3.0 * pi / 2.0) + pi / 2.0).abs() < 1e-5);
+        assert!((game_wrap_angle(-3.0 * pi / 2.0) - pi / 2.0).abs() < 1e-5);
+        assert!((game_wrap_angle(0.5) - 0.5).abs() < 1e-6);
+        assert!((game_wrap_angle(-0.5) + 0.5).abs() < 1e-6);
     }
 
     /// A clash hands two volume objects to the script; word +8 of each is its owner.

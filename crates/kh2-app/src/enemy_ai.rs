@@ -371,12 +371,8 @@ fn ai_update(
     mut player_cmds: MessageWriter<PlayerReactionCmd>,
     mut player_reaction: ResMut<PlayerReaction>,
     (mut trace, mut mailbox): (ResMut<AiTrace>, ResMut<Mailbox>),
-    (programs, abilities, prize_pool, mut prize_drops): (
-        Res<AiPrograms>,
-        Option<Res<crate::abilities::Abilities>>,
-        Option<Res<crate::prize::PrizePool>>,
-        MessageWriter<crate::prize::PrizeDrop>,
-    ),
+    (programs, abilities): (Res<AiPrograms>, Option<Res<crate::abilities::Abilities>>),
+    (prize_pool, mut prize_drops): (Option<Res<crate::prize::PrizePool>>, MessageWriter<crate::prize::PrizeDrop>),
 ) {
     trace.tick += 1;
     if trace.tick.is_multiple_of(SUMMARY_EVERY) {

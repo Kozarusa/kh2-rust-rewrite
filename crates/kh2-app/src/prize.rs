@@ -769,12 +769,10 @@ fn run_prizes(
     mut prizes: Query<(Entity, &mut PrizeObj, &mut Transform), Without<Sora>>,
     mut sora: Query<(&Transform, &mut Sora)>,
     bodies: Query<(&Animator, &GlobalTransform)>,
-    (mut magic, mut drive, abilities, mut progress): (
-        Option<ResMut<crate::magic::MagicState>>,
-        Option<ResMut<crate::drive::DriveState>>,
-        Option<Res<crate::abilities::Abilities>>,
-        Option<ResMut<crate::progress::Progress>>,
-    ),
+    mut magic: Option<ResMut<crate::magic::MagicState>>,
+    mut drive: Option<ResMut<crate::drive::DriveState>>,
+    abilities: Option<Res<crate::abilities::Abilities>>,
+    mut progress: Option<ResMut<crate::progress::Progress>>,
     mut sounds: MessageWriter<crate::audio::PlaySe>,
     mut munny: MessageWriter<MunnyGained>,
 ) {

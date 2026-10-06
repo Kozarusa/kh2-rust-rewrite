@@ -189,6 +189,11 @@ pub fn orb_consts(elf: &[u8]) -> Option<Consts> {
     Some(c)
 }
 
+/// A word of the executable at a virtual address.
+pub fn exe_word(elf: &[u8], va: u32) -> Option<u32> {
+    exe_bytes(elf, va).map(u32::from_le_bytes)
+}
+
 fn exe_bytes(elf: &[u8], va: u32) -> Option<[u8; 4]> {
     let u16_at = |o: usize| elf.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]]) as usize);
     let u32_at = |o: usize| elf.get(o..o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));

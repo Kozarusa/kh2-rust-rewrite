@@ -135,8 +135,9 @@ pub mod key {
     /// The attack chosen when nothing else qualifies, on the ground and in the air.
     pub const GROUND_ATTACK: u8 = 5;
     pub const AIR_ATTACK: u8 = 9;
-    /// Chosen by the wall probe (FUN_001cbcf8), whatever its group says.
-    pub const WALL_PROBE: u8 = 1;
+    /// Flagged by the ledge probe (FUN_001cbcf8 -> FUN_0019a8e8: no floor ahead), whatever its
+    /// group says.
+    pub const LEDGE_PROBE: u8 = 1;
     pub const GUARD: u8 = 11;
     /// Explicit actions tried on an attack press before the table selection, in this order
     /// (FUN_00177ea0): Finishing Leap, Upper Slash, Horizontal Slash.
@@ -323,9 +324,11 @@ pub struct Scene {
     /// Every target point of the other enemies (including the target's): group 2 records pass when
     /// any of them is inside the window.
     pub others: Vec<Probe>,
-    /// The wall probe of FUN_001cbcf8 hit something: the actor's body sphere swept forward by its
-    /// radius plus `plyr` AttackJFront touched a wall. It flags key 1 whatever that record says.
-    pub wall_probe: bool,
+    /// The ledge probe of FUN_001cbcf8 (FUN_0019a8e8, bit 32 of actor +0x600) is set: after the
+    /// actor's body sphere is swept forward by its radius plus `plyr` AttackJFront, the floor test
+    /// at the sweep's end found no floor, or one too far below. It flags key 1 whatever that record
+    /// says.
+    pub ledge_probe: bool,
     /// The actor's jump height (FUN_0016be20), added to the reach of records with flag bit 1.
     pub jump_height: f32,
 }
@@ -352,7 +355,7 @@ pub struct Evaluation {
 impl Moveset {
     /// FUN_001cbcf8: one verdict per record. Group 3 records are flagged when available, group 1 when
     /// available and the target is inside the window, group 2 when available and any other enemy's
-    /// target point is. Key 1 is also flagged by the wall probe.
+    /// target point is. Key 1 is also flagged by the ledge probe.
     pub fn evaluate(&self, chain: &Chain, scene: &Scene) -> Vec<Evaluation> {
         self.actions
             .iter()
@@ -384,7 +387,7 @@ impl Moveset {
                     },
                     _ => Verdict::ByKeyOnly,
                 };
-                if a.key == key::WALL_PROBE && scene.wall_probe {
+                if a.key == key::LEDGE_PROBE && scene.ledge_probe {
                     verdict = Verdict::Flagged;
                 }
                 Evaluation { index, verdict }

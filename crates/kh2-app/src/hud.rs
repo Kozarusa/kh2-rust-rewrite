@@ -28,12 +28,15 @@ mod hud_text;
 mod hud_card;
 #[path = "hud_party.rs"]
 pub(crate) mod hud_party;
+#[path = "hud_msgwin.rs"]
+pub(crate) mod hud_msgwin;
 
 use hud_gauge::{DriveGauge, DriveTables, FaceFile, MpRecharge, SoraPanel};
 use hud_gfx::{HudGfxPlugin, HudScene};
 use hud_banner::{BannerNodes, HudBanner, MunnyPopups, NumberStrips, StripNodes};
 use hud_card::{AreaCard, CardNodes};
 use hud_menu::{CommandMenu, MenuFile, MenuNodes, MenuTables};
+use hud_msgwin::{MsgWindow, WindowNodes};
 use hud_party::{PartyMembers, PartyNodes};
 use hud_target::{TargetBubble, TargetHud};
 
@@ -64,6 +67,8 @@ impl Plugin for HudPlugin {
             .init_resource::<CardNodes>()
             .init_resource::<PartyMembers>()
             .init_resource::<PartyNodes>()
+            .init_resource::<MsgWindow>()
+            .init_resource::<WindowNodes>()
             .add_systems(Startup, (setup, load_files).chain())
             .add_systems(
                 Update,
@@ -78,6 +83,7 @@ impl Plugin for HudPlugin {
                         hud_banner::update,
                         hud_banner::update_strips,
                         hud_card::update,
+                        hud_msgwin::update,
                         hud_text::demo,
                     )
                         .chain(),

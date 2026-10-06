@@ -26,6 +26,10 @@ pub struct TextSys {
     icon_file: usize,
     /// Colour column of the font-style table (the current world's index in `text::WORLDS`).
     pub world: usize,
+    /// Scene file of the message-window frames: the `md_m` sequence of `fontinfo.bar` with the
+    /// `md_m` image of the world's message file (0x190b70 loads it into the window texture
+    /// 0x1c95710 when the world's file is bound, 0x168ba8). `None` when the world file has no image.
+    pub frame_file: Option<usize>,
 }
 
 /// A text drawn by a node: the message, how to lay it out, and where it sits from the node's origin.
@@ -46,9 +50,12 @@ fn atlas_key(a: Atlas) -> u8 {
 impl TextSys {
     /// Reads the font and message files from the disc and adds the atlas textures to `files`.
     pub fn load(disc: &Disc, world: &str, images: &mut Assets<Image>, files: &mut Vec<SeqFile>) -> Option<TextSys> {
-        let set = FontSet::parse(&disc.read("msg/us/fontinfo.bar")?, &disc.read("msg/us/fontimage.bar")?)?;
+        let info = disc.read("msg/us/fontinfo.bar")?;
+        let set = FontSet::parse(&info, &disc.read("msg/us/fontimage.bar")?)?;
         let messages = disc.read("msg/us/sys.bar").and_then(|b| Messages::from_bar(&b));
-        let world_messages = disc.read(&format!("msg/us/{world}.bar")).and_then(|b| Messages::from_bar(&b));
+        let world_bar = disc.read(&format!("msg/us/{world}.bar"));
+        let world_messages = world_bar.as_ref().and_then(|b| Messages::from_bar(b));
+        let frame_file = frame_file(&info, world_bar.as_deref(), images, files);
         let places = disc.read("msg/us/place.bin").and_then(|b| Places::parse(&b));
         let colors = disc.read("03system.bin").and_then(|b| {
             let e = kh2_bar::parse(&b).ok()?;
@@ -68,7 +75,18 @@ impl TextSys {
         }
         let icon_file = add(set.icons_rgba(), files);
         let world = text::WORLDS.iter().position(|w| *w == world).unwrap_or(0);
-        Some(TextSys { set, messages, world_messages, places, colors, files: map, icon_file, world })
+        Some(TextSys { set, messages, world_messages, places, colors, files: map, icon_file, world, frame_file })
+    }
+
+    /// Colour `id` of the font-style table for the current world (0x1a7df8), white if missing.
+    pub fn color(&self, id: u32) -> [u8; 4] {
+        self.colors.as_ref().and_then(|c| c.color(id, self.world)).unwrap_or([0x80; 4])
+    }
+
+    /// Lays `tokens` out with `style` and tells whether the typewriter has reached the end
+    /// (`time` is the label's draw count, as in `quads`).
+    pub fn complete(&self, tokens: &[Token], style: &Style, time: f32) -> bool {
+        text::layout(&self.set, self.colors.as_ref(), tokens, &Style { time, ..style.clone() }, [0.0, 0.0]).complete
     }
 
     /// A label for system message `id` (bit 15 of a table field is ignored).
@@ -114,6 +132,16 @@ impl TextSys {
     pub fn measure(&self, label: &Label) -> [f32; 2] {
         text::layout(&self.set, self.colors.as_ref(), &label.tokens, &label.style, [0.0, 0.0]).size
     }
+}
+
+/// The message-window frame file: `md_m` sequence of `fontinfo.bar`, `md_m` image of the world's
+/// message file (the system file's is empty, so there is no fallback to it).
+fn frame_file(info: &[u8], world_bar: Option<&[u8]>, images: &mut Assets<Image>, files: &mut Vec<SeqFile>) -> Option<usize> {
+    let find = |bar: &[u8], kind: u16| kh2_bar::parse(bar).ok()?.iter().find(|e| e.tag == "md_m" && e.kind == kind && !e.data.is_empty()).map(|e| e.data.to_vec());
+    let seq = kh2_image::seqd::parse(&find(info, 25)?)?;
+    let img = kh2_image::imgd::decode(&find(world_bar?, 24)?)?;
+    files.push(SeqFile::new(&img, seq, images));
+    Some(files.len() - 1)
 }
 
 fn to_quad(q: &GlyphQuad, fade: f32) -> Quad {

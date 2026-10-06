@@ -355,6 +355,14 @@ fn ai_attach(mut commands: Commands, programs: Res<AiPrograms>, q: Query<(Entity
     }
 }
 
+/// The scripts, Sora's abilities, the mission manager (WP-7E: host 4.29, no-prize flag) and the global events.
+type ScriptWorld<'w, 's> = (
+    Res<'w, AiPrograms>,
+    Option<Res<'w, crate::abilities::Abilities>>,
+    Option<Res<'w, crate::struggle::Mission>>,
+    MessageReader<'w, 's, crate::struggle::GlobalEvent>,
+);
+
 /// One tick of every scripted enemy: deliver events, run the script, carry out what it asked for.
 #[allow(clippy::too_many_arguments)]
 fn ai_update(
@@ -371,12 +379,7 @@ fn ai_update(
     mut player_cmds: MessageWriter<PlayerReactionCmd>,
     mut player_reaction: ResMut<PlayerReaction>,
     (mut trace, mut mailbox): (ResMut<AiTrace>, ResMut<Mailbox>),
-    (programs, abilities, mission, mut global_events): (
-        Res<AiPrograms>,
-        Option<Res<crate::abilities::Abilities>>,
-        Option<Res<crate::struggle::Mission>>,
-        MessageReader<crate::struggle::GlobalEvent>,
-    ),
+    (programs, abilities, mission, mut global_events): ScriptWorld,
     (prize_pool, mut prize_drops, mut item_drops, mut collect_all): (
         Option<Res<crate::prize::PrizePool>>,
         MessageWriter<crate::prize::PrizeDrop>,

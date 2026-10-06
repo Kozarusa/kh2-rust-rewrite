@@ -17,6 +17,7 @@
 //!   two digits each (table 0x358680), placed one after the other by their widths; hidden from one hour on.
 //!   Counting down with no minutes left, seconds 2, 1, 0 start groups 0x1f, 0x1e, 0x1d once each (with sound
 //!   0x2b, not played here) and the end group 0x1c at 0.
+//!
 //! Children are placed from their parent's position plus their own offset (`FUN_00138ed0`, `FUN_00138ea8`);
 //! the frame node itself stands at (0, 0): the sequence carries the screen position [inferred].
 

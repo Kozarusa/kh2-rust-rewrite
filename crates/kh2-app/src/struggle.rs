@@ -255,12 +255,13 @@ pub fn orb_tick(o: &mut Orb, c: &Consts, sweep: impl Fn(Vec3, Vec3) -> prize::Sw
         bounce = prize::fall_physics(&mut o.p, c, &sweep);
     }
     let mut side = None;
-    if prize::shrink_or_check(&mut o.p, c, &sweep) && o.p.pickable {
-        if let Some(t) = takers.iter().find(|t| prize::in_reach(c, &o.p, t.feet, t.extra)) {
-            prize::start_absorb(&mut o.p, c, t.centre);
-            o.taker = Some(t.ent);
-            side = Some(side_of(t.player));
-        }
+    if prize::shrink_or_check(&mut o.p, c, &sweep)
+        && o.p.pickable
+        && let Some(t) = takers.iter().find(|t| prize::in_reach(c, &o.p, t.feet, t.extra))
+    {
+        prize::start_absorb(&mut o.p, c, t.centre);
+        o.taker = Some(t.ent);
+        side = Some(side_of(t.player));
     }
     (true, bounce, side)
 }

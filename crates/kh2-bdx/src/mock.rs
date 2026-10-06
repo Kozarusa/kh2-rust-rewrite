@@ -132,6 +132,8 @@ impl Host for MockHost {
             // 1.63 motion_near_end: the toy motions have no return frame, so their end.
             Call::Func { group: 1, index: 63, .. } => Value::Bool(self.motion_frames_left <= 0.0),
             Call::MotionState { .. } => Value::Int(0),
+            // 1.98 ground_position: the toy world is flat at the object's height.
+            Call::Func { group: 1, index: 98, .. } => Value::Vec(self.position),
             Call::MotionLength { .. } | Call::MotionEnd { .. } => Value::Float(self.motion_length),
             Call::OnScreen { .. } => Value::Bool(true),
             Call::Airborne { .. } => Value::Bool(self.airborne > 0),

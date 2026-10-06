@@ -334,7 +334,7 @@ fn spline(p: &[Vec3]) -> Vec<Vec3> {
     for i in 1..n - 2 {
         let r = 1.0 / c[i - 1];
         m[i + 1] = (d[i + 1] - d[i]) - m[i] * r;
-        c[i] = r * -1.0 + 4.0;
+        c[i] = 4.0 - r;
     }
     let last = m[n - 1];
     m[n - 2] -= last;
@@ -407,8 +407,8 @@ pub(crate) fn trail_draw(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
             let s = (2 * i) as u16;
             q.indices = [s, s + 1, s + 2, s + 3];
             if let Some((alpha, uvs)) = obj.trail_prims.get(prims.len()) {
-                for c in 0..4 {
-                    q.colors[c][3] = alpha[c];
+                for (col, a) in q.colors.iter_mut().zip(alpha) {
+                    col[3] = *a;
                 }
                 q.uvs = *uvs;
             }
@@ -418,7 +418,7 @@ pub(crate) fn trail_draw(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
     let first_pass = obj.mem[st + 5] != 0;
     // The stationary tail (trailing points equal to their neighbour) is only counted on the first
     // pass; afterwards the whole trail counts as visible (FUN_002002f8).
-    let mut still = 0;
+    let mut still = 0usize;
     if first_pass {
         let mut i = segs;
         while i > 0 && verts[2 * i] == verts[2 * i - 2] {

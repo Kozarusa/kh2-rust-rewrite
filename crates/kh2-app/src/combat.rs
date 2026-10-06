@@ -232,6 +232,9 @@ pub fn hurt_spheroid(s: &Shape, anim: &Animator, body: &GlobalTransform) -> Hurt
     HurtSpheroid { center, radius: s.radius.abs() * SCALE, half_height: s.height * SCALE }
 }
 
+/// A snapshot of a hittable fighter: entity, team, hurt shapes with their spheroids, position.
+type Defender = (Entity, Team, Vec<(Volume, HurtSpheroid)>, Vec3);
+
 /// The hurt shapes of a body paired with the spheroids the hit point is taken on.
 fn hurt_shapes(anim: &Animator, body: &GlobalTransform) -> Vec<(Volume, HurtSpheroid)> {
     anim.rig
@@ -269,7 +272,7 @@ pub fn detect_hits(
     let log = std::env::var_os("KH2_HITLOG").is_some();
     let mut skipped_now = false;
     // Snapshot defenders first.
-    let defenders: Vec<(Entity, Team, Vec<(Volume, HurtSpheroid)>, Vec3)> = fighters
+    let defenders: Vec<Defender> = fighters
         .iter()
         .filter(|(_, f, _)| f.hittable)
         .filter_map(|(e, f, g)| bodies.get(f.hurt_body).ok().map(|(a, bg)| (e, f.team, hurt_shapes(a, bg), g.translation())))

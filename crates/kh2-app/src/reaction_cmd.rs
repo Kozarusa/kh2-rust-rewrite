@@ -74,8 +74,12 @@ pub fn scan_mset(m: &kh2_anim::Mset) -> Vec<(usize, String, Offer, i16, i16)> {
 }
 
 /// Execute values the player's availability switch (FUN_001ba2c0) handles itself. A reaction command
-/// with one of these is not decided by flags alone and is reported as not ported.
-const EXECUTE_SWITCH: &[u16] = &[1, 2, 4, 5, 0x37, 0x48, 0x51, 0x67, 0x68, 0x7f, 0x13c, 0x14a, 0x1c4];
+/// with one of these is not decided by flags alone and is reported as not ported. 0x1c4 (452) is
+/// ported in [`status`].
+const EXECUTE_SWITCH: &[u16] = &[1, 2, 4, 5, 0x37, 0x48, 0x51, 0x67, 0x68, 0x7f, 0x13c, 0x14a];
+
+/// Execute 0x1c4 (command 452): the case of FUN_001ba2c0.
+const EXECUTE_MP_COMMAND: u16 = 0x1c4;
 
 /// What the availability test reads.
 #[derive(Clone, Copy, Debug, Default)]
@@ -91,6 +95,11 @@ pub struct Ctx {
     pub player_blocked: bool,
     /// Horizontal distance from the offering object to the player, game units.
     pub distance: f32,
+    /// The player's MP (status block +0x180), for Execute 0x1c4.
+    pub mp: i32,
+    /// The status block's float at +0x1c0 is above zero (FUN_001a05d0; Execute 0x1c4 is refused
+    /// while it holds). Its meaning was not traced; the app passes false.
+    pub mp_timer: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,6 +109,8 @@ pub enum Status {
     Blocked,
     /// Farther than `DistRange` (FUN_0019c3c8).
     TooFar,
+    /// Status 2 of FUN_001ba2c0: Execute 0x1c4 with less MP than the row's `Cost`.
+    NoMp,
     /// The Execute value belongs to a command the availability switch handles with state the app has
     /// no source for.
     NotPorted,
@@ -119,6 +130,10 @@ pub struct CmdRow {
     pub message_id: i32,
     pub cmd_action: u8,
     pub reaction_count: u16,
+    /// The command a Flags bit 6 row waits for in the player's window (+0x22, FUN_0019cf58).
+    pub require: u16,
+    /// MP cost (+0x1c), read by Execute 0x1c4.
+    pub cost: u8,
 }
 
 impl From<&t::Cmd> for CmdRow {
@@ -134,6 +149,8 @@ impl From<&t::Cmd> for CmdRow {
             message_id: c.message_id,
             cmd_action: c.cmd_action,
             reaction_count: c.reaction_count,
+            require: c.require,
+            cost: c.cost,
         }
     }
 }
@@ -158,6 +175,16 @@ pub fn status(cmds: &[CmdRow], c: &CmdRow, ctx: &Ctx) -> Status {
     if EXECUTE_SWITCH.contains(&c.execute) {
         return Status::NotPorted;
     }
+    // FUN_001ba2c0 case 0x1c4: 5 while the status block's +0x1c0 timer runs, else 2 when the MP
+    // (+0x180) is below the row's Cost; the flags and form tests below still run and win with 5.
+    let mut own = Status::Available;
+    if c.execute == EXECUTE_MP_COMMAND {
+        if ctx.mp_timer {
+            own = Status::Blocked;
+        } else if ctx.mp < c.cost as i32 {
+            own = Status::NoMp;
+        }
+    }
     // FUN_001b70b8
     let blocked = (c.flags >> 1 & 1 != 0 && ctx.player_blocked)
         || (c.flags >> 16 & 1 != 0 && !ctx.battle)
@@ -165,10 +192,31 @@ pub fn status(cmds: &[CmdRow], c: &CmdRow, ctx: &Ctx) -> Status {
     if blocked || disable_mask(cmds, c) >> (ctx.form & 0x1f) & 1 != 0 {
         return Status::Blocked;
     }
+    if own != Status::Available {
+        return own;
+    }
     if c.dist_range != 0 && ctx.distance > c.dist_range as f32 {
         return Status::TooFar;
     }
     Status::Available
+}
+
+/// FUN_0019cf58: whether a native part's command row may be offered at all. With the battle flag
+/// set the row needs Flags bit 4; a row with Flags bit 6 also needs the player's reaction window:
+/// flag 0x200000 of his +0x160 (range trigger 26 of his own motion covering the frame, FUN_00188030
+/// case 0x1a; trigger 25 sets 0x100000, which this test does not read) with +0x50c (the trigger's
+/// parameter) equal to the row's `Require`. `window` is that parameter while trigger 26 covers the
+/// player's frame.
+pub fn native_gate(c: &CmdRow, battle: bool, window: Option<u16>) -> bool {
+    if battle && c.flags >> 4 & 1 == 0 {
+        return false;
+    }
+    c.flags >> 6 & 1 == 0 || window == Some(c.require)
+}
+
+/// The parameter of a range trigger 26 covering `gframe` of a motion (the player's window).
+pub fn window_at(t: &Triggers, gframe: f32) -> Option<u16> {
+    t.active(gframe).filter(|r| r.id == 26).find_map(|r| r.params.first().map(|&p| p as u16))
 }
 
 /// The commands and message ids the offer needs, read once.
@@ -230,8 +278,8 @@ pub enum PlayerReactionCmd {
     Velocity { dir: Vec3, speed: f32 },
     /// Host 1.13: queue motion `slot` of the player's own set behind the running one (FUN_0017e170).
     QueueMotion { slot: usize, blend: f32 },
-    /// Commands 455 and 457 are the player's own (FUN_001ce518, not the generic accept path): the
-    /// player's timer at +0xb68 is set (120 ticks and motion 0xc1 for 455, 30 ticks and no motion for
+    /// Commands 455 and 457 accepted by a player of Mickey's class (FUN_001ce518, not the generic
+    /// accept path; Sora's class sends them to the target as event 11): the player's timer at +0xb68 is set (120 ticks and motion 0xc1 for 455, 30 ticks and no motion for
     /// 457); while it runs FUN_001ce240 adds one unit to the drive gauge (FUN_001a0290) each time its
     /// second timer (+0xb6c) runs out with the motion near its end, and at zero asks for motion 5. The
     /// consumer (`drive.rs`, `sora.rs`) is a hook.
@@ -357,12 +405,15 @@ fn offer(
     // candidate replaces the best one when its priority is higher, or equal and it is nearer.
     let mut best: Option<(u8, f32)> = None;
     let s_yaw = st.rotation.to_euler(EulerRot::YXZ).0;
+    // The player's window (+0x160 bit 0x200000 and +0x50c): range trigger 26 of his playing motion.
+    let window = anims.get(s.body).ok().and_then(|a| a.triggers().and_then(|tg| window_at(tg, a.gframe())));
+    let native_ctx = Ctx { form, battle, mp: s.mp, ..Default::default() };
     for (e, en, tr) in &enemies {
         let Ok(a) = anims.get(en.body) else { continue };
         if let (Some(table), Some(body)) = (tables.by_kind.get(en.kind.name), tables.player.as_ref())
             && en.alive()
         {
-            native_offers(&rules, table, body, a, (e, tr), (st.translation / SCALE, s_yaw), &mut best, &mut slot.0);
+            native_offers(&rules, table, body, a, (e, tr), (st.translation / SCALE, s_yaw), (&native_ctx, window), &mut best, &mut slot.0);
         }
         let mut found = a.triggers().map(|tg| offers_at(tg, a.gframe())).unwrap_or_default();
         // Harness: every living enemy offers this command while it plays any motion (no enemy on the
@@ -373,7 +424,7 @@ fn offer(
         for o in found {
             let Some(c) = rules.cmd(o.cmd) else { continue };
             let d = (tr.translation - st.translation).with_y(0.0).length() / SCALE;
-            let ctx = Ctx { form, battle, distance: d, ..Default::default() };
+            let ctx = Ctx { distance: d, ..native_ctx };
             let status = status(&rules.cmds, c, &ctx);
             slot.0 = Some(Active { cmd: o.cmd, pos: o.pos, from: e, status, message: c.message_id as u32 });
         }
@@ -386,22 +437,61 @@ fn offer(
     }
 }
 
-/// Commands the player's own handler (FUN_001ce518) runs itself: id, timer ticks (the floats at 0x37c340 and
-/// 0x37c344 are 120.0 and 30.0) and motion. 455 (0x1c7) plays motion 0xc1, 457 (0x1c9) none. Not ported:
-/// 456 (0x1c8, motion 0xc0 and FUN_001ce680) and 452 (0x1c4), which this disc offers to nobody here.
-fn own_command(cmd: u16) -> Option<(f32, Option<u16>)> {
-    match cmd {
-        455 => Some((120.0, Some(0xc1))),
-        457 => Some((30.0, None)),
+/// The player object's class: the command handler is entry +0x98 of its class table (0x3604a8 for
+/// Sora, 0x3603f8 for Mickey, 0x35ca40 = FUN_00177b18 for the base player class 0x35c9a8). Sora (class table 0x360410, built by FUN_001ce718, which stores itself
+/// in DAT_00360400) has FUN_001cf030: Execute 0x48, 4, 5, 0x49, 0x51 and 0x13c are its own, everything
+/// else goes to FUN_00177b18 -> FUN_00177c20 (the generic path: use counter, CmdAction, event 11).
+/// Mickey's class (table 0x360360, FUN_001cda78; drive gauge maximum 3) has FUN_001ce518, which takes
+/// Execute 0x1c4, 0x1c7, 0x1c8 and 0x1c9 itself ([`mickey_command`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlayerClass {
+    Sora,
+    Mickey,
+}
+
+/// The app's player is Sora. `KH2_CHARGE_ON_SORA=1` (the drive.rs harness for the charge, NOT the
+/// original's behaviour) routes the commands through Mickey's handler instead.
+fn player_class() -> PlayerClass {
+    if std::env::var("KH2_CHARGE_ON_SORA").is_ok_and(|v| v != "0") { PlayerClass::Mickey } else { PlayerClass::Sora }
+}
+
+/// What Mickey's handler FUN_001ce518 does with an Execute value it takes itself.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MickeyCommand {
+    /// 0x1c7 (455) and 0x1c9 (457): the drive-gauge charge (timer +0xb68 = 120.0 / 30.0, the floats at
+    /// 0x37c340 / 0x37c344; 455 also starts motion 0xc1 and hangs an end callback).
+    Charge { ticks: f32, motion: Option<u16> },
+    /// 0x1c4 (452): +0xaf4 = the row's Cost byte, motion 0xc2 requested, motion 4 queued behind it.
+    Cost { cost: u8, motion: u16, queued: u16 },
+    /// 0x1c8 (456): motion 0xc0 requested, then FUN_001ce680: the message queue at +0xb74 is cleared
+    /// (FUN_001d0588), the record at +0xb40 released (FUN_0019b580) and +0x10c bit 0x200000 set.
+    Release { motion: u16 },
+}
+
+/// FUN_001ce518's own cases, keyed by the row's Execute (the halfword at +2 of the command row).
+pub fn mickey_command(c: &CmdRow) -> Option<MickeyCommand> {
+    match c.execute {
+        0x1c7 => Some(MickeyCommand::Charge { ticks: 120.0, motion: Some(0xc1) }),
+        0x1c9 => Some(MickeyCommand::Charge { ticks: 30.0, motion: None }),
+        0x1c4 => Some(MickeyCommand::Cost { cost: c.cost, motion: 0xc2, queued: 4 }),
+        0x1c8 => Some(MickeyCommand::Release { motion: 0xc0 }),
         _ => None,
+    }
+}
+
+/// The handler of `class` for a command: `Some` when the class takes it itself, `None` for the generic
+/// path. Sora's own cases (summons, forms) are not reaction rows and are not reached from here.
+pub fn own_command(class: PlayerClass, c: &CmdRow) -> Option<MickeyCommand> {
+    match class {
+        PlayerClass::Sora => None,
+        PlayerClass::Mickey => mickey_command(c),
     }
 }
 
 /// The native offer of one enemy (FUN_0019cb70): every enabled reaction part (`reaction_parts`) whose
 /// volume overlaps the player's body volume offers its command. The row's Flags decide first
-/// (FUN_0019cf58: bit 4 lets it show in battle, taken as on in the app; bit 6 needs the trigger window
-/// of the player's own motion, id 25 or 26, which the app does not read: those rows are never offered
-/// [GAP]); the Range column is the cone test of FUN_0019c868 (the player must face the enemy within that
+/// ([`native_gate`], FUN_0019cf58: bit 4 in battle, bit 6 the player's trigger 26 window, read from
+/// Sora's playing motion); the Range column is the cone test of FUN_0019c868 (the player must face the enemy within that
 /// dot product; -1 is off). The candidate replaces the best so far when its priority is higher, or equal
 /// and it is nearer (FUN_0019c520); the lock-on distance bonus of FUN_0019c868 is not applied [GAP].
 #[allow(clippy::too_many_arguments)]
@@ -412,6 +502,7 @@ fn native_offers(
     anim: &Animator,
     (e, tr): (Entity, &Transform),
     (player_pos, player_yaw): (Vec3, f32),
+    (ctx, window): (&Ctx, Option<u16>),
     best: &mut Option<(u8, f32)>,
     slot: &mut Option<Active>,
 ) {
@@ -433,7 +524,7 @@ fn native_offers(
             continue;
         }
         let Some(c) = rules.cmd(r.id) else { continue };
-        if c.flags >> 6 & 1 != 0 {
+        if !native_gate(c, ctx.battle, window) {
             continue;
         }
         let Some(shape) = parts::shape_of(r, epos, eyaw) else { continue };
@@ -444,7 +535,7 @@ fn native_offers(
         if best.is_some_and(|(p, d)| c.priority < p || (c.priority == p && d <= dist)) {
             continue;
         }
-        let mut st = status(&rules.cmds, c, &Ctx { distance: (epos - player_pos).with_y(0.0).length(), ..Default::default() });
+        let mut st = status(&rules.cmds, c, &Ctx { distance: (epos - player_pos).with_y(0.0).length(), ..*ctx });
         if st == Status::Available && c.range > -1.0 {
             let face = Vec3::new(player_yaw.sin(), 0.0, player_yaw.cos());
             if (epos - player_pos).normalize_or_zero().dot(face) < c.range {
@@ -485,13 +576,29 @@ fn accept(
         return;
     }
     let Some(c) = rules.cmd(a.cmd) else { return };
+    // The player class's handler first: Mickey's FUN_001ce518 takes its own Execute values before the
+    // generic path, so they send no event, bump no use counter and apply no CmdAction (all of that is
+    // inside FUN_00177c20). Sora's FUN_001cf030 hands every reaction row to the generic path.
+    if let Some(own) = own_command(player_class(), c) {
+        match own {
+            MickeyCommand::Charge { ticks, motion } => {
+                player_cmds.write(PlayerReactionCmd::Charge { ticks, motion });
+            }
+            // No player object of the app is of Mickey's class: logged only.
+            MickeyCommand::Cost { .. } | MickeyCommand::Release { .. } => {}
+        }
+        if log.0 {
+            info!("reaction: accepted command {} through Mickey's class handler (FUN_001ce518): {own:?}", a.cmd);
+        }
+        return;
+    }
     // FUN_00177c20: the use counter first (it is counted even when nothing follows).
-    if c.reaction_count != 0 && own_command(a.cmd).is_none() {
+    if c.reaction_count != 0 {
         let n = uses.0.entry(c.reaction_count).or_insert(0);
         *n = (*n + 1).min(999);
     }
     // FUN_001b80e8: the target must still be in the object list.
-    if own_command(a.cmd).is_none() && targets.get(a.from).is_err() {
+    if targets.get(a.from).is_err() {
         if log.0 {
             info!("reaction: accept of command {} dropped, the target {:?} is gone", a.cmd, a.from);
         }
@@ -505,15 +612,6 @@ fn accept(
             1 | 2 => s.motor.vel = Vec3::ZERO,
             _ => {}
         }
-    }
-    // The player's own handler FUN_001ce518 takes 455 (0x1c7) and 457 (0x1c9) before the generic path,
-    // so they send no event and bump no use counter (that is inside FUN_00177c20).
-    if let Some((ticks, motion)) = own_command(a.cmd) {
-        player_cmds.write(PlayerReactionCmd::Charge { ticks, motion });
-        if log.0 {
-            info!("reaction: accepted command {} (player's own handler): timer {ticks} ticks, motion {motion:?}; the gauge charge and the motion are the player side's [hook]", a.cmd);
-        }
-        return;
     }
     out.write(ReactionAccepted { cmd: a.cmd, pos: a.pos, target: a.from });
     if log.0 {
@@ -551,7 +649,60 @@ mod tests {
     }
 
     fn mk(flags: u32, disable: u16, dist: u16) -> CmdRow {
-        CmdRow { id: 900, execute: 900, flags, disable_form: disable, dist_range: dist, range: -1.0, priority: 100, message_id: 0, cmd_action: 0, reaction_count: 0 }
+        CmdRow { id: 900, execute: 900, flags, disable_form: disable, dist_range: dist, range: -1.0, priority: 100, message_id: 0, cmd_action: 0, reaction_count: 0, require: 0, cost: 0 }
+    }
+
+    /// FUN_0019cf58 by hand: row 287's Flags 0xb959 (bits 4 and 6 set) and Require 286.
+    #[test]
+    fn native_gate_follows_fun_0019cf58() {
+        let r287 = CmdRow { flags: 0xb959, require: 286, ..mk(0, 0, 0) };
+        // Bit 6: only inside the player's trigger 26 window whose parameter is the Require.
+        assert!(!native_gate(&r287, true, None));
+        assert!(!native_gate(&r287, true, Some(287)));
+        assert!(native_gate(&r287, true, Some(286)));
+        // Without bit 6 the window is not read; in battle bit 4 is needed.
+        let plain = CmdRow { flags: 0xb913, ..mk(0, 0, 0) };
+        assert!(native_gate(&plain, true, None));
+        let no_battle_bit = CmdRow { flags: 0x0003, ..mk(0, 0, 0) };
+        assert!(!native_gate(&no_battle_bit, true, None));
+        assert!(native_gate(&no_battle_bit, false, None));
+    }
+
+    #[test]
+    fn window_is_the_parameter_of_trigger_26() {
+        let t = trig(vec![
+            RangeTrigger { start: 0, end: 40, id: 25, params: vec![28] },
+            RangeTrigger { start: 10, end: 30, id: 26, params: vec![286] },
+        ]);
+        assert_eq!(window_at(&t, 5.0), None, "trigger 25 sets 0x100000, which the offer does not read");
+        assert_eq!(window_at(&t, 20.0), Some(286));
+        assert_eq!(window_at(&t, 31.0), None);
+    }
+
+    /// FUN_001ba2c0 case 0x1c4 (command 452, Cost 18): the +0x1c0 timer gives 5, too little MP 2,
+    /// and the flags test still wins.
+    #[test]
+    fn execute_0x1c4_needs_mp() {
+        let c = CmdRow { id: 452, execute: 0x1c4, cost: 18, ..mk(0x111, 0, 0) };
+        assert_eq!(status(&[], &c, &Ctx { mp: 18, ..Default::default() }), Status::Available);
+        assert_eq!(status(&[], &c, &Ctx { mp: 17, ..Default::default() }), Status::NoMp);
+        assert_eq!(status(&[], &c, &Ctx { mp: 99, mp_timer: true, ..Default::default() }), Status::Blocked);
+        assert_eq!(status(&[], &c, &Ctx { mp: 0, commands_locked: true, ..Default::default() }), Status::Blocked);
+    }
+
+    /// FUN_001ce518 (Mickey's class) takes 452, 455, 456 and 457 itself; Sora's class (FUN_001cf030)
+    /// sends all four down the generic path.
+    #[test]
+    fn class_handlers() {
+        let row = |id: u16, cost: u8| CmdRow { id, execute: id, cost, ..mk(0, 0, 0) };
+        assert_eq!(mickey_command(&row(455, 0)), Some(MickeyCommand::Charge { ticks: 120.0, motion: Some(0xc1) }));
+        assert_eq!(mickey_command(&row(457, 0)), Some(MickeyCommand::Charge { ticks: 30.0, motion: None }));
+        assert_eq!(mickey_command(&row(452, 18)), Some(MickeyCommand::Cost { cost: 18, motion: 0xc2, queued: 4 }));
+        assert_eq!(mickey_command(&row(456, 0)), Some(MickeyCommand::Release { motion: 0xc0 }));
+        assert_eq!(mickey_command(&row(34, 0)), None);
+        for id in [452, 455, 456, 457] {
+            assert_eq!(own_command(PlayerClass::Sora, &row(id, 0)), None);
+        }
     }
 
     #[test]
@@ -614,6 +765,44 @@ mod tests {
         }
         eprintln!("motion sets {} offers {total}", names.len());
         assert!(!names.is_empty());
+    }
+
+    /// Every motion set on the disc, slots and paired sub-motions (BAR type 20 entries): print each
+    /// range trigger 20 (offer), 25 and 26 (the player's reaction window, FUN_00188030 cases 0x19 and
+    /// 0x1a: flag 0x100000 / 0x200000 and +0x50c = the parameter). Skips without an ISO or name list.
+    #[test]
+    fn real_disc_window_scan() {
+        let Some(d) = disc() else { return };
+        let list = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../local/kh2idx.txt")).unwrap_or_default();
+        if list.is_empty() {
+            eprintln!("skipped: no name list (kh2 fetch-names)");
+            return;
+        }
+        let names: Vec<String> = {
+            let mut a = d.0.lock().unwrap();
+            a.apply_names(list.lines()).expect("names");
+            a.entries().iter().filter_map(|l| l.name.clone()).filter(|n| n.ends_with(".mset")).collect()
+        };
+        let show = |n: &str, at: &str, tg: &Triggers| {
+            for r in tg.ranges.iter().filter(|r| matches!(r.id, 20 | 25 | 26)) {
+                eprintln!("WINDOW {n} {at} trigger {} params {:?} frames {}..{}", r.id, r.params, r.start, r.end);
+            }
+        };
+        for n in &names {
+            let Some(raw) = d.read(n) else { continue };
+            if let Some(m) = kh2_anim::Mset::parse(&raw) {
+                for slot in 0..m.slots.len() {
+                    if let Some(s) = m.get(slot) {
+                        show(n, &format!("slot {slot} {}", s.tag), &s.triggers);
+                    }
+                }
+            }
+            for (slot, subs) in crate::player_reaction::paired_entries(&raw) {
+                for (sub, s) in subs {
+                    show(n, &format!("paired {slot}/{sub}"), &s.triggers);
+                }
+            }
+        }
     }
 
     /// The command table's reaction rows: the 124 rows with CmdAction 1 or 2 whose Execute is their own

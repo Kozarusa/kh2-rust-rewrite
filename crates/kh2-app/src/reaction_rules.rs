@@ -255,6 +255,28 @@ impl ExeConsts {
     }
 }
 
+/// The cone test FUN_0018d308(A, B), run both ways by FUN_0018d808 before a pair clashes. Vectors are
+/// in the app's space (local +z forward). With `ReflectRange` 0 the test passes. Otherwise the
+/// direction is A's owner's facing (FUN_0016a890), turned about Y by `ReflectAngle * 2` degrees when
+/// the angle is non-zero (FUN_0017c2e8, the game's `x' = x cos + z sin, z' = -x sin + z cos` in its own
+/// space, which reads `x' = x cos - z sin, z' = x sin + z cos` here); `from_other` is B's method +0xc
+/// (FUN_0018c4f8): the flat unit vector from B's owner (its +0x730) to A's owner (its position,
+/// FUN_0016b960), or minus A's facing when B has no owner. The pair passes when the dot product of the
+/// two is below -cos(`ReflectRange` degrees): B's owner stands inside the cone in front of A. The
+/// degree factor is the float at 0x37ac8c (0.0174533); the game's own cosine routine is FUN_003000d8.
+pub fn reflect_cone(range: u8, angle: i8, facing: Vec3, from_other: Vec3) -> bool {
+    if range == 0 {
+        return true;
+    }
+    let deg = std::f32::consts::PI / 180.0;
+    let mut dir = facing;
+    if angle != 0 {
+        let (s, c) = ((angle as f32 * 2.0) * deg).sin_cos();
+        dir = Vec3::new(facing.x * c - facing.z * s, facing.y, facing.x * s + facing.z * c);
+    }
+    from_other.dot(dir) < -(range as f32 * deg).cos()
+}
+
 /// Outcome for a party member (Sora and friends, FUN_001754a0) whose attack volume `A` overlaps
 /// another attack `B`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -267,9 +289,10 @@ pub enum ClashReaction {
     Guard,
 }
 
-/// `own` is `A`'s `RefactSelf`, `other` is `B`'s `RefactOther`. `plain_ground` is true when the
-/// actor is on the ground and neither the owner-type flag 2 nor actor flag 0x40 (+0x160) is set;
-/// anything else always takes the Reflect branch.
+/// `own` is `A`'s `RefactSelf`, `other` is `B`'s `RefactOther`. `plain_ground` is false when
+/// FUN_0019aa28 holds for the actor, or bit 2 of its mover's flags (+0xc, +8), or bit 0x40 of its
+/// +0x160 (range trigger 24 covering the frame, FUN_00188030 case 0x18); any of them takes the Reflect
+/// branch ([`ClashActor::plain_ground`]).
 pub fn party_clash(own: Refact, other: Refact, plain_ground: bool) -> ClashReaction {
     if own == Refact::Nothing || other == Refact::Nothing {
         return ClashReaction::None;
@@ -283,6 +306,49 @@ pub fn party_clash(own: Refact, other: Refact, plain_ground: bool) -> ClashReact
         ClashReaction::Guard
     }
 }
+
+/// The actor state FUN_001754a0 and FUN_00185d30 read, from the actor's own controller flags (+0x160:
+/// the controller's +0x20, cleared to the bits 0x7183 at the start of each trigger pass by
+/// FUN_0017f3d0 and set again by the range triggers covering the frame, FUN_00188030).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ClashActor {
+    /// FUN_0019aa28: the mover's flag bit 1 (+0xc, +8; the app's "airborne"), or +0x160 bit 0x20
+    /// (range trigger 3) or 0x1000000 (range trigger 30), or +0x108 bit 0x800000 (not modelled).
+    pub fun_0019aa28: bool,
+    /// +0x160 bit 0x40: range trigger 24.
+    pub flag_40: bool,
+}
+
+impl ClashActor {
+    /// `airborne` stands for the mover's bit 1; `ranges` are the ids of the range triggers covering
+    /// the actor's frame. The mover's bit 2 (read by FUN_001754a0) was not traced and is taken as clear.
+    pub fn new(airborne: bool, ranges: impl IntoIterator<Item = u8>) -> ClashActor {
+        let mut a = ClashActor { fun_0019aa28: airborne, flag_40: false };
+        for id in ranges {
+            match id {
+                3 | 30 => a.fun_0019aa28 = true,
+                24 => a.flag_40 = true,
+                _ => {}
+            }
+        }
+        a
+    }
+
+    /// The `plain_ground` argument of [`party_clash`].
+    pub fn plain_ground(&self) -> bool {
+        !self.fun_0019aa28 && !self.flag_40
+    }
+
+    /// FUN_00185d30's motion: 0x2b when FUN_0019aa28 holds, else 0x29.
+    pub fn recoil_motion(&self) -> u8 {
+        if self.fun_0019aa28 { motion::REFLECT_AIR } else { motion::REFLECT_GROUND }
+    }
+}
+
+/// Blend of the motion requests of the clash and wall recoils (FUN_00185d30) and of the guard bounce
+/// (FUN_001756c8): both pass 0.0 (`$f20` cleared, moved into `$f12` and `$f13` before the call to
+/// FUN_0017e220).
+pub const RECOIL_BLEND: f32 = 0.0;
 
 /// What the other actor classes (enemies; the handler at 0x1b2478) do on a clash.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -749,6 +815,50 @@ mod tests {
         assert_eq!(party_clash(Reflect, Guard, true), ClashReaction::Guard);
         assert_eq!(party_clash(Guard, Reflect, true), ClashReaction::Guard);
         assert_eq!(party_clash(Guard, Guard, false), ClashReaction::Reflect);
+    }
+
+    /// FUN_0018d308 by hand. A faces +z; `from_other` points from B's owner to A's owner.
+    #[test]
+    fn reflect_cone_by_hand() {
+        let face = Vec3::Z;
+        // Range 0: no test.
+        assert!(reflect_cone(0, 0, face, Vec3::Z));
+        // B straight in front: from B to A is -z, dot -1 < -cos 30 = -0.866: clashes.
+        assert!(reflect_cone(30, 0, face, -Vec3::Z));
+        // B 45 degrees to the front right: dot -0.707 > -0.866: no clash.
+        let v = -Vec3::new(45f32.to_radians().sin(), 0.0, 45f32.to_radians().cos());
+        assert!(!reflect_cone(30, 0, face, v));
+        // ...but within a 60 degree cone (-0.707 < -cos 60 = -0.5).
+        assert!(reflect_cone(60, 0, face, v));
+        // Behind A never clashes.
+        assert!(!reflect_cone(90, 0, face, Vec3::Z));
+        // ReflectAngle 10 turns the facing by 20 degrees: x' = x cos - z sin = -0.342, z' = 0.940.
+        // B along that turned direction: from B to A is (0.342, 0, -0.940), dot -1: clashes even with
+        // a 5 degree cone, while B straight ahead (dot -0.940 > -cos 5 = -0.996) does not.
+        let turned = Vec3::new(-(20f32.to_radians().sin()), 0.0, 20f32.to_radians().cos());
+        assert!(reflect_cone(5, 10, face, -turned));
+        assert!(!reflect_cone(5, 10, face, -Vec3::Z));
+    }
+
+    /// FUN_001754a0's owner flags and FUN_0019aa28: range triggers 3 and 30 count as FUN_0019aa28
+    /// (recoil 0x2b), trigger 24 only forces the recoil branch (motion 0x29).
+    #[test]
+    fn clash_actor_flags() {
+        use Refact::*;
+        let ground = ClashActor::new(false, [0u8, 1, 20]);
+        assert!(ground.plain_ground());
+        assert_eq!(party_clash(Reflect, Guard, ground.plain_ground()), ClashReaction::Guard);
+        let t24 = ClashActor::new(false, [24u8]);
+        assert_eq!(t24, ClashActor { fun_0019aa28: false, flag_40: true });
+        assert_eq!(party_clash(Reflect, Guard, t24.plain_ground()), ClashReaction::Reflect);
+        assert_eq!(t24.recoil_motion(), 0x29);
+        for ids in [[3u8], [30u8]] {
+            let a = ClashActor::new(false, ids);
+            assert!(!a.plain_ground());
+            assert_eq!(a.recoil_motion(), 0x2b);
+        }
+        assert_eq!(ClashActor::new(true, []).recoil_motion(), 0x2b);
+        assert_eq!(RECOIL_BLEND, 0.0);
     }
 
     #[test]

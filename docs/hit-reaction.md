@@ -64,9 +64,14 @@ are most likely the in-air states.
 
 Volumes of opposing teams are paired in FUN_0018d808 (team differs, and a 7x7 byte table at 0x37ac98
 indexed by the two volumes' `Type` says whether that pair clashes). A pair is accepted only if
-both sides pass FUN_0018d308: when `ReflectRange` (0x22) is non-zero the other attack must lie in
-a cone of that many degrees, turned by `ReflectAngle * 2` degrees, in front of the owner (inferred
-reading of the dot product test). Then FUN_0018d6b0 spawns a spark (FUN_0018d560), which also
+both sides pass FUN_0018d308 (WP-6E, `reaction_rules::reflect_cone`, test `reflect_cone_by_hand`):
+when `ReflectRange` (0x22) is non-zero, the owner's facing (FUN_0016a890), turned about Y by
+`ReflectAngle * 2` degrees when that byte is non-zero (FUN_0017c2e8, the same routine as script host
+0.13), is dotted with the other volume's method +0xc (FUN_0018c4f8: the flat unit vector from the other
+owner's +0x730 to this owner's position, or minus this owner's facing when the other volume has no
+owner); the pair passes when the product is below -cos(range degrees) (degree factor 0x37ac8c, cosine
+FUN_003000d8): the other owner stands inside the cone in front. The app takes +0x730 as the other
+owner's position [inferred]. Then FUN_0018d6b0 spawns a spark (FUN_0018d560), which also
 disables both volumes (flag 0x80, FUN_0018dc58) except one whose own `RefactSelf` is 2. FUN_0018d430
 does the bookkeeping per side: it sets volume flag 0x200 unless that side's `RefactSelf` is 2, then
 calls the owner's virtual method +0x6c with both volumes.
@@ -74,8 +79,9 @@ calls the owner's virtual method +0x6c with both volumes.
 `RefactSelf` / `RefactOther` values (OpenKH): 0 Reflect, 1 Guard, 2 Nothing. Verified usage:
 
 * Party class (+0x6c = FUN_00178708 -> FUN_001754a0). `A` is the actor's volume, `B` the other.
-  If `A.RefactSelf == 2` or `B.RefactOther == 2`: spark only. Otherwise, when the actor is airborne
-  or has owner-type flag 2 or +0x160 flag 0x40, or when both are 0: the same recoil as a wall hit
+  If `A.RefactSelf == 2` or `B.RefactOther == 2`: spark only. Otherwise, when FUN_0019aa28 holds for
+  the actor, or bit 2 of its mover's flags (+0xc, +8), or +0x160 flag 0x40, or when both are 0: the
+  same recoil as a wall hit
   (FUN_00185d30, power -1.0, ID 0x29 / 0x2b, combo counter decremented). Otherwise (one of them is
   1, ground): the guard bounce FUN_001756c8 (motion 0x2a = 42, power 200.0 push facing away, then
   FUN_00175aa8 with 80.0). FUN_00178708 also copies `ReflectRC` (0x20) of the other volume into
@@ -98,14 +104,31 @@ calls the owner's virtual method +0x6c with both volumes.
      counts it down by the frame step, FUN_00175ad8 refuses hits while it is above 0, and Quick Run
      (FUN_00178108) writes its `fmab` star time there too (the app's `Sora::invuln`). Then the own
      volume gets flag 0x40.
-  The port: motion via the state fallback in the battle state, blend 2 ticks (the request's
-  arguments 0, 0 were not decoded), `State::Hurt` (back to idle when the motion ends, which is what
-  the queued motion 0 gives). The spark is not started (see docs/limits-reactions.md).
-* Enemy-style class (handler at 0x1b2478, not in the decompilation, read from disassembly). If the
-  volume has flag 0x40 or `A.RefactSelf == 2`: nothing. Else if `ReflectedMotion` (0x15) is non-zero:
-  FUN_00185d30 with power `ReflectHitBack` (s16, negative = 50.0) and that motion ID as the
-  override. Else if `ReflectAction` (0x18, s32) is non-zero it is looked up (FUN_0019e870) and
-  started on the actor's script component. Then volume flag 0x40 is set.
+  The port: motion via the state fallback in the battle state, blend 0 (FUN_00185d30 and FUN_001756c8
+  clear `$f20` and pass it in `$f12` and `$f13` to FUN_0017e220: `reaction_rules::RECOIL_BLEND`),
+  `State::Hurt` (back to idle when the motion ends, which is what the queued motion 0 gives; the air
+  recoil queues motion 4 instead, not modelled). The spark is started (see docs/limits-reactions.md).
+* The actor flags the party handler reads (WP-6E, `reaction_rules::ClashActor`, test
+  `clash_actor_flags`): +0x160 is the controller's flag word (+0x140 + 0x20). FUN_00187fb0 ->
+  FUN_0017f3d0 keeps only the bits 0x7183 of it at the start of the trigger pass, and FUN_00188030 sets
+  the others while a range trigger covers the frame: 0x20 by trigger 3, 0x40 by trigger 24 (case 0x18,
+  which also writes the float +0xf0), 0x1000000 by trigger 30, 0x100000 / 0x200000 by triggers 25 /
+  26. So FUN_0019aa28 is "the mover's bit 1 (the app's airborne) or trigger 3 or trigger 30 or +0x108
+  bit 0x800000", and the flag 0x40 of FUN_001754a0 is "trigger 24 covers Sora's frame". The mover's
+  bit 2 and +0x108 bit 0x800000 were not traced and read as clear.
+* Enemy-style class (handler at 0x1b2478, not in the decompilation, read from disassembly). First,
+  in every case: FUN_001b21a0 stores the other volume's owner at +0xae4 (and at +0xaec when it is
+  in the object list with +0x3b0 == 1); when the actor has a script thread (+0x484), FUN_00187130
+  passes event 7 with (word +0x88, own volume, other volume) to the action system at +0x300 and
+  FUN_0016c620 delivers **script event 0x13 (19)** with the two volume objects as arguments. Then, if
+  the volume has flag 0x40 or `A.RefactSelf == 2`: nothing more. Else if `ReflectedMotion` (0x15) is
+  non-zero: FUN_00185d30 with power `ReflectHitBack` (s16, negative = 50.0) and that motion ID as the
+  override, then FUN_00186ca8 on +0x300 (stops the running action unless its +0x9c bit 1 is set). If
+  `ReflectAction` (0x18, s32) is non-zero (checked after the motion, not instead of it):
+  FUN_0019e870 turns it into a pointer, row + `ReflectAction` (an offset from the atkp row itself,
+  into the table's data), and FUN_00186db0 starts that record on the action system at +0x300. Then
+  volume flag 0x40 is set. Not ported: the action records (the format behind the offset and the
+  action system at +0x300 were not decoded) and event 0x13 (enemy_ai.rs).
 * USA data: `RefactSelf` is 2 in 1803 rows, 0 in 521, 1 in 2; `RefactOther` is 1 in 1487, 0 in 583,
   2 in 256; `ReflectedMotion` is 0 except 10 (one row) and 140..143 (187 rows); `ReflectHitBack`
   is only 0 or -1; `ReflectRC` is always 0; `ReflectRange` is set in 70 rows, `ReflectAngle` in 7.
@@ -283,10 +306,14 @@ airborne wall recoil using the ground push, and a Sora hit that the game would n
   value +0x1c8 (added to every push power; the app adds 0); owner word +0x588 flag 0x80; the
   status bits behind `patn`; the surface type nibble (1 versus other) used for the spark variant;
   volume flag 0x100.
-* The air recoil push (FUN_00185978: a call of the owner's controller method +8 with the power
-  scaled by HitBackToJump) and the air flinch (FUN_001853c0), the guard bounce details, class 5,
-  the orb scatter, and the `FloorCheck` probe of FUN_0018c8e0 (a second sweep with the segment
-  moved by that many units when the first misses; every Sora combo row has FloorCheck 0).
-* The blend time of the recoil's motion request (FUN_0017e378 takes 0 on the ground and 4 in the
-  air; their meaning is unknown, the app blends over 2 ticks).
+* The air recoil push FUN_00185978 (WP-6E, decoded as far as this): only when FUN_0019b1d0 holds
+  (FUN_0019a470, or +0x588 bit 0x8000000, and in both cases +0x108 bit 0x80 clear) it calls method +8
+  of the mover (+0xc) with the vector (dir.x, 50.0 (0x37a960), dir.z, power x the float at +0x38 of the
+  table DAT_00360130), dir = the facing times -1.0 (0x37a968). The table pointer is set at run time
+  (FUN_001cc040 -> FUN_001cc140), and the mover's method +8 was not read, so the push is not ported (the
+  ground push stands in). Also open: the air flinch (FUN_001853c0), class 5, the orb scatter, and the
+  `FloorCheck` probe of FUN_0018c8e0 (a second sweep with the segment moved by that many units when the
+  first misses; every Sora combo row has FloorCheck 0).
+* The recoil's motion requests: blend 0 (closed by WP-6E, above). FUN_0017e378 then queues motion 0
+  on the ground and 4 in the air.
 * Motion 43 (0x2b) exists in Sora's motion set: it is A350 (slot 172).

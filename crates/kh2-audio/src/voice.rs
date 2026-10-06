@@ -171,7 +171,7 @@ impl VoiceSlot {
 }
 
 /// Virtual address to file offset in a PS2 ELF (the main executable's load segments).
-fn elf_at(exe: &[u8], va: u32) -> Option<usize> {
+pub(crate) fn elf_at(exe: &[u8], va: u32) -> Option<usize> {
     let u32_at = |o: usize| exe.get(o..o + 4).map(|s| u32::from_le_bytes(s.try_into().unwrap()));
     let u16_at = |o: usize| exe.get(o..o + 2).map(|s| u16::from_le_bytes([s[0], s[1]]));
     if exe.get(..4) != Some(b"\x7fELF") {

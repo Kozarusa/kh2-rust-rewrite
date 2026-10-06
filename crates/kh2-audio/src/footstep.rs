@@ -125,6 +125,80 @@ pub fn footstep_number(record: Option<&SoundInfoRecord>, neo_status: u16, materi
     Some(bank? as u32 * 1000 + material as u32 * 16 + variant as u32)
 }
 
+/// The dust kinds `FUN_0017af10` asks `FUN_001b1c90` for (the motions' trigger 19 carries the other
+/// kinds in its first parameter; an even kind is the left foot, an odd one the right).
+pub mod dust_kind {
+    /// Stop step (the stick is let go while walking or running): left, right.
+    pub const STOP: [u16; 2] = [8, 9];
+    /// First step out of idle (a movement command while the last motion request was idle): left, right.
+    pub const START: [u16; 2] = [10, 11];
+    /// Last kind that places the dust at a foot (FUN_001b1c90's switch covers 0..=0x13); a larger
+    /// kind starts at the actor's own position and facing.
+    pub const LAST_FOOT: u16 = 0x13;
+    /// The NeoStatus the stop and start dust skip (`FUN_001699a8(actor) == 0xe`).
+    pub const NO_DUST_NEO_STATUS: u16 = 0xe;
+}
+
+/// The start-to-move dust of `FUN_0017af10` (its commanded branch): a party actor whose last
+/// requested motion id (+0x154) is idle (0) while a movement command is held (+0x1c above 0) starts
+/// kinds 10 and 11, unless its NeoStatus is 0xe. There is no sound and no range-trigger test; the
+/// same call ends by requesting walk or run, so it fires on the tick the stick goes out.
+pub fn start_dust(party: bool, commanded_speed: f32, motion: u32, neo_status: u16) -> bool {
+    commanded_speed > 0.0 && party && motion == 0 && neo_status != dust_kind::NO_DUST_NEO_STATUS
+}
+
+/// What `FUN_001b1c90` reads from the executable: the byte table at 0x37b9b8 (ground material to dust
+/// class, 0 = no dust on that floor), the two probe distances (0x37b598 above the foot, 0x37b59c
+/// below it, in centimetres) and the foot-bone reach factor (0x37b9d8, which multiplies the bone
+/// length of the foot point).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DustRules {
+    classes: Vec<u8>,
+    /// Centimetres above the foot point where the ground probe starts.
+    pub probe_above: f32,
+    /// Centimetres below the foot point where it ends.
+    pub probe_below: f32,
+    /// Factor on the foot bone's length for the foot point (`FUN_0016adb0`'s first argument).
+    pub foot_reach: f32,
+}
+
+const DUST_CLASSES: u32 = 0x37b9b8;
+const DUST_CLASS_COUNT: usize = 32;
+const DUST_ABOVE: u32 = 0x37b598;
+const DUST_BELOW: u32 = 0x37b59c;
+const DUST_REACH: u32 = 0x37b9d8;
+
+impl DustRules {
+    /// Reads the table and the constants from the USA executable (`None` for another file).
+    pub fn from_exe(exe: &[u8]) -> Option<DustRules> {
+        let at = crate::voice::elf_at(exe, DUST_CLASSES)?;
+        let classes = exe.get(at..at + DUST_CLASS_COUNT)?.to_vec();
+        let f32_at = |va: u32| {
+            let o = crate::voice::elf_at(exe, va)?;
+            Some(f32::from_le_bytes(exe.get(o..o + 4)?.try_into().ok()?))
+        };
+        Some(DustRules { classes, probe_above: f32_at(DUST_ABOVE)?, probe_below: f32_at(DUST_BELOW)?, foot_reach: f32_at(DUST_REACH)? })
+    }
+
+    /// The dust class of a ground material (`FUN_00183730`'s value); 0 means no dust. The game
+    /// indexes the table without a bound; a material past its 32 entries is read as 0 here.
+    pub fn class(&self, material: u8) -> u8 {
+        self.classes.get(material as usize).copied().unwrap_or(0)
+    }
+
+    /// The category bits the effect must carry (`FUN_001db9e0`'s mask): bit `class` and bit
+    /// `kind + 0x20`. `None` when the class is 0 (the game returns before the lookup).
+    pub fn mask(&self, material: u8, kind: u16) -> Option<u64> {
+        let class = self.class(material);
+        (class != 0).then(|| 1u64.wrapping_shl(class as u32) | 1u64.wrapping_shl(kind as u32 + 0x20))
+    }
+
+    /// Whether `kind` places the dust at a foot (and probes the ground there).
+    pub fn at_foot(kind: u16) -> bool {
+        kind <= dust_kind::LAST_FOOT
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,6 +216,36 @@ mod tests {
         // Range trigger 42 open, or not a party actor: nothing.
         assert!(!stop_step(true, 0.0, true, MOTION_WALK));
         assert!(!stop_step(false, 0.0, false, MOTION_WALK));
+    }
+
+    #[test]
+    fn start_dust_gate_of_fun_0017af10() {
+        // A held command, a party actor, last request idle: kinds 10 and 11 start.
+        assert!(start_dust(true, 8.0, 0, 1));
+        // Not commanded, already walking or running, not a party actor, or NeoStatus 0xe: nothing.
+        assert!(!start_dust(true, 0.0, 0, 1));
+        assert!(!start_dust(true, 8.0, MOTION_WALK, 1));
+        assert!(!start_dust(true, 8.0, MOTION_RUN, 1));
+        assert!(!start_dust(false, 8.0, 0, 1));
+        assert!(!start_dust(true, 8.0, 0, 0xe));
+        assert_eq!(dust_kind::STOP.map(|k| k % 2), [0, 1]);
+        assert_eq!(dust_kind::START.map(|k| k % 2), [0, 1]);
+    }
+
+    #[test]
+    fn dust_masks_select_class_and_kind_bits() {
+        let rules = DustRules { classes: vec![0, 1, 0, 2, 3], probe_above: 50.0, probe_below: 100.0, foot_reach: 1.0 };
+        assert_eq!(rules.class(1), 1);
+        assert_eq!(rules.class(3), 2);
+        // Material 0 and class-0 materials start nothing; a material past the table too.
+        assert_eq!(rules.mask(0, 8), None);
+        assert_eq!(rules.mask(2, 8), None);
+        assert_eq!(rules.mask(200, 8), None);
+        // Bit `class` and bit `kind + 0x20`.
+        assert_eq!(rules.mask(1, 0), Some(1 << 1 | 1 << 0x20));
+        assert_eq!(rules.mask(3, 9), Some(1 << 2 | 1 << 0x29));
+        assert_eq!(rules.mask(4, 0x13), Some(1 << 3 | 1 << 0x33));
+        assert!(DustRules::at_foot(0x13) && !DustRules::at_foot(0x14));
     }
 
     fn entry() -> Vec<u8> {

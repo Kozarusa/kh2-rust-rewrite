@@ -25,6 +25,7 @@ kh2-rs is written from scratch. Nothing below is vendored as code. Where we reim
 | The game's motion-evaluation routines (setup / curves / solve, called at fixed addresses on a RAM image) | OpenKH `OpenKh.Engine/Motion/Mlink.cs`, kenjiuno's approach; we call the USA build's equivalents in our own interpreter on the user's executable | Apache-2.0 | `crates/kh2/src/oracle.rs` |
 | 2D UI images and sequences: IMGD/IMGZ header and pixel formats, SEQD sprite / sprite part / sprite group / animation / animation group layouts (container roles of `.2dd` and `.2ld`) | OpenKH `docs/kh2/file/type/image.md`, `docs/kh2/file/type/2ld.md`, `OpenKh.Kh2/Sequence.cs` | Apache-2.0 | `crates/kh2-image` |
 | R5900 / VU0 instruction semantics; FPU and VU corner cases (no infinities, saturation, LWR sign extension) | Sony EE Core / VU user manuals; conventions documented by [PCSX2](https://github.com/PCSX2/pcsx2) | — (facts, no code) | `crates/kh2-ee` |
+| ARD area data: area script programs (opcode 0 loads a spawn group) and spawn-group layout (entity, event activator, walk path, return parameter, signal lists); sizes checked on the USA disc | OpenKH `OpenKh.Kh2/Ard/SpawnPoint.cs`, `OpenKh.Kh2/Ard/AreaDataScript.cs` | Apache-2.0 | `crates/kh2-ard` |
 
 ## Dependencies
 

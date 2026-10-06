@@ -253,6 +253,11 @@ Done:
   hit 128 with 75 (motion 10, hit from the front); row 124 (reaction 0) does nothing; row 129 blows
   with up 3 and horizontal 45; the Shadow rows 9 and 11 (reaction 3, KnockbackStrength1 0x7fff)
   push Sora by the `sstm` default 200.
+* The Dusk (WP-6C, `docs/enemies.md`) goes through the same code with no change: its set has the
+  default reaction slots (10..13 flinch, 16..19 blow and landing). Seen in the 6C run: Sora's hit 127
+  flinches a Dusk (reaction 3, push 125, motion 10); last hits blow it and it lands
+  (`Dusk lands from a blow`); its kick (atkp 17, reaction 3) flinches Sora with a push of 350; Sora's
+  swing against its kick clashes (`Dusk clash: recoil motion 140`).
 * The `patn` conversion and the ineffective-hit rule run before the class handler. No status
   bit is ever set in the app (the `ReactionStatus` component, absent by default, carries one), so
   the conversion is exercised by unit tests only. `combat::IneffectiveHit` is written by both

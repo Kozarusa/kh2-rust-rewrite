@@ -429,12 +429,19 @@ impl Abilities {
         s
     }
 
-    /// The start of the story as far as the data goes, plus the app baseline (Guard equipped) and the
-    /// environment overrides (see the module doc).
-    pub fn with_defaults(rules: Arc<AbilityRules>) -> Abilities {
+    /// Sora's equipment and ability list from `progress::Progress` (the new game plus its app
+    /// baseline: Kingdom Key and Guard, which `KH2_ABILITY_START=data` drops there), then the
+    /// environment overrides (see the module doc). Without `Progress`: the Kingdom Key and the
+    /// Guard baseline as before.
+    pub fn with_defaults(rules: Arc<AbilityRules>, progress: Option<&crate::progress::Progress>) -> Abilities {
         let mut s = Abilities::new(rules);
-        if std::env::var("KH2_ABILITY_START").as_deref() != Ok("data") {
-            s.equip_ability(id::GUARD);
+        match progress {
+            Some(p) => {
+                s.equipment = p.equipment();
+                s.learned = p.sora().abilities.iter().map(|&(id, equipped)| Slot { id, equipped }).collect();
+            }
+            None if std::env::var("KH2_ABILITY_START").as_deref() != Ok("data") => s.equip_ability(id::GUARD),
+            None => {}
         }
         let list = |name: &str| -> Vec<u32> {
             std::env::var(name).unwrap_or_default().split(',').filter_map(|v| v.trim().parse().ok()).collect()
@@ -660,7 +667,8 @@ impl Plugin for AbilitiesPlugin {
             warn!("abilities: tables not readable; the ability system is off");
             return;
         };
-        let abilities = Abilities::with_defaults(Arc::new(rules));
+        crate::progress::ensure(app);
+        let abilities = Abilities::with_defaults(Arc::new(rules), app.world().get_resource::<crate::progress::Progress>());
         app.insert_resource(sora::Abilities::from_block(&abilities))
             .insert_resource(abilities)
             .add_systems(Update, log_changes.run_if(resource_changed::<Abilities>))

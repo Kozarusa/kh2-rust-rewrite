@@ -31,6 +31,7 @@ mod magic;
 mod magic_rules;
 mod motor;
 mod player_reaction;
+mod progress;
 mod reaction_cmd;
 mod reaction_parts;
 mod reaction_rules;
@@ -92,5 +93,9 @@ fn main() {
             player_reaction::PlayerReactionPlugin,
             magic::MagicPlugin,
         ))
+        // The third tuple: later plugins go here (the second is near the 15-entry limit).
+        // `progress::ensure` lets the plugins above that read `Progress` while they build insert it
+        // first, so its place here does not matter.
+        .add_plugins((progress::ProgressPlugin,))
         .run();
 }

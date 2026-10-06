@@ -94,6 +94,11 @@ fn policy(g: u16, i: u16, n: u32) -> u32 {
     if matches!((g, i), (1, 62) | (1, 64) | (1, 120) | (1, 147) | (1, 201)) {
         return HOSTBUF + 16 * (n % 8);
     }
+    // The heap function (0.47) answers with a block inside the memory both sides can reach, so that
+    // scripts which write through the pointer run on (the other replies are numbers).
+    if (g, i) == (0, 47) {
+        return HOSTBUF + 0x1_0000 + 0x100 * (n % 64);
+    }
     [0, 0x3f80_0000, 3, 99, 0, 2][((n + i as u32) % 6) as usize]
 }
 
@@ -306,14 +311,26 @@ struct Report {
     slices: usize,
 }
 
+/// The three words event handlers get by default: pointers into the shared argument area.
+const DEFAULT_ARGS: [u32; 3] = [ARGMEM + 0x10, ARGMEM + 0x20, ARGMEM + 0x30];
+
 fn compare_script(ee: &mut Ee, make: &dyn Fn() -> Ee, table: &HostTable, name: &str, data: &[u8], rep: &mut Report) -> Result<(), String> {
+    compare_with(ee, make, table, name, data, rep, DEFAULT_ARGS, None, &[])
+}
+
+/// As `compare_script` with chosen event arguments, optionally for the roots whose label contains `only`.
+#[allow(clippy::too_many_arguments)]
+fn compare_with(ee: &mut Ee, make: &dyn Fn() -> Ee, table: &HostTable, name: &str, data: &[u8], rep: &mut Report, args: [u32; 3], only: Option<&str>, extra: &[usize]) -> Result<(), String> {
     let prog = Program::parse(data).map_err(|e| format!("{name}: {e}"))?;
     let code_len = (prog.words.len() * 2) as u32;
     rep.scripts += 1;
-    let an = kh2_bdx::analyze(&prog).map_err(|e| format!("{name}: {e}"))?;
+    let an = kh2_bdx::analyze_with(&prog, extra).map_err(|e| format!("{name}: {e}"))?;
     let mut roots: Vec<(String, u32)> = prog.entries.iter().map(|e| (format!("event {}", e.id), e.pc)).collect();
     roots.extend(an.routines.iter().map(|&pc| (format!("routine {pc:#x}"), pc as u32)));
     for (root, pc) in roots {
+        if only.is_some_and(|o| !root.contains(o)) {
+            continue;
+        }
         let entry = kh2_bdx::EntryPoint { id: 0, pc };
         rep.entries += 1;
         // --- game side set-up ---
@@ -326,7 +343,6 @@ fn compare_script(ee: &mut Ee, make: &dyn Fn() -> Ee, table: &HostTable, name: &
         ee.w32(THREAD, PROG);
         ee.w32(THREAD + 4, entry.pc);
         ee.w32(THREAD + 8, FRAME + 16);
-        let args = [ARGMEM + 0x10, ARGMEM + 0x20, ARGMEM + 0x30];
         for (k, a) in args.iter().enumerate() {
             ee.w32(VALS + 4 * k as u32, *a);
         }
@@ -478,4 +494,38 @@ fn interpreter_matches_the_games() {
         eprintln!("{f}");
     }
     assert!(failures.is_empty(), "{} scripts differ from the game's interpreter", failures.len());
+}
+
+/// The path of a reaction command into the Soldier's script (event 0xb, `docs/limits-reactions.md`):
+/// the handler with the command id 34 (its only branch), with another id (it does nothing), and
+/// the routine the handler starts through host 2.20 (word 0x5a), each compared step for step with the
+/// game's interpreter, host calls and their arguments included. The routine at 0x5a is not reachable
+/// by the flow walk (its address is a parameter), so it is added as a root by hand.
+#[test]
+fn soldier_reaction_command_path_matches_the_games() {
+    let Some((mut a, elf)) = open_disc() else {
+        eprintln!("skipped: no disc image (set KH2_ISO)");
+        return;
+    };
+    let table = HostTable::from_exe(&elf).expect("host table");
+    let make = || make_ee(&elf, &table);
+    let mut ee = make();
+    let scripts = disc_scripts(&mut a, false);
+    let (name, data) = scripts.iter().find(|(n, _)| n == "obj/M_EX010.mdlx").expect("Soldier's script");
+    let mut rep = Report { scripts: 0, entries: 0, steps: 0, host_calls: 0, slices: 0 };
+    // Event 11 arguments are (controller, command id, target record); 34 takes the branch.
+    for cmd in [34u32, 457, 0] {
+        let before = rep.steps;
+        compare_with(&mut ee, &make, &table, name, data, &mut rep, [ARGMEM + 0x10, cmd, ARGMEM + 0x30], Some("event 11"), &[0x5a])
+            .unwrap_or_else(|e| panic!("command {cmd}: {e}"));
+        eprintln!("command {cmd}: event 11 ran {} interpreter steps, 0 differences", rep.steps - before);
+        if cmd == 34 {
+            assert!(rep.host_calls >= 4, "the handler makes host calls, got {}", rep.host_calls);
+        }
+    }
+    // The started routine and the helpers it calls, with the thread argument a record pointer.
+    let before = (rep.steps, rep.host_calls);
+    compare_with(&mut ee, &make, &table, name, data, &mut rep, [0, 0, ARGMEM + 0x40], Some("0x5a"), &[0x5a]).unwrap_or_else(|e| panic!("routine 0x5a: {e}"));
+    eprintln!("routine 0x5a: {} steps, {} host calls, 0 differences", rep.steps - before.0, rep.host_calls - before.1);
+    assert!(rep.steps > before.0, "the routine ran");
 }

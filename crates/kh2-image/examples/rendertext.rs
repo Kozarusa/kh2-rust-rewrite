@@ -25,7 +25,7 @@ fn main() {
         let toks = msgs.tokens(id).unwrap();
         println!("{id:#x}: {:?}", kh2_image::text::to_text(&toks));
         let l = layout(&set, None, &toks, &Style { font: font_id, size: Some(size), ..Style::default() }, [10.0, y]);
-        let mut all = shadows(&l.quads, font.mode);
+        let mut all = shadows(&l.quads, font.mode, 0x80);
         all.extend(l.quads.iter().copied());
         for q in &all {
             let (data, tw, th) = match q.kind {

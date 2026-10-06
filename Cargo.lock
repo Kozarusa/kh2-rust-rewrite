@@ -3293,6 +3293,10 @@ dependencies = [
 [[package]]
 name = "kh2-audio"
 version = "0.1.0"
+dependencies = [
+ "kh2-archive",
+ "kh2-ee",
+]
 
 [[package]]
 name = "kh2-bar"

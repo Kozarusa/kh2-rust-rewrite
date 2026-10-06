@@ -66,6 +66,18 @@ pub mod kind {
     pub const LAND: u8 = 8;
 }
 
+/// Material forced by bit 0x20 of the class descriptor's flag word (`*(actor + 0xc) + 8`).
+pub const FORCED_MATERIAL: u8 = 0x12;
+/// The descriptor flag bit of [`FORCED_MATERIAL`].
+pub const DESCRIPTOR_FORCED_MATERIAL: u32 = 0x20;
+
+/// FUN_00183730: the material of an actor, `ground` being the byte at actor +0x648. Which
+/// descriptors carry bit 0x20 is not known (no writer of that bit was found); every actor the app
+/// has so far passes 0.
+pub fn actor_material(descriptor_flags: u32, ground: u8) -> u8 {
+    if descriptor_flags & DESCRIPTOR_FORCED_MATERIAL != 0 { FORCED_MATERIAL } else { ground }
+}
+
 /// The sound number FUN_0016baa0 plays, or `None` when it plays nothing (material 0, or no bank).
 ///
 /// `counter` is the actor's step counter (the byte at actor +0x7fc, starts at 0): kinds 0 and 4
@@ -143,6 +155,17 @@ mod tests {
         let mut c = 0;
         assert_eq!(footstep_number(r, 1, 1, 0xd, &mut c), Some(697_016 + 0xd));
         assert_eq!(footstep_number(r, 1, 1, 0xd, &mut c), Some(697_016 + 0xe));
+    }
+
+    #[test]
+    fn descriptor_bit_forces_material_0x12() {
+        assert_eq!(actor_material(0x20, 3), 0x12);
+        assert_eq!(actor_material(0x20, 0), 0x12);
+        assert_eq!(actor_material(0xdf, 3), 3);
+        let w = WorldSoundInfo::parse(&entry()).unwrap();
+        let mut c = 0;
+        // A forced actor sounds material 0x12 even in the air (ground material 0).
+        assert_eq!(footstep_number(w.area(1), 1, actor_material(0x20, 0), 9, &mut c), Some(697_000 + 0x12 * 16 + 9));
     }
 
     #[test]

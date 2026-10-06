@@ -78,8 +78,14 @@ with a default, nothing in the app reads it; Missing = fails visibly. Addresses 
 | 1.171, 1.206, 1.34, 1.301 | Stub | global flags and a global byte set by other scripts or the game: false and 0 |
 | 2.8 hit_is_real | Impl | the effective reaction's class is 2 or more (FUN_0018b700 on the hit record's byte +0x26) |
 | mode manager hooks | Approx | `ModeInterrupted` and `ModeMayStart` follow FUN_00186b70 and FUN_001873d0 read as "a hit reaction plays" and "not in hit stun"; `ModeFrozen` (FUN_00186b38, object flag 0x40000) is false because hit stop is not implemented |
+| 1.29 play_motion_with, 1.238 obj_word_158, 1.13 queue_motion, 1.89 set_velocity, 1.70 / 1.71 on the player, 1.14 on the player | Approx | the calls of Soldier's reaction thread on the player: handed to the player side as `PlayerReactionCmd` (no consumer yet), the paired motion's length gives the player's `motion_done` |
+| 0.47 alloc / 0.48 free, 2.20 start_request, 1.132 target_release | Impl / Stub | the script heap and the detached request thread are the runtime's own (see `docs/bdx.md`); target records are not pooled |
 | 1.92 ground_marker | Missing | not a marker: FUN_0016b738 finds the ground under the object and FUN_001a3cb0 spawns row `id` of the drop table (orbs, munny). The app has no pickups |
-| 1.62, 1.64, 1.89, 1.133, 1.134, 1.128, 2.20 | Missing | in the scripts but not reached in a fight: object vectors at +0x860 and +0x850, the secondary velocity, two virtual methods of the object, a virtual call on the mover, a sound or effect request (Soldier's event 11 only). They would be logged when first called |
+| 1.62, 1.64, 1.133, 1.134, 1.128 | Missing | in the scripts but not reached in a fight: object vectors at +0x860 and +0x850, two virtual methods of the object, a virtual call on the mover (1.89 on the enemy itself too: the secondary velocity of a scripted object has no consumer). They would be logged when first called |
+
+## Event 11: reaction commands (WP-2C2)
+
+`reaction_cmd::accept` writes `ReactionAccepted { cmd, pos, target }`; `ai_update` delivers it to the target's runtime as event 11 with (the player, the command id, a 16-byte target record {the enemy, the part index, 0, -1}) (`FUN_0016b420` -> `FUN_0016c620`). Soldier answers command 34 (`docs/limits-reactions.md`): the thread it starts (host 2.20, run by `Runtime::update_requests` each tick) makes calls on the **player**, which the host turns into `reaction_cmd::PlayerReactionCmd` messages: `set_flag` / `clear_flag` of bit 3 (`Unhittable`), `play_motion_with` (host 1.29: entry 252 and 253 of the *Soldier's* motion set, a BAR of per-player-model sub-motions named `%03d0` of Sora's objentry byte +7; `PairedMotion`, with the sub-motion's length so that `motion_done` of the player comes true when it would have ended), `set_velocity` (`Velocity`, 30 per tick), `queue_motion` (`QueueMotion`). The player's `+0x158` serial returned by `play_motion_with` is the counter of `FUN_0017ef98` (started at 0 here, inferred). **Nothing on the player side consumes the messages yet** (a hook for `sora.rs`); the log shows them with `KH2_BDXLOG=1`. `read_mem` answers the controller (the word at +4 is the player) and the target records.
 
 ## Events, death, leaving
 
@@ -127,7 +133,7 @@ the removal of hidden objects, Flag309 as "is the player".
 - Drops (orbs, munny) do not exist; the death's `ground_marker` call is the visible gap.
 - Hit stop is not implemented, so `ModeFrozen` is always false.
 - Target records are the player's origin, not the lock-on part.
-- Events 11 and 13 (Soldier's lock-on query, event begin) are not delivered; messages between objects are not wired (neither script sends any).
+- Event 13 (event begin) is not delivered; messages between objects are not wired (neither script sends any). Event 11 (a reaction command accepted by the player) **is** delivered since WP-2C2, see below.
 
 ## Acceptance run
 

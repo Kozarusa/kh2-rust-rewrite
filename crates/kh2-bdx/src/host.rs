@@ -191,8 +191,6 @@ pub enum Call {
     MoverMethod { obj: u32, value: f32 },
     /// Set an attribute pair on the object (FUN_001b2148; role inferred: attack/parameter slot).
     SetObjParam { obj: u32, a: i32, b: i32 },
-    /// Sound or effect request (FUN_001a4738; role unknown).
-    Request2_20 { a: u32, b: u32 },
     /// Free a target record (FUN_0018f3f8; role inferred).
     FreeTarget { handle: u32 },
 

@@ -20,6 +20,7 @@ use bevy::pbr::{Material, MaterialPlugin};
 use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, Extent3d, TextureDimension, TextureFormat};
 use bevy::shader::ShaderRef;
+use kh2_audio::footstep::DustRules;
 use kh2_fx::pax::element_flag;
 use kh2_fx::{Batch, Dpd, Element, Env, Pax};
 use kh2_ps2::gs::Vram;
@@ -279,6 +280,8 @@ impl Plugin for FxPlugin {
             .add_message::<StartSystemEffect>()
             .add_message::<GameEffect>()
             .add_message::<SpellHit>()
+            .add_message::<FootDust>()
+            .init_resource::<AreaFx>()
             .add_systems(Startup, setup)
             .add_systems(
                 FixedUpdate,
@@ -288,6 +291,8 @@ impl Plugin for FxPlugin {
                         motion_effects,
                         start_requests,
                         start_system_requests,
+                        load_area_fx,
+                        foot_dust,
                         hit_sparks,
                         fx_kill,
                         game_effects,
@@ -358,6 +363,124 @@ pub fn start_system_requests(mut commands: Commands, lib: Res<EffectLib>, mut re
             info!("system effect {:#x} at {:?}", r.id, r.at.w_axis.truncate());
         }
         start_placed(&mut commands, &lib.system, r.id, Bind::Fixed(r.at), Placement { replace_translation: true, ..default() });
+    }
+}
+
+/// First id handed to the effect file of an area (`AreaFx`); the system file is 1, the object files
+/// count up from 2, so the area files stay clear of both and of each other (the texture cache keys
+/// on the id).
+const AREA_FX_ID_BASE: usize = 1000;
+
+/// A footstep dust request, what `FUN_001b1c90(actor, kind)` is asked for: by a motion's trigger 19
+/// (the kind is its first parameter) and by the ground mover `FUN_0017af10` (kinds 8 and 9 with the
+/// stop step, 10 and 11 when movement starts). `crates/kh2-app/src/audio.rs` sends them from the same
+/// place that plays the footstep sounds.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct FootDust {
+    pub kind: u16,
+    /// The actor's position in Bevy world space (metres), at its feet.
+    pub at: Vec3,
+    /// The actor's facing in Bevy world space.
+    pub facing: Vec3,
+    /// `FUN_00183730`'s ground material of the actor (selects the dust class).
+    pub material: u8,
+    /// Who asked, for `KH2_FXLOG`.
+    pub why: &'static str,
+}
+
+/// The effect file of the current area: the PAX of its map file (`map/us/<area>.map`, BAR type 18),
+/// which the game keeps as the area's own effect manager (`FUN_0015e6c0` hands the map's PAX, map
+/// +0x50, to `FUN_001db4d0(0x35a7f0)`; `FUN_001b1c90` looks its dust up there), and the dust tables
+/// read from the executable.
+#[derive(Resource, Default)]
+pub struct AreaFx {
+    area: Option<String>,
+    pub pax: Option<Arc<LoadedPax>>,
+    pub rules: Option<DustRules>,
+}
+
+/// Loads the area's own effect file whenever a new area has finished loading.
+pub fn load_area_fx(disc: Res<Disc>, area: Res<crate::assets::CurrentArea>, mut fx: ResMut<AreaFx>, mut serial: Local<usize>) {
+    let Some(loaded) = area.loaded.clone() else { return };
+    if fx.area.as_deref() == Some(loaded.as_str()) {
+        return;
+    }
+    fx.area = Some(loaded.clone());
+    if fx.rules.is_none() {
+        fx.rules = disc.read_root("SLUS_210.05").and_then(|exe| DustRules::from_exe(&exe));
+        if fx.rules.is_none() {
+            warn!("fx: could not read the footstep dust tables from SLUS_210.05; no footstep dust");
+        }
+    }
+    let common = disc.read("effect/texcommon.dpd").and_then(|b| Dpd::parse(&b).ok());
+    *serial += 1;
+    fx.pax = load(&disc, &format!("map/us/{loaded}.map"), AREA_FX_ID_BASE + *serial, common.as_ref()).map(Arc::new);
+    if std::env::var_os("KH2_FXLOG").is_some() {
+        info!("{loaded}: area effect file {}", fx.pax.as_ref().map_or("none".to_string(), |p| format!("{} elements", p.pax.elements.len())));
+    }
+}
+
+/// Starts the footstep dust (`FUN_001b1c90`): the ground material gives a dust class (a byte table
+/// of the executable; class 0 starts nothing), the effect is the first element of the area's own
+/// effect file whose category holds the class bit and bit `kind + 0x20` (`FUN_001db9e0`), started at
+/// the ground point under the foot (a vertical probe from 50 above to 100 below the foot, started
+/// only when it finds ground) and turned to the horizontal direction from the foot to the toe. Kinds
+/// above 0x13 start at the actor's own position and facing with no probe. The foot is not looked up
+/// by its bone: the foot point is the actor's position and the direction its facing (`[inferred]`:
+/// the game takes both from the foot bones `0x8028` / `0x8029` and `0x802c` / `0x802d`, whose
+/// mapping to the model's bones was not decoded, `FUN_0016aa18`).
+pub fn foot_dust(
+    mut commands: Commands,
+    area: Res<AreaFx>,
+    world: Option<Res<crate::world::World>>,
+    mut req: MessageReader<FootDust>,
+) {
+    let log = std::env::var_os("KH2_FXLOG").is_some();
+    for r in req.read() {
+        let (Some(pax), Some(rules)) = (area.pax.as_ref(), area.rules.as_ref()) else {
+            if log {
+                info!("foot dust kind {} ({}): no area effect file", r.kind, r.why);
+            }
+            continue;
+        };
+        let Some(mask) = rules.mask(r.material, r.kind) else {
+            if log {
+                info!("foot dust kind {} ({}): material {} has no dust class", r.kind, r.why, r.material);
+            }
+            continue;
+        };
+        let Some(id) = element_by_category(pax, mask) else {
+            if log {
+                info!("foot dust kind {} ({}): material {} class {} mask {mask:#x}: no element", r.kind, r.why, r.material, rules.class(r.material));
+            }
+            continue;
+        };
+        let at = if DustRules::at_foot(r.kind) {
+            // FUN_001a5ce8: a vertical line through the foot point from `probe_above` above it to
+            // `probe_below` below it (centimetres); no ground on it, no dust.
+            let Some(w) = world.as_ref() else { continue };
+            let cm = r.at / crate::SCALE;
+            let Some(g) = w.ground(cm, cm.y + rules.probe_above, rules.probe_above + rules.probe_below) else {
+                if log {
+                    info!("foot dust kind {} ({}): no ground under the foot", r.kind, r.why);
+                }
+                continue;
+            };
+            Vec3::new(cm.x, g.y, cm.z) * crate::SCALE
+        } else {
+            r.at
+        };
+        let facing = r.facing.with_y(0.0).try_normalize().unwrap_or(Vec3::Z);
+        if log {
+            info!(
+                "foot dust kind {} ({}): material {} class {} -> element id {id} at {at:?} facing {facing:?}",
+                r.kind,
+                r.why,
+                r.material,
+                rules.class(r.material)
+            );
+        }
+        start_placed(&mut commands, pax, id, Bind::Fixed(Mat4::from_translation(at)), Placement::hit(Some(facing)));
     }
 }
 
@@ -471,7 +594,7 @@ fn ineffective(atk: &kh2_tables::tables::Atkp, victim: Option<crate::data::Stats
 
 /// The first element of `pax` whose category has all of `mask` (FUN_001db9e0: the lookup behind
 /// every category-selected effect).
-fn element_by_category(pax: &LoadedPax, mask: u64) -> Option<u16> {
+pub(crate) fn element_by_category(pax: &LoadedPax, mask: u64) -> Option<u16> {
     pax.pax.elements.iter().find(|e| e.category & mask == mask).map(|e| e.id)
 }
 
@@ -1075,6 +1198,74 @@ mod tests {
             eprintln!("{name}: {} elements, clash-category (0x10) elements: {:x?}, low category words present: {:x?}", p.pax.elements.len(), sparks, low);
             assert!(sparks.is_empty(), "{name}: has 0x10 elements, so FUN_0018d6b0 would spark first and the party handler's system spark would be skipped");
         }
+    }
+
+    /// The footstep dust of `FUN_001b1c90` on the disc: the area effect file of tt02 (the PAX of its
+    /// map) holds dust elements for the floor materials with a dust class, and `foot_dust` starts
+    /// the one the mask selects at the ground under the foot (a probe from 50 above to 100 below),
+    /// and nothing where there is no ground there or the material has no dust class.
+    #[test]
+    fn foot_dust_starts_the_area_effect_at_the_ground_under_the_foot() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let rules = DustRules::from_exe(&disc.read_root("SLUS_210.05").expect("exe")).expect("dust tables");
+        let mut pick = None;
+        for area in ["tt02", "tt04", "tt05", "tt01", "tt10", "tt00"] {
+            let Some(pax) = load(&disc, &format!("map/us/{area}.map"), AREA_FX_ID_BASE, None) else { continue };
+            let cats: std::collections::BTreeSet<u64> = pax.pax.elements.iter().map(|e| e.category).collect();
+            eprintln!("{area}: {} elements, categories {cats:x?}", pax.pax.elements.len());
+            if pick.is_none() && pax.pax.elements.iter().any(|e| e.category != 0) {
+                pick = Some((area, pax));
+            }
+        }
+        let Some((area, pax)) = pick else {
+            eprintln!("no tt area has a categorised dust element in its map effect file: nothing to start");
+            return;
+        };
+        let pax = Arc::new(pax);
+        // Which (material, kind) pairs of the area have an element.
+        let mut found = Vec::new();
+        for material in 0..32u8 {
+            for kind in 0..=0x13u16 {
+                if let Some(mask) = rules.mask(material, kind)
+                    && let Some(id) = element_by_category(&pax, mask)
+                {
+                    found.push((material, kind, id));
+                }
+            }
+        }
+        eprintln!("{area} dust elements (material, kind, id): {found:?}");
+        if found.is_empty() {
+            eprintln!("no tt area's map effect file has an element whose category selects footstep dust (checked every material and kind 0..=0x13): nothing to start");
+            return;
+        }
+        let &(material, kind, id) = found.iter().find(|f| f.1 == 8).or(found.first()).expect("a dust element");
+        // A floor under the origin, 20 m square.
+        let floor = kh2_model::Mesh {
+            positions: vec![[-1000.0, 0.0, -1000.0], [0.0, 0.0, 1000.0], [1000.0, 0.0, -1000.0]],
+            indices: vec![0, 1, 2],
+            ..Default::default()
+        };
+        let mut app = App::new();
+        app.add_message::<FootDust>()
+            .insert_resource(AreaFx { area: Some(area.into()), pax: Some(pax), rules: Some(rules) })
+            .insert_resource(crate::world::World::from_meshes(&[floor]))
+            .add_systems(Update, foot_dust);
+        let request = |at: Vec3, material: u8, kind: u16| FootDust { kind, at, facing: Vec3::X, material, why: "test" };
+        let running = |app: &mut App| app.world_mut().query::<&RunningEffect>().iter(app.world()).map(|r| r.game_id).collect::<Vec<_>>();
+        // 30 cm above the floor: the probe finds it and the element starts.
+        app.world_mut().write_message(request(Vec3::new(1.0, 0.3, 2.0), material, kind));
+        app.update();
+        assert_eq!(running(&mut app), vec![id], "material {material} kind {kind}");
+        // 2 m above the floor the probe (50 up, 100 down) finds nothing: no dust.
+        app.world_mut().write_message(request(Vec3::new(1.0, 2.0, 2.0), material, kind));
+        // A material without a dust class: no dust.
+        app.world_mut().write_message(request(Vec3::new(1.0, 0.3, 2.0), 0, kind));
+        app.update();
+        assert_eq!(running(&mut app), vec![id], "only the first request started an effect");
     }
 
     #[test]

@@ -97,14 +97,32 @@ pub struct PlaySe {
 /// A voice line: line `line` of the voice bank `file` (e.g. `voice/us/battle/tt0_sora.vsb`).
 #[derive(Message, Clone, Debug)]
 pub struct PlayVoice {
+    /// The bank's file: a `voice/<lang>/battle/*.vsb` file, or (`in_bar`) an object's `.apdx`.
     pub file: String,
+    /// The bank is the entry of type [`VOICE_BAR_ENTRY`] of the BAR `file`: an enemy's own voice
+    /// bank, which its object file carries (`FUN_00196b58` looks it up there for the voice slot).
+    pub in_bar: bool,
     pub line: u16,
     /// The record's priority byte (`vtbl` +2): a line with a lower priority than the one queued
     /// or playing on the speaker's slot is dropped (`FUN_001ae798`).
     pub priority: u8,
     /// World position in metres of the speaker (voice lines are positional sounds of kind 5).
     pub pos: Option<Vec3>,
+    /// The speaker's priority slot (actor +0x9b8, `FUN_001ae798`): [`SORA_SLOT`] for Sora, the
+    /// entity's bits for an enemy.
+    pub speaker: u64,
+    /// The speaker's body: the slot keeps the playing sound at the actor's position every tick
+    /// (`FUN_001ae7d8` -> `FUN_002c34c8(handle, FUN_0016b960(actor))`).
+    pub follow: Option<Entity>,
 }
+
+/// Entry type of a BAR (an object's `.apdx`) that holds the object's own voice bank: the base
+/// object constructors `FUN_00196b58` and `FUN_00196d18` look it up with `FUN_001684c0(file, 0x22)`
+/// and make the actor's voice slot (+0x9b8) only when it exists.
+pub const VOICE_BAR_ENTRY: u16 = 0x22;
+
+/// The voice slot key of Sora (the party use their own banks and slots; enemies use entity bits).
+pub const SORA_SLOT: u64 = 0;
 
 /// The voice table (`vtbl` of `00battle.bin`): a motion names a voice ID, and the table says which
 /// lines of the speaker's voice bank can answer it.
@@ -239,7 +257,18 @@ impl Plugin for AudioPlugin {
             .add_systems(Update, area_bgm.after(crate::assets::load_area))
             .add_systems(
                 FixedUpdate,
-                (motion_sounds, sora_voices, footsteps, wall_sounds, crate::audio_bgm::battle_music, update_mixes).chain().in_set(crate::schedule::Sim::Sounds),
+                (
+                    motion_sounds,
+                    sora_voices,
+                    enemy_voice_calls,
+                    footsteps,
+                    enemy_footsteps,
+                    wall_sounds,
+                    crate::audio_bgm::battle_music,
+                    update_mixes,
+                )
+                    .chain()
+                    .in_set(crate::schedule::Sim::Sounds),
             );
     }
 }
@@ -347,6 +376,9 @@ pub struct LiveSound {
     pub pos: Vec3,
     /// The last volume and pan sent.
     pub last: (i32, i32),
+    /// A voice line moves with its speaker: the voice slot rewrites the sound's position from the
+    /// actor every tick (`FUN_001ae7d8` -> `FUN_002c34c8`). Sound effects never do.
+    pub follow: Option<Entity>,
 }
 
 /// The positional sounds that are still playing.
@@ -365,7 +397,12 @@ pub fn live_mix(sound: &LiveSound, listener: &Transform) -> (i32, i32) {
 }
 
 /// The per-tick mix update of every live positional sound (FUN_002c30d0 -> FUN_002c2e90).
-fn update_mixes(audio: Res<Audio>, mut live: ResMut<LiveMixes>, listener: Query<&Transform, With<crate::camera::OrbitCamera>>) {
+fn update_mixes(
+    audio: Res<Audio>,
+    mut live: ResMut<LiveMixes>,
+    listener: Query<&Transform, With<crate::camera::OrbitCamera>>,
+    places: Query<&GlobalTransform>,
+) {
     if live.0.is_empty() {
         return;
     }
@@ -381,6 +418,9 @@ fn update_mixes(audio: Res<Audio>, mut live: ResMut<LiveMixes>, listener: Query<
         if !playing {
             return false;
         }
+        if let Some(g) = snd.follow.and_then(|e| places.get(e).ok()) {
+            snd.pos = g.translation();
+        }
         let mix = live_mix(snd, l);
         match snd.kind {
             LiveKind::Se(_) => d.set_se_mix(snd.handle, mix.0, mix.1),
@@ -394,6 +434,27 @@ fn update_mixes(audio: Res<Audio>, mut live: ResMut<LiveMixes>, listener: Query<
     });
 }
 
+/// The voice bank of a request: a `.vsb` file, or the entry of type [`VOICE_BAR_ENTRY`] of the
+/// BAR file the request names (cached by file).
+fn voice_bank(disc: &Disc, cache: &SeCache, v: &PlayVoice) -> Option<Arc<Vsb>> {
+    let key = if v.in_bar { format!("{}#{VOICE_BAR_ENTRY:#x}", v.file) } else { v.file.clone() };
+    cache
+        .voices
+        .lock()
+        .ok()?
+        .entry(key)
+        .or_insert_with(|| {
+            let raw = disc.read(&v.file)?;
+            if v.in_bar {
+                let bar = kh2_bar::parse(&raw).ok()?;
+                Vsb::parse(bar.iter().find(|e| e.kind == VOICE_BAR_ENTRY)?.data).map(Arc::new)
+            } else {
+                Vsb::parse(&raw).map(Arc::new)
+            }
+        })
+        .clone()
+}
+
 /// Plays a voice line at the speaker's slot rules: a lower priority than the queued or playing
 /// line is dropped, a started line stops the one before it (`FUN_001ae798`, `FUN_001ae7d8`), and
 /// the sound is positional with a minimum volume (`kh2_audio::voice`).
@@ -405,7 +466,7 @@ fn play_voices(
     vp: (i32, i32),
     slot: &mut kh2_audio::voice::VoiceSlot,
 ) -> Option<Handle> {
-    let bank = cache.voices.lock().ok().and_then(|mut m| m.entry(v.file.clone()).or_insert_with(|| Vsb::parse(&disc.read(&v.file)?).map(Arc::new)).clone())?;
+    let bank = voice_bank(disc, cache, v)?;
     let (sample, rate) = bank.line(v.line as usize)?;
     let mut s = audio.0.lock().ok()?;
     let d = s.driver.as_mut()?;
@@ -434,7 +495,7 @@ fn play_requests(
     listener: Query<&Transform, With<crate::camera::OrbitCamera>>,
     mut req: MessageReader<PlaySe>,
     mut voices: MessageReader<PlayVoice>,
-    mut slot: Local<kh2_audio::voice::VoiceSlot>,
+    mut slots: Local<HashMap<u64, kh2_audio::voice::VoiceSlot>>,
     mut live: ResMut<LiveMixes>,
 ) {
     if std::env::var_os("KH2_NO_SOUND").is_some() {
@@ -444,12 +505,12 @@ fn play_requests(
     }
     for v in voices.read() {
         let vp = placement(v.pos, listener.single().ok());
-        let h = play_voices(&disc, &audio, &cache, v, vp, &mut slot);
+        let h = play_voices(&disc, &audio, &cache, v, vp, slots.entry(v.speaker).or_default());
         if let (Some(h), Some(pos)) = (h, v.pos) {
-            live.0.push(LiveSound { handle: h, kind: LiveKind::Voice(kh2_audio::voice::MIN_VOLUME), pos, last: vp });
+            live.0.push(LiveSound { handle: h, kind: LiveKind::Voice(kh2_audio::voice::MIN_VOLUME), pos, last: vp, follow: v.follow });
         }
         if std::env::var_os("KH2_SOUNDLOG").is_some() {
-            info!("voice {}:{} {}", v.file, v.line, if h.is_some() { "playing" } else { "not found" });
+            info!("voice {}{}:{} {}", v.file, if v.in_bar { "#0x22" } else { "" }, v.line, if h.is_some() { "playing" } else { "not found or dropped by priority" });
         }
     }
     let log = std::env::var_os("KH2_SOUNDLOG").is_some();
@@ -458,7 +519,7 @@ fn play_requests(
         let started = play_se(&disc, &audio, &cache, r, vp);
         let ok = started.is_some();
         if let (Some((handle, flags)), Some(pos)) = (started, r.pos) {
-            live.0.push(LiveSound { handle, kind: LiveKind::Se(flags), pos, last: vp });
+            live.0.push(LiveSound { handle, kind: LiveKind::Se(flags), pos, last: vp, follow: None });
         }
         if log {
             info!(
@@ -503,6 +564,7 @@ pub fn motion_sounds(
     info: Res<VoiceInfo>,
     disc: Res<Disc>,
     enemies: Query<&crate::enemy::Enemy>,
+    speakers: Query<(Entity, &crate::enemy::Enemy)>,
     mut neo_cache: Local<HashMap<&'static str, u16>>,
     mut out: MessageWriter<PlaySe>,
     mut voices: MessageWriter<PlayVoice>,
@@ -529,7 +591,17 @@ pub fn motion_sounds(
                 (frame::VOICE | frame::VOICE2, [voice, ..]) if is_sora => {
                     let ctx = VoiceCtx { area: &area, table: &table, info: &info, disc: &disc };
                     let other = sora_other(&sora, &enemies, &disc, &mut neo_cache);
-                    if let Some(v) = sora_voice(&ctx, *voice as u16, other, &mut rng.0, place.translation(), a.tag()) {
+                    if let Some(v) = sora_voice(&ctx, *voice as u16, other, &mut rng.0, (place.translation(), e), a.tag()) {
+                        voices.write(v);
+                    }
+                }
+                // An enemy's voice trigger (the dispatcher calls the object's method +0x54, FUN_001970b8,
+                // with the first parameter as the line of the enemy's own bank and the second, when the
+                // trigger has two, as the priority; 0 otherwise).
+                (frame::VOICE | frame::VOICE2, [line, rest @ ..]) if !is_sora => {
+                    let Some((owner, enemy)) = speakers.iter().find(|(_, en)| en.body == e) else { continue };
+                    let priority = rest.first().copied().unwrap_or(0) as i32;
+                    if let Some(v) = enemy_voice(enemy.name, a.rig.apdx.as_deref(), *line as i32, priority, place.translation(), (owner, e)) {
                         voices.write(v);
                     }
                 }
@@ -565,7 +637,7 @@ fn sora_other(sora: &Query<&Sora>, enemies: &Query<&crate::enemy::Enemy>, disc: 
 /// FUN_00175d18 (the player's method +0x54) for Sora: the voice table picks a line of `voice` against
 /// the other party's NeoStatus, from the speaker's bank of the current world, played at `at`.
 /// `None` when no area is loaded or the record answers no line.
-pub fn sora_voice(ctx: &VoiceCtx, voice: u16, other: u16, rng: &mut u32, at: Vec3, why: &str) -> Option<PlayVoice> {
+pub fn sora_voice(ctx: &VoiceCtx, voice: u16, other: u16, rng: &mut u32, at: (Vec3, Entity), why: &str) -> Option<PlayVoice> {
     let area_name = ctx.area.loaded.as_deref()?;
     let world = area_name.get(..2)?;
     let picked = ctx.table.pick(SORA_SPEAKER, voice, other, rng, &|_| false);
@@ -575,7 +647,81 @@ pub fn sora_voice(ctx: &VoiceCtx, voice: u16, other: u16, rng: &mut u32, at: Vec
         info!("voice id {voice} ({why}) other {other} -> line {picked:?} rng {:#x}", *rng);
     }
     let (line, priority) = picked?;
-    Some(PlayVoice { file: kh2_audio::voice::bank_path(&ctx.info.lang, world, bank, name), line, priority, pos: Some(at) })
+    Some(PlayVoice {
+        file: kh2_audio::voice::bank_path(&ctx.info.lang, world, bank, name),
+        in_bar: false,
+        line,
+        priority,
+        pos: Some(at.0),
+        speaker: SORA_SLOT,
+        follow: Some(at.1),
+    })
+}
+
+/// An enemy's voice line (`FUN_001970b8` -> `FUN_001ae798`, the object's method +0x54): the line is
+/// the line number of the enemy's own voice bank, the entry of type [`VOICE_BAR_ENTRY`] of its
+/// `.apdx` (the constructors `FUN_00196b58` and `FUN_00196d18` take it from there for the voice slot
+/// at +0x9b8; an object file without the entry has no slot and the call does nothing), played
+/// at the speaker with the slot's minimum volume (`MIN_VOLUME`) and priority `priority`. `at` is the
+/// speaker's position and its owner and body entities. `None` without a bank file or with a negative line.
+pub fn enemy_voice(name: &str, apdx: Option<&str>, line: i32, priority: i32, at: Vec3, speaker: (Entity, Entity)) -> Option<PlayVoice> {
+    let file = apdx?.to_string();
+    let line = u16::try_from(line).ok()?;
+    if std::env::var_os("KH2_SOUNDLOG").is_some() {
+        info!("voice enemy {name} line {line} priority {priority} -> bank {file} entry {VOICE_BAR_ENTRY:#x} id {line}");
+    }
+    Some(PlayVoice {
+        file,
+        in_bar: true,
+        line,
+        priority: priority.clamp(0, 255) as u8,
+        pos: Some(at),
+        speaker: speaker.0.to_bits(),
+        follow: Some(speaker.1),
+    })
+}
+
+/// A voice request of an enemy script (host call 1.262, `enemy_host.rs`): who asked (the script's tag,
+/// `<kind name>#<serial>`), the line, the priority and where it stands (metres, world space). The
+/// host runs inside the enemy AI system, which does not own the sound messages, so the request waits
+/// here until [`enemy_voice_calls`] picks it up.
+#[derive(Clone, Debug)]
+pub struct EnemyVoiceCall {
+    pub tag: String,
+    pub line: i32,
+    pub priority: i32,
+    pub at: Vec3,
+}
+
+static ENEMY_VOICE_CALLS: std::sync::Mutex<Vec<EnemyVoiceCall>> = std::sync::Mutex::new(Vec::new());
+
+/// Queues an enemy script's voice request (host 1.262).
+pub fn queue_enemy_voice(call: EnemyVoiceCall) {
+    if let Ok(mut q) = ENEMY_VOICE_CALLS.lock() {
+        q.push(call);
+    }
+}
+
+/// Plays the queued voice requests of enemy scripts. The speaker is the nearest living enemy of the
+/// requesting script's kind (the host has no entity; the tag names the kind, and two enemies of one
+/// kind are told apart by where they stand).
+pub fn enemy_voice_calls(enemies: Query<(Entity, &crate::enemy::Enemy, &GlobalTransform)>, anims: Query<&Animator>, mut voices: MessageWriter<PlayVoice>) {
+    let calls: Vec<EnemyVoiceCall> = match ENEMY_VOICE_CALLS.lock() {
+        Ok(mut q) => std::mem::take(&mut *q),
+        Err(_) => return,
+    };
+    for c in calls {
+        let kind = c.tag.split('#').next().unwrap_or_default();
+        let nearest = enemies
+            .iter()
+            .filter(|(_, e, _)| e.name == kind)
+            .min_by(|a, b| a.2.translation().distance_squared(c.at).total_cmp(&b.2.translation().distance_squared(c.at)));
+        let Some((owner, e, place)) = nearest else { continue };
+        let apdx = anims.get(e.body).ok().and_then(|a| a.rig.apdx.clone());
+        if let Some(v) = enemy_voice(e.name, apdx.as_deref(), c.line, c.priority, place.translation(), (owner, e.body)) {
+            voices.write(v);
+        }
+    }
 }
 
 /// A voice of Sora asked for outside the motion triggers: the cast start (FUN_001a4798) calls the
@@ -603,10 +749,11 @@ pub fn sora_voices(
     mut voices: MessageWriter<PlayVoice>,
 ) {
     for r in req.read() {
-        let at = sora.single().ok().and_then(|s| places.get(s.body).ok()).map_or(Vec3::ZERO, |g| g.translation());
+        let Ok(s) = sora.single() else { continue };
+        let at = places.get(s.body).map_or(Vec3::ZERO, |g| g.translation());
         let ctx = VoiceCtx { area: &area, table: &table, info: &info, disc: &disc };
         let other = sora_other(&sora, &enemies, &disc, &mut neo_cache);
-        if let Some(v) = sora_voice(&ctx, r.voice, other, &mut rng.0, at, &r.why) {
+        if let Some(v) = sora_voice(&ctx, r.voice, other, &mut rng.0, (at, s.body), &r.why) {
             voices.write(v);
         }
     }
@@ -655,29 +802,46 @@ pub fn footsteps(
     mut counter: Local<u8>,
     mut last: Local<Option<(u32, bool)>>,
     mut out: MessageWriter<PlaySe>,
+    mut dust: MessageWriter<crate::fx::FootDust>,
 ) {
     let Ok(s) = sora.single() else { return };
     let Ok(a) = anims.get(s.body) else { return };
+    let neo_status = neo.get_or_insert_with(|| neo_status(&disc, SORA_MODEL)).unwrap_or(1);
     // The ground mover (FUN_0017af10) runs for a grounded Sora in his ground state; he is a party actor.
     let commanded = pad.as_ref().map_or(0.0, |p| p.stick);
-    let stop = last.is_some_and(|(id, r42)| {
-        s.state == crate::sora::State::Ground && s.motor.grounded && kh2_audio::footstep::stop_step(true, commanded, r42, id)
-    });
+    let mover = s.state == crate::sora::State::Ground && s.motor.grounded;
+    let stop = mover && last.is_some_and(|(id, r42)| kh2_audio::footstep::stop_step(true, commanded, r42, id));
+    // The same call starts the dust of the first step out of idle (its commanded branch).
+    let start = mover && last.is_some_and(|(id, _)| kh2_audio::footstep::start_dust(true, commanded, id, neo_status));
     *last = Some((a.slot.map_or(u32::MAX, |sl| (sl / 4) as u32), a.trigger(kh2_anim::triggers::range::KEEP_MOMENTUM)));
     let mut kinds: Vec<(u16, String)> = Vec::new();
+    // Dust requests (FUN_001b1c90) in the order the game makes them: the stop step's sound first,
+    // then its dust 8 and 9 (not for NeoStatus 0xe), the start dust 10 and 11, and the trigger 19 dust.
+    let mut dusts: Vec<(u16, String)> = Vec::new();
     if stop {
         kinds.push((kh2_audio::footstep::kind::STOP, "stop (FUN_0017af10)".to_string()));
+        if neo_status != kh2_audio::footstep::dust_kind::NO_DUST_NEO_STATUS {
+            dusts.extend(kh2_audio::footstep::dust_kind::STOP.map(|k| (k, "stop (FUN_0017af10)".to_string())));
+        }
+    }
+    if start {
+        dusts.extend(kh2_audio::footstep::dust_kind::START.map(|k| (k, "start (FUN_0017af10)".to_string())));
     }
     if let (Some(t), Some(m)) = (a.triggers(), a.motion()) {
         let g = |f: f32| f * crate::data::LOGIC_HZ / m.fps.max(1.0);
         let (from, to) = (g(a.prev_frame), g(a.frame));
         if from != to {
-            for ft in t.crossed(from, to).filter(|f| f.id == kh2_anim::triggers::frame::FOOTSTEP_SOUND) {
-                kinds.push((ft.params.first().copied().unwrap_or(0).max(0) as u16, format!("frame {}", ft.frame)));
+            for ft in t.crossed(from, to) {
+                let kind = ft.params.first().copied().unwrap_or(0).max(0) as u16;
+                match ft.id {
+                    kh2_anim::triggers::frame::FOOTSTEP_SOUND => kinds.push((kind, format!("frame {}", ft.frame))),
+                    kh2_anim::triggers::frame::FOOTSTEP_EFFECT => dusts.push((kind, format!("trigger 19 frame {}", ft.frame))),
+                    _ => {}
+                }
             }
         }
     }
-    if kinds.is_empty() {
+    if kinds.is_empty() && dusts.is_empty() {
         return;
     }
     let Some(name) = area.loaded.clone() else { return };
@@ -685,7 +849,6 @@ pub fn footsteps(
         *info = Some((name.clone(), area_soundinfo(&disc, &name)));
     }
     let record = info.as_ref().and_then(|(_, r)| r.as_ref());
-    let neo_status = neo.get_or_insert_with(|| neo_status(&disc, SORA_MODEL)).unwrap_or(1);
     // FUN_00183730: the ground material of the polygon in contact (0 in the air: no contact).
     // (Sora's descriptor flags: bit 0x20 is not set for him as far as the footstep logic shows.)
     let material = kh2_audio::footstep::actor_material(0, s.motor.ground.map_or(0, |g| g.material));
@@ -703,6 +866,101 @@ pub fn footsteps(
         if let Some(n) = number {
             // FUN_0016baa0 passes the actor's position, so the step is placed at Sora's feet.
             out.write(PlaySe::number(n, None).at(s.motor.pos * crate::SCALE));
+        }
+    }
+    let (at, facing) = (s.motor.pos * crate::SCALE, Quat::from_rotation_y(s.motor.yaw) * Vec3::Z);
+    for (kind, why) in dusts {
+        if log {
+            info!("dust {} {why} kind {kind} material {material} neo {neo_status}", a.tag());
+        }
+        dust.write(crate::fx::FootDust { kind, at, facing, material, why: "Sora" });
+    }
+}
+
+/// Footsteps of enemies: motion frame trigger 2 resolves the sound the same way as for Sora
+/// (`footstep_number` with the enemy's own step counter, its NeoStatus from its `objentry` row, and
+/// `FUN_00183730`'s ground material under it) and plays it at the enemy; trigger 19 asks for the
+/// footstep dust (`FUN_001b1c90`). The enemy ground mover has no stop step (`FUN_0017af10` needs a
+/// party actor, +0x588 bit 0x80), so the triggers are all there is.
+///
+/// None of the motion sets of the app's enemy kinds carries a trigger 2 or 19 today (checked with
+/// `kh2 triggers obj/<model>.mset 2`, see `docs/footsteps.md`); the system is the hook for kinds that
+/// do, and logs a `footstep enemy` line when it plays one.
+#[allow(clippy::too_many_arguments)]
+pub fn enemy_footsteps(
+    enemies: Query<(Entity, &crate::enemy::Enemy, &GlobalTransform)>,
+    anims: Query<&Animator>,
+    world: Option<Res<crate::world::World>>,
+    area: Res<CurrentArea>,
+    disc: Res<Disc>,
+    cache: Res<SeCache>,
+    mut info: Local<Option<(String, Option<kh2_audio::footstep::SoundInfoRecord>)>>,
+    mut neo: Local<HashMap<&'static str, u16>>,
+    mut counters: Local<HashMap<Entity, u8>>,
+    mut out: MessageWriter<PlaySe>,
+    mut dust: MessageWriter<crate::fx::FootDust>,
+) {
+    let log = std::env::var_os("KH2_SOUNDLOG").is_some();
+    for (owner, e, place) in &enemies {
+        let Ok(a) = anims.get(e.body) else { continue };
+        let (Some(t), Some(m)) = (a.triggers(), a.motion()) else { continue };
+        if t.frames.is_empty() {
+            continue;
+        }
+        let g = |f: f32| f * crate::data::LOGIC_HZ / m.fps.max(1.0);
+        let (from, to) = (g(a.prev_frame), g(a.frame));
+        if from == to {
+            continue;
+        }
+        use kh2_anim::triggers::frame;
+        let crossed: Vec<(u8, u16, i16)> = t
+            .crossed(from, to)
+            .filter(|f| f.id == frame::FOOTSTEP_SOUND || f.id == frame::FOOTSTEP_EFFECT)
+            .map(|f| (f.id, f.params.first().copied().unwrap_or(0).max(0) as u16, f.frame))
+            .collect();
+        if crossed.is_empty() {
+            continue;
+        }
+        let Some(name) = area.loaded.clone() else { return };
+        if info.as_ref().is_none_or(|(n, _)| *n != name) {
+            *info = Some((name.clone(), area_soundinfo(&disc, &name)));
+        }
+        let record = info.as_ref().and_then(|(_, r)| r.as_ref());
+        let neo_status = *neo.entry(e.name).or_insert_with(|| neo_status(&disc, e.kind.model).unwrap_or(0));
+        let at = place.translation();
+        // FUN_00183730 for an enemy: the material of the floor polygon under it (0 in the air). The
+        // enemy's own ground contact is kept by its script object, which this system cannot see; the
+        // floor under its position is looked up again [inferred: the same polygon on ordinary terrain].
+        let cm = at / crate::SCALE;
+        let ground = world.as_ref().and_then(|w| w.ground(cm, cm.y + 20.0, 40.0));
+        let material = kh2_audio::footstep::actor_material(0, ground.map_or(0, |g| g.material));
+        let facing = place.rotation() * Vec3::Z;
+        let counter = counters.entry(owner).or_insert(0);
+        for (id, kind, frame_no) in crossed {
+            if id == frame::FOOTSTEP_EFFECT {
+                if log {
+                    info!("dust enemy {} trigger 19 frame {frame_no} kind {kind} material {material} neo {neo_status}", e.name);
+                }
+                dust.write(crate::fx::FootDust { kind, at, facing, material, why: e.name });
+                continue;
+            }
+            let number = kh2_audio::footstep::footstep_number(record, neo_status, material, kind, counter);
+            if log {
+                let sample = number.and_then(|n| {
+                    let bank = load_bank(&disc, &cache, (n / 1000) as u16, None)?;
+                    let en = bank.block.entries.get((n % 1000) as usize)?;
+                    Some(format!("wd {} tracks {}", en.wd, en.tracks.len()))
+                });
+                info!(
+                    "footstep enemy {} {} frame {frame_no} kind {kind} material {material} neo {neo_status} -> {number:?} {}",
+                    e.name,
+                    a.tag(),
+                    sample.as_deref().unwrap_or("no sample")
+                );
+            }
+            if let Some(n) = number {
+                out.write(PlaySe::number(n, None).at(at));
+            }
         }
     }
 }
@@ -865,7 +1123,7 @@ mod tests {
                 // on another member; Donald's NeoStatus 2 here).
                 let got = [0u16, kh2_audio::voice::speaker::DONALD]
                     .into_iter()
-                    .find_map(|other| (0..32).find_map(|_| sora_voice(&ctx, v as u16, other, &mut rng, Vec3::ZERO, "test")));
+                    .find_map(|other| (0..32).find_map(|_| sora_voice(&ctx, v as u16, other, &mut rng, (Vec3::ZERO, Entity::PLACEHOLDER), "test")));
                 eprintln!("{} {what} {v}: {:?}", row.file_name, got.as_ref().map(|p| (&p.file, p.line, p.priority)));
                 let p = got.unwrap_or_else(|| panic!("{} {what} {v}: no line", row.file_name));
                 assert!(d.read(&p.file).is_some(), "bank {} on the disc", p.file);
@@ -894,7 +1152,7 @@ mod tests {
     /// left half to the right half of the circle.
     #[test]
     fn a_live_sound_follows_the_moving_listener() {
-        let snd = LiveSound { handle: Handle(1), kind: LiveKind::Se(0), pos: Vec3::new(0.0, 0.0, -6.0), last: (0, 0) };
+        let snd = LiveSound { handle: Handle(1), kind: LiveKind::Se(0), pos: Vec3::new(0.0, 0.0, -6.0), last: (0, 0), follow: None };
         // The camera looks down -Z (Bevy's default) and walks along +X past the source.
         let at = |x: f32| live_mix(&snd, &Transform::from_translation(Vec3::new(x, 0.0, 0.0)));
         let (v_left, p_left) = at(-6.0);
@@ -924,7 +1182,7 @@ mod tests {
         let (sample, rate) = (0..40).filter_map(|i| bank.line(i)).max_by_key(|(s, r)| s.pcm.len() as u64 * 1000 / *r as u64).expect("a line");
         let source = Vec3::new(0.0, 0.0, -6.0);
         let start = Transform::from_translation(Vec3::new(-9.0, 0.0, 0.0));
-        let snd = LiveSound { handle: Handle(0), kind: LiveKind::Voice(0), pos: source, last: (0, 0) };
+        let snd = LiveSound { handle: Handle(0), kind: LiveKind::Voice(0), pos: source, last: (0, 0), follow: None };
         let secs = sample.pcm.len() as f32 / rate as f32;
         let first = live_mix(&snd, &start);
         let h = d.play_voice_at(Arc::new(sample), rate, first.0, first.1);
@@ -961,6 +1219,124 @@ mod tests {
         b.extend(data);
         std::fs::write(dir.join("pan_sweep.wav"), b).unwrap();
         assert!(pcm.iter().any(|s| s.abs() > 0.01));
+    }
+
+    /// The triggers of every slot of an object's motion set: (slot, tag, frame trigger id, params).
+    fn frame_triggers(d: &Disc, model: &str) -> Vec<(usize, String, u8, Vec<i16>)> {
+        let m = kh2_anim::Mset::parse(&d.read(&format!("obj/{model}.mset")).expect("mset")).expect("mset parses");
+        let mut out = Vec::new();
+        for slot in 0..m.slots.len() {
+            let Some(s) = m.get(slot) else { continue };
+            out.extend(s.triggers.frames.iter().map(|f| (slot, s.tag.to_string(), f.id, f.params.clone())));
+        }
+        out
+    }
+
+    /// An enemy's voice bank is the type 0x22 entry of its own `.apdx` (the constructors
+    /// `FUN_00196b58` / `FUN_00196d18` build the voice slot only when it exists): N_EX570_BTL (Seifer),
+    /// N_EX500_BTL and N_EX600_BTL carry one, the Heartless, the Dusk and the Dancer do not. Every
+    /// line a script (host 1.262: N_EX570_BTL asks for lines 17, 26, 37) or a motion's voice trigger
+    /// (13, 14: the first parameter is the line) of those three asks for exists in the bank and
+    /// decodes.
+    #[test]
+    fn enemy_voice_banks_are_the_object_files_own_entry() {
+        let Some(d) = disc() else { return };
+        let cache = SeCache::default();
+        let bank_of = |model: &str| {
+            let v = PlayVoice { file: format!("obj/{model}.apdx"), in_bar: true, line: 0, priority: 0, pos: None, speaker: 1, follow: None };
+            voice_bank(&d, &cache, &v)
+        };
+        for kind in crate::enemy::KINDS {
+            let bank = bank_of(kind.model);
+            eprintln!("{} ({}): voice bank {}", kind.name, kind.model, bank.as_ref().map_or("none".to_string(), |b| format!("{} lines", b.len())));
+            let expected = ["N_EX570_BTL", "N_EX500_BTL", "N_EX600_BTL"].contains(&kind.model);
+            assert_eq!(bank.is_some(), expected, "{}", kind.model);
+            let Some(bank) = bank else { continue };
+            let mut asked: Vec<usize> = frame_triggers(&d, kind.model)
+                .into_iter()
+                .filter(|t| t.2 == kh2_anim::triggers::frame::VOICE || t.2 == kh2_anim::triggers::frame::VOICE2)
+                .filter_map(|t| t.3.first().map(|&l| l as usize))
+                .collect();
+            if kind.model == "N_EX570_BTL" {
+                asked.extend([17, 26, 37]);
+            }
+            asked.sort_unstable();
+            asked.dedup();
+            assert!(!asked.is_empty(), "{} asks for lines", kind.model);
+            for line in &asked {
+                let (sample, rate) = bank.line(*line).unwrap_or_else(|| panic!("{} line {line} missing from its bank", kind.model));
+                assert!(!sample.pcm.is_empty() && rate > 0, "{} line {line}", kind.model);
+            }
+            eprintln!("  lines asked for: {asked:?} (all decode)");
+        }
+    }
+
+    /// A request is one line of the speaker's own bank with its priority; the slot is per speaker.
+    #[test]
+    fn enemy_voice_requests_carry_their_slot() {
+        let a = Entity::from_raw_u32(5).expect("entity");
+        let b = Entity::from_raw_u32(6).expect("entity");
+        let v = enemy_voice("Seifer", Some("obj/N_EX570_BTL.apdx"), 26, 2, Vec3::new(1.0, 0.0, 2.0), (a, b)).expect("a request");
+        assert_eq!((v.line, v.priority, v.in_bar, v.file.as_str()), (26, 2, true, "obj/N_EX570_BTL.apdx"));
+        assert_eq!((v.speaker, v.follow, v.pos), (a.to_bits(), Some(b), Some(Vec3::new(1.0, 0.0, 2.0))));
+        let other = enemy_voice("Seifer", Some("obj/N_EX570_BTL.apdx"), 17, 2, Vec3::ZERO, (b, a)).expect("a request");
+        assert_ne!(other.speaker, v.speaker, "each enemy has its own priority slot");
+        assert_ne!(v.speaker, SORA_SLOT);
+        // No object file, a negative line: nothing; a large priority is held to a byte.
+        assert!(enemy_voice("Dusk", None, 1, 0, Vec3::ZERO, (a, b)).is_none());
+        assert!(enemy_voice("Seifer", Some("obj/N_EX570_BTL.apdx"), -1, 0, Vec3::ZERO, (a, b)).is_none());
+        assert_eq!(enemy_voice("Seifer", Some("x"), 1, 1000, Vec3::ZERO, (a, b)).unwrap().priority, 255);
+        // The slot rule over those requests (FUN_001ae798): a lower priority is dropped while a line
+        // is queued, an equal one replaces it.
+        let mut slot = kh2_audio::voice::VoiceSlot::default();
+        slot.request(17, 2);
+        slot.request(26, 1);
+        assert_eq!(slot.pending, Some((17, 2)));
+        slot.request(37, 2);
+        assert_eq!(slot.pending, Some((37, 2)));
+    }
+
+    /// The enemy kinds the app has and the motion triggers the footstep hooks serve: Shadow, Soldier,
+    /// Dusk, N_EX570_BTL, the Dancer, N_EX500_BTL and N_EX600_BTL have no trigger 2 (footstep sound)
+    /// and no trigger 19 (footstep dust) in any motion, so `enemy_footsteps` has nothing to play for
+    /// them today. The check lists the counts; a kind that gains a trigger fails it, as a reminder to
+    /// look at that kind's sound bank (`enemy_footstep_numbers_resolve_per_kind`).
+    #[test]
+    fn enemy_motion_sets_carry_no_footstep_triggers() {
+        let Some(d) = disc() else { return };
+        for kind in crate::enemy::KINDS {
+            let t = frame_triggers(&d, kind.model);
+            let steps = t.iter().filter(|t| t.2 == kh2_anim::triggers::frame::FOOTSTEP_SOUND).count();
+            let dust = t.iter().filter(|t| t.2 == kh2_anim::triggers::frame::FOOTSTEP_EFFECT).count();
+            eprintln!("{} ({}): {} frame triggers, trigger 2 x{steps}, trigger 19 x{dust}", kind.name, kind.model, t.len());
+            assert_eq!((steps, dust), (0, 0), "{}", kind.model);
+        }
+    }
+
+    /// What an enemy footstep would resolve to: each kind's NeoStatus (its `objentry` row) picks its
+    /// bank in the area's soundinfo record, and a walk step on material 1 numbers like the game's
+    /// `FUN_0016baa0`; the per-actor counter cycles the variants. Kinds whose NeoStatus has no bank
+    /// in the area are silent.
+    #[test]
+    fn enemy_footstep_numbers_resolve_per_kind() {
+        let Some(d) = disc() else { return };
+        let record = area_soundinfo(&d, "tt04").expect("tt04 record");
+        let mut with_bank = 0;
+        for kind in crate::enemy::KINDS {
+            let neo = neo_status(&d, kind.model).unwrap_or_else(|| panic!("{} has an objentry row", kind.model));
+            let mut counter = 0u8;
+            let first = kh2_audio::footstep::footstep_number(Some(&record), neo, 1, 4, &mut counter);
+            let second = kh2_audio::footstep::footstep_number(Some(&record), neo, 1, 4, &mut counter);
+            eprintln!("{} neo {neo}: bank {:?}, walk steps on material 1: {first:?} then {second:?}", kind.name, record.bank(neo));
+            match record.bank(neo) {
+                Some(bank) => {
+                    with_bank += 1;
+                    assert_eq!((first, second), (Some(bank as u32 * 1000 + 16 + 4), Some(bank as u32 * 1000 + 16 + 5)));
+                }
+                None => assert_eq!((first, second), (None, None)),
+            }
+        }
+        assert!(with_bank > 0, "at least one enemy kind has a footstep bank in tt04");
     }
 
     #[test]

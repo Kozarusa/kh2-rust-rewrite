@@ -284,3 +284,43 @@ old line and start the new one every tick).
   `footstep_number(record, neo_status, actor_material(desc_flags, ground), kind, &mut counter)`
   for each trigger 2 and write `PlaySe::number(n, None).at(position)`; the counter is per actor.
   `audio::area_soundinfo` and `audio::neo_status` (make it `pub`) give the record and bank.
+
+## Enemy voices, enemy footsteps and footstep dust (WP-7L)
+
+Status words as above; nobody has listened to any of this.
+
+- **Enemy voice bank (verified).** `FUN_00196b58` and `FUN_00196d18` (base constructors of talking
+  objects, +0x588 bit 0) build the voice slot at actor +0x9b8 only when the object file (actor +0x7b0, the
+  `.apdx`) holds a BAR entry of type 0x22 (`FUN_001684c0(file, 0x22)`); the slot's play method is
+  `FUN_001ae8e0` -> `FUN_002c37b8(bank data, line, position, minimum volume 0x1800)` -> `FUN_002c25a8`.
+  So an enemy's voice is NOT a `voice/<lang>/battle` bank: `obj/N_EX570_BTL.apdx` entry `seif` (38 lines),
+  `N_EX500_BTL.apdx` `hyne` (26), `N_EX600_BTL.apdx` `sezt` (40) are `IopVoice` banks; Shadow, Soldier,
+  Dusk and the Dancer have none. The party use `FUN_001ae180` banks (`voice/..`) instead.
+  Host 1.262 (`0x1709c8`) and motion frame trigger 13/14 (dispatcher 0x188498 case 13/14, 0x1886f4: needs
+  +0x588 bit 0; priority = second parameter when the trigger has two, else 0) call the object's method +0x54;
+  for these enemies it is `FUN_001970b8` ([inferred] for N_EX500/N_EX600, whose tables were not traced),
+  and the first argument is the line number of the enemy's own bank. Priority rule `FUN_001ae798`
+  (`voice::VoiceSlot`, one per enemy). `FUN_001ae7d8` rewrites the playing sound's position from the actor
+  every tick (`FUN_002c34c8`): voices follow their speaker (`LiveSound::follow`, also for Sora's lines;
+  the "position is fixed" note above holds for kind 0 sound effects only).
+  Port: `audio::enemy_voice`, `enemy_voice_calls` (host queue), `motion_sounds`. Log:
+  `voice enemy <name> line <n> priority <p> -> bank <apdx> entry 0x22 id <n>`. Tests:
+  `enemy_voice_banks_are_the_object_files_own_entry`, `enemy_voice_requests_carry_their_slot`.
+- **Enemy footsteps (hook ported, nothing to play today).** `audio::enemy_footsteps`: trigger 2 resolves
+  `footstep_number` with a per-enemy counter; trigger 19 asks for dust. None of the app's seven enemy kinds
+  has a trigger 2 or 19 in any motion (`enemy_motion_sets_carry_no_footstep_triggers`); the NeoStatus ->
+  bank chain resolves for all of them (`enemy_footstep_numbers_resolve_per_kind`: bank 729 in tt04).
+- **Footstep dust `FUN_001b1c90` (rule ported; no dust element found on the disc).** Callers: frame
+  trigger 19 (dispatcher case 19, 0x1887d0, kind = parameter 0) and `FUN_0017af10` (kinds 8/9 with the stop
+  step, 10/11 when movement starts from idle; not for NeoStatus 0xe). Rule: ground material -> class byte
+  (table 0x37b9b8), mask = bit class | bit kind+0x20, first element of the area manager's PAX
+  (`DAT_0035a7f0`, set by `FUN_0015e6c0` from map +0x50 [inferred: the map's type 18 entry]) whose
+  category holds the mask (`FUN_001db9e0`); kinds 0..0x13 probe a vertical line 50 above to 100 below the
+  foot (0x37b598/0x37b59c) and start only on a hit, turned to the foot-to-toe direction. Port:
+  `kh2_audio::footstep::DustRules` (tables read from the exe, test `dust_rules_match_the_executable_memory`),
+  `fx::foot_dust`, `fx::AreaFx`. Gaps: (1) the foot point and direction use the actor's position and facing,
+  not the bones 0x8028/0x8029/0x802c/0x802d (`FUN_0016aa18` maps them through `*(actor+0x8b0)` vtable +0x18,
+  not decoded); (2) no map PAX of tt01, tt02, tt04, tt05, tt10 has an element whose category selects dust
+  (tt02: all categories 0; tt04/05: 0 and 0x8000000000000001; tt10: 0x200 damage categories), so the
+  lookup never starts anything on these areas: either the effects live elsewhere or the manager is not the
+  map's PAX. Test `foot_dust_starts_the_area_effect_at_the_ground_under_the_foot` reports this and returns.

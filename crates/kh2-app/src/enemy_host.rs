@@ -697,7 +697,22 @@ impl BevyHost<'_> {
             // 1.262 (0x1709c8): the object's virtual method +0x54 with (line, priority), FUN_001970b8 in
             // the enemy tables: the voice slot at +0x9b8 takes the line when its priority is at least
             // the queued one's (FUN_001ae798). N_EX570_BTL asks for lines 17, 26 and 37 with priority 2.
-            Call::Func { group: 1, index: 262, .. } => stub(Value::None, "enemy voice lines: no voice slot for enemies in the app, and no voice/us/battle bank names this speaker"),
+            // The line is a line number of the object's own voice bank, the type 0x22 entry of its
+            // `.apdx` (FUN_00196b58 builds the slot only when the entry exists; the speaker is not
+            // looked up in `voice/<lang>/battle`). `audio::enemy_voice_calls` plays it (the priority
+            // slot is `kh2_audio::voice::VoiceSlot`, one per enemy).
+            Call::Func { group: 1, index: 262, args } if args[0].int() as u32 == me => {
+                crate::audio::queue_enemy_voice(crate::audio::EnemyVoiceCall {
+                    tag: self.tag.to_string(),
+                    line: args[1].int(),
+                    priority: args[2].int(),
+                    at: self.obj.motor.pos * SCALE,
+                });
+                approx(Value::None, "the line is played by the nearest enemy of the script's kind (the host has no entity); the bank, priority slot and minimum volume are the game's")
+            }
+            // The same call on another object (the player's method +0x54 is FUN_00175d18, which takes a
+            // voice id for the voice table, not a line): no script of the app does this.
+            Call::Func { group: 1, index: 262, .. } => stub(Value::None, "voice request on an object other than the caller"),
             // 1.211 / 1.212 (0x170760, 0x170788): set / clear bit n of the word at object +0xabc. Its
             // readers (FUN_00185be0, FUN_0018c6d0) test bits 9, 10, 11 and 13 (with +0xac0 and +0xac4);
             // N_EX570_BTL only uses bits 1 and 12, for which no reader was found.

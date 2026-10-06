@@ -189,42 +189,42 @@ old line and start the new one every tick).
   of that block was not established). Which descriptors carry bit 0x20 and what sets it was not found (no writer in the
   main executable's decompilation). Port: `footstep::actor_material` (tested); Sora and the two
   ported enemies pass 0.
-- **Kind 8 landing.** `FUN_0017af10` is slot 6 of the descriptor class vtables at 0x35cbb0 and
-  0x371298 (called from `FUN_0016a2f0` as `(*(desc->vtable + 0x18))(desc, actor)`). Actor +0x1c is
-  tested against 0: when positive (inferred: moving up) it plays nothing but the dust effects 10
-  and 11, when not positive the landing branch needs actor +0x588 bit 0x80, actor +0x164 bit 0
-  clear and +0x154 (the motion state) equal 1 or 2 and then calls `FUN_0016baa0(actor, 8)` (kind
-  8) and the dust effects 8 and 9 unless NeoStatus is 0xe. `FUN_0017aeb8` finally feeds a
-  camera/controller shake with an intensity 0, 1 or 2 from the actor's speed. Not ported (a
-  landing in the app already makes kind 9 through A003's trigger). Gap. Findings of the WP-5D
-  search (the earlier "moving up" reading of +0x1c was wrong):
-  - **Actor +0x1c** is the w component of the actor's input vector at +0x10 (a 4-float vector:
-    desired direction in xyz). The player's version `FUN_001774d8` sets +0x1c to the walk speed
-    (actor +0x110) or the run speed (+0x114) when the pad object (+0xb44) has a stick
-    magnitude above 0 (below the threshold at 0x37a4bc: walk, else run) and to 0 without stick
-    input; the AI versions `FUN_001775e8` (from +0xb38, +0x1c is the VU0 length) and
-    `FUN_00177710` fill the same vector. So `FUN_0017af10`'s first test is "the actor is being
-    commanded to move"; `(+0x110 + +0x114) * 0x37a4e8 <= +0x1c` (run, not walk) only picks the
-    shake intensity 2 over 1 for `FUN_0017aeb8`. So the landing branch (the kind 8 sound) is the
-    one for an actor with NO movement command.
-  - **Actor +0x588 bit 0x80** is a party-member flag: the only writers found are the party actor
-    constructors `FUN_00176e00` and `FUN_00176f88` (both `flags |= 0x80`); no clearing form
-    (`& ~0x80`) appears anywhere in the decompilation. Readers (`FUN_00169978`, `FUN_00170288`,
-    `FUN_001819d8`, `FUN_00185460`, `FUN_001a4798` ...) use it as "is a party character".
-  - **Actor +0x154** is the motion controller's current motion slot (`FUN_0017f0c0` and
-    `FUN_0017f160` set it to the motion id they start, after `FUN_0017ef98`; other callers pass
-    0xfc..0xfe). The landing branch wants slot 1 or 2. What motions slots 1 and 2 are (and
-    +0x164 bit 0) was not identified.
-  - **Why it is still not ported.** `FUN_0016a2f0` calls descriptor slot 6 EVERY tick for the actor,
-    and nothing in `FUN_0017af10` makes the kind 8 sound a one-shot (the +0x164 bit is only
-    read). Played every tick it would be a machine-gun, so one more gate must exist outside
-    (a one-tick landing state, or +0x164 bit 0 set by the landing code). Searched without
-    finding it: writers of +0x154 and +0x588 bit 0x80 in 0x0015.. to 0x001b.. (above), direct
-    callers of `FUN_0017af10` in 0x0016.. to 0x0019.. (none, it is only reached through the
-    vtable slot), writers of `+ 0x1c` / `[7]` in 0x0016.. to 0x001b.. (the three input-vector
-    functions above are the ones on the player and AI actors; the rest are other structs). The
-    exact next step is the writers of actor +0x164 (word 0x59) and which motion slots 1 and 2 are
-    in the party motion table.
+- **Kind 8: the stop step (WP-6A, ported).** `FUN_0017af10` is slot 6 of the mover descriptor
+  classes at 0x35cbb0 (mover 0, the ground mover, registered by `FUN_00179880` in the table at
+  0x1c88eb0) and 0x371298 (mover 0x2b), called by `FUN_0016a2f0` every tick as
+  `(*(desc->vtable + 0x18))(desc, actor)`. It has two branches on actor +0x1c, the commanded speed
+  (the w of the input vector at +0x10: `FUN_001774d8` writes the walk speed +0x110 or the run speed
+  +0x114 while the stick is out, 0 without input; the AI versions are `FUN_001775e8`,
+  `FUN_00177710`):
+  - commanded (+0x1c > 0): for a party actor (+0x588 bit 0x80, set only by the party constructors
+    `FUN_00176e00`, `FUN_00176f88`) whose last requested motion id is 0 (idle), the dust effects 10
+    and 11 (`FUN_001b1c90`, not for NeoStatus 0xe). No sound. The wanted motion is 1 (walk) or 2
+    (run, when `(+0x110 + +0x114) * DAT_0037a4e8 <= +0x1c`).
+  - not commanded: for a party actor whose last requested motion id is 1 or 2 and whose +0x164 bit
+    0 is clear, footstep kind 8 (`FUN_0016baa0(actor, 8)`) and the dust effects 8 and 9 (not for
+    NeoStatus 0xe). The wanted motion is 0.
+  - Both end with `FUN_0017aeb8(desc, actor, wanted)`. It is a motion request, not a shake (the
+    WP-1B/5D reading was wrong): when controller +0x20 (actor +0x160) has bit 4, or bit 0x10 and the
+    wanted id is not 0, it calls `FUN_0017e2d8(DAT_0037a4e4, 0, controller, wanted)`, which starts the
+    motion (`FUN_0017e220`) when `FUN_0017e278` allows it.
+  - The fields: actor +0x154 is controller (+0x140) +0x14, the motion id last requested
+    (`FUN_0017e000` stores it). Actor +0x160 / +0x164 are controller +0x20 / +0x24, the range-trigger
+    flags of the playing motion (`FUN_00188030`: range 0 sets +0x20 bit 4, range 2 bit 0x10, range
+    0x2a (42) sets +0x24 bit 0, range 0x2c sets bit 1; `FUN_0017f3d0` clears them and `FUN_0017dd38`
+    zeroes +0x24 when a motion starts). On the disc, Sora's A000, A001 and A002 (idle, walk, run)
+    carry range 0 over every frame, and A005 (landing, motion 5) carries range 42 over every frame
+    and range 2 from frame 12.
+  - The one-shot gate that WP-5D could not find: walk and run have range 0 open, so the same call
+    asks for idle; +0x154 becomes 0 and the next tick fails the test. Range 42 keeps the step out
+    while the landing motion plays (and the landing's id 5 fails the test anyway).
+  - Port: `kh2_audio::footstep::stop_step` (test `stop_step_gate_of_fun_0017af10`) and
+    `audio::footsteps`, which plays it for a grounded Sora in the ground state when the stick is let
+    go while the previous tick's motion id (body slot / 4) was 1 or 2 and its range 42 was closed
+    (the app's controller has asked for idle before the sound system runs). Log line with
+    `KH2_SOUNDLOG=1`: `footstep A000 stop (FUN_0017af10) kind 8 material 0 neo 1 -> None` (tt00,
+    stick let go after running; tt00's floor has material 0, so the number is None there: the sound
+    itself was neither produced on a sounding floor in a run nor listened to). Not ported: the dust
+    effects 8 to 11 (effects are not this package's).
 - **Enemy footsteps.** Shadow and Soldier motions have no trigger 2, so nothing to play. Hook
   for another enemy: in `enemy.rs` where the enemy's motion triggers are walked, resolve
   `footstep_number(record, neo_status, actor_material(desc_flags, ground), kind, &mut counter)`

@@ -190,9 +190,26 @@ bit 100, group 3 finisher), key 40 (A344, bit 101, explicit key 40, not ported).
 * The ability system is not ported: bits come from `KH2_ABILITIES` (and Guard). Combo Plus and the
   others are one bit each, the game counts equipped copies.
 
-## The keyblade at A343 frame 18 (open)
+## The keyblade at A343 frame 18 (closed by WP-6A: not a bug)
 
-Reproduced in the motion viewer, cause not found (WP-5A, see "A343 keyblade" at the end for the
+Cause (WP-6A): the blade is hidden behind Sora's own body. From motion frame 18 to 20 it points
+forward and down from his hip (in front of him), and the run's camera looks from behind him. Evidence:
+- `kh2 rig` against the game's own evaluator (kh2-ee): Sora's slot 776 at frames 17 and 19 (max error
+  0.008 over 228 bones) and the keyblade's `W_EX010.mset` slot 776 at frames 16 to 22 (max error 0.002
+  over 12 bones). So both poses are the original's.
+- Test `skel::tests::a343_keyblade_is_whole_and_in_front_of_sora`: the blade mesh (mesh 0, 518 vertices,
+  bones 2 and 11) skinned on the CPU as the GPU does it, on hand bone 178: whole at frames 16 to 22 (extent
+  119 to 133 units), never below the floor, and at frame 19 the hand is at (28.7, 79.2, 55.4) with the
+  blade from z 22 to 126 (Sora faces +z).
+- Screenshots looked at (WP-6A, `KH2_VIEW_SLOT=776 KH2_VIEW_AFTER=4 KH2_FXONLY=9999 KH2_NO_ENEMIES=1
+  KH2_SHOT_AT=4.63`, frame 19 confirmed by a per-tick log): from the default camera (behind) no blade;
+  with Sora turned 90 and 180 degrees (a temporary viewer override of his facing, not committed) the whole
+  keyblade is drawn, pointing forward and down. `KH2_YAW` did not turn the camera in these viewer runs
+  (yaw 1.57 and 3.14 gave identical images), which is why WP-5A's "six camera yaws" all showed the back
+  view. Nothing to fix; whether the original's camera shows this frame from behind is the camera's
+  business, and A343 is an air finisher (Sora is airborne in play, not on the floor as in the viewer).
+
+The earlier notes, kept for the record (WP-5A, see "A343 keyblade" at the end for the
 runs). Frame numbers here are the motion's own 30 fps frames; the trigger frames below are global
 (60 Hz) frames, twice as large. What was checked earlier: the keyblade's own motion for the A343
 slot (776) is non-degenerate at every frame; Sora's right hand bone (178) is finite with determinant
@@ -324,7 +341,7 @@ raised by its lift, and `detect_hits` places `Hit.point` with `victim_point(hurt
 (0.2078461, 1.3, -0.1558846); clamped pole; equator). docs/effects-damage.md "Hit point" still says
 `Hit.point` is `vol.a` and suggests `(vol.a + vol.b) / 2` for the attacker; both are superseded here.
 
-### A343 keyblade at frame ~18 (WP-5A): reproduced, not culling, cause open
+### A343 keyblade at frame ~18 (WP-5A): reproduced, not culling; cause found in WP-6A (occlusion, see above)
 * Hand socket lag: rejected by code (shift 4). `Sim::Pose` (animation) runs before `Sim::Sora`
   (`follow_hand`) in the same tick and `sync_weapon` copies the body's frame before the pose step.
 * Frustum culling: REJECTED by screenshot. Runs: `KH2_VIEW_SLOT=776 KH2_VIEW_AFTER=4 KH2_FXONLY=9999

@@ -310,3 +310,71 @@ impl MotionMeta for Option<&kh2_anim::Motion> {
         self.map(|m| Meta { fps: m.fps.max(1.0), end: m.frame_end, ret: m.frame_return.clamp(m.frame_start, m.frame_end) })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The pose as `animate` builds it: the motion at `frame`, relative to its root.
+    fn root_relative_pose(m: &Model, mo: &kh2_anim::Motion, frame: f32) -> Vec<Mat4> {
+        let mut st = kh2_anim::rig::RigState::default();
+        let mut pose = mo.pose_with(&m.bones, frame, &mut st);
+        let root = match &mo.data {
+            kh2_anim::motion::Data::Interpolated(ip) => ip.root_at(mo.tick(frame)).unwrap_or_default(),
+            _ => Default::default(),
+        };
+        let undo = (Mat4::from_translation(root.translation) * Mat4::from_rotation_y(root.yaw)).inverse();
+        for p in &mut pose {
+            *p = undo * *p;
+        }
+        pose
+    }
+
+    /// A343 (slot 776), "the keyblade shaft missing at motion frames 18 to 20" (WP-5A): skinned on the
+    /// CPU exactly as the GPU does it (joint pose times inverse rest pose, weights normalised), on
+    /// Sora's hand bone 178 (both poses equal the game's evaluator there, `kh2 rig`), the blade
+    /// (mesh 0) is whole at every frame: about 100 units long, above the floor, and from frame 18 to
+    /// 20 it points forward (+z, Sora's facing) and down from his hip. Seen from the default camera
+    /// behind Sora it is behind his body; seen from the side or the front it is drawn (screenshots).
+    #[test]
+    fn a343_keyblade_is_whole_and_in_front_of_sora() {
+        let Some(iso) = std::env::var("KH2_ISO").ok() else { return };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let mut read = |p: &str| a.read(p).unwrap_or_else(|e| panic!("{p}: {e}"));
+        let body = kh2_model::mdlx(&read("obj/P_EX100.mdlx")).unwrap();
+        let bset = Mset::parse(&read("obj/P_EX100.mset")).unwrap();
+        let blade = kh2_model::mdlx(&read("obj/W_EX010.mdlx")).unwrap();
+        let wset = Mset::parse(&read("obj/W_EX010.mset")).unwrap();
+        let bmo = bset.get(776).and_then(|s| s.motion.as_ref()).unwrap();
+        let wmo = wset.get(776).and_then(|s| s.motion.as_ref()).unwrap();
+        let inv: Vec<Mat4> = kh2_model::rest_pose(&blade.bones).iter().map(|m| m.inverse()).collect();
+        let mesh = &blade.meshes[0];
+        for f in [16.0f32, 17.0, 18.0, 19.0, 20.0, 21.0, 22.0] {
+            let hand = root_relative_pose(&body, bmo, f)[178];
+            let wp = root_relative_pose(&blade, wmo, f);
+            let mut bb = (Vec3::MAX, Vec3::MIN);
+            for (i, p) in mesh.positions.iter().enumerate() {
+                let w = mesh.weights[i];
+                let s: f32 = w.iter().sum();
+                let mut v = Vec3::ZERO;
+                for k in 0..4 {
+                    let wk = if s > 1e-6 { w[k] / s } else if k == 0 { 1.0 } else { 0.0 };
+                    let j = mesh.joints[i][k] as usize;
+                    v += wk * (hand * wp[j] * inv[j]).transform_point3(Vec3::from(*p));
+                }
+                assert!(v.is_finite());
+                bb = (bb.0.min(v), bb.1.max(v));
+            }
+            let size = (bb.1 - bb.0).length();
+            eprintln!("A343 frame {f}: hand ({:.1} {:.1} {:.1}), blade {:.0?}..{:.0?}, extent {size:.0}", hand.w_axis.x, hand.w_axis.y, hand.w_axis.z, bb.0, bb.1);
+            assert!(size > 90.0, "blade collapsed at frame {f}");
+            assert!(bb.0.y > 0.0, "blade under the floor at frame {f}");
+            if (18.0..=20.0).contains(&f) {
+                assert!(bb.1.z > 100.0, "blade not in front at frame {f}");
+            }
+        }
+        // Frame 19 by hand: the hand at the hip, in front of the body.
+        let hand = root_relative_pose(&body, bmo, 19.0)[178].w_axis;
+        assert!((hand.y - 79.2).abs() < 0.5 && (hand.z - 55.4).abs() < 0.5, "{hand:?}");
+    }
+}

@@ -27,9 +27,12 @@ number, `bank = number / 1000` selects `se/seNNN.seb` and `number % 1000` is the
   used as is. So run steps (kind 0) cycle through entries 0..3 and walk steps (kind 4) through
   4..7 of the material's block of 16, sharing one counter per actor.
 
-The only other caller of FUN_0016baa0 is FUN_0017af10 (kind 8, on the landing path: a check on
-actor +0x588 bit 0x80 (party member), +0x164 bit 0 and +0x154 (motion slot); inferred to be the
-landing thud, played without a movement command). FUN_001b1c90
+The only other caller of FUN_0016baa0 is FUN_0017af10 (kind 8). It is not a landing sound but the
+**stop step** (WP-6A, ported): the ground mover's per-tick update plays kind 8 when a party actor
+(+0x588 bit 0x80) has no movement command (+0x1c not above 0), its last requested motion id (+0x154)
+is walk (1) or run (2), and range trigger 42 is not open (+0x164 bit 0); then FUN_0017aeb8 asks for
+idle, so it plays once, on the tick the stick is let go. Details in `docs/audio.md` ("Kind 8: the
+stop step"). FUN_001b1c90
 (the footstep dust effect, trigger 19) also indexes a byte table by FUN_00183730's material.
 
 ### Which `kind` the motions pass (verified from the disc)
@@ -138,10 +141,10 @@ Deviations and gaps:
   volume and pan against the camera. Footsteps are now placed at Sora's feet with that formula
   (`docs/audio.md`); the mix is recomputed every tick against the moving camera while the
   step plays (`audio::update_mixes`), the source position stays where the step started.
-- Only Sora's footsteps are produced. The landing path of FUN_0017af10 (kind 8, with its
-  conditions) is not ported (the WP-5D search of its conditions is in `docs/audio.md`, "Kind 8
-  landing": it is the branch for an actor with no movement command, party flag, motion slot 1
-  or 2, and the one-shot gate was not found); the footstep dust effect (trigger 19, FUN_001b1c90) is not ported.
+- Only Sora's footsteps are produced. The stop step of FUN_0017af10 (kind 8) is ported
+  (`kh2_audio::footstep::stop_step`, played from `audio::footsteps`); its dust effects 8 and 9, the
+  start-to-move dust 10 and 11 of the same routine, and the footstep dust effect (trigger 19,
+  FUN_001b1c90) are not ported.
 - The `NeoStatus` 0x12 material override and the soundinfo bytes before +0xe are not understood.
 - Nobody has listened to any of this. The rendered wav only shows that the entry has a sample and
   that it is not silent.

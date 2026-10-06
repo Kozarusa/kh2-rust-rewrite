@@ -586,35 +586,52 @@ fn neo_status(disc: &Disc, model: &str) -> Option<u16> {
 const SORA_MODEL: &str = "P_EX100";
 
 /// Motion frame trigger 2 (footstep sound): `params[0]` is the `kind` the game passes to
-/// FUN_0016baa0 (0 run, 4 walk, 8 land, 9..11 other steps, per Sora's motions). The sound is
+/// FUN_0016baa0 (0 run, 4 walk, 9..11 other steps, per Sora's motions; 8 is the stop step below). The sound is
 /// `bank * 1000 + material * 16 + variant`: bank from the area's soundinfo record by `NeoStatus`,
 /// material of the ground polygon under Sora's feet (byte 0 of its COCT record; 0 is silent).
 /// Only Sora's footsteps are handled: Shadow and Soldier motions carry no trigger 2.
+///
+/// Also the stop step (kind 8) of the ground mover, `kh2_audio::footstep::stop_step`: on the tick
+/// the stick is let go while the last requested motion was walk or run. The app's controller has
+/// already asked for idle by the time this runs (as `FUN_0017aeb8` does right after the step), so
+/// the motion id and range trigger 42 are the ones of the previous tick. The stick magnitude
+/// stands for the commanded speed (+0x1c is the walk or run speed exactly when the stick is out).
 #[allow(clippy::too_many_arguments)]
 pub fn footsteps(
     anims: Query<&Animator>,
     sora: Query<&Sora>,
+    pad: Option<Res<crate::sora::Pad>>,
     area: Res<CurrentArea>,
     disc: Res<Disc>,
     cache: Res<SeCache>,
     mut info: Local<Option<(String, Option<kh2_audio::footstep::SoundInfoRecord>)>>,
     mut neo: Local<Option<Option<u16>>>,
     mut counter: Local<u8>,
+    mut last: Local<Option<(u32, bool)>>,
     mut out: MessageWriter<PlaySe>,
 ) {
     let Ok(s) = sora.single() else { return };
     let Ok(a) = anims.get(s.body) else { return };
-    let (Some(t), Some(m)) = (a.triggers(), a.motion()) else { return };
-    if t.frames.is_empty() {
-        return;
+    // The ground mover (FUN_0017af10) runs for a grounded Sora in his ground state; he is a party actor.
+    let commanded = pad.as_ref().map_or(0.0, |p| p.stick);
+    let stop = last.is_some_and(|(id, r42)| {
+        s.state == crate::sora::State::Ground && s.motor.grounded && kh2_audio::footstep::stop_step(true, commanded, r42, id)
+    });
+    *last = Some((a.slot.map_or(u32::MAX, |sl| (sl / 4) as u32), a.trigger(kh2_anim::triggers::range::KEEP_MOMENTUM)));
+    let mut kinds: Vec<(u16, String)> = Vec::new();
+    if stop {
+        kinds.push((kh2_audio::footstep::kind::STOP, "stop (FUN_0017af10)".to_string()));
     }
-    let g = |f: f32| f * crate::data::LOGIC_HZ / m.fps.max(1.0);
-    let (from, to) = (g(a.prev_frame), g(a.frame));
-    if from == to {
-        return;
+    if let (Some(t), Some(m)) = (a.triggers(), a.motion()) {
+        let g = |f: f32| f * crate::data::LOGIC_HZ / m.fps.max(1.0);
+        let (from, to) = (g(a.prev_frame), g(a.frame));
+        if from != to {
+            for ft in t.crossed(from, to).filter(|f| f.id == kh2_anim::triggers::frame::FOOTSTEP_SOUND) {
+                kinds.push((ft.params.first().copied().unwrap_or(0).max(0) as u16, format!("frame {}", ft.frame)));
+            }
+        }
     }
-    let steps: Vec<_> = t.crossed(from, to).filter(|f| f.id == kh2_anim::triggers::frame::FOOTSTEP_SOUND).collect();
-    if steps.is_empty() {
+    if kinds.is_empty() {
         return;
     }
     let Some(name) = area.loaded.clone() else { return };
@@ -627,8 +644,7 @@ pub fn footsteps(
     // (Sora's descriptor flags: bit 0x20 is not set for him as far as the footstep logic shows.)
     let material = kh2_audio::footstep::actor_material(0, s.motor.ground.map_or(0, |g| g.material));
     let log = std::env::var_os("KH2_SOUNDLOG").is_some();
-    for ft in steps {
-        let kind = ft.params.first().copied().unwrap_or(0).max(0) as u16;
+    for (kind, at) in kinds {
         let number = kh2_audio::footstep::footstep_number(record, neo_status, material, kind, &mut counter);
         if log {
             let sample = number.and_then(|n| {
@@ -636,7 +652,7 @@ pub fn footsteps(
                 let e = bank.block.entries.get((n % 1000) as usize)?;
                 Some(format!("wd {} tracks {}", e.wd, e.tracks.len()))
             });
-            info!("footstep {} frame {} kind {kind} material {material} neo {neo_status} -> {number:?} {}", a.tag(), ft.frame, sample.as_deref().unwrap_or("no sample"));
+            info!("footstep {} {at} kind {kind} material {material} neo {neo_status} -> {number:?} {}", a.tag(), sample.as_deref().unwrap_or("no sample"));
         }
         if let Some(n) = number {
             // FUN_0016baa0 passes the actor's position, so the step is placed at Sora's feet.

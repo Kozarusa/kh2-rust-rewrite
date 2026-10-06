@@ -102,3 +102,172 @@ fn every_area_file_on_the_disc_parses() {
     let known = ["ard/al08.ard: [\"m_10\", \"m_11\"]", "ard/po10.ard: [\"m_10\"]"];
     assert!(failed.iter().all(|f| known.contains(&f.as_str())), "{failed:?}");
 }
+
+/// Twilight Town's area files (`ard/ttNN.ard`, the ones on the disc), in area order.
+fn tt_areas(a: &mut kh2_archive::Archive) -> Vec<(String, kh2_ard::Area)> {
+    (0..64)
+        .filter_map(|n| {
+            let name = format!("tt{n:02}");
+            let file = a.read(&format!("ard/{name}.ard")).ok()?;
+            let (ard, bad) = kh2_ard::Area::parse(&file)?;
+            assert!(bad.is_empty(), "{name}: {bad:?}");
+            Some((name, ard))
+        })
+        .collect()
+}
+
+/// docs/events.md section 1: the opcodes of every Twilight Town area script, with counts per area
+/// and in total, and the trigger definitions (opcode 0xc) decoded.
+#[test]
+fn twilight_town_area_script_opcodes() {
+    let Some(mut a) = open() else { return };
+    let areas = tt_areas(&mut a);
+    assert!(areas.len() > 30, "tt area files found: {}", areas.len());
+    let mut total: BTreeMap<u16, usize> = BTreeMap::new();
+    for (name, ard) in &areas {
+        let mut per: BTreeMap<u16, usize> = BTreeMap::new();
+        for (tag, progs) in &ard.scripts {
+            for p in progs {
+                for c in &p.commands {
+                    assert!(c.opcode < kh2_ard::OPCODES, "{name} {tag} {:#x}: opcode {:#x}", p.id, c.opcode);
+                    *per.entry(c.opcode).or_default() += 1;
+                    *total.entry(c.opcode).or_default() += 1;
+                    if c.opcode == 0xc {
+                        let t = kh2_ard::parse_trigger(&c.args).unwrap_or_else(|| panic!("{name} {tag} {:#x}: trigger {:x?}", p.id, c.args));
+                        eprintln!("{name} {tag} program {:#x}: trigger ({:#x}, {:#x}) {:x?}", p.id, t.event, t.arg, t.subs);
+                    }
+                }
+            }
+        }
+        let progs: Vec<String> = ard.scripts.iter().map(|(t, p)| format!("{t} {:x?}", p.iter().map(|p| p.id).collect::<Vec<_>>())).collect();
+        eprintln!("{name}: programs {progs:?}; opcodes {:?}", per.iter().map(|(o, n)| format!("{o:#x} {} x{n}", kh2_ard::opcode_name(*o))).collect::<Vec<_>>());
+    }
+    eprintln!("opcode table over {} tt area files:", areas.len());
+    for (o, n) in &total {
+        eprintln!("  {o:#04x} {:<20} {n}", kh2_ard::opcode_name(*o));
+    }
+    assert!(total.contains_key(&kh2_ard::OP_SPAWN));
+}
+
+/// docs/events.md section 2: every spawn group of Twilight Town with its kind, the exits (kind 1:
+/// header +0x1c area, +0x1d entrance), activator volumes, walk paths and signals; and the BAR
+/// entries of type 3 (scripts) and 0x16 (events) of each area file.
+#[test]
+fn twilight_town_groups_exits_and_events() {
+    let Some(mut a) = open() else { return };
+    let objs = kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).expect("objentry").rows;
+    let name = |id: u32| objs.iter().find(|o| o.object_id == id).map_or(("?".to_string(), 0), |o| (o.model_name.clone(), o.object_type));
+    let mut kinds: BTreeMap<u16, usize> = BTreeMap::new();
+    for (area, ard) in &tt_areas(&mut a) {
+        let others: Vec<String> = ard.entries.iter().filter(|(_, k, _)| !matches!(*k, kh2_ard::SCRIPT_KIND | kh2_ard::SPAWN_KIND)).map(|(t, k, n)| format!("{t}:{k:#x}:{n}")).collect();
+        eprintln!("{area}: other entries {others:?}");
+        // The exits: groups with activators whose header names an area (+0x1c) and entrance (+0x1d).
+        let exits: Vec<String> = ard
+            .spawns
+            .iter()
+            .flat_map(|(tag, gs)| gs.iter().map(move |g| (tag, g)))
+            .filter(|(_, g)| g.kind & 0xff == 1 && !g.activators.is_empty())
+            .map(|(tag, g)| format!("{tag} -> tt{:02} entrance {} (+0x1e {}) options {:?}", g.header[0x1c], g.header[0x1d], g.header[0x1e], g.activators.iter().map(|v| v.option).collect::<Vec<_>>()))
+            .collect();
+        eprintln!("{area} exits: {exits:?}");
+        for (tag, groups) in &ard.spawns {
+            for g in groups {
+                *kinds.entry(g.kind).or_default() += 1;
+                let ents: Vec<String> = g.entities.iter().map(|e| {
+                    let (m, k) = name(e.object);
+                    format!("{m}/{k}/sk{}", e.spawn_kind)
+                }).collect();
+                let h = &g.header;
+                eprintln!(
+                    "{area} {tag} group id {:#x} kind {:#x} flags {:#x} hdr+0x1c {:02x?} ents {ents:?} acts {} paths {} returns {} signals {:?}",
+                    g.id, g.kind, g.flags(), &h[0x0e..0x2c], g.activators.len(), g.paths.len(), g.returns.len(),
+                    g.signals.iter().map(|s| (s.event, s.arg, s.action)).collect::<Vec<_>>()
+                );
+                for v in &g.activators {
+                    eprintln!("    activator shape {} option {} at {:?} scale {:?} rot {:?} +0x28 {:02x?}", v.shape, v.option, v.position, v.scale, v.rotation, &v.raw[0x28..0x40]);
+                }
+                for p in &g.paths {
+                    eprintln!("    path hdr {:02x?} points {}", p.header, p.points.len());
+                }
+            }
+        }
+    }
+    eprintln!("group kinds over tt: {kinds:?}");
+}
+
+/// docs/events.md section 6: every Twilight Town event (type 0x16 entry) splits into commands
+/// `u16 size, u16 opcode` to its last byte or a size-0 end; the opcodes used, with counts.
+#[test]
+fn twilight_town_events_split_into_commands() {
+    let Some(mut a) = open() else { return };
+    let mut ops: BTreeMap<u16, usize> = BTreeMap::new();
+    let mut events = 0;
+    for (area, ard) in &tt_areas(&mut a) {
+        for (tag, d) in &ard.events {
+            let cmds = kh2_ard::parse_event(d).unwrap_or_else(|| panic!("{area} event {tag}"));
+            let used: usize = cmds.iter().map(|c| c.data.len() + 4).sum();
+            events += 1;
+            for c in &cmds {
+                *ops.entry(c.opcode).or_default() += 1;
+            }
+            if area == "tt02" && tag == "102" || area == "tt04" && tag == "110" {
+                for c in &cmds {
+                    eprintln!("{area} {tag}: op {:#x} {:02x?}", c.opcode, &c.data[..c.data.len().min(40)]);
+                }
+            }
+            eprintln!("{area} event {tag}: {} commands, {used} of {} bytes", cmds.len(), d.len());
+        }
+    }
+    eprintln!("{events} tt events; opcodes {ops:x?}");
+    // 07localset.bin: per world (type-2 entries in order) u16 count, then (u8 program, u8 area) pairs.
+    let file = a.read("07localset.bin").expect("07localset.bin");
+    let bar = kh2_bar::parse(&file).expect("BAR");
+    let tt = bar.iter().filter(|e| e.kind == 2).nth(2).expect("tt").data;
+    let n = u16::from_le_bytes([tt[0], tt[1]]) as usize;
+    let pairs: Vec<(u8, u8)> = (0..n).map(|k| (tt[2 + 2 * k], tt[3 + 2 * k])).collect();
+    eprintln!("07localset tt: {n} (program, area) pairs {pairs:x?}");
+}
+
+/// docs/events.md sections 5 and 7: the Twilight Town story flags (world 2 of `00progress.bin`)
+/// whose side effects write area program bytes, and the music the area scripts set (opcode 0x10)
+/// next to the `arif` pairs of `03system.bin`.
+#[test]
+fn twilight_town_story_flags_and_music() {
+    let Some(mut a) = open() else { return };
+    let file = a.read("00progress.bin").expect("00progress.bin");
+    let bar = kh2_bar::parse(&file).expect("BAR");
+    eprintln!("00progress.bin entries: {:?}", bar.iter().map(|e| (e.tag, e.kind, e.data.len())).collect::<Vec<_>>());
+    let worlds: Vec<_> = bar.iter().filter(|e| e.kind == 2).collect();
+    let tt = worlds[2].data;
+    let n = kh2_ard::progress::flag_count(tt);
+    eprintln!("tt flag entry: {} bytes, {n} flags", tt.len());
+    let mut ops: BTreeMap<u8, usize> = BTreeMap::new();
+    for f in 0..n as u16 {
+        let effects = kh2_ard::progress::effects(tt, f).unwrap_or_else(|| panic!("flag {f:#x}"));
+        for e in &effects {
+            *ops.entry(e.op).or_default() += 1;
+        }
+        if !effects.is_empty() {
+            eprintln!("flag {:#x}: {:?}", 0x800 + f as u32, effects.iter().map(|e| if e.op == 1 { format!("programs {:x?}", e.programs()) } else { format!("op {} {:02x?}", e.op, e.data) }).collect::<Vec<_>>());
+        }
+    }
+    eprintln!("tt flag side-effect ops: {ops:?}");
+    // Music: opcode 0x10 per area script program, and the arif pairs.
+    let sys = a.read("03system.bin").expect("03system.bin");
+    let arif = kh2_bar::parse(&sys).unwrap().into_iter().find(|e| e.tag == "arif").expect("arif").data;
+    let u16_at = |o: usize| u16::from_le_bytes([arif[o], arif[o + 1]]);
+    let (count, off) = (u16_at(8 + 4 * 2) as usize, u16_at(8 + 4 * 2 + 2) as usize);
+    for (name, ard) in &tt_areas(&mut a) {
+        let index: usize = name[2..].parse().unwrap();
+        let pairs: Vec<(u16, u16)> = if index < count { (0..8).map(|k| (u16_at(off + 0x40 * index + 0x10 + 4 * k), u16_at(off + 0x40 * index + 0x12 + 4 * k))).collect() } else { Vec::new() };
+        let mut set = Vec::new();
+        for (tag, progs) in &ard.scripts {
+            for p in progs {
+                for c in p.commands.iter().filter(|c| c.opcode == 0x10) {
+                    set.push(format!("{tag} {:#x}: {} {}", p.id, c.args[0] & 0xffff, c.args[0] >> 16));
+                }
+            }
+        }
+        eprintln!("{name}: arif pairs {pairs:?}; opcode 0x10 {set:?}");
+    }
+}

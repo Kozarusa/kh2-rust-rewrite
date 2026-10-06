@@ -65,7 +65,7 @@ pub mod list {
 /// Command ids the builders put in (immediates of the code, not data).
 pub mod cmd_id {
     pub const ATTACK: u16 = 1;
-    pub const MAGIC: u16 = 2;
+    pub const MAGIC: u16 = crate::magic_rules::EXECUTE_MAGIC;
     pub const ITEMS: u16 = 3;
     pub const DRIVE: u16 = 4;
     pub const REVERT: u16 = 5;
@@ -909,6 +909,14 @@ fn setup(mut commands: Commands, disc: Res<Disc>) {
     commands.insert_resource(ItemsData { cmds, items, form_items, member_cmds, charge_feed, use_wait, messages });
 }
 
+/// The game state the menu reads besides Sora: the drive state, `Progress`, the battle flag, the
+/// ability block.
+type MenuState<'w> = (Option<Res<'w, crate::drive::DriveState>>, Option<Res<'w, Progress>>, Option<Res<'w, Battle>>, Option<Res<'w, crate::abilities::Abilities>>);
+
+/// What the item use changes or reads besides Sora: the MP charge, the maxima, the battle flag, the
+/// ability block (Item Boost), the drive gauge.
+type UseState<'w> = (ResMut<'w, MagicState>, Res<'w, crate::data::GameData>, Option<Res<'w, Battle>>, Option<Res<'w, crate::abilities::Abilities>>, Option<ResMut<'w, crate::drive::DriveState>>);
+
 /// The command menu each frame: rebuild (FUN_001bc2b8), the root (FUN_001bc370), the pad
 /// (FUN_001bbfd8), the issued command, and the pages the HUD draws.
 #[allow(clippy::too_many_arguments)]
@@ -923,7 +931,7 @@ fn command_menu(
     mut lists: ResMut<CommandLists>,
     mut uses: ResMut<ItemUse>,
     sora: Query<&Sora>,
-    (drive, progress, battle, abilities): (Option<Res<crate::drive::DriveState>>, Option<Res<Progress>>, Option<Res<Battle>>, Option<Res<crate::abilities::Abilities>>),
+    (drive, progress, battle, abilities): MenuState,
 ) {
     let (Some(data), Some(md), Some(progress)) = (data, magic_data, progress) else { return };
     let Ok(s) = sora.single() else { return };
@@ -1040,7 +1048,7 @@ fn run(
     mut anims: Query<&mut Animator>,
     gts: Query<&GlobalTransform>,
     lib: Option<Res<crate::fx::EffectLib>>,
-    (mut magic, game, battle, abilities, mut drive): (ResMut<MagicState>, Res<crate::data::GameData>, Option<Res<Battle>>, Option<Res<crate::abilities::Abilities>>, Option<ResMut<crate::drive::DriveState>>),
+    (mut magic, game, battle, abilities, mut drive): UseState,
 ) {
     let (Some(data), Some(mut progress)) = (data, progress) else { return };
     let Ok(mut s) = sora_q.single_mut() else { return };
@@ -1107,10 +1115,10 @@ fn run(
     let mut done = Vec::new();
     let tick = uses.tick;
     for (i, q) in uses.queue.iter_mut().enumerate() {
-        if q.left >= data.use_wait {
-            if let Some(lib) = lib.as_ref() {
-                fx::start_placed(&mut commands, &lib.system, USE_EFFECT, Bind::Fixed(Mat4::from_translation(pos)), Placement::default());
-            }
+        if q.left >= data.use_wait
+            && let Some(lib) = lib.as_ref()
+        {
+            fx::start_placed(&mut commands, &lib.system, USE_EFFECT, Bind::Fixed(Mat4::from_translation(pos)), Placement::default());
         }
         q.left -= 1.0;
         if q.left > 0.0 {

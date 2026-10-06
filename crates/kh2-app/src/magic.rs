@@ -101,8 +101,20 @@ impl Plugin for MagicPlugin {
 }
 
 fn log_on() -> bool {
+    log_level() > 0
+}
+
+/// `KH2_MAGIC_LOG`: 1 the casts, MP and hits; 2 also every live attack each tick (the timeline the
+/// hand port and the interpreter are compared by).
+fn log_level() -> u32 {
+    static ON: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("KH2_MAGIC_LOG").map_or(0, |v| v.parse().unwrap_or(1)))
+}
+
+/// `KH2_MAGIC_VM=1`: run the spell scripts in the BDX interpreter (see `VmCast`).
+fn vm_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("KH2_MAGIC_LOG").is_ok_and(|v| v != "0"))
+    *ON.get_or_init(|| std::env::var("KH2_MAGIC_VM").is_ok_and(|v| v == "1"))
 }
 
 macro_rules! mlog {
@@ -126,6 +138,11 @@ pub struct MagicData {
     pub slots: Vec<Option<(Magc, Option<Arc<LoadedPax>>)>>,
     /// `prty` MpDrive of Sora's row (FUN_00186440 reads the player's `prty` row at +0x12c, +0x1c).
     pub mp_drive: f32,
+    /// The slot's spell script (the first BDX of its `.mag`, the one FUN_001a45c0 keeps), for
+    /// `KH2_MAGIC_VM=1`.
+    pub scripts: Vec<Option<Arc<Vec<u8>>>>,
+    /// Host function signatures read from the executable (for the scripts' unnamed calls).
+    pub host_table: Option<kh2_bdx::exe::HostTable>,
 }
 
 impl MagicData {
@@ -186,6 +203,9 @@ pub struct MagicState {
     strikes: Vec<Strike>,
     /// The cast's target records for the turn triggers of its motion (see `CastTurn`).
     turn: Option<CastTurn>,
+    /// Ticks run, and the tick of the last cast (for the `KH2_MAGIC_LOG=2` attack timeline).
+    tick: u64,
+    cast_tick: u64,
 }
 
 /// What the turn triggers of a cast motion read (FUN_00188030 cases 22 and 28): the command's target
@@ -252,6 +272,10 @@ struct Cast {
     /// Element started by event 20 ([g]+0x1c), for event 21 to stop.
     charge_fx: Option<u16>,
     step: Step,
+    /// `KH2_MAGIC_VM=1`: the spell's script running in the interpreter instead of the hand port.
+    vm: Option<Box<VmCast>>,
+    /// The cast trigger has paid and restarted the script at event 21 (VM casts).
+    paid: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -265,6 +289,8 @@ enum Step {
     Blizzard { elem: u16, yielded: bool },
     /// Thunder's event 21 picks the strike's place (needs the targets; same frame).
     Thunder,
+    /// The script runs in the interpreter (`KH2_MAGIC_VM=1`).
+    Vm,
     /// The script has ended.
     Done,
 }
@@ -334,7 +360,17 @@ fn setup(
         magi.len(),
         data.prty.mp_drive
     );
-    commands.insert_resource(MagicData { magc, cmds, magi, levels, world: world_id, slots, mp_drive: data.prty.mp_drive });
+    let scripts = slots
+        .iter()
+        .map(|s| {
+            let (row, _) = s.as_ref()?;
+            let file = disc.read(&row.file_name)?;
+            let e = kh2_bar::parse(&file).ok()?.into_iter().find(|e| e.kind == 3)?;
+            Some(Arc::new(e.data.to_vec()))
+        })
+        .collect();
+    let host_table = disc.read_root("SLUS_210.05").and_then(|exe| kh2_bdx::exe::HostTable::from_exe(&exe));
+    commands.insert_resource(MagicData { magc, cmds, magi, levels, world: world_id, slots, mp_drive: data.prty.mp_drive, scripts, host_table });
 }
 
 /// `KH2_KEYS` entries for the menu keys the harness does not map (T, G, B), pressed the same way.
@@ -524,6 +560,7 @@ fn run(
     let Some(data) = data else { return };
     let Ok((me, mut s)) = sora_q.single_mut() else { return };
     let st = &mut *st;
+    st.tick += 1;
     let form = drive.as_ref().map_or(0, |d| d.form);
 
     // MP charge (FUN_00175f48 each frame; the regeneration multiplier is the block's +0x34). The
@@ -565,7 +602,7 @@ fn run(
         let status = data.status(cmd, s.mp, st.charge.active(), form);
         let pressed = (free || combo || fin).then(|| chain.press(Windows { free, combo }, true)).flatten();
         match (row, pressed) {
-            (Some((row, pax)), Some(press)) if status.usable() && !st.casts.iter().any(|c| c.step == Step::Waiting) => {
+            (Some((row, pax)), Some(press)) if status.usable() && !st.casts.iter().any(|c| c.step == Step::Waiting || (c.step == Step::Vm && !c.paid)) => {
                 s.hits = chain.combo;
                 s.finishers = chain.finishers;
                 let finisher = form != 6 && rules::is_finisher(chain.combo, airborne, mg, ma);
@@ -617,11 +654,21 @@ fn run(
                 );
                 // Event 20 (FIRE/BLIZZARD/THUNDER/CURE): the charge effect of the cast. Wisdom and Final
                 // (kind / 10 = 1, 3) start none in Fire; every other case starts element 0.
-                let charge_fx = (!(row.id == 0 && matches!(kind / 10, 1 | 3)) && row.id <= 3).then_some(0u16);
+                // `KH2_MAGIC_VM=1`: the script itself runs event 20 instead.
+                let vm = if vm_on() { pax.as_ref().zip(data.scripts.get(row.id as usize).cloned().flatten()).and_then(|(_, code)| VmCast::start(&code, data.host_table.as_ref(), kind)) } else { None };
+                let charge_fx = (vm.is_none() && !(row.id == 0 && matches!(kind / 10, 1 | 3)) && row.id <= 3).then_some(0u16);
                 if let (Some(id), Some(p)) = (charge_fx, pax) {
                     fx::start(&mut commands, p, id, Bind::Owner(body_e));
                 }
-                st.casts.push(Cast { slot: row.id, cmd, cost, kind, magi, pax: pax.clone(), motion: mslot, motion_id, charge_fx, step: Step::Waiting });
+                let step = if vm.is_some() { Step::Vm } else { Step::Waiting };
+                let mut cast = Cast { slot: row.id, cmd, cost, kind, magi, pax: pax.clone(), motion: mslot, motion_id, charge_fx, step, vm, paid: false };
+                st.cast_tick = st.tick;
+                if cast.vm.is_some() {
+                    mlog!("magic(vm): {} event 20 runs in the interpreter", row.file_name);
+                    let mut ctx = VmCtx { commands: &mut commands, game: &game, frames: &frames, running: &mut running, attacks: &mut st.attacks, next: &mut st.next_group, body: body_e };
+                    vm_slice(&mut cast, &mut ctx, airborne, true);
+                }
+                st.casts.push(cast);
             }
             _ => {
                 if left > 1 && status.usable() {
@@ -686,7 +733,7 @@ fn run(
     let (magic_state, playing) = (s.state == State::Magic, body.slot);
     let in_motion = |c: &Cast| magic_state && playing == c.motion;
     for c in st.casts.iter_mut() {
-        if c.step != Step::Waiting {
+        if c.step != Step::Waiting && !(c.step == Step::Vm && !c.paid) {
             continue;
         }
         if fires(c) && in_motion(c) {
@@ -699,12 +746,35 @@ fn run(
                     st.charge = Charge { left: total, total };
                 }
             }
+            if log_level() >= 2 {
+                info!("magic: timeline +{} trigger 17", st.tick - st.cast_tick);
+            }
             mlog!("magic: trigger 17 at frame {:.1}: MP spent {} -> {} (cost {}){}", body.gframe(), before, s.mp, c.cost, if st.charge.active() { format!(", MP charge {:.0} frames", st.charge.total) } else { String::new() });
+            if let Some(vm) = c.vm.as_mut() {
+                // FUN_0016c500(thread, 21, 0, 0): the script's own event 21 runs in this tick's slice.
+                c.paid = true;
+                vm.rt.restart_thread(21, &[]);
+                mlog!("magic(vm): event 21");
+                continue;
+            }
             c.step = event21(&mut commands, c, &data, &game, &mut s, me, body_e, &frames, airborne_now, &mut running, &mut st.attacks, &mut st.next_group);
-        } else if !in_motion(c) {
+        } else if !in_motion(c) && c.vm.is_none() {
             // Event 20 ends when the caster's motion changes (host 1.15): no spell, no cost.
             mlog!("magic: cast of command {} ended before its trigger (Sora {:?})", c.cmd, s.state);
             c.step = Step::Done;
+        }
+    }
+
+    // The scripts in the interpreter: one slice per tick (FUN_001a4428), except a cast's first, which
+    // ran when it started.
+    for c in st.casts.iter_mut().filter(|c| c.step == Step::Vm) {
+        let im = in_motion(c);
+        if c.vm.as_ref().is_some_and(|v| !v.ran) {
+            let mut ctx = VmCtx { commands: &mut commands, game: &game, frames: &frames, running: &mut running, attacks: &mut st.attacks, next: &mut st.next_group, body: body_e };
+            vm_slice(c, &mut ctx, airborne_now, im);
+        }
+        if let Some(v) = c.vm.as_mut() {
+            v.ran = false;
         }
     }
 
@@ -827,6 +897,9 @@ fn run(
     let sora_pos = s.motor.pos * SCALE;
     for a in st.attacks.iter_mut().filter(|a| a.live) {
         let Some(cur) = a.pos else { continue };
+        if log_level() >= 2 {
+            info!("magic: timeline +{} attack {} atkp {} at {:.1?} radius {} height {}", st.tick - st.cast_tick, a.group, game.atkp[a.base_row].id, cur / SCALE, a.radius, a.height);
+        }
         // FUN_0018c8e0 (from FUN_001a2cc0 when the attack moved more than two units): a row with BG Hit
         // (atkp Flags bit 0) whose attack has not hit yet casts the segment from the last to this
         // position against terrain that blocks attacks (mask 4); a hit goes to the wall handler
@@ -908,8 +981,10 @@ fn event21(
     let fin = c.kind & 1 == 1;
     match c.slot {
         0 => {
-            // FIRE: Final stops the charge effect and starts element 1.
-            if k10 == 3 {
+            // FIRE (R001a -> R017d): every cast but Final's stops the charge effect and starts element 1
+            // (`call R01f9; i.iszero; jz`: the branch is taken when the kind is not Final's; Final starts
+            // no charge effect in event 20). Found by running the script in the interpreter.
+            if k10 != 3 {
                 if let Some(id) = c.charge_fx {
                     stop_effect(running, pax, id, body);
                 }
@@ -1212,6 +1287,273 @@ fn attack_volume(c: Vec3, radius: f32, height: f32) -> Volume {
     Volume { a: c - Vec3::Y * half, b: c + Vec3::Y * half, r: radius * SCALE }
 }
 
+// ---- the spell scripts in the interpreter (`KH2_MAGIC_VM=1`) ---------------------------------------
+
+/// What the spell script reads of the caster: a 16-byte block whose word +4 is the object (the script
+/// copies the first 16 bytes of the object it is given into its context, R0283, and passes the context
+/// to the host functions that take an object). The address is the app's own.
+const VM_CASTER: u32 = 0x0a00_0000;
+/// The caster's object handle in the interpreter.
+const VM_OBJ: u32 = 1;
+/// The slot's resource record (FUN_001a4798 passes `table + 0xc`; the script only hands it to 1.139).
+const VM_PAX: u32 = 0x0a10_0000;
+/// The `magi` row of the cast's kind (the script reads its floats with `ldf`).
+const VM_MAGI: u32 = 0x0a20_0000;
+/// Effect and attack handles given to the script.
+const VM_EFFECT: u32 = 0x0b00_0000;
+const VM_ATTACK: u32 = 0x0c00_0000;
+
+/// A cast whose script runs in the interpreter: the thread of FUN_001a4798 (event 20 at the cast, event
+/// 21 from the cast trigger), the effects (element ids, stopped) and attacks (index in
+/// `MagicState::attacks`) it holds handles to, and the host functions it called that the app does not
+/// answer.
+struct VmCast {
+    rt: kh2_bdx::Runtime,
+    effects: Vec<(u16, bool)>,
+    attacks: Vec<Option<usize>>,
+    missing: std::collections::BTreeSet<String>,
+    /// The slice of this tick has run.
+    ran: bool,
+}
+
+impl VmCast {
+    /// FUN_001a4798's thread: event 20 with (caster, resource record, kind, `magi` row).
+    fn start(code: &[u8], table: Option<&kh2_bdx::exe::HostTable>, kind: u32) -> Option<Box<VmCast>> {
+        let prog = kh2_bdx::Program::parse(code).ok()?;
+        let mut rt = kh2_bdx::Runtime::new(prog);
+        if let Some(t) = table {
+            rt.set_host_table(t.clone());
+        }
+        if !rt.start_thread(VM_OBJ, 20, &[VM_CASTER, VM_PAX, kind, VM_MAGI]) {
+            return None;
+        }
+        Some(Box::new(VmCast { rt, effects: Vec::new(), attacks: Vec::new(), missing: Default::default(), ran: false }))
+    }
+}
+
+/// What a script asked for in its slice, carried out after it (they need the ECS).
+#[derive(Debug)]
+enum VmReq {
+    Effect(u16),
+    Stop(u16),
+    Attack { h: usize, atkp: u16, kind: u32, copy_of: Option<usize> },
+    Size { h: usize, a: f32, b: f32 },
+    Move { h: usize, at: Vec3 },
+    Finish(usize),
+}
+
+/// The app's game space for the scripts: the game's axes (Y and Z negated) in its units.
+fn to_game(v: Vec3) -> [f32; 4] {
+    let g = v / SCALE;
+    [g.x, -g.y, -g.z, 1.0]
+}
+
+fn from_game(v: [f32; 4]) -> Vec3 {
+    Vec3::new(v[0], -v[1], -v[2]) * SCALE
+}
+
+/// The host functions the four level-1 spell scripts call, answered from the tick's state. Calls that
+/// change the game are queued (`VmReq`). Anything else is recorded as missing and answers 0.
+struct SpellHost<'a> {
+    airborne: bool,
+    /// Host 1.15: the caster's motion word (+0x154): 1 while the cast motion plays, 0 after.
+    motion_state: i32,
+    kind: u32,
+    magi: &'a MagiRow,
+    pax: &'a LoadedPax,
+    frames: &'a Frames,
+    vm_effects: &'a mut Vec<(u16, bool)>,
+    vm_attacks: &'a mut Vec<Option<usize>>,
+    missing: &'a mut std::collections::BTreeSet<String>,
+    reqs: Vec<VmReq>,
+}
+
+impl SpellHost<'_> {
+    fn effect(&self, h: u32) -> Option<usize> {
+        h.checked_sub(VM_EFFECT).map(|i| i as usize).filter(|&i| i < self.vm_effects.len())
+    }
+
+    fn attack(&self, h: u32) -> Option<usize> {
+        h.checked_sub(VM_ATTACK).map(|i| i as usize).filter(|&i| i < self.vm_attacks.len())
+    }
+
+    fn new_attack(&mut self, atkp: u16, copy_of: Option<usize>) -> kh2_bdx::host::Value {
+        let h = self.vm_attacks.len();
+        self.vm_attacks.push(None);
+        self.reqs.push(VmReq::Attack { h, atkp, kind: self.kind, copy_of });
+        kh2_bdx::host::Value::Handle(VM_ATTACK + h as u32)
+    }
+}
+
+impl kh2_bdx::host::Host for SpellHost<'_> {
+    fn call(&mut self, c: &kh2_bdx::host::Call) -> kh2_bdx::host::Value {
+        use kh2_bdx::host::{Arg, Call, Value};
+        let raw = |a: &[Arg], k: usize| match a.get(k) {
+            Some(Arg::Raw(v)) | Some(Arg::Obj(v)) => *v,
+            Some(Arg::Int(v)) => *v as u32,
+            _ => 0,
+        };
+        let float = |a: &[Arg], k: usize| match a.get(k) {
+            Some(Arg::Float(f)) => *f,
+            _ => 0.0,
+        };
+        match c {
+            Call::Airborne { .. } => Value::Bool(self.airborne),
+            Call::MotionState { .. } => Value::Int(self.motion_state),
+            // 1.139 (FUN_00173988 -> FUN_001db868): element `id` of the resource's effect file on the
+            // context's object. The mode word (1 or 0) is not told apart: the element is bound to the
+            // caster as in the hand port [inferred: FUN_001db868's third argument was not traced].
+            Call::Unknown { group: 1, index: 139, args } if args.len() >= 2 => {
+                let id = args[1] as u16;
+                self.vm_effects.push((id, false));
+                self.reqs.push(VmReq::Effect(id));
+                Value::Handle(VM_EFFECT + self.vm_effects.len() as u32 - 1)
+            }
+            Call::Unknown { group: 2, index: 31, args } if args.len() >= 2 => match self.attack(args[0]) {
+                Some(src) => self.new_attack(args[1] as u16, Some(src)),
+                None => Value::Int(0),
+            },
+            Call::Func { group: 0, index: 50, args } => Value::Bool(self.effect(raw(args, 0)).is_some_and(|i| !self.vm_effects[i].1)),
+            Call::Func { group: 0, index: 44, args } => {
+                if let Some(i) = self.effect(raw(args, 0)) {
+                    self.vm_effects[i].1 = true;
+                    self.reqs.push(VmReq::Stop(self.vm_effects[i].0));
+                }
+                Value::None
+            }
+            // 0.53 (FUN_001d9d00): the effect's position, as the hand port takes it.
+            Call::Func { group: 0, index: 53, args } => {
+                let p = self.effect(raw(args, 0)).map_or(self.frames[0].w_axis.truncate(), |i| element_position(self.pax, self.vm_effects[i].0, self.frames));
+                Value::Vec(to_game(p))
+            }
+            Call::Func { group: 0, index: 3, .. } => Value::Float(1.0),
+            Call::Func { group: 2, index: 10, args } => self.new_attack(raw(args, 1) as u16, None),
+            Call::Func { group: 2, index: 30, .. } => Value::None,
+            Call::Func { group: 2, index: 11, args } => {
+                if let Some(h) = self.attack(raw(args, 0)) {
+                    self.reqs.push(VmReq::Size { h, a: float(args, 1), b: float(args, 2) });
+                }
+                Value::None
+            }
+            Call::Func { group: 2, index: 12, args } => {
+                if let (Some(h), Some(Arg::Vec(v))) = (self.attack(raw(args, 0)), args.get(1)) {
+                    self.reqs.push(VmReq::Move { h, at: from_game(*v) });
+                }
+                Value::None
+            }
+            Call::Func { group: 2, index: 13, args } => {
+                if let Some(h) = self.attack(raw(args, 0)) {
+                    self.reqs.push(VmReq::Finish(h));
+                }
+                Value::None
+            }
+            other => {
+                let name = match other {
+                    Call::Func { group, index, .. } | Call::Unknown { group, index, .. } => format!("{group}.{index}"),
+                    c => format!("{c:?}").split([' ', '{', '(']).next().unwrap_or("?").to_string(),
+                };
+                self.missing.insert(name);
+                Value::Int(0)
+            }
+        }
+    }
+
+    fn read_mem(&mut self, addr: u32, out: &mut [u8]) -> bool {
+        let words: Vec<u32> = if (VM_CASTER..VM_CASTER + 16).contains(&addr) {
+            vec![0, VM_OBJ, 0, 0]
+        } else if (VM_MAGI..VM_MAGI + 4 * self.magi.0.len() as u32).contains(&addr) {
+            self.magi.0.iter().map(|f| f.to_bits()).collect()
+        } else {
+            return false;
+        };
+        let base = if addr >= VM_MAGI { VM_MAGI } else { VM_CASTER };
+        let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let o = (addr - base) as usize;
+        match bytes.get(o..o + out.len()) {
+            Some(b) => {
+                out.copy_from_slice(b);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// What carrying out a script's requests needs.
+struct VmCtx<'a, 'w, 's, 'rw, 'rs> {
+    commands: &'a mut Commands<'w, 's>,
+    game: &'a GameData,
+    frames: &'a Frames,
+    running: &'a mut Running<'rw, 'rs>,
+    attacks: &'a mut Vec<SpellAttack>,
+    next: &'a mut u32,
+    body: Entity,
+}
+
+/// One slice of a cast's script (FUN_0016c680 from the magic task), then its requests: effects started
+/// on or stopped for the caster, attack objects made, sized (FUN_001a30e0: the height is the second
+/// value when positive, else the radius), moved and finished. The cast is done once the thread has
+/// ended; the host functions it called that the app does not answer are logged then.
+fn vm_slice(c: &mut Cast, ctx: &mut VmCtx, airborne: bool, in_motion: bool) {
+    let (Some(vm), Some(pax)) = (c.vm.as_mut(), c.pax.clone()) else { return };
+    vm.ran = true;
+    let mut host = SpellHost {
+        airborne,
+        motion_state: in_motion as i32,
+        kind: c.kind,
+        magi: &c.magi,
+        pax: &pax,
+        frames: ctx.frames,
+        vm_effects: &mut vm.effects,
+        vm_attacks: &mut vm.attacks,
+        missing: &mut vm.missing,
+        reqs: Vec::new(),
+    };
+    vm.rt.update(&mut host);
+    let reqs = std::mem::take(&mut host.reqs);
+    for e in std::mem::take(&mut vm.rt.core.errors) {
+        warn!("magic(vm): script error at {:#x}: {:?}", e.0, e.1);
+    }
+    for r in reqs {
+        match r {
+            VmReq::Effect(id) => fx::start(ctx.commands, &pax, id, Bind::Owner(ctx.body)),
+            VmReq::Stop(id) => stop_effect(ctx.running, &pax, id, ctx.body),
+            VmReq::Attack { h, atkp, kind, copy_of } => {
+                let i = new_attack(ctx.attacks, ctx.next, ctx.game, &pax, atkp, kind, 0.0, 0.0);
+                if let (Some(i), Some(src)) = (i, copy_of.and_then(|s| vm.attacks.get(s).copied().flatten())) {
+                    // FUN_001a2c58: the copy keeps the original's group and size [inferred, as the hand port].
+                    let (g, r, ht) = (ctx.attacks[src].group, ctx.attacks[src].radius, ctx.attacks[src].height);
+                    let a = &mut ctx.attacks[i];
+                    (a.group, a.radius, a.height) = (g, r, ht);
+                }
+                vm.attacks[h] = i;
+                mlog!("magic(vm): attack {:?} made: atkp {atkp} kind {kind}", i.map(|i| ctx.attacks[i].group));
+            }
+            VmReq::Size { h, a, b } => {
+                if let Some(i) = vm.attacks[h] {
+                    ctx.attacks[i].radius = a;
+                    ctx.attacks[i].height = if b > 0.0 { b } else { a };
+                }
+            }
+            VmReq::Move { h, at } => {
+                if let Some(i) = vm.attacks[h] {
+                    move_attack(&mut ctx.attacks[i], at);
+                }
+            }
+            VmReq::Finish(h) => {
+                if let Some(i) = vm.attacks[h] {
+                    ctx.attacks[i].live = false;
+                    mlog!("magic(vm): attack {} over", ctx.attacks[i].group);
+                }
+            }
+        }
+    }
+    if vm.rt.thread_done() {
+        mlog!("magic(vm): script of slot {} ended; host functions not answered: {:?}", c.slot, vm.missing);
+        c.step = Step::Done;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1272,6 +1614,73 @@ mod tests {
         assert!(fire.is_empty());
         assert!(blizzard.iter().any(|t| t.0 == rules::TRIGGER_TURN_LOCK && t.2.is_some_and(|p| p > 0)));
         assert!(thunder.iter().any(|t| t.0 == rules::TRIGGER_TURN_TARGET && t.2.is_some_and(|p| p > 0)));
+    }
+
+    /// Fire's own script (FIRE_1.mag) in the interpreter with the app's host (`KH2_MAGIC_VM=1`) asks for
+    /// what the hand port does: event 20 starts element 0 and waits while the motion plays; event 21
+    /// (after the cast trigger) starts element 2 (on the ground) and yields; then attack 502 of the
+    /// cast's kind, sized `magi` +0 / +4, moved to the element's position for `magi` +8 frames, one per
+    /// slice, then finished; the thread ends.
+    #[test]
+    fn fire_script_in_the_interpreter_matches_the_hand_port() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let file = disc.read("magic/FIRE_1.mag").expect("FIRE_1.mag");
+        let code = kh2_bar::parse(&file).unwrap().into_iter().find(|e| e.kind == 3).expect("script").data.to_vec();
+        let table = disc.read_root("SLUS_210.05").and_then(|exe| kh2_bdx::exe::HostTable::from_exe(&exe));
+        let pax = fx::load(&disc, "magic/FIRE_1.mag", 100, None).expect("pax");
+        let f = disc.read("03system.bin").unwrap();
+        let top = kh2_bar::parse(&f).unwrap();
+        let inner = kh2_bar::parse(kh2_bar::find(&top, "pref").unwrap().data).unwrap();
+        let magi = rules::parse_magi(kh2_bar::find(&inner, "magi").unwrap().data);
+        let row = rules::magi_row(&magi, 0).unwrap().clone();
+        let frames: Frames = [Mat4::IDENTITY; 10];
+        let mut vm = VmCast::start(&code, table.as_ref(), 0).expect("event 20");
+        let mut slice = |vm: &mut VmCast, in_motion: bool| {
+            let mut host = SpellHost {
+                airborne: false,
+                motion_state: in_motion as i32,
+                kind: 0,
+                magi: &row,
+                pax: &pax,
+                frames: &frames,
+                vm_effects: &mut vm.effects,
+                vm_attacks: &mut vm.attacks,
+                missing: &mut vm.missing,
+                reqs: Vec::new(),
+            };
+            vm.rt.update(&mut host);
+            assert!(vm.rt.core.errors.is_empty(), "{:?}", vm.rt.core.errors);
+            host.reqs
+        };
+        let ev20: Vec<VmReq> = (0..3).flat_map(|_| slice(&mut vm, true)).collect();
+        assert!(matches!(ev20[..], [VmReq::Effect(0)]), "event 20 starts element 0 and waits");
+        assert!(!vm.rt.thread_done());
+        vm.rt.restart_thread(21, &[]);
+        let first = slice(&mut vm, true);
+        // R017d (every kind but Final's): the charge effect stops, element 1 starts; then the ball.
+        assert!(matches!(first[..], [VmReq::Stop(0), VmReq::Effect(1), VmReq::Effect(2)]), "event 21: {first:?}");
+        let second = slice(&mut vm, true);
+        assert!(matches!(second[0], VmReq::Attack { atkp: ATKP_FIRE, kind: 0, copy_of: None, .. }));
+        assert!(matches!(second[1], VmReq::Size { a, b, .. } if a == row.f(MAGI_RADIUS) && b == row.f(MAGI_HEIGHT)));
+        let mut moves = second.iter().filter(|r| matches!(r, VmReq::Move { .. })).count();
+        let mut finished = false;
+        for _ in 0..200 {
+            let r = slice(&mut vm, true);
+            moves += r.iter().filter(|r| matches!(r, VmReq::Move { .. })).count();
+            if r.iter().any(|r| matches!(r, VmReq::Finish(_))) {
+                finished = true;
+                break;
+            }
+        }
+        assert!(finished);
+        assert_eq!(moves as f32, row.f(MAGI_TIME), "one move per frame of the attack time");
+        assert!(vm.missing.is_empty(), "every call answered: {:?}", vm.missing);
+        let _ = slice(&mut vm, true);
+        assert!(vm.rt.thread_done());
     }
 
     /// The rules against the disc: Fire, Blizzard, Thunder and Cure at level 1 (`KH2_ISO` needed).

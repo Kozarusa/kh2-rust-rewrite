@@ -23,3 +23,7 @@ kh2-bdx.workspace = true
 kh2-image.workspace = true
 kh2-ard = { path = "../kh2-ard" }
 bevy = "0.19"
+
+[dev-dependencies]
+# The oracle test of progress.rs runs the game's own new-game routines (PLAYBOOK R2).
+kh2-ee.workspace = true

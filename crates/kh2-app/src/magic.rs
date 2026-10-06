@@ -19,7 +19,8 @@
 //! Keys: the command menu answers T (cursor up), G (cursor down), B (back); J / left mouse
 //! executes the selected command (the game's X button): Attack attacks, Magic opens the list, a
 //! spell is cast. `KH2_KEYS` drives T, G and B too (the harness maps J). `KH2_MAGIC=f,b,t,c[,m,r]`
-//! sets the spell levels owned (default 1,1,1,1,0,0: the app has no inventory). `KH2_MAGIC_LOG=1`
+//! sets the spell levels owned (default: the counts in `progress::Progress`, whose app baseline is
+//! 1,1,1,1,0,0). `KH2_MAGIC_LOG=1`
 //! logs the menu, the casts, MP, hits and damage.
 
 use std::collections::HashMap;
@@ -249,7 +250,13 @@ struct SpellAttack {
     wall: bool,
 }
 
-fn setup(mut commands: Commands, disc: Res<Disc>, data: Res<GameData>, world: Option<Res<crate::drive::DriveWorld>>) {
+fn setup(
+    mut commands: Commands,
+    disc: Res<Disc>,
+    data: Res<GameData>,
+    world: Option<Res<crate::drive::DriveWorld>>,
+    progress: Option<Res<crate::progress::Progress>>,
+) {
     let (magc, cmds) = {
         let Ok(mut a) = disc.0.lock() else { return };
         let magc = kh2_tables::load::<Magc>(&mut a, &t::MAGC).map(|d| d.rows).unwrap_or_default();
@@ -265,7 +272,9 @@ fn setup(mut commands: Commands, disc: Res<Disc>, data: Res<GameData>, world: Op
             Some(rules::parse_magi(kh2_bar::find(&inner, "magi")?.data))
         })
         .unwrap_or_default();
-    let mut levels = [1u8, 1, 1, 1, 0, 0];
+    // The owned levels are the counts of the slots' items in `Progress` (which carries the app
+    // baseline Fire/Blizzard/Thunder/Cure at level 1); without it the old default. `KH2_MAGIC` wins.
+    let mut levels = progress.map_or([1u8, 1, 1, 1, 0, 0], |p| p.spell_levels());
     if let Ok(v) = std::env::var("KH2_MAGIC") {
         for (i, x) in v.split(',').enumerate().take(levels.len()) {
             levels[i] = x.trim().parse().unwrap_or(0);

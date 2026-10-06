@@ -8,6 +8,10 @@ Function names are the addresses in the main executable (`SLUS_210.05`, written 
 decompiled code is a local study aid and is not in the repository. No game values are in this repository:
 the numbers below are structure (which field, which unit); the values come from the disc at run time.
 
+The saved state these systems read (inventory, party and form records, munny, summon level, outfits) and its
+new-game values are in `docs/progress.md` (WP-7S, `progress::Progress`, save block `0x33e860`, party block
+`0x33fec0`).
+
 ## How to look at the data
 
 New decoders live in `crates/kh2-tables/src/player.rs` (typed views and loaders) and `msg.rs` (system

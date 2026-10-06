@@ -22,6 +22,7 @@ use crate::assets::Disc;
 use crate::combat::{Fighter, Hit};
 use crate::data::{GameData, KINGDOM_KEY};
 use crate::fx::EffectLib;
+use crate::progress::Progress;
 use crate::schedule::{Frame, Sim};
 use crate::skel::{spawn_skinned, Animator, Rig};
 use crate::sora::{self, Battle, Rigs, Sora, State, WeaponCue};
@@ -524,7 +525,8 @@ pub mod rules {
     /// Object id of the base body in a merged record (`FUN_001cf2c8` with form 0: byte offset
     /// 0x10 + 2 * outfit, the outfit being the low 5 bits of byte 0 of the world's save block at
     /// `0x340c9c + 4 * world`, `FUN_001a71e8`). A new game has 0 there (inferred: nothing in the
-    /// paths read writes it before play); the app takes it from `KH2_DRIVE_OUTFIT`.
+    /// paths read writes it before play: `FUN_00187b38` sets it to 0); the app takes it from
+    /// `progress::Progress::outfit` or `KH2_DRIVE_OUTFIT`.
     pub fn merged_base_object(rec: &[u16; 24], outfit: u8) -> Option<u16> {
         (outfit < 4).then(|| rec[8 + outfit as usize]).filter(|&o| o != 0)
     }
@@ -714,7 +716,11 @@ impl DriveState {
         if self.in_form { self.form } else { 0 }
     }
 
-    fn from_env(rules: &DriveRules) -> DriveState {
+    /// The owned forms, their levels, their second keyblades and the spare keyblades come from
+    /// `progress::Progress` (the form items, the form records, the inventory); `KH2_DRIVE_OWNED`,
+    /// `KH2_DRIVE_LEVEL` and `KH2_DRIVE_INVENTORY` replace them. Without `Progress` the old
+    /// defaults apply (forms 1..4 owned at level 1, one spare Kingdom Key per form that takes one).
+    fn from_env(rules: &DriveRules, progress: Option<&Progress>) -> DriveState {
         let env = |k: &str| std::env::var(k).ok();
         let num = |k: &str| env(k).and_then(|v| v.trim().parse::<i32>().ok());
         let scripted = env("KH2_DRIVE").is_some();
@@ -723,36 +729,60 @@ impl DriveState {
         let want = num("KH2_DRIVE_POINTS").map_or(if scripted { 9 } else { 0 }, |v| v.clamp(0, 9) as u8);
         let points = rules::Points { whole: want, fraction: 0, max: want.max(3) };
         let mut owned = [false; 6];
-        match env("KH2_DRIVE_OWNED") {
-            Some(v) => v.split(',').filter_map(|x| x.trim().parse::<usize>().ok()).filter(|&f| f < 6).for_each(|f| owned[f] = true),
-            None => owned[1..=4].fill(true),
+        let env_owned = env("KH2_DRIVE_OWNED");
+        match (&env_owned, progress) {
+            (Some(v), _) => v.split(',').filter_map(|x| x.trim().parse::<usize>().ok()).filter(|&f| f < 6).for_each(|f| owned[f] = true),
+            (None, Some(p)) => (1..=5u8).for_each(|f| owned[f as usize] = p.owns_form(f)),
+            (None, None) => owned[1..=4].fill(true),
         }
         let cap = player::form_level_cap(owned[1..=4].iter().filter(|&&o| o).count() as u32);
-        let level = num("KH2_DRIVE_LEVEL").map_or(1, |v| v.clamp(1, cap as i32) as u8);
+        let saved = |f: u8| progress.map_or(1, |p| p.form_level(f).clamp(1, 7));
+        let level: [u8; 6] = match num("KH2_DRIVE_LEVEL") {
+            Some(v) => {
+                let l = v.clamp(1, cap as i32) as u8;
+                [0, l, l, l, l, l]
+            }
+            None => [0, saved(1), saved(2), saved(3), saved(4), saved(5)],
+        };
         let seed = env("KH2_DRIVE_SEED").and_then(|v| v.parse::<u32>().ok()).unwrap_or_else(|| {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.subsec_nanos())
         });
         let party = env("KH2_DRIVE_PARTY").unwrap_or_else(|| "both".into());
         // The forms' second keyblades come from the inventory when the form items are obtained
-        // (the harness obtains the owned forms in id order). The app has no inventory: the
-        // default gives one spare copy of the equipped keyblade per form that takes one, which
-        // keeps the Kingdom Key in both hands; `KH2_DRIVE_INVENTORY=` (empty) is the new-game
-        // state with no spare keyblade (the forms then hold one), `=id,id` any list.
-        let mut inventory: Vec<u16> = match env("KH2_DRIVE_INVENTORY") {
-            Some(v) => v.split(',').filter_map(|x| x.trim().parse().ok()).collect(),
-            None => (1..=4u8).filter(|&f| owned[f as usize] && matches!(f, 1 | 3 | 4)).map(|_| rules.key_item).collect(),
-        };
+        // (`FUN_001a2010`). With `Progress` (and neither env var) that already happened there:
+        // the form records hold them and the inventory keeps the rest. Otherwise the harness
+        // obtains the owned forms in id order from `KH2_DRIVE_INVENTORY` (`=` empty: no spare
+        // keyblade, `=id,id` any list) or, by default, one spare copy of the equipped keyblade per
+        // form that takes one, which keeps the Kingdom Key in both hands.
+        let env_inventory = env("KH2_DRIVE_INVENTORY");
         let mut form_weapon = [0u16; 6];
-        for f in 1..=4u8 {
-            if owned[f as usize] {
-                form_weapon[f as usize] = rules::take_form_keyblade(rules.items(), &mut inventory, f);
+        let inventory: Vec<u16> = match (progress, env_owned.is_none() && env_inventory.is_none()) {
+            (Some(p), true) => {
+                for f in 1..=4u8 {
+                    if owned[f as usize] {
+                        form_weapon[f as usize] = p.form(f).weapon;
+                    }
+                }
+                p.keyblades()
             }
-        }
+            _ => {
+                let mut inventory: Vec<u16> = match env_inventory {
+                    Some(v) => v.split(',').filter_map(|x| x.trim().parse().ok()).collect(),
+                    None => (1..=4u8).filter(|&f| owned[f as usize] && matches!(f, 1 | 3 | 4)).map(|_| rules.key_item).collect(),
+                };
+                for f in 1..=4u8 {
+                    if owned[f as usize] {
+                        form_weapon[f as usize] = rules::take_form_keyblade(rules.items(), &mut inventory, f);
+                    }
+                }
+                inventory
+            }
+        };
         DriveState {
             points,
             in_form: false,
             form: 0,
-            level: [0, level, level, level, level, level],
+            level,
             owned,
             counters: rules::Counters { anti: num("KH2_DRIVE_ANTI_COUNTER").unwrap_or(0), fin: 0 },
             timer: Default::default(),
@@ -889,9 +919,16 @@ impl Plugin for DrivePlugin {
                 n => n.parse().unwrap_or(2),
             })
             .unwrap_or(2);
-        let outfit = std::env::var("KH2_DRIVE_OUTFIT").ok().and_then(|v| v.parse::<u8>().ok()).unwrap_or(0).min(3);
+        crate::progress::ensure(app);
+        let progress = app.world().get_resource::<Progress>();
+        // The outfit is the world record's byte (`Progress::outfit`); `KH2_DRIVE_OUTFIT` wins.
+        let outfit = std::env::var("KH2_DRIVE_OUTFIT")
+            .ok()
+            .and_then(|v| v.parse::<u8>().ok())
+            .unwrap_or_else(|| progress.map_or(0, |p| p.outfit(world as usize)))
+            .min(3);
         let enter = std::env::var("KH2_DRIVE").ok().and_then(|v| v.parse::<u8>().ok()).map(|f| (env_f("KH2_DRIVE_AT").unwrap_or(4.0), f));
-        let state = DriveState::from_env(&rules);
+        let state = DriveState::from_env(&rules, progress);
         info!("drive: form keyblades (hand 1) {:?}, inventory left {:?}", &state.form_weapon[1..=4], state.inventory);
         app.insert_resource(state)
             .insert_resource(rules)

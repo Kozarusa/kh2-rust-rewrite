@@ -606,9 +606,10 @@ pub fn receive_hits(
             x => x,
         };
         info!(
-            "{} hit: atkp {} damage {dmg} hp {} reaction {} effective {} ineffective {useless} {} -> {action:?}",
+            "{} hit: atkp {} row SubId {} damage {dmg} hp {} reaction {} effective {} ineffective {useless} {} -> {action:?}",
             e.name,
             h.atkp,
+            atk.sub_id,
             e.hp,
             atk.enemy_reaction,
             out.effective,

@@ -58,7 +58,7 @@ impl Plugin for StrugglePlugin {
         if consts.is_none() {
             warn!("struggle: the orb constants are not readable from SLUS_210.05; no orb pool");
         }
-        app.insert_resource(OrbLib(consts)).add_systems(
+        app.insert_resource(OrbLib(consts)).init_resource::<OrbDraws>().add_systems(Update, (build_orb_draws, show_orbs).chain()).add_systems(
             FixedUpdate,
             (
                 start_mission.in_set(Sim::Enemy).after(crate::enemy::spawn_waves),
@@ -219,6 +219,16 @@ pub struct OrbLib(pub Option<Consts>);
 pub struct Orb {
     pub p: Prize,
     pub taker: Option<Entity>,
+    /// The entity that draws it (`show_orbs`), its sprite children and the shape frame they show.
+    pub ent: Option<Entity>,
+    pub kids: Vec<Entity>,
+    pub shown: Option<usize>,
+}
+
+impl Orb {
+    pub fn new(p: Prize) -> Orb {
+        Orb { p, taker: None, ent: None, kids: Vec::new(), shown: None }
+    }
 }
 
 /// A fighter that may take orbs (`FUN_00184d98`: the objects with +0x588 bit 2), in object-list order.
@@ -284,6 +294,8 @@ pub struct Active {
     pub latch: bool,
     pub orb_pool: bool,
     pub orbs: Vec<Orb>,
+    /// Entities of orbs that ended, for `show_orbs` to remove.
+    pub gone: Vec<Entity>,
     /// The generator the orb launches step (the game shares 0x3716a0 with every other user; here it is the
     /// pool's own [approx]).
     pub seed: u32,
@@ -400,6 +412,7 @@ pub fn build(id: u32, name: &str, file: Vec<u8>, orb_pool: bool, table: Option<&
         latch: false,
         orb_pool,
         orbs: Vec::new(),
+        gone: Vec::new(),
         seed: 1,
         rt,
         events: Vec::new(),
@@ -589,7 +602,7 @@ fn knock_out(a: &mut Active, c: &Consts, player: bool, reaction: u8, centre_game
             a.seed = a.seed.wrapping_mul(0x10dcd);
             *x = a.seed;
         }
-        a.orbs.push(Orb { p: prize::launch(c, orb_kind(player), v, centre_game), taker: None });
+        a.orbs.push(Orb::new(prize::launch(c, orb_kind(player), v, centre_game)));
     }
     n
 }
@@ -733,6 +746,92 @@ fn note_event(a: &mut Active, id: u32, arg: i32) {
     }
 }
 
+/// The orbs' look: `obj/PRIZE_TT.mdlx` holds one effect file with the prize program `pppRyjMegaBirthPrize`,
+/// drawn as the prizes are (`prize::kind_draws`, the pool's draw `FUN_001bf848` [inferred: the PRIZE_TT pool
+/// is the same class 0x35fd38 with its own vtable 0x3600d0, whose draw slots were not read]).
+#[derive(Resource, Default)]
+struct OrbDraws {
+    draws: Vec<prize::KindDraw>,
+    tried: bool,
+}
+
+fn build_orb_draws(
+    disc: Res<Disc>,
+    mut d: ResMut<OrbDraws>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    if d.tried {
+        return;
+    }
+    d.tried = true;
+    let Some(pax) = crate::fx::load(&disc, "obj/PRIZE_TT.mdlx", usize::MAX - 9, None) else {
+        warn!("struggle: obj/PRIZE_TT.mdlx has no readable effect file; orbs run but are not drawn");
+        return;
+    };
+    match prize::kind_draws(&pax, 4, &mut meshes, &mut materials, &mut images) {
+        Some((draws, looks, shapes)) => {
+            info!("struggle: orbs drawn from obj/PRIZE_TT.mdlx ({shapes} shapes): kinds {:?}", looks.iter().take(4).map(|l| (l.shape, l.rgb, l.scale)).collect::<Vec<_>>());
+            d.draws = draws;
+        }
+        None => warn!("struggle: obj/PRIZE_TT.mdlx has no prize program; orbs are not drawn"),
+    }
+}
+
+/// Places the orbs' sprites (as `prize::show_prizes`: facing the camera, scaled by the kind and the size, the
+/// shape's frames stepped at 60 Hz).
+fn show_orbs(
+    mut commands: Commands,
+    draws: Res<OrbDraws>,
+    mut mission: ResMut<Mission>,
+    cam: Query<&GlobalTransform, With<Camera3d>>,
+    mut tfs: Query<(&mut Transform, &mut Visibility)>,
+    mut ticks: Local<f32>,
+    time: Res<Time>,
+) {
+    let Some(a) = mission.m.as_deref_mut() else { return };
+    for e in a.gone.drain(..) {
+        commands.entity(e).despawn();
+    }
+    let rot = cam.single().map(|g| g.compute_transform().rotation).unwrap_or_default();
+    *ticks += time.delta_secs() * crate::data::LOGIC_HZ;
+    let steps = ticks.floor() as u32;
+    *ticks -= steps as f32;
+    for o in &mut a.orbs {
+        let Some(d) = draws.draws.get(o.p.kind as usize).filter(|d| !d.frames.is_empty()) else { continue };
+        let at = flip(o.p.pos) * SCALE;
+        let e = *o.ent.get_or_insert_with(|| commands.spawn((Transform::from_translation(at), Visibility::Hidden)).id());
+        let n = d.frames.len();
+        let mut f = o.p.frame;
+        if f == 0xff {
+            f = if d.loops { (o.p.pos.x.to_bits() as usize % n.max(1)) as u8 } else { 0 };
+        } else {
+            for _ in 0..steps {
+                let next = f as usize + 1;
+                f = if next < n { next as u8 } else if d.loops { 0 } else { f };
+            }
+        }
+        o.p.frame = f;
+        let size = d.scale * o.p.size as f32 / 255.0;
+        if let Ok((mut t, mut vis)) = tfs.get_mut(e) {
+            t.translation = at;
+            t.rotation = rot;
+            t.scale = Vec3::splat(size * SCALE);
+            *vis = if size > 0.0 { Visibility::Inherited } else { Visibility::Hidden };
+        }
+        if o.shown != Some(f as usize) {
+            for k in o.kids.drain(..) {
+                commands.entity(k).despawn();
+            }
+            for sp in &d.frames[(f as usize).min(n - 1)].sprites {
+                o.kids.push(commands.spawn((Mesh3d(sp.mesh.clone()), MeshMaterial3d(sp.material.clone()), Transform::default(), bevy::light::NotShadowCaster, ChildOf(e))).id());
+            }
+            o.shown = Some(f as usize);
+        }
+    }
+}
+
 /// The orb pool's frame (`FUN_001c4d50` walk; update `FUN_001c5288` / rest, pickup `FUN_001cadd8`).
 #[allow(clippy::too_many_arguments)]
 fn run_orbs(
@@ -779,7 +878,8 @@ fn run_orbs(
         if alive {
             i += 1;
         } else {
-            a.orbs.swap_remove(i);
+            let o = a.orbs.swap_remove(i);
+            a.gone.extend(o.ent);
         }
     }
     for (side, kind, taker) in picked {
@@ -1110,7 +1210,7 @@ mod tests {
             let e = s + v;
             if e.y >= 0.0 { prize::Sweep { end: e.with_y(0.0), on_floor: true } } else { prize::Sweep { end: e, on_floor: false } }
         };
-        let mut o = Orb { p: prize::launch(&c, 2, [0x8000_0000; 3], Vec3::new(0.0, -100.0, 0.0)), taker: None };
+        let mut o = Orb::new(prize::launch(&c, 2, [0x8000_0000; 3], Vec3::new(0.0, -100.0, 0.0)));
         let far = Taker { ent: Entity::from_raw_u32(1).unwrap(), player: true, feet: Vec3::new(1000.0, 0.0, 0.0), centre: Vec3::new(1000.0, -90.0, 0.0), extra: 0.0 };
         let near = Taker { ent: Entity::from_raw_u32(2).unwrap(), player: false, feet: Vec3::ZERO, centre: Vec3::new(0.0, -90.0, 0.0), extra: 0.0 };
         let mut taken = None;

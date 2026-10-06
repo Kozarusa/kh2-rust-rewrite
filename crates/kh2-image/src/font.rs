@@ -149,6 +149,19 @@ impl FontSet {
         })
     }
 
+    /// A font set with no pixels and every advance width `width`: for layout tests that need the
+    /// game's rules but not the disc.
+    pub fn synthetic(width: u8) -> FontSet {
+        let (sys, evt) = (Font::get(0), Font::get(3));
+        FontSet {
+            widths: [vec![width; sys.per_page()], vec![width; evt.per_page()], vec![width; ICON_COLS * (ICON_H / ICON_CELL)]],
+            sys: vec![0; ATLAS_W * SYS_H],
+            evt: vec![0; ATLAS_W * EVT_H],
+            icons: vec![0; ICON_W * ICON_H],
+            clut: vec![[0; 4]; 256],
+        }
+    }
+
     /// Advance width of glyph `g` of `font`, in pixels at scale 1.
     pub fn width(&self, font: &Font, g: usize) -> u32 {
         let table = match font.atlas {

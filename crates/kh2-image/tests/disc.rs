@@ -79,11 +79,53 @@ fn every_message_tokenises_and_only_known_commands_appear() {
         assert!(!t.is_empty());
         assert_eq!(t.last(), Some(&Token::End), "{id:#x}");
         for k in &t {
+            // Every command the file uses has a token of its own now (0x08 and 0x13 are callbacks,
+            // 0x11 a position, 0x14 a wait); nothing is left as a bare command.
             if let Token::Command(op, args) = k {
-                assert!(matches!(op, 0x08 | 0x11 | 0x13 | 0x14), "{id:#x}: unexpected command {op:#x} {args:?}");
+                panic!("{id:#x}: unexpected command {op:#x} {args:?}");
+            }
+            if let Token::Callback(op, _) = k {
+                assert!(matches!(op, 0x08 | 0x13), "{id:#x}: unexpected callback {op:#x}");
             }
         }
     }
+}
+
+/// The phase-three commands as they occur in the real system text: positions, waits and callbacks
+/// parse with the game's lengths and lay out without panicking; a message that sets the pen puts
+/// its later glyphs at the requested x.
+#[test]
+fn phase_three_commands_in_real_messages() {
+    let Some(mut a) = open() else { return };
+    let set = fonts(&mut a);
+    let bar = a.read("msg/us/sys.bar").expect("sys.bar");
+    let m = Messages::from_bar(&bar).expect("messages");
+    let mut ids: Vec<u32> = m.ids().collect();
+    ids.sort_unstable();
+    let (mut positions, mut waits, mut callbacks) = (0, 0, 0);
+    for id in &ids {
+        let t = m.tokens(*id).unwrap();
+        for k in &t {
+            match k {
+                Token::Position(..) => positions += 1,
+                Token::Wait(_) => waits += 1,
+                Token::Callback(..) => callbacks += 1,
+                _ => {}
+            }
+        }
+        let l = text::layout(&set, None, &t, &Style { font: 1, size: Some(14.0), ..Style::default() }, [0.0, 0.0]);
+        assert!(l.complete, "{id:#x}: no typewriter in the system text, so nothing is cut");
+        if let Some(Token::Position(dx, _)) = t.iter().find(|k| matches!(k, Token::Position(..))) {
+            // The first glyph after the position starts at dx from the origin.
+            let after = t.iter().position(|k| matches!(k, Token::Position(..))).unwrap();
+            let glyphs_before = t[..after].iter().filter(|k| matches!(k, Token::Glyph(_) | Token::Icon(_))).count();
+            if let Some(q) = l.quads.get(glyphs_before) {
+                assert_eq!(q.pos[0], *dx as f32, "{id:#x}");
+            }
+        }
+    }
+    eprintln!("sys.bar: {positions} position commands, {waits} waits, {callbacks} callbacks");
+    assert!(positions > 0 && waits > 0 && callbacks > 0);
 }
 
 #[test]

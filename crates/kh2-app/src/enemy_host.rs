@@ -693,6 +693,25 @@ impl BevyHost<'_> {
                 }
                 stub(Value::None, "word +0xabc stored; bits 1 and 12 have no reader in the executable that was found")
             }
+            // 1.95 (0x173038 -> FUN_00183470): mover 1 (the jump mover, FUN_0016b698(obj, 1)) continuing the
+            // last tick's real movement (+0x860, see 1.62): its horizontal part is the velocity (+0x20), its
+            // vertical speed vy gives the apex time vy / g (+0xd0) and height y - (vy / g)^2 * g * 0.5 (+0xd8;
+            // g = DAT_0037a884 = 20/49, 0.5 = DAT_0037a888). N_EX600_BTL's atk_air_counter hook (R13e7). Not
+            // in `kh2_bdx::names`, it arrives undecoded with the raw context word; the only caller passes
+            // its own context, so it is taken as this object.
+            Call::Unknown { group: 1, index: 95, .. } | Call::Func { group: 1, index: 95, .. } => {
+                let v = self.obj.moved;
+                let h = v.y * v.y / (2.0 * crate::motor::G);
+                self.obj.dash = None;
+                self.obj.air_vel = Vec3::new(v.x, 0.0, v.z);
+                if v.y > 0.0 {
+                    self.obj.motor.start_jump(h);
+                } else {
+                    self.obj.motor.start_fall();
+                    self.obj.motor.jump = crate::motor::Jump::fall(h, self.obj.motor.pos.y);
+                }
+                approx(Value::None, "the parabola of mover 1 is the app's Motor jump (eased rise to the same apex); the fall-motion follow-ups are not set")
+            }
             // 1.54 bits_47c_480_clear (0x172910 -> FUN_0019dde0): bit n cleared in the bit arrays at object
             // +0x47c and +0x480 (set by 1.52 / 1.53, which none of the app's scripts call). No reader of
             // either array was traced. N_EX500_BTL clears bit 2 (R1447).

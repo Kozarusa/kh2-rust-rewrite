@@ -71,8 +71,13 @@ pub const DANCER: Kind = Kind { name: "Dancer", enmp: 48, model: "M_EX930", deat
 /// effect file, fades out and hides, as the Dusk's does.
 pub const N_EX500: Kind = Kind { name: "N_EX500", enmp: 150, model: "N_EX500_BTL", death_effect: true };
 
+/// The Struggle opponent `N_EX600_BTL` (object 0x82f) of tt04's battle group b_52, called by its model.
+/// Its script hands `enmp` row 158 to `set_obj_param` (BDX `N_EX600_BTL` 0x07fd); its `dead` mode
+/// (R09c8) starts element 2 of its effect file, fades out and hides.
+pub const N_EX600: Kind = Kind { name: "N_EX600", enmp: 158, model: "N_EX600_BTL", death_effect: true };
+
 /// Every enemy kind the app has.
-pub const KINDS: [&Kind; 6] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500];
+pub const KINDS: [&Kind; 7] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600];
 
 /// The rigs of the enemy kinds, by `Kind::name` (Shadow and Soldier share `sora::Rigs`' copies).
 #[derive(Resource, Default)]

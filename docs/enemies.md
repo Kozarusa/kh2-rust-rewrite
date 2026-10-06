@@ -199,3 +199,31 @@ Acceptance run (WP-7D): `KH2_BDXLOG=1 KH2_WAVE_GROUP=b_50 KH2_NO_SOUND=1 KH2_NO_
 `idle_short`, `idle_fix`, `move_target_near`, `atk_blow_2`, `atk_spin`, `back_step`, `mode_revenge`; no script
 error, no unimplemented host call; Sora's hits flinch and blow it (HP 200 down to 176 in the first eight hits), its
 blow-class hits send `player_finish_struggle` and drop prize row 122.
+
+## The fifth enemy: N_EX600_BTL (WP-7D)
+
+`N_EX600_BTL` (object 0x82f, ObjectType 4, `enemy::N_EX600`, called by its model) is the Struggle opponent of b_52
+(btl program 0xb7, with a player entry). Model (14 meshes, 3135 triangles, 262 bones, 5 textures), motion set
+(208 slots, 34 with motions), effect file and BDX script (7087 words) are on the disc (`cargo test -p kh2-bdx --test
+disc n_ex600`). Same family as N_EX500_BTL: no spawn parameter, lowest HP 1 (1.231 at 0x0809), 4.29 for the score,
+the same event 6 rule (effective reaction 4, 7, 9 or 11: `player_finish_struggle`, then `faint` at HP 2 or less,
+else prize row 132), plus two branches of that handler that switch to `atk_air_counter`.
+
+- **Stats.** `enmp` row 158 (0x07fd): 100 HP at world level 1. Distance thresholds 350 / 450 cm (R1a39).
+- **Host 1.95** (0x173038 -> FUN_00183470), new: mover 1 continuing the object's last real movement (+0x860, host
+  1.62): its horizontal part as the velocity, its vertical speed vy giving the apex time vy / g and the apex height
+  (g = DAT_0037a884 = 20/49 per tick squared, the factor 0.5 at DAT_0037a888). Called by the second routine of
+  `atk_air_counter` (R13e7), which then plays motion 4 when motion 202 was playing. The app starts its `Motor` jump to
+  the same apex (rising) or a fall already that fast (falling) with the horizontal speed kept; approx: the eased
+  rise of `Motor` is not the game's parabola. 1.95 is not in `kh2_bdx::names`: it arrives undecoded and is taken as
+  the object's own (its only caller passes its own context).
+- **Death.** `dead` (R09c8) is the Dusk's: `Kind::death_effect` true, not reached with the lowest HP at 1.
+
+Acceptance run (WP-7D): `KH2_BDXLOG=1 KH2_WAVE_GROUP=b_52 KH2_NO_SOUND=1 KH2_NO_MUSIC=1 KH2_KEYS="6:Q,<J every
+0.45 s from 6.3 to 36 s>" kh2-game tt04`: modes `start_voice`, `mode_battle`, `check_mode`, `btl_attack`,
+`btl_long`, `footwork`, `footwork_not_voice`, `move_target_near`, `atk_swing_side`, `atk_combo_thrust`, `atk_guard`,
+`atk_air_counter`, `land_check`, `back_step`, `mode_revenge`; no script error, no unimplemented host call (1.95
+reached twice, `first host call 1.95 ? [Approx]`); its blow 168 knocked Sora down (reaction 4).
+
+Not done for the three (WP-7D): the Struggle rules (WP-7E), enemy voice lines (1.262 stays a stub), event 13 and
+event 15. `docs/hit-reaction.md`: all three use the default reaction slots of their sets.

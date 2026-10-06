@@ -248,6 +248,26 @@ fn n_ex500_btl_runs_its_mode_cycle() {
     assert!(d.host.calls().any(|c| matches!(c, Call::SetObjParam { a: 150, .. })), "set_obj_param 150");
 }
 
+/// The Struggle opponent N_EX600_BTL (WP-7D) of tt04's group b_52. Undecoded by `names.rs`: group 4's
+/// 4.29 / 4.0 / 4.1 (as for N_EX500_BTL) and 1.95 (FUN_00183470, the ballistic fall of its
+/// `atk_air_counter` hook).
+#[test]
+fn n_ex600_btl_runs_its_mode_cycle() {
+    let Some((mut a, elf)) = open() else { return };
+    assert_enemy_files(&mut a, "N_EX600_BTL");
+    let table = HostTable::from_exe(&elf).expect("table");
+    let data = object_script(&mut a, "obj/N_EX600_BTL.mdlx");
+    let (seen, unknown) = mode_cycle_table(&data, 99, Some(&table));
+    eprintln!("N_EX600_BTL modes: {seen:?}; undecoded calls: {unknown:?}");
+    assert!(unknown.keys().all(|&k| [(4, 0), (4, 1), (4, 29), (1, 95)].contains(&k)), "{unknown:?}");
+    for m in ["start_voice", "mode_battle", "check_mode", "btl_attack", "mode_revenge"] {
+        assert!(seen.contains(m), "mode {m} never ran: {seen:?}");
+    }
+    assert!(seen.iter().any(|m| m.starts_with("atk_")), "no attack: {seen:?}");
+    let d = dry_run_table(&data, 1, 250.0, 60, None, 99, Some(&table));
+    assert!(d.host.calls().any(|c| matches!(c, Call::SetObjParam { a: 158, .. })), "set_obj_param 158");
+}
+
 /// Every BDX on the disc (object scripts, mission and area scripts, 00common.bdx).
 fn all_scripts(a: &mut kh2_archive::Archive) -> Vec<(String, Vec<u8>)> {
     if let Ok(names) = std::fs::read_to_string("../../local/kh2idx.txt") {

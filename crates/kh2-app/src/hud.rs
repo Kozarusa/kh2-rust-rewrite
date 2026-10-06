@@ -13,7 +13,7 @@ use crate::sora::{Sora, State};
 
 // The HUD's own files sit beside this one; they are submodules so `main.rs` stays untouched.
 #[path = "hud_gauge.rs"]
-mod hud_gauge;
+pub(crate) mod hud_gauge;
 #[path = "hud_gfx.rs"]
 mod hud_gfx;
 #[path = "hud_target.rs"]

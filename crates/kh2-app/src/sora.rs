@@ -154,6 +154,8 @@ pub enum State {
     /// A reaction command's paired motion is playing on Sora (`player_reaction.rs` starts and ends
     /// it): no input, his velocity is the script's secondary velocity, gravity goes on.
     Reaction,
+    /// A spell's cast motion is playing (`magic.rs` starts it): no input until the motion lets go.
+    Magic,
 }
 
 /// Growth-ability levels (0 = not learned, 5 = MAX). Written from the ability block's growth
@@ -195,6 +197,12 @@ impl Pad {
         let p = *n > 0;
         *n = n.saturating_sub(1);
         p
+    }
+
+    /// Takes one pending attack press for another use (the command menu executes the selected
+    /// command with the same button, `magic.rs`). True when there was one.
+    pub fn steal_attack(&mut self) -> bool {
+        Pad::take(&mut self.attack)
     }
 }
 
@@ -1428,6 +1436,26 @@ pub fn tick(
             // No input: `player_reaction.rs` set the velocity for this tick and ends the state.
             if !s.motor.grounded {
                 airborne_dy = Some(s.motor.jump_dy(fall_max));
+            }
+        }
+        State::Magic => {
+            // The cast motion (`magic.rs`): gravity unless the motion suspends it; control comes back
+            // when it ends or its blend-to-idle range opens with a press or a direction.
+            let hover = body.trigger(range::NO_GRAVITY) || body.trigger(range::NO_GRAVITY_KEEP_KINETICS);
+            if !s.motor.grounded {
+                airborne_dy = Some(if hover { 0.0 } else { s.motor.jump_dy(fall_max) });
+                if hover {
+                    s.motor.jump = Jump::fall(0.0, s.motor.pos.y);
+                }
+            }
+            if body.finished || (body.trigger(range::BLEND_TO_IDLE) && (dir != Vec3::ZERO || attack || jump)) {
+                s.state = if s.motor.grounded { State::Ground } else { State::Air };
+                if s.state == State::Air {
+                    s.motor.start_fall();
+                    body.play(motion(id::FALL), true, BLEND_FALL);
+                } else if attack {
+                    request(s, &mut body, &mut weapon, false, Windows { free: true, combo: false }, false);
+                }
             }
         }
     }

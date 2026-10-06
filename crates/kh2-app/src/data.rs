@@ -93,6 +93,16 @@ impl GameData {
         self.atkp.iter().find(|a| a.id == id && a.sub_id >> 8 == 0).or_else(|| self.atkp.iter().find(|a| a.id == id))
     }
 
+    /// The `atkp` row a hit used: the exact `SubId` when the hit names one (spell attacks pick their
+    /// row by the cast's kind and the hit count, `magic_rules::attack_row` and `variant`), otherwise
+    /// the default lookup of `atkp`.
+    pub fn hit_row(&self, h: &crate::combat::Hit) -> Option<&Atkp> {
+        match h.row {
+            Some(sub) => self.atkp.iter().find(|a| a.id == h.atkp as u16 && a.sub_id == sub),
+            None => self.atkp(h.atkp),
+        }
+    }
+
     pub fn sora_stats(&self, level: i32) -> Stats {
         let l = self.sora_levels.get((level - 1).max(0) as usize);
         Stats {

@@ -62,7 +62,15 @@ enum Request {
     SetAction { handle: u32, pc: u32, args: Vec<u32> },
     /// Host 1.214: drop the action thread (FUN_001764a8 with 0).
     StopAction,
+    /// Host 2.20: start a detached request thread (FUN_001a4738).
+    StartRequest { handle: u32, pc: u32, args: Vec<u32> },
 }
+
+/// Base of the script heap served to host 0.47 (`alloc`). The game hands out real heap memory; here a
+/// bump allocator inside the runtime answers reads and writes before the host is asked. Clear of the
+/// script regions (`vm::CODE_ADDR` and up).
+pub const HEAP_BASE: u32 = 0x0900_0000;
+const HEAP_SIZE: usize = 0x1_0000;
 
 /// A message waiting for its delay to run out (offsets +0xa0, +0xa4, +0xa8 of the mode manager).
 struct PendingMessage {
@@ -118,8 +126,15 @@ pub struct Core {
     requests: Vec<Request>,
     /// The object's action thread (offset +0xaec of the game object), started by host 1.112.
     action: Option<Node>,
+    /// Detached request threads started by host 2.20 (FUN_001a4738): the game keeps them in a global
+    /// list at 0x1c95518 and the task body FUN_001a4428 runs each one once per frame (FUN_0016c680),
+    /// destroying it when it has ended. Here they belong to the object whose script started them.
+    requests_threads: Vec<Node>,
     /// Mode threads that were stopped; destroyed when the mode machine's pass ends (FUN_0016ca48).
     deferred: Vec<Node>,
+    /// The script heap behind host 0.47 / 0.48 (see [`HEAP_BASE`]); `heap_next` is the bump pointer.
+    heap: Vec<u8>,
+    heap_next: usize,
     /// When set, the name of every mode that starts is appended (modes that switch again within the
     /// frame show up here but not in [`Runtime::current_mode`] sampled once per frame).
     pub mode_log: Option<Vec<String>>,
@@ -271,9 +286,32 @@ impl Core {
             cur_root: 0,
             requests: Vec::new(),
             action: None,
+            requests_threads: Vec::new(),
             deferred: Vec::new(),
+            heap: Vec::new(),
+            heap_next: 0,
             mode_log: None,
         }
+    }
+
+    /// Host 0.47: `size` bytes of zeroed heap, or 0 when the heap is exhausted (the game's allocator
+    /// returns 0 too when it fails; scripts do not check). Never reused: 0.48 (`free`) only records.
+    fn heap_alloc(&mut self, size: u32) -> u32 {
+        if self.heap.is_empty() {
+            self.heap = vec![0; HEAP_SIZE];
+        }
+        let size = ((size as usize) + 15) & !15;
+        if self.heap_next + size > self.heap.len() {
+            return 0;
+        }
+        let at = self.heap_next;
+        self.heap_next += size;
+        HEAP_BASE + at as u32
+    }
+
+    fn heap_range(&self, addr: u32, len: usize) -> Option<std::ops::Range<usize>> {
+        let o = addr.checked_sub(HEAP_BASE)? as usize;
+        (o + len <= self.heap.len()).then_some(o..o + len)
     }
 
     fn alloc_handle(&mut self) -> u32 {
@@ -407,6 +445,12 @@ impl Core {
         while i < self.requests.len() {
             match &self.requests[i] {
                 Request::SetAction { .. } | Request::StopAction => {}
+                Request::StartRequest { .. } => {
+                    let Request::StartRequest { handle, pc, args } = self.requests.remove(i) else { continue };
+                    let node = self.new_node(prog, sh, handle, pc, &args);
+                    self.requests_threads.push(node);
+                    continue;
+                }
                 _ => {
                     i += 1;
                     continue;
@@ -419,6 +463,23 @@ impl Core {
             if let Request::SetAction { handle, pc, args } = req {
                 let node = self.new_node(prog, sh, handle, pc, &args);
                 self.action = Some(node);
+            }
+        }
+    }
+
+    /// Runs every detached request thread one slice and destroys the ones that have ended
+    /// (FUN_001a4428: `for node in list { if FUN_0016c680(node.thread) == 1 { destroy } }`; the game
+    /// skips the whole pass while the pause flag 0x20 of 0x35d268 is set).
+    fn run_requests(&mut self, prog: &Program, code: &[u8], sh: &mut Shared, host: &mut dyn Host) {
+        let mut i = 0;
+        while i < self.requests_threads.len() {
+            let mut node = self.requests_threads.remove(i);
+            let done = self.run_node(prog, code, sh, host, &mut node, None);
+            if done {
+                self.destroy(prog, code, sh, host, node);
+            } else {
+                self.requests_threads.insert(i, node);
+                i += 1;
             }
         }
     }
@@ -725,10 +786,18 @@ impl Env for CoreEnv<'_> {
     }
 
     fn ext_read(&mut self, addr: u32, out: &mut [u8]) -> bool {
+        if let Some(r) = self.core.heap_range(addr, out.len()) {
+            out.copy_from_slice(&self.core.heap[r]);
+            return true;
+        }
         self.host.read_mem(addr, out)
     }
 
     fn ext_write(&mut self, addr: u32, data: &[u8]) -> bool {
+        if let Some(r) = self.core.heap_range(addr, data.len()) {
+            self.core.heap[r].copy_from_slice(data);
+            return true;
+        }
         self.host.write_mem(addr, data)
     }
 
@@ -762,6 +831,10 @@ impl CoreEnv<'_> {
             // Functions the retail executable implements as an empty return (debug prints and the like).
             (0, 0 | 1 | 2 | 8 | 24 | 25 | 26 | 60) | (1, 103 | 122 | 163 | 240 | 246) | (2, 36) => return Ok(None),
             (0, 79) => Call::ReleaseEffect { handle: a[0] },
+            // The game heap (FUN_0016dea8 allocates through the allocator at 0x33e850, FUN_0016ded8 frees
+            // with FUN_00104fe0): served by the runtime's own heap, see `HEAP_BASE`.
+            (0, 47) => return Ok(Some(self.core.heap_alloc(a[0]))),
+            (0, 48) => return Ok(None),
             // Start a thread under the thread this one runs for (FUN_0016d458): tag, routine, cleanup
             // routine, argument. Another start with the same tag bits kills the earlier thread first.
             (0, 9) => {
@@ -915,7 +988,14 @@ impl CoreEnv<'_> {
             (2, 5) => Call::HitStun { obj: self.obj_of(mem, a[0])? },
             (2, 8) => Call::HitIsReal { hit: a[0] },
             (2, 9) => Call::SetObjParam { obj: self.obj_of(mem, a[0])?, a: a[1] as i32, b: a[2] as i32 },
-            (2, 20) => Call::Request2_20 { a: a[0], b: a[1] },
+            // A detached thread at routine a[0] with the single argument a[1] (FUN_0018e898 ->
+            // FUN_001a4738: FUN_0016c838 makes the thread, FUN_001a42b8 links it into the list at
+            // 0x1c95518; FUN_001a4428 runs the list once per frame). Returns the list node.
+            (2, 20) => {
+                let handle = self.core.alloc_handle();
+                self.core.requests.push(Request::StartRequest { handle, pc: a[0], args: vec![a[1]] });
+                return Ok(Some(handle));
+            }
             (2, 23) => Call::Target { obj: self.obj_of(mem, a[0])? },
             (2, 88) => Call::LastAttacker { obj: self.obj_of(mem, a[0])? },
 
@@ -1060,6 +1140,20 @@ impl Runtime {
     pub fn update(&mut self, host: &mut dyn Host) {
         self.update_script(host);
         self.update_action(host);
+        self.update_requests(host);
+    }
+
+    /// The detached request threads of host 2.20 (the task FUN_001a4428 in the game, whose order
+    /// relative to the object updates is not known): each runs one slice, ended ones are destroyed.
+    pub fn update_requests(&mut self, host: &mut dyn Host) {
+        let (prog, code) = (&self.prog, &self.code);
+        self.core.apply_action_requests(prog, code, &mut self.shared, host);
+        self.core.run_requests(prog, code, &mut self.shared, host);
+    }
+
+    /// Number of detached request threads (host 2.20) still running.
+    pub fn request_threads(&self) -> usize {
+        self.core.requests_threads.len()
     }
 
     /// The script part of a frame: main thread, its children, the mode machine.
@@ -1130,7 +1224,7 @@ impl Runtime {
             usize::from(!n.finished) + n.children.iter().map(count).sum::<usize>()
         }
         let m = &self.core.modes;
-        self.main.iter().chain(m.cur_thread.iter()).chain(self.core.action.iter()).map(count).sum()
+        self.main.iter().chain(m.cur_thread.iter()).chain(self.core.action.iter()).chain(self.core.requests_threads.iter()).map(count).sum()
     }
 }
 

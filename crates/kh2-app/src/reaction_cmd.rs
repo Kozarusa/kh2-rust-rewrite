@@ -14,13 +14,16 @@
 //!   decide, then the distance test of FUN_0019c3c8 (horizontal distance from the target to the
 //!   player above `DistRange` marks it unavailable).
 //! - Accepting (FUN_0019c670 pushes slot 1 as input action 0xcb, the player runs it through
-//!   FUN_00177b18 -> FUN_00177c20): bump the use counter `ReactionCount`, apply `CmdAction`
-//!   (1 stop the player if moving, 2 clear velocity), then deliver the command to the offering
-//!   object as script event 0xb with the arguments (player, command id, target record)
-//!   (FUN_0016b420 -> FUN_0016c620). What the object's script does with it is the target side.
+//!   FUN_00177b18 -> FUN_00177c20): bump the use counter `ReactionCount`; refuse unless the target
+//!   object is still in the object list (FUN_001b80e8); set the player's bytes +0xb04 and +0xb05 to 1
+//!   (FUN_00176a70, the combo step counters); apply `CmdAction` (1 stop the player if moving, 2 clear
+//!   the velocity at +0x20 and call the mover with a zero vector; both clear the vector at +0xad0);
+//!   then deliver the command to the target object as script event 0xb with the arguments (player
+//!   object, command id, target record) (FUN_0016b420 -> FUN_0016c620).
 //!
-//! The target side (the BDX event 0xb handler and the paired player motions) is a hook: this module
-//! writes `ReactionAccepted` and nothing else.
+//! The target side is the script: `enemy_ai.rs` delivers `ReactionAccepted` as event 11 to the
+//! target's BDX runtime, and what the script then asks of the *player* comes back here as
+//! [`PlayerReactionCmd`] (the hook for `sora.rs`, see docs/limits-reactions.md).
 
 use std::collections::HashMap;
 
@@ -192,14 +195,45 @@ pub struct ReactionOffer(pub Option<Active>);
 #[derive(Resource, Default)]
 pub struct ReactionUses(pub HashMap<u16, u16>);
 
-/// Sent when the player accepts an offer. Hook for the offering object's script (event 0xb with the
-/// arguments player, `cmd`, target record).
-#[allow(dead_code)]
+/// Sent when the player accepts an offer. `enemy_ai.rs` delivers it to the target's script as event
+/// 0xb (event 11) with the arguments (player, `cmd`, target record {target object, `pos`, 0, -1, 0}).
 #[derive(Message, Clone, Copy, Debug)]
 pub struct ReactionAccepted {
     pub cmd: u16,
     pub pos: i16,
     pub target: Entity,
+}
+
+/// What a target's script asks of the *player* while a reaction command runs: the host calls the
+/// Soldier's command-34 thread makes on the player's context (docs/limits-reactions.md). Written by
+/// `enemy_ai.rs`; the consumer is the player side (`sora.rs`), which is a hook: nothing in the app
+/// reads these yet, so the player neither plays the paired motion nor moves.
+#[allow(dead_code)]
+#[derive(Message, Clone, Copy, Debug, PartialEq)]
+pub enum PlayerReactionCmd {
+    /// Host 1.29 (FUN_0017f160): play entry `slot` of `from`'s motion set on the player's body with
+    /// `blend` frames (the entry holds one sub-motion per player model, named `%03d0` of the player's
+    /// objentry byte +7). `serial` is the value the player's +0x158 takes; the script compares it with
+    /// `obj_word_158` to see whether its motion is still the one running.
+    PairedMotion { from: Entity, slot: usize, blend: f32, serial: i32 },
+    /// Host 1.70 / 1.71 with bit 3 on the player: cannot be hit (FUN_0019a4f0 tests it).
+    Unhittable(bool),
+    /// Host 1.89: the player's secondary velocity vector (+0x880): unit direction in the app's space
+    /// and speed in centimetres per tick. Set again every tick while the script wants it.
+    Velocity { dir: Vec3, speed: f32 },
+    /// Host 1.13: queue motion `slot` of the player's own set behind the running one (FUN_0017e170).
+    QueueMotion { slot: usize, blend: f32 },
+}
+
+/// The player's part of a running reaction command, as the scripts see it.
+#[derive(Resource, Default, Debug)]
+pub struct PlayerReaction {
+    /// The player's +0x158: the serial of the motion `play_motion_with` last started on him (the
+    /// counter at 0x35ccb0 counts down from 0 and never returns above -1).
+    pub serial: i32,
+    /// Set by the player side when the paired motion has ended (bit 1 of the player's +0x160, read by
+    /// host 1.14). Nothing sets it yet.
+    pub paired_done: bool,
 }
 
 /// The accept key was pressed (Triangle in the game).
@@ -232,7 +266,9 @@ impl Plugin for ReactionPlugin {
             .init_resource::<ReactionOffer>()
             .init_resource::<ReactionUses>()
             .init_resource::<AcceptPress>()
+            .init_resource::<PlayerReaction>()
             .add_message::<ReactionAccepted>()
+            .add_message::<PlayerReactionCmd>()
             .add_systems(Update, read_key)
             .add_systems(FixedUpdate, (offer, accept).chain().in_set(Sim::Effects));
     }
@@ -303,6 +339,7 @@ fn accept(
     mut uses: ResMut<ReactionUses>,
     mut out: MessageWriter<ReactionAccepted>,
     mut sora: Query<&mut Sora>,
+    targets: Query<&Enemy>,
 ) {
     if !std::mem::take(&mut press.0) {
         return;
@@ -320,11 +357,21 @@ fn accept(
         return;
     }
     let Some(c) = rules.cmd(a.cmd) else { return };
-    // FUN_00177c20: the use counter, then the player's own handling by CmdAction.
+    // FUN_00177c20: the use counter first (it is counted even when nothing follows).
     if c.reaction_count != 0 {
         let n = uses.0.entry(c.reaction_count).or_insert(0);
         *n = (*n + 1).min(999);
     }
+    // FUN_001b80e8: the target must still be in the object list.
+    if targets.get(a.from).is_err() {
+        if log.0 {
+            info!("reaction: accept of command {} dropped, the target {:?} is gone", a.cmd, a.from);
+        }
+        return;
+    }
+    // FUN_00176a70 sets the player's bytes +0xb04 and +0xb05 to 1 (the combo step counters) [not
+    // ported: they live in sora.rs]. CmdAction 1 stops the mover when it is moving, 2 clears the
+    // velocity at +0x20 and gives the mover a zero vector; both clear the vector at +0xad0.
     if let Ok(mut s) = sora.single_mut() {
         match c.cmd_action {
             1 | 2 => s.motor.vel = Vec3::ZERO,
@@ -334,7 +381,7 @@ fn accept(
     out.write(ReactionAccepted { cmd: a.cmd, pos: a.pos, target: a.from });
     if log.0 {
         info!(
-            "reaction: accepted command {} (Execute {}, CmdAction {}, counter slot {} = {}) from {:?}; delivered as script event 0xb to the offering object (target side not ported)",
+            "reaction: accepted command {} (Execute {}, CmdAction {}, counter slot {} = {}) from {:?}; delivering script event 0xb (player, command id, target record) to the target's script",
             a.cmd,
             c.execute,
             c.cmd_action,

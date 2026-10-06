@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use bevy::color::Alpha;
 use bevy::prelude::*;
-use kh2_bdx::{Call, Host, Program, Runtime, Value, Vec4};
+use kh2_bdx::{Arg, Call, Host, Program, Runtime, Value, Vec4};
 use kh2_tables::tables as t;
 
 use crate::assets::Disc;
@@ -33,6 +33,7 @@ use crate::data::GameData;
 use crate::enemy::{EState, Enemy};
 use crate::fx::{GameEffect, StartEffect, EFFECT_DEATH};
 use crate::motor::{wrap_angle, Motor};
+use crate::reaction_cmd::{PlayerReaction, PlayerReactionCmd, ReactionAccepted};
 use crate::schedule::Sim;
 use crate::skel::{Animator, Rig};
 use crate::sora::Sora;
@@ -45,7 +46,13 @@ const PLAYER: u32 = 0x0200_0000;
 const TARGET: u32 = 0x0300_0000;
 const EFFECT: u32 = 0x0400_0000;
 const HIT: u32 = 0x0500_0000;
+/// Target records handed to event 11 (0x14 bytes each, built like FUN_0018ed40 + FUN_0018f490:
+/// object, position index, 0, -1, 0), one per accepted command.
+const RECORD: u32 = 0x0600_0000;
+const RECORD_SIZE: u32 = 0x20;
 const OBJ_SIZE: usize = 0x1000;
+/// Bit 3 of an object's flag array: "cannot be hit" (FUN_0019a4f0).
+const FLAG_BIT_UNHITTABLE: i32 = 3;
 /// Offset of the movement vector (direction and speed in w) in a game object.
 const MOVE_VECTOR: usize = 0x10;
 /// Flag bit 3 of the object's flag array: the object cannot be hit (FUN_0019a4f0 tests it).
@@ -185,7 +192,6 @@ fn is_query(c: &Call) -> bool {
             | Call::SetObjParam { .. }
             | Call::SetTargetMode { .. }
             | Call::FreeTarget { .. }
-            | Call::Request2_20 { .. }
             | Call::ObjMethod44 { .. }
             | Call::ObjMethod48 { .. }
             | Call::MoverMethod { .. }
@@ -250,7 +256,6 @@ fn call_id(c: &Call) -> (u16, u16) {
         Call::ObjMethod48 { .. } => (1, 134),
         Call::MoverMethod { .. } => (1, 128),
         Call::SetObjParam { .. } => (2, 9),
-        Call::Request2_20 { .. } => (2, 20),
         Call::FreeTarget { .. } => (1, 131),
         Call::SendMessage { .. } => (1, 90),
         Call::RemoteSetMode { .. } => (6, 58),
@@ -330,6 +335,12 @@ struct Obj {
     next_effect: u32,
     hits: HashMap<u32, bool>,
     next_hit: u32,
+    /// Target records given to event 11, readable by the script (handle `RECORD + k * RECORD_SIZE`).
+    records: Vec<[u8; 20]>,
+    /// What the script asked of the player this tick (host calls on the player's context).
+    player_cmds: Vec<PlayerReactionCmd>,
+    /// The player's +0x158 after this tick's `play_motion_with`, if it changed.
+    player_serial: Option<i32>,
 }
 
 impl Obj {
@@ -358,7 +369,21 @@ impl Obj {
             next_effect: 0,
             hits: HashMap::new(),
             next_hit: 0,
+            records: Vec::new(),
+            player_cmds: Vec::new(),
+            player_serial: None,
         }
+    }
+
+    /// A target record for event 11 (FUN_0018ed40 then FUN_0018f490: object, position index, 0, -1,
+    /// and a fifth word the manager copies, 0 here). Returns its handle.
+    fn new_record(&mut self, obj: u32, pos: i16) -> u32 {
+        let mut r = [0u8; 20];
+        r[0..4].copy_from_slice(&obj.to_le_bytes());
+        r[4..8].copy_from_slice(&(pos as i32).to_le_bytes());
+        r[12..16].copy_from_slice(&(-1i32).to_le_bytes());
+        self.records.push(r);
+        RECORD + (self.records.len() as u32 - 1) * RECORD_SIZE
     }
 
     fn advance_fade(&mut self) {
@@ -386,6 +411,10 @@ struct Env<'a> {
     rig: &'a Rig,
     flags124: bool,
     enmp: u16,
+    /// The player's +0x158 (the serial of the paired motion last started on him) and whether that
+    /// motion has ended (bit 1 of his +0x160), from `reaction_cmd::PlayerReaction`.
+    player_serial: i32,
+    player_motion_done: bool,
 }
 
 struct BevyHost<'a> {
@@ -522,6 +551,9 @@ impl BevyHost<'_> {
             Call::LastAttacker { .. } => imp(Value::Handle(PLAYER)),
             Call::SetTargetMode { .. } => stub(Value::None, "lock mode of a target record: nothing in the app consumes it"),
             Call::FreeTarget { .. } => stub(Value::Bool(true), "target records are not pooled"),
+            Call::MotionDone { obj } if *obj == PLAYER => {
+                approx(Value::Bool(self.env.player_motion_done), "the player's motion-done flag comes from reaction_cmd::PlayerReaction, which the player side has to set")
+            }
             Call::MotionDone { .. } => imp(Value::Bool(self.obj.done)),
             Call::MotionState { .. } => imp(Value::Int(self.obj.slot.map_or(-1, |s| s as i32))),
             Call::MotionLength { motion, .. } | Call::MotionEnd { motion, .. } => {
@@ -570,6 +602,11 @@ impl BevyHost<'_> {
                 self.obj.set_move(*dir, *speed);
                 approx(Value::None, "applied for one tick (inferred), vertical part ignored")
             }
+            Call::SetVelocity { obj, dir, speed } if *obj == PLAYER => {
+                let d = from_game(*dir).normalize_or_zero();
+                self.obj.player_cmds.push(PlayerReactionCmd::Velocity { dir: d, speed: *speed });
+                approx(Value::None, "handed to the player side as PlayerReactionCmd::Velocity (no consumer yet)")
+            }
             Call::SetVelocity { .. } => missing(Value::None, "secondary velocity vector at +0x880: consumer not found"),
             Call::StartMove { dir, motion, blend, commit, .. } => {
                 self.start_move(*dir, *motion, *blend, *commit);
@@ -596,6 +633,15 @@ impl BevyHost<'_> {
                 imp(Value::None)
             }
             Call::GroundMarker { .. } => missing(Value::None, "the drop: FUN_0016b738 finds the ground under the object, FUN_001a3cb0 spawns row `id` of the drop table (orbs, munny); the app has no pickups"),
+            Call::SetFlag { obj, bit } | Call::ClearFlag { obj, bit } if *obj == PLAYER => {
+                let set = matches!(c, Call::SetFlag { .. });
+                if *bit == FLAG_BIT_UNHITTABLE {
+                    self.obj.player_cmds.push(PlayerReactionCmd::Unhittable(set));
+                    approx(Value::None, "bit 3 of the player's flags handed to the player side as PlayerReactionCmd::Unhittable (no consumer yet)")
+                } else {
+                    stub(Value::None, "a flag bit of the player other than 3: no consumer in the app")
+                }
+            }
             Call::SetFlag { bit, .. } => {
                 if (0..64).contains(bit) {
                     self.obj.flags |= 1 << bit;
@@ -634,7 +680,6 @@ impl BevyHost<'_> {
                 }
                 imp(Value::None)
             }
-            Call::Request2_20 { .. } => missing(Value::Int(0), "sound or effect request"),
             Call::ModeFrozen { .. } => stub(Value::Bool(false), "hit stop is not implemented"),
             Call::ModeInterrupted { .. } => approx(Value::Bool(self.obj.reacting), "FUN_00186b70: the object is in a hit reaction"),
             Call::ModeMayStart { .. } => approx(Value::Bool(!self.obj.reacting), "FUN_001873d0: the object is not in hit stun"),
@@ -660,13 +705,30 @@ impl Host for BevyHost<'_> {
 
     fn read_mem(&mut self, addr: u32, out: &mut [u8]) -> bool {
         let o = addr.wrapping_sub(self.obj.handle) as usize;
-        match self.obj.mem.get(o..o + out.len()) {
-            Some(b) => {
-                out.copy_from_slice(b);
-                true
-            }
-            None => false,
+        if let Some(b) = self.obj.mem.get(o..o + out.len()) {
+            out.copy_from_slice(b);
+            return true;
         }
+        // A target record of event 11.
+        let r = addr.wrapping_sub(RECORD);
+        if let Some(rec) = self.obj.records.get((r / RECORD_SIZE) as usize) {
+            let k = (r % RECORD_SIZE) as usize;
+            if let Some(b) = rec.get(k..k + out.len()) {
+                out.copy_from_slice(b);
+                return true;
+            }
+        }
+        // The first 16 bytes of the player object: the Soldier's reaction thread copies them into its
+        // request block and then uses the copy as a context, so the word at +4 must read as the player
+        // object [inferred from that use; what the game keeps at object +4 was not read].
+        let p = addr.wrapping_sub(PLAYER) as usize;
+        if p + out.len() <= 16 {
+            let mut b = [0u8; 16];
+            b[4..8].copy_from_slice(&PLAYER.to_le_bytes());
+            out.copy_from_slice(&b[p..p + out.len()]);
+            return true;
+        }
+        false
     }
 
     fn write_mem(&mut self, addr: u32, data: &[u8]) -> bool {
@@ -790,8 +852,11 @@ fn ai_update(
     mut q: Query<(Entity, &mut Transform, &mut Enemy, &mut Fighter, &mut AiBrain)>,
     mut anims: Query<&mut Animator>,
     mut hit_msgs: MessageReader<AiHit>,
+    mut accepted: MessageReader<ReactionAccepted>,
     mut fx: MessageWriter<StartEffect>,
     mut game: MessageWriter<GameEffect>,
+    mut player_cmds: MessageWriter<PlayerReactionCmd>,
+    mut player_reaction: ResMut<PlayerReaction>,
     mut trace: ResMut<AiTrace>,
 ) {
     trace.tick += 1;
@@ -801,6 +866,10 @@ fn ai_update(
     let mut hits: HashMap<Entity, Vec<bool>> = HashMap::new();
     for h in hit_msgs.read() {
         hits.entry(h.target).or_default().push(h.real);
+    }
+    let mut reactions: HashMap<Entity, Vec<(u16, i16)>> = HashMap::new();
+    for r in accepted.read() {
+        reactions.entry(r.target).or_default().push((r.cmd, r.pos));
     }
     let Ok(sp) = sora.single() else { return };
     let player = sp.translation / SCALE;
@@ -827,7 +896,16 @@ fn ai_update(
         let wrapped = anim.looping && anim.frame < *last_frame;
         obj.done = anim.slot.is_some() && (anim.finished || wrapped);
         obj.slot = anim.slot;
-        let env = Env { player, player_yaw, world: world.as_deref(), rig: &rig, flags124: *flags124, enmp: *enmp };
+        let env = Env {
+            player,
+            player_yaw,
+            world: world.as_deref(),
+            rig: &rig,
+            flags124: *flags124,
+            enmp: *enmp,
+            player_serial: player_reaction.serial,
+            player_motion_done: player_reaction.paired_done,
+        };
         let handle = obj.handle;
         let mut host = BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() };
 
@@ -848,7 +926,29 @@ fn ai_update(
             host.trace.line(host.tag, &format!("event 6: hit, real {real}"));
             rt.event(&mut host, 6, &[h]);
         }
+        // An accepted reaction command: event 0xb with (player, command id, target record), the call
+        // FUN_00177c20 makes through FUN_0016b420 on the target's persistent thread.
+        for (cmd, pos) in reactions.remove(&ent).unwrap_or_default() {
+            let rec = host.obj.new_record(handle, pos);
+            let handled = rt.event(&mut host, 11, &[PLAYER, cmd as u32, rec]);
+            host.trace.line(host.tag, &format!("event 11: reaction command {cmd} (position index {pos}, record {rec:#x}); handler {}", if handled { "ran" } else { "absent" }));
+            if trace.level == 0 {
+                info!("bdx {tag}: event 11 (reaction command {cmd}) delivered, handler {}", if handled { "ran" } else { "absent" });
+            }
+        }
         rt.update(&mut host);
+        for c in obj.player_cmds.drain(..) {
+            let c = match c {
+                PlayerReactionCmd::PairedMotion { slot, blend, serial, .. } => PlayerReactionCmd::PairedMotion { from: ent, slot, blend, serial },
+                other => other,
+            };
+            trace.line(tag, &format!("player side: {c:?}"));
+            player_cmds.write(c);
+        }
+        if let Some(s) = obj.player_serial.take() {
+            player_reaction.serial = s;
+            player_reaction.paired_done = false;
+        }
         for m in rt.core.mode_log.as_mut().map(std::mem::take).unwrap_or_default() {
             trace.line(tag, &format!("mode {m}"));
         }

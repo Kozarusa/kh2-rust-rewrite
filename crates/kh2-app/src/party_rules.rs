@@ -267,7 +267,8 @@ pub fn follow_distance(t: &Thresholds, radius: f32, c: &Consts) -> f32 {
 }
 
 /// FUN_00111670: the follow point of each member. The two offsets `(side[k], 0, ahead)` times the
-/// member's follow distance are carried through the player's model matrix (+0x6b0); each member takes
+/// member's follow distance are carried through the player's model matrix (axis rows from +0x6b0,
+/// position row from +0x70: [inferred] to be the player's position); each member takes
 /// the nearer of the two, and when both take the same one the member that is farther from it (the
 /// second one on a tie) takes the other.
 ///
@@ -337,7 +338,8 @@ impl Default for Follow {
 pub struct FollowIn {
     /// The follow point minus the member's position.
     pub to_point: Vec3,
-    /// +0xb9c: the 3D distance to the player.
+    /// +0xb90 / +0xb9c: the unit direction and the 3D distance to the player.
+    pub to_player: Vec3,
     pub dist: f32,
     /// +0xba0: the unit direction to the player on the ground plane.
     pub ground_dir: Vec3,
@@ -370,11 +372,12 @@ pub fn next_mode(mode: usize, dist: f32, t: &[(f32, f32); MODES]) -> usize {
 }
 
 /// FUN_0010e140, motion state 0x1f/0x20 (the friend's free state, FUN_00111070 puts it there), with
-/// the follow vector (+0xb80): the direction to the follow point, the speed of the mode the distance
-/// to the player asks for (field row); standing, a member not facing the player turns toward him at a
-/// fraction of the walk speed. Returns the wanted direction (unit, +0xc00) and speed (+0xc0c).
+/// the follow vector (+0xb80): the direction to the follow point (to the player himself while the
+/// turning bit is set), the speed of the mode the distance to the player asks for (field row);
+/// standing, a member not facing the player turns toward him at a fraction of the walk speed.
+/// Returns the wanted direction (+0xc00) and speed (+0xc0c).
 pub fn follow_step(st: &mut Follow, i: &FollowIn, t: &Thresholds, c: &Consts) -> (Vec3, f32) {
-    let mut dir = i.to_point.normalize_or_zero();
+    let mut dir = if st.turning { i.to_player } else { i.to_point.normalize_or_zero() };
     st.mode = next_mode(st.mode, i.dist, &t[ROW_FIELD]);
     let mut speed = mode_speed(st.mode, i.walk, i.run);
     if speed != 0.0 {
@@ -559,7 +562,7 @@ mod tests {
         let c = consts();
         let t = c.classes[0];
         let mut st = Follow::default();
-        let i = FollowIn { to_point: Vec3::Z * 50.0, dist: 100.0, ground_dir: Vec3::Z, facing: -Vec3::Z, walk: 2.0, run: 8.0 };
+        let i = FollowIn { to_point: Vec3::Z * 50.0, to_player: Vec3::Z, dist: 100.0, ground_dir: Vec3::Z, facing: -Vec3::Z, walk: 2.0, run: 8.0 };
         let (_, s) = follow_step(&mut st, &i, &t, &c);
         assert!(st.turning && s == 0.0);
         let (_, s) = follow_step(&mut st, &i, &t, &c);
@@ -582,6 +585,234 @@ mod tests {
         let gdir = Vec3::Z;
         assert!(warp_point_ok(Vec3::new(0.0, 0.0, -100.0), player, member, gdir, &c));
         assert!(!warp_point_ok(Vec3::new(0.0, 0.0, 100.0), player, member, gdir, &c));
+    }
+
+    // ---- Oracle checks (PLAYBOOK R2): the game's own routines in kh2-ee on the user's executable.
+
+    const STACK: u32 = 0x01ff_0000;
+    const OBJ: u32 = 0x0182_0000;
+    const CTRL: u32 = 0x0183_0000;
+    const AI: u32 = 0x0184_0000;
+    const RING: u32 = 0x0180_0000;
+    const POS: u32 = 0x0181_0000;
+    /// The follow points (FUN_00111670 writes them, FUN_0010e140 reads `+ position x 16`).
+    const FOLLOW_POINTS: u32 = 0x0034_e920;
+    /// The battle flag FUN_001903d8 reads.
+    const BATTLE: u32 = 0x01c8_a7d8;
+
+    fn oracle() -> Option<(kh2_ee::Ee, Consts)> {
+        let iso = crate::assets::iso_path().ok().filter(|p| p.exists())?;
+        let elf = crate::assets::Disc::open(&iso).read_root("SLUS_210.05")?;
+        let mut ee = kh2_ee::Ee::new();
+        ee.load_elf(&elf)?;
+        Some((ee, Consts::from_exe(&elf)?))
+    }
+
+    fn clear(ee: &mut kh2_ee::Ee, at: u32, len: u32) {
+        for o in (0..len).step_by(4) {
+            ee.w32(at + o, 0);
+        }
+    }
+
+    fn wv(ee: &mut kh2_ee::Ee, at: u32, v: Vec4) {
+        for (i, x) in v.to_array().into_iter().enumerate() {
+            ee.wf32(at + 4 * i as u32, x);
+        }
+    }
+
+    fn rv(ee: &mut kh2_ee::Ee, at: u32) -> Vec4 {
+        Vec4::new(ee.f32_at(at), ee.f32_at(at + 4), ee.f32_at(at + 8), ee.f32_at(at + 12))
+    }
+
+    struct Lcg(u32);
+    impl Lcg {
+        fn f(&mut self) -> f32 {
+            self.0 = self.0.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (self.0 >> 8) as f32 / (1u32 << 24) as f32
+        }
+        fn unit(&mut self) -> Vec3 {
+            let a = self.f() * std::f32::consts::TAU;
+            Vec3::new(a.sin(), 0.0, a.cos())
+        }
+    }
+
+    fn close(a: Vec3, b: Vec3) -> bool {
+        (a - b).length() <= 1e-4 * (1.0 + a.length().max(b.length()))
+    }
+
+    /// FUN_0010b270 (the player's trail) against `Trail::push` over a random walk with jumps: the
+    /// return byte, the head index, the newest point and the header's byte 0 agree every frame.
+    #[test]
+    fn party_trail_matches_fun_0010b270() {
+        let Some((mut ee, c)) = oracle() else { return };
+        clear(&mut ee, RING, 0x220);
+        ee.w32(RING + 4, u32::MAX);
+        let mut tr = Trail::default();
+        let mut rng = Lcg(7);
+        let mut p = Vec3::new(100.0, 0.0, -50.0);
+        for step in 0..400 {
+            p += rng.unit() * if rng.f() < 0.05 { 300.0 } else { rng.f() * 30.0 } + Vec3::Y * (rng.f() - 0.5) * 4.0;
+            wv(&mut ee, POS, p.extend(1.0));
+            let game = ee.call(0x10b270, &[RING as u64, POS as u64], &[], STACK).expect("FUN_0010b270") & 0xff;
+            let port = tr.push(p, c.trail_step2);
+            assert_eq!(game, port as u64, "step {step}: point added");
+            let head = ee.r32(RING + 4) as i32;
+            assert_eq!(head, tr.head, "step {step}: head");
+            assert_eq!(ee.r32(RING) & 0xff != 0, tr.moved, "step {step}: header byte 0");
+            assert!(close(rv(&mut ee, RING + 16 * (1 + head as u32)).truncate(), tr.points[head as usize]), "step {step}: newest point");
+        }
+        eprintln!("FUN_0010b270 agrees with Trail::push over 400 frames (head {})", tr.head);
+    }
+
+    /// FUN_00110468 (the steer) against `steer` over random wanted velocities, speeds (stand, walk, run
+    /// and in between) and turning frames: the mixed direction, the snapped speed and the ring index.
+    #[test]
+    fn party_steer_matches_fun_00110468() {
+        let Some((mut ee, c)) = oracle() else { return };
+        let (walk, run) = (2.0, 12.0);
+        clear(&mut ee, OBJ, 0xd00);
+        clear(&mut ee, CTRL, 0x10);
+        ee.w32(OBJ + 0xc, CTRL);
+        ee.w32(CTRL + 4, 0x1f);
+        ee.wf32(OBJ + 0x110, walk);
+        ee.wf32(OBJ + 0x114, run);
+        ee.w32(OBJ + 0xcd0, u32::MAX);
+        let mut st = Follow::default();
+        let mut rng = Lcg(11);
+        for step in 0..300 {
+            let dir = rng.unit();
+            let speed = match (rng.f() * 5.0) as u32 {
+                0 => 0.0,
+                1 => walk,
+                2 => run,
+                _ => rng.f() * run,
+            };
+            st.turning = rng.f() < 0.1;
+            wv(&mut ee, OBJ + 0xc00, dir.extend(speed));
+            ee.w32(OBJ + 0xb7c, if st.turning { 0x10 } else { 0 });
+            ee.call(0x110468, &[OBJ as u64], &[], STACK).expect("FUN_00110468");
+            let game = rv(&mut ee, OBJ + 0xc00);
+            let (d, s) = steer(&mut st, dir, speed, walk, run, &c);
+            assert!(close(game.truncate(), d), "step {step}: direction {game:?} vs {d:?}");
+            assert!((game.w - s).abs() <= 1e-4, "step {step}: speed {} vs {s}", game.w);
+            assert_eq!(ee.r32(OBJ + 0xcd0) as i32, st.ring_at, "step {step}: ring index");
+        }
+        eprintln!("FUN_00110468 agrees with steer over 300 frames");
+    }
+
+    /// FUN_0010e140 in the friend's motion state 0x1f with the follow vector, out of battle, against
+    /// `follow_step` with the executable's thresholds of class 0 (Donald): the speed mode, the turning
+    /// bit, the wanted direction and speed, over random positions, facings and starting modes.
+    #[test]
+    fn party_follow_step_matches_fun_0010e140() {
+        let Some((mut ee, c)) = oracle() else { return };
+        let (walk, run) = (2.0, 12.0);
+        let class = 0u8;
+        let block = 0x34ea00 + ee.r32(0x34ea00 + 4 * class as u32);
+        let t = c.thresholds(class);
+        let mut rng = Lcg(23);
+        for step in 0..400 {
+            clear(&mut ee, OBJ, 0xd00);
+            clear(&mut ee, CTRL, 0x10);
+            clear(&mut ee, AI, 0x20);
+            ee.w32(OBJ + 0xc, CTRL);
+            ee.w32(CTRL + 4, 0x1f);
+            ee.w32(AI + 8, block);
+            ee.w32(OBJ + 0xb60, AI);
+            ee.w32(OBJ + 0xb70, 1);
+            ee.w32(BATTLE, 0);
+            ee.wf32(OBJ + 0x110, walk);
+            ee.wf32(OBJ + 0x114, run);
+            let mode = (rng.f() * 3.0) as usize;
+            let turning = rng.f() < 0.3;
+            ee.w32(OBJ + 0xb78, mode as u32);
+            ee.w32(OBJ + 0xb7c, if turning { 0x10 } else { 0 });
+            let pos = Vec3::new(rng.f() * 400.0, 0.0, rng.f() * 400.0);
+            let player = pos + rng.unit() * rng.f() * 600.0 + Vec3::Y * (rng.f() - 0.5) * 50.0;
+            let point = player + rng.unit() * 115.0;
+            let facing = rng.unit();
+            wv(&mut ee, OBJ + 0x540, pos.extend(1.0));
+            wv(&mut ee, FOLLOW_POINTS + 16, point.extend(1.0));
+            wv(&mut ee, OBJ + 0x550, facing.extend(0.0));
+            let rel = player - pos;
+            let gdir = rel.with_y(0.0).normalize_or_zero();
+            ee.wf32(OBJ + 0xb80, rel.y);
+            wv(&mut ee, OBJ + 0xb90, rel.normalize_or_zero().extend(rel.length()));
+            wv(&mut ee, OBJ + 0xba0, gdir.extend(rel.with_y(0.0).length()));
+            let r = ee.call(0x10e140, &[OBJ as u64, OBJ as u64 + 0xb80], &[], STACK).expect("FUN_0010e140");
+            assert_eq!(r & 0xffff_ffff, 1);
+            let mut st = Follow { mode, turning, ..Follow::default() };
+            let i = FollowIn { to_point: point - pos, to_player: rel.normalize_or_zero(), dist: rel.length(), ground_dir: gdir, facing, walk, run };
+            let (d, s) = follow_step(&mut st, &i, &t, &c);
+            let game = rv(&mut ee, OBJ + 0xc00);
+            assert_eq!(ee.r32(OBJ + 0xb78) as usize, st.mode, "step {step}: mode");
+            assert_eq!(ee.r32(OBJ + 0xb7c) & 0x10 != 0, st.turning, "step {step}: turning bit");
+            assert!(
+                close(game.truncate(), d),
+                "step {step}: direction {game:?} vs {d:?}; mode {mode} turning {turning} pos {pos} player {player} point {point} facing {facing} to point {:?}",
+                (point - pos).normalize()
+            );
+            assert!((game.w - s).abs() <= 1e-4, "step {step}: speed {} vs {s}", game.w);
+        }
+        eprintln!("FUN_0010e140 (state 0x1f, field) agrees with follow_step over 400 cases");
+    }
+
+    /// FUN_00111670 (the follow points) against `follow_points`: the player's model matrix (+0x6b0)
+    /// is the turn the app draws him with (rows: local X, Y, Z, position), the two members stand at
+    /// random places with the body radius of the disc's Donald; the points written to 0x34e930 and
+    /// 0x34e940 agree, the shared-point rule included.
+    #[test]
+    fn party_follow_points_match_fun_00111670() {
+        let Some((mut ee, c)) = oracle() else { return };
+        const PLAYER: u32 = 0x0185_0000;
+        const MEMBERS: [u32; 2] = [0x0186_0000, 0x0187_0000];
+        let class = 0u8;
+        let block = 0x34ea00 + ee.r32(0x34ea00 + 4 * class as u32);
+        let t = c.thresholds(class);
+        let radius = 90.0;
+        let mut rng = Lcg(31);
+        let mut shared = 0;
+        for step in 0..300 {
+            for o in [PLAYER, MEMBERS[0], MEMBERS[1]] {
+                clear(&mut ee, o, 0xd00);
+            }
+            clear(&mut ee, AI, 0x20);
+            ee.w32(AI + 8, block);
+            ee.w32(BATTLE, 0);
+            ee.w32(0x34e908, PLAYER);
+            ee.w32(0x34e90c, MEMBERS[0]);
+            ee.w32(0x34e910, MEMBERS[1]);
+            let player = Vec3::new(rng.f() * 1000.0, 0.0, rng.f() * 1000.0);
+            let yaw = (rng.f() - 0.5) * std::f32::consts::TAU;
+            let (s, co) = yaw.sin_cos();
+            wv(&mut ee, PLAYER + 0x540, player.extend(1.0));
+            wv(&mut ee, PLAYER + 0x6b0, Vec4::new(co, 0.0, -s, 0.0));
+            wv(&mut ee, PLAYER + 0x6c0, Vec4::new(0.0, 1.0, 0.0, 0.0));
+            wv(&mut ee, PLAYER + 0x6d0, Vec4::new(s, 0.0, co, 0.0));
+            // The routine takes the matrix's three axis rows from +0x6b0 and the position row from +0x70
+            // (the position FUN_0016b960 returns for a linked object).
+            wv(&mut ee, PLAYER + 0x70, player.extend(1.0));
+            let mut pos = [Vec3::ZERO; 2];
+            for (k, &m) in MEMBERS.iter().enumerate() {
+                // Every third case both members stand on the same side, so they want the same point.
+                pos[k] = if step % 3 == 0 && k == 1 { pos[0] + rng.unit() * 40.0 } else { player + rng.unit() * rng.f() * 500.0 };
+                wv(&mut ee, m + 0x540, pos[k].extend(1.0));
+                ee.w32(m + 0xb60, AI);
+                ee.wf32(m + 0x5b8, radius);
+            }
+            ee.call(0x111670, &[], &[], STACK).expect("FUN_00111670");
+            let d = follow_distance(&t, radius, &c);
+            let port = follow_points(player, yaw, [Some((pos[0], d)), Some((pos[1], d))], &c);
+            for k in 0..2 {
+                let game = rv(&mut ee, FOLLOW_POINTS + 16 * (1 + k as u32)).truncate();
+                assert!(close(game, port[k].unwrap()), "step {step} member {k}: {game} vs {:?}", port[k]);
+            }
+            let local = |p: Vec3| ((p - player).x * co - (p - player).z * s).signum();
+            if local(pos[0]) == local(pos[1]) {
+                shared += 1;
+            }
+        }
+        eprintln!("FUN_00111670 agrees with follow_points over 300 cases ({shared} with both members on one side)");
     }
 
     /// FUN_001a7330 on the empty party with preset 1 gives Donald and Goofy in slots 1 and 2, and the

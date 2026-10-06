@@ -405,7 +405,7 @@ fn party_tick(
         let before_mode = m.follow.mode;
         let point = points.get(m.slot as usize).copied().flatten().unwrap_or(player);
         let facing = Vec3::new(m.motor.yaw.sin(), 0.0, m.motor.yaw.cos());
-        let input = FollowIn { to_point: point - pos, dist: to_player.length(), ground_dir, facing, walk: m.walk, run: m.run };
+        let input = FollowIn { to_point: point - pos, to_player: to_player.normalize_or_zero(), dist: to_player.length(), ground_dir, facing, walk: m.walk, run: m.run };
         let (dir, speed) = rules::follow_step(&mut m.follow, &input, &m.thresholds, c);
         let (dir, speed) = rules::steer(&mut m.follow, dir, speed, m.walk, m.run, c);
         if log && m.follow.mode != before_mode {
@@ -582,6 +582,7 @@ mod tests {
                 t[rules::ROW_FIELD],
                 rules::follow_distance(&t, body_shape(&rig).0, &c)
             );
+            eprintln!("  objentry WeaponJoint {} bones {}", row.weapon_joint, rig.model.bones.len());
             assert!(rig.mset.slot(id::IDLE, PlayerState::FieldNoWeapon).is_some());
             assert!(rig.mset.slot(id::RUN, PlayerState::FieldNoWeapon).is_some());
             models.push(row.model_name.clone());

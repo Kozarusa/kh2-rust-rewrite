@@ -371,7 +371,12 @@ fn ai_update(
     mut player_cmds: MessageWriter<PlayerReactionCmd>,
     mut player_reaction: ResMut<PlayerReaction>,
     (mut trace, mut mailbox): (ResMut<AiTrace>, ResMut<Mailbox>),
-    (programs, abilities): (Res<AiPrograms>, Option<Res<crate::abilities::Abilities>>),
+    (programs, abilities, mission, mut global_events): (
+        Res<AiPrograms>,
+        Option<Res<crate::abilities::Abilities>>,
+        Option<Res<crate::struggle::Mission>>,
+        MessageReader<crate::struggle::GlobalEvent>,
+    ),
     (prize_pool, mut prize_drops, mut item_drops, mut collect_all): (
         Option<Res<crate::prize::PrizePool>>,
         MessageWriter<crate::prize::PrizeDrop>,
@@ -398,6 +403,11 @@ fn ai_update(
     // Last tick's messages go to every scripted object (FUN_00187250), each with its own delay.
     let order: Vec<Entity> = q.iter().map(|(e, ..)| e).collect();
     let mut mail = dispatch_messages(&mut mailbox, &order);
+    // Global events (FUN_00197b70 -> FUN_0016b470, object method +0x34): every scripted enemy gets event 10
+    // with (event, argument) (WP-7E: the Struggle's result 159 / 160 picks the opponents' `gameset_voice_*`).
+    let globals: Vec<crate::struggle::GlobalEvent> = global_events.read().copied().collect();
+    let mission_counters = mission.as_deref().and_then(|m| m.counters());
+    let no_prizes = mission.as_deref().is_some_and(|m| m.no_prizes());
     let Ok(sp) = sora.single() else { return };
     let player = sp.translation / SCALE;
     let player_yaw = sp.rotation.to_euler(EulerRot::YXZ).0;
@@ -441,6 +451,7 @@ fn ai_update(
             player_motion_done: player_reaction.paired_done,
             paired: paired.as_ref(),
             player_model: *player_model,
+            mission_counters,
         };
         let handle = obj.handle;
         let mut host = BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() };
@@ -482,6 +493,13 @@ fn ai_update(
                 info!("bdx {}: event 19 (clash, attack {} against {}) delivered, handler {}", host.tag, c.own_atkp, c.other_atkp, if handled { "ran" } else { "absent" });
             }
         }
+        for g in &globals {
+            let handled = rt.event(&mut host, 10, &[g.id, g.arg as u32]);
+            host.trace.line(host.tag, &format!("event 10: global event {} ({}); handler {}", g.id, g.arg, if handled { "ran" } else { "absent" }));
+            if handled && matches!(g.id, crate::struggle::EV_PLAYER_WON | crate::struggle::EV_PLAYER_LOST) {
+                info!("bdx {}: event 10 (global event {}) delivered", host.tag, g.id);
+            }
+        }
         // Messages (host 1.90 of any object, this one included): the mode of that name gets them.
         for (sender, name, delay) in mail.remove(&ent).unwrap_or_default() {
             host.trace.line(host.tag, &format!("message {name:?} from {sender:#x}, delay {delay:.2}"));
@@ -498,6 +516,11 @@ fn ai_update(
         // The prize objects and the dropped items' objects (FUN_001bd490) are made by `prize` (no pool
         // without its plugin: no prize objects then).
         for id in obj.drops.drain(..) {
+            // A mission whose header has flag 0x40 (the Struggle's): FUN_001a3cb0 makes no prizes and no items.
+            if no_prizes {
+                info!("bdx {tag}: drop (host 1.92) of row {id}: none, the mission forbids prizes (header flag 0x40, DAT_0035d268 bit 0x200)");
+                continue;
+            }
             let (jackpot, lucky) = abilities.as_deref().map_or((0.0, 0.0), |a| (a.block().jackpot, a.block().lucky_lucky));
             match prize_row(&programs.prizes, id) {
                 Some(row) => {

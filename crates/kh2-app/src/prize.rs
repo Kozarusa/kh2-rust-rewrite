@@ -991,7 +991,7 @@ fn flip(v: Vec3) -> Vec3 {
 /// a ball of the kind's radius against walls, downward it stops on the highest floor it crosses
 /// [inferred: the game uses its character mover `FUN_00143840`, not ported; this keeps its results:
 /// the end point and whether it stands on a floor].
-fn sweep(world: Option<&World>, radius: f32, start: Vec3, vel: Vec3) -> Sweep {
+pub(crate) fn sweep(world: Option<&World>, radius: f32, start: Vec3, vel: Vec3) -> Sweep {
     let Some(w) = world else { return Sweep { end: start + vel, on_floor: false } };
     let (s, v) = (flip(start), flip(vel));
     let mut p = s;
@@ -1016,7 +1016,7 @@ fn sweep(world: Option<&World>, radius: f32, start: Vec3, vel: Vec3) -> Sweep {
 }
 
 /// The first shape of `kind` of a body, on its bone (`FUN_0016b558` + `FUN_001894d0`), in app cm.
-fn shape_point(anim: &Animator, body: &GlobalTransform, kind: u8) -> Option<Vec3> {
+pub(crate) fn shape_point(anim: &Animator, body: &GlobalTransform, kind: u8) -> Option<Vec3> {
     let s = anim.rig.model.shapes.iter().find(|s| s.kind == kind && (kind != TARGET_SHAPE || s.argument & 1 == 0))?;
     let m = match s.bone {
         Some(b) => anim.bone_world(body, b),

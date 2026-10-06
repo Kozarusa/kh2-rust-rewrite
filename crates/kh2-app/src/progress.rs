@@ -126,6 +126,8 @@ pub mod item_type {
 pub const INVENTORY: u16 = 100;
 /// Count limit of an item (`FUN_001a1768`: a count above 99 refuses the item).
 pub const MAX_COUNT: u8 = 99;
+/// The command shortcuts of the Customize page (save `+0x2600`, four u16).
+pub const SHORTCUTS: usize = 4;
 /// Experience limit (`FUN_001b51e0`).
 pub const MAX_EXPERIENCE: i32 = 9_999_999;
 /// Sora's party member id.
@@ -496,6 +498,71 @@ impl Progress {
 
     pub fn spell_switch_word(&self) -> u32 {
         self.u32_at(off::SPELL_SWITCH)
+    }
+
+    /// `FUN_001a4b68` (set the bit) and `FUN_001a4b30` (clear it): the per-spell switch bit `bit` of the
+    /// word at save `+0x264c` (party block `+0xfec`). A SET bit means "Not Used": `FUN_001a4bb8` answers
+    /// 1 (usable) when the bit is clear. A bit past the word (`bit >= 32`) is ignored here; the original
+    /// indexes a second word it never has.
+    pub fn set_spell_switch(&mut self, bit: u8, set: bool) {
+        self.set_bit(off::SPELL_SWITCH, 1, bit as u16, set);
+    }
+
+    /// `FUN_00274e50`, the Customize page's switch: flips the bit and answers whether the spell is now
+    /// usable ("Use", the bit clear). The original reads the state with `FUN_001a4bb8` and writes the
+    /// opposite (clear when it read 0, set otherwise), which is a plain flip for every spell whose command
+    /// `Cost` is not 255 (`docs/magic.md`).
+    pub fn toggle_spell_switch(&mut self, bit: u8) -> bool {
+        let now = self.spell_switch(bit);
+        self.set_spell_switch(bit, !now);
+        now
+    }
+
+    /// One of the four command shortcuts (`FUN_001a1f78` gives an item's command, `FUN_00274dd0` writes
+    /// it): the u16 at save `+0x2600 + 2 * slot` (party block `+0xfa0`).
+    pub fn shortcut(&self, slot: usize) -> u16 {
+        if slot < SHORTCUTS { self.u16_at(off::SHORTCUTS + 2 * slot) } else { 0 }
+    }
+
+    pub fn shortcuts(&self) -> [u16; SHORTCUTS] {
+        std::array::from_fn(|i| self.shortcut(i))
+    }
+
+    /// `FUN_00274dd0`: store a command (0 empties the slot). False for a slot past the four.
+    pub fn set_shortcut(&mut self, slot: usize, command: u16) -> bool {
+        if slot >= SHORTCUTS {
+            return false;
+        }
+        self.set_u16(off::SHORTCUTS + 2 * slot, command);
+        true
+    }
+
+    /// `FUN_001a0ec0`, `0ee0`, `0f00`, `0f20`: whether the stat boost item `id` (0x114 strength, 0x115 magic,
+    /// 0x116 defense, 0x117 AP) has reached its limit on the member's record (the byte is above 99).
+    pub fn boost_maxed(&self, member: u16, id: u16) -> bool {
+        let (Some(r), Some(b)) = (Self::member_off(member), Self::boost_byte(id)) else { return false };
+        self.u8_at(r + b) > 99
+    }
+
+    fn boost_byte(id: u16) -> Option<usize> {
+        match id {
+            0x114 => Some(rec::STRENGTH),
+            0x115 => Some(rec::MAGIC),
+            0x116 => Some(rec::DEFENSE),
+            0x117 => Some(rec::AP),
+            _ => None,
+        }
+    }
+
+    /// `FUN_001a0ce0`, `0d30`, `0d80`, `0dd0`: add `n` to the record byte the boost item raises, held at 100
+    /// (when the sum would pass 100 only the room is added). Answers the amount added; the original adds
+    /// the same amount to the live status block, which the app recomputes from the record.
+    pub fn apply_boost(&mut self, member: u16, id: u16, n: u8) -> u8 {
+        let (Some(r), Some(b)) = (Self::member_off(member), Self::boost_byte(id)) else { return 0 };
+        let old = self.u8_at(r + b);
+        let add = if (old as u32 + n as u32) < 0x65 { n } else { 100u8.saturating_sub(old) };
+        self.set_u8(r + b, old.wrapping_add(add));
+        add
     }
 
     /// The experience total (`0x340e48`, see the field `wallet` for the munny).
@@ -1515,6 +1582,38 @@ mod tests {
         assert!(!p.set_ability_equipped(99, 0, true), "no such member");
     }
 
+    /// The Customize writers: the shortcut words and the spell switch bits, and the stat boost bytes.
+    #[test]
+    fn shortcuts_spell_switches_and_boosts_write_their_words() {
+        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        assert_eq!(p.shortcuts(), [0; 4]);
+        assert!(p.set_shortcut(2, 0x1234));
+        assert_eq!((p.shortcut(2), p.shortcut(0), p.shortcut(4)), (0x1234, 0, 0));
+        assert_eq!(p.u16_at(off::SHORTCUTS + 4), 0x1234, "slot 2 is the u16 at party block +0xfa0 + 4 (save +0x2604)");
+        assert!(!p.set_shortcut(4, 1), "only four slots");
+        // The switch: a set bit is "Not Used"; the toggle answers the state it left (true = it was set).
+        assert!(!p.toggle_spell_switch(3), "was clear");
+        assert!(p.spell_switch(3) && p.spell_switch_word() == 8);
+        assert!(p.toggle_spell_switch(3), "was set");
+        assert_eq!(p.spell_switch_word(), 0);
+        p.set_spell_switch(5, true);
+        p.set_spell_switch(0, true);
+        p.set_spell_switch(5, false);
+        assert_eq!(p.spell_switch_word(), 1);
+        // The boosts add to the record byte and stop at 100.
+        let r = Progress::member_off(SORA).unwrap();
+        p.set_u8(r + rec::STRENGTH, 98);
+        assert!(!p.boost_maxed(SORA, 0x114));
+        assert_eq!(p.apply_boost(SORA, 0x114, 1), 1);
+        assert_eq!(p.apply_boost(SORA, 0x114, 5), 1, "only the room up to 100 is added");
+        assert_eq!(p.u8_at(r + rec::STRENGTH), 100);
+        assert!(p.boost_maxed(SORA, 0x114));
+        assert_eq!(p.apply_boost(SORA, 0x114, 1), 0);
+        assert_eq!(p.apply_boost(SORA, 0x117, 2), 2);
+        assert_eq!(p.u8_at(r + rec::AP), 2);
+        assert_eq!(p.apply_boost(SORA, 0x118, 1), 0, "not a boost");
+    }
+
     struct Tables {
         items: Vec<Item>,
         cmds: Vec<Cmd>,
@@ -1544,6 +1643,89 @@ mod tests {
 
     fn index(tb: &Tables) -> Arc<ItemIndex> {
         Arc::new(ItemIndex::new(&tb.items, &tb.cmds, &tb.magc))
+    }
+
+    /// The oracle for the pause menu's Items and Customize writers (WP-M3): the game's own `FUN_001a4b68` /
+    /// `FUN_001a4b30` / `FUN_001a4bb8` (the spell switch bit and the flip `FUN_00274e50` makes of it) and
+    /// `FUN_001a1ba8(id, 100)` (the Stock page's "Throw away" and the take after "Use") run in kh2-ee on the
+    /// block the game built; the port must leave the same bytes. The shortcut write `FUN_00274dd0` is one u16
+    /// store at `+0x2600 + 2 * slot` of the save block, checked at that address.
+    #[test]
+    fn menu_writers_match_the_game() {
+        use kh2_ee::Ee;
+        const STACK: u32 = 0x01ff_0000;
+        const ITEM_PTR: u32 = 0x01c9_5588;
+        const PLRP_PTR: u32 = 0x01d5_df5c;
+        const CMD_PTR: u32 = 0x01d5_d798;
+        const MAGC_PTR: u32 = 0x01c9_5520;
+        let Some(mut tb) = tables() else { return };
+        let ix = index(&tb);
+        let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| tb.archive.iso().read(p).ok()).expect("executable");
+        let blob = |a: &mut kh2_archive::Archive, d: &kh2_tables::TableDef| kh2_tables::subfile(a, d).expect("table");
+        let tables = [
+            (ITEM_PTR, 0x0180_0000, blob(&mut tb.archive, &t::ITEM)),
+            (PLRP_PTR, 0x0181_0000, blob(&mut tb.archive, &t::PLRP)),
+            (CMD_PTR, 0x0182_0000, blob(&mut tb.archive, &t::CMD)),
+            (MAGC_PTR, 0x0183_0000, blob(&mut tb.archive, &t::MAGC)),
+        ];
+        let mut ee = Ee::new();
+        ee.load_elf(&elf).expect("elf");
+        for (ptr, at, data) in &tables {
+            ee.write(*at, data);
+            ee.w32(*ptr, *at);
+        }
+        let party = addr::PARTY;
+        ee.write(addr::SAVE, &vec![0u8; addr::SAVE_LEN as usize]);
+        ee.call(0x0018_7b38, &[party as u64], &[], STACK).expect("FUN_00187b38");
+        ee.call(0x001c_0cb0, &[0], &[], STACK).expect("FUN_001c0cb0");
+        let read = |ee: &mut Ee| (0..off::LEN as u32).map(|o| ee.r8(party + o)).collect::<Vec<u8>>();
+        let mut port = Progress::new_game(ix.clone(), &tb.plrp);
+        let diff = |a: &[u8], b: &[u8]| a.iter().zip(b).enumerate().filter(|(_, (x, y))| x != y).map(|(o, (x, y))| format!("+{o:#x}: game {x:#x} port {y:#x}")).take(12).collect::<Vec<_>>();
+        assert_eq!(diff(&read(&mut ee), port.block()), Vec::<String>::new(), "start");
+
+        // The spell switch: set, clear, and the page's flip (read FUN_001a4bb8, write the opposite).
+        for bit in [0u8, 3, 5, 31, 2, 3, 0, 17] {
+            ee.call(0x001a_4b68, &[bit as u64], &[], STACK).expect("FUN_001a4b68");
+            port.set_spell_switch(bit, true);
+            assert_eq!(diff(&read(&mut ee), port.block()), Vec::<String>::new(), "set bit {bit}");
+            ee.call(0x001a_4b30, &[bit as u64], &[], STACK).expect("FUN_001a4b30");
+            port.set_spell_switch(bit, false);
+            assert_eq!(diff(&read(&mut ee), port.block()), Vec::<String>::new(), "clear bit {bit}");
+        }
+        let mut flips = Vec::new();
+        for bit in [1u8, 4, 1, 1, 9, 4] {
+            let state = ee.call(0x001a_4bb8, &[bit as u64], &[], STACK).expect("FUN_001a4bb8") as u8;
+            // FUN_00274e50: state 0 (the bit is set) clears it, anything else sets it.
+            ee.call(if state == 0 { 0x001a_4b30 } else { 0x001a_4b68 }, &[bit as u64], &[], STACK).expect("set or clear");
+            let was_set = port.toggle_spell_switch(bit);
+            assert_eq!(state == 0, was_set, "bit {bit}: the game read {state}");
+            flips.push(!was_set);
+            assert_eq!(diff(&read(&mut ee), port.block()), Vec::<String>::new(), "flip bit {bit}");
+        }
+
+        // The shortcut word: save +0x2600 is party block +0xfa0 (0x340e60); one u16 per slot.
+        for (slot, cmd) in [(0usize, 23u16), (3, 0x1234), (1, 0)] {
+            ee.write(0x0034_0e60 + 2 * slot as u32, &cmd.to_le_bytes());
+            port.set_shortcut(slot, cmd);
+        }
+        assert_eq!(diff(&read(&mut ee), port.block()), Vec::<String>::new(), "shortcuts");
+
+        // Throw away / the take after Use: FUN_001a1ba8(id, 100) over the owned items and some not owned.
+        let owned: Vec<u16> = ix.rows.iter().filter(|r| r.kind == item_type::CONSUMABLE && !r.is_key() && r.id != 0).map(|r| r.id).take(6).collect();
+        for (k, &id) in owned.iter().enumerate() {
+            for _ in 0..=(k % 3) {
+                let ok = ee.call(0x001a_18d8, &[id as u64, INVENTORY as u64, 0], &[], STACK).expect("FUN_001a18d8") as u32 != 0;
+                assert_eq!(port.give(id, INVENTORY, false), ok);
+            }
+        }
+        let mut taken = 0;
+        for &id in owned.iter().chain(&owned).chain(&owned) {
+            ee.call(0x001a_1ba8, &[id as u64, INVENTORY as u64], &[], STACK).expect("FUN_001a1ba8");
+            assert!(port.take_item(id, INVENTORY));
+            taken += 1;
+            assert_eq!(diff(&read(&mut ee), port.block()), Vec::<String>::new(), "after taking item {id} from the stock");
+        }
+        eprintln!("oracle: menu writers equal (spell switch set/clear/flip {flips:?}, 4 shortcut words, {taken} stock takes; counts floor at 0)");
     }
 
     #[test]

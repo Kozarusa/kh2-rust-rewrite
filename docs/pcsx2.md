@@ -17,3 +17,6 @@ watching it around an action; (3) side-by-side pictures of the original for look
 breakpoints use PCSX2's own debugger (Debug > Open Debugger; it shows the game's MIPS and can break on reads and writes).
 Limits: no key injection yet (the user plays, or savestates are loaded with `pine.py load <slot>`); PINE has no screenshot call.
 Final Mix: the same works with the Final Mix image (research only, ORCHESTRATION one-ISO rule).
+
+## Code-level debugging: PCSX2-MCP (added 2026-10-06 with the user's yes)
+The patched emulator from github.com/hkmodd/PCSX2-MCP (release v1.0.0, win64 zip) is unpacked in `local/tools/pcsx2-mcp/` (untracked). It is a full PCSX2 build with a DebugServer on 127.0.0.1:21512 (no authentication; local use only) that adds registers, MIPS disassembly, conditional breakpoints, memory watchpoints, stepping, thread and stack walks to PINE's memory and savestate calls. `local/tools/dbg.py` sends raw JSON requests to it, so Node and the MCP bridge are not needed. Do not run its `setup-mcp.bat` (it writes other tools' MCP configs). Launch `pcsx2-qt.exe` from that folder with the USA iso, not the installed PCSX2; the two share the data folder `C:/Users/KoZa/Documents/PCSX2`, so do not run both at once. Typical use: set a write watchpoint (`set_memcheck`) on a field to find the code that changes it, then read the disassembly around the hit PC.

@@ -862,7 +862,20 @@ fn load_assets(disc: &Disc, rules: &DriveRules, form: u8, world: u16, hand1_item
     for (hand, w) in f.weapons() {
         match weapon_rig(disc, w) {
             Some(r) => weapons.push((hand, r)),
-            None => warn!("drive: weapon {} of hand {hand} not loadable; the hand stays empty", w.model),
+            // The world variants of the keyblade (`W_EX010_TR`, `_WI`, `_NM`) are named by the object table
+            // but are not on this disc (checked: no `obj/W_EX010_{TR,WI,NM}.mdlx`). The original's behaviour
+            // for the missing file is not known; the app keeps the plain keyblade model with the hand's
+            // motion set [inferred] rather than dropping the weapon.
+            None => match rules.files(form, 2, hand1_item).and_then(|d| d.hands[hand].clone()) {
+                Some(plain) if plain.model != w.model => match weapon_rig(disc, &WeaponFiles { model: plain.model.clone(), mset: w.mset.clone() }) {
+                    Some(r) => {
+                        warn!("drive: weapon {} of hand {hand} is not on the disc; using {}", w.model, plain.model);
+                        weapons.push((hand, r));
+                    }
+                    None => warn!("drive: weapon {} of hand {hand} not loadable; the hand stays empty", w.model),
+                },
+                _ => warn!("drive: weapon {} of hand {hand} not loadable; the hand stays empty", w.model),
+            },
         }
     }
     let hand = |h: usize| f.hands[h].as_ref().map_or("none".to_string(), |w| format!("{} ({})", w.model, w.mset.as_deref().unwrap_or("no motion set")));

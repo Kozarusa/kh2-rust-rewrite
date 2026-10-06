@@ -110,10 +110,10 @@ fn apply_preset(cur: [u8; 4], preset: [u8; 4]) -> [u8; 4] {
         }
         k += 1;
     };
-    for i in 1..4 {
-        if tmp[i] & 0xc0 != 0 {
-            put(&mut out, tmp[i]);
-            tmp[i] = 0x10;
+    for t in tmp.iter_mut().skip(1) {
+        if *t & 0xc0 != 0 {
+            put(&mut out, *t);
+            *t = 0x10;
         }
     }
     for &c in &cur[1..] {
@@ -174,7 +174,7 @@ fn member_table_merge_slots_and_presets_match_the_doc() {
     println!("FUN_001a6ff0 and FUN_0017cd20 agree with the doc for worlds 0..=18, with no story flag and with all of memt's flags set");
 
     // Presets: every preset of the disc against a set of current slot bytes.
-    let presets: Vec<[u8; 4]> = memt[8 + recs.len() * 48..].chunks_exact(4).map(|c| c.try_into().unwrap()).collect();
+    let presets: Vec<[u8; 4]> = memt[8 + recs.len() * 48..].as_chunks::<4>().0.to_vec();
     let currents = [[0u8, 1, 2, 0x10], [0, 2, 1, 0x10], [0, 3, 2, 1], [0, 0x10, 0x10, 0x10], [0, 1, 0x10, 0x10], [0, 3, 0x10, 0x10], [0, 0x81, 0x42, 3]];
     for (p, preset) in presets.iter().enumerate() {
         for cur in currents {

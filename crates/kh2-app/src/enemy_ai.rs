@@ -1,5 +1,5 @@
-//! Enemy AI runtime: Shadow and Soldier run under the game's own BDX scripts (`obj/M_EX020.mdlx`,
-//! `obj/M_EX010.mdlx`, read from the disc).
+//! Enemy AI runtime: Shadow, Soldier and Dusk run under the game's own BDX scripts
+//! (`obj/M_EX020.mdlx`, `obj/M_EX010.mdlx`, `obj/M_EX990.mdlx`, read from the disc).
 //!
 //! One `kh2_bdx::Runtime` per enemy runs once per 60 Hz tick (`Runtime::update`). The script talks to
 //! the world through `kh2_bdx::Host::call`; `BevyHost` below answers each `Call` from a small model of
@@ -346,6 +346,14 @@ struct Obj {
     player_cmds: Vec<PlayerReactionCmd>,
     /// The player's +0x158 after this tick's `play_motion_with`, if it changed.
     player_serial: Option<i32>,
+    /// The spawn kind byte of the object's spawn record (host 1.110), -1 without one.
+    spawn_kind: i32,
+    /// The motion controller's time (+0x140 + 0x30 = object +0x170), in the motion's own frames: the
+    /// `Animator` frame at the start of the tick, or the first frame of a motion requested in it.
+    frame: f32,
+    /// Blend time left (the controller's +0x34), in ticks: the blend of the last request, run down
+    /// one per tick.
+    blend_left: f32,
 }
 
 impl Obj {
@@ -377,6 +385,9 @@ impl Obj {
             records: Vec::new(),
             player_cmds: Vec::new(),
             player_serial: None,
+            spawn_kind: -1,
+            frame: 0.0,
+            blend_left: 0.0,
         }
     }
 
@@ -474,7 +485,28 @@ impl BevyHost<'_> {
         self.trace.line(self.tag, &format!("motion request slot {slot} blend {blend}{}", if checked { " (checked)" } else { "" }));
         o.slot = Some(slot);
         o.done = false;
+        o.frame = start.unwrap_or_else(|| self.env.rig.mset.get(slot).and_then(|s| s.motion.as_ref()).map_or(0.0, |m| m.frame_start));
+        o.blend_left = blend.max(0.0);
         o.motion_req = Some(MotionReq { slot, blend, start });
+    }
+
+    /// Host 1.63 (FUN_00172b00 -> FUN_0017f400): the controller has a motion, no blend left (+0x34 <= 0)
+    /// and its time (+0x30) has reached the value of the motion's virtual method +0x1c. That value is
+    /// the return frame [inferred: FUN_0017e3b8 wraps a looping motion to time - end + that value, and
+    /// FUN_0017f558 (host 1.68) answers the same frame].
+    fn motion_near_end(&self) -> bool {
+        let o = &*self.obj;
+        let Some(m) = o.slot.and_then(|s| self.env.rig.mset.get(s)).and_then(|s| s.motion.as_ref()) else { return false };
+        o.blend_left <= 0.0 && m.frame_return <= o.frame
+    }
+
+    /// Host 1.98 (FUN_00173088): the object's position with the height of the floor under it
+    /// (FUN_00183808 -> FUN_00183750: a line from 200 above the object down 100000 below it,
+    /// DAT_0037a894 and DAT_0037a890; no floor keeps the object's own height).
+    fn ground_position(&self, obj: u32) -> Option<Vec3> {
+        let p = self.pos_of(obj)?;
+        let g = self.env.world.and_then(|w| w.ground(Vec3::new(p.x, 0.0, p.z), p.y + 200.0, 100_200.0));
+        Some(g.map_or(p, |g| p.with_y(g.y)))
     }
 
     fn turn_toward(&mut self, dir: Vec4, speed: f32) -> bool {
@@ -576,7 +608,8 @@ impl BevyHost<'_> {
             Call::Airborne { .. } => imp(Value::Bool(!self.obj.motor.grounded)),
             Call::Busy { .. } | Call::HitStun { .. } => approx(Value::Bool(self.obj.reacting), "the game's flags (+0x160) are read as 'a hit reaction plays'"),
             Call::SpawnParam { .. } => stub(Value::Int(99), "no spawn record: the area's event data is not read"),
-            Call::SpawnKind { .. } => imp(Value::Int(-1)),
+            // FUN_0016b858: byte +0x1c of the spawn record, -1 without one (the app's own waves).
+            Call::SpawnKind { .. } => imp(Value::Int(self.obj.spawn_kind)),
             Call::GlobalByte33e830 => approx(Value::Int(2), "world number of Twilight Town"),
             Call::GlobalFlag4 | Call::GlobalFlag80 | Call::EventActive => stub(Value::Bool(false), "global state set by other scripts"),
             Call::GlobalByte301 => stub(Value::Int(0), "global byte at 0x35ea48 + 0x1e, role unknown"),
@@ -734,6 +767,31 @@ impl BevyHost<'_> {
                 self.obj.player_cmds.push(PlayerReactionCmd::QueueMotion { slot: args[1].int().max(0) as usize, blend: args[2].float() });
                 approx(Value::None, "handed to the player side as PlayerReactionCmd::QueueMotion (player_reaction.rs)")
             }
+            // 0.15 progress_flag_test (FUN_0016d5b8 -> FUN_001802e0): a bit of the story progress array
+            // at 0x33f6b0 (0xffff is false). The app has no story progress: every flag reads clear.
+            Call::Func { group: 0, index: 15, .. } => stub(Value::Bool(false), "story progress flags: the app has none, all read clear (a new game)"),
+            Call::Func { group: 1, index: 63, args } if args[0].int() as u32 == me => imp(Value::Bool(self.motion_near_end())),
+            // 1.66 (0x172bc0): bit 27 of the flag word at +0x108.
+            Call::Func { group: 1, index: 66, .. } => {
+                self.obj.flags |= 1 << 27;
+                stub(Value::None, "flag 27 of +0x108: no consumer in the app")
+            }
+            // 1.69 (0x172c50): the float at object +0x170, the motion controller's (+0x140) time at +0x30.
+            Call::Func { group: 1, index: 69, args } if args[0].int() as u32 == me => imp(Value::Float(self.obj.frame)),
+            // 1.74 (FUN_00171548): ends the object's mover (its virtual method +4) and installs mover
+            // type 0 (FUN_0016b698 -> FUN_0016b648 -> FUN_00179868(0)).
+            Call::Func { group: 1, index: 74, .. } => {
+                self.obj.move_vel = Vec3::ZERO;
+                self.obj.air_vel = Vec3::ZERO;
+                approx(Value::None, "the mover's own state is not modelled: the movement and jump speeds are cleared")
+            }
+            Call::Func { group: 1, index: 98, args } => match self.ground_position(args[0].int() as u32) {
+                Some(p) => imp(Value::Vec(to_game(p))),
+                None => missing(Value::Vec([0.0; 4]), "ground position of an object other than self and the player"),
+            },
+            // 1.150 (0x171600): bit n-1 of the byte at object +0x238. Its writer was not found; a new
+            // object's byte is taken as 0.
+            Call::Func { group: 1, index: 150, .. } => stub(Value::Bool(false), "byte +0x238 of the object: writer not found, read as 0"),
             // 1.132: the target record returns to a pool; the app's records are never reused.
             Call::Func { group: 1, index: 132, .. } => stub(Value::None, "target records are not pooled"),
             Call::Func { .. } | Call::Unknown { .. } => missing(Value::Int(0), "function not mapped"),
@@ -842,7 +900,7 @@ impl Plugin for EnemyAiPlugin {
 
 /// Reads the BDX entry (BAR type 3) of each scripted enemy's object file and its `objentry` flags.
 fn load_programs(disc: Res<Disc>, mut programs: ResMut<AiPrograms>) {
-    let entries: Vec<(&'static str, &str)> = vec![("Shadow", "M_EX020"), ("Soldier", "M_EX010")];
+    let entries: Vec<(&'static str, &str)> = crate::enemy::KINDS.iter().map(|k| (k.name, k.model)).collect();
     let rows = {
         let Ok(mut a) = disc.0.lock() else { return };
         kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).map(|d| d.rows).unwrap_or_default()
@@ -892,7 +950,7 @@ fn paired_motions(mset: &[u8]) -> HashMap<usize, Vec<(String, f32)>> {
     out
 }
 
-/// Gives every new Shadow and Soldier its script runtime. Runs right after the wave spawner, so the
+/// Gives every new enemy its script runtime. Runs right after the wave spawner, so the
 /// script's first frame is the frame the enemy appears in.
 fn ai_attach(mut commands: Commands, programs: Res<AiPrograms>, q: Query<(Entity, &Enemy), Without<AiBrain>>, mut serial: Local<u32>) {
     for (ent, e) in &q {
@@ -976,6 +1034,9 @@ fn ai_update(
         let wrapped = anim.looping && anim.frame < *last_frame;
         obj.done = anim.slot.is_some() && (anim.finished || wrapped);
         obj.slot = anim.slot;
+        obj.frame = anim.frame;
+        obj.blend_left = (obj.blend_left - 1.0).max(0.0);
+        obj.spawn_kind = e.spawn_kind;
         let env = Env {
             player,
             player_yaw,

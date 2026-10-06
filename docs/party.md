@@ -1,6 +1,6 @@
 # Party members (Donald, Goofy, the world partners): implementation spec
 
-Work package 7H. Research only: nothing here is implemented in the app yet. The note is meant to let later
+Work package 7H (research); stage 1 of section 9 is in the app since WP-7P1 (section 11). The note is meant to let later
 work packages build the party stage by stage without reading the game code again. Structure and standard
 follow `docs/summons.md`.
 
@@ -196,8 +196,14 @@ FUN_00112168 (called from FUN_001b72f0) registers three callbacks through FUN_00
   point when the player moved more than 45 units (`DAT_00378480` = 2025 is the squared distance; host 10.57,
   FUN_002f7580, does the same for scripts);
 - FUN_00111670 computes the follow points `DAT_0034e920 + slot x 16` (player, member 0, member 1) from the
-  player's position and the members' positions [GAP: the geometry was not read; constants at 0x3785ac..0x3785b8
-  are 0.51, 1.0, 0.86, -0.86].
+  player's position and the members' positions. [V, WP-7P1, oracle-checked by
+  `party_follow_points_match_fun_00111670`] Two offsets `(0x3785b4 or 0x3785b8, 0, 0x3785ac)` (0.86 / -0.86
+  sideways, 0.51 forward) times the member's follow distance (FUN_001115d0: the class's field slow-down
+  distance of mode 1 minus `0x3785a8` (0.5) times the body radius +0x5b8, at least `0x3785a4`; doubled in battle
+  for style 3) go through the player's matrix: axis rows from +0x6b0, position row from +0x70. Each member
+  takes the nearer offset; when both take the same, the one farther from it (the second on a tie) takes the
+  other. In the app's drawing convention (local +Z is the facing) the points lie ahead of the player, about 59
+  degrees to each side [I: that +0x6b0 matches the app's draw turn].
 
 Area load (FUN_00112270): warp mode `DAT_0034e980` = 1 in world 8 area 8 and world 13 area 3, else 2; host
 function at 0x2eec70 (FUN_00112260) sets it from scripts.
@@ -503,17 +509,67 @@ Each stage ends with `verify.ps1` passing and the named check.
 
 ## 10. Unknowns (with what was searched)
 
-- Follow-point geometry (FUN_00111670, 9.7 kB of VU code): only its inputs and outputs were read.
+- (Resolved by WP-7P1: the follow-point geometry, see section 3 and section 11.)
 - Style 0's target choice FUN_0010d0c0, FUN_0010d848, the range test FUN_0010f118, FUN_00112b28/b88.
 - The record at +0x12c whose +0x18 is the revive time (searched: `prty` StunTime is 0 in all rows).
 - Writers of the walk/run speeds +0x110/+0x114 (FUN_0010e5b8 reads them).
 - The far counter +0xcd8: increments (FUN_00111070, FUN_0010e5e8) and resets (FUN_00110eb0, FUN_00110e28)
-  were read; no decrement was found in FUN_00110a58, FUN_00110e08, FUN_00110e28, FUN_00111070.
+  were read; no decrement was found in FUN_00110a58, FUN_00110e08, FUN_00110e28, FUN_00111070. WP-7P1 scanned
+  every immediate access (`mips_scan --store-off 0xcd8`): the only other writer is the small routine at
+  0x111ae0 (not decompiled), which clears the counter, sets the steer ring index +0xcd0 to -1 and puts the member
+  on its follow point (FUN_0016a700); its callers were not traced. The warp cooldown +0xcdc counts down by the
+  frame unit `DAT_00356f40` in the friend update (0x1113dc..0x111400, inside FUN_001112e8).
+- What +0x660 bit 4 is (FUN_00111070 counts it toward the warp): +0x660 is a copy of the high word of the
+  movement's collision result +0x600 (FUN_00182690 line `+0x660 = +0x604`); bit 4 of it is bit 34 of that result,
+  the same bit the warp's spot test rejects (FUN_001108c8 after FUN_00143840). Which collision sets it was not
+  read; the app counts a tick whose step was blocked [I].
 - Attacker callback FUN_00110728, the combo follow-up FUN_001b0758, item use FUN_001a1fc0 fields.
 - The meaning of the settings' values 0..3 and styles 0..5 in the party menu (FUN_00112308 readers only).
 - Who writes the save slot bytes at new game; `lvup` table order beyond Sora.
 - Per-class constructors of the world partners (FUN_00114890..FUN_001154d0) and their action records were not
   dumped; the oracle test prints only their thresholds.
+
+## 11. Status: stage 1 in the app (WP-7P1)
+
+Files: `crates/kh2-app/src/party_rules.rs` (pure rules, constants read from the executable at run time),
+`party.rs` (spawn and tick), `friend_ai.rs` (the members' scripts). Log `KH2_PARTYLOG=1`; harness
+`KH2_NO_PARTY=1`, `KH2_PARTY_WARP=<s>` (the forced warp of FUN_00110e08), `KH2_PARTY_AT_RECORD=1` (Sora starts at
+the player's row of the friends' map group: the app otherwise starts him at its own spawn point, outside the
+walls of tt02's Usual Spot).
+
+Done:
+
+- Slot bytes: preset 1 applied to an empty party (FUN_001a7330), `FRIEND_1` = slot byte 1, `FRIEND_2` = byte 2,
+  resolved through the world's memt merge (FUN_0017cd20). In Twilight Town: `P_EX020` and `P_EX030`, AI classes 0
+  and 1 (`party_tt02_friends_are_donald_and_goofy`). The rows are the first `FRIEND_1` / `FRIEND_2` rows of the
+  area's `map` script (tt02 `m_00`); the entrance byte is not tested (the app has no entrances).
+- Model and motion set (objentry `AnimationName`); player-type motion sets (4 slots per motion id).
+- The member's script attached, init run, mode `idle` set and run each tick (`friend_ai.rs`). The idle mode
+  (`P_EX020` R0489 -> R0499) faces the target and asks for motion 0; that request is logged and not carried out
+  (the player-type remap FUN_0017da30 is not ported), so the mode ends after a frame.
+- Follow: FUN_0010e140 in the friend's motion state 0x1f (FUN_00111070 keeps a free member there), which is the
+  path the field follow takes; FUN_0010e5e8's own body (state 0) is not ported. Corrections to section 4: in this
+  path the distance the speed modes compare is the 3D one (+0xb9c), and while the turning bit is set the
+  direction is the one to the player (+0xb90), not to the follow point (oracle-checked,
+  `party_follow_step_matches_fun_0010e140`). Steer FUN_00110468 (`party_steer_matches_fun_00110468`), trail
+  FUN_0010b270 (`party_trail_matches_fun_0010b270`), follow points FUN_00111670 (section 3).
+- Warp: FUN_00110eb0 / FUN_00110a58 / FUN_001108c8 / FUN_00110e28: due when the cooldown is out and the far
+  counter is above 39; the member must be off screen; trail points tried from `(warps + 0x1c + random(4)) & 31`
+  (absolute ring indices, 0x110ccc), eleven, three apart; forced (flag 0x8000) takes the accepted point nearest
+  the player. Fade-in 30 frames, cooldown 480, counter 0, warps + 1; a new trail point clears the warps.
+
+Inferred or approximated in the app: the walk/run/turn speeds from the `prty` row of the NeoStatus; the facing
+turns toward the movement (toward the player while turning); the motion is the motion id of the speed (0, 1, 2)
+in the field state; the screen test (FUN_00146648) is the camera frustum on a box of the body shape; the spot
+test of FUN_001108c8 is "a floor under the point"; +0x660 bit 4 is "the last step was blocked"; the random
+generator is not the game's.
+
+Not done in stage 1: the weapons. FUN_0017c718 attaches the hand objects through FUN_0016ef28 (the member's
+saved weapon word, `Progress::member`) -> FUN_001845b0 (`went` of the moveset) -> FUN_001751b0 -> FUN_00184190,
+which ends in resource handles, not a bone number; the attach bone of Donald's and Goofy's models is not known
+(objentry `WeaponJoint` is 2 and 3, not a bone). Sora's bone 178 was set by looking, which this WP did not do.
+Also not done: members do not push each other or Sora apart (nothing in the paths read does it); the spawn
+refusals during a form or a summon (stage 6); battle (the members follow in battle too until stage 2).
 
 ## Decompile index
 
@@ -529,6 +585,7 @@ Each stage ends with `verify.ps1` passing and the named check.
 | 0x111070, 0x111040, 0x10df08, 0x10dcf0, 0x10cf90, 0x110f90, 0x10f830, 0x10f8d8, 0x10fcd0, 0x10fc68, 0x10ed00, 0x10ed20, 0x10f220, 0x10f578 | decision loop |
 | 0x1102c8, 0x10e5e8, 0x10e140, 0x10e4b8, 0x10e5b8, 0x110468, 0x10c8d0, 0x10c748 | follow, steer, jump |
 | 0x110eb0, 0x110a58, 0x1108c8, 0x110e08, 0x110e28 | warp |
+| 0x111ae0, 0x1113dc..0x111400, 0x1115d0, 0x0016b960, 0x001beb00, 0x00182690 (+0x660 copy), 0x0016ef28, 0x0016ee98, 0x001845b0, 0x001751b0 | WP-7P1: snap to follow point, cooldown count-down, follow distance, position getter, collision word, hand objects |
 | 0x113450, 0x1133c0, 0x1133e0, 0x114550, 0x114668, 0x114078, 0x1140c0, 0x114038, 0x114048, 0x114108, 0x113578..0x1135a0, 0x1143b8, 0x114348, 0x1144d0 | AI classes and parameter readers |
 | 0x1135e0, 0x113728, 0x113888, 0x113b08, 0x1137d8, 0x113d48, 0x113e68, 0x114738, 0x114828, 0x10c8f0, 0x10c9d0, 0x10c800 | action handlers and command starts |
 | 0x10cbe0, 0x10d270, 0x10d378, 0x10d538, 0x10cf80, 0x10cf88 | target styles |

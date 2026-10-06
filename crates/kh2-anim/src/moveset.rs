@@ -14,7 +14,7 @@
 //! | 1 | candidate group: 3 = always a candidate, 1 = candidate for the locked target by range, 2 = candidate for other threatening enemies by range, 0 = only chosen explicitly by key |
 //! | 2 | alternative key (signed, -1 none): tried when this action's motion is already playing |
 //! | 3 | argument of the finisher test |
-//! | 4 | flags: bit 0 airborne only, bit 1 widens the height window's lower bound by the weapon reach, bits 3 and 4 pick the sign of the target's half-height added to the upper and lower bounds, bit 2 finisher |
+//! | 4 | flags: bit 0 airborne only, bit 1 widens the height window's lower bound (and the action's leap) by the actor's jump height, bits 3 and 4 pick the sign of the target's half-height added to the upper and lower bounds, bit 2 finisher |
 //! | 8 | motion ID played |
 //! | 10 | motion ID queued after it (4, the fall, for air attacks) |
 //! | 0x20, 0x24 | horizontal distance window (min inclusive, max exclusive) |
@@ -143,7 +143,13 @@ pub mod key {
     pub const EXPLICIT: [u8; 3] = [37, 12, 38];
     /// The attack that answers a guard hit.
     pub const COUNTER: u8 = 39;
+    /// Retaliating Slash (A344): the Square press of a blown actor (FUN_001758b0).
+    pub const RETALIATING: u8 = 40;
 }
+
+/// Ability bit of Aerial Recovery (ability item 158): the confirm press of a blown actor plays the
+/// recovery motion instead of Retaliating Slash (FUN_001758b0 tests `block & 0x100000`).
+pub const ABILITY_AERIAL_RECOVERY: u16 = 20;
 
 /// The combo state the availability tests read (fields of the actor and its status block).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -284,13 +290,14 @@ pub enum Miss {
 }
 
 impl Action {
-    /// FUN_0019f090: the record's distance, height and angle windows against a probe. `reach` is
-    /// what FUN_0016be20 returns for flag bit 1 (the weapon's reach; not resolved by the app).
-    pub fn window(&self, p: &Probe, reach: f32) -> Result<(), Miss> {
+    /// FUN_0019f090: the record's distance, height and angle windows against a probe. `jump_height`
+    /// is what FUN_0016be20 returns for flag bit 1: the actor's jump height (the High Jump height
+    /// of the `fmab` row of its level when the actor has one, else its plain jump height).
+    pub fn window(&self, p: &Probe, jump_height: f32) -> Result<(), Miss> {
         let mut hi = self.height[0];
         let mut lo = self.height[1];
         if self.flags & 2 != 0 {
-            lo -= reach;
+            lo -= jump_height;
         }
         hi += if self.flags & 8 == 0 { p.half_height } else { -p.half_height };
         lo += if self.flags & 0x10 == 0 { -p.half_height } else { p.half_height };
@@ -316,9 +323,11 @@ pub struct Scene {
     /// Every target point of the other enemies (including the target's): group 2 records pass when
     /// any of them is inside the window.
     pub others: Vec<Probe>,
-    /// The wall probe of FUN_001cbcf8 hit something (it flags key 1; not ported).
+    /// The wall probe of FUN_001cbcf8 hit something: the actor's body sphere swept forward by its
+    /// radius plus `plyr` AttackJFront touched a wall. It flags key 1 whatever that record says.
     pub wall_probe: bool,
-    pub reach: f32,
+    /// The actor's jump height (FUN_0016be20), added to the reach of records with flag bit 1.
+    pub jump_height: f32,
 }
 
 /// What became of one record in the selection.
@@ -358,7 +367,7 @@ impl Moveset {
                             let mut first_miss = None;
                             let mut hit = false;
                             for p in probes {
-                                match a.window(p, scene.reach) {
+                                match a.window(p, scene.jump_height) {
                                     Ok(()) => {
                                         hit = true;
                                         break;
@@ -439,6 +448,73 @@ pub enum ExplicitMiss {
     NoWindow,
 }
 
+/// What a blown actor's state looks like to FUN_001758b0.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BlowState {
+    /// The actor's mover has flag 0x40 and not 0x800: the blow movers (modes 4, 8, 0x15, 0x21;
+    /// mode 0x2d carries 0x800 and allows nothing).
+    pub recoverable: bool,
+    /// Ticks since the blow was launched (actor +0xf8: zeroed by FUN_0019e468, +1 per tick in
+    /// FUN_0019e4d8).
+    pub ticks: f32,
+    /// `plyr` BlowRecoveryTime (the record at actor +0x130, offset 0x58).
+    pub recovery_time: f32,
+    /// Actor +0x7f8 flag 4 (set by FUN_00186580 together with a motion-request reset; cleared by
+    /// FUN_00178d80 which hands the actor back to its controller). Inferred: the actor is out of play.
+    pub locked: bool,
+}
+
+/// The outcome of a blown actor's button press (FUN_001758b0).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Recovery<'a> {
+    /// The confirm flag with Aerial Recovery: motion 40 and the mover's launch (FUN_001759b8).
+    AerialRecovery,
+    /// The Square flag: the counters restart and the key 40 record starts.
+    Retaliate(&'a Action),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveryMiss {
+    /// Not in a blow mover, or in one that allows nothing.
+    NotRecoverable,
+    /// Fewer ticks than BlowRecoveryTime have passed.
+    TooEarly,
+    Locked,
+    /// Neither the confirm flag with Aerial Recovery nor the Square flag.
+    NoInput,
+    NoRecord,
+    Rejected(Reject),
+}
+
+impl Moveset {
+    /// FUN_001758b0, run for every command tick before the Square actions and the attack: in a
+    /// blow mover, once BlowRecoveryTime ticks have passed and the actor is not locked, the confirm
+    /// flag (`confirm`) with the Aerial Recovery ability plays the recovery; otherwise the Square
+    /// flag (`square`) restarts the counters and starts the key 40 record if it is available. The
+    /// restart happens even when the record is missing or rejected, as in the game.
+    pub fn recovery(&self, blow: &BlowState, confirm: bool, square: bool, chain: &mut Chain) -> Result<Recovery<'_>, RecoveryMiss> {
+        if !blow.recoverable {
+            return Err(RecoveryMiss::NotRecoverable);
+        }
+        if blow.ticks < blow.recovery_time {
+            return Err(RecoveryMiss::TooEarly);
+        }
+        if blow.locked {
+            return Err(RecoveryMiss::Locked);
+        }
+        if confirm && chain.has_ability(ABILITY_AERIAL_RECOVERY) {
+            return Ok(Recovery::AerialRecovery);
+        }
+        if !square {
+            return Err(RecoveryMiss::NoInput);
+        }
+        chain.restart();
+        let a = self.by_key(key::RETALIATING).ok_or(RecoveryMiss::NoRecord)?;
+        chain.check(a).map_err(RecoveryMiss::Rejected)?;
+        Ok(Recovery::Retaliate(a))
+    }
+}
+
 /// A shared handle for components.
 pub type SharedMoveset = Arc<Moveset>;
 
@@ -477,6 +553,38 @@ mod tests {
         assert_eq!((m.actions[1].key, m.actions[1].motion, m.actions[1].alt), (8, 183, 7));
         assert!(m.actions[1].air_only() && m.actions[1].finisher() && !m.actions[0].finisher());
         assert!(Moveset::parse(&t, 1).is_none());
+    }
+
+    #[test]
+    fn recovery_press_follows_fun_001758b0() {
+        // Key 40 as an air-only record (flag bit 0) gated on ability bit 101.
+        let mut r40 = record(40, 0, -1, 1, 196);
+        r40[0x40..0x42].copy_from_slice(&101u16.to_le_bytes());
+        let t = table(&[record(5, 3, 6, 0, 151), r40]);
+        let m = Moveset::parse(&t, 0).unwrap();
+        let base = Chain { airborne: true, abilities: 1 << 101, combo: 3, finishers: 2, max_ground: 3, max_air: 3, max_finishers: 1, finisher_window: false };
+        let blow = BlowState { recoverable: true, ticks: 10.0, recovery_time: 10.0, locked: false };
+        let mut c = base;
+        // Square in a blow mover after BlowRecoveryTime: the counters restart and key 40 starts.
+        assert_eq!(m.recovery(&blow, false, true, &mut c).map(|r| matches!(r, Recovery::Retaliate(a) if a.key == 40)), Ok(true));
+        assert_eq!((c.combo, c.finishers), (1, 1));
+        // The gates, in the game's order.
+        let mut c = base;
+        assert_eq!(m.recovery(&BlowState { recoverable: false, ..blow }, false, true, &mut c), Err(RecoveryMiss::NotRecoverable));
+        assert_eq!(m.recovery(&BlowState { ticks: 9.0, ..blow }, false, true, &mut c), Err(RecoveryMiss::TooEarly));
+        assert_eq!(m.recovery(&BlowState { locked: true, ..blow }, false, true, &mut c), Err(RecoveryMiss::Locked));
+        assert_eq!(m.recovery(&blow, true, false, &mut c), Err(RecoveryMiss::NoInput));
+        assert_eq!((c.combo, c.finishers), (3, 2));
+        // Confirm with Aerial Recovery wins over Square; without the ability it is ignored.
+        let mut c = Chain { abilities: 1 << 101 | 1 << ABILITY_AERIAL_RECOVERY, ..base };
+        assert_eq!(m.recovery(&blow, true, true, &mut c), Ok(Recovery::AerialRecovery));
+        // Square without the record's ability: the counters still restart, the record is rejected.
+        let mut c = Chain { abilities: 0, ..base };
+        assert_eq!(m.recovery(&blow, false, true, &mut c), Err(RecoveryMiss::Rejected(Reject::Ability(101))));
+        assert_eq!((c.combo, c.finishers), (1, 1));
+        // On the ground the air-only record is for the other state.
+        let mut c = Chain { airborne: false, ..base };
+        assert_eq!(m.recovery(&blow, false, true, &mut c), Err(RecoveryMiss::Rejected(Reject::State)));
     }
 
     #[test]

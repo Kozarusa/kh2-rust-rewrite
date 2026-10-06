@@ -17,7 +17,7 @@ use std::sync::Arc;
 use bevy::input::mouse::MouseButton;
 use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
 use bevy::prelude::*;
-use kh2_anim::moveset::{self, key, Action, Chain, Evaluation, ExplicitMiss, Moveset, Probe, Scene, Verdict, Windows};
+use kh2_anim::moveset::{self, key, Action, BlowState, Chain, Evaluation, ExplicitMiss, Moveset, Probe, Recovery, Scene, Verdict, Windows};
 use kh2_anim::{id, triggers::range, PlayerState};
 use kh2_model::collision::kind as shape_kind;
 
@@ -282,20 +282,124 @@ fn probe(p: &TargetPoint, from: Vec3, reference: Vec3) -> Probe {
     }
 }
 
-/// Everything the table selection needs about the surroundings (FUN_001cb928): the target and its
-/// direction (the reference direction of the angle test; Sora's facing without a target), and the
-/// target points of every enemy.
-fn selection_scene(m: &Motor, target: Option<TargetPoint>, others: &[TargetPoint]) -> Scene {
-    let reference = target
+/// The reference direction of the selection (`ctx + 0x30` of FUN_001cb928): the horizontal unit
+/// direction to the target, or Sora's facing without one.
+fn reference_direction(m: &Motor, target: Option<TargetPoint>) -> Vec3 {
+    target
         .map(|t| (t.pos - m.pos).with_y(0.0).normalize_or_zero())
         .filter(|d| *d != Vec3::ZERO)
-        .unwrap_or_else(|| m.forward().with_y(0.0).normalize_or_zero());
+        .unwrap_or_else(|| m.forward().with_y(0.0).normalize_or_zero())
+}
+
+/// Everything the table selection needs about the surroundings (FUN_001cb928): the target and its
+/// direction (the reference direction of the angle test; Sora's facing without a target), the
+/// target points of every enemy, the jump height the flag-bit-1 records add to their reach, and
+/// whether the wall probe in front hit.
+fn selection_scene(m: &Motor, target: Option<TargetPoint>, others: &[TargetPoint], jump_height: f32, wall_probe: bool) -> Scene {
+    let reference = reference_direction(m, target);
     Scene {
         target: target.map(|t| probe(&t, m.pos, reference)),
         others: others.iter().map(|t| probe(t, m.pos, reference)).collect(),
-        wall_probe: false,
-        // The weapon reach that FUN_0016be20 adds for table flag 2 was not resolved.
-        reach: 0.0,
+        wall_probe,
+        jump_height,
+    }
+}
+
+/// FUN_0016be20 (FUN_0016bd98): the jump height the flag-bit-1 records add to their reach, and
+/// the height the jump action uses. A party member (+0x588 flag 4) whose mover does not carry
+/// flag 0x800 and whose High Jump level (ability block +0x20) is above 0 gets the High Jump
+/// height of the `fmab` row of that level (and motion 201); otherwise the actor's own jump height
+/// (+0x118; the app reads `prty` JumpHeight, the game's writer of +0x118 was not found).
+fn jump_height(data: &GameData, growth: &Growth) -> f32 {
+    data.fmab(growth.high_jump).map_or(data.prty.jump_height, |f| f.high_jump_height)
+}
+
+/// Sora's body collision shape (the first shape of kind 0 or 4, FUN_00188e70 with mask 0x11 in
+/// FUN_00169af0): its radius is the actor's collision radius (+0x5b0) and its lift the step
+/// height (+0x5fc), as (radius, lift) in game units.
+fn body_shape(rig: &Rig) -> Option<(f32, f32)> {
+    rig.model.shapes.iter().find(|s| s.kind == 0 || s.kind == 4).map(|s| (s.radius.abs(), s.lift))
+}
+
+/// The wall probe of the table selection (FUN_001cbcf8 -> FUN_00182e38 -> FUN_0019a8e8). Only on
+/// the ground (FUN_0019aa28 false) for an actor whose mover is not a rider (flag 2) and that has no
+/// +0x160 flag 0x40 and no +0x810 (neither modelled): the body sphere (radius `r`, centred on the
+/// position raised by the lift) is swept along the reference direction projected on the ground
+/// plane (the actor's +0x630 normal) by `r + plyr AttackJFront`. A hit flags the key 1 record.
+/// Returns the contact point when it hit.
+fn wall_probe(world: &World, m: &Motor, shape: Option<(f32, f32)>, reference: Vec3, j_front: f32) -> Option<Vec3> {
+    if !m.grounded {
+        return None;
+    }
+    let (r, lift) = shape?;
+    let normal = m.ground.map_or(Vec3::Y, |g| g.normal);
+    // FUN_00182e38: two cross products with the ground normal keep the direction in its plane.
+    let dir = normal.cross(reference).cross(normal).normalize_or_zero();
+    if dir == Vec3::ZERO {
+        return None;
+    }
+    let start = m.pos + Vec3::Y * lift;
+    crate::motor::sweep_wall(world, start, start + dir * (r + j_front), r).map(|(q, _)| q)
+}
+
+/// A button press while Sora is blown (FUN_001758b0; the party controller runs it on every
+/// command tick before the Square actions and the attack). `confirm` is the command's confirm
+/// flag (the attack button here; inferred, see the doc) and `square` its Square flag. Aerial
+/// Recovery plays motion 40 and ends the flight; Retaliating Slash restarts the counters and
+/// starts the key 40 record through the attack start. Returns true when the state changed.
+#[allow(clippy::too_many_arguments)]
+fn blown_press(
+    s: &mut Sora,
+    body: &mut Animator,
+    weapon: &mut Animator,
+    abilities: &Abilities,
+    data: &GameData,
+    confirm: bool,
+    square: bool,
+    rig: &Rig,
+    pstate: PlayerState,
+    start_attack: &impl Fn(&mut Sora, &mut Animator, &mut Animator, &Action, bool) -> bool,
+) -> bool {
+    let air = !s.motor.grounded;
+    let mut chain = abilities.chain(s.hits, s.finishers, air, false);
+    // The blow movers (modes 4 and 8 for a party member) carry flag 0x40; the flight timer is the
+    // ticks in the state; +0x7f8 flag 4 stands in as "no HP left" (inferred: set when the actor
+    // leaves play).
+    let blow = BlowState { recoverable: s.blow.is_some(), ticks: s.timer, recovery_time: data.plyr.blow_recovery_time, locked: s.hp <= 0 };
+    let moves = s.moves.clone();
+    match moves.recovery(&blow, confirm, square, &mut chain) {
+        Ok(Recovery::AerialRecovery) => {
+            // FUN_001759b8: motion 40 with blend 4, then the mover's launch (its method +8 with a
+            // vector built from the stick direction, plyr BlowRecoveryH and BlowRecoveryV; the
+            // launch itself was not decoded). The app ends the flight and lets Sora fall.
+            body.restart(rig.mset.slot(id::DAMAGE_BLOW_RECOV, pstate), false, 4.0);
+            weapon.restart(None, false, 4.0);
+            s.blow = None;
+            s.push = None;
+            s.motor.vel = Vec3::ZERO;
+            s.motor.start_fall();
+            s.state = State::Air;
+            s.timer = 0.0;
+            s.hits = 0;
+            s.finishers = 1;
+            info!("move: blown press: Aerial Recovery (ability bit {}) after {:.0} ticks (BlowRecoveryTime {:.0}): motion 40 {}", moveset::ABILITY_AERIAL_RECOVERY, blow.ticks, blow.recovery_time, body.tag());
+            true
+        }
+        Ok(Recovery::Retaliate(a)) => {
+            let a = a.clone();
+            info!("move: blown press: Retaliating Slash key {} after {:.0} ticks (BlowRecoveryTime {:.0}): counters restart (combo {}, finishers {})", a.key, blow.ticks, blow.recovery_time, chain.combo, chain.finishers);
+            s.hits = chain.combo;
+            s.finishers = chain.finishers;
+            s.blow = None;
+            s.push = None;
+            start_attack(s, body, weapon, &a, air)
+        }
+        Err(m) => {
+            if move_log() {
+                info!("move: blown press refused: {m:?} (ticks {:.0}, BlowRecoveryTime {:.0}, confirm {confirm}, square {square})", blow.ticks, blow.recovery_time);
+            }
+            false
+        }
     }
 }
 
@@ -680,7 +784,9 @@ pub fn tick(
                 }
             }
         }
-        let scene = selection_scene(&s.motor, target_point, &all_points);
+        // The wall probe runs inside the selection (FUN_001cbcf8), once per press.
+        let wall = wall_probe(&world, &s.motor, body_shape(&rig), reference_direction(&s.motor, target_point), data.plyr.attack_j_front);
+        let scene = selection_scene(&s.motor, target_point, &all_points, jump_height(&data, &growth), wall.is_some());
         let mut evals: Vec<Evaluation> = Vec::new();
         if chosen.is_none() {
             press = chain.press(w, s.connected);
@@ -722,6 +828,13 @@ pub fn tick(
                     scene.target.map_or("none".to_string(), |p| probe_text(&p)),
                     scene.others.len(),
                     scene.others.iter().map(probe_text).collect::<Vec<_>>().join(" | ")
+                );
+                info!(
+                    "move:   jump height {:.1} (flag-bit-1 reach); wall probe {}: body radius {} + AttackJFront {:.1} ahead on the ground",
+                    scene.jump_height,
+                    wall.map_or("missed".to_string(), |q| format!("HIT at ({:.0} {:.0} {:.0}), key 1 flagged", q.x, q.y, q.z)),
+                    body_shape(&rig).map_or("none".to_string(), |(r, l)| format!("{r} (lift {l})")),
+                    data.plyr.attack_j_front
                 );
                 for e in &evals {
                     let a = &s.moves.actions[e.index];
@@ -962,6 +1075,12 @@ pub fn tick(
             }
         }
         State::Blown => {
+            // A press while blown (FUN_001758b0, run before everything else on every command
+            // tick): Aerial Recovery on the confirm flag, Retaliating Slash (key 40) on the
+            // Square flag, once plyr BlowRecoveryTime ticks have passed.
+            if (attack || square) && s.blow.is_some() {
+                blown_press(s, &mut body, &mut weapon, &abilities, &data, attack, square, &rig, pstate, &start_attack);
+            }
             // The flight of a blow (FUN_0019e4d8): horizontal speed brakes down to a floor, the
             // rise brakes, gravity pulls. Without the reaction data the jump model stands in.
             if let (Some(b), Some(r)) = (s.blow.as_mut(), reaction.as_ref()) {

@@ -213,6 +213,49 @@ pub fn hurt_volumes(anim: &Animator, body: &GlobalTransform) -> Vec<Volume> {
     anim.rig.model.shapes.iter().filter(|s| s.kind == kind::BATTLE || s.kind == kind::TARGET).map(|s| shape_volume(s, anim, body)).collect()
 }
 
+/// A hurt shape as the game's hit code keeps it (the entry FUN_001894d0 fills for every shape of
+/// the hurt list): a spheroid at the bone's world matrix times the shape offset, moved up by the
+/// shape's lift, with the shape's radius and its height as the half height. Metres.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HurtSpheroid {
+    pub center: Vec3,
+    pub radius: f32,
+    pub half_height: f32,
+}
+
+pub fn hurt_spheroid(s: &Shape, anim: &Animator, body: &GlobalTransform) -> HurtSpheroid {
+    let m = match s.bone {
+        Some(b) => anim.bone_world(body, b),
+        None => body.to_matrix(),
+    };
+    let center = m.transform_point3(Vec3::from(s.offset)) + Vec3::Y * (s.lift * SCALE);
+    HurtSpheroid { center, radius: s.radius.abs() * SCALE, half_height: s.height * SCALE }
+}
+
+/// The hurt shapes of a body paired with the spheroids the hit point is taken on.
+fn hurt_shapes(anim: &Animator, body: &GlobalTransform) -> Vec<(Volume, HurtSpheroid)> {
+    anim.rig
+        .model
+        .shapes
+        .iter()
+        .filter(|s| s.kind == kind::BATTLE || s.kind == kind::TARGET)
+        .map(|s| (shape_volume(s, anim, body), hurt_spheroid(s, anim, body)))
+        .collect()
+}
+
+/// Where a hit is placed (FUN_0018ce18, called by the hit-effect code FUN_0018d090 for every
+/// landed hit): the point of the victim's spheroid in the direction of the attack sphere's
+/// centre. The height difference is clamped to the half height; the horizontal radius at that
+/// height is `radius * sqrt(1 - (dy / half_height)^2)` (the constant 1.0 at 0x37ac84). A shape
+/// without height gets the equator (the game would divide by zero there).
+pub fn victim_point(h: &HurtSpheroid, toward: Vec3) -> Vec3 {
+    let d = toward - h.center;
+    let dy = d.y.clamp(-h.half_height, h.half_height);
+    let f = if h.half_height > 0.0 { (dy / h.half_height).abs() } else { 0.0 };
+    let flat = d.with_y(0.0).normalize_or_zero() * (h.radius * (1.0 - f * f).max(0.0).sqrt());
+    h.center + flat + Vec3::Y * dy
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn detect_hits(
     mut fighters: Query<(Entity, &mut Fighter, &GlobalTransform)>,
@@ -226,10 +269,10 @@ pub fn detect_hits(
     let log = std::env::var_os("KH2_HITLOG").is_some();
     let mut skipped_now = false;
     // Snapshot defenders first.
-    let defenders: Vec<(Entity, Team, Vec<Volume>, Vec3)> = fighters
+    let defenders: Vec<(Entity, Team, Vec<(Volume, HurtSpheroid)>, Vec3)> = fighters
         .iter()
         .filter(|(_, f, _)| f.hittable)
-        .filter_map(|(e, f, g)| bodies.get(f.hurt_body).ok().map(|(a, bg)| (e, f.team, hurt_volumes(a, bg), g.translation())))
+        .filter_map(|(e, f, g)| bodies.get(f.hurt_body).ok().map(|(a, bg)| (e, f.team, hurt_shapes(a, bg), g.translation())))
         .collect();
     for (e, mut f, g) in &mut fighters {
         let mut still_live = HashSet::new();
@@ -248,10 +291,12 @@ pub fn detect_hits(
                     if f.landed.contains(&key) {
                         continue;
                     }
-                    if hurts.iter().any(|h| overlap(&vol, h)) {
+                    // The first hurt shape the volume touches (FUN_001b5a58 returns the first
+                    // entry of the victim's list) places the hit on its surface.
+                    if let Some((_, sph)) = hurts.iter().find(|(h, _)| overlap(&vol, h)) {
                         f.landed.insert(key);
                         let dir = (*tpos - g.translation()).with_y(0.0).normalize_or(Vec3::Z);
-                        hits.write(Hit { attacker: e, target: *te, atkp, dir, point: vol.a });
+                        hits.write(Hit { attacker: e, target: *te, atkp, dir, point: victim_point(sph, vol.a) });
                     }
                 }
                 if let (Some(world), Team::Player) = (world.as_ref(), f.team) {
@@ -304,6 +349,32 @@ fn landed_hit_sounds(
         let Some(sound) = data.atkp(h.atkp).and_then(|a| ReflectFields::from_atkp(a).hit_sound()) else { continue };
         let apdx = fighters.get(h.attacker).ok().and_then(|f| f.attack_bodies.first().copied()).and_then(|b| anims.get(b).ok()).and_then(|a| a.rig.apdx.clone());
         out.write(PlaySe::number(sound, apdx));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn victim_point_lies_on_the_spheroid_toward_the_attack() {
+        let h = HurtSpheroid { center: Vec3::new(1.0, 2.0, 3.0), radius: 0.5, half_height: 1.0 };
+        // Level with the centre: the equator point toward the attack, one radius out.
+        let p = victim_point(&h, Vec3::new(5.0, 2.0, 3.0));
+        assert!((p - Vec3::new(1.5, 2.0, 3.0)).length() < 1e-5, "{p:?}");
+        // Half way up: the horizontal radius shrinks to r * sqrt(1 - 0.25).
+        let p = victim_point(&h, Vec3::new(1.0, 2.5, 7.0));
+        assert!((p - Vec3::new(1.0, 2.5, 3.0 + 0.5 * 0.75f32.sqrt())).length() < 1e-5, "{p:?}");
+        // Above the top: the height clamps to the half height and the point is the pole.
+        let p = victim_point(&h, Vec3::new(1.0, 9.0, 3.1));
+        assert!((p - Vec3::new(1.0, 3.0, 3.0)).length() < 1e-5, "{p:?}");
+        // Below the bottom, the other pole.
+        let p = victim_point(&h, Vec3::new(2.0, -9.0, 3.0));
+        assert!((p - Vec3::new(1.0, 1.0, 3.0)).length() < 1e-5, "{p:?}");
+        // A flat shape (no height) keeps the equator instead of the game's division by zero.
+        let flat = HurtSpheroid { half_height: 0.0, ..h };
+        let p = victim_point(&flat, Vec3::new(1.0, 5.0, 0.0));
+        assert!((p - Vec3::new(1.0, 2.0, 2.5)).length() < 1e-5, "{p:?}");
     }
 }
 

@@ -167,9 +167,10 @@ Constructor chain:
 
 1. **Actor base** FUN_001746e0(obj, objentry, 1, record).
 2. **Friend base** FUN_0017c718 (vtable 0x35cc18): first free party slot `DAT_01c893a8[0..1]` (FUN_0017cd08),
-   slot index at +0xb48, +0x588 |= 0x4000, status block FUN_0019fd30(NeoStatus) at +0x48c (rebuilt from the
-   saved party record FUN_00187d40(0x33fec0, ..) and FUN_0019f920, HP set to max), its owner pointer
-   +0x24c; side angle +0xb3c = `slot x 2a - a` with a = `DAT_01c893a0` (set from 0x37a568, 20 degrees, by
+   slot index at +0xb48, +0x588 |= 0x4000, status block FUN_0019fd30(NeoStatus) at +0x48c (an existing block
+   is rebuilt with FUN_0019f920; a new one (FUN_0019f708) gets +0x244 = NeoStatus, is built from a saved
+   party record (FUN_00187d40 on 0x33fec0) and gets its HP through FUN_001a0140 [I: set to the maximum]),
+   its owner pointer +0x24c; side angle +0xb3c = `slot x 2a - a` with a = `DAT_01c893a0` (set from 0x37a568, 20 degrees, by
    FUN_0017d5a0) [I: used for the follow points]; both hand weapons; +0x768 |= 0x10.
 3. **Friend AI class** FUN_0010b780 (vtable 0x352d88): AI state fields cleared, state function
    `+0xb64/+0xb68` = 0x111070 (pointer-to-member pair), flags +0xb7c = 0x10000000, +0xcd0 = -1; party
@@ -183,8 +184,9 @@ are listed by `kh2-ard`'s disc test.
 
 ### Party manager [V]
 
-FUN_00112168 (game start) registers three tasks: 0x111d18 (priority 4), 0x112018 (6), 0x112100. Each frame
-FUN_00111d18:
+FUN_00112168 (called from FUN_001b72f0) registers three callbacks through FUN_00102778: 0x111d18 and 0x112018
+(arguments 4 and 6, [I] priorities) and 0x112100; it also sets the warp mode to 2 and clears the party list.
+[I] Each frame FUN_00111d18 runs:
 
 - FUN_00111c18: `DAT_0034e908[3]` = {player, slot 0 member, slot 1 member}; each member's AI object owner is
   set (FUN_00113448) and +0xb70 = 1-based position; changes go to the HUD (FUN_00135a48).

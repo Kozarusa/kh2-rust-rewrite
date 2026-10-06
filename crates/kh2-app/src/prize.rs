@@ -854,7 +854,7 @@ impl Plugin for PrizePlugin {
         let pax = consts.as_ref().and_then(|_| crate::fx::load(disc, "obj/PRIZE.mdlx", usize::MAX - 7, None));
         match items {
             Some(lib) => {
-                app.insert_resource(lib).add_systems(FixedUpdate, (spawn_items, run_items).chain().in_set(Sim::EffectTick)).add_systems(Update, show_items);
+                app.insert_resource(lib).add_systems(FixedUpdate, (item_test, spawn_items, run_items).chain().in_set(Sim::EffectTick)).add_systems(Update, show_items);
             }
             None => warn!("prize: the item object constants or the item table are not readable; dropped items make no objects"),
         }
@@ -1417,18 +1417,82 @@ fn spawn_items(
         // FUN_001a3cb0 passes the same point as to the prizes (FUN_0016b738's lock-on point).
         let at = bodies.get(e.body).ok().and_then(|(a, g)| shape_point(a, g, TARGET_SHAPE)).unwrap_or(t.translation / SCALE);
         for &(id, v) in &d.launches {
-            let Some((object, scale)) = lib.box_of(id) else {
-                warn!("prize: item {id:#x} has no box row (item +0x16 outside the table); no object");
-                continue;
-            };
-            let o = item_launch(&lib.consts, id, scale, v, flip(at));
-            let ent = commands.spawn((ItemObj { o }, Transform::from_translation(at * SCALE), Visibility::default())).id();
-            if let Some(m) = lib.models.get(&object) {
-                let model = commands.spawn((Transform::default(), Visibility::default(), ChildOf(ent))).id();
-                crate::assets::spawn_model(&mut commands, model, m, &mut meshes, &mut materials, &mut images);
-            }
-            info!("prize: item {id:#x} dropped at {at:.0?} as object {object:#x} (scale {scale}), launch {:.1?}, yaw {:.2}", flip(o.vel), o.yaw);
+            spawn_item(&mut commands, &lib, id, v, at, (&mut meshes, &mut materials, &mut images));
         }
+    }
+}
+
+/// One item object with its box model (app cm `at`).
+fn spawn_item(
+    commands: &mut Commands,
+    lib: &ItemLib,
+    id: u16,
+    v: [u32; 4],
+    at: Vec3,
+    (meshes, materials, images): (&mut Assets<Mesh>, &mut Assets<StandardMaterial>, &mut Assets<Image>),
+) {
+    let Some((object, scale)) = lib.box_of(id) else {
+        warn!("prize: item {id:#x} has no box row (item +0x16 outside the table); no object");
+        return;
+    };
+    let o = item_launch(&lib.consts, id, scale, v, flip(at));
+    let ent = commands.spawn((ItemObj { o }, Transform::from_translation(at * SCALE), Visibility::default())).id();
+    if let Some(m) = lib.models.get(&object) {
+        let model = commands.spawn((Transform::default(), Visibility::default(), ChildOf(ent))).id();
+        crate::assets::spawn_model(commands, model, m, meshes, materials, images);
+    }
+    info!("prize: item {id:#x} dropped at {at:.0?} as object {object:#x} (scale {scale}), launch {:.1?}, yaw {:.2}", flip(o.vel), o.yaw);
+}
+
+/// Harness aids, not game behaviour: `KH2_ITEMTEST=<id>,<id>,..[@<seconds>]` (hex ids with `0x`,
+/// default 4 s) drops those items once from `KH2_PRIZETEST_DIST` cm (default 300) in front of Sora,
+/// 100 cm up, with launch values from a fixed generator start; `KH2_COLLECTALL=<seconds>` sends one
+/// `CollectAll` (what host 6.31 does) at that time.
+#[allow(clippy::too_many_arguments)]
+fn item_test(
+    mut commands: Commands,
+    lib: Res<ItemLib>,
+    sora: Query<&Transform, With<Sora>>,
+    time: Res<Time>,
+    mut done: Local<(bool, bool)>,
+    mut collect: MessageWriter<CollectAll>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    if !done.1
+        && let Some(at) = std::env::var("KH2_COLLECTALL").ok().and_then(|v| v.parse::<f32>().ok())
+        && time.elapsed_secs() >= at
+    {
+        done.1 = true;
+        info!("prize: harness collect-all (host 6.31) at {at} s");
+        collect.write(CollectAll);
+    }
+    if done.0 {
+        return;
+    }
+    let Ok(v) = std::env::var("KH2_ITEMTEST") else {
+        done.0 = true;
+        return;
+    };
+    let (list, at) = v.split_once('@').map_or((v.as_str(), 4.0), |(l, t)| (l, t.parse().unwrap_or(4.0)));
+    if time.elapsed_secs() < at {
+        return;
+    }
+    done.0 = true;
+    let Ok(t) = sora.single() else { return };
+    let dist: f32 = std::env::var("KH2_PRIZETEST_DIST").ok().and_then(|d| d.parse().ok()).unwrap_or(300.0);
+    let fwd = (t.rotation * Vec3::Z).with_y(0.0).normalize_or(Vec3::Z);
+    let at = t.translation / SCALE + fwd * dist + Vec3::Y * 100.0;
+    let mut seed = 7u32;
+    let parse = |s: &str| s.trim().strip_prefix("0x").map_or_else(|| s.trim().parse::<u16>().ok(), |h| u16::from_str_radix(h, 16).ok());
+    for id in list.split(',').filter_map(parse) {
+        let mut v = [0u32; 4];
+        for x in &mut v {
+            seed = seed.wrapping_mul(0x10dcd);
+            *x = seed;
+        }
+        spawn_item(&mut commands, &lib, id, v, at, (&mut meshes, &mut materials, &mut images));
     }
 }
 
@@ -1490,7 +1554,7 @@ fn run_items(
         // and the item is drawn in all the same. The obtained log FUN_001d0828 is not written.
         let note = match progress.as_deref_mut() {
             Some(p) => match give_item(p, o.id) {
-                Some(to) => format!("given to {} (count {})", if to == crate::progress::INVENTORY { "the inventory" } else { "Sora's item slots" }, p.item_count(o.id)),
+                Some(to) => format!("given to {} (count {})", if to == crate::progress::INVENTORY { "the inventory" } else { "Sora's battle item slots" }, p.item_count(o.id)),
                 None => format!("refused (no room, count {}): drawn in all the same", p.item_count(o.id)),
             },
             None => "no game state".to_string(),

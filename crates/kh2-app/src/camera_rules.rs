@@ -48,6 +48,10 @@ pub struct LookParams {
     pub fade_out_ticks: f32,
     pub fade_to: f32,
     pub fade_in_ticks: f32,
+    /// The player's turn per tick while looking, in the game's facing sign: right stick left
+    /// (pad bit 0x100000) and right (0x200000) (`FUN_001779e8`: 0x37a4c8, 0x37a4cc).
+    pub turn_left: f32,
+    pub turn_right: f32,
 }
 
 /// Overhead camera (mode 5, area camera type 1) constants (`FUN_00158eb0`).
@@ -143,6 +147,8 @@ impl Params {
                 fade_out_ticks: f(0x378e54)?,
                 fade_to: f(0x378f00)?,
                 fade_in_ticks: f(0x378e78)?,
+                turn_left: f(0x37a4c8)?,
+                turn_right: f(0x37a4cc)?,
             },
             overhead: OverheadParams {
                 probe_up: f(0x37939c)?,
@@ -193,6 +199,8 @@ impl Params {
             && self.look.pitch_max > 0.0
             && self.look.fade_out_ticks > 0.0
             && self.look.fade_in_ticks > 0.0
+            && self.look.turn_left.abs() < 1.0
+            && self.look.turn_right.abs() < 1.0
             && self.overhead.probe_down > 0.0
             && self.overhead.ease > 0.0
             && self.overhead.fov > 0.3
@@ -252,6 +260,23 @@ pub fn wanted_position(look: Vec3, radius: f32, yaw: f32, min_radius: f32, heigh
 pub fn auto_turn_step(p: &Params, left: Vec2, mag: f32, run_speed: f32) -> f32 {
     let rate = p.auto_base + p.auto_per_speed * (run_speed - 8.0);
     (left.y.abs() + 1.0) * (2.0 * (left.x.abs() + 1.0)) * mag * rate
+}
+
+/// The player's turn this tick while the look-around runs (`FUN_001779e8`, the player's update,
+/// gated by `FUN_00140f98` (camera mode 1) and the player's free-move state `FUN_001b7e00`): the
+/// right stick's left bit adds `turn_left` to the game's facing, else its right bit adds
+/// `turn_right`. Returned in the app's yaw (the game's facing `r` is the app's `PI - r`), so the
+/// sign flips: a push to the left turns the facing, and with it the view, to the left.
+pub fn look_turn(p: &Params, s: &Sticks) -> f32 {
+    if s.right_mag <= 0.0 {
+        0.0
+    } else if s.right.x < 0.0 {
+        -p.look.turn_left
+    } else if s.right.x > 0.0 {
+        -p.look.turn_right
+    } else {
+        0.0
+    }
 }
 
 /// Spring time constant per tick; it grows with the character's run speed (`FUN_001407b8`).
@@ -993,7 +1018,17 @@ mod tests {
             stick_yaw: 0.05,
             wall_margin: 5.0,
             wall_margin_far: 30.0,
-            look: LookParams { distance: 350.0, pitch_min: -1.22, pitch_max: 1.22, fade_from: 1.0, fade_out_ticks: 30.0, fade_to: 1.0, fade_in_ticks: 30.0 },
+            look: LookParams {
+                distance: 350.0,
+                pitch_min: -1.22,
+                pitch_max: 1.22,
+                fade_from: 1.0,
+                fade_out_ticks: 30.0,
+                fade_to: 1.0,
+                fade_in_ticks: 30.0,
+                turn_left: -0.05,
+                turn_right: 0.05,
+            },
             overhead: OverheadParams {
                 probe_up: 100.0,
                 probe_down: 10000.0,
@@ -1342,6 +1377,75 @@ mod tests {
     }
 
     #[test]
+    fn look_around_starts_only_from_select() {
+        let p = params();
+        let mut s = subject(Vec3::ZERO);
+        let rig = &mut Rig::new(&p, row(), &s, &no_wall);
+        let mut inp = input(s, &no_wall);
+        // Every other control, moving, resetting, zooming and locking on: still the follow camera.
+        for k in 0..400 {
+            s.moved = k % 2 == 0;
+            s.pos.x += if s.moved { 8.0 } else { 0.0 };
+            inp.subject = s;
+            inp.sticks = Sticks { left: Vec2::new(1.0, 0.0), left_mag: (k % 3) as f32 * 0.5, right: Vec2::new(0.0, if k % 5 == 0 { -1.0 } else { 1.0 }), right_mag: (k % 4) as f32 / 3.0 };
+            inp.reset = k % 7 == 0;
+            inp.zoom = if k % 11 == 0 { 40.0 } else { 0.0 };
+            inp.lock = (k % 13 == 0).then_some(Vec3::new(0.0, 100.0, -300.0));
+            rig.tick(&p, &inp);
+            assert_ne!(rig.mode, Mode::Look, "tick {k}");
+        }
+        inp = input(s, &no_wall);
+        inp.select = true;
+        rig.tick(&p, &inp);
+        assert_eq!(rig.mode, Mode::Look);
+        // Holding it does not toggle: only a new press (the harness and the key give one tick).
+        inp.select = false;
+        for _ in 0..60 {
+            rig.tick(&p, &inp);
+        }
+        assert_eq!(rig.mode, Mode::Look);
+    }
+
+    #[test]
+    fn look_turn_is_the_right_stick_and_turns_left_for_left() {
+        let p = params();
+        let mut sticks = Sticks::default();
+        assert_eq!(look_turn(&p, &sticks), 0.0);
+        // The left stick never turns.
+        sticks.left = Vec2::new(-1.0, 0.0);
+        sticks.left_mag = 1.0;
+        assert_eq!(look_turn(&p, &sticks), 0.0);
+        // Right stick left: the game's facing gets `turn_left` (negative), the app's yaw the opposite.
+        sticks.right = Vec2::new(-1.0, 0.0);
+        sticks.right_mag = 1.0;
+        let d = look_turn(&p, &sticks);
+        assert_eq!(d, -p.look.turn_left);
+        // An app yaw that grows turns the facing toward the view's left: right = (-fz, 0, fx).
+        let a = 0.3f32;
+        let f0 = Vec3::new(a.sin(), 0.0, a.cos());
+        let f1 = Vec3::new((a + d).sin(), 0.0, (a + d).cos());
+        let left = -Vec3::new(-f0.z, 0.0, f0.x);
+        assert!((f1 - f0).dot(left) > 0.0);
+        // Up and down only tilt (`look_tick`), they do not turn; a diagonal turns at the full rate.
+        sticks.right = Vec2::new(0.0, -1.0);
+        assert_eq!(look_turn(&p, &sticks), 0.0);
+        sticks.right = Vec2::new(0.707, -0.707);
+        assert_eq!(look_turn(&p, &sticks), -p.look.turn_right);
+        // The look-around's view follows the turned facing (yaw = behind the facing every tick).
+        let mut s = subject(Vec3::ZERO);
+        let rig = &mut Rig::new(&p, row(), &s, &no_wall);
+        let mut inp = input(s, &no_wall);
+        inp.select = true;
+        rig.tick(&p, &inp);
+        inp.select = false;
+        let yaw = (s.facing.x).atan2(s.facing.z) + 20.0 * -p.look.turn_left;
+        s.facing = Vec3::new(yaw.sin(), 0.0, yaw.cos());
+        inp.subject = s;
+        rig.tick(&p, &inp);
+        assert!(wrap(rig.look_yaw - yaw).abs() < 1e-4, "{} {}", rig.look_yaw, yaw);
+    }
+
+    #[test]
     fn overhead_camera_follows_the_floor_point_and_select_swaps_the_view() {
         let p = params();
         let mut s = subject(Vec3::new(0.0, 0.0, 0.0));
@@ -1447,6 +1551,7 @@ mod tests {
             (0x3793cc, 200.0), (0x3793a8, 600.0), (0x3793b0, -500.0), (0x3793b4, 51.0), (0x3793b8, -1492.0), (0x3793bc, 256.0),
             (0x3793c0, -1777.0), (0x3793c4, 1.5), (0x3793d0, 1.05), (0x379470, 2.5), (0x379474, 0.5), (0x379478, 0.1),
             (0x37947c, 1.0), (0x379480, 0.07), (0x379484, 0.07), (0x379488, 2.5), (0x37948c, 0.5), (0x379490, 0.001),
+            (0x37a4c8, -0.05), (0x37a4cc, 0.05),
         ] {
             put(va, v);
         }
@@ -1456,6 +1561,7 @@ mod tests {
         assert_eq!(p.rows[1].fov, 1.0);
         assert_eq!(p.overhead.offset, Vec3::new(600.0, 500.0, 0.0), "Y flipped to up");
         assert_eq!(p.look.distance, 350.0);
+        assert_eq!((p.look.turn_left, p.look.turn_right), (-0.05, 0.05));
         assert!(Params::from_exe(&exe[..1000]).is_none());
         assert!(Params::from_exe(&vec![0u8; 0x380000 - EXE_BIAS]).is_none());
     }

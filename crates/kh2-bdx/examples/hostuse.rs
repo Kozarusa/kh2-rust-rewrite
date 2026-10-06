@@ -63,17 +63,32 @@ fn main() {
     // KH2_PREFIX=obj/M_,obj/B_ keeps only scripts whose label starts with one of the prefixes; KH2_SKIP=_RTN drops matches.
     let prefixes: Vec<String> = std::env::var("KH2_PREFIX").map(|v| v.split(',').map(str::to_string).collect()).unwrap_or_default();
     let skip = std::env::var("KH2_SKIP").ok();
+    // KH2_ARGS=group.index prints, per call site of that function, the arguments that are plain constants
+    // and the event ids the script handles (used to list which script offers which reaction command).
+    let want_args: Option<(u16, u16)> = std::env::var("KH2_ARGS").ok().and_then(|w| {
+        let (g, i) = w.split_once('.')?;
+        Some((g.parse().ok()?, i.parse().ok()?))
+    });
     for (name, bdx) in scripts(&mut a, &args) {
         if bdx.is_empty() || (!prefixes.is_empty() && !prefixes.iter().any(|p| name.starts_with(p.as_str()))) || skip.as_ref().is_some_and(|s| name.contains(s.as_str())) {
             continue;
         }
         let Ok(p) = Program::parse(&bdx) else { continue };
         let Ok(an) = analyze(&p) else { continue };
-        for (i, _) in an.code.values() {
+        for (pc, (i, _)) in &an.code {
             if let Insn::Host { group, index } = i {
                 *uses.entry((*group, *index)).or_default().entry(name.clone()).or_default() += 1;
+                if want_args == Some((*group, *index)) {
+                    let nargs = table.get(*group, *index).map_or(0, |s| s.nargs as usize);
+                    let consts = kh2_bdx::call_constants(&an, *pc, nargs);
+                    let events: Vec<String> = p.entries.iter().map(|e| e.id.to_string()).collect();
+                    println!("{name} pc {pc:#x} args {consts:?} events {}", events.join(","));
+                }
             }
         }
+    }
+    if want_args.is_some() {
+        return;
     }
     // KH2_WHO=3.35 lists the scripts that call one function.
     if let Ok(w) = std::env::var("KH2_WHO") {

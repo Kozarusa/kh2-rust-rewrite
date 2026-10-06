@@ -21,6 +21,7 @@
 //! measured in the app's space inside `Obj`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 
 use bevy::color::Alpha;
 use bevy::prelude::*;
@@ -33,6 +34,7 @@ use crate::data::GameData;
 use crate::enemy::{EState, Enemy};
 use crate::fx::{GameEffect, StartEffect, EFFECT_DEATH};
 use crate::motor::{wrap_angle, Motor};
+use crate::reaction_cmd::{PlayerReaction, PlayerReactionCmd, ReactionAccepted};
 use crate::schedule::Sim;
 use crate::skel::{Animator, Rig};
 use crate::sora::Sora;
@@ -45,7 +47,13 @@ const PLAYER: u32 = 0x0200_0000;
 const TARGET: u32 = 0x0300_0000;
 const EFFECT: u32 = 0x0400_0000;
 const HIT: u32 = 0x0500_0000;
+/// Target records handed to event 11 (0x14 bytes each, built like FUN_0018ed40 + FUN_0018f490:
+/// object, position index, 0, -1, 0), one per accepted command.
+const RECORD: u32 = 0x0600_0000;
+const RECORD_SIZE: u32 = 0x20;
 const OBJ_SIZE: usize = 0x1000;
+/// Bit 3 of an object's flag array: "cannot be hit" (FUN_0019a4f0).
+const FLAG_BIT_UNHITTABLE: i32 = 3;
 /// Offset of the movement vector (direction and speed in w) in a game object.
 const MOVE_VECTOR: usize = 0x10;
 /// Flag bit 3 of the object's flag array: the object cannot be hit (FUN_0019a4f0 tests it).
@@ -75,12 +83,16 @@ struct Script {
     prog: Program,
     /// Bit 3 of the halfword at +0x48 of the object's `objentry` row (host 1.124, FUN_0019aaf0).
     flags124: bool,
+    /// Paired player motions of the object's motion set, see `paired_motions`.
+    paired: Arc<HashMap<usize, Vec<(String, f32)>>>,
 }
 
 /// The scripts of the enemies that run under BDX, by `Kind::name`.
 #[derive(Resource, Default)]
 struct AiPrograms {
     by_kind: HashMap<&'static str, Script>,
+    /// The player's objentry byte +7, which names the sub-motion of a paired motion.
+    player_model: u8,
 }
 
 /// Classification of a host call, for the trace and the summary.
@@ -185,7 +197,6 @@ fn is_query(c: &Call) -> bool {
             | Call::SetObjParam { .. }
             | Call::SetTargetMode { .. }
             | Call::FreeTarget { .. }
-            | Call::Request2_20 { .. }
             | Call::ObjMethod44 { .. }
             | Call::ObjMethod48 { .. }
             | Call::MoverMethod { .. }
@@ -250,7 +261,6 @@ fn call_id(c: &Call) -> (u16, u16) {
         Call::ObjMethod48 { .. } => (1, 134),
         Call::MoverMethod { .. } => (1, 128),
         Call::SetObjParam { .. } => (2, 9),
-        Call::Request2_20 { .. } => (2, 20),
         Call::FreeTarget { .. } => (1, 131),
         Call::SendMessage { .. } => (1, 90),
         Call::RemoteSetMode { .. } => (6, 58),
@@ -330,6 +340,12 @@ struct Obj {
     next_effect: u32,
     hits: HashMap<u32, bool>,
     next_hit: u32,
+    /// Target records given to event 11, readable by the script (handle `RECORD + k * RECORD_SIZE`).
+    records: Vec<[u8; 20]>,
+    /// What the script asked of the player this tick (host calls on the player's context).
+    player_cmds: Vec<PlayerReactionCmd>,
+    /// The player's +0x158 after this tick's `play_motion_with`, if it changed.
+    player_serial: Option<i32>,
 }
 
 impl Obj {
@@ -358,7 +374,21 @@ impl Obj {
             next_effect: 0,
             hits: HashMap::new(),
             next_hit: 0,
+            records: Vec::new(),
+            player_cmds: Vec::new(),
+            player_serial: None,
         }
+    }
+
+    /// A target record for event 11 (FUN_0018ed40 then FUN_0018f490: object, position index, 0, -1,
+    /// and a fifth word the manager copies, 0 here). Returns its handle.
+    fn new_record(&mut self, obj: u32, pos: i16) -> u32 {
+        let mut r = [0u8; 20];
+        r[0..4].copy_from_slice(&obj.to_le_bytes());
+        r[4..8].copy_from_slice(&(pos as i32).to_le_bytes());
+        r[12..16].copy_from_slice(&(-1i32).to_le_bytes());
+        self.records.push(r);
+        RECORD + (self.records.len() as u32 - 1) * RECORD_SIZE
     }
 
     fn advance_fade(&mut self) {
@@ -386,6 +416,12 @@ struct Env<'a> {
     rig: &'a Rig,
     flags124: bool,
     enmp: u16,
+    /// The player's +0x158 (the serial of the paired motion last started on him) and whether that
+    /// motion has ended (bit 1 of his +0x160), from `reaction_cmd::PlayerReaction`.
+    player_serial: i32,
+    player_motion_done: bool,
+    paired: &'a HashMap<usize, Vec<(String, f32)>>,
+    player_model: u8,
 }
 
 struct BevyHost<'a> {
@@ -522,6 +558,9 @@ impl BevyHost<'_> {
             Call::LastAttacker { .. } => imp(Value::Handle(PLAYER)),
             Call::SetTargetMode { .. } => stub(Value::None, "lock mode of a target record: nothing in the app consumes it"),
             Call::FreeTarget { .. } => stub(Value::Bool(true), "target records are not pooled"),
+            Call::MotionDone { obj } if *obj == PLAYER => {
+                approx(Value::Bool(self.env.player_motion_done), "the player's motion-done flag comes from reaction_cmd::PlayerReaction, which the player side has to set")
+            }
             Call::MotionDone { .. } => imp(Value::Bool(self.obj.done)),
             Call::MotionState { .. } => imp(Value::Int(self.obj.slot.map_or(-1, |s| s as i32))),
             Call::MotionLength { motion, .. } | Call::MotionEnd { motion, .. } => {
@@ -570,6 +609,11 @@ impl BevyHost<'_> {
                 self.obj.set_move(*dir, *speed);
                 approx(Value::None, "applied for one tick (inferred), vertical part ignored")
             }
+            Call::SetVelocity { obj, dir, speed } if *obj == PLAYER => {
+                let d = from_game(*dir).normalize_or_zero();
+                self.obj.player_cmds.push(PlayerReactionCmd::Velocity { dir: d, speed: *speed });
+                approx(Value::None, "handed to the player side as PlayerReactionCmd::Velocity (no consumer yet)")
+            }
             Call::SetVelocity { .. } => missing(Value::None, "secondary velocity vector at +0x880: consumer not found"),
             Call::StartMove { dir, motion, blend, commit, .. } => {
                 self.start_move(*dir, *motion, *blend, *commit);
@@ -596,6 +640,15 @@ impl BevyHost<'_> {
                 imp(Value::None)
             }
             Call::GroundMarker { .. } => missing(Value::None, "the drop: FUN_0016b738 finds the ground under the object, FUN_001a3cb0 spawns row `id` of the drop table (orbs, munny); the app has no pickups"),
+            Call::SetFlag { obj, bit } | Call::ClearFlag { obj, bit } if *obj == PLAYER => {
+                let set = matches!(c, Call::SetFlag { .. });
+                if *bit == FLAG_BIT_UNHITTABLE {
+                    self.obj.player_cmds.push(PlayerReactionCmd::Unhittable(set));
+                    approx(Value::None, "bit 3 of the player's flags handed to the player side as PlayerReactionCmd::Unhittable (no consumer yet)")
+                } else {
+                    stub(Value::None, "a flag bit of the player other than 3: no consumer in the app")
+                }
+            }
             Call::SetFlag { bit, .. } => {
                 if (0..64).contains(bit) {
                     self.obj.flags |= 1 << bit;
@@ -634,7 +687,6 @@ impl BevyHost<'_> {
                 }
                 imp(Value::None)
             }
-            Call::Request2_20 { .. } => missing(Value::Int(0), "sound or effect request"),
             Call::ModeFrozen { .. } => stub(Value::Bool(false), "hit stop is not implemented"),
             Call::ModeInterrupted { .. } => approx(Value::Bool(self.obj.reacting), "FUN_00186b70: the object is in a hit reaction"),
             Call::ModeMayStart { .. } => approx(Value::Bool(!self.obj.reacting), "FUN_001873d0: the object is not in hit stun"),
@@ -646,6 +698,41 @@ impl BevyHost<'_> {
                 }
             }
             Call::SendMessage { .. } | Call::RemoteSetMode { .. } => missing(Value::None, "messages between objects"),
+            // 1.29 play_motion_with(from, to, entry, blend): entry `motion` of the first object's motion
+            // set played on the second object (FUN_0017f160). Only the player as `to` is supported.
+            Call::Func { group: 1, index: 29, args } => {
+                let (to, slot, blend) = (args[1].int() as u32, args[2].int(), args[3].float());
+                if to != PLAYER {
+                    return missing(Value::Int(0), "play_motion_with on an object other than the player");
+                }
+                let name = format!("{:03}0", self.env.player_model);
+                let ticks = usize::try_from(slot).ok().and_then(|s| self.env.paired.get(&s)).and_then(|l| l.iter().find(|(n, _)| *n == name)).map(|(_, t)| *t);
+                // FUN_0017ef98: the serial is the counter at 0x35ccb0 minus one, never above -1; its
+                // start value was not read, so it is taken as 0 [inferred; scripts only compare it].
+                let serial = self.obj.player_serial.unwrap_or(self.env.player_serial).min(0) - 1;
+                self.obj.player_serial = Some(serial);
+                self.obj.player_cmds.push(PlayerReactionCmd::PairedMotion {
+                    from: Entity::PLACEHOLDER,
+                    slot: slot.max(0) as usize,
+                    blend,
+                    serial,
+                    ticks: ticks.unwrap_or(0.0),
+                });
+                if ticks.is_none() {
+                    self.trace.note(self.tag, format!("paired motion entry {slot} has no sub-motion named {name}"));
+                }
+                approx(Value::Int(serial), "the player side does not play the motion yet (PlayerReactionCmd::PairedMotion has no consumer); its length is the sub-motion's")
+            }
+            // 1.238: the player's +0x158, the serial of his last paired motion.
+            Call::Func { group: 1, index: 238, args } if args[0].int() as u32 == PLAYER => {
+                imp(Value::Int(self.obj.player_serial.unwrap_or(self.env.player_serial)))
+            }
+            Call::Func { group: 1, index: 13, args } if args[0].int() as u32 == PLAYER => {
+                self.obj.player_cmds.push(PlayerReactionCmd::QueueMotion { slot: args[1].int().max(0) as usize, blend: args[2].float() });
+                approx(Value::None, "handed to the player side as PlayerReactionCmd::QueueMotion (no consumer yet)")
+            }
+            // 1.132: the target record returns to a pool; the app's records are never reused.
+            Call::Func { group: 1, index: 132, .. } => stub(Value::None, "target records are not pooled"),
             Call::Func { .. } | Call::Unknown { .. } => missing(Value::Int(0), "function not mapped"),
         }
     }
@@ -660,13 +747,30 @@ impl Host for BevyHost<'_> {
 
     fn read_mem(&mut self, addr: u32, out: &mut [u8]) -> bool {
         let o = addr.wrapping_sub(self.obj.handle) as usize;
-        match self.obj.mem.get(o..o + out.len()) {
-            Some(b) => {
-                out.copy_from_slice(b);
-                true
-            }
-            None => false,
+        if let Some(b) = self.obj.mem.get(o..o + out.len()) {
+            out.copy_from_slice(b);
+            return true;
         }
+        // A target record of event 11.
+        let r = addr.wrapping_sub(RECORD);
+        if let Some(rec) = self.obj.records.get((r / RECORD_SIZE) as usize) {
+            let k = (r % RECORD_SIZE) as usize;
+            if let Some(b) = rec.get(k..k + out.len()) {
+                out.copy_from_slice(b);
+                return true;
+            }
+        }
+        // The first 16 bytes of the player object: the Soldier's reaction thread copies them into its
+        // request block and then uses the copy as a context, so the word at +4 must read as the player
+        // object [inferred from that use; what the game keeps at object +4 was not read].
+        let p = addr.wrapping_sub(PLAYER) as usize;
+        if p + out.len() <= 16 {
+            let mut b = [0u8; 16];
+            b[4..8].copy_from_slice(&PLAYER.to_le_bytes());
+            out.copy_from_slice(&b[p..p + out.len()]);
+            return true;
+        }
+        false
     }
 
     fn write_mem(&mut self, addr: u32, data: &[u8]) -> bool {
@@ -695,6 +799,8 @@ pub struct AiBrain {
     tag: String,
     enmp: u16,
     flags124: bool,
+    paired: Arc<HashMap<usize, Vec<(String, f32)>>>,
+    player_model: u8,
     started: bool,
     dead_sent: bool,
     errors_seen: usize,
@@ -738,18 +844,49 @@ fn load_programs(disc: Res<Disc>, mut programs: ResMut<AiPrograms>) {
         let Ok(mut a) = disc.0.lock() else { return };
         kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).map(|d| d.rows).unwrap_or_default()
     };
+    // The player's objentry byte +7 (`WeaponJoint`): the paired motions of reaction commands hold one
+    // sub-motion per player model, named by `%03d0` of it (FUN_0017ef98 formats the key with the format
+    // string at 0x37a598, FUN_0017ee40 looks the name up). Sora's row is P_EX100.
+    programs.player_model = rows.iter().find(|r| r.model_name == "P_EX100").map_or(1, |r| r.weapon_joint);
     for (kind, model) in entries {
+        let paired = disc.read(&format!("obj/{model}.mset")).map(|m| paired_motions(&m)).unwrap_or_default();
         let Some(file) = disc.read(&format!("obj/{model}.mdlx")) else { continue };
         let Some(entry) = kh2_bar::parse(&file).ok().and_then(|b| b.into_iter().find(|e| e.kind == 3).map(|e| e.data.to_vec())) else { continue };
         match Program::parse(&entry) {
             Ok(prog) => {
                 let flags124 = rows.iter().find(|r| r.model_name == model).is_some_and(|r| r.flags & 8 != 0);
                 info!("bdx: {kind} script {} ({} words), objentry flag 124 = {flags124}", prog.name, prog.words.len());
-                programs.by_kind.insert(kind, Script { prog, flags124 });
+                if !paired.is_empty() {
+                    info!("bdx: {kind} motion set has {} paired player motion entries", paired.len());
+                }
+                programs.by_kind.insert(kind, Script { prog, flags124, paired: Arc::new(paired) });
             }
             Err(e) => warn!("bdx: {model}: {e}; {kind} has no script and only stands"),
         }
     }
+}
+
+/// The paired player motions of an enemy's motion set: the entries of BAR type 20, each a BAR of
+/// sub-motions named `%03d0` of a player model byte (FUN_0017ee40). Maps entry slot to
+/// (sub-entry name, length in 60 Hz ticks); an empty sub-entry (the fallbacks) is left out.
+fn paired_motions(mset: &[u8]) -> HashMap<usize, Vec<(String, f32)>> {
+    let mut out = HashMap::new();
+    let Ok(entries) = kh2_bar::parse(mset) else { return out };
+    for (slot, e) in entries.iter().enumerate().filter(|(_, e)| e.kind == 20) {
+        let Ok(subs) = kh2_bar::parse(e.data) else { continue };
+        let list: Vec<(String, f32)> = subs
+            .iter()
+            .filter(|s| !s.data.is_empty())
+            .filter_map(|s| {
+                // Each sub-entry is an animation BAR like a slot of the set: motion (type 9), triggers (16).
+                let anb = kh2_bar::parse(s.data).ok()?;
+                let m = anb.iter().find(|x| x.kind == 9).and_then(|x| kh2_anim::Motion::parse(x.data))?;
+                Some((s.tag.to_string(), (m.frame_end - m.frame_start).max(0.0) * 60.0 / m.fps.max(1.0)))
+            })
+            .collect();
+        out.insert(slot, list);
+    }
+    out
 }
 
 /// Gives every new Shadow and Soldier its script runtime. Runs right after the wave spawner, so the
@@ -767,6 +904,8 @@ fn ai_attach(mut commands: Commands, programs: Res<AiPrograms>, q: Query<(Entity
             tag: format!("{}#{}", e.name, *serial),
             enmp: e.kind.enmp,
             flags124: script.flags124,
+            paired: script.paired.clone(),
+            player_model: programs.player_model,
             started: false,
             dead_sent: false,
             errors_seen: 0,
@@ -790,8 +929,11 @@ fn ai_update(
     mut q: Query<(Entity, &mut Transform, &mut Enemy, &mut Fighter, &mut AiBrain)>,
     mut anims: Query<&mut Animator>,
     mut hit_msgs: MessageReader<AiHit>,
+    mut accepted: MessageReader<ReactionAccepted>,
     mut fx: MessageWriter<StartEffect>,
     mut game: MessageWriter<GameEffect>,
+    mut player_cmds: MessageWriter<PlayerReactionCmd>,
+    mut player_reaction: ResMut<PlayerReaction>,
     mut trace: ResMut<AiTrace>,
 ) {
     trace.tick += 1;
@@ -802,6 +944,19 @@ fn ai_update(
     for h in hit_msgs.read() {
         hits.entry(h.target).or_default().push(h.real);
     }
+    // The paired motion on the player runs its length, then reads as ended.
+    if let Some(r) = player_reaction.remaining {
+        if r <= 1.0 {
+            player_reaction.remaining = None;
+            player_reaction.paired_done = true;
+        } else {
+            player_reaction.remaining = Some(r - 1.0);
+        }
+    }
+    let mut reactions: HashMap<Entity, Vec<(u16, i16)>> = HashMap::new();
+    for r in accepted.read() {
+        reactions.entry(r.target).or_default().push((r.cmd, r.pos));
+    }
     let Ok(sp) = sora.single() else { return };
     let player = sp.translation / SCALE;
     let player_yaw = sp.rotation.to_euler(EulerRot::YXZ).0;
@@ -810,7 +965,7 @@ fn ai_update(
         let Ok(mut anim) = anims.get_mut(e.body) else { continue };
         let rig = anim.rig.clone();
         let e = &mut *e;
-        let AiBrain { rt, obj, tag, enmp, flags124, started, dead_sent, errors_seen, last_frame, in_air, .. } = &mut *brain;
+        let AiBrain { rt, obj, tag, enmp, flags124, paired, player_model, started, dead_sent, errors_seen, last_frame, in_air, .. } = &mut *brain;
 
         // The world as the script finds it this tick.
         obj.motor.pos = tf.translation / SCALE;
@@ -827,7 +982,18 @@ fn ai_update(
         let wrapped = anim.looping && anim.frame < *last_frame;
         obj.done = anim.slot.is_some() && (anim.finished || wrapped);
         obj.slot = anim.slot;
-        let env = Env { player, player_yaw, world: world.as_deref(), rig: &rig, flags124: *flags124, enmp: *enmp };
+        let env = Env {
+            player,
+            player_yaw,
+            world: world.as_deref(),
+            rig: &rig,
+            flags124: *flags124,
+            enmp: *enmp,
+            player_serial: player_reaction.serial,
+            player_motion_done: player_reaction.paired_done,
+            paired: paired.as_ref(),
+            player_model: *player_model,
+        };
         let handle = obj.handle;
         let mut host = BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() };
 
@@ -848,7 +1014,34 @@ fn ai_update(
             host.trace.line(host.tag, &format!("event 6: hit, real {real}"));
             rt.event(&mut host, 6, &[h]);
         }
+        // An accepted reaction command: event 0xb with (player, command id, target record), the call
+        // FUN_00177c20 makes through FUN_0016b420 on the target's persistent thread.
+        for (cmd, pos) in reactions.remove(&ent).unwrap_or_default() {
+            let rec = host.obj.new_record(handle, pos);
+            let handled = rt.event(&mut host, 11, &[PLAYER, cmd as u32, rec]);
+            host.trace.line(host.tag, &format!("event 11: reaction command {cmd} (position index {pos}, record {rec:#x}); handler {}", if handled { "ran" } else { "absent" }));
+            if host.trace.level == 0 {
+                info!("bdx {}: event 11 (reaction command {cmd}) delivered, handler {}", host.tag, if handled { "ran" } else { "absent" });
+            }
+        }
         rt.update(&mut host);
+        for c in obj.player_cmds.drain(..) {
+            let c = match c {
+                PlayerReactionCmd::PairedMotion { slot, blend, serial, ticks, .. } => {
+                    // Until the player side plays the motion itself, its length alone decides when the
+                    // script sees it end (bit 1 of the player's +0x160, host 1.14).
+                    player_reaction.remaining = Some(ticks);
+                    player_reaction.paired_done = false;
+                    PlayerReactionCmd::PairedMotion { from: ent, slot, blend, serial, ticks }
+                }
+                other => other,
+            };
+            trace.line(tag, &format!("player side: {c:?}"));
+            player_cmds.write(c);
+        }
+        if let Some(s) = obj.player_serial.take() {
+            player_reaction.serial = s;
+        }
         for m in rt.core.mode_log.as_mut().map(std::mem::take).unwrap_or_default() {
             trace.line(tag, &format!("mode {m}"));
         }

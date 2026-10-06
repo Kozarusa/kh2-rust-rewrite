@@ -14,13 +14,16 @@
 //!   decide, then the distance test of FUN_0019c3c8 (horizontal distance from the target to the
 //!   player above `DistRange` marks it unavailable).
 //! - Accepting (FUN_0019c670 pushes slot 1 as input action 0xcb, the player runs it through
-//!   FUN_00177b18 -> FUN_00177c20): bump the use counter `ReactionCount`, apply `CmdAction`
-//!   (1 stop the player if moving, 2 clear velocity), then deliver the command to the offering
-//!   object as script event 0xb with the arguments (player, command id, target record)
-//!   (FUN_0016b420 -> FUN_0016c620). What the object's script does with it is the target side.
+//!   FUN_00177b18 -> FUN_00177c20): bump the use counter `ReactionCount`; refuse unless the target
+//!   object is still in the object list (FUN_001b80e8); set the player's bytes +0xb04 and +0xb05 to 1
+//!   (FUN_00176a70, the combo step counters); apply `CmdAction` (1 stop the player if moving, 2 clear
+//!   the velocity at +0x20 and call the mover with a zero vector; both clear the vector at +0xad0);
+//!   then deliver the command to the target object as script event 0xb with the arguments (player
+//!   object, command id, target record) (FUN_0016b420 -> FUN_0016c620).
 //!
-//! The target side (the BDX event 0xb handler and the paired player motions) is a hook: this module
-//! writes `ReactionAccepted` and nothing else.
+//! The target side is the script: `enemy_ai.rs` delivers `ReactionAccepted` as event 11 to the
+//! target's BDX runtime, and what the script then asks of the *player* comes back here as
+//! [`PlayerReactionCmd`] (the hook for `sora.rs`, see docs/limits-reactions.md).
 
 use std::collections::HashMap;
 
@@ -30,6 +33,7 @@ use kh2_tables::tables as t;
 
 use crate::assets::Disc;
 use crate::enemy::Enemy;
+use crate::reaction_parts::{self as parts, Table};
 use crate::schedule::Sim;
 use crate::skel::Animator;
 use crate::sora::{Sora, State};
@@ -109,6 +113,9 @@ pub struct CmdRow {
     pub flags: u32,
     pub disable_form: u16,
     pub dist_range: u16,
+    /// Offer cone: the player must face the target within this dot product (FUN_0019cb70; -1 is off).
+    pub range: f32,
+    pub priority: u8,
     pub message_id: i32,
     pub cmd_action: u8,
     pub reaction_count: u16,
@@ -122,6 +129,8 @@ impl From<&t::Cmd> for CmdRow {
             flags: c.flags,
             disable_form: c.disable_form,
             dist_range: c.dist_range,
+            range: c.range,
+            priority: c.priority,
             message_id: c.message_id,
             cmd_action: c.cmd_action,
             reaction_count: c.reaction_count,
@@ -192,14 +201,54 @@ pub struct ReactionOffer(pub Option<Active>);
 #[derive(Resource, Default)]
 pub struct ReactionUses(pub HashMap<u16, u16>);
 
-/// Sent when the player accepts an offer. Hook for the offering object's script (event 0xb with the
-/// arguments player, `cmd`, target record).
-#[allow(dead_code)]
+/// Sent when the player accepts an offer. `enemy_ai.rs` delivers it to the target's script as event
+/// 0xb (event 11) with the arguments (player, `cmd`, target record {target object, `pos`, 0, -1, 0}).
 #[derive(Message, Clone, Copy, Debug)]
 pub struct ReactionAccepted {
     pub cmd: u16,
     pub pos: i16,
     pub target: Entity,
+}
+
+/// What a target's script asks of the *player* while a reaction command runs: the host calls the
+/// Soldier's command-34 thread makes on the player's context (docs/limits-reactions.md). Written by
+/// `enemy_ai.rs`; the consumer is the player side (`sora.rs`), which is a hook: nothing in the app
+/// reads these yet, so the player neither plays the paired motion nor moves.
+#[allow(dead_code)]
+#[derive(Message, Clone, Copy, Debug, PartialEq)]
+pub enum PlayerReactionCmd {
+    /// Host 1.29 (FUN_0017f160): play entry `slot` of `from`'s motion set on the player's body with
+    /// `blend` frames (the entry holds one sub-motion per player model, named `%03d0` of the player's
+    /// objentry byte +7). `serial` is the value the player's +0x158 takes; the script compares it with
+    /// `obj_word_158` to see whether its motion is still the one running.
+    /// `ticks` is the sub-motion's length in 60 Hz ticks (0 when the entry has none for the player's model).
+    PairedMotion { from: Entity, slot: usize, blend: f32, serial: i32, ticks: f32 },
+    /// Host 1.70 / 1.71 with bit 3 on the player: cannot be hit (FUN_0019a4f0 tests it).
+    Unhittable(bool),
+    /// Host 1.89: the player's secondary velocity vector (+0x880): unit direction in the app's space
+    /// and speed in centimetres per tick. Set again every tick while the script wants it.
+    Velocity { dir: Vec3, speed: f32 },
+    /// Host 1.13: queue motion `slot` of the player's own set behind the running one (FUN_0017e170).
+    QueueMotion { slot: usize, blend: f32 },
+    /// Commands 455 and 457 are the player's own (FUN_001ce518, not the generic accept path): the
+    /// player's timer at +0xb68 is set (120 ticks and motion 0xc1 for 455, 30 ticks and no motion for
+    /// 457); while it runs FUN_001ce240 adds one unit to the drive gauge (FUN_001a0290) each time its
+    /// second timer (+0xb6c) runs out with the motion near its end, and at zero asks for motion 5. The
+    /// consumer (`drive.rs`, `sora.rs`) is a hook.
+    Charge { ticks: f32, motion: Option<u16> },
+}
+
+/// The player's part of a running reaction command, as the scripts see it.
+#[derive(Resource, Default, Debug)]
+pub struct PlayerReaction {
+    /// The player's +0x158: the serial of the motion `play_motion_with` last started on him (the
+    /// counter at 0x35ccb0 counts down from 0 and never returns above -1).
+    pub serial: i32,
+    /// Set by the player side when the paired motion has ended (bit 1 of the player's +0x160, read by
+    /// host 1.14). Nothing sets it yet.
+    pub paired_done: bool,
+    /// Ticks the paired motion still has to run before `paired_done` is set (`enemy_ai.rs` counts it).
+    pub remaining: Option<f32>,
 }
 
 /// The accept key was pressed (Triangle in the game).
@@ -209,9 +258,23 @@ struct AcceptPress(bool);
 #[derive(Resource)]
 struct Log(bool);
 
+/// `KH2_REACTION_FAKE_ON=<enemy name>` limits the harness offer to that kind (Soldier is the one whose
+/// script answers command 34).
+fn fake_on() -> Option<String> {
+    std::env::var("KH2_REACTION_FAKE_ON").ok().filter(|v| !v.is_empty())
+}
+
 /// `KH2_REACTION_FAKE=<command id>`: a harness offer from every living enemy.
 #[derive(Resource)]
 struct FakeOffer(Option<u16>);
+
+/// The collision tables of the enemies and the player's body volume (docs/limits-reactions.md, the
+/// native source of reaction commands).
+#[derive(Resource, Default)]
+struct Parts {
+    by_kind: HashMap<&'static str, Table>,
+    player: Option<parts::Rec>,
+}
 
 pub struct ReactionPlugin;
 
@@ -226,13 +289,25 @@ impl Plugin for ReactionPlugin {
             return;
         };
         let log = std::env::var("KH2_REACTIONLOG").is_ok_and(|v| v != "0");
+        let mut tables = Parts::default();
+        if let Some(d) = app.world().get_resource::<Disc>() {
+            for (kind, model) in [("Shadow", "M_EX020"), ("Soldier", "M_EX010")] {
+                if let Some(t) = d.read(&format!("obj/{model}.mdlx")).and_then(|f| Table::from_mdlx(&f)) {
+                    tables.by_kind.insert(kind, t);
+                }
+            }
+            tables.player = d.read("obj/P_EX100.mdlx").and_then(|f| Table::from_mdlx(&f)).and_then(|t| t.first(parts::TYPE_BODY).copied());
+        }
         app.insert_resource(ReactionRules { cmds })
+            .insert_resource(tables)
             .insert_resource(Log(log))
             .insert_resource(FakeOffer(std::env::var("KH2_REACTION_FAKE").ok().and_then(|v| v.trim().parse().ok())))
             .init_resource::<ReactionOffer>()
             .init_resource::<ReactionUses>()
             .init_resource::<AcceptPress>()
+            .init_resource::<PlayerReaction>()
             .add_message::<ReactionAccepted>()
+            .add_message::<PlayerReactionCmd>()
             .add_systems(Update, read_key)
             .add_systems(FixedUpdate, (offer, accept).chain().in_set(Sim::Effects));
     }
@@ -257,6 +332,7 @@ fn offer(
     rules: Res<ReactionRules>,
     log: Res<Log>,
     fake: Res<FakeOffer>,
+    tables: Res<Parts>,
     mut slot: ResMut<ReactionOffer>,
     sora: Query<(&Sora, &Transform)>,
     enemies: Query<(Entity, &Enemy, &Transform)>,
@@ -270,12 +346,21 @@ fn offer(
     if s.hp <= 0 || matches!(s.state, State::Down | State::Viewer) {
         return;
     }
+    // The native candidates compete by the row's priority and then by distance (FUN_0019c520): a
+    // candidate replaces the best one when its priority is higher, or equal and it is nearer.
+    let mut best: Option<(u8, f32)> = None;
+    let s_yaw = st.rotation.to_euler(EulerRot::YXZ).0;
     for (e, en, tr) in &enemies {
         let Ok(a) = anims.get(en.body) else { continue };
+        if let (Some(table), Some(body)) = (tables.by_kind.get(en.kind.name), tables.player.as_ref())
+            && en.alive()
+        {
+            native_offers(&rules, table, body, a, (e, tr), (st.translation / SCALE, s_yaw), &mut best, &mut slot.0);
+        }
         let mut found = a.triggers().map(|tg| offers_at(tg, a.gframe())).unwrap_or_default();
         // Harness: every living enemy offers this command while it plays any motion (no enemy on the
         // disc that the app can spawn offers one; this exercises the offer and accept path).
-        if let Some(c) = fake.0.filter(|_| en.alive()) {
+        if let Some(c) = fake.0.filter(|_| en.alive() && fake_on().is_none_or(|k| k == en.name)) {
             found.push(Offer { cmd: c, pos: 0 });
         }
         for o in found {
@@ -294,7 +379,78 @@ fn offer(
     }
 }
 
+/// Commands the player's own handler (FUN_001ce518) runs itself: id, timer ticks (the floats at 0x37c340 and
+/// 0x37c344 are 120.0 and 30.0) and motion. 455 (0x1c7) plays motion 0xc1, 457 (0x1c9) none. Not ported:
+/// 456 (0x1c8, motion 0xc0 and FUN_001ce680) and 452 (0x1c4), which this disc offers to nobody here.
+fn own_command(cmd: u16) -> Option<(f32, Option<u16>)> {
+    match cmd {
+        455 => Some((120.0, Some(0xc1))),
+        457 => Some((30.0, None)),
+        _ => None,
+    }
+}
+
+/// The native offer of one enemy (FUN_0019cb70): every enabled reaction part (`reaction_parts`) whose
+/// volume overlaps the player's body volume offers its command. The row's Flags decide first
+/// (FUN_0019cf58: bit 4 lets it show in battle, taken as on in the app; bit 6 needs the trigger window
+/// of the player's own motion, id 25 or 26, which the app does not read: those rows are never offered
+/// [GAP]); the Range column is the cone test of FUN_0019c868 (the player must face the enemy within that
+/// dot product; -1 is off). The candidate replaces the best so far when its priority is higher, or equal
+/// and it is nearer (FUN_0019c520); the lock-on distance bonus of FUN_0019c868 is not applied [GAP].
+#[allow(clippy::too_many_arguments)]
+fn native_offers(
+    rules: &ReactionRules,
+    table: &Table,
+    body: &parts::Rec,
+    anim: &Animator,
+    (e, tr): (Entity, &Transform),
+    (player_pos, player_yaw): (Vec3, f32),
+    best: &mut Option<(u8, f32)>,
+    slot: &mut Option<Active>,
+) {
+    let (mut on, mut off) = (Vec::new(), Vec::new());
+    if let Some(tg) = anim.triggers() {
+        // Range triggers 4 and 5 enable and disable collision parts while they cover the frame.
+        for r in tg.active(anim.gframe()) {
+            match (r.id, r.params.first()) {
+                (4, Some(&p)) => on.push(p),
+                (5, Some(&p)) => off.push(p),
+                _ => {}
+            }
+        }
+    }
+    let Some(player) = parts::shape_of(body, player_pos, player_yaw) else { return };
+    let (epos, eyaw) = (tr.translation / SCALE, tr.rotation.to_euler(EulerRot::YXZ).0);
+    for r in table.reaction_parts() {
+        if !parts::part_usable(table, r.part, &on, &off) || r.id == 0x83 {
+            continue;
+        }
+        let Some(c) = rules.cmd(r.id) else { continue };
+        if c.flags >> 6 & 1 != 0 {
+            continue;
+        }
+        let Some(shape) = parts::shape_of(r, epos, eyaw) else { continue };
+        if parts::overlaps(&shape, &player) != Some(true) {
+            continue;
+        }
+        let dist = (shape.center - player_pos).length();
+        if best.is_some_and(|(p, d)| c.priority < p || (c.priority == p && d <= dist)) {
+            continue;
+        }
+        let mut st = status(&rules.cmds, c, &Ctx { distance: (epos - player_pos).with_y(0.0).length(), ..Default::default() });
+        if st == Status::Available && c.range > -1.0 {
+            let face = Vec3::new(player_yaw.sin(), 0.0, player_yaw.cos());
+            if (epos - player_pos).normalize_or_zero().dot(face) < c.range {
+                st = Status::TooFar;
+            }
+        }
+        *best = Some((c.priority, dist));
+        *slot = Some(Active { cmd: r.id, pos: r.part as i16, from: e, status: st, message: c.message_id as u32 });
+    }
+}
+
 /// The accept key: only an available offer runs (FUN_0019c670 pushes slot 1 when its status is 0).
+#[allow(clippy::too_many_arguments)]
 fn accept(
     rules: Res<ReactionRules>,
     log: Res<Log>,
@@ -303,6 +459,8 @@ fn accept(
     mut uses: ResMut<ReactionUses>,
     mut out: MessageWriter<ReactionAccepted>,
     mut sora: Query<&mut Sora>,
+    targets: Query<&Enemy>,
+    mut player_cmds: MessageWriter<PlayerReactionCmd>,
 ) {
     if !std::mem::take(&mut press.0) {
         return;
@@ -320,21 +478,40 @@ fn accept(
         return;
     }
     let Some(c) = rules.cmd(a.cmd) else { return };
-    // FUN_00177c20: the use counter, then the player's own handling by CmdAction.
-    if c.reaction_count != 0 {
+    // FUN_00177c20: the use counter first (it is counted even when nothing follows).
+    if c.reaction_count != 0 && own_command(a.cmd).is_none() {
         let n = uses.0.entry(c.reaction_count).or_insert(0);
         *n = (*n + 1).min(999);
     }
+    // FUN_001b80e8: the target must still be in the object list.
+    if own_command(a.cmd).is_none() && targets.get(a.from).is_err() {
+        if log.0 {
+            info!("reaction: accept of command {} dropped, the target {:?} is gone", a.cmd, a.from);
+        }
+        return;
+    }
+    // FUN_00176a70 sets the player's bytes +0xb04 and +0xb05 to 1 (the combo step counters) [not
+    // ported: they live in sora.rs]. CmdAction 1 stops the mover when it is moving, 2 clears the
+    // velocity at +0x20 and gives the mover a zero vector; both clear the vector at +0xad0.
     if let Ok(mut s) = sora.single_mut() {
         match c.cmd_action {
             1 | 2 => s.motor.vel = Vec3::ZERO,
             _ => {}
         }
     }
+    // The player's own handler FUN_001ce518 takes 455 (0x1c7) and 457 (0x1c9) before the generic path,
+    // so they send no event and bump no use counter (that is inside FUN_00177c20).
+    if let Some((ticks, motion)) = own_command(a.cmd) {
+        player_cmds.write(PlayerReactionCmd::Charge { ticks, motion });
+        if log.0 {
+            info!("reaction: accepted command {} (player's own handler): timer {ticks} ticks, motion {motion:?}; the gauge charge and the motion are the player side's [hook]", a.cmd);
+        }
+        return;
+    }
     out.write(ReactionAccepted { cmd: a.cmd, pos: a.pos, target: a.from });
     if log.0 {
         info!(
-            "reaction: accepted command {} (Execute {}, CmdAction {}, counter slot {} = {}) from {:?}; delivered as script event 0xb to the offering object (target side not ported)",
+            "reaction: accepted command {} (Execute {}, CmdAction {}, counter slot {} = {}) from {:?}; delivering script event 0xb (player, command id, target record) to the target's script",
             a.cmd,
             c.execute,
             c.cmd_action,
@@ -367,7 +544,7 @@ mod tests {
     }
 
     fn mk(flags: u32, disable: u16, dist: u16) -> CmdRow {
-        CmdRow { id: 900, execute: 900, flags, disable_form: disable, dist_range: dist, message_id: 0, cmd_action: 0, reaction_count: 0 }
+        CmdRow { id: 900, execute: 900, flags, disable_form: disable, dist_range: dist, range: -1.0, priority: 100, message_id: 0, cmd_action: 0, reaction_count: 0 }
     }
 
     #[test]
@@ -430,6 +607,41 @@ mod tests {
         }
         eprintln!("motion sets {} offers {total}", names.len());
         assert!(!names.is_empty());
+    }
+
+    /// The command table's reaction rows: the 124 rows with CmdAction 1 or 2 whose Execute is their own
+    /// id, plus the two rows of the motion offer (455 and 457, CmdAction 0), 126 in all. Their facts
+    /// (docs/limits-reactions.md): all can show in battle (Flags bit 4), 12 wait for the player's trigger
+    /// window (bit 6), two have an offer cone, three a distance limit, and with the neutral context
+    /// every one is available or blocked by its flags, none is "not ported".
+    #[test]
+    fn real_reaction_rows() {
+        let Some(d) = disc() else { return };
+        let rows: Vec<t::Cmd> = {
+            let mut a = d.0.lock().unwrap();
+            kh2_tables::load::<t::Cmd>(&mut a, &t::CMD).expect("cmd").rows
+        };
+        let cmds: Vec<CmdRow> = rows.iter().map(CmdRow::from).collect();
+        let react: Vec<&t::Cmd> = rows.iter().filter(|c| matches!(c.cmd_action, 1 | 2) && c.execute == c.id).collect();
+        assert_eq!(react.len(), 124);
+        let extra: Vec<&t::Cmd> = rows.iter().filter(|c| matches!(c.id, 455 | 457)).collect();
+        assert_eq!(extra.len(), 2);
+        assert!(react.iter().all(|c| c.flags >> 4 & 1 != 0), "every reaction row shows in battle");
+        assert!(react.iter().all(|c| c.dir == 0.0 && c.dir_range == -1.0));
+        assert_eq!(react.iter().filter(|c| c.flags >> 6 & 1 != 0).count(), 12, "rows that wait for the trigger window");
+        assert_eq!(react.iter().filter(|c| c.range > -1.0).map(|c| c.range).collect::<Vec<_>>(), vec![0.5, 0.5]);
+        assert_eq!(react.iter().filter(|c| c.dist_range != 0).map(|c| (c.id, c.dist_range)).collect::<Vec<_>>(), vec![(466, 1000), (516, 500), (517, 1000)]);
+        assert_eq!(react.iter().filter(|c| c.reaction_count != 0).count(), 43);
+        // Command 34 (the Soldier's) and 457 (Mickey's motion offer).
+        let c34 = react.iter().find(|c| c.id == 34).expect("34");
+        assert_eq!((c34.mark, c34.cmd_action, c34.reaction_count, c34.priority, c34.message_id), (2, 1, 1, 100, 33949));
+        let c457 = extra.iter().find(|c| c.id == 457).expect("457");
+        assert_eq!((c457.cmd_action, c457.mark, c457.priority, c457.require, c457.message_id), (0, 6, 255, 455, 48047));
+        for c in react.iter().copied().chain(extra.iter().copied()) {
+            let row = CmdRow::from(c);
+            let st = status(&cmds, &row, &Ctx::default());
+            assert!(matches!(st, Status::Available | Status::Blocked | Status::TooFar), "command {} is {st:?}", c.id);
+        }
     }
 
     /// The Shadow and Soldier sets (the app's two enemies) make no reaction offer.

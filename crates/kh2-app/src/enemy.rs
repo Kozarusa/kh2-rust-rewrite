@@ -79,11 +79,11 @@ pub struct EnemyPlugin;
 impl Plugin for EnemyPlugin {
     fn build(&self, app: &mut App) {
         use crate::schedule::Sim;
-        app.insert_resource(Waves::default()).add_systems(
+        app.insert_resource(Waves::default()).add_message::<EnemyClash>().add_systems(
             FixedUpdate,
             (
                 (spawn_waves, think, separate).chain().in_set(Sim::Enemy),
-                receive_hits.in_set(Sim::EnemyHurt),
+                (receive_clashes, receive_hits).chain().in_set(Sim::EnemyHurt),
             ),
         );
     }
@@ -385,5 +385,43 @@ pub fn receive_hits(
         if !matches!(action, VictimAction::None | VictimAction::NotDecoded { .. } | VictimAction::Push { .. }) {
             f.landed.clear();
         }
+    }
+}
+
+/// An enemy attack volume met a player attack volume (`clash.rs`) and the enemy-class handler of the
+/// game (0x1b2478) reacts: the row's `ReflectedMotion` with a recoil push (FUN_00185d30, power
+/// `ReflectHitBack`, negative for the default). `ReflectAction` (a script action id) is not carried:
+/// the table behind FUN_0019e870 is not decoded.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct EnemyClash {
+    pub enemy: Entity,
+    pub motion: Option<u8>,
+    pub power: f32,
+}
+
+/// Plays the clash recoil: the motion, then a push backwards along the enemy's own facing
+/// (FUN_001857b0). A motion the enemy's set does not have is ignored.
+pub fn receive_clashes(
+    mut clashes: MessageReader<EnemyClash>,
+    reaction: Option<Res<ReactionData>>,
+    mut q: Query<&mut Enemy>,
+    mut anims: Query<&mut Animator>,
+) {
+    let Some(reaction) = reaction else { return };
+    for c in clashes.read() {
+        let (Ok(mut e), Some(m)) = (q.get_mut(c.enemy), c.motion) else { continue };
+        if !e.alive() {
+            continue;
+        }
+        let Ok(mut a) = anims.get_mut(e.body) else { continue };
+        let rig = a.rig.clone();
+        let Some(slot) = has(&rig, m as usize) else { continue };
+        let facing = Vec3::new(e.yaw.sin(), 0.0, e.yaw.cos());
+        e.push = Push::new(-facing, rules::recoil_power(c.power, &reaction.consts), 0.0, &reaction.consts);
+        e.vel = Vec3::new(0.0, e.vel.y, 0.0);
+        e.timer = 0.0;
+        e.state = EState::Hurt;
+        a.restart(Some(slot), false, 0.0);
+        info!("{} clash: recoil motion {m}", e.name);
     }
 }

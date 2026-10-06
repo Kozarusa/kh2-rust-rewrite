@@ -80,6 +80,9 @@ fn auto_screenshot(
                 "Backspace" => KeyCode::Backspace,
                 "LB" => KeyCode::BracketLeft,
                 "RB" => KeyCode::BracketRight,
+                "Y" => KeyCode::KeyY,
+                "[" => KeyCode::BracketLeft,
+                "]" => KeyCode::BracketRight,
                 _ => continue,
             };
             if t >= at && t - dt < at {

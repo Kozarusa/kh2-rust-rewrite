@@ -30,6 +30,7 @@ mod limit;
 mod magic;
 mod magic_rules;
 mod menu;
+mod menu_abilities;
 mod menu_gfx;
 mod menu_pages;
 mod menu_status;
@@ -104,6 +105,6 @@ fn main() {
         // The third tuple: later plugins go here (the second is near the 15-entry limit).
         // `progress::ensure` lets the plugins above that read `Progress` while they build insert it
         // first, so its place here does not matter.
-        .add_plugins((progress::ProgressPlugin, prize::PrizePlugin, menu::MenuPlugin))
+        .add_plugins((progress::ProgressPlugin, prize::PrizePlugin, menu::MenuPlugin, menu_abilities::MenuAbilitiesPlugin))
         .run();
 }

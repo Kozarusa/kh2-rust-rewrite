@@ -788,6 +788,31 @@ impl Progress {
         }
     }
 
+    /// The member's ability list with the raw slot index (0..64) of each non-empty slot: the menu's
+    /// rows keep the slot (`FUN_0027a7e8` stores the loop index in the row) because the toggle
+    /// writes that slot (`FUN_0027d8b8`).
+    pub fn ability_slots(&self, member: u16) -> Vec<(usize, u16, bool)> {
+        let Some(r) = Self::member_off(member) else { return Vec::new() };
+        (0..rec::ABILITY_SLOTS)
+            .map(|i| (i, self.u16_at(r + rec::ABILITIES + 2 * i)))
+            .filter(|&(_, v)| v & 0x7fff != 0)
+            .map(|(i, v)| (i, v & 0x7fff, v & 0x8000 != 0))
+            .collect()
+    }
+
+    /// `FUN_0027d8b8`: the equipped flag (bit 15) of one slot of a member's ability list is written
+    /// as `(old & 0x7fff) | on << 15`. False when the member or the slot does not exist.
+    pub fn set_ability_equipped(&mut self, member: u16, slot: usize, on: bool) -> bool {
+        let Some(r) = Self::member_off(member) else { return false };
+        if slot >= rec::ABILITY_SLOTS {
+            return false;
+        }
+        let o = r + rec::ABILITIES + 2 * slot;
+        let old = self.u16_at(o);
+        self.set_u16(o, old & 0x7fff | (on as u16) << 15);
+        true
+    }
+
     /// `FUN_00187f18`: an ability into the first empty slot of a form's list, always equipped.
     fn put_form_ability(&mut self, r: usize, v: u16) {
         for i in 0..16 {
@@ -1381,6 +1406,29 @@ impl JsonParser<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `FUN_0027d8b8`: the toggle writes bit 15 of exactly the named slot, keeps the id bits, and
+    /// leaves the other slots (and the empty slots between them) alone.
+    #[test]
+    fn ability_toggle_sets_and_clears_bit_15_of_the_right_slot() {
+        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        let r = Progress::member_off(SORA).unwrap();
+        p.put_ability(r, 82, true);
+        p.put_ability(r, 162, false);
+        p.put_ability(r, 394, false);
+        // A gap: slot 1 emptied, so the next row's slot index differs from its position in the list.
+        p.set_u16(r + rec::ABILITIES + 2, 0);
+        assert_eq!(p.ability_slots(SORA), vec![(0, 82, true), (2, 394, false)]);
+        assert!(p.set_ability_equipped(SORA, 2, true));
+        assert_eq!(p.ability_slots(SORA), vec![(0, 82, true), (2, 394, true)]);
+        assert_eq!(p.u16_at(r + rec::ABILITIES + 4), 394 | 0x8000);
+        assert!(p.set_ability_equipped(SORA, 0, false));
+        assert_eq!(p.ability_slots(SORA), vec![(0, 82, false), (2, 394, true)]);
+        assert_eq!(p.u16_at(r + rec::ABILITIES), 82, "the id bits are kept");
+        assert_eq!(p.sora().abilities, vec![(82, false), (394, true)]);
+        assert!(!p.set_ability_equipped(SORA, 64, true), "slot 64 does not exist");
+        assert!(!p.set_ability_equipped(99, 0, true), "no such member");
+    }
 
     struct Tables {
         items: Vec<Item>,

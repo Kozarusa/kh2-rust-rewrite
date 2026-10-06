@@ -318,7 +318,7 @@ Messages other systems can use: `FormChanged { from, to }` (written when the bod
   +0xb68 always drops by the frame unit and at <= 0 is cleared and motion 5 is played. Ported as the pure
   `drive::rules::Charge` (tests `charge_*`, `sstm[0xd4]` read from the disc); one unit is 1/100 of a point.
   The app's "at its end" ignores the blend part of `FUN_0017f400` (the frame test alone).
-- Form experience, level-ups and the Master orb gain (`FUN_001d3f88` and friends) are not run: the level is
+- Master Form's orb experience now runs (`prize.rs` `master_form_exp`, WP-7Bb Part B); Valor, Wisdom and Final gains (`FUN_001d4078`, `FUN_001d40e0`) and the level-up side effects do not. Form experience, level-ups for the other forms are not run: the level is
   fixed per run (`KH2_DRIVE_LEVEL`); the form's ability list is rebuilt from the level on each entry.
 - Orbs, Damage Drive and summon mode (gauge mode 3, `FUN_001cf210`) are not implemented.
 - The camera during the change (`FUN_0016fb20`, `FUN_00170098`) and the HUD mode switch.

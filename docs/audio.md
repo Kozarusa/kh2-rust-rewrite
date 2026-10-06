@@ -53,9 +53,30 @@ from the app's camera `Transform`, metres to game units with `SCALE`), `PlaySe::
 
 Deviations and gaps:
 
-- The port computes volume and pan once at the start of the sound. The game recomputes them every
-  tick for the sound's whole life (command 0x15), so a long sound follows the camera there. Doing
-  the same needs a handle from `Driver::play_se` and an update call; not done.
+- **Per-tick update (WP-5D, verified, implemented).** The game recomputes volume and pan every
+  tick for the sound's whole life (command 0x15). Confirmed again: `FUN_002c30d0` walks the slot
+  list and calls `FUN_002c2e90`, which dispatches by kind byte (+0x31): kind 5 to `FUN_002c2d00`
+  (state 2: still playing per `FUN_002c26c8` -> `FUN_002c27b0`, `FUN_002c2a68`, `FUN_002bef1c`),
+  kind 6 to `FUN_002c2dc8`, everything else to `FUN_002c2b70` (kind 0: state 2 ->
+  `FUN_002c27b0` + `FUN_002be564`). The brief assumed the source moves; it does not. The
+  position is copied into the slot once, by `FUN_002c2760` (called from the request functions
+  `FUN_002c2380` kind 0, `FUN_002c2530` kind 5, `FUN_002c25a8`, `FUN_002c34c8`, all in the engine)
+  and nothing rewrites it afterwards. Only kind 4 (`FUN_002c2b08`, map emitters, which ask
+  `FUN_0014eb50` for a position) follows something, and that kind is not ported. So what changes
+  per tick is the listener, the camera's view matrix. Port: `audio::LiveMixes` (every positional
+  `PlaySe` and `PlayVoice` start pushes a `LiveSound` with the fixed start position, the handle
+  from `Driver::play_se_handle` / `play_voice_at`, and the entry flags or the voice minimum
+  volume), `audio::update_mixes` (FixedUpdate, `Sim::Sounds`, last in the chain) which drops
+  finished sounds and calls `set_se_mix` / `set_voice_mix` with `audio::live_mix` ->
+  `kh2_audio::positional::{se_mix, voice_mix}`. SE entry flags 0x10 (fixed volume) and 0x20
+  (fixed pan) are re-applied each tick as the driver does at the start. `KH2_SOUNDLOG=1` prints
+  `mix <kind> handle <n> volume <v> pan <p>` whenever the pair changes. Tests:
+  `positional::a_source_passing_the_listener_sweeps_volume_and_pan`,
+  `positional::entry_flags_and_minimum_volume_apply`, `audio::a_live_sound_follows_the_moving_listener`,
+  and `audio::render_pan_sweep` (writes `local/wp5d-audio/pan_sweep.wav`; nobody has listened).
+  Not verified: whether the IOP applies a command 0x15 to a sound already in flight in exactly
+  the way `Driver::set_se_mix` does (it changes the volume and pan the sequence uses for its next
+  notes and the running voices at the next 240 Hz frame).
 - Hit sounds (`combat.rs`), enemy hit sounds (`enemy.rs`) and effect sounds (`fx.rs`) are not
   placed yet: those files belong to another package. Hook: where they write `PlaySe`, add
   `.at(position_in_metres)` (`PlaySe::number(..).at(translation)`; for `PlaySe::hit` set `.pos`).
@@ -156,9 +177,8 @@ old line and start the new one every tick).
 - **Playback.** A voice line is a kind 5 sound (`FUN_002c2530`): positional at the actor like
   sound effects (`FUN_002c2d00` -> `FUN_002c27b0`) with a minimum volume of 0x1800 (`actor +
   0x2c7`, constructors 0x1746e0, 0x174800). The app plays it through the driver's pan law at the
-  volume and pan computed once at the start. Per-tick updates exist in the driver
-  (`Driver::set_voice_mix`, `set_se_mix`, handles from `play_voice_at` and `play_se_handle`) but
-  the app does not call them every tick yet.
+  volume and pan computed at the start and re-mixed every tick against the camera
+  (`audio::update_mixes`, see "Per-tick update" above).
 
 ## Footstep leftovers (WP-1B)
 
@@ -175,9 +195,36 @@ old line and start the new one every tick).
   and 11, when not positive the landing branch needs actor +0x588 bit 0x80, actor +0x164 bit 0
   clear and +0x154 (the motion state) equal 1 or 2 and then calls `FUN_0016baa0(actor, 8)` (kind
   8) and the dust effects 8 and 9 unless NeoStatus is 0xe. `FUN_0017aeb8` finally feeds a
-  camera/controller shake with an intensity 0, 1 or 2 from the actor's speed. What actor +0x1c
-  and +0x588 bit 0x80 are is not known, so this is not ported (a landing in the app already makes
-  kind 9 through A003's trigger). Gap.
+  camera/controller shake with an intensity 0, 1 or 2 from the actor's speed. Not ported (a
+  landing in the app already makes kind 9 through A003's trigger). Gap. Findings of the WP-5D
+  search (the earlier "moving up" reading of +0x1c was wrong):
+  - **Actor +0x1c** is the w component of the actor's input vector at +0x10 (a 4-float vector:
+    desired direction in xyz). The player's version `FUN_001774d8` sets +0x1c to the walk speed
+    (actor +0x110) or the run speed (+0x114) when the pad object (+0xb44) has a stick
+    magnitude above 0 (below the threshold at 0x37a4bc: walk, else run) and to 0 without stick
+    input; the AI versions `FUN_001775e8` (from +0xb38, +0x1c is the VU0 length) and
+    `FUN_00177710` fill the same vector. So `FUN_0017af10`'s first test is "the actor is being
+    commanded to move"; `(+0x110 + +0x114) * 0x37a4e8 <= +0x1c` (run, not walk) only picks the
+    shake intensity 2 over 1 for `FUN_0017aeb8`. So the landing branch (the kind 8 sound) is the
+    one for an actor with NO movement command.
+  - **Actor +0x588 bit 0x80** is a party-member flag: the only writers found are the party actor
+    constructors `FUN_00176e00` and `FUN_00176f88` (both `flags |= 0x80`); no clearing form
+    (`& ~0x80`) appears anywhere in the decompilation. Readers (`FUN_00169978`, `FUN_00170288`,
+    `FUN_001819d8`, `FUN_00185460`, `FUN_001a4798` ...) use it as "is a party character".
+  - **Actor +0x154** is the motion controller's current motion slot (`FUN_0017f0c0` and
+    `FUN_0017f160` set it to the motion id they start, after `FUN_0017ef98`; other callers pass
+    0xfc..0xfe). The landing branch wants slot 1 or 2. What motions slots 1 and 2 are (and
+    +0x164 bit 0) was not identified.
+  - **Why it is still not ported.** `FUN_0016a2f0` calls descriptor slot 6 EVERY tick for the actor,
+    and nothing in `FUN_0017af10` makes the kind 8 sound a one-shot (the +0x164 bit is only
+    read). Played every tick it would be a machine-gun, so one more gate must exist outside
+    (a one-tick landing state, or +0x164 bit 0 set by the landing code). Searched without
+    finding it: writers of +0x154 and +0x588 bit 0x80 in 0x0015.. to 0x001b.. (above), direct
+    callers of `FUN_0017af10` in 0x0016.. to 0x0019.. (none, it is only reached through the
+    vtable slot), writers of `+ 0x1c` / `[7]` in 0x0016.. to 0x001b.. (the three input-vector
+    functions above are the ones on the player and AI actors; the rest are other structs). The
+    exact next step is the writers of actor +0x164 (word 0x59) and which motion slots 1 and 2 are
+    in the party motion table.
 - **Enemy footsteps.** Shadow and Soldier motions have no trigger 2, so nothing to play. Hook
   for another enemy: in `enemy.rs` where the enemy's motion triggers are walked, resolve
   `footstep_number(record, neo_status, actor_material(desc_flags, ground), kind, &mut counter)`

@@ -28,7 +28,8 @@ number, `bank = number / 1000` selects `se/seNNN.seb` and `number % 1000` is the
   4..7 of the material's block of 16, sharing one counter per actor.
 
 The only other caller of FUN_0016baa0 is FUN_0017af10 (kind 8, on the landing path: a check on
-actor +0x588 bit 0x80, +0x164 bit 0 and +0x154; inferred to be the landing thud). FUN_001b1c90
+actor +0x588 bit 0x80 (party member), +0x164 bit 0 and +0x154 (motion slot); inferred to be the
+landing thud, played without a movement command). FUN_001b1c90
 (the footstep dust effect, trigger 19) also indexes a byte table by FUN_00183730's material.
 
 ### Which `kind` the motions pass (verified from the disc)
@@ -135,9 +136,12 @@ Deviations and gaps:
   game's last collision-sweep polygon. They agree on ordinary terrain.
 - Position and distance: the game passes the actor's position to the sound engine, which derives
   volume and pan against the camera. Footsteps are now placed at Sora's feet with that formula
-  (`docs/audio.md`); it is computed once at the start of the step, not every tick.
+  (`docs/audio.md`); the mix is recomputed every tick against the moving camera while the
+  step plays (`audio::update_mixes`), the source position stays where the step started.
 - Only Sora's footsteps are produced. The landing path of FUN_0017af10 (kind 8, with its
-  conditions) is not ported; the footstep dust effect (trigger 19, FUN_001b1c90) is not ported.
+  conditions) is not ported (the WP-5D search of its conditions is in `docs/audio.md`, "Kind 8
+  landing": it is the branch for an actor with no movement command, party flag, motion slot 1
+  or 2, and the one-shot gate was not found); the footstep dust effect (trigger 19, FUN_001b1c90) is not ported.
 - The `NeoStatus` 0x12 material override and the soundinfo bytes before +0xe are not understood.
 - Nobody has listened to any of this. The rendered wav only shows that the entry has a sample and
   that it is not silent.

@@ -2,6 +2,12 @@
 
 One short section per work package. "Verified" says how; nothing here was checked by watching video, and audio was listened to only where stated.
 
+## Shift 8
+
+- **WP-M2 (menu Status).** The Status pages of the pause menu: Sora's tab and both numbers screens (LV, Experience, Next LV, HP, MP, AP, Drive Gauge, Bonus LV, form levels, Strength, Magic, Defense, resistances), tables read from the executable (tab mask FUN_002683c8, pages FUN_00265c48 and FUN_00266328). Verified by 9 tests and screenshots of both pages. Open: forms', summons' and party members' tabs, list origins are guessed (no footage).
+- **WP-M5 (menu Abilities).** Abilities pages: four groups, equip and Don't Equip prompt, AP cost rule (equipping over the AP maximum is refused), AP bar preview; the toggle sets bit 15 of the slot and updates the `Abilities` resource. Verified by 11 tests and harness log lines. Open: Donald and Goofy rows, Items switch, NEW tags, scroll thumb.
+- **WP-M6 (menu Config).** Config page over the option word (ten rows, round trip proven against the original's reader and writer code on the user's executable); Field Camera Manual and the two Camera Reverse rows act in `camera.rs`; Summon Effects, Navigational Map, Command Menu theme, Right Analog Stick, Sound and Vibration are stored only. Verified by 7 tests (2 oracle). Open: R2-hold camera toggle, no footage of the page.
+
 ## Shift 7
 
 - **WP-7R (split).** enemy_ai.rs split into enemy_ai, enemy_host and enemy_obj with no behaviour change. Verified by the BDX oracle (54 scripts, 0 failures), the arm-for-arm diff and an identical tt04 host-call table. Open: none.

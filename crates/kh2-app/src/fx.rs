@@ -590,9 +590,21 @@ impl SparkRing {
 #[derive(Component)]
 pub struct Evicted;
 
+/// Marks a spark registered in the ring. [inferred] A looping one (system effect 0xd) also ends after its own
+/// life plus the fade: the decompiled rule only ends it when 8 further sparks follow, but the user sees a lone
+/// clash spark stay (docs/hit-reaction.md "Lifetime of the clash spark").
+#[derive(Component)]
+pub struct RingSpark;
+
+/// Whether a looping ring spark has run its program life (`pd.life`, `TICK` per frame) on the clock `time`.
+pub fn ring_spark_expired(time: f32, life: i32) -> bool {
+    time >= (life / kh2_fx::pax::TICK) as f32
+}
+
 /// `FUN_001c09f8` for a freshly started spark (`None`: no element, nothing to register).
 pub fn ring_push(commands: &mut Commands, ring: &mut SparkRing, spark: Option<Entity>) {
     let Some(e) = spark else { return };
+    commands.entity(e).try_insert(RingSpark);
     if let Some(old) = ring.push(e) {
         if std::env::var_os("KH2_FXLOG").is_some() {
             info!("spark ring: {e:?} takes the slot of {old:?}, which fades out");
@@ -792,6 +804,7 @@ pub fn tick(
     mut commands: Commands,
     mut effects: Query<(Entity, &mut RunningEffect)>,
     evicted: Query<(), With<Evicted>>,
+    ringed: Query<(), With<RingSpark>>,
     owners: Query<&Animator>,
     sora: Query<&Sora>,
     locals: Query<(&Transform, Option<&ChildOf>)>,
@@ -814,7 +827,9 @@ pub fn tick(
     });
     for (e, mut r) in &mut effects {
         // A spark pushed out of the ring fades out over `SPARK_EVICT_FADE` frames (FUN_001da080).
-        if r.fade.is_none() && evicted.contains(e) {
+        let pd = r.effect.particle_data();
+        let lone_loop_over = pd.flags & 1 != 0 && ring_spark_expired(r.time, pd.life) && ringed.contains(e);
+        if r.fade.is_none() && (evicted.contains(e) || lone_loop_over) {
             r.fade = Some((1.0, -1.0 / SPARK_EVICT_FADE));
         }
         let el = r.element.clone();
@@ -1449,6 +1464,37 @@ mod tests {
         app.world_mut().flush();
         let marked: Vec<bool> = ents.iter().map(|e| app.world().entity(*e).contains::<Evicted>()).collect();
         assert_eq!(marked, [true, false, false, false, false, false, false, false, false]);
+    }
+
+    /// [inferred] A lone looping spark (0xd) is gone after its Life (60 frames) plus the 4-frame fade; the
+    /// non-looping 0xb is not touched by the rule (it ends on its own). Skips without a disc.
+    #[test]
+    fn lone_clash_spark_is_gone_after_life_plus_fade() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let common = disc.read("effect/texcommon.dpd").and_then(|b| Dpd::parse(&b).ok());
+        let lib = load(&disc, "00effect.bar", 1, common.as_ref()).expect("00effect.bar");
+        let el = lib.pax.elements_for(0xd).next().expect("element");
+        let fx = &lib.pax.effects[el.effect as usize];
+        let e = kh2_fx::Effect::new(lib.dpds[fx.dpd].clone(), fx.dpd, fx.particle_data).expect("effect");
+        let life = e.particle_data().life;
+        assert_eq!(life / kh2_fx::pax::TICK, 60);
+        // The clock `tick` runs: +1 per frame; the fade starts at the first frame the rule holds.
+        let start = (0..1000).find(|t| ring_spark_expired(*t as f32, life)).expect("expires");
+        let mut level = 1.0f32;
+        let mut gone = None;
+        for t in start..start + 20 {
+            level -= 1.0 / SPARK_EVICT_FADE;
+            if level <= 0.0 {
+                gone = Some(t);
+                break;
+            }
+        }
+        assert_eq!(start, 60);
+        assert_eq!(gone, Some(63), "gone about 64 frames (about 1 s) after it started");
     }
 
     /// Why the ring is needed (`FUN_001e6240`): system effect 0xd, the spark of a clash (`FUN_0018d560`), is

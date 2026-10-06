@@ -169,6 +169,14 @@ ownerless system effect (callers of `FUN_001d9f48`, `FUN_001da080`, `FUN_001e029
 owner-bound end in `FUN_001dd0d0` needs the record's owner at +0x48, which is 0 here). If the user still sees a
 sphere stay after a fight ends, the next step is a kh2-ee trace of the holder's record list over time.
 
+**[inferred] Added on top of the decompiled rule:** a looping spark registered in the ring (`fx::RingSpark`,
+in practice only the clash spark 0xd) also fades out once its program Life (`pd.life / 0x1000` = 60 frames) has
+run, over the same 4 frames (`fx::ring_spark_expired`, test `fx::tests::lone_clash_spark_is_gone_after_life_plus_fade`).
+Reason: the decompiled rule gives a lone spark no end, and the user reports a clash spark that stays on screen;
+the user's report outranks the reading. Not found in the original code; remove it if a trace shows the original
+keeps a lone spark. The ring cap stays. Harness: one forced spark goes from "running effects 1" to 0 about 2 s
+after it starts (the 60 frames plus load of the log's once-a-second sampling).
+
 Harness: `KH2_CLASH_FORCE_SPARK=<s>,<s>,..` starts spark 0xd in front of Sora at those times; `KH2_FXCOUNT=1`
 logs `fx count: t=<s>s running effects <n> ids [..]` once a second.
 

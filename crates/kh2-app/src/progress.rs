@@ -72,8 +72,8 @@ pub mod off {
     /// Key-item bits `0x340e28` (items with `Flag0` bit 0), by `Slot`.
     pub const KEYS: usize = 0xf68;
     pub const KEY_WORDS: usize = 8;
-    /// Munny `0x340e48` (`FUN_001b51e0`).
-    pub const MUNNY: usize = 0xf88;
+    /// Experience total `0x340e48` (`FUN_001b51e0`, followed by the level-up check `FUN_001b52f8`).
+    pub const EXPERIENCE: usize = 0xf88;
     /// Summon experience `0x340e4c` (`FUN_001d4ec8`).
     pub const SUMMON_EXP: usize = 0xf8c;
     /// Consumables Sora received, 8 ids (`FUN_001a2120`).
@@ -126,8 +126,8 @@ pub mod item_type {
 pub const INVENTORY: u16 = 100;
 /// Count limit of an item (`FUN_001a1768`: a count above 99 refuses the item).
 pub const MAX_COUNT: u8 = 99;
-/// Munny limit (`FUN_001b51e0`).
-pub const MAX_MUNNY: i32 = 9_999_999;
+/// Experience limit (`FUN_001b51e0`).
+pub const MAX_EXPERIENCE: i32 = 9_999_999;
 /// Sora's party member id.
 pub const SORA: u16 = 1;
 
@@ -265,7 +265,7 @@ pub struct Progress {
     pub baseline: Vec<String>,
     /// The munny the prizes pay: save block `+0x1600` (`0x33fe60`, before the party block, so it is
     /// kept apart from `block`). `FUN_0023e620` adds to it and `FUN_0023e5e0` lets a sum through only
-    /// below 1,000,000 (else 999,999). The word at `0x340e48` that `munny()` reads is raised by
+    /// below 1,000,000 (else 999,999). The word at `0x340e48` that `experience()` reads is raised by
     /// `FUN_001b51e0`, which then runs the level-up check of every party member (`FUN_001b52f8`
     /// compares it with the level table), so that word is the experience total (docs/prizes.md).
     wallet: u32,
@@ -484,19 +484,25 @@ impl Progress {
         self.u32_at(off::SPELL_SWITCH)
     }
 
-    pub fn munny(&self) -> i32 {
-        self.u32_at(off::MUNNY) as i32
+    /// The experience total (`0x340e48`, see the field `wallet` for the munny).
+    pub fn experience(&self) -> i32 {
+        self.u32_at(off::EXPERIENCE) as i32
     }
 
-    /// `FUN_001b51e0`: add (or, negative, remove) munny; a sum of 10,000,000 or more becomes
+    /// `FUN_001b51e0`: add (or, negative, remove) experience; a sum of 10,000,000 or more becomes
     /// 9,999,999. The routine does not floor at 0 (its callers check first).
-    pub fn add_munny(&mut self, delta: i32) {
-        let sum = self.munny().wrapping_add(delta);
-        self.set_u32(off::MUNNY, (if sum < 10_000_000 { sum } else { MAX_MUNNY }) as u32);
+    pub fn add_experience(&mut self, delta: i32) {
+        let sum = self.experience().wrapping_add(delta);
+        self.set_u32(off::EXPERIENCE, (if sum < 10_000_000 { sum } else { MAX_EXPERIENCE }) as u32);
     }
 
-    fn set_munny(&mut self, v: i32) {
-        self.set_u32(off::MUNNY, v.min(MAX_MUNNY) as u32);
+    fn set_experience(&mut self, v: i32) {
+        self.set_u32(off::EXPERIENCE, v.min(MAX_EXPERIENCE) as u32);
+    }
+
+    /// `KH2_STATE` key `munny`: set the wallet, held at the prize limit.
+    fn set_wallet(&mut self, v: u32) {
+        self.wallet = v.min(MAX_WALLET);
     }
 
     /// The prize munny (save `+0x1600`, see the field).
@@ -845,7 +851,7 @@ impl Progress {
             self.block[o..o + 4].copy_from_slice(&[0, 0x10, 0x10, 0x10]);
         }
         self.zero(off::KEYS, 4 * off::KEY_WORDS);
-        self.set_u32(off::MUNNY, 0);
+        self.set_u32(off::EXPERIENCE, 0);
         self.zero(0xfac, 32);
         self.zero(0xfcc, 32);
         self.set_u32(off::SPELL_SWITCH, 0);
@@ -976,7 +982,8 @@ impl Progress {
         };
         for (key, v) in fields {
             match key.as_str() {
-                "munny" => self.set_munny(int(v, "munny")? as i32),
+                "experience" => self.set_experience(int(v, "experience")? as i32),
+                "munny" => self.set_wallet(int(v, "munny")?.max(0) as u32),
                 "items" => {
                     let Json::Obj(m) = v else { return Err("items: expected an object of id: count".into()) };
                     for (k, n) in m {
@@ -1105,10 +1112,11 @@ impl Progress {
         let abil: Vec<String> = s.abilities.iter().map(|&(id, on)| if on { id.to_string() } else { format!("{id} off") }).collect();
         let inv: Vec<String> = self.inventory().iter().map(|&(id, n)| format!("{id}x{n}")).collect();
         format!(
-            "progress: state from {from}: munny {}; spells {:?}; forms owned {owned:?} levels {levels:?} keyblades {fw:?}; \
+            "progress: state from {from}: experience {}; munny {}; spells {:?}; forms owned {owned:?} levels {levels:?} keyblades {fw:?}; \
              weapon {:?} armor {:?} accessories {:?}; abilities [{}]; HP {}/{} MP {}/{}; summon level {} exp {}; \
              outfit (world 2) {}; spell switch {:#x}; inventory [{}]",
-            self.munny(),
+            self.experience(),
+            self.wallet(),
             self.spell_levels(),
             s.weapons,
             s.armor,
@@ -1386,13 +1394,14 @@ mod tests {
         let fire = ix.magic_items[0];
         let valor = ix.form_items[1];
         let json = format!(
-            r#"{{ "munny": 1234, "magic": [3, 0, 2], "items": {{ "{fire}": 2, "1": 7 }},
+            r#"{{ "experience": 1234, "munny": 4321, "magic": [3, 0, 2], "items": {{ "{fire}": 2, "1": 7 }},
                  "weapon": {KINGDOM_KEY}, "abilities": [82, 162], "abilities_off": [394],
                  "forms": {{ "1": {{ "owned": true, "level": 3, "exp": 12 }}, "2": {{ "level": 2 }} }},
                  "summon": {{ "level": 4, "exp": 99 }}, "outfits": {{ "2": 1 }}, "spell_switch": 5 }}"#
         );
         p.apply_json(&json).unwrap();
-        assert_eq!(p.munny(), 1234);
+        assert_eq!(p.experience(), 1234);
+        assert_eq!(p.wallet(), 4321, "the munny key sets the wallet, not the experience");
         // "items" comes after "magic" in the file, so Fire ends at 2.
         assert_eq!(p.spell_levels()[..3], [2, 0, 2]);
         assert_eq!(p.item_count(1), 7);
@@ -1425,16 +1434,16 @@ mod tests {
     }
 
     #[test]
-    fn counts_munny_and_spell_rows_follow_the_rules() {
+    fn counts_experience_and_spell_rows_follow_the_rules() {
         let Some(tb) = tables() else { return };
         let ix = index(&tb);
         let mut p = Progress::new_game(ix.clone(), &tb.plrp);
-        // Munny: capped at 9,999,999 (FUN_001b51e0).
-        p.add_munny(9_999_000);
-        p.add_munny(5_000);
-        assert_eq!(p.munny(), MAX_MUNNY);
-        p.add_munny(-999);
-        assert_eq!(p.munny(), MAX_MUNNY - 999);
+        // Experience: capped at 9,999,999 (FUN_001b51e0).
+        p.add_experience(9_999_000);
+        p.add_experience(5_000);
+        assert_eq!(p.experience(), MAX_EXPERIENCE);
+        p.add_experience(-999);
+        assert_eq!(p.experience(), MAX_EXPERIENCE - 999);
         // Counts stop at 99 (FUN_001a1768), use floors at 0 (FUN_001a1c30).
         let potion = ix.rows.iter().find(|r| r.kind == item_type::CONSUMABLE && !r.is_key()).unwrap().id;
         let before = p.item_count(potion);
@@ -1508,7 +1517,7 @@ mod tests {
         let s = g.sora();
         assert_eq!((s.hp, s.hp_max, s.mp, s.mp_max), (sora_row.hp, sora_row.hp, sora_row.mp, sora_row.mp));
         assert_eq!(s.items.len(), sora_row.item_slot_max as usize);
-        assert_eq!((g.munny(), g.summon(), g.summon_level(), g.summon_exp(), g.spell_switch_word()), (0, 0, 1, 0, 0));
+        assert_eq!((g.experience(), g.summon(), g.summon_level(), g.summon_exp(), g.spell_switch_word()), (0, 0, 1, 0, 0));
         assert!((1..=5).all(|f| g.form_level(f) == 1 && g.form(f).weapon == 0));
         assert!((0..off::WORLD_COUNT).all(|w| g.outfit(w) == 0));
         for r in &ix.rows {

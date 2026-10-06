@@ -72,12 +72,13 @@ function; 0 frees the entry.
 
 The rows on the user's disc (test `real_prize_tables`): kinds 0-1 HP, 2-4 munny, 5-6 MP, 7-8 drive.
 
-**Correction to earlier docs.** The word at 0x340e48 that `Progress::munny` reads and `FUN_001b51e0` raises
+**Correction to earlier docs.** The word at 0x340e48 that `Progress::experience` (renamed from `munny` in WP-7Bb) reads and `FUN_001b51e0` raises
 (capped at 9,999,999) is followed in that routine by the level-up check of every party member
 (`FUN_001b52f8` levels up while the level table's value is at most that word), so it is the experience total;
 the digit popup 0x15b198 that shows the value added there (from `FUN_001b25d0` and `FUN_001c46a8`) is an
-experience popup. Munny is the save word +0x1600. `hud_banner`'s `StripKind::LevelUp` is the munny strip
-(0x1a39b0 is the pickup).
+experience popup. Munny is the save word +0x1600 (`Progress::wallet`). `hud_banner`'s `StripKind::Munny` (was `LevelUp`) is the
+munny strip (0x1a39b0 is the pickup), and its `ExperiencePopups` (was `MunnyPopups`) is the 0x15b198 digit popup.
+The `KH2_STATE` key `munny` sets the wallet; `experience` sets the 0x340e48 word.
 
 ## The look (verified unless marked)
 
@@ -88,9 +89,11 @@ The pool's draw (`FUN_001bf848`) writes per entry `position, kind, 0x80, size, f
 (`+4 + 12 * kind`: shape, colour bytes, scale), scaled by the kind's scale times size / 255, and steps the
 frame by one per draw (a looping shape starts at a random frame when the frame byte is 0xff). On the disc:
 HP shape 1 (scale 0.7, 1.5), munny shape 0 (1.2, 0.8, 0.4), MP shape 2 (0.5, 0.9), drive shape 3 (0.9, 1.7).
-The sprite faces the camera [inferred: the handler multiplies by the matrix at 0x1db1000]. The shapes' UVs as
-`kh2_fx::shape` parses them fit their 128x64 texture pages only when read as fractions of 512 on both axes
-(test `prize_looks_name_real_shapes`) [inferred; the VU1 microcode was not read].
+The sprite faces the camera [inferred: the handler multiplies by the matrix at 0x1db1000]. A sprite's texture rectangle is
+`kh2_fx::shape::Sprite::st` (raw / 4096, the normalised ST the game's draw hands to the GS, WP-FIX-9; test
+`prize_looks_name_real_shapes` checks it lies inside the texture). Since WP-7Bb each sprite of a frame has its own
+material: the texture of the frame's TEX0 plus the sprite's palette offset (`Sprite::tex0`) and the sprite's own blend
+(the HP orb's shape mixes an additive 0x48 sprite and a blend 0x44 one); the sprites keep their draw order.
 
 ## Tail calls of FUN_001a3cb0 (verified: read, not ported)
 

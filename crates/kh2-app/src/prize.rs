@@ -59,8 +59,6 @@ const CENTRE_SHAPE: u8 = 1;
 const TARGET_SHAPE: u8 = 3;
 /// Index of `pppRyjMegaBirthPrize` in the particle program table.
 const PROGRAM: &str = "pppRyjMegaBirthPrize";
-/// The parsed shape UV that stands for a whole texture side (see `build_draws`).
-const UV_UNIT: f32 = 512.0;
 
 // ---------------------------------------------------------------------------------------------------
 // Constants from the executable
@@ -465,10 +463,17 @@ pub fn kind_looks(params: &[u8]) -> Vec<KindLook> {
         .collect()
 }
 
-/// A sprite frame ready to draw: mesh (local units, Y up) and material.
-struct FrameDraw {
+/// One sprite of a frame ready to draw: its quad (local units, Y up) and the material of its own
+/// texture (TEX0 with its palette offset) and blend: the sprites of a frame differ in both (the HP
+/// orb mixes an additive 0x48 sprite and a blend 0x44 one).
+struct SpriteDraw {
     mesh: Handle<Mesh>,
     material: Handle<StandardMaterial>,
+}
+
+/// A sprite frame: its sprites in draw order.
+struct FrameDraw {
+    sprites: Vec<SpriteDraw>,
 }
 
 #[derive(Default)]
@@ -491,6 +496,8 @@ pub struct PrizeLib {
 pub struct PrizeObj {
     pub p: Prize,
     shown: Option<usize>,
+    /// The sprite entities of the frame shown (children of the prize entity).
+    kids: Vec<Entity>,
 }
 
 /// The live prizes (the pool's used slots).
@@ -543,8 +550,8 @@ fn alpha_mode(alpha: u8) -> AlphaMode {
     }
 }
 
-/// The sprite meshes of each kind's shape: one mesh per frame (its sprites as quads in local units,
-/// X right and Y up, the vertex colour the sprite's colour times the kind's, 0x80 = 1.0).
+/// The sprite meshes of each kind's shape: one mesh and material per sprite
+/// of each frame (quads in local units, X right and Y up, the vertex colour the sprite's colour times the kind's, 0x80 = 1.0).
 fn build_draws(
     mut lib: ResMut<PrizeLib>,
     pax: Res<PrizePax>,
@@ -562,7 +569,7 @@ fn build_draws(
     };
     let looks = kind_looks(&params);
     let d = &pax.dpds[dpd];
-    let mut textures: HashMap<u64, (Handle<Image>, [f32; 2])> = HashMap::new();
+    let mut textures: HashMap<u64, Handle<Image>> = HashMap::new();
     let mut draws = Vec::new();
     for k in 0..KINDS {
         let Some(look) = looks.get(k).copied() else {
@@ -575,56 +582,58 @@ fn build_draws(
         };
         let mut frames = Vec::new();
         for f in &shape.frames {
-            let (tex, _texels) = textures
-                .entry(f.tex0)
-                .or_insert_with(|| {
-                    let (w, h, rgba) = pax.vram[dpd].texture8(f.tex0);
-                    let mut img = Image::new(
-                        Extent3d { width: w as u32, height: h as u32, depth_or_array_layers: 1 },
-                        TextureDimension::D2,
-                        rgba,
-                        TextureFormat::Rgba8UnormSrgb,
-                        RenderAssetUsages::default(),
-                    );
-                    img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
-                        address_mode_u: ImageAddressMode::Repeat,
-                        address_mode_v: ImageAddressMode::Repeat,
-                        ..ImageSamplerDescriptor::linear()
-                    });
-                    (images.add(img), [w as f32, h as f32])
-                })
-                .clone();
-            // The sprite UVs of this file, as parsed, fill their texture only when read as fractions
-            // of 512 on both axes: then every sprite covers one square cell of its 128x64 page,
-            // matching its square quad [inferred from the data; the VU1 code was not read].
-            let size = [UV_UNIT, UV_UNIT];
-            let (mut pos, mut uv, mut col, mut idx) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-            for s in &f.sprites {
-                let base = pos.len() as u32;
-                let [u, v, w, h] = s.uv;
+            let mut sprites = Vec::new();
+            for (order, s) in f.sprites.iter().enumerate() {
+                // The sprite's own TEX0 (the frame's plus its palette offset) and blend.
+                let tex0 = s.tex0(f.tex0);
+                let tex = textures
+                    .entry(tex0)
+                    .or_insert_with(|| {
+                        let (w, h, rgba) = pax.vram[dpd].texture8(tex0);
+                        let mut img = Image::new(
+                            Extent3d { width: w as u32, height: h as u32, depth_or_array_layers: 1 },
+                            TextureDimension::D2,
+                            rgba,
+                            TextureFormat::Rgba8UnormSrgb,
+                            RenderAssetUsages::default(),
+                        );
+                        img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+                            address_mode_u: ImageAddressMode::Repeat,
+                            address_mode_v: ImageAddressMode::Repeat,
+                            ..ImageSamplerDescriptor::linear()
+                        });
+                        images.add(img)
+                    })
+                    .clone();
+                // The texture rectangle as fractions of the texture (raw / 4096), the normalised ST the
+                // game's draw hands to the GS (`kh2_fx::shape::Sprite::st`).
+                let [u, v, w, h] = s.st;
                 let uvs = [[u, v], [u + w, v], [u, v + h], [u + w, v + h]];
+                let (mut pos, mut uv, mut col) = (Vec::new(), Vec::new(), Vec::new());
                 for (c, t) in s.corners.iter().zip(uvs) {
                     pos.push([c[0], -c[1], 0.0]);
-                    uv.push([t[0] / size[0], t[1] / size[1]]);
+                    uv.push([t[0], t[1]]);
                     let ch = |i: usize| s.rgba[i] as f32 / 128.0 * look.rgb.get(i).map_or(1.0, |x| *x as f32 / 128.0);
                     col.push([ch(0), ch(1), ch(2), s.rgba[3] as f32 / 128.0]);
                 }
-                idx.extend([base, base + 1, base + 2, base + 1, base + 3, base + 2]);
+                let mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+                    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
+                    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
+                    .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, VertexAttributeValues::Float32x4(col))
+                    .with_inserted_indices(Indices::U32(vec![0, 1, 2, 1, 3, 2]));
+                // The sprites of a frame are drawn in order on the same plane: the bias keeps that order.
+                let material = materials.add(StandardMaterial {
+                    base_color_texture: Some(tex),
+                    unlit: true,
+                    cull_mode: None,
+                    double_sided: true,
+                    alpha_mode: alpha_mode(s.alpha),
+                    depth_bias: order as f32,
+                    ..default()
+                });
+                sprites.push(SpriteDraw { mesh: meshes.add(mesh), material });
             }
-            let mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
-                .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
-                .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
-                .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, VertexAttributeValues::Float32x4(col))
-                .with_inserted_indices(Indices::U32(idx));
-            let material = materials.add(StandardMaterial {
-                base_color_texture: Some(tex),
-                unlit: true,
-                cull_mode: None,
-                double_sided: true,
-                alpha_mode: alpha_mode(f.sprites.first().map_or(0x44, |s| s.alpha)),
-                ..default()
-            });
-            frames.push(FrameDraw { mesh: meshes.add(mesh), material });
+            frames.push(FrameDraw { sprites });
         }
         let loops = shape.frames.last().is_some_and(|f| f.flag & 0x80 != 0);
         draws.push(KindDraw { scale: look.scale, frames, loops });
@@ -706,7 +715,7 @@ fn spawn_drops(
             let p = launch(&lib.consts, kind, v, flip(at));
             kinds.push(p.kind);
             pool.live += 1;
-            commands.spawn((PrizeObj { p, shown: None }, Transform::from_translation(at * SCALE), Visibility::Hidden));
+            commands.spawn((PrizeObj { p, shown: None, kids: Vec::new() }, Transform::from_translation(at * SCALE), Visibility::Hidden));
         }
         info!("prize: drop of row {} at {:.0?}: {} objects, kinds {:?}", d.row, at, kinds.len(), kinds);
     }
@@ -753,7 +762,7 @@ fn prize_test(
             p.vel.z = 0.0;
         }
         pool.live += 1;
-        commands.spawn((PrizeObj { p, shown: None }, Transform::from_translation(at * SCALE), Visibility::Hidden));
+        commands.spawn((PrizeObj { p, shown: None, kids: Vec::new() }, Transform::from_translation(at * SCALE), Visibility::Hidden));
         info!("prize: test launch of kind {kind} at {at:.0?}");
     }
 }
@@ -905,7 +914,13 @@ fn show_prizes(
         *vis = if size > 0.0 { Visibility::Inherited } else { Visibility::Hidden };
         if obj.shown != Some(f as usize) {
             let fr = &d.frames[(f as usize).min(n - 1)];
-            commands.entity(e).insert((Mesh3d(fr.mesh.clone()), MeshMaterial3d(fr.material.clone()), bevy::light::NotShadowCaster));
+            for k in obj.kids.drain(..) {
+                commands.entity(k).despawn();
+            }
+            for sp in &fr.sprites {
+                let kid = commands.spawn((Mesh3d(sp.mesh.clone()), MeshMaterial3d(sp.material.clone()), Transform::default(), bevy::light::NotShadowCaster, ChildOf(e))).id();
+                obj.kids.push(kid);
+            }
             obj.shown = Some(f as usize);
         }
     }
@@ -1091,7 +1106,7 @@ mod tests {
         assert_eq!(p.add_to_wallet(10), 10);
         assert_eq!(p.add_to_wallet(999_989), 999_999);
         assert_eq!(p.add_to_wallet(1), 999_999, "a sum of 1,000,000 becomes 999,999 (FUN_0023e5e0)");
-        assert_eq!(p.munny(), 0, "the experience word is not touched");
+        assert_eq!(p.experience(), 0, "the experience word is not touched");
     }
 
     fn exe() -> Option<Vec<u8>> {
@@ -1203,12 +1218,12 @@ mod tests {
         let params = d.particles.iter().flat_map(|p| p.groups.iter()).flat_map(|g| g.programs.iter()).find(|p| p.kind == program).expect("program in PRIZE").params.clone();
         let looks = kind_looks(&params);
         eprintln!("looks {looks:?}; {} shapes", d.shapes.len());
-        // Every sprite's UV rectangle, read as fractions of UV_UNIT, lies inside its texture page.
+        // Every sprite's texture rectangle (fractions of the texture, raw / 4096) lies inside the texture.
         for s in &d.shapes {
             for f in &s.frames {
                 for sp in &f.sprites {
-                    let [u, v, w, h] = sp.uv;
-                    assert!(u >= 0.0 && v >= 0.0 && u + w <= UV_UNIT && v + h <= UV_UNIT, "{:?}", sp.uv);
+                    let [u, v, w, h] = sp.st;
+                    assert!(u >= 0.0 && v >= 0.0 && u + w <= 1.0 && v + h <= 1.0, "{:?}", sp.st);
                 }
             }
         }

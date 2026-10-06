@@ -30,7 +30,7 @@ Marks: **[V]** read in the code (or checked by the oracle), **[I]** inferred, **
 | `+0xddc + 4 * w` | `0x340c9c` | world records, 19 of 4 bytes (`FUN_001a71c0`); Sora's outfit = byte 0 & 0x1f (`FUN_001a71e8`) | `FUN_001a71a8` defaults |
 | `+0xe28` | `0x340ce8` | **item counts**, one byte per item `Slot` (`item` +0x12), 0x140 slots | `FUN_001a1a18` adds, `FUN_001a1c30` subtracts, `FUN_001a1cc8` reads |
 | `+0xf68` | `0x340e28` | key-item bits by `Slot` (items whose `Flag0` bit 0 is set), 8 words | same three routines |
-| `+0xf88` | `0x340e48` | munny (i32) | `FUN_001b51e0` adds, caps at 9,999,999 |
+| `+0xf88` | `0x340e48` | experience total (i32) | `FUN_001b51e0` adds, caps at 9,999,999, then runs the party's level-up check (`FUN_001b52f8`); not the munny (the wallet is the save word +0x1600, `Progress::wallet`) |
 | `+0xf8c` | `0x340e4c` | summon experience | `FUN_001d4ec8` |
 | `+0xf90` | `0x340e50` | 8 consumable ids Sora received | `FUN_001a2120` |
 | `+0xfa0` | `0x340e60` | 4 command shortcuts [I: by their filling; the menu that uses them was not read] | `FUN_001a2120` (0), `FUN_001a1a18` (1..3) |
@@ -79,7 +79,7 @@ set to 1 with the level (no reader traced); `+4` experience (for form 5 the Anti
   command into the first empty shortcut 1..3.
 - **Take** (`FUN_001a1c30(id, n)`, `Progress::use_item`): count minus n, at least 0; a key item loses its
   bit. (The brief named `FUN_001a12a0`: that is the item's *effect* (heal HP/MP, drive), not the count.)
-- **Munny** (`FUN_001b51e0`, `Progress::add_munny`): sum, 9,999,999 when it reaches 10,000,000; no floor.
+- **Experience** (`FUN_001b51e0`, `Progress::add_experience`): sum, 9,999,999 when it reaches 10,000,000; no floor.
   The routine then refreshes every member's level state (`FUN_001b52f8`), not part of `Progress`.
 - An item drop (`FUN_001bd490`) spawns the prize object; adding to the inventory happens when it is picked
   up (prize code, WP-7B).
@@ -93,7 +93,7 @@ set to 1 with the level (no reader traced); `+4` experience (for form 5 the Anti
 - 9 form records (`FUN_00187ed0`): no keyblade, level 1, byte `+3` = 1, experience 0, no abilities.
 - current form 0, no summon, summon level 1, drive bytes `+0xdd0` = 100, `+0xdd1` = 3, `+0xdd2` = 3.
 - 19 world records `{0, 0x10, 0x10, 0x10}` (outfit 0 everywhere).
-- munny 0, no key items, spell switch bits 0, shortcuts empty.
+- experience 0, wallet 0, no key items, spell switch bits 0, shortcuts empty.
 
 Then `FUN_00187d20` -> `FUN_001c0cb0(0)`: the `plrp` rows with `Id` 0 (the first one and the rows after it with
 the same `Id`), each through `FUN_001c0b80`. A member row (`Character` < 0x80) sets HP and max HP, MP and max
@@ -128,7 +128,7 @@ while they build) does, in order:
 2. `KH2_STATE=<path>`: the JSON file (schema below) on top of the new game, and nothing else;
 3. otherwise the **app baseline** (below).
 
-`KH2_PROGRESSLOG=1` logs `progress: state from <new game + app baseline | file path>: munny ...; spells
+`KH2_PROGRESSLOG=1` logs `progress: state from <new game + app baseline | file path>: experience ..; munny ..; spells
 [...]; forms owned [...] levels [...] keyblades [...]; weapon ...; abilities [...]; ...; inventory [...]` and,
 with the baseline, `progress: app baseline (not the original's new game, docs/progress.md): ...`.
 
@@ -166,7 +166,8 @@ an error (logged; the app then falls back to the new game + baseline). Example: 
 
 | field | type | effect |
 |---|---|---|
-| `munny` | int | munny (capped at 9,999,999) |
+| `experience` | int | the experience total at 0x340e48 (capped at 9,999,999) |
+| `munny` | int | the wallet, save word +0x1600 (held at 999,999) |
 | `items` | object `"<item id>": count` | sets inventory counts directly (0..99; key items: 0 or not) |
 | `magic` | array of up to 6 ints | spell levels by magic slot (sets the count of the slot's `magc` item) |
 | `weapon` | int | Sora's hand 0 item |
@@ -194,7 +195,7 @@ an error (logged; the app then falls back to the new game + baseline). Example: 
 | 0x1a2120, 0x1a1f78, 0x1a4dd0 | consumable list and shortcut 0, shortcut command, magic resource command |
 | 0x1a2010, 0x1a20b0, 0x1b6f48 | form item obtained (keyblade take), first owned item of a type, `cmd` lookup |
 | 0x187d40, 0x1b58d8, 0x187f60 | member record, member index, form record |
-| 0x1b51e0 | munny add and cap |
+| 0x1b51e0 | experience add and cap |
 | 0x1a71c0, 0x1a71e8 | world record address, outfit bits |
 | 0x1a4b30, 0x1a4b68, 0x1a4bb8 | spell switch bit clear, set, test |
 | 0x1a4c78 | spell row from the item count |

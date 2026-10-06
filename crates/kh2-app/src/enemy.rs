@@ -531,6 +531,14 @@ pub fn separate(sora: Query<&Transform, (With<Sora>, Without<Enemy>)>, mut q: Qu
     }
 }
 
+/// The `atkp` row a hit names and its base damage on `to`, before the form and ability multipliers:
+/// a spell hit carries the exact `SubId` of the row its attack object used (`Hit::row`, so SubId 2 is
+/// its own row with its own Power), any other hit the default lookup (`GameData::hit_row`).
+fn row_damage<'a>(data: &'a GameData, h: &Hit, from: &Stats, to: &Stats) -> Option<(&'a kh2_tables::tables::Atkp, i32)> {
+    let atk = data.hit_row(h)?;
+    Some((atk, data.damage(atk, from, to)))
+}
+
 /// Sora's hits on enemies: damage, then the victim reaction of the attack row
 /// (`reaction_rules::victim_outcome`): nothing, a push, a flinch, a flinch with a push, or a blow.
 #[allow(clippy::too_many_arguments)]
@@ -556,9 +564,8 @@ pub fn receive_hits(
         if !e.alive() {
             continue;
         }
-        let Some(atk) = data.hit_row(h) else { continue };
+        let Some((atk, mut dmg)) = row_damage(&data, h, &from, &e.stats) else { continue };
         let useless = hit_is_ineffective(atk, &e.stats);
-        let mut dmg = data.damage(atk, &from, &e.stats);
         // Anti form multiplies the damage Sora deals (FUN_001a0610), then the attacker's ability
         // block adds its element and combo/reaction boosts (FUN_001a0a18, FUN_001a0aa8).
         if let (Some(rules), Some(state)) = (&drive.0, &drive.1) {
@@ -699,5 +706,55 @@ pub fn receive_clashes(
         e.state = EState::Hurt;
         a.restart(Some(slot), false, 0.0);
         info!("{} clash: recoil motion {m}", e.name);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stats(strength: i32, magic: i32) -> Stats {
+        Stats { level: 1, max_hp: 1000, strength, magic, defense: 0, max_taken: i32::MAX, min_taken: 1, max_dealt: i32::MAX, min_dealt: 0, weakness: [100; 7] }
+    }
+
+    /// A spell hit whose `Hit::row` names SubId 2 deals the damage of that row (its own Power), not the
+    /// default row of the same `atkp` id (`receive_hits` takes both from `row_damage`). Fire is atkp 502:
+    /// its rows carry the hit-by-hit variants (`magic_rules::variant`). Needs `KH2_ISO`.
+    #[test]
+    fn sub_id_2_hit_uses_its_own_atkp_row() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let data = GameData::load(&Disc::open(&iso));
+        // Every id that has a SubId 0 row and a SubId 2 row with a different Power.
+        let ids: Vec<u16> = data
+            .atkp
+            .iter()
+            .filter(|b| b.sub_id == 2 && data.atkp.iter().any(|a| a.id == b.id && a.sub_id == 0 && a.power != b.power && a.r#type == b.r#type))
+            .map(|b| b.id)
+            .collect();
+        eprintln!("atkp ids with distinct SubId 0 and SubId 2 rows: {ids:?}");
+        assert!(!ids.is_empty());
+        let (from, to) = (stats(200, 200), stats(0, 0));
+        let mut checked = 0;
+        for id in ids {
+            let base = data.atkp.iter().find(|a| a.id == id && a.sub_id == 0).unwrap();
+            let own = data.atkp.iter().find(|a| a.id == id && a.sub_id == 2).unwrap();
+            let hit = |row| Hit { attacker: Entity::PLACEHOLDER, target: Entity::PLACEHOLDER, atkp: id as i16, dir: Vec3::X, point: Vec3::ZERO, row };
+            let (row, dmg) = row_damage(&data, &hit(Some(2)), &from, &to).unwrap();
+            assert_eq!(row.sub_id, 2, "atkp {id}: the hit names SubId 2");
+            assert_eq!(dmg, data.damage(own, &from, &to), "atkp {id}: damage comes from the SubId 2 row");
+            let (dflt, dflt_dmg) = row_damage(&data, &hit(None), &from, &to).unwrap();
+            assert_eq!(dflt.sub_id, base.sub_id, "atkp {id}: no row named means the default lookup");
+            assert_eq!(dflt_dmg, data.damage(base, &from, &to));
+            if dmg != dflt_dmg {
+                checked += 1;
+            }
+            if id == crate::magic::ATKP_FIRE {
+                eprintln!("fire (atkp {id}): SubId 2 Power {} -> damage {dmg}; default SubId {} Power {} -> damage {dflt_dmg}", own.power, dflt.sub_id, base.power);
+            }
+        }
+        assert!(checked > 0, "at least one id deals different damage through its SubId 2 row");
     }
 }

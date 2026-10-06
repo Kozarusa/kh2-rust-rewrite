@@ -1,6 +1,6 @@
 //! The `fiel` text banners and the number popup: the "PUSH!", "CHANCE!", "COMBO!" and "FINISH!" button
-//! prompts, the "NEXT LEVEL" and "OBTAINED MUNNY!" strips, and the munny gain popup (0x15b198).
-//! The game state that raises them is not read here: `HudBanner` and `MunnyPopups` are plain
+//! prompts, the "NEXT LEVEL" and "OBTAINED MUNNY!" strips, and the experience gain popup (0x15b198).
+//! The game state that raises them is not read here: `HudBanner` and `ExperiencePopups` are plain
 //! resources for the owning module to fill. Which group belongs to which word was read from the
 //! sprite rectangles each group draws (docs/hud.md); the position of a banner is not known.
 
@@ -10,10 +10,10 @@ use super::hud_gfx::{HudScene, Node};
 
 /// Scene file index of `fiel` (the first pair of the field file).
 const FIEL: usize = 0;
-/// Munny digits: group 6 + digit (table 0x358c50 holds 6 to 15), the prefix symbol is group 16.
+/// Popup digits: group 6 + digit (table 0x358c50 holds 6 to 15), the prefix symbol is group 16.
 const DIGIT_BASE: usize = 6;
 const PREFIX: usize = 16;
-/// The game caps the munny counter at 9,999,999, so a popup has at most 7 digits.
+/// The game caps the experience counter at 9,999,999, so a popup has at most 7 digits.
 const DIGITS: usize = 7;
 const POPUPS: usize = 4;
 
@@ -65,16 +65,17 @@ pub struct Banner {
 #[derive(Resource, Default, Clone, Debug)]
 pub struct HudBanner(pub Option<Banner>);
 
-/// A munny gain popup: the amount at a screen position (the game projects the defeated enemy's world
-/// position). `KH2_HUDMUNNY=<amount>[:x:y]` shows one.
+/// An experience gain popup (0x15b198 shows the value `FUN_001b51e0` adds to the experience total, called
+/// from `FUN_001b25d0` and `FUN_001c46a8`): the amount at a screen position (the game projects the
+/// defeated enemy's world position). `KH2_HUDEXP=<amount>[:x:y]` (older name `KH2_HUDMUNNY`) shows one.
 #[derive(Clone, Copy, Debug)]
-pub struct MunnyPopup {
+pub struct ExperiencePopup {
     pub amount: u32,
     pub pos: [f32; 2],
 }
 
 #[derive(Resource, Default, Clone, Debug)]
-pub struct MunnyPopups(pub Vec<MunnyPopup>);
+pub struct ExperiencePopups(pub Vec<ExperiencePopup>);
 
 #[derive(Resource, Default)]
 pub struct BannerNodes {
@@ -106,7 +107,7 @@ fn advance(scene: &HudScene, group: usize) -> f32 {
     scene.files.get(FIEL).and_then(|f| f.seq.groups.get(group)).map(|g| g.unk20 as f32).unwrap_or(0.0)
 }
 
-pub fn update(mut scene: ResMut<HudScene>, mut banner: ResMut<HudBanner>, mut popups: ResMut<MunnyPopups>, mut nodes: ResMut<BannerNodes>, mut demo: Local<bool>) {
+pub fn update(mut scene: ResMut<HudScene>, mut banner: ResMut<HudBanner>, mut popups: ResMut<ExperiencePopups>, mut nodes: ResMut<BannerNodes>, mut demo: Local<bool>) {
     if scene.files.is_empty() {
         return;
     }
@@ -119,11 +120,11 @@ pub fn update(mut scene: ResMut<HudScene>, mut banner: ResMut<HudBanner>, mut po
                 banner.0 = Some(Banner { kind, pos: [n(1, 256.0), n(2, 120.0)] });
             }
         }
-        if let Ok(v) = std::env::var("KH2_HUDMUNNY") {
+        if let Ok(v) = std::env::var("KH2_HUDEXP").or_else(|_| std::env::var("KH2_HUDMUNNY")) {
             let p: Vec<&str> = v.split(':').collect();
             if let Some(amount) = p.first().and_then(|a| a.parse().ok()) {
                 let n = |i: usize, d: f32| p.get(i).and_then(|x| x.parse().ok()).unwrap_or(d);
-                popups.0.push(MunnyPopup { amount, pos: [n(1, 256.0), n(2, 200.0)] });
+                popups.0.push(ExperiencePopup { amount, pos: [n(1, 256.0), n(2, 200.0)] });
             }
         }
     }
@@ -156,7 +157,7 @@ pub fn update(mut scene: ResMut<HudScene>, mut banner: ResMut<HudBanner>, mut po
             scene.nodes[b].visible = true;
         }
     }
-    // Munny popups: the prefix symbol with the digits laid out from the groups' advance widths and
+    // Experience popups: the prefix symbol with the digits laid out from the groups' advance widths and
     // centred on the position (0x15ae80).
     for i in 0..POPUPS {
         let (root, digits) = nodes.popups[i];
@@ -203,9 +204,8 @@ pub fn update(mut scene: ResMut<HudScene>, mut banner: ResMut<HudBanner>, mut po
 pub enum StripKind {
     /// Group 17 with digit groups 28 to 37 (table 0x3586e8), raised through 0x14f2d8 (kind 0x11 in
     /// the popup registry 0x14f8b0) by 0x1a39b0, which is the prize pickup (WP-7B, docs/prizes.md):
-    /// this is the "OBTAINED MUNNY!" strip with the munny picked up, not a level-up strip. The
-    /// variant keeps its old name.
-    LevelUp,
+    /// this is the "OBTAINED MUNNY!" strip with the munny picked up.
+    Munny,
     /// Group 48 with digit groups 38 to 47 (table 0x358730), raised when the number popup is
     /// created (0x15b198 calls 0x14f2b8 with its third argument; kind 0xe).
     PopupTotal,
@@ -214,14 +214,14 @@ pub enum StripKind {
 impl StripKind {
     fn groups(self) -> (usize, usize) {
         match self {
-            StripKind::LevelUp => (17, 28),
+            StripKind::Munny => (17, 28),
             StripKind::PopupTotal => (48, 38),
         }
     }
 
     pub fn parse(s: &str) -> Option<StripKind> {
         Some(match s {
-            "levelup" => StripKind::LevelUp,
+            "munny" | "levelup" => StripKind::Munny,
             "popup" => StripKind::PopupTotal,
             _ => return None,
         })
@@ -244,7 +244,7 @@ pub struct NumberStrip {
 /// was not followed, see `NumberStrip::pos`].
 const PICKUP_STRIP_POS: [f32; 2] = [0.0, 0.0];
 
-/// Strips on screen. `KH2_HUDSTRIP=<levelup|popup>:<value>[:x:y]` shows one.
+/// Strips on screen. `KH2_HUDSTRIP=<munny|popup>:<value>[:x:y]` shows one.
 #[derive(Resource, Default, Clone, Debug)]
 pub struct NumberStrips(pub Vec<NumberStrip>);
 
@@ -292,7 +292,7 @@ pub fn update_strips(
                     nodes.drawn[i] = None;
                 }
             }
-            None => strips.0.push(NumberStrip { kind: StripKind::LevelUp, value: m.amount, pos: PICKUP_STRIP_POS, pickup: true }),
+            None => strips.0.push(NumberStrip { kind: StripKind::Munny, value: m.amount, pos: PICKUP_STRIP_POS, pickup: true }),
         }
     }
     // A pickup strip goes once its group has played out [inferred: when the game's popup registry
@@ -363,7 +363,7 @@ mod tests {
 
     #[test]
     fn strip_kinds_use_their_own_digit_tables() {
-        assert_eq!(StripKind::LevelUp.groups(), (17, 28));
+        assert_eq!(StripKind::Munny.groups(), (17, 28));
         assert_eq!(StripKind::PopupTotal.groups(), (48, 38));
         assert_eq!(StripKind::parse("popup"), Some(StripKind::PopupTotal));
         assert_eq!(StripKind::parse("x"), None);

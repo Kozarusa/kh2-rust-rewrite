@@ -404,7 +404,7 @@ pub fn grid_move(cursor: usize, n: usize, key: Key) -> usize {
     }
     let (row, col) = (cursor / COLUMNS, cursor % COLUMNS);
     let rows = n.div_ceil(COLUMNS);
-    let in_row = |r: usize| if r + 1 == rows && n % COLUMNS != 0 { n % COLUMNS } else { COLUMNS };
+    let in_row = |r: usize| if r + 1 == rows && !n.is_multiple_of(COLUMNS) { n % COLUMNS } else { COLUMNS };
     let land = |r: usize| r * COLUMNS + col.min(in_row(r) - 1);
     match key {
         Key::Left => row * COLUMNS + (col + in_row(row) - 1) % in_row(row),
@@ -735,6 +735,8 @@ struct Ui {
     info: usize,
     info_text: usize,
     info_rows: Vec<usize>,
+    /// The "no items" text (its own group 0x12e, placed by the group's absolute anchor).
+    empty: usize,
     help: usize,
     all: Vec<usize>,
 }
@@ -945,7 +947,12 @@ fn input(
                 }
                 Effect::Page(page) => {
                     menu.page = page;
-                    info!("menu: page {page:#x}");
+                    // The Stock page names the highlighted item; the others only their id.
+                    let extra = match st.machine.as_ref() {
+                        Some(m) if page == STOCK => m.stock.get(m.cursor).map(|s| format!(" cursor {} {} x{}", m.cursor, item_name(&st, &scene, s.id), s.count)).unwrap_or_else(|| " (empty)".into()),
+                        _ => String::new(),
+                    };
+                    info!("menu: page {page:#x}{extra}");
                 }
                 Effect::Filter(f) => {
                     if let Some(p) = progress.as_deref() {
@@ -1020,7 +1027,7 @@ fn use_item(
     p: &mut Progress,
     s: &mut crate::sora::Sora,
     magic: &mut crate::magic::MagicState,
-    mut drive: Option<&mut crate::drive::DriveState>,
+    drive: Option<&mut crate::drive::DriveState>,
     max_mp: i32,
     feed: f32,
     (item, name): (u16, &str),
@@ -1050,7 +1057,7 @@ fn use_item(
         s.mp = v.mp;
         magic.charge.left = v.charge_left;
         magic.charge.total = v.charge_total;
-        if let Some(d) = drive.as_deref_mut() {
+        if let Some(d) = drive {
             d.points.fraction = v.drive_fraction;
             d.points.whole = v.drive_points;
         }
@@ -1097,6 +1104,7 @@ fn ensure_ui(st: &mut ItemsMenu, scene: &mut MenuScene) {
     let info = mk(scene, S);
     let info_text = mk(scene, None);
     let info_rows: Vec<usize> = (0..2).map(|_| mk(scene, S)).collect();
+    let empty = mk(scene, S);
     let help = mk(scene, None);
     for (&c, &n) in cells.iter().zip(&counts) {
         scene.nodes[c].parent = Some(panel);
@@ -1137,6 +1145,7 @@ fn ensure_ui(st: &mut ItemsMenu, scene: &mut MenuScene) {
         info,
         info_text,
         info_rows,
+        empty,
         help,
         all,
     });
@@ -1240,6 +1249,7 @@ fn redraw(st: &mut ItemsMenu, scene: &mut MenuScene, progress: Option<&Progress>
         ui_ref.counts.clone(),
         ui_ref.help,
     );
+    let empty = ui_ref.empty;
     let (prompt_panel, prompt_title, prompt_rows, item_window, target_panel, target_title, target_nodes, info, info_text, info_rows) = (
         ui_ref.prompt_panel,
         ui_ref.prompt_title,
@@ -1337,9 +1347,11 @@ fn redraw(st: &mut ItemsMenu, scene: &mut MenuScene, progress: Option<&Progress>
         STOCK => {
             set(scene, panel, group::STOCK_PANEL[0], Some(group::STOCK_PANEL[1]), was_of(panel));
             if m.stock.is_empty() {
-                let c = cells[0];
-                set(scene, c, group::CELL_EMPTY, None, was_of(c));
-                scene.nodes[c].label = Some(label(&text, tokens_of(&text, NO_ITEMS), 1, 15.0, at::COLOR, 0, at::LABEL));
+                // `FUN_0025dae8`: the first cell takes group 0x12e and the message 0x845a; the group's anchor
+                // (216, 115) is where the text starts.
+                set(scene, empty, group::CELL_EMPTY, None, was_of(empty));
+                scene.nodes[empty].label_anchor = Some(at::LABEL);
+                scene.nodes[empty].label = Some(label(&text, tokens_of(&text, NO_ITEMS), 1, 15.0, at::COLOR, 0, [0.0, 0.0]));
             }
             let (dx, dy) = cell_pitch(scene);
             for slot in 0..COLUMNS * ROWS {

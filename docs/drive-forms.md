@@ -267,18 +267,39 @@ Messages other systems can use: `FormChanged { from, to }` (written when the bod
   refills HP and MP at the timer start; the player constructors `FUN_001cda78`/`FUN_001cdb98`;
   `FUN_00118730`; `FUN_001a12a0` item use; `FUN_001ac130`; `FUN_0017d4b8` the periodic MP tick; `FUN_001be500`).
   None tests the form. Not ported; no invention.
-- The drive-gauge charge of commands 455 and 457 [rule V, consumer not wired, WP-5B]: `FUN_001ce518` sets the
+- The drive-gauge charge of commands 455 and 457: wired in WP-6A, but it is **not Sora's** [V]. The three
+  player-class tables in the executable: 0x360288 (`FUN_001cd678` ...), 0x360360 (built by `FUN_001cda78` and
+  `FUN_001cdb98`; per-tick `FUN_001ce240` at +0xc, command handler `FUN_001ce518` at +0x98) and 0x360410 (built
+  by `FUN_001ce718` / `FUN_001ce820`, the default class of `FUN_00178e40`; it holds `FUN_001ceda8`, the form-timer
+  revert, and the drive-form code: Sora's). Sora's command handler at +0x98 is `FUN_001cf030` (not in the
+  decompilation; read from the instructions): it takes command 0x48 and 4/5 and passes every other id,
+  455 and 457 included, to the generic `FUN_00177b18` -> `FUN_00177c20` (use counter, event 11 to the target).
+  The 0x360360 class is the one `FUN_001cdf48` spawns with `FUN_001cdb98` from the merged `memt` word 17
+  (`FUN_001ce080` reads +0x22): object 91, `P_EX200`, the model whose motion set offers 457 (test
+  `charge_class_object_is_memt_word_17`), i.e. Mickey [inferred name]. `FUN_001ce518` also hangs an end callback on
+  motion 0xc1 (player +0x2d4 = controller +0x194 = `LAB_001ce710`, two instructions: `jr ra; sw zero, 0xb68(a0)`);
+  the controller calls and clears it when any new motion starts (`FUN_0017dd38` -> `FUN_0017fac8`), so a hit or
+  any other motion ends the charge with no motion 5. Blend of 0xc1: `DAT_0037c33c` = 8.0; motion 5 is started
+  with blend 0 and motion 0 is queued behind it (`FUN_0017e378`).
+  Port (`drive.rs`): `rules::ChargeRun` (accept, tick, callback; test `charge_run_wiring_455_457_and_the_end_callback`)
+  and the system `charge_tick` (reads `PlayerReactionCmd::Charge`). Since the app's only player is Sora, the
+  command is logged and dropped (`charge command ... not run: Sora's command handler FUN_001cf030 has no
+  charge`). `KH2_CHARGE_ON_SORA=1` runs Mickey's handler on Sora's body as a harness (NOT the original's
+  behaviour: Sora's motion 0xc1 is his magic motion A342, Mickey's is A122). Harness run
+  (`KH2_REACTION_FAKE=455 KH2_REACTIONLOG=1 KH2_CHARGE_ON_SORA=1 KH2_REACTION_PRESS=3,3.5,4,4.5,5`, tt00): `charge
+  started ... timer 120, wait 0`, `charge motion 0xc1 (A342, slot Some(772)), blend 8`, `charge +1 gauge unit
+  (FUN_001a0290): 0 points + 0% -> 0 + 1% (timer 60, wait 3)` then one every 4 ticks, `charge timer ran out:
+  motion 5 (A005) with motion 0 queued behind it`; a hit during the charge: `charge cancelled: the charge motion
+  was replaced (A202)`. For Sora the faithful outcome is the generic accept path, which is `reaction_cmd.rs`'s
+  (not changed here). The rule as found by WP-5B: `FUN_001ce518` sets the
   timer +0xb68 (120.0 at 0x37c340 for 455, with motion 0xc1, and +0xb6c = 0; 30.0 at 0x37c344 for 457, no motion,
   +0xb6c kept). `FUN_001ce240` each tick, while +0xb68 > 0: when the player's animator is at the end of its
   motion (`FUN_0017f400`: `FUN_0017fab8` false i.e. a motion present, blend time +0x34 <= 0 and the motion's
   length `<=` the current frame +0x30) it takes the frame unit off +0xb6c and, at <= 0, adds 1 gauge unit
   (`FUN_001a0290`, the same carry as `Points::gain`) and re-arms +0xb6c by `sstm[0xd4]` (4 on this disc);
   +0xb68 always drops by the frame unit and at <= 0 is cleared and motion 5 is played. Ported as the pure
-  `drive::rules::Charge` (tests `charge_*`, `sstm[0xd4]` read from the disc). Not wired: it needs the player's
-  motion 0xc1 to play and to report "at its end", which is the controller's state machine in `sora.rs`
-  (WP-5A's region). Wiring: on `PlayerReactionCmd::Charge` call `Charge::start(ticks, motion.is_some())`, play
-  `motion`, then each tick `Charge::tick(&rules.tuning, animator_at_end)`, add `units` with `Points::gain(units)` (one unit
-  is 1/100 of a point) and on `finished` play motion 5.
+  `drive::rules::Charge` (tests `charge_*`, `sstm[0xd4]` read from the disc); one unit is 1/100 of a point.
+  The app's "at its end" ignores the blend part of `FUN_0017f400` (the frame test alone).
 - Form experience, level-ups and the Master orb gain (`FUN_001d3f88` and friends) are not run: the level is
   fixed per run (`KH2_DRIVE_LEVEL`); the form's ability list is rebuilt from the level on each entry.
 - Orbs, Damage Drive and summon mode (gauge mode 3, `FUN_001cf210`) are not implemented.

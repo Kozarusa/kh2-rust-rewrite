@@ -17,6 +17,8 @@ use crate::sora::Sora;
 
 /// Sequence pair order in the world's field file: fiel, gaug, mapj, miss.
 pub const GAUG: usize = 1;
+/// The normal face group of a character's `face` pair (the party panels use it too).
+pub const FACE_NORMAL: usize = 3;
 
 /// HP below which the ring (instead of the bar) shows the value, and points per ring step.
 const RING_HP: i32 = 60;

@@ -13,6 +13,7 @@ use kh2_image::text::Style;
 use super::hud_gfx::{HudScene, Node};
 use super::hud_text::Label;
 use crate::assets::Disc;
+use crate::reaction_cmd::{ReactionOffer, ReactionRules, Status};
 
 /// Menu pages that can be open at once (a sub-menu opens one page to the right).
 pub const PAGES: usize = 3;
@@ -182,16 +183,57 @@ pub struct MenuNodes {
     capsule: usize,
 }
 
+fn command_rows(disc: &Disc) -> Option<Vec<kh2_tables::tables::Cmd>> {
+    use kh2_tables::tables as t;
+    let mut a = disc.0.lock().ok()?;
+    Some(kh2_tables::load::<t::Cmd>(&mut a, &t::CMD).ok()?.rows)
+}
+
+fn entry(c: &kh2_tables::tables::Cmd) -> MenuEntry {
+    MenuEntry { message: c.message_id as u32, icon: c.cmd_icon, style: 0 }
+}
+
+/// The four basic commands (the rows whose Execute is 1 attack, 2 magic, 3 items, 4 drive, each
+/// by its own id first). The game builds the list from the player's command data at +0x974
+/// (0x13ca30), which this port has no source for; this is the list a new game opens with.
+fn base_entries(cmds: &[kh2_tables::tables::Cmd]) -> Vec<MenuEntry> {
+    [1u16, 2, 3, 4]
+        .iter()
+        .filter_map(|&e| cmds.iter().find(|c| c.id == e && c.execute == e).or_else(|| cmds.iter().find(|c| c.execute == e)))
+        .map(entry)
+        .collect()
+}
+
+/// The menu shown in play: one page of the basic commands with the cursor on the first.
+pub fn default_menu(disc: &Disc) -> Option<CommandMenu> {
+    let cmds = command_rows(disc)?;
+    Some(CommandMenu { visible: true, pages: vec![MenuPage { kind: 0, entries: base_entries(&cmds), cursor: 0 }], reaction: None })
+}
+
+/// Hook 1 of docs/limits-reactions.md: the offered reaction command (slot 1 of the command manager)
+/// becomes the capsule above the list while it is available; `alt` is the command's Flags bit 3.
+/// The entry-type-7 variant has no source in the port.
+pub fn mirror_reaction(offer: Option<Res<ReactionOffer>>, rules: Option<Res<ReactionRules>>, mut menu: ResMut<CommandMenu>) {
+    let active = offer.as_ref().and_then(|o| o.0).filter(|a| a.status == Status::Available);
+    let next = active.map(|a| {
+        let flags = rules.as_ref().and_then(|r| r.cmd(a.cmd)).map(|c| c.flags).unwrap_or(0);
+        Reaction { message: a.message, alt: flags & 8 != 0, kind7: false }
+    });
+    let same = match (&menu.reaction, &next) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a.message == b.message && a.alt == b.alt,
+        _ => false,
+    };
+    if !same {
+        menu.reaction = next;
+    }
+}
+
 /// `KH2_HUDMENU=<kind>:<rows>:<cursor>[:r][;<kind>:<rows>:<cursor>...]` shows command lists (one
 /// page per `;`) with names taken from the game's own command table; `r` adds a reaction command.
 /// Display only.
 pub fn demo_menu(spec: &str, disc: &Disc) -> Option<CommandMenu> {
-    use kh2_tables::tables as t;
-    let cmds: Vec<t::Cmd> = {
-        let mut a = disc.0.lock().ok()?;
-        kh2_tables::load::<t::Cmd>(&mut a, &t::CMD).ok()?.rows
-    };
-    let entry = |c: &t::Cmd| MenuEntry { message: c.message_id as u32, icon: c.cmd_icon, style: 0 };
+    let cmds = command_rows(disc)?;
     let mut menu = CommandMenu { visible: true, ..default() };
     for (n, page) in spec.split(';').enumerate() {
         let p: Vec<&str> = page.split(':').collect();
@@ -200,14 +242,7 @@ pub fn demo_menu(spec: &str, disc: &Disc) -> Option<CommandMenu> {
         let cursor: usize = p.get(2).and_then(|v| v.parse().ok()).unwrap_or(0);
         // The first page lists the four basic commands (1 attack, 2 magic, 3 items, 4 drive handlers),
         // later pages and longer lists continue with other named commands from `skip` on.
-        let mut entries: Vec<MenuEntry> = Vec::new();
-        if n == 0 {
-            for e in [1u16, 2, 3, 4] {
-                if let Some(c) = cmds.iter().find(|c| c.id == e && c.execute == e).or_else(|| cmds.iter().find(|c| c.execute == e)) {
-                    entries.push(entry(c));
-                }
-            }
-        }
+        let mut entries: Vec<MenuEntry> = if n == 0 { base_entries(&cmds) } else { Vec::new() };
         for c in cmds.iter().filter(|c| c.message_id > 0 && !matches!(c.execute, 1..=4)).skip(n * 12) {
             if entries.len() >= rows {
                 break;
@@ -270,6 +305,11 @@ pub fn update(
         *demo = true;
         if let Some(m) = std::env::var("KH2_HUDMENU").ok().and_then(|s| demo_menu(&s, &disc)) {
             *menu = m;
+        } else if menu.pages.is_empty() {
+            // Nothing filled the menu: show the basic list the game opens with.
+            if let Some(m) = default_menu(&disc) {
+                *menu = m;
+            }
         }
     }
     if !nodes.built {

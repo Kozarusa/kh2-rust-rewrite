@@ -23,6 +23,7 @@ mod enemy;
 mod enemy_ai;
 mod enemy_host;
 mod enemy_obj;
+mod friend_ai;
 mod fx;
 mod harness;
 mod hud;

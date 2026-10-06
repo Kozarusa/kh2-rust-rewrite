@@ -52,9 +52,14 @@ impl Plugin for PartyPlugin {
         app.insert_resource(data)
             .init_resource::<PartySlots>()
             .insert_resource(Manager { log: std::env::var("KH2_PARTYLOG").is_ok_and(|v| !v.is_empty() && v != "0"), rng: 0x2545_f491, ..Default::default() })
-            .add_systems(FixedUpdate, (spawn_party, party_tick, party_fade).chain().in_set(Sim::Enemy));
+            .add_systems(FixedUpdate, (spawn_party, party_tick, party_fade).chain().in_set(PartyTick).in_set(Sim::Enemy));
+        crate::friend_ai::register(app);
     }
 }
+
+/// The party's own systems (spawn, tick, fade); the members' scripts run after them.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct PartyTick;
 
 /// The disc and executable data the party needs.
 #[derive(Resource)]
@@ -166,6 +171,17 @@ pub struct PartyMember {
     /// The last movement step was blocked ([inferred] reading of +0x660 bit 4).
     blocked: bool,
     speed: f32,
+}
+
+impl PartyMember {
+    /// Position (game units, the app's axes) and facing (app yaw).
+    pub(crate) fn position(&self) -> Vec3 {
+        self.motor.pos
+    }
+
+    pub(crate) fn yaw(&self) -> f32 {
+        self.motor.yaw
+    }
 }
 
 /// The player's objentry id in spawn records (`PLAYER`, FUN_0016e208).

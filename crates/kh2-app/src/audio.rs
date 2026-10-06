@@ -424,6 +424,7 @@ fn play_voices(
     Some(h)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn play_requests(
     disc: Res<Disc>,
     audio: Res<Audio>,

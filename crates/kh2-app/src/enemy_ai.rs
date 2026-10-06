@@ -559,7 +559,10 @@ impl BevyHost<'_> {
             Call::SetTargetMode { .. } => stub(Value::None, "lock mode of a target record: nothing in the app consumes it"),
             Call::FreeTarget { .. } => stub(Value::Bool(true), "target records are not pooled"),
             Call::MotionDone { obj } if *obj == PLAYER => {
-                approx(Value::Bool(self.env.player_motion_done), "the player's motion-done flag comes from reaction_cmd::PlayerReaction, which the player side has to set")
+                // A paired motion this object started on the player in this tick is a new motion
+                // that has not ended (the game's bit is read live; the player side's is a tick old).
+                let done = self.env.player_motion_done && self.obj.player_serial.is_none();
+                approx(Value::Bool(done), "bit 1 of the player's +0x160 from reaction_cmd::PlayerReaction (player_reaction.rs sets it from the real end of his motion, one tick old)")
             }
             Call::MotionDone { .. } => imp(Value::Bool(self.obj.done)),
             Call::MotionState { .. } => imp(Value::Int(self.obj.slot.map_or(-1, |s| s as i32))),

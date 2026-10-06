@@ -241,8 +241,10 @@ function at 0x2eec70 (FUN_00112260) sets it from scripts.
 | anything else | class with the table's first block | FUN_001133e0 (no actions) | 0x352e78 | none |
 
 The AI object (0x14 bytes, Goofy 0x30): +4 owner, +8 parameter block, +0xc action count, +0x10 action
-records. The AI vtable's hooks (+0x14 after create, +0x18, +0xc on hit, +0x30 on warp) are empty functions in
-the base class (0x114138..0x1141c8).
+records. In the base AI vtable (0x352e78, kept by Donald's and Goofy's) the hooks +0xc (on hit), +0x14
+(after create), +0x18, +0x2c and +0x30 (on warp) are empty functions (0x114138, 0x114148, 0x114150, 0x1141c0,
+0x1141c8, decompiled); +0x28 (FUN_00114170, host 10.3) ends a link to a carrier object (+0x570) and puts
+the member back on the ground. +0x10, +0x1c..+0x24 (0x114140, 0x114158..0x114168) were not read.
 
 ### Parameter block (0x34ea00 + offset[class]) [V for the readers; values printed by the oracle test]
 
@@ -350,15 +352,20 @@ and in front (dot >= 0) unless entry flag 0x10.
 
 FUN_0010dcf0 picks the target by style through the table at 0x352d28 (re-target test 0x352cd0):
 
-| style | choose | keep while |
+| style | choose | re-target when (FUN_0010cf90, also always when the target is not valid) |
 |---|---|---|
-| 0 | FUN_0010d0c0 [GAP: not read] | FUN_0010cbe0: the attacker that hit the member (+0xcec) or the current target within block distance |
-| 1 | FUN_0010d270: FUN_0010d848's pick, else the player's target (`0x34e9b0`) | FUN_0010cc80 |
-| 2 | FUN_0010d378: the nearest enemy within FUN_00114058's range of the member and within FUN_00114118's range of the player | FUN_0010ccf8 |
-| 3 | FUN_0010d538: among enemies within 2x range, the one farthest from the player | FUN_0010ce40 |
-| 4, 5 | FUN_0010d700 / FUN_0010d708 (short) | FUN_0010cf80 (true) / FUN_0010cf88 (false) |
+| 0 | FUN_0010d0c0 [GAP: not read] | FUN_0010cbe0: an attacker is remembered (+0xcec) and is not the target, or the target is farther than FUN_00114068's range |
+| 1 | FUN_0010d270: FUN_0010d848's pick, else the player's target (`0x34e9b0`) | FUN_0010cc80 [GAP] |
+| 2 | FUN_0010d378: the nearest enemy within FUN_00114058's range of the member and within FUN_00114118's range of the player | FUN_0010ccf8 [GAP] |
+| 3 | FUN_0010d538: among enemies within 2x range, the one farthest from the player | FUN_0010ce40 [GAP] |
+| 4, 5 | FUN_0010d700 / FUN_0010d708 (short) | FUN_0010cf80 (always) / FUN_0010cf88 (never) |
 
-During a limit (FUN_001b3c00) FUN_0010d700 is used. Hits on the member remember the attacker in +0xcec
+Battle distance (FUN_0010df08): when the member's ground distance to the player (+0xbac) exceeds block +0x80
+(x2 for styles 3 and 5, x0.5 for style 2), +0xb7c bit 0x40 is set, and a target with that bit set is not valid
+(FUN_0010ca88): the member drops its target and follows (the follow step clears the bit). The target is
+refreshed only in battle, when the member is not busy (+0x390), has no script-set target (+0xb7c bit 0x10000,
+host 10.14) and the re-target test asks for it. During a limit (FUN_001b3c00) FUN_0010d700 is used. Hits on
+the member remember the attacker in +0xcec
 (FUN_001106b8, when FUN_00112ac0 accepts it). [GAP: FUN_0010d0c0, FUN_0010d848, FUN_00112b28, FUN_00112b88
 not read; the style names are not known]
 

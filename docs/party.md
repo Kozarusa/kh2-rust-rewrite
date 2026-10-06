@@ -77,7 +77,7 @@ The current party of a world is four **slot bytes** in the save data at `0x340c9
 (FUN_001a71c0): byte 0 the player's member index, bytes 1, 2 the two companions, byte 3 the third
 (partner) slot. Low five bits = member index, 0x10 = empty (FUN_001a71e8); bit 0x80 / 0x40 are flags
 (below). The disc's presets: 0 `[0,-,-,-]`, 1 `[0,1,2,-]`, 2 `[0,3,2,1]`, 3 `[0,3*,2,1]`,
-4 `[0,3*,2,1]` (0x43 and 0x83), 5 `[0,3,-,-]`, 6 `[0,1,-,-]` (`*` = flag 0x40/0x80).
+4 `[0,3*,2,1]`, 5 `[0,3,-,-]`, 6 `[0,1,-,-]` (`*` = flag: 0x43 in preset 3, 0x83 in preset 4).
 
 Applying a preset (FUN_001a7330, area-script command 0xf of FUN_00180b48; checked by the oracle test for all
 seven presets): the result is the preset's player index; then the preset's members flagged 0x80/0x40; then
@@ -141,8 +141,9 @@ its slot byte has 0x80, or its index is in the hidden list (below). FUN_0017d150
 3. Type 1 -> FUN_0017d1b0 (section 3).
 4. The friend's files are the object's own: `obj/<model>.mdlx` (model + BDX), the motion set named by
    `AnimationName`, `obj/<model>.apdx` (effects and sound banks). Sizes per object are printed by the disc
-   test. The member's weapon objects (`DONALD_WEAPON` 575, `GOOFY_WEAPON` 576, `AURON_WEAPON` 704, type 6)
-   are attached by the base constructor (FUN_0017c718: FUN_0016ef28(objentry, 0/1) -> FUN_001751b0, two hands).
+   test. The base constructor attaches up to two hand objects (FUN_0017c718: FUN_0016ef28(objentry, 0/1) ->
+   FUN_001751b0) [I: the weapons; objentry has `DONALD_WEAPON` 575, `GOOFY_WEAPON` 576, `AURON_WEAPON` 704,
+   type 6; FUN_0016ef28 was not read].
 5. Voices: by NeoStatus through the voice table (docs/audio.md "other party"); the friend's voice method is
    vtable slot +0x54, the party class's FUN_00175d18 (summons override it with FUN_001c6998). Lines asked
    for: 2 on KO (FUN_00175f10), 9 when its HP falls into danger (FUN_0017cde0).

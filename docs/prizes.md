@@ -57,17 +57,25 @@ function; 0 frees the entry.
   `min(30 / (distance * frac), 0.59341)` (0x37bf68; the limit is 0x37bf88, copied to 0x1d5e2c4 by
   `FUN_001c59b0`); position = centre + direction * distance * frac; size = frac * 255. The turn's sign is pinned
   by `absorb_turn_matches_the_game_rotation` (the game's `FUN_0011b4d8` in `kh2-ee`).
-- Mode 1 (`FUN_001a40b8` -> `FUN_001a3ad8`: every pickable prize at once, 80 frames, 0x37bf80) is not ported;
-  its caller was not traced.
+- Mode 1 (collect-all, ported since WP-7Bb): `FUN_001a40b8` walks the pool and, for every entry whose flag bit 0
+  is set (whatever its update: one already drawn in starts again and pays again, `FUN_001a3ad8` does not look),
+  runs `FUN_001c5808(entry, player, 1)` and the pickup `FUN_001a39b0`. Mode 1 is mode 0 with its own numbers:
+  80 frames (0x37bf80), update `LAB_001c5748` -> `FUN_001c5588` with length 80 (0x37bf70), turn numerator 150
+  (0x37bf74), size scale 255 (0x37bf78) and the largest turn 0.5236 (0x37bf84, copied to 0x1d5e2c0 by
+  `FUN_001c59b0`). Its only caller is `FUN_002eece8` (which also runs `FUN_001bda98`, below), the wrapper of
+  host function 6.31 (no arguments; table entry 0x370f58 of the group-6 table 0x371078 named by 0x35bce8).
+  No BDX script on the disc calls 6.31 (`kh2 bdx --scan` lists no 6.31); other script systems were not
+  searched. The app maps 6.31 in `enemy_host` and sends `prize::CollectAll`; test
+  `collect_all_draws_in_over_its_own_frames`.
 
 ## The pickup (`FUN_001a39b0`, verified; table at 0x37b540, 8 bytes per kind)
 
 | byte | effect | port |
 |---|---|---|
-| +0 float | above 0: `FUN_00175c28` starts system effect 6 of 0x1c954d8 on the player for that many frames (+0xae4/+0xae8) | **gap**: no owner-bound system effect with an end in `fx` |
+| +0 float | above 0: `FUN_00175c28` starts system effect 6 of 0x1c954d8 on the player (`FUN_001db868(.., 6, 0, 1, 0x2714, player)`) for that many frames when none runs (+0xae4 the handle, +0xae8 the frames) and the player's +0x160 bit 0x4000 is clear; otherwise the frames left are raised to the new value. `FUN_00175cb0` (called from `FUN_00174b68`) counts +0xae8 down and stops the effect (`FUN_001d9f48`) at 0 or with bit 0x4000 | timer ported (`prize::Glow`, test `the_pickup_glow_starts_once_and_extends`, log `glow starts for N frames, not drawn`); **gap**: the effect is not drawn (`fx` has no owner-bound system effect with an end) |
 | +4 | HP: the player's method +0x78 (`FUN_001792f0` -> `FUN_00176c98` -> `FUN_00186238`, HP + amount held at the maximum) | done |
 | +5 | MP: `FUN_00186368` -> `FUN_001a0180`: during the MP charge the charge time drops by amount * `sstm[0x7c]` (`FUN_001a0540`), else MP + amount held at the maximum | done (the charge end comes on `magic`'s next tick [inferred one tick late]) |
-| +6 | drive: `FUN_001788d8(units)`: gauge mode adds `(int)(units * [sstm[0x78] * block +0x38 while charging] * FUN_001ba040())` to the gauge (`FUN_001a0290`); form mode adds `units * sstm[0x70]` to the form timer (`FUN_001a0358`); `FUN_001d4148` gives Master Form (+0xb50 == 3) form experience (`FUN_001d3f88`) | gauge and timer done; `FUN_001ba040` is 1.0 (0x37bc04) outside the Colosseum manager `DAT_01d5dd20`; **gap**: Master Form experience |
+| +6 | drive: `FUN_001788d8(units)`: gauge mode adds `(int)(units * [sstm[0x78] * block +0x38 while charging] * FUN_001ba040())` to the gauge (`FUN_001a0290`); form mode adds `units * sstm[0x70]` to the form timer (`FUN_001a0358`); `FUN_001d4148` gives Master Form (+0xb50 == 3) form experience (`FUN_001d3f88`) | gauge and timer done; `FUN_001ba040` is 1.0 (0x37bc04) outside the Colosseum manager `DAT_01d5dd20`; Master Form experience done since WP-7Bb (below) |
 | +7 | munny: `FUN_0014f2d8(amount)` -> `FUN_00151970` on the HUD object `DAT_00358534` (the "OBTAINED MUNNY!" strip, group 0x11 with digits; while it is up the amount is added to the one shown, `FUN_00151c40`), then `FUN_0023e620(amount)`: the word at save + 0x1600 (0x33fe60) + amount, 999,999 when the sum is 1,000,000 or more (`FUN_0023e5e0`) | done (`Progress::add_to_wallet`, `hud_banner` strip) |
 
 The rows on the user's disc (test `real_prize_tables`): kinds 0-1 HP, 2-4 munny, 5-6 MP, 7-8 drive.

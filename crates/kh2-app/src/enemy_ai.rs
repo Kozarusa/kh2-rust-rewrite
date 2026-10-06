@@ -372,7 +372,12 @@ fn ai_update(
     mut player_reaction: ResMut<PlayerReaction>,
     (mut trace, mut mailbox): (ResMut<AiTrace>, ResMut<Mailbox>),
     (programs, abilities): (Res<AiPrograms>, Option<Res<crate::abilities::Abilities>>),
-    (prize_pool, mut prize_drops): (Option<Res<crate::prize::PrizePool>>, MessageWriter<crate::prize::PrizeDrop>),
+    (prize_pool, mut prize_drops, mut item_drops, mut collect_all): (
+        Option<Res<crate::prize::PrizePool>>,
+        MessageWriter<crate::prize::PrizeDrop>,
+        MessageWriter<crate::prize::ItemDrop>,
+        MessageWriter<crate::prize::CollectAll>,
+    ),
 ) {
     trace.tick += 1;
     if trace.tick.is_multiple_of(SUMMARY_EVERY) {
@@ -490,8 +495,8 @@ fn ai_update(
             }
         }
         // Drops (host 1.92): the party is Sora alone, his ability block gives Jackpot and Lucky Lucky.
-        // The prize objects are made by `prize` (no pool without its plugin: none are made then);
-        // the dropped items' objects (FUN_001bd490) are not ported.
+        // The prize objects and the dropped items' objects (FUN_001bd490) are made by `prize` (no pool
+        // without its plugin: no prize objects then).
         for id in obj.drops.drain(..) {
             let (jackpot, lucky) = abilities.as_deref().map_or((0.0, 0.0), |a| (a.block().jackpot, a.block().lucky_lucky));
             match prize_row(&programs.prizes, id) {
@@ -499,18 +504,27 @@ fn ai_update(
                     let free = prize_pool.as_deref().map_or(0, |p| p.free());
                     let d = compute_drop(row, 1.0 + jackpot, 1.0 + lucky, &mut mailbox.seed, free);
                     info!(
-                        "bdx {tag}: drop (host 1.92) asked row {id}, used row {}: prizes per kind {:?}, items {:?} ({} prize objects; item objects not ported)",
+                        "bdx {tag}: drop (host 1.92) asked row {id}, used row {}: prizes per kind {:?}, items {:?} ({} prize objects, {} item objects)",
                         d.row,
                         d.prizes,
                         d.items,
-                        d.launches.len()
+                        d.launches.len(),
+                        d.item_launches.len()
                     );
                     if !d.launches.is_empty() {
                         prize_drops.write(crate::prize::PrizeDrop { from: ent, row: d.row, launches: d.launches });
                     }
+                    if !d.item_launches.is_empty() {
+                        item_drops.write(crate::prize::ItemDrop { from: ent, launches: d.item_launches });
+                    }
                 }
                 None => trace.note(tag, format!("drop row {id}: przt has neither it nor row 0x48")),
             }
+        }
+        // Host 6.31 (FUN_002eece8): every prize and item goes to the player.
+        if std::mem::take(&mut obj.collect_all) {
+            info!("bdx {tag}: host 6.31 collects every prize and item for the player");
+            collect_all.write(crate::prize::CollectAll);
         }
         // The status block the script rebuilt (host 2.9) and the HP changes it made (1.231, 1.155).
         if let Some(row) = obj.param_row.take() {

@@ -669,9 +669,19 @@ mod group {
     pub const CELL: usize = 0x130;
     pub const CELL_SELECTED: usize = 0x12f;
     pub const CELL_EMPTY: usize = 0x12e;
-    /// The dialog pages' panel (`FUN_0025bad0`: 0x128 enter, 0x129 loop) and row plate (0x124).
+    /// The prompt panel (`FUN_0025bad0`: 0x128 enter, 0x129 loop), the item window beside it (0x131, 0x132), the
+    /// target panel under it (`FUN_0025c2c8`: 0x12b, 0x12c), the title strip of both (0x124) and the row plate
+    /// (0x123, every set of `FUN_00296b48` in both builders).
     pub const PROMPT_PANEL: [usize; 2] = [0x128, 0x129];
-    pub const PROMPT_ROWS: usize = 0x124;
+    pub const ITEM_WINDOW: [usize; 2] = [0x131, 0x132];
+    pub const TARGET_PANEL: [usize; 2] = [0x12b, 0x12c];
+    pub const TITLE: usize = 0x124;
+    pub const ROW: usize = 0x123;
+    /// The information window (`FUN_00253398`, the groups at 0x380880 and 0x380888, in the order of every group
+    /// table of the camp: enter, leave, hold): the OK window of the notice and the larger Yes / No window of the
+    /// question.
+    pub const INFO_OK: [usize; 3] = [6, 8, 7];
+    pub const INFO_ASK: [usize; 3] = [9, 0xb, 0xa];
 }
 
 /// Layout in menu units (before the 16 line offset). The positions come from the groups' own anchors; what
@@ -688,6 +698,16 @@ mod at {
     pub const SELECTED: [u8; 4] = [0xe5, 0xe5, 0xe5, 0x80];
     pub const HELP_COLOR: [u8; 4] = [0x30, 0x7c, 0x80, 0x80];
     pub const LABEL: [f32; 2] = [0.0, 1.0];
+    /// The right edge of a stock cell's count from the cell's anchor (the selected cell group is 216 wide).
+    pub const COUNT_RIGHT: f32 = 204.0;
+    /// Where the information window's text and rows start from its anchor (255, 118) / (255, 126): by eye, no clip
+    /// shows the window.
+    pub const INFO_OK_TEXT: [f32; 2] = [-170.0, -4.0];
+    pub const INFO_ASK_TEXT: [f32; 2] = [-210.0, -10.0];
+    /// The first row of the window's list and the pitch between rows (the Yes / No window's group has 24).
+    pub const INFO_OK_ROWS: [f32; 2] = [-30.0, 125.0];
+    pub const INFO_ASK_ROWS: [f32; 2] = [-30.0, 98.0];
+    pub const INFO_ASK_PITCH: f32 = 24.0;
 }
 
 /// "There are no items." (`FUN_0025dae8`: `0x845a`, bit 15 ignored).
@@ -706,8 +726,15 @@ struct Ui {
     cells: Vec<usize>,
     counts: Vec<usize>,
     prompt_panel: usize,
+    prompt_title: usize,
     prompt_rows: Vec<usize>,
-    text: usize,
+    item_window: usize,
+    target_panel: usize,
+    target_title: usize,
+    target_rows: Vec<usize>,
+    info: usize,
+    info_text: usize,
+    info_rows: Vec<usize>,
     help: usize,
     all: Vec<usize>,
 }
@@ -935,7 +962,8 @@ fn input(
                         && let (Some(m), Some(d)) = (magic.as_deref_mut(), game.as_deref())
                     {
                         let feed = idata.as_deref().map_or(0.0, |i| i.charge_feed);
-                        use_item(&st, p, &mut s, m, drive.as_deref_mut(), d.sora_max_mp, feed, item, row);
+                        let name = item_name(&st, &scene, item);
+                        use_item(&st, p, &mut s, m, drive.as_deref_mut(), d.sora_max_mp, feed, (item, &name), row);
                         let stock = stock_of(&st, p, st.machine.as_ref().map_or(0, |m| m.filter));
                         if let Some(m) = st.machine.as_mut() {
                             m.reload(stock, false);
@@ -995,7 +1023,7 @@ fn use_item(
     mut drive: Option<&mut crate::drive::DriveState>,
     max_mp: i32,
     feed: f32,
-    item: u16,
+    (item, name): (u16, &str),
     row: usize,
 ) {
     let Some(r) = st.rows.get(&item).copied() else { return };
@@ -1004,8 +1032,18 @@ fn use_item(
     let (hp0, mp0) = (v.hp, v.mp);
     let mut note = String::new();
     if (0x114..=0x117).contains(&item) {
+        let m0 = p.sora();
+        let was = [m0.ap, m0.strength, m0.magic, m0.defense];
         let added = p.apply_boost(crate::progress::SORA, item, r.amount.min(255) as u8);
-        note = format!(", boost +{added}");
+        let m1 = p.sora();
+        let now = [m1.ap, m1.strength, m1.magic, m1.defense];
+        let k = match item {
+            0x114 => 1,
+            0x115 => 2,
+            0x116 => 3,
+            _ => 0,
+        };
+        note = format!(", boost +{added} (record byte {} -> {})", was[k], now[k]);
     } else {
         item_effect(item, r.amount, 100, &mut v, feed);
         s.hp = v.hp;
@@ -1018,7 +1056,7 @@ fn use_item(
         }
     }
     p.take_item(item, crate::progress::INVENTORY);
-    info!("menu: item used: id {item} (row {row}) on Sora: HP {hp0} -> {}, MP {mp0} -> {}{note}, stock {before} -> {}", s.hp, s.mp, p.item_count(item));
+    info!("menu: item used: {name} (id {item}, row {row}) on Sora: HP {hp0} -> {}, MP {mp0} -> {}{note}, stock {before} -> {}", s.hp, s.mp, p.item_count(item));
 }
 
 // --- drawing -------------------------------------------------------------------------------
@@ -1049,21 +1087,59 @@ fn ensure_ui(st: &mut ItemsMenu, scene: &mut MenuScene) {
     let panel = mk(scene, S);
     let cells: Vec<usize> = (0..COLUMNS * ROWS).map(|_| mk(scene, S)).collect();
     let counts: Vec<usize> = (0..COLUMNS * ROWS).map(|_| mk(scene, None)).collect();
+    let item_window = mk(scene, S);
     let prompt_panel = mk(scene, S);
-    let prompt_rows: Vec<usize> = (0..4).map(|_| mk(scene, S)).collect();
-    let text = mk(scene, None);
+    let prompt_title = mk(scene, S);
+    let prompt_rows: Vec<usize> = (0..2).map(|_| mk(scene, S)).collect();
+    let target_panel = mk(scene, S);
+    let target_title = mk(scene, S);
+    let target_rows: Vec<usize> = (0..4).map(|_| mk(scene, S)).collect();
+    let info = mk(scene, S);
+    let info_text = mk(scene, None);
+    let info_rows: Vec<usize> = (0..2).map(|_| mk(scene, S)).collect();
     let help = mk(scene, None);
     for (&c, &n) in cells.iter().zip(&counts) {
         scene.nodes[c].parent = Some(panel);
         scene.nodes[n].parent = Some(c);
     }
+    scene.nodes[prompt_title].parent = Some(prompt_panel);
     for &r in &prompt_rows {
         scene.nodes[r].parent = Some(prompt_panel);
+    }
+    scene.nodes[target_title].parent = Some(target_panel);
+    for &r in &target_rows {
+        scene.nodes[r].parent = Some(target_panel);
+    }
+    scene.nodes[info_text].parent = Some(info);
+    for &r in &info_rows {
+        scene.nodes[r].parent = Some(info);
     }
     for &r in &preview {
         scene.nodes[r].parent = Some(window);
     }
-    st.ui = Some(Ui { tabs, rows, hand, glint, window, preview, panel, cells, counts, prompt_panel, prompt_rows, text, help, all });
+    st.ui = Some(Ui {
+        tabs,
+        rows,
+        hand,
+        glint,
+        window,
+        preview,
+        panel,
+        cells,
+        counts,
+        prompt_panel,
+        prompt_title,
+        prompt_rows,
+        item_window,
+        target_panel,
+        target_title,
+        target_rows,
+        info,
+        info_text,
+        info_rows,
+        help,
+        all,
+    });
 }
 
 /// Takes over from page 0: hides its rows, hand, help line and cards.
@@ -1093,8 +1169,9 @@ fn leave(st: &mut ItemsMenu, menu: &mut Menu, scene: &mut MenuScene) {
     info!("menu: page 0");
 }
 
+/// A message's tokens without its end command, so runs can be joined (the layout stops at an end command).
 fn tokens_of(text: &MenuText, id: u32) -> Vec<Token> {
-    text.messages.as_ref().and_then(|m| m.tokens(id)).unwrap_or_default()
+    text.messages.as_ref().and_then(|m| m.tokens(id)).unwrap_or_default().into_iter().filter(|t| *t != Token::End).collect()
 }
 
 fn label(text: &MenuText, tokens: Vec<Token>, font: usize, size: f32, color: [u8; 4], align: u8, offset: [f32; 2]) -> Label {
@@ -1107,11 +1184,17 @@ pub fn fill(tokens: Vec<Token>, args: &[Vec<Token>]) -> Vec<Token> {
     let mut next = args.iter();
     for t in tokens {
         match t {
-            Token::Variable => out.extend(next.next().cloned().unwrap_or_default()),
+            // A substituted run ends with its own end command, which would stop the whole message.
+            Token::Variable => out.extend(next.next().into_iter().flatten().filter(|t| **t != Token::End).cloned()),
             other => out.push(other),
         }
     }
     out
+}
+
+/// The tokens of the count beside a cell.
+fn count_tokens(text: &MenuText, n: u8) -> Option<Vec<Token>> {
+    Some(text.literal(&count_text(n)?, Style::default(), [0.0; 2]).tokens)
 }
 
 /// One stock cell's text: the item's icon and name (`FUN_00255520`).
@@ -1121,9 +1204,11 @@ fn item_tokens(text: &MenuText, r: &ItemRow) -> Vec<Token> {
     v
 }
 
-/// The count text beside a cell (`FUN_00284088`: nothing for one, else the format at 0x382408, `*%d`).
+/// The count text beside a cell (`FUN_00284088`: nothing for one, else the format at 0x382408, `*%d`). The game's
+/// glyph table has no asterisk in the font's character set, and its multiplication sign (glyph 13) is what the
+/// font draws for it [inferred: the format's ASCII `*` goes through the text conversion of `FUN_00191710`].
 pub fn count_text(n: u8) -> Option<String> {
-    (n != 1).then(|| format!("*{n}"))
+    (n != 1).then(|| format!("\u{d7}{n}"))
 }
 
 fn set_help(scene: &mut MenuScene, text: &MenuText, help: usize, id: Option<u32>) {
@@ -1143,7 +1228,7 @@ fn cell_pitch(scene: &MenuScene) -> (f32, f32) {
 fn redraw(st: &mut ItemsMenu, scene: &mut MenuScene, progress: Option<&Progress>) {
     let Some(m) = st.machine.clone() else { return };
     let Some(ui_ref) = st.ui.as_ref() else { return };
-    let (tabs, rows, hand, glint, window, preview, panel, cells, counts, prompt_panel, prompt_rows, text_node, help) = (
+    let (tabs, rows, hand, glint, window, preview, panel, cells, counts, help) = (
         ui_ref.tabs,
         ui_ref.rows.clone(),
         ui_ref.hand,
@@ -1153,10 +1238,19 @@ fn redraw(st: &mut ItemsMenu, scene: &mut MenuScene, progress: Option<&Progress>
         ui_ref.panel,
         ui_ref.cells.clone(),
         ui_ref.counts.clone(),
-        ui_ref.prompt_panel,
-        ui_ref.prompt_rows.clone(),
-        ui_ref.text,
         ui_ref.help,
+    );
+    let (prompt_panel, prompt_title, prompt_rows, item_window, target_panel, target_title, target_nodes, info, info_text, info_rows) = (
+        ui_ref.prompt_panel,
+        ui_ref.prompt_title,
+        ui_ref.prompt_rows.clone(),
+        ui_ref.item_window,
+        ui_ref.target_panel,
+        ui_ref.target_title,
+        ui_ref.target_rows.clone(),
+        ui_ref.info,
+        ui_ref.info_text,
+        ui_ref.info_rows.clone(),
     );
     let all = ui_ref.all.clone();
     let entry = st.entry.clone().unwrap_or_else(|| Entry { idle: [0; 4], selected: [0; 4], name: 0, help: 0, need: vec![], deny: vec![] });
@@ -1237,7 +1331,8 @@ fn redraw(st: &mut ItemsMenu, scene: &mut MenuScene, progress: Option<&Progress>
                     scene.nodes[id].label = Some(label(&text, tokens, 1, 15.0, at::COLOR, 0, at::LABEL));
                 }
             }
-            set_help(scene, &text, help, Some(0x3714));
+            // `FUN_0025ddc0`: the member's help, or the Stock's (messages 0xbb86, 0xbb87; bit 15 ignored).
+            set_help(scene, &text, help, Some(if m.cursor1 < m.members { 0x3b86 } else { 0x3b87 }));
         }
         STOCK => {
             set(scene, panel, group::STOCK_PANEL[0], Some(group::STOCK_PANEL[1]), was_of(panel));
@@ -1256,10 +1351,10 @@ fn redraw(st: &mut ItemsMenu, scene: &mut MenuScene, progress: Option<&Progress>
                 set(scene, c, if selected { group::CELL_SELECTED } else { group::CELL }, None, false);
                 scene.nodes[c].label_anchor = None;
                 scene.nodes[c].label = st.rows.get(&s.id).map(|r| label(&text, item_tokens(&text, r), 1, 15.0, if selected { at::SELECTED } else { at::COLOR }, 0, at::LABEL));
-                if let Some(n) = count_text(s.count) {
+                if let Some(tokens) = count_tokens(&text, s.count) {
                     let id = counts[slot];
                     scene.nodes[id].visible = true;
-                    scene.nodes[id].label = Some(label(&text, text.literal(&n, Style::default(), [0.0; 2]).tokens, 1, 15.0, if selected { at::SELECTED } else { at::COLOR }, 1, [dx - 12.0, 1.0]));
+                    scene.nodes[id].label = Some(label(&text, tokens, 1, 15.0, if selected { at::SELECTED } else { at::COLOR }, 1, [at::COUNT_RIGHT, 1.0]));
                 }
             }
             if let Some(s) = m.stock.get(m.cursor) {
@@ -1273,52 +1368,89 @@ fn redraw(st: &mut ItemsMenu, scene: &mut MenuScene, progress: Option<&Progress>
         }
         PROMPT | DISCARD | TARGET | NOTICE => {
             let item = m.item;
+            let id = item.map_or(0, |r| r.id);
+            // The prompt panel and the item window stay up on every one of these pages (`FUN_0025bad0` builds them,
+            // the later pages add their own objects); the target panel hangs under the prompt panel.
             set(scene, prompt_panel, group::PROMPT_PANEL[0], Some(group::PROMPT_PANEL[1]), was_of(prompt_panel));
-            let type_tokens = |r: &ItemRow| exe.type_name(r.kind).map(|id| tokens_of(&text, id)).unwrap_or_default();
-            let (labels, cursor): (Vec<(Vec<Token>, bool)>, usize) = match page {
+            set(scene, item_window, group::ITEM_WINDOW[0], Some(group::ITEM_WINDOW[1]), was_of(item_window));
+            // The title strip of the prompt panel is the item's own list text (icon, name, count: `FUN_0025bad0` points
+            // the strip's text at the cell's buffer).
+            set(scene, prompt_title, group::TITLE, None, was_of(prompt_title));
+            let count = m.stock.iter().find(|s| s.id == id).map_or(0, |s| s.count);
+            let mut title = item.map(|r| item_tokens(&text, &r)).unwrap_or_default();
+            if let Some(c) = count_tokens(&text, count) {
+                title.push(Token::Space);
+                title.extend(c);
+            }
+            scene.nodes[prompt_title].label_anchor = Some(at::LABEL);
+            scene.nodes[prompt_title].label = Some(label(&text, title, 1, 15.0, at::COLOR, 0, [0.0, 0.0]));
+            let can = item.is_some_and(|r| r.can_discard());
+            let pitch = scene.seqs.get(1).and_then(|s| s.groups.get(group::ROW)).map_or(28.0, |g| g.unk1c as f32);
+            for (k, &r) in prompt_rows.iter().enumerate() {
+                let Some(&row) = prompt_rows_of(m.usable).get(k) else { continue };
+                scene.nodes[r].off = [0.0, pitch * k as f32];
+                set(scene, r, group::ROW, None, was_of(r));
+                scene.nodes[r].label_anchor = Some(at::LABEL);
+                let selected = page == PROMPT && k == m.prompt;
+                let color = if selected { at::SELECTED } else if row == 1 && !can { at::GREY } else { at::COLOR };
+                scene.nodes[r].label = Some(label(&text, tokens_of(&text, exe.prompt[row]), 1, 15.0, color, 0, [0.0, 0.0]));
+            }
+            match page {
                 PROMPT => {
-                    let can = item.is_some_and(|r| r.can_discard());
-                    let rows: Vec<(Vec<Token>, bool)> = prompt_rows_of(m.usable).into_iter().map(|row| (tokens_of(&text, exe.prompt[row]), row == 1 && !can)).collect();
-                    (rows, m.prompt)
+                    scene.nodes[hand].parent = Some(prompt_rows[m.prompt.min(prompt_rows.len() - 1)]);
+                    scene.nodes[hand].off = at::HAND;
+                    set(scene, hand, group::HAND, None, false);
                 }
                 TARGET => {
-                    let id = item.map_or(0, |r| r.id);
+                    set(scene, target_panel, group::TARGET_PANEL[0], Some(group::TARGET_PANEL[1]), was_of(target_panel));
+                    set(scene, target_title, group::TITLE, None, was_of(target_title));
+                    scene.nodes[target_title].label_anchor = Some(at::LABEL);
+                    scene.nodes[target_title].label = Some(label(&text, tokens_of(&text, 0x3943), 1, 15.0, at::COLOR, 0, [0.0, 0.0]));
                     let (n, all_row) = target_rows(id, m.single, 1);
-                    let rows = (0..n).map(|_| (if all_row { tokens_of(&text, 0x3944) } else { text.literal("Sora", Style::default(), [0.0; 2]).tokens }, false)).collect();
-                    (rows, m.target)
+                    for (k, &r) in target_nodes.iter().enumerate().take(n) {
+                        scene.nodes[r].off = [0.0, pitch * k as f32];
+                        set(scene, r, group::ROW, None, was_of(r));
+                        scene.nodes[r].label_anchor = Some(at::LABEL);
+                        let tokens = if all_row { tokens_of(&text, 0x3944) } else { text.literal("Sora", Style::default(), [0.0; 2]).tokens };
+                        scene.nodes[r].label = Some(label(&text, tokens, 1, 15.0, if k == m.target { at::SELECTED } else { at::COLOR }, 0, [0.0, 0.0]));
+                    }
+                    scene.nodes[hand].parent = Some(target_nodes[m.target.min(n.saturating_sub(1))]);
+                    scene.nodes[hand].off = at::HAND;
+                    set(scene, hand, group::HAND, None, false);
                 }
-                DISCARD => (vec![(tokens_of(&text, exe.no), false), (tokens_of(&text, exe.yes), false)], m.question),
-                _ => (vec![(tokens_of(&text, exe.ok), false)], 0),
-            };
-            for (k, &r) in prompt_rows.iter().enumerate() {
-                let Some((tokens, grey)) = labels.get(k).cloned() else { continue };
-                scene.nodes[r].off = [0.0, at::ROW_PITCH * k as f32];
-                set(scene, r, group::PROMPT_ROWS, None, was_of(r));
-                scene.nodes[r].label_anchor = Some(at::LABEL);
-                let color = if k == cursor { at::SELECTED } else if grey { at::GREY } else { at::COLOR };
-                scene.nodes[r].label = Some(label(&text, tokens, 1, 15.0, color, 0, [0.0, 0.0]));
+                NOTICE | DISCARD => {
+                    // The information window (`FUN_00253398`): "{type} {name}" goes into the message (`FUN_00191a30`);
+                    // the OK of the notice or the No and Yes of the question are its rows.
+                    let ask = page == DISCARD;
+                    let g = if ask { group::INFO_ASK } else { group::INFO_OK };
+                    set(scene, info, g[0], Some(g[2]), was_of(info));
+                    let type_tokens = item.and_then(|r| exe.type_name(r.kind)).map(|t| tokens_of(&text, t)).unwrap_or_default();
+                    let name = item.map(|r| tokens_of(&text, u32::from(r.name))).unwrap_or_default();
+                    let tokens = fill(tokens_of(&text, if ask { 0x394f } else { 0x3b90 }), &[type_tokens, name]);
+                    let n = &mut scene.nodes[info_text];
+                    n.visible = true;
+                    n.label_anchor = Some(if ask { at::INFO_ASK_TEXT } else { at::INFO_OK_TEXT });
+                    n.label = Some(label(&text, tokens, 1, 15.0, at::COLOR, 0, [0.0, 0.0]));
+                    let rows: Vec<(u32, bool)> = if ask { vec![(exe.no, m.question == 0), (exe.yes, m.question == 1)] } else { vec![(exe.ok, true)] };
+                    let [px, py] = if ask { at::INFO_ASK_ROWS } else { at::INFO_OK_ROWS };
+                    for (k, &(msg, sel)) in rows.iter().enumerate() {
+                        let r = info_rows[k];
+                        set(scene, r, group::ROW, None, was_of(r));
+                        scene.nodes[r].off = [px, py + at::INFO_ASK_PITCH * k as f32];
+                        scene.nodes[r].label_anchor = Some(at::LABEL);
+                        scene.nodes[r].label = Some(label(&text, tokens_of(&text, msg), 1, 15.0, if sel { at::SELECTED } else { at::COLOR }, 0, [0.0, 0.0]));
+                        if sel {
+                            scene.nodes[hand].parent = Some(r);
+                            scene.nodes[hand].off = at::HAND;
+                            set(scene, hand, group::HAND, None, false);
+                        }
+                    }
+                }
+                _ => {}
             }
-            if let Some(&sel) = prompt_rows.get(cursor) {
-                scene.nodes[hand].parent = Some(sel);
-                scene.nodes[hand].off = at::HAND;
-                set(scene, hand, group::HAND, None, false);
-            }
-            // The question or notice text: "{type} {name}" substituted into the message (`FUN_00191a30`).
-            let msg = match page {
-                DISCARD => Some(0x394f),
-                NOTICE => Some(0x3b90),
-                TARGET => Some(0x3943),
-                _ => None,
-            };
-            if let Some(id) = msg {
-                let args = item.map(|r| vec![type_tokens(&r), tokens_of(&text, u32::from(r.name))]).unwrap_or_default();
-                let tokens = fill(tokens_of(&text, id), &args);
-                let n = &mut scene.nodes[text_node];
-                n.visible = true;
-                n.pos = at::HELP;
-                n.label = Some(label(&text, tokens, 0, 15.0, at::HELP_COLOR, 0, [0.0, 0.0]));
-            }
-            set_help(scene, &text, help, None);
+            // `FUN_0025ddc0` on pages 0xb and 0xc: the item's description (`item +0xa`).
+            let desc = if matches!(page, PROMPT | TARGET) { item.map(|r| u32::from(r.description)) } else { None };
+            set_help(scene, &text, help, desc);
         }
         _ => {}
     }
@@ -1752,6 +1884,6 @@ mod tests {
         let out = fill(msg, &[vec![Token::Glyph(10)], vec![Token::Glyph(20), Token::Glyph(21)]]);
         assert_eq!(out, vec![Token::Glyph(1), Token::Glyph(10), Token::Space, Token::Glyph(20), Token::Glyph(21), Token::Glyph(2)]);
         assert_eq!(count_text(1), None, "a single item shows no count");
-        assert_eq!(count_text(12).as_deref(), Some("*12"));
+        assert_eq!(count_text(12).as_deref(), Some("\u{d7}12"));
     }
 }

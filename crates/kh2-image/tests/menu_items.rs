@@ -109,7 +109,7 @@ fn item_page_groups_exist_in_camp() {
     let bar = a.read("menu/us/camp.2ld").expect("camp.2ld");
     let two = layd::parse_2ld(&bar).expect("a .2ld");
     let seq = &two.layd.seqs[1];
-    for g in [0x123usize, 0x124, 0x125, 0x126, 0x128, 0x129, 0x12b, 0x12c, 0x12e, 0x12f, 0x130, 0x131, 0x132, 0x84, 0x85, 0x86, 0x87, 0x9c, 0x77, 0x7b, 0x7c, 0xe6] {
+    for g in [0x123usize, 0x124, 0x125, 0x126, 0x128, 0x129, 0x12b, 0x12c, 0x12e, 0x12f, 0x130, 0x131, 0x132, 0x84, 0x85, 0x86, 0x87, 0x9c, 0x77, 0x7b, 0x7c, 0xe6, 6, 7, 8, 9, 10, 11] {
         assert!(g < seq.groups.len(), "group {g:#x} exists");
         let gr = &seq.groups[g];
         let last = seq.last_frame(g);
@@ -122,8 +122,11 @@ fn item_page_groups_exist_in_camp() {
             y0 = y0.min(p[1]);
             y1 = y1.max(p[1]);
         }
+        let alpha: Vec<u8> = q.iter().take(6).map(|q| q.color[0][3]).collect();
         println!(
-            "group {g:#x}: loops {} flags {:#x} len {} last {last} xy ({}, {}) size {} unk1c {} unk20 {} anchor0 ({x}, {y}) last-frame bbox ({x0:.0}, {y0:.0})-({x1:.0}, {y1:.0})",
+            "group {g:#x}: {} quads, first alphas {alpha:?}, blend {:?}; loops {} flags {:#x} len {} last {last} xy ({}, {}) size {} unk1c {} unk20 {} anchor0 ({x}, {y}) last-frame bbox ({x0:.0}, {y0:.0})-({x1:.0}, {y1:.0})",
+            q.len(),
+            q.iter().take(6).map(|q| q.blend).collect::<Vec<_>>(),
             gr.loops,
             gr.flags,
             seq.group_len(g),

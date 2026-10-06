@@ -563,7 +563,6 @@ fn run(
     st.casts.retain(|c| c.step != Step::Done);
 
     // The attacks against the enemies' hurt shapes, then the victims' hit memory counts down.
-    drop(body);
     let victims: Vec<Victim> = fighters
         .iter()
         .filter(|(_, f, _)| f.team == Team::Enemy && f.hittable)

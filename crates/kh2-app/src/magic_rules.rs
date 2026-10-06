@@ -291,7 +291,7 @@ pub fn parse_magi(blob: &[u8]) -> Vec<MagiRow> {
                 return MagiRow::default();
             }
             let end = sorted.iter().copied().find(|&x| x > o).unwrap_or(blob.len()).min(blob.len());
-            MagiRow(blob.get(o..end).unwrap_or(&[]).chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+            MagiRow(blob.get(o..end).unwrap_or(&[]).as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect())
         })
         .collect()
 }

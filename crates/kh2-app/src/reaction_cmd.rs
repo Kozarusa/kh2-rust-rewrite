@@ -616,6 +616,44 @@ mod tests {
         assert!(!names.is_empty());
     }
 
+    /// Every motion set on the disc, slots and paired sub-motions (BAR type 20 entries): print each
+    /// range trigger 20 (offer), 25 and 26 (the player's reaction window, FUN_00188030 cases 0x19 and
+    /// 0x1a: flag 0x100000 / 0x200000 and +0x50c = the parameter). Skips without an ISO or name list.
+    #[test]
+    fn real_disc_window_scan() {
+        let Some(d) = disc() else { return };
+        let list = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../local/kh2idx.txt")).unwrap_or_default();
+        if list.is_empty() {
+            eprintln!("skipped: no name list (kh2 fetch-names)");
+            return;
+        }
+        let names: Vec<String> = {
+            let mut a = d.0.lock().unwrap();
+            a.apply_names(list.lines()).expect("names");
+            a.entries().iter().filter_map(|l| l.name.clone()).filter(|n| n.ends_with(".mset")).collect()
+        };
+        let show = |n: &str, at: &str, tg: &Triggers| {
+            for r in tg.ranges.iter().filter(|r| matches!(r.id, 20 | 25 | 26)) {
+                eprintln!("WINDOW {n} {at} trigger {} params {:?} frames {}..{}", r.id, r.params, r.start, r.end);
+            }
+        };
+        for n in &names {
+            let Some(raw) = d.read(n) else { continue };
+            if let Some(m) = kh2_anim::Mset::parse(&raw) {
+                for slot in 0..m.slots.len() {
+                    if let Some(s) = m.get(slot) {
+                        show(n, &format!("slot {slot} {}", s.tag), &s.triggers);
+                    }
+                }
+            }
+            for (slot, subs) in crate::player_reaction::paired_entries(&raw) {
+                for (sub, s) in subs {
+                    show(n, &format!("paired {slot}/{sub}"), &s.triggers);
+                }
+            }
+        }
+    }
+
     /// The command table's reaction rows: the 124 rows with CmdAction 1 or 2 whose Execute is their own
     /// id, plus the two rows of the motion offer (455 and 457, CmdAction 0), 126 in all. Their facts
     /// (docs/limits-reactions.md): all can show in battle (Flags bit 4), 12 wait for the player's trigger

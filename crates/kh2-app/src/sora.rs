@@ -127,6 +127,126 @@ mod mid {
     pub const GLIDE_HOVER: usize = 208;
 }
 
+/// A Square press while moving that is released within this many ticks (0.2 s) is a tap: the dodge
+/// roll; held longer it is the Quick Run. [inferred] The user's rule (2026-10-06 report); the USA
+/// executable has no dodge roll (Dodge Roll is a Final Mix addition: no ability row, no motion in
+/// P_EX100, and `fmab` rows are 16 floats, see docs/movement.md), so no threshold could be read.
+const TAP_TICKS: f32 = 12.0;
+
+/// Range trigger 30: suspends gravity like trigger 3 (FUN_00188030 sets actor +0x160 bit
+/// 0x1000000 for it, which FUN_0017b6e0 and FUN_00169ee8 read together with bit 0x20 of trigger 3).
+const TRIGGER_NO_GRAVITY_30: u8 = 30;
+
+/// The leap of an attack record (`ptya` record fields the selection does not use): FUN_00176050
+/// launches the actor's mover with it when `height` (+0xc) is above 0. Air attacks have one; ground
+/// attacks have none (all zero), except the ledge record key 1.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Leap {
+    /// +0xc: the jump height without a target (and the "has a leap" test).
+    pub height: f32,
+    /// +0x10: the highest jump toward a target (plus the jump height for flag bit 1).
+    pub reach: f32,
+    /// +0x14: the lowest jump toward a target.
+    pub min_height: f32,
+    /// +0x18, +0x1c: the horizontal speed range toward a target; +0x1c is also the speed without one.
+    pub min_speed: f32,
+    pub max_speed: f32,
+    /// +0x3c: added to the horizontal gap to the target.
+    pub gap: f32,
+}
+
+impl Leap {
+    fn from_record(r: &[u8]) -> Option<Leap> {
+        let f = |o: usize| r.get(o..o + 4).map(|s| f32::from_le_bytes([s[0], s[1], s[2], s[3]]));
+        Some(Leap { height: f(0xc)?, reach: f(0x10)?, min_height: f(0x14)?, min_speed: f(0x18)?, max_speed: f(0x1c)?, gap: f(0x3c)? })
+    }
+}
+
+/// The leap fields of every record of every `ptya` table, beside the record as the selection reads
+/// it (`moveset::Action` does not carry them). The controller finds the started record here; the
+/// drive code swaps `Sora::moves` for a form's table, so the lookup is by record, not by index.
+#[derive(Resource, Default)]
+pub struct AttackLeaps(Vec<(Action, Leap)>);
+
+impl AttackLeaps {
+    pub fn parse(ptya: &[u8]) -> AttackLeaps {
+        let word = |o: usize| ptya.get(o..o + 4).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]) as usize);
+        let mut out = Vec::new();
+        for index in 0..word(4).unwrap_or(0) {
+            let (Some(m), Some(at)) = (Moveset::parse(ptya, index), word(8 + 4 * index)) else { continue };
+            for (i, a) in m.actions.into_iter().enumerate() {
+                let start = at + 4 + moveset::RECORD_SIZE * i;
+                if let Some(l) = ptya.get(start..start + moveset::RECORD_SIZE).and_then(Leap::from_record) {
+                    out.push((a, l));
+                }
+            }
+        }
+        AttackLeaps(out)
+    }
+
+    /// The leap of a started record (all zero when the record is not found).
+    pub fn of(&self, a: &Action) -> Leap {
+        self.0.iter().find(|(x, _)| x == a).map_or(Leap::default(), |(_, l)| *l)
+    }
+}
+
+/// The launch of an attack's leap (FUN_00176050, record +0xc above 0): the horizontal unit
+/// direction, the horizontal speed per tick and the jump height. `to_target` is the target's point
+/// less Sora's own (both the centres of their target shapes, FUN_00176400 -> FUN_0018eec0 /
+/// FUN_001894d0, Y up here) and `radii` the sum of their radii; `jump_height` is what record flag
+/// bit 1 adds to the reach (FUN_0016be20).
+/// * With a target: the height is the target's height above Sora, at least +0x14 and at most the
+///   reach; the speed covers the horizontal gap (distance less the radii, plus +0x3c) in the rise
+///   time sqrt(2h/g) of that height (FUN_0017bee0), clamped to +0x18..+0x1c.
+///   [inferred] The distance is read from the VU0 Q register after the square root (`cfc2`).
+/// * Without one: height +0xc, along the facing (FUN_0016a890), at speed +0x1c.
+pub fn leap_launch(l: &Leap, flags: u32, jump_height: f32, facing: Vec3, target: Option<(Vec3, f32)>) -> (Vec3, f32, f32) {
+    let Some((to, radii)) = target else { return (facing.with_y(0.0).normalize_or_zero(), l.max_speed, l.height) };
+    let reach = l.reach + if flags & 2 != 0 { jump_height } else { 0.0 };
+    let up = to.y;
+    let h = if l.min_height <= up { if reach < up { reach } else { up } } else { l.min_height };
+    let flat = to.with_y(0.0);
+    let gap = flat.length() - radii + l.gap;
+    let rise = (2.0 * h / crate::motor::G).sqrt();
+    let s = gap / rise;
+    let speed = if l.min_speed <= s { if s <= l.max_speed { s } else { l.max_speed } } else { l.min_speed };
+    (flat.normalize_or_zero(), speed, h)
+}
+
+/// The phase of a Square dash on the ground (`State::QuickRun`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Dash {
+    /// Pressed while moving, still held, fewer than `TAP_TICKS` ticks ago: not yet decided.
+    #[default]
+    Pending,
+    /// Released within `TAP_TICKS`: the dodge roll, which runs `TAP_TICKS` ticks and stops.
+    Roll,
+    /// Held past `TAP_TICKS` with Quick Run learned: the Quick Run (FUN_00178108 / FUN_001c1660),
+    /// which runs while the button is held, at most `AirSlideTime` ticks.
+    Run,
+}
+
+/// One tick of a Square dash: `held` is the button, `ticks` the ticks since the press, `quick_run`
+/// the Quick Run level and `run_left` its clock (`AirSlideTime`, counted down while held). Returns
+/// the new phase and whether the dash stops now (the stop brake starts).
+pub fn dash_step(phase: Dash, held: bool, ticks: f32, quick_run: u8, run_left: f32) -> (Dash, bool) {
+    match phase {
+        Dash::Pending if !held => (Dash::Roll, ticks >= TAP_TICKS),
+        Dash::Pending if ticks >= TAP_TICKS => {
+            if quick_run >= 1 {
+                (Dash::Run, run_left <= 0.0)
+            } else {
+                // Quick Run not learned: the press was a roll after all.
+                (Dash::Roll, true)
+            }
+        }
+        Dash::Pending => (Dash::Pending, false),
+        Dash::Roll => (Dash::Roll, ticks >= TAP_TICKS),
+        // FUN_001c1660: the clock runs only while the button is held; a release ends it at once.
+        Dash::Run => (Dash::Run, !held || run_left <= 0.0),
+    }
+}
+
 /// Blend lengths in ticks.
 const BLEND_LOCOMOTION: f32 = 8.0;
 const BLEND_FALL: f32 = 8.0;
@@ -244,6 +364,14 @@ pub struct Sora {
     /// Quick Run: ticks left while the button is held, and the per-tick brake.
     dash_time: f32,
     dash_brake: f32,
+    /// The Square dash's phase (dodge roll or Quick Run, decided by how long the button is held).
+    dash: Dash,
+    /// A gravity-suspending trigger (3, 24 or 30) covered the playing motion last tick while airborne:
+    /// actor +0x108 bits 0x800000 / 0x1000000 (FUN_00169ee8). When it ends FUN_0016a2f0 restarts
+    /// the fall carrying the last real movement.
+    hover: bool,
+    /// The last tick's real displacement after collisions (actor +0x860, FUN_00181e00).
+    last_move: Vec3,
     /// One Aerial Dodge per airtime below MAX.
     aerial_dodge_ready: bool,
     lunge_left: f32,
@@ -595,7 +723,13 @@ impl Plugin for SoraPlugin {
             }
         };
         crate::startup_log("rigs");
+        let leaps = {
+            let disc = app.world().resource::<Disc>();
+            let mut a = disc.0.lock().unwrap();
+            kh2_tables::subfile(&mut a, &kh2_tables::tables::PTYA).map(|b| AttackLeaps::parse(&b)).unwrap_or_default()
+        };
         app.insert_resource(rigs)
+            .insert_resource(leaps)
             .init_resource::<Pad>()
             .init_resource::<Battle>()
             .init_resource::<Abilities>()
@@ -746,6 +880,9 @@ pub fn setup(
             timer: 0.0,
             dash_time: 0.0,
             dash_brake: 0.0,
+            dash: Dash::Pending,
+            hover: false,
+            last_move: Vec3::ZERO,
             aerial_dodge_ready: false,
             lunge_left: 0.0,
             lunge_speed: 0.0,
@@ -892,6 +1029,7 @@ pub fn tick(
     data: Res<GameData>,
     growth: Res<Growth>,
     abilities: Res<Abilities>,
+    leaps: Res<AttackLeaps>,
     mut battle: ResMut<Battle>,
     world: Option<Res<World>>,
     reaction: Option<Res<ReactionData>>,
@@ -913,6 +1051,8 @@ pub fn tick(
     // The weapons are addressed through a cue that is replayed on each of them at the end of
     // the tick (`WeaponCue`); `wrig` answers whether any weapon follows a body slot.
     let wrig = WeaponRigs::of(&s.weapons, &anims);
+    // Sora's own target point (FUN_0016b558(actor, 3, -1): his first target-kind shape), for the leap.
+    let own_point = anims.get(s.body).ok().zip(globals.get(s.body).ok()).and_then(|(a, g)| target_points(a, g).first().copied());
     let Ok(mut body) = anims.get_mut(s.body) else { return };
     let rig = body.rig.clone();
     let mut weapon = WeaponCue::default();
@@ -992,6 +1132,9 @@ pub fn tick(
         return;
     }
 
+    // The target's first target point (the selection's target and the leap's aim).
+    let target_point = s.target.and_then(|t| enemy_points.iter().find(|(e, _)| *e == t)).and_then(|(_, p)| p.first().copied());
+
     // Starts the table action `a` (FUN_00176050).
     let start_attack = |s: &mut Sora, body: &mut Animator, weapon: &mut WeaponCue, a: &Action, air: bool| -> bool {
         let finisher = a.finisher();
@@ -1013,7 +1156,14 @@ pub fn tick(
         // Starting an action clears the hit-landed latch.
         s.connected = false;
         keep_out.set(true);
-        s.motor.vel = Vec3::ZERO;
+        // FUN_00176050 writes no velocity for a record without a leap. On the ground the mover's
+        // velocity follows the stick, which FUN_001778e8 zeroes outside an idle range, so Sora
+        // stops; in the air the jump mover keeps its velocity (FUN_001832b8 brakes it by 0.95 a
+        // tick while the stick is zeroed), so the swing does not stop him.
+        let airborne = !s.motor.grounded;
+        if !airborne {
+            s.motor.vel = Vec3::ZERO;
+        }
         // Face the target; close distance beyond the swing's own root motion at plyr V0.
         s.lunge_left = 0.0;
         if let Some(tp) = target_pos {
@@ -1023,6 +1173,34 @@ pub fn tick(
             s.lunge_speed = v0;
         } else if dir != Vec3::ZERO {
             s.motor.yaw = dir.x.atan2(dir.z);
+        }
+        let leap = leaps.of(a);
+        if leap.height > 0.0 {
+            // FUN_00176050 with record +0xc above 0: on the ground the counters restart
+            // (FUN_00176a70), then the mover is launched (its method +8, FUN_001796a8): a new jump
+            // of the leap's height carrying the leap's horizontal velocity. It replaces the plyr V0
+            // approach of the app.
+            if !airborne {
+                s.hits = 1;
+                s.finishers = 1;
+            }
+            let own = own_point.unwrap_or(TargetPoint { pos: s.motor.pos, radius: 0.0, half_height: 0.0 });
+            let to_target = target_point.map(|t| (t.pos - own.pos, t.radius + own.radius));
+            let (d, speed, h) = leap_launch(&leap, a.flags, jump_height(&data, &growth), s.motor.forward(), to_target);
+            s.motor.vel = d * speed;
+            s.motor.start_leap(h);
+            s.lunge_left = 0.0;
+            info!(
+                "sora leap: key {} height {:.1} speed {:.1} ({}), velocity ({:.1} {:.1})",
+                a.key,
+                h,
+                speed,
+                if to_target.is_some() { "toward the target" } else { "along the facing" },
+                s.motor.vel.x,
+                s.motor.vel.z
+            );
+        } else if airborne && move_log() {
+            info!("move: air attack without a leap: velocity kept ({:.1} {:.1})", s.motor.vel.x, s.motor.vel.z);
         }
         true
     };
@@ -1085,7 +1263,6 @@ pub fn tick(
     // The attack button (FUN_00174cf8, command type 1): the combo counters of FUN_00176b00, then
     // the table selection of FUN_00177d58. False when the press is refused or the table offers
     // nothing. `w` holds the playing motion's input windows and `fin_window` its finisher window.
-    let target_point = s.target.and_then(|t| enemy_points.iter().find(|(e, _)| *e == t)).and_then(|(_, p)| p.first().copied());
     let all_points: Vec<TargetPoint> = enemy_points.iter().flat_map(|(_, p)| p.iter().copied()).collect();
     let request = |s: &mut Sora, body: &mut Animator, weapon: &mut WeaponCue, air: bool, w: Windows, fin_window: bool| -> bool {
         let log = move_log();
@@ -1178,6 +1355,22 @@ pub fn tick(
     // Vertical motion this tick: None = follow the floor.
     let mut airborne_dy: Option<f32> = None;
     let fall_max = data.sstm.fall_max;
+    // An attack's plyr V0 approach while airborne, added to the mover's own velocity.
+    let mut lunge_move = Vec3::ZERO;
+    // Gravity suspended by the playing motion (triggers 3, 24, 30; FUN_00169ee8 latches it in actor
+    // +0x108 bits 0x800000 / 0x1000000). When it ends while airborne, FUN_0016a2f0 restarts the jump
+    // mover as a fall that carries the last real movement (+0x860): the horizontal velocity becomes
+    // last tick's displacement and the fall starts at its downward speed. Ported for the attack and
+    // the free fall that follows it.
+    let hover_now = !s.motor.grounded && (body.trigger(range::NO_GRAVITY) || body.trigger(range::NO_GRAVITY_KEEP_KINETICS) || body.trigger(TRIGGER_NO_GRAVITY_30));
+    if s.hover && !hover_now && !s.motor.grounded && matches!(s.state, State::Attack { .. } | State::Air) {
+        s.motor.vel = s.last_move.with_y(0.0);
+        s.motor.jump = Jump::falling_at(-s.last_move.y, s.motor.pos.y);
+        if move_log() {
+            info!("move: gravity back: fall carrying ({:.1} {:.1} {:.1})", s.last_move.x, s.last_move.y, s.last_move.z);
+        }
+    }
+    s.hover = hover_now;
     match s.state {
         State::Ground => {
             s.hits = 0;
@@ -1198,23 +1391,36 @@ pub fn tick(
                 request(s, &mut body, &mut weapon, false, Windows { free: true, combo: false }, false);
             } else if square {
                 // FUN_00177ea0's order: the explicit actions first (they need a combo or finisher
-                // window, so from idle they never start), then Quick Run, then the guard.
+                // window, so from idle they never start), then the dash, then the guard.
+                // The user's rules (2026-10-06): the guard only while standing still; Square while
+                // moving dashes: a tap is the dodge roll, a hold the Quick Run (`Dash`, `dash_step`).
+                // The original (FUN_00178108 then FUN_00178080) starts Quick Run at the press when it
+                // is learned and the stick is pushed, and otherwise guards even while moving.
                 if square_explicit(s, &mut body, &mut weapon, false, Windows { free: true, combo: false }, false) {
                     // An explicit action started.
-                } else if let Some(f) = data.fmab(growth.quick_run).filter(|_| move_speed > 0.0) {
-                    // Quick Run: dash along the input at AirSlideSpeed while the button is held.
+                } else if move_speed > 0.0
+                    && let Some(f) = data.fmab(growth.quick_run.max(1))
+                {
+                    // The dash starts at the press with FUN_00178108's numbers: AirSlideSpeed along the
+                    // stick, AirSlideBrake per tick, AirSlideStarTime of invincibility (+0xb00), motion
+                    // 203 (0xcb). [inferred] Without Quick Run the roll uses the level 1 row: the disc
+                    // has no roll data.
                     s.state = State::QuickRun;
                     s.timer = 0.0;
+                    s.dash = Dash::Pending;
                     s.motor.yaw = dir.x.atan2(dir.z);
                     s.motor.vel = dir * f.air_slide_speed;
                     s.dash_time = f.air_slide_time;
                     s.dash_brake = f.air_slide_brake;
                     s.invuln = f.air_slide_star_time;
                     body.restart(motion(mid::QUICK_RUN), false, 0.0);
-                } else if let Some(g) = s.moves.by_key(key::GUARD).filter(|g| abilities.chain(s.hits, s.finishers, false, false).check(g).is_ok()).cloned()
+                    info!("sora dash: Square pressed while moving (speed {:.1}, Quick Run level {})", f.air_slide_speed, growth.quick_run);
+                } else if move_speed <= 0.0
+                    && let Some(g) = s.moves.by_key(key::GUARD).filter(|g| abilities.chain(s.hits, s.finishers, false, false).check(g).is_ok()).cloned()
                     && let Some(slot) = rig.mset.slot(g.motion as usize, pstate)
                 {
-                    // The guard action is a ground action of the attack table.
+                    // The guard action is a ground action of the attack table (FUN_00178080: key 11,
+                    // available, an idle range; it zeroes the stick). Only while standing still.
                     s.state = State::Guard;
                     s.timer = 0.0;
                     body.restart(Some(slot), false, BLEND_ATTACK);
@@ -1263,15 +1469,28 @@ pub fn tick(
             }
         }
         State::QuickRun => {
+            // FUN_001c1660: the Quick Run clock runs while the button is held (+0x10c bit 4).
             if pad.square_held {
                 s.dash_time -= 1.0;
-            } else {
-                s.dash_time = 0.0;
             }
-            if s.dash_time <= 0.0 && body.slot != motion(mid::QUICK_RUN_END) {
-                let f = data.fmab(growth.quick_run.max(1)).unwrap();
-                s.dash_brake = f.air_slide_stop_brake;
-                body.restart(motion(mid::QUICK_RUN_END), false, 0.0);
+            let stopping = body.slot == motion(mid::QUICK_RUN_END);
+            if !stopping {
+                let (phase, stop) = dash_step(s.dash, pad.square_held, s.timer, growth.quick_run, s.dash_time);
+                if phase != s.dash {
+                    match phase {
+                        Dash::Roll if pad.square_held => info!("sora dodge roll: Square held {:.0} ticks but Quick Run is not learned (level 0)", s.timer),
+                        Dash::Roll => info!("sora dodge roll: Square released after {:.0} ticks (tap, under {TAP_TICKS:.0}), Quick Run level {}", s.timer, growth.quick_run),
+                        Dash::Run => info!("sora quick run: Square held {:.0} ticks, Quick Run level {}, {:.0} ticks left", s.timer, growth.quick_run, s.dash_time),
+                        Dash::Pending => {}
+                    }
+                    s.dash = phase;
+                }
+                if stop && let Some(f) = data.fmab(growth.quick_run.max(1)) {
+                    // The stop: AirSlideStopBrake per tick and motion 204 (0xcc), back to idle after.
+                    s.dash_brake = f.air_slide_stop_brake;
+                    body.restart(motion(mid::QUICK_RUN_END), false, 0.0);
+                    info!("sora dash stop: {:?} after {:.0} ticks", s.dash, s.timer);
+                }
             }
             s.motor.vel *= s.dash_brake;
             if body.slot == motion(mid::QUICK_RUN_END) && (body.finished || s.motor.vel.length() < prty.walk_speed) {
@@ -1302,28 +1521,41 @@ pub fn tick(
                 airborne_dy = Some(-sink);
             }
         }
-        State::Attack { air, .. } => {
+        State::Attack { .. } => {
             if attack {
                 s.queued_attack = true;
             }
             let combo_window = body.trigger(range::ALLOW_COMBO);
             let finisher_window = body.trigger(range::ALLOW_FINISHER);
             let window = combo_window || finisher_window;
-            // Close the gap to the target at plyr V0, then let the motion's root motion carry.
+            // Close the gap to the target at plyr V0 (the app's approach for a record without a
+            // leap), then let the motion's root motion carry.
             let step = s.lunge_speed.min(s.lunge_left);
             s.lunge_left -= step;
-            s.motor.vel = s.motor.forward() * step;
+            if s.motor.grounded {
+                s.motor.vel = s.motor.forward() * step;
+            } else {
+                // The jump mover goes on during an air swing (FUN_0017b620 -> FUN_001832b8). The
+                // stick is zeroed outside an idle range (FUN_001778e8: +0x160 bits 4, 8, 0x10 =
+                // triggers 0, 1, 2), so the velocity brakes by 0.95 a tick (DAT_0037a50c); in an
+                // idle range it steers as in a jump (0.9 blend, DAT_0037a508).
+                let idle = body.trigger(range::GROUNDED) || body.trigger(range::AIR) || body.trigger(range::BLEND_TO_IDLE);
+                if idle {
+                    s.motor.air_velocity(dir, move_speed);
+                } else {
+                    s.motor.air_velocity(Vec3::ZERO, 0.0);
+                }
+                lunge_move = s.motor.forward() * step;
+            }
             if let Some(tp) = target_pos
                 && (body.trigger(range::TURN_TO_LOCK) || body.trigger(range::TURN_TO_TARGET))
             {
                 s.motor.turn_to(tp - s.motor.pos, prty.turn_speed);
             }
-            let hover = air || body.trigger(range::NO_GRAVITY) || body.trigger(range::NO_GRAVITY_KEEP_KINETICS);
+            // Gravity is held only while trigger 3, 24 or 30 covers the frame (FUN_0017b6e0); the
+            // fall restarts when they end (`hover`, before the match).
             if !s.motor.grounded {
-                airborne_dy = Some(if hover { 0.0 } else { s.motor.jump_dy(fall_max) });
-                if hover {
-                    s.motor.jump = Jump::fall(0.0, s.motor.pos.y);
-                }
+                airborne_dy = Some(if hover_now { 0.0 } else { s.motor.jump_dy(fall_max) });
             }
             // A pressed attack is tried every tick while a window of the motion is open (the game
             // keeps the pending command and retries it); the table decides air or ground by Sora's
@@ -1343,7 +1575,7 @@ pub fn tick(
             } else if body.finished || (body.trigger(range::BLEND_TO_IDLE) && dir != Vec3::ZERO) {
                 s.state = if s.motor.grounded { State::Ground } else { State::Air };
                 if s.state == State::Air {
-                    s.motor.start_fall();
+                    // The jump mover goes on: no new fall (the record's queued motion is the fall, 4).
                     body.play(motion(id::FALL), true, BLEND_FALL);
                 }
             }
@@ -1462,6 +1694,12 @@ pub fn tick(
     if keep_out.get() {
         battle.ticks = BATTLE_TICKS;
     }
+    // A jump, a leap off the ground or an attack started this tick from another state while
+    // airborne: the jump mover moves Sora on this tick too. Without this the floor-follow below put
+    // him back on the floor (`grounded` stayed set through a jump's whole rise) and ended a leap.
+    if airborne_dy.is_none() && !s.motor.grounded && matches!(s.state, State::Attack { .. } | State::Air) {
+        airborne_dy = Some(s.motor.jump_dy(fall_max));
+    }
 
     // Root motion: yaw turns the facing; translation is rotated by the facing the motion
     // started from.
@@ -1469,7 +1707,7 @@ pub fn tick(
     s.motor.yaw = wrap_angle(s.motor.yaw + root_yaw);
     let start_yaw = s.motor.yaw - body.root.yaw;
     let root_move = Quat::from_rotation_y(start_yaw) * root_t;
-    let mut delta = s.motor.vel + root_move.with_y(0.0);
+    let mut delta = s.motor.vel + root_move.with_y(0.0) + lunge_move;
     if let (Some(p), Some(r)) = (s.push.as_mut(), reaction.as_ref()) {
         delta += p.step(&r.consts);
         if p.finished() {
@@ -1478,7 +1716,24 @@ pub fn tick(
     }
     let dy = airborne_dy.map(|d| d + root_move.y);
     let was_air = airborne_dy.is_some();
+    let before = s.motor.pos;
     let landed = s.motor.move_by(&world, delta, dy);
+    s.last_move = s.motor.pos - before;
+    if move_log() && matches!(s.state, State::Attack { .. } | State::Air) && !s.motor.grounded {
+        info!(
+            "move: {} {} f{:.0}: velocity ({:.1} {:.1}) horizontal {:.1}, moved ({:.1} {:.1} {:.1}){}",
+            if s.state == State::Air { "airborne" } else { "air swing" },
+            body.tag(),
+            body.frame,
+            s.motor.vel.x,
+            s.motor.vel.z,
+            s.motor.vel.with_y(0.0).length(),
+            s.last_move.x,
+            s.last_move.y,
+            s.last_move.z,
+            if hover_now { ", gravity held" } else { "" }
+        );
+    }
     if landed && was_air {
         land(s, &mut body, motion(id::LAND), dir != Vec3::ZERO);
     } else if !s.motor.grounded && s.state == State::Ground {
@@ -1800,6 +2055,67 @@ mod tests {
         let mut a = kh2_archive::Archive::open(&iso).map_err(|e| eprintln!("skipped: {iso}: {e}")).ok()?;
         let index = kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).ok()?.rows.into_iter().find(|r| r.model_name == "P_EX100")?.neo_moveset as usize;
         Moveset::parse(&kh2_tables::subfile(&mut a, &t::PTYA).ok()?, index)
+    }
+
+    /// The air records carry a leap and the ground combo none (`ptya` from the user's disc).
+    #[test]
+    fn air_attacks_leap_and_ground_attacks_do_not() {
+        let iso = std::env::var("KH2_ISO").ok();
+        let Some(iso) = iso else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let Ok(p) = kh2_tables::subfile(&mut a, &t::PTYA) else { return };
+        let leaps = AttackLeaps::parse(&p);
+        let Some(m) = real_moves() else { return };
+        // A300..A304 (keys 5, 4, 6, 2, 3): no leap, the swing stops Sora on the ground.
+        for k in [5, 4, 6, 2, 3] {
+            assert_eq!(leaps.of(m.by_key(k).unwrap()).height, 0.0, "key {k}");
+        }
+        // A330..A333 (keys 9, 10, 8, 7): a leap with a positive height and a forward speed.
+        for k in [9, 10, 8, 7] {
+            let l = leaps.of(m.by_key(k).unwrap());
+            assert!(l.height > 0.0 && l.max_speed > 0.0 && l.min_height > 0.0 && l.reach >= l.min_height, "key {k}: {l:?}");
+        }
+    }
+
+    #[test]
+    fn leap_launch_follows_fun_00176050() {
+        let l = Leap { height: 21.0, reach: 71.0, min_height: 21.0, min_speed: -8.0, max_speed: 8.0, gap: 85.0 };
+        // No target: the record's height, along the facing, at the top speed.
+        let (d, s, h) = leap_launch(&l, 1, 185.0, Vec3::new(0.0, 0.0, 1.0), None);
+        assert_eq!((d, s, h), (Vec3::Z, 8.0, 21.0));
+        // A target level with Sora: the lowest height; a far target is reached at the top speed.
+        let (d, s, h) = leap_launch(&l, 1, 185.0, Vec3::Z, Some((Vec3::new(1000.0, 0.0, 0.0), 60.0)));
+        assert_eq!((d, s, h), (Vec3::X, 8.0, 21.0));
+        // A target 50 above: height 50; the gap over the rise time sqrt(2h/g).
+        let (_, s, h) = leap_launch(&l, 1, 185.0, Vec3::Z, Some((Vec3::new(0.0, 50.0, 30.0), 60.0)));
+        let want = (30.0 - 60.0 + 85.0) / (2.0 * 50.0 / crate::motor::G).sqrt();
+        assert_eq!(h, 50.0);
+        assert!((s - want).abs() < 1e-4, "{s} {want}");
+        // Higher than the reach: the reach; flag bit 1 adds the jump height to it.
+        assert_eq!(leap_launch(&l, 1, 185.0, Vec3::Z, Some((Vec3::new(0.0, 500.0, 30.0), 60.0))).2, 71.0);
+        assert_eq!(leap_launch(&l, 3, 185.0, Vec3::Z, Some((Vec3::new(0.0, 500.0, 30.0), 60.0))).2, 256.0);
+        // A target behind the reach of a short gap: the speed is clamped to the lowest (backwards).
+        assert_eq!(leap_launch(&l, 1, 185.0, Vec3::Z, Some((Vec3::new(0.0, 0.0, 1.0), 500.0))).1, -8.0);
+    }
+
+    #[test]
+    fn square_while_moving_tap_rolls_and_hold_runs() {
+        // Released within the tap window: a roll that runs TAP_TICKS ticks, then stops.
+        assert_eq!(dash_step(Dash::Pending, false, 3.0, 1, 11.0), (Dash::Roll, false));
+        assert_eq!(dash_step(Dash::Roll, false, 11.0, 1, 11.0), (Dash::Roll, false));
+        assert_eq!(dash_step(Dash::Roll, true, TAP_TICKS, 1, 11.0), (Dash::Roll, true));
+        // Still held: undecided until the window ends, then the Quick Run.
+        assert_eq!(dash_step(Dash::Pending, true, 11.0, 1, 3.0), (Dash::Pending, false));
+        assert_eq!(dash_step(Dash::Pending, true, TAP_TICKS, 1, 2.0), (Dash::Run, false));
+        // The Quick Run runs while held and while its clock lasts (FUN_001c1660).
+        assert_eq!(dash_step(Dash::Run, true, 13.0, 1, 1.0), (Dash::Run, false));
+        assert_eq!(dash_step(Dash::Run, true, 14.0, 1, 0.0), (Dash::Run, true));
+        assert_eq!(dash_step(Dash::Run, false, 13.0, 4, 20.0), (Dash::Run, true));
+        // Held without Quick Run learned: it ends as a roll.
+        assert_eq!(dash_step(Dash::Pending, true, TAP_TICKS, 0, 2.0), (Dash::Roll, true));
     }
 
     fn chain(air: bool, combo: u8, abilities: &[u16]) -> Chain {

@@ -239,6 +239,8 @@ pub(crate) struct Env<'a> {
     pub(crate) player_motion_done: bool,
     pub(crate) paired: &'a HashMap<usize, Vec<(String, f32)>>,
     pub(crate) player_model: u8,
+    /// The mission manager's counters (`struggle::Mission`), None without a manager (host 4.29).
+    pub(crate) mission_counters: Option<[i32; 3]>,
 }
 
 pub(crate) struct BevyHost<'a> {
@@ -833,9 +835,16 @@ impl BevyHost<'_> {
             // FUN_001b9338, which the event command FUN_00180b48 runs), then word +0x114 of its entry i
             // (0x38 bytes from +0xf4, used when bit 0 of the entry's first word is set). The Struggle
             // opponents compare entries 0 and 1 (the two sides' score [inferred from gameset_voice_win /
-            // _lose / _draw]). The app has no such manager (the Struggle rules are WP-7E's): 0.
+            // _lose / _draw]). Since WP-7E the manager is `struggle::Mission`: entry i is its counter i
+            // (slot 0 the player's orbs, slot 1 the opponent's), 0 when it does not exist.
             Call::Unknown { group: 4, index: 29, .. } | Call::Func { group: 4, index: 29, .. } => {
-                approx(Value::Int(0), "the manager DAT_01d5dd20 (Struggle) does not exist in the app: FUN_001d6738 answers 0 without it")
+                let i = match c {
+                    Call::Unknown { args, .. } => args.first().map_or(0, |&a| a as i32),
+                    Call::Func { args, .. } => args.first().map_or(0, |a| a.int()),
+                    _ => 0,
+                };
+                let v = self.env.mission_counters.and_then(|cs| usize::try_from(i).ok().and_then(|i| cs.get(i).copied())).unwrap_or(0);
+                imp(Value::Int(v))
             }
             // 6.31 (wrapper FUN_002eece8, table entry 0x370f58, no arguments): FUN_001a40b8 draws every
             // pickable prize into the player (FUN_001a3ad8, mode 1) and FUN_001bda98 hands every item

@@ -140,6 +140,11 @@ pub struct AreaGroup {
     pub skipped: Vec<String>,
     /// Where the group puts the player (its entity 0x236, the player's id, FUN_0016b078), metres.
     pub player: Option<Vec3>,
+    /// The mission the group's btl program starts (opcode 0x15, `FUN_001b9338`): id and file name (WP-7E).
+    pub mission: Option<(u32, String)>,
+    /// The program also loads a group with the Struggle orb pool object (`00objentry` type 22 subtype 8,
+    /// `PRIZE_TT`, made by `FUN_001c0400` -> `FUN_001cac70`) (WP-7E).
+    pub orb_pool: bool,
 }
 
 /// The current area's enemy spawn groups (see the module header).
@@ -168,11 +173,15 @@ pub fn area_groups(disc: &Disc, area: &str) -> Vec<AreaGroup> {
     };
     let mut out: Vec<AreaGroup> = Vec::new();
     for p in ard.scripts.get("btl").into_iter().flatten() {
+        let mission = crate::struggle::mission_command(p);
+        let orb_pool = p.spawns().flat_map(|n| ard.spawns.get(&n).into_iter().flatten().flat_map(|g| &g.entities).map(|e| e.object).collect::<Vec<_>>()).any(|o| {
+            rows.iter().any(|r| r.object_id == o && r.object_type == crate::struggle::ORB_POOL_TYPE.0 && r.sub_type == crate::struggle::ORB_POOL_TYPE.1)
+        });
         for name in p.spawns() {
             if out.iter().any(|g| g.name == name) {
                 continue;
             }
-            let mut g = AreaGroup { program: p.id, name: name.clone(), members: Vec::new(), skipped: Vec::new(), player: None };
+            let mut g = AreaGroup { program: p.id, name: name.clone(), members: Vec::new(), skipped: Vec::new(), player: None, mission: mission.clone(), orb_pool };
             for e in ard.spawns.get(&name).into_iter().flatten().flat_map(|g| &g.entities) {
                 if e.object == PLAYER_ENTITY && g.player.is_none() {
                     let [x, y, z] = e.position;
@@ -347,6 +356,7 @@ pub fn spawn_waves(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
+    mut missions: MessageWriter<crate::struggle::MissionStart>,
 ) {
     let (Some(col), Ok((mut sora_tf, mut sora))) = (collider, sora.single_mut()) else { return };
     let p = *sora_tf;
@@ -404,6 +414,10 @@ pub fn spawn_waves(
             let y = col.ground_m(m.at.x, m.at.z, m.at.y + 1.0).unwrap_or(m.at.y);
             let at = m.at.with_y(y);
             spawn_enemy(&mut commands, m.kind, rig, at, m.yaw, (m.spawn_kind, Some(m.spawn_params)), &data, (&mut meshes, &mut materials, &mut images, &mut bindposes));
+        }
+        // The program's mission command (opcode 0x15) creates the mission manager (WP-7E, struggle.rs).
+        if let Some((id, name)) = &g.mission {
+            missions.write(crate::struggle::MissionStart { id: *id, name: name.clone(), orb_pool: g.orb_pool });
         }
         return;
     }

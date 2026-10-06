@@ -784,22 +784,22 @@ pub fn kind_looks(params: &[u8]) -> Vec<KindLook> {
 /// One sprite of a frame ready to draw: its quad (local units, Y up) and the material of its own
 /// texture (TEX0 with its palette offset) and blend: the sprites of a frame differ in both (the HP
 /// orb mixes an additive 0x48 sprite and a blend 0x44 one).
-struct SpriteDraw {
-    mesh: Handle<Mesh>,
-    material: Handle<StandardMaterial>,
+pub(crate) struct SpriteDraw {
+    pub(crate) mesh: Handle<Mesh>,
+    pub(crate) material: Handle<StandardMaterial>,
 }
 
 /// A sprite frame: its sprites in draw order.
-struct FrameDraw {
-    sprites: Vec<SpriteDraw>,
+pub(crate) struct FrameDraw {
+    pub(crate) sprites: Vec<SpriteDraw>,
 }
 
 #[derive(Default)]
-struct KindDraw {
-    scale: f32,
+pub(crate) struct KindDraw {
+    pub(crate) scale: f32,
     /// Frames of the kind's shape; `loops` when the last frame's flag has 0x80.
-    frames: Vec<FrameDraw>,
-    loops: bool,
+    pub(crate) frames: Vec<FrameDraw>,
+    pub(crate) loops: bool,
 }
 
 #[derive(Resource)]
@@ -895,18 +895,37 @@ fn build_draws(
     mut images: ResMut<Assets<Image>>,
 ) {
     let Some(pax) = &pax.0 else { return };
-    let program = kh2_fx::ppp::NAMES.iter().position(|n| *n == PROGRAM).unwrap_or(usize::MAX) as u32;
-    let Some((dpd, params)) = pax.dpds.iter().enumerate().find_map(|(i, d)| {
-        d.particles.iter().flat_map(|p| p.groups.iter()).flat_map(|g| g.programs.iter()).find(|p| p.kind == program).map(|p| (i, p.params.clone()))
-    }) else {
+    let Some((draws, looks, shapes)) = kind_draws(pax, KINDS, &mut meshes, &mut materials, &mut images) else {
         warn!("prize: obj/PRIZE.mdlx has no {PROGRAM} program; prizes are not drawn");
         return;
     };
+    info!(
+        "prize: {} drawn from obj/PRIZE.mdlx ({} shapes): kinds {:?}",
+        PROGRAM,
+        shapes,
+        looks.iter().take(KINDS).map(|l| (l.shape, l.rgb, l.scale)).collect::<Vec<_>>()
+    );
+    lib.draws = draws;
+}
+
+/// The sprite meshes of the first `kinds` kinds of a prize effect file's `pppRyjMegaBirthPrize` program
+/// (also the Struggle orbs' `obj/PRIZE_TT.mdlx`, `struggle.rs`): the draws, the kinds' looks, the shape count.
+pub(crate) fn kind_draws(
+    pax: &crate::fx::LoadedPax,
+    kinds: usize,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    images: &mut Assets<Image>,
+) -> Option<(Vec<KindDraw>, Vec<KindLook>, usize)> {
+    let program = kh2_fx::ppp::NAMES.iter().position(|n| *n == PROGRAM).unwrap_or(usize::MAX) as u32;
+    let (dpd, params) = pax.dpds.iter().enumerate().find_map(|(i, d)| {
+        d.particles.iter().flat_map(|p| p.groups.iter()).flat_map(|g| g.programs.iter()).find(|p| p.kind == program).map(|p| (i, p.params.clone()))
+    })?;
     let looks = kind_looks(&params);
     let d = &pax.dpds[dpd];
     let mut textures: HashMap<u64, Handle<Image>> = HashMap::new();
     let mut draws = Vec::new();
-    for k in 0..KINDS {
+    for k in 0..kinds {
         let Some(look) = looks.get(k).copied() else {
             draws.push(KindDraw::default());
             continue;
@@ -973,13 +992,7 @@ fn build_draws(
         let loops = shape.frames.last().is_some_and(|f| f.flag & 0x80 != 0);
         draws.push(KindDraw { scale: look.scale, frames, loops });
     }
-    info!(
-        "prize: {} drawn from obj/PRIZE.mdlx ({} shapes): kinds {:?}",
-        PROGRAM,
-        d.shapes.len(),
-        looks.iter().take(KINDS).map(|l| (l.shape, l.rgb, l.scale)).collect::<Vec<_>>()
-    );
-    lib.draws = draws;
+    Some((draws, looks, d.shapes.len()))
 }
 
 /// App (cm, Y up) and game space (Y and Z negated) are each other's mirror.
@@ -991,7 +1004,7 @@ fn flip(v: Vec3) -> Vec3 {
 /// a ball of the kind's radius against walls, downward it stops on the highest floor it crosses
 /// [inferred: the game uses its character mover `FUN_00143840`, not ported; this keeps its results:
 /// the end point and whether it stands on a floor].
-fn sweep(world: Option<&World>, radius: f32, start: Vec3, vel: Vec3) -> Sweep {
+pub(crate) fn sweep(world: Option<&World>, radius: f32, start: Vec3, vel: Vec3) -> Sweep {
     let Some(w) = world else { return Sweep { end: start + vel, on_floor: false } };
     let (s, v) = (flip(start), flip(vel));
     let mut p = s;
@@ -1016,7 +1029,7 @@ fn sweep(world: Option<&World>, radius: f32, start: Vec3, vel: Vec3) -> Sweep {
 }
 
 /// The first shape of `kind` of a body, on its bone (`FUN_0016b558` + `FUN_001894d0`), in app cm.
-fn shape_point(anim: &Animator, body: &GlobalTransform, kind: u8) -> Option<Vec3> {
+pub(crate) fn shape_point(anim: &Animator, body: &GlobalTransform, kind: u8) -> Option<Vec3> {
     let s = anim.rig.model.shapes.iter().find(|s| s.kind == kind && (kind != TARGET_SHAPE || s.argument & 1 == 0))?;
     let m = match s.bone {
         Some(b) => anim.bone_world(body, b),

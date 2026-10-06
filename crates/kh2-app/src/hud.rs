@@ -30,6 +30,8 @@ mod hud_card;
 pub(crate) mod hud_party;
 #[path = "hud_msgwin.rs"]
 pub(crate) mod hud_msgwin;
+#[path = "hud_mission.rs"]
+mod hud_mission;
 
 use hud_gauge::{DriveGauge, DriveTables, FaceFile, MpRecharge, SoraPanel};
 use hud_gfx::{HudGfxPlugin, HudScene};
@@ -69,6 +71,7 @@ impl Plugin for HudPlugin {
             .init_resource::<PartyNodes>()
             .init_resource::<MsgWindow>()
             .init_resource::<WindowNodes>()
+            .init_resource::<hud_mission::MissionHud>()
             .add_systems(Startup, (setup, load_files).chain())
             .add_systems(
                 Update,
@@ -84,6 +87,7 @@ impl Plugin for HudPlugin {
                         hud_banner::update_strips,
                         hud_card::update,
                         hud_msgwin::update,
+                        hud_mission::update,
                         hud_text::demo,
                     )
                         .chain(),

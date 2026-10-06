@@ -402,6 +402,11 @@ pub struct Sequence {
     /// Player volume and pan (0x3fff full, 0x40 centre).
     pub volume: i32,
     pub pan: i32,
+    /// The slot volume the BGM fades move (the IOP sequence struct's +0x44; 0x3000 is the
+    /// game's full BGM level, 0x3fff for a sound effect). Inferred to be the second fixed factor
+    /// of the volume chain; its exact position in the chain was not traced, which can change the
+    /// result by one 14-bit step.
+    pub slot_volume: i32,
     /// Base voice tag.
     tag: u32,
     pub finished: bool,
@@ -424,9 +429,19 @@ impl Sequence {
             wd,
             volume,
             pan,
+            slot_volume: 0x3fff,
             tag,
             finished: false,
             samples: HashMap::new(),
+        }
+    }
+
+    /// Releases every sounding note of this player (the driver keys its voices off when a
+    /// sequence stops, FUN_108900 in the IOP module).
+    pub fn release_all(&mut self, mixer: &mut Mixer) {
+        for (ti, t) in self.tracks.iter_mut().enumerate() {
+            mixer.release(self.tag + ti as u32, None);
+            t.voices.clear();
         }
     }
 
@@ -589,7 +604,7 @@ impl Sequence {
             vol = vol * (t.expression.value >> 9) >> 14;
             vol = vol * v.velocity as i32 >> 7;
             vol = vol * (r.volume_raw & 0x7f) as i32 >> 7;
-            vol = vol * 0x3fff >> 14;
+            vol = vol * self.slot_volume >> 14;
             vol = vol * (0xff - t.tremolo.out) >> 8;
             vol = vol * (0xff - trem) >> 8;
             vol = (vol * t.vol_factor >> 14).clamp(0, 0x3fff);
@@ -959,11 +974,95 @@ impl SeBlock {
     }
 }
 
-/// The whole driver: BGM slot, sound effects, voices.
+/// The game's full BGM slot volume: every start and fade-in of the area music goes to 0x3000
+/// (FUN_00136ec0, FUN_00137458, FUN_001374c0), half is 0x1800 (the event scripts' 0x101).
+pub const BGM_FULL: i32 = 0x3000;
+
+/// Mixer tag bases of the two BGM slots (64 tags each, one per track); sound effects and voice
+/// lines take the blocks from 64 up to 60,000.
+const BGM_TAG: [u32; 2] = [0, 61_440];
+
+/// A BGM slot of the driver: the IOP module's sequence struct for slot 0 (field) or 1 (battle),
+/// with its volume ramp (+0x44 volume, +0x46 target, +0x48 frames left, +0x4a step per frame,
+/// +0x68 delay, +0x6a delay counter). Read in the disassembly of the user's `LIBSSL.IRX`:
+/// command 0xf (`FUN_103cbc`) starts the sequence with a ramp from a start volume to a target
+/// over `time` frames after `delay` frames, command 0x11 (`FUN_104964`) ramps the playing
+/// sequence to a target over `time` frames. The ramp runs in the 240 Hz driver frame
+/// (`FUN_1081ac` from the main loop at 0x101908), before the slot's sequencer tick, which does
+/// not run while the delay counts: `volume += step; time -= 1`, and at 0 `volume = target`; a
+/// target of 0 stops the sequence (`FUN_108900(slot, 1)`). The step is the integer quotient
+/// `(target - volume) / time` (a `time` of 0 or less counts as 1), so a long fade-out ends on a
+/// small positive remainder before the final snap to 0.
+#[derive(Default)]
+pub struct BgmSlot {
+    pub seq: Option<Sequence>,
+    /// A sequence stopped by a fade to 0, kept for a "resume" start. The game restores the state
+    /// its sequencer last checkpointed (0x1e35c0, written at 0x108140 of routine 0x108068 on a
+    /// counter event that was not traced); the port resumes at the exact stop point.
+    saved: Option<Sequence>,
+    pub volume: i32,
+    target: i32,
+    time: i32,
+    step: i32,
+    delay: i32,
+    counter: i32,
+}
+
+impl BgmSlot {
+    fn set_fade(&mut self, target: i32, time: i32) {
+        let time = time.max(1);
+        self.step = (target - self.volume) / time;
+        self.target = target;
+        self.time = time;
+    }
+
+    /// The ramp of one driver frame; true when the sequencer may run this frame.
+    fn frame(&mut self, mixer: &mut Mixer) -> bool {
+        if self.counter < self.delay {
+            self.counter += 1;
+            return false;
+        }
+        if self.time != 0 {
+            self.volume += self.step;
+            self.time -= 1;
+            if self.time <= 0 {
+                self.volume = self.target;
+                self.step = 0;
+                self.time = 0;
+                if self.target == 0 {
+                    self.stop(mixer, true);
+                }
+            }
+        }
+        true
+    }
+
+    /// `FUN_108900(slot, save)`: keys the slot's notes off and drops the sequence, keeping it for
+    /// a resume when `save`.
+    fn stop(&mut self, mixer: &mut Mixer, save: bool) {
+        if let Some(mut s) = self.seq.take() {
+            s.release_all(mixer);
+            if save {
+                self.saved = Some(s);
+            }
+        }
+    }
+
+    pub fn playing(&self) -> bool {
+        self.seq.is_some()
+    }
+}
+
+/// A playing sound effect or voice line, for later volume and pan updates (the game sends
+/// command 0x15 every tick for a positional sound).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Handle(u32);
+
+/// The whole driver: two BGM slots, sound effects, voices.
 pub struct Driver {
     pub tables: Arc<Tables>,
     pub mixer: Mixer,
-    pub bgm: Option<Sequence>,
+    pub bgm: [BgmSlot; 2],
     pub se: Vec<Sequence>,
     rng: u32,
     frame_acc: u32,
@@ -972,37 +1071,147 @@ pub struct Driver {
 
 impl Driver {
     pub fn new(tables: Arc<Tables>) -> Driver {
-        Driver { tables, mixer: Mixer::new(), bgm: None, se: Vec::new(), rng: 0x1234_5678, frame_acc: 0, next_tag: 64 }
+        Driver { tables, mixer: Mixer::new(), bgm: Default::default(), se: Vec::new(), rng: 0x1234_5678, frame_acc: 0, next_tag: 64 }
     }
 
+    fn take_tag(&mut self) -> u32 {
+        let tag = self.next_tag;
+        self.next_tag = if self.next_tag > 60_000 { 64 } else { self.next_tag + 64 };
+        tag
+    }
+
+    /// Plays `seq` in slot 0 at the full BGM level at once (the area start of FUN_00136ec0:
+    /// command 0xf from 0x3000 to 0x3000 in no time).
     pub fn play_bgm(&mut self, seq: Sequence) {
-        self.mixer.voices.retain(|v| v.tag >= 64);
-        self.bgm = Some(seq);
+        self.bgm_start(0, Some(seq), BGM_FULL, BGM_FULL, 0, false, 0);
+    }
+
+    /// Command 0xf: starts a BGM in `slot` with a ramp from `from` to `to` over `time` frames
+    /// after `delay` frames. With `resume`, a sequence the slot kept from a fade-out is restarted
+    /// where it stopped instead of `seq` (the game's mode 1 restores its checkpoint); `seq` must
+    /// be given otherwise. The slot's playing sequence is dropped first, without keeping it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn bgm_start(&mut self, slot: usize, seq: Option<Sequence>, from: i32, to: i32, time: i32, resume: bool, delay: i32) -> bool {
+        let Some(s) = self.bgm.get_mut(slot) else { return false };
+        s.stop(&mut self.mixer, false);
+        let mut next = match (resume, s.saved.take(), seq) {
+            (true, Some(kept), _) => kept,
+            (_, _, Some(mut fresh)) => {
+                fresh.tag = BGM_TAG[slot];
+                fresh
+            }
+            _ => return false,
+        };
+        next.tag = BGM_TAG[slot];
+        next.finished = false;
+        s.volume = from;
+        s.set_fade(to, time);
+        s.delay = delay;
+        s.counter = 0;
+        s.seq = Some(next);
+        true
+    }
+
+    /// Command 0x11: ramps the playing BGM of `slot` to `target` over `time` frames; a target of
+    /// 0 stops it at the end, keeping it for a resume. Nothing when the slot is silent.
+    pub fn bgm_fade(&mut self, slot: usize, target: i32, time: i32) {
+        if let Some(s) = self.bgm.get_mut(slot)
+            && s.seq.is_some()
+        {
+            s.set_fade(target, time);
+        }
+    }
+
+    /// Stops the BGM of `slot` now.
+    pub fn bgm_stop(&mut self, slot: usize, save: bool) {
+        if let Some(s) = self.bgm.get_mut(slot) {
+            s.stop(&mut self.mixer, save);
+        }
     }
 
     /// Starts sound effect `index` of `block` with volume (0..0x3fff) and pan (0..0x7f).
     pub fn play_se(&mut self, block: &SeBlock, index: usize, wd: Arc<Wd>, volume: i32, pan: i32) -> bool {
-        let Some(e) = block.entries.get(index) else { return false };
+        self.play_se_handle(block, index, wd, volume, pan).is_some()
+    }
+
+    /// `play_se` with a handle for later `set_se_mix` calls.
+    pub fn play_se_handle(&mut self, block: &SeBlock, index: usize, wd: Arc<Wd>, volume: i32, pan: i32) -> Option<Handle> {
+        let e = block.entries.get(index)?;
         if e.tracks.is_empty() {
-            return false;
+            return None;
         }
         let vol = if e.flags & 0x10 != 0 { 0x3fff } else { volume };
         let pan = if e.flags & 0x20 != 0 { 0x40 } else { pan };
-        let tag = self.next_tag;
-        self.next_tag = if self.next_tag > 60_000 { 64 } else { self.next_tag + 64 };
+        let tag = self.take_tag();
         self.se.push(Sequence::new(e.tracks.clone(), wd, vol, pan, tag));
         if self.se.len() > 24 {
             self.se.remove(0);
         }
-        true
+        Some(Handle(tag))
+    }
+
+    /// Command 0x15 for a sound effect: new volume and pan, applied by the next driver frame.
+    pub fn set_se_mix(&mut self, h: Handle, volume: i32, pan: i32) {
+        if let Some(s) = self.se.iter_mut().find(|s| s.tag == h.0) {
+            s.volume = volume;
+            s.pan = pan;
+        }
+    }
+
+    pub fn se_playing(&self, h: Handle) -> bool {
+        self.se.iter().any(|s| s.tag == h.0)
     }
 
     /// Plays a one-shot sample (a voice line) at `rate` Hz, centred.
     pub fn play_voice(&mut self, sample: Arc<Sample>, rate: u32, volume: f32) {
-        let tag = self.next_tag;
-        self.next_tag = if self.next_tag > 60_000 { 64 } else { self.next_tag + 64 };
+        let tag = self.take_tag();
         let step = rate as f64 / crate::synth::RATE as f64;
         self.mixer.play(Voice::new(sample, step, Envelope::new(0x000f, 0x0000), volume, 0.0, tag, 0));
+    }
+
+    /// Plays a voice line at `rate` Hz with the driver's volume (0..0x3fff) and pan circle
+    /// position, through the pan law tables like a sequence note.
+    pub fn play_voice_at(&mut self, sample: Arc<Sample>, rate: u32, volume: i32, pan: i32) -> Handle {
+        let tag = self.take_tag();
+        let step = rate as f64 / crate::synth::RATE as f64;
+        let mut v = Voice::new(sample, step, Envelope::new(0x000f, 0x0000), 0.0, 0.0, tag, 0);
+        let (l, r) = self.law(volume, pan);
+        v.set_lr(l, r);
+        self.mixer.play(v);
+        Handle(tag)
+    }
+
+    /// Command 0x15 for a voice line.
+    pub fn set_voice_mix(&mut self, h: Handle, volume: i32, pan: i32) {
+        let (l, r) = self.law(volume, pan);
+        if let Some(v) = self.mixer.voices.iter_mut().find(|v| v.tag == h.0) {
+            v.set_lr(l, r);
+        }
+    }
+
+    pub fn voice_playing(&self, h: Handle) -> bool {
+        self.mixer.voices.iter().any(|v| v.tag == h.0 && !v.env.off())
+    }
+
+    pub fn stop_voice(&mut self, h: Handle) {
+        self.mixer.release(h.0, None);
+    }
+
+    /// Left and right gains of a volume on the pan circle (the law tables; a position past 0xff
+    /// inverts the phase, as for sequence notes).
+    fn law(&self, volume: i32, pan: i32) -> (f32, f32) {
+        let vol = volume.clamp(0, 0x3fff);
+        let pan = (pan & 0x1ff) as usize;
+        let (l, r) = if pan < 0x100 {
+            (vol * self.tables.pan_l[pan] as i32 >> 14, vol * self.tables.pan_r[pan] as i32 >> 14)
+        } else {
+            (vol * -(self.tables.pan_l[pan & 0xff] as i32) >> 14, vol * -(self.tables.pan_r[pan & 0xff] as i32) >> 14)
+        };
+        let spu = |v: i32| {
+            let v = v & 0x7fff;
+            (if v & 0x4000 != 0 { v - 0x8000 } else { v }) as f32 / 16384.0
+        };
+        (spu(l), spu(r))
     }
 
     /// Renders `out.len() / 2` stereo frames at 48 kHz, running driver frames every 200 samples.
@@ -1012,8 +1221,13 @@ impl Driver {
         let frames = out.len() / 2;
         while done < frames {
             if self.frame_acc == 0 {
-                if let Some(b) = self.bgm.as_mut() {
-                    b.frame(&mut self.mixer, &self.tables, &mut self.rng);
+                for slot in &mut self.bgm {
+                    if slot.frame(&mut self.mixer)
+                        && let Some(b) = slot.seq.as_mut()
+                    {
+                        b.slot_volume = slot.volume.clamp(0, 0x3fff);
+                        b.frame(&mut self.mixer, &self.tables, &mut self.rng);
+                    }
                 }
                 for s in &mut self.se {
                     s.frame(&mut self.mixer, &self.tables, &mut self.rng);
@@ -1037,6 +1251,48 @@ mod tests {
     fn one_note_wd() -> Arc<Wd> {
         let region = Region { key_high: 127, velocity_high: 127, ..Region::default() };
         Arc::new(Wd { id: 0, instruments: vec![Instrument { regions: vec![region] }], samples: Vec::new() })
+    }
+
+    fn idle_seq() -> Sequence {
+        // One track that waits for a very long time and plays nothing.
+        Sequence::new(vec![Arc::from(vec![0x8f, 0x7f])], one_note_wd(), BGM_FULL, 0x40, 0)
+    }
+
+    fn driver() -> Driver {
+        let tables = Tables { semitone: [0; 12], fine: [0; 256], pan_l: [0; 256], pan_r: [0; 256] };
+        Driver::new(Arc::new(tables))
+    }
+
+    /// The slot volume ramps linearly with the integer step, waits out its delay, and a fade to 0
+    /// stops the sequence and keeps it for a resume (IOP commands 0xf and 0x11).
+    #[test]
+    fn bgm_slot_ramps_delays_and_resumes() {
+        let mut d = driver();
+        assert!(d.bgm_start(1, Some(idle_seq()), 0, 0x3000, 240, false, 240));
+        let mut out = vec![0.0f32; 2 * 200];
+        for _ in 0..240 {
+            d.render(&mut out);
+        }
+        // Delay still counting: volume untouched.
+        assert_eq!(d.bgm[1].volume, 0);
+        for _ in 0..121 {
+            d.render(&mut out);
+        }
+        assert_eq!(d.bgm[1].volume, 0x3000 / 240 * 121);
+        assert!(d.bgm[1].volume > 0 && d.bgm[1].volume < 0x3000);
+        for _ in 0..200 {
+            d.render(&mut out);
+        }
+        assert_eq!(d.bgm[1].volume, 0x3000);
+        d.bgm_fade(1, 0, 100);
+        for _ in 0..101 {
+            d.render(&mut out);
+        }
+        assert!(!d.bgm[1].playing());
+        assert!(d.bgm[1].saved.is_some());
+        // Resume without a fresh sequence.
+        assert!(d.bgm_start(1, None, 0, 0x3000, 10, true, 0));
+        assert!(d.bgm[1].playing());
     }
 
     /// Command 0x78 takes (index, value) and 0x79 takes (index): a sequence that sets the random

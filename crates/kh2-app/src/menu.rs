@@ -27,11 +27,15 @@ use crate::progress::Progress;
 use crate::schedule::Sim;
 use crate::sora::{Sora, State};
 
+// The Config page (stage M6) lives in its own file as a child module, so it reads this file's state.
+#[path = "menu_config.rs"]
+pub mod config;
+
 pub struct MenuPlugin;
 
 impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(MenuGfxPlugin)
+        app.add_plugins((MenuGfxPlugin, config::ConfigPlugin))
             .init_resource::<Menu>()
             // The field stands still while the menu is up: every 60 Hz set waits for it.
             .configure_sets(

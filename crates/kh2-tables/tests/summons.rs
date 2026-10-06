@@ -125,7 +125,11 @@ fn summon_command_family() {
     let cmds = rows!(&mut a, tables::Cmd, tables::CMD);
     let msg = player::load_messages(&mut a);
     let name = |id: u32| msg.as_ref().and_then(|m| m.get(id)).unwrap_or_default();
-    for c in cmds.iter().filter(|c| (515..=549).contains(&c.id) || [468, 469, 600, 609].contains(&c.id)) {
+    // Also the menu entries the command menu builder FUN_001bc6e0 picks between (4 Drive, 72 Summon,
+    // 73 Party, 81 Limit, 104 the blank entry, 316 the entry shown while a summon is out, 605 Genie's
+    // form list) and the leave command 5 (Revert).
+    let menu = [4, 5, 72, 73, 81, 104, 316, 605];
+    for c in cmds.iter().filter(|c| (515..=549).contains(&c.id) || [468, 469, 600, 609].contains(&c.id) || menu.contains(&c.id)) {
         println!(
             "cmd {} {:?} exe {} arg {} cost {} time {} require {} mark {} flags {:#x} receiver {}",
             c.id,

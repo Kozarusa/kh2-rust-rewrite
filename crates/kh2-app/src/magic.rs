@@ -17,9 +17,10 @@
 //! interpreter instead (`VmCast`, `SpellHost`): Fire's matches the hand port; the other three stop at
 //! host calls the app does not answer yet (docs/magic.md "Running the scripts in the interpreter").
 //!
-//! Keys: the command menu answers T (cursor up), G (cursor down), B (back); J / left mouse
-//! executes the selected command (the game's X button): Attack attacks, Magic opens the list, a
-//! spell is cast. `KH2_KEYS` drives T, G and B too (the harness maps J). `KH2_MAGIC=f,b,t,c[,m,r]`
+//! Keys: the command menu (`items.rs`, WP-7C: the original's lists and input) answers T (cursor
+//! up), G (cursor down), B (back); J / left mouse executes the selected command (the game's X
+//! button): Attack attacks, Magic opens the list, a spell is cast (`MagicState::request_cast`).
+//! `KH2_KEYS` drives T, G and B too (`harness_keys` here; the harness maps J). `KH2_MAGIC=f,b,t,c[,m,r]`
 //! sets the spell levels owned (default: the counts in `progress::Progress`, whose app baseline is
 //! 1,1,1,1,0,0). `KH2_MAGIC_LOG=1`
 //! logs the menu, the casts, MP, hits and damage; `=2` also every live attack per tick.
@@ -38,11 +39,10 @@ use crate::assets::Disc;
 use crate::combat::{self, Fighter, Hit, HurtSpheroid, Team, Volume};
 use crate::data::GameData;
 use crate::fx::{self, Bind, LoadedPax, Placement, RunningEffect};
-use crate::hud::hud_menu::{CommandMenu, MenuEntry, MenuPage};
 use crate::magic_rules::{self as rules, Charge, HitMemory, MagiRow, Paid, Status};
 use crate::schedule::Sim;
 use crate::skel::Animator;
-use crate::sora::{Battle, Pad, Sora, State};
+use crate::sora::{Battle, Sora, State};
 use crate::SCALE;
 
 /// `atkp` id of Fire's attack objects (FIRE_*.mag event 21: `attack_create(ctx, 502, -1, kind)`).
@@ -78,9 +78,6 @@ const MAGI_THUNDER_COLUMN_H: usize = 0x28;
 const MAGI_THUNDER_COLUMN_R: usize = 0x2c;
 const MAGI_THUNDER_WAIT: usize = 0x30;
 const MAGI_THUNDER_TIME: usize = 0x34;
-/// The ids of the base command list (Attack, Magic, Items, Drive: the rows whose `Execute` is the
-/// same as their id), see `hud_menu::base_entries`.
-const BASE_COMMANDS: [u16; 4] = [1, 2, 3, 4];
 /// Ticks a cast request waits for Sora to accept it (app rule: the game keeps a pending command
 /// and retries it while the playing motion has no window, the retry limit was not traced).
 const REQUEST_TICKS: u32 = 20;
@@ -96,7 +93,7 @@ impl Plugin for MagicPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MagicState>()
             .add_systems(Startup, setup.after(crate::sora::setup))
-            .add_systems(Update, (harness_keys, menu).chain().after(crate::sora::read_pad))
+            .add_systems(Update, harness_keys.after(crate::sora::read_pad))
             .add_systems(FixedUpdate, run.in_set(Sim::Sora).after(crate::sora::tick));
     }
 }
@@ -156,7 +153,7 @@ impl MagicData {
     }
 
     /// FUN_001ba2c0 for a magic command, with the `DisableForm` mask of command 2 (FUN_001b7290).
-    fn status(&self, cmd: u16, mp: i32, charging: bool, form: u8) -> Status {
+    pub fn status(&self, cmd: u16, mp: i32, charging: bool, form: u8) -> Status {
         let Some(c) = self.cmd(cmd) else { return Status::Unavailable };
         let mask = self.cmd(c.execute).map_or(c.disable_form, |e| e.disable_form);
         rules::availability(c.cost, mp, charging, false, rules::form_disables(mask, form))
@@ -182,18 +179,9 @@ pub fn refill_mp(charge: Option<&mut Charge>, mp: &mut i32, max_mp: i32) -> bool
     ended
 }
 
-/// The command menu as this module drives it: which page is open and the cursors.
-#[derive(Default, Debug, Clone)]
-pub struct MenuState {
-    pub sub_open: bool,
-    pub cursor: usize,
-    pub sub_cursor: usize,
-}
-
 #[derive(Resource, Default)]
 pub struct MagicState {
     pub charge: Charge,
-    pub menu: MenuState,
     /// A spell command waiting for Sora (command id, ticks left).
     request: Option<(u16, u32)>,
     casts: Vec<Cast>,
@@ -390,7 +378,7 @@ fn setup(
 }
 
 /// `KH2_KEYS` entries for the menu keys the harness does not map (T, G, B), pressed the same way.
-fn harness_keys(time: Res<Time>, mut keys: ResMut<ButtonInput<KeyCode>>) {
+pub(crate) fn harness_keys(time: Res<Time>, mut keys: ResMut<ButtonInput<KeyCode>>) {
     let Ok(spec) = std::env::var("KH2_KEYS") else { return };
     let (t, dt) = (time.elapsed_secs(), time.delta_secs());
     for item in spec.split(',') {
@@ -412,104 +400,21 @@ fn harness_keys(time: Res<Time>, mut keys: ResMut<ButtonInput<KeyCode>>) {
     }
 }
 
-/// The command menu: the base list and the Magic sub-menu (FUN_001bbee8's list), the cursor keys,
-/// and the attack button executing the selected command. The list entries carry the commands'
-/// own names and icons; a spell that is not usable (FUN_001ba2c0 status 5) is drawn in style 1.
-#[allow(clippy::too_many_arguments)]
-fn menu(
-    keys: Res<ButtonInput<KeyCode>>,
-    mouse: Res<ButtonInput<MouseButton>>,
-    data: Option<Res<MagicData>>,
-    mut st: ResMut<MagicState>,
-    mut pad: ResMut<Pad>,
-    mut cm: ResMut<CommandMenu>,
-    sora: Query<&Sora>,
-    drive: Option<Res<crate::drive::DriveState>>,
-) {
-    let Some(data) = data else { return };
-    let Ok(s) = sora.single() else { return };
-    let form = drive.map_or(0, |d| d.form);
-    let charging = st.charge.active();
-    let list = rules::magic_list(&data.magc, &data.levels, data.world);
-    let base: Vec<&Cmd> = BASE_COMMANDS.iter().filter_map(|&e| data.cmds.iter().find(|c| c.id == e && c.execute == e)).collect();
-    let up = keys.just_pressed(KeyCode::KeyT);
-    let down = keys.just_pressed(KeyCode::KeyG);
-    let back = keys.just_pressed(KeyCode::KeyB);
-    let exec = keys.just_pressed(KeyCode::KeyJ) || mouse.just_pressed(MouseButton::Left);
-    let step = |c: &mut usize, n: usize| {
-        // [inferred] the cursor wraps; the game's list cursor code was not traced.
-        if n > 0 {
-            if up {
-                *c = (*c + n - 1) % n;
-            }
-            if down {
-                *c = (*c + 1) % n;
-            }
-        }
-    };
-    let st = &mut *st;
-    if st.menu.sub_open {
-        step(&mut st.menu.sub_cursor, list.len());
-        if back {
-            st.menu.sub_open = false;
-            mlog!("magic: menu: back to the command list");
-        }
-    } else {
-        step(&mut st.menu.cursor, base.len());
+impl MagicState {
+    /// Menu glue (WP-7C): the command menu (`items.rs`, FUN_001bc0c8) issued a spell command; Sora
+    /// takes it when a window lets him (see `run`). The menu only issues commands whose status is
+    /// below 4 (FUN_001bb930).
+    pub fn request_cast(&mut self, cmd: u16) {
+        self.request = Some((cmd, REQUEST_TICKS));
+        mlog!("magic: menu: cast command {cmd} selected");
     }
-    if (up || down) && log_on() {
-        info!("magic: menu: cursor {} sub {} (sub-menu open {})", st.menu.cursor, st.menu.sub_cursor, st.menu.sub_open);
+}
+
+/// Menu glue (WP-7C): a menu line under `KH2_MAGIC_LOG` (the command menu lives in `items.rs`).
+pub fn log_menu(line: &str) {
+    if log_on() {
+        info!("{line}");
     }
-    if exec {
-        let sel_base = base.get(st.menu.cursor).map(|c| c.id);
-        if st.menu.sub_open {
-            // The attack button casts the selected spell.
-            pad.steal_attack();
-            if let Some(&cmd) = list.get(st.menu.sub_cursor) {
-                let status = data.status(cmd, s.mp, charging, form);
-                if status.usable() {
-                    st.request = Some((cmd, REQUEST_TICKS));
-                    mlog!("magic: menu: cast command {cmd} selected (status {status:?}, MP {})", s.mp);
-                } else {
-                    mlog!("magic: menu: command {cmd} not usable (status {status:?}, MP {}, charging {charging})", s.mp);
-                }
-            }
-        } else if sel_base == Some(rules::EXECUTE_MAGIC) {
-            pad.steal_attack();
-            let status = data.status(rules::EXECUTE_MAGIC, s.mp, charging, form);
-            if status.usable() && !list.is_empty() {
-                st.menu.sub_open = true;
-                st.menu.sub_cursor = st.menu.sub_cursor.min(list.len() - 1);
-                mlog!("magic: menu: Magic opened: {} spells {:?} (MP {}, charging {charging})", list.len(), list, s.mp);
-            } else {
-                mlog!("magic: menu: Magic not usable (status {status:?}, {} spells)", list.len());
-            }
-        } else if sel_base != Some(1) {
-            // Items and Drive are not run from this menu yet: the press does nothing (not an attack).
-            pad.steal_attack();
-            mlog!("magic: menu: command {sel_base:?} is not ported from the menu");
-        }
-    }
-    // The menu the HUD draws.
-    let entry = |c: &Cmd, style: u8| MenuEntry { message: c.message_id as u32, icon: c.cmd_icon, style };
-    let mut pages = vec![MenuPage {
-        kind: 0,
-        entries: base
-            .iter()
-            .map(|c| entry(c, if c.id == rules::EXECUTE_MAGIC && !data.status(c.id, s.mp, charging, form).usable() { 1 } else { 0 }))
-            .collect(),
-        cursor: st.menu.cursor,
-    }];
-    if st.menu.sub_open {
-        let kind = data.cmd(rules::EXECUTE_MAGIC).map_or(1, |c| c.sub_menu.max(0) as u8);
-        let entries = list
-            .iter()
-            .filter_map(|&id| data.cmd(id).map(|c| entry(c, if data.status(id, s.mp, charging, form).usable() { 0 } else { 1 })))
-            .collect();
-        pages.push(MenuPage { kind, entries, cursor: st.menu.sub_cursor });
-    }
-    cm.visible = true;
-    cm.pages = pages;
 }
 
 /// The caster's object frames 0x4000..=0x4009 this tick (FUN_0016aa18 through `fx::object_bone`), by

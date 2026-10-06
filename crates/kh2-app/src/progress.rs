@@ -777,6 +777,83 @@ impl Progress {
         }
     }
 
+    /// A member's battle item slots as (item, reserved id) pairs, `+0x34` and `+0x44`, for the first
+    /// `+0x12` slots (the field Items list `FUN_001bc910` reads both).
+    pub fn battle_items(&self, member: u16) -> Vec<(u16, u16)> {
+        let Some(r) = Self::member_off(member) else { return Vec::new() };
+        let n = (self.u8_at(r + rec::ITEM_SLOTS) as usize).min(8);
+        (0..n).map(|i| (self.u16_at(r + rec::ITEMS + 2 * i), self.u16_at(r + rec::RESERVED + 2 * i))).collect()
+    }
+
+    /// `FUN_001a1ba8(id, to)`: take one item away. `to == INVENTORY`: one off the stock count
+    /// (`FUN_001a1c30(id, 1)`), always true. A member: the LAST of its battle item slots that holds
+    /// the item is emptied (the reserved id stays); false when none holds it. Using an item from the
+    /// field menu takes it this way from the user's slots (`FUN_00175ec0` -> here with the user).
+    pub fn take_item(&mut self, id: u16, to: u16) -> bool {
+        if to == INVENTORY {
+            self.use_item(id, 1);
+            return true;
+        }
+        let Some(r) = Self::member_off(to) else { return false };
+        let n = (self.u8_at(r + rec::ITEM_SLOTS) as usize).min(8);
+        for i in (0..n).rev() {
+            if self.u16_at(r + rec::ITEMS + 2 * i) == id {
+                self.set_u16(r + rec::ITEMS + 2 * i, 0);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// `FUN_001877c8`: every empty battle item slot that reserves an item takes one from the stock
+    /// when the stock has it (`FUN_001a1cc8` >= 1, then `FUN_001a1c30(id, 1)`).
+    pub fn refill_battle_items(&mut self, member: u16) {
+        let Some(r) = Self::member_off(member) else { return };
+        let n = (self.u8_at(r + rec::ITEM_SLOTS) as usize).min(8);
+        for i in 0..n {
+            let reserved = self.u16_at(r + rec::RESERVED + 2 * i);
+            if reserved != 0 && self.u16_at(r + rec::ITEMS + 2 * i) == 0 && self.item_count(reserved) >= 1 {
+                self.use_item(reserved, 1);
+                self.set_u16(r + rec::ITEMS + 2 * i, reserved);
+            }
+        }
+    }
+
+    /// `FUN_0026c698(slot, item)` (pause menu, Items category): the slot's item goes back to the stock
+    /// (`FUN_001a18d8(old, 100, 0)`); then, when `item` is 0 or `carried`, the reserved id is cleared, the
+    /// slot takes `item` and one comes off the stock (`FUN_001a1ba8(item, 100)`); otherwise the item
+    /// only becomes the slot's reserved id and the slot stays empty. `carried` is the menu row's flag
+    /// (the byte `(row - 1) * 6 + 2` of the page's list table); which rows set it was not traced
+    /// [inferred: a stock count above 0]. False when the member or the slot does not exist.
+    pub fn equip_battle_item(&mut self, member: u16, slot: usize, item: u16, carried: bool) -> bool {
+        let Some(r) = Self::member_off(member) else { return false };
+        if slot >= 8 {
+            return false;
+        }
+        let o = r + rec::ITEMS + 2 * slot;
+        let old = self.u16_at(o);
+        if old != 0 {
+            self.give(old, INVENTORY, false);
+        }
+        if item == 0 || carried {
+            self.set_u16(r + rec::RESERVED + 2 * slot, 0);
+            self.set_u16(o, item);
+            if item != 0 {
+                self.take_item(item, INVENTORY);
+            }
+        } else {
+            self.set_u16(r + rec::RESERVED + 2 * slot, item);
+            self.set_u16(o, 0);
+        }
+        true
+    }
+
+    /// The 8 consumable ids Sora received (`0x340e50`, `FUN_001a2120` fills it); the field menu shows
+    /// its Items entry only once the first is set (`FUN_001bbca0`).
+    pub fn recent_items(&self) -> [u16; 8] {
+        std::array::from_fn(|i| self.u16_at(off::RECENT + 2 * i))
+    }
+
     /// `FUN_00187868`: an ability into the first empty slot of the member's list.
     fn put_ability(&mut self, r: usize, id: u16, equipped: bool) {
         for i in 0..rec::ABILITY_SLOTS {
@@ -1071,6 +1148,14 @@ impl Progress {
                     }
                 }
                 "abilities" | "abilities_off" => {}
+                // Each id is given to Sora through the original's give (`FUN_001a18d8(id, 1, 0)`, what a
+                // pickup does): a consumable fills his first free battle item slot (else the stock) and
+                // joins the received list.
+                "sora_items" => {
+                    for id in list(v, "sora_items")? {
+                        self.give(id, SORA, false);
+                    }
+                }
                 "dodge_roll" => self.dodge_roll = int(v, "dodge_roll")?.clamp(0, 5) as u8,
                 "forms" => {
                     let Json::Obj(m) = v else { return Err("forms: expected an object of form id: {...}".into()) };
@@ -1502,6 +1587,34 @@ mod tests {
         assert!(p.apply_json(r#"{"munnny": 1}"#).is_err(), "typos are reported");
     }
 
+    /// `FUN_0026c698` (equip a battle item, the pause menu writer) and the `sora_items` state key
+    /// (`FUN_001a18d8` to Sora, what a pickup does).
+    #[test]
+    fn battle_item_equip_swaps_with_the_stock() {
+        let Some(tb) = tables() else { return };
+        let ix = index(&tb);
+        let mut p = Progress::new_game(ix.clone(), &tb.plrp);
+        let r = Progress::member_off(SORA).unwrap();
+        p.set_item_slots(r, 3);
+        let (potion, ether) = (1u16, 3u16);
+        p.add_item(potion, 2);
+        assert!(p.equip_battle_item(SORA, 0, potion, p.item_count(potion) > 0));
+        assert_eq!((p.battle_items(SORA)[0], p.item_count(potion)), ((potion, 0), 1), "one off the stock into the slot");
+        // Not carried: the item is only reserved and the old one goes back.
+        assert!(p.equip_battle_item(SORA, 0, ether, p.item_count(ether) > 0));
+        assert_eq!((p.battle_items(SORA)[0], p.item_count(potion)), ((0, ether), 2));
+        assert!(p.equip_battle_item(SORA, 0, 0, false));
+        assert_eq!(p.battle_items(SORA)[0], (0, 0));
+        assert!(!p.equip_battle_item(SORA, 8, potion, true));
+        // The state file: two Potions to Sora fill two slots and the received list.
+        let mut q = Progress::new_game(ix, &tb.plrp);
+        q.set_item_slots(Progress::member_off(SORA).unwrap(), 3);
+        q.apply_json(r#"{"sora_items": [1, 1]}"#).unwrap();
+        assert_eq!(q.battle_items(SORA).iter().filter(|s| s.0 == potion).count(), 2);
+        assert_eq!(q.recent_items()[0], potion);
+        assert!(q.take_item(potion, SORA) && q.take_item(potion, SORA) && !q.take_item(potion, SORA));
+    }
+
     #[test]
     fn baseline_gives_the_old_app_defaults() {
         let Some(tb) = tables() else { return };
@@ -1653,6 +1766,39 @@ mod tests {
         }
         let game = read(&mut ee);
         assert_eq!(diff(&game, port.block()), Vec::<String>::new(), "party block after the give/take sweep");
+
+        // The field item use (WP-7C): FUN_001a1ba8 (take from a member's slots or the stock) and
+        // FUN_001877c8 (refill reserved slots from the stock), on Sora with three battle item slots.
+        let sora = Progress::member_off(SORA).unwrap();
+        ee.write(party + (sora + rec::ITEM_SLOTS) as u32, &[3]);
+        port.set_u8(sora + rec::ITEM_SLOTS, 3);
+        for i in 0..3 {
+            ee.write(party + (sora + rec::ITEMS + 2 * i) as u32, &[0, 0]);
+            port.set_u16(sora + rec::ITEMS + 2 * i, 0);
+        }
+        let consumables: Vec<u16> = ix.rows.iter().filter(|r| r.kind == item_type::CONSUMABLE && !r.is_key() && r.id != 0).map(|r| r.id).take(2).collect();
+        let (potion, other) = (consumables[0], consumables[1]);
+        for (id, to) in [(potion, SORA), (other, SORA), (potion, SORA), (potion, INVENTORY), (potion, INVENTORY)] {
+            let ok = ee.call(0x001a_18d8, &[id as u64, to as u64, 0], &[], STACK).expect("FUN_001a18d8") as u32 != 0;
+            assert_eq!(port.give(id, to, false), ok, "give {id} to {to}");
+        }
+        assert_eq!(diff(&read(&mut ee), port.block()), Vec::<String>::new(), "after the gives to Sora's slots");
+        let mut takes = Vec::new();
+        for (id, to) in [(potion, SORA), (potion, SORA), (potion, SORA), (other, SORA), (potion, INVENTORY)] {
+            let ok = ee.call(0x001a_1ba8, &[id as u64, to as u64], &[], STACK).expect("FUN_001a1ba8") as u32 != 0;
+            assert_eq!(port.take_item(id, to), ok, "take {id} from {to}");
+            takes.push(ok);
+            assert_eq!(diff(&read(&mut ee), port.block()), Vec::<String>::new(), "after taking {id} from {to}");
+        }
+        // Reserve the potion in slots 0 and 2 and refill from the stock (one potion is left there).
+        for i in [0usize, 2] {
+            ee.write(party + (sora + rec::RESERVED + 2 * i) as u32, &potion.to_le_bytes());
+            port.set_u16(sora + rec::RESERVED + 2 * i, potion);
+        }
+        ee.call(0x0018_77c8, &[(party + sora as u32) as u64], &[], STACK).expect("FUN_001877c8");
+        port.refill_battle_items(SORA);
+        assert_eq!(diff(&read(&mut ee), port.block()), Vec::<String>::new(), "after the refill");
+        eprintln!("oracle: battle item take/refill equal (takes {takes:?}; Sora's slots {:?}; stock {})", port.battle_items(SORA), port.item_count(potion));
         let inv = port.inventory().len();
         eprintln!(
             "oracle: new-game party block equal ({} bytes, {} plrp rows with Id 0); {} item counts equal; \

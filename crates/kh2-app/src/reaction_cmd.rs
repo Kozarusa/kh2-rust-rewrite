@@ -450,6 +450,7 @@ fn native_offers(
 }
 
 /// The accept key: only an available offer runs (FUN_0019c670 pushes slot 1 when its status is 0).
+#[allow(clippy::too_many_arguments)]
 fn accept(
     rules: Res<ReactionRules>,
     log: Res<Log>,

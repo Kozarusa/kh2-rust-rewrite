@@ -75,7 +75,7 @@ The interpreter's own pi is 0x40490fda and 2 pi is 0x40c90fda (one unit below th
 - Per object: `FUN_00169a90` creates one thread, runs **event 0** (arg: the object pointer) as a short handler, then makes **event 1** the persistent main thread (obj+0x484). A script without event 1 has a finished main thread from the start.
 - Every frame `FUN_0016a288` runs the main thread one slice (and its child threads, below); while it has not ended the **mode manager** (obj+0x300, `FUN_001869b8`) runs. The main thread counts as ended when its code has returned *and* it has no children left.
 - Events are started by the game with `FUN_0016c620(thread, id, args, n)` and run to their first `yield`, then are discarded. Known ids from call sites: 0 init, 1 main,
-  6 damage received (arg: the hit record; `FUN_001b21f0`), 0xd / 0xe event begin / end (`FUN_00182f68`, `FUN_00183080`), 0xb (3 args), 0xf (2 args), 0x10 (3 args), 0x13 (2 args),
+  6 damage received (arg: the hit record; `FUN_001b21f0`), 0xd / 0xe event begin / end (`FUN_00182f68`, `FUN_00183080`), 0xb (3 args: the **reaction command** delivered to its target, `FUN_0016b420` from `FUN_00177c20` and `FUN_00170b50`, see `docs/limits-reactions.md`), 0xf (2 args), 0x10 (3 args), 0x13 (2 args),
   0x17, 0x18, 0x19, 0x1a (`FUN_001b3d18`, `FUN_001b3cc8`, `FUN_001b3c70`), 0x1b (3 args). Meanings other than 0, 1, 6 are inferred from the names of the call sites only.
   Ids 2, 3 occur in `00common.bdx` (`FUN_001954f8`).
 - **Modes.** A script registers named modes in a 0x80-record table in its globals (host 1.6; record = name pointer, priority u16, flags u16, nine routine words) and attaches the table and a context
@@ -95,6 +95,8 @@ The interpreter's own pi is 0x40490fda and 2 pi is 0x40c90fda (one unit below th
   frame (FUN_0016c680 runs the thread, then each child, and removes children that have ended and have no children); threads a child starts attach to its parent. A thread that is destroyed (ended, killed, or its mode stopped) first runs its cleanup routine
   once, then its children are destroyed the same way (FUN_0016c3f0). A mode ends only when its thread and all its children have. Event handlers run as throw-away threads whose children attach to the main thread.
   Mode threads that are stopped are destroyed at the end of the mode manager's pass (FUN_0016ca48), not at once.
+- **Request threads.** Host 2.20 (`FUN_0018e898` -> `FUN_001a4738`) starts a detached thread at a routine with one argument and links it into the game's global list at 0x1c95518; the task body `FUN_001a4428` runs every listed thread once per frame (`FUN_0016c680`) and destroys the ones that have ended (it does nothing while the pause flag 0x20 of 0x35d268 is set). Here they belong to the runtime of the object whose script started them and run in `Runtime::update_requests` (called by `update`). The routine and its argument are plain constants only when the script passes them so: Soldier's event 11 passes the routine number through two calls, so `analyze_with` (and the `listing` example) take extra routine starts by hand.
+- **Script heap.** Host 0.47 (`alloc`) and 0.48 (`free`, `FUN_0016ded8`) are served by the runtime itself (`runtime::HEAP_BASE`, a 64 KiB bump allocator that never reuses): the game hands out real heap memory, scripts only keep and fill it (Soldier's reaction thread builds its context there). The runtime's own reads of script memory (contexts, vectors) and the interpreter's copies see it; the host is never asked about heap addresses.
 - **Action thread.** Host 1.112 (FUN_001764a8) starts a thread that is not a child of anything but belongs to the object (+0xaec): routine and an optional argument after the object. It replaces the earlier one (which is destroyed) and runs once per frame in the object class's own update (FUN_00176528) unless the object is frozen (+0x160 bit 0x40000);
   host 1.214 drops it. Where the class runs it relative to the script update (FUN_0016a288) is not known; `Runtime::update` runs it after the script and the two halves can be called separately.
 - **Messages.** Host 1.90 (FUN_00187170: message name, delay, the sender's mode machine) and 1.241 (FUN_00187190: name, delay, no sender) append to a global 64-entry queue. A per-frame task (FUN_00187250, registered at 0x187398) hands every queued
@@ -160,6 +162,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 0.43 | `wrap_angle(f) -> f` | 0x16de78 | 140 | wrap an angle in radians into -pi..pi (FUN_0017bbc0) |
 | 0.44 | `effect_stop(p)` | 0x16dba0 | 114 | stop the effect instance of an effect handle (FUN_001e0298 on handle+0x1c, if it has one) |
 | 0.47 | `alloc(i) -> p` | 0x16dea8 | 212 | allocate `size` bytes from the game heap (vtable slot 0 of the allocator at 0x33e850) |
+| 0.48 | `free(p)` | 0x16ded8 | 0 | release an allocation of 0.47 (FUN_00104fe0) |
 | 0.49 | `effect_alive(p) -> b` | 0x16dbd0 | 45 | bit 0 of the handle's halfword at +10 is clear (FUN_001da0d8) |
 | 0.50 | `effect_valid(p) -> b` | 0x16dc00 | 74 | the handle has an effect instance (handle+0x1c != 0) |
 | 0.51 | `effect_destroy(p)` | 0x16dc30 | 73 | mark the handle released (flags |= 0x10001), destroy its instance (FUN_001e0218, FUN_001e4218) and clear the pointer |
@@ -200,7 +203,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.26 | `global_byte_33e834() -> i` | 0x1720e8 | 45 | byte at 0x33e834 |
 | 1.27 | `global_byte_33e835() -> i` | 0x1720f8 | 0 | byte at 0x33e835 |
 | 1.28 | `hide(O)` | 0x170f78 | 1120 | hide the object at once |
-| 1.29 | `play_motion_with(OOif) -> i` | 0x1715b8 | 206 | start a motion on the object in step with a second object (FUN_0017f160 on the motion controller at +0x140: motion id stored at +0x154); role inferred |
+| 1.29 | `play_motion_with(OOif) -> i` | 0x1715b8 | 249 | play entry `motion` of the first object's motion set on the second object's body (FUN_0017f160: the entry is looked up in the first object's set, FUN_0017ee40 finds inside it the sub-entry named `%03d0` plus a variant digit of the second object's objentry byte +7 and starts it on the second object's controller; the second object's +0x154 becomes the motion number and its +0x158 a new serial from the counter at 0x35ccb0, which is returned) |
 | 1.32 | `task_start(pi) -> h` | 0x172360 | 105 | allocate a task object (0xb0c bytes, vtable 0x35eb80) and a 0x1c byte listener, return the task (FUN_001ab6a8, FUN_001aad78); role inferred |
 | 1.33 | `task_free(p)` | 0x1723f0 | 105 | call the task's virtual method +0x20 |
 | 1.34 | `event_active() -> b` | 0x173888 | 517 | the word at 0x35e3a4 is non-zero: an event or pause is in progress |
@@ -291,6 +294,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.157 | `spawn_effect_on(OiO)` | 0x171f40 | 83 | spawn an effect (FUN_001971c0 for the id) anchored at the object's +0x80, optionally bound to a second object (FUN_00197230) |
 | 1.161 | `has_link(O) -> b` | 0x1706c8 | 321 | the object is linked to another (+0x570 non-zero and in the object list) |
 | 1.163 | `nop_163(pp)` | 0x1737d0 | 0 | empty function |
+| 1.165 | `offer_command(iiOi)` | 0x1734a8 | 41 | offer a reaction command: slot, command id, the object the target record is built for (position index 0), show flag; priority 100 through FUN_001bb3a8 on the player's command manager (not decompiled; read from the machine code) |
 | 1.166 | `ctx_word_8(p) -> i` | 0x1737e0 | 13 | the word at +8 of the argument |
 | 1.167 | `set_mode_priority(ps)` | 0x170f50 | 16 | switch to the named mode when its priority is at least that of the running one (FUN_00186e70) |
 | 1.168 | `start_move_alt(Ovifi)` | 0x171460 | 112 | as start_move through the alternate setter (FUN_001b4ee0) |
@@ -331,7 +335,8 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.232 | `rec12_word2(pi) -> i` | 0x174120 | 60 | word 2 of record i of an array of 12-byte records |
 | 1.233 | `rec12_set_clamped(ppi)` | 0x174178 | 13 | word 0 of record i = the value clamped between word 2 (lower) and word 1 (upper) (arguments: base, value, index) |
 | 1.234 | `obj_word_af8(Oi) -> i` | 0x174280 | 18 | word at object +0xaf8 + 4 * i |
-| 1.238 | `obj_word_158(O) -> i` | 0x171718 | 24 | word at object +0x158 |
+| 1.237 | `offer_four(iiiiO)` | 0x173508 | 8 | offer four commands into slots 3 to 6 of the player's command manager (FUN_001bb4b0 with priority 100), the target record built for the object of the last argument |
+| 1.238 | `obj_word_158(O) -> i` | 0x171718 | 407 | word at object +0x158: the serial of the motion last started on it by play_motion_with |
 | 1.239 | `spawn_flag_8_or_none(O) -> b` | 0x171bc8 | 8 | the object has no spawn record (+0x818) or the record's flag 8 (+4) is set |
 | 1.240 | `nop_240(ppp)` | 0x1710d8 | 0 | empty function |
 | 1.241 | `broadcast_message(sf)` | 0x172098 | 0 | like send_message without a sender |
@@ -354,9 +359,11 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.311 | `set_scaled_byte(pii)` | 0x174238 | 153 | byte at +0x1a8 + i of the first argument = (halfword i of the table at its +0x254 + 0x48) * percent + 99) / 100 (FUN_001a0ba0) |
 | 1.317 | `gflags_set_20000()` | 0x173b70 | 56 | set bit 17 of the global flag word at 0x35d268 |
 | 1.324 | `obj_flags_abc_clear_b(Oi)` | 0x1707b0 | 17 | the same function as obj_flags_abc_clear under a second number |
+| 1.325 | `send_reaction(OOiO)` | 0x170b50 | 8 | deliver script event 0xb to the first object: (the second object, the command id, a target record built for the fourth argument's object) through FUN_0016b420, the same call the player's accept path makes |
 | 1.335 | `list_800_remove(Op)` | 0x170d38 | 41 | remove the entry with that value from the list at object +0x800 (FUN_001b1750) |
 | 1.336 | `list_800_add(Op)` | 0x170d60 | 41 | add a value to the list at object +0x800 (FUN_001b1810) |
 | 1.344 | `list_800_clear(O)` | 0x170d88 | 0 | empty the list at object +0x800 |
+| 1.345 | `offer_command_ret(iiOi) -> h` | 0x1735c8 | 0 | as offer_command, returning the slot entry (0 when refused); no script on the disc calls it |
 | 1.350 | `gflags_set_100000()` | 0x173b88 | 1 | set bit 20 of the global flag word at 0x35d268 |
 | 1.351 | `gflags_clear_100000()` | 0x173ba0 | 1 | clear bit 20 of the global flag word at 0x35d268 |
 | 2.2 | `react_flinch_push(Opf)` | 0x18df00 | 11 | reaction class 3: flinch plus push on the object (FUN_001850c8; see hit-reaction.md) |
@@ -373,7 +380,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 2.15 | `hit_set_flag1(p)` | 0x18e190 | 136 | set bit 0 of the flags at hit +0x18 |
 | 2.16 | `hit_flag1(p) -> b` | 0x18e1a8 | 0 | bit 0 of the flags at +0x18 (2.15 sets it) |
 | 2.17 | `attack_hit_object(pOip)` | 0x18e6e0 | 61 | when the attack may hit the object (FUN_0018c5f8): build the hit record (FUN_0018c6d0), mark it, call the object's virtual method +100 with it (delivers the damage) |
-| 2.20 | `request_2_20(pp) -> i` | 0x18e898 | 269 | sound or effect request (FUN_001a4738); role unknown |
+| 2.20 | `start_request(ip) -> h` | 0x18e898 | 278 | start a detached thread at routine `pc` with one argument (FUN_001a4738: FUN_0016c838 makes the thread on the running thread's program, FUN_001a42b8 links it into the list at 0x1c95518; the task body FUN_001a4428 runs every listed thread once per frame and destroys it when it ends); returns the list node |
 | 2.21 | `shared_block(ii) -> p` | 0x18e928 | 156 | the persistent buffer registered under a key (FUN_001a5040): the first call allocates and zeroes size + 1 bytes, every call sets the first byte to 1 and returns the buffer |
 | 2.22 | `attack_anchor(pO)` | 0x18e7c8 | 67 | set the attack's anchor (+0x24) to the other object's +0x80 |
 | 2.23 | `target(O) -> p` | 0x18ddb0 | 3225 | the object's current target record (+0x9f4) |
@@ -503,7 +510,7 @@ Header: globals 0x1070, events 0, 1, 6, 11, 13. Same structure as Shadow (same c
 +0x30 short range 300.0, +0x34 long range 500.0, +0x38 / +0x3c chase radii 2000 (off screen) and 1200 (on screen) for the type Soldier passes (2500 for area byte 10; the other types give 2500 / 1800 and 2500 / 1200), +0x40 and +0x44 the probabilities 0.7 and 0.35 (stored; no Soldier mode reads them), +0x48 a movement parameter block (probe ranges 200 and 200, turn speed 0, move motion 2, blend 8, jump motion 3, air speed 8).
 
 - **Events.** 0 init, 1 main (`appear`, queue `mode_battle`; each frame re-enters `mode_battle` when nothing is pending). 6 damage: when `hit_is_real`, the hit counter +0x14 goes up and the mode becomes `mode_revenge`. 13 event begin: `mover_method(0.0)`, motion 4 with blend 8, `set_flag_26`.
-  **11 (three arguments: reply pointer, query id, third)** answers the single query 34 with a freshly allocated target record (`alloc`, a vector, `2.23 target` freed through `1.131 free_target`, a call to `2.20` on it) and ignores every other query; what the game asks with it is not known (inferred: the lock-on anchor).
+  **11 (three arguments: the controller, the command id, the target record)** is the delivery of a **reaction command**: it answers command 34 only (see below and `docs/limits-reactions.md`): it allocates an 80-byte block holding a context for the Soldier, starts the detached thread of host 2.20 at word 0x5a (the dodge: the player is made untouchable, a paired motion plays on him and he is pushed tangentially around the Soldier at 30 per tick) and returns; every other command id does nothing. The argument words are not a reply pointer and a query: the earlier reading was wrong.
 - **appear.** `spawn_kind` -1 or 2 (spawned in the world): face the player, motion 44 with fade-in 30 frames, face the player every frame until the motion ends, then motion 4 (0 when the object is in a state where `flag_124` or not `busy`). Other kinds: motion 0 started at a random frame, wait while `event_active` and while `global_byte_301` is set, then a random wait up to 30 frames.
 - **idle** (priority 100): wait until the object is free (`flag_124` clear and not `busy`, no hit stun), face the target, motion 0 until it ends. **idle_time**: wait a random 15 to 45 frames, face the target, motion 0. **footwork** (motion 47) is never entered by the script; the game's native code must switch to it.
 - **mode_battle**: leave check (`global_flag_80` forces leaving, `global_flag_4` forbids it, otherwise leave when the player is farther than +0x3c on screen or +0x38 off screen: mode `leave`), `set_target_mode(target, 0)`, hit counter +0x10 plus one, then by the distance to the target: under +0x30 (300) `btl_attack`, under +0x34 (500) `btl_short`, else `btl_long`.
@@ -519,11 +526,16 @@ Header: globals 0x1070, events 0, 1, 6, 11, 13. Same structure as Shadow (same c
 - The dry-run test (`tests/disc.rs::soldier_runs_its_whole_mode_cycle`) runs Soldier on the mock world (which gained jumps and the object's own memory, since the jump writes the movement vector at obj+0x10) at four distances, six seeds, with and without a hit: it enters `appear`, `mode_battle`, `idle`, `idle_time`, `btl_attack`, `btl_short`, `btl_long`, `atk_craw`, `atk_kick`, `atk_jump`, `move_target`, `move_roll`, `move_step`, `move_back`, `fight`, `mode_revenge`, `rvg_short`, `rvg_long`
   and `leave` (player 6000 away), with no error and no undecoded call.
 
+## Reaction commands in scripts (WP-2C2)
+
+`kh2_bdx::reaction` reads a program without running it: `handled` gives the command ids the event 11 handler compares its second argument with (a constant pushed in front of an integer subtraction, within the first 400 instructions), `offered` the ids passed to host 1.165, 1.237 and 1.325 as constants. Over the disc (`tests/reaction.rs`, needs `local/kh2idx.txt`): 1243 scripts, 177 with an event 11 handler, 229 distinct ids handled (some are not commands), 22 distinct ids offered by a script. The examples `reactmap` (the same map with the objects whose collision table has type 5 parts) and `listing` (a listing with extra routine starts) are developer tools. Host 1.165 is `offer_command(slot, id, object, flag)` (priority 100 through `FUN_001bb3a8`), 1.237 four commands at once, 1.325 sends event 11 to another object (`FUN_00170b50`), 1.345 returns the slot entry (no script calls it).
+
 ## Verification
 
 `crates/kh2-bdx/tests/oracle.rs` runs the game's interpreter (FUN_001d7cb0 in `kh2-ee`) and this crate's on the same program and compares program counter, operand depth, frame pointer and top of stack after every instruction, plus every host call and its arguments.
 Host functions of groups 1 and 2 are replaced on both sides by the same scripted replies; group 0 math (vectors, random numbers, rotation, and since 1E2 `fabs` and `vec_scale_in_place`) runs natively on the game side. With `KH2_BDX_ORACLE_ALL=1` it covers every entry point and every call target of
 all scripts: 1246 scripts, 51,709 starting points, 165,032 run slices, 17,485,071 interpreter steps and 1,447,005 host calls, **0 differences** (the routines passed to the thread-spawn calls count as starting points since 1E2). The default run checks every 25th script plus Shadow, Soldier and `00common.bdx`.
+WP-2C2 added `soldier_reaction_command_path_matches_the_games`: Soldier's event 11 with command 34 (81 steps), 457 and 0 (11 steps each) and the thread routine at 0x5a (73 steps, 10 host calls) against the game's interpreter, 0 differences; the oracle's scripted reply for host 0.47 is now an address both sides can use, and the whole-disc sweep (`KH2_BDX_ORACLE_ALL=1`) was rerun: 1246 scripts, 51,852 starting points, 165,672 run slices, 19,558,975 interpreter steps, 1,520,214 host calls, **0 differences**.
 It found and fixed: the interpreter's pi constants, the game's own sin/cos kernels, the rotation helper's polynomial, saturating vector arithmetic. Not covered by the oracle: the Rust `Call` decoding of group 1/2 functions (checked by reading
 the wrappers, not executed), the mode machine, threads, messages and queues (`runtime.rs`, covered by `tests/runtime.rs` on hand-assembled scripts and by the dry runs), the signature inference (`sigcheck`), and `HostTable`.
 Tests that need no disc: `tests/synthetic.rs` (instruction semantics), `tests/runtime.rs` (child threads, tag kill, cleanup, delayed messages, remote mode entries, action thread, inferred signatures), the names table against this document.
@@ -539,4 +551,4 @@ Tests that read the disc and skip without `KH2_ISO`: `tests/disc.rs` (parsing, s
   Global memory starts zeroed; whether the game zeroes it is not verified.
 - Sine and cosine for arguments beyond about 2^7 * pi/2 use a double precision fallback (the game uses a multi-word reduction).
 - The wrapper tables assume the USA release; `HostTable::from_exe` reads fixed addresses.
-- Soldier: what event 11 / query 34 is for, and which game code enters `footwork`.
+- Soldier: which game code enters `footwork`. (Event 11 is the reaction command 34, resolved in WP-2C2.)

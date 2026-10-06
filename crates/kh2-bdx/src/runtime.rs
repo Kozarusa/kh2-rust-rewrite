@@ -63,7 +63,7 @@ enum Request {
     /// Host 1.214: drop the action thread (FUN_001764a8 with 0).
     StopAction,
     /// Host 2.20: start a detached request thread (FUN_001a4738).
-    StartRequest { handle: u32, pc: u32, args: Vec<u32> },
+    Detached { handle: u32, pc: u32, args: Vec<u32> },
 }
 
 /// Base of the script heap served to host 0.47 (`alloc`). The game hands out real heap memory; here a
@@ -482,8 +482,8 @@ impl Core {
         while i < self.requests.len() {
             match &self.requests[i] {
                 Request::SetAction { .. } | Request::StopAction => {}
-                Request::StartRequest { .. } => {
-                    let Request::StartRequest { handle, pc, args } = self.requests.remove(i) else { continue };
+                Request::Detached { .. } => {
+                    let Request::Detached { handle, pc, args } = self.requests.remove(i) else { continue };
                     let node = self.new_node(prog, sh, handle, pc, &args);
                     self.requests_threads.push(node);
                     continue;
@@ -1031,7 +1031,7 @@ impl CoreEnv<'_> {
             // 0x1c95518; FUN_001a4428 runs the list once per frame). Returns the list node.
             (2, 20) => {
                 let handle = self.core.alloc_handle();
-                self.core.requests.push(Request::StartRequest { handle, pc: a[0], args: vec![a[1]] });
+                self.core.requests.push(Request::Detached { handle, pc: a[0], args: vec![a[1]] });
                 return Ok(Some(handle));
             }
             (2, 23) => Call::Target { obj: self.obj_of(mem, a[0])? },

@@ -223,6 +223,7 @@ impl Options {
         }
     }
 
+    #[cfg(test)]
     /// The raw 2-bit Summon Effects field `FUN_001c65f0` tests.
     pub fn summon_raw(&self) -> u32 {
         match self.summon {
@@ -275,7 +276,6 @@ struct PageNodes {
     /// Three value cells per visible row.
     cells: Vec<usize>,
     hand: usize,
-    help: usize,
 }
 
 pub struct ConfigPlugin;
@@ -319,7 +319,7 @@ fn setup(disc: Res<Disc>, mut scene: ResMut<MenuScene>, mut page: ResMut<ConfigP
     };
     page.rows = rows;
     page.cells = cells;
-    let mut new = |scene: &mut MenuScene| {
+    let new = |scene: &mut MenuScene| {
         let mut n = Node::new(Some(SEQ_MAIN));
         n.visible = false;
         scene.add(n)
@@ -334,9 +334,6 @@ fn setup(disc: Res<Disc>, mut scene: ResMut<MenuScene>, mut page: ResMut<ConfigP
         page.nodes.cells.push(id);
     }
     page.nodes.hand = new(&mut scene);
-    let mut help = Node::new(None);
-    help.visible = false;
-    page.nodes.help = scene.add(help);
     page.ready = true;
 }
 
@@ -354,7 +351,7 @@ fn sync_options(progress: Option<Res<Progress>>, mut options: ResMut<Options>) {
 
 fn hide(scene: &mut MenuScene, page: &ConfigPage) {
     let n = &page.nodes;
-    for &id in [n.panel, n.hand, n.help].iter().chain(&n.plates).chain(&n.cells) {
+    for &id in [n.panel, n.hand].iter().chain(&n.plates).chain(&n.cells) {
         scene.nodes[id].visible = false;
     }
 }
@@ -421,7 +418,7 @@ fn input(
             info!("menu: config row {row} -> {} ({imm:?})", page.ui[row]);
         }
         se.write(PlaySe::number(menu_sound::CURSOR, None));
-        show_rows(&mut scene, &mut page, true);
+        show_rows(&mut scene, &page, menu.nodes.help);
     } else if let Some(wrap) = step {
         let new = super::step_cursor(page.cursor, ROWS, dir, wrap);
         if new != page.cursor {
@@ -433,7 +430,7 @@ fn input(
             } else if new >= page.scroll + VISIBLE {
                 page.scroll = new + 1 - VISIBLE;
             }
-            show_rows(&mut scene, &mut page, true);
+            show_rows(&mut scene, &page, menu.nodes.help);
         }
     } else if confirm {
         // Confirm has no meaning on a row (the list result is only read for Left and Right).
@@ -454,7 +451,7 @@ fn enter(menu: &mut Menu, scene: &mut MenuScene, page: &mut ConfigPage, se: &mut
     for &r in &n.rows {
         scene.nodes[r].visible = false;
     }
-    for id in [n.pointer, n.glint, n.help] {
+    for id in [n.pointer, n.glint] {
         scene.nodes[id].visible = false;
     }
     page.cards = n.cards.iter().copied().filter(|&c| scene.nodes[c].visible).collect();
@@ -466,8 +463,15 @@ fn enter(menu: &mut Menu, scene: &mut MenuScene, page: &mut ConfigPage, se: &mut
     scene.set_group_then(nodes.panel, PANEL[0], PANEL[1]);
     scene.nodes[nodes.hand].visible = true;
     scene.set_group(nodes.hand, group::HAND);
+    if std::env::var_os("KH2_MENU_CONFIG_LOG").is_some() {
+        for g in [PANEL[0], PANEL[1], PLATE, page.cells[0][0], page.cells[0][1], page.cells[1][0], page.cells[1][1], page.cells[2][0], page.cells[2][1]] {
+            if let Some(gr) = scene.seqs.get(SEQ_MAIN).and_then(|s| s.groups.get(g)) {
+                info!("menu: config group {g:#x}: xy ({}, {}) size {} unk1c {} unk20 {}", gr.x, gr.y, gr.size, gr.unk1c, gr.unk20);
+            }
+        }
+    }
     info!("menu: page {PAGE:#x} (Config) option word {word:#x} -> {:?}", page.ui);
-    show_rows(scene, page, false);
+    show_rows(scene, page, menu.nodes.help);
 }
 
 /// Leaves the page for page 0 (cancel) or the field (close).
@@ -493,7 +497,7 @@ fn leave(menu: &mut Menu, scene: &mut MenuScene, page: &mut ConfigPage, se: &mut
 }
 
 /// Places the plates, the cells and the texts for the visible rows.
-fn show_rows(scene: &mut MenuScene, page: &ConfigPage, _moved: bool) {
+fn show_rows(scene: &mut MenuScene, page: &ConfigPage, menu_help: usize) {
     let Some(text) = scene.text.as_ref() else { return };
     let pitch = scene.seqs.get(SEQ_MAIN).and_then(|s| s.groups.get(PLATE)).map_or(26, |g| g.unk1c) as f32;
     let mut labels = Vec::new();
@@ -516,12 +520,14 @@ fn show_rows(scene: &mut MenuScene, page: &ConfigPage, _moved: bool) {
         labels.push((slot, name, cells));
     }
     let cell_pitch = |scene: &MenuScene, g: usize| scene.seqs.get(SEQ_MAIN).and_then(|s| s.groups.get(g)).map_or(0, |g| g.unk1c) as f32;
+    let panel = page.nodes.panel;
     let nodes_plates = page.nodes.plates.clone();
     let nodes_cells = page.nodes.cells.clone();
     for (slot, name, cells) in labels {
         let y = pitch * slot as f32;
         let p = nodes_plates[slot];
         scene.nodes[p].visible = true;
+        scene.nodes[p].parent = Some(panel);
         scene.nodes[p].off = [0.0, y];
         if scene.nodes[p].player.group != Some(PLATE) {
             scene.set_group(p, PLATE);
@@ -535,9 +541,11 @@ fn show_rows(scene: &mut MenuScene, page: &ConfigPage, _moved: bool) {
                     let w = cell_pitch(scene, *g);
                     let n = &mut scene.nodes[id];
                     n.visible = true;
+                    n.parent = Some(panel);
                     n.off = [w * j as f32, y];
                     n.label = label.clone();
-                    n.label_anchor = Some([0.0, 0.0]);
+                    // The value text starts a little right of the cell's anchor so a long row name does not run into it (measured by eye: no clip of this page exists).
+                    n.label_anchor = Some([10.0, 0.0]);
                     if scene.nodes[id].player.group != Some(*g) {
                         scene.set_group(id, *g);
                     }
@@ -553,9 +561,12 @@ fn show_rows(scene: &mut MenuScene, page: &ConfigPage, _moved: bool) {
     scene.nodes[hand].off = at::HAND;
     let row = page.cursor;
     let help_id = page.rows.get(row).map_or(0, |d| d.helps[(page.ui[row] as usize).min(2)]);
+    if std::env::var_os("KH2_MENU_CONFIG_LOG").is_some() {
+        info!("menu: config row {row} value {} help message {help_id:#x} resolves {}", page.ui[row], scene.text.as_ref().is_some_and(|t| t.message(help_id, Style::default(), [0.0; 2]).is_some()));
+    }
     let text = scene.text.as_ref().unwrap();
     let help = text.message(help_id, Style { font: 0, size: Some(15.0), color: [0x30, 0x7c, 0x80, 0x80], ..Style::default() }, at::HELP);
-    let h = page.nodes.help;
+    let h = menu_help;
     scene.nodes[h].label = help;
     scene.nodes[h].visible = true;
     // Rows beyond the table (when fewer than nine are visible) stay hidden by the loop above.
@@ -623,7 +634,7 @@ mod tests {
     #[test]
     fn the_new_game_word_is_the_one_the_original_writes() {
         let w = crate::progress::OPTION_DEFAULT;
-        assert_eq!(w, (0u32 & 0xffff_f809) | 0x40b);
+        assert_eq!(w, 0x40b, "FUN_0023e9a0 on a zero word: (0 & 0xfffff809) | 0x40b");
         let o = Options::from_word(w);
         assert_eq!(
             o,
@@ -730,7 +741,8 @@ mod tests {
     fn oracle_the_loader_and_the_readers_match() {
         let Some(mut ee) = open() else { return };
         let mut seed = 7;
-        let readers: [(u32, fn(&Options) -> u64); 9] = [
+        type Reader = (u32, fn(&Options) -> u64);
+        let readers: [Reader; 9] = [
             (0x23ec68, |o| u64::from(!o.field_camera_manual)),
             (0x23ece0, |o| u64::from(!o.right_stick_command_menu)),
             (0x23ee68, |o| u64::from(o.camera_ud_reverse)),

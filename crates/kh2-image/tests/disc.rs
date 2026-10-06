@@ -170,3 +170,56 @@ fn font_style_colours_read_from_the_system_table() {
     assert!(t.color(9, 2).is_none());
     assert!(t.color(1, 19).is_none());
 }
+
+/// The message-window frames: the `md_m` sequence of fontinfo.bar holds the ten frame kinds as
+/// group triples from 67 (open, idle, close; the string at 0x35ea48), each drawing a nine-part
+/// sprite group with its own margins in the group record; the world message files carry the
+/// 256x128 frame image (`md_m`, loaded at 0x190b70 into the window texture 0x1c95710), the system
+/// file an empty one.
+#[test]
+fn window_frames_in_the_font_and_world_files() {
+    use kh2_image::window::{frame_group, Phase, KINDS};
+    let Some(mut a) = open() else { return };
+    let info = a.read("msg/us/fontinfo.bar").expect("fontinfo.bar");
+    let entries = kh2_bar::parse(&info).unwrap();
+    let seq = entries.iter().find(|e| e.tag == "md_m" && e.kind == 25).expect("md_m sequence").data;
+    let seq = kh2_image::seqd::parse(seq).expect("seqd");
+    assert_eq!(seq.groups.len(), 97);
+    let mut margins = Vec::new();
+    for kind in 0..KINDS {
+        let (open, idle, close) = (frame_group(kind, Phase::Open), frame_group(kind, Phase::Idle), frame_group(kind, Phase::Close));
+        let g = seq.groups[idle];
+        margins.push((g.x, g.y));
+        // Opening and closing play once and hold; the idle group loops.
+        assert_eq!((seq.groups[open].loops, g.loops, seq.groups[close].loops), (1, 0, 1), "kind {kind}");
+        for grp in [open, idle, close] {
+            let first = &seq.anims[seq.groups[grp].first];
+            assert_eq!(seq.sprite_groups[first.group].count, 9, "kind {kind} group {grp}");
+        }
+    }
+    assert_eq!(&margins[..5], &[(16, 8), (10, 8), (16, 8), (8, 8), (0, 0)]);
+    // Kind 0: 16x16 corners cut from the top-left 32x48 of the image.
+    let mut s = seq.clone();
+    s.resize_frame(frame_group(0, Phase::Idle), 200, 40);
+    let sg = seq.sprite_groups[seq.anims[seq.groups[frame_group(0, Phase::Idle)].first].group];
+    let p = &s.parts[sg.start..sg.start + 9];
+    assert_eq!([p[4].left, p[4].top, p[4].right, p[4].bottom], [-108, -24, 108, 24]);
+    assert_eq!([p[0].left, p[0].top, p[0].right, p[0].bottom], [-124, -40, -108, -24]);
+    let corner = seq.sprites[seq.parts[sg.start].sprite];
+    assert_eq!([corner.u0, corner.v0, corner.u1, corner.v1], [0, 0, 16, 16]);
+    // The system message file's frame image is empty.
+    let sys = a.read("msg/us/sys.bar").expect("sys.bar");
+    let e = kh2_bar::parse(&sys).unwrap();
+    assert!(e.iter().any(|e| e.tag == "md_m" && e.kind == 24 && e.data.is_empty()));
+    // The world files live in the world sub-indexes; with the name list they can be read.
+    let Ok(names) = std::fs::read_to_string("../../local/kh2idx.txt") else {
+        eprintln!("skipped the world file part: no local/kh2idx.txt");
+        return;
+    };
+    a.apply_names(names.lines()).unwrap();
+    let tt = a.read("msg/us/tt.bar").expect("tt.bar");
+    let e = kh2_bar::parse(&tt).unwrap();
+    let img = e.iter().find(|e| e.tag == "md_m" && e.kind == 24).expect("md_m image").data;
+    let img = kh2_image::imgd::decode(img).expect("imgd");
+    assert_eq!((img.width, img.height), (256, 128));
+}

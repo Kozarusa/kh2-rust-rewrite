@@ -7,6 +7,7 @@ pub mod font;
 pub mod imgd;
 pub mod seqd;
 pub mod text;
+pub mod window;
 
 #[cfg(test)]
 mod tests;

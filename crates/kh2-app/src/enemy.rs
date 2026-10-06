@@ -39,18 +39,28 @@ pub struct Kind {
     pub enmp: u16,
     /// The object's model name (`obj/<model>.mdlx`, `.mset`, `.apdx`; its `00objentry` row).
     pub model: &'static str,
+    /// The script's `dead` mode starts element 2 of the object's effect file (the death effect), so
+    /// the damage code starts it when HP reaches 0 (`GameEffect::Death`).
+    pub death_effect: bool,
 }
 
-pub const SHADOW: Kind = Kind { name: "Shadow", enmp: 34, model: "M_EX020" };
+pub const SHADOW: Kind = Kind { name: "Shadow", enmp: 34, model: "M_EX020", death_effect: true };
 
-pub const SOLDIER: Kind = Kind { name: "Soldier", enmp: 33, model: "M_EX010" };
+pub const SOLDIER: Kind = Kind { name: "Soldier", enmp: 33, model: "M_EX010", death_effect: true };
 
 /// The Dusk. Its `enmp` row is the constant its script hands to `set_obj_param` (host 2.9, the
 /// call that builds the status block from the row, FUN_001b2148): 41 (BDX `M_EX990` at 0x073c).
-pub const DUSK: Kind = Kind { name: "Dusk", enmp: 41, model: "M_EX990" };
+pub const DUSK: Kind = Kind { name: "Dusk", enmp: 41, model: "M_EX990", death_effect: true };
+
+/// The Struggle opponent `N_EX570_BTL` (object 0x678; Seifer by the community's model names), in
+/// tt04's battle groups b_41, b_42, b_45 and b_51. Its script picks the `enmp` row it hands to
+/// `set_obj_param` from spawn parameter 1 (BDX `N_EX570_BTL` R1864 at 0x077d): 155 for 3 and 4, else
+/// 135. The kind starts with 135; host 2.9 rebuilds the stats from the row the script asks for. Its
+/// `dead` mode (BDX 0x174d) plays motion 16 or 10 and waits for ever: no death effect, no fade.
+pub const SEIFER: Kind = Kind { name: "Seifer", enmp: 135, model: "N_EX570_BTL", death_effect: false };
 
 /// Every enemy kind the app has.
-pub const KINDS: [&Kind; 3] = [&SHADOW, &SOLDIER, &DUSK];
+pub const KINDS: [&Kind; 4] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER];
 
 /// The rigs of the enemy kinds, by `Kind::name` (Shadow and Soldier share `sora::Rigs`' copies).
 #[derive(Resource, Default)]
@@ -98,6 +108,9 @@ pub struct Member {
     pub at: Vec3,
     pub yaw: f32,
     pub spawn_kind: i32,
+    /// The record's words at +0x20 and +0x24, which the game copies to the object's spawn
+    /// parameters 1 and 2 (FUN_0016b870; host 1.39).
+    pub spawn_params: [i32; 2],
 }
 
 /// A spawn group of the area's battle script that holds enemies the app has.
@@ -157,6 +170,7 @@ pub fn area_groups(disc: &Disc, area: &str) -> Vec<AreaGroup> {
                             at: Vec3::new(x, -y, -z) * SCALE,
                             yaw: std::f32::consts::PI - e.rotation[1],
                             spawn_kind: e.spawn_kind as i32,
+                            spawn_params: [0x20, 0x24].map(|o| i32::from_le_bytes(e.raw[o..o + 4].try_into().unwrap_or_default())),
                         });
                     }
                     None if row.object_type == OBJECT_ENEMY => g.skipped.push(row.model_name.clone()),
@@ -200,6 +214,11 @@ pub struct Enemy {
     hit_sounds: u8,
     /// The spawn kind byte of the enemy's spawn record (host 1.110), -1 without one.
     pub spawn_kind: i32,
+    /// Spawn parameters 1 and 2 from the record (host 1.39), `None` without a record.
+    pub spawn_params: Option<[i32; 2]>,
+    /// The lowest HP a hit can leave (word 2 of the HP record of the status block, which the game's
+    /// HP change FUN_001a0100 clamps to; scripts set it with host 1.231). 0 unless a script sets it.
+    pub min_hp: i32,
 }
 
 impl Enemy {
@@ -260,7 +279,7 @@ fn spawn_enemy(
     rig: Arc<Rig>,
     at: Vec3,
     yaw: f32,
-    spawn_kind: i32,
+    (spawn_kind, spawn_params): (i32, Option<[i32; 2]>),
     data: &GameData,
     assets: (&mut Assets<Mesh>, &mut Assets<StandardMaterial>, &mut Assets<Image>, &mut Assets<SkinnedMeshInverseBindposes>),
 ) {
@@ -285,6 +304,8 @@ fn spawn_enemy(
             blown_back: false,
             hit_sounds: 0,
             spawn_kind,
+            spawn_params,
+            min_hp: 0,
         },
         Fighter { team: Team::Enemy, attack_bodies: vec![body], hurt_body: body, landed: Default::default(), hittable: false },
     ));
@@ -360,7 +381,7 @@ pub fn spawn_waves(
             // On the floor under the record's point (the record's height is the game's own floor).
             let y = col.ground_m(m.at.x, m.at.z, m.at.y + 1.0).unwrap_or(m.at.y);
             let at = m.at.with_y(y);
-            spawn_enemy(&mut commands, m.kind, rig, at, m.yaw, m.spawn_kind, &data, (&mut meshes, &mut materials, &mut images, &mut bindposes));
+            spawn_enemy(&mut commands, m.kind, rig, at, m.yaw, (m.spawn_kind, Some(m.spawn_params)), &data, (&mut meshes, &mut materials, &mut images, &mut bindposes));
         }
         return;
     }
@@ -384,7 +405,7 @@ pub fn spawn_waves(
         let kind: &'static Kind = if waves.count > 1 && i == 0 { &SOLDIER } else { &SHADOW };
         let Some(rig) = rigs.get(kind) else { continue };
         let yaw = { let d = p.translation - Vec3::new(x, y, z); f32::atan2(d.x, d.z) };
-        spawn_enemy(&mut commands, kind, rig, Vec3::new(x, y, z), yaw, -1, &data, (&mut meshes, &mut materials, &mut images, &mut bindposes));
+        spawn_enemy(&mut commands, kind, rig, Vec3::new(x, y, z), yaw, (-1, None), &data, (&mut meshes, &mut materials, &mut images, &mut bindposes));
     }
 }
 
@@ -524,8 +545,9 @@ pub fn receive_hits(
         if let Some(ab) = &abilities {
             dmg = crate::abilities::attacker_bonuses(ab.block(), combo_hits, atk, dmg);
         }
-        e.hp = (e.hp - dmg).max(0);
-        if e.hp == 0 {
+        // FUN_001a0100: the new HP is held between word 2 (`min_hp`) and the maximum.
+        e.hp = (e.hp - dmg).max(e.min_hp);
+        if e.hp == 0 && e.kind.death_effect {
             // The damage method starts the death at the moment HP reaches 0 (FUN_00186530 -> the
             // `dead` mode); a second request for the same victim is ignored by `fx`.
             game.write(crate::fx::GameEffect::Death { victim: h.target });

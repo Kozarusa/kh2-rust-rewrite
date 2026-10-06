@@ -52,6 +52,8 @@ const HIT: u32 = 0x0500_0000;
 const RECORD: u32 = 0x0600_0000;
 const RECORD_SIZE: u32 = 0x20;
 const OBJ_SIZE: usize = 0x1000;
+/// The status block of the scripted object (host 1.84: the pointer at object +0x48c).
+const GAUGES: u32 = 0x0700_0000;
 /// Bit 3 of an object's flag array: "cannot be hit" (FUN_0019a4f0).
 const FLAG_BIT_UNHITTABLE: i32 = 3;
 /// Offset of the movement vector (direction and speed in w) in a game object.
@@ -348,6 +350,15 @@ struct Obj {
     player_serial: Option<i32>,
     /// The spawn kind byte of the object's spawn record (host 1.110), -1 without one.
     spawn_kind: i32,
+    /// Spawn parameters 1 and 2 (object +0x820, +0x824, copied from the record by FUN_0016b870).
+    spawn_params: Option<[i32; 2]>,
+    /// The `enmp` row of this tick's `set_obj_param` when it is not the one the stats were built from.
+    param_row: Option<u16>,
+    /// The HP record of part 0 of the status block (+0x48c, FUN_0019f770: current, maximum, lowest):
+    /// the maximum and the lowest as the enemy has them, and the change the script asked for this tick.
+    hp_max: i32,
+    hp_min: i32,
+    hp_add: i32,
     /// The motion controller's time (+0x140 + 0x30 = object +0x170), in the motion's own frames: the
     /// `Animator` frame at the start of the tick, or the first frame of a motion requested in it.
     frame: f32,
@@ -391,6 +402,11 @@ impl Obj {
             player_cmds: Vec::new(),
             player_serial: None,
             spawn_kind: -1,
+            spawn_params: None,
+            param_row: None,
+            hp_max: 1,
+            hp_min: 0,
+            hp_add: 0,
             frame: 0.0,
             blend_left: 0.0,
             want_vel: Vec3::ZERO,
@@ -516,6 +532,16 @@ impl BevyHost<'_> {
         Some(g.map_or(p, |g| p.with_y(g.y)))
     }
 
+    /// Record `i` of the HP records of the status block: (current, maximum, lowest); parts other than
+    /// 0 have no HP in the app (an `enmp` row with one health value gives them 0, FUN_0019f770).
+    fn hp_record(&self, i: i32) -> [i32; 3] {
+        if i == 0 {
+            [self.obj.hp, self.obj.hp_max, self.obj.hp_min]
+        } else {
+            [0; 3]
+        }
+    }
+
     fn turn_toward(&mut self, dir: Vec4, speed: f32) -> bool {
         let target = yaw_of(dir);
         let step = if speed == 0.0 { TURN_DEFAULT } else { speed };
@@ -620,7 +646,12 @@ impl BevyHost<'_> {
             Call::OnScreen { .. } => approx(Value::Bool(self.obj.on_screen), "the origin lifted one metre against the camera's view"),
             Call::Airborne { .. } => imp(Value::Bool(!self.obj.motor.grounded)),
             Call::Busy { .. } | Call::HitStun { .. } => approx(Value::Bool(self.obj.reacting), "the game's flags (+0x160) are read as 'a hit reaction plays'"),
-            Call::SpawnParam { .. } => stub(Value::Int(99), "no spawn record: the area's event data is not read"),
+            // FUN_0016b940: word `index` of the array at object +0x81c; words 1 and 2 are the record's
+            // +0x20 and +0x24 (FUN_0016b870). Without a record (the app's own waves) 99 stays.
+            Call::SpawnParam { index, .. } => match (self.obj.spawn_params, index) {
+                (Some(p), 1 | 2) => imp(Value::Int(p[*index as usize - 1])),
+                _ => stub(Value::Int(99), "no spawn record (the app's own waves) or word 0 (the record pointer)"),
+            },
             // FUN_0016b858: byte +0x1c of the spawn record, -1 without one (the app's own waves).
             Call::SpawnKind { .. } => imp(Value::Int(self.obj.spawn_kind)),
             Call::GlobalByte33e830 => approx(Value::Int(2), "world number of Twilight Town"),
@@ -730,9 +761,12 @@ impl BevyHost<'_> {
             Call::ReleaseEffect { .. } => stub(Value::None, "effects run to their end"),
             Call::ObjMethod44 { .. } | Call::ObjMethod48 { .. } => missing(Value::None, "virtual method of the object, role unknown"),
             Call::MoverMethod { .. } => missing(Value::None, "virtual call on the object's mover, role unknown"),
+            // FUN_001b2148 builds the status block from `enmp` row `a`; the app built it at spawn from
+            // the kind's row and rebuilds it (full HP) when the script asks for another one.
             Call::SetObjParam { a, .. } => {
                 if *a != self.env.enmp as i32 {
-                    self.trace.note(self.tag, format!("set_obj_param asks for enmp row {a}, the enemy was built from {}", self.env.enmp));
+                    self.trace.note(self.tag, format!("set_obj_param asks for enmp row {a}, the enemy was built from {}: rebuilt", self.env.enmp));
+                    self.obj.param_row = u16::try_from(*a).ok();
                 }
                 imp(Value::None)
             }
@@ -805,6 +839,42 @@ impl BevyHost<'_> {
             // 1.150 (0x171600): bit n-1 of the byte at object +0x238. Its writer was not found; a new
             // object's byte is taken as 0.
             Call::Func { group: 1, index: 150, .. } => stub(Value::Bool(false), "byte +0x238 of the object: writer not found, read as 0"),
+            // 1.84 (0x172ee8): the pointer at object +0x48c, the status block FUN_001b2148 builds. Its
+            // first 32 records of 12 bytes are the HP of each part (FUN_0019f770: current, maximum,
+            // lowest); the app has part 0 only.
+            Call::Func { group: 1, index: 84, args } if args[0].int() as u32 == me => imp(Value::Handle(GAUGES)),
+            // 1.228 / 1.229 / 1.232 (0x1740e0, 0x174100, 0x174120): word 0, 1 or 2 of record i.
+            Call::Func { group: 1, index: i @ (228 | 229 | 232), args } if args[0].int() as u32 == GAUGES => {
+                let rec = self.hp_record(args[1].int());
+                imp(Value::Int(rec[match i { 228 => 0, 229 => 1, _ => 2 }]))
+            }
+            // 1.230 (0x174140): float(word 0) / float(word 1) of record i.
+            Call::Func { group: 1, index: 230, args } if args[0].int() as u32 == GAUGES => {
+                let rec = self.hp_record(args[1].int());
+                imp(Value::Float(rec[0] as f32 / rec[1] as f32))
+            }
+            // 1.231 (0x1741c0): word 2 of record `index` = `value` (arguments: base, value, index); the
+            // HP change FUN_001a0100 never goes below it.
+            Call::Func { group: 1, index: 231, args } if args[0].int() as u32 == GAUGES => {
+                if args[2].int() == 0 {
+                    self.obj.hp_min = args[1].int();
+                    imp(Value::None)
+                } else {
+                    stub(Value::None, "lowest HP of a part other than 0: the app's enemies have one part")
+                }
+            }
+            // 1.155 (0x171c48): the object's virtual method +0x78 with (amount, part, flag != 0). The slot
+            // holds FUN_00186238 in 27 object tables of the executable [the N_EX570 object's table was
+            // not traced]: HP of the part plus `amount`, held between its lowest and its maximum
+            // (FUN_001a0100); the death method runs when part 0 reaches 0. It returns that HP.
+            Call::Func { group: 1, index: 155, args } if args[0].int() as u32 == me => {
+                if args[2].int() != 0 {
+                    return stub(Value::Int(0), "HP change of a part other than 0: the app's enemies have one part");
+                }
+                self.obj.hp_add += args[1].int();
+                let hp = (self.obj.hp + self.obj.hp_add).max(self.obj.hp_min).min(self.obj.hp_max);
+                approx(Value::Int(hp), "the change is applied after the tick; the HUD side of FUN_00186238 (FUN_0019bd18 / FUN_0019bd58) is not reproduced")
+            }
             // 1.132: the target record returns to a pool; the app's records are never reused.
             Call::Func { group: 1, index: 132, .. } => stub(Value::None, "target records are not pooled"),
             Call::Func { .. } | Call::Unknown { .. } => missing(Value::Int(0), "function not mapped"),
@@ -1050,6 +1120,9 @@ fn ai_update(
         obj.frame = anim.frame;
         obj.blend_left = (obj.blend_left - 1.0).max(0.0);
         obj.spawn_kind = e.spawn_kind;
+        obj.spawn_params = e.spawn_params;
+        obj.hp_max = e.stats.max_hp;
+        obj.hp_min = e.min_hp;
         let env = Env {
             player,
             player_yaw,
@@ -1093,6 +1166,18 @@ fn ai_update(
             }
         }
         rt.update(&mut host);
+        // The status block the script rebuilt (host 2.9) and the HP changes it made (1.231, 1.155).
+        if let Some(row) = obj.param_row.take() {
+            e.stats = data.enemy_stats(row, 1);
+            e.hp = e.stats.max_hp;
+            *enmp = row;
+            trace.line(tag, &format!("status block rebuilt from enmp row {row}: {} HP", e.hp));
+        }
+        e.min_hp = obj.hp_min;
+        if obj.hp_add != 0 {
+            e.hp = (e.hp + std::mem::take(&mut obj.hp_add)).max(e.min_hp).min(e.stats.max_hp);
+            trace.line(tag, &format!("hp changed by the script: {}", e.hp));
+        }
         for c in obj.player_cmds.drain(..) {
             let c = match c {
                 PlayerReactionCmd::PairedMotion { slot, blend, serial, ticks, .. } => {

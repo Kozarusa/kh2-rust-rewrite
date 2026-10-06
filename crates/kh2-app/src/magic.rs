@@ -53,6 +53,17 @@ const MAGI_RADIUS: usize = 0x0;
 const MAGI_HEIGHT: usize = 0x4;
 const MAGI_TIME: usize = 0x8;
 const MAGI_CURE_RANGE: usize = 0x38;
+/// `atkp` id of Blizzard's shot (BLIZZARD_*.mag R035b: `attack_create(ctx, 248, -1, kind)`).
+pub const ATKP_BLIZZARD: u16 = 248;
+/// `magi` offsets Blizzard's shot reads: turn rate (+0xc, times the shot's scale), life (+0x10),
+/// speed (+0x14, units per frame), size (+0x18), and the caster's push (+0x1c, host 1.146).
+const MAGI_TURN: usize = 0xc;
+const MAGI_LIFE: usize = 0x10;
+const MAGI_SPEED: usize = 0x14;
+const MAGI_SHOT_SIZE: usize = 0x18;
+const MAGI_PUSH: usize = 0x1c;
+/// The fade a shot ends with (host 0.52 with 12 frames).
+const SHOT_FADE: u32 = 12;
 /// The ids of the base command list (Attack, Magic, Items, Drive: the rows whose `Execute` is the
 /// same as their id), see `hud_menu::base_entries`.
 const BASE_COMMANDS: [u16; 4] = [1, 2, 3, 4];
@@ -139,6 +150,27 @@ pub struct MagicState {
     attacks: Vec<SpellAttack>,
     memory: HashMap<Entity, HitMemory>,
     next_group: u32,
+    shots: Vec<Shot>,
+}
+
+/// A Blizzard projectile: the request thread at word 0x319 of BLIZZARD_*.mag (its block: +0x20
+/// position, +0x50 direction, +0x60 turn rate, +0x64 flag; +0x40 the effect, +0x44 the attack).
+struct Shot {
+    pax: Arc<LoadedPax>,
+    kind: u32,
+    magi: MagiRow,
+    pos: Vec3,
+    dir: Vec3,
+    /// The caster's target when the shot started (the block's copy of the target record, +0x30).
+    target: Option<Entity>,
+    /// The attack's index in `MagicState::attacks` (None before the first slice).
+    attack: Option<usize>,
+    /// The effect instance (element 2), once it exists.
+    effect: Option<Entity>,
+    /// Frames before the fade starts (`magi` +0x10 - 12), then the fade's frames left.
+    life: f32,
+    fade: Option<u32>,
+    done: bool,
 }
 
 /// One cast: the script instance of FUN_001a4798.
@@ -163,6 +195,8 @@ enum Step {
     /// Event 21 ran its first slice; `ball` and `ball2` are the elements whose position the
     /// attacks follow, `t` the attack time left.
     Fire { ball: u16, ball2: Option<u16>, attacks: Option<(usize, Option<usize>)>, t: f32, yielded: bool },
+    /// Blizzard's event 21 started element `elem` and yields once before it fires the shot.
+    Blizzard { elem: u16, yielded: bool },
     /// The script has ended.
     Done,
 }
@@ -177,6 +211,9 @@ struct SpellAttack {
     radius: f32,
     height: f32,
     live: bool,
+    /// It hit a target (flags 8 / 0x10 of the attack object [inferred]) or terrain (0x200 [inferred]).
+    hit_any: bool,
+    wall: bool,
 }
 
 fn setup(mut commands: Commands, disc: Res<Disc>, data: Res<GameData>, world: Option<Res<crate::drive::DriveWorld>>) {
@@ -346,14 +383,24 @@ fn menu(
 }
 
 /// The effect position of an element bound to `owner` (host 0.53, FUN_001d9d00: the bind record's
-/// position): the owner's matrix times the element's own translation (game axes, Y and Z flipped).
-fn element_position(pax: &LoadedPax, id: u16, owner: Mat4) -> Vec3 {
-    let t = pax.pax.elements_for(id).next().map_or([0.0; 3], |e| e.translation);
-    owner.transform_point3(Vec3::new(t[0], -t[1], -t[2]))
+/// position): the matrix the element's bone names (FUN_0016aa18) times the element's own translation
+/// (game axes, Y and Z flipped). Bones 0x4003 / 0x4004 are the weapon of hand 0 / 1 (FUN_0016ae50),
+/// moved along its x axis by a length FUN_0016ae50 returns [GAP: the length is not applied]; every
+/// other bone number is taken as the object's own matrix [inferred for 0x4001 and 0x4009].
+fn element_position(pax: &LoadedPax, id: u16, owner: Mat4, weapons: &[Mat4]) -> Vec3 {
+    let Some(e) = pax.pax.elements_for(id).next() else { return owner.transform_point3(Vec3::ZERO) };
+    let t = e.translation;
+    let m = match e.bone {
+        0x4003 | 0x4004 => weapons.get((e.bone - 0x4003) as usize).copied().unwrap_or(owner),
+        _ => owner,
+    };
+    m.transform_point3(Vec3::new(t[0], -t[1], -t[2]))
 }
 
-fn stop_effect(running: &mut Query<&mut RunningEffect>, pax: &LoadedPax, id: u16, owner: Entity) {
-    for mut r in running.iter_mut() {
+type Running<'w, 's> = Query<'w, 's, (Entity, &'static mut RunningEffect)>;
+
+fn stop_effect(running: &mut Running, pax: &LoadedPax, id: u16, owner: Entity) {
+    for (_, mut r) in running.iter_mut() {
         if r.lib.id == pax.id && r.game_id == id && matches!(r.bind, Bind::Owner(o) if o == owner) {
             r.effect.end();
         }
@@ -372,13 +419,13 @@ fn run(
     mut st: ResMut<MagicState>,
     mut battle: ResMut<Battle>,
     abilities: Res<crate::sora::Abilities>,
-    (block, drive): (Option<Res<crate::abilities::Abilities>>, Option<Res<crate::drive::DriveState>>),
+    (block, drive, world): (Option<Res<crate::abilities::Abilities>>, Option<Res<crate::drive::DriveState>>, Option<Res<crate::world::World>>),
     mut sora_q: Query<(Entity, &mut Sora)>,
     mut anims: Query<&mut Animator>,
     locals: Query<(&Transform, Option<&ChildOf>)>,
     fighters: Query<(Entity, &Fighter, &GlobalTransform)>,
     gts: Query<&GlobalTransform>,
-    mut running: Query<&mut RunningEffect>,
+    mut running: Running,
     mut hits: MessageWriter<Hit>,
     enemies: Query<&crate::enemy::Enemy>,
     mut recharge: ResMut<crate::hud::hud_gauge::MpRecharge>,
@@ -480,6 +527,7 @@ fn run(
         from != to && t.crossed(from, to).any(|f| f.id == frame::MAGIC_CAST)
     });
     let owner_m = fx::world_now(body_e, &locals);
+    let weapons_m: Vec<Mat4> = s.weapons.iter().map(|w| fx::world_now(*w, &locals)).collect();
     let airborne_now = !s.motor.grounded;
     let (magic_state, playing) = (s.state == State::Magic, body.slot);
     let in_motion = |c: &Cast| magic_state && playing == c.motion;
@@ -543,10 +591,10 @@ fn run(
                 }
             };
             if t > 0.0 {
-                let p = element_position(&pax, ball, owner_m);
+                let p = element_position(&pax, ball, owner_m, &weapons_m);
                 move_attack(&mut st.attacks[a1], p);
                 if let (Some(b2), Some(i2)) = (ball2, a2) {
-                    move_attack(&mut st.attacks[i2], element_position(&pax, b2, owner_m));
+                    move_attack(&mut st.attacks[i2], element_position(&pax, b2, owner_m, &weapons_m));
                 }
                 c.step = Step::Fire { ball, ball2, attacks: Some((a1, a2)), t: t - 1.0, yielded };
             } else {
@@ -560,7 +608,33 @@ fn run(
             }
         }
     }
+    // Blizzard's event 21 after its yield: the push of the caster (host 1.146 with `magi` +0x1c, not
+    // ported) and the shot from element 1's position along the facing (R02b9 -> R02d7 -> R04d6).
+    for c in st.casts.iter_mut() {
+        if let Step::Blizzard { elem, yielded } = c.step {
+            if !yielded {
+                c.step = Step::Blizzard { elem, yielded: true };
+                continue;
+            }
+            if let Some(pax) = c.pax.clone() {
+                let pos = element_position(&pax, elem, owner_m, &weapons_m);
+                let dir = s.motor.forward().with_y(0.0).normalize_or(Vec3::Z);
+                mlog!("magic: Blizzard shot from element {elem} at {pos:?} along {dir:?}: speed {} life {} size {} turn {} (push {} not ported)", c.magi.f(MAGI_SPEED), c.magi.f(MAGI_LIFE), c.magi.f(MAGI_SHOT_SIZE), c.magi.f(MAGI_TURN), c.magi.f(MAGI_PUSH));
+                st.shots.push(Shot { pax, kind: c.kind, magi: c.magi.clone(), pos, dir, target: s.target, attack: None, effect: None, life: c.magi.f(MAGI_LIFE) - SHOT_FADE as f32, fade: None, done: false });
+            }
+            c.step = Step::Done;
+        }
+    }
     st.casts.retain(|c| c.step != Step::Done);
+
+    // The shots (request threads; they run after the spell threads in the same task pass [inferred]).
+    let targets = victim_targets(&fighters, &anims, &gts);
+    let mut claimed: Vec<Entity> = st.shots.iter().filter_map(|x| x.effect).collect();
+    for shot in st.shots.iter_mut() {
+        step_shot(shot, &mut commands, &game, &mut st.attacks, &mut st.next_group, &mut running, &targets, &claimed);
+        claimed.extend(shot.effect);
+    }
+    st.shots.retain(|x| !x.done);
 
     // The attacks against the enemies' hurt shapes, then the victims' hit memory counts down.
     let victims: Vec<Victim> = fighters
@@ -580,15 +654,31 @@ fn run(
         })
         .collect();
     let sora_pos = s.motor.pos * SCALE;
-    for a in st.attacks.iter().filter(|a| a.live) {
+    for a in st.attacks.iter_mut().filter(|a| a.live) {
         let Some(cur) = a.pos else { continue };
+        // FUN_0018c8e0 (from FUN_001a2cc0 when the attack moved more than two units): a row with BG Hit
+        // (atkp Flags bit 0) whose attack has not hit yet casts the segment from the last to this
+        // position against terrain that blocks attacks (mask 4); a hit goes to the wall handler
+        // FUN_0018ca78 [inferred: it sets flag 0x200, which ends a Blizzard shot]. The second, lowered
+        // segment for a non-zero `FloorCheck` is not ported.
+        let moved = a.prev.map_or(0.0, |p| (p - cur).length() / SCALE);
+        if game.atkp[a.base_row].flags & 1 != 0
+            && moved > SWEEP_MIN
+            && !a.hit_any
+            && !a.wall
+            && let (Some(w), Some(prev)) = (world.as_deref(), a.prev)
+            && let Some((p, _)) = w.touching_m(prev, cur, 0.01, kh2_map::flags::ATTACK_COLLIDE)
+        {
+            a.wall = true;
+            mlog!("magic: attack {} meets terrain at {p:?}", a.group);
+        }
         for (te, shapes, tpos) in &victims {
             let mem = st.memory.entry(*te).or_default();
             let row = &game.atkp[a.base_row];
             if !mem.may_hit(row.r#type, a.group) {
                 continue;
             }
-            let Some((point_from, sph)) = sweep_points(a, cur).into_iter().find_map(|c| {
+            let Some((point_from, sph)) = sweep_points(&*a, cur).into_iter().find_map(|c| {
                 let v = attack_volume(c, a.radius, a.height);
                 shapes.iter().find(|(h, _)| combat::overlap(&v, h)).map(|(_, sph)| (c, *sph))
             }) else {
@@ -610,13 +700,14 @@ fn run(
                 );
             }
             hits.write(hit);
+            a.hit_any = true;
         }
     }
     for m in st.memory.values_mut() {
         m.tick();
     }
     // Casts hold indices into the list: finished attacks go once no cast runs.
-    if st.casts.is_empty() {
+    if st.casts.is_empty() && st.shots.is_empty() {
         st.attacks.retain(|a| a.live);
     }
 }
@@ -633,7 +724,7 @@ fn event21(
     body: Entity,
     owner_m: Mat4,
     airborne: bool,
-    running: &mut Query<&mut RunningEffect>,
+    running: &mut Running,
     _attacks: &mut [SpellAttack],
     _next: &mut u32,
 ) -> Step {
@@ -697,14 +788,138 @@ fn event21(
             mlog!("magic: Cure: no other party member to heal (atkp {ATKP_CURE_OTHER} for them)");
             Step::Done
         }
-        1 | 2 => {
-            // BLIZZARD / THUNDER: their projectiles are request threads (host 2.20, routine 0x319 of
-            // BLIZZARD_1) that are not ported; nothing is made.
-            warn!("magic: {} cast: its projectile threads are not ported (no attack, no effect)", if c.slot == 1 { "Blizzard" } else { "Thunder" });
+        1 => {
+            // BLIZZARD (kind / 10 of 0 or 1 without a finisher bit): R0263(1) stops the charge effect
+            // and starts element 1; Final finishers and Master use 7 (and 1 and 7), not ported.
+            if c.kind / 10 != 0 {
+                warn!("magic: Blizzard in a form (kind {}) is not ported", c.kind);
+                return Step::Done;
+            }
+            if let Some(id) = c.charge_fx {
+                stop_effect(running, pax, id, body);
+            }
+            start(commands, 1);
+            Step::Blizzard { elem: 1, yielded: false }
+        }
+        2 => {
+            // THUNDER: its strikes are request threads (host 2.20) that are not ported.
+            warn!("magic: Thunder cast: its strike threads are not ported (no attack, no effect)");
             Step::Done
         }
         _ => Step::Done,
     }
+}
+
+/// The target points the shots steer toward: each enemy's first target shape (FUN_001894d0's spheroid
+/// centre), by root entity [inferred: host 1.120 reads the target record's position].
+fn victim_targets(fighters: &Query<(Entity, &Fighter, &GlobalTransform)>, anims: &Query<&mut Animator>, gts: &Query<&GlobalTransform>) -> Vec<(Entity, Vec3)> {
+    fighters
+        .iter()
+        .filter(|(_, f, _)| f.team == Team::Enemy)
+        .filter_map(|(e, f, g)| {
+            let (a, bg) = (anims.get(f.hurt_body).ok()?, gts.get(f.hurt_body).ok()?);
+            let c = a.rig.model.shapes.iter().find(|sh| sh.kind == shape_kind::TARGET).map(|sh| combat::hurt_spheroid(sh, a, bg).center);
+            Some((e, c.unwrap_or(g.translation())))
+        })
+        .collect()
+}
+
+/// Rotates `from` toward `to` by at most `rate` radians (FUN_0017c0f8: the angle between the unit
+/// vectors, clamped to the rate times the frame step, about their cross product). Unit result.
+pub fn turn_toward(from: Vec3, to: Vec3, rate: f32) -> Vec3 {
+    let (a, b) = (from.normalize_or_zero(), to.normalize_or_zero());
+    if a == Vec3::ZERO || b == Vec3::ZERO {
+        return a;
+    }
+    let angle = a.dot(b).clamp(-1.0, 1.0).acos();
+    let step = angle.clamp(-rate, rate);
+    let axis = a.cross(b).normalize_or_zero();
+    if axis == Vec3::ZERO {
+        return a;
+    }
+    Quat::from_axis_angle(axis, step) * a
+}
+
+/// One frame of a Blizzard shot (BLIZZARD_*.mag routine 0x319). First slice (R035b): element 2 of the
+/// spell's file, unbound; the attack `atkp` 248 of the cast's kind sized `magi` +0x18 both ways; life
+/// `magi` +0x10 - 12. Each frame (L039d): the shot ends when its effect is gone or its attack hit a
+/// target or terrain; otherwise the effect and the attack move to the position; after the yield the
+/// direction turns toward the target by `magi` +0x60 of the block (`magi` +0xc times the shot's scale)
+/// when there is one (host 0.46), the position moves `magi` +0x14 along it (host 0.45), and when the
+/// life runs out the effect fades over 12 frames and goes (host 0.52). Cleanup (R0487): the effect is
+/// destroyed and the attack finished.
+#[allow(clippy::too_many_arguments)]
+fn step_shot(
+    shot: &mut Shot,
+    commands: &mut Commands,
+    game: &GameData,
+    attacks: &mut Vec<SpellAttack>,
+    next: &mut u32,
+    running: &mut Running,
+    targets: &[(Entity, Vec3)],
+    claimed: &[Entity],
+) {
+    let place = |p: Vec3, d: Vec3| Mat4::from_rotation_translation(Quat::from_rotation_y(d.x.atan2(d.z)), p);
+    let Some(ai) = shot.attack else {
+        // R035b.
+        fx::start_placed(commands, &shot.pax, 2, Bind::Fixed(place(shot.pos, shot.dir)), Placement { replace_translation: true, ..default() });
+        let size = shot.magi.f(MAGI_SHOT_SIZE);
+        shot.attack = new_attack(attacks, next, game, ATKP_BLIZZARD, shot.kind, size, 0.0);
+        let Some(ai) = shot.attack else {
+            warn!("magic: no atkp row {ATKP_BLIZZARD} for kind {}", shot.kind);
+            shot.done = true;
+            return;
+        };
+        mlog!("magic: Blizzard attack {} made: atkp {ATKP_BLIZZARD} kind {} size {size}", attacks[ai].group, shot.kind);
+        move_attack(&mut attacks[ai], shot.pos);
+        return;
+    };
+    // The effect instance exists from the frame after its start request: the shot takes an unbound
+    // element 2 of the file that no other shot holds [app bookkeeping for the handle].
+    if shot.effect.is_none() {
+        shot.effect = running
+            .iter()
+            .filter(|(e, r)| r.lib.id == shot.pax.id && r.game_id == 2 && matches!(r.bind, Bind::Fixed(_)) && !claimed.contains(e))
+            .map(|(e, _)| e)
+            .max();
+    }
+    // After the yield: steer, move, count the life down.
+    let rate = shot.magi.f(MAGI_TURN);
+    if rate > 0.0
+        && let Some(t) = shot.target.and_then(|t| targets.iter().find(|x| x.0 == t))
+    {
+        shot.dir = turn_toward(shot.dir, t.1 - shot.pos, rate);
+    }
+    shot.pos += shot.dir.normalize_or_zero() * shot.magi.f(MAGI_SPEED) * SCALE;
+    let mut effect = shot.effect.and_then(|e| running.get_mut(e).ok());
+    match shot.fade.as_mut() {
+        Some(f) => *f = f.saturating_sub(1),
+        None => {
+            shot.life -= 1.0;
+            if shot.life <= 0.0 {
+                // Host 0.52 (fade over 12 frames, then destroy): the app ends the effect's loops [inferred].
+                shot.fade = Some(SHOT_FADE);
+                if let Some((_, r)) = effect.as_mut() {
+                    r.effect.end();
+                }
+            }
+        }
+    }
+    // Loop top: the end conditions, then the effect and the attack follow the position.
+    let a = &attacks[ai];
+    if shot.fade == Some(0) || a.hit_any || a.wall {
+        mlog!("magic: Blizzard shot over at {:?} (hit {}, wall {}, faded {})", shot.pos, a.hit_any, a.wall, shot.fade == Some(0));
+        if let Some((_, r)) = effect.as_mut() {
+            r.effect.end();
+        }
+        attacks[ai].live = false;
+        shot.done = true;
+        return;
+    }
+    if let Some((_, r)) = effect.as_mut() {
+        r.bind = Bind::Fixed(place(shot.pos, shot.dir));
+    }
+    move_attack(&mut attacks[ai], shot.pos);
 }
 
 fn new_attack(attacks: &mut Vec<SpellAttack>, next: &mut u32, game: &GameData, id: u16, kind: u32, radius: f32, height: f32) -> Option<usize> {
@@ -712,7 +927,7 @@ fn new_attack(attacks: &mut Vec<SpellAttack>, next: &mut u32, game: &GameData, i
     *next += 1;
     // FUN_001a30e0: the height is the radius unless it is positive.
     let height = if height > 0.0 { height } else { radius };
-    attacks.push(SpellAttack { group: *next, base_row, pos: None, prev: None, radius, height, live: true });
+    attacks.push(SpellAttack { group: *next, base_row, pos: None, prev: None, radius, height, live: true, hit_any: false, wall: false });
     Some(attacks.len() - 1)
 }
 
@@ -757,7 +972,7 @@ mod tests {
 
     #[test]
     fn sweep_steps_back_toward_the_previous_position() {
-        let a = SpellAttack { group: 1, base_row: 0, pos: None, prev: Some(Vec3::new(0.0, 0.0, 1.0)), radius: 20.0, height: 40.0, live: true };
+        let a = SpellAttack { group: 1, base_row: 0, pos: None, prev: Some(Vec3::new(0.0, 0.0, 1.0)), radius: 20.0, height: 40.0, live: true, hit_any: false, wall: false };
         let pts = sweep_points(&a, Vec3::ZERO);
         // 100 units at steps of 20 while more than 10 is left: 5 extra points.
         assert_eq!(pts.len(), 6);

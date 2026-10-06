@@ -170,7 +170,13 @@ invulnerable state; the method tests flag bits of its state words).
   its id, FUN_001db868 starts the first element with that id). For Sora's keyblade attacks that is
   `W_EX010`; for an enemy's claws it is the enemy's own file: `M_EX020` has element 3 (category
   bit 32, "hit by EffectOnHit 1") and 4 (bit 33), `M_EX010` the same plus 7. The current code
-  played the keyblade's spark for every attacker.
+  played the keyblade's spark for every attacker. For a spell's attack object (FUN_001a2ba0, made by
+  the spell's script) the file is the spell's `.mag` PAX, which the script anchors its attacks to
+  (host 2.30): `FIRE_1.mag` has element 3 (bit 32) and 4 (bit 33) for `atkp` 502's `EffectOnHit` 1
+  and 2. WP-7A: `magic.rs` sends `fx::SpellHit` (target, `atkp`, the spell's file) with every spell
+  hit and `hit_sparks` takes that file and the hit's own row (`GameData::hit_row`: the variant the hit
+  count picked, whose `EffectOnHit` can differ from the first row's) [the anchoring is inferred from
+  host 2.30 storing the file pointer at attack +0x24; the spark's reader of +0x24 was not traced].
 * **Placement of a hit effect.** After the effect is created the game overwrites its position with the
   hit point (FUN_0018ce18: the point on the victim's volume nearest the attack) and, for the spark and
   effect 0x12, its rotation with `(atan2(-dy, hypot(dx, dz)), atan2(dx, dz), 0)` of the hit direction
@@ -263,7 +269,7 @@ works like this, and `fx.rs::tick` follows it:
   matrix is read once (the first tick) and kept. Flag 1 set: it is read again every tick, except that an element with
   flag 2 (BIND_ONLY_START) keeps the first reading once the instance runs. The matrix is the owner's bone matrix
   (FUN_0016aa18: bone number below 0x4000 a bone, 0x4000 the object's own matrix, 0x4001 and above other object
-  matrices) times the element's own placement. `Bind::Owner` always followed the bone before; now the three
+  matrices, see "Object bones" below) times the element's own placement. `Bind::Owner` always followed the bone before; now the three
   cases differ. Element flag 0x20000 (a camera-relative bind, FUN_001dc978) is not ported (no element the app
   starts has it; **gap**).
 * **The owner goes away** (FUN_001dcd08: FUN_0019a3f8 on the owner returns 0): the record is marked orphaned (flag 0x10),
@@ -275,6 +281,30 @@ works like this, and `fx.rs::tick` follows it:
   alpha through `Env::tint.w` (**inferred**: the game scales the instance alpha).
 * The attached owner of `spawn_attached` (the sixth argument of FUN_0016a570, defaulting to the object) is the
   record's +0x48; only the checks above read it.
+
+### Object bones 0x4000..0x4009 (FUN_0016aa18, WP-7A, verified)
+
+A bone number with bit 0x4000 names a frame of the object rather than a bone (`fx::object_bone`,
+`fx::ObjectFrame`):
+
+| number | frame |
+|---|---|
+| 0x4000 | the object's matrix (+0x40) with its position (FUN_0016b960: +0x70 or +0x540) |
+| 0x4001 | the object's matrix moved to the centre of its first shape of type 1, the body volume (FUN_0016b7d0 -> FUN_0016b558(obj, 1, -1) -> FUN_001894d0: the shape's offset in its joint's frame, y minus its +0xe); without one, the position +0x540 |
+| 0x4002 | the model's world matrix (+0x6b0); the app does not tell it from 0x4000 |
+| 0x4003 / 0x4004 | the weapon of hand 0 / 1 (FUN_0016ae50): for a party member (+0x588 & 4) the weapon object in its list at +0xaf8 (FUN_00175df8), for any other object the object itself (FUN_0016ae90 on it; both hands alike). FUN_0016ae90 takes the weapon's first shape of type 15: FUN_0016aa18 on that shape's joint gives the blade's matrix, the shape's x offset (+8, as a float) is the weapon's length. 0x4003 / 0x4004 then move the matrix along its own x axis by the length (`row3 += row0 * length`, w set to `DAT_0037a1b8`, 1.0) |
+| 0x4005 / 0x4006 | the blade's matrix unmoved |
+| 0x4007 / 0x4008 | moved by the length times `DAT_0037a1bc` (0.5) |
+| 0x4009 | the object's matrix moved to the centre of its first shape of type 9; without one, unmoved |
+
+On the disc the keyblade `W_EX010` has one type-15 shape on bone 2 with a negative x offset (the blade
+points along -x); Sora `P_EX100` has a type-1 and a type-9 shape on his own matrix (joint 0x4000), lifted
+above his feet. The charge and cast elements 0 and 1 of the four level-1 spells are bound to 0x4003, so
+they start at the keyblade's tip (tests `fx::tests::object_bones_follow_the_game`,
+`cast_effects_bind_to_the_blade_on_the_disc`). [inferred] The first record of a type is taken: the
+records' enable mask (FUN_0016b558 skips records FUN_0019a6a0 refuses) is not modelled, and FUN_001894d0
+gives a zero centre for a record on a plain bone while flag 0x400 of +0x7f8 is clear, which the app
+does not model either.
 
 ## Death, hide and remove (WP-1F3)
 

@@ -53,13 +53,17 @@ Executing a magic command (FUN_00174cf8, `Execute` 2) [V]:
    (+0xb04) has reached the ground or air combo length of the ability block (+0x28 / +0x29) (not in form 6; FUN_001768b8
    and flag 0x20 of +0x168 are [GAP]). Then:
    - the slot whose row has this command;
-   - with the ability bit tested at block +0xc & 0x80000 and a slot below 3 or 4, FUN_00179470 (turns to the target
-     [I]) [GAP: not ported];
+   - with the ability bit tested at block +0xc & 0x80000 (bit 115, Magic Lock-On: the disc's ability row 403 owns
+     it) and a slot below 3 or 4, FUN_00179470: see "The magic turn";
    - airborne (FUN_0019aa28): the mover's method +0xc with `sstm` MagicJump (+0x48) [I: a jump start], the air motion;
      on the ground: the finisher motion when it is a finisher and the row has one (`FinishMotion` not 0xffff), else the
      ground motion (FUN_0017e220 with the row's blend); FUN_0017e378(8, 0, ..., 4) in the air [GAP: meaning];
-   - the voice: `Voice`, `VoiceFinisher` for the finisher motion, `VoiceSelf` when the command's target is the caster
-     (vtable +0x54) [V; not played: the app has no voice hook for it, GAP];
+   - the voice: `Voice`, `VoiceFinisher` for the finisher motion, `VoiceSelf` when the command's target is the caster,
+     through the player's method +0x54, FUN_00175d18 (the player vtables at 0x35c9a8, 0x3601e0, ... hold it there):
+     the voice table picks a line against the NeoStatus of the target record's object (FUN_001ae3c8) and
+     FUN_001970b8 plays it. [V] Port: `audio::SoraVoice` -> `audio::sora_voices`, the same pick as the motion's
+     voice triggers (`audio::sora_voice`). The app's Cure targets Sora, so it plays `VoiceSelf`; the other spells
+     `Voice` / `VoiceFinisher` [I: which record the menu puts in the request for a spell was not traced];
    - the kind: `2 * Level - 2`, + 1 for the finisher motion, + 10 / 20 / 30 in forms 2 / 3 / 4;
    - a script thread on the slot's program (FUN_0016c9b8), linked into the magic list at 0x1c95518 (FUN_001a42b8), and its
      event 20 set as the thread's code (FUN_0016c500) with (caster, the slot's effect file, kind, `magi` row of the kind).
@@ -67,7 +71,10 @@ Executing a magic command (FUN_00174cf8, `Execute` 2) [V]:
 5. The task FUN_001a4428 runs every thread of the list once per frame and destroys the ended ones (FUN_001a43b8).
 6. Frame trigger 17 of the cast motion (FUN_00188498 case 0x11: with no parameter always, with one only when it equals
    a word of the trigger context) calls FUN_001a4a60 on +0xb28: for a party member (+0x588 & 4) FUN_001769e0 pays the
-   MP, then FUN_0016c500 restarts the thread at event 21. [V]
+   MP, then FUN_0016c500 restarts the thread at event 21. [V] The word is the motion id the cast asked for [I from the
+   data: spells share cast slots (Fire's ground motion 56 and Reflect's 71 play one slot) and each slot has one
+   trigger 17 per motion id: Reflect's at frame 0, Fire's at 22]. Before WP-7A the app fired on any trigger 17, so
+   Fire cast at frame 0 through Reflect's trigger.
 7. Event 20 of every spell script waits while the caster's `motion_state` (host 1.15, +0x154) is what it was: a cast
    whose motion is left before the trigger ends its thread there and costs nothing. [V]
 
@@ -85,8 +92,10 @@ each tick. A request waits up to 20 ticks for a window [app rule].
   frame step * the ability block's +0x34 (MP Haste family); at 0 FUN_001a05a8 clears both and refills MP to the maximum
   (FUN_001a0210). [V] Port: `Charge::tick` (step 1.0 per 60 Hz tick, the app's convention for `DAT_00356f40`).
 - MP gained while charging (FUN_001a0180 with a positive delta) shortens the charge by delta * `sstm[0x7c]` instead. [V;
-  not ported: nothing in the app gives MP yet]. A refill (FUN_001a0240, e.g. the drive form start) ends the charge; the
-  app ends it when Sora's MP is raised from outside while charging.
+  not ported: nothing in the app gives MP yet]. A refill (FUN_001a0240, from the drive form start FUN_001a04b0) ends a
+  running charge (FUN_001a05d0: total +0x1c0 above 0; FUN_001a05a8 clears both times) and then raises MP by its maximum
+  (FUN_001a0210 -> FUN_001a0180). Port: `magic::refill_mp`, called by `drive.rs` at the form start (WP-7A; the earlier
+  stand-in that ended the charge whenever MP rose from outside is gone).
 - HUD: FUN_001a0030 copies +0x1bc / 60 and +0x1c0 / 60 to the HUD record; `hud_gauge::MpRecharge` gets +0x1bc and
   +0x1c0. [V]
 
@@ -95,8 +104,9 @@ each tick. A request waits up to 20 ticks for a window [app rule].
 Event 20: `kind / 10` of 1 or 3 (Wisdom, Final) starts no charge effect, 2 (Master) clears the finisher bit of the kind;
 otherwise element 0 of the effect file starts on the caster ([g]+0x1c). Then it waits (above).
 
-Event 21 [V, script]:
-1. Final: stop [g]+0x1c, start element 1.
+Event 21 [V, script; corrected in WP-7A by running the script in the interpreter]:
+1. Every kind but Final's: stop [g]+0x1c, start element 1 (R001a: `call R01f9; i.iszero; jz` skips R017d for
+   Final, which started no charge effect). The earlier port had this the other way round.
 2. Airborne (host 1.57): element 5 (and 7), else element 2 (and 6) bound to the caster; the first is the one the attack
    follows ([g]+0x24). The second starts for Wisdom finishers, Master, and Final finishers.
 3. Final: element 10 (a second attack follows it) and 11, 12 (finisher) or 8, 9.
@@ -135,8 +145,8 @@ Event 20: element 0 on the caster ([g]+0x1c); the target is the command's target
 1.140), else the caster. With host 1.343(caster, 114) true and a target that is not the caster, a request thread is
 started (routine at word 0x233) [GAP: not ported; the app always casts on Sora].
 
-Event 21 [V, script]: stop [g]+0x1c, start element 1; the centre is the target's bone 0x4001 (host 1.83) [I: the app
-uses the target's root]; element 2 is placed there (host 1.138 + 0.38). For party members 0..3 (host 1.93): a valid,
+Event 21 [V, script]: stop [g]+0x1c, start element 1; the centre is the target's bone 0x4001 (host 1.83: its body
+shape's centre, `fx::object_bone`; the app's target is Sora); element 2 is placed there (host 1.138 + 0.38). For party members 0..3 (host 1.93): a valid,
 not dead (host 10.31 [I]) member whose horizontal distance to the centre is below `magi` +0x38 gets element 3 and atkp
 708 if it is the target, else element 4 and atkp 709 (and host 0.100); the attack object hits it directly (host 2.17)
 and is finished. Atkp 708/709 are type 6: the "damage" `(Magic * Power + 99) / 100` (FUN_001a0610) is added to HP
@@ -186,24 +196,69 @@ the copy keeping the original's group are I]
 
 Port: `magic::step_strike`; the probe is the app's floor test `World::ground_m`.
 
+## The magic turn (WP-7A)
+
+- FUN_00179470 (Magic Lock-On, for Fire, Blizzard, Thunder and Magnet): when the command's target record (+0x9f4,
+  copied from the request by FUN_00174cf8) is not valid (FUN_0018ed58), FUN_0018fb98 picks one into it with a range of
+  0.0. Its first test `range <= 0.0` then lets every candidate through (no distance or height window): every target
+  shape (type 3, records without bit 0 of +2) of every targetable object, scored `(d + |dy| * plyr+0x6c) * ((1 -
+  facing . dir) * 0.5 * (1 - plyr+0x70) + plyr+0x70)`, the lowest wins. When one is found the lock-on controller
+  (+0xb40) goes to mode 1 on it (FUN_0019b3f0: the target marker, FUN_0013e528 with 5 or 1) and FUN_0019bcb8 sets its
+  timer from the player's +0x130 row +0x68. [V] Port: `magic_rules::lock_on_pick`, `magic_lock_on_applies`; the mode-1
+  target is kept for the cast motion. [GAP: the marker and the controller's mode-1 timer count-down are not ported.]
+- The turn itself is two range triggers of the cast motions (FUN_00188030, player objects only, +0x588 & 2): 22 turns
+  toward the command's target record (FUN_00186118), 28 toward the lock-on controller's target (FUN_001861b8, which
+  also refreshes the mode-1 timer). The parameter is the limit in degrees per frame (times `DAT_0037a988`, pi/180).
+  FUN_00186018: nothing when the record is invalid or names the caster; else, when the horizontal distance from the
+  caster's position (+0x70 plus +0x560 [I: no horizontal part]) to the target point (FUN_0018efa0: the target's target
+  shape centre, else its position) is above `DAT_0037a970` (50.0), FUN_00183848 turns the facing toward it by at most
+  the limit (times the frame step), snapping within it. [V] On the disc the level-1 cast motions carry: Thunder and
+  Cure on the ground trigger 22 (frames 0..16, 15 degrees), Blizzard (all three), Thunder's finisher and air motions,
+  Cure's air motion and Magnet trigger 28 (15 degrees); Fire and Reflect none (test `magic_turn_data_from_the_disc`).
+  Port: `magic_rules::cast_turn` (test `cast_turn_rule`); the app's command target record is Sora's target (lock-on or
+  auto target), Cure's names Sora [I], the controller's target is Sora's lock-on, else the mode-1 target. The turn is
+  applied after `sora::tick`, so the body shows it one tick later [app].
+
+## Running the scripts in the interpreter (WP-7A)
+
+`kh2_bdx::Runtime::start_thread` / `restart_thread` give the spell thread of FUN_001a4798 (docs/bdx.md "A thread
+whose code is an event", tested against the game's interpreter). With `KH2_MAGIC_VM=1` a cast runs its slot's own
+script (the first BDX of the `.mag`) instead of the hand port: event 20 at the cast with (caster, resource record,
+kind, `magi` row), event 21 from the cast trigger, one slice per tick. `magic::SpellHost` answers the host calls of
+Fire's script: 1.139 (an element of the spell's effect file on the caster; the mode word is not told apart [I]), 0.44,
+0.50, 0.53 (the element's position as the hand port takes it), 1.15 (1 while the cast motion plays), 1.57, 2.10,
+2.11, 2.12, 2.13, 2.30, 2.31, the caster's first 16 bytes (word 1 the object) and the `magi` row's floats. With
+`KH2_MAGIC_LOG=2` both paths log every live attack per tick relative to the cast (`magic: timeline +<tick>`).
+
+Compared in harness runs (tt00, the `magic-fire` keys with 0, 1, 2 or 3 `G` presses):
+- Fire: the same timeline in both paths (trigger at +22, attack 502 radius 200 height 80 from +23 to +66, the same
+  hits), and test `fire_script_in_the_interpreter_matches_the_hand_port` checks the requests against the disc's
+  script. The comparison found the inverted event-21 branch above (fixed in the hand port).
+- Blizzard: the script stops at host 1.201 (`FacingVector`), not answered; then a read through a null pointer.
+- Thunder: stops at 2.23 (`Target`), 1.140, 1.147 (`Position`).
+- Cure: stops at 2.23, 1.140, 1.343, 1.83.
+
+So the hand port stays the default; the interpreter path is a check for Fire. [GAP: the hosts above, then 2.20
+request threads (already run by the runtime), 1.88, 1.120, 1.138, 1.141, 1.146, 2.14, 2.17, 2.29, 2.39, 0.38, 0.41,
+0.46, 0.52, 1.93, 10.31, 0.100 for the other three.]
+
 ## Not ported / gaps
 
-- Effect binding to bones 0x4001 / 0x4003 / 0x4009 (FUN_0016aa18: 0x4003/0x4004 the weapon of a hand moved along its
-  axis by the weapon length, 0x4001 the object matrix at FUN_0016b7d0's point, 0x4009 at the object's shape of kind 9):
-  `fx.rs` binds every 0x4000-and-up bone to the object's root, so the cast effects (element 0 and 1, bone 0x4003) show
-  at Sora's feet instead of the keyblade tip. `magic.rs` uses the weapon's matrix for a shot's start (without the length).
-- Running the spell scripts in the BDX interpreter: `kh2_bdx::Runtime` can run an event only to its first yield or
-  start events 0 and 1; the game starts a script's event as the thread's persistent code (FUN_0016c500 -> FUN_0016c4d8).
-  With such an entry point the scripts could run as they are (the host functions they use are listed above).
-- The voices of a cast, the magic lock-on turn, Wisdom / Master / Final variants beyond Fire's script branches, Magnet,
-  Reflect, levels 2 and 3 (the rules handle them; the effects and scripts are the same code paths but were not looked at).
-- The hit spark of a spell: `fx::hit_sparks` takes the keyblade's effect file for every player hit; for a spell the
-  attacking object's effect file is the spell's (`EffectOnHit` category in the `.mag` PAX) [not changed: fx.rs].
+- The menu's input code (cursor, wrap, closing after a cast), above.
+- Running Blizzard, Thunder and Cure in the interpreter (above); Wisdom / Master / Final variants beyond Fire's script
+  branches, Magnet, Reflect, levels 2 and 3 (the rules handle them; the effects and scripts are the same code paths but
+  were not looked at).
+- The lock-on controller's mode-1 marker and timer (above). Which target record the menu code puts into a spell's
+  request (FUN_00174cf8 copies it; its writer was not traced) [I: Sora's target, Cure's the caster].
 - The HUD's MP charge bar: `hud_gauge::MpRecharge` gets +0x1bc (time left, which counts down) and +0x1c0 as its doc
   names them; whether the game's bar fills with the left time or with the elapsed time was not traced in the HUD code
   (0x1556a0), and in a run the recharge bar is drawn at the right edge of the screen (hud_gauge layout, not checked).
 - `enemy::receive_hits` looks the row up with `GameData::atkp` (the first row of the id): until it uses
-  `GameData::hit_row`, every Fire hit uses `SubId` 0.
+  `GameData::hit_row`, every Fire hit uses `SubId` 0 for damage (the hit spark already uses the hit's row, WP-7A).
+
+Done in WP-7A: element bones 0x4001..0x4009 (docs/effects-damage.md "Object bones"), so the cast effects start at
+the keyblade's tip; the spell's own hit spark (`fx::SpellHit`); the cast voices; the form-start refill; the magic
+turn; the interpreter entry point.
 
 ## Decompile index
 
@@ -226,4 +281,10 @@ Port: `magic::step_strike`; the probe is the app's floor test `World::ground_m`.
 | 0x173988 | host 1.139: FUN_001db868(effect file, id, 1, 1, 0, object) |
 | 0x16d098, 0x16d138 -> 0x17c0f8, 0x18e3d8 -> 0x18c890, 0x172538 -> 0x1a5c30, 0x1705e8 -> 0x1857b0 | hosts 0.45 (move along a direction), 0.46 (turn toward), 2.14, 1.141 (probe), 1.146 (push) |
 | 0x18c8e0, 0x18ca78 | terrain segment test of a moving attack, wall handler |
-| 0x16aa18, 0x16ae50 | element bone matrices (0x4000..0x4009) |
+| 0x16aa18, 0x16ae50, 0x16ae90, 0x175df8, 0x16b7d0, 0x16b558, 0x16b4e0, 0x1894d0, 0x16b960 | element bone matrices (0x4000..0x4009): weapon of a hand, blade shape (type 15), body shape (type 1), shape centre |
+| 0x175d18, 0x1ae3c8, 0x1970b8 | player method +0x54: the cast voice |
+| 0x1a0240, 0x1a05d0, 0x1a05a8, 0x1a0210, 0x1a04b0 | MP refill of the form start |
+| 0x179470, 0x18fb98, 0x18ed58, 0x19b3f0, 0x19bcb8, 0x19bbc0, 0x1768a8 | Magic Lock-On: target pick, lock-on controller mode 1 |
+| 0x188030 (cases 0x16, 0x1c), 0x186118, 0x1861b8, 0x186018, 0x183848, 0x18efa0, 0x18eec0, 0x18ed98 | the turn triggers 22 and 28 |
+| 0x16c500, 0x16c4c0, 0x1d7b78, 0x16c4d8, 0x1d7bb0, 0x1d7b30, 0x16c9b8, 0x16c230, 0x16c7c8 | a thread pointed at an event |
+| 0x173988 -> 0x1db868 | host 1.139 (effect file, id, mode, 1, extra, the context's object) |

@@ -10,18 +10,19 @@
 //! spell. A cast whose motion is left before the trigger ends with event 20 (it waits for the
 //! motion to change) and costs nothing.
 //!
-//! The scripts are not run in the BDX interpreter here (the interpreter has no way yet to start an
-//! event as a persistent thread, see docs/magic.md); what Fire's and Cure's scripts do is ported by
-//! hand below, step by step, from their disassembly (`kh2 bdx magic/FIRE_1.mag`), including the
-//! request threads (host 2.20) of Blizzard's shot and Thunder's strike. Only the casts without a
-//! drive form are ported for Blizzard and Thunder (the form variants send more shots and strikes).
+//! What the four spells' scripts do is ported by hand below, step by step, from their disassembly
+//! (`kh2 bdx magic/FIRE_1.mag`), including the request threads (host 2.20) of Blizzard's shot and
+//! Thunder's strike. Only the casts without a drive form are ported for Blizzard and Thunder (the form
+//! variants send more shots and strikes). `KH2_MAGIC_VM=1` runs the scripts themselves in the BDX
+//! interpreter instead (`VmCast`, `SpellHost`): Fire's matches the hand port; the other three stop at
+//! host calls the app does not answer yet (docs/magic.md "Running the scripts in the interpreter").
 //!
 //! Keys: the command menu answers T (cursor up), G (cursor down), B (back); J / left mouse
 //! executes the selected command (the game's X button): Attack attacks, Magic opens the list, a
 //! spell is cast. `KH2_KEYS` drives T, G and B too (the harness maps J). `KH2_MAGIC=f,b,t,c[,m,r]`
 //! sets the spell levels owned (default: the counts in `progress::Progress`, whose app baseline is
 //! 1,1,1,1,0,0). `KH2_MAGIC_LOG=1`
-//! logs the menu, the casts, MP, hits and damage.
+//! logs the menu, the casts, MP, hits and damage; `=2` also every live attack per tick.
 
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -3,7 +3,8 @@
 //! Controls: WASD move (camera-relative), Ctrl walk, Space jump, LMB/J attack (combo), K/E guard
 //! and growth abilities (Quick Run, Glide), Q/Tab lock-on, RMB drag / arrows orbit the camera,
 //! wheel zoom, 1-9/0 switch Twilight Town areas, F1 motion viewer ([ ] to step), F3 spawn
-//! enemies, F4 show hit volumes, F6 cycle growth-ability levels.
+//! enemies, F4 show hit volumes, F6 cycle growth-ability levels. Command menu: T / G move the
+//! cursor, B goes back, J executes the selected command (Magic opens the spell list).
 //!
 //! Gameplay runs in `FixedUpdate` at the game's 60 Hz logic rate. Each feature module has a
 //! plugin that registers its own resources, messages and systems; the order between features is
@@ -24,6 +25,8 @@ mod fx;
 mod harness;
 mod hud;
 mod limit;
+mod magic;
+mod magic_rules;
 mod motor;
 mod player_reaction;
 mod reaction_cmd;
@@ -85,6 +88,7 @@ fn main() {
             reaction_cmd::ReactionPlugin,
             clash::ClashPlugin,
             player_reaction::PlayerReactionPlugin,
+            magic::MagicPlugin,
         ))
         .run();
 }

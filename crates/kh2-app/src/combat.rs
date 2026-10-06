@@ -119,6 +119,11 @@ pub struct Hit {
     /// Attacker → target, horizontal.
     pub dir: Vec3,
     pub point: Vec3,
+    /// The magic damage entry point: the exact `SubId` of the `atkp` row a spell's attack object
+    /// used for this hit (`magic.rs`; FUN_0019e7e0 picks it by the cast's kind and the hit count).
+    /// `None` for motion-trigger attacks, whose row is the default lookup. Readers that need the
+    /// row call `GameData::hit_row`.
+    pub row: Option<u16>,
 }
 
 /// A hit whose damage multipliers for the attack's element and in general multiply to zero: the
@@ -308,7 +313,7 @@ pub fn detect_hits(
                     if let Some((_, sph)) = hurts.iter().find(|(h, _)| overlap(&vol, h)) {
                         f.landed.insert(key);
                         let dir = (*tpos - g.translation()).with_y(0.0).normalize_or(Vec3::Z);
-                        hits.write(Hit { attacker: e, target: *te, atkp, dir, point: victim_point(sph, centre) });
+                        hits.write(Hit { attacker: e, target: *te, atkp, dir, point: victim_point(sph, centre), row: None });
                     }
                 }
                 if let (Some(world), Team::Player) = (world.as_ref(), f.team) {

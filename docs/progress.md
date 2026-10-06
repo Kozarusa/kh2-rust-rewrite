@@ -149,6 +149,7 @@ therefore adds, on top of the new game and only where missing:
   beside the save block, not part of the original's records. `KH2_ABILITY_START=data` drops it with the
   Guard, and a `KH2_STATE` file sets it with `"dodge_roll": <0..5>` (without the key it is 0). The
   harness `KH2_GROWTH=a,b,c,d,e` fifth value overrides it (docs/movement.md section 2).
+  A `KH2_STATE` key `sora_items` (array of item ids) gives each item to Sora through FUN_001a18d8(id, 1, 0): free battle item slots first, then the stock; it fills the received list. The helpers `battle_items`, `take_item` (FUN_001a1ba8), `refill_battle_items` (FUN_001877c8), `equip_battle_item` (FUN_0026c698) and `recent_items` are read by items.rs.
 
 This reproduces the previous defaults exactly (`progress::tests::baseline_gives_the_old_app_defaults`).
 

@@ -35,8 +35,7 @@ in the code; they come from the user's disc.
 - Menu art and layout are `hud_menu.rs` (WP-4): the sub-menu is page kind `cmd(2).SubMenu`; an unusable entry is drawn
   in style 1 [I: the style byte +0x11 of a list entry is set by FUN_001ba748 from other conditions; the mapping of
   status 5 to style 1 is the app's].
-- [GAP] The menu's input code (cursor movement, wrap, what closes the sub-menu after a cast) was not traced. The app
-  wraps the cursor and keeps the sub-menu open after a cast; B goes back.
+- The menu's input is FUN_001ba9b0 / FUN_001bb930 (docs/items.md section 4): the cursor wraps both ways; an issued spell closes the menu to the deck with the cursor on Attack; Cure (SubMenu 4) first opens the target list. Port: items.rs.
 
 ## Casting
 

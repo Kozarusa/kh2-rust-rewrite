@@ -482,7 +482,7 @@ mod at {
     pub const TAB_Y: f32 = 0.0;
     pub const TAB_PITCH: f32 = 26.0;
     /// Page 0x17: the preview plates' left edge and the first row's origin (the baseline of the plate).
-    pub const PREVIEW: [f32; 2] = [150.0, 104.0];
+    pub const PREVIEW: [f32; 2] = [164.0, 104.0];
     /// Page 0x18: the wide rows.
     pub const WIDE: [f32; 2] = [40.0, 104.0];
     /// Row pitch of both pages (`group.unk1c`, 24 for every row group of the page).
@@ -502,7 +502,7 @@ mod at {
 /// The nodes the screen draws with, created once in the scene.
 struct Nodes {
     tabs: Vec<usize>,
-    /// Per column and row: the row node (a group), its value node (text only, a child of the row).
+    /// Per column and row: the row node (a group) and its value node (text only, at the row's origin).
     rows: [Vec<usize>; 2],
     values: [Vec<usize>; 2],
     hand: usize,
@@ -729,10 +729,8 @@ fn build(scene: &mut MenuScene) -> Nodes {
         for _ in 0..10 {
             rows[c].push(new(scene, Some(SEQ_MAIN)));
         }
-        for r in 0..10 {
-            let v = new(scene, None);
-            scene.nodes[v].parent = Some(rows[c][r]);
-            values[c].push(v);
+        for _ in 0..10 {
+            values[c].push(new(scene, None));
         }
     }
     let hand = new(scene, Some(SEQ_MAIN));
@@ -888,6 +886,8 @@ fn draw(ui: &StatusUi, n: &Nodes, scene: &mut MenuScene, numbers: &Numbers) {
         scene.nodes[rid].label_fade = 1.0;
         scene.set_group(rid, group);
         scene.nodes[vid].visible = true;
+        // The value sits at the row group's own x from the row's origin, not from its anchor.
+        scene.nodes[vid].pos = scene.nodes[rid].pos;
         scene.nodes[vid].label = val.into();
         scene.nodes[vid].label_fade = 1.0;
         if wide && c == ui.col && i == ui.row[c] {

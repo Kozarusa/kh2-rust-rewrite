@@ -136,14 +136,17 @@ fn status_groups_exist_in_camp() {
             gr.unk1c,
             gr.unk20
         );
-        let q = seq.quads(g, 0, [0.0, 0.0], &Default::default());
-        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
-        for p in q.iter().flat_map(|q| q.pos) {
-            x0 = x0.min(p[0]);
-            x1 = x1.max(p[0]);
-            y0 = y0.min(p[1]);
-            y1 = y1.max(p[1]);
+        for f in 0..=seq.last_frame(g) {
+            let q = seq.quads(g, f, [0.0, 0.0], &Default::default());
+            let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+            for p in q.iter().flat_map(|q| q.pos) {
+                x0 = x0.min(p[0]);
+                x1 = x1.max(p[0]);
+                y0 = y0.min(p[1]);
+                y1 = y1.max(p[1]);
+            }
+            let a = seq.anchor(g, f, &Default::default());
+            println!("   frame {f}: {} quads, bbox ({x0:.0}, {y0:.0})-({x1:.0}, {y1:.0}) anchor {a:?}", q.len());
         }
-        println!("   frame 0: {} quads, bbox ({x0:.0}, {y0:.0})-({x1:.0}, {y1:.0})", q.len());
     }
 }

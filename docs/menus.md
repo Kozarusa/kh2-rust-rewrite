@@ -481,8 +481,8 @@ Sound/Vibration stored only. Acceptance: a test that every row's value survives 
 - **The dim and the transition curves** (1.6): taken from the footage; the game's helper task `0x2a14d0` and the sequence step were not read.
 - **The "NEW!" tags**, the cards' source fields and the Munny/Time plate code (page 0 layers): `FUN_00251100`, `FUN_002506b8` only skimmed.
 - **Pages 3, 4, 0xb..0xe, 0x16, 0x1c** and the Items category list code: purposes inferred from callers and message tables.
-- **Party (0x14..0x16), Status fields (0x17, 0x18), the Help pages (0x25) and the tutorial `.bar` resources, Journal, Save pages (kinds 7, 8):** not read beyond
-  structure.
+- **Party (0x14..0x16), the Help pages (0x25) and the tutorial `.bar` resources, Journal, Save pages (kinds 7, 8):** not read beyond
+  structure. (Status 0x17, 0x18 was read in WP-M2: section 10; its open gaps are listed there: the forms', summons' and members' tabs are not ported, the layout origin is [I].)
 - **Menu kinds 1, 2, 4, 6, 9, 0xa..0xf:** named by inference only.
 - **Where flags 0x70..0x73 are set** (tutorial/story bits at 0x33fdb0): not searched.
 - **The system sound bank (channel 2) mapping to the app's `PlaySe` numbers.**
@@ -574,6 +574,10 @@ table entries below the level, the table from `FUN_001d3b90`), the experience to
 experience) and the gauge row `level + 2`; the summons' tab the same from the summon level (`+0xdce`) and experience (`0x340e4c`, `FUN_001d3d48`,
 `FUN_001d3cf8`). The second column of a form tab is the leader's strength, magic, defense and resistances. The party members' tabs print the leader's rows 0..5 and 10..16
 from the member's own status object.
+
+Checked on the disc (`the_leaders_numbers_follow_lvup_the_record_and_the_abilities_resource`): the new game with the app baseline gives LV 1, Next LV 40 (the Exp of `lvup` row 0), HP 20/20, MP 100/100,
+AP 2/2 (Guard costs the 2 that `lvup` row 0 gives), Strength 5 (row 2 + Kingdom Key 3), Magic 7 (6 + 1), Defense 2, every resistance 0 %, Drive Gauge 3/3, and the same strength, magic, defense,
+used AP and AP total as the `Abilities` resource computes (`equipment_stats`, `ap_used`, `ap_max` + the record's AP byte, which is 0 here).
 
 **The AP rule** that 2.3 lists as a gap is therefore known for the display: the number the Abilities screen compares is the same `FUN_002688d8` sum over
 `FUN_0019f920`'s total; the check that refuses an over-cost equip was still not found in the handlers read. `Abilities::ap_max()` (`abilities.rs`) leaves out the record's own AP byte `+8`.

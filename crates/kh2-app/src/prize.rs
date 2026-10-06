@@ -1102,6 +1102,14 @@ fn prize_test(
     }
 }
 
+/// The player-side state a pickup changes or reads.
+type PlayerState<'w> = (
+    Option<ResMut<'w, crate::magic::MagicState>>,
+    Option<ResMut<'w, crate::drive::DriveState>>,
+    Option<Res<'w, crate::abilities::Abilities>>,
+    Option<Res<'w, crate::drive::DriveRules>>,
+);
+
 /// The prizes' frame: flight, rest, pickup and draw-in; the pickup applies `FUN_001a39b0`. A
 /// `CollectAll` (host 6.31, `FUN_001a40b8`) first draws every pickable prize in (mode 1) and pays it.
 #[allow(clippy::too_many_arguments)]
@@ -1114,12 +1122,7 @@ fn run_prizes(
     mut prizes: Query<(Entity, &mut PrizeObj, &mut Transform), Without<Sora>>,
     mut sora: Query<(&Transform, &mut Sora)>,
     bodies: Query<(&Animator, &GlobalTransform)>,
-    (mut magic, mut drive, abilities, rules): (
-        Option<ResMut<crate::magic::MagicState>>,
-        Option<ResMut<crate::drive::DriveState>>,
-        Option<Res<crate::abilities::Abilities>>,
-        Option<Res<crate::drive::DriveRules>>,
-    ),
+    (mut magic, mut drive, abilities, rules): PlayerState<'_>,
     mut progress: Option<ResMut<crate::progress::Progress>>,
     (mut sounds, mut munny): (MessageWriter<crate::audio::PlaySe>, MessageWriter<MunnyGained>),
     (mut collect, mut glow): (MessageReader<CollectAll>, ResMut<PickupGlow>),

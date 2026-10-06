@@ -258,7 +258,7 @@ Messages other systems can use: `FormChanged { from, to }` (written when the bod
   the spare keyblades (`KH2_DRIVE_INVENTORY`).
 - The outfit index of a world (byte 0 of the save block at `0x340c9c + 4 * world`): a new game's value is
   taken to be 0; its writer was not read. `KH2_DRIVE_OUTFIT` sets it.
-- "Anti's partial MP drain" [searched twice, not found, WP-5B]: no code ties MP to the form field. Searched:
+- "Anti's partial MP drain" [closed by WP-6A: the original has none, see the third attempt below; searched twice before, not found, WP-5B]: no code ties MP to the form field. Searched:
   every reader of `sstm` (`DAT_00360130 + offset`, all 0x0c..0x16c): the Anti-related offsets are 0x8c (timer
   level, `FUN_001a04b0`), 0x90 and 0xa4 (counter drops), 0x94 (damage, `FUN_001a0610`), 0x98..0xa0 (Final roll
   chance, `FUN_001d4180`, `FUN_001d4348`); 0xa8 belongs to a movement routine (`FUN_00176050`). The MP writers:
@@ -267,6 +267,24 @@ Messages other systems can use: `FormChanged { from, to }` (written when the bod
   refills HP and MP at the timer start; the player constructors `FUN_001cda78`/`FUN_001cdb98`;
   `FUN_00118730`; `FUN_001a12a0` item use; `FUN_001ac130`; `FUN_0017d4b8` the periodic MP tick; `FUN_001be500`).
   None tests the form. Not ported; no invention.
+  Third attempt (WP-6A), a different method: a scan of the executable's instructions themselves (all
+  executable segments of `SLUS_210.05`, so it also covers code the decompilation lacks, such as Sora's
+  command handler `FUN_001cf030`): (a) every `jal` to the MP writers `FUN_001a0180`, `FUN_001a0210`,
+  `FUN_001a0240`, `FUN_001a05a8` and the actor-level `FUN_00186368` (MP add with the "not enough" branch
+  `FUN_00186440`): 15 call sites, all inside known functions: `FUN_00118730`, `FUN_001769e0` (cost of
+  +0xaf4), `FUN_00176c98`, `FUN_00186368`, `FUN_00194c08`, `FUN_001a0240`, `FUN_001a04b0` (the refill at
+  the form timer start), `FUN_001a12a0` (items), `FUN_001a39b0` (the pickup table at 0x37b540: HP, MP and
+  drive per prize kind), `FUN_001ac130`, `FUN_001b28a0` (a command's MP cost, `FUN_001b3f00`),
+  `FUN_001be500`, `FUN_001cda78`, `FUN_001cdb98`; none reads the form field +0xb50 or the gauge mode;
+  (b) every store instruction with offset 0x180..0x183: the status-block ones are the initialisers
+  `FUN_0019f4a8`, `FUN_0019f5d8`, `FUN_0019f920`, the writer `FUN_001a0180` and `FUN_001a04b0`; the rest
+  store to other structures (stack frames, map and render code in 0x0013..0x0016 and 0x0020..0x0023).
+  Sora's per-tick drive work (`FUN_00177788` at +0xc of his class table 0x360410: the timer drain
+  through `FUN_001a0358`; `FUN_001ceda8` at +0x14: the revert when the timer is empty) writes no MP.
+  Conclusion [V for the direct writers]: the original has no separate MP drain for Anti form; MP moves
+  only by the costs, pickups, items, the periodic tick (`FUN_0017d4b8`) and the refill at the form
+  start, in every form alike. (A writer through a computed address other than base + 0x180 would not
+  be found by this scan.)
 - The drive-gauge charge of commands 455 and 457: wired in WP-6A, but it is **not Sora's** [V]. The three
   player-class tables in the executable: 0x360288 (`FUN_001cd678` ...), 0x360360 (built by `FUN_001cda78` and
   `FUN_001cdb98`; per-tick `FUN_001ce240` at +0xc, command handler `FUN_001ce518` at +0x98) and 0x360410 (built

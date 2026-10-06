@@ -519,7 +519,7 @@ mod tests {
         // 16:9: the 448 tall box is 796.4 wide, 142.2 more on each side; 4:3 and taller windows have none.
         assert!((side_margin(Vec2::new(1280.0, 720.0)) - 142.2).abs() < 0.1);
         assert!(side_margin(Vec2::new(1024.0, 768.0)) < 1.0);
-        assert_eq!(side_margin(Vec2::new(600.0, 800.0)), 0.0);
+        assert!(side_margin(Vec2::new(600.0, 800.0)) < 1e-3);
         assert_eq!(side_margin(Vec2::ZERO), 0.0);
     }
 

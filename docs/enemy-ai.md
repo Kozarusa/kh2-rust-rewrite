@@ -1,5 +1,14 @@
 # Enemy AI runtime: Shadow, Soldier and Dusk under their BDX scripts
 
+**Files (since WP-7R; the code was one file, `enemy_ai.rs`, before).** `crates/kh2-app/src/enemy_obj.rs` holds the object as the script sees it:
+`Obj` with its fields and small methods, the handle and size constants (`PLAYER`, `TARGET`, `GAUGES`, `VOLUME`, `OBJ_SIZE`, ...) and the
+game-space conversions (`to_game`, `from_game`, `yaw_of`). `crates/kh2-app/src/enemy_host.rs` holds the host-call dispatch: `BevyHost` and
+`Env`, the answer helpers (`imp`, `approx`, `stub`, `missing`), `call_id`, and the arms of every host call split by group into `group0`,
+`group1`, `group2` and `other` (new arms go into the function of their group; inside a function the order of the arms matters, the first
+match wins), plus the pure helpers the arms use (`game_wrap_angle`, the prize table and `compute_drop`). `crates/kh2-app/src/enemy_ai.rs` keeps
+the plugin and the systems (`load_programs`, `ai_attach`, `ai_update`, `ai_fade`), `AiBrain`, the `Mailbox` and the `AiTrace` log.
+Where this document says "`enemy_ai.rs`" for a host call or the object, read the file named here.
+
 (WP-6C added the Dusk, `obj/M_EX990.mdlx`; why that enemy, its stats and where it spawns are in `docs/enemies.md`.
 The kinds are `enemy::KINDS`; `load_programs` reads every kind's script.)
 
@@ -223,7 +232,7 @@ the prize manager DAT_0035e7a0 exists:
 - then FUN_001c5b10, FUN_001c8590 and FUN_001d54d8 with the point and the row (not read).
 
 Bit 0x200 of 0x35d268 skips the prizes and items; the player state FUN_001ce6c0 (+0x588 bit 0x2000000) remaps the kinds
-(table 0x37b4a0) and skips the items. Both are taken as clear. `enemy_ai::compute_drop` does this with Sora's Jackpot and
+(table 0x37b4a0) and skips the items. Both are taken as clear. `enemy_host::compute_drop` does this with Sora's Jackpot and
 Lucky Lucky from `abilities::Abilities` and logs `drop (host 1.92) asked row .., used row ..: prizes per kind [..],
 items [..]`; tests `a_drop_follows_fun_001a3cb0`, `prize_rows_parse_and_fall_back_to_row_0x48`, `real_przt`. Gaps: no
 prize objects (their flight, pickup and effects), the three calls at the end, the flags and the generator's real state.

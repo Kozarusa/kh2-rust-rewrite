@@ -292,6 +292,12 @@ pub fn mv_yp_eff(ctx: &mut Ctx, obj: &mut Obj, p: &Program, _: usize) {
     }
 }
 
+/// The game's double to float conversion (0x327230) truncates toward zero; Rust's `as` rounds to nearest.
+pub(crate) fn f64_to_f32_trunc(x: f64) -> f32 {
+    let r = x as f32;
+    if r.is_finite() && (r as f64).abs() > x.abs() { f32::from_bits(r.to_bits() - 1) } else { r }
+}
+
 // ---- pppSnoMdlDttNorm -----------------------------------------------------------------------------
 
 /// Work 0: the amplitude (value, rate, acceleration as floats; init and reset zero it); work 1: the
@@ -349,7 +355,7 @@ pub fn sno_draw(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
     let depth_scale = match proj {
         Some(m) if m_cam.w_axis.z != 0.0 => {
             let p32 = m.w_axis.z;
-            let biased = (p32 as f64 - pf(p, e, 0x18) as f64 * 1e7 / m_cam.w_axis.z as f64) as f32;
+            let biased = f64_to_f32_trunc(p32 as f64 - pf(p, e, 0x18) as f64 * 1e7 / m_cam.w_axis.z as f64);
             if biased.is_finite() && biased != 0.0 { p32 / biased } else { 1.0 }
         }
         _ => 1.0,

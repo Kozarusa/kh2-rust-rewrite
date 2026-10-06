@@ -530,17 +530,6 @@ fn sno_amplitude_matches_the_game() {
     obj.mem[w1 + 8..w1 + 12].copy_from_slice(&[128, 128, 128, 90]);
     obj.set_mat(w2, Mat4::from_translation(Vec3::new(1.0, 2.0, 300.0)));
     let mut rng = 0u32;
-    // The soft-float routines the bias goes through (float to double 0x326900, double multiply
-    // 0x326cc0, divide 0x326f10, subtract 0x326c58, double to float 0x327230), on their own.
-    let d = |ee: &mut Ee, f: f32| ee.call(0x326900, &[f.to_bits() as u64], &[], STACK).unwrap();
-    let (a, b, c) = (d(&mut ee, -80.0), d(&mut ee, 300.0), d(&mut ee, 250.0));
-    let prod = ee.call(0x326cc0, &[a, 1.0e7f64.to_bits()], &[], STACK).unwrap();
-    let quot = ee.call(0x326f10, &[prod, b], &[], STACK).unwrap();
-    let diff = ee.call(0x326c58, &[c, quot], &[], STACK).unwrap();
-    let back = f32::from_bits(ee.call(0x327230, &[diff], &[], STACK).unwrap() as u32);
-    assert_eq!(f64::from_bits(prod), -80.0f64 * 1.0e7, "double multiply");
-    assert_eq!(f64::from_bits(quot), -80.0f64 * 1.0e7 / 300.0, "double divide");
-    assert_eq!(back, (250.0f64 - (-80.0f64 * 1.0e7 / 300.0)) as f32, "double subtract and back to float");
     for tick in 0..10 {
         obj.set_i32(OBJ_FRAME, tick * 0x1000);
         sync_obj(&mut ee, &obj);
@@ -576,7 +565,7 @@ fn sno_amplitude_matches_the_game() {
         // The projection's z translation the draw sees is biased by entry +0x18 (-80) times 1e7
         // over the model's depth (300), and restored afterwards; the port's depth factor is the
         // unbiased over the biased value.
-        assert_eq!(rec[0].3, (250.0f64 - (-80.0f64 * 1.0e7 / 300.0)) as f32, "tick {tick}: biased z translation");
+        assert_eq!(rec[0].3, m::f64_to_f32_trunc(250.0f64 - (-80.0f64 * 1.0e7 / 300.0)), "tick {tick}: biased z translation");
         assert_eq!(ee.f32_at(0x1db1038), 250.0);
         assert_eq!(draws.len(), 1, "tick {tick}: the port draws the model");
         assert!(near(draws[0].depth_scale, 250.0 / rec[0].3), "tick {tick}: depth factor {} vs {}", draws[0].depth_scale, 250.0 / rec[0].3);
@@ -607,6 +596,12 @@ fn projection_matches_the_game() {
         let want = p.matrix(hfov);
         let got = Mat4::from_cols_array(&std::array::from_fn(|i| ee.f32_at(CAM + 4 * i as u32)));
         for (i, (g, w)) in got.to_cols_array().iter().zip(want.to_cols_array()).enumerate() {
+            // Element 11 (the z row's w) is 0 in the game's stored matrix; the model draw adds the
+            // w = z term itself (the draw reads rows 0, 1 and 3 packed into one register and row 2
+            // separately, 0x20acf0..0x20ad20), so the port keeps 1 there.
+            if i == 11 {
+                continue;
+            }
             assert!((g - w).abs() <= 1e-4 * (1.0 + w.abs()), "hfov {hfov}: element {i}: game {g} port {w}\n{got:?}\n{want:?}");
         }
         assert!(near(ee.f32_at(CAM + 0x40), p.focal(hfov)), "focal length");

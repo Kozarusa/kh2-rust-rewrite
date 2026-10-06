@@ -151,7 +151,7 @@ impl Material for DistortMaterial {
         if let Some(ds) = descriptor.depth_stencil.as_mut() {
             ds.depth_write_enabled = Some(false);
             if !key.bind_group_data.depth_test {
-                ds.depth_compare = bevy::render::render_resource::CompareFunction::Always;
+                ds.depth_compare = Some(bevy::render::render_resource::CompareFunction::Always);
             }
         }
         Ok(())
@@ -179,9 +179,9 @@ pub enum Bind {
     Fixed(Mat4),
 }
 
-/// The game's time step per 60 Hz frame for the effect instance clocks (DAT_00356f40: DAT_00379174
-/// = 2.0 in normal play, times the speed factor DAT_00356f3c, which is 1 here).
-pub const EFFECT_TIME_STEP: f32 = 2.0;
+/// Step of the bind record's clock per 60 Hz tick (inference: the game adds its frame step DAT_00356f40,
+/// 2.0 per update in its own units, which this port takes as one 60 Hz tick).
+pub const EFFECT_TIME_STEP: f32 = 1.0;
 /// Added to a bound element's start wait (DAT_0037c778, FUN_001db5f0).
 pub const BOUND_WAIT_EXTRA: f32 = 0.1;
 
@@ -203,6 +203,8 @@ pub struct RunningEffect {
     se_played: bool,
     /// The bind sampled on the first tick, kept for `BIND_ONLY_START` elements.
     bind_once: Option<Mat4>,
+    /// Two-point positions of the last read of the owner.
+    two_point: Option<[Vec3; 2]>,
     /// The last bind, kept once the owner is gone (the record is marked orphaned and no longer
     /// updated, FUN_001dcd08).
     last_bind: Option<Mat4>,
@@ -215,7 +217,7 @@ pub struct RunningEffect {
 impl RunningEffect {
     fn new(lib: Arc<LoadedPax>, element: Element, effect: kh2_fx::Effect, dpd: usize, bind: Bind, game_id: u16) -> RunningEffect {
         let wait = element.start_wait + if element.flags & element_flag::BIND != 0 { BOUND_WAIT_EXTRA } else { 0.0 };
-        RunningEffect { lib, element, effect, dpd, bind, game_id, parts: Vec::new(), time: 0.0, wait, se_played: false, bind_once: None, last_bind: None, orphan: false, fade: None }
+        RunningEffect { lib, element, effect, dpd, bind, game_id, parts: Vec::new(), time: 0.0, wait, se_played: false, bind_once: None, two_point: None, last_bind: None, orphan: false, fade: None }
     }
 }
 
@@ -578,43 +580,102 @@ pub fn tick(
     mut effects: Query<(Entity, &mut RunningEffect)>,
     owners: Query<&Animator>,
     locals: Query<(&Transform, Option<&ChildOf>)>,
-    camera: Query<&GlobalTransform, With<Camera3d>>,
+    camera: Query<(&GlobalTransform, &Projection), With<Camera3d>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut cache: ResMut<FxCache>,
     distort: Res<DistortHandle>,
+    projection: Res<FxProjection>,
+    mut se: MessageWriter<crate::audio::PlaySe>,
 ) {
-    let view_inv = camera.single().map(|c| game_camera(c.to_matrix())).unwrap_or(Mat4::IDENTITY);
+    let view_inv = camera.single().map(|(c, _)| game_camera(c.to_matrix())).unwrap_or(Mat4::IDENTITY);
+    // The game's projection for the camera's field of view (camera.rs makes the vertical field from the
+    // game's horizontal one at 4:3: fov = 2 atan(0.75 tan(hfov / 2))).
+    let proj = projection.0.and_then(|p| {
+        let (_, Projection::Perspective(pp)) = camera.single().ok()? else { return None };
+        let hfov = 2.0 * ((pp.fov * 0.5).tan() / 0.75).atan();
+        Some(p.matrix(hfov))
+    });
     for (e, mut r) in &mut effects {
         let el = r.element.clone();
-        let mut env = Env { view: view_inv.inverse(), view_inv, ..Default::default() };
+        // The bind record's clock (FUN_001dd0d0 adds the frame step to +0x4c at its end): an element with
+        // a start wait does not run, draw or sound until the clock reaches it (inference for the unit: one
+        // per 60 Hz tick, as the effect's own clock).
+        if r.time < r.wait {
+            r.time += EFFECT_TIME_STEP;
+            continue;
+        }
+        if !r.se_played {
+            r.se_played = true;
+            if el.se >= 0 {
+                se.write(crate::audio::PlaySe::number(el.se as u32, r.lib.apdx.clone()));
+            }
+        }
+        r.time += EFFECT_TIME_STEP;
+        let mut env = Env { view: view_inv.inverse(), view_inv, proj, ..Default::default() };
         match r.bind {
             Bind::Owner(owner) => {
-                let Ok(anim) = owners.get(owner) else {
+                // The bind record follows its owner every tick (FUN_001dd0d0 -> FUN_001dcd08 for mode 1):
+                // the owner's bone matrix is read again unless the element is not bound (flag 1 clear:
+                // read once when created) or binds only at its start (flag 2: not read again once the
+                // instance runs). `bone` numbers with 0x4000 name object matrices (FUN_0016aa18: 0x4000 the
+                // object's own matrix, the root here).
+                let frozen = r.bind_once.is_some() && (el.flags & element_flag::BIND == 0 || el.flags & element_flag::BIND_ONLY_START != 0);
+                let mut now = if frozen { r.bind_once } else { None };
+                if now.is_none() && !r.orphan {
+                    if let Ok(anim) = owners.get(owner) {
+                        let body = GlobalTransform::from(world_now(owner, &locals));
+                        let bone = if el.bone & 0x4000 != 0 { body.to_matrix() } else { anim.bone_world(&body, el.bone.max(0) as usize) };
+                        // The element's offset and rotation are in the game's Y-down frame: the same flip that
+                        // takes the bone's world placement into fx space applies to its local axes (as for
+                        // `Bind::Fixed`). Root-bound elements put their centre at negative Y (above the feet).
+                        let m = fx_space(bone) * FLIP * element_matrix(&el);
+                        if el.flags & element_flag::TWO_POINT != 0 {
+                            let p = |b: u16, ratio: f32| {
+                                let len = anim.rig.model.bones.get(b as usize).map_or(0.0, |x| x.length);
+                                fx_space(anim.bone_world(&body, b as usize)).transform_point3(Vec3::new(ratio * len, 0.0, 0.0))
+                            };
+                            r.two_point = Some([p(el.bone_pos.a, el.bone_pos.ratio_a), p(el.bone_pos.b, el.bone_pos.ratio_b)]);
+                        }
+                        now = Some(m);
+                        if r.bind_once.is_none() {
+                            r.bind_once = Some(m);
+                        }
+                    } else {
+                        // The owner is gone: the record is marked orphaned (FUN_001dcd08 sets bit 0x10 of
+                        // its flags) and keeps its last matrix. Elements with flag 0x200 (destroy when the
+                        // object leaves) or 0x400 end now (FUN_001dd0d0 -> FUN_001dd060); the others run on.
+                        r.orphan = true;
+                        if el.flags & (element_flag::DESTROY_WHEN_OBJECT_LEAVES | element_flag::DESTROY_WHEN_BIND_EFFECT_OFF) != 0 {
+                            destroy(&mut r);
+                        }
+                    }
+                }
+                let Some(m) = now.or(r.last_bind) else {
                     commands.entity(e).despawn();
                     continue;
                 };
-                let body = GlobalTransform::from(world_now(owner, &locals));
-                // Bone numbers with 0x4000 set name special object matrices; the root for now.
-                let bone = if el.bone & 0x4000 != 0 { body.to_matrix() } else { anim.bone_world(&body, el.bone.max(0) as usize) };
-                // The element's offset and rotation are in the game's Y-down frame: the same flip that
-                // takes the bone's world placement into fx space applies to its local axes (as for
-                // `Bind::Fixed`). Root-bound elements put their centre at negative Y (above the feet).
-                env.bind = fx_space(bone) * FLIP * element_matrix(&el);
-                if el.flags & element_flag::TWO_POINT != 0 {
-                    let p = |b: u16, ratio: f32| {
-                        let len = anim.rig.model.bones.get(b as usize).map_or(0.0, |x| x.length);
-                        fx_space(anim.bone_world(&body, b as usize)).transform_point3(Vec3::new(ratio * len, 0.0, 0.0))
-                    };
-                    env.two_point = Some([p(el.bone_pos.a, el.bone_pos.ratio_a), p(el.bone_pos.b, el.bone_pos.ratio_b)]);
-                }
+                r.last_bind = Some(m);
+                env.bind = m;
+                env.two_point = r.two_point;
             }
             Bind::Fixed(m) => {
                 // A placement in metres: rotation and scale stay, the translation becomes centimetres.
-                let (sc, r, t) = m.to_scale_rotation_translation();
-                env.bind = FLIP * Mat4::from_scale_rotation_translation(sc, r, t / SCALE) * FLIP * element_matrix(&el);
+                let (sc, rot, t) = m.to_scale_rotation_translation();
+                env.bind = FLIP * Mat4::from_scale_rotation_translation(sc, rot, t / SCALE) * FLIP * element_matrix(&el);
             }
+        }
+        // A fade-out (element flag 0x40: FUN_001da080 over the element's fadeout frames) scales the
+        // effect's alpha down to nothing, then the effect is gone.
+        if let Some((level, step)) = r.fade {
+            let level = level + step;
+            if level <= 0.0 {
+                commands.entity(e).despawn();
+                continue;
+            }
+            r.fade = Some((level, step));
+            env.tint.w = level;
         }
         env.bind_scale = Vec3::new(env.bind.x_axis.truncate().length(), env.bind.y_axis.truncate().length(), env.bind.z_axis.truncate().length());
         let draws = r.effect.tick(&env);
@@ -659,10 +720,8 @@ pub fn tick(
                         let mat = material(&mut cache, &mut materials, tex, b.alpha);
                         commands.entity(child).remove::<MeshMaterial3d<DistortMaterial>>().insert((MeshMaterial3d(mat), Visibility::Inherited));
                     } else {
-                        commands
-                            .entity(child)
-                            .remove::<MeshMaterial3d<StandardMaterial>>()
-                            .insert((MeshMaterial3d(distort.0.clone()), Visibility::Inherited));
+                        let handle = if b.depth_test { distort.tested.clone() } else { distort.always.clone() };
+                        commands.entity(child).remove::<MeshMaterial3d<StandardMaterial>>().insert((MeshMaterial3d(handle), Visibility::Inherited));
                     }
                 }
                 None => {
@@ -670,6 +729,21 @@ pub fn tick(
                 }
             }
         }
+    }
+}
+
+/// FUN_001dd060: starts the end of an element's effect once. Element flag 0x80 stops it like a
+/// loop end (FUN_001d9f48); flag 0x40 fades it out over its `fadeout_frame` frames (FUN_001da080);
+/// with neither the effect runs to its own end.
+fn destroy(r: &mut RunningEffect) {
+    if r.fade.is_some() {
+        return;
+    }
+    if r.element.flags & element_flag::DESTROY_LOOPEND != 0 {
+        r.effect.end();
+    } else if r.element.flags & element_flag::DESTROY_FADEOUT != 0 {
+        let frames = (r.element.fadeout_frame as f32).max(1.0);
+        r.fade = Some((1.0, -1.0 / frames));
     }
 }
 

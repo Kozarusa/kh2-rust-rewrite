@@ -1053,12 +1053,14 @@ impl Progress {
             )
         };
         let index = Arc::new(ItemIndex::new(&items, &cmds, &magc));
-        let mut p = Progress::new_game(index, &plrp);
+        let mut p = Progress::new_game(index.clone(), &plrp);
         match std::env::var("KH2_STATE") {
             Ok(path) if !path.is_empty() => match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|s| p.apply_json(&s)) {
                 Ok(()) => p.source = Source::File(path),
                 Err(e) => {
+                    // A file that failed half way is dropped as a whole.
                     warn!("progress: KH2_STATE={path}: {e}; using the new game and the app baseline");
+                    p = Progress::new_game(index, &plrp);
                     p.apply_baseline(std::env::var("KH2_ABILITY_START").as_deref() != Ok("data"));
                 }
             },

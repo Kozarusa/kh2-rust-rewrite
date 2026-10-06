@@ -606,14 +606,14 @@ pub fn receive_hits(
             x => x,
         };
         info!(
-            "{} hit: atkp {} row SubId {} damage {dmg} hp {} reaction {} effective {} ineffective {useless} {} -> {action:?}",
+            "{} hit: atkp {} damage {dmg} hp {} reaction {} effective {} ineffective {useless} {} -> {action:?} (atkp row SubId {})",
             e.name,
             h.atkp,
-            atk.sub_id,
             e.hp,
             atk.enemy_reaction,
             out.effective,
-            if from_front { "front" } else { "back" }
+            if from_front { "front" } else { "back" },
+            atk.sub_id
         );
         let away = h.dir.with_y(0.0).normalize_or_zero();
         let push = |strength: f32| Push::new(away, strength, 0.0, &reaction.consts);

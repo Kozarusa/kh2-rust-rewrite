@@ -32,27 +32,23 @@ pub(crate) fn packed_color(obj: &Obj, color_work: usize) -> Vec4 {
     Vec4::new(obj.mem[o] as f32, obj.mem[o + 1] as f32, obj.mem[o + 2] as f32, obj.mem[o + 3] as f32) / 128.0
 }
 
-/// Texture size from a TEX0 value.
-fn tex_size(tex0: u64) -> (f32, f32) {
-    ((1u32 << ((tex0 >> 26) & 0xf)) as f32, (1u32 << ((tex0 >> 30) & 0xf)) as f32)
-}
-
-/// Draws one shape frame with a world matrix and material color.
+/// Draws one shape frame with a world matrix and material color (FUN_0021a660): every sprite with
+/// the frame's TEX0 plus its own palette offset, its texture rectangle as fractions of the texture
+/// (the GS gets them as normalised ST, whatever the texture's size).
 pub(crate) fn draw_frame(ctx: &mut Ctx, frame: &Frame, m: Mat4, mat: Vec4) {
-    let (tw, th) = tex_size(frame.tex0);
     for s in &frame.sprites {
         let col = Vec4::new(s.rgba[0] as f32, s.rgba[1] as f32, s.rgba[2] as f32, s.rgba[3] as f32) / 128.0 * mat;
         if col.w <= 0.0 {
             continue;
         }
-        let [u0, v0, w, h] = s.uv;
+        let [u0, v0, w, h] = s.st;
         let uvs = [[u0, v0], [u0 + w, v0], [u0, v0 + h], [u0 + w, v0 + h]];
         let mut v = [Vertex { pos: Vec3::ZERO, color: col, uv: [0.0; 2] }; 4];
         for k in 0..4 {
             v[k].pos = m.transform_point3(Vec3::new(s.corners[k][0], s.corners[k][1], 0.0));
-            v[k].uv = [uvs[k][0] / tw, uvs[k][1] / th];
+            v[k].uv = uvs[k];
         }
-        batch_for(ctx, Some(frame.tex0), s.alpha).quad(v);
+        batch_for(ctx, Some(s.tex0(frame.tex0)), s.alpha).quad(v);
     }
 }
 

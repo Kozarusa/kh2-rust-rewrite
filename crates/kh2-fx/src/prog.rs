@@ -314,6 +314,7 @@ fn trail_init(obj: &mut Obj, p: &Program) {
     obj.mem[o + 4] = 0;
     obj.mem[o + 5] = 1;
     obj.ring.clear();
+    obj.trail_prims.clear();
 }
 
 /// Natural cubic spline second derivatives for unit-spaced knots.
@@ -373,7 +374,11 @@ fn trail_draw(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
             verts[2 * i + edge] = [v.x as i16, v.y as i16, v.z as i16];
         }
     }
-    // Default primitives: white, opaque, quad indices 2i..2i+3.
+    // FUN_00200a20 rewrites the model in place every tick: the color bytes r, g, b of every
+    // primitive to 0xff and the quad indices to 2i..2i+3. The alpha bytes and the texture
+    // coordinates are only written by FUN_002002f8 while the ring fills for the first time and keep
+    // their last values after that (the model is the game's own copy, written in place); the port
+    // keeps them per object in `trail_prims`.
     let mut prims = Vec::new();
     let mut tex0 = 0;
     let mut kind = 6;
@@ -383,22 +388,48 @@ fn trail_draw(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
         for (i, pr) in b.prims.iter().enumerate() {
             let mut q = *pr;
             for c in 0..4 {
-                q.colors[c] = [0xff; 4];
+                q.colors[c] = [0xff, 0xff, 0xff, q.colors[c][3]];
             }
             let s = (2 * i) as u16;
             q.indices = [s, s + 1, s + 2, s + 3];
+            if let Some((alpha, uvs)) = obj.trail_prims.get(prims.len()) {
+                for c in 0..4 {
+                    q.colors[c][3] = alpha[c];
+                }
+                q.uvs = *uvs;
+            }
             prims.push(q);
         }
     }
     let first_pass = obj.mem[st + 5] != 0;
+    // The stationary tail (trailing points equal to their neighbour) is only counted on the first
+    // pass; afterwards the whole trail counts as visible (FUN_002002f8).
+    let mut still = 0;
     if first_pass {
-        // Count the stationary tail (trailing points equal to their neighbour).
-        let mut still = 0;
         let mut i = segs;
         while i > 0 && verts[2 * i] == verts[2 * i - 2] {
             still += 1;
             i -= 1;
         }
+    }
+    // Entry byte +0xf: the trail narrows to its second edge toward the end. Vertex 2i of the first
+    // edge becomes `first * t + second * (1 - t)` (FUN_002fb308) with t going from 1 at the newest
+    // sample down by 1 / visible per sample, not below 0.
+    if u8_at(&p.params, e + 0xf) != 0 {
+        let visible = segs as i32 - still as i32;
+        let step = if visible > 0 { 1.0 / visible as f32 } else { 1.0 };
+        let mut t = 1.0f32;
+        for i in 0..=segs {
+            let (a, b) = (verts[2 * i], verts[2 * i + 1]);
+            let f = |k: usize| (a[k] as f32 * t + b[k] as f32 * (1.0 - t)) as i32 as i16;
+            verts[2 * i] = [f(0), f(1), f(2)];
+            t -= step;
+            if t <= 0.0 {
+                t = 0.0;
+            }
+        }
+    }
+    if first_pass {
         let visible = segs as i32 - still as i32;
         let (mut u, u_end, v_top, v_bottom) = uv_range(&p.params[e..]);
         let (du, da) = if visible < 1 { (0, 0.0) } else { ((u_end - u) / visible, 128.0 / visible as f32) };
@@ -426,6 +457,7 @@ fn trail_draw(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
                 u = next.min(u_end);
             }
         }
+        obj.trail_prims = prims.iter().map(|q| ([q.colors[0][3], q.colors[1][3], q.colors[2][3], q.colors[3][3]], q.uvs)).collect();
     }
     if ctx.running && u8_at(&p.params, e + 0xd) == 0 {
         let h = obj.i32(st) + 1;

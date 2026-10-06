@@ -333,7 +333,7 @@ fn tail3_check(world: bool, count: u8, spacing: f32, rotate: u16) {
         fresh: false,
         restart: false,
         parent: None,
-        ring: Vec::new(),
+        ring: Vec::new(), trail_prims: Vec::new(),
         heap: Vec::new(),
         seed: 0,
     };
@@ -459,7 +459,7 @@ fn mv_yp_eff_matches_the_game() {
     // The axes and the zero cases.
     cases.extend([Vec3::X, -Vec3::X, Vec3::Y, -Vec3::Y, Vec3::Z, -Vec3::Z, Vec3::ZERO, Vec3::new(0.0, 0.0, 3.0), Vec3::new(2.0, 0.0, 0.0), Vec3::new(0.0, 5.0, 1.0)]);
     for v in cases {
-        let mut obj = Obj { group: 0, mem: vec![0; OBJ_SIZE], cursors: vec![0], fresh: false, restart: false, parent: None, ring: Vec::new(), heap: Vec::new(), seed: 0 };
+        let mut obj = Obj { group: 0, mem: vec![0; OBJ_SIZE], cursors: vec![0], fresh: false, restart: false, parent: None, ring: Vec::new(), trail_prims: Vec::new(), heap: Vec::new(), seed: 0 };
         let (w0, w1) = (OBJ_WORK + 0x40, OBJ_WORK + 0x60);
         obj.set_vec3(w1, v);
         // Angles start at a marker so "not touched" shows.
@@ -525,7 +525,7 @@ fn sno_amplitude_matches_the_game() {
     let mut raw = raw_model(2, &[[50, 0, 0], [0, 50, 0], [0, 0, 50]], &[[4096, 0, 0], [0, 4096, 0], [0, 0, 4096]], &[[0, 1, 2]]);
     raw[0..2].copy_from_slice(&3i16.to_le_bytes());
     let dpd = Dpd { particles: vec![], textures: vec![], shapes: vec![], models: vec![crate::omd::Model::parse(&raw)], vsfs: vec![] };
-    let mut obj = Obj { group: 0, mem: vec![0; OBJ_SIZE], cursors: vec![0], fresh: false, restart: false, parent: None, ring: Vec::new(), heap: Vec::new(), seed: 0 };
+    let mut obj = Obj { group: 0, mem: vec![0; OBJ_SIZE], cursors: vec![0], fresh: false, restart: false, parent: None, ring: Vec::new(), trail_prims: Vec::new(), heap: Vec::new(), seed: 0 };
     let (w0, w1, w2) = (OBJ_WORK + 0x40, OBJ_WORK + 0x60, OBJ_WORK + 0x80);
     obj.mem[w1 + 8..w1 + 12].copy_from_slice(&[128, 128, 128, 90]);
     obj.set_mat(w2, Mat4::from_translation(Vec3::new(1.0, 2.0, 300.0)));
@@ -947,7 +947,7 @@ fn sno_entries_and_element_flags_on_the_disc() {
 }
 
 fn sno_obj(amp: f32, m_cam: &Mat4) -> Obj {
-    let mut obj = Obj { group: 0, mem: vec![0; OBJ_SIZE], cursors: vec![0], fresh: false, restart: false, parent: None, ring: Vec::new(), heap: Vec::new(), seed: 0 };
+    let mut obj = Obj { group: 0, mem: vec![0; OBJ_SIZE], cursors: vec![0], fresh: false, restart: false, parent: None, ring: Vec::new(), trail_prims: Vec::new(), heap: Vec::new(), seed: 0 };
     let (w0, w1, w2) = (OBJ_WORK + 0x40, OBJ_WORK + 0x60, OBJ_WORK + 0x80);
     obj.mem[w1 + 8..w1 + 12].copy_from_slice(&[128, 128, 128, 128]);
     obj.set_f32(w0, amp);

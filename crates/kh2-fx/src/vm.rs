@@ -121,6 +121,10 @@ pub(crate) struct Obj {
     pub parent: Option<usize>,
     /// Weapon-trail sample ring (the game allocates it from the effect heap).
     pub ring: Vec<[Vec3; 2]>,
+    /// Weapon trail: the per-primitive vertex alphas and texture coordinates the game writes into
+    /// the DPD model in place while the ring fills for the first time (FUN_002002f8) and that stay
+    /// there afterwards.
+    pub trail_prims: Vec<([u8; 4], [[u16; 2]; 4])>,
     /// Per-program heap blocks (particle pools, tail rings), keyed by program index.
     pub heap: Vec<(usize, crate::progx::Heap)>,
     /// A random 16-bit value drawn when the object is born, for init handlers that call the game's
@@ -336,6 +340,7 @@ impl Effect {
             restart: false,
             parent: None,
             ring: Vec::new(),
+            trail_prims: Vec::new(),
             heap: Vec::new(),
         };
         let id = match self.objs.iter().position(|o| o.is_none()) {

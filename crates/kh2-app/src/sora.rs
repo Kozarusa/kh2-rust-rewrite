@@ -599,8 +599,55 @@ impl Plugin for SoraPlugin {
                     sync_weapon.in_set(Sim::Weapon),
                     (follow_hand, tick).chain().in_set(Sim::Sora),
                     (track_connects, receive_hits, receive_wall_hits).chain().in_set(Sim::SoraHurt),
+                    apply_player_fade.after(Sim::Pose),
                 ),
             );
+    }
+}
+
+/// The material state a faded mesh goes back to.
+#[derive(Component)]
+pub struct FadeBase(AlphaMode);
+
+/// The player's draw fade (`actor+0x834`, driven by the look-around, `OrbitCamera::player_fade`)
+/// applied to Sora's body and weapons. The game multiplies the fade into the object's alpha byte
+/// (`FUN_00191c18` stores `base alpha * FUN_00193270`, and a child object such as a weapon also
+/// multiplies its parent's factor), so the model goes see-through and at 0 is not drawn. Here a
+/// faded mesh switches to alpha blending with the fade as its alpha; at 1 the original alpha
+/// mode comes back.
+pub fn apply_player_fade(
+    cam: Query<&OrbitCamera>,
+    sora: Query<&Sora>,
+    children: Query<&Children>,
+    mut meshes: Query<(Entity, &MeshMaterial3d<StandardMaterial>, Option<&FadeBase>)>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut commands: Commands,
+    mut faded: Local<bool>,
+) {
+    let (Ok(cam), Ok(s)) = (cam.single(), sora.single()) else { return };
+    let fade = cam.player_fade.clamp(0.0, 1.0);
+    if fade >= 1.0 && !*faded {
+        return;
+    }
+    *faded = fade < 1.0;
+    let roots = std::iter::once(s.body).chain(s.weapons.iter().copied());
+    for root in roots {
+        for e in children.iter_descendants(root) {
+            let Ok((entity, handle, base)) = meshes.get_mut(e) else { continue };
+            let Some(mut m) = materials.get_mut(&handle.0) else { continue };
+            if fade < 1.0 {
+                let original = base.map_or(m.alpha_mode, |b| b.0);
+                if base.is_none() {
+                    commands.entity(entity).insert(FadeBase(original));
+                }
+                m.alpha_mode = AlphaMode::Blend;
+                m.base_color.set_alpha(fade);
+            } else if let Some(b) = base {
+                m.alpha_mode = b.0;
+                m.base_color.set_alpha(1.0);
+                commands.entity(entity).remove::<FadeBase>();
+            }
+        }
     }
 }
 

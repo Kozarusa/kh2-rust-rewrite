@@ -18,8 +18,7 @@ returns the table pointer (`actor + 0xaf0`) and looks a record up by key through
 The party controller keeps a pending command (`actor + 0xb44`, run by `FUN_001778e8` once a tick).
 `FUN_00174cf8` runs it. For the attack command (cmd table row 1, Execute 1) the order is:
 
-1. `FUN_001758b0`: key 40 (A344, Retaliating Slash, ability bit 101). Needs a request flag (bit 3)
-   and a charge value (`actor + 0xf8` against `stat + 0x58`) that were not traced. NOT PORTED.
+1. `FUN_001758b0`: key 40 (A344, Retaliating Slash, ability bit 101); the blown press, see "WP-2G2" below.
 2. When the request has flag bit 3: `FUN_00177ea0` (vtable +0x80). If the actor is in an idle range
    (grounded, airborne or blend-to-idle: motion flag word bits 4, 8, 0x10) it first restarts the
    combo counters (`FUN_00176a70`: combo 1, finishers 1). Then the explicit actions, each through
@@ -83,7 +82,7 @@ and the window test `FUN_0019f090` with
 
 Window (`FUN_0019f090`): `min <= dist < max` (record 0x20, 0x24), `angle_min < dot <= angle_max`
 (0x30, 0x34), and `lo < dy <= hi` where `hi` is record 0x28 and `lo` record 0x2c, adjusted by the
-record flags: bit 1 lowers `lo` by the weapon reach (`FUN_0016be20`, see gaps); bit 3 clear adds
+record flags: bit 1 lowers `lo` by the actor's jump height (`FUN_0016be20`, see WP-2G2); bit 3 clear adds
 the point's half height to `hi`, set subtracts it; bit 4 clear subtracts it from `lo`, set adds it.
 
 Group 1 records have the angle window (0.99996, 1]: only the point in the reference direction, that
@@ -139,18 +138,15 @@ Air chain:
   not by repeating the chain.
 
 Range and height gated records: key 33 (A340, bit 97, grounded, target 110 to 250 above within 260;
-the flag bit 1 widens it by the weapon reach), key 36 (A341, bit 98, group 1: any height within
+the flag bit 1 widens it by the jump height), key 36 (A341, bit 98, group 1: any height within
 650; group 2: another enemy 300 to 650 away), key 38 (A342, bit 99, explicit), key 29 (A343,
 bit 100, group 3 finisher), key 40 (A344, bit 101, explicit key 40, not ported).
 
 ## Not ported or not resolved (GAPS)
 
-* The request flag bit 3 of the attack command (inferred set, see above) and the whole of
-  `FUN_001758b0` (key 40, A344): the charge test `actor + 0xf8 < stat + 0x58` and what fills it.
+* The request flag bit 3 of the attack command (inferred set, see above).
 * `FUN_001783d8`, `FUN_00178290`, `FUN_00178108` (other abilities started by the attack button).
-* The wall probe that marks key 1 (`FUN_001cbcf8`, `FUN_0019a8e8`, actor +0x5b0 and +0x810).
-* The weapon reach `FUN_0016be20` adds for record flag bit 1 (keys 33 and 0): it is the first float
-  of the equipped weapon's record (`FUN_001c13b8`, `FUN_001cc1a0`) or `actor + 0x118`. The app uses 0.
+* The wall probe's start-overlap behaviour and polygon handler index, and the source of actor +0x118 (see WP-2G2).
 * The status flag 0x800 case of `FUN_001768b8` (makes finishers impossible).
 * Who sets actor +0x168 bit 0x20 other than range trigger 50 was not looked for.
 * How long the game keeps a pending attack command that was refused (the app keeps it until the
@@ -194,3 +190,82 @@ every 0.3 s):
 * `KH2_ABILITIES=98,100,99` in the air: A341 (key 36, group 1), then A342 (explicit key 38); with
   `KH2_ABILITIES=100` key 29 (A343) is flagged on the third press but key 7 (A333) comes first in the
   table when another enemy is in its window.
+
+## WP-2G2: key 40, wall probe, jump-height reach, hit point, A343
+
+Addresses are SLUS_210.05 function addresses. Labels: verified = read in the code, inferred = follows
+from it but a name or meaning is a guess.
+
+### A344, key 40: a blown actor's press (FUN_001758b0), ported
+It is not an attack-button rule. FUN_00174cf8 runs it first, for every pending command, and it only
+acts while the actor's mover (`actor + 0xc`, word +8) has flag 0x40 and not 0x800 (verified; the movers
+are the blow movers, modes 4, 8, 0x15, 0x21 of FUN_00179798's table; mode 0x2d carries 0x800 and allows
+nothing). Gates, in order (verified): `actor + 0xf8 >= plyr + 0x58` (the record at actor +0x130 is the
+`plyr` row, offset 0x58 is field 22, BlowRecoveryTime; `+0xf8` is the blow's tick counter, zeroed by
+FUN_0019e468 at launch and +1 per tick by FUN_0019e4d8); `actor + 0x7f8` flag 4 clear (FUN_00186580
+sets it with the dead flag; inferred: the actor is out of play). Then command flag bit 1 with ability
+block bit 20 (`block & 0x100000`; ability item 158, Aerial Recovery, verified in the `item` table)
+runs FUN_001759b8: motion 40 (blend 4) and the mover's launch method +8 with a vector built from
+BlowRecoveryV / BlowRecoveryH (`plyr` +0x50/+0x54), not decoded. Otherwise command flag bit 3 runs
+FUN_00176a70 (counters to 1/1, even if nothing starts), looks key 0x28 (40) up and, when it passes
+the availability test, starts it with FUN_00176050. The record is A344, motion id 172, group 0,
+ability bit 101 (items 523 and 273, type 19; USA `ptya`, checked by a test).
+
+App: `Moveset::recovery` (pure, tested) and `sora::blown_press`, called from the Blown state. The
+mapping of the command flags to buttons is inferred: bit 3 (also the attack's request flag, see above)
+is the attack button; the app has one button for both flags, so Aerial Recovery wins when its ability
+bit is set. Aerial Recovery's launch is a stand-in (the flight ends and Sora falls). Nothing sets
+ability bit 20 or 101 unless `KH2_ABILITIES` does.
+
+### Wall probe, key 1 (FUN_001cbcf8 step 4, FUN_0019a8e8): ported with two approximations
+Verified: only on the ground by FUN_0019aa28, for an actor whose mover lacks flag 2 and whose
+`+0x160` lacks flag 0x40, with `+0x810` zero. The vector is the reference direction (to the target,
+else the facing) scaled by `actor + 0x5b0 + plyr[0x2c]` and re-projected into the ground plane by
+FUN_00182e38 (two cross products with the ground normal at `+0x630`, length kept). `+0x5b0` is the
+radius of the body shape (first shape of kind 0 or 4 in the model: FUN_00169af0 via FUN_00188e70 with
+mask 0x11): Sora's is a sphere of radius 90 lifted 115 (`+0x5fc`). `plyr[0x2c]` is field 11,
+AttackJFront, -5.0 in the USA data. FUN_0019a8e8 stores the start (`+0x590` = position) and the
+vector (`+0x5a0`), then FUN_00143840 -> FUN_00164138 sweeps that sphere (start raised by the lift,
+stepped in radius-sized steps through FUN_00163f98) against the polygons of the swept box; the result
+is bit 0 of `+0x600`. So: a sphere of radius 90 swept 85 units forward. A hit flags the key 1 record
+(motion 181, A330, without the air bit, so it is a ground action).
+
+Polygon filter (FUN_00141b50): `(attr & 0xf) != 4`, and FUN_0032e3b8 (table 0x378f7c, assembly) tests
+the polygon word against a mask picked by bits 3..6 of `+0x600`: index 0 and 6 test 0x10
+(PARTY_COLLIDE). Inferred: the handler's third argument is the polygon word and Sora's index is 0.
+The app uses `kh2_map::flags::PARTY_COLLIDE` and the wall class (normal more than 60 degrees from
+vertical), `motor::sweep_wall`.
+
+Approximation (the app's): a contact that is not ahead of the sphere's centre (dot with the direction
+not above 0) is dropped. Without it Sora, who stands 35 from a wall in tt00, touches the 90-radius
+sphere sideways and takes key 1 on every press. What the game's sweep does with polygons it already
+overlaps at the start was not read (FUN_001632b8 is 800 lines).
+
+Check, tt00 start, `KH2_MOVELOG=1`: "wall probe missed" and keys 5, 4, 5, 2 for presses 1 to 4 (the
+ground combo as before). `KH2_MOVELOG` now also logs position, yaw, jump height and the probe result.
+
+### Weapon reach for record flag bit 1 (FUN_0016be20 = FUN_0016bd98): resolved
+It is the actor's jump height, not a weapon value (verified): `actor + 0x118`, replaced when the object
+is a party member (`+0x588` flag 4) whose mover lacks 0x800 by the first float of the `fmab` row for
+the High Jump level (`FUN_001c13b8(status + 0x1cc, 0)` > 0; FUN_001cc1a0 indexes the table named at
+0x37c288, "fmab"). So Sora with High Jump level n gets that row's HighJumpHeight; otherwise `+0x118`
+(inferred to be `prty` JumpHeight, 185 in the USA data; its writer was not found). The window
+subtracts it from the lower bound (FUN_0019f090) and FUN_00176050 adds it to the action's leap range
+(record +0x10). App: `Scene::jump_height`. The earlier wording "weapon reach" was wrong. The action's
+own leap (FUN_00176050 for record +0xc > 0) is not ported (the app's lunge uses `plyr` V0).
+
+### Hit.point (FUN_0018ce18): ported
+`combat::victim_point`: the point of the victim's spheroid (centre = bone matrix x offset raised by
+the shape's lift; radius; the shape's height field as half height, FUN_001894d0) toward the attacker's
+volume point, height clamped (rule in docs/effects-damage.md). The first overlapped hurt shape is used
+(FUN_001b5a58 returns the first matching entry). Deviation: the attacker point is the attack volume's
+base point (`vol.a`, the offset without a lift), not the shape centre the game keeps at record +0x20.
+
+### A343 keyblade at frame ~18: candidates tested
+* Hand socket lag: rejected by code. `Sim::Pose` (animation) runs before `Sim::Sora` (`follow_hand`) in
+  the same tick and `sync_weapon` copies the body's frame before the pose step, so socket and weapon
+  pose come from the same frame; there is no interpolation to lag.
+* Rest-pose bounds: skinned meshes were left to Bevy's frustum culling, which uses the mesh's rest-pose
+  box. `skel::spawn_skinned` now adds `NoFrustumCulling`. Not confirmed by eye (no run showed the
+  missing blade, nobody looked). If the blade still vanishes the next candidate is the renderer's skin
+  transform, i.e. shader work.

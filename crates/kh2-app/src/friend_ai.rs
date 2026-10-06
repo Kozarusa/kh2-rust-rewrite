@@ -142,6 +142,7 @@ fn friend_update(
             player_motion_done: true,
             paired: &paired,
             player_model: 0,
+            mission_counters: None,
         };
         let handle = obj.handle;
         let mut host = BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() };

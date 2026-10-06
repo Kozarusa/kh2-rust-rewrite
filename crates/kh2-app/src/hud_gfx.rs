@@ -170,6 +170,10 @@ pub struct Node {
     /// Logic ticks the label has been drawn for: the text engine's typewriter budget (the game's
     /// message object counts its draws at +0x1c). Reset when a new label is set.
     pub label_time: f32,
+    /// Follow-up group (the game's object field +0x17c, -1 when unset): when a group that plays a
+    /// limited number of times has finished, the object switches to this group and steps it once
+    /// (0x138aa8). Set by `HudScene::set_group_then`; a looping group never hands over.
+    pub next: Option<usize>,
     /// Last anchor point the group's anchor animation produced.
     anchor: [f32; 2],
     base: [f32; 2],
@@ -193,6 +197,7 @@ impl Node {
             label: None,
             label_fade: 1.0,
             label_time: 0.0,
+            next: None,
             anchor: [0.0; 2],
             base: [0.0; 2],
             origin: [0.0; 2],
@@ -223,8 +228,15 @@ impl HudScene {
         }
     }
 
+    /// Starts `group` and makes `next` its follow-up (the game writes +0x17c after the switch, as
+    /// 0x157040 does for the circle and 0x153ee8 for the face).
+    pub fn set_group_then(&mut self, node: usize, group: usize, next: usize) {
+        self.set_group(node, group);
+        self.nodes[node].next = Some(next);
+    }
+
     /// Advances all players by real time at the game's 60 Hz logic rate.
-    fn advance(&mut self, dt: f32) {
+    pub(crate) fn advance(&mut self, dt: f32) {
         self.acc = (self.acc + dt).min(0.25);
         while self.acc >= STEP {
             self.acc -= STEP;
@@ -232,6 +244,13 @@ impl HudScene {
                 match n.freeze {
                     Some(f) => n.player.seek(f),
                     None => n.player.tick(1.0),
+                }
+                // 0x138aa8: a finished group hands over to the follow-up, which is stepped once.
+                if n.player.finished()
+                    && let (Some(g), Some(f)) = (n.next.take(), self.files.get(n.file))
+                {
+                    n.player.set_group(&f.seq, g);
+                    n.player.tick(1.0);
                 }
                 if n.label.is_some() && n.visible {
                     n.label_time += 1.0;

@@ -5,6 +5,7 @@
 //! and runs clockwise; points beyond 60 extend a bar to the left at 3 pixels each. Three layers
 //! use the same rule: maximum HP (dark), the HP before the last hit (the trail) and the current
 //! HP (green). HP at or below a quarter of the maximum switches the panel to its danger look.
+//! A hit flashes the circle and shows Sora's hurt face once, then the face of the panel's state.
 //! MP: a blue bar one pixel per point.
 
 use std::f32::consts::{FRAC_PI_2, PI};
@@ -28,14 +29,18 @@ const BAR_PER_HP: f32 = 3.0;
 /// Width of the bar sprites (they are drawn 100 pixels long and scaled).
 const BAR_SPRITE: f32 = 100.0;
 
-/// Animation groups of the gauge file, by the roles in the panel.
+/// Animation groups of the gauge file, by the roles in the panel. The `[usize; 3]` sets are indexed
+/// by the panel state (`PanelState`): the table at 0x358970 (read by 0x1558a0) and the face switch 0x153dd0.
 mod g {
-    pub const CIRCLE: [usize; 2] = [137, 132];
-    pub const RING_BACK: [usize; 2] = [121, 122];
+    pub const CIRCLE: [usize; 3] = [137, 132, 137];
+    /// The circle on a hit: 135 for an ordinary hit (event 1, 0x1571d0). The game uses 134 and 133 for
+    /// the two other hit kinds (events 2 and 3, 0x1571e8 and 0x157200), which this port does not tell apart.
+    pub const CIRCLE_HIT: usize = 135;
+    pub const RING_BACK: [usize; 3] = [121, 122, 121];
     pub const RING_DEFAULT: usize = 121;
     pub const RING_TRAIL: usize = 126;
     pub const RING_GREEN: usize = 128;
-    pub const BAR_BACK: [usize; 2] = [124, 125];
+    pub const BAR_BACK: [usize; 3] = [124, 125, 124];
     pub const BAR_TRAIL: usize = 127;
     pub const BAR_GREEN: usize = 129;
     pub const CAP: usize = 123;
@@ -43,8 +48,61 @@ mod g {
     pub const MP_BACK: usize = 119;
     pub const MP_FILL: usize = 115;
     pub const MP_CAP: usize = 120;
-    /// Sora's face file: normal, and the two red variants the game uses at low HP.
-    pub const FACE: [usize; 2] = [3, 0];
+    /// Sora's face file by panel state (0x153dd0): 3 the normal face, 0 the tired face pulsing red
+    /// (danger), 2 the eyes-closed face in red (knocked out).
+    pub const FACE: [usize; 3] = [3, 0, 2];
+    /// The hurt face (teeth gritted, red fading to normal over 30 frames, held 30 more; plays once):
+    /// started on every hit by 0x153ee8 with the state's face as its follow-up.
+    pub const FACE_HIT: usize = 1;
+}
+
+/// The panel's state (panel +0x18, set every frame by 0x157d40): knocked out when the actor's flag
+/// +0x7f8 bit 4 is set (0x166710), otherwise danger when `hp <= max >> 2` (0x1666e8 -> 0x1a0be0).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PanelState {
+    Normal = 0,
+    Danger = 1,
+    KnockedOut = 2,
+}
+
+impl PanelState {
+    pub fn of(hp: i32, max: i32, ko: bool) -> PanelState {
+        if ko {
+            PanelState::KnockedOut
+        } else if hp <= max >> 2 {
+            PanelState::Danger
+        } else {
+            PanelState::Normal
+        }
+    }
+}
+
+/// What reaches the panel in a frame. The game's damage handler (0x175340) posts event 1 to the
+/// member's panel (0x13dd20; events 2 and 3 for two other hit kinds) and the HP change code
+/// (0x186238) posts event 4 when a value rises (0x13de10); the panel runs them at the start of its
+/// frame (0x157e48). Without an event, a change of the danger state switches the groups (0x1572a0,
+/// 0x157310 through 0x157230). The port sees Sora's HP only, so a drop stands for a hit and a rise
+/// for a heal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PanelEvent {
+    None,
+    Hit,
+    Heal,
+    Switch,
+}
+
+impl PanelEvent {
+    pub fn of(last_hp: i32, hp: i32, last: PanelState, now: PanelState) -> PanelEvent {
+        if hp < last_hp {
+            PanelEvent::Hit
+        } else if hp > last_hp {
+            PanelEvent::Heal
+        } else if last != now {
+            PanelEvent::Switch
+        } else {
+            PanelEvent::None
+        }
+    }
 }
 
 /// Which `HudScene` file Sora's face is (set when the files are loaded).
@@ -157,7 +215,9 @@ pub struct SoraPanel {
     bar: [usize; 3],
     cap: usize,
     mp: [usize; 4],
-    danger: bool,
+    state: Option<PanelState>,
+    /// The face group last logged (`hud: portrait face group N`).
+    face_group: Option<usize>,
     last_hp: i32,
     lag_hp: i32,
 }
@@ -182,9 +242,11 @@ pub fn update(
     mut recharge: ResMut<MpRecharge>,
     drive_tables: Res<DriveTables>,
     sora: Query<&Sora>,
+    time: Res<Time>,
     mut demo: Local<bool>,
 ) {
     let Ok(s) = sora.single() else { return };
+    let now = time.elapsed_secs();
     if !*demo {
         *demo = true;
         if let Some(d) = drive_test() {
@@ -204,29 +266,14 @@ pub fn update(
     if let Some([a, b, c, d]) = test_values() {
         (hp, max, mp, mp_max) = (a, b, c, d);
     }
+    if let Some(h) = hp_timeline(now) {
+        hp = h.clamp(0, max);
+    }
     if !panel.built {
         build(&mut scene, &mut panel, face.0, hp);
     }
     let p = &mut *panel;
-    // Low HP: at or below a quarter of the maximum (the game's integer `hp <= max >> 2`).
-    let danger = hp <= max >> 2;
-    if danger != p.danger {
-        p.danger = danger;
-        let m = danger as usize;
-        scene.set_group(p.circle, g::CIRCLE[m]);
-        scene.set_group(p.ring[0], g::RING_BACK[m]);
-        scene.set_group(p.bar[0], g::BAR_BACK[m]);
-        if let Some(f) = p.face {
-            scene.set_group(f, g::FACE[m]);
-        }
-    }
-    // On a hit the trail starts from the HP before it; on a heal it snaps to the new HP.
-    if hp != p.last_hp {
-        p.lag_hp = if p.last_hp < hp { hp } else { p.last_hp };
-        p.last_hp = hp;
-        scene.set_group(p.ring[1], g::RING_TRAIL);
-        scene.set_group(p.bar[1], g::BAR_TRAIL);
-    }
+    panel_frame(&mut scene, p, hp, max, ko_test());
     for (layer, value) in [(0, max), (1, p.lag_hp), (2, hp)] {
         let (ring, bar) = (p.ring[layer], p.bar[layer]);
         match fill(value) {
@@ -328,6 +375,77 @@ fn update_drive(scene: &mut HudScene, p: &mut SoraPanel, d: &DriveGauge, tables:
     }
 }
 
+/// One frame of the panel's reaction to Sora's HP: the event handlers run by 0x157e48 (hit 0x157040,
+/// heal 0x157108) or, without an event, the state switch 0x157230. Then the HP trail (0x1574d8).
+pub(crate) fn panel_frame(scene: &mut HudScene, p: &mut SoraPanel, hp: i32, max: i32, ko: bool) {
+    let state = PanelState::of(hp, max, ko);
+    let s = state as usize;
+    let last = p.state.unwrap_or(PanelState::Normal);
+    match PanelEvent::of(p.last_hp, hp, last, state) {
+        PanelEvent::Hit => {
+            // The circle flashes red and shakes, then returns to the state's circle (its follow-up
+            // at +0x1afc); the back layers take the state's groups; the face shows the hurt face once
+            // and then the state's face (0x153ee8 with mode 1: group 1, follow-up from 0x153dd0).
+            scene.set_group_then(p.circle, g::CIRCLE_HIT, g::CIRCLE[s]);
+            scene.set_group(p.ring[0], g::RING_BACK[s]);
+            scene.set_group(p.bar[0], g::BAR_BACK[s]);
+            if let Some(f) = p.face {
+                scene.set_group_then(f, g::FACE_HIT, g::FACE[s]);
+            }
+        }
+        // A heal (0x157108) sets the same groups as the state switch. The game skips the circle on the
+        // first heal event after the panel is built (flag +0x3b8b); when that first event comes in the
+        // game was not traced, and the port has no start-up event, so every heal resets the circle here.
+        PanelEvent::Heal | PanelEvent::Switch => {
+            scene.set_group(p.circle, g::CIRCLE[s]);
+            scene.set_group(p.ring[0], g::RING_BACK[s]);
+            scene.set_group(p.bar[0], g::BAR_BACK[s]);
+            if let Some(f) = p.face {
+                scene.set_group(f, g::FACE[s]);
+            }
+        }
+        PanelEvent::None => {}
+    }
+    p.state = Some(state);
+    // On a hit the trail starts from the HP before it; on a heal it snaps to the new HP.
+    if hp != p.last_hp {
+        p.lag_hp = if p.last_hp < hp { hp } else { p.last_hp };
+        p.last_hp = hp;
+        scene.set_group(p.ring[1], g::RING_TRAIL);
+        scene.set_group(p.bar[1], g::BAR_TRAIL);
+    }
+    // Log every face change, including the hand-over from the hurt face to the state's face.
+    if let Some(f) = p.face {
+        let group = scene.nodes[f].player.group;
+        if group != p.face_group {
+            p.face_group = group;
+            if let Some(gr) = group {
+                info!("hud: portrait face group {gr} (state {state:?}, hp {hp}/{max})");
+            }
+        }
+    }
+}
+
+/// `KH2_HUDHP=<s>:<hp>,<s>:<hp>,...`: from each time (seconds since start) on, the panel shows that HP
+/// instead of Sora's (display only), so a run can show a hit, the danger state and a heal at known
+/// times. Values are clamped to Sora's maximum.
+fn hp_timeline(now: f32) -> Option<i32> {
+    static STEPS: std::sync::OnceLock<Vec<(f32, i32)>> = std::sync::OnceLock::new();
+    let steps = STEPS.get_or_init(|| {
+        let v = std::env::var("KH2_HUDHP").unwrap_or_default();
+        v.split(',').filter_map(|s| s.split_once(':')).filter_map(|(t, h)| Some((t.trim().parse().ok()?, h.trim().parse().ok()?))).collect()
+    });
+    steps.iter().filter(|(t, _)| *t <= now).max_by(|a, b| a.0.total_cmp(&b.0)).map(|&(_, h)| h)
+}
+
+/// `KH2_HUDKO=1`: show the knocked-out state (the actor's +0x7f8 bit 4, which the port does not
+/// track: the death path that sets it, 0x186530 -> the actor's method +0x5c -> 0x186568 -> 0x186580,
+/// is not ported). Display only.
+fn ko_test() -> bool {
+    static KO: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *KO.get_or_init(|| std::env::var("KH2_HUDKO").is_ok_and(|v| v == "1"))
+}
+
 fn recharge_test() -> Option<MpRecharge> {
     let v = std::env::var("KH2_HUDMPRECHARGE").ok()?;
     let mut it = v.split(':').filter_map(|x| x.parse::<f32>().ok());
@@ -398,4 +516,107 @@ fn build(scene: &mut HudScene, p: &mut SoraPanel, face_file: Option<usize>, hp: 
     p.last_hp = hp;
     p.lag_hp = hp;
     p.built = true;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::hud_gfx::SeqFile;
+    use kh2_image::seqd::{Anim, AnimGroup, Seqd};
+
+    /// A sequence of `n` groups, each one animation over frames 0..=9 that loops forever, except
+    /// the listed `(group, plays, frames)` (shaped like the real files: the face's group 1 plays once
+    /// over 60 frames, the gauge's circle 135 once over 31).
+    fn seq(n: usize, once: &[(usize, u16, i32)]) -> SeqFile {
+        let mut s = Seqd::default();
+        for i in 0..n {
+            let (loops, frames) = once.iter().find(|o| o.0 == i).map(|o| (o.1, o.2)).unwrap_or((0, 10));
+            s.anims.push(Anim { frame_end: frames - 1, ..Anim::default() });
+            s.groups.push(AnimGroup { first: i, count: 1, loops, loop_start: frames - 1, ..AnimGroup::default() });
+        }
+        SeqFile { seq: s, width: 1, height: 1, linear: Handle::default(), nearest: Handle::default() }
+    }
+
+    fn panel() -> (HudScene, SoraPanel, usize) {
+        let mut scene = HudScene::default();
+        scene.files = vec![seq(1, &[]), seq(160, &[(g::CIRCLE_HIT, 1, 31)]), seq(4, &[(g::FACE_HIT, 1, 60)])];
+        let mut p = SoraPanel::default();
+        build(&mut scene, &mut p, Some(2), 20);
+        let face = p.face.unwrap();
+        (scene, p, face)
+    }
+
+    fn ticks(scene: &mut HudScene, n: usize) {
+        for _ in 0..n {
+            scene.advance(1.0 / 60.0);
+        }
+    }
+
+    #[test]
+    fn panel_state_follows_the_game_rule() {
+        // 0x157d40: knocked out first, then danger at hp <= max >> 2 (integer shift), else normal.
+        assert_eq!(PanelState::of(5, 20, false), PanelState::Danger);
+        assert_eq!(PanelState::of(6, 20, false), PanelState::Normal);
+        assert_eq!(PanelState::of(4, 18, false), PanelState::Danger);
+        assert_eq!(PanelState::of(5, 18, false), PanelState::Normal);
+        assert_eq!(PanelState::of(20, 20, true), PanelState::KnockedOut);
+        assert_eq!(g::FACE, [3, 0, 2]);
+    }
+
+    #[test]
+    fn a_hit_shows_the_hurt_face_once_then_the_state_face() {
+        let (mut scene, mut p, face) = panel();
+        let group = |scene: &HudScene, n: usize| scene.nodes[n].player.group;
+        panel_frame(&mut scene, &mut p, 20, 20, false);
+        assert_eq!(group(&scene, face), Some(3));
+        // A hit that keeps HP above a quarter: hurt face (group 1) and the circle's hit flash (135).
+        panel_frame(&mut scene, &mut p, 15, 20, false);
+        assert_eq!(group(&scene, face), Some(g::FACE_HIT));
+        assert_eq!(group(&scene, p.circle), Some(g::CIRCLE_HIT));
+        // The flash is 31 frames, played once: then the circle's state group.
+        ticks(&mut scene, 31);
+        assert_eq!(group(&scene, p.circle), Some(g::CIRCLE_HIT));
+        ticks(&mut scene, 1);
+        assert_eq!(group(&scene, p.circle), Some(137));
+        // The hurt face is 60 frames: it hands over to the normal face on the 61st tick.
+        ticks(&mut scene, 28);
+        assert_eq!(group(&scene, face), Some(g::FACE_HIT));
+        ticks(&mut scene, 1);
+        assert_eq!(group(&scene, face), Some(3));
+        // A hit into danger: the hurt face first, then the danger face; the back layers turn red at once.
+        panel_frame(&mut scene, &mut p, 4, 20, false);
+        assert_eq!(group(&scene, face), Some(g::FACE_HIT));
+        assert_eq!(group(&scene, p.ring[0]), Some(122));
+        ticks(&mut scene, 61);
+        assert_eq!(group(&scene, face), Some(0));
+        assert_eq!(group(&scene, p.circle), Some(132));
+        // No change: nothing restarts.
+        panel_frame(&mut scene, &mut p, 4, 20, false);
+        assert_eq!(group(&scene, face), Some(0));
+        // A heal out of danger switches straight to the normal face.
+        panel_frame(&mut scene, &mut p, 20, 20, false);
+        assert_eq!(group(&scene, face), Some(3));
+        assert_eq!(group(&scene, p.circle), Some(137));
+        // A heal during the hurt face cuts it short.
+        panel_frame(&mut scene, &mut p, 10, 20, false);
+        ticks(&mut scene, 5);
+        panel_frame(&mut scene, &mut p, 12, 20, false);
+        assert_eq!(group(&scene, face), Some(3));
+    }
+
+    #[test]
+    fn danger_without_a_hit_switches_the_face_directly() {
+        // A panel built at low HP takes the danger groups on its first frame (0x157230).
+        let mut scene = HudScene::default();
+        scene.files = vec![seq(1, &[]), seq(160, &[]), seq(4, &[])];
+        let mut p = SoraPanel::default();
+        build(&mut scene, &mut p, Some(2), 3);
+        panel_frame(&mut scene, &mut p, 3, 20, false);
+        assert_eq!(scene.nodes[p.face.unwrap()].player.group, Some(0));
+        assert_eq!(scene.nodes[p.circle].player.group, Some(132));
+        // The knocked-out state: face group 2, normal circle (the table's third column).
+        panel_frame(&mut scene, &mut p, 3, 20, true);
+        assert_eq!(scene.nodes[p.face.unwrap()].player.group, Some(2));
+        assert_eq!(scene.nodes[p.circle].player.group, Some(137));
+    }
 }

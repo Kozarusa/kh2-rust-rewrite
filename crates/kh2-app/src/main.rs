@@ -25,6 +25,7 @@ mod hud;
 mod limit;
 mod motor;
 mod reaction_cmd;
+mod reaction_parts;
 mod reaction_rules;
 mod schedule;
 mod skel;

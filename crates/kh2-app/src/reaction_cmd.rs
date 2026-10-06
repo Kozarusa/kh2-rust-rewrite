@@ -33,6 +33,7 @@ use kh2_tables::tables as t;
 
 use crate::assets::Disc;
 use crate::enemy::Enemy;
+use crate::reaction_parts::{self as parts, Table};
 use crate::schedule::Sim;
 use crate::skel::Animator;
 use crate::sora::{Sora, State};
@@ -112,6 +113,9 @@ pub struct CmdRow {
     pub flags: u32,
     pub disable_form: u16,
     pub dist_range: u16,
+    /// Offer cone: the player must face the target within this dot product (FUN_0019cb70; -1 is off).
+    pub range: f32,
+    pub priority: u8,
     pub message_id: i32,
     pub cmd_action: u8,
     pub reaction_count: u16,
@@ -125,6 +129,8 @@ impl From<&t::Cmd> for CmdRow {
             flags: c.flags,
             disable_form: c.disable_form,
             dist_range: c.dist_range,
+            range: c.range,
+            priority: c.priority,
             message_id: c.message_id,
             cmd_action: c.cmd_action,
             reaction_count: c.reaction_count,
@@ -246,9 +252,23 @@ struct AcceptPress(bool);
 #[derive(Resource)]
 struct Log(bool);
 
+/// `KH2_REACTION_FAKE_ON=<enemy name>` limits the harness offer to that kind (Soldier is the one whose
+/// script answers command 34).
+fn fake_on() -> Option<String> {
+    std::env::var("KH2_REACTION_FAKE_ON").ok().filter(|v| !v.is_empty())
+}
+
 /// `KH2_REACTION_FAKE=<command id>`: a harness offer from every living enemy.
 #[derive(Resource)]
 struct FakeOffer(Option<u16>);
+
+/// The collision tables of the enemies and the player's body volume (docs/limits-reactions.md, the
+/// native source of reaction commands).
+#[derive(Resource, Default)]
+struct Parts {
+    by_kind: HashMap<&'static str, Table>,
+    player: Option<parts::Rec>,
+}
 
 pub struct ReactionPlugin;
 
@@ -263,7 +283,17 @@ impl Plugin for ReactionPlugin {
             return;
         };
         let log = std::env::var("KH2_REACTIONLOG").is_ok_and(|v| v != "0");
+        let mut tables = Parts::default();
+        if let Some(d) = app.world().get_resource::<Disc>() {
+            for (kind, model) in [("Shadow", "M_EX020"), ("Soldier", "M_EX010")] {
+                if let Some(t) = d.read(&format!("obj/{model}.mdlx")).and_then(|f| Table::from_mdlx(&f)) {
+                    tables.by_kind.insert(kind, t);
+                }
+            }
+            tables.player = d.read("obj/P_EX100.mdlx").and_then(|f| Table::from_mdlx(&f)).and_then(|t| t.first(parts::TYPE_BODY).copied());
+        }
         app.insert_resource(ReactionRules { cmds })
+            .insert_resource(tables)
             .insert_resource(Log(log))
             .insert_resource(FakeOffer(std::env::var("KH2_REACTION_FAKE").ok().and_then(|v| v.trim().parse().ok())))
             .init_resource::<ReactionOffer>()
@@ -296,6 +326,7 @@ fn offer(
     rules: Res<ReactionRules>,
     log: Res<Log>,
     fake: Res<FakeOffer>,
+    tables: Res<Parts>,
     mut slot: ResMut<ReactionOffer>,
     sora: Query<(&Sora, &Transform)>,
     enemies: Query<(Entity, &Enemy, &Transform)>,
@@ -309,12 +340,21 @@ fn offer(
     if s.hp <= 0 || matches!(s.state, State::Down | State::Viewer) {
         return;
     }
+    // The native candidates compete by the row's priority and then by distance (FUN_0019c520): a
+    // candidate replaces the best one when its priority is higher, or equal and it is nearer.
+    let mut best: Option<(u8, f32)> = None;
+    let s_yaw = st.rotation.to_euler(EulerRot::YXZ).0;
     for (e, en, tr) in &enemies {
         let Ok(a) = anims.get(en.body) else { continue };
+        if let (Some(table), Some(body)) = (tables.by_kind.get(en.kind.name), tables.player.as_ref())
+            && en.alive()
+        {
+            native_offers(&rules, table, body, a, (e, tr), (st.translation / SCALE, s_yaw), &mut best, &mut slot.0);
+        }
         let mut found = a.triggers().map(|tg| offers_at(tg, a.gframe())).unwrap_or_default();
         // Harness: every living enemy offers this command while it plays any motion (no enemy on the
         // disc that the app can spawn offers one; this exercises the offer and accept path).
-        if let Some(c) = fake.0.filter(|_| en.alive()) {
+        if let Some(c) = fake.0.filter(|_| en.alive() && fake_on().is_none_or(|k| k == en.name)) {
             found.push(Offer { cmd: c, pos: 0 });
         }
         for o in found {
@@ -330,6 +370,65 @@ fn offer(
             Some(a) => info!("reaction: offered command {} (message {}) by {:?}, status {:?}", a.cmd, a.message, a.from, a.status),
             None => info!("reaction: offer withdrawn"),
         }
+    }
+}
+
+/// The native offer of one enemy (FUN_0019cb70): every enabled reaction part (`reaction_parts`) whose
+/// volume overlaps the player's body volume offers its command. The row's Flags decide first
+/// (FUN_0019cf58: bit 4 lets it show in battle, taken as on in the app; bit 6 needs the trigger window
+/// of the player's own motion, id 25 or 26, which the app does not read: those rows are never offered
+/// [GAP]); the Range column is the cone test of FUN_0019c868 (the player must face the enemy within that
+/// dot product; -1 is off). The candidate replaces the best so far when its priority is higher, or equal
+/// and it is nearer (FUN_0019c520); the lock-on distance bonus of FUN_0019c868 is not applied [GAP].
+#[allow(clippy::too_many_arguments)]
+fn native_offers(
+    rules: &ReactionRules,
+    table: &Table,
+    body: &parts::Rec,
+    anim: &Animator,
+    (e, tr): (Entity, &Transform),
+    (player_pos, player_yaw): (Vec3, f32),
+    best: &mut Option<(u8, f32)>,
+    slot: &mut Option<Active>,
+) {
+    let (mut on, mut off) = (Vec::new(), Vec::new());
+    if let Some(tg) = anim.triggers() {
+        // Range triggers 4 and 5 enable and disable collision parts while they cover the frame.
+        for r in tg.active(anim.gframe()) {
+            match (r.id, r.params.first()) {
+                (4, Some(&p)) => on.push(p),
+                (5, Some(&p)) => off.push(p),
+                _ => {}
+            }
+        }
+    }
+    let Some(player) = parts::shape_of(body, player_pos, player_yaw) else { return };
+    let (epos, eyaw) = (tr.translation / SCALE, tr.rotation.to_euler(EulerRot::YXZ).0);
+    for r in table.reaction_parts() {
+        if !parts::part_usable(table, r.part, &on, &off) || r.id == 0x83 {
+            continue;
+        }
+        let Some(c) = rules.cmd(r.id) else { continue };
+        if c.flags >> 6 & 1 != 0 {
+            continue;
+        }
+        let Some(shape) = parts::shape_of(r, epos, eyaw) else { continue };
+        if parts::overlaps(&shape, &player) != Some(true) {
+            continue;
+        }
+        let dist = (shape.center - player_pos).length();
+        if best.is_some_and(|(p, d)| c.priority < p || (c.priority == p && d <= dist)) {
+            continue;
+        }
+        let mut st = status(&rules.cmds, c, &Ctx { distance: (epos - player_pos).with_y(0.0).length(), ..Default::default() });
+        if st == Status::Available && c.range > -1.0 {
+            let face = Vec3::new(player_yaw.sin(), 0.0, player_yaw.cos());
+            if (epos - player_pos).normalize_or_zero().dot(face) < c.range {
+                st = Status::TooFar;
+            }
+        }
+        *best = Some((c.priority, dist));
+        *slot = Some(Active { cmd: r.id, pos: r.part as i16, from: e, status: st, message: c.message_id as u32 });
     }
 }
 
@@ -417,7 +516,7 @@ mod tests {
     }
 
     fn mk(flags: u32, disable: u16, dist: u16) -> CmdRow {
-        CmdRow { id: 900, execute: 900, flags, disable_form: disable, dist_range: dist, message_id: 0, cmd_action: 0, reaction_count: 0 }
+        CmdRow { id: 900, execute: 900, flags, disable_form: disable, dist_range: dist, range: -1.0, priority: 100, message_id: 0, cmd_action: 0, reaction_count: 0 }
     }
 
     #[test]

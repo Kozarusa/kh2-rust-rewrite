@@ -145,6 +145,25 @@ impl MagicData {
     }
 }
 
+/// FUN_001a0240 (the MP refill of the form start, FUN_001a04b0): a running MP charge ends first
+/// (FUN_001a05d0 tests the total +0x1c0; FUN_001a05a8 clears both times and refills MP), then MP is
+/// raised by its maximum (FUN_001a0210 -> FUN_001a0180, clamped), i.e. set to the maximum. Returns
+/// whether a charge was ended. `charge` may be `None` when the magic system is not running.
+pub fn refill_mp(charge: Option<&mut Charge>, mp: &mut i32, max_mp: i32) -> bool {
+    let ended = match charge {
+        Some(c) if c.total > 0.0 => {
+            *c = Charge::default();
+            true
+        }
+        _ => false,
+    };
+    *mp = max_mp;
+    if ended {
+        mlog!("magic: MP refill (FUN_001a0240): MP charge ended, MP {max_mp}");
+    }
+    ended
+}
+
 /// The command menu as this module drives it: which page is open and the cursors.
 #[derive(Default, Debug, Clone)]
 pub struct MenuState {
@@ -165,6 +184,19 @@ pub struct MagicState {
     next_group: u32,
     shots: Vec<Shot>,
     strikes: Vec<Strike>,
+    /// The cast's target records for the turn triggers of its motion (see `CastTurn`).
+    turn: Option<CastTurn>,
+}
+
+/// What the turn triggers of a cast motion read (FUN_00188030 cases 22 and 28): the command's target
+/// record (+0x9f4; `own` when it names the caster) and the lock-on controller's mode-1 target that
+/// FUN_00179470 set (+0xb40: FUN_0019b3f0 with 1). Kept while the cast motion plays.
+#[derive(Clone, Copy, Debug)]
+struct CastTurn {
+    motion: Option<usize>,
+    target: Option<Entity>,
+    own: bool,
+    lock_mode1: Option<Entity>,
 }
 
 /// A Thunder strike: the request thread at word 0x2da of THUNDER_*.mag (block +0x20 the place, +0x48
@@ -215,6 +247,8 @@ struct Cast {
     pax: Option<Arc<LoadedPax>>,
     /// The cast motion's slot: event 20 waits while it plays (host 1.15 `motion_state`).
     motion: Option<usize>,
+    /// The motion id the cast asked for (the word frame trigger 17's parameter is compared with).
+    motion_id: u16,
     /// Element started by event 20 ([g]+0x1c), for event 21 to stop.
     charge_fx: Option<u16>,
     step: Step,
@@ -248,6 +282,8 @@ struct SpellAttack {
     /// It hit a target (flags 8 / 0x10 of the attack object [inferred]) or terrain (0x200 [inferred]).
     hit_any: bool,
     wall: bool,
+    /// The spell's effect file: the hit spark comes from it (`fx::SpellHit`).
+    pax: Option<Arc<LoadedPax>>,
 }
 
 fn setup(
@@ -424,18 +460,28 @@ fn menu(
     cm.pages = pages;
 }
 
-/// The effect position of an element bound to `owner` (host 0.53, FUN_001d9d00: the bind record's
-/// position): the matrix the element's bone names (FUN_0016aa18) times the element's own translation
-/// (game axes, Y and Z flipped). Bones 0x4003 / 0x4004 are the weapon of hand 0 / 1 (FUN_0016ae50),
-/// moved along its x axis by a length FUN_0016ae50 returns [GAP: the length is not applied]; every
-/// other bone number is taken as the object's own matrix [inferred for 0x4001 and 0x4009].
-fn element_position(pax: &LoadedPax, id: u16, owner: Mat4, weapons: &[Mat4]) -> Vec3 {
+/// The caster's object frames 0x4000..=0x4009 this tick (FUN_0016aa18 through `fx::object_bone`), by
+/// `bone - 0x4000`.
+type Frames = [Mat4; 10];
+
+fn object_frames(anims: &Query<&mut Animator>, locals: &Query<(&Transform, Option<&ChildOf>)>, body: Entity, weapons: &[Entity]) -> Frames {
+    let owner_m = fx::world_now(body, locals);
+    let Ok(anim) = anims.get(body) else { return [owner_m; 10] };
+    let hands: Vec<Option<fx::ObjectFrame>> = weapons.iter().map(|w| anims.get(*w).ok().map(|a| fx::ObjectFrame::of(a, fx::world_now(*w, locals)))).collect();
+    let owner = fx::ObjectFrame::of(anim, owner_m);
+    std::array::from_fn(|k| fx::object_bone(0x4000 + k as u16, &owner, &hands, true))
+}
+
+/// The effect position of an element bound to the caster (host 0.53, FUN_001d9d00: the bind record's
+/// position): the matrix the element's bone names (FUN_0016aa18, `fx::object_bone` for the numbers
+/// with 0x4000: 0x4003 is the keyblade's blade moved out by its length) times the element's own
+/// translation (game axes, Y and Z flipped). A plain bone number is taken as the object's matrix
+/// [GAP: no spell element of the four files uses one].
+fn element_position(pax: &LoadedPax, id: u16, frames: &Frames) -> Vec3 {
+    let owner = frames[0];
     let Some(e) = pax.pax.elements_for(id).next() else { return owner.transform_point3(Vec3::ZERO) };
     let t = e.translation;
-    let m = match e.bone {
-        0x4003 | 0x4004 => weapons.get((e.bone - 0x4003) as usize).copied().unwrap_or(owner),
-        _ => owner,
-    };
+    let m = if e.bone & 0x4000 != 0 { frames.get((e.bone as usize) & 0xf).copied().unwrap_or(owner) } else { owner };
     m.transform_point3(Vec3::new(t[0], -t[1], -t[2]))
 }
 
@@ -471,7 +517,7 @@ fn run(
     fighters: Query<(Entity, &Fighter, &GlobalTransform)>,
     gts: Query<&GlobalTransform>,
     mut running: Running,
-    mut hits: MessageWriter<Hit>,
+    (mut hits, mut spell_hits, mut voices): (MessageWriter<Hit>, MessageWriter<fx::SpellHit>, MessageWriter<crate::audio::SoraVoice>),
     enemies: Query<&crate::enemy::Enemy>,
     mut recharge: ResMut<crate::hud::hud_gauge::MpRecharge>,
 ) {
@@ -480,24 +526,24 @@ fn run(
     let st = &mut *st;
     let form = drive.as_ref().map_or(0, |d| d.form);
 
-    // MP charge (FUN_00175f48 each frame; the regeneration multiplier is the block's +0x34). An MP
-    // refill from outside (the drive form start, FUN_001a04b0 -> FUN_001a0240) ends the charge.
+    // MP charge (FUN_00175f48 each frame; the regeneration multiplier is the block's +0x34). The
+    // drive form start ends it through `refill_mp` (FUN_001a0240).
     if st.charge.active() {
-        if s.mp > 0 {
-            mlog!("magic: MP refilled from outside ({}): charge ended", s.mp);
-            st.charge = Charge::default();
-        } else {
-            let regen = block.as_ref().map_or(1.0, |b| b.block().mp_regen);
-            if st.charge.tick(regen) {
-                s.mp = game.sora_max_mp;
-                mlog!("magic: MP charge over: MP {}", s.mp);
-            }
+        let regen = block.as_ref().map_or(1.0, |b| b.block().mp_regen);
+        if st.charge.tick(regen) {
+            s.mp = game.sora_max_mp;
+            mlog!("magic: MP charge over: MP {}", s.mp);
         }
     }
     recharge.progress = st.charge.left;
     recharge.total = st.charge.total;
 
     let body_e = s.body;
+    // The caster's object frames (the pose sora::tick left for this tick).
+    let frames = object_frames(&anims, &locals, body_e, &s.weapons);
+    // The enemies' target points (each one's target shape centre, Bevy space).
+    let targets = victim_targets(&fighters, &anims, &gts);
+    let alive = |e: Entity| enemies.get(e).is_ok_and(|x| x.alive());
     let Ok(mut body) = anims.get_mut(body_e) else { return };
 
     // Accept a pending cast (FUN_00174cf8: FUN_00176b00 with the hit latch forced, then FUN_00179400).
@@ -523,6 +569,22 @@ fn run(
                 s.hits = chain.combo;
                 s.finishers = chain.finishers;
                 let finisher = form != 6 && rules::is_finisher(chain.combo, airborne, mg, ma);
+                // The command's target record (+0x9f4, copied from the request by FUN_00174cf8): Cure's
+                // names the caster (the app casts it on Sora), the others Sora's current target
+                // [inferred: the menu code that fills the request's target was not traced].
+                let own = row.id == 3;
+                let mut target = if own { None } else { s.target.filter(|t| alive(*t)) };
+                // FUN_00179470 (Magic Lock-On): without a valid record a target is picked (FUN_0018fb98
+                // with range 0: every target shape of every enemy) and the lock-on controller goes to
+                // mode 1 on it (FUN_0019b3f0: the target marker; FUN_0019bcb8 its timer).
+                let mut lock_mode1 = None;
+                let has_lock_on = block.as_ref().is_some_and(|b| b.has_bit(rules::BIT_MAGIC_LOCK_ON));
+                if rules::magic_lock_on_applies(has_lock_on, row.id) && target.is_none() {
+                    let cands: Vec<(Entity, Vec3)> = targets.iter().filter(|(e, _)| alive(*e)).map(|(e, p)| (*e, *p / SCALE)).collect();
+                    target = rules::lock_on_pick(s.motor.pos, s.motor.forward(), game.plyr.auto_lock_on_h_adjust, game.plyr.auto_lock_on_inner_adjust, &cands);
+                    lock_mode1 = target;
+                    mlog!("magic: Magic Lock-On (FUN_00179470): no target record, picked {target:?} of {} candidates; lock-on controller mode 1", cands.len());
+                }
                 let (motion_id, blend, fin_motion) = rules::cast_motion(row, airborne, finisher);
                 let kind = rules::cast_kind(row.level, fin_motion, form);
                 battle.ticks = battle.ticks.max(240.0);
@@ -534,11 +596,16 @@ fn run(
                     // The mover's method +0xc with sstm MagicJump (FUN_001a4798) [inferred: a jump start].
                     s.motor.start_jump(game.sstm.magic_jump);
                 }
-                let voice = rules::cast_voice(row, fin_motion, false);
+                // The voice (FUN_001a4798 -> the player's method +0x54, FUN_00175d18).
+                let voice = rules::cast_voice(row, fin_motion, own);
+                if voice >= 0 {
+                    voices.write(crate::audio::SoraVoice { voice: voice as u16, why: format!("cast {}", row.file_name) });
+                }
+                st.turn = Some(CastTurn { motion: mslot, target, own, lock_mode1 });
                 let magi = rules::magi_row(&data.magi, kind).cloned().unwrap_or_default();
                 let cost = data.cmd(cmd).map_or(0, |c| c.cost);
                 mlog!(
-                    "magic: cast {} (command {cmd}, slot {}, level {}): {press:?}, combo {} finisher {finisher}, kind {kind}, motion {motion_id} ({}) blend {blend}, airborne {airborne}, cost {cost}, MP {}, voice {voice} (not played: no voice hook), magi {:?}",
+                    "magic: cast {} (command {cmd}, slot {}, level {}): {press:?}, combo {} finisher {finisher}, kind {kind}, motion {motion_id} ({}) blend {blend}, airborne {airborne}, cost {cost}, MP {}, voice {voice}, target record {target:?} (own {own}), magi {:?}",
                     row.file_name,
                     row.id,
                     row.level,
@@ -553,7 +620,7 @@ fn run(
                 if let (Some(id), Some(p)) = (charge_fx, pax) {
                     fx::start(&mut commands, p, id, Bind::Owner(body_e));
                 }
-                st.casts.push(Cast { slot: row.id, cmd, cost, kind, magi, pax: pax.clone(), motion: mslot, charge_fx, step: Step::Waiting });
+                st.casts.push(Cast { slot: row.id, cmd, cost, kind, magi, pax: pax.clone(), motion: mslot, motion_id, charge_fx, step: Step::Waiting });
             }
             _ => {
                 if left > 1 && status.usable() {
@@ -565,14 +632,55 @@ fn run(
         }
     }
 
-    // Frame trigger 17 of the motion this tick (FUN_00188498 case 0x11): pay, then event 21.
-    let fired = body.motion().zip(body.triggers()).is_some_and(|(m, t)| {
-        let g = |f: f32| f * crate::data::LOGIC_HZ / m.fps.max(1.0);
-        let (from, to) = (g(body.prev_frame), g(body.frame));
-        from != to && t.crossed(from, to).any(|f| f.id == frame::MAGIC_CAST)
-    });
-    let owner_m = fx::world_now(body_e, &locals);
-    let weapons_m: Vec<Mat4> = s.weapons.iter().map(|w| fx::world_now(*w, &locals)).collect();
+    // The turn triggers of the cast motion, each frame they cover (FUN_00188030 cases 22 and 28 ->
+    // FUN_00186018): toward the command's target record, or toward the lock-on controller's target
+    // (Sora's lock-on, else the mode-1 target of Magic Lock-On), by at most the trigger's degrees per
+    // frame. The target point is the target's target shape (FUN_0018efa0); the caster's is its
+    // position [inferred: the offset +0x560 added to it has no horizontal part].
+    match st.turn {
+        Some(t) if s.state == State::Magic && body.slot == t.motion => {
+            let g = body.gframe();
+            let turns: Vec<(u8, f32)> = body
+                .triggers()
+                .map(|tr| {
+                    tr.active(g)
+                        .filter(|r| matches!(r.id, rules::TRIGGER_TURN_TARGET | rules::TRIGGER_TURN_LOCK))
+                        .map(|r| (r.id, r.params.first().copied().unwrap_or(0) as u16 as f32))
+                        .collect()
+                })
+                .unwrap_or_default();
+            for (id, deg) in turns {
+                let (rec, own) = if id == rules::TRIGGER_TURN_TARGET { (t.target, t.own) } else { (s.lock.or(t.lock_mode1), false) };
+                let Some(at) = rec.filter(|e| alive(*e)).and_then(|e| targets.iter().find(|x| x.0 == e)).map(|x| x.1 / SCALE) else { continue };
+                let before = s.motor.yaw;
+                s.motor.yaw = rules::cast_turn(before, s.motor.pos, at, own, deg);
+                if before != s.motor.yaw {
+                    mlog!("magic: turn trigger {id} at frame {g:.1}: toward {rec:?} by at most {deg} deg, yaw {before:.3} -> {:.3}", s.motor.yaw);
+                }
+            }
+        }
+        Some(_) if s.state != State::Magic => st.turn = None,
+        _ => {}
+    }
+
+    // Frame trigger 17 of the motion this tick (FUN_00188498 case 0x11): pay, then event 21. A trigger
+    // with a parameter fires only when it equals a word of the trigger context: the motion id the
+    // cast asked for [inferred from the data: the cast slots are shared by spells (Fire's ground motion
+    // 56 and Reflect's 71 play one slot), and each slot carries one trigger 17 per motion id, Reflect's
+    // at frame 0 and Fire's later].
+    let fired: Vec<Option<i16>> = body
+        .motion()
+        .zip(body.triggers())
+        .map(|(m, t)| {
+            let g = |f: f32| f * crate::data::LOGIC_HZ / m.fps.max(1.0);
+            let (from, to) = (g(body.prev_frame), g(body.frame));
+            if from == to {
+                return Vec::new();
+            }
+            t.crossed(from, to).filter(|f| f.id == frame::MAGIC_CAST).map(|f| f.params.first().copied()).collect()
+        })
+        .unwrap_or_default();
+    let fires = |c: &Cast| fired.iter().any(|p| p.is_none_or(|p| p as u16 == c.motion_id));
     let airborne_now = !s.motor.grounded;
     let (magic_state, playing) = (s.state == State::Magic, body.slot);
     let in_motion = |c: &Cast| magic_state && playing == c.motion;
@@ -580,7 +688,7 @@ fn run(
         if c.step != Step::Waiting {
             continue;
         }
-        if fired && in_motion(c) {
+        if fires(c) && in_motion(c) {
             // FUN_001a4a60 -> FUN_001769e0: the cost byte comes off MP (FUN_00186368).
             let before = s.mp;
             match rules::pay(s.mp, game.sora_max_mp, c.cost, data.mp_drive) {
@@ -591,7 +699,7 @@ fn run(
                 }
             }
             mlog!("magic: trigger 17 at frame {:.1}: MP spent {} -> {} (cost {}){}", body.gframe(), before, s.mp, c.cost, if st.charge.active() { format!(", MP charge {:.0} frames", st.charge.total) } else { String::new() });
-            c.step = event21(&mut commands, c, &data, &game, &mut s, me, body_e, owner_m, airborne_now, &mut running, &mut st.attacks, &mut st.next_group);
+            c.step = event21(&mut commands, c, &data, &game, &mut s, me, body_e, &frames, airborne_now, &mut running, &mut st.attacks, &mut st.next_group);
         } else if !in_motion(c) {
             // Event 20 ends when the caster's motion changes (host 1.15): no spell, no cost.
             mlog!("magic: cast of command {} ended before its trigger (Sora {:?})", c.cmd, s.state);
@@ -615,11 +723,11 @@ fn run(
                 Some(a) => a,
                 None => {
                     // After the yield: the attack objects (FIRE event 21).
-                    let a1 = new_attack(&mut st.attacks, &mut st.next_group, &game, ATKP_FIRE, c.kind, c.magi.f(MAGI_RADIUS), c.magi.f(MAGI_HEIGHT));
+                    let a1 = new_attack(&mut st.attacks, &mut st.next_group, &game, &pax, ATKP_FIRE, c.kind, c.magi.f(MAGI_RADIUS), c.magi.f(MAGI_HEIGHT));
                     let mut a2 = None;
                     if c.kind / 10 == 3 {
                         // Host 2.31 copies the attack with id 502, sized 30 smaller; a finisher widens the first to 450.
-                        a2 = new_attack(&mut st.attacks, &mut st.next_group, &game, ATKP_FIRE, c.kind, c.magi.f(MAGI_RADIUS) - 30.0, c.magi.f(MAGI_HEIGHT) - 30.0);
+                        a2 = new_attack(&mut st.attacks, &mut st.next_group, &game, &pax, ATKP_FIRE, c.kind, c.magi.f(MAGI_RADIUS) - 30.0, c.magi.f(MAGI_HEIGHT) - 30.0);
                         if c.kind & 1 == 1
                             && let Some(i) = a1
                         {
@@ -636,10 +744,10 @@ fn run(
                 }
             };
             if t > 0.0 {
-                let p = element_position(&pax, ball, owner_m, &weapons_m);
+                let p = element_position(&pax, ball, &frames);
                 move_attack(&mut st.attacks[a1], p);
                 if let (Some(b2), Some(i2)) = (ball2, a2) {
-                    move_attack(&mut st.attacks[i2], element_position(&pax, b2, owner_m, &weapons_m));
+                    move_attack(&mut st.attacks[i2], element_position(&pax, b2, &frames));
                 }
                 c.step = Step::Fire { ball, ball2, attacks: Some((a1, a2)), t: t - 1.0, yielded };
             } else {
@@ -662,7 +770,7 @@ fn run(
                 continue;
             }
             if let Some(pax) = c.pax.clone() {
-                let pos = element_position(&pax, elem, owner_m, &weapons_m);
+                let pos = element_position(&pax, elem, &frames);
                 let dir = s.motor.forward().with_y(0.0).normalize_or(Vec3::Z);
                 mlog!("magic: Blizzard shot from element {elem} at {pos:?} along {dir:?}: speed {} life {} size {} turn {} (push {} not ported)", c.magi.f(MAGI_SPEED), c.magi.f(MAGI_LIFE), c.magi.f(MAGI_SHOT_SIZE), c.magi.f(MAGI_TURN), c.magi.f(MAGI_PUSH));
                 st.shots.push(Shot { pax, kind: c.kind, magi: c.magi.clone(), pos, dir, target: s.target, attack: None, effect: None, life: c.magi.f(MAGI_LIFE) - SHOT_FADE as f32, fade: None, done: false });
@@ -673,7 +781,6 @@ fn run(
     // Thunder's event 21, the rest of its first slice: the strike's place is the target's position
     // (host 1.120) raised by 100, or 300 ahead of the caster raised by 80 and 330 without a target
     // (L003e / L0076 / L009c), then R02b5 starts the strike thread.
-    let targets = victim_targets(&fighters, &anims, &gts);
     for c in st.casts.iter_mut().filter(|c| c.step == Step::Thunder) {
         c.step = Step::Done;
         let Some(pax) = c.pax.clone() else { continue };
@@ -763,6 +870,9 @@ fn run(
                 );
             }
             hits.write(hit);
+            if let Some(pax) = &a.pax {
+                spell_hits.write(fx::SpellHit { target: *te, atkp: hit.atkp, pax: pax.clone() });
+            }
             a.hit_any = true;
         }
     }
@@ -785,7 +895,7 @@ fn event21(
     s: &mut Sora,
     me: Entity,
     body: Entity,
-    owner_m: Mat4,
+    frames: &Frames,
     airborne: bool,
     running: &mut Running,
     _attacks: &mut [SpellAttack],
@@ -827,9 +937,9 @@ fn event21(
                 stop_effect(running, pax, id, body);
             }
             start(commands, 1);
-            // The target is the caster (the app has no command target record); its bone 0x4001 is
-            // taken as its root [inferred].
-            let centre = owner_m.transform_point3(Vec3::ZERO);
+            // The target is the caster (the app has no command target record); the centre is its
+            // bone 0x4001 (host 1.83 -> FUN_0016aa18: the centre of its body shape).
+            let centre = frames[1].w_axis.truncate();
             fx::start_placed(commands, pax, 2, Bind::Fixed(Mat4::from_translation(centre)), Placement { replace_translation: true, ..default() });
             let me_pos = s.motor.pos * SCALE;
             let dist = (me_pos - centre).with_y(0.0).length() / SCALE;
@@ -936,7 +1046,7 @@ fn step_shot(
         // R035b.
         fx::start_placed(commands, &shot.pax, 2, Bind::Fixed(place(shot.pos, shot.dir)), Placement { replace_translation: true, ..default() });
         let size = shot.magi.f(MAGI_SHOT_SIZE);
-        shot.attack = new_attack(attacks, next, game, ATKP_BLIZZARD, shot.kind, size, 0.0);
+        shot.attack = new_attack(attacks, next, game, &shot.pax, ATKP_BLIZZARD, shot.kind, size, 0.0);
         let Some(ai) = shot.attack else {
             warn!("magic: no atkp row {ATKP_BLIZZARD} for kind {}", shot.kind);
             shot.done = true;
@@ -1024,14 +1134,14 @@ fn step_strike(k: &mut Strike, commands: &mut Commands, game: &GameData, attacks
     match k.attacks {
         None => {
             let atkp = k.atkp;
-            let Some(a1) = new_attack(attacks, next, game, atkp, k.kind, k.magi.f(MAGI_THUNDER_RADIUS), 0.0) else {
+            let Some(a1) = new_attack(attacks, next, game, &k.pax, atkp, k.kind, k.magi.f(MAGI_THUNDER_RADIUS), 0.0) else {
                 warn!("magic: no atkp row {atkp} for kind {}", k.kind);
                 k.done = true;
                 return;
             };
             move_attack(&mut attacks[a1], k.pos);
             let group = attacks[a1].group;
-            let Some(a2) = new_attack(attacks, next, game, ATKP_THUNDER_COLUMN, k.kind, k.magi.f(MAGI_THUNDER_COLUMN_R), k.magi.f(MAGI_THUNDER_COLUMN_H)) else {
+            let Some(a2) = new_attack(attacks, next, game, &k.pax, ATKP_THUNDER_COLUMN, k.kind, k.magi.f(MAGI_THUNDER_COLUMN_R), k.magi.f(MAGI_THUNDER_COLUMN_H)) else {
                 k.done = true;
                 return;
             };
@@ -1056,12 +1166,13 @@ fn step_strike(k: &mut Strike, commands: &mut Commands, game: &GameData, attacks
     }
 }
 
-fn new_attack(attacks: &mut Vec<SpellAttack>, next: &mut u32, game: &GameData, id: u16, kind: u32, radius: f32, height: f32) -> Option<usize> {
+#[allow(clippy::too_many_arguments)]
+fn new_attack(attacks: &mut Vec<SpellAttack>, next: &mut u32, game: &GameData, pax: &Arc<LoadedPax>, id: u16, kind: u32, radius: f32, height: f32) -> Option<usize> {
     let base_row = rules::attack_row(&game.atkp, id, kind)?;
     *next += 1;
     // FUN_001a30e0: the height is the radius unless it is positive.
     let height = if height > 0.0 { height } else { radius };
-    attacks.push(SpellAttack { group: *next, base_row, pos: None, prev: None, radius, height, live: true, hit_any: false, wall: false });
+    attacks.push(SpellAttack { group: *next, base_row, pos: None, prev: None, radius, height, live: true, hit_any: false, wall: false, pax: Some(pax.clone()) });
     Some(attacks.len() - 1)
 }
 
@@ -1106,13 +1217,60 @@ mod tests {
 
     #[test]
     fn sweep_steps_back_toward_the_previous_position() {
-        let a = SpellAttack { group: 1, base_row: 0, pos: None, prev: Some(Vec3::new(0.0, 0.0, 1.0)), radius: 20.0, height: 40.0, live: true, hit_any: false, wall: false };
+        let a = SpellAttack { group: 1, base_row: 0, pos: None, prev: Some(Vec3::new(0.0, 0.0, 1.0)), radius: 20.0, height: 40.0, live: true, hit_any: false, wall: false, pax: None };
         let pts = sweep_points(&a, Vec3::ZERO);
         // 100 units at steps of 20 while more than 10 is left: 5 extra points.
         assert_eq!(pts.len(), 6);
         assert!((pts[1].z - 0.2).abs() < 1e-5);
         let still = SpellAttack { prev: Some(Vec3::new(0.0, 0.0, 0.01)), ..a };
         assert_eq!(sweep_points(&still, Vec3::ZERO).len(), 1, "a move of 1 unit tests one place");
+    }
+
+    /// FUN_001a0240: a refill during the MP charge ends it and sets MP to the maximum; without a
+    /// charge it only refills.
+    #[test]
+    fn refill_ends_the_mp_charge() {
+        let mut c = Charge { left: 300.0, total: 600.0 };
+        let mut mp = 0;
+        assert!(refill_mp(Some(&mut c), &mut mp, 120));
+        assert_eq!((mp, c.active(), c.left), (120, false, 0.0));
+        let mut mp = 40;
+        assert!(!refill_mp(Some(&mut Charge::default()), &mut mp, 120));
+        assert_eq!(mp, 120);
+        assert!(!refill_mp(None, &mut mp, 90));
+        assert_eq!(mp, 90);
+    }
+
+    /// The disc's side of the magic turn (FUN_001a4798 -> FUN_00179470, FUN_00188030 cases 22 and 28):
+    /// the Magic Lock-On bit belongs to an ability row; Thunder's ground cast motion turns toward the
+    /// command's target (trigger 22), Blizzard's toward the lock-on target (28), each with a limit in
+    /// degrees per frame; Fire's ground motion has no turn trigger.
+    #[test]
+    fn magic_turn_data_from_the_disc() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let (rules_ab, magc) = {
+            let mut a = disc.0.lock().unwrap();
+            (crate::abilities::AbilityRules::load(&mut a).expect("abilities"), kh2_tables::load::<Magc>(&mut a, &t::MAGC).unwrap().rows)
+        };
+        let owner = rules_ab.id_of_bit(rules::BIT_MAGIC_LOCK_ON);
+        eprintln!("Magic Lock-On bit {} owned by item {owner:?}", rules::BIT_MAGIC_LOCK_ON);
+        assert!(owner.is_some(), "an ability row sets the bit");
+        let mset = kh2_anim::Mset::parse(&disc.read("obj/P_EX100.mset").unwrap()).unwrap();
+        let turns = |id: u8| {
+            let row = rules::pick_row(&magc, id, 1, 0).unwrap();
+            let slot = mset.slot(row.ground_motion as usize, PlayerState::BattleWeapon).expect("motion");
+            let m = mset.get(slot).unwrap();
+            m.triggers.ranges.iter().filter(|r| matches!(r.id, rules::TRIGGER_TURN_TARGET | rules::TRIGGER_TURN_LOCK)).map(|r| (r.id, r.start, r.params.first().copied())).collect::<Vec<_>>()
+        };
+        let (fire, blizzard, thunder) = (turns(0), turns(1), turns(2));
+        eprintln!("turn triggers: Fire {fire:?}, Blizzard {blizzard:?}, Thunder {thunder:?}");
+        assert!(fire.is_empty());
+        assert!(blizzard.iter().any(|t| t.0 == rules::TRIGGER_TURN_LOCK && t.2.is_some_and(|p| p > 0)));
+        assert!(thunder.iter().any(|t| t.0 == rules::TRIGGER_TURN_TARGET && t.2.is_some_and(|p| p > 0)));
     }
 
     /// The rules against the disc: Fire, Blizzard, Thunder and Cure at level 1 (`KH2_ISO` needed).

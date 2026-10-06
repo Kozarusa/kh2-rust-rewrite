@@ -64,6 +64,18 @@ const MAGI_SHOT_SIZE: usize = 0x18;
 const MAGI_PUSH: usize = 0x1c;
 /// The fade a shot ends with (host 0.52 with 12 frames).
 const SHOT_FADE: u32 = 12;
+/// Thunder's attack rows (THUNDER_*.mag R031c): on the ground, in the air, and the column copy.
+pub const ATKP_THUNDER_GROUND: u16 = 250;
+pub const ATKP_THUNDER_AIR: u16 = 251;
+pub const ATKP_THUNDER_COLUMN: u16 = 249;
+/// `magi` offsets of the strike: ground snap distance, radius, column height and radius, the wait
+/// before the attacks and their time.
+const MAGI_THUNDER_SNAP: usize = 0x20;
+const MAGI_THUNDER_RADIUS: usize = 0x24;
+const MAGI_THUNDER_COLUMN_H: usize = 0x28;
+const MAGI_THUNDER_COLUMN_R: usize = 0x2c;
+const MAGI_THUNDER_WAIT: usize = 0x30;
+const MAGI_THUNDER_TIME: usize = 0x34;
 /// The ids of the base command list (Attack, Magic, Items, Drive: the rows whose `Execute` is the
 /// same as their id), see `hud_menu::base_entries`.
 const BASE_COMMANDS: [u16; 4] = [1, 2, 3, 4];
@@ -151,6 +163,25 @@ pub struct MagicState {
     memory: HashMap<Entity, HitMemory>,
     next_group: u32,
     shots: Vec<Shot>,
+    strikes: Vec<Strike>,
+}
+
+/// A Thunder strike: the request thread at word 0x2da of THUNDER_*.mag (block +0x20 the place, +0x48
+/// how far above it the ground probe starts).
+struct Strike {
+    pax: Arc<LoadedPax>,
+    kind: u32,
+    magi: MagiRow,
+    pos: Vec3,
+    rise: f32,
+    /// The ground or air attack row (250 or 251), chosen in the first slice.
+    atkp: u16,
+    started: bool,
+    /// Frames left of the current wait (R029f).
+    wait: f32,
+    /// (ground attack, column attack) once made.
+    attacks: Option<(usize, usize)>,
+    done: bool,
 }
 
 /// A Blizzard projectile: the request thread at word 0x319 of BLIZZARD_*.mag (its block: +0x20
@@ -197,6 +228,8 @@ enum Step {
     Fire { ball: u16, ball2: Option<u16>, attacks: Option<(usize, Option<usize>)>, t: f32, yielded: bool },
     /// Blizzard's event 21 started element `elem` and yields once before it fires the shot.
     Blizzard { elem: u16, yielded: bool },
+    /// Thunder's event 21 picks the strike's place (needs the targets; same frame).
+    Thunder,
     /// The script has ended.
     Done,
 }
@@ -625,10 +658,28 @@ fn run(
             c.step = Step::Done;
         }
     }
+    // Thunder's event 21, the rest of its first slice: the strike's place is the target's position
+    // (host 1.120) raised by 100, or 300 ahead of the caster raised by 80 and 330 without a target
+    // (L003e / L0076 / L009c), then R02b5 starts the strike thread.
+    let targets = victim_targets(&fighters, &anims, &gts);
+    for c in st.casts.iter_mut().filter(|c| c.step == Step::Thunder) {
+        c.step = Step::Done;
+        let Some(pax) = c.pax.clone() else { continue };
+        let here = s.motor.pos * SCALE;
+        let (pos, rise) = match s.target.and_then(|t| targets.iter().find(|x| x.0 == t)) {
+            Some(t) => (t.1, 100.0),
+            None => (here + s.motor.forward().with_y(0.0).normalize_or(Vec3::Z) * 300.0 * SCALE + Vec3::Y * 80.0 * SCALE, 330.0),
+        };
+        mlog!("magic: Thunder strike at {pos:?} (target {:?}, rise {rise})", s.target);
+        st.strikes.push(Strike { pax, kind: c.kind, magi: c.magi.clone(), pos, rise, atkp: 0, started: false, wait: 0.0, attacks: None, done: false });
+    }
     st.casts.retain(|c| c.step != Step::Done);
+    for k in st.strikes.iter_mut() {
+        step_strike(k, &mut commands, &game, &mut st.attacks, &mut st.next_group, world.as_deref());
+    }
+    st.strikes.retain(|x| !x.done);
 
     // The shots (request threads; they run after the spell threads in the same task pass [inferred]).
-    let targets = victim_targets(&fighters, &anims, &gts);
     let mut claimed: Vec<Entity> = st.shots.iter().filter_map(|x| x.effect).collect();
     for shot in st.shots.iter_mut() {
         step_shot(shot, &mut commands, &game, &mut st.attacks, &mut st.next_group, &mut running, &targets, &claimed);
@@ -707,7 +758,7 @@ fn run(
         m.tick();
     }
     // Casts hold indices into the list: finished attacks go once no cast runs.
-    if st.casts.is_empty() && st.shots.is_empty() {
+    if st.casts.is_empty() && st.shots.is_empty() && st.strikes.is_empty() {
         st.attacks.retain(|a| a.live);
     }
 }
@@ -802,9 +853,18 @@ fn event21(
             Step::Blizzard { elem: 1, yielded: false }
         }
         2 => {
-            // THUNDER: its strikes are request threads (host 2.20) that are not ported.
-            warn!("magic: Thunder cast: its strike threads are not ported (no attack, no effect)");
-            Step::Done
+            // THUNDER (kind / 10 of 0 or 1 without a finisher): R0226(1) stops the charge effect and
+            // starts element 1; the strike is placed in the same slice (`Step::Thunder`). Master, Final
+            // and the Wisdom finisher strike more than once and are not ported.
+            if c.kind / 10 != 0 {
+                warn!("magic: Thunder in a form (kind {}) is not ported", c.kind);
+                return Step::Done;
+            }
+            if let Some(id) = c.charge_fx {
+                stop_effect(running, pax, id, body);
+            }
+            start(commands, 1);
+            Step::Thunder
         }
         _ => Step::Done,
     }
@@ -920,6 +980,68 @@ fn step_shot(
         r.bind = Bind::Fixed(place(shot.pos, shot.dir));
     }
     move_attack(&mut attacks[ai], shot.pos);
+}
+
+/// One frame of a Thunder strike (THUNDER_*.mag routine 0x2da, R031c). First slice: a ground probe
+/// (host 1.141 -> FUN_001a5c30 with mask 4) from `rise` above the place, 10000 down; ground less than
+/// `magi` +0x20 below the place moves the strike onto it with element 2 and atkp 250, otherwise it stays
+/// with element 3 and atkp 251. The element is started there unbound. After `magi` +0x30 frames: the
+/// attack (radius `magi` +0x24) at the place and its copy with atkp 249 (host 2.31; radius +0x2c,
+/// height +0x28, raised by that height); both live `magi` +0x34 frames, then both are finished.
+fn step_strike(k: &mut Strike, commands: &mut Commands, game: &GameData, attacks: &mut Vec<SpellAttack>, next: &mut u32, world: Option<&crate::world::World>) {
+    if !k.started {
+        k.started = true;
+        let (mut elem, mut atkp) = (3u16, ATKP_THUNDER_AIR);
+        if let Some(gy) = world.and_then(|w| w.ground_m(k.pos.x, k.pos.z, k.pos.y + k.rise * SCALE)) {
+            let below = (k.pos.y - gy) / SCALE;
+            if below - k.magi.f(MAGI_THUNDER_SNAP) < 0.0 {
+                elem = 2;
+                atkp = ATKP_THUNDER_GROUND;
+                k.pos.y = gy;
+            }
+        }
+        mlog!("magic: Thunder strike: element {elem} at {:?}, atkp {atkp} after {} frames", k.pos, k.magi.f(MAGI_THUNDER_WAIT));
+        fx::start_placed(commands, &k.pax, elem, Bind::Fixed(Mat4::from_translation(k.pos)), Placement { replace_translation: true, ..default() });
+        k.wait = k.magi.f(MAGI_THUNDER_WAIT);
+        k.atkp = atkp;
+    }
+    if k.wait > 0.0 {
+        k.wait -= 1.0;
+        return;
+    }
+    match k.attacks {
+        None => {
+            let atkp = k.atkp;
+            let Some(a1) = new_attack(attacks, next, game, atkp, k.kind, k.magi.f(MAGI_THUNDER_RADIUS), 0.0) else {
+                warn!("magic: no atkp row {atkp} for kind {}", k.kind);
+                k.done = true;
+                return;
+            };
+            move_attack(&mut attacks[a1], k.pos);
+            let group = attacks[a1].group;
+            let Some(a2) = new_attack(attacks, next, game, ATKP_THUNDER_COLUMN, k.kind, k.magi.f(MAGI_THUNDER_COLUMN_R), k.magi.f(MAGI_THUNDER_COLUMN_H)) else {
+                k.done = true;
+                return;
+            };
+            // Host 2.31 copies the attack: the copy keeps the original's group [inferred from
+            // FUN_001a2c58 passing the original's +0x20].
+            attacks[a2].group = group;
+            let h = attacks[a2].height;
+            move_attack(&mut attacks[a2], k.pos + Vec3::Y * h * SCALE);
+            mlog!("magic: Thunder attacks {group}: atkp {atkp} radius {} and atkp {ATKP_THUNDER_COLUMN} radius {} height {h}, for {} frames", attacks[a1].radius, attacks[a2].radius, k.magi.f(MAGI_THUNDER_TIME));
+            k.attacks = Some((a1, a2));
+            k.wait = k.magi.f(MAGI_THUNDER_TIME);
+            if k.wait > 0.0 {
+                k.wait -= 1.0;
+            }
+        }
+        Some((a1, a2)) => {
+            attacks[a1].live = false;
+            attacks[a2].live = false;
+            mlog!("magic: Thunder strike over");
+            k.done = true;
+        }
+    }
 }
 
 fn new_attack(attacks: &mut Vec<SpellAttack>, next: &mut u32, game: &GameData, id: u16, kind: u32, radius: f32, height: f32) -> Option<usize> {

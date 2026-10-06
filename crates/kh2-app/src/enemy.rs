@@ -65,8 +65,14 @@ pub const SEIFER: Kind = Kind { name: "Seifer", enmp: 135, model: "N_EX570_BTL",
 /// the Dusk's.
 pub const DANCER: Kind = Kind { name: "Dancer", enmp: 48, model: "M_EX930", death_effect: true };
 
+/// The Struggle opponent `N_EX500_BTL` (object 0x4d7) of tt04's battle group b_50, called by its model
+/// (its name is not in the data the app reads). Its script hands `enmp` row 150 to `set_obj_param`
+/// (BDX `N_EX500_BTL` 0x0736). Unlike `N_EX570_BTL` its `dead` mode (R0900) starts element 2 of its
+/// effect file, fades out and hides, as the Dusk's does.
+pub const N_EX500: Kind = Kind { name: "N_EX500", enmp: 150, model: "N_EX500_BTL", death_effect: true };
+
 /// Every enemy kind the app has.
-pub const KINDS: [&Kind; 5] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER];
+pub const KINDS: [&Kind; 6] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500];
 
 /// The rigs of the enemy kinds, by `Kind::name` (Shadow and Soldier share `sora::Rigs`' copies).
 #[derive(Resource, Default)]
@@ -585,7 +591,7 @@ pub fn receive_hits(
             hit_part_plain: true,
         };
         let out = rules::victim_outcome(&rules::HitRow::from_atkp(atk), useless, &ctx, &reaction.patn, &reaction.defaults, &reaction.consts);
-        ai_hits.write(crate::enemy_ai::AiHit { target: h.target, real: rules::reaction_class(out.effective) >= 2 });
+        ai_hits.write(crate::enemy_ai::AiHit { target: h.target, real: rules::reaction_class(out.effective) >= 2, reaction: out.effective });
         // Dying is not part of the reaction rules: the last hit always launches.
         let d = &reaction.defaults;
         let action = match out.action {

@@ -72,9 +72,18 @@ fn dry_run(data: &[u8], seed: u32, distance: f32, frames: u32, damage_at: Option
 
 /// As `dry_run` with the answer of host 1.39 (spawn parameter) chosen.
 fn dry_run_with(data: &[u8], seed: u32, distance: f32, frames: u32, damage_at: Option<u32>, spawn_param: i32) -> Dry {
+    dry_run_table(data, seed, distance, frames, damage_at, spawn_param, None)
+}
+
+/// As `dry_run_with` with the executable's host table given to the runtime (as the app does), so
+/// functions `names.rs` does not carry (4.29 of the Struggle opponents) have their signatures.
+fn dry_run_table(data: &[u8], seed: u32, distance: f32, frames: u32, damage_at: Option<u32>, spawn_param: i32, table: Option<&HostTable>) -> Dry {
     let p = Program::parse(data).unwrap();
     analyze(&p).unwrap();
     let mut rt = Runtime::new(p);
+    if let Some(t) = table {
+        rt.set_host_table(t.clone());
+    }
     rt.shared.rng = seed;
     rt.core.mode_log = Some(Vec::new());
     let mut host = MockHost::new();
@@ -98,14 +107,25 @@ fn mode_cycle(data: &[u8]) -> (std::collections::BTreeSet<String>, usize) {
 }
 
 fn mode_cycle_with(data: &[u8], spawn_param: i32) -> (std::collections::BTreeSet<String>, usize) {
+    let (seen, unknown) = mode_cycle_table(data, spawn_param, None);
+    (seen, unknown.values().sum())
+}
+
+/// As `mode_cycle_with` with the executable's host table; the calls that reached the host undecoded
+/// are counted per function.
+fn mode_cycle_table(data: &[u8], spawn_param: i32, table: Option<&HostTable>) -> (std::collections::BTreeSet<String>, std::collections::BTreeMap<(u16, u16), usize>) {
     let mut seen = std::collections::BTreeSet::new();
-    let mut unknown = 0;
+    let mut unknown = std::collections::BTreeMap::new();
     for distance in [150.0, 250.0, 450.0, 900.0] {
         for seed in 1..=6 {
             for damage_at in [None, Some(200)] {
-                let d = dry_run_with(data, seed, distance, 700, damage_at, spawn_param);
+                let d = dry_run_table(data, seed, distance, 700, damage_at, spawn_param, table);
                 assert!(d.errors.is_empty(), "seed {seed} distance {distance}: {:?}", d.errors);
-                unknown += d.host.calls().filter(|c| matches!(c, Call::Unknown { .. })).count();
+                for c in d.host.calls() {
+                    if let Call::Unknown { group, index, .. } = c {
+                        *unknown.entry((*group, *index)).or_insert(0) += 1;
+                    }
+                }
                 seen.extend(d.modes);
             }
         }
@@ -206,6 +226,26 @@ fn m_ex930_runs_its_mode_cycle() {
     // Its status block comes from enmp row 48 (R0f13 at 0x0f3a).
     let d = dry_run(&data, 1, 250.0, 60, None);
     assert!(d.host.calls().any(|c| matches!(c, Call::SetObjParam { a: 48, .. })), "set_obj_param 48");
+}
+
+/// The Struggle opponent N_EX500_BTL (WP-7D) of tt04's group b_50. With the executable's host table
+/// (as the app runs it) the only functions `names.rs` does not decode are group 4's: 4.29 (the
+/// Struggle manager's score, FUN_001d6738) and 4.0 / 4.1 (empty table entries, signatures inferred).
+#[test]
+fn n_ex500_btl_runs_its_mode_cycle() {
+    let Some((mut a, elf)) = open() else { return };
+    assert_enemy_files(&mut a, "N_EX500_BTL");
+    let table = HostTable::from_exe(&elf).expect("table");
+    let data = object_script(&mut a, "obj/N_EX500_BTL.mdlx");
+    let (seen, unknown) = mode_cycle_table(&data, 99, Some(&table));
+    eprintln!("N_EX500_BTL modes: {seen:?}; undecoded calls: {unknown:?}");
+    assert!(unknown.keys().all(|&(g, i)| g == 4 && [0, 1, 29].contains(&i)), "{unknown:?}");
+    for m in ["start_voice", "mode_battle", "check_mode", "move_target_near", "mode_revenge"] {
+        assert!(seen.contains(m), "mode {m} never ran: {seen:?}");
+    }
+    assert!(seen.iter().any(|m| m.starts_with("atk_")), "no attack: {seen:?}");
+    let d = dry_run_table(&data, 1, 250.0, 60, None, 99, Some(&table));
+    assert!(d.host.calls().any(|c| matches!(c, Call::SetObjParam { a: 150, .. })), "set_obj_param 150");
 }
 
 /// Every BDX on the disc (object scripts, mission and area scripts, 00common.bdx).

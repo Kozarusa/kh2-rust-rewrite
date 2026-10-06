@@ -693,6 +693,12 @@ impl BevyHost<'_> {
                 }
                 stub(Value::None, "word +0xabc stored; bits 1 and 12 have no reader in the executable that was found")
             }
+            // 1.54 bits_47c_480_clear (0x172910 -> FUN_0019dde0): bit n cleared in the bit arrays at object
+            // +0x47c and +0x480 (set by 1.52 / 1.53, which none of the app's scripts call). No reader of
+            // either array was traced. N_EX500_BTL clears bit 2 (R1447).
+            Call::Func { group: 1, index: 54, args } if args[0].int() as u32 == me => {
+                stub(Value::None, "bit arrays +0x47c / +0x480: nothing in the app sets or reads them")
+            }
             // 1.132: the target record returns to a pool; the app's records are never reused.
             Call::Func { group: 1, index: 132, .. } => stub(Value::None, "target records are not pooled"),
             // The Dancer's (M_EX930) force dance asks these of the player before it grabs him (BDX R0a48,
@@ -729,7 +735,7 @@ impl BevyHost<'_> {
             Call::Target { .. } => imp(Value::Handle(TARGET)),
             Call::LastAttacker { .. } => imp(Value::Handle(PLAYER)),
             Call::HitStun { .. } => approx(Value::Bool(self.obj.reacting), "the game's flags (+0x160) are read as 'a hit reaction plays'"),
-            Call::HitIsReal { hit } => imp(Value::Bool(self.obj.hits.get(hit).copied().unwrap_or(true))),
+            Call::HitIsReal { hit } => imp(Value::Bool(self.obj.hits.get(hit).is_none_or(|h| h.0))),
             // FUN_001b2148 builds the status block from `enmp` row `a`; the app built it at spawn from
             // the kind's row and rebuilds it (full HP) when the script asks for another one.
             Call::SetObjParam { a, .. } => {
@@ -743,6 +749,12 @@ impl BevyHost<'_> {
             // found (FUN_001769e0, FUN_0022e0a0, ...) read it as a byte or an int of other object
             // classes; no reader for this one was found.
             Call::Func { group: 2, index: 76, .. } => stub(Value::None, "float at +0xaf4: no reader found"),
+            // 2.7 hit_reaction (0x18e0d0): byte +0x26 of the hit record, the effective reaction; the app's
+            // is `reaction_rules::victim_outcome`'s, the same byte 2.8 classifies.
+            Call::Func { group: 2, index: 7, args } => match self.obj.hits.get(&(args[0].int() as u32)) {
+                Some(&(_, r)) => imp(Value::Int(r as i32)),
+                None => missing(Value::Int(0), "hit_reaction of a handle that is not one of this object's hit records"),
+            },
             _ => missing(Value::Int(0), "function not mapped"),
         }
     }
@@ -754,6 +766,14 @@ impl BevyHost<'_> {
             Call::ModeInterrupted { .. } => approx(Value::Bool(self.obj.reacting), "FUN_00186b70: the object is in a hit reaction"),
             Call::ModeMayStart { .. } => approx(Value::Bool(!self.obj.reacting), "FUN_001873d0: the object is not in hit stun"),
             Call::RemoteSetMode { .. } => missing(Value::None, "a mode queued for another object (host 6.58): not wired"),
+            // 4.29 (FUN_0019ebd0 -> FUN_001d6738(i)): 0 unless the manager at DAT_01d5dd20 exists (set by
+            // FUN_001b9338, which the event command FUN_00180b48 runs), then word +0x114 of its entry i
+            // (0x38 bytes from +0xf4, used when bit 0 of the entry's first word is set). The Struggle
+            // opponents compare entries 0 and 1 (the two sides' score [inferred from gameset_voice_win /
+            // _lose / _draw]). The app has no such manager (the Struggle rules are WP-7E's): 0.
+            Call::Unknown { group: 4, index: 29, .. } | Call::Func { group: 4, index: 29, .. } => {
+                approx(Value::Int(0), "the manager DAT_01d5dd20 (Struggle) does not exist in the app: FUN_001d6738 answers 0 without it")
+            }
             _ => missing(Value::Int(0), "function not mapped"),
         }
     }

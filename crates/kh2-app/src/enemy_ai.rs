@@ -354,6 +354,11 @@ struct Obj {
     /// Blend time left (the controller's +0x34), in ticks: the blend of the last request, run down
     /// one per tick.
     blend_left: f32,
+    /// The last tick's movement as FUN_00181e00 keeps it (the app's space, centimetres per tick):
+    /// what the object asked for (+0x850) and how far it really went (+0x860, new position minus
+    /// old, after collision).
+    want_vel: Vec3,
+    moved: Vec3,
 }
 
 impl Obj {
@@ -388,6 +393,8 @@ impl Obj {
             spawn_kind: -1,
             frame: 0.0,
             blend_left: 0.0,
+            want_vel: Vec3::ZERO,
+            moved: Vec3::ZERO,
         }
     }
 
@@ -582,9 +589,15 @@ impl BevyHost<'_> {
                 let yaw = if *obj == me { self.obj.motor.yaw } else { self.env.player_yaw };
                 imp(Value::Vec([yaw.sin(), 0.0, -yaw.cos(), 0.0]))
             }
-            Call::ObjVec860 { .. } | Call::ObjVec850 { .. } => {
-                missing(Value::Vec([0.0; 4]), "vector in the object at +0x860 / +0x850: no writer found")
+            // FUN_00181e00, the object's movement step, writes both every tick: +0x850 the displacement
+            // the object asked for (mover, movement vector, push), +0x860 the position after collision
+            // minus the position before, each times DAT_00356f48 (a frame-step factor, 1.0 at start;
+            // taken as one 60 Hz tick).
+            Call::ObjVec850 { obj } | Call::ObjVec860 { obj } if *obj == me => {
+                let v = if matches!(c, Call::ObjVec850 { .. }) { self.obj.want_vel } else { self.obj.moved };
+                approx(Value::Vec([v.x, -v.y, -v.z, 0.0]), "the asked-for displacement of a grounded object is taken to press down by one tick of gravity [inferred]; the frame-step factor is 1")
             }
+            Call::ObjVec860 { .. } | Call::ObjVec850 { .. } => missing(Value::Vec([0.0; 4]), "movement vectors of an object other than self"),
             Call::Target { .. } => imp(Value::Handle(TARGET)),
             Call::TargetPosition { .. } => approx(Value::Vec(to_game(self.env.player)), "the player's origin, not the lock-on part's point"),
             Call::LastAttacker { .. } => imp(Value::Handle(PLAYER)),
@@ -1135,15 +1148,22 @@ fn ai_update(
         }
         obj.move_vel = Vec3::ZERO;
         let mut landed = false;
+        let before = obj.motor.pos;
+        let mut asked = delta;
         if let Some(w) = world.as_deref() {
             let dy = was_air.then(|| obj.motor.jump_dy(data.sstm.fall_max) + root_move.y);
+            asked.y = dy.unwrap_or(root_move.y - crate::motor::G);
             landed = obj.motor.move_by(w, delta, dy);
         }
         // Poses are kept relative to the motion's root, so a motion whose root rises (Soldier's appear
         // motion) is followed by the origin: on the ground the root's height is an offset above the floor.
+        // A root below the floor (the Dusk's sinking motion 181) is stopped by it, as the game's
+        // movement step (FUN_00181e00) collides the whole displacement.
         if !was_air && obj.motor.grounded {
-            obj.motor.pos.y += anim.root.translation.y;
+            obj.motor.pos.y += anim.root.translation.y.max(0.0);
         }
+        obj.want_vel = asked;
+        obj.moved = obj.motor.pos - before;
         // Falling and landing motions of a jump started with the commit flag.
         let mut follow = None;
         if landed {

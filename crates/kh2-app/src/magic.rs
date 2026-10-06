@@ -440,7 +440,10 @@ fn stop_effect(running: &mut Running, pax: &LoadedPax, id: u16, owner: Entity) {
     }
 }
 
-type Victim = (Entity, Vec<(Volume, HurtSpheroid)>, Vec3);
+/// The ability block, the drive state and the collision world, as optional resources.
+type Context<'w> = (Option<Res<'w, crate::abilities::Abilities>>, Option<Res<'w, crate::drive::DriveState>>, Option<Res<'w, crate::world::World>>);
+
+type Victim =(Entity, Vec<(Volume, HurtSpheroid)>, Vec3);
 
 /// The 60 Hz part: the MP charge, accepting a cast, the cast trigger, the spell scripts and their
 /// attacks' hits.
@@ -452,7 +455,7 @@ fn run(
     mut st: ResMut<MagicState>,
     mut battle: ResMut<Battle>,
     abilities: Res<crate::sora::Abilities>,
-    (block, drive, world): (Option<Res<crate::abilities::Abilities>>, Option<Res<crate::drive::DriveState>>, Option<Res<crate::world::World>>),
+    (block, drive, world): Context,
     mut sora_q: Query<(Entity, &mut Sora)>,
     mut anims: Query<&mut Animator>,
     locals: Query<(&Transform, Option<&ChildOf>)>,

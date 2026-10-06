@@ -2,6 +2,11 @@
 
 One short section per work package. "Verified" says how; nothing here was checked by watching video, and audio was listened to only where stated.
 
+## Shift 7
+
+- **WP-7R (split).** enemy_ai.rs split into enemy_ai, enemy_host and enemy_obj with no behaviour change. Verified by the BDX oracle (54 scripts, 0 failures), the arm-for-arm diff and an identical tt04 host-call table. Open: none.
+- **WP-7M (texture regions and animation).** The black rectangles on tt04's roofs were GS CLAMP region modes the app ignored (the map textures have no TEXA or UVSC); the app now crops each image to its region. TEXA sprite and UVSC scroll animation are ported (FUN_00132a80, FUN_00133518) and run on maps, sky and characters; motion range trigger 23 selects TEXA slots, so Sora blinks. Verified by kh2-ee oracle tests (159300 TEXA fields, 24000 UV offsets) and before/after screenshots. Open: linked texture collections, other slot-request callers, the UV offset units (inferred), BOB models are not drawn.
+
 ## Shift 6 (work done while the user was away; nothing here was play-tested by the user)
 
 - **WP-6A (gaps).** The Mickey charge handler belongs to a Mickey-class player, not Sora (Sora sends 455 and 457 down the generic command path); the A343 keyblade "bug" is Sora's body hiding the blade from the default camera (the pose matches the game's evaluator); the kind 8 footstep is the stop step on stick release (ported); Anti has no separate MP drain (an instruction scan found no writer).

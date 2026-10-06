@@ -1958,7 +1958,7 @@ mod tests {
             indices.extend([b, b + 2, b + 1, b, b + 3, b + 2]);
         }
         let n = positions.len();
-        let mesh = kh2_model::Mesh { positions, uvs: vec![[0.0; 2]; n], colors: vec![[1.0; 4]; n], indices, texture: 0, transparent: false, joints: vec![], weights: vec![] };
+        let mesh = kh2_model::Mesh { positions, uvs: vec![[0.0; 2]; n], colors: vec![[1.0; 4]; n], indices, texture: 0, transparent: false, joints: vec![], weights: vec![], uv_scroll: 0 };
         let mut w = World::from_meshes(&[mesh]);
         // Walls across x (facing -x), only for the sweep (it walks `tris` directly).
         for &x in walls {

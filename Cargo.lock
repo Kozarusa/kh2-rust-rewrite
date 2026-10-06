@@ -3362,6 +3362,7 @@ name = "kh2-model"
 version = "0.1.0"
 dependencies = [
  "glam",
+ "kh2-archive",
  "kh2-bar",
  "kh2-ps2",
 ]

@@ -169,12 +169,24 @@ pub fn spawn_model(
     images: &mut Assets<Image>,
 ) {
     let textures = texture_handles(model, images);
-    // One material per (texture, transparency) pair.
+    // One material per (texture, transparency, UV scroll) triple.
     let mut mats = std::collections::HashMap::new();
+    let mut used = Vec::new();
     for m in &model.meshes {
-        let mat = mats.entry((m.texture, m.transparent)).or_insert_with(|| material_for(m, &textures, materials)).clone();
+        let mat = mats
+            .entry((m.texture, m.transparent, m.uv_scroll))
+            .or_insert_with(|| {
+                let h = material_for(m, model, &textures, materials);
+                used.push((m.texture, m.uv_scroll, h.clone()));
+                h
+            })
+            .clone();
         let mesh = meshes.add(to_mesh(m));
         commands.spawn((Mesh3d(mesh), MeshMaterial3d(mat), Transform::default(), ChildOf(parent)));
+    }
+    crate::texanim::log_model(model);
+    if let Some(anim) = crate::texanim::TexAnim::new(model, &textures, &used) {
+        commands.entity(parent).insert(anim);
     }
 }
 
@@ -182,16 +194,50 @@ pub fn texture_handles(model: &kh2_model::Model, images: &mut Assets<Image>) -> 
     model.textures.iter().map(|t| images.add(to_image(t))).collect()
 }
 
-/// PS2-style material: unlit, vertex colour × texture, alpha-tested or blended.
-pub fn material_for(m: &kh2_model::Mesh, textures: &[Handle<Image>], materials: &mut Assets<StandardMaterial>) -> Handle<StandardMaterial> {
+/// PS2-style material: unlit, vertex colour × texture, alpha-tested or blended. The UV transform
+/// maps the mesh's texture coordinates onto the image cropped to the GS region (`to_image`).
+pub fn material_for(
+    m: &kh2_model::Mesh,
+    model: &kh2_model::Model,
+    textures: &[Handle<Image>],
+    materials: &mut Assets<StandardMaterial>,
+) -> Handle<StandardMaterial> {
+    let tint = crate::texanim::tinted(m.texture);
     materials.add(StandardMaterial {
-        base_color_texture: textures.get(m.texture).cloned(),
+        base_color: if tint { Color::srgb(1.0, 0.0, 1.0) } else { Color::WHITE },
+        base_color_texture: if tint { None } else { textures.get(m.texture).cloned() },
+        uv_transform: model.textures.get(m.texture).map_or(bevy::math::Affine2::IDENTITY, |t| region_affine(t, [0.0, 0.0])),
         unlit: true,
         cull_mode: None,
         double_sided: true,
         alpha_mode: if m.transparent { AlphaMode::Blend } else { AlphaMode::Mask(0.25) },
         ..default()
     })
+}
+
+/// UV transform for a texture drawn from its GS region, with a UV-scroll offset `off` (fractions
+/// of the whole texture, added to the coordinates before the GS wraps them):
+/// `u' = (u × W + off_u × W − start_u) / len_u`, likewise for V.
+pub fn region_affine(t: &kh2_model::Texture, off: [f32; 2]) -> bevy::math::Affine2 {
+    let [ru, rv] = t.region;
+    let (w, h) = (t.width as f32, t.height as f32);
+    let (lu, lv) = (ru.len.max(1) as f32, rv.len.max(1) as f32);
+    bevy::math::Affine2::from_scale_angle_translation(
+        Vec2::new(w / lu, h / lv),
+        0.0,
+        Vec2::new((off[0] * w - ru.start as f32) / lu, (off[1] * h - rv.start as f32) / lv),
+    )
+}
+
+/// The texture's pixels inside its GS region (`Texture::region`), row-major RGBA8.
+pub fn crop(t: &kh2_model::Texture) -> Vec<u8> {
+    let [ru, rv] = t.region;
+    let mut out = Vec::with_capacity((ru.len * rv.len * 4) as usize);
+    for y in rv.start..rv.start + rv.len {
+        let o = ((y * t.width + ru.start) * 4) as usize;
+        out.extend_from_slice(t.rgba.get(o..o + ru.len as usize * 4).unwrap_or(&vec![0; ru.len as usize * 4]));
+    }
+    out
 }
 
 fn to_mesh(m: &kh2_model::Mesh) -> Mesh {
@@ -202,11 +248,13 @@ fn to_mesh(m: &kh2_model::Mesh) -> Mesh {
         .with_inserted_indices(Indices::U32(m.indices.clone()))
 }
 
+/// The texture as the GS samples it: cropped to its region, wrapped per the region's mode.
 fn to_image(t: &kh2_model::Texture) -> Image {
+    let [ru, rv] = t.region;
     let mut img = Image::new(
-        Extent3d { width: t.width, height: t.height, depth_or_array_layers: 1 },
+        Extent3d { width: ru.len, height: rv.len, depth_or_array_layers: 1 },
         TextureDimension::D2,
-        t.rgba.clone(),
+        crop(t),
         TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::default(),
     );
@@ -215,8 +263,8 @@ fn to_image(t: &kh2_model::Texture) -> Image {
         kh2_model::Wrap::Clamp => ImageAddressMode::ClampToEdge,
     };
     img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
-        address_mode_u: mode(t.wrap_u),
-        address_mode_v: mode(t.wrap_v),
+        address_mode_u: mode(ru.wrap),
+        address_mode_v: mode(rv.wrap),
         ..ImageSamplerDescriptor::linear()
     });
     img

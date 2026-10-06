@@ -8,6 +8,7 @@
 //! `OpenKh.Kh2/Mdlx.Model.cs` and `OpenKh.Engine/Parsers/*` (Apache-2.0); see CREDITS.md.
 
 pub mod collision;
+pub mod texanim;
 pub mod texture;
 
 use glam::{Mat4, Quat, Vec3, Vec4};
@@ -30,6 +31,10 @@ pub struct Mesh {
     /// Skinning (empty for maps): up to 4 bones per vertex and their weights.
     pub joints: Vec<[u16; 4]>,
     pub weights: Vec<[f32; 4]>,
+    /// UV-scroll entry the mesh scrolls by: 0 none, k the texture footer's `UVSC` entry with
+    /// index k - 1. Map meshes: bits 1..5 of the mesh entry's +0xc word (FUN_0011f560 reads
+    /// `(+0x2c >> 1) & 0x1f`); skeletal meshes: bits 22..26 of the mesh header's flags (FUN_00121a78).
+    pub uv_scroll: u8,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -56,6 +61,8 @@ pub struct Model {
     pub textures: Vec<Texture>,
     /// Object collision shapes (MDLX only).
     pub shapes: Vec<collision::Shape>,
+    /// Texture animations (sprite regions and UV scrolls) from the texture container's footer.
+    pub anims: texanim::Animations,
 }
 
 fn u32_at(b: &[u8], o: usize) -> u32 {
@@ -78,8 +85,9 @@ pub fn map_model(block: &[u8]) -> Vec<Mesh> {
         let e = 0x20 + 16 * c;
         let (start, texture) = (u32_at(b, e) as usize, u32_at(b, e + 4) as usize);
         let transparent = b.get(e + 0x0A..e + 0x0C).is_some_and(|f| f != [0, 0]);
+        let uv_scroll = (u32_at(b, e + 0x0C) >> 1 & 0x1f) as u8;
         let code = dma::chain_to_vif(b, start);
-        let mut mesh = Mesh { texture, transparent, ..Default::default() };
+        let mut mesh = Mesh { texture, transparent, uv_scroll, ..Default::default() };
         Vif::default().run(&code, |mem| append_packet(&mut mesh, &VpuPacket::read(mem), |p, i| p.vertices.get(i).map(|v| [v[0], v[1], v[2]])));
         if !mesh.indices.is_empty() {
             meshes.push(mesh);
@@ -106,7 +114,9 @@ fn append_packet(mesh: &mut Mesh, p: &VpuPacket, pos: impl Fn(&VpuPacket, usize)
 pub fn mdlx(file: &[u8]) -> Option<Model> {
     let entries = kh2_bar::parse(file).ok()?;
     let block = entries.iter().find(|e| e.kind == 4)?.data;
-    let textures = entries.iter().find(|e| e.kind == 7).map(|e| texture::decode(e.data)).unwrap_or_default();
+    let tex = entries.iter().find(|e| e.kind == 7);
+    let textures = tex.map(|e| texture::decode(e.data)).unwrap_or_default();
+    let anims = tex.map(|e| texanim::parse(e.data)).unwrap_or_default();
     let b = block.get(RESERVED..)?;
     if u32_at(b, 0) != 3 {
         return None;
@@ -144,7 +154,7 @@ pub fn mdlx(file: &[u8]) -> Option<Model> {
                 slots.last_mut().unwrap().push(v as usize);
             }
         }
-        let mut mesh = Mesh { texture, transparent: flags & 1 != 0, ..Default::default() };
+        let mut mesh = Mesh { texture, transparent: flags & 1 != 0, uv_scroll: (flags >> 22 & 0x1f) as u8, ..Default::default() };
         for (pk, slot) in packets.iter().zip(&slots) {
             let tag = dma::tag_at(b, *pk);
             let code = b.get(tag.addr..tag.addr + tag.qwc * 16).unwrap_or(&[]);
@@ -163,7 +173,7 @@ pub fn mdlx(file: &[u8]) -> Option<Model> {
         }
     }
     let shapes = entries.iter().find(|e| e.kind == 23).map(|e| collision::parse(e.data)).unwrap_or_default();
-    Some(Model { meshes, bones, textures, shapes })
+    Some(Model { meshes, bones, textures, shapes, anims })
 }
 
 /// Absolute rest-pose matrices (rotation then translation; scale is not applied by the game here).
@@ -246,6 +256,7 @@ pub fn map_file(file: &[u8]) -> Option<MapFile> {
         Some(Model {
             meshes: map_model(m.data),
             textures: t.map(|t| texture::decode(t.data)).unwrap_or_default(),
+            anims: t.map(|t| texanim::parse(t.data)).unwrap_or_default(),
             ..Default::default()
         })
     };

@@ -264,6 +264,7 @@ impl Plugin for FxPlugin {
         embedded_asset!(app, "fx_distort.wgsl");
         app.add_plugins(MaterialPlugin::<DistortMaterial>::default())
             .add_message::<StartEffect>()
+            .add_message::<StartSystemEffect>()
             .add_message::<GameEffect>()
             .add_systems(Startup, setup)
             .add_systems(
@@ -273,6 +274,7 @@ impl Plugin for FxPlugin {
                         weapon_trails,
                         motion_effects,
                         start_requests,
+                        start_system_requests,
                         hit_sparks,
                         fx_kill,
                         game_effects,
@@ -325,6 +327,24 @@ pub fn start_requests(mut commands: Commands, lib: Res<EffectLib>, anims: Query<
         if let Some(pax) = lib.for_rig(&a.rig) {
             start(&mut commands, pax, r.id, Bind::Owner(r.owner));
         }
+    }
+}
+
+/// Request to start an element of the system effect file `00effect.bar` at a fixed place (what
+/// `FUN_001db868(&DAT_01c954d8, id, 1, 1, 10000, 0)` does, as the clash spark `FUN_0018d560` uses it).
+/// `at` is a world matrix in Bevy space; its translation replaces the element's own translation.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct StartSystemEffect {
+    pub id: u16,
+    pub at: Mat4,
+}
+
+pub fn start_system_requests(mut commands: Commands, lib: Res<EffectLib>, mut req: MessageReader<StartSystemEffect>) {
+    for r in req.read() {
+        if std::env::var_os("KH2_FXLOG").is_some() {
+            info!("system effect {:#x} at {:?}", r.id, r.at.w_axis.truncate());
+        }
+        start_placed(&mut commands, &lib.system, r.id, Bind::Fixed(r.at), Placement { replace_translation: true, ..default() });
     }
 }
 
@@ -916,6 +936,27 @@ pub fn fx_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Which effect files carry clash-spark elements (category bit 0x10 plus a target-bit): the lookup
+    /// of `FUN_0018d6b0`, which runs before the party handler's system spark. Skips without a disc.
+    #[test]
+    fn clash_spark_elements_by_file() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        for name in ["obj/W_EX010.apdx", "obj/P_EX100.apdx", "obj/M_EX010.apdx", "obj/M_EX020.apdx"] {
+            let Some(p) = load(&disc, name, 99, None) else {
+                eprintln!("{name}: not loadable");
+                continue;
+            };
+            let sparks: Vec<(u16, u64)> = p.pax.elements.iter().filter(|e| e.category & 0x10 != 0).map(|e| (e.id, e.category)).collect();
+            let low: std::collections::BTreeSet<u64> = p.pax.elements.iter().map(|e| e.category & 0xffff_ffff).collect();
+            eprintln!("{name}: {} elements, clash-category (0x10) elements: {:x?}, low category words present: {:x?}", p.pax.elements.len(), sparks, low);
+            assert!(sparks.is_empty(), "{name}: has 0x10 elements, so FUN_0018d6b0 would spark first and the party handler's system spark would be skipped");
+        }
+    }
 
     #[test]
     fn hit_rotation_follows_the_game_axes() {

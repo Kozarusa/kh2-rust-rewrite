@@ -273,11 +273,24 @@ docs/hit-reaction.md: latch `connected`, spark only / recoil 0x29 or 0x2b with c
 with push 200, facing the other attack and 80 invincible ticks). The spark (`FUN_0018d560` ->
 `FUN_001db868(&DAT_01c954d8, id, ...)`) is element 0xd (spark only, recoil) or 0xb (guard bounce of a party actor,
 +0x588 bit 0x80; 0xc otherwise) of the **system file** `00effect.bar`, placed at the own volume's centre moved toward
-the other's by the own radius; `fx::StartEffect` only starts elements of the owner's own effect file, so the spark is
-not started [needs an fx.rs entry for the system file at a fixed point]. Evidence: `clash: Player attack 127 meets Enemy attack 1313` and `Soldier clash: recoil motion 140`
-in the run above.
+the other's by the own radius. The spark is started through `fx::StartSystemEffect { id, at }` (handler
+`fx::start_system_requests`: `start_placed` on `EffectLib::system` with the translation replaced and a fixed bind;
+`fx::StartEffect` only reaches the owner's own effect file). `player_reaction::receive_clashes` sends it with the
+`spark` id `party_clash` returns, at `own centre + unit(other centre - own centre) * own radius`; the volume centre is
+the midpoint of the capsule [inferred: the hit code's own centre is private to `combat.rs`]. The game starts it only
+when neither volume has flag 0x80, which `FUN_0018d560` itself sets. `FUN_0018d808` first calls `FUN_0018d6b0` for both
+sides, which would start a spark from the *owner's* effect file (category 0x10 plus the row's `EffectOnHit` bit) and set
+the flag, silencing the handler's; none of `W_EX010`, `P_EX100`, `M_EX010`, `M_EX020` has a 0x10 element
+(`fx::tests::clash_spark_elements_by_file`), so for these objects the handler's system spark is the clash spark and the
+flag is clear. The enemy-side handler does not call `FUN_0018d560` (only `FUN_001754a0` and `FUN_0018d6b0` do), so the
+spark is made once per clash. Evidence (`KH2_FXLOG=1`, the long fight of `accept.ps1`'s reaction-34 scenario; clashes
+happen by chance, 1 of 2 runs here had none): `player: clash: own atkp 127 ... recoil motion 41 ...; system effect 0xd
+(started at Vec3(-3.607, 0.395, -1.024))`, then `fx: system effect 0xd at Vec3(-3.6067522, ...)` and `fx: fx 13 objs 9
+batches 7 verts 1176` (effect 13 = 0xd running at that point). The element itself was looked at in a screenshot made
+with `KH2_FXTEST=13` (a bright ring and sparks); a screenshot of the spark at a real clash was not taken (the clash
+moment is not reproducible).
 
-Not ported: the spark (`FUN_0018d560`, an effect start), the cone test of `FUN_0018d308` for rows with
+Not ported: the cone test of `FUN_0018d308` for rows with
 `ReflectRange` (70 rows; those pairs never clash here and the first one met is warned about), `ReflectAction`
 (a script action id looked up by `FUN_0019e870`, not decoded), the hit-registry tests of `FUN_001be108` (a pair
 that already hit each other does not clash again), `ReflectRC`, the airborne variants of the recoil's push (the
@@ -541,8 +554,9 @@ none of which exist in the app.
 3. `sora.rs` / the drive plugin (WP-2B2): the player's form id into `reaction_cmd::Ctx.form` (now 0) and the battle flag.
 4. Consumer of `reaction_cmd::PlayerReactionCmd`: **done by WP-5C** (`player_reaction.rs`, see "The player's side"
    above). `Charge` is still not consumed.
-5. Consumer of `clash::Clash`: **done by WP-5C** (`player_reaction::receive_clashes`). Still open: the clash spark
-   (`FUN_0018d560`, system effect 0xb / 0xd of `00effect.bar`) needs a way into `fx.rs` (see the clash section).
+5. Consumer of `clash::Clash`: **done by WP-5C** (`player_reaction::receive_clashes`); the clash spark (system
+   effect 0xb / 0xd of `00effect.bar`) goes through `fx::StartSystemEffect` (see the clash section). Not done: the
+   spark of an enemy-owner row through `FUN_0018d6b0` (no object of the app has a category 0x10 element).
 6. `drive.rs`: the `PlayerReactionCmd::Charge` of commands 455 and 457 (+1 drive gauge unit each time the timer runs
    out, see above).
 7. A shared `LimitParty` source once companions exist (it is a resource today).

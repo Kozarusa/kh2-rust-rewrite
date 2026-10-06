@@ -82,7 +82,7 @@ conversion is `(int)(angle * 32768.0 / pi)` through the soft-float routines. 50 
 random, the axes, the zero and mixed cases) match the game within one unit
 (`mv_yp_eff_matches_the_game`).
 
-### pppSnoMdlDttNorm (verified except culling, clipping and the depth bias)
+### pppSnoMdlDttNorm (verified)
 
 A model that shows the screen shifted along the model's normals: a lens or shock-wave ripple.
 Verified by the oracle tests `sno_amplitude_matches_the_game` and `sno_geometry_matches_the_game`
@@ -109,15 +109,41 @@ computes within 3e-5, which is about 0.03 pixel):
   the undisplaced vertex projects. The frame buffer is the texture, tinted by the vertex color times
   the object color, blended with the entry's ALPHA.
 
-Inferred, not run in the interpreter (it has no VU flag registers, so the game's tests never reject
-there): a model whose flag word has bit 1 clear is drawn with back faces dropped (every Sno model on
-the disc has flag word 5, culled, or 7, not culled: Sora's `P_EX100` model 5, the system model 17,
-`M_EX600`, `N_BB050_BTL`, `PO06-08_PLAYER`, `AL14_*` are culled), by the sign of the z of
-`(p1 - p0) x (p2 - p1)` on the projected vertices; the port culls where it is negative assuming
-positive projection scales. The handler also lowers the view matrix's z translation for the duration
-of the draw (the value is restored afterwards, checked) by what reads as
-`entry +0x18 * 1e7 / (matrix z)` (inferred from the soft-float calls), a depth bias that is not
-ported, and the VU clip tests are not modelled.
+### Sno: clip, back-face test, depth bias (WP-1F3, verified)
+
+The interpreter now has a model of the VU0 status and MAC flags for the one routine that reads them
+(`oracle_tests.rs::install_vu_flags`: a probe on every flag-setting FMAC instruction of 0x20ab40 computes the
+zero and sign bits of its result as the VU manual states them). With it the game's own model draw runs its
+tests and `sno_clip_and_cull_match_the_game` compares the triangles it kicks with the port's, vertex by vertex
+(screen x, y, z words, texture-coordinate displacement), for models in front of the camera, culled and not
+culled, and for models that cross the near plane and the 4096-pixel window, with and without bias:
+
+* **Clip test** (0x20af98..0x20afbc, repeated for each vertex): the vertex goes through the projection, then
+  `vdiv Q = 1 / w`, `screen = clip * Q`; STATUS is cleared and `w - 1`, `x`, `y`, `4096 - x`, `4096 - y` are
+  computed with vsub; a sticky zero or sign bit (STATUS & 0xc0) drops the whole triangle. So a triangle with any
+  vertex nearer than w = 1, or off the 0..4096 window, is not drawn (the GS would clamp it; the game does not
+  rely on that).
+* **Back-face test** (0x20b0b4, only when the model flag word has bit 1 clear): `vopmula/vopmsub` of
+  `(p2 - p1)` and `(p1 - p0)` on the screen positions, the MAC flag's sign bit of z (0x20) skips the triangle.
+  The port's `(p1 - p0) x (p2 - p1)` with the game's y-down screen is the same sign.
+* **Depth bias** (handler 0x20a7e8): the projection's z translation `p32` (0x1db1038) becomes
+  `p32 - entry float +0x18 * 1e7 / (the model matrix's view-space z)` in double precision, converted back to a
+  float **by truncation** (0x327230; Rust's `as` rounds to nearest, `f64_to_f32_trunc` is the port's), for the
+  duration of the draw. GS z is `p22 + p32 / z`, so the port gives the batch `depth_scale = p32 / p32'` and
+  tests depth as if every vertex sat at that factor of its distance (`Batch::depth_scale`, applied in the
+  vertex stage of `fx_distort.wgsl`; the factor is the only thing the bias changes). The disc's Sno entries use
+  +0x18 of 0, -20 (`P_EX100`, `P_EX120` model 5), -50 (`B_EX130`) and -80 (system effect 12 model 18, `B_EX140`).
+  `sno_amplitude_matches_the_game` checks the biased translation the draw sees (and its restoration).
+* **Depth test off** (entry byte +0x17, `Batch::depth_test`): the byte reaches the draw's setup; every Sno
+  entry on the disc has it 0, so the depth test is on (ZTST GREATER). The mapping of the set case to ALWAYS is
+  an **inference** from the packet setup (the byte lands in the packet word that carries the TEST register).
+* **The projection** is the game's (`kh2_fx::projection::Projection`, `projection_matches_the_game`): the 4x4 the
+  camera builder FUN_001078f0 -> FUN_00106ba0/00106c48/00106a68 leaves at 0x3b21f0 for a given horizontal field of view,
+  from the constants at 0x3780f0..0x378164 read from the executable: focal length
+  `(512 / 0.8 * 0.5) / tan(hfov * 0.5)`, x and y scales 0.8 and 0.8667, centre 2048, z row
+  `p22 = (near * c - far * near) / (c - near)`, `p32 = near * c * (far - near) / (c - near)` with c = 4e6,
+  near 1, far 1.677e7. The stored matrix has 0 where the port keeps 1 in the z row's w (the model draw adds
+  the w = z term itself); nothing else differs.
 
 The port produces the displaced geometry as `Batch::offsets`; `fx.rs` draws it with the material
 `DistortMaterial` (`fx_distort.wgsl`), which reads the scene drawn so far through Bevy's transmission
@@ -221,16 +247,109 @@ first use); `KH2_FXTEST_EVERY=<ticks>`, `KH2_FXTEST_DIST=<m>` (negative: toward 
 every living enemy at those times (both `M_EX020` and `M_EX010` die with their effect 2).
 `KH2_FXINEFFECTIVE=1` makes every hit ineffective. `KH2_FXLOG=1` logs the effect decisions.
 
+## Bound effects: what follows the owner (WP-1F3, verified except where marked)
+
+The game's effect record (the "bind record", created by FUN_001db5f0 from the PAX element, ticked by FUN_001dd0d0)
+works like this, and `fx.rs::tick` follows it:
+
+* **Creation** (FUN_001db868 finds the first element with the id; FUN_001db5f0 starts it): the start wait is the
+  element's `start_wait`, plus `DAT_0037c778` (0.1) when element flag 1 (BIND) is set. The record's clock
+  (+0x4c) starts at 0 and gets the frame step added at the end of every FUN_001dd0d0; nothing runs, draws or
+  sounds while the clock is below the wait. **Inferred**: the step is one 60 Hz tick (the game adds `DAT_00356f40`,
+  2.0 per update in its own units). On the disc only `N_HB630` effect 7 (wait 20) has a non-zero wait.
+* **The sound** is started when the instance starts (FUN_001dd748 / FUN_002c32b8), so `effect_sounds` was
+  folded into `tick` and a waiting element starts its sound at the wait.
+* **Following the owner** (per tick, FUN_001dd0d0 -> FUN_001dcd08 for the object-bound mode): flag 1 clear: the
+  matrix is read once (the first tick) and kept. Flag 1 set: it is read again every tick, except that an element with
+  flag 2 (BIND_ONLY_START) keeps the first reading once the instance runs. The matrix is the owner's bone matrix
+  (FUN_0016aa18: bone number below 0x4000 a bone, 0x4000 the object's own matrix, 0x4001 and above other object
+  matrices) times the element's own placement. `Bind::Owner` always followed the bone before; now the three
+  cases differ. Element flag 0x20000 (a camera-relative bind, FUN_001dc978) is not ported (no element the app
+  starts has it; **gap**).
+* **The owner goes away** (FUN_001dcd08: FUN_0019a3f8 on the owner returns 0): the record is marked orphaned (flag 0x10),
+  stops updating and keeps its last matrix; the effect plays on. FUN_001dd0d0 then ends it at once only for
+  elements with flag 0x200 (DESTROY_WHEN_OBJECT_LEAVES) or flag 0x400 (checked through FUN_001dd670); FUN_001dd060
+  ends it as flag 0x80 says (stop like a loop end, FUN_001d9f48) or flag 0x40 (fade out over the element's
+  `fadeout_frame` frames, FUN_001da080), once. `fx.rs` did the opposite (despawned the effect with its owner);
+  this matters for the death effect, which outlives the hidden and removed body. The fade multiplies the effect's
+  alpha through `Env::tint.w` (**inferred**: the game scales the instance alpha).
+* The attached owner of `spawn_attached` (the sixth argument of FUN_0016a570, defaulting to the object) is the
+  record's +0x48; only the checks above read it.
+
+## Death, hide and remove (WP-1F3)
+
+* The hide-then-remove step: the script's `hide` ends in `enemy_ai.rs` (`obj.hidden` -> the enemy entity is
+  despawned, the app's own rule; the game's rule for deleting a hidden object was not found). Before this package the
+  effects bound to that body were despawned with it, which cut the death effect and the Soldier's `leave` effect
+  (element id 1 of `M_EX010`, started by `spawn_attached(1, 1, 0)` of its `leave` mode and routed by `enemy_ai`
+  through `StartEffect`) short. With the orphan rule above both play to their end. The Shadow's `leave` asks for
+  id 1, which its file does not have (nothing starts, as in the game: FUN_001db868 returns 0).
+* **FUN_001b25d0 (the victim's method +0x5c, "defeated") step by step**: (1) find the mode named `dead` in the
+  mode table at +0x300 (FUN_001870d8) and switch to it (FUN_00186db0); (2) when the object has an attacker record
+  (+0x48c) with a stat block (+0x254): if FUN_001b5148 holds (inferred: the last attacker is Sora, no
+  cutscene lock) the payout is `ceil(table[+10] * stat block ushort +0x56 / 100)` where `table` is
+  `DAT_0035f33c`; when the player is valid and has bit 0x80 of his word +0x588 and his HP fraction is at or
+  below the float at `DAT_00360130 + 0x144`, the amount is multiplied by the byte at player stats +0x2b
+  (inference: a low-HP bonus ability); FUN_001b51e0 adds it to the munny at `DAT_00340e48` (capped at 9,999,999)
+  and loops over the 13 party slots (FUN_001b52f8; HP-orb or experience bookkeeping, not decoded), and when it
+  returns positive a pickup is created (FUN_0016bbe8 builds the position, FUN_0015b198 spawns the 0xae0-byte
+  prize object); (3) when the stat block's short +0x58 is non-zero FUN_0016b738 drops the ground marker
+  (the same call as the script's `ground_marker`; the point is the object's position with y above the floor
+  found by a probe FUN_001d1648, handed to FUN_001a3cb3), and when its short +0x5a is non-zero FUN_001be6b8 sets a
+  progress flag (bit in the array at 0x340e6c, count at 0x340e68) and runs the flag's side effects
+  (FUN_00180450); (4) FUN_00186568 -> FUN_00186580 sets the dead flag. **Gap**: munny, the pickup object, the
+  HP orbs and the flag are not ported (the app has no munny counter or pickup object to hand them to); the
+  stat-block offsets are named by position only. The `enmp` Prize and Experience columns are the probable source.
+
+## Hit point (FUN_0018ce18, for `combat.rs`; not edited here)
+
+`Hit.point` is `vol.a`, the attacker volume's base point. The game puts the effect at the point on the victim's
+volume in the direction of the attack: with `C` the victim's volume centre (record +0x10), `r` its radius (+4)
+and `h` its half height (+8), and `A` the attacker volume's centre (record +0x20 of the attacker):
+
+    d = A - C
+    dy = clamp(d.y, -h, h)
+    t = |dy / h|                              (FUN_00300188 is fabs)
+    flat = normalise((d.x, 0, d.z))
+    point = C + (flat.x * r * sqrt(1 - t*t), dy, flat.z * r * sqrt(1 - t*t))
+
+(`DAT_0037ac84` is 1.0.) It is a point on the victim's ellipsoid-like volume at the attacker's height, clamped to the
+volume's vertical extent. Needed edit in `combat.rs::detect_hits` (the `Hit { .. point: vol.a }` line): use this with
+the overlapping hurt volume's centre, radius and half height (`shape_volume` has `a`, `b`, `r`; the centre is
+`(a + b) / 2`, the half height `|b - a| / 2 + r`, in Bevy space with y up; the clamp is symmetric so the game's
+y-down axis does not matter) and the attacker volume's centre `(vol.a + vol.b) / 2`. The Y axis of the placement is
+the one `fx.rs::Placement::hit` and `GameEffect::Damage` already handle.
+
+## Tail3X draw flags and the draw-call budget (FUN_0021a660, read; gap)
+
+The shape-draw routine reads the record `a1` (word at +2 = flags) and the shape frame `a0` (word 0 bit 8 = "uses
+the alternate GIF tag", +2 = sprite count). What the bits do, from the code:
+
+* record flag 0x80: draws into the **caller's own packet memory** (`record +0x14`) and first checks the budget
+  `DAT_01db11f0 <= DAT_01db11e8 + size`: when the packet budget set by FUN_001e0168 (called from FUN_001e4350 with
+  the instance memory size) is spent the draw is skipped and the routine returns `DAT_01db11e4`. The budget
+  is the per-frame effect memory; the port has no packet memory, so the check cannot fire and nothing is
+  skipped. **Gap by construction** (a frame that overflows the console's memory would lose sprites there).
+* record flag 0x10: a longer packet header (3 GIF tags, 0xee8 against 0xe8 bytes of header reservation) and an extra
+  register write 0x47 (the register was not identified); not visible in the port.
+* record flag 0x100: the second set of GS register words (`DAT_01dbb3b0`) instead of `DAT_01dbb320` (a
+  different TEST/CLAMP state; the words were not decoded).
+* record flags 0x400 and 0x800: sprites fade or shrink with depth: a clamp to the ranges at `0x367030..0x367060`
+  applied to the alpha and the sprite size (`vminibc/vmaxbc` on a plane equation of the view z). Which of the
+  two constants sets is in force depends on the bits; **inferred** meaning: near and far fade distances. Not ported;
+  the Tail3X entry bytes that set these bits (+0x50, +0x51, +0x52, +0x54, +0x55) are not interpreted, as
+  before. Of the elements in `M_EX*` the effect that would show it is the trail fade at long range, which is
+  not visible within the arena sizes the app has.
+* sprite clipping: each sprite's corners go through the same `vclip` window test as the Sno draw (the 2048 +- 2047
+  window and the near test); sprites outside are skipped. Whether `pppDrawShapeX` (the app's port) clips was not checked; the GPU clips the rest, so the visible
+  difference is limited to sprites that straddle the near plane or the 4096 window (**inferred**).
+
 ## What is not done
 
-* `pppSnoMdlDttNorm`: back-face culling and the clip tests (the interpreter has no VU flag registers)
-  and the depth bias; see its section.
-* The shape-draw flag bits of Tail3X, the draw-call budget in FUN_0021a660 and the GS state are not
-  modelled (shared with the existing `pppDrawShapeX` port).
-* The rest of FUN_001b25d0 (munny and item payout), the hide-then-remove step after the `dead` mode
-  and the Soldier's `leave` effect.
-* Hit-point accuracy: `Hit.point` is the attacker volume's base point, not the nearest point on the
-  victim's volume (FUN_0018ce18).
-* The category tests use the first matching element only for the damage effect and the spark; effect
-  starts by id start every element with that id (no file on the disc repeats an id, checked over all
-  750 effect files).
+* Hit-point accuracy: the rule is above; `combat.rs` needs the edit (not made, not in this package's ownership).
+* Munny and item payout of FUN_001b25d0, the camera-bound effect bind (flag 0x20000), the depth fade of sprites
+  (flags 0x400, 0x800) and the packet budget; see the sections above.
+* The Sno lens samples the opaque pass only, bilinear, with a per-fragment displacement (see above).
+* The `+0x17` depth-test-off mapping and the clock unit of the start wait are inferences.
+* Category tests: all category-selected lookups are first-match (FUN_001db9e0); nothing else uses more than the
+  first element.

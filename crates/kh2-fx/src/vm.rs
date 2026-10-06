@@ -40,6 +40,10 @@ pub struct Env {
     pub two_point: Option<[Vec3; 2]>,
     /// Column lengths of the bind matrix (the game's per-effect scale).
     pub bind_scale: Vec3,
+    /// The game's projection (the matrix at 0x1db1000, see [`crate::projection`]): camera space
+    /// to GS screen pixels. Programs that clip or cull on the screen (`pppSnoMdlDttNorm`) need it;
+    /// without it they draw every triangle in front of the camera.
+    pub proj: Option<Mat4>,
 }
 
 impl Default for Env {
@@ -51,12 +55,13 @@ impl Default for Env {
             tint: Vec4::ONE,
             two_point: None,
             bind_scale: Vec3::ONE,
+            proj: None,
         }
     }
 }
 
 /// What the draw handlers produced this tick: textured triangles in fx space.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Batch {
     pub dpd: usize,
     /// GS TEX0 register of the texture (None: untextured).
@@ -70,6 +75,18 @@ pub struct Batch {
     /// vertex position shifted by its displacement, tinted by the vertex color. Empty for every
     /// other batch.
     pub offsets: Vec<Vec3>,
+    /// Depth bias as the game applies it: the batch is depth-tested as if every vertex sat at
+    /// `depth_scale` times its distance from the camera (1.0: none). `pppSnoMdlDttNorm` lowers
+    /// the projection's z translation for its draw, which comes to this factor.
+    pub depth_scale: f32,
+    /// Whether the GS depth test is on for the batch (ZTST GREATER; false: ALWAYS).
+    pub depth_test: bool,
+}
+
+impl Default for Batch {
+    fn default() -> Batch {
+        Batch { dpd: 0, tex0: None, alpha: 0, verts: Vec::new(), indices: Vec::new(), offsets: Vec::new(), depth_scale: 1.0, depth_test: true }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

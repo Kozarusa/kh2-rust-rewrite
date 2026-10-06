@@ -21,14 +21,20 @@ mod hud_target;
 #[path = "hud_banner.rs"]
 mod hud_banner;
 #[path = "hud_menu.rs"]
-mod hud_menu;
+pub(crate) mod hud_menu;
 #[path = "hud_text.rs"]
 mod hud_text;
+#[path = "hud_card.rs"]
+mod hud_card;
+#[path = "hud_party.rs"]
+pub(crate) mod hud_party;
 
 use hud_gauge::{DriveGauge, DriveTables, FaceFile, MpRecharge, SoraPanel};
 use hud_gfx::{HudGfxPlugin, HudScene};
-use hud_banner::{BannerNodes, HudBanner, MunnyPopups};
+use hud_banner::{BannerNodes, HudBanner, MunnyPopups, NumberStrips, StripNodes};
+use hud_card::{AreaCard, CardNodes};
 use hud_menu::{CommandMenu, MenuFile, MenuNodes, MenuTables};
+use hud_party::{PartyMembers, PartyNodes};
 use hud_target::{TargetBubble, TargetHud};
 
 pub struct HudPlugin;
@@ -52,10 +58,32 @@ impl Plugin for HudPlugin {
             .init_resource::<MenuFile>()
             .init_resource::<MenuTables>()
             .init_resource::<MenuNodes>()
+            .init_resource::<NumberStrips>()
+            .init_resource::<StripNodes>()
+            .init_resource::<AreaCard>()
+            .init_resource::<CardNodes>()
+            .init_resource::<PartyMembers>()
+            .init_resource::<PartyNodes>()
             .add_systems(Startup, (setup, load_files).chain())
             .add_systems(
                 Update,
-                (toggle_debug, (hud_gauge::update, hud_target::update, hud_menu::update, hud_banner::update, hud_text::demo).chain(), debug_text.run_if(debug_on)).in_set(Frame::Hud),
+                (
+                    toggle_debug,
+                    (
+                        hud_gauge::update,
+                        hud_party::update,
+                        hud_target::update,
+                        hud_menu::mirror_reaction,
+                        hud_menu::update,
+                        hud_banner::update,
+                        hud_banner::update_strips,
+                        hud_card::update,
+                        hud_text::demo,
+                    )
+                        .chain(),
+                    debug_text.run_if(debug_on),
+                )
+                    .in_set(Frame::Hud),
             )
             .add_systems(Update, popups.in_set(Frame::Popups).run_if(debug_on));
     }

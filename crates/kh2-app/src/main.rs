@@ -12,6 +12,7 @@
 mod abilities;
 mod assets;
 mod audio;
+mod audio_bgm;
 mod camera;
 mod combat;
 mod data;

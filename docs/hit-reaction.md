@@ -80,6 +80,27 @@ calls the owner's virtual method +0x6c with both volumes.
   1, ground): the guard bounce FUN_001756c8 (motion 0x2a = 42, power 200.0 push facing away, then
   FUN_00175aa8 with 80.0). FUN_00178708 also copies `ReflectRC` (0x20) of the other volume into
   its owner at +0xaa4; the field is 0 in every USA row.
+* Party class in detail (WP-5C, FUN_001754a0 and callees; ported for Sora in `player_reaction.rs`,
+  rule function `player_reaction::party_clash`, unit test `party_clash_follows_fun_001754a0`):
+  1. the actor's +0x108 bit 0x2000000 is set first in every case: the hit-landed latch the next
+     attack press needs (`Sora::connected`);
+  2. spark only: FUN_0018d560 with system effect 0xd (`00effect.bar`, holder 0x1c954d8, returned by
+     FUN_001a21d0);
+  3. recoil: spark 0xd, FUN_00185d30 with the power at 0x37a4a0 (-1.0, so the default 50.0) and no
+     motion override, then FUN_00176aa0 (combo counter +0xb04 minus one, not below 0);
+  4. guard bounce: spark 0xb when the actor's +0x588 has 0x80 (the party class sets it), else 0xc;
+     then FUN_001756c8: FUN_0018cc48 gives the flat unit direction from the other volume's position
+     (its method +8) to the actor (+0x730); the actor is turned along it times 0x37a4a8 (-1.0: it
+     faces the other attack; FUN_0016a828, skipped when FUN_0019ad98 holds, not decoded); FUN_001857b0
+     pushes it along the direction (away) with 0x37a4ac (200.0); FUN_0017e220 clears the motion queue
+     and requests motion 0x2a; FUN_0017e378 queues motion 0 behind it; FUN_00175aa8 writes 0x37a4b0
+     (80.0) to +0xb00. +0xb00 is the invincibility timer: FUN_00175ab0 (party tick FUN_00174b68)
+     counts it down by the frame step, FUN_00175ad8 refuses hits while it is above 0, and Quick Run
+     (FUN_00178108) writes its `fmab` star time there too (the app's `Sora::invuln`). Then the own
+     volume gets flag 0x40.
+  The port: motion via the state fallback in the battle state, blend 2 ticks (the request's
+  arguments 0, 0 were not decoded), `State::Hurt` (back to idle when the motion ends, which is what
+  the queued motion 0 gives). The spark is not started (see docs/limits-reactions.md).
 * Enemy-style class (handler at 0x1b2478, not in the decompilation, read from disassembly). If the
   volume has flag 0x40 or `A.RefactSelf == 2`: nothing. Else if `ReflectedMotion` (0x15) is non-zero:
   FUN_00185d30 with power `ReflectHitBack` (s16, negative = 50.0) and that motion ID as the

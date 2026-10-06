@@ -53,12 +53,14 @@ pub struct Animator {
     pub root_delta: (Vec3, f32),
     /// The motion rig's work buffers (persist like the game's per-object buffers).
     rig_state: kh2_anim::rig::RigState,
+    /// A motion from outside the rig's own set (`play_external`), played instead of `slot`.
+    extra: Option<Arc<kh2_anim::Slot>>,
 }
 
 impl Animator {
     /// Starts a motion slot. `blend` is the crossfade length in ticks (60 Hz).
     pub fn play(&mut self, slot: Option<usize>, looping: bool, blend: f32) {
-        if slot == self.slot && !self.finished && looping == self.looping {
+        if slot == self.slot && !self.finished && looping == self.looping && self.extra.is_none() {
             return;
         }
         self.restart(slot, looping, blend);
@@ -66,6 +68,19 @@ impl Animator {
 
     /// Like `play` but always restarts (e.g. the same attack twice).
     pub fn restart(&mut self, slot: Option<usize>, looping: bool, blend: f32) {
+        self.extra = None;
+        self.start(slot, looping, blend);
+    }
+
+    /// Plays a motion that is not in the rig's own set (a paired motion of a reaction command, held
+    /// in the other object's motion set but made for this skeleton), once, crossfaded over `blend`
+    /// ticks. `slot` reads `None` while it plays; any `play` or `restart` replaces it.
+    pub fn play_external(&mut self, motion: Arc<kh2_anim::Slot>, blend: f32) {
+        self.extra = Some(motion);
+        self.start(None, false, blend);
+    }
+
+    fn start(&mut self, slot: Option<usize>, looping: bool, blend: f32) {
         self.blend_from = self.pose.iter().map(|m| m.to_scale_rotation_translation()).collect();
         self.blend_t = 0.0;
         self.blend_len = blend;
@@ -122,10 +137,16 @@ impl Animator {
     }
 
     pub fn motion(&self) -> Option<&kh2_anim::Motion> {
+        if let Some(x) = &self.extra {
+            return x.motion.as_ref();
+        }
         self.rig.mset.get(self.slot?)?.motion.as_ref()
     }
 
     pub fn triggers(&self) -> Option<&Triggers> {
+        if let Some(x) = &self.extra {
+            return Some(&x.triggers);
+        }
         Some(&self.rig.mset.get(self.slot?)?.triggers)
     }
 
@@ -142,7 +163,7 @@ impl Animator {
     }
 
     pub fn tag(&self) -> &str {
-        self.slot.and_then(|s| self.rig.mset.get(s)).map_or("-", |s| s.tag.as_str())
+        self.extra.as_deref().or_else(|| self.slot.and_then(|s| self.rig.mset.get(s))).map_or("-", |s| s.tag.as_str())
     }
 
     /// World-space matrix of a bone given the body's global transform.
@@ -200,6 +221,7 @@ pub fn spawn_skinned(
         root: Default::default(),
         root_delta: (Vec3::ZERO, 0.0),
         rig_state: Default::default(),
+        extra: None,
         rig,
     });
     body
@@ -241,8 +263,12 @@ pub fn animate(mut q: Query<&mut Animator>, mut joints: Query<&mut Transform>) {
             continue;
         }
         let rig = a.rig.clone();
+        let extra = a.extra.clone();
         let bones: &[Bone] = &rig.model.bones;
-        let motion = a.slot.and_then(|s| rig.mset.get(s)).and_then(|s| s.motion.as_ref());
+        let motion = match &extra {
+            Some(x) => x.motion.as_ref(),
+            None => a.slot.and_then(|s| rig.mset.get(s)).and_then(|s| s.motion.as_ref()),
+        };
         let mut pose = motion.map(|mo| mo.pose_with(bones, a.frame, &mut a.rig_state)).unwrap_or_else(|| a.pose.clone());
         // Poses are kept relative to the motion's root: root motion moves the character
         // instead, and crossfades between motions stay continuous.

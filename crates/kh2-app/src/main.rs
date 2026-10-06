@@ -25,6 +25,7 @@ mod harness;
 mod hud;
 mod limit;
 mod motor;
+mod player_reaction;
 mod reaction_cmd;
 mod reaction_parts;
 mod reaction_rules;
@@ -83,6 +84,7 @@ fn main() {
             limit::LimitPlugin,
             reaction_cmd::ReactionPlugin,
             clash::ClashPlugin,
+            player_reaction::PlayerReactionPlugin,
         ))
         .run();
 }

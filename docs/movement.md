@@ -85,21 +85,54 @@ motions 0xc9..0xcc and turns 0x97 / 0x98: a special non-drive mode, not a roll),
   floats: the 17th column the sheet calls `DodgeRollStarTime` shows the next row's HighJumpHeight
   (310, 385, 585, 585). Dodge Roll is a Final Mix addition.
 
-### The app (the user's rules, 2026-10-06)
-* Square while standing still: the guard (as `FUN_00178080`).
-* Square while moving: never the guard. The dash starts at the press with the Quick Run numbers of
-  the learned level (level 1 when Quick Run is not learned [inferred]) and motion 203.
-  * Released within 12 ticks (0.2 s) [inferred, the brief's default; no threshold exists in the
-    original]: the **dodge roll**: the dash runs 12 ticks from the press, then the stop brake and
-    motion 204. Log `sora dodge roll: Square released after N ticks`.
-  * Held 12 ticks with Quick Run learned: the **Quick Run** of `FUN_001c1660` (clock counted while
-    held, release or the end of AirSlideTime stops it). Log `sora quick run: Square held 12 ticks`.
-    Without Quick Run learned the held dash ends as a roll at 12 ticks.
-  The roll has no motion of its own on this disc: it shows the Quick Run start motion A150.
-* Harness check (tt00, `KH2_GROWTH=0,1,0,0`, keys `4.5:K,5.5:W:3.5,6.5:K,7.6:K:0.6`): `sora guard
-  A322`, then `sora dodge roll: Square released after 3 ticks`, `sora dash stop: Roll after 12
-  ticks`, then `sora quick run: Square held 12 ticks, Quick Run level 1, 2 ticks left`, `sora dash
-  stop: Run after 14 ticks`.
+### The Final Mix rules (WP-FIX-10b; `docs/final-mix.md` "Player controls")
+The user's rule (guard only when still, tap while moving = roll, hold while moving = Quick Run) is the
+Final Mix behaviour. Its numbers were read from the Final Mix executable; only the small rule constants
+are in code (`sora::square_ground`, `sora::TAP_TICKS`), no Final Mix data or assets.
+* The Square handler (FM 0x178eb0) runs the USA chain first, then, only when the stick magnitude
+  (actor +0x1c) is 0.0, the guard (FM 0x1790c0), then the Dodge Roll (FM 0x179530), then Quick Run
+  (FM 0x179148), then the guard again.
+* Dodge Roll is the **fifth growth kind** (growth slot 4 in FM; the USA table at 0x37bda0 has four).
+  The app's `sora::Growth.dodge_roll` is read from `Progress::dodge_roll` (`abilities::Abilities::growth(4)`),
+  `KH2_GROWTH=a,b,c,d,e` (fifth value) or F6; hidden in a drive form [inferred: a form's growth is its
+  own ability]. The baseline gives Sora Dodge Roll level 1 (the user's wish, docs/progress.md);
+  `KH2_ABILITY_START=data` drops it with the Guard so the USA rules stay reachable.
+* Decision table (`sora::square_ground`, test `square_decision_table`), after the explicit keys:
+
+  | stick | Dodge Roll | Quick Run | Square does |
+  |---|---|---|---|
+  | still | any | any | guard |
+  | moving | learned | any | roll start: tap = roll, hold = Quick Run (only if Quick Run learned) |
+  | moving | no | learned | Quick Run at the press (USA, no tap window) |
+  | moving | no | no | guard (USA: the guard has no stick test) |
+
+* **Threshold: 10 ticks** (`TAP_TICKS`). The roll's motion A180 (FM motion 209) has frame trigger type
+  34 at tick 10; its handler (FM 0x189c78) starts Quick Run when Square is still held, else the roll
+  plays on (test `square_while_moving_tap_rolls_and_hold_runs`). The earlier 12-tick number was an
+  inference and is replaced.
+* What the app shows for the roll (what the USA disc lacks): motion A180 and the 17th `fmab` column
+  (roll invincibility, FM +0x40) exist only in Final Mix. The app starts the dash at the press with the
+  Quick Run start motion A150 (203) and the Quick Run numbers (level 1 row when Quick Run is not
+  learned) [inferred], runs it `TAP_TICKS` ticks, then the stop brake and motion 204. The original's
+  roll installs no mover and no velocity (its travel is root motion of A180, FM 0x179530); that
+  part is not reproduced.
+* Logs: `sora square: moving, Dodge Roll level N, Quick Run level M: dodge roll pending ...` or
+  `... quick run at the press (USA rule)`; `sora guard ... standing still` / `... stick pushed, neither
+  learned`; `sora dodge roll: Square released after N ticks (tap, under 10)`; `sora quick run: Square
+  held 10 ticks ...`; `sora dash stop: Roll|Run after N ticks`.
+* Harness runs (tt00, `KH2_NO_ENEMIES=1`, keys `4.5:K,5.5:W:3.5,6.5:K,7.6:K:0.6` = guard standing, walk,
+  tap while moving, hold 0.6 s while moving). Logs seen:
+  * `KH2_GROWTH=0,1,0,0,1` (roll + Quick Run): `sora guard A322 (... standing still ...)`, `sora square:
+    moving ... dodge roll pending`, `sora dodge roll: Square released after 3 ticks (tap, under 10)`,
+    `sora dash stop: Roll after 10 ticks`, then for the hold `sora quick run: Square held 10 ticks, Quick
+    Run level 1, 4 ticks left`, `sora dash stop: Run after 14 ticks`.
+  * no `KH2_GROWTH` (baseline: Dodge Roll 1, Quick Run 0): the tap rolls as above; the hold logs `sora
+    dodge roll: Square held 10 ticks but Quick Run is not learned (level 0)` and `sora dash stop: Roll
+    after 10 ticks`.
+  * `KH2_GROWTH=0,1,0,0` (USA rules, no roll): `sora square: moving ... quick run at the press (USA
+    rule)` at every press; the tap stops with `sora dash stop: Run after 3 ticks`, the hold after 14.
+  * `KH2_GROWTH=0,0,0,0`: `sora guard A322 (... stick pushed, neither learned ...)` at both moving presses.
+  * `KH2_ABILITY_START=data`: no guard and no dash at all (no Guard ability, no Dodge Roll, Quick Run 0).
 
 ## Decompile index
 | address | read for |
@@ -116,7 +149,11 @@ motions 0xc9..0xcc and turns 0x97 / 0x98: a special non-drive mode, not a roll),
 | 0x1c1660, 0x1c18c0, 0x1c1840, 0x1c1a48, 0x1c1a78, 0x1c7018, 0x1c70f0, 0x1c7d20 | Quick Run mover, mover 0x16 |
 
 ## Gaps (searched without result)
-* A dodge roll and a tap/hold threshold: the Square chain above, the mover table at 0x1c88eb0, the
-  `fmab` reader `FUN_001cc1a0` users (`FUN_00178108`, `FUN_00178290`, `FUN_0017bad0`, `FUN_0016bd98`).
+* A dodge roll and a tap/hold threshold in the USA executable: the Square chain above, the mover table
+  at 0x1c88eb0, the `fmab` reader `FUN_001cc1a0` users (`FUN_00178108`, `FUN_00178290`,
+  `FUN_0017bad0`, `FUN_0016bd98`). They exist only in Final Mix (docs/final-mix.md); the app's rule is
+  ported from there.
+* The roll's length and travel (A180 is 27 frames at 30 fps with the idle range from tick 36 and root
+  motion carrying Sora): not reproduced, the USA disc has no A180.
 * The writer of +0x108 bit 0x800000 other than `FUN_00169ee8` (scan of `lui 0x80` / `lui 0x100`
   followed by a store to +0x108: only `FUN_00169ee8`).

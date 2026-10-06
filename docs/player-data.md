@@ -483,3 +483,5 @@ form 0, with experience `DAT_00340e4c` and level `DAT_00340c88` byte 6 (FUN_001d
   auto-form ability order (0x37c350), form to item (0x37b420), drive orb table (0x37b540). Their values are
   recoverable from the executable at run time if a later work package needs them as data.
 - `ptya`, `patn`, `vbrt` (party and voice tables) were not decoded here.
+
+Correction from WP-7H (see docs/party.md section 1): the memt words at +0x10 are 16 member objects by member index, merged per world (0 player, 1 Donald, 2 Goofy, 3 partner, 4..8 forms, 9 Mickey, 10..15 keyblades); indices 0..3 are not world outfits. FUN_001c77a8 takes every member, whatever its NeoStatus, in forms 3..5, not only Sora's two friends. The ability block at +0x58 also scales a party member's revive time (FUN_0017ce60).

@@ -31,7 +31,7 @@ pub struct MenuPlugin;
 
 impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(MenuGfxPlugin)
+        app.add_plugins((MenuGfxPlugin, crate::menu_status::StatusPlugin))
             .init_resource::<Menu>()
             // The field stands still while the menu is up: every 60 Hz set waits for it.
             .configure_sets(
@@ -216,6 +216,15 @@ impl Default for Menu {
     }
 }
 
+impl Menu {
+    /// The nodes only page 0 draws (rows, hand, glint, panel outline, help line, cards): a sub-page hides
+    /// them while it shows and puts their visibility back when it returns.
+    pub fn page0_nodes(&self) -> Vec<usize> {
+        let n = &self.nodes;
+        n.rows.iter().copied().chain([n.pointer, n.glint, n.panel, n.help]).chain(n.cards.iter().copied()).collect()
+    }
+}
+
 /// The brightness-to-black alpha: the picture is multiplied by `b` in the game's gamma-space product
 /// (the HUD's `gamma22` convention), which on the linear framebuffer is `b^2.2`.
 pub fn dim_alpha(brightness: f32) -> f32 {
@@ -327,7 +336,7 @@ fn party(sora: Option<&Sora>, data: Option<&GameData>) -> Vec<CardData> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn input(
+pub(crate) fn input(
     mut menu: ResMut<Menu>,
     mut scene: ResMut<MenuScene>,
     mut keys: ResMut<ButtonInput<KeyCode>>,
@@ -364,8 +373,14 @@ fn input(
                 }
             }
         }
+        // A sub-page (Status ...) owns its keys (its module runs before this system); only Start closes here.
+        Phase::Opening | Phase::Open if menu.page != 0 => {
+            if start {
+                close(&mut menu, &mut scene, &mut se, true);
+            }
+        }
         Phase::Opening | Phase::Open => {
-            let dir = if keys.pressed(KeyCode::ArrowUp) { -1 } else if keys.pressed(KeyCode::ArrowDown) { 1 } else { 0 };
+            let dir =if keys.pressed(KeyCode::ArrowUp) { -1 } else if keys.pressed(KeyCode::ArrowDown) { 1 } else { 0 };
             let fresh = keys.just_pressed(KeyCode::ArrowUp) || keys.just_pressed(KeyCode::ArrowDown);
             let mut step = None;
             if dir == 0 {
@@ -382,8 +397,14 @@ fn input(
             } else if confirm {
                 // M1 has no sub-page: the row refuses (sound kind 4).
                 let target = menu.rows.get(menu.cursor).and_then(|&e| menu_pages::page_of(e));
-                info!("menu: page 0 row {} refused (no sub-page yet; the original opens page {:?})", menu.cursor, target);
-                se.write(PlaySe::number(menu_sound::REFUSED, None));
+                if let Some(p) = target.filter(|p| crate::menu_status::PAGES.contains(p)) {
+                    menu.page = p;
+                    se.write(PlaySe::number(crate::menu_status::CONFIRM, None));
+                    info!("menu: page {p:#x}");
+                } else {
+                    info!("menu: page 0 row {} refused (no sub-page yet; the original opens page {:?})", menu.cursor, target);
+                    se.write(PlaySe::number(menu_sound::REFUSED, None));
+                }
             } else if let Some(wrap) = step {
                 move_cursor(&mut menu, &mut scene, &mut se, dir, wrap);
             }

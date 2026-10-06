@@ -32,6 +32,7 @@ mod magic_rules;
 mod menu;
 mod menu_gfx;
 mod menu_pages;
+mod menu_status;
 mod menu_text;
 mod motor;
 mod player_reaction;

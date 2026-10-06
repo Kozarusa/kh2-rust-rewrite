@@ -21,10 +21,11 @@
 //! measured in the app's space inside `Obj`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 
 use bevy::color::Alpha;
 use bevy::prelude::*;
-use kh2_bdx::{Arg, Call, Host, Program, Runtime, Value, Vec4};
+use kh2_bdx::{Call, Host, Program, Runtime, Value, Vec4};
 use kh2_tables::tables as t;
 
 use crate::assets::Disc;
@@ -82,12 +83,16 @@ struct Script {
     prog: Program,
     /// Bit 3 of the halfword at +0x48 of the object's `objentry` row (host 1.124, FUN_0019aaf0).
     flags124: bool,
+    /// Paired player motions of the object's motion set, see `paired_motions`.
+    paired: Arc<HashMap<usize, Vec<(String, f32)>>>,
 }
 
 /// The scripts of the enemies that run under BDX, by `Kind::name`.
 #[derive(Resource, Default)]
 struct AiPrograms {
     by_kind: HashMap<&'static str, Script>,
+    /// The player's objentry byte +7, which names the sub-motion of a paired motion.
+    player_model: u8,
 }
 
 /// Classification of a host call, for the trace and the summary.
@@ -415,6 +420,8 @@ struct Env<'a> {
     /// motion has ended (bit 1 of his +0x160), from `reaction_cmd::PlayerReaction`.
     player_serial: i32,
     player_motion_done: bool,
+    paired: &'a HashMap<usize, Vec<(String, f32)>>,
+    player_model: u8,
 }
 
 struct BevyHost<'a> {
@@ -691,6 +698,41 @@ impl BevyHost<'_> {
                 }
             }
             Call::SendMessage { .. } | Call::RemoteSetMode { .. } => missing(Value::None, "messages between objects"),
+            // 1.29 play_motion_with(from, to, entry, blend): entry `motion` of the first object's motion
+            // set played on the second object (FUN_0017f160). Only the player as `to` is supported.
+            Call::Func { group: 1, index: 29, args } => {
+                let (to, slot, blend) = (args[1].int() as u32, args[2].int(), args[3].float());
+                if to != PLAYER {
+                    return missing(Value::Int(0), "play_motion_with on an object other than the player");
+                }
+                let name = format!("{:03}0", self.env.player_model);
+                let ticks = usize::try_from(slot).ok().and_then(|s| self.env.paired.get(&s)).and_then(|l| l.iter().find(|(n, _)| *n == name)).map(|(_, t)| *t);
+                // FUN_0017ef98: the serial is the counter at 0x35ccb0 minus one, never above -1; its
+                // start value was not read, so it is taken as 0 [inferred; scripts only compare it].
+                let serial = self.obj.player_serial.unwrap_or(self.env.player_serial).min(0) - 1;
+                self.obj.player_serial = Some(serial);
+                self.obj.player_cmds.push(PlayerReactionCmd::PairedMotion {
+                    from: Entity::PLACEHOLDER,
+                    slot: slot.max(0) as usize,
+                    blend,
+                    serial,
+                    ticks: ticks.unwrap_or(0.0),
+                });
+                if ticks.is_none() {
+                    self.trace.note(self.tag, format!("paired motion entry {slot} has no sub-motion named {name}"));
+                }
+                approx(Value::Int(serial), "the player side does not play the motion yet (PlayerReactionCmd::PairedMotion has no consumer); its length is the sub-motion's")
+            }
+            // 1.238: the player's +0x158, the serial of his last paired motion.
+            Call::Func { group: 1, index: 238, args } if args[0].int() as u32 == PLAYER => {
+                imp(Value::Int(self.obj.player_serial.unwrap_or(self.env.player_serial)))
+            }
+            Call::Func { group: 1, index: 13, args } if args[0].int() as u32 == PLAYER => {
+                self.obj.player_cmds.push(PlayerReactionCmd::QueueMotion { slot: args[1].int().max(0) as usize, blend: args[2].float() });
+                approx(Value::None, "handed to the player side as PlayerReactionCmd::QueueMotion (no consumer yet)")
+            }
+            // 1.132: the target record returns to a pool; the app's records are never reused.
+            Call::Func { group: 1, index: 132, .. } => stub(Value::None, "target records are not pooled"),
             Call::Func { .. } | Call::Unknown { .. } => missing(Value::Int(0), "function not mapped"),
         }
     }
@@ -757,6 +799,8 @@ pub struct AiBrain {
     tag: String,
     enmp: u16,
     flags124: bool,
+    paired: Arc<HashMap<usize, Vec<(String, f32)>>>,
+    player_model: u8,
     started: bool,
     dead_sent: bool,
     errors_seen: usize,
@@ -800,18 +844,44 @@ fn load_programs(disc: Res<Disc>, mut programs: ResMut<AiPrograms>) {
         let Ok(mut a) = disc.0.lock() else { return };
         kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).map(|d| d.rows).unwrap_or_default()
     };
+    // The player's objentry byte +7 (`WeaponJoint`): the paired motions of reaction commands hold one
+    // sub-motion per player model, named by `%03d0` of it (FUN_0017ef98 formats the key with the format
+    // string at 0x37a598, FUN_0017ee40 looks the name up). Sora's row is P_EX100.
+    programs.player_model = rows.iter().find(|r| r.model_name == "P_EX100").map_or(1, |r| r.weapon_joint);
     for (kind, model) in entries {
+        let paired = disc.read(&format!("obj/{model}.mset")).map(|m| paired_motions(&m)).unwrap_or_default();
         let Some(file) = disc.read(&format!("obj/{model}.mdlx")) else { continue };
         let Some(entry) = kh2_bar::parse(&file).ok().and_then(|b| b.into_iter().find(|e| e.kind == 3).map(|e| e.data.to_vec())) else { continue };
         match Program::parse(&entry) {
             Ok(prog) => {
                 let flags124 = rows.iter().find(|r| r.model_name == model).is_some_and(|r| r.flags & 8 != 0);
                 info!("bdx: {kind} script {} ({} words), objentry flag 124 = {flags124}", prog.name, prog.words.len());
-                programs.by_kind.insert(kind, Script { prog, flags124 });
+                if !paired.is_empty() {
+                    info!("bdx: {kind} motion set has {} paired player motion entries", paired.len());
+                }
+                programs.by_kind.insert(kind, Script { prog, flags124, paired: Arc::new(paired) });
             }
             Err(e) => warn!("bdx: {model}: {e}; {kind} has no script and only stands"),
         }
     }
+}
+
+/// The paired player motions of an enemy's motion set: the entries of BAR type 20, each a BAR of
+/// sub-motions named `%03d0` of a player model byte (FUN_0017ee40). Maps entry slot to
+/// (sub-entry name, length in 60 Hz ticks); an empty sub-entry (the fallbacks) is left out.
+fn paired_motions(mset: &[u8]) -> HashMap<usize, Vec<(String, f32)>> {
+    let mut out = HashMap::new();
+    let Ok(entries) = kh2_bar::parse(mset) else { return out };
+    for (slot, e) in entries.iter().enumerate().filter(|(_, e)| e.kind == 20) {
+        let Ok(subs) = kh2_bar::parse(e.data) else { continue };
+        let list: Vec<(String, f32)> = subs
+            .iter()
+            .filter(|s| !s.data.is_empty())
+            .filter_map(|s| kh2_anim::Motion::parse(s.data).map(|m| (s.tag.to_string(), (m.frame_end - m.frame_start).max(0.0) * 60.0 / m.fps.max(1.0))))
+            .collect();
+        out.insert(slot, list);
+    }
+    out
 }
 
 /// Gives every new Shadow and Soldier its script runtime. Runs right after the wave spawner, so the
@@ -829,6 +899,8 @@ fn ai_attach(mut commands: Commands, programs: Res<AiPrograms>, q: Query<(Entity
             tag: format!("{}#{}", e.name, *serial),
             enmp: e.kind.enmp,
             flags124: script.flags124,
+            paired: script.paired.clone(),
+            player_model: programs.player_model,
             started: false,
             dead_sent: false,
             errors_seen: 0,
@@ -867,6 +939,15 @@ fn ai_update(
     for h in hit_msgs.read() {
         hits.entry(h.target).or_default().push(h.real);
     }
+    // The paired motion on the player runs its length, then reads as ended.
+    if let Some(r) = player_reaction.remaining {
+        if r <= 1.0 {
+            player_reaction.remaining = None;
+            player_reaction.paired_done = true;
+        } else {
+            player_reaction.remaining = Some(r - 1.0);
+        }
+    }
     let mut reactions: HashMap<Entity, Vec<(u16, i16)>> = HashMap::new();
     for r in accepted.read() {
         reactions.entry(r.target).or_default().push((r.cmd, r.pos));
@@ -879,7 +960,7 @@ fn ai_update(
         let Ok(mut anim) = anims.get_mut(e.body) else { continue };
         let rig = anim.rig.clone();
         let e = &mut *e;
-        let AiBrain { rt, obj, tag, enmp, flags124, started, dead_sent, errors_seen, last_frame, in_air, .. } = &mut *brain;
+        let AiBrain { rt, obj, tag, enmp, flags124, paired, player_model, started, dead_sent, errors_seen, last_frame, in_air, .. } = &mut *brain;
 
         // The world as the script finds it this tick.
         obj.motor.pos = tf.translation / SCALE;
@@ -905,6 +986,8 @@ fn ai_update(
             enmp: *enmp,
             player_serial: player_reaction.serial,
             player_motion_done: player_reaction.paired_done,
+            paired: paired.as_ref(),
+            player_model: *player_model,
         };
         let handle = obj.handle;
         let mut host = BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() };
@@ -932,14 +1015,20 @@ fn ai_update(
             let rec = host.obj.new_record(handle, pos);
             let handled = rt.event(&mut host, 11, &[PLAYER, cmd as u32, rec]);
             host.trace.line(host.tag, &format!("event 11: reaction command {cmd} (position index {pos}, record {rec:#x}); handler {}", if handled { "ran" } else { "absent" }));
-            if trace.level == 0 {
-                info!("bdx {tag}: event 11 (reaction command {cmd}) delivered, handler {}", if handled { "ran" } else { "absent" });
+            if host.trace.level == 0 {
+                info!("bdx {}: event 11 (reaction command {cmd}) delivered, handler {}", host.tag, if handled { "ran" } else { "absent" });
             }
         }
         rt.update(&mut host);
         for c in obj.player_cmds.drain(..) {
             let c = match c {
-                PlayerReactionCmd::PairedMotion { slot, blend, serial, .. } => PlayerReactionCmd::PairedMotion { from: ent, slot, blend, serial },
+                PlayerReactionCmd::PairedMotion { slot, blend, serial, ticks, .. } => {
+                    // Until the player side plays the motion itself, its length alone decides when the
+                    // script sees it end (bit 1 of the player's +0x160, host 1.14).
+                    player_reaction.remaining = Some(ticks);
+                    player_reaction.paired_done = false;
+                    PlayerReactionCmd::PairedMotion { from: ent, slot, blend, serial, ticks }
+                }
                 other => other,
             };
             trace.line(tag, &format!("player side: {c:?}"));
@@ -947,7 +1036,6 @@ fn ai_update(
         }
         if let Some(s) = obj.player_serial.take() {
             player_reaction.serial = s;
-            player_reaction.paired_done = false;
         }
         for m in rt.core.mode_log.as_mut().map(std::mem::take).unwrap_or_default() {
             trace.line(tag, &format!("mode {m}"));

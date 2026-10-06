@@ -215,7 +215,8 @@ pub enum PlayerReactionCmd {
     /// `blend` frames (the entry holds one sub-motion per player model, named `%03d0` of the player's
     /// objentry byte +7). `serial` is the value the player's +0x158 takes; the script compares it with
     /// `obj_word_158` to see whether its motion is still the one running.
-    PairedMotion { from: Entity, slot: usize, blend: f32, serial: i32 },
+    /// `ticks` is the sub-motion's length in 60 Hz ticks (0 when the entry has none for the player's model).
+    PairedMotion { from: Entity, slot: usize, blend: f32, serial: i32, ticks: f32 },
     /// Host 1.70 / 1.71 with bit 3 on the player: cannot be hit (FUN_0019a4f0 tests it).
     Unhittable(bool),
     /// Host 1.89: the player's secondary velocity vector (+0x880): unit direction in the app's space
@@ -234,6 +235,8 @@ pub struct PlayerReaction {
     /// Set by the player side when the paired motion has ended (bit 1 of the player's +0x160, read by
     /// host 1.14). Nothing sets it yet.
     pub paired_done: bool,
+    /// Ticks the paired motion still has to run before `paired_done` is set (`enemy_ai.rs` counts it).
+    pub remaining: Option<f32>,
 }
 
 /// The accept key was pressed (Triangle in the game).

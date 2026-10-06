@@ -78,6 +78,9 @@ fn auto_screenshot(
                 "Enter" => KeyCode::Enter,
                 "Escape" => KeyCode::Escape,
                 "Backspace" => KeyCode::Backspace,
+                "Y" => KeyCode::KeyY,
+                "[" => KeyCode::BracketLeft,
+                "]" => KeyCode::BracketRight,
                 _ => continue,
             };
             if t >= at && t - dt < at {

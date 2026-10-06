@@ -326,8 +326,22 @@ fn party(sora: Option<&Sora>, data: Option<&GameData>) -> Vec<CardData> {
     }]
 }
 
+impl Menu {
+    /// The entry (index into the table of 2.1) of the highlighted row of page 0, while the menu is open.
+    pub fn current_entry(&self) -> Option<usize> {
+        (self.phase == Phase::Open).then(|| self.rows.get(self.cursor).copied()).flatten()
+    }
+
+    /// Nodes of page 0 that a sub-page hides while it is up: the rows, the hand and the glint, the
+    /// help line, the panel outline and the party cards.
+    pub fn page0_nodes(&self) -> Vec<usize> {
+        let n = &self.nodes;
+        n.rows.iter().copied().chain([n.pointer, n.glint, n.help, n.panel]).chain(n.cards.iter().copied()).collect()
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-fn input(
+pub(crate) fn input(
     mut menu: ResMut<Menu>,
     mut scene: ResMut<MenuScene>,
     mut keys: ResMut<ButtonInput<KeyCode>>,

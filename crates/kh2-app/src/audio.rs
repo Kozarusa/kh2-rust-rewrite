@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use bevy::audio::{AddAudioSource, Decodable, Source};
 use bevy::prelude::*;
-use kh2_audio::ssl::{Driver, SeBlock, Sequence, Tables};
+use kh2_audio::ssl::{Driver, Handle, SeBlock, Sequence, Tables};
 use kh2_audio::vsb::Vsb;
 use kh2_audio::{RATE, Wd};
 
@@ -228,6 +228,7 @@ impl Plugin for AudioPlugin {
             .init_resource::<VoiceTable>()
             .init_resource::<GameRng>()
             .init_resource::<VoiceInfo>()
+            .init_resource::<LiveMixes>()
             .init_resource::<crate::audio_bgm::AreaMusic>()
             .add_message::<PlaySe>()
             .add_message::<PlayVoice>()
@@ -236,7 +237,7 @@ impl Plugin for AudioPlugin {
             .add_systems(Update, area_bgm.after(crate::assets::load_area))
             .add_systems(
                 FixedUpdate,
-                (motion_sounds, footsteps, wall_sounds, crate::audio_bgm::battle_music).chain().in_set(crate::schedule::Sim::Sounds),
+                (motion_sounds, footsteps, wall_sounds, crate::audio_bgm::battle_music, update_mixes).chain().in_set(crate::schedule::Sim::Sounds),
             );
     }
 }
@@ -312,13 +313,83 @@ fn load_wd(disc: &Disc, cache: &SeCache, id: u16) -> Option<Arc<Wd>> {
     cache.wds.lock().ok()?.entry(id).or_insert_with(|| Wd::parse(&disc.read(&format!("se/wave{id:04}.wd"))?).map(Arc::new)).clone()
 }
 
-/// Plays a sound effect by bank and index.
-pub fn play_se(disc: &Disc, audio: &Audio, cache: &SeCache, req: &PlaySe, volume_pan: (i32, i32)) -> bool {
-    let Some(bank) = load_bank(disc, cache, req.bank, req.apdx.as_deref()) else { return false };
-    let Some(entry) = bank.block.entries.get(req.index as usize) else { return false };
-    let Some(wd) = bank.wd.clone().or_else(|| load_wd(disc, cache, entry.wd)) else { return false };
-    let Ok(mut s) = audio.0.lock() else { return false };
-    s.driver.as_mut().is_some_and(|d| d.play_se(&bank.block, req.index as usize, wd, volume_pan.0, volume_pan.1))
+/// Plays a sound effect by bank and index. The handle and the entry's flags go to [`LiveMixes`].
+pub fn play_se(disc: &Disc, audio: &Audio, cache: &SeCache, req: &PlaySe, volume_pan: (i32, i32)) -> Option<(Handle, u8)> {
+    let bank = load_bank(disc, cache, req.bank, req.apdx.as_deref())?;
+    let entry = bank.block.entries.get(req.index as usize)?;
+    let wd = bank.wd.clone().or_else(|| load_wd(disc, cache, entry.wd))?;
+    let mut s = audio.0.lock().ok()?;
+    let h = s.driver.as_mut()?.play_se_handle(&bank.block, req.index as usize, wd, volume_pan.0, volume_pan.1)?;
+    Some((h, entry.flags))
+}
+
+/// How a live sound is re-mixed every tick.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LiveKind {
+    /// A sound effect with its entry flags (fixed volume / fixed pan).
+    Se(u8),
+    /// A voice line (kind 5) with its minimum volume.
+    Voice(i32),
+}
+
+/// A playing positional sound. The game's request slot (FUN_002c2380 / FUN_002c2530 via
+/// FUN_002c2760) copies the position once at request time; every tick FUN_002c2e90 recomputes the
+/// volume and pan from that fixed position and the camera's current view matrix and sends them to
+/// the driver (FUN_002be564, FUN_002bef1c). Only kind 4 sounds (map emitters, FUN_002c2b08) follow
+/// an actor, and those are not ported. So the moving part is the listener, not the source.
+#[derive(Clone, Copy, Debug)]
+pub struct LiveSound {
+    pub handle: Handle,
+    pub kind: LiveKind,
+    /// World position in metres at the time of the request.
+    pub pos: Vec3,
+    /// The last volume and pan sent.
+    pub last: (i32, i32),
+}
+
+/// The positional sounds that are still playing.
+#[derive(Resource, Default)]
+pub struct LiveMixes(pub Vec<LiveSound>);
+
+/// Volume and pan of a live sound for a listener (camera) transform.
+pub fn live_mix(sound: &LiveSound, listener: &Transform) -> (i32, i32) {
+    use kh2_audio::positional::{se_mix, voice_mix};
+    let d = (sound.pos - listener.translation) / crate::SCALE;
+    let rel = [d.dot(*listener.right()), d.dot(*listener.up()), d.dot(*listener.forward())];
+    match sound.kind {
+        LiveKind::Se(flags) => se_mix(rel, flags),
+        LiveKind::Voice(min) => voice_mix(rel, min),
+    }
+}
+
+/// The per-tick mix update of every live positional sound (FUN_002c30d0 -> FUN_002c2e90).
+fn update_mixes(audio: Res<Audio>, mut live: ResMut<LiveMixes>, listener: Query<&Transform, With<crate::camera::OrbitCamera>>) {
+    if live.0.is_empty() {
+        return;
+    }
+    let Ok(l) = listener.single() else { return };
+    let Ok(mut s) = audio.0.lock() else { return };
+    let Some(d) = s.driver.as_mut() else { return };
+    let log = std::env::var_os("KH2_SOUNDLOG").is_some();
+    live.0.retain_mut(|snd| {
+        let playing = match snd.kind {
+            LiveKind::Se(_) => d.se_playing(snd.handle),
+            LiveKind::Voice(_) => d.voice_playing(snd.handle),
+        };
+        if !playing {
+            return false;
+        }
+        let mix = live_mix(snd, l);
+        match snd.kind {
+            LiveKind::Se(_) => d.set_se_mix(snd.handle, mix.0, mix.1),
+            LiveKind::Voice(_) => d.set_voice_mix(snd.handle, mix.0, mix.1),
+        }
+        if log && mix != snd.last {
+            info!("mix {:?} handle {} volume {:#x} pan {:#x}", snd.kind, snd.handle.0, mix.0, mix.1);
+        }
+        snd.last = mix;
+        true
+    });
 }
 
 /// Plays a voice line at the speaker's slot rules: a lower priority than the queued or playing
@@ -331,29 +402,29 @@ fn play_voices(
     v: &PlayVoice,
     vp: (i32, i32),
     slot: &mut kh2_audio::voice::VoiceSlot,
-) -> bool {
-    let Some(bank) = cache.voices.lock().ok().and_then(|mut m| m.entry(v.file.clone()).or_insert_with(|| Vsb::parse(&disc.read(&v.file)?).map(Arc::new)).clone()) else {
-        return false;
-    };
-    let Some((sample, rate)) = bank.line(v.line as usize) else { return false };
-    let Ok(mut s) = audio.0.lock() else { return false };
-    let Some(d) = s.driver.as_mut() else { return false };
+) -> Option<Handle> {
+    let bank = cache.voices.lock().ok().and_then(|mut m| m.entry(v.file.clone()).or_insert_with(|| Vsb::parse(&disc.read(&v.file)?).map(Arc::new)).clone())?;
+    let (sample, rate) = bank.line(v.line as usize)?;
+    let mut s = audio.0.lock().ok()?;
+    let d = s.driver.as_mut()?;
     if let Some(h) = slot.playing
         && !d.voice_playing(kh2_audio::ssl::Handle(h))
     {
         slot.playing = None;
     }
     slot.request(v.line, v.priority);
-    let Some(_) = slot.tick(|_| true) else { return false };
+    slot.tick(|_| true)?;
     if let Some(h) = slot.playing.take() {
         d.stop_voice(kh2_audio::ssl::Handle(h));
     }
     let volume = vp.0.max(kh2_audio::voice::MIN_VOLUME);
     let pan = if volume > 0x39ff { kh2_audio::positional::CENTRE_PAN } else { vp.1 };
-    slot.playing = Some(d.play_voice_at(Arc::new(sample), rate, volume, pan).0);
-    true
+    let h = d.play_voice_at(Arc::new(sample), rate, volume, pan);
+    slot.playing = Some(h.0);
+    Some(h)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn play_requests(
     disc: Res<Disc>,
     audio: Res<Audio>,
@@ -362,6 +433,7 @@ fn play_requests(
     mut req: MessageReader<PlaySe>,
     mut voices: MessageReader<PlayVoice>,
     mut slot: Local<kh2_audio::voice::VoiceSlot>,
+    mut live: ResMut<LiveMixes>,
 ) {
     if std::env::var_os("KH2_NO_SOUND").is_some() {
         req.clear();
@@ -370,15 +442,22 @@ fn play_requests(
     }
     for v in voices.read() {
         let vp = placement(v.pos, listener.single().ok());
-        let ok = play_voices(&disc, &audio, &cache, v, vp, &mut slot);
+        let h = play_voices(&disc, &audio, &cache, v, vp, &mut slot);
+        if let (Some(h), Some(pos)) = (h, v.pos) {
+            live.0.push(LiveSound { handle: h, kind: LiveKind::Voice(kh2_audio::voice::MIN_VOLUME), pos, last: vp });
+        }
         if std::env::var_os("KH2_SOUNDLOG").is_some() {
-            info!("voice {}:{} {}", v.file, v.line, if ok { "playing" } else { "not found" });
+            info!("voice {}:{} {}", v.file, v.line, if h.is_some() { "playing" } else { "not found" });
         }
     }
     let log = std::env::var_os("KH2_SOUNDLOG").is_some();
     for r in req.read() {
         let vp = placement(r.pos, listener.single().ok());
-        let ok = play_se(&disc, &audio, &cache, r, vp);
+        let started = play_se(&disc, &audio, &cache, r, vp);
+        let ok = started.is_some();
+        if let (Some((handle, flags)), Some(pos)) = (started, r.pos) {
+            live.0.push(LiveSound { handle, kind: LiveKind::Se(flags), pos, last: vp });
+        }
         if log {
             info!(
                 "se {}:{} ({}) volume {:#x} pan {:#x}{} {}",
@@ -707,6 +786,80 @@ mod tests {
         // No position or no listener: full volume, centre.
         assert_eq!(placement(None, Some(&cam)), (0x3fff, 0x40));
         assert_eq!(placement(Some(Vec3::X), None), (0x3fff, 0x40));
+    }
+
+    /// The source stays where the request put it; the camera moves past it (the game's listener
+    /// is the camera, FUN_002c27b0). The mix follows: loudest at the closest point, pan from the
+    /// left half to the right half of the circle.
+    #[test]
+    fn a_live_sound_follows_the_moving_listener() {
+        let snd = LiveSound { handle: Handle(1), kind: LiveKind::Se(0), pos: Vec3::new(0.0, 0.0, -6.0), last: (0, 0) };
+        // The camera looks down -Z (Bevy's default) and walks along +X past the source.
+        let at = |x: f32| live_mix(&snd, &Transform::from_translation(Vec3::new(x, 0.0, 0.0)));
+        let (v_left, p_left) = at(-6.0);
+        let (v_mid, _) = at(0.0);
+        let (v_right, p_right) = at(6.0);
+        assert!(p_left > 0x40 && p_left <= 0x80, "source is to the right while the camera is left of it: {p_left}");
+        assert!(p_right < 0x40, "source is to the left once the camera passed: {p_right}");
+        assert!(v_mid > v_left && v_mid > v_right, "{v_left} {v_mid} {v_right}");
+        assert_eq!(v_left, v_right);
+        // A fixed-volume entry ignores the distance, a voice never drops below its minimum.
+        let far = Transform::from_translation(Vec3::new(0.0, 0.0, 40.0));
+        assert_eq!(live_mix(&LiveSound { kind: LiveKind::Se(0x10), ..snd }, &far).0, 0x3fff);
+        assert_eq!(live_mix(&LiveSound { kind: LiveKind::Voice(0x1800), ..snd }, &far).0, 0x1800);
+    }
+
+    /// Renders a voice line from a fixed source that the listener passes from left to right, with
+    /// the mix recomputed every 1/60 s tick exactly as `update_mixes` does, to
+    /// `local/wp5d-audio/pan_sweep.wav` (untracked) for listening. Skipped without a disc.
+    #[test]
+    fn render_pan_sweep() {
+        let Some(disc) = disc() else { return };
+        let irx = disc.read_root("LIBSSL.IRX").expect("irx");
+        let tables = Tables::from_irx(&irx).expect("tables");
+        let mut d = Driver::new(Arc::new(tables));
+        d.mixer.master = 0.8;
+        let bank = disc.read("voice/us/battle/tt0_sora.vsb").and_then(|b| Vsb::parse(&b)).expect("bank");
+        let (sample, rate) = (0..40).filter_map(|i| bank.line(i)).max_by_key(|(s, r)| s.pcm.len() as u64 * 1000 / *r as u64).expect("a line");
+        let source = Vec3::new(0.0, 0.0, -6.0);
+        let start = Transform::from_translation(Vec3::new(-9.0, 0.0, 0.0));
+        let snd = LiveSound { handle: Handle(0), kind: LiveKind::Voice(0), pos: source, last: (0, 0) };
+        let secs = sample.pcm.len() as f32 / rate as f32;
+        let first = live_mix(&snd, &start);
+        let h = d.play_voice_at(Arc::new(sample), rate, first.0, first.1);
+        let snd = LiveSound { handle: h, ..snd };
+        let ticks = (secs * 60.0).ceil() as usize + 30;
+        let mut pcm = Vec::new();
+        let mut pans = Vec::new();
+        for t in 0..ticks {
+            let x = -9.0 + 18.0 * t as f32 / ticks as f32;
+            let (v, p) = live_mix(&snd, &Transform::from_translation(Vec3::new(x, 0.0, 0.0)));
+            d.set_voice_mix(h, v, p);
+            pans.push(p);
+            let mut buf = vec![0f32; (kh2_audio::RATE / 60) as usize * 2];
+            d.render(&mut buf);
+            pcm.extend(buf);
+        }
+        assert!(pans[0] > 0x40 && *pans.last().unwrap() < 0x40, "pan sweeps from the right of the circle's front to the left: {pans:?}");
+        let dir = std::path::Path::new("../../local/wp5d-audio");
+        std::fs::create_dir_all(dir).unwrap();
+        let data: Vec<u8> = pcm.iter().flat_map(|s| ((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes()).collect();
+        let mut b = Vec::new();
+        b.extend(b"RIFF");
+        b.extend((36 + data.len() as u32).to_le_bytes());
+        b.extend(b"WAVEfmt ");
+        b.extend(16u32.to_le_bytes());
+        b.extend(1u16.to_le_bytes());
+        b.extend(2u16.to_le_bytes());
+        b.extend(kh2_audio::RATE.to_le_bytes());
+        b.extend((kh2_audio::RATE * 4).to_le_bytes());
+        b.extend(4u16.to_le_bytes());
+        b.extend(16u16.to_le_bytes());
+        b.extend(b"data");
+        b.extend((data.len() as u32).to_le_bytes());
+        b.extend(data);
+        std::fs::write(dir.join("pan_sweep.wav"), b).unwrap();
+        assert!(pcm.iter().any(|s| s.abs() > 0.01));
     }
 
     #[test]

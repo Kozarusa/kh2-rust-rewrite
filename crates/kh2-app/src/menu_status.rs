@@ -634,7 +634,7 @@ fn input(
         step = Some(true);
     } else {
         ui.held.1 += 1;
-        if ui.held.1 >= REPEAT_DELAY && (ui.held.1 - REPEAT_DELAY) % REPEAT_EVERY == 0 {
+        if ui.held.1 >= REPEAT_DELAY && (ui.held.1 - REPEAT_DELAY).is_multiple_of(REPEAT_EVERY) {
             step = Some(false);
         }
     }

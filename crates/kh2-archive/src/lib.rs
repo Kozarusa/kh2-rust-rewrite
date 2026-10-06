@@ -14,6 +14,31 @@ use kh2_iso::{Iso, SECTOR};
 /// The only edition this crate is validated against.
 pub const SUPPORTED_BOOT: &str = "SLUS_210.05";
 
+/// Set to `1` to let [`Archive::open`] accept a disc whose boot executable is not [`SUPPORTED_BOOT`]
+/// (for research on another edition, e.g. Final Mix `SLPM_666.75`; see `docs/final-mix.md`).
+/// Without it other discs are refused, because table layouts and executable addresses differ.
+pub const ALLOW_OTHER_DISC_ENV: &str = "KH2_ALLOW_OTHER_DISC";
+
+/// The boot executable named by a `SYSTEM.CNF` (`BOOT2 = cdrom0:\SLUS_210.05;1` gives `SLUS_210.05`).
+pub fn boot_name(cnf: &str) -> Option<String> {
+    let line = cnf.lines().find(|l| l.trim_start().to_ascii_uppercase().starts_with("BOOT2"))?;
+    let value = line.split_once('=')?.1.trim();
+    let name = value.rsplit(['\\', ':']).next()?.split(';').next()?.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Whether a disc with this `SYSTEM.CNF` may be opened: the USA release always, any other disc only
+/// with the explicit opt-in.
+pub fn check_disc(cnf: &str, allow_other: bool) -> Result<String> {
+    if cnf.contains(SUPPORTED_BOOT) {
+        return Ok(SUPPORTED_BOOT.to_string());
+    }
+    match boot_name(cnf) {
+        Some(b) if allow_other => Ok(b),
+        _ => Err(Error::UnsupportedDisc(cnf.lines().next().unwrap_or_default().to_string())),
+    }
+}
+
 #[derive(Debug)]
 pub enum Error {
     Io(io::Error),
@@ -169,6 +194,7 @@ pub struct Listed {
 
 pub struct Archive {
     iso: Iso,
+    boot: String,
     img_lba: u64,
     ovl_lba: u64,
     ovl: Vec<IdxEntry>,
@@ -177,19 +203,25 @@ pub struct Archive {
 }
 
 impl Archive {
-    /// Opens the user's disc. Refuses discs other than the validated USA release.
+    /// Opens the user's disc. Refuses discs other than the validated USA release, unless
+    /// `KH2_ALLOW_OTHER_DISC=1` is set ([`ALLOW_OTHER_DISC_ENV`]).
     pub fn open(iso_path: impl AsRef<Path>) -> Result<Self> {
+        let allow = std::env::var(ALLOW_OTHER_DISC_ENV).is_ok_and(|v| v.trim() == "1");
+        Self::open_edition(iso_path, allow)
+    }
+
+    /// Opens a disc; `allow_other_disc` is the explicit opt-in for editions other than the USA
+    /// release (research tests pass `true`; nothing else in the repository does).
+    pub fn open_edition(iso_path: impl AsRef<Path>, allow_other_disc: bool) -> Result<Self> {
         let mut iso = Iso::open(iso_path)?;
         let cnf = String::from_utf8_lossy(&iso.read("SYSTEM.CNF")?).into_owned();
-        if !cnf.contains(SUPPORTED_BOOT) {
-            return Err(Error::UnsupportedDisc(cnf.lines().next().unwrap_or_default().to_string()));
-        }
+        let boot = check_disc(&cnf, allow_other_disc)?;
         let lba = |iso: &Iso, p: &str| iso.find(p).map(|e| e.lba as u64).ok_or_else(|| Error::NotFound(p.into()));
         let img_lba = lba(&iso, "KH2.IMG")?;
         let ovl_lba = lba(&iso, "OVL.IMG")?;
         let ovl = parse_idx(&iso.read("OVL.IDX")?)?;
         let main = parse_idx(&iso.read("KH2.IDX")?)?;
-        let mut a = Archive { iso, img_lba, ovl_lba, ovl, entries: Vec::new(), by_key: HashMap::new() };
+        let mut a = Archive { iso, boot, img_lba, ovl_lba, ovl, entries: Vec::new(), by_key: HashMap::new() };
         for e in main {
             a.push(e, "KH2.IDX");
         }
@@ -241,6 +273,11 @@ impl Archive {
 
     pub fn iso(&mut self) -> &mut Iso {
         &mut self.iso
+    }
+
+    /// The disc's boot executable from `SYSTEM.CNF` (`SLUS_210.05` for the USA release).
+    pub fn boot_executable(&self) -> &str {
+        &self.boot
     }
 
     /// Reads a file by its in-game name, e.g. `"00battle.bin"`. Works without a name list.
@@ -299,6 +336,19 @@ mod tests {
         s.extend_from_slice(b"AB"); // read as 'B' then 'A'
         s.extend_from_slice(&[0, 0, 0, 6, key]); // size (big-endian, read backwards) + key
         assert_eq!(decompress(&s).unwrap(), b"ABABAB");
+    }
+
+    #[test]
+    fn other_discs_need_the_explicit_opt_in() {
+        let usa = "BOOT2 = cdrom0:\\SLUS_210.05;1\r\nVER = 1.00\r\nVMODE = NTSC\r\n";
+        let fm = "BOOT2 = cdrom0:\\SLPM_666.75;1\r\nVER = 1.01\r\nVMODE = NTSC\r\n";
+        assert_eq!(boot_name(usa).as_deref(), Some("SLUS_210.05"));
+        assert_eq!(boot_name(fm).as_deref(), Some("SLPM_666.75"));
+        assert_eq!(check_disc(usa, false).unwrap(), "SLUS_210.05");
+        assert_eq!(check_disc(usa, true).unwrap(), "SLUS_210.05");
+        assert!(matches!(check_disc(fm, false), Err(Error::UnsupportedDisc(_))));
+        assert_eq!(check_disc(fm, true).unwrap(), "SLPM_666.75");
+        assert!(check_disc("garbage", true).is_err());
     }
 
     #[test]

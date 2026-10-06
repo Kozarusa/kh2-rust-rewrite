@@ -272,7 +272,7 @@ fn open_disc() -> Option<(kh2_archive::Archive, Vec<u8>)> {
 /// Every BDX the archive can name: object scripts (type 3 entries of MDLX files) and 00common.bdx.
 fn disc_scripts(a: &mut kh2_archive::Archive, all: bool) -> Vec<(String, Vec<u8>)> {
     let mut out = Vec::new();
-    for name in ["obj/M_EX020.mdlx", "obj/M_EX010.mdlx"] {
+    for name in ["obj/M_EX020.mdlx", "obj/M_EX010.mdlx", "obj/M_EX990.mdlx"] {
         if let Ok(d) = a.read(name)
             && let Some(e) = kh2_bar::parse(&d).unwrap().into_iter().find(|e| e.kind == 3) {
                 out.push((name.to_string(), e.data.to_vec()));

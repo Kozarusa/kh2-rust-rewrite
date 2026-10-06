@@ -3272,6 +3272,7 @@ dependencies = [
  "bevy",
  "kh2-anim",
  "kh2-archive",
+ "kh2-ard",
  "kh2-audio",
  "kh2-bar",
  "kh2-bdx",
@@ -3288,6 +3289,15 @@ name = "kh2-archive"
 version = "0.1.0"
 dependencies = [
  "kh2-iso",
+]
+
+[[package]]
+name = "kh2-ard"
+version = "0.1.0"
+dependencies = [
+ "kh2-archive",
+ "kh2-bar",
+ "kh2-tables",
 ]
 
 [[package]]

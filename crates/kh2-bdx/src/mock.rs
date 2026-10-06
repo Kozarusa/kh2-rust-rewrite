@@ -126,6 +126,8 @@ impl Host for MockHost {
                 Value::Bool(false)
             }
             Call::MotionDone { .. } => Value::Bool(self.motion_frames_left <= 0.0),
+            // 1.63 motion_near_end: the toy motions have no return frame, so their end.
+            Call::Func { group: 1, index: 63, .. } => Value::Bool(self.motion_frames_left <= 0.0),
             Call::MotionState { .. } => Value::Int(0),
             Call::MotionLength { .. } | Call::MotionEnd { .. } => Value::Float(self.motion_length),
             Call::OnScreen { .. } => Value::Bool(true),

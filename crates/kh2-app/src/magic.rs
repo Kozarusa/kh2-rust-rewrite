@@ -162,7 +162,7 @@ enum Step {
     Waiting,
     /// Event 21 ran its first slice; `ball` and `ball2` are the elements whose position the
     /// attacks follow, `t` the attack time left.
-    Fire { ball: u16, ball2: Option<u16>, attacks: Option<(usize, Option<usize>)>, t: f32 },
+    Fire { ball: u16, ball2: Option<u16>, attacks: Option<(usize, Option<usize>)>, t: f32, yielded: bool },
     /// The script has ended.
     Done,
 }
@@ -377,7 +377,7 @@ fn run(
     mut anims: Query<&mut Animator>,
     locals: Query<(&Transform, Option<&ChildOf>)>,
     fighters: Query<(Entity, &Fighter, &GlobalTransform)>,
-    bodies: Query<(&Animator, &GlobalTransform)>,
+    gts: Query<&GlobalTransform>,
     mut running: Query<&mut RunningEffect>,
     mut hits: MessageWriter<Hit>,
     enemies: Query<&crate::enemy::Enemy>,
@@ -508,7 +508,12 @@ fn run(
 
     // The scripts after their first slice (Fire's attack loop).
     for c in st.casts.iter_mut() {
-        if let Step::Fire { ball, ball2, attacks, t } = c.step {
+        if let Step::Fire { ball, ball2, attacks, t, yielded } = c.step {
+            if !yielded {
+                // The script's yield after starting the effects: the attacks come next frame.
+                c.step = Step::Fire { ball, ball2, attacks, t, yielded: true };
+                continue;
+            }
             let Some(pax) = c.pax.clone() else {
                 c.step = Step::Done;
                 continue;
@@ -543,7 +548,7 @@ fn run(
                 if let (Some(b2), Some(i2)) = (ball2, a2) {
                     move_attack(&mut st.attacks[i2], element_position(&pax, b2, owner_m));
                 }
-                c.step = Step::Fire { ball, ball2, attacks: Some((a1, a2)), t: t - 1.0 };
+                c.step = Step::Fire { ball, ball2, attacks: Some((a1, a2)), t: t - 1.0, yielded };
             } else {
                 // Host 2.13: the attack objects are finished.
                 st.attacks[a1].live = false;
@@ -558,11 +563,12 @@ fn run(
     st.casts.retain(|c| c.step != Step::Done);
 
     // The attacks against the enemies' hurt shapes, then the victims' hit memory counts down.
+    drop(body);
     let victims: Vec<Victim> = fighters
         .iter()
         .filter(|(_, f, _)| f.team == Team::Enemy && f.hittable)
         .filter_map(|(e, f, g)| {
-            let (a, bg) = bodies.get(f.hurt_body).ok()?;
+            let (a, bg) = (anims.get(f.hurt_body).ok()?, gts.get(f.hurt_body).ok()?);
             let shapes = a
                 .rig
                 .model
@@ -610,7 +616,10 @@ fn run(
     for m in st.memory.values_mut() {
         m.tick();
     }
-    st.attacks.retain(|a| a.live);
+    // Casts hold indices into the list: finished attacks go once no cast runs.
+    if st.casts.is_empty() {
+        st.attacks.retain(|a| a.live);
+    }
 }
 
 /// The first slice of event 21 of the spell's script (after the MP is paid).
@@ -656,7 +665,7 @@ fn event21(
                 }
             }
             mlog!("magic: Fire event 21: element {ball} (airborne {airborne}), attack follows it for {} frames", c.magi.f(MAGI_TIME));
-            Step::Fire { ball, ball2, attacks: None, t: c.magi.f(MAGI_TIME) }
+            Step::Fire { ball, ball2, attacks: None, t: c.magi.f(MAGI_TIME), yielded: false }
         }
         3 => {
             // CURE: stop the charge effect, element 1 on the caster, element 2 at the target's centre,

@@ -140,15 +140,16 @@ pub mod rules {
         }
     }
 
-    /// The player's drive-gauge charge (reaction commands 455 and 457, `FUN_001ce518` sets it,
-    /// `FUN_001ce240` runs it each tick): `total` is the timer at +0xb68, `wait` the second timer at
+    /// The drive-gauge charge of Mickey's player class (reaction commands 455 and 457, `FUN_001ce518`
+    /// sets it, `FUN_001ce240` runs it each tick; both are in the class table at 0x360360 that
+    /// `FUN_001cda78` / `FUN_001cdb98` build, not in Sora's at 0x360410, whose command handler
+    /// `FUN_001cf030` sends 455 and 457 to the generic path `FUN_00177b18`): `total` is the timer at +0xb68, `wait` the second timer at
     /// +0xb6c. While `total` is above 0, each tick where the player's motion has reached its end
     /// (`FUN_0017f400`: no blend pending and the motion's frame is at or past its length) takes the
     /// frame unit off `wait`; at 0 or below one gauge unit is added (`FUN_001a0290`) and `wait` is
     /// re-armed by `sstm[0xd4]`. `total` always drops by the frame unit; reaching 0 clears it and
     /// asks for motion 5 (`finished`).
     #[derive(Clone, Copy, Debug, Default, PartialEq)]
-    #[cfg_attr(not(test), allow(dead_code))]
     pub struct Charge {
         pub total: f32,
         pub wait: f32,
@@ -156,15 +157,68 @@ pub mod rules {
 
     /// What one tick of the charge asks for.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    #[cfg_attr(not(test), allow(dead_code))]
     pub struct ChargeStep {
         /// Gauge units to add through `Points::gain`.
         pub units: i32,
         /// The timer ran out: play motion 5.
         pub finished: bool,
+        /// The charge motion was replaced by another motion while the timer ran: its end callback
+        /// (`LAB_001ce710`) cleared the timer, with no motion 5.
+        pub cancelled: bool,
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Motion 0xc1 of command 455 and the blend `FUN_001ce518` starts it with (`DAT_0037c33c`, 8.0).
+    pub const CHARGE_MOTION: u16 = 0xc1;
+    pub const CHARGE_BLEND: f32 = 8.0;
+    /// The motion asked for when the timer runs out (`FUN_001ce240`: motion 5 with no blend, then
+    /// motion 0 queued behind it, `FUN_0017e378`).
+    pub const CHARGE_END_MOTION: u16 = 5;
+
+    /// The charge as the player object runs it: the timers and the end callback `FUN_001ce518` hangs
+    /// on motion 0xc1 (controller +0x194, player +0x2d4 = `LAB_001ce710`, two instructions that store
+    /// 0 to +0xb68). The motion controller calls that callback and clears it whenever a new motion
+    /// starts (`FUN_0017dd38` -> `FUN_0017fac8`), so anything that replaces the charge motion ends the
+    /// charge with no gain and no motion 5. Command 457 starts no motion and hangs no callback.
+    #[derive(Clone, Copy, Debug, Default, PartialEq)]
+    pub struct ChargeRun {
+        pub charge: Charge,
+        /// The end callback is armed on the charge motion.
+        pub hooked: bool,
+    }
+
+    impl ChargeRun {
+        /// `FUN_001ce518` for 455 or 457: returns the motion to start (0xc1 for 455).
+        pub fn accept(&mut self, ticks: f32, motion: Option<u16>) -> Option<u16> {
+            self.charge.start(ticks, motion.is_some());
+            if motion.is_some() {
+                self.hooked = true;
+            }
+            motion
+        }
+
+        /// One tick of `FUN_001ce240`. `replaced`: a motion other than the charge motion started
+        /// since the last tick (the callback ran); `motion_at_end`: `FUN_0017f400` on the player's
+        /// controller.
+        pub fn tick(&mut self, t: &Tuning, replaced: bool, motion_at_end: bool) -> ChargeStep {
+            if self.hooked && replaced {
+                self.hooked = false;
+                let was = self.charge.total > 0.0;
+                self.charge.total = 0.0;
+                return ChargeStep { cancelled: was, ..Default::default() };
+            }
+            let step = self.charge.tick(t, motion_at_end);
+            if step.finished {
+                // Motion 5 replaces the charge motion: the callback runs and is cleared.
+                self.hooked = false;
+            }
+            step
+        }
+
+        pub fn running(&self) -> bool {
+            self.charge.total > 0.0
+        }
+    }
+
     impl Charge {
         /// Command 455 (`ticks` 120, wait reset to 0) or 457 (`ticks` 30, `wait` kept).
         pub fn start(&mut self, ticks: f32, reset_wait: bool) {
@@ -850,7 +904,109 @@ impl Plugin for DrivePlugin {
             .add_message::<FormChanged>()
             .add_plugins(hud_drive::HudDrivePlugin)
             .add_systems(Update, input.after(Frame::Pad))
-            .add_systems(FixedUpdate, (drive_tick.in_set(Sim::Weapon).before(sora::sync_weapon), log_changes.in_set(Sim::Sounds)));
+            .insert_resource(ChargeHook { run: Default::default(), slot: None, on_sora: std::env::var("KH2_CHARGE_ON_SORA").is_ok_and(|v| v != "0") })
+            .add_systems(
+                FixedUpdate,
+                (
+                    charge_tick.in_set(Sim::Sora).before(sora::tick),
+                    drive_tick.in_set(Sim::Weapon).before(sora::sync_weapon),
+                    log_changes.in_set(Sim::Sounds),
+                ),
+            );
+    }
+}
+
+/// The charge of commands 455 and 457 (`rules::ChargeRun`) on the player object. Only Mickey's
+/// player class runs it (see `rules::Charge`); the app's player is Sora, whose class does not, so
+/// by default the command is logged and dropped. `KH2_CHARGE_ON_SORA=1` (harness only, NOT the
+/// original's behaviour for Sora) runs Mickey's handler on Sora's body to exercise the wiring:
+/// Sora's motion 0xc1 is his own A342, not Mickey's A122.
+#[derive(Resource)]
+struct ChargeHook {
+    run: rules::ChargeRun,
+    /// The body slot the charge motion plays in (the callback is on that motion).
+    slot: Option<usize>,
+    on_sora: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn charge_tick(
+    mut cmds: MessageReader<crate::reaction_cmd::PlayerReactionCmd>,
+    rules: Res<DriveRules>,
+    battle: Res<Battle>,
+    mut state: ResMut<DriveState>,
+    mut hook: ResMut<ChargeHook>,
+    mut sora_q: Query<&mut Sora>,
+    mut anims: Query<&mut Animator>,
+) {
+    use crate::reaction_cmd::PlayerReactionCmd;
+    let Ok(mut s) = sora_q.single_mut() else {
+        cmds.clear();
+        return;
+    };
+    let pstate = if battle.active() { kh2_anim::PlayerState::BattleWeapon } else { kh2_anim::PlayerState::FieldNoWeapon };
+    // A motion other than the charge motion is on the body: the callback ran (FUN_0017fac8).
+    let replaced = anims.get(s.body).map_or(true, |b| hook.slot.is_none() || b.slot != hook.slot);
+    let at_end = anims.get(s.body).is_ok_and(|b| b.motion().is_some_and(|m| b.frame >= m.frame_end));
+    let ChargeHook { run, slot, on_sora } = &mut *hook;
+    if run.running() {
+        let step = run.tick(&rules.tuning, replaced, at_end);
+        if step.units != 0 {
+            let before = state.points;
+            state.points.gain(step.units);
+            info!(
+                "drive: charge +{} gauge unit (FUN_001a0290): {} points + {}% -> {} + {}% (timer {:.0}, wait {:.0})",
+                step.units, before.whole, before.fraction, state.points.whole, state.points.fraction, run.charge.total, run.charge.wait
+            );
+        }
+        if step.cancelled {
+            *slot = None;
+            info!("drive: charge cancelled: the charge motion was replaced ({}), its end callback cleared the timer", anims.get(s.body).map_or("-", |b| b.tag()));
+        }
+        if step.finished {
+            *slot = None;
+            let mut cue = WeaponCue::default();
+            if let Ok(mut body) = anims.get_mut(s.body) {
+                let end = body.rig.mset.slot(rules::CHARGE_END_MOTION as usize, pstate);
+                body.restart(end, false, 0.0);
+                cue.restart(end, false, 0.0);
+                info!("drive: charge timer ran out: motion {} ({}) with motion 0 queued behind it", rules::CHARGE_END_MOTION, body.tag());
+            }
+            cue.apply(&s.weapons, &mut anims);
+            // Motion 5 then motion 0: the ground state plays the landing motion out, then idle.
+            if s.state == State::Reaction {
+                let next = if s.motor.grounded { State::Ground } else { State::Air };
+                s.enter(next, None);
+            }
+        }
+    }
+    for c in cmds.read() {
+        let PlayerReactionCmd::Charge { ticks, motion } = *c else { continue };
+        if !*on_sora {
+            info!(
+                "drive: charge command (timer {ticks}, motion {motion:?}) not run: Sora's command handler FUN_001cf030 has no charge (FUN_001ce518 is Mickey's class); KH2_CHARGE_ON_SORA=1 runs it on Sora as a harness"
+            );
+            continue;
+        }
+        let want = run.accept(ticks, motion);
+        info!("drive: charge started (harness on Sora): timer {ticks}, wait {:.0}, motion {want:?}", run.charge.wait);
+        let Some(id) = want else { continue };
+        let mut cue = WeaponCue::default();
+        if let Ok(mut body) = anims.get_mut(s.body) {
+            let sl = body.rig.mset.slot(id as usize, pstate);
+            body.restart(sl, false, rules::CHARGE_BLEND);
+            cue.restart(sl, false, rules::CHARGE_BLEND);
+            *slot = sl;
+            let which = if id == rules::CHARGE_MOTION { "command 455's" } else { "unexpected" };
+            info!("drive: charge motion {id:#x} ({which}; {}, slot {sl:?}), blend {}", body.tag(), rules::CHARGE_BLEND);
+        }
+        cue.apply(&s.weapons, &mut anims);
+        if slot.is_some() {
+            // No input while the motion plays (the app's controller would replace it with locomotion).
+            s.enter(State::Reaction, None);
+        } else {
+            run.hooked = false;
+        }
     }
 }
 
@@ -1361,6 +1517,60 @@ mod tests {
         c.wait = 4.0;
         c.start(30.0, false);
         assert_eq!(c.wait, 4.0);
+    }
+
+    #[test]
+    fn charge_run_wiring_455_457_and_the_end_callback() {
+        let t = Tuning { point_units: 600.0, field_drain_scale: 0.5, form_hit_loss: 1.2, anti_level_basis: 5, anti_drop: 5, anti_damage: 1.5, final_base: 25.0, final_growth: 2.0, final_cap: 100.0, final_anti_drop: 10, form_boost: 0.8, charge_wait: 4.0 };
+        let mut pts = Points { whole: 0, fraction: 98, max: 3 };
+        let mut r = ChargeRun::default();
+        // 455: motion 0xc1, callback armed. The motion plays 15 ticks, then holds at its end.
+        assert_eq!(r.accept(120.0, Some(CHARGE_MOTION)), Some(CHARGE_MOTION));
+        assert!(r.hooked && r.running());
+        let mut units = 0;
+        let mut fin = 0;
+        for tick in 1..=120 {
+            let s = r.tick(&t, false, tick > 15);
+            pts.gain(s.units);
+            units += s.units;
+            if s.finished {
+                fin = tick;
+            }
+        }
+        // 105 ticks at the end: a unit at the first (wait 0 -> -1), then one every 4 ticks.
+        assert_eq!((units, fin), (27, 120));
+        assert_eq!((pts.whole, pts.fraction), (1, 25));
+        assert!(!r.hooked && !r.running());
+        // 457 while 455's motion still holds: the wait is kept, the hook stays.
+        r.accept(120.0, Some(CHARGE_MOTION));
+        for _ in 0..10 {
+            r.tick(&t, false, true);
+        }
+        let wait = r.charge.wait;
+        assert_eq!(r.accept(30.0, None), None);
+        assert!(r.hooked && r.charge.total == 30.0 && r.charge.wait == wait);
+        // Another motion replaces the charge motion: cleared, no gain, no motion 5.
+        let s = r.tick(&t, true, true);
+        assert_eq!(s, ChargeStep { units: 0, finished: false, cancelled: true });
+        assert!(!r.running() && !r.hooked);
+        assert_eq!(r.tick(&t, false, true), ChargeStep::default());
+        // 457 alone hangs no callback: a replaced motion does not stop it.
+        let mut r = ChargeRun::default();
+        r.accept(30.0, None);
+        assert!(!r.tick(&t, true, false).cancelled && r.running());
+    }
+
+    /// The object `FUN_001cdf48` spawns with the charge class (`FUN_001cdb98`) is word 17 of the
+    /// merged `memt` record (`FUN_001ce080` reads +0x22): its model is the one whose motion set
+    /// offers 457 (`P_EX200`, docs/limits-reactions.md), not Sora's.
+    #[test]
+    fn charge_class_object_is_memt_word_17() {
+        let Some(r) = rules_from_disc() else { return };
+        let rec = r.merged(2);
+        let obj = rec[17];
+        let name = r.objs.iter().find(|o| o.object_id == obj as u32).map(|o| o.model_name.clone()).unwrap_or_default();
+        eprintln!("memt word 17 (world 2): object {obj} model {name}");
+        assert_eq!(name, "P_EX200");
     }
 
     #[test]

@@ -586,7 +586,7 @@ fn neo_status(disc: &Disc, model: &str) -> Option<u16> {
 const SORA_MODEL: &str = "P_EX100";
 
 /// Motion frame trigger 2 (footstep sound): `params[0]` is the `kind` the game passes to
-/// FUN_0016baa0 (0 run, 4 walk, 8 land, 9..11 other steps, per Sora's motions). The sound is
+/// FUN_0016baa0 (0 run, 4 walk, 9..11 other steps, per Sora's motions; 8 is the stop step below). The sound is
 /// `bank * 1000 + material * 16 + variant`: bank from the area's soundinfo record by `NeoStatus`,
 /// material of the ground polygon under Sora's feet (byte 0 of its COCT record; 0 is silent).
 /// Only Sora's footsteps are handled: Shadow and Soldier motions carry no trigger 2.

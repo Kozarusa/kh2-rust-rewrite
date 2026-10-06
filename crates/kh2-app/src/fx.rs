@@ -100,15 +100,33 @@ pub struct DeathFx;
 
 /// Screen-distortion material for `pppSnoMdlDttNorm` batches: the triangles show the scene drawn
 /// so far (the transmission copy of the main pass) at the screen position of the vertex shifted by
-/// its displacement, tinted by the vertex color. The displacement rides in the UV attributes.
+/// its displacement, tinted by the vertex color. The displacement rides in the UV attributes (UV 0
+/// x, y and UV 1 x), the game's depth bias as a factor on the view-space depth in UV 1 y.
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+#[bind_group_data(DistortKey)]
 pub struct DistortMaterial {
     /// Unused; a material needs at least one binding.
     #[uniform(0)]
     pub unused: Vec4,
+    /// The GS depth test of the draw: ZTST GREATER (true) or ALWAYS (entry byte +0x17 set).
+    pub depth_test: bool,
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub struct DistortKey {
+    depth_test: bool,
+}
+
+impl From<&DistortMaterial> for DistortKey {
+    fn from(m: &DistortMaterial) -> DistortKey {
+        DistortKey { depth_test: m.depth_test }
+    }
 }
 
 impl Material for DistortMaterial {
+    fn vertex_shader() -> ShaderRef {
+        ShaderRef::Path("embedded://kh2_game/fx_distort.wgsl".into())
+    }
     fn fragment_shader() -> ShaderRef {
         ShaderRef::Path("embedded://kh2_game/fx_distort.wgsl".into())
     }
@@ -124,20 +142,33 @@ impl Material for DistortMaterial {
         _: &bevy::pbr::MaterialPipeline,
         descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
         _: &bevy::mesh::MeshVertexBufferLayoutRef,
-        _: bevy::pbr::MaterialPipelineKey<Self>,
+        key: bevy::pbr::MaterialPipelineKey<Self>,
     ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
-        // Like the other effect materials: both sides of every triangle are drawn (the console
-        // does not cull), and the lens does not hide effects drawn after it.
+        // The game's back-face test is done by the program itself (the console draws both sides
+        // otherwise), and the lens does not hide effects drawn after it (no depth write; the GS
+        // packet's TEST register has AFAIL = FB_ONLY).
         descriptor.primitive.cull_mode = None;
         if let Some(ds) = descriptor.depth_stencil.as_mut() {
             ds.depth_write_enabled = Some(false);
+            if !key.bind_group_data.depth_test {
+                ds.depth_compare = bevy::render::render_resource::CompareFunction::Always;
+            }
         }
         Ok(())
     }
 }
 
+/// The two distortion materials: with the depth test (ZTST GREATER) and without (ALWAYS).
 #[derive(Resource)]
-pub struct DistortHandle(Handle<DistortMaterial>);
+pub struct DistortHandle {
+    tested: Handle<DistortMaterial>,
+    always: Handle<DistortMaterial>,
+}
+
+/// The game's projection constants, read from the executable on the disc; `None` when the
+/// executable could not be read (effects then skip the screen clip test).
+#[derive(Resource)]
+pub struct FxProjection(pub Option<kh2_fx::Projection>);
 
 /// What an effect is bound to.
 #[derive(Clone, Copy)]
@@ -147,6 +178,12 @@ pub enum Bind {
     /// A fixed world matrix (Bevy space), e.g. a hit point.
     Fixed(Mat4),
 }
+
+/// The game's time step per 60 Hz frame for the effect instance clocks (DAT_00356f40: DAT_00379174
+/// = 2.0 in normal play, times the speed factor DAT_00356f3c, which is 1 here).
+pub const EFFECT_TIME_STEP: f32 = 2.0;
+/// Added to a bound element's start wait (DAT_0037c778, FUN_001db5f0).
+pub const BOUND_WAIT_EXTRA: f32 = 0.1;
 
 #[derive(Component)]
 pub struct RunningEffect {
@@ -158,6 +195,28 @@ pub struct RunningEffect {
     pub game_id: u16,
     /// One child mesh entity per draw batch.
     parts: Vec<(Entity, Handle<Mesh>)>,
+    /// The bind record's clock (+0x4c): `EFFECT_TIME_STEP` per tick from 0.
+    time: f32,
+    /// The element's start wait (+0x14, plus `BOUND_WAIT_EXTRA` for a bound element): the instance
+    /// starts and its sound plays once the clock reaches it (FUN_001db5f0, FUN_001dd0d0).
+    wait: f32,
+    se_played: bool,
+    /// The bind sampled on the first tick, kept for `BIND_ONLY_START` elements.
+    bind_once: Option<Mat4>,
+    /// The last bind, kept once the owner is gone (the record is marked orphaned and no longer
+    /// updated, FUN_001dcd08).
+    last_bind: Option<Mat4>,
+    orphan: bool,
+    /// A fade-out running: (level, change per tick); the effect goes once the level reaches 0
+    /// (FUN_001da080 for `DESTROY_FADEOUT`).
+    fade: Option<(f32, f32)>,
+}
+
+impl RunningEffect {
+    fn new(lib: Arc<LoadedPax>, element: Element, effect: kh2_fx::Effect, dpd: usize, bind: Bind, game_id: u16) -> RunningEffect {
+        let wait = element.start_wait + if element.flags & element_flag::BIND != 0 { BOUND_WAIT_EXTRA } else { 0.0 };
+        RunningEffect { lib, element, effect, dpd, bind, game_id, parts: Vec::new(), time: 0.0, wait, se_played: false, bind_once: None, last_bind: None, orphan: false, fade: None }
+    }
 }
 
 impl RunningEffect {
@@ -216,7 +275,6 @@ impl Plugin for FxPlugin {
                         fx_kill,
                         game_effects,
                         fx_test,
-                        effect_sounds,
                     )
                         .chain()
                         .in_set(Sim::Effects),
@@ -227,7 +285,15 @@ impl Plugin for FxPlugin {
 }
 
 pub fn setup(mut commands: Commands, disc: Res<Disc>, rigs: Res<crate::sora::Rigs>, mut distort: ResMut<Assets<DistortMaterial>>) {
-    commands.insert_resource(DistortHandle(distort.add(DistortMaterial { unused: Vec4::ZERO })));
+    commands.insert_resource(DistortHandle {
+        tested: distort.add(DistortMaterial { unused: Vec4::ZERO, depth_test: true }),
+        always: distort.add(DistortMaterial { unused: Vec4::ZERO, depth_test: false }),
+    });
+    let proj = disc.read_root("SLUS_210.05").and_then(|exe| kh2_fx::Projection::from_exe(&exe));
+    if proj.is_none() {
+        warn!("fx: could not read the projection constants from SLUS_210.05; effects skip the screen clip test");
+    }
+    commands.insert_resource(FxProjection(proj));
     let common = disc.read("effect/texcommon.dpd").and_then(|b| Dpd::parse(&b).ok());
     let system = Arc::new(load(&disc, "00effect.bar", 1, common.as_ref()).expect("00effect.bar: no effects"));
     let mut objects = HashMap::new();
@@ -311,29 +377,26 @@ pub fn hit_rotation(dir: Vec3) -> [f32; 3] {
     [(-g.y).atan2((g.x * g.x + g.z * g.z).sqrt()), g.x.atan2(g.z), 0.0]
 }
 
+/// Starts the first element of `lib` with game effect id `id` (FUN_001db868 returns after the
+/// first match; no file on the disc repeats an id, so this is the only element either way).
 pub fn start_placed(commands: &mut Commands, lib: &Arc<LoadedPax>, id: u16, bind: Bind, place: Placement) {
-    for el in lib.pax.elements_for(id) {
-        let Some(fx) = lib.pax.effects.get(el.effect as usize) else { continue };
-        let Some(effect) = kh2_fx::Effect::new(lib.dpds[fx.dpd].clone(), fx.dpd, fx.particle_data) else { continue };
-        // `KH2_FXONLY=<id,id,...>` runs only those effect IDs (isolating an effect in a screenshot).
-        if let Ok(only) = std::env::var("KH2_FXONLY")
-            && !only.split(',').any(|v| v.trim().parse::<u16>().ok() == Some(id))
-        {
-            continue;
-        }
-        let mut element = el.clone();
-        if place.replace_translation {
-            element.translation = [0.0; 3];
-        }
-        if let Some(r) = place.rotation {
-            element.rotation = r;
-        }
-        commands.spawn((
-            Transform::default(),
-            Visibility::default(),
-            RunningEffect { lib: lib.clone(), element, effect, dpd: fx.dpd, bind, game_id: id, parts: Vec::new() },
-        ));
+    let Some(el) = lib.pax.elements_for(id).next() else { return };
+    let Some(fx) = lib.pax.effects.get(el.effect as usize) else { return };
+    let Some(effect) = kh2_fx::Effect::new(lib.dpds[fx.dpd].clone(), fx.dpd, fx.particle_data) else { return };
+    // `KH2_FXONLY=<id,id,...>` runs only those effect IDs (isolating an effect in a screenshot).
+    if let Ok(only) = std::env::var("KH2_FXONLY")
+        && !only.split(',').any(|v| v.trim().parse::<u16>().ok() == Some(id))
+    {
+        return;
     }
+    let mut element = el.clone();
+    if place.replace_translation {
+        element.translation = [0.0; 3];
+    }
+    if let Some(r) = place.rotation {
+        element.rotation = r;
+    }
+    commands.spawn((Transform::default(), Visibility::default(), RunningEffect::new(lib.clone(), element, effect, fx.dpd, bind, id)));
 }
 
 /// Weapon trails: run effect 10 while the keyblade's motion has its trail range trigger.
@@ -504,15 +567,6 @@ pub fn fx_kill(time: Res<Time>, mut enemies: Query<(Entity, &mut Enemy)>, mut do
         if e.alive() {
             e.hp = 0;
             out.write(GameEffect::Death { victim: ent });
-        }
-    }
-}
-
-/// An effect element that names a sound effect (`se` >= 0) plays it when the effect starts.
-pub fn effect_sounds(started: Query<&RunningEffect, Added<RunningEffect>>, mut out: MessageWriter<crate::audio::PlaySe>) {
-    for r in &started {
-        if r.element.se >= 0 {
-            out.write(crate::audio::PlaySe::number(r.element.se as u32, r.lib.apdx.clone()));
         }
     }
 }
@@ -712,10 +766,11 @@ fn build_mesh(b: &Batch) -> Mesh {
     if b.offsets.is_empty() {
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, b.verts.iter().map(|v| v.uv).collect::<Vec<_>>());
     } else {
-        // Distortion batch: the displacement (in metres) rides in UV 0 (x, y) and UV 1 (z).
+        // Distortion batch: the displacement (in metres) rides in UV 0 (x, y) and UV 1 (x = z),
+        // the depth factor in UV 1 y.
         let off: Vec<[f32; 3]> = b.offsets.iter().map(|o| (FLIP.transform_vector3(*o) * SCALE).to_array()).collect();
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, off.iter().map(|o| [o[0], o[1]]).collect::<Vec<_>>());
-        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, off.iter().map(|o| [o[2], 0.0]).collect::<Vec<_>>());
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, off.iter().map(|o| [o[2], b.depth_scale]).collect::<Vec<_>>());
     }
     mesh
 }

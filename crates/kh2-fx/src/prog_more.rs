@@ -8,8 +8,10 @@
 //!   channels.
 //! * `pppKeMvYpEff` (frame 0x1f4628): turns the object's angles to face its own velocity.
 //! * `pppSnoMdlDttNorm` (draw 0x20a7e8, init 0x20a7b8, reset 0x20a7d0): draws a model that shows
-//!   the screen shifted along the model's normals (a distortion lens). The animated amplitude and
-//!   the geometry are ported; see [`Batch::offsets`] for how the draw is handed over.
+//!   the screen shifted along the model's normals (a distortion lens). The animated amplitude,
+//!   the geometry, the per-vertex clip test, the back-face test, the depth bias and the depth-test
+//!   switch are ported; see [`Batch::offsets`], [`Batch::depth_scale`] and [`Batch::depth_test`]
+//!   for how the draw is handed over.
 //!
 //! Work-memory offsets in this file are relative to each program's own work area (the object's
 //! `0xa0 + useVal`), like the offsets the game's handlers add to their `+0xa0` base.
@@ -337,12 +339,29 @@ pub fn sno_draw(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
         0 => 0x44,
         a => a,
     };
-    // A model whose flag word has bit 1 clear is drawn with back faces dropped: the game tests the sign of
-    // the z of (p1 - p0) x (p2 - p1) on the projected vertices (x and y over z, y down) and skips
-    // triangles where it is negative. The projection's own signs are not known here; positive scales
-    // are assumed.
+    // The projection the model draw (FUN_0020ab40) runs every vertex through, when known.
+    let proj = ctx.env.proj;
+    // Depth bias (handler 0x20a7e8, before the draw): the projection's z translation (0x1db1038,
+    // p32) becomes `p32 - entry float +0x18 * 1e7 / the model's view-space z` in double precision
+    // (the soft-float calls 0x326900, 0x326cc0, 0x326f10, 0x326c58, 0x327230) and is restored after
+    // the draw. GS z is `p22 + p32 / z`, so a vertex at depth z gets the z of an unbiased vertex at
+    // depth `z * p32 / p32'`: the batch is depth-tested as if scaled toward the camera by that.
+    let depth_scale = match proj {
+        Some(m) if m_cam.w_axis.z != 0.0 => {
+            let p32 = m.w_axis.z;
+            let biased = (p32 as f64 - pf(p, e, 0x18) as f64 * 1e7 / m_cam.w_axis.z as f64) as f32;
+            if biased.is_finite() && biased != 0.0 { p32 / biased } else { 1.0 }
+        }
+        _ => 1.0,
+    };
+    // Entry byte +0x17 reaches the draw's TEST register (FUN_0020ab40): ZTST GREATER when clear,
+    // ALWAYS (no depth test) when set.
+    let depth_test = pb(p, e, 0x17) == 0;
+    // A model whose flag word has bit 1 clear is drawn with back faces dropped (FUN_0020ab40,
+    // 0x20b0b4): the outer product (p1 - p0) x (p2 - p1) of the screen positions, and the VU MAC
+    // flag's sign bit of its z (0x20) skips the triangle.
     let cull = model.flags & 2 == 0;
-    let mut batch = Batch { dpd: ctx.dpd_index, tex0: None, alpha, ..Default::default() };
+    let mut batch = Batch { dpd: ctx.dpd_index, tex0: None, alpha, depth_scale, depth_test, ..Default::default() };
     for blk in model.blocks.iter().filter(|b| b.kind == 1) {
         for pr in &blk.prims {
             let base = batch.verts.len() as u32;
@@ -350,11 +369,39 @@ pub fn sno_draw(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
                 let v = model.vertices.get(pr.tri[k] as usize).copied().unwrap_or([0; 3]);
                 m_cam.transform_point3(Vec3::new(v[0] as f32, v[1] as f32, v[2] as f32))
             };
+            // Screen positions, and the game's per-vertex clip test (0x20af98..0x20afbc, repeated
+            // for the three vertices): after `vdiv Q = 1 / w` and `screen = clip * Q`, the status
+            // flags are cleared and `w - 1`, `x - 0`, `y - 0`, `4096 - x`, `4096 - y` are computed
+            // with vsub; a sticky zero or sign bit (status & 0xc0) drops the whole triangle. A zero
+            // w makes the VU divide return the largest float (the w test rejects it anyway).
+            let mut screen = [Vec3::ZERO; 3];
+            let mut rejected = false;
+            for (k, s) in screen.iter_mut().enumerate() {
+                let v = pos(k);
+                *s = match proj {
+                    Some(m) => {
+                        let c = m * v.extend(1.0);
+                        let q = if c.w == 0.0 { f32::MAX } else { 1.0 / c.w };
+                        let s = c.truncate() * q;
+                        if c.w - 1.0 <= 0.0 || s.x <= 0.0 || s.y <= 0.0 || 4096.0 - s.x <= 0.0 || 4096.0 - s.y <= 0.0 {
+                            rejected = true;
+                        }
+                        s
+                    }
+                    // Without the projection: x and y over z keep the orientation (positive scales,
+                    // y down), and nothing is clipped.
+                    None => Vec3::new(v.x / v.z, v.y / v.z, 0.0),
+                };
+                if rejected {
+                    break;
+                }
+            }
+            if rejected {
+                continue;
+            }
             if cull {
-                let p: Vec<Vec3> = (0..3).map(pos).collect();
-                let s = |v: Vec3| (v.x / v.z, v.y / v.z);
-                let (a, b, c) = (s(p[0]), s(p[1]), s(p[2]));
-                if (b.0 - a.0) * (c.1 - b.1) - (b.1 - a.1) * (c.0 - b.0) < 0.0 {
+                let (a, b) = (screen[1] - screen[0], screen[2] - screen[1]);
+                if a.x * b.y - a.y * b.x < 0.0 {
                     continue;
                 }
             }

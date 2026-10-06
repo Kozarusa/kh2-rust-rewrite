@@ -12,8 +12,8 @@
 //! What this module does: detects the pairs the way the app detects hits (capsule overlap of
 //! `combat::live_attacks`), disables the volumes by marking their windows as landed so
 //! `combat::detect_hits` skips them, writes [`EnemyClash`] for the enemy side and [`Clash`] for the
-//! player's side (the hook for `sora.rs`, which has no consumer yet). Not done: the spark effect
-//! (FUN_0018d560, effect system hook), the cone test for rows with `ReflectRange` (those pairs never
+//! player's side (consumed by `player_reaction.rs`, which also starts the spark through
+//! `fx::StartSystemEffect`). Not done: the cone test for rows with `ReflectRange` (those pairs never
 //! clash here), `ReflectAction`, the hit registry tests of FUN_001be108.
 
 use std::collections::HashSet;

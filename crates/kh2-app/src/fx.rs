@@ -94,6 +94,18 @@ pub enum GameEffect {
     Death { victim: Entity },
 }
 
+/// The effect file of the attacking object of a spell hit, sent with the `combat::Hit` by `magic.rs`.
+/// FUN_0018d090 takes the hit spark from the attacking object's own effect file; a spell's attack
+/// object belongs to the spell's script, whose effect file is the `.mag` PAX the cast loaded
+/// (FUN_001a45c0; the script anchors its attacks to it, host 2.30). `hit_sparks` pairs it with the
+/// hit of the same target and `atkp` id.
+#[derive(Message, Clone)]
+pub struct SpellHit {
+    pub target: Entity,
+    pub atkp: i16,
+    pub pax: Arc<LoadedPax>,
+}
+
 /// Marks a victim whose death effect has started.
 #[derive(Component)]
 pub struct DeathFx;
@@ -266,6 +278,7 @@ impl Plugin for FxPlugin {
             .add_message::<StartEffect>()
             .add_message::<StartSystemEffect>()
             .add_message::<GameEffect>()
+            .add_message::<SpellHit>()
             .add_systems(Startup, setup)
             .add_systems(
                 FixedUpdate,
@@ -465,10 +478,11 @@ fn element_by_category(pax: &LoadedPax, mask: u64) -> Option<u16> {
 /// Hit effects, as FUN_0018d090 starts them for every landed hit. An ineffective hit sends
 /// `GameEffect::Ineffective` and nothing else. Otherwise `EffectOnHit` (plus a random offset up to
 /// `RandomEffect`) picks a category bit, together with the target type 1 (a normal target), in the
-/// attacker's own effect file (Sora's weapon for his attacks, the enemy's file for its claws); the
-/// first element whose category has all those bits is started at the hit point, turned along the
-/// hit. `DamageEffect` then becomes a `GameEffect::Damage` for the victim. Wall hits only spawn the
-/// spark.
+/// attacker's own effect file (Sora's weapon for his attacks, the enemy's file for its claws, the
+/// spell's `.mag` PAX for a spell's attack: `SpellHit`); the first element whose category has all
+/// those bits is started at the hit point, turned along the hit. The row is the hit's own
+/// (`GameData::hit_row`: a spell hit names its variant row). `DamageEffect` then becomes a
+/// `GameEffect::Damage` for the victim. Wall hits only spawn the spark.
 #[allow(clippy::too_many_arguments)]
 pub fn hit_sparks(
     mut commands: Commands,
@@ -480,13 +494,17 @@ pub fn hit_sparks(
     sora: Query<&Sora>,
     mut hits: MessageReader<crate::combat::Hit>,
     mut walls: MessageReader<crate::combat::WallHit>,
+    mut spells: MessageReader<SpellHit>,
     mut game: MessageWriter<GameEffect>,
     mut seed: Local<u32>,
 ) {
+    let mut spells: Vec<SpellHit> = spells.read().cloned().collect();
     // (attacker's effect file, atkp row, point, direction, the hit if it is one)
     let mut all = Vec::new();
     for h in hits.read() {
-        let Some(atk) = data.atkp(h.atkp) else { continue };
+        let Some(atk) = data.hit_row(h) else { continue };
+        // The spell's file for a spell hit (each `SpellHit` answers one hit).
+        let spell = h.row.and_then(|_| spells.iter().position(|s| s.target == h.target && s.atkp == h.atkp)).map(|i| spells.remove(i).pax);
         let victim = enemies.get(h.target).map(|e| e.stats).ok().or_else(|| sora.get(h.target).map(|s| s.stats).ok());
         if ineffective(atk, victim) {
             game.write(GameEffect::Ineffective { point: h.point, dir: h.dir });
@@ -495,9 +513,11 @@ pub fn hit_sparks(
         if atk.damage_effect != 0 {
             game.write(GameEffect::Damage { victim: h.target, effect: atk.damage_effect, point: h.point });
         }
-        let pax = fighters.get(h.attacker).ok().and_then(|f| match f.team {
-            Team::Player => Some(lib.keyblade.clone()),
-            Team::Enemy => f.attack_bodies.first().and_then(|b| anims.get(*b).ok()).and_then(|a| lib.for_rig(&a.rig)).cloned(),
+        let pax = spell.or_else(|| {
+            fighters.get(h.attacker).ok().and_then(|f| match f.team {
+                Team::Player => Some(lib.keyblade.clone()),
+                Team::Enemy => f.attack_bodies.first().and_then(|b| anims.get(*b).ok()).and_then(|a| lib.for_rig(&a.rig)).cloned(),
+            })
         });
         if let Some(pax) = pax {
             all.push((pax, atk, h.point, Some(h.dir)));
@@ -520,7 +540,7 @@ pub fn hit_sparks(
         }
         let Some(id) = element_by_category(&pax, 1 | 1u64 << (32 + bit)) else { continue };
         if std::env::var_os("KH2_FXLOG").is_some() {
-            info!("hit atkp {} effect {} -> element id {id} of {:?} at {:?}", atk.id, atk.effect_on_hit, pax.apdx, point);
+            info!("hit atkp {} SubId {} effect {} -> element id {id} of {:?} (effect file {}) at {:?}", atk.id, atk.sub_id, atk.effect_on_hit, pax.apdx, pax.id, point);
         }
         let place = if dir.is_some() { Placement::hit(dir) } else { Placement::default() };
         start_placed(&mut commands, &pax, id, Bind::Fixed(Mat4::from_translation(point)), place);
@@ -601,6 +621,7 @@ pub fn tick(
     mut commands: Commands,
     mut effects: Query<(Entity, &mut RunningEffect)>,
     owners: Query<&Animator>,
+    sora: Query<&Sora>,
     locals: Query<(&Transform, Option<&ChildOf>)>,
     camera: Query<(&GlobalTransform, &Projection), With<Camera3d>>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -641,14 +662,22 @@ pub fn tick(
                 // The bind record follows its owner every tick (FUN_001dd0d0 -> FUN_001dcd08 for mode 1):
                 // the owner's bone matrix is read again unless the element is not bound (flag 1 clear:
                 // read once when created) or binds only at its start (flag 2: not read again once the
-                // instance runs). `bone` numbers with 0x4000 name object matrices (FUN_0016aa18: 0x4000 the
-                // object's own matrix, the root here).
+                // instance runs). `bone` numbers with 0x4000 name object frames (FUN_0016aa18, see
+                // `object_bone`: the root, the body centre, the weapon's blade tip, a shape's centre).
                 let frozen = r.bind_once.is_some() && (el.flags & element_flag::BIND == 0 || el.flags & element_flag::BIND_ONLY_START != 0);
                 let mut now = if frozen { r.bind_once } else { None };
                 if now.is_none() && !r.orphan {
                     if let Ok(anim) = owners.get(owner) {
                         let body = GlobalTransform::from(world_now(owner, &locals));
-                        let bone = if el.bone & 0x4000 != 0 { body.to_matrix() } else { anim.bone_world(&body, el.bone.max(0) as usize) };
+                        let bone = if el.bone & 0x4000 != 0 {
+                            // A party member's weapons by hand (Sora's list); other owners are their own weapon.
+                            let party = sora.iter().find(|s| s.body == owner);
+                            let weapons: Vec<Option<ObjectFrame>> =
+                                party.map_or(Vec::new(), |s| s.weapons.iter().map(|w| owners.get(*w).ok().map(|a| ObjectFrame::of(a, world_now(*w, &locals)))).collect());
+                            object_bone(el.bone as u16, &ObjectFrame::of(anim, body.to_matrix()), &weapons, party.is_some())
+                        } else {
+                            anim.bone_world(&body, el.bone.max(0) as usize)
+                        };
                         // The element's offset and rotation are in the game's Y-down frame: the same flip that
                         // takes the bone's world placement into fx space applies to its local axes (as for
                         // `Bind::Fixed`). Root-bound elements put their centre at negative Y (above the feet).
@@ -829,6 +858,96 @@ fn element_matrix(el: &Element) -> Mat4 {
     Mat4::from_scale_rotation_translation(s, r, Vec3::from(el.translation))
 }
 
+/// Shape type FUN_0016b7d0 looks for (the object's own body volume).
+pub const SHAPE_BODY: u8 = 1;
+/// Shape type of the 0x4009 point (FUN_0016aa18 case 0x4009).
+pub const SHAPE_POINT_9: u8 = 9;
+/// Shape type of a weapon's blade (FUN_0016ae90: its joint is the weapon's bone, its x offset the
+/// weapon's length).
+pub const SHAPE_WEAPON: u8 = 15;
+/// The part of the weapon length 0x4007 / 0x4008 move along the blade (DAT_0037a1bc).
+pub const WEAPON_MIDDLE: f32 = 0.5;
+
+/// What FUN_0016aa18 reads of an object for the bone numbers with 0x4000, in Bevy world space: its
+/// matrix, the centres of its first type-1 and type-9 shapes, and its blade (the bone matrix of its
+/// first type-15 shape with that shape's x offset, the weapon's length).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ObjectFrame {
+    pub matrix: Mat4,
+    pub body_centre: Option<Vec3>,
+    pub point_9: Option<Vec3>,
+    pub blade: Option<(Mat4, f32)>,
+}
+
+/// The centre of a shape (FUN_001894d0): its offset in its joint's frame, lifted by its +0xe (the
+/// game's y is down, so up in Bevy space); the same point `combat::hurt_spheroid` takes.
+pub fn shape_point(sh: &kh2_model::collision::Shape, joint: Mat4) -> Vec3 {
+    joint.transform_point3(Vec3::from(sh.offset)) + Vec3::Y * (sh.lift * SCALE)
+}
+
+impl ObjectFrame {
+    /// The frames of an animated object whose world matrix is `matrix`. A shape is the first record of
+    /// its type (FUN_0016b558 with -1) [inferred: the first record is the one the enable mask passes,
+    /// FUN_0019a6a0; the records' part masks are not modelled].
+    pub fn of(anim: &Animator, matrix: Mat4) -> ObjectFrame {
+        let body = GlobalTransform::from(matrix);
+        let joint = |sh: &kh2_model::collision::Shape| match sh.bone {
+            Some(b) => anim.bone_world(&body, b),
+            None => matrix,
+        };
+        let first = |kind: u8| anim.rig.model.shapes.iter().find(|s| s.kind == kind);
+        ObjectFrame {
+            matrix,
+            body_centre: first(SHAPE_BODY).map(|sh| shape_point(sh, joint(sh))),
+            point_9: first(SHAPE_POINT_9).map(|sh| shape_point(sh, joint(sh))),
+            // FUN_0016ae90: FUN_0016aa18 on the shape's joint, and the length `(float)` of its +8.
+            blade: first(SHAPE_WEAPON).map(|sh| (joint(sh), sh.offset[0])),
+        }
+    }
+}
+
+/// FUN_0016aa18 for the bone numbers with bit 0x4000 (the object's own frames), as a world matrix in
+/// Bevy space:
+/// - 0x4001: the object's matrix moved to the centre of its first type-1 shape (FUN_0016b7d0; without
+///   one, the object's position);
+/// - 0x4003 / 0x4004: the blade of the weapon of hand 0 / 1 moved along the blade's x axis by the
+///   weapon's length (FUN_0016ae50 -> FUN_0016ae90, then `row3 += row0 * length`); 0x4005 / 0x4006
+///   the blade unmoved; 0x4007 / 0x4008 moved by half the length. The weapon of a party member is its
+///   weapon of that hand (FUN_00175df8: the list at +0xaf8); any other object is its own weapon
+///   (FUN_0016ae90 on itself, both hands alike);
+/// - 0x4009: the object's matrix moved to the centre of its first type-9 shape (without one, unmoved);
+/// - 0x4000, 0x4002 and any other number: the object's matrix (+0x40 / +0x6b0, which the app does
+///   not tell apart).
+///
+/// `weapons` holds the party member's weapons by hand (`None` for an empty hand); `party` says the
+/// owner is a party member (+0x588 & 4). A missing weapon or blade gives the object's matrix (the game
+/// would read through a null record there).
+pub fn object_bone(bone: u16, owner: &ObjectFrame, weapons: &[Option<ObjectFrame>], party: bool) -> Mat4 {
+    let at = |p: Option<Vec3>| {
+        let mut m = owner.matrix;
+        if let Some(p) = p {
+            m.w_axis = p.extend(1.0);
+        }
+        m
+    };
+    match bone {
+        0x4001 => at(owner.body_centre),
+        0x4003..=0x4008 => {
+            let hand = ((bone - 0x4003) & 1) as usize;
+            let weapon = if party { weapons.get(hand).copied().flatten() } else { Some(*owner) };
+            let Some((m, len)) = weapon.and_then(|w| w.blade) else { return owner.matrix };
+            let along = match bone {
+                0x4003 | 0x4004 => len,
+                0x4005 | 0x4006 => 0.0,
+                _ => len * WEAPON_MIDDLE,
+            };
+            m * Mat4::from_translation(Vec3::new(along, 0.0, 0.0))
+        }
+        0x4009 => at(owner.point_9),
+        _ => owner.matrix,
+    }
+}
+
 /// World matrix from this tick's local transforms (GlobalTransform is only propagated after
 /// the fixed-rate systems, one frame late for anything that moved this tick).
 pub fn world_now(e: Entity, locals: &Query<(&Transform, Option<&ChildOf>)>) -> Mat4 {
@@ -969,5 +1088,74 @@ mod tests {
         // Straight up in Bevy is down in the game: pitch atan2(1, 0) = pi/2 about X.
         let r = hit_rotation(Vec3::Y);
         assert!((r[0] + std::f32::consts::FRAC_PI_2).abs() < 1e-5 || (r[0] - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
+    }
+
+    /// FUN_0016aa18's object frames: 0x4003 is the hand-0 weapon's blade moved along its x axis by the
+    /// length, 0x4005 the blade itself, 0x4007 half way; 0x4001 / 0x4009 the object's matrix moved to
+    /// its type-1 / type-9 shape centres; an object that is not a party member is its own weapon.
+    #[test]
+    fn object_bones_follow_the_game() {
+        let rot = Mat4::from_rotation_y(0.5) * Mat4::from_rotation_x(0.3);
+        let blade_m = Mat4::from_translation(Vec3::new(1.0, 2.0, 3.0)) * rot;
+        let sword = ObjectFrame { matrix: Mat4::from_translation(Vec3::new(5.0, 0.0, 0.0)), body_centre: None, point_9: None, blade: Some((blade_m, -78.0)) };
+        let owner = ObjectFrame {
+            matrix: Mat4::from_translation(Vec3::new(10.0, 0.0, 0.0)) * Mat4::from_rotation_y(1.0),
+            body_centre: Some(Vec3::new(10.0, 0.85, 0.0)),
+            point_9: Some(Vec3::new(10.0, 1.05, 0.0)),
+            blade: None,
+        };
+        let hands = [Some(sword), None];
+        let pos = |m: Mat4| m.w_axis.truncate();
+        // The tip: the blade's own x axis times the length (negative: toward -x).
+        let tip = object_bone(0x4003, &owner, &hands, true);
+        assert!((pos(tip) - (blade_m.w_axis.truncate() - 78.0 * blade_m.x_axis.truncate())).length() < 1e-4);
+        assert_eq!(object_bone(0x4005, &owner, &hands, true), blade_m);
+        let mid = object_bone(0x4007, &owner, &hands, true);
+        assert!((pos(mid) - (blade_m.w_axis.truncate() - 39.0 * blade_m.x_axis.truncate())).length() < 1e-4);
+        // Hand 1 is empty: the object's matrix.
+        assert_eq!(object_bone(0x4004, &owner, &hands, true), owner.matrix);
+        // 0x4001 and 0x4009 keep the rotation and take the shape centre.
+        let b = object_bone(0x4001, &owner, &hands, true);
+        assert_eq!(pos(b), Vec3::new(10.0, 0.85, 0.0));
+        assert_eq!(b.x_axis, owner.matrix.x_axis);
+        assert_eq!(pos(object_bone(0x4009, &owner, &hands, true)), Vec3::new(10.0, 1.05, 0.0));
+        assert_eq!(object_bone(0x4000, &owner, &hands, true), owner.matrix);
+        assert_eq!(object_bone(0x4002, &owner, &hands, true), owner.matrix);
+        // Not a party member: its own blade, both hands alike; without one, its own matrix.
+        let enemy = ObjectFrame { blade: Some((blade_m, 10.0)), ..owner };
+        assert_eq!(object_bone(0x4003, &enemy, &[], false), object_bone(0x4004, &enemy, &[], false));
+        assert_eq!(object_bone(0x4003, &owner, &[], false), owner.matrix);
+        // No shape of the type: the object's own place.
+        let bare = ObjectFrame { body_centre: None, point_9: None, ..owner };
+        assert_eq!(object_bone(0x4001, &bare, &[], true), owner.matrix);
+    }
+
+    /// The disc's data behind the cast effects: the keyblade has a type-15 shape on a bone with a
+    /// length along -x; Sora has type-1 and type-9 shapes on his own matrix; the charge and cast
+    /// elements (0 and 1) of the four level-1 spells are bound to 0x4003, the weapon of hand 0.
+    #[test]
+    fn cast_effects_bind_to_the_blade_on_the_disc() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let kb = kh2_model::mdlx(&disc.read("obj/W_EX010.mdlx").expect("keyblade")).expect("model");
+        let blade = kb.shapes.iter().find(|s| s.kind == SHAPE_WEAPON).expect("type-15 shape");
+        eprintln!("keyblade blade: bone {:?} length {}", blade.bone, blade.offset[0]);
+        assert!(blade.bone.is_some() && blade.offset[0] < 0.0, "a bone and a length along -x");
+        let sora = kh2_model::mdlx(&disc.read("obj/P_EX100.mdlx").expect("sora")).expect("model");
+        for kind in [SHAPE_BODY, SHAPE_POINT_9] {
+            let s = sora.shapes.iter().find(|s| s.kind == kind).expect("shape");
+            eprintln!("sora type {kind}: bone {:?} lift {}", s.bone, s.lift);
+            assert!(s.bone.is_none() && s.lift > 0.0, "on the object's matrix, above its feet");
+        }
+        for name in ["magic/FIRE_1.mag", "magic/BLIZZARD_1.mag", "magic/THUNDER_1.mag", "magic/CURE_1.mag"] {
+            let p = load(&disc, name, 1, None).expect(name);
+            for id in [0u16, 1] {
+                let e = p.pax.elements_for(id).next().expect("element");
+                assert_eq!(e.bone, 0x4003, "{name} element {id}");
+            }
+        }
     }
 }

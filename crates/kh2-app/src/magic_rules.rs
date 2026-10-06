@@ -310,6 +310,65 @@ pub fn heal_amount(row: &Atkp, strength: i32, magic: i32) -> i32 {
     }
 }
 
+/// Ability bit tested by the cast start before FUN_00179470 (FUN_001a4798: ability block +0xc &
+/// 0x80000, word 3 bit 19). The disc's ability row that owns it is item 403 (`magic_lock_on_bit_owner`
+/// test).
+pub const BIT_MAGIC_LOCK_ON: u16 = 3 * 32 + 19;
+
+/// Whether FUN_001a4798 calls FUN_00179470 for a slot: with the Magic Lock-On bit, for Fire,
+/// Blizzard, Thunder and Magnet (`magc` id below 3 or equal to 4).
+pub fn magic_lock_on_applies(has_bit: bool, slot: u8) -> bool {
+    has_bit && (slot < 3 || slot == 4)
+}
+
+/// FUN_0018fb98 as FUN_00179470 calls it (with a range of 0.0, which lets every target through: the
+/// first test `range <= 0.0` holds, so no distance or height window applies): among the candidate
+/// target points (each target shape of each targetable object, game units), the one with the lowest
+/// `(d + |dy| * h_adjust) * ((1 - facing . dir) * 0.5 * (1 - inner) + inner)`, `d` the horizontal
+/// distance from `pos` (the object's position, FUN_0016b960), `dir` the horizontal unit direction,
+/// `dy` the height difference (FUN_00300188 [inferred: an absolute value]), `h_adjust` and `inner`
+/// the player's row at +0x6c and +0x70 (`plyr` AutoLockOnHAdjust and AutoLockOnInnerAdjust). The
+/// first of equal scores wins (`score < best`).
+pub fn lock_on_pick<T: Copy>(pos: bevy::math::Vec3, facing: bevy::math::Vec3, h_adjust: f32, inner: f32, candidates: &[(T, bevy::math::Vec3)]) -> Option<T> {
+    let mut best: Option<(T, f32)> = None;
+    for &(t, at) in candidates {
+        let d = at - pos;
+        let flat = d.with_y(0.0);
+        let dist = flat.length();
+        let dir = if dist > 0.0 { flat / dist } else { flat };
+        let score = (dist + d.y.abs() * h_adjust) * ((1.0 - facing.dot(dir)) * 0.5 * (1.0 - inner) + inner);
+        if best.is_none_or(|(_, s)| score < s) {
+            best = Some((t, score));
+        }
+    }
+    best.map(|b| b.0)
+}
+
+/// Range triggers of a cast motion that turn the caster (FUN_00188030): 22 toward the command's target
+/// record (+0x9f4, FUN_00186118), 28 toward the lock-on controller's target (+0xb40 + 4,
+/// FUN_001861b8). Both only for an object with flag 2 of +0x588 (the player); the parameter is the
+/// turn limit in degrees per frame (times `DAT_0037a988`, pi / 180).
+pub const TRIGGER_TURN_TARGET: u8 = 22;
+pub const TRIGGER_TURN_LOCK: u8 = 28;
+/// FUN_00186018 turns only when the target is more than this far away horizontally (DAT_0037a970).
+pub const TURN_MIN_DISTANCE: f32 = 50.0;
+
+/// FUN_00186018 -> FUN_00183848 for one frame: the facing `yaw` turns toward the horizontal direction
+/// from `pos` to the target point `at` (game units) by at most `deg_per_frame` degrees (times the frame
+/// step, 1.0 per tick in the app), snapping once within that; nothing happens when the target is the
+/// caster itself (`own`) or not more than `TURN_MIN_DISTANCE` away. Returns the new yaw. The yaw is
+/// `atan2(x, z)` of the facing, as `Motor::forward`.
+pub fn cast_turn(yaw: f32, pos: bevy::math::Vec3, at: bevy::math::Vec3, own: bool, deg_per_frame: f32) -> f32 {
+    let d = (at - pos).with_y(0.0);
+    if own || d.length() <= TURN_MIN_DISTANCE {
+        return yaw;
+    }
+    let rate = deg_per_frame * std::f32::consts::PI / 180.0;
+    let mut m = crate::motor::Motor { yaw, ..Default::default() };
+    m.turn_to(d, rate);
+    m.yaw
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -427,5 +486,60 @@ mod tests {
         assert_eq!(rows[0].0, vec![1.0, 2.0]);
         assert_eq!(rows[1].f(4), 4.0);
         assert_eq!(magi_row(&rows, 9).map(|r| r.f(0)), Some(1.0), "past the count: row 0");
+    }
+
+    /// FUN_00179470's pick (FUN_0018fb98 with range 0): no distance limit, the facing weighs in by
+    /// `inner`, the height by `h_adjust`.
+    #[test]
+    fn lock_on_pick_has_no_range_limit() {
+        use bevy::math::Vec3;
+        let pos = Vec3::ZERO;
+        let facing = Vec3::Z;
+        // Far ahead beats near behind when the facing weighs heavily (inner 0.1).
+        let c = [(1, Vec3::new(0.0, 0.0, -300.0)), (2, Vec3::new(0.0, 0.0, 2000.0))];
+        assert_eq!(lock_on_pick(pos, facing, 1.0, 0.1, &c), Some(2));
+        // Inner 1.0: distance alone.
+        assert_eq!(lock_on_pick(pos, facing, 1.0, 1.0, &c), Some(1));
+        // The height difference adds |dy| * h_adjust to the distance.
+        let h = [(1, Vec3::new(0.0, 500.0, 400.0)), (2, Vec3::new(0.0, 0.0, 600.0))];
+        assert_eq!(lock_on_pick(pos, facing, 1.0, 1.0, &h), Some(2));
+        assert_eq!(lock_on_pick(pos, facing, 0.0, 1.0, &h), Some(1));
+        // Equal scores: the first.
+        let e = [(1, Vec3::new(100.0, 0.0, 0.0)), (2, Vec3::new(-100.0, 0.0, 0.0))];
+        assert_eq!(lock_on_pick(pos, facing, 1.0, 0.5, &e), Some(1));
+        assert_eq!(lock_on_pick::<u8>(pos, facing, 1.0, 0.5, &[]), None);
+    }
+
+    /// FUN_00186018 -> FUN_00183848: at most the trigger's degrees per frame, a snap within that, no
+    /// turn within 50 units or toward the caster itself.
+    #[test]
+    fn cast_turn_rule() {
+        use bevy::math::Vec3;
+        let step = 15f32.to_radians();
+        // Facing +z (yaw 0), target to the right (+x): a quarter turn takes six frames of 15 degrees.
+        let mut yaw = 0.0;
+        let at = Vec3::new(1000.0, 0.0, 0.0);
+        for k in 1..=5 {
+            yaw = cast_turn(yaw, Vec3::ZERO, at, false, 15.0);
+            assert!((yaw - step * k as f32).abs() < 1e-5, "frame {k}: {yaw}");
+        }
+        yaw = cast_turn(yaw, Vec3::ZERO, at, false, 15.0);
+        assert!((yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
+        // Within one step: snaps.
+        assert!((cast_turn(1.5, Vec3::ZERO, at, false, 15.0) - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        // Turning the short way (to the left).
+        assert!((cast_turn(0.0, Vec3::ZERO, Vec3::new(-1000.0, 0.0, 10.0), false, 15.0) + step).abs() < 1e-5);
+        // Too close (horizontal distance 50 or less, height ignored), or the caster's own record.
+        assert_eq!(cast_turn(0.3, Vec3::ZERO, Vec3::new(50.0, 900.0, 0.0), false, 15.0), 0.3);
+        assert_ne!(cast_turn(0.3, Vec3::ZERO, Vec3::new(51.0, 0.0, 0.0), false, 15.0), 0.3);
+        assert_eq!(cast_turn(0.3, Vec3::ZERO, at, true, 15.0), 0.3);
+    }
+
+    #[test]
+    fn magic_lock_on_slots() {
+        for (slot, want) in [(0, true), (1, true), (2, true), (3, false), (4, true), (5, false)] {
+            assert_eq!(magic_lock_on_applies(true, slot), want, "slot {slot}");
+            assert!(!magic_lock_on_applies(false, slot));
+        }
     }
 }

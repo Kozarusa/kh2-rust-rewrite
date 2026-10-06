@@ -232,12 +232,13 @@ impl Plugin for AudioPlugin {
             .init_resource::<crate::audio_bgm::AreaMusic>()
             .add_message::<PlaySe>()
             .add_message::<PlayVoice>()
+            .add_message::<SoraVoice>()
             .add_systems(Startup, (start_stream, load_voice_table, load_voice_info))
             .add_systems(Update, play_requests)
             .add_systems(Update, area_bgm.after(crate::assets::load_area))
             .add_systems(
                 FixedUpdate,
-                (motion_sounds, footsteps, wall_sounds, crate::audio_bgm::battle_music, update_mixes).chain().in_set(crate::schedule::Sim::Sounds),
+                (motion_sounds, sora_voices, footsteps, wall_sounds, crate::audio_bgm::battle_music, update_mixes).chain().in_set(crate::schedule::Sim::Sounds),
             );
     }
 }
@@ -525,39 +526,87 @@ pub fn motion_sounds(
                 }
                 // Voice lines: the speaker's bank for the current world.
                 (frame::VOICE | frame::VOICE2, [voice, ..]) if is_sora => {
-                    if let Some(area_name) = area.loaded.as_deref()
-                        && let Some(world) = area_name.get(..2)
-                    {
-                        // The other party is the lock-on target's NeoStatus (FUN_00175d18 takes the
-                        // actor's target object +0x9f4; that it is the lock-on target is inferred).
-                        let other = sora
-                            .single()
-                            .ok()
-                            .and_then(|s| s.target)
-                            .and_then(|t| enemies.get(t).ok())
-                            .map(|e| {
-                                let model = e.kind.model;
-                                *neo_cache.entry(e.name).or_insert_with(|| neo_status(&disc, model).unwrap_or(0))
-                            })
-                            .unwrap_or(0);
-                        let picked = table.pick(SORA_SPEAKER, *voice as u16, other, &mut rng.0, &|_| false);
-                        let bank = area_voice_bank(&disc, area_name).unwrap_or(0);
-                        let name = info.names.name(SORA_SPEAKER).unwrap_or("sora");
-                        if std::env::var_os("KH2_SOUNDLOG").is_some() {
-                            info!("voice id {voice} ({}) other {other} -> line {picked:?} rng {:#x}", a.tag(), rng.0);
-                        }
-                        if let Some((line, priority)) = picked {
-                            voices.write(PlayVoice {
-                                file: kh2_audio::voice::bank_path(&info.lang, world, bank, name),
-                                line,
-                                priority,
-                                pos: Some(place.translation()),
-                            });
-                        }
+                    let ctx = VoiceCtx { area: &area, table: &table, info: &info, disc: &disc };
+                    let other = sora_other(&sora, &enemies, &disc, &mut neo_cache);
+                    if let Some(v) = sora_voice(&ctx, *voice as u16, other, &mut rng.0, place.translation(), a.tag()) {
+                        voices.write(v);
                     }
                 }
                 _ => {}
             }
+        }
+    }
+}
+
+/// What picking a voice line of Sora reads: the loaded area (its voice bank), the voice table, the
+/// speaker names and language, the disc.
+pub struct VoiceCtx<'a> {
+    pub area: &'a CurrentArea,
+    pub table: &'a VoiceTable,
+    pub info: &'a VoiceInfo,
+    pub disc: &'a Disc,
+}
+
+/// The other party of a voice pick: the NeoStatus of the actor's target object (FUN_00175d18 takes
+/// +0x9f4, the command's target record; the app's is the lock-on or auto target [inferred]).
+fn sora_other(sora: &Query<&Sora>, enemies: &Query<&crate::enemy::Enemy>, disc: &Disc, cache: &mut HashMap<&'static str, u16>) -> u16 {
+    sora.single()
+        .ok()
+        .and_then(|s| s.target)
+        .and_then(|t| enemies.get(t).ok())
+        .map(|e| {
+            let model = e.kind.model;
+            *cache.entry(e.name).or_insert_with(|| neo_status(disc, model).unwrap_or(0))
+        })
+        .unwrap_or(0)
+}
+
+/// FUN_00175d18 (the player's method +0x54) for Sora: the voice table picks a line of `voice` against
+/// the other party's NeoStatus, from the speaker's bank of the current world, played at `at`.
+/// `None` when no area is loaded or the record answers no line.
+pub fn sora_voice(ctx: &VoiceCtx, voice: u16, other: u16, rng: &mut u32, at: Vec3, why: &str) -> Option<PlayVoice> {
+    let area_name = ctx.area.loaded.as_deref()?;
+    let world = area_name.get(..2)?;
+    let picked = ctx.table.pick(SORA_SPEAKER, voice, other, rng, &|_| false);
+    let bank = area_voice_bank(ctx.disc, area_name).unwrap_or(0);
+    let name = ctx.info.names.name(SORA_SPEAKER).unwrap_or("sora");
+    if std::env::var_os("KH2_SOUNDLOG").is_some() {
+        info!("voice id {voice} ({why}) other {other} -> line {picked:?} rng {:#x}", *rng);
+    }
+    let (line, priority) = picked?;
+    Some(PlayVoice { file: kh2_audio::voice::bank_path(&ctx.info.lang, world, bank, name), line, priority, pos: Some(at) })
+}
+
+/// A voice of Sora asked for outside the motion triggers: the cast start (FUN_001a4798) calls the
+/// player's method +0x54 (FUN_00175d18) with the `magc` row's `Voice`, `VoiceFinisher` or
+/// `VoiceSelf`. `why` names the caller in the sound log.
+#[derive(Message, Clone, Debug)]
+pub struct SoraVoice {
+    pub voice: u16,
+    pub why: String,
+}
+
+/// Plays the `SoraVoice` requests through the same pick as the motion's voice triggers, at Sora's body.
+#[allow(clippy::too_many_arguments)]
+pub fn sora_voices(
+    mut req: MessageReader<SoraVoice>,
+    sora: Query<&Sora>,
+    places: Query<&GlobalTransform>,
+    area: Res<CurrentArea>,
+    table: Res<VoiceTable>,
+    mut rng: ResMut<GameRng>,
+    info: Res<VoiceInfo>,
+    disc: Res<Disc>,
+    enemies: Query<&crate::enemy::Enemy>,
+    mut neo_cache: Local<HashMap<&'static str, u16>>,
+    mut voices: MessageWriter<PlayVoice>,
+) {
+    for r in req.read() {
+        let at = sora.single().ok().and_then(|s| places.get(s.body).ok()).map_or(Vec3::ZERO, |g| g.translation());
+        let ctx = VoiceCtx { area: &area, table: &table, info: &info, disc: &disc };
+        let other = sora_other(&sora, &enemies, &disc, &mut neo_cache);
+        if let Some(v) = sora_voice(&ctx, r.voice, other, &mut rng.0, at, &r.why) {
+            voices.write(v);
         }
     }
 }
@@ -784,6 +833,45 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The cast voices (FUN_001a4798 -> FUN_00175d18): the `magc` rows of Fire, Blizzard, Thunder and
+    /// Cure name voice ids that the voice table answers with a line of Sora's tt bank, through the
+    /// same pick the motion triggers use (`sora_voice`); -1 asks for none.
+    #[test]
+    fn cast_voices_pick_lines_from_the_bank() {
+        let Some(d) = disc() else { return };
+        let mut table = VoiceTable::default();
+        let magc = {
+            let mut a = d.0.lock().unwrap();
+            table.0 = kh2_tables::load::<kh2_tables::tables::Vtbl>(&mut a, &kh2_tables::tables::VTBL).expect("vtbl").rows;
+            kh2_tables::load::<kh2_tables::tables::Magc>(&mut a, &kh2_tables::tables::MAGC).expect("magc").rows
+        };
+        let exe = d.read_root("SLUS_210.05").expect("exe");
+        let info = VoiceInfo { names: kh2_audio::voice::SpeakerNames::from_exe(&exe).unwrap_or_default(), lang: kh2_audio::voice::language(&exe).unwrap_or_else(|| "us".into()) };
+        let area = CurrentArea { name: "tt04".into(), loaded: Some("tt04".into()) };
+        let ctx = VoiceCtx { area: &area, table: &table, info: &info, disc: &d };
+        let mut rng = 1u32;
+        let mut played = 0;
+        for id in 0..4u8 {
+            let row = crate::magic_rules::pick_row(&magc, id, 1, 0).expect("level-1 row");
+            for (what, v) in [("Voice", row.voice), ("VoiceFinisher", row.voice_finisher), ("VoiceSelf", row.voice_self)] {
+                if v < 0 {
+                    continue;
+                }
+                // A record's pairs pass by chance: a few generator states find a line. A record whose
+                // lines all depend on the other party (-3) answers only for one (Cure's Voice: cast
+                // on another member; Donald's NeoStatus 2 here).
+                let got = [0u16, kh2_audio::voice::speaker::DONALD]
+                    .into_iter()
+                    .find_map(|other| (0..32).find_map(|_| sora_voice(&ctx, v as u16, other, &mut rng, Vec3::ZERO, "test")));
+                eprintln!("{} {what} {v}: {:?}", row.file_name, got.as_ref().map(|p| (&p.file, p.line, p.priority)));
+                let p = got.unwrap_or_else(|| panic!("{} {what} {v}: no line", row.file_name));
+                assert!(d.read(&p.file).is_some(), "bank {} on the disc", p.file);
+                played += 1;
+            }
+        }
+        assert!(played >= 4, "every spell asks for a voice");
     }
 
     #[test]

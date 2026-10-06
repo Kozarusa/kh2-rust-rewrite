@@ -422,3 +422,416 @@ fn the_action_thread_runs_until_it_is_stopped() {
     assert_eq!(word(&rt, ACTION), 2, "stopped");
     assert!(rt.core.errors.is_empty(), "{:?}", rt.core.errors);
 }
+
+/// The persistent spell thread of FUN_001a4798: event 20 runs as the thread's code until it is pointed
+/// at event 21 (FUN_0016c500), which runs on the same thread and ends it.
+#[test]
+fn a_thread_can_be_restarted_at_another_event() {
+    const LOOPS: u16 = 0x00;
+    const AFTER: u16 = 0x04;
+    let mut a = Asm { w: vec![0; base(2)] };
+    let ev20 = a.here();
+    a.store_local(0);
+    let lp = a.here();
+    a.bump(LOOPS).yield_().jmp(lp);
+    let ev21 = a.here();
+    a.bump(AFTER).ret();
+    let img = image(&[(20, ev20 as u32), (21, ev21 as u32)], &a.w[base(2)..], 0x40);
+    let mut rt = Runtime::new(Program::parse(&img).expect("parse"));
+    let mut host = MockHost::new();
+    assert!(rt.start_thread(SELF_OBJ, 20, &[7]));
+    for _ in 0..3 {
+        rt.update(&mut host);
+    }
+    assert_eq!((word(&rt, LOOPS), word(&rt, AFTER)), (3, 0));
+    assert!(!rt.thread_done());
+    assert!(rt.restart_thread(21, &[]));
+    rt.update(&mut host);
+    assert_eq!((word(&rt, LOOPS), word(&rt, AFTER)), (3, 1), "event 21 ran once, the loop of event 20 no more");
+    assert!(rt.thread_done());
+    assert!(rt.core.errors.is_empty(), "{:?}", rt.core.errors);
+    // An event the program lacks ends the thread.
+    assert!(!rt.restart_thread(22, &[]));
+    assert!(rt.thread_done());
+    let mut none = Runtime::new(Program::parse(&img).expect("parse"));
+    assert!(!none.start_thread(SELF_OBJ, 5, &[]));
+    assert!(none.thread_done());
+}
+
+mod restart_oracle {
+    //! The restart against the game's own code: the four spell scripts' event 20 runs some slices in the
+    //! game's interpreter (FUN_001d7cb0 in kh2-ee) and in this crate's, then the game's FUN_001d7bb0
+    //! points its thread at event 21 (what FUN_0016c500 -> FUN_0016c4d8 does) and `Thread::restart`
+    //! points this crate's; both run on. Program counter, operand stack depth, frame pointer and top of
+    //! stack are compared after every instruction, the host calls with their arguments. Host functions
+    //! answer by the same script on both sides (math functions run natively on the game's side).
+
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    use kh2_bdx::exe::HostTable;
+    use kh2_bdx::insn::Insn;
+    use kh2_bdx::math::{self, VecAccess};
+    use kh2_bdx::program::Program;
+    use kh2_bdx::vm::{self, Env, Mem, Shared, Stop, Thread, TraceState, VmError};
+    use kh2_ee::Ee;
+
+    const PROG: u32 = 0x0140_0000;
+    const THREAD: u32 = 0x0150_0000;
+    const GLOB: u32 = 0x0151_0000;
+    const FRAME: u32 = 0x0152_0000;
+    const VALS: u32 = 0x0153_0000;
+    const EXT: u32 = 0x0154_0000;
+    const EXT_LEN: usize = 0x2_0000;
+    const STACK: u32 = 0x01ff_0000;
+    const CB_ADDR: u32 = 0x0000_3000;
+    const GROUP_TABLE: u32 = 0x35bce8;
+    const SEED_ADDR: u32 = 0x35b9a8;
+    const IDENTITY: u32 = 0x354a60;
+    const SEED: u32 = 0x1234_5679;
+    /// FUN_001d7bb0: set a thread's program counter, push four zero frame words and the arguments.
+    const START: u32 = 0x1d7bb0;
+    /// FUN_001d7cb0: run a thread one slice.
+    const RUN: u32 = 0x1d7cb0;
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum Canon {
+        Raw(u32),
+        Code(u32),
+        Global(u32),
+        Frame(u32),
+        Scratch,
+    }
+
+    type Step = (usize, usize, usize, Option<Canon>);
+
+    #[derive(Default)]
+    struct EeState {
+        n: u32,
+        by_addr: HashMap<u32, (u16, u16, usize, bool)>,
+        steps: Vec<Step>,
+        calls: Vec<(u16, u16, Vec<Canon>)>,
+        code_len: u32,
+    }
+
+    thread_local! {
+        static ST: RefCell<EeState> = RefCell::new(EeState::default());
+    }
+
+    fn canon(v: u32, code: u32, code_len: u32) -> Canon {
+        if (code..code + code_len).contains(&v) {
+            Canon::Code(v - code)
+        } else if (GLOB..GLOB + 0x4000).contains(&v) {
+            Canon::Global(v - GLOB)
+        } else if (FRAME..FRAME + 0x1000).contains(&v) {
+            Canon::Frame(v - FRAME)
+        } else if (0x522100..0x522300).contains(&v) || (0x0522_2000..0x0522_2100).contains(&v) {
+            Canon::Scratch
+        } else {
+            Canon::Raw(v)
+        }
+    }
+
+    /// The scripted reply of a host function: vector results point at a buffer both sides can read, the
+    /// heap gives blocks inside it, the rest cycles through a few numbers. 1.15 (`motion_state`) keeps
+    /// its answer, so event 20's wait loop waits.
+    fn policy(g: u16, i: u16, n: u32) -> u32 {
+        if matches!((g, i), (1, 62) | (1, 64) | (1, 120) | (1, 147) | (1, 201) | (0, 53) | (2, 23) | (1, 83)) {
+            return EXT + 16 * (n % 8);
+        }
+        if (g, i) == (0, 47) {
+            return EXT + 0x1_0000 + 0x100 * (n % 64);
+        }
+        if (g, i) == (1, 15) {
+            return 7;
+        }
+        [0, 0x3f80_0000, 3, 99, 0, 2][((n + i as u32) % 6) as usize]
+    }
+
+    fn ext_initial() -> Vec<u8> {
+        let mut b = vec![0u8; EXT_LEN];
+        for k in 0..8u32 {
+            for (j, x) in [k as f32 * 10.0 + 1.0, 2.0, 3.0 + k as f32, 0.0].iter().enumerate() {
+                let o = (16 * k + 4 * j as u32) as usize;
+                b[o..o + 4].copy_from_slice(&x.to_le_bytes());
+            }
+        }
+        b
+    }
+
+    fn host_hook(ee: &mut Ee) {
+        let pc = ee.pc;
+        let a0 = ee.gpr[kh2_ee::reg::A0] as u32;
+        let (g, i, nargs, ret) = ST.with(|s| s.borrow().by_addr[&pc]);
+        let args: Vec<u32> = (0..nargs as u32).map(|k| ee.r32(a0 + 4 * k)).collect();
+        ST.with(|s| {
+            let mut s = s.borrow_mut();
+            let n = s.n;
+            s.n += 1;
+            let cl = s.code_len;
+            let c: Vec<Canon> = args.iter().map(|&v| canon(v, PROG + 0x10, cl)).collect();
+            s.calls.push((g, i, c));
+            if ret {
+                drop(s);
+                ee.w32(a0, policy(g, i, n));
+            }
+        });
+    }
+
+    fn cb_hook(ee: &mut Ee) {
+        let th = ee.gpr[kh2_ee::reg::A0] as u32;
+        let pc = ee.r32(th + 4) as usize;
+        let fp = ee.r32(th + 8);
+        let vsp = ee.r32(th + 12);
+        let depth = (vsp.wrapping_sub(VALS) / 4) as usize;
+        let top = if depth > 0 && depth < 0x1000 { Some(ee.r32(vsp - 4)) } else { None };
+        ST.with(|s| {
+            let mut s = s.borrow_mut();
+            let cl = s.code_len;
+            let t = top.map(|v| canon(v, PROG + 0x10, cl));
+            s.steps.push((pc, depth, fp.wrapping_sub(FRAME) as usize, t));
+        });
+    }
+
+    struct Io<'a>(&'a mut Vec<u8>);
+
+    impl VecAccess for Io<'_> {
+        fn read_vec(&mut self, mem: &mut Mem<'_>, addr: u32) -> Result<[f32; 4], VmError> {
+            match mem.read_vec4(addr) {
+                Ok(v) => Ok(v),
+                Err(vm::Outside::Ext(a)) => {
+                    let o = a.wrapping_sub(EXT) as usize;
+                    let b = self.0.get(o..o + 16).ok_or(VmError::BadAddress(a))?;
+                    Ok(std::array::from_fn(|k| f32::from_le_bytes(b[4 * k..4 * k + 4].try_into().unwrap())))
+                }
+                Err(_) => Err(VmError::BadAddress(addr)),
+            }
+        }
+
+        fn write_vec(&mut self, mem: &mut Mem<'_>, addr: u32, v: [f32; 4]) -> Result<(), VmError> {
+            match mem.write_vec4(addr, v) {
+                Ok(()) => Ok(()),
+                Err(vm::Outside::Ext(a)) => {
+                    let o = a.wrapping_sub(EXT) as usize;
+                    let b = self.0.get_mut(o..o + 16).ok_or(VmError::BadAddress(a))?;
+                    for (k, x) in v.iter().enumerate() {
+                        b[4 * k..4 * k + 4].copy_from_slice(&x.to_le_bytes());
+                    }
+                    Ok(())
+                }
+                Err(_) => Err(VmError::BadAddress(addr)),
+            }
+        }
+    }
+
+    struct TestEnv {
+        ext: Vec<u8>,
+        table: HostTable,
+        n: u32,
+        code_len: u32,
+        steps: Vec<Step>,
+        calls: Vec<(u16, u16, Vec<Canon>)>,
+    }
+
+    impl Env for TestEnv {
+        fn signature(&self, g: u16, i: u16) -> Option<(usize, bool)> {
+            self.table.get(g, i).map(|s| (s.nargs as usize, s.returns))
+        }
+
+        fn host_call(&mut self, _p: &Program, mem: &mut Mem<'_>, g: u16, i: u16, a: &[u32]) -> Result<Option<u32>, VmError> {
+            if g == 0 && math::is_math(i) {
+                return math::call(mem, i, a, &mut Io(&mut self.ext));
+            }
+            let ret = self.table.get(g, i).unwrap().returns;
+            let n = self.n;
+            self.n += 1;
+            let cl = self.code_len;
+            self.calls.push((g, i, a.iter().map(|&v| canon(v, layout().code, cl)).collect()));
+            Ok(ret.then(|| policy(g, i, n)))
+        }
+
+        fn ext_read(&mut self, addr: u32, out: &mut [u8]) -> bool {
+            let o = addr.wrapping_sub(EXT) as usize;
+            match self.ext.get(o..o + out.len()) {
+                Some(b) => {
+                    out.copy_from_slice(b);
+                    true
+                }
+                None => false,
+            }
+        }
+
+        fn ext_write(&mut self, addr: u32, data: &[u8]) -> bool {
+            let o = addr.wrapping_sub(EXT) as usize;
+            match self.ext.get_mut(o..o + data.len()) {
+                Some(b) => {
+                    b.copy_from_slice(data);
+                    true
+                }
+                None => false,
+            }
+        }
+
+        fn trace(&mut self, s: &TraceState, _i: &Insn) {
+            let t = s.top.map(|v| canon(v, layout().code, self.code_len));
+            self.steps.push((s.pc, s.depth, s.fp, t));
+        }
+    }
+
+    fn layout() -> vm::Layout {
+        vm::Layout { code: PROG + 0x10, globals: GLOB, frames: FRAME, frame_stride: 0x1_0000, scratch: 0x0522_2000 }
+    }
+
+    fn make_ee(elf: &[u8], table: &HostTable) -> Ee {
+        let mut ee = Ee::new();
+        ee.load_elf(elf).expect("elf");
+        ee.limit = 300_000_000;
+        for k in 0..16u32 {
+            ee.wf32(IDENTITY + 4 * k, if k % 5 == 0 { 1.0 } else { 0.0 });
+        }
+        for g in 0..=11u16 {
+            for i in 0..700u16 {
+                if g == 0 && math::is_math(i) {
+                    continue;
+                }
+                if let Some(sig) = table.get(g, i) {
+                    ST.with(|s| s.borrow_mut().by_addr.insert(sig.address, (g, i, sig.nargs as usize, sig.returns)));
+                    ee.hooks.insert(sig.address, host_hook);
+                }
+            }
+        }
+        ee.hooks.insert(CB_ADDR, cb_hook);
+        ee
+    }
+
+    /// Runs the game's slice and this crate's, compares them; returns whether the thread yielded.
+    fn slice(ee: &mut Ee, prog: &Program, sh: &mut Shared, th: &mut Thread, env: &mut TestEnv, label: &str) -> Result<bool, String> {
+        ST.with(|s| {
+            let mut s = s.borrow_mut();
+            s.steps.clear();
+            s.calls.clear();
+        });
+        env.steps.clear();
+        env.calls.clear();
+        let game = ee.call(RUN, &[THREAD as u64, GROUP_TABLE as u64, CB_ADDR as u64, 0], &[], STACK).map_err(|e| format!("{label}: game: {e:?}"))?;
+        let mine = vm::run(prog, sh, th, env).map_err(|e| format!("{label}: this crate: {e:?} after the calls {:?}", env.calls))?;
+        let (gsteps, gcalls) = ST.with(|s| {
+            let s = s.borrow();
+            (s.steps.clone(), s.calls.clone())
+        });
+        // The game's callback reports the state before each instruction from the second on.
+        let n = env.steps.len();
+        if gsteps.len() != n.saturating_sub(1) && gsteps.len() != n {
+            return Err(format!("{label}: game ran {} steps, this crate {n}", gsteps.len()));
+        }
+        for k in 1..n {
+            if gsteps.get(k - 1) != Some(&env.steps[k]) {
+                return Err(format!("{label}: step {k} differs\n  game {:?}\n  this {:?}", gsteps.get(k - 1), env.steps[k]));
+            }
+        }
+        let key = |c: &(u16, u16, Vec<Canon>)| (env.table.get(c.0, c.1).map(|s| s.address), c.2.clone());
+        if gcalls.len() != env.calls.len() || gcalls.iter().zip(&env.calls).any(|(a, b)| key(a) != key(b)) {
+            return Err(format!("{label}: host calls differ\n  game {gcalls:?}\n  this {:?}", env.calls));
+        }
+        let code = match mine {
+            Stop::Yield => 1,
+            Stop::Exit => 2,
+            Stop::Done => 3,
+        };
+        if game as u32 != code {
+            return Err(format!("{label}: game result {game}, this crate {code}"));
+        }
+        Ok(code == 1)
+    }
+
+    fn open_disc() -> Option<(kh2_archive::Archive, Vec<u8>)> {
+        let path = std::env::var("KH2_ISO").ok().or_else(|| std::fs::read_to_string("../../local/iso.txt").ok().map(|s| s.trim().to_string()))?;
+        if !std::path::Path::new(&path).exists() {
+            return None;
+        }
+        let mut a = kh2_archive::Archive::open(&path).ok()?;
+        if let Ok(names) = std::fs::read_to_string("../../local/kh2idx.txt") {
+            a.apply_names(names.lines()).ok()?;
+        }
+        let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok())?;
+        Some((a, elf))
+    }
+
+    /// For each level-1 spell script and each number of event-20 slices before the cast trigger (1, 2,
+    /// 5), the game's and this crate's threads agree instruction by instruction, the restart at event
+    /// 21 included, and event 21 runs on to its end (at most 80 slices).
+    #[test]
+    fn spell_thread_restart_matches_the_games() {
+        let Some((mut a, elf)) = open_disc() else {
+            eprintln!("skipped: no disc image (set KH2_ISO)");
+            return;
+        };
+        let table = HostTable::from_exe(&elf).expect("host table");
+        let mut ee = make_ee(&elf, &table);
+        let mut total = (0usize, 0usize);
+        for name in ["magic/FIRE_1.mag", "magic/BLIZZARD_1.mag", "magic/THUNDER_1.mag", "magic/CURE_1.mag"] {
+            let file = a.read(name).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let data = kh2_bar::parse(&file).expect("bar").into_iter().find(|e| e.kind == 3).expect("script").data.to_vec();
+            let prog = Program::parse(&data).expect("parse");
+            let code_len = (prog.words.len() * 2) as u32;
+            let (pc20, pc21) = (prog.entry(20).expect("event 20"), prog.entry(21).expect("event 21"));
+            for before in [1usize, 2, 5] {
+                // The game's thread: event 20 with the four cast arguments (caster, effect file, kind,
+                // magi row; pointers into the shared buffer, kind 0).
+                let args = [EXT + 0x100, EXT + 0x200, 0, EXT + 0x300];
+                ee.write(PROG, &data);
+                ee.write(GLOB, &vec![0u8; 0x4000]);
+                ee.write(FRAME, &vec![0u8; 0x1000]);
+                ee.write(VALS, &vec![0u8; 0x1000]);
+                ee.write(EXT, &ext_initial());
+                ee.w32(SEED_ADDR, SEED);
+                ee.w32(THREAD, PROG);
+                ee.w32(THREAD + 8, FRAME);
+                ee.w32(THREAD + 12, VALS);
+                ee.w32(THREAD + 16, GLOB);
+                for (k, v) in args.iter().enumerate() {
+                    ee.w32(EXT + 0x400 + 4 * k as u32, *v);
+                }
+                ee.call(START, &[THREAD as u64, pc20 as u64, (EXT + 0x400) as u64, 4], &[], STACK).expect("start");
+                ST.with(|s| {
+                    let mut s = s.borrow_mut();
+                    s.n = 0;
+                    s.code_len = code_len;
+                });
+                let mut sh = Shared::new(&prog);
+                sh.layout = layout();
+                sh.rng = SEED;
+                let mut th = Thread::new(&prog, &mut sh);
+                th.restart(pc20 as usize, &args);
+                let mut env = TestEnv { ext: ext_initial(), table: table.clone(), n: 0, code_len, steps: Vec::new(), calls: Vec::new() };
+                let mut alive = true;
+                for k in 0..before {
+                    alive = slice(&mut ee, &prog, &mut sh, &mut th, &mut env, &format!("{name} event 20 slice {k}")).unwrap_or_else(|e| panic!("{e}"));
+                    total.0 += env.steps.len();
+                    total.1 += env.calls.len();
+                    if !alive {
+                        break;
+                    }
+                }
+                assert!(alive, "{name}: event 20 waits for the motion");
+                // The cast trigger: FUN_001a4a60 -> FUN_0016c500(thread, 21, 0, 0).
+                ee.call(START, &[THREAD as u64, pc21 as u64, 0, 0], &[], STACK).expect("restart");
+                th.restart(pc21 as usize, &[]);
+                assert_eq!(ee.r32(THREAD + 4), pc21, "{name}: the game's thread points at event 21");
+                let mut ended = false;
+                for k in 0..80 {
+                    let more = slice(&mut ee, &prog, &mut sh, &mut th, &mut env, &format!("{name} after {before} slices: event 21 slice {k}")).unwrap_or_else(|e| panic!("{e}"));
+                    total.0 += env.steps.len();
+                    total.1 += env.calls.len();
+                    if !more {
+                        ended = true;
+                        break;
+                    }
+                }
+                eprintln!("{name}: {before} slices of event 20, restart at 21: ended {ended}");
+            }
+        }
+        eprintln!("restart oracle: {} interpreter steps and {} host calls compared, 0 differences", total.0, total.1);
+        assert!(total.0 > 0);
+    }
+}

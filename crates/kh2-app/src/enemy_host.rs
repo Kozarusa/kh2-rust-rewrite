@@ -64,27 +64,43 @@ pub fn prize_row(rows: &[PrizeRow], id: i32) -> Option<&PrizeRow> {
     find(id).or_else(|| find(0x48))
 }
 
-/// What a drop is made of: prizes per kind and the items that won their roll.
+/// What a drop is made of: prizes per kind, the prize objects made (kind and the three generator
+/// values of their launch, in order) and the items that won their roll.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Drop {
     pub row: u16,
     pub prizes: [u32; 9],
+    /// One entry per prize object the pool had room for (`crate::prize` turns the values into the
+    /// launch velocity, FUN_001a3b28).
+    pub launches: Vec<(u8, [u32; 3])>,
     pub items: Vec<u16>,
 }
 
 /// FUN_001a3cb0 up to the prize objects: kind `k` drops `ceil(counts[k] * orb)` prizes (FUN_001a4240,
 /// FUN_00300008 is a ceiling), `orb` being 1.0 (DAT_01c8a7e4, reset by FUN_00190370) plus each party
 /// member's Jackpot float (ability block +0x60, FUN_00190788). Each prize object takes three steps of
-/// the generator (FUN_001a3b28: seed * 0x10dcd, * 0x10dcd^2, then seed *= 0x10dcd^3). Then each item
-/// pair in turn: one step, and the item drops when `seed * 2^-32 * 100 < chance * item` (`item` 1.0
-/// plus each member's Lucky Lucky float, +0x64; the seed read unsigned). The flags of 0x35d268 (0x200
-/// no prizes, 0x400 no items) and the player state of FUN_001ce6c0 are taken as clear.
-pub fn compute_drop(row: &PrizeRow, orb: f32, item: f32, seed: &mut u32) -> Drop {
+/// the generator (FUN_001a3b28: seed * 0x10dcd, * 0x10dcd^2, then seed *= 0x10dcd^3), but only when
+/// the pool gives it a slot (FUN_001c4d78 returns 0 when none is free; `free` slots are left). Then
+/// each item pair in turn: one step, and the item drops when `seed * 2^-32 * 100 < chance * item`
+/// (`item` 1.0 plus each member's Lucky Lucky float, +0x64; the seed read unsigned); a dropping item
+/// takes one more step (FUN_001bd490 -> FUN_001bd0d0, its launch). The flags of 0x35d268 (0x200 no
+/// prizes, 0x400 no items) and the player state of FUN_001ce6c0 are taken as clear.
+pub fn compute_drop(row: &PrizeRow, orb: f32, item: f32, seed: &mut u32, mut free: usize) -> Drop {
     let mut prizes = [0u32; 9];
+    let mut launches = Vec::new();
     for (k, p) in prizes.iter_mut().enumerate() {
         *p = (row.counts[k] as f32 * orb).ceil().max(0.0) as u32;
         for _ in 0..*p {
-            *seed = seed.wrapping_mul(0x10dcd).wrapping_mul(0x10dcd).wrapping_mul(0x10dcd);
+            if free == 0 {
+                continue;
+            }
+            free -= 1;
+            let mut v = [0u32; 3];
+            for x in &mut v {
+                *seed = seed.wrapping_mul(0x10dcd);
+                *x = *seed;
+            }
+            launches.push((k as u8, v));
         }
     }
     let mut items = Vec::new();
@@ -92,9 +108,10 @@ pub fn compute_drop(row: &PrizeRow, orb: f32, item: f32, seed: &mut u32) -> Drop
         *seed = seed.wrapping_mul(0x10dcd);
         if (*seed as f32) * 2.328_306_4e-10 * 100.0 < chance as f32 * item {
             items.push(id);
+            *seed = seed.wrapping_mul(0x10dcd);
         }
     }
-    Drop { row: row.id, prizes, items }
+    Drop { row: row.id, prizes, launches, items }
 }
 
 /// The bytes of the object's own target record (host 2.23, `TARGET`): the player, position index 0
@@ -503,7 +520,7 @@ impl BevyHost<'_> {
             // 1.92 (FUN_0016b738 -> FUN_001a3cb0): the drop of prize row `id`; computed after the tick.
             Call::GroundMarker { id, .. } => {
                 self.obj.drops.push(*id);
-                approx(Value::None, "the drop is computed from `przt` (FUN_001a3cb0: prize counts, item rolls) and logged; the app has no prize objects, nothing appears")
+                approx(Value::None, "the drop is computed from `przt` (FUN_001a3cb0) and its prize objects run in prize.rs; dropped items are logged only (no item objects, FUN_001bd490), the three mini-game pools are absent")
             }
             Call::SetFlag { obj, bit } | Call::ClearFlag { obj, bit } if *obj == PLAYER => {
                 let set = matches!(c, Call::SetFlag { .. });
@@ -914,24 +931,36 @@ mod tests {
     fn a_drop_follows_fun_001a3cb0() {
         let r = PrizeRow { id: 1, counts: [0, 2, 0, 0, 3, 0, 0, 0, 1], items: [(10, 0), (11, 100), (12, 50)] };
         let mut seed = 1u32;
-        let d = compute_drop(&r, 1.5, 1.0, &mut seed);
+        let d = compute_drop(&r, 1.5, 1.0, &mut seed, 256);
         assert_eq!(d.prizes, [0, 3, 0, 0, 5, 0, 0, 0, 2]);
-        // 10 prizes, 3 steps each, then 3 item steps.
+        // 10 prizes, 3 steps each (the launch values, in order), then 3 item steps, one more per drop.
         let mut s = 1u32;
+        let mut values = Vec::new();
         for _ in 0..30 {
             s = s.wrapping_mul(0x10dcd);
+            values.push(s);
         }
+        assert_eq!(d.launches.len(), 10);
+        assert_eq!(d.launches[0], (1, [values[0], values[1], values[2]]));
+        assert_eq!(d.launches[3].0, 4);
+        assert_eq!(d.launches[9], (8, [values[27], values[28], values[29]]));
         let mut want = Vec::new();
         for (id, chance) in r.items {
             s = s.wrapping_mul(0x10dcd);
             if (s as f32) * 2.328_306_4e-10 * 100.0 < chance as f32 {
                 want.push(id);
+                s = s.wrapping_mul(0x10dcd);
             }
         }
         assert_eq!(seed, s);
         assert_eq!(d.items, want);
         assert!(!d.items.contains(&10), "a chance of 0 never drops");
         assert!(d.items.contains(&11), "a chance of 100 always drops");
+        // A full pool: no prize object, no launch steps (FUN_001c4d78 returns 0).
+        let mut seed2 = 1u32;
+        let full = compute_drop(&r, 1.5, 1.0, &mut seed2, 0);
+        assert!(full.launches.is_empty());
+        assert_eq!(full.prizes, d.prizes);
     }
 
     /// The disc's prize table: sorted by id and holding the fallback row 0x48 (skips without an ISO).

@@ -31,6 +31,7 @@ mod magic;
 mod magic_rules;
 mod motor;
 mod player_reaction;
+mod prize;
 mod progress;
 mod reaction_cmd;
 mod reaction_parts;
@@ -98,6 +99,6 @@ fn main() {
         // The third tuple: later plugins go here (the second is near the 15-entry limit).
         // `progress::ensure` lets the plugins above that read `Progress` while they build insert it
         // first, so its place here does not matter.
-        .add_plugins((progress::ProgressPlugin,))
+        .add_plugins((progress::ProgressPlugin, prize::PrizePlugin))
         .run();
 }

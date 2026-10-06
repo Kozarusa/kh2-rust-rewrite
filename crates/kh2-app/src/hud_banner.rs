@@ -201,8 +201,10 @@ pub fn update(mut scene: ResMut<HudScene>, mut banner: ResMut<HudBanner>, mut po
 /// value with `%d` (0x15b010, format at 0x379430) and keeps at most six digits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StripKind {
-    /// Group 17 with digit groups 28 to 37 (table 0x3586e8), raised by the level-up routine
-    /// 0x1a39b0 through 0x14f2d8 (kind 0x11 in the popup registry 0x14f8b0).
+    /// Group 17 with digit groups 28 to 37 (table 0x3586e8), raised through 0x14f2d8 (kind 0x11 in
+    /// the popup registry 0x14f8b0) by 0x1a39b0, which is the prize pickup (WP-7B, docs/prizes.md):
+    /// this is the "OBTAINED MUNNY!" strip with the munny picked up, not a level-up strip. The
+    /// variant keeps its old name.
     LevelUp,
     /// Group 48 with digit groups 38 to 47 (table 0x358730), raised when the number popup is
     /// created (0x15b198 calls 0x14f2b8 with its third argument; kind 0xe).
@@ -233,7 +235,14 @@ pub struct NumberStrip {
     /// Screen position in HUD units; the game's placement (0x14f8b0 registers the object with the
     /// group's own x from 0x237678) was not followed, so the owner gives it.
     pub pos: [f32; 2],
+    /// Raised by a munny pickup (`crate::prize::MunnyGained`): later pickups add to it while it
+    /// shows, and it goes when its group's animation has ended.
+    pub pickup: bool,
 }
+
+/// Where a pickup's munny strip is put: the sequence's own placement [inferred: the game's position
+/// was not followed, see `NumberStrip::pos`].
+const PICKUP_STRIP_POS: [f32; 2] = [0.0, 0.0];
 
 /// Strips on screen. `KH2_HUDSTRIP=<levelup|popup>:<value>[:x:y]` shows one.
 #[derive(Resource, Default, Clone, Debug)]
@@ -252,7 +261,13 @@ pub struct StripNodes {
 /// The strip and its digits: the digits run to the right of the strip's origin, each advanced by
 /// its group's `unk20`. Where the digits sit relative to the strip is inferred: the sums 0x1518c8
 /// stores at +0xad0 are offsets, and the draw that applies them was not read.
-pub fn update_strips(mut scene: ResMut<HudScene>, mut strips: ResMut<NumberStrips>, mut nodes: ResMut<StripNodes>, mut demo: Local<bool>) {
+pub fn update_strips(
+    mut scene: ResMut<HudScene>,
+    mut strips: ResMut<NumberStrips>,
+    mut nodes: ResMut<StripNodes>,
+    mut demo: Local<bool>,
+    mut munny: MessageReader<crate::prize::MunnyGained>,
+) {
     if scene.files.is_empty() {
         return;
     }
@@ -262,8 +277,36 @@ pub fn update_strips(mut scene: ResMut<HudScene>, mut strips: ResMut<NumberStrip
             let p: Vec<&str> = v.split(':').collect();
             if let (Some(kind), Some(value)) = (p.first().and_then(|k| StripKind::parse(k)), p.get(1).and_then(|a| a.parse().ok())) {
                 let n = |i: usize, d: f32| p.get(i).and_then(|x| x.parse().ok()).unwrap_or(d);
-                strips.0.push(NumberStrip { kind, value, pos: [n(2, 256.0), n(3, 300.0)] });
+                strips.0.push(NumberStrip { kind, value, pos: [n(2, 256.0), n(3, 300.0)], pickup: false });
             }
+        }
+    }
+    // A munny pickup (0x1a39b0 -> 0x14f2d8 -> 0x151970): while the strip is up (0x151c80) the amount
+    // is added to the one shown and group 0x11 starts again (0x151c40); otherwise it opens with
+    // the amount.
+    for m in munny.read() {
+        match strips.0.iter().position(|s| s.pickup) {
+            Some(i) => {
+                strips.0[i].value = strips.0[i].value.saturating_add(m.amount);
+                if i < STRIPS {
+                    nodes.drawn[i] = None;
+                }
+            }
+            None => strips.0.push(NumberStrip { kind: StripKind::LevelUp, value: m.amount, pos: PICKUP_STRIP_POS, pickup: true }),
+        }
+    }
+    // A pickup strip goes once its group has played out [inferred: when the game's popup registry
+    // drops it was not followed].
+    if nodes.built {
+        let done: Vec<usize> = (0..STRIPS.min(strips.0.len()))
+            .filter(|&i| strips.0[i].pickup && nodes.drawn[i].is_some() && scene.nodes[nodes.strips[i].0].player.finished())
+            .collect();
+        if !done.is_empty() {
+            for i in done.into_iter().rev() {
+                strips.0.remove(i);
+            }
+            // The strips after a removed one move up a slot: draw them all again.
+            nodes.drawn = [None; STRIPS];
         }
     }
     if !nodes.built {

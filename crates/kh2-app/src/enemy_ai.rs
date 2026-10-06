@@ -372,6 +372,7 @@ fn ai_update(
     mut player_reaction: ResMut<PlayerReaction>,
     (mut trace, mut mailbox): (ResMut<AiTrace>, ResMut<Mailbox>),
     (programs, abilities): (Res<AiPrograms>, Option<Res<crate::abilities::Abilities>>),
+    (prize_pool, mut prize_drops): (Option<Res<crate::prize::PrizePool>>, MessageWriter<crate::prize::PrizeDrop>),
 ) {
     trace.tick += 1;
     if trace.tick.is_multiple_of(SUMMARY_EVERY) {
@@ -489,12 +490,24 @@ fn ai_update(
             }
         }
         // Drops (host 1.92): the party is Sora alone, his ability block gives Jackpot and Lucky Lucky.
+        // The prize objects are made by `prize` (no pool without its plugin: none are made then);
+        // the dropped items' objects (FUN_001bd490) are not ported.
         for id in obj.drops.drain(..) {
             let (jackpot, lucky) = abilities.as_deref().map_or((0.0, 0.0), |a| (a.block().jackpot, a.block().lucky_lucky));
             match prize_row(&programs.prizes, id) {
                 Some(row) => {
-                    let d = compute_drop(row, 1.0 + jackpot, 1.0 + lucky, &mut mailbox.seed);
-                    info!("bdx {tag}: drop (host 1.92) asked row {id}, used row {}: prizes per kind {:?}, items {:?} (no prize objects in the app)", d.row, d.prizes, d.items);
+                    let free = prize_pool.as_deref().map_or(0, |p| p.free());
+                    let d = compute_drop(row, 1.0 + jackpot, 1.0 + lucky, &mut mailbox.seed, free);
+                    info!(
+                        "bdx {tag}: drop (host 1.92) asked row {id}, used row {}: prizes per kind {:?}, items {:?} ({} prize objects; item objects not ported)",
+                        d.row,
+                        d.prizes,
+                        d.items,
+                        d.launches.len()
+                    );
+                    if !d.launches.is_empty() {
+                        prize_drops.write(crate::prize::PrizeDrop { from: ent, row: d.row, launches: d.launches });
+                    }
                 }
                 None => trace.note(tag, format!("drop row {id}: przt has neither it nor row 0x48")),
             }

@@ -263,7 +263,16 @@ pub struct Progress {
     pub source: Source,
     /// What the app baseline added on top of the new game (empty with `KH2_STATE`).
     pub baseline: Vec<String>,
+    /// The munny the prizes pay: save block `+0x1600` (`0x33fe60`, before the party block, so it is
+    /// kept apart from `block`). `FUN_0023e620` adds to it and `FUN_0023e5e0` lets a sum through only
+    /// below 1,000,000 (else 999,999). The word at `0x340e48` that `munny()` reads is raised by
+    /// `FUN_001b51e0`, which then runs the level-up check of every party member (`FUN_001b52f8`
+    /// compares it with the level table), so that word is the experience total (docs/prizes.md).
+    wallet: u32,
 }
+
+/// The prize munny limit (`FUN_0023e5e0`: a sum below 1,000,000 is kept, else 999,999).
+pub const MAX_WALLET: u32 = 999_999;
 
 impl Progress {
     // --- raw block access -------------------------------------------------------------------
@@ -316,7 +325,7 @@ impl Progress {
         let mut block = vec![0u8; off::LEN];
         let n = bytes.len().min(off::LEN);
         block[..n].copy_from_slice(&bytes[..n]);
-        Progress { block, items, source: Source::NewGame, baseline: Vec::new() }
+        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), wallet: 0 }
     }
 
     // --- records ----------------------------------------------------------------------------
@@ -488,6 +497,19 @@ impl Progress {
 
     fn set_munny(&mut self, v: i32) {
         self.set_u32(off::MUNNY, v.min(MAX_MUNNY) as u32);
+    }
+
+    /// The prize munny (save `+0x1600`, see the field).
+    pub fn wallet(&self) -> u32 {
+        self.wallet
+    }
+
+    /// `FUN_0023e620`: add `n`; when the unsigned sum is not below 1,000,000 (`FUN_0023e5e0`) the
+    /// counter becomes 999,999. Returns the new value.
+    pub fn add_to_wallet(&mut self, n: u32) -> u32 {
+        let sum = self.wallet.wrapping_add(n);
+        self.wallet = if sum < MAX_WALLET + 1 { sum } else { MAX_WALLET };
+        self.wallet
     }
 
     // --- inventory ----------------------------------------------------------------------------
@@ -791,7 +813,7 @@ impl Progress {
     /// The new-game state: the party block after `FUN_00187b38` on the cleared save block and the
     /// `plrp` rows with `Id` 0 (`FUN_001c0cb0(0)`).
     pub fn new_game(items: Arc<ItemIndex>, plrp: &[Plrp]) -> Progress {
-        let mut p = Progress { block: vec![0; off::LEN], items, source: Source::NewGame, baseline: Vec::new() };
+        let mut p = Progress { block: vec![0; off::LEN], items, source: Source::NewGame, baseline: Vec::new(), wallet: 0 };
         p.init_party();
         p.apply_plrp(plrp, 0);
         p

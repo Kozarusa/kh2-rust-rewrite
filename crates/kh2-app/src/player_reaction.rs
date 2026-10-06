@@ -34,6 +34,7 @@ use crate::clash::Clash;
 use crate::combat::{live_attacks, Fighter, ReactionData};
 use crate::data::GameData;
 use crate::enemy::Enemy;
+use crate::fx::StartSystemEffect;
 use crate::reaction_cmd::{PlayerReaction, PlayerReactionCmd};
 use crate::reaction_rules::{self as rules, ClashReaction, ExeConsts, Push, ReflectFields};
 use crate::schedule::Sim;
@@ -370,6 +371,7 @@ fn receive_clashes(
     globals: Query<&GlobalTransform>,
     mut sora_q: Query<(Entity, &mut Sora, &mut Fighter)>,
     mut anims: Query<&mut Animator>,
+    mut sparks: MessageWriter<StartSystemEffect>,
 ) {
     let Ok((me, mut s, mut fighter)) = sora_q.single_mut() else { return };
     let Some(reaction) = reaction else { return };
@@ -382,7 +384,30 @@ fn receive_clashes(
         let airborne = !s.motor.grounded;
         let (outcome, spark) = party_clash(&own, &other, airborne, c, guard.as_deref());
         s.connected = true;
-        let spark_note = "spark not started: fx::StartEffect reaches only the owner's own effect file, the spark is in 00effect.bar";
+        // FUN_0018d560: the spark is element `spark` of the system effect file, at the own volume's
+        // centre moved toward the other volume's centre by the own radius. The volume centre is the
+        // midpoint of the capsule here (the hit code's own centre is private to combat.rs) [inferred].
+        // The game starts it only when neither volume has flag 0x80: `detect_clashes` sends a Clash
+        // once per fresh pair, and no effect file of the app's objects has a category 0x10 element,
+        // so FUN_0018d6b0 (which would set the flag first) never sparks (test
+        // `fx::tests::clash_spark_elements_by_file`); the flag is therefore clear here.
+        let volume_of = |bodies: &[Entity], atkp: i16| {
+            bodies.iter().find_map(|b| {
+                let (a, g) = (anims.get(*b).ok()?, globals.get(*b).ok()?);
+                live_attacks(a, g).into_iter().find(|(id, _, _)| *id == atkp).map(|(_, _, v)| v)
+            })
+        };
+        let own_vol = volume_of(&fighter.attack_bodies, k.player_atkp);
+        let other_vol = enemies.get(k.enemy).ok().and_then(|f| volume_of(&f.attack_bodies, k.enemy_atkp));
+        let spark_note = match (own_vol, other_vol) {
+            (Some(o), Some(t)) => {
+                let (oc, tc) = ((o.a + o.b) * 0.5, (t.a + t.b) * 0.5);
+                let at = oc + (tc - oc).normalize_or_zero() * o.r;
+                sparks.write(StartSystemEffect { id: spark, at: Mat4::from_translation(at) });
+                format!("started at {at:.3?}")
+            }
+            _ => "not started: a volume of the pair is no longer live".to_string(),
+        };
         let what = match outcome {
             PartyOutcome::Spark => "spark only".to_string(),
             PartyOutcome::Recoil { motion, power } => {

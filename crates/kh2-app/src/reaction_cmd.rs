@@ -23,7 +23,7 @@
 //!
 //! The target side is the script: `enemy_ai.rs` delivers `ReactionAccepted` as event 11 to the
 //! target's BDX runtime, and what the script then asks of the *player* comes back here as
-//! [`PlayerReactionCmd`] (the hook for `sora.rs`, see docs/limits-reactions.md).
+//! [`PlayerReactionCmd`] (consumed by `player_reaction.rs`, see docs/limits-reactions.md).
 
 use std::collections::HashMap;
 
@@ -212,8 +212,8 @@ pub struct ReactionAccepted {
 
 /// What a target's script asks of the *player* while a reaction command runs: the host calls the
 /// Soldier's command-34 thread makes on the player's context (docs/limits-reactions.md). Written by
-/// `enemy_ai.rs`; the consumer is the player side (`sora.rs`), which is a hook: nothing in the app
-/// reads these yet, so the player neither plays the paired motion nor moves.
+/// `enemy_ai.rs`; the consumer is the player side, `player_reaction.rs` (paired motion, velocity,
+/// unhittable flag and queued motion are applied to Sora; `Charge` is still not consumed).
 #[allow(dead_code)]
 #[derive(Message, Clone, Copy, Debug, PartialEq)]
 pub enum PlayerReactionCmd {
@@ -245,9 +245,10 @@ pub struct PlayerReaction {
     /// counter at 0x35ccb0 counts down from 0 and never returns above -1).
     pub serial: i32,
     /// Set by the player side when the paired motion has ended (bit 1 of the player's +0x160, read by
-    /// host 1.14). Nothing sets it yet.
+    /// host 1.14). Set by `player_reaction.rs` from the real end of Sora's paired motion.
     pub paired_done: bool,
-    /// Ticks the paired motion still has to run before `paired_done` is set (`enemy_ai.rs` counts it).
+    /// Ticks left of Sora's current paired motion (`player_reaction.rs` writes it from the animator
+    /// every tick).
     pub remaining: Option<f32>,
 }
 

@@ -32,8 +32,8 @@ pub struct OrbitCamera {
     pub distance: f32,
     /// The look-around (mode 1) is on: the camera sits in Sora's head.
     pub first_person: bool,
-    /// The player's draw fade the look-around drives (`player + 0x834`, 1 = drawn). Output for
-    /// the model code; nothing reads it yet.
+    /// The player's draw fade the look-around drives (`player + 0x834`, 1 = drawn). Output;
+    /// `sora::apply_player_fade` applies it to Sora's body and weapons.
     pub player_fade: f32,
 }
 

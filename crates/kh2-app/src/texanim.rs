@@ -246,10 +246,10 @@ fn tick(
             let p = a.uvsc[s.uvsc];
             let off = p.uv(s.span, s.texture.width, s.texture.height);
             let want = region_affine(&s.texture, off);
-            if materials.get(&s.material).is_some_and(|m| m.uv_transform != want) {
-                if let Some(mut m) = materials.get_mut(&s.material) {
-                    m.uv_transform = want;
-                }
+            if materials.get(&s.material).is_some_and(|m| m.uv_transform != want)
+                && let Some(mut m) = materials.get_mut(&s.material)
+            {
+                m.uv_transform = want;
             }
         }
     }

@@ -129,7 +129,7 @@ impl Texa {
         let g = texture::gs_info(container, texture)?;
         let (width, height) = (u16_at(body, 0x14) as usize, u16_at(body, 0x16) as usize);
         let bpp = u16_at(body, 6) as usize;
-        let size = (width * bpp >> 3) * height;
+        let size = ((width * bpp) >> 3) * height;
         let base = u32_at(body, 0x20) as usize;
         let sprites = (0..u16_at(body, 0xe) as usize)
             .map(|k| {

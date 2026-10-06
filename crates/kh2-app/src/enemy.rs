@@ -617,12 +617,17 @@ pub fn receive_hits(
 /// An enemy attack volume met a player attack volume (`clash.rs`) and the enemy-class handler of the
 /// game (0x1b2478) reacts: the row's `ReflectedMotion` with a recoil push (FUN_00185d30, power
 /// `ReflectHitBack`, negative for the default). `ReflectAction` (a script action id) is not carried:
-/// the table behind FUN_0019e870 is not decoded.
+/// the table behind FUN_0019e870 is not decoded. Written for every clash of an enemy volume, also when
+/// the handler's own part does nothing (`motion` `None`): the script part of 0x1b2478 (clash hook and
+/// event 0x13, `enemy_ai.rs`) runs before its flag 0x40 / `RefactSelf` 2 tests.
 #[derive(Message, Clone, Copy, Debug)]
 pub struct EnemyClash {
     pub enemy: Entity,
     pub motion: Option<u8>,
     pub power: f32,
+    /// The attack rows of the enemy's own volume and of the other one.
+    pub own_atkp: i16,
+    pub other_atkp: i16,
 }
 
 /// Plays the clash recoil: the motion, then a push backwards along the enemy's own facing

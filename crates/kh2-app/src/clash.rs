@@ -16,7 +16,8 @@
 //! `fx::StartSystemEffect`). The cone test of FUN_0018d308 runs both ways for rows with `ReflectRange`
 //! (`reaction_rules::reflect_cone`). Not done: `ReflectAction` (FUN_0019e870 reads it as an offset from
 //! the row to an action record that 0x1b2478 hands to the actor's action system at +0x300,
-//! FUN_00186db0), the script event 0x13 the enemy handler sends, the hit registry tests of FUN_001be108.
+//! FUN_00186db0), the hit registry tests of FUN_001be108. The script part of the enemy handler (the
+//! running mode's clash hook and event 0x13) is delivered by `enemy_ai.rs` from [`EnemyClash`].
 
 use std::collections::HashSet;
 
@@ -46,8 +47,24 @@ pub struct ClashPlugin;
 
 impl Plugin for ClashPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<Clash>().add_systems(FixedUpdate, detect_clashes.after(crate::enemy::think).in_set(Sim::Enemy));
+        app.add_message::<Clash>()
+            .add_systems(FixedUpdate, (detect_clashes, force_enemy_clash).after(crate::enemy::think).in_set(Sim::Enemy));
     }
+}
+
+/// Harness `KH2_CLASH_FORCE_ENEMY=<s>`: at that time the first living enemy gets one clash with no
+/// reaction of its own (rows 0 and 0), so the script part of 0x1b2478 (clash hook, event 0x13) runs
+/// once. Not the original's behaviour: the real pairing needs attack volumes that meet.
+fn force_enemy_clash(time: Res<Time>, enemies: Query<(Entity, &crate::enemy::Enemy)>, mut out: MessageWriter<EnemyClash>, mut at: Local<Option<Option<f32>>>) {
+    let t = *at.get_or_insert_with(|| std::env::var("KH2_CLASH_FORCE_ENEMY").ok().and_then(|v| v.trim().parse().ok()));
+    let Some(t) = t else { return };
+    if time.elapsed_secs() < t {
+        return;
+    }
+    let Some((e, en)) = enemies.iter().find(|(_, en)| en.alive()) else { return };
+    info!("clash: forced enemy clash on {} {e:?} (harness)", en.name);
+    out.write(EnemyClash { enemy: e, motion: None, power: 0.0, own_atkp: 0, other_atkp: 0 });
+    *at = Some(None);
 }
 
 /// One live attack window.
@@ -119,11 +136,17 @@ fn detect_clashes(
                 }
                 match me.team {
                     Team::Enemy => {
-                        if let Some(c) = rules::enemy_clash(mine, false) {
-                            enemy_out.write(EnemyClash { enemy: me.fighter, motion: c.motion, power: c.push_power });
-                            if let Some(action) = c.action {
-                                debug!("clash: enemy row {} would start script action {action} (not decoded)", me.atkp);
-                            }
+                        // Every clash: 0x1b2478 hands it to the script (event 0x13) before its own tests.
+                        let c = rules::enemy_clash(mine, false);
+                        enemy_out.write(EnemyClash {
+                            enemy: me.fighter,
+                            motion: c.and_then(|c| c.motion),
+                            power: c.map_or(0.0, |c| c.push_power),
+                            own_atkp: me.atkp,
+                            other_atkp: other.atkp,
+                        });
+                        if let Some(action) = c.and_then(|c| c.action) {
+                            debug!("clash: enemy row {} would start script action {action} (not decoded)", me.atkp);
                         }
                     }
                     Team::Player => {

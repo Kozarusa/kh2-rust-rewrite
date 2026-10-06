@@ -168,7 +168,9 @@ pub enum Call {
     FadeOut { obj: u32, frames: f32 },
     /// Fade in over `frames`.
     FadeIn { obj: u32, frames: f32 },
-    /// Place a marker effect on the ground under the object.
+    /// Host 1.92 (0x171078 -> FUN_0016b738): the object's drop, row `id` of the prize table `przt`
+    /// (FUN_001a3cb0: orbs and munny, item rolls), at the object's lock-on point or the collision in
+    /// between. The name is historical.
     GroundMarker { obj: u32, id: i32 },
 
     // ---- flags and effects ---------------------------------------------------------------

@@ -119,7 +119,8 @@ calls the owner's virtual method +0x6c with both volumes.
 * Enemy-style class (handler at 0x1b2478, not in the decompilation, read from disassembly). First,
   in every case: FUN_001b21a0 stores the other volume's owner at +0xae4 (and at +0xaec when it is
   in the object list with +0x3b0 == 1); when the actor has a script thread (+0x484), FUN_00187130
-  passes event 7 with (word +0x88, own volume, other volume) to the action system at +0x300 and
+  runs the running mode's hook in slot 8 (FUN_00187040 with 7) with (context +0x88, own volume, other
+  volume) on the mode machine at +0x300 and
   FUN_0016c620 delivers **script event 0x13 (19)** with the two volume objects as arguments. Then, if
   the volume has flag 0x40 or `A.RefactSelf == 2`: nothing more. Else if `ReflectedMotion` (0x15) is
   non-zero: FUN_00185d30 with power `ReflectHitBack` (s16, negative = 50.0) and that motion ID as the
@@ -128,7 +129,8 @@ calls the owner's virtual method +0x6c with both volumes.
   FUN_0019e870 turns it into a pointer, row + `ReflectAction` (an offset from the atkp row itself,
   into the table's data), and FUN_00186db0 starts that record on the action system at +0x300. Then
   volume flag 0x40 is set. Not ported: the action records (the format behind the offset and the
-  action system at +0x300 were not decoded) and event 0x13 (enemy_ai.rs).
+  action system at +0x300 were not decoded). The script part (slot 8 hook, event 0x13) is ported
+  since WP-6G (`Runtime::clash`, enemy_ai.rs; docs/enemy-ai.md).
 * USA data: `RefactSelf` is 2 in 1803 rows, 0 in 521, 1 in 2; `RefactOther` is 1 in 1487, 0 in 583,
   2 in 256; `ReflectedMotion` is 0 except 10 (one row) and 140..143 (187 rows); `ReflectHitBack`
   is only 0 or -1; `ReflectRC` is always 0; `ReflectRange` is set in 70 rows, `ReflectAngle` in 7.

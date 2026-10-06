@@ -309,6 +309,8 @@ struct Report {
     steps: usize,
     host_calls: usize,
     slices: usize,
+    /// The host calls both sides agreed on, in order (group, index, canonical arguments).
+    called: Vec<(u16, u16, Vec<Canon>)>,
 }
 
 /// The three words event handlers get by default: pointers into the shared argument area.
@@ -427,6 +429,7 @@ fn compare_with(ee: &mut Ee, make: &dyn Fn() -> Ee, table: &HostTable, name: &st
                 }
             }
             rep.host_calls += common;
+            rep.called.extend(env.calls[..common].iter().cloned());
             rep.slices += 1;
             if !matches!(mine, Ok(Stop::Yield)) {
                 break;
@@ -470,7 +473,7 @@ fn interpreter_matches_the_games() {
     let mut ee = make();
     let all = std::env::var("KH2_BDX_ORACLE_ALL").is_ok();
     let scripts = disc_scripts(&mut a, all);
-    let mut rep = Report { scripts: 0, entries: 0, steps: 0, host_calls: 0, slices: 0 };
+    let mut rep = Report { scripts: 0, entries: 0, steps: 0, host_calls: 0, slices: 0, called: Vec::new() };
     let mut failures = Vec::new();
     let only = std::env::var("KH2_BDX_ORACLE_ONLY").ok();
     for (name, data) in &scripts {
@@ -496,6 +499,38 @@ fn interpreter_matches_the_games() {
     assert!(failures.is_empty(), "{} scripts differ from the game's interpreter", failures.len());
 }
 
+/// The Dusk's reaction commands (event 0xb, `docs/enemy-ai.md`): with command 24 or 69 the handler
+/// sends the message `dusk_surprise` (host 1.90, delay 0) after its helper; with any other id it makes
+/// no call. Compared step for step with the game's interpreter, host calls and arguments included; the
+/// message name argument is the script's own string.
+#[test]
+fn dusk_reaction_command_sends_dusk_surprise_like_the_game() {
+    let Some((mut a, elf)) = open_disc() else {
+        eprintln!("skipped: no disc image (set KH2_ISO)");
+        return;
+    };
+    let table = HostTable::from_exe(&elf).expect("host table");
+    let make = || make_ee(&elf, &table);
+    let mut ee = make();
+    let scripts = disc_scripts(&mut a, false);
+    let (name, data) = scripts.iter().find(|(n, _)| n == "obj/M_EX990.mdlx").expect("Dusk's script");
+    let text = data.windows(14).position(|w| w == b"dusk_surprise\0").expect("the string") as u32 - 0x10;
+    for cmd in [24u32, 69, 34, 0] {
+        let mut rep = Report { scripts: 0, entries: 0, steps: 0, host_calls: 0, slices: 0, called: Vec::new() };
+        compare_with(&mut ee, &make, &table, name, data, &mut rep, [ARGMEM + 0x10, cmd, ARGMEM + 0x30], Some("event 11"), &[]).unwrap_or_else(|e| panic!("command {cmd}: {e}"));
+        let sends: Vec<_> = rep.called.iter().filter(|(g, i, _)| (*g, *i) == (1, 90)).collect();
+        eprintln!("command {cmd}: {} steps, host calls {:?}", rep.steps, rep.called.iter().map(|(g, i, _)| format!("{g}.{i}")).collect::<Vec<_>>());
+        if matches!(cmd, 24 | 69) {
+            assert_eq!(sends.len(), 1, "command {cmd} sends one message");
+            let args = &sends[0].2;
+            assert_eq!(args[1], Canon::Code(text), "the message is dusk_surprise");
+            assert_eq!(args[2], Canon::Raw(0), "delay 0.0: delivered at once");
+        } else {
+            assert!(rep.called.is_empty(), "command {cmd}: no call");
+        }
+    }
+}
+
 /// The path of a reaction command into the Soldier's script (event 0xb, `docs/limits-reactions.md`):
 /// the handler with the command id 34 (its only branch), with another id (it does nothing), and
 /// the routine the handler starts through host 2.20 (word 0x5a), each compared step for step with the
@@ -512,7 +547,7 @@ fn soldier_reaction_command_path_matches_the_games() {
     let mut ee = make();
     let scripts = disc_scripts(&mut a, false);
     let (name, data) = scripts.iter().find(|(n, _)| n == "obj/M_EX010.mdlx").expect("Soldier's script");
-    let mut rep = Report { scripts: 0, entries: 0, steps: 0, host_calls: 0, slices: 0 };
+    let mut rep = Report { scripts: 0, entries: 0, steps: 0, host_calls: 0, slices: 0, called: Vec::new() };
     // Event 11 arguments are (controller, command id, target record); 34 takes the branch.
     for cmd in [34u32, 457, 0] {
         let before = rep.steps;

@@ -82,10 +82,15 @@ with a default, nothing in the app reads it; Missing = fails visibly. Addresses 
 | 1.66 set_flag_27 | Stub | bit 27 of +0x108, no consumer |
 | 1.74 mover_reset | Approx | FUN_00171548 ends the mover and installs mover type 0; the app clears the movement and jump speeds |
 | 1.98 ground_position | Impl | the object's position with the floor height under it: a line from 200 above down 100000 (FUN_00183750 with DAT_0037a894, DAT_0037a890); no floor keeps the height |
-| 1.150 spawn_bit_238 | Stub | bit n-1 of the byte at object +0x238 (0x171600); its writer was not found, read as 0 |
+| 1.150 / 1.151 spawn_bit_238 / 239 | Impl | bit n-1 of object +0x238 / +0x239 = the motion controller's (+0x140) bytes +0xf8 / +0xf9: range triggers 16..19 set bits 0..3 of +0xf8 (FUN_00188030, cleared per pass by FUN_00187fb0); frame triggers 9..12 set bits 0..3 of +0xf9 (dispatcher 0x188498, cases 0x1886c0..; cleared by FUN_0017e3b8 before each advance). WP-6H; this changes the Dusk's 1.150 answers too |
 | 1.64 / 1.62 obj_vec_850 / 860 | Approx | written each tick by the movement step FUN_00181e00: the displacement the object asked for and the one it made after collision, times the frame-step factor DAT_00356f48 (1.0 at start, taken as 1). The app gives the tick's horizontal request plus the jump/fall step, or for a grounded object the root's vertical change minus one tick of gravity [inferred: a grounded mover presses down]; the real one is new minus old position. The Dusk's sinking and landing loops end when the real downward movement is under a tenth of the asked one |
-| 1.39 spawn_param | Stub | 99: no spawn record (the area's event data is not read); 99 is the value Shadow tests for the plain behaviour |
-| 1.23 global_byte_33e830 | Approx | 2, the world number of Twilight Town |
+| 1.39 spawn_param | Impl / Stub | word i of object +0x81c (FUN_0016b940): words 1 and 2 are the spawn record's +0x20 / +0x24 (FUN_0016b870) for area-group enemies; 99 for the app's own waves (no record) |
+| 1.84 gauges, 1.228 / 1.229 / 1.232, 1.230, 1.231 | Impl | (WP-6H) the status block (+0x48c); records of 12 bytes (current, maximum, lowest HP per part, FUN_0019f770); part 0 only. 1.231 sets the lowest, which the HP change FUN_001a0100 never goes below (`Enemy::min_hp`) |
+| 1.155 obj_method_78 | Approx | virtual +0x78 = FUN_00186238 in 27 object tables (the N_EX570 table not traced): HP + amount, clamped; applied after the tick |
+| 1.58 set_dash | Approx | +0x20 = normalised direction times w, +0xf0 = factor k, mover 5 (table 0x35e4d8, FUN_0019e740 -> FUN_001832b8): v = v*k + move*(1-k) with a movement vector, else v*k. Ended by 1.74 and start_move |
+| 1.211 / 1.212, 2.76 | Stub | bits of +0xabc (readers FUN_00185be0 / FUN_0018c6d0 test 9, 10, 11, 13; N_EX570 uses 1 and 12) and a float at +0xaf4: no reader found |
+| 1.262 obj_method_54 | Stub | voice line request (FUN_001970b8 -> FUN_001ae798 priority slot at +0x9b8); no enemy voice in the app |
+| 2.9 set_obj_param (WP-6H) | Impl | a row other than the kind's rebuilds the stats with full HP (N_EX570_BTL: 135 or 155) || 1.23 global_byte_33e830 | Approx | 2, the world number of Twilight Town |
 | 1.171, 1.206, 1.34, 1.301 | Stub | global flags and a global byte set by other scripts or the game: false and 0 |
 | 2.8 hit_is_real | Impl | the effective reaction's class is 2 or more (FUN_0018b700 on the hit record's byte +0x26) |
 | mode manager hooks | Approx | `ModeInterrupted` and `ModeMayStart` follow FUN_00186b70 and FUN_001873d0 read as "a hit reaction plays" and "not in hit stun"; `ModeFrozen` (FUN_00186b38, object flag 0x40000) is false because hit stop is not implemented |

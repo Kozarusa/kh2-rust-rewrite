@@ -11,6 +11,7 @@ pub mod math;
 pub mod mock;
 pub mod names;
 pub mod program;
+pub mod reaction;
 pub mod runtime;
 pub mod signatures;
 pub mod trig;

@@ -7,9 +7,7 @@
 //!
 //! `cargo run -p kh2-bdx --example reactmap`
 
-use std::collections::BTreeSet;
-
-use kh2_bdx::{BinaryOp, Insn, Program, analyze, call_constants, decode};
+use kh2_bdx::{Program, analyze, reaction};
 
 fn scripts(a: &mut kh2_archive::Archive) -> Vec<(String, Vec<u8>)> {
     let mut out = Vec::new();
@@ -30,38 +28,6 @@ fn scripts(a: &mut kh2_archive::Archive) -> Vec<(String, Vec<u8>)> {
     out
 }
 
-/// Constants the handler at word `pc` subtracts from a value it loaded (walks straight code and both
-/// ways of every jump, at most 400 instructions).
-fn handled(p: &Program, pc: usize) -> BTreeSet<i32> {
-    let mut seen = BTreeSet::new();
-    let mut work = vec![pc];
-    let mut found = BTreeSet::new();
-    let mut budget = 400;
-    while let Some(mut at) = work.pop() {
-        while budget > 0 && seen.insert(at) {
-            budget -= 1;
-            let Some((i, len)) = decode(p, at) else { break };
-            match i {
-                Insn::Jump(t) => {
-                    work.push(t);
-                    break;
-                }
-                Insn::JumpIfZero(t) | Insn::JumpIfNonZero(t) => work.push(t),
-                Insn::Ret | Insn::Exit => break,
-                Insn::Binary { float: false, op: BinaryOp::Sub } => {
-                    // the instruction in front of the subtraction is the constant
-                    if let Some((Insn::PushInt(v), _)) = at.checked_sub(3).and_then(|b| decode(p, b)) {
-                        found.insert(v as i32);
-                    }
-                }
-                _ => {}
-            }
-            at += len;
-        }
-    }
-    found
-}
-
 fn main() {
     let path = std::env::var("KH2_ISO").ok().or_else(|| std::fs::read_to_string("local/iso.txt").ok().map(|s| s.trim().to_string()));
     let Some(path) = path else { return eprintln!("set KH2_ISO") };
@@ -70,27 +36,37 @@ fn main() {
     if let Ok(list) = std::fs::read_to_string(names_path) {
         a.apply_names(list.lines()).expect("names");
     }
-    for (name, bdx) in scripts(&mut a) {
-        let Ok(p) = Program::parse(&bdx) else { continue };
-        let Ok(an) = analyze(&p) else { continue };
-        let mut offered: BTreeSet<i32> = BTreeSet::new();
-        for (pc, (i, _)) in &an.code {
-            if let Insn::Host { group: 1, index } = i {
-                let (n, which): (usize, &[usize]) = match index {
-                    165 => (4, &[1]),
-                    237 => (5, &[0, 1, 2, 3]),
-                    325 => (4, &[2]),
-                    _ => continue,
-                };
-                let c = call_constants(&an, *pc, n);
-                for &k in which {
-                    if let Some(v) = c[k] {
-                        offered.insert(v as i32);
-                    }
+    // The native source: reaction parts (collision records of type 5, BAR entry 23) in object files.
+    let list: Vec<_> = a.entries().to_vec();
+    for l in &list {
+        let Some(name) = &l.name else { continue };
+        if !name.ends_with(".mdlx") {
+            continue;
+        }
+        let Ok(data) = a.read_entry(&l.entry) else { continue };
+        let Ok(es) = kh2_bar::parse(&data) else { continue };
+        let Some(coll) = es.iter().find(|e| e.kind == 23) else { continue };
+        let count = coll.data.get(0..4).map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize);
+        let mut ids: Vec<(u16, usize)> = Vec::new();
+        for i in 0..count {
+            let Some(r) = coll.data.get(0x40 + 0x14 * i..0x40 + 0x14 * (i + 1)) else { break };
+            if r[4] == 5 {
+                let id = u16::from_le_bytes([r[2], r[3]]);
+                match ids.iter_mut().find(|(c, _)| *c == id) {
+                    Some(e) => e.1 += 1,
+                    None => ids.push((id, 1)),
                 }
             }
         }
-        let handler = p.entry(11).map(|pc| handled(&p, pc as usize));
+        if !ids.is_empty() {
+            println!("PARTS {name}	{ids:?}");
+        }
+    }
+    for (name, bdx) in scripts(&mut a) {
+        let Ok(p) = Program::parse(&bdx) else { continue };
+        let Ok(an) = analyze(&p) else { continue };
+        let offered = reaction::offered(&an);
+        let handler = reaction::handled(&p);
         if handler.is_none() && offered.is_empty() {
             continue;
         }

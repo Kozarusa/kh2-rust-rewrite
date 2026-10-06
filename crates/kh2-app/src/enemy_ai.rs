@@ -877,7 +877,12 @@ fn paired_motions(mset: &[u8]) -> HashMap<usize, Vec<(String, f32)>> {
         let list: Vec<(String, f32)> = subs
             .iter()
             .filter(|s| !s.data.is_empty())
-            .filter_map(|s| kh2_anim::Motion::parse(s.data).map(|m| (s.tag.to_string(), (m.frame_end - m.frame_start).max(0.0) * 60.0 / m.fps.max(1.0))))
+            .filter_map(|s| {
+                // Each sub-entry is an animation BAR like a slot of the set: motion (type 9), triggers (16).
+                let anb = kh2_bar::parse(s.data).ok()?;
+                let m = anb.iter().find(|x| x.kind == 9).and_then(|x| kh2_anim::Motion::parse(x.data))?;
+                Some((s.tag.to_string(), (m.frame_end - m.frame_start).max(0.0) * 60.0 / m.fps.max(1.0)))
+            })
             .collect();
         out.insert(slot, list);
     }

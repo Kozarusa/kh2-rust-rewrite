@@ -14,6 +14,7 @@ mod assets;
 mod audio;
 mod audio_bgm;
 mod camera;
+mod clash;
 mod combat;
 mod data;
 mod drive;
@@ -81,6 +82,7 @@ fn main() {
             drive::DrivePlugin,
             limit::LimitPlugin,
             reaction_cmd::ReactionPlugin,
+            clash::ClashPlugin,
         ))
         .run();
 }

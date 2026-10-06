@@ -186,6 +186,44 @@ fn read_vec(mem: &mut Mem<'_>, host: &mut dyn Host, addr: u32) -> Result<Vec4, V
     }
 }
 
+/// The host with the script heap (host 0.47) in front of it: reads and writes of heap addresses never
+/// reach the host. Used wherever the runtime itself reads script-owned memory (contexts, vectors).
+struct HeapHost<'a> {
+    heap: &'a mut Vec<u8>,
+    host: &'a mut dyn Host,
+}
+
+impl Host for HeapHost<'_> {
+    fn call(&mut self, c: &Call) -> Value {
+        self.host.call(c)
+    }
+
+    fn read_mem(&mut self, addr: u32, out: &mut [u8]) -> bool {
+        match heap_span(self.heap.len(), addr, out.len()) {
+            Some(r) => {
+                out.copy_from_slice(&self.heap[r]);
+                true
+            }
+            None => self.host.read_mem(addr, out),
+        }
+    }
+
+    fn write_mem(&mut self, addr: u32, data: &[u8]) -> bool {
+        match heap_span(self.heap.len(), addr, data.len()) {
+            Some(r) => {
+                self.heap[r].copy_from_slice(data);
+                true
+            }
+            None => self.host.write_mem(addr, data),
+        }
+    }
+}
+
+fn heap_span(heap_len: usize, addr: u32, len: usize) -> Option<std::ops::Range<usize>> {
+    let o = addr.checked_sub(HEAP_BASE)? as usize;
+    (o + len <= heap_len).then_some(o..o + len)
+}
+
 fn fl(v: u32) -> f32 {
     f32::from_bits(v)
 }
@@ -310,8 +348,7 @@ impl Core {
     }
 
     fn heap_range(&self, addr: u32, len: usize) -> Option<std::ops::Range<usize>> {
-        let o = addr.checked_sub(HEAP_BASE)? as usize;
-        (o + len <= self.heap.len()).then_some(o..o + len)
+        heap_span(self.heap.len(), addr, len)
     }
 
     fn alloc_handle(&mut self) -> u32 {
@@ -809,11 +846,11 @@ impl Env for CoreEnv<'_> {
 
 impl CoreEnv<'_> {
     fn obj_of(&mut self, mem: &mut Mem<'_>, ctx: u32) -> Result<u32, VmError> {
-        read32(mem, self.host, ctx.wrapping_add(4))
+        read32(mem, &mut HeapHost { heap: &mut self.core.heap, host: &mut *self.host }, ctx.wrapping_add(4))
     }
 
     fn vec(&mut self, mem: &mut Mem<'_>, ptr: u32) -> Result<Vec4, VmError> {
-        read_vec(mem, self.host, ptr)
+        read_vec(mem, &mut HeapHost { heap: &mut self.core.heap, host: &mut *self.host }, ptr)
     }
 
     fn cstr(&mut self, mem: &mut Mem<'_>, ptr: u32) -> Result<String, VmError> {
@@ -825,7 +862,8 @@ impl CoreEnv<'_> {
         let call: Call = match (g, i) {
             // ---- group 0: math, no host involvement ----
             (0, idx) if math::is_math(idx) => {
-                let mut io = HostVec(&mut *self.host);
+                let mut hh = HeapHost { heap: &mut self.core.heap, host: &mut *self.host };
+                let mut io = HostVec(&mut hh);
                 return math::call(mem, idx, a, &mut io);
             }
             // Functions the retail executable implements as an empty return (debug prints and the like).

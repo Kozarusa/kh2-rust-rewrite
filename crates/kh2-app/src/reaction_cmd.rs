@@ -230,6 +230,12 @@ pub enum PlayerReactionCmd {
     Velocity { dir: Vec3, speed: f32 },
     /// Host 1.13: queue motion `slot` of the player's own set behind the running one (FUN_0017e170).
     QueueMotion { slot: usize, blend: f32 },
+    /// Commands 455 and 457 are the player's own (FUN_001ce518, not the generic accept path): the
+    /// player's timer at +0xb68 is set (120 ticks and motion 0xc1 for 455, 30 ticks and no motion for
+    /// 457); while it runs FUN_001ce240 adds one unit to the drive gauge (FUN_001a0290) each time its
+    /// second timer (+0xb6c) runs out with the motion near its end, and at zero asks for motion 5. The
+    /// consumer (`drive.rs`, `sora.rs`) is a hook.
+    Charge { ticks: f32, motion: Option<u16> },
 }
 
 /// The player's part of a running reaction command, as the scripts see it.
@@ -373,6 +379,17 @@ fn offer(
     }
 }
 
+/// Commands the player's own handler (FUN_001ce518) runs itself: id, timer ticks (the floats at 0x37c340 and
+/// 0x37c344 are 120.0 and 30.0) and motion. 455 (0x1c7) plays motion 0xc1, 457 (0x1c9) none. Not ported:
+/// 456 (0x1c8, motion 0xc0 and FUN_001ce680) and 452 (0x1c4), which this disc offers to nobody here.
+fn own_command(cmd: u16) -> Option<(f32, Option<u16>)> {
+    match cmd {
+        455 => Some((120.0, Some(0xc1))),
+        457 => Some((30.0, None)),
+        _ => None,
+    }
+}
+
 /// The native offer of one enemy (FUN_0019cb70): every enabled reaction part (`reaction_parts`) whose
 /// volume overlaps the player's body volume offers its command. The row's Flags decide first
 /// (FUN_0019cf58: bit 4 lets it show in battle, taken as on in the app; bit 6 needs the trigger window
@@ -442,6 +459,7 @@ fn accept(
     mut out: MessageWriter<ReactionAccepted>,
     mut sora: Query<&mut Sora>,
     targets: Query<&Enemy>,
+    mut player_cmds: MessageWriter<PlayerReactionCmd>,
 ) {
     if !std::mem::take(&mut press.0) {
         return;
@@ -460,12 +478,12 @@ fn accept(
     }
     let Some(c) = rules.cmd(a.cmd) else { return };
     // FUN_00177c20: the use counter first (it is counted even when nothing follows).
-    if c.reaction_count != 0 {
+    if c.reaction_count != 0 && own_command(a.cmd).is_none() {
         let n = uses.0.entry(c.reaction_count).or_insert(0);
         *n = (*n + 1).min(999);
     }
     // FUN_001b80e8: the target must still be in the object list.
-    if targets.get(a.from).is_err() {
+    if own_command(a.cmd).is_none() && targets.get(a.from).is_err() {
         if log.0 {
             info!("reaction: accept of command {} dropped, the target {:?} is gone", a.cmd, a.from);
         }
@@ -479,6 +497,15 @@ fn accept(
             1 | 2 => s.motor.vel = Vec3::ZERO,
             _ => {}
         }
+    }
+    // The player's own handler FUN_001ce518 takes 455 (0x1c7) and 457 (0x1c9) before the generic path,
+    // so they send no event and bump no use counter (that is inside FUN_00177c20).
+    if let Some((ticks, motion)) = own_command(a.cmd) {
+        player_cmds.write(PlayerReactionCmd::Charge { ticks, motion });
+        if log.0 {
+            info!("reaction: accepted command {} (player's own handler): timer {ticks} ticks, motion {motion:?}; the gauge charge and the motion are the player side's [hook]", a.cmd);
+        }
+        return;
     }
     out.write(ReactionAccepted { cmd: a.cmd, pos: a.pos, target: a.from });
     if log.0 {
@@ -579,6 +606,41 @@ mod tests {
         }
         eprintln!("motion sets {} offers {total}", names.len());
         assert!(!names.is_empty());
+    }
+
+    /// The command table's reaction rows: the 124 rows with CmdAction 1 or 2 whose Execute is their own
+    /// id, plus the two rows of the motion offer (455 and 457, CmdAction 0), 126 in all. Their facts
+    /// (docs/limits-reactions.md): all can show in battle (Flags bit 4), 12 wait for the player's trigger
+    /// window (bit 6), two have an offer cone, three a distance limit, and with the neutral context
+    /// every one is available or blocked by its flags, none is "not ported".
+    #[test]
+    fn real_reaction_rows() {
+        let Some(d) = disc() else { return };
+        let rows: Vec<t::Cmd> = {
+            let mut a = d.0.lock().unwrap();
+            kh2_tables::load::<t::Cmd>(&mut a, &t::CMD).expect("cmd").rows
+        };
+        let cmds: Vec<CmdRow> = rows.iter().map(CmdRow::from).collect();
+        let react: Vec<&t::Cmd> = rows.iter().filter(|c| matches!(c.cmd_action, 1 | 2) && c.execute == c.id).collect();
+        assert_eq!(react.len(), 124);
+        let extra: Vec<&t::Cmd> = rows.iter().filter(|c| matches!(c.id, 455 | 457)).collect();
+        assert_eq!(extra.len(), 2);
+        assert!(react.iter().all(|c| c.flags >> 4 & 1 != 0), "every reaction row shows in battle");
+        assert!(react.iter().all(|c| c.dir == 0.0 && c.dir_range == -1.0));
+        assert_eq!(react.iter().filter(|c| c.flags >> 6 & 1 != 0).count(), 12, "rows that wait for the trigger window");
+        assert_eq!(react.iter().filter(|c| c.range > -1.0).map(|c| c.range).collect::<Vec<_>>(), vec![0.5, 0.5]);
+        assert_eq!(react.iter().filter(|c| c.dist_range != 0).map(|c| (c.id, c.dist_range)).collect::<Vec<_>>(), vec![(466, 1000), (516, 500), (517, 1000)]);
+        assert_eq!(react.iter().filter(|c| c.reaction_count != 0).count(), 43);
+        // Command 34 (the Soldier's) and 457 (Mickey's motion offer).
+        let c34 = react.iter().find(|c| c.id == 34).expect("34");
+        assert_eq!((c34.mark, c34.cmd_action, c34.reaction_count, c34.priority, c34.message_id), (2, 1, 1, 100, 33949));
+        let c457 = extra.iter().find(|c| c.id == 457).expect("457");
+        assert_eq!((c457.cmd_action, c457.mark, c457.priority, c457.require, c457.message_id), (0, 6, 255, 455, 48047));
+        for c in react.iter().copied().chain(extra.iter().copied()) {
+            let row = CmdRow::from(c);
+            let st = status(&cmds, &row, &Ctx::default());
+            assert!(matches!(st, Status::Available | Status::Blocked | Status::TooFar), "command {} is {st:?}", c.id);
+        }
     }
 
     /// The Shadow and Soldier sets (the app's two enemies) make no reaction offer.

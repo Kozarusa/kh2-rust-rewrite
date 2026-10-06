@@ -151,6 +151,9 @@ pub enum State {
     /// A drive form change is playing (motions A120 and A121): the drive code holds the controller,
     /// there is no input, and the hit tests are off. It sets the state back when the change ends.
     FormChange,
+    /// A reaction command's paired motion is playing on Sora (`player_reaction.rs` starts and ends
+    /// it): no input, his velocity is the script's secondary velocity, gravity goes on.
+    Reaction,
 }
 
 /// Growth-ability levels (0 = not learned, 5 = MAX). Written from the ability block's growth
@@ -313,6 +316,16 @@ impl Sora {
         self.motor.yaw
     }
 
+    /// Enters `state` from outside the controller (reaction commands and clashes,
+    /// `player_reaction.rs`): the motion is already requested; the state's clock restarts, the
+    /// velocity and a pending attack are dropped and `push` replaces the running push.
+    pub fn enter(&mut self, state: State, push: Option<Push>) {
+        self.state = state;
+        self.timer = 0.0;
+        self.motor.vel = Vec3::ZERO;
+        self.queued_attack = false;
+        self.push = push;
+    }
 }
 
 /// A target point of an enemy in game units (Y up here), from its target-kind collision shape.
@@ -1360,6 +1373,12 @@ pub fn tick(
         State::FormChange => {
             // No input: the drive code plays the change motions and ends the state. Gravity goes on.
             s.motor.vel = Vec3::ZERO;
+            if !s.motor.grounded {
+                airborne_dy = Some(s.motor.jump_dy(fall_max));
+            }
+        }
+        State::Reaction => {
+            // No input: `player_reaction.rs` set the velocity for this tick and ends the state.
             if !s.motor.grounded {
                 airborne_dy = Some(s.motor.jump_dy(fall_max));
             }

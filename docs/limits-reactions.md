@@ -126,10 +126,46 @@ frame pointer, top of stack and every host call with its arguments); the whole-d
 What the app does with it (`enemy_ai.rs`): event 11 is delivered; the host calls on the player turn into
 `reaction_cmd::PlayerReactionCmd` messages (`PairedMotion`, `Unhittable`, `Velocity`, `QueueMotion`), the paired
 motion's length is read from the Soldier's motion set so that `motion_done` comes true when it would have ended,
-and the script runs to its end. **Nothing consumes the messages**: the player does not play the paired motion,
-move or become untouchable [hook for `sora.rs`, see the end of this section]. The sub-motion for the player's
-model is a normal motion of Sora's skeleton, so the consumer needs an `Animator` entry point for a motion that is
-not in Sora's own set.
+and the script runs to its end.
+
+### The player's side (WP-5C) [V rules, timing partly inferred]
+
+`player_reaction.rs` (`PlayerReactionPlugin`) consumes the messages at the start of Sora's next tick (the scripts
+run after his controller, so one tick after the script asked):
+
+- `PairedMotion`: host 1.29 (`FUN_0017f160`) clears the player's motion queue (`FUN_0017e118`) and starts the
+  sub-motion on his own controller. The port reads the type 20 entries of `M_EX010.mset` / `M_EX020.mset` at start
+  (`paired_entries`: motion type 9 and triggers type 16 of each sub-entry), finds `%03d0` of P_EX100's objentry byte
+  +7 (`0010`) in entry `slot` of the sending enemy's set and plays it on Sora's body with
+  `Animator::play_external` (a motion outside the rig's own set; `slot` reads `None` while it plays). Sora is in
+  `sora::State::Reaction`: no input, gravity on, root motion of the sub-motion applied. Unit test
+  `real_soldier_paired_motions`: entries 252 and 253 hold `0010`, 12 and 70 ticks, posable on Sora's skeleton.
+- `motion_done` (host 1.14, bit 1 of +0x160, "the current motion has ended"): `PlayerReaction.paired_done` follows
+  the real end of Sora's animator while a reaction runs (`enemy_ai` no longer counts the length; it only clears the
+  bit when it asks for a new motion). An entry without the player's sub-motion is reported as ended at once
+  [inferred: the lookup failure of `FUN_0017ee40` was not read].
+- `Unhittable(bool)`: bit 3 of the player's flags; `FUN_0019a4f0` refuses hits while it is set. The port clears
+  `Fighter::hittable` after Sora's tick while it is set.
+- `Velocity { dir, speed }`: `FUN_00183418` stores the unit direction at +0x880 and the speed at +0x88c; the mover
+  `FUN_00181e00` adds direction x speed x the frame step (`DAT_00356f40`, one per 60 Hz tick) to the tick's
+  displacement and **clears the whole vector at its end**, so a request moves the player for one tick. The port sets
+  Sora's velocity to it for that tick (moved with collision by his motor); a tick without a request has zero
+  velocity. A request while Sora is not in `State::Reaction` (a hit took him over) is dropped and logged [app gap:
+  the game would still add it].
+- `QueueMotion { slot, blend }`: host 1.13 (`FUN_0017e170`) appends a motion id to the controller's 4-entry queue.
+  When the paired motion ends the port plays Sora's own motion id `slot` (state fallback of the battle flag) with
+  that blend and gives control back (Ground or Air). With nothing queued Sora holds the last frame for 2 ticks,
+  waiting for the script's next request, then control returns [the app's: the controller's empty-queue case was not
+  read].
+- A hit or other motion request during the reaction ends it (the queue is dropped, as `FUN_0017e220` clears it);
+  `paired_done` then follows that motion's end.
+
+Log lines (all `player_reaction`): `player: paired motion started: entry 252 sub-motion 0010 of Soldier on Sora (12
+ticks, blend 0), serial -1`, `player: unhittable set` / `cleared`, `player: velocity (x y z) 30.0 cm this tick`
+(only with `KH2_REACTIONLOG=1`), `player: paired motion ended after N ticks: motion_done set`, `player: motion 0
+queued behind the paired motion (blend 0)`, `player: queued motion 0 (A000) plays, control returns (Ground)`,
+`player: paired motion ended with nothing queued: control returns (...)`, `player: paired motion interrupted: Sora is
+...`, `player: velocity request dropped: ...`, and for clashes `player: clash: own atkp ...`.
 
 ### Command 457 and the player's own commands [V]
 
@@ -231,20 +267,28 @@ capsules overlap. The enemy side then plays `ReflectedMotion` (140 to 143; the S
 the Shadow's rows 9 to 12 have it) with the default recoil push backwards along its facing (`enemy::receive_clashes`,
 `EnemyClash`), and **both volumes are disabled** (`FUN_0018d6b0`) unless a side's own row says `RefactSelf` 2: the
 window is marked as landed so `combat::detect_hits` skips it. The player's side is the party handler
-`FUN_001754a0` (`reaction_rules::party_clash`): the `Clash` message carries both rows and the ground result, for
-`sora.rs` (hook). Evidence: `clash: Player attack 127 meets Enemy attack 1313` and `Soldier clash: recoil motion 140`
+`FUN_001754a0` (`reaction_rules::party_clash`): the `Clash` message carries both rows and the ground result;
+`player_reaction::receive_clashes` applies it to Sora with his own airborne state (WP-5C, rules in
+docs/hit-reaction.md: latch `connected`, spark only / recoil 0x29 or 0x2b with combo step refund / guard bounce 0x2a
+with push 200, facing the other attack and 80 invincible ticks). The spark (`FUN_0018d560` ->
+`FUN_001db868(&DAT_01c954d8, id, ...)`) is element 0xd (spark only, recoil) or 0xb (guard bounce of a party actor,
++0x588 bit 0x80; 0xc otherwise) of the **system file** `00effect.bar`, placed at the own volume's centre moved toward
+the other's by the own radius; `fx::StartEffect` only starts elements of the owner's own effect file, so the spark is
+not started [needs an fx.rs entry for the system file at a fixed point]. Evidence: `clash: Player attack 127 meets Enemy attack 1313` and `Soldier clash: recoil motion 140`
 in the run above.
 
 Not ported: the spark (`FUN_0018d560`, an effect start), the cone test of `FUN_0018d308` for rows with
 `ReflectRange` (70 rows; those pairs never clash here and the first one met is warned about), `ReflectAction`
 (a script action id looked up by `FUN_0019e870`, not decoded), the hit-registry tests of `FUN_001be108` (a pair
-that already hit each other does not clash again), `ReflectRC`, the airborne variants of the recoil, the
-player's recoil itself.
+that already hit each other does not clash again), `ReflectRC`, the airborne variants of the recoil's push (the
+air push `FUN_00185978` is not decoded; the ground push stands in, as for the wall recoil).
 
 ### Gaps of this section
 
-- The player side of every script call: the paired motion, the tangential slide at 30 per tick, the
-  untouchable flag, the queued idle (`PlayerReactionCmd`), the drive-gauge charge of 455 / 457, the Mickey objects
+- The player side of the script calls is ported (WP-5C) except: the one-tick lag behind the script, the velocity
+  while a hit has taken Sora over, the keyblade during the paired motion (it follows Sora's slot, which reads none,
+  so it holds its rest pose; whether the game moves the weapon then was not read), the empty-queue hold. Not ported:
+  the drive-gauge charge of 455 / 457, the Mickey objects
   that offer 457 (no object of the app is a player-class body), the player's trigger window for the 12 rows with
   Flags bit 6, records of type 14, part id 0x83, joints other than 0x4000 (bone matrices of `FUN_0016aa18`),
   cylinder shapes, the lock-on distance bonus.
@@ -495,15 +539,10 @@ none of which exist in the app.
 1. `hud.rs` (WP-4B3): mirror `ReactionOffer` into `CommandMenu.reaction` (above). Done by 4B3.
 2. `enemy_ai.rs`: **done here**: `ReactionAccepted` is delivered as event 11; Soldier's thread for command 34 runs.
 3. `sora.rs` / the drive plugin (WP-2B2): the player's form id into `reaction_cmd::Ctx.form` (now 0) and the battle flag.
-4. **`sora.rs` consumer of `reaction_cmd::PlayerReactionCmd`** (needed for command 34 to be visible): play the paired
-   motion on Sora (`PairedMotion { from, slot, blend, serial, ticks }`: the sub-motion named `%03d0` of his objentry
-   byte +7 inside entry `slot` of the *enemy's* motion set, a BAR of type 20; `enemy_ai::paired_motions` reads the
-   lengths, the motion itself needs an `Animator` call for a motion outside the rig's own set), keep him untouchable
-   while `Unhittable(true)`, move him by `Velocity { dir, speed }` each tick (30 units per tick, set again every tick),
-   queue `QueueMotion`, and set `PlayerReaction.paired_done` when the motion ends (today `enemy_ai` sets it after the
-   motion's length).
-5. `sora.rs` consumer of `clash::Clash` (party handler `FUN_001754a0`, `party_clash`): recoil or guard bounce and the
-   refunded combo step. `fx.rs`: the clash spark (`FUN_0018d560`).
+4. Consumer of `reaction_cmd::PlayerReactionCmd`: **done by WP-5C** (`player_reaction.rs`, see "The player's side"
+   above). `Charge` is still not consumed.
+5. Consumer of `clash::Clash`: **done by WP-5C** (`player_reaction::receive_clashes`). Still open: the clash spark
+   (`FUN_0018d560`, system effect 0xb / 0xd of `00effect.bar`) needs a way into `fx.rs` (see the clash section).
 6. `drive.rs`: the `PlayerReactionCmd::Charge` of commands 455 and 457 (+1 drive gauge unit each time the timer runs
    out, see above).
 7. A shared `LimitParty` source once companions exist (it is a resource today).

@@ -612,7 +612,7 @@ impl BevyHost<'_> {
             Call::SetVelocity { obj, dir, speed } if *obj == PLAYER => {
                 let d = from_game(*dir).normalize_or_zero();
                 self.obj.player_cmds.push(PlayerReactionCmd::Velocity { dir: d, speed: *speed });
-                approx(Value::None, "handed to the player side as PlayerReactionCmd::Velocity (no consumer yet)")
+                approx(Value::None, "handed to the player side as PlayerReactionCmd::Velocity (player_reaction.rs, applied one tick later)")
             }
             Call::SetVelocity { .. } => missing(Value::None, "secondary velocity vector at +0x880: consumer not found"),
             Call::StartMove { dir, motion, blend, commit, .. } => {
@@ -644,7 +644,7 @@ impl BevyHost<'_> {
                 let set = matches!(c, Call::SetFlag { .. });
                 if *bit == FLAG_BIT_UNHITTABLE {
                     self.obj.player_cmds.push(PlayerReactionCmd::Unhittable(set));
-                    approx(Value::None, "bit 3 of the player's flags handed to the player side as PlayerReactionCmd::Unhittable (no consumer yet)")
+                    approx(Value::None, "bit 3 of the player's flags handed to the player side as PlayerReactionCmd::Unhittable (player_reaction.rs)")
                 } else {
                     stub(Value::None, "a flag bit of the player other than 3: no consumer in the app")
                 }
@@ -721,7 +721,7 @@ impl BevyHost<'_> {
                 if ticks.is_none() {
                     self.trace.note(self.tag, format!("paired motion entry {slot} has no sub-motion named {name}"));
                 }
-                approx(Value::Int(serial), "the player side does not play the motion yet (PlayerReactionCmd::PairedMotion has no consumer); its length is the sub-motion's")
+                approx(Value::Int(serial), "the player side plays the sub-motion one tick later (player_reaction.rs) and reports its end through motion_done")
             }
             // 1.238: the player's +0x158, the serial of his last paired motion.
             Call::Func { group: 1, index: 238, args } if args[0].int() as u32 == PLAYER => {
@@ -729,7 +729,7 @@ impl BevyHost<'_> {
             }
             Call::Func { group: 1, index: 13, args } if args[0].int() as u32 == PLAYER => {
                 self.obj.player_cmds.push(PlayerReactionCmd::QueueMotion { slot: args[1].int().max(0) as usize, blend: args[2].float() });
-                approx(Value::None, "handed to the player side as PlayerReactionCmd::QueueMotion (no consumer yet)")
+                approx(Value::None, "handed to the player side as PlayerReactionCmd::QueueMotion (player_reaction.rs)")
             }
             // 1.132: the target record returns to a pool; the app's records are never reused.
             Call::Func { group: 1, index: 132, .. } => stub(Value::None, "target records are not pooled"),
@@ -944,15 +944,6 @@ fn ai_update(
     for h in hit_msgs.read() {
         hits.entry(h.target).or_default().push(h.real);
     }
-    // The paired motion on the player runs its length, then reads as ended.
-    if let Some(r) = player_reaction.remaining {
-        if r <= 1.0 {
-            player_reaction.remaining = None;
-            player_reaction.paired_done = true;
-        } else {
-            player_reaction.remaining = Some(r - 1.0);
-        }
-    }
     let mut reactions: HashMap<Entity, Vec<(u16, i16)>> = HashMap::new();
     for r in accepted.read() {
         reactions.entry(r.target).or_default().push((r.cmd, r.pos));
@@ -1028,9 +1019,8 @@ fn ai_update(
         for c in obj.player_cmds.drain(..) {
             let c = match c {
                 PlayerReactionCmd::PairedMotion { slot, blend, serial, ticks, .. } => {
-                    // Until the player side plays the motion itself, its length alone decides when the
-                    // script sees it end (bit 1 of the player's +0x160, host 1.14).
-                    player_reaction.remaining = Some(ticks);
+                    // A new motion on the player has not ended (bit 1 of his +0x160, host 1.14);
+                    // `player_reaction.rs` plays it and sets the bit when it really ends.
                     player_reaction.paired_done = false;
                     PlayerReactionCmd::PairedMotion { from: ent, slot, blend, serial, ticks }
                 }

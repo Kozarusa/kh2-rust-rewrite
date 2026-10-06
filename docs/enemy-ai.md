@@ -9,7 +9,7 @@ match wins), plus the pure helpers the arms use (`game_wrap_angle`, the prize ta
 the plugin and the systems (`load_programs`, `ai_attach`, `ai_update`, `ai_fade`), `AiBrain`, the `Mailbox` and the `AiTrace` log.
 Where this document says "`enemy_ai.rs`" for a host call or the object, read the file named here.
 
-(WP-6C added the Dusk, `obj/M_EX990.mdlx`; why that enemy, its stats and where it spawns are in `docs/enemies.md`.
+(WP-6C added the Dusk, `obj/M_EX990.mdlx`, WP-6H `N_EX570_BTL`, WP-7D `M_EX930`, `N_EX500_BTL` and `N_EX600_BTL`; why, their stats and where they spawn are in `docs/enemies.md`.
 The kinds are `enemy::KINDS`; `load_programs` reads every kind's script.)
 
 Work package 2E. The Heartless of `enemy.rs` used to run a small state machine written for the app. Shadow (`obj/M_EX020.mdlx`) and
@@ -111,6 +111,16 @@ with a default, nothing in the app reads it; Missing = fails visibly. Addresses 
 | 0.42 angle_of | Approx | atan2(v.x, v.z) (FUN_0016d060 -> FUN_003003e8); the platform's atan2, not the game's routine |
 | 0.43 wrap_angle | Impl | FUN_0017bbc0: a positive angle `fmod(x + pi, 2 pi) - pi`, else `pi - fmod(pi - x, 2 pi)`, with the floats at 0x37a528 / 0x37a52c |
 | 1.94 obj_valid | Approx | 0x170150: 0 is false, else "in the object list and FUN_0019a440 clear" (FUN_0019a3f8). Self and the player are true (the +0x108 bits 0x80000 / 0x10000000 of FUN_0019a440 were not traced and read clear); any other handle reads absent |
+| 1.101 flag_160_4000 on the player (WP-7D) | Approx | bit 0x4000 of the player's +0x160 (0x1716d0; the same test as FUN_00179538); the word is written through the motion controller's base and no writer of the bit was found (`mips_scan --store-off 0x160`: only FUN_00188ad0, which sets 0x20000): read clear |
+| 1.225 mover_method_60 on the player (WP-7D) | Approx | FUN_001708f8: 0 unless bit 2 of the player's +0x588 is set, then his mover's virtual +0x60; the bit's writer was not traced: 0 |
+| 1.161 has_link on the player (WP-7D) | Approx | FUN_001706c8 -> FUN_001beb00: the player's +0x570 (link parent) is set. The app has no links (1.18): false |
+| 1.18 link_start on the player (WP-7D) | Stub | 0x170dd8 -> FUN_001beb90: parent +0x570, halfwords +0x574 / +0x576, facing +0x550 cleared and 8 or-ed into +0x7f8 (flags bit 1 clear), mover 3, the child entered in the parent's list (+0x760 / +0x764); FUN_00169ee8 ends it when +0x576 bit 0 is set and the parent's +0x160 loses 0x8000, FUN_001becb8 undoes it. The player side has no link mover: Sora is not attached (the Dancer's force dance, `docs/enemies.md`) |
+| 2.7 hit_reaction (WP-7D) | Impl | byte +0x26 of the hit record (0x18e0d0): the effective reaction of `reaction_rules::victim_outcome`, carried by `AiHit::reaction` with every hit (2.8 classifies the same byte) |
+| 1.95 (WP-7D) | Approx | 0x173038 -> FUN_00183470: mover 1 continuing the last real movement (+0x860): horizontal velocity kept, apex time vy / g and apex height from its vertical speed (g = DAT_0037a884, 0.5 = DAT_0037a888). The app starts a `Motor` jump to that apex or a fall already that fast; not in `kh2_bdx::names` (arrives undecoded, taken as the object's own) |
+| 1.54 bits_47c_480_clear (WP-7D) | Stub | 0x172910 -> FUN_0019dde0: bit n cleared in the bit arrays at +0x47c and +0x480; none of the app's scripts sets them (1.52 / 1.53) and no reader was traced |
+| 4.29 (WP-7D) | Approx | FUN_0019ebd0 -> FUN_001d6738(i): 0 without the manager at DAT_01d5dd20 (created by FUN_001b9338 from the event command FUN_00180b48), else word +0x114 of its 0x38-byte entry i when bit 0 of the entry's +0xf4 is set. The Struggle opponents compare entries 0 and 1 (the score [inferred]). The app has no such manager: 0 |
+| host table (WP-7D) | Impl | every enemy runtime gets the executable's host table (`HostTable::from_exe`, 0x35bce8) for the functions `kh2_bdx::names` does not carry; they reach the host as `Call::Unknown` (before, 4.29 stopped N_EX500_BTL's script with `UnknownHost`) |
+| target record memory (WP-7D) | Approx | `read_mem` of the object's own target record (2.23): the player, index 0 [inferred], 0, -1, 0 (FUN_0018ed40 + FUN_0018f490 layout); the Dusk reads word 0 at 0x136d |
 
 ## Event 11: reaction commands (WP-2C2)
 

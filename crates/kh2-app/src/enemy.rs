@@ -59,8 +59,25 @@ pub const DUSK: Kind = Kind { name: "Dusk", enmp: 41, model: "M_EX990", death_ef
 /// `dead` mode (BDX 0x174d) plays motion 16 or 10 and waits for ever: no death effect, no fade.
 pub const SEIFER: Kind = Kind { name: "Seifer", enmp: 135, model: "N_EX570_BTL", death_effect: false };
 
+/// The Nobody `M_EX930` (object 0x138), with two Dusks in tt04's battle group b_21; "Dancer" is
+/// inferred from its mode names (`atk_force_dance`, `atk_spin_*`, `atk_kick`). Its script hands
+/// `enmp` row 48 to `set_obj_param` (BDX `M_EX930` R0f13 at 0x0f3a, the constant pushed at 0x04ce). Its `dead` mode (R06bd) starts element 2 of its effect file, fades out and hides, like
+/// the Dusk's.
+pub const DANCER: Kind = Kind { name: "Dancer", enmp: 48, model: "M_EX930", death_effect: true };
+
+/// The Struggle opponent `N_EX500_BTL` (object 0x4d7) of tt04's battle group b_50, called by its model
+/// (its name is not in the data the app reads). Its script hands `enmp` row 150 to `set_obj_param`
+/// (BDX `N_EX500_BTL` 0x0736). Unlike `N_EX570_BTL` its `dead` mode (R0900) starts element 2 of its
+/// effect file, fades out and hides, as the Dusk's does.
+pub const N_EX500: Kind = Kind { name: "N_EX500", enmp: 150, model: "N_EX500_BTL", death_effect: true };
+
+/// The Struggle opponent `N_EX600_BTL` (object 0x82f) of tt04's battle group b_52, called by its model.
+/// Its script hands `enmp` row 158 to `set_obj_param` (BDX `N_EX600_BTL` 0x07fd); its `dead` mode
+/// (R09c8) starts element 2 of its effect file, fades out and hides.
+pub const N_EX600: Kind = Kind { name: "N_EX600", enmp: 158, model: "N_EX600_BTL", death_effect: true };
+
 /// Every enemy kind the app has.
-pub const KINDS: [&Kind; 4] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER];
+pub const KINDS: [&Kind; 7] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600];
 
 /// The rigs of the enemy kinds, by `Kind::name` (Shadow and Soldier share `sora::Rigs`' copies).
 #[derive(Resource, Default)]
@@ -370,7 +387,12 @@ pub fn spawn_waves(
         let k = (waves.count as usize - 1) % area_waves.groups.len();
         let g = forced.as_deref().and_then(|f| area_waves.groups.iter().find(|g| g.name == f)).unwrap_or(&area_waves.groups[k]);
         info!("wave {}: area group {} (btl program {:#x}), {} enemies", waves.count, g.name, g.program, g.members.len());
-        if let (Some(_), Some(at)) = (&forced, g.player) {
+        // Harness: `KH2_WAVE_AT_GROUP=1` puts Sora at the centre of a forced group that has no player
+        // entry (b_00, b_21: the group stands about 22 m from his start point, out of the scripts'
+        // battle radius). A test aid, not the game's rule.
+        let centre = (forced.is_some() && g.player.is_none() && std::env::var("KH2_WAVE_AT_GROUP").is_ok_and(|v| v == "1") && !g.members.is_empty())
+            .then(|| g.members.iter().map(|m| m.at).sum::<Vec3>() / g.members.len() as f32);
+        if let (Some(_), Some(at)) = (&forced, g.player.or(centre)) {
             let y = col.ground_m(at.x, at.z, at.y + 1.0).unwrap_or(at.y);
             crate::sora::respawn(&mut sora, at.with_y(y) / SCALE);
             sora_tf.translation = at.with_y(y);
@@ -574,7 +596,7 @@ pub fn receive_hits(
             hit_part_plain: true,
         };
         let out = rules::victim_outcome(&rules::HitRow::from_atkp(atk), useless, &ctx, &reaction.patn, &reaction.defaults, &reaction.consts);
-        ai_hits.write(crate::enemy_ai::AiHit { target: h.target, real: rules::reaction_class(out.effective) >= 2 });
+        ai_hits.write(crate::enemy_ai::AiHit { target: h.target, real: rules::reaction_class(out.effective) >= 2, reaction: out.effective });
         // Dying is not part of the reaction rules: the last hit always launches.
         let d = &reaction.defaults;
         let action = match out.action {

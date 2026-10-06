@@ -103,7 +103,8 @@ pub(crate) struct Obj {
     pub(crate) fall_pending: bool,
     pub(crate) effects: Vec<u16>,
     pub(crate) next_effect: u32,
-    pub(crate) hits: HashMap<u32, bool>,
+    /// Hit records of event 6 by handle: hit is real (2.8) and the effective reaction, byte +0x26 (2.7).
+    pub(crate) hits: HashMap<u32, (bool, u8)>,
     pub(crate) next_hit: u32,
     /// Target records given to event 11, readable by the script (handle `RECORD + k * RECORD_SIZE`).
     pub(crate) records: Vec<[u8; 20]>,

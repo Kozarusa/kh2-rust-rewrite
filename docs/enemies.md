@@ -58,11 +58,12 @@ New host functions the Dusk needs are in the table of `docs/enemy-ai.md` (0.15, 
 - In an area whose `btl` script loads groups with enemies of `enemy::KINDS` (tt04), a wave is the next such
   group in script order: b_00, b_44, b_43, b_21. Each enemy stands where its record puts it (game space converted:
   `(x, -y, -z)`, then put on the floor under it) with the record's facing (game yaw `r` is the app's `PI - r`) and
-  spawn kind. Members the app does not have are logged and left out (`M_EX930` in b_21).
+  spawn kind. Members the app does not have are logged and left out (none left in tt04 since WP-7D).
 - Elsewhere (tt00, tt02) and with `KH2_AREA_WAVES=0`: the app's own wave of Shadows around Sora with a Soldier from
   the second wave on, as before. These are not from the disc.
 - `KH2_WAVE_GROUP=<tag>` (harness) makes every wave that group; when the group holds the player's entity (0x236)
-  Sora is put there first (b_44: the centre of the Sandlot).
+  Sora is put there first (b_44: the centre of the Sandlot). With `KH2_WAVE_AT_GROUP=1` a forced group without a
+  player entry (b_00, b_21) puts Sora at the centre of its members instead (a test aid, WP-7D; not the game's rule).
 
 **Gaps.** Which `btl` program the game runs, and when, depends on story progress and the event scripts, which the
 app does not have: the groups take turns instead. Whether the game moves the player to a battle group's player
@@ -117,9 +118,112 @@ effect file and BDX script (6619 words) are on the disc (`cargo test -p kh2-ard 
   are stubbed: no `voice/us/battle` bank names this speaker and the app has no enemy voice slot. Its motions' voice
   triggers (13) are only played for Sora by `audio.rs`. Script motions 48..50 (R0b83, which also calls host 4.0, an
   empty table entry) are not in the set; that path was not reached.
-- **Next enemies.** `M_EX930` (b_21), `N_EX500_BTL` (b_50), `N_EX600_BTL` (b_52) not started.
+- **Next enemies.** `M_EX930` (b_21), `N_EX500_BTL` (b_50), `N_EX600_BTL` (b_52): WP-7D, below.
 
 Acceptance runs (WP-6H, `KH2_BDXLOG=1 KH2_WAVE_GROUP=<g>`, Sora idle until 25 s then J every 0.45 s, Q lock):
 b_42 modes `start_voice`, `mode_battle`, `check_arg_mode`, `btl_long`, `btl_attack`, `footwork`, `walk_forward`,
 `run_forward`, `atk_swing_down`, `atk_cut_off`, `atk_jump`, `backstep`, `mode_revenge`, `dead`; b_45 also `btl_short`,
 stats rebuilt to row 155. No script error, no unimplemented host call. Its claw 1042 flinched Sora (push 200).
+
+## The third enemy: M_EX930, the Dancer (WP-7D)
+
+`M_EX930` (object 0x138, ObjectType 4, `enemy::DANCER`) stands with two Dusks in b_21 (btl program 0x7). "Dancer"
+is inferred from its mode names (`atk_force_dance`, `atk_spin_u/m/d`, `atk_kick`) and its pink and cream textures
+with the Nobody emblem; the code calls it by its model. Model (4 meshes, 60 bones, 2 textures), motion set
+(253 slots, 32 with motions, entry 252 a paired player motion), effect file and BDX script (4383 words) are on the
+disc (`cargo test -p kh2-bdx --test disc m_ex930`).
+
+- **Stats.** R0f13 hands `enmp` row 48 to `set_obj_param` (the constant pushed at 0x04ce, the call at 0x0f3a): 32 HP
+  at world level 1. The same routine stores the attack ranges (400 / 800 cm at context +0x30 / +0x34), the chase
+  radii (2000 / 1200 cm, R0f99: world byte 0x33e830 is not 10, spawn kind not 5 or 6), the motion blend (8) and
+  the prize row (25, read by `dead`).
+- **Appear.** Spawn kind 2 (b_21) or -1 (the app's waves) faces the player and plays motion 44 with a fade-in
+  (R058a); other kinds start motion 0 at a random frame (R062d).
+- **Attacks.** Spins 206 / 207 / 208 (atkp 438, 439, 440 through range trigger 10), the kick 205 (atkp 441; three in
+  a row, and `atk_kick_call` sends `atk_kick` to every object with a delay of 60), the force dance (below).
+  Attack shapes and windows come from the motions' triggers like the other enemies'.
+- **Force dance.** `atk_force_dance_near` (R0a48) closes in with motion 202 for at most 600 frames; within 100 cm
+  it switches to `atk_force_dance` (R0b0a) when the player's 1.101 and 1.225 read clear, else to
+  `atk_force_dance_finish` (motion 204). `atk_force_dance` tests 1.225, 1.161 and 1.101 on the player again, then links the player to the Dancer (1.18 `link_start`, joint word 0x4002, flags 1), sets
+  his flag bit 1, plays motion 203 on itself and paired entry 252 on him (1.29: sub-motion `0010`, 116 ticks),
+  queues his motion 0 and waits while motion 203 plays and the link holds. **Gap:** the player-side link
+  (FUN_001beb90: parent at +0x570, mover 3; FUN_00169ee8 breaks it when the parent's +0x160 loses bit 0x8000) is
+  not in the app, so Sora plays the paired motion where he stands instead of being carried by the Dancer; 1.161
+  answers "not linked", which only ends the script's wait earlier (it then waits for motion 203's end anyway).
+- **Reactions** use the default slots (10/12 flinch, 16..19 blow) of its set. **Death.** `dead` (R06bd) drops
+  prize row 25 (1.92), starts element 2 of its effect file (`Kind::death_effect`), sets flags 3 and 6, waits half of
+  +0x20 (15 of 30 frames), fades out over the other half and hides.
+- **Not reached.** Event 13 (`event_begin`: 1.128, motion 4, 1.65) is not delivered by the app; motion 47
+  (`footwork`) is not in its set (the request is logged and ignored).
+
+Also fixed for the Dusks of b_00 / b_21 (WP-7D): when range trigger 16 is on (1.150 bit 1) the Dusk reads word 0
+of its own target record (0x136d -> R0217); the host now serves that record (the player, index 0 [inferred], 0,
+-1, 0), which removes the `BadAddress(0x3000000)` script error those Dusks hit in mode `escape`.
+
+Acceptance run (WP-7D): `KH2_BDXLOG=1 KH2_WAVE_GROUP=b_21 KH2_WAVE_AT_GROUP=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1
+KH2_KEYS="6:Q,<J every 0.45 s from 6.3 to 36 s>" kh2-game tt04`: modes `appear`, `mode_battle`, `btl_attack`,
+`btl_short`, `btl_long`, `move_back`, `move_target`, `mode_revenge`, `rvg_short`, `atk_spin_random`, `atk_spin_d`,
+`atk_kick_call`, `atk_kick`, `atk_force_dance_near`, `atk_force_dance`, `dead`; no script error, no unimplemented
+host call; its spin 440 flinched Sora; the paired motion 252 played on Sora (`player: paired motion started: entry
+252 sub-motion 0010 of Dancer`).
+
+## The fourth enemy: N_EX500_BTL (WP-7D)
+
+`N_EX500_BTL` (object 0x4d7, ObjectType 4, `enemy::N_EX500`; the app calls it by its model, its name is not in the
+data it reads) is the Struggle opponent of b_50 (btl program 0xb6, with a player entry: Sora is put there). Model
+(4 meshes, 3200 triangles, 166 bones, 3 textures), motion set (206 slots, 29 with motions), effect file and BDX
+script (6638 words) are on the disc (`cargo test -p kh2-bdx --test disc n_ex500`). Its family is N_EX570_BTL's (the
+same mode names: `start_voice`, `check_mode`, `reflect_struggle`, `player_finish_struggle`, `gameset_voice_*`).
+
+- **Stats.** Init hands `enmp` row 150 to `set_obj_param` (0x0736): 200 HP at world level 1. It reads no spawn
+  parameter (no host 1.39 call), and sets the lowest HP of part 0 to 1 right after (1.231 at 0x0742): it cannot
+  die in a fight. Distance thresholds 300 / 400 cm (R187e, context +0x30 / +0x34).
+- **Damage (event 6).** A real hit whose effective reaction (host 2.7, the hit record's byte +0x26) is 4, 7, 9 or 11
+  sends `player_finish_struggle` and then goes to `faint` when its HP is 2 or less, else drops prize row 122 (1.92:
+  ten prizes of kind 0 and five of kind 1 in the runs: the Struggle orbs [inferred]); other real hits switch to
+  `mode_revenge`. The app now hands the effective reaction with every hit (`AiHit::reaction`).
+- **Struggle score.** Host 4.29 (FUN_001d6738) reads the score of side 0 or 1 from the manager at DAT_01d5dd20,
+  which an event command creates (FUN_00180b48 -> FUN_001b9338); without it the function answers 0, as it does in
+  the app (the Struggle rules are WP-7E's). The script compares 70 with side 1's value and picks
+  `gameset_voice_win` / `_lose` / `_draw` from the two.
+- **Host table.** 4.29 is not in `kh2_bdx::names`; the app now gives every enemy runtime the executable's host table
+  (`HostTable::from_exe`, as the disc and oracle tests do), so such calls reach the host as `Call::Unknown` instead
+  of stopping the script with `UnknownHost`.
+- **Death.** Its `dead` mode (R0900) is the Dusk's (drop, element 2, flags 3 and 6, fade, hide), so
+  `Kind::death_effect` is true; with the lowest HP at 1 the app never reaches it.
+- **Not reached.** Event 15 (its handler compares host 2.25, the hit's attack id, with 1046..1048) and event 13
+  are not delivered by the app; 4.0 / 4.1 (empty table entries) sit on the 1.32 task path, which was not reached.
+
+Acceptance run (WP-7D): `KH2_BDXLOG=1 KH2_WAVE_GROUP=b_50 KH2_NO_SOUND=1 KH2_NO_MUSIC=1 KH2_KEYS="6:Q,<J every
+0.45 s from 6.3 to 36 s>" kh2-game tt04`: modes `start_voice`, `mode_battle`, `check_mode`, `run_origin`,
+`idle_short`, `idle_fix`, `move_target_near`, `atk_blow_2`, `atk_spin`, `back_step`, `mode_revenge`; no script
+error, no unimplemented host call; Sora's hits flinch and blow it (HP 200 down to 176 in the first eight hits), its
+blow-class hits send `player_finish_struggle` and drop prize row 122.
+
+## The fifth enemy: N_EX600_BTL (WP-7D)
+
+`N_EX600_BTL` (object 0x82f, ObjectType 4, `enemy::N_EX600`, called by its model) is the Struggle opponent of b_52
+(btl program 0xb7, with a player entry). Model (14 meshes, 3135 triangles, 262 bones, 5 textures), motion set
+(208 slots, 34 with motions), effect file and BDX script (7087 words) are on the disc (`cargo test -p kh2-bdx --test
+disc n_ex600`). Same family as N_EX500_BTL: no spawn parameter, lowest HP 1 (1.231 at 0x0809), 4.29 for the score,
+the same event 6 rule (effective reaction 4, 7, 9 or 11: `player_finish_struggle`, then `faint` at HP 2 or less,
+else prize row 132), plus two branches of that handler that switch to `atk_air_counter`.
+
+- **Stats.** `enmp` row 158 (0x07fd): 100 HP at world level 1. Distance thresholds 350 / 450 cm (R1a39).
+- **Host 1.95** (0x173038 -> FUN_00183470), new: mover 1 continuing the object's last real movement (+0x860, host
+  1.62): its horizontal part as the velocity, its vertical speed vy giving the apex time vy / g and the apex height
+  (g = DAT_0037a884 = 20/49 per tick squared, the factor 0.5 at DAT_0037a888). Called by the second routine of
+  `atk_air_counter` (R13e7), which then plays motion 4 when motion 202 was playing. The app starts its `Motor` jump to
+  the same apex (rising) or a fall already that fast (falling) with the horizontal speed kept; approx: the eased
+  rise of `Motor` is not the game's parabola. 1.95 is not in `kh2_bdx::names`: it arrives undecoded and is taken as
+  the object's own (its only caller passes its own context).
+- **Death.** `dead` (R09c8) is the Dusk's: `Kind::death_effect` true, not reached with the lowest HP at 1.
+
+Acceptance run (WP-7D): `KH2_BDXLOG=1 KH2_WAVE_GROUP=b_52 KH2_NO_SOUND=1 KH2_NO_MUSIC=1 KH2_KEYS="6:Q,<J every
+0.45 s from 6.3 to 36 s>" kh2-game tt04`: modes `start_voice`, `mode_battle`, `check_mode`, `btl_attack`,
+`btl_long`, `footwork`, `footwork_not_voice`, `move_target_near`, `atk_swing_side`, `atk_combo_thrust`, `atk_guard`,
+`atk_air_counter`, `land_check`, `back_step`, `mode_revenge`; no script error, no unimplemented host call (1.95
+reached twice, `first host call 1.95 ? [Approx]`); its blow 168 knocked Sora down (reaction 4).
+
+Not done for the three (WP-7D): the Struggle rules (WP-7E), enemy voice lines (1.262 stays a stub), event 13 and
+event 15. `docs/hit-reaction.md`: all three use the default reaction slots of their sets.

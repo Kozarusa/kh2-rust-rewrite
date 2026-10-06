@@ -55,6 +55,8 @@ const SUMMARY_EVERY: u64 = 900;
 pub struct AiHit {
     pub target: Entity,
     pub real: bool,
+    /// The effective reaction (the hit record's byte +0x26, host 2.7).
+    pub reaction: u8,
 }
 
 struct Script {
@@ -73,6 +75,9 @@ struct AiPrograms {
     player_model: u8,
     /// The prize table `przt` of `00battle.bin` (drops, host 1.92).
     prizes: Vec<PrizeRow>,
+    /// The host function table of the executable (0x35bce8): argument counts and result flags of the
+    /// functions `kh2_bdx::names` does not carry (the Struggle opponents call 4.29, for example).
+    table: Option<kh2_bdx::HostTable>,
 }
 
 /// The global message queue of host 1.90 / 1.241 (64 entries at 0x1c89738, FUN_00187170) and the
@@ -273,6 +278,10 @@ fn load_programs(disc: Res<Disc>, mut programs: ResMut<AiPrograms>) {
     if programs.prizes.is_empty() {
         warn!("bdx: 00battle.bin przt not readable; drops are not computed");
     }
+    programs.table = disc.read_root("SLUS_210.05").and_then(|exe| kh2_bdx::HostTable::from_exe(&exe));
+    if programs.table.is_none() {
+        warn!("bdx: the host table of SLUS_210.05 is not readable; calls to functions kh2_bdx does not name stop their script");
+    }
     for (kind, model) in entries {
         let paired = disc.read(&format!("obj/{model}.mset")).map(|m| paired_motions(&m)).unwrap_or_default();
         let Some(file) = disc.read(&format!("obj/{model}.mdlx")) else { continue };
@@ -321,6 +330,9 @@ fn ai_attach(mut commands: Commands, programs: Res<AiPrograms>, q: Query<(Entity
         let Some(script) = programs.by_kind.get(e.kind.name) else { continue };
         *serial += 1;
         let mut rt = Runtime::new(script.prog.clone());
+        if let Some(t) = &programs.table {
+            rt.set_host_table(t.clone());
+        }
         rt.shared.rng = 0x9E37_79B9u32 ^ serial.wrapping_mul(0x85EB_CA6B);
         rt.core.mode_log = Some(Vec::new());
         commands.entity(ent).insert(AiBrain {
@@ -365,9 +377,9 @@ fn ai_update(
     if trace.tick.is_multiple_of(SUMMARY_EVERY) {
         trace.summary();
     }
-    let mut hits: HashMap<Entity, Vec<bool>> = HashMap::new();
+    let mut hits: HashMap<Entity, Vec<(bool, u8)>> = HashMap::new();
     for h in hit_msgs.read() {
-        hits.entry(h.target).or_default().push(h.real);
+        hits.entry(h.target).or_default().push((h.real, h.reaction));
     }
     let mut reactions: HashMap<Entity, Vec<(u16, i16)>> = HashMap::new();
     for r in accepted.read() {
@@ -437,11 +449,11 @@ fn ai_update(
             host.trace.line(host.tag, "hp 0: switching to mode dead");
             rt.set_mode_named(&mut host, "dead");
         }
-        for real in hits.remove(&ent).unwrap_or_default() {
+        for (real, reaction) in hits.remove(&ent).unwrap_or_default() {
             host.obj.next_hit += 1;
             let h = HIT + host.obj.next_hit;
-            host.obj.hits.insert(h, real);
-            host.trace.line(host.tag, &format!("event 6: hit, real {real}"));
+            host.obj.hits.insert(h, (real, reaction));
+            host.trace.line(host.tag, &format!("event 6: hit, real {real}, reaction {reaction}"));
             rt.event(&mut host, 6, &[h]);
         }
         // An accepted reaction command: event 0xb with (player, command id, target record), the call
@@ -523,8 +535,8 @@ fn ai_update(
             let dist = (obj.motor.pos - player).with_y(0.0).length();
             trace.line(tag, &format!("status: mode {mode} slot {:?} distance {dist:.0} cm hp {} grounded {}", obj.slot, e.hp, obj.motor.grounded));
         }
-        for (_, err) in &rt.core.errors[*errors_seen..] {
-            warn!("bdx {tag}: script error {err:?}");
+        for (pc, err) in &rt.core.errors[*errors_seen..] {
+            warn!("bdx {tag}: script error {err:?} at {pc:#06x}");
         }
         *errors_seen = rt.core.errors.len();
 

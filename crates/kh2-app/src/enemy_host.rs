@@ -97,6 +97,15 @@ pub fn compute_drop(row: &PrizeRow, orb: f32, item: f32, seed: &mut u32) -> Drop
     Drop { row: row.id, prizes, items }
 }
 
+/// The bytes of the object's own target record (host 2.23, `TARGET`): the player, position index 0
+/// [inferred], 0, -1, 0 (the layout of FUN_0018ed40 + FUN_0018f490).
+pub(crate) fn target_record() -> [u8; 20] {
+    let mut r = [0u8; 20];
+    r[0..4].copy_from_slice(&PLAYER.to_le_bytes());
+    r[12..16].copy_from_slice(&(-1i32).to_le_bytes());
+    r
+}
+
 /// Classification of a host call, for the trace and the summary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum St {
@@ -684,8 +693,57 @@ impl BevyHost<'_> {
                 }
                 stub(Value::None, "word +0xabc stored; bits 1 and 12 have no reader in the executable that was found")
             }
+            // 1.95 (0x173038 -> FUN_00183470): mover 1 (the jump mover, FUN_0016b698(obj, 1)) continuing the
+            // last tick's real movement (+0x860, see 1.62): its horizontal part is the velocity (+0x20), its
+            // vertical speed vy gives the apex time vy / g (+0xd0) and height y - (vy / g)^2 * g * 0.5 (+0xd8;
+            // g = DAT_0037a884 = 20/49, 0.5 = DAT_0037a888). N_EX600_BTL's atk_air_counter hook (R13e7). Not
+            // in `kh2_bdx::names`, it arrives undecoded with the raw context word; the only caller passes
+            // its own context, so it is taken as this object.
+            Call::Unknown { group: 1, index: 95, .. } | Call::Func { group: 1, index: 95, .. } => {
+                let v = self.obj.moved;
+                let h = v.y * v.y / (2.0 * crate::motor::G);
+                self.obj.dash = None;
+                self.obj.air_vel = Vec3::new(v.x, 0.0, v.z);
+                if v.y > 0.0 {
+                    self.obj.motor.start_jump(h);
+                } else {
+                    self.obj.motor.start_fall();
+                    self.obj.motor.jump = crate::motor::Jump::fall(h, self.obj.motor.pos.y);
+                }
+                approx(Value::None, "the parabola of mover 1 is the app's Motor jump (eased rise to the same apex); the fall-motion follow-ups are not set")
+            }
+            // 1.54 bits_47c_480_clear (0x172910 -> FUN_0019dde0): bit n cleared in the bit arrays at object
+            // +0x47c and +0x480 (set by 1.52 / 1.53, which none of the app's scripts call). No reader of
+            // either array was traced. N_EX500_BTL clears bit 2 (R1447).
+            Call::Func { group: 1, index: 54, args } if args[0].int() as u32 == me => {
+                stub(Value::None, "bit arrays +0x47c / +0x480: nothing in the app sets or reads them")
+            }
             // 1.132: the target record returns to a pool; the app's records are never reused.
             Call::Func { group: 1, index: 132, .. } => stub(Value::None, "target records are not pooled"),
+            // The Dancer's (M_EX930) force dance asks these of the player before it grabs him (BDX R0a48,
+            // R0b0a). 1.101 (0x1716d0): bit 0x4000 of the player's +0x160 (the same test as FUN_00179538);
+            // its writer was not found (the word is written through the motion controller's base).
+            Call::Func { group: 1, index: 101, args } if args[0].int() as u32 == PLAYER => {
+                approx(Value::Bool(false), "bit 0x4000 of the player's +0x160: writer not found, read clear")
+            }
+            // 1.225 (FUN_001708f8): 0 unless bit 2 of the player's +0x588 is set, then the result of his
+            // mover's (+4) virtual method +0x60. The bit's writer was not traced.
+            Call::Func { group: 1, index: 225, args } if args[0].int() as u32 == PLAYER => {
+                approx(Value::Int(0), "bit 2 of the player's +0x588: writer not traced, read clear (the mover is not asked)")
+            }
+            // 1.161 (FUN_001706c8 -> FUN_001beb00): the player's link (+0x570) is set. Links are not in the
+            // app (1.18 below is not carried out), so the player is never linked.
+            Call::Func { group: 1, index: 161, args } if args[0].int() as u32 == PLAYER => {
+                approx(Value::Bool(false), "the app has no object links (1.18 is not carried out): the player is never linked")
+            }
+            // 1.18 link_start (0x170dd8 -> FUN_001beb90): the first object (the player) gets the second as
+            // its parent (+0x570), the two halfwords (+0x574: 0x4002, +0x576: 1), its facing (+0x550) cleared
+            // and 8 or-ed into +0x7f8 (when bit 1 of the flags is clear), mover 3; FUN_00169ee8 breaks the link when bit 0 of
+            // +0x576 is set and the parent's +0x160 loses bit 0x8000. The player side has no link mover.
+            Call::Func { group: 1, index: 18, args } if args[0].int() as u32 == PLAYER => stub(
+                Value::None,
+                "the player-side link (FUN_001beb90: parent +0x570, mover 3) is not in the app: Sora is not attached to the Dancer during its force dance",
+            ),
             _ => missing(Value::Int(0), "function not mapped"),
         }
     }
@@ -696,7 +754,7 @@ impl BevyHost<'_> {
             Call::Target { .. } => imp(Value::Handle(TARGET)),
             Call::LastAttacker { .. } => imp(Value::Handle(PLAYER)),
             Call::HitStun { .. } => approx(Value::Bool(self.obj.reacting), "the game's flags (+0x160) are read as 'a hit reaction plays'"),
-            Call::HitIsReal { hit } => imp(Value::Bool(self.obj.hits.get(hit).copied().unwrap_or(true))),
+            Call::HitIsReal { hit } => imp(Value::Bool(self.obj.hits.get(hit).is_none_or(|h| h.0))),
             // FUN_001b2148 builds the status block from `enmp` row `a`; the app built it at spawn from
             // the kind's row and rebuilds it (full HP) when the script asks for another one.
             Call::SetObjParam { a, .. } => {
@@ -710,6 +768,12 @@ impl BevyHost<'_> {
             // found (FUN_001769e0, FUN_0022e0a0, ...) read it as a byte or an int of other object
             // classes; no reader for this one was found.
             Call::Func { group: 2, index: 76, .. } => stub(Value::None, "float at +0xaf4: no reader found"),
+            // 2.7 hit_reaction (0x18e0d0): byte +0x26 of the hit record, the effective reaction; the app's
+            // is `reaction_rules::victim_outcome`'s, the same byte 2.8 classifies.
+            Call::Func { group: 2, index: 7, args } => match self.obj.hits.get(&(args[0].int() as u32)) {
+                Some(&(_, r)) => imp(Value::Int(r as i32)),
+                None => missing(Value::Int(0), "hit_reaction of a handle that is not one of this object's hit records"),
+            },
             _ => missing(Value::Int(0), "function not mapped"),
         }
     }
@@ -721,6 +785,14 @@ impl BevyHost<'_> {
             Call::ModeInterrupted { .. } => approx(Value::Bool(self.obj.reacting), "FUN_00186b70: the object is in a hit reaction"),
             Call::ModeMayStart { .. } => approx(Value::Bool(!self.obj.reacting), "FUN_001873d0: the object is not in hit stun"),
             Call::RemoteSetMode { .. } => missing(Value::None, "a mode queued for another object (host 6.58): not wired"),
+            // 4.29 (FUN_0019ebd0 -> FUN_001d6738(i)): 0 unless the manager at DAT_01d5dd20 exists (set by
+            // FUN_001b9338, which the event command FUN_00180b48 runs), then word +0x114 of its entry i
+            // (0x38 bytes from +0xf4, used when bit 0 of the entry's first word is set). The Struggle
+            // opponents compare entries 0 and 1 (the two sides' score [inferred from gameset_voice_win /
+            // _lose / _draw]). The app has no such manager (the Struggle rules are WP-7E's): 0.
+            Call::Unknown { group: 4, index: 29, .. } | Call::Func { group: 4, index: 29, .. } => {
+                approx(Value::Int(0), "the manager DAT_01d5dd20 (Struggle) does not exist in the app: FUN_001d6738 answers 0 without it")
+            }
             _ => missing(Value::Int(0), "function not mapped"),
         }
     }
@@ -749,6 +821,15 @@ impl Host for BevyHost<'_> {
             }
         }
         if self.obj.volume_word(addr, out) {
+            return true;
+        }
+        // The object's own target record (host 2.23: object +0x9f4), laid out like the records of
+        // event 11 (FUN_0018ed40 + FUN_0018f490: object, position index, 0, -1, 0). Its object is the
+        // player; the position index is taken as 0 [inferred: the app has no lock-on parts]. The
+        // Dusk's 0x136d reads word 0 when range trigger 16 is on (host 1.150 bit 1).
+        let t = addr.wrapping_sub(TARGET) as usize;
+        if t + out.len() <= 20 {
+            out.copy_from_slice(&target_record()[t..t + out.len()]);
             return true;
         }
         // The first 16 bytes of the player object: the Soldier's reaction thread copies them into its
@@ -792,6 +873,14 @@ mod tests {
         assert!((game_wrap_angle(-3.0 * pi / 2.0) - pi / 2.0).abs() < 1e-5);
         assert!((game_wrap_angle(0.5) - 0.5).abs() < 1e-6);
         assert!((game_wrap_angle(-0.5) + 0.5).abs() < 1e-6);
+    }
+
+    /// The Dusk reads word 0 of its target record (BDX `M_EX990` 0x136d -> R0217 at 0x021b): the player.
+    #[test]
+    fn the_own_target_record_names_the_player() {
+        let r = target_record();
+        assert_eq!(u32::from_le_bytes(r[0..4].try_into().unwrap()), PLAYER);
+        assert_eq!(i32::from_le_bytes(r[12..16].try_into().unwrap()), -1);
     }
 
     fn row(id: u16, counts: [u8; 9], items: [(u16, u16); 3]) -> Vec<u8> {

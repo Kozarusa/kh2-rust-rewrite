@@ -1115,3 +1115,138 @@ fn shape_draw_texture_coordinates_match_the_game() {
     }
     assert_eq!(checked, 6);
 }
+// ---- weapon trail (pppRyjDrawShipolyBone: FUN_00200a20 -> FUN_002002f8) -----------------------------
+
+const TRAIL_MODTAB: u32 = 0x01f0_7000;
+const TRAIL_OMD: u32 = 0x01f0_7100;
+const TRAIL_VBUF: u32 = 0x01f0_9000;
+const TRAIL_POINTS: u32 = 0x01f0_9800;
+const TRAIL_RING: u32 = 0x01f0_a000;
+
+fn hook_trail_ring(ee: &mut Ee) {
+    ee.gpr[reg::V0] = TRAIL_RING as u128;
+}
+
+/// A raw DPD model (0x10 header, then the OMD) of `segs` type-6 quads, as the trail uses it.
+fn raw_trail_model(segs: usize) -> Vec<u8> {
+    let mut b = vec![0u8; 0x40 + 0x28 * segs + 0x20];
+    let omd = 0x10;
+    b[omd + 4..omd + 8].copy_from_slice(&0x20u32.to_le_bytes());
+    b[omd + 0x10..omd + 0x12].copy_from_slice(&(segs as i16).to_le_bytes());
+    b[omd + 0x12..omd + 0x14].copy_from_slice(&((2 * segs + 2) as i16).to_le_bytes());
+    b[omd + 0x16] = 0x48;
+    let blk = omd + 0x20;
+    b[blk + 1] = 6;
+    b[blk + 2..blk + 4].copy_from_slice(&(segs as i16).to_le_bytes());
+    for i in 0..segs {
+        let q = blk + 0x10 + 0x28 * i;
+        // File values that the game overwrites (colors 0x40, uvs 0x123).
+        for k in 0..16 {
+            b[q + k] = 0x40;
+        }
+        for k in 0..8 {
+            b[q + 0x18 + 2 * k..q + 0x1a + 2 * k].copy_from_slice(&0x123u16.to_le_bytes());
+        }
+    }
+    b[blk + 0x10 + 0x28 * segs + 1] = 0xff;
+    b
+}
+
+/// The weapon trail against the game's FUN_00200a20 (called at the start of the draw handler
+/// 0x200d58), which allocates and fills the ring, resets the model's colors and indices and runs
+/// FUN_002002f8: the spline through the ring, the narrowing (entry +0xf), the stationary tail count,
+/// the alphas and texture coordinates of the first pass, and the ring head. Over more ticks than the
+/// ring holds, so the values kept after the first pass are compared too; the first ticks hold the
+/// points still. Every vertex, alpha byte and texture coordinate is compared.
+fn trail_check(n: u8, segs: usize, taper: u8, divs: [u8; 3]) {
+    let Some(elf) = exe() else { return };
+    let mut ee = Ee::new();
+    ee.load_elf(&elf).expect("elf");
+    let raw = raw_trail_model(segs);
+    let dpd = Dpd { particles: vec![], textures: vec![], shapes: vec![], models: vec![crate::omd::Model::parse(&raw)], vsfs: vec![] };
+    ee.w32(0x1db0e20, ZERO);
+    ee.w32(0x1db0e24, RES);
+    ee.w32(0x1db11dc, 0);
+    ee.w32(RES + 0x10, TRAIL_MODTAB);
+    ee.write(TRAIL_MODTAB, &[0; 0x24]);
+    ee.w32(TRAIL_MODTAB, (2 * segs + 2) as u32);
+    ee.w32(TRAIL_MODTAB + 8, segs as u32);
+    ee.w32(TRAIL_MODTAB + 0x14, TRAIL_VBUF);
+    ee.w32(TRAIL_MODTAB + 0x1c, TRAIL_OMD);
+    ee.write(TRAIL_OMD, &raw[0x10..]);
+    ee.w32(0x3625a0, TRAIL_POINTS);
+    ee.w32(0x3625a4, 1);
+    ee.hooks.insert(0x1e4cb0, hook_trail_ring);
+    let mut params = vec![0u8; 0x18];
+    params[0xd] = 0;
+    params[0xe] = n;
+    params[0xf] = taper;
+    params[0x10..0x13].copy_from_slice(&divs);
+    params[0x14..0x18].copy_from_slice(&0xffff_f000u32.to_le_bytes());
+    let p = Program { kind: 200, param_size: 0x14, params, use_val: vec![0x20, 0x40] };
+    put_program(&mut ee, &p);
+    let mut obj = Obj { group: 0, mem: vec![0; OBJ_SIZE], cursors: vec![0], fresh: false, restart: false, parent: None, ring: Vec::new(), trail_prims: Vec::new(), heap: Vec::new(), seed: 0 };
+    let c = OBJ_WORK + 0x20 + 8;
+    obj.mem[c..c + 4].copy_from_slice(&[0x80; 4]);
+    crate::prog::trail_init(&mut obj, &p);
+    sync_obj(&mut ee, &obj);
+    ee.call(0x200fd8, &[OBJ as u64, PROG as u64], &[], STACK).unwrap_or_else(|f| panic!("init: {f:?}"));
+    let mut rng = 0u32;
+    let mut compared = 0;
+    for tick in 0..(3 * n as usize + 4) {
+        // Held still for three ticks, then a swing: the base turns slowly, the tip sweeps an arc.
+        let t = tick.saturating_sub(3) as f32;
+        let a = Vec3::new(10.0 + t * 1.5, -100.0 + (t * 0.3).sin() * 8.0, 20.0 - t);
+        let b = a + Vec3::new((t * 0.45).cos() * 90.0, -60.0 + (t * 0.45).sin() * 70.0, (t * 0.2).sin() * 30.0);
+        for (k, v) in [a, b].iter().enumerate() {
+            let at = TRAIL_POINTS + 16 * k as u32;
+            ee.wf32(at, v.x);
+            ee.wf32(at + 4, v.y);
+            ee.wf32(at + 8, v.z);
+            ee.wf32(at + 12, 1.0);
+        }
+        ee.call(0x200a20, &[OBJ as u64, ENTRY as u64, PROG as u64], &[], STACK).unwrap_or_else(|f| panic!("tick {tick}: FUN_00200a20: {f:?}"));
+        let env = Env { two_point: Some([a, b]), ..Default::default() };
+        let (mut draws, mut spawns) = (Vec::new(), Vec::new());
+        {
+            let mut ctx = Ctx { env: &env, dpd: &dpd, dpd_index: 0, draws: &mut draws, rng: &mut rng, running: true, fast_forward: false, obj_id: 0, prog_index: 0, parent_local: None, spawns: &mut spawns };
+            crate::prog::trail_draw(&mut ctx, &mut obj, &p, 0);
+        }
+        let w1 = OBJ_WORK + 0x40;
+        assert_eq!(ee.r32(OBJ + w1 as u32), obj.i32(w1) as u32, "tick {tick}: ring head");
+        assert_eq!(ee.r8(OBJ + w1 as u32 + 5), obj.mem[w1 + 5], "tick {tick}: first-pass flag");
+        assert_eq!(draws.len(), 1, "tick {tick}: one batch");
+        let verts = &draws[0].verts;
+        for i in 0..segs {
+            let q = TRAIL_OMD + 0x20 + 0x10 + 0x28 * i as u32;
+            for k in 0..4 {
+                let v = verts[4 * i + k];
+                // Corner k of quad i is vertex 2i + k.
+                let vi = (2 * i + k) as u32;
+                let g = [ee.r16(TRAIL_VBUF + 6 * vi) as i16, ee.r16(TRAIL_VBUF + 6 * vi + 2) as i16, ee.r16(TRAIL_VBUF + 6 * vi + 4) as i16];
+                let port = v.pos - a;
+                assert!(
+                    (port.x - g[0] as f32).abs() < 0.01 && (port.y - g[1] as f32).abs() < 0.01 && (port.z - g[2] as f32).abs() < 0.01,
+                    "tick {tick} vertex {vi}: game {g:?} port {port:?}"
+                );
+                let alpha = ee.r8(q + 4 * k as u32 + 3);
+                assert_eq!((v.color.w * 128.0).round() as u8, alpha, "tick {tick} prim {i} corner {k}: alpha");
+                assert_eq!(v.color.x * 128.0, 255.0, "tick {tick} prim {i} corner {k}: red");
+                let (gu, gv) = (ee.r16(q + 0x18 + 4 * k as u32), ee.r16(q + 0x1a + 4 * k as u32));
+                assert_eq!(v.uv, [(gu & 0xfff) as f32 / 4096.0, (gv & 0xfff) as f32 / 4096.0], "tick {tick} prim {i} corner {k}: uv");
+                compared += 1;
+            }
+        }
+    }
+    eprintln!("trail (ring {n}, {segs} segments, taper {taper}, divisions {divs:?}): {compared} corners match the game");
+}
+
+#[test]
+fn trail_matches_the_game() {
+    trail_check(8, 16, 0, [0, 0, 0]);
+}
+
+#[test]
+fn trail_narrowing_matches_the_game() {
+    trail_check(6, 10, 1, [1, 2, 1]);
+}

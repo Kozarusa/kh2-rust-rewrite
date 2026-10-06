@@ -307,7 +307,7 @@ fn draw_matrix_front(ctx: &mut Ctx, obj: &mut Obj, _: &Program, _: usize) {
 
 /// Trail state in work memory at useVal[1]: ring head (u32 at +0), ring size (u8 at +4),
 /// "first pass" flag (u8 at +5, set until the ring wraps once). The ring itself is in `obj.ring`.
-fn trail_init(obj: &mut Obj, p: &Program) {
+pub(crate) fn trail_init(obj: &mut Obj, p: &Program) {
     let o = work(p, 1);
     obj.set_i32(o, 0);
     obj.set_i32(o + 8, 0);
@@ -317,37 +317,51 @@ fn trail_init(obj: &mut Obj, p: &Program) {
     obj.trail_prims.clear();
 }
 
-/// Natural cubic spline second derivatives for unit-spaced knots.
+/// Natural cubic spline through unit-spaced knots, as FUN_00200000 solves it: the second
+/// derivatives over 6 (`m`), from `m[i-1] + 4 m[i] + m[i+1] = d[i] - d[i-1]` with `d[i] = p[i+1] - p[i]`
+/// and `m[0] = m[n-1] = 0`, by forward elimination (`c[0] = 4`, `c[i] = 4 - 1 / c[i-1]`) and back
+/// substitution, in the game's order of operations.
 fn spline(p: &[Vec3]) -> Vec<Vec3> {
     let n = p.len();
     let mut m = vec![Vec3::ZERO; n];
     if n < 3 {
         return m;
     }
-    // Tridiagonal system m[i-1] + 4 m[i] + m[i+1] = 6 (p[i+1] - 2 p[i] + p[i-1]), m[0] = m[n-1] = 0.
+    let d: Vec<Vec3> = (0..n - 1).map(|i| p[i + 1] - p[i]).collect();
     let mut c = vec![0f32; n];
-    let mut d = vec![Vec3::ZERO; n];
-    for i in 1..n - 1 {
-        let rhs = (p[i + 1] - 2.0 * p[i] + p[i - 1]) * 6.0;
-        let denom = 4.0 - c[i - 1];
-        c[i] = 1.0 / denom;
-        d[i] = (rhs - d[i - 1]) / denom;
+    m[1] = d[1] - d[0] - m[0];
+    c[0] = 4.0;
+    for i in 1..n - 2 {
+        let r = 1.0 / c[i - 1];
+        m[i + 1] = (d[i + 1] - d[i]) - m[i] * r;
+        c[i] = r * -1.0 + 4.0;
     }
+    let last = m[n - 1];
+    m[n - 2] -= last;
     for i in (1..n - 1).rev() {
-        m[i] = d[i] - c[i] * m[i + 1];
+        m[i] = (m[i] - m[i + 1]) / c[i - 1];
     }
     m
 }
 
+/// FUN_002001b8: the spline at `t` (knot `t as usize`, fraction `t - knot`), in the game's
+/// Horner order. At the last knot the fraction is 0 and the knot itself comes back.
 fn spline_at(p: &[Vec3], m: &[Vec3], t: f32) -> Vec3 {
-    let i = (t as usize).min(p.len().saturating_sub(2));
-    let u = t - i as f32;
-    let (a, b) = (p[i], p[i + 1]);
-    let (ma, mb) = (m[i], m[i + 1]);
-    a + u * (b - a - (2.0 * ma + mb) / 6.0) + u * u * (ma / 2.0) + u * u * u * ((mb - ma) / 6.0)
+    let i = t as usize;
+    let f = t - i as f32;
+    if i + 1 >= p.len() {
+        return p[p.len() - 1];
+    }
+    let (p0, p1, m0, m1) = (p[i], p[i + 1], m[i], m[i + 1]);
+    let e = m1 - m0;
+    let s = m0 * 2.0 + m1;
+    let g = (p1 - p0) - s;
+    let h = e * f + m0 * 3.0;
+    let h = h * f + g;
+    h * f + p0
 }
 
-fn trail_draw(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
+pub(crate) fn trail_draw(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
     let Some(points) = ctx.env.two_point else { return };
     let model_no = i32_at(&p.params, e + 4);
     if model_no == 0xffff {

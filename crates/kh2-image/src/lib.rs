@@ -5,6 +5,7 @@
 
 pub mod font;
 pub mod imgd;
+pub mod layd;
 pub mod seqd;
 pub mod text;
 pub mod window;

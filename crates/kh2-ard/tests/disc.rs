@@ -161,6 +161,15 @@ fn twilight_town_groups_exits_and_events() {
     for (area, ard) in &tt_areas(&mut a) {
         let others: Vec<String> = ard.entries.iter().filter(|(_, k, _)| !matches!(*k, kh2_ard::SCRIPT_KIND | kh2_ard::SPAWN_KIND)).map(|(t, k, n)| format!("{t}:{k:#x}:{n}")).collect();
         eprintln!("{area}: other entries {others:?}");
+        // The exits: groups with activators whose header names an area (+0x1c) and entrance (+0x1d).
+        let exits: Vec<String> = ard
+            .spawns
+            .iter()
+            .flat_map(|(tag, gs)| gs.iter().map(move |g| (tag, g)))
+            .filter(|(_, g)| g.kind & 0xff == 1 && !g.activators.is_empty())
+            .map(|(tag, g)| format!("{tag} -> tt{:02} entrance {} (+0x1e {}) options {:?}", g.header[0x1c], g.header[0x1d], g.header[0x1e], g.activators.iter().map(|v| v.option).collect::<Vec<_>>()))
+            .collect();
+        eprintln!("{area} exits: {exits:?}");
         for (tag, groups) in &ard.spawns {
             for g in groups {
                 *kinds.entry(g.kind).or_default() += 1;

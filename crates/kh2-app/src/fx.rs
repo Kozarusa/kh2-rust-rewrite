@@ -297,6 +297,7 @@ impl Plugin for FxPlugin {
                         fx_kill,
                         game_effects,
                         fx_test,
+                        fx_count,
                     )
                         .chain()
                         .in_set(Sim::Effects),
@@ -1114,6 +1115,21 @@ fn build_mesh(b: &Batch) -> Mesh {
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, off.iter().map(|o| [o[2], b.depth_scale]).collect::<Vec<_>>());
     }
     mesh
+}
+
+/// `KH2_FXCOUNT=1`: once a second, how many effects are running (and which ids), to see leftovers.
+pub fn fx_count(time: Res<Time>, effects: Query<&RunningEffect>, mut last: Local<u32>) {
+    if std::env::var_os("KH2_FXCOUNT").is_none() {
+        return;
+    }
+    let sec = time.elapsed_secs() as u32;
+    if sec == *last {
+        return;
+    }
+    *last = sec;
+    let mut ids: Vec<u16> = effects.iter().map(|r| r.game_id).collect();
+    ids.sort_unstable();
+    info!("fx count: t={sec}s running effects {} ids {ids:?}", ids.len());
 }
 
 /// `KH2_FXTEST=<id>`: starts system effect `id` 1.2 m in front of Sora at chest height once a second

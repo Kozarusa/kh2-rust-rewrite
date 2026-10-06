@@ -374,6 +374,7 @@ fn receive_clashes(
     mut sparks: MessageWriter<StartSystemEffect>,
     time: Res<Time>,
     mut forced: Local<Option<f32>>,
+    mut spark_times: Local<Option<Vec<f32>>>,
 ) {
     let Ok((me, mut s, mut fighter)) = sora_q.single_mut() else { return };
     let Some(reaction) = reaction else { return };
@@ -406,6 +407,21 @@ fn receive_clashes(
         let place = globals.get(me).map(|g| g.translation()).unwrap_or_default() + s.motor.forward() * (20.0 * SCALE) + Vec3::Y * (100.0 * SCALE);
         sparks.write(StartSystemEffect { id: spark, at: Mat4::from_translation(place) });
         info!("player: clash (forced by KH2_CLASH_FORCE_GUARD): own RefactSelf Guard against RefactOther Reflect, {actor:?}: {outcome:?}; system effect {spark:#x} (started at {place:.3?})");
+    }
+    // Harness: `KH2_CLASH_FORCE_SPARK=<s>,<s>,..` starts the spark-only clash spark (system effect 0xd,
+    // `RefactSelf` 2) at each of those times, at the same place as the guard-bounce hook, with no
+    // other effect on Sora. Not the original's behaviour: a stand-in for clashes that happen by chance
+    // (see docs/hit-reaction.md "Lifetime of the clash spark").
+    let due = spark_times.get_or_insert_with(|| {
+        let mut v: Vec<f32> = std::env::var("KH2_CLASH_FORCE_SPARK").ok().map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect()).unwrap_or_default();
+        v.sort_by(f32::total_cmp);
+        v
+    });
+    while due.first().is_some_and(|t| time.elapsed_secs() >= *t) {
+        let t = due.remove(0);
+        let place = globals.get(me).map(|g| g.translation()).unwrap_or_default() + s.motor.forward() * (20.0 * SCALE) + Vec3::Y * (100.0 * SCALE);
+        sparks.write(StartSystemEffect { id: 0xd, at: Mat4::from_translation(place) });
+        info!("player: clash spark forced by KH2_CLASH_FORCE_SPARK={t}: system effect 0xd at {place:.3?}");
     }
     for k in clashes.read().filter(|k| k.player == me) {
         let (Some(own), Some(other)) = (data.atkp(k.player_atkp), data.atkp(k.enemy_atkp)) else { continue };

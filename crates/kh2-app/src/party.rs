@@ -168,16 +168,22 @@ pub struct PartyMember {
     speed: f32,
 }
 
-/// The rows of the area's `map` script that place `FRIEND_1` / `FRIEND_2`: (objentry id, group,
-/// position in game units in the app's axes, app yaw, entrance byte +0x1d).
+/// The player's objentry id in spawn records (`PLAYER`, FUN_0016e208).
+const PLAYER_ENTITY: u32 = 0x236;
+
+/// The rows of the area's `map` script that place `FRIEND_1` / `FRIEND_2` (and the player's row of
+/// the first friend's group): (objentry id, group, position in game units in the app's axes, app
+/// yaw, entrance byte +0x1d), in script order, the first row of each object.
 fn friend_records(disc: &Disc, area: &str) -> Vec<(u32, String, Vec3, f32, u8)> {
     let Some(file) = disc.read(&format!("ard/{area}.ard")) else { return Vec::new() };
     let Some((ard, _)) = kh2_ard::Area::parse(&file) else { return Vec::new() };
     let mut out: Vec<(u32, String, Vec3, f32, u8)> = Vec::new();
     for p in ard.scripts.get("map").into_iter().flatten() {
         for name in p.spawns() {
+            let friends_here = ard.spawns.get(&name).into_iter().flatten().flat_map(|g| &g.entities).any(|e| e.object == rules::FRIEND_1 || e.object == rules::FRIEND_2);
             for e in ard.spawns.get(&name).into_iter().flatten().flat_map(|g| &g.entities) {
-                if (e.object == rules::FRIEND_1 || e.object == rules::FRIEND_2) && !out.iter().any(|r| r.0 == e.object) {
+                let wanted = e.object == rules::FRIEND_1 || e.object == rules::FRIEND_2 || (e.object == PLAYER_ENTITY && friends_here);
+                if wanted && !out.iter().any(|r| r.0 == e.object) {
                     let [x, y, z] = e.position;
                     out.push((e.object, name.clone(), Vec3::new(x, -y, -z), std::f32::consts::PI - e.rotation[1], e.raw[0x1d]));
                 }
@@ -200,6 +206,7 @@ fn spawn_party(
     world: Option<Res<World>>,
     drive_world: Option<Res<crate::drive::DriveWorld>>,
     (mut data, mut slots, mut mgr): (ResMut<PartyData>, ResMut<PartySlots>, ResMut<Manager>),
+    mut sora: Query<(&mut Transform, &mut Sora), Without<PartyMember>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
@@ -230,9 +237,21 @@ fn spawn_party(
     let merged = crate::drive::rules::memt_merge(&memt, world_id, |_| false);
     info!("party: {name} world {world_id} slot bytes {:02x?} (preset {}), warp mode {}", slots.bytes, rules::DEFAULT_PRESET, mgr.warp_mode);
     let Some(consts) = data.consts.clone() else { return };
-    let records = friend_records(&disc, &name);
+    let (player_rec, records): (Vec<_>, Vec<_>) = friend_records(&disc, &name).into_iter().partition(|r| r.0 == PLAYER_ENTITY);
     if records.is_empty() {
         info!("party: {name}: the map script places no FRIEND_1 / FRIEND_2");
+    }
+    // Harness: `KH2_PARTY_AT_RECORD=1` puts Sora at the player's row of the friends' group (the app
+    // starts him at its own spawn point; the game places the player at his row, docs/events.md). A
+    // test aid, not the game's rule.
+    if std::env::var("KH2_PARTY_AT_RECORD").is_ok_and(|v| v == "1")
+        && let (Some(r), Ok((mut tf, mut s))) = (player_rec.first(), sora.single_mut())
+    {
+        let at = r.2.with_y(w.ground(r.2, r.2.y + 100.0, 400.0).map_or(r.2.y, |g| g.y));
+        crate::sora::respawn(&mut s, at);
+        s.motor.yaw = r.3;
+        tf.translation = at * SCALE;
+        info!("party: Sora placed at the player's row of {} at {at:?}", r.1);
     }
     let mut next_slot = 0u8;
     for (entity, group, at, yaw, entrance) in records {
@@ -389,7 +408,12 @@ fn party_tick(
         m.motor.move_by(&w, delta, airborne);
         let moved = (m.motor.pos - before).with_y(0.0).length();
         m.blocked = speed > 0.0 && moved < 0.5 * speed;
-        if delta != Vec3::ZERO {
+        // Facing: a turning member turns toward the player, which ends the turn (dot above
+        // `turn_off`); otherwise toward its movement. Both [inferred]: the writer of the facing
+        // (+0x550) during the friend's motion state 0x1f was not read.
+        if m.follow.turning {
+            m.motor.turn_to(ground_dir, m.turn);
+        } else if delta != Vec3::ZERO {
             m.motor.turn_to(delta, m.turn);
         }
         if let Ok(mut a) = anims.get_mut(m.body) {
@@ -522,7 +546,7 @@ mod tests {
         for r in &recs {
             eprintln!("tt02 record {:#x} group {} at {:?} yaw {:.2} entrance {}", r.0, r.1, r.2, r.3, r.4);
         }
-        assert_eq!(recs.len(), 2);
+        assert_eq!(recs.iter().filter(|r| r.0 != PLAYER_ENTITY).count(), 2);
         let mut models = Vec::new();
         for (k, byte) in [bytes[1], bytes[2]].into_iter().enumerate() {
             let obj = rules::slot_object(&merged, byte).expect("member");

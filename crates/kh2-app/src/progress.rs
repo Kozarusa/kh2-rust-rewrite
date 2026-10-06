@@ -273,7 +273,17 @@ pub struct Progress {
     /// `FUN_001b51e0`, which then runs the level-up check of every party member (`FUN_001b52f8`
     /// compares it with the level table), so that word is the experience total (docs/prizes.md).
     wallet: u32,
+    /// The option word (save `+0x31b0`, `0x33fa10`: the ten Config rows of docs/menus.md 2.8) and the game
+    /// mode (save `+0x1658`, read-only on that page). Outside the party block, so kept apart like `wallet`.
+    config: [u32; 2],
 }
+
+/// The option word `FUN_0023e9a0` writes on a new game: it keeps bits 0, 3 and 11 up and sets 0x40b, so
+/// vibration on, Stereo, Navigational Map on, Summon Effects Auto, and every other row at its first value.
+pub const OPTION_DEFAULT: u32 = 0x40b;
+/// The game mode the app starts in: Standard (1; Beginner 0, Proud 2). The title screen sets the original's;
+/// the app has none, so this is [inferred].
+pub const GAME_MODE_DEFAULT: u32 = 1;
 
 /// The prize munny limit (`FUN_0023e5e0`: a sum below 1,000,000 is kept, else 999,999).
 pub const MAX_WALLET: u32 = 999_999;
@@ -329,7 +339,7 @@ impl Progress {
         let mut block = vec![0u8; off::LEN];
         let n = bytes.len().min(off::LEN);
         block[..n].copy_from_slice(&bytes[..n]);
-        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0 }
+        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT] }
     }
 
     // --- records ----------------------------------------------------------------------------
@@ -507,6 +517,20 @@ impl Progress {
     /// `KH2_STATE` key `munny`: set the wallet, held at the prize limit.
     fn set_wallet(&mut self, v: u32) {
         self.wallet = v.min(MAX_WALLET);
+    }
+
+    /// The option word (save `+0x31b0`).
+    pub fn option_word(&self) -> u32 {
+        self.config[0]
+    }
+
+    pub fn set_option_word(&mut self, w: u32) {
+        self.config[0] = w;
+    }
+
+    /// The game mode (save `+0x1658`).
+    pub fn game_mode(&self) -> u32 {
+        self.config[1]
     }
 
     /// The prize munny (save `+0x1600`, see the field).
@@ -823,7 +847,7 @@ impl Progress {
     /// The new-game state: the party block after `FUN_00187b38` on the cleared save block and the
     /// `plrp` rows with `Id` 0 (`FUN_001c0cb0(0)`).
     pub fn new_game(items: Arc<ItemIndex>, plrp: &[Plrp]) -> Progress {
-        let mut p = Progress { block: vec![0; off::LEN], items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0 };
+        let mut p = Progress { block: vec![0; off::LEN], items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT] };
         p.init_party();
         p.apply_plrp(plrp, 0);
         p
@@ -1060,6 +1084,8 @@ impl Progress {
                     }
                 }
                 "spell_switch" => self.set_u32(off::SPELL_SWITCH, int(v, "spell_switch")? as u32),
+                "option_word" => self.config[0] = int(v, "option_word")? as u32,
+                "game_mode" => self.config[1] = int(v, "game_mode")?.clamp(0, 2) as u32,
                 "comment" | "_comment" => {}
                 other => return Err(format!("unknown field '{other}'")),
             }
@@ -1125,7 +1151,7 @@ impl Progress {
         format!(
             "progress: state from {from}: experience {}; munny {}; spells {:?}; forms owned {owned:?} levels {levels:?} keyblades {fw:?}; \
              weapon {:?} armor {:?} accessories {:?}; abilities [{}]; HP {}/{} MP {}/{}; summon level {} exp {}; \
-             outfit (world 2) {}; spell switch {:#x}; inventory [{}]",
+             outfit (world 2) {}; spell switch {:#x}; option word {:#x}; inventory [{}]",
             self.experience(),
             self.wallet(),
             self.spell_levels(),
@@ -1141,6 +1167,7 @@ impl Progress {
             self.summon_exp(),
             self.outfit(2),
             self.spell_switch_word(),
+            self.option_word(),
             inv.join(" "),
         )
     }

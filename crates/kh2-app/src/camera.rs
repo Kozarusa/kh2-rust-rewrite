@@ -283,7 +283,9 @@ fn tick(
     mut sora: Query<&mut Sora>,
     targets: Query<&GlobalTransform>,
     mut cam: Query<(&mut Transform, &mut OrbitCamera, &mut Projection)>,
+    options: Option<Res<crate::menu::config::Options>>,
 ) {
+    let options = options.map(|o| *o).unwrap_or_default();
     let (Some(params), Ok(mut s), Ok((mut t, mut o, mut proj))) = (params, sora.single_mut(), cam.single_mut()) else { return };
     let (Some(mode0), false) = (st.mode, st.area.is_none()) else { return };
     let st = &mut *st;
@@ -342,7 +344,14 @@ fn tick(
             pressed(KeyCode::KeyS) - pressed(KeyCode::KeyW),
             if keys.pressed(KeyCode::ControlLeft) { 0.5 } else { 1.0 },
         );
-        let (right, right_mag) = stick(pressed(KeyCode::ArrowRight) - pressed(KeyCode::ArrowLeft), pressed(KeyCode::ArrowDown) - pressed(KeyCode::ArrowUp), 1.0);
+        // Config: Camera Left/Right and Up/Down "Reverse" flip the right stick's axes [inferred: the game swaps the
+        // two logical camera bits of each pair, `FUN_00157f98..00158090`].
+        let flip = |on: bool| if on { -1.0 } else { 1.0 };
+        let (right, right_mag) = stick(
+            flip(options.camera_lr_reverse) * (pressed(KeyCode::ArrowRight) - pressed(KeyCode::ArrowLeft)),
+            flip(options.camera_ud_reverse) * (pressed(KeyCode::ArrowDown) - pressed(KeyCode::ArrowUp)),
+            1.0,
+        );
         let sticks = Sticks { left, left_mag, right, right_mag };
         // The player's own update turns him with the right stick while the look-around runs
         // (`FUN_001779e8`, before the camera's tick); the look yaw then follows his facing.
@@ -366,7 +375,7 @@ fn tick(
                 subject,
                 lock,
                 zoom: p.zoom,
-                auto: true,
+                auto: !options.field_camera_manual,
                 warp,
                 cast: &cast,
                 blockers: &list,

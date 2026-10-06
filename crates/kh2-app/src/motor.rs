@@ -237,9 +237,114 @@ impl Motor {
     }
 }
 
+/// A sphere of radius `r` swept from `a` to `b` (game units) against the walls of the map: the
+/// first wall-like triangle (normal more than 60 degrees from vertical, the same class the
+/// capsule slides along) within `r` of the segment, as (contact point, normal). COCT walls are
+/// one-sided, as in `World::slide`.
+///
+/// This is the shape of the game's probe (FUN_0019a8e8 -> FUN_00143840 -> FUN_00164138: the
+/// actor's collision sphere stepped along its delta in radius-sized steps against the polygons
+/// in the swept box). Polygons are filtered by attribute word: `(attr & 0xf) != 4` and `attr & mask`
+/// (the handler of mask index 0: flag 0x10, PARTY_COLLIDE). That the handler's third argument is
+/// the polygon word, and that the probe's mask index is 0, are inferences (the handler table is
+/// assembly and the decompiler dropped the argument); walls are told from floors by the normal.
+pub fn sweep_wall(world: &World, a: Vec3, b: Vec3, r: f32, mask: u32) -> Option<(Vec3, Vec3)> {
+    if !(a.is_finite() && b.is_finite()) {
+        return None;
+    }
+    let lo = a.min(b) - Vec3::splat(r);
+    let hi = a.max(b) + Vec3::splat(r);
+    let ab = b - a;
+    let len2 = ab.length_squared();
+    let mut best: Option<(f32, Vec3, Vec3)> = None;
+    for t in &world.tris {
+        // Polygon filter of FUN_00141b50: the attribute nibble is not 4 and the handler of the
+        // probe's mask index (0 for a party member, FUN_0032e3b8 table at 0x378f7c: index 0 and 6
+        // test flag 0x10) accepts the word. Maps without COCT flags (flags 0) never match.
+        if t.flags & mask == 0 || t.flags & 0xf == 4 || t.n.y.abs() >= crate::world::FLOOR_NY || t.hi.x < lo.x || t.lo.x > hi.x || t.hi.y < lo.y || t.lo.y > hi.y || t.hi.z < lo.z || t.lo.z > hi.z {
+            continue;
+        }
+        // Closest points between the segment and the triangle (a few alternating projections).
+        let mut s = 0.5f32;
+        let mut q = closest_point_triangle(a + ab * s, t);
+        for _ in 0..4 {
+            s = if len2 > 1e-6 { ((q - a).dot(ab) / len2).clamp(0.0, 1.0) } else { 0.0 };
+            q = closest_point_triangle(a + ab * s, t);
+        }
+        let p = a + ab * s;
+        if world.coct && t.n.dot(p - t.v[0]) < 0.0 {
+            continue;
+        }
+        let d = q.distance(p);
+        if d <= r && best.is_none_or(|(bd, _, _)| d < bd) {
+            best = Some((d, q, t.n));
+        }
+    }
+    best.map(|(_, q, n)| (q, n))
+}
+
+fn closest_point_triangle(p: Vec3, t: &crate::world::Tri) -> Vec3 {
+    // Ericson, Real-Time Collision Detection, 5.1.5.
+    let [a, b, c] = t.v;
+    let (ab, ac, ap) = (b - a, c - a, p - a);
+    let (d1, d2) = (ab.dot(ap), ac.dot(ap));
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return a;
+    }
+    let bp = p - b;
+    let (d3, d4) = (ab.dot(bp), ac.dot(bp));
+    if d3 >= 0.0 && d4 <= d3 {
+        return b;
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        return a + ab * (d1 / (d1 - d3));
+    }
+    let cp = p - c;
+    let (d5, d6) = (ab.dot(cp), ac.dot(cp));
+    if d6 >= 0.0 && d5 <= d6 {
+        return c;
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        return a + ac * (d2 / (d2 - d6));
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
+        return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
+    }
+    let denom = 1.0 / (va + vb + vc);
+    a + ab * (vb * denom) + ac * (vc * denom)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sweep_finds_a_wall_ahead_and_ignores_floors() {
+        // A floor square and a wall across x = 100 facing -x, from render-style meshes.
+        let tri = |v: [Vec3; 3], flags: u32| {
+            let n = (v[1] - v[0]).cross(v[2] - v[0]).normalize();
+            crate::world::Tri { v, n, flags, material: 0, lo: v[0].min(v[1]).min(v[2]), hi: v[0].max(v[1]).max(v[2]) }
+        };
+        let w = |x: f32, flags: u32| tri([Vec3::new(x, -200.0, -400.0), Vec3::new(x, -200.0, 400.0), Vec3::new(x, 600.0, 0.0)], flags);
+        let floor = tri([Vec3::new(-500.0, 0.0, -500.0), Vec3::new(500.0, 0.0, 500.0), Vec3::new(500.0, 0.0, -500.0)], 0x10);
+        let mut world = World::default();
+        world.tris = vec![floor, w(100.0, 0x10), w(300.0, 0x10 | 4), w(-100.0, 0x80)];
+        let start = Vec3::new(0.0, 40.0, 0.0);
+        // 35 + 30 of reach along +x from x = 0: the sphere's front reaches x = 100.
+        let hit = sweep_wall(&world, start, start + Vec3::X * 65.0, 35.0, 0x10);
+        assert!(hit.is_some_and(|(q, _)| (q.x - 100.0).abs() < 1e-3), "{hit:?}");
+        // Short of it by a unit: nothing.
+        assert!(sweep_wall(&world, start, start + Vec3::X * 64.0, 35.0, 0x10).is_none());
+        // Facing away: nothing, and the floor never counts.
+        assert!(sweep_wall(&world, start, start - Vec3::X * 65.0, 35.0, 0x10).is_none());
+        // Attribute 4 and walls without the party flag do not count.
+        assert!(sweep_wall(&world, Vec3::new(240.0, 40.0, 0.0), Vec3::new(305.0, 40.0, 0.0), 35.0, 0x10).is_none());
+        assert!(sweep_wall(&world, Vec3::new(-40.0, 40.0, 0.0), Vec3::new(-105.0, 40.0, 0.0), 35.0, 0x10).is_none());
+        assert!(sweep_wall(&world, Vec3::new(0.0, 10.0, 0.0), Vec3::new(0.0, 10.0, 60.0), 35.0, 0x10).is_none());
+    }
 
     #[test]
     fn jump_reaches_its_height_at_the_rise_time() {

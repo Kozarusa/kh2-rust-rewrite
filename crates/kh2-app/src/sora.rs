@@ -17,7 +17,7 @@ use std::sync::Arc;
 use bevy::input::mouse::MouseButton;
 use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
 use bevy::prelude::*;
-use kh2_anim::moveset::{self, key, Action, Chain, Evaluation, ExplicitMiss, Moveset, Probe, Scene, Verdict, Windows};
+use kh2_anim::moveset::{self, key, Action, BlowState, Chain, ExplicitMiss, Moveset, Probe, Recovery, Scene, Verdict, Windows};
 use kh2_anim::{id, triggers::range, PlayerState};
 use kh2_model::collision::kind as shape_kind;
 
@@ -282,20 +282,189 @@ fn probe(p: &TargetPoint, from: Vec3, reference: Vec3) -> Probe {
     }
 }
 
-/// Everything the table selection needs about the surroundings (FUN_001cb928): the target and its
-/// direction (the reference direction of the angle test; Sora's facing without a target), and the
-/// target points of every enemy.
-fn selection_scene(m: &Motor, target: Option<TargetPoint>, others: &[TargetPoint]) -> Scene {
-    let reference = target
+/// The reference direction of the selection (`ctx + 0x30` of FUN_001cb928): the horizontal unit
+/// direction to the target, or Sora's facing without one.
+fn reference_direction(m: &Motor, target: Option<TargetPoint>) -> Vec3 {
+    target
         .map(|t| (t.pos - m.pos).with_y(0.0).normalize_or_zero())
         .filter(|d| *d != Vec3::ZERO)
-        .unwrap_or_else(|| m.forward().with_y(0.0).normalize_or_zero());
+        .unwrap_or_else(|| m.forward().with_y(0.0).normalize_or_zero())
+}
+
+/// Everything the table selection needs about the surroundings (FUN_001cb928): the target and its
+/// direction (the reference direction of the angle test; Sora's facing without a target), the
+/// target points of every enemy, the jump height the flag-bit-1 records add to their reach, and
+/// whether the ledge probe in front is set (no floor ahead).
+fn selection_scene(m: &Motor, target: Option<TargetPoint>, others: &[TargetPoint], jump_height: f32, ledge_probe: bool) -> Scene {
+    let reference = reference_direction(m, target);
     Scene {
         target: target.map(|t| probe(&t, m.pos, reference)),
         others: others.iter().map(|t| probe(t, m.pos, reference)).collect(),
-        wall_probe: false,
-        // The weapon reach that FUN_0016be20 adds for table flag 2 was not resolved.
-        reach: 0.0,
+        ledge_probe,
+        jump_height,
+    }
+}
+
+/// FUN_0016be20 (FUN_0016bd98): the jump height the flag-bit-1 records add to their reach, and
+/// the height the jump action uses. A party member (+0x588 flag 4) whose mover does not carry
+/// flag 0x800 and whose High Jump level (ability block +0x20) is above 0 gets the High Jump
+/// height of the `fmab` row of that level (and motion 201); otherwise the actor's own jump height
+/// (+0x118; the app reads `prty` JumpHeight, the game's writer of +0x118 was not found).
+fn jump_height(data: &GameData, growth: &Growth) -> f32 {
+    data.fmab(growth.high_jump).map_or(data.prty.jump_height, |f| f.high_jump_height)
+}
+
+/// Sora's body collision shape (the first shape of kind 0 or 4, FUN_00188e70 with mask 0x11 in
+/// FUN_00169af0), in game units: its radius is the actor's collision radius (+0x5b0), its height
+/// field +0x5b4 and its lift the step height (+0x5fc).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct BodyShape {
+    radius: f32,
+    height: f32,
+    lift: f32,
+}
+
+fn body_shape(rig: &Rig) -> Option<BodyShape> {
+    rig.model.shapes.iter().find(|s| s.kind == 0 || s.kind == 4).map(|s| BodyShape { radius: s.radius.abs(), height: s.height, lift: s.lift })
+}
+
+/// The result of the ledge probe: where the sweep ended, the floor found under it, the lowest
+/// floor height that still counts, and whether the probe's bit is set (no floor, or too low).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Ledge {
+    end: Vec3,
+    floor: Option<f32>,
+    limit: f32,
+    flagged: bool,
+}
+
+/// The ledge probe of the table selection (FUN_001cbcf8 -> FUN_00182e38 -> FUN_0019a8e8). Only on
+/// the ground (FUN_0019aa28 false) for an actor whose mover is not a rider (flag 2) and that has no
+/// +0x160 flag 0x40 and no +0x810 (neither modelled): the vector is the reference direction
+/// projected on the ground plane (the actor's +0x630 normal) times `radius + plyr AttackJFront`.
+/// FUN_0019a8e8 returns bit 32 of the word at +0x600 (`+0x604 & 1`): the floor test after the
+/// sweep, so a set result means NO floor ahead. Key 1 is flagged then. `airborne` is the
+/// selection's airborne state (FUN_0019aa28, the chain's), not the motor's floor contact.
+fn ledge_probe(world: &World, m: &Motor, airborne: bool, shape: Option<BodyShape>, reference: Vec3, j_front: f32) -> Option<Ledge> {
+    if airborne {
+        return None;
+    }
+    let b = shape?;
+    let normal = m.ground.map_or(Vec3::Y, |g| g.normal);
+    // FUN_00182e38: two cross products with the ground normal keep the direction in its plane.
+    let dir = normal.cross(reference).cross(normal).normalize_or_zero();
+    if dir == Vec3::ZERO {
+        return None;
+    }
+    Some(ledge_at(world, m.pos, dir * (b.radius + j_front), b))
+}
+
+/// FUN_00143840 for the probe of FUN_0019a8e8 from `start` (the actor position, +0x590) along `v`
+/// (+0x5a0), Y up here (the game's Y points down):
+/// * the sweep (FUN_00164138): the body sphere, centred `lift` above the start, moves along `v`
+///   against the party-collide walls. [inferred] It ends where a wall ahead stops the sphere, else
+///   at `start + v` (the sweep's end point, +0x5c0, is what the floor test reads).
+/// * the floor test (FUN_001423d8): a ray down at the end point from `lift + clamp(|v.y|, 0, 100)`
+///   above it to `3 * lift` below it (DAT_00378f60 = 100, DAT_00378f64 = 3; the clamp applies for
+///   mask index 0, Sora's). No floor sets bit 33 and, through FUN_00141910, bit 32.
+/// * FUN_00141910: a floor found clears bit 32 when it is no lower than
+///   `start.y - max(0, -v.y) - (lift - height) + 1` (the game's `hit.y <= start.y + max(0, v.y) +
+///   (lift - +0x5b4) + +0x610 - 1.0` with Y down, DAT_00378f50 = 1.0; +0x610 is 0 because the probe
+///   only runs with +0x810 zero, FUN_00183e90); a lower floor sets it.
+fn ledge_at(world: &World, start: Vec3, v: Vec3, b: BodyShape) -> Ledge {
+    let len = v.length();
+    let centre = start + Vec3::Y * b.lift;
+    let travel = if len > 1e-4 {
+        let dir = v / len;
+        crate::motor::sweep_wall(world, centre, centre + v, b.radius, kh2_map::flags::PARTY_COLLIDE)
+            .map(|(q, _)| (q - centre).dot(dir))
+            // A wall the sphere already touches level with or behind its centre blocks nothing
+            // ahead (the earlier port's approximation; the game's start-overlap case was not read).
+            .filter(|ahead| *ahead > 0.0)
+            .map_or(len, |ahead| (ahead - b.radius).clamp(0.0, len))
+    } else {
+        0.0
+    };
+    let end = if len > 1e-4 { start + v * (travel / len) } else { start };
+    let top = end.y + b.lift + v.y.abs().min(100.0);
+    let bottom = end.y - 3.0 * b.lift;
+    let floor = world.ground(end, top, top - bottom).map(|g| g.y);
+    let limit = start.y - (-v.y).max(0.0) - (b.lift - b.height) + 1.0;
+    let flagged = floor.is_none_or(|y| y < limit);
+    Ledge { end, floor, limit, flagged }
+}
+
+fn ledge_text(l: &Ledge) -> String {
+    format!(
+        "{}: sweep end ({:.0} {:.0} {:.0}), floor {}, lowest floor that counts {:.1}",
+        if l.flagged { "SET (no floor ahead), key 1 flagged" } else { "clear" },
+        l.end.x,
+        l.end.y,
+        l.end.z,
+        l.floor.map_or("none".to_string(), |y| format!("{y:.1}")),
+        l.limit
+    )
+}
+
+/// A button press while Sora is blown (FUN_001758b0; the party controller runs it on every
+/// command tick before the Square actions and the attack). `jump` is command flag 2 (the jump
+/// button, Space: FUN_001babf0 sets it from logical pad bit 0x100, which FUN_00167310 maps from
+/// the cancel button) and `square` command flag 8 (Square, K/E: logical 0x200). Aerial Recovery
+/// plays motion 40 and ends the flight; Retaliating Slash restarts the counters and starts the
+/// key 40 record through the attack start. Returns true when the state changed.
+#[allow(clippy::too_many_arguments)]
+fn blown_press(
+    s: &mut Sora,
+    body: &mut Animator,
+    weapon: &mut Animator,
+    abilities: &Abilities,
+    data: &GameData,
+    jump: bool,
+    square: bool,
+    rig: &Rig,
+    pstate: PlayerState,
+    start_attack: &impl Fn(&mut Sora, &mut Animator, &mut Animator, &Action, bool) -> bool,
+) -> bool {
+    let air = !s.motor.grounded;
+    let mut chain = abilities.chain(s.hits, s.finishers, air, false);
+    // The blow movers (modes 4 and 8 for a party member) carry flag 0x40; the flight timer is the
+    // ticks in the state; +0x7f8 flag 4 stands in as "no HP left" (inferred: set when the actor
+    // leaves play).
+    let blow = BlowState { recoverable: s.blow.is_some(), ticks: s.timer, recovery_time: data.plyr.blow_recovery_time, locked: s.hp <= 0 };
+    let moves = s.moves.clone();
+    match moves.recovery(&blow, jump, square, &mut chain) {
+        Ok(Recovery::AerialRecovery) => {
+            // FUN_001759b8: motion 40 with blend 4, then the mover's launch (its method +8 with a
+            // vector built from the stick direction, plyr BlowRecoveryH and BlowRecoveryV; the
+            // launch itself was not decoded). The app ends the flight and lets Sora fall.
+            body.restart(rig.mset.slot(id::DAMAGE_BLOW_RECOV, pstate), false, 4.0);
+            weapon.restart(None, false, 4.0);
+            s.blow = None;
+            s.push = None;
+            s.motor.vel = Vec3::ZERO;
+            s.motor.start_fall();
+            s.state = State::Air;
+            s.timer = 0.0;
+            s.hits = 0;
+            s.finishers = 1;
+            info!("move: blown press: Aerial Recovery (ability bit {}) after {:.0} ticks (BlowRecoveryTime {:.0}): motion 40 {}", moveset::ABILITY_AERIAL_RECOVERY, blow.ticks, blow.recovery_time, body.tag());
+            true
+        }
+        Ok(Recovery::Retaliate(a)) => {
+            let a = a.clone();
+            info!("move: blown press: Retaliating Slash key {} after {:.0} ticks (BlowRecoveryTime {:.0}): counters restart (combo {}, finishers {})", a.key, blow.ticks, blow.recovery_time, chain.combo, chain.finishers);
+            s.hits = chain.combo;
+            s.finishers = chain.finishers;
+            s.blow = None;
+            s.push = None;
+            start_attack(s, body, weapon, &a, air)
+        }
+        Err(m) => {
+            if move_log() {
+                info!("move: blown press refused: {m:?} (ticks {:.0}, BlowRecoveryTime {:.0}, jump {jump}, square {square})", blow.ticks, blow.recovery_time);
+            }
+            false
+        }
     }
 }
 
@@ -639,68 +808,97 @@ pub fn tick(
         true
     };
 
-    // The attack button (FUN_00174cf8, command type 1): the explicit actions of FUN_00177ea0, the
-    // combo counters of FUN_00176b00, then the table selection of FUN_00177d58. False when the press
-    // is refused or the table offers nothing. `w` holds the playing motion's input windows and
-    // `fin_window` its finisher window.
+    // The Square press's explicit actions (FUN_00174cf8 calls FUN_00177ea0 through vtable +0x80
+    // when the command carries flag 8, the Square button). FUN_00177ea0, in this order: nothing
+    // while the mover has flag 0x800; the counters restart in an idle range (FUN_00176a70);
+    // FUN_001783d8 (mover 0x16, only when actor +0xb50 is 6: not identified, not ported);
+    // FUN_00178290 (Glide, growth slot 3: the caller's); then the explicit actions through
+    // FUN_00177fa8, keys 37, 12, 38; then FUN_00178108 (Quick Run, growth slot 1) and FUN_00178080
+    // (guard, key 11), both the caller's. Each explicit action needs its record available and an
+    // allow-combo or finisher window, then passes the press counters (FUN_00176b00) and starts.
+    // True when one started. The counter restart is kept only when an action starts (the app's
+    // counters restart on every later press from an idle range anyway).
+    let square_explicit = |s: &mut Sora, body: &mut Animator, weapon: &mut Animator, air: bool, w: Windows, fin_window: bool| -> bool {
+        let log = move_log();
+        let mut chain = abilities.chain(s.hits, s.finishers, air, fin_window);
+        if w.free {
+            chain.restart();
+        }
+        let mut lines: Vec<String> = Vec::new();
+        let mut chosen = None;
+        for k in key::EXPLICIT {
+            match s.moves.explicit(k, &chain, w) {
+                Ok(a) => {
+                    let mut c = chain;
+                    if let Some(p) = c.press(w, s.connected) {
+                        chain = c;
+                        chosen = Some((a.clone(), p));
+                        break;
+                    }
+                    lines.push(format!("explicit key {k}: available, but the press is refused"));
+                }
+                Err(m) => lines.push(format!("explicit key {k}: {}", explicit_text(m))),
+            }
+        }
+        if log {
+            let playing = body.slot.map_or(usize::MAX, |sl| sl / 4);
+            info!(
+                "move: square press: {} at motion {playing}, windows free {} combo {} finisher {fin_window}, hit landed {}",
+                if air { "airborne" } else { "grounded" },
+                w.free,
+                w.combo,
+                s.connected
+            );
+            for l in &lines {
+                info!("move:   {l}");
+            }
+        }
+        let Some((a, p)) = chosen else { return false };
+        if log {
+            let tag = rig.mset.slot(a.motion as usize, pstate).and_then(|sl| rig.mset.get(sl)).map_or("-", |x| x.tag.as_str());
+            info!("move:   {p:?} (combo {}, finishers {}): chosen key {} motion {} ({tag}) by explicit key (Square)", chain.combo, chain.finishers, a.key, a.motion);
+        }
+        s.hits = chain.combo;
+        s.finishers = chain.finishers;
+        start_attack(s, body, weapon, &a, air)
+    };
+
+    // The attack button (FUN_00174cf8, command type 1): the combo counters of FUN_00176b00, then
+    // the table selection of FUN_00177d58. False when the press is refused or the table offers
+    // nothing. `w` holds the playing motion's input windows and `fin_window` its finisher window.
     let target_point = s.target.and_then(|t| enemy_points.iter().find(|(e, _)| *e == t)).and_then(|(_, p)| p.first().copied());
     let all_points: Vec<TargetPoint> = enemy_points.iter().flat_map(|(_, p)| p.iter().copied()).collect();
     let request = |s: &mut Sora, body: &mut Animator, weapon: &mut Animator, air: bool, w: Windows, fin_window: bool| -> bool {
         let log = move_log();
         let playing = body.slot.map_or(usize::MAX, |sl| sl / 4);
         let tag_of = |id: u16| rig.mset.slot(id as usize, pstate).and_then(|sl| rig.mset.get(sl)).map_or("-", |x| x.tag.as_str());
-        let mut lines: Vec<String> = Vec::new();
         let mut chain = abilities.chain(s.hits, s.finishers, air, fin_window);
+        // KEPT FROM THE EARLIER PORT (not the game's attack path): the idle-range restart belongs to
+        // FUN_00177ea0, which runs on the Square flag only; FUN_00174cf8's attack path calls
+        // FUN_00176b00 alone. It only matters when an idle range and the allow-combo range are open
+        // together with a landed hit; kept so the ground combo and air chain stay as they were.
         if w.free {
             chain.restart();
         }
-        let mut chosen: Option<Action> = None;
-        let mut how = "table";
-        let mut press = None;
-        for k in key::EXPLICIT {
-            match s.moves.explicit(k, &chain, w) {
-                Ok(a) => {
-                    let a = a.clone();
-                    let mut c = chain;
-                    if let Some(p) = c.press(w, s.connected) {
-                        chain = c;
-                        press = Some(p);
-                        chosen = Some(a);
-                        how = "explicit key";
-                        break;
-                    }
-                    if log {
-                        lines.push(format!("explicit key {k}: available, but the press is refused"));
-                    }
-                }
-                Err(m) => {
-                    if log {
-                        lines.push(format!("explicit key {k}: {}", explicit_text(m)));
-                    }
-                }
+        let press = chain.press(w, s.connected);
+        if press.is_none() {
+            if log && !s.deny_logged {
+                info!(
+                    "move: attack press refused: motion {playing} ({}), windows free {} combo {} finisher {fin_window}, hit landed {}: no chain without a landed hit in the combo window, and no restart while the motion plays",
+                    tag_of(playing as u16),
+                    w.free,
+                    w.combo,
+                    s.connected
+                );
+                s.deny_logged = true;
             }
+            return false;
         }
-        let scene = selection_scene(&s.motor, target_point, &all_points);
-        let mut evals: Vec<Evaluation> = Vec::new();
-        if chosen.is_none() {
-            press = chain.press(w, s.connected);
-            if press.is_none() {
-                if log && !s.deny_logged {
-                    info!(
-                        "move: attack press refused: motion {playing} ({}), windows free {} combo {} finisher {fin_window}, hit landed {}: no chain without a landed hit in the combo window, and no restart while the motion plays",
-                        tag_of(playing as u16),
-                        w.free,
-                        w.combo,
-                        s.connected
-                    );
-                    s.deny_logged = true;
-                }
-                return false;
-            }
-            let (ev, idx) = s.moves.select(&chain, &scene, playing);
-            evals = ev;
-            chosen = idx.map(|i| s.moves.actions[i].clone());
-        }
+        // The ledge probe runs inside the selection (FUN_001cbcf8), once per press.
+        let ledge = ledge_probe(&world, &s.motor, air, body_shape(&rig), reference_direction(&s.motor, target_point), data.plyr.attack_j_front);
+        let scene = selection_scene(&s.motor, target_point, &all_points, jump_height(&data, &growth), ledge.as_ref().is_some_and(|l| l.flagged));
+        let (evals, idx) = s.moves.select(&chain, &scene, playing);
+        let chosen = idx.map(|i| s.moves.actions[i].clone());
         if log {
             info!(
                 "move: attack press: {} (combo {}, finishers {}), {} at motion {playing} ({}), windows free {} combo {} finisher {fin_window}, hit landed {}",
@@ -713,28 +911,24 @@ pub fn tick(
                 w.combo,
                 s.connected
             );
-            for l in &lines {
-                info!("move:   {l}");
-            }
-            if !evals.is_empty() {
-                info!(
-                    "move:   target {}; {} enemy point(s) {}",
-                    scene.target.map_or("none".to_string(), |p| probe_text(&p)),
-                    scene.others.len(),
-                    scene.others.iter().map(probe_text).collect::<Vec<_>>().join(" | ")
-                );
-                for e in &evals {
-                    let a = &s.moves.actions[e.index];
-                    info!(
-                        "move:   #{} key {} motion {} ({}) group {} -> {}",
-                        e.index,
-                        a.key,
-                        a.motion,
-                        tag_of(a.motion),
-                        a.group,
-                        verdict_text(&e.verdict)
-                    );
-                }
+            info!(
+                "move:   target {}; {} enemy point(s) {}",
+                scene.target.map_or("none".to_string(), |p| probe_text(&p)),
+                scene.others.len(),
+                scene.others.iter().map(probe_text).collect::<Vec<_>>().join(" | ")
+            );
+            info!(
+                "move:   at ({:.0} {:.0} {:.0}) yaw {:.2}; jump height {:.1} (flag-bit-1 reach); ledge probe {}",
+                s.motor.pos.x,
+                s.motor.pos.y,
+                s.motor.pos.z,
+                s.motor.yaw,
+                scene.jump_height,
+                ledge.as_ref().map_or("not run (airborne or no body shape)".to_string(), ledge_text),
+            );
+            for e in &evals {
+                let a = &s.moves.actions[e.index];
+                info!("move:   #{} key {} motion {} ({}) group {} -> {}", e.index, a.key, a.motion, tag_of(a.motion), a.group, verdict_text(&e.verdict));
             }
         }
         let Some(a) = chosen else {
@@ -744,7 +938,7 @@ pub fn tick(
             return false;
         };
         if log {
-            info!("move:   chosen key {} motion {} ({}) by {how}", a.key, a.motion, tag_of(a.motion));
+            info!("move:   chosen key {} motion {} ({}) by table", a.key, a.motion, tag_of(a.motion));
         }
         s.hits = chain.combo;
         s.finishers = chain.finishers;
@@ -784,7 +978,11 @@ pub fn tick(
             } else if attack {
                 request(s, &mut body, &mut weapon, false, Windows { free: true, combo: false }, false);
             } else if square {
-                if let Some(f) = data.fmab(growth.quick_run).filter(|_| move_speed > 0.0) {
+                // FUN_00177ea0's order: the explicit actions first (they need a combo or finisher
+                // window, so from idle they never start), then Quick Run, then the guard.
+                if square_explicit(s, &mut body, &mut weapon, false, Windows { free: true, combo: false }, false) {
+                    // An explicit action started.
+                } else if let Some(f) = data.fmab(growth.quick_run).filter(|_| move_speed > 0.0) {
                     // Quick Run: dash along the input at AirSlideSpeed while the button is held.
                     s.state = State::QuickRun;
                     s.timer = 0.0;
@@ -834,6 +1032,8 @@ pub fn tick(
                 s.state = State::Glide;
                 s.timer = 0.0;
                 body.play(motion(if move_speed > 0.0 { mid::GLIDE } else { mid::GLIDE_HOVER }), true, BLEND_GLIDE);
+            } else if square && square_explicit(s, &mut body, &mut weapon, true, Windows { free: true, combo: false }, false) {
+                // After Glide, the explicit actions (FUN_00177ea0); none starts without a window.
             } else if attack {
                 request(s, &mut body, &mut weapon, true, Windows { free: true, combo: false }, false);
             }
@@ -911,7 +1111,13 @@ pub fn tick(
             // state at this moment.
             let air_now = !s.motor.grounded || body.trigger(range::NO_GRAVITY);
             let windows = Windows { free: body.trigger(range::GROUNDED) || body.trigger(range::AIR) || body.trigger(range::BLEND_TO_IDLE), combo: combo_window };
-            if s.queued_attack && (windows.free || windows.combo || finisher_window) && request(s, &mut body, &mut weapon, air_now, windows, finisher_window) {
+            // A Square press is tried on its own tick (the command flag comes from the pad's
+            // newly-pressed word, FUN_001670d0 / FUN_001babf0) and before the pending attack, as
+            // FUN_00174cf8 runs FUN_00177ea0 first. Quick Run, Glide and the guard from an idle
+            // range of an attack motion are not ported.
+            if square && square_explicit(s, &mut body, &mut weapon, air_now, windows, finisher_window) {
+                // An explicit action started.
+            } else if s.queued_attack && (windows.free || windows.combo || finisher_window) && request(s, &mut body, &mut weapon, air_now, windows, finisher_window) {
                 // Chained into the next attack.
             } else if jump && window && s.motor.grounded {
                 start_jump(s, &mut body);
@@ -962,6 +1168,12 @@ pub fn tick(
             }
         }
         State::Blown => {
+            // A press while blown (FUN_001758b0, run before everything else on every command
+            // tick): Aerial Recovery on the jump flag, Retaliating Slash (key 40) on the Square
+            // flag, once plyr BlowRecoveryTime ticks have passed. The attack button does nothing.
+            if (jump || square) && s.blow.is_some() {
+                blown_press(s, &mut body, &mut weapon, &abilities, &data, jump, square, &rig, pstate, &start_attack);
+            }
             // The flight of a blow (FUN_0019e4d8): horizontal speed brakes down to a floor, the
             // rise brakes, gravity pulls. Without the reaction data the jump model stands in.
             if let (Some(b), Some(r)) = (s.blow.as_mut(), reaction.as_ref()) {
@@ -1462,6 +1674,94 @@ mod tests {
         assert_eq!(ev[i].verdict, Verdict::Outside(moveset::Miss::Height));
         let (ev, _) = m.select(&chain(true, 1, &[97]), &high, 0);
         assert_eq!(ev[i].verdict, Verdict::Rejected(moveset::Reject::State));
+    }
+
+    #[test]
+    fn ledge_probe_flags_key_1_and_jump_height_widens_flag_bit_1() {
+        let Some(m) = real_moves() else { return };
+        // Key 1 is flagged by the ledge probe on the ground whatever its group says.
+        let i = m.actions.iter().position(|a| a.key == key::LEDGE_PROBE).unwrap();
+        let none = Scene::default();
+        let (ev, _) = m.select(&chain(false, 1, &[]), &none, 0);
+        assert_ne!(ev[i].verdict, Verdict::Flagged);
+        let ledge = Scene { ledge_probe: true, ..Scene::default() };
+        let (ev, _) = m.select(&chain(false, 1, &[]), &ledge, 0);
+        assert_eq!(ev[i].verdict, Verdict::Flagged);
+        // Key 33 (A340, bit 97) has flag bit 1: a target higher than its plain window is reached
+        // once the jump height lowers the window's bound.
+        let a = m.by_key(33).unwrap();
+        assert!(a.flags & 2 != 0);
+        let high = point(100.0, 400.0);
+        assert_eq!(a.window(&high, 0.0), Err(moveset::Miss::Height));
+        assert_eq!(a.window(&high, 235.0), Ok(()));
+        // Key 40 (A344) is an record (motion id 172) gated on bit 101 that only the blown press starts.
+        let k40 = m.by_key(key::RETALIATING).unwrap();
+        assert_eq!((k40.motion, k40.ability, k40.group), (172, 101, 0));
+    }
+
+    /// A world of horizontal floor quads (x0, x1, y), each 2000 wide in z, plus party-collide walls.
+    fn ledge_world(floors: &[(f32, f32, f32)], walls: &[f32]) -> World {
+        let mut positions = Vec::new();
+        let mut indices = Vec::new();
+        for &(x0, x1, y) in floors {
+            let b = positions.len() as u32;
+            positions.extend([[x0, y, -1000.0], [x1, y, -1000.0], [x1, y, 1000.0], [x0, y, 1000.0]]);
+            indices.extend([b, b + 2, b + 1, b, b + 3, b + 2]);
+        }
+        let n = positions.len();
+        let mesh = kh2_model::Mesh { positions, uvs: vec![[0.0; 2]; n], colors: vec![[1.0; 4]; n], indices, texture: 0, transparent: false, joints: vec![], weights: vec![] };
+        let mut w = World::from_meshes(&[mesh]);
+        // Walls across x (facing -x), only for the sweep (it walks `tris` directly).
+        for &x in walls {
+            let v = [Vec3::new(x, -500.0, -1000.0), Vec3::new(x, -500.0, 1000.0), Vec3::new(x, 1000.0, 0.0)];
+            w.tris.push(crate::world::Tri { v, n: Vec3::NEG_X, flags: kh2_map::flags::PARTY_COLLIDE, material: 0, lo: v[0].min(v[1]).min(v[2]), hi: v[0].max(v[1]).max(v[2]) });
+        }
+        w
+    }
+
+    #[test]
+    fn ledge_probe_is_set_only_without_a_floor_ahead() {
+        // Sora's numbers in the shape of FUN_0019a8e8: radius 90, lift 115, a height of 90 here, so a
+        // floor counts down to start - (115 - 90) + 1 = 24 below; the vector is 90 - 5 = 85 ahead.
+        let b = BodyShape { radius: 90.0, height: 90.0, lift: 115.0 };
+        let v = Vec3::X * 85.0;
+        // Open floor: the floor at the end point is level, the bit stays clear.
+        let l = ledge_at(&ledge_world(&[(-1000.0, 1000.0, 0.0)], &[]), Vec3::ZERO, v, b);
+        assert_eq!((l.end, l.floor, l.limit, l.flagged), (Vec3::new(85.0, 0.0, 0.0), Some(0.0), -24.0, false));
+        // The floor ends 50 ahead: no floor under the end point, the bit is set.
+        let l = ledge_at(&ledge_world(&[(-1000.0, 50.0, 0.0)], &[]), Vec3::ZERO, v, b);
+        assert_eq!((l.floor, l.flagged), (None, true));
+        // A step down beyond 50: 20 lower still counts, 100 lower does not.
+        let l = ledge_at(&ledge_world(&[(-1000.0, 50.0, 0.0), (50.0, 1000.0, -20.0)], &[]), Vec3::ZERO, v, b);
+        assert_eq!((l.floor, l.flagged), (Some(-20.0), false));
+        let l = ledge_at(&ledge_world(&[(-1000.0, 50.0, 0.0), (50.0, 1000.0, -100.0)], &[]), Vec3::ZERO, v, b);
+        assert_eq!((l.floor, l.flagged), (Some(-100.0), true));
+        // A floor more than 3 * lift below the end point is out of the ray: no floor.
+        let l = ledge_at(&ledge_world(&[(-1000.0, 50.0, 0.0), (50.0, 1000.0, -400.0)], &[]), Vec3::ZERO, v, b);
+        assert_eq!((l.floor, l.flagged), (None, true));
+        // A step up within lift above the end point is found and counts.
+        let l = ledge_at(&ledge_world(&[(-1000.0, 50.0, 0.0), (50.0, 1000.0, 60.0)], &[]), Vec3::ZERO, v, b);
+        assert_eq!((l.floor, l.flagged), (Some(60.0), false));
+        // A wall 100 ahead stops the sphere after 10: the end point stays on the floor before an edge
+        // at 60 that the unblocked sweep would have passed.
+        let l = ledge_at(&ledge_world(&[(-1000.0, 60.0, 0.0)], &[100.0]), Vec3::ZERO, v, b);
+        assert!((l.end.x - 10.0).abs() < 1e-3, "{l:?}");
+        assert_eq!((l.floor, l.flagged), (Some(0.0), false));
+        // Sloped travel: v.y below zero (moving down, Y up here) lowers the limit by that much.
+        let l = ledge_at(&ledge_world(&[(-1000.0, 1000.0, -30.0)], &[]), Vec3::ZERO, Vec3::new(80.0, -30.0, 0.0), b);
+        assert_eq!((l.limit, l.flagged), (-54.0, false));
+    }
+
+    #[test]
+    fn ledge_probe_runs_on_the_ground_only() {
+        let w = ledge_world(&[(-1000.0, 50.0, 0.0)], &[]);
+        let b = Some(BodyShape { radius: 90.0, height: 90.0, lift: 115.0 });
+        let m = Motor { grounded: true, ..Motor::default() };
+        assert!(ledge_probe(&w, &m, false, b, Vec3::X, -5.0).is_some_and(|l| l.flagged));
+        // Facing away from the edge: floor under the end point.
+        assert!(ledge_probe(&w, &m, false, b, Vec3::NEG_X, -5.0).is_some_and(|l| !l.flagged));
+        // Airborne for the selection (FUN_0019aa28): no probe.
+        assert!(ledge_probe(&w, &m, true, b, Vec3::X, -5.0).is_none());
     }
 
     #[test]

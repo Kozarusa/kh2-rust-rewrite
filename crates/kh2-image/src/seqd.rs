@@ -423,6 +423,53 @@ impl Seqd {
         }
     }
 
+    /// Stretches a nine-part frame to enclose a `w` x `h` box centred on the group's origin, the way
+    /// the game's frame sizer (0x2387c0) rewrites the sprite parts in place before each draw of a
+    /// message window. The parts are those of the sprite group of the group's first animation, in
+    /// the order top-left, top, top-right, left, centre, right, bottom-left, bottom, bottom-right.
+    /// The box grows by the group record's `x` and `y` (margins) and is rounded down to even
+    /// sizes; the corners keep their own sizes and sit outside it, the edges are stretched along it
+    /// and the centre fills it. Nothing changes when the group or its parts are missing.
+    pub fn resize_frame(&mut self, group: usize, w: i32, h: i32) {
+        let Some(g) = self.groups.get(group) else { return };
+        let Some(sg) = self.anims.get(g.first).and_then(|a| self.sprite_groups.get(a.group)).copied() else { return };
+        if sg.count < 9 || sg.start + 9 > self.parts.len() {
+            return;
+        }
+        let (gw, gh) = (w + g.x, h + g.y);
+        let (full_w, full_h) = (gw & !1, gh & !1);
+        let (half_w, half_h) = (gw >> 1, gh >> 1);
+        // C integer division truncates toward zero.
+        let (left, top) = (-full_w / 2, -full_h / 2);
+        let p = &mut self.parts[sg.start..sg.start + 9];
+        let width = |p: &Part| p.right - p.left;
+        let height = |p: &Part| p.bottom - p.top;
+        // Moving an edge keeps the part's size (0x2343c0, 0x234430); a size sets the far edge
+        // (0x2344a8, 0x234518, 0x2345a8).
+        fn at(p: &mut Part, x: i32, y: i32) {
+            p.right += x - p.left;
+            p.left = x;
+            p.bottom += y - p.top;
+            p.top = y;
+        }
+        let (w0, h0, h1, h2, w3, w6) = (width(&p[0]), height(&p[0]), height(&p[1]), height(&p[2]), width(&p[3]), width(&p[6]));
+        at(&mut p[0], left - w0, top - h0);
+        at(&mut p[1], left, top - h1);
+        p[1].right = p[1].left + full_w;
+        at(&mut p[2], half_w, top - h2);
+        at(&mut p[3], left - w3, top);
+        p[3].bottom = p[3].top + full_h;
+        at(&mut p[4], left, top);
+        p[4].right = p[4].left + full_w;
+        p[4].bottom = p[4].top + full_h;
+        at(&mut p[5], half_w, top);
+        p[5].bottom = p[5].top + full_h;
+        at(&mut p[6], left - w6, half_h);
+        at(&mut p[7], left, half_h);
+        p[7].right = p[7].left + full_w;
+        at(&mut p[8], half_w, half_h);
+    }
+
     /// The rectangles drawn by `group` at integer `frame`, placed at `origin` (x, y).
     pub fn quads(&self, group: usize, frame: i32, origin: [f32; 2], ext: &Ext) -> Vec<Quad> {
         let Some(g) = self.groups.get(group) else { return Vec::new() };

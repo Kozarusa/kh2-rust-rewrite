@@ -513,7 +513,7 @@ pub fn receive_hits(
         if !e.alive() {
             continue;
         }
-        let Some(atk) = data.atkp(h.atkp) else { continue };
+        let Some(atk) = data.hit_row(h) else { continue };
         let useless = hit_is_ineffective(atk, &e.stats);
         let mut dmg = data.damage(atk, &from, &e.stats);
         // Anti form multiplies the damage Sora deals (FUN_001a0610), then the attacker's ability

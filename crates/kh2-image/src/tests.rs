@@ -161,6 +161,11 @@ fn extra_rotation_turns_the_quad() {
 
 /// An 8-bit swizzled IMGD with the given upload canvas and palette.
 fn imgd8(w: u16, h: u16, canvas: &[u8], pal: &[u8]) -> Vec<u8> {
+    imgd8_flags(w, h, canvas, pal, 7)
+}
+
+/// An 8-bit IMGD with the given header flags (+0x3c; bit 2 = pixels in GS upload order).
+fn imgd8_flags(w: u16, h: u16, canvas: &[u8], pal: &[u8], flags: u32) -> Vec<u8> {
     let mut b = b"IMGD".to_vec();
     for v in [0x100u32, 0x40, canvas.len() as u32, 0x40 + canvas.len() as u32, pal.len() as u32, 0xffff_ffff] {
         b.extend_from_slice(&v.to_le_bytes());
@@ -170,7 +175,7 @@ fn imgd8(w: u16, h: u16, canvas: &[u8], pal: &[u8]) -> Vec<u8> {
     b.resize(0x34, 0);
     b.extend_from_slice(&5u16.to_le_bytes());
     b.resize(0x3c, 0);
-    b.extend_from_slice(&7u32.to_le_bytes());
+    b.extend_from_slice(&flags.to_le_bytes());
     b.extend_from_slice(canvas);
     b.extend_from_slice(pal);
     b
@@ -201,6 +206,24 @@ fn swizzled_eight_bit_round_trips_through_gs_memory() {
         let k = (ix & 0xe7) | (ix & 8) << 1 | (ix & 16) >> 1;
         assert_eq!(img.rgba[p * 4], k as u8, "pixel {p}");
         assert_eq!(img.rgba[p * 4 + 3], 255);
+    }
+}
+
+/// A linear (flag bit 2 clear) 8-bit IMGD such as Sora's HUD face: the palette is still read in the
+/// GS CSM1 order, pixel value `i` takes the entry with bits 3 and 4 swapped (8..15 <-> 16..23, ...).
+#[test]
+fn linear_eight_bit_palette_reads_in_csm1_order() {
+    let (w, h) = (16usize, 16usize);
+    let lin: Vec<u8> = (0..=255u8).collect();
+    let pal: Vec<u8> = (0..256).flat_map(|k| [k as u8, 0, 0, 0x80]).collect();
+    let img = decode(&imgd8_flags(w as u16, h as u16, &lin, &pal, 3)).expect("decode");
+    assert!(!img.swizzled);
+    for (p, want) in [(0usize, 0u8), (7, 7), (8, 16), (15, 23), (16, 8), (23, 15), (24, 24), (200, 208), (208, 200), (216, 216), (231, 231), (247, 239)] {
+        assert_eq!(img.rgba[p * 4], want, "pixel value {p}");
+        assert_eq!(img.rgba[p * 4 + 3], 255);
+    }
+    for i in 0..=255u8 {
+        assert_eq!(crate::imgd::csm1_entry(crate::imgd::csm1_entry(i) as u8), i as usize, "the swap is its own inverse");
     }
 }
 

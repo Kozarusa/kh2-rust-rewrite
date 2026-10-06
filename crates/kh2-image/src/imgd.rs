@@ -47,8 +47,7 @@ pub fn decode(b: &[u8]) -> Option<Image> {
             let four = kind == 4;
             let idx = if swizzled { unswizzle(pix, w, h, four) } else { linear(pix, w, h, four) };
             for (i, &ix) in idx.iter().enumerate().take(w * h) {
-                // Eight-bit palettes keep the GS CLUT order (bits 3 and 4 swapped) in swizzled images.
-                let k = if !four && swizzled { (ix as usize & 0xe7) | (ix as usize & 8) << 1 | (ix as usize & 16) >> 1 } else { ix as usize };
+                let k = if four { ix as usize } else { csm1_entry(ix) };
                 let c = pal.get(k * 4..k * 4 + 4).unwrap_or(&[255, 0, 255, 0x80]);
                 rgba[i * 4..i * 4 + 4].copy_from_slice(&[c[0], c[1], c[2], gs::alpha(c[3])]);
             }
@@ -56,6 +55,18 @@ pub fn decode(b: &[u8]) -> Option<Image> {
         _ => return None,
     }
     Some(Image { width: w as u32, height: h as u32, rgba, swizzled })
+}
+
+/// The palette entry an 8-bit pixel value reads. Every IMGD is drawn with a TEX0 whose CLUT storage
+/// mode is CSM1 (0x233588 never sets bit 55) and its 256-entry palette is uploaded as a 16x16 PSMCT32
+/// rectangle in file order (0x233588, first 0x2f9278 call, the CLUT width and height from header
+/// +0x2c and +0x2e). CSM1 lays an 8-bit CLUT out in 8x2 blocks, so pixel value `i` reads the file
+/// entry with bits 3 and 4 of `i` swapped. The pixel layout flag (header +0x3c bit 2) only changes how
+/// the pixels are uploaded, not the palette, so the swap holds for linear and swizzled images alike
+/// (the HUD faces in `obj/P_*.apdx` are linear 8-bit images).
+pub fn csm1_entry(ix: u8) -> usize {
+    let i = ix as usize;
+    (i & 0xe7) | (i & 8) << 1 | (i & 16) >> 1
 }
 
 fn linear(pix: &[u8], w: usize, h: usize, four: bool) -> Vec<u8> {

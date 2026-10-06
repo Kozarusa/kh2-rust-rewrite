@@ -153,6 +153,59 @@ and is finished. Atkp 708/709 are type 6: the "damage" `(Magic * Power + 99) / 1
 (FUN_00185a68: types 5 and 6 are positive) and clamped to the maximum (FUN_001a0100). Port: `magic_rules::heal_amount`,
 `magic::event21` (Sora only: the app has no party members).
 
+### The heal rule (WP-FIX-13) [V: decomp]
+
+The user reported "cure does not heal". What the code of the original says, and what the app does:
+
+- **Amount.** FUN_001a0610 on an `atkp` row of type 6: `(stat * Power + 99) / 100` (integer division), `stat` = the
+  caster's stat block +0x188 (Strength) when the row's `CriticalAdjust` is 0, +0x18a (Magic) when it is 1, and 0 for any
+  other value. Type 5 rows use a percentage of the target's maximum instead (`max * stat * Power`, rounded up over
+  10000); no spell row has it and it is not ported (the port answers 0). Cure's rows (disc, `atkp` 708 for the target,
+  709 for another member) are all type 6, `CriticalAdjust` 1: Power 400 / 500 / 600 for levels 1 / 2 / 3, 800 / 1000 /
+  1200 in Wisdom, 3000 in Master and Final; 709 has about half of them. So level 1 at Magic 7 heals 28 (Sora's maximum
+  at the start is 20). Test `cure_heals_for_every_kind_from_the_disc`, `heal_amount_and_clamp_rules`.
+- **Which rows exist.** A cast's kind is `2 * level - 2` (+ 10 / 20 / 30 in forms 2 / 3 / 4, + 1 for a finisher
+  motion). Cure's `magc` rows have no finisher motion, so its kind is always even, and rows 708 / 709 exist for every even
+  kind the game can cast (0, 2, 4 and +10 / 20 / 30). The same test asserts it, and that `magi` +0x38 (the range) is above
+  0 for each, since a range of 0 would skip the heal.
+- **Who.** Every party member 0 to 3 that is valid, alive, and whose horizontal distance to the cast point (the target's
+  body centre, bone 0x4001) is below `magi` +0x38 (280 / 600 / 1200 at levels 1 / 2 / 3, in game units). The target
+  record names the caster, so Sora is always inside (distance 0). The app heals Sora only.
+- **When.** At the cast trigger (frame trigger 17 of the cast motion, FUN_001a4a60): the MP is paid, then event 21 starts
+  element 3, creates the attack and hits the target directly (host 2.17), which applies the heal at once. Ground cast:
+  trigger at frame 18 (0.3 s after the cast starts, A364); air cast: frame 30 (A372).
+- **Apply.** FUN_00175340 (the receive handler) passes types 5 and 6 through even when the object is KO'd or untouchable
+  for other hits, FUN_00185a68 hands the signed amount to the object's HP method (vtable +0x78 = FUN_00186238), which
+  adds it with FUN_001a0100 (clamp to the maximum, slot 0 = HP), posts HUD event 4 (FUN_0013de10; the panel's heal
+  handler FUN_00157108 is in docs/hud.md) and revives a KO'd member instead of healing it. Port: `magic_rules::healed`.
+- **MP.** FUN_001769e0 pays the cost byte at the trigger through FUN_00186368: Cure's cost is 255, always more than the
+  MP held, so MP becomes 0 and the MP charge starts (`prty` MpDrive times 1.0 = 3000 frames; MP Haste shortens it).
+  While it runs every spell is unavailable (FUN_001ba2c0, status 5). Verified by log: `menu: command 52 not usable
+  (status Unavailable, MP 0, charging true)` in the second cast attempt of a run.
+
+**Finding.** The app's Cure heals. Reproduced with `KH2_MAGIC_HURT=<s>:<hp>` (below) in tt00, tt02 and tt04, on the
+ground and in the air: `magic: Cure heals Sora: atkp 708 SubId 0 Power 400 x magic 7 -> 28; HP 6 -> 20`, and the HUD ring
+grows (screenshots in the WP report). The earlier accept scenario `magic-cure` showed nothing because Sora starts at full
+HP (`HP 20 -> 20`). The cases where a player sees no heal and the original behaves the same:
+1. The first cast was at full HP and used all MP; for the next 3000 frames (50 s at 60 Hz) every spell is unavailable and
+   the menu entry does nothing.
+2. A hit that flinches Sora between the button and the trigger ends the cast: event 20 stops when the caster's motion
+   changes (host 1.15), so no MP is paid and nothing heals. None of the four spells' cast motions carries a range trigger
+   that arms the caster (36 / 37 set bits of the status mask the reaction table `patn` reads, see
+   docs/hit-reaction.md; the test `magic_turn_data_from_the_disc` checks it), and the app sets no status bit, so a Dusk
+   or Shadow hit during the 0.3 s wind-up cancels it. What else sets the status bits (abilities such as a cast that cannot
+   be interrupted) was not found [GAP: addresses searched: 0x188030 cases 0x24 / 0x25, writers of +0xabc by the host
+   calls 1.211 / 1.212].
+3. The cast request is dropped when Sora is in a state with no window (`magic: cast of command 52 dropped (state Hurt ...)`).
+
+Fixed in WP-FIX-13: the stat choice (Strength for `CriticalAdjust` 0, nothing for other values, type 5 not treated as a
+flat heal) and the heal / clamp as pure functions with disc tests. The MpDrive value is read from the `prty` row through
+`+0x12c`, which is inferred from the field name.
+
+**Harness aid.** `KH2_MAGIC_HURT=<seconds>:<hp>` sets Sora's HP once, that many seconds after the start (60 Hz ticks), and
+logs `magic: KH2_MAGIC_HURT: Sora's HP 20 -> 6`: the first areas start at full HP, so a Cure has nothing to heal without
+it. Display-independent: the HUD reads the same HP.
+
 ## Blizzard (BLIZZARD_*.mag)
 
 The shot is a request thread (host 2.20 -> FUN_001a4738) at word 0x319, which the disassembler's flow walk does not
@@ -278,6 +331,8 @@ turn; the interpreter entry point.
 | 0x18e2f0, 0x1a2ba0, 0x1a30e0, 0x1a2fc8, 0x18dc98, 0x1a2c58, 0x1a2cc0, 0x189610 | attack objects |
 | 0x1be108, 0x1be190, 0x1be280, 0x1be300, 0x19e7e0 | hit memory, row variant |
 | 0x1a0610, 0x1a0a18, 0x185a68, 0x186238 | damage, element boost, heal/damage apply |
+| 0x175340, 0x1bff00, 0x1a0100, 0x13de10, 0x17cee8 | receive handler (types 5 and 6 pass), status conversion, HP add and clamp, HUD heal event 4, revive (WP-FIX-13) |
+| 0x188030 (cases 0x24, 0x25) | range triggers 36 / 37: status mask bits +0xac0 / +0xac4 (none in the spell motions) |
 | 0x173988 | host 1.139: FUN_001db868(effect file, id, 1, 1, 0, object) |
 | 0x16d098, 0x16d138 -> 0x17c0f8, 0x18e3d8 -> 0x18c890, 0x172538 -> 0x1a5c30, 0x1705e8 -> 0x1857b0 | hosts 0.45 (move along a direction), 0.46 (turn toward), 2.14, 1.141 (probe), 1.146 (push) |
 | 0x18c8e0, 0x18ca78 | terrain segment test of a moving attack, wall handler |

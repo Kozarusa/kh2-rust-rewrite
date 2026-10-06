@@ -68,6 +68,8 @@ pub mod rules {
         pub final_cap: f32,
         pub final_anti_drop: i32,
         pub form_boost: f32,
+        /// The charge's re-arm time (`sstm[0xd4]`, `FUN_001ce240`).
+        pub charge_wait: f32,
     }
 
     impl Tuning {
@@ -84,6 +86,7 @@ pub mod rules {
                 final_cap: s.f32(0xa0),
                 final_anti_drop: s.i32(0xa4),
                 form_boost: s.f32(0x140),
+                charge_wait: s.f32(0xd4),
             }
         }
     }
@@ -134,6 +137,61 @@ pub mod rules {
                 self.fraction = 0;
             }
             self.whole = self.whole.saturating_sub(cost);
+        }
+    }
+
+    /// The player's drive-gauge charge (reaction commands 455 and 457, `FUN_001ce518` sets it,
+    /// `FUN_001ce240` runs it each tick): `total` is the timer at +0xb68, `wait` the second timer at
+    /// +0xb6c. While `total` is above 0, each tick where the player's motion has reached its end
+    /// (`FUN_0017f400`: no blend pending and the motion's frame is at or past its length) takes the
+    /// frame unit off `wait`; at 0 or below one gauge unit is added (`FUN_001a0290`) and `wait` is
+    /// re-armed by `sstm[0xd4]`. `total` always drops by the frame unit; reaching 0 clears it and
+    /// asks for motion 5 (`finished`).
+    #[derive(Clone, Copy, Debug, Default, PartialEq)]
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub struct Charge {
+        pub total: f32,
+        pub wait: f32,
+    }
+
+    /// What one tick of the charge asks for.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub struct ChargeStep {
+        /// Gauge units to add through `Points::gain`.
+        pub units: i32,
+        /// The timer ran out: play motion 5.
+        pub finished: bool,
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    impl Charge {
+        /// Command 455 (`ticks` 120, wait reset to 0) or 457 (`ticks` 30, `wait` kept).
+        pub fn start(&mut self, ticks: f32, reset_wait: bool) {
+            self.total = ticks;
+            if reset_wait {
+                self.wait = 0.0;
+            }
+        }
+
+        pub fn tick(&mut self, t: &Tuning, motion_at_end: bool) -> ChargeStep {
+            let mut step = ChargeStep::default();
+            if self.total <= 0.0 {
+                return step;
+            }
+            if motion_at_end {
+                self.wait -= FRAME_UNIT;
+                if self.wait <= 0.0 {
+                    step.units = 1;
+                    self.wait += t.charge_wait;
+                }
+            }
+            self.total -= FRAME_UNIT;
+            if self.total <= 0.0 {
+                self.total = 0.0;
+                step.finished = true;
+            }
+            step
         }
     }
 
@@ -937,7 +995,7 @@ fn start_motion(s: &Sora, anims: &mut Query<&mut Animator>, id: usize, blend: f3
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-pub(crate) fn drive_tick(
+fn drive_tick(
     mut commands: Commands,
     rules: Res<DriveRules>,
     data: Res<GameData>,
@@ -1275,6 +1333,44 @@ mod tests {
     }
 
     #[test]
+    fn charge_counts_down_and_adds_a_unit_per_wait() {
+        let t = Tuning { point_units: 600.0, field_drain_scale: 0.5, form_hit_loss: 1.2, anti_level_basis: 5, anti_drop: 5, anti_damage: 1.5, final_base: 25.0, final_growth: 2.0, final_cap: 100.0, final_anti_drop: 10, form_boost: 0.8, charge_wait: 10.0 };
+        let mut c = Charge::default();
+        c.start(120.0, true);
+        // The motion is never at its end: the timer runs out with no gain.
+        let mut units = 0;
+        let mut ticks = 0;
+        loop {
+            ticks += 1;
+            let s = c.tick(&t, false);
+            units += s.units;
+            if s.finished {
+                break;
+            }
+        }
+        assert_eq!((ticks, units), (120, 0));
+        // At its end every tick: one unit on the first tick (wait 0), then one per 10 ticks.
+        c.start(120.0, true);
+        let mut units = 0;
+        for _ in 0..119 {
+            units += c.tick(&t, true).units;
+        }
+        assert_eq!(units, 12);
+        assert!(c.tick(&t, true).finished && c.total == 0.0);
+        // Command 457 keeps the wait.
+        c.wait = 4.0;
+        c.start(30.0, false);
+        assert_eq!(c.wait, 4.0);
+    }
+
+    #[test]
+    fn charge_wait_is_read_from_the_disc() {
+        let Some(r) = rules_from_disc() else { return };
+        eprintln!("charge_wait {}", r.tuning.charge_wait);
+        assert!(r.tuning.charge_wait > 0.0);
+    }
+
+    #[test]
     fn gauge_carry_borrow_and_spend() {
         let mut p = Points { whole: 0, fraction: 90, max: 3 };
         p.gain(20);
@@ -1299,7 +1395,7 @@ mod tests {
 
     #[test]
     fn timer_clamps_and_anti_inverts() {
-        let t = Tuning { point_units: 100.0, field_drain_scale: 0.5, form_hit_loss: 1.0, anti_level_basis: 5, anti_drop: 5, anti_damage: 1.5, final_base: 25.0, final_growth: 2.0, final_cap: 100.0, final_anti_drop: 10, form_boost: 0.8 };
+        let t = Tuning { point_units: 100.0, field_drain_scale: 0.5, form_hit_loss: 1.0, anti_level_basis: 5, anti_drop: 5, anti_damage: 1.5, final_base: 25.0, final_growth: 2.0, final_cap: 100.0, final_anti_drop: 10, form_boost: 0.8, charge_wait: 0.0 };
         let mut tm = FormTimer::start(&t, form::VALOR, 1);
         assert_eq!((tm.left, tm.total), (400.0, 400.0));
         assert_eq!(tm.whole_points(&t), 3);
@@ -1317,7 +1413,7 @@ mod tests {
 
     #[test]
     fn anti_scales_generic_damage_only() {
-        let t = Tuning { point_units: 600.0, field_drain_scale: 0.5, form_hit_loss: 1.2, anti_level_basis: 5, anti_drop: 5, anti_damage: 1.5, final_base: 25.0, final_growth: 2.0, final_cap: 100.0, final_anti_drop: 10, form_boost: 0.8 };
+        let t = Tuning { point_units: 600.0, field_drain_scale: 0.5, form_hit_loss: 1.2, anti_level_basis: 5, anti_drop: 5, anti_damage: 1.5, final_base: 25.0, final_growth: 2.0, final_cap: 100.0, final_anti_drop: 10, form_boost: 0.8, charge_wait: 0.0 };
         assert_eq!(outgoing_damage(&t, form::ANTI, 0, 10), 15);
         assert_eq!(outgoing_damage(&t, form::ANTI, 5, 10), 10);
         assert_eq!(outgoing_damage(&t, form::VALOR, 0, 10), 10);
@@ -1337,7 +1433,7 @@ mod tests {
 
     #[test]
     fn roll_rules() {
-        let t = Tuning { point_units: 600.0, field_drain_scale: 0.5, form_hit_loss: 1.2, anti_level_basis: 5, anti_drop: 5, anti_damage: 1.5, final_base: 25.0, final_growth: 2.0, final_cap: 100.0, final_anti_drop: 10, form_boost: 0.8 };
+        let t = Tuning { point_units: 600.0, field_drain_scale: 0.5, form_hit_loss: 1.2, anti_level_basis: 5, anti_drop: 5, anti_damage: 1.5, final_base: 25.0, final_growth: 2.0, final_cap: 100.0, final_anti_drop: 10, form_boost: 0.8, charge_wait: 0.0 };
         assert_eq!(final_chance(&t, 0), 25.0);
         assert_eq!(final_chance(&t, 1), 50.0);
         assert_eq!(final_chance(&t, 5), 100.0);

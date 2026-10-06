@@ -158,7 +158,12 @@ Anti through it.
   form's `.mset`) and its `NeoMoveset` (an index into `ptya`; the variants have their own rows).
 - Keyblades [V]: the `wmst` table of `03system.bin` (row = `NeoMoveset`, two 0x20-byte names; `FUN_00184640`)
   names the right-hand and left-hand weapon motion sets, for example `W_EX010_BTLF_R` and `W_EX010_BTLF_L`.
-  Valor, Master and Final hold two keyblades, Wisdom one, Anti none. The `went` table (row = `NeoMoveset`, then
+  Valor, Master and Final hold two keyblades, Wisdom one, Anti none. Anti: [V, WP-5B, from the disc data via
+  `explore_memt_went_wmst`] its moveset (6) has a filled `went` row (same row 66 as the other forms, giving
+  `W_EX010` for the Kingdom Key) but BOTH `wmst` names are empty. `FUN_00184640` returns 0 for an empty name,
+  so `FUN_00184190` never loads a motion set for that weapon; a weapon with no motion set is not drawn [I]
+  (matches the game: Anti Sora shows no keyblade; seen in the app). `DriveRules::object_files` therefore gives a
+  hand only when its `wmst` name is non-empty. Wisdom's hand 1 has an empty `wmst` name too, so it never shows. The `went` table (row = `NeoMoveset`, then
   one object id per weapon slot of the equipped keyblade item, `FUN_001845b0`) gives the weapon model.
 - Which item each hand holds [V, WP-2B2]: the player object's constructor (`FUN_00176f88`, also
   `FUN_00176e00`) attaches hand 0 with `FUN_0016ef28(objentry, 0)` and, only while the form field is 1..5 or
@@ -180,6 +185,11 @@ Anti through it.
   dual-wielding form; the harness obtains the owned forms in id order), and `DriveState::form_weapon` is the
   record word per form. Checked against the disc: Valor with the Kingdom Key in both hands gives
   `W_EX010` with `W_EX010_BTLF_R` and `W_EX010_BTLF_L`; Anti's row gives no weapon.
+- World variants of the keyblade [V negative, WP-5B]: the object table names `W_EX010_NM`, `_WI` and `_TR` (the
+  `went` rows of the variant movesets point at them) but this disc has no `obj/W_EX010_{NM,WI,TR}.mdlx` (or `.a.us`):
+  the names exist in the OpenKH list only. What the original does for the missing file was not traced. The app
+  keeps the plain `W_EX010` model with the hand's motion set [I] (`drive::load_assets` and `sora::setup` both).
+  Checked in the app for worlds 13, 14 and 17: the forms show both keyblades in the outfit.
 - The weapon bones [I]: the attach passes `method +0x3c (0x16bc68) + hand + 1` to `FUN_00184190`, which
   stores it through `FUN_001a79a0`/`FUN_001a7808` as an index resolved by `FUN_0016fd18` in the resource
   manager (a handle counter, not a bone number); in a form hand 0 gets the constant 0x8fd instead. The
@@ -248,11 +258,27 @@ Messages other systems can use: `FormChanged { from, to }` (written when the bod
   the spare keyblades (`KH2_DRIVE_INVENTORY`).
 - The outfit index of a world (byte 0 of the save block at `0x340c9c + 4 * world`): a new game's value is
   taken to be 0; its writer was not read. `KH2_DRIVE_OUTFIT` sets it.
-- "Anti's partial MP drain" (named in the shift plan as found earlier): no such rule was found in this pass.
-  The drive paths read (`FUN_001a04b0`, `FUN_001a0240`, `FUN_001a0210`, `FUN_00186368`, `FUN_001a0180`,
-  `FUN_00177788`, `FUN_001a0358`, `FUN_00178748`, `FUN_001788d8`) key nothing on Anti besides the timer sign
-  and the damage multiplier; the readers of the object's form field (listed under "Stats and abilities") and
-  of the save-record form byte include no MP change. Not ported; if an address exists it was not handed over.
+- "Anti's partial MP drain" [searched twice, not found, WP-5B]: no code ties MP to the form field. Searched:
+  every reader of `sstm` (`DAT_00360130 + offset`, all 0x0c..0x16c): the Anti-related offsets are 0x8c (timer
+  level, `FUN_001a04b0`), 0x90 and 0xa4 (counter drops), 0x94 (damage, `FUN_001a0610`), 0x98..0xa0 (Final roll
+  chance, `FUN_001d4180`, `FUN_001d4348`); 0xa8 belongs to a movement routine (`FUN_00176050`). The MP writers:
+  `FUN_001a0180` (adds to MP at +0x180; during an MP charge a positive add feeds the charge by `sstm[0x7c]`
+  instead), `FUN_001a0210`, `FUN_00186368`, `FUN_001a0240`, `FUN_001a05a8`, and their callers (`FUN_001a04b0`
+  refills HP and MP at the timer start; the player constructors `FUN_001cda78`/`FUN_001cdb98`;
+  `FUN_00118730`; `FUN_001a12a0` item use; `FUN_001ac130`; `FUN_0017d4b8` the periodic MP tick; `FUN_001be500`).
+  None tests the form. Not ported; no invention.
+- The drive-gauge charge of commands 455 and 457 [rule V, consumer not wired, WP-5B]: `FUN_001ce518` sets the
+  timer +0xb68 (120.0 at 0x37c340 for 455, with motion 0xc1, and +0xb6c = 0; 30.0 at 0x37c344 for 457, no motion,
+  +0xb6c kept). `FUN_001ce240` each tick, while +0xb68 > 0: when the player's animator is at the end of its
+  motion (`FUN_0017f400`: `FUN_0017fab8` false i.e. a motion present, blend time +0x34 <= 0 and the motion's
+  length `<=` the current frame +0x30) it takes the frame unit off +0xb6c and, at <= 0, adds 1 gauge unit
+  (`FUN_001a0290`, the same carry as `Points::gain`) and re-arms +0xb6c by `sstm[0xd4]` (4 on this disc);
+  +0xb68 always drops by the frame unit and at <= 0 is cleared and motion 5 is played. Ported as the pure
+  `drive::rules::Charge` (tests `charge_*`, `sstm[0xd4]` read from the disc). Not wired: it needs the player's
+  motion 0xc1 to play and to report "at its end", which is the controller's state machine in `sora.rs`
+  (WP-5A's region). Wiring: on `PlayerReactionCmd::Charge` call `Charge::start(ticks, motion.is_some())`, play
+  `motion`, then each tick `Charge::tick(&rules.tuning, animator_at_end)`, add `units` with `Points::gain(units)` (one unit
+  is 1/100 of a point) and on `finished` play motion 5.
 - Form experience, level-ups and the Master orb gain (`FUN_001d3f88` and friends) are not run: the level is
   fixed per run (`KH2_DRIVE_LEVEL`); the form's ability list is rebuilt from the level on each entry.
 - Orbs, Damage Drive and summon mode (gauge mode 3, `FUN_001cf210`) are not implemented.
@@ -260,6 +286,7 @@ Messages other systems can use: `FormChanged { from, to }` (written when the bod
 - The special form field values 6 and 0xb and the battle flag's `FUN_001a4e70`.
 - Wisdom's menu swap (`FUN_001bc4c8`) and the Final-ready prompts (`FUN_001ce240`): the menu is not ported.
 - The frame unit: 1.0 per 60 Hz tick is inferred (see above).
+
 ## Integration status (WP-I1, WP-2B2)
 
 WP-I1 did in sora.rs, enemy.rs and drive.rs: (1) `State::FormChange` holds the controller during A120 and A121 (no input, hit tests off, keyblade shown) and drive.rs ends it; (5) the `Battle` resource replaces `Sora::battle` and is read by the drive code; (6) Anti's multiplier is applied in `enemy::receive_hits` through `drive::rules::outgoing_damage` (generic damage branch only, as FUN_001a0610 does).
@@ -267,3 +294,13 @@ WP-I1 did in sora.rs, enemy.rs and drive.rs: (1) `State::FormChange` holds the c
 WP-2B2 did: (2) the base-body merge in `sora::setup` (`DriveRules::base_files`); (3) the weapon list (`Sora::weapons`, `WeaponCue`, `HandSocket(bone)`, `spawn_weapons`; `fx::weapon_trails` over the list; drive.rs no longer owns a socket or a visibility rule); (4) the stat block is read: the drive code sets the form's list on the ability system, `abilities::sync_controller` writes `sora::Abilities` and `Growth` from the block, the drain reads `form_drain`, and `enemy::receive_hits` applies `abilities::attacker_bonuses` after Anti's multiplier; HP and MP are restored at the timer start; `reaction_cmd::offer` passes the object's form (`DriveState::object_form`) and the battle flag into `Ctx`.
 
 Where the controller's attack-selection code is touched (WP-2G2's region in sora.rs): only the type of the `weapon` parameter of the `start_attack` and `request` closures (`&mut Animator` -> `&mut WeaponCue`, same `play`/`restart` calls) and the `wrig.mset.has(x)` reads, which now ask `WeaponRigs` (any weapon has the slot); every call inside the closures is unchanged.
+
+### Verification status (WP-5B)
+
+Run in the app (`tt00`, `KH2_DRIVE=1..5`, `KH2_DRIVE_AT=3`): the log shows the entered form, the chosen files, the
+stat block values and the revert (`KH2_DRIVE_REVERT_AT`: `revert from Valor`, `form changed Valor -> base Sora`).
+Screenshots LOOKED AT: Valor (two keyblades), Wisdom (one), Final (two, crossed), Anti (none), and Final in
+worlds 13 and 17 (outfit changes, two keyblades after the fallback above). Master was checked from the log only
+(`hand 0 W_EX010 (W_EX010_TRIF_R), hand 1 W_EX010 (W_EX010_TRIF_L)`). Base body per world (log): 2
+`P_EX100`, 13 `P_EX100_WI`, 14 `P_EX100_NM`, 17 `P_EX100_TR`, each with the attack table of its own row.
+Not verified: animation of the left hand's weapon in combat, the weapon bone choice (still [I]), audio.

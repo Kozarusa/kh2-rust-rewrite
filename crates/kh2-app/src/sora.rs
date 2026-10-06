@@ -751,7 +751,6 @@ pub fn tick(
         body.play(slot, true, BLEND_LOCOMOTION);
         weapon.play(slot.filter(|&x| wrig.mset.has(x)), true, BLEND_LOCOMOTION);
         place(&mut tf, s, &body, &mut bodies);
-        drop(body);
         weapon.apply(&s.weapons, &mut anims);
         return;
     }
@@ -1195,7 +1194,6 @@ pub fn tick(
             s.state, body.tag(), body.frame, s.motor.pos.x, s.motor.pos.y, s.motor.pos.z, s.motor.yaw, world.x, world.y, world.z, body.root.translation.z, body.root.yaw
         );
     }
-    drop(body);
     weapon.apply(&s.weapons, &mut anims);
 }
 
@@ -1351,7 +1349,6 @@ pub fn receive_wall_hits(
             hits_before,
             s.hits
         );
-        drop(body);
         weapon.apply(&s.weapons, &mut anims);
         s.state = State::Hurt;
         s.motor.vel = Vec3::ZERO;
@@ -1390,7 +1387,6 @@ pub fn receive_hits(
             let slot = rig.mset.slot(id::AUTOGUARD, PlayerState::BattleWeapon);
             body.restart(slot, false, 2.0);
             weapon.restart(slot, false, 2.0);
-            drop(body);
             weapon.apply(&s.weapons, &mut anims);
             s.state = State::Counter;
             s.invuln = 18.0;
@@ -1475,7 +1471,6 @@ pub fn receive_hits(
         }
         // The game's invulnerability after a hit was not found; the app keeps its own timer.
         s.invuln = 36.0;
-        drop(body);
         weapon.apply(&s.weapons, &mut anims);
     }
 }

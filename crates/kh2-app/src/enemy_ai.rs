@@ -359,6 +359,16 @@ struct Obj {
     hp_max: i32,
     hp_min: i32,
     hp_add: i32,
+    /// The word at object +0xabc (host 1.211 / 1.212).
+    flags_abc: u32,
+    /// The motion controller's (+0x140) trigger bytes +0xf8 and +0xf9 (object +0x238, +0x239): bits 0..3
+    /// of +0xf8 while range triggers 16..19 are active (FUN_00188030; cleared at the start of each pass,
+    /// FUN_00187fb0), bits 0..3 of +0xf9 when frame triggers 9..12 fired in the last advance (the frame
+    /// trigger dispatcher 0x188498, cases at 0x1886c0; cleared by FUN_0017e3b8 before it advances).
+    trigger_bits: [u8; 2],
+    /// Mover type 5, installed by `set_dash` (host 1.58): its velocity (+0x20, the app's space,
+    /// centimetres per tick) and its factor (+0xf0).
+    dash: Option<(Vec3, f32)>,
     /// The motion controller's time (+0x140 + 0x30 = object +0x170), in the motion's own frames: the
     /// `Animator` frame at the start of the tick, or the first frame of a motion requested in it.
     frame: f32,
@@ -407,6 +417,9 @@ impl Obj {
             hp_max: 1,
             hp_min: 0,
             hp_add: 0,
+            flags_abc: 0,
+            trigger_bits: [0; 2],
+            dash: None,
             frame: 0.0,
             blend_left: 0.0,
             want_vel: Vec3::ZERO,
@@ -588,6 +601,8 @@ impl BevyHost<'_> {
         // The scripts (Shadow's pounce 100, Soldier's jump 260) pass positive values, then wait for
         // `airborne`, so the app jumps |y|; the rest of the direction, normalised and scaled by w, is the
         // horizontal speed.
+        // The jump installs its own mover (FUN_0017b278 -> mover 1), which ends a dash.
+        self.obj.dash = None;
         let h = dir[1].abs();
         let d = from_game([dir[0], 0.0, dir[2], 0.0]).normalize_or_zero();
         self.obj.air_vel = Vec3::new(d.x, 0.0, d.z) * dir[3];
@@ -830,15 +845,19 @@ impl BevyHost<'_> {
             Call::Func { group: 1, index: 74, .. } => {
                 self.obj.move_vel = Vec3::ZERO;
                 self.obj.air_vel = Vec3::ZERO;
+                self.obj.dash = None;
                 approx(Value::None, "the mover's own state is not modelled: the movement and jump speeds are cleared")
             }
             Call::Func { group: 1, index: 98, args } => match self.ground_position(args[0].int() as u32) {
                 Some(p) => imp(Value::Vec(to_game(p))),
                 None => missing(Value::Vec([0.0; 4]), "ground position of an object other than self and the player"),
             },
-            // 1.150 (0x171600): bit n-1 of the byte at object +0x238. Its writer was not found; a new
-            // object's byte is taken as 0.
-            Call::Func { group: 1, index: 150, .. } => stub(Value::Bool(false), "byte +0x238 of the object: writer not found, read as 0"),
+            // 1.150 / 1.151 (0x171600, 0x171628): bit n-1 of the byte at object +0x238 / +0x239, the
+            // motion controller's trigger bytes (see Obj::trigger_bits).
+            Call::Func { group: 1, index: i @ (150 | 151), args } if args[0].int() as u32 == me => {
+                let byte = self.obj.trigger_bits[*i as usize - 150];
+                imp(Value::Bool((byte as u32).wrapping_shr((args[1].int() - 1) as u32) & 1 != 0))
+            }
             // 1.84 (0x172ee8): the pointer at object +0x48c, the status block FUN_001b2148 builds. Its
             // first 32 records of 12 bytes are the HP of each part (FUN_0019f770: current, maximum,
             // lowest); the app has part 0 only.
@@ -875,6 +894,39 @@ impl BevyHost<'_> {
                 let hp = (self.obj.hp + self.obj.hp_add).max(self.obj.hp_min).min(self.obj.hp_max);
                 approx(Value::Int(hp), "the change is applied after the tick; the HUD side of FUN_00186238 (FUN_0019bd18 / FUN_0019bd58) is not reproduced")
             }
+            // 1.58 (0x172988 -> FUN_0019e6b8): +0x20 = the direction normalised times its w, +0xf0 = the
+            // factor, then mover type 5 (FUN_0016b698(obj, 5); the mover object at 0x1c88f00, table
+            // 0x35e4d8). Its velocity method FUN_0019e740 -> FUN_001832b8: with a movement vector
+            // (+0x10, speed +0x1c above 0) v = v * k + direction * speed * (1 - k), else v = v * k; the
+            // step is v times the frame-step factor (1). N_EX570_BTL passes (0, 0, 0, 1): v starts at 0.
+            Call::Func { group: 1, index: 58, args } if args[0].int() as u32 == me => {
+                let v = match &args[1] {
+                    kh2_bdx::host::Arg::Vec(d) => from_game([d[0], d[1], d[2], 0.0]).normalize_or_zero() * d[3],
+                    _ => Vec3::ZERO,
+                };
+                self.obj.dash = Some((v, args[2].float()));
+                approx(Value::None, "mover 5 as the velocity rule of FUN_001832b8; the threshold test at its start (DAT_0037a880) only picks between two equal paths")
+            }
+            // 1.262 (0x1709c8): the object's virtual method +0x54 with (line, priority), FUN_001970b8 in
+            // the enemy tables: the voice slot at +0x9b8 takes the line when its priority is at least
+            // the queued one's (FUN_001ae798). N_EX570_BTL asks for lines 17, 26 and 37 with priority 2.
+            Call::Func { group: 1, index: 262, .. } => stub(Value::None, "enemy voice lines: no voice slot for enemies in the app, and no voice/us/battle bank names this speaker"),
+            // 1.211 / 1.212 (0x170760, 0x170788): set / clear bit n of the word at object +0xabc. Its
+            // readers (FUN_00185be0, FUN_0018c6d0) test bits 9, 10, 11 and 13 (with +0xac0 and +0xac4);
+            // N_EX570_BTL only uses bits 1 and 12, for which no reader was found.
+            Call::Func { group: 1, index: i @ (211 | 212), args } if args[0].int() as u32 == me => {
+                let bit = 1u32.checked_shl(args[1].int() as u32).unwrap_or(0);
+                if *i == 211 {
+                    self.obj.flags_abc |= bit;
+                } else {
+                    self.obj.flags_abc &= !bit;
+                }
+                stub(Value::None, "word +0xabc stored; bits 1 and 12 have no reader in the executable that was found")
+            }
+            // 2.76 (0x18e068): a float stored at object +0xaf4 (N_EX570_BTL: 50). The readers of +0xaf4
+            // found (FUN_001769e0, FUN_0022e0a0, ...) read it as a byte or an int of other object
+            // classes; no reader for this one was found.
+            Call::Func { group: 2, index: 76, .. } => stub(Value::None, "float at +0xaf4: no reader found"),
             // 1.132: the target record returns to a pool; the app's records are never reused.
             Call::Func { group: 1, index: 132, .. } => stub(Value::None, "target records are not pooled"),
             Call::Func { .. } | Call::Unknown { .. } => missing(Value::Int(0), "function not mapped"),
@@ -1121,6 +1173,7 @@ fn ai_update(
         obj.blend_left = (obj.blend_left - 1.0).max(0.0);
         obj.spawn_kind = e.spawn_kind;
         obj.spawn_params = e.spawn_params;
+        obj.trigger_bits = trigger_bits(&anim);
         obj.hp_max = e.stats.max_hp;
         obj.hp_min = e.min_hp;
         let env = Env {
@@ -1227,7 +1280,15 @@ fn ai_update(
         obj.motor.yaw = wrap_angle(obj.motor.yaw + root_yaw);
         let root_move = Quat::from_rotation_y(obj.motor.yaw - anim.root.yaw) * root_t;
         let was_air = !obj.motor.grounded;
-        let mut delta = obj.move_vel + root_move.with_y(0.0);
+        // Mover 5 (`set_dash`) turns the movement vector into its smoothed velocity.
+        let step = match obj.dash.as_mut() {
+            Some((v, k)) => {
+                *v = if obj.move_vel != Vec3::ZERO { *v * *k + obj.move_vel * (1.0 - *k) } else { *v * *k };
+                *v
+            }
+            None => obj.move_vel,
+        };
+        let mut delta = step + root_move.with_y(0.0);
         if was_air {
             delta += obj.air_vel;
         }
@@ -1296,6 +1357,25 @@ fn ai_update(
             commands.entity(ent).despawn();
         }
     }
+}
+
+/// The motion controller's trigger bytes after the last advance (Obj::trigger_bits): range triggers
+/// 16..19 active at the current frame, frame triggers 9..12 crossed by the last tick.
+fn trigger_bits(anim: &Animator) -> [u8; 2] {
+    let (Some(t), Some(m)) = (anim.triggers(), anim.motion()) else { return [0; 2] };
+    let g = |f: f32| f * crate::data::LOGIC_HZ / m.fps.max(1.0);
+    let mut bits = [0u8; 2];
+    for k in 0..4u8 {
+        if t.is_active(anim.gframe(), 16 + k) {
+            bits[0] |= 1 << k;
+        }
+    }
+    if anim.frame != anim.prev_frame {
+        for ft in t.crossed(g(anim.prev_frame), g(anim.frame)).filter(|f| (9..=12).contains(&f.id)) {
+            bits[1] |= 1 << (ft.id - 9);
+        }
+    }
+    bits
 }
 
 /// Applies the script's fade to the enemy's materials (blended while it fades, as authored otherwise).

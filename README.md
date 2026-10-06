@@ -3,7 +3,7 @@
 An experimental, from-scratch Rust rewrite of **Kingdom Hearts II** (PS2, USA, `SLUS_210.05`).
 It reads all game data at runtime from **your own disc image**. No game assets, extracted files or decompiled code are in this repository, and none ever will be.
 
-Status: a playable combat slice in Twilight Town. Everything is decoded from your disc at startup: maps, sky, textures, models, animations, hitboxes and stats.
+Status: a playable combat slice in Twilight Town (`tt00`, `tt02`, `tt04`). Everything is decoded from your disc at startup: maps, sky, textures, models, animations, hitboxes, stats, enemy scripts, effects and audio.
 
 Sora:
 - **Movement:** runs, walks, turns and jumps with his real speeds and jump height from the game's `pref` tables.
@@ -17,16 +17,25 @@ Sora:
 - **Guard and lock-on:** guards (A320, with the A321 counter on a frontal block), dodge-rolls, and locks on with KH2-style camera assist.
 - **Getting hit:** flinches, gets blown away, goes down and revives.
 
+Sora (continued):
+- **Abilities and drive forms:** the ability and stat block, growth abilities, Valor, Wisdom, Master, Final and Anti forms with their outfits and hand weapons, and limits.
+- **Reaction commands:** native offers, the accept path, and Soldier's command 34 played on Sora; clashes between attacks.
+- **Camera:** the game's field camera model, look-around (the model fades), area camera types and collision.
+- **HUD:** gauges, the command menu with its reaction capsule, text with commands, the area-name card and banners.
+- **Audio:** the game's sound driver, area music with the battle switch, voices and footsteps, and positional volume and pan. Mostly unlistened.
+
 Enemies:
 - **Shadows and Soldiers:** spawn in waves with their own models, motions, hitboxes, and `enmp`/`lvpm` stats.
-- **Behaviour:** they chase, sink and resurface (Shadows), attack, flinch, get blown away and die.
+- **Behaviour:** they run the game's own AI scripts (BDX) in an interpreter that was checked against the game's code, so they chase, sink and resurface (Shadows), attack, flinch, get blown away and die as in the original.
 
 Not done yet:
-- IK and motion constraints.
-- Magic, abilities, Drive Forms, Limits and reaction commands.
-- The game's real enemy AI scripts (BDX); a stand-in AI is used.
-- COCT collision; the render triangles are used instead.
-- Other effects (hit sparks, Heartless deaths, magic), audio, NPCs, events and menus.
+- Magic, items and summons.
+- Other enemy types.
+- NPCs, events, menus and the world map.
+- Final Mix differences (only the USA release is supported).
+- Message windows and HP digit counters.
+- Some audio gaps (the landing footstep) and some effects (munny payout).
+- COCT collision is used; some camera blockers and the Quick Run camera speed are open.
 
 The open rows of `sheets/systems.json` are the to-do list.
 

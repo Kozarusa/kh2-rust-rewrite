@@ -369,10 +369,41 @@ fn receive_clashes(
     mut sora_q: Query<(Entity, &mut Sora, &mut Fighter)>,
     mut anims: Query<&mut Animator>,
     mut sparks: MessageWriter<StartSystemEffect>,
+    time: Res<Time>,
+    mut forced: Local<Option<f32>>,
 ) {
     let Ok((me, mut s, mut fighter)) = sora_q.single_mut() else { return };
     let Some(reaction) = reaction else { return };
     let c = &reaction.consts;
+    // Harness: `KH2_CLASH_FORCE_GUARD=<seconds>` runs FUN_001754a0 once at that time with a guarding
+    // own row (RefactSelf 1) against a reflecting row, Sora's own state, and starts the spark it
+    // returns 20 units in front of Sora at chest height (the place stands in for the volumes; no
+    // attack pair exists). The bounce itself is not applied. Not the original's behaviour: a test hook
+    // for the guard-bounce spark, which real clashes in the app's fights rarely produce.
+    let at = *forced.get_or_insert_with(|| std::env::var("KH2_CLASH_FORCE_GUARD").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(-1.0));
+    if at >= 0.0 && time.elapsed_secs() >= at {
+        *forced = Some(-1.0);
+        let fields = |own: rules::Refact, other: rules::Refact| ReflectFields {
+            refact_self: own,
+            refact_other: other,
+            reflected_motion: 0,
+            reflect_hit_back: 0,
+            reflect_action: 0,
+            reflect_hit_sound: -1,
+            reflect_rc: 0,
+            reflect_range: 0,
+            reflect_angle: 0,
+            bg_hit: false,
+        };
+        let ranges: Vec<u8> = anims.get(s.body).ok().and_then(|a| a.triggers().map(|t| t.active(a.gframe()).map(|r| r.id).collect())).unwrap_or_default();
+        let actor = ClashActor::new(!s.motor.grounded, ranges);
+        let own = fields(rules::Refact::Guard, rules::Refact::Reflect);
+        let other = fields(rules::Refact::Reflect, rules::Refact::Reflect);
+        let (outcome, spark) = party_clash(&own, &other, actor, c, guard.as_deref());
+        let place = globals.get(me).map(|g| g.translation()).unwrap_or_default() + s.motor.forward() * (20.0 * SCALE) + Vec3::Y * (100.0 * SCALE);
+        sparks.write(StartSystemEffect { id: spark, at: Mat4::from_translation(place) });
+        info!("player: clash (forced by KH2_CLASH_FORCE_GUARD): own RefactSelf Guard against RefactOther Reflect, {actor:?}: {outcome:?}; system effect {spark:#x} (started at {place:.3?})");
+    }
     for k in clashes.read().filter(|k| k.player == me) {
         let (Some(own), Some(other)) = (data.atkp(k.player_atkp), data.atkp(k.enemy_atkp)) else { continue };
         let (own, other) = (ReflectFields::from_atkp(own), ReflectFields::from_atkp(other));

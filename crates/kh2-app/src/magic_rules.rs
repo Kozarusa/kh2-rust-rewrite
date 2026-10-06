@@ -301,13 +301,26 @@ pub fn magi_row(rows: &[MagiRow], kind: u32) -> Option<&MagiRow> {
 }
 
 /// The heal of a Cure hit (FUN_001a0610 for an `atkp` row of type 6, FUN_00185a68 adds it for types 5
-/// and 6): `(stat * Power + 99) / 100`, the stat being Magic when `CriticalAdjust` is 1.
+/// and 6): `(stat * Power + 99) / 100`, the stat being Strength (stat block +0x188) when `CriticalAdjust`
+/// is 0, Magic (+0x18a) when it is 1 and 0 for any other value (the function loads nothing else).
+/// Type 5 (a percentage of the target's maximum, `(max * stat * Power + 9999) / 10000`) is not used
+/// by the spell rows and is not ported: it answers 0 here.
 pub fn heal_amount(row: &Atkp, strength: i32, magic: i32) -> i32 {
-    let stat = if row.critical_adjust == 1 { magic } else { strength };
+    let stat = match row.critical_adjust {
+        0 => strength,
+        1 => magic,
+        _ => 0,
+    };
     match row.r#type {
-        5 | 6 => (stat * row.power as i32 + 99) / 100,
+        6 => (stat * row.power as i32 + 99) / 100,
         _ => 0,
     }
+}
+
+/// The HP after a heal (FUN_00186238 -> FUN_001a0100: the amount is added and the result clamped to
+/// the maximum; a KO'd object (`hp` 0 here) takes no heal through this path).
+pub fn healed(hp: i32, max: i32, heal: i32) -> i32 {
+    if hp <= 0 { hp } else { (hp + heal).min(max) }
 }
 
 /// Ability bit tested by the cast start before FUN_00179470 (FUN_001a4798: ability block +0xc &

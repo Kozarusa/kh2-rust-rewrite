@@ -207,6 +207,21 @@ pub struct MagicState {
     /// Ticks run, and the tick of the last cast (for the `KH2_MAGIC_LOG=2` attack timeline).
     tick: u64,
     cast_tick: u64,
+    /// `KH2_MAGIC_HURT` has been applied.
+    hurt_done: bool,
+}
+
+/// `KH2_MAGIC_HURT=<seconds>:<hp>`: once, that many seconds (60 Hz ticks) after the start, Sora's HP
+/// is set to the value (a harness aid: the first levels start at full HP, so a Cure has nothing to
+/// heal). Returns the HP when it is due.
+fn hurt_due(tick: u64) -> Option<i32> {
+    static SPEC: std::sync::OnceLock<Option<(f32, i32)>> = std::sync::OnceLock::new();
+    let (at, hp) = (*SPEC.get_or_init(|| {
+        let v = std::env::var("KH2_MAGIC_HURT").ok()?;
+        let (a, b) = v.split_once(':')?;
+        Some((a.parse().ok()?, b.parse().ok()?))
+    }))?;
+    (tick as f32 >= at * crate::data::LOGIC_HZ).then_some(hp)
 }
 
 /// What the turn triggers of a cast motion read (FUN_00188030 cases 22 and 28): the command's target
@@ -562,6 +577,13 @@ fn run(
     let Ok((me, mut s)) = sora_q.single_mut() else { return };
     let st = &mut *st;
     st.tick += 1;
+    if !st.hurt_done
+        && let Some(hp) = hurt_due(st.tick)
+    {
+        st.hurt_done = true;
+        mlog!("magic: KH2_MAGIC_HURT: Sora's HP {} -> {hp}", s.hp);
+        s.hp = hp.clamp(1, s.stats.max_hp);
+    }
     let form = drive.as_ref().map_or(0, |d| d.form);
 
     // MP charge (FUN_00175f48 each frame; the regeneration multiplier is the block's +0x34). The
@@ -1028,7 +1050,7 @@ fn event21(
                     Some(r) => {
                         let heal = rules::heal_amount(r, s.stats.strength, s.stats.magic);
                         let before = s.hp;
-                        s.hp = (s.hp + heal).min(s.stats.max_hp);
+                        s.hp = rules::healed(s.hp, s.stats.max_hp, heal);
                         mlog!("magic: Cure heals Sora: atkp {} SubId {} Power {} x magic {} -> {heal}; HP {before} -> {} (range {range}, distance {dist:.0})", r.id, r.sub_id, r.power, s.stats.magic, s.hp);
                     }
                     None => warn!("magic: no atkp row {ATKP_CURE_SELF} for kind {}", c.kind),
@@ -1610,6 +1632,19 @@ mod tests {
             let m = mset.get(slot).unwrap();
             m.triggers.ranges.iter().filter(|r| matches!(r.id, rules::TRIGGER_TURN_TARGET | rules::TRIGGER_TURN_LOCK)).map(|r| (r.id, r.start, r.params.first().copied())).collect::<Vec<_>>()
         };
+        // No cast motion of the four spells carries a range trigger that arms the caster against hits
+        // (FUN_00188030: 36 sets a bit of the status mask at +0xac0, 37 one of +0xac4 that masks the
+        // conversion of FUN_001bff00; 27 is the app's name for an invincible range): a hit that
+        // flinches Sora during a cast ends it before its trigger (event 20 stops when the motion
+        // changes), so the spell costs nothing and does nothing.
+        for id in 0..4u8 {
+            let row = rules::pick_row(&magc, id, 1, 0).unwrap();
+            for mo in [row.ground_motion, row.air_motion] {
+                let slot = mset.slot(mo as usize, PlayerState::BattleWeapon).expect("motion");
+                let m = mset.get(slot).unwrap();
+                assert!(!m.triggers.ranges.iter().any(|r| matches!(r.id, 27 | 36 | 37)), "spell {id} motion {mo} has an armor range");
+            }
+        }
         let (fire, blizzard, thunder) = (turns(0), turns(1), turns(2));
         eprintln!("turn triggers: Fire {fire:?}, Blizzard {blizzard:?}, Thunder {thunder:?}");
         assert!(fire.is_empty());
@@ -1730,5 +1765,78 @@ mod tests {
         let magi = rules::parse_magi(kh2_bar::find(&inner, "magi").unwrap().data);
         eprintln!("magi rows {}; row 0 {:?}", magi.len(), &magi[0].0[..magi[0].0.len().min(16)]);
         assert!(magi[0].f(MAGI_TIME) > 0.0, "Fire's attack time");
+    }
+
+    /// WP-FIX-13: a Cure heals Sora for every kind the game can cast (level 1 to 3 normal casts, +10 / 20 /
+    /// 30 in forms 2 / 3 / 4; Cure has no finisher motion, so the kind is always even). Each kind needs its
+    /// `atkp` row 708 (type 6, Magic, Power from the disc: `(Magic * Power + 99) / 100`) and a `magi` range
+    /// above 0 (`magi` +0x38: Sora counts as in range when his horizontal distance to the cast point is
+    /// below it, so a zero range would skip the heal), and the heal must lift HP and stop at the maximum.
+    #[test]
+    fn cure_heals_for_every_kind_from_the_disc() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let (magc, atkp) = {
+            let mut a = disc.0.lock().unwrap();
+            (kh2_tables::load::<Magc>(&mut a, &t::MAGC).unwrap().rows, kh2_tables::load::<t::Atkp>(&mut a, &t::ATKP).unwrap().rows)
+        };
+        let f = disc.read("03system.bin").unwrap();
+        let top = kh2_bar::parse(&f).unwrap();
+        let inner = kh2_bar::parse(kh2_bar::find(&top, "pref").unwrap().data).unwrap();
+        let magi = rules::parse_magi(kh2_bar::find(&inner, "magi").unwrap().data);
+        for level in 1..=3u8 {
+            let row = rules::pick_row(&magc, 3, level, 2).expect("Cure row");
+            assert!((row.finish_motion as i16) < 0, "Cure has no finisher motion: its kind is never odd");
+            for form in [0u8, 2, 3, 4] {
+                let kind = rules::cast_kind(row.level, false, form);
+                let r = rules::attack_row(&atkp, ATKP_CURE_SELF, kind).unwrap_or_else(|| panic!("no atkp 708 row for kind {kind}"));
+                let (r, other) = (&atkp[r], rules::attack_row(&atkp, ATKP_CURE_OTHER, kind).expect("709 row"));
+                assert_eq!((r.r#type, r.critical_adjust), (6, 1), "Cure's heal is type 6 on the Magic stat");
+                assert!(atkp[other].power <= r.power, "the other member never gets more than the target");
+                let magic = 7;
+                let heal = rules::heal_amount(r, 99, magic);
+                assert_eq!(heal, (magic * r.power as i32 + 99) / 100, "kind {kind}: the Strength argument is not used");
+                assert!(heal > 0);
+                let range = rules::magi_row(&magi, kind).expect("magi row").f(MAGI_CURE_RANGE);
+                assert!(range > 0.0, "kind {kind}: a Cure range of 0 would heal nobody");
+                // Damaged Sora: HP rises by the heal, never past the maximum.
+                let max = 2 * heal + 10;
+                assert_eq!(rules::healed(max - heal - 1, max, heal), max - 1);
+                assert_eq!(rules::healed(max - 1, max, heal), max);
+            }
+        }
+        // Level 1 with the starting Magic stat is the figure the harness log shows.
+        let r = &atkp[rules::attack_row(&atkp, ATKP_CURE_SELF, 0).unwrap()];
+        eprintln!("Cure level 1: Power {} -> heal {} at Magic 7", r.power, rules::heal_amount(r, 0, 7));
+    }
+
+    /// FUN_001a0610's stat choice for a heal row and FUN_00186238's rules (no heal for a KO'd object,
+    /// the maximum caps it).
+    #[test]
+    fn heal_amount_and_clamp_rules() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let atkp = kh2_tables::load::<t::Atkp>(&mut disc.0.lock().unwrap(), &t::ATKP).unwrap().rows;
+        let mut row = atkp[rules::attack_row(&atkp, ATKP_CURE_SELF, 0).unwrap()].clone();
+        row.power = 400;
+        assert_eq!((row.r#type, row.critical_adjust), (6, 1));
+        assert_eq!(rules::heal_amount(&row, 3, 7), 28);
+        assert_eq!(rules::heal_amount(&row, 3, 0), 0);
+        row.critical_adjust = 0;
+        assert_eq!(rules::heal_amount(&row, 3, 7), 12, "Strength when CriticalAdjust is 0");
+        row.critical_adjust = 2;
+        assert_eq!(rules::heal_amount(&row, 3, 7), 0, "no stat is loaded for other values");
+        row.r#type = 0;
+        row.critical_adjust = 1;
+        assert_eq!(rules::heal_amount(&row, 3, 7), 0, "a damage row heals nothing");
+        assert_eq!(rules::healed(6, 20, 28), 20);
+        assert_eq!(rules::healed(6, 100, 28), 34);
+        assert_eq!(rules::healed(0, 20, 28), 0, "a KO'd object takes no heal here");
     }
 }

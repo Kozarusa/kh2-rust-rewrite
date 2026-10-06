@@ -50,6 +50,12 @@ pub struct Jump {
     pub height: f32,
     /// Jump button still held (short hop allowed).
     pub hold: bool,
+    /// Releasing the jump button may cut the rise short. Set for the jump press and the Aerial
+    /// Dodge (they set actor +0x108 bit 0x10000, which the jump mover's start FUN_0017b328 turns
+    /// into the release-watch bit 0x20000); clear for an attack's leap (FUN_00176050 launches the
+    /// mover without it, so FUN_0017b328 clears 0x20000 and FUN_00174cf8 never sets the cut bit
+    /// 0x40000).
+    pub release_cuts: bool,
     /// Fall motion not yet started.
     pub fall_motion_pending: bool,
 }
@@ -57,12 +63,20 @@ pub struct Jump {
 impl Jump {
     /// A jump of `h` from height `y`.
     pub fn up(h: f32, y: f32) -> Jump {
-        Jump { t: 0.0, rise: (2.0 * h / G).sqrt(), base: y, height: h, hold: true, fall_motion_pending: true }
+        Jump { t: 0.0, rise: (2.0 * h / G).sqrt(), base: y, height: h, hold: true, release_cuts: true, fall_motion_pending: true }
     }
 
     /// A fall as if it had started `drop` above `y` (0 = start falling now).
     pub fn fall(drop: f32, y: f32) -> Jump {
-        Jump { t: (2.0 * drop / G).sqrt(), rise: 0.0, base: y + drop, height: 0.0, hold: false, fall_motion_pending: true }
+        Jump { t: (2.0 * drop / G).sqrt(), rise: 0.0, base: y + drop, height: 0.0, hold: false, release_cuts: false, fall_motion_pending: true }
+    }
+
+    /// A fall from `y` that is already moving down at `speed` units per tick (the jump mover
+    /// restarted by FUN_0016a2f0: clock `+0xd0` = speed / g, no rise, base so that the curve
+    /// passes through the current height).
+    pub fn falling_at(speed: f32, y: f32) -> Jump {
+        let v = speed.max(0.0);
+        Jump::fall(v * v / (2.0 * G), y)
     }
 
     pub fn target_y(&self) -> f32 {
@@ -145,6 +159,13 @@ impl Motor {
         self.ground = None;
     }
 
+    /// An attack's leap (FUN_00176050 -> the mover's launch FUN_001796a8 -> FUN_0017b278 /
+    /// FUN_0017b1e0): a new jump of `h` from here that the jump button cannot cut short.
+    pub fn start_leap(&mut self, h: f32) {
+        self.start_jump(h);
+        self.jump.release_cuts = false;
+    }
+
     pub fn start_fall(&mut self) {
         self.jump = Jump::fall(0.0, self.pos.y);
         self.grounded = false;
@@ -162,7 +183,7 @@ impl Motor {
         if self.ceiling && j.t > 6.0 && j.t < j.rise {
             fall_motion = std::mem::take(&mut j.fall_motion_pending);
             *j = Jump { fall_motion_pending: false, ..Jump::fall(0.0, self.pos.y) };
-        } else if !j.hold && j.t > 6.0 && j.t < j.rise - 5.0 {
+        } else if j.release_cuts && !j.hold && j.t > 6.0 && j.t < j.rise - 5.0 {
             fall_motion = std::mem::take(&mut j.fall_motion_pending);
             *j = Jump { fall_motion_pending: false, ..Jump::up(SHORT_HOP, self.pos.y) };
             j.hold = false;
@@ -354,6 +375,30 @@ mod tests {
         assert!((j.target_y() - 185.0).abs() < 1e-3);
         j.t = j.rise + 10.0;
         assert!((j.target_y() - (185.0 - 0.5 * G * 100.0)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_leap_is_not_cut_by_the_jump_button_and_a_fall_keeps_its_speed() {
+        let mut m = Motor::default();
+        m.start_leap(185.0);
+        for _ in 0..8 {
+            m.jump.t += 1.0;
+            m.jump_control(false);
+        }
+        assert_eq!(m.jump.height, 185.0, "the leap's rise was cut");
+        let mut j = Motor::default();
+        j.start_jump(185.0);
+        for _ in 0..8 {
+            j.jump.t += 1.0;
+            j.jump_control(false);
+        }
+        assert!(j.jump.height < 10.0, "a released jump still hops short");
+        // A fall that already moves down 6 units a tick drops about 6.2 on its next tick.
+        let f = Jump::falling_at(6.0, 100.0);
+        let mut n = f;
+        n.t += 1.0;
+        let drop = f.target_y() - n.target_y();
+        assert!((f.target_y() - 100.0).abs() < 1e-3 && (drop - (6.0 + 0.5 * G)).abs() < 1e-3, "{drop}");
     }
 
     #[test]

@@ -99,6 +99,11 @@ pub struct PlaySe {
 pub struct PlayVoice {
     pub file: String,
     pub line: u16,
+    /// The record's priority byte (`vtbl` +2): a line with a lower priority than the one queued
+    /// or playing on the speaker's slot is dropped (`FUN_001ae798`).
+    pub priority: u8,
+    /// World position in metres of the speaker (voice lines are positional sounds of kind 5).
+    pub pos: Option<Vec3>,
 }
 
 /// The voice table (`vtbl` of `00battle.bin`): a motion names a voice ID, and the table says which
@@ -108,39 +113,50 @@ pub struct VoiceTable(Vec<kh2_tables::tables::Vtbl>);
 
 /// Sora's entry in the game's speaker list (`sora`, `donald`, `goofy`, ...); his voice bank is the
 /// `<world>0_sora.vsb` file.
-pub const SORA_SPEAKER: u8 = 1;
+pub const SORA_SPEAKER: u16 = kh2_audio::voice::speaker::SORA;
 
 impl VoiceTable {
-    /// The line the game plays for `voice` of `speaker`. The five (line, chance) pairs of the
-    /// record are tried in order: a pair with a chance wins when the percent roll runs out in it,
-    /// pairs without one form a pool that is drawn from at random when no chance pair won. A line
-    /// of -3 depends on the other party's speaker and is not resolved here. `rng` is the game's
-    /// multiplicative generator (x * 0x10dcd).
-    pub fn line(&self, speaker: u8, voice: u16, rng: &mut u32) -> Option<u16> {
-        let rec = self.0.iter().find(|r| r.character_id == speaker && r.id as u16 == voice)?;
-        *rng = rng.wrapping_mul(0x10dcd);
-        let mut roll = (*rng / 0x028f_5c29) as i32;
-        let mut pool = Vec::new();
-        for pair in rec.voices.chunks(2) {
-            let (line, chance) = (pair[0], pair[1]);
-            if line < 0 {
-                continue;
-            }
-            if chance <= 0 {
-                pool.push(line as u16);
-            } else {
-                roll -= chance as i32;
-                if roll < 0 {
-                    return Some(line as u16);
-                }
-            }
+    /// The line the game plays for `voice` of `speaker` (`FUN_001ae538`, ported in
+    /// `kh2_audio::voice`): the five (line, chance) pairs of the record are tried in order, a pair
+    /// with a chance wins when the percent roll runs out in it, pairs without one form a pool that
+    /// is drawn from when no chance pair won, and a line of -3 is the other party's line (`other`
+    /// is its NeoStatus). `rng` is the game's shared generator ([`GameRng`]). Returns the line and
+    /// the record's priority.
+    pub fn pick(&self, speaker: u16, voice: u16, other: u16, rng: &mut u32, flags: &impl Fn(u16) -> bool) -> Option<(u16, u8)> {
+        use kh2_audio::voice::{pick_line, resolve_line};
+        let rec = self.0.iter().find(|r| r.character_id as u16 == speaker && r.id as u16 == voice)?;
+        let mut pairs = [0i8; 10];
+        for (p, v) in pairs.iter_mut().zip(rec.voices.iter()) {
+            *p = *v as i8;
         }
-        if pool.is_empty() {
-            return None;
-        }
-        *rng = rng.wrapping_mul(0x10dcd);
-        Some(pool[((*rng as u64 * pool.len() as u64) >> 32) as usize])
+        let line = pick_line(&pairs, rng, |l| resolve_line(l, speaker, other, flags));
+        (line >= 0).then_some((line as u16, rec.priority as u8))
     }
+}
+
+/// The game's shared random generator (`DAT_003716a0`), reset to 1 at start (`FUN_002f5fc8`).
+/// Every user steps it; this package's voice picks are the only users in the app so far.
+#[derive(Resource)]
+pub struct GameRng(pub u32);
+
+impl Default for GameRng {
+    fn default() -> Self {
+        GameRng(1)
+    }
+}
+
+/// Speaker names and the voice language folder, read from the executable at start.
+#[derive(Resource, Default)]
+pub struct VoiceInfo {
+    pub names: kh2_audio::voice::SpeakerNames,
+    pub lang: String,
+}
+
+fn load_voice_info(disc: Res<Disc>, mut info: ResMut<VoiceInfo>) {
+    let Some(exe) = disc.read_root("SLUS_210.05") else { return };
+    info.names = kh2_audio::voice::SpeakerNames::from_exe(&exe).unwrap_or_default();
+    info.lang = kh2_audio::voice::language(&exe).unwrap_or_else(|| "us".into());
+    info!("voice: language folder {}, {} speaker names", info.lang, info.names.0.iter().flatten().count());
 }
 
 fn load_voice_table(disc: Res<Disc>, mut table: ResMut<VoiceTable>) {
@@ -210,12 +226,18 @@ impl Plugin for AudioPlugin {
             .insert_resource(Audio(Arc::new(Mutex::new(State::default()))))
             .init_resource::<SeCache>()
             .init_resource::<VoiceTable>()
+            .init_resource::<GameRng>()
+            .init_resource::<VoiceInfo>()
+            .init_resource::<crate::audio_bgm::AreaMusic>()
             .add_message::<PlaySe>()
             .add_message::<PlayVoice>()
-            .add_systems(Startup, (start_stream, load_voice_table))
+            .add_systems(Startup, (start_stream, load_voice_table, load_voice_info))
             .add_systems(Update, play_requests)
             .add_systems(Update, area_bgm.after(crate::assets::load_area))
-            .add_systems(FixedUpdate, (motion_sounds, footsteps, wall_sounds).chain().in_set(crate::schedule::Sim::Sounds));
+            .add_systems(
+                FixedUpdate,
+                (motion_sounds, footsteps, wall_sounds, crate::audio_bgm::battle_music).chain().in_set(crate::schedule::Sim::Sounds),
+            );
     }
 }
 
@@ -236,14 +258,20 @@ fn start_stream(mut commands: Commands, disc: Res<Disc>, audio: Res<Audio>, mut 
     commands.spawn(AudioPlayer(h));
 }
 
-/// Starts BGM `music<nnn>` with its WD bank (replacing the current one).
+/// The sequence of BGM `music<nnn>` with its WD bank.
+pub fn load_sequence(disc: &Disc, number: u32) -> Option<Sequence> {
+    let raw = disc.read(&format!("bgm/music{number:03}.bgm"))?;
+    let bgm = kh2_audio::Bgm::parse(&raw)?;
+    let wd = disc.read(&format!("bgm/wave{:04}.wd", bgm.wd)).and_then(|b| Wd::parse(&b))?;
+    Sequence::bgm(&raw, Arc::new(wd), 0)
+}
+
+/// Starts BGM `music<nnn>` in the field slot at the full level (replacing the current one).
 pub fn play_bgm(disc: &Disc, audio: &Audio, number: u32) -> bool {
-    let Some(raw) = disc.read(&format!("bgm/music{number:03}.bgm")) else { return false };
-    let Some(bgm) = kh2_audio::Bgm::parse(&raw) else { return false };
-    let Some(wd) = disc.read(&format!("bgm/wave{:04}.wd", bgm.wd)).and_then(|b| Wd::parse(&b)) else { return false };
-    let Some(seq) = Sequence::bgm(&raw, Arc::new(wd), 0) else { return false };
+    let Some(seq) = load_sequence(disc, number) else { return false };
     if let Ok(mut s) = audio.0.lock() {
         if let Some(d) = s.driver.as_mut() {
+            d.bgm_stop(1, false);
             d.play_bgm(seq);
         }
     }
@@ -293,13 +321,37 @@ pub fn play_se(disc: &Disc, audio: &Audio, cache: &SeCache, req: &PlaySe, volume
     s.driver.as_mut().is_some_and(|d| d.play_se(&bank.block, req.index as usize, wd, volume_pan.0, volume_pan.1))
 }
 
-fn play_voices(disc: &Disc, audio: &Audio, cache: &SeCache, v: &PlayVoice) -> bool {
+/// Plays a voice line at the speaker's slot rules: a lower priority than the queued or playing
+/// line is dropped, a started line stops the one before it (`FUN_001ae798`, `FUN_001ae7d8`), and
+/// the sound is positional with a minimum volume (`kh2_audio::voice`).
+fn play_voices(
+    disc: &Disc,
+    audio: &Audio,
+    cache: &SeCache,
+    v: &PlayVoice,
+    vp: (i32, i32),
+    slot: &mut kh2_audio::voice::VoiceSlot,
+) -> bool {
     let Some(bank) = cache.voices.lock().ok().and_then(|mut m| m.entry(v.file.clone()).or_insert_with(|| Vsb::parse(&disc.read(&v.file)?).map(Arc::new)).clone()) else {
         return false;
     };
     let Some((sample, rate)) = bank.line(v.line as usize) else { return false };
     let Ok(mut s) = audio.0.lock() else { return false };
-    s.driver.as_mut().map(|d| d.play_voice(Arc::new(sample), rate, 0.9)).is_some()
+    let Some(d) = s.driver.as_mut() else { return false };
+    if let Some(h) = slot.playing
+        && !d.voice_playing(kh2_audio::ssl::Handle(h))
+    {
+        slot.playing = None;
+    }
+    slot.request(v.line, v.priority);
+    let Some(_) = slot.tick(|_| true) else { return false };
+    if let Some(h) = slot.playing.take() {
+        d.stop_voice(kh2_audio::ssl::Handle(h));
+    }
+    let volume = vp.0.max(kh2_audio::voice::MIN_VOLUME);
+    let pan = if volume > 0x39ff { kh2_audio::positional::CENTRE_PAN } else { vp.1 };
+    slot.playing = Some(d.play_voice_at(Arc::new(sample), rate, volume, pan).0);
+    true
 }
 
 fn play_requests(
@@ -309,6 +361,7 @@ fn play_requests(
     listener: Query<&Transform, With<crate::camera::OrbitCamera>>,
     mut req: MessageReader<PlaySe>,
     mut voices: MessageReader<PlayVoice>,
+    mut slot: Local<kh2_audio::voice::VoiceSlot>,
 ) {
     if std::env::var_os("KH2_NO_SOUND").is_some() {
         req.clear();
@@ -316,7 +369,8 @@ fn play_requests(
         return;
     }
     for v in voices.read() {
-        let ok = play_voices(&disc, &audio, &cache, v);
+        let vp = placement(v.pos, listener.single().ok());
+        let ok = play_voices(&disc, &audio, &cache, v, vp, &mut slot);
         if std::env::var_os("KH2_SOUNDLOG").is_some() {
             info!("voice {}:{} {}", v.file, v.line, if ok { "playing" } else { "not found" });
         }
@@ -363,13 +417,14 @@ pub fn motion_sounds(
     sora: Query<&Sora>,
     area: Res<CurrentArea>,
     table: Res<VoiceTable>,
-    mut rng: Local<u32>,
+    mut rng: ResMut<GameRng>,
+    info: Res<VoiceInfo>,
+    disc: Res<Disc>,
+    enemies: Query<&crate::enemy::Enemy>,
+    mut neo_cache: Local<HashMap<&'static str, u16>>,
     mut out: MessageWriter<PlaySe>,
     mut voices: MessageWriter<PlayVoice>,
 ) {
-    if *rng == 0 {
-        *rng = 0x2545_f491;
-    }
     let sora_body = sora.single().map(|s| s.body).ok();
     for (e, a, place) in &anims {
         let is_sora = Some(e) == sora_body;
@@ -390,13 +445,38 @@ pub fn motion_sounds(
                 }
                 // Voice lines: the speaker's bank for the current world.
                 (frame::VOICE | frame::VOICE2, [voice, ..]) if is_sora => {
-                    if let Some(world) = area.loaded.as_deref().and_then(|n| n.get(..2)) {
-                        let line = table.line(SORA_SPEAKER, *voice as u16, &mut rng);
+                    if let Some(area_name) = area.loaded.as_deref()
+                        && let Some(world) = area_name.get(..2)
+                    {
+                        // The other party is the lock-on target's NeoStatus (FUN_00175d18 takes the
+                        // actor's target object +0x9f4; that it is the lock-on target is inferred).
+                        let other = sora
+                            .single()
+                            .ok()
+                            .and_then(|s| s.target)
+                            .and_then(|t| enemies.get(t).ok())
+                            .and_then(|e| {
+                                let model = match e.name {
+                                    "Shadow" => "M_EX020",
+                                    "Soldier" => "M_EX010",
+                                    _ => return None,
+                                };
+                                Some(*neo_cache.entry(e.name).or_insert_with(|| neo_status(&disc, model).unwrap_or(0)))
+                            })
+                            .unwrap_or(0);
+                        let picked = table.pick(SORA_SPEAKER, *voice as u16, other, &mut rng.0, &|_| false);
+                        let bank = area_voice_bank(&disc, area_name).unwrap_or(0);
+                        let name = info.names.name(SORA_SPEAKER).unwrap_or("sora");
                         if std::env::var_os("KH2_SOUNDLOG").is_some() {
-                            info!("voice id {voice} ({}) -> line {line:?}", a.tag());
+                            info!("voice id {voice} ({}) other {other} -> line {picked:?} rng {:#x}", a.tag(), rng.0);
                         }
-                        if let Some(line) = line {
-                            voices.write(PlayVoice { file: format!("voice/us/battle/{world}0_sora.vsb"), line });
+                        if let Some((line, priority)) = picked {
+                            voices.write(PlayVoice {
+                                file: kh2_audio::voice::bank_path(&info.lang, world, bank, name),
+                                line,
+                                priority,
+                                pos: Some(place.translation()),
+                            });
                         }
                     }
                 }
@@ -464,7 +544,8 @@ pub fn footsteps(
     let record = info.as_ref().and_then(|(_, r)| r.as_ref());
     let neo_status = neo.get_or_insert_with(|| neo_status(&disc, SORA_MODEL)).unwrap_or(1);
     // FUN_00183730: the ground material of the polygon in contact (0 in the air: no contact).
-    let material = s.motor.ground.map_or(0, |g| g.material);
+    // (Sora's descriptor flags: bit 0x20 is not set for him as far as the footstep logic shows.)
+    let material = kh2_audio::footstep::actor_material(0, s.motor.ground.map_or(0, |g| g.material));
     let log = std::env::var_os("KH2_SOUNDLOG").is_some();
     for ft in steps {
         let kind = ft.params.first().copied().unwrap_or(0).max(0) as u16;
@@ -491,6 +572,18 @@ const WORLDS: [&str; 19] = ["zz", "es", "tt", "di", "hb", "bb", "he", "al", "mu"
 /// (version, world count, per world: u16 area count, u16 offset) and 0x40-byte area records with
 /// eight (field, battle) pairs at 0x10. Layout per OpenKH `OpenKh.Kh2/SystemData/Arif.cs`.
 pub fn area_music(disc: &Disc, area: &str) -> Option<(u16, u16)> {
+    let (_, field, battle) = area_arif(disc, area)?;
+    Some((field, battle))
+}
+
+/// The voice bank number of an area (`arif` record +0x30, `FUN_001933a0` / `FUN_001ae180`): the
+/// `<n>` of `voice/<lang>/battle/<world><n>_<speaker>.vsb`.
+pub fn area_voice_bank(disc: &Disc, area: &str) -> Option<u16> {
+    area_arif(disc, area).map(|r| r.0)
+}
+
+/// (voice bank, field music, battle music) of an area's `arif` record.
+fn area_arif(disc: &Disc, area: &str) -> Option<(u16, u16, u16)> {
     let (w, a) = area.split_at(2);
     let world = WORLDS.iter().position(|x| *x == w)?;
     let index: usize = a.parse().ok()?;
@@ -503,11 +596,17 @@ pub fn area_music(disc: &Disc, area: &str) -> Option<(u16, u16)> {
         return None;
     }
     let rec = off + 0x40 * index;
-    Some((u16_at(rec + 0x10)?, u16_at(rec + 0x12)?))
+    Some((u16_at(rec + 0x30)?, u16_at(rec + 0x10)?, u16_at(rec + 0x12)?))
 }
 
 /// Plays the area's field music whenever a new area finishes loading.
-pub fn area_bgm(disc: Res<Disc>, audio: Res<Audio>, area: Res<crate::assets::CurrentArea>, mut last: Local<Option<String>>) {
+pub fn area_bgm(
+    disc: Res<Disc>,
+    audio: Res<Audio>,
+    area: Res<crate::assets::CurrentArea>,
+    mut music: ResMut<crate::audio_bgm::AreaMusic>,
+    mut last: Local<Option<String>>,
+) {
     let Some(loaded) = area.loaded.clone() else { return };
     if last.as_deref() == Some(loaded.as_str()) {
         return;
@@ -519,6 +618,7 @@ pub fn area_bgm(disc: Res<Disc>, audio: Res<Audio>, area: Res<crate::assets::Cur
     match area_music(&disc, &loaded) {
         Some((field, battle)) => {
             info!("{loaded}: music field {field} battle {battle}");
+            music.set_area(field, battle);
             if !play_bgm(&disc, &audio, field as u32) {
                 warn!("music {field}: cannot load");
             }
@@ -546,6 +646,52 @@ mod tests {
         let map = disc.read(&format!("map/us/{area}.map")).expect("map");
         let coct = Coct::from_map(&map).expect("coct");
         coct.polygons.iter().filter(|p| p.flags & flags::PARTY_STAND != 0).map(|p| p.material).collect()
+    }
+
+    /// The USA executable selects the "us" voice folder (language table entry 2, passed by
+    /// FUN_00101d68), names Sora's bank `<world><n>_sora` and every tt area's bank file exists.
+    #[test]
+    fn voice_paths_resolve_on_the_disc() {
+        let Some(d) = disc() else { return };
+        let exe = d.read_root("SLUS_210.05").expect("exe");
+        assert_eq!(kh2_audio::voice::language(&exe).as_deref(), Some("us"));
+        let names = kh2_audio::voice::SpeakerNames::from_exe(&exe).expect("names");
+        assert_eq!(names.name(SORA_SPEAKER), Some("sora"));
+        assert_eq!(names.name(2), Some("donald"));
+        let mut found = 0;
+        for area in ["tt00", "tt02", "tt04", "tt10"] {
+            let Some(n) = area_voice_bank(&d, area) else { continue };
+            let path = kh2_audio::voice::bank_path("us", "tt", n, "sora");
+            if d.read(&path).is_some() {
+                found += 1;
+            }
+            eprintln!("{area}: bank {n} -> {path} {}", d.read(&path).is_some());
+        }
+        assert!(found >= 1, "no Sora voice bank found for the tt areas");
+    }
+
+    /// Every voice id of Sora in the table resolves under the game's rules for a range of
+    /// generator states: lines stay inside the bank, and -3 entries answer by the other party.
+    #[test]
+    fn sora_voice_records_pick_lines() {
+        let Some(d) = disc() else { return };
+        let mut table = VoiceTable::default();
+        {
+            let mut a = d.0.lock().unwrap();
+            table.0 = kh2_tables::load::<kh2_tables::tables::Vtbl>(&mut a, &kh2_tables::tables::VTBL).expect("vtbl").rows;
+        }
+        let sora: Vec<_> = table.0.iter().filter(|r| r.character_id as u16 == SORA_SPEAKER).collect();
+        assert!(!sora.is_empty());
+        let with_other = sora.iter().filter(|r| r.voices.iter().step_by(2).any(|&l| l as i8 == -3)).count();
+        eprintln!("Sora records {}, with an other-party line {with_other}", sora.len());
+        let mut rng = 1u32;
+        for r in &sora {
+            for other in [0u16, 2, 3, 4] {
+                if let Some((line, _)) = table.pick(SORA_SPEAKER, r.id as u16, other, &mut rng, &|_| false) {
+                    assert!(line < 200, "voice id {} line {line}", r.id);
+                }
+            }
+        }
     }
 
     #[test]

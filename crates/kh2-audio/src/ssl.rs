@@ -1056,7 +1056,7 @@ impl BgmSlot {
 /// A playing sound effect or voice line, for later volume and pan updates (the game sends
 /// command 0x15 every tick for a positional sound).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Handle(u32);
+pub struct Handle(pub u32);
 
 /// The whole driver: two BGM slots, sound effects, voices.
 pub struct Driver {
@@ -1093,6 +1093,15 @@ impl Driver {
     #[allow(clippy::too_many_arguments)]
     pub fn bgm_start(&mut self, slot: usize, seq: Option<Sequence>, from: i32, to: i32, time: i32, resume: bool, delay: i32) -> bool {
         let Some(s) = self.bgm.get_mut(slot) else { return false };
+        if resume && s.saved.is_none() && s.seq.is_some() {
+            // Not yet faded out: the sequence is still the one to continue (inferred; the game's
+            // checkpoint restore was not traced).
+            s.volume = from;
+            s.set_fade(to, time);
+            s.delay = delay;
+            s.counter = 0;
+            return true;
+        }
         s.stop(&mut self.mixer, false);
         let mut next = match (resume, s.saved.take(), seq) {
             (true, Some(kept), _) => kept,

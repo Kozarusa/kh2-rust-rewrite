@@ -67,16 +67,118 @@ Deviations and gaps:
 - A source exactly behind the camera gives pan -64 in the game (the wrap quirk above); the port
   reproduces it.
 
-## Gaps not worked (no code, no findings)
+## Battle music (WP-1B; verified in the decompilation and the IOP disassembly, implemented)
 
-The package was cut short at the coordinator's request after item 1. Nothing was researched for:
+Code: `audio_bgm.rs` (trigger, fades), `kh2_audio::ssl::{BgmSlot, Driver::bgm_start, bgm_fade}`.
 
-- Battle BGM switching (the area's battle music number is already read from `arif` and logged by
-  `area_bgm`, but no trigger or fade is implemented).
-- Voice id 3 (target dependent), the game's random generator for voice pools, the Final Mix
-  Japanese versus USA voice path.
-- Footstep leftovers: the kind 8 landing path (`FUN_0017af10`), enemy footsteps, bit 0x20 of
-  `*(actor + 0xc) + 8` forcing material 0x12.
+The area load (`FUN_00136ec0`, from `FUN_001048e0`) puts the area's field BGM into IOP slot 0 and
+the battle BGM into slot 1. `FUN_001371d8` (numbers equal) clears and `FUN_00137300` (numbers
+differ) sets the "battle music exists" flag at 0x354ebc; `arif` +0x10 and +0x12 give the two
+numbers (`area_music`). A per-frame task `FUN_001373d0` (registered by `FUN_00137128`, priority
+300000) compares the battle flag `FUN_001903d8` (word 0x1c8a7d8) with the state it last acted on
+(0x354ebd). On a rise (and no battle fade running, 0x354eb8 = 0) it calls `FUN_00137458`; on a
+fall while one runs, `FUN_001374c0`. Both state bytes are updated either way. Pausing the BGM
+(`FUN_00137520`) clears the flag at 0x354ebc and `FUN_00137558` restores it.
 
-Starting points: the BGM request code is reached from the area load path; the voice table lookups
-are at 0x1ae4e8 and 0x1ae538; `docs/footsteps.md` lists the footstep addresses.
+| | slot 0 (field) | slot 1 (battle) |
+|---|---|---|
+| battle starts (`FUN_00137458`) | command 0x11: fade to 0 over 0x3c0 = 960 frames | command 0xf, mode 0: from 0 to 0x3000 over 0xf0 = 240 frames after a delay of 0xf0 = 240 |
+| battle ends (`FUN_001374c0`) | command 0xf, mode 1 (resume): from 0 to 0x3000 over 0x1e0 = 480 frames after a delay of 0xf0 = 240 | command 0x11: fade to 0 over 0x2d0 = 720 frames |
+
+Frames are the driver's 240 Hz frames (4 s, 1 s, 1 s, 2 s, 3 s). Command 0xf handler 0x104814
+reads (slot, from, to, time, mode, delay) and calls `FUN_103cbc`; command 0x11 (handler 0x104a8c)
+reads (slot, target, time) and calls `FUN_104964`. The ramp is stepped by `FUN_1081ac` (called
+from the main loop at 0x101908): while the delay counter (+0x6a) is below the delay (+0x68) the
+slot does nothing, then `volume += step; time -= 1` with `step = (target - volume) / time`
+(integer division), and at 0 the volume snaps to the target; a target of 0 stops the sequence
+(`FUN_108900(slot, 1)`) and keeps it for a resume. `kh2-audio` ports the ramps and slot handling
+(unit test `bgm_slot_ramps_delays_and_resumes`) and the app drives them from `Battle`.
+
+Inferred or not done:
+
+- The slot volume (+0x44) is applied in place of one of the two fixed 0x3fff factors of the volume
+  chain in `Sequence::update_voices`; which factor it replaces was not traced (inferred; at most
+  one 14-bit step of difference). Full level is 0x3000, not 0x3fff, so the app's BGM is now a bit
+  quieter than before (0.75 of the old level at the same master gain).
+- Resume (mode 1) restores the game's last checkpoint (state at 0x1e35c0, saved by routine
+  0x108068 at a counter event that was not traced). The port resumes where the field slot stopped.
+- The game's battle flag has its own hysteresis (`FUN_001903e8`: after the desired state differs
+  it needs 45 ticks to rise (the timer at 0x1c8a7e0 resets to 45 while the flag is 0 and to 120
+  while it is 1, so a fall needs 120), except in the first 30 ticks after a reset (0x1c8a7dc)).
+  What makes it desired is `FUN_001904e0`: the player alive and either a script flag (0x1b3c00)
+  or an awake hostile in `FUN_001a4e70`'s list (flag +0x588 bit 0x4000 and not 0x400000). The app
+  keeps its own `Battle` flag (ticks held after the last sign of a fight) and feeds it straight to
+  the trigger. Result in tt: the music switches 240 ticks after the last fight sign, not 120.
+- Area changes: slot 1 is stopped when a new area's field music starts.
+- Streams (`bgm/music118.vsb`, event BGM) are not handled.
+
+## Voices (WP-1B; verified, implemented in `kh2_audio::voice` and `audio.rs`)
+
+Chain from a motion's voice trigger (13 or 14: the voice id): `FUN_00175d18(actor, id, prio)` ->
+`FUN_001ae3c8` -> `FUN_001ae4e8` (find the `vtbl` record of speaker NeoStatus and id; the record
+is 0xe bytes: speaker, id, priority, reserved, five (line, chance) byte pairs) -> `FUN_001ae538`
+(pick) -> `FUN_001970b8` / `FUN_001ae798` (queue on the actor's slot) -> `FUN_001ae7d8` (stop the
+old line and start the new one every tick).
+
+- **Random generator.** One shared word, `DAT_003716a0`, reset to 1 by `FUN_002f5fc8`; the voice
+  code steps it as `x = x * 0x10dcd` (mod 2^32). Other users of the word multiply by 0x1c587629 or
+  -0x59004c2b. `FUN_00325b38` is a software 64-bit unsigned divide.
+- **Pick** (`FUN_001ae538`): step, `roll = x / 0x028f5c29` (0..99); walk the five pairs in order;
+  a line byte below 0 is skipped (-3 asks `FUN_001ae440`); a pair with chance 0 or less joins a
+  pool; a chance pair subtracts its chance from the roll and wins when the roll goes below 0; with
+  no winner the generator is stepped again and the pool entry `x / ((2^32 + n - 1) / n)` is
+  taken; an empty pool is -1. Port: `voice::pick_line`. **Byte-identical check:**
+  `crates/kh2-audio/tests/voice_oracle.rs` runs the game's `FUN_001ae538` in `kh2-ee` on the
+  user's executable for seven records and 518 generator states each (3,626 picks) and compares
+  line and new generator state. The old app code differed in the pool draw (`(x * n) >> 32`).
+- **Voice id 3 / target dependence.** There is no special id: a record whose line byte is -3 takes
+  its line from the other party (`FUN_001ae440(speaker, other)`): -1 when equal; -1 with Auron
+  (NeoStatus 5) on either side while none of the story flags 0x184c, 0x180c, 0x182e is set (bits
+  of the save table at 0x33f6b0); otherwise `other - 1` for Sora, Donald, Goofy (0, 1, 2), 4 for
+  `pin` (15), 3 for NeoStatus 4..14, and -1 outside 1..15. The other party is the NeoStatus of
+  the actor's object at +0x9f4 (0 if it is invalid, `FUN_001699a8`). Port: `voice::other_party_line`
+  (oracle test over all 18 x 18 pairs). The app passes the lock-on target's NeoStatus (inferred
+  to be +0x9f4; Shadow and Soldier map to their `objentry` rows M_EX020, M_EX010) and no story
+  flags (they are not in the app, so Auron lines are refused).
+- **Priority slot** (`FUN_001ae798`, per-actor object at +0xb08: +8 queued line, +0xc priority,
+  +0x10 sound handle, +0x18 actor): with nothing queued or playing the line is taken; otherwise it
+  replaces the queued line only when its priority (the record's byte 2) is at least the queued
+  one's. Port: `voice::VoiceSlot`.
+- **Bank path.** Format at 0x37b900: `voice/%s/battle/%s%d_%s.vsb` with the language folder
+  (`DAT_00349d40`), the world code, the area's `arif` record short at +0x30 (`FUN_001933a0`
+  record, so `<n>` is not always 0) and the speaker name (table 0x35ee10 indexed by NeoStatus:
+  sora, donald, goofy, ...). Three banks stay loaded (0x1cb8290, `FUN_001ae180`).
+- **Japanese versus USA.** The language table at 0x349d44 is `jp, us, uk, it, sp, gr, fr`, and
+  start-up `FUN_00101d68` calls `FUN_00105cb0(2)`, which stores entry 2: this USA executable
+  always uses `us`. No code path in it selects `jp`; the Final Mix executable (`SLPM_666.75`) is a
+  different file that was not examined, so what it passes is a gap. Port: `voice::language`
+  reads the table and the index from the executable.
+- **Playback.** A voice line is a kind 5 sound (`FUN_002c2530`): positional at the actor like
+  sound effects (`FUN_002c2d00` -> `FUN_002c27b0`) with a minimum volume of 0x1800 (`actor +
+  0x2c7`, constructors 0x1746e0, 0x174800). The app plays it through the driver's pan law at the
+  volume and pan computed once at the start. Per-tick updates exist in the driver
+  (`Driver::set_voice_mix`, `set_se_mix`, handles from `play_voice_at` and `play_se_handle`) but
+  the app does not call them every tick yet.
+
+## Footstep leftovers (WP-1B)
+
+- **Bit 0x20 of `*(actor + 0xc) + 8`.** `FUN_00183730` returns 0x12 for it, else the ground
+  material. The word is the class descriptor's flag word. `FUN_0016a2f0` (the per-tick actor
+  update) tests bits 2 and 0x20 of the same word together to decide whether to run the actor's
+  jump set-up. Which descriptors carry bit 0x20 and what sets it was not found (no writer in the
+  main executable's decompilation). Port: `footstep::actor_material` (tested); Sora and the two
+  ported enemies pass 0.
+- **Kind 8 landing.** `FUN_0017af10` is slot 6 of the descriptor class vtables at 0x35cbb0 and
+  0x371298 (called from `FUN_0016a2f0` as `(*(desc->vtable + 0x18))(desc, actor)`). Actor +0x1c is
+  tested against 0: when positive (inferred: moving up) it plays nothing but the dust effects 10
+  and 11, when not positive the landing branch needs actor +0x588 bit 0x80, actor +0x164 bit 0
+  clear and +0x154 (the motion state) equal 1 or 2 and then calls `FUN_0016baa0(actor, 8)` (kind
+  8) and the dust effects 8 and 9 unless NeoStatus is 0xe. `FUN_0017aeb8` finally feeds a
+  camera/controller shake with an intensity 0, 1 or 2 from the actor's speed. What actor +0x1c
+  and +0x588 bit 0x80 are is not known, so this is not ported (a landing in the app already makes
+  kind 9 through A003's trigger). Gap.
+- **Enemy footsteps.** Shadow and Soldier motions have no trigger 2, so nothing to play. Hook
+  for another enemy: in `enemy.rs` where the enemy's motion triggers are walked, resolve
+  `footstep_number(record, neo_status, actor_material(desc_flags, ground), kind, &mut counter)`
+  for each trigger 2 and write `PlaySe::number(n, None).at(position)`; the counter is per actor.
+  `audio::area_soundinfo` and `audio::neo_status` (make it `pub`) give the record and bank.

@@ -7,9 +7,15 @@ use crate::camera;
 
 pub struct HarnessPlugin;
 
+/// The scripted key presses of `KH2_KEYS` (the menu's input runs after this set).
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Keys;
+
 impl Plugin for HarnessPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, auto_screenshot);
+        // The scripted keys are pressed in `PreUpdate`, after the keyboard is read, so the pause menu
+        // (which takes its keys there) sees them like real ones.
+        app.add_systems(PreUpdate, auto_screenshot.in_set(Keys).after(bevy::input::InputSystems));
         // `KH2_FPS=1`: log frame rate every 2 s.
         if std::env::var("KH2_FPS").is_ok() {
             app.add_plugins((
@@ -69,6 +75,9 @@ fn auto_screenshot(
                 "Right" => KeyCode::ArrowRight,
                 "Up" => KeyCode::ArrowUp,
                 "Down" => KeyCode::ArrowDown,
+                "Enter" => KeyCode::Enter,
+                "Escape" => KeyCode::Escape,
+                "Backspace" => KeyCode::Backspace,
                 _ => continue,
             };
             if t >= at && t - dt < at {

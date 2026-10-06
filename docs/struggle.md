@@ -126,8 +126,9 @@ of the header. The HUD stays up and the fighters go on (`FUN_001b9940`'s other c
 for the session only (no save data). The match starts at once: the start layout (record 1) and the event that may
 play before (`FUN_001b9140` state 0 waits for no event) are not in the app. The global frame counter and the
 generator 0x3716a0 are the pool's own (the game shares them). `player_finish_struggle` (host 1.90 from the
-opponents' event 6): no searched file registers a mode of that name (obj/P_*, obj/N_EX5*, obj/N_EX6*, the tt04
-missions and area files; the executable has no such string), so its receiver is unknown; the app delivers it to
+opponents' event 6): the name occurs only in the senders (nine `obj/N_EX5..6.._BTL*` files) among every named file
+under `obj/`, `msn/`, `ard/`, `limit/`, `magic/`, `event/`, `libretto*` and `00*` (decompressed and searched for
+the bytes), and the executable has no such string, so its receiver is unknown; the app delivers it to
 every scripted enemy and none has the mode. The pickup skips (`FUN_00185a08` / `FUN_00185a38` on +0x140 / +0x154,
 +0x168 bit 0x40) are not ported: any fighter in reach takes an orb. Sora's guard repel is taken as the whole guard
 state facing the attacker.

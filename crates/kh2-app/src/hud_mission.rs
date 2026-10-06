@@ -281,13 +281,13 @@ pub fn update(disc: Res<Disc>, mission: Res<Mission>, mut hud: ResMut<MissionHud
         }
         // The last seconds of a countdown (FUN_00150d40): 2, 1, 0 once each, then the end group at 0.
         if a.clock.down && h == 0 && m == 0 {
-            for (k, sec) in [2, 1, 0].into_iter().enumerate() {
-                let slot = 2 - k;
-                if s == sec && !c.played[slot] {
-                    c.played[slot] = true;
-                    scene.nodes[c.warn[slot]].visible = true;
-                    scene.set_group(c.warn[slot], WARN[slot]);
-                    info!("hud: mission clock: {sec} seconds left (group {:#x})", WARN[slot]);
+            // Seconds 2, 1, 0 start groups 0x1f, 0x1e, 0x1d (`WARN[sec]`).
+            for sec in [2usize, 1, 0] {
+                if s as usize == sec && !c.played[sec] {
+                    c.played[sec] = true;
+                    scene.nodes[c.warn[sec]].visible = true;
+                    scene.set_group(c.warn[sec], WARN[sec]);
+                    info!("hud: mission clock: {sec} seconds left (group {:#x})", WARN[sec]);
                 }
             }
             if frames == 0 && !c.played[3] && c.played[0] {
@@ -295,6 +295,12 @@ pub fn update(disc: Res<Disc>, mission: Res<Mission>, mut hud: ResMut<MissionHud
                 scene.nodes[c.warn[3]].visible = true;
                 scene.set_group(c.warn[3], TIME_UP);
                 info!("hud: mission clock: time up (group {TIME_UP:#x})");
+            }
+        }
+        // A last-seconds group goes when it has played (its object is only drawn while `FUN_00139fe0` says it runs).
+        for n in c.warn {
+            if scene.nodes[n].visible && scene.nodes[n].player.finished() {
+                scene.nodes[n].visible = false;
             }
         }
         let _ = c.file;

@@ -4,8 +4,9 @@
 //! numbers come from the menu code at 0x13b000..0x13d900 and the group tables it reads in the
 //! executable (read at run time here). See docs/hud.md.
 //!
-//! The game state is not read here: `CommandMenu` is a plain resource that the player module
-//! fills in (which commands exist, which is selected, whether a reaction command is offered).
+//! The game state is not read here: `CommandMenu` is a plain resource that `items.rs` fills in (the
+//! stacked command lists with their statuses and cursors, docs/items.md) and `mirror_reaction` adds
+//! the offered reaction command to.
 
 use bevy::prelude::*;
 use kh2_image::text::Style;
@@ -29,15 +30,17 @@ pub struct MenuEntry {
     pub message: u32,
     /// `cmd.CmdIcon`: picks the icon on the selected bar (0 none, 1 to 7 as the game's switch at 0x13bd48).
     pub icon: u8,
-    /// Text colour style, 0 to 8 (the byte at +0x11 of the list entry; 0 normal, 1 unavailable, 2 highlighted).
+    /// Text colour style, 0 to 8: the entry's status byte (entry +5, list +0x11 for the first entry):
+    /// 0 usable, 1 a sub-menu with nothing usable, 2 a spell short of MP (orange), 5 unavailable,
+    /// 6 an item only reserved (docs/items.md).
     pub style: u8,
 }
 
 /// One open list.
 #[derive(Clone, Debug, Default)]
 pub struct MenuPage {
-    /// Which menu: 0 and 6 commands, 1 magic, 2 items, 3 forms, 4 party, 7 summons, 8 friends, 9 shortcuts
-    /// (the art of each is listed in docs/hud.md).
+    /// Which menu: the command list's index (0 and 6 the decks, 1 magic, 2 items, 3 forms, 4 the targets,
+    /// 5 shortcuts, 7 summons, 8 friends, 9 limits; the art of each is listed in docs/hud.md).
     pub kind: u8,
     pub entries: Vec<MenuEntry>,
     pub cursor: usize,
@@ -194,8 +197,9 @@ fn entry(c: &kh2_tables::tables::Cmd) -> MenuEntry {
 }
 
 /// The four basic commands (the rows whose Execute is 1 attack, 2 magic, 3 items, 4 drive, each
-/// by its own id first). The game builds the list from the player's command data at +0x974
-/// (0x13ca30), which this port has no source for; this is the list a new game opens with.
+/// by its own id first). In play `items.rs` fills `CommandMenu` with the lists the original builds
+/// (the command manager's lists, stacked at manager +0x974, drawn by 0x13ca30); this stand-in is
+/// only shown before that system has run and by the `KH2_HUDMENU` demo.
 fn base_entries(cmds: &[kh2_tables::tables::Cmd]) -> Vec<MenuEntry> {
     [1u16, 2, 3, 4]
         .iter()

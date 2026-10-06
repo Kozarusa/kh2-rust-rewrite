@@ -303,7 +303,8 @@ pub enum State {
     /// A reaction command's paired motion is playing on Sora (`player_reaction.rs` starts and ends
     /// it): no input, his velocity is the script's secondary velocity, gravity goes on.
     Reaction,
-    /// A spell's cast motion is playing (`magic.rs` starts it): no input until the motion lets go.
+    /// A spell's cast motion is playing (`magic.rs` starts it), or the item-use motion (motion
+    /// request 9, `items.rs`): no input until the motion lets go.
     Magic,
 }
 

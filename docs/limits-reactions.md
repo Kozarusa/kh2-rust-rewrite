@@ -25,18 +25,43 @@ manager or the controller candidate (`FUN_0019c520`); the status and the accept 
    part 0, so the parts of index 6 are enabled by **range trigger 4 (parameter 6) of one motion, the kick
    (slot 203)**: command 34 is on offer while the Soldier kicks and the player is inside the cross. Trigger 5
    switches a part off again; scripts do the same with host 1.52 and 1.53 (the script masks win over the
-   trigger masks, `FUN_0019a6a0`). Records of type 14 take the id from the object's word at +0xaa4 instead
-   [GAP: not ported]. Rows whose Flags bit 6 is set also need the player to be inside a trigger window of his
-   own motion (range trigger 25 or 26 sets player flag 0x100000 or 0x200000 and +0x50c to the id,
-   `FUN_00188030` cases 0x19 and 0x1a; `FUN_0019cf58` compares +0x50c with the row's `Require`) [GAP: the
-   app does not read the player's window, so those 12 rows are never offered natively].
+   trigger masks, `FUN_0019a6a0`). Records of type 14 take the id from the object's word at +0xaa4 instead;
+   **no object file on the disc has a type 14 record** (WP-6E: `reactmap` prints `TYPE14` lines, there are
+   none among the named `*.mdlx` files), so that branch has no data to run on. A part with id 0x83
+   takes the halfword at +0x2c of the object's spawn record (+0x81c, stored by `FUN_0016b870`): the
+   0x40-byte entities of the area's spawn lists (BAR type 12 of `ard/*.ard`). `reactmap` reads them
+   (`SPAWN` lines; 3,449 of 3,456 lists walk exactly): 230 objects have a 0x83 part, nearly all `_RTN`
+   townspeople and shops, and their entities carry 31 (talk) in most places and 30, 154 to 158, 191 to
+   240, 249 to 252, 293, 555 to 559, 596, 604, 622, 633, 639, 642, 656 elsewhere; **none of the 124
+   reaction rows comes from a spawn record**. `FUN_0019cf58` gates every native candidate
+   (`reaction_cmd::native_gate`, ported, test `native_gate_follows_fun_0019cf58`): with the battle flag
+   set the row needs Flags bit 4; a row with Flags bit 6 also needs the player's window: his +0x160 flag
+   0x200000 (range trigger 26 of his own motion covering the frame, `FUN_00188030` case 0x1a, which also
+   writes the trigger's parameter to +0x50c) and +0x50c equal to the row's `Require`. Trigger 25 (case
+   0x19, flag 0x100000) writes +0x50c too, but the gate does not read 0x100000. The port reads trigger
+   26 from Sora's playing motion (`reaction_cmd::window_at`), which is where the windows are: the scan
+   `real_disc_window_scan` finds trigger 26 almost only in the **paired sub-motions** (BAR type 20) the
+   enemies play on the player, with the id of the command that started them as parameter (M_EX920
+   entry 252 opens 286, M_EX760 254 opens 300, B_MU100 253 opens 270, N_TR010_BTL 252 opens 435, ...):
+   a bit 6 row is a follow-up that can be offered only during the paired motion of its `Require`.
 2. **Scripts** offer through host 1.165 (`offer_command`: slot, command id, object, show flag), 1.237 (four
    commands at once, slots 3 to 6) and 1.325 (`send_reaction`: delivers event 11 straight to another object,
    used by the mission scripts of the skate and letter games). Scripts on the disc call them with a constant
    id for 22 distinct ids (`kh2_bdx::reaction::offered`). 1.113, 1.117 and 1.118 are not offers (FUN_00173310
    reads a stored vector, FUN_001905a8 sets a screen mode).
-3. **A range trigger 20 in a motion** (`FUN_00188030` case 0x14 -> `FUN_00188ad0`). Only the player-class
-   motion sets `P_EX200` / `P_EX220` use it (command 457, below).
+3. **A range trigger 20 in a motion** (`FUN_00188030` case 0x14 -> `FUN_00188ad0`). Among the slots of
+   the motion sets only `P_EX200` / `P_EX220` use it (command 457, below); the **paired sub-motions**
+   hold 35 more entries (WP-6E scan `real_disc_window_scan`): 36 and 480 (M_EX050), 28 (M_EX770), 224
+   (F_MU070), 285 (M_EX660), 297 to 299 (B_EX100), 334 (F_TR060), 374 (F_MU000/010/020), 38, 39, 41
+   (B_HE020), 393 (B_CA010), 433 (N_PO010_BTL), 462 (B_CA020), 504 (M_EX880_DANCER), 524 (B_LK110), 562 to
+   564 (B_EX170), 641 (B_AL020), 661 / 662 (B_AL100), 665 (B_EX170_LAST), 151 (F_BB050). These play on
+   the player, so `FUN_00188ad0` runs with the player as the object: the offer goes through
+   `FUN_001bb3e0` (no 0x2000000 refusal) and its target record names the player himself, **unless** he is
+   a party-class actor (+0x588 bit 0x80) with +0x160 bit 0x4000, when it names his +0x23c: the object
+   whose paired motion he plays (`FUN_0017ee40` stores it at controller +0xfc). The setter of +0x160 bit
+   0x4000 was not found (searched every `| 0x4000` store in the decompilation and the trigger cases) [GAP:
+   so these offers are not ported; with the target unknown, accepting them would send event 11 to the
+   wrong object].
 4. **Player code** (`FUN_001cd678`: command 412 when the player enters; `FUN_001ce240`: 455 while the drive
    gauge is below its maximum, 456 when it is full; `FUN_001cef10`: the four commands of the table at 0x37c350)
    and **map objects** outside the decompiled set (`FUN_002db670`: 496, 497, 578, 579; `FUN_002e0348`: 461 and
@@ -66,9 +91,12 @@ clears all its slots every tick (`FUN_001bb368`). The controller (`FUN_0019c670`
 
 ### Accepting [V]
 
-Triangle (the port: R, or `KH2_REACTION_PRESS`) runs the command through the player's handler `FUN_001ce518`:
-ids 455 (0x1c7), 452 (0x1c4), 456 (0x1c8) and 457 (0x1c9) are its own (below), everything else goes to
-`FUN_00177b18`, which sends Execute 0x1e, 0x1f, 0x20, 0x37 and 0x7f to their own handlers and the rest to
+Triangle (the port: R, or `KH2_REACTION_PRESS`) runs the command through the player object's class handler
+(entry +0x98 of its class table). For **Sora** (class table 0x360410, built by `FUN_001ce718`) it is
+`FUN_001cf030`: Execute 0x48, 4, 5, 0x49, 0x51 and 0x13c are its own (summons, forms; no reaction row has
+them), everything else, 452 to 457 included, goes to `FUN_00177b18`. Only **Mickey's** class (table 0x360360,
+`FUN_001cda78`) has `FUN_001ce518`, which takes Execute 0x1c4, 0x1c7, 0x1c8 and 0x1c9 itself (below).
+`FUN_00177b18` sends Execute 0x1e, 0x1f, 0x20, 0x37 and 0x7f to their own handlers and the rest to
 `FUN_00177c20`:
 
 1. increment the saved use counter at slot `ReactionCount` (capped at 999, only if non-zero and the journal is
@@ -167,21 +195,44 @@ queued behind the paired motion (blend 0)`, `player: queued motion 0 (A000) play
 `player: paired motion ended with nothing queued: control returns (...)`, `player: paired motion interrupted: Sora is
 ...`, `player: velocity request dropped: ...`, and for clashes `player: clash: own atkp ...`.
 
-### Command 457 and the player's own commands [V]
+### Commands 452 to 457: Mickey's class [V]
+
+The four Execute values 0x1c4, 0x1c7, 0x1c8 and 0x1c9 belong to **Mickey's player class** (class table 0x360360,
+constructor `FUN_001cda78`: player class 10, drive gauge maximum 3, message 0xbbc2 queued). Its handler
+`FUN_001ce518` takes them before the generic path; **Sora's class handler `FUN_001cf030` does not**: for Sora
+they are ordinary reaction commands (use counter, `CmdAction`, event 11 to the target). The port keys this on
+`reaction_cmd::PlayerClass` (the app's player is Sora; `KH2_CHARGE_ON_SORA=1`, the drive.rs harness, routes
+through Mickey's handler) and `mickey_command` (test `class_handlers`).
 
 457 (Execute 457, message 48047, Mark 6, Require 455, Priority 255, Flags 347, CmdAction 0, no `DistRange`) is
 offered by the **player-class** motion sets `obj/P_EX200.mset` (objentry 91) and `obj/P_EX220.mset` (objentry
 792), slot 772 (A122), range trigger 20 from frame 60 to the end with position index 2, found by scanning all 1,157
-motion sets (unit test `real_disc_scan`). Neither object's script has an event 11 handler, and the player's own
-handler `FUN_001ce518` takes 457 before the generic path anyway: **no event is sent**. It sets the player's word
-at +0xb68 to 30.0 (the float at 0x37c344); 455 does the same with 120.0 (0x37c340) and starts the player's motion
+motion sets (unit test `real_disc_scan`); the same slot holds a trigger 26 with 455. Neither object's script has an
+event 11 handler, and Mickey's handler `FUN_001ce518` takes 457 before the generic path: **no event is sent**. It
+sets the player's word at +0xb68 to 30.0 (the float at 0x37c344); 455 does the same with 120.0 (0x37c340) and starts the player's motion
 0xc1. While +0xb68 is above zero `FUN_001ce240` (the player's tick) counts it down by the frame time, and each
 time the second timer +0xb6c (re-armed with the float at table 0x360130 + 0xd4) runs out while the motion is near
 its end (`FUN_0017f400`) it adds one unit to the **drive gauge** (`FUN_001a0290(gauge, 1)`: +1 to the fraction
 byte at +0x1b0 with carry into the level at +0x1b1 up to the maximum +0x1b2); at zero it asks for motion 5
-(idle). So 455 and 457 are Mickey's drive-gauge charge commands, an execute path of the player and not a script
-call. The port writes `PlayerReactionCmd::Charge { ticks, motion }` and nothing more [hook for `drive.rs` /
-`sora.rs`]. 456 (0x1c8: motion 0xc0, `FUN_001ce680`) and 452 (0x1c4) are not ported.
+(idle). So 455 and 457 are Mickey's drive-gauge charge commands, an execute path of his class and not a script
+call. For a Mickey-class player the port writes `PlayerReactionCmd::Charge { ticks, motion }` (consumed by
+`drive.rs`).
+
+- **456** (Execute 0x1c8, message 48048, Mark 4): `FUN_001ce240` (Mickey's tick) offers it in slot 1 with
+  priority 100 once his gauge level (+0x1b1) reaches the maximum (+0x1b2; below it he offers 455 with himself as
+  target); the first time it also runs `FUN_001ce3f8` (calls `FUN_0016a570` for 10 to 21, sets +0xb70) and queues
+  the messages 0xbbc3 and 0xbbc4. Its target is the object in `DAT_00360400`, which Sora's constructor
+  `FUN_001ce718` stores: **456 is aimed at Sora**. Accepting: motion 0xc0 requested, then `FUN_001ce680`: the
+  message queue at +0xb74 cleared, the record at +0xb40 released (`FUN_0019b580`), +0x10c bit 0x200000 set
+  (`MickeyCommand::Release`; what the flag does was not followed). Its availability is flags only.
+- **452** (Execute 0x1c4, message 48020, Cost 18): **not a reaction command**: no code offers it to the
+  prompt (the only `li 0x1c4` in the executable are the availability case and the handler); it is the second
+  entry of Mickey's **command menu** table at 0x37c450 (`FUN_001d2970` menu kind 1: 454, 452, 1). Availability
+  (`FUN_001ba2c0` case 0x1c4, ported in `status()`, test `execute_0x1c4_needs_mp`): 5 while the status block's
+  float +0x1c0 is above 0 (`FUN_001a05d0`), else 2 when MP (+0x180) is below `Cost`. Accepting
+  (`MickeyCommand::Cost`): +0xaf4 = `Cost`, motion 0xc2 requested, motion 4 queued.
+
+No object of the app is of Mickey's class, so 452 and 456 are logged only.
 
 ### The 124 reaction rows [V by scan, classification below]
 
@@ -290,20 +341,38 @@ batches 7 verts 1176` (effect 13 = 0xd running at that point). The element itsel
 with `KH2_FXTEST=13` (a bright ring and sparks); a screenshot of the spark at a real clash was not taken (the clash
 moment is not reproducible).
 
-Not ported: the cone test of `FUN_0018d308` for rows with
-`ReflectRange` (70 rows; those pairs never clash here and the first one met is warned about), `ReflectAction`
-(a script action id looked up by `FUN_0019e870`, not decoded), the hit-registry tests of `FUN_001be108` (a pair
-that already hit each other does not clash again), `ReflectRC`, the airborne variants of the recoil's push (the
-air push `FUN_00185978` is not decoded; the ground push stands in, as for the wall recoil).
+WP-6E ported the cone test of `FUN_0018d308` for the 70 rows with `ReflectRange` (`reaction_rules::reflect_cone`,
+both ways in `clash::detect_clashes`; a pair outside the cone is logged with `KH2_HITLOG=1`), the owner flags of
+`FUN_001754a0` (`ClashActor`: Sora's range triggers 3, 30 and 24) and blend 0 for the recoil and guard-bounce
+motions; details in docs/hit-reaction.md. Not ported: `ReflectAction` (an offset from the atkp row to an action
+record for the action system at +0x300, `FUN_0019e870` / `FUN_00186db0`; the record format was not decoded), the
+enemy handler's script event 0x13, the hit-registry tests of `FUN_001be108` (a pair that already hit each other
+does not clash again), `ReflectRC`, the air push `FUN_00185978` (decoded up to the mover's method +8 and a run-time
+table, docs/hit-reaction.md; the ground push stands in).
+
+Guard-bounce spark (effect 0xb): no real clash in the app's fights has produced a guard bounce (the rows met had
+`RefactSelf` 2 or both 0). `KH2_CLASH_FORCE_GUARD=<s>` (harness, `player_reaction::receive_clashes`) runs
+`party_clash` once with a guarding own row against a reflecting row and starts the returned spark 20 units in
+front of Sora at chest height (the place stands in for the volumes; the bounce itself is not applied). Run
+`KH2_CLASH_FORCE_GUARD=5 KH2_FXLOG=1 kh2-game tt00`:
+
+```
+player: clash (forced by KH2_CLASH_FORCE_GUARD): own RefactSelf Guard against RefactOther Reflect, ClashActor { fun_0019aa28: false, flag_40: false }: GuardBounce { motion: 42, power: 200.0, star: 80.0 }; system effect 0xb (started at Vec3(1.152, 1.000, -0.150))
+fx: system effect 0xb at Vec3(1.1520001, 1.0, -0.1501)
+fx: fx 11 objs 9 batches 3 verts 52
+fx: fx 11 objs 9 batches 5 verts 260
+```
+
+A screenshot 0.15 s later did not show the spark clearly; nobody has looked at it otherwise.
 
 ### Gaps of this section
 
 - The player side of the script calls is ported (WP-5C) except: the one-tick lag behind the script, the velocity
   while a hit has taken Sora over, the keyblade during the paired motion (it follows Sora's slot, which reads none,
   so it holds its rest pose; whether the game moves the weapon then was not read), the empty-queue hold. Not ported:
-  the drive-gauge charge of 455 / 457, the Mickey objects
-  that offer 457 (no object of the app is a player-class body), the player's trigger window for the 12 rows with
-  Flags bit 6, records of type 14, part id 0x83, joints other than 0x4000 (bone matrices of `FUN_0016aa18`),
+  the Mickey objects that offer 455 to 457 (no object of the app is of Mickey's class), the trigger 20 offers of
+  paired sub-motions (their target rule, source 3), part id 0x83 (spawn records are not read by the app; no
+  reaction row comes from them), joints other than 0x4000 (bone matrices of `FUN_0016aa18`),
   cylinder shapes, the lock-on distance bonus.
 - `FUN_0019ae90` (the object-side refusal: flags +0x7f8 bits 4 and 0x400, +0x108 bit 0x40, +0x160 bit 0x8000000,
   `FUN_0019b088`, the object-entry flag 0x2000) is read as "the enemy is alive"; `FUN_00176a70` (the player's combo
@@ -475,6 +544,31 @@ claims.
 | 433 | 1 | 1 | 0 | - |
 | 602 | 4 | 1 | 0 | - |
 
+### The 30 rows of the last five blocks (WP-6E)
+
+Searched again with every offer source the code has (`reactmap`: parts, spawn records, scripts with constant and
+with computed ids; `real_disc_window_scan`: trigger 20 and trigger 26 in every slot and paired sub-motion):
+
+| rows | offerer found | handler | note |
+| --- | --- | --- | --- |
+| 36, 480 | trigger 20 in M_EX050's paired sub-motions (entries 253; 242 and 254) | M_EX050 | follow-ups offered while the player plays M_EX050's paired motion; target rule gap (source 3) |
+| 393 | trigger 20 in B_CA010's paired 252 (frames 178 to 220) | B_CA010 | Flags bit 6 with `Require` 392 is not read on this path (`FUN_0019cf58` is only the native gate) |
+| 524 | trigger 20 in B_LK110's paired 253 | B_LK110 | |
+| 433 | trigger 20 in N_PO010_BTL's paired 252; window 433 in its paired 254 | not found (N_PO010_BTL's handler compares 0 and 5) | |
+| 113 | host 1.165 with a computed id in M_EX890's script (pc 0x348); window 113 in M_EX890 paired 253 | M_EX890 | |
+| 427 | 1.165 computed in M_EX760 (pc 0x6b3, also `_NM`, `_RAW`); window 300 (its `Require`) in M_EX760 paired 254 | M_EX760 | the follow-up of 300 |
+| 647 | 1.165 computed in B_EX130 (pc 0xb33); window 647 in its paired 253 | B_EX130 | |
+| 345, 432, 666, 667 | 1.165 computed in B_EX100 (pc 0x8c7) | B_EX100 | |
+| 367 | 1.165 computed in M_EX670 (pc 0x658) | M_EX670, M_EX720 | |
+| 270, 271 | 1.165 with constants in B_MU100; window 270 in its paired 253 | B_MU100 has an event 11 entry but compares no constant (a table or switch the pattern misses) | 271 (`Require` 270) is 270's follow-up |
+| 287 | none; window 286 (its `Require`) in M_EX920 paired 252 | M_EX920 | M_EX920 has no type 5 part and offers nothing the scan sees |
+| 286, 304, 314, 318, 435, 436, 463, 492, 635 | none | M_EX920, M_EX900, M_EX750, M_EX620, N_TR010_BTL (435, and 436 = its follow-up, window 435 in paired 252), N_HE010_BTL, B_EX140 (window 492 in paired 254), B_EX170_LAST (window 635 in paired 252 / 253) | the offer is made by something no scan reads: the action system at +0x300, an overlay, or a script call through a host other than 1.165 / 1.237 / 1.325 |
+| 235, 278, 576, 577 | type 5 parts of F_BB100 and F_NM130 | none found | field objects whose event 11 handler (if any) does not compare constants |
+| 602 | none | none | no reference on the disc found |
+
+None of these objects is in the app; the generic path they need (offer, gate, status, accept, event 11) is
+ported. What the app still lacks for them: the objects themselves, and for the paired-motion offers (source 3)
+the target rule (+0x160 bit 0x4000).
 
 ### HUD hook
 
@@ -553,7 +647,7 @@ none of which exist in the app.
 2. `enemy_ai.rs`: **done here**: `ReactionAccepted` is delivered as event 11; Soldier's thread for command 34 runs.
 3. `sora.rs` / the drive plugin (WP-2B2): the player's form id into `reaction_cmd::Ctx.form` (now 0) and the battle flag.
 4. Consumer of `reaction_cmd::PlayerReactionCmd`: **done by WP-5C** (`player_reaction.rs`, see "The player's side"
-   above). `Charge` is still not consumed.
+   above). `Charge` is consumed by `drive.rs` (WP-6A) and written only for a Mickey-class player (WP-6E).
 5. Consumer of `clash::Clash`: **done by WP-5C** (`player_reaction::receive_clashes`); the clash spark (system
    effect 0xb / 0xd of `00effect.bar`) goes through `fx::StartSystemEffect` (see the clash section). Not done: the
    spark of an enemy-owner row through `FUN_0018d6b0` (no object of the app has a category 0x10 element).

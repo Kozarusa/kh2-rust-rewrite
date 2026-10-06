@@ -792,7 +792,7 @@ mod tests {
         assert_eq!(r.abilities[&id::COMBO_BOOST].bit, BIT_COMBO_BOOST);
         assert_eq!(r.abilities[&id::AIR_COMBO_BOOST].bit, BIT_AIR_COMBO_BOOST);
         assert_eq!(r.abilities[&id::REACTION_BOOST].bit, BIT_REACTION_BOOST);
-        let atk = |element: u8, kind: u8| t::Atkp { element, kind, ..Default::default() };
+        let atk = |element: u8, kind: u8| { let mut a = <t::Atkp as kh2_tables::Record>::parse(&mut kh2_tables::rt::Reader::new(&[0u8; 48])); a.element = element; a.kind = kind; a };
         let none = with(&r, &[]);
         assert_eq!(attacker_bonuses(none.block(), 3, &atk(1, 7), 100), 100);
         // Fire Boost scales a Fire attack only.

@@ -1560,7 +1560,7 @@ mod tests {
         let behind = Scene { others: vec![Probe { dot: -0.9, ..other(100.0, 50.0) }], ..Scene::default() };
         assert_eq!(pick(&m, &chain(false, 3, &[]), &behind, 152), 3);
         // A longer combo with Combo Plus: the third press is still a normal hit.
-        let mut plus = chain(false, 3, &[ABILITY_COMBO_PLUS]);
+        let mut plus = chain(false, 3, &[21]);
         plus.max_ground = 4;
         assert_eq!(pick(&m, &plus, &near, 151), 4);
         // A motion is never picked again while it plays: with A301 playing key 5 (A300) is next.

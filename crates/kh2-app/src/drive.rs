@@ -1431,7 +1431,7 @@ mod tests {
                 let obj = if f == 0 { rec[8] } else { rec[11 + f as usize] };
                 let Some(o) = r.objs.iter().find(|o| o.object_id == obj as u32) else { continue };
                 let names = r.wmst.get(o.neo_moveset as usize);
-                let w0 = weapon_object(&r.went, o.neo_moveset as usize, r.key_slot);
+                let w0 = weapon_object(&r.went, o.neo_moveset as usize, r.item_slot(r.key_item).unwrap_or(0));
                 let w0n = w0.and_then(|id| r.objs.iter().find(|w| w.object_id == id)).map(|w| (w.model_name.clone(), w.animation_name.clone(), w.weapon_joint));
                 eprintln!(
                     "  form {f}: obj {obj} {} mset {} moveset {} joint {} wmst {:?} went(key) {:?} -> {:?}",
@@ -1460,8 +1460,9 @@ mod tests {
         assert_eq!(hands(&valor), [Some(("W_EX010".into(), Some("W_EX010_BTLF_R".into()))), Some(("W_EX010".into(), Some("W_EX010_BTLF_L".into())))]);
         // Without a form keyblade the left hand is empty.
         assert_eq!(hands(&r.files(form::VALOR, 2, 0).unwrap())[1], None);
-        // Wisdom: one keyblade; Anti: none (its moveset's went row and wmst row are empty).
-        assert_eq!(hands(&r.files(form::WISDOM, 2, key).unwrap())[1], None);
+        // Wisdom: one keyblade (its form record holds no second item, `take_form_keyblade` gives 0);
+        // Anti: none (its moveset's went row and wmst row are empty).
+        assert_eq!(hands(&r.files(form::WISDOM, 2, 0).unwrap())[1], None);
         assert!(hands(&r.files(form::WISDOM, 2, key).unwrap())[0].is_some());
         assert_eq!(hands(&r.files(form::ANTI, 2, key).unwrap()), [None, None]);
         // World outfits: the memt records of worlds 17, 13 and 14 swap in the _TR, _WI and _NM objects.
@@ -1493,8 +1494,11 @@ mod tests {
             assert_ne!(f.moveset, base.moveset, "world {id}: its own attack table row");
             assert!(f.hands[0].is_some(), "world {id}");
         }
-        // Outfits 1..3 of Twilight Town are the story-flag records, not merged here: empty words.
-        assert!(r.base_files(&DriveWorld { id: 2, outfit: 1 }).is_none());
+        // The outfit index picks the word: Twilight Town's merged record has objects in words 9 and 10
+        // (the Roxas outfits) and nothing in word 11 here.
+        let o1 = r.base_files(&DriveWorld { id: 2, outfit: 1 }).unwrap();
+        assert_ne!(o1.model, base.model);
+        assert!(r.base_files(&DriveWorld { id: 2, outfit: 4 }).is_none());
     }
 
     #[test]

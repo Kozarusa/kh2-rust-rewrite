@@ -111,19 +111,87 @@ material: the texture of the frame's TEX0 plus the sprite's palette offset (`Spr
 points 0x37c5d0). Their managers exist only while such an object is loaded (the object factory `FUN_001c0400`
 switches on the entry's sub type), so they do nothing in Twilight Town fights.
 
-## Dropped items (gap)
+## Master Form experience (verified, ported in WP-7Bb)
 
-`FUN_001bd490(item, point)` makes an item object (0x9f0 bytes, class 0x35f2e8, object id and scale from
-0x37bcb0 by the item's byte +0x16; `FUN_001bd0d0` takes one more generator step, ported in `compute_drop`).
-The item object (its flight, pickup and inventory entry) is not ported: items are logged only.
+`FUN_001d4148(units, player)`: when the player's form (+0xb50) is 3 (Master), `FUN_001d3f88(player, units)`: unless the
+minigame flag `FUN_001b9bd8` is set (the manager `DAT_01d5dd20`, absent in the app: taken as clear) the form record
+(`FUN_00187f60(0x33fec0, form)`) +4 grows by the units; then while `FUN_001d3c38` gives a row (the record's level +2 below
+the cap `FUN_001d3bd0` = 2 + the owned forms 1..4, 7 instead of 6; the row `FUN_001d3b90(form, level)` of `fmlv`) and the
+experience reaches the row's +4, the row's amount is taken off and `FUN_001d3da8` raises the level; without a row the
+experience is set to 0. After a level-up `FUN_001b5528` starts system effect 0x10 on the player. `FUN_001d3da8`: level + 1,
+the growth ability upgrade in the form's 16 slots and Sora's 64 (`FUN_001d3f18`, table 0x37c556) when the display level
+rises, the new row's ability (+2) given to Sora (`FUN_001a18d8(ability, 1, 0)` and the obtained log `FUN_001d0828`), the
+level-up popups (`FUN_001b5788`), the stat rebuild (`FUN_0019fb98`) and `FUN_001d5718`.
+
+Port: `prize::add_form_exp` (test `master_form_experience_levels_up_to_the_cap`) and `master_form_exp` on
+`Progress` (record level and experience, the ability through `Progress::give`) and `DriveState::level`. Harness:
+`KH2_DRIVE=3 KH2_DRIVE_AT=3 KH2_PRIZETEST=8,8,..(40)@8 KH2_PRIZETEST_DIST=60 KH2_PRIZETEST_STILL=1 kh2-game tt02` logs
+`(Master Form experience 57->0, level 1 -> 2 (ability 0x183), cap 7)`. Not ported: the growth upgrade in the record lists
+(drive.rs rebuilds the form's list from the level on each entry), the popups, the stat rebuild, the effect 0x10, the
+obtained log; the new ability applies from the next form entry.
+
+## Dropped items (verified, ported in WP-7Bb)
+
+`FUN_001bd490(item, point)`: the item row (`FUN_001a66e8`) byte +0x16 (`Icon1`) picks a row of the box table 0x37bcb0
+(12 rows of 8 bytes: the `00objentry` object and a scale; objects 0x3b8..0x3bb are `PRIZE_BOX_YELLOW`, `_RED`, `_BLUE`,
+`_GREEN`, scales 1.6, 2.3, 3.2 each); an object of 0x9f0 bytes is made (`FUN_00104fa8`, `FUN_0016e208`) and set up by
+`FUN_001bd0d0`: one generator step for its yaw (`-pi + u * 2 pi`, 0x37bc5c/54/58, given to the constructor `FUN_00168d30`),
+the item id at +0x9b4, the scale at +0x3c and +0x9b8, +0x588 bit 0x40000 (an item object), +0x108 bit 1 (not takeable), the
+class 0x35f2e8, then `FUN_0016b698(obj, 0xc)`. That runs state 12's enter at once (the state objects are global,
+`FUN_00179868` reads 0x35ca48; `FUN_00179880` gives state 12 the vtable 0x35f2b8 and state 13 the vtable 0x35f288):
+
+- **State 12 (fall)**, enter `FUN_001bd580`: the generic `FUN_0017b328` and three generator steps: X = -5 + u * 10
+  (0x37bc74, 0x37bc70), Z the same, Y = -15 + u * 5 (0x37bc7c, 0x37bc78; Y down: upward), written X, Z, Y. Each frame
+  the generic state code (`FUN_0017b440`, not ported) asks slot 7 `FUN_001bd700` for the step: Y velocity above 0 clears
+  +0x108 bit 1 (the item can now be taken), Y + 1.5 (0x37bc84) held at 25 (0x37bc80), X and Z times 0.97 (0x37bc88), the
+  step is the velocity times the frame unit. On landing slot 5 `FUN_001bd7a0`: faster than 2.5 (0x37bc8c) the Y velocity
+  is multiplied by -0.8 (0x37bc90) and sound 0xe plays at the item for the first two bounces (+0x9e4 counts them); slower,
+  +0x9e0 bit 0 (rested) and the velocity is cleared. [inferred: the app's sweep, as for the prizes, stands in for the
+  generic mover.]
+- **Pickup** (vtable slot 5 `FUN_001bd358`, decompiled with Ghidra here; [inferred] run once per frame): the player
+  (`DAT_0035c998`) exists (`FUN_0019a3f8`) and its +0x588 bit 0x2000000 is clear, the item is not taken (+0x9e0 bit 2) and
+  `FUN_0019a4b0` lets it (+0x108 bit 1 clear, +0x7f8 bit 0x1000 clear, +0x828 record above 0), and `FUN_001a3700(0, 0,
+  player, position)` (the prizes' reach: 120 plus Draw horizontally, 30 vertically). Out of reach it is taken only with
+  the instant-collection flags (`FUN_001905e8`, `FUN_00190610`), or, for an object 0x883 (`FUN_001bdb10`), by any party
+  member (`FUN_00184ac8`). Then (the same tail as `FUN_001bd1d8`): `FUN_001a1768(item, NeoStatus of the player = 1, 1)`
+  finds the room, `FUN_001a18d8` gives it and `FUN_001d0828` logs it; with no room nothing is given and the item is drawn
+  in all the same (object 0x883 instead counts +0xacc on the member and plays `FUN_00197b70(0x51, 1)` for the player).
+  +0x9e0 bit 2; +0x9d0 = position minus the member's centre (`FUN_0016b7d0`); frames = `|offset| * 0.05` (0x37bc60) held
+  in 30..60 (0x37bc64, 0x37bc68) at +0x9bc and +0x9c0; state 13.
+- **State 13 (draw-in)**, enter `FUN_001bd848`: +0x108 bits 0 and 1, sound 0x12 at the item. Update `FUN_001bd878`: the
+  frames drop by the frame unit; with the member gone or the frames out, `FUN_001a1f40(item, -1)` builds the item's
+  message (byte 9, the item's +0x17, its name `FUN_00190c40(+8)`) and `FUN_00138498` queues it (16 entries of 0x1d0 bytes
+  at `DAT_00354ecc` +0x2a7c), then the object ends (vtable +0x20). Otherwise `g = sin((1 - left / total) * pi * 0.5)`
+  (`FUN_00300278` is sine; 0x37bc94, 0x37bc98, 0x37bc9c), `f = 1 - g`: the position is the member's centre plus the
+  offset times `f` raised by `sin(f * pi) * 50` (0x37bca0); the yaw target (`FUN_0016a7f0`, +0x66c) grows by
+  `g * 0.5236` (0x37bca4) [inferred: the object turns to it at once]; below `f` 0.1 (0x37bca8) the scale is the start
+  scale times `f * 10` (0x37bcac).
+
+Port: `prize::ItemConsts`, `item_launch`, `item_fall`, `item_take`, `item_absorb_step`, `give_item`, the systems
+`spawn_items`, `run_items`, `show_items` (the box model drawn with `assets::spawn_model`); tests
+`an_item_launch_takes_yaw_then_x_z_y`, `an_item_bounces_then_rests`, `a_taken_item_arcs_into_the_collector`,
+`real_item_objects` (box rows, the four models, a consumable given to the 99 cap then refused), and
+`a_drop_follows_fun_001a3cb0` for the four generator steps. Not ported: the item message (`FUN_00138498` queue, no HUD
+for it), the obtained log `FUN_001d0828` (ring of 32 at 0x341518), the instant-collection flags, object 0x883, party
+members as collectors.
+
+## Collect-all (`FUN_002eece8`, host 6.31)
+
+`FUN_001a40b8` (mode 1 above) and `FUN_001bda98`: every object with +0x588 bit 0x40000 (the item objects) is handed to
+the player by `FUN_001bd1d8`, which checks nothing (an item already drawn in is given again and starts again). Ported:
+`run_prizes` and `run_items` read `prize::CollectAll`.
 
 ## Harness
 
 `KH2_PRIZELOG=1` logs rest, re-fall and timeout; drops, draw-ins and pickups always log:
 `prize: drop of row .. at ..: n objects, kinds [..]`, `prize: kind k drawn toward Sora from d away`,
-`prize: picked up kind k: HP +.. MP +.. drive +.. munny +.. -> ...`. `KH2_PRIZETEST=<kind>,..[@<s>]` launches
-kinds in front of Sora (`KH2_PRIZETEST_DIST` cm, `KH2_PRIZETEST_STILL=1` without the sideways launch); a
-harness aid, not game behaviour.
+`prize: picked up kind k: HP +.. MP +.. drive +.. munny +.. -> ...` (plus the glow, the charge, the gauge or form timer,
+Master Form experience and munny notes). Items: `prize: item 0x.. dropped at ..`, `prize: item 0x.. taken by Sora: given to
+..`, `prize: item 0x.. reached Sora`, and with `KH2_PRIZELOG` `prize: item 0x.. came to rest`. `KH2_PRIZETEST=<kind>,..[@<s>]`
+launches kinds in front of Sora (`KH2_PRIZETEST_DIST` cm, `KH2_PRIZETEST_STILL=1` without the sideways launch);
+`KH2_ITEMTEST=<id>,..[@<s>]` (hex with `0x`) drops item objects the same way; `KH2_COLLECTALL=<s>` sends one `CollectAll`.
+All three are harness aids, not game behaviour. The collision of `tt00` has floors above the arena floor in places:
+prizes and items come to rest in mid-air there (seen at y 150 to 188); use `tt02` or `tt04`.
 
 ## Decompile index
 
@@ -141,7 +209,10 @@ harness aid, not game behaviour.
 | 0x1b51e0, 0x1b52f8, 0x1c46a8 | the experience word (correction above) |
 | 0x203378 | `pppRyjMegaBirthPrize` draw |
 | 0x1c5b10, 0x1c8590, 0x1d54d8, 0x1d55d8, 0x1c0400, 0x1c5a30 | mini-game pools |
-| 0x1bd490, 0x1bd0d0 | item object |
+| 0x1bd490, 0x1bd0d0, 0x1bd580, 0x1bd700, 0x1bd7a0, 0x1bd358, 0x1bd1d8, 0x1bd848, 0x1bd878, 0x1bdb10, 0x1bda48, 0x1bd518, 0x1bcfc8, 0x179868, 0x179880, 0x16b698, 0x16b648, 0x17b328, 0x17b440, 0x17b410, 0x17bad0, 0x19a4b0, 0x1699a8, 0x169958, 0x16a890, 0x16a7f0, 0x300278, 0x1a1f40, 0x1a1ee0, 0x138498, 0x1d0828, 0x1d0760, 0x2c32b8, 0x2c3290, 0x2c2380 | item object |
+| 0x2eece8, 0x1a40b8, 0x1a3ad8, 0x1c5808, 0x1c5748, 0x1c5588, 0x1bda98 | collect-all (host 6.31, table 0x371078 entry 31 at 0x370f58) |
+| 0x175c28, 0x175cb0, 0x174b68, 0x1db868, 0x1a21d0 | pickup glow |
+| 0x1d4148, 0x1d3f88, 0x1b9bd8, 0x187f60, 0x1d3c38, 0x1d3bd0, 0x1d3b90, 0x1d3da8, 0x1d3f18, 0x1b5528 | Master Form experience |
 
 ## Gaps
 
@@ -152,8 +223,12 @@ harness aid, not game behaviour.
 - +0x588 bit 4 (Draw applies) is taken as set for Sora; status +0x1c4 in the reach is taken as 0 (writers not
   searched); the flags 0x35d268 (0x200, 0x400) and `FUN_00190610` / `FUN_001905e8` (instant collection, flag 8)
   are taken as clear.
-- The pickup glow (system effect 6), Master Form experience, item objects, the auto-collect mode 1, party members
-  as collectors (the app has none) are not ported.
+- The pickup glow's effect is not drawn (its timer runs): `fx::StartSystemEffect` places an effect at a fixed matrix
+  and files it in the clash spark ring; an owner-bound system effect that `Glow::tick` can stop is missing.
+- Party members as collectors (the app has none); the item message queue `FUN_00138498` and the obtained log
+  `FUN_001d0828`; Master Form's level-up side effects listed above.
+- The item object's generic state code (`FUN_0017b440` and the mover) is replaced by the prize sweep; the yaw sign
+  against the app's mirrored Z is [inferred].
 - Where and how long the munny strip shows: it uses the sequence's own placement and goes when its group ends
   [inferred]; the popup registry `FUN_0014f8b0` was not followed.
 - The sprite's colour combination (sprite colour times the kind's colour, 0x80 = 1.0) and the camera-facing

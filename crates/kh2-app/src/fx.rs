@@ -282,6 +282,7 @@ impl Plugin for FxPlugin {
             .add_message::<SpellHit>()
             .add_message::<FootDust>()
             .init_resource::<AreaFx>()
+            .init_resource::<SparkRing>()
             .add_systems(Startup, setup)
             .add_systems(
                 FixedUpdate,
@@ -358,12 +359,14 @@ pub struct StartSystemEffect {
     pub at: Mat4,
 }
 
-pub fn start_system_requests(mut commands: Commands, lib: Res<EffectLib>, mut req: MessageReader<StartSystemEffect>) {
+pub fn start_system_requests(mut commands: Commands, lib: Res<EffectLib>, mut ring: ResMut<SparkRing>, mut req: MessageReader<StartSystemEffect>) {
     for r in req.read() {
         if std::env::var_os("KH2_FXLOG").is_some() {
             info!("system effect {:#x} at {:?}", r.id, r.at.w_axis.truncate());
         }
-        start_placed(&mut commands, &lib.system, r.id, Bind::Fixed(r.at), Placement { replace_translation: true, ..default() });
+        // Every system effect started this way is a clash spark (FUN_0018d560), which FUN_001c09f8 registers.
+        let spark = start_placed(&mut commands, &lib.system, r.id, Bind::Fixed(r.at), Placement { replace_translation: true, ..default() });
+        ring_push(&mut commands, &mut ring, spark);
     }
 }
 
@@ -538,15 +541,15 @@ pub fn hit_rotation(dir: Vec3) -> [f32; 3] {
 
 /// Starts the first element of `lib` with game effect id `id` (FUN_001db868 returns after the
 /// first match; no file on the disc repeats an id, so this is the only element either way).
-pub fn start_placed(commands: &mut Commands, lib: &Arc<LoadedPax>, id: u16, bind: Bind, place: Placement) {
-    let Some(el) = lib.pax.elements_for(id).next() else { return };
-    let Some(fx) = lib.pax.effects.get(el.effect as usize) else { return };
-    let Some(effect) = kh2_fx::Effect::new(lib.dpds[fx.dpd].clone(), fx.dpd, fx.particle_data) else { return };
+pub fn start_placed(commands: &mut Commands, lib: &Arc<LoadedPax>, id: u16, bind: Bind, place: Placement) -> Option<Entity> {
+    let el = lib.pax.elements_for(id).next()?;
+    let fx = lib.pax.effects.get(el.effect as usize)?;
+    let effect = kh2_fx::Effect::new(lib.dpds[fx.dpd].clone(), fx.dpd, fx.particle_data)?;
     // `KH2_FXONLY=<id,id,...>` runs only those effect IDs (isolating an effect in a screenshot).
     if let Ok(only) = std::env::var("KH2_FXONLY")
         && !only.split(',').any(|v| v.trim().parse::<u16>().ok() == Some(id))
     {
-        return;
+        return None;
     }
     let mut element = el.clone();
     if place.replace_translation {
@@ -555,7 +558,47 @@ pub fn start_placed(commands: &mut Commands, lib: &Arc<LoadedPax>, id: u16, bind
     if let Some(r) = place.rotation {
         element.rotation = r;
     }
-    commands.spawn((Transform::default(), Visibility::default(), RunningEffect::new(lib.clone(), element, effect, fx.dpd, bind, id)));
+    Some(commands.spawn((Transform::default(), Visibility::default(), RunningEffect::new(lib.clone(), element, effect, fx.dpd, bind, id))).id())
+}
+
+/// Slots of the game's ring of recent spark effects (`DAT_01d5df30`, 8 words, index `DAT_01d5df50`).
+pub const SPARK_RING_SLOTS: usize = 8;
+/// The fade time `FUN_001c09f8` hands to `FUN_001da080` for the effect it pushes out (`DAT_0037bd90`, 4.0).
+pub const SPARK_EVICT_FADE: f32 = 4.0;
+
+/// The ring `FUN_001c09f8` keeps of the last 8 spark effects: the hit spark and the "ineffective" effect
+/// of `FUN_0018d090`, the wall spark of `FUN_0018ca78` and the clash spark of `FUN_0018d560`. A new entry
+/// takes the slot of the oldest, and the effect that was in it is faded out (`FUN_001da080(4.0, effect)`).
+/// This is the only thing that ends a looping spark such as system effect 0xd, which has no owner and no
+/// end of its own (docs/hit-reaction.md "Lifetime of the clash spark").
+#[derive(Resource, Default)]
+pub struct SparkRing {
+    slots: [Option<Entity>; SPARK_RING_SLOTS],
+    next: usize,
+}
+
+impl SparkRing {
+    /// Registers a spark; returns the effect it pushes out of the ring, if the slot held one.
+    pub fn push(&mut self, e: Entity) -> Option<Entity> {
+        let old = self.slots[self.next].replace(e);
+        self.next = (self.next + 1) % SPARK_RING_SLOTS;
+        old
+    }
+}
+
+/// Marks a spark pushed out of the ring: `tick` fades it out over `SPARK_EVICT_FADE` frames.
+#[derive(Component)]
+pub struct Evicted;
+
+/// `FUN_001c09f8` for a freshly started spark (`None`: no element, nothing to register).
+pub fn ring_push(commands: &mut Commands, ring: &mut SparkRing, spark: Option<Entity>) {
+    let Some(e) = spark else { return };
+    if let Some(old) = ring.push(e) {
+        if std::env::var_os("KH2_FXLOG").is_some() {
+            info!("spark ring: {e:?} takes the slot of {old:?}, which fades out");
+        }
+        commands.entity(old).try_insert(Evicted);
+    }
 }
 
 /// Weapon trails: run effect 10 while the keyblade's motion has its trail range trigger.
@@ -620,6 +663,7 @@ pub fn hit_sparks(
     mut walls: MessageReader<crate::combat::WallHit>,
     mut spells: MessageReader<SpellHit>,
     mut game: MessageWriter<GameEffect>,
+    mut ring: ResMut<SparkRing>,
     mut seed: Local<u32>,
 ) {
     let mut spells: Vec<SpellHit> = spells.read().cloned().collect();
@@ -667,7 +711,8 @@ pub fn hit_sparks(
             info!("hit atkp {} SubId {} effect {} -> element id {id} of {:?} (effect file {}) at {:?}", atk.id, atk.sub_id, atk.effect_on_hit, pax.apdx, pax.id, point);
         }
         let place = if dir.is_some() { Placement::hit(dir) } else { Placement::default() };
-        start_placed(&mut commands, &pax, id, Bind::Fixed(Mat4::from_translation(point)), place);
+        let spark = start_placed(&mut commands, &pax, id, Bind::Fixed(Mat4::from_translation(point)), place);
+        ring_push(&mut commands, &mut ring, spark);
     }
 }
 
@@ -679,6 +724,7 @@ pub fn game_effects(
     mut req: MessageReader<GameEffect>,
     fighters: Query<&Fighter>,
     anims: Query<&Animator>,
+    mut ring: ResMut<SparkRing>,
     mut dead: Local<std::collections::HashSet<Entity>>,
 ) {
     // The victim's body (the model that carries the effect file's bones) and its effect file.
@@ -693,7 +739,8 @@ pub fn game_effects(
                 if std::env::var_os("KH2_FXLOG").is_some() {
                     info!("ineffective hit: system effect {EFFECT_INEFFECTIVE:#x} at {point:?}");
                 }
-                start_placed(&mut commands, &lib.system, EFFECT_INEFFECTIVE, Bind::Fixed(Mat4::from_translation(point)), Placement::hit(Some(dir)));
+                let spark = start_placed(&mut commands, &lib.system, EFFECT_INEFFECTIVE, Bind::Fixed(Mat4::from_translation(point)), Placement::hit(Some(dir)));
+                ring_push(&mut commands, &mut ring, spark);
             }
             GameEffect::Damage { victim, effect, point } => {
                 let Some((_, pax)) = victim_pax(victim) else { continue };
@@ -744,6 +791,7 @@ pub fn fx_kill(time: Res<Time>, mut enemies: Query<(Entity, &mut Enemy)>, mut do
 pub fn tick(
     mut commands: Commands,
     mut effects: Query<(Entity, &mut RunningEffect)>,
+    evicted: Query<(), With<Evicted>>,
     owners: Query<&Animator>,
     sora: Query<&Sora>,
     locals: Query<(&Transform, Option<&ChildOf>)>,
@@ -765,6 +813,10 @@ pub fn tick(
         Some(p.matrix(hfov))
     });
     for (e, mut r) in &mut effects {
+        // A spark pushed out of the ring fades out over `SPARK_EVICT_FADE` frames (FUN_001da080).
+        if r.fade.is_none() && evicted.contains(e) {
+            r.fade = Some((1.0, -1.0 / SPARK_EVICT_FADE));
+        }
         let el = r.element.clone();
         // The bind record's clock (FUN_001dd0d0 adds the frame step to +0x4c at its end): an element with
         // a start wait does not run, draw or sound until the clock reaches it (inference for the unit: one
@@ -1364,5 +1416,65 @@ mod tests {
                 assert_eq!(e.bone, 0x4003, "{name} element {id}");
             }
         }
+    }
+
+    /// `FUN_001c09f8`: the ring holds the last 8 sparks; the 9th takes the slot of the 1st and pushes it out,
+    /// the 10th the 2nd, and so on, in order.
+    #[test]
+    fn spark_ring_pushes_out_the_oldest_after_eight() {
+        let mut w = World::new();
+        let ents: Vec<Entity> = (0..12).map(|_| w.spawn_empty().id()).collect();
+        let mut ring = SparkRing::default();
+        for (i, e) in ents.iter().enumerate() {
+            let out = ring.push(*e);
+            if i < SPARK_RING_SLOTS {
+                assert_eq!(out, None, "push {i}: the ring still has a free slot");
+            } else {
+                assert_eq!(out, Some(ents[i - SPARK_RING_SLOTS]), "push {i}: the oldest spark leaves");
+            }
+        }
+    }
+
+    /// `ring_push` marks exactly the pushed-out spark `Evicted` (which `tick` fades over 4 frames).
+    #[test]
+    fn ring_push_marks_the_pushed_out_spark() {
+        let mut app = App::new();
+        let ents: Vec<Entity> = (0..9).map(|_| app.world_mut().spawn_empty().id()).collect();
+        let mut ring = SparkRing::default();
+        let mut commands = app.world_mut().commands();
+        for e in &ents {
+            ring_push(&mut commands, &mut ring, Some(*e));
+        }
+        ring_push(&mut commands, &mut ring, None);
+        app.world_mut().flush();
+        let marked: Vec<bool> = ents.iter().map(|e| app.world().entity(*e).contains::<Evicted>()).collect();
+        assert_eq!(marked, [true, false, false, false, false, false, false, false, false]);
+    }
+
+    /// Why the ring is needed (`FUN_001e6240`): system effect 0xd, the spark of a clash (`FUN_0018d560`), is
+    /// a looping effect (program flags bit 0) with no element end flag (0x40 / 0x80) and no owner, so it never
+    /// ends by itself; the guard-bounce sparks 0xb and 0xc end on their own within a second. Skips without a disc.
+    #[test]
+    fn clash_spark_0xd_has_no_end_of_its_own() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let common = disc.read("effect/texcommon.dpd").and_then(|b| Dpd::parse(&b).ok());
+        let lib = load(&disc, "00effect.bar", 1, common.as_ref()).expect("00effect.bar");
+        let run = |id: u16, ticks: usize| {
+            let el = lib.pax.elements_for(id).next().expect("element");
+            assert_eq!(el.flags & (element_flag::DESTROY_LOOPEND | element_flag::DESTROY_FADEOUT), 0, "element {id:#x} has no own end flag");
+            let fx = &lib.pax.effects[el.effect as usize];
+            let mut e = kh2_fx::Effect::new(lib.dpds[fx.dpd].clone(), fx.dpd, fx.particle_data).expect("effect");
+            (0..ticks).find(|_| {
+                e.tick(&kh2_fx::Env::default());
+                e.done
+            })
+        };
+        assert!(run(0xb, 600).is_some(), "0xb ends by itself");
+        assert!(run(0xc, 600).is_some(), "0xc ends by itself");
+        assert!(run(0xd, 3000).is_none(), "0xd is still running after 50 s");
     }
 }

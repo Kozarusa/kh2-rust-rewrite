@@ -138,6 +138,40 @@ calls the owner's virtual method +0x6c with both volumes.
   a party-class actor, that actor takes the Guard branch (if its own row is not 2 and it is on the
   ground). The enemy-style handler never reads `RefactOther`; no other reader of it was found.
 
+### Lifetime of the clash spark (WP-FIX-14)
+
+User report: after a clash a rainbow bubble sphere with a bright white core stays in the world. Cause: system
+effect 0xd (the spark of "spark only" and the recoil) is a **looping effect** (its program file's flags have
+bit 0; element flags 0, so no 0x40 / 0x80 own end) and the clash spark has no owner (`FUN_0018d560` passes 0 as
+the sixth argument of `FUN_001db868`), so nothing of the effect's own ends it: `FUN_001e5660` copies the flag to
+the manager's +0x84, `FUN_001e6240` then finishes a manager only when +0x85 is set (loop end,
+`FUN_001e0298`, called by `FUN_001d9f48`), and the groups' loops (`FUN_001e5b70`) run on while +0x85 is
+clear. The app ran 0xd forever (unit test `fx::tests::clash_spark_0xd_has_no_end_of_its_own`; the guard-bounce
+sparks 0xb and 0xc are not looping and end within about a second).
+
+What the game does about it: `FUN_001c09f8` keeps a **ring of the last 8 spark effects**
+(`DAT_01d5df30`, index `DAT_01d5df50`). Every spark registers there: the hit spark and the ineffective
+effect 0x12 of `FUN_0018d090`, the wall spark of `FUN_0018ca78`, the clash spark of `FUN_0018d560` (the
+victim's damage effect is not registered). The new effect takes the slot of the oldest; the effect that was in
+that slot gets `FUN_001da080(DAT_0037bd90 = 4.0, effect)`: loop-end flag, fade out over 4 frames (a time of 0 or
+less would kill it at once, `FUN_001da028`). `FUN_001c09a0` only clears slots whose effect is already gone;
+`FUN_001c0968` empties the ring. A second ring of 4 with fade `DAT_0037b450` does the same for another effect
+class (`FUN_001a2438`, not ported). Ported as `fx::SparkRing` / `fx::ring_push` (marker `Evicted`, faded in
+`fx::tick` with the same fade path as element flag 0x40); the app's hit sparks, wall sparks, effect 0x12 and
+the clash spark all go through it. Tests: `fx::tests::spark_ring_pushes_out_the_oldest_after_eight`,
+`ring_push_marks_the_pushed_out_spark`.
+
+Consequence, read from the code: a clash spark leaves when 8 further sparks (any hit) have happened after it,
+so during a fight it vanishes within a few hits. A lone spark with no later spark stays, as far as the decompiled
+code shows. [inferred] that the original behaves the same; I found no other writer of the end flag for an
+ownerless system effect (callers of `FUN_001d9f48`, `FUN_001da080`, `FUN_001e0298` searched: 0016dbb8, 0016dc48,
+00175cb0, 001864b8, 001a2438, 001c09f8, 001cd880, 001dd060, 00226188, 00227978, 002cc6a8, 002f7dc0, 002f7df8; the
+owner-bound end in `FUN_001dd0d0` needs the record's owner at +0x48, which is 0 here). If the user still sees a
+sphere stay after a fight ends, the next step is a kh2-ee trace of the holder's record list over time.
+
+Harness: `KH2_CLASH_FORCE_SPARK=<s>,<s>,..` starts spark 0xd in front of Sora at those times; `KH2_FXCOUNT=1`
+logs `fx count: t=<s>s running effects <n> ids [..]` once a second.
+
 ## ReflectHitSound
 
 Verified (FUN_0018c6d0, the hit record builder): when a hit lands, the attacker's object plays

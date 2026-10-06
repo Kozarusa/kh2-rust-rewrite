@@ -58,6 +58,10 @@ fields that matter for the player systems:
 | `Flags` [V, partly] | bit 1: unavailable while FUN_0019aa28 is true for the player; bit 16: needs the global flag read by FUN_001903d8; bit 5: ignores the "commands locked" global bit 2 of DAT_0035d268 (FUN_001b70b8). The other bits are not decoded. |
 | `Priority`, `Mark`, `Range`, `Dir`, `DirRange`, `DistRange`, `Score`, `Group`, `CmdIcon`, `SubMenu` | command-menu layout and reaction-command targeting. Not traced. [GAP] |
 
+Magic commands (`Execute` 2, `Argument` = the `magc` slot, `Cost` = MP, 255 = all MP) and the `magc`, `magi` and
+MP-charge rules are in `docs/magic.md` (WP-6B): a spell with too little MP can still be cast (FUN_001ba2c0 status 2),
+paying more than the MP left starts the charge (FUN_00186368 -> FUN_00186440, `prty` MpDrive).
+
 `item` records of type 20 (summon charms) and 21 (drive form items) carry the command id in `Command`
 (offset +0x10) [V: FUN_001b7188 does `cmd(item(formItem).Command)`].
 

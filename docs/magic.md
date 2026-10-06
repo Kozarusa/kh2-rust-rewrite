@@ -143,16 +143,55 @@ and is finished. Atkp 708/709 are type 6: the "damage" `(Magic * Power + 99) / 1
 (FUN_00185a68: types 5 and 6 are positive) and clamped to the maximum (FUN_001a0100). Port: `magic_rules::heal_amount`,
 `magic::event21` (Sora only: the app has no party members).
 
-## Blizzard and Thunder [GAP]
+## Blizzard (BLIZZARD_*.mag)
 
-Their event 21 starts effects and then makes the projectiles in request threads (host 2.20 -> FUN_001a4738) whose
-routines are not reached by the disassembler's flow walk (Blizzard: routine at word 0x319 with arguments set by
-R02d7; Thunder similar). They also read the target (2.23, 1.120), the facing (1.201) and 1.146 / 1.248 (not named).
-These routines are not ported: the app plays the cast, pays the MP and logs that the projectile is missing. No attack is
-made.
+The shot is a request thread (host 2.20 -> FUN_001a4738) at word 0x319, which the disassembler's flow walk does not
+reach on its own (`cargo run -p kh2-bdx --example listing` with root 319 after pointing it at the `.mag`). [V, script]
+
+Event 21, kind / 10 = 0 (level casts without a form): stop [g]+0x1c, start element 1 (bound to bone 0x4003, the weapon of
+hand 0: FUN_0016aa18 -> FUN_0016ae50), yield; host 1.146 with the facing turned by pi and `magi` +0x1c (FUN_001857b0: a
+push of the caster backward [I]; not ported, GAP); then R02b9 -> R02d7 -> R04d6 start the shot with a 112-byte block: the
+caster's context, a copy of its target record (+0x30), the start position = element 1's position (+0x20), the direction
+= the facing (+0x50), the turn rate `magi` +0xc times the scale 1.0 (+0x60) and a flag 1 (+0x64). Wisdom, Master and
+Final send three to seven shots at other angles (not ported).
+
+The shot (R035b): element 2 unbound (host 1.138); `attack_create(ctx, 248, -1, kind)` sized `magi` +0x18 both ways (a
+sphere); the attack first moves to the caster's lock-on point (host 1.88) [GAP: the app starts it at the shot's position,
+so the first swept segment is missing]; life `magi` +0x10 - 12. Each frame while the effect lives: it ends when the
+attack's flags 8 / 0x10 (host 2.29) or 0x200 (2.39) are set, or with flag 0 of the block when host 2.14 (FUN_0018c890)
+holds; otherwise the effect's second vector takes the direction (0.41), the effect and attack move to the position
+(R045b), yield; with a valid target and a rate above 0 the direction turns toward the target (host 0.46 -> FUN_0017c0f8:
+by the angle between them clamped to the rate, about their cross product); the position moves `magi` +0x14 along the
+unit direction (host 0.45 -> FUN_0016d098); at the end of the life the effect fades over 12 frames and is destroyed
+(host 0.52). Cleanup (R0487): destroy the effect, finish the attack, release the target record, free the block.
+
+Port: `magic::step_shot`, `turn_toward`. The flags: 8 / 0x10 are taken to mean "hit a target" and 0x200 "hit terrain"
+[I: their writers were not found; FUN_0018c8e0 (from FUN_001a2cc0 for an attack that moved more than two units) casts the
+segment from the last position against terrain with mask 4 for rows with BG Hit and calls the wall handler FUN_0018ca78].
+Atkp 248 has BG Hit. The fade is the effect's loop end in the app (`fx` has no handle for a timed fade) [I].
+
+## Thunder (THUNDER_*.mag)
+
+Event 21, kind / 10 = 0: stop [g]+0x1c, start element 1; the place is the target record's position (host 1.120) when the
+caster has a valid target, with a probe height of 100; otherwise 300 ahead of the caster along the facing, 80 up, with
+330. R02b5 starts the strike thread (word 0x2da) with the place (+0x20) and the probe height (+0x48). Master, Final and
+the Wisdom finisher make more strikes (not ported). [V, script]
+
+The strike (R031c): host 1.141 (FUN_001a5c30 with mask 4, distance 10000) probes from the probe height above the place;
+ground found less than `magi` +0x20 below the place moves the strike onto it and picks element 2 and atkp 250, else
+element 3 and atkp 251. The element is started there unbound. After `magi` +0x30 frames (R029f: count down, yield) the
+attack (atkp 250/251, radius `magi` +0x24) is made at the place, and a copy (host 2.31, atkp 249) sized `magi` +0x2c /
++0x28 is raised by +0x28; both live `magi` +0x34 frames, then both are finished. [V, script; the probe's direction and
+the copy keeping the original's group are I]
+
+Port: `magic::step_strike`; the probe is the app's floor test `World::ground_m`.
 
 ## Not ported / gaps
 
+- Effect binding to bones 0x4001 / 0x4003 / 0x4009 (FUN_0016aa18: 0x4003/0x4004 the weapon of a hand moved along its
+  axis by the weapon length, 0x4001 the object matrix at FUN_0016b7d0's point, 0x4009 at the object's shape of kind 9):
+  `fx.rs` binds every 0x4000-and-up bone to the object's root, so the cast effects (element 0 and 1, bone 0x4003) show
+  at Sora's feet instead of the keyblade tip. `magic.rs` uses the weapon's matrix for a shot's start (without the length).
 - Running the spell scripts in the BDX interpreter: `kh2_bdx::Runtime` can run an event only to its first yield or
   start events 0 and 1; the game starts a script's event as the thread's persistent code (FUN_0016c500 -> FUN_0016c4d8).
   With such an entry point the scripts could run as they are (the host functions they use are listed above).
@@ -160,6 +199,9 @@ made.
   Reflect, levels 2 and 3 (the rules handle them; the effects and scripts are the same code paths but were not looked at).
 - The hit spark of a spell: `fx::hit_sparks` takes the keyblade's effect file for every player hit; for a spell the
   attacking object's effect file is the spell's (`EffectOnHit` category in the `.mag` PAX) [not changed: fx.rs].
+- The HUD's MP charge bar: `hud_gauge::MpRecharge` gets +0x1bc (time left, which counts down) and +0x1c0 as its doc
+  names them; whether the game's bar fills with the left time or with the elapsed time was not traced in the HUD code
+  (0x1556a0), and in a run the recharge bar is drawn at the right edge of the screen (hud_gauge layout, not checked).
 - `enemy::receive_hits` looks the row up with `GameData::atkp` (the first row of the id): until it uses
   `GameData::hit_row`, every Fire hit uses `SubId` 0.
 
@@ -182,3 +224,6 @@ made.
 | 0x1be108, 0x1be190, 0x1be280, 0x1be300, 0x19e7e0 | hit memory, row variant |
 | 0x1a0610, 0x1a0a18, 0x185a68, 0x186238 | damage, element boost, heal/damage apply |
 | 0x173988 | host 1.139: FUN_001db868(effect file, id, 1, 1, 0, object) |
+| 0x16d098, 0x16d138 -> 0x17c0f8, 0x18e3d8 -> 0x18c890, 0x172538 -> 0x1a5c30, 0x1705e8 -> 0x1857b0 | hosts 0.45 (move along a direction), 0.46 (turn toward), 2.14, 1.141 (probe), 1.146 (push) |
+| 0x18c8e0, 0x18ca78 | terrain segment test of a moving attack, wall handler |
+| 0x16aa18, 0x16ae50 | element bone matrices (0x4000..0x4009) |

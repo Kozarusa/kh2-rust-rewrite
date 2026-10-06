@@ -12,9 +12,9 @@
 //!
 //! The scripts are not run in the BDX interpreter here (the interpreter has no way yet to start an
 //! event as a persistent thread, see docs/magic.md); what Fire's and Cure's scripts do is ported by
-//! hand below, step by step, from their disassembly (`kh2 bdx magic/FIRE_1.mag`). Blizzard and
-//! Thunder make their projectiles in request threads (host 2.20) whose routines are not ported:
-//! they cast, pay and start their first effects, and make no attack (logged).
+//! hand below, step by step, from their disassembly (`kh2 bdx magic/FIRE_1.mag`), including the
+//! request threads (host 2.20) of Blizzard's shot and Thunder's strike. Only the casts without a
+//! drive form are ported for Blizzard and Thunder (the form variants send more shots and strikes).
 //!
 //! Keys: the command menu answers T (cursor up), G (cursor down), B (back); J / left mouse
 //! executes the selected command (the game's X button): Attack attacks, Magic opens the list, a

@@ -21,19 +21,20 @@ Sora (continued):
 - **Abilities and drive forms:** the ability and stat block, growth abilities, Valor, Wisdom, Master, Final and Anti forms with their outfits and hand weapons, and limits.
 - **Reaction commands:** native offers, the accept path, and Soldier's command 34 played on Sora; clashes between attacks.
 - **Camera:** the game's field camera model, look-around (the model fades), area camera types and collision.
-- **HUD:** gauges, the command menu with its reaction capsule, text with commands, the area-name card and banners.
+- **Magic (phase 1):** a Magic page in the command menu (T/G move, B back, J casts) with Fire, Blizzard, Thunder and Cure at level 1, their MP cost, charge and damage rows.
+- **HUD:** gauges, the command menu with its reaction capsule, text with commands, the area-name card, banners and message windows.
 - **Audio:** the game's sound driver, area music with the battle switch, voices and footsteps, and positional volume and pan. Mostly unlistened.
 
 Enemies:
-- **Shadows and Soldiers:** spawn in waves with their own models, motions, hitboxes, and `enmp`/`lvpm` stats.
+- **Shadows, Soldiers, Dusks and one more:** each has its own model, motions, hitboxes, and `enmp`/`lvpm` stats. In Twilight Town (tt04) the waves come from the area's own battle groups (Dusks and a Struggle opponent); other areas use stand-in Shadow/Soldier waves.
 - **Behaviour:** they run the game's own AI scripts (BDX) in an interpreter that was checked against the game's code, so they chase, sink and resurface (Shadows), attack, flinch, get blown away and die as in the original.
 
 Not done yet:
-- Magic, items and summons.
+- Magic beyond level 1 (Magnet, Reflect, drive-form casts), items and summons (spec in `docs/summons.md`).
 - Other enemy types.
 - NPCs, events, menus and the world map.
 - Final Mix differences (only the USA release is supported).
-- Message windows and HP digit counters.
+- Message windows are drawn but nothing in play opens them yet.
 - Some audio gaps (the landing footstep) and some effects (munny payout).
 - COCT collision is used; some camera blockers and the Quick Run camera speed are open.
 

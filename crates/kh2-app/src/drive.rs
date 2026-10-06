@@ -997,7 +997,8 @@ fn charge_tick(
             body.restart(sl, false, rules::CHARGE_BLEND);
             cue.restart(sl, false, rules::CHARGE_BLEND);
             *slot = sl;
-            info!("drive: charge motion {id:#x} ({}, slot {sl:?}), blend {}", body.tag(), rules::CHARGE_BLEND);
+            let which = if id == rules::CHARGE_MOTION { "command 455's" } else { "unexpected" };
+            info!("drive: charge motion {id:#x} ({which}; {}, slot {sl:?}), blend {}", body.tag(), rules::CHARGE_BLEND);
         }
         cue.apply(&s.weapons, &mut anims);
         if slot.is_some() {

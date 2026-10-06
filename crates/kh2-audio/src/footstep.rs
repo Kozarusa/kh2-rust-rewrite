@@ -62,8 +62,27 @@ impl WorldSoundInfo {
 /// Which `kind` values the frame trigger carries are listed on the motions; these are the ones
 /// the executable's own callers use besides the trigger parameter.
 pub mod kind {
-    /// The landing path of FUN_0017af10 (inferred from where it is called).
-    pub const LAND: u8 = 8;
+    /// The stop step of FUN_0017af10 ([`super::stop_step`]): walking or running with no movement
+    /// command left. (Earlier docs called it the landing path; it is not.)
+    pub const STOP: u16 = 8;
+}
+
+/// The motion ids the ground mover's stop step looks for: walk and run.
+pub const MOTION_WALK: u32 = 1;
+pub const MOTION_RUN: u32 = 2;
+
+/// FUN_0017af10, the per-tick update of the ground mover (descriptor class 0x35cbb0, mover 0, and
+/// 0x371298, mover 0x2b; slot 6, called by FUN_0016a2f0 every tick): with no movement command
+/// (`commanded_speed`, actor +0x1c, the walk or run speed FUN_001774d8 writes from the stick, 0
+/// without input), for a party actor (`party`, +0x588 bit 0x80) whose last requested motion id
+/// (+0x154, controller +0x14, written by FUN_0017e000) is walk (1) or run (2) and whose motion has no
+/// range trigger 42 open (`range_42`, +0x164 bit 0, set by FUN_00188030 case 0x2a) it plays footstep
+/// kind 8 (FUN_0016baa0) and the dust effects 8 and 9 (FUN_001b1c90, not for NeoStatus 0xe). The same
+/// call ends with FUN_0017aeb8, which asks the controller for motion 0 (idle) while range trigger 0 is
+/// open (controller +0x20 bit 4; walk and run have it over every frame), so +0x154 becomes 0 and the
+/// step is one-shot: it marks the tick the stick is let go. True when the step plays.
+pub fn stop_step(party: bool, commanded_speed: f32, range_42: bool, motion: u32) -> bool {
+    commanded_speed <= 0.0 && party && !range_42 && matches!(motion, MOTION_WALK | MOTION_RUN)
 }
 
 /// Material forced by bit 0x20 of the class descriptor's flag word (`*(actor + 0xc) + 8`).
@@ -109,6 +128,21 @@ pub fn footstep_number(record: Option<&SoundInfoRecord>, neo_status: u16, materi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stop_step_gate_of_fun_0017af10() {
+        // Walk or run with the stick let go: the step.
+        assert!(stop_step(true, 0.0, false, MOTION_WALK));
+        assert!(stop_step(true, 0.0, false, MOTION_RUN));
+        // Still commanded, idle, landing (5) or any other motion: nothing.
+        assert!(!stop_step(true, 8.0, false, MOTION_RUN));
+        for m in [0, 3, 4, 5, 6, 194] {
+            assert!(!stop_step(true, 0.0, false, m));
+        }
+        // Range trigger 42 open, or not a party actor: nothing.
+        assert!(!stop_step(true, 0.0, true, MOTION_WALK));
+        assert!(!stop_step(false, 0.0, false, MOTION_WALK));
+    }
 
     fn entry() -> Vec<u8> {
         // Two areas; the second has banks 697, 698, 699, -1, 729.

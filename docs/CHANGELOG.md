@@ -9,6 +9,7 @@ One short section per work package. "Verified" says how; nothing here was checke
 
 - **WP-7S (game state).** `Progress` resource holds the original's party block (inventory counts, key items, munny, spells, forms, keyblades, abilities, summons) built by the new-game initialiser (FUN_00105638 chain); `KH2_STATE` loads a json state; magic, drive and abilities read it and their env vars still win. The app adds a documented baseline (spare Kingdom Keys, form items, spells 0-3). Verified by the oracle `new_game_block_matches_the_game` (6552 bytes, 466 item counts, give/take sweep, 24 spell rows). Open: story grants, title-menu path, unwired saved bytes.
 - **WP-7H (party spec).** `docs/party.md`: member tables per world, spawn and despawn, friend AI, host group 10, combat, HUD, staged plan 1-6. Verified by disc and oracle tests (five). Docs only; no app change. Open: follow-point geometry, style 0 target choice, revive-time record.
+- **WP-7D (three more enemies).** M_EX930 (the Dancer, name inferred), N_EX500_BTL and N_EX600_BTL (Struggle opponents, lowest HP 1) run under their own BDX scripts in tt04 groups b_21, b_50 and b_52; enemy runtimes now get the executable's host table; Dusks no longer fault reading their own target record. Verified by the BDX oracle (57 scripts, 12568 host calls, 0 failures), three mode-cycle tests and harness runs with 0 missing calls. Open: the Dancer's player link (force dance), Struggle rules (WP-7E), enemy voices.
 
 ## Shift 6 (work done while the user was away; nothing here was play-tested by the user)
 

@@ -283,6 +283,7 @@ Done:
   flinches a Dusk (reaction 3, push 125, motion 10); last hits blow it and it lands
   (`Dusk lands from a blow`); its kick (atkp 17, reaction 3) flinches Sora with a push of 350; Sora's
   swing against its kick clashes (`Dusk clash: recoil motion 140`).
+* N_EX570_BTL (WP-6H) uses the default slots too (10..13 flinch, 16..19 blow); seen: Sora's 128 flinches it (push 75), last hits blow it; its claw 1042 (reaction 3) flinches Sora with a push of 200. Damage is held at its lowest HP (FUN_001a0100).
 * The `patn` conversion and the ineffective-hit rule run before the class handler. No status
   bit is ever set in the app (the `ReactionStatus` component, absent by default, carries one), so
   the conversion is exercised by unit tests only. `combat::IneffectiveHit` is written by both

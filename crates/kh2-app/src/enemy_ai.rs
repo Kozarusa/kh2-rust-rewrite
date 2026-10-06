@@ -58,6 +58,8 @@ const VOLUME_SIZE: u32 = 0x40;
 /// to FUN_001b21a0 as the other side's object). The other fields are not served.
 const VOLUME_OWNER: u32 = 8;
 const OBJ_SIZE: usize = 0x1000;
+/// The status block of the scripted object (host 1.84: the pointer at object +0x48c).
+const GAUGES: u32 = 0x0700_0000;
 /// Bit 3 of an object's flag array: "cannot be hit" (FUN_0019a4f0).
 const FLAG_BIT_UNHITTABLE: i32 = 3;
 /// Offset of the movement vector (direction and speed in w) in a game object.
@@ -471,6 +473,25 @@ struct Obj {
     volumes: Vec<(u32, i16)>,
     /// Prize rows of host 1.92 calls this tick.
     drops: Vec<i32>,
+    /// Spawn parameters 1 and 2 (object +0x820, +0x824, copied from the record by FUN_0016b870).
+    spawn_params: Option<[i32; 2]>,
+    /// The `enmp` row of this tick's `set_obj_param` when it is not the one the stats were built from.
+    param_row: Option<u16>,
+    /// The HP record of part 0 of the status block (+0x48c, FUN_0019f770: current, maximum, lowest):
+    /// the maximum and the lowest as the enemy has them, and the change the script asked for this tick.
+    hp_max: i32,
+    hp_min: i32,
+    hp_add: i32,
+    /// The word at object +0xabc (host 1.211 / 1.212).
+    flags_abc: u32,
+    /// The motion controller's (+0x140) trigger bytes +0xf8 and +0xf9 (object +0x238, +0x239): bits 0..3
+    /// of +0xf8 while range triggers 16..19 are active (FUN_00188030; cleared at the start of each pass,
+    /// FUN_00187fb0), bits 0..3 of +0xf9 when frame triggers 9..12 fired in the last advance (the frame
+    /// trigger dispatcher 0x188498, cases at 0x1886c0; cleared by FUN_0017e3b8 before it advances).
+    trigger_bits: [u8; 2],
+    /// Mover type 5, installed by `set_dash` (host 1.58): its velocity (+0x20, the app's space,
+    /// centimetres per tick) and its factor (+0xf0).
+    dash: Option<(Vec3, f32)>,
     /// The motion controller's time (+0x140 + 0x30 = object +0x170), in the motion's own frames: the
     /// `Animator` frame at the start of the tick, or the first frame of a motion requested in it.
     frame: f32,
@@ -517,6 +538,14 @@ impl Obj {
             outbox: Vec::new(),
             volumes: Vec::new(),
             drops: Vec::new(),
+            spawn_params: None,
+            param_row: None,
+            hp_max: 1,
+            hp_min: 0,
+            hp_add: 0,
+            flags_abc: 0,
+            trigger_bits: [0; 2],
+            dash: None,
             frame: 0.0,
             blend_left: 0.0,
             want_vel: Vec3::ZERO,
@@ -666,6 +695,16 @@ impl BevyHost<'_> {
         Some(g.map_or(p, |g| p.with_y(g.y)))
     }
 
+    /// Record `i` of the HP records of the status block: (current, maximum, lowest); parts other than
+    /// 0 have no HP in the app (an `enmp` row with one health value gives them 0, FUN_0019f770).
+    fn hp_record(&self, i: i32) -> [i32; 3] {
+        if i == 0 {
+            [self.obj.hp, self.obj.hp_max, self.obj.hp_min]
+        } else {
+            [0; 3]
+        }
+    }
+
     fn turn_toward(&mut self, dir: Vec4, speed: f32) -> bool {
         let target = yaw_of(dir);
         let step = if speed == 0.0 { TURN_DEFAULT } else { speed };
@@ -712,6 +751,8 @@ impl BevyHost<'_> {
         // The scripts (Shadow's pounce 100, Soldier's jump 260) pass positive values, then wait for
         // `airborne`, so the app jumps |y|; the rest of the direction, normalised and scaled by w, is the
         // horizontal speed.
+        // The jump installs its own mover (FUN_0017b278 -> mover 1), which ends a dash.
+        self.obj.dash = None;
         let h = dir[1].abs();
         let d = from_game([dir[0], 0.0, dir[2], 0.0]).normalize_or_zero();
         self.obj.air_vel = Vec3::new(d.x, 0.0, d.z) * dir[3];
@@ -770,7 +811,12 @@ impl BevyHost<'_> {
             Call::OnScreen { .. } => approx(Value::Bool(self.obj.on_screen), "the origin lifted one metre against the camera's view"),
             Call::Airborne { .. } => imp(Value::Bool(!self.obj.motor.grounded)),
             Call::Busy { .. } | Call::HitStun { .. } => approx(Value::Bool(self.obj.reacting), "the game's flags (+0x160) are read as 'a hit reaction plays'"),
-            Call::SpawnParam { .. } => stub(Value::Int(99), "no spawn record: the area's event data is not read"),
+            // FUN_0016b940: word `index` of the array at object +0x81c; words 1 and 2 are the record's
+            // +0x20 and +0x24 (FUN_0016b870). Without a record (the app's own waves) 99 stays.
+            Call::SpawnParam { index, .. } => match (self.obj.spawn_params, index) {
+                (Some(p), 1 | 2) => imp(Value::Int(p[*index as usize - 1])),
+                _ => stub(Value::Int(99), "no spawn record (the app's own waves) or word 0 (the record pointer)"),
+            },
             // FUN_0016b858: byte +0x1c of the spawn record, -1 without one (the app's own waves).
             Call::SpawnKind { .. } => imp(Value::Int(self.obj.spawn_kind)),
             Call::GlobalByte33e830 => approx(Value::Int(2), "world number of Twilight Town"),
@@ -884,9 +930,12 @@ impl BevyHost<'_> {
             Call::ReleaseEffect { .. } => stub(Value::None, "effects run to their end"),
             Call::ObjMethod44 { .. } | Call::ObjMethod48 { .. } => missing(Value::None, "virtual method of the object, role unknown"),
             Call::MoverMethod { .. } => missing(Value::None, "virtual call on the object's mover, role unknown"),
+            // FUN_001b2148 builds the status block from `enmp` row `a`; the app built it at spawn from
+            // the kind's row and rebuilds it (full HP) when the script asks for another one.
             Call::SetObjParam { a, .. } => {
                 if *a != self.env.enmp as i32 {
-                    self.trace.note(self.tag, format!("set_obj_param asks for enmp row {a}, the enemy was built from {}", self.env.enmp));
+                    self.trace.note(self.tag, format!("set_obj_param asks for enmp row {a}, the enemy was built from {}: rebuilt", self.env.enmp));
+                    self.obj.param_row = u16::try_from(*a).ok();
                 }
                 imp(Value::None)
             }
@@ -957,6 +1006,7 @@ impl BevyHost<'_> {
             Call::Func { group: 1, index: 74, .. } => {
                 self.obj.move_vel = Vec3::ZERO;
                 self.obj.air_vel = Vec3::ZERO;
+                self.obj.dash = None;
                 approx(Value::None, "the mover's own state is not modelled: the movement and jump speeds are cleared")
             }
             Call::Func { group: 1, index: 98, args } => match self.ground_position(args[0].int() as u32) {
@@ -980,9 +1030,81 @@ impl BevyHost<'_> {
                     approx(Value::Bool(false), "an object other than self and the player: not known to this host, read as absent")
                 }
             }
-            // 1.150 (0x171600): bit n-1 of the byte at object +0x238. Its writer was not found; a new
-            // object's byte is taken as 0.
-            Call::Func { group: 1, index: 150, .. } => stub(Value::Bool(false), "byte +0x238 of the object: writer not found, read as 0"),
+            // 1.150 / 1.151 (0x171600, 0x171628): bit n-1 of the byte at object +0x238 / +0x239, the
+            // motion controller's trigger bytes (see Obj::trigger_bits).
+            Call::Func { group: 1, index: i @ (150 | 151), args } if args[0].int() as u32 == me => {
+                let byte = self.obj.trigger_bits[*i as usize - 150];
+                imp(Value::Bool((byte as u32).wrapping_shr((args[1].int() - 1) as u32) & 1 != 0))
+            }
+            // 1.84 (0x172ee8): the pointer at object +0x48c, the status block FUN_001b2148 builds. Its
+            // first 32 records of 12 bytes are the HP of each part (FUN_0019f770: current, maximum,
+            // lowest); the app has part 0 only.
+            Call::Func { group: 1, index: 84, args } if args[0].int() as u32 == me => imp(Value::Handle(GAUGES)),
+            // 1.228 / 1.229 / 1.232 (0x1740e0, 0x174100, 0x174120): word 0, 1 or 2 of record i.
+            Call::Func { group: 1, index: i @ (228 | 229 | 232), args } if args[0].int() as u32 == GAUGES => {
+                let rec = self.hp_record(args[1].int());
+                imp(Value::Int(rec[match i { 228 => 0, 229 => 1, _ => 2 }]))
+            }
+            // 1.230 (0x174140): float(word 0) / float(word 1) of record i.
+            Call::Func { group: 1, index: 230, args } if args[0].int() as u32 == GAUGES => {
+                let rec = self.hp_record(args[1].int());
+                imp(Value::Float(rec[0] as f32 / rec[1] as f32))
+            }
+            // 1.231 (0x1741c0): word 2 of record `index` = `value` (arguments: base, value, index); the
+            // HP change FUN_001a0100 never goes below it.
+            Call::Func { group: 1, index: 231, args } if args[0].int() as u32 == GAUGES => {
+                if args[2].int() == 0 {
+                    self.obj.hp_min = args[1].int();
+                    imp(Value::None)
+                } else {
+                    stub(Value::None, "lowest HP of a part other than 0: the app's enemies have one part")
+                }
+            }
+            // 1.155 (0x171c48): the object's virtual method +0x78 with (amount, part, flag != 0). The slot
+            // holds FUN_00186238 in 27 object tables of the executable [the N_EX570 object's table was
+            // not traced]: HP of the part plus `amount`, held between its lowest and its maximum
+            // (FUN_001a0100); the death method runs when part 0 reaches 0. It returns that HP.
+            Call::Func { group: 1, index: 155, args } if args[0].int() as u32 == me => {
+                if args[2].int() != 0 {
+                    return stub(Value::Int(0), "HP change of a part other than 0: the app's enemies have one part");
+                }
+                self.obj.hp_add += args[1].int();
+                let hp = (self.obj.hp + self.obj.hp_add).max(self.obj.hp_min).min(self.obj.hp_max);
+                approx(Value::Int(hp), "the change is applied after the tick; the HUD side of FUN_00186238 (FUN_0019bd18 / FUN_0019bd58) is not reproduced")
+            }
+            // 1.58 (0x172988 -> FUN_0019e6b8): +0x20 = the direction normalised times its w, +0xf0 = the
+            // factor, then mover type 5 (FUN_0016b698(obj, 5); the mover object at 0x1c88f00, table
+            // 0x35e4d8). Its velocity method FUN_0019e740 -> FUN_001832b8: with a movement vector
+            // (+0x10, speed +0x1c above 0) v = v * k + direction * speed * (1 - k), else v = v * k; the
+            // step is v times the frame-step factor (1). N_EX570_BTL passes (0, 0, 0, 1): v starts at 0.
+            Call::Func { group: 1, index: 58, args } if args[0].int() as u32 == me => {
+                let v = match &args[1] {
+                    kh2_bdx::host::Arg::Vec(d) => from_game([d[0], d[1], d[2], 0.0]).normalize_or_zero() * d[3],
+                    _ => Vec3::ZERO,
+                };
+                self.obj.dash = Some((v, args[2].float()));
+                approx(Value::None, "mover 5 as the velocity rule of FUN_001832b8; the threshold test at its start (DAT_0037a880) only picks between two equal paths")
+            }
+            // 1.262 (0x1709c8): the object's virtual method +0x54 with (line, priority), FUN_001970b8 in
+            // the enemy tables: the voice slot at +0x9b8 takes the line when its priority is at least
+            // the queued one's (FUN_001ae798). N_EX570_BTL asks for lines 17, 26 and 37 with priority 2.
+            Call::Func { group: 1, index: 262, .. } => stub(Value::None, "enemy voice lines: no voice slot for enemies in the app, and no voice/us/battle bank names this speaker"),
+            // 1.211 / 1.212 (0x170760, 0x170788): set / clear bit n of the word at object +0xabc. Its
+            // readers (FUN_00185be0, FUN_0018c6d0) test bits 9, 10, 11 and 13 (with +0xac0 and +0xac4);
+            // N_EX570_BTL only uses bits 1 and 12, for which no reader was found.
+            Call::Func { group: 1, index: i @ (211 | 212), args } if args[0].int() as u32 == me => {
+                let bit = 1u32.checked_shl(args[1].int() as u32).unwrap_or(0);
+                if *i == 211 {
+                    self.obj.flags_abc |= bit;
+                } else {
+                    self.obj.flags_abc &= !bit;
+                }
+                stub(Value::None, "word +0xabc stored; bits 1 and 12 have no reader in the executable that was found")
+            }
+            // 2.76 (0x18e068): a float stored at object +0xaf4 (N_EX570_BTL: 50). The readers of +0xaf4
+            // found (FUN_001769e0, FUN_0022e0a0, ...) read it as a byte or an int of other object
+            // classes; no reader for this one was found.
+            Call::Func { group: 2, index: 76, .. } => stub(Value::None, "float at +0xaf4: no reader found"),
             // 1.132: the target record returns to a pool; the app's records are never reused.
             Call::Func { group: 1, index: 132, .. } => stub(Value::None, "target records are not pooled"),
             Call::Func { .. } | Call::Unknown { .. } => missing(Value::Int(0), "function not mapped"),
@@ -1246,6 +1368,10 @@ fn ai_update(
         obj.frame = anim.frame;
         obj.blend_left = (obj.blend_left - 1.0).max(0.0);
         obj.spawn_kind = e.spawn_kind;
+        obj.spawn_params = e.spawn_params;
+        obj.trigger_bits = trigger_bits(&anim);
+        obj.hp_max = e.stats.max_hp;
+        obj.hp_min = e.min_hp;
         let env = Env {
             player,
             player_yaw,
@@ -1321,6 +1447,18 @@ fn ai_update(
                 None => trace.note(tag, format!("drop row {id}: przt has neither it nor row 0x48")),
             }
         }
+        // The status block the script rebuilt (host 2.9) and the HP changes it made (1.231, 1.155).
+        if let Some(row) = obj.param_row.take() {
+            e.stats = data.enemy_stats(row, 1);
+            e.hp = e.stats.max_hp;
+            *enmp = row;
+            trace.line(tag, &format!("status block rebuilt from enmp row {row}: {} HP", e.hp));
+        }
+        e.min_hp = obj.hp_min;
+        if obj.hp_add != 0 {
+            e.hp = (e.hp + std::mem::take(&mut obj.hp_add)).max(e.min_hp).min(e.stats.max_hp);
+            trace.line(tag, &format!("hp changed by the script: {}", e.hp));
+        }
         for c in obj.player_cmds.drain(..) {
             let c = match c {
                 PlayerReactionCmd::PairedMotion { slot, blend, serial, ticks, .. } => {
@@ -1370,7 +1508,15 @@ fn ai_update(
         obj.motor.yaw = wrap_angle(obj.motor.yaw + root_yaw);
         let root_move = Quat::from_rotation_y(obj.motor.yaw - anim.root.yaw) * root_t;
         let was_air = !obj.motor.grounded;
-        let mut delta = obj.move_vel + root_move.with_y(0.0);
+        // Mover 5 (`set_dash`) turns the movement vector into its smoothed velocity.
+        let step = match obj.dash.as_mut() {
+            Some((v, k)) => {
+                *v = if obj.move_vel != Vec3::ZERO { *v * *k + obj.move_vel * (1.0 - *k) } else { *v * *k };
+                *v
+            }
+            None => obj.move_vel,
+        };
+        let mut delta = step + root_move.with_y(0.0);
         if was_air {
             delta += obj.air_vel;
         }
@@ -1439,6 +1585,25 @@ fn ai_update(
             commands.entity(ent).despawn();
         }
     }
+}
+
+/// The motion controller's trigger bytes after the last advance (Obj::trigger_bits): range triggers
+/// 16..19 active at the current frame, frame triggers 9..12 crossed by the last tick.
+fn trigger_bits(anim: &Animator) -> [u8; 2] {
+    let (Some(t), Some(m)) = (anim.triggers(), anim.motion()) else { return [0; 2] };
+    let g = |f: f32| f * crate::data::LOGIC_HZ / m.fps.max(1.0);
+    let mut bits = [0u8; 2];
+    for k in 0..4u8 {
+        if t.is_active(anim.gframe(), 16 + k) {
+            bits[0] |= 1 << k;
+        }
+    }
+    if anim.frame != anim.prev_frame {
+        for ft in t.crossed(g(anim.prev_frame), g(anim.frame)).filter(|f| (9..=12).contains(&f.id)) {
+            bits[1] |= 1 << (ft.id - 9);
+        }
+    }
+    bits
 }
 
 /// Applies the script's fade to the enemy's materials (blended while it fades, as authored otherwise).

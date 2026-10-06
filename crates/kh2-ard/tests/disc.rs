@@ -52,6 +52,33 @@ fn the_app_areas_spawn_the_dusk_most() {
     assert!(a.read("obj/M_EX990.mset").is_ok());
 }
 
+/// The next enemy after the Dusk (WP-6H): `N_EX570_BTL`, object 0x678, in four tt04 battle groups.
+/// Prints each group's records (the words the game copies into the object, FUN_0016b870: +0x20 and
+/// +0x24 become spawn parameters 1 and 2, host 1.39) and checks the files the app reads are there.
+#[test]
+fn the_second_enemy_is_n_ex570_btl() {
+    let Some(mut a) = open() else { return };
+    let file = a.read("ard/tt04.ard").expect("area file");
+    let (ard, _) = kh2_ard::Area::parse(&file).expect("BAR");
+    let groups = ard.groups_with("btl", 0x678);
+    eprintln!("N_EX570_BTL groups: {groups:?}");
+    assert_eq!(groups.iter().map(|(_, g)| g.as_str()).collect::<Vec<_>>(), ["b_41", "b_42", "b_51", "b_45"]);
+    for (_, g) in &groups {
+        for e in ard.spawns[g].iter().flat_map(|g| &g.entities) {
+            let w = |o: usize| u32::from_le_bytes(e.raw[o..o + 4].try_into().unwrap());
+            eprintln!(
+                "{g}: object {:#x} at {:?} rot {:?} kind {} arg {} serial {:#x} param1 {} param2 {} +0x28 {:#x} +0x30 {:02x?}",
+                e.object, e.position, e.rotation, e.spawn_kind, e.spawn_arg, e.serial, w(0x20), w(0x24), w(0x28) & 0xffff, &e.raw[0x30..0x40]
+            );
+        }
+    }
+    for f in ["obj/N_EX570_BTL.mdlx", "obj/N_EX570_BTL.mset", "obj/N_EX570_BTL.apdx"] {
+        assert!(a.read(f).is_ok(), "{f}");
+    }
+    let mdlx = a.read("obj/N_EX570_BTL.mdlx").unwrap();
+    assert!(kh2_bar::parse(&mdlx).unwrap().iter().any(|e| e.kind == 3 && !e.data.is_empty()), "BDX entry");
+}
+
 #[test]
 fn every_area_file_on_the_disc_parses() {
     let Some(mut a) = open() else { return };

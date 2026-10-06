@@ -67,6 +67,11 @@ struct Dry {
 }
 
 fn dry_run(data: &[u8], seed: u32, distance: f32, frames: u32, damage_at: Option<u32>) -> Dry {
+    dry_run_with(data, seed, distance, frames, damage_at, 99)
+}
+
+/// As `dry_run` with the answer of host 1.39 (spawn parameter) chosen.
+fn dry_run_with(data: &[u8], seed: u32, distance: f32, frames: u32, damage_at: Option<u32>, spawn_param: i32) -> Dry {
     let p = Program::parse(data).unwrap();
     analyze(&p).unwrap();
     let mut rt = Runtime::new(p);
@@ -74,6 +79,7 @@ fn dry_run(data: &[u8], seed: u32, distance: f32, frames: u32, damage_at: Option
     rt.core.mode_log = Some(Vec::new());
     let mut host = MockHost::new();
     host.player_position = [distance, 0.0, 0.0, 1.0];
+    host.spawn_param = spawn_param;
     assert!(rt.spawn(&mut host, SELF_OBJ));
     for frame in 0..frames {
         if damage_at == Some(frame) {
@@ -88,12 +94,16 @@ fn dry_run(data: &[u8], seed: u32, distance: f32, frames: u32, damage_at: Option
 /// Every mode the script enters with the player at several distances, several random seeds, with and
 /// without being hit, and how many calls reached the host undecoded.
 fn mode_cycle(data: &[u8]) -> (std::collections::BTreeSet<String>, usize) {
+    mode_cycle_with(data, 99)
+}
+
+fn mode_cycle_with(data: &[u8], spawn_param: i32) -> (std::collections::BTreeSet<String>, usize) {
     let mut seen = std::collections::BTreeSet::new();
     let mut unknown = 0;
     for distance in [150.0, 250.0, 450.0, 900.0] {
         for seed in 1..=6 {
             for damage_at in [None, Some(200)] {
-                let d = dry_run(data, seed, distance, 700, damage_at);
+                let d = dry_run_with(data, seed, distance, 700, damage_at, spawn_param);
                 assert!(d.errors.is_empty(), "seed {seed} distance {distance}: {:?}", d.errors);
                 unknown += d.host.calls().filter(|c| matches!(c, Call::Unknown { .. })).count();
                 seen.extend(d.modes);
@@ -148,6 +158,26 @@ fn dusk_runs_its_mode_cycle() {
         assert!(seen.contains(m), "mode {m} never ran: {seen:?}");
     }
     assert!(seen.iter().any(|m| m.starts_with("atk_")), "no attack: {seen:?}");
+}
+
+
+/// The Struggle opponent N_EX570_BTL (WP-6H) with the spawn parameter 1 of its tt04 groups (b_41: 1,
+/// b_42: 2, b_45: 4, b_51: 5; `docs/enemies.md`).
+#[test]
+fn n_ex570_btl_runs_its_mode_cycle() {
+    let Some((mut a, _)) = open() else { return };
+    let data = object_script(&mut a, "obj/N_EX570_BTL.mdlx");
+    let mut all = std::collections::BTreeSet::new();
+    for param in [1, 2, 4, 5] {
+        let (seen, unknown) = mode_cycle_with(&data, param);
+        eprintln!("N_EX570_BTL spawn parameter {param}: modes {seen:?}");
+        assert_eq!(unknown, 0, "every host function N_EX570_BTL calls is decoded");
+        all.extend(seen);
+    }
+    for m in ["start_voice", "mode_battle", "btl_attack", "mode_revenge"] {
+        assert!(all.contains(m), "mode {m} never ran: {all:?}");
+    }
+    assert!(all.iter().any(|m| m.starts_with("atk_")), "no attack: {all:?}");
 }
 
 /// Every BDX on the disc (object scripts, mission and area scripts, 00common.bdx).

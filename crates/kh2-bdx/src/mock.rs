@@ -29,6 +29,8 @@ pub struct MockHost {
     /// The scripted object's own memory (`SELF_OBJ..`), for scripts that write fields such as the
     /// movement vector at +0x10 directly.
     pub object: Vec<u8>,
+    /// What host 1.39 (spawn parameter, word i of the object's array at +0x81c) answers; 99 by default.
+    pub spawn_param: i32,
     /// Every call made by the script, with the frame it happened on.
     pub log: Vec<(u32, Call)>,
 }
@@ -54,6 +56,7 @@ impl MockHost {
             stun: 0,
             airborne: 0,
             object: vec![0; OBJECT_SIZE],
+            spawn_param: 99,
             log: Vec::new(),
         }
     }
@@ -129,12 +132,14 @@ impl Host for MockHost {
             // 1.63 motion_near_end: the toy motions have no return frame, so their end.
             Call::Func { group: 1, index: 63, .. } => Value::Bool(self.motion_frames_left <= 0.0),
             Call::MotionState { .. } => Value::Int(0),
+            // 1.98 ground_position: the toy world is flat at the object's height.
+            Call::Func { group: 1, index: 98, .. } => Value::Vec(self.position),
             Call::MotionLength { .. } | Call::MotionEnd { .. } => Value::Float(self.motion_length),
             Call::OnScreen { .. } => Value::Bool(true),
             Call::Airborne { .. } => Value::Bool(self.airborne > 0),
             Call::Busy { .. } | Call::Flag124 { .. } | Call::Flag309 { .. } => Value::Bool(false),
             Call::HitStun { .. } => Value::Bool(self.stun > 0),
-            Call::SpawnParam { .. } => Value::Int(99),
+            Call::SpawnParam { .. } => Value::Int(self.spawn_param),
             Call::SpawnKind { .. } => Value::Int(0),
             Call::GlobalByte33e830 | Call::GlobalByte301 => Value::Int(0),
             Call::GlobalFlag4 | Call::GlobalFlag80 | Call::EventActive => Value::Bool(false),

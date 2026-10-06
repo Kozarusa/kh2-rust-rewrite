@@ -147,7 +147,7 @@ pub mod key {
     pub const RETALIATING: u8 = 40;
 }
 
-/// Ability bit of Aerial Recovery (ability item 158): the confirm press of a blown actor plays the
+/// Ability bit of Aerial Recovery (ability item 158): the jump press of a blown actor plays the
 /// recovery motion instead of Retaliating Slash (FUN_001758b0 tests `block & 0x100000`).
 pub const ABILITY_AERIAL_RECOVERY: u16 = 20;
 
@@ -467,7 +467,8 @@ pub struct BlowState {
 /// The outcome of a blown actor's button press (FUN_001758b0).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Recovery<'a> {
-    /// The confirm flag with Aerial Recovery: motion 40 and the mover's launch (FUN_001759b8).
+    /// The jump flag (command flag 2) with Aerial Recovery: motion 40 and the mover's launch
+    /// (FUN_001759b8).
     AerialRecovery,
     /// The Square flag: the counters restart and the key 40 record starts.
     Retaliate(&'a Action),
@@ -480,7 +481,7 @@ pub enum RecoveryMiss {
     /// Fewer ticks than BlowRecoveryTime have passed.
     TooEarly,
     Locked,
-    /// Neither the confirm flag with Aerial Recovery nor the Square flag.
+    /// Neither the jump flag with Aerial Recovery nor the Square flag.
     NoInput,
     NoRecord,
     Rejected(Reject),
@@ -488,11 +489,13 @@ pub enum RecoveryMiss {
 
 impl Moveset {
     /// FUN_001758b0, run for every command tick before the Square actions and the attack: in a
-    /// blow mover, once BlowRecoveryTime ticks have passed and the actor is not locked, the confirm
-    /// flag (`confirm`) with the Aerial Recovery ability plays the recovery; otherwise the Square
-    /// flag (`square`) restarts the counters and starts the key 40 record if it is available. The
-    /// restart happens even when the record is missing or rejected, as in the game.
-    pub fn recovery(&self, blow: &BlowState, confirm: bool, square: bool, chain: &mut Chain) -> Result<Recovery<'_>, RecoveryMiss> {
+    /// blow mover, once BlowRecoveryTime ticks have passed and the actor is not locked, command
+    /// flag 2 (`jump`: set by FUN_001babf0 from logical pad bit 0x100, the jump button; the same flag
+    /// makes FUN_00174cf8 call the mover's jump method) with the Aerial Recovery ability plays the
+    /// recovery; otherwise command flag 8 (`square`: logical pad bit 0x200, physical Square 0x8000)
+    /// restarts the counters and starts the key 40 record if it is available. The restart happens
+    /// even when the record is missing or rejected, as in the game.
+    pub fn recovery(&self, blow: &BlowState, jump: bool, square: bool, chain: &mut Chain) -> Result<Recovery<'_>, RecoveryMiss> {
         if !blow.recoverable {
             return Err(RecoveryMiss::NotRecoverable);
         }
@@ -502,7 +505,7 @@ impl Moveset {
         if blow.locked {
             return Err(RecoveryMiss::Locked);
         }
-        if confirm && chain.has_ability(ABILITY_AERIAL_RECOVERY) {
+        if jump && chain.has_ability(ABILITY_AERIAL_RECOVERY) {
             return Ok(Recovery::AerialRecovery);
         }
         if !square {
@@ -575,9 +578,13 @@ mod tests {
         assert_eq!(m.recovery(&BlowState { locked: true, ..blow }, false, true, &mut c), Err(RecoveryMiss::Locked));
         assert_eq!(m.recovery(&blow, true, false, &mut c), Err(RecoveryMiss::NoInput));
         assert_eq!((c.combo, c.finishers), (3, 2));
-        // Confirm with Aerial Recovery wins over Square; without the ability it is ignored.
+        // Jump (command flag 2) with Aerial Recovery wins over Square; without the ability it is
+        // ignored. Square alone never recovers, jump alone never retaliates.
         let mut c = Chain { abilities: 1 << 101 | 1 << ABILITY_AERIAL_RECOVERY, ..base };
         assert_eq!(m.recovery(&blow, true, true, &mut c), Ok(Recovery::AerialRecovery));
+        assert_eq!(m.recovery(&blow, true, false, &mut c), Ok(Recovery::AerialRecovery));
+        assert_eq!((c.combo, c.finishers), (3, 2));
+        assert!(matches!(m.recovery(&blow, false, true, &mut c), Ok(Recovery::Retaliate(a)) if a.key == key::RETALIATING));
         // Square without the record's ability: the counters still restart, the record is rejected.
         let mut c = Chain { abilities: 0, ..base };
         assert_eq!(m.recovery(&blow, false, true, &mut c), Err(RecoveryMiss::Rejected(Reject::Ability(101))));

@@ -349,10 +349,11 @@ fn wall_probe(world: &World, m: &Motor, shape: Option<(f32, f32)>, reference: Ve
 }
 
 /// A button press while Sora is blown (FUN_001758b0; the party controller runs it on every
-/// command tick before the Square actions and the attack). `confirm` is the command's confirm
-/// flag (the attack button here; inferred, see the doc) and `square` its Square flag. Aerial
-/// Recovery plays motion 40 and ends the flight; Retaliating Slash restarts the counters and
-/// starts the key 40 record through the attack start. Returns true when the state changed.
+/// command tick before the Square actions and the attack). `jump` is command flag 2 (the jump
+/// button, Space: FUN_001babf0 sets it from logical pad bit 0x100, which FUN_00167310 maps from
+/// the cancel button) and `square` command flag 8 (Square, K/E: logical 0x200). Aerial Recovery
+/// plays motion 40 and ends the flight; Retaliating Slash restarts the counters and starts the
+/// key 40 record through the attack start. Returns true when the state changed.
 #[allow(clippy::too_many_arguments)]
 fn blown_press(
     s: &mut Sora,
@@ -360,7 +361,7 @@ fn blown_press(
     weapon: &mut Animator,
     abilities: &Abilities,
     data: &GameData,
-    confirm: bool,
+    jump: bool,
     square: bool,
     rig: &Rig,
     pstate: PlayerState,
@@ -373,7 +374,7 @@ fn blown_press(
     // leaves play).
     let blow = BlowState { recoverable: s.blow.is_some(), ticks: s.timer, recovery_time: data.plyr.blow_recovery_time, locked: s.hp <= 0 };
     let moves = s.moves.clone();
-    match moves.recovery(&blow, confirm, square, &mut chain) {
+    match moves.recovery(&blow, jump, square, &mut chain) {
         Ok(Recovery::AerialRecovery) => {
             // FUN_001759b8: motion 40 with blend 4, then the mover's launch (its method +8 with a
             // vector built from the stick direction, plyr BlowRecoveryH and BlowRecoveryV; the
@@ -402,7 +403,7 @@ fn blown_press(
         }
         Err(m) => {
             if move_log() {
-                info!("move: blown press refused: {m:?} (ticks {:.0}, BlowRecoveryTime {:.0}, confirm {confirm}, square {square})", blow.ticks, blow.recovery_time);
+                info!("move: blown press refused: {m:?} (ticks {:.0}, BlowRecoveryTime {:.0}, jump {jump}, square {square})", blow.ticks, blow.recovery_time);
             }
             false
         }
@@ -1083,10 +1084,10 @@ pub fn tick(
         }
         State::Blown => {
             // A press while blown (FUN_001758b0, run before everything else on every command
-            // tick): Aerial Recovery on the confirm flag, Retaliating Slash (key 40) on the
-            // Square flag, once plyr BlowRecoveryTime ticks have passed.
-            if (attack || square) && s.blow.is_some() {
-                blown_press(s, &mut body, &mut weapon, &abilities, &data, attack, square, &rig, pstate, &start_attack);
+            // tick): Aerial Recovery on the jump flag, Retaliating Slash (key 40) on the Square
+            // flag, once plyr BlowRecoveryTime ticks have passed. The attack button does nothing.
+            if (jump || square) && s.blow.is_some() {
+                blown_press(s, &mut body, &mut weapon, &abilities, &data, jump, square, &rig, pstate, &start_attack);
             }
             // The flight of a blow (FUN_0019e4d8): horizontal speed brakes down to a floor, the
             // rise brakes, gravity pulls. Without the reaction data the jump model stands in.

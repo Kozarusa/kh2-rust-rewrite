@@ -194,8 +194,10 @@ pub fn spawn_skinned(
     let inverse: Vec<Mat4> = rest.iter().map(|m| m.inverse()).collect();
     let inv = bindposes.add(SkinnedMeshInverseBindposes::from(inverse));
     let textures = texture_handles(&rig.model, images);
+    let mut used = Vec::new();
     for m in &rig.model.meshes {
-        let mat = material_for(m, &textures, materials);
+        let mat = material_for(m, &rig.model, &textures, materials);
+        used.push((m.texture, m.uv_scroll, mat.clone()));
         let mesh = meshes.add(skinned_mesh(m));
         commands.spawn((
             Mesh3d(mesh),
@@ -204,6 +206,9 @@ pub fn spawn_skinned(
             SkinnedMesh { inverse_bindposes: inv.clone(), joints: joints.clone() },
             ChildOf(body),
         ));
+    }
+    if let Some(anim) = crate::texanim::TexAnim::new(&rig.model, &textures, &used) {
+        commands.entity(body).insert(anim);
     }
     commands.entity(body).insert(Animator {
         pose: rest,

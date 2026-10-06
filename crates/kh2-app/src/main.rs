@@ -37,6 +37,7 @@ mod reaction_rules;
 mod schedule;
 mod skel;
 mod sora;
+mod texanim;
 mod world;
 
 use std::sync::OnceLock;
@@ -91,6 +92,7 @@ fn main() {
             clash::ClashPlugin,
             player_reaction::PlayerReactionPlugin,
             magic::MagicPlugin,
+            texanim::TexAnimPlugin,
         ))
         .run();
 }

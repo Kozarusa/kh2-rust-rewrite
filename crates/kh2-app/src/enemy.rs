@@ -340,7 +340,7 @@ pub fn spawn_waves(
             );
         }
     }
-    let area_on = std::env::var("KH2_AREA_WAVES").map_or(true, |v| v != "0");
+    let area_on = !std::env::var("KH2_AREA_WAVES").is_ok_and(|v| v == "0");
     // Harness: `KH2_WAVE_GROUP=<tag>` makes every wave that group and, when the group holds the
     // player's entity, puts Sora there first (the record's place for the player; that the game
     // moves the player there when such a battle starts is [inferred]).

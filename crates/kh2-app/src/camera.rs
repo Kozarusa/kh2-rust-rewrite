@@ -11,7 +11,7 @@ use bevy::prelude::*;
 use crate::assets::{CurrentArea, Disc};
 use crate::data::GameData;
 use crate::schedule::Sim;
-use crate::sora::{Sora, State};
+use crate::sora::{Pad, Sora, State};
 use crate::world::{CameraWorld, World};
 use crate::SCALE;
 
@@ -234,14 +234,25 @@ fn harness_select(t: f32, dt: f32) -> bool {
     })
 }
 
+#[allow(clippy::too_many_arguments)] // Bevy system parameters
 fn gather_input(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
+    cam: Query<&OrbitCamera>,
+    mut pad: ResMut<Pad>,
     mut st: ResMut<CamState>,
 ) {
+    // While the look-around runs the player applies no velocity (his method +0x84,
+    // `FUN_00179108`, is false in camera mode 1, so `FUN_00174bd8` skips the move): the left
+    // stick does not move Sora. The app drops the stick before his tick reads it; what the
+    // original does with the stick's facing and motion requests then is not known (docs/camera.md).
+    if cam.single().is_ok_and(|c| c.first_person) {
+        pad.dir = Vec3::ZERO;
+        pad.stick = 0.0;
+    }
     let p = &mut st.pending;
     if buttons.pressed(MouseButton::Right) {
         p.yaw -= motion.delta.x * 0.005;
@@ -269,11 +280,11 @@ fn tick(
     mut st: ResMut<CamState>,
     mut blockers: ResMut<CamBlockers>,
     mut event: ResMut<CamEvent>,
-    sora: Query<&Sora>,
+    mut sora: Query<&mut Sora>,
     targets: Query<&GlobalTransform>,
     mut cam: Query<(&mut Transform, &mut OrbitCamera, &mut Projection)>,
 ) {
-    let (Some(params), Ok(s), Ok((mut t, mut o, mut proj))) = (params, sora.single(), cam.single_mut()) else { return };
+    let (Some(params), Ok(mut s), Ok((mut t, mut o, mut proj))) = (params, sora.single_mut(), cam.single_mut()) else { return };
     let (Some(mode0), false) = (st.mode, st.area.is_none()) else { return };
     let st = &mut *st;
     let params = &params.0;
@@ -283,9 +294,10 @@ fn tick(
 
     let pos = s.motor.pos;
     let warp = pos.distance(st.prev_pos) > 500.0;
-    // `can_look` stands in for the player's state flag (`FUN_0019ae30`): only the ground state
-    // here (inferred; the flag's owner is not decoded).
-    let subject = Subject {
+    // `can_look` stands in for the player's state flags (`FUN_0019ae30` for the look-around,
+    // `FUN_001b7e00` for its turn): only the ground state here (inferred; the flags' owners are
+    // not decoded).
+    let mut subject = Subject {
         pos,
         facing: s.motor.forward(),
         moved: pos.xz() != st.prev_pos.xz(),
@@ -304,6 +316,7 @@ fn tick(
     if let Some(v) = event.handover.take() {
         rig.handover(params, &subject, v);
     }
+    let mode_before = rig.mode;
     // An event owns the view: the field camera idles (`FUN_00140a80` skips while
     // `FUN_00106848` is set).
     let view = if let Some(ev) = &event.active {
@@ -330,6 +343,16 @@ fn tick(
             if keys.pressed(KeyCode::ControlLeft) { 0.5 } else { 1.0 },
         );
         let (right, right_mag) = stick(pressed(KeyCode::ArrowRight) - pressed(KeyCode::ArrowLeft), pressed(KeyCode::ArrowDown) - pressed(KeyCode::ArrowUp), 1.0);
+        let sticks = Sticks { left, left_mag, right, right_mag };
+        // The player's own update turns him with the right stick while the look-around runs
+        // (`FUN_001779e8`, before the camera's tick); the look yaw then follows his facing.
+        if rig.mode == Mode::Look && subject.can_look {
+            let d = rules::look_turn(params, &sticks);
+            if d != 0.0 {
+                s.motor.yaw = rules::wrap(s.motor.yaw + d);
+                subject.facing = s.motor.forward();
+            }
+        }
         // Lock-on target: the locked enemy's position, a metre up (the game uses the object's own
         // target point, not decoded yet).
         let lock = s.lock.and_then(|l| targets.get(l).ok()).map(|g| g.translation() / SCALE + Vec3::Y * 100.0);
@@ -337,7 +360,7 @@ fn tick(
         rig.tick(
             params,
             &TickIn {
-                sticks: Sticks { left, left_mag, right, right_mag },
+                sticks,
                 reset: p.reset,
                 select: p.select,
                 subject,
@@ -351,6 +374,9 @@ fn tick(
         );
         View { look: rig.look, pos: rig.pos, fov: rig.fov, roll: rig.roll }
     };
+    if (mode_before == Mode::Look) != (rig.mode == Mode::Look) {
+        info!("camera: look-around {} (mode {:?} -> {:?})", if rig.mode == Mode::Look { "on" } else { "off" }, mode_before, rig.mode);
+    }
 
     if st.log {
         st.ticks += 1;

@@ -120,7 +120,19 @@ are in code (`sora::square_ground`, `sora::TAP_TICKS`), no Final Mix data or ass
   `... quick run at the press (USA rule)`; `sora guard ... standing still` / `... stick pushed, neither
   learned`; `sora dodge roll: Square released after N ticks (tap, under 10)`; `sora quick run: Square
   held 10 ticks ...`; `sora dash stop: Roll|Run after N ticks`.
-* Harness check: see "Harness runs" below.
+* Harness runs (tt00, `KH2_NO_ENEMIES=1`, keys `4.5:K,5.5:W:3.5,6.5:K,7.6:K:0.6` = guard standing, walk,
+  tap while moving, hold 0.6 s while moving). Logs seen:
+  * `KH2_GROWTH=0,1,0,0,1` (roll + Quick Run): `sora guard A322 (... standing still ...)`, `sora square:
+    moving ... dodge roll pending`, `sora dodge roll: Square released after 3 ticks (tap, under 10)`,
+    `sora dash stop: Roll after 10 ticks`, then for the hold `sora quick run: Square held 10 ticks, Quick
+    Run level 1, 4 ticks left`, `sora dash stop: Run after 14 ticks`.
+  * no `KH2_GROWTH` (baseline: Dodge Roll 1, Quick Run 0): the tap rolls as above; the hold logs `sora
+    dodge roll: Square held 10 ticks but Quick Run is not learned (level 0)` and `sora dash stop: Roll
+    after 10 ticks`.
+  * `KH2_GROWTH=0,1,0,0` (USA rules, no roll): `sora square: moving ... quick run at the press (USA
+    rule)` at every press; the tap stops with `sora dash stop: Run after 3 ticks`, the hold after 14.
+  * `KH2_GROWTH=0,0,0,0`: `sora guard A322 (... stick pushed, neither learned ...)` at both moving presses.
+  * `KH2_ABILITY_START=data`: no guard and no dash at all (no Guard ability, no Dodge Roll, Quick Run 0).
 
 ## Decompile index
 | address | read for |

@@ -32,8 +32,9 @@ use crate::assets::Disc;
 use crate::combat::Fighter;
 use crate::data::GameData;
 use crate::enemy::{EState, Enemy, EnemyClash};
+use crate::enemy_obj::*;
 use crate::fx::{GameEffect, StartEffect, EFFECT_DEATH};
-use crate::motor::{wrap_angle, Motor};
+use crate::motor::wrap_angle;
 use crate::reaction_cmd::{PlayerReaction, PlayerReactionCmd, ReactionAccepted};
 use crate::schedule::Sim;
 use crate::skel::{Animator, Rig};
@@ -41,31 +42,6 @@ use crate::sora::Sora;
 use crate::world::World;
 use crate::SCALE;
 
-/// Object handles the script sees. The scripted object's memory is `[handle, handle + OBJ_SIZE)`.
-const SELF_BASE: u32 = 0x0100_0000;
-const PLAYER: u32 = 0x0200_0000;
-const TARGET: u32 = 0x0300_0000;
-const EFFECT: u32 = 0x0400_0000;
-const HIT: u32 = 0x0500_0000;
-/// Target records handed to event 11 (0x14 bytes each, built like FUN_0018ed40 + FUN_0018f490:
-/// object, position index, 0, -1, 0), one per accepted command.
-const RECORD: u32 = 0x0600_0000;
-const RECORD_SIZE: u32 = 0x20;
-/// Attack volume objects handed to the clash hook and event 0x13 (0x1b2478), two per clash.
-const VOLUME: u32 = 0x0700_0000;
-const VOLUME_SIZE: u32 = 0x40;
-/// The word of a volume object that holds its owner (0x1b2478 passes word +8 of the other volume
-/// to FUN_001b21a0 as the other side's object). The other fields are not served.
-const VOLUME_OWNER: u32 = 8;
-const OBJ_SIZE: usize = 0x1000;
-/// The status block of the scripted object (host 1.84: the pointer at object +0x48c).
-const GAUGES: u32 = 0x0700_0000;
-/// Bit 3 of an object's flag array: "cannot be hit" (FUN_0019a4f0).
-const FLAG_BIT_UNHITTABLE: i32 = 3;
-/// Offset of the movement vector (direction and speed in w) in a game object.
-const MOVE_VECTOR: usize = 0x10;
-/// Flag bit 3 of the object's flag array: the object cannot be hit (FUN_0019a4f0 tests it).
-const FLAG_UNHITTABLE: u32 = 3;
 /// Turn rate in radians per tick when a script passes speed 0 ("the object's own rate"). The game reads
 /// it from the object (+0x11c); where that value comes from was not found, this is the rate the
 /// placeholder enemies used (5 rad/s).
@@ -392,217 +368,6 @@ fn call_id(c: &Call) -> (u16, u16) {
 fn game_wrap_angle(x: f32) -> f32 {
     let (pi, two_pi) = (f32::from_bits(0x4049_0fdb), f32::from_bits(0x40c9_0fdb));
     if x > 0.0 { (x + pi) % two_pi - pi } else { pi - (pi - x) % two_pi }
-}
-
-/// A position in the app (centimetres, Y up) as the script sees it.
-fn to_game(p: Vec3) -> Vec4 {
-    [p.x, -p.y, -p.z, 1.0]
-}
-
-/// A direction from the script as an app direction.
-fn from_game(d: Vec4) -> Vec3 {
-    Vec3::new(d[0], -d[1], -d[2])
-}
-
-/// App yaw of a script direction: atan2(x, z) in the game's space (atan2 of nothing is 0), then
-/// mirrored into the app's.
-fn yaw_of(d: Vec4) -> f32 {
-    let g = if d[0] == 0.0 && d[2] == 0.0 { 0.0 } else { d[0].atan2(d[2]) };
-    (g.sin()).atan2(-g.cos())
-}
-
-// ---------------------------------------------------------------------------------------------------
-// The scripted object
-
-struct Fade {
-    from: f32,
-    to: f32,
-    frames: f32,
-    t: f32,
-}
-
-struct MotionReq {
-    slot: usize,
-    blend: f32,
-    start: Option<f32>,
-}
-
-/// What the script sees of its object, plus what it has asked for during this tick.
-struct Obj {
-    handle: u32,
-    /// Position (centimetres, Y up), facing, ground contact and the jump model.
-    motor: Motor,
-    hp: i32,
-    /// A hit reaction is playing (`EState::Hurt` or `Blown`).
-    reacting: bool,
-    on_screen: bool,
-    /// The motion slot playing, as the script left it or the reaction code changed it (the game's +0x154).
-    slot: Option<usize>,
-    /// The motion reached its end during the last tick (looping motions: each time they wrap).
-    done: bool,
-    flags: u64,
-    flags768: bool,
-    mem: Vec<u8>,
-    /// Horizontal movement set by `set_move` / the object's memory, centimetres per tick; used for one tick.
-    move_vel: Vec3,
-    /// Horizontal speed given to `start_move`, used while airborne.
-    air_vel: Vec3,
-    alpha: f32,
-    fade: Option<Fade>,
-    hidden: bool,
-    motion_req: Option<MotionReq>,
-    /// Motions the jump started by `start_move` (with the commit flag) plays: falling, landing.
-    fall_motion: i32,
-    land_motion: i32,
-    fall_pending: bool,
-    effects: Vec<u16>,
-    next_effect: u32,
-    hits: HashMap<u32, bool>,
-    next_hit: u32,
-    /// Target records given to event 11, readable by the script (handle `RECORD + k * RECORD_SIZE`).
-    records: Vec<[u8; 20]>,
-    /// What the script asked of the player this tick (host calls on the player's context).
-    player_cmds: Vec<PlayerReactionCmd>,
-    /// The player's +0x158 after this tick's `play_motion_with`, if it changed.
-    player_serial: Option<i32>,
-    /// The spawn kind byte of the object's spawn record (host 1.110), -1 without one.
-    spawn_kind: i32,
-    /// Messages the script sent this tick (host 1.90 / 1.241): sender, mode name, delay in frames.
-    outbox: Vec<(u32, String, f32)>,
-    /// Volume objects of clashes (handle `VOLUME + k * VOLUME_SIZE`): owner and attack row.
-    volumes: Vec<(u32, i16)>,
-    /// Prize rows of host 1.92 calls this tick.
-    drops: Vec<i32>,
-    /// Spawn parameters 1 and 2 (object +0x820, +0x824, copied from the record by FUN_0016b870).
-    spawn_params: Option<[i32; 2]>,
-    /// The `enmp` row of this tick's `set_obj_param` when it is not the one the stats were built from.
-    param_row: Option<u16>,
-    /// The HP record of part 0 of the status block (+0x48c, FUN_0019f770: current, maximum, lowest):
-    /// the maximum and the lowest as the enemy has them, and the change the script asked for this tick.
-    hp_max: i32,
-    hp_min: i32,
-    hp_add: i32,
-    /// The word at object +0xabc (host 1.211 / 1.212).
-    flags_abc: u32,
-    /// The motion controller's (+0x140) trigger bytes +0xf8 and +0xf9 (object +0x238, +0x239): bits 0..3
-    /// of +0xf8 while range triggers 16..19 are active (FUN_00188030; cleared at the start of each pass,
-    /// FUN_00187fb0), bits 0..3 of +0xf9 when frame triggers 9..12 fired in the last advance (the frame
-    /// trigger dispatcher 0x188498, cases at 0x1886c0; cleared by FUN_0017e3b8 before it advances).
-    trigger_bits: [u8; 2],
-    /// Mover type 5, installed by `set_dash` (host 1.58): its velocity (+0x20, the app's space,
-    /// centimetres per tick) and its factor (+0xf0).
-    dash: Option<(Vec3, f32)>,
-    /// The motion controller's time (+0x140 + 0x30 = object +0x170), in the motion's own frames: the
-    /// `Animator` frame at the start of the tick, or the first frame of a motion requested in it.
-    frame: f32,
-    /// Blend time left (the controller's +0x34), in ticks: the blend of the last request, run down
-    /// one per tick.
-    blend_left: f32,
-    /// The last tick's movement as FUN_00181e00 keeps it (the app's space, centimetres per tick):
-    /// what the object asked for (+0x850) and how far it really went (+0x860, new position minus
-    /// old, after collision).
-    want_vel: Vec3,
-    moved: Vec3,
-}
-
-impl Obj {
-    fn new(handle: u32) -> Obj {
-        Obj {
-            handle,
-            motor: Motor { grounded: true, ..Default::default() },
-            hp: 1,
-            reacting: false,
-            on_screen: true,
-            slot: None,
-            done: false,
-            flags: 0,
-            flags768: false,
-            mem: vec![0; OBJ_SIZE],
-            move_vel: Vec3::ZERO,
-            air_vel: Vec3::ZERO,
-            alpha: 1.0,
-            fade: None,
-            hidden: false,
-            motion_req: None,
-            fall_motion: -1,
-            land_motion: -1,
-            fall_pending: false,
-            effects: Vec::new(),
-            next_effect: 0,
-            hits: HashMap::new(),
-            next_hit: 0,
-            records: Vec::new(),
-            player_cmds: Vec::new(),
-            player_serial: None,
-            spawn_kind: -1,
-            outbox: Vec::new(),
-            volumes: Vec::new(),
-            drops: Vec::new(),
-            spawn_params: None,
-            param_row: None,
-            hp_max: 1,
-            hp_min: 0,
-            hp_add: 0,
-            flags_abc: 0,
-            trigger_bits: [0; 2],
-            dash: None,
-            frame: 0.0,
-            blend_left: 0.0,
-            want_vel: Vec3::ZERO,
-            moved: Vec3::ZERO,
-        }
-    }
-
-    /// A target record for event 11 (FUN_0018ed40 then FUN_0018f490: object, position index, 0, -1,
-    /// and a fifth word the manager copies, 0 here). Returns its handle.
-    fn new_record(&mut self, obj: u32, pos: i16) -> u32 {
-        let mut r = [0u8; 20];
-        r[0..4].copy_from_slice(&obj.to_le_bytes());
-        r[4..8].copy_from_slice(&(pos as i32).to_le_bytes());
-        r[12..16].copy_from_slice(&(-1i32).to_le_bytes());
-        self.records.push(r);
-        RECORD + (self.records.len() as u32 - 1) * RECORD_SIZE
-    }
-
-    /// The two volume objects of a clash: the object's own attack volume and the player's (the only
-    /// other team in the app). Returns their handles (own, other).
-    fn new_volumes(&mut self, own_atkp: i16, other_atkp: i16) -> (u32, u32) {
-        let k = self.volumes.len() as u32;
-        self.volumes.push((self.handle, own_atkp));
-        self.volumes.push((PLAYER, other_atkp));
-        (VOLUME + k * VOLUME_SIZE, VOLUME + (k + 1) * VOLUME_SIZE)
-    }
-
-    /// Word +8 (the owner) of a clash volume object.
-    fn volume_word(&self, addr: u32, out: &mut [u8]) -> bool {
-        let v = addr.wrapping_sub(VOLUME);
-        let Some(&(owner, _)) = self.volumes.get((v / VOLUME_SIZE) as usize) else { return false };
-        let k = (v % VOLUME_SIZE).wrapping_sub(VOLUME_OWNER) as usize;
-        let b = owner.to_le_bytes();
-        match b.get(k..k + out.len()) {
-            Some(s) if out.len() <= 4 => {
-                out.copy_from_slice(s);
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn advance_fade(&mut self) {
-        if let Some(f) = &mut self.fade {
-            f.t += 1.0;
-            let k = if f.frames <= 0.0 { 1.0 } else { (f.t / f.frames).min(1.0) };
-            self.alpha = f.from + (f.to - f.from) * k;
-            if k >= 1.0 {
-                self.fade = None;
-            }
-        }
-    }
-
-    fn set_move(&mut self, dir: Vec4, speed: f32) {
-        let d = from_game(dir).normalize_or_zero();
-        self.move_vel = Vec3::new(d.x, 0.0, d.z) * speed;
-    }
 }
 
 /// What the host reads from the app, per enemy and tick.
@@ -1638,41 +1403,6 @@ fn ai_fade(
 mod tests {
     use super::*;
 
-    #[test]
-    fn game_space_is_the_apps_rotated_half_a_turn_about_x() {
-        let p = Vec3::new(1.0, 2.0, 3.0);
-        assert_eq!(to_game(p), [1.0, -2.0, -3.0, 1.0]);
-        assert_eq!(from_game([1.0, -2.0, -3.0, 0.0]), p);
-    }
-
-    #[test]
-    fn yaw_of_a_script_direction_is_the_apps_facing() {
-        // The app's facing for yaw a is (sin a, 0, cos a); the script sees it as (sin a, 0, -cos a).
-        for k in -7..8 {
-            let a = k as f32 * 0.4;
-            let d = to_game(Vec3::new(a.sin(), 0.0, a.cos()) * 300.0);
-            assert!(wrap_angle(yaw_of(d) - a).abs() < 1e-4, "{a}");
-        }
-        // atan2 of nothing is 0 in the game's space.
-        assert!(wrap_angle(yaw_of([0.0; 4]) - std::f32::consts::PI).abs() < 1e-5);
-    }
-
-    #[test]
-    fn a_fade_runs_its_length_and_stops() {
-        let mut o = Obj::new(SELF_BASE);
-        o.alpha = 0.0;
-        o.fade = Some(Fade { from: 0.0, to: 1.0, frames: 30.0, t: 0.0 });
-        for _ in 0..15 {
-            o.advance_fade();
-        }
-        assert!((o.alpha - 0.5).abs() < 1e-5);
-        for _ in 0..15 {
-            o.advance_fade();
-        }
-        assert_eq!(o.alpha, 1.0);
-        assert!(o.fade.is_none());
-    }
-
     /// FUN_00187250: every message goes to every object of the list, each drawing its own delay from
     /// the generator in list order; a delay of 0 draws nothing.
     #[test]
@@ -1699,20 +1429,6 @@ mod tests {
         assert!((game_wrap_angle(-3.0 * pi / 2.0) - pi / 2.0).abs() < 1e-5);
         assert!((game_wrap_angle(0.5) - 0.5).abs() < 1e-6);
         assert!((game_wrap_angle(-0.5) + 0.5).abs() < 1e-6);
-    }
-
-    /// A clash hands two volume objects to the script; word +8 of each is its owner.
-    #[test]
-    fn clash_volumes_hold_their_owners() {
-        let mut o = Obj::new(SELF_BASE);
-        let (own, other) = o.new_volumes(5, 7);
-        let w = |o: &Obj, a: u32| {
-            let mut b = [0u8; 4];
-            o.volume_word(a, &mut b).then(|| u32::from_le_bytes(b))
-        };
-        assert_eq!(w(&o, own + VOLUME_OWNER), Some(SELF_BASE));
-        assert_eq!(w(&o, other + VOLUME_OWNER), Some(PLAYER));
-        assert_eq!(w(&o, own), None, "other fields are not served");
     }
 
     fn row(id: u16, counts: [u8; 9], items: [(u16, u16); 3]) -> Vec<u8> {
@@ -1779,11 +1495,4 @@ mod tests {
         assert!(rows.iter().any(|r| r.id == 0x48));
     }
 
-    #[test]
-    fn the_movement_vector_is_horizontal_and_in_the_apps_axes() {
-        let mut o = Obj::new(SELF_BASE);
-        o.set_move([3.0, 0.0, -3.0, 0.0], 8.0);
-        let want = Vec3::new(1.0, 0.0, 1.0).normalize() * 8.0;
-        assert!((o.move_vel - want).length() < 1e-4, "{:?}", o.move_vel);
-    }
 }

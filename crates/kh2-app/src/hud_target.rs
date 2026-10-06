@@ -171,6 +171,9 @@ pub fn update(
     for i in h.gauge {
         scene.nodes[i].visible = true;
     }
+    // The long frame (group 42) is hidden by the game unless the HP is in the top segment of a gauge
+    // that has more than one (0x154498 sets +0x3b19 and hides the object at +0x1bc otherwise).
+    scene.nodes[h.gauge[1]].visible = frame_shown(hp, max);
     for (node, v) in [(2, v_max), (4, v_prev), (5, v_cur)] {
         let n = &mut scene.nodes[h.gauge[node]];
         n.ext.scale[1] = v as f32 / 100.0;
@@ -193,6 +196,15 @@ pub fn update(
             scene.set_group(fill, want);
         }
     }
+}
+
+/// Whether the gauge's frame (group 42, 205 pixels wide) is drawn (0x154498): only when the current HP
+/// sits in the top segment of a maximum that spans more than one segment (`cur_idx == segs != 0`, C
+/// division truncating toward zero). An enemy of up to 200 HP gets the bar alone, so its gauge is as
+/// long as its HP; drawing the frame always made every gauge look 200 HP long (WP-FIX-12).
+fn frame_shown(hp: i32, max: i32) -> bool {
+    let cur_idx = (hp - 1) / SEGMENT;
+    cur_idx == (max - 1) / SEGMENT && cur_idx != 0
 }
 
 fn build(scene: &mut HudScene, h: &mut TargetHud) {
@@ -224,4 +236,28 @@ fn build(scene: &mut HudScene, h: &mut TargetHud) {
     h.reticle = add(scene, FIEL, None, g::FREE);
     h.bubble = add(scene, FIEL, Some(h.reticle), g::BUBBLE);
     h.built = true;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_shows_only_in_the_top_segment_of_a_multi_segment_gauge() {
+        // One segment (max 1..=200): never, however much HP is left; so a 10 HP enemy's gauge is 10 pixels.
+        assert!(!frame_shown(10, 10));
+        assert!(!frame_shown(200, 200));
+        assert!(!frame_shown(0, 200));
+        // 450 HP: three segments. The frame is up while the HP is in the top one (401..=450), not below it.
+        assert!(frame_shown(450, 450));
+        assert!(frame_shown(401, 450));
+        assert!(!frame_shown(400, 450));
+        assert!(!frame_shown(1, 450));
+        // A maximum on a segment boundary (400 = two segments).
+        assert!(frame_shown(400, 400));
+        assert!(frame_shown(201, 400));
+        assert!(!frame_shown(200, 400));
+        // Dead (0 HP): the C division truncates toward zero, so segment 0: no frame.
+        assert!(!frame_shown(0, 450));
+    }
 }

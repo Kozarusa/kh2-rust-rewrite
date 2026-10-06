@@ -142,6 +142,20 @@ impl SeqFile {
     }
 }
 
+/// Which screen edge a root node keeps its distance from. The original lays the HUD out on its 512 wide
+/// screen (4:3). On a wider window the extra width is split in two: `Left` nodes move out to the left
+/// edge, `Right` nodes to the right edge, so their distance from that edge stays what the 4:3 layout
+/// has; `Center` nodes (messages, banners, the area card, enemy gauges) stay where they are.
+/// This is the user's widescreen anchoring (WP-FIX-12), not a rule of the original; `KH2_HUD_43=1`
+/// turns it off.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Edge {
+    #[default]
+    Center,
+    Left,
+    Right,
+}
+
 /// One HUD object: a sequence player at a position, optionally positioned from a parent.
 pub struct Node {
     pub file: usize,
@@ -149,6 +163,8 @@ pub struct Node {
     pub parent: Option<usize>,
     /// Position of a root node.
     pub pos: [f32; 2],
+    /// Screen edge a root node is anchored to (children follow their parent).
+    pub edge: Edge,
     /// Offset added to this node's own drawing position (and passed on to its children).
     pub off: [f32; 2],
     pub ext: Ext,
@@ -187,6 +203,7 @@ impl Node {
             player: Player::default(),
             parent,
             pos: [0.0; 2],
+            edge: Edge::Center,
             off: [0.0; 2],
             ext: Ext::default(),
             visible: true,
@@ -211,6 +228,8 @@ pub struct HudScene {
     pub nodes: Vec<Node>,
     /// Fonts and messages (None when the disc has none).
     pub text: Option<TextSys>,
+    /// HUD units the window shows beyond the 4:3 screen on each side (0 at 4:3, or with `KH2_HUD_43=1`).
+    pub margin: f32,
     acc: f32,
 }
 
@@ -274,7 +293,15 @@ impl HudScene {
                     self.nodes[p].anchor = anchor;
                     [pb[0] + anchor[0] + po[0], pb[1] + anchor[1] + po[1]]
                 }
-                None => self.nodes[i].pos,
+                None => {
+                    let n = &self.nodes[i];
+                    let dx = match n.edge {
+                        Edge::Left => -self.margin,
+                        Edge::Right => self.margin,
+                        Edge::Center => 0.0,
+                    };
+                    [n.pos[0] + dx, n.pos[1]]
+                }
             };
             let n = &mut self.nodes[i];
             n.base = base;
@@ -332,6 +359,22 @@ fn setup_camera(mut commands: Commands) {
         Transform::from_xyz(SCREEN[0] / 2.0, -SCREEN[1] / 2.0, 100.0),
         RenderLayers::layer(HUD_LAYER),
     ));
+}
+
+/// HUD units shown beyond the 512 wide screen on each side for a window of `size` pixels. The HUD camera
+/// fits the 512x448 box (`ScalingMode::AutoMin`), so a wider window shows more to the left and right.
+pub fn side_margin(size: Vec2) -> f32 {
+    if size.x <= 0.0 || size.y <= 0.0 {
+        return 0.0;
+    }
+    let scale = (size.x / SCREEN[0]).min(size.y / SCREEN[1]);
+    ((size.x / scale - SCREEN[0]) / 2.0).max(0.0)
+}
+
+/// `KH2_HUD_43=1`: keep the original's 4:3 layout in the middle of a wide window.
+fn layout_43() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("KH2_HUD_43").is_ok_and(|v| v != "0"))
 }
 
 /// `KH2_HUDLOG=<seconds>`: true on the frame that passes that time.
@@ -472,6 +515,37 @@ mod tests {
     }
 
     #[test]
+    fn side_margin_splits_the_extra_width() {
+        // 16:9: the 448 tall box is 796.4 wide, 142.2 more on each side; 4:3 and taller windows have none.
+        assert!((side_margin(Vec2::new(1280.0, 720.0)) - 142.2).abs() < 0.1);
+        assert!(side_margin(Vec2::new(1024.0, 768.0)) < 1.0);
+        assert_eq!(side_margin(Vec2::new(600.0, 800.0)), 0.0);
+        assert_eq!(side_margin(Vec2::ZERO), 0.0);
+    }
+
+    #[test]
+    fn edge_anchored_roots_move_to_the_screen_edges() {
+        let mut scene = HudScene { margin: 100.0, ..HudScene::default() };
+        let mut left = Node::new(0, None);
+        (left.edge, left.pos) = (Edge::Left, [28.0, 300.0]);
+        let mut right = Node::new(0, None);
+        (right.edge, right.pos) = (Edge::Right, [450.0, 400.0]);
+        let mut mid = Node::new(0, None);
+        mid.pos = [256.0, 100.0];
+        let mut child = Node::new(0, Some(1));
+        child.off = [-10.0, 5.0];
+        for n in [left, right, mid, child] {
+            scene.add(n);
+        }
+        scene.resolve();
+        assert_eq!(scene.nodes[0].origin, [-72.0, 300.0]);
+        assert_eq!(scene.nodes[1].origin, [550.0, 400.0]);
+        assert_eq!(scene.nodes[2].origin, [256.0, 100.0]);
+        // A child keeps its parent's shift (anchor 0 with no sequence loaded).
+        assert_eq!(scene.nodes[3].origin, [540.0, 405.0]);
+    }
+
+    #[test]
     fn viewport_maps_the_centre_to_the_screen_centre() {
         let c = viewport_to_hud(Vec2::new(640.0, 360.0), Vec2::new(1280.0, 720.0));
         assert_eq!((c.x, c.y), (256.0, 224.0 - Y_BIAS));
@@ -485,6 +559,8 @@ mod tests {
 pub struct HudDraw {
     pool: Vec<Entity>,
     materials: HashMap<(usize, u32, bool), Handle<HudMaterial>>,
+    /// The side margin last logged (`hud: layout ...`).
+    logged_margin: Option<f32>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -496,7 +572,20 @@ fn draw(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<HudMaterial>>,
     mut batches: Query<(&mut Mesh2d, &mut MeshMaterial2d<HudMaterial>, &mut Visibility, &mut Transform)>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
 ) {
+    scene.margin = match windows.single() {
+        Ok(w) if !layout_43() => side_margin(Vec2::new(w.width(), w.height())),
+        _ => 0.0,
+    };
+    if state.logged_margin.is_none_or(|m| (m - scene.margin).abs() > 0.5) {
+        state.logged_margin = Some(scene.margin);
+        if scene.margin > 0.0 {
+            info!("hud: edge layout, left group at the left edge, right group at the right edge ({:.0} HUD units of margin per side)", scene.margin);
+        } else {
+            info!("hud: 4:3 layout (no side margin)");
+        }
+    }
     scene.advance(time.delta_secs());
     scene.resolve();
     // `KH2_HUDHIDE=3,9`: hide nodes by index (for isolating a drawing problem).

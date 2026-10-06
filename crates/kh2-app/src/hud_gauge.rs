@@ -13,7 +13,7 @@ use std::f32::consts::{FRAC_PI_2, PI};
 use bevy::prelude::*;
 
 use crate::data::GameData;
-use super::hud_gfx::{HudScene, Node};
+use super::hud_gfx::{Edge, HudScene, Node};
 use crate::sora::Sora;
 
 /// Sequence pair order in the world's field file: fiel, gaug, mapj, miss.
@@ -482,6 +482,8 @@ fn build(scene: &mut HudScene, p: &mut SoraPanel, face_file: Option<usize>, hp: 
         i
     };
     p.circle = add(scene, GAUG, None, g::CIRCLE[0]);
+    // The HP ring, MP bar and drive gauge (its children) keep their 4:3 distance from the RIGHT screen edge (WP-FIX-12).
+    scene.nodes[p.circle].edge = Edge::Right;
     p.ring = [
         add(scene, GAUG, Some(p.circle), g::RING_BACK[0]),
         add(scene, GAUG, Some(p.circle), g::RING_DEFAULT),

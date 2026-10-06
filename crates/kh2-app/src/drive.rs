@@ -17,21 +17,20 @@ use kh2_anim::moveset::Moveset;
 use kh2_tables::player::{self, form, DriveForm, FormLevels, Memt, Sstm};
 use kh2_tables::tables as t;
 
+use crate::abilities::Abilities;
 use crate::assets::Disc;
 use crate::combat::{Fighter, Hit};
 use crate::data::{GameData, KINGDOM_KEY};
 use crate::fx::EffectLib;
 use crate::schedule::{Frame, Sim};
 use crate::skel::{spawn_skinned, Animator, Rig};
-use crate::sora::{self, Abilities, Battle, Growth, HandSocket, Rigs, Sora, State};
+use crate::sora::{self, Battle, Rigs, Sora, State, WeaponCue};
 use crate::SCALE;
 
 #[path = "hud_drive.rs"]
 mod hud_drive;
 pub use hud_drive::DriveGauge;
 
-/// Sora's left-hand bone (the mirror of `sora::RIGHT_HAND`, bone 178).
-const LEFT_HAND: usize = 86;
 /// Motion id the old body plays when a form starts (`FUN_001b4c28` asks for 0x34) and the id the new
 /// form body plays on arrival (every form motion set has one at 53; the call that starts it was
 /// not found, see the doc).
@@ -52,8 +51,8 @@ pub mod rules {
     /// Elapsed time per logic tick in the units of the game's frame unit (`DAT_00356f40`): one
     /// 60 Hz tick is 1.0 (the unit counts vertical syncs; see the doc).
     pub const FRAME_UNIT: f32 = 1.0;
-    /// Ability id of Form Boost, the one ability the form timer drain reads (`FUN_001c0f40`).
-    pub const FORM_BOOST_ID: u16 = 398;
+    /// `item.Type` of Sora's keyblades (the type `FUN_001a20b0(2)` looks for).
+    pub const KEYBLADE_TYPE: u8 = 2;
 
     /// The `sstm` fields the drive code reads (offsets in `player::sstm_label`).
     #[derive(Clone, Copy, Debug, PartialEq)]
@@ -69,6 +68,8 @@ pub mod rules {
         pub final_cap: f32,
         pub final_anti_drop: i32,
         pub form_boost: f32,
+        /// The charge's re-arm time (`sstm[0xd4]`, `FUN_001ce240`).
+        pub charge_wait: f32,
     }
 
     impl Tuning {
@@ -85,6 +86,7 @@ pub mod rules {
                 final_cap: s.f32(0xa0),
                 final_anti_drop: s.i32(0xa4),
                 form_boost: s.f32(0x140),
+                charge_wait: s.f32(0xd4),
             }
         }
     }
@@ -138,6 +140,61 @@ pub mod rules {
         }
     }
 
+    /// The player's drive-gauge charge (reaction commands 455 and 457, `FUN_001ce518` sets it,
+    /// `FUN_001ce240` runs it each tick): `total` is the timer at +0xb68, `wait` the second timer at
+    /// +0xb6c. While `total` is above 0, each tick where the player's motion has reached its end
+    /// (`FUN_0017f400`: no blend pending and the motion's frame is at or past its length) takes the
+    /// frame unit off `wait`; at 0 or below one gauge unit is added (`FUN_001a0290`) and `wait` is
+    /// re-armed by `sstm[0xd4]`. `total` always drops by the frame unit; reaching 0 clears it and
+    /// asks for motion 5 (`finished`).
+    #[derive(Clone, Copy, Debug, Default, PartialEq)]
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub struct Charge {
+        pub total: f32,
+        pub wait: f32,
+    }
+
+    /// What one tick of the charge asks for.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub struct ChargeStep {
+        /// Gauge units to add through `Points::gain`.
+        pub units: i32,
+        /// The timer ran out: play motion 5.
+        pub finished: bool,
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    impl Charge {
+        /// Command 455 (`ticks` 120, wait reset to 0) or 457 (`ticks` 30, `wait` kept).
+        pub fn start(&mut self, ticks: f32, reset_wait: bool) {
+            self.total = ticks;
+            if reset_wait {
+                self.wait = 0.0;
+            }
+        }
+
+        pub fn tick(&mut self, t: &Tuning, motion_at_end: bool) -> ChargeStep {
+            let mut step = ChargeStep::default();
+            if self.total <= 0.0 {
+                return step;
+            }
+            if motion_at_end {
+                self.wait -= FRAME_UNIT;
+                if self.wait <= 0.0 {
+                    step.units = 1;
+                    self.wait += t.charge_wait;
+                }
+            }
+            self.total -= FRAME_UNIT;
+            if self.total <= 0.0 {
+                self.total = 0.0;
+                step.finished = true;
+            }
+            step
+        }
+    }
+
     /// The form timer (status +0x1b4 left, +0x1b8 full), in gauge units.
     #[derive(Clone, Copy, Debug, Default, PartialEq)]
     pub struct FormTimer {
@@ -186,9 +243,28 @@ pub mod rules {
     }
 
     /// Drain per logic tick (`FUN_00177788`): the frame unit, times `sstm[0x6c]` while the battle
-    /// flag (`FUN_001903d8`) is clear, times the ability block's form multiplier.
-    pub fn drain_per_tick(t: &Tuning, battle: bool, form_boost: f32) -> f32 {
-        FRAME_UNIT * if battle { 1.0 } else { t.field_drain_scale } * form_boost
+    /// flag (`FUN_001903d8`) is clear, times the ability block's form multiplier (`+0x3c`,
+    /// `abilities::Block::form_drain`: Form Boost per copy, the player's support copies included).
+    pub fn drain_per_tick(t: &Tuning, battle: bool, form_drain: f32) -> f32 {
+        FRAME_UNIT * if battle { 1.0 } else { t.field_drain_scale } * form_drain
+    }
+
+    /// The form's second keyblade (`FUN_001a2010`, run when a form item is added to the inventory,
+    /// `FUN_001a1a18` type 21): for Valor, Master and Final, while the form record's weapon word
+    /// is 0, `FUN_001a20b0(2)` takes the first keyblade item (type 2) in table order that the
+    /// inventory holds, removes one copy and stores its id in the record. Wisdom and Anti keep 0.
+    /// `inventory` is a multiset of item ids; returns the item taken, 0 for none.
+    pub fn take_form_keyblade(items: &[t::Item], inventory: &mut Vec<u16>, form: u8) -> u16 {
+        if !matches!(form, 1 | 3 | 4) {
+            return 0;
+        }
+        for it in items.iter().filter(|i| i.r#type == KEYBLADE_TYPE) {
+            if let Some(pos) = inventory.iter().position(|&x| x == it.id) {
+                inventory.remove(pos);
+                return it.id;
+            }
+        }
+        0
     }
 
     /// Anti form multiplies the damage Sora deals by `sstm[0x94]` (`FUN_001a0610`): in the generic
@@ -197,12 +273,6 @@ pub mod rules {
     /// (`FUN_001a0a18`, `FUN_001a0aa8`, not ported).
     pub fn outgoing_damage(t: &Tuning, form: u8, atk_type: u8, dmg: i32) -> i32 {
         if form == player::form::ANTI && !matches!(atk_type, 5 | 6) { (dmg as f32 * t.anti_damage) as i32 } else { dmg }
-    }
-
-    /// The form timer multiplier of the abilities the form has granted: Form Boost multiplies by
-    /// `sstm[0x140]` once per copy (`FUN_001c0f40`, ability 398).
-    pub fn form_boost(t: &Tuning, granted: &[u16]) -> f32 {
-        granted.iter().filter(|&&a| a == FORM_BOOST_ID).fold(1.0, |m, _| m * t.form_boost)
     }
 
     /// Abilities the form has earned at `level`: the `ability` column of its `fmlv` rows up to the level.
@@ -397,6 +467,14 @@ pub mod rules {
         (1..=5).contains(&form).then(|| rec[11 + form as usize]).filter(|&o| o != 0)
     }
 
+    /// Object id of the base body in a merged record (`FUN_001cf2c8` with form 0: byte offset
+    /// 0x10 + 2 * outfit, the outfit being the low 5 bits of byte 0 of the world's save block at
+    /// `0x340c9c + 4 * world`, `FUN_001a71e8`). A new game has 0 there (inferred: nothing in the
+    /// paths read writes it before play); the app takes it from `KH2_DRIVE_OUTFIT`.
+    pub fn merged_base_object(rec: &[u16; 24], outfit: u8) -> Option<u16> {
+        (outfit < 4).then(|| rec[8 + outfit as usize]).filter(|&o| o != 0)
+    }
+
     /// `FUN_001845b0`: the weapon object for a moveset and an item's slot (the item's
     /// `Flag1 | Rank << 8`), from the `went` table: a u32 per moveset giving a word offset, then
     /// one u32 object id per slot at that offset.
@@ -425,81 +503,125 @@ pub struct DriveRules {
     pub tuning: rules::Tuning,
     memt: Memt,
     objs: Vec<t::Objentry>,
+    items: Vec<t::Item>,
     wmst: Vec<[String; 2]>,
     went: Vec<u8>,
-    /// Ability item id to its ability bit (the `abilities` table).
-    ability_bits: HashMap<u16, u16>,
-    /// Slot of the equipped keyblade item (Kingdom Key), the `went` index of the weapon object.
-    key_slot: u16,
+    /// The equipped keyblade item (Kingdom Key; the party record's weapon word, hand 0 of every
+    /// player object through `FUN_0016ee98`).
+    key_item: u16,
 }
 
-/// What one form is made of.
+/// One weapon of a player object: its model and, when the moveset's `wmst` row names one for the
+/// hand, its motion set (a weapon without one stays in its rest pose, `FUN_00184190`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WeaponFiles {
+    pub model: String,
+    pub mset: Option<String>,
+}
+
+/// What one player object (base Sora or a form) is made of.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FormFiles {
     pub model: String,
     pub mset: String,
     pub moveset: u16,
-    /// Weapon model and the motion sets of the right and left hand (empty = no weapon in that hand).
-    pub weapon_model: Option<String>,
-    pub right_mset: Option<String>,
-    pub left_mset: Option<String>,
+    /// The outfit index used (base body only).
+    pub outfit: u8,
+    /// The weapons by hand (0 right, 1 left); `None` when the hand holds nothing.
+    pub hands: [Option<WeaponFiles>; 2],
+}
+
+impl FormFiles {
+    /// The weapons in hand order with their hand index.
+    pub fn weapons(&self) -> impl Iterator<Item = (usize, &WeaponFiles)> {
+        self.hands.iter().enumerate().filter_map(|(h, w)| Some((h, w.as_ref()?)))
+    }
 }
 
 impl DriveRules {
     pub fn load(disc: &Disc) -> Option<DriveRules> {
         let mut a = disc.0.lock().ok()?;
-        let items = kh2_tables::load::<t::Item>(&mut a, &t::ITEM).ok()?.rows;
-        let cmds = kh2_tables::load::<t::Cmd>(&mut a, &t::CMD).ok()?.rows;
-        let fmlv = kh2_tables::load::<t::Fmlv>(&mut a, &t::FMLV).ok()?.rows;
-        let objs = kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).ok()?.rows;
-        let memt = player::load_memt(&mut a).ok()?;
-        let sstm = player::load_sstm(&mut a).ok()?;
-        let wmst = rules::parse_wmst(&kh2_tables::subfile(&mut a, &t::WMST).ok()?);
-        let went = kh2_tables::subfile(&mut a, &t::WENT).ok()?;
-        let key = items.iter().find(|i| i.id == KINGDOM_KEY)?;
+        Self::from_archive(&mut a)
+    }
+
+    pub fn from_archive(a: &mut kh2_archive::Archive) -> Option<DriveRules> {
+        let items = kh2_tables::load::<t::Item>(a, &t::ITEM).ok()?.rows;
+        let cmds = kh2_tables::load::<t::Cmd>(a, &t::CMD).ok()?.rows;
+        let fmlv = kh2_tables::load::<t::Fmlv>(a, &t::FMLV).ok()?.rows;
+        let objs = kh2_tables::load::<t::Objentry>(a, &t::OBJENTRY).ok()?.rows;
+        let memt = player::load_memt(a).ok()?;
+        let sstm = player::load_sstm(a).ok()?;
+        let wmst = rules::parse_wmst(&kh2_tables::subfile(a, &t::WMST).ok()?);
+        let went = kh2_tables::subfile(a, &t::WENT).ok()?;
+        items.iter().find(|i| i.id == KINGDOM_KEY)?;
         Some(DriveRules {
             forms: player::drive_forms(&items, &cmds, &memt),
             levels: FormLevels::from_rows(&fmlv),
             tuning: rules::Tuning::from_sstm(&sstm),
             memt,
             objs,
+            items,
             wmst,
             went,
-            ability_bits: player::abilities(&items).into_iter().map(|a| (a.id, a.bit)).collect(),
-            key_slot: key.flag1 as u16 | (key.rank as u16) << 8,
+            key_item: KINGDOM_KEY,
         })
-    }
-
-    /// The abilities a form has earned at `level` as (id, bit) pairs, for the controller's ability block.
-    pub fn granted_with_bits(&self, form: u8, level: u8) -> Vec<(u16, u16)> {
-        rules::granted_abilities(&self.levels, form, level).into_iter().filter_map(|id| Some((id, *self.ability_bits.get(&id)?))).collect()
     }
 
     pub fn form(&self, form: u8) -> Option<&DriveForm> {
         self.forms.iter().find(|f| f.form == form)
     }
 
-    /// Files of a form in a world (`world` selects the `_NM`, `_TR`, `_WI` variants through the
-    /// memt merge; no story flag is set).
-    pub fn files(&self, form: u8, world: u16) -> Option<FormFiles> {
-        let rec = rules::memt_merge(&self.memt, world, |_| false);
-        let obj = rules::merged_form_object(&rec, form)?;
+    pub fn items(&self) -> &[t::Item] {
+        &self.items
+    }
+
+    /// The `went` slot of an item: its `Flag1 | Rank << 8` word (`FUN_001845b0` reads item `+4`).
+    fn item_slot(&self, item: u16) -> Option<u16> {
+        self.items.iter().find(|i| i.id == item).map(|i| i.flag1 as u16 | (i.rank as u16) << 8)
+    }
+
+    /// Files of a player object: `obj` is its objentry id; `hand1_item` the form record's weapon
+    /// word (0 for the base body, which only has hand 0: `FUN_00176f88`). Each hand's weapon is
+    /// the moveset's `went` entry for the item (`FUN_0016ef28`, `FUN_001845b0`) and its motion set
+    /// the `wmst` name of that hand (`FUN_00184640`).
+    fn object_files(&self, obj: u16, outfit: u8, hand1_item: u16) -> Option<FormFiles> {
         let o = self.objs.iter().find(|o| o.object_id == obj as u32)?;
-        let names = self.wmst.get(o.neo_moveset as usize);
-        let non_empty = |i: usize| names.and_then(|n| n.get(i)).filter(|s| !s.is_empty()).cloned();
-        let right = non_empty(0);
-        let weapon_model = right.as_ref().and_then(|_| {
-            let id = rules::weapon_object(&self.went, o.neo_moveset as usize, self.key_slot)?;
-            self.objs.iter().find(|w| w.object_id == id).map(|w| w.model_name.clone())
-        });
+        let ms = o.neo_moveset as usize;
+        let mset_of = |hand: usize| self.wmst.get(ms).and_then(|n| n.get(hand)).filter(|s| !s.is_empty()).cloned();
+        let weapon = |item: u16, hand: usize| -> Option<WeaponFiles> {
+            let id = rules::weapon_object(&self.went, ms, self.item_slot(item)?)?;
+            let w = self.objs.iter().find(|w| w.object_id == id)?;
+            // A hand whose `wmst` name is empty loads no motion set (`FUN_00184640` returns 0 and
+            // `FUN_00184190` skips the animation setup): such a weapon has nothing to animate and is
+            // not drawn [inferred]. Anti's row is the one such case (his went row is filled).
+            let mset = mset_of(hand)?;
+            Some(WeaponFiles { model: w.model_name.clone(), mset: Some(mset) })
+        };
         Some(FormFiles {
             model: o.model_name.clone(),
             mset: o.animation_name.trim_end_matches(".mset").to_string(),
             moveset: o.neo_moveset,
-            weapon_model,
-            right_mset: right,
-            left_mset: non_empty(1),
+            outfit,
+            hands: [weapon(self.key_item, 0), (hand1_item != 0).then(|| weapon(hand1_item, 1)).flatten()],
         })
+    }
+
+    /// The merged `memt` record of a world (`FUN_001a6ff0`; no story flag is set).
+    fn merged(&self, world: u16) -> [u16; 24] {
+        rules::memt_merge(&self.memt, world, |_| false)
+    }
+
+    /// Files of the base body in a world: the merged record's outfit word (`FUN_001cf2c8`, form 0).
+    pub fn base_files(&self, world: &DriveWorld) -> Option<FormFiles> {
+        let obj = rules::merged_base_object(&self.merged(world.id), world.outfit)?;
+        self.object_files(obj, world.outfit, 0)
+    }
+
+    /// Files of a form in a world (`world` selects the `_NM`, `_TR`, `_WI` variants through the
+    /// memt merge), with the form's second keyblade item (`DriveState::form_weapon`).
+    pub fn files(&self, form: u8, world: u16, hand1_item: u16) -> Option<FormFiles> {
+        let obj = rules::merged_form_object(&self.merged(world), form)?;
+        self.object_files(obj, 0, hand1_item)
     }
 }
 
@@ -523,10 +645,21 @@ pub struct DriveState {
     pub rng: rules::Lcg,
     /// The battle flag is forced by `KH2_DRIVE_BATTLE`.
     pub force_battle: bool,
+    /// The forms' second keyblade (form record word 0, `FUN_0016ee98` hand 1), set by
+    /// `rules::take_form_keyblade` when the form is obtained; 0 for none.
+    pub form_weapon: [u16; 6],
+    /// Spare keyblades in the inventory (item ids, one per copy) after the forms took theirs.
+    pub inventory: Vec<u16>,
     ticks: u32,
 }
 
 impl DriveState {
+    /// The form field of the current player object (`+0xb50`): the entered form once the body has
+    /// been swapped, else 0 (the old object stays the base one through the change).
+    pub fn object_form(&self) -> u8 {
+        if self.in_form { self.form } else { 0 }
+    }
+
     fn from_env(rules: &DriveRules) -> DriveState {
         let env = |k: &str| std::env::var(k).ok();
         let num = |k: &str| env(k).and_then(|v| v.trim().parse::<i32>().ok());
@@ -546,7 +679,21 @@ impl DriveState {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.subsec_nanos())
         });
         let party = env("KH2_DRIVE_PARTY").unwrap_or_else(|| "both".into());
-        let _ = rules;
+        // The forms' second keyblades come from the inventory when the form items are obtained
+        // (the harness obtains the owned forms in id order). The app has no inventory: the
+        // default gives one spare copy of the equipped keyblade per form that takes one, which
+        // keeps the Kingdom Key in both hands; `KH2_DRIVE_INVENTORY=` (empty) is the new-game
+        // state with no spare keyblade (the forms then hold one), `=id,id` any list.
+        let mut inventory: Vec<u16> = match env("KH2_DRIVE_INVENTORY") {
+            Some(v) => v.split(',').filter_map(|x| x.trim().parse().ok()).collect(),
+            None => (1..=4u8).filter(|&f| owned[f as usize] && matches!(f, 1 | 3 | 4)).map(|_| rules.key_item).collect(),
+        };
+        let mut form_weapon = [0u16; 6];
+        for f in 1..=4u8 {
+            if owned[f as usize] {
+                form_weapon[f as usize] = rules::take_form_keyblade(rules.items(), &mut inventory, f);
+            }
+        }
         DriveState {
             points,
             in_form: false,
@@ -560,6 +707,8 @@ impl DriveState {
             goofy: matches!(party.as_str(), "both" | "goofy"),
             rng: rules::Lcg(seed | 1),
             force_battle: env("KH2_DRIVE_BATTLE").is_some_and(|v| v != "0"),
+            form_weapon,
+            inventory,
             ticks: 0,
         }
     }
@@ -586,9 +735,14 @@ pub struct FormChanged {
     pub to: u8,
 }
 
-/// The world the forms are looked up for (selects `_NM`, `_TR`, `_WI` objects). 2 is Twilight Town.
+/// The world the player objects are looked up for (the `memt` merge key: 13, 14 and 17 select the
+/// `_WI`, `_NM`, `_TR` objects; 2 is Twilight Town) and its outfit index (word 8 + outfit of the
+/// merged record for the base body; a new game has 0).
 #[derive(Resource, Clone, Copy, Debug)]
-pub struct DriveWorld(pub u16);
+pub struct DriveWorld {
+    pub id: u16,
+    pub outfit: u8,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Phase {
@@ -612,30 +766,22 @@ struct ChangeTask {
 /// Loaded form models, filled on first use.
 struct FormAssets {
     body: Arc<Rig>,
-    right: Arc<Rig>,
-    left: Option<Arc<Rig>>,
+    /// The weapons with their hand (0 right, 1 left), in hand order.
+    weapons: Vec<(usize, Arc<Rig>)>,
     moves: Arc<Moveset>,
-    has_weapon: bool,
 }
 
 #[derive(Resource, Default)]
 struct FormCache(HashMap<(u8, u16), Arc<FormAssets>>);
 
-/// What base Sora was before the first form, for the revert.
+/// What base Sora was before the first form, for the revert (the body and keyblade rigs are
+/// `Rigs`, which `sora::setup` fills from the same merge).
 struct Base {
     moves: Arc<Moveset>,
-    growth: Growth,
 }
 
 #[derive(Resource, Default)]
 struct BaseSora(Option<Base>);
-
-/// The second weapon (left hand) of the dual-wielding forms.
-#[derive(Resource, Default)]
-struct LeftWeapon(Option<Entity>);
-
-#[derive(Component)]
-struct LeftSocket;
 
 /// The drive system's own state, as one system parameter.
 #[derive(SystemParam)]
@@ -645,8 +791,8 @@ struct Store<'w> {
     change: ResMut<'w, Change>,
     cache: ResMut<'w, FormCache>,
     base: ResMut<'w, BaseSora>,
-    left: ResMut<'w, LeftWeapon>,
-    abilities: ResMut<'w, Abilities>,
+    /// The ability system (absent when its tables are unreadable: then no form list applies).
+    abilities: Option<ResMut<'w, Abilities>>,
     battle: Res<'w, Battle>,
 }
 
@@ -689,28 +835,22 @@ impl Plugin for DrivePlugin {
                 n => n.parse().unwrap_or(2),
             })
             .unwrap_or(2);
+        let outfit = std::env::var("KH2_DRIVE_OUTFIT").ok().and_then(|v| v.parse::<u8>().ok()).unwrap_or(0).min(3);
         let enter = std::env::var("KH2_DRIVE").ok().and_then(|v| v.parse::<u8>().ok()).map(|f| (env_f("KH2_DRIVE_AT").unwrap_or(4.0), f));
-        app.insert_resource(DriveState::from_env(&rules))
+        let state = DriveState::from_env(&rules);
+        info!("drive: form keyblades (hand 1) {:?}, inventory left {:?}", &state.form_weapon[1..=4], state.inventory);
+        app.insert_resource(state)
             .insert_resource(rules)
-            .insert_resource(DriveWorld(world))
+            .insert_resource(DriveWorld { id: world, outfit })
             .insert_resource(Harness { enter, revert_at: env_f("KH2_DRIVE_REVERT_AT"), chosen: enter.map_or(1, |e| e.1) })
             .init_resource::<DriveQueue>()
             .init_resource::<Change>()
             .init_resource::<FormCache>()
             .init_resource::<BaseSora>()
-            .init_resource::<LeftWeapon>()
             .add_message::<FormChanged>()
             .add_plugins(hud_drive::HudDrivePlugin)
             .add_systems(Update, input.after(Frame::Pad))
-            .add_systems(
-                FixedUpdate,
-                (
-                    drive_tick.in_set(Sim::Weapon).before(sora::sync_weapon),
-                    sync_left.in_set(Sim::Weapon).after(sora::sync_weapon),
-                    (follow_left, weapon_visibility.after(sora::tick)).in_set(Sim::Sora),
-                    log_changes.in_set(Sim::Sounds),
-                ),
-            );
+            .add_systems(FixedUpdate, (drive_tick.in_set(Sim::Weapon).before(sora::sync_weapon), log_changes.in_set(Sim::Sounds)));
     }
 }
 
@@ -746,7 +886,8 @@ fn input(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, mut h: ResMut<Harness
     }
 }
 
-fn read_rig(disc: &Disc, model: &str, mset: &str) -> Option<Arc<Rig>> {
+/// A model with its motion set (`obj/<model>.mdlx`, `obj/<mset>.mset`) and its effect file.
+pub(crate) fn read_rig(disc: &Disc, model: &str, mset: &str) -> Option<Arc<Rig>> {
     let m = disc.read(&format!("obj/{model}.mdlx")).and_then(|d| kh2_model::mdlx(&d))?;
     let s = disc.read(&format!("obj/{mset}.mset")).and_then(|d| kh2_anim::Mset::parse(&d))?;
     let apdx = format!("obj/{model}.apdx");
@@ -754,26 +895,54 @@ fn read_rig(disc: &Disc, model: &str, mset: &str) -> Option<Arc<Rig>> {
     Some(Arc::new(Rig { model: m, mset: s, apdx }))
 }
 
-fn load_assets(disc: &Disc, rules: &DriveRules, rigs: &Rigs, form: u8, world: u16) -> Option<FormAssets> {
-    let f = rules.files(form, world)?;
+/// A weapon: its model with the hand's motion set, or with no motions at all when the `wmst` row
+/// names none (the game then loads none and the weapon keeps its rest pose, `FUN_00184190`).
+pub(crate) fn weapon_rig(disc: &Disc, w: &WeaponFiles) -> Option<Arc<Rig>> {
+    match &w.mset {
+        Some(s) => read_rig(disc, &w.model, s),
+        None => {
+            let m = disc.read(&format!("obj/{}.mdlx", w.model)).and_then(|d| kh2_model::mdlx(&d))?;
+            let apdx = format!("obj/{}.apdx", w.model);
+            let apdx = disc.read(&apdx).is_some().then_some(apdx);
+            Some(Arc::new(Rig { model: m, mset: kh2_anim::Mset { slots: Vec::new() }, apdx }))
+        }
+    }
+}
+
+fn load_assets(disc: &Disc, rules: &DriveRules, form: u8, world: u16, hand1_item: u16) -> Option<FormAssets> {
+    let f = rules.files(form, world, hand1_item)?;
     let body = read_rig(disc, &f.model, &f.mset)?;
     let moves = {
         let mut a = disc.0.lock().ok()?;
         kh2_tables::subfile(&mut a, &t::PTYA).ok().and_then(|b| Moveset::parse(&b, f.moveset as usize))?
     };
-    let weapon = f.weapon_model.as_deref().zip(f.right_mset.as_deref());
-    let right = weapon.and_then(|(m, s)| read_rig(disc, m, s));
-    let left = f.weapon_model.as_deref().zip(f.left_mset.as_deref()).and_then(|(m, s)| read_rig(disc, m, s));
-    let has_weapon = right.is_some();
-    info!(
-        "drive: loaded {} (mset {}, attack table {}, right weapon {:?}, left weapon {:?})",
-        f.model, f.mset, f.moveset, f.right_mset, f.left_mset
-    );
-    Some(FormAssets { body, right: right.unwrap_or_else(|| rigs.keyblade.clone()), left, moves: Arc::new(moves), has_weapon })
+    let mut weapons = Vec::new();
+    for (hand, w) in f.weapons() {
+        match weapon_rig(disc, w) {
+            Some(r) => weapons.push((hand, r)),
+            // The world variants of the keyblade (`W_EX010_TR`, `_WI`, `_NM`) are named by the object table
+            // but are not on this disc (checked: no `obj/W_EX010_{TR,WI,NM}.mdlx`). The original's behaviour
+            // for the missing file is not known; the app keeps the plain keyblade model with the hand's
+            // motion set [inferred] rather than dropping the weapon.
+            None => match rules.files(form, 2, hand1_item).and_then(|d| d.hands[hand].clone()) {
+                Some(plain) if plain.model != w.model => match weapon_rig(disc, &WeaponFiles { model: plain.model.clone(), mset: w.mset.clone() }) {
+                    Some(r) => {
+                        warn!("drive: weapon {} of hand {hand} is not on the disc; using {}", w.model, plain.model);
+                        weapons.push((hand, r));
+                    }
+                    None => warn!("drive: weapon {} of hand {hand} not loadable; the hand stays empty", w.model),
+                },
+                _ => warn!("drive: weapon {} of hand {hand} not loadable; the hand stays empty", w.model),
+            },
+        }
+    }
+    let hand = |h: usize| f.hands[h].as_ref().map_or("none".to_string(), |w| format!("{} ({})", w.model, w.mset.as_deref().unwrap_or("no motion set")));
+    info!("drive: loaded {} (mset {}, attack table {}, hand 0 {}, hand 1 {}; hand 1 item {hand1_item})", f.model, f.mset, f.moveset, hand(0), hand(1));
+    Some(FormAssets { body, weapons, moves: Arc::new(moves) })
 }
 
 /// Registers a rig's effect file with the effect library so its motion effects run.
-fn register_effects(disc: &Disc, lib: &mut EffectLib, rig: &Rig) {
+pub(crate) fn register_effects(disc: &Disc, lib: &mut EffectLib, rig: &Rig) {
     let Some(name) = &rig.apdx else { return };
     if lib.objects.contains_key(name) {
         return;
@@ -784,7 +953,8 @@ fn register_effects(disc: &Disc, lib: &mut EffectLib, rig: &Rig) {
     }
 }
 
-/// Spawns `assets` under `root` and points Sora at the new bodies. Returns the old body.
+/// Spawns `assets` under `root` (the body, then its weapons on their hand sockets) and points Sora
+/// and his fighter at the new entities; the old body goes with its sockets and weapons.
 #[allow(clippy::too_many_arguments)]
 fn swap_bodies(
     commands: &mut Commands,
@@ -792,7 +962,6 @@ fn swap_bodies(
     s: &mut Sora,
     fighter: &mut Fighter,
     assets: &FormAssets,
-    left: &mut LeftWeapon,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
     images: &mut Assets<Image>,
@@ -800,23 +969,29 @@ fn swap_bodies(
 ) {
     let old = s.body;
     let body = spawn_skinned(commands, root, assets.body.clone(), meshes, materials, images, bindposes, SCALE);
-    let hand = commands.spawn((Transform::default(), Visibility::default(), ChildOf(body))).id();
-    let weapon = spawn_skinned(commands, hand, assets.right.clone(), meshes, materials, images, bindposes, 1.0);
-    commands.entity(hand).insert(HandSocket);
-    let mut attack = vec![weapon, body];
-    left.0 = assets.left.as_ref().map(|rig| {
-        let socket = commands.spawn((Transform::default(), Visibility::default(), ChildOf(body), LeftSocket)).id();
-        let w = spawn_skinned(commands, socket, rig.clone(), meshes, materials, images, bindposes, 1.0);
-        attack.push(w);
-        w
-    });
+    let weapons = sora::spawn_weapons(commands, body, &assets.weapons, meshes, materials, images, bindposes);
     commands.entity(old).despawn();
     s.body = body;
-    s.weapon = weapon;
+    s.weapons = weapons.clone();
     s.moves = assets.moves.clone();
-    fighter.attack_bodies = attack;
+    fighter.attack_bodies = weapons.into_iter().chain([body]).collect();
     fighter.hurt_body = body;
     fighter.landed.clear();
+}
+
+/// Starts motion `id` (battle-weapon variant) on the body and, where their motion sets have the
+/// slot, on the weapons. Returns the slot.
+fn start_motion(s: &Sora, anims: &mut Query<&mut Animator>, id: usize, blend: f32) -> Option<usize> {
+    let slot = {
+        let mut body = anims.get_mut(s.body).ok()?;
+        let slot = body.rig.mset.slot(id, kh2_anim::PlayerState::BattleWeapon)?;
+        body.restart(Some(slot), false, blend);
+        slot
+    };
+    let mut cue = WeaponCue::default();
+    cue.restart(Some(slot), false, blend);
+    cue.apply(&s.weapons, anims);
+    Some(slot)
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -828,7 +1003,6 @@ fn drive_tick(
     rigs: Res<Rigs>,
     world: Res<DriveWorld>,
     store: Store,
-    mut growth: ResMut<Growth>,
     mut lib: Option<ResMut<EffectLib>>,
     mut hits: MessageReader<Hit>,
     mut changed: MessageWriter<FormChanged>,
@@ -837,7 +1011,7 @@ fn drive_tick(
     mut anims: Query<&mut Animator>,
     gfx: Gfx,
 ) {
-    let Store { mut state, mut queue, mut change, mut cache, mut base, mut left, mut abilities, battle: battle_flag } = store;
+    let Store { mut state, mut queue, mut change, mut cache, mut base, mut abilities, battle: battle_flag } = store;
     let Gfx { mut meshes, mut materials, mut images, mut bindposes } = gfx;
     let Ok((root, mut s, mut fighter)) = sora_q.single_mut() else { return };
     let s = &mut *s;
@@ -845,6 +1019,8 @@ fn drive_tick(
     st.ticks += 1;
     let tuning = rules.tuning;
     let battle = st.force_battle || battle_flag.active();
+    // The block's form multiplier (+0x3c): Form Boost per copy, 1.0 without the ability system.
+    let form_drain = |ab: &Option<ResMut<Abilities>>| ab.as_deref().map_or(1.0, |a| a.block().form_drain);
 
     // Hits Sora lands: drive gain in the normal gauge, lost time in a form (FUN_00178748; the
     // victim flags 0x10 / 0x800 it tests are not modelled, so every enemy counts as 0x10 only).
@@ -919,15 +1095,14 @@ fn drive_tick(
                     info!("drive: Anti entered directly (harness); the game reaches it only through the roll");
                 }
                 // The load happens now; the swap waits for the old body's change motion.
-                let key = (entered, world.0);
+                let key = (entered, world.id);
                 if let std::collections::hash_map::Entry::Vacant(slot) = cache.0.entry(key) {
-                    match load_assets(&disc, &rules, &rigs, entered, world.0) {
+                    match load_assets(&disc, &rules, entered, world.id, st.form_weapon[entered as usize]) {
                         Some(a) => {
                             if let Some(l) = lib.as_deref_mut() {
                                 register_effects(&disc, l, &a.body);
-                                register_effects(&disc, l, &a.right);
-                                if let Some(r) = &a.left {
-                                    register_effects(&disc, l, r);
+                                for (_, w) in &a.weapons {
+                                    register_effects(&disc, l, w);
                                 }
                             }
                             slot.insert(Arc::new(a));
@@ -939,16 +1114,10 @@ fn drive_tick(
                     }
                 }
                 if base.0.is_none() {
-                    base.0 = Some(Base { moves: s.moves.clone(), growth: *growth });
+                    base.0 = Some(Base { moves: s.moves.clone() });
                 }
                 st.form = entered;
-                let started = anims.get_many_mut([s.body, s.weapon]).ok().and_then(|[mut body, mut weapon]| {
-                    let slot = body.rig.mset.slot(MOTION_LEAVE, kh2_anim::PlayerState::BattleWeapon)?;
-                    body.restart(Some(slot), false, 4.0);
-                    let armed = weapon.rig.mset.has(slot);
-                    weapon.restart(armed.then_some(slot), false, 4.0);
-                    Some(slot)
-                });
+                let started = start_motion(s, &mut anims, MOTION_LEAVE, 4.0);
                 if let Some(slot) = started {
                     info!("drive: change motion {} (id {MOTION_LEAVE}, slot {slot}) on the old body", anims.get(s.body).map_or("-", |a| a.tag()));
                     s.state = State::FormChange;
@@ -966,7 +1135,7 @@ fn drive_tick(
                 } else if !rules::can_revert(st.form, battle) {
                     info!("drive: revert refused: Anti form cannot be reverted by command while the battle flag is set");
                 } else {
-                    do_revert(&mut commands, root, s, &mut fighter, st, &base, &cache, &rigs, &mut growth, &mut abilities, &mut left, &mut changed, &mut meshes, &mut materials, &mut images, &mut bindposes, "command");
+                    do_revert(&mut commands, root, s, &mut fighter, st, &base, &rigs, &mut abilities, &mut changed, &mut meshes, &mut materials, &mut images, &mut bindposes, "command");
                 }
             }
         }
@@ -983,38 +1152,48 @@ fn drive_tick(
         };
         if done && task.phase == Phase::Leaving {
             let to = task.to;
-            let key = (to, world.0);
+            let key = (to, world.id);
             let Some(assets) = cache.0.get(&key).cloned() else {
                 change.0 = None;
                 return;
             };
-            swap_bodies(&mut commands, root, s, &mut fighter, &assets, &mut left, &mut meshes, &mut materials, &mut images, &mut bindposes);
-            // Per-form growth (the form's own growth ability only) and abilities (its fmlv grants).
+            swap_bodies(&mut commands, root, s, &mut fighter, &assets, &mut meshes, &mut materials, &mut images, &mut bindposes);
+            // The form record's ability list (FUN_001c0e50 applies its 16 slots, and only the
+            // player's support abilities beside them): the fmlv grants up to the level and the
+            // growth ability of the form's chain at the display level (FUN_001d3da8 keeps that
+            // slot at the current level). The ability system derives the block from it.
             let level = st.level[to as usize];
             let g = rules::growth_level(&rules.levels, to, level);
-            let mut next = Growth::default();
-            match to {
-                1 => next.high_jump = g,
-                2 => next.quick_run = g,
-                3 => next.aerial_dodge = g,
-                4 => next.glide = g,
-                _ => {}
-            }
-            *growth = next;
-            let granted = rules::granted_abilities(&rules.levels, to, level);
-            // The form's grants join the controller's ability block (Combo Plus and Air Combo Plus lengthen the chains).
-            abilities.form = rules.granted_with_bits(to, level);
-            st.timer =rules::FormTimer::start(&tuning, to, level);
+            let mut list = rules::granted_abilities(&rules.levels, to, level);
+            let block = match abilities.as_deref_mut() {
+                Some(ab) => {
+                    if let Some(id) = (g > 0).then(|| ab.rules().growth_ability(to as usize - 1, g)).flatten() {
+                        list.push(id);
+                    }
+                    ab.set_form(Some(list.clone()));
+                    let d = ab.block().deltas();
+                    if d.is_empty() { "unchanged".to_string() } else { d.join("; ") }
+                }
+                None => "ability system off".to_string(),
+            };
+            st.timer = rules::FormTimer::start(&tuning, to, level);
             st.in_form = true;
+            // FUN_001a04b0 at the timer start: HP raised by the maximum (FUN_001a0140 -> the
+            // player's method +0x78 = FUN_001792f0 -> FUN_00176c98 -> FUN_00186238, clamped by
+            // FUN_001a0100) and MP set to its maximum (FUN_001a0240 -> FUN_001a0210).
+            let (hp_before, mp_before) = (s.hp, s.mp);
+            s.hp = s.stats.max_hp;
             s.mp = data.sora_max_mp;
+            let fd = form_drain(&abilities);
             info!(
-                "drive: {} active, level {level}, timer {}/{} ({} points, drain {:.2}/tick in battle, {:.2} out of battle), growth level {g}, abilities granted {granted:?}, MP refilled to {}",
+                "drive: {} active, level {level}, timer {}/{} ({} points, drain {:.2}/tick in battle, {:.2} out of battle), form list {list:?}, stat block {block}, HP {hp_before} -> {}, MP {mp_before} -> {}",
                 form_name(to),
                 st.timer.left,
                 st.timer.total,
                 st.timer.whole_points(&tuning),
-                rules::drain_per_tick(&tuning, true, rules::form_boost(&tuning, &granted)),
-                rules::drain_per_tick(&tuning, false, rules::form_boost(&tuning, &granted)),
+                rules::drain_per_tick(&tuning, true, fd),
+                rules::drain_per_tick(&tuning, false, fd),
+                s.hp,
                 s.mp
             );
             changed.write(FormChanged { from: 0, to });
@@ -1033,14 +1212,10 @@ fn drive_tick(
                 s.motor.start_fall();
             }
         } else if task.phase == Phase::Arriving && task.ticks == 1 {
-            let started = anims.get_many_mut([s.body, s.weapon]).ok().and_then(|[mut body, mut weapon]| {
-                let slot = body.rig.mset.slot(MOTION_ARRIVE, kh2_anim::PlayerState::BattleWeapon)?;
-                body.restart(Some(slot), false, 0.0);
-                let armed = weapon.rig.mset.has(slot);
-                weapon.restart(armed.then_some(slot), false, 0.0);
-                info!("drive: arrival motion {} (id {MOTION_ARRIVE})", body.tag());
-                Some(())
-            });
+            let started = start_motion(s, &mut anims, MOTION_ARRIVE, 0.0);
+            if started.is_some() {
+                info!("drive: arrival motion {} (id {MOTION_ARRIVE})", anims.get(s.body).map_or("-", |a| a.tag()));
+            }
             if started.is_none() {
                 s.state = if s.motor.grounded { State::Ground } else { State::Air };
                 change.0 = None;
@@ -1051,20 +1226,18 @@ fn drive_tick(
 
     // The form timer.
     if st.in_form && change.0.is_none() {
-        let granted = rules::granted_abilities(&rules.levels, st.form, st.level[st.form as usize]);
-        let drain = rules::drain_per_tick(&tuning, battle, rules::form_boost(&tuning, &granted));
+        let drain = rules::drain_per_tick(&tuning, battle, form_drain(&abilities));
         st.timer.add(st.form, -drain);
         if st.ticks % 60 == 0 {
-            info!("drive: {} timer {:.0}/{:.0} ({} points, battle {battle})", form_name(st.form), st.timer.left, st.timer.total, st.timer.whole_points(&tuning));
+            info!("drive: {} timer {:.0}/{:.0} ({} points, battle {battle}, drain {drain:.2}/tick)", form_name(st.form), st.timer.left, st.timer.total, st.timer.whole_points(&tuning));
         }
         if st.timer.expired() {
-            do_revert(&mut commands, root, s, &mut fighter, st, &base, &cache, &rigs, &mut growth, &mut abilities, &mut left, &mut changed, &mut meshes, &mut materials, &mut images, &mut bindposes, "timer ran out");
+            do_revert(&mut commands, root, s, &mut fighter, st, &base, &rigs, &mut abilities, &mut changed, &mut meshes, &mut materials, &mut images, &mut bindposes, "timer ran out");
         }
     }
 
     // The HUD hook.
-    let granted = rules::granted_abilities(&rules.levels, st.form, st.level[st.form as usize]);
-    let drain = rules::drain_per_tick(&tuning, battle, rules::form_boost(&tuning, &granted)).max(f32::EPSILON);
+    let drain = rules::drain_per_tick(&tuning, battle, form_drain(&abilities)).max(f32::EPSILON);
     *gauge = DriveGauge {
         points: st.points.whole,
         max_points: st.points.max,
@@ -1081,7 +1254,8 @@ fn drive_tick(
 }
 
 /// Back to base Sora (`FUN_001b4c28(player, 0)`: the same change task with form 0; the old body
-/// plays no motion). Restores the attack table, abilities and growth levels.
+/// plays no motion). Restores the base body with its one keyblade, the attack table and the
+/// player's own ability list (the growth levels follow it).
 #[allow(clippy::too_many_arguments)]
 fn do_revert(
     commands: &mut Commands,
@@ -1090,11 +1264,8 @@ fn do_revert(
     fighter: &mut Fighter,
     st: &mut DriveState,
     base: &BaseSora,
-    _cache: &FormCache,
     rigs: &Rigs,
-    growth: &mut Growth,
-    abilities: &mut Abilities,
-    left: &mut LeftWeapon,
+    abilities: &mut Option<ResMut<Abilities>>,
     changed: &mut MessageWriter<FormChanged>,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
@@ -1104,10 +1275,11 @@ fn do_revert(
 ) {
     let Some(b) = &base.0 else { return };
     let from = st.form;
-    let assets = FormAssets { body: rigs.sora.clone(), right: rigs.keyblade.clone(), left: None, moves: b.moves.clone(), has_weapon: true };
-    swap_bodies(commands, root, s, fighter, &assets, left, meshes, materials, images, bindposes);
-    abilities.form.clear();
-    *growth = b.growth;
+    let assets = FormAssets { body: rigs.sora.clone(), weapons: vec![(0, rigs.keyblade.clone())], moves: b.moves.clone() };
+    swap_bodies(commands, root, s, fighter, &assets, meshes, materials, images, bindposes);
+    if let Some(ab) = abilities.as_deref_mut() {
+        ab.set_form(None);
+    }
     st.in_form = false;
     st.form = 0;
     st.timer = Default::default();
@@ -1115,7 +1287,16 @@ fn do_revert(
     if !s.motor.grounded {
         s.motor.start_fall();
     }
-    info!("drive: revert from {} ({why}); gauge mode normal, points {} + {}%", form_name(from), st.points.whole, st.points.fraction);
+    info!(
+        "drive: revert from {} ({why}); gauge mode normal, points {} + {}%, stat block {}",
+        form_name(from),
+        st.points.whole,
+        st.points.fraction,
+        abilities.as_deref().map_or("ability system off".to_string(), |a| {
+            let d = a.block().deltas();
+            if d.is_empty() { "unchanged".to_string() } else { d.join("; ") }
+        })
+    );
     changed.write(FormChanged { from, to: 0 });
 }
 
@@ -1126,55 +1307,12 @@ fn log_changes(mut changes: MessageReader<FormChanged>) {
     }
 }
 
-/// The left weapon plays the body's slot and frame, as the right one does in `sora::sync_weapon`.
-fn sync_left(sora: Query<&Sora>, left: Res<LeftWeapon>, mut anims: Query<&mut Animator>) {
-    let (Ok(s), Some(l)) = (sora.single(), left.0) else { return };
-    let Ok([body, mut weapon]) = anims.get_many_mut([s.body, l]) else { return };
-    let slot = body.slot.filter(|&x| weapon.rig.mset.has(x));
-    if weapon.slot != slot {
-        weapon.restart(slot, body.looping, 0.0);
-    }
-    weapon.frame = body.frame;
-    weapon.prev_frame = body.prev_frame;
-    weapon.looping = body.looping;
-    weapon.speed = body.speed;
-}
-
-/// Keeps the left socket on the left-hand bone.
-fn follow_left(sora: Query<&Sora>, anims: Query<&Animator>, mut socket: Query<&mut Transform, With<LeftSocket>>) {
-    let (Ok(s), Ok(mut t)) = (sora.single(), socket.single_mut()) else { return };
-    if let Ok(a) = anims.get(s.body) {
-        *t = Transform::from_matrix(a.pose.get(LEFT_HAND).copied().unwrap_or(Mat4::IDENTITY));
-    }
-}
-
-/// The left weapon shows with the right one; a form without a weapon (Anti) never shows it.
-/// Runs after the controller, which sets the right weapon's visibility from the battle state.
-fn weapon_visibility(
-    sora: Query<&Sora>,
-    state: Res<DriveState>,
-    left: Res<LeftWeapon>,
-    cache: Res<FormCache>,
-    world: Res<DriveWorld>,
-    mut vis: Query<&mut Visibility>,
-) {
-    let Ok(s) = sora.single() else { return };
-    let armed = state.form == 0 || cache.0.get(&(state.form, world.0)).is_none_or(|a| a.has_weapon);
-    if !armed && let Ok(mut v) = vis.get_mut(s.weapon) {
-        *v = Visibility::Hidden;
-    }
-    let shown = vis.get(s.weapon).copied().unwrap_or(Visibility::Hidden);
-    if let Some(l) = left.0 && let Ok(mut v) = vis.get_mut(l) {
-        *v = shown;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::rules::*;
     use super::*;
 
-    fn rules_from_disc() -> Option<DriveRules> {
+    fn archive() -> Option<kh2_archive::Archive> {
         let iso = std::env::var("KH2_ISO").ok().or_else(|| {
             let f = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../local/iso.txt");
             std::fs::read_to_string(f).ok().map(|s| s.trim().to_string())
@@ -1183,31 +1321,53 @@ mod tests {
             eprintln!("skipped: no disc (set KH2_ISO)");
             return None;
         };
-        let mut a = kh2_archive::Archive::open(&iso).map_err(|e| eprintln!("skipped: {iso}: {e}")).ok()?;
-        let items = kh2_tables::load::<t::Item>(&mut a, &t::ITEM).ok()?.rows;
-        let cmds = kh2_tables::load::<t::Cmd>(&mut a, &t::CMD).ok()?.rows;
-        let fmlv = kh2_tables::load::<t::Fmlv>(&mut a, &t::FMLV).ok()?.rows;
-        let objs = kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).ok()?.rows;
-        let memt = player::load_memt(&mut a).ok()?;
-        let sstm = player::load_sstm(&mut a).ok()?;
-        let wmst = parse_wmst(&kh2_tables::subfile(&mut a, &t::WMST).ok()?);
-        let went = kh2_tables::subfile(&mut a, &t::WENT).ok()?;
-        let key = items.iter().find(|i| i.id == KINGDOM_KEY)?;
-        Some(DriveRules {
-            forms: player::drive_forms(&items, &cmds, &memt),
-            levels: FormLevels::from_rows(&fmlv),
-            tuning: Tuning::from_sstm(&sstm),
-            memt,
-            objs,
-            wmst,
-            went,
-            ability_bits: player::abilities(&items).into_iter().map(|a| (a.id, a.bit)).collect(),
-            key_slot: key.flag1 as u16 | (key.rank as u16) << 8,
-        })
+        kh2_archive::Archive::open(&iso).map_err(|e| eprintln!("skipped: {iso}: {e}")).ok()
+    }
+
+    fn rules_from_disc() -> Option<DriveRules> {
+        DriveRules::from_archive(&mut archive()?)
     }
 
     fn ctx(points: u8) -> EnterCtx {
         EnterCtx { current_form: 0, owned: [false, true, true, true, true, false], points, donald: true, goofy: true, locked: false }
+    }
+
+    #[test]
+    fn charge_counts_down_and_adds_a_unit_per_wait() {
+        let t = Tuning { point_units: 600.0, field_drain_scale: 0.5, form_hit_loss: 1.2, anti_level_basis: 5, anti_drop: 5, anti_damage: 1.5, final_base: 25.0, final_growth: 2.0, final_cap: 100.0, final_anti_drop: 10, form_boost: 0.8, charge_wait: 10.0 };
+        let mut c = Charge::default();
+        c.start(120.0, true);
+        // The motion is never at its end: the timer runs out with no gain.
+        let mut units = 0;
+        let mut ticks = 0;
+        loop {
+            ticks += 1;
+            let s = c.tick(&t, false);
+            units += s.units;
+            if s.finished {
+                break;
+            }
+        }
+        assert_eq!((ticks, units), (120, 0));
+        // At its end every tick: one unit on the first tick (wait 0), then one per 10 ticks.
+        c.start(120.0, true);
+        let mut units = 0;
+        for _ in 0..119 {
+            units += c.tick(&t, true).units;
+        }
+        assert_eq!(units, 12);
+        assert!(c.tick(&t, true).finished && c.total == 0.0);
+        // Command 457 keeps the wait.
+        c.wait = 4.0;
+        c.start(30.0, false);
+        assert_eq!(c.wait, 4.0);
+    }
+
+    #[test]
+    fn charge_wait_is_read_from_the_disc() {
+        let Some(r) = rules_from_disc() else { return };
+        eprintln!("charge_wait {}", r.tuning.charge_wait);
+        assert!(r.tuning.charge_wait > 0.0);
     }
 
     #[test]
@@ -1235,7 +1395,7 @@ mod tests {
 
     #[test]
     fn timer_clamps_and_anti_inverts() {
-        let t = Tuning { point_units: 100.0, field_drain_scale: 0.5, form_hit_loss: 1.0, anti_level_basis: 5, anti_drop: 5, anti_damage: 1.5, final_base: 25.0, final_growth: 2.0, final_cap: 100.0, final_anti_drop: 10, form_boost: 0.8 };
+        let t = Tuning { point_units: 100.0, field_drain_scale: 0.5, form_hit_loss: 1.0, anti_level_basis: 5, anti_drop: 5, anti_damage: 1.5, final_base: 25.0, final_growth: 2.0, final_cap: 100.0, final_anti_drop: 10, form_boost: 0.8, charge_wait: 0.0 };
         let mut tm = FormTimer::start(&t, form::VALOR, 1);
         assert_eq!((tm.left, tm.total), (400.0, 400.0));
         assert_eq!(tm.whole_points(&t), 3);
@@ -1253,7 +1413,7 @@ mod tests {
 
     #[test]
     fn anti_scales_generic_damage_only() {
-        let t = Tuning { point_units: 600.0, field_drain_scale: 0.5, form_hit_loss: 1.2, anti_level_basis: 5, anti_drop: 5, anti_damage: 1.5, final_base: 25.0, final_growth: 2.0, final_cap: 100.0, final_anti_drop: 10, form_boost: 0.8 };
+        let t = Tuning { point_units: 600.0, field_drain_scale: 0.5, form_hit_loss: 1.2, anti_level_basis: 5, anti_drop: 5, anti_damage: 1.5, final_base: 25.0, final_growth: 2.0, final_cap: 100.0, final_anti_drop: 10, form_boost: 0.8, charge_wait: 0.0 };
         assert_eq!(outgoing_damage(&t, form::ANTI, 0, 10), 15);
         assert_eq!(outgoing_damage(&t, form::ANTI, 5, 10), 10);
         assert_eq!(outgoing_damage(&t, form::VALOR, 0, 10), 10);
@@ -1273,7 +1433,7 @@ mod tests {
 
     #[test]
     fn roll_rules() {
-        let t = Tuning { point_units: 600.0, field_drain_scale: 0.5, form_hit_loss: 1.2, anti_level_basis: 5, anti_drop: 5, anti_damage: 1.5, final_base: 25.0, final_growth: 2.0, final_cap: 100.0, final_anti_drop: 10, form_boost: 0.8 };
+        let t = Tuning { point_units: 600.0, field_drain_scale: 0.5, form_hit_loss: 1.2, anti_level_basis: 5, anti_drop: 5, anti_damage: 1.5, final_base: 25.0, final_growth: 2.0, final_cap: 100.0, final_anti_drop: 10, form_boost: 0.8, charge_wait: 0.0 };
         assert_eq!(final_chance(&t, 0), 25.0);
         assert_eq!(final_chance(&t, 1), 50.0);
         assert_eq!(final_chance(&t, 5), 100.0);
@@ -1342,10 +1502,22 @@ mod tests {
             assert_eq!(ticks as f32, (tm.total / drain_per_tick(&t, true, 1.0)).ceil());
             assert!(drain_per_tick(&t, false, 1.0) < drain_per_tick(&t, true, 1.0));
         }
-        // Form Boost shortens the drain once per granted copy: Final grants it at levels 4 and 6.
-        assert_eq!(form_boost(&t, &granted_abilities(&r.levels, form::FINAL, 3)), 1.0);
-        assert_eq!(form_boost(&t, &granted_abilities(&r.levels, form::FINAL, 4)), t.form_boost);
-        assert!(form_boost(&t, &granted_abilities(&r.levels, form::FINAL, 6)) < t.form_boost);
+        // Form Boost shortens the drain once per granted copy (the block's +0x3c): Final grants it
+        // at levels 4 and 6, and the player's own support copy counts too.
+        let ab_rules = Arc::new(crate::abilities::AbilityRules::load(&mut archive().unwrap()).unwrap());
+        let drain_at = |level: u8, own: &[u16]| {
+            let mut a = crate::abilities::Abilities::new(ab_rules.clone());
+            for id in own {
+                a.equip_ability(*id);
+            }
+            a.set_form(Some(granted_abilities(&r.levels, form::FINAL, level)));
+            a.block().form_drain
+        };
+        assert_eq!(drain_at(3, &[]), 1.0);
+        assert_eq!(drain_at(4, &[]), t.form_boost);
+        assert!(drain_at(6, &[]) < t.form_boost);
+        assert!(drain_at(3, &[crate::abilities::id::FORM_BOOST]) == t.form_boost);
+        assert!(drain_per_tick(&t, true, drain_at(4, &[])) < drain_per_tick(&t, true, 1.0));
         // Growth abilities rise with the display level (1..=4).
         assert_eq!(growth_level(&r.levels, form::FINAL, 1), 1);
         assert_eq!(growth_level(&r.levels, form::FINAL, 7), 4);
@@ -1363,25 +1535,106 @@ mod tests {
     }
 
     #[test]
-    fn form_files_follow_memt_objentry_and_wmst() {
+    fn explore_memt_went_wmst() {
         let Some(r) = rules_from_disc() else { return };
-        let valor = r.files(form::VALOR, 2).unwrap();
-        assert_eq!((valor.model.as_str(), valor.mset.as_str()), ("P_EX100_BTLF", "P_EX100_BTLF"));
-        // Valor, Master and Final hold two keyblades, Wisdom one, Anti none.
-        assert!(valor.left_mset.is_some() && valor.right_mset.is_some());
-        assert!(r.files(form::WISDOM, 2).unwrap().left_mset.is_none());
-        let anti = r.files(form::ANTI, 2).unwrap();
-        assert!(anti.right_mset.is_none() && anti.weapon_model.is_none());
-        assert_eq!(valor.weapon_model.as_deref(), Some("W_EX010"));
-        // World outfits: the memt records of worlds 17, 13 and 14 swap in the _TR, _WI and _NM objects.
-        assert_eq!(r.files(form::VALOR, 17).unwrap().model, "P_EX100_TR_BTLF");
-        assert_eq!(r.files(form::FINAL, 13).unwrap().model, "P_EX100_WI_ULTF");
-        assert_eq!(r.files(form::MASTER, 14).unwrap().model, "P_EX100_NM_TRIF");
-        // The form's shared motion set and its own attack table.
-        assert_eq!(r.files(form::VALOR, 17).unwrap().mset, "P_EX100_BTLF");
-        assert_ne!(r.files(form::VALOR, 17).unwrap().moveset, valor.moveset);
-        for f in 1..=5 {
-            assert!(r.files(f, 2).is_some(), "form {f}");
+        for world in [2u16, 13, 14, 17] {
+            let rec = memt_merge(&r.memt, world, |_| false);
+            eprintln!("world {world}: words 8..24 {:?}", &rec[8..]);
+            for f in 0..=5u8 {
+                let obj = if f == 0 { rec[8] } else { rec[11 + f as usize] };
+                let Some(o) = r.objs.iter().find(|o| o.object_id == obj as u32) else { continue };
+                let names = r.wmst.get(o.neo_moveset as usize);
+                let w0 = weapon_object(&r.went, o.neo_moveset as usize, r.item_slot(r.key_item).unwrap_or(0));
+                let w0n = w0.and_then(|id| r.objs.iter().find(|w| w.object_id == id)).map(|w| (w.model_name.clone(), w.animation_name.clone(), w.weapon_joint));
+                eprintln!(
+                    "  form {f}: obj {obj} {} mset {} moveset {} joint {} wmst {:?} went(key) {:?} -> {:?}",
+                    o.model_name, o.animation_name, o.neo_moveset, o.weapon_joint, names, w0, w0n
+                );
+            }
         }
+        // Every went row of the forms' movesets: which slots are filled.
+        let w = |i: usize| r.went.get(i * 4..i * 4 + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap())).unwrap_or(0);
+        eprintln!("went words 0..16: {:?}", (0..16).map(w).collect::<Vec<_>>());
+        eprintln!("wmst rows: {}", r.wmst.len());
+        for (i, n) in r.wmst.iter().enumerate().filter(|(_, n)| !n[0].is_empty() || !n[1].is_empty()) {
+            eprintln!("  wmst {i}: {n:?}");
+        }
+    }
+
+    #[test]
+    fn form_files_follow_memt_objentry_went_and_wmst() {
+        let Some(r) = rules_from_disc() else { return };
+        let key = KINGDOM_KEY;
+        let valor = r.files(form::VALOR, 2, key).unwrap();
+        assert_eq!((valor.model.as_str(), valor.mset.as_str()), ("P_EX100_BTLF", "P_EX100_BTLF"));
+        // Hand 0 is the equipped keyblade through the moveset's went row; hand 1 the form record's
+        // item, with the wmst motion set of each hand.
+        let hands = |f: &FormFiles| f.hands.clone().map(|w| w.map(|w| (w.model, w.mset)));
+        assert_eq!(hands(&valor), [Some(("W_EX010".into(), Some("W_EX010_BTLF_R".into()))), Some(("W_EX010".into(), Some("W_EX010_BTLF_L".into())))]);
+        // Without a form keyblade the left hand is empty.
+        assert_eq!(hands(&r.files(form::VALOR, 2, 0).unwrap())[1], None);
+        // Wisdom: one keyblade (its form record holds no second item, `take_form_keyblade` gives 0);
+        // Anti: none (its went row names W_EX010 but its wmst row is empty, so no motion set loads).
+        assert_eq!(hands(&r.files(form::WISDOM, 2, 0).unwrap())[1], None);
+        assert!(hands(&r.files(form::WISDOM, 2, key).unwrap())[0].is_some());
+        assert_eq!(hands(&r.files(form::ANTI, 2, key).unwrap()), [None, None]);
+        // World outfits: the memt records of worlds 17, 13 and 14 swap in the _TR, _WI and _NM objects.
+        assert_eq!(r.files(form::VALOR, 17, key).unwrap().model, "P_EX100_TR_BTLF");
+        assert_eq!(r.files(form::FINAL, 13, key).unwrap().model, "P_EX100_WI_ULTF");
+        assert_eq!(r.files(form::MASTER, 14, key).unwrap().model, "P_EX100_NM_TRIF");
+        // The form's shared motion set and its own attack table.
+        assert_eq!(r.files(form::VALOR, 17, key).unwrap().mset, "P_EX100_BTLF");
+        assert_ne!(r.files(form::VALOR, 17, key).unwrap().moveset, valor.moveset);
+        for f in 1..=5 {
+            assert!(r.files(f, 2, key).is_some(), "form {f}");
+        }
+    }
+
+    #[test]
+    fn base_body_follows_the_memt_merge() {
+        let Some(r) = rules_from_disc() else { return };
+        let world = |id: u16| DriveWorld { id, outfit: 0 };
+        let base = r.base_files(&world(2)).unwrap();
+        assert_eq!((base.model.as_str(), base.mset.as_str()), ("P_EX100", "P_EX100"));
+        // Hand 0 only: the keyblade with the base motion set; nothing in hand 1.
+        assert_eq!(base.hands[0].as_ref().map(|w| (w.model.as_str(), w.mset.as_deref())), Some(("W_EX010", Some("W_EX010"))));
+        assert!(base.hands[1].is_none());
+        // The outfit worlds replace the base body too (word 8 of their memt records), sharing P_EX100's motion set.
+        for (id, model) in [(17u16, "P_EX100_TR"), (13, "P_EX100_WI"), (14, "P_EX100_NM")] {
+            let f = r.base_files(&world(id)).unwrap();
+            assert_eq!(f.model, model, "world {id}");
+            assert_eq!(f.mset, "P_EX100", "world {id}");
+            assert_ne!(f.moveset, base.moveset, "world {id}: its own attack table row");
+            assert!(f.hands[0].is_some(), "world {id}");
+        }
+        // The outfit index picks the word: Twilight Town's merged record has objects in words 9 and 10
+        // (the Roxas outfits) and nothing in word 11 here.
+        let o1 = r.base_files(&DriveWorld { id: 2, outfit: 1 }).unwrap();
+        assert_ne!(o1.model, base.model);
+        assert!(r.base_files(&DriveWorld { id: 2, outfit: 4 }).is_none());
+    }
+
+    #[test]
+    fn form_keyblade_comes_from_the_inventory() {
+        let Some(r) = rules_from_disc() else { return };
+        let items = r.items();
+        // The first keyblade in table order with a copy in the inventory, taken once per form that
+        // dual-wields (Valor, Master, Final); Wisdom and Anti take none.
+        let mut inv = vec![KINGDOM_KEY, KINGDOM_KEY];
+        assert_eq!(take_form_keyblade(items, &mut inv, form::VALOR), KINGDOM_KEY);
+        assert_eq!(take_form_keyblade(items, &mut inv, form::WISDOM), 0);
+        assert_eq!(inv.len(), 1);
+        assert_eq!(take_form_keyblade(items, &mut inv, form::MASTER), KINGDOM_KEY);
+        assert_eq!(take_form_keyblade(items, &mut inv, form::FINAL), 0);
+        assert!(inv.is_empty());
+        // Table order, not inventory order: the lowest keyblade id in the table wins.
+        let mut keys: Vec<u16> = items.iter().filter(|i| i.r#type == KEYBLADE_TYPE).map(|i| i.id).take(2).collect();
+        assert_eq!(keys.len(), 2);
+        keys.reverse();
+        let first = keys[1];
+        assert_eq!(take_form_keyblade(items, &mut keys, form::FINAL), first);
+        // An item that is not a keyblade is never taken.
+        let mut other = vec![1u16];
+        assert_eq!(take_form_keyblade(items, &mut other, form::VALOR), 0);
     }
 }

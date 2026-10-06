@@ -33,28 +33,20 @@ use crate::skel::{spawn_skinned, Animator, Rig};
 use crate::world::World;
 use crate::SCALE;
 
-/// Sora's right-hand bone (mirror of the left hand, bone 86).
-const RIGHT_HAND: usize = 178;
+/// The bones the weapons hang from, by hand: 0 the right hand (bone 178, checked on screen), 1 the
+/// left hand (bone 86, the mirror of 178, inferred: the game's attach path `FUN_001751b0` ->
+/// `FUN_00184190` ends in resource handles, not a bone number; `objentry.WeaponJoint` is the
+/// data candidate, see docs/drive-forms.md). The game attaches hand 1 only while a drive form is
+/// active (`FUN_00176f88`: form field 1..5 or 9).
+pub const HAND_BONES: [usize; 2] = [178, 86];
 
 /// Ability bits (the attack table's gate) that start set: Guard.
 const ABILITY_GUARD: u16 = 1;
-/// Bits of the abilities that change the combo length (the abilities table: Combo Plus, Air Combo
-/// Plus, Finishing Plus, Negative Combo). The game counts equipped copies; the bit says one.
-const ABILITY_COMBO_PLUS: u16 = 21;
-const ABILITY_AIR_COMBO_PLUS: u16 = 22;
-const ABILITY_FINISHING_PLUS: u16 = 105;
-const ABILITY_NEGATIVE_COMBO: u16 = 106;
 /// Base combo lengths of the status block (FUN_001c0d88): attacks before the finisher on the
 /// ground and in the air, and finishers per chain.
 const BASE_HITS_GROUND: u8 = 3;
 const BASE_HITS_AIR: u8 = 3;
 const BASE_FINISHERS: u8 = 1;
-/// Ability item ids of the four abilities above (`FUN_001c0f40`: Combo Plus +1 ground, Air Combo
-/// Plus +1 air, Finishing Plus +1 finisher, Negative Combo -1 both lengths).
-const ID_COMBO_PLUS: u16 = 162;
-const ID_AIR_COMBO_PLUS: u16 = 163;
-const ID_FINISHING_PLUS: u16 = 393;
-const ID_NEGATIVE_COMBO: u16 = 394;
 /// Ticks the keyblade stays out after the last sign of a fight.
 const BATTLE_TICKS: f32 = 240.0;
 
@@ -73,32 +65,40 @@ impl Battle {
     }
 }
 
-/// The ability block the controller reads (`FUN_001c0d88`, `FUN_001c0f40`): the ability bits that
-/// gate the attack table and the combo lengths. `player` holds the player's own bits (Guard, plus
-/// `KH2_ABILITIES` until the ability system exists); `form` the abilities the active drive form
-/// grants, as (ability id, ability bit) pairs, set by the drive code and cleared on revert.
-#[derive(Resource, Clone, Debug, Default)]
+/// The ability block as the controller reads it (`FUN_001c0d88`, `FUN_001c0f40`): the ability
+/// bits that gate the attack table and the combo lengths. The ability system (`abilities.rs`)
+/// writes it from its block whenever that changes (equipment, the `KH2_ABILITIES` overrides, a
+/// drive form's list on entry and revert). The default is the app's baseline when the ability
+/// system is off: Guard and the block's base lengths.
+#[derive(Resource, Clone, Debug)]
 pub struct Abilities {
-    pub player: u128,
-    pub form: Vec<(u16, u16)>,
+    pub bits: u128,
+    pub max_ground: u8,
+    pub max_air: u8,
+    pub max_finishers: u8,
+}
+
+impl Default for Abilities {
+    fn default() -> Abilities {
+        Abilities { bits: 1u128 << ABILITY_GUARD, max_ground: BASE_HITS_GROUND, max_air: BASE_HITS_AIR, max_finishers: BASE_FINISHERS }
+    }
 }
 
 impl Abilities {
-    /// Every ability bit set, the player's and the form's.
-    pub fn bits(&self) -> u128 {
-        self.form.iter().filter(|(_, b)| *b < 128).fold(self.player, |m, (_, b)| m | 1u128 << b)
+    /// The controller's view of the ability block.
+    pub fn from_block(a: &crate::abilities::Abilities) -> Abilities {
+        Abilities { bits: a.bits(), max_ground: a.ground_combo(), max_air: a.air_combo(), max_finishers: a.finishers() }
     }
 
-    /// Attacks before the finisher on the ground and in the air, and finishers per chain. The
-    /// player's bits count once each (the app has one bit per ability); the form's grants count per copy.
+    /// Every ability bit set (the low 128 of the block's 256).
+    pub fn bits(&self) -> u128 {
+        self.bits
+    }
+
+    /// Attacks before the finisher on the ground and in the air, and finishers per chain
+    /// (block `+0x28`, `+0x29`, `+0x2a`; the game counts equipped copies).
     pub fn combo_block(&self) -> (u8, u8, u8) {
-        let copies = |id: u16, bit: u16| (self.player >> bit & 1) as u8 + self.form.iter().filter(|(i, _)| *i == id).count() as u8;
-        let minus = copies(ID_NEGATIVE_COMBO, ABILITY_NEGATIVE_COMBO);
-        (
-            (BASE_HITS_GROUND + copies(ID_COMBO_PLUS, ABILITY_COMBO_PLUS)).saturating_sub(minus),
-            (BASE_HITS_AIR + copies(ID_AIR_COMBO_PLUS, ABILITY_AIR_COMBO_PLUS)).saturating_sub(minus),
-            BASE_FINISHERS + copies(ID_FINISHING_PLUS, ABILITY_FINISHING_PLUS),
-        )
+        (self.max_ground, self.max_air, self.max_finishers)
     }
 
     /// The combo state the attack table's availability tests read.
@@ -153,14 +153,21 @@ pub enum State {
     FormChange,
 }
 
-/// Growth-ability levels (0 = not learned, 5 = MAX).
-#[derive(Resource, Clone, Copy, Default, Debug)]
+/// Growth-ability levels (0 = not learned, 5 = MAX). Written from the ability block's growth
+/// levels (`FUN_001c1340`) whenever the abilities change (`abilities::sync_controller`); in a form
+/// the form's own growth ability is the only one that applies.
+#[derive(Resource, Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct Growth {
     pub high_jump: u8,
     pub quick_run: u8,
     pub aerial_dodge: u8,
     pub glide: u8,
 }
+
+/// `KH2_GROWTH=a,b,c,d`: the harness's growth levels (up to 5, the forced MAX of `FUN_001c13b8`),
+/// used instead of the ability block's while no form is active.
+#[derive(Resource, Clone, Copy, Default, Debug)]
+pub struct GrowthOverride(pub Option<Growth>);
 
 /// Controller input, sampled every rendered frame and consumed by the 60 Hz tick.
 #[derive(Resource, Default, Debug)]
@@ -217,7 +224,10 @@ pub struct Sora {
     pub lock: Option<Entity>,
     pub target: Option<Entity>,
     pub body: Entity,
-    pub weapon: Entity,
+    /// The weapons in hand order (0 right, 1 left), as the game's per-object weapon list
+    /// (`FUN_001751b0` attaches hand 0 for every player object and hand 1 in a form). Empty
+    /// for a form without a weapon (Anti). The drive code swaps it with the body.
+    pub weapons: Vec<Entity>,
     /// Ticks in the current state.
     timer: f32,
     /// Quick Run: ticks left while the button is held, and the per-tick brake.
@@ -228,6 +238,71 @@ pub struct Sora {
     lunge_left: f32,
     lunge_speed: f32,
     viewer_slot: usize,
+}
+
+/// One motion request the controller makes of the weapons.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WeaponMotion {
+    pub slot: Option<usize>,
+    pub looping: bool,
+    pub blend: f32,
+    /// `Animator::restart` rather than `play`.
+    pub restart: bool,
+}
+
+/// The weapons as the controller addresses them in one tick. It has the `play`/`restart` shape
+/// of `Animator`, so the attack code is written as for one weapon; `apply` replays the requests on
+/// every weapon in order, each weapon playing a slot only when its own motion set has it (what
+/// the one-weapon code did with `wrig.mset.has`). The requests are applied before the pose step
+/// of the same tick (`Sim::Pose` runs after `Sim::Sora` and `Sim::SoraHurt`), so the result is
+/// the same as writing the animator directly.
+#[derive(Default, Debug)]
+pub struct WeaponCue {
+    pub ops: Vec<WeaponMotion>,
+}
+
+impl WeaponCue {
+    pub fn play(&mut self, slot: Option<usize>, looping: bool, blend: f32) {
+        self.ops.push(WeaponMotion { slot, looping, blend, restart: false });
+    }
+
+    pub fn restart(&mut self, slot: Option<usize>, looping: bool, blend: f32) {
+        self.ops.push(WeaponMotion { slot, looping, blend, restart: true });
+    }
+
+    pub fn apply(&self, weapons: &[Entity], anims: &mut Query<&mut Animator>) {
+        for w in weapons {
+            let Ok(mut a) = anims.get_mut(*w) else { continue };
+            for op in &self.ops {
+                let slot = op.slot.filter(|&x| a.rig.mset.has(x));
+                if op.restart {
+                    a.restart(slot, op.looping, op.blend);
+                } else {
+                    a.play(slot, op.looping, op.blend);
+                }
+            }
+        }
+    }
+}
+
+/// The weapons' motion sets together: `mset.has(slot)` when any weapon has the slot (the
+/// controller only asks whether the weapons follow a body slot; `WeaponCue::apply` decides per weapon).
+pub struct WeaponRigs {
+    pub mset: WeaponMsets,
+}
+
+pub struct WeaponMsets(Vec<Arc<Rig>>);
+
+impl WeaponMsets {
+    pub fn has(&self, slot: usize) -> bool {
+        self.0.iter().any(|r| r.mset.has(slot))
+    }
+}
+
+impl WeaponRigs {
+    pub fn of(weapons: &[Entity], anims: &Query<&mut Animator>) -> WeaponRigs {
+        WeaponRigs { mset: WeaponMsets(weapons.iter().filter_map(|&w| anims.get(w).ok().map(|a| a.rig.clone())).collect()) }
+    }
 }
 
 impl Sora {
@@ -416,14 +491,14 @@ fn ledge_text(l: &Ledge) -> String {
 fn blown_press(
     s: &mut Sora,
     body: &mut Animator,
-    weapon: &mut Animator,
+    weapon: &mut WeaponCue,
     abilities: &Abilities,
     data: &GameData,
     jump: bool,
     square: bool,
     rig: &Rig,
     pstate: PlayerState,
-    start_attack: &impl Fn(&mut Sora, &mut Animator, &mut Animator, &Action, bool) -> bool,
+    start_attack: &impl Fn(&mut Sora, &mut Animator, &mut WeaponCue, &Action, bool) -> bool,
 ) -> bool {
     let air = !s.motor.grounded;
     let mut chain = abilities.chain(s.hits, s.finishers, air, false);
@@ -502,7 +577,7 @@ impl Plugin for SoraPlugin {
         app.insert_resource(rigs)
             .init_resource::<Pad>()
             .init_resource::<Battle>()
-            .insert_resource(Abilities { player: start_abilities(), form: Vec::new() })
+            .init_resource::<Abilities>()
             .add_systems(Startup, setup)
             .add_systems(Update, read_pad.in_set(Frame::Pad))
             .add_systems(
@@ -516,24 +591,69 @@ impl Plugin for SoraPlugin {
     }
 }
 
+/// Spawns Sora: the base body of the current world and its keyblade. The game builds the player
+/// object from the merged `memt` record (`FUN_001cf2c8` with form 0: word 8 + the world's outfit
+/// index) and the weapon from its moveset's `went` row with the equipped keyblade (`FUN_0016ef28`,
+/// `FUN_001845b0`) and motion set from `wmst` (`FUN_00184640`); `DriveRules::base_files` is that
+/// lookup. The rigs loaded by the plugin (`P_EX100`, `W_EX010`) are reused when the merge names
+/// them and replaced otherwise, so the world outfit variants (`_TR`, `_WI`, `_NM`) appear, and
+/// every reader of `Rigs` (the revert, the effect library) sees the chosen base.
 #[allow(clippy::too_many_arguments)]
 pub fn setup(
     mut commands: Commands,
-    rigs: Res<Rigs>,
+    mut rigs: ResMut<Rigs>,
     data: Res<GameData>,
     disc: Res<Disc>,
+    drive: Option<Res<crate::drive::DriveRules>>,
+    world: Option<Res<crate::drive::DriveWorld>>,
+    mut lib: Option<ResMut<crate::fx::EffectLib>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
 ) {
+    let base = drive.as_deref().zip(world.as_deref()).and_then(|(d, w)| d.base_files(w));
+    let mut moves = None;
+    match &base {
+        Some(f) => {
+            info!(
+                "sora: base body {} (mset {}, attack table {}), hand 0 {} (memt merge, world {}, outfit {})",
+                f.model,
+                f.mset,
+                f.moveset,
+                f.hands[0].as_ref().map_or("none".to_string(), |w| format!("{} ({})", w.model, w.mset.as_deref().unwrap_or("no motion set"))),
+                world.as_deref().map_or(0, |w| w.id),
+                f.outfit
+            );
+            if f.model != "P_EX100" || f.mset != "P_EX100" {
+                match crate::drive::read_rig(&disc, &f.model, &f.mset) {
+                    Some(r) => rigs.sora = r,
+                    None => warn!("sora: {} not loadable; keeping P_EX100", f.model),
+                }
+            }
+            match &f.hands[0] {
+                Some(w) if w.model != "W_EX010" || w.mset.as_deref() != Some("W_EX010") => match crate::drive::weapon_rig(&disc, w) {
+                    Some(r) => rigs.keyblade = r,
+                    None => warn!("sora: weapon {} not loadable; keeping W_EX010", w.model),
+                },
+                Some(_) => {}
+                None => warn!("sora: the base moveset names no weapon for the equipped keyblade; keeping W_EX010"),
+            }
+            if let Some(l) = lib.as_deref_mut() {
+                // The effect library was built before this ran: register the chosen rigs' effect files.
+                crate::drive::register_effects(&disc, l, &rigs.sora);
+                crate::drive::register_effects(&disc, l, &rigs.keyblade);
+            }
+            moves = load_moveset_index(&disc, f.moveset as usize);
+        }
+        None => info!("sora: base body P_EX100 (drive tables off; no memt merge)"),
+    }
     let root = commands.spawn((Transform::default(), Visibility::default())).id();
     let body = spawn_skinned(&mut commands, root, rigs.sora.clone(), &mut meshes, &mut materials, &mut images, &mut bindposes, SCALE);
-    // The keyblade is its own skinned model parented to Sora's right-hand joint (already in model units).
-    let hand = commands.spawn((Transform::default(), Visibility::default(), ChildOf(body))).id();
-    let weapon = spawn_skinned(&mut commands, hand, rigs.keyblade.clone(), &mut meshes, &mut materials, &mut images, &mut bindposes, 1.0);
-    commands.entity(hand).insert(HandSocket);
+    // Hand 0 only: the game attaches the second hand in a drive form (FUN_00176f88).
+    let weapons = spawn_weapons(&mut commands, body, &[(0, rigs.keyblade.clone())], &mut meshes, &mut materials, &mut images, &mut bindposes);
     let stats = data.sora_stats(1);
+    let attack_bodies = weapons.iter().copied().chain([body]).collect();
     commands.entity(root).insert((
         Sora {
             state: State::Ground,
@@ -543,7 +663,7 @@ pub fn setup(
             queued_attack: false,
             connected: false,
             deny_logged: false,
-            moves: Arc::new(load_moveset(&disc, "P_EX100")),
+            moves: Arc::new(moves.unwrap_or_else(|| load_moveset(&disc, "P_EX100"))),
             blown_back: false,
             push: None,
             blow: None,
@@ -554,7 +674,7 @@ pub fn setup(
             lock: None,
             target: None,
             body,
-            weapon,
+            weapons,
             timer: 0.0,
             dash_time: 0.0,
             dash_brake: 0.0,
@@ -563,40 +683,59 @@ pub fn setup(
             lunge_speed: 0.0,
             viewer_slot: 0,
         },
-        Fighter { team: Team::Player, attack_bodies: vec![weapon, body], hurt_body: body, landed: Default::default(), hittable: true },
+        Fighter { team: Team::Player, attack_bodies, hurt_body: body, landed: Default::default(), hittable: true },
     ));
-    let growth = std::env::var("KH2_GROWTH")
-        .ok()
-        .map(|v| {
-            let l: Vec<u8> = v.split(',').filter_map(|x| x.parse().ok()).collect();
-            Growth { high_jump: l.first().copied().unwrap_or(0), quick_run: l.get(1).copied().unwrap_or(0), aerial_dodge: l.get(2).copied().unwrap_or(0), glide: l.get(3).copied().unwrap_or(0) }
+    let growth = std::env::var("KH2_GROWTH").ok().map(|v| {
+        let l: Vec<u8> = v.split(',').filter_map(|x| x.parse().ok()).collect();
+        Growth { high_jump: l.first().copied().unwrap_or(0), quick_run: l.get(1).copied().unwrap_or(0), aerial_dodge: l.get(2).copied().unwrap_or(0), glide: l.get(3).copied().unwrap_or(0) }
+    });
+    commands.insert_resource(GrowthOverride(growth));
+    commands.insert_resource(growth.unwrap_or_default());
+}
+
+/// Spawns one skinned weapon per `(hand, rig)` under `body`, each on the socket of its hand
+/// (`HAND_BONES`), and returns the weapon entities in the given order. The weapons are in model units.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_weapons(
+    commands: &mut Commands,
+    body: Entity,
+    rigs: &[(usize, Arc<Rig>)],
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    images: &mut Assets<Image>,
+    bindposes: &mut Assets<SkinnedMeshInverseBindposes>,
+) -> Vec<Entity> {
+    rigs.iter()
+        .map(|(hand, rig)| {
+            let bone = HAND_BONES.get(*hand).copied().unwrap_or(HAND_BONES[0]);
+            let socket = commands.spawn((Transform::default(), Visibility::default(), ChildOf(body), HandSocket(bone))).id();
+            spawn_skinned(commands, socket, rig.clone(), meshes, materials, images, bindposes, 1.0)
         })
-        .unwrap_or_default();
-    commands.insert_resource(growth);
+        .collect()
 }
 
 /// The attack table of the object `model` (`NeoMoveset` of its `00objentry` row, an index into the
 /// `ptya` subfile of `00battle.bin`).
 fn load_moveset(disc: &Disc, model: &str) -> Moveset {
     use kh2_tables::tables as t;
-    let mut a = disc.0.lock().unwrap();
-    let index = kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY)
-        .ok()
-        .and_then(|d| d.rows.into_iter().find(|r| r.model_name == model))
-        .map(|r| r.neo_moveset as usize);
-    let table = index.zip(kh2_tables::subfile(&mut a, &t::PTYA).ok()).and_then(|(i, blob)| Moveset::parse(&blob, i));
-    table.unwrap_or_else(|| {
+    let index = {
+        let mut a = disc.0.lock().unwrap();
+        kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY)
+            .ok()
+            .and_then(|d| d.rows.into_iter().find(|r| r.model_name == model))
+            .map(|r| r.neo_moveset as usize)
+    };
+    index.and_then(|i| load_moveset_index(disc, i)).unwrap_or_else(|| {
         warn!("{model}: no attack table; Sora cannot attack");
         Moveset::default()
     })
 }
 
-/// Ability bits Sora starts with: Guard, plus any listed in `KH2_ABILITIES` (comma separated bit
-/// numbers of the attack table's ability gate, e.g. `100` for the action behind the A343 finisher).
-/// The ability system itself is not ported.
-fn start_abilities() -> u128 {
-    let extra = std::env::var("KH2_ABILITIES").unwrap_or_default();
-    extra.split(',').filter_map(|v| v.trim().parse::<u32>().ok()).filter(|&b| b < 128).fold(1u128 << ABILITY_GUARD, |m, b| m | 1u128 << b)
+/// The attack table at `index` of `ptya`.
+fn load_moveset_index(disc: &Disc, index: usize) -> Option<Moveset> {
+    use kh2_tables::tables as t;
+    let mut a = disc.0.lock().ok()?;
+    kh2_tables::subfile(&mut a, &t::PTYA).ok().and_then(|blob| Moveset::parse(&blob, index))
 }
 
 /// Samples keyboard and mouse into the pad (every rendered frame). WASD move, Ctrl walk,
@@ -641,29 +780,35 @@ pub fn read_pad(
     }
 }
 
-/// The keyblade's motion set mirrors Sora's slot for slot: lock it to Sora's slot and frame.
+/// The weapons' motion sets mirror Sora's slot for slot: lock every weapon to Sora's slot and
+/// frame (a weapon without the slot plays nothing).
 pub fn sync_weapon(sora: Query<&Sora>, mut anims: Query<&mut Animator>) {
     let Ok(s) = sora.single() else { return };
-    let Ok([body, mut weapon]) = anims.get_many_mut([s.body, s.weapon]) else { return };
-    let slot = body.slot.filter(|&x| weapon.rig.mset.has(x));
-    if weapon.slot != slot {
-        weapon.restart(slot, body.looping, 0.0);
+    let Ok(body) = anims.get(s.body) else { return };
+    let (slot, frame, prev_frame, looping, speed) = (body.slot, body.frame, body.prev_frame, body.looping, body.speed);
+    for w in &s.weapons {
+        let Ok(mut weapon) = anims.get_mut(*w) else { continue };
+        let slot = slot.filter(|&x| weapon.rig.mset.has(x));
+        if weapon.slot != slot {
+            weapon.restart(slot, looping, 0.0);
+        }
+        weapon.frame = frame;
+        weapon.prev_frame = prev_frame;
+        weapon.looping = looping;
+        weapon.speed = speed;
     }
-    weapon.frame = body.frame;
-    weapon.prev_frame = body.prev_frame;
-    weapon.looping = body.looping;
-    weapon.speed = body.speed;
 }
 
-/// Marks the entity that follows Sora's right-hand joint.
+/// Marks a weapon socket under Sora's body: the entity follows the bone it names (`HAND_BONES`).
 #[derive(Component)]
-pub struct HandSocket;
+pub struct HandSocket(pub usize);
 
-/// Keeps the keyblade socket on the hand bone (the joint entities are siblings under the body).
-pub fn follow_hand(sora: Query<&Sora>, anims: Query<&Animator>, mut socket: Query<&mut Transform, With<HandSocket>>) {
-    let (Ok(s), Ok(mut t)) = (sora.single(), socket.single_mut()) else { return };
-    if let Ok(a) = anims.get(s.body) {
-        *t = Transform::from_matrix(a.pose.get(RIGHT_HAND).copied().unwrap_or(Mat4::IDENTITY));
+/// Keeps every weapon socket on its hand bone (the joint entities are siblings under the body).
+pub fn follow_hand(sora: Query<&Sora>, anims: Query<&Animator>, mut sockets: Query<(&HandSocket, &mut Transform)>) {
+    let Ok(s) = sora.single() else { return };
+    let Ok(a) = anims.get(s.body) else { return };
+    for (h, mut t) in &mut sockets {
+        *t = Transform::from_matrix(a.pose.get(h.0).copied().unwrap_or(Mat4::IDENTITY));
     }
 }
 
@@ -697,9 +842,12 @@ pub fn tick(
         .filter(|(_, _, e)| e.alive())
         .filter_map(|(en, _, e)| Some((en, target_points(anims.get(e.body).ok()?, globals.get(e.body).ok()?))))
         .collect();
-    let Ok([mut body, mut weapon]) = anims.get_many_mut([s.body, s.weapon]) else { return };
+    // The weapons are addressed through a cue that is replayed on each of them at the end of
+    // the tick (`WeaponCue`); `wrig` answers whether any weapon follows a body slot.
+    let wrig = WeaponRigs::of(&s.weapons, &anims);
+    let Ok(mut body) = anims.get_mut(s.body) else { return };
     let rig = body.rig.clone();
-    let wrig = weapon.rig.clone();
+    let mut weapon = WeaponCue::default();
     let pos_m = s.motor.pos * SCALE;
     let dir = pad.dir;
     let attack = Pad::take(&mut pad.attack);
@@ -738,9 +886,11 @@ pub fn tick(
     battle.ticks = (battle.ticks - 1.0).max(0.0);
     let battle_on = battle.active();
     let pstate = if battle_on { PlayerState::BattleWeapon } else { PlayerState::FieldNoWeapon };
-    if let Ok(mut v) = vis.get_mut(s.weapon) {
-        // The change motions are the battle-state ones (the drive code asks for that variant), so the keyblade is out.
-        *v = if battle_on || matches!(s.state, State::Viewer | State::FormChange) { Visibility::Inherited } else { Visibility::Hidden };
+    for w in &s.weapons {
+        if let Ok(mut v) = vis.get_mut(*w) {
+            // The change motions are the battle-state ones (the drive code asks for that variant), so the keyblade is out.
+            *v = if battle_on || matches!(s.state, State::Viewer | State::FormChange) { Visibility::Inherited } else { Visibility::Hidden };
+        }
     }
     let motion = |id: usize| rig.mset.slot(id, pstate);
 
@@ -770,11 +920,12 @@ pub fn tick(
         body.play(slot, true, BLEND_LOCOMOTION);
         weapon.play(slot.filter(|&x| wrig.mset.has(x)), true, BLEND_LOCOMOTION);
         place(&mut tf, s, &body, &mut bodies);
+        weapon.apply(&s.weapons, &mut anims);
         return;
     }
 
     // Starts the table action `a` (FUN_00176050).
-    let start_attack = |s: &mut Sora, body: &mut Animator, weapon: &mut Animator, a: &Action, air: bool| -> bool {
+    let start_attack = |s: &mut Sora, body: &mut Animator, weapon: &mut WeaponCue, a: &Action, air: bool| -> bool {
         let finisher = a.finisher();
         let v0 = if finisher {
             data.plyr.attack_finish_v0
@@ -818,7 +969,7 @@ pub fn tick(
     // allow-combo or finisher window, then passes the press counters (FUN_00176b00) and starts.
     // True when one started. The counter restart is kept only when an action starts (the app's
     // counters restart on every later press from an idle range anyway).
-    let square_explicit = |s: &mut Sora, body: &mut Animator, weapon: &mut Animator, air: bool, w: Windows, fin_window: bool| -> bool {
+    let square_explicit = |s: &mut Sora, body: &mut Animator, weapon: &mut WeaponCue, air: bool, w: Windows, fin_window: bool| -> bool {
         let log = move_log();
         let mut chain = abilities.chain(s.hits, s.finishers, air, fin_window);
         if w.free {
@@ -868,7 +1019,7 @@ pub fn tick(
     // nothing. `w` holds the playing motion's input windows and `fin_window` its finisher window.
     let target_point = s.target.and_then(|t| enemy_points.iter().find(|(e, _)| *e == t)).and_then(|(_, p)| p.first().copied());
     let all_points: Vec<TargetPoint> = enemy_points.iter().flat_map(|(_, p)| p.iter().copied()).collect();
-    let request = |s: &mut Sora, body: &mut Animator, weapon: &mut Animator, air: bool, w: Windows, fin_window: bool| -> bool {
+    let request = |s: &mut Sora, body: &mut Animator, weapon: &mut WeaponCue, air: bool, w: Windows, fin_window: bool| -> bool {
         let log = move_log();
         let playing = body.slot.map_or(usize::MAX, |sl| sl / 4);
         let tag_of = |id: u16| rig.mset.slot(id as usize, pstate).and_then(|sl| rig.mset.get(sl)).map_or("-", |x| x.tag.as_str());
@@ -1255,6 +1406,7 @@ pub fn tick(
             s.state, body.tag(), body.frame, s.motor.pos.x, s.motor.pos.y, s.motor.pos.z, s.motor.yaw, world.x, world.y, world.z, body.root.translation.z, body.root.yaw
         );
     }
+    weapon.apply(&s.weapons, &mut anims);
 }
 
 /// The game's automatic target choice: among targets within AutoLockOnRange and the height
@@ -1384,12 +1536,12 @@ pub fn receive_wall_hits(
             info!("wall recoil: atkp {} has no BG Hit: no recoil", w.atkp);
             continue;
         };
-        let Ok([mut body, mut weapon]) = anims.get_many_mut([s.body, s.weapon]) else { return };
+        let Ok(mut body) = anims.get_mut(s.body) else { return };
         let slot = body.rig.mset.slot(rc.motion as usize, PlayerState::BattleWeapon);
         // The blend time of the game's motion request was not read; 2 ticks as for the other reactions.
         body.restart(slot, false, 2.0);
-        let wslot = slot.filter(|&x| weapon.rig.mset.has(x));
-        weapon.restart(wslot, false, 2.0);
+        let mut weapon = WeaponCue::default();
+        weapon.restart(slot, false, 2.0);
         // Ground: FUN_001857b0. In the air the game calls FUN_00185978 instead (a jump-back push
         // scaled by HitBackToJump, not decoded); the ground push stands in for it.
         s.push = Push::new(-s.motor.forward(), rc.push_power, 0.0, &reaction.consts);
@@ -1409,6 +1561,7 @@ pub fn receive_wall_hits(
             hits_before,
             s.hits
         );
+        weapon.apply(&s.weapons, &mut anims);
         s.state = State::Hurt;
         s.motor.vel = Vec3::ZERO;
         s.finishers = 1;
@@ -1435,7 +1588,8 @@ pub fn receive_hits(
         if s.invuln > 0.0 || matches!(s.state, State::Down | State::Viewer | State::FormChange) {
             continue;
         }
-        let Ok([mut body, mut weapon]) = anims.get_many_mut([s.body, s.weapon]) else { return };
+        let Ok(mut body) = anims.get_mut(s.body) else { return };
+        let mut weapon = WeaponCue::default();
         let rig = body.rig.clone();
         let facing = s.motor.forward();
         let from_front = facing.dot(-h.dir) > 0.0;
@@ -1444,8 +1598,8 @@ pub fn receive_hits(
         if s.state == State::Guard && !body.trigger(range::BLEND_TO_IDLE) && from_front {
             let slot = rig.mset.slot(id::AUTOGUARD, PlayerState::BattleWeapon);
             body.restart(slot, false, 2.0);
-            let wslot = slot.filter(|&x| weapon.rig.mset.has(x));
-            weapon.restart(wslot, false, 2.0);
+            weapon.restart(slot, false, 2.0);
+            weapon.apply(&s.weapons, &mut anims);
             s.state = State::Counter;
             s.invuln = 18.0;
             continue;
@@ -1529,6 +1683,7 @@ pub fn receive_hits(
         }
         // The game's invulnerability after a hit was not found; the app keeps its own timer.
         s.invuln = 36.0;
+        weapon.apply(&s.weapons, &mut anims);
     }
 }
 
@@ -1612,7 +1767,7 @@ mod tests {
         let behind = Scene { others: vec![Probe { dot: -0.9, ..other(100.0, 50.0) }], ..Scene::default() };
         assert_eq!(pick(&m, &chain(false, 3, &[]), &behind, 152), 3);
         // A longer combo with Combo Plus: the third press is still a normal hit.
-        let mut plus = chain(false, 3, &[ABILITY_COMBO_PLUS]);
+        let mut plus = chain(false, 3, &[21]);
         plus.max_ground = 4;
         assert_eq!(pick(&m, &plus, &near, 151), 4);
         // A motion is never picked again while it plays: with A301 playing key 5 (A300) is next.
@@ -1782,17 +1937,33 @@ mod tests {
     }
 
     #[test]
-    fn combo_block_counts_player_bits_and_form_grants() {
-        let mut a = Abilities { player: 1 << ABILITY_GUARD, form: vec![] };
-        assert_eq!(a.combo_block(), (3, 3, 1));
-        a.player |= 1 << ABILITY_COMBO_PLUS;
-        assert_eq!(a.combo_block(), (4, 3, 1));
-        // A form's grants count per copy and join the bits the table tests.
-        a.form = vec![(ID_COMBO_PLUS, ABILITY_COMBO_PLUS), (ID_AIR_COMBO_PLUS, ABILITY_AIR_COMBO_PLUS)];
-        assert_eq!(a.combo_block(), (5, 4, 1));
-        assert!(a.bits() >> ABILITY_AIR_COMBO_PLUS & 1 == 1);
-        a.form.push((ID_NEGATIVE_COMBO, ABILITY_NEGATIVE_COMBO));
-        assert_eq!(a.combo_block(), (4, 3, 1));
+    fn controller_view_follows_the_ability_block() {
+        use crate::abilities::{self, id};
+        assert_eq!(Abilities::default().combo_block(), (3, 3, 1));
+        assert!(Abilities::default().bits() >> ABILITY_GUARD & 1 == 1);
+        let iso = std::env::var("KH2_ISO").ok().or_else(|| {
+            let f = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../local/iso.txt");
+            std::fs::read_to_string(f).ok().map(|s| s.trim().to_string())
+        });
+        let Some(iso) = iso else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let Some(rules) = abilities::AbilityRules::load(&mut a) else { return };
+        let mut ab = abilities::Abilities::new(Arc::new(rules));
+        ab.equip_ability(id::GUARD);
+        ab.equip_ability(id::COMBO_PLUS);
+        let v = Abilities::from_block(&ab);
+        assert_eq!(v.combo_block(), (4, 3, 1));
+        assert!(v.bits() >> ABILITY_GUARD & 1 == 1 && v.bits() >> 21 & 1 == 1);
+        // A form's list replaces the player's action abilities; its own grants count per copy.
+        ab.set_form(Some(vec![id::COMBO_PLUS, id::AIR_COMBO_PLUS, id::AIR_COMBO_PLUS]));
+        let v = Abilities::from_block(&ab);
+        assert_eq!(v.combo_block(), (5, 5, 1));
+        assert!(v.bits() >> ABILITY_GUARD & 1 == 0);
+        ab.set_form(None);
+        assert_eq!(Abilities::from_block(&ab).combo_block(), (4, 3, 1));
     }
 
     #[test]

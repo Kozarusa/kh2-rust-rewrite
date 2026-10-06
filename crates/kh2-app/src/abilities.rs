@@ -12,8 +12,12 @@
 //! equipped through the ability row that owns the bit, so `21` really adds a combo hit),
 //! `KH2_ABILITY_IDS=id,...` (item ids), `KH2_ABILITY_START=data` (no Guard baseline, see the doc),
 //! `KH2_ABILITYLOG=1` (log the active abilities and the stat block deltas).
+//!
+//! Readers: the controller's view (`sora::Abilities`, `sora::Growth`) is written by
+//! `sync_controller` whenever the block changes; the drive code sets and clears the form list
+//! and reads `form_drain`; `attacker_bonuses` is the damage routine's use of the boosts.
 
-// The query API is for sora.rs and drive.rs, which are wired at integration (docs/abilities.md).
+// The menu queries (`ap_used`, `ap_max`, `equipment_stats`) wait for a menu (docs/abilities.md).
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
@@ -26,6 +30,50 @@ use kh2_tables::tables as t;
 
 use crate::assets::Disc;
 use crate::data::KINGDOM_KEY;
+use crate::schedule::Sim;
+use crate::sora::{self, Growth, GrowthOverride};
+
+/// Ability bits the damage routine tests in the block's fourth word (`FUN_001a0aa8`: `+0x1d8`
+/// bits 0x40, 0x80, 0x100): Combo Boost, Air Combo Boost, Reaction Boost. The ability rows own
+/// these bits (checked against the disc in the tests).
+pub const BIT_COMBO_BOOST: u16 = 102;
+pub const BIT_AIR_COMBO_BOOST: u16 = 103;
+pub const BIT_REACTION_BOOST: u16 = 104;
+
+/// The two steps of the damage routine that read the attacker's ability block, after the
+/// generic formula and Anti's multiplier (`FUN_001a0610` calls them last):
+///
+/// - `FUN_001a0a18`: the attack row's `Element` 1, 2, 3 (Fire, Blizzard, Thunder) scales the
+///   damage by the block's percent for that element (`+0x40`, `+0x42`, `+0x44`), rounded up;
+///   other elements are unchanged.
+/// - `FUN_001a0aa8`: with the Combo Boost bit and the row's `Kind` bit 0, the damage grows by
+///   `combo_boost` percent per combo hit (`FUN_00176be8`: the actor's hit counter `+0xb04`
+///   capped at the block's ground length); else with the Air Combo Boost bit and `Kind` bit 1
+///   the same with the air length (`FUN_00176c40`); else with the Reaction Boost bit and `Kind`
+///   bit 2 by `reaction_boost` percent. Only the first matching case applies. Each addition is
+///   rounded up.
+///
+/// `hits` is Sora's combo counter at the time of the hit.
+pub fn attacker_bonuses(block: &Block, hits: u8, atk: &t::Atkp, dmg: i32) -> i32 {
+    let pct = |d: i32, p: i32| (d * p + 99) / 100;
+    let dmg = match atk.element {
+        1 => pct(dmg, block.fire as i32),
+        2 => pct(dmg, block.blizzard as i32),
+        3 => pct(dmg, block.thunder as i32),
+        _ => dmg,
+    };
+    let kind = atk.kind;
+    let capped = |max: i8| if (hits as i64) < max as i64 { hits as i32 } else { max as i32 };
+    if block.bit(BIT_COMBO_BOOST) && kind & 1 != 0 {
+        dmg + pct(dmg, block.combo_boost as i32 * capped(block.ground_combo))
+    } else if block.bit(BIT_AIR_COMBO_BOOST) && kind >> 1 & 1 != 0 {
+        dmg + pct(dmg, block.air_combo_boost as i32 * capped(block.air_combo))
+    } else if block.bit(BIT_REACTION_BOOST) && kind >> 2 & 1 != 0 {
+        dmg + pct(dmg, block.reaction_boost as i32)
+    } else {
+        dmg
+    }
+}
 
 /// Ability ids that `FUN_001c0f40` has a stat effect for (item ids of type 19).
 pub mod id {
@@ -323,6 +371,14 @@ impl AbilityRules {
         self.abilities.values().find(|i| i.bit == bit).map(|i| i.id)
     }
 
+    /// The growth ability item of `group` (0 High Jump, 1 Quick Run, 2 Aerial Dodge, 3 Glide) at
+    /// `level` 1..=4: what a drive form's chain (0x37c556) grants at its display level, found
+    /// through the growth bits of the kind 3 rows.
+    pub fn growth_ability(&self, group: usize, level: u8) -> Option<u16> {
+        let bit = *self.growth_bits.get(group)?.get(level.checked_sub(1)? as usize)?;
+        (bit != 0).then(|| self.id_of_bit(bit)).flatten()
+    }
+
     /// `FUN_001c1340`: the highest growth level set per group (0 when none).
     fn growth_levels(&self, block: &Block) -> [u8; 4] {
         let mut out = [0u8; 4];
@@ -420,6 +476,16 @@ impl Abilities {
     pub fn set_form(&mut self, abilities: Option<Vec<u16>>) {
         self.form = abilities;
         self.recompute();
+    }
+
+    /// A form record is active (`FUN_001c0e50` then applies only the player's support abilities).
+    pub fn in_form(&self) -> bool {
+        self.form.is_some()
+    }
+
+    /// The form's list as set (for logs).
+    pub fn form_list(&self) -> &[u16] {
+        self.form.as_deref().unwrap_or(&[])
     }
 
     /// `FUN_0019f920` + `FUN_001c0e50`: rebuild the block from equipment, the ability list and the form.
@@ -553,6 +619,33 @@ fn log_changes(a: Res<Abilities>) {
     }
 }
 
+/// The growth levels of the block as the controller's resource.
+pub fn growth_of(a: &Abilities) -> Growth {
+    Growth { high_jump: a.growth(0), quick_run: a.growth(1), aerial_dodge: a.growth(2), glide: a.growth(3) }
+}
+
+/// Writes the block into the controller's view (`sora::Abilities`: the ability bits and the combo
+/// lengths) and the growth levels (`sora::Growth`) whenever the abilities change. In a form the
+/// block's growth is the form's own ability; outside one `KH2_GROWTH` overrides it. Runs between
+/// the drive code's swap (`Sim::Weapon`) and the controller (`Sim::Sora`), so a form's list applies
+/// on the tick the body is swapped.
+fn sync_controller(a: Res<Abilities>, over: Option<Res<GrowthOverride>>, mut view: ResMut<sora::Abilities>, growth: Option<ResMut<Growth>>) {
+    *view = sora::Abilities::from_block(&a);
+    let from_block = growth_of(&a);
+    let next = match over.and_then(|o| o.0) {
+        Some(o) if !a.in_form() => o,
+        _ => from_block,
+    };
+    if let Some(mut g) = growth
+        && *g != next
+    {
+        *g = next;
+    }
+    if log_on() {
+        info!("abilities: controller view: combo {}+finisher x{}, air {}, growth {:?}, bits {:#x}", view.max_ground, view.max_finishers, view.max_air, next, view.bits);
+    }
+}
+
 /// Registers `Abilities`. Needs `Disc`, so add it after `AssetsPlugin`.
 pub struct AbilitiesPlugin;
 
@@ -567,8 +660,11 @@ impl Plugin for AbilitiesPlugin {
             warn!("abilities: tables not readable; the ability system is off");
             return;
         };
-        app.insert_resource(Abilities::with_defaults(Arc::new(rules)))
-            .add_systems(Update, log_changes.run_if(resource_changed::<Abilities>));
+        let abilities = Abilities::with_defaults(Arc::new(rules));
+        app.insert_resource(sora::Abilities::from_block(&abilities))
+            .insert_resource(abilities)
+            .add_systems(Update, log_changes.run_if(resource_changed::<Abilities>))
+            .add_systems(FixedUpdate, sync_controller.after(Sim::Weapon).before(Sim::Sora).run_if(resource_changed::<Abilities>));
     }
 }
 
@@ -687,6 +783,40 @@ mod tests {
         b.unequip_ability(id::GUARD);
         assert!(!b.has(id::GUARD));
         assert_eq!(b.ap_max(), r.ap_by_level[0]);
+    }
+
+    #[test]
+    fn damage_boosts_follow_the_routine() {
+        let Some(r) = rules() else { return };
+        // The bits the damage routine tests are the rows' bits.
+        assert_eq!(r.abilities[&id::COMBO_BOOST].bit, BIT_COMBO_BOOST);
+        assert_eq!(r.abilities[&id::AIR_COMBO_BOOST].bit, BIT_AIR_COMBO_BOOST);
+        assert_eq!(r.abilities[&id::REACTION_BOOST].bit, BIT_REACTION_BOOST);
+        let atk = |element: u8, kind: u8| { let mut a = <t::Atkp as kh2_tables::Record>::parse(&mut kh2_tables::rt::Reader::new(&[0u8; 48])); a.element = element; a.kind = kind; a };
+        let none = with(&r, &[]);
+        assert_eq!(attacker_bonuses(none.block(), 3, &atk(1, 7), 100), 100);
+        // Fire Boost scales a Fire attack only.
+        let fire = with(&r, &[id::FIRE_BOOST]);
+        let f = fire.block().fire as i32;
+        assert!(f > 100);
+        assert_eq!(attacker_bonuses(fire.block(), 1, &atk(1, 0), 100), (100 * f + 99) / 100);
+        assert_eq!(attacker_bonuses(fire.block(), 1, &atk(2, 0), 100), 100);
+        // Combo Boost: per combo hit, capped at the ground length, only for rows with Kind bit 0.
+        let cb = with(&r, &[id::COMBO_BOOST]);
+        let step = cb.block().combo_boost as i32;
+        assert!(step > 0);
+        assert_eq!(attacker_bonuses(cb.block(), 2, &atk(0, 1), 100), 100 + (100 * step * 2 + 99) / 100);
+        assert_eq!(attacker_bonuses(cb.block(), 9, &atk(0, 1), 100), 100 + (100 * step * 3 + 99) / 100);
+        assert_eq!(attacker_bonuses(cb.block(), 2, &atk(0, 2), 100), 100);
+        // Reaction Boost: a flat percent for Kind bit 2; Combo Boost takes precedence when both match.
+        let rb = with(&r, &[id::REACTION_BOOST, id::COMBO_BOOST]);
+        let rstep = rb.block().reaction_boost as i32;
+        assert_eq!(attacker_bonuses(rb.block(), 1, &atk(0, 4), 100), 100 + (100 * rstep + 99) / 100);
+        assert_eq!(attacker_bonuses(rb.block(), 1, &atk(0, 5), 100), 100 + (100 * step + 99) / 100);
+        // The form chain's growth abilities by group and level.
+        assert_eq!(r.growth_ability(0, 1), Some(94));
+        assert_eq!(r.growth_ability(3, 4), Some(109));
+        assert_eq!(r.growth_ability(0, 0), None);
     }
 
     #[test]

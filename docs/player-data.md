@@ -202,9 +202,14 @@ change sign is inverted (above).
 - Auto-form abilities [V, FUN_001cef10]: the four "Auto X" abilities are tested in the order Final, Master,
   Wisdom, Valor (list at 0x37c350). If the ability bit is set and the item's command is available
   (FUN_001ba2c0 < 4) the command is offered as a reaction-style prompt (FUN_001bb3a8, slot 1).
-- Stat changes by form [GAP]: no per-form Strength/Magic/Defense table was found in this pass. Only the Anti
-  damage multiplier (above) and the ability lists were traced. The form keyblades (`H_EX500_<F>`) are visual
-  objects (objentry type 2) with no stat fields.
+- Stat changes by form [V negative]: no per-form Strength/Magic/Defense table exists in the paths read (see
+  docs/drive-forms.md, "Stats and abilities in a form"). What a form changes is the ability list (above), the
+  object and its attack table, the Anti damage multiplier, and, at the timer start, HP and MP restored to
+  their maximum (`FUN_001a04b0`, WP-2B2). The form keyblades (`H_EX500_<F>`) are visual objects (objentry type
+  2) with no stat fields.
+- The form record's weapon word [V, WP-2B2]: record `+0` is the form's second keyblade item, written by
+  `FUN_001a2010` when the form item is obtained (the first spare keyblade in the item table, one copy taken
+  from the inventory; Valor, Master and Final only). `FUN_0016ee98` reads it for hand 1 of the form's object.
 - Level ability grants are the `fmlv` `ability` column [V] (for example Valor level 2 grants the Auto Valor
   ability; the form_levels dump names each grant).
 
@@ -217,8 +222,10 @@ objentry + the file list]:
   World outfit variants `P_EX100_TR_F`, `_WI_F`, `_NM_F` use their own mdlx/apdx and share the form's mset;
   their objentry rows (ObjectForm = the form id) are separate objects. How the game maps a world outfit to the
   variant object is not in `memt` for forms (memt gives one object per form) [GAP].
-- Keyblade objects `H_EX500_F` (mdlx), plus the second weapon `SORA_WEAPON_BTLF` for Valor (objentry 574) and
-  the weapon motion sets `obj/W_EX010_F_L.mset` / `_R.mset` [I].
+- The weapons: the equipped keyblade's object through the moveset's `went` row (hand 0) and the form
+  record's keyblade (hand 1, dual-wielding forms), with the motion sets named by `wmst` for the form's
+  moveset (`W_EX010_BTLF_R` / `_L` when the Kingdom Key is held) [V, docs/drive-forms.md; corrects the
+  earlier guess at `H_EX500_F` and `SORA_WEAPON_BTLF`].
 - The change effect resource loaded by FUN_0016e7e8 is keyed by the form's player object [V]; its file was not
   identified [GAP].
 - `objentry` fields of the player object: `NeoStatus` 1, `NeoMoveset` a form-specific index [V from the dump].

@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use bevy::asset::RenderAssetUsages;
+use bevy::camera::visibility::NoFrustumCulling;
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;

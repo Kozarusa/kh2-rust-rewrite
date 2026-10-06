@@ -647,6 +647,9 @@ pub fn tick(
                         // its flags) and keeps its last matrix. Elements with flag 0x200 (destroy when the
                         // object leaves) or 0x400 end now (FUN_001dd0d0 -> FUN_001dd060); the others run on.
                         r.orphan = true;
+                        if std::env::var_os("KH2_FXLOG").is_some() {
+                            info!("fx {}: owner gone, effect keeps its last bind (element flags {:#x})", r.game_id, el.flags);
+                        }
                         if el.flags & (element_flag::DESTROY_WHEN_OBJECT_LEAVES | element_flag::DESTROY_WHEN_BIND_EFFECT_OFF) != 0 {
                             destroy(&mut r);
                         }

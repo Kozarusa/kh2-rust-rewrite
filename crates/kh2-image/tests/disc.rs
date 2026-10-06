@@ -177,6 +177,41 @@ fn font_style_colours_read_from_the_system_table() {
 /// 256x128 frame image (`md_m`, loaded at 0x190b70 into the window texture 0x1c95710), the system
 /// file an empty one.
 #[test]
+fn sora_face_palette_reads_in_csm1_order() {
+    // Sora's HUD face (`obj/P_EX100.apdx`, entry `face`) is a linear 8-bit image (flag bit 2 clear).
+    // Read in the CSM1 order (bits 3 and 4 of the index swapped) neighbouring opaque pixels are far
+    // closer in colour than read in file order, which gave the speckled portrait (WP-FIX-8).
+    let Some(mut a) = open() else { return };
+    let apdx = a.read("obj/P_EX100.apdx").expect("P_EX100.apdx");
+    let entries = kh2_bar::parse(&apdx).unwrap();
+    let b = entries.iter().find(|e| e.tag == "face" && e.kind == 24).expect("face image").data;
+    let img = kh2_image::imgd::decode(b).expect("imgd");
+    assert_eq!((img.width, img.height, img.swizzled), (256, 128, false));
+    let rd32 = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap()) as usize;
+    let (pix, pal) = (&b[rd32(8)..rd32(8) + rd32(12)], &b[rd32(0x10)..rd32(0x10) + rd32(0x14)]);
+    // Median colour step between horizontal neighbours that are both opaque, for a palette lookup.
+    let median = |entry: &dyn Fn(u8) -> usize| {
+        let mut d = Vec::new();
+        for y in 0..128 {
+            for x in 0..255 {
+                let (p, q) = (entry(pix[y * 256 + x]) * 4, entry(pix[y * 256 + x + 1]) * 4);
+                if pal[p + 3] >= 0x7f && pal[q + 3] >= 0x7f {
+                    d.push((0..3).map(|k| (pal[p + k] as i32 - pal[q + k] as i32).abs()).sum::<i32>());
+                }
+            }
+        }
+        d.sort();
+        d[d.len() / 2]
+    };
+    let (csm1, file_order) = (median(&kh2_image::imgd::csm1_entry), median(&|i| i as usize));
+    eprintln!("median neighbour step: CSM1 order {csm1}, file order {file_order}");
+    assert!(csm1 * 4 < file_order * 3, "CSM1 {csm1} vs file order {file_order}");
+    // The decoder uses the CSM1 order.
+    let k = kh2_image::imgd::csm1_entry(pix[64 * 256 + 64]) * 4;
+    assert_eq!(&img.rgba[(64 * 256 + 64) * 4..(64 * 256 + 64) * 4 + 3], &pal[k..k + 3]);
+}
+
+#[test]
 fn window_frames_in_the_font_and_world_files() {
     use kh2_image::window::{frame_group, Phase, KINDS};
     let Some(mut a) = open() else { return };

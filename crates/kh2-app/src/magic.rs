@@ -212,6 +212,9 @@ pub struct MagicState {
     vm_world: VmWorld,
     /// Clashes already counted: (guard attack group, enemy, its attack body, its window start).
     clash_done: std::collections::HashSet<(u32, Entity, Entity, i16)>,
+    /// Blizzard's global +0x2c: casts counted by its event 21 (Final finishers pick their elements by
+    /// it). The program's globals live as long as the slot's resource [inferred], so it is kept here.
+    bliz_counter: u32,
 }
 
 /// `KH2_MAGIC_HURT=<seconds>:<hp>`: once, that many seconds (60 Hz ticks) after the start, Sora's HP
@@ -274,6 +277,8 @@ struct Shot {
     life: f32,
     fade: Option<u32>,
     done: bool,
+    /// The block's +0x60 is `magi` +0xc times this scale (R02d7).
+    turn_scale: f32,
 }
 
 /// One cast: the script instance of FUN_001a4798.
@@ -298,6 +303,11 @@ struct Cast {
     /// The command's target record (host 2.23 for the interpreter): Sora's target or the Magic
     /// Lock-On pick; none for Cure (its record names the caster).
     target: Option<Entity>,
+    /// Blizzard's shots for the slice after the yield.
+    bliz: Option<BlizzardPlan>,
+    /// Thunder's strikes still to start: (frames to wait first, place, probe height).
+    thunder: Option<std::collections::VecDeque<(f32, Vec3, f32)>>,
+    thunder_wait: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -621,7 +631,7 @@ fn run(
                 let step = if vm.is_some() { Step::Vm } else { Step::Waiting };
                 // The hand port keeps the kind the script keeps after event 20 (the VM's script makes it itself).
                 let kind = if vm.is_some() { kind } else { rules::script_kind(row.id, kind) };
-                let mut cast = Cast { slot: row.id, cmd, cost, kind, magi, pax: pax.clone(), motion: mslot, motion_id, charge_fx, step, vm, paid: false, target };
+                let mut cast = Cast { slot: row.id, cmd, cost, kind, magi, pax: pax.clone(), motion: mslot, motion_id, charge_fx, step, vm, paid: false, target, bliz: None, thunder: None, thunder_wait: 0.0 };
                 st.cast_tick = st.tick;
                 if cast.vm.is_some() {
                     mlog!("magic(vm): {} event 20 runs in the interpreter", row.file_name);
@@ -718,7 +728,9 @@ fn run(
                 mlog!("magic(vm): event 21");
                 continue;
             }
-            c.step = event21(&mut commands, c, &data, &game, &mut s, me, body_e, &frames, airborne_now, &mut running, &mut st.attacks, &mut st.next_group);
+            let mut bliz = None;
+            c.step = event21(&mut commands, c, &data, &game, &mut s, me, body_e, &frames, airborne_now, &mut running, &mut st.bliz_counter, &mut bliz);
+            c.bliz = bliz;
         } else if !in_motion(c) && c.vm.is_none() {
             // Event 20 ends when the caster's motion changes (host 1.15): no spell, no cost.
             mlog!("magic: cast of command {} ended before its trigger (Sora {:?})", c.cmd, s.state);
@@ -802,12 +814,18 @@ fn run(
                 c.step = Step::Blizzard { elem, yielded: true };
                 continue;
             }
-            if let Some(pax) = c.pax.clone() {
-                let pos = element_position(&pax, elem, &frames);
-                let dir = s.motor.forward().with_y(0.0).normalize_or(Vec3::Z);
-                mlog!("magic: Blizzard shot from element {elem} at {pos:?} along {dir:?}: speed {} life {} size {} turn {} (push {} not ported)", c.magi.f(MAGI_SPEED), c.magi.f(MAGI_LIFE), c.magi.f(MAGI_SHOT_SIZE), c.magi.f(MAGI_TURN), c.magi.f(MAGI_PUSH));
-                st.shots.push(Shot { pax, kind: c.kind, magi: c.magi.clone(), pos, dir, target: s.target, attack: None, effect: None, life: c.magi.f(MAGI_LIFE) - SHOT_FADE as f32, fade: None, done: false });
+            if let (Some(pax), Some(plan)) = (c.pax.clone(), c.bliz.take()) {
+                // The facing (host 1.201) in the game's space; each shot's direction is it with the
+                // plan's height, turned about Y (host 0.13).
+                let facing = s.motor.forward().with_y(0.0).normalize_or(Vec3::Z);
+                for sh in &plan.shots {
+                    let pos = element_position(&pax, sh.elem, &frames);
+                    let dir = rotate_y_game(facing.with_y(-sh.y), sh.angle);
+                    mlog!("magic: Blizzard shot from element {} at {pos:?} along {dir:?} (flag {}, turn scale {}): speed {} life {} size {} turn {} (push {} not ported)", sh.elem, sh.flag, sh.scale, c.magi.f(MAGI_SPEED), c.magi.f(MAGI_LIFE), c.magi.f(MAGI_SHOT_SIZE), c.magi.f(MAGI_TURN), c.magi.f(MAGI_PUSH));
+                    st.shots.push(Shot { pax: pax.clone(), kind: c.kind, magi: c.magi.clone(), pos, dir, target: s.target, attack: None, effect: None, life: c.magi.f(MAGI_LIFE) - SHOT_FADE as f32, fade: None, done: false, turn_scale: sh.scale });
+                }
             }
+            let _ = elem;
             c.step = Step::Done;
         }
     }
@@ -815,15 +833,39 @@ fn run(
     // (host 1.120) raised by 100, or 300 ahead of the caster raised by 80 and 330 without a target
     // (L003e / L0076 / L009c), then R02b5 starts the strike thread.
     for c in st.casts.iter_mut().filter(|c| c.step == Step::Thunder) {
-        c.step = Step::Done;
-        let Some(pax) = c.pax.clone() else { continue };
-        let here = s.motor.pos * SCALE;
-        let (pos, rise) = match s.target.and_then(|t| targets.iter().find(|x| x.0 == t)) {
-            Some(t) => (t.1, 100.0),
-            None => (here + s.motor.forward().with_y(0.0).normalize_or(Vec3::Z) * 300.0 * SCALE + Vec3::Y * 80.0 * SCALE, 330.0),
+        let Some(pax) = c.pax.clone() else {
+            c.step = Step::Done;
+            continue;
         };
-        mlog!("magic: Thunder strike at {pos:?} (target {:?}, rise {rise})", s.target);
-        st.strikes.push(Strike { pax, kind: c.kind, magi: c.magi.clone(), pos, rise, atkp: 0, started: false, wait: 0.0, attacks: None, done: false });
+        if c.thunder.is_none() {
+            let here = s.motor.pos * SCALE;
+            let target = s.target.and_then(|t| targets.iter().find(|x| x.0 == t)).map(|t| t.1);
+            let facing = s.motor.forward().with_y(0.0).normalize_or(Vec3::Z);
+            let plan = thunder_plan(c.kind, here, facing, target, c.magi.f(MAGI_THUNDER_RADIUS));
+            mlog!("magic: Thunder event 21 (kind {}): {} strikes, target {:?}", c.kind, plan.len(), s.target);
+            if c.kind / 10 == 3 {
+                mlog!("magic: Thunder in Final: the extra strikes at random places (host 1.248 -> FUN_001a5ee0) are not ported");
+            }
+            c.thunder = Some(plan.into());
+        }
+        // R029f between the strikes: the frames are counted down one per slice.
+        if c.thunder_wait > 0.0 {
+            c.thunder_wait -= 1.0;
+            if c.thunder_wait > 0.0 {
+                continue;
+            }
+        }
+        match c.thunder.as_mut().and_then(|q| q.pop_front()) {
+            Some((wait, pos, rise)) => {
+                mlog!("magic: Thunder strike at {pos:?} (rise {rise})");
+                st.strikes.push(Strike { pax, kind: c.kind, magi: c.magi.clone(), pos, rise, atkp: 0, started: false, wait: 0.0, attacks: None, done: false });
+                c.thunder_wait = wait;
+                if c.thunder.as_ref().is_some_and(|q| q.is_empty()) {
+                    c.step = Step::Done;
+                }
+            }
+            None => c.step = Step::Done,
+        }
     }
     st.casts.retain(|c| c.step != Step::Done);
     for k in st.strikes.iter_mut() {
@@ -1014,6 +1056,116 @@ fn charge_element(slot: u8, kind: u32) -> Option<u16> {
     (slot <= 3 && !(slot == 0 && matches!(kind / 10, 1 | 3))).then_some(0)
 }
 
+/// One Blizzard shot of event 21 (R02b9(element, direction, flag, scale)): the element whose position
+/// it starts from, the turn about Y of the facing (host 0.13, radians), the height the direction is
+/// given first (the game's Y, down; Master only), the block's flag (+0x64) and the turn-rate scale.
+#[derive(Clone, Debug, PartialEq)]
+struct BlizzardShot {
+    elem: u16,
+    angle: f32,
+    y: f32,
+    flag: u32,
+    scale: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct BlizzardPlan {
+    elements: Vec<u16>,
+    shots: Vec<BlizzardShot>,
+    /// The cast reaches L022b, which counts it in the global +0x2c.
+    counts: bool,
+}
+
+/// BLIZZARD_*.mag R0017 by the script's kind and the global counter +0x2c. The elements: Final
+/// non-finishers start 1 and 7, Final finishers 7 when the counter is 1 or 3, 1 and 7 when it is 4,
+/// else 1; every other kind 1. The shots: the Wisdom finisher sends five from the first element (0.5
+/// scale ahead, 1.0 at +-35 degrees, 2.0 at +-70 degrees, flag 0); Master seven with scale 1, flag 0
+/// (ahead, then with the height -0.96 and 0.96, then 0.4 turned +-45 degrees, then -0.4 turned
+/// +-45 degrees); every other kind one ahead with flag 1 and, when a second element started (7), one
+/// more from it. Only the Wisdom finisher, Master and the one-element case reach the counter.
+fn blizzard_plan(kind: u32, counter: u32) -> BlizzardPlan {
+    let (k10, fin) = (kind / 10, kind & 1 == 1);
+    let mode = if k10 == 3 {
+        if fin {
+            match counter {
+                1 | 3 => 1,
+                4 => 2,
+                _ => 0,
+            }
+        } else {
+            2
+        }
+    } else {
+        0
+    };
+    let elements: Vec<u16> = match mode {
+        0 => vec![1],
+        1 => vec![7],
+        _ => vec![1, 7],
+    };
+    let e = elements[0];
+    let shot = |angle: f32, y: f32, flag: u32, scale: f32| BlizzardShot { elem: e, angle, y, flag, scale };
+    let (a35, a70, a45) = (0.610_865_f32, 1.221_73_f32, std::f32::consts::FRAC_PI_4);
+    if k10 == 1 && fin {
+        let shots = vec![shot(0.0, 0.0, 0, 0.5), shot(a35, 0.0, 0, 1.0), shot(-a35, 0.0, 0, 1.0), shot(a70, 0.0, 0, 2.0), shot(-a70, 0.0, 0, 2.0)];
+        return BlizzardPlan { elements, shots, counts: true };
+    }
+    if k10 == 2 {
+        let shots = vec![shot(0.0, 0.0, 0, 1.0), shot(0.0, -0.96, 0, 1.0), shot(0.0, 0.96, 0, 1.0), shot(a45, 0.4, 0, 1.0), shot(-a45, 0.4, 0, 1.0), shot(a45, -0.4, 0, 1.0), shot(-a45, -0.4, 0, 1.0)];
+        return BlizzardPlan { elements, shots, counts: true };
+    }
+    let mut shots = vec![shot(0.0, 0.0, 1, 1.0)];
+    if let Some(&second) = elements.get(1) {
+        shots.push(BlizzardShot { elem: second, ..shot(0.0, 0.0, 1, 1.0) });
+    }
+    let counts = elements.len() == 1;
+    BlizzardPlan { elements, shots, counts }
+}
+
+/// Host 0.13 (FUN_0016cf08 -> FUN_0017c2e8 with the Y rotation of FUN_0011b4d8): a vector turned about
+/// Y in the game's space, `x' = x cos + z sin`, `z' = z cos - x sin` [inferred: FUN_002fb628 read as
+/// libvu0's Y rotation matrix]. Input and output in Bevy space (the game's Y and Z negated).
+fn rotate_y_game(v: Vec3, angle: f32) -> Vec3 {
+    let (sn, cs) = angle.sin_cos();
+    let (x, z) = (v.x, -v.z);
+    let (x2, z2) = (x * cs + z * sn, z * cs - x * sn);
+    Vec3::new(x2, v.y, -z2)
+}
+
+/// THUNDER_*.mag R0017: the strikes of a cast, in order, as (frames to wait after it, place, probe
+/// height). The main place is the target record's position with 100 (host 1.120) or, without a target,
+/// 300 ahead of the caster (Master: 800 ahead turned 45 degrees) raised by 80, with 330. Master first
+/// strikes at the caster's position and 0.47 and 0.78 of the way to the place, 16 frames apart, then
+/// the place. The Wisdom finisher strikes three more times 8 frames apart around the place, `magi`
+/// +0x24 * 1.5 away along the facing turned by 120, 240 and 360 degrees. Final's extra strikes are
+/// left out (their places come from FUN_001a5ee0's random scatter, not ported). Positions in Bevy space.
+fn thunder_plan(kind: u32, here: Vec3, facing: Vec3, target: Option<Vec3>, radius: f32) -> Vec<(f32, Vec3, f32)> {
+    let (k10, fin) = (kind / 10, kind & 1 == 1);
+    let (place, rise) = match target {
+        Some(t) => (t, 100.0),
+        None => {
+            let ahead = if k10 == 2 { rotate_y_game(facing, std::f32::consts::FRAC_PI_4) * 800.0 } else { facing * 300.0 };
+            (here + ahead * SCALE + Vec3::Y * 80.0 * SCALE, 330.0)
+        }
+    };
+    let mut out = Vec::new();
+    if k10 == 2 {
+        for f in [0.0, 0.47, 0.78] {
+            out.push((16.0, here + (place - here) * f, rise));
+        }
+    }
+    out.push((0.0, place, rise));
+    if k10 == 1 && fin {
+        out.last_mut().unwrap().0 = 8.0;
+        let mut dir = rotate_y_game(facing * radius * 1.5, 2.094_395);
+        for i in 0..3 {
+            out.push((if i < 2 { 8.0 } else { 0.0 }, place + dir * SCALE, 330.0));
+            dir = rotate_y_game(dir, 2.094_395);
+        }
+    }
+    out
+}
+
 /// The first slice of event 21 of the spell's script (after the MP is paid).
 #[allow(clippy::too_many_arguments)]
 fn event21(
@@ -1027,8 +1179,8 @@ fn event21(
     frames: &Frames,
     airborne: bool,
     running: &mut Running,
-    _attacks: &mut [SpellAttack],
-    _next: &mut u32,
+    bliz_counter: &mut u32,
+    bliz_plan: &mut Option<BlizzardPlan>,
 ) -> Step {
     let Some(pax) = c.pax.as_ref() else { return Step::Done };
     let start = |commands: &mut Commands, id: u16| fx::start(commands, pax, id, Bind::Owner(body));
@@ -1078,26 +1230,26 @@ fn event21(
             Step::Done
         }
         1 => {
-            // BLIZZARD (kind / 10 of 0 or 1 without a finisher bit): R0263(1) stops the charge effect
-            // and starts element 1; Final finishers and Master use 7 (and 1 and 7), not ported.
-            if c.kind / 10 != 0 {
-                warn!("magic: Blizzard in a form (kind {}) is not ported", c.kind);
-                return Step::Done;
-            }
+            // BLIZZARD (R0017): R0263 stops the charge effect and starts the plan's elements (1, or 7,
+            // or 1 and 7 for Final); the shots follow after a yield (`Step::Blizzard`).
             if let Some(id) = c.charge_fx {
                 stop_effect(running, pax, id, body);
             }
-            start(commands, 1);
-            Step::Blizzard { elem: 1, yielded: false }
+            let plan = blizzard_plan(c.kind, *bliz_counter);
+            for &id in &plan.elements {
+                start(commands, id);
+            }
+            if plan.counts {
+                *bliz_counter += 1;
+            }
+            mlog!("magic: Blizzard event 21 (kind {}): elements {:?}, {} shots", c.kind, plan.elements, plan.shots.len());
+            let first = plan.elements[0];
+            *bliz_plan = Some(plan);
+            Step::Blizzard { elem: first, yielded: false }
         }
         2 => {
-            // THUNDER (kind / 10 of 0 or 1 without a finisher): R0226(1) stops the charge effect and
-            // starts element 1; the strike is placed in the same slice (`Step::Thunder`). Master, Final
-            // and the Wisdom finisher strike more than once and are not ported.
-            if c.kind / 10 != 0 {
-                warn!("magic: Thunder in a form (kind {}) is not ported", c.kind);
-                return Step::Done;
-            }
+            // THUNDER (R0017): R0226(1) stops the charge effect and starts element 1; the strikes are
+            // placed in the same slice (`Step::Thunder`, `thunder_plan`).
             if let Some(id) = c.charge_fx {
                 stop_effect(running, pax, id, body);
             }
@@ -1182,7 +1334,7 @@ fn step_shot(
             .max();
     }
     // After the yield: steer, move, count the life down.
-    let rate = shot.magi.f(MAGI_TURN);
+    let rate = shot.magi.f(MAGI_TURN) * shot.turn_scale;
     if rate > 0.0
         && let Some(t) = shot.target.and_then(|t| targets.iter().find(|x| x.0 == t))
     {
@@ -2044,6 +2196,74 @@ mod tests {
             // The persistent block is reset by the cast whose barrier it holds (R0181).
             assert_eq!(&world.shared[0].1[4..12], &[0; 8]);
         }
+    }
+
+    /// WP-7I forms: Blizzard's hand-ported element choice (`blizzard_plan`) against BLIZZARD_1.mag's own
+    /// first slice of event 21 for every kind the game casts (a fresh program: the counter +0x2c is 0),
+    /// and the plan's shot counts: one ahead (two from 1 and 7 for Final non-finishers), five for the
+    /// Wisdom finisher, seven in Master.
+    #[test]
+    fn blizzard_forms_follow_the_script() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let (code, table, pax, magi) = spell_setup(&disc, "magic/BLIZZARD_1.mag");
+        let frames: Frames = [Mat4::IDENTITY; 10];
+        for form in [0u8, 2, 3, 4] {
+            for fin in [false, true] {
+                let kind = rules::cast_kind(1, fin, form);
+                let row = rules::magi_row(&magi, kind).unwrap().clone();
+                let mut world = VmWorld::default();
+                let mut vm = VmCast::start(&code, table.as_ref(), kind).expect("event 20");
+                let _ = test_slice(&mut vm, &mut world, false, true, kind, &row, &pax, &frames, None, Vec::new());
+                vm.rt.restart_thread(21, &[]);
+                let first = test_slice(&mut vm, &mut world, false, true, kind, &row, &pax, &frames, None, Vec::new());
+                let starts: Vec<u16> = first.iter().filter_map(|r| if let VmReq::Effect { id, .. } = r { Some(*id) } else { None }).collect();
+                let plan = blizzard_plan(rules::script_kind(1, kind), 0);
+                assert_eq!(starts, plan.elements, "kind {kind}");
+                let want = match (form, fin) {
+                    (2, true) => 5,
+                    (3, _) => 7,
+                    (4, false) => 2,
+                    _ => 1,
+                };
+                assert_eq!(plan.shots.len(), want, "kind {kind}");
+            }
+        }
+        // Final finishers by the counter: 1 and 3 start element 7, 4 both, others 1.
+        assert_eq!(blizzard_plan(31, 1).elements, vec![7]);
+        assert_eq!(blizzard_plan(31, 4).elements, vec![1, 7]);
+        assert_eq!(blizzard_plan(31, 2).elements, vec![1]);
+    }
+
+    /// WP-7I forms: Thunder's strikes per kind (`thunder_plan`, THUNDER_*.mag R0017): one; Master four
+    /// (from the caster toward the place at 0, 0.47, 0.78, then the place, 16 frames apart); the Wisdom
+    /// finisher four (the place, then three around it 8 frames apart, `magi` +0x24 * 1.5 away).
+    #[test]
+    fn thunder_forms_strike_counts() {
+        let here = Vec3::ZERO;
+        let facing = Vec3::Z;
+        let t = Some(Vec3::new(0.0, 0.0, 5.0));
+        assert_eq!(thunder_plan(0, here, facing, t, 100.0).len(), 1);
+        let m = thunder_plan(20, here, facing, t, 100.0);
+        assert_eq!(m.iter().map(|x| x.0).collect::<Vec<_>>(), vec![16.0, 16.0, 16.0, 0.0]);
+        assert!((m[1].1.z - 5.0 * 0.47).abs() < 1e-5 && m[3].1 == t.unwrap() && m[3].2 == 100.0);
+        let w = thunder_plan(11, here, facing, t, 100.0);
+        assert_eq!(w.iter().map(|x| x.0).collect::<Vec<_>>(), vec![8.0, 8.0, 8.0, 0.0]);
+        for x in &w[1..] {
+            assert!(((x.1 - t.unwrap()).length() / SCALE - 150.0).abs() < 1e-2);
+        }
+        assert_eq!(thunder_plan(10, here, facing, t, 100.0).len(), 1, "Wisdom without a finisher");
+        // No target: 300 ahead (Master: 800 at 45 degrees), raised by 80, probe height 330.
+        let n = thunder_plan(0, here, facing, None, 100.0);
+        assert!((n[0].1 - Vec3::new(0.0, 80.0, 300.0) * SCALE).length() < 1e-5 && n[0].2 == 330.0);
+        let nm = thunder_plan(20, here, facing, None, 100.0);
+        assert!(((nm[3].1.with_y(0.0)).length() / SCALE - 800.0).abs() < 1e-2);
+        // Host 0.13 keeps the length and turns by the angle.
+        let r = rotate_y_game(Vec3::Z, std::f32::consts::FRAC_PI_2);
+        assert!((r.length() - 1.0).abs() < 1e-6 && r.z.abs() < 1e-6);
     }
 
     /// WP-7I follow-up of WP-7A: the HAND PORT of Fire's events 20 and 21 (`charge_element`,

@@ -216,26 +216,39 @@ The shot is a request thread (host 2.20 -> FUN_001a4738) at word 0x319, which th
 reach on its own (`cargo run -p kh2-bdx --example listing` with root 319 after pointing it at the `.mag`). [V, script]
 
 Event 21, kind / 10 = 0 (level casts without a form): stop [g]+0x1c, start element 1 (bound to bone 0x4003, the weapon of
-hand 0: FUN_0016aa18 -> FUN_0016ae50), yield; host 1.146 with the facing turned by pi and `magi` +0x1c (FUN_001857b0: a
-push of the caster backward [I]; not ported, GAP); then R02b9 -> R02d7 -> R04d6 start the shot with a 112-byte block: the
+hand 0: FUN_0016aa18 -> FUN_0016ae50), yield; host 1.146 with the facing turned by pi and `magi` +0x1c (FUN_001705e8 ->
+FUN_001857b0: the caster is pushed backward with the decaying ground push of the wall recoil, docs/hit-reaction.md; every
+kind reaches it, L00ab; ported in WP-7M2, below); then R02b9 -> R02d7 -> R04d6 start the shot with a 112-byte block: the
 caster's context, a copy of its target record (+0x30), the start position = element 1's position (+0x20), the direction
 = the facing (+0x50), the turn rate `magi` +0xc times the scale 1.0 (+0x60) and a flag 1 (+0x64). Wisdom, Master and
 Final send three to seven shots at other angles (not ported).
 
 The shot (R035b): element 2 unbound (host 1.138); `attack_create(ctx, 248, -1, kind)` sized `magi` +0x18 both ways (a
 sphere); the attack first moves to the caster's lock-on point (host 1.88) [GAP: the app starts it at the shot's position,
-so the first swept segment is missing]; life `magi` +0x10 - 12. Each frame while the effect lives: it ends when the
-attack's flags 8 / 0x10 (host 2.29) or 0x200 (2.39) are set, or with flag 0 of the block when host 2.14 (FUN_0018c890)
-holds; otherwise the effect's second vector takes the direction (0.41), the effect and attack move to the position
+so the first swept segment is missing]; life `magi` +0x10 - 12. Each frame while the effect lives (L039d): it ends when
+the attack's flags 8 / 0x10 (host 2.29) or 0x200 (2.39) are set, or when host 2.14 (FUN_0018c890: flag 2, 8, 0x10 or
+0x200) holds and the block's flag (+0x64) is 0; otherwise the effect's second vector takes the direction (0.41), the effect and attack move to the position
 (R045b), yield; with a valid target and a rate above 0 the direction turns toward the target (host 0.46 -> FUN_0017c0f8:
 by the angle between them clamped to the rate, about their cross product); the position moves `magi` +0x14 along the
 unit direction (host 0.45 -> FUN_0016d098); at the end of the life the effect fades over 12 frames and is destroyed
 (host 0.52). Cleanup (R0487): destroy the effect, finish the attack, release the target record, free the block.
 
-Port: `magic::step_shot`, `turn_toward`. The flags: 8 / 0x10 are taken to mean "hit a target" and 0x200 "hit terrain"
-[I: their writers were not found; FUN_0018c8e0 (from FUN_001a2cc0 for an attack that moved more than two units) casts the
-segment from the last position against terrain with mask 4 for rows with BG Hit and calls the wall handler FUN_0018ca78].
-Atkp 248 has BG Hit. The fade is the effect's loop end in the app (`fx` has no handle for a timed fade) [I].
+Port: `magic::step_shot`, `turn_toward`, `shot_ends`. The flags (WP-7M2, from docs/hit-reaction.md): 8 / 0x10 are set
+by the wall handler FUN_0018ca78 (FUN_0018c8e0, from FUN_001a2cc0 for an attack that moved more than two units, casts
+the segment from the last position against terrain with mask 4 for rows with BG Hit), 0x200 by the clash handler
+FUN_0018d430, and 2 marks an attack that hit a target (FUN_0018c8e0 skips the wall test for it). So a shot with flag 1
+(every cast but the Wisdom finisher's five and Master's seven, `blizzard_plan`) goes through the targets it hits and ends
+only at a wall, a clash or the end of its life; a shot with flag 0 ends at its first target. The app's spell attacks
+do not clash with enemy attacks (only Reflect's guard does), so the clash term is always false. Before WP-7M2 every
+shot ended at its first target. Atkp 248 has BG Hit. The fade is the effect's loop end in the app (`fx` has no handle
+for a timed fade) [I]. Test `blizzard_shot_flag_follows_host_2_14`. Harness (the `magic-blizzard` keys, tt00): `magic:
+Blizzard shot over at ... (hit true, wall false, flag 1, faded true)` after hits on all four Shadows.
+
+The push (WP-7M2): `magic::run` keeps it in `MagicState::push` (`reaction_rules::Push` with `magi` +0x1c along minus the
+facing, stat term 0) and steps it after Sora's tick, since Sora's own push field belongs to `sora.rs`; a hit reaction
+(Hurt, Blown, Down) drops it. Harness: `magic: Blizzard push of the caster (host 1.146 -> FUN_001857b0): power 50 ...
+speed Some(5.0)`, then `magic: Blizzard push over: Sora moved 40.7 units` (the 41 units of the wall recoil's power 50).
+[I: the script calls the ground push also for an air cast; the app applies it in the air as well.]
 
 ## Thunder (THUNDER_*.mag)
 
@@ -335,9 +348,46 @@ and `KnockbackStrength2` (+0xab0, the game's generator at 0x3716a0), the row's `
 Magnet's rows) and plays motion 0x14 (facing the attack) or 0x15; each frame FUN_001bfc10 moves it toward the
 attack object's position by `clamp((distance - hold) * DAT_0037bd30, DAT_0037bd2c, DAT_0037bd34)` plus the
 flat direction turned by FUN_0017c2e8(DAT_0037bd38) times +0xab4 (a swirl), times the frame step; FUN_001bfba8
-ends it when +0xaac is cleared (FUN_00186600). [V for the functions; GAP: not ported, the victim side lives in the
-enemy reaction code (`reaction_rules::ReactionClass::Special5` is "not decoded")]. So in the app Magnet hits each
-enemy once (atkp 658 has no `Interval`) without pulling.
+ends it when +0xaac is cleared. [V for the functions]
+
+Ported in WP-7M2 (`reaction_rules::Pull`, `PullConsts`; `enemy::receive_hits` and `think`; test
+`pull_follows_fun_001bfc10`, disc test `pull_numbers_from_the_disc`). The details read from the code:
+- FUN_001bf920: the hold distance is `KnockbackStrength1 + r * 2^-32 * (KnockbackStrength2 - KnockbackStrength1)`
+  with `r` the generator's state after its step (`DAT_0037bd18` = 2^-32); the motion is 0x14 when FUN_00184dd0 holds
+  (the victim's facing against the hit direction is negative: hit from the front), else 0x15; the request is
+  FUN_0017e220(blend 0, ..., motion). FUN_001bfdf8 then turns the victim toward the attack object (its method +8)
+  from its body centre (FUN_0016b7d0: the first collision shape of type 1, else +0x540), times `DAT_0037bd3c` (-1)
+  for motion 0x15 (it keeps its back to it). The mover is switched to 14, or 15 when the mover's flag 2 or +0x160
+  bit 0x40 is set (FUN_0016b698); its object is constructed at run time (table 0x35ca48 points into the BSS), and
+  the methods it calls are those of the vtable at 0x35f348: +0x18 = FUN_001bfba8 (each frame: re-face with
+  FUN_001bfdf8, or, once +0xaac is 0, the default mover and motion 0 with the blend `DAT_0037bd28` = 8), +0x1c =
+  FUN_003332f0 -> FUN_001bfc10 (the velocity). [I: mover 15 was not told apart from 14.]
+- FUN_001bfc10: `d` = attack position - body centre (all three axes); speed `(|d| - hold) * DAT_0037bd30` (0.1),
+  below `DAT_0037bd2c` (-20) that, else above `DAT_0037bd34` (20) that; the pull `unit(d) * speed`; the swirl is the
+  pull turned about Y by `DAT_0037bd38` (pi / 2, FUN_0017c2e8), its height zeroed, made unit, times +0xab4 (the
+  row's `Unknown`: -3, -6, -12 by level); the velocity is their sum times `DAT_00356f40` (1.0), per frame. It has a
+  height part and no gravity [I: the blow mover's velocity method FUN_0019e4d8, at the same vtable slot, adds its
+  own gravity; this one adds none].
+- The end: FUN_0018ccf8 (an attack object being finished: from FUN_0018c0d8, FUN_0018c248, FUN_0018e408) clears
+  the hit-memory bit of the attack in every actor and +0xaac of every actor that holds it.
+  FUN_00186600 (mover +4 of the blow mover 0x35e4a8 and of 0x35e728) clears the hit-memory bit of the held attack
+  when those movers are left; the pull mover's +4 (0x331388) is not decompiled [GAP].
+- The numbers are read from the user's executable (`PullConsts::from_exe`). The generator is the app's own
+  instance of `x * 0x10dcd` started at 1 (`enemy::PullRng`; the game shares one state, so the sequence differs).
+
+In the app: `magic::SpellAttacks` publishes each tick the live spell attacks' positions by group, this tick's
+spell hits (victim, atkp, group) and the enemies' body-centre offsets; `victim_outcome` still answers class 5 as
+`NotDecoded { class: 5 }` (the variant stays so that `sora.rs` keeps compiling; Sora is never the victim of an atkp
+658), and `enemy::receive_hits` turns it into the pull when the hit came from a spell attack. The enemy is in
+`EState::Hurt` with the pull until the attack group is gone; then motion 0 with blend 8. Any other reaction ends
+the pull. `KH2_REACTIONLOG=1` logs the pull every 10 ticks.
+
+Harness (tt00, `KH2_MAGIC=1,1,1,1,1,1 KH2_MAGIC_LOG=1 KH2_REACTIONLOG=1 KH2_YAW=0`, keys
+`2:F3,4:Q,5:W:1.2,6.8:G,7.1:J,7.25:G,7.4:G,7.55:G,7.7:G,7.9:J`): `enemy: Shadow pulled (reaction class 5,
+FUN_001bf920): attack 1, hold 40.0 (kb 40 .. 120), swirl -3, motion 0x14` for the four Shadows, then lines such as
+`Shadow pull: 52 units from attack 1 (hold 40), velocity Vec3(2.6, -0.1, -2.0) units/tick` (the Shadows circle the
+sphere near their hold distances), and `Shadow pull ends: attack 1 finished (FUN_001bfba8), motion 0 blend 8`
+about 2.8 s later. Screenshot at 9.0 s: the blue sphere with the Shadows gathered at its foot.
 
 ### Reflect (REFLECT_*.mag) [V, script]
 
@@ -361,6 +411,15 @@ fighters, as clash.rs does) unless its own row says Nothing, so it cannot hit So
 [I: Power 0, reaction 0]. The barrier's duration is the barrier element's own life in the effect runtime (27
 frames in a tt00 run at level 1).
 
+A live clash (WP-7M2, no forcing): tt00, `KH2_MAGIC=1,1,1,1,1,1 KH2_MAGIC_LOG=1`, Sora standing still after F3 so
+that a Shadow attacks him (the first hit lands about 8.8 s into the run), Reflect cast just before it with the keys
+`2:F3,7.60:G,7.75:J,7.90:G,8.02:G,8.14:G,8.26:G,8.38:G,8.60:J` (casts at 8.45 and 8.75 clash too). The log:
+`magic: guard 1 clashes with 1076v0 attack 10 (clashes 1)`, `enemy: Shadow clash: recoil motion 140`, `magic(vm):
+effect 1: element 1 (on the caster)` (the flash), `magic(vm): attack 1 over (clashes 1)`, `magic(vm): effect 2:
+element 4 (on the caster)`, `attack Some(2) made: atkp 574`, three rounds of `hit by attack 2` on the four Shadows
+(SubId 0, 1, 1; Interval 10), then `attack Some(3) made: atkp 667` (Power 550) hitting them; no `sora hit` in that
+window. Screenshot at 9.2 s: white burst bubbles around Sora with the Shadows close around him.
+
 ### Drive forms
 
 - Fire: `fire_plan` (event 21 elements per kind; test `fire_hand_port_matches_the_script_for_every_kind` against
@@ -371,14 +430,31 @@ frames in a tt00 run at level 1).
   2.0 at +-70 degrees, flag 0); Master seven (scale 1, flag 0: ahead, with the height -0.96 and 0.96, then 0.4 and
   -0.4 each turned +-45 degrees); otherwise one ahead with flag 1 and one more from element 7 when it started. The
   turn rate of a shot is `magi` +0xc times its scale. Host 0.13 (FUN_0016cf08 -> FUN_0017c2e8 with FUN_0011b4d8 ->
-  FUN_002fb628) is taken as libvu0's Y rotation [I]. Test `blizzard_forms_follow_the_script`. [GAP: the block's
-  flag (+0x64) with host 2.14 (FUN_0018c890) is not ported, nor the push 1.146.]
+  FUN_002fb628) is taken as libvu0's Y rotation [I]. Test `blizzard_forms_follow_the_script`. The block's flag
+  (+0x64) with host 2.14 and the push 1.146 are ported since WP-7M2 (Blizzard section above).
 - Thunder (`thunder_plan`): Master strikes at the caster's position and 0.47 and 0.78 of the way to the place, 16
   frames apart, then the place (without a target 800 ahead turned 45 degrees); the Wisdom finisher three more
   strikes 8 frames apart around the place (`magi` +0x24 * 1.5 along the facing turned 120, 240, 360 degrees).
-  Final strikes 2 (7 for a finisher) more times 8 frames apart at places from host 1.248 (FUN_00172730 ->
-  FUN_001a5ee0 -> FUN_001a6068 / FUN_001a63c8: a random radius and angle bucket around the place with a ground
-  test, the game's generator 0x3716a0) [GAP: not ported]. Test `thunder_forms_strike_counts`.
+  Final (R026a, L014c) strikes 2 (7 for a finisher, R0276) more times, each after a wait of 8 frames, at host
+  1.248's place around the main place with probe height 330 (WP-7M2, below). Test `thunder_forms_strike_counts`.
+- Host 1.248 (FUN_00172730: FUN_001a5ee0(out, centre, mask 2, f12..f15 = the four floats), read from the machine
+  code since the decompiler dropped the float arguments). Thunder passes R = 2.5 * `magi` +0x24 as (0.4 R, R,
+  -0.1 R, 0.1 R). FUN_001a6068: radius `r_min + rand * 2^-32 * (r_max - r_min)`; start angle `bucket * pi/4 + rand
+  * 2^-32 * pi/4` with `bucket = (t & 4) >> 2 | t << 1` of the counter `t` at 0x35e9b0, which then steps modulo 8
+  (the buckets 0, 2, 4, 6, 9, 11, 13, 15: the eighths in a spread order). FUN_001a63c8: try k = 1, 2, ...: angle
+  start + k pi/4 (wrapped, FUN_0017bbc0), the candidate is the centre plus (sin, 0, cos) (FUN_00300278 sinf,
+  FUN_003000d8 cosf, the game's axes) times the radius, raised by `h_min + rand * 2^-32 * (h_max - h_min)`; it is
+  taken when FUN_001a5bf8 (FUN_001d1648, a line test, negated) finds the line from the centre to the point 20
+  (0x37b5cc) further out and 100 (0x37b5d0) above the candidate clear; after 8 tries the radius shrinks by 100 and
+  k starts again; once the radius is below `r_min` the centre is returned. Port: `magic_rules::scatter_place`,
+  `ScatterConsts` (read from the executable), `ScatterState` (the app's generator instance and the counter, kept in
+  `MagicState`); the line test is `World::raycast_m` against every triangle [I: mask 2's surfaces not told apart].
+  Oracle test `scatter_place_matches_fun_001a5ee0` (kh2-ee runs FUN_001a5ee0 on the user's executable with the line
+  test stubbed to always / never clear: same place, generator state and counter for six seeds), and
+  `scatter_place_by_hand`. Harness (tt00, `KH2_DRIVE=4 KH2_DRIVE_AT=3 KH2_MAGIC_LOG=1 KH2_YAW=1.57`, keys
+  `2:F3,6.8:G,7.1:J,7.25:G,7.4:G,7.6:J`): `magic: Thunder event 21 (kind 30): 3 strikes`, then twice `magic: Thunder
+  in Final: host 1.248 around Vec3(1.152, 0.8, 2.65) (radius 170 .. 425): Vec3(-0.54, 0.45, 2.50) (generator
+  0x16c43621, counter 1)` with the strikes 8 frames apart.
 - Cure: the kind alone (rows 708 / 709 of +10 / 20 / 30 exist, `cure_heals_for_every_kind_from_the_disc`).
 - Magnet, Reflect: their scripts' own branches in the interpreter.
 - Valor and Anti cannot cast (`DisableForm`, unchanged). The form is the player object's (`DriveState::object_form`
@@ -390,9 +466,21 @@ frames in a tt00 run at level 1).
 instance still runs), 0.51 (destroy), 1.60, 2.23 / 1.140 / 1.120 (the cast's target record), 2.21 (the persistent
 block, read and written through the script's memory), 2.66 (the attack's clash count), 1.187 / 1.188 (nothing).
 Effect handles are kept in one table for all casts (`VmWorld`), since Reflect keeps a handle in its block from
-cast to cast. [GAP: 1.141 and 0.39 are not named in kh2-bdx, so their pointer arguments cannot be read: the ground
-probe answers "no ground" and Magnet's sphere keeps scale 1. Naming them in `kh2_bdx::names` (1.141 `vpf`,
-0.39 `pv`) would let the host answer them.]
+cast to cast.
+
+WP-7M2 named 0.39 (`effect_set_vector2`, `pv`), 1.141 (`probe_ground_down`, `vpf -> i`), 1.146 (`push_object`,
+`Ovf`), 1.248 (`scatter_point`, `vffff -> v`) and 2.14 (`attack_hit_anything`, `p -> b`) in `kh2_bdx::names` (rows in
+docs/bdx.md). 0.39 is now read: Magnet's sphere grows from 0 to 1 and shrinks back (test
+`magnet_script_runs_in_the_interpreter` samples element 3's scale: first 0.0, maximum 1, last 0.0096).
+1.141 is decoded but still answered "no ground" [GAP]: its second argument is where FUN_001a5c30 writes the found
+point (or copies the start point), and MAGNET_*.mag passes `lea local+0x20`, an address in the script's own stack.
+The interpreter (`kh2_bdx::runtime`) keeps that memory itself; `Host::write_mem` is only asked for addresses outside
+it, and a host call has no way to return a second value. Answering "found" would make the script copy the
+unwritten local. Needed (outside this work package, `crates/kh2-bdx/src/runtime.rs`, `host_call`): an arm for
+(1, 141) that passes the decoded call to the host and, when the host answers `Value::Vec(p)`, writes `p` to `a[1]`
+(`mem.write_vec4`) and pushes 1, else writes the start point to `a[1]` and pushes 0; `SpellHost` then answers with
+the ground point from `World::ground_m` (it needs the world in `VmCtx`). Until then Magnet's attack stays at the
+target's position instead of `magi` +0x3c above the ground under it.
 
 ### Effect colours (Fire's sparks)
 
@@ -408,8 +496,11 @@ overlap: not changed.]
 ## Not ported / gaps
 
 - The menu's input code (cursor, wrap, closing after a cast), above.
-- Running Blizzard, Thunder and Cure in the interpreter (above). Phase 2 gaps: Magnet's pull (victim side), Final
-  Thunder's random strikes, Blizzard's shot flag with host 2.14 and the push 1.146, hosts 1.141 / 0.39 (see "Phase 2").
+- Running Blizzard, Thunder and Cure in the interpreter (above). Phase 2 gaps closed in WP-7M2: Magnet's pull,
+  Final Thunder's scatter, Blizzard's shot flag and push, host 0.39. Still open: host 1.141's output (the runtime
+  change above); the pull mover 15 (air) against 14; the pull mover's leave method 0x331388; the line-test mask 2
+  of host 1.248 (every triangle blocks in the app); Sora as the victim of reaction class 5 (`sora.rs` still takes
+  it as `NotDecoded`); a pull by an attack that is not a spell's (the app knows only spell attack objects).
 - The lock-on controller's mode-1 marker and timer (above). Which target record the menu code puts into a spell's
   request (FUN_00174cf8 copies it; its writer was not traced) [I: Sora's target, Cure's the caster].
 - The HUD's MP charge bar: `hud_gauge::MpRecharge` gets +0x1bc (time left, which counts down) and +0x1c0 as its doc
@@ -454,7 +545,11 @@ turn; the interpreter entry point.
 | 0x173988 -> 0x1db868 | host 1.139 (effect file, id, mode, 1, extra, the context's object) |
 | 0x188498 (ghidra), 0x1889d0, 0x188cc0, 0x17f588, 0x17e220, 0x17e000 | trigger 17's parameter against the motion controller's +0x14 (the requested motion id) |
 | 0x1a4bb8, 0x1ba2c0 (`cmd +4`) | the MP Charge switch bit of the command's slot |
-| 0x185668, 0x1bf920, 0x1bfc10, 0x1bfba8, 0x1bfdf8, 0x186600, 0x184dd0 | reaction class 5: Magnet's pull (victim side, not ported) |
+| 0x185668, 0x1bf920, 0x1bfc10, 0x1bfba8, 0x1bfdf8, 0x186600, 0x184dd0 | reaction class 5: Magnet's pull (victim side, WP-7M2) |
+| 0x3332f0, 0x35f348 (vtable), 0x16b698, 0x16b648, 0x179868 (0x35ca48), 0x16b7d0, 0x16b558, 0x16b4e0, 0x1894d0, 0x16a828, 0x18ccf8, 0x1be2c8, 0x19e4c0, 0x1a1048 | the pull mover, the mover switch, the body centre, the facing, the release of +0xaac |
+| 0x37bd18, 0x37bd28, 0x37bd2c, 0x37bd30, 0x37bd34, 0x37bd38, 0x37bd3c, 0x356f40 | the pull's numbers (`PullConsts`) |
+| 0x172730, 0x1a5ee0, 0x1a6068, 0x1a63c8, 0x1a5bf8, 0x17bbc0, 0x300278, 0x3000d8, 0x35e9b0, 0x37b5a8..0x37b5d0 | host 1.248 (`scatter_place`, `ScatterConsts`) |
+| 0x172538, 0x1a5c30, 0x16dad0, 0x1705e8, 0x18e3d8, 0x18c890 | hosts 1.141, 0.39, 1.146, 2.14 |
 | 0x18d430, 0x18d808, 0x18e818 | clash handler counting byte +0xa4, the pair test, host 2.66 |
 | 0x1729f8, 0x18e928, 0x16dad0, 0x16cf08, 0x17c2e8, 0x11b4d8, 0x11be08 | hosts 1.60, 2.21, 0.39, 0.13 and the Y rotation |
-| 0x172730, 0x1a5ee0, 0x1a6068, 0x1a63c8 | host 1.248: Final Thunder's random places (not ported) |
+| 0x172730, 0x1a5ee0, 0x1a6068, 0x1a63c8 | host 1.248: Final Thunder's random places (WP-7M2) |

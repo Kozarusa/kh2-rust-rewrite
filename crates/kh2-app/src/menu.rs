@@ -39,12 +39,21 @@ pub mod customize;
 // And the Equipment pages (stage M4).
 #[path = "menu_equipment.rs"]
 pub mod equipment;
+// The NEW tags (stage M7).
+#[path = "menu_new.rs"]
+pub mod new_tags;
+// The Help overlay (page 0x25, stage M7).
+#[path = "menu_help.rs"]
+pub mod help;
+// The item pictures (stage M7).
+#[path = "menu_pic.rs"]
+pub mod pictures;
 
 pub struct MenuPlugin;
 
 impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((MenuGfxPlugin, crate::menu_status::StatusPlugin, config::ConfigPlugin, item_pages::ItemPagesPlugin, customize::CustomizePlugin, equipment::EquipmentPlugin))
+        app.add_plugins((MenuGfxPlugin, crate::menu_status::StatusPlugin, config::ConfigPlugin, item_pages::ItemPagesPlugin, customize::CustomizePlugin, equipment::EquipmentPlugin, new_tags::NewTagsPlugin, pictures::PicturesPlugin, help::HelpPlugin))
             .init_resource::<Menu>()
             // The field stands still while the menu is up: every 60 Hz set waits for it.
             .configure_sets(
@@ -177,6 +186,8 @@ struct Nodes {
     layers: Vec<usize>,
     panel: usize,
     rows: Vec<usize>,
+    /// One NEW tag per row of the list, a child of its row (stage M7).
+    tags: Vec<usize>,
     pointer: usize,
     glint: usize,
     munny: usize,
@@ -188,9 +199,25 @@ struct Nodes {
     cards: Vec<usize>,
 }
 
+/// A screen change that one page module asks another for: the list result -5 (docs/menus.md 1.7, 16.2) on the
+/// Items pages and the Abilities pages. `second` is the second level (page 2 and page 0x10, the character's own
+/// lists) as opposed to the first (page 1 and page 0xf, the character rows).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Switch {
+    ToAbilities { second: bool },
+    ToItems { second: bool },
+}
+
 #[derive(Resource)]
 pub struct Menu {
     pub phase: Phase,
+    /// The screen change a module has asked for and the receiving module has not taken yet.
+    pub switch: Option<Switch>,
+    /// Page 0's nodes that were hidden for the page that handed over: the receiving module keeps hiding them and
+    /// puts them back when it leaves to page 0 (so the top list does not flash between two screens).
+    pub carry: Vec<usize>,
+    /// The Help overlay (page 0x25) that a page asked for with -7, taken by `menu_help.rs`.
+    pub help: Option<help::Request>,
     /// The current page (`DAT_0036d1d4`); only page 0 exists in M1.
     pub page: u16,
     /// The cursor on page 0, an index into `rows`.
@@ -214,6 +241,9 @@ impl Default for Menu {
     fn default() -> Menu {
         Menu {
             phase: Phase::Closed,
+            switch: None,
+            carry: Vec::new(),
+            help: None,
             page: 0,
             cursor: 0,
             entries: Vec::new(),
@@ -234,7 +264,7 @@ impl Menu {
     /// them while it shows and puts their visibility back when it returns.
     pub fn page0_nodes(&self) -> Vec<usize> {
         let n = &self.nodes;
-        n.rows.iter().copied().chain([n.pointer, n.glint, n.panel, n.help]).chain(n.cards.iter().copied()).collect()
+        n.rows.iter().copied().chain(n.tags.iter().copied()).chain([n.pointer, n.glint, n.panel, n.help]).chain(n.cards.iter().copied()).collect()
     }
 }
 
@@ -317,6 +347,11 @@ fn build_nodes(scene: &mut MenuScene) -> Nodes {
     for _ in 0..menu_pages::ENTRIES {
         n.rows.push(new(scene, Some(SEQ_MAIN)));
     }
+    for k in 0..menu_pages::ENTRIES {
+        let t = new(scene, Some(SEQ_MAIN));
+        scene.nodes[t].parent = Some(n.rows[k]);
+        n.tags.push(t);
+    }
     n.pointer = new(scene, Some(SEQ_MAIN));
     n.glint = new(scene, Some(SEQ_MAIN));
     n.munny = new(scene, Some(SEQ_MAIN));
@@ -349,6 +384,11 @@ fn party(sora: Option<&Sora>, data: Option<&GameData>) -> Vec<CardData> {
 }
 
 impl Menu {
+    /// Whether page 0's list shows the row of this table entry (the lists' switch mask, `FUN_00253f80`).
+    pub fn rows_has(&self, entry: usize) -> bool {
+        self.rows.contains(&entry)
+    }
+
     /// The entry (index into the table of 2.1) of the highlighted row of page 0, while the menu is open.
     pub fn current_entry(&self) -> Option<usize> {
         (self.phase == Phase::Open).then(|| self.rows.get(self.cursor).copied()).flatten()
@@ -367,11 +407,14 @@ pub(crate) fn input(
     data: Option<Res<GameData>>,
     area: Res<CurrentArea>,
     real: Res<Time<Real>>,
+    mut tags: ResMut<new_tags::NewTags>,
+    items: Res<item_pages::ItemsMenu>,
 ) {
     if !menu.loaded {
         return;
     }
     menu.play = real.elapsed_secs();
+    let before = menu.phase;
     let start = keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter);
     let cancel = keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::Backspace) || keys.just_pressed(KeyCode::KeyK);
     let confirm = keys.just_pressed(KeyCode::KeyJ);
@@ -387,6 +430,12 @@ pub(crate) fn input(
                 );
                 if free {
                     let has_ability = progress.as_ref().is_some_and(|p| !p.sora().abilities.is_empty());
+                    // The camp's start builds the NEW sets (`FUN_00293808`).
+                    if let Some(p) = progress.as_deref() {
+                        let abilities: Vec<u16> = p.sora().abilities.iter().map(|a| a.0).collect();
+                        tags.begin(&items.order, &|id| p.item_count(id), &abilities);
+                        info!("menu: new tags: {}", tags.summary());
+                    }
                     open(&mut menu, &mut scene, &mut se, sora.single().ok(), data.as_deref(), &area, has_ability);
                 } else {
                     info!("menu: start refused ({state:?})");
@@ -430,6 +479,15 @@ pub(crate) fn input(
             }
         }
         Phase::Closing => {}
+    }
+    // The camp's end counts what the party wears as seen (`FUN_00293758`).
+    if before != Phase::Closing
+        && menu.phase == Phase::Closing
+        && let Some(p) = progress.as_deref()
+    {
+        let s = p.sora();
+        let worn: Vec<u16> = s.weapons.iter().chain(&s.armor).chain(&s.accessories).chain(&s.items).copied().collect();
+        tags.end(&worn);
     }
     // Every press that arrives while the menu is up belongs to the menu.
     if menu.phase != Phase::Closed {
@@ -673,9 +731,13 @@ fn tick(
     mut scene: ResMut<MenuScene>,
     real: Res<Time<Real>>,
     progress: Option<Res<Progress>>,
+    tags: Res<new_tags::NewTags>,
 ) {
     if !menu.loaded || menu.phase == Phase::Closed {
         return;
+    }
+    if menu.page == 0 {
+        update_tags(&menu, &mut scene, &tags);
     }
     let ticks = scene.advance(real.delta_secs());
     menu.frames += ticks;
@@ -724,6 +786,26 @@ fn tick(
     }
     if menu.phase != Phase::Closed {
         refresh(&menu, &mut scene, progress.as_deref());
+    }
+}
+
+/// The NEW tag of each row of the list (`FUN_00251100`): the group says unseen (0x32) or all seen (0x31); a row
+/// with no fresh member has no tag.
+fn update_tags(menu: &Menu, scene: &mut MenuScene, tags: &new_tags::NewTags) {
+    for (k, &t) in menu.nodes.tags.iter().enumerate() {
+        let want = menu.rows.get(k).and_then(|&e| new_tags::NewTags::set_of_entry(e)).and_then(|s| tags.row_group(s));
+        match want {
+            Some(g) => {
+                // The tag sits at the row group's own x and y (the plate's right end) from the row's origin.
+                let row_group = scene.nodes[menu.nodes.rows[k]].player.group.unwrap_or(0);
+                scene.nodes[t].off = scene.extent(SEQ_MAIN, row_group);
+                scene.nodes[t].visible = true;
+                if scene.nodes[t].player.group != Some(g) {
+                    scene.set_group(t, g);
+                }
+            }
+            None => scene.nodes[t].visible = false,
+        }
     }
 }
 

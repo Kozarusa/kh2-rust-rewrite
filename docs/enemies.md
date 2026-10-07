@@ -235,4 +235,10 @@ The Struggle rules are in `docs/struggle.md`. For the opponents: b_50, b_51 and 
 manager's counters (slot 0 the player's orbs, slot 1 the opponent's); every reaction an opponent takes knocks 3 or
 15 orbs out of slot 1 (`FUN_001caeb0`); the opponents pick orbs up for slot 1; their prize drops make nothing
 under the mission's header flag 0x40; global events reach their scripts as event 10, so the result 159 / 160 picks
-`gameset_voice_lose` / `gameset_voice_win`. `player_finish_struggle` still has no known receiver.
+`gameset_voice_lose` / `gameset_voice_win`.
+
+WP-7E2: `player_finish_struggle` is a mode that the Struggle-tournament opponents `N_EX650_BTL10`, `N_EX670_BTL10`,
+`N_EX680_BTL10` and `N_EX690_BTL10` register (host 1.6, next to `enemy_finish_struggle`); none of them is in tt04's
+Struggle groups, so in tt04 the message finds no receiver (docs/struggle.md, "player_finish_struggle"). Host 1.34
+`event_active` now answers true while a mission layout event plays (the start, end and failure titles). An
+opponent standing in a reaction motion (10..39) or in 140..150 does not pick orbs up (`FUN_001cadd8`).

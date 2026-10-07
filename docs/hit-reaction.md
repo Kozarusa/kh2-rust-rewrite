@@ -218,7 +218,7 @@ handler; `reaction_class` in the module):
 | 2 | 2 | flinch motion only (FUN_00185198) |
 | 3, 6, 8, 10, 13, 16, 18 | 3 | flinch plus push (FUN_001850c8) |
 | 4, 7, 9, 11, 15, 17 | 4 | blow (FUN_00185460) |
-| 5 | 5 | FUN_00185668 -> FUN_001bf920 (motion 20/21, uses `atkp` +0x10 as a float); not decoded |
+| 5 | 5 | FUN_00185668 -> FUN_001bf920: the pull toward the attack object (motion 20 / 21, `atkp` +0x10 the swirl); WP-7M2, below |
 | 14 | 14 | motion 0x17 (front) / 0x18 (back) plus push (FUN_001856a8) |
 | 19 and above | same | no handler |
 
@@ -235,8 +235,21 @@ halved. Class 4: the launch is `KnockbackStrength1` upward and `KnockbackStrengt
 both are 0. The victim faces the attacker when hit from the front (victim facing . hit direction
 < 0) and plays motion 16, from behind motion 18; in both cases it is pushed along the hit
 direction. The push uses the same decaying mechanism as the wall recoil.
-Class 5's strength interpolates between `KnockbackStrength1` and 2 with the game's random
-generator minus the distance to the attacker; not ported.
+Class 5 (WP-7M2, verified; the full rule with the constants' addresses is in docs/magic.md
+"Magnet"): FUN_001bf920 keeps the attack object at victim +0xaac, draws the hold distance at random
+between `KnockbackStrength1` and `KnockbackStrength2` (+0xab0), keeps the row's `Unknown` (s16 at
++0x10) as a swirl (+0xab4), plays motion 0x14 when hit from the front, else 0x15 (+0xab8), faces the
+attack object (away from it for 0x15) and switches the mover to 14 (15 with mover flag 2 or +0x160
+bit 0x40). Each frame the mover's velocity method (vtable 0x35f348 +0x1c, FUN_003332f0 ->
+FUN_001bfc10) moves the victim's body centre toward the attack object at `(distance - hold) * 0.1`
+units per frame, held within -20..20, plus the pull turned a right angle about Y, flattened, made unit
+and times the swirl; its end method (+0x18, FUN_001bfba8) re-faces it, or, once FUN_0018ccf8 (the
+attack object finished) has cleared +0xaac, returns to the default mover with motion 0 (blend 8).
+The earlier reading "minus the distance to the attacker" was wrong: the distance is to the attack
+object and enters the speed, not the hold. Port: `reaction_rules::Pull`, `PullConsts` (tests
+`pull_follows_fun_001bfc10`, `pull_numbers_from_the_disc`), played by `enemy.rs` for spell attacks.
+`victim_outcome` still returns `NotDecoded { class: 5 }` (callers turn it into the pull; Sora's
+receiver does not).
 
 Flinch motion (class 2, ground class 3; FUN_00185198): ID from the u16 list at 0x35ce40
 (10, 11, 12, 13). Index starts at 2 (behind), is 0 when the hit is from the front, and gets +1
@@ -357,7 +370,7 @@ airborne wall recoil using the ground push, and a Sora hit that the game would n
   of the mover (+0xc) with the vector (dir.x, 50.0 (0x37a960), dir.z, power x the float at +0x38 of the
   table DAT_00360130), dir = the facing times -1.0 (0x37a968). The table pointer is set at run time
   (FUN_001cc040 -> FUN_001cc140), and the mover's method +8 was not read, so the push is not ported (the
-  ground push stands in). Also open: the air flinch (FUN_001853c0), class 5, the orb scatter, and the
+  ground push stands in). Also open: the air flinch (FUN_001853c0), class 5 for Sora as the victim (enemies: WP-7M2), the orb scatter, and the
   `FloorCheck` probe of FUN_0018c8e0 (a second sweep with the segment moved by that many units when the
   first misses; every Sora combo row has FloorCheck 0).
 * The recoil's motion requests: blend 0 (closed by WP-6E, above). FUN_0017e378 then queues motion 0

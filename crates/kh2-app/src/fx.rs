@@ -278,6 +278,8 @@ impl Plugin for FxPlugin {
         app.add_plugins(MaterialPlugin::<DistortMaterial>::default())
             .add_message::<StartEffect>()
             .add_message::<StartSystemEffect>()
+            .add_message::<StartBoundSystemEffect>()
+            .add_message::<StopEffect>()
             .add_message::<GameEffect>()
             .add_message::<SpellHit>()
             .add_message::<FootDust>()
@@ -292,6 +294,8 @@ impl Plugin for FxPlugin {
                         motion_effects,
                         start_requests,
                         start_system_requests,
+                        start_bound_system_requests,
+                        stop_requests,
                         load_area_fx,
                         foot_dust,
                         hit_sparks,
@@ -367,6 +371,80 @@ pub fn start_system_requests(mut commands: Commands, lib: Res<EffectLib>, mut ri
         // Every system effect started this way is a clash spark (FUN_0018d560), which FUN_001c09f8 registers.
         let spark = start_placed(&mut commands, &lib.system, r.id, Bind::Fixed(r.at), Placement { replace_translation: true, ..default() });
         ring_push(&mut commands, &mut ring, spark);
+    }
+}
+
+/// The handle of an owner-bound system effect, what `FUN_001db868` returns and its caller keeps to end
+/// the effect later (the player's pickup glow at +0xae4, `FUN_00175c28`). The caller takes a fresh one with
+/// `FxHandle::new` and sends it with `StartBoundSystemEffect`; `fx` puts it on the running effect.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FxHandle(pub u32);
+
+impl FxHandle {
+    /// A handle no other effect carries.
+    pub fn new() -> FxHandle {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+        FxHandle(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
+impl Default for FxHandle {
+    fn default() -> FxHandle {
+        FxHandle::new()
+    }
+}
+
+/// Request to start an element of the system effect file `00effect.bar` bound to an owner, what
+/// `FUN_001db868(&DAT_01c954d8, id, .., owner)` does with an owner (sixth argument, the record's +0x48):
+/// the element follows the owner's bone as any bound effect (`tick`, FUN_001dcd08) and is not filed in
+/// the spark ring (only the spark callers of `FUN_001c09f8` are). `owner` is a model entity (it carries
+/// the `Animator`). The effect ends by itself, with its owner as its element flags say, or on `StopEffect`.
+/// The middle arguments of `FUN_001db868` (the pickup glow passes 0, 1, 0x2714) are not modelled, as
+/// for `StartSystemEffect`.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct StartBoundSystemEffect {
+    pub id: u16,
+    pub owner: Entity,
+    pub handle: FxHandle,
+}
+
+/// Request to end the effect carrying `handle`: `kill` false is `FUN_001d9f48` (the record's +8 bit 0 and
+/// the instance's loop-end byte +0x85, `FUN_001e0298`: the effect stops emitting and goes when its
+/// particles are done, as `effect.end()`); `kill` true is `FUN_001da028` (gone at once). A handle with no
+/// running effect is ignored (the effect already ended or never started: no element with that id).
+#[derive(Message, Clone, Copy, Debug)]
+pub struct StopEffect {
+    pub handle: FxHandle,
+    pub kill: bool,
+}
+
+pub fn start_bound_system_requests(mut commands: Commands, lib: Res<EffectLib>, mut req: MessageReader<StartBoundSystemEffect>) {
+    for r in req.read() {
+        let e = start_placed(&mut commands, &lib.system, r.id, Bind::Owner(r.owner), Placement::default());
+        if std::env::var_os("KH2_FXLOG").is_some() {
+            info!("system effect {:#x} bound to {:?} (handle {}): {}", r.id, r.owner, r.handle.0, if e.is_some() { "started" } else { "no element" });
+        }
+        if let Some(e) = e {
+            commands.entity(e).insert(r.handle);
+        }
+    }
+}
+
+pub fn stop_requests(mut commands: Commands, mut effects: Query<(Entity, &FxHandle, &mut RunningEffect)>, mut req: MessageReader<StopEffect>) {
+    for r in req.read() {
+        for (e, h, mut fx) in &mut effects {
+            if *h != r.handle {
+                continue;
+            }
+            if std::env::var_os("KH2_FXLOG").is_some() {
+                info!("effect {:#x} (handle {}) {}", fx.game_id, h.0, if r.kill { "killed" } else { "told to end" });
+            }
+            if r.kill {
+                commands.entity(e).despawn();
+            } else {
+                fx.effect.end();
+            }
+        }
     }
 }
 
@@ -539,11 +617,18 @@ pub fn hit_rotation(dir: Vec3) -> [f32; 3] {
     [(-g.y).atan2((g.x * g.x + g.z * g.z).sqrt()), g.x.atan2(g.z), 0.0]
 }
 
+/// The DPX effect an element names: the entry whose number (its third word) equals the element's `effect`
+/// (`FUN_001d9720` walks the DPX list comparing that word; `FUN_001db5f0` -> `FUN_001da6f0` -> `FUN_001d9bf0`). The
+/// number is not always the entry's place: `00effect.bar` has 14 entries numbered up to 17.
+pub fn dpx_effect(pax: &Pax, number: u16) -> Option<&kh2_fx::pax::DpxEffect> {
+    pax.effects.iter().find(|f| f.number == number as u32)
+}
+
 /// Starts the first element of `lib` with game effect id `id` (FUN_001db868 returns after the
 /// first match; no file on the disc repeats an id, so this is the only element either way).
 pub fn start_placed(commands: &mut Commands, lib: &Arc<LoadedPax>, id: u16, bind: Bind, place: Placement) -> Option<Entity> {
     let el = lib.pax.elements_for(id).next()?;
-    let fx = lib.pax.effects.get(el.effect as usize)?;
+    let fx = dpx_effect(&lib.pax, el.effect)?;
     let effect = kh2_fx::Effect::new(lib.dpds[fx.dpd].clone(), fx.dpd, fx.particle_data)?;
     // `KH2_FXONLY=<id,id,...>` runs only those effect IDs (isolating an effect in a screenshot).
     if let Ok(only) = std::env::var("KH2_FXONLY")
@@ -1476,23 +1561,13 @@ mod tests {
         assert_eq!(marked, [true, false, false, false, false, false, false, false, false]);
     }
 
-    /// [inferred] A lone looping spark (0xd) is gone after its Life (60 frames) plus the 4-frame fade; the
-    /// non-looping 0xb is not touched by the rule (it ends on its own). Skips without a disc.
+    /// [inferred] rule `ring_spark_expired`: a looping ring spark is faded once its program life is over (a
+    /// 60-frame life starts the 4-frame fade at frame 60, gone at 63). Since WP-7Bc the clash spark 0xd itself is
+    /// not looping (its DPX entry is found by number, `dpx_effect`): it ends by itself within its 24-frame life,
+    /// so the rule does not touch it. Skips the disc part without a disc.
     #[test]
-    fn lone_clash_spark_is_gone_after_life_plus_fade() {
-        let Ok(iso) = crate::assets::iso_path() else { return };
-        if !iso.exists() {
-            return;
-        }
-        let disc = Disc::open(&iso);
-        let common = disc.read("effect/texcommon.dpd").and_then(|b| Dpd::parse(&b).ok());
-        let lib = load(&disc, "00effect.bar", 1, common.as_ref()).expect("00effect.bar");
-        let el = lib.pax.elements_for(0xd).next().expect("element");
-        let fx = &lib.pax.effects[el.effect as usize];
-        let e = kh2_fx::Effect::new(lib.dpds[fx.dpd].clone(), fx.dpd, fx.particle_data).expect("effect");
-        let life = e.particle_data().life;
-        assert_eq!(life / kh2_fx::pax::TICK, 60);
-        // The clock `tick` runs: +1 per frame; the fade starts at the first frame the rule holds.
+    fn lone_clash_spark_ends_by_itself() {
+        let life = 60 * kh2_fx::pax::TICK;
         let start = (0..1000).find(|t| ring_spark_expired(*t as f32, life)).expect("expires");
         let mut level = 1.0f32;
         let mut gone = None;
@@ -1504,14 +1579,33 @@ mod tests {
             }
         }
         assert_eq!(start, 60);
-        assert_eq!(gone, Some(63), "gone about 64 frames (about 1 s) after it started");
+        assert_eq!(gone, Some(63), "a looping ring spark is gone about 64 frames after it started");
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let common = disc.read("effect/texcommon.dpd").and_then(|b| Dpd::parse(&b).ok());
+        let lib = load(&disc, "00effect.bar", 1, common.as_ref()).expect("00effect.bar");
+        let el = lib.pax.elements_for(0xd).next().expect("element");
+        let fx = dpx_effect(&lib.pax, el.effect).expect("dpx effect");
+        let mut e = kh2_fx::Effect::new(lib.dpds[fx.dpd].clone(), fx.dpd, fx.particle_data).expect("effect");
+        assert_eq!(e.particle_data().flags & 1, 0, "0xd does not loop");
+        let life = e.particle_data().life / kh2_fx::pax::TICK;
+        let done = (0..600).find(|_| {
+            e.tick(&kh2_fx::Env::default());
+            e.done
+        });
+        assert_eq!((life, done), (24, Some(23)), "0xd ends within its life");
     }
 
-    /// Why the ring is needed (`FUN_001e6240`): system effect 0xd, the spark of a clash (`FUN_0018d560`), is
-    /// a looping effect (program flags bit 0) with no element end flag (0x40 / 0x80) and no owner, so it never
-    /// ends by itself; the guard-bounce sparks 0xb and 0xc end on their own within a second. Skips without a disc.
+    /// `FUN_001db5f0` -> `FUN_001d9720` finds an element's DPX entry by the entry's number, not its place. In
+    /// `00effect.bar` the 14 entries are numbered 0..5 and 11..18, so the elements 0xb..0x13 resolve only by
+    /// number (by place 0xb, 0xc and 0xd got the entries numbered 16, 17 and 18, and 0xe..0x13 nothing). With
+    /// the game's lookup the guard-bounce sparks 0xb, 0xc and the clash spark 0xd all end by themselves within
+    /// half a second; 0x13 (the summon arrival) is the looping 60-frame entry. Skips without a disc.
     #[test]
-    fn clash_spark_0xd_has_no_end_of_its_own() {
+    fn system_elements_resolve_by_dpx_number() {
         let Ok(iso) = crate::assets::iso_path() else { return };
         if !iso.exists() {
             return;
@@ -1521,16 +1615,102 @@ mod tests {
         let lib = load(&disc, "00effect.bar", 1, common.as_ref()).expect("00effect.bar");
         let run = |id: u16, ticks: usize| {
             let el = lib.pax.elements_for(id).next().expect("element");
-            assert_eq!(el.flags & (element_flag::DESTROY_LOOPEND | element_flag::DESTROY_FADEOUT), 0, "element {id:#x} has no own end flag");
-            let fx = &lib.pax.effects[el.effect as usize];
+            let fx = dpx_effect(&lib.pax, el.effect).expect("dpx effect");
             let mut e = kh2_fx::Effect::new(lib.dpds[fx.dpd].clone(), fx.dpd, fx.particle_data).expect("effect");
-            (0..ticks).find(|_| {
+            let looping = e.particle_data().flags & 1 != 0;
+            (looping, (0..ticks).find(|_| {
                 e.tick(&kh2_fx::Env::default());
                 e.done
-            })
+            }))
         };
-        assert!(run(0xb, 600).is_some(), "0xb ends by itself");
-        assert!(run(0xc, 600).is_some(), "0xc ends by itself");
-        assert!(run(0xd, 3000).is_none(), "0xd is still running after 50 s");
+        for el in &lib.pax.elements {
+            let f = dpx_effect(&lib.pax, el.effect).expect("every system element has its DPX entry");
+            eprintln!("element {:#x} flags {:#x}: DPX number {} = entry {} (particle data {})", el.id, el.flags, el.effect, lib.pax.effects.iter().position(|x| x.number == f.number).unwrap_or(99), f.particle_data);
+        }
+        let numbers: Vec<u32> = lib.pax.effects.iter().map(|f| f.number).collect();
+        assert_eq!(numbers, [0, 1, 2, 3, 4, 5, 11, 12, 13, 14, 15, 16, 17, 18]);
+        assert_eq!(run(0xb, 600), (false, Some(18)), "0xb ends by itself");
+        assert_eq!(run(0xc, 600), (false, Some(14)), "0xc ends by itself");
+        assert_eq!(run(0xd, 600), (false, Some(23)), "0xd ends by itself");
+        assert_eq!(run(0x13, 600), (true, None), "0x13 loops");
+        // The other files the app starts effects from: is the number the place there (then nothing changed)?
+        for name in ["obj/W_EX010.apdx", "obj/P_EX100.apdx", "obj/M_EX010.apdx", "obj/M_EX020.apdx", "magic/FIRE_1.mag", "magic/BLIZZARD_1.mag", "magic/THUNDER_1.mag", "magic/CURE_1.mag", "map/us/tt02.map", "obj/PRIZE.mdlx"] {
+            if let Some(p) = load(&disc, name, 99, None) {
+                let same = p.pax.effects.iter().enumerate().all(|(i, f)| f.number == i as u32);
+                eprintln!("{name}: {} DPX entries, numbers equal places: {same}", p.pax.effects.len());
+            }
+        }
+    }
+
+    /// The owner-bound system effect (`FUN_001db868` with an owner, the pickup glow's system effect 6):
+    /// it starts bound to the owner, carries its handle, is not filed in the spark ring; `StopEffect`
+    /// ends only the effect with that handle (`FUN_001d9f48`: loop end, the effect runs out), and a kill
+    /// (`FUN_001da028`) removes it at once. Skips without a disc.
+    #[test]
+    fn a_bound_system_effect_carries_its_handle_and_stops_on_request() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let common = disc.read("effect/texcommon.dpd").and_then(|b| Dpd::parse(&b).ok());
+        let system = Arc::new(load(&disc, "00effect.bar", 1, common.as_ref()).expect("00effect.bar"));
+        let el = system.pax.elements_for(6).next().expect("system element 6");
+        let pd = dpx_effect(&system.pax, el.effect).map(|f| system.dpds[f.dpd].particles[f.particle_data as usize].flags);
+        eprintln!("system element 6: bone {:#x} flags {:#x} effect {} sound {} program flags {pd:?}", el.bone, el.flags, el.effect, el.se);
+        let ids: Vec<u16> = system.pax.elements.iter().map(|e| e.id).collect();
+        eprintln!("system element ids: {ids:x?}");
+        let e10 = system.pax.elements_for(0x10).next().expect("element 0x10");
+        let f10 = dpx_effect(&system.pax, e10.effect);
+        eprintln!(
+            "system element 0x10: bone {:#x} flags {:#x} effect {} (of {}) {:?}",
+            e10.bone,
+            e10.flags,
+            e10.effect,
+            system.pax.effects.len(),
+            f10.map(|f| (f.dpd, f.particle_data, kh2_fx::Effect::new(system.dpds[f.dpd].clone(), f.dpd, f.particle_data).is_some()))
+        );
+        // FUN_001d9720 finds the DPX entry by its number: the level-up effect 0x10 and the ineffective-hit effect
+        // 0x12 name numbers past the entry count, and both resolve and build.
+        let numbers: Vec<u32> = system.pax.effects.iter().map(|f| f.number).collect();
+        eprintln!("system DPX entry numbers: {numbers:?}");
+        for id in [6u16, 0x10, 0x12] {
+            let el = system.pax.elements_for(id).next().expect("element");
+            let f = dpx_effect(&system.pax, el.effect).unwrap_or_else(|| panic!("element {id:#x}: DPX number {}", el.effect));
+            assert!(kh2_fx::Effect::new(system.dpds[f.dpd].clone(), f.dpd, f.particle_data).is_some(), "element {id:#x} builds");
+        }
+        let mut app = App::new();
+        app.add_message::<StartBoundSystemEffect>()
+            .add_message::<StopEffect>()
+            .init_resource::<SparkRing>()
+            .insert_resource(EffectLib { keyblade: system.clone(), system, objects: HashMap::new() })
+            .add_systems(Update, (start_bound_system_requests, stop_requests).chain());
+        let owner = app.world_mut().spawn_empty().id();
+        let (glow, other) = (FxHandle::new(), FxHandle::new());
+        assert_ne!(glow, other);
+        app.world_mut().write_message(StartBoundSystemEffect { id: 6, owner, handle: glow });
+        app.world_mut().write_message(StartBoundSystemEffect { id: 6, owner, handle: other });
+        app.update();
+        let state = |app: &mut App| {
+            let mut v: Vec<(u32, u16, bool, bool, bool)> = app
+                .world_mut()
+                .query::<(&FxHandle, &RunningEffect, Has<RingSpark>)>()
+                .iter(app.world())
+                .map(|(h, r, ring)| (h.0, r.game_id, matches!(r.bind, Bind::Owner(o) if o == owner), r.effect.is_ending(), ring))
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(state(&mut app), vec![(glow.0, 6, true, false, false), (other.0, 6, true, false, false)]);
+        app.world_mut().write_message(StopEffect { handle: glow, kill: false });
+        app.update();
+        assert_eq!(state(&mut app), vec![(glow.0, 6, true, true, false), (other.0, 6, true, false, false)], "only the glow's effect ends");
+        app.world_mut().write_message(StopEffect { handle: other, kill: true });
+        app.update();
+        assert_eq!(state(&mut app), vec![(glow.0, 6, true, true, false)], "the killed effect is gone at once");
+        // No element with the id: nothing starts (FUN_001db868 returns 0).
+        app.world_mut().write_message(StartBoundSystemEffect { id: 0x7fff, owner, handle: FxHandle::new() });
+        app.update();
+        assert_eq!(state(&mut app).len(), 1);
     }
 }

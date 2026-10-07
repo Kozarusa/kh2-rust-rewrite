@@ -63,7 +63,7 @@ The lists:
 | 3 forms | `FUN_001bca70` | for index 1..5 of the u16 table at 0x37b420 (the form items, Valor, Wisdom, Master, Final, Anti), when the item's count is above 0: the item's command, left out when `FUN_001c7970` answers 2 (a companion the form needs is not in the party, `FUN_001c77f0`), status 5 when it answers 1. Flag 0x20 is set when no form item is owned; the list is not rebuilt while flag 0x20 or the lock `0x35fec0` bit 1 is up |
 | 4 targets | `FUN_001bcb98` | for the three party slots (`FUN_00175b68`): each valid member that is not a summon and has a status; the member goes to `+0x9ec`, the entry is the member's command from the u16 table at 0x37bab0 (Sora 42) |
 | 5 shortcuts | `FUN_001bcc78` | the four shortcut commands of `0x340e60` with the count of slots carrying an item |
-| 6 second deck | `FUN_001bc6e0` | the attack command; 0x13c (map command) while `DAT_01d5e368` is set, else Summon (0x48) when the summon list is not empty, else 0x68; Party (0x49) when `FUN_001807a0` holds, else 0x68 (0x25d in map mode 2 with 0xc9); Limit (0x51) when `FUN_001807f8` holds, else 0x68 |
+| 6 second deck | `FUN_001bc6e0` | the attack command; Dismiss (0x13c) while the summon state `DAT_01d5e368` is set (`FUN_001c6918`), else Summon (0x48) when the summon list is not empty, else 0x68; Party (0x49) when `FUN_001807a0` holds, else 0x68 (0x25d in map mode 2 with 0xc9); Limit (0x51) when `FUN_001807f8` holds, else 0x68 |
 | 7 summons | `FUN_001bc8b0` | the summon commands of `+0x9e2` |
 
 On this disc: Attack 1 (`SubMenu` -1), Magic 2 (1), Items 3 (2), Drive 4 (3), Revert 5, Summon 0x48 (7), Party 0x49 (8),
@@ -77,7 +77,9 @@ entry, `FUN_001746e0` -> `FUN_001d5e48`), else 5; 2 (magic) docs/magic.md (MP, t
 special-battle bit 11 `FUN_001b9f70`); 3 (items) nothing of its own; 4 (drive) and 0x48 (summon) `FUN_001ba568` (a
 command with a sub-menu passes; a form's command needs no lock, no form 6 or 11, the companions and `Cost` <= whole
 points; summon also the special-battle bit 14); 5 (revert) `FUN_001c7a38` and the lock `0x35fec0`; 0x51 `FUN_001b3e38`;
-0x67, 0x68 give 5; 0x13c needs map mode 2; 0x14a and 0x1c4 their own tests; anything else 0. Then the locks
+0x67, 0x68 give 5; 0x13c (Dismiss) gives 5 unless the summon state `DAT_01d5e368` (`FUN_001c6918`) is 2, and 5 while
+the limit task exists (`FUN_001b3c00`: `DAT_01d5d6b0` != 0; docs/summons.md); 0x14a and 0x1c4 their own tests; anything
+else 0. Then the locks
 `FUN_001b70b8` (`Flags` bit 1 airborne, bit 16 outside battle, without bit 5 the global lock `DAT_0035d268` & 2) and
 `DisableForm` (`FUN_001b7290`) give 5. Port: `items::availability`.
 
@@ -116,8 +118,9 @@ Cure first ask for the target. The app until now kept the Magic list open after 
 list" [GAP], now answered).
 
 Keys in the app: T up, G down, J confirm (the attack button; on the deck's attack command the press stays an attack for
-Sora's controller), B cancel. Left, Right, Square and L1 have no key (the arrows turn the camera), so the deck swap and
-the shortcut list are ported but not reachable. Port: `CommandLists::input`, `select_root`.
+Sora's controller), B cancel, H the d-pad Left (closes the top list; at the deck the deck swap to the second deck with
+Summon / Dismiss, Party and Limit; `KH2_KEYS` `t:H` presses it). Right, Square and L1 have no key (the arrows turn the camera), so the
+shortcut list is ported but not reachable. Port: `CommandLists::input`, `select_root`.
 
 ## 5. The item command [V]
 
@@ -159,8 +162,9 @@ not call it yet.
 - `CommandLists` (resource) holds the 18 lists, the stack, the deck and the flags; `command_menu` (Update, after the
   pad) rebuilds, selects the root, reads T/G/J/B and fills `hud_menu::CommandMenu` with one page per stacked list (the
   list index is the page kind, the status the style). An issued spell goes to `magic::MagicState::request_cast`, an
-  item to the item use, Attack stays with Sora's controller; Drive, Revert and the other commands are not run from the
-  menu in the app (logged `items: command ... is not run from the menu in the app`).
+  item to the item use, Attack stays with Sora's controller, a summon command (from the SUMMONS list) and Dismiss go to
+  `summon::SummonQueue` (`summon.rs` runs them, docs/summons.md); Drive, Revert and the other commands are not run from
+  the menu in the app (logged `items: command ... is not run from the menu in the app`).
 - `ItemUse` and `run` (FixedUpdate, `Sim::Sora`): the request waits up to 20 ticks for Sora to be free (ground, air,
   or the grounded / air / blend-to-idle range of an attack or cast motion [I: the window of `FUN_00174cf8`'s caller]),
   then motion request 9 (battle or field set by the battle flag) in `sora::State::Magic`; trigger 6 takes the item

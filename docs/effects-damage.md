@@ -245,6 +245,44 @@ holds for 15 frames, fades over 15 frames and is hidden at frame 30, while effec
 * `sora.rs` (Sora as the victim) needs nothing: his hits arrive as `Hit` too, and his file has no
   `DamageEffect` element.
 
+## Owner-bound system effects and their end (WP-7Bc, verified)
+
+`FUN_001db868(file, id, .., owner)` with the system file (0x1c954d8, `FUN_001a21d0`) and an owner (its sixth argument,
+stored at the record's +0x48 by `FUN_001dc138`) gives an effect that follows the owner like any bound element
+(`FUN_001dd0d0` -> `FUN_001dcd08`) and is not filed in the spark ring (only `FUN_001c09f8`'s callers are). The caller
+keeps the returned handle to end it later:
+
+* **End** `FUN_001d9f48(handle)`: bit 0 of the handle's flags (+8), and the instance's loop-end byte +0x85
+  (`FUN_001e0298` on +0x1c): the effect stops emitting and goes when its particles are done (`kh2_fx::Effect::end`).
+* **Kill** `FUN_001da028(handle)`: flags 0x10001, the instance freed at once (`FUN_001e0218`, `FUN_001e4218`).
+* **Fade** `FUN_001da080(t, handle)`: a time of 0 or less kills, else flags 0x20001 and the alpha step `-a / t` (the
+  spark ring's eviction uses this one).
+
+Users: the pickup glow (system effect 6, `FUN_00175c28` keeps the handle at player +0xae4, `FUN_00175cb0` ends it when
+its frames run out or the player's +0x160 bit 0x4000 is set) and the form level-up effect (0x10, `FUN_001b5528`, never
+ended by its caller). Port: `fx::StartBoundSystemEffect { id, owner, handle }` (owner = a model entity with an
+`Animator`; the handle `fx::FxHandle::new()` is chosen by the caller and put on the running effect) and
+`fx::StopEffect { handle, kill }`. `KH2_FXLOG=1` logs `system effect 0x6 bound to .. (handle N): started` and
+`effect 0x6 (handle N) told to end`. Test `fx::tests::a_bound_system_effect_carries_its_handle_and_stops_on_request`.
+The middle arguments of `FUN_001db868` are not modelled. The summon arrival effect 0x13 (docs/summons.md) can use the
+same pair (end = `kill: false`, `FUN_001da028` = `kill: true`).
+
+## An element's DPX entry is found by number (WP-7Bc, verified; a correction)
+
+An element's `effect` word is not the place of its DPX entry: `FUN_001db5f0` -> `FUN_001da6f0` -> `FUN_001d9bf0` ->
+`FUN_001d9720` walks the DPX list (0x20-byte entries) and takes the first entry whose third word (the entry's number)
+equals it. `fx.rs` used the place (`effects.get(el.effect)`). In most files the numbers are the places, but not in
+`00effect.bar` (14 entries numbered 0..5 and 11..18) nor in `obj/M_EX010.apdx` (the Soldier). With the place lookup the
+system elements 0xb, 0xc and 0xd (guard bounce and clash sparks) ran the entries numbered 16, 17 and 18 (18 is the
+looping 60-frame summon arrival effect of element 0x13), and the elements 0xe..0x13 started nothing, the ineffective-hit
+effect 0x12 included. With the game's lookup (`fx::dpx_effect`) 0xb, 0xc, 0xd are short sparks that end by themselves
+(19, 15 and 24 frames). Tests `fx::tests::system_elements_resolve_by_dpx_number`, `lone_clash_spark_ends_by_itself`
+(they replace `clash_spark_0xd_has_no_end_of_its_own` and `lone_clash_spark_is_gone_after_life_plus_fade`, which were
+written against the place lookup). Consequence for docs/hit-reaction.md "Lifetime of the clash spark": the clash spark
+is not a looping effect; the "rainbow bubble sphere with a bright white core" the user saw stay was most probably the
+summon arrival effect run in its place [inferred: not compared with the original]. The spark ring stays as read; its
+[inferred] lone-loop end no longer applies to 0xd.
+
 ## Test and harness hooks (all in `fx.rs`)
 
 `KH2_FXTEST=<id>` (system effect), `k<id>` (keyblade), `<name>:<id>` (any `obj/<name>.apdx`, loaded on

@@ -514,6 +514,158 @@ pub fn add_form_exp(levels: &kh2_tables::player::FormLevels, form: u8, level: u8
     (level, exp, ups)
 }
 
+/// Address of the growth chains `FUN_001d3f18` reads: `0x37c556 + 10 * form + 2 * level`, five ability
+/// ids per form for the display levels 0..4 (0: none). Rows 1..4 are Valor (High Jump), Wisdom (Quick
+/// Run), Master (Aerial Dodge) and Final (Glide).
+pub const GROWTH_CHAINS: u32 = 0x37c556;
+
+/// The growth chains of the drive forms (`GROWTH_CHAINS`), forms 0..=4, read from the executable.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GrowthChains(pub [[u16; 5]; 5]);
+
+impl GrowthChains {
+    pub fn from_exe(elf: &[u8]) -> Option<GrowthChains> {
+        let b = exe_bytes(elf, GROWTH_CHAINS, 50)?;
+        let mut t = [[0u16; 5]; 5];
+        for i in 0..25 {
+            t[i / 5][i % 5] = u16::from_le_bytes([b[2 * i], b[2 * i + 1]]);
+        }
+        Some(GrowthChains(t))
+    }
+
+    /// The id at `(form, level)` (0 outside the table).
+    pub fn at(&self, form: u8, level: u8) -> u16 {
+        self.0.get(form as usize).and_then(|r| r.get(level as usize)).copied().unwrap_or(0)
+    }
+}
+
+/// `FUN_001d3f18(list, n, form, level)`: in the ability list (bit 15 = equipped) the first slot whose id
+/// is the chain's id one level below `level` (an empty slot when that is 0) takes the chain's id at
+/// `level`, keeping its bit 15; at most one slot changes. Returns the chain's id at `level` whether or not
+/// a slot matched (the disassembly loads it into v0 before the search; the decompiler shows no return).
+pub fn growth_upgrade(list: &mut [u16], chains: &GrowthChains, form: u8, level: u8) -> u16 {
+    let new = chains.at(form, level);
+    let old = if level == 0 { chains.at(form.wrapping_sub(1), 4) } else { chains.at(form, level - 1) };
+    if let Some(slot) = list.iter_mut().find(|s| **s & 0x7fff == old) {
+        *slot = (*slot & 0x8000) | (new & 0x7fff);
+    }
+    new
+}
+
+/// What `FUN_001d3da8` does at one form level-up, worked out for the log, the obtained log and the
+/// popups: `growth` is (the form record's new id, Sora's new id) when the row's display level rises above
+/// the previous row's (`FUN_001d3f18` on the form's 16 slots at the display level and on Sora's 64 at one
+/// below); `ability` is the row's +2 (`FUN_001a18d8(ability, 1, 0)`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FormLevelUp {
+    pub level: u8,
+    /// The row's display level (+1).
+    pub display: u8,
+    pub growth: Option<(u16, u16)>,
+    pub ability: u16,
+}
+
+/// `FUN_001d3da8`'s choices at `level` (reached): the display levels of the row of `level` and the one
+/// below, the chain ids, the row's ability.
+pub fn form_level_up(levels: &kh2_tables::player::FormLevels, chains: &GrowthChains, form: u8, level: u8) -> FormLevelUp {
+    let row = levels.get(form, level);
+    let prev = level.checked_sub(1).and_then(|l| levels.get(form, l));
+    let display = row.map_or(0, |r| r.display_level);
+    let growth = (prev.map_or(0, |p| p.display_level) < display).then(|| (chains.at(form, display), chains.at(form, display.saturating_sub(1))));
+    FormLevelUp { level, display, growth, ability: row.map_or(0, |r| r.ability) }
+}
+
+/// `FUN_001d4078` (from the enemies' hit method at 0x1849d8, after the hit's +0x2a byte is added to the
+/// victim's +0xaf0): a hit whose attacker is the player in Valor Form (+0xb50 == 1) gives Valor 1
+/// experience (`FUN_001d3f88(player, 1)`).
+pub fn valor_hit_exp(player_form: u8) -> i32 {
+    (player_form == kh2_tables::player::form::VALOR) as i32
+}
+
+/// `FUN_001d40e0(id, player)` (from the enemies' defeat method `FUN_00184a30`, when the object that
+/// defeated it, +0xae4, is the player): in Wisdom Form an object id (`FUN_001699a8`) in 1000..=2011, in
+/// Final Form one in 3000..=4008, gives the form 1 experience.
+pub fn defeat_exp(player_form: u8, object_id: u32) -> i32 {
+    use kh2_tables::player::form;
+    let hit = match player_form {
+        form::WISDOM => object_id.wrapping_sub(1000) < 0x3f4,
+        form::FINAL => object_id.wrapping_sub(3000) < 0x3f1,
+        _ => false,
+    };
+    hit as i32
+}
+
+/// One record of the obtained log (`FUN_001d0688`, 6 bytes in the ring of 32 at 0x341518 + 4).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Obtained {
+    /// +0, +1: the world and area bytes (0x33e830, 0x33e831).
+    pub world: u8,
+    pub area: u8,
+    /// +2 low 15 bits.
+    pub item: u16,
+    /// +2 bit 15: set for a key item (`Flag0` bit 0), else set only when the item's "obtained once" bit
+    /// (0x3414f0 by its `Slot`) is clear.
+    pub new: bool,
+    /// +4: who got it (the `FUN_001a1768` room, 1 for the form level-up gifts).
+    pub to: u8,
+    /// +5: the source: 0 an item object (`FUN_001bd1d8`), 3 a level-up (`FUN_001b53d0`), 4 (`FUN_001be500`),
+    /// 5 a form level-up (`FUN_001d3da8`), 6 a summon level-up (`FUN_001d4fa0`).
+    pub source: u8,
+}
+
+/// Ring size of the obtained log (`FUN_001d0760`: index + 1 modulo 32).
+pub const OBTAINED_LOG: usize = 32;
+
+/// The obtained log (`FUN_001d0828` -> `FUN_001d0760(0x341518, ..)`): the index word, then 32 records;
+/// each new record overwrites the one at the index, which then moves on modulo 32. It lives in the save
+/// (0x341518 = save + 0x16b8); here it is kept beside `Progress` (docs/prizes.md).
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct ObtainedLog {
+    pub next: usize,
+    pub records: [Obtained; OBTAINED_LOG],
+}
+
+impl ObtainedLog {
+    /// `FUN_001d0760`: writes `r` at the index and moves the index on.
+    pub fn push(&mut self, r: Obtained) {
+        let i = self.next % OBTAINED_LOG;
+        self.records[i] = r;
+        self.next = (i + 1) % OBTAINED_LOG;
+    }
+}
+
+/// `FUN_001d0688`'s record. `key` is the item row's `Flag0` bit 0, `obtained_bit` its "obtained once" bit
+/// at the time of the call.
+pub fn obtained_record(place: (u8, u8), item: u16, key: bool, obtained_bit: bool, to: u8, source: u8) -> Obtained {
+    Obtained { world: place.0, area: place.1, item: item & 0x7fff, new: key || !obtained_bit, to, source }
+}
+
+/// The world and area bytes (0x33e830, 0x33e831) of an area name such as `tt04` [inferred: the world is the
+/// code's place in the game's world table, the area the number].
+pub fn place_bytes(area: &str) -> (u8, u8) {
+    let world = area.get(..2).and_then(|w| kh2_image::text::WORLDS.iter().position(|x| *x == w)).unwrap_or(0) as u8;
+    let n = area.get(2..).and_then(|n| n.parse::<u8>().ok()).unwrap_or(0);
+    (world, n)
+}
+
+/// The item message `FUN_001a1f40(item, -1)` builds and `FUN_00138498` queues (byte 9 = an icon, its
+/// argument the item's +0x17 `Icon2`, then the name text, message `+8`). `hud_banner` shows the queue.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ItemObtained {
+    pub item: u16,
+    pub icon: u8,
+    pub name: u16,
+}
+
+/// Experience for the player's current form from outside the prizes (`FUN_001d4078` Valor hits,
+/// `FUN_001d40e0` Wisdom / Final defeats): applied by `FUN_001d3f88` when the player is in `form`. The
+/// rules are `valor_hit_exp` and `defeat_exp`; the sender is the hit / defeat code.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FormExpGain {
+    pub form: u8,
+    pub amount: i32,
+}
+
 // ---------------------------------------------------------------------------------------------------
 // Item objects (FUN_001bd490): dropped items as objects PRIZE_BOX_YELLOW / RED / BLUE / GREEN
 
@@ -751,9 +903,12 @@ pub struct ItemDrop {
 #[derive(Message, Clone, Copy, Debug)]
 pub struct CollectAll;
 
-/// The player's pickup glow (`Glow`).
+/// The player's pickup glow (`Glow`) and the handle of its effect (the player's +0xae4).
 #[derive(Resource, Default)]
-pub struct PickupGlow(pub Glow);
+pub struct PickupGlow(pub Glow, pub Option<crate::fx::FxHandle>);
+
+/// The system effect the pickup glow starts (`FUN_00175c28`: `FUN_001db868(.., 6, ..)` on the system file 0x1c954d8).
+pub const GLOW_EFFECT: u16 = 6;
 
 /// The kind's look from `pppRyjMegaBirthPrize`'s parameters (+4 + 12 * kind).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -808,6 +963,8 @@ pub struct PrizeLib {
     /// `sstm` +0x70 (form timer per unit), +0x78 (drive gain while charging), +0x7c (charge per MP).
     sstm: [f32; 3],
     draws: Vec<KindDraw>,
+    /// The growth chains of `FUN_001d3f18` (0x37c556).
+    pub chains: GrowthChains,
 }
 
 #[derive(Component)]
@@ -838,6 +995,9 @@ impl Plugin for PrizePlugin {
             .add_message::<MunnyGained>()
             .add_message::<ItemDrop>()
             .add_message::<CollectAll>()
+            .add_message::<ItemObtained>()
+            .add_message::<FormExpGain>()
+            .init_resource::<ObtainedLog>()
             .init_resource::<PrizePool>()
             .init_resource::<PickupGlow>();
         let Some(disc) = app.world().get_resource::<Disc>() else { return };
@@ -865,10 +1025,10 @@ impl Plugin for PrizePlugin {
         if pax.is_none() {
             warn!("prize: obj/PRIZE.mdlx has no readable effect file; prizes run but are not drawn");
         }
-        app.insert_resource(PrizeLib { consts, sstm, draws: Vec::new() })
+        app.insert_resource(PrizeLib { consts, sstm, draws: Vec::new(), chains: GrowthChains::from_exe(&elf).unwrap_or_default() })
             .insert_resource(PrizePax(pax.map(Arc::new)))
             .add_systems(Startup, build_draws)
-            .add_systems(FixedUpdate, (prize_test, spawn_drops, run_prizes).chain().in_set(Sim::EffectTick))
+            .add_systems(FixedUpdate, (prize_test, form_exp_test, spawn_drops, run_prizes).chain().in_set(Sim::EffectTick))
             .add_systems(Update, show_prizes);
     }
 }
@@ -1115,11 +1275,42 @@ fn prize_test(
     }
 }
 
+/// Harness aid, not game behaviour: `KH2_FORMHITS=<n>[@<s>]` counts as `n` hits Sora lands at that time
+/// (default 6 s), `KH2_FORMDEFEATS=<id>,..[@<s>]` as defeats of objects with those ids; each sends the
+/// `FormExpGain` that `valor_hit_exp` / `defeat_exp` give for the form Sora is in (the hit and defeat code is
+/// not wired to them yet).
+fn form_exp_test(time: Res<Time>, drive: Option<Res<crate::drive::DriveState>>, mut out: MessageWriter<FormExpGain>, mut done: Local<[bool; 2]>) {
+    let form = drive.as_ref().map_or(0, |d| d.object_form());
+    for (i, key) in ["KH2_FORMHITS", "KH2_FORMDEFEATS"].into_iter().enumerate() {
+        if done[i] {
+            continue;
+        }
+        let Ok(v) = std::env::var(key) else {
+            done[i] = true;
+            continue;
+        };
+        let (list, at) = v.split_once('@').map_or((v.as_str(), 6.0), |(l, t)| (l, t.parse().unwrap_or(6.0)));
+        if time.elapsed_secs() < at {
+            continue;
+        }
+        done[i] = true;
+        let gains: Vec<i32> = if i == 0 {
+            (0..list.trim().parse::<u32>().unwrap_or(0)).map(|_| valor_hit_exp(form)).collect()
+        } else {
+            list.split(',').filter_map(|x| x.trim().parse::<u32>().ok()).map(|id| defeat_exp(form, id)).collect()
+        };
+        info!("prize: {key} in form {form}: experience {gains:?}");
+        for amount in gains.into_iter().filter(|&a| a > 0) {
+            out.write(FormExpGain { form, amount });
+        }
+    }
+}
+
 /// The player-side state a pickup changes or reads.
 type PlayerState<'w> = (
     Option<ResMut<'w, crate::magic::MagicState>>,
     Option<ResMut<'w, crate::drive::DriveState>>,
-    Option<Res<'w, crate::abilities::Abilities>>,
+    Option<ResMut<'w, crate::abilities::Abilities>>,
     Option<Res<'w, crate::drive::DriveRules>>,
 );
 
@@ -1135,22 +1326,41 @@ fn run_prizes(
     mut prizes: Query<(Entity, &mut PrizeObj, &mut Transform), Without<Sora>>,
     mut sora: Query<(&Transform, &mut Sora)>,
     bodies: Query<(&Animator, &GlobalTransform)>,
-    (mut magic, mut drive, abilities, rules): PlayerState<'_>,
+    (mut magic, mut drive, mut abilities, rules): PlayerState<'_>,
     mut progress: Option<ResMut<crate::progress::Progress>>,
     (mut sounds, mut munny): (MessageWriter<crate::audio::PlaySe>, MessageWriter<MunnyGained>),
     (mut collect, mut glow): (MessageReader<CollectAll>, ResMut<PickupGlow>),
+    (mut fx_start, mut fx_stop): (MessageWriter<crate::fx::StartBoundSystemEffect>, MessageWriter<crate::fx::StopEffect>),
+    (mut log, area, mut gains): (ResMut<ObtainedLog>, Option<Res<crate::assets::CurrentArea>>, MessageReader<FormExpGain>),
 ) {
     let c = &lib.consts;
+    let place = area.as_ref().map_or((0, 0), |a| place_bytes(&a.name));
     let Ok((st, mut s)) = sora.single_mut() else { return };
+    // FUN_001d4078 / FUN_001d40e0: experience for the form the player is in (FUN_001d3f88 reads +0xb50).
+    for g in gains.read() {
+        if g.amount > 0 && drive.as_ref().is_some_and(|d| d.object_form() == g.form) {
+            let note = apply_form_exp(
+                (g.form, g.amount),
+                (progress.as_deref_mut(), drive.as_deref_mut(), rules.as_deref(), abilities.as_deref_mut()),
+                (&lib.chains, place, &mut log),
+                (&mut fx_start, s.body),
+            );
+            info!("prize: form experience +{}{note}", g.amount);
+        }
+    }
     let feet = st.translation / SCALE;
     let centre = bodies.get(s.body).ok().and_then(|(a, g)| shape_point(a, g, CENTRE_SHAPE)).unwrap_or(feet);
     let (feet_g, centre_g) = (flip(feet), flip(centre));
     let anti = drive.as_ref().is_some_and(|d| d.object_form() == kh2_tables::player::form::ANTI);
     let draw = abilities.as_ref().map_or(0.0, |a| a.block().draw_radius);
     let alive_player = s.hp > 0;
-    // FUN_00175cb0 (the player's update): the glow's frames run down.
+    // FUN_00175cb0 (the player's update): the glow's frames run down; at 0 the effect is told to end
+    // (FUN_001d9f48) and the handle cleared.
     if glow.0.tick(false) {
-        info!("prize: pickup glow (system effect 6) ends");
+        if let Some(h) = glow.1.take() {
+            fx_stop.write(crate::fx::StopEffect { handle: h, kill: false });
+        }
+        info!("prize: pickup glow (system effect {GLOW_EFFECT}) ends");
     }
     // FUN_001a40b8: every entry whose flag bit 0 is set, whatever its update (one already drawn in
     // starts again in mode 1 and pays again: FUN_001a3ad8 does not look). Not while the player is gone
@@ -1206,10 +1416,14 @@ fn run_prizes(
         // FUN_001a39b0, in its order: glow, HP, MP, drive (and Master Form experience), munny.
         let mut glow_note = String::new();
         if pick.glow > 0.0 {
-            // FUN_00175c28: system effect 6 bound to the player [not drawn: `fx` has no owner-bound
-            // system effect with an end; the timer runs].
+            // FUN_00175c28: system effect 6 bound to the player (his body model), its handle kept.
             let started = glow.0.start(pick.glow, false);
-            glow_note = format!(" (glow {} for {:.0} frames, not drawn)", if started { "starts" } else { "extended" }, glow.0.left);
+            if started {
+                let handle = crate::fx::FxHandle::new();
+                glow.1 = Some(handle);
+                fx_start.write(crate::fx::StartBoundSystemEffect { id: GLOW_EFFECT, owner: s.body, handle });
+            }
+            glow_note = format!(" (glow {} for {:.0} frames)", if started { "starts" } else { "extended" }, glow.0.left);
         }
         let hp0 = s.hp;
         if pick.hp > 0 {
@@ -1230,6 +1444,7 @@ fn run_prizes(
             }
         }
         let mut drive_note = String::new();
+        let mut form_gains: Vec<(u8, i32)> = Vec::new();
         if pick.drive > 0
             && let Some(d) = drive.as_deref_mut()
         {
@@ -1246,11 +1461,17 @@ fn run_prizes(
                 drive_note = format!(" (gauge {}.{:02})", d.points.whole, d.points.fraction);
             }
             // FUN_001d4148: in Master Form (+0xb50 == 3) the units are form experience (FUN_001d3f88).
-            if d.object_form() == kh2_tables::player::form::MASTER
-                && let (Some(pr), Some(r)) = (progress.as_deref_mut(), rules.as_deref())
-            {
-                drive_note += &master_form_exp(pr, d, &r.levels, pick.drive as i32);
+            if d.object_form() == kh2_tables::player::form::MASTER {
+                form_gains.push((kh2_tables::player::form::MASTER, pick.drive as i32));
             }
+        }
+        for (form, amount) in form_gains.drain(..) {
+            drive_note += &apply_form_exp(
+                (form, amount),
+                (progress.as_deref_mut(), drive.as_deref_mut(), rules.as_deref(), abilities.as_deref_mut()),
+                (&lib.chains, place, &mut log),
+                (&mut fx_start, s.body),
+            );
         }
         let mut munny_note = String::new();
         if pick.munny > 0 {
@@ -1272,33 +1493,108 @@ fn run_prizes(
     }
 }
 
-/// `FUN_001d3f88(player, amount)` for Master Form (form 3) on the game state: the record's
-/// experience and level (`add_form_exp`; the cap `FUN_001d3bd0` = 2 + the owned forms 1..4, 7
-/// instead of 6), and for each level reached `FUN_001d3da8`'s ability of the new level's `fmlv` row
-/// given to Sora (`FUN_001a18d8(ability, 1, 0)`). The minigame flag of `FUN_001b9bd8` (the manager
-/// `DAT_01d5dd20`) is taken as clear: the app has no such manager. Returns the log note.
-fn master_form_exp(pr: &mut crate::progress::Progress, d: &mut crate::drive::DriveState, levels: &kh2_tables::player::FormLevels, amount: i32) -> String {
-    let form = kh2_tables::player::form::MASTER;
+/// `FUN_001d3f88` and what follows a level-up: `form_exp` on the game state; after any level-up the
+/// effect 0x10 bound to the player (`FUN_001b5528`, once after the loop) and, while the player is in the
+/// form, its ability list rebuilt at the new level (`FUN_0019fb98`'s stat rebuild, `drive::refresh_form_list`).
+/// `FUN_001d5718` (progress flags 0x6a, 0x67, 0x68 by the form and summon levels) is not ported (`Progress`
+/// has no flag setter). Returns the log note.
+fn apply_form_exp(
+    (form, amount): (u8, i32),
+    (pr, d, rules, ab): (Option<&mut crate::progress::Progress>, Option<&mut crate::drive::DriveState>, Option<&crate::drive::DriveRules>, Option<&mut crate::abilities::Abilities>),
+    (chains, place, log): (&GrowthChains, (u8, u8), &mut ObtainedLog),
+    (fx, body): (&mut MessageWriter<crate::fx::StartBoundSystemEffect>, Entity),
+) -> String {
+    let (Some(pr), Some(d), Some(r)) = (pr, d, rules) else { return String::new() };
+    let (mut note, ups) = form_exp(pr, d, &r.levels, chains, form, amount, place, log);
+    if !ups.is_empty() {
+        fx.write(crate::fx::StartBoundSystemEffect { id: LEVEL_UP_EFFECT, owner: body, handle: crate::fx::FxHandle::new() });
+        note += &format!(" (level-up effect {LEVEL_UP_EFFECT:#x}");
+        match ab.and_then(|ab| crate::drive::refresh_form_list(d, &r.levels, ab, form)) {
+            Some(list) => note += &format!(", form list rebuilt {list:?})"),
+            None => note += ")",
+        }
+    }
+    note
+}
+
+/// The system effect `FUN_001b5528` starts on the player after a form level-up (`FUN_001db868(.., 0x10, 1,
+/// 1, 0x2715, player)`).
+pub const LEVEL_UP_EFFECT: u16 = 0x10;
+/// The first line of the form's level-up popup (`FUN_001b5588(popup, 0xc3f2)` in `FUN_001d3da8`).
+pub const FORM_POPUP_LINE: u16 = 0xc3f2;
+
+/// `FUN_001d3f88(player, amount)` on the game state for the player's form `form`: the record's experience
+/// and level (`add_form_exp`; the cap `FUN_001d3bd0` = 2 + the owned forms 1..4, 7 instead of 6), and for
+/// each level reached `FUN_001d3da8` (`form_level_up`): the growth upgrade's ids and the row's ability
+/// given to Sora (`FUN_001a18d8(ability, 1, 0)`), each written to the obtained log with source 5. The
+/// minigame flag of `FUN_001b9bd8` (the manager `DAT_01d5dd20`) is taken as clear: the app has no such
+/// manager. The record lists themselves (`FUN_001d3f18` on the form's 16 slots and Sora's 64) are not
+/// written here (`Progress` has no setter for them; the form list the player uses is rebuilt from the level
+/// by `drive::refresh_form_list`). Returns the log note and the level-ups.
+#[allow(clippy::too_many_arguments)]
+fn form_exp(
+    pr: &mut crate::progress::Progress,
+    d: &mut crate::drive::DriveState,
+    levels: &kh2_tables::player::FormLevels,
+    chains: &GrowthChains,
+    form: u8,
+    amount: i32,
+    place: (u8, u8),
+    log: &mut ObtainedLog,
+) -> (String, Vec<FormLevelUp>) {
     let owned = (1..=4u8).filter(|&f| pr.owns_form(f)).count() as u32;
     let cap = kh2_tables::player::form_level_cap(owned);
     let (level0, exp0) = (pr.form_level(form), pr.form_exp(form) as i32);
     let (level, exp, ups) = add_form_exp(levels, form, level0, exp0, amount, cap);
     pr.set_form_level(form, level);
     pr.set_form_exp(form, exp as u32);
-    let mut note = format!(" (Master Form experience {exp0}->{exp}, level {level0}");
+    let name = ["", "Valor", "Wisdom", "Master", "Final", "Anti"].get(form as usize).copied().unwrap_or("?");
+    let mut note = format!(" ({name} Form experience {exp0}->{exp}, level {level0}");
+    let mut done = Vec::new();
     for &l in &ups {
-        // FUN_001d3da8: the row of the new level; its ability (+2) goes to Sora (FUN_001a18d8). The
-        // growth ability upgrade in the record lists (FUN_001d3f18), the level-up popups (FUN_001b5788),
-        // the stat rebuild (FUN_0019fb98) and the level-up effect 0x10 (FUN_001b5528) are not ported.
-        let ability = levels.get(form, l).map_or(0, |r| r.ability);
-        let given = ability != 0 && pr.give(ability, crate::progress::SORA, false);
-        note += &format!(" -> {l}{}", if ability != 0 { format!(" (ability {ability:#x}{})", if given { "" } else { " refused" }) } else { String::new() });
+        let up = form_level_up(levels, chains, form, l);
+        let key = |pr: &crate::progress::Progress, id: u16| pr.items().get(id).is_some_and(|i| i.is_key());
+        note += &format!(" -> {l}");
+        if let Some((form_id, sora_id)) = up.growth {
+            // FUN_001d3f18 twice; the obtained log gets Sora's id (FUN_001d0828(id, 1, 5)), whose
+            // "obtained once" bit is not set by the upgrade [the bit is read as clear]. Sora's 64 slots
+            // are worked out on a copy: `Progress` has no setter for an ability slot.
+            let mut sora = [0u16; 64];
+            for (slot, id, on) in pr.ability_slots(crate::progress::SORA) {
+                if let Some(x) = sora.get_mut(slot) {
+                    *x = id | if on { 0x8000 } else { 0 };
+                }
+            }
+            let before = sora;
+            growth_upgrade(&mut sora, chains, form, up.display.saturating_sub(1));
+            let changed = (0..64).find(|&i| sora[i] != before[i]).map_or("no slot matches".to_string(), |i| format!("slot {i} {:#x} -> {:#x}", before[i], sora[i]));
+            note += &format!(" (growth: form {form_id:#x}, Sora {sora_id:#x}: {changed}, not written)");
+            log.push(obtained_record(place, sora_id, key(pr, sora_id), false, 1, 5));
+        }
+        if up.ability != 0 {
+            let given = pr.give(up.ability, crate::progress::SORA, false);
+            note += &format!(" (ability {:#x}{})", up.ability, if given { "" } else { " refused" });
+            // FUN_001a18d8 set the obtained bit just before when it gave the item [inferred: `Progress`
+            // does not show the bit; a refused gift leaves it as it was, read as clear].
+            log.push(obtained_record(place, up.ability, key(pr, up.ability), given, 1, 5));
+        }
+        // FUN_001b5788 twice: the form's popup (title: the form's item name; lines: message 0xc3f2, the
+        // form's growth id) and Sora's (title: message 0x37ba90[1]; lines: Sora's growth id, the ability),
+        // each queued in the four-entry popup queue of DAT_003587e8 + 0x24f8 (FUN_00152ed0) when it has a
+        // line. Not drawn (the popup object's draw was not followed): logged.
+        let sora_lines: Vec<String> = up.growth.map(|g| g.1).into_iter().chain((up.ability != 0).then_some(up.ability)).filter(|&i| i != 0).map(|i| format!("{i:#x}")).collect();
+        info!(
+            "prize: form level-up popups (not drawn): {name} Form LV{l}: [msg {FORM_POPUP_LINE:#x}{}]; Sora: {}",
+            up.growth.map_or(String::new(), |g| format!(", {:#x}", g.0)),
+            if sora_lines.is_empty() { "no popup".to_string() } else { format!("[{}]", sora_lines.join(", ")) }
+        );
+        done.push(up);
     }
     if let Some(slot) = d.level.get_mut(form as usize) {
         *slot = level;
     }
     note += &format!(", cap {cap})");
-    note
+    (note, done)
 }
 
 /// The draw (`FUN_00203378` per pool entry): the kind's shape frame as a sprite facing the camera
@@ -1361,6 +1657,8 @@ pub struct ItemLib {
     reach: f32,
     height: f32,
     icon: HashMap<u16, u8>,
+    /// The item's name message (+8) and its `Icon2` (+0x17), for its message (`FUN_001a1ee0`).
+    names: HashMap<u16, (u16, u8)>,
     models: HashMap<u32, Arc<kh2_model::Model>>,
 }
 
@@ -1377,6 +1675,7 @@ impl ItemLib {
             )
         };
         let icon = items.iter().map(|i| (i.id, i.icon1)).collect();
+        let names = items.iter().map(|i| (i.id, (i.name, i.icon2))).collect();
         let mut models = HashMap::new();
         for &(obj, _) in &consts.boxes {
             if models.contains_key(&obj) {
@@ -1394,7 +1693,7 @@ impl ItemLib {
             }
         }
         info!("prize: item boxes {:?}, {} models", consts.boxes.iter().map(|(o, s)| format!("{o:#x} x{s}")).collect::<Vec<_>>(), models.len());
-        Some(ItemLib { consts, reach, height, icon, models })
+        Some(ItemLib { consts, reach, height, icon, names, models })
     }
 
     /// `FUN_001bd490`: the box row of an item (its byte +0x16), when the table has it.
@@ -1528,8 +1827,10 @@ fn run_items(
     mut progress: Option<ResMut<crate::progress::Progress>>,
     mut sounds: MessageWriter<crate::audio::PlaySe>,
     mut collect: MessageReader<CollectAll>,
+    (mut log, area, mut obtained): (ResMut<ObtainedLog>, Option<Res<crate::assets::CurrentArea>>, MessageWriter<ItemObtained>),
 ) {
     let c = &lib.consts;
+    let place = area.as_ref().map_or((0, 0), |a| place_bytes(&a.name));
     let Ok((st, s)) = sora.single() else { return };
     let feet = st.translation / SCALE;
     let centre = bodies.get(s.body).ok().and_then(|(a, g)| shape_point(a, g, CENTRE_SHAPE)).unwrap_or(feet);
@@ -1543,7 +1844,10 @@ fn run_items(
         if o.absorb.is_some() && !collect_all {
             // FUN_001bd878: the collector gone (FUN_0019a3f8) or the frames out: the message and the end.
             if !alive_player || !item_absorb_step(o, c, centre_g) {
-                info!("prize: item {:#x} reached Sora (its 'obtained' message FUN_001a1f40 -> FUN_00138498 is not shown)", o.id);
+                // FUN_001a1f40(item, -1): byte 9 with the item's Icon2, then its name; FUN_00138498 queues it.
+                let (name, icon) = lib.names.get(&o.id).copied().unwrap_or((0, 0));
+                obtained.write(ItemObtained { item: o.id, icon, name });
+                info!("prize: item {:#x} reached Sora: its message (icon {icon}, name {name:#x}) goes to the queue", o.id);
                 commands.entity(e).despawn();
             }
             continue;
@@ -1567,10 +1871,16 @@ fn run_items(
         }
         // FUN_001bd1d8 / the tail of FUN_001bd358: the room for one (FUN_001a1768 to the player's
         // party id, NeoStatus 1 = Sora) and the gift (FUN_001a18d8); with no room nothing is given
-        // and the item is drawn in all the same. The obtained log FUN_001d0828 is not written.
+        // and the item is drawn in all the same. A gift goes into the obtained log (FUN_001d0828(item, room,
+        // 0)); FUN_001a18d8 has just set a non-key item's "obtained once" bit, so its record is not new.
         let note = match progress.as_deref_mut() {
             Some(p) => match give_item(p, o.id) {
-                Some(to) => format!("given to {} (count {})", if to == crate::progress::INVENTORY { "the inventory" } else { "Sora's battle item slots" }, p.item_count(o.id)),
+                Some(to) => {
+                    let key = p.items().get(o.id).is_some_and(|i| i.is_key());
+                    log.push(obtained_record(place, o.id, key, !key, to as u8, 0));
+                    let room = if to == crate::progress::INVENTORY { "the inventory" } else { "Sora's battle item slots" };
+                    format!("given to {room} (count {}), obtained log record {}", p.item_count(o.id), (log.next + OBTAINED_LOG - 1) % OBTAINED_LOG)
+                }
                 None => format!("refused (no room, count {}): drawn in all the same", p.item_count(o.id)),
             },
             None => "no game state".to_string(),
@@ -2032,6 +2342,79 @@ mod tests {
         // Cap 3 (one form owned): level 3 is the top; the experience is cleared there.
         assert_eq!(add_form_exp(&levels, 3, 1, 0, 100, 3), (3, 0, vec![2, 3]));
         assert_eq!(add_form_exp(&levels, 3, 3, 0, 5, 3), (3, 0, vec![]));
+    }
+
+    /// `FUN_001d3f18` on the executable's chains (0x37c556): rows 1..4 are four-level chains; an empty slot
+    /// takes level 1, the level-1 id becomes level 2 with bit 15 kept, nothing else changes; the id at the
+    /// level comes back either way. `form_level_up` on the disc's `fmlv` rows of Master Form: every
+    /// level-up whose display level rises names the chain's ids (form at the display level, Sora one below).
+    /// Skips without an ISO.
+    #[test]
+    fn form_level_ups_upgrade_the_growth_chain() {
+        let Some(elf) = exe() else { return eprintln!("skipped: no disc (set KH2_ISO)") };
+        let chains = GrowthChains::from_exe(&elf).expect("chains");
+        eprintln!("growth chains {:x?}", chains.0);
+        for f in 1..=4u8 {
+            assert_eq!(chains.at(f, 0), 0, "form {f}: level 0 is none");
+            assert!((1..=4).all(|l| chains.at(f, l) != 0), "form {f}: four levels");
+        }
+        let (l1, l2) = (chains.at(3, 1), chains.at(3, 2));
+        let mut list = [0x8100u16, 0, 0, 0];
+        assert_eq!(growth_upgrade(&mut list, &chains, 3, 1), l1);
+        assert_eq!(list, [0x8100, l1, 0, 0], "the first empty slot takes level 1");
+        list[1] |= 0x8000;
+        assert_eq!(growth_upgrade(&mut list, &chains, 3, 2), l2);
+        assert_eq!(list, [0x8100, 0x8000 | l2, 0, 0], "level 1 becomes level 2, still equipped");
+        let mut none = [0x8100u16, 0x100];
+        assert_eq!(growth_upgrade(&mut none, &chains, 3, 3), chains.at(3, 3));
+        assert_eq!(none, [0x8100, 0x100], "no level-2 slot: nothing changes");
+        let iso = crate::assets::iso_path().expect("iso");
+        let rules = crate::drive::DriveRules::load(&Disc::open(&iso)).expect("drive rules");
+        let mut rises = 0;
+        for level in 2..=7u8 {
+            let up = form_level_up(&rules.levels, &chains, 3, level);
+            let (row, prev) = (rules.levels.get(3, level).expect("row"), rules.levels.get(3, level - 1).expect("prev"));
+            eprintln!("Master LV{level}: display {} (before {}), {up:x?}", row.display_level, prev.display_level);
+            assert_eq!(up.ability, row.ability);
+            match up.growth {
+                Some((f, s)) => {
+                    rises += 1;
+                    assert_eq!((f, s), (chains.at(3, row.display_level), chains.at(3, row.display_level - 1)));
+                }
+                None => assert!(row.display_level <= prev.display_level),
+            }
+        }
+        assert!(rises > 0, "the display level rises somewhere between 2 and 7");
+    }
+
+    /// `FUN_001d4078` / `FUN_001d40e0`: Valor gains on hits, Wisdom on ids 1000..=2011, Final on 3000..=4008.
+    #[test]
+    fn form_experience_from_hits_and_defeats() {
+        use kh2_tables::player::form;
+        assert_eq!((valor_hit_exp(form::VALOR), valor_hit_exp(form::MASTER), valor_hit_exp(0)), (1, 0, 0));
+        assert_eq!((defeat_exp(form::WISDOM, 999), defeat_exp(form::WISDOM, 1000), defeat_exp(form::WISDOM, 2011), defeat_exp(form::WISDOM, 2012)), (0, 1, 1, 0));
+        assert_eq!((defeat_exp(form::FINAL, 2999), defeat_exp(form::FINAL, 3000), defeat_exp(form::FINAL, 4008), defeat_exp(form::FINAL, 4009)), (0, 1, 1, 0));
+        assert_eq!(defeat_exp(form::VALOR, 1500), 0);
+        assert_eq!(defeat_exp(form::FINAL, 1500), 0);
+    }
+
+    /// `FUN_001d0760` / `FUN_001d0688`: the ring of 32 overwrites the oldest; the "new" bit is set for a
+    /// key item or an item whose "obtained once" bit is clear; the place bytes come from the area name.
+    #[test]
+    fn the_obtained_log_is_a_ring_of_32() {
+        let mut log = ObtainedLog::default();
+        for i in 0..33u16 {
+            log.push(obtained_record((2, 4), i, false, true, 1, 0));
+        }
+        assert_eq!(log.next, 1);
+        assert_eq!(log.records[0].item, 32, "the 33rd record took the first slot");
+        assert_eq!(log.records[1].item, 1);
+        assert!(!log.records[1].new);
+        assert!(obtained_record((0, 0), 5, true, true, 1, 5).new, "a key item is always new");
+        assert!(obtained_record((0, 0), 5, false, false, 1, 5).new, "never obtained before: new");
+        assert_eq!(obtained_record((0, 0), 0x8005, false, true, 1, 5).item, 5, "15 bits");
+        assert_eq!(place_bytes("tt04"), (2, 4));
+        assert_eq!(place_bytes("hb10"), (4, 10));
     }
 
     /// FUN_001c5808 mode 1 (collect-all) runs 80 frames with its own constants; mode 0 runs 40.

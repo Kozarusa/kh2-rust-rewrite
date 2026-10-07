@@ -22,7 +22,9 @@ use bevy::prelude::*;
 use kh2_image::text::{Style, Token};
 
 use super::item_pages::{count_text, fill, label, node, set_help, stock, tokens_of, ExeTables, ItemRow, ItemsMenu, Stack};
-use super::{Menu, Phase};
+use super::new_tags::NewTags;
+use super::pictures::Pictures;
+use super::{help, Menu, Phase, Switch};
 use crate::abilities::Abilities;
 use crate::assets::Disc;
 use crate::audio::PlaySe;
@@ -201,6 +203,10 @@ pub enum Key {
     Next,
     /// -6: the Auto-Reload switch of a battle item row (`FUN_00269580`'s case -6).
     Toggle,
+    /// -5: to the Abilities pages (page 2 goes to page 0x10).
+    Switch,
+    /// -7: the Help overlay (page 2 on an Items row or a form's row, pages 6 and 9).
+    Help,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -216,6 +222,10 @@ pub enum Effect {
     Settle,
     /// Back to page 1 (the character list of Items).
     Leave,
+    /// -5: hand over to the Abilities pages (page 0x10).
+    Switch,
+    /// -7: open the Help overlay with a topic, to come back to the page.
+    Help { topic: u8, ret: u16 },
     Close,
 }
 
@@ -328,6 +338,12 @@ impl Machine {
                     }
                     return fx;
                 }
+                // `FUN_00269580`: -5 sets the target page 0x10 (sound kind 2).
+                if key == Key::Switch {
+                    fx.push(Sound(snd::CONFIRM));
+                    fx.push(Effect::Switch);
+                    return fx;
+                }
                 let Some(row) = self.current() else {
                     if key == Key::Cancel {
                         fx.push(Sound(snd::CANCEL));
@@ -353,6 +369,11 @@ impl Machine {
                         if game.members() < 2 {
                             fx.push(Sound(snd::REFUSED));
                         }
+                    }
+                    // `FUN_00269580` case -7: topic 0 on an Items row, topic 3 on a form's row; nothing elsewhere.
+                    Key::Help if matches!(row.cat, Cat::Item | Cat::Form) => {
+                        fx.push(Sound(snd::CONFIRM));
+                        fx.push(Effect::Help { topic: if row.cat == Cat::Item { 0 } else { 3 }, ret: LIST });
                     }
                     // Only the Items rows allow the key (the mask's 0x200); the validity callback refuses an
                     // empty row.
@@ -451,6 +472,11 @@ impl Machine {
                         self.page = LIST;
                         fx.push(Page(LIST));
                     }
+                    // `FUN_0026a528` case -7: page 9 (the Items list) topic 0, page 6 (the forms' weapons) topic 3.
+                    Key::Help if matches!(cat, Cat::Item | Cat::Form) => {
+                        fx.push(Sound(snd::CONFIRM));
+                        fx.push(Effect::Help { topic: if cat == Cat::Item { 0 } else { 3 }, ret: page });
+                    }
                     _ => {}
                 }
             }
@@ -469,6 +495,8 @@ mod group {
     pub const HAND: usize = 0x19;
     pub const GLINT: [usize; 3] = [0x1b, 0x1d, 0x1c];
     pub const WINDOW: [usize; 2] = [0xe3, 0xe4];
+    /// The item window of page 2 (enter, hold).
+    pub const ITEM_WINDOW: [usize; 2] = [0x11f, 0x120];
     pub const INFO_OK: [usize; 3] = [6, 8, 7];
     pub const INFO_ASK: [usize; 3] = [9, 0xb, 0xa];
     pub const LIST_ROW: usize = 0x123;
@@ -514,6 +542,8 @@ pub struct EquipTables {
     pub form_labels: [u32; 6],
     /// 0x381a48: the pick page's list window per category (enter, leave, hold).
     pub windows: [[u16; 3]; 5],
+    /// 0x381a78: the item window of each pick page, with the picture (enter, leave, hold).
+    pub pic_windows: [[u16; 3]; 5],
     /// 0x381a98: the pick row plate per category, idle then selected.
     pub pick_plates: [[u16; 2]; 5],
     /// 0x382460: the item type whose icon an empty row of the category shows (0xffff for the weapon).
@@ -532,6 +562,7 @@ impl EquipTables {
             t.labels[i] = msg(0x0038_1a18 + 2 * k)?;
             for e in 0..3u32 {
                 t.windows[i][e as usize] = w(0x0038_1a48 + 6 * k + 2 * e)?;
+                t.pic_windows[i][e as usize] = w(0x0038_1a78 + 6 * k + 2 * e)?;
             }
             t.pick_plates[i] = [w(0x0038_1a98 + 2 * k)?, w(0x0038_1a98 + 2 * (k + 5))?];
             t.empty_types[i] = w(0x0038_2460 + 2 * k)?;
@@ -567,8 +598,12 @@ struct Ui {
     rows: Vec<usize>,
     tags: Vec<usize>,
     pick_window: usize,
+    /// The item window with the picture (page 2: groups 0x11f, 0x120; the pick pages: `pic_windows`).
+    item_window: usize,
     pick_rows: Vec<usize>,
     pick_counts: Vec<usize>,
+    /// The NEW tag of each pick row (a child of the row; stage M7).
+    pick_new: Vec<usize>,
     info: usize,
     info_text: usize,
     info_rows: Vec<usize>,
@@ -687,6 +722,12 @@ fn keys_of(keys: &ButtonInput<KeyCode>, held: &mut (i8, f32), dt: f32) -> Vec<Ke
     if any(&[KeyCode::KeyY]) {
         out.push(Key::Toggle);
     }
+    if any(&[KeyCode::KeyX]) {
+        out.push(Key::Switch);
+    }
+    if any(&[KeyCode::Tab]) {
+        out.push(Key::Help);
+    }
     out
 }
 
@@ -725,6 +766,8 @@ fn input(
     mut progress: Option<ResMut<Progress>>,
     mut abilities: Option<ResMut<Abilities>>,
     real: Res<Time<Real>>,
+    mut ntags: ResMut<NewTags>,
+    mut pics: ResMut<Pictures>,
 ) {
     if !st.ready {
         return;
@@ -732,6 +775,10 @@ fn input(
     if st.machine.is_some() && matches!(menu.phase, Phase::Closing | Phase::Closed) {
         st.machine = None;
         st.held = (0, 0.0);
+        return;
+    }
+    // The Help overlay has the keys.
+    if menu.page == help::PAGE {
         return;
     }
     let Some(p) = progress.as_deref() else { return };
@@ -747,7 +794,7 @@ fn input(
         menu.page = LIST;
         info!("menu: page {LIST:#x}");
         keys.reset_all();
-        redraw(&mut st, &items, &mut scene, p);
+        redraw(&mut st, &items, &mut scene, p, &mut ntags, &mut pics);
         return;
     }
     let mut held = st.held;
@@ -820,6 +867,23 @@ fn input(
                     menu.page = super::item_pages::MEMBERS;
                     info!("menu: page {:#x}", super::item_pages::MEMBERS);
                 }
+                Effect::Switch => {
+                    // The list mask has 0x100 only while the Abilities row is on page 0.
+                    if menu.rows_has(1) {
+                        if let Some(ui) = &st.ui {
+                            for &i in &ui.all {
+                                scene.nodes[i].visible = false;
+                            }
+                        }
+                        st.machine = None;
+                        super::item_pages::hand_over(&mut items, &mut menu, &mut scene);
+                        menu.switch = Some(Switch::ToAbilities { second: true });
+                        info!("menu: switch to Abilities (page 0x10)");
+                    }
+                }
+                Effect::Help { topic, ret } => {
+                    menu.help = Some(help::Request { topic, ret });
+                }
                 Effect::Close => {
                     leave(&mut st, &mut items, &mut menu, &mut scene);
                     super::item_pages::leave(&mut items, &mut menu, &mut scene);
@@ -845,7 +909,7 @@ fn input(
     if st.machine.is_some()
         && let Some(p) = progress.as_deref()
     {
-        redraw(&mut st, &items, &mut scene, p);
+        redraw(&mut st, &items, &mut scene, p, &mut ntags, &mut pics);
     }
     keys.reset_all();
 }
@@ -866,8 +930,10 @@ fn ensure_ui(st: &mut EquipmentMenu, scene: &mut MenuScene) {
     let rows: Vec<usize> = (0..VISIBLE).map(|_| mk(scene, S)).collect();
     let tags: Vec<usize> = (0..VISIBLE).map(|_| mk(scene, S)).collect();
     let pick_window = mk(scene, S);
+    let item_window = mk(scene, S);
     let pick_rows: Vec<usize> = (0..PICK_VISIBLE).map(|_| mk(scene, S)).collect();
     let pick_counts: Vec<usize> = (0..PICK_VISIBLE).map(|_| mk(scene, None)).collect();
+    let pick_new: Vec<usize> = (0..PICK_VISIBLE).map(|_| mk(scene, S)).collect();
     let info = mk(scene, S);
     let info_text = mk(scene, None);
     let info_rows: Vec<usize> = (0..2).map(|_| mk(scene, S)).collect();
@@ -878,15 +944,16 @@ fn ensure_ui(st: &mut EquipmentMenu, scene: &mut MenuScene) {
         scene.nodes[r].parent = Some(window);
         scene.nodes[t].parent = Some(r);
     }
-    for (&r, &c) in pick_rows.iter().zip(&pick_counts) {
+    for ((&r, &c), &n) in pick_rows.iter().zip(&pick_counts).zip(&pick_new) {
         scene.nodes[r].parent = Some(pick_window);
         scene.nodes[c].parent = Some(r);
+        scene.nodes[n].parent = Some(r);
     }
     scene.nodes[info_text].parent = Some(info);
     for &r in &info_rows {
         scene.nodes[r].parent = Some(info);
     }
-    st.ui = Some(Ui { tabs, window, rows, tags, pick_window, pick_rows, pick_counts, info, info_text, info_rows, hand, glint, help, all });
+    st.ui = Some(Ui { tabs, window, rows, tags, pick_window, item_window, pick_rows, pick_counts, pick_new, info, info_text, info_rows, hand, glint, help, all });
 }
 
 /// Hides this module's nodes and gives the keys back to the Items module (page 1 redraws itself).
@@ -920,12 +987,30 @@ fn row_tokens(text: &crate::menu_text::MenuText, t: &EquipTables, items: &ItemsM
     }
 }
 
-fn redraw(st: &mut EquipmentMenu, items: &ItemsMenu, scene: &mut MenuScene, p: &Progress) {
+/// Where the item picture goes in a window group: the picture is 128 by 128 (`itempic/item-NNN.imd`, drawn at 100 % by
+/// `FUN_002830f8` when the window has no frame group), centred across the window's last-frame box and 10 below its top
+/// [inferred: the sprite's anchor was not read; clip 6 shows it near the top of the window].
+fn picture_rect(scene: &MenuScene, group: usize) -> [f32; 4] {
+    let Some(seq) = scene.seqs.get(1) else { return [0.0; 4] };
+    let quads = seq.quads(group, seq.last_frame(group), [0.0, 0.0], &Default::default());
+    let (mut x0, mut x1, mut y0) = (f32::MAX, f32::MIN, f32::MAX);
+    for p in quads.iter().flat_map(|q| q.pos) {
+        x0 = x0.min(p[0]);
+        x1 = x1.max(p[0]);
+        y0 = y0.min(p[1]);
+    }
+    let cx = (x0 + x1) / 2.0;
+    [cx - 64.0, y0 + 10.0, cx + 64.0, y0 + 138.0]
+}
+
+fn redraw(st: &mut EquipmentMenu, items: &ItemsMenu, scene: &mut MenuScene, p: &Progress, ntags: &mut NewTags, pics: &mut Pictures) {
     let Some(m) = st.machine.clone() else { return };
     let (Some(ui), Some(t)) = (st.ui.as_ref(), st.tables.clone()) else { return };
     let (tabs, window, rows, tags, pick_window, pick_rows, pick_counts, hand, glint, help) =
         (ui.tabs, ui.window, ui.rows.clone(), ui.tags.clone(), ui.pick_window, ui.pick_rows.clone(), ui.pick_counts.clone(), ui.hand, ui.glint, ui.help);
     let (info, info_text, info_rows) = (ui.info, ui.info_text, ui.info_rows.clone());
+    let pick_new = ui.pick_new.clone();
+    let item_window = ui.item_window;
     let all = ui.all.clone();
     let Some(text) = scene.text.take() else { return };
     let page = m.page;
@@ -977,6 +1062,13 @@ fn redraw(st: &mut EquipmentMenu, items: &ItemsMenu, scene: &mut MenuScene, p: &
     if matches!(page, LIST | QUESTION) {
         // The slot list (`FUN_00269028`): the window and nine rows with the tag of a category's first row.
         set(scene, window, group::WINDOW[0], Some(group::WINDOW[1]), was_of(window));
+        // The item window on the right (`FUN_00283018` + `FUN_0026b1c8`): groups 0x11f then 0x120, with the picture of
+        // the highlighted row's item (an empty row has none).
+        set(scene, item_window, group::ITEM_WINDOW[0], Some(group::ITEM_WINDOW[1]), was_of(item_window));
+        match m.current().and_then(|r| items.pictures.get(&r.id)).copied().filter(|&p| p >= 0 && m.current().is_some_and(|r| r.id != 0)) {
+            Some(pic) => pics.show(item_window, pic as u16, picture_rect(scene, group::ITEM_WINDOW[0])),
+            None => pics.clear(item_window),
+        }
         let mut prev_cat: Option<(Cat, usize)> = None;
         if m.scroll > 0 {
             let r = &m.rows[m.scroll - 1];
@@ -1019,6 +1111,12 @@ fn redraw(st: &mut EquipmentMenu, items: &ItemsMenu, scene: &mut MenuScene, p: &
         let cat = pick_cat.unwrap_or(Cat::Accessory);
         let w = t.windows[cat.index()];
         set(scene, pick_window, usize::from(w[0]), Some(usize::from(w[2])), was_of(pick_window));
+        let pw = t.pic_windows[cat.index()];
+        set(scene, item_window, usize::from(pw[0]), Some(usize::from(pw[2])), was_of(item_window));
+        match m.pick_item(m.pick).and_then(|id| items.pictures.get(&id)).copied().filter(|&p| p >= 0 && m.pick_item(m.pick) != Some(0)) {
+            Some(pic) => pics.show(item_window, pic as u16, picture_rect(scene, usize::from(pw[0]))),
+            None => pics.clear(item_window),
+        }
         let len = m.pick_len();
         let remove = cat.has_remove();
         let [idle, selected_plate] = t.pick_plates[cat.index()];
@@ -1035,6 +1133,14 @@ fn redraw(st: &mut EquipmentMenu, items: &ItemsMenu, scene: &mut MenuScene, p: &
                 (row_tokens(&text, &t, items, cat, 0, false), None)
             } else {
                 let s = m.cands[idx - usize::from(remove)];
+                // `FUN_0026bd08`: a fresh candidate carries the tag; `FUN_0026c068`: the cursor on it sets its seen bit.
+                if sel {
+                    ntags.view(s.id);
+                }
+                if let Some(g) = ntags.cell_group(s.id) {
+                    scene.nodes[pick_new[k]].off = scene.extent(1, usize::from(idle));
+                    set(scene, pick_new[k], g, None, false);
+                }
                 (row_tokens(&text, &t, items, cat, s.id, false), count_text(s.count))
             };
             scene.nodes[pick_rows[k]].label = Some(label(&text, tokens, 1, 15.0, if sel { at::SELECTED } else { at::COLOR }, 0, [0.0; 2]));

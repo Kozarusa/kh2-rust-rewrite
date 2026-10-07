@@ -105,7 +105,7 @@ after the handler, below; the result branches were checked on all three by the t
   (`FUN_001b9818`, the failure path), 4 -> 4.22 (global event 0xf).
 - Event 10: event 0x7b (a counter full) with slot 0 -> the player wins, with slot 1 -> he loses; event 0x4a (the
   clock ran out) -> he wins if his counter is above the opponent's, else he loses (a tie loses); event 90 -> he
-  loses (read in MS00; its sender was not traced). An empty counter (0xe) decides nothing. Win: host 4.42 tallies wins (`FUN_001d7560`, held at 99), at 10
+  loses (the player's knock-out, `FUN_001cec00`, section "The player's knock-out"). An empty counter (0xe) decides nothing. Win: host 4.42 tallies wins (`FUN_001d7560`, held at 99), at 10
   wins sets story flag 2281 if clear; global event 159 (host 1.41); word 0 = 1 unless the latch 0x35fec8 (4.55)
   is set, then the latch (4.54). Lose: 4.42 tallies losses, global event 160, word 0 = 3. After the handler, when
   a record bit is clear (0.89) and the win flag (global +0x10) is set, a condition sets that bit (0.69): MS00 bit
@@ -119,20 +119,128 @@ The app runs the script itself (`struggle::MissionHost` maps 0.14, 0.15, 0.69, 0
 `struggle: end <win|lose|time>: player <n> orbs, opponent <m>` (the deciding event: a full counter or the clock)
 and `struggle: result <win|lose> (global event 159|160)`; the enemies log `event 10 (global event 159) delivered`.
 
-**Gaps.** The end after the result is not in the app: the result layouts (records 1 to 3, `re_m`, `st_t`, `ed_t`),
-the mission end states of `FUN_001b9140` (states 2 to 4), the area event 7 / 8 the end fires, sounds 0xbcd..0xbcf
-of the header. The HUD stays up and the fighters go on (`FUN_001b9940`'s other calls, `FUN_001d4bf8`,
-`FUN_001befc0(8)`, `FUN_001bef48(5)`, `FUN_001adf78`, were not read). Story flags, record bits and tallies are kept
-for the session only (no save data). The match starts at once: the start layout (record 1) and the event that may
-play before (`FUN_001b9140` state 0 waits for no event) are not in the app. The global frame counter and the
-generator 0x3716a0 are the pool's own (the game shares them). `player_finish_struggle` (host 1.90 from the
-opponents' event 6): the name occurs only in the senders (nine `obj/N_EX5..6.._BTL*` files) among every named file
-under `obj/`, `msn/`, `ard/`, `limit/`, `magic/`, `event/`, `libretto*` and `00*` (decompressed and searched for
-the bytes), and the executable has no such string, so its receiver is unknown; the app delivers it to
-every scripted enemy and none has the mode. The pickup skips (`FUN_00185a08` / `FUN_00185a38` on +0x140 / +0x154,
-+0x168 bit 0x40) are not ported: any fighter in reach takes an orb. Sora's guard repel is taken as the whole guard
-state facing the attacker.
+**Gaps** (after WP-7E2). Story flags, record bits and tallies are kept for the session only (no save data). The
+global frame counter and the generator 0x3716a0 are the pool's own (the game shares them). Sora's guard repel is
+taken as the whole guard state facing the attacker.
 
+## The start and the end (WP-7E2, verified unless marked)
+
+**The header** (BAR type 2): +2 the id, +4 the flags, +6 a message id for `FUN_001b9a08` (0 here), +8 the mission
+kind (2 in all three Struggle files), +9 and +0xc (0x13: `FUN_001d3688` / `FUN_001d36b8` / `FUN_001b9ae0` at the
+start, not ported), +0xd an unlock byte for `FUN_001be6b8` (0), +0x10 / +0x14 / +0x18 the sounds of the start, the
+end and the failure (0xbcd, 0xbce, 0xbcf; interface sounds, `FUN_001b9ec8` -> `FUN_002c3318`, played as
+`PlaySe::number`). Test `the_struggle_layouts_and_sounds_come_from_the_header`.
+
+**Layout records** (opcodes 1, 2, 3, 0xd; `FUN_001b9378` -> `FUN_001d3490`): byte +4 is the BAR index of an event
+of the mission file (`re_m`, type 0x16), +5 the 1-based index of a picture (IMGD; the SEQD follows,
+`FUN_001d3390`), +6 an object the event binds (0 here). `FUN_001d3538` plays the record as an event (a 0xb0-byte
+event object, `FUN_00195898`, kind = the manager's default from `FUN_001b8b10`: record 1 0xc, 2 and 0xd 0xe, 3 0xf;
+record 1 with a picture becomes 0xd) whose picture pair goes to event +0x94 / +0x98. The Struggle's records: 1 =
+event 2 with picture 4 (`st_t`: "STRUGGLE!"), 2 = event 5 with picture 7 (`ed_t`), 3 = event 8 with picture 10
+(`ed_t`); no record 0xd. The `re_m` event: opcode 8 sets the end frame (500, `FUN_002245d0` case 8 ->
+`FUN_00226fb0`), opcode 0x50 at frame 11 starts a 2D object that plays one group of the event's picture at draw
+priority 26000 (`FUN_00225af0` -> `FUN_00225998`; the group is `DAT_0036bd30` 1..5, set from event +0x9c by
+`FUN_002232c8`, else 1). The event frame is the game frame count times 0.5 (`FUN_00222728`, 0x37ec50); the event
+ends when its frame reaches the end frame (`FUN_00222668`): 500 event frames are 1000 game frames.
+[inferred] the event object's own startup and fade states (`FUN_00195c08`) take no time in the port.
+
+**Event kinds** (`03system.bin` entry `evtp`, read by `FUN_001d1128`; byte 0 the kind, +2 flags): flag bit 3 clear
+-> players 0 and 1 lose control for the event (`FUN_00195ae0` -> `FUN_00196280` -> `FUN_001b7ce8`; `FUN_001b7d50`
+reads it; `FUN_00196170` -> `FUN_001962a0` gives it back); bit 2 clear -> the field HUD's draw tags 3 to 6 are hidden
+(`FUN_00196760` -> `FUN_0014ef48` -> `FUN_0013da78`; back at the end through `FUN_00196790`). Every event also
+pauses the clock with bit 4 (`FUN_0014c748(4)`, cleared by `FUN_001959f0`). Kind 0xd (the start) has 0x60: holds
+the player and hides the field HUD; 0xe (the end) 0x44 and 0xf (the failure) 0x64: hold the player, the field HUD
+stays.
+
+**The start** (`FUN_001b8ee8`'s tail): sound +0x10, record 1 plays at once. `FUN_001b9140` state 0 waits while an
+event plays and the player cannot act (`FUN_001794f0` -> `FUN_00176a18` -> `FUN_001b7d50`), then shows the
+elements (`FUN_001d5f00`; the clock starts with its record's show method) and goes to state 1. So the counters and
+the clock appear when "STRUGGLE!" ends, 1000 frames after the mission starts; the match clock runs from there. Test
+`the_start_layout_holds_the_hud_until_it_ends`. [inferred] The show is skipped when manager +4 bit 1 is set; its
+writer was not found.
+
+**The end.** Host 4.3 (`FUN_001b9780`) ends with event 7 (0x9c only for mission kind 0x1e with a set story flag on
+the trigger of (7, argument)); host 4.16 (`FUN_001b97f0`) with 0x10. Both go through `FUN_001b95a0`: header +0xd
+(none), the end sound (+0x14), the stop `FUN_001b9940` (manager +4 bits 4 and 0x10, clock stop, bit 2 of
+`DAT_0035d268`, `FUN_001d4bf8`, pause-menu records: clear 8, apply 5, `FUN_001adf78`), then record 2: with event
+0x10 or 0x9c, or a trigger for the event while the header lacks flag 0x40, state 2 (next frame 3: wait until the
+event has 4 or fewer frames left, `FUN_00196668` against 4.0 at 0x37bbc8, then record 0xd or a `00battle.bin` event,
+state 4); otherwise state 4 at once. State 4 waits for the event's end and runs the last step `FUN_001b96e0`: mission
+kinds 2, 0x19, 0x20 (`FUN_001b9c00`) or event 0x9c open the menu of pause-menu record 0x1a (`FUN_0024f330`) and the
+manager stays; otherwise the event goes to the area (`FUN_00197b70`): a trigger that takes it ends the manager
+(`FUN_001b9518`), event 8 with no trigger ends it with the game-over path (`FUN_001b9ce0`). Host 4.11
+(`FUN_001b9818`, the loss): the failure sound (+0x18), +0xb4 = 2 (record 3's select word: its picture shows group 2,
+"YOU LOSE"; record 2 shows group 1, "YOU WIN!"), record 3, the stop; with a trigger for event 8 or a picture on
+record 3 (`FUN_001b98a8`) the last step waits with event 8 (state 4), else the manager ends at once
+(`FUN_001b9ce0`). Host 4.22 (`FUN_001b9908`): the stop, the manager ends, global event 0xf. Tests
+`the_struggle_end_plays_its_layout_then_opens_the_menu`, `with_a_trigger_and_no_flag_0x40_the_end_waits_for_the_last_frames`,
+`area_triggers_match_by_event_and_argument`.
+
+In tt04 the Struggle header has flag 0x40 and kind 2: a win plays "YOU WIN!" (record 2, 1000 frames, the player held,
+the field HUD and the mission HUD with the final score stay), a loss "YOU LOSE" (record 3); then the menu 0x1a would
+open. The area triggers of the `btl` program and of the `evt` program with the same id (0xb6: events 0x8b and 0x8d,
+jumps) do not take event 7 or 8, and the mission kind sends neither to the area anyway. So the HUD does not come
+down at the end: it stays until the menu ends the manager. **Gaps:** the menu of record 0x1a (`FUN_0024f330`, the
+pause-menu record table of `DAT_01d5df08`) is not in the app: the manager, its HUD and the frozen clock stay after
+the last step (log `struggle: last step (FUN_001b96e0): mission kind 2 opens the menu of record 0x1a`). The app's
+player controller does not read the layout's control lock nor the stop (`Mission::control_locked`,
+`Mission::fight_stopped`; outside this package's files): Sora can still move and attack during "STRUGGLE!" and the
+result, and the counters then change before the HUD shows (they do not after the stop). `FUN_001be6b8`,
+`FUN_001d4bf8`, `FUN_001adf78`, the pause-menu records 5 and 8, the start's `FUN_001d3688` / `FUN_001b9ae0`,
+`FUN_001d5048` (equips item 0x180 on 0x33fec0 for missions 0x128..0x12a) and `FUN_001d5320` (the reverse at the
+end) are not ported. Event skipping was not read.
+
+What the opponents do at the end: they get global event 159 / 160 as event 10 (`gameset_voice_*` modes); host
+1.34 `event_active` now answers true while a layout plays (the app's only events).
+
+**The fight stops** (`FUN_001b9940`, bit 2 of `DAT_0035d268`): readers `FUN_00175ad8` (the player's method +0x60,
+`FUN_001789d8`: busy), `FUN_00190668` (spawn groups `FUN_001989d8` and code at 0x189b64: no new spawns),
+`FUN_001b70b8` (every command answers 5, refused: `FUN_001ba2c0`). In the app the counters no longer move after the
+stop (`FUN_001b9560`) and the clock is stopped; the rest needs the player controller and the command menu
+(outside-ownership).
+
+## The player's knock-out (verified)
+
+Header flag 0x100 -> bit 0x8000 of `DAT_0035d268` (`FUN_001b8d80`) has one reader, `FUN_001908b0`, called only by
+`FUN_0015b798`, a draw method (vtable 0x359008, created by `FUN_0015bc10` from area opcode 0xe): the bit hides that
+screen element [inferred: an area map marker]. It has nothing to do with the knock-out (the Struggle header has no
+0x100 anyway). The rule is bit 0x20000 of `DAT_0035d268`, set by host 1.317 in the Struggle script's event 3: the
+field player's class (vtable 0x360410, made by `FUN_001ce820`) has the knock-out method +0x5c = `FUN_001cec00`,
+called when HP part 0 reaches 0 (`FUN_00186238` -> `FUN_00186530`). With the bit it sends global event 0x5a (90)
+instead of the game-over paths (`FUN_001ad8e0` / `FUN_001ad810` / `FUN_001ad8a8`); the Struggle script takes event
+90 as a loss (host 4.11). Sora's HP does go to 0 (his lowest HP is the status record +8, 0 unless a script sets it,
+`FUN_0019f920` / `FUN_001a0030`). The same bit makes `FUN_001a0968` scale damage by the word at 0x1d5d7c8 plus 1
+(the player takes it divided, others multiplied); no writer of that word was found except the clear `FUN_001b81f8`,
+so the factor is 1. Port: `mission_tick` sends event 0x5a when Sora's HP falls to 0 with the bit set; test
+`a_knock_out_with_host_1_317_loses_the_struggle`; log `struggle: Sora knocked out: global event 0x5a`. The app still
+revives Sora after 3 s (`sora.rs`); in the original he stays down through the result [inferred from the absence of a
+revive in `FUN_001cec00`].
+
+## The pickup skips (verified)
+
+`FUN_001cadd8` passes a fighter by while `FUN_00185a08` (controller +0x140 present and the last requested motion
++0x154 in 10..39: the reaction motions) or `FUN_00185a38` (140..150) holds, or while +0x168 bit 0x40 is set. Port:
+`pickup_skipped` with the motion id from the body's animator (enemies: the slot; Sora: slot / 4, `Mset::slot`). The
+writer of +0x168 bit 0x40 was not found; it reads clear. Test `the_pickup_passes_fighters_in_reaction_motions`.
+
+## `player_finish_struggle` (verified)
+
+Searched every entry of the disc for the bytes (26,464 entries: `KH2.IDX`, the world sub-indexes named by the name
+list, and `OVL.IMG`, decompressed; a scratch test, not kept): they are in nine opponent files. `N_EX500_BTL`,
+`N_EX570_BTL`, `N_EX600_BTL`, `N_EX610_BTL` and `N_EX610_BTL2` hold it as a send argument (host 1.90, checked in the
+listings of `N_EX500_BTL` and `N_EX610_BTL`); `N_EX650_BTL10`, `N_EX670_BTL10`, `N_EX680_BTL10` and `N_EX690_BTL10`
+register a mode of that name (host 1.6, beside `enemy_finish_struggle`). Messages go to the mode machines of every
+object (`FUN_00187250`), so the receivers are those `_BTL10` opponents; none of them is in tt04's Struggle groups,
+so in the tt04 matches the message reaches no one, as in the app.
+
+## The target gauge over the TIME plate (inferred fix)
+
+The game binds the target gauge only when the player's ability bit 19 (ability 138, Scan) is set
+(`FUN_0019b4a8`: status +0x1cc bit 0x80000) and the target's +0x108 bit 0x4000 is clear (the opponents' scripts set
+only +0x108 flags 3 and 6, host 1.70). No mission rule that hides it was found (searched `FUN_0019b4a8`,
+`FUN_0019b3f0`, `FUN_00154498`, `FUN_00153f98`, `FUN_0013da78`, `FUN_0014f8b0`, `FUN_001b9378`, `FUN_001d6110`).
+[inferred] `hud_mission` hides the gauge (field gauge file group 38 and its children) while a counter stands on
+screen side 1, where the gauge would cover it and the TIME plate.
 ## HUD (verified unless marked)
 
 See `hud_mission.rs`'s header. Counter: frame group by side (0x24, 0x25, 0x23), group 3 (the ORBS plate and the
@@ -142,8 +250,8 @@ minutes, separator 0x17, seconds, separator 0x18, hundredths (digit width 18, se
 hidden from one hour on; the last seconds of a countdown start groups 0x1f, 0x1e, 0x1d, then 0x1c at 0
 (`FUN_00150d40`; its sound 0x2b is not played). [inferred] The children are placed at the translation of group 3's
 anchor animation (the pivots of -256 and -100 would put them off the screen); the stacking y of `FUN_0014f8b0` is
-taken as 0; the target gauge of the app (`hud_target`) still shows and overlaps the TIME plate (whether the game
-hides it in a mission was not traced). Widescreen: the user's edge rule (left counter left, right counter right).
+taken as 0; the target gauge of the app is hidden while a side-1 counter shows ([inferred], section "The target
+gauge over the TIME plate"). Widescreen: the user's edge rule (left counter left, right counter right).
 Test `counter_digits_blank_their_leading_zeros`, `the_struggle_pictures_have_the_groups_the_code_uses`.
 
 ## Harness
@@ -153,7 +261,10 @@ $env:KH2_WAVE_GROUP='b_50'; $env:KH2_NO_SOUND='1'; $env:KH2_NO_MUSIC='1'
 # won: Q at 6 s, J every 0.45 s from 6.3 s to 75 s; lost: no keys
 $env:KH2_SHOT_AT='70'; $env:KH2_SCREENSHOT='<png>'; target\debug\kh2-game.exe tt04
 ```
-`KH2_STRUGGLELOG=1` logs every orb taken.
+`KH2_STRUGGLELOG=1` logs every orb taken. WP-7E2 runs: `KH2_SHOT_AT=7` shows "STRUGGLE!" (the mission starts about
+4 s in); standing still, the opponent knocks Sora out and the log has `struggle: end knock-out`, then
+`layout failure (record 3)` and "YOU LOSE" on screen (shot at 58 s); attacking (the keys above, to 82 s) ends by
+time with `struggle: end time` and "YOU WIN!" (shot at 90 s); both end with `struggle: last step (FUN_001b96e0)`.
 
 ## Decompile index
 
@@ -170,3 +281,7 @@ $env:KH2_SHOT_AT='70'; $env:KH2_SCREENSHOT='<png>'; target\debug\kh2-game.exe tt
 | 0x184e80, 0x179078, 0x18b700, 0x1caeb0, 0x1cad50, 0x1cadd8, 0x1cac70, 0x1c0400, 0x184d98, 0x185a08, 0x185a38 | orbs |
 | 0x1a3cb0, 0x1c5b10, 0x1c5bf8, 0x1d54d8, 0x1d55d8, 0x1ce6c0 | the drop and the other two mini-game pools (subtypes 4 and 0xd, not in tt04) |
 | 0x197b70, 0x195718, 0x195690, 0x1954f8, 0x16b470, 0x1727b0, 0x173b70, 0x16e088, 0x16e0b8, 0x1a5328 | global events and the script's other hosts |
+| 0x1b8ee8, 0x1b9140, 0x1b95a0, 0x1b96e0, 0x1b9780, 0x1b97f0, 0x1b9818, 0x1b98a8, 0x1b9908, 0x1b9940, 0x1b9c00, 0x1b9ce0, 0x1b9518, 0x1b90d0, 0x1b8b10, 0x1ba100, 0x1ba140, 0x1ba150, 0x1b9ec8, 0x1d3490, 0x1d3538, 0x1d3390, 0x1d5320, 0x1d5048, 0x1d51b8, 0x1b9a08 | the start and the end (WP-7E2) |
+| 0x195898, 0x195ae0, 0x1959f0, 0x195c08, 0x196170, 0x1962a0, 0x196280, 0x196418, 0x196668, 0x196760, 0x1964d0, 0x1968c8, 0x1d1118, 0x1d1128, 0x193610, 0x1b7ce8, 0x1b7d18, 0x1b7d50, 0x2232c8, 0x2245d0, 0x226fb0, 0x225af0, 0x225998, 0x222668, 0x222728, 0x2236d8, 0x224b98, 0x1bef10, 0x1bef48, 0x1befc0, 0x1beff8, 0x1bf030, 0x138758 | events, event kinds, pause-menu records |
+| 0x1b8d80, 0x1908b0, 0x15b798, 0x15bc10, 0x1cec00, 0x1ce718, 0x1ce820, 0x178c88, 0x175f10, 0x186238, 0x186530, 0x1a0100, 0x19f920, 0x1a0030, 0x1a0968, 0x1b8218, 0x175ad8, 0x1789d8, 0x190668, 0x1b70b8, 0x1ba2c0 | flags of `DAT_0035d268`, the knock-out |
+| 0x185a08, 0x185a38, 0x1cadd8, 0x19b4a8, 0x19b3f0, 0x154498, 0x153f98, 0x13da78, 0x14f8b0, 0x187250 | pickup skips, target gauge, messages |

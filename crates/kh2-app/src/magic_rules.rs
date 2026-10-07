@@ -393,9 +393,191 @@ pub fn cast_turn(yaw: f32, pos: bevy::math::Vec3, at: bevy::math::Vec3, own: boo
     m.yaw
 }
 
+/// The numbers of host 1.248's scatter (FUN_001a6068, FUN_001a63c8), read from the user's executable.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScatterConsts {
+    /// The start angle's bucket size and jitter (0x37b5a8).
+    pub bucket_angle: f32,
+    /// The angle step between tries (0x37b5c4).
+    pub turn_angle: f32,
+    /// Scale of the generator's state to 0..1 (0x37b5ac; 0x37b5c8 in FUN_001a63c8).
+    pub rand_scale: f32,
+    pub rand_scale_h: f32,
+    /// The line test reaches this much beyond the candidate (0x37b5cc) ...
+    pub reach: f32,
+    /// ... and this much above it; also the radius step after eight tries (0x37b5d0).
+    pub step: f32,
+}
+
+impl ScatterConsts {
+    pub fn from_exe(elf: &[u8]) -> Option<ScatterConsts> {
+        let f = |va| crate::reaction_rules::exe_f32(elf, va);
+        Some(ScatterConsts { bucket_angle: f(0x37b5a8)?, rand_scale: f(0x37b5ac)?, turn_angle: f(0x37b5c4)?, rand_scale_h: f(0x37b5c8)?, reach: f(0x37b5cc)?, step: f(0x37b5d0)? })
+    }
+}
+
+/// The state host 1.248 keeps between calls: the game's shared random generator (`DAT_003716a0`,
+/// `x * 0x10dcd`; the app keeps its own instance, started at 1) and the bucket counter 0x35e9b0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScatterState {
+    pub seed: u32,
+    pub turn: i32,
+}
+
+impl Default for ScatterState {
+    fn default() -> Self {
+        ScatterState { seed: 1, turn: 0 }
+    }
+}
+
+impl ScatterState {
+    fn rand(&mut self) -> u32 {
+        self.seed = self.seed.wrapping_mul(0x10dcd);
+        self.seed
+    }
+}
+
+/// Host 1.248 (FUN_00172730 -> FUN_001a5ee0 with collision mask 2): a free place around `centre` for
+/// Final Thunder's extra strikes. FUN_001a6068: the radius is random between `r_min` and `r_max`, the
+/// start angle is a bucket of eighths of a turn taken by the counter (`(t & 4) >> 2 | t << 1`, the
+/// counter then steps modulo 8) plus a random part of one bucket. FUN_001a63c8: from the start angle,
+/// one eighth further each try, the candidate is the centre plus `(sin a, 0, cos a)` (the game's axes)
+/// times the radius, raised by a random height between `h_min` and `h_max`; it is taken when the line
+/// from the centre to a point `reach` further out and `step` above the candidate is clear (`clear`,
+/// FUN_001a5bf8); after eight tries the radius shrinks by `step`; below `r_min` the centre itself is
+/// returned. Positions in game units with Bevy's axes (the game's Y and Z negated).
+#[allow(clippy::too_many_arguments)]
+pub fn scatter_place(
+    centre: bevy::math::Vec3,
+    r_min: f32,
+    r_max: f32,
+    h_min: f32,
+    h_max: f32,
+    st: &mut ScatterState,
+    c: &ScatterConsts,
+    mut clear: impl FnMut(bevy::math::Vec3, bevy::math::Vec3) -> bool,
+) -> bevy::math::Vec3 {
+    use bevy::math::Vec3;
+    let mut r = r_min + st.rand() as f32 * c.rand_scale * (r_max - r_min);
+    let t = st.turn;
+    let bucket = ((t & 4) >> 2) | (t << 1);
+    let start = bucket as f32 * c.bucket_angle + st.rand() as f32 * c.rand_scale * c.bucket_angle;
+    st.turn = (t + 1).rem_euclid(8);
+    if r_min <= r {
+        let mut k = 0;
+        loop {
+            k += 1;
+            // FUN_0017bbc0 wraps the angle into -pi..pi first (sin and cos do not care but for the
+            // rounding).
+            let x = start + k as f32 * c.turn_angle;
+            let (pi, tau) = (std::f32::consts::PI, std::f32::consts::TAU);
+            let a = if x > 0.0 { (x + pi) % tau - pi } else { pi - (pi - x) % tau };
+            // Game (sin a, 0, cos a) in Bevy's axes.
+            let dir = Vec3::new(a.sin(), 0.0, -a.cos());
+            let h = h_min + st.rand() as f32 * c.rand_scale_h * (h_max - h_min);
+            let p = centre + dir * r + Vec3::Y * h;
+            let q = (centre + dir * (r + c.reach)).with_y(p.y + c.step);
+            if clear(centre, q) {
+                return p;
+            }
+            if k >= 8 {
+                k = 0;
+                r -= c.step;
+            }
+            if r < r_min {
+                break;
+            }
+        }
+    }
+    centre
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn toy_scatter() -> ScatterConsts {
+        let q = std::f32::consts::FRAC_PI_4;
+        ScatterConsts { bucket_angle: q, turn_angle: q, rand_scale: 1.0 / 4_294_967_296.0, rand_scale_h: 1.0 / 4_294_967_296.0, reach: 20.0, step: 100.0 }
+    }
+
+    /// Host 1.248 by hand: the bucket counter's order of eighths (0, 2, 4, 6, then 9, 11, 13, 15),
+    /// a clear first try at the radius and height window, and no clear place: eight tries per radius,
+    /// shrinking by the step, then the centre.
+    #[test]
+    fn scatter_place_by_hand() {
+        let c = toy_scatter();
+        let centre = bevy::math::Vec3::new(10.0, 5.0, -20.0);
+        let buckets: Vec<i32> = (0..8).map(|t: i32| ((t & 4) >> 2) | (t << 1)).collect();
+        assert_eq!(buckets, vec![0, 2, 4, 6, 9, 11, 13, 15]);
+        let mut st = ScatterState::default();
+        for _ in 0..10 {
+            let p = scatter_place(centre, 200.0, 500.0, -50.0, 50.0, &mut st, &c, |_, _| true);
+            let flat = (p - centre).with_y(0.0).length();
+            assert!((200.0..=500.0).contains(&flat), "{flat}");
+            assert!((p.y - centre.y).abs() <= 50.0);
+        }
+        assert_eq!(st.turn, 2, "the counter steps modulo 8");
+        let mut tries = 0;
+        let p = scatter_place(centre, 200.0, 500.0, -50.0, 50.0, &mut st, &c, |_, _| {
+            tries += 1;
+            false
+        });
+        assert_eq!(p, centre);
+        assert!(tries % 8 == 0 && (8..=32).contains(&tries), "{tries}");
+    }
+
+    /// Oracle (PLAYBOOK R2): FUN_001a5ee0 (host 1.248's body) run in kh2-ee on the user's executable
+    /// against `scatter_place`, with the line test FUN_001a5bf8 replaced by a stub that answers
+    /// always clear or never clear (it is the collision query, not part of the rule). The place, the
+    /// generator's state 0x3716a0 and the counter 0x35e9b0 after the call must agree.
+    #[test]
+    fn scatter_place_matches_fun_001a5ee0() {
+        let path = std::env::var("KH2_ISO")
+            .ok()
+            .or_else(|| std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../local/iso.txt")).ok().map(|s| s.trim().to_string()))
+            .filter(|p| std::path::Path::new(p).exists());
+        let Some(path) = path else {
+            eprintln!("skipped: no disc image (set KH2_ISO)");
+            return;
+        };
+        let mut a = kh2_archive::Archive::open(&path).expect("iso");
+        let elf = a.iso().read("SLUS_210.05").expect("exe");
+        let c = ScatterConsts::from_exe(&elf).expect("scatter constants");
+        let mut ee = kh2_ee::Ee::new();
+        ee.load_elf(&elf).expect("elf");
+        const STACK: u32 = 0x01ff_0000;
+        const OUT: u32 = 0x0180_0000;
+        const CENTRE: u32 = 0x0180_0100;
+        let centre_game = [120.0f32, -35.0, 260.0, 1.0];
+        for (i, v) in centre_game.iter().enumerate() {
+            ee.wf32(CENTRE + 4 * i as u32, *v);
+        }
+        let centre = bevy::math::Vec3::new(centre_game[0], -centre_game[1], -centre_game[2]);
+        // Thunder's arguments: R = 2.5 * magi +0x24, (0.4 R, R, -0.1 R, 0.1 R).
+        let r = 500.0f32;
+        let mut n = 0;
+        for (clear, seed, turn) in [(true, 1u32, 0i32), (true, 0x0123_4567, 5), (false, 99, 3), (true, 7, 7), (false, 0xdead_beef, 6), (true, 0x8000_0001, 4)] {
+            // FUN_001a5bf8: jr ra; addiu v0, zero, clear.
+            ee.w32(0x1a5bf8, 0x03e0_0008);
+            ee.w32(0x1a5bfc, 0x2402_0000 | clear as u32);
+            ee.w32(0x3716a0, seed);
+            ee.w32(0x35e9b0, turn as u32);
+            ee.call(0x1a5ee0, &[OUT as u64, CENTRE as u64, 2], &[0.4 * r, r, -0.1 * r, 0.1 * r], STACK).expect("FUN_001a5ee0");
+            let got = [ee.f32_at(OUT), ee.f32_at(OUT + 4), ee.f32_at(OUT + 8)];
+            let mut st = ScatterState { seed, turn };
+            let p = scatter_place(centre, 0.4 * r, r, -0.1 * r, 0.1 * r, &mut st, &c, |_, _| clear);
+            let mine = [p.x, -p.y, -p.z];
+            eprintln!("clear {clear} seed {seed:#x} turn {turn}: game {got:?} port {mine:?}");
+            for k in 0..3 {
+                assert!((got[k] - mine[k]).abs() < 0.05, "axis {k}: game {got:?} port {mine:?}");
+            }
+            assert_eq!(ee.r32(0x3716a0), st.seed, "generator state");
+            assert_eq!(ee.r32(0x35e9b0) as i32, st.turn, "bucket counter");
+            n += 1;
+        }
+        assert_eq!(n, 6);
+    }
 
     fn magc(id: u8, level: u8, world: u8, cmd: u16) -> Magc {
         Magc {

@@ -36,6 +36,9 @@ pub const WARP_STEP: usize = 3;
 /// Rows of the follow thresholds (FUN_00114078 / FUN_001140c0): field, battle while following the
 /// player, battle with another target.
 pub const ROW_FIELD: usize = 0;
+/// In battle, following the player and moving to another target (FUN_00114078 / FUN_001140c0 +0x20, +0x40).
+pub const ROW_BATTLE_PLAYER: usize = 1;
+pub const ROW_BATTLE_TARGET: usize = 2;
 /// Speed modes (+0xb78): 0 stand, 1 walk, 2 run (FUN_0010e5b8).
 pub const MODES: usize = 3;
 /// AI classes in the parameter table at 0x34ea00 (docs/party.md section 4).
@@ -82,7 +85,7 @@ pub struct Consts {
 }
 
 /// Bytes at a virtual address of the executable, through its program headers.
-fn exe_bytes(elf: &[u8], va: u32, len: usize) -> Option<&[u8]> {
+pub(crate) fn exe_bytes(elf: &[u8], va: u32, len: usize) -> Option<&[u8]> {
     let u16_at = |o: usize| elf.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]]) as usize);
     let u32_at = |o: usize| elf.get(o..o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
     if elf.get(0..4)? != b"\x7fELF" {
@@ -101,7 +104,7 @@ fn exe_bytes(elf: &[u8], va: u32, len: usize) -> Option<&[u8]> {
 }
 
 /// The friend-AI parameter table (FUN_0010b780 binds `0x34ea00 + offset[class]` to the AI object).
-const AI_PARAMS: u32 = 0x34ea00;
+pub(crate) const AI_PARAMS: u32 = 0x34ea00;
 
 impl Consts {
     pub fn from_exe(elf: &[u8]) -> Option<Consts> {
@@ -376,9 +379,16 @@ pub fn next_mode(mode: usize, dist: f32, t: &[(f32, f32); MODES]) -> usize {
 /// turning bit is set), the speed of the mode the distance to the player asks for (field row);
 /// standing, a member not facing the player turns toward him at a fraction of the walk speed.
 /// Returns the wanted direction (+0xc00) and speed (+0xc0c).
+#[cfg(test)]
 pub fn follow_step(st: &mut Follow, i: &FollowIn, t: &Thresholds, c: &Consts) -> (Vec3, f32) {
+    follow_step_row(st, i, t, ROW_FIELD, c)
+}
+
+/// `follow_step` with the thresholds row FUN_001140c0 / FUN_00114078 pick: `ROW_FIELD` out of battle,
+/// `ROW_BATTLE_PLAYER` in battle (the player relation).
+pub fn follow_step_row(st: &mut Follow, i: &FollowIn, t: &Thresholds, row: usize, c: &Consts) -> (Vec3, f32) {
     let mut dir = if st.turning { i.to_player } else { i.to_point.normalize_or_zero() };
-    st.mode = next_mode(st.mode, i.dist, &t[ROW_FIELD]);
+    st.mode = next_mode(st.mode, i.dist, &t[row.min(2)]);
     let mut speed = mode_speed(st.mode, i.walk, i.run);
     if speed != 0.0 {
         st.turning = false;

@@ -108,6 +108,118 @@ pub struct MissionHud {
     counters: Vec<CounterHud>,
     clock: Option<ClockHud>,
     edge: Vec<(usize, Edge)>,
+    /// The layout pictures (WP-7E2): (mission, picture index, group) -> the node playing it.
+    layouts: Vec<((u32, u8, usize), usize)>,
+    /// Field HUD nodes this module hid while a layout hides the field HUD, to show again after it.
+    hidden: Vec<usize>,
+}
+
+
+/// The target gauge's root group in the field gauge file (`hud_target`, the "HP" tag, group 38).
+const TARGET_TAG: usize = 38;
+
+/// The layout picture of the event playing (WP-7E2): from the event frame of its opcode 0x50 until the event
+/// ends, a group of the record's picture (`Layout::group`: 1, or 2 for the failure) is drawn above the field (the 2D object at draw priority 26000,
+/// `FUN_00225998`). The node stands at (0, 0): the sequence carries the screen position [inferred, as for the
+/// counters' frames].
+fn layout_picture(mission: &Mission, hud: &mut MissionHud, scene: &mut HudScene, images: &mut Assets<Image>) {
+    let want = mission.m.as_deref().and_then(|a| {
+        let p = a.play.as_ref().filter(|p| p.picture_shown())?;
+        let (i, s) = p.layout.picture_entries()?;
+        Some((a, (a.id, p.layout.picture, p.layout.group()), i, s))
+    });
+    for (key, node) in &hud.layouts {
+        if want.as_ref().is_none_or(|w| w.1 != *key) {
+            scene.nodes[*node].visible = false;
+        }
+    }
+    let Some((a, key, i, s)) = want else { return };
+    let node = match hud.layouts.iter().find(|(k, _)| *k == key) {
+        Some((_, n)) => *n,
+        None => {
+            let file = kh2_bar::parse(&a.file).ok().and_then(|entries| {
+                let img = kh2_image::imgd::decode(entries.get(i)?.data)?;
+                let seq = kh2_image::seqd::parse(entries.get(s)?.data)?;
+                scene.files.push(SeqFile::new(&img, seq, images));
+                Some(scene.files.len() - 1)
+            });
+            let Some(file) = file else {
+                warn!("hud: mission {} layout picture {} (entries {i}/{s}) not readable", a.name, key.1);
+                hud.layouts.push((key, usize::MAX));
+                return;
+            };
+            let n = add(scene, file, key.2);
+            scene.nodes[n].visible = false;
+            info!("hud: mission layout picture {} (entries {i}/{s}): group {}", key.1, key.2);
+            hud.layouts.push((key, n));
+            n
+        }
+    };
+    if node == usize::MAX {
+        return;
+    }
+    if !scene.nodes[node].visible {
+        // The picture starts from its first frame each time its event shows it.
+        scene.set_group(node, key.2);
+        scene.nodes[node].visible = true;
+    }
+}
+
+/// Every node of this module (the counters, the clock, the layout pictures).
+fn own_nodes(hud: &MissionHud) -> Vec<usize> {
+    let mut v: Vec<usize> = hud.counters.iter().flat_map(|c| [c.frame, c.g3, c.g9].into_iter().chain(c.digits.iter().copied())).collect();
+    if let Some(c) = &hud.clock {
+        v.extend([c.frame, c.g3, c.g9].into_iter().chain(c.digits).chain(c.seps).chain(c.warn));
+    }
+    v.extend(hud.layouts.iter().map(|(_, n)| *n));
+    v
+}
+
+/// While a layout's event kind hides the field HUD (`FUN_00196760` -> `FUN_0014ef48`: draw tags 3 to 6), every
+/// other node of the scene is hidden; the ones hidden here come back when it ends (`FUN_00196790`) [inferred: which
+/// of the app's HUD modules are the tags 3 to 5 was not traced; tag 6 is the target gauge].
+fn field_hud_hide(hidden_now: bool, hud: &mut MissionHud, scene: &mut HudScene) {
+    if hidden_now {
+        let own = own_nodes(hud);
+        for (i, n) in scene.nodes.iter_mut().enumerate() {
+            if n.visible && !own.contains(&i) {
+                n.visible = false;
+                if !hud.hidden.contains(&i) {
+                    hud.hidden.push(i);
+                }
+            }
+        }
+    } else {
+        for i in hud.hidden.drain(..) {
+            if let Some(n) = scene.nodes.get_mut(i) {
+                n.visible = true;
+            }
+        }
+    }
+}
+
+/// The target gauge (`hud_target`, field gauge file group 38 and the nodes under it) is hidden while a counter
+/// stands on screen side 1, where the gauge would cover it and the TIME plate. [inferred] The game binds the gauge
+/// only when the player's ability bit 19 (Scan, ability 138) is set (`FUN_0019b4a8`: status +0x1cc bit 0x80000)
+/// and the target's +0x108 bit 0x4000 is clear; no mission rule that hides it was found (searched: `FUN_0019b4a8`,
+/// `FUN_0019b3f0`, `FUN_00154498`, `FUN_00153f98`, `FUN_0013da78`, `FUN_0014f8b0`, the record handlers
+/// `FUN_001b9378`, `FUN_001d6110`; the opponents' scripts set only +0x108 flags 3 and 6 through host 1.70).
+fn hide_target_gauge(scene: &mut HudScene) {
+    let gaug = super::hud_gauge::GAUG;
+    let roots: Vec<bool> = (0..scene.nodes.len())
+        .map(|i| {
+            let mut k = i;
+            while let Some(p) = scene.nodes[k].parent {
+                k = p;
+            }
+            scene.nodes[k].file == gaug && scene.nodes[k].player.group == Some(TARGET_TAG)
+        })
+        .collect();
+    for (n, under) in scene.nodes.iter_mut().zip(roots) {
+        if under {
+            n.visible = false;
+        }
+    }
 }
 
 fn add(scene: &mut HudScene, file: usize, group: usize) -> usize {
@@ -172,6 +284,8 @@ pub fn update(disc: Res<Disc>, mission: Res<Mission>, mut hud: ResMut<MissionHud
         }
     }
     let Some(t) = hud.tables.clone() else { return };
+    layout_picture(&mission, &mut hud, &mut scene, &mut images);
+    field_hud_hide(mission.hud_hidden(), &mut hud, &mut scene);
     let Some(a) = mission.m.as_deref() else {
         // No manager: the elements go (FUN_001b90d0 destroys them with the manager).
         if hud.mission.take().is_some() {
@@ -188,6 +302,9 @@ pub fn update(disc: Res<Disc>, mission: Res<Mission>, mut hud: ResMut<MissionHud
     };
     if !a.shown {
         return;
+    }
+    if a.elements.iter().any(|e| e.op == 5 && e.side == 1) {
+        hide_target_gauge(&mut scene);
     }
     if hud.mission != Some(a.id) {
         hud.mission = Some(a.id);

@@ -98,6 +98,17 @@ pub fn cast_kind(level: u8, finisher_motion: bool, form: u8) -> u32 {
     k
 }
 
+/// The kind a spell's script keeps after its event 20 (the `.mag` scripts, `kind / 2 * 2`): Fire,
+/// Blizzard and Thunder clear the finisher bit in Master form (kind / 10 = 2), Reflect always; Cure
+/// and Magnet keep it. The script passes this kind to `attack_create` and branches on it.
+pub fn script_kind(slot: u8, kind: u32) -> u32 {
+    match slot {
+        0..=2 if kind / 10 == 2 => kind & !1,
+        5 => kind & !1,
+        _ => kind,
+    }
+}
+
 /// Whether the cast is a finisher (FUN_00176908 with 0 extra): the combo counter (+0xb04, already
 /// advanced by this press, FUN_00174cf8 calls FUN_00176b00 first) has reached the ground or air
 /// combo length of the ability block (+0x28, +0x29). FUN_001768b8 and flag 0x20 of +0x168 (both

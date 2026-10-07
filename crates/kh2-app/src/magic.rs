@@ -78,6 +78,11 @@ const MAGI_THUNDER_COLUMN_H: usize = 0x28;
 const MAGI_THUNDER_COLUMN_R: usize = 0x2c;
 const MAGI_THUNDER_WAIT: usize = 0x30;
 const MAGI_THUNDER_TIME: usize = 0x34;
+/// Magnet's attack (MAGNET_*.mag R0017: `attack_create(ctx, 658, -1, kind)`); its pulling reaction is
+/// the victim's (`EnemyReaction` 5, FUN_00185668 -> FUN_001bf920).
+pub const ATKP_MAGNET: u16 = 658;
+/// Reflect's guard (REFLECT_*.mag R0017: `attack_create(ctx, 573, -1, kind)`, a type-3 row).
+pub const ATKP_REFLECT_GUARD: u16 = 573;
 /// Ticks a cast request waits for Sora to accept it (app rule: the game keeps a pending command
 /// and retries it while the playing motion has no window, the retry limit was not traced).
 const REQUEST_TICKS: u32 = 20;
@@ -598,6 +603,8 @@ fn run(
                     fx::start(&mut commands, p, id, Bind::Owner(body_e));
                 }
                 let step = if vm.is_some() { Step::Vm } else { Step::Waiting };
+                // The hand port keeps the kind the script keeps after event 20 (the VM's script makes it itself).
+                let kind = if vm.is_some() { kind } else { rules::script_kind(row.id, kind) };
                 let mut cast = Cast { slot: row.id, cmd, cost, kind, magi, pax: pax.clone(), motion: mslot, motion_id, charge_fx, step, vm, paid: false };
                 st.cast_tick = st.tick;
                 if cast.vm.is_some() {
@@ -1752,6 +1759,57 @@ mod tests {
         let cure_slot = md.cmd(cure).unwrap().argument as u8;
         p.set_spell_switch(cure_slot, true);
         assert_eq!(md.status(cure, 0, false, 0, Some(&p)), Status::ShortMp, "cost 255 ignores the bit");
+    }
+
+    /// WP-7I, levels 2 and 3: each level's `magc` row names its own `.mag` (with an effect file), its own
+    /// command with an MP cost, and the script of every level is the same program (the kind carries the
+    /// level); every kind a level casts (`2 * level - 2`, + 1 with a finisher motion, + 10 / 20 / 30 in
+    /// forms 2 / 3 / 4) has the attack rows its script asks for and a `magi` row.
+    #[test]
+    fn levels_two_and_three_have_their_rows() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let (magc, cmds, atkp) = {
+            let mut a = disc.0.lock().unwrap();
+            (
+                kh2_tables::load::<Magc>(&mut a, &t::MAGC).unwrap().rows,
+                kh2_tables::load::<Cmd>(&mut a, &t::CMD).unwrap().rows,
+                kh2_tables::load::<t::Atkp>(&mut a, &t::ATKP).unwrap().rows,
+            )
+        };
+        let f = disc.read("03system.bin").unwrap();
+        let top = kh2_bar::parse(&f).unwrap();
+        let inner = kh2_bar::parse(kh2_bar::find(&top, "pref").unwrap().data).unwrap();
+        let magi = rules::parse_magi(kh2_bar::find(&inner, "magi").unwrap().data);
+        let script = |name: &str| kh2_bar::parse(&disc.read(name).unwrap()).unwrap().into_iter().find(|e| e.kind == 3).unwrap().data.to_vec();
+        // The attack rows each spell's script creates for a cast kind (hand port and VM alike).
+        let rows: [&[u16]; 6] = [&[ATKP_FIRE], &[ATKP_BLIZZARD], &[ATKP_THUNDER_GROUND, ATKP_THUNDER_AIR, ATKP_THUNDER_COLUMN], &[ATKP_CURE_SELF], &[ATKP_MAGNET], &[ATKP_REFLECT_GUARD, 574, 667]];
+        for id in 0..6u8 {
+            let first = rules::pick_row(&magc, id, 1, 2).unwrap();
+            let code1 = script(&first.file_name);
+            for level in 1..=3u8 {
+                let row = rules::pick_row(&magc, id, level, 2).unwrap();
+                eprintln!("slot {id} level {level}: {} command {} motions {}/{}/{}", row.file_name, row.command, row.ground_motion, row.finish_motion as i16, row.air_motion);
+                assert_eq!(row.level, level, "slot {id}: a row per level");
+                assert!(fx::load(&disc, &row.file_name, 100, None).is_some(), "{} effect file", row.file_name);
+                assert_eq!(script(&row.file_name), code1, "{}: the same program as level 1", row.file_name);
+                let cmd = cmds.iter().find(|c| c.id == row.command).expect("command");
+                assert_eq!((cmd.execute, cmd.argument as u8), (rules::EXECUTE_MAGIC, id));
+                for form in [0u8, 2, 3, 4] {
+                    for fin in [false, (row.finish_motion as i16) >= 0] {
+                        // Reflect's script clears the finisher bit (event 20: kind / 2 * 2).
+                        let kind = rules::script_kind(id, rules::cast_kind(level, fin, form));
+                        assert!(!rules::magi_row(&magi, kind).unwrap().0.is_empty());
+                        for &a in rows[id as usize] {
+                            assert!(rules::attack_row(&atkp, a, kind).is_some(), "slot {id} level {level} kind {kind}: atkp {a}");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// The rules against the disc: Fire, Blizzard, Thunder and Cure at level 1 (`KH2_ISO` needed).

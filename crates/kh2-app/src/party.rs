@@ -311,9 +311,12 @@ fn weapon_bone(model: &str) -> Option<usize> {
     }
 }
 
-/// Donald's and Goofy's weapon bones (`weapon_bone`).
-const DONALD_HAND: usize = 0;
-const GOOFY_HAND: usize = 0;
+/// Donald's and Goofy's weapon bones (`weapon_bone`): the wrist bones with four finger children on the
+/// bind pose's -X side, the side of Sora's 178 (bone dump of the models); on screen the staff and the
+/// shield sit in the hand and face outward with these, and Goofy's shield turns edge-on into his leg on
+/// the other wrist (27).
+const DONALD_HAND: usize = 131;
+const GOOFY_HAND: usize = 101;
 
 /// Marks a member's weapon socket: the entity follows the bone of the member's body.
 #[derive(Component)]
@@ -429,7 +432,12 @@ fn spawn_party(
         let root = commands.spawn((AreaPart, Transform::from_translation(motor.pos * SCALE).with_rotation(Quat::from_rotation_y(yaw)), Visibility::default())).id();
         let body = spawn_skinned(&mut commands, root, rig.clone(), &mut meshes, &mut materials, &mut images, &mut bindposes, SCALE);
         // FUN_0017c718: the hand objects. Hand 0 is the member's saved weapon word (FUN_0016ee98).
-        let item = progress.as_ref().and_then(|p| p.member(row.neo_status)).map_or(0, |m| m.weapons[0]);
+        // The app's new game leaves this word 0 (its writer in the original was not found): no hand
+        // object then, as FUN_0016ee98 answers 0. `KH2_PARTY_WEAPONS=<Donald item>,<Goofy item>` is a
+        // harness aid that hands in an item for a zero word.
+        let saved = progress.as_ref().and_then(|p| p.member(row.neo_status)).map_or(0, |m| m.weapons[0]);
+        let aid = std::env::var("KH2_PARTY_WEAPONS").ok().and_then(|v| v.split(',').nth(row.neo_status.saturating_sub(2) as usize).and_then(|s| s.trim().parse::<u16>().ok()));
+        let item = if saved != 0 { saved } else { aid.unwrap_or(0) };
         let mut weapons = Vec::new();
         match (data.weapon_files(&row, item, 0), weapon_bone(&row.model_name)) {
             (Some(files), Some(bone)) => match crate::drive::weapon_rig(&disc, &files) {
@@ -503,8 +511,16 @@ fn spawn_party(
 /// Keeps every member's weapon socket on its hand bone (the joint entities are siblings under the
 /// body, as Sora's `sora::follow_hand`), and plays the body's slot on the weapon (the weapons'
 /// motion sets mirror the body's slots, as Sora's `sora::sync_weapon`).
-fn member_hands(mut sockets: Query<(&MemberHand, &mut Transform, &Children)>, mut anims: Query<&mut Animator>) {
-    for (h, mut t, kids) in &mut sockets {
+///
+/// The hand objects show only while the battle flag is set [inferred from the user's reference video
+/// `10_menu_open_close.mp4` at 0.0 s: out of battle Donald and Goofy hold nothing; the game's switch
+/// (FUN_001752a0 and +0x588 bit 4 select the weapon rows of FUN_0017da30) was not traced further].
+fn member_hands(flag: Option<Res<crate::audio_bgm::BattleFlag>>, mut sockets: Query<(&MemberHand, &mut Transform, &mut Visibility, &Children)>, mut anims: Query<&mut Animator>) {
+    let shown = if flag.is_some_and(|f| f.active()) { Visibility::Inherited } else { Visibility::Hidden };
+    for (h, mut t, mut vis, kids) in &mut sockets {
+        if *vis != shown {
+            *vis = shown;
+        }
         let Ok(a) = anims.get(h.body) else { continue };
         *t = Transform::from_matrix(a.pose.get(h.bone).copied().unwrap_or(Mat4::IDENTITY));
         let (slot, frame, prev, looping, speed) = (a.slot, a.frame, a.prev_frame, a.looping, a.speed);
@@ -1155,16 +1171,30 @@ mod tests {
         let progress = crate::progress::Progress::start(&disc);
         for (neo, model) in [(2u16, "P_EX020"), (3, "P_EX030")] {
             let row = data.objs.iter().find(|r| r.model_name == model).cloned().expect("row");
-            let item = progress.as_ref().and_then(|p| p.member(neo)).map_or(0, |m| m.weapons[0]);
+            let saved = progress.as_ref().and_then(|p| p.member(neo)).map_or(0, |m| m.weapons[0]);
+            // The app's new game leaves the members' weapon words 0 (no hand object, FUN_0016ee98);
+            // the base weapon items (Mage's Staff 75, Knight's Shield 49 [inferred from the item ids])
+            // are what `KH2_PARTY_WEAPONS` hands in.
+            let item = if saved != 0 { saved } else if neo == 2 { 75 } else { 49 };
             let files = data.weapon_files(&row, item, 0);
             let rig = files.as_ref().and_then(|f| crate::drive::weapon_rig(&disc, f));
             eprintln!(
-                "{model}: NeoStatus {neo} moveset {} WeaponJoint {} weapon item {item} -> {files:?} (bones {:?}, motion slots {:?})",
+                "{model}: NeoStatus {neo} moveset {} WeaponJoint {} saved weapon word {saved}, item {item} -> {files:?} (bones {:?}, motion slots {:?})",
                 row.neo_moveset,
                 row.weapon_joint,
                 rig.as_ref().map(|r| r.model.bones.len()),
                 rig.as_ref().map(|r| r.mset.slots.len())
             );
+            let w = |i: usize| data.weapons.went.get(i * 4..i * 4 + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap())).unwrap_or(0);
+            let off = w(row.neo_moveset as usize) as usize;
+            for k in 0..64 {
+                let id = if off == 0 { 0 } else { w(off + k) };
+                if id != 0 {
+                    let o = data.objs.iter().find(|o| o.object_id == id).map(|o| o.model_name.clone());
+                    let items: Vec<u16> = data.weapons.items.iter().filter(|i| (i.flag1 as usize | (i.rank as usize) << 8) == k).map(|i| i.id).collect();
+                    eprintln!("  went slot {k}: object {id} {o:?} items {items:?}");
+                }
+            }
             assert!(rig.is_some(), "{model}: weapon not loadable");
         }
     }

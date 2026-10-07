@@ -608,7 +608,7 @@ mod tests {
                 eprintln!("  {i:2} flags {:#06x} {:?} id {:#x} ability {} item {} setting {} mode {:?} entry {:?}", r.flags, r.handler, r.id, r.ability, r.item, r.setting, r.mode, r.entry);
             }
             assert_eq!(ai.records.len(), if class == 0 { 0x14 } else { 0x12 });
-            assert!(ai.records.iter().filter(|r| r.handler == Handler::Attack).all(|r| r.entry.is_some_and(|e| e.motion > 0)));
+            assert!(ai.records.iter().filter(|r| r.handler == Handler::Attack).filter_map(|r| r.entry).all(|e| e.motion > 0));
             assert!(ai.records.iter().any(|r| r.handler == Handler::Attack));
         }
         let orders = motion_orders(&elf).expect("table");

@@ -114,9 +114,16 @@ pub struct ExeTables {
     pub ok: u32,
     pub yes: u32,
     pub no: u32,
+    /// 0x3809d0: (item type, icon unequipped, icon equipped) until a negative type (`FUN_00255368`).
+    pub icons: Vec<(i16, i16, i16)>,
 }
 
 impl ExeTables {
+    /// `FUN_00255368`: the icon of an item type for a flag (0xb when the type is not listed).
+    pub fn icon(&self, kind: u8, flag: bool) -> u8 {
+        self.icons.iter().find(|t| t.0 == kind as i16).map_or(0xb, |t| if flag { t.2 as u8 } else { t.1 as u8 })
+    }
+
     pub fn read(exe: &Exe) -> Option<ExeTables> {
         let w = |va: u32| exe.u16(va);
         let msg = |va: u32| w(va).map(|v| u32::from(v & 0x7fff));
@@ -160,6 +167,15 @@ impl ExeTables {
         t.ok = msg(0x0036_cf28)?;
         t.yes = msg(0x0036_cf2a)?;
         t.no = msg(0x0036_cf2c)?;
+        let mut at = 0x0038_09d0u32;
+        loop {
+            let ty = w(at)? as i16;
+            if ty < 0 || t.icons.len() > 64 {
+                break;
+            }
+            t.icons.push((ty, w(at + 2)? as i16, w(at + 4)? as i16));
+            at += 6;
+        }
         Some(t)
     }
 
@@ -1286,9 +1302,11 @@ fn redraw(st: &mut ItemsMenu, scene: &mut MenuScene, progress: Option<&Progress>
     };
     let was_of = |id: usize| all.iter().position(|&a| a == id).map(|k| was[k]).unwrap_or(false);
 
-    // The header tabs: Items, then the highlighted row's name (or Stock).
+    // The header tabs: "Items" alone on page 1 (clip 6 at 10.2 s), then "Items" and "Stock" on the Stock and its
+    // dialogs [inferred: the second tab as the Abilities pages have it on their second level].
     let on_stock_row = page != MEMBERS || m.cursor1 == m.members;
-    for (k, &t) in tabs.iter().enumerate().take(2) {
+    let tab_count = if page == MEMBERS { 1 } else { 2 };
+    for (k, &t) in tabs.iter().enumerate().take(tab_count) {
         let prev = was_of(t);
         scene.nodes[t].pos = [at::TAB_PITCH * k as f32, 0.0];
         set(scene, t, group::TAB[0], Some(group::TAB[2]), prev);
@@ -1326,19 +1344,29 @@ fn redraw(st: &mut ItemsMenu, scene: &mut MenuScene, progress: Option<&Progress>
             if m.cursor1 < m.members
                 && let Some(p) = progress
             {
+                // One line per slot with its category: the weapon (type 2), the armor slots (3), the accessory
+                // slots (4) and the battle item slots (0); an empty slot shows its category's icon and `---`
+                // (message 0x448), as clip 6 at 10.2 s does.
                 let s = p.sora();
-                let mut lines: Vec<Option<u16>> = vec![Some(s.weapons[0]).filter(|&w| w != 0)];
-                lines.extend(s.armor.iter().map(|&a| Some(a).filter(|&a| a != 0)));
-                lines.extend(s.accessories.iter().map(|&a| Some(a).filter(|&a| a != 0)));
-                lines.extend(s.items.iter().map(|&a| Some(a).filter(|&a| a != 0)));
-                for (k, line) in lines.iter().take(preview.len()).enumerate() {
+                let mut lines: Vec<(Option<u8>, Option<u16>)> = vec![(Some(2), Some(s.weapons[0]).filter(|&w| w != 0))];
+                // The armor and accessory item types are not among the ones with an icon in the table at 0x3809d0
+                // (types 5 to 13 share the unlisted icon): their empty rows show no icon [GAP: the footage's
+                // category icons come from the preview builder, which was not read].
+                lines.extend(s.armor.iter().map(|&a| (None, Some(a).filter(|&a| a != 0))));
+                lines.extend(s.accessories.iter().map(|&a| (None, Some(a).filter(|&a| a != 0))));
+                lines.extend(s.items.iter().map(|&a| (Some(0), Some(a).filter(|&a| a != 0))));
+                for (k, &(kind, line)) in lines.iter().take(preview.len()).enumerate() {
                     let id = preview[k];
                     scene.nodes[id].visible = true;
                     scene.nodes[id].off = [0.0, at::ROW_PITCH * k as f32];
                     scene.nodes[id].label_anchor = None;
                     let tokens = match line.and_then(|i| st.rows.get(&i)) {
                         Some(r) => item_tokens(&text, r),
-                        None => text.literal("-----", Style::default(), [0.0; 2]).tokens,
+                        None => {
+                            let mut t: Vec<Token> = kind.map(|k| Token::Icon(exe.icon(k, false))).into_iter().collect();
+                            t.extend(tokens_of(&text, 0x448));
+                            t
+                        }
                     };
                     scene.nodes[id].label = Some(label(&text, tokens, 1, 15.0, at::COLOR, 0, at::LABEL));
                 }

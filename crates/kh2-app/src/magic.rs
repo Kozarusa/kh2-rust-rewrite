@@ -224,6 +224,8 @@ pub struct MagicState {
     scatter: rules::ScatterState,
     /// Blizzard's push of the caster (host 1.146 -> FUN_001857b0), stepped each tick after Sora's own.
     push: Option<crate::reaction_rules::Push>,
+    /// Horizontal distance the push has moved Sora so far (for the log).
+    push_moved: f32,
 }
 
 /// The spell attack objects as the victims' side reads them (enemy.rs: the pull of reaction class 5,
@@ -861,6 +863,7 @@ fn run(
             let back = -s.motor.forward().with_y(0.0).normalize_or(Vec3::Z);
             if let Some(rd) = reaction.as_deref() {
                 st.push = crate::reaction_rules::Push::new(back, c.magi.f(MAGI_PUSH), 0.0, &rd.consts);
+                st.push_moved = 0.0;
                 mlog!("magic: Blizzard push of the caster (host 1.146 -> FUN_001857b0): power {} along {back:?}, speed {:?}", c.magi.f(MAGI_PUSH), st.push.map(|p| p.speed));
             }
             if let (Some(pax), Some(plan)) = (c.pax.clone(), c.bliz.take()) {
@@ -888,9 +891,13 @@ fn run(
     if let (Some(p), Some(rd), Some(w)) = (st.push.as_mut(), reaction.as_deref(), world.as_deref()) {
         let d = p.step(&rd.consts);
         let dy = (!s.motor.grounded).then_some(0.0);
+        let before = s.motor.pos;
         s.motor.move_by(w, d, dy);
+        st.push_moved += (s.motor.pos - before).with_y(0.0).length();
         if p.finished() {
             st.push = None;
+            mlog!("magic: Blizzard push over: Sora moved {:.1} units", st.push_moved);
+            st.push_moved = 0.0;
         }
     }
     // Thunder's event 21, the rest of its first slice: the strike's place is the target's position

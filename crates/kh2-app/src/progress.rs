@@ -461,6 +461,16 @@ impl Progress {
         self.u32_at(off::SUMMON_EXP)
     }
 
+    /// Byte 6 of `0x340c88` (the summon level-up, `FUN_001d4ec8`).
+    pub fn set_summon_level(&mut self, level: u8) {
+        self.set_u8(off::SUMMON_LEVEL, level);
+    }
+
+    /// `0x340e4c`, the summon experience (`FUN_001d4ec8`).
+    pub fn set_summon_exp(&mut self, exp: u32) {
+        self.set_u32(off::SUMMON_EXP, exp);
+    }
+
     /// The Genie form / Tinker Bell byte (`0x340c8f`).
     pub fn summon_extra(&self) -> u8 {
         self.u8_at(off::SUMMON_EXTRA)

@@ -1,6 +1,7 @@
 # Summons (backlog B5): implementation spec
 
-Work package 6F (research); stages 1 and 2 implemented by WP-7J (see "Status" at the end of section 6).
+Work package 6F (research); stages 1 and 2 implemented by WP-7J, stage 3 and parts of stages 5 and 6 by WP-7J2
+(see "Status" at the end of section 6).
 This note is meant to let a later work package build summons without reading the game code again.
 
 Marks: **[V]** read in the game's code (address given) or checked against the disc or a kh2-ee run;
@@ -164,8 +165,10 @@ Dismiss (316) is available only while the summon state is 2 and no limit task ex
    (FUN_001db868 on `DAT_01c954d8`); its handle is kept at player +0xb68.
 3. `Cost` drive points are spent (FUN_001a0320; when the points were full or short the fraction is cleared).
 4. `DAT_00340c88` byte 5 = the sumn index; `0x35feb8` bit 0 set; summon state (`DAT_01d5e368`) = 2.
-5. Byte 7 of `DAT_00340c88`: for Genie (89) a random owned drive form (FUN_001c6a88: LCG `DAT_003716a0`,
-   pick among the forms from FUN_001c6a20); for Peter Pan (306) 1 (Tinker Bell available, below).
+5. Byte 7 of `DAT_00340c88`: for Genie (89) a random owned drive form (FUN_001c6a88: LCG `DAT_003716a0`
+   times 0x10dcd, then the form list of FUN_001c6a20 indexed by the new word divided by `(2^32 + n - 1) / n`,
+   FUN_00325b38 being an unsigned 64-bit division; checked by the oracle in `summon.rs`); for Peter Pan (306) 1
+   (Tinker Bell available, below).
 6. Player flags +0x108 |= 0x104 [I: 0x100 makes the player unhittable (FUN_00186638 reads it), 0x4 makes
    FUN_0019a530 report "busy"].
 7. A thread (FUN_00102808 at 0x1c6260, stack 0x2000, handle `DAT_0035fe08`, cleanup 0x1c6550) runs the
@@ -407,13 +410,73 @@ FormB groups, the digit and the in-segment fill of FUN_00155bf0. Drive is refuse
 Inferred in stage 2: the arrival wait counts down one frame unit per tick; the end-at-0 test runs only in
 mode 3 (the game tests +0x1b4 in any mode, and during the arrival the player is busy through +0x108 bit
 4, which is not modelled); the state goes back to 0 when the leave finds both object slots empty (the
-game does it in the object's destructor). Left for later stages: the companions' fade out and return
+game does it in the object's destructor). Left for later stages (WP-7J2 below took up most of them): the companions' fade out and return
 (the arrival does not wait for FUN_0017d470), the player's motions and flags, effect 0x13, actor stop
 id 2, the arrival event and its config option, Genie's form byte (FUN_001c6a88 divides a sign-extended
 random word; not ported, the generator is not stepped), the summon face panel, the limit task test of
 Dismiss (FUN_001b3c00 reads no task), and summon limits (limit.rs refuses summon rows until a summon
 object exists, because FUN_00175ba0 needs it). The summon level and experience are kept in
 `SummonState`, not written back to `Progress` (it has no setter for them).
+
+### Status (WP-7J2: stage 3, with parts of stages 5 and 6)
+
+The arrival thread was decompiled (0x1c6260, ghidra-cli `DecompileAt.java`) together with the Summon case of
+FUN_001cf030; section 3 matches it, with these details: the wait loop runs while the fade list is busy, while
+`0 < wait` (the wait loses the frame unit `DAT_00356f40` per frame) or while `FUN_0017d470` finds a party slot
+filled; motion 0x8a takes its blend from `DAT_0037c358`, motion 0x82 has blend 0; the mode names are the strings
+at 0x37c000 (`appear_skip`) and 0x37bff8 (`appear`); FUN_001a5ea8 gets flags 0x10000 and the player's position.
+
+What `summon.rs` now does, in the order of the game:
+
+- Summon: motion 0x8a on Sora (`State::Reaction` until it ends), system effect 0x13 bound to his body
+  (`fx::start_placed`, the handle kept as +0xb68), the cost, byte 5, the sequence bit, state 2, byte 7 (Genie:
+  `rules::genie_form`, the port of FUN_001c6a88; Peter Pan 1), the player's +0x108 |= 0x104 (0x100: no hit
+  reaches Sora while it is set), the arrival choice (`rules::arrival_event`, FUN_001c65f0, with the option
+  word's bits 9..10 and the seen bits), the companions' fade-out over `DAT_0037bff0` frames (component `Away`),
+  actor stop id 2 (below) and the use counter.
+- The arrival: the wait (`sstm[0x84]` with the event, `sstm[0x88]` without) and the companions gone, then +0x108
+  |= 1, gauge mode 3 and the summon object (`sumn` `Entity1`: objentry row, model, motion set, script; component
+  `SummonObject` in the first free of the two slots). Without the event: effect 0x13 told to end, motion 0x82,
+  the free spot (`rules::spot_start` = FUN_001a6068, oracle-checked; `rules::spot_find` = FUN_001a6198 with a
+  floor under the point standing in for FUN_001a5c30 and no test for FUN_001a5bf8), script mode `appear_skip`.
+  With the event: the effect killed, mode `appear`, state 1. Then state 2, +0x108 &= ~0x105, the stop lifted.
+- The object: its script runs every tick through the enemy host (as the party's in `friend_ai.rs`); its motion
+  requests are logged (`KH2_SUMMONLOG=1`) and not played (the friend AI's motion mapping is stage 4); the body
+  loops motion 0. A hide by the script removes it (the destructor empties its slot; with both slots empty the
+  state is 0). `SummonState::present` lists the objects' NeoStatus.
+- Leave: the first object's script switches to `leave`; once both slots are empty the companions fade back in
+  over `DAT_0037c064` frames to `DAT_0037c068`, and the sequence bit is cleared.
+- Summon limits (stage 5, the rule side): limit.rs refuses a summon row unless its summon object is present
+  (FUN_00175ba0 by NeoStatus) and the timer is above 0, and charges `Cost x sstm[0x70]` to the timer
+  (`SummonRequest::Gauge`, FUN_001788d8 with the experience). The limit task is the resource `LimitTask`
+  (`DAT_01d5d6b0`); Dismiss is refused while it exists (FUN_001b3c00).
+- The summon level and experience are written back to `Progress` (`set_summon_level`, `set_summon_exp`).
+- Actor stop id 2 during the arrival: the enemies (object types in the mask 0xfff7ffdc) stop their motion
+  (`Animator::speed` 0) and no hit reaches them.
+
+Tests: `summon_arrival_choice_follows_the_option_and_the_seen_bits`, `summon_genie_form_picks_an_owned_form`,
+`summon_consts_and_spot_on_a_flat_floor`, the oracles `summon_spot_start_and_genie_form_match_the_game`
+(FUN_001a6068 and FUN_001c6a88 with the form items in a fake inventory), `summon_spot_trig_is_sin_and_cos`
+(FUN_00300278, FUN_003000d8) and `summon_arrival_choice_matches_the_game` (FUN_001c65f0), and limit.rs's
+`summon_limits_need_the_gauge_not_a_partner`.
+
+Not done, and why:
+
+- The enemies' scripts keep running during the stop: `enemy_ai.rs` (not owned here) would have to skip an
+  enemy's tick while `SummonState::stop` is set. Their movement from the script therefore continues.
+- The companions come back where the party code left them (it keeps moving them while they are hidden):
+  `party.rs` has no way to place a member; FUN_0017d290's spot (200..300 units, searched from 100 units above
+  the player) needs a placement call there.
+- The event that the `appear` mode and the thread wait for is never started (section 7), so the wait ends at once;
+  the HUD layers 7..10 are not hidden. The fade list (FUN_0016ff50, FUN_0016f8e0, FUN_0016fb20) is not modelled.
+- The free-spot collision tests FUN_001a5c30 and FUN_001a5bf8 were not read: a floor under the point (`World::ground`)
+  stands in for the first, the second always passes [inferred].
+- No friend AI, no group 10 hosts, no motion requests (stage 4); summon limits are not offered by the scripts
+  (host 1.165) and the limit task body is not run (stage 5); the summon face panel, Genie's "Drive!", Tinker
+  Bell's reraise and the area re-entry (stage 6).
+- Byte 5 and byte 7 are kept in `SummonState`, not written to `Progress` (no setters for them).
+- The game steps one LCG (`DAT_003716a0`) for many systems; the app keeps a copy for the summon only, started
+  from the executable's initial word.
 
 ## 7. Unknowns (with what was searched)
 

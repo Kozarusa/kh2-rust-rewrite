@@ -9,8 +9,10 @@
 //!   type 19 ability, the member `Character` must have its ability bit set.
 //! - Command available (FUN_001b3e38, Execute 81): the row exists and is usable, no global command
 //!   lock; a normal limit needs MP >= the command's `Cost` byte (FUN_001b3f00), else status 2 (not
-//!   enough MP); a summon limit (`Summon` 200..=204) needs a non-zero summon gauge.
-//! - Execution (FUN_001b28a0): spend MP (normal) or summon gauge, create the limit task with the
+//!   enough MP); a summon limit (`Summon` 200..=204) needs its summon object present (FUN_00175ba0 by
+//!   NeoStatus, summon.rs) and a non-zero summon gauge.
+//! - Execution (FUN_001b28a0): spend MP (normal) or the summon timer (`FUN_001788d8(-Cost)` through
+//!   summon.rs), create the limit task (`LimitTask`, read by Dismiss's test FUN_001b3c00) with the
 //!   command's `Time` as its duration, load the limit's resource BAR `limit/us/<FileName>`, and put
 //!   the participants into the limit state. The app runs the first three steps (the BAR is listed,
 //!   not played) and writes `LimitStarted`; the task body, the script, the effects and the
@@ -91,6 +93,9 @@ pub struct Party {
     pub mp: i32,
     /// The summon gauge (status +0x1b4) is non-zero.
     pub summon_gauge: bool,
+    /// The NeoStatus of the summon objects present (`FUN_00175ba0` finds a summon row's member among
+    /// the party slots by it; summon.rs).
+    pub summons: Vec<u16>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,8 +123,11 @@ pub fn usable(r: &LimitRow, p: &Party) -> Result<(), Refusal> {
         if p.form == 6 && (m == 2 || m == 3) {
             return Err(Refusal::MemberAbsent(m));
         }
-        // Summon limits name a summon (200..=204), not a party member: no participant to find.
+        // Summon limits name a summon (200..=204): FUN_00175ba0 finds the summon object by NeoStatus.
         if player::is_summon_limit(m) {
+            if !p.summons.contains(&(m as u16)) {
+                return Err(Refusal::MemberAbsent(m));
+            }
             continue;
         }
         if m != 1 && !p.present.contains(&m) {
@@ -181,6 +189,11 @@ pub struct LimitStarted {
     pub time: u16,
 }
 
+/// The limit task (`DAT_01d5d6b0`, created by `FUN_001b2c10` in `FUN_001cf030` case 0x51): the command
+/// and the ticks left of its duration. `FUN_001b3c00` (Dismiss's test) reads whether it exists.
+#[derive(Resource, Default, Debug)]
+pub struct LimitTask(pub Option<(u16, u32)>);
+
 #[derive(Resource, Default)]
 struct Selected {
     next: usize,
@@ -222,6 +235,7 @@ impl Plugin for LimitPlugin {
         app.insert_resource(LimitRules { rows })
             .insert_resource(LimitParty(party))
             .insert_resource(Selected { scripted: env("KH2_LIMIT").and_then(|v| v.parse().ok()), ..Default::default() })
+            .init_resource::<LimitTask>()
             .add_message::<LimitStarted>()
             .add_systems(Update, read_key)
             .add_systems(FixedUpdate, try_limit.in_set(Sim::Sora));
@@ -239,14 +253,15 @@ fn try_limit(
     disc: Res<Disc>,
     mut sora: Query<&mut Sora>,
     mut out: MessageWriter<LimitStarted>,
-    mut active: Local<Option<(u16, u32)>>,
-    summon: (Option<Res<crate::summon::SummonState>>, Option<Res<crate::drive::DriveState>>),
+    mut active: ResMut<LimitTask>,
+    summon: (Option<Res<crate::summon::SummonState>>, Option<Res<crate::drive::DriveState>>, Option<Res<crate::summon::SummonData>>, Option<ResMut<crate::summon::SummonQueue>>),
 ) {
-    if let Some((cmd, left)) = active.as_mut() {
+    let (sm, drive, summon_data, mut summon_queue) = summon;
+    if let Some((cmd, left)) = active.0.as_mut() {
         *left = left.saturating_sub(1);
         if *left == 0 {
             info!("limit: command {cmd} ended (duration over)");
-            *active = None;
+            active.0 = None;
         }
     }
     let Ok(mut s) = sora.single_mut() else { return };
@@ -268,14 +283,13 @@ fn try_limit(
     };
     let Some(command) = command else { return };
     party.0.mp = s.mp;
-    // The summon gauge: the mode-3 timer (status +0x1b4) is non-zero (summon.rs). A summon row also
-    // needs the summon object (FUN_001d1ce0 -> FUN_00175ba0 by NeoStatus), which `usable` does not
-    // test; no summon object exists yet (docs/summons.md stage 3), so the read requires one and the
-    // summon rows stay refused until then.
-    party.0.summon_gauge = match summon {
-        (Some(sm), Some(d)) => sm.gauge(&d) && sm.slots.iter().any(Option::is_some),
+    // The summon gauge: the mode-3 timer (status +0x1b4) is non-zero; a summon row's member is the
+    // summon object of its NeoStatus (FUN_001d1ce0 -> FUN_00175ba0), from summon.rs.
+    party.0.summon_gauge = match (&sm, &drive) {
+        (Some(sm), Some(d)) => sm.gauge(d),
         _ => false,
     };
+    party.0.summons = sm.as_ref().map_or_else(Vec::new, |s| s.present.clone());
     let Some(i) = rules.rows.iter().position(|r| r.command == command) else {
         info!("limit: command {command} has no limit row");
         return;
@@ -287,8 +301,15 @@ fn try_limit(
     match available(r, &party.0) {
         Err(e) => info!("limit: {desc} refused: {e:?} (party {:?})", party.0.present),
         Ok(()) => {
-            // A summon limit spends the summon gauge (not modelled); a normal one MP.
-            if !r.is_summon() {
+            // A summon limit spends the summon timer (FUN_001cf030 case 0x51: FUN_001788d8(-Cost), so
+            // `Cost x sstm[0x70]`, through summon.rs); a normal one MP.
+            if r.is_summon() {
+                if let (Some(d), Some(q)) = (summon_data.as_deref(), summon_queue.as_deref_mut()) {
+                    let c = crate::drive::rules::summon_limit_cost(&d.tuning, r.cost);
+                    q.0.push(crate::summon::SummonRequest::Gauge(c));
+                    info!("limit: summon limit cost {} x {} = {c} to the summon timer", r.cost, d.tuning.gain);
+                }
+            } else {
                 s.mp = if r.cost == 255 { 0 } else { (s.mp - r.cost as i32).max(0) };
             }
             let entries = disc
@@ -296,7 +317,7 @@ fn try_limit(
                 .and_then(|b| kh2_bar::parse(&b).ok().map(|es| es.iter().map(|e| format!("{}:{}", e.tag, e.kind)).collect::<Vec<_>>().join(" ")))
                 .unwrap_or_else(|| "(resource not found)".into());
             info!("limit: {desc} started, MP now {}; resource BAR entries {entries}; the task body is not ported", s.mp);
-            *active = Some((command, (r.time as u32).max(1)));
+            active.0 = Some((command, (r.time as u32).max(1)));
             out.write(LimitStarted { command, file: r.file.clone(), time: r.time });
         }
     }
@@ -343,6 +364,11 @@ mod tests {
     fn summon_limits_need_the_gauge_not_a_partner() {
         let r = row([0, 201, 0], 0, 0, None);
         let mut p = party(&[], 0, 0);
+        // FUN_00175ba0: the summon object of NeoStatus 201 must be present.
+        assert_eq!(available(&r, &p), Err(Refusal::MemberAbsent(201)));
+        p.summons = vec![200];
+        assert_eq!(available(&r, &p), Err(Refusal::MemberAbsent(201)));
+        p.summons = vec![201];
         assert_eq!(available(&r, &p), Err(Refusal::SummonGaugeEmpty));
         p.summon_gauge = true;
         assert_eq!(available(&r, &p), Ok(()));

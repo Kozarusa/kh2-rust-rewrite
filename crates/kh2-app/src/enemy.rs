@@ -145,6 +145,9 @@ pub struct AreaGroup {
     /// The program also loads a group with the Struggle orb pool object (`00objentry` type 22 subtype 8,
     /// `PRIZE_TT`, made by `FUN_001c0400` -> `FUN_001cac70`) (WP-7E).
     pub orb_pool: bool,
+    /// The triggers (opcode 0xc) of the area's `btl` program and of the `evt` program with the same id, which
+    /// the mission's end looks up (WP-7E2) [inferred: the area record runs the `evt` program of the same number].
+    pub triggers: Vec<crate::struggle::Trig>,
 }
 
 /// The current area's enemy spawn groups (see the module header).
@@ -181,7 +184,13 @@ pub fn area_groups(disc: &Disc, area: &str) -> Vec<AreaGroup> {
             if out.iter().any(|g| g.name == name) {
                 continue;
             }
-            let mut g = AreaGroup { program: p.id, name: name.clone(), members: Vec::new(), skipped: Vec::new(), player: None, mission: mission.clone(), orb_pool };
+            let triggers = [Some(p), ard.scripts.get("evt").and_then(|e| e.iter().find(|q| q.id == p.id))]
+                .into_iter()
+                .flatten()
+                .flat_map(|q| q.commands.iter().filter(|c| c.opcode == 0xc).filter_map(|c| kh2_ard::parse_trigger(&c.args)))
+                .map(|t| crate::struggle::Trig::from_ard(&t))
+                .collect();
+            let mut g = AreaGroup { program: p.id, name: name.clone(), members: Vec::new(), skipped: Vec::new(), player: None, mission: mission.clone(), orb_pool, triggers };
             for e in ard.spawns.get(&name).into_iter().flatten().flat_map(|g| &g.entities) {
                 if e.object == PLAYER_ENTITY && g.player.is_none() {
                     let [x, y, z] = e.position;
@@ -417,7 +426,7 @@ pub fn spawn_waves(
         }
         // The program's mission command (opcode 0x15) creates the mission manager (WP-7E, struggle.rs).
         if let Some((id, name)) = &g.mission {
-            missions.write(crate::struggle::MissionStart { id: *id, name: name.clone(), orb_pool: g.orb_pool });
+            missions.write(crate::struggle::MissionStart { id: *id, name: name.clone(), orb_pool: g.orb_pool, triggers: g.triggers.clone() });
         }
         return;
     }

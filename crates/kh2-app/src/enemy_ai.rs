@@ -411,6 +411,7 @@ fn ai_update(
     let globals: Vec<crate::struggle::GlobalEvent> = global_events.read().copied().collect();
     let mission_counters = mission.as_deref().and_then(|m| m.counters());
     let no_prizes = mission.as_deref().is_some_and(|m| m.no_prizes());
+    let event_active = mission.as_deref().is_some_and(|m| m.event_active());
     let Ok(sp) = sora.single() else { return };
     let player = sp.translation / SCALE;
     let player_yaw = sp.rotation.to_euler(EulerRot::YXZ).0;
@@ -455,6 +456,7 @@ fn ai_update(
             paired: paired.as_ref(),
             player_model: *player_model,
             mission_counters,
+            event_active,
         };
         let handle = obj.handle;
         let mut host = BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() };

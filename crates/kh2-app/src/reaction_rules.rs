@@ -401,7 +401,7 @@ pub enum ReactionClass {
     FlinchPush,
     /// 4: blown away with an upward and a horizontal speed (FUN_00185460).
     Blow,
-    /// 5: FUN_00185668 (pull or throw towards the attacker); not decoded further.
+    /// 5: FUN_00185668 -> FUN_001bf920, the pull toward the attack object ([`Pull`]).
     Special5,
     /// 14: motion 0x17 / 0x18 plus push (FUN_001856a8).
     Special14,
@@ -803,7 +803,8 @@ pub enum VictimAction {
     Blow { motion: u8, up: f32, horiz: f32, face_attacker: bool },
     /// Class 14: motion 0x17 (front) or 0x18 (back) plus push (FUN_001856a8).
     Class14 { motion: u8, strength: f32, face_attacker: bool },
-    /// Classes 5 (FUN_001bf920, not decoded) and those without a handler.
+    /// Classes without a handler, and class 5: its pull needs the attack object, so the caller makes
+    /// it ([`Pull`]; `enemy::receive_hits` does for spell attacks).
     NotDecoded { class: u8 },
 }
 

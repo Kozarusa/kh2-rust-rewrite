@@ -1885,10 +1885,11 @@ fn vm_slice(c: &mut Cast, ctx: &mut VmCtx, airborne: bool, in_motion: bool) {
                 }
                 mlog!("magic(vm): effect {h}: element {id}{}", if f.fixed { " (in the world)" } else { " (on the caster)" });
             }
-            VmReq::Stop { h, .. } => {
+            VmReq::Stop { h, id } => {
                 if let Some(mut r) = ctx.world.fx[h].entity.and_then(|e| ctx.running.get_mut(e).ok()) {
                     r.1.effect.end();
                 }
+                mlog!("magic(vm): effect {h} (element {id}) stopped");
             }
             VmReq::Destroy(h) => {
                 pending.retain(|&p| p != h);
@@ -1914,7 +1915,12 @@ fn vm_slice(c: &mut Cast, ctx: &mut VmCtx, airborne: bool, in_motion: bool) {
                     (a.group, a.radius, a.height) = (g, r, ht);
                 }
                 vm.attacks[h] = i;
-                mlog!("magic(vm): attack {:?} made: atkp {atkp} kind {kind}", i.map(|i| ctx.attacks[i].group));
+                let what = match atkp {
+                    ATKP_MAGNET => " (Magnet)",
+                    ATKP_REFLECT_GUARD => " (Reflect's guard)",
+                    _ => "",
+                };
+                mlog!("magic(vm): attack {:?} made: atkp {atkp}{what} kind {kind}", i.map(|i| ctx.attacks[i].group));
             }
             VmReq::Size { h, a, b } => {
                 if let Some(i) = vm.attacks[h] {

@@ -5,11 +5,12 @@
 //! name (docs/party.md section 4, action records +0x20). Stage 1 starts the script when the member
 //! appears and switches it to `idle`, then runs it every tick through the enemy host (`BevyHost`).
 //!
-//! What the script asks for is not carried out in stage 1: the member's body plays the locomotion
-//! motions of `party.rs`. `idle` (BDX `P_EX020` R0489 -> R0499) faces the target and plays motion 0
-//! until it ends; for a player-type motion set the game maps the number through FUN_0017da30, which
-//! the enemy host does not (it treats numbers as slots), so applying the request would play the wrong
-//! slot. The request is logged and dropped [deliberate gap until the remap is ported].
+//! The script runs through `friend_host::FriendHost`: its motion requests go through the player-type
+//! remap FUN_0017da30 (the member's motion state row, `PartyMember::motion_row`) before the enemy host
+//! plays them, and the group-10 entries the members' scripts reach are answered there. The requested
+//! slot is handed to `party.rs` (`PartyMember::script_slot`), which plays it while the member stands:
+//! `idle` (BDX `P_EX020` R0489 -> R0499) faces the target and asks for motion 0. Movement, effects
+//! and the other requests of the script are not carried out (the locomotion owns the body).
 //!
 //! Log: `KH2_PARTYLOG=1` prints the mode changes; `KH2_BDXLOG=1` the host calls as for enemies.
 
@@ -22,6 +23,7 @@ use kh2_tables::tables as t;
 use crate::assets::Disc;
 use crate::enemy_ai::AiTrace;
 use crate::enemy_host::{BevyHost, Env};
+use crate::friend_host::{FriendFields, FriendHost};
 use crate::enemy_obj::{Obj, OBJ_SIZE, SELF_BASE};
 use crate::party::PartyMember;
 use crate::schedule::Sim;
@@ -81,6 +83,7 @@ pub struct FriendBrain {
     started: bool,
     errors_seen: usize,
     mode: Option<String>,
+    fields: FriendFields,
 }
 
 /// Registers the systems (called by `party::PartyPlugin`, which runs them after its own tick).
@@ -107,6 +110,7 @@ fn friend_attach(mut commands: Commands, disc: Res<Disc>, mut scripts: ResMut<Fr
             started: false,
             errors_seen: 0,
             mode: None,
+            fields: FriendFields::default(),
         });
     }
 }
@@ -116,16 +120,19 @@ fn friend_update(
     world: Option<Res<World>>,
     trace: Option<ResMut<AiTrace>>,
     sora: Query<&Sora>,
-    mut q: Query<(&PartyMember, &mut FriendBrain)>,
+    data: Res<crate::party::PartyData>,
+    mut q: Query<(&mut PartyMember, &mut FriendBrain)>,
     anims: Query<&Animator>,
 ) {
     let (Some(mut trace), Ok(s)) = (trace, sora.single()) else { return };
     let log = std::env::var("KH2_PARTYLOG").is_ok_and(|v| !v.is_empty() && v != "0");
     let paired = HashMap::new();
-    for (m, mut brain) in &mut q {
+    for (mut m, mut brain) in &mut q {
         let Ok(anim) = anims.get(m.body) else { continue };
         let rig = anim.rig.clone();
-        let FriendBrain { rt, obj, tag, flags124, started, errors_seen, mode } = &mut *brain;
+        let FriendBrain { rt, obj, tag, flags124, started, errors_seen, mode, fields } = &mut *brain;
+        fields.order = data.order(m.motion_row);
+        fields.free = m.free;
         obj.motor.pos = m.position();
         obj.motor.yaw = m.yaw();
         obj.motor.grounded = true;
@@ -146,7 +153,7 @@ fn friend_update(
             event_active: false,
         };
         let handle = obj.handle;
-        let mut host = BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() };
+        let mut host = FriendHost { inner: BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() }, fields };
         if !*started {
             *started = true;
             rt.spawn(&mut host, handle);
@@ -160,12 +167,13 @@ fn friend_update(
             }
             *mode = now;
         }
-        if let Some(req) = obj.motion_req.take()
-            && log
-        {
-            info!("party: {tag} script asked for motion {} (not applied in stage 1: the locomotion owns the body)", req.slot);
+        if let Some(req) = obj.motion_req.take() {
+            if log && m.script_slot != Some(req.slot) {
+                info!("party: {tag} script asked for slot {} (FUN_0017da30 row {}): played while the member stands", req.slot, m.motion_row);
+            }
+            m.script_slot = Some(req.slot);
         }
-        // Nothing else the script asked for is carried out in stage 1.
+        // Nothing else the script asked for is carried out.
         obj.move_vel = Vec3::ZERO;
         obj.effects.clear();
         obj.outbox.clear();

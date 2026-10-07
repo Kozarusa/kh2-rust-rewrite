@@ -1523,6 +1523,7 @@ mod tests {
             ok: 1,
             yes: 2,
             no: 3,
+            icons: vec![(0, 0, 12), (2, 4, 14)],
         }
     }
 
@@ -1921,6 +1922,14 @@ mod tests {
         }
         assert!(total > 50, "the lists were not trivially empty: {total}");
         eprintln!("oracle: FUN_00283a70 + FUN_002845a0 equal for 18 lists ({total} entries; (filter, length) {seen:?}; filter 5 is argument 10, Customize's shortcut candidates)");
+    }
+
+    #[test]
+    fn an_icon_follows_the_type_and_the_flag_and_an_unlisted_type_shows_0xb() {
+        let e = exe();
+        assert_eq!((e.icon(0, false), e.icon(0, true)), (0, 12));
+        assert_eq!((e.icon(2, false), e.icon(2, true)), (4, 14));
+        assert_eq!(e.icon(9, true), 0xb);
     }
 
     #[test]

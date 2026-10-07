@@ -475,6 +475,8 @@ Not done, and why:
   (host 1.165) and the limit task body is not run (stage 5); the summon face panel, Genie's "Drive!", Tinker
   Bell's reraise and the area re-entry (stage 6).
 - Byte 5 and byte 7 are kept in `SummonState`, not written to `Progress` (no setters for them).
+- An area change during a summon (FUN_00168ba8 -> FUN_001c68f8 clears the slots and the state, FUN_001c6710
+  creates the summon again in the new area) is not handled: the object is not an area part and stays where it was.
 - The game steps one LCG (`DAT_003716a0`) for many systems; the app keeps a copy for the summon only, started
   from the executable's initial word, which is 0 in the file. A multiplicative LCG at 0 stays 0, so the game
   must seed it somewhere [GAP: none of the 34 functions `mips_scan.py --addr 0x3716a0` lists stores anything but

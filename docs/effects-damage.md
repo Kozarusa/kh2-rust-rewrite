@@ -267,6 +267,22 @@ ended by its caller). Port: `fx::StartBoundSystemEffect { id, owner, handle }` (
 The middle arguments of `FUN_001db868` are not modelled. The summon arrival effect 0x13 (docs/summons.md) can use the
 same pair (end = `kill: false`, `FUN_001da028` = `kill: true`).
 
+## An element's DPX entry is found by number (WP-7Bc, verified; a correction)
+
+An element's `effect` word is not the place of its DPX entry: `FUN_001db5f0` -> `FUN_001da6f0` -> `FUN_001d9bf0` ->
+`FUN_001d9720` walks the DPX list (0x20-byte entries) and takes the first entry whose third word (the entry's number)
+equals it. `fx.rs` used the place (`effects.get(el.effect)`). In most files the numbers are the places, but not in
+`00effect.bar` (14 entries numbered 0..5 and 11..18) nor in `obj/M_EX010.apdx` (the Soldier). With the place lookup the
+system elements 0xb, 0xc and 0xd (guard bounce and clash sparks) ran the entries numbered 16, 17 and 18 (18 is the
+looping 60-frame summon arrival effect of element 0x13), and the elements 0xe..0x13 started nothing, the ineffective-hit
+effect 0x12 included. With the game's lookup (`fx::dpx_effect`) 0xb, 0xc, 0xd are short sparks that end by themselves
+(19, 15 and 24 frames). Tests `fx::tests::system_elements_resolve_by_dpx_number`, `lone_clash_spark_ends_by_itself`
+(they replace `clash_spark_0xd_has_no_end_of_its_own` and `lone_clash_spark_is_gone_after_life_plus_fade`, which were
+written against the place lookup). Consequence for docs/hit-reaction.md "Lifetime of the clash spark": the clash spark
+is not a looping effect; the "rainbow bubble sphere with a bright white core" the user saw stay was most probably the
+summon arrival effect run in its place [inferred: not compared with the original]. The spark ring stays as read; its
+[inferred] lone-loop end no longer applies to 0xd.
+
 ## Test and harness hooks (all in `fx.rs`)
 
 `KH2_FXTEST=<id>` (system effect), `k<id>` (keyblade), `<name>:<id>` (any `obj/<name>.apdx`, loaded on

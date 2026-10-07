@@ -241,8 +241,11 @@ entries of 0x510) uses group 0x4f with a delay of 60 (0x378d24); it is not the i
 Port: `prize::ItemObtained { item, icon, name }` is sent when a taken item's draw-in ends (`run_items`, log
 `prize: item 0x.. reached Sora: its message (icon N, name 0x..) goes to the queue`); `hud_banner::ItemMessages` keeps
 the queue (test `the_item_message_queue_takes_fifteen`) and shows the front entry: a `gaug` node playing group 0x4c with
-the label `[icon, name]` (font 0, size 16, colour 0xe5e5e5) at the group's x, y; it goes when the group has played (log
-`hud: item message 0x.. shown: ..`). [inferred] The group's alpha is not applied to the label (taken as 0x80); the text
+the label `[icon, name]` (font 0, size 16, colour 0xe5e5e5) at the group's anchor point (`Seqd::anchor`, what
+`FUN_002375c0` -> `FUN_00236cf8` computes, kept from the last frame one covered) plus the record's x, y (0, 0 on the
+disc); it goes when the group has played (record +4 = 1 on the disc: one play, about 1.8 s). Log
+`hud: item message 0x1 shown: "[icon 0]Potion", gaug group 0x4c Some((0.0, 0.0, 1))`. Screenshot (tt02,
+`KH2_ITEMTEST=0x1,0x2@5`, 6.6 s): a dark bar with "OBTAINED" in yellow, then the green potion icon and "Potion". [inferred] The group's alpha is not applied to the label (taken as 0x80); the text
 width limit (`FUN_001a8cc0` with the group record's +0x1c) is not applied; system sound 10 is logged, not played (the
 system sound list is not wired, as in `items.rs`).
 
@@ -271,7 +274,11 @@ Master Form experience and munny notes). Items: `prize: item 0x.. dropped at ..`
 ..`, `prize: item 0x.. reached Sora`, and with `KH2_PRIZELOG` `prize: item 0x.. came to rest`. `KH2_PRIZETEST=<kind>,..[@<s>]`
 launches kinds in front of Sora (`KH2_PRIZETEST_DIST` cm, `KH2_PRIZETEST_STILL=1` without the sideways launch);
 `KH2_ITEMTEST=<id>,..[@<s>]` (hex with `0x`) drops item objects the same way; `KH2_COLLECTALL=<s>` sends one `CollectAll`.
-All three are harness aids, not game behaviour. The collision of `tt00` has floors above the arena floor in places:
+`KH2_FORMHITS=<n>[@<s>]` and `KH2_FORMDEFEATS=<id>,..[@<s>]` (default 6 s) send the `FormExpGain` that
+`valor_hit_exp` / `defeat_exp` give for the form Sora is in (with `KH2_DRIVE=1|2|4 KH2_DRIVE_AT=3`). The item
+message logs `hud: item message 0x.. shown: "[icon N]Name", gaug group 0x4c ..`; a form level-up logs
+`prize: form level-up popups (not drawn): ..` and `.. (level-up effect 0x10, form list rebuilt [..])`.
+All of these are harness aids, not game behaviour. The collision of `tt00` has floors above the arena floor in places:
 prizes and items come to rest in mid-air there (seen at y 150 to 188); use `tt02` or `tt04`.
 
 ## Decompile index

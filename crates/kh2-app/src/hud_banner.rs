@@ -387,6 +387,8 @@ pub struct ItemMessages {
     pub queue: std::collections::VecDeque<crate::prize::ItemObtained>,
     node: Option<usize>,
     shown: bool,
+    /// The group's anchor point last computed (the player's +0xe0, +0xe4).
+    anchor: [i32; 2],
 }
 
 impl ItemMessages {
@@ -425,6 +427,7 @@ fn item_messages(scene: &mut HudScene, q: &mut ItemMessages, incoming: &mut Mess
         scene.nodes[node].label = None;
     }
     if q.shown {
+        place_item_text(scene, q, node);
         return;
     }
     let Some(m) = q.queue.front().copied() else { return };
@@ -444,6 +447,24 @@ fn item_messages(scene: &mut HudScene, q: &mut ItemMessages, incoming: &mut Mess
     n.label_time = 0.0;
     n.visible = true;
     q.shown = true;
+    q.anchor = [0, 0];
+    place_item_text(scene, q, node);
+}
+
+/// The text point of the shown entry (`FUN_00139048`): the player's place (`FUN_002375c0` -> `FUN_00236cf8`,
+/// the group's anchor animation at the current frame, `Seqd::anchor`; kept from the last frame one covered)
+/// plus the group record's x, y.
+fn place_item_text(scene: &mut HudScene, q: &mut ItemMessages, node: usize) {
+    let Some(seq) = scene.files.get(GAUG).map(|f| &f.seq) else { return };
+    let n = &scene.nodes[node];
+    if let Some(a) = seq.anchor(ITEM_MSG_GROUP, n.player.frame(), &n.ext) {
+        q.anchor = a;
+    }
+    let (x, y) = seq.groups.get(ITEM_MSG_GROUP).map_or((0, 0), |g| (g.x, g.y));
+    let off = [(q.anchor[0] + x) as f32, (q.anchor[1] + y) as f32];
+    if let Some(l) = scene.nodes[node].label.as_mut() {
+        l.offset = off;
+    }
 }
 
 #[cfg(test)]

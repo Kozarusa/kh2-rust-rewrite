@@ -93,12 +93,15 @@ const REQUEST_TICKS: u32 = 20;
 const SWEEP_STEP: f32 = 0.5;
 /// FUN_001a2fc8: a move longer than twice the frame step (`DAT_00356f40` = 1.0) sets the sweep flag.
 const SWEEP_MIN: f32 = 2.0;
+/// The shape type FUN_0016b7d0 asks FUN_0016b558 for: the victim's body centre for the pull.
+const BODY_SHAPE: u8 = 1;
 
 pub struct MagicPlugin;
 
 impl Plugin for MagicPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MagicState>()
+            .init_resource::<SpellAttacks>()
             .add_systems(Startup, setup.after(crate::sora::setup))
             .add_systems(Update, harness_keys.after(crate::sora::read_pad))
             .add_systems(FixedUpdate, run.in_set(Sim::Sora).after(crate::sora::tick));
@@ -148,6 +151,8 @@ pub struct MagicData {
     pub scripts: Vec<Option<Arc<Vec<u8>>>>,
     /// Host function signatures read from the executable (for the scripts' unnamed calls).
     pub host_table: Option<kh2_bdx::exe::HostTable>,
+    /// The numbers of host 1.248's scatter (Final Thunder), from the executable.
+    pub scatter: Option<rules::ScatterConsts>,
 }
 
 impl MagicData {
@@ -215,6 +220,31 @@ pub struct MagicState {
     /// Blizzard's global +0x2c: casts counted by its event 21 (Final finishers pick their elements by
     /// it). The program's globals live as long as the slot's resource [inferred], so it is kept here.
     bliz_counter: u32,
+    /// Host 1.248's generator and bucket counter (Final Thunder's scatter).
+    scatter: rules::ScatterState,
+    /// Blizzard's push of the caster (host 1.146 -> FUN_001857b0), stepped each tick after Sora's own.
+    push: Option<crate::reaction_rules::Push>,
+}
+
+/// The spell attack objects as the victims' side reads them (enemy.rs: the pull of reaction class 5,
+/// which follows the attack object the victim keeps at +0xaac). Written by `run` every tick.
+#[derive(Resource, Default)]
+pub struct SpellAttacks {
+    /// The position of every live attack object (method +8), by group, Bevy space. A group that is
+    /// gone has been finished (FUN_0018ccf8 clears the victims' +0xaac then).
+    pub places: HashMap<u32, Vec3>,
+    /// This tick's spell hits: (victim, atkp, attack group).
+    pub hits: Vec<(Entity, i16, u32)>,
+    /// Each enemy's body centre (FUN_0016b7d0: the centre of its first shape of type 1, else its
+    /// position) relative to its root, Bevy space.
+    pub centres: HashMap<Entity, Vec3>,
+}
+
+impl SpellAttacks {
+    /// The attack object behind this tick's spell hit on `target` with `atkp`.
+    pub fn hit_group(&self, target: Entity, atkp: i16) -> Option<u32> {
+        self.hits.iter().find(|h| h.0 == target && h.1 == atkp).map(|h| h.2)
+    }
 }
 
 /// `KH2_MAGIC_HURT=<seconds>:<hp>`: once, that many seconds (60 Hz ticks) after the start, Sora's HP
@@ -279,6 +309,9 @@ struct Shot {
     done: bool,
     /// The block's +0x60 is `magi` +0xc times this scale (R02d7).
     turn_scale: f32,
+    /// The block's flag (+0x64, R02b9): a shot with 0 ends at its first target (host 2.14), one
+    /// with 1 goes through targets and ends only at a wall or a clash (L039d).
+    flag: u32,
 }
 
 /// One cast: the script instance of FUN_001a4798.
@@ -305,8 +338,9 @@ struct Cast {
     target: Option<Entity>,
     /// Blizzard's shots for the slice after the yield.
     bliz: Option<BlizzardPlan>,
-    /// Thunder's strikes still to start: (frames to wait first, place, probe height).
-    thunder: Option<std::collections::VecDeque<(f32, Vec3, f32)>>,
+    /// Thunder's strikes still to start: (frames to wait after it, place, probe height, the place is
+    /// host 1.248's scatter around it).
+    thunder: Option<std::collections::VecDeque<(f32, Vec3, f32, bool)>>,
     thunder_wait: f32,
 }
 
@@ -403,8 +437,10 @@ fn setup(
             Some(Arc::new(e.data.to_vec()))
         })
         .collect();
-    let host_table = disc.read_root("SLUS_210.05").and_then(|exe| kh2_bdx::exe::HostTable::from_exe(&exe));
-    commands.insert_resource(MagicData { magc, cmds, magi, levels, world: world_id, slots, mp_drive: data.prty.mp_drive, scripts, host_table });
+    let exe = disc.read_root("SLUS_210.05");
+    let host_table = exe.as_ref().and_then(|exe| kh2_bdx::exe::HostTable::from_exe(exe));
+    let scatter = exe.as_ref().and_then(|exe| rules::ScatterConsts::from_exe(exe));
+    commands.insert_resource(MagicData { magc, cmds, magi, levels, world: world_id, slots, mp_drive: data.prty.mp_drive, scripts, host_table, scatter });
 }
 
 /// `KH2_KEYS` entries for the menu keys the harness does not map (T, G, B), pressed the same way.
@@ -482,13 +518,15 @@ fn stop_effect(running: &mut Running, pax: &LoadedPax, id: u16, owner: Entity) {
     }
 }
 
-/// The ability block, the drive state, the collision world and the game state, as optional resources.
+/// The ability block, the drive state, the collision world and the game state, as optional resources,
+/// and the attack objects published for the victims.
 type Context<'w> = (
     Option<Res<'w, crate::abilities::Abilities>>,
     Option<Res<'w, crate::drive::DriveState>>,
     Option<Res<'w, crate::world::World>>,
     Option<Res<'w, crate::progress::Progress>>,
     Option<Res<'w, combat::ReactionData>>,
+    ResMut<'w, SpellAttacks>,
 );
 
 type Victim =(Entity, Vec<(Volume, HurtSpheroid)>, Vec3);
@@ -503,7 +541,7 @@ fn run(
     mut st: ResMut<MagicState>,
     mut battle: ResMut<Battle>,
     abilities: Res<crate::sora::Abilities>,
-    (block, drive, world, progress, reaction): Context,
+    (block, drive, world, progress, reaction, mut published): Context,
     mut sora_q: Query<(Entity, &mut Sora)>,
     mut anims: Query<&mut Animator>,
     locals: Query<(&Transform, Option<&ChildOf>)>,
@@ -514,6 +552,7 @@ fn run(
     enemies: Query<&crate::enemy::Enemy>,
     mut recharge: ResMut<crate::hud::hud_gauge::MpRecharge>,
 ) {
+    published.hits.clear();
     let Some(data) = data else { return };
     let Ok((me, mut s)) = sora_q.single_mut() else { return };
     let st = &mut *st;
@@ -807,13 +846,22 @@ fn run(
             }
         }
     }
-    // Blizzard's event 21 after its yield: the push of the caster (host 1.146 with `magi` +0x1c, not
-    // ported) and the shot from element 1's position along the facing (R02b9 -> R02d7 -> R04d6).
+    // Blizzard's event 21 after its yield: the push of the caster (host 1.146 with `magi` +0x1c) and
+    // the shot from element 1's position along the facing (R02b9 -> R02d7 -> R04d6).
     for c in st.casts.iter_mut() {
         if let Step::Blizzard { elem, yielded } = c.step {
             if !yielded {
                 c.step = Step::Blizzard { elem, yielded: true };
                 continue;
+            }
+            // L00ab, every kind: host 1.146 (FUN_001705e8 -> FUN_001857b0) pushes the caster along the
+            // facing turned by pi (host 0.13) with the power `magi` +0x1c: the decaying ground push of
+            // the wall recoil (initial speed (power + stat +0x1c8) * 0.1, times 0.9 per frame; the stat
+            // term is 0 in the app as for the recoil).
+            let back = -s.motor.forward().with_y(0.0).normalize_or(Vec3::Z);
+            if let Some(rd) = reaction.as_deref() {
+                st.push = crate::reaction_rules::Push::new(back, c.magi.f(MAGI_PUSH), 0.0, &rd.consts);
+                mlog!("magic: Blizzard push of the caster (host 1.146 -> FUN_001857b0): power {} along {back:?}, speed {:?}", c.magi.f(MAGI_PUSH), st.push.map(|p| p.speed));
             }
             if let (Some(pax), Some(plan)) = (c.pax.clone(), c.bliz.take()) {
                 // The facing (host 1.201) in the game's space; each shot's direction is it with the
@@ -822,12 +870,27 @@ fn run(
                 for sh in &plan.shots {
                     let pos = element_position(&pax, sh.elem, &frames);
                     let dir = rotate_y_game(facing.with_y(-sh.y), sh.angle);
-                    mlog!("magic: Blizzard shot from element {} at {pos:?} along {dir:?} (flag {}, turn scale {}): speed {} life {} size {} turn {} (push {} not ported)", sh.elem, sh.flag, sh.scale, c.magi.f(MAGI_SPEED), c.magi.f(MAGI_LIFE), c.magi.f(MAGI_SHOT_SIZE), c.magi.f(MAGI_TURN), c.magi.f(MAGI_PUSH));
-                    st.shots.push(Shot { pax: pax.clone(), kind: c.kind, magi: c.magi.clone(), pos, dir, target: s.target, attack: None, effect: None, life: c.magi.f(MAGI_LIFE) - SHOT_FADE as f32, fade: None, done: false, turn_scale: sh.scale });
+                    mlog!("magic: Blizzard shot from element {} at {pos:?} along {dir:?} (flag {}, turn scale {}): speed {} life {} size {} turn {}", sh.elem, sh.flag, sh.scale, c.magi.f(MAGI_SPEED), c.magi.f(MAGI_LIFE), c.magi.f(MAGI_SHOT_SIZE), c.magi.f(MAGI_TURN));
+                    st.shots.push(Shot { pax: pax.clone(), kind: c.kind, magi: c.magi.clone(), pos, dir, target: s.target, attack: None, effect: None, life: c.magi.f(MAGI_LIFE) - SHOT_FADE as f32, fade: None, done: false, turn_scale: sh.scale, flag: sh.flag });
                 }
             }
             let _ = elem;
             c.step = Step::Done;
+        }
+    }
+    // The push of host 1.146 (FUN_001858b0 each frame: move by the speed, then decay; it ends below
+    // the cutoff). Sora's own push field is his module's, so the app steps this one here, after his
+    // tick; a hit reaction replaces it as it replaces the game's push [inferred for the air: the
+    // script calls the ground push FUN_001857b0 also for an air cast].
+    if matches!(s.state, State::Hurt | State::Blown | State::Down) {
+        st.push = None;
+    }
+    if let (Some(p), Some(rd), Some(w)) = (st.push.as_mut(), reaction.as_deref(), world.as_deref()) {
+        let d = p.step(&rd.consts);
+        let dy = (!s.motor.grounded).then_some(0.0);
+        s.motor.move_by(w, d, dy);
+        if p.finished() {
+            st.push = None;
         }
     }
     // Thunder's event 21, the rest of its first slice: the strike's place is the target's position
@@ -844,9 +907,6 @@ fn run(
             let facing = s.motor.forward().with_y(0.0).normalize_or(Vec3::Z);
             let plan = thunder_plan(c.kind, here, facing, target, c.magi.f(MAGI_THUNDER_RADIUS));
             mlog!("magic: Thunder event 21 (kind {}): {} strikes, target {:?}", c.kind, plan.len(), s.target);
-            if c.kind / 10 == 3 {
-                mlog!("magic: Thunder in Final: the extra strikes at random places (host 1.248 -> FUN_001a5ee0) are not ported");
-            }
             c.thunder = Some(plan.into());
         }
         // R029f between the strikes: the frames are counted down one per slice.
@@ -857,7 +917,22 @@ fn run(
             }
         }
         match c.thunder.as_mut().and_then(|q| q.pop_front()) {
-            Some((wait, pos, rise)) => {
+            Some((wait, mut pos, rise, scatter)) => {
+                if scatter {
+                    // Host 1.248 (L016f): R = 2.5 * `magi` +0x24, radius 0.4 R .. R, height -0.1 R ..
+                    // 0.1 R; the line test against the collision world [inferred: mask 2's surfaces
+                    // were not told apart, every triangle blocks].
+                    let r = 2.5 * c.magi.f(MAGI_THUNDER_RADIUS);
+                    match data.scatter.as_ref() {
+                        Some(sc) => {
+                            let clear = |a: Vec3, b: Vec3| world.as_deref().is_none_or(|w| w.raycast_m(a * SCALE, b * SCALE).is_none());
+                            let centre = pos;
+                            pos = rules::scatter_place(pos / SCALE, 0.4 * r, r, -0.1 * r, 0.1 * r, &mut st.scatter, sc, clear) * SCALE;
+                            mlog!("magic: Thunder in Final: host 1.248 around {centre:?} (radius {} .. {r}): {pos:?} (generator {:#x}, counter {})", 0.4 * r, st.scatter.seed, st.scatter.turn);
+                        }
+                        None => mlog!("magic: Thunder in Final: no scatter numbers from the executable; the strike stays at the place"),
+                    }
+                }
                 mlog!("magic: Thunder strike at {pos:?} (rise {rise})");
                 st.strikes.push(Strike { pax, kind: c.kind, magi: c.magi.clone(), pos, rise, atkp: 0, started: false, wait: 0.0, attacks: None, done: false });
                 c.thunder_wait = wait;
@@ -987,6 +1062,7 @@ fn run(
                 );
             }
             hits.write(hit);
+            published.hits.push((*te, hit.atkp, a.group));
             if let Some(pax) = &a.pax {
                 spell_hits.write(fx::SpellHit { target: *te, atkp: hit.atkp, pax: pax.clone() });
             }
@@ -1008,6 +1084,18 @@ fn run(
     for m in st.memory.values_mut() {
         m.tick();
     }
+    // What the victims read next (the pull of reaction class 5): the live attacks' positions and the
+    // enemies' body centres (FUN_0016b7d0: the first shape of type 1, else the position).
+    published.places = st.attacks.iter().filter(|a| a.live).filter_map(|a| a.pos.map(|p| (a.group, p))).collect();
+    published.centres = fighters
+        .iter()
+        .filter(|(_, f, _)| f.team == Team::Enemy)
+        .filter_map(|(e, f, g)| {
+            let (an, bg) = (anims.get(f.hurt_body).ok()?, gts.get(f.hurt_body).ok()?);
+            let c = an.rig.model.shapes.iter().find(|sh| sh.kind == BODY_SHAPE).map(|sh| combat::hurt_spheroid(sh, an, bg).center);
+            Some((e, c.map_or(Vec3::ZERO, |c| c - g.translation())))
+        })
+        .collect();
     // Casts hold indices into the list: finished attacks go once no cast runs.
     if st.casts.is_empty() && st.shots.is_empty() && st.strikes.is_empty() {
         st.attacks.retain(|a| a.live);
@@ -1055,6 +1143,15 @@ fn fire_plan(kind: u32, airborne: bool) -> FirePlan {
 /// starts element 0 (the other spells always do).
 fn charge_element(slot: u8, kind: u32) -> Option<u16> {
     (slot <= 3 && !(slot == 0 && matches!(kind / 10, 1 | 3))).then_some(0)
+}
+
+/// BLIZZARD_*.mag L039d, the end test of a shot each frame: host 2.29 (the attack's flags 8 / 0x10, a
+/// wall: FUN_0018ca78), 2.39 (0x200, a clash: FUN_0018d430), or 2.14 (FUN_0018c890: flag 2, a target,
+/// or any of the others) when the block's flag (+0x64) is 0. So a shot with flag 1 (every cast but the
+/// Wisdom finisher's and Master's) goes on through the targets it hits. The app's attack has no clash
+/// with enemy attacks, so `clash` is false for it.
+fn shot_ends(wall: bool, clash: bool, target: bool, flag: u32) -> bool {
+    wall || clash || ((target || wall || clash) && flag == 0)
 }
 
 /// One Blizzard shot of event 21 (R02b9(element, direction, flag, scale)): the element whose position
@@ -1138,9 +1235,10 @@ fn rotate_y_game(v: Vec3, angle: f32) -> Vec3 {
 /// 300 ahead of the caster (Master: 800 ahead turned 45 degrees) raised by 80, with 330. Master first
 /// strikes at the caster's position and 0.47 and 0.78 of the way to the place, 16 frames apart, then
 /// the place. The Wisdom finisher strikes three more times 8 frames apart around the place, `magi`
-/// +0x24 * 1.5 away along the facing turned by 120, 240 and 360 degrees. Final's extra strikes are
-/// left out (their places come from FUN_001a5ee0's random scatter, not ported). Positions in Bevy space.
-fn thunder_plan(kind: u32, here: Vec3, facing: Vec3, target: Option<Vec3>, radius: f32) -> Vec<(f32, Vec3, f32)> {
+/// +0x24 * 1.5 away along the facing turned by 120, 240 and 360 degrees. Final strikes 2 (finisher 7)
+/// more times 8 frames apart; those entries carry `true`: their place is host 1.248's scatter around
+/// the place, drawn when the strike starts. Positions in Bevy space.
+fn thunder_plan(kind: u32, here: Vec3, facing: Vec3, target: Option<Vec3>, radius: f32) -> Vec<(f32, Vec3, f32, bool)> {
     let (k10, fin) = (kind / 10, kind & 1 == 1);
     let (place, rise) = match target {
         Some(t) => (t, 100.0),
@@ -1152,16 +1250,25 @@ fn thunder_plan(kind: u32, here: Vec3, facing: Vec3, target: Option<Vec3>, radiu
     let mut out = Vec::new();
     if k10 == 2 {
         for f in [0.0, 0.47, 0.78] {
-            out.push((16.0, here + (place - here) * f, rise));
+            out.push((16.0, here + (place - here) * f, rise, false));
         }
     }
-    out.push((0.0, place, rise));
+    out.push((0.0, place, rise, false));
     if k10 == 1 && fin {
         out.last_mut().unwrap().0 = 8.0;
         let mut dir = rotate_y_game(facing * radius * 1.5, 2.094_395);
         for i in 0..3 {
-            out.push((if i < 2 { 8.0 } else { 0.0 }, place + dir * SCALE, 330.0));
+            out.push((if i < 2 { 8.0 } else { 0.0 }, place + dir * SCALE, 330.0, false));
             dir = rotate_y_game(dir, 2.094_395);
+        }
+    }
+    // Final (R026a, L014c): 2 more strikes, 7 for a finisher (R0276), each after a wait of 8 frames,
+    // at host 1.248's scatter around the place (`magic_rules::scatter_place`), probe height 330.
+    if k10 == 3 {
+        let n = if fin { 8 } else { 3 };
+        out.last_mut().unwrap().0 = 8.0;
+        for i in 1..n {
+            out.push((if i < n - 1 { 8.0 } else { 0.0 }, place, 330.0, true));
         }
     }
     out
@@ -1293,8 +1400,8 @@ pub fn turn_toward(from: Vec3, to: Vec3, rate: f32) -> Vec3 {
 
 /// One frame of a Blizzard shot (BLIZZARD_*.mag routine 0x319). First slice (R035b): element 2 of the
 /// spell's file, unbound; the attack `atkp` 248 of the cast's kind sized `magi` +0x18 both ways; life
-/// `magi` +0x10 - 12. Each frame (L039d): the shot ends when its effect is gone or its attack hit a
-/// target or terrain; otherwise the effect and the attack move to the position; after the yield the
+/// `magi` +0x10 - 12. Each frame (L039d): the shot ends when its effect is gone or by `shot_ends` (a
+/// wall; a target only for a shot with flag 0); otherwise the effect and the attack move to the position; after the yield the
 /// direction turns toward the target by `magi` +0x60 of the block (`magi` +0xc times the shot's scale)
 /// when there is one (host 0.46), the position moves `magi` +0x14 along it (host 0.45), and when the
 /// life runs out the effect fades over 12 frames and goes (host 0.52). Cleanup (R0487): the effect is
@@ -1358,8 +1465,8 @@ fn step_shot(
     }
     // Loop top: the end conditions, then the effect and the attack follow the position.
     let a = &attacks[ai];
-    if shot.fade == Some(0) || a.hit_any || a.wall {
-        mlog!("magic: Blizzard shot over at {:?} (hit {}, wall {}, faded {})", shot.pos, a.hit_any, a.wall, shot.fade == Some(0));
+    if shot.fade == Some(0) || shot_ends(a.wall, false, a.hit_any, shot.flag) {
+        mlog!("magic: Blizzard shot over at {:?} (hit {}, wall {}, flag {}, faded {})", shot.pos, a.hit_any, a.wall, shot.flag, shot.fade == Some(0));
         if let Some((_, r)) = effect.as_mut() {
             r.effect.end();
         }
@@ -1692,18 +1799,15 @@ impl kh2_bdx::host::Host for SpellHost<'_> {
             // 1.138 (FUN_00173948, not in the decompilation): element `id` started unbound; the scripts
             // place it next with 0.38 [inferred from the use: Thunder, Cure, Magnet].
             Call::Unknown { group: 1, index: 138, args } if args.len() >= 2 => self.new_effect(args[1] as u16, true),
-            // 1.141 (FUN_00172538 -> FUN_001a5c30): a ground probe writing the point it found through a
-            // pointer the app cannot reach from an unnamed call: answered "no ground" [GAP].
-            Call::Unknown { group: 1, index: 141, .. } => {
-                self.missing.insert("1.141 (answered: no ground)".into());
+            // 1.141 `probe_ground_down` (FUN_00172538 -> FUN_001a5c30): the found point goes through the
+            // second argument, a pointer into the script's own stack (MAGNET_*.mag passes local+0x20),
+            // which a host cannot write: the interpreter keeps that memory and `Host::write_mem` only
+            // gets addresses outside it. Answered "no ground" (the place stays the target's position,
+            // not `magi` +0x3c above the ground) [GAP: needs the runtime to write a host call's output
+            // vector, see docs/magic.md].
+            Call::Func { group: 1, index: 141, .. } => {
+                self.missing.insert("1.141 (answered: no ground; its output pointer is script stack)".into());
                 Value::Int(0)
-            }
-            // 0.39 (FUN_0016dad0) is not named in kh2-bdx, so its vector argument (a pointer into the
-            // script's stack) cannot be read here: Magnet's sphere keeps scale 1 instead of growing and
-            // shrinking [GAP: needs the name in kh2-bdx's table].
-            Call::Unknown { group: 0, index: 39, .. } => {
-                self.missing.insert("0.39 (unnamed: scale not read)".into());
-                Value::None
             }
             // 1.187 / 1.188: bit 3 of the global flag word 0x35d268, set around Final's extra Magnet
             // attack; its readers were not traced [GAP], so nothing changes in the app.
@@ -2123,9 +2227,16 @@ mod tests {
         assert!(matches!(ev20[..], [VmReq::Effect { id: 0, .. }]), "{ev20:?}");
         vm.rt.restart_thread(21, &[]);
         let mut log: Vec<(usize, VmReq)> = Vec::new();
+        // Element 3's scale (host 0.39, named in WP-7M2) after each slice.
+        let mut scales: Vec<f32> = Vec::new();
         for n in 0..2000 {
             let clashes = vec![0; vm.attacks.len()];
             log.extend(test_slice(&mut vm, &mut world, false, true, 0, &row, &pax, &frames, target, clashes).into_iter().map(|r| (n, r)));
+            if let Some(f) = world.fx.get(3)
+                && !f.gone
+            {
+                scales.push(f.scale);
+            }
             if vm.rt.thread_done() {
                 break;
             }
@@ -2148,7 +2259,13 @@ mod tests {
         assert!(fin >= e3 + grow + row.f(0x44) as usize, "the pull lasts the growth and the hold");
         assert!(at(&|r| matches!(r, VmReq::Effect { id: 4, .. })).is_some_and(|n| n >= fin));
         assert!(at(&|r| matches!(r, VmReq::Destroy(3))).is_some());
-        assert_eq!(vm.missing.iter().filter(|m| !m.starts_with("1.141") && !m.starts_with("0.39")).count(), 0, "{:?}", vm.missing);
+        assert_eq!(vm.missing.iter().filter(|m| !m.starts_with("1.141")).count(), 0, "{:?}", vm.missing);
+        // The sphere grows from 0 to 1 and shrinks back (`(sin((t - 0.5) pi) + 1) / 2`).
+        let max = scales.iter().copied().fold(0.0f32, f32::max);
+        eprintln!("magnet sphere scales: {} samples, first {:?}, max {max}, last {:?}", scales.len(), scales.first(), scales.last());
+        assert!(scales.first().is_some_and(|s| *s < 0.2), "{scales:?}");
+        assert!((max - 1.0).abs() < 0.02, "{scales:?}");
+        assert!(scales.last().is_some_and(|s| *s < 0.2), "{scales:?}");
     }
 
     /// WP-7I: Reflect's own script (REFLECT_1.mag). Event 20 starts no charge effect; event 21 starts the
@@ -2247,7 +2364,22 @@ mod tests {
 
     /// WP-7I forms: Thunder's strikes per kind (`thunder_plan`, THUNDER_*.mag R0017): one; Master four
     /// (from the caster toward the place at 0, 0.47, 0.78, then the place, 16 frames apart); the Wisdom
-    /// finisher four (the place, then three around it 8 frames apart, `magi` +0x24 * 1.5 away).
+    /// finisher four (the place, then three around it 8 frames apart, `magi` +0x24 * 1.5 away); Final
+    /// three, a Final finisher eight (the place, then host 1.248's scatter).
+    /// WP-7M2: Blizzard's end test L039d. A wall (2.29) or a clash (2.39) ends every shot; a target
+    /// (2.14's flag 2) ends only a shot whose block flag is 0 (the Wisdom finisher's five, Master's
+    /// seven); the plain shot (flag 1) goes on through targets.
+    #[test]
+    fn blizzard_shot_flag_follows_host_2_14() {
+        assert!(shot_ends(true, false, false, 1) && shot_ends(false, true, false, 1));
+        assert!(!shot_ends(false, false, true, 1), "flag 1: through targets");
+        assert!(shot_ends(false, false, true, 0), "flag 0: ends at the first target");
+        assert!(!shot_ends(false, false, false, 0));
+        assert!(blizzard_plan(0, 0).shots.iter().all(|s| s.flag == 1));
+        assert!(blizzard_plan(11, 0).shots.iter().all(|s| s.flag == 0));
+        assert!(blizzard_plan(20, 0).shots.iter().all(|s| s.flag == 0));
+    }
+
     #[test]
     fn thunder_forms_strike_counts() {
         let here = Vec3::ZERO;
@@ -2263,6 +2395,14 @@ mod tests {
             assert!(((x.1 - t.unwrap()).length() / SCALE - 150.0).abs() < 1e-2);
         }
         assert_eq!(thunder_plan(10, here, facing, t, 100.0).len(), 1, "Wisdom without a finisher");
+        // Final (L014c): the place, then 2 (finisher 7) scatter strikes 8 frames apart, probe 330.
+        let f = thunder_plan(30, here, facing, t, 100.0);
+        assert_eq!(f.iter().map(|x| (x.0, x.3)).collect::<Vec<_>>(), vec![(8.0, false), (8.0, true), (0.0, true)]);
+        assert!(f[1].1 == t.unwrap() && f[1].2 == 330.0, "scatter around the place");
+        let ff = thunder_plan(31, here, facing, t, 100.0);
+        assert_eq!(ff.len(), 8);
+        assert_eq!(ff.iter().filter(|x| x.3).count(), 7);
+        assert_eq!(ff.last().unwrap().0, 0.0);
         // No target: 300 ahead (Master: 800 at 45 degrees), raised by 80, probe height 330.
         let n = thunder_plan(0, here, facing, None, 100.0);
         assert!((n[0].1 - Vec3::new(0.0, 80.0, 300.0) * SCALE).length() < 1e-5 && n[0].2 == 330.0);
@@ -2336,7 +2476,7 @@ mod tests {
             (kh2_tables::load::<Magc>(&mut a, &t::MAGC).unwrap().rows, kh2_tables::load::<Cmd>(&mut a, &t::CMD).unwrap().rows)
         };
         let list = rules::magic_list(&magc, &[1, 1, 1, 1, 0, 0], 2);
-        let md = MagicData { magc, cmds, magi: Vec::new(), levels: [1, 1, 1, 1, 0, 0], world: 2, slots: Vec::new(), mp_drive: 0.0, scripts: Vec::new(), host_table: None };
+        let md = MagicData { magc, cmds, magi: Vec::new(), levels: [1, 1, 1, 1, 0, 0], world: 2, slots: Vec::new(), mp_drive: 0.0, scripts: Vec::new(), host_table: None, scatter: None };
         let mut p = crate::progress::Progress::from_block(&[], Arc::new(crate::progress::ItemIndex::new(&[], &[], &[])));
         let (fire, cure) = (list[0], list[3]);
         let fire_slot = md.cmd(fire).unwrap().argument as u8;

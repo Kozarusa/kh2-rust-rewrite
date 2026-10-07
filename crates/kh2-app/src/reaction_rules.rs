@@ -33,6 +33,9 @@ pub mod motion {
     /// Reaction class 14 motions, front / back (FUN_001856a8).
     pub const CLASS14_FRONT: u8 = 0x17;
     pub const CLASS14_BACK: u8 = 0x18;
+    /// Reaction class 5 (the pull of FUN_001bf920): hit from the front / from behind.
+    pub const PULL_FRONT: u8 = 0x14;
+    pub const PULL_BACK: u8 = 0x15;
 }
 
 /// `RefactSelf` / `RefactOther` values (OpenKH: 0 Reflect, 1 Guard, 2 Nothing).
@@ -177,7 +180,7 @@ fn exe_bytes(elf: &[u8], va: u32, len: usize) -> Option<&[u8]> {
     None
 }
 
-fn exe_f32(elf: &[u8], va: u32) -> Option<f32> {
+pub(crate) fn exe_f32(elf: &[u8], va: u32) -> Option<f32> {
     exe_bytes(elf, va, 4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
 }
 
@@ -643,6 +646,106 @@ impl Blow {
         self.up = (self.up - c.gravity).max(-d.fall_max);
         (self.horiz, self.up)
     }
+}
+
+// ---- Reaction class 5: the pull toward an attack object (Magnet) ----
+
+/// The executable's numbers of the class 5 pull (FUN_001bf920, FUN_001bfc10, FUN_001bfdf8,
+/// FUN_001bfba8), read from the user's `SLUS_210.05` by [`PullConsts::from_exe`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PullConsts {
+    /// Scale of the random generator's state to 0..1 (0x37bd18).
+    pub rand_scale: f32,
+    /// Speed per unit of distance beyond the hold distance (0x37bd30).
+    pub gain: f32,
+    /// The speed is held between these (0x37bd2c, 0x37bd34).
+    pub min_speed: f32,
+    pub max_speed: f32,
+    /// The swirl is the pull turned about Y by this angle (0x37bd38, FUN_0017c2e8).
+    pub swirl_angle: f32,
+    /// A victim hit from behind faces along the direction times this (0x37bd3c).
+    pub back_facing: f32,
+    /// Blend of the motion 0 request when the pull ends (0x37bd28, FUN_001bfba8).
+    pub end_blend: f32,
+    /// The velocity is multiplied by this at the end (0x356f40, the frame step).
+    pub step: f32,
+}
+
+impl PullConsts {
+    pub fn from_exe(elf: &[u8]) -> Option<PullConsts> {
+        let f = |va| exe_f32(elf, va);
+        Some(PullConsts {
+            rand_scale: f(0x37bd18)?,
+            gain: f(0x37bd30)?,
+            min_speed: f(0x37bd2c)?,
+            max_speed: f(0x37bd34)?,
+            swirl_angle: f(0x37bd38)?,
+            back_facing: f(0x37bd3c)?,
+            end_blend: f(0x37bd28)?,
+            step: f(0x356f40)?,
+        })
+    }
+}
+
+/// The victim side of reaction class 5 (FUN_00185668 -> FUN_001bf920): the victim keeps the attack
+/// object (actor +0xaac) and is drawn toward it every frame by its mover (the mover's velocity method
+/// FUN_003332f0 -> FUN_001bfc10) until the attack object is finished (FUN_0018ccf8 clears +0xaac of
+/// every actor that holds it; then FUN_001bfba8 switches the mover back and requests motion 0).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pull {
+    /// +0xab0: the distance the victim settles at, random between `KnockbackStrength1` and `2`.
+    pub hold: f32,
+    /// +0xab4: the row's `Unknown` field (atkp +0x10), the strength of the sideways swirl.
+    pub swirl: f32,
+    /// +0xab8: motion 0x14 (hit from the front) or 0x15 (from behind).
+    pub motion: u8,
+}
+
+impl Pull {
+    /// FUN_001bf920. `rand` is the shared generator's state after its step (`x * 0x10dcd`), scaled
+    /// to 0..1 by `rand_scale`; `from_front` is FUN_00184dd0 (the victim's facing against the hit
+    /// direction is negative).
+    pub fn new(kb1: i16, kb2: i16, unknown: i16, from_front: bool, rand: u32, c: &PullConsts) -> Pull {
+        let lo = kb1 as f32;
+        Pull { hold: lo + rand as f32 * c.rand_scale * (kb2 as f32 - lo), swirl: unknown as f32, motion: if from_front { motion::PULL_FRONT } else { motion::PULL_BACK } }
+    }
+
+    /// FUN_001bfc10: the victim's velocity this frame (game units per frame, Bevy axes). `attack` is
+    /// the attack object's position (its method +8), `centre` the victim's body centre (FUN_0016b7d0).
+    /// The speed toward the attack is `(distance - hold) * gain`, held between the two limits; the
+    /// swirl is that vector turned about Y by `swirl_angle`, made flat and unit, times `swirl`.
+    pub fn velocity(&self, attack: Vec3, centre: Vec3, c: &PullConsts) -> Vec3 {
+        let d = attack - centre;
+        let dist = d.length();
+        let dir = d.normalize_or_zero();
+        let s = (dist - self.hold) * c.gain;
+        // The order of the game's tests: below the minimum, else above the maximum.
+        let speed = if s < c.min_speed {
+            c.min_speed
+        } else if s > c.max_speed {
+            c.max_speed
+        } else {
+            s
+        };
+        let pull = dir * speed;
+        let side = game_rotate_y(pull, c.swirl_angle).with_y(0.0).normalize_or_zero() * self.swirl;
+        (pull + side) * c.step
+    }
+
+    /// FUN_001bfdf8: the direction the victim faces, toward the attack object, or away from it
+    /// (times `back_facing`) when it plays the motion of a hit from behind.
+    pub fn facing(&self, attack: Vec3, centre: Vec3, c: &PullConsts) -> Vec3 {
+        let dir = (attack - centre).normalize_or_zero();
+        if self.motion == motion::PULL_BACK { dir * c.back_facing } else { dir }
+    }
+}
+
+/// FUN_0017c2e8 (the rotation of script host 0.13): a vector turned about Y in the game's space,
+/// `x' = x cos + z sin`, `z' = z cos - x sin`. Input and output in Bevy space (the game's Z negated).
+fn game_rotate_y(v: Vec3, angle: f32) -> Vec3 {
+    let (sn, cs) = angle.sin_cos();
+    let (x, z) = (v.x, -v.z);
+    Vec3::new(x * cs + z * sn, v.y, -(z * cs - x * sn))
 }
 
 // ---- Which reaction a victim plays ----
@@ -1205,5 +1308,59 @@ mod tests {
             }
         }
         assert!(ticks < 100 && x > 0.0, "ticks {ticks} x {x}");
+    }
+
+    fn toy_pull() -> PullConsts {
+        PullConsts { rand_scale: 1.0 / 4_294_967_296.0, gain: 0.1, min_speed: -20.0, max_speed: 20.0, swirl_angle: std::f32::consts::FRAC_PI_2, back_facing: -1.0, end_blend: 8.0, step: 1.0 }
+    }
+
+    /// Reaction class 5 (FUN_001bf920, FUN_001bfc10, FUN_001bfdf8): the hold distance between the two
+    /// knockback strengths by the generator, the speed toward the attack `(distance - hold) * gain`
+    /// held between the limits, the flat swirl at a right angle times the row's `Unknown`, and the
+    /// facing toward the attack (away from it for a hit from behind).
+    #[test]
+    fn pull_follows_fun_001bfc10() {
+        let c = toy_pull();
+        let p = Pull::new(100, 300, -3, true, 0x8000_0000, &c);
+        assert!((p.hold - 200.0).abs() < 1e-3 && p.swirl == -3.0 && p.motion == motion::PULL_FRONT);
+        assert_eq!(Pull::new(100, 300, -3, false, 0, &c).motion, motion::PULL_BACK);
+        assert!((Pull::new(100, 300, 0, true, 0, &c).hold - 100.0).abs() < 1e-6);
+        // 400 away along +X with a hold of 200: speed (400 - 200) * 0.1 = 20 (the maximum).
+        let attack = Vec3::new(400.0, 0.0, 0.0);
+        let v = p.velocity(attack, Vec3::ZERO, &c);
+        assert!((v.x - 20.0).abs() < 1e-4, "{v}");
+        // The swirl: +X turned a right angle about the game's Y is the game's -Z, Bevy +Z; times -3.
+        assert!((v.z - -3.0).abs() < 1e-4 && v.y.abs() < 1e-5, "{v}");
+        // Far beyond the limit the speed holds at 20; inside the hold it pushes away, at most 20.
+        assert!((p.velocity(Vec3::new(5000.0, 0.0, 0.0), Vec3::ZERO, &c).x - 20.0).abs() < 1e-4);
+        let near = p.velocity(Vec3::new(150.0, 0.0, 0.0), Vec3::ZERO, &c);
+        assert!((near.x - -5.0).abs() < 1e-4, "{near}");
+        // A sphere above the victim lifts it: the pull has a height part, the swirl none.
+        let up = Pull::new(0, 0, 0, true, 0, &c).velocity(Vec3::new(0.0, 100.0, 0.0), Vec3::ZERO, &c);
+        assert!((up.y - 10.0).abs() < 1e-4 && up.x.abs() < 1e-6);
+        assert_eq!(p.facing(attack, Vec3::ZERO, &c), Vec3::X);
+        assert_eq!(Pull::new(100, 300, -3, false, 0, &c).facing(attack, Vec3::ZERO, &c), -Vec3::X);
+    }
+
+    /// The disc's side of the pull: Magnet's attack rows (658) have reaction 5 and a swirl (`Unknown`),
+    /// and the executable's numbers have the signs and sizes the rule needs.
+    #[test]
+    fn pull_numbers_from_the_disc() {
+        let Some(mut a) = open_disc() else { return };
+        let Ok(exe) = a.iso().read("SLUS_210.05") else { return };
+        let c = PullConsts::from_exe(&exe).expect("pull constants");
+        eprintln!("{c:?}");
+        assert!(c.min_speed < 0.0 && c.max_speed > 0.0 && c.gain > 0.0 && c.back_facing < 0.0 && c.step > 0.0);
+        let rows = atkp_rows(&mut a);
+        let magnet: Vec<&Atkp> = rows.iter().filter(|r| r.id == 658).collect();
+        assert!(!magnet.is_empty());
+        for r in magnet {
+            eprintln!("atkp 658 SubId {}: reaction {} kb {} {} unknown {}", r.sub_id, r.enemy_reaction, r.knockback_strength1, r.knockback_strength2, r.unknown);
+            assert_eq!(reaction_class(r.enemy_reaction), 5);
+            // The rows of the three levels (no form) hold the enemy between two distances and swirl it.
+            if r.sub_id < 0x0a00 {
+                assert!(r.unknown != 0 && r.knockback_strength2 > r.knockback_strength1);
+            }
+        }
     }
 }

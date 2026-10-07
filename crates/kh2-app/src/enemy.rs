@@ -236,6 +236,9 @@ pub struct Enemy {
     /// Flight of the blow that put the enemy in `EState::Blown`, and whether it came from behind.
     blow: Option<Blow>,
     blown_back: bool,
+    /// Reaction class 5 (Magnet): the spell attack object the enemy is drawn toward (its group in
+    /// `magic::SpellAttacks`, actor +0xaac) and the pull's numbers (`reaction_rules::Pull`).
+    pull: Option<(u32, rules::Pull)>,
     /// Hit sounds played so far; the sound alternates between two entries (actor byte +0x7fc).
     hit_sounds: u8,
     /// The spawn kind byte of the enemy's spawn record (host 1.110), -1 without one.
@@ -252,6 +255,16 @@ impl Enemy {
         self.hp > 0
     }
 }
+
+/// The executable's numbers of the class 5 pull (`reaction_rules::PullConsts`).
+#[derive(Resource)]
+pub struct PullData(pub rules::PullConsts);
+
+/// The game's shared random generator (`DAT_003716a0`, `x * 0x10dcd`) as the pull draws from it
+/// (FUN_001bf920). The game shares one state with every other user; the app keeps this one for the
+/// pull, started at 1 like the game's (FUN_002f5fc8) [the sequence differs from the game's].
+#[derive(Default)]
+pub struct PullRng(u32);
 
 #[derive(Resource, Default)]
 pub struct Waves {
@@ -279,6 +292,13 @@ impl Plugin for EnemyPlugin {
             }
             EnemyRigs(map)
         };
+        // The numbers of reaction class 5 (Magnet's pull), from the user's executable.
+        match app.world().resource::<Disc>().read_root("SLUS_210.05").and_then(|e| rules::PullConsts::from_exe(&e)) {
+            Some(p) => {
+                app.insert_resource(PullData(p));
+            }
+            None => warn!("enemy: SLUS_210.05 not readable; reaction class 5 (pull) is not played"),
+        }
         app.insert_resource(Waves::default())
             .insert_resource(rigs)
             .init_resource::<AreaWaves>()
@@ -328,6 +348,7 @@ fn spawn_enemy(
             push: None,
             blow: None,
             blown_back: false,
+            pull: None,
             hit_sounds: 0,
             spawn_kind,
             spawn_params,
@@ -454,12 +475,13 @@ pub fn think(
     collider: Option<Res<World>>,
     reaction: Option<Res<ReactionData>>,
     sora: Query<&Transform, (With<Sora>, Without<Enemy>)>,
-    mut q: Query<(&mut Transform, &mut Enemy, Has<crate::enemy_ai::AiBrain>)>,
+    mut q: Query<(Entity, &mut Transform, &mut Enemy, Has<crate::enemy_ai::AiBrain>)>,
     mut anims: Query<&mut Animator>,
+    (pull_data, spells): (Option<Res<PullData>>, Option<Res<crate::magic::SpellAttacks>>),
 ) {
     let (Some(col), Ok(_)) = (collider, sora.single()) else { return };
     let dt = time.delta_secs().min(0.05);
-    for (mut tf, mut e, scripted) in &mut q {
+    for (me, mut tf, mut e, scripted) in &mut q {
         let e = &mut *e;
         if scripted && !matches!(e.state, EState::Hurt | EState::Blown) {
             continue;
@@ -472,6 +494,41 @@ pub fn think(
             EState::Idle => {
                 e.vel = Vec3::new(0.0, e.vel.y, 0.0);
                 a.play(has(&rig, IDLE), true, 0.2);
+            }
+            EState::Hurt if e.pull.is_some() => {
+                // Reaction class 5: the pull mover (FUN_003332f0 -> FUN_001bfc10 for the velocity,
+                // FUN_001bfba8 each frame: the facing again, or the end once the attack object is
+                // finished, FUN_0018ccf8 clearing +0xaac). The pull's velocity is the whole movement,
+                // height included [inferred: the blow mover's velocity method adds its own gravity
+                // (FUN_0019e4d8), this one adds none].
+                let (group, p) = e.pull.expect("pull");
+                let at = spells.as_ref().and_then(|s| s.places.get(&group).copied());
+                match (at, pull_data.as_ref()) {
+                    (Some(at), Some(pd)) => {
+                        let centre = tf.translation + spells.as_ref().and_then(|s| s.centres.get(&me).copied()).unwrap_or(Vec3::ZERO);
+                        let v = p.velocity(at / SCALE, centre / SCALE, &pd.0);
+                        e.vel = v * (SCALE * LOGIC_HZ);
+                        gravity = 0.0;
+                        let face = p.facing(at / SCALE, centre / SCALE, &pd.0).with_y(0.0);
+                        if face != Vec3::ZERO {
+                            e.yaw = face.x.atan2(face.z);
+                        }
+                        // `KH2_REACTIONLOG=1`: the pull every 10 ticks (distance to the attack, game units).
+                        if std::env::var("KH2_REACTIONLOG").is_ok_and(|v| v != "0") && (e.timer * LOGIC_HZ).round() as i32 % 10 == 0 {
+                            info!("{} pull: {:.0} units from attack {group} (hold {:.0}), velocity {:.1?} units/tick, at {:.2?}", e.name, (at - centre).length() / SCALE, p.hold, v, tf.translation);
+                        }
+                    }
+                    _ => {
+                        // FUN_001bfba8 with +0xaac cleared: the default mover again and motion 0 with
+                        // the blend of 0x37bd28.
+                        let blend = pull_data.as_ref().map_or(0.0, |pd| pd.0.end_blend);
+                        info!("{} pull ends: attack {group} finished (FUN_001bfba8), motion 0 blend {blend} at {:?}", e.name, tf.translation);
+                        e.pull = None;
+                        e.state = EState::Idle;
+                        e.timer = 0.0;
+                        a.restart(has(&rig, IDLE), true, blend);
+                    }
+                }
             }
             EState::Hurt => {
                 e.vel *= Vec3::new(0.85, 1.0, 0.85);
@@ -570,6 +627,7 @@ pub fn receive_hits(
     mut game: MessageWriter<crate::fx::GameEffect>,
     drive: (Option<Res<crate::drive::DriveRules>>, Option<Res<crate::drive::DriveState>>),
     abilities: Option<Res<crate::abilities::Abilities>>,
+    (pull_data, spells, mut rng): (Option<Res<PullData>>, Option<Res<crate::magic::SpellAttacks>>, Local<PullRng>),
 ) {
     let from = sora.single().map(|s| (s.stats, s.hits)).ok();
     let Some(reaction) = reaction else { return };
@@ -639,6 +697,46 @@ pub fn receive_hits(
         let away = h.dir.with_y(0.0).normalize_or_zero();
         let push = |strength: f32| Push::new(away, strength, 0.0, &reaction.consts);
         let first = |ids: &[usize]| ids.iter().find_map(|&i| has(&rig, i));
+        // Any other reaction replaces the pull's mover (FUN_0016b698 switches the mover).
+        if !matches!(action, VictimAction::None) {
+            e.pull = None;
+        }
+        // Reaction class 5 (FUN_00185668 -> FUN_001bf920): the victim keeps the attack object and is
+        // pulled toward it (see `think`). `victim_outcome` leaves the class to the caller since the
+        // pull needs the attack object; the app has it for spell attacks (`magic::SpellAttacks`).
+        if matches!(action, VictimAction::NotDecoded { class: 5 }) {
+            let group = spells.as_ref().and_then(|s| s.hit_group(h.target, h.atkp));
+            match (group, pull_data.as_ref()) {
+                (Some(group), Some(pd)) => {
+                    if rng.0 == 0 {
+                        rng.0 = 1;
+                    }
+                    rng.0 = rng.0.wrapping_mul(0x10dcd);
+                    let p = rules::Pull::new(atk.knockback_strength1, atk.knockback_strength2, atk.unknown, from_front, rng.0, &pd.0);
+                    e.pull = Some((group, p));
+                    e.push = None;
+                    e.vel = Vec3::ZERO;
+                    e.timer = 0.0;
+                    e.state = EState::Hurt;
+                    // FUN_0017e220(0, 0, controller, 0x14 / 0x15): blend 0 [the motion loops at its own
+                    // return frame while the pull lasts, inferred].
+                    let slot = has(&rig, p.motion as usize);
+                    let running = a.slot;
+                    a.restart(slot.or(running), true, 0.0);
+                    info!(
+                        "{} pulled (reaction class 5, FUN_001bf920): attack {group}, hold {:.1} (kb {} .. {}), swirl {}, motion {:#x}{}",
+                        e.name,
+                        p.hold,
+                        atk.knockback_strength1,
+                        atk.knockback_strength2,
+                        p.swirl,
+                        p.motion,
+                        if slot.is_none() { " (not in the set: the running motion stays)" } else { "" }
+                    );
+                }
+                _ => info!("{} reaction class 5 without a spell attack object or the executable's numbers: no pull", e.name),
+            }
+        }
         match action {
             VictimAction::None | VictimAction::NotDecoded { .. } => {}
             VictimAction::Push { strength } => e.push = push(strength),
@@ -674,7 +772,7 @@ pub fn receive_hits(
                 a.restart(first(&[motion as usize, BLOW, HURT_FRONT]), false, 0.03);
             }
         }
-        if !matches!(action, VictimAction::None | VictimAction::NotDecoded { .. } | VictimAction::Push { .. }) {
+        if !matches!(action, VictimAction::None | VictimAction::NotDecoded { .. } | VictimAction::Push { .. }) || (matches!(action, VictimAction::NotDecoded { class: 5 }) && e.pull.is_some()) {
             f.landed.clear();
         }
     }

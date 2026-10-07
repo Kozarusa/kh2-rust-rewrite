@@ -10,6 +10,7 @@ const STACK: u32 = 0x01ff_0000;
 const VOLUME: u32 = 0x0180_0000;
 const RECORD: u32 = 0x0181_0000;
 const POINT: u32 = 0x0182_0000;
+const IDENTITY: u32 = 0x354a60;
 
 fn open() -> Option<(Ee, kh2_archive::Archive)> {
     let path = std::env::var("KH2_ISO")
@@ -27,6 +28,11 @@ fn open() -> Option<(Ee, kh2_archive::Archive)> {
     a.apply_names(if list.is_empty() { vec!["000tt.idx"] } else { list }).ok()?;
     let mut ee = Ee::new();
     ee.load_elf(&elf).expect("elf");
+    // The identity matrix FUN_0011b460 copies lives at 0x354a60 and is filled at start-up by
+    // FUN_0011bd58 (the ELF holds zeros there): seed it as the kh2-bdx oracle does.
+    for k in 0..16 {
+        ee.wf32(IDENTITY + 4 * k, if k % 5 == 0 { 1.0 } else { 0.0 });
+    }
     Some((ee, a))
 }
 

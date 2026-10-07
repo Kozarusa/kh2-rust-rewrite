@@ -527,8 +527,8 @@ impl GrowthChains {
     pub fn from_exe(elf: &[u8]) -> Option<GrowthChains> {
         let b = exe_bytes(elf, GROWTH_CHAINS, 50)?;
         let mut t = [[0u16; 5]; 5];
-        for (i, v) in b.chunks_exact(2).enumerate() {
-            t[i / 5][i % 5] = u16::from_le_bytes([v[0], v[1]]);
+        for i in 0..25 {
+            t[i / 5][i % 5] = u16::from_le_bytes([b[2 * i], b[2 * i + 1]]);
         }
         Some(GrowthChains(t))
     }

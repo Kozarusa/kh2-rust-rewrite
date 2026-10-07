@@ -153,10 +153,14 @@ impl MagicData {
     }
 
     /// FUN_001ba2c0 for a magic command, with the `DisableForm` mask of command 2 (FUN_001b7290).
-    pub fn status(&self, cmd: u16, mp: i32, charging: bool, form: u8) -> Status {
+    /// The per-spell switch (FUN_001a4bb8: bit `cmd.Argument`, the command's magic slot, of the word
+    /// at 0x340eac, `Progress::spell_switch`) decides whether a spell may be cast with too little MP;
+    /// without `Progress` it reads as clear (a new game).
+    pub fn status(&self, cmd: u16, mp: i32, charging: bool, form: u8, progress: Option<&crate::progress::Progress>) -> Status {
         let Some(c) = self.cmd(cmd) else { return Status::Unavailable };
         let mask = self.cmd(c.execute).map_or(c.disable_form, |e| e.disable_form);
-        rules::availability(c.cost, mp, charging, false, rules::form_disables(mask, form))
+        let switch = progress.is_some_and(|p| p.spell_switch(c.argument as u8));
+        rules::availability(c.cost, mp, charging, switch, rules::form_disables(mask, form))
     }
 }
 
@@ -452,8 +456,13 @@ fn stop_effect(running: &mut Running, pax: &LoadedPax, id: u16, owner: Entity) {
     }
 }
 
-/// The ability block, the drive state and the collision world, as optional resources.
-type Context<'w> = (Option<Res<'w, crate::abilities::Abilities>>, Option<Res<'w, crate::drive::DriveState>>, Option<Res<'w, crate::world::World>>);
+/// The ability block, the drive state, the collision world and the game state, as optional resources.
+type Context<'w> = (
+    Option<Res<'w, crate::abilities::Abilities>>,
+    Option<Res<'w, crate::drive::DriveState>>,
+    Option<Res<'w, crate::world::World>>,
+    Option<Res<'w, crate::progress::Progress>>,
+);
 
 type Victim =(Entity, Vec<(Volume, HurtSpheroid)>, Vec3);
 
@@ -467,7 +476,7 @@ fn run(
     mut st: ResMut<MagicState>,
     mut battle: ResMut<Battle>,
     abilities: Res<crate::sora::Abilities>,
-    (block, drive, world): Context,
+    (block, drive, world, progress): Context,
     mut sora_q: Query<(Entity, &mut Sora)>,
     mut anims: Query<&mut Animator>,
     locals: Query<(&Transform, Option<&ChildOf>)>,
@@ -527,7 +536,7 @@ fn run(
         let mut chain = Chain { airborne, abilities: abilities.bits(), combo: s.hits, finishers: s.finishers, max_ground: mg, max_air: ma, max_finishers: mf, finisher_window: fin };
         let slot = data.slot_of_cmd(cmd);
         let row = slot.and_then(|i| data.slots[i as usize].as_ref());
-        let status = data.status(cmd, s.mp, st.charge.active(), form);
+        let status = data.status(cmd, s.mp, st.charge.active(), form, progress.as_deref());
         let pressed = (free || combo || fin).then(|| chain.press(Windows { free, combo }, true)).flatten();
         match (row, pressed) {
             (Some((row, pax)), Some(press)) if status.usable() && !st.casts.iter().any(|c| c.step == Step::Waiting || (c.step == Step::Vm && !c.paid)) => {
@@ -584,7 +593,7 @@ fn run(
                 // (kind / 10 = 1, 3) start none in Fire; every other case starts element 0.
                 // `KH2_MAGIC_VM=1`: the script itself runs event 20 instead.
                 let vm = if vm_on() { pax.as_ref().zip(data.scripts.get(row.id as usize).cloned().flatten()).and_then(|(_, code)| VmCast::start(&code, data.host_table.as_ref(), kind)) } else { None };
-                let charge_fx = (vm.is_none() && !(row.id == 0 && matches!(kind / 10, 1 | 3)) && row.id <= 3).then_some(0u16);
+                let charge_fx = if vm.is_none() { charge_element(row.id, kind) } else { None };
                 if let (Some(id), Some(p)) = (charge_fx, pax) {
                     fx::start(&mut commands, p, id, Bind::Owner(body_e));
                 }
@@ -887,6 +896,49 @@ fn run(
     }
 }
 
+/// What the first slice of Fire's event 21 does (FIRE_*.mag R001a -> R017d), by kind and airborne.
+#[derive(Clone, Debug, PartialEq)]
+struct FirePlan {
+    /// Every cast but Final's stops the charge effect and starts element 1 (`call R01f9; i.iszero;
+    /// jz`: the branch is taken when the kind is not Final's; Final starts no charge effect in event
+    /// 20). Found by running the script in the interpreter (WP-7A).
+    stop_charge: bool,
+    /// The elements started, in order.
+    starts: Vec<u16>,
+    /// The element the first attack follows ([g]+0x24) and the one the Final copy follows.
+    ball: u16,
+    ball2: Option<u16>,
+}
+
+/// Fire's event 21, first slice: element 1 (not Final), the ball (5 airborne, else 2), its second
+/// element (7 / 6) for Wisdom finishers, Master and Final finishers; Final adds element 10 (the copy
+/// attack follows it) and 11, 12 (finisher) or 8, 9.
+fn fire_plan(kind: u32, airborne: bool) -> FirePlan {
+    let (k10, fin) = (kind / 10, kind & 1 == 1);
+    let mut starts = Vec::new();
+    if k10 != 3 {
+        starts.push(1);
+    }
+    let (ball, extra) = if airborne { (5, 7) } else { (2, 6) };
+    starts.push(ball);
+    if (k10 == 1 && fin) || k10 == 2 || (k10 == 3 && fin) {
+        starts.push(extra);
+    }
+    let mut ball2 = None;
+    if k10 == 3 {
+        starts.push(10);
+        ball2 = Some(10);
+        starts.extend(if fin { [11, 12] } else { [8, 9] });
+    }
+    FirePlan { stop_charge: k10 != 3, starts, ball, ball2 }
+}
+
+/// Fire's event 20: Wisdom and Final (kind / 10 = 1, 3) start no charge effect; every other kind
+/// starts element 0 (the other spells always do).
+fn charge_element(slot: u8, kind: u32) -> Option<u16> {
+    (slot <= 3 && !(slot == 0 && matches!(kind / 10, 1 | 3))).then_some(0)
+}
+
 /// The first slice of event 21 of the spell's script (after the MP is paid).
 #[allow(clippy::too_many_arguments)]
 fn event21(
@@ -905,34 +957,19 @@ fn event21(
 ) -> Step {
     let Some(pax) = c.pax.as_ref() else { return Step::Done };
     let start = |commands: &mut Commands, id: u16| fx::start(commands, pax, id, Bind::Owner(body));
-    let k10 = c.kind / 10;
-    let fin = c.kind & 1 == 1;
     match c.slot {
         0 => {
-            // FIRE (R001a -> R017d): every cast but Final's stops the charge effect and starts element 1
-            // (`call R01f9; i.iszero; jz`: the branch is taken when the kind is not Final's; Final starts
-            // no charge effect in event 20). Found by running the script in the interpreter.
-            if k10 != 3 {
-                if let Some(id) = c.charge_fx {
-                    stop_effect(running, pax, id, body);
-                }
-                start(commands, 1);
+            let plan = fire_plan(c.kind, airborne);
+            if plan.stop_charge
+                && let Some(id) = c.charge_fx
+            {
+                stop_effect(running, pax, id, body);
             }
-            let (ball, extra) = if airborne { (5, 7) } else { (2, 6) };
-            start(commands, ball);
-            if (k10 == 1 && fin) || k10 == 2 || (k10 == 3 && fin) {
-                start(commands, extra);
+            for &id in &plan.starts {
+                start(commands, id);
             }
-            let mut ball2 = None;
-            if k10 == 3 {
-                start(commands, 10);
-                ball2 = Some(10);
-                for id in if fin { [11, 12] } else { [8, 9] } {
-                    start(commands, id);
-                }
-            }
-            mlog!("magic: Fire event 21: element {ball} (airborne {airborne}), attack follows it for {} frames", c.magi.f(MAGI_TIME));
-            Step::Fire { ball, ball2, attacks: None, t: c.magi.f(MAGI_TIME), yielded: false }
+            mlog!("magic: Fire event 21 (kind {}): elements {:?} (airborne {airborne}), attack follows {} for {} frames", c.kind, plan.starts, plan.ball, c.magi.f(MAGI_TIME));
+            Step::Fire { ball: plan.ball, ball2: plan.ball2, attacks: None, t: c.magi.f(MAGI_TIME), yielded: false }
         }
         3 => {
             // CURE: stop the charge effect, element 1 on the caster, element 2 at the target's centre,
@@ -1622,6 +1659,68 @@ mod tests {
         assert!(vm.missing.is_empty(), "every call answered: {:?}", vm.missing);
         let _ = slice(&mut vm, true);
         assert!(vm.rt.thread_done());
+    }
+
+    /// WP-7I follow-up of WP-7A: the HAND PORT of Fire's events 20 and 21 (`charge_element`,
+    /// `fire_plan`) against Fire's own script in the interpreter, for every kind the game casts (levels
+    /// 1 to 3, finisher or not, no form and Wisdom / Master / Final) on the ground and in the air:
+    /// event 20 starts element 0 except for Wisdom and Final; event 21's first slice stops it (every
+    /// kind but Final) and starts the same elements in the same order.
+    #[test]
+    fn fire_hand_port_matches_the_script_for_every_kind() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let table = disc.read_root("SLUS_210.05").and_then(|exe| kh2_bdx::exe::HostTable::from_exe(&exe));
+        let f = disc.read("03system.bin").unwrap();
+        let top = kh2_bar::parse(&f).unwrap();
+        let inner = kh2_bar::parse(kh2_bar::find(&top, "pref").unwrap().data).unwrap();
+        let magi = rules::parse_magi(kh2_bar::find(&inner, "magi").unwrap().data);
+        let frames: Frames = [Mat4::IDENTITY; 10];
+        for level in 1..=3u8 {
+            let name = format!("magic/FIRE_{level}.mag");
+            let file = disc.read(&name).expect("fire file");
+            let code = kh2_bar::parse(&file).unwrap().into_iter().find(|e| e.kind == 3).expect("script").data.to_vec();
+            let pax = fx::load(&disc, &name, 100, None).expect("pax");
+            for form in [0u8, 2, 3, 4] {
+                for fin in [false, true] {
+                    for airborne in [false, true] {
+                        let kind = rules::cast_kind(level, fin, form);
+                        let row = rules::magi_row(&magi, kind).unwrap().clone();
+                        let mut vm = VmCast::start(&code, table.as_ref(), kind).expect("event 20");
+                        let mut slice = |vm: &mut VmCast| {
+                            let mut host = SpellHost {
+                                airborne,
+                                motion_state: 1,
+                                kind,
+                                magi: &row,
+                                pax: &pax,
+                                frames: &frames,
+                                vm_effects: &mut vm.effects,
+                                vm_attacks: &mut vm.attacks,
+                                missing: &mut vm.missing,
+                                reqs: Vec::new(),
+                            };
+                            vm.rt.update(&mut host);
+                            assert!(vm.rt.core.errors.is_empty(), "{:?}", vm.rt.core.errors);
+                            host.reqs
+                        };
+                        let ev20: Vec<u16> = (0..3).flat_map(|_| slice(&mut vm)).filter_map(|r| if let VmReq::Effect(id) = r { Some(id) } else { None }).collect();
+                        let charge = charge_element(0, kind);
+                        assert_eq!(ev20, charge.into_iter().collect::<Vec<_>>(), "{name} kind {kind}: event 20");
+                        vm.rt.restart_thread(21, &[]);
+                        let first = slice(&mut vm);
+                        let plan = fire_plan(kind, airborne);
+                        let starts: Vec<u16> = first.iter().filter_map(|r| if let VmReq::Effect(id) = r { Some(*id) } else { None }).collect();
+                        let stops = first.iter().any(|r| matches!(r, VmReq::Stop(0)));
+                        assert_eq!(starts, plan.starts, "{name} kind {kind} airborne {airborne}: event 21 elements");
+                        assert_eq!(stops, plan.stop_charge && charge.is_some(), "{name} kind {kind}: the charge effect stops");
+                    }
+                }
+            }
+        }
     }
 
     /// The rules against the disc: Fire, Blizzard, Thunder and Cure at level 1 (`KH2_ISO` needed).

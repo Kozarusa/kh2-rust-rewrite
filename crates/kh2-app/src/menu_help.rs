@@ -238,18 +238,19 @@ fn show_page(help: &mut Help, scene: &mut MenuScene, disc: &Disc, images: &mut A
     let Some(text) = scene.text.take() else { return };
     // The page picture over the whole screen.
     scene.nodes[image].visible = tex.is_some();
-    scene.nodes[image].pic = tex.map(|tex| Pic { tex, rect: [0.0, 0.0, menu_gfx::SCREEN[0], menu_gfx::SCREEN[1]] });
+    scene.nodes[image].pic = tex.map(|tex| Pic { tex, rect: [0.0, 0.0, menu_gfx::SCREEN[0], menu_gfx::SCREEN[1]], v_end: menu_gfx::SCREEN[1] / 512.0 });
     // The title: the topic's message (0x382780 + 2 * topic).
     let title_msg = help.titles.get(usize::from(topic)).copied();
     scene.nodes[title].visible = true;
     scene.nodes[title].label_anchor = Some([0.0, 1.0]);
-    scene.nodes[title].label = title_msg.map(|m| label(&text, tokens_of(&text, m), 1, 15.0, [0x80; 4], 0, [0.0, 0.0]));
+    scene.nodes[title].label = title_msg.map(|m| label(&text, tokens_of(&text, m), 1, 15.0, [0x80; 4], 2, [0.0, 0.0]));
     // The counter: "PAGE" and "n/m".
     let mut tokens = tokens_of(&text, COUNTER_MESSAGE);
+    tokens.push(kh2_image::text::Token::Space);
     tokens.extend(text.literal(&format!("{}/{}", at + 1, count), Style::default(), [0.0; 2]).tokens);
     scene.nodes[counter].visible = true;
     scene.nodes[counter].label_anchor = Some([0.0, 1.0]);
-    scene.nodes[counter].label = Some(label(&text, tokens, 1, 15.0, [0x80; 4], 0, [0.0, 0.0]));
+    scene.nodes[counter].label = Some(label(&text, tokens, 1, 15.0, [0x80; 4], 2, [0.0, 0.0]));
     scene.text = Some(text);
     scene.set_group_then(title, TITLE_GROUPS[0], TITLE_GROUPS[1]);
     scene.set_group_then(counter, COUNTER_GROUPS[0], COUNTER_GROUPS[1]);

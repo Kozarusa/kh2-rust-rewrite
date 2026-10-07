@@ -733,7 +733,7 @@ mod at {
     /// The right edge of a stock cell's count from the cell's anchor (the selected cell group is 216 wide).
     pub const COUNT_RIGHT: f32 = 204.0;
     /// The item picture inside the item window (absolute menu units; compared with clip 6 at 12.5 s).
-    pub const PICTURE: [f32; 4] = [300.0, 80.0, 460.0, 240.0];
+    pub const PICTURE: [f32; 4] = [318.0, 82.0, 446.0, 210.0];
     /// Where the information window's text and rows start from its anchor (255, 118) / (255, 126): by eye, no clip
     /// shows the window.
     pub const INFO_OK_TEXT: [f32; 2] = [-170.0, -4.0];
@@ -1487,6 +1487,7 @@ fn redraw(st: &mut ItemsMenu, scene: &mut MenuScene, progress: Option<&Progress>
             }
             // `FUN_0025aac0`: the Stock row carries the tag when any listed item is fresh (the set of page 0's Items row).
             if let Some(g) = tags.row_group(new_tags::Set::Items) {
+                scene.nodes[stock_tag].off = scene.extent(1, usize::from(entry.idle[2]));
                 set(scene, stock_tag, g, None, was_of(stock_tag));
             }
             // `FUN_0025ddc0`: the member's help, or the Stock's (messages 0xbb86, 0xbb87; bit 15 ignored).
@@ -1517,6 +1518,7 @@ fn redraw(st: &mut ItemsMenu, scene: &mut MenuScene, progress: Option<&Progress>
                     tags.view(s.id);
                 }
                 if let Some(g) = tags.cell_group(s.id) {
+                    scene.nodes[cell_tags[slot]].off = scene.extent(1, group::CELL);
                     set(scene, cell_tags[slot], g, None, false);
                 }
                 if let Some(tokens) = count_tokens(&text, s.count) {

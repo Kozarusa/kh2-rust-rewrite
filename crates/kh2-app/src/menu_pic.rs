@@ -82,7 +82,7 @@ fn apply(mut pics: ResMut<Pictures>, mut scene: ResMut<MenuScene>, disc: Res<Dis
                         t
                     }
                 };
-                let pic = tex.map(|tex| Pic { tex, rect });
+                let pic = tex.map(|tex| Pic { tex, rect, v_end: 1.0 });
                 if scene.nodes[node].pic != pic {
                     scene.nodes[node].pic = pic;
                 }

@@ -796,6 +796,9 @@ fn update_tags(menu: &Menu, scene: &mut MenuScene, tags: &new_tags::NewTags) {
         let want = menu.rows.get(k).and_then(|&e| new_tags::NewTags::set_of_entry(e)).and_then(|s| tags.row_group(s));
         match want {
             Some(g) => {
+                // The tag sits at the row group's own x and y (the plate's right end) from the row's origin.
+                let row_group = scene.nodes[menu.nodes.rows[k]].player.group.unwrap_or(0);
+                scene.nodes[t].off = scene.extent(SEQ_MAIN, row_group);
                 scene.nodes[t].visible = true;
                 if scene.nodes[t].player.group != Some(g) {
                     scene.set_group(t, g);

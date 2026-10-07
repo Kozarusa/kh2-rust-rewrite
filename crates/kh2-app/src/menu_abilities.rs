@@ -1031,6 +1031,7 @@ fn redraw(st: &mut AbilitiesMenu, scene: &mut MenuScene, ntags: &mut NewTags) {
             scene.nodes[char_row].label = Some(label(&text, text.literal("Sora", Style::default(), [0.0, 0.0]).tokens, 1, 15.0, [0xe5, 0xe5, 0xe5, 0x80], 0, [0.0, 0.0]));
             // `FUN_00278aa8`: the character's row has the tag while any of his abilities is fresh.
             if let Some(g) = ntags.row_group(new_tags::Set::Abilities) {
+                scene.nodes[char_new].off = scene.extent(1, usize::from(entry.selected[2]));
                 set(scene, char_new, g, None, was_of(char_new));
             }
             set(scene, window, group::LIST_WINDOW[0], None, was_of(window));
@@ -1086,6 +1087,7 @@ fn redraw(st: &mut AbilitiesMenu, scene: &mut MenuScene, ntags: &mut NewTags) {
                 if r.slot.is_some()
                     && let Some(g) = ntags.ability_group(r.id)
                 {
+                    scene.nodes[new_tags[k]].off = scene.extent(1, exe.row[r.group as usize % 4] as usize);
                     set(scene, new_tags[k], g, None, false);
                 }
                 prev_group = Some(r.group);

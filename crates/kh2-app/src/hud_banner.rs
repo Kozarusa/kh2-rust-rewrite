@@ -1,12 +1,16 @@
 //! The `fiel` text banners and the number popup: the "PUSH!", "CHANCE!", "COMBO!" and "FINISH!" button
-//! prompts, the "NEXT LEVEL" and "OBTAINED MUNNY!" strips, and the experience gain popup (0x15b198).
+//! prompts, the "NEXT LEVEL" and "OBTAINED MUNNY!" strips, the experience gain popup (0x15b198), and
+//! the item messages of picked-up items (`gaug` group 0x4c, the queue of `FUN_00138498`).
 //! The game state that raises them is not read here: `HudBanner` and `ExperiencePopups` are plain
 //! resources for the owning module to fill. Which group belongs to which word was read from the
 //! sprite rectangles each group draws (docs/hud.md); the position of a banner is not known.
 
 use bevy::prelude::*;
 
+use kh2_image::text::{Style, Token};
+
 use super::hud_gfx::{HudScene, Node};
+use super::hud_text::Label;
 
 /// Scene file index of `fiel` (the first pair of the field file).
 const FIEL: usize = 0;
@@ -267,10 +271,12 @@ pub fn update_strips(
     mut nodes: ResMut<StripNodes>,
     mut demo: Local<bool>,
     mut munny: MessageReader<crate::prize::MunnyGained>,
+    (mut items, mut obtained): (Local<ItemMessages>, MessageReader<crate::prize::ItemObtained>),
 ) {
     if scene.files.is_empty() {
         return;
     }
+    item_messages(&mut scene, &mut items, &mut obtained);
     if !*demo {
         *demo = true;
         if let Ok(v) = std::env::var("KH2_HUDSTRIP") {
@@ -357,9 +363,128 @@ pub fn update_strips(
     }
 }
 
+/// Scene file of `gaug` (the second pair of the field file: `FUN_0013a998(1)`).
+const GAUG: usize = 1;
+/// The item message's group of `gaug` (`FUN_001379c0` -> `FUN_00137648(0, entry, 0x4c, text, -1)`).
+pub const ITEM_MSG_GROUP: usize = 0x4c;
+/// The queue of `FUN_00138498`: 16 entries of 0x1d0 bytes at `DAT_00354ecc` + 0x28cc; a message is taken
+/// while fewer than 15 are in it (the one shown counts until it ends).
+pub const ITEM_QUEUE: usize = 16;
+/// The system sound the entry's update plays when it starts (`FUN_001376e0`: `FUN_002c14a8(10, 0)`).
+pub const ITEM_MSG_SE: u32 = 10;
+/// The entry's text: font 0 (+0x1a0), size 0x10 (+0x19c, `FUN_00137648`), colour 0xe5e5e5 (+0x198,
+/// `FUN_00138fc8`) with the group's alpha (flags 4 and 8, `FUN_00139048`) [the group alpha is taken as
+/// 0x80], left aligned (+0x1a4 = 0).
+pub const ITEM_MSG_STYLE: (usize, f32, [u8; 4]) = (0, 16.0, [0xe5, 0xe5, 0xe5, 0x80]);
+
+/// The item messages (`FUN_00138498` queue, shown by the manager `DAT_00354ecc`'s update
+/// `FUN_00137de0`): one at a time, in order; the shown one plays `gaug` group 0x4c once with the text
+/// (an icon, then the name) at the group's text point (the group record's x, y: `FUN_00237618`,
+/// `FUN_00237638`), and leaves when the group has played (`FUN_00138aa8`: a group that loops forever
+/// never ends by itself).
+#[derive(Default, Debug)]
+pub struct ItemMessages {
+    pub queue: std::collections::VecDeque<crate::prize::ItemObtained>,
+    node: Option<usize>,
+    shown: bool,
+    /// The group's anchor point last computed (the player's +0xe0, +0xe4).
+    anchor: [i32; 2],
+}
+
+impl ItemMessages {
+    /// `FUN_00138498`: true when the message was taken.
+    pub fn offer(&mut self, m: crate::prize::ItemObtained) -> bool {
+        if self.queue.len() < ITEM_QUEUE - 1 {
+            self.queue.push_back(m);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// The tokens of an item message (`FUN_001a1ee0`: byte 9 = an icon with the item's `Icon2`, then the
+/// item's name message).
+pub fn item_message_tokens(m: &crate::prize::ItemObtained, name: Option<Vec<Token>>) -> Vec<Token> {
+    std::iter::once(Token::Icon(m.icon)).chain(name.unwrap_or_default()).collect()
+}
+
+fn item_messages(scene: &mut HudScene, q: &mut ItemMessages, incoming: &mut MessageReader<crate::prize::ItemObtained>) {
+    for m in incoming.read() {
+        if !q.offer(*m) {
+            info!("hud: item message {:#x} refused: the queue is full", m.item);
+        }
+    }
+    let node = *q.node.get_or_insert_with(|| {
+        let mut n = Node::new(GAUG, None);
+        n.visible = false;
+        scene.add(n)
+    });
+    if q.shown && scene.nodes[node].player.finished() {
+        q.queue.pop_front();
+        q.shown = false;
+        scene.nodes[node].visible = false;
+        scene.nodes[node].label = None;
+    }
+    if q.shown {
+        place_item_text(scene, q, node);
+        return;
+    }
+    let Some(m) = q.queue.front().copied() else { return };
+    let name = scene.text.as_ref().and_then(|t| t.lookup(m.name as u32));
+    let tokens = item_message_tokens(&m, name);
+    let group = scene.files.get(GAUG).and_then(|f| f.seq.groups.get(ITEM_MSG_GROUP)).map(|g| (g.x as f32, g.y as f32, g.loops));
+    info!(
+        "hud: item message {:#x} shown: {:?}, gaug group {ITEM_MSG_GROUP:#x} {group:?} (system sound {ITEM_MSG_SE}: not played, the system sound list is not wired), {} waiting",
+        m.item,
+        kh2_image::text::to_text(&tokens),
+        q.queue.len() - 1
+    );
+    let (font, size, color) = ITEM_MSG_STYLE;
+    scene.set_group(node, ITEM_MSG_GROUP);
+    let n = &mut scene.nodes[node];
+    n.label = Some(Label { tokens, style: Style { font, size: Some(size), color, ..Style::default() }, offset: [group.map_or(0.0, |g| g.0), group.map_or(0.0, |g| g.1)] });
+    n.label_time = 0.0;
+    n.visible = true;
+    q.shown = true;
+    q.anchor = [0, 0];
+    place_item_text(scene, q, node);
+}
+
+/// The text point of the shown entry (`FUN_00139048`): the player's place (`FUN_002375c0` -> `FUN_00236cf8`,
+/// the group's anchor animation at the current frame, `Seqd::anchor`; kept from the last frame one covered)
+/// plus the group record's x, y.
+fn place_item_text(scene: &mut HudScene, q: &mut ItemMessages, node: usize) {
+    let Some(seq) = scene.files.get(GAUG).map(|f| &f.seq) else { return };
+    let n = &scene.nodes[node];
+    if let Some(a) = seq.anchor(ITEM_MSG_GROUP, n.player.frame(), &n.ext) {
+        q.anchor = a;
+    }
+    let (x, y) = seq.groups.get(ITEM_MSG_GROUP).map_or((0, 0), |g| (g.x, g.y));
+    let off = [(q.anchor[0] + x) as f32, (q.anchor[1] + y) as f32];
+    if let Some(l) = scene.nodes[node].label.as_mut() {
+        l.offset = off;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `FUN_00138498` takes 15 messages (the shown one included) and refuses the 16th; the message is
+    /// the item's icon, then its name.
+    #[test]
+    fn the_item_message_queue_takes_fifteen() {
+        let mut q = ItemMessages::default();
+        let m = |item: u16| crate::prize::ItemObtained { item, icon: 3, name: 0x1234 };
+        for i in 0..15 {
+            assert!(q.offer(m(i)), "message {i}");
+        }
+        assert!(!q.offer(m(99)), "the 16th waits for nothing: refused");
+        assert_eq!(q.queue.front().map(|x| x.item), Some(0));
+        let t = item_message_tokens(&m(1), Some(vec![Token::Icon(7)]));
+        assert_eq!(t, vec![Token::Icon(3), Token::Icon(7)]);
+    }
 
     #[test]
     fn strip_kinds_use_their_own_digit_tables() {

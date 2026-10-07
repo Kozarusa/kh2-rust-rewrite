@@ -243,8 +243,8 @@ impl Layout {
 /// `FUN_001d1128`): byte 0 the kind, +2 the flags `FUN_00195ae0` / `FUN_00196170` test.
 pub fn event_kinds(sys: &[u8]) -> Vec<(u8, u16)> {
     let Ok(entries) = kh2_bar::parse(sys) else { return Vec::new() };
-    let Some(e) = entries.iter().find(|e| e.tag.to_string() == "evtp") else { return Vec::new() };
-    e.data.get(8..).unwrap_or_default().chunks_exact(8).map(|r| (r[0], u16::from_le_bytes([r[2], r[3]]))).collect()
+    let Some(e) = entries.iter().find(|e| e.tag == "evtp") else { return Vec::new() };
+    e.data.get(8..).unwrap_or_default().as_chunks::<8>().0.iter().map(|r| (r[0], u16::from_le_bytes([r[2], r[3]]))).collect()
 }
 
 /// One event playing (`DAT_0035e3a4`: one at a time; a new one ends the old, `FUN_00195ae0`).

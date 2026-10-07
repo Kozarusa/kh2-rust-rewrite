@@ -209,11 +209,8 @@ fn hide_target_gauge(scene: &mut HudScene) {
     let roots: Vec<bool> = (0..scene.nodes.len())
         .map(|i| {
             let mut k = i;
-            loop {
-                match scene.nodes[k].parent {
-                    Some(p) => k = p,
-                    None => break,
-                }
+            while let Some(p) = scene.nodes[k].parent {
+                k = p;
             }
             scene.nodes[k].file == gaug && scene.nodes[k].player.group == Some(TARGET_TAG)
         })

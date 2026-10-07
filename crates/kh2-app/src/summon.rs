@@ -1155,6 +1155,7 @@ fn objects(
             paired: &paired,
             player_model: 0,
             mission_counters: None,
+            event_active: false,
         };
         let SummonObject { rt, obj, tag, started, leave, mode, errors_seen, .. } = so;
         let Some(rt) = rt.as_mut() else {

@@ -1723,6 +1723,37 @@ mod tests {
         }
     }
 
+    /// FUN_001ba2c0 -> FUN_001a4bb8 through `MagicData::status`: with too little MP a spell is usable
+    /// (MP Charge) while its Customize switch bit (`cmd.Argument` of the word at 0x340eac) is clear,
+    /// and not usable once the pause menu sets it ("Don't MP Charge"); Cure (cost 255) stays usable;
+    /// with enough MP the bit does not matter.
+    #[test]
+    fn mp_charge_switch_follows_the_spell_slot() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let (magc, cmds) = {
+            let mut a = disc.0.lock().unwrap();
+            (kh2_tables::load::<Magc>(&mut a, &t::MAGC).unwrap().rows, kh2_tables::load::<Cmd>(&mut a, &t::CMD).unwrap().rows)
+        };
+        let list = rules::magic_list(&magc, &[1, 1, 1, 1, 0, 0], 2);
+        let md = MagicData { magc, cmds, magi: Vec::new(), levels: [1, 1, 1, 1, 0, 0], world: 2, slots: Vec::new(), mp_drive: 0.0, scripts: Vec::new(), host_table: None };
+        let mut p = crate::progress::Progress::from_block(&[], Arc::new(crate::progress::ItemIndex::new(&[], &[], &[])));
+        let (fire, cure) = (list[0], list[3]);
+        let fire_slot = md.cmd(fire).unwrap().argument as u8;
+        assert_eq!(md.status(fire, 0, false, 0, Some(&p)), Status::ShortMp, "clear bit: MP Charge");
+        p.set_spell_switch(fire_slot, true);
+        assert!(p.spell_switch(fire_slot));
+        assert_eq!(md.status(fire, 0, false, 0, Some(&p)), Status::Unavailable, "set bit: Don't MP Charge");
+        assert_eq!(md.status(fire, 99, false, 0, Some(&p)), Status::Ready);
+        assert_eq!(md.status(fire, 0, false, 0, None), Status::ShortMp, "no game state: a new game");
+        let cure_slot = md.cmd(cure).unwrap().argument as u8;
+        p.set_spell_switch(cure_slot, true);
+        assert_eq!(md.status(cure, 0, false, 0, Some(&p)), Status::ShortMp, "cost 255 ignores the bit");
+    }
+
     /// The rules against the disc: Fire, Blizzard, Thunder and Cure at level 1 (`KH2_ISO` needed).
     #[test]
     fn magic_rows_from_the_disc() {

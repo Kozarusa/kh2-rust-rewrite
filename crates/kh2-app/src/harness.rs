@@ -81,6 +81,9 @@ fn auto_screenshot(
                 "LB" => KeyCode::BracketLeft,
                 "RB" => KeyCode::BracketRight,
                 "Y" => KeyCode::KeyY,
+                // The camp's list results -5 (switch) and -7 (help): the face button X and Select.
+                "X" => KeyCode::KeyX,
+                "Select" | "Tab" => KeyCode::Tab,
                 "[" => KeyCode::BracketLeft,
                 "]" => KeyCode::BracketRight,
                 _ => continue,

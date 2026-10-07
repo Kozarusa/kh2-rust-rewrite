@@ -549,6 +549,181 @@ pub mod rules {
         let name = |c: &[u8]| String::from_utf8_lossy(&c[..c.iter().position(|&x| x == 0).unwrap_or(c.len())]).into_owned();
         b.as_chunks::<0x40>().0.iter().map(|c| [name(&c[..0x20]), name(&c[0x20..])]).collect()
     }
+
+    // ---------------------------------------------------------------------------------------------
+    // Summons (docs/summons.md sections 1 and 2). The summon uses the same gauge fields as the form
+    // timer (status +0x1b3 segment count, +0x1b4 timer, +0x1b8 its maximum) under mode byte 3.
+    // ---------------------------------------------------------------------------------------------
+
+    /// The gauge mode byte (status +0x1af): 1 normal drive points, 2 form timer, 3 summon timer
+    /// (4, locked, is not used by the app).
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub enum GaugeMode {
+        #[default]
+        Normal = 1,
+        Form = 2,
+        Summon = 3,
+    }
+
+    /// The `sstm` fields only the summon code reads (the segment size is `Tuning::point_units`,
+    /// the field drain scale `Tuning::field_drain_scale`).
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct SummonTuning {
+        /// `sstm[0x70]`: multiplier on every gauge change made through FUN_001788d8 in modes 2 and 3.
+        pub gain: f32,
+        /// `sstm[0x84]` / `sstm[0x88]`: the arrival wait in frames with / without the arrival event
+        /// (FUN_001c6260 loads both with `lwc1` at 0x1c62c4 and 0x1c6548).
+        pub wait_event: f32,
+        pub wait: f32,
+    }
+
+    impl SummonTuning {
+        pub fn from_sstm(s: &Sstm) -> SummonTuning {
+            SummonTuning { gain: s.f32(0x70), wait_event: s.f32(0x84), wait: s.f32(0x88) }
+        }
+    }
+
+    /// `FUN_001a0480(status, 3, level)`: the summon timer and its segment count. Segments = level + 3,
+    /// timer = maximum = `sstm[0x68]` x (level + 3): `FormTimer::start` with form 0 (base Sora's
+    /// level rule, no Anti special case).
+    pub fn summon_timer(t: &Tuning, level: u8) -> (FormTimer, u8) {
+        (FormTimer::start(t, 0, level), level.wrapping_add(3))
+    }
+
+    /// The drain multiplier of a gauge mode (`FUN_00177788`): the ability block's `+0x3c` (Form
+    /// Boost) in mode 2, `+0x68` (Summon Boost) in mode 3; mode 1 does not drain (`None`).
+    pub fn mode_drain_factor(mode: GaugeMode, form_drain: f32, summon_drain: f32) -> Option<f32> {
+        match mode {
+            GaugeMode::Normal => None,
+            GaugeMode::Form => Some(form_drain),
+            GaugeMode::Summon => Some(summon_drain),
+        }
+    }
+
+    /// The whole segments the timer lost between two values (`FUN_001a0358` in mode 3: FUN_001a0420
+    /// before minus after). Negative for a gain; the experience add ignores those.
+    pub fn segments_drained(t: &Tuning, before: &FormTimer, after: &FormTimer) -> i32 {
+        before.whole_points(t) - after.whole_points(t)
+    }
+
+    impl FormTimer {
+        /// `FUN_001a0358` with the player's form field `form` and the gauge mode: the change (Anti
+        /// turns a gain into a loss), clamped to 0..=total; in mode 3 the whole segments lost, which
+        /// the caller passes to the summon experience (`FUN_001d4ec8`). 0 in the other modes.
+        pub fn change(&mut self, t: &Tuning, mode: GaugeMode, form: u8, delta: f32) -> i32 {
+            let before = *self;
+            self.add(form, delta);
+            if mode == GaugeMode::Summon { segments_drained(t, &before, self) } else { 0 }
+        }
+    }
+
+    /// The summon level cap (`FUN_001d4e68`): 2 + the number of `sumn` rows whose charm count is above
+    /// 0 (`FUN_001a1cc8`), and 7 when that sum is 6 (all four charms). The same shape as the form cap.
+    pub fn summon_level_cap(charms_owned: u32) -> u8 {
+        match 2 + charms_owned {
+            6 => 7,
+            n => n.min(255) as u8,
+        }
+    }
+
+    /// The summon level (`DAT_00340c88` byte 6) and experience (`DAT_00340e4c`).
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct SummonExp {
+        pub level: u8,
+        pub exp: i32,
+    }
+
+    impl SummonExp {
+        /// `FUN_001d4ec8(gained)`: nothing for a gain of 0 or less or while the minigame flag of
+        /// `FUN_001b9bd8` is set; else the experience grows and, while the level is below `cap`
+        /// (`FUN_001d3cf8`) and the `fmlv` row of form 0 at the current level exists
+        /// (`FUN_001d3b90(0, level)`, a binary search on the key `form << 4 | level`) and its `Exp` is
+        /// reached, the level rises and that `Exp` is taken off (`FUN_001d4fa0` then shows the notice).
+        /// When no row is returned (cap reached or no row) the experience is set to 0. Returns the
+        /// levels reached, in order.
+        pub fn add(&mut self, levels: &FormLevels, cap: u8, gained: i32, minigame: bool) -> Vec<u8> {
+            let mut reached = Vec::new();
+            if gained <= 0 || minigame {
+                return reached;
+            }
+            self.exp = self.exp.wrapping_add(gained);
+            loop {
+                let row = if self.level < cap { levels.get(player::form::SUMMON_CURVE, self.level) } else { None };
+                let Some(row) = row else {
+                    self.exp = 0;
+                    break;
+                };
+                if self.exp < row.exp {
+                    break;
+                }
+                self.level = self.level.wrapping_add(1);
+                self.exp -= row.exp;
+                reached.push(self.level);
+            }
+            reached
+        }
+    }
+
+    /// Damage to a summon drains the player's timer instead of the summon's HP (the summon class's HP
+    /// change method, vtable 0x35fe18 slot +0x78 = `FUN_001c60f8`): a negative change `d` changes the
+    /// timer by `sstm[0x68] x d / max_hp` (the summon's status +4); a positive one does nothing.
+    /// Returns the timer change (`None` for no change).
+    pub fn summon_damage_to_timer(t: &Tuning, d: i32, summon_max_hp: i32) -> Option<f32> {
+        (d < 0).then(|| t.point_units * d as f32 / summon_max_hp as f32)
+    }
+
+    /// A gauge change through `FUN_001788d8` in mode 3 (hits Sora lands, summon limits): the amount
+    /// times `sstm[0x70]`, added to the timer by `FUN_001a0358`.
+    pub fn summon_gauge_change(st: &SummonTuning, amount: f32) -> f32 {
+        amount * st.gain
+    }
+
+    /// A summon limit's cost (`FUN_001b28a0`: `FUN_001788d8(-Cost)`): the timer loses `Cost x sstm[0x70]`.
+    pub fn summon_limit_cost(st: &SummonTuning, cost: u8) -> f32 {
+        summon_gauge_change(st, -(cost as f32))
+    }
+
+    /// The digit and fill the HUD shows for modes 2 and 3 (`FUN_00155bf0`): segment size =
+    /// int(max / count); digit = int(timer) / size; when that equals the count the digit is count - 1
+    /// with a full fill, else the fill is int(timer) mod size. Returns (digit, fill, size); all 0 when
+    /// the size is 0.
+    pub fn segment_display(left: f32, total: f32, count: u8) -> (u32, i32, i32) {
+        let seg = if count == 0 { 0 } else { (total / count as f32) as i32 };
+        if seg == 0 {
+            return (0, 0, 0);
+        }
+        let digit = (left as i32 / seg) as u32;
+        if digit == count as u32 { (digit - 1, seg, seg) } else { (digit, left as i32 % seg, seg) }
+    }
+
+    /// What decides whether a summon command (`Execute` 72) is available (`FUN_001ba2c0` case 0x48).
+    #[derive(Clone, Copy, Debug)]
+    pub struct SummonCtx {
+        /// `0x35feb8` bit 0 (a summon or limit sequence) or `0x35fec0` bit 3 (the summon arrival).
+        pub busy: bool,
+        /// The player's form field `+0xb50` (6 and 11 refuse).
+        pub form: u8,
+        /// `FUN_001c78f0`: both party slots hold valid members in the party.
+        pub party_ok: bool,
+        /// `DAT_0035d268` bit 0x40000.
+        pub locked: bool,
+        /// Whole drive points (status +0x1b1) and the command's `Cost`.
+        pub points: u8,
+        pub cost: u8,
+    }
+
+    /// `FUN_001ba568` + `FUN_001c7970` for a summon command (not the menu entry, which passes at once
+    /// in `FUN_001b7098`). The current battle record's bit 14 (`FUN_001ba0c0`) is not modelled (no
+    /// battle records in the app).
+    pub fn summon_available(c: &SummonCtx) -> bool {
+        !c.busy && c.party_ok && c.form != 6 && c.form != 11 && !c.locked && c.cost <= c.points
+    }
+
+    /// Dismiss (command 316) is available only while the summon state is 2 and no limit task exists
+    /// (`FUN_001b3c00`: `DAT_01d5d6b0 != 0`).
+    pub fn dismiss_available(summon_state: u8, limit_task: bool) -> bool {
+        summon_state == 2 && !limit_task
+    }
 }
 
 /// The disc data the drive system needs.
@@ -706,6 +881,14 @@ pub struct DriveState {
     pub form_weapon: [u16; 6],
     /// Spare keyblades in the inventory (item ids, one per copy) after the forms took theirs.
     pub inventory: Vec<u16>,
+    /// The gauge mode byte (status +0x1af). Mode 2 follows `in_form`; mode 3 (the summon timer in
+    /// `timer`) is set and cleared by `summon.rs`.
+    pub gauge_mode: rules::GaugeMode,
+    /// The gauge's segment count (status +0x1b3), written by the mode set `FUN_001a0480`.
+    pub segments: u8,
+    /// A summon sequence holds the drive commands (`0x35feb8` bit 0 or `0x35fec0` bit 3, which
+    /// `FUN_001ba568` tests for Drive and Summon alike); `summon.rs` keeps it.
+    pub summon_busy: bool,
     ticks: u32,
 }
 
@@ -793,6 +976,9 @@ impl DriveState {
             force_battle: env("KH2_DRIVE_BATTLE").is_some_and(|v| v != "0"),
             form_weapon,
             inventory,
+            gauge_mode: rules::GaugeMode::Normal,
+            segments: 0,
+            summon_busy: false,
             ticks: 0,
         }
     }
@@ -1223,6 +1409,8 @@ fn drive_tick(
         if st.in_form {
             st.timer.add(st.form, -(drain as f32) * tuning.form_hit_loss);
             info!("drive: landed hit (atkp {}, DriveDrain {drain}): form timer now {:.0}", h.atkp, st.timer.left);
+        } else if st.gauge_mode == rules::GaugeMode::Summon {
+            // Mode 3: `summon.rs` applies the hit to the summon timer (FUN_001788d8).
         } else if change.0.is_none() {
             st.points.gain(drain as i32);
             info!("drive: landed hit (atkp {}, DriveDrain {drain}): gauge {} points + {}%", h.atkp, st.points.whole, st.points.fraction);
@@ -1239,7 +1427,8 @@ fn drive_tick(
                 }
             }
             DriveRequest::Enter(chosen) => {
-                let can_act = change.0.is_none() && s.hp > 0 && !matches!(s.state, State::Down | State::Blown | State::Viewer);
+                // A summon sequence or mode 3 holds Drive (FUN_001ba568: `0x35feb8` / `0x35fec0`).
+                let can_act = change.0.is_none() && !st.summon_busy && st.gauge_mode != rules::GaugeMode::Summon && s.hp > 0 && !matches!(s.state, State::Down | State::Blown | State::Viewer);
                 let ctx = rules::EnterCtx { current_form: st.form, owned: st.owned, points: st.points.whole, donald: st.donald, goofy: st.goofy, locked: !can_act };
                 // Anti is only entered by the roll; the harness may name it to look at the form.
                 let forced_anti = chosen == form::ANTI;
@@ -1371,7 +1560,9 @@ fn drive_tick(
                 None => "ability system off".to_string(),
             };
             st.timer = rules::FormTimer::start(&tuning, to, level);
+            st.segments = (rules::timer_level(&tuning, to, level) + 3) as u8;
             st.in_form = true;
+            st.gauge_mode = rules::GaugeMode::Form;
             // FUN_001a04b0 at the timer start: HP raised by the maximum (FUN_001a0140 -> the
             // player's method +0x78 = FUN_001792f0 -> FUN_00176c98 -> FUN_00186238, clamped by
             // FUN_001a0100) and MP set to its maximum (FUN_001a0240: a running MP charge ends first).
@@ -1477,6 +1668,7 @@ fn do_revert(
     st.in_form = false;
     st.form = 0;
     st.timer = Default::default();
+    st.gauge_mode = rules::GaugeMode::Normal;
     s.state = if s.motor.grounded { State::Ground } else { State::Air };
     if !s.motor.grounded {
         s.motor.start_fall();
@@ -1884,5 +2076,215 @@ mod tests {
         // An item that is not a keyblade is never taken.
         let mut other = vec![1u16];
         assert_eq!(take_form_keyblade(items, &mut other, form::VALOR), 0);
+    }
+
+    // ---- Summons (docs/summons.md stage 1) ---------------------------------------------------
+
+    fn tuning_from_disc() -> Option<(Tuning, SummonTuning, FormLevels, Vec<t::Sumn>)> {
+        let mut a = archive()?;
+        let sstm = player::load_sstm(&mut a).ok()?;
+        let fmlv = kh2_tables::load::<t::Fmlv>(&mut a, &t::FMLV).ok()?.rows;
+        let sumn = kh2_tables::load::<t::Sumn>(&mut a, &t::SUMN).ok()?.rows;
+        Some((Tuning::from_sstm(&sstm), SummonTuning::from_sstm(&sstm), FormLevels::from_rows(&fmlv), sumn))
+    }
+
+    #[test]
+    fn summon_rules_on_the_disc_rows() {
+        let Some((t, st, levels, sumn)) = tuning_from_disc() else { return };
+        assert_eq!(sumn.len(), 4);
+        // FUN_001a0480: level + 3 segments of sstm[0x68] units each.
+        for level in 0..=7u8 {
+            let (timer, segs) = summon_timer(&t, level);
+            assert_eq!(segs, level + 3);
+            assert_eq!(timer.left, t.point_units * (level as f32 + 3.0));
+            assert_eq!(timer.total, timer.left);
+            // A full timer shows one whole segment fewer (FUN_001a0420); the HUD shows count - 1 full.
+            assert_eq!(timer.whole_points(&t), level as i32 + 2);
+            assert_eq!(segment_display(timer.left, timer.total, segs), (segs as u32 - 1, t.point_units as i32, t.point_units as i32));
+        }
+        // The mode-3 drain factor is the ability block's summon factor; mode 1 does not drain.
+        assert_eq!(mode_drain_factor(GaugeMode::Summon, 0.8, 0.5), Some(0.5));
+        assert_eq!(mode_drain_factor(GaugeMode::Form, 0.8, 0.5), Some(0.8));
+        assert_eq!(mode_drain_factor(GaugeMode::Normal, 0.8, 0.5), None);
+        // The cap: 2 + charms, 7 with all four.
+        assert_eq!((0..=4).map(summon_level_cap).collect::<Vec<_>>(), vec![2, 3, 4, 5, 7]);
+        // Segments drained: leaving a full timer costs nothing (full shows one fewer), a drain across
+        // a boundary counts one, a gain counts negative, and nothing counts outside mode 3.
+        let (full, _) = summon_timer(&t, 1);
+        let mut x = full;
+        assert_eq!(x.change(&t, GaugeMode::Summon, 0, -1.0), 0);
+        let mut y = x;
+        assert_eq!(y.change(&t, GaugeMode::Summon, 0, -t.point_units), 1);
+        assert_eq!(segments_drained(&t, &x, &y), 1);
+        assert_eq!(y.change(&t, GaugeMode::Summon, 0, t.point_units), -1);
+        assert_eq!(y.change(&t, GaugeMode::Form, 0, -t.point_units), 0);
+        // The experience over the form-0 rows (FUN_001d4ec8).
+        let rows: Vec<_> = levels.levels(player::form::SUMMON_CURVE).collect();
+        assert!(!rows.is_empty(), "fmlv has form-0 rows");
+        let need = levels.get(0, 1).map(|r| r.exp).expect("form 0 level 1");
+        let mut e = SummonExp { level: 1, exp: 0 };
+        assert!(e.add(&levels, 7, need - 1, false).is_empty());
+        assert_eq!(e, SummonExp { level: 1, exp: need - 1 });
+        assert_eq!(e.add(&levels, 7, 2, false), vec![2]);
+        assert_eq!(e.exp, 1);
+        assert!(e.add(&levels, 7, 0, false).is_empty() && e.add(&levels, 7, -5, false).is_empty() && e.add(&levels, 7, 99, true).is_empty());
+        assert_eq!(e.exp, 1, "no gain for 0, a negative drop or the minigame flag");
+        let mut capped = SummonExp { level: 3, exp: 0 };
+        assert!(capped.add(&levels, 3, 1_000_000, false).is_empty());
+        assert_eq!(capped, SummonExp { level: 3, exp: 0 }, "at the cap the experience is set to 0");
+        // Damage to the summon: a hit of its whole max HP costs one segment; heals do nothing.
+        assert_eq!(summon_damage_to_timer(&t, -500, 500), Some(-t.point_units));
+        assert_eq!(summon_damage_to_timer(&t, 10, 500), None);
+        // FUN_001788d8 in mode 3 and the limit cost: times sstm[0x70].
+        assert_eq!(summon_gauge_change(&st, 4.0), 4.0 * st.gain);
+        assert_eq!(summon_limit_cost(&st, 100), -100.0 * st.gain);
+        assert!(st.wait > 0.0 && st.wait_event > 0.0);
+        eprintln!(
+            "summon: segment {} units, field drain scale {}, change factor {}, wait {} / {} (event) frames, form-0 rows {:?}",
+            t.point_units,
+            t.field_drain_scale,
+            st.gain,
+            st.wait,
+            st.wait_event,
+            rows.iter().map(|r| (r.level, r.exp)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn summon_availability_and_dismiss() {
+        let ok = SummonCtx { busy: false, form: 0, party_ok: true, locked: false, points: 3, cost: 3 };
+        assert!(summon_available(&ok));
+        assert!(!summon_available(&SummonCtx { busy: true, ..ok }));
+        assert!(!summon_available(&SummonCtx { party_ok: false, ..ok }));
+        assert!(!summon_available(&SummonCtx { form: 6, ..ok }));
+        assert!(!summon_available(&SummonCtx { form: 11, ..ok }));
+        assert!(!summon_available(&SummonCtx { locked: true, ..ok }));
+        assert!(!summon_available(&SummonCtx { points: 2, ..ok }));
+        assert!(dismiss_available(2, false));
+        assert!(!dismiss_available(1, false) && !dismiss_available(3, false) && !dismiss_available(2, true));
+    }
+
+    /// The oracle (PLAYBOOK R2): the game's FUN_001a0480, FUN_001a0358 (with FUN_001a0420 and the
+    /// experience add FUN_001d4ec8 -> FUN_001d3cf8 -> FUN_001d4e68 / FUN_001d3b90), FUN_00155bf0 and
+    /// FUN_001c60f8 in kh2-ee on the user's executable, against the rules above. The `fmlv`, `sumn` and
+    /// `item` tables are laid out in free memory behind their pointers (`DAT_01d6a990`, `DAT_01d6a9b8`,
+    /// `0x01c95588`); the charm counts go into the inventory (0x340ce8, or the bits at 0x340e28). The
+    /// level-up notice (FUN_001d4fa0) and the message call (FUN_001b5528) are replaced by `jr ra` stubs:
+    /// they only show the notice. The player object behind status +0x24c is a zeroed block (form
+    /// field +0xb50 = 0).
+    #[test]
+    fn summon_gauge_matches_the_game() {
+        use kh2_ee::Ee;
+        const STACK: u32 = 0x01ff_0000;
+        const SSTM: u32 = 0x0180_0000;
+        const STATUS: u32 = 0x0181_0000;
+        const OBJECT: u32 = 0x0182_0000;
+        const SUMMON: u32 = 0x0183_0000;
+        const SUMMON_STATUS: u32 = 0x0184_0000;
+        const PANEL: u32 = 0x0185_0000;
+        const OUT: u32 = 0x0186_0000;
+        const FMLV_AT: u32 = 0x0187_0000;
+        const SUMN_AT: u32 = 0x0188_0000;
+        const ITEM_AT: u32 = 0x0189_0000;
+        let Some(mut a) = archive() else { return };
+        let Some((t, st, levels, sumn)) = tuning_from_disc() else { return };
+        let sstm = player::load_sstm(&mut a).expect("sstm");
+        let fmlv_blob = kh2_tables::subfile(&mut a, &t::FMLV).expect("fmlv");
+        let sumn_blob = kh2_tables::subfile(&mut a, &t::SUMN).expect("sumn");
+        let item_blob = kh2_tables::subfile(&mut a, &t::ITEM).expect("item");
+        let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok()).expect("executable");
+        let mut ee = Ee::new();
+        ee.load_elf(&elf).expect("elf");
+        for (i, w) in sstm.words.iter().enumerate() {
+            ee.w32(SSTM + 4 * i as u32, *w);
+        }
+        ee.w32(0x0036_0130, SSTM);
+        ee.write(FMLV_AT, &fmlv_blob);
+        ee.w32(0x01d6_a990, FMLV_AT);
+        ee.write(SUMN_AT, &sumn_blob);
+        ee.w32(0x01d6_a9b8, SUMN_AT);
+        ee.write(ITEM_AT, &item_blob);
+        ee.w32(0x01c9_5588, ITEM_AT);
+        // No battle record: the minigame flag of FUN_001b9bd8 reads clear.
+        ee.w32(0x01d5_dd20, 0);
+        for stub in [0x001d_4fa0u32, 0x001b_5528] {
+            ee.w32(stub, 0x03e0_0008);
+            ee.w32(stub + 4, 0);
+        }
+        // The player object behind DAT_0035c998 (FUN_001c60f8 changes its status).
+        ee.write(OBJECT, &[0u8; 0xc00]);
+        ee.w32(OBJECT + 0x48c, STATUS);
+        ee.w32(0x0035_c998, OBJECT);
+        // A charm's inventory count (FUN_001a1cc8: the byte at 0x340ce8 + record +0x12, or the bit at
+        // 0x340e28 for a record with flag bit 0 at +3).
+        let set_charm = |ee: &mut Ee, item: u16, on: bool| {
+            let rec = ee.call(0x001a_66e8, &[item as u64], &[], STACK).expect("FUN_001a66e8") as u32;
+            assert_ne!(rec, 0, "charm {item} has an item record");
+            let slot = ee.r16(rec + 0x12) as u32;
+            if ee.r8(rec + 3) & 1 == 0 {
+                ee.write(0x0034_0ce8 + slot, &[on as u8]);
+            } else {
+                let w = 0x0034_0e28 + (slot >> 5) * 4;
+                let v = (ee.r32(w) & !(1 << (slot & 31))) | (on as u32) << (slot & 31);
+                ee.w32(w, v);
+            }
+        };
+        let mut checked = 0;
+        for owned in 0..=4usize {
+            for (i, r) in sumn.iter().enumerate() {
+                set_charm(&mut ee, r.item, i < owned);
+            }
+            let cap = ee.call(0x001d_4e68, &[], &[], STACK).expect("FUN_001d4e68") as u8;
+            assert_eq!(cap, summon_level_cap(owned as u32), "cap with {owned} charms");
+            for level in 0..=7u8 {
+                ee.write(STATUS, &[0u8; 0x200]);
+                ee.w32(STATUS + 0x24c, OBJECT);
+                ee.call(0x001a_0480, &[STATUS as u64, 3, level as u64], &[], STACK).expect("FUN_001a0480");
+                let (timer, segs) = summon_timer(&t, level);
+                let set = (ee.r8(STATUS + 0x1af), ee.r8(STATUS + 0x1b3), ee.f32_at(STATUS + 0x1b4), ee.f32_at(STATUS + 0x1b8));
+                assert_eq!(set, (3, segs, timer.left, timer.total), "mode set at level {level}");
+                for start_exp in [0i32, 1, 7, 29] {
+                    let mut port = timer;
+                    let mut exp = SummonExp { level, exp: start_exp };
+                    ee.wf32(STATUS + 0x1b4, timer.left);
+                    ee.write(0x0034_0c8e, &[level]);
+                    ee.w32(0x0034_0e4c, start_exp as u32);
+                    let steps = [-1.0f32, -(t.point_units * 0.5), -t.point_units, 7.5, -(t.point_units * 1.75), t.point_units * 3.0, -(t.point_units * 2.0), -9999.0];
+                    for d in steps {
+                        ee.call(0x001a_0358, &[STATUS as u64], &[d], STACK).expect("FUN_001a0358");
+                        let drop = port.change(&t, GaugeMode::Summon, 0, d);
+                        exp.add(&levels, cap, drop, false);
+                        let game = (ee.f32_at(STATUS + 0x1b4), ee.r8(0x0034_0c8e), ee.r32(0x0034_0e4c) as i32);
+                        assert_eq!(game, (port.left, exp.level, exp.exp), "charms {owned} level {level} exp {start_exp} step {d}");
+                        // FUN_00155bf0 on the same block (panel +0x34 -> object, object +0x48c -> status).
+                        ee.w32(PANEL + 0x34, OBJECT);
+                        let digit = ee.call(0x0015_5bf0, &[PANEL as u64, OUT as u64, (OUT + 4) as u64], &[], STACK).expect("FUN_00155bf0") as u32;
+                        let shown = (digit, ee.r32(OUT) as i32, ee.r32(OUT + 4) as i32);
+                        assert_eq!(shown, segment_display(port.left, port.total, segs), "HUD at {}", port.left);
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        // FUN_001c60f8: damage to the summon object changes the player's timer.
+        ee.write(SUMMON, &[0u8; 0x600]);
+        ee.w32(SUMMON + 0x48c, SUMMON_STATUS);
+        for max_hp in [40i32, 213, 1000] {
+            for d in [-1i32, -40, -250, 5] {
+                ee.write(STATUS, &[0u8; 0x200]);
+                ee.w32(STATUS + 0x24c, OBJECT);
+                ee.call(0x001a_0480, &[STATUS as u64, 3, 2], &[], STACK).expect("FUN_001a0480");
+                ee.w32(SUMMON_STATUS + 4, max_hp as u32);
+                let ret = ee.call(0x001c_60f8, &[SUMMON as u64, d as i64 as u64], &[], STACK).expect("FUN_001c60f8") as i32;
+                assert_eq!(ret, max_hp, "the method returns the summon's max HP");
+                let mut port = summon_timer(&t, 2).0;
+                if let Some(c) = summon_damage_to_timer(&t, d, max_hp) {
+                    port.add(0, c);
+                }
+                assert_eq!(ee.f32_at(STATUS + 0x1b4), port.left, "damage {d} of max HP {max_hp}");
+                checked += 1;
+            }
+        }
+        eprintln!("oracle: FUN_001a0480, FUN_001a0358 + FUN_001d4ec8, FUN_001d4e68, FUN_00155bf0, FUN_001c60f8 equal in {checked} cases (gain factor {})", st.gain);
     }
 }

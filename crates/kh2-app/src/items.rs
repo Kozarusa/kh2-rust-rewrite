@@ -80,8 +80,8 @@ pub mod cmd_id {
     pub const ATTACK_WISDOM: u16 = 0x16d;
     /// Attack while MP charges with ability bit 107 (FUN_001bc4c8 -> FUN_001768b8).
     pub const ATTACK_CHARGING: u16 = 0x21d;
-    /// The map command (FUN_001bc6e0 while `DAT_01d5e368` is set).
-    pub const MAP: u16 = 0x13c;
+    /// Dismiss (FUN_001bc6e0 while the summon state `DAT_01d5e368` is set; docs/summons.md).
+    pub const DISMISS: u16 = 0x13c;
 }
 
 /// Statuses (FUN_001ba2c0 and the overrides of FUN_001ba748): below 4 the command can be chosen
@@ -187,7 +187,7 @@ pub struct StatusCtx<'a> {
     pub revert_ok: bool,
     /// A spell (FUN_001ba2c0 case 2: MP, MP charge, spell switch): magic.rs.
     pub magic: &'a dyn Fn(&Cmd) -> u8,
-    /// FUN_001ba568 for a drive or summon command.
+    /// FUN_001ba568 for a drive or summon command; Dismiss's test (FUN_001ba2c0 case 0x13c).
     pub drive: &'a dyn Fn(&Cmd) -> bool,
 }
 
@@ -241,8 +241,14 @@ pub fn availability(cmds: &[Cmd], c: &Cmd, ctx: &StatusCtx) -> u8 {
         // FUN_001b3e38 (the limit test) is not ported: conservative.
         cmd_id::LIMIT => status::UNAVAILABLE,
         0x67 | cmd_id::EMPTY => status::UNAVAILABLE,
-        // The map command needs map mode 2 (`DAT_01d5e368`), which the app never has.
-        cmd_id::MAP => status::UNAVAILABLE,
+        // Dismiss: summon state 2 and no limit task (summon.rs answers through `drive`).
+        cmd_id::DISMISS => {
+            if (ctx.drive)(c) {
+                status::READY
+            } else {
+                status::UNAVAILABLE
+            }
+        }
         _ => status::READY,
     };
     if command_locked(c, ctx) || form_disabled(cmds, c, ctx.form) { status::UNAVAILABLE } else { s }
@@ -281,8 +287,10 @@ pub struct BuildCtx<'a> {
     pub form_items: Vec<(u16, u8)>,
     /// FUN_001c7970 for a form's command: 0 shown, 1 shown unavailable, 2 left out.
     pub form_party: &'a dyn Fn(&Cmd) -> u8,
-    /// The summon commands (+0x9e2): the app has no summon system.
+    /// The summon commands (+0x9e2, `summon::SummonState::commands`).
     pub summons: Vec<u16>,
+    /// The summon state `DAT_01d5e368` is set (the second deck shows Dismiss).
+    pub summon_active: bool,
     /// The party members of list 4 (FUN_00175b68 0..2 that are valid, not summons and have a
     /// status) and the target command of each (FUN_001b58a8: the table at 0x37bab0).
     pub party: Vec<(u16, u16)>,
@@ -430,11 +438,17 @@ impl CommandLists {
         } else {
             self.add(list::ROOT, cmd_id::EMPTY, 1, ctx);
         }
-        // FUN_001bc6e0: the second deck (map command mode 0 in the app; the story flags of
+        // FUN_001bc6e0: the second deck (Dismiss while a summon is active; the story flags of
         // FUN_001807a0 / FUN_001807f8 read clear, so Party and Limit are listed).
         self.clear(list::ROOT2);
         self.add_attack(list::ROOT2, ctx);
-        let summon = if self.lists[list::SUMMONS].entries.is_empty() { cmd_id::EMPTY } else { cmd_id::SUMMON };
+        let summon = if ctx.summon_active {
+            cmd_id::DISMISS
+        } else if self.lists[list::SUMMONS].entries.is_empty() {
+            cmd_id::EMPTY
+        } else {
+            cmd_id::SUMMON
+        };
         self.add(list::ROOT2, summon, 1, ctx);
         self.add(list::ROOT2, cmd_id::PARTY, 1, ctx);
         self.add(list::ROOT2, cmd_id::LIMIT, 1, ctx);
@@ -932,6 +946,7 @@ fn command_menu(
     mut uses: ResMut<ItemUse>,
     sora: Query<&Sora>,
     (drive, progress, battle, abilities): MenuState,
+    (summon, mut summon_queue): (Option<Res<crate::summon::SummonState>>, Option<ResMut<crate::summon::SummonQueue>>),
 ) {
     let (Some(data), Some(md), Some(progress)) = (data, magic_data, progress) else { return };
     let Ok(s) = sora.single() else { return };
@@ -948,6 +963,11 @@ fn command_menu(
     let drive_ok = |c: &Cmd| {
         if c.sub_menu != -1 && c.sub_menu != 4 {
             return true;
+        }
+        // A summon command and Dismiss: summon.rs (FUN_001ba568 + FUN_001c7970, FUN_001b3c00).
+        if c.execute == cmd_id::SUMMON || c.execute == cmd_id::DISMISS {
+            let (Some(sm), Some(d)) = (summon.as_deref(), drive.as_deref()) else { return false };
+            return if c.execute == cmd_id::DISMISS { sm.dismiss_ok() } else { sm.command_ok(d, c) };
         }
         let party_ok = c.execute != 4 || crate::drive::rules::companions_ok(c.argument as u8, donald, goofy);
         party_ok && form != 6 && form != 11 && c.cost <= points
@@ -968,7 +988,8 @@ fn command_menu(
         received: progress.recent_items()[0] != 0,
         form_items: (1..=5).map(|i| (data.form_items[i], progress.item_count(data.form_items[i]))).collect(),
         form_party: &form_party,
-        summons: Vec::new(),
+        summons: summon.as_ref().map_or_else(Vec::new, |s| s.commands.clone()),
+        summon_active: summon.as_ref().is_some_and(|s| s.state != 0),
         party: vec![(SORA, data.member_cmds.get(SORA as usize).copied().unwrap_or(0))],
         world: md.world,
         charging_attack: block_bits & 0x800 != 0 && charging,
@@ -982,6 +1003,8 @@ fn command_menu(
         cancel: keys.just_pressed(KeyCode::KeyB),
         up: keys.just_pressed(KeyCode::KeyT),
         down: keys.just_pressed(KeyCode::KeyG),
+        // H stands in for d-pad Left (the deck swap at the deck, FUN_001bc410).
+        left: keys.just_pressed(KeyCode::KeyH),
         ..default()
     };
     // The confirm button is the attack button: on the deck's attack command the press stays an attack
@@ -1003,6 +1026,13 @@ fn command_menu(
             3 => {
                 uses.request = Some((cmd, target.unwrap_or(SORA), REQUEST_TICKS));
                 info!("items: {} chosen for member {}", data.cmd_name(cmd), target.unwrap_or(SORA));
+                true
+            }
+            // A summon command or Dismiss: summon.rs runs it.
+            cmd_id::SUMMON | cmd_id::DISMISS if summon_queue.is_some() => {
+                let req = if c.execute == cmd_id::DISMISS { crate::summon::SummonRequest::Dismiss } else { crate::summon::SummonRequest::Summon(cmd) };
+                info!("items: {} chosen", data.cmd_name(cmd));
+                summon_queue.as_deref_mut().into_iter().for_each(|q| q.0.push(req));
                 true
             }
             _ => {
@@ -1267,6 +1297,7 @@ mod tests {
             form_items: s.forms.clone(),
             form_party: &party,
             summons: Vec::new(),
+            summon_active: false,
             party: vec![(SORA, 42)],
             world: 2,
             charging_attack: false,

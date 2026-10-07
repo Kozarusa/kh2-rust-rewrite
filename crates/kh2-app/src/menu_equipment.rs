@@ -489,8 +489,9 @@ mod at {
     pub const INFO_OK_ROWS: [f32; 2] = [-30.0, 125.0];
     pub const INFO_ASK_ROWS: [f32; 2] = [-30.0, 98.0];
     pub const INFO_PITCH: f32 = 24.0;
-    /// The right edge of the count of a pick row from the row's origin (the Stock cell's 204, by eye).
-    pub const COUNT_RIGHT: f32 = 204.0;
+    /// The right edge of the count of a pick row from the row's origin: the row plates' right edge (201 for
+    /// the armor, accessory and item plates, 185 for the weapon plates) less a margin.
+    pub const COUNT_RIGHT: f32 = 190.0;
 }
 
 /// The question's message (0x846a: bit 15 ignored) and the notice's (0xc22e).
@@ -1008,7 +1009,10 @@ fn redraw(st: &mut EquipmentMenu, items: &ItemsMenu, scene: &mut MenuScene, p: &
                 set(scene, glint, group::GLINT[0], Some(group::GLINT[2]), was_of(glint));
             }
         }
-        set_help(scene, &text, help, if page == LIST { m.current().and_then(|r| item_help(r.id)) } else { None });
+        // The help of a slot row is its category's: the message after the label ("Change Armor." after "Armor",
+        // "Change Sub-Weapon used in Valor Form." after "Valor"; the system messages hold them as consecutive
+        // pairs and nothing else uses them) [inferred: the list's help table builder was not read].
+        set_help(scene, &text, help, if page == LIST { m.current().map(|r| t.label(&r) + 1) } else { None });
     }
 
     if on_pick || page == NOTICE {
@@ -1037,7 +1041,8 @@ fn redraw(st: &mut EquipmentMenu, items: &ItemsMenu, scene: &mut MenuScene, p: &
             if let Some(c) = count {
                 let id = pick_counts[k];
                 scene.nodes[id].visible = true;
-                scene.nodes[id].label = Some(label(&text, text.literal(&c, Style::default(), [0.0; 2]).tokens, 1, 15.0, if sel { at::SELECTED } else { at::COLOR }, 1, [at::COUNT_RIGHT, 1.0]));
+                let right = if matches!(cat, Cat::Weapon | Cat::Form) { at::COUNT_RIGHT - 16.0 } else { at::COUNT_RIGHT };
+                scene.nodes[id].label = Some(label(&text, text.literal(&c, Style::default(), [0.0; 2]).tokens, 1, 15.0, if sel { at::SELECTED } else { at::COLOR }, 1, [right, 1.0]));
             }
         }
         if let Some(&sel) = pick_rows.get(m.pick.saturating_sub(m.pick_scroll)) {

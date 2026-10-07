@@ -115,7 +115,7 @@ pub fn build_rows(i: &Inputs) -> Vec<Row> {
     let tail: Vec<Row> = rows[4..].to_vec();
     for r in rows.iter_mut().take(4) {
         if r.id != 0
-            && let Some(t) = tail.iter().filter(|t| t.id == r.id).next_back()
+            && let Some(t) = tail.iter().rfind(|t| t.id == r.id)
         {
             r.on = t.on;
         }
@@ -442,8 +442,6 @@ mod at {
     pub const LABEL: [f32; 2] = [0.0, 1.0];
     pub const COLOR: [u8; 4] = [0x80; 4];
     pub const SELECTED: [u8; 4] = [0xe5, 0xe5, 0xe5, 0x80];
-    pub const IDLE: [u8; 4] = [0x50, 0x50, 0x58, 0x80];
-    pub const HELP_COLOR: [u8; 4] = [0x30, 0x7c, 0x80, 0x80];
     /// The tag text of a section and the sub page's rows from the window anchor [inferred from the groups' boxes].
     pub const TAG_LABEL: [f32; 2] = [-86.0, 1.0];
     pub const LIST_PITCH: f32 = 28.0;

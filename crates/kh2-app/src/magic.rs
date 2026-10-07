@@ -1,5 +1,5 @@
-//! Sora's magic, phase 1: the Magic sub-menu of the command menu, the cast motion, the MP cost and
-//! the MP charge, and the spell objects of Fire and Cure.
+//! Sora's magic: the cast motion, the MP cost and the MP charge, and the spell objects of the six
+//! spells at levels 1 to 3, in and out of drive forms (phase 1 WP-6B / 7A, phase 2 WP-7I).
 //!
 //! The game keeps one magic resource per slot (FUN_001a45c0): the `magc` row the slot uses
 //! (`magic_rules::pick_row`), the row's BAR (`magic/<SPELL>_<level>.mag`) with two BDX scripts and a
@@ -12,10 +12,10 @@
 //!
 //! What the four spells' scripts do is ported by hand below, step by step, from their disassembly
 //! (`kh2 bdx magic/FIRE_1.mag`), including the request threads (host 2.20) of Blizzard's shot and
-//! Thunder's strike. Only the casts without a drive form are ported for Blizzard and Thunder (the form
-//! variants send more shots and strikes). `KH2_MAGIC_VM=1` runs the scripts themselves in the BDX
-//! interpreter instead (`VmCast`, `SpellHost`): Fire's matches the hand port; the other three stop at
-//! host calls the app does not answer yet (docs/magic.md "Running the scripts in the interpreter").
+//! Thunder's strike, with their drive-form branches (`fire_plan`, `blizzard_plan`, `thunder_plan`).
+//! Magnet and Reflect always run their own scripts in the BDX interpreter (`VmCast`, `SpellHost`);
+//! `KH2_MAGIC_VM=1` runs the other four there too: Fire's matches the hand port; the other three stop
+//! at host calls the app does not answer yet (docs/magic.md "Running the scripts in the interpreter").
 //!
 //! Keys: the command menu (`items.rs`, WP-7C: the original's lists and input) answers T (cursor
 //! up), G (cursor down), B (back); J / left mouse executes the selected command (the game's X
@@ -525,7 +525,8 @@ fn run(
         mlog!("magic: KH2_MAGIC_HURT: Sora's HP {} -> {hp}", s.hp);
         s.hp = hp.clamp(1, s.stats.max_hp);
     }
-    let form = drive.as_ref().map_or(0, |d| d.form);
+    // The player object's form (+0xb50): the base object's until the body has been swapped.
+    let form = drive.as_ref().map_or(0, |d| d.object_form());
 
     // MP charge (FUN_00175f48 each frame; the regeneration multiplier is the block's +0x34). The
     // drive form start ends it through `refill_mp` (FUN_001a0240).
@@ -683,8 +684,8 @@ fn run(
     }
 
     // Frame trigger 17 of the motion this tick (FUN_00188498 case 0x11): pay, then event 21. A trigger
-    // with a parameter fires only when it equals a word of the trigger context: the motion id the
-    // cast asked for [inferred from the data: the cast slots are shared by spells (Fire's ground motion
+    // with a parameter fires only when it equals the motion controller's +0x14, the motion id the
+    // cast asked for (FUN_0017e000 writes it on a successful request; WP-7I, ghidra) [the data agrees: the cast slots are shared by spells (Fire's ground motion
     // 56 and Reflect's 71 play one slot), and each slot carries one trigger 17 per motion id, Reflect's
     // at frame 0 and Fire's later].
     let fired: Vec<Option<i16>> = body

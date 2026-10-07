@@ -242,6 +242,14 @@ impl Plugin for LimitPlugin {
     }
 }
 
+/// What the limit rules read from and send to the summon system (summon.rs).
+type SummonSide<'w> = (
+    Option<Res<'w, crate::summon::SummonState>>,
+    Option<Res<'w, crate::drive::DriveState>>,
+    Option<Res<'w, crate::summon::SummonData>>,
+    Option<ResMut<'w, crate::summon::SummonQueue>>,
+);
+
 /// Key `L` tries the next limit command in table order; `KH2_LIMIT=<command id>` tries that one once
 /// at about 4 s. Both print the decision (every limit) and run an available limit.
 #[allow(clippy::too_many_arguments)]
@@ -254,7 +262,7 @@ fn try_limit(
     mut sora: Query<&mut Sora>,
     mut out: MessageWriter<LimitStarted>,
     mut active: ResMut<LimitTask>,
-    summon: (Option<Res<crate::summon::SummonState>>, Option<Res<crate::drive::DriveState>>, Option<Res<crate::summon::SummonData>>, Option<ResMut<crate::summon::SummonQueue>>),
+    summon: SummonSide,
 ) {
     let (sm, drive, summon_data, mut summon_queue) = summon;
     if let Some((cmd, left)) = active.0.as_mut() {

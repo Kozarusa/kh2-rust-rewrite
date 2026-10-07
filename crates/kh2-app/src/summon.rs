@@ -123,7 +123,7 @@ pub mod rules {
         if n == 0 {
             return 0;
         }
-        let step = ((n - 1) + (1u64 << 32)) / n;
+        let step = (1u64 << 32).div_ceil(n);
         owned.get((r as u64 / step) as usize).copied().unwrap_or(0)
     }
 
@@ -910,6 +910,11 @@ fn tick(
     }
 }
 
+/// The resources `act` reads besides its own.
+type ActRes<'w> = (ResMut<'w, SummonState>, Res<'w, Battle>, Option<Res<'w, World>>, Option<Res<'w, crate::fx::EffectLib>>);
+/// The asset stores a spawned model needs.
+type Gfx<'w> = (ResMut<'w, Assets<Mesh>>, ResMut<'w, Assets<StandardMaterial>>, ResMut<'w, Assets<Image>>, ResMut<'w, Assets<SkinnedMeshInverseBindposes>>);
+
 /// Carries out what `tick` asked for: the player's motions and effect, the companions' fades, the
 /// object's spawn and its `leave`.
 #[allow(clippy::too_many_arguments)]
@@ -919,13 +924,13 @@ fn act(
     mut data: ResMut<SummonData>,
     mut acts: ResMut<Acts>,
     mut side: ResMut<PlayerSide>,
-    (mut sm, battle, world, lib): (ResMut<SummonState>, Res<Battle>, Option<Res<World>>, Option<Res<crate::fx::EffectLib>>),
+    (mut sm, battle, world, lib): ActRes,
     mut sora: Query<&mut Sora>,
     mut anims: Query<&mut Animator>,
     mut running: Query<&mut crate::fx::RunningEffect>,
     party: Query<(Entity, &PartyMember, Option<&Away>)>,
     mut objects: Query<&mut SummonObject>,
-    gfx: (ResMut<Assets<Mesh>>, ResMut<Assets<StandardMaterial>>, ResMut<Assets<Image>>, ResMut<Assets<SkinnedMeshInverseBindposes>>),
+    gfx: Gfx,
 ) {
     let (mut meshes, mut materials, mut images, mut bindposes) = gfx;
     let Ok(mut s) = sora.single_mut() else {
@@ -1016,7 +1021,7 @@ fn act(
             }
             Act::Spawn { index, mode, skip } => {
                 let Some(row) = data.rows.get(index as usize - 1).cloned() else { continue };
-                let Some(o) = data.objs.iter().find(|r| r.object_id == row.entity1 as u32).cloned() else {
+                let Some(o) = data.objs.iter().find(|r| r.object_id == row.entity1).cloned() else {
                     warn!("summon: object {} of summon {index} has no objentry row", row.entity1);
                     continue;
                 };
@@ -1125,7 +1130,7 @@ fn objects(
     trace: Option<ResMut<AiTrace>>,
     sora: Query<&Sora>,
     mut q: Query<(Entity, &mut Transform, &mut SummonObject)>,
-    mut anims: Query<&mut Animator>,
+    anims: Query<&Animator>,
     children: Query<&Children>,
     handles: Query<&MeshMaterial3d<StandardMaterial>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -1134,11 +1139,10 @@ fn objects(
     let paired = HashMap::new();
     for (ent, mut tf, mut so) in &mut q {
         let so = &mut *so;
-        let Ok(anim) = anims.get_mut(so.body) else { continue };
+        let Ok(anim) = anims.get(so.body) else { continue };
         let rig = anim.rig.clone();
         so.obj.slot = anim.slot;
         so.obj.frame = anim.frame;
-        drop(anim);
         let env = Env {
             player: s.motor.pos,
             player_yaw: s.motor.yaw,

@@ -571,6 +571,65 @@ which ends in resource handles, not a bone number; the attach bone of Donald's a
 Also not done: members do not push each other or Sora apart (nothing in the paths read does it); the spawn
 refusals during a form or a summon (stage 6); battle (the members follow in battle too until stage 2).
 
+## 12. Status: stage 2 in the app (WP-7P2)
+
+Files: `crates/kh2-app/src/party_battle.rs` (pure rules of the battle AI), `party.rs` (the battle branch of the
+tick, weapons, push-apart), `friend_host.rs` (the members' script host: group 10 and the motion remap),
+`friend_ai.rs` (runs the scripts through it). Log `KH2_PARTYLOG=1`: "battle flag set", "target", "chose record",
+"attack motion", "actions in the last second", "hit". Harness `KH2_PARTY_WARP_ONSCREEN=1` (with
+`KH2_PARTY_WARP=<s>`) lets the forced warp happen in view, `KH2_PARTY_WEAPON_BONE=<n>` overrides the weapon bone.
+
+Done:
+
+- **Battle gate** (FUN_001903d8): the tick reads the game's battle flag (`audio_bgm::BattleFlag`, word
+  0x1c8a7d8). Clear: the stage-1 follow. Set: the battle branch of FUN_00111070.
+- **Action records** (`ClassAi::from_exe`): the class's block (+0x60..+0x80, +0xa0/+0xa4 entries, +0xa8 follow-ups)
+  and the records of Donald (0x353090, 20, from FUN_00114550) and Goofy (0x3533a0, 18, FUN_00114668), bound to
+  their 0x80-byte entries by id and to the ability table 0x352ec0 / item order 0x352eb0 as FUN_00113450 does.
+  Printed by `party_action_records_from_the_executable`.
+- **Range** FUN_0010f118 (oracle-checked over 2592 cases, `party_range_matches_fun_0010f118`), **feasibility**
+  FUN_0010f220, **anti-repeat** FUN_0010fc68 / FUN_0010ed00, **choice** FUN_0010fcd0 (continuous records kept,
+  setting-2 records only in the second pass, the triple repeat skipped once, nothing feasible = stand).
+  Handlers read for phase 0/1: FUN_001137d8 (attack: FUN_001103f8 then the command FUN_0010c8f0), FUN_001135e0
+  (stand facing the target, wait +0x70..+0x74), FUN_00113728 (move, wait +0x78..+0x7c), FUN_00114738 (Goofy:
+  run the way it started); the waits count down in FUN_001112e8 (+0xcd4). The idle handlers refuse while any
+  attack is feasible (FUN_0010ed20).
+- **Target, style 0** (FUN_0010d0c0, read): the remembered attacker's nearest shape, else the enemy hurt shape
+  whose surface (centre distance minus radius) is nearest and within the block's +0x68; re-target
+  (FUN_0010cbe0) when the target is invalid, the attacker differs, or the target is beyond +0x6c. Battle
+  distance (FUN_0010df08): farther than +0x80 from the player makes the target invalid (bit 0x40).
+- **Moving in battle**: toward the target FUN_0010e5e8's body with the relation +0xbb0 (row 2 thresholds,
+  ground distance; the stop when the target is right above, 0x378564 / 0x378568); following the player with
+  row 1.
+- **Attack command** (FUN_001112e8 -> FUN_00174cf8 -> FUN_00110790): the entry's motion through the player-type
+  remap FUN_0017da30 (battle row 1 of the table 0x37a5c8, checked equal to `kh2_anim::PlayerState`'s orders);
+  an air entry (+0x20 != 0) jumps `+0x20 - dy` (held between 0 and the jump height) toward the target at the
+  run speed. The member is busy until the motion ends on the ground. Its attack volumes hit enemies through
+  `combat` (a `Fighter` of the player team; not hittable before stage 3).
+- **Motion remap for the scripts** (follow-up 2): `friend_host` remaps the scripts' motion requests
+  (FUN_0017e000 -> FUN_0017da30) before the enemy host plays them; the requested slot plays while the member
+  stands (the `idle` mode's motion 0).
+- **Group 10** (`friend_host`): 10.14 (target bit; record copy not carried out), 10.19, 10.31 (false: not a
+  summon), 10.36, 10.40 (false: no linked controllers), 10.55 (bit 16 of the argument's word +4, read from
+  FUN_002f0758). Wrappers 0x2f6da0, 0x2f72e8, 0x2f7118, 0x2f7230, 0x2f6e60 decompiled with ghidra.
+- **Push-apart** (follow-up 4) [inferred]: members move out of each other, Sora and the enemies by their body
+  radii; the game's object-to-object push was not read.
+- **Weapons** (follow-up 1): FUN_0016ef28's weapon word of the member (`Progress::member`), `went` of the member's
+  moveset (FUN_001845b0), `wmst` hand 0 (FUN_00184640); the attach bone found by looking (see the report).
+
+Not done or approximated in stage 2:
+
+- The combo follow-ups (FUN_0010c800 -> FUN_001b0758 not read): a chosen follow-up starts nothing.
+- Items, specials, Cure and the emergency pass (stage 4: they need the member's status block and the MP gate
+  FUN_00110f90); they are never feasible here.
+- The members' damage uses Sora's stats (`enemy::receive_hits` takes the attacker's stats from Sora), and the
+  hit sparks use the keyblade's effect file (`fx::hit_sparks` for any player-team attacker).
+- The settings bytes (record +0xd4) are read as 0 (their new-game value).
+- FUN_00111040 forces motion state 0x1f only for classes 12, 15 and 16, so Donald and Goofy (classes 0, 1)
+  may follow through FUN_0010e5e8's body (state 0) rather than FUN_0010e140 as stage 1 assumed; which state a
+  free class-0 member stands in was not determined. The field follow keeps stage 1's port.
+- The random generator is not the game's.
+
 ## Decompile index
 
 | address | what |
@@ -593,6 +652,9 @@ refusals during a form or a summon (stage 6); battle (the members follow in batt
 | 0x111c18, 0x111d18, 0x111670, 0x112168, 0x112260, 0x112270, 0x113208, 0x17d5a0 | party manager |
 | 0x1c76b0, 0x1c77a8, 0x1c77f0, 0x1c75c0, 0x1c75d0, 0x1c7600, 0x1c7ab0, 0x1c7be8, 0x1b3f78 | hide / return members, forms |
 | 0x2f6a90..0x2f75c0 | host group 10 (ghidra decompiled the 31 the decompilation lacked) |
+| 0x1903d8, 0x17da30, 0x17d960, 0x19a898, 0x1752a0, 0x17e000, 0x17e220, 0x37a5c8 | WP-7P2: battle flag, motion remap and its table |
+| 0x1137d8, 0x10c8f0, 0x110790, 0x10cbe0, 0x1112e8, 0x114738, 0x114828, 0x10c748, 0x110728 (ghidra) | WP-7P2: attack handler, command, attack motion, re-target, friend update, Goofy's handlers |
+| 0x10fcd0, 0x10f220, 0x10f118, 0x10fc68, 0x10ed00, 0x10ed20, 0x10ecb0, 0x10f3d8, 0x10c800, 0x10f698, 0x10f688, 0x10f6a8, 0x10f670, 0x10f7a8, 0x10f7b8, 0x10ca78, 0x10ca88, 0x10d0c0, 0x10d848, 0x10dcf0, 0x10cf90, 0x112b28, 0x112b88, 0x112ac0, 0x10d720, 0x10e5e8, 0x1102c8, 0x1103e0, 0x1103f8, 0x111040, 0x110f90, 0x10f8d8, 0x113450, 0x1135e0, 0x113728, 0x1143b8, 0x114348, 0x1144d0, 0x10f578, 0x174cf8, 0x176b00, 0x1b6f48, 0x114058, 0x114068, 0x114108, 0x114048, 0x2f0758, 0x17eb48 | WP-7P2: choice, feasibility, range, targets, movement, records |
 
 ## Corrections to other docs (for the orchestrator)
 

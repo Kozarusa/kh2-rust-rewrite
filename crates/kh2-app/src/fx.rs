@@ -278,6 +278,8 @@ impl Plugin for FxPlugin {
         app.add_plugins(MaterialPlugin::<DistortMaterial>::default())
             .add_message::<StartEffect>()
             .add_message::<StartSystemEffect>()
+            .add_message::<StartBoundSystemEffect>()
+            .add_message::<StopEffect>()
             .add_message::<GameEffect>()
             .add_message::<SpellHit>()
             .add_message::<FootDust>()
@@ -292,6 +294,8 @@ impl Plugin for FxPlugin {
                         motion_effects,
                         start_requests,
                         start_system_requests,
+                        start_bound_system_requests,
+                        stop_requests,
                         load_area_fx,
                         foot_dust,
                         hit_sparks,
@@ -367,6 +371,80 @@ pub fn start_system_requests(mut commands: Commands, lib: Res<EffectLib>, mut ri
         // Every system effect started this way is a clash spark (FUN_0018d560), which FUN_001c09f8 registers.
         let spark = start_placed(&mut commands, &lib.system, r.id, Bind::Fixed(r.at), Placement { replace_translation: true, ..default() });
         ring_push(&mut commands, &mut ring, spark);
+    }
+}
+
+/// The handle of an owner-bound system effect, what `FUN_001db868` returns and its caller keeps to end
+/// the effect later (the player's pickup glow at +0xae4, `FUN_00175c28`). The caller takes a fresh one with
+/// `FxHandle::new` and sends it with `StartBoundSystemEffect`; `fx` puts it on the running effect.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FxHandle(pub u32);
+
+impl FxHandle {
+    /// A handle no other effect carries.
+    pub fn new() -> FxHandle {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+        FxHandle(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
+impl Default for FxHandle {
+    fn default() -> FxHandle {
+        FxHandle::new()
+    }
+}
+
+/// Request to start an element of the system effect file `00effect.bar` bound to an owner, what
+/// `FUN_001db868(&DAT_01c954d8, id, .., owner)` does with an owner (sixth argument, the record's +0x48):
+/// the element follows the owner's bone as any bound effect (`tick`, FUN_001dcd08) and is not filed in
+/// the spark ring (only the spark callers of `FUN_001c09f8` are). `owner` is a model entity (it carries
+/// the `Animator`). The effect ends by itself, with its owner as its element flags say, or on `StopEffect`.
+/// The middle arguments of `FUN_001db868` (the pickup glow passes 0, 1, 0x2714) are not modelled, as
+/// for `StartSystemEffect`.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct StartBoundSystemEffect {
+    pub id: u16,
+    pub owner: Entity,
+    pub handle: FxHandle,
+}
+
+/// Request to end the effect carrying `handle`: `kill` false is `FUN_001d9f48` (the record's +8 bit 0 and
+/// the instance's loop-end byte +0x85, `FUN_001e0298`: the effect stops emitting and goes when its
+/// particles are done, as `effect.end()`); `kill` true is `FUN_001da028` (gone at once). A handle with no
+/// running effect is ignored (the effect already ended or never started: no element with that id).
+#[derive(Message, Clone, Copy, Debug)]
+pub struct StopEffect {
+    pub handle: FxHandle,
+    pub kill: bool,
+}
+
+pub fn start_bound_system_requests(mut commands: Commands, lib: Res<EffectLib>, mut req: MessageReader<StartBoundSystemEffect>) {
+    for r in req.read() {
+        let e = start_placed(&mut commands, &lib.system, r.id, Bind::Owner(r.owner), Placement::default());
+        if std::env::var_os("KH2_FXLOG").is_some() {
+            info!("system effect {:#x} bound to {:?} (handle {}): {}", r.id, r.owner, r.handle.0, if e.is_some() { "started" } else { "no element" });
+        }
+        if let Some(e) = e {
+            commands.entity(e).insert(r.handle);
+        }
+    }
+}
+
+pub fn stop_requests(mut commands: Commands, mut effects: Query<(Entity, &FxHandle, &mut RunningEffect)>, mut req: MessageReader<StopEffect>) {
+    for r in req.read() {
+        for (e, h, mut fx) in &mut effects {
+            if *h != r.handle {
+                continue;
+            }
+            if std::env::var_os("KH2_FXLOG").is_some() {
+                info!("effect {:#x} (handle {}) {}", fx.game_id, h.0, if r.kill { "killed" } else { "told to end" });
+            }
+            if r.kill {
+                commands.entity(e).despawn();
+            } else {
+                fx.effect.end();
+            }
+        }
     }
 }
 
@@ -1532,5 +1610,56 @@ mod tests {
         assert!(run(0xb, 600).is_some(), "0xb ends by itself");
         assert!(run(0xc, 600).is_some(), "0xc ends by itself");
         assert!(run(0xd, 3000).is_none(), "0xd is still running after 50 s");
+    }
+
+    /// The owner-bound system effect (`FUN_001db868` with an owner, the pickup glow's system effect 6):
+    /// it starts bound to the owner, carries its handle, is not filed in the spark ring; `StopEffect`
+    /// ends only the effect with that handle (`FUN_001d9f48`: loop end, the effect runs out), and a kill
+    /// (`FUN_001da028`) removes it at once. Skips without a disc.
+    #[test]
+    fn a_bound_system_effect_carries_its_handle_and_stops_on_request() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let common = disc.read("effect/texcommon.dpd").and_then(|b| Dpd::parse(&b).ok());
+        let system = Arc::new(load(&disc, "00effect.bar", 1, common.as_ref()).expect("00effect.bar"));
+        let el = system.pax.elements_for(6).next().expect("system element 6");
+        let pd = system.pax.effects.get(el.effect as usize).map(|f| system.dpds[f.dpd].particles[f.particle_data as usize].flags);
+        eprintln!("system element 6: bone {:#x} flags {:#x} effect {} sound {} program flags {pd:?}", el.bone, el.flags, el.effect, el.se);
+        let mut app = App::new();
+        app.add_message::<StartBoundSystemEffect>()
+            .add_message::<StopEffect>()
+            .init_resource::<SparkRing>()
+            .insert_resource(EffectLib { keyblade: system.clone(), system, objects: HashMap::new() })
+            .add_systems(Update, (start_bound_system_requests, stop_requests).chain());
+        let owner = app.world_mut().spawn_empty().id();
+        let (glow, other) = (FxHandle::new(), FxHandle::new());
+        assert_ne!(glow, other);
+        app.world_mut().write_message(StartBoundSystemEffect { id: 6, owner, handle: glow });
+        app.world_mut().write_message(StartBoundSystemEffect { id: 6, owner, handle: other });
+        app.update();
+        let state = |app: &mut App| {
+            let mut v: Vec<(u32, u16, bool, bool, bool)> = app
+                .world_mut()
+                .query::<(&FxHandle, &RunningEffect, Has<RingSpark>)>()
+                .iter(app.world())
+                .map(|(h, r, ring)| (h.0, r.game_id, matches!(r.bind, Bind::Owner(o) if o == owner), r.effect.is_ending(), ring))
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(state(&mut app), vec![(glow.0, 6, true, false, false), (other.0, 6, true, false, false)]);
+        app.world_mut().write_message(StopEffect { handle: glow, kill: false });
+        app.update();
+        assert_eq!(state(&mut app), vec![(glow.0, 6, true, true, false), (other.0, 6, true, false, false)], "only the glow's effect ends");
+        app.world_mut().write_message(StopEffect { handle: other, kill: true });
+        app.update();
+        assert_eq!(state(&mut app), vec![(glow.0, 6, true, true, false)], "the killed effect is gone at once");
+        // No element with the id: nothing starts (FUN_001db868 returns 0).
+        app.world_mut().write_message(StartBoundSystemEffect { id: 0x7fff, owner, handle: FxHandle::new() });
+        app.update();
+        assert_eq!(state(&mut app).len(), 1);
     }
 }

@@ -896,6 +896,32 @@ pub struct DriveState {
     ticks: u32,
 }
 
+/// The form record's ability list at `level` (what `FUN_001c0e50` applies from its 16 slots): the `fmlv`
+/// grants up to the level plus the growth ability of the form's chain at the display level (the slot
+/// `FUN_001d3da8` -> `FUN_001d3f18` keeps at the current level; 0x37c556).
+pub fn form_ability_list(levels: &FormLevels, ab: &crate::abilities::AbilityRules, form: u8, level: u8) -> Vec<u16> {
+    let g = rules::growth_level(levels, form, level);
+    let mut list = rules::granted_abilities(levels, form, level);
+    if let Some(id) = (g > 0).then(|| ab.growth_ability(form as usize - 1, g)).flatten() {
+        list.push(id);
+    }
+    list
+}
+
+/// A form level-up while the player is in that form (`FUN_001d3da8`: the record's list is upgraded in
+/// place, then `FUN_0019fb98` rebuilds the status block from it): the form list the ability system applies
+/// is rebuilt at the new level, which recomputes the block. Returns the new list, or `None` when the
+/// player is not in `form` (the list then applies from the next entry, as before).
+pub fn refresh_form_list(state: &DriveState, levels: &FormLevels, ab: &mut Abilities, form: u8) -> Option<Vec<u16>> {
+    if state.object_form() != form || form == 0 {
+        return None;
+    }
+    let level = *state.level.get(form as usize)?;
+    let list = form_ability_list(levels, ab.rules(), form, level);
+    ab.set_form(Some(list.clone()));
+    Some(list)
+}
+
 impl DriveState {
     /// The form field of the current player object (`+0xb50`): the entered form once the body has
     /// been swapped, else 0 (the old object stays the base one through the change).
@@ -1550,13 +1576,10 @@ fn drive_tick(
             // growth ability of the form's chain at the display level (FUN_001d3da8 keeps that
             // slot at the current level). The ability system derives the block from it.
             let level = st.level[to as usize];
-            let g = rules::growth_level(&rules.levels, to, level);
             let mut list = rules::granted_abilities(&rules.levels, to, level);
             let block = match abilities.as_deref_mut() {
                 Some(ab) => {
-                    if let Some(id) = (g > 0).then(|| ab.rules().growth_ability(to as usize - 1, g)).flatten() {
-                        list.push(id);
-                    }
+                    list = form_ability_list(&rules.levels, ab.rules(), to, level);
                     ab.set_form(Some(list.clone()));
                     let d = ab.block().deltas();
                     if d.is_empty() { "unchanged".to_string() } else { d.join("; ") }
@@ -1716,6 +1739,30 @@ mod tests {
 
     fn rules_from_disc() -> Option<DriveRules> {
         DriveRules::from_archive(&mut archive()?)
+    }
+
+    /// A Master Form level-up while in the form (`FUN_001d3da8` -> `FUN_0019fb98`) rebuilds the form list
+    /// the ability system applies at the new level; out of the form, or in another form, nothing changes.
+    #[test]
+    fn a_form_level_up_in_the_form_rebuilds_its_list() {
+        let Some(r) = rules_from_disc() else { return };
+        let ab_rules = Arc::new(crate::abilities::AbilityRules::load(&mut archive().unwrap()).unwrap());
+        let mut ab = crate::abilities::Abilities::new(ab_rules);
+        let mut st = DriveState::from_env(&r, None);
+        st.level[form::MASTER as usize] = 2;
+        assert_eq!(refresh_form_list(&st, &r.levels, &mut ab, form::MASTER), None, "not in a form");
+        st.in_form = true;
+        st.form = form::VALOR;
+        assert_eq!(refresh_form_list(&st, &r.levels, &mut ab, form::MASTER), None, "in another form");
+        st.form = form::MASTER;
+        let at2 = form_ability_list(&r.levels, ab.rules(), form::MASTER, 2);
+        assert_eq!(refresh_form_list(&st, &r.levels, &mut ab, form::MASTER).as_deref(), Some(&at2[..]));
+        assert_eq!(ab.form_list(), &at2[..]);
+        st.level[form::MASTER as usize] = 7;
+        let at7 = refresh_form_list(&st, &r.levels, &mut ab, form::MASTER).expect("list");
+        eprintln!("Master Form list at 2: {at2:x?}, at 7: {at7:x?}");
+        assert!(at7.len() > at2.len(), "level 7 has more grants than level 2");
+        assert_eq!(ab.form_list(), &at7[..]);
     }
 
     fn ctx(points: u8) -> EnterCtx {

@@ -219,6 +219,13 @@ Anti through it.
   abilities 94..97, 98..101, 102..105, 106..109 for forms 1..4 (levels 1..4). So in a form the growth level is
   the form's `fmlv` display level (1..4) in the group `form - 1`, and no other growth ability applies. Note
   for `sora.rs`: its `Growth` uses 1..5 with 5 as MAX, but this path only ever reaches 4.
+- A form level-up while the player is in that form (WP-7Bc; `FUN_001d3da8` upgrades the record's slots with
+  `FUN_001d3f18` and then rebuilds the status block, `FUN_0019fb98`): `drive::refresh_form_list` rebuilds the form
+  list at the new level (`drive::form_ability_list`, the same list the form entry builds) and hands it to the ability
+  system, which recomputes the block at once. Out of the form nothing changes; the next entry builds the list from the
+  saved level as before. Caller: `prize::apply_form_exp` (Master Form from the drive orbs, and the `FormExpGain`
+  message for Valor, Wisdom and Final). Test `drive::tests::a_form_level_up_in_the_form_rebuilds_its_list`. The rules
+  of the experience itself are in docs/prizes.md ("Master Form experience").
 
 ## Hook points in sora.rs (for the orchestrator)
 

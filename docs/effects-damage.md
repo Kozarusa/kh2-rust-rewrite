@@ -245,6 +245,28 @@ holds for 15 frames, fades over 15 frames and is hidden at frame 30, while effec
 * `sora.rs` (Sora as the victim) needs nothing: his hits arrive as `Hit` too, and his file has no
   `DamageEffect` element.
 
+## Owner-bound system effects and their end (WP-7Bc, verified)
+
+`FUN_001db868(file, id, .., owner)` with the system file (0x1c954d8, `FUN_001a21d0`) and an owner (its sixth argument,
+stored at the record's +0x48 by `FUN_001dc138`) gives an effect that follows the owner like any bound element
+(`FUN_001dd0d0` -> `FUN_001dcd08`) and is not filed in the spark ring (only `FUN_001c09f8`'s callers are). The caller
+keeps the returned handle to end it later:
+
+* **End** `FUN_001d9f48(handle)`: bit 0 of the handle's flags (+8), and the instance's loop-end byte +0x85
+  (`FUN_001e0298` on +0x1c): the effect stops emitting and goes when its particles are done (`kh2_fx::Effect::end`).
+* **Kill** `FUN_001da028(handle)`: flags 0x10001, the instance freed at once (`FUN_001e0218`, `FUN_001e4218`).
+* **Fade** `FUN_001da080(t, handle)`: a time of 0 or less kills, else flags 0x20001 and the alpha step `-a / t` (the
+  spark ring's eviction uses this one).
+
+Users: the pickup glow (system effect 6, `FUN_00175c28` keeps the handle at player +0xae4, `FUN_00175cb0` ends it when
+its frames run out or the player's +0x160 bit 0x4000 is set) and the form level-up effect (0x10, `FUN_001b5528`, never
+ended by its caller). Port: `fx::StartBoundSystemEffect { id, owner, handle }` (owner = a model entity with an
+`Animator`; the handle `fx::FxHandle::new()` is chosen by the caller and put on the running effect) and
+`fx::StopEffect { handle, kill }`. `KH2_FXLOG=1` logs `system effect 0x6 bound to .. (handle N): started` and
+`effect 0x6 (handle N) told to end`. Test `fx::tests::a_bound_system_effect_carries_its_handle_and_stops_on_request`.
+The middle arguments of `FUN_001db868` are not modelled. The summon arrival effect 0x13 (docs/summons.md) can use the
+same pair (end = `kill: false`, `FUN_001da028` = `kill: true`).
+
 ## Test and harness hooks (all in `fx.rs`)
 
 `KH2_FXTEST=<id>` (system effect), `k<id>` (keyblade), `<name>:<id>` (any `obj/<name>.apdx`, loaded on

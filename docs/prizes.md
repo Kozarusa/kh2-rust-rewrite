@@ -72,7 +72,7 @@ function; 0 frees the entry.
 
 | byte | effect | port |
 |---|---|---|
-| +0 float | above 0: `FUN_00175c28` starts system effect 6 of 0x1c954d8 on the player (`FUN_001db868(.., 6, 0, 1, 0x2714, player)`) for that many frames when none runs (+0xae4 the handle, +0xae8 the frames) and the player's +0x160 bit 0x4000 is clear; otherwise the frames left are raised to the new value. `FUN_00175cb0` (called from `FUN_00174b68`) counts +0xae8 down and stops the effect (`FUN_001d9f48`) at 0 or with bit 0x4000 | timer ported (`prize::Glow`, test `the_pickup_glow_starts_once_and_extends`, log `glow starts for N frames, not drawn`); **gap**: the effect is not drawn (`fx` has no owner-bound system effect with an end) |
+| +0 float | above 0: `FUN_00175c28` starts system effect 6 of 0x1c954d8 on the player (`FUN_001db868(.., 6, 0, 1, 0x2714, player)`) for that many frames when none runs (+0xae4 the handle, +0xae8 the frames) and the player's +0x160 bit 0x4000 is clear; otherwise the frames left are raised to the new value. `FUN_00175cb0` (called from `FUN_00174b68`) counts +0xae8 down and stops the effect (`FUN_001d9f48`) at 0 or with bit 0x4000 | done since WP-7Bc: the timer (`prize::Glow`, test `the_pickup_glow_starts_once_and_extends`) and the effect, `fx::StartBoundSystemEffect { id: 6, owner: Sora's body }` with its `fx::FxHandle` kept in `PickupGlow` (+0xae4) and `fx::StopEffect` (`FUN_001d9f48`, loop end) when the frames run out (test `fx::tests::a_bound_system_effect_carries_its_handle_and_stops_on_request`); logs `glow starts for N frames` and `pickup glow (system effect 6) ends` |
 | +4 | HP: the player's method +0x78 (`FUN_001792f0` -> `FUN_00176c98` -> `FUN_00186238`, HP + amount held at the maximum) | done |
 | +5 | MP: `FUN_00186368` -> `FUN_001a0180`: during the MP charge the charge time drops by amount * `sstm[0x7c]` (`FUN_001a0540`), else MP + amount held at the maximum | done (the charge end comes on `magic`'s next tick [inferred one tick late]) |
 | +6 | drive: `FUN_001788d8(units)`: gauge mode adds `(int)(units * [sstm[0x78] * block +0x38 while charging] * FUN_001ba040())` to the gauge (`FUN_001a0290`); form mode adds `units * sstm[0x70]` to the form timer (`FUN_001a0358`); `FUN_001d4148` gives Master Form (+0xb50 == 3) form experience (`FUN_001d3f88`) | gauge and timer done; `FUN_001ba040` is 1.0 (0x37bc04) outside the Colosseum manager `DAT_01d5dd20`; Master Form experience done since WP-7Bb (below) |
@@ -126,9 +126,55 @@ level-up popups (`FUN_001b5788`), the stat rebuild (`FUN_0019fb98`) and `FUN_001
 Port: `prize::add_form_exp` (test `master_form_experience_levels_up_to_the_cap`) and `master_form_exp` on
 `Progress` (record level and experience, the ability through `Progress::give`) and `DriveState::level`. Harness:
 `KH2_DRIVE=3 KH2_DRIVE_AT=3 KH2_PRIZETEST=8,8,..(40)@8 KH2_PRIZETEST_DIST=60 KH2_PRIZETEST_STILL=1 kh2-game tt02` logs
-`(Master Form experience 57->0, level 1 -> 2 (ability 0x183), cap 7)`. Not ported: the growth upgrade in the record lists
-(drive.rs rebuilds the form's list from the level on each entry), the popups, the stat rebuild, the effect 0x10, the
-obtained log; the new ability applies from the next form entry.
+`(Master Form experience 57->0, level 1 -> 2 (ability 0x183), cap 7)`.
+
+**The level-up side effects (WP-7Bc).** `FUN_001d3da8` step by step (disassembly checked where the decompiler drops a
+return value):
+
+1. The record's level byte +2 rises; the row of the new level is `FUN_001d3b90(form, level)` (8-byte rows; byte +1 the
+   display level, +2 the ability, +4 the experience).
+2. When the row's display level is above the previous row's (`row[-7] < row[+1]`): `FUN_001d3f18(record +8, 16, form,
+   display)` on the form's 16 slots and `FUN_001d3f18(Sora's record +0x54, 64, form, display - 1)` on Sora's 64.
+   `FUN_001d3f18(list, n, form, level)` reads the chain at `0x37c556 + 10 * form + 2 * level` (five ids per form for the
+   display levels 0..4, 0 = none; rows 1..4 on the disc are High Jump, Quick Run, Aerial Dodge, Glide): the first slot
+   whose id (low 15 bits) is the chain's id one level below takes the chain's id at the level, its bit 15 (equipped)
+   kept; at most one slot changes, an empty slot matches a 0. It returns the chain's id at the level whether or not a
+   slot matched (the disassembly at 0x1d3f3c loads it into v0 before the search). The second call's id goes to the
+   form popup's line and to the obtained log (`FUN_001d0828(id, 1, 5)`).
+3. The row's ability (+2): `FUN_001a18d8(ability, 1, 0)`, the popup line, the obtained log (`FUN_001d0828(id, 1, 5)`).
+4. Two popups (`FUN_001b5788`): the form's (title: the form's item name via `FUN_001a1e38`; lines: message 0xc3f2 and
+   the form's new growth id) and Sora's (title: message `0x37ba90[1]`; lines: Sora's new growth id, the ability), each
+   queued by `FUN_00152ed0` in the four-entry queue at `DAT_003587e8 + 0x24f8` (taken while fewer than three wait).
+5. `FUN_0019fb98` rebuilds the status block from the records (`FUN_001a0030`, `FUN_0019f920(status, 0)`).
+6. `FUN_001d5718`: progress flags (`FUN_001a5328` reads, `FUN_001a52b0` sets the bit array at 0x33fdb0): 0x6a once flag
+   0x65 is set and forms 1..3 are all at level 5 or more; 0x67 once 0x65 is set and the summon level (`DAT_00340c88`
+   byte 6) is above 4; 0x68 once the eleven ids of 0x37c5d8 all pass `FUN_001802e0` (bit array 0x33f6b0), forms 1..4 are
+   all at 7 and the summon level is 7.
+
+After the loop (any level-up) `FUN_001d3f88` calls `FUN_001b5528(player)`: system effect 0x10 bound to the player
+(`FUN_001db868(.., 0x10, 1, 1, 0x2715, player)`).
+
+Port: `prize::form_level_up`, `growth_upgrade`, `GrowthChains` (read from the executable), `form_exp` and
+`apply_form_exp` (tests `form_level_ups_upgrade_the_growth_chain`, `master_form_experience_levels_up_to_the_cap`):
+the level, the experience and the ability through `Progress`, the two obtained log records, the popups' content logged
+(`prize: form level-up popups (not drawn): Master Form LV2: [msg 0xc3f2, ..]; Sora: [..]`), the effect 0x10 through
+`fx::StartBoundSystemEffect`, and, while the player is in the form, `drive::refresh_form_list` rebuilds the form list at
+the new level, which recomputes the ability block (test `drive::tests::a_form_level_up_in_the_form_rebuilds_its_list`;
+log `(level-up effect 0x10, form list rebuilt [..])`). The status rebuild beyond the ability block is [inferred] to be
+what `Abilities::set_form` recomputes. Not ported: the two record lists themselves (`Progress` has no setter for an
+ability slot; the form list in use is derived from the level, which gives the same growth id), the popups' draw, the
+progress flags of `FUN_001d5718` (no flag setter in `Progress`).
+
+**Valor, Wisdom and Final experience.** `FUN_001d4078(victim, hit)` is called from the enemies' hit method at 0x1849d8
+(no decompiled file; read in the disassembly: it adds the hit's atkp byte +0x2a to the victim's +0xaf0, calls
+`FUN_001d4078`, then jumps to the receive function `FUN_001b21f0`; the method sits in the vtables at 0x35ce24,
+0x35ed54, 0x35eddc, 0x35ef0c, 0x35f5e4): when the hit's attacker (hit +0x1c, then +8) is the player in Valor Form, Valor
+gets 1. `FUN_001d40e0(id, player)` is called from the defeat method `FUN_00184a30` when the defeating object (+0xae4) is
+the player: in Wisdom Form an object id (`FUN_001699a8`) in 1000..=2011, in Final Form one in 3000..=4008, gives 1.
+Port: the rules `prize::valor_hit_exp`, `prize::defeat_exp` (test `form_experience_from_hits_and_defeats`) and the
+message `prize::FormExpGain { form, amount }`, applied by `run_prizes` while the player is in that form (log
+`prize: form experience +1 (Valor Form experience ..)`). The senders belong to the hit and defeat code (`enemy.rs`): not
+wired (outside this package's files).
 
 ## Dropped items (verified, ported in WP-7Bb)
 
@@ -171,9 +217,44 @@ Port: `prize::ItemConsts`, `item_launch`, `item_fall`, `item_take`, `item_absorb
 `spawn_items`, `run_items`, `show_items` (the box model drawn with `assets::spawn_model`); tests
 `an_item_launch_takes_yaw_then_x_z_y`, `an_item_bounces_then_rests`, `a_taken_item_arcs_into_the_collector`,
 `real_item_objects` (box rows, the four models, a consumable given to the 99 cap then refused), and
-`a_drop_follows_fun_001a3cb0` for the four generator steps. Not ported: the item message (`FUN_00138498` queue, no HUD
-for it), the obtained log `FUN_001d0828` (ring of 32 at 0x341518), the instant-collection flags, object 0x883, party
-members as collectors.
+`a_drop_follows_fun_001a3cb0` for the four generator steps. Since WP-7Bc the item message and the obtained log (below).
+Not ported: the instant-collection flags, object 0x883, party members as collectors.
+
+## Item messages and the obtained log (WP-7Bc)
+
+**The message.** `FUN_001a1f40(item, -1)` fills the buffer 0x1c954b8 through `FUN_001a1ee0`: byte 0 = 9 (the text
+system's icon code), byte 1 = the item's +0x17 (`Icon2`; a non-negative second argument replaces it), then the item's
+name message (`FUN_00190c40(+8)` copied by `FUN_00191870`). `FUN_00138498` queues it in the manager `DAT_00354ecc`
+(made by `FUN_00138240`, 0x45d0 bytes): 16 entries of 0x1d0 bytes from +0x28cc (the text at entry +0x1b0, so slot `w`'s
+text is +0x2a7c + 0x1d0 w), write index +0x28c4, read index +0x28c8; it copies the text in only while `(w - r) mod 16`
+is below 15, else the message is dropped. The manager's update `FUN_00137de0` (vtable 0x354ed8 slot 1) starts the
+entry at the read index (`FUN_001379c0` -> `FUN_00137648(0, entry, 0x4c, text, -1)` -> `FUN_00138fc8`: the sequence
+`FUN_0013a998(1)` = `gaug`, group 0x4c, the text texture `FUN_0013d6f8`, colour 0x80e5e5e5 at +0x198, font 0 at +0x1a0,
+size 0x10 at +0x19c, flags 4, 8, 0x10 at +0xc); when the entry has left the draw list (`FUN_00139fe0` no longer finds
+it) the read index moves on and the next entry starts. The entry (vtable 0x354f18) plays its group (`FUN_001376e0`: with
+its delay +0x1a8 at 0 it plays system sound 10, `FUN_002c14a8(10, 0)`, once) and draws the text (`FUN_00139048` ->
+`FUN_001a80d8`) at the player's place plus the group record's x, y (`FUN_00237618`, `FUN_00237638`) with the group's
+colour alpha and its own colour; `FUN_00138aa8` hides it (vtable +0x14 = `FUN_00139778`) once a group that does not loop
+forever (record +4 non-zero, `FUN_002369e0`) has played (`FUN_002369c0`). The other queue of the manager (+0x30, 8
+entries of 0x510) uses group 0x4f with a delay of 60 (0x378d24); it is not the item message.
+
+Port: `prize::ItemObtained { item, icon, name }` is sent when a taken item's draw-in ends (`run_items`, log
+`prize: item 0x.. reached Sora: its message (icon N, name 0x..) goes to the queue`); `hud_banner::ItemMessages` keeps
+the queue (test `the_item_message_queue_takes_fifteen`) and shows the front entry: a `gaug` node playing group 0x4c with
+the label `[icon, name]` (font 0, size 16, colour 0xe5e5e5) at the group's x, y; it goes when the group has played (log
+`hud: item message 0x.. shown: ..`). [inferred] The group's alpha is not applied to the label (taken as 0x80); the text
+width limit (`FUN_001a8cc0` with the group record's +0x1c) is not applied; system sound 10 is logged, not played (the
+system sound list is not wired, as in `items.rs`).
+
+**The obtained log.** `FUN_001d0828(item, to, source)` -> `FUN_001d0760(0x341518, ..)`: the word at 0x341518 is the
+index, 32 records of 6 bytes follow; `FUN_001d0688` writes the record at the index and the index moves on modulo 32.
+Record: +0, +1 the world and area bytes (0x33e830, 0x33e831), +2 the item id (15 bits) with bit 15 set for a key item
+(`Flag0` bit 0) or an item whose "obtained once" bit (0x3414f0 by its `Slot`) is clear, +4 `to`, +5 `source`. Callers:
+`FUN_001bd1d8` (item objects, source 0, `to` = the room `FUN_001a1768` found, only when the gift went through),
+`FUN_001b53d0` (3), `FUN_001be500` (4), `FUN_001d3da8` (5, `to` 1), `FUN_001d4fa0` (6), `FUN_001a6910`. 0x341518 is save
++0x16b8. Port: `prize::ObtainedLog` (a resource beside `Progress`, which has no field for it), `obtained_record`,
+`place_bytes` (test `the_obtained_log_is_a_ring_of_32`); written by the item objects and the form level-ups. No reader of
+the log was searched for.
 
 ## Collect-all (`FUN_002eece8`, host 6.31)
 
@@ -213,6 +294,11 @@ prizes and items come to rest in mid-air there (seen at y 150 to 188); use `tt02
 | 0x2eece8, 0x1a40b8, 0x1a3ad8, 0x1c5808, 0x1c5748, 0x1c5588, 0x1bda98 | collect-all (host 6.31, table 0x371078 entry 31 at 0x370f58) |
 | 0x175c28, 0x175cb0, 0x174b68, 0x1db868, 0x1a21d0 | pickup glow |
 | 0x1d4148, 0x1d3f88, 0x1b9bd8, 0x187f60, 0x1d3c38, 0x1d3bd0, 0x1d3b90, 0x1d3da8, 0x1d3f18, 0x1b5528 | Master Form experience |
+| 0x175c28, 0x175cb0, 0x1d9f48, 0x1da0e8, 0x1e0298, 0x1da028, 0x1da080, 0x1db5f0, 0x1dc138, 0x1dd0d0 | glow start and stop (WP-7Bc) |
+| 0x1d3f18 (disassembly 0x1d3f18..0x1d3f80), 0x37c556, 0x1b5578, 0x1b5588, 0x1b55f8, 0x1b5788, 0x1b5868, 0x37ba90, 0x152ed0, 0x19fb98, 0x1d5718, 0x1d5740, 0x1d57c8, 0x1d5820, 0x1a5328, 0x1a52b0, 0x1802e0, 0x37c5d8 | form level-up side effects |
+| 0x1d4078, 0x1d40e0, 0x1849d8 (disassembly), 0x184968, 0x184a30, 0x1acfe0 | Valor, Wisdom, Final experience |
+| 0x1a1f40, 0x1a1ee0, 0x138498, 0x138240, 0x137da8, 0x1383c8, 0x137de0, 0x1379c0, 0x137770, 0x137648, 0x138fc8, 0x138948, 0x138a60, 0x1389b0, 0x139430, 0x1394e8, 0x139468, 0x1376e0, 0x139328, 0x138aa8, 0x138bf0, 0x139048, 0x138f38, 0x139fe0, 0x139778, 0x1397d8, 0x237618, 0x237638, 0x237658, 0x237678, 0x2369c0, 0x2369e0, 0x2375c0, 0x13a998, 0x13d6f8, 0x2c14a8 | item message queue and entry |
+| 0x1d0828, 0x1d0760, 0x1d0688, 0x341518, 0x3414f0 | obtained log |
 
 ## Gaps
 
@@ -223,10 +309,12 @@ prizes and items come to rest in mid-air there (seen at y 150 to 188); use `tt02
 - +0x588 bit 4 (Draw applies) is taken as set for Sora; status +0x1c4 in the reach is taken as 0 (writers not
   searched); the flags 0x35d268 (0x200, 0x400) and `FUN_00190610` / `FUN_001905e8` (instant collection, flag 8)
   are taken as clear.
-- The pickup glow's effect is not drawn (its timer runs): `fx::StartSystemEffect` places an effect at a fixed matrix
-  and files it in the clash spark ring; an owner-bound system effect that `Glow::tick` can stop is missing.
-- Party members as collectors (the app has none); the item message queue `FUN_00138498` and the obtained log
-  `FUN_001d0828`; Master Form's level-up side effects listed above.
+- The middle arguments of `FUN_001db868` for the glow (0, 1, 0x2714) and the level-up effect (1, 1, 0x2715) are not
+  modelled (`fx` ignores them for every system effect).
+- Party members as collectors (the app has none). The level-up popups' draw (`DAT_003587e8`, `FUN_00152ed0`), the
+  record-list writes of `FUN_001d3f18` and the progress flags of `FUN_001d5718` (no `Progress` setters); the senders of
+  `FormExpGain` (Valor hits, Wisdom / Final defeats) in the hit and defeat code. The obtained log's "obtained once" bit is
+  inferred from the call order (`Progress` does not expose the bits). The item message's alpha, width limit and sound.
 - The item object's generic state code (`FUN_0017b440` and the mover) is replaced by the prize sweep; the yaw sign
   against the app's mirrored Z is [inferred].
 - Where and how long the munny strip shows: it uses the sequence's own placement and goes when its group ends

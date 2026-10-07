@@ -1917,6 +1917,14 @@ mod tests {
             let ok = ee.call(0x001a_18d8, &[id as u64, INVENTORY as u64, 0], &[], STACK).expect("FUN_001a18d8") as u32 != 0;
             assert_eq!(port.give(id, INVENTORY, false), ok);
         }
+        // The new game holds no weapon (0) in the main hand and the forms. The game's writers give the old id back
+        // unconditionally, and its item lookup answers a null row for id 0 whose zero bytes bump count slot 0 (save
+        // `+0xe28`) -- a junk side effect the port does not model (`give` refuses an unknown id) and the menu never
+        // reaches (a keyblade is always held). So start from held keyblades, set the same way in both blocks.
+        for o in std::iter::once(r).chain((1..=4u8).map(|f| Progress::form_off(f).unwrap())) {
+            ee.write(party + o as u32, &keys[0].to_le_bytes());
+            port.set_u16(o, keys[0]);
+        }
         assert_eq!(diff(&read(&mut ee), port.block()), Vec::<String>::new(), "after the purchases");
         // The game's four writers answer 0 or 1; the port the same. A swap, the same item again, a removal, a swap back.
         let mut swaps = 0;

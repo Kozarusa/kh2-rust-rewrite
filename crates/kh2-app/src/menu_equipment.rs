@@ -1112,12 +1112,10 @@ mod tests {
         // The forms' rows carry the form number, an empty hand is a row too.
         assert_eq!(rows[1..4].iter().map(|r| (r.slot, r.id, r.carried)).collect::<Vec<_>>(), [(1, 11, true), (3, 0, false), (4, 12, true)]);
         assert_eq!(rows[5], Row { cat: Cat::Armor, id: 0, carried: false, reload: false, slot: 1 });
-        // Battle items: carried with its reservation (on), reserved but empty (on, not carried), carried without a
-        // reservation (off), empty with nothing reserved (the flag compares 0 with 0: set).
+        // Battle items: carried with its reservation (on), reserved but empty (shows the reserved item, not carried,
+        // on), carried without a reservation (off), empty with nothing reserved (the flag compares 0 with 0: set).
         let items: Vec<(u16, bool, bool)> = rows[7..].iter().map(|r| (r.id, r.carried, r.reload)).collect();
-        assert_eq!(items, [(1, true, true), (2, false, false), (3, true, false), (0, false, true)]);
-        // 2 is reserved by the slot's own reserved id: the flag is on.
-        assert!(build_rows(&Inputs { items: vec![(0, 2)], ..inputs() }).last().unwrap().reload);
+        assert_eq!(items, [(1, true, true), (2, false, true), (3, true, false), (0, false, true)]);
     }
 
     #[test]

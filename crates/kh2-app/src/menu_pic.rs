@@ -19,13 +19,16 @@ use bevy::prelude::*;
 use crate::assets::Disc;
 use crate::menu_gfx::{self, MenuScene, Pic};
 
+/// One request: the picture id and its rectangle, or none.
+type Want = Option<(u16, [f32; 4])>;
+
 /// What the pages ask for: per node, the picture id and the rectangle (relative to the node's origin).
 #[derive(Resource, Default)]
 pub struct Pictures {
     /// Picture id -> index into `MenuScene::texs` (`None`: the file is missing or unreadable).
     cache: BTreeMap<u16, Option<usize>>,
     /// Node -> (picture id, rectangle); `None` clears the node.
-    wanted: BTreeMap<usize, Option<(u16, [f32; 4])>>,
+    wanted: BTreeMap<usize, Want>,
 }
 
 impl Pictures {
@@ -57,7 +60,7 @@ fn apply(mut pics: ResMut<Pictures>, mut scene: ResMut<MenuScene>, disc: Res<Dis
     if pics.wanted.is_empty() {
         return;
     }
-    let wanted: Vec<(usize, Option<(u16, [f32; 4])>)> = pics.wanted.iter().map(|(&k, &v)| (k, v)).collect();
+    let wanted: Vec<(usize, Want)> = pics.wanted.iter().map(|(&k, &v)| (k, v)).collect();
     for (node, want) in wanted {
         let Some(n) = scene.nodes.get(node) else { continue };
         match want {

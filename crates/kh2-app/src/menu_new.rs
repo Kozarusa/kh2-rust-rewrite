@@ -171,7 +171,7 @@ impl NewTags {
             Set::Abilities => {
                 let any = self.known_fresh.iter().any(|&f| f);
                 let all_seen = self.known_fresh.iter().zip(&self.known_seen).all(|(&f, &s)| !f || s);
-                any.then(|| if all_seen { VIEWED } else { NEW })
+                any.then_some(if all_seen { VIEWED } else { NEW })
             }
             _ => {
                 let fresh = self.fresh_of(set);

@@ -743,10 +743,11 @@ struct Ui {
 
 #[derive(Resource, Default)]
 pub struct ItemsMenu {
-    ready: bool,
-    order: Vec<ItemRow>,
-    rows: BTreeMap<u16, ItemRow>,
-    exe: Option<ExeTables>,
+    pub(super) ready: bool,
+    /// The item rows in table order, and by id.
+    pub(super) order: Vec<ItemRow>,
+    pub(super) rows: BTreeMap<u16, ItemRow>,
+    pub(super) exe: Option<ExeTables>,
     /// Entry 0 of the top list (Items): its name message and group sets.
     entry: Option<Entry>,
     machine: Option<Machine>,
@@ -768,7 +769,7 @@ impl Plugin for ItemPagesPlugin {
     }
 }
 
-fn load(disc: Res<Disc>, mut st: ResMut<ItemsMenu>) {
+pub(super) fn load(disc: Res<Disc>, mut st: ResMut<ItemsMenu>) {
     let items = {
         let Ok(mut a) = disc.0.lock() else { return };
         kh2_tables::load::<t::Item>(&mut a, &t::ITEM).ok().map(|d| d.rows)
@@ -1068,7 +1069,7 @@ fn use_item(
 
 // --- drawing -------------------------------------------------------------------------------
 
-fn node(scene: &mut MenuScene, seq: Option<usize>) -> usize {
+pub(super) fn node(scene: &mut MenuScene, seq: Option<usize>) -> usize {
     let mut n = Node::new(seq);
     n.visible = false;
     scene.add(n)
@@ -1087,8 +1088,6 @@ fn ensure_ui(st: &mut ItemsMenu, scene: &mut MenuScene) {
     };
     let tabs = [mk(scene, S), mk(scene, S), mk(scene, S)];
     let rows: Vec<usize> = (0..2).map(|_| mk(scene, S)).collect();
-    let hand = mk(scene, S);
-    let glint = mk(scene, S);
     let window = mk(scene, S);
     let preview: Vec<usize> = (0..9).map(|_| mk(scene, None)).collect();
     let panel = mk(scene, S);
@@ -1105,6 +1104,9 @@ fn ensure_ui(st: &mut ItemsMenu, scene: &mut MenuScene) {
     let info_text = mk(scene, None);
     let info_rows: Vec<usize> = (0..2).map(|_| mk(scene, S)).collect();
     let empty = mk(scene, S);
+    // The hand and the glint draw over everything else (later nodes draw on top).
+    let hand = mk(scene, S);
+    let glint = mk(scene, S);
     let help = mk(scene, None);
     for (&c, &n) in cells.iter().zip(&counts) {
         scene.nodes[c].parent = Some(panel);
@@ -1179,11 +1181,11 @@ fn leave(st: &mut ItemsMenu, menu: &mut Menu, scene: &mut MenuScene) {
 }
 
 /// A message's tokens without its end command, so runs can be joined (the layout stops at an end command).
-fn tokens_of(text: &MenuText, id: u32) -> Vec<Token> {
+pub(super) fn tokens_of(text: &MenuText, id: u32) -> Vec<Token> {
     text.messages.as_ref().and_then(|m| m.tokens(id)).unwrap_or_default().into_iter().filter(|t| *t != Token::End).collect()
 }
 
-fn label(text: &MenuText, tokens: Vec<Token>, font: usize, size: f32, color: [u8; 4], align: u8, offset: [f32; 2]) -> Label {
+pub(super) fn label(text: &MenuText, tokens: Vec<Token>, font: usize, size: f32, color: [u8; 4], align: u8, offset: [f32; 2]) -> Label {
     Label { tokens, style: Style { font, size: Some(size), color, align, world: text.world, ..Style::default() }, offset }
 }
 
@@ -1220,7 +1222,7 @@ pub fn count_text(n: u8) -> Option<String> {
     (n != 1).then(|| format!("\u{d7}{n}"))
 }
 
-fn set_help(scene: &mut MenuScene, text: &MenuText, help: usize, id: Option<u32>) {
+pub(super) fn set_help(scene: &mut MenuScene, text: &MenuText, help: usize, id: Option<u32>) {
     let n = &mut scene.nodes[help];
     n.pos = [0.0, 0.0];
     n.label = id.and_then(|id| text.message(id, Style { font: 0, size: Some(15.0), color: at::HELP_COLOR, ..Style::default() }, at::HELP));
@@ -1864,7 +1866,15 @@ mod tests {
             }
             o.ee.write(crate::progress::addr::PARTY + crate::progress::off::COUNTS as u32, &counts);
             let game_count = |ee: &mut kh2_ee::Ee, id: u16| ee.call(0x001a_1cc8, &[id as u64], &[], STACK).expect("FUN_001a1cc8") as u8;
-            for (filter, arg) in [(0u8, 0u64), (1, 0xd), (2, 0xb), (3, 0xc), (4, 0xe)] {
+            let mut ids = Vec::new();
+            for r in &o.items {
+                ids.push((r.id, game_count(&mut o.ee, r.id)));
+            }
+            let by_id: std::collections::BTreeMap<u16, u8> = ids.into_iter().collect();
+            let count = |id: u16| by_id.get(&id).copied().unwrap_or(0);
+            // The five filters of the Stock page, then argument 10 (the consumables and the spells), which the
+            // Customize page's shortcut list builds (`crate::menu::customize::candidates`).
+            for (filter, arg) in [(0u8, 0u64), (1, 0xd), (2, 0xb), (3, 0xc), (4, 0xe), (5, 10)] {
                 o.ee.write(LIST, &vec![0u8; 0x1100]);
                 o.ee.call(0x0028_3a70, &[LIST as u64, 0, arg], &[], STACK).expect("FUN_00283a70");
                 o.ee.call(0x0028_45a0, &[LIST as u64], &[], STACK).expect("FUN_002845a0");
@@ -1875,19 +1885,14 @@ mod tests {
                         Stack { id: o.ee.r16(at), count: o.ee.r8(at + 2) }
                     })
                     .collect();
-                let mut ids = Vec::new();
-                for r in &o.items {
-                    ids.push((r.id, game_count(&mut o.ee, r.id)));
-                }
-                let by_id: std::collections::BTreeMap<u16, u8> = ids.into_iter().collect();
-                let port = stock(&rows, exe.filter_word(filter), &exe, &|id| by_id.get(&id).copied().unwrap_or(0), &|_| false);
+                let port = if filter == 5 { crate::menu::customize::candidates(&rows, &exe, &count) } else { stock(&rows, exe.filter_word(filter), &exe, &count, &|_| false) };
                 assert_eq!(port, game, "filter {filter} (argument {arg:#x}), counts variant {variant}");
                 seen.insert((filter, game.len()));
                 total += game.len();
             }
         }
         assert!(total > 50, "the lists were not trivially empty: {total}");
-        eprintln!("oracle: FUN_00283a70 + FUN_002845a0 equal for 15 lists ({total} entries; (filter, length) {seen:?})");
+        eprintln!("oracle: FUN_00283a70 + FUN_002845a0 equal for 18 lists ({total} entries; (filter, length) {seen:?}; filter 5 is argument 10, Customize's shortcut candidates)");
     }
 
     #[test]

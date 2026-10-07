@@ -915,6 +915,25 @@ impl Progress {
         true
     }
 
+    /// `FUN_00274f70`, the slot loop (the Customize page's Auto-Reload switch): every battle item slot of the
+    /// member that holds the item or reserves it gets its reserved id set to the item (on) or cleared (off).
+    /// The items stay where they are.
+    pub fn set_auto_reload(&mut self, member: u16, id: u16, on: bool) {
+        let Some(r) = Self::member_off(member) else { return };
+        let n = (self.u8_at(r + rec::ITEM_SLOTS) as usize).min(8);
+        for i in 0..n {
+            if self.u16_at(r + rec::ITEMS + 2 * i) == id || self.u16_at(r + rec::RESERVED + 2 * i) == id {
+                self.set_u16(r + rec::RESERVED + 2 * i, if on { id } else { 0 });
+            }
+        }
+    }
+
+    /// `FUN_00275288` for the leader: whether turning Auto-Reload off for an item that is on needs the question
+    /// first, which is when a slot reserves the item without carrying it (an empty slot waiting for a refill).
+    pub fn reload_off_needs_question(&self, member: u16, id: u16) -> bool {
+        self.battle_items(member).iter().any(|&(item, reserved)| item != id && reserved == id)
+    }
+
     /// The 8 consumable ids Sora received (`0x340e50`, `FUN_001a2120` fills it); the field menu shows
     /// its Items entry only once the first is set (`FUN_001bbca0`).
     pub fn recent_items(&self) -> [u16; 8] {
@@ -1612,6 +1631,30 @@ mod tests {
         assert_eq!(p.apply_boost(SORA, 0x117, 2), 2);
         assert_eq!(p.u8_at(r + rec::AP), 2);
         assert_eq!(p.apply_boost(SORA, 0x118, 1), 0, "not a boost");
+    }
+
+    /// `FUN_00274f70`'s slot loop and `FUN_00275288`'s question test.
+    #[test]
+    fn auto_reload_reserves_and_releases_every_slot_of_the_item() {
+        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        let r = Progress::member_off(SORA).unwrap();
+        p.set_item_slots(r, 4);
+        // Slot 0 carries item 1, slot 1 reserves 1 and is empty, slot 2 carries item 3, slot 3 is free.
+        p.set_u16(r + rec::ITEMS, 1);
+        p.set_u16(r + rec::RESERVED + 2, 1);
+        p.set_u16(r + rec::ITEMS + 4, 3);
+        assert_eq!(p.battle_items(SORA), vec![(1, 0), (0, 1), (3, 0), (0, 0)]);
+        // Item 1 is on in slot 1 and not carried there: turning it off asks first (the empty slot waits for a refill).
+        assert!(p.reload_off_needs_question(SORA, 1));
+        assert!(!p.reload_off_needs_question(SORA, 3));
+        p.set_auto_reload(SORA, 1, false);
+        assert_eq!(p.battle_items(SORA), vec![(1, 0), (0, 0), (3, 0), (0, 0)], "the carried item stays, the reservation goes");
+        assert!(!p.reload_off_needs_question(SORA, 1));
+        // On: every slot that carries or reserves it reserves it; other items are untouched.
+        p.set_auto_reload(SORA, 3, true);
+        p.set_auto_reload(SORA, 1, true);
+        assert_eq!(p.battle_items(SORA), vec![(1, 1), (0, 0), (3, 3), (0, 0)]);
+        assert!(!p.reload_off_needs_question(SORA, 1), "reserved and carried: no question");
     }
 
     struct Tables {

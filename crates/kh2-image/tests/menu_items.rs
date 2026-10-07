@@ -102,6 +102,48 @@ fn item_page_tables_have_the_documented_shape() {
     println!("filter tab messages: {class:?}");
 }
 
+/// The Customize page's tables (docs/menus.md section 14): the row kinds, their groups and messages.
+#[test]
+fn customize_tables_have_the_documented_shape() {
+    let Some((mut a, exe)) = open() else { return };
+    let m = Messages::from_bar(&a.read("msg/us/sys.bar").expect("sys.bar")).expect("messages");
+    let kinds = |va: u32| -> Vec<u8> { (0..8).map(|k| exe.u8(va + k)).collect() };
+    // 0x381d40: Sora's row kinds (0 shortcuts, 1 spells, 2 items), 0x381d48: the others' (3, 4, 2).
+    let sora: Vec<u8> = kinds(0x0038_1d40)[..3].to_vec();
+    println!("row kinds: Sora {sora:?}, the others {:?}", &kinds(0x0038_1d48)[..3]);
+    assert_eq!(sora, vec![0, 1, 2]);
+    let row_group: Vec<u16> = (0..5).map(|k| exe.u16(0x0038_1ca0 + 2 * k)).collect();
+    let head_group: Vec<u16> = (0..5).map(|k| exe.u16(0x0038_1cb0 + 2 * k)).collect();
+    let head_msg: Vec<u16> = (0..5).map(|k| exe.u16(0x0038_1cc0 + 2 * k) & 0x7fff).collect();
+    println!("row groups {row_group:x?}, heading plate groups {head_group:x?}, heading messages {head_msg:x?}");
+    assert_eq!(row_group[..3], [0x108, 0x107, 0x106]);
+    assert_eq!(head_group[..3], [0x11a, 0x119, 0x118]);
+    for (i, id) in (0..4).map(|k| (k, exe.u16(0x0038_1cd0 + 2 * k) & 0x7fff)) {
+        println!("shortcut row {i}: message {id:#x} {:?}", text(&m, u32::from(id)));
+    }
+    for k in 1..3usize {
+        println!("heading kind {k}: {:?}", text(&m, u32::from(head_msg[k])));
+    }
+    for (name, va) in [("spell sub-list", 0x0038_1d20u32), ("item sub-list", 0x0038_1d30)] {
+        let ids: Vec<u16> = (0..2).map(|k| exe.u16(va + 2 * k) & 0x7fff).collect();
+        println!("{name}: {ids:x?} {:?}", ids.iter().map(|&i| text(&m, u32::from(i))).collect::<Vec<_>>());
+    }
+    // The icon of a row by item type and flag (`FUN_00255368`, 0x3809d0: type, unequipped icon, equipped icon).
+    let mut icons = Vec::new();
+    for k in 0..40u32 {
+        let ty = exe.u16(0x0038_09d0 + 6 * k) as i16;
+        if ty < 0 {
+            break;
+        }
+        icons.push((ty, exe.u16(0x0038_09d2 + 6 * k), exe.u16(0x0038_09d4 + 6 * k)));
+    }
+    println!("icons (type, unequipped, equipped): {icons:?}");
+    // The empty shortcut row and the remove row, the confirm question of the Auto-Reload switch.
+    for id in [0x448u32, 0x459, 0x46a, 0x481, 0x482, 0x1df7, 0x3b89, 0x3b8a] {
+        println!("message {id:#x}: {:?}", text(&m, id));
+    }
+}
+
 /// The camp groups the Items pages draw: they exist; print their geometry for the layout.
 #[test]
 fn item_page_groups_exist_in_camp() {
@@ -109,7 +151,7 @@ fn item_page_groups_exist_in_camp() {
     let bar = a.read("menu/us/camp.2ld").expect("camp.2ld");
     let two = layd::parse_2ld(&bar).expect("a .2ld");
     let seq = &two.layd.seqs[1];
-    for g in [0x123usize, 0x124, 0x125, 0x126, 0x128, 0x129, 0x12b, 0x12c, 0x12e, 0x12f, 0x130, 0x131, 0x132, 0x84, 0x85, 0x86, 0x87, 0x9c, 0x77, 0x7b, 0x7c, 0xe6, 6, 7, 8, 9, 10, 11] {
+    for g in [0xe3usize, 0xe4, 0xe5, 0x106, 0x107, 0x108, 0x118, 0x119, 0x11a, 0x11b, 0xc8, 0xbd, 0xb4, 0xa2, 0x99, 0x113, 0x13d, 0x14e,0x123usize, 0x124, 0x125, 0x126, 0x128, 0x129, 0x12b, 0x12c, 0x12e, 0x12f, 0x130, 0x131, 0x132, 0x84, 0x85, 0x86, 0x87, 0x9c, 0x77, 0x7b, 0x7c, 0xe6, 6, 7, 8, 9, 10, 11] {
         assert!(g < seq.groups.len(), "group {g:#x} exists");
         let gr = &seq.groups[g];
         let last = seq.last_frame(g);

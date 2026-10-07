@@ -193,9 +193,14 @@ pub struct Layout {
     pub object: u16,
     /// Event opcode 8 (`FUN_002245d0` -> `FUN_00226fb0`): the event frame it ends at (-1: none).
     pub end: i32,
-    /// Event opcode 0x50 (`FUN_00225af0`): the event frame from which group 1 of the picture plays
-    /// (`FUN_00225998`: the event object's picture pair +0x94 / +0x98, group 1).
+    /// Event opcode 0x50 (`FUN_00225af0`): the event frame from which a group of the picture plays
+    /// (`FUN_00225998`: the event object's picture pair +0x94 / +0x98).
     pub picture_at: Option<i32>,
+    /// The record's words +0x14 and +0x18 in the manager (`FUN_001d3538`: +0x14 non-zero -> event +0x9c, +0x18
+    /// non-zero -> event +0x9c = 2; `FUN_002232c8` copies +0x9c to `DAT_0036bd30`). Only the failure path writes
+    /// one here: +0xb4 = 2 (`FUN_001b9818`) is record 3's +0x14.
+    pub select: u32,
+    pub select2: u32,
 }
 
 /// The layout slots of the manager: record 1 (+0x4c, the start), 2 (+0x68, the end), 3 (+0xa0, the failure),
@@ -219,7 +224,13 @@ impl Layout {
         let kind = if kind == 0xc && picture != 0 { 0xd } else { kind };
         let cmds = entries.get(entry as usize).and_then(|e| kh2_ard::parse_event(e.data)).unwrap_or_default();
         let at = |op: u16| cmds.iter().find(|c| c.opcode == op).and_then(|c| c.data.get(0..2)).map(|b| i16::from_le_bytes([b[0], b[1]]) as i32);
-        Some((slot, Layout { op: r.op, kind, entry, picture, object, end: at(8).unwrap_or(-1), picture_at: at(0x50) }))
+        Some((slot, Layout { op: r.op, kind, entry, picture, object, end: at(8).unwrap_or(-1), picture_at: at(0x50), select: 0, select2: 0 }))
+    }
+
+    /// The picture's group (`FUN_00225af0`: `DAT_0036bd30` 1 to 5 picks that group, anything else group 1).
+    pub fn group(&self) -> usize {
+        let sel = if self.select != 0 { self.select } else if self.select2 != 0 { 2 } else { u32::MAX };
+        if (1..=5).contains(&sel) { sel as usize } else { 1 }
     }
 
     /// The BAR entries (image, sequence) of its picture.
@@ -570,8 +581,8 @@ impl Active {
         let Some(l) = self.layouts[slot].clone() else { return };
         let flags = self.kinds.iter().find(|(k, _)| *k == l.kind).map_or(0, |(_, f)| *f);
         info!(
-            "struggle: layout {what} (record {}): event entry {}, kind {:#x} (flags {flags:#06x}), picture {}, end frame {}, picture from frame {:?}",
-            l.op, l.entry, l.kind, l.picture, l.end, l.picture_at
+            "struggle: layout {what} (record {}): event entry {}, kind {:#x} (flags {flags:#06x}), picture {} group {}, end frame {}, picture from frame {:?}",
+            l.op, l.entry, l.kind, l.picture, l.group(), l.end, l.picture_at
         );
         self.play = Some(Play { what, layout: l, flags, ticks: 0 });
         self.clock.pause |= 4;
@@ -625,6 +636,9 @@ impl Active {
             self.sounds.push(self.header.se_fail);
         }
         self.failed = true;
+        if let Some(l) = self.layouts[LAYOUT_FAIL].as_mut() {
+            l.select = 2;
+        }
         self.play_layout(LAYOUT_FAIL, "failure");
         self.stop();
         let pictured = self.layouts[LAYOUT_FAIL].as_ref().is_some_and(|l| l.picture != 0);
@@ -1751,7 +1765,7 @@ mod tests {
             deliver(&mut a, EV_COUNTER_FULL, 1);
             assert!(a.stopped && a.failed, "{name}");
             assert_eq!((a.state, a.end_ev, a.end_arg, a.sounds.clone()), (4, 8, -1, vec![0xbcf]), "{name}");
-            assert_eq!(a.play.as_ref().map(|p| p.what), Some("failure"));
+            assert_eq!(a.play.as_ref().map(|p| (p.what, p.layout.group())), Some(("failure", 2)));
             assert_eq!(run_to_finish(&mut a, 2000).0, Some(Finish::Menu), "{name}");
             // A stopped mission's counters stay.
             let v = a.counter_value(0);

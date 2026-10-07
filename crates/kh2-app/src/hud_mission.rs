@@ -108,26 +108,25 @@ pub struct MissionHud {
     counters: Vec<CounterHud>,
     clock: Option<ClockHud>,
     edge: Vec<(usize, Edge)>,
-    /// The layout pictures (WP-7E2): (mission, picture index) -> the node playing its group 1.
-    layouts: Vec<((u32, u8), usize)>,
+    /// The layout pictures (WP-7E2): (mission, picture index, group) -> the node playing it.
+    layouts: Vec<((u32, u8, usize), usize)>,
     /// Field HUD nodes this module hid while a layout hides the field HUD, to show again after it.
     hidden: Vec<usize>,
 }
 
-/// The group a layout's picture plays (`FUN_00225af0` -> `FUN_00225998`: group 1 of the event object's picture).
-const LAYOUT_GROUP: usize = 1;
+
 /// The target gauge's root group in the field gauge file (`hud_target`, the "HP" tag, group 38).
 const TARGET_TAG: usize = 38;
 
 /// The layout picture of the event playing (WP-7E2): from the event frame of its opcode 0x50 until the event
-/// ends, group 1 of the record's picture is drawn above the field (the 2D object at draw priority 26000,
+/// ends, a group of the record's picture (`Layout::group`: 1, or 2 for the failure) is drawn above the field (the 2D object at draw priority 26000,
 /// `FUN_00225998`). The node stands at (0, 0): the sequence carries the screen position [inferred, as for the
 /// counters' frames].
 fn layout_picture(mission: &Mission, hud: &mut MissionHud, scene: &mut HudScene, images: &mut Assets<Image>) {
     let want = mission.m.as_deref().and_then(|a| {
         let p = a.play.as_ref().filter(|p| p.picture_shown())?;
         let (i, s) = p.layout.picture_entries()?;
-        Some((a, (a.id, p.layout.picture), i, s))
+        Some((a, (a.id, p.layout.picture, p.layout.group()), i, s))
     });
     for (key, node) in &hud.layouts {
         if want.as_ref().is_none_or(|w| w.1 != *key) {
@@ -149,9 +148,9 @@ fn layout_picture(mission: &Mission, hud: &mut MissionHud, scene: &mut HudScene,
                 hud.layouts.push((key, usize::MAX));
                 return;
             };
-            let n = add(scene, file, LAYOUT_GROUP);
+            let n = add(scene, file, key.2);
             scene.nodes[n].visible = false;
-            info!("hud: mission layout picture {} (entries {i}/{s}): group {LAYOUT_GROUP}", key.1);
+            info!("hud: mission layout picture {} (entries {i}/{s}): group {}", key.1, key.2);
             hud.layouts.push((key, n));
             n
         }
@@ -161,7 +160,7 @@ fn layout_picture(mission: &Mission, hud: &mut MissionHud, scene: &mut HudScene,
     }
     if !scene.nodes[node].visible {
         // The picture starts from its first frame each time its event shows it.
-        scene.set_group(node, LAYOUT_GROUP);
+        scene.set_group(node, key.2);
         scene.nodes[node].visible = true;
     }
 }

@@ -402,7 +402,7 @@ fn tick(
         }
     }
     sm.ticks += 1;
-    if sm.ticks % crate::data::LOGIC_HZ as u32 == 0 {
+    if sm.ticks.is_multiple_of(crate::data::LOGIC_HZ as u32) {
         let (digit, fill, seg) = rules::segment_display(st.timer.left, st.timer.total, st.segments);
         info!(
             "summon: timer {:.0}/{:.0} ({} whole segments, HUD digit {digit} fill {fill}/{seg}), drain {drain:.2}/tick (battle {battle_on}, Summon Boost factor {factor}), level {} exp {}",

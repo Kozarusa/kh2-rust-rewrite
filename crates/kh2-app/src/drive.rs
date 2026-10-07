@@ -668,6 +668,8 @@ pub mod rules {
     /// change method, vtable 0x35fe18 slot +0x78 = `FUN_001c60f8`): a negative change `d` changes the
     /// timer by `sstm[0x68] x d / max_hp` (the summon's status +4); a positive one does nothing.
     /// Returns the timer change (`None` for no change).
+    // Its caller (the summon object, the summon limit task) comes in a later stage of docs/summons.md.
+    #[allow(dead_code)]
     pub fn summon_damage_to_timer(t: &Tuning, d: i32, summon_max_hp: i32) -> Option<f32> {
         (d < 0).then(|| t.point_units * d as f32 / summon_max_hp as f32)
     }
@@ -679,6 +681,8 @@ pub mod rules {
     }
 
     /// A summon limit's cost (`FUN_001b28a0`: `FUN_001788d8(-Cost)`): the timer loses `Cost x sstm[0x70]`.
+    // Its caller (the summon object, the summon limit task) comes in a later stage of docs/summons.md.
+    #[allow(dead_code)]
     pub fn summon_limit_cost(st: &SummonTuning, cost: u8) -> f32 {
         summon_gauge_change(st, -(cost as f32))
     }

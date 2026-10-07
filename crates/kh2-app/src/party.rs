@@ -1021,13 +1021,16 @@ fn party_tick(
     }
 }
 
+/// Fighters other than the members and Sora.
+type NotMemberOrSora = (Without<PartyMember>, Without<Sora>);
+
 /// Keeps the members from overlapping each other, Sora and the enemies: a member inside another
 /// body's radius moves out along the line between them on the ground (two members share the move).
 /// [inferred] The game's object-to-object push (the movement's collision against other objects'
 /// cylinders) was not read; the radii are the bodies' shapes.
 fn party_push_apart(
     sora: Query<(&Sora, &Transform), Without<PartyMember>>,
-    fighters: Query<(&Fighter, &Transform), (Without<PartyMember>, Without<Sora>)>,
+    fighters: Query<(&Fighter, &Transform), NotMemberOrSora>,
     rigs: Query<&Animator>,
     mut q: Query<(&mut Transform, &mut PartyMember)>,
 ) {

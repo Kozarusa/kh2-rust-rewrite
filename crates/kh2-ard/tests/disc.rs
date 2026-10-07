@@ -271,3 +271,45 @@ fn twilight_town_story_flags_and_music() {
         eprintln!("{name}: arif pairs {pairs:?}; opcode 0x10 {set:?}");
     }
 }
+
+/// WP-E1 (docs/events.md section 9): every Twilight Town area run with programs (0, 0, 0) through
+/// `kh2_ard::run::run_area` for each entrance a player entity names: the groups loaded, where the
+/// player starts (FUN_001981a0), the exits of the loaded groups and the triggers on event 1 (an
+/// exit touched) that would take an exit over. tt04 has a start for entrance 1 and an exit to tt03.
+#[test]
+fn twilight_town_entrances_and_exits_with_program_zero() {
+    let Some(mut a) = open() else { return };
+    let mut tt04 = (false, false);
+    for (area, ard) in &tt_areas(&mut a) {
+        let mut entrances: Vec<u8> = ard.spawns.values().flatten().flat_map(|g| &g.entities).filter(|e| e.object == kh2_ard::run::PLAYER && e.spawn_kind == 1).map(|e| e.spawn_arg).collect();
+        entrances.sort();
+        entrances.dedup();
+        let run = kh2_ard::run::run_area(ard, [0, 0, 0], entrances.first().copied().unwrap_or(0));
+        let groups: Vec<String> = run.groups.iter().map(|g| format!("{} {}{}", g.script, g.tag, if g.alt { "*" } else { "" })).collect();
+        eprintln!("{area}: programs (0, 0, 0) groups {groups:?} music {:?} unported {:x?} triggers {}", run.music, run.unported, run.triggers.len());
+        for e in &entrances {
+            let r = kh2_ard::run::run_area(ard, [0, 0, 0], *e);
+            match kh2_ard::run::player_start(ard, &r, *e) {
+                Some((tag, p)) => eprintln!("{area}: entrance {e} start {tag} at {:?} ry {:.3}", p.position, p.rotation[1]),
+                None => eprintln!("{area}: entrance {e}: no start in the program-0 groups"),
+            }
+            if area == "tt04" && *e == 1 {
+                tt04.0 |= kh2_ard::run::player_start(ard, &r, 1).is_some();
+            }
+        }
+        for g in &run.groups {
+            for grp in ard.spawns.get(&g.tag).into_iter().flatten() {
+                let Some(x) = grp.exit() else { continue };
+                let (w, dst) = x.destination(2);
+                let opts: Vec<(u16, u16)> = grp.volumes().map(|v| (v.shape, v.option)).collect();
+                let takeover: Vec<String> = run.triggers.iter().filter(|t| t.matches(1, grp.id)).map(|t| format!("{:?} {:?}", t.event_tag(), t.jump())).collect();
+                eprintln!("{area}: exit {} id {:#x} -> world {w} tt{dst:02} entrance {} gate {} disabled {} volumes (shape, option) {opts:?} takeover {takeover:?}", g.tag, grp.id, x.entrance, x.gate, grp.starts_disabled());
+                if area == "tt04" && dst == 3 {
+                    tt04.1 = true;
+                }
+            }
+        }
+    }
+    assert!(tt04.0, "tt04 has no player start for entrance 1 in its program-0 groups");
+    assert!(tt04.1, "tt04 has no exit to tt03 in its program-0 groups");
+}

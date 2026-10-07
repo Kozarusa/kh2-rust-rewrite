@@ -1699,8 +1699,8 @@ mod tests {
     fn stock_row_of_page_1_opens_the_stock_and_cancel_comes_back() {
         let (mut m, r, e) = start(stacks(&[(1, 3)]));
         let g = G { members: 1, helps: true };
-        // Sora's row opens his equipment (stage M4): refused.
-        assert_eq!(m.press(Key::Confirm, &r, &e, &g), vec![Effect::Sound(snd::REFUSED)]);
+        // Sora's row opens his equipment (stage M4, `menu_equipment.rs`).
+        assert_eq!(m.press(Key::Confirm, &r, &e, &g), vec![Effect::Sound(snd::CONFIRM), Effect::Member(0)]);
         assert_eq!(m.press(Key::Down { fresh: true }, &r, &e, &g), vec![Effect::Sound(snd::CURSOR), Effect::Page(MEMBERS)]);
         assert_eq!(m.cursor1, 1);
         assert_eq!(m.press(Key::Down { fresh: true }, &r, &e, &g)[0], Effect::Sound(snd::CURSOR), "wraps to Sora");

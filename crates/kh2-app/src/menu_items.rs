@@ -382,6 +382,8 @@ pub enum Effect {
     Discard { item: u16 },
     /// The Stock filter changed: the caller rebuilds the list and calls `Machine::reload`.
     Filter(u8),
+    /// A member's row was confirmed: his equipment pages (page 2) take over (`menu_equipment.rs`).
+    Member(usize),
     /// Back to the top list (page 0).
     Leave,
     /// Close the whole menu.
@@ -511,8 +513,11 @@ impl Machine {
                         fx.push(Effect::Filter(0));
                         fx.push(Page(STOCK));
                     }
-                    // A member's row opens page 2, his equipment (stage M4): refused here.
-                    Key::Confirm => fx.push(Sound(snd::REFUSED)),
+                    // A member's row opens page 2, his equipment (stage M4, `menu_equipment.rs`).
+                    Key::Confirm => {
+                        fx.push(Sound(snd::CONFIRM));
+                        fx.push(Effect::Member(self.cursor1));
+                    }
                     Key::Cancel => {
                         fx.push(Sound(snd::CANCEL));
                         fx.push(Effect::Leave);
@@ -771,6 +776,23 @@ pub struct ItemsMenu {
     /// Page 0's nodes that were visible when the pages took over.
     hidden: Vec<usize>,
     held: (i8, f32),
+    /// The equipment pages (page 2 and below, `menu_equipment.rs`) own the keys and the screen: this module
+    /// neither reads keys nor draws while it is set, and keeps its machine (page 1's cursor) for the way back.
+    pub(super) suspended: bool,
+    /// Set by the confirm on a member's row, taken by the equipment module.
+    equipment_requested: bool,
+}
+
+impl ItemsMenu {
+    /// The name message of the Items entry of page 0 (the first header tab).
+    pub(super) fn entry_name(&self) -> u32 {
+        self.entry.as_ref().map_or(0, |e| e.name)
+    }
+
+    /// Whether page 2 was just asked for (and clears the request).
+    pub(super) fn take_equipment_request(&mut self) -> bool {
+        std::mem::take(&mut self.equipment_requested)
+    }
 }
 
 pub struct ItemPagesPlugin;
@@ -903,7 +925,7 @@ type Vitality<'w> = (
 );
 
 #[allow(clippy::too_many_arguments)]
-fn input(
+pub(super) fn input(
     mut st: ResMut<ItemsMenu>,
     mut menu: ResMut<Menu>,
     mut scene: ResMut<MenuScene>,
@@ -922,6 +944,11 @@ fn input(
         st.machine = None;
         st.hidden.clear();
         st.held = (0, 0.0);
+        st.suspended = false;
+        return;
+    }
+    // The equipment pages have the keys and the screen.
+    if st.suspended {
         return;
     }
     if st.machine.is_none() {
@@ -1006,6 +1033,17 @@ fn input(
                         }
                     }
                 }
+                Effect::Member(_) => {
+                    // Page 2: the equipment module takes over this frame (it runs after this system); the
+                    // screen of page 1 goes.
+                    st.suspended = true;
+                    st.equipment_requested = true;
+                    if let Some(ui) = &st.ui {
+                        for &i in &ui.all {
+                            scene.nodes[i].visible = false;
+                        }
+                    }
+                }
                 Effect::Leave => leave(&mut st, &mut menu, &mut scene),
                 Effect::Close => {
                     // Back to page 0, then the menu's own input closes it from there (the key is left
@@ -1014,18 +1052,18 @@ fn input(
                     close = true;
                 }
             }
-            if st.machine.is_none() {
+            if st.machine.is_none() || st.suspended {
                 break;
             }
         }
-        if st.machine.is_none() {
+        if st.machine.is_none() || st.suspended {
             break;
         }
     }
     if close {
         return;
     }
-    if st.machine.is_some() {
+    if st.machine.is_some() && !st.suspended {
         redraw(&mut st, &mut scene, progress.as_deref());
     }
     keys.reset_all();
@@ -1181,7 +1219,7 @@ fn enter(st: &mut ItemsMenu, menu: &mut Menu, scene: &mut MenuScene) {
 }
 
 /// Back to page 0: this module's nodes go, page 0's come back.
-fn leave(st: &mut ItemsMenu, menu: &mut Menu, scene: &mut MenuScene) {
+pub(super) fn leave(st: &mut ItemsMenu, menu: &mut Menu, scene: &mut MenuScene) {
     if let Some(ui) = &st.ui {
         for &i in &ui.all {
             scene.nodes[i].visible = false;
@@ -1661,8 +1699,8 @@ mod tests {
     fn stock_row_of_page_1_opens_the_stock_and_cancel_comes_back() {
         let (mut m, r, e) = start(stacks(&[(1, 3)]));
         let g = G { members: 1, helps: true };
-        // Sora's row opens his equipment (stage M4): refused.
-        assert_eq!(m.press(Key::Confirm, &r, &e, &g), vec![Effect::Sound(snd::REFUSED)]);
+        // Sora's row opens his equipment (stage M4, `menu_equipment.rs`).
+        assert_eq!(m.press(Key::Confirm, &r, &e, &g), vec![Effect::Sound(snd::CONFIRM), Effect::Member(0)]);
         assert_eq!(m.press(Key::Down { fresh: true }, &r, &e, &g), vec![Effect::Sound(snd::CURSOR), Effect::Page(MEMBERS)]);
         assert_eq!(m.cursor1, 1);
         assert_eq!(m.press(Key::Down { fresh: true }, &r, &e, &g)[0], Effect::Sound(snd::CURSOR), "wraps to Sora");

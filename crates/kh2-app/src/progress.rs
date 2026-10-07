@@ -117,6 +117,9 @@ mod rec {
 pub mod item_type {
     pub const CONSUMABLE: u8 = 0;
     pub const KEYBLADE: u8 = 2;
+    /// Armor and accessory rows (the filter words of `FUN_00283810`: bits 0x4000 and 0x8000).
+    pub const ARMOR: u8 = 14;
+    pub const ACCESSORY: u8 = 15;
     pub const MAGIC: u8 = 0x12;
     pub const ABILITY: u8 = 0x13;
     pub const DRIVE_FORM: u8 = 0x15;
@@ -890,8 +893,9 @@ impl Progress {
     /// (`FUN_001a18d8(old, 100, 0)`); then, when `item` is 0 or `carried`, the reserved id is cleared, the
     /// slot takes `item` and one comes off the stock (`FUN_001a1ba8(item, 100)`); otherwise the item
     /// only becomes the slot's reserved id and the slot stays empty. `carried` is the menu row's flag
-    /// (the byte `(row - 1) * 6 + 2` of the page's list table); which rows set it was not traced
-    /// [inferred: a stock count above 0]. False when the member or the slot does not exist.
+    /// (the byte `(row - 1) * 6 + 2` of the page's list table): the list entry's count byte
+    /// (`FUN_00283a70` stores the stock count there; the recent items `FUN_00283e50` adds with 0 are not carried).
+    /// False when the member or the slot does not exist.
     pub fn equip_battle_item(&mut self, member: u16, slot: usize, item: u16, carried: bool) -> bool {
         let Some(r) = Self::member_off(member) else { return false };
         if slot >= 8 {
@@ -913,6 +917,89 @@ impl Progress {
             self.set_u16(o, 0);
         }
         true
+    }
+
+    /// `FUN_0026c420(item)` (pause menu, Items, Weapons): the selected member's main weapon (record `+0`). When it
+    /// differs, the old one goes back to the stock (`FUN_001a18d8(old, 100, 0)`, called whether the old id is 0 or
+    /// not), the record takes the new one and one comes off the stock (`FUN_001a1ba8(new, 100)`). The original then
+    /// queues a live-weapon change (`FUN_002a1060(member, 0, item, 0)`); the app's caller refreshes `Abilities`.
+    /// Answers whether anything changed (the original's return value).
+    pub fn equip_weapon(&mut self, member: u16, item: u16) -> bool {
+        let Some(r) = Self::member_off(member) else { return false };
+        let old = self.u16_at(r + rec::WEAPONS);
+        if old == item {
+            return false;
+        }
+        self.give(old, INVENTORY, false);
+        self.set_u16(r + rec::WEAPONS, item);
+        self.take_item(item, INVENTORY);
+        true
+    }
+
+    /// `FUN_0026c4d0(form, item)`: a drive form's second keyblade (form record `+0`), the same swap on the form
+    /// record. The live weapon is refreshed by the caller when `form` is the current form (`FUN_00282df8`, the
+    /// byte at save `+0x242c`: `current_form()`).
+    pub fn equip_form_weapon(&mut self, form: u8, item: u16) -> bool {
+        let Some(r) = Self::form_off(form) else { return false };
+        let old = self.u16_at(r);
+        if old == item {
+            return false;
+        }
+        self.give(old, INVENTORY, false);
+        self.set_u16(r, item);
+        self.take_item(item, INVENTORY);
+        true
+    }
+
+    /// `FUN_0026c588(slot, item)`: an armor slot (record `+0x14 + 2 * slot`). The old item goes back to the stock
+    /// when there was one, the slot takes the new one and one comes off the stock when it is not 0. False when the
+    /// slot already holds the item (the original's 0) or does not exist.
+    pub fn equip_armor(&mut self, member: u16, slot: usize, item: u16) -> bool {
+        self.equip_slot(member, rec::ARMOR_SLOTS, rec::ARMOR, slot, item)
+    }
+
+    /// `FUN_0026c610(slot, item)`: an accessory slot (record `+0x24 + 2 * slot`), as `equip_armor`.
+    pub fn equip_accessory(&mut self, member: u16, slot: usize, item: u16) -> bool {
+        self.equip_slot(member, rec::ACCESSORY_SLOTS, rec::ACCESSORIES, slot, item)
+    }
+
+    fn equip_slot(&mut self, member: u16, count_at: usize, list_at: usize, slot: usize, item: u16) -> bool {
+        let Some(r) = Self::member_off(member) else { return false };
+        // The original does not look at the slot count (the page only offers existing slots).
+        if slot >= self.u8_at(r + count_at) as usize {
+            return false;
+        }
+        let o = r + list_at + 2 * slot;
+        let old = self.u16_at(o);
+        if old == item {
+            return false;
+        }
+        if old != 0 {
+            self.give(old, INVENTORY, false);
+        }
+        self.set_u16(o, item);
+        if item != 0 {
+            self.take_item(item, INVENTORY);
+        }
+        true
+    }
+
+    /// What the pause menu runs when it leaves an equipment list page (`FUN_0026a528`, after the leave animation
+    /// and on a close): `FUN_0026c770` then `FUN_001877c8`. The first re-reserves: the reserved ids of the
+    /// member's slots are collected in slot order, and every slot that carries one of those items takes it as its
+    /// reserved id (so an item moved between slots keeps its Auto-Reload); the second refills every empty slot
+    /// that reserves an item from the stock (`refill_battle_items`).
+    pub fn settle_battle_items(&mut self, member: u16) {
+        let Some(r) = Self::member_off(member) else { return };
+        let n = (self.u8_at(r + rec::ITEM_SLOTS) as usize).min(8);
+        let reserved: Vec<u16> = (0..n).map(|i| self.u16_at(r + rec::RESERVED + 2 * i)).filter(|&v| v != 0).collect();
+        for i in 0..n {
+            let carried = self.u16_at(r + rec::ITEMS + 2 * i);
+            if let Some(&v) = reserved.iter().find(|&&v| v == carried) {
+                self.set_u16(r + rec::RESERVED + 2 * i, v);
+            }
+        }
+        self.refill_battle_items(member);
     }
 
     /// `FUN_00274f70`, the slot loop (the Customize page's Auto-Reload switch): every battle item slot of the
@@ -1771,6 +1858,99 @@ mod tests {
         eprintln!("oracle: menu writers equal (spell switch set/clear/flip {flips:?}, 4 shortcut words, {taken} stock takes; counts floor at 0)");
     }
 
+    /// The oracle for the pause menu's equipment writers (WP-M4): the game's own `FUN_0026c420` (main weapon),
+    /// `FUN_0026c4d0` (a form's keyblade), `FUN_0026c588` (armor slot) and `FUN_0026c610` (accessory slot) run in
+    /// kh2-ee on the block the game built, with the page's party object faked (`DAT_0036ce90` points at a table
+    /// whose row 0 holds a status object whose `+0x238` is Sora's record; the page's remembered cursor
+    /// `FUN_00252fb8(1)` reads 0) and the live-weapon queue `FUN_002a1060` stubbed (it only queues a request for
+    /// the field). The port must leave the same bytes and answer the same value after every swap.
+    #[test]
+    fn equipment_writers_match_the_game() {
+        use kh2_ee::Ee;
+        const STACK: u32 = 0x01ff_0000;
+        const TABLE: u32 = 0x0197_0000;
+        const STATUS: u32 = 0x0198_0000;
+        let Some(mut tb) = tables() else { return };
+        let ix = index(&tb);
+        let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| tb.archive.iso().read(p).ok()).expect("executable");
+        let blob = |a: &mut kh2_archive::Archive, d: &kh2_tables::TableDef| kh2_tables::subfile(a, d).expect("table");
+        let tables = [
+            (0x01c9_5588u32, 0x0180_0000u32, blob(&mut tb.archive, &t::ITEM)),
+            (0x01d5_df5c, 0x0181_0000, blob(&mut tb.archive, &t::PLRP)),
+            (0x01d5_d798, 0x0182_0000, blob(&mut tb.archive, &t::CMD)),
+            (0x01c9_5520, 0x0183_0000, blob(&mut tb.archive, &t::MAGC)),
+        ];
+        let mut ee = Ee::new();
+        ee.load_elf(&elf).expect("elf");
+        for (ptr, at, data) in &tables {
+            ee.write(*at, data);
+            ee.w32(*ptr, *at);
+        }
+        let party = addr::PARTY;
+        ee.write(addr::SAVE, &vec![0u8; addr::SAVE_LEN as usize]);
+        ee.call(0x0018_7b38, &[party as u64], &[], STACK).expect("FUN_00187b38");
+        ee.call(0x001c_0cb0, &[0], &[], STACK).expect("FUN_001c0cb0");
+        let mut port = Progress::new_game(ix.clone(), &tb.plrp);
+        let r = Progress::member_off(SORA).unwrap();
+        // The fake party object: one row, id 1, the status object pointer at row +0x14; the record at status +0x238.
+        ee.w32(0x0036_ce90, TABLE);
+        ee.w32(TABLE, 1);
+        ee.write(TABLE + 4, &1u16.to_le_bytes());
+        ee.write(TABLE + 6, &1u16.to_le_bytes());
+        ee.w32(TABLE + 0x14, STATUS);
+        ee.w32(STATUS + 0x238, party + r as u32);
+        // `FUN_002a1060` returns at once.
+        ee.write(0x002a_1060, &[0x08, 0x00, 0xe0, 0x03, 0, 0, 0, 0]);
+        // Slots: two armor and two accessory slots (the game does not look at the counts), set in both blocks.
+        for (o, n) in [(rec::ARMOR_SLOTS, 2u8), (rec::ACCESSORY_SLOTS, 2)] {
+            ee.write(party + (r + o) as u32, &[n]);
+            port.set_u8(r + o, n);
+        }
+        let read = |ee: &mut Ee| (0..off::LEN as u32).map(|o| ee.r8(party + o)).collect::<Vec<u8>>();
+        let diff = |a: &[u8], b: &[u8]| a.iter().zip(b).enumerate().filter(|(_, (x, y))| x != y).map(|(o, (x, y))| format!("+{o:#x}: game {x:#x} port {y:#x}")).take(12).collect::<Vec<_>>();
+        assert_eq!(diff(&read(&mut ee), port.block()), Vec::<String>::new(), "start");
+        let of_kind = |k: u8, n: usize| ix.rows.iter().filter(|x| x.kind == k && !x.is_key() && x.id != 0).map(|x| x.id).take(n).collect::<Vec<u16>>();
+        let (keys, armor, acc) = (of_kind(item_type::KEYBLADE, 3), of_kind(item_type::ARMOR, 3), of_kind(item_type::ACCESSORY, 3));
+        assert!(keys.len() == 3 && armor.len() == 3 && acc.len() == 3, "the item table has keyblades, armor and accessories");
+        // Own two of each (a second copy of the first, so a swap keeps a count above 0), through the game's own give.
+        for &id in keys.iter().chain(&armor).chain(&acc).chain(&keys[..1]).chain(&armor[..1]).chain(&acc[..1]) {
+            let ok = ee.call(0x001a_18d8, &[id as u64, INVENTORY as u64, 0], &[], STACK).expect("FUN_001a18d8") as u32 != 0;
+            assert_eq!(port.give(id, INVENTORY, false), ok);
+        }
+        // The new game holds no weapon (0) in the main hand and the forms. The game's writers give the old id back
+        // unconditionally, and its item lookup answers a null row for id 0 whose zero bytes bump count slot 0 (save
+        // `+0xe28`) -- a junk side effect the port does not model (`give` refuses an unknown id) and the menu never
+        // reaches (a keyblade is always held). So start from held keyblades, set the same way in both blocks.
+        for o in std::iter::once(r).chain((1..=4u8).map(|f| Progress::form_off(f).unwrap())) {
+            ee.write(party + o as u32, &keys[0].to_le_bytes());
+            port.set_u16(o, keys[0]);
+        }
+        assert_eq!(diff(&read(&mut ee), port.block()), Vec::<String>::new(), "after the purchases");
+        // The game's four writers answer 0 or 1; the port the same. A swap, the same item again, a removal, a swap back.
+        let mut swaps = 0;
+        let mut run = |ee: &mut Ee, port: &mut Progress, what: &str, game: u32, args: &[u64], f: &dyn Fn(&mut Progress) -> bool| {
+            let g = ee.call(game, args, &[], STACK).expect("the game's writer") as u32 & 0xff;
+            let p = f(port);
+            assert_eq!(g != 0, p, "{what}: the answer");
+            assert_eq!(diff(&read(ee), port.block()), Vec::<String>::new(), "{what}");
+            swaps += 1;
+        };
+        for &w in &[keys[1], keys[1], keys[2], keys[0], keys[0]] {
+            run(&mut ee, &mut port, &format!("weapon {w}"), 0x0026_c420, &[w as u64], &|p| p.equip_weapon(SORA, w));
+        }
+        for (slot, id) in [(0usize, armor[0]), (0, armor[0]), (1, armor[1]), (0, armor[2]), (1, 0), (0, 0), (0, armor[1])] {
+            run(&mut ee, &mut port, &format!("armor slot {slot} item {id}"), 0x0026_c588, &[slot as u64, id as u64], &|p| p.equip_armor(SORA, slot, id));
+        }
+        for (slot, id) in [(0usize, acc[0]), (1, acc[0]), (1, acc[1]), (0, 0), (0, acc[2]), (1, 0)] {
+            run(&mut ee, &mut port, &format!("accessory slot {slot} item {id}"), 0x0026_c610, &[slot as u64, id as u64], &|p| p.equip_accessory(SORA, slot, id));
+        }
+        // A form's keyblade: forms 1, 3 and 4 (the Valor, Master and Final hands).
+        for (form, id) in [(1u8, keys[1]), (3, keys[2]), (1, keys[1]), (1, keys[0]), (4, keys[1])] {
+            run(&mut ee, &mut port, &format!("form {form} weapon {id}"), 0x0026_c4d0, &[form as u64, id as u64], &|p| p.equip_form_weapon(form, id));
+        }
+        eprintln!("oracle: equipment writers equal after {swaps} swaps (weapon, armor, accessory, form weapon; stock counts and slots)");
+    }
+
     #[test]
     fn json_reader_handles_the_schema_shapes() {
         let j = Json::parse(r#" { "a": [1, 2.5, -3e2], "b": {"x": true, "y": null}, "s": "q\"A\n" } "#).unwrap();
@@ -1838,6 +2018,84 @@ mod tests {
         assert_eq!(q.battle_items(SORA).iter().filter(|s| s.0 == potion).count(), 2);
         assert_eq!(q.recent_items()[0], potion);
         assert!(q.take_item(potion, SORA) && q.take_item(potion, SORA) && !q.take_item(potion, SORA));
+    }
+
+    /// An item index without the disc: keyblades 10 and 11, armor 20, accessories 30 and 31, consumables 1 and 2
+    /// (the count slot of each is its id).
+    fn small_index() -> Arc<ItemIndex> {
+        let row = |id: u16, kind: u8| ItemInfo { id, kind, flag0: 0, word4: 0, command: 0, slot: id };
+        let rows = vec![row(1, 0), row(2, 0), row(10, 2), row(11, 2), row(20, item_type::ARMOR), row(30, item_type::ACCESSORY), row(31, item_type::ACCESSORY)];
+        let by_id = rows.iter().enumerate().map(|(n, r)| (r.id, n)).collect();
+        Arc::new(ItemIndex { rows, by_id, ..ItemIndex::default() })
+    }
+
+    /// The equipment writers keep the stock: the old item goes back, the new one comes out; the same item again
+    /// and a slot that does not exist change nothing.
+    #[test]
+    fn equipment_writers_swap_with_the_stock_and_keep_the_counts() {
+        let mut p = Progress::from_block(&[], small_index());
+        let r = Progress::member_off(SORA).unwrap();
+        p.set_u8(r + rec::ARMOR_SLOTS, 1);
+        p.set_u8(r + rec::ACCESSORY_SLOTS, 2);
+        p.add_item(10, 2);
+        p.add_item(11, 1);
+        p.add_item(20, 1);
+        p.add_item(30, 1);
+        // The weapon: 10 in, 10 out of two; then 11, which sends 10 back.
+        assert!(p.equip_weapon(SORA, 10));
+        assert_eq!((p.sora().weapons[0], p.item_count(10)), (10, 1));
+        assert!(p.equip_weapon(SORA, 11));
+        assert_eq!((p.sora().weapons[0], p.item_count(10), p.item_count(11)), (11, 2, 0));
+        assert!(!p.equip_weapon(SORA, 11), "the same weapon changes nothing");
+        assert_eq!((p.item_count(10), p.item_count(11)), (2, 0));
+        // Armor: in, out (the slot empties, the item returns), no second slot.
+        assert!(p.equip_armor(SORA, 0, 20));
+        assert_eq!((p.sora().armor, p.item_count(20)), (vec![20], 0));
+        assert!(!p.equip_armor(SORA, 0, 20));
+        assert!(p.equip_armor(SORA, 0, 0));
+        assert_eq!((p.sora().armor, p.item_count(20)), (vec![0], 1));
+        assert!(!p.equip_armor(SORA, 0, 0), "an empty slot stays empty");
+        assert!(!p.equip_armor(SORA, 1, 20), "the record has one armor slot");
+        // Accessories: the two slots are separate words.
+        assert!(p.equip_accessory(SORA, 1, 30));
+        assert_eq!((p.sora().accessories, p.item_count(30)), (vec![0, 30], 0));
+        assert!(p.equip_accessory(SORA, 0, 31) && p.item_count(31) == 0, "taking an item the stock does not have floors at 0");
+        assert!(p.equip_accessory(SORA, 1, 31));
+        assert_eq!((p.sora().accessories, p.item_count(30), p.item_count(31)), (vec![31, 31], 1, 0));
+        // A form's keyblade: the form record's own word.
+        assert!(p.equip_form_weapon(1, 10));
+        assert_eq!((p.form(1).weapon, p.item_count(10)), (10, 1));
+        assert!(p.equip_form_weapon(1, 11) && p.form(1).weapon == 11 && p.item_count(10) == 2);
+        assert!(!p.equip_form_weapon(0, 10) && !p.equip_form_weapon(10, 10), "forms 1 to 9 only");
+        // A full stock loses the old item (the menu refuses that swap before it gets here).
+        p.set_count(10, 99);
+        assert!(p.equip_weapon(SORA, 10));
+        assert_eq!((p.sora().weapons[0], p.item_count(10), p.item_count(11)), (10, 98, 1));
+        p.set_count(10, 99);
+        assert!(p.equip_weapon(SORA, 11));
+        assert_eq!((p.sora().weapons[0], p.item_count(10), p.item_count(11)), (11, 99, 0), "the old 10 had no room and is gone");
+        assert_eq!(p.equipment(), vec![11, 31, 31]);
+    }
+
+    /// `FUN_0026c770` then `FUN_001877c8`: an item moved between slots keeps its reservation, and a slot that
+    /// reserves an item the stock has is refilled.
+    #[test]
+    fn leaving_the_equipment_lists_settles_the_reservations_and_refills() {
+        let mut p = Progress::from_block(&[], small_index());
+        let r = Progress::member_off(SORA).unwrap();
+        p.set_u8(r + rec::ITEM_SLOTS, 4);
+        // Slot 0 reserves item 1 but is empty, slot 1 carries item 1 without a reservation, slot 2 carries 2 and
+        // reserves it, slot 3 reserves 2 but is empty.
+        for (i, (item, reserved)) in [(0u16, 1u16), (1, 0), (2, 2), (0, 2)].into_iter().enumerate() {
+            p.set_u16(r + rec::ITEMS + 2 * i, item);
+            p.set_u16(r + rec::RESERVED + 2 * i, reserved);
+        }
+        p.set_count(1, 1);
+        p.settle_battle_items(SORA);
+        // Slot 1 carries item 1, which another slot reserves: it takes the reservation; then the empty slots that
+        // reserve something the stock has take it (item 1: one in stock, slot 0 gets it; item 2: none).
+        assert_eq!(p.battle_items(SORA), vec![(1, 1), (1, 1), (2, 2), (0, 2)]);
+        assert_eq!(p.item_count(1), 0);
     }
 
     #[test]

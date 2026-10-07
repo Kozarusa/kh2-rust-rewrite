@@ -36,12 +36,15 @@ pub mod item_pages;
 // And the Customize pages.
 #[path = "menu_customize.rs"]
 pub mod customize;
+// And the Equipment pages (stage M4).
+#[path = "menu_equipment.rs"]
+pub mod equipment;
 
 pub struct MenuPlugin;
 
 impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((MenuGfxPlugin, crate::menu_status::StatusPlugin, config::ConfigPlugin, item_pages::ItemPagesPlugin, customize::CustomizePlugin))
+        app.add_plugins((MenuGfxPlugin, crate::menu_status::StatusPlugin, config::ConfigPlugin, item_pages::ItemPagesPlugin, customize::CustomizePlugin, equipment::EquipmentPlugin))
             .init_resource::<Menu>()
             // The field stands still while the menu is up: every 60 Hz set waits for it.
             .configure_sets(

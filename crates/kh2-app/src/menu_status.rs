@@ -599,6 +599,9 @@ mod at {
     pub const FONT: usize = 1;
 }
 
+/// Tab row nodes: Sora, the forms, the summons and the other members never exceed this many tabs.
+const MAX_TAB_NODES: usize = 10;
+
 /// The nodes the screen draws with, created once in the scene.
 struct Nodes {
     tabs: Vec<usize>,
@@ -830,7 +833,7 @@ fn build(scene: &mut MenuScene) -> Nodes {
         n.visible = false;
         scene.add(n)
     };
-    let tabs = (0..4).map(|_| new(scene, Some(SEQ_MAIN))).collect();
+    let tabs = (0..MAX_TAB_NODES).map(|_| new(scene, Some(SEQ_MAIN))).collect();
     let mut rows = [Vec::new(), Vec::new()];
     let mut values = [Vec::new(), Vec::new()];
     for c in 0..2 {
@@ -973,7 +976,7 @@ fn draw(ui: &StatusUi, n: &Nodes, scene: &mut MenuScene, numbers: &Numbers) {
     let mut hand_on = None;
     if !wide {
         for (k, label) in tab_labels {
-            let id = n.tabs[k];
+            let Some(&id) = n.tabs.get(k) else { break };
             let set = ui.tables.tab_sets[usize::from(ui.tabs[k].table() != 0)][usize::from(k == ui.tab)];
             scene.nodes[id].visible = true;
             scene.nodes[id].off = [at::TAB_X, at::TAB_Y + pitch * k as f32];

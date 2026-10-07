@@ -158,6 +158,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 0.35 | `vec_scale_in_place(vf)` | 0x16d038 | 105 | multiply all four lanes of the vector by the scalar, in place |
 | 0.36 | `vec_scale(vf) -> v` | 0x16cd88 | 569 | multiply all four lanes by a scalar into a new vector |
 | 0.38 | `effect_set_position(pv)` | 0x16da90 | 78 | copy a vector into the effect's position (the 16 bytes behind FUN_001d9d00(handle)) |
+| 0.39 | `effect_set_vector2(pv)` | 0x16dad0 | 19 | copy a vector into the 16 bytes behind FUN_001d9d28(handle), the vector after the effect's position; MAGNET_*.mag writes (s, s, s, 1) there to grow and shrink its sphere, so it reads as the scale (role inferred) |
 | 0.41 | `effect_set_vec2(pv)` | 0x16db50 | 32 | copy a vector (through FUN_0017be00) into the second vector of the effect instance (the 16 bytes behind FUN_001d9d50(handle)); role unknown |
 | 0.42 | `angle_of(v) -> f` | 0x16d060 | 219 | atan2(v.x, v.z), the yaw of a direction |
 | 0.43 | `wrap_angle(f) -> f` | 0x16de78 | 140 | wrap an angle in radians into -pi..pi (FUN_0017bbc0) |
@@ -283,8 +284,10 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.133 | `obj_method_44(O)` | 0x170540 | 97 | virtual method +0x44 of the object; role unknown |
 | 1.134 | `obj_method_48(O)` | 0x170570 | 68 | virtual method +0x48 of the object; role unknown |
 | 1.140 | `target_valid(p) -> b` | 0x173740 | 256 | the target record is usable (FUN_0018ed58); role inferred |
+| 1.141 | `probe_ground_down(vpf) -> i` | 0x172538 | 56 | collision probe (FUN_001a5c30 with mask 4) from the point down by the distance: 1 and the point found written through the second argument, else 0 and the point itself written there |
 | 1.143 | `bind_object_143(pi)` | 0x171d40 | 36 | set the context's object pointer from FUN_0016b0d8(arg) |
 | 1.145 | `obj_word_aa8(O) -> i` | 0x1705d0 | 392 | word at object +0xaa8 |
+| 1.146 | `push_object(Ovf)` | 0x1705e8 | 15 | push the object along a direction with a power (FUN_001857b0: the decaying ground push of the wall recoil) |
 | 1.147 | `position(O) -> v` | 0x170610 | 8507 | world position of the object |
 | 1.148 | `set_position(Ov)` | 0x170658 | 267 | set the position (w forced to 1.0) and sync the mover (FUN_0016a618) |
 | 1.149 | `spawn_effect_for(OiOii) -> h` | 0x171840 | 21 | as spawn_effect with another object as the owner (FUN_0016a570) |
@@ -343,6 +346,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.241 | `broadcast_message(sf)` | 0x172098 | 0 | like send_message without a sender |
 | 1.246 | `nop_246()` | 0x1737d8 | 0 | empty function |
 | 1.247 | `random_free_point(vff) -> v` | 0x1726d8 | 68 | search around a position for a free point between two radii: samples a spiral with the game's second random generator and tests collisions (FUN_001a6068, FUN_001a6198); returns the point in a static buffer; role inferred |
+| 1.248 | `scatter_point(vffff) -> v` | 0x172730 | 36 | a free place around a position (FUN_001a5ee0 with mask 2): radius random between the first two values, start angle from a counter of eighths (0x35e9b0) and the game's generator, a height random between the last two; tries eighths of a turn with a line test, shrinking the radius; the point in a static buffer (Final Thunder) |
 | 1.250 | `set_scale_250(f)` | 0x173af8 | 16 | store the argument at 0x1c8a7e8 and the argument times the float at 0x360130 + 0x50 at 0x1c8a7ec (FUN_00190808) |
 | 1.254 | `has_ptr_810(O) -> b` | 0x170ce0 | 4 | the pointer at object +0x810 is non-zero |
 | 1.262 | `obj_method_54(Opp)` | 0x1709c8 | 396 | virtual method +0x54 of the object with two arguments |
@@ -378,6 +382,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 2.11 | `attack_set_size(pff)` | 0x18e348 | 239 | attack +0x100 = a, +0x104 = b when b is positive else a (FUN_001a30e0) |
 | 2.12 | `attack_move_to(pv)` | 0x18e3a0 | 202 | move the attack object to a position, keeping the previous one for the swept test (FUN_001a2fc8) |
 | 2.13 | `attack_arm(p)` | 0x18e3c0 | 232 | set flag 0x800 at attack +4 when the attack object exists (FUN_0018dc98) |
+| 2.14 | `attack_hit_anything(p) -> b` | 0x18e3d8 | 3 | FUN_0018c890: the attack's flags at +4 have 2 (a target), 8 or 0x10 (a wall) or 0x200 (a clash) |
 | 2.15 | `hit_set_flag1(p)` | 0x18e190 | 136 | set bit 0 of the flags at hit +0x18 |
 | 2.16 | `hit_flag1(p) -> b` | 0x18e1a8 | 0 | bit 0 of the flags at +0x18 (2.15 sets it) |
 | 2.17 | `attack_hit_object(pOip)` | 0x18e6e0 | 61 | when the attack may hit the object (FUN_0018c5f8): build the hit record (FUN_0018c6d0), mark it, call the object's virtual method +100 with it (delivers the damage) |

@@ -1,4 +1,4 @@
-# Magic (work package 6B, phase 1: Fire, Blizzard, Thunder, Cure at level 1)
+# Magic (work package 6B, phase 1: Fire, Blizzard, Thunder, Cure at level 1; WP-7I, phase 2: levels 2 and 3, Magnet, Reflect, drive forms)
 
 How Sora casts a spell in the PS2 USA release (`SLUS_210.05`), read from the decompiled executable and the
 disassembled spell scripts (`kh2 bdx magic/FIRE_1.mag`), and what `crates/kh2-app/src/magic.rs` and
@@ -27,10 +27,11 @@ in the code; they come from the user's disc.
 - A command id of a spell resolves to the loaded level's command (FUN_001b6f48 for a magic command whose id is not 2). [V]
 - Availability (FUN_001ba2c0, `Execute` 2): 5 (not usable) while MP charges (FUN_001a05d0: charge time > 0); with MP
   below the cost, 2 (usable) when the cost is 255 or the spell's bit at 0x340eac is clear, else 5 (FUN_001a4bb8; the bit
-  is toggled only by the pause-menu code FUN_00274e50 [I: a per-spell switch of that menu], clear in a new game);
+  is toggled only by the pause-menu code FUN_00274e50: the Customize page's MP Charge switch, a set bit is "Don't MP Charge"; clear in a new game; the bit is `cmd.Argument`, the command's magic slot, FUN_001ba2c0 passes `cmd +4`);
   otherwise 0. The command locks (FUN_001b70b8) and `DisableForm` (FUN_001b7290: the mask of the command whose id is the
   `Execute`, so command 2's mask, which hides Magic in Valor and Anti) give 5. A status below 4 is usable
-  (FUN_00178a78). [V] Port: `magic_rules::availability`. So a spell can be cast with too little MP: it takes what is
+  (FUN_00178a78). [V] Port: `magic_rules::availability`; `MagicData::status` reads the bit from
+  `Progress::spell_switch` (WP-7I; test `mp_charge_switch_follows_the_spell_slot`). So a spell can be cast with too little MP: it takes what is
   left and starts the charge.
 - Menu art and layout are `hud_menu.rs` (WP-4): the sub-menu is page kind `cmd(2).SubMenu`; an unusable entry is drawn
   in style 1 [I: the style byte +0x11 of a list entry is set by FUN_001ba748 from other conditions; the mapping of
@@ -70,9 +71,13 @@ Executing a magic command (FUN_00174cf8, `Execute` 2) [V]:
 5. The task FUN_001a4428 runs every thread of the list once per frame and destroys the ended ones (FUN_001a43b8).
 6. Frame trigger 17 of the cast motion (FUN_00188498 case 0x11: with no parameter always, with one only when it equals
    a word of the trigger context) calls FUN_001a4a60 on +0xb28: for a party member (+0x588 & 4) FUN_001769e0 pays the
-   MP, then FUN_0016c500 restarts the thread at event 21. [V] The word is the motion id the cast asked for [I from the
-   data: spells share cast slots (Fire's ground motion 56 and Reflect's 71 play one slot) and each slot has one
-   trigger 17 per motion id: Reflect's at frame 0, Fire's at 22]. Before WP-7A the app fired on any trigger 17, so
+   MP, then FUN_0016c500 restarts the thread at event 21. [V] The word is the motion id the cast asked for [V, WP-7I:
+   FUN_00188498 was decompiled with ghidra (it is not in the decompilation folder): case 0x11 compares the
+   trigger's u16 parameter with the context's +0x14 when the parameter count byte +3 is not 0; the context is the
+   motion controller (player +0x140, FUN_0017f588 -> FUN_001889d0 -> FUN_00188cc0 with the handler), and +0x14 is
+   written only by FUN_0017e000 (from FUN_0017e220, the motion request FUN_001a4798 makes with the row's motion id)
+   when the request succeeds. The data agrees: spells share cast slots (Fire's ground motion 56 and Reflect's 71 play
+   one slot) and each slot has one trigger 17 per motion id, Reflect's at frame 0, Fire's at 22]. Before WP-7A the app fired on any trigger 17, so
    Fire cast at frame 0 through Reflect's trigger.
 7. Event 20 of every spell script waits while the caster's `motion_state` (host 1.15, +0x154) is what it was: a cast
    whose motion is left before the trigger ends its thread there and costs nothing. [V]
@@ -294,12 +299,117 @@ So the hand port stays the default; the interpreter path is a check for Fire. [G
 request threads (already run by the runtime), 1.88, 1.120, 1.138, 1.141, 1.146, 2.14, 2.17, 2.29, 2.39, 0.38, 0.41,
 0.46, 0.52, 1.93, 10.31, 0.100 for the other three.]
 
+## Phase 2 (WP-7I)
+
+### Levels 2 and 3
+
+Every level's `magc` row names its own `.mag` (`FIRE_2.mag` ...), its own command (Fire 49 / 119 / 120, Blizzard 51 /
+121 / 122, Thunder 50 / 123 / 124, Cure 52 / 125 / 126, Magnet 174 / 175 / 176, Reflect 177 / 178 / 179 on the
+disc) and its effect file, but the BDX program of every level is the same (byte for byte): the level is carried by
+the kind (`2 * level - 2`), which picks the `atkp` rows (`SubId` high byte) and the `magi` row. So the hand port
+covers levels 2 and 3 with no new code paths. What was missing is the kind the scripts keep after event 20
+(`magic_rules::script_kind`): Fire, Blizzard and Thunder clear the finisher bit in Master form (`kind / 2 * 2` when
+kind / 10 = 2), Reflect always; Cure and Magnet keep it. [V, script] Test `levels_two_and_three_have_their_rows`
+(rows, files, identical scripts, commands, and the attack and `magi` rows of every kind, forms included).
+Harness: `KH2_MAGIC=3,3,3,3` casts Firaga (atkp 502 `SubId` 1024, radius 240, height 180), Blizzaga, Thundaga and
+Curaga (atkp 708 `SubId` 1024, Power 600) with their rows.
+
+The `magc` slot order is read from the data (`Id`): 0 Fire, 1 Blizzard, 2 Thunder, 3 Cure, 4 Magnet, 5 Reflect.
+
+### Magnet (MAGNET_*.mag) [V, script]
+
+Runs in the interpreter (slots 4 and 5 always do, WP-7I). Event 20 starts element 0 on the caster. Event 21: stop
+it, element 1; Final sets bit 3 of the global flag word 0x35d268 (host 1.187) over a yield [GAP: its readers]. The
+place: the target record's position (2.23 / 1.140 / 1.120) or element 1's position; host 1.141 probes the ground
+from `magi` +0x3c above it down `2 * magi +0x3c` and, when found, puts the place `magi` +0x3c above the ground.
+Attack 658 of the kind at the place, a sphere of `magi` +0x4c; element 2 placed there (1.138 + 0.38). 16 frames
+later, in Wisdom, Master and Final, a second attack 976 (radius `magi` +0x3c * 0.5). Element 3 at the place one
+unit up grows over `magi` +0x40 frames (host 0.39 with `(sin((t - 0.5) pi) + 1) / 2`), then `magi` +0x44 frames
+pass and the attacks are finished; Final adds attack 1440 (radius `magi` +0x3c * 0.6) for one frame; element 4
+starts; element 3 shrinks over `magi` +0x48 frames and is destroyed (0.51). Test
+`magnet_script_runs_in_the_interpreter`.
+
+The pull is the victim's: atkp 658 has `EnemyReaction` 5, class 5 of FUN_00184e80 -> FUN_00185668 ->
+FUN_001bf920: the victim keeps the attack object (+0xaac), a hold distance random between `KnockbackStrength1`
+and `KnockbackStrength2` (+0xab0, the game's generator at 0x3716a0), the row's `Unknown` field (+0xab4, -3 on
+Magnet's rows) and plays motion 0x14 (facing the attack) or 0x15; each frame FUN_001bfc10 moves it toward the
+attack object's position by `clamp((distance - hold) * DAT_0037bd30, DAT_0037bd2c, DAT_0037bd34)` plus the
+flat direction turned by FUN_0017c2e8(DAT_0037bd38) times +0xab4 (a swirl), times the frame step; FUN_001bfba8
+ends it when +0xaac is cleared (FUN_00186600). [V for the functions; GAP: not ported, the victim side lives in the
+enemy reaction code (`reaction_rules::ReactionClass::Special5` is "not decoded")]. So in the app Magnet hits each
+enemy once (atkp 658 has no `Interval`) without pulling.
+
+### Reflect (REFLECT_*.mag) [V, script]
+
+Event 20 asks for the persistent block of key 0x10002 (host 2.21, FUN_001a5040: 12 bytes kept across casts),
+clears the finisher bit and starts no charge effect. Event 21: the barrier is element 2 when host 1.60 holds
+(FUN_001729f8: airborne by FUN_0019aa28, or class flag 2, or +0x160 & 0x40), 12 in Wisdom and Final, else 0; a
+barrier still in the block is destroyed first, the new one is kept there (+4). After a yield the guard: atkp 573
+(Type 3, Power 0), a sphere of `magi` +0x50, moved to the barrier's position every frame while the barrier lives
+(0.49); each rise of its byte +0xa4 (2.66) starts the flash element (barrier + 1) unless one still runs. When the
+barrier ends: the clashes are added to the block's +8, the guard is finished, and if the barrier is still the
+block's, the block is reset and, with clashes, the counter-burst: 1, 2 or 3 by the count against `magi` +0x64
+and +0x70, element 4 / 5 / 6 (+10 in Wisdom, Master and Final) on the caster, then attack 574 / 576 / 578
+(radius and height `magi` +0x5c / +0x60, +0x68 / +0x6c, +0x74 / +0x78) at the element for `magi` +0x54 frames, then
+667 / 668 / 669 20 larger for `magi` +0x58 frames. Test `reflect_script_runs_in_the_interpreter`.
+
+The guard: byte +0xa4 is counted by FUN_0018d430, the handler of an attack-against-attack pair of FUN_0018d808
+(docs: `clash.rs`). The app pairs the guard (`magic::run`) with enemy attack volumes the executable's clash table
+allows (`ExeConsts::types_clash` with Type 3): each enemy window counts once, the enemy gets its clash reaction
+(`reaction_rules::enemy_clash`, `EnemyClash`) and its volume is disabled (its window marked landed on the player's
+fighters, as clash.rs does) unless its own row says Nothing, so it cannot hit Sora. The guard hits no object
+[I: Power 0, reaction 0]. The barrier's duration is the barrier element's own life in the effect runtime (27
+frames in a tt00 run at level 1).
+
+### Drive forms
+
+- Fire: `fire_plan` (event 21 elements per kind; test `fire_hand_port_matches_the_script_for_every_kind` against
+  the script for every kind of levels 1 to 3, forms included).
+- Blizzard (`blizzard_plan`, R0017): elements 1; Final non-finishers 1 and 7; Final finishers by the program's
+  global +0x2c (casts counted at L022b, kept in `MagicState` [I: the globals live as long as the slot's resource]):
+  7 for 1 and 3, 1 and 7 for 4, else 1. Shots: the Wisdom finisher five (turn scale 0.5 ahead, 1.0 at +-35 degrees,
+  2.0 at +-70 degrees, flag 0); Master seven (scale 1, flag 0: ahead, with the height -0.96 and 0.96, then 0.4 and
+  -0.4 each turned +-45 degrees); otherwise one ahead with flag 1 and one more from element 7 when it started. The
+  turn rate of a shot is `magi` +0xc times its scale. Host 0.13 (FUN_0016cf08 -> FUN_0017c2e8 with FUN_0011b4d8 ->
+  FUN_002fb628) is taken as libvu0's Y rotation [I]. Test `blizzard_forms_follow_the_script`. [GAP: the block's
+  flag (+0x64) with host 2.14 (FUN_0018c890) is not ported, nor the push 1.146.]
+- Thunder (`thunder_plan`): Master strikes at the caster's position and 0.47 and 0.78 of the way to the place, 16
+  frames apart, then the place (without a target 800 ahead turned 45 degrees); the Wisdom finisher three more
+  strikes 8 frames apart around the place (`magi` +0x24 * 1.5 along the facing turned 120, 240, 360 degrees).
+  Final strikes 2 (7 for a finisher) more times 8 frames apart at places from host 1.248 (FUN_00172730 ->
+  FUN_001a5ee0 -> FUN_001a6068 / FUN_001a63c8: a random radius and angle bucket around the place with a ground
+  test, the game's generator 0x3716a0) [GAP: not ported]. Test `thunder_forms_strike_counts`.
+- Cure: the kind alone (rows 708 / 709 of +10 / 20 / 30 exist, `cure_heals_for_every_kind_from_the_disc`).
+- Magnet, Reflect: their scripts' own branches in the interpreter.
+- Valor and Anti cannot cast (`DisableForm`, unchanged). The form is the player object's (`DriveState::object_form`
+  in the command menu and in `magic::run`).
+
+### The interpreter host (WP-7I additions)
+
+`magic::SpellHost` now also answers: 1.138 (an element placed in the world), 0.38 (its position), 0.49 (the
+instance still runs), 0.51 (destroy), 1.60, 2.23 / 1.140 / 1.120 (the cast's target record), 2.21 (the persistent
+block, read and written through the script's memory), 2.66 (the attack's clash count), 1.187 / 1.188 (nothing).
+Effect handles are kept in one table for all casts (`VmWorld`), since Reflect keeps a handle in its block from
+cast to cast. [GAP: 1.141 and 0.39 are not named in kh2-bdx, so their pointer arguments cannot be read: the ground
+probe answers "no ground" and Magnet's sphere keeps scale 1. Naming them in `kh2_bdx::names` (1.141 `vpf`,
+0.39 `pv`) would let the host answer them.]
+
+### Effect colours (Fire's sparks)
+
+Fire's sparks were drawn pale tan. The data: `KH2_FXLOG=1` on a Fire cast shows the vertex colours of FIRE_1.mag's
+elements, for example (1.24, 0.59, 0.23) of 0x80 (bytes about 0x9e, 0x4b, 0x1e) on the sparks, with GS ALPHA 0x48
+(A = Cs, B = 0, C = As, D = Cd: additive). The GS modulates the texel by the vertex colour in display space, so a
+white texel comes out orange (255, 150, 59 before the blend). The app multiplied the colours in linear space, which
+lifts the weak channels (pale tan). `fx.rs` now raises the vertex colour channels to 2.2 before the mesh (the HUD's
+`gamma22` convention; alpha stays linear). Screenshot of the same cast after the fix: orange-red sparks. [The
+additive blend itself still sums in linear space, which differs from the GS's sum in display space where effects
+overlap: not changed.]
+
 ## Not ported / gaps
 
 - The menu's input code (cursor, wrap, closing after a cast), above.
-- Running Blizzard, Thunder and Cure in the interpreter (above); Wisdom / Master / Final variants beyond Fire's script
-  branches, Magnet, Reflect, levels 2 and 3 (the rules handle them; the effects and scripts are the same code paths but
-  were not looked at).
+- Running Blizzard, Thunder and Cure in the interpreter (above). Phase 2 gaps: Magnet's pull (victim side), Final
+  Thunder's random strikes, Blizzard's shot flag with host 2.14 and the push 1.146, hosts 1.141 / 0.39 (see "Phase 2").
 - The lock-on controller's mode-1 marker and timer (above). Which target record the menu code puts into a spell's
   request (FUN_00174cf8 copies it; its writer was not traced) [I: Sora's target, Cure's the caster].
 - The HUD's MP charge bar: `hud_gauge::MpRecharge` gets +0x1bc (time left, which counts down) and +0x1c0 as its doc
@@ -342,3 +452,9 @@ turn; the interpreter entry point.
 | 0x188030 (cases 0x16, 0x1c), 0x186118, 0x1861b8, 0x186018, 0x183848, 0x18efa0, 0x18eec0, 0x18ed98 | the turn triggers 22 and 28 |
 | 0x16c500, 0x16c4c0, 0x1d7b78, 0x16c4d8, 0x1d7bb0, 0x1d7b30, 0x16c9b8, 0x16c230, 0x16c7c8 | a thread pointed at an event |
 | 0x173988 -> 0x1db868 | host 1.139 (effect file, id, mode, 1, extra, the context's object) |
+| 0x188498 (ghidra), 0x1889d0, 0x188cc0, 0x17f588, 0x17e220, 0x17e000 | trigger 17's parameter against the motion controller's +0x14 (the requested motion id) |
+| 0x1a4bb8, 0x1ba2c0 (`cmd +4`) | the MP Charge switch bit of the command's slot |
+| 0x185668, 0x1bf920, 0x1bfc10, 0x1bfba8, 0x1bfdf8, 0x186600, 0x184dd0 | reaction class 5: Magnet's pull (victim side, not ported) |
+| 0x18d430, 0x18d808, 0x18e818 | clash handler counting byte +0xa4, the pair test, host 2.66 |
+| 0x1729f8, 0x18e928, 0x16dad0, 0x16cf08, 0x17c2e8, 0x11b4d8, 0x11be08 | hosts 1.60, 2.21, 0.39, 0.13 and the Y rotation |
+| 0x172730, 0x1a5ee0, 0x1a6068, 0x1a63c8 | host 1.248: Final Thunder's random places (not ported) |

@@ -954,7 +954,7 @@ fn command_menu(
     let battle_on = battle.as_ref().is_some_and(|b| b.active());
     let charging = magic.charge.active();
     let mp = s.mp;
-    let magic_status = |c: &Cmd| md.status(c.id, mp, charging, form) as u8;
+    let magic_status = |c: &Cmd| md.status(c.id, mp, charging, form, Some(&*progress)) as u8;
     let points = drive.as_ref().map_or(0, |d| d.points.whole);
     let (donald, goofy) = drive.as_ref().map_or((true, true), |d| (d.donald, d.goofy));
     // FUN_001ba568: a drive command that opens a list (the generic Drive) passes; a form's command

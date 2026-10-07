@@ -1163,13 +1163,23 @@ fn game_camera(cam: Mat4) -> Mat4 {
     FLIP * Mat4::from_rotation_translation(r, t / SCALE) * FLIP
 }
 
+/// A vertex color of the effect (0x80 = 1.0) for the linear framebuffer. The GS multiplies the texel
+/// by the vertex color in display (gamma) space (`(Ct * Cf) >> 7`); the app multiplies in linear space,
+/// so the color channels go through 2.2 first (the HUD's `gamma22` convention). Without it an orange
+/// vertex color such as Fire's (0x9e, 0x4b, 0x1e) is drawn pale tan. Alpha is the blend weight (As)
+/// and stays linear.
+fn gs_color(c: Vec4) -> [f32; 4] {
+    let g = |v: f32| v.max(0.0).powf(2.2);
+    [g(c.x), g(c.y), g(c.z), c.w]
+}
+
 fn build_mesh(b: &Batch) -> Mesh {
     let back = |p: Vec3| (FLIP.transform_point3(p) * SCALE).to_array();
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, b.verts.iter().map(|v| back(v.pos)).collect::<Vec<_>>())
         .with_inserted_attribute(
             Mesh::ATTRIBUTE_COLOR,
-            VertexAttributeValues::Float32x4(b.verts.iter().map(|v| v.color.to_array()).collect()),
+            VertexAttributeValues::Float32x4(b.verts.iter().map(|v| gs_color(v.color)).collect()),
         )
         .with_inserted_indices(Indices::U32(b.indices.clone()));
     if b.offsets.is_empty() {

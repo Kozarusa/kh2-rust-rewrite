@@ -75,6 +75,37 @@ pub struct MissionStart {
     pub id: u32,
     pub name: String,
     pub orb_pool: bool,
+    /// The area triggers (area-script opcode 0xc) the mission's end may meet (`FUN_00197588`).
+    pub triggers: Vec<Trig>,
+}
+
+/// An area trigger as the mission end looks it up (`FUN_00197588`: the record's event and argument, -1 matches
+/// any argument; `FUN_001b9780` reads the record's story flag, +8, set by trigger sub-command 2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Trig {
+    pub event: u16,
+    pub arg: u16,
+    pub story_flag: Option<u16>,
+    /// The trigger plays an event (sub-command 0) or jumps (sub-command 1): what the game does when it fires.
+    pub plays_event: bool,
+    pub jumps: bool,
+}
+
+impl Trig {
+    pub fn from_ard(t: &kh2_ard::Trigger) -> Trig {
+        Trig {
+            event: t.event,
+            arg: t.arg,
+            story_flag: t.subs.iter().find(|(op, _)| *op == 2).and_then(|(_, h)| h.first().copied()),
+            plays_event: t.subs.iter().any(|(op, _)| *op == 0),
+            jumps: t.subs.iter().any(|(op, _)| *op == 1),
+        }
+    }
+
+    /// `FUN_00197588(event, arg)`: same event, and the same argument or a record argument of -1.
+    pub fn matches(&self, event: u32, arg: i32) -> bool {
+        self.event as u32 == event && (self.arg == arg as u16 || self.arg == 0xffff)
+    }
 }
 
 /// A global event (`FUN_00197b70(event, argument)`): besides the mission script it goes to every object
@@ -102,11 +133,30 @@ pub struct Header {
     pub id: u16,
     /// +4: flags (`FUN_001b8d80`: 0x40 sets bit 0x200 of `DAT_0035d268`, no prizes; 0x80 bit 0x400, no items).
     pub flags: u16,
+    /// +8: the mission kind. `FUN_001b9c00` treats 2, 0x19 and 0x20 as the kinds whose end opens the menu of
+    /// record 0x1a (`FUN_001b96e0`) instead of sending the end event to the area; the start applies the
+    /// pause-menu record of this number (`FUN_001b8ee8` -> `FUN_001bef48`).
+    pub kind: u8,
+    /// +0xd: when not 0, the end passes it to `FUN_001be6b8` (not ported, 0 in the Struggle).
+    pub unlock: u8,
+    /// +0x10, +0x14, +0x18: interface sounds (`FUN_001b9ec8` -> `FUN_002c3318`) of the start
+    /// (`FUN_001b8ee8`), the end (`FUN_001b95a0`) and the failure (`FUN_001b9818`); 0 plays nothing.
+    pub se_start: u32,
+    pub se_end: u32,
+    pub se_fail: u32,
     pub records: Vec<Record>,
+}
+
+impl Header {
+    /// `FUN_001b9c00`: the mission kinds 2, 0x19 and 0x20.
+    pub fn ends_in_menu(&self) -> bool {
+        matches!(self.kind, 2 | 0x19 | 0x20)
+    }
 }
 
 pub fn parse_header(d: &[u8]) -> Option<Header> {
     let u16_at = |o: usize| d.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
+    let u32_at = |o: usize| d.get(o..o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
     let mut records = Vec::new();
     let mut p = 0x1c;
     while let (Some(op), Some(n)) = (u16_at(p), u16_at(p + 2)) {
@@ -117,7 +167,134 @@ pub fn parse_header(d: &[u8]) -> Option<Header> {
         records.push(Record { op, args });
         p += 4 + 4 * n as usize;
     }
-    Some(Header { id: u16_at(2)?, flags: u16_at(4)?, records })
+    Some(Header {
+        id: u16_at(2)?,
+        flags: u16_at(4)?,
+        kind: *d.get(8)?,
+        unlock: *d.get(0xd)?,
+        se_start: u32_at(0x10)?,
+        se_end: u32_at(0x14)?,
+        se_fail: u32_at(0x18)?,
+        records,
+    })
+}
+
+/// A layout record (opcodes 1, 2, 3 and 0xd; `FUN_001b9378` -> `FUN_001d3490`): an event of the mission file
+/// played by the event player (`FUN_001d3538` -> `FUN_00195898`, `FUN_00195ae0`), with a picture the event shows.
+/// Record bytes +4 the event's BAR index, +5 the 1-based index of the picture (image; the sequence follows,
+/// `FUN_001d3390`), +6 an object the event binds (0: none). The event kind is the manager's default
+/// (`FUN_001b8b10`: record 1 0xc, 2 and 0xd 0xe, 3 0xf); record 1 with a picture becomes 0xd.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Layout {
+    pub op: u16,
+    pub kind: u8,
+    pub entry: u8,
+    pub picture: u8,
+    pub object: u16,
+    /// Event opcode 8 (`FUN_002245d0` -> `FUN_00226fb0`): the event frame it ends at (-1: none).
+    pub end: i32,
+    /// Event opcode 0x50 (`FUN_00225af0`): the event frame from which group 1 of the picture plays
+    /// (`FUN_00225998`: the event object's picture pair +0x94 / +0x98, group 1).
+    pub picture_at: Option<i32>,
+}
+
+/// The layout slots of the manager: record 1 (+0x4c, the start), 2 (+0x68, the end), 3 (+0xa0, the failure),
+/// 0xd (+0x84, the one after the end's wait).
+pub const LAYOUT_START: usize = 0;
+pub const LAYOUT_END: usize = 1;
+pub const LAYOUT_FAIL: usize = 2;
+pub const LAYOUT_AFTER: usize = 3;
+
+impl Layout {
+    pub fn from_record(r: &Record, entries: &[kh2_bar::Entry]) -> Option<(usize, Layout)> {
+        let (slot, kind) = match r.op {
+            1 => (LAYOUT_START, 0xc),
+            2 => (LAYOUT_END, 0xe),
+            3 => (LAYOUT_FAIL, 0xf),
+            0xd => (LAYOUT_AFTER, 0xe),
+            _ => return None,
+        };
+        let w = *r.args.first()?;
+        let (entry, picture, object) = (w as u8, (w >> 8) as u8, (w >> 16) as u16);
+        let kind = if kind == 0xc && picture != 0 { 0xd } else { kind };
+        let cmds = entries.get(entry as usize).and_then(|e| kh2_ard::parse_event(e.data)).unwrap_or_default();
+        let at = |op: u16| cmds.iter().find(|c| c.opcode == op).and_then(|c| c.data.get(0..2)).map(|b| i16::from_le_bytes([b[0], b[1]]) as i32);
+        Some((slot, Layout { op: r.op, kind, entry, picture, object, end: at(8).unwrap_or(-1), picture_at: at(0x50) }))
+    }
+
+    /// The BAR entries (image, sequence) of its picture.
+    pub fn picture_entries(&self) -> Option<(usize, usize)> {
+        (self.picture > 0).then(|| (self.picture as usize - 1, self.picture as usize))
+    }
+}
+
+/// The event kind rows (`03system.bin` entry `evtp`, 8 bytes each after an 8-byte head, looked up by
+/// `FUN_001d1128`): byte 0 the kind, +2 the flags `FUN_00195ae0` / `FUN_00196170` test.
+pub fn event_kinds(sys: &[u8]) -> Vec<(u8, u16)> {
+    let Ok(entries) = kh2_bar::parse(sys) else { return Vec::new() };
+    let Some(e) = entries.iter().find(|e| e.tag.to_string() == "evtp") else { return Vec::new() };
+    e.data.get(8..).unwrap_or_default().chunks_exact(8).map(|r| (r[0], u16::from_le_bytes([r[2], r[3]]))).collect()
+}
+
+/// One event playing (`DAT_0035e3a4`: one at a time; a new one ends the old, `FUN_00195ae0`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Play {
+    pub what: &'static str,
+    pub layout: Layout,
+    /// The kind row's flags (`evtp` +2).
+    pub flags: u16,
+    /// Game frames since the start. The event frame is half of it (`FUN_00222728`: the counter adds the frame
+    /// step, 1.0, each frame and the frame is the counter times 0.5 at 0x37ec50) [inferred: the startup states of
+    /// the event object (`FUN_00195c08`, fades) take no time here].
+    pub ticks: i32,
+}
+
+impl Play {
+    pub fn frame(&self) -> i32 {
+        self.ticks / 2
+    }
+
+    /// `FUN_00195ae0`: kind flag bit 3 clear -> `FUN_00196280`, players 0 and 1 lose control (`FUN_001b7ce8`;
+    /// `FUN_001b7d50` reads it) until the end (`FUN_00196170` -> `FUN_001962a0`).
+    pub fn locks_control(&self) -> bool {
+        self.flags & 8 == 0
+    }
+
+    /// `FUN_00195ae0`: kind flag bit 2 clear -> `FUN_00196760` -> `FUN_0014ef48` hides the field HUD's draw tags 3
+    /// to 6 (`FUN_0013da78`; tag 6 is the target gauge, `FUN_00154498`) until the end (`FUN_00196790`).
+    pub fn hides_hud(&self) -> bool {
+        self.flags & 4 == 0
+    }
+
+    /// `FUN_00222668`: the event ends when its frame reaches the end frame.
+    pub fn ended(&self) -> bool {
+        self.layout.end >= 0 && self.frame() >= self.layout.end
+    }
+
+    /// `FUN_00224b98`: frames left (0 without an end frame).
+    pub fn remaining(&self) -> i32 {
+        if self.layout.end < 0 { 0 } else { self.layout.end - self.frame() }
+    }
+
+    pub fn picture_shown(&self) -> bool {
+        self.layout.picture_at.is_some_and(|f| self.frame() >= f)
+    }
+}
+
+/// What the end of the mission's update does (`FUN_001b96e0`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Finish {
+    /// Mission kinds 2, 0x19, 0x20 or event 0x9c: the menu of record 0x1a opens (`FUN_001bef10(0x1a)` ->
+    /// `FUN_0024f330`); the manager stays.
+    Menu,
+    /// The event goes to the area (`FUN_00197b70`): a trigger that takes it ends the manager (`FUN_001b9518`);
+    /// event 8 that no trigger takes ends it too, with the game-over path (`FUN_001b9ce0`).
+    Event(u32, i32),
+    /// `FUN_001b9ce0`: the manager ends and the game-over path runs (kind 2, 0x1e, 0x23: `FUN_001ad8e0(0)`, else
+    /// `FUN_001ad868`; neither is ported).
+    GameOver,
+    /// The manager ends (host 4.22, `FUN_001b9908`).
+    Gone,
 }
 
 /// A HUD element record (opcodes 4 to 9, `FUN_001d6110`): words +4, +8, +0xc go to the element's init
@@ -241,6 +418,15 @@ pub struct Taker {
     pub centre: Vec3,
     /// The Draw ability's reach added for the player (+0x588 bit 4).
     pub extra: f32,
+    /// The pickup passes it by (`pickup_skipped`).
+    pub skip: bool,
+}
+
+/// `FUN_001cadd8` passes a fighter by while `FUN_00185a08` (its last requested motion, +0x154 = controller
+/// (+0x140) +0x14, is 10 to 39: the reaction motions, host 2.6 `in_reaction`) or `FUN_00185a38` (140 to 150) holds,
+/// or while its +0x168 bit 0x40 is set (the writer of that bit was not found; it reads clear here).
+pub fn pickup_skipped(motion: Option<usize>) -> bool {
+    motion.is_some_and(|m| (10..40).contains(&m) || (140..151).contains(&m))
 }
 
 /// One frame of an orb: the prize update without the life count; at the pickup check the first fighter in
@@ -257,7 +443,7 @@ pub fn orb_tick(o: &mut Orb, c: &Consts, sweep: impl Fn(Vec3, Vec3) -> prize::Sw
     let mut side = None;
     if prize::shrink_or_check(&mut o.p, c, &sweep)
         && o.p.pickable
-        && let Some(t) = takers.iter().find(|t| prize::in_reach(c, &o.p, t.feet, t.extra))
+        && let Some(t) = takers.iter().find(|t| !t.skip && prize::in_reach(c, &o.p, t.feet, t.extra))
     {
         prize::start_absorb(&mut o.p, c, t.centre);
         o.taker = Some(t.ent);
@@ -273,6 +459,8 @@ pub fn orb_tick(o: &mut Orb, c: &Consts, sweep: impl Fn(Vec3, Vec3) -> prize::Sw
 #[derive(Resource, Default)]
 pub struct Mission {
     pub m: Option<Box<Active>>,
+    /// Orb entities left by a manager that ended, for `show_orbs` to remove.
+    pub gone: Vec<Entity>,
 }
 
 pub struct Active {
@@ -312,6 +500,29 @@ pub struct Active {
     /// How the match ended (`time`, `win`, `lose`) and its result, once known.
     pub end_cause: Option<&'static str>,
     pub result: Option<&'static str>,
+    /// The layout records (`LAYOUT_*`).
+    pub layouts: [Option<Layout>; 4],
+    /// The event kind rows (`evtp`).
+    pub kinds: Vec<(u8, u16)>,
+    /// The area triggers the end looks up.
+    pub triggers: Vec<Trig>,
+    /// +0x2d8: the update state of `FUN_001b9140` (0 wait to show, 1 running, 2 / 3 / 4 the end).
+    pub state: u8,
+    /// +0x2dc, +0x2e0: the end event and its argument.
+    pub end_ev: u32,
+    pub end_arg: i32,
+    /// The event playing (`DAT_0035e3a4`).
+    pub play: Option<Play>,
+    /// +0xb4 = 2: the failure path ran (`FUN_001b9818`).
+    pub failed: bool,
+    /// Bit 0x20000 of `DAT_0035d268` (host 1.317): the player's knock-out ends the match (`FUN_001cec00` sends
+    /// global event 0x5a) instead of the game-over path.
+    pub ko_loses: bool,
+    /// Interface sounds to play (`FUN_002c3318`).
+    pub sounds: Vec<u32>,
+    /// The end's last step (`FUN_001b96e0`), once reached, and the same waiting for `mission_tick`.
+    pub finish: Option<Finish>,
+    pub pending: Option<Finish>,
 }
 
 impl Active {
@@ -347,6 +558,151 @@ impl Active {
     pub fn no_prizes(&self) -> bool {
         self.header.flags & 0x40 != 0
     }
+
+    fn trigger(&self, ev: u32, arg: i32) -> Option<Trig> {
+        self.triggers.iter().copied().find(|t| t.matches(ev, arg))
+    }
+
+    /// `FUN_001d3538` + `FUN_00195ae0`: plays a layout record's event (none when the record is absent). A new
+    /// event ends the one playing; an event pauses the clock with bit 4 (`FUN_0014c748(4)`, `FUN_001959f0`
+    /// clears it at the end).
+    fn play_layout(&mut self, slot: usize, what: &'static str) {
+        let Some(l) = self.layouts[slot].clone() else { return };
+        let flags = self.kinds.iter().find(|(k, _)| *k == l.kind).map_or(0, |(_, f)| *f);
+        info!(
+            "struggle: layout {what} (record {}): event entry {}, kind {:#x} (flags {flags:#06x}), picture {}, end frame {}, picture from frame {:?}",
+            l.op, l.entry, l.kind, l.picture, l.end, l.picture_at
+        );
+        self.play = Some(Play { what, layout: l, flags, ticks: 0 });
+        self.clock.pause |= 4;
+    }
+
+    /// `FUN_001b8ee8`'s tail: the start sound (header +0x10) and the start layout (record 1, at once).
+    pub fn begin(&mut self) {
+        if self.header.se_start != 0 {
+            self.sounds.push(self.header.se_start);
+        }
+        self.play_layout(LAYOUT_START, "start");
+        self.state = 0;
+    }
+
+    /// `FUN_001b95a0(event, argument)`: the end sound (header +0x14), the stop (`FUN_001b9940`), then the end
+    /// layout (record 2): with event 0x10 or 0x9c, or a trigger for the event when the header has no flag 0x40,
+    /// the update waits for the event's last frames (state 2), else for its end (state 4). Without record 2 the
+    /// last step runs at once.
+    fn end_through(&mut self, ev: u32, arg: i32) {
+        if self.header.unlock != 0 {
+            info!("struggle: header +0xd {} (FUN_001be6b8) is not ported", self.header.unlock);
+        }
+        if self.header.se_end != 0 {
+            self.sounds.push(self.header.se_end);
+        }
+        self.stop();
+        if self.layouts[LAYOUT_END].is_some() {
+            let has = self.trigger(ev, -1).is_some();
+            let wait_last = ev == 0x10 || ev == 0x9c || (has && self.header.flags & 0x40 == 0);
+            self.play_layout(LAYOUT_END, "end");
+            self.state = if wait_last { 2 } else { 4 };
+            self.end_arg = arg;
+            self.end_ev = ev;
+            return;
+        }
+        self.set_finish(self.finish_step(ev, arg));
+    }
+
+    /// Host 4.3 (`FUN_001b9780`): the end with event 7, or 0x9c when the mission kind is 0x1e (`FUN_001ba100`) and
+    /// the trigger for (7, argument) has a story flag that is set.
+    fn host_end(&mut self, arg: i32) {
+        let set = self.header.kind == 0x1e && self.trigger(7, arg).and_then(|t| t.story_flag).is_some_and(|f| f != 0xffff && self.story.contains(&(f as i32)));
+        self.end_through(if set { 0x9c } else { 7 }, arg);
+    }
+
+    /// Host 4.11 (`FUN_001b9818`): the failure sound (header +0x18), +0xb4 = 2, the failure layout (record 3), the
+    /// stop; with a trigger for event 8 or a picture on record 3 (`FUN_001b98a8`: +0xac) the end waits for the
+    /// layout and then runs the last step with event 8; otherwise the manager ends at once (`FUN_001b9ce0`).
+    fn host_fail(&mut self) {
+        if self.header.se_fail != 0 {
+            self.sounds.push(self.header.se_fail);
+        }
+        self.failed = true;
+        self.play_layout(LAYOUT_FAIL, "failure");
+        self.stop();
+        let pictured = self.layouts[LAYOUT_FAIL].as_ref().is_some_and(|l| l.picture != 0);
+        if self.trigger(8, -1).is_some() || pictured {
+            self.end_ev = 8;
+            self.end_arg = -1;
+            self.state = 4;
+        } else {
+            self.set_finish(Finish::GameOver);
+        }
+    }
+
+    fn set_finish(&mut self, f: Finish) {
+        self.finish = Some(f);
+        self.pending = Some(f);
+    }
+
+    /// `FUN_001b96e0`: the last step.
+    fn finish_step(&self, ev: u32, arg: i32) -> Finish {
+        if self.header.ends_in_menu() || ev == 0x9c { Finish::Menu } else { Finish::Event(ev, arg) }
+    }
+
+    /// One frame of the event playing (the event player) and of the manager's update (`FUN_001b9140`). The last
+    /// step, once the end reaches it, waits in `pending`.
+    pub fn flow_tick(&mut self) {
+        if let Some(p) = self.play.as_mut() {
+            p.ticks += 1;
+            if p.ended() {
+                info!("struggle: layout {} ended at event frame {}", p.what, p.frame());
+                self.play = None;
+                self.clock.pause &= !4;
+            }
+        }
+        match self.state {
+            // Wait while an event holds the player (FUN_001794f0 false), then show the elements.
+            0 => {
+                if self.play.as_ref().is_none_or(|p| !p.locks_control()) {
+                    // [inferred] the show is skipped when manager +4 bit 1 is set; its writer was not found and it
+                    // reads clear here.
+                    self.show();
+                    self.state = 1;
+                }
+            }
+            2 => self.state = 3,
+            // FUN_00196668: frames left of the event (none playing: 0); at 4 or less (0x37bbc8) record 0xd plays.
+            3 => {
+                if self.play.as_ref().is_some_and(|p| p.remaining() > 4) {
+                    return;
+                }
+                if self.end_ev == 0x9c {
+                    info!("struggle: event 0x9c: sound 0x1b68 with the sound pause (FUN_002c38c8) is not ported");
+                }
+                if self.layouts[LAYOUT_AFTER].is_none() {
+                    info!("struggle: no record 0xd; the game would play event {} of 00battle.bin (FUN_00193f08), not ported", if self.end_ev == 0x10 { 2 } else { 1 });
+                }
+                self.play_layout(LAYOUT_AFTER, "after");
+                self.state = 4;
+            }
+            4 if self.play.is_none() && self.finish.is_none() => {
+                let f = self.finish_step(self.end_ev, self.end_arg);
+                self.set_finish(f);
+            }
+            _ => {}
+        }
+    }
+    /// `FUN_001d5f00`: the elements come up; the clock record's show method `FUN_001cf748` starts the clock.
+    fn show(&mut self) {
+        self.shown = true;
+        for c in self.counters.iter_mut().filter(|c| c.active) {
+            c.shown = true;
+        }
+        if let Some(r) = self.clock_rec {
+            let max = (r.max_word & 0xbfff_ffff) as i32;
+            self.clock.begin(r.start, max);
+            info!("struggle: clock starts: {} s{}", r.start, if r.start < 1 { " counting up" } else { " counting down" });
+        }
+        info!("struggle: mission HUD shown: player {} orbs, opponent {}", self.counter_value(0), self.counter_value(1));
+    }
 }
 
 impl Mission {
@@ -357,6 +713,28 @@ impl Mission {
 
     pub fn no_prizes(&self) -> bool {
         self.m.as_ref().is_some_and(|a| a.no_prizes())
+    }
+
+    /// An event of the mission is playing (`DAT_0035e3a4` non-zero: host 1.34 `event_active`).
+    pub fn event_active(&self) -> bool {
+        self.m.as_ref().is_some_and(|a| a.play.is_some())
+    }
+
+    /// The playing layout keeps the players from acting (`FUN_00196280`; read by `FUN_001b7d50`).
+    pub fn control_locked(&self) -> bool {
+        self.m.as_ref().and_then(|a| a.play.as_ref()).is_some_and(|p| p.locks_control())
+    }
+
+    /// The playing layout hides the field HUD (draw tags 3 to 6, `FUN_0014ef48`).
+    pub fn hud_hidden(&self) -> bool {
+        self.m.as_ref().and_then(|a| a.play.as_ref()).is_some_and(|p| p.hides_hud())
+    }
+
+    /// The mission stopped (`FUN_001b9940`: manager +4 bits 4 and 0x10, bit 2 of `DAT_0035d268`): the commands
+    /// are refused (`FUN_001ba2c0` -> `FUN_001b70b8` answers 5), the player's method +0x60 reports busy
+    /// (`FUN_001789d8` -> `FUN_00175ad8`), the counters and the clock no longer move.
+    pub fn fight_stopped(&self) -> bool {
+        self.m.as_ref().is_some_and(|a| a.stopped)
     }
 }
 
@@ -376,6 +754,12 @@ pub fn build(id: u32, name: &str, file: Vec<u8>, orb_pool: bool, table: Option<&
         }
         None => None,
     };
+    let mut layouts: [Option<Layout>; 4] = Default::default();
+    for r in &header.records {
+        if let Some((slot, l)) = Layout::from_record(r, &entries) {
+            layouts[slot] = Some(l);
+        }
+    }
     drop(entries);
     let mut counters: [Counter; 3] = Default::default();
     let mut clock_rec = None;
@@ -422,6 +806,18 @@ pub fn build(id: u32, name: &str, file: Vec<u8>, orb_pool: bool, table: Option<&
         tallies: HashMap::new(),
         end_cause: None,
         result: None,
+        layouts,
+        kinds: Vec::new(),
+        triggers: Vec::new(),
+        state: 0,
+        end_ev: 0,
+        end_arg: 0,
+        play: None,
+        failed: false,
+        ko_loses: false,
+        sounds: Vec::new(),
+        finish: None,
+        pending: None,
     })
 }
 
@@ -470,22 +866,38 @@ impl Host for MissionHost<'_> {
                 a.events.push((arg(0) as u32, arg(1)));
                 Value::None
             }
-            // 1.317 (0x173b70): bit 0x20000 of DAT_0035d268 (meaning not traced).
-            (1, 317) => Value::None,
-            // 4.3 (FUN_001b9780), 4.16 (FUN_001b97f0), 4.11 (FUN_001b9818), 4.22 (0x19e910): the mission ends
-            // with result event 7 (or 0x9c), 0x10, the failure path (+0xb4 = 2), or global event 0xf.
-            (4, 3) | (4, 16) | (4, 11) | (4, 22) => {
-                let what = match i {
-                    3 => "event 7 (FUN_001b9780)",
-                    16 => "event 0x10 (FUN_001b97f0)",
-                    11 => "the failure path (FUN_001b9818)",
-                    _ => "global event 0xf (0x19e910)",
-                };
-                info!("struggle: mission {} ends through host 4.{i}: {what}; result layouts and the area event are not in the app", a.name);
+            // 1.317 (0x173b70): bit 0x20000 of DAT_0035d268. Its readers: the player's knock-out (FUN_001cec00,
+            // the player class 0x360410 method +0x5c) sends global event 0x5a instead of the game-over path, and
+            // the damage formula (FUN_001a0610 -> FUN_001a0968) scales by the word at 0x1d5d7c8 plus 1 (no writer
+            // found besides the clear FUN_001b81f8: factor 1, nothing to port).
+            (1, 317) => {
+                a.ko_loses = true;
+                Value::None
+            }
+            // 4.3 (FUN_001b9780 -> FUN_001b95a0): the end with event 7 (or 0x9c).
+            (4, 3) => {
+                info!("struggle: mission {} ends through host 4.3 (FUN_001b9780)", a.name);
+                a.host_end(arg(0));
+                Value::None
+            }
+            // 4.16 (FUN_001b97f0): the end with event 0x10.
+            (4, 16) => {
+                info!("struggle: mission {} ends through host 4.16 (FUN_001b97f0)", a.name);
+                a.end_through(0x10, arg(0));
+                Value::None
+            }
+            // 4.11 (FUN_001b9818): the failure path.
+            (4, 11) => {
+                info!("struggle: mission {} ends through host 4.11 (FUN_001b9818, the failure path)", a.name);
+                a.host_fail();
+                Value::None
+            }
+            // 4.22 (0x19e910 -> FUN_001b9908): the stop, the manager ends (FUN_001b9518), global event 0xf.
+            (4, 22) => {
+                info!("struggle: mission {} ends through host 4.22 (FUN_001b9908): the manager goes, global event 0xf", a.name);
                 a.stop();
-                if i == 22 {
-                    a.events.push((0xf, arg(0)));
-                }
+                a.set_finish(Finish::Gone);
+                a.events.push((0xf, arg(0)));
                 Value::None
             }
             // 4.29 (FUN_001d6738): a counter's value.
@@ -542,6 +954,7 @@ struct ScriptEnv {
     table: Option<kh2_bdx::HostTable>,
     unknown: HashSet<(u16, u16)>,
     loaded: bool,
+    kinds: Vec<(u8, u16)>,
 }
 
 fn start_mission(disc: Res<Disc>, mut starts: MessageReader<MissionStart>, mut mission: ResMut<Mission>, mut env: Local<ScriptEnv>) {
@@ -553,6 +966,10 @@ fn start_mission(disc: Res<Disc>, mut starts: MessageReader<MissionStart>, mut m
     if !env.loaded {
         env.loaded = true;
         env.table = disc.read_root("SLUS_210.05").and_then(|e| kh2_bdx::HostTable::from_exe(&e));
+        env.kinds = disc.read("03system.bin").map(|s| event_kinds(&s)).unwrap_or_default();
+        if env.kinds.is_empty() {
+            warn!("struggle: no event kind rows (03system.bin evtp); layouts lock nothing");
+        }
     }
     let path = format!("msn/us/{}.bar", s.name);
     let Some(file) = disc.read(&path) else {
@@ -569,6 +986,8 @@ fn start_mission(disc: Res<Disc>, mut starts: MessageReader<MissionStart>, mut m
                 rt.start_thread(0, 3, &[]);
             }
             a.rt = rt;
+            a.kinds = env.kinds.clone();
+            a.triggers = s.triggers.clone();
             info!(
                 "struggle: mission {} ({:#x}) from {path}: flags {:#06x}, counters {:?}, clock {:?}, orb pool {}, script {}",
                 a.name,
@@ -579,6 +998,16 @@ fn start_mission(disc: Res<Disc>, mut starts: MessageReader<MissionStart>, mut m
                 a.orb_pool,
                 if a.rt.is_some() { "yes" } else { "no" }
             );
+            info!(
+                "struggle: mission kind {}, sounds {:#x} {:#x} {:#x}, layouts {:?}, area triggers {:?}",
+                a.header.kind,
+                a.header.se_start,
+                a.header.se_end,
+                a.header.se_fail,
+                a.layouts.iter().map(|l| l.as_ref().map(|l| (l.op, l.entry, l.picture, l.end))).collect::<Vec<_>>(),
+                a.triggers
+            );
+            a.begin();
             mission.m = Some(Box::new(a));
         }
         Err(e) => warn!("struggle: {e}"),
@@ -681,25 +1110,46 @@ fn enemy_orb_loss(
     }
 }
 
-/// The mission's frame: the HUD elements come up when the mission starts (`FUN_001b9140` state 0 ->
-/// `FUN_001d5f00`; the clock record's show method `FUN_001cf748` starts the clock), the clock ticks, the
-/// script runs, and the global events of the frame are delivered.
-fn mission_tick(mut mission: ResMut<Mission>, mut out: MessageWriter<GlobalEvent>, mut unknown: Local<HashSet<(u16, u16)>>) {
-    let Some(a) = mission.m.as_deref_mut() else { return };
-    if !a.shown {
-        a.shown = true;
-        for c in a.counters.iter_mut().filter(|c| c.active) {
-            c.shown = true;
-        }
-        if let Some(r) = a.clock_rec {
-            let max = (r.max_word & 0xbfff_ffff) as i32;
-            a.clock.begin(r.start, max);
-            info!("struggle: clock starts: {} s{}", r.start, if r.start < 1 { " counting up" } else { " counting down" });
-        }
-        info!("struggle: mission HUD shown: player {} orbs, opponent {}", a.counter_value(0), a.counter_value(1));
+/// The mission's frame: the event playing and the manager's update (`FUN_001b9140`: the elements come up once the
+/// start layout lets the player act, `FUN_001d5f00`; the clock record's show method `FUN_001cf748` starts the
+/// clock), the clock ticks, the script runs, the global events of the frame are delivered, the player's knock-out
+/// is reported (`FUN_001cec00`), and the end's last step (`FUN_001b96e0`) runs.
+#[allow(clippy::too_many_arguments)]
+fn mission_tick(
+    mut mission: ResMut<Mission>,
+    mut out: MessageWriter<GlobalEvent>,
+    mut sounds: MessageWriter<crate::audio::PlaySe>,
+    sora: Query<&Sora>,
+    mut last_hp: Local<Option<i32>>,
+    mut unknown: Local<HashSet<(u16, u16)>>,
+    mut seen: Local<(bool, bool)>,
+) {
+    // The player lock of a layout and the stop, for the log (the app's player controller does not read them yet).
+    let now = (mission.control_locked(), mission.fight_stopped());
+    if *seen != now {
+        info!("struggle: player control locked by a layout: {}, fight stopped (FUN_001b9940): {}", now.0, now.1);
+        *seen = now;
     }
+    let Some(a) = mission.m.as_deref_mut() else {
+        *last_hp = None;
+        return;
+    };
+    a.flow_tick();
     if a.clock.tick() {
         a.events.push((EV_CLOCK_END, 0));
+    }
+    // The player's knock-out (FUN_00186238 -> FUN_00186530 -> method +0x5c, FUN_001cec00 for the player class
+    // 0x360410): with bit 0x20000 (host 1.317) it sends global event 0x5a, which the Struggle script takes as a loss.
+    if let Ok(s) = sora.single() {
+        if s.hp <= 0 && last_hp.is_some_and(|h| h > 0) {
+            if a.ko_loses {
+                info!("struggle: Sora knocked out: global event 0x5a (FUN_001cec00)");
+                a.events.push((EV_PLAYER_KO, 0));
+            } else {
+                info!("struggle: Sora knocked out without host 1.317's bit: the game-over path (not ported)");
+            }
+        }
+        *last_hp = Some(s.hp);
     }
     let mut rt = a.rt.take();
     if let Some(rt) = rt.as_mut() {
@@ -720,14 +1170,55 @@ fn mission_tick(mut mission: ResMut<Mission>, mut out: MessageWriter<GlobalEvent
         }
     }
     a.rt = rt;
+    for se in a.sounds.drain(..) {
+        info!("struggle: sound {se:#x} (FUN_002c3318)");
+        sounds.write(crate::audio::PlaySe::number(se, None));
+    }
+    let Some(f) = a.pending.take() else { return };
+    let (p, o) = (a.counter_value(0), a.counter_value(1));
+    let gone = match f {
+        Finish::Menu => {
+            info!("struggle: last step (FUN_001b96e0): mission kind {} opens the menu of record 0x1a (FUN_0024f330), which the app does not have; the manager stays (player {p} orbs, opponent {o})", a.header.kind);
+            false
+        }
+        Finish::Event(ev, arg) => {
+            out.write(GlobalEvent { id: ev, arg });
+            match a.trigger(ev, arg) {
+                Some(t) => {
+                    info!("struggle: last step (FUN_001b96e0): event {ev:#x} to the area: trigger {t:?} takes it; the manager ends (FUN_001b9518)");
+                    true
+                }
+                None if ev == 8 => {
+                    info!("struggle: last step (FUN_001b96e0): event 8 with no trigger: the manager ends with the game-over path (FUN_001b9ce0, not ported)");
+                    true
+                }
+                None => {
+                    info!("struggle: last step (FUN_001b96e0): event {ev:#x} to the area: no trigger takes it; the manager stays");
+                    false
+                }
+            }
+        }
+        Finish::GameOver => {
+            info!("struggle: the manager ends with the game-over path (FUN_001b9ce0, not ported)");
+            true
+        }
+        Finish::Gone => true,
+    };
+    if gone {
+        // FUN_001b90d0: the elements and the clock go with the manager; the orbs' entities are removed.
+        let orbs: Vec<Entity> = a.orbs.drain(..).flat_map(|o| o.ent).chain(a.gone.drain(..)).collect();
+        mission.gone.extend(orbs);
+        mission.m = None;
+        info!("struggle: mission manager ended (player {p} orbs, opponent {o})");
+    }
 }
-
 /// The log lines of the events the Struggle cares about.
 fn note_event(a: &mut Active, id: u32, arg: i32) {
     let (p, o) = (a.counter_value(0), a.counter_value(1));
     let cause = match id {
         EV_COUNTER_FULL => Some(if arg == 0 { "win" } else { "lose" }),
         EV_CLOCK_END => Some("time"),
+        EV_PLAYER_KO => Some("knock-out"),
         _ => None,
     };
     if let Some(cause) = cause
@@ -791,6 +1282,9 @@ fn show_orbs(
     mut ticks: Local<f32>,
     time: Res<Time>,
 ) {
+    for e in mission.gone.drain(..) {
+        commands.entity(e).despawn();
+    }
     let Some(a) = mission.m.as_deref_mut() else { return };
     for e in a.gone.drain(..) {
         commands.entity(e).despawn();
@@ -855,12 +1349,15 @@ fn run_orbs(
     {
         let feet = tf.translation / SCALE;
         let extra = abilities.as_ref().map_or(0.0, |x| x.block().draw_radius);
-        takers.push(Taker { ent, player: true, feet: flip(feet), centre: flip(centre_of(&bodies, s.body, feet)), extra });
+        // The player's motion id is its MSET slot / 4 (`Mset::slot`: four state variants per motion).
+        let skip = pickup_skipped(bodies.get(s.body).ok().and_then(|(an, _)| an.slot).map(|sl| sl / 4));
+        takers.push(Taker { ent, player: true, feet: flip(feet), centre: flip(centre_of(&bodies, s.body, feet)), extra, skip });
     }
     for (ent, tf, e) in &enemies {
         if e.alive() {
             let feet = tf.translation / SCALE;
-            takers.push(Taker { ent, player: false, feet: flip(feet), centre: flip(centre_of(&bodies, e.body, feet)), extra: 0.0 });
+            let skip = pickup_skipped(bodies.get(e.body).ok().and_then(|(an, _)| an.slot));
+            takers.push(Taker { ent, player: false, feet: flip(feet), centre: flip(centre_of(&bodies, e.body, feet)), extra: 0.0, skip });
         }
     }
     let w = world.as_deref();
@@ -899,6 +1396,8 @@ fn run_orbs(
 pub const EV_COUNTER_EMPTY: u32 = 0xe;
 /// Global event a counter sends when it reaches its maximum from below (`FUN_001cf9e8`, 0x7b).
 pub const EV_COUNTER_FULL: u32 = 0x7b;
+/// Global event of the player's knock-out with host 1.317's bit (`FUN_001cec00`: `FUN_00197b70(0x5a, 0)`).
+pub const EV_PLAYER_KO: u32 = 0x5a;
 /// Global event the clock sends when it runs out (`FUN_0014c560`: `FUN_00197b70(0x4a, 0)`).
 pub const EV_CLOCK_END: u32 = 0x4a;
 /// Highest value of a clock that counts up (`FUN_0014c560`, 0x34bbf frames: one hour less a frame).
@@ -1115,7 +1614,19 @@ mod tests {
         // The thread's first frame (it clears its state and waits).
         rt.update_script(&mut MissionHost { a: &mut a, unknown: &mut unknown });
         a.rt = Some(rt);
+        a.kinds = disc.read("03system.bin").map(|s| event_kinds(&s)).unwrap_or_default();
         a
+    }
+
+    /// Runs the manager's frames until the last step (at most `max` frames); returns it and the frames taken.
+    fn run_to_finish(a: &mut Active, max: i32) -> (Option<Finish>, i32) {
+        for f in 1..=max {
+            a.flow_tick();
+            if let Some(x) = a.pending.take() {
+                return (Some(x), f);
+            }
+        }
+        (None, max)
     }
 
     /// Delivers one global event to the script and runs a few frames; returns the events it raised.
@@ -1172,6 +1683,141 @@ mod tests {
     }
 
     #[test]
+    fn the_struggle_layouts_and_sounds_come_from_the_header() {
+        let Some(disc) = disc() else { return };
+        for name in ["TT04_MS00", "TT04_MS01", "TT04_MS02"] {
+            let a = struggle(&disc, name);
+            let h = &a.header;
+            assert_eq!((h.kind, h.se_start, h.se_end, h.se_fail, h.unlock), (2, 0xbcd, 0xbce, 0xbcf, 0), "{name}");
+            assert!(h.ends_in_menu());
+            let l = |s: usize| a.layouts[s].as_ref().map(|l| (l.op, l.kind, l.entry, l.picture, l.object, l.end, l.picture_at));
+            // Record 1: event entry 2 with picture 4 (st_t) -> kind 0xd; records 2 and 3: entries 5 and 8 with the
+            // two ed_t pictures; every event ends at frame 500 and shows its picture from frame 11.
+            assert_eq!(l(LAYOUT_START), Some((1, 0xd, 2, 4, 0, 500, Some(11))), "{name}");
+            assert_eq!(l(LAYOUT_END), Some((2, 0xe, 5, 7, 0, 500, Some(11))), "{name}");
+            assert_eq!(l(LAYOUT_FAIL), Some((3, 0xf, 8, 10, 0, 500, Some(11))), "{name}");
+            assert_eq!(l(LAYOUT_AFTER), None, "{name}");
+            // The event kinds: all three hold the player (flag bit 3 clear); only the start's hides the field HUD.
+            let flags = |k: u8| a.kinds.iter().find(|(x, _)| *x == k).map(|(_, f)| *f);
+            assert_eq!((flags(0xd), flags(0xe), flags(0xf)), (Some(0x60), Some(0x44), Some(0x64)));
+        }
+    }
+
+    #[test]
+    fn the_start_layout_holds_the_hud_until_it_ends() {
+        let Some(disc) = disc() else { return };
+        let mut a = struggle(&disc, "TT04_MS00");
+        a.begin();
+        assert_eq!(a.sounds, vec![0xbcd]);
+        let p = a.play.clone().expect("start layout");
+        assert!(p.locks_control() && p.hides_hud());
+        assert_eq!(a.clock.pause & 4, 4, "an event pauses the clock");
+        let mut shown_at = None;
+        for f in 1..=1100 {
+            a.flow_tick();
+            if a.play.as_ref().is_some_and(|p| p.frame() == 11) && !a.play.as_ref().unwrap().picture_shown() {
+                panic!("the picture shows from event frame 11");
+            }
+            if a.shown {
+                shown_at = Some(f);
+                break;
+            }
+        }
+        // 500 event frames at half the game's frame rate.
+        assert_eq!(shown_at, Some(1000));
+        assert!(a.play.is_none() && a.clock.pause & 4 == 0 && a.state == 1);
+        assert!(a.counters[0].shown && a.clock.state == 1);
+    }
+
+    #[test]
+    fn the_struggle_end_plays_its_layout_then_opens_the_menu() {
+        let Some(disc) = disc() else { return };
+        for name in ["TT04_MS00", "TT04_MS01", "TT04_MS02"] {
+            // Won: host 4.3 -> event 7, the end sound and record 2's layout; the mission kind 2 opens the menu.
+            let mut a = struggle(&disc, name);
+            a.state = 1;
+            a.shown = true;
+            a.counters.iter_mut().for_each(|c| c.shown = true);
+            deliver(&mut a, EV_COUNTER_FULL, 0);
+            assert!(a.stopped && !a.failed, "{name}");
+            assert_eq!((a.state, a.end_ev, a.sounds.clone()), (4, 7, vec![0xbce]), "{name}");
+            assert_eq!(a.play.as_ref().map(|p| (p.what, p.locks_control(), p.hides_hud())), Some(("end", true, false)));
+            // The last step comes in the frame the layout's 500 event frames end.
+            assert_eq!(run_to_finish(&mut a, 2000), (Some(Finish::Menu), 1000), "{name}");
+            // Lost: host 4.11 -> the failure sound and record 3's layout, then event 8's last step: the menu.
+            let mut a = struggle(&disc, name);
+            a.shown = true;
+            a.counters.iter_mut().for_each(|c| c.shown = true);
+            deliver(&mut a, EV_COUNTER_FULL, 1);
+            assert!(a.stopped && a.failed, "{name}");
+            assert_eq!((a.state, a.end_ev, a.end_arg, a.sounds.clone()), (4, 8, -1, vec![0xbcf]), "{name}");
+            assert_eq!(a.play.as_ref().map(|p| p.what), Some("failure"));
+            assert_eq!(run_to_finish(&mut a, 2000).0, Some(Finish::Menu), "{name}");
+            // A stopped mission's counters stay.
+            let v = a.counter_value(0);
+            a.change(0, |c| c.add(5));
+            assert_eq!(a.counter_value(0), v);
+        }
+    }
+
+    #[test]
+    fn with_a_trigger_and_no_flag_0x40_the_end_waits_for_the_last_frames() {
+        let Some(disc) = disc() else { return };
+        let mut a = struggle(&disc, "TT04_MS00");
+        a.header.flags &= !0x40;
+        a.header.kind = 0;
+        a.triggers = vec![Trig { event: 7, arg: 0xffff, story_flag: None, plays_event: false, jumps: true }];
+        a.end_through(7, 3);
+        assert_eq!(a.state, 2);
+        // State 2 -> 3, then the wait for 4 frames left (FUN_00196668 against 4.0 at 0x37bbc8), then state 4.
+        let mut at = None;
+        for f in 1..=1100 {
+            a.flow_tick();
+            if a.state == 4 {
+                at = Some(f);
+                break;
+            }
+        }
+        assert_eq!(at, Some(992), "event frame 496 = 500 - 4");
+        // No record 0xd: nothing new plays (FUN_001d3538 returns), the end layout runs out, then the last step:
+        // the event goes to the area.
+        assert_eq!(run_to_finish(&mut a, 100), (Some(Finish::Event(7, 3)), 8));
+    }
+
+    #[test]
+    fn a_knock_out_with_host_1_317_loses_the_struggle() {
+        let Some(disc) = disc() else { return };
+        for name in ["TT04_MS00", "TT04_MS01", "TT04_MS02"] {
+            let mut a = struggle(&disc, name);
+            assert!(a.ko_loses, "{name}: event 3 calls host 1.317");
+            a.shown = true;
+            assert_eq!(deliver(&mut a, EV_PLAYER_KO, 0), vec![(EV_PLAYER_LOST, 0)], "{name}");
+            assert!(a.failed, "{name}: the loss takes the failure path");
+        }
+    }
+
+    #[test]
+    fn area_triggers_match_by_event_and_argument() {
+        let t = Trig { event: 7, arg: 0xffff, story_flag: Some(2083), plays_event: true, jumps: true };
+        assert!(t.matches(7, -1) && t.matches(7, 5));
+        assert!(!t.matches(8, -1));
+        let u = Trig { arg: 2, ..t };
+        assert!(u.matches(7, 2) && !u.matches(7, 3) && !u.matches(7, -1));
+        let k = kh2_ard::Trigger { event: 7, arg: 0xffff, subs: vec![(2, vec![2083]), (0, vec![8, 12593, 50]), (1, vec![0, 2, 2, 0, 0, 126, 1])] };
+        assert_eq!(Trig::from_ard(&k), t);
+    }
+
+    #[test]
+    fn the_pickup_passes_fighters_in_reaction_motions() {
+        assert!(!pickup_skipped(None));
+        assert!(!pickup_skipped(Some(9)));
+        assert!(pickup_skipped(Some(10)) && pickup_skipped(Some(39)));
+        assert!(!pickup_skipped(Some(40)) && !pickup_skipped(Some(139)));
+        assert!(pickup_skipped(Some(140)) && pickup_skipped(Some(150)));
+        assert!(!pickup_skipped(Some(151)));
+    }
+
+    #[test]
     fn reactions_knock_out_3_or_15_orbs() {
         assert_eq!(orbs_knocked_out(0, 100), 3);
         assert_eq!(orbs_knocked_out(2, 100), 3);
@@ -1212,8 +1858,8 @@ mod tests {
             if e.y >= 0.0 { prize::Sweep { end: e.with_y(0.0), on_floor: true } } else { prize::Sweep { end: e, on_floor: false } }
         };
         let mut o = Orb::new(prize::launch(&c, 2, [0x8000_0000; 3], Vec3::new(0.0, -100.0, 0.0)));
-        let far = Taker { ent: Entity::from_raw_u32(1).unwrap(), player: true, feet: Vec3::new(1000.0, 0.0, 0.0), centre: Vec3::new(1000.0, -90.0, 0.0), extra: 0.0 };
-        let near = Taker { ent: Entity::from_raw_u32(2).unwrap(), player: false, feet: Vec3::ZERO, centre: Vec3::new(0.0, -90.0, 0.0), extra: 0.0 };
+        let far = Taker { ent: Entity::from_raw_u32(1).unwrap(), player: true, feet: Vec3::new(1000.0, 0.0, 0.0), centre: Vec3::new(1000.0, -90.0, 0.0), extra: 0.0, skip: false };
+        let near = Taker { ent: Entity::from_raw_u32(2).unwrap(), player: false, feet: Vec3::ZERO, centre: Vec3::new(0.0, -90.0, 0.0), extra: 0.0, skip: false };
         let mut taken = None;
         for _ in 0..600 {
             let (alive, _, side) = orb_tick(&mut o, &c, floor, &[far, near]);

@@ -241,6 +241,8 @@ pub(crate) struct Env<'a> {
     pub(crate) player_model: u8,
     /// The mission manager's counters (`struggle::Mission`), None without a manager (host 4.29).
     pub(crate) mission_counters: Option<[i32; 3]>,
+    /// A mission layout event is playing (`struggle::Mission::event_active`, host 1.34) (WP-7E2).
+    pub(crate) event_active: bool,
 }
 
 pub(crate) struct BevyHost<'a> {
@@ -468,7 +470,9 @@ impl BevyHost<'_> {
             // FUN_0016b858: byte +0x1c of the spawn record, -1 without one (the app's own waves).
             Call::SpawnKind { .. } => imp(Value::Int(self.obj.spawn_kind)),
             Call::GlobalByte33e830 => approx(Value::Int(2), "world number of Twilight Town"),
-            Call::GlobalFlag4 | Call::GlobalFlag80 | Call::EventActive => stub(Value::Bool(false), "global state set by other scripts"),
+            // 1.34 (0x173888): DAT_0035e3a4 non-zero. The app's only events are the mission's layouts (WP-7E2).
+            Call::EventActive => approx(Value::Bool(self.env.event_active), "only the mission's layout events exist in the app"),
+            Call::GlobalFlag4 | Call::GlobalFlag80 => stub(Value::Bool(false), "global state set by other scripts"),
             Call::GlobalByte301 => stub(Value::Int(0), "global byte at 0x35ea48 + 0x1e, role unknown"),
             Call::Flag124 { .. } => imp(Value::Bool(self.env.flags124)),
             Call::Flag309 { obj } => approx(Value::Bool(*obj == PLAYER), "status bit 0x80: set for the party class"),

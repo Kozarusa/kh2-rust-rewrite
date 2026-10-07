@@ -144,11 +144,15 @@ pub struct DriveGauge {
     pub max: u8,
     /// Progress to the next point, 0 to 99 (+0x1b0).
     pub fraction: u8,
+    /// Modes 2 and 3: the fill inside the current segment, 0.0 to 1.0 (`FUN_00155bf0`: the timer's
+    /// remainder over the segment size, full on the last segment of a full timer). `None` uses
+    /// `fraction`. The summon module fills it in mode 3.
+    pub time_fill: Option<f32>,
 }
 
 impl Default for DriveGauge {
     fn default() -> DriveGauge {
-        DriveGauge { enabled: false, mode: DriveMode::Normal, points: 0, max: 5, fraction: 0 }
+        DriveGauge { enabled: false, mode: DriveMode::Normal, points: 0, max: 5, fraction: 0, time_fill: None }
     }
 }
 
@@ -368,7 +372,14 @@ fn update_drive(scene: &mut HudScene, p: &mut SoraPanel, d: &DriveGauge, tables:
         scene.nodes[burst].visible = false;
     }
     let full = d.points >= d.max;
-    scene.nodes[fill].reveal = Some(if full { 1.0 } else { d.fraction.min(99) as f32 / 100.0 });
+    let reveal = match d.time_fill {
+        // Modes 2 and 3 (FUN_00155bf0): the fill inside the segment; the game turns its mask by
+        // `value * 23 / count` degrees (0x1557f8), approximated by the same left-edge reveal.
+        Some(f) if d.mode != DriveMode::Normal => f.clamp(0.0, 1.0),
+        _ if full => 1.0,
+        _ => d.fraction.min(99) as f32 / 100.0,
+    };
+    scene.nodes[fill].reveal = Some(reveal);
     scene.nodes[max].visible = full && d.mode == DriveMode::Normal;
     for n in [bar, fill, digit] {
         scene.nodes[n].visible = true;
@@ -463,7 +474,7 @@ fn drive_test() -> Option<DriveGauge> {
         4 => DriveMode::Locked,
         _ => DriveMode::Normal,
     };
-    Some(DriveGauge { enabled: true, mode, points: n(0, 0), max: n(1, 5), fraction: n(2, 0) })
+    Some(DriveGauge { enabled: true, mode, points: n(0, 0), max: n(1, 5), fraction: n(2, 0), time_fill: None })
 }
 
 fn test_values() -> Option<[i32; 4]> {

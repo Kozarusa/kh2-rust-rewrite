@@ -240,6 +240,7 @@ fn try_limit(
     mut sora: Query<&mut Sora>,
     mut out: MessageWriter<LimitStarted>,
     mut active: Local<Option<(u16, u32)>>,
+    summon: (Option<Res<crate::summon::SummonState>>, Option<Res<crate::drive::DriveState>>),
 ) {
     if let Some((cmd, left)) = active.as_mut() {
         *left = left.saturating_sub(1);
@@ -267,7 +268,14 @@ fn try_limit(
     };
     let Some(command) = command else { return };
     party.0.mp = s.mp;
-    party.0.summon_gauge = false;
+    // The summon gauge: the mode-3 timer (status +0x1b4) is non-zero (summon.rs). A summon row also
+    // needs the summon object (FUN_001d1ce0 -> FUN_00175ba0 by NeoStatus), which `usable` does not
+    // test; no summon object exists yet (docs/summons.md stage 3), so the read requires one and the
+    // summon rows stay refused until then.
+    party.0.summon_gauge = match summon {
+        (Some(sm), Some(d)) => sm.gauge(&d) && sm.slots.iter().any(Option::is_some),
+        _ => false,
+    };
     let Some(i) = rules.rows.iter().position(|r| r.command == command) else {
         info!("limit: command {command} has no limit row");
         return;

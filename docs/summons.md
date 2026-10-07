@@ -1,7 +1,7 @@
 # Summons (backlog B5): implementation spec
 
-Work package 6F. Research only: nothing here is implemented in the app yet. This note is meant to let a later
-work package build summons without reading the game code again.
+Work package 6F (research); stages 1 and 2 implemented by WP-7J (see "Status" at the end of section 6).
+This note is meant to let a later work package build summons without reading the game code again.
 
 Marks: **[V]** read in the game's code (address given) or checked against the disc or a kh2-ee run;
 **[I]** inferred (fits the code but no line states it); **[GAP]** not found, with the addresses searched.
@@ -380,6 +380,40 @@ Each stage ends with `verify.ps1` passing and the named check.
 6. **Event arrival and the rest.** The config option and seen bits; `appear` with the link and HUD layers
    hidden; Genie's "Drive!"; Tinker Bell's reraise; area re-entry with `appear_area_start`; the summon face
    panel. Accept: logs per path; visuals only after someone looks at them.
+
+### Status (WP-7J: stages 1 and 2)
+
+Stage 1 is done. The rules are pure functions in `drive.rs` `rules`: `GaugeMode`, `SummonTuning`
+(`sstm` 0x70, 0x84, 0x88), `summon_timer`, `mode_drain_factor`, `segments_drained` and
+`FormTimer::change` (FUN_001a0358 with the segment count in mode 3), `summon_level_cap`, `SummonExp::add`
+(FUN_001d4ec8), `summon_damage_to_timer` (FUN_001c60f8), `summon_gauge_change` and `summon_limit_cost`
+(FUN_001788d8), `segment_display` (FUN_00155bf0), `summon_available` and `dismiss_available`. Tests:
+`summon_rules_on_the_disc_rows`, `summon_availability_and_dismiss`, and the oracle
+`summon_gauge_matches_the_game`, which runs the game's FUN_001a0480, FUN_001a0358 (with the experience
+add and its level-up loop), FUN_001d4e68 (with the charms set in a fake inventory), FUN_00155bf0 and
+FUN_001c60f8 in kh2-ee and compares every result. The level-up notice routines FUN_001d4fa0 and
+FUN_001b5528 are stubbed in that run.
+
+Stage 2 is done without the summon object. `summon.rs` keeps `SummonState` (bytes 5..7, the experience,
+the state, the sequence bit, the arrival wait, the object slots, the use counters, the SUMMONS list, the
+cap) and `SummonQueue`. The command menu (`items.rs`) lists the owned charms' commands under Summon,
+shows Dismiss (0x13c) on the second deck while the state is set (the earlier "map command" reading of
+0x13c in `items.rs` was wrong: FUN_001ceda8 looks Dismiss up by 0x13c), and issues both to the queue.
+A summon pays its cost, sets the state to 2, waits `sstm[0x88]` frames, then sets gauge mode 3. Mode 3
+drains with the Summon Boost factor, feeds the experience, takes hits Sora lands as `DriveDrain x
+sstm[0x70]`, and ends at 0 or on Dismiss (gauge mode 1). The HUD's drive gauge shows mode 3 with the
+FormB groups, the digit and the in-segment fill of FUN_00155bf0. Drive is refused while a summon runs.
+
+Inferred in stage 2: the arrival wait counts down one frame unit per tick; the end-at-0 test runs only in
+mode 3 (the game tests +0x1b4 in any mode, and during the arrival the player is busy through +0x108 bit
+4, which is not modelled); the state goes back to 0 when the leave finds both object slots empty (the
+game does it in the object's destructor). Left for later stages: the companions' fade out and return
+(the arrival does not wait for FUN_0017d470), the player's motions and flags, effect 0x13, actor stop
+id 2, the arrival event and its config option, Genie's form byte (FUN_001c6a88 divides a sign-extended
+random word; not ported, the generator is not stepped), the summon face panel, the limit task test of
+Dismiss (FUN_001b3c00 reads no task), and summon limits (limit.rs refuses summon rows until a summon
+object exists, because FUN_00175ba0 needs it). The summon level and experience are kept in
+`SummonState`, not written back to `Progress` (it has no setter for them).
 
 ## 7. Unknowns (with what was searched)
 

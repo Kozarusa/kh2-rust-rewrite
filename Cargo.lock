@@ -3298,6 +3298,7 @@ version = "0.1.0"
 dependencies = [
  "kh2-archive",
  "kh2-bar",
+ "kh2-ee",
  "kh2-tables",
 ]
 

@@ -564,7 +564,7 @@ in the field state; the screen test (FUN_00146648) is the camera frustum on a bo
 test of FUN_001108c8 is "a floor under the point"; +0x660 bit 4 is "the last step was blocked"; the random
 generator is not the game's.
 
-Not done in stage 1: the weapons. FUN_0017c718 attaches the hand objects through FUN_0016ef28 (the member's
+Not done in stage 1 (stage 2 below did the weapons): the weapons. FUN_0017c718 attaches the hand objects through FUN_0016ef28 (the member's
 saved weapon word, `Progress::member`) -> FUN_001845b0 (`went` of the moveset) -> FUN_001751b0 -> FUN_00184190,
 which ends in resource handles, not a bone number; the attach bone of Donald's and Goofy's models is not known
 (objentry `WeaponJoint` is 2 and 3, not a bone). Sora's bone 178 was set by looking, which this WP did not do.
@@ -577,7 +577,8 @@ Files: `crates/kh2-app/src/party_battle.rs` (pure rules of the battle AI), `part
 tick, weapons, push-apart), `friend_host.rs` (the members' script host: group 10 and the motion remap),
 `friend_ai.rs` (runs the scripts through it). Log `KH2_PARTYLOG=1`: "battle flag set", "target", "chose record",
 "attack motion", "actions in the last second", "hit". Harness `KH2_PARTY_WARP_ONSCREEN=1` (with
-`KH2_PARTY_WARP=<s>`) lets the forced warp happen in view, `KH2_PARTY_WEAPON_BONE=<n>` overrides the weapon bone.
+`KH2_PARTY_WARP=<s>`) lets the forced warp happen in view, `KH2_PARTY_WEAPON_BONE=<n>` overrides the weapon bone, `KH2_PARTY_WEAPONS=<Donald item>,<Goofy item>` hands an item in for
+a zero weapon word.
 
 Done:
 
@@ -587,7 +588,7 @@ Done:
   and the records of Donald (0x353090, 20, from FUN_00114550) and Goofy (0x3533a0, 18, FUN_00114668), bound to
   their 0x80-byte entries by id and to the ability table 0x352ec0 / item order 0x352eb0 as FUN_00113450 does.
   Printed by `party_action_records_from_the_executable`.
-- **Range** FUN_0010f118 (oracle-checked over 2592 cases, `party_range_matches_fun_0010f118`), **feasibility**
+- **Range** FUN_0010f118 (oracle-checked over 432 cases, `party_range_matches_fun_0010f118`), **feasibility**
   FUN_0010f220, **anti-repeat** FUN_0010fc68 / FUN_0010ed00, **choice** FUN_0010fcd0 (continuous records kept,
   setting-2 records only in the second pass, the triple repeat skipped once, nothing feasible = stand).
   Handlers read for phase 0/1: FUN_001137d8 (attack: FUN_001103f8 then the command FUN_0010c8f0), FUN_001135e0
@@ -614,8 +615,16 @@ Done:
   FUN_002f0758). Wrappers 0x2f6da0, 0x2f72e8, 0x2f7118, 0x2f7230, 0x2f6e60 decompiled with ghidra.
 - **Push-apart** (follow-up 4) [inferred]: members move out of each other, Sora and the enemies by their body
   radii; the game's object-to-object push was not read.
-- **Weapons** (follow-up 1): FUN_0016ef28's weapon word of the member (`Progress::member`), `went` of the member's
-  moveset (FUN_001845b0), `wmst` hand 0 (FUN_00184640); the attach bone found by looking (see the report).
+- **Weapons** (follow-up 1): FUN_0016ef28 -> FUN_0016ee98 reads the member's saved weapon word (`Progress::member`),
+  FUN_001845b0 the `went` object of the member's moveset for the item's `Flag1 | Rank << 8` slot, FUN_00184640 the
+  `wmst` motion set of hand 0 (item 75 -> `W_EX020`, item 49 -> `W_EX030`, `party_member_weapons_from_went`). The
+  bones: Donald 131, Goofy 101, the wrist bones with four finger children on the bind pose's -X side, the side of
+  Sora's 178; on screen the staff and the shield sit in the hand facing outward (the other wrist puts Goofy's shield
+  edge-on into his leg). Shown only while the battle flag is set [inferred from the reference video
+  `10_menu_open_close.mp4` at 0.0 s, where neither member holds anything out of battle]. **Gap**: the app's new
+  game leaves both members' weapon words 0 (the original's writer of those words was not found; searched: item-id
+  immediates 0x4b / 0x31 in the decompilation), so no weapon appears without `KH2_PARTY_WEAPONS=75,49` (harness
+  aid) or a state that sets the words.
 
 Not done or approximated in stage 2:
 

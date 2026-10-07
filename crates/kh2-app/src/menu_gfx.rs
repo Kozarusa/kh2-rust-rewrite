@@ -127,6 +127,15 @@ impl Tex {
     }
 }
 
+/// A whole texture drawn as one rectangle: `rect` (x0, y0, x1, y1) is relative to the node's origin.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pic {
+    pub tex: usize,
+    pub rect: [f32; 4],
+    /// The part of the texture's height that is drawn (1.0: all of it).
+    pub v_end: f32,
+}
+
 /// One menu object: a sequence player at a position, optionally positioned from a parent's anchor.
 pub struct Node {
     /// Index into `MenuScene::seqs` (`None`: a text-only node).
@@ -146,6 +155,8 @@ pub struct Node {
     pub label_anchor: Option<[f32; 2]>,
     /// A plain rectangle (x0, y0, x1, y1 in menu units) with its four corner colours, drawn first.
     pub fill: Option<([f32; 4], [[u8; 4]; 4])>,
+    /// A picture from another texture of `MenuScene::texs` (the item pictures, `itempic/item-NNN.imd`).
+    pub pic: Option<Pic>,
     /// Alpha multiplier of the label.
     pub label_fade: f32,
     /// Follow-up group: when a group that plays a limited number of times has finished, the node
@@ -169,6 +180,7 @@ impl Node {
             label: None,
             label_anchor: None,
             fill: None,
+            pic: None,
             label_fade: 1.0,
             next: None,
             anchor: [0.0; 2],
@@ -202,6 +214,12 @@ impl MenuScene {
     pub fn add(&mut self, node: Node) -> usize {
         self.nodes.push(node);
         self.nodes.len() - 1
+    }
+
+    /// The `x` and `y` fields of a group of sequence `seq` (the plate's extent for the row groups: the NEW tag sits
+    /// there, `FUN_00138ed0(tag, FUN_00237618(row + 0x18), FUN_00237638(row + 0x18))`).
+    pub fn extent(&self, seq: usize, group: usize) -> [f32; 2] {
+        self.seqs.get(seq).and_then(|s| s.groups.get(group)).map_or([0.0; 2], |g| [g.x as f32, g.y as f32])
     }
 
     /// Starts `group` on a node (restarting it from frame 0, as the game's group switch does).
@@ -284,6 +302,14 @@ impl MenuScene {
             }
             if let Some(([x0, y0, x1, y1], color)) = n.fill {
                 out.push((WHITE_TEX, Quad { pos: [[x0, y0], [x1, y0], [x0, y1], [x1, y1]], uv: [[0.5; 2]; 4], color, blend: 0, nearest: true }));
+            }
+            if let (Some(p), Some(t)) = (n.pic, n.pic.and_then(|p| self.texs.get(p.tex))) {
+                let [x0, y0, x1, y1] = [n.origin[0] + p.rect[0], n.origin[1] + p.rect[1], n.origin[0] + p.rect[2], n.origin[1] + p.rect[3]];
+                let (w, h) = (t.width as f32, t.height as f32 * p.v_end);
+                out.push((
+                    p.tex,
+                    Quad { pos: [[x0, y0], [x1, y0], [x0, y1], [x1, y1]], uv: [[0.0, 0.0], [w, 0.0], [0.0, h], [w, h]], color: [[0x80; 4]; 4], blend: 0, nearest: false },
+                ));
             }
             if let (Some(g), Some(s)) = (n.player.group, n.seq.and_then(|s| self.seqs.get(s))) {
                 let mut ext = n.ext;

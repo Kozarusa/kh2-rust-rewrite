@@ -21,7 +21,8 @@ use std::collections::BTreeMap;
 
 use bevy::prelude::*;
 use kh2_image::text::Style;
-use kh2_tables::tables::{self as t, Item, ItemStat, Lvup};
+use kh2_tables::player::FormLevels;
+use kh2_tables::tables::{self as t, Fmlv, Item, ItemStat, Lvup};
 
 use crate::assets::Disc;
 use crate::audio::PlaySe;
@@ -88,10 +89,51 @@ impl Tab {
         }
     }
 
-    /// The port draws only the Sora tab; see the module doc.
+    /// The tabs the port draws: Sora's, the forms' and the summons' (the party members' tabs need the other
+    /// members' status blocks, which the app does not have; see the module doc).
     pub fn ported(self) -> bool {
-        self == Tab::Sora
+        !matches!(self, Tab::Member(_))
     }
+
+    /// Which row table the tab reads (`FUN_00267de0`: 0 the character and the members, 1 the forms, 2 the summons)
+    /// and which group set its row in the tab list uses (the forms' and summons' are the second one).
+    pub fn table(self) -> usize {
+        match self {
+            Tab::Sora | Tab::Member(_) => 0,
+            Tab::Form(_) => 1,
+            Tab::Summons => 2,
+        }
+    }
+}
+
+/// The numbers of a form's or the summons' tab (`FUN_002673c0` at 0x267788 and 0x2678dc): the level (record `+2`,
+/// the summon level byte), its experience in total (`FUN_001d3c98`, `FUN_001d3d48`: the record's experience plus
+/// the `fmlv` rows below the level), the experience to the next level (`FUN_001d3c38`, `FUN_001d3cf8`) and the
+/// gauge row, `level + 2`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LevelNumbers {
+    pub level: i32,
+    pub exp: i32,
+    pub next: i32,
+    pub gauge: i32,
+}
+
+/// `FUN_001d3bd0` and `FUN_001d4e68`: the level cap of the rows, 2 plus the number of owned form items (or summon
+/// charms), 7 instead of 6.
+pub fn level_cap(owned: usize) -> i32 {
+    match 2 + owned as i32 {
+        6 => 7,
+        n => n,
+    }
+}
+
+/// The tab numbers for `form` (0: the summons, whose `fmlv` rows are the form-0 rows) at `level` with the record's
+/// own experience `rec_exp`.
+pub fn level_numbers(levels: &FormLevels, form: u8, level: i32, rec_exp: i32, cap: i32) -> LevelNumbers {
+    let below: i32 = (1..level.max(1)).map(|l| levels.get(form, l as u8).map_or(0, |r| r.exp)).sum();
+    // `FUN_001d3c38`: a row exists below the cap; the next level needs the row's Exp minus the record's.
+    let next = if level < cap { levels.get(form, level.clamp(0, 255) as u8).map_or(0, |r| r.exp - rec_exp) } else { 0 };
+    LevelNumbers { level, exp: rec_exp + below, next, gauge: level + 2 }
 }
 
 /// `FUN_002683c8`: the mask of present tabs (u16 at `+0x18` of the page object). `party` is the number of
@@ -186,6 +228,8 @@ pub struct StatRules {
     /// Item id -> the ability's AP cost (the high byte of the item's `StatEntry`, `item + 7`;
     /// `FUN_002688d8`).
     pub ap_cost: BTreeMap<u16, u8>,
+    /// The `fmlv` rows (`FUN_001d3b90`: key `form << 4 | level`, the summons are form 0).
+    pub form_levels: FormLevels,
 }
 
 impl StatRules {
@@ -216,7 +260,7 @@ impl StatRules {
                 );
             }
         }
-        StatRules { levels: levels.iter().map(LevelRow::from).collect(), gear, ap_cost }
+        StatRules { levels: levels.iter().map(LevelRow::from).collect(), gear, ap_cost, form_levels: FormLevels::default() }
     }
 
     /// `FUN_001b50c0(character, level)`: the row of `level` (the table is clamped to its length).
@@ -254,6 +298,11 @@ pub struct Numbers {
     pub summon: Option<i32>,
     /// "Bonus LV": the byte at party block `+0xfa8` (row 7), always shown on the Sora tab.
     pub bonus: i32,
+    /// The rows of each form's tab (Valor, Wisdom, Master, Final) and of the summons' tab.
+    pub form_tabs: [Option<LevelNumbers>; 4],
+    pub summon_tab: Option<LevelNumbers>,
+    /// Which of the four summon charms (`SUMMON_ITEMS`) are held: the summons' tab lists those (`FUN_00268758`).
+    pub summons_held: [bool; 4],
 }
 
 /// The state the numbers read besides `Progress`: the live HP and MP (the app keeps them on Sora, not in
@@ -267,6 +316,8 @@ pub struct Live {
     /// `FUN_00282b20` and `FUN_00282b80`: the form is available. `Progress::owns_form` here.
     pub forms: [bool; 4],
     pub summons: bool,
+    /// Which summon charms are held.
+    pub summons_held: [bool; 4],
 }
 
 /// The Sora tab's numbers as `FUN_0019f920` builds the status block and `FUN_002673c0` prints it:
@@ -302,6 +353,16 @@ pub fn numbers(p: &Progress, rules: &StatRules, live: &Live) -> Numbers {
     // the app has no level-up yet, so the number is held at 0 [inferred].
     let next = if level < 99 { (rules.level_row(level).exp - exp).max(0) } else { 0 };
     let drive = p.drive_bytes();
+    // The forms' tabs (`FUN_001d3bd0` caps the level rows by the number of owned forms), the summons' (`FUN_001d4e68`).
+    let form_cap = level_cap(live.forms.iter().filter(|&&f| f).count());
+    let form_tabs = [0, 1, 2, 3].map(|i| {
+        live.forms[i].then(|| {
+            let f = i as u8 + 1;
+            level_numbers(&rules.form_levels, f, i32::from(p.form_level(f)), p.form_exp(f) as i32, form_cap)
+        })
+    });
+    let summon_cap = level_cap(live.summons_held.iter().filter(|&&h| h).count());
+    let summon_tab = live.summons.then(|| level_numbers(&rules.form_levels, 0, i32::from(p.summon_level()), p.summon_exp() as i32, summon_cap));
     Numbers {
         level,
         exp,
@@ -317,6 +378,39 @@ pub fn numbers(p: &Progress, rules: &StatRules, live: &Live) -> Numbers {
         forms: [0, 1, 2, 3].map(|i| live.forms[i].then(|| i32::from(p.form_level(i as u8 + 1)))),
         summon: live.summons.then(|| i32::from(p.summon_level())),
         bonus: p.block().get(BONUS_OFFSET).copied().map_or(0, i32::from),
+        form_tabs,
+        summon_tab,
+        summons_held: live.summons_held,
+    }
+}
+
+/// The rows a tab shows, as bits of the page object's word (`FUN_00268568`'s jump table 0x381768): the forms' tab
+/// has bits 0..3 and 10..16 (`FUN_002686f8`), the summons' tab bits 0..3 and `10 + j` for each summon j held
+/// (`FUN_00268758`).
+pub fn tab_bits(tab: Tab, n: &Numbers) -> Vec<u32> {
+    match tab {
+        Tab::Sora | Tab::Member(_) => sora_bits(n),
+        Tab::Form(_) => (0..4).chain(10..17).collect(),
+        Tab::Summons => (0..4).chain(n.summons_held.iter().enumerate().filter(|&(_, &h)| h).map(|(j, _)| 10 + j as u32)).collect(),
+    }
+}
+
+/// The value text of a row of a tab: the forms' and summons' tabs print the level, experience, next level and the
+/// gauge row for bits 0..3 (the formats at 0x3816b8, `%d`), the forms' second column the leader's strength, magic,
+/// defense and resistances (`FUN_002673c0` at 0x267788: the status block `+0x188..` and `100 - +0x1a9..`).
+pub fn tab_value(tab: Tab, n: &Numbers, b: u32) -> String {
+    let rows = match tab {
+        Tab::Form(f) => n.form_tabs.get(usize::from(f).wrapping_sub(1)).copied().flatten(),
+        Tab::Summons => n.summon_tab,
+        _ => return value_text(n, b),
+    };
+    match (b, rows) {
+        (0, Some(r)) => r.level.to_string(),
+        (1, Some(r)) => r.exp.to_string(),
+        (2, Some(r)) => r.next.to_string(),
+        (3, Some(r)) => r.gauge.to_string(),
+        (10..=16, _) if matches!(tab, Tab::Form(_)) => value_text(n, b),
+        _ => String::new(),
     }
 }
 
@@ -394,6 +488,9 @@ const MEMBER_NAMES: u32 = 0x0037_ba90;
 const TAB_HELP: u32 = 0x0038_17d0;
 /// The four summon charm items whose possession adds the summons tab (`FUN_00268338`, 0x381760).
 const SUMMON_ITEMS: u32 = 0x0038_1760;
+/// The forms' label messages (`FUN_00268b90`: `0x381a38 + 2 * form`) and the summons' tab name (message 0xc5b1).
+const FORM_NAMES: u32 = 0x0038_1a38;
+const SUMMONS_NAME: u32 = 0x45b1;
 
 /// One row of a row table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -416,6 +513,8 @@ pub struct Tables {
     pub tab_help: [u32; 9],
     pub summon_items: [u16; 4],
     pub member_names: Vec<u32>,
+    /// The forms' names (`0x381a38 + 2 * form`, form 1..=4; index 0 is the main weapon's label).
+    pub form_names: Vec<u32>,
 }
 
 impl Tables {
@@ -447,6 +546,7 @@ impl Tables {
         for (i, s) in t.summon_items.iter_mut().enumerate() {
             *s = exe.u16(SUMMON_ITEMS + 2 * i as u32)?;
         }
+        t.form_names = (0..5).filter_map(|i| exe.u16(FORM_NAMES + 2 * i).map(|v| u32::from(v & 0x7fff))).collect();
         t.member_names = (0..16).filter_map(|i| exe.u16(MEMBER_NAMES + 2 * i).map(|v| u32::from(v & 0x7fff))).collect();
         Some(t)
     }
@@ -536,12 +636,12 @@ pub struct StatusUi {
 
 impl StatusUi {
     /// The rows of column `c` in the order they are drawn: (table row, bit).
-    fn column(numbers: &Numbers, c: usize) -> Vec<(usize, u32)> {
-        sora_bits(numbers).into_iter().filter(|&b| b as usize / 10 == c).map(|b| (b as usize % 10, b)).collect()
+    fn column(tab: Tab, numbers: &Numbers, c: usize) -> Vec<(usize, u32)> {
+        tab_bits(tab, numbers).into_iter().filter(|&b| b as usize / 10 == c).map(|b| (b as usize % 10, b)).collect()
     }
 
     fn rows_in(&self, numbers: &Numbers, c: usize) -> usize {
-        Self::column(numbers, c).len()
+        Self::column(self.tabs.get(self.tab).copied().unwrap_or(Tab::Sora), numbers, c).len()
     }
 }
 
@@ -568,6 +668,7 @@ fn gather(p: &Progress, ui: &StatusUi, sora: Option<&Sora>, data: Option<&GameDa
         max_mp: data.map_or(i32::from(p.sora().mp_max), |d| d.sora_max_mp),
         forms: [1, 2, 3, 4].map(|f| p.owns_form(f)),
         summons: ui.tables.summon_items.iter().any(|&i| i != 0 && p.item_count(i) > 0),
+        summons_held: ui.tables.summon_items.map(|i| i != 0 && p.item_count(i) > 0),
     };
     numbers(p, &ui.rules, &live)
 }
@@ -587,9 +688,16 @@ fn load(ui: &mut StatusUi, disc: &Disc, data: Option<&GameData>) {
         let Ok(mut a) = disc.0.lock() else { return };
         (kh2_tables::load::<Item>(&mut a, &t::ITEM), kh2_tables::load::<ItemStat>(&mut a, &t::ITEM_STAT))
     };
+    let fmlv = {
+        let Ok(mut a) = disc.0.lock() else { return };
+        kh2_tables::load::<Fmlv>(&mut a, &t::FMLV).ok()
+    };
     if let (Ok(items), Ok(stats)) = rows {
         let levels = data.map(|d| d.sora_levels.as_slice()).unwrap_or_default();
         ui.rules = StatRules::from_tables(&items.rows, &stats.rows, levels);
+        if let Some(f) = fmlv {
+            ui.rules.form_levels = FormLevels::from_rows(&f.rows);
+        }
     } else {
         warn!("menu: status: the item tables are not readable");
     }
@@ -837,17 +945,21 @@ fn draw(ui: &StatusUi, n: &Nodes, scene: &mut MenuScene, numbers: &Numbers) {
     for (k, tab) in ui.tabs.iter().enumerate() {
         let name = match tab {
             Tab::Sora => ui.tables.member_names.get(usize::from(crate::progress::SORA)).copied(),
+            // `FUN_00268b90`: a form's name is the label at 0x381a38 + 2 * form, the summons' tab 0xc5b1.
+            Tab::Form(f) => ui.tables.form_names.get(usize::from(*f)).copied(),
+            Tab::Summons => Some(SUMMONS_NAME),
             _ => None,
         };
         tab_labels.push((k, name.and_then(|id| label(id, !wide && k == ui.tab))));
     }
     // The rows: one group per row type, packed per column.
     let mut cells = Vec::new();
+    let tab_now = ui.tabs.get(ui.tab).copied().unwrap_or(Tab::Sora);
     for c in 0..2 {
-        for (i, (r, b)) in StatusUi::column(numbers, c).into_iter().enumerate() {
-            let Some(def) = ui.tables.rows[0][c][r] else { continue };
+        for (i, (r, b)) in StatusUi::column(tab_now, numbers, c).into_iter().enumerate() {
+            let Some(def) = ui.tables.rows[tab_now.table()][c][r] else { continue };
             let selected = wide && c == ui.col && i == ui.row[c];
-            cells.push((c, i, b, def, label(def.name, selected), value(&value_text(numbers, b), if wide { 180.0 } else { 160.0 })));
+            cells.push((c, i, b, def, label(def.name, selected), value(&tab_value(tab_now, numbers, b), if wide { 180.0 } else { 160.0 })));
         }
     }
     let help = if wide {
@@ -862,7 +974,7 @@ fn draw(ui: &StatusUi, n: &Nodes, scene: &mut MenuScene, numbers: &Numbers) {
     if !wide {
         for (k, label) in tab_labels {
             let id = n.tabs[k];
-            let set = ui.tables.tab_sets[0][usize::from(k == ui.tab)];
+            let set = ui.tables.tab_sets[usize::from(ui.tabs[k].table() != 0)][usize::from(k == ui.tab)];
             scene.nodes[id].visible = true;
             scene.nodes[id].off = [at::TAB_X, at::TAB_Y + pitch * k as f32];
             scene.nodes[id].label = label;
@@ -937,6 +1049,7 @@ mod tests {
                 (61, Gear { strength: 1, magic: 0, defense: 1, ap: 2, resist: [100, 50, 100, 100, 100, 100, 100] }),
             ]),
             ap_cost: BTreeMap::from([(82, 1), (90, 3), (7, 0)]),
+            form_levels: FormLevels::default(),
         }
     }
 
@@ -1054,7 +1167,7 @@ mod tests {
         let mut p = Progress::new_game(index, &plrp);
         p.apply_baseline(true);
         let rules = StatRules::from_tables(&items, &stats, &lvup);
-        let live = Live { hp: 20, max_hp: 20, mp: 100, max_mp: 100, forms: [1, 2, 3, 4].map(|f| p.owns_form(f)), summons: false };
+        let live = Live { hp: 20, max_hp: 20, mp: 100, max_mp: 100, forms: [1, 2, 3, 4].map(|f| p.owns_form(f)), summons: false, summons_held: [false; 4] };
         let n = numbers(&p, &rules, &live);
         let (rec, row, kk) = (p.sora(), &lvup[0], rules.gear[&crate::data::KINGDOM_KEY]);
         println!("leader: {n:?}\n  record {rec:?}\n  lvup row 0 {:?}\n  Kingdom Key {kk:?}", rules.level_row(1));
@@ -1087,7 +1200,61 @@ mod tests {
         );
         assert_eq!(tab_mask(0, [false; 4], false), 0);
         assert_eq!(Tab::Member(2).index(), 7);
-        assert!(Tab::Sora.ported() && !Tab::Form(1).ported());
+        assert!(Tab::Sora.ported() && Tab::Form(1).ported() && Tab::Summons.ported() && !Tab::Member(1).ported());
+        assert_eq!((Tab::Sora.table(), Tab::Form(2).table(), Tab::Summons.table()), (0, 1, 2));
+    }
+
+    fn fmlv() -> FormLevels {
+        // Form 1 (Valor): levels 1..=4 need 10, 20, 40, 80; the summons (form 0) 5, 15.
+        let row = |form: u8, level: u8, exp: i32| kh2_tables::player::FormLevel { form, level, display_level: level, ability: 0, exp };
+        FormLevels(vec![row(1, 1, 10), row(1, 2, 20), row(1, 3, 40), row(1, 4, 80), row(0, 1, 5), row(0, 2, 15)])
+    }
+
+    #[test]
+    fn a_forms_experience_is_the_record_plus_the_rows_below_its_level() {
+        // `FUN_001d3c98`: record exp + the rows of levels 1..level-1; `FUN_001d3c38`: the row at the level minus the record.
+        let f = fmlv();
+        let n = level_numbers(&f, 1, 3, 7, 5);
+        assert_eq!((n.level, n.exp, n.next, n.gauge), (3, 7 + 10 + 20, 40 - 7, 5));
+        // At level 1 nothing is below.
+        assert_eq!(level_numbers(&f, 1, 1, 4, 5).exp, 4);
+        // At or above the cap there is no next level.
+        assert_eq!(level_numbers(&f, 1, 5, 0, 5).next, 0);
+        assert_eq!(level_numbers(&f, 1, 4, 0, 4).next, 0, "the cap is exclusive");
+        // A missing row (the table ends) shows 0.
+        assert_eq!(level_numbers(&f, 1, 6, 0, 7).next, 0);
+    }
+
+    #[test]
+    fn the_cap_is_two_plus_the_owned_items_and_seven_instead_of_six() {
+        assert_eq!([0, 1, 2, 3, 4].map(level_cap), [2, 3, 4, 5, 7]);
+    }
+
+    #[test]
+    fn the_forms_and_summons_tabs_have_their_own_rows_and_values() {
+        let p = block(|b| {
+            b[0xf] = 2;
+            b[off::FORM_BASE + 3 * 40 + 2] = 3; // form 3 (Master) level 3
+            b[off::SUMMON_LEVEL] = 2;
+        });
+        let l = Live { forms: [true, false, true, false], summons: true, summons_held: [true, false, true, false], ..live() };
+        let mut r = rules();
+        r.form_levels = fmlv();
+        let n = numbers(&p, &r, &l);
+        // Forms: bits 0..3 and 10..16; the values of 0..3 are the tab's own, 10..16 the leader's.
+        assert_eq!(tab_bits(Tab::Form(1), &n), vec![0, 1, 2, 3, 10, 11, 12, 13, 14, 15, 16]);
+        assert_eq!(tab_value(Tab::Form(1), &n, 0), "0", "the record of form 1 is empty in this block");
+        assert_eq!(tab_value(Tab::Form(1), &n, 3), "2", "level + 2");
+        assert_eq!(tab_value(Tab::Form(3), &n, 3), "5", "level + 2");
+        assert_eq!(tab_value(Tab::Form(1), &n, 10), n.strength.to_string());
+        assert_eq!(tab_value(Tab::Form(3), &n, 0), "3");
+        // Summons: bits 0..3 and 10 + j for each held charm.
+        assert_eq!(tab_bits(Tab::Summons, &n), vec![0, 1, 2, 3, 10, 12]);
+        assert_eq!(tab_value(Tab::Summons, &n, 0), "2");
+        assert_eq!(tab_value(Tab::Summons, &n, 1), "5", "the summon's form-0 row of level 1 below the record exp 0");
+        assert_eq!(tab_value(Tab::Summons, &n, 10), "", "the summon rows of the second column print no number");
+        // The Sora tab keeps its own rows.
+        assert_eq!(tab_value(Tab::Sora, &n, 0), "2");
     }
 
     #[test]

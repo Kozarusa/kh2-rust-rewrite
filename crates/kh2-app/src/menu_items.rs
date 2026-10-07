@@ -21,11 +21,13 @@ use bevy::prelude::*;
 use kh2_image::text::{Style, Token};
 use kh2_tables::tables as t;
 
-use super::{Menu, Phase};
+use super::{Menu, Phase, Switch};
 use crate::assets::Disc;
 use crate::audio::PlaySe;
 use crate::items::{item_effect, Vitals};
+use super::new_tags::{self, NewTags};
 use crate::menu_gfx::{MenuScene, Node};
+use super::pictures::Pictures;
 use crate::menu_pages::{Entry, Exe};
 use crate::menu_text::{Label, MenuText};
 use crate::progress::Progress;
@@ -368,6 +370,8 @@ pub enum Key {
     /// -10 / -11: the previous or next Stock filter.
     Prev,
     Next,
+    /// -5: to the Abilities pages (page 1 only, `FUN_0025ae18`).
+    Switch,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -386,6 +390,8 @@ pub enum Effect {
     Member(usize),
     /// Back to the top list (page 0).
     Leave,
+    /// -5: hand over to the Abilities pages.
+    Switch,
     /// Close the whole menu.
     Close,
 }
@@ -521,6 +527,11 @@ impl Machine {
                     Key::Cancel => {
                         fx.push(Sound(snd::CANCEL));
                         fx.push(Effect::Leave);
+                    }
+                    // `FUN_0025ae18`: -5 sets the target page 0xf (the list result's sound kind is 2, the confirm).
+                    Key::Switch => {
+                        fx.push(Sound(snd::CONFIRM));
+                        fx.push(Effect::Switch);
                     }
                     _ => {}
                 }
@@ -721,6 +732,8 @@ mod at {
     pub const LABEL: [f32; 2] = [0.0, 1.0];
     /// The right edge of a stock cell's count from the cell's anchor (the selected cell group is 216 wide).
     pub const COUNT_RIGHT: f32 = 204.0;
+    /// The item picture inside the item window (absolute menu units; compared with clip 6 at 12.5 s).
+    pub const PICTURE: [f32; 4] = [318.0, 82.0, 446.0, 210.0];
     /// Where the information window's text and rows start from its anchor (255, 118) / (255, 126): by eye, no clip
     /// shows the window.
     pub const INFO_OK_TEXT: [f32; 2] = [-170.0, -4.0];
@@ -746,6 +759,9 @@ struct Ui {
     panel: usize,
     cells: Vec<usize>,
     counts: Vec<usize>,
+    /// The NEW tag of each Stock cell (a child of the cell) and of page 1's Stock row (stage M7).
+    cell_tags: Vec<usize>,
+    stock_tag: usize,
     prompt_panel: usize,
     prompt_title: usize,
     prompt_rows: Vec<usize>,
@@ -767,6 +783,8 @@ pub struct ItemsMenu {
     pub(super) ready: bool,
     /// The item rows in table order, and by id.
     pub(super) order: Vec<ItemRow>,
+    /// Item id -> picture id (`item +0x14`, -1 none): `itempic/item-NNN.imd`.
+    pub(super) pictures: BTreeMap<u16, i16>,
     pub(super) rows: BTreeMap<u16, ItemRow>,
     pub(super) exe: Option<ExeTables>,
     /// Entry 0 of the top list (Items): its name message and group sets.
@@ -817,6 +835,7 @@ pub(super) fn load(disc: Res<Disc>, mut st: ResMut<ItemsMenu>) {
         return;
     };
     st.order = items.iter().map(ItemRow::of).collect();
+    st.pictures = items.iter().map(|i| (i.id, i.picture)).collect();
     for r in st.order.clone() {
         st.rows.entry(r.id).or_insert(r);
     }
@@ -914,6 +933,9 @@ fn keys_of(keys: &ButtonInput<KeyCode>, held: &mut (i8, f32), dt: f32) -> Vec<Ke
     if any(&[KeyCode::BracketRight]) {
         out.push(Key::Next);
     }
+    if any(&[KeyCode::KeyX]) {
+        out.push(Key::Switch);
+    }
     out
 }
 
@@ -935,6 +957,8 @@ pub(super) fn input(
     mut sora: Query<&mut crate::sora::Sora>,
     (mut magic, mut drive, game, idata): Vitality,
     real: Res<Time<Real>>,
+    mut tags: ResMut<NewTags>,
+    mut pics: ResMut<Pictures>,
 ) {
     if !st.ready {
         return;
@@ -947,16 +971,26 @@ pub(super) fn input(
         st.suspended = false;
         return;
     }
+    // The Help overlay has the keys.
+    if menu.page == super::help::PAGE {
+        return;
+    }
     // The equipment pages have the keys and the screen.
     if st.suspended {
         return;
     }
     if st.machine.is_none() {
-        // Page 0's confirm on the Items row opens page 1 (`FUN_00251848`'s jump table, entry 0).
+        // Page 0's confirm on the Items row opens page 1 (`FUN_00251848`'s jump table, entry 0); the Abilities pages'
+        // -5 asks for the same page (or, from page 0x10, for page 2).
         let on_row = menu.page == 0 && menu.current_entry() == Some(ENTRY);
-        if !(on_row && keys.just_pressed(KeyCode::KeyJ)) {
+        let asked = match menu.switch {
+            Some(Switch::ToItems { second }) => Some(second),
+            _ => None,
+        };
+        if asked.is_none() && !(on_row && keys.just_pressed(KeyCode::KeyJ)) {
             return;
         }
+        menu.switch = None;
         let Some(p) = progress.as_deref() else {
             se.write(PlaySe::number(snd::REFUSED, None));
             keys.reset_all();
@@ -966,9 +1000,22 @@ pub(super) fn input(
         st.machine = Some(Machine::new(1, stock));
         st.held = (0, 0.0);
         enter(&mut st, &mut menu, &mut scene);
-        se.write(PlaySe::number(snd::CONFIRM, None));
+        if asked.is_none() {
+            se.write(PlaySe::number(snd::CONFIRM, None));
+        }
         keys.reset_all();
-        redraw(&mut st, &mut scene, progress.as_deref());
+        if asked == Some(true) {
+            // Page 2 directly (`FUN_0026xxxx`'s -5 from page 0x10): the equipment module takes over this frame.
+            st.suspended = true;
+            st.equipment_requested = true;
+            if let Some(ui) = &st.ui {
+                for &i in &ui.all {
+                    scene.nodes[i].visible = false;
+                }
+            }
+            return;
+        }
+        redraw(&mut st, &mut scene, progress.as_deref(), &mut tags, &mut pics);
         return;
     }
     let mut held = st.held;
@@ -1045,6 +1092,14 @@ pub(super) fn input(
                     }
                 }
                 Effect::Leave => leave(&mut st, &mut menu, &mut scene),
+                Effect::Switch => {
+                    // -5 needs the Abilities row on page 0 (the list mask's 0x100 is set only then).
+                    if menu.rows_has(1) {
+                        hand_over(&mut st, &mut menu, &mut scene);
+                        menu.switch = Some(Switch::ToAbilities { second: false });
+                        info!("menu: switch to Abilities");
+                    }
+                }
                 Effect::Close => {
                     // Back to page 0, then the menu's own input closes it from there (the key is left
                     // unconsumed).
@@ -1064,7 +1119,7 @@ pub(super) fn input(
         return;
     }
     if st.machine.is_some() && !st.suspended {
-        redraw(&mut st, &mut scene, progress.as_deref());
+        redraw(&mut st, &mut scene, progress.as_deref(), &mut tags, &mut pics);
     }
     keys.reset_all();
 }
@@ -1147,6 +1202,8 @@ fn ensure_ui(st: &mut ItemsMenu, scene: &mut MenuScene) {
     let panel = mk(scene, S);
     let cells: Vec<usize> = (0..COLUMNS * ROWS).map(|_| mk(scene, S)).collect();
     let counts: Vec<usize> = (0..COLUMNS * ROWS).map(|_| mk(scene, None)).collect();
+    let cell_tags: Vec<usize> = (0..COLUMNS * ROWS).map(|_| mk(scene, S)).collect();
+    let stock_tag = mk(scene, S);
     let item_window = mk(scene, S);
     let prompt_panel = mk(scene, S);
     let prompt_title = mk(scene, S);
@@ -1162,10 +1219,12 @@ fn ensure_ui(st: &mut ItemsMenu, scene: &mut MenuScene) {
     let hand = mk(scene, S);
     let glint = mk(scene, S);
     let help = mk(scene, None);
-    for (&c, &n) in cells.iter().zip(&counts) {
+    for ((&c, &n), &t) in cells.iter().zip(&counts).zip(&cell_tags) {
         scene.nodes[c].parent = Some(panel);
         scene.nodes[n].parent = Some(c);
+        scene.nodes[t].parent = Some(c);
     }
+    scene.nodes[stock_tag].parent = Some(rows[1]);
     scene.nodes[prompt_title].parent = Some(prompt_panel);
     for &r in &prompt_rows {
         scene.nodes[r].parent = Some(prompt_panel);
@@ -1191,6 +1250,8 @@ fn ensure_ui(st: &mut ItemsMenu, scene: &mut MenuScene) {
         panel,
         cells,
         counts,
+        cell_tags,
+        stock_tag,
         prompt_panel,
         prompt_title,
         prompt_rows,
@@ -1207,10 +1268,24 @@ fn ensure_ui(st: &mut ItemsMenu, scene: &mut MenuScene) {
     });
 }
 
+/// Gives the screen to another module (the Abilities pages): this module's nodes go, page 0's stay hidden and are
+/// handed on through `Menu::carry`.
+pub(super) fn hand_over(st: &mut ItemsMenu, menu: &mut Menu, scene: &mut MenuScene) {
+    if let Some(ui) = &st.ui {
+        for &i in &ui.all {
+            scene.nodes[i].visible = false;
+        }
+    }
+    menu.carry = std::mem::take(&mut st.hidden);
+    st.machine = None;
+    st.suspended = false;
+    menu.page = 0;
+}
+
 /// Takes over from page 0: hides its rows, hand, help line and cards.
 fn enter(st: &mut ItemsMenu, menu: &mut Menu, scene: &mut MenuScene) {
     ensure_ui(st, scene);
-    st.hidden = menu.page0_nodes().into_iter().filter(|&i| scene.nodes[i].visible).collect();
+    st.hidden = if menu.carry.is_empty() { menu.page0_nodes().into_iter().filter(|&i| scene.nodes[i].visible).collect() } else { std::mem::take(&mut menu.carry) };
     for &i in &st.hidden {
         scene.nodes[i].visible = false;
     }
@@ -1290,7 +1365,7 @@ fn cell_pitch(scene: &MenuScene) -> (f32, f32) {
 }
 
 /// Sets what every node shows from the machine's state.
-fn redraw(st: &mut ItemsMenu, scene: &mut MenuScene, progress: Option<&Progress>) {
+fn redraw(st: &mut ItemsMenu, scene: &mut MenuScene, progress: Option<&Progress>, tags: &mut NewTags, pics: &mut Pictures) {
     let Some(m) = st.machine.clone() else { return };
     let Some(ui_ref) = st.ui.as_ref() else { return };
     let (tabs, rows, hand, glint, window, preview, panel, cells, counts, help) = (
@@ -1305,6 +1380,7 @@ fn redraw(st: &mut ItemsMenu, scene: &mut MenuScene, progress: Option<&Progress>
         ui_ref.counts.clone(),
         ui_ref.help,
     );
+    let (cell_tags, stock_tag) = (ui_ref.cell_tags.clone(), ui_ref.stock_tag);
     let empty = ui_ref.empty;
     let (prompt_panel, prompt_title, prompt_rows, item_window, target_panel, target_title, target_nodes, info, info_text, info_rows) = (
         ui_ref.prompt_panel,
@@ -1409,6 +1485,11 @@ fn redraw(st: &mut ItemsMenu, scene: &mut MenuScene, progress: Option<&Progress>
                     scene.nodes[id].label = Some(label(&text, tokens, 1, 15.0, at::COLOR, 0, at::LABEL));
                 }
             }
+            // `FUN_0025aac0`: the Stock row carries the tag when any listed item is fresh (the set of page 0's Items row).
+            if let Some(g) = tags.row_group(new_tags::Set::Items) {
+                scene.nodes[stock_tag].off = scene.extent(1, usize::from(entry.idle[2]));
+                set(scene, stock_tag, g, None, was_of(stock_tag));
+            }
             // `FUN_0025ddc0`: the member's help, or the Stock's (messages 0xbb86, 0xbb87; bit 15 ignored).
             set_help(scene, &text, help, Some(if m.cursor1 < m.members { 0x3b86 } else { 0x3b87 }));
         }
@@ -1431,6 +1512,15 @@ fn redraw(st: &mut ItemsMenu, scene: &mut MenuScene, progress: Option<&Progress>
                 set(scene, c, if selected { group::CELL_SELECTED } else { group::CELL }, None, false);
                 scene.nodes[c].label_anchor = None;
                 scene.nodes[c].label = st.rows.get(&s.id).map(|r| label(&text, item_tokens(&text, r), 1, 15.0, if selected { at::SELECTED } else { at::COLOR }, 0, at::LABEL));
+                // `FUN_0025dae8`: a fresh item's cell has the tag; `FUN_0025dcf8`: the cursor reaching it sets its
+                // seen bit, which turns the tag to the viewed form.
+                if selected {
+                    tags.view(s.id);
+                }
+                if let Some(g) = tags.cell_group(s.id) {
+                    scene.nodes[cell_tags[slot]].off = scene.extent(1, group::CELL);
+                    set(scene, cell_tags[slot], g, None, false);
+                }
                 if let Some(tokens) = count_tokens(&text, s.count) {
                     let id = counts[slot];
                     scene.nodes[id].visible = true;
@@ -1453,6 +1543,11 @@ fn redraw(st: &mut ItemsMenu, scene: &mut MenuScene, progress: Option<&Progress>
             // the later pages add their own objects); the target panel hangs under the prompt panel.
             set(scene, prompt_panel, group::PROMPT_PANEL[0], Some(group::PROMPT_PANEL[1]), was_of(prompt_panel));
             set(scene, item_window, group::ITEM_WINDOW[0], Some(group::ITEM_WINDOW[1]), was_of(item_window));
+            // `FUN_0025bad0` -> `FUN_0029ed50`: the item's picture in the window.
+            match item.and_then(|r| st.pictures.get(&r.id)).copied().filter(|&p| p >= 0) {
+                Some(p) => pics.show(item_window, p as u16, at::PICTURE),
+                None => pics.clear(item_window),
+            }
             // The title strip of the prompt panel is the item's own list text (icon, name, count: `FUN_0025bad0` points
             // the strip's text at the cell's buffer).
             set(scene, prompt_title, group::TITLE, None, was_of(prompt_title));

@@ -24,7 +24,8 @@ use kh2_tables::tables as t;
 use crate::abilities::Abilities;
 use crate::assets::Disc;
 use crate::audio::PlaySe;
-use crate::menu::{Menu, Phase};
+use crate::menu::new_tags::{self, NewTags};
+use crate::menu::{help, Menu, Phase, Switch};
 use crate::menu_gfx::{MenuScene, Node};
 use crate::menu_pages::{Entry, Exe};
 use crate::menu_text::{Label, MenuText};
@@ -288,6 +289,10 @@ pub enum Key {
     Next,
     /// -6: the quick toggle of the highlighted row (`FUN_0027d708`).
     Toggle,
+    /// -5: to the Items pages (page 0xf goes to page 1, page 0x10 to page 2).
+    Switch,
+    /// -7: the Help overlay (page 0x10 only, topic 2).
+    Help,
 }
 
 /// What the screen has to do after a key.
@@ -302,6 +307,10 @@ pub enum Effect {
     Member(usize),
     /// Back to the top list (page 0).
     Leave,
+    /// -5: hand over to the Items pages (`second`: from page 0x10 to page 2).
+    Switch { second: bool },
+    /// -7: open the Help overlay with a topic, to come back to the page.
+    Help { topic: u8, ret: u16 },
     /// Close the whole menu.
     Close,
 }
@@ -423,6 +432,16 @@ impl Machine {
                     fx.push(Effect::Sound(snd::REFUSED));
                 }
             }
+            // `FUN_002790e0` / `FUN_00279ac0`: -5 sets the target page 1 (from 0xf) or 2 (from 0x10), sound kind 2.
+            Key::Switch if self.page == 0xf || self.page == 0x10 => {
+                fx.push(Effect::Sound(snd::CONFIRM));
+                fx.push(Effect::Switch { second: self.page == 0x10 });
+            }
+            // `FUN_00279ac0`: -7 opens page 0x25 with topic 2 and the return page 0x10.
+            Key::Help if self.page == 0x10 => {
+                fx.push(Effect::Sound(snd::CONFIRM));
+                fx.push(Effect::Help { topic: 2, ret: 0x10 });
+            }
             Key::Toggle if self.page == 0x10 => {
                 // The shortcut is offered (mask 0x200) only for a row with a cost; `FUN_0027d708` then
                 // flips the flag when the callback allows it.
@@ -501,6 +520,9 @@ struct Ui {
     rows: Vec<usize>,
     costs: Vec<usize>,
     tags: Vec<usize>,
+    /// The NEW tag of each row of page 0x10 and of the character row of page 0xf (stage M7).
+    new_tags: Vec<usize>,
+    char_new: usize,
     outline: usize,
     hand: usize,
     glint: usize,
@@ -640,6 +662,12 @@ fn keys_of(keys: &ButtonInput<KeyCode>, held: &mut (i8, f32), dt: f32) -> Vec<Ke
     if any(&[KeyCode::KeyY]) {
         out.push(Key::Toggle);
     }
+    if any(&[KeyCode::KeyX]) {
+        out.push(Key::Switch);
+    }
+    if any(&[KeyCode::Tab]) {
+        out.push(Key::Help);
+    }
     out
 }
 
@@ -653,6 +681,7 @@ fn input(
     mut progress: Option<ResMut<Progress>>,
     mut abilities: Option<ResMut<Abilities>>,
     real: Res<Time<Real>>,
+    mut ntags: ResMut<NewTags>,
 ) {
     if !st.ready {
         return;
@@ -664,12 +693,23 @@ fn input(
         st.held = (0, 0.0);
         return;
     }
+    // The Help overlay has the keys.
+    if menu.page == help::PAGE {
+        return;
+    }
     if st.machine.is_none() {
-        // Page 0's confirm on the Abilities row opens page 0xf (`FUN_00251848`'s jump table).
+        // Page 0's confirm on the Abilities row opens page 0xf (`FUN_00251848`'s jump table); the Items pages' -5 asks
+        // for page 0xf too (or, from page 2, for page 0x10).
         let on_row = menu.page == 0 && menu.current_entry() == Some(1);
-        if !(on_row && keys.just_pressed(KeyCode::KeyJ)) {
+        let asked = match menu.switch {
+            Some(Switch::ToAbilities { second }) => Some(second),
+            _ => None,
+        };
+        if asked.is_none() && !(on_row && keys.just_pressed(KeyCode::KeyJ)) {
+            // A Help overlay we came back from asks for its page again (`menu_help.rs`).
             return;
         }
+        menu.switch = None;
         let (Some(ab), Some(p)) = (abilities.as_deref(), progress.as_deref()) else {
             se.write(PlaySe::number(snd::REFUSED, None));
             keys.reset_all();
@@ -682,12 +722,22 @@ fn input(
             keys.reset_all();
             return;
         }
-        st.machine = Some(Machine::new(table, 1));
+        let mut machine = Machine::new(table, 1);
+        if asked == Some(true) {
+            machine.page = 0x10;
+        }
+        st.machine = Some(machine);
         st.held = (0, 0.0);
         enter(&mut st, &mut menu, &mut scene);
-        se.write(PlaySe::number(snd::CONFIRM, None));
+        if asked == Some(true) {
+            menu.page = 0x10;
+            info!("menu: page 0x10");
+        }
+        if asked.is_none() {
+            se.write(PlaySe::number(snd::CONFIRM, None));
+        }
         keys.reset_all();
-        redraw(&mut st, &mut scene);
+        redraw(&mut st, &mut scene, &mut ntags);
         return;
     }
     let mut held = st.held;
@@ -711,6 +761,17 @@ fn input(
                 }
                 Effect::Member(_) => {}
                 Effect::Leave => leave(&mut st, &mut menu, &mut scene),
+                Effect::Switch { second } => {
+                    // The list mask has 0x100 only while the Items row is on page 0.
+                    if menu.rows_has(0) {
+                        hand_over(&mut st, &mut menu, &mut scene);
+                        menu.switch = Some(Switch::ToItems { second });
+                        info!("menu: switch to Items{}", if second { " (page 2)" } else { "" });
+                    }
+                }
+                Effect::Help { topic, ret } => {
+                    menu.help = Some(help::Request { topic, ret });
+                }
                 Effect::Close => {
                     // Back to page 0, then the menu's own input closes it from there (the key is
                     // left unconsumed).
@@ -730,7 +791,7 @@ fn input(
         return;
     }
     if st.machine.is_some() {
-        redraw(&mut st, &mut scene);
+        redraw(&mut st, &mut scene, &mut ntags);
         keys.reset_all();
     } else {
         // Leaving for page 0 consumed this frame's key.
@@ -798,6 +859,8 @@ fn ensure_ui(st: &mut AbilitiesMenu, scene: &mut MenuScene) {
     let rows: Vec<usize> = (0..VISIBLE).map(|_| mk(scene, S)).collect();
     let costs: Vec<usize> = (0..VISIBLE).map(|_| mk(scene, S)).collect();
     let tags: Vec<usize> = (0..VISIBLE).map(|_| mk(scene, S)).collect();
+    let new_tags: Vec<usize> = (0..VISIBLE).map(|_| mk(scene, S)).collect();
+    let char_new = mk(scene, S);
     let outline = mk(scene, S);
     let hand = mk(scene, S);
     let glint = mk(scene, S);
@@ -816,6 +879,10 @@ fn ensure_ui(st: &mut AbilitiesMenu, scene: &mut MenuScene) {
     for (&r, &g) in rows.iter().zip(&tags) {
         scene.nodes[g].parent = Some(r);
     }
+    for (&r, &g) in rows.iter().zip(&new_tags) {
+        scene.nodes[g].parent = Some(r);
+    }
+    scene.nodes[char_new].parent = Some(char_row);
     scene.nodes[outline].parent = Some(window);
     scene.nodes[prompt_head].parent = Some(window);
     for &r in &prompt_rows {
@@ -823,14 +890,27 @@ fn ensure_ui(st: &mut AbilitiesMenu, scene: &mut MenuScene) {
     }
     scene.nodes[gauge_a].parent = Some(ap_panel);
     scene.nodes[gauge_b].parent = Some(ap_panel);
-    st.ui = Some(Ui { tabs, window, char_row, rows, costs, tags, outline, hand, glint, prompt_head, prompt_rows, ap_panel, gauge_a, gauge_b, ap_text, help, all });
+    st.ui = Some(Ui { tabs, window, char_row, rows, costs, tags, new_tags, char_new, outline, hand, glint, prompt_head, prompt_rows, ap_panel, gauge_a, gauge_b, ap_text, help, all });
+}
+
+/// Gives the screen to the Items pages: this module's nodes go and page 0's stay hidden (handed on through
+/// `Menu::carry`).
+fn hand_over(st: &mut AbilitiesMenu, menu: &mut Menu, scene: &mut MenuScene) {
+    if let Some(ui) = &st.ui {
+        for &i in &ui.all {
+            scene.nodes[i].visible = false;
+        }
+    }
+    menu.carry = std::mem::take(&mut st.hidden);
+    st.machine = None;
+    menu.page = 0;
 }
 
 /// Takes over from page 0: hides its rows, hand, help line and cards, and brings in the header tabs
 /// and the AP panel.
 fn enter(st: &mut AbilitiesMenu, menu: &mut Menu, scene: &mut MenuScene) {
     ensure_ui(st, scene);
-    st.hidden = menu.page0_nodes().into_iter().filter(|&i| scene.nodes[i].visible).collect();
+    st.hidden = if menu.carry.is_empty() { menu.page0_nodes().into_iter().filter(|&i| scene.nodes[i].visible).collect() } else { std::mem::take(&mut menu.carry) };
     for &i in &st.hidden {
         scene.nodes[i].visible = false;
     }
@@ -873,7 +953,7 @@ fn row_label(text: &MenuText, st: &AbilitiesMenu, r: &Row, color: [u8; 4]) -> Op
 }
 
 /// Sets what every node shows from the machine's state.
-fn redraw(st: &mut AbilitiesMenu, scene: &mut MenuScene) {
+fn redraw(st: &mut AbilitiesMenu, scene: &mut MenuScene, ntags: &mut NewTags) {
     let Some(m) = st.machine.clone() else { return };
     let (Some(ui_ref), Some(exe)) = (st.ui.as_ref(), st.exe.clone()) else { return };
     let (tabs, window, char_row, rows, costs, tags, outline, hand, glint, prompt_head, prompt_rows, ap_panel, gauge_a, gauge_b, ap_text, help) = (
@@ -894,6 +974,7 @@ fn redraw(st: &mut AbilitiesMenu, scene: &mut MenuScene) {
         ui_ref.ap_text,
         ui_ref.help,
     );
+    let (new_tags, char_new) = (ui_ref.new_tags.clone(), ui_ref.char_new);
     let all = ui_ref.all.clone();
     let entry = st.entry.clone().unwrap_or_else(|| Entry { idle: [0; 4], selected: [0; 4], name: 0, help: 0, need: vec![], deny: vec![] });
     let Some(text) = scene.text.take() else { return };
@@ -948,6 +1029,11 @@ fn redraw(st: &mut AbilitiesMenu, scene: &mut MenuScene) {
             set(scene, char_row, usize::from(entry.selected[0]), Some(usize::from(entry.selected[2])), prev);
             scene.nodes[char_row].label_anchor = Some([-7.0, 1.5]);
             scene.nodes[char_row].label = Some(label(&text, text.literal("Sora", Style::default(), [0.0, 0.0]).tokens, 1, 15.0, [0xe5, 0xe5, 0xe5, 0x80], 0, [0.0, 0.0]));
+            // `FUN_00278aa8`: the character's row has the tag while any of his abilities is fresh.
+            if let Some(g) = ntags.row_group(new_tags::Set::Abilities) {
+                scene.nodes[char_new].off = scene.extent(1, usize::from(entry.selected[2]));
+                set(scene, char_new, g, None, was_of(char_new));
+            }
             set(scene, window, group::LIST_WINDOW[0], None, was_of(window));
             for (k, r) in m.table.rows.iter().filter(|r| r.equipped).take(VISIBLE).enumerate() {
                 let id = rows[k];
@@ -992,6 +1078,17 @@ fn redraw(st: &mut AbilitiesMenu, scene: &mut MenuScene) {
                     set(scene, tags[k], tag, None, was_of(tags[k]));
                     scene.nodes[tags[k]].label_anchor = Some(at::TAG_LABEL);
                     scene.nodes[tags[k]].label = Some(label(&text, tokens_of(&text, exe.group_label[g]), 1, 13.0, at::COLOR, 0, [0.0, 0.0]));
+                }
+                // `FUN_0027b9a8`: a fresh ability's row has the tag (the keyblade's own row, cost 0 and slot 0xff, is
+                // not in the list); `FUN_0027be78`: the cursor on it sets its seen bit.
+                if idx == m.cursor && r.slot.is_some() {
+                    ntags.view_ability(r.id);
+                }
+                if r.slot.is_some()
+                    && let Some(g) = ntags.ability_group(r.id)
+                {
+                    scene.nodes[new_tags[k]].off = scene.extent(1, exe.row[r.group as usize % 4] as usize);
+                    set(scene, new_tags[k], g, None, false);
                 }
                 prev_group = Some(r.group);
             }

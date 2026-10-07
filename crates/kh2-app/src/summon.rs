@@ -175,10 +175,10 @@ pub mod rules {
         pub flags: u32,
     }
 
-    /// The LCG word as a float. The game converts the word with `cvt.s.w` (signed) [checked by the
-    /// oracle `summon_spot_start_matches_the_game`].
+    /// The LCG word as a float, read unsigned (0 .. 2^32; checked by the oracle
+    /// `summon_spot_start_and_genie_form_match_the_game`).
     fn word_f(w: u32) -> f32 {
-        w as i32 as f32
+        w as f32
     }
 
     /// `FUN_001a6068(min, max, out, origin, flags)`: a radius between `min` and `max` and a start angle
@@ -660,7 +660,7 @@ fn leave(sm: &mut SummonState, drive: &mut DriveState, acts: &mut Acts, why: &st
 
 /// The experience (`FUN_001d4ec8`; the minigame flag of `FUN_001b9bd8` is never set in the app),
 /// written back to `Progress`.
-fn add_exp(sm: &mut SummonState, levels: &kh2_tables::player::FormLevels, progress: &mut Option<ResMut<Progress>>, segments: i32) {
+fn add_exp(sm: &mut SummonState, levels: &kh2_tables::player::FormLevels, progress: Option<&mut Progress>, segments: i32) {
     if segments <= 0 {
         return;
     }
@@ -670,7 +670,7 @@ fn add_exp(sm: &mut SummonState, levels: &kh2_tables::player::FormLevels, progre
     for l in reached {
         info!("summon: level up to {l} (notice 0xc5bd not shown: FUN_001d4fa0 not ported)");
     }
-    if let Some(p) = progress.as_deref_mut() {
+    if let Some(p) = progress {
         p.set_summon_level(sm.exp.level);
         p.set_summon_exp(sm.exp.exp.max(0) as u32);
     }
@@ -817,7 +817,7 @@ fn tick(
                 if st.gauge_mode == GaugeMode::Summon {
                     let lost = st.timer.change(&tuning, GaugeMode::Summon, st.form, d);
                     info!("summon: gauge change {d:.1} (FUN_001788d8) -> timer {:.0}", st.timer.left);
-                    add_exp(sm, &rules_d.levels, &mut progress, lost);
+                    add_exp(sm, &rules_d.levels, progress.as_deref_mut(), lost);
                 }
             }
         }
@@ -882,7 +882,7 @@ fn tick(
     let battle_on = st.force_battle || battle.active();
     let drain = drive_rules::drain_per_tick(&tuning, battle_on, factor);
     segments_lost += st.timer.change(&tuning, GaugeMode::Summon, st.form, -drain);
-    add_exp(sm, &rules_d.levels, &mut progress, segments_lost);
+    add_exp(sm, &rules_d.levels, progress.as_deref_mut(), segments_lost);
     sm.ticks += 1;
     if sm.ticks.is_multiple_of(crate::data::LOGIC_HZ as u32) {
         let (digit, fill, seg) = drive_rules::segment_display(st.timer.left, st.timer.total, st.segments);
@@ -1344,16 +1344,31 @@ mod tests {
             eprintln!("skipped: no disc (set KH2_ISO)");
             return None;
         };
-        kh2_archive::Archive::open(&iso.to_string_lossy()).ok()
+        kh2_archive::Archive::open(&iso).ok()
     }
 
     fn elf(a: &mut kh2_archive::Archive) -> Vec<u8> {
         ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok()).expect("executable")
     }
 
+    /// The experience a summon earns is written back to `Progress` (byte 6 and `0x340e4c`) with the
+    /// level-up of `FUN_001d4ec8` (the disc's `fmlv` form-0 rows).
     #[test]
-    fn summon_arrival_choice_follows_the_option_and_the_seen_bits() {
-        let mut seen = 0;
+    fn summon_exp_is_written_to_progress() {
+        let Some(mut a) = archive() else { return };
+        let fmlv = kh2_tables::load::<t::Fmlv>(&mut a, &t::FMLV).expect("fmlv").rows;
+        let levels = kh2_tables::player::FormLevels::from_rows(&fmlv);
+        let mut p = Progress::from_block(&[], Arc::new(crate::progress::ItemIndex::default()));
+        let mut sm = SummonState { exp: drive_rules::SummonExp { level: 1, exp: 0 }, cap: 7, ..Default::default() };
+        for _ in 0..12 {
+            add_exp(&mut sm, &levels, Some(&mut p), 1);
+            assert_eq!((p.summon_level(), p.summon_exp()), (sm.exp.level, sm.exp.exp as u32));
+        }
+        assert!(sm.exp.level > 1, "twelve segments level a summon up from 1: {:?}", sm.exp);
+    }
+
+    #[test]
+    fn summon_arrival_choice_follows_the_option_and_the_seen_bits() {        let mut seen = 0;
         // Auto (2): the first time only, per summon.
         assert!(arrival_event(2, &mut seen, 3, 0));
         assert_eq!(seen, 1 << 3);

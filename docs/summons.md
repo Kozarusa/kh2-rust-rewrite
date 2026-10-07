@@ -476,7 +476,21 @@ Not done, and why:
   Bell's reraise and the area re-entry (stage 6).
 - Byte 5 and byte 7 are kept in `SummonState`, not written to `Progress` (no setters for them).
 - The game steps one LCG (`DAT_003716a0`) for many systems; the app keeps a copy for the summon only, started
-  from the executable's initial word.
+  from the executable's initial word, which is 0 in the file. A multiplicative LCG at 0 stays 0, so the game
+  must seed it somewhere [GAP: none of the 34 functions `mips_scan.py --addr 0x3716a0` lists stores anything but
+  the next step; a store through a computed base or an overlay was not searched]. With 0 the port gives Genie
+  the first owned form and the free spot its minimum radius.
+- System effect 0x13 is element 19 of `00effect.bar` (`kh2 pax 00effect.bar`: effect 18, bone 67, flags 0x805,
+  sound 180), but `kh2_fx::Effect::new` refuses its particle program, so nothing is drawn (logged `not started:
+  its particle program did not start`); fx.rs / kh2-fx are not owned here.
+- The free spot's direction is (sin, 0, cos) of the angle and the LCG word is read unsigned (both oracle-checked).
+
+Harness (the runs behind the status, tt02, Donald and Goofy spawned by the map script):
+`KH2_STATE=<file with "items": {"25": 1}, "summon": {"level": 1, "exp": 0}, "option_word": 11>` (11 = the default
+option word with Summon Effects 0, so the arrival skips the event) `KH2_DRIVE_POINTS=5 KH2_SUMMON=3 KH2_SUMMON_AT=4`,
+plus `KH2_DISMISS_AT=12` (Dismiss) or `KH2_SUMMON_AT=2 KH2_LIMIT=519 KH2_DISMISS_AT=4.5` (Ohana with Stitch out:
+`limit: summon limit cost 100 x 12 = -1200 to the summon timer`, `summon: Dismiss refused (summon state 2, limit
+task true)`). Without `option_word` the default Auto plays the event path on the first summon.
 
 ## 7. Unknowns (with what was searched)
 

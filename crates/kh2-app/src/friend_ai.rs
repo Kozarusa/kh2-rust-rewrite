@@ -133,6 +133,7 @@ fn friend_update(
         let FriendBrain { rt, obj, tag, flags124, started, errors_seen, mode, fields } = &mut *brain;
         fields.order = data.order(m.motion_row);
         fields.free = m.free;
+        fields.target_valid = m.target_valid();
         obj.motor.pos = m.position();
         obj.motor.yaw = m.yaw();
         obj.motor.grounded = true;
@@ -159,8 +160,23 @@ fn friend_update(
             rt.spawn(&mut host, handle);
             rt.set_mode_named(&mut host, START_MODE);
         }
+        // FUN_00113d48 phase 0: the special's mode (FUN_00186e70 on the script controller +0x300) and
+        // the pending MP byte +0xaf4.
+        if let Some(want) = m.mode_request.take() {
+            host.fields.pending_mp = m.pending_mp;
+            rt.set_mode_named(&mut host, &want);
+            if log {
+                info!("party: {tag} special: script mode {want:?} asked (pending MP {})", m.pending_mp);
+            }
+        }
         rt.update(&mut host);
+        // Host 1.276 paid the pending MP: FUN_00186368 on the member (an MP charge when it is short).
+        if let Some(cost) = host.fields.paid.take() {
+            m.pay_mp(cost);
+        }
+        m.pending_mp = host.fields.pending_mp;
         let now = rt.current_mode();
+        m.script_mode = now.clone();
         if now != *mode {
             if log {
                 info!("party: {tag} script mode {:?} -> {:?}", mode.as_deref().unwrap_or("-"), now.as_deref().unwrap_or("-"));

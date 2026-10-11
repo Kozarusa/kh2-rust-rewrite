@@ -21,6 +21,13 @@ pub struct FriendFields {
     pub free: bool,
     /// FUN_0017da30's slot order for the member's motion state now.
     pub order: [u8; 4],
+    /// +0xaf4: the MP the special's mode costs (FUN_00113d48 writes it); host 1.276 pays it.
+    pub pending_mp: u8,
+    /// What host 1.276 paid this tick (`friend_ai` hands it to the member's MP, FUN_00186368).
+    pub paid: Option<u8>,
+    /// The member's target record (+0x9f4) is valid: an enemy target, or the one a special or Cure was
+    /// chosen for (FUN_00113d48 copies phase 1's record there). Host 1.140 reads it.
+    pub target_valid: bool,
 }
 
 /// The member's script host.
@@ -113,6 +120,25 @@ impl Host for FriendHost<'_, '_> {
                 return self.inner.call(&Call::PlayMotionAt { obj: *obj, motion: self.remap(*motion), start: *start, blend: *blend });
             }
             _ => {}
+        }
+        // 1.276 (0x170a00): for a party object (+0x588 bit 4) FUN_001769e0 pays the pending MP byte
+        // +0xaf4 (FUN_00186368 with minus it) and clears it. [inferred] The object named is the member
+        // itself (its script runs only here).
+        // 1.140 (0x173740 -> FUN_0018ed58): whether a target record is valid. The members' scripts ask it
+        // of their own target (2.23 then 1.140, `kh2 bdx P_EX020` R1559); [inferred] the app answers the
+        // member's target record for any record the script names.
+        if let Some((1, 140, _)) = words(c) {
+            let v = Value::Bool(self.fields.target_valid);
+            let tag = self.inner.tag;
+            self.trace().record(tag, c, &v, St::Approx, "the member's own target record (+0x9f4) whatever record is named");
+            return v;
+        }
+        if let Some((1, 276, _)) = words(c) {
+            let cost = std::mem::take(&mut self.fields.pending_mp);
+            self.fields.paid = Some(self.fields.paid.unwrap_or(0).saturating_add(cost));
+            let tag = self.inner.tag;
+            self.trace().record(tag, c, &Value::None, St::Impl, "");
+            return Value::None;
         }
         if let Some((10, index, a)) = words(c)
             && let Some((v, st, why)) = self.group10(index, &a)

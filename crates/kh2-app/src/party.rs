@@ -61,7 +61,10 @@ impl Plugin for PartyPlugin {
             .init_resource::<PartySlots>()
             .insert_resource(Manager { log: std::env::var("KH2_PARTYLOG").is_ok_and(|v| !v.is_empty() && v != "0"), rng: 0x2545_f491, ..Default::default() })
             .add_systems(FixedUpdate, (spawn_party, party_tick, party_push_apart, party_fade, party_hits).chain().in_set(PartyTick).in_set(Sim::Enemy))
-            .add_systems(FixedUpdate, member_hands.in_set(Sim::Enemy).before(PartyTick));
+            .add_systems(FixedUpdate, member_hands.in_set(Sim::Enemy).before(PartyTick))
+            .add_systems(FixedUpdate, (party_receive_hits, party_item_uses).chain().in_set(Sim::SoraHurt))
+            .add_systems(FixedUpdate, party_hud.after(Sim::SoraHurt))
+            .add_systems(FixedUpdate, party_forced_hits.in_set(Sim::Detect));
         crate::friend_ai::register(app);
     }
 }
@@ -93,7 +96,20 @@ pub struct PartyData {
     objs: Vec<t::Objentry>,
     memt: Option<kh2_tables::player::Memt>,
     prty: Vec<t::PrefPrty>,
+    /// The `prty` entry's row offsets (FUN_001cc140 falls back to row 1 for an offset of 0).
+    prty_offsets: Vec<u32>,
+    /// The `sstm` record (03system.bin): +0x54 the revive heal scale, +0x58 the revive heal, +0x5c the
+    /// out-of-battle revive count-down scale, +0x7c the MP-charge feed of an MP gain.
+    sstm: Option<kh2_tables::player::Sstm>,
     weapons: WeaponTables,
+    /// Stage 4's executable values: FUN_00110f90's MP-gate weights (0x378598, 0x37859c), FUN_0010c800's
+    /// degrees to radians (0x3784a0), the item handlers' fractions (0x3785c8 HP, 0x3785d4 MP) and choice
+    /// orders (0x352e28 / 0x352e3c HP, 0x352e50 / 0x352e60 MP).
+    mp_gate_w: (f32, f32),
+    deg_to_rad: f32,
+    item_frac: (f32, f32),
+    hp_items: (Vec<u16>, Vec<u16>),
+    mp_items: (Vec<u16>, Vec<u16>),
     /// Loaded rigs by model name (`None`: not loadable).
     rigs: HashMap<String, Option<Arc<Rig>>>,
 }
@@ -107,7 +123,15 @@ impl PartyData {
         }
         let mut ai = HashMap::new();
         let (mut orders, mut half, mut stop) = ([[2, 3, 1, 0]; 4], 0.5, (0.0, 0.0));
+        let (mut mp_gate_w, mut deg_to_rad, mut item_frac) = ((0.0, 0.0), 0.0, (0.0, 0.0));
+        let (mut hp_items, mut mp_items) = ((Vec::new(), Vec::new()), (Vec::new(), Vec::new()));
         if let Some(elf) = exe.as_deref() {
+            let g = |va: u32| rules::exe_bytes(elf, va, 4).map_or(0.0, |b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+            mp_gate_w = (g(battle::MP_GATE_SLOPE), g(battle::MP_GATE_BASE));
+            deg_to_rad = g(battle::DEG_TO_RAD);
+            item_frac = (g(battle::HP_ITEM_FRACTION), g(battle::MP_ITEM_FRACTION));
+            hp_items = (battle::item_order(elf, battle::HP_ITEMS_ONE, battle::HP_ITEM_CHOICES), battle::item_order(elf, battle::HP_ITEMS_MANY, battle::HP_ITEM_CHOICES));
+            mp_items = (battle::item_order(elf, battle::MP_ITEMS_ONE, battle::MP_ITEM_CHOICES), battle::item_order(elf, battle::MP_ITEMS_MANY, battle::MP_ITEM_CHOICES));
             for class in 0..rules::CLASSES as u8 {
                 if let Some(c) = ClassAi::from_exe(elf, class) {
                     ai.insert(class, c);
@@ -118,7 +142,7 @@ impl PartyData {
             half = f(0x3784ac).unwrap_or(half);
             stop = (f(0x378564).unwrap_or(0.0), f(0x378568).unwrap_or(0.0));
         }
-        let (objs, memt, prty, weapons) = match disc.0.lock() {
+        let (objs, memt, prty, weapons, prty_offsets, sstm) = match disc.0.lock() {
             Ok(mut a) => (
                 kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).map(|d| d.rows).unwrap_or_default(),
                 kh2_tables::player::load_memt(&mut a).ok(),
@@ -128,10 +152,25 @@ impl PartyData {
                     went: kh2_tables::subfile(&mut a, &t::WENT).unwrap_or_default(),
                     wmst: kh2_tables::subfile(&mut a, &t::WMST).map(|b| crate::drive::rules::parse_wmst(&b)).unwrap_or_default(),
                 },
+                prty_offsets(&mut a),
+                kh2_tables::player::load_sstm(&mut a).ok(),
             ),
-            Err(_) => (Vec::new(), None, Vec::new(), WeaponTables::default()),
+            Err(_) => (Vec::new(), None, Vec::new(), WeaponTables::default(), Vec::new(), None),
         };
-        PartyData { consts, ai, orders, half, stop, objs, memt, prty, weapons, rigs: HashMap::new() }
+        PartyData { consts, ai, orders, half, stop, objs, memt, prty, prty_offsets, sstm, weapons, mp_gate_w, deg_to_rad, item_frac, hp_items, mp_items, rigs: HashMap::new() }
+    }
+
+    /// The record at +0x12c (and the movement block at +0x110): the `prty` row of the object's
+    /// `objentry` NeoMoveset (FUN_00196b58 tail-calls FUN_00194438(+0x110, NeoMoveset) -> FUN_001cc1c8 ->
+    /// FUN_001cc140 with fallback row 1), which also gives +0x110 walk, +0x114 run, +0x118 jump, +0x11c
+    /// turn.
+    fn prty_row(&self, moveset: u16) -> Option<&t::PrefPrty> {
+        battle::pref_row(&self.prty_offsets, moveset as usize, 1).and_then(|k| self.prty.get(k))
+    }
+
+    /// A word of the `sstm` record as f32 (0.0 when the record is missing).
+    fn sstm_f32(&self, off: usize) -> f32 {
+        self.sstm.as_ref().filter(|s| s.words.len() > off / 4).map_or(0.0, |s| s.f32(off))
     }
 
     /// FUN_0017da30's slot order of a motion-state row.
@@ -167,6 +206,21 @@ impl PartyData {
         let mset = self.weapons.wmst.get(ms).and_then(|n| n.get(hand)).filter(|s| !s.is_empty()).cloned();
         Some(crate::drive::WeaponFiles { model: w.model_name.clone(), mset })
     }
+}
+
+/// The row offsets of the `prty` entry of 03system.bin's `pref` (u32 count, then the offsets).
+fn prty_offsets(a: &mut kh2_archive::Archive) -> Vec<u32> {
+    let Ok(file) = a.read("03system.bin") else { return Vec::new() };
+    let Some(sub) = kh2_bar::parse(&file).ok().and_then(|top| {
+        let pref = kh2_bar::find(&top, "pref")?;
+        let inner = kh2_bar::parse(pref.data).ok()?;
+        Some(kh2_bar::find(&inner, "prty")?.data.to_vec())
+    }) else {
+        return Vec::new();
+    };
+    let w = |o: usize| sub.get(o..o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let n = w(0).unwrap_or(0) as usize;
+    (0..n).map_while(|k| w(4 + 4 * k)).collect()
 }
 
 /// The current world's party: the four slot bytes (`0x340c9c + world x 4`: player, the two
@@ -220,11 +274,48 @@ struct Target {
     shape: usize,
 }
 
-/// An attack motion that runs (the member is not free: +0x160 bits clear).
+/// An attack, follow-up jump or item motion that runs (the member is not free: +0x160 bits clear).
 #[derive(Clone, Copy, Debug)]
 struct Attacking {
-    record: usize,
+    /// The action record (`None` for a combo follow-up).
+    record: Option<usize>,
     slot: usize,
+    /// A follow-up jump ends when the member lands (its jump motion may loop).
+    until_landed: bool,
+}
+
+/// An item use that runs (FUN_00175e20: +0xb2c the item, +0xb30 the target) until frame trigger 6 of
+/// motion 9 (FUN_00188498 case 6 -> FUN_001b8710).
+#[derive(Clone, Copy, Debug)]
+struct ItemUse {
+    item: u16,
+    target: battle::Who,
+    slot: usize,
+}
+
+/// An item taken out of the member's slots, waiting `left` frames before its effect (FUN_001b82b8 with
+/// `DAT_0037bba4` = 30, as Sora's `items::USE_WAIT`).
+#[derive(Clone, Copy, Debug)]
+struct QueuedUse {
+    left: f32,
+    item: u16,
+    target: battle::Who,
+}
+
+/// An item handler's two choice orders (one target, several) and the value it compares (HP or MP).
+type ItemLists = (Vec<u16>, Vec<u16>);
+type VitalPart = fn(&battle::Vital) -> (i32, i32);
+
+/// What a chosen record starts this tick.
+enum Start {
+    /// FUN_001137d8: the attack command with the entry's motion.
+    Attack(usize, battle::Entry),
+    /// FUN_0010c800: a combo follow-up jump.
+    FollowUp(battle::FollowUp),
+    /// FUN_00113888 / FUN_00113b08 phase 0 -> FUN_0010c9d0: an item on a target.
+    Item(usize, u16, battle::Who),
+    /// FUN_00113d48 phase 0: the script's mode and the pending MP byte (+0xaf4).
+    Special(usize, String, u8),
 }
 
 /// One party member in the field.
@@ -280,7 +371,52 @@ pub struct PartyMember {
     /// FUN_0017da30's state row now (1 battle, 2 field).
     pub(crate) motion_row: usize,
     pub(crate) free: bool,
+    /// Stage 3: the status block (+0x48c): HP +0, maximum +4, minimum +8, MP +0x180, maximum +0x184,
+    /// the MP charge +0x1bc / +0x1c0.
+    pub hp: i32,
+    pub hp_max: i32,
+    pub mp: i32,
+    pub mp_max: i32,
+    pub(crate) charge: crate::magic_rules::Charge,
+    /// +0x7f8 bit 4 (KO, FUN_00186580), the revive timer +0xb40 and the handle of system effect 0xe
+    /// (+0xb44) while the member lies in motion 0x36.
+    pub ko: bool,
+    pub revive: f32,
+    down_fx: Option<crate::fx::FxHandle>,
+    /// The `prty` row of the NeoMoveset (+0x12c): StunTime (+0x18, the revive time) and MpDrive (+0x1c,
+    /// the MP charge length).
+    stun: f32,
+    mp_drive: f32,
+    /// A hit-reaction motion runs (slot): the member is not free until it ends.
+    hurt: Option<usize>,
+    /// Stage 4: the MP gate bit of this frame (+0xb7c 0x20, FUN_00110f90), the member in danger (+0xce4,
+    /// FUN_0010f830), the item use that runs and the uses waiting for their effect.
+    mp_gate: bool,
+    danger: Option<battle::Who>,
+    using: Option<ItemUse>,
+    queued: Vec<QueuedUse>,
+    /// FUN_00113d48: the mode the script is asked to switch to (FUN_00186e70 on +0x300; `friend_ai`
+    /// carries it out) and the MP cost the script pays through host 1.276 (+0xaf4).
+    pub(crate) mode_request: Option<String>,
+    pub(crate) pending_mp: u8,
+    /// The script's mode now (`friend_ai` writes it): the script is busy (+0x390) while it runs a
+    /// special's mode [inferred].
+    pub(crate) script_mode: Option<String>,
+    /// FUN_00113d48 put the special's (or Cure's) target into +0x9f4; kept while its mode runs.
+    special_target: bool,
 }
+
+/// Motion ids of FUN_0017ca70 / FUN_0017cee8: lying KO'd (0x36) and getting up (0x37).
+const MOTION_DOWN: i32 = 0x36;
+const MOTION_GET_UP: i32 = 0x37;
+/// `DAT_0037a55c`: the blend of FUN_0017cee8's get-up request (8.0 in the executable; read there).
+const GET_UP_BLEND: f32 = 8.0;
+/// System effect of a KO'd member (FUN_0017ca70: FUN_001db868(.., 0xe, ..)).
+const EFFECT_DOWN: u16 = 0xe;
+/// Voice-table ids the member's voice method (+0x54, FUN_00175d18) is asked for: 2 on KO (FUN_00175f10),
+/// 9 when its HP enters danger (FUN_0017cde0).
+const VOICE_KO: u16 = 2;
+const VOICE_DANGER: u16 = 9;
 
 impl PartyMember {
     /// Position (game units, the app's axes) and facing (app yaw).
@@ -290,6 +426,16 @@ impl PartyMember {
 
     pub(crate) fn yaw(&self) -> f32 {
         self.motor.yaw
+    }
+
+    /// The member's target record (+0x9f4) is valid (host 1.140).
+    pub(crate) fn target_valid(&self) -> bool {
+        self.special_target || self.target.is_some()
+    }
+
+    /// The status block's HP and MP as the danger test and the item handlers read them.
+    fn vital(&self) -> battle::Vital {
+        battle::Vital { hp: self.hp, hp_max: self.hp_max, mp: self.mp, mp_max: self.mp_max }
     }
 
     /// Puts the member at `at` (game units, the app's axes) facing `yaw`, on the ground, with no
@@ -305,6 +451,54 @@ impl PartyMember {
         self.held = None;
         self.attack = None;
         self.want_yaw = None;
+    }
+
+    /// The HP method (FUN_00176c98 -> FUN_00186238) on the member's status block; a KO by it sets the
+    /// revive timer (FUN_0017ce60). The revive scale is `sstm` +0x54: the ability block's +0x10 bit 8 (1.0
+    /// instead) is not built for the members [inferred: clear]. The MP Rage gain of FUN_00176c98 for a
+    /// damage is not ported (the members' ability block +0x54 is not built).
+    fn change_hp(&mut self, delta: i32, data: &PartyData) -> battle::HpChange {
+        let c = battle::hp_change(&mut self.hp, self.hp_max, 0, &mut self.ko, delta, data.sstm_f32(0x54));
+        if c.knocked_out {
+            // FUN_0017ce60: StunTime of the +0x12c row x the ability block's Hyper Healing (+0x58; the
+            // members' block is the default 1.0 [inferred: no Hyper Healing equipped]).
+            self.revive = battle::revive_time(self.stun, 1.0);
+            self.attack = None;
+            self.using = None;
+            self.held = None;
+        }
+        c
+    }
+
+    /// FUN_001769e0 -> FUN_00186368 with minus `cost` (host 1.276): nothing while KO'd; MP below 0 starts
+    /// the MP charge (FUN_00186440: the `prty` MpDrive of the +0x12c row x `DAT_0037a974`, MP 0),
+    /// otherwise MP drops (FUN_001a0180), as Sora's spells pay (`magic_rules::pay`).
+    pub(crate) fn pay_mp(&mut self, cost: u8) {
+        if self.ko || self.hp_max == 0 {
+            return;
+        }
+        let before = self.mp;
+        match crate::magic_rules::pay(self.mp, self.mp_max, cost, self.mp_drive) {
+            crate::magic_rules::Paid::Mp(v) => self.mp = v,
+            crate::magic_rules::Paid::Charge { total } => {
+                self.mp = 0;
+                self.charge = crate::magic_rules::Charge { left: total, total };
+            }
+        }
+        info!("party: {} paid {cost} MP (host 1.276): MP {before} -> {}{}", self.model, self.mp, if self.charge.active() { format!(", MP charge {:.0}", self.charge.left) } else { String::new() });
+    }
+
+    /// FUN_0017cee8's motion: 0x37 (blend `DAT_0037a55c`) when the member lies in 0x36; it is busy until it
+    /// ends.
+    fn get_up(&mut self, anims: &mut Query<(&mut Animator, &GlobalTransform)>, order: [u8; 4]) {
+        let Ok((mut a, _)) = anims.get_mut(self.body) else { return };
+        let rig = a.rig.clone();
+        let down = battle::remap(MOTION_DOWN, order, |s| rig.mset.has(s));
+        if down.is_some() && a.slot == down {
+            let slot = battle::remap(MOTION_GET_UP, order, |s| rig.mset.has(s));
+            a.restart(slot, false, GET_UP_BLEND);
+            self.hurt = slot;
+        }
     }
 }
 
@@ -449,8 +643,14 @@ fn spawn_party(
             continue;
         };
         let (radius, height) = body_shape(&rig);
-        let prty = data.prty.get(row.neo_status as usize);
+        // +0x110..+0x11c and the record at +0x12c: the `prty` row of the NeoMoveset (FUN_00194438).
+        let prty = data.prty_row(row.neo_moveset);
         let (walk, run, turn, jump) = prty.map_or((0.0, 0.0, 0.0, 0.0), |p| (p.walk_speed, p.run_speed, p.turn_speed, p.jump_height));
+        let (stun, mp_drive) = prty.map_or((0.0, 0.0), |p| (p.stun_time, p.mp_drive));
+        // The status block (FUN_0019fd30): rebuilt from the saved party record; a new block gets its HP
+        // through FUN_001a0140 [inferred: the maximum], and MP at its maximum [inferred].
+        let rec = progress.as_ref().and_then(|p| p.member(row.neo_status));
+        let (hp_max, mp_max) = rec.as_ref().map_or((0, 0), |r| (r.hp_max as i32, r.mp_max as i32));
         let ground = w.ground(at, at.y + 100.0, 400.0).map_or(at.y, |g| g.y);
         let mut motor = Motor { pos: at.with_y(ground), yaw, grounded: true, ..Motor::default() };
         motor.capsule.radius = radius;
@@ -529,9 +729,30 @@ fn spawn_party(
                 script_slot: None,
                 motion_row: battle::motion_state(false, false),
                 free: true,
+                // Harness: `KH2_PARTY_HP=<n>` starts the members with n HP (to see a KO soon).
+                hp: std::env::var("KH2_PARTY_HP").ok().and_then(|v| v.parse::<i32>().ok()).map_or(hp_max, |v| v.clamp(1, hp_max.max(1))),
+                hp_max,
+                mp: mp_max,
+                mp_max,
+                charge: Default::default(),
+                ko: false,
+                revive: 0.0,
+                down_fx: None,
+                stun,
+                mp_drive,
+                hurt: None,
+                mp_gate: false,
+                danger: None,
+                using: None,
+                queued: Vec::new(),
+                mode_request: None,
+                pending_mp: 0,
+                script_mode: None,
+                special_target: false,
             },
-            // The members' attacks hit enemies (stage 2); they cannot be hit before stage 3.
-            Fighter { team: Team::Player, attack_bodies, hurt_body: body, landed: Default::default(), hittable: false },
+            // The members' attacks hit enemies (stage 2) and enemies' attacks hit them (stage 3,
+            // `party_receive_hits`).
+            Fighter { team: Team::Player, attack_bodies, hurt_body: body, landed: Default::default(), hittable: true },
         ));
         if next_slot >= 2 {
             break;
@@ -614,6 +835,7 @@ fn party_tick(
     fighters: Query<(Entity, &Fighter), Without<PartyMember>>,
     mut q: Query<(&mut Transform, &mut PartyMember)>,
     mut anims: Query<(&mut Animator, &GlobalTransform)>,
+    mut fx: (MessageWriter<crate::fx::StartBoundSystemEffect>, MessageWriter<crate::fx::StopEffect>),
 ) {
     let (Some(c), Some(w), Ok(s)) = (data.consts.as_ref(), world, sora.single()) else { return };
     if q.is_empty() {
@@ -668,6 +890,9 @@ fn party_tick(
         }
     }
     let points = rules::follow_points(player, player_yaw, inputs, c);
+    // The status blocks the danger test and the item handlers read: the player's and each member's.
+    let player_vital = battle::Vital { hp: s.hp, hp_max: s.stats.max_hp, mp: s.mp, mp_max: game.sora_max_mp };
+    let vitals: Vec<(u8, battle::Vital)> = q.iter().map(|(_, m)| (m.slot, m.vital())).collect();
 
     for (mut tf, mut m) in &mut q {
         let m = &mut *m;
@@ -685,9 +910,59 @@ fn party_tick(
         if m.timer > 0.0 {
             m.timer -= FRAME;
         }
+        // FUN_00175f48 -> FUN_001a0540: the MP charge runs down (the ability block's MP regeneration
+        // +0x34 is the default 1.0 for the members [inferred]); at its end MP refills (FUN_001a05a8).
+        if m.charge.tick(1.0) {
+            m.mp = m.mp_max;
+            info!("party: {} MP charge over: MP {}", m.model, m.mp);
+        }
         let mut delta = Vec3::ZERO;
-        let mut start: Option<(usize, battle::Entry)> = None;
-        m.free = m.attack.is_none();
+        let mut start: Option<Start> = None;
+        // A reaction or get-up motion that ended frees the member.
+        if let Some(slot) = m.hurt
+            && anims.get(m.body).is_ok_and(|(a, _)| a.finished || a.slot != Some(slot))
+        {
+            m.hurt = None;
+        }
+        // FUN_0017ca70 (the friend base's tick, vtable +0xc): a KO'd member's revive count-down; at 0
+        // FUN_0017cc20 heals `maxHP x sstm +0x58` through the HP method, which revives (FUN_0017cee8).
+        if m.ko && battle::revive_step(&mut m.revive, FRAME, in_battle, data.sstm_f32(0x5c)) {
+            let heal = battle::revive_heal(m.hp_max, data.sstm_f32(0x58));
+            let c = m.change_hp(heal, &data);
+            info!("party: {} revive: timer out, heal {heal} (maxHP {} x sstm +0x58), HP now {} of {}", m.model, m.hp_max, m.hp, m.hp_max);
+            if c.revived {
+                m.get_up(&mut anims, order);
+            }
+        }
+        if m.ko {
+            // While KO'd and free on the ground (FUN_001b7e00, not FUN_0019aa28): effect 0xe once and
+            // motion 0x36 (FUN_0017e2d8 asks only when it is not already playing).
+            if m.hurt.is_none()
+                && m.attack.is_none()
+                && m.motor.grounded
+                && let Ok((mut a, _)) = anims.get_mut(m.body)
+            {
+                if m.down_fx.is_none() {
+                    let handle = crate::fx::FxHandle::new();
+                    fx.0.write(crate::fx::StartBoundSystemEffect { id: EFFECT_DOWN, owner: m.body, handle });
+                    m.down_fx = Some(handle);
+                }
+                let rig = a.rig.clone();
+                let slot = battle::remap(MOTION_DOWN, order, |s| rig.mset.has(s));
+                if a.slot != slot {
+                    a.play(slot, true, BLEND);
+                    if log {
+                        info!("party: {} lies down: motion {MOTION_DOWN:#x} -> slot {slot:?}, system effect {EFFECT_DOWN:#x}", m.model);
+                    }
+                }
+            }
+        } else if let Some(h) = m.down_fx.take() {
+            // Out of motion 0x36: the effect is told to end (FUN_001d9f20 -> FUN_001e0298).
+            fx.1.write(crate::fx::StopEffect { handle: h, kill: false });
+            // A revive by another heal (an item, Cure) gets up as well (FUN_0017cee8).
+            m.get_up(&mut anims, order);
+        }
+        m.free = m.attack.is_none() && m.hurt.is_none() && !m.ko;
         if m.free {
             // FUN_00111070: the far counter (a blocked step [inferred] and a height difference over far_dy).
             if m.blocked {
@@ -749,14 +1024,33 @@ fn party_tick(
                 (dir, speed) = follow_player(m, if in_battle { rules::ROW_BATTLE_PLAYER } else { rules::ROW_FIELD });
             } else {
                 let ai = ai.unwrap();
-                // FUN_0010fcd0 (the emergency pass FUN_0010f8d8 is stage 4: no member is in danger here).
+                // FUN_00110f90: the MP gate of this frame; FUN_0010f830: the member in danger.
+                let roll = mgr.roll();
+                m.mp_gate = battle::mp_gate(roll, ai.params.mp_chance, m.mp, m.mp_max, data.mp_gate_w.0, data.mp_gate_w.1);
+                let me_v = m.vital();
+                let other_v = vitals.iter().find(|(sl, _)| *sl != m.slot).map(|(_, v)| *v);
+                let danger = battle::danger_member(player_vital, me_v, other_v, false);
+                if log && danger != m.danger {
+                    info!("party: {} member in danger (FUN_0010f830): {danger:?}", m.model);
+                }
+                m.danger = danger;
+                // +0x390: the script runs a special's mode (or is asked to) [inferred].
+                let script_busy = m.mode_request.is_some() || ai.records.iter().any(|r| !r.mode.is_empty() && m.script_mode.as_deref() == Some(r.mode.as_str()));
+                if !script_busy {
+                    m.special_target = false;
+                }
+                // FUN_0010f8d8 sets the MP gate before its tests.
+                let emergency_now = danger.is_some() && !script_busy;
+                if emergency_now {
+                    m.mp_gate = true;
+                }
                 let now = MemberNow {
                     standing: m.motor.grounded,
                     free: true,
-                    status: false,
-                    mp: 0,
-                    mp_gate: false,
-                    mp_charge: false,
+                    status: true,
+                    mp: m.mp,
+                    mp_gate: m.mp_gate,
+                    mp_charge: m.charge.active(),
                     target_ok,
                     dy: rel_t.dy,
                     gd: rel_t.gd,
@@ -770,6 +1064,19 @@ fn party_tick(
                 let skip = battle::repeated(m.choosing.last, m.class);
                 let any_attack = |skip: Option<usize>| ai.records.iter().enumerate().any(|(i, r)| r.flags & battle::flag::ATTACK != 0 && Some(i) != skip && !matches!(r.handler, Handler::Other(0)) && r.handler == Handler::Attack && battle::feasible(r, &now, setting(i), equipped(r)));
                 let (current, timer, changed) = (m.choosing.current, m.timer, m.target_changed);
+                // FUN_0010f510 -> FUN_001a1d50: the member stands, is free and holds the item in its own
+                // battle item slots.
+                let stock = |item: u16| now.standing && member.as_ref().is_some_and(|mm| mm.items.contains(&item));
+                // The item handlers' phase 1 (FUN_00113888 HP, FUN_00113b08 MP): target and item.
+                let item_choice = |h: Handler| -> Option<(battle::Who, u16)> {
+                    let (frac, lists, value): (f32, &ItemLists, VitalPart) = match h {
+                        Handler::HpItem => (data.item_frac.0, &data.hp_items, |v| (v.hp, v.hp_max)),
+                        _ => (data.item_frac.1, &data.mp_items, |v| (v.mp, v.mp_max)),
+                    };
+                    battle::item_pick(danger, me_v, player_vital, other_v, frac, value, &lists.0, &lists.1, |_| 0, stock)
+                };
+                // FUN_00113d48 phase 1: a mode to switch to, the script free to take it, and FUN_0010f220.
+                let special_ok = |i: usize, r: &battle::Record| !r.mode.is_empty() && !script_busy && battle::feasible(r, &now, setting(i), equipped(r));
                 let can = |i: usize, cont: bool| {
                     let r = &ai.records[i];
                     let waited = !(changed || timer <= 0.0);
@@ -778,9 +1085,11 @@ fn party_tick(
                         Handler::Approach => (if cont { waited } else { current != Some(i) }) && !any_attack(skip),
                         Handler::Wait => (!cont || waited) && !any_attack(skip),
                         Handler::GoofyWait => (!cont || waited) && target_ok,
-                        // Items, specials and Cure need the member's status block and the MP gate
-                        // (stages 3 and 4): not feasible yet.
-                        _ => false,
+                        Handler::HpItem | Handler::MpItem => battle::feasible(r, &now, setting(i), equipped(r)) && item_choice(r.handler).is_some(),
+                        Handler::Special => special_ok(i, r),
+                        // FUN_00113e68: as the special, when someone's HP is below the entry's +0x3c.
+                        Handler::Cure => special_ok(i, r) && r.entry.is_some_and(|e| battle::cure_target(danger, me_v, player_vital, other_v, e.cure).is_some()),
+                        Handler::Other(_) => false,
                     }
                 };
                 let chain = m.motor.grounded && target_ok;
@@ -788,7 +1097,17 @@ fn party_tick(
                 let choice = {
                     let mgr = &mut *mgr;
                     let rng = std::cell::RefCell::new(mgr);
-                    battle::choose(&ai.records, &mut choosing, &ai.params, m.class, &now, false, chain, setting, can, || rng.borrow_mut().roll(), |n| rng.borrow_mut().random(n))
+                    // FUN_0010f8d8 first when someone is in danger; FUN_0010fcd0 when it found nothing.
+                    let urgent = if emergency_now { battle::emergency(&ai.records, &mut choosing, true, now.mp_charge, |i| can(i, false), |n| rng.borrow_mut().random(n)) } else { None };
+                    match urgent {
+                        Some(k) => {
+                            if log {
+                                info!("party: {} emergency pass (FUN_0010f8d8) chose record {k} {:?}", m.model, ai.records[k].handler);
+                            }
+                            Choice::Do(k)
+                        }
+                        None => battle::choose(&ai.records, &mut choosing, &ai.params, m.class, &now, false, chain, setting, can, || rng.borrow_mut().roll(), |n| rng.borrow_mut().random(n)),
+                    }
                 };
                 m.choosing = choosing;
                 let record = match choice {
@@ -809,10 +1128,15 @@ fn party_tick(
                         );
                     }
                 }
+                // A combo follow-up (FUN_0010fcd0 -> FUN_0010c800 with the class's entry k): the jump.
                 if let Choice::FollowUp(k) = choice
-                    && log
+                    && let Some(f) = ai.followups.get(k as usize)
                 {
-                    info!("party: {} combo follow-up {k} chosen: FUN_0010c800 / FUN_001b0758 are not ported, nothing starts", m.model);
+                    m.chosen.push(format!("FollowUp#{k}"));
+                    if log {
+                        info!("party: {} combo follow-up {k} (FUN_0010c800): angle {} height {} speed {} frames {}", m.model, f.angle, f.height, f.speed, f.frames);
+                    }
+                    start = Some(Start::FollowUp(*f));
                 }
                 let continuing = matches!(choice, Choice::Keep(_));
                 match (choice, record.map(|i| &ai.records[i])) {
@@ -821,8 +1145,21 @@ fn party_tick(
                             // FUN_001137d8 phase 0: FUN_001103f8, then the command (FUN_0010c8f0).
                             (dir, speed) = toward(m);
                             if let Some(e) = r.entry {
-                                start = Some((record.unwrap(), e));
+                                start = Some(Start::Attack(record.unwrap(), e));
                             }
+                        }
+                        Handler::HpItem | Handler::MpItem => {
+                            // Phase 0: FUN_0010c9d0 with the target and item phase 1 found.
+                            (dir, speed) = (facing, 0.0);
+                            if let Some((who, item)) = item_choice(r.handler) {
+                                start = Some(Start::Item(record.unwrap(), item, who));
+                            }
+                        }
+                        Handler::Special | Handler::Cure => {
+                            // FUN_00113d48 phase 0: the target kept, +0xaf4 = the entry's MP byte, the
+                            // script's mode switched to the record's name.
+                            (dir, speed) = (facing, 0.0);
+                            start = Some(Start::Special(record.unwrap(), r.mode.clone(), r.entry.map_or(0, |e| e.mp as u8)));
                         }
                         Handler::Approach => {
                             // FUN_001135e0 phase 0: the wait, the facing toward the target, standing.
@@ -873,47 +1210,101 @@ fn party_tick(
             }
             m.speed = sp;
             delta = d.with_y(0.0).normalize_or_zero() * sp;
+        } else if m.attack.is_none() {
+            // KO'd or in a reaction / get-up motion: no movement of its own.
+            m.speed = 0.0;
         }
-        // The queued attack command (FUN_001112e8 -> FUN_00174cf8 -> FUN_00110790): the entry's motion
-        // through the player-type remap in the battle row; an air entry jumps toward the target
-        // (height `air` minus the height difference, held between 0 and the jump height) at the run
-        // speed.
-        if let Some((rec, e)) = start
-            && let Ok((mut a, _)) = anims.get_mut(m.body)
-        {
-            let rig = a.rig.clone();
-            match battle::remap(e.motion, order, |s| rig.mset.has(s)) {
-                Some(slot) => {
-                    a.restart(Some(slot), false, BLEND);
-                    m.attack = Some(Attacking { record: rec, slot });
-                    m.free = false;
-                    m.script_slot = None;
-                    m.speed = 0.0;
-                    delta = Vec3::ZERO;
-                    if e.air != 0.0 {
-                        let to = m.target.and_then(|t| shape_of(t, &enemies)).map_or(Rel::default(), |(ct, _)| relation(m.motor.pos, ct));
-                        let h = (e.air - to.dy).clamp(0.0, m.jump);
-                        m.motor.start_jump(h);
-                        m.held = Some((to.gdir, m.run));
-                    } else {
-                        m.held = None;
-                    }
-                    if log {
-                        info!("party: {} attack motion {:#x} -> slot {slot}{}", m.model, e.motion, if e.air != 0.0 { " (jump)" } else { "" });
-                    }
-                }
-                None => {
-                    if log {
-                        info!("party: {} attack motion {:#x} has no slot in the battle row; not started", m.model, e.motion);
+        // What the choice started: the queued attack command (FUN_001112e8 -> FUN_00174cf8 ->
+        // FUN_00110790: the entry's motion through the player-type remap in the battle row; an air entry
+        // jumps toward the target, height `air` minus the height difference held between 0 and the jump
+        // height, at the run speed); a combo follow-up's jump (FUN_0010c800); an item use (FUN_0010c9d0 ->
+        // FUN_00175e20: motion 9, blend 8.0); a special's mode switch (FUN_00113d48).
+        let started = start.is_some();
+        match start {
+            Some(Start::Attack(rec, e)) => {
+                if let Ok((mut a, _)) = anims.get_mut(m.body) {
+                    let rig = a.rig.clone();
+                    match battle::remap(e.motion, order, |s| rig.mset.has(s)) {
+                        Some(slot) => {
+                            a.restart(Some(slot), false, BLEND);
+                            m.attack = Some(Attacking { record: Some(rec), slot, until_landed: false });
+                            m.free = false;
+                            m.script_slot = None;
+                            m.speed = 0.0;
+                            delta = Vec3::ZERO;
+                            if e.air != 0.0 {
+                                let to = m.target.and_then(|t| shape_of(t, &enemies)).map_or(Rel::default(), |(ct, _)| relation(m.motor.pos, ct));
+                                let h = (e.air - to.dy).clamp(0.0, m.jump);
+                                m.motor.start_jump(h);
+                                m.held = Some((to.gdir, m.run));
+                            } else {
+                                m.held = None;
+                            }
+                            if log {
+                                info!("party: {} attack motion {:#x} -> slot {slot}{}", m.model, e.motion, if e.air != 0.0 { " (jump)" } else { "" });
+                            }
+                        }
+                        None => {
+                            if log {
+                                info!("party: {} attack motion {:#x} has no slot in the battle row; not started", m.model, e.motion);
+                            }
+                        }
                     }
                 }
             }
+            Some(Start::FollowUp(f)) => {
+                // FUN_0010c800: the direction is the yaw (+0x55c) plus the entry's angle; FUN_001b0758
+                // jumps `height` high reaching the top after `frames` frames, moving `speed` per frame
+                // along it; motion 3 (FUN_0017e220 blend 0). [inferred] The app's motor rises with its own
+                // gravity to that height (FUN_001b0758's `2h / t^2` is not modelled).
+                if let Ok((mut a, _)) = anims.get_mut(m.body) {
+                    let rig = a.rig.clone();
+                    let slot = battle::remap(kh2_anim::id::JUMP as i32, order, |s| rig.mset.has(s));
+                    let dir = battle::followup_dir(m.motor.yaw, &f, data.deg_to_rad);
+                    if let Some(slot) = slot {
+                        a.restart(Some(slot), false, 0.0);
+                        m.attack = Some(Attacking { record: None, slot, until_landed: true });
+                        m.free = false;
+                        m.script_slot = None;
+                        m.speed = 0.0;
+                        delta = Vec3::ZERO;
+                        m.motor.start_leap(f.height);
+                        m.held = Some((dir, f.speed));
+                        if log {
+                            info!("party: {} follow-up jump: direction {dir:.2?} height {} speed {} -> slot {slot}", m.model, f.height, f.speed);
+                        }
+                    }
+                }
+            }
+            Some(Start::Item(rec, item, who)) => {
+                if let Ok((mut a, _)) = anims.get_mut(m.body) {
+                    let rig = a.rig.clone();
+                    if let Some(slot) = battle::remap(crate::items::USE_MOTION as i32, order, |s| rig.mset.has(s)) {
+                        a.restart(Some(slot), false, crate::items::USE_BLEND);
+                        m.attack = Some(Attacking { record: Some(rec), slot, until_landed: false });
+                        m.using = Some(ItemUse { item, target: who, slot });
+                        m.free = false;
+                        m.script_slot = None;
+                        m.speed = 0.0;
+                        delta = Vec3::ZERO;
+                        info!("party: {} uses item {item} on {who:?} (record {rec}, FUN_0010c9d0): motion 9 -> slot {slot}; HP {} MP {}", m.model, m.hp, m.mp);
+                    }
+                }
+            }
+            Some(Start::Special(rec, mode, mp)) => {
+                info!("party: {} special record {rec}: script mode {mode:?}, pending MP {mp} (+0xaf4, FUN_00113d48)", m.model);
+                m.pending_mp = mp;
+                m.mode_request = Some(mode);
+                m.special_target = true;
+            }
+            None => {}
         }
-        // A running attack: root motion as Sora's (translation turned by the facing the motion started
-        // from), the air entry's run toward the target, and free again once the motion ended on the ground.
+        // A running attack, follow-up or item motion: root motion as Sora's (translation turned by the
+        // facing the motion started from), the air entry's or the jump's run, and free again once the
+        // motion ended on the ground (a follow-up: once it landed).
         if let Some(at) = m.attack
             && !m.free
-            && start.is_none()
+            && !started
             && let Ok((a, _)) = anims.get(m.body)
         {
             let (root_t, root_yaw) = a.root_delta;
@@ -925,9 +1316,10 @@ fn party_tick(
             {
                 delta += d * sp;
             }
-            if (a.finished || a.slot != Some(at.slot)) && m.motor.grounded {
+            let over = if at.until_landed { m.motor.grounded } else { a.finished || a.slot != Some(at.slot) };
+            if over && m.motor.grounded {
                 if mgr.log {
-                    info!("party: {} attack of record {} ended", m.model, at.record);
+                    info!("party: {} action of record {:?} ended", m.model, at.record);
                 }
                 m.attack = None;
                 m.held = None;
@@ -943,7 +1335,7 @@ fn party_tick(
         // Facing: a turning member turns toward the player, which ends the turn (dot above
         // `turn_off`); a wanted yaw (+0x66c) is turned to; otherwise toward its movement. All
         // [inferred]: the writer of the facing (+0x550) in the friend's motion states was not read.
-        if m.attack.is_none() {
+        if m.free {
             if m.follow.turning {
                 m.motor.turn_to(ground_dir, m.turn);
             } else if let Some(y) = m.want_yaw {
@@ -952,7 +1344,7 @@ fn party_tick(
                 m.motor.turn_to(delta, m.turn);
             }
         }
-        if m.attack.is_none()
+        if m.free
             && let Ok((mut a, _)) = anims.get_mut(m.body)
         {
             let rig = a.rig.clone();
@@ -1114,6 +1506,282 @@ fn party_hits(mut hits: MessageReader<Hit>, mgr: Res<Manager>, q: Query<&PartyMe
     }
 }
 
+/// FUN_00175d18 (the party class's voice method +0x54) for a member: the voice table's line of `voice` for
+/// the member's NeoStatus, from the member's bank of the current world, at the member. The other party
+/// (the NeoStatus of the member's target +0x9f4) is passed as 0 [inferred: the app's member target is
+/// not mapped to an object id here].
+fn member_voice(v: &VoiceRes, rng: &mut u32, neo: u16, voice: u16, at: Vec3, owner: Entity, body: Entity) -> Option<crate::audio::PlayVoice> {
+    let (table, info) = (v.0.as_ref()?, v.1.as_ref()?);
+    let area_name = v.2.loaded.as_deref()?;
+    let world = area_name.get(..2)?;
+    let (line, priority) = table.pick(neo, voice, 0, rng, &|_| false)?;
+    let bank = crate::audio::area_voice_bank(&v.3, area_name).unwrap_or(0);
+    let name = info.names.name(neo)?;
+    Some(crate::audio::PlayVoice {
+        file: kh2_audio::voice::bank_path(&info.lang, world, bank, name),
+        in_bar: false,
+        line,
+        priority,
+        pos: Some(at),
+        speaker: owner.to_bits(),
+        follow: Some(body),
+    })
+}
+
+/// What a member's voice reads: the voice table, the speaker names and language, the area, the disc.
+type VoiceRes<'w> = (Option<Res<'w, crate::audio::VoiceTable>>, Option<Res<'w, crate::audio::VoiceInfo>>, Res<'w, CurrentArea>, Res<'w, Disc>);
+
+/// Enemy hits on the members (stage 3): the friend's receive method FUN_001106b8 -> FUN_0017cde0 ->
+/// FUN_00175340. A KO'd member ignores the hit (FUN_00175340 returns for attack kinds other than 5 and
+/// 6, which no enemy of the app uses [inferred]). The damage is the `atkp` row's on the member's stats
+/// from its saved record (`enemy::member_stats`) by the attacker's stats, at least 1 unless ineffective,
+/// as Sora's (`sora::receive_hits`), through the HP method (FUN_00185a68 -> FUN_00176c98 ->
+/// FUN_00186238): HP 0 knocks out (FUN_0017ce60: voice 2, the revive timer). Voice 9 when the hit takes
+/// the HP into danger (FUN_0017cde0, FUN_001a0be0). The reaction is the party class's (+0x68, the rule
+/// `reaction_rules::victim_outcome` that Sora's hits use) as a motion of the member's set through the
+/// player-type remap; pushes and the blow's launch are not carried out [inferred: the members' movers
+/// are not modelled].
+#[allow(clippy::too_many_arguments)]
+fn party_receive_hits(
+    mut hits: MessageReader<Hit>,
+    game: Res<GameData>,
+    data: Res<PartyData>,
+    reaction: Option<Res<crate::combat::ReactionData>>,
+    progress: Option<Res<crate::progress::Progress>>,
+    enemies: Query<&crate::enemy::Enemy>,
+    mut q: Query<(Entity, &mut PartyMember, &mut Fighter, &GlobalTransform)>,
+    mut anims: Query<&mut Animator>,
+    (voice, mut rng, mut voices): (VoiceRes, Option<ResMut<crate::audio::GameRng>>, MessageWriter<crate::audio::PlayVoice>),
+) {
+    use crate::reaction_rules::{self as rr, VictimAction, VictimCtx};
+    let Some(reaction) = reaction else { return };
+    for h in hits.read() {
+        let Ok((me, mut m, mut fighter, place)) = q.get_mut(h.target) else { continue };
+        if m.ko {
+            continue;
+        }
+        let (Some(atk), Ok(from), Some(to)) = (game.hit_row(h), enemies.get(h.attacker).map(|e| e.stats), crate::enemy::member_stats(progress.as_deref(), m.neo)) else { continue };
+        let useless = crate::combat::hit_is_ineffective(atk, &to);
+        let dmg = if useless { game.damage(atk, &from, &to) } else { game.damage(atk, &from, &to).max(1) };
+        let (before, danger_before) = (m.hp, battle::in_danger(m.hp, m.hp_max));
+        let c = m.change_hp(-dmg, &data);
+        let mut asked = Vec::new();
+        if c.knocked_out {
+            asked.push(VOICE_KO);
+        }
+        if !danger_before && battle::in_danger(m.hp, m.hp_max) {
+            asked.push(VOICE_DANGER);
+        }
+        let facing = Vec3::new(m.motor.yaw.sin(), 0.0, m.motor.yaw.cos());
+        let from_front = facing.dot(-h.dir) > 0.0;
+        let ctx = VictimCtx { status: 0, grounded: m.motor.grounded, attacker_flag_4000: false, from_front, hit_part_plain: true };
+        let out = rr::victim_outcome(&rr::HitRow::from_atkp(atk), useless, &ctx, &reaction.patn, &reaction.defaults, &reaction.consts);
+        let motion = match out.action {
+            VictimAction::Flinch { motion, fallback } | VictimAction::FlinchPush { motion, fallback, .. } => Some((motion as i32, Some(fallback as i32))),
+            VictimAction::Class14 { motion, .. } | VictimAction::Blow { motion, .. } => Some((motion as i32, None)),
+            _ => None,
+        };
+        let mut played = None;
+        if let Some((motion, fallback)) = motion
+            && let Ok(mut a) = anims.get_mut(m.body)
+        {
+            let rig = a.rig.clone();
+            let order = data.order(m.motion_row);
+            let slot = battle::remap(motion, order, |s| rig.mset.has(s)).or_else(|| fallback.and_then(|f| battle::remap(f, order, |s| rig.mset.has(s))));
+            if slot.is_some() {
+                a.restart(slot, false, 2.0);
+                m.hurt = slot;
+                m.attack = None;
+                m.using = None;
+                m.held = None;
+                fighter.landed.clear();
+                played = slot;
+            }
+        }
+        info!(
+            "party: {} hit: atkp {} damage {dmg} HP {before} -> {} of {}{} reaction {:?} -> slot {played:?}{}",
+            m.model,
+            h.atkp,
+            m.hp,
+            m.hp_max,
+            if useless { " (ineffective)" } else { "" },
+            out.action,
+            if c.knocked_out { format!("; KO (FUN_0017ce60): revive timer {:.0} (prty StunTime of row NeoMoveset)", m.revive) } else { String::new() }
+        );
+        if let Some(rng) = rng.as_mut() {
+            for id in asked {
+                let line = member_voice(&voice, &mut rng.0, m.neo, id, place.translation(), me, m.body);
+                info!("party: {} voice {id} ({}) -> {:?}", m.model, if id == VOICE_KO { "KO" } else { "HP in danger" }, line.as_ref().map(|l| (&l.file, l.line)));
+                if let Some(l) = line {
+                    voices.write(l);
+                }
+            }
+        }
+    }
+    // A KO'd member is not hit [inferred, see above]; the others are.
+    for (_, m, mut f, _) in &mut q {
+        let want = !m.ko;
+        if f.hittable != want {
+            f.hittable = want;
+        }
+    }
+}
+
+/// The members' item uses (stage 4): at frame trigger 6 of motion 9 (FUN_00188498 case 6 -> FUN_001b8710)
+/// the item leaves the member's own slots (FUN_00175ec0, `Progress::take_item` with the member's NeoStatus)
+/// and waits 30 frames (FUN_001b82b8); then its effect (FUN_001a12a0, `items::item_effect`, multiplier
+/// 100: the members' Item Boost is not built [inferred 0]) lands on the target, every party object for a
+/// group item (FUN_001a1fe0). A member's HP part goes through its HP method (a KO'd member is revived,
+/// FUN_0017cee8) [inferred: FUN_001a12a0 on a block with an object calls the object's method, as the
+/// `items` oracle test's note says]. The use effects (system effect 0 and the item's own) are not started.
+#[allow(clippy::too_many_arguments)]
+fn party_item_uses(
+    data: Res<PartyData>,
+    game: Res<GameData>,
+    mut progress: Option<ResMut<crate::progress::Progress>>,
+    mut q: Query<(Entity, &mut PartyMember)>,
+    anims: Query<(&Animator, &GlobalTransform)>,
+    mut sora: Query<&mut Sora>,
+    mut magic: Option<ResMut<crate::magic::MagicState>>,
+) {
+    let feed = data.sstm_f32(0x7c);
+    let mut landed: Vec<(Entity, u16, battle::Who)> = Vec::new();
+    for (e, mut m) in &mut q {
+        if let Some(u) = m.using {
+            let Ok((a, _)) = anims.get(m.body) else { continue };
+            let in_motion = a.slot == Some(u.slot);
+            let fired = a
+                .motion()
+                .zip(a.triggers())
+                .map(|(mo, tr)| {
+                    // [inferred] The trigger frames count 60 Hz ticks from the motion's first frame: the
+                    // members' motion 9 starts at frame 15 / 12 (30 fps) with trigger 6 at tick 14 / 19, and
+                    // every trigger of the motions printed by `party_ko_data_from_the_disc` lies inside the
+                    // motion's length counted that way (the app's other trigger readers count from frame 0,
+                    // which never reaches these).
+                    let g = |f: f32| (f - mo.frame_start) * crate::data::LOGIC_HZ / mo.fps.max(1.0);
+                    let (from, to) = (g(a.prev_frame), g(a.frame));
+                    from != to && tr.crossed(from, to).any(|f| f.id == crate::items::TRIGGER_USE)
+                })
+                .unwrap_or(false);
+            if !in_motion {
+                info!("party: {} item motion ended before trigger {}: nothing used", m.model, crate::items::TRIGGER_USE);
+                m.using = None;
+            } else if fired {
+                m.using = None;
+                let taken = progress.as_mut().is_some_and(|p| p.take_item(u.item, m.neo));
+                info!("party: {} trigger {}: item {} {} the member's slots", m.model, crate::items::TRIGGER_USE, u.item, if taken { "taken from" } else { "not in" });
+                if taken {
+                    m.queued.push(QueuedUse { left: USE_WAIT, item: u.item, target: u.target });
+                }
+            }
+        }
+        let mut keep = Vec::new();
+        for mut qu in std::mem::take(&mut m.queued) {
+            qu.left -= FRAME;
+            if qu.left > 0.0 {
+                keep.push(qu);
+            } else {
+                landed.push((e, qu.item, qu.target));
+            }
+        }
+        m.queued = keep;
+    }
+    for (user, item, who) in landed {
+        let Some(row) = data.weapons.items.iter().find(|i| i.id == item) else { continue };
+        let amount = row.flag1 as u16 | (row.rank as u16) << 8;
+        let user_slot = q.get(user).map_or(0, |(_, m)| m.slot);
+        let group = crate::items::item_id::group(item);
+        // The targets: Sora, and the members by entity.
+        let to_sora = group || who == battle::Who::Player;
+        let members: Vec<Entity> = q.iter().filter(|(e, m)| group || (who == battle::Who::Me && *e == user) || (who == battle::Who::Other && *e != user && m.slot != user_slot)).map(|(e, _)| e).collect();
+        if to_sora && let Ok(mut s) = sora.single_mut() {
+            let charge = magic.as_ref().map_or(Default::default(), |m| m.charge);
+            let mut v = crate::items::Vitals { hp: s.hp, hp_max: s.stats.max_hp, hp_min: 0, mp: s.mp, mp_max: game.sora_max_mp, charge_left: charge.left, charge_total: charge.total, ..Default::default() };
+            let before = (s.hp, s.mp);
+            crate::items::item_effect(item, amount, 100, &mut v, feed);
+            s.hp = v.hp;
+            s.mp = v.mp;
+            if let Some(mg) = magic.as_mut() {
+                mg.charge.left = v.charge_left;
+                mg.charge.total = v.charge_total;
+            }
+            info!("party: item {item} (amount {amount}) on Sora: HP {} -> {}, MP {} -> {}", before.0, s.hp, before.1, s.mp);
+        }
+        for t in members {
+            let Ok((_, mut m)) = q.get_mut(t) else { continue };
+            let mut v = crate::items::Vitals { hp: m.hp, hp_max: m.hp_max, hp_min: 0, mp: m.mp, mp_max: m.mp_max, charge_left: m.charge.left, charge_total: m.charge.total, ..Default::default() };
+            let before = (m.hp, m.mp);
+            crate::items::item_effect(item, amount, 100, &mut v, feed);
+            let gain = v.hp - m.hp;
+            let c = m.change_hp(gain, &data);
+            m.mp = v.mp;
+            m.charge.left = v.charge_left;
+            m.charge.total = v.charge_total;
+            info!("party: item {item} (amount {amount}) on {}: HP {} -> {}{}, MP {} -> {}", m.model, before.0, m.hp, if c.revived { " (revived)" } else { "" }, before.1, m.mp);
+        }
+    }
+}
+
+/// FUN_001b82b8's wait before a used item's effect (`DAT_0037bba4`, 30 frames; `items` reads the same).
+const USE_WAIT: f32 = 30.0;
+
+/// Harness: `KH2_PARTY_HIT=<s>:<atkp>[,<s>:<atkp>...]` makes the nearest living enemy land a hit with
+/// that `atkp` row on every member at those seconds (the enemies of the app aim at Sora, so a member is
+/// hit only by chance). A test aid, not the game's rule: the hit then takes the members' real receive path.
+fn party_forced_hits(
+    mut done: Local<Vec<f32>>,
+    mut tick: Local<u32>,
+    enemies: Query<(Entity, &crate::enemy::Enemy, &GlobalTransform)>,
+    q: Query<(Entity, &PartyMember)>,
+    mut hits: MessageWriter<Hit>,
+) {
+    let Ok(spec) = std::env::var("KH2_PARTY_HIT") else { return };
+    *tick += 1;
+    let now = *tick as f32 / 60.0;
+    for item in spec.split(',') {
+        let Some((t, atkp)) = item.split_once(':') else { continue };
+        let (Ok(t), Ok(atkp)) = (t.trim().parse::<f32>(), atkp.trim().parse::<i16>()) else { continue };
+        if now < t || done.contains(&t) {
+            continue;
+        }
+        done.push(t);
+        for (me, m) in &q {
+            let at = m.position() * SCALE;
+            let Some((e, en, g)) = enemies.iter().filter(|(_, en, _)| en.alive()).min_by(|a, b| a.2.translation().distance_squared(at).total_cmp(&b.2.translation().distance_squared(at))) else { continue };
+            let dir = (at - g.translation()).with_y(0.0).normalize_or(Vec3::Z);
+            info!("party: KH2_PARTY_HIT at {t} s: {} lands atkp {atkp} on {}", en.name, m.model);
+            hits.write(Hit { attacker: e, target: me, atkp, dir, point: at + Vec3::Y * (m.height * 0.5 * SCALE), row: None });
+        }
+    }
+}
+
+/// The party panels' inputs (docs/party.md section 7): per party slot the member's status block as the
+/// panel reads it (HP +0 over +4, MP +0x180 over +0x184; FUN_0013dcd8 registers slot + 1 at creation,
+/// summons get none). The harness fill `KH2_HUDPARTY` keeps precedence.
+fn party_hud(q: Query<&PartyMember>, panels: Option<ResMut<crate::hud::hud_party::PartyMembers>>, mut filled: Local<bool>) {
+    let Some(mut panels) = panels else { return };
+    if std::env::var_os("KH2_HUDPARTY").is_some() {
+        return;
+    }
+    let mut members: Vec<&PartyMember> = q.iter().collect();
+    if members.is_empty() {
+        if *filled {
+            panels.0.clear();
+            *filled = false;
+        }
+        return;
+    }
+    members.sort_by_key(|m| m.slot);
+    let face = |s: usize| panels.0.get(s).and_then(|p| p.face);
+    let want: Vec<crate::hud::hud_party::PartyMember> =
+        members.iter().enumerate().map(|(s, m)| crate::hud::hud_party::PartyMember { hp: m.hp, max_hp: m.hp_max, mp: m.mp, max_mp: m.mp_max, face: face(s) }).collect();
+    if panels.0 != want {
+        panels.0 = want;
+    }
+    *filled = true;
+}
+
 /// The warp's fade-in on the member's materials (blended while it fades, as authored otherwise).
 fn party_fade(
     mut q: Query<&mut PartyMember>,
@@ -1230,6 +1898,63 @@ mod tests {
                 }
             }
             assert!(rig.is_some(), "{model}: weapon not loadable");
+        }
+    }
+
+    /// Stage 3's data from the disc: the `prty` row of Donald's and Goofy's NeoMoveset (the record at
+    /// +0x12c: StunTime = the revive time, MpDrive = the MP charge), the `sstm` words the KO path reads
+    /// (+0x54, +0x58, +0x5c), the get-up blend `DAT_0037a55c`, and that the members' motion sets have the
+    /// KO motions 0x36 / 0x37 and the item motion 9 in the battle row (printed). Needs `KH2_ISO`.
+    #[test]
+    fn party_ko_data_from_the_disc() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let mut data = PartyData::load(&disc);
+        eprintln!("prty: {} rows, offsets {:?}", data.prty.len(), data.prty_offsets);
+        eprintln!("sstm +0x54 {} +0x58 {} +0x5c {} +0x7c {}", data.sstm_f32(0x54), data.sstm_f32(0x58), data.sstm_f32(0x5c), data.sstm_f32(0x7c));
+        let elf = disc.read_root("SLUS_210.05").expect("exe");
+        let blend = rules::exe_bytes(&elf, 0x37a55c, 4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+        assert_eq!(blend, Some(GET_UP_BLEND), "DAT_0037a55c");
+        // Sora's item motion for comparison (the frame unit of the triggers).
+        if let Some(row) = data.objs.iter().find(|r| r.model_name == "P_EX100").cloned()
+            && let Some(rig) = data.rig(&disc, &row)
+        {
+            let slot = rig.mset.slot(crate::items::USE_MOTION, kh2_anim::PlayerState::BattleWeapon);
+            let s = slot.and_then(|s| rig.mset.get(s));
+            eprintln!(
+                "P_EX100 motion 9 slot {slot:?}: frames {:?} triggers {:?}",
+                s.and_then(|s| s.motion.as_ref()).map(|mo| (mo.frame_start, mo.frame_end, mo.fps)),
+                s.map(|s| s.triggers.frames.iter().map(|f| (f.frame, f.id)).collect::<Vec<_>>())
+            );
+        }
+        for model in ["P_EX020", "P_EX030"] {
+            let row = data.objs.iter().find(|r| r.model_name == model).cloned().expect("row");
+            let k = battle::pref_row(&data.prty_offsets, row.neo_moveset as usize, 1);
+            let p = data.prty_row(row.neo_moveset).cloned().expect("prty row");
+            eprintln!(
+                "{model}: NeoStatus {} NeoMoveset {} -> prty row {k:?}: walk {} run {} jump {} turn {} StunTime {} MpDrive {} (row NeoStatus: {:?})",
+                row.neo_status,
+                row.neo_moveset,
+                p.walk_speed,
+                p.run_speed,
+                p.jump_height,
+                p.turn_speed,
+                p.stun_time,
+                p.mp_drive,
+                data.prty.get(row.neo_status as usize).map(|q| (q.walk_speed, q.run_speed, q.stun_time, q.mp_drive))
+            );
+            let rig = data.rig(&disc, &row).expect("rig");
+            let order = data.order(1);
+            for motion in [MOTION_DOWN, MOTION_GET_UP, crate::items::USE_MOTION as i32, 3] {
+                let slot = battle::remap(motion, order, |s| rig.mset.has(s));
+                let tr = slot.and_then(|s| rig.mset.get(s)).map(|s| s.triggers.frames.iter().map(|f| (f.frame, f.id)).collect::<Vec<_>>());
+                let span = slot.and_then(|s| rig.mset.get(s)).and_then(|s| s.motion.as_ref()).map(|mo| (mo.frame_start, mo.frame_end, mo.fps));
+                eprintln!("  motion {motion:#x} -> battle slot {slot:?}, frames (start, end, fps) {span:?}, frame triggers (frame, id) {tr:?}");
+                assert!(slot.is_some(), "{model}: motion {motion:#x}");
+            }
         }
     }
 

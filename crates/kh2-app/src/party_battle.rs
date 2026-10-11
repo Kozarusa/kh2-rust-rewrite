@@ -46,30 +46,19 @@ pub mod flag {
 
 /// The item choice orders of the HP item handler FUN_00113888 (one target, several targets) and of
 /// the MP item handler FUN_00113b08, u32 item ids in the executable.
-#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
 pub const HP_ITEMS_ONE: u32 = 0x352e28;
-#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
 pub const HP_ITEMS_MANY: u32 = 0x352e3c;
-#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
 pub const HP_ITEM_CHOICES: usize = 5;
-#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
 pub const MP_ITEMS_ONE: u32 = 0x352e50;
-#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
 pub const MP_ITEMS_MANY: u32 = 0x352e60;
-#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
 pub const MP_ITEM_CHOICES: usize = 4;
 /// The HP fraction of FUN_00113888 (`DAT_003785c8`) and the MP fraction of FUN_00113b08 (`DAT_003785d4`).
-#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
 pub const HP_ITEM_FRACTION: u32 = 0x3785c8;
-#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
 pub const MP_ITEM_FRACTION: u32 = 0x3785d4;
 /// FUN_00110f90's MP-gate weights (`DAT_00378598`, `DAT_0037859c`).
-#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
 pub const MP_GATE_SLOPE: u32 = 0x378598;
-#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
 pub const MP_GATE_BASE: u32 = 0x37859c;
 /// FUN_0010c800: degrees to radians (`DAT_003784a0`).
-#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
 pub const DEG_TO_RAD: u32 = 0x3784a0;
 
 /// Parameter entry flags (+0xc).
@@ -213,7 +202,6 @@ pub struct ClassAi {
 
 /// FUN_0010c800's jump direction: the member's yaw plus the entry's angle, as (sin, 0, cos) in the
 /// game's axes; the app's facing has the same form (`Vec3::new(yaw.sin(), 0, yaw.cos())`).
-#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
 pub fn followup_dir(yaw: f32, f: &FollowUp, deg_to_rad: f32) -> bevy::math::Vec3 {
     let a = yaw + f.angle * deg_to_rad;
     bevy::math::Vec3::new(a.sin(), 0.0, a.cos())
@@ -318,7 +306,6 @@ impl ClassAi {
 }
 
 /// The item ids of an item choice order of the executable (`HP_ITEMS_ONE` and the others).
-#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
 pub fn item_order(elf: &[u8], at: u32, n: usize) -> Vec<u16> {
     (0..n as u32).filter_map(|k| rw(elf, at + 4 * k).map(|v| v as u16)).collect()
 }
@@ -584,13 +571,11 @@ pub fn battle_distance(base: f32, style: u8, half: f32) -> f32 {
 // Stages 3 and 4: the status block, danger, the MP gate, the emergency pass, items and Cure
 
 /// FUN_001a0be0 ("HP in danger"): `HP <= maxHP / 4` with the division toward zero.
-#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
 pub fn in_danger(hp: i32, max: i32) -> bool {
     hp <= max / 4
 }
 
 /// FUN_0010f490 / FUN_0010f4d0 ("below a fraction"): `value < int(max x fraction)`.
-#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
 pub fn below_fraction(value: i32, max: i32, fraction: f32) -> bool {
     value < (max as f32 * fraction) as i32
 }
@@ -598,7 +583,6 @@ pub fn below_fraction(value: i32, max: i32, fraction: f32) -> bool {
 /// FUN_00110f90: the MP gate bit (+0xb7c 0x20) of this frame: with a status block, set when a roll
 /// in 0..1 is at most the class's MP-use chance factor (block +0x60) times
 /// `MP / maxMP x slope + base` (`DAT_00378598` = 0.75, `DAT_0037859c` = 0.25 as the executable holds them).
-#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
 pub fn mp_gate(roll: f32, mp_chance: f32, mp: i32, max_mp: i32, slope: f32, base: f32) -> bool {
     let ratio = mp as f32 / max_mp as f32;
     let threshold = mp_chance * (ratio * slope + base);
@@ -610,7 +594,6 @@ pub fn mp_gate(roll: f32, mp_chance: f32, mp: i32, max_mp: i32, slope: f32, base
 /// One of the three party objects FUN_0010f830 and the item handlers look at: the player
 /// (`DAT_0034e908[0]`), the member itself, the other member (FUN_00111be8).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
 pub enum Who {
     Player,
     Me,
@@ -619,7 +602,6 @@ pub enum Who {
 
 /// HP and MP of a status block as the handlers read them (+0, +4, +0x180, +0x184).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
 pub struct Vital {
     pub hp: i32,
     pub hp_max: i32,
@@ -629,7 +611,6 @@ pub struct Vital {
 
 /// FUN_0010f830: the member in danger (+0xce4): the player when his HP is in danger; else, for a
 /// party member (not a summon class, FUN_001124b8), itself, else the other member; else nobody.
-#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
 pub fn danger_member(player: Vital, me: Vital, other: Option<Vital>, summon_class: bool) -> Option<Who> {
     if in_danger(player.hp, player.hp_max) {
         return Some(Who::Player);
@@ -651,7 +632,6 @@ pub fn danger_member(player: Vital, me: Vital, other: Option<Vital>, summon_clas
 /// when someone is in danger, any setting) and which the member has in stock (FUN_0010f510 ->
 /// FUN_001a1d50: in its own battle item slots) is taken. `None`: nothing to do.
 #[allow(clippy::too_many_arguments)]
-#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
 pub fn item_pick(
     danger: Option<Who>,
     me: Vital,
@@ -684,7 +664,6 @@ pub fn item_pick(
 
 /// FUN_00113e68's target (Cure): the member in danger, else the first of the member, the player and
 /// the other member whose HP is below the entry's fraction (+0x3c); `None` when nobody needs it.
-#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
 pub fn cure_target(danger: Option<Who>, me: Vital, player: Vital, other: Option<Vital>, fraction: f32) -> Option<Who> {
     if danger.is_some() {
         return danger;
@@ -705,7 +684,6 @@ pub fn cure_target(danger: Option<Who>, me: Vital, player: Vital, other: Option<
 /// (`can(i)`, phase 1; a record whose entry costs MP is skipped while the MP charge runs); one of the
 /// feasible ones is picked at random and becomes the current record (counted unless flag 1).
 /// `None`: nothing was feasible (the previous current record is kept, as the game restores it).
-#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
 pub fn emergency(recs: &[Record], st: &mut Choosing, status: bool, mp_charge: bool, mut can: impl FnMut(usize) -> bool, mut rand: impl FnMut(u32) -> u32) -> Option<usize> {
     let saved = st.current;
     st.last = [None; 3];
@@ -740,9 +718,108 @@ pub fn emergency(recs: &[Record], st: &mut Choosing, status: bool, mp_charge: bo
     None
 }
 
+// ---------------------------------------------------------------------------------------------------
+// Stage 3: hits, KO and revive of a party object
+
+/// What `FUN_00186238` (the HP method of a party object, +0x588 bit 0x4000 set, through FUN_00176c98)
+/// did with a change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct HpChange {
+    /// The KO bit was cleared by a heal (FUN_0017cee8): motion 0x37 when the member lay in 0x36.
+    pub revived: bool,
+    /// HP reached 0 by this change (FUN_00186530 -> the KO method +0x5c, FUN_0017ce60).
+    pub knocked_out: bool,
+    /// The amount applied (after FUN_0017cee8's scale); 0 when the change was refused.
+    pub applied: i32,
+}
+
+/// `FUN_00186238` for a party object on its HP (member index 0): no change at a zero maximum; a heal
+/// (`delta >= 1`) on a KO'd object first revives it (FUN_0017cee8: the KO bit cleared, the amount
+/// scaled by `revive_scale`, which is 1.0 (`DAT_0037a560`) with the ability block's +0x10 bit 8 and
+/// `sstm` +0x54 without); while KO'd nothing else changes; otherwise FUN_001a0100 adds the amount held
+/// between the minimum (+8) and the maximum (+4), and an HP of 0 knocks the object out (FUN_00186530,
+/// only when the KO bit is clear).
+pub fn hp_change(hp: &mut i32, max: i32, min: i32, ko: &mut bool, delta: i32, revive_scale: f32) -> HpChange {
+    let mut out = HpChange::default();
+    if max == 0 {
+        return out;
+    }
+    let mut delta = delta;
+    if delta >= 1 && *ko {
+        *ko = false;
+        out.revived = true;
+        delta = (delta as f32 * revive_scale) as i32;
+    }
+    if *ko {
+        return out;
+    }
+    let sum = *hp + delta;
+    let new = if sum < min { min } else if sum > max { max } else { sum };
+    out.applied = new - *hp;
+    *hp = new;
+    if new == 0 {
+        *ko = true;
+        out.knocked_out = true;
+    }
+    out
+}
+
+/// FUN_0017ce60: the revive timer (+0xb40) is the StunTime (+0x18) of the record at +0x12c, the `prty`
+/// row of the object's `objentry` NeoMoveset (FUN_00196b58 -> FUN_00194438 -> FUN_001cc1c8), times the
+/// ability block's +0x58 (Hyper Healing).
+pub fn revive_time(stun: f32, hyper_healing: f32) -> f32 {
+    stun * hyper_healing
+}
+
+/// FUN_0017ca70's count-down of a KO'd member: the frame unit, times `sstm` +0x5c while the battle
+/// flag is clear (FUN_001903c8 = 0). True when the timer reached 0 or below: FUN_0017cc20 then heals
+/// `maxHP x sstm +0x58` through the HP method.
+pub fn revive_step(timer: &mut f32, frame: f32, battle: bool, field_scale: f32) -> bool {
+    let step = if battle { frame } else { frame * field_scale };
+    *timer -= step;
+    *timer <= 0.0
+}
+
+/// FUN_0017cc20: the heal of a revive, `int(maxHP x sstm +0x58)`.
+pub fn revive_heal(max: i32, scale: f32) -> i32 {
+    (max as f32 * scale) as i32
+}
+
+/// FUN_001cc140: the row a `pref` lookup answers: `index` when it is below the count and its offset
+/// is not 0, else `fallback` (FUN_001cc1c8 passes 1 for `prty`); `None` when that one is empty too.
+pub fn pref_row(offsets: &[u32], index: usize, fallback: usize) -> Option<usize> {
+    let k = if index < offsets.len() && offsets[index] != 0 { index } else { fallback };
+    offsets.get(k).filter(|&&o| o != 0).map(|_| k)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// FUN_00186238 / FUN_0017cee8: damage to 0 knocks out, nothing changes while KO'd, a heal revives
+    /// scaled; FUN_0017ce60 / FUN_0017ca70 / FUN_0017cc20: the timer, its count-down and the heal.
+    #[test]
+    fn party_hp_method_ko_and_revive() {
+        let (mut hp, mut ko) = (10, false);
+        assert_eq!(hp_change(&mut hp, 20, 0, &mut ko, -4, 0.5), HpChange { applied: -4, ..HpChange::default() });
+        let c = hp_change(&mut hp, 20, 0, &mut ko, -30, 0.5);
+        assert!(c.knocked_out && ko && hp == 0);
+        assert_eq!(hp_change(&mut hp, 20, 0, &mut ko, -3, 0.5), HpChange::default(), "no damage while KO'd");
+        let c = hp_change(&mut hp, 20, 0, &mut ko, 10, 0.5);
+        assert!(c.revived && !ko && hp == 5 && !c.knocked_out, "the revive heal is scaled");
+        assert_eq!(hp_change(&mut hp, 20, 0, &mut ko, 100, 0.5).applied, 15, "held at the maximum");
+        assert_eq!(hp_change(&mut hp, 0, 0, &mut ko, -100, 0.5), HpChange::default(), "no block maximum: refused");
+        assert_eq!(revive_time(600.0, 0.5), 300.0);
+        let mut t = 2.0;
+        assert!(!revive_step(&mut t, 1.0, true, 4.0) && revive_step(&mut t, 1.0, true, 4.0));
+        let mut t = 2.0;
+        assert!(revive_step(&mut t, 1.0, false, 4.0), "out of battle the step is scaled");
+        assert_eq!(revive_heal(37, 0.5), 18);
+        assert_eq!(pref_row(&[8, 0, 16, 0], 3, 1), None);
+        assert_eq!(pref_row(&[8, 12, 16, 0], 3, 1), Some(1));
+        assert_eq!(pref_row(&[8, 12, 16], 2, 1), Some(2));
+        assert_eq!(pref_row(&[8, 12, 16], 9, 1), Some(1));
+    }
 
     fn entry() -> Entry {
         Entry { near: 0.0, far: 150.0, up: 0.0, down: 100.0, close: 30.0, close_dy: 50.0, ..Entry::default() }

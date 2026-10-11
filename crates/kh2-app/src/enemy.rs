@@ -630,7 +630,7 @@ fn row_damage<'a>(data: &'a GameData, h: &Hit, from: &Stats, to: &Stats) -> Opti
 /// magic, defense, level, maximum HP). [inferred] The equipment pass of the status rebuild is not applied:
 /// the hand-0 weapon's attack and magic (`item_stat`) are not added, unlike Sora's keyblade in
 /// `GameData::sora_stats`.
-fn member_stats(progress: Option<&crate::progress::Progress>, neo: u16) -> Option<Stats> {
+pub(crate) fn member_stats(progress: Option<&crate::progress::Progress>, neo: u16) -> Option<Stats> {
     let m = progress?.member(neo)?;
     Some(Stats {
         level: m.level as i32,

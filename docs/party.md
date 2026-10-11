@@ -100,8 +100,10 @@ its slot byte has 0x80, or its index is in the hidden list (below). FUN_0017d150
 - `lvup`: 13 character tables of 99 levels (table 0 Sora, then [I] 1 Donald, 2 Goofy, ... in party-member
   order); printed by the disc test.
 - `prty` (03system.bin pref): rows by character index (row 1 is Sora's, as kh2-app reads it). Rows 2..8 and
-  12..15 hold walk 2, run 7..18 per character; StunTime is 0 in every row. [I] that the friend's walk and run
-  speeds at object +0x110 / +0x114 (FUN_0010e5b8) come from these rows; the writer was not traced.
+  12..15 hold walk 2, run 7..18 per character; StunTime is 0 in those rows. (WP-P3b) The game indexes `prty`
+  by the objentry **NeoMoveset**, not the NeoStatus: FUN_00194438 copies the row into +0x110.. and keeps it
+  at +0x12c (section 3); Donald's row 17 and Goofy's row 20 hold walk 2, run 8, StunTime 2400 / 2100,
+  MpDrive 1200.
 - The member's own ability list: 64 slots at party record +0x54 (FUN_0010f578 searches it for an equipped
   ability item); the ability bit set at status +0x1cc (FUN_001768a8) as for Sora.
 - **AI settings per member**: bytes at party record `+0xd4` (FUN_00112308: config block FUN_001057a8 + 0x1660,
@@ -224,9 +226,15 @@ function at 0x2eec70 (FUN_00112260) sets it from scripts.
 
 ### KO and revive [V]
 
-- KO (friend vtable +0x5c, FUN_0017ce60): FUN_00175f10 (voice line 2, FUN_00186568); revive timer
-  `+0xb40 = (record at +0x12c)+0x18 x ability block +0x58` (Hyper Healing multiplier) [GAP: which record
-  +0x12c points to; `prty` StunTime is 0 for every row, so it is not that].
+- KO (friend vtable +0x5c, FUN_0017ce60, reached from the HP method FUN_00186238 -> FUN_00186530 when HP
+  becomes 0): FUN_00175f10 (voice line 2, then FUN_00186568 -> FUN_00186580 sets +0x7f8 bit 4); revive
+  timer `+0xb40 = (record at +0x12c)+0x18 x ability block +0x58` (Hyper Healing multiplier). **The record
+  at +0x12c is the `prty` row of the object's `objentry` NeoMoveset** (WP-P3b): the base constructor
+  FUN_00196b58 ends with a tail call `FUN_00194438(obj + 0x110, objentry +0x4e)` (instructions
+  0x196cd8..0x196cf8), which stores `FUN_001cc1c8(NeoMoveset)` (= FUN_001cc140 on the `prty` table
+  `DAT_01d6a8f8`, loaded by FUN_001cc040 from the name at 0x37c290 "prty", fallback row 1) at +0x12c and
+  copies its walk, run, jump, turn (+0x110..+0x11c) and words 8 and 10. +0x18 of the row is StunTime; +0x1c
+  (MpDrive) is the MP-charge length FUN_00186440 reads through the same pointer.
 - Each frame while +0x7f8 bit 4 (KO) is set (FUN_0017ca70, from vtable +0xc): the timer counts down by the
   frame unit, times `sstm[0x5c]` while the battle flag `DAT_01c8a7d8` is clear; at 0 FUN_0017cc20 heals
   `maxHP x sstm[0x58]` through the HP method (vtable +0x78). While down (motion state 0x36, played with
@@ -511,8 +519,26 @@ Each stage ends with `verify.ps1` passing and the named check.
 
 - (Resolved by WP-7P1: the follow-point geometry, see section 3 and section 11.)
 - Style 0's target choice FUN_0010d0c0, FUN_0010d848, the range test FUN_0010f118, FUN_00112b28/b88.
-- The record at +0x12c whose +0x18 is the revive time (searched: `prty` StunTime is 0 in all rows).
-- Writers of the walk/run speeds +0x110/+0x114 (FUN_0010e5b8 reads them).
+- (Resolved by WP-P3b: the record at +0x12c is the `prty` row of the objentry NeoMoveset, section 3; the
+  earlier search read the rows by NeoStatus, whose StunTime is 0.)
+- (Resolved by WP-P3b: the walk/run speeds +0x110/+0x114 are written by FUN_00194438 from the same row.)
+- Frame-trigger frames [inferred, WP-P3b]: in the members' motion sets every frame trigger lies inside the
+  motion's length counted in 60 Hz ticks from the motion's FIRST frame (Donald's motion 9 runs frames
+  15..55 at 30 fps with trigger 6 at tick 14, Goofy's 12..48 with trigger 6 at tick 19, Goofy's 0x37 88..142
+  with triggers 0 and 76; printed by `party_ko_data_from_the_disc`). The app's trigger readers (`audio`,
+  `items`, `fx`, `enemy_ai`, `magic`) count from frame 0, so for such motions they never fire; `party`'s
+  item use counts from the start. Not checked against the game's motion controller.
+- Cure's heal: the `cure` mode (P_EX020 R1559) plays motion 192, waits for frame trigger bit 239 (R089a,
+  host 1.151), pays through 1.276, then creates attack 1525 (2.10) on the target (2.17), whose hit on a
+  party object heals it [inferred: FUN_00175340 lets attack kinds 5 and 6 through even on a KO'd member].
+  The app does not carry out the scripts' attack objects for members, so Cure pays nothing and heals
+  nobody yet; the next step is the enemy host's attack objects (2.10 / 2.17 / 2.13) for friend scripts and
+  a heal kind in `party_receive_hits`.
+- The members' ability block (+0x1cc) is not built: Hyper Healing (+0x58), MP Rage (+0x54), the revive
+  scale bit (+0x10 bit 8), Item Boost and MP regeneration read their defaults.
+- Members are hit only by chance (the enemies aim at Sora); the attacker memory +0xcec (FUN_001106b8) is not
+  kept, and the party panel's hit flashes (FUN_0013dd20 / 0013dd70 / 0013ddc0 from FUN_00175340) are not
+  drawn.
 - The far counter +0xcd8: increments (FUN_00111070, FUN_0010e5e8) and resets (FUN_00110eb0, FUN_00110e28)
   were read; no decrement was found in FUN_00110a58, FUN_00110e08, FUN_00110e28, FUN_00111070. WP-7P1 scanned
   every immediate access (`mips_scan --store-off 0xcd8`): the only other writer is the small routine at
@@ -628,9 +654,7 @@ Done:
 
 Not done or approximated in stage 2:
 
-- The combo follow-ups (FUN_0010c800 -> FUN_001b0758 not read): a chosen follow-up starts nothing.
-- Items, specials, Cure and the emergency pass (stage 4: they need the member's status block and the MP gate
-  FUN_00110f90); they are never feasible here.
+- (Done in WP-P3b, section 13: the combo follow-ups, items, specials, Cure and the emergency pass.)
 - (Closed in WP-F1 item 5.) A member's hit now uses the member's own record: `enemy::receive_hits` builds the
   attacker's `Stats` from `Progress::member(neo)` (strength, magic, defense, level, max HP: the status block
   +0x188 / +0x18a that `FUN_001a0610` reads is rebuilt from the saved record, `FUN_0019fd30` -> `FUN_0019f920`),
@@ -644,6 +668,57 @@ Not done or approximated in stage 2:
   constants `DONALD_STAFF` / `GOOFY_SHIELD`) when their weapon words are 0, so the weapons show without
   `KH2_PARTY_WEAPONS`; the original's writer of those words is still not found (above).
 - The settings bytes (record +0xd4) are read as 0 (their new-game value).
+- (WP-P3b) The walk/run/turn/jump speeds now come from the `prty` row of the NeoMoveset (FUN_00194438; Donald
+  row 17 and Goofy row 20: walk 2, run 8), no longer the row of the NeoStatus (run 12) that stage 1 inferred.
+
+## 13. Status: stages 3 and 4 in the app (WP-P3b)
+
+Files: `party.rs` (status block, hits, KO, revive, items, the battle branch's stage-4 steps, the panels),
+`party_battle.rs` (pure rules: `hp_change`, `revive_time`, `revive_step`, `revive_heal`, `pref_row`, and
+WP-P3's `mp_gate`, `danger_member`, `emergency`, `item_pick`, `cure_target`, `followup_dir`), `friend_ai.rs`
+(the special's mode switch, the MP payment), `friend_host.rs` (hosts 1.140 and 1.276), `hud_party.rs` (doc).
+Log `KH2_PARTYLOG=1`; harness `KH2_PARTY_HP=<n>` (members start with n HP), `KH2_PARTY_HIT=<s>:<atkp>,...`
+(the nearest enemy lands that `atkp` row on every member at those seconds).
+
+Done:
+
+- **Status block**: HP/MP from the saved record (`Progress::member`: max HP and MP; [inferred] a new block
+  starts full), the MP charge (+0x1bc/+0x1c0) counting down per frame (FUN_00175f48 -> FUN_001a0540, regen 1.0)
+  and refilling MP at its end (FUN_001a05a8).
+- **Hits** (`party_receive_hits`, FUN_001106b8 -> FUN_0017cde0 -> FUN_00175340 -> FUN_00185a68): the `atkp`
+  row's damage on `enemy::member_stats` by the enemy's stats, at least 1 unless ineffective, through the HP
+  method port `hp_change` (FUN_00176c98 -> FUN_00186238 / FUN_001a0100); voice 9 when the hit takes the HP
+  into danger (FUN_001a0be0 before and after); the reaction from `reaction_rules::victim_outcome` played as a
+  motion of the member's set through the player-type remap (pushes and the blow's launch not carried out).
+  A KO'd member is not hit [inferred]. Log: `party: P_EX020 hit: atkp 17 damage 3 HP 2 -> 0 of 18 ...`.
+- **KO** (FUN_00186530 -> FUN_0017ce60): voice 2 (FUN_00175f10), the revive timer = StunTime of the +0x12c
+  row x Hyper Healing (1.0): Donald 2400, Goofy 2100 frames. While KO'd and on the ground: motion 0x36 and
+  system effect 0xe bound to the body (FUN_0017ca70); the effect is told to end when the member gets up.
+- **Revive** (FUN_0017ca70 -> FUN_0017cc20 -> FUN_0017cee8): the timer counts down by a frame in battle and by
+  `sstm +0x5c` (8) frames out of battle; at 0 the heal `int(maxHP x sstm +0x58 (0.5))` goes through the HP
+  method, which on a KO'd member clears the KO bit and scales the heal by `sstm +0x54` (0.5); any heal (an
+  item) revives the same way; motion 0x37 (blend `DAT_0037a55c` = 8) when the member lay in 0x36.
+- **HUD** (`party_hud`): `hud_party::PartyMembers` per slot from the members' HP and MP.
+- **Battle branch** of FUN_00111070: the MP gate each frame (FUN_00110f90 with 0.75 / 0.25 from 0x378598 /
+  0x37859c), the member in danger (FUN_0010f830), the emergency pass (FUN_0010f8d8, which sets the gate) before
+  the choice, the status block in the feasibility (MP cost, MP charge).
+- **Combo follow-ups** (FUN_0010c800): direction = yaw + angle (`DAT_003784a0` degrees to radians), motion 3
+  (blend 0), a jump of the entry's height moving the entry's speed per frame until the member lands
+  ([inferred] the app's motor gravity instead of FUN_001b0758's `2h / t^2`).
+- **Items** (FUN_00113888 / FUN_00113b08 phase 1 `item_pick`, phase 0 FUN_0010c9d0 -> FUN_00175e20): motion 9
+  (blend 8); at frame trigger 6 (counted from the motion's start, section 10) `Progress::take_item(item,
+  NeoStatus)` (FUN_00175ec0); after 30 frames (FUN_001b82b8) `items::item_effect` on the target (Sora, the
+  member, the other member; everyone for the group items, FUN_001a1fe0); a member's HP part goes through its
+  HP method (so a Potion revives). The use effects are not started.
+- **Specials and Cure** (FUN_00113d48 / FUN_00113e68 / FUN_00114828): phase 1 needs the record's mode, the
+  script not busy with a special ([inferred] stand-in for +0x390) and FUN_0010f220 (ability equipped, MP gate);
+  Cure also `cure_target` below the entry's +0x3c. Phase 0 sets +0xaf4 and switches the script's mode
+  (`friend_ai`). Host **1.276** (0x170a00 -> FUN_001769e0 -> FUN_00186368) pays +0xaf4: MP drops, or the MP
+  charge starts (MP 0, length = the row's MpDrive 1200 x `DAT_0037a974` 1.0) when MP is short (Goofy's `blade`
+  pays 10 per use in a b_44 run). Host 1.140 (0x173740 -> FUN_0018ed58) answers the member's target record.
+
+Not done: Cure's heal (section 10), the scripts' attack objects and effects of the specials, the members'
+ability block, the attacker memory +0xcec, the panel flashes, limits and forms (stages 5, 6).
 - FUN_00111040 forces motion state 0x1f only for classes 12, 15 and 16, so Donald and Goofy (classes 0, 1)
   may follow through FUN_0010e5e8's body (state 0) rather than FUN_0010e140 as stage 1 assumed; which state a
   free class-0 member stands in was not determined. The field follow keeps stage 1's port.
@@ -674,6 +749,11 @@ Not done or approximated in stage 2:
 | 0x1903d8, 0x17da30, 0x17d960, 0x19a898, 0x1752a0, 0x17e000, 0x17e220, 0x37a5c8 | WP-7P2: battle flag, motion remap and its table |
 | 0x1137d8, 0x10c8f0, 0x110790, 0x10cbe0, 0x1112e8, 0x114738, 0x114828, 0x10c748, 0x110728 (ghidra) | WP-7P2: attack handler, command, attack motion, re-target, friend update, Goofy's handlers |
 | 0x10fcd0, 0x10f220, 0x10f118, 0x10fc68, 0x10ed00, 0x10ed20, 0x10ecb0, 0x10f3d8, 0x10c800, 0x10f698, 0x10f688, 0x10f6a8, 0x10f670, 0x10f7a8, 0x10f7b8, 0x10ca78, 0x10ca88, 0x10d0c0, 0x10d848, 0x10dcf0, 0x10cf90, 0x112b28, 0x112b88, 0x112ac0, 0x10d720, 0x10e5e8, 0x1102c8, 0x1103e0, 0x1103f8, 0x111040, 0x110f90, 0x10f8d8, 0x113450, 0x1135e0, 0x113728, 0x1143b8, 0x114348, 0x1144d0, 0x10f578, 0x174cf8, 0x176b00, 0x1b6f48, 0x114058, 0x114068, 0x114108, 0x114048, 0x2f0758, 0x17eb48 | WP-7P2: choice, feasibility, range, targets, movement, records |
+
+| 0x196b58 (tail 0x196cd8..0x196cf8), 0x194438, 0x1943c8, 0x1cc1c8, 0x1cc140, 0x1cc040, 0x37c290 | WP-P3b: the record at +0x12c / the movement block +0x110 = `prty` row of the NeoMoveset |
+| 0x17ce60, 0x17ca70, 0x17cc20, 0x17cee8, 0x186238, 0x176c98, 0x186530, 0x186580, 0x1a0100, 0x1903c8, 0x1b7e00, 0x1d9f20, 0x17cde0, 0x1106b8, 0x175340, 0x185a68, 0x175f10, 0x37a55c, 0x37a560 | WP-P3b: hits, KO, revive |
+| 0x111070, 0x110f90, 0x10f830, 0x10f8d8, 0x10c800, 0x1b0758, 0x113888, 0x10c9d0, 0x175e20, 0x1b8710, 0x10f510, 0x1a1d50, 0x113d48, 0x113e68, 0x114828, 0x1870d8, 0x187458, 0x186e70 | WP-P3b: battle branch, follow-up, items, specials |
+| 0x170a00 (1.276), 0x1769e0, 0x186368, 0x186440, 0x1a0180, 0x1a0540, 0x1a05a8, 0x1a05d0, 0x37a974, 0x173740 (1.140), 0x18ed58 | WP-P3b: the MP-cost host and the MP charge |
 
 ## Corrections to other docs (for the orchestrator)
 

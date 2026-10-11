@@ -24,7 +24,7 @@ use crate::data::GameData;
 use crate::menu_gfx::{self, MenuGfxPlugin, MenuScene, Node};
 use crate::menu_pages::{self, Entry, Exe, Flags};
 use crate::progress::Progress;
-use crate::schedule::Sim;
+use crate::schedule::Pause;
 use crate::sora::{Sora, State};
 
 // The Config page (stage M6) lives in its own file as a child module, so it reads this file's state.
@@ -45,6 +45,9 @@ pub mod new_tags;
 // The Help overlay (page 0x25, stage M7).
 #[path = "menu_help.rs"]
 pub mod help;
+// The PAUSE band of the combat pause (docs/menus.md 1.8).
+#[path = "menu_pause.rs"]
+pub mod pause_band;
 // The item pictures (stage M7).
 #[path = "menu_pic.rs"]
 pub mod pictures;
@@ -53,31 +56,39 @@ pub struct MenuPlugin;
 
 impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((MenuGfxPlugin, crate::menu_status::StatusPlugin, config::ConfigPlugin, item_pages::ItemPagesPlugin, customize::CustomizePlugin, equipment::EquipmentPlugin, new_tags::NewTagsPlugin, pictures::PicturesPlugin, help::HelpPlugin))
+        app.add_plugins((MenuGfxPlugin, crate::menu_status::StatusPlugin, config::ConfigPlugin, item_pages::ItemPagesPlugin, customize::CustomizePlugin, equipment::EquipmentPlugin, new_tags::NewTagsPlugin, pictures::PicturesPlugin, help::HelpPlugin, pause_band::PausePlugin))
             .init_resource::<Menu>()
-            // The field stands still while the menu is up: every 60 Hz set waits for it.
-            .configure_sets(
-                FixedUpdate,
-                (
-                    Sim::Weapon,
-                    Sim::Pose,
-                    Sim::Sora,
-                    Sim::Enemy,
-                    Sim::Detect,
-                    Sim::SoraHurt,
-                    Sim::EnemyHurt,
-                    Sim::Effects,
-                    Sim::Sounds,
-                    Sim::EffectTick,
-                )
-                    .run_if(is_closed),
-            )
             .add_systems(Startup, load)
             // The game's own readers run in `Update`; the menu takes its keys first, in `PreUpdate`
             // after the keyboard is read and after the harness has pressed its scripted keys.
             .add_systems(PreUpdate, input.after(bevy::input::InputSystems).after(crate::harness::Keys))
-            .add_systems(Update, tick.before(crate::schedule::Frame::Popups));
+            .add_systems(Update, (tick.before(crate::schedule::Frame::Popups), pause_log.after(crate::schedule::Frame::Camera)));
     }
+}
+
+/// `KH2_PAUSELOG=1`: one line every 30 frames with the frozen state and the positions that must stand still while
+/// the simulation is paused: Sora, the first enemy (by name) and the camera (the proof of docs/menus.md 1.8).
+fn pause_log(
+    pause: Res<Pause>,
+    menu: Res<Menu>,
+    sora: Query<&Sora>,
+    enemies: Query<(&crate::enemy::Enemy, &Transform)>,
+    cam: Query<&Transform, With<crate::camera::OrbitCamera>>,
+    mut frame: Local<u32>,
+) {
+    if std::env::var_os("KH2_PAUSELOG").is_none() {
+        return;
+    }
+    *frame += 1;
+    if !frame.is_multiple_of(30) {
+        return;
+    }
+    let v = |p: Vec3| format!("({:.1} {:.1} {:.1})", p.x, p.y, p.z);
+    let s = sora.single().map_or("-".into(), |s| v(s.motor.pos));
+    let mut e: Vec<String> = enemies.iter().map(|(e, t)| format!("{} {}", e.name, v(t.translation))).collect();
+    e.sort();
+    let c = cam.single().map_or("-".into(), |t| v(t.translation));
+    info!("pauselog f{} frozen {} phase {:?} sora {} camera {} enemies [{}]", *frame, pause.frozen(), menu.phase, s, c, e.first().cloned().unwrap_or_default());
 }
 
 /// Run condition: the menu is closed, so the field runs.
@@ -332,6 +343,14 @@ fn load(
     menu.loaded = true;
 }
 
+/// The close faded the row, area and help labels to nothing (`tick`, Closing): a reopen starts every label at full
+/// strength again. (Play-test 2026-10-11: after one close the second open showed no row names, area name or help.)
+fn restore_fades(scene: &mut MenuScene) {
+    for n in &mut scene.nodes {
+        n.label_fade = 1.0;
+    }
+}
+
 /// Creates every node the page uses, hidden. Indices only grow: a parent comes before its child.
 fn build_nodes(scene: &mut MenuScene) -> Nodes {
     let mut n = Nodes::default();
@@ -409,6 +428,9 @@ pub(crate) fn input(
     real: Res<Time<Real>>,
     mut tags: ResMut<new_tags::NewTags>,
     items: Res<item_pages::ItemsMenu>,
+    mut pause: ResMut<Pause>,
+    band: Res<pause_band::Band>,
+    battle: Option<Res<crate::audio_bgm::BattleFlag>>,
 ) {
     if !menu.loaded {
         return;
@@ -418,7 +440,15 @@ pub(crate) fn input(
     let start = keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter);
     let cancel = keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::Backspace) || keys.just_pressed(KeyCode::KeyK);
     let confirm = keys.just_pressed(KeyCode::KeyJ);
+    let band_up = pause.band;
     match menu.phase {
+        Phase::Closed if band_up => {
+            // The PAUSE band: the pause button (or a cancel) takes it away again.
+            if start || cancel {
+                pause_band::close(&band, &mut scene, &mut pause);
+                info!("menu: pause band closed");
+            }
+        }
         Phase::Closed => {
             if start {
                 // The gate of `FUN_00138758` that the app has: the player is in control of Sora (the
@@ -428,7 +458,13 @@ pub(crate) fn input(
                     state,
                     Some(State::Ground | State::Air | State::QuickRun | State::Glide | State::Attack { .. } | State::Guard | State::Counter)
                 );
-                if free {
+                // `KH2_NO_PAUSE_BAND=1` (harness aid): the menu opens even in combat.
+                let in_combat = battle.as_ref().is_some_and(|b| b.active()) && std::env::var_os("KH2_NO_PAUSE_BAND").is_none();
+                if free && in_combat && band.is_ready() {
+                    // In combat the button shows the PAUSE band, not the menu (docs/menus.md 1.8 [inferred rule]).
+                    pause_band::open(&band, &mut scene, &mut pause);
+                    info!("menu: pause band (battle flag set)");
+                } else if free {
                     let has_ability = progress.as_ref().is_some_and(|p| !p.sora().abilities.is_empty());
                     // The camp's start builds the NEW sets (`FUN_00293808`).
                     if let Some(p) = progress.as_deref() {
@@ -490,9 +526,14 @@ pub(crate) fn input(
         tags.end(&worn);
     }
     // Every press that arrives while the menu is up belongs to the menu.
-    if menu.phase != Phase::Closed {
+    if menu.phase != Phase::Closed || band_up || pause.band {
         keys.reset_all();
         mouse.reset_all();
+    }
+    // The simulation stops in the frame of the open input and runs again once the close has finished (`schedule::Pause`).
+    let open = menu.phase != Phase::Closed;
+    if pause.menu != open {
+        pause.menu = open;
     }
 }
 
@@ -632,6 +673,7 @@ fn open(
         n.label = None;
         n.visible = k < menu.rows.len();
     }
+    restore_fades(scene);
     let pitch = scene.seqs.get(SEQ_MAIN).and_then(|s| s.groups.get(0x86)).map_or(26, |g| g.unk20) as f32;
     for (k, &e) in menu.rows.iter().enumerate() {
         let entry = menu.entries[e].clone();
@@ -864,8 +906,9 @@ fn refresh(menu: &Menu, scene: &mut MenuScene, progress: Option<&Progress>) {
             Some(d) => {
                 let want = group::MUNNY_DIGIT + usize::from(d);
                 n.pos = [at::DIGIT_RIGHT - at::DIGIT_PITCH * from_right as f32, at::MUNNY_TOP];
+                // Visible on every refresh: the close hid every node while the group stayed the same.
+                n.visible = true;
                 if n.player.group != Some(want) {
-                    n.visible = true;
                     scene.set_group(id, want);
                 }
             }
@@ -890,12 +933,55 @@ fn refresh(menu: &Menu, scene: &mut MenuScene, progress: Option<&Progress>) {
         match cells.get(i) {
             Some(&(g, x)) => {
                 scene.nodes[id].pos = [x, at::TIME_TOP];
+                scene.nodes[id].visible = true;
                 if scene.nodes[id].player.group != Some(g) {
-                    scene.nodes[id].visible = true;
                     scene.set_group(id, g);
                 }
             }
             None => scene.nodes[id].visible = false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression (play-test 2026-10-11, "upon opening the menu most text vanishes"): a second open must show the
+    /// labels the first close had faded out.
+    #[test]
+    fn a_reopen_restores_the_label_fades() {
+        let mut scene = MenuScene::default();
+        for fade in [0.0, 0.4, 1.0] {
+            let mut n = Node::new(None);
+            n.label_fade = fade;
+            scene.add(n);
+        }
+        restore_fades(&mut scene);
+        assert!(scene.nodes.iter().all(|n| n.label_fade == 1.0));
+    }
+
+    /// Regression: the close hid every node but left the digits' groups; the refresh only showed a digit whose group
+    /// changed, so the Munny and Time numbers stayed invisible after a reopen.
+    #[test]
+    fn the_refresh_shows_a_digit_whose_group_did_not_change() {
+        let mut scene = MenuScene::default();
+        let mut menu = Menu::default();
+        for _ in 0..6 {
+            let mut n = Node::new(None);
+            n.visible = false;
+            n.player.group = Some(group::MUNNY_DIGIT);
+            menu.nodes.munny_digits.push(scene.add(n));
+        }
+        for _ in 0..5 {
+            let mut n = Node::new(None);
+            n.visible = false;
+            menu.nodes.time_digits.push(scene.add(n));
+        }
+        refresh(&menu, &mut scene, None);
+        let first = menu.nodes.munny_digits[0];
+        assert!(scene.nodes[first].visible, "the last Munny digit (a 0 with an empty wallet) is shown again");
+        // The Time cells are placed too (their groups are unset in a node without a sequence, so they show).
+        assert!(menu.nodes.time_digits.iter().any(|&t| scene.nodes[t].visible));
     }
 }

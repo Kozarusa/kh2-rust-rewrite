@@ -605,7 +605,7 @@ impl Plugin for SummonPlugin {
             .init_resource::<PlayerSide>()
             .add_systems(Update, (keys.before(crate::magic::harness_keys), harness_requests, hud_feed.before(crate::hud::hud_gauge::update)))
             .add_systems(FixedUpdate, (tick, act, objects, companions).chain().in_set(Sim::Sounds))
-            .add_systems(FixedUpdate, stops.after(Sim::Enemy).before(Sim::Detect));
+            .add_systems(FixedUpdate, stops.after(Sim::Enemy).before(Sim::Detect).run_if(crate::schedule::sim_running));
     }
 }
 

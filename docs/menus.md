@@ -216,6 +216,47 @@ table at 0x36cb48 and the u16 table at 0x37f654 (printed by `menu_tables`): curs
 open 3. These are ids of channel 2 of the sound driver; their mapping to the app's `PlaySe` numbers was not traced [GAP:
 `audio.rs` has `PlaySe::number(n, apdx)` for the area banks; the system bank of channel 2 is not loaded by the app].
 
+### 1.8 The freeze, and the combat PAUSE band (WP-MP1)
+
+**Freeze.** The original stops the field by a scene change: `FUN_00138758` -> `FUN_0024f0b8` -> `FUN_001033a8` makes the camp a game scene,
+so no field task (actors, camera, clocks, spawns, hit processing) runs while it is open, and the sound driver (the BGM) is not a field task
+[V for the structure, 1.1; which task flag the field tasks poll was not traced]. The app has no scene change: `schedule::Pause`
+(`menu`, `band`) is set by `menu::input` in `PreUpdate`, the frame of the open input and before the 60 Hz sets and the `Update` systems of
+that frame; `schedule::sim_running` is the one run condition, put on the whole `Sim` chain (`SchedulePlugin`) and on the systems that live
+outside the sets (camera `tick` and `gather_input`, `area_jump::tick`, `texanim::tick`, `party_hud`, `summon::stops`, `fx::weapon_appear`).
+The Struggle clock, drive timers, the battle flag timers, the wave spawner, hit processing, effects and the area jump task are all in
+those sets. `Pause::menu` clears when the close fade has finished (the world stays frozen during the 14 close frames, as before);
+the next 60 Hz tick runs from the same state, no catch-up (the fixed clock keeps ticking, only its systems wait). The HUD, the menu and the
+music run on. Proof: `KH2_PAUSELOG=1` prints `pauselog f<frame> frozen <bool> phase <phase> sora (x y z) camera (x y z) enemies [first]`
+every 30 frames; in a tt04 `KH2_WAVE_GROUP=b_44` run with `KH2_KEYS=7:W:8,10:Enter,13:Enter` Sora (z 854 -> 894 -> 902) and the camera
+(z 4.0 -> 4.4) move until the open, stay at (0 -10 902) / (0 2.4 4.4) for all 34 frozen lines, and move on after the close. Tests:
+`schedule::tests::a_pause_stops_every_set_and_a_resume_runs_them_again`, `frozen_means_menu_or_band`.
+
+**The PAUSE band.** The user's frame of the original (PCSX2) shows, when the pause button is pressed in combat, the scene frozen and
+dimmed with a dark band across the middle, thin violet rules at its edges and PAUSE in orange-gold italic letters, no menu rows. The picture
+is `menu/us/pause.2ld` (list index 0 of the menu boot, 1.3): one 64x64 image (the letters P A U S E stacked, a few sparkles) and one sequence
+of 19 groups, one layer. Read from the file [V]: group 0 black at alpha 64/128 (the dim), 14 the band (black gradient to transparent at
+both ends, violet rule top and bottom), 15 the five letters sliding in one after the other (frames 20 to 99) and holding, 11 and 12 a pill
+that opens (red / blue), 2 to 5 and 16 to 18 white flash and black fades, 6 to 9 sparkles, 10 the anchor (256, 216). The port plays 0 (as
+the scene dim), 14 and 15. **Rule [GAP]:** `FUN_00138758` opens the camp (or the save menu when a start prompt object exists,
+`FUN_001bf030`) whatever the battle state is; `FUN_0024fa20` (the buffer of the current `.2ld`) has two callers, `FUN_0024f908` (the
+loader) and `FUN_002a04f8` (the list widget, called by the camp, the shop and the journal builders `FUN_002506b8`, `FUN_0025fcd8`,
+`FUN_002761e8`); `0x1dc0e00` and `0x36cdc8` are used only by the loader family (`FUN_0024f558`, `FUN_0024f688`, `FUN_0024f7a8`,
+`FUN_0024f898`, `FUN_0024fa20`, `FUN_0024fa38`); the scene records 0x380560 (kinds 0 to 0xf) were read for a pause scene (kind 0xf, scene
+0x384, init `FUN_002f7b38`, is the landing-screen family, not it). So nothing that plays `pause.2ld` was found in the decompilation of this
+US executable. [inferred] "in combat" = the game's battle flag (`audio_bgm::BattleFlag`, word 0x1c8a7d8, `FUN_001903d8`, docs/audio.md):
+with it set, the open input shows the band (`menu_pause.rs`) and freezes the world like the menu; the same button or a cancel closes it
+(no fade: the close groups 4, 5, 18 were not tried); the music keeps playing. Layout [inferred]: the dim is the scene dim at brightness 0.5,
+the band's middle is the picture's middle line (menu y 208), the letters are centred in the band. Not played [GAP]: groups 2 to 13 and 16 to 18.
+`KH2_NO_PAUSE_BAND=1` makes the menu open in combat (harness aid). Screenshots: tt04 `KH2_WAVE_GROUP=b_44`, `KH2_KEYS=7:W:8,10:Enter,13:Enter`,
+`KH2_SHOT_AT=11` and `12.9` (the same frame twice; the letters finish sliding) against a run without the Enter keys (the world moved on).
+
+**Reopen bug (play-test 2026-10-11, fixed).** After one open and close, the second open showed no row names, area name, help line, Munny or
+Time numbers: the close fades those labels to alpha 0 (`label_fade`) and hides every node, and the open did not reset the fade, while the
+digit refresh showed a digit only when its group changed. Reproduced at tt03 with `KH2_NO_ENEMIES=1 KH2_KEYS=6:Enter,8:Enter,9.5:Enter`,
+`KH2_SHOT_AT=11` (before: plates and NEW tags only; after: all text). Tests `menu::tests::a_reopen_restores_the_label_fades`,
+`the_refresh_shows_a_digit_whose_group_did_not_change`.
+
 ## 2. The screens
 
 ### 2.1 The top list (page 0) [V]
@@ -415,7 +456,7 @@ those files (the HUD and fx fixes edit them): new files only, one small hook eac
 | `crates/kh2-app/src/progress.rs` (outside this WP; the stage that needs it adds) | setters mirroring 2.2: `equip_weapon(member, item)`, `equip_form_weapon(form, item)`, `equip_armor/accessory/item(member, slot, item)`, `set_ability_equipped(member, slot, on)`, `shortcut(slot)/set_shortcut`, `set_spell_switch(slot, on)` (exists as accessors), `option_word()/set_option_word()` (a u32 at save `+0x31b0`) |
 | `crates/kh2-app/src/main.rs` | `menu::MenuPlugin` into the third tuple |
 | `crates/kh2-app/src/harness.rs` | key names for the menu (Start, confirm, cancel, the shoulder keys, Select) in `KH2_KEYS` |
-| `crates/kh2-app/src/sora.rs` or the pad reader | the pause: while `Menu.open`, no `Pad` input reaches Sora and the `Sim` sets stop (`Time<Virtual>` paused, or a run condition on the `Sim` sets, `schedule.rs`) |
+| `crates/kh2-app/src/sora.rs` or the pad reader | the pause: while `Menu.open`, no `Pad` input reaches Sora and the `Sim` sets stop (done as a run condition on the `Sim` sets, `schedule::Pause`, 1.8) |
 
 Keys (proposal, [I]): Enter = Start, J = confirm (the app's attack key), K or Backspace = cancel, `[` and `]` = the shoulder switch (already
 `pad.prev/next`), V = Select/Help (already Select in `camera.md`), arrow keys = the list, arrows left/right = Config values; the harness takes the

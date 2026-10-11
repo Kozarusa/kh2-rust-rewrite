@@ -23,7 +23,7 @@ pub struct TexAnimPlugin;
 impl Plugin for TexAnimPlugin {
     fn build(&self, app: &mut App) {
         // After the pose step, so this tick's motion frame selects range-triggered animations.
-        app.add_systems(FixedUpdate, tick.after(crate::schedule::Sim::Pose));
+        app.add_systems(FixedUpdate, tick.after(crate::schedule::Sim::Pose).run_if(crate::schedule::sim_running));
     }
 }
 

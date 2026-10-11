@@ -290,7 +290,7 @@ impl Plugin for FxPlugin {
             .init_resource::<AreaFx>()
             .init_resource::<SparkRing>()
             .add_systems(Startup, setup)
-            .add_systems(FixedUpdate, weapon_appear.after(weapon_trails))
+            .add_systems(FixedUpdate, weapon_appear.after(weapon_trails).run_if(crate::schedule::sim_running))
             .add_systems(
                 FixedUpdate,
                 (

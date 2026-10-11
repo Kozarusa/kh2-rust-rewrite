@@ -133,6 +133,7 @@ fn friend_update(
         let FriendBrain { rt, obj, tag, flags124, started, errors_seen, mode, fields } = &mut *brain;
         fields.order = data.order(m.motion_row);
         fields.free = m.free;
+        fields.target_valid = m.target_valid();
         obj.motor.pos = m.position();
         obj.motor.yaw = m.yaw();
         obj.motor.grounded = true;

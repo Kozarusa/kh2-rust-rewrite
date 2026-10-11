@@ -63,7 +63,8 @@ impl Plugin for PartyPlugin {
             .add_systems(FixedUpdate, (spawn_party, party_tick, party_push_apart, party_fade, party_hits).chain().in_set(PartyTick).in_set(Sim::Enemy))
             .add_systems(FixedUpdate, member_hands.in_set(Sim::Enemy).before(PartyTick))
             .add_systems(FixedUpdate, (party_receive_hits, party_item_uses).chain().in_set(Sim::SoraHurt))
-            .add_systems(FixedUpdate, party_hud.after(Sim::SoraHurt));
+            .add_systems(FixedUpdate, party_hud.after(Sim::SoraHurt))
+            .add_systems(FixedUpdate, party_forced_hits.in_set(Sim::Detect));
         crate::friend_ai::register(app);
     }
 }
@@ -397,6 +398,8 @@ pub struct PartyMember {
     /// The script's mode now (`friend_ai` writes it): the script is busy (+0x390) while it runs a
     /// special's mode [inferred].
     pub(crate) script_mode: Option<String>,
+    /// FUN_00113d48 put the special's (or Cure's) target into +0x9f4; kept while its mode runs.
+    special_target: bool,
 }
 
 /// Motion ids of FUN_0017ca70 / FUN_0017cee8: lying KO'd (0x36) and getting up (0x37).
@@ -419,6 +422,11 @@ impl PartyMember {
 
     pub(crate) fn yaw(&self) -> f32 {
         self.motor.yaw
+    }
+
+    /// The member's target record (+0x9f4) is valid (host 1.140).
+    pub(crate) fn target_valid(&self) -> bool {
+        self.special_target || self.target.is_some()
     }
 
     /// The status block's HP and MP as the danger test and the item handlers read them.
@@ -725,6 +733,7 @@ fn spawn_party(
                 mode_request: None,
                 pending_mp: 0,
                 script_mode: None,
+                special_target: false,
             },
             // The members' attacks hit enemies (stage 2) and enemies' attacks hit them (stage 3,
             // `party_receive_hits`).
@@ -1012,6 +1021,9 @@ fn party_tick(
                 m.danger = danger;
                 // +0x390: the script runs a special's mode (or is asked to) [inferred].
                 let script_busy = m.mode_request.is_some() || ai.records.iter().any(|r| !r.mode.is_empty() && m.script_mode.as_deref() == Some(r.mode.as_str()));
+                if !script_busy {
+                    m.special_target = false;
+                }
                 // FUN_0010f8d8 sets the MP gate before its tests.
                 let emergency_now = danger.is_some() && !script_busy;
                 if emergency_now {
@@ -1268,6 +1280,7 @@ fn party_tick(
                 info!("party: {} special record {rec}: script mode {mode:?}, pending MP {mp} (+0xaf4, FUN_00113d48)", m.model);
                 m.pending_mp = mp;
                 m.mode_request = Some(mode);
+                m.special_target = true;
             }
             None => {}
         }
@@ -1626,7 +1639,12 @@ fn party_item_uses(
                 .motion()
                 .zip(a.triggers())
                 .map(|(mo, tr)| {
-                    let g = |f: f32| f * crate::data::LOGIC_HZ / mo.fps.max(1.0);
+                    // [inferred] The trigger frames count 60 Hz ticks from the motion's first frame: the
+                    // members' motion 9 starts at frame 15 / 12 (30 fps) with trigger 6 at tick 14 / 19, and
+                    // every trigger of the motions printed by `party_ko_data_from_the_disc` lies inside the
+                    // motion's length counted that way (the app's other trigger readers count from frame 0,
+                    // which never reaches these).
+                    let g = |f: f32| (f - mo.frame_start) * crate::data::LOGIC_HZ / mo.fps.max(1.0);
                     let (from, to) = (g(a.prev_frame), g(a.frame));
                     from != to && tr.crossed(from, to).any(|f| f.id == crate::items::TRIGGER_USE)
                 })
@@ -1692,6 +1710,36 @@ fn party_item_uses(
 
 /// FUN_001b82b8's wait before a used item's effect (`DAT_0037bba4`, 30 frames; `items` reads the same).
 const USE_WAIT: f32 = 30.0;
+
+/// Harness: `KH2_PARTY_HIT=<s>:<atkp>[,<s>:<atkp>...]` makes the nearest living enemy land a hit with
+/// that `atkp` row on every member at those seconds (the enemies of the app aim at Sora, so a member is
+/// hit only by chance). A test aid, not the game's rule: the hit then takes the members' real receive path.
+fn party_forced_hits(
+    mut done: Local<Vec<f32>>,
+    mut tick: Local<u32>,
+    enemies: Query<(Entity, &crate::enemy::Enemy, &GlobalTransform)>,
+    q: Query<(Entity, &PartyMember)>,
+    mut hits: MessageWriter<Hit>,
+) {
+    let Ok(spec) = std::env::var("KH2_PARTY_HIT") else { return };
+    *tick += 1;
+    let now = *tick as f32 / 60.0;
+    for item in spec.split(',') {
+        let Some((t, atkp)) = item.split_once(':') else { continue };
+        let (Ok(t), Ok(atkp)) = (t.trim().parse::<f32>(), atkp.trim().parse::<i16>()) else { continue };
+        if now < t || done.contains(&t) {
+            continue;
+        }
+        done.push(t);
+        for (me, m) in &q {
+            let at = m.position() * SCALE;
+            let Some((e, en, g)) = enemies.iter().filter(|(_, en, _)| en.alive()).min_by(|a, b| a.2.translation().distance_squared(at).total_cmp(&b.2.translation().distance_squared(at))) else { continue };
+            let dir = (at - g.translation()).with_y(0.0).normalize_or(Vec3::Z);
+            info!("party: KH2_PARTY_HIT at {t} s: {} lands atkp {atkp} on {}", en.name, m.model);
+            hits.write(Hit { attacker: e, target: me, atkp, dir, point: at + Vec3::Y * (m.height * 0.5 * SCALE), row: None });
+        }
+    }
+}
 
 /// The party panels' inputs (docs/party.md section 7): per party slot the member's status block as the
 /// panel reads it (HP +0 over +4, MP +0x180 over +0x184; FUN_0013dcd8 registers slot + 1 at creation,
@@ -1855,6 +1903,18 @@ mod tests {
         let elf = disc.read_root("SLUS_210.05").expect("exe");
         let blend = rules::exe_bytes(&elf, 0x37a55c, 4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
         assert_eq!(blend, Some(GET_UP_BLEND), "DAT_0037a55c");
+        // Sora's item motion for comparison (the frame unit of the triggers).
+        if let Some(row) = data.objs.iter().find(|r| r.model_name == "P_EX100").cloned()
+            && let Some(rig) = data.rig(&disc, &row)
+        {
+            let slot = rig.mset.slot(crate::items::USE_MOTION, kh2_anim::PlayerState::BattleWeapon);
+            let s = slot.and_then(|s| rig.mset.get(s));
+            eprintln!(
+                "P_EX100 motion 9 slot {slot:?}: frames {:?} triggers {:?}",
+                s.and_then(|s| s.motion.as_ref()).map(|mo| (mo.frame_start, mo.frame_end, mo.fps)),
+                s.map(|s| s.triggers.frames.iter().map(|f| (f.frame, f.id)).collect::<Vec<_>>())
+            );
+        }
         for model in ["P_EX020", "P_EX030"] {
             let row = data.objs.iter().find(|r| r.model_name == model).cloned().expect("row");
             let k = battle::pref_row(&data.prty_offsets, row.neo_moveset as usize, 1);
@@ -1875,7 +1935,9 @@ mod tests {
             let order = data.order(1);
             for motion in [MOTION_DOWN, MOTION_GET_UP, crate::items::USE_MOTION as i32, 3] {
                 let slot = battle::remap(motion, order, |s| rig.mset.has(s));
-                eprintln!("  motion {motion:#x} -> battle slot {slot:?}");
+                let tr = slot.and_then(|s| rig.mset.get(s)).map(|s| s.triggers.frames.iter().map(|f| (f.frame, f.id)).collect::<Vec<_>>());
+                let span = slot.and_then(|s| rig.mset.get(s)).and_then(|s| s.motion.as_ref()).map(|mo| (mo.frame_start, mo.frame_end, mo.fps));
+                eprintln!("  motion {motion:#x} -> battle slot {slot:?}, frames (start, end, fps) {span:?}, frame triggers (frame, id) {tr:?}");
                 assert!(slot.is_some(), "{model}: motion {motion:#x}");
             }
         }

@@ -342,20 +342,22 @@ struct MemberHand {
 
 /// The rows of the area's `map` script that place `FRIEND_1` / `FRIEND_2` (and the player's row of
 /// the first friend's group): (objentry id, group, position in game units in the app's axes, app
-/// yaw, entrance byte +0x1d), in script order, the first row of each object.
-fn friend_records(disc: &Disc, area: &str) -> Vec<(u32, String, Vec3, f32, u8)> {
+/// yaw, entrance byte +0x1d), in script order, the first row of each object. With `at` (the groups the
+/// area scripts loaded and the entrance of `area::AreaRecord`, after a jump or `KH2_ENTRANCE`): only
+/// those groups and only the rows `FUN_001981a0` creates for that entrance (WP-E1c).
+fn friend_records(disc: &Disc, area: &str, at: Option<(Vec<String>, u8)>) -> Vec<(u32, String, Vec3, f32, u8)> {
     let Some(file) = disc.read(&format!("ard/{area}.ard")) else { return Vec::new() };
     let Some((ard, _)) = kh2_ard::Area::parse(&file) else { return Vec::new() };
     let mut out: Vec<(u32, String, Vec3, f32, u8)> = Vec::new();
-    for p in ard.scripts.get("map").into_iter().flatten() {
-        for name in p.spawns() {
-            let friends_here = ard.spawns.get(&name).into_iter().flatten().flat_map(|g| &g.entities).any(|e| e.object == rules::FRIEND_1 || e.object == rules::FRIEND_2);
-            for e in ard.spawns.get(&name).into_iter().flatten().flat_map(|g| &g.entities) {
-                let wanted = e.object == rules::FRIEND_1 || e.object == rules::FRIEND_2 || (e.object == PLAYER_ENTITY && friends_here);
-                if wanted && !out.iter().any(|r| r.0 == e.object) {
-                    let [x, y, z] = e.position;
-                    out.push((e.object, name.clone(), Vec3::new(x, -y, -z), std::f32::consts::PI - e.rotation[1], e.raw[0x1d]));
-                }
+    let names: Vec<String> = at.as_ref().map_or_else(|| ard.scripts.get("map").into_iter().flatten().flat_map(|p| p.spawns()).collect(), |a| a.0.clone());
+    let made = |e: &&kh2_ard::Entity| at.as_ref().is_none_or(|a| kh2_ard::run::entity_for_entrance(e, a.1));
+    for name in names {
+        let friends_here = ard.spawns.get(&name).into_iter().flatten().flat_map(|g| &g.entities).filter(made).any(|e| e.object == rules::FRIEND_1 || e.object == rules::FRIEND_2);
+        for e in ard.spawns.get(&name).into_iter().flatten().flat_map(|g| &g.entities).filter(made) {
+            let wanted = e.object == rules::FRIEND_1 || e.object == rules::FRIEND_2 || (e.object == PLAYER_ENTITY && friends_here);
+            if wanted && !out.iter().any(|r| r.0 == e.object) {
+                let [x, y, z] = e.position;
+                out.push((e.object, name.clone(), Vec3::new(x, -y, -z), std::f32::consts::PI - e.rotation[1], e.raw[0x1d]));
             }
         }
     }
@@ -382,11 +384,20 @@ fn spawn_party(
     mut images: ResMut<Assets<Image>>,
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
     mut lib: Option<ResMut<crate::fx::EffectLib>>,
+    rec: Option<Res<crate::area::AreaRecord>>,
 ) {
     let Some(w) = world else { return };
     if area.loaded == mgr.area {
         return;
     }
+    // WP-E1c: with a real entrance (a jump, `KH2_ENTRANCE`) wait for this area's script run.
+    let at = match rec.as_deref().filter(|r| r.place_on_load) {
+        Some(r) => match r.run.as_deref().filter(|run| area.loaded.as_ref() == Some(&run.name)) {
+            Some(run) => Some((run.script.groups.iter().map(|g| g.tag.clone()).collect::<Vec<_>>(), r.entrance)),
+            None => return,
+        },
+        None => None,
+    };
     mgr.area = area.loaded.clone();
     mgr.trail = Trail::default();
     let Some(name) = area.loaded.clone() else { return };
@@ -408,7 +419,7 @@ fn spawn_party(
     let merged = crate::drive::rules::memt_merge(&memt, world_id, |_| false);
     info!("party: {name} world {world_id} slot bytes {:02x?} (preset {}), warp mode {}", slots.bytes, rules::DEFAULT_PRESET, mgr.warp_mode);
     let Some(consts) = data.consts.clone() else { return };
-    let (player_rec, records): (Vec<_>, Vec<_>) = friend_records(&disc, &name).into_iter().partition(|r| r.0 == PLAYER_ENTITY);
+    let (player_rec, records): (Vec<_>, Vec<_>) = friend_records(&disc, &name, at).into_iter().partition(|r| r.0 == PLAYER_ENTITY);
     if records.is_empty() {
         info!("party: {name}: the map script places no FRIEND_1 / FRIEND_2");
     }
@@ -1148,7 +1159,7 @@ mod tests {
         let preset = memt.trailing[rules::DEFAULT_PRESET].to_le_bytes();
         let bytes = rules::apply_preset([0, rules::EMPTY, rules::EMPTY, rules::EMPTY], preset);
         let merged = crate::drive::rules::memt_merge(&memt, 2, |_| false);
-        let recs = friend_records(&disc, "tt02");
+        let recs = friend_records(&disc, "tt02", None);
         for r in &recs {
             eprintln!("tt02 record {:#x} group {} at {:?} yaw {:.2} entrance {}", r.0, r.1, r.2, r.3, r.4);
         }

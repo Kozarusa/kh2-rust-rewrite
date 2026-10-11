@@ -125,7 +125,7 @@ pub fn run_area_script(disc: Res<Disc>, area: Res<CurrentArea>, mut rec: ResMut<
                 info!("area {loaded}: {} program {:#x} loads group {}{} ({n} entities)", g.script, g.program, g.tag, if g.alt { " (alt)" } else { "" });
             }
             match script.music {
-                Some([field, battle]) => info!("area {loaded}: music field {field} battle {battle} (opcode 0x10; not applied: audio_bgm keeps the arif pair)"),
+                Some([field, battle]) => info!("area {loaded}: music field {field} battle {battle} (opcode 0x10; audio::area_bgm applies it)"),
                 None => info!("area {loaded}: no music command (the previous pair stays, FUN_00137150)"),
             }
             info!("area {loaded}: {} triggers, map visibility {:#x}, capacity {}", script.triggers.len(), script.map_visibility, script.capacity);

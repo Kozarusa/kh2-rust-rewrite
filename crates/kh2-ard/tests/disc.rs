@@ -272,6 +272,35 @@ fn twilight_town_story_flags_and_music() {
     }
 }
 
+/// WP-E1c (docs/events.md section 2, "Lock"): the exit-lock table `dsa` of `00progress.bin`
+/// (FUN_0017fd10 -> FUN_001951f8; read by FUN_00195208) and the Twilight Town story flags whose
+/// side effects (ops 2..5: FUN_00195260, FUN_00195288, FUN_001952a0, FUN_00195300) write a lock
+/// halfword. Every entry index a flag names is inside the table.
+#[test]
+fn the_exit_lock_table_and_the_flags_that_write_it() {
+    let Some(mut a) = open() else { return };
+    let file = a.read("00progress.bin").expect("00progress.bin");
+    let bar = kh2_bar::parse(&file).expect("BAR");
+    let dsa = bar.iter().find(|e| e.tag == kh2_ard::progress::LOCK_TABLE).expect("dsa entry").data;
+    let count = u16::from_le_bytes([dsa[0], dsa[1]]) as usize;
+    let pairs: Vec<(u8, u8)> = (0..count).map(|i| (dsa[2 + 2 * i], dsa[3 + 2 * i])).collect();
+    eprintln!("dsa: {} bytes, {count} lockable areas: {pairs:?}", dsa.len());
+    let tt: Vec<String> = pairs.iter().enumerate().filter(|(_, p)| p.0 == 2).map(|(i, p)| format!("{i}: tt{:02}", p.1)).collect();
+    eprintln!("dsa Twilight Town entries: {tt:?}");
+    for (i, &(w, ar)) in pairs.iter().enumerate() {
+        assert_eq!(kh2_ard::progress::lock_index(dsa, w, ar), pairs.iter().position(|p| *p == (w, ar)), "entry {i}");
+    }
+    let worlds: Vec<_> = bar.iter().filter(|e| e.kind == 2).collect();
+    let tt = worlds[2].data;
+    for f in 0..kh2_ard::progress::flag_count(tt) as u16 {
+        for e in kh2_ard::progress::effects(tt, f).unwrap_or_default().iter().filter(|e| (2..=5).contains(&e.op)) {
+            let words = e.flags();
+            eprintln!("flag {:#x}: lock op {} halfwords {words:x?} -> {:?}", 0x800 + f as u32, e.op, words.first().and_then(|&i| pairs.get(i as usize)));
+            assert!(words.first().is_some_and(|&i| (i as usize) < count), "flag {f:#x} op {} names {words:?}", e.op);
+        }
+    }
+}
+
 /// WP-E1 (docs/events.md section 9): every Twilight Town area run with programs (0, 0, 0) through
 /// `kh2_ard::run::run_area` for each entrance a player entity names: the groups loaded, where the
 /// player starts (FUN_001981a0), the exits of the loaded groups and the triggers on event 1 (an

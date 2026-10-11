@@ -63,8 +63,8 @@ impl Plugin for CameraPlugin {
             .init_resource::<CamBlockers>()
             .init_resource::<CamEvent>()
             .add_systems(Startup, (setup, load_params))
-            .add_systems(Update, (refresh_area, gather_input).chain().in_set(crate::schedule::Frame::Camera))
-            .add_systems(FixedUpdate, tick.after(Sim::EffectTick));
+            .add_systems(Update, (refresh_area, gather_input.run_if(crate::schedule::sim_running)).chain().in_set(crate::schedule::Frame::Camera))
+            .add_systems(FixedUpdate, tick.after(Sim::EffectTick).run_if(crate::schedule::sim_running));
     }
 }
 

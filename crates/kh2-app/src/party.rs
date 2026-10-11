@@ -63,7 +63,7 @@ impl Plugin for PartyPlugin {
             .add_systems(FixedUpdate, (spawn_party, party_tick, party_push_apart, party_fade, party_hits).chain().in_set(PartyTick).in_set(Sim::Enemy))
             .add_systems(FixedUpdate, member_hands.in_set(Sim::Enemy).before(PartyTick))
             .add_systems(FixedUpdate, (party_receive_hits, party_item_uses, party_script_hits).chain().in_set(Sim::SoraHurt))
-            .add_systems(FixedUpdate, party_hud.after(Sim::SoraHurt))
+            .add_systems(FixedUpdate, party_hud.after(Sim::SoraHurt).run_if(crate::schedule::sim_running))
             .add_systems(FixedUpdate, party_forced_hits.in_set(Sim::Detect));
         crate::friend_ai::register(app);
     }

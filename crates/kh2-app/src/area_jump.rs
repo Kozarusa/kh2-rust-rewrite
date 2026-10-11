@@ -47,7 +47,7 @@ impl Plugin for AreaJumpPlugin {
             .init_resource::<ExitLocks>()
             .init_resource::<Keyhole>()
             .add_systems(Startup, (load_consts, spawn_fader))
-            .add_systems(FixedUpdate, tick.after(Sim::Sora).before(Sim::Enemy))
+            .add_systems(FixedUpdate, tick.after(Sim::Sora).before(Sim::Enemy).run_if(crate::schedule::sim_running))
             .add_systems(Update, (load_keyhole, draw_fader).in_set(crate::schedule::Frame::Hud));
     }
 }

@@ -24,7 +24,7 @@ use crate::data::GameData;
 use crate::menu_gfx::{self, MenuGfxPlugin, MenuScene, Node};
 use crate::menu_pages::{self, Entry, Exe, Flags};
 use crate::progress::Progress;
-use crate::schedule::Sim;
+use crate::schedule::Pause;
 use crate::sora::{Sora, State};
 
 // The Config page (stage M6) lives in its own file as a child module, so it reads this file's state.
@@ -45,6 +45,9 @@ pub mod new_tags;
 // The Help overlay (page 0x25, stage M7).
 #[path = "menu_help.rs"]
 pub mod help;
+// The PAUSE band of the combat pause (docs/menus.md 1.8).
+#[path = "menu_pause.rs"]
+pub mod pause_band;
 // The item pictures (stage M7).
 #[path = "menu_pic.rs"]
 pub mod pictures;
@@ -53,31 +56,39 @@ pub struct MenuPlugin;
 
 impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((MenuGfxPlugin, crate::menu_status::StatusPlugin, config::ConfigPlugin, item_pages::ItemPagesPlugin, customize::CustomizePlugin, equipment::EquipmentPlugin, new_tags::NewTagsPlugin, pictures::PicturesPlugin, help::HelpPlugin))
+        app.add_plugins((MenuGfxPlugin, crate::menu_status::StatusPlugin, config::ConfigPlugin, item_pages::ItemPagesPlugin, customize::CustomizePlugin, equipment::EquipmentPlugin, new_tags::NewTagsPlugin, pictures::PicturesPlugin, help::HelpPlugin, pause_band::PausePlugin))
             .init_resource::<Menu>()
-            // The field stands still while the menu is up: every 60 Hz set waits for it.
-            .configure_sets(
-                FixedUpdate,
-                (
-                    Sim::Weapon,
-                    Sim::Pose,
-                    Sim::Sora,
-                    Sim::Enemy,
-                    Sim::Detect,
-                    Sim::SoraHurt,
-                    Sim::EnemyHurt,
-                    Sim::Effects,
-                    Sim::Sounds,
-                    Sim::EffectTick,
-                )
-                    .run_if(is_closed),
-            )
             .add_systems(Startup, load)
             // The game's own readers run in `Update`; the menu takes its keys first, in `PreUpdate`
             // after the keyboard is read and after the harness has pressed its scripted keys.
             .add_systems(PreUpdate, input.after(bevy::input::InputSystems).after(crate::harness::Keys))
-            .add_systems(Update, tick.before(crate::schedule::Frame::Popups));
+            .add_systems(Update, (tick.before(crate::schedule::Frame::Popups), pause_log.after(crate::schedule::Frame::Camera)));
     }
+}
+
+/// `KH2_PAUSELOG=1`: one line every 30 frames with the frozen state and the positions that must stand still while
+/// the simulation is paused: Sora, the first enemy (by name) and the camera (the proof of docs/menus.md 1.8).
+fn pause_log(
+    pause: Res<Pause>,
+    menu: Res<Menu>,
+    sora: Query<&Sora>,
+    enemies: Query<(&crate::enemy::Enemy, &Transform)>,
+    cam: Query<&Transform, With<crate::camera::OrbitCamera>>,
+    mut frame: Local<u32>,
+) {
+    if std::env::var_os("KH2_PAUSELOG").is_none() {
+        return;
+    }
+    *frame += 1;
+    if *frame % 30 != 0 {
+        return;
+    }
+    let v = |p: Vec3| format!("({:.1} {:.1} {:.1})", p.x, p.y, p.z);
+    let s = sora.single().map_or("-".into(), |s| v(s.motor.pos));
+    let mut e: Vec<String> = enemies.iter().map(|(e, t)| format!("{} {}", e.name, v(t.translation))).collect();
+    e.sort();
+    let c = cam.single().map_or("-".into(), |t| v(t.translation));
+    info!("pauselog f{} frozen {} phase {:?} sora {} camera {} enemies [{}]", *frame, pause.frozen(), menu.phase, s, c, e.first().cloned().unwrap_or_default());
 }
 
 /// Run condition: the menu is closed, so the field runs.
@@ -417,6 +428,9 @@ pub(crate) fn input(
     real: Res<Time<Real>>,
     mut tags: ResMut<new_tags::NewTags>,
     items: Res<item_pages::ItemsMenu>,
+    mut pause: ResMut<Pause>,
+    band: Res<pause_band::Band>,
+    battle: Option<Res<crate::audio_bgm::BattleFlag>>,
 ) {
     if !menu.loaded {
         return;
@@ -426,7 +440,15 @@ pub(crate) fn input(
     let start = keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter);
     let cancel = keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::Backspace) || keys.just_pressed(KeyCode::KeyK);
     let confirm = keys.just_pressed(KeyCode::KeyJ);
+    let band_up = pause.band;
     match menu.phase {
+        Phase::Closed if band_up => {
+            // The PAUSE band: the pause button (or a cancel) takes it away again.
+            if start || cancel {
+                pause_band::close(&band, &mut scene, &mut pause);
+                info!("menu: pause band closed");
+            }
+        }
         Phase::Closed => {
             if start {
                 // The gate of `FUN_00138758` that the app has: the player is in control of Sora (the
@@ -436,7 +458,13 @@ pub(crate) fn input(
                     state,
                     Some(State::Ground | State::Air | State::QuickRun | State::Glide | State::Attack { .. } | State::Guard | State::Counter)
                 );
-                if free {
+                // `KH2_NO_PAUSE_BAND=1` (harness aid): the menu opens even in combat.
+                let in_combat = battle.as_ref().is_some_and(|b| b.active()) && std::env::var_os("KH2_NO_PAUSE_BAND").is_none();
+                if free && in_combat && band.is_ready() {
+                    // In combat the button shows the PAUSE band, not the menu (docs/menus.md 1.8 [inferred rule]).
+                    pause_band::open(&band, &mut scene, &mut pause);
+                    info!("menu: pause band (battle flag set)");
+                } else if free {
                     let has_ability = progress.as_ref().is_some_and(|p| !p.sora().abilities.is_empty());
                     // The camp's start builds the NEW sets (`FUN_00293808`).
                     if let Some(p) = progress.as_deref() {
@@ -498,9 +526,14 @@ pub(crate) fn input(
         tags.end(&worn);
     }
     // Every press that arrives while the menu is up belongs to the menu.
-    if menu.phase != Phase::Closed {
+    if menu.phase != Phase::Closed || band_up || pause.band {
         keys.reset_all();
         mouse.reset_all();
+    }
+    // The simulation stops in the frame of the open input and runs again once the close has finished (`schedule::Pause`).
+    let open = menu.phase != Phase::Closed;
+    if pause.menu != open {
+        pause.menu = open;
     }
 }
 

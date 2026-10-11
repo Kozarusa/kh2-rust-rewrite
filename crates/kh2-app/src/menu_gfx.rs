@@ -140,6 +140,8 @@ pub struct Pic {
 pub struct Node {
     /// Index into `MenuScene::seqs` (`None`: a text-only node).
     pub seq: Option<usize>,
+    /// Texture of `MenuScene::texs` the sequence draws from (`CAMP_TEX`; the PAUSE band's image otherwise).
+    pub tex: usize,
     pub player: Player,
     pub parent: Option<usize>,
     /// Position of a root node.
@@ -171,6 +173,7 @@ impl Node {
     pub fn new(seq: Option<usize>) -> Node {
         Node {
             seq,
+            tex: CAMP_TEX,
             player: Player::default(),
             parent: None,
             pos: [0.0; 2],
@@ -315,7 +318,7 @@ impl MenuScene {
                 let mut ext = n.ext;
                 ext.time = n.player.uv_time;
                 for q in s.quads(g, n.player.frame(), n.origin, &ext) {
-                    out.push((CAMP_TEX, q));
+                    out.push((n.tex, q));
                 }
             }
             if let (Some(label), Some(text)) = (&n.label, &self.text) {

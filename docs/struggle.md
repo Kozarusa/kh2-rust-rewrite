@@ -141,7 +141,20 @@ event 2 with picture 4 (`st_t`: "STRUGGLE!"), 2 = event 5 with picture 7 (`ed_t`
 `FUN_00226fb0`), opcode 0x50 at frame 11 starts a 2D object that plays one group of the event's picture at draw
 priority 26000 (`FUN_00225af0` -> `FUN_00225998`; the group is `DAT_0036bd30` 1..5, set from event +0x9c by
 `FUN_002232c8`, else 1). The event frame is the game frame count times 0.5 (`FUN_00222728`, 0x37ec50); the event
-ends when its frame reaches the end frame (`FUN_00222668`): 500 event frames are 1000 game frames.
+ends when its frame reaches the end frame (`FUN_00222668`): 500 event frames are 1000 game frames, **or earlier,
+when its picture has played through** (WP-G1, verified chain): the 2D object (vtable 0x36bed8; update method
+`FUN_00225aa8` -> the sequence step `FUN_00138aa8`, which at the end of a non-looping group with no follow-up calls the
+destroy method, vtable +0x14) has a destructor `FUN_00225a50` that, when the object's byte +0x350 is 1 (set by
+`FUN_00225998`'s third argument, which `FUN_00225af0` passes as 1), starts a thread of `FUN_00225a20`; that calls
+`FUN_00223658(0)`, which, while an event plays (`FUN_00196418`, `DAT_0035e3a4`), ends it (`FUN_002235c0`). The group
+plays once (`loops` 1) from event frame 11 (tick 22) for its length: `st_t` group 1 is 90 ticks (last frame 89),
+`ed_t` group 1 ("YOU WIN!") 300, group 2 ("YOU LOSE") 270, so the start event ends at tick 112, the win at 322, the
+loss at 292, not at the end frame [inferred: the destroy thread's own start takes a tick or two]. Port:
+`Layout::group_ticks`, `Play::picture_end`, `Play::ended`; tests
+`the_start_event_ends_when_its_picture_group_has_played_through`, `an_event_without_a_finishing_picture_ends_at_its_end_frame`.
+The picture goes with its object: `hud_mission::picture_act` removes the node when its group has finished (it used to
+hold the last frame, so "STRUGGLE!" stayed on screen until the event's end frame), test
+`a_layout_picture_goes_when_it_has_played_through_or_its_event_is_over`.
 [inferred] the event object's own startup and fade states (`FUN_00195c08`) take no time in the port.
 
 **Event kinds** (`03system.bin` entry `evtp`, read by `FUN_001d1128`; byte 0 the kind, +2 flags): flag bit 3 clear
@@ -155,7 +168,10 @@ stays.
 **The start** (`FUN_001b8ee8`'s tail): sound +0x10, record 1 plays at once. `FUN_001b9140` state 0 waits while an
 event plays and the player cannot act (`FUN_001794f0` -> `FUN_00176a18` -> `FUN_001b7d50`), then shows the
 elements (`FUN_001d5f00`; the clock starts with its record's show method) and goes to state 1. So the counters and
-the clock appear when "STRUGGLE!" ends, 1000 frames after the mission starts; the match clock runs from there. Test
+the clock appear when "STRUGGLE!" ends, 112 ticks (about 1.9 s) after the mission starts (it was 1000 before WP-G1: the
+event waited for its end frame); control returns then and the match clock runs from there. Before WP-G1 the log showed
+the layout start at 13:11:41.33 and `layout start ended at event frame 500` 16.6 s later (the whole time the player was
+held). Test
 `the_start_layout_holds_the_hud_until_it_ends`. [inferred] The show is skipped when manager +4 bit 1 is set; its
 writer was not found.
 
@@ -176,7 +192,7 @@ record 3 (`FUN_001b98a8`) the last step waits with event 8 (state 4), else the m
 `the_struggle_end_plays_its_layout_then_opens_the_menu`, `with_a_trigger_and_no_flag_0x40_the_end_waits_for_the_last_frames`,
 `area_triggers_match_by_event_and_argument`.
 
-In tt04 the Struggle header has flag 0x40 and kind 2: a win plays "YOU WIN!" (record 2, 1000 frames, the player held,
+In tt04 the Struggle header has flag 0x40 and kind 2: a win plays "YOU WIN!" (record 2, 322 ticks, the player held,
 the field HUD and the mission HUD with the final score stay), a loss "YOU LOSE" (record 3); then the menu 0x1a would
 open. The area triggers of the `btl` program and of the `evt` program with the same id (0xb6: events 0x8b and 0x8d,
 jumps) do not take event 7 or 8, and the mission kind sends neither to the area anyway. So the HUD does not come
@@ -185,7 +201,7 @@ pause-menu record table of `DAT_01d5df08`) is not in the app. Since WP-F1 (item 
 lingered for ever) the last step ends the manager at once in its place (log `struggle: last step (FUN_001b96e0):
 mission kind 2 opens the menu of record 0x1a (FUN_0024f330), which the app does not have; the manager ends as if
 it had closed`, then `struggle: mission manager ended`): the counters, the frozen clock, the result picture, the
-orbs and the player lock go 1000 frames after the result layout started, as `FUN_001b90d0` removes them with the
+orbs and the player lock go 322 ticks (292 for "YOU LOSE") after the result layout started, as `FUN_001b90d0` removes them with the
 manager [inferred: what the game does when that menu closes was not read]. Since WP-F1 (item 2) the player
 controller reads the layout's control lock and the stop (`Mission::control_locked`, `Mission::fight_stopped`):
 `sora::tick` drops every press and the stick (`Pad::lock`) while either holds, and Sora does not revive from
@@ -270,6 +286,16 @@ $env:KH2_SHOT_AT='70'; $env:KH2_SCREENSHOT='<png>'; target\debug\kh2-game.exe tt
 4 s in); standing still, the opponent knocks Sora out and the log has `struggle: end knock-out`, then
 `layout failure (record 3)` and "YOU LOSE" on screen (shot at 58 s); attacking (the keys above, to 82 s) ends by
 time with `struggle: end time` and "YOU WIN!" (shot at 90 s); both end with `struggle: last step (FUN_001b96e0)`.
+
+WP-G1 runs (user report: the start pictures stayed on screen and control came back far too late): same harness with
+`KH2_KEYS=3:D:60 KH2_MOVELOG=1 KH2_STRUGGLELOG=1`. The start picture (`st_t` group 1, 90 ticks) shows "READY" and then
+"STRUGGLE!" zooming in over it (shots at 5.3 s and 5.6 s); before the fix the last frame, "STRUGGLE!", stayed up for
+16.6 s (shot at 8 s and 14 s) with the player held (log: layout start to `layout start ended at event frame 500`
+16.64 s, 990 `input ignored` lines); after the fix the picture is gone and the counters and clock are up at 5.9 s,
+control returned 1.85 s after the layout began (`layout start ended at event frame 56`, 106 lines). The final
+countdown numerals (clock groups 0x1f, 0x1e, 0x1d, 0x1c) were looked at in shots at 78.6 to 82 s (before) and 63 to
+65 s (after): each shows alone for about a second and is gone (`FUN_00150d40` plays each once and its object ends);
+the app already removed them when their group finished.
 
 ## Decompile index
 

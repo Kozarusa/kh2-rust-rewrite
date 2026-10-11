@@ -110,6 +110,9 @@ pub struct MissionHud {
     edge: Vec<(usize, Edge)>,
     /// The layout pictures (WP-7E2): (mission, picture index, group) -> the node playing it.
     layouts: Vec<((u32, u8, usize), usize)>,
+    /// The layout picture that has played through (its group finished): it stays gone until the event is over, so
+    /// it is not started again by the next frame's check (WP-G1).
+    layout_done: Option<(u32, u8, usize)>,
     /// Field HUD nodes this module hid while a layout hides the field HUD, to show again after it.
     hidden: Vec<usize>,
 }
@@ -122,18 +125,53 @@ const TARGET_TAG: usize = 38;
 /// ends, a group of the record's picture (`Layout::group`: 1, or 2 for the failure) is drawn above the field (the 2D object at draw priority 26000,
 /// `FUN_00225998`). The node stands at (0, 0): the sequence carries the screen position [inferred, as for the
 /// counters' frames].
+/// What a layout picture's node does this frame: `Hide` when its event does not want it, when it has played
+/// through (the original's 2D object plays its group once and destroys itself, `FUN_00138aa8` vtable +0x14, so
+/// nothing of it stays on screen), `Start` from its first frame, or `Keep` playing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PictureAct {
+    Hide,
+    Start,
+    Keep,
+}
+
+pub fn picture_act(wanted: bool, done: bool, visible: bool, finished: bool) -> PictureAct {
+    if !wanted || done || (visible && finished) {
+        PictureAct::Hide
+    } else if visible {
+        PictureAct::Keep
+    } else {
+        PictureAct::Start
+    }
+}
+
 fn layout_picture(mission: &Mission, hud: &mut MissionHud, scene: &mut HudScene, images: &mut Assets<Image>) {
     let want = mission.m.as_deref().and_then(|a| {
         let p = a.play.as_ref().filter(|p| p.picture_shown())?;
         let (i, s) = p.layout.picture_entries()?;
         Some((a, (a.id, p.layout.picture, p.layout.group()), i, s))
     });
-    for (key, node) in &hud.layouts {
-        if want.as_ref().is_none_or(|w| w.1 != *key) {
-            scene.nodes[*node].visible = false;
+    if want.is_none() {
+        hud.layout_done = None;
+    }
+    for (key, node) in hud.layouts.clone() {
+        if node == usize::MAX {
+            continue;
+        }
+        let n = &mut scene.nodes[node];
+        let wanted = want.as_ref().is_some_and(|w| w.1 == key);
+        if picture_act(wanted, hud.layout_done == Some(key), n.visible, n.player.finished()) == PictureAct::Hide {
+            if wanted && n.visible {
+                info!("hud: mission layout picture {} group {} played through: removed", key.1, key.2);
+                hud.layout_done = Some(key);
+            }
+            n.visible = false;
         }
     }
     let Some((a, key, i, s)) = want else { return };
+    if hud.layout_done == Some(key) {
+        return;
+    }
     let node = match hud.layouts.iter().find(|(k, _)| *k == key) {
         Some((_, n)) => *n,
         None => {
@@ -466,6 +504,40 @@ mod tests {
                 eprintln!("entry {seq} group {g:#x}: x {} y {} width {} anims {anims:?} anchor {:?}", grp.x, grp.y, grp.unk20, s.anchor(g, 0, &kh2_image::seqd::Ext::default()));
             }
         }
+    }
+
+    #[test]
+    fn a_layout_picture_goes_when_it_has_played_through_or_its_event_is_over() {
+        // wanted, done, visible, finished
+        assert_eq!(picture_act(true, false, false, false), PictureAct::Start);
+        assert_eq!(picture_act(true, false, true, false), PictureAct::Keep);
+        // Played through: removed, whatever the event still wants (the original's 2D object destroys itself).
+        assert_eq!(picture_act(true, false, true, true), PictureAct::Hide);
+        // Removed once: not started again by the next frame's check while the same event goes on.
+        assert_eq!(picture_act(true, true, false, true), PictureAct::Hide);
+        // The event is over: gone.
+        assert_eq!(picture_act(false, false, true, false), PictureAct::Hide);
+    }
+
+    #[test]
+    fn the_start_picture_group_plays_through_in_90_ticks() {
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let disc = Disc::open(&iso);
+        let file = disc.read("msn/us/TT04_MS00.bar").expect("mission file");
+        let entries = kh2_bar::parse(&file).unwrap();
+        let seq = kh2_image::seqd::parse(entries[4].data).expect("st_t sequence");
+        let mut player = kh2_image::seqd::Player::default();
+        player.set_group(&seq, 1);
+        let mut ticks = 0;
+        while !player.finished() && ticks < 1000 {
+            player.tick(1.0);
+            ticks += 1;
+        }
+        // One tick starts the group, then 90 frames play; the node is then removed (`picture_act`).
+        assert!(player.finished() && (90..=92).contains(&ticks), "{ticks}");
     }
 
     #[test]

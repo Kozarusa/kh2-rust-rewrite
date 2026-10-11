@@ -387,6 +387,9 @@ fn npc_update(
     {
         let mut rows: Vec<_> = q.iter_mut().collect();
         let tags: Vec<String> = rows.iter().map(|r| r.3.tag.clone()).collect();
+        // [inferred] the script's init (which hands the parameter block over, host 5.33) runs
+        // before the class's first update: an object whose script has not started is skipped.
+        let started: Vec<bool> = rows.iter().map(|r| r.3.started).collect();
         let mut minds: Vec<Mind> = rows
             .iter_mut()
             .map(|(_, tf, npc, brain)| {
@@ -405,7 +408,7 @@ fn npc_update(
             })
             .collect();
         for i in 0..minds.len() {
-            if minds[i].fields.test_bit(0) {
+            if !started[i] || minds[i].fields.test_bit(0) {
                 continue;
             }
             let before = minds[i].fields.region;

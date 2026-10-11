@@ -132,3 +132,41 @@ fn sora_eyes_blink_by_texture_animation() {
     assert!(changes.iter().any(|&c| c >= 20), "the blink runs: {changes:?}");
     assert!(changes.contains(&0), "the other region stays on its base image");
 }
+
+/// WP-F1 item 11 (the keyblade showed its back faces): every mesh of the Kingdom Key and of Sora, with the
+/// chain header's blend flag and its triangle winding against the rest pose.
+#[test]
+fn keyblade_meshes_report_their_blend_flags_and_winding() {
+    let Some(mut a) = open() else { return };
+    for name in ["obj/W_EX010.mdlx", "obj/P_EX100.mdlx"] {
+        let file = a.read(name).expect(name);
+        let m = kh2_model::mdlx(&file).expect("mdlx");
+        for (i, x) in m.meshes.iter().enumerate() {
+            // Winding: the sum over triangles of (normal . (centroid - model centre)), positive when the
+            // triangles face outward in the right-handed sense.
+            let centre = {
+                let n = x.positions.len().max(1) as f32;
+                let s = x.positions.iter().fold([0.0f32; 3], |s, p| [s[0] + p[0], s[1] + p[1], s[2] + p[2]]);
+                [s[0] / n, s[1] / n, s[2] / n]
+            };
+            let mut outward = 0.0f32;
+            for t in x.indices.chunks_exact(3) {
+                let p = |k: usize| x.positions[t[k] as usize];
+                let (a, b, c) = (p(0), p(1), p(2));
+                let e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                let e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+                let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+                let g = [(a[0] + b[0] + c[0]) / 3.0 - centre[0], (a[1] + b[1] + c[1]) / 3.0 - centre[1], (a[2] + b[2] + c[2]) / 3.0 - centre[2]];
+                outward += n[0] * g[0] + n[1] * g[1] + n[2] * g[2];
+            }
+            eprintln!(
+                "{name} mesh {i}: texture {} transparent {} uv_scroll {} tris {} outward {:.0}",
+                x.texture,
+                x.transparent,
+                x.uv_scroll,
+                x.indices.len() / 3,
+                outward
+            );
+        }
+    }
+}

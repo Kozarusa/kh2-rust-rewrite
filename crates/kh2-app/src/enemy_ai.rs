@@ -386,8 +386,16 @@ fn ai_update(
         MessageWriter<crate::prize::ItemDrop>,
         MessageWriter<crate::prize::CollectAll>,
     ),
+    (summon, mut summon_stop_logged): (Option<Res<crate::summon::SummonState>>, Local<bool>),
 ) {
     trace.tick += 1;
+    // The summon arrival puts actor stop id 2 on every enemy (FUN_0016bef0(2, 0xfff7ffdc), `SummonState::stop`):
+    // a stopped actor's update does not run, so its script gets no tick (WP-F1 item 3).
+    let summon_stop = summon.as_deref().is_some_and(|s| s.stop);
+    if summon_stop != *summon_stop_logged {
+        *summon_stop_logged = summon_stop;
+        info!("bdx: enemy scripts {} (summon arrival actor stop id 2, 0x35fec0 bit 3)", if summon_stop { "paused" } else { "resume" });
+    }
     if trace.tick.is_multiple_of(SUMMARY_EVERY) {
         trace.summary();
     }
@@ -510,7 +518,11 @@ fn ai_update(
             host.trace.line(host.tag, &format!("message {name:?} from {sender:#x}, delay {delay:.2}"));
             rt.receive_message(&mut host, &name, sender, delay);
         }
-        rt.update(&mut host);
+        if summon_stop {
+            host.trace.line(host.tag, "summon arrival stop: no script tick");
+        } else {
+            rt.update(&mut host);
+        }
         // The game's queue holds 0x40 entries; FUN_00187170 drops a message when it is full.
         for m in obj.outbox.drain(..) {
             if mailbox.queue.len() < MAILBOX_LEN {

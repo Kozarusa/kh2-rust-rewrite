@@ -462,8 +462,10 @@ Tests: `summon_arrival_choice_follows_the_option_and_the_seen_bits`, `summon_gen
 
 Not done, and why:
 
-- The enemies' scripts keep running during the stop: `enemy_ai.rs` (not owned here) would have to skip an
-  enemy's tick while `SummonState::stop` is set. Their movement from the script therefore continues.
+- (Closed in WP-F1 item 3.) The enemies' scripts now get no tick while `SummonState::stop` is set: `enemy_ai::ai_update`
+  skips `Runtime::update` for every scripted enemy (the game's actor stop id 2 leaves the actor's update out, so its
+  script thread does not advance), logging `bdx: enemy scripts paused (summon arrival actor stop id 2, 0x35fec0 bit 3)`
+  once and `... resume` when the stop lifts; the trace of each enemy gets `summon arrival stop: no script tick`.
 - The companions come back where the party code left them (it keeps moving them while they are hidden):
   `party.rs` has no way to place a member; FUN_0017d290's spot (200..300 units, searched from 100 units above
   the player) needs a placement call there.

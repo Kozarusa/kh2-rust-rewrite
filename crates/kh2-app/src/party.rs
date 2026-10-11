@@ -302,6 +302,10 @@ struct QueuedUse {
     target: battle::Who,
 }
 
+/// An item handler's two choice orders (one target, several) and the value it compares (HP or MP).
+type ItemLists = (Vec<u16>, Vec<u16>);
+type VitalPart = fn(&battle::Vital) -> (i32, i32);
+
 /// What a chosen record starts this tick.
 enum Start {
     /// FUN_001137d8: the attack command with the entry's motion.
@@ -1054,7 +1058,7 @@ fn party_tick(
                 let stock = |item: u16| now.standing && member.as_ref().is_some_and(|mm| mm.items.contains(&item));
                 // The item handlers' phase 1 (FUN_00113888 HP, FUN_00113b08 MP): target and item.
                 let item_choice = |h: Handler| -> Option<(battle::Who, u16)> {
-                    let (frac, lists, value): (f32, &(Vec<u16>, Vec<u16>), fn(&battle::Vital) -> (i32, i32)) = match h {
+                    let (frac, lists, value): (f32, &ItemLists, VitalPart) = match h {
                         Handler::HpItem => (data.item_frac.0, &data.hp_items, |v| (v.hp, v.hp_max)),
                         _ => (data.item_frac.1, &data.mp_items, |v| (v.mp, v.mp_max)),
                     };

@@ -365,3 +365,46 @@ Station Heights** (tt04 and tt05 are both Sandlot, tt08 Station Plaza).
   quick run) (speed ...)`, then `sora dodge roll: Square released after N ticks (tap, under 10)`.
 * The writer of +0x108 bit 0x800000 other than `FUN_00169ee8` (scan of `lui 0x80` / `lui 0x100`
   followed by a store to +0x108: only `FUN_00169ee8`).
+
+## The motion-set variant: the armed field run (WP-G5, verified except where marked)
+
+User report (2026-10-11): with the keyblade out but no fight, the run animation should differ. The original
+stores each motion of `obj/P_EX100.mset` in four slots, `slot = motion id * 4 + variant`: 0 battle with
+weapon, 1 battle without, 2 field without weapon, 3 field with weapon. A001 (walk) has variants 0, 2, 3
+(slots 4, 6, 7), A002 (run) has 0, 2, 3 (slots 8, 10, 11); A000 (idle) has only 0 and 2; A010 (motion 6) has
+0 and 3 (`cargo run -p kh2 -- mset obj/P_EX100.mset`). So variant 3 is the armed field walk and run.
+
+The rule, `FUN_0017da30(controller, motion id)` (callers `FUN_0017e000`, `FUN_0017f390`):
+
+* row = 1 when `FUN_0019a898(actor)` is true, else 2. `FUN_0019a898` is true when actor +0x588 bit 0x80 and
+  `FUN_001793a8` hold (not Sora), or when actor +0x108 bit 0x100000 is set.
+* for a party member (+0x588 bit 4): when `FUN_001752a0` is true (one of the two weapon objects at +0xaf8 exists
+  and `FUN_0019af68` says it is not hidden: weapon +0x10c bits 0x80 / 0x100 clear, ...) the row's low bit flips:
+  1 -> 0, 2 -> 3.
+* the rows are the byte table at 0x37a5c8 (test `armed_field_run_is_the_variant_three_slot_of_the_disc` reads
+  it from the disc): row 0 = 0,1,3,2; row 1 = 1,0,2,3; row 2 = 2,3,1,0; row 3 = 3,2,0,1. The first variant
+  whose slot exists (`FUN_001a7da8`) plays. This is `kh2_anim::PlayerState::fallback`.
+* actor +0x108 bit 0x100000 is the actor's battle bit: `FUN_00174b68` (every tick of the party controller
+  `FUN_00177788`, and `FUN_0017ca48`) sets it when the global battle flag `FUN_001903d8` (word 0x1c8a7d8) is
+  set; `FUN_0019a820` clears it when the actor is a party member, the bit is set and the flag is clear (called by
+  the motion controller `FUN_0017e3b8` when the next queued motion starts). So the bit follows the flag at
+  motion boundaries [inferred: the call order inside `FUN_0017e3b8` was read, not traced per frame].
+* the global flag is the one the music uses (docs/audio.md "The battle flag"): it rises 45 ticks after an enemy
+  is within 12 m and falls 120 ticks after the last one left. That is the original's timeout: for those 120
+  ticks the keyblade stays out with the battle run, then the flag falls and the armed field run starts.
+* a change between the battle variants (0, 1) and the field ones (2, 3) first plays motion 6 (A010) when it
+  exists for the new variant (`FUN_0017e000`); A010 has only variants 0 and 3 on the disc. Not ported (gap).
+
+App: `sora::motion_state(weapon_out, game_battle_flag)` gives `BattleWeapon` (out, flag set), `FieldWeapon` (out,
+flag clear), `FieldNoWeapon` (hidden). "Out" is still the app's keyblade timer `sora::Battle` (240 ticks after
+the last sign of a fight; the weapon is shown while it runs); the flag is `audio_bgm::BattleFlag`. With the
+keyblade out and the flag clear the walk and run are slots 7 and 11 and the idle is slot 2 (A000 has no variant
+3, row 3 falls to 2); attacks and reactions have only variant 0 or 2 and resolve as before. Without the
+`BattleFlag` resource (unit tests) the stand-in decides alone. Log (`KH2_MOVELOG=1`): `move: motion variant
+Some(BattleWeapon) -> FieldWeapon (keyblade out true, game battle flag Some(false); FUN_0017da30)`.
+
+Gaps: the A010 transition is not played; a hidden weapon with the flag set (row 1) should show the weapon at
+once, the app waits for its own timer (it differs only while an enemy is inside the flag's 12 m range but
+outside the app's lock-on range). Searched without finding the writers of weapon +0x10c bit 0x100 other than
+the weapon class method at 0x331590 (`FUN_00331590`, called on both weapons by `FUN_00176588`; its callers
+were not traced), and `FUN_001793a8`, `FUN_0019af28`, `FUN_002c56c0` were not read.

@@ -70,6 +70,10 @@ pub struct FxCache {
 pub const TRIGGER_TRAIL: u8 = 12;
 /// Game effect id of the weapon trail.
 pub const EFFECT_TRAIL: u16 = 10;
+/// Element id of the weapon's own effect that `FUN_00184498` starts when the weapon appears
+/// (`FUN_0016a570(weapon, 0, 1, 0, 0)` = `FUN_001db868(weapon + 0x80, 0, 1, 1, 0, weapon)`: the first element
+/// with id 0 of the weapon object's effect file, bound to the weapon).
+pub const EFFECT_WEAPON_APPEAR: u16 = 0;
 /// Effect started in place of the hit spark when a hit is ineffective (FUN_0018d090 starts element
 /// id 0x12 of the system file `00effect.bar` at the hit point).
 pub const EFFECT_INEFFECTIVE: u16 = 0x12;
@@ -286,6 +290,7 @@ impl Plugin for FxPlugin {
             .init_resource::<AreaFx>()
             .init_resource::<SparkRing>()
             .add_systems(Startup, setup)
+            .add_systems(FixedUpdate, weapon_appear.after(weapon_trails))
             .add_systems(
                 FixedUpdate,
                 (
@@ -696,6 +701,35 @@ pub fn ring_push(commands: &mut Commands, ring: &mut SparkRing, spark: Option<En
         }
         commands.entity(old).try_insert(Evicted);
     }
+}
+
+/// The weapons that went from hidden to shown between two ticks (`now[i] && !prev[i]`). A weapon
+/// that is new in the list (the first tick) counts as hidden before, so a keyblade that is out at
+/// the start still shows its effect once, as the game's weapon does when it first becomes visible.
+pub fn weapons_appeared(prev: &[bool], now: &[bool]) -> Vec<usize> {
+    (0..now.len()).filter(|&i| now[i] && !prev.get(i).copied().unwrap_or(false)).collect()
+}
+
+/// The keyblade's appearance effect: when Sora's weapon turns from hidden to shown (the controller
+/// shows it with the battle stand-in, `sora::tick`), start element 0 of the weapon's own effect file
+/// bound to the weapon, as the weapon's update `FUN_001843b0` does through `FUN_00184498` the moment the
+/// owner's motion variant is a weapon one (0 or 3) while the weapon was still hidden (flag 0x100 of
+/// +0x10c, set by the constructor `FUN_00184190`). Log with `KH2_FXLOG`.
+pub fn weapon_appear(mut commands: Commands, lib: Res<EffectLib>, sora: Query<&crate::sora::Sora>, vis: Query<&Visibility>, mut prev: Local<Vec<bool>>) {
+    let Ok(s) = sora.single() else { return };
+    appear_step(&mut commands, &lib, &s.weapons, &vis, &mut prev);
+}
+
+/// One tick of `weapon_appear` for a list of weapon entities.
+fn appear_step(commands: &mut Commands, lib: &EffectLib, weapons: &[Entity], vis: &Query<&Visibility>, prev: &mut Vec<bool>) {
+    let now: Vec<bool> = weapons.iter().map(|w| vis.get(*w).is_ok_and(|v| *v != Visibility::Hidden)).collect();
+    for i in weapons_appeared(prev, &now) {
+        let started = start_placed(commands, &lib.keyblade, EFFECT_WEAPON_APPEAR, Bind::Owner(weapons[i]), Placement::default());
+        if std::env::var_os("KH2_FXLOG").is_some() {
+            info!("weapon appear: weapon {i} shown, effect element {EFFECT_WEAPON_APPEAR} (FUN_00184498): {}", if started.is_some() { "started" } else { "no such element" });
+        }
+    }
+    *prev = now;
 }
 
 /// Weapon trails: run effect 10 while the keyblade's motion has its trail range trigger.
@@ -1716,5 +1750,50 @@ mod tests {
         app.world_mut().write_message(StartBoundSystemEffect { id: 0x7fff, owner, handle: FxHandle::new() });
         app.update();
         assert_eq!(state(&mut app).len(), 1);
+    }
+
+    #[derive(Resource)]
+    struct TestWeapons(Vec<Entity>);
+
+    /// Only a weapon that turns from hidden to shown starts its appearance effect (a new list entry counts
+    /// as hidden before).
+    #[test]
+    fn weapons_appeared_reports_hidden_to_shown_only() {
+        assert_eq!(weapons_appeared(&[false, false], &[true, false]), vec![0]);
+        assert_eq!(weapons_appeared(&[true, false], &[true, true]), vec![1]);
+        assert_eq!(weapons_appeared(&[true], &[true]), Vec::<usize>::new());
+        assert_eq!(weapons_appeared(&[true], &[false]), Vec::<usize>::new());
+        assert_eq!(weapons_appeared(&[], &[true]), vec![0]);
+    }
+
+    /// The keyblade's own effect file has an element 0 that builds, and the system starts it bound to the weapon
+    /// when its visibility turns on, once. Skips without a disc.
+    #[test]
+    fn the_keyblade_appearance_effect_starts_when_the_weapon_is_shown() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let common = disc.read("effect/texcommon.dpd").and_then(|b| Dpd::parse(&b).ok());
+        let kb = Arc::new(load(&disc, "obj/W_EX010.apdx", 2, common.as_ref()).expect("W_EX010.apdx"));
+        let ids: Vec<u16> = kb.pax.elements.iter().map(|e| e.id).collect();
+        eprintln!("keyblade element ids: {ids:?}");
+        let el = kb.pax.elements_for(EFFECT_WEAPON_APPEAR).next().expect("keyblade element 0");
+        let f = dpx_effect(&kb.pax, el.effect).expect("DPX entry");
+        eprintln!("keyblade element 0: bone {:#x} flags {:#x} effect {} sound {}", el.bone, el.flags, el.effect, el.se);
+        assert!(kh2_fx::Effect::new(kb.dpds[f.dpd].clone(), f.dpd, f.particle_data).is_some(), "element 0 builds");
+        let mut app = App::new();
+        app.insert_resource(EffectLib { keyblade: kb.clone(), system: kb, objects: HashMap::new() }).add_systems(Update, |mut c: Commands, lib: Res<EffectLib>, w: Res<TestWeapons>, vis: Query<&Visibility>, mut prev: Local<Vec<bool>>| appear_step(&mut c, &lib, &w.0, &vis, &mut prev));
+        let w = app.world_mut().spawn(Visibility::Hidden).id();
+        app.insert_resource(TestWeapons(vec![w]));
+        let count = |app: &mut App| app.world_mut().query::<&RunningEffect>().iter(app.world()).filter(|r| r.game_id == EFFECT_WEAPON_APPEAR).count();
+        app.update();
+        assert_eq!(count(&mut app), 0, "hidden: nothing");
+        *app.world_mut().get_mut::<Visibility>(w).unwrap() = Visibility::Inherited;
+        app.update();
+        assert_eq!(count(&mut app), 1, "shown: one effect");
+        app.update();
+        assert_eq!(count(&mut app), 1, "still shown: no second one");
     }
 }

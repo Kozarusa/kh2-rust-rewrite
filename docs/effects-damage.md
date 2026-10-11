@@ -531,6 +531,27 @@ Gaps: the model draw FUN_0020c7f8 (and its four packet builders 0x2114c0, 0x2135
 not read; how it combines the 0xff vertex colors with the trail's material color is the port's earlier
 reading (vertex color / 128 times material). The GS SPRITE screen alignment above is not ported.
 
+## The keyblade's appearance effect (WP-G5, verified except where marked)
+
+User report (2026-10-11): the original shows a particle effect when Sora's keyblade appears. The weapon object
+(`FUN_00184190`, made by `FUN_001751b0` per hand and stored in the owner's list at +0xaf8) starts hidden (its
++0x10c gets 0x700). Its update `FUN_001843b0` calls `FUN_00184498` when the owner's motion variant (owner +0x15c,
+the `FUN_0017f5e8` value = slot mod 4; docs/movement.md) is 0 or 3 and the weapon is hidden (`FUN_0019af68`).
+`FUN_00184498` runs `FUN_0016a570(weapon, 0, 1, 0, 0)` = `FUN_001db868(weapon + 0x80, 0, 1, 1, 0, weapon)`, which
+starts the first element with id 0 of the weapon object's own effect file (`obj/W_EX010.apdx`) bound to the
+weapon; then two colour fades (`FUN_00192c98`, from 0.0 to 1.0 and 16 frames from `DAT_0037a8b4` / `DAT_0037a8b8`
+[the fade values were read, the colour target field was not traced]); it clears the hidden bit and, when the
+object definition's flag bit 7 is set, calls `FUN_00176680` on the owner. While the weapon is shown `FUN_001846a8`
+keeps element 10 (the trail effect that the app runs on the swing trigger) when the weapon's +0x160 bit 0x800 is
+set [not traced further].
+
+App: `fx::weapon_appear` (FixedUpdate, after `weapon_trails`) watches the visibility of Sora's weapons (`sora::tick`
+shows them while the keyblade timer runs) and starts element 0 of `lib.keyblade` bound to the weapon on the tick
+it turns from hidden to shown (`fx::weapons_appeared`, `fx::EFFECT_WEAPON_APPEAR`). Log (`KH2_FXLOG=1`): `weapon
+appear: weapon 0 shown, effect element 0 (FUN_00184498): started`. Tests: `weapons_appeared_reports_hidden_to_shown_only`,
+`the_keyblade_appearance_effect_starts_when_the_weapon_is_shown`. Not done: the weapon's colour fade and the owner
+call `FUN_00176680`.
+
 ## What is not done
 
 * Hit-point accuracy: the rule is above; `combat.rs` needs the edit (not made, not in this package's ownership).

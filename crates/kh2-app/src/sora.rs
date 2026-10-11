@@ -57,11 +57,31 @@ const BATTLE_TICKS: f32 = 240.0;
 #[derive(Resource, Default, Debug)]
 pub struct Battle {
     pub ticks: f32,
+    /// The motion-set variant of the last tick, for the `KH2_MOVELOG` line on a change.
+    last_state: Option<PlayerState>,
 }
 
 impl Battle {
     pub fn active(&self) -> bool {
         self.ticks > 0.0
+    }
+}
+
+/// The motion-set variant (the relative slot of `id * 4 + variant`) Sora's controller asks for, the
+/// rule of `FUN_0017da30` (tables at 0x37a5c8: row 0 = 0,1,3,2; row 1 = 1,0,2,3; row 2 = 2,3,1,0; row 3 = 3,2,0,1):
+/// the row is 1 while the actor's battle bit (+0x108 bit 0x100000, raised by `FUN_00174b68` when the game's
+/// battle flag `FUN_001903d8` is set, dropped by `FUN_0019a820` when it is clear) is set, else 2; for a
+/// party member (+0x588 bit 4) whose weapon is out (`FUN_001752a0`) the low bit flips, so the row becomes 0
+/// (battle) or 3 (field). The first slot of the row that exists wins (`Mset::slot`). Weapon out with the
+/// game's battle flag clear is the field variant 3: its walk and run (`A001`, `A002`, slots 7 and 11) are the
+/// armed ones. [inferred] A hidden weapon with the flag set (row 1) is left as the field variant without a
+/// weapon: the game would play a weapon variant and show the weapon at once, the app shows it by its own
+/// stand-in timer (`Battle`).
+pub fn motion_state(weapon_out: bool, battle_flag: bool) -> PlayerState {
+    match (weapon_out, battle_flag) {
+        (true, true) => PlayerState::BattleWeapon,
+        (true, false) => PlayerState::FieldWeapon,
+        (false, _) => PlayerState::FieldNoWeapon,
     }
 }
 
@@ -1099,6 +1119,7 @@ pub fn tick(
     mut bodies: Query<&mut Transform, Without<Sora>>,
     mut vis: Query<&mut Visibility>,
     mission: Option<Res<crate::struggle::Mission>>,
+    game_flag: Option<Res<crate::audio_bgm::BattleFlag>>,
 ) {
     let (Ok((mut tf, mut s, mut fighter)), Some(world)) = (sora_q.single_mut(), world) else { return };
     let s = &mut *s;
@@ -1161,7 +1182,14 @@ pub fn tick(
     }
     battle.ticks = (battle.ticks - 1.0).max(0.0);
     let battle_on = battle.active();
-    let pstate = if battle_on { PlayerState::BattleWeapon } else { PlayerState::FieldNoWeapon };
+    // Without the game's flag resource (tests) the stand-in decides alone, as before.
+    let pstate = motion_state(battle_on, game_flag.as_ref().is_none_or(|f| f.active()));
+    if battle.last_state != Some(pstate) {
+        if move_log() {
+            info!("move: motion variant {:?} -> {pstate:?} (keyblade out {battle_on}, game battle flag {:?}; FUN_0017da30)", battle.last_state, game_flag.as_ref().map(|f| f.active()));
+        }
+        battle.last_state = Some(pstate);
+    }
     for w in &s.weapons {
         if let Ok(mut v) = vis.get_mut(*w) {
             // The change motions are the battle-state ones (the drive code asks for that variant), so the keyblade is out.
@@ -2168,6 +2196,50 @@ mod tests {
         let mut a = kh2_archive::Archive::open(&iso).map_err(|e| eprintln!("skipped: {iso}: {e}")).ok()?;
         let index = kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).ok()?.rows.into_iter().find(|r| r.model_name == "P_EX100")?.neo_moveset as usize;
         Moveset::parse(&kh2_tables::subfile(&mut a, &t::PTYA).ok()?, index)
+    }
+
+    /// The variant rule of `FUN_0017da30` (pure part): weapon out with the game's battle flag clear is the
+    /// field-with-weapon variant, with it set the battle one, no weapon the field variant without.
+    #[test]
+    fn motion_state_picks_the_armed_field_variant_out_of_battle() {
+        assert_eq!(motion_state(true, true), PlayerState::BattleWeapon);
+        assert_eq!(motion_state(true, false), PlayerState::FieldWeapon);
+        assert_eq!(motion_state(false, false), PlayerState::FieldNoWeapon);
+        assert_eq!(motion_state(false, true), PlayerState::FieldNoWeapon);
+    }
+
+    /// The four variant rows of `FUN_0017da30` (bytes at 0x37a5c8 of `SLUS_210.05`) are `PlayerState`'s fallback
+    /// orders, and on P_EX100 the keyblade-out field walk and run are the A001 / A002 variant-3 slots (7 and 11),
+    /// the battle ones the variant-0 slots (4 and 8). Skips without a disc.
+    #[test]
+    fn armed_field_run_is_the_variant_three_slot_of_the_disc() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let exe = disc.read_root("SLUS_210.05").expect("SLUS_210.05");
+        let at = 0x37a5c8 - 0xff000;
+        let rows: Vec<[u8; 4]> = (0..4).map(|r| exe[at + r * 4..at + r * 4 + 4].try_into().unwrap()).collect();
+        assert_eq!(rows, [[0, 1, 3, 2], [1, 0, 2, 3], [2, 3, 1, 0], [3, 2, 0, 1]]);
+        // The state the app asks for -> the row the game takes (0 = battle + weapon, 3 = field + weapon, 2 = field).
+        for (st, row) in [(PlayerState::BattleWeapon, 0), (PlayerState::FieldWeapon, 3), (PlayerState::FieldNoWeapon, 2)] {
+            let mset = kh2_anim::Mset::parse(&disc.read("obj/P_EX100.mset").expect("mset")).expect("parse");
+            let want: Vec<usize> = rows[row].iter().map(|&b| b as usize).collect();
+            let got = |i: usize| mset.slot(i, st);
+            let first = |i: usize| want.iter().map(|&r| r + i * 4).find(|&s| mset.has(s));
+            for i in [id::IDLE, id::WALK, id::RUN] {
+                assert_eq!(got(i), first(i), "{st:?} motion {i}");
+            }
+        }
+        let mset = kh2_anim::Mset::parse(&disc.read("obj/P_EX100.mset").unwrap()).unwrap();
+        assert_eq!(mset.slot(id::WALK, PlayerState::FieldWeapon), Some(7));
+        assert_eq!(mset.slot(id::RUN, PlayerState::FieldWeapon), Some(11));
+        assert_eq!(mset.slot(id::WALK, PlayerState::BattleWeapon), Some(4));
+        assert_eq!(mset.slot(id::RUN, PlayerState::BattleWeapon), Some(8));
+        assert_eq!(mset.slot(id::RUN, PlayerState::FieldNoWeapon), Some(10));
+        // The armed run is a slot of its own, with the run's tag.
+        assert_eq!(mset.get(11).map(|s| s.tag.as_str()), Some("A002"));
     }
 
     /// The air records carry a leap and the ground combo none (`ptya` from the user's disc).

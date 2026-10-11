@@ -1557,18 +1557,14 @@ fn form_exp(
         note += &format!(" -> {l}");
         if let Some((form_id, sora_id)) = up.growth {
             // FUN_001d3f18 twice; the obtained log gets Sora's id (FUN_001d0828(id, 1, 5)), whose
-            // "obtained once" bit is not set by the upgrade [the bit is read as clear]. Sora's 64 slots
-            // are worked out on a copy: `Progress` has no setter for an ability slot.
-            let mut sora = [0u16; 64];
-            for (slot, id, on) in pr.ability_slots(crate::progress::SORA) {
-                if let Some(x) = sora.get_mut(slot) {
-                    *x = id | if on { 0x8000 } else { 0 };
-                }
-            }
-            let before = sora;
-            growth_upgrade(&mut sora, chains, form, up.display.saturating_sub(1));
-            let changed = (0..64).find(|&i| sora[i] != before[i]).map_or("no slot matches".to_string(), |i| format!("slot {i} {:#x} -> {:#x}", before[i], sora[i]));
-            note += &format!(" (growth: form {form_id:#x}, Sora {sora_id:#x}: {changed}, not written)");
+            // "obtained once" bit is not set by the upgrade [the bit is read as clear]. The upgrade is
+            // written to Sora's record, where a first level arrives unequipped as in the game.
+            let lv = up.display.saturating_sub(1);
+            let old = if lv == 0 { chains.at(form.wrapping_sub(1), 4) } else { chains.at(form, lv - 1) };
+            let changed = pr
+                .upgrade_ability(crate::progress::SORA, old, chains.at(form, lv))
+                .map_or("no slot matches".to_string(), |s| format!("slot {s} -> {:#x}", chains.at(form, lv)));
+            note += &format!(" (growth: form {form_id:#x}, Sora {sora_id:#x}: {changed})");
             log.push(obtained_record(place, sora_id, key(pr, sora_id), false, 1, 5));
         }
         if up.ability != 0 {

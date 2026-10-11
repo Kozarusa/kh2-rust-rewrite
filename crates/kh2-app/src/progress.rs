@@ -1768,8 +1768,8 @@ mod tests {
 
     /// The oracle for `upgrade_ability`: the game's `FUN_001d3f18(list, 0x40, form, level)` (a leaf) runs in
     /// kh2-ee on the user's executable over a 64-slot list, with the chain table at 0x37c556 as the
-    /// executable holds it; the port gets the chain's ids at `level - 1` (the routine's `puVar1[-1]`, which
-    /// for level 0 is the previous form's entry 4) and `level`. Every form 0..=4 and level 0..=4, twice
+    /// executable holds it; the port gets the chain's ids at `level - 1` (the routine reads the entry just before the
+    /// chain's `level` entry, which for level 0 is the previous form's entry 4) and `level`. Every form 0..=4 and level 0..=4, twice
     /// round, with one slot taken off between the rounds; the 64 words must stay equal.
     #[test]
     fn growth_upgrade_matches_the_game() {

@@ -224,9 +224,15 @@ function at 0x2eec70 (FUN_00112260) sets it from scripts.
 
 ### KO and revive [V]
 
-- KO (friend vtable +0x5c, FUN_0017ce60): FUN_00175f10 (voice line 2, FUN_00186568); revive timer
-  `+0xb40 = (record at +0x12c)+0x18 x ability block +0x58` (Hyper Healing multiplier) [GAP: which record
-  +0x12c points to; `prty` StunTime is 0 for every row, so it is not that].
+- KO (friend vtable +0x5c, FUN_0017ce60, reached from the HP method FUN_00186238 -> FUN_00186530 when HP
+  becomes 0): FUN_00175f10 (voice line 2, then FUN_00186568 -> FUN_00186580 sets +0x7f8 bit 4); revive
+  timer `+0xb40 = (record at +0x12c)+0x18 x ability block +0x58` (Hyper Healing multiplier). **The record
+  at +0x12c is the `prty` row of the object's `objentry` NeoMoveset** (WP-P3b): the base constructor
+  FUN_00196b58 ends with a tail call `FUN_00194438(obj + 0x110, objentry +0x4e)` (instructions
+  0x196cd8..0x196cf8), which stores `FUN_001cc1c8(NeoMoveset)` (= FUN_001cc140 on the `prty` table
+  `DAT_01d6a8f8`, loaded by FUN_001cc040 from the name at 0x37c290 "prty", fallback row 1) at +0x12c and
+  copies its walk, run, jump, turn (+0x110..+0x11c) and words 8 and 10. +0x18 of the row is StunTime; +0x1c
+  (MpDrive) is the MP-charge length FUN_00186440 reads through the same pointer.
 - Each frame while +0x7f8 bit 4 (KO) is set (FUN_0017ca70, from vtable +0xc): the timer counts down by the
   frame unit, times `sstm[0x5c]` while the battle flag `DAT_01c8a7d8` is clear; at 0 FUN_0017cc20 heals
   `maxHP x sstm[0x58]` through the HP method (vtable +0x78). While down (motion state 0x36, played with

@@ -171,21 +171,6 @@ impl PartyData {
     fn sstm_f32(&self, off: usize) -> f32 {
         self.sstm.as_ref().filter(|s| s.words.len() > off / 4).map_or(0.0, |s| s.f32(off))
     }
-}
-
-/// The row offsets of the `prty` entry of 03system.bin's `pref` (u32 count, then the offsets).
-fn prty_offsets(a: &mut kh2_archive::Archive) -> Vec<u32> {
-    let Ok(file) = a.read("03system.bin") else { return Vec::new() };
-    let Some(sub) = kh2_bar::parse(&file).ok().and_then(|top| {
-        let pref = kh2_bar::find(&top, "pref")?;
-        let inner = kh2_bar::parse(pref.data).ok()?;
-        Some(kh2_bar::find(&inner, "prty")?.data.to_vec())
-    }) else {
-        return Vec::new();
-    };
-    let w = |o: usize| sub.get(o..o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
-    let n = w(0).unwrap_or(0) as usize;
-    (0..n).map_while(|k| w(4 + 4 * k)).collect()
 
     /// FUN_0017da30's slot order of a motion-state row.
     pub(crate) fn order(&self, row: usize) -> [u8; 4] {
@@ -220,6 +205,21 @@ fn prty_offsets(a: &mut kh2_archive::Archive) -> Vec<u32> {
         let mset = self.weapons.wmst.get(ms).and_then(|n| n.get(hand)).filter(|s| !s.is_empty()).cloned();
         Some(crate::drive::WeaponFiles { model: w.model_name.clone(), mset })
     }
+}
+
+/// The row offsets of the `prty` entry of 03system.bin's `pref` (u32 count, then the offsets).
+fn prty_offsets(a: &mut kh2_archive::Archive) -> Vec<u32> {
+    let Ok(file) = a.read("03system.bin") else { return Vec::new() };
+    let Some(sub) = kh2_bar::parse(&file).ok().and_then(|top| {
+        let pref = kh2_bar::find(&top, "pref")?;
+        let inner = kh2_bar::parse(pref.data).ok()?;
+        Some(kh2_bar::find(&inner, "prty")?.data.to_vec())
+    }) else {
+        return Vec::new();
+    };
+    let w = |o: usize| sub.get(o..o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let n = w(0).unwrap_or(0) as usize;
+    (0..n).map_while(|k| w(4 + 4 * k)).collect()
 }
 
 /// The current world's party: the four slot bytes (`0x340c9c + world x 4`: player, the two
@@ -1680,7 +1680,8 @@ fn party_item_uses(
             let mut v = crate::items::Vitals { hp: m.hp, hp_max: m.hp_max, hp_min: 0, mp: m.mp, mp_max: m.mp_max, charge_left: m.charge.left, charge_total: m.charge.total, ..Default::default() };
             let before = (m.hp, m.mp);
             crate::items::item_effect(item, amount, 100, &mut v, feed);
-            let c = m.change_hp(v.hp - m.hp, &data);
+            let gain = v.hp - m.hp;
+            let c = m.change_hp(gain, &data);
             m.mp = v.mp;
             m.charge.left = v.charge_left;
             m.charge.total = v.charge_total;

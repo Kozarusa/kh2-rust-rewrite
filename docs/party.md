@@ -527,13 +527,10 @@ Each stage ends with `verify.ps1` passing and the named check.
   15..55 at 30 fps with trigger 6 at tick 14, Goofy's 12..48 with trigger 6 at tick 19, Goofy's 0x37 88..142
   with triggers 0 and 76; printed by `party_ko_data_from_the_disc`). The app's trigger readers (`audio`,
   `items`, `fx`, `enemy_ai`, `magic`) count from frame 0, so for such motions they never fire; `party`'s
-  item use counts from the start. Not checked against the game's motion controller.
-- Cure's heal: the `cure` mode (P_EX020 R1559) plays motion 192, waits for frame trigger bit 239 (R089a,
-  host 1.151), pays through 1.276, then creates attack 1525 (2.10) on the target (2.17), whose hit on a
-  party object heals it [inferred: FUN_00175340 lets attack kinds 5 and 6 through even on a KO'd member].
-  The app does not carry out the scripts' attack objects for members, so Cure pays nothing and heals
-  nobody yet; the next step is the enemy host's attack objects (2.10 / 2.17 / 2.13) for friend scripts and
-  a heal kind in `party_receive_hits`.
+  item use and `friend_ai`'s trigger bytes for the members' scripts (WP-P3c) count from the start; this is kept
+  party-local (the other readers are outside the party's files and are not changed). Not checked against the
+  game's motion controller.
+- (Resolved by WP-P3c) Cure's heal and Donald's specials, section 14.
 - The members' ability block (+0x1cc) is not built: Hyper Healing (+0x58), MP Rage (+0x54), the revive
   scale bit (+0x10 bit 8), Item Boost and MP regeneration read their defaults.
 - Members are hit only by chance (the enemies aim at Sora); the attacker memory +0xcec (FUN_001106b8) is not
@@ -717,13 +714,38 @@ Done:
   charge starts (MP 0, length = the row's MpDrive 1200 x `DAT_0037a974` 1.0) when MP is short (Goofy's `blade`
   pays 10 per use in a b_44 run). Host 1.140 (0x173740 -> FUN_0018ed58) answers the member's target record.
 
-Not done: Cure's heal (section 10), the scripts' attack objects and effects of the specials, the members'
+Not done: (Cure's heal and the specials' payment: section 14) the specials' moving attack objects and effects, the members'
 ability block, the attacker memory +0xcec, the panel flashes, limits and forms (stages 5, 6).
 - FUN_00111040 forces motion state 0x1f only for classes 12, 15 and 16, so Donald and Goofy (classes 0, 1)
   may follow through FUN_0010e5e8's body (state 0) rather than FUN_0010e140 as stage 1 assumed; which state a
   free class-0 member stands in was not determined. The field follow keeps stage 1's port.
 - The random generator is not the game's.
 
+## 14. Status: Cure and the specials' payment (WP-P3c)
+
+- **Donald's specials pay.** While the script runs a special's mode (+0x390 busy, FUN_0010f698) FUN_0010fcd0 and
+  FUN_0010f8d8 return at once, so the member no longer chooses or moves (Choice::Busy; [inferred] the steer's
+  speed is held at 0 so the cast motion is not replaced). riend_ai fills the motion controller's trigger
+  bytes +0x238 / +0x239 (hosts 1.150 / 1.151, as enemy_ai does for enemies, frames counted from the motion's
+  start, section 10): the cast's wait R089a (P_EX020) waits for bit 0 of +0x239, set by frame trigger 9 of
+  motion 192 (slot 768, tick 26). Log: party: P_EX020 paid 10 MP (host 1.276): MP 100 -> 90 (thunder),
+  paid 255 MP (host 1.276): MP 100 -> 0, MP charge 1200 (cure).
+- **The scripts' attack objects** (riend_host): 2.10 (0x18e2f0) keeps the tkp id by a handle; 2.17
+  (0x18e6e0: FUN_0018c5f8 / FUN_0018c6d0, then the target's receive method +0x64) delivers it on the member's
+  target record; 2.13 / 2.22 need nothing. party_script_hits carries the hits out: on an enemy, a
+  combat::Hit; on a party object, attack types 5 and 6 are a heal (FUN_00185a68 adds the amount; FUN_00175340
+  lets these types through even on a KO'd member), through the HP method, which revives a KO'd member
+  (FUN_00186238 -> FUN_0017cee8, scaled by sstm +0x54). Cure's attack 1525 is type 6, Power 200, so the
+  amount is (magic x 200 + 99) / 100 of Donald (GameData::damage).
+- The record FUN_00113d48 copies into +0x9f4 is phase 1's: Cure's is cure_target (the member in danger, else
+  the first below +0x3c), the others' the member's enemy target.
+- Log: party: P_EX020 heals P_EX030 with atkp 1525 (type 6, FUN_00185a68): +2, HP 0 -> 1 (was KO'd: revived),
+  party: P_EX020 heals Sora with atkp 1525 (type 6, FUN_00185a68): +2, HP 6 -> 8.
+- [inferred] The caster's magic is the saved record's plus the hand-0 weapon's item_stat magic (the status
+  rebuild's equipment pass, FUN_0019f920, as GameData::sora_stats adds the keyblade); with the new game's record
+  Donald's magic is 1, so Cure heals 2.
+- Harness: KH2_PARTY_HIT=<s>:<atkp>[:<model>] (the model limits the hit to one member).
+- Not done: thunder's / fire's moving attack objects (2.11 / 2.12) and every effect of the specials (1.149, 1.87).
 ## Decompile index
 
 | address | what |

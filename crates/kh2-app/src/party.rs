@@ -62,7 +62,7 @@ impl Plugin for PartyPlugin {
             .insert_resource(Manager { log: std::env::var("KH2_PARTYLOG").is_ok_and(|v| !v.is_empty() && v != "0"), rng: 0x2545_f491, ..Default::default() })
             .add_systems(FixedUpdate, (spawn_party, party_tick, party_push_apart, party_fade, party_hits).chain().in_set(PartyTick).in_set(Sim::Enemy))
             .add_systems(FixedUpdate, member_hands.in_set(Sim::Enemy).before(PartyTick))
-            .add_systems(FixedUpdate, (party_receive_hits, party_item_uses).chain().in_set(Sim::SoraHurt))
+            .add_systems(FixedUpdate, (party_receive_hits, party_item_uses, party_script_hits).chain().in_set(Sim::SoraHurt))
             .add_systems(FixedUpdate, party_hud.after(Sim::SoraHurt))
             .add_systems(FixedUpdate, party_forced_hits.in_set(Sim::Detect));
         crate::friend_ai::register(app);
@@ -77,6 +77,8 @@ pub(crate) struct PartyTick;
 #[derive(Default)]
 struct WeaponTables {
     items: Vec<t::Item>,
+    /// `item_stat` rows (a weapon's attack and magic, `Item::stat_entry`).
+    stats: Vec<t::ItemStat>,
     went: Vec<u8>,
     wmst: Vec<[String; 2]>,
 }
@@ -149,6 +151,7 @@ impl PartyData {
                 kh2_tables::load::<t::PrefPrty>(&mut a, &t::PREF_PRTY).map(|d| d.rows).unwrap_or_default(),
                 WeaponTables {
                     items: kh2_tables::load::<t::Item>(&mut a, &t::ITEM).map(|d| d.rows).unwrap_or_default(),
+                    stats: kh2_tables::load::<t::ItemStat>(&mut a, &t::ITEM_STAT).map(|d| d.rows).unwrap_or_default(),
                     went: kh2_tables::subfile(&mut a, &t::WENT).unwrap_or_default(),
                     wmst: kh2_tables::subfile(&mut a, &t::WMST).map(|b| crate::drive::rules::parse_wmst(&b)).unwrap_or_default(),
                 },
@@ -306,6 +309,13 @@ struct QueuedUse {
 type ItemLists = (Vec<u16>, Vec<u16>);
 type VitalPart = fn(&battle::Vital) -> (i32, i32);
 
+/// What a member's target record (+0x9f4) names for a special: a party object or an enemy.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ScriptTarget {
+    Party(battle::Who),
+    Enemy(Target),
+}
+
 /// What a chosen record starts this tick.
 enum Start {
     /// FUN_001137d8: the attack command with the entry's motion.
@@ -315,7 +325,7 @@ enum Start {
     /// FUN_00113888 / FUN_00113b08 phase 0 -> FUN_0010c9d0: an item on a target.
     Item(usize, u16, battle::Who),
     /// FUN_00113d48 phase 0: the script's mode and the pending MP byte (+0xaf4).
-    Special(usize, String, u8),
+    Special(usize, String, u8, Option<ScriptTarget>),
 }
 
 /// One party member in the field.
@@ -404,6 +414,10 @@ pub struct PartyMember {
     pub(crate) script_mode: Option<String>,
     /// FUN_00113d48 put the special's (or Cure's) target into +0x9f4; kept while its mode runs.
     special_target: bool,
+    /// Who that target record names, and the hits the script's attack objects delivered on it (hosts
+    /// 2.10 / 2.17, riend_ai fills them; party_script_hits carries them out).
+    special_who: Option<ScriptTarget>,
+    pub(crate) script_hits: Vec<i16>,
 }
 
 /// Motion ids of FUN_0017ca70 / FUN_0017cee8: lying KO'd (0x36) and getting up (0x37).
@@ -749,6 +763,8 @@ fn spawn_party(
                 pending_mp: 0,
                 script_mode: None,
                 special_target: false,
+                special_who: None,
+                script_hits: Vec::new(),
             },
             // The members' attacks hit enemies (stage 2) and enemies' attacks hit them (stage 3,
             // `party_receive_hits`).
@@ -1006,6 +1022,8 @@ fn party_tick(
             // FUN_0010ca88: a valid target and bit 0x40 clear.
             let target_ok = tshape.is_some() && !too_far;
             let (dir, speed);
+            // The script is busy with a special: the member holds still so its cast motion plays.
+            let mut hold = false;
             m.want_yaw = None;
             // FUN_001102c8 (the player relation) or FUN_001103e0 (the target), as FUN_001103f8 picks.
             let follow_player = |m: &mut PartyMember, row: usize| {
@@ -1164,7 +1182,9 @@ fn party_tick(
                             // FUN_00113d48 phase 0: the target kept, +0xaf4 = the entry's MP byte, the
                             // script's mode switched to the record's name.
                             (dir, speed) = (facing, 0.0);
-                            start = Some(Start::Special(record.unwrap(), r.mode.clone(), r.entry.map_or(0, |e| e.mp as u8)));
+                            // Phase 1's record: Cure's is FUN_00113e68's (the member in danger or below +0x3c), the others' the member's target.
+                            let who = if r.handler == Handler::Cure { r.entry.and_then(|e| battle::cure_target(danger, me_v, player_vital, other_v, e.cure)).map(ScriptTarget::Party) } else { m.target.map(ScriptTarget::Enemy) };
+                            start = Some(Start::Special(record.unwrap(), r.mode.clone(), r.entry.map_or(0, |e| e.mp as u8), who));
                         }
                         Handler::Approach => {
                             // FUN_001135e0 phase 0: the wait, the facing toward the target, standing.
@@ -1198,7 +1218,10 @@ fn party_tick(
                         }
                         _ => (dir, speed) = toward(m),
                     },
-                    (Choice::Busy, _) => (dir, speed) = (facing, 0.0),
+                    (Choice::Busy, _) => {
+                        (dir, speed) = (facing, 0.0);
+                        hold = true;
+                    }
                     (Choice::Stand, _) => {
                         (dir, _) = toward(m);
                         speed = 0.0;
@@ -1211,6 +1234,9 @@ fn party_tick(
             }
             // FUN_00110468: the steer.
             let (d, sp) = rules::steer(&mut m.follow, dir, speed, m.walk, m.run, c);
+            // [inferred] The steer's six-frame average would keep a member that just stopped walking for a
+            // few frames, which replaces the script's motion; the game's busy member does not move.
+            let sp = if hold { 0.0 } else { sp };
             if log && m.follow.mode != before_mode {
                 info!("party: {} speed mode {before_mode} -> {} (distance to the player {:.0}, speed {sp:.1})", m.model, m.follow.mode, to_player.length());
             }
@@ -1297,7 +1323,8 @@ fn party_tick(
                     }
                 }
             }
-            Some(Start::Special(rec, mode, mp)) => {
+            Some(Start::Special(rec, mode, mp, who)) => {
+                m.special_who = who;
                 info!("party: {} special record {rec}: script mode {mode:?}, pending MP {mp} (+0xaf4, FUN_00113d48)", m.model);
                 m.pending_mp = mp;
                 m.mode_request = Some(mode);
@@ -1729,10 +1756,85 @@ fn party_item_uses(
     }
 }
 
+/// The hits the members' scripts delivered through their attack objects (hosts 2.10 / 2.17: the target's
+/// receive method with the hit record, FUN_0018c6d0). On an enemy target: a `combat::Hit` with the `atkp`
+/// row (the enemy's receive path does the rest). On a party object: FUN_00175340 -> FUN_00185a68 takes
+/// attack types 5 and 6 as a heal (the amount added, not subtracted), even on a KO'd member, which the HP
+/// method then revives (FUN_00186238 -> FUN_0017cee8); Cure's attack 1525 is type 6, so the amount is
+/// `(magic x Power + 99) / 100` of the caster (`GameData::damage`). Other types on a party object are not
+/// carried out [inferred: no member script aims one there].
+#[allow(clippy::too_many_arguments)]
+fn party_script_hits(
+    game: Res<GameData>,
+    data: Res<PartyData>,
+    progress: Option<Res<crate::progress::Progress>>,
+    mut q: Query<(Entity, &mut PartyMember)>,
+    mut sora: Query<&mut Sora>,
+    places: Query<&GlobalTransform>,
+    mut hits: MessageWriter<Hit>,
+) {
+    let mut heals: Vec<(Entity, battle::Who, i32, i16)> = Vec::new();
+    for (me, mut m) in &mut q {
+        if m.script_hits.is_empty() {
+            continue;
+        }
+        let ids = std::mem::take(&mut m.script_hits);
+        let Some(mut caster) = crate::enemy::member_stats(progress.as_deref(), m.neo) else { continue };
+        // [inferred] The status rebuild's equipment pass (FUN_0019f920) adds the hand-0 weapon's attack and
+        // magic, as `GameData::sora_stats` adds the keyblade's; `enemy::member_stats` leaves it out.
+        let weapon = progress.as_ref().and_then(|p| p.member(m.neo)).map_or(0, |r| r.weapons[0]);
+        if let Some(st) = data.weapons.items.iter().find(|i| i.id == weapon).and_then(|i| data.weapons.stats.iter().find(|s| s.id == i.stat_entry)) {
+            caster.strength += st.attack as i32;
+            caster.magic += st.magic as i32;
+        }
+        info!("party: {} script hits {ids:?}: caster strength {} magic {} (weapon item {weapon})", m.model, caster.strength, caster.magic);
+        for id in ids {
+            let Some(atk) = game.atkp(id) else { continue };
+            match m.special_who {
+                Some(ScriptTarget::Enemy(t)) => {
+                    let at = places.get(t.entity).map_or(Vec3::ZERO, |g| g.translation());
+                    let from = m.position() * SCALE;
+                    hits.write(Hit { attacker: me, target: t.entity, atkp: id, dir: (at - from).with_y(0.0).normalize_or(Vec3::Z), point: at, row: None });
+                    info!("party: {} script attack atkp {id} hits its target {:?}", m.model, t.entity);
+                }
+                Some(ScriptTarget::Party(who)) if matches!(atk.r#type, 5 | 6) => {
+                    let to = if who == battle::Who::Player { sora.single().map(|s| s.stats).ok() } else { None }.unwrap_or(caster);
+                    heals.push((me, who, game.damage(atk, &caster, &to), id));
+                }
+                other => info!("party: {} script attack atkp {id} (type {}) on {other:?}: not carried out", m.model, atk.r#type),
+            }
+        }
+    }
+    for (caster, who, amount, id) in heals {
+        let (caster_slot, caster_model) = q.get(caster).map_or((0, String::new()), |(_, m)| (m.slot, m.model.clone()));
+        match who {
+            battle::Who::Player => {
+                if let Ok(mut s) = sora.single_mut() {
+                    // Sora's HP method (FUN_00186238 on the player, not KO'd): added, held at the maximum.
+                    let before = s.hp;
+                    s.hp = (s.hp + amount).clamp(0, s.stats.max_hp);
+                    info!("party: {caster_model} heals Sora with atkp {id} (type 6, FUN_00185a68): +{amount}, HP {before} -> {}", s.hp);
+                }
+            }
+            battle::Who::Me | battle::Who::Other => {
+                for (e, mut m) in &mut q {
+                    let hit = if who == battle::Who::Me { e == caster } else { e != caster && m.slot != caster_slot };
+                    if !hit {
+                        continue;
+                    }
+                    let (before, was_ko) = (m.hp, m.ko);
+                    let c = m.change_hp(amount, &data);
+                    info!("party: {caster_model} heals {} with atkp {id} (type 6, FUN_00185a68): +{amount}, HP {before} -> {}{}", m.model, m.hp, if was_ko && c.revived { " (was KO'd: revived)" } else { "" });
+                }
+            }
+        }
+    }
+}
+
 /// FUN_001b82b8's wait before a used item's effect (`DAT_0037bba4`, 30 frames; `items` reads the same).
 const USE_WAIT: f32 = 30.0;
 
-/// Harness: `KH2_PARTY_HIT=<s>:<atkp>[,<s>:<atkp>...]` makes the nearest living enemy land a hit with
+/// Harness: `KH2_PARTY_HIT=<s>:<atkp>[:<model>][,...]` makes the nearest living enemy land a hit with
 /// that `atkp` row on every member at those seconds (the enemies of the app aim at Sora, so a member is
 /// hit only by chance). A test aid, not the game's rule: the hit then takes the members' real receive path.
 fn party_forced_hits(
@@ -1746,13 +1848,15 @@ fn party_forced_hits(
     *tick += 1;
     let now = *tick as f32 / 60.0;
     for item in spec.split(',') {
-        let Some((t, atkp)) = item.split_once(':') else { continue };
+        let mut parts = item.split(':');
+        let (Some(t), Some(atkp)) = (parts.next(), parts.next()) else { continue };
+        let only = parts.next().map(str::trim);
         let (Ok(t), Ok(atkp)) = (t.trim().parse::<f32>(), atkp.trim().parse::<i16>()) else { continue };
         if now < t || done.contains(&t) {
             continue;
         }
         done.push(t);
-        for (me, m) in &q {
+        for (me, m) in q.iter().filter(|(_, m)| only.is_none_or(|o| o == m.model)) {
             let at = m.position() * SCALE;
             let Some((e, en, g)) = enemies.iter().filter(|(_, en, _)| en.alive()).min_by(|a, b| a.2.translation().distance_squared(at).total_cmp(&b.2.translation().distance_squared(at))) else { continue };
             let dir = (at - g.translation()).with_y(0.0).normalize_or(Vec3::Z);

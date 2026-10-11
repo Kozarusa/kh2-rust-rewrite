@@ -197,6 +197,9 @@ fn friend_update(
         if let Some(cost) = host.fields.paid.take() {
             m.pay_mp(cost);
         }
+        // Hosts 2.10 / 2.17: the script's attack hits on its target record, for `party` to deliver.
+        host.fields.attacks.clear();
+        m.script_hits.append(&mut host.fields.target_hits);
         m.pending_mp = host.fields.pending_mp;
         let now = rt.current_mode();
         m.script_mode = now.clone();

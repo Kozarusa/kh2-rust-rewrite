@@ -141,15 +141,27 @@ pub fn load_area(
         .unwrap_or_else(|| World::from_meshes(&map.map.meshes));
     let cam_world = World::from_meshes(&map.map.meshes);
     if let Ok((mut t, mut p)) = player.single_mut() {
-        // Main floor from the render mesh, standing on the collision floor below it.
-        let near = cam_world.spawn_point_band();
-        let at = world.ground(near, near.y + 100.0, 400.0).map_or(near, |g| Vec3::new(near.x, g.y, near.z));
+        let (_, at) = spawn_point(&world, &cam_world);
         crate::sora::respawn(&mut p, at);
         t.translation = at * SCALE;
     }
     info!("{file}: {} meshes, collision {} triangles ({})", map.map.meshes.len(), world.tris.len(), if world.coct { "COCT" } else { "render mesh" });
     commands.insert_resource(world);
     commands.insert_resource(crate::world::CameraWorld(cam_world));
+}
+
+/// Where Sora stands when an area loads: the main floor of the render mesh (`cam_world`, the height band
+/// with the most floor area, at its point nearest the centre), put down on the collision floor below it.
+/// When no collision floor is within 400 units under that point, the render mesh's main floor is scenery
+/// outside the walkable collision (tt01, tt03, tt06 and tt07: Sora fell through it, WP-F1 item 15), and
+/// the collision world's own main floor band is taken instead. Returns (the render floor point, the spawn
+/// point). Stand-in until spawn points come from the area's event data (`world::World::spawn_point`).
+pub fn spawn_point(world: &World, cam_world: &World) -> (Vec3, Vec3) {
+    let near = cam_world.spawn_point_band();
+    match world.ground(near, near.y + 100.0, 400.0) {
+        Some(g) => (near, Vec3::new(near.x, g.y, near.z)),
+        None => (near, world.spawn_point_band()),
+    }
 }
 
 pub fn sky_follow(cam: Query<&Transform, (With<Camera3d>, Without<Sky>)>, mut sky: Query<&mut Transform, With<Sky>>) {
@@ -268,4 +280,72 @@ fn to_image(t: &kh2_model::Texture) -> Image {
         ..ImageSamplerDescriptor::linear()
     });
     img
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// WP-F1 item 15 (Sora fell through the floor after an area jump): for every Twilight Town area, the
+    /// spawn point `load_area` would choose and whether the collision world has a floor under it.
+    #[test]
+    fn every_twilight_town_area_has_collision_ground_under_its_spawn_point() {
+        let Some(iso) = iso_path().ok().filter(|p| p.exists()) else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let disc = Disc::open(&iso);
+        let mut bad = Vec::new();
+        for area in AREAS {
+            let file = format!("map/us/{area}.map");
+            let Some(data) = disc.read(&file) else {
+                eprintln!("{area}: no map file");
+                continue;
+            };
+            let Some(map) = kh2_model::map_file(&data) else {
+                eprintln!("{area}: not a map");
+                continue;
+            };
+            // Every collision entry of the file, so a wrong pick shows (`Coct::from_map` takes the first type 6).
+            for (i, e) in kh2_bar::parse(&data).into_iter().flatten().enumerate() {
+                if e.kind == 6 || e.kind == 11 {
+                    let c = kh2_map::Coct::parse(e.data);
+                    let n = c.as_ref().map_or(0, |c| c.polygons.len());
+                    let (lo, hi) = c.as_ref().map_or((Vec3::ZERO, Vec3::ZERO), |c| {
+                        c.polygons.iter().flat_map(|p| p.triangles()).flatten().map(Vec3::from).fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(lo, hi), v| (lo.min(v), hi.max(v)))
+                    });
+                    eprintln!("{area}: entry {i} kind {} tag {:?} {} bytes: {n} polygons, bounds ({:.0} {:.0} {:.0})..({:.0} {:.0} {:.0})", e.kind, e.tag, e.data.len(), lo.x, lo.y, lo.z, hi.x, hi.y, hi.z);
+                }
+            }
+            let world = kh2_map::Coct::from_map(&data)
+                .filter(|c| !c.polygons.is_empty())
+                .map(|c| World::from_coct(&c))
+                .unwrap_or_else(|| World::from_meshes(&map.map.meshes));
+            let cam_world = World::from_meshes(&map.map.meshes);
+            let (near, at) = spawn_point(&world, &cam_world);
+            let floor = world.ground(at, at.y + 10.0, 20.0);
+            // Before WP-F1 item 15 the spawn was the render floor point put down at most 400 units.
+            let before = world.ground(near, near.y + 100.0, 400.0);
+            eprintln!(
+                "{area}: render floor band on {} collision floor within 400 below it (the spawn before WP-F1)",
+                if before.is_some() { "a" } else { "NO" }
+            );
+            eprintln!(
+                "{area}: {} ({} tris), render floor band ({:.0} {:.0} {:.0}), spawn ({:.0} {:.0} {:.0}), collision floor under it: {}",
+                if world.coct { "COCT" } else { "render mesh" },
+                world.tris.len(),
+                near.x,
+                near.y,
+                near.z,
+                at.x,
+                at.y,
+                at.z,
+                floor.map_or("NONE".to_string(), |g| format!("y {:.0} flags {:#x}", g.y, g.flags))
+            );
+            if floor.is_none() {
+                bad.push(area);
+            }
+        }
+        assert!(bad.is_empty(), "areas whose spawn point stands on nothing: {bad:?}");
+    }
 }

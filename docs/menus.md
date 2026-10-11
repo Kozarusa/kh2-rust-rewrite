@@ -742,7 +742,7 @@ The item window (`FUN_0029ed50`; page 2 and the pick pages `FUN_0026b1c8`, page 
 
 **Cards.** `FUN_00295bc0` returns `DAT_0036d1f8`, the object `FUN_00295720` creates (`FUN_0023a018`, vtable 0x36ca50): the **3D party models** standing in the world (`FUN_0023a520` loads the member's model and animation 0x8b, the head and eye textures, the per-slot lights); it is not the name/LV/HP/MP card. The card's drawing code was not found (searched: `FUN_00250a00`, `FUN_002506b8`, `FUN_00251100`, `FUN_0023a848`, `FUN_0023b3a8..0023b5d0`). The cards stay as built in M1 (shapes and colours from clip 10); the party is Sora alone. [GAP]
 
-**Items page overlapping the Magic row (accept scenario `items-page`).** It is the field's command deck (`hud_menu.rs`, the Items sub list under COMMANDS), not a pause menu page: the header plate of ITEMS is drawn over the Magic row. Not in this stage's files.
+**Items page overlapping the Magic row (accept scenario `items-page`).** It is the field's command deck (`hud_menu.rs`, the Items sub list under COMMANDS), not a pause menu page: the header plate of ITEMS is drawn over the Magic row. Resolved by WP-F2 item C as the original's own look: the game draws every stacked list in full and places each list's header by its own row count (docs/hud.md, command menu "Structure"), so a one-entry sub list's ITEMS plate sits where the parent's third row is. No change.
 
 ### 16.7 Harness
 

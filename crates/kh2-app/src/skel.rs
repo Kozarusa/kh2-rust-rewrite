@@ -382,4 +382,45 @@ mod tests {
         let hand = root_relative_pose(&body, bmo, 19.0)[178].w_axis;
         assert!((hand.y - 79.2).abs() < 0.5 && (hand.z - 55.4).abs() < 0.5, "{hand:?}");
     }
+
+    /// WP-F2 item B (user report: the keyblade's faces look inverted). The weapon socket takes the
+    /// hand bone's full pose matrix (`sora::follow_hand`); a negative determinant there would mirror
+    /// the blade. Checked on the disc: no bone of P_EX100, W_EX010, P_EX020 (Donald) or P_EX030
+    /// (Goofy) has a negative bind scale, and the hand bones 178 and 86 keep a positive determinant
+    /// through the rest pose and the motions A000, A300, A330, A343 and the first drive-form slot.
+    #[test]
+    fn hand_bone_poses_never_mirror_the_weapon() {
+        let Some(iso) = std::env::var("KH2_ISO").ok() else { return };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let mut read = |p: &str| a.read(p).unwrap_or_else(|e| panic!("{p}: {e}"));
+        for name in ["P_EX100", "W_EX010", "P_EX020", "P_EX030"] {
+            let m = kh2_model::mdlx(&read(&format!("obj/{name}.mdlx"))).unwrap();
+            let negative: Vec<(usize, Vec3)> = m.bones.iter().enumerate().filter(|(_, b)| b.scale.min_element() < 0.0).map(|(i, b)| (i, b.scale)).collect();
+            eprintln!("{name}: {} bones, negative bind scales: {negative:?}", m.bones.len());
+            assert!(negative.is_empty(), "{name}: bones with a negative bind scale: {negative:?}");
+            let rest = kh2_model::rest_pose(&m.bones);
+            for (i, p) in rest.iter().enumerate() {
+                assert!(p.determinant() > 0.0, "{name}: rest pose of bone {i} has determinant {}", p.determinant());
+            }
+        }
+        let body = kh2_model::mdlx(&read("obj/P_EX100.mdlx")).unwrap();
+        let bset = Mset::parse(&read("obj/P_EX100.mset")).unwrap();
+        for tag in ["A000", "A300", "A330", "A343"] {
+            let Some(slot) = bset.by_tag(tag).next() else { panic!("{tag} missing") };
+            let mo = bset.get(slot).and_then(|s| s.motion.as_ref()).unwrap();
+            let mut st = kh2_anim::rig::RigState::default();
+            let mut worst = f32::MAX;
+            let mut f = mo.frame_start;
+            while f <= mo.frame_end {
+                let pose = mo.pose_with(&body.bones, f, &mut st);
+                for bone in super::super::sora::HAND_BONES {
+                    let d = pose[bone].determinant();
+                    worst = worst.min(d);
+                    assert!(d > 0.0, "{tag} slot {slot} frame {f}: hand bone {bone} determinant {d}");
+                }
+                f += 1.0;
+            }
+            eprintln!("{tag} (slot {slot}): hand bones 178 and 86 keep a positive determinant, smallest {worst:.3}");
+        }
+    }
 }

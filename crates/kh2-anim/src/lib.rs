@@ -8,6 +8,7 @@
 //! Layouts per OpenKH `docs/kh2/file/anb/{mset,anb,motion}.md` (Apache-2.0), which credit
 //! kenjiuno's msetDoc; see CREDITS.md.
 
+pub mod blend;
 pub mod motion;
 pub mod moveset;
 pub mod rig;

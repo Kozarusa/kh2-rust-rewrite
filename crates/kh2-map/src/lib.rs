@@ -126,3 +126,22 @@ impl Coct {
         e.iter().filter(|x| x.kind == 6).find_map(|x| Coct::parse(x.data))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The walking filter: PARTY_COLLIDE, nibble not 4, bit 0x100000 clear (attributes seen on the disc).
+    #[test]
+    fn walking_filter_keeps_party_collide_only() {
+        for attr in [0x172u32, 0x1f2, 0x1172, 0x3f2, 0x3f1, 0x972, 0x803f1, 0x7f1] {
+            assert!(stops_party(attr), "{attr:#x} is a real wall");
+        }
+        // Attack-only (0x82), object-only (0x22, 0x62, 0x80002), nibble 4 (0x284 has no party bit either).
+        for attr in [0x82u32, 0x22, 0x62, 0x80002, 0x284] {
+            assert!(!stops_party(attr), "{attr:#x} lets the party through");
+        }
+        assert!(!stops_party(0x174), "attribute nibble 4 is filtered by FUN_00141b50");
+        assert!(!stops_party(0x172 | flags::SOLVER_SKIP), "bit 0x100000 is skipped by FUN_001632b8");
+    }
+}

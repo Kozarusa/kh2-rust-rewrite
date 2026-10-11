@@ -16,6 +16,21 @@ pub mod flags {
     pub const ATTACK_COLLIDE: u32 = 1 << 7;
     pub const LEDGE_GRAB: u32 = 1 << 10;
     pub const BARRIER: u32 = 1 << 11;
+    /// Attribute bit 0x100000: the sphere solver FUN_001632b8 skips the polygon altogether (it tests
+    /// `attribute & 0x100000` before any plane test, in all three of its passes).
+    pub const SOLVER_SKIP: u32 = 1 << 20;
+}
+
+/// Does a polygon with attribute word `attr` stop the walking party member (collision kind 0)?
+///
+/// The player's collider (FUN_00143840 -> FUN_00164138) sweeps with `FUN_00141b50`, which keeps a
+/// polygon when its attribute nibble is not 4 (`FUN_00141b30(.., 0xf, 4, 1, ..)`: mask 0xf, value 4,
+/// inverted) and the handler of the collider's kind accepts it. Party members have kind 0 (their
+/// constructors clear bits 3..6 of +0x600, FUN_001746e0 / FUN_00174800), and handler 0 of the table at
+/// 0x378f7c (0x32e438) tests `attribute & 0x10`, PARTY_COLLIDE. The solver (FUN_001632b8) then skips
+/// polygons with attribute bit 0x100000.
+pub fn stops_party(attr: u32) -> bool {
+    attr & flags::PARTY_COLLIDE != 0 && attr & 0xf != 4 && attr & flags::SOLVER_SKIP == 0
 }
 
 #[derive(Debug, Clone, Copy)]

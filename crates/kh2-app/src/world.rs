@@ -148,9 +148,16 @@ impl World {
             .min_by(f32::total_cmp)
     }
 
-    /// Moves a vertical capsule (feet at `pos`) horizontally by `delta`, sliding along walls.
+    /// Moves a vertical capsule (feet at `pos`) horizontally by `delta`, sliding along the walls that
+    /// stop the party (`kh2_map::stops_party`: PARTY_COLLIDE, not nibble 4, not the solver-skip bit).
     /// Returns the wall normals touched.
     pub fn slide(&self, pos: &mut Vec3, delta: Vec3, radius: f32, bottom: f32, top: f32) -> Vec<Vec3> {
+        self.slide_with(pos, delta, radius, bottom, top, true)
+    }
+
+    /// `slide`, with the walking filter optional: `party` false stops at every wall-like polygon (the
+    /// enemies' simple mover, whose collision kind was not read).
+    pub fn slide_with(&self, pos: &mut Vec3, delta: Vec3, radius: f32, bottom: f32, top: f32, party: bool) -> Vec<Vec3> {
         let mut touched = Vec::new();
         let len = delta.length();
         if !len.is_finite() {
@@ -169,7 +176,7 @@ impl World {
                 let mut moved = false;
                 for &i in &ids {
                     let t = &self.tris[i as usize];
-                    if t.n.y.abs() >= FLOOR_NY {
+                    if t.n.y.abs() >= FLOOR_NY || (party && self.coct && !kh2_map::stops_party(t.flags)) {
                         continue;
                     }
                     // Closest point between the capsule axis segment and the triangle.
@@ -334,7 +341,7 @@ impl World {
             }
         }
         let mut p = *pos * Self::M;
-        self.slide(&mut p, Vec3::new(vel.x, 0.0, vel.z) * dt * Self::M, RADIUS, STEP, 150.0);
+        self.slide_with(&mut p, Vec3::new(vel.x, 0.0, vel.z) * dt * Self::M, RADIUS, STEP, 150.0, false);
         vel.y = (vel.y - gravity * dt).max(-fall_max);
         let next = p.y + vel.y * dt * Self::M;
         match self.ground(p, p.y + STEP, STEP + (p.y - next).max(0.0) + 4.0) {
@@ -394,6 +401,23 @@ mod tests {
         // The riser is one-sided: a segment through it from the raised side (z > 0 toward z < 0) is ignored.
         assert_eq!(w.cast_m(Vec3::new(1.0, 1.0, 0.5), Vec3::new(1.0, 1.0, -0.5), kh2_map::flags::ATTACK_COLLIDE), None);
         assert!(w.cast_m(Vec3::new(1.0, 1.0, -0.5), Vec3::new(1.0, 1.0, 0.5), kh2_map::flags::ATTACK_COLLIDE).is_some());
+    }
+
+    /// Survey (printed, no assertion): wall-like polygons of every Twilight Town area by walking class.
+    #[test]
+    fn g3_survey() {
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else { return };
+        let disc = crate::assets::Disc::open(&iso);
+        for n in 0..=40 {
+            let Some(f) = disc.read(&format!("map/us/tt{n:02}.map")) else { continue };
+            let Some(c) = kh2_map::Coct::from_map(&f) else { continue };
+            let mut counts = std::collections::BTreeMap::<String, usize>::new();
+            for p in c.polygons.iter().filter(|p| p.normal[1].abs() < FLOOR_NY) {
+                let class = if kh2_map::stops_party(p.flags) { "stops" } else if p.flags & 0x10 == 0 { "no0x10" } else if p.flags & 0xf == 4 { "nib4" } else { "skip" };
+                *counts.entry(format!("{class} attr={:#x}", p.flags)).or_default() += 1;
+            }
+            println!("tt{n:02}: {} polygons; walls: {counts:?}", c.polygons.len());
+        }
     }
 }
 

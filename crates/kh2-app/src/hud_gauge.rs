@@ -228,9 +228,10 @@ pub struct SoraPanel {
     alarm: bool,
 }
 
-/// The danger alarm: system sound 9 of bank 2 (`FUN_002c1528` -> `FUN_002c14a8(9, 0)` -> `FUN_002be49c(2, 9, 0,
-/// 0x3fff, 0x40)`), the app's `PlaySe::number(2009)`.
-pub const DANGER_ALARM_SE: u32 = 2009;
+/// The danger alarm: system sound 9 (`FUN_002c1528` -> `FUN_002c14a8(9, 0)` -> `FUN_002be49c(2, 9, 0,
+/// 0x3fff, 0x40)`; the 2 is the driver SLOT of the boot bank `se000.seb`, game bank 0), the app's
+/// `PlaySe::number(9)` = `se 0:9`.
+pub const DANGER_ALARM_SE: u32 = 9;
 
 /// The alarm's rule, run every panel frame (0x157310 without an event; 0x157040 on a hit, 0x157108 on a heal):
 /// not knocked out, in danger and the alarm silent -> it starts; knocked out, or the alarm sounding and the
@@ -307,7 +308,7 @@ pub fn update(
     // game's fade-out (0x2c1550, 0x3c frames) is only logged.
     match alarm_step(&mut p.alarm, PanelState::of(hp, max, ko_test())) {
         Some(true) => {
-            info!("hud: danger alarm starts (0x2c1528: bank 2 sound 9, hp {hp}/{max})");
+            info!("hud: danger alarm starts (0x2c1528: system sound 9, se000, hp {hp}/{max})");
             se.write(crate::audio::PlaySe::number(DANGER_ALARM_SE, None));
         }
         Some(false) => info!("hud: danger alarm stops (0x2c1550: fade 0x3c frames; not ported, the sound runs out) hp {hp}/{max}"),
@@ -669,7 +670,7 @@ mod tests {
     }
 
     /// The danger alarm (0x157310 / 0x157040 / 0x157108): one start when danger begins, nothing while it
-    /// lasts, one stop when it ends or Sora is knocked out; bank 2 sound 9 is `PlaySe::number(2009)`.
+    /// lasts, one stop when it ends or Sora is knocked out; sound 9 of the boot bank is `PlaySe::number(9)`.
     #[test]
     fn the_danger_alarm_starts_once_and_stops_when_danger_ends() {
         let st = |hp: i32, ko: bool| PanelState::of(hp, 20, ko);
@@ -683,6 +684,6 @@ mod tests {
         assert_eq!(alarm_step(&mut alarm, st(2, false)), Some(true));
         assert_eq!(alarm_step(&mut alarm, st(0, true)), Some(false), "knocked out: the stop (0x157310's first branch)");
         assert_eq!(alarm_step(&mut alarm, st(0, true)), None);
-        assert_eq!(DANGER_ALARM_SE, 2000 + 9);
+        assert_eq!(DANGER_ALARM_SE, 9, "bank 0 (se000.seb, driver slot 2), sound 9");
     }
 }

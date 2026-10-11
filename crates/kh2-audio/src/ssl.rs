@@ -18,6 +18,27 @@ use crate::wd::Wd;
 /// Driver frames per second.
 pub const FRAME_HZ: u32 = 240;
 
+/// The game's sound-bank number of the system bank `se/se000.seb` (with `se/wave0000.wd`): the
+/// interface sounds, the HUD alarm, item and pick-up sounds. The boot routine `FUN_002c0eb0` loads
+/// it into driver slot 2 (`FUN_002c1378(2, ..)` at 0x2c0f10; the wave bank by `FUN_002c1348(2, ..)`
+/// at 0x2c0f74 [read from the decompilation of 0x2c0eb0]) and `FUN_002c0da8` registers slot 2 under
+/// bank number 0 (`FUN_002c3a90(0x1e33b50, 2, 0)`).
+pub const SYSTEM_BANK: u16 = 0;
+
+/// The second boot bank, `se/se999.seb` (with `se/wave0001.wd`): driver slot 3, bank number 999
+/// (`FUN_002c0da8`: `FUN_002c3a90(0x1e33b50, 3, 999)`).
+pub const SYSTEM_BANK_2: u16 = 999;
+
+/// The driver slot a boot bank sits in (the first argument of `FUN_002be49c`): 2 for bank 0, 3 for
+/// bank 999. Other banks (the area's own, e.g. 697) are loaded per area into other slots.
+pub fn boot_slot(bank: u16) -> Option<u8> {
+    match bank {
+        SYSTEM_BANK => Some(2),
+        SYSTEM_BANK_2 => Some(3),
+        _ => None,
+    }
+}
+
 /// Lookup tables from the driver binary.
 #[derive(Clone)]
 pub struct Tables {

@@ -262,6 +262,46 @@ pub fn demo_menu(spec: &str, disc: &Disc) -> Option<CommandMenu> {
     Some(menu)
 }
 
+/// The label of a bar: the command's message through the game's lookup (0x190c40: the system table,
+/// then the world's, then message 0x8adc) at the bar's text offset, font and size (0x13abf0), in the
+/// colour the status picks (0x13ba80).
+fn name_label(text: &super::hud_text::TextSys, message: u32, color: [u8; 4]) -> Option<Label> {
+    let tokens = text.lookup(message)?;
+    Some(Label { tokens, style: Style { world: text.world, font: TEXT_FONT, size: Some(TEXT_SIZE), color: bar_color(color), ..Style::default() }, offset: TEXT_OFFSET })
+}
+
+/// The table colour as the text engine takes it. The game multiplies the glyph texel (white is
+/// 0x80, the palette rows of docs/hud.md) by the vertex colour with `>> 7` (0x230738), so a bar's
+/// text shows `colour / 255` of full brightness: the light colour 0xb4 is 70 %, the grey 0x64 is
+/// 39 % (clip 4.mp4: "Items" at 0.8 and "?" at 0.45 to 0.55 of the selected bar's text, ratios
+/// 0.78 and 0.43 by the tables). The port's atlas stores the texel doubled (`font.rs atlas_rgba`),
+/// so the same colour would clamp to white and make every bar equal; halving the channels gives the
+/// game's product. Alpha is kept (it is the opacity, 0x80 is 1.0). [inferred from the clip's ratios
+/// and the atlas code; the shared text path in hud_text.rs is untouched]
+fn bar_color(c: [u8; 4]) -> [u8; 4] {
+    [c[0] / 2, c[1] / 2, c[2] / 2, c[3]]
+}
+
+/// `KH2_HUDMENULOG=1`: one line per page whenever the drawn lists change (message id, status, name).
+fn log_pages(menu: &CommandMenu, scene: &HudScene, last: &mut String) {
+    let mut line = String::new();
+    for p in menu.pages.iter().filter(|_| menu.visible) {
+        let names: Vec<String> = p
+            .entries
+            .iter()
+            .map(|e| {
+                let t = scene.text.as_ref().and_then(|t| t.lookup(e.message)).map(|k| kh2_image::text::to_text(&k));
+                format!("{:#x}/s{} {:?}", e.message, e.style, t.unwrap_or_default())
+            })
+            .collect();
+        line += &format!("[kind {} cursor {}: {}] ", p.kind, p.cursor, names.join(", "));
+    }
+    if line != *last {
+        info!("hudmenu: {line}");
+        *last = line;
+    }
+}
+
 fn set(scene: &mut HudScene, node: usize, group: Option<usize>) {
     let n = &mut scene.nodes[node];
     match group {
@@ -302,6 +342,7 @@ pub fn update(
     mut nodes: ResMut<MenuNodes>,
     disc: Res<Disc>,
     mut demo: Local<bool>,
+    mut last_log: Local<String>,
 ) {
     let (Some(file), Some(tb)) = (file.0, tables.0.as_ref()) else { return };
     if scene.files.len() <= file {
@@ -322,6 +363,9 @@ pub fn update(
         build(&mut scene, &mut nodes, file);
     }
     let nodes = &*nodes;
+    if std::env::var_os("KH2_HUDMENULOG").is_some() {
+        log_pages(&menu, &scene, &mut last_log);
+    }
     let show = menu.visible;
     let last_count = menu.pages.last().map(|p| p.entries.len()).unwrap_or(0);
     for p in 0..PAGES {
@@ -376,7 +420,7 @@ pub fn update(
             set(&mut scene, rn.bar, Some(g));
             scene.nodes[rn.bar].pos = [bx, y];
             let color = if sel { tb.selected } else { tb.normal }[(e.style as usize).min(8)];
-            let label = scene.text.as_ref().and_then(|t| t.message(e.message, Style { font: TEXT_FONT, size: Some(TEXT_SIZE), color, ..Style::default() }, TEXT_OFFSET));
+            let label = scene.text.as_ref().and_then(|t| name_label(t, e.message, color));
             scene.nodes[rn.bar].label = label;
             // The medallion, icon and arrow belong to the selected bar only.
             let icon = icon_group(e.icon).filter(|_| sel);
@@ -441,6 +485,59 @@ mod tests {
         assert_eq!(t.kind[0][0], ((0x3551c0 - 0xff000) / 4) as u32);
         assert_eq!(t.open[1] - t.open[0], 1);
         assert!(Tables::from_exe(&exe[..0x1000]).is_none());
+    }
+
+    /// The disc: the command table, the system messages and the executable's colour tables.
+    fn disc() -> Option<(Vec<kh2_tables::tables::Cmd>, kh2_image::text::Messages, Tables)> {
+        use kh2_tables::tables as t;
+        let iso = std::env::var("KH2_ISO").ok()?;
+        let mut a = kh2_archive::Archive::open(&iso).ok()?;
+        let cmds = kh2_tables::load::<t::Cmd>(&mut a, &t::CMD).ok()?.rows;
+        let sys = kh2_image::text::Messages::from_bar(&a.read("msg/us/sys.bar").ok()?)?;
+        let exe = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok())?;
+        Some((cmds, sys, Tables::from_exe(&exe)?))
+    }
+
+    /// The "?" of the deck is the real name of the empty bar 0x68 (`Execute` 0, message 0x8503 in
+    /// `sys.bar`, the clip 4.mp4 shows it in the same places); no other command row is named "?", and
+    /// every command the lists can offer has a real name (docs/hud.md, WP-G2).
+    #[test]
+    fn question_mark_is_only_the_empty_bar() {
+        let Some((cmds, sys, _)) = disc() else { return eprintln!("skipped: no disc (set KH2_ISO)") };
+        let empty = cmds.iter().find(|c| c.id == 0x68).expect("command 0x68");
+        assert_eq!(empty.execute, 0);
+        assert_eq!(sys.text(empty.message_id as u32).as_deref(), Some("?"));
+        for c in cmds.iter().filter(|c| c.id != 0x68 && c.message_id != 0) {
+            assert_ne!(sys.text(c.message_id as u32).as_deref(), Some("?"), "command {} is named ?", c.id);
+        }
+        for id in [1u16, 2, 3, 4, 5, 0x48, 0x49, 0x51, 0x13c, 49, 50, 51, 52] {
+            let c = cmds.iter().find(|c| c.id == id).expect("command");
+            let name = sys.text(c.message_id as u32).unwrap_or_default();
+            assert!(!name.is_empty() && name != "?", "command {id} has no name ({name:?})");
+        }
+    }
+
+    /// The status byte picks the text colour (0x13ba80): grey (1, 5, 6) is darker than the normal
+    /// light colour and orange (2) differs, for the normal and the selected bar.
+    #[test]
+    fn unavailable_commands_draw_darker() {
+        let Some((_, _, tb)) = disc() else { return eprintln!("skipped: no disc (set KH2_ISO)") };
+        for table in [&tb.normal, &tb.selected] {
+            let light: u32 = table[0][..3].iter().map(|&v| v as u32).sum();
+            for s in [1usize, 5, 6] {
+                let grey: u32 = table[s][..3].iter().map(|&v| v as u32).sum();
+                assert!(grey * 10 < light * 8, "style {s} is not clearly darker than style 0");
+            }
+            assert_ne!(table[2][..3], table[0][..3]);
+        }
+    }
+
+    #[test]
+    fn bar_text_colour_is_the_ps2_product() {
+        // The glyph texel is 0x80 (1.0) on the PS2, so a bar shows colour/255; the port's glyph
+        // atlas is stored doubled (1.0 = 255), so the table colour goes in halved. Alpha is kept.
+        assert_eq!(bar_color([0xb4, 0x64, 0x00, 0x80]), [0x5a, 0x32, 0x00, 0x80]);
+        assert_eq!(bar_color([0xff, 0x01, 0x00, 0x80]), [0x7f, 0x00, 0x00, 0x80]);
     }
 
     #[test]

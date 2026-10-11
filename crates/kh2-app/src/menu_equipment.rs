@@ -809,7 +809,7 @@ fn input(
         for e in fx {
             match e {
                 Effect::Sound(n) => {
-                    se.write(PlaySe::number(n, None));
+                    crate::menu::menu_sound::play(&mut se, n);
                 }
                 Effect::Page(page) => {
                     menu.page = page;

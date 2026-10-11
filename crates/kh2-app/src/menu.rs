@@ -468,11 +468,11 @@ pub(crate) fn input(
                 let target = menu.rows.get(menu.cursor).and_then(|&e| menu_pages::page_of(e));
                 if let Some(p) = target.filter(|p| crate::menu_status::PAGES.contains(p)) {
                     menu.page = p;
-                    se.write(PlaySe::number(crate::menu_status::CONFIRM, None));
+                    menu_sound::play(&mut se, crate::menu_status::CONFIRM);
                     info!("menu: page {p:#x}");
                 } else {
                     info!("menu: page 0 row {} refused (no sub-page yet; the original opens page {:?})", menu.cursor, target);
-                    se.write(PlaySe::number(menu_sound::REFUSED, None));
+                    menu_sound::play(&mut se, menu_sound::REFUSED);
                 }
             } else if let Some(wrap) = step {
                 move_cursor(&mut menu, &mut scene, &mut se, dir, wrap);
@@ -500,13 +500,33 @@ pub(crate) fn input(
 /// (docs/menus.md 1.7: kind -> id through 0x36cb48 and 0x37f654: cursor 1, confirm 2, cancel 4,
 /// refused 5, close 2, open 3). `FUN_002be49c(2, id, ...)` is bank 2, index `id`
 /// (`FUN_002c2b70` calls the same function with the slot's bank at +0x18 and index at +0x10).
-mod menu_sound {
+pub mod menu_sound {
+    use bevy::prelude::*;
+
+    use crate::audio::PlaySe;
+
     const BANK: u32 = 2000;
     pub const CURSOR: u32 = BANK + 1;
     pub const CANCEL: u32 = BANK + 4;
     pub const REFUSED: u32 = BANK + 5;
     pub const CLOSE: u32 = BANK + 2;
     pub const OPEN: u32 = BANK + 3;
+
+    /// The one switch for every menu sound effect (the pause menu and its pages: Items, Magic,
+    /// Abilities, Customize, Equipment, Status, Config, Help). The user finds the app's menu sounds
+    /// wrong (play-test report 2026-10-10, WP-F1 item 14), so they are muted until the system bank
+    /// mapping is verified: with `false` no menu request reaches the mixer (`KH2_SOUNDLOG=1` logs
+    /// `menu se <n> muted` instead). Set it to `true` to hear them again; the ids stay in the code.
+    pub const MENU_SOUND_ENABLED: bool = false;
+
+    /// Every menu sound request goes through here (`FUN_0023e738(kind, play)` -> `FUN_002be49c(2, id, ...)`).
+    pub fn play(se: &mut MessageWriter<PlaySe>, n: u32) {
+        if MENU_SOUND_ENABLED {
+            se.write(PlaySe::number(n, None));
+        } else if std::env::var_os("KH2_SOUNDLOG").is_some() {
+            info!("menu se {n} muted (menu_sound::MENU_SOUND_ENABLED is false)");
+        }
+    }
 }
 
 fn move_cursor(menu: &mut Menu, scene: &mut MenuScene, se: &mut MessageWriter<PlaySe>, dir: i8, wrap: bool) {
@@ -516,7 +536,7 @@ fn move_cursor(menu: &mut Menu, scene: &mut MenuScene, se: &mut MessageWriter<Pl
         return;
     }
     menu.cursor = new;
-    se.write(PlaySe::number(menu_sound::CURSOR, None));
+    menu_sound::play(se, menu_sound::CURSOR);
     info!("menu: page {} cursor {}", menu.page, new);
     select_row(menu, scene, Some(old));
 }
@@ -624,7 +644,7 @@ fn open(
     scene.nodes[nodes.area].visible = true;
     // The party cards.
     show_cards(menu, scene, &party(sora, data));
-    se.write(PlaySe::number(menu_sound::OPEN, None));
+    menu_sound::play(se, menu_sound::OPEN);
     info!("menu: open ({} rows, {:?})", menu.rows.len(), menu.rows);
 }
 
@@ -707,7 +727,7 @@ fn set_layout(layd: &Layd, nodes: &Nodes, scene: &mut MenuScene, n: usize) {
 fn close(menu: &mut Menu, scene: &mut MenuScene, se: &mut MessageWriter<PlaySe>, start: bool) {
     menu.phase = Phase::Closing;
     menu.frames = 0;
-    se.write(PlaySe::number(if start { menu_sound::CLOSE } else { menu_sound::CANCEL }, None));
+    menu_sound::play(se, if start { menu_sound::CLOSE } else { menu_sound::CANCEL });
     let nodes = &menu.nodes;
     set_layout(&menu.layd, nodes, scene, 2);
     scene.set_group(nodes.panel, group::PANEL[2]);

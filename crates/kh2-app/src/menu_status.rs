@@ -757,18 +757,18 @@ fn input(
                 let to = crate::menu::step_cursor(ui.tab, count, dir, wrap);
                 if to != ui.tab {
                     ui.tab = to;
-                    se.write(PlaySe::number(CURSOR, None));
+                    crate::menu::menu_sound::play(&mut se, CURSOR);
                     info!("menu: status tab {to}");
                 }
             }
             if confirm && count > 0 {
                 // Page 0x18 with the cursor where this tab last left it (`FUN_00252fb8(0x17)`).
                 menu.page = PAGE_NUMBERS;
-                se.write(PlaySe::number(CONFIRM, None));
+                crate::menu::menu_sound::play(&mut se, CONFIRM);
                 info!("menu: page {PAGE_NUMBERS:#x}");
             } else if cancel {
                 menu.page = 0;
-                se.write(PlaySe::number(CANCEL, None));
+                crate::menu::menu_sound::play(&mut se, CANCEL);
                 info!("menu: page 0");
             }
         }
@@ -779,7 +779,7 @@ fn input(
                 let to = crate::menu::step_cursor(ui.row[c], rows, dir, wrap);
                 if to != ui.row[c] {
                     ui.row[c] = to;
-                    se.write(PlaySe::number(CURSOR, None));
+                    crate::menu::menu_sound::play(&mut se, CURSOR);
                     info!("menu: status row {} {}", c, to);
                 }
             }
@@ -790,7 +790,7 @@ fn input(
                 if n > 0 {
                     ui.row[other] = toggle_column(ui.row[ui.col], n);
                     ui.col = other;
-                    se.write(PlaySe::number(CURSOR, None));
+                    crate::menu::menu_sound::play(&mut se, CURSOR);
                     info!("menu: status column {} row {}", other, ui.row[other]);
                 }
             }
@@ -798,13 +798,13 @@ fn input(
                 let to = cycle(ui.tab, count, next);
                 if to != ui.tab {
                     ui.tab = to;
-                    se.write(PlaySe::number(CURSOR, None));
+                    crate::menu::menu_sound::play(&mut se, CURSOR);
                     info!("menu: status tab {to}");
                 }
             }
             if cancel {
                 menu.page = PAGE_TABS;
-                se.write(PlaySe::number(CANCEL, None));
+                crate::menu::menu_sound::play(&mut se, CANCEL);
                 info!("menu: page {PAGE_TABS:#x}");
             }
         }

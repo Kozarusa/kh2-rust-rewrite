@@ -566,7 +566,9 @@ impl Machine {
                 }
                 Key::Prev | Key::Next => {
                     self.filter = if key == Key::Next { (self.filter + 1) % FILTERS } else { (self.filter + FILTERS - 1) % FILTERS };
-                    fx.push(Sound(snd::CURSOR));
+                    // The filter step is list result -10 / -11 (`FUN_0025b6e0` -> `FUN_0025e838`); `FUN_00295bf0`
+                    // maps those to sound kind 2, the confirm sound, not the cursor's (WP-F1 item 9).
+                    fx.push(Sound(snd::CONFIRM));
                     fx.push(Effect::Filter(self.filter));
                     fx.push(Page(STOCK));
                 }
@@ -992,7 +994,7 @@ pub(super) fn input(
         }
         menu.switch = None;
         let Some(p) = progress.as_deref() else {
-            se.write(PlaySe::number(snd::REFUSED, None));
+            crate::menu::menu_sound::play(&mut se, snd::REFUSED);
             keys.reset_all();
             return;
         };
@@ -1001,7 +1003,7 @@ pub(super) fn input(
         st.held = (0, 0.0);
         enter(&mut st, &mut menu, &mut scene);
         if asked.is_none() {
-            se.write(PlaySe::number(snd::CONFIRM, None));
+            crate::menu::menu_sound::play(&mut se, snd::CONFIRM);
         }
         keys.reset_all();
         if asked == Some(true) {
@@ -1034,7 +1036,7 @@ pub(super) fn input(
         for e in fx {
             match e {
                 Effect::Sound(n) => {
-                    se.write(PlaySe::number(n, None));
+                    crate::menu::menu_sound::play(&mut se, n);
                 }
                 Effect::Page(page) => {
                     menu.page = page;
@@ -1879,7 +1881,7 @@ mod tests {
         let (mut m, r, e) = start(stacks(&[(1, 1)]));
         let g = G { members: 1, helps: true };
         m.page = STOCK;
-        assert_eq!(m.press(Key::Next, &r, &e, &g), vec![Effect::Sound(snd::CURSOR), Effect::Filter(1), Effect::Page(STOCK)]);
+        assert_eq!(m.press(Key::Next, &r, &e, &g), vec![Effect::Sound(snd::CONFIRM), Effect::Filter(1), Effect::Page(STOCK)]);
         assert_eq!(m.press(Key::Prev, &r, &e, &g)[1], Effect::Filter(0));
         assert_eq!(m.press(Key::Prev, &r, &e, &g)[1], Effect::Filter(4), "wraps below 0");
         m.filter = 4;

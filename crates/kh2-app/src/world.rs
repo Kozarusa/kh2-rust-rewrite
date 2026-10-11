@@ -258,6 +258,31 @@ impl World {
             .map(|(_, q, n)| (q, n))
     }
 
+    /// The nearest triangle carrying any of `mask`'s flags whose FRONT face the segment `p`..`q`
+    /// (metres) crosses: (hit point in metres, surface normal). Floors and ceilings count as much as
+    /// walls. This is the game's segment cast FUN_00143aa0 -> FUN_00141f08: the polygons of the
+    /// swept box pass the mask handler (FUN_00141b50 -> FUN_0032e3b8; handler 4 at 0x32e420 is
+    /// `attribute & 0x80`, with no orientation test), each is cut by FUN_001623a0 only when the
+    /// segment runs against its normal (`n . dir < 0`) with the parameter in 0..=1, and FUN_00141d90
+    /// keeps the hit nearest the start.
+    pub fn cast_m(&self, p: Vec3, q: Vec3, mask: u32) -> Option<(Vec3, Vec3)> {
+        let (p, q) = (p * Self::M, q * Self::M);
+        let d = q - p;
+        let len = d.length();
+        if len < 1e-3 || !p.is_finite() || !q.is_finite() {
+            return None;
+        }
+        let dir = d / len;
+        let mut ids = Vec::new();
+        self.near(p.min(q), p.max(q), &mut ids);
+        ids.iter()
+            .map(|&i| &self.tris[i as usize])
+            .filter(|t| t.flags & mask != 0 && t.n.dot(dir) < 0.0)
+            .filter_map(|t| ray_tri(p, dir, &t.v).filter(|&x| x <= len).map(|x| (x, t.n)))
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(x, n)| ((p + dir * x) / Self::M, n))
+    }
+
     /// Distance along the segment to the first triangle (any orientation).
     #[allow(dead_code)]
     pub fn raycast(&self, p: Vec3, q: Vec3) -> Option<f32> {
@@ -338,6 +363,39 @@ fn area(t: &Tri) -> f32 {
 /// Render-mesh triangles for camera occlusion (the camera is not stopped by invisible collision).
 #[derive(Resource, Default)]
 pub struct CameraWorld(pub World);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// WP-F2 item A: tt00 is not a flat box. Its 16 collision polygons are the 20 m box plus a
+    /// 150-unit step across z = 0: a riser (normal -z) and a raised floor (y = 150) for z > 0, all
+    /// carrying the attack-blocking flag. Sora spawns at (115, 0, -35) facing +z, 35 units from the
+    /// riser, so a swing there crosses the raised floor from above and the cast reports terrain; a
+    /// swing on the low floor facing -z crosses nothing (harness runs in docs/movement.md).
+    #[test]
+    fn tt00_has_an_attack_blocking_step_in_front_of_the_spawn() {
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else { return };
+        let disc = crate::assets::Disc::open(&iso);
+        let read = |p: &str| disc.read(p).unwrap_or_else(|| panic!("{p}: not readable"));
+        let c = kh2_map::Coct::from_map(&read("map/us/tt00.map")).unwrap();
+        assert_eq!(c.polygons.len(), 16);
+        assert!(c.polygons.iter().all(|p| p.flags & kh2_map::flags::ATTACK_COLLIDE != 0), "every tt00 polygon blocks attacks");
+        let raised: Vec<_> = c.polygons.iter().filter(|p| p.normal[1] > 0.9 && p.verts[0][1] == 150.0).collect();
+        let risers: Vec<_> = c.polygons.iter().filter(|p| p.normal[2] < -0.9 && p.verts[0][2] == 0.0).collect();
+        assert_eq!((raised.len(), risers.len()), (2, 2), "two raised-floor and two riser triangles");
+        let w = World::from_coct(&c);
+        // The cast of the ground swing seen in the harness: the first keyblade volume's centre goes from
+        // (121, 187, 47) to (124, 115, 68) and crosses the raised floor at y = 150 from above.
+        let (p, n) = w.cast_m(Vec3::new(1.21, 1.87, 0.47), Vec3::new(1.24, 1.15, 0.68), kh2_map::flags::ATTACK_COLLIDE).expect("the step");
+        assert!((p.y - 1.5).abs() < 1e-4 && n.y > 0.9, "{p:?} {n:?}");
+        // The same movement on the low floor, 3 m back from the step: nothing.
+        assert_eq!(w.cast_m(Vec3::new(1.21, 1.87, -3.5), Vec3::new(1.24, 1.15, -3.3), kh2_map::flags::ATTACK_COLLIDE), None);
+        // The riser is one-sided: a segment through it from the raised side (z > 0 toward z < 0) is ignored.
+        assert_eq!(w.cast_m(Vec3::new(1.0, 1.0, 0.5), Vec3::new(1.0, 1.0, -0.5), kh2_map::flags::ATTACK_COLLIDE), None);
+        assert!(w.cast_m(Vec3::new(1.0, 1.0, -0.5), Vec3::new(1.0, 1.0, 0.5), kh2_map::flags::ATTACK_COLLIDE).is_some());
+    }
+}
 
 fn height_at(t: &Tri, x: f32, z: f32) -> Option<f32> {
     let [a, b, c] = t.v;

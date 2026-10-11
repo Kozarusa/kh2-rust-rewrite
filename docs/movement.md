@@ -80,14 +80,12 @@ replaces the swing (FUN_0017b9e0: slot 5, then idle)`. Harness: tt00, `KH2_NO_EN
 KH2_KEYS=6:Space,6.4:J`: the jump, an air attack near the apex, the landing cuts it.
 * The landing's own length is the game's: `A005` runs frames 42..55 at 30 fps with its idle range (trigger 2)
   from global frame 12, as the app's ground state already plays it after a jump.
-* NOT REPRODUCED IN THE HARNESS (gap, outside this package's files): in every run tried (tt00 at the arena
-  centre, tt02, tt04, keys `6:Space,6.2:J`, also a ground swing with `KH2_GROWTH=3,0,0,0`) the swing ended in
-  `wall recoil: atkp 131 (BG Hit, keyblade volume) -> motion id 43 slot 172 A350` (ground: atkp 126 -> A320)
-  before any landing, although no wall is within 800 units of tt00's spawn (its COCT is a 2000-unit box).
-  So the recoil motion, not the swing, is what the player sees after an air attack there. Next step
-  (`combat.rs` line 327, `World::touching_m`): log the contact point and the volume's `a`, `b`, `r` for the
-  keyblade volume and check the units (the volume is swept in metres against the world's centimetres through
-  `touching_m`'s `M` factor) and the polygon filter (`n.y.abs() < FLOOR_NY`, mask ATTACK_COLLIDE).
+* The wall recoil that ended every harness swing before the landing (WP-F1's gap) is resolved in section 3
+  (WP-F2 item A): the swings crossed real attack-blocking terrain next to the spawn points, and the app's
+  wall test was a capsule-with-radius sweep instead of the game's segment cast. With the cast ported, the
+  air swing in open ground ends in `move: landed during A330 f16: the landing motion replaces the swing
+  (FUN_0017b9e0: slot 5, then idle)` (run `KH2_NO_ENEMIES=1 KH2_MOVELOG=1 KH2_HITLOG=1
+  KH2_KEYS=5:S:0.6,6:Space,6.4:J` in tt00).
 
 ### Not ported / gaps
 * +0x160 bit 31 (keeps the stick during a swing): its trigger was not identified.
@@ -162,9 +160,104 @@ are in code (`sora::square_ground`, `sora::TAP_TICKS`), no Final Mix data or ass
   * `KH2_GROWTH=0,0,0,0`: `sora guard A322 (... stick pushed, neither learned ...)` at both moving presses.
   * `KH2_ABILITY_START=data`: no guard and no dash at all (no Guard ability, no Dodge Roll, Quick Run 0).
 
+## 3. The wall test of a swing (WP-F2 item A; user report 2026-10-10: a lag after every aerial attack)
+
+What the user saw after air attacks in the app was the wall recoil A350 (ground: A320), not the landing:
+every harness swing logged `wall recoil: atkp 131 (BG Hit, keyblade volume) -> motion id 43 slot 172 A350`
+(ground: `atkp 126 ... motion id 41 slot 164 A320`) in tt00 and tt04 (base build, runs `6:Space,6.4:J` and
+`6:J,6.6:J,7.2:J` with `KH2_NO_ENEMIES=1 KH2_MOVELOG=1 KH2_HITLOG=1`). Two causes, both fixed or explained:
+
+### The original's test (FUN_001a27e8 -> FUN_0018c8e0 -> FUN_00143aa0)
+* Each tick the attack entry walks the owner's shapes of kinds 6 and 13 (`FUN_0016b5d0(obj, 0x2040, ..)`)
+  whose group byte equals the entry's group (+0xc4) and takes each one's centre (`FUN_001894d0`: bone
+  matrix x offset, y minus the lift). The centres of the last tick are kept at entry +0xd0 (16 bytes each,
+  +0xc8 counts them); entry flag 4 is set once they exist, so the first tick of a window casts nothing.
+* Only the FIRST centre of the group (index 0) is cast against terrain: `FUN_0018c8e0(entry, &prev, &cur)`
+  runs when the row has BG Hit (`atkp` +0x12 bit 0), the entry has neither 8 nor 0x10 (a wall already hit) and
+  either has 0x100 or lacks 2 (no target hit). It is a SEGMENT from the previous centre to the current one
+  (`FUN_00143aa0(from, to, .., 4)`): no radius. When it misses and the row's `FloorCheck` (+0x28) is not 0,
+  a second segment from the current centre with y + FloorCheck (the game's y, the app's -y [inferred]) is
+  cast; every Sora combo row has 0.
+* The cast (`FUN_00141f08`, map `DAT_00355934`): the polygons of the swept box pass the mask handler
+  (`FUN_00141b50` -> `FUN_0032e3b8(.., 4)`; the table at 0x378f7c gives handler 4 = `FUN_0032e420`:
+  `attribute & 0x80`, the COCT ATTACK_COLLIDE bit, any orientation: floors and ceilings count), each is cut
+  by `FUN_001623a0` only when the segment runs AGAINST its normal (`n . dir < 0`: one-sided) with the
+  parameter in 0..=1, and `FUN_00141d90` keeps the hit nearest the start. The hit goes to `FUN_0018ca78`
+  (flags, spark, sound 500010 for a weapon-owned volume, the owner's recoil method +0x70; docs/hit-reaction.md).
+* The other shapes of the group (W_EX010 group 1: offsets -40, 0, -34, -68 on bone 2, radius 40) are only
+  swept against targets (`FUN_0018d768` in steps of the radius); a swing that already hit a target skips
+  the wall cast.
+
+### What the app did, and does now
+* Before: `combat::detect_hits` swept EVERY live shape as a capsule of its radius (40 to 140 units) against
+  wall-like triangles (`World::touching_m`, floors filtered, both faces), so a wall within 40 units of any
+  point of the blade, or a 150-unit step behind the blade's path, recoiled Sora. Now: `combat::wall_cast`
+  = `World::cast_m` (one-sided segment, no radius, mask ATTACK_COLLIDE, every orientation) from the first
+  volume's centre of the last tick to this tick's, with the FloorCheck probe, once per window; the previous
+  centre is kept per (attack body, trigger start) in a `Local` of `detect_hits` and forgotten with the
+  window. Logs (`KH2_HITLOG=1`): `wall cast: atkp 126 window 15 from Vec3(..) to Vec3(..) hits terrain at
+  Vec3(..) (normal Vec3(..)); volume radius 0.40` before each `wall recoil:` line; `wall test not run: atkp N
+  has no BG Hit, volume path crosses a wall at ..` for rows without the flag.
+* The premise "no wall within 800 units of tt00's spawn" was wrong. `map/us/tt00.map`'s COCT (16
+  polygons, all with ATTACK_COLLIDE) is the 20 m box plus a 150-unit STEP across z = 0: a riser facing -z
+  (polygons 10, 11) and a raised floor at y = 150 for z > 0 (polygons 12, 13). Sora spawns at (115, 0, -35)
+  facing +z, 35 units from the riser, and the first keyblade volume's centre (bone 2 offset -40) goes from
+  (121, 187, 47) to (124, 115, 68) during A300: it crosses the raised floor from above, which the game's
+  cast reports too. tt04's spawn (-2015, 114, 1190) faces a wall 20 cm away (z = 13.45 m) with another at
+  z = 9.1 m behind; the first air swing's centre goes from z = 12.80 to 13.65. These are real walls.
+  Test `world::tests::tt00_has_an_attack_blocking_step_in_front_of_the_spawn`.
+* Runs (`KH2_NO_ENEMIES=1 KH2_MOVELOG=1 KH2_HITLOG=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1`, logs in the report):
+  * tt00 at the spawn, `6:Space,6.4:J` and `6:J,6.6:J,7.2:J`: still `wall cast: atkp 131 window 12 from
+    Vec3(1.0998299, 2.0402899, 0.98999876) to Vec3(1.1281766, 1.3007644, 0.826493) hits terrain at
+    Vec3(1.1205397, 1.5, 0.87054306) (normal Vec3(0.0, 1.0, 0.0))` then the recoil: the step.
+  * tt00 after walking 0.6 s away from the step, `5:S:0.6,6:Space,6.4:J,7.5:J,8.1:J,8.7:J`: no `wall cast`
+    and no `wall recoil` line; the air swing ends in `move: landed during A330 f16: the landing motion
+    replaces the swing (FUN_0017b9e0: slot 5, then idle)` and the three ground swings are plain A300s.
+  * tt04 at the spawn: the wall at z = 13.45 (normal (0, 0, -1)) is crossed and recoils, as the game would.
+  * tt04 after `5:A:1.5` (Sora at (-1500, 87, 752), behind a one-sided fence polygon at x = -14.6 m facing
+    +x): the air swing's centre pokes through the front side and back (`from x -14.55 to -14.65`) and
+    recoils; the ground swing after it does not. A back-to-front crossing is ignored (one-sided).
+* Tests: `combat::tests::wall_cast_hits_only_terrain_the_centre_path_crosses` (open ground, a crossed wall,
+  a wall without the flag, no movement, from behind, ending on the plane),
+  `combat::tests::wall_cast_floor_check_probes_down_only_when_set`.
+* Not ported / gaps: the hit point the game stores (entry +0xb0, the cast's point) is what the app uses;
+  the spark variant by the polygon's type nibble and flag 0x100 (docs/hit-reaction.md) are unchanged. The
+  sign of the FloorCheck step is inferred from the COCT convention (the game's y is the app's -y). Whether
+  `FUN_001657d8`'s object pass (the first half of FUN_00143aa0: other objects' collision) can stop a swing
+  was not read; the app casts against the map only.
+
+## 4. Play-test follow-ups without a code change (WP-F2 items B and D)
+
+### B. "The keyblade's faces look inverted" (WP-F1 item 11): not reproduced
+* `sora::follow_hand` puts the weapon socket at the hand bone's full pose matrix (`Transform::from_matrix`),
+  so a negative-determinant pose would mirror the blade. Checked on the disc (`skel::tests::
+  hand_bone_poses_never_mirror_the_weapon`): no bone of P_EX100, W_EX010, P_EX020 or P_EX030 has a negative
+  bind scale, every rest-pose matrix has a positive determinant, and bones 178 and 86 keep determinant
+  1.000 through every frame of A000, A300, A330 and A343. The game's weapon attach (FUN_00184190 path,
+  docs/drive-forms.md) was not re-read: with no mirror in the data there is nothing to counter.
+* The render path cannot invert a face either: `assets::material_for` is unlit, `cull_mode: None`,
+  `double_sided: true`, so winding changes nothing visible.
+* Screenshots looked at (tt00, `KH2_DIST=2.5`, A300 at frame 7): from the side (`KH2_YAW=1.57`) the blade is
+  raised behind Sora's head, whole, teeth outward; from behind (`KH2_YAW=3.14`) the grip and blade are
+  above his head. Valor (`KH2_DRIVE=1 KH2_DRIVE_AT=4`, B300 frame 7): the right-hand keyblade is drawn,
+  the left one is behind the body at that frame. Donald's and Goofy's weapons are only visible in battle
+  (`party::member_hands`), and no run put them in frame with enemies present. The reference clips
+  (4.mp4, 9.mp4) show the fighter too small to judge the blade's orientation.
+
+### D. The dodge roll on the USA disc (WP-F1 item 12): no change
+`cargo run -p kh2 -- mset obj/P_EX100.mset` on the USA disc: 835 slots, 84 with motion. The tags are
+A000..A010 (idle, walk, run, jumps, landing), A100/A101 (summon), A110, A120, A130, A140/A141, A150/A151
+(Quick Run start and stop), A160 (Aerial Dodge), A170..A173 (Glide), A200..A214 (hurt), A300..A304,
+A310..A317, A320..A322, A330..A333, A340..A344, A350, A360..A372 (attacks and reactions) and B003: no A180
+and no other roll. The Square handler chain (section 2) gives, on the USA disc, Quick Run at the press
+while moving with Quick Run learned, else the guard. The app keeps the Final Mix rule (tap = the stand-in
+roll played with A150) because the user asked for it; `KH2_GROWTH=0,1,0,0` shows the USA behaviour.
+
 ## Decompile index
 | address | read for |
 |---|---|
+| 0x1a27e8, 0x18c8e0, 0x18ca78, 0x1894d0 | attack entry tick, wall cast gate, wall hit, volume centre |
+| 0x143aa0, 0x1657d8, 0x141f08, 0x141b30, 0x141b50, 0x32e3b8, 0x32e420, 0x141d90, 0x1623a0 | the segment cast and its polygon filter |
 | 0x176050 | attack start: leap or no velocity write |
 | 0x176400, 0x18eec0, 0x18ed58, 0x17bee0 | leap aim: points, radii, rise time |
 | 0x1796a8, 0x17b278, 0x17b1e0, 0x17b328 | mover launch, jump set-up, jump mover start |

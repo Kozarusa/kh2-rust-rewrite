@@ -273,6 +273,17 @@ pub fn victim_point(h: &HurtSpheroid, toward: Vec3) -> Vec3 {
     h.center + flat + Vec3::Y * dy
 }
 
+/// The wall cast of one attack window for one tick (FUN_001a27e8 -> FUN_0018c8e0): the segment
+/// from the first volume's centre of the last tick (`prev`) to this tick's (`cur`), metres, against
+/// terrain that blocks attacks. When it misses and the row's `FloorCheck` is not 0, a second segment
+/// from `cur` down by that many game units (the game adds the byte to the segment's y in its own
+/// world space, whose y is the app's -y) [inferred: the direction]. Returns (hit point, normal).
+pub fn wall_cast(world: &crate::world::World, floor_check: u8, prev: Vec3, cur: Vec3) -> Option<(Vec3, Vec3)> {
+    world.cast_m(prev, cur, kh2_map::flags::ATTACK_COLLIDE).or_else(|| {
+        (floor_check != 0).then(|| world.cast_m(cur, cur - Vec3::Y * (floor_check as f32 * SCALE), kh2_map::flags::ATTACK_COLLIDE)).flatten()
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn detect_hits(
     mut fighters: Query<(Entity, &mut Fighter, &GlobalTransform)>,
@@ -282,9 +293,14 @@ pub fn detect_hits(
     world: Option<Res<crate::world::World>>,
     data: Res<GameData>,
     mut skipped: Local<Option<(Entity, i16, i16)>>,
+    // The centre of each window's first volume on the last tick (the game's attack entry keeps the
+    // previous centres at +0xd0 and sets its flag 4 once they exist): (attack body, trigger start).
+    mut wall_prev: Local<std::collections::HashMap<(Entity, i16), Vec3>>,
 ) {
     let log = std::env::var_os("KH2_HITLOG").is_some();
     let mut skipped_now = false;
+    let mut first_seen: HashSet<(Entity, i16)> = HashSet::new();
+    let mut live_windows: HashSet<(Entity, i16)> = HashSet::new();
     // Snapshot defenders first.
     let defenders: Vec<Defender> = fighters
         .iter()
@@ -317,6 +333,15 @@ pub fn detect_hits(
                     }
                 }
                 if let (Some(world), Team::Player) = (world.as_ref(), f.team) {
+                    // The game casts only the FIRST volume of the group (FUN_001a27e8: the cast runs
+                    // for entry 0 of the centre list), a segment from its centre of the last tick to
+                    // this tick's (FUN_0018c8e0). The first tick of a window has no previous centre
+                    // and casts nothing (entry flag 4 is set after the centres are first stored).
+                    if !first_seen.insert((body, start)) {
+                        continue;
+                    }
+                    live_windows.insert((body, start));
+                    let prev = wall_prev.insert((body, start), centre);
                     // Each attack window bounces off a wall once.
                     let key = (Entity::PLACEHOLDER, body, start);
                     still_live.insert(key);
@@ -324,16 +349,21 @@ pub fn detect_hits(
                     if f.landed.contains(&key) || hit_a_target {
                         continue;
                     }
-                    let Some((point, _normal)) = world.touching_m(vol.a, vol.b, vol.r, kh2_map::flags::ATTACK_COLLIDE) else { continue };
+                    let Some(prev) = prev else { continue };
+                    let Some(row) = data.atkp(atkp) else { continue };
+                    let Some((point, normal)) = wall_cast(world, row.floor_check, prev, centre) else { continue };
                     // The terrain test runs only for rows with BG Hit (atkp Flags bit 0).
-                    if data.atkp(atkp).is_some_and(|a| a.flags & rules::ATKP_FLAG_BG_HIT != 0) {
+                    if row.flags & rules::ATKP_FLAG_BG_HIT != 0 {
+                        if log {
+                            info!("wall cast: atkp {atkp} window {start} from {prev:?} to {centre:?} hits terrain at {point:?} (normal {normal:?}); volume radius {:.2}", vol.r);
+                        }
                         f.landed.insert(key);
                         wall_hits.write(WallHit { attacker: e, body, atkp, point, weapon_volume: body != hurt_body });
                     } else if log {
                         skipped_now = true;
                         if *skipped != Some((body, start, atkp)) {
                             *skipped = Some((body, start, atkp));
-                            info!("wall test not run: atkp {atkp} has no BG Hit, volume touches a wall at {point:?}");
+                            info!("wall test not run: atkp {atkp} has no BG Hit, volume path crosses a wall at {point:?}");
                         }
                     }
                 }
@@ -342,6 +372,7 @@ pub fn detect_hits(
         // Forget windows that have closed so the next swing can hit again.
         f.landed.retain(|k| still_live.contains(k));
     }
+    wall_prev.retain(|k, _| live_windows.contains(k));
     if !skipped_now {
         *skipped = None;
     }
@@ -409,6 +440,55 @@ mod tests {
         // A level, straight along -x at any distance: the equator, one radius out: (-0.3, 1, 0).
         let p = victim_point(&h, Vec3::new(-7.0, 1.0, 0.0));
         assert!((p - Vec3::new(-0.3, 1.0, 0.0)).length() < 1e-6, "{p:?}");
+    }
+
+    /// A collision world of one wall (x = 100 units, facing -x) and one floor (y = 0), both blocking
+    /// attacks, plus a second wall at x = 300 without the flag.
+    fn wall_world() -> crate::world::World {
+        let quad = |v: [[f32; 3]; 4], normal: [f32; 3], flags: u32| kh2_map::Polygon { verts: v, quad: true, normal, d: 0.0, flags, material: 0, mesh: 0 };
+        let a = kh2_map::flags::ATTACK_COLLIDE;
+        let coct = kh2_map::Coct {
+            polygons: vec![
+                quad([[100.0, 0.0, -300.0], [100.0, 300.0, -300.0], [100.0, 300.0, 300.0], [100.0, 0.0, 300.0]], [-1.0, 0.0, 0.0], a | kh2_map::flags::PARTY_COLLIDE),
+                quad([[-300.0, 0.0, -300.0], [-300.0, 0.0, 300.0], [300.0, 0.0, 300.0], [300.0, 0.0, -300.0]], [0.0, 1.0, 0.0], a | kh2_map::flags::PARTY_STAND),
+                quad([[300.0, 0.0, -300.0], [300.0, 300.0, -300.0], [300.0, 300.0, 300.0], [300.0, 0.0, 300.0]], [-1.0, 0.0, 0.0], kh2_map::flags::PARTY_COLLIDE),
+            ],
+        };
+        crate::world::World::from_coct(&coct)
+    }
+
+    /// WP-F2 item A: the wall test is the game's segment cast between two ticks' centres
+    /// (FUN_0018c8e0), so a swing that never crosses attack-blocking terrain recoils from nothing.
+    #[test]
+    fn wall_cast_hits_only_terrain_the_centre_path_crosses() {
+        let w = wall_world();
+        // A swing in open ground: the centre moves 40 cm toward a wall 50 cm away. Nothing.
+        assert_eq!(wall_cast(&w, 0, Vec3::new(0.5, 1.0, 0.0), Vec3::new(0.9, 1.0, 0.0)), None);
+        // The same swing a tick later crosses the wall: the hit is on the wall plane, x = 1.0 m.
+        let (p, n) = wall_cast(&w, 0, Vec3::new(0.9, 1.0, 0.0), Vec3::new(1.3, 1.0, 0.0)).expect("the wall");
+        assert!((p - Vec3::new(1.0, 1.0, 0.0)).length() < 1e-4, "{p:?}");
+        assert!((n - Vec3::new(-1.0, 0.0, 0.0)).length() < 1e-4, "{n:?}");
+        // A wall without the attack flag is not terrain for the cast.
+        assert_eq!(wall_cast(&w, 0, Vec3::new(2.9, 1.0, 0.0), Vec3::new(3.3, 1.0, 0.0)), None);
+        // A cast with no movement (the same centre twice) is nothing, not a hit on whatever is near.
+        assert_eq!(wall_cast(&w, 0, Vec3::new(0.99, 1.0, 0.0), Vec3::new(0.99, 1.0, 0.0)), None);
+        // Crossing the wall from behind is nothing: the game's segment test (FUN_001623a0) cuts a
+        // polygon only when the segment runs against its normal.
+        assert_eq!(wall_cast(&w, 0, Vec3::new(1.2, 1.0, 0.0), Vec3::new(0.8, 1.0, 0.0)), None);
+        // A swing that ends exactly at the wall plane counts (the parameter may be 1).
+        assert!(wall_cast(&w, 0, Vec3::new(0.6, 1.0, 0.0), Vec3::new(1.0, 1.0, 0.0)).is_some());
+    }
+
+    /// The `FloorCheck` byte adds a second, downward segment of that many game units when the
+    /// first cast misses; every Sora combo row has 0, so his swings never probe the floor.
+    #[test]
+    fn wall_cast_floor_check_probes_down_only_when_set() {
+        let w = wall_world();
+        let (prev, cur) = (Vec3::new(0.2, 0.5, 0.0), Vec3::new(0.3, 0.5, 0.0));
+        assert_eq!(wall_cast(&w, 0, prev, cur), None);
+        assert_eq!(wall_cast(&w, 40, prev, cur), None, "40 units down from 50 cm up does not reach the floor");
+        let (p, _) = wall_cast(&w, 60, prev, cur).expect("the floor");
+        assert!((p - Vec3::new(0.3, 0.0, 0.0)).length() < 1e-4, "{p:?}");
     }
 }
 

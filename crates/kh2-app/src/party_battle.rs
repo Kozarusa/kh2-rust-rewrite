@@ -740,9 +740,108 @@ pub fn emergency(recs: &[Record], st: &mut Choosing, status: bool, mp_charge: bo
     None
 }
 
+// ---------------------------------------------------------------------------------------------------
+// Stage 3: hits, KO and revive of a party object
+
+/// What `FUN_00186238` (the HP method of a party object, +0x588 bit 0x4000 set, through FUN_00176c98)
+/// did with a change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct HpChange {
+    /// The KO bit was cleared by a heal (FUN_0017cee8): motion 0x37 when the member lay in 0x36.
+    pub revived: bool,
+    /// HP reached 0 by this change (FUN_00186530 -> the KO method +0x5c, FUN_0017ce60).
+    pub knocked_out: bool,
+    /// The amount applied (after FUN_0017cee8's scale); 0 when the change was refused.
+    pub applied: i32,
+}
+
+/// `FUN_00186238` for a party object on its HP (member index 0): no change at a zero maximum; a heal
+/// (`delta >= 1`) on a KO'd object first revives it (FUN_0017cee8: the KO bit cleared, the amount
+/// scaled by `revive_scale`, which is 1.0 (`DAT_0037a560`) with the ability block's +0x10 bit 8 and
+/// `sstm` +0x54 without); while KO'd nothing else changes; otherwise FUN_001a0100 adds the amount held
+/// between the minimum (+8) and the maximum (+4), and an HP of 0 knocks the object out (FUN_00186530,
+/// only when the KO bit is clear).
+pub fn hp_change(hp: &mut i32, max: i32, min: i32, ko: &mut bool, delta: i32, revive_scale: f32) -> HpChange {
+    let mut out = HpChange::default();
+    if max == 0 {
+        return out;
+    }
+    let mut delta = delta;
+    if delta >= 1 && *ko {
+        *ko = false;
+        out.revived = true;
+        delta = (delta as f32 * revive_scale) as i32;
+    }
+    if *ko {
+        return out;
+    }
+    let sum = *hp + delta;
+    let new = if sum < min { min } else if sum > max { max } else { sum };
+    out.applied = new - *hp;
+    *hp = new;
+    if new == 0 {
+        *ko = true;
+        out.knocked_out = true;
+    }
+    out
+}
+
+/// FUN_0017ce60: the revive timer (+0xb40) is the StunTime (+0x18) of the record at +0x12c, the `prty`
+/// row of the object's `objentry` NeoMoveset (FUN_00196b58 -> FUN_00194438 -> FUN_001cc1c8), times the
+/// ability block's +0x58 (Hyper Healing).
+pub fn revive_time(stun: f32, hyper_healing: f32) -> f32 {
+    stun * hyper_healing
+}
+
+/// FUN_0017ca70's count-down of a KO'd member: the frame unit, times `sstm` +0x5c while the battle
+/// flag is clear (FUN_001903c8 = 0). True when the timer reached 0 or below: FUN_0017cc20 then heals
+/// `maxHP x sstm +0x58` through the HP method.
+pub fn revive_step(timer: &mut f32, frame: f32, battle: bool, field_scale: f32) -> bool {
+    let step = if battle { frame } else { frame * field_scale };
+    *timer -= step;
+    *timer <= 0.0
+}
+
+/// FUN_0017cc20: the heal of a revive, `int(maxHP x sstm +0x58)`.
+pub fn revive_heal(max: i32, scale: f32) -> i32 {
+    (max as f32 * scale) as i32
+}
+
+/// FUN_001cc140: the row a `pref` lookup answers: `index` when it is below the count and its offset
+/// is not 0, else `fallback` (FUN_001cc1c8 passes 1 for `prty`); `None` when that one is empty too.
+pub fn pref_row(offsets: &[u32], index: usize, fallback: usize) -> Option<usize> {
+    let k = if index < offsets.len() && offsets[index] != 0 { index } else { fallback };
+    offsets.get(k).filter(|&&o| o != 0).map(|_| k)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// FUN_00186238 / FUN_0017cee8: damage to 0 knocks out, nothing changes while KO'd, a heal revives
+    /// scaled; FUN_0017ce60 / FUN_0017ca70 / FUN_0017cc20: the timer, its count-down and the heal.
+    #[test]
+    fn party_hp_method_ko_and_revive() {
+        let (mut hp, mut ko) = (10, false);
+        assert_eq!(hp_change(&mut hp, 20, 0, &mut ko, -4, 0.5), HpChange { applied: -4, ..HpChange::default() });
+        let c = hp_change(&mut hp, 20, 0, &mut ko, -30, 0.5);
+        assert!(c.knocked_out && ko && hp == 0);
+        assert_eq!(hp_change(&mut hp, 20, 0, &mut ko, -3, 0.5), HpChange::default(), "no damage while KO'd");
+        let c = hp_change(&mut hp, 20, 0, &mut ko, 10, 0.5);
+        assert!(c.revived && !ko && hp == 5 && !c.knocked_out, "the revive heal is scaled");
+        assert_eq!(hp_change(&mut hp, 20, 0, &mut ko, 100, 0.5).applied, 15, "held at the maximum");
+        assert_eq!(hp_change(&mut hp, 0, 0, &mut ko, -100, 0.5), HpChange::default(), "no block maximum: refused");
+        assert_eq!(revive_time(600.0, 0.5), 300.0);
+        let mut t = 2.0;
+        assert!(!revive_step(&mut t, 1.0, true, 4.0) && revive_step(&mut t, 1.0, true, 4.0));
+        let mut t = 2.0;
+        assert!(revive_step(&mut t, 1.0, false, 4.0), "out of battle the step is scaled");
+        assert_eq!(revive_heal(37, 0.5), 18);
+        assert_eq!(pref_row(&[8, 0, 16, 0], 3, 1), None);
+        assert_eq!(pref_row(&[8, 12, 16, 0], 3, 1), Some(1));
+        assert_eq!(pref_row(&[8, 12, 16], 2, 1), Some(2));
+        assert_eq!(pref_row(&[8, 12, 16], 9, 1), Some(1));
+    }
 
     fn entry() -> Entry {
         Entry { near: 0.0, far: 150.0, up: 0.0, down: 100.0, close: 30.0, close_dy: 50.0, ..Entry::default() }

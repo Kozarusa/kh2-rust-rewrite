@@ -1,7 +1,7 @@
 //! Party members' panels (WP-4B3): the circle, the HP rings and the MP ring of each companion,
 //! built the way the game's party panel class does (0x154a78, objects of 0x1570 bytes, two of
-//! them at 0x355720 and 0x355724 for slots 0 and 1, 0x13d738). The port has no party members, so
-//! `PartyMembers` is empty and nothing is drawn; the geometry is ready for whoever adds them.
+//! them at 0x355720 and 0x355724 for slots 0 and 1, 0x13d738). `party::party_hud` fills `PartyMembers`
+//! from the members' status blocks each tick (WP-P3b); with no member nothing is drawn.
 //!
 //! Objects (gaug sequence groups, decimal; 0x154a78): circle 71 at +0x384 (Z 0), ring 64 at
 //! +0x514 (Z 100), ring 65 at +0x6a4 (Z 1000), ring 66 at +0x834 (Z 10000), the member's own
@@ -61,8 +61,8 @@ pub struct PartyMember {
     pub face: Option<usize>,
 }
 
-/// The party, in slot order. Empty in this port (there are no companions); nothing is drawn then.
-/// `KH2_HUDPARTY=<hp>:<max>:<mp>:<mpmax>[;...]` fills it for a look at the geometry.
+/// The party, in slot order (filled by `party::party_hud`); empty draws nothing.
+/// `KH2_HUDPARTY=<hp>:<max>:<mp>:<mpmax>[;...]` fills it instead, for a look at the geometry.
 #[derive(Resource, Default, Clone, Debug)]
 pub struct PartyMembers(pub Vec<PartyMember>);
 

@@ -86,6 +86,12 @@ fn auto_screenshot(
                 "Select" | "Tab" => KeyCode::Tab,
                 "[" => KeyCode::BracketLeft,
                 "]" => KeyCode::BracketRight,
+                // The sound viewer (F10) and the asset viewer (F11) and their paging keys.
+                "F10" => KeyCode::F10,
+                "F11" => KeyCode::F11,
+                "PageUp" => KeyCode::PageUp,
+                "PageDown" => KeyCode::PageDown,
+                "Shift" => KeyCode::ShiftLeft,
                 _ => continue,
             };
             if t >= at && t - dt < at {

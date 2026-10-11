@@ -11,6 +11,8 @@
 //! in `schedule`.
 
 mod abilities;
+mod area;
+mod area_jump;
 mod assets;
 mod audio;
 mod audio_bgm;
@@ -113,6 +115,6 @@ fn main() {
         // The third tuple: later plugins go here (the second is near the 15-entry limit).
         // `progress::ensure` lets the plugins above that read `Progress` while they build insert it
         // first, so its place here does not matter.
-        .add_plugins((progress::ProgressPlugin, prize::PrizePlugin, menu::MenuPlugin, menu_abilities::MenuAbilitiesPlugin, items::ItemsPlugin, party::PartyPlugin, struggle::StrugglePlugin, summon::SummonPlugin))
+        .add_plugins((progress::ProgressPlugin, prize::PrizePlugin, menu::MenuPlugin, menu_abilities::MenuAbilitiesPlugin, items::ItemsPlugin, party::PartyPlugin, struggle::StrugglePlugin, summon::SummonPlugin, area::AreaPlugin, area_jump::AreaJumpPlugin))
         .run();
 }

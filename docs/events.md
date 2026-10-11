@@ -211,6 +211,50 @@ previous world `0x33e848`, then `FUN_00104c68` applies the destination (`FUN_001
 stores world, area, entrance at `0x33e86c..e`) and restarts the area thread `FUN_001048e0`. On the next area start
 `FUN_0013efe8` runs the matching fade-in unless trigger 0 plays an event.
 
+**Fades, gate and lock (WP-E1b notes)** [V unless marked]:
+
+- `FUN_00104e18(destination, fade, wait, flag, reset)` takes the fade kind from its caller;
+  `FUN_00198fa0` passes `current world != destination world`, so an exit fades with kind 1 on a
+  world change and kind 0 inside a world. With `wait` 0 the fade-out starts at once, else the task
+  waits `wait` ticks first (`FUN_00104d58`). A trigger's jump record passes its flags word
+  (`FUN_0019d9d8`); bit 0x4000 becomes bit 31, which makes `FUN_0013ef68` only record the kind.
+- Kind 1 is the screen fader at `0x3564d0`: out `FUN_0013f148` -> `FUN_0014a7c8(fader, 0xf, 0)`
+  (state +0xfc = 3), in `FUN_0013f1a0` -> `FUN_0014a7f0(fader, 0xf, 0)` (+0xf8 = 1, +0xfc = 1).
+  `FUN_0014a710(fader, n)` sets the duration `2 * n` ticks (+0x100, so 30) and the step
+  `DAT_00379130 / duration` (+0x104; `DAT_00379130` = 128.0, the full alpha); byte +0xf4 picks
+  black (0, `FUN_0014af90(0, 0, 0, 0)`, mode 0x44) or white (0xff, 0x48). The app: a black
+  full-screen UI node whose alpha runs 0 -> 1 in 30 ticks and back (`area_jump::FADE_TICKS`).
+- Kind 0 is the 2D layout in slot 2 of the table at `0x355118` / `0x35511c` (`FUN_0013a980(2)`,
+  `FUN_0013a998(2)`): out `FUN_0015d058` plays its animation 1 (`FUN_002368a8(0x3591e0, 1)`), in
+  `FUN_0015d1a8` plays animation 0 and a 2-tick fader fade-in (`FUN_0014a7f0(fader, 1, 0)`). The
+  reference video 8.mp4 shows this as the keyhole wipe, then the area card. The layout is not
+  decoded [GAP: the table's loader and the `.2ld` file were not searched]; the app draws the same
+  black fade as a labelled stand-in (`jump: fade kind 0 ... black stand-in`).
+- Kinds 2 and 3 (`FUN_0013f290` / `FUN_0013f3b0`, in `FUN_0013f2e8` / `FUN_0013f3f0`): not read.
+- Gate (header +0x1e, `FUN_001d88a0(volume, gate)`): 0 passes. 1 and 2 need `FUN_001d8908()`: the
+  player is in the controlled-object list at `0x1d5d7a0` (`FUN_001b80e8`), his actor flags +0x108
+  have neither 0x80000 nor 0x10000000 (`FUN_0019a440`) [I: an action or event in progress], and
+  `FUN_001b7e00`: method +0x40 answers non-zero and +0x160 has bit 4, 8 or 0x10 [I: walking,
+  running or dashing]; then `FUN_001d8958(volume)`: the direction `(sin a, 0, cos a)` for
+  `a = DAT_0037c714 - volume rotation y` (`FUN_0017be98`; `DAT_0037c714` = -PI/2) must have a dot
+  product of at least `DAT_0037b358` (= 0.7) with the player's facing (`FUN_0016a890`) and with his
+  movement direction +0x10, while his speed +0x1c is above 0 (`FUN_0019b110`). Gates 3 and up
+  fail. Every tt04 exit has gate 2, so walking out needs the player to move along the exit's
+  direction. The app ports this as `area_jump::gate_passes` (moving = horizontal velocity above
+  0; the busy flags are not ported) and reads the two constants from the executable.
+- Lock: `FUN_00195358(world, area)` reads the halfword at `0x33f918 + FUN_00195208() * 4` (0 =
+  open) and then `FUN_001d32c0(world, area)`; neither was read further [GAP]. The app locks nothing.
+- `FUN_001989d8` clears the group's flag bits 3 and 4 every frame (0xffffffe7) and skips a group
+  whose bit 0 (fired, set by `FUN_00198fa0`) is set; bit 4 is the prompt shown this frame
+  (`FUN_00198e10`), so the prompt is re-issued every frame while the player faces the volume. In
+  battle state 2 (`FUN_001903c8`) a group whose gate is not 0 does nothing: not ported (no battle
+  state resource in the app's area code).
+- Oracle: `crates/kh2-ard/tests/oracle.rs` `exit_volumes_match_the_game` runs `FUN_001d8600` +
+  `FUN_001d89a0` / `FUN_001d8a70` on every Twilight Town exit activator plus turned synthetic ones
+  (the identity matrix at `0x354a60` seeded, as `FUN_0011bd58` does at start-up): 183 records,
+  92781 points, 0 mismatches against `Activator::contains`. The rotation sign of
+  `Activator::local` is therefore verified, no longer inferred.
+
 **Player placement and facing** [V]. There is no separate entrance table: an entity whose spawn kind (+0x1c) is 1
 is created only when its +0x1d equals the entrance byte (`FUN_001981a0`). The player (0x236) and the two friends
 (FRIEND_1/2) stand in the `map` program's groups once per entrance (tt02 `m_00` has two such groups, `e_50` six
@@ -399,6 +443,17 @@ Each stage ends with `verify.ps1` passing and the named check.
   `FUN_00180ff8`, `FUN_00198e10`, `FUN_00198fa0`, `FUN_00104e18`, `FUN_00104bd0`, `FUN_001981a0`, `FUN_001d89a0`,
   `FUN_001d8a70`. Accept: `KH2_AREALOG=1` logs `area tt04 entrance 1 programs (..)`, a scenario walking from tt04
   out of the m_10 exit logs `exit -> tt03 entrance 1`; screenshot after the jump looked at (Sora in tt03).
+  **Status (WP-E1 / E1b):** done for Twilight Town. `kh2_ard::run` is the interpreter (`run_area`,
+  `player_start`, `Group::exit`, `Activator::contains`, oracle-checked); `kh2-app/src/area.rs` holds
+  the `AreaRecord` (world 2, area from `CurrentArea`, entrance from a jump or `KH2_ENTRANCE`,
+  programs (0, 0, 0) until E5) and runs the scripts when an area loads, placing Sora at the
+  entrance's player entity after a jump; `area_jump.rs` tests the option-0 volumes of the loaded
+  exit groups every tick (gate 0, 1, 2 as above), logs the option-1/2 prompt, and runs the jump task
+  (fade out 30 ticks, load, place, fade in). Triggers on event 1 with an event tag log `event not
+  played (E6)`; type-1 trigger jumps are taken, other types logged. Not done: the music pair of
+  opcode 0x10 is logged, not applied (`audio_bgm` keeps the `arif` pair); the keyhole layout; the
+  exit lock; the battle-state check; the name window of the prompt; the friends' entrance filter
+  and the camera snap after a teleport (both listed under "Later" in the E1b brief).
 - **E2 NPC spawn and idle/walk.** Class-5 objects of `map` program groups with their BDX (`rtn_default`), group 5
   hosts for the walk path (+0x508), walk path ids. Accept: tt02 log of spawned `N_EX5xx_RTN` with no `missing`
   host calls in `KH2_BDXLOG`; screenshot with townspeople looked at.
@@ -437,6 +492,8 @@ Each stage ends with `verify.ps1` passing and the named check.
 | 0x181728, 0x1817f0, 0x198430, 0x198750, 0x198920, 0x1981a0, 0x198220, 0x1982c8, 0x1989d8, 0x198b30 | spawn groups |
 | 0x198e10, 0x198fa0, 0x199058, 0x1991a0, 0x199518, 0x199930, 0x199b18, 0x199e68, 0x199e98, 0x199f70, 0x199c48, 0x199c70 | group kinds |
 | 0x1d8b48, 0x1d8600, 0x1d89a0, 0x1d8a70, 0x334388 | activator volumes |
+| 0x1d88a0, 0x1d8908, 0x1d8958, 0x19a3f8, 0x19a440, 0x1b80e8, 0x1b7e00, 0x19b110, 0x17be98, 0x16a890, 0x195358 | exit gate and lock (E1b) |
+| 0x13ef68, 0x13efe8, 0x13f148, 0x13f1a0, 0x14a7c8, 0x14a7f0, 0x14a710, 0x15d058, 0x15d1a8, 0x104d58 | fade kinds and the jump task (E1b) |
 | 0x104e18, 0x104d58, 0x104c68, 0x104ce0, 0x104bd0, 0x104b90, 0x105188, 0x105010, 0x19d8f0, 0x19d9d8, 0x13ef68, 0x13efe8, 0x198080, 0x198058, 0x172118, 0x172170, 0x149df0, 0x1abfe8 | jumps |
 | 0x1802e0, 0x180298, 0x17ff60, 0x17fd10, 0x180350 | story flags |
 | 0x16e8c0, 0x189858, 0x1a51e8, 0x2ea050..0x2ea978 | objects by type, NPC class, group 5 hosts |

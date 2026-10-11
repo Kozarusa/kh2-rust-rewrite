@@ -16,6 +16,21 @@ pub mod flags {
     pub const ATTACK_COLLIDE: u32 = 1 << 7;
     pub const LEDGE_GRAB: u32 = 1 << 10;
     pub const BARRIER: u32 = 1 << 11;
+    /// Attribute bit 0x100000: the sphere solver FUN_001632b8 skips the polygon altogether (it tests
+    /// `attribute & 0x100000` before any plane test, in all three of its passes).
+    pub const SOLVER_SKIP: u32 = 1 << 20;
+}
+
+/// Does a polygon with attribute word `attr` stop the walking party member (collision kind 0)?
+///
+/// The player's collider (FUN_00143840 -> FUN_00164138) sweeps with `FUN_00141b50`, which keeps a
+/// polygon when its attribute nibble is not 4 (`FUN_00141b30(.., 0xf, 4, 1, ..)`: mask 0xf, value 4,
+/// inverted) and the handler of the collider's kind accepts it. Party members have kind 0 (their
+/// constructors clear bits 3..6 of +0x600, FUN_001746e0 / FUN_00174800), and handler 0 of the table at
+/// 0x378f7c (0x32e438) tests `attribute & 0x10`, PARTY_COLLIDE. The solver (FUN_001632b8) then skips
+/// polygons with attribute bit 0x100000.
+pub fn stops_party(attr: u32) -> bool {
+    attr & flags::PARTY_COLLIDE != 0 && attr & 0xf != 4 && attr & flags::SOLVER_SKIP == 0
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -109,5 +124,24 @@ impl Coct {
     pub fn from_map(file: &[u8]) -> Option<Coct> {
         let e = kh2_bar::parse(file).ok()?;
         e.iter().filter(|x| x.kind == 6).find_map(|x| Coct::parse(x.data))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The walking filter: PARTY_COLLIDE, nibble not 4, bit 0x100000 clear (attributes seen on the disc).
+    #[test]
+    fn walking_filter_keeps_party_collide_only() {
+        for attr in [0x172u32, 0x1f2, 0x1172, 0x3f2, 0x3f1, 0x972, 0x803f1, 0x7f1] {
+            assert!(stops_party(attr), "{attr:#x} is a real wall");
+        }
+        // Attack-only (0x82), object-only (0x22, 0x62, 0x80002), nibble 4 (0x284 has no party bit either).
+        for attr in [0x82u32, 0x22, 0x62, 0x80002, 0x284] {
+            assert!(!stops_party(attr), "{attr:#x} lets the party through");
+        }
+        assert!(!stops_party(0x174), "attribute nibble 4 is filtered by FUN_00141b50");
+        assert!(!stops_party(0x172 | flags::SOLVER_SKIP), "bit 0x100000 is skipped by FUN_001632b8");
     }
 }

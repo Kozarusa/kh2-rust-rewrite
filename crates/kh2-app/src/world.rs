@@ -148,9 +148,16 @@ impl World {
             .min_by(f32::total_cmp)
     }
 
-    /// Moves a vertical capsule (feet at `pos`) horizontally by `delta`, sliding along walls.
+    /// Moves a vertical capsule (feet at `pos`) horizontally by `delta`, sliding along the walls that
+    /// stop the party (`kh2_map::stops_party`: PARTY_COLLIDE, not nibble 4, not the solver-skip bit).
     /// Returns the wall normals touched.
     pub fn slide(&self, pos: &mut Vec3, delta: Vec3, radius: f32, bottom: f32, top: f32) -> Vec<Vec3> {
+        self.slide_with(pos, delta, radius, bottom, top, true)
+    }
+
+    /// `slide`, with the walking filter optional: `party` false stops at every wall-like polygon (the
+    /// enemies' simple mover, whose collision kind was not read).
+    pub fn slide_with(&self, pos: &mut Vec3, delta: Vec3, radius: f32, bottom: f32, top: f32, party: bool) -> Vec<Vec3> {
         let mut touched = Vec::new();
         let len = delta.length();
         if !len.is_finite() {
@@ -169,7 +176,7 @@ impl World {
                 let mut moved = false;
                 for &i in &ids {
                     let t = &self.tris[i as usize];
-                    if t.n.y.abs() >= FLOOR_NY {
+                    if t.n.y.abs() >= FLOOR_NY || (party && self.coct && !kh2_map::stops_party(t.flags)) {
                         continue;
                     }
                     // Closest point between the capsule axis segment and the triangle.
@@ -334,7 +341,7 @@ impl World {
             }
         }
         let mut p = *pos * Self::M;
-        self.slide(&mut p, Vec3::new(vel.x, 0.0, vel.z) * dt * Self::M, RADIUS, STEP, 150.0);
+        self.slide_with(&mut p, Vec3::new(vel.x, 0.0, vel.z) * dt * Self::M, RADIUS, STEP, 150.0, false);
         vel.y = (vel.y - gravity * dt).max(-fall_max);
         let next = p.y + vel.y * dt * Self::M;
         match self.ground(p, p.y + STEP, STEP + (p.y - next).max(0.0) + 4.0) {
@@ -394,6 +401,88 @@ mod tests {
         // The riser is one-sided: a segment through it from the raised side (z > 0 toward z < 0) is ignored.
         assert_eq!(w.cast_m(Vec3::new(1.0, 1.0, 0.5), Vec3::new(1.0, 1.0, -0.5), kh2_map::flags::ATTACK_COLLIDE), None);
         assert!(w.cast_m(Vec3::new(1.0, 1.0, -0.5), Vec3::new(1.0, 1.0, 0.5), kh2_map::flags::ATTACK_COLLIDE).is_some());
+    }
+
+    /// The world as the player's slide saw it before WP-G3: every polygon carries the party bit (and
+    /// nothing else), so every wall-like polygon stops.
+    fn old_world(c: &kh2_map::Coct) -> World {
+        let mut c = c.clone();
+        for p in &mut c.polygons {
+            p.flags = kh2_map::flags::PARTY_COLLIDE;
+        }
+        World::from_coct(&c)
+    }
+
+    /// Walks a grounded Sora-sized motor from `start` (x, z; the floor under `from_y`) along `dir` for 30
+    /// ticks of 8 units (a run) and returns where it ends.
+    fn walk(w: &World, start: [f32; 2], from_y: f32, dir: Vec3) -> Vec3 {
+        let p = Vec3::new(start[0], from_y, start[1]);
+        let g = w.ground(p, from_y + 60.0, 200.0).expect("floor under the start");
+        let mut m = crate::motor::Motor { pos: p.with_y(g.y), grounded: true, ..Default::default() };
+        for _ in 0..30 {
+            m.move_by(w, dir * 8.0, None);
+        }
+        m.pos
+    }
+
+    /// One scripted walk of the invisible-wall test: the world pair, start (x, z), floor search height,
+    /// direction, the wall's plane coordinate on the walking axis, and whether the walk goes toward +axis.
+    type WalkCase<'a> = (&'a World, &'a World, [f32; 2], f32, Vec3, f32, bool);
+
+    /// WP-G3 (user report 2026-10-11: invisible walls in Tram Common and Station Heights). The player's
+    /// slide stopped at every wall-like polygon; the game's walking collider keeps only polygons with
+    /// PARTY_COLLIDE (handler 0 of the table at 0x378f7c), not nibble 4, not bit 0x100000. Tram Common
+    /// (tt07) and Station Heights (tt06) carry hundreds of wall polygons with attack-only (0x82) or
+    /// object-only (0x22, 0x80002) attributes. Each case walks into one from the front: the old world
+    /// stops Sora at the plane, the new one lets him through; the real walls (0x172, 0x1f2) stop him in
+    /// both.
+    #[test]
+    fn invisible_walls_of_tram_common_and_station_heights_do_not_stop_sora() {
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else { return };
+        let disc = crate::assets::Disc::open(&iso);
+        let load = |n: usize| {
+            let c = kh2_map::Coct::from_map(&disc.read(&format!("map/us/tt{n:02}.map")).unwrap()).unwrap();
+            (World::from_coct(&c), old_world(&c))
+        };
+        let (heights, heights_old) = load(6);
+        let (tram, tram_old) = load(7);
+        // The classes exist: wall-like polygons that do not stop the party.
+        let count = |w: &World, attr: u32| w.tris.iter().filter(|t| t.n.y.abs() < FLOOR_NY && t.flags == attr).count();
+        assert!(count(&tram, 0x80002) >= 60 && count(&tram, 0x22) >= 100 && count(&tram, 0x82) >= 400);
+        assert!(count(&heights, 0x22) >= 7 && count(&heights, 0x82) >= 300);
+        let cases: [WalkCase; 5] = [
+            // Tram Common: the big volume at z = 2100..2500, x = 550..1600 (0x80002 on its -z face).
+            (&tram, &tram_old, [550.0, 1980.0], 0.0, Vec3::Z, 2100.0, true),
+            // The same volume from inside, through its 0x22 face (z = 2100, normal +z), walking -z.
+            (&tram, &tram_old, [550.0, 2220.0], 5.0, Vec3::NEG_Z, 2100.0, false),
+            // A low attack-only wall at x = 3159 (0x82, normal +x), walking -x.
+            (&tram, &tram_old, [3279.0, 301.0], 0.0, Vec3::NEG_X, 3159.0, false),
+            // Station Heights: an object-only wall at x = -1250 (0x22, normal +x), walking -x.
+            (&heights, &heights_old, [-1130.0, -217.0], 0.0, Vec3::NEG_X, -1250.0, false),
+            // An attack-only wall at x = 1400 (0x82, normal -x) on the lower level, walking +x.
+            (&heights, &heights_old, [1280.0, 340.0], -550.0, Vec3::X, 1400.0, true),
+        ];
+        for (i, (new, old, start, y, dir, plane, positive)) in cases.into_iter().enumerate() {
+            let (a, b) = (walk(old, start, y, dir), walk(new, start, y, dir));
+            let coord = |p: Vec3| if dir.x != 0.0 { p.x } else { p.z };
+            let before = |p: Vec3| if positive { coord(p) < plane } else { coord(p) > plane };
+            let past = |p: Vec3| if positive { coord(p) > plane + 30.0 } else { coord(p) < plane - 30.0 };
+            assert!(before(a), "case {i}: the old slide stops in front of the plane ({a:?})");
+            assert!(past(b), "case {i}: the walking filter lets Sora through ({b:?})");
+        }
+        // Real walls keep stopping: Station Heights x = 313 (0x172, normal -x) walking +x at z = 374 on the
+        // lower level; Tram Common z = -1700 (0x1f2, normal +z) walking -z at x = 3637, 2037 and 4283.
+        let real: [(&World, &World, [f32; 2], f32, Vec3); 4] = [
+            (&heights, &heights_old, [227.0, 374.0], -550.0, Vec3::X),
+            (&tram, &tram_old, [3637.0, -1580.0], 0.0, Vec3::NEG_Z),
+            (&tram, &tram_old, [2037.0, -1580.0], 0.0, Vec3::NEG_Z),
+            (&tram, &tram_old, [4283.0, -1580.0], 0.0, Vec3::NEG_Z),
+        ];
+        for (i, (new, old, start, y, dir)) in real.into_iter().enumerate() {
+            let (a, b) = (walk(old, start, y, dir), walk(new, start, y, dir));
+            let travelled = |p: Vec3| (p - Vec3::new(start[0], p.y, start[1])).dot(dir);
+            assert!(travelled(b) < 150.0 && (travelled(a) - travelled(b)).abs() < 1.0, "real wall {i}: stops Sora as before ({a:?} -> {b:?})");
+        }
     }
 }
 

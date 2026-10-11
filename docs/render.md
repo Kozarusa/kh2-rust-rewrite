@@ -148,3 +148,14 @@ minute). The tt04 `MAP` and `BOB` texture containers have no animation.
 * VU1 use of the UV offset (units, sign) not read; see `[inferred]` above.
 * tt04's `BOB` models (BAR type 4/7/30 entries tagged `BOB`) are not drawn by the app at all
   (`kh2_model::map_file` loads only `MAP` and `SK0`); their textures have no animation.
+
+## Sky placement (G4, tt05 green plane)
+
+Symptom: in the second Sandlot (`tt05`) a flat green plane covered the floor and moved with the camera.
+Cause: the sky model (`SK0`) has ground meshes at world height -200 (tt05 mesh 7, tt04 mesh 5, x -60935..65904,
+z -43041..48327), while the app moved the whole sky to the camera, which put that backdrop 2 m below the camera
+and through the floor. The game builds the sky object at position 0 (FUN_0015e6c0 -> FUN_0015f3a0) and its update
+(FUN_0015fef8) only advances texture players, so the app now keeps the sky at the origin
+(`assets::sky_follow`). `[inferred]`: that no other code moves it. Gap: maps also carry `SK1` skies (tt00, tt03,
+tt24..28; counts at map +0x6c SK0 / +0x70 SK1, FUN_00149348) that `kh2_model::map_file` does not load, and the
+dome meshes (about 3.5 million units wide) lie beyond the camera's far plane.

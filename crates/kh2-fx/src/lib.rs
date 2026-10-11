@@ -19,5 +19,6 @@ pub mod vm;
 mod oracle_tests;
 
 pub use pax::{Dpd, Element, Pax, ParticleData};
+pub use prog::unported;
 pub use projection::Projection;
 pub use vm::{Batch, Draw, Effect, Env, Vertex};

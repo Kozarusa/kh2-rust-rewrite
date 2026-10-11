@@ -20,8 +20,10 @@ Verified (program table at 0x362b10, handler addresses read from it):
 | pppKeShpTail3X | 157 | 0x1fcf70 | 0x1fd388 | 0x1fdb90 | 0x1fdbf0 |
 | pppSnoMdlDttNorm | 238 | none | 0x20a7e8 | 0x20a7b8 | 0x20a7d0 |
 
-In the system effect file `00effect.bar` they are element ids 11 (Tail3X), 12 (Sno) and 13
-(MvYpEff): `KH2_FXTEST=11`, `12`, `13` runs them. Other files that use them are listed in the
+In the system effect file `00effect.bar` they are element ids 0x10 (Tail3X), 0x12 (Sno) and 0x13
+(MvYpEff, the summon arrival): `KH2_FXTEST=16`, `18`, `19` runs them. (Until WP-FX13 this said 11, 12
+and 13: the kh2-fx disc tests took an element's `effect` word as a place in the DPX list; the game takes
+it as the entry's number, see "The summon arrival effect 0x13" below.) Other files that use them are listed in the
 earlier scan: Tail3X in most `M_EX*` magic files, many bosses and `P_NM000`, `P_MU000`,
 `SAVE_POINT`, `W_TR000` (over 100 files); MvYpEff in `B_EX170_LAST`, `P_EX100_*_ULTF`, `P_EX200`,
 `P_EX220`; Sno in `P_EX100` variants, `P_EX120`, `AL14_*`, `G_EX900*`, `B_EX130/140`, several
@@ -282,6 +284,35 @@ written against the place lookup). Consequence for docs/hit-reaction.md "Lifetim
 is not a looping effect; the "rainbow bubble sphere with a bright white core" the user saw stay was most probably the
 summon arrival effect run in its place [inferred: not compared with the original]. The spark ring stays as read; its
 [inferred] lone-loop end no longer applies to 0xd.
+
+## The summon arrival effect 0x13 and the number lookup in the kh2-fx tests (WP-FX13, verified)
+
+WP-7J2 logged the summon arrival effect (element 19 of `00effect.bar`, system effect 0x13) as "not started: its
+particle program did not start (kh2_fx::Effect::new)". That reading was wrong: `Effect::new` only fails when the
+DPX entry's particle-data index is past the DPD's list, and it never refused entry 18. What failed was the step
+before it: the app's `start_placed` took the element's `effect` word (18) as a place in the 14-entry DPX list
+(`effects.get(18)` = none), so the effect was never built; the summon code's status string blamed the wrong call.
+WP-7Bc (commit 5b81547, 2026-10-06) replaced that lookup with the game's (`fx::dpx_effect`, the number word that
+`FUN_001d9720` compares: `FUN_001db5f0` -> `FUN_001da6f0` -> `FUN_001d9bf0` -> `FUN_001d9720`), and since then the
+effect starts: `KH2_FXLOG=1` with a summon logs `summon: system effect 0x13 (00effect.bar) bound to the player:
+started` and then `fx 19 objs 9 batches 7 verts 1176` every frame until `summon: system effect 0x13 told to end
+(FUN_001d9f48)`. No program or opcode was missing.
+
+What entry 18 is (`crates/kh2-fx/tests/disc.rs::summon_arrival_0x13_draws`): DPD 0, particle data 13, life 60
+frames, flags 1 (looping), 20 groups. The program kinds it uses, all with handlers in `prog.rs`: the value programs
+(Accele, AngAccele, SclAccele, ColAccele, Move, AngMove, SclMove, ColMove, Point, Angle, Scale, Color and their Loop
+forms), RandFloat, RandIV, MatrixXYZ, MatrixYXZ, MatrixZXY, MatrixScl, RyjMatrixNoRot, MatrixLoop, DrawMatrixFront,
+DrawMatrixLoop, KeZCrct, KeZCrctShp, DrawMdl3, DrawMdlTs3, DrawMdlLoopZ, DrawShapeX, VertexAp, KeBornRnd5,
+RyjMegaBirth and KeMvYpEff (group 8, the only user of MvYpEff in the system file; its start frame is past the
+effect's life, so KeBornRnd5 births it). Run for 300 ticks in the test it draws in every frame (up to 4400 vertices).
+`kh2_fx::unported(kind)` (exported for the test) is true for a kind with neither a frame nor a draw handler.
+
+The same correction applies to the kh2-fx disc tests: `Pax::dpx_effect(number)` is the crate's lookup now, and
+`disc.rs::run` uses it. With the place lookup the tests for ids 11, 12 and 13 ran the entries numbered 16, 17 and
+18, which are the entries of the elements 0x10, 0x12 and 0x13, so the three ported-program tests now name those
+elements (`tail3_draws_a_tail`, `sno_distortion_runs`, `summon_arrival_0x13_draws`); the element 11 (0xb, the guard
+bounce spark) uses none of the three. `system_dpx_entries_resolve_by_number` checks the entry numbers 0..5 and
+11..18 and that every system element resolves. Not oracle-checked here: nothing new was ported.
 
 ## Test and harness hooks (all in `fx.rs`)
 

@@ -15,7 +15,7 @@ Every difference is marked:
 
 Tests (all read-only, they skip unless both images are configured):
 ```
-$env:KH2_ISO    = 'C:\Users\KoZa\Documents\ClaudeShit\Kingdom Hearts II (USA).iso'
+$env:KH2_ISO    = 'C:\Users\KoZa\Documents\AGENTS\ClaudeShit\Kingdom Hearts II (USA).iso'
 $env:KH2_ISO_FM = 'C:\Users\KoZa\Documents\ChatGPT\Kingdom Hearts II - Final Mix (Japan).iso'
 cargo test -p kh2 --test fm_exe  -- --nocapture --test-threads 1
 cargo test -p kh2 --test fm_disc -- --nocapture --test-threads 1

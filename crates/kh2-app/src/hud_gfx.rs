@@ -320,18 +320,26 @@ impl HudScene {
                 let mut ext = n.ext;
                 ext.time = n.player.uv_time;
                 let qs = f.seq.quads(g, n.player.frame(), n.origin, &ext);
+                // A scrolling sprite repeats inside its own rectangle (see `region_repeat`): the rectangles are
+                // the quads' texture coordinates at time 0, where nothing is scrolled yet.
+                let regions: Vec<Option<[f32; 4]>> = if f.seq.sprites.iter().any(|s| s.u_scroll != 0.0 || s.v_scroll != 0.0) {
+                    let still = f.seq.quads(g, n.player.frame(), n.origin, &Ext { time: 0.0, ..ext });
+                    qs.iter().zip(&still).map(|(q, s)| (q.uv != s.uv).then_some([s.uv[0][0], s.uv[0][1], s.uv[3][0], s.uv[3][1]])).collect()
+                } else {
+                    Vec::new()
+                };
                 let max_x = n.reveal.map(|r| {
                     let xs = qs.iter().flat_map(|q| q.pos.iter().map(|p| p[0]));
                     let (lo, hi) = xs.fold((f32::MAX, f32::MIN), |(lo, hi), x| (lo.min(x), hi.max(x)));
                     lo + (hi - lo) * r.clamp(0.0, 1.0)
                 });
-                for q in qs {
-                    out.push((n.file, q, n.origin, n.sweep.map(|s| (n.sweep_start, s)), max_x));
+                for (k, q) in qs.into_iter().enumerate() {
+                    out.push((n.file, q, n.origin, n.sweep.map(|s| (n.sweep_start, s)), max_x, regions.get(k).copied().flatten()));
                 }
             }
             if let (Some(label), Some(text)) = (&n.label, &self.text) {
                 for (file, q) in text.quads(label, n.origin, n.label_fade, n.label_time) {
-                    out.push((file, q, n.origin, None, None));
+                    out.push((file, q, n.origin, None, None, None));
                 }
             }
         }
@@ -339,9 +347,9 @@ impl HudScene {
     }
 }
 
-/// One quad to draw: texture file, the quad, its node's origin, the ring wedge (start, sweep) and
-/// the x limit.
-type Drawn = (usize, Quad, [f32; 2], Option<(f32, f32)>, Option<f32>);
+/// One quad to draw: texture file, the quad, its node's origin, the ring wedge (start, sweep), the
+/// x limit and the texel rectangle a scrolling sprite repeats in.
+type Drawn = (usize, Quad, [f32; 2], Option<(f32, f32)>, Option<f32>, Option<[f32; 4]>);
 
 #[derive(Component)]
 pub struct HudCamera;
@@ -420,6 +428,63 @@ fn clip(poly: &[Vert], c: [f32; 2], n: [f32; 2]) -> Vec<Vert> {
         }
     }
     out
+}
+
+/// Keeps the part of a convex polygon whose texture coordinate `axis` is `>= at` (`above`) or `<= at`.
+fn clip_uv(poly: &[Vert], axis: usize, at: f32, above: bool) -> Vec<Vert> {
+    let sign = if above { 1.0 } else { -1.0 };
+    let d = |v: &Vert| (v.uv[axis] - at) * sign;
+    let mut out = Vec::new();
+    for i in 0..poly.len() {
+        let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+        let (da, db) = (d(&a), d(&b));
+        if da >= 0.0 {
+            out.push(a);
+        }
+        if (da >= 0.0) != (db >= 0.0) {
+            out.push(lerp_vert(a, b, da / (da - db)));
+        }
+    }
+    out
+}
+
+/// The GS texture region repeat of a scrolling sprite. The sequence draw (0x235450) gives a sprite
+/// whose scroll speed is not zero the register value `(u1 - u0) << 4 | u0 << 14 | (v1 - v0) << 24 |
+/// v0 << 34 | 0xf`, which is the CLAMP register with both wrap modes set to "region repeat", mask
+/// `u1 - u0` / `v1 - v0` and fixed bits `u0` / `v0`: a texel coordinate `t` is read at
+/// `(t & mask) | fix`, so the scrolled picture wraps inside the sprite's own rectangle (a steam
+/// column scrolling up inside its 32x64 strip) instead of running into the neighbouring art.
+/// `rect` is `[u0, v0, u1, v1]` in texels. A mask that is not 2^n - 1 is left alone (the wrap of
+/// `& mask` is then not a plain repeat; none of the files seen has one).
+fn region_repeat(poly: &[Vert], rect: [f32; 4]) -> Vec<Vec<Vert>> {
+    let mut pieces = vec![poly.to_vec()];
+    for axis in 0..2 {
+        let (fix, mask) = (rect[axis].round() as i32, (rect[axis + 2] - rect[axis]).round() as i32);
+        let period = mask + 1;
+        if mask <= 0 || period & mask != 0 {
+            continue;
+        }
+        let (period, base) = (period as f32, (fix & !mask) as f32);
+        let mut next = Vec::new();
+        for p in pieces {
+            let (lo, hi) = p.iter().fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v.uv[axis]), hi.max(v.uv[axis])));
+            let first = (lo / period).floor() as i32;
+            let last = ((hi / period - 1e-4).floor() as i32).max(first);
+            for k in first..=last {
+                let from = k as f32 * period;
+                let mut part = clip_uv(&clip_uv(&p, axis, from, true), axis, from + period, false);
+                if part.len() < 3 {
+                    continue;
+                }
+                for v in part.iter_mut() {
+                    v.uv[axis] += base - from;
+                }
+                next.push(part);
+            }
+        }
+        pieces = next;
+    }
+    pieces
 }
 
 /// The wedge of a ring gauge: from `start` (radians clockwise from west), clockwise on screen, by
@@ -555,6 +620,27 @@ mod tests {
         let r = viewport_to_hud(Vec2::new(640.0 + 256.0 * 720.0 / 448.0, 360.0), Vec2::new(1280.0, 720.0));
         assert!((r.x - 512.0).abs() < 1e-3);
     }
+
+    #[test]
+    fn scrolled_sprite_repeats_inside_its_rectangle() {
+        // The steam strip of the Twilight Town deck: texels u 256..287, v 0..63, scrolled 10 rows down.
+        let uv = [[256.0, 10.0], [287.0, 10.0], [287.0, 73.0], [256.0, 73.0]];
+        let poly: Vec<Vert> = uv.iter().map(|&uv| Vert { pos: uv, uv, col: [1.0; 4] }).collect();
+        let pieces = region_repeat(&poly, [256.0, 0.0, 287.0, 63.0]);
+        assert_eq!(pieces.len(), 2);
+        for p in &pieces {
+            for v in p {
+                assert!((256.0..=287.0).contains(&v.uv[0]) && (0.0..=64.0).contains(&v.uv[1]), "{:?}", v.uv);
+            }
+        }
+        // The first piece shows rows 10 to 64 at the top, the second rows 0 to 9 below it.
+        let rows = |p: &Vec<Vert>| p.iter().fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(v.uv[1]), b.max(v.uv[1])));
+        assert_eq!(rows(&pieces[0]), (10.0, 64.0));
+        assert_eq!(rows(&pieces[1]), (0.0, 9.0));
+        // Not scrolled: one piece, untouched.
+        let still: Vec<Vert> = [[256.0, 0.0], [287.0, 0.0], [287.0, 63.0], [256.0, 63.0]].iter().map(|&uv| Vert { pos: uv, uv, col: [1.0; 4] }).collect();
+        assert_eq!(region_repeat(&still, [256.0, 0.0, 287.0, 63.0]).len(), 1);
+    }
 }
 
 #[derive(Resource, Default)]
@@ -625,7 +711,7 @@ fn draw(
         col: Vec<[f32; 4]>,
     }
     let mut out: Vec<Batch> = Vec::new();
-    for (file, q, origin, sweep, max_x) in scene.quads() {
+    for (file, q, origin, sweep, max_x, region) in scene.quads() {
         let Some(f) = scene.files.get(file) else { continue };
         let key = (file, q.blend, q.nearest);
         // Quad corners are TL, TR, BL, BR; as a polygon: TL, TR, BR, BL.
@@ -633,14 +719,23 @@ fn draw(
             .iter()
             .map(|&i| Vert {
                 pos: q.pos[i],
-                uv: [q.uv[i][0] / f.width as f32, q.uv[i][1] / f.height as f32],
+                uv: q.uv[i],
                 // 0x80 is 1.0; the product is taken in gamma space on the PS2, so convert to linear.
                 col: [gamma22(q.color[i][0] as f32 / 128.0), gamma22(q.color[i][1] as f32 / 128.0), gamma22(q.color[i][2] as f32 / 128.0), q.color[i][3] as f32 / 128.0],
             })
             .collect();
-        let mut pieces = match sweep {
-            Some((start, s)) => wedge(&poly, origin, start, s),
+        let polys = match region {
+            Some(r) => region_repeat(&poly, r),
             None => vec![poly],
+        };
+        // Texel coordinates to the texture's 0..1.
+        let polys: Vec<Vec<Vert>> = polys
+            .into_iter()
+            .map(|p| p.into_iter().map(|v| Vert { uv: [v.uv[0] / f.width as f32, v.uv[1] / f.height as f32], ..v }).collect())
+            .collect();
+        let mut pieces: Vec<Vec<Vert>> = match sweep {
+            Some((start, s)) => polys.iter().flat_map(|p| wedge(p, origin, start, s)).collect(),
+            None => polys,
         };
         if let Some(mx) = max_x {
             // Keep x <= mx.

@@ -711,14 +711,14 @@ fn input(
         }
         menu.switch = None;
         let (Some(ab), Some(p)) = (abilities.as_deref(), progress.as_deref()) else {
-            se.write(PlaySe::number(snd::REFUSED, None));
+            crate::menu::menu_sound::play(&mut se, snd::REFUSED);
             keys.reset_all();
             return;
         };
         let table = table_of(&st, ab, p);
         if table.rows.is_empty() {
             // `FUN_0027b9a8`: "There are no Abilities." (the row is not even offered on page 0).
-            se.write(PlaySe::number(snd::REFUSED, None));
+            crate::menu::menu_sound::play(&mut se, snd::REFUSED);
             keys.reset_all();
             return;
         }
@@ -734,7 +734,7 @@ fn input(
             info!("menu: page 0x10");
         }
         if asked.is_none() {
-            se.write(PlaySe::number(snd::CONFIRM, None));
+            crate::menu::menu_sound::play(&mut se, snd::CONFIRM);
         }
         keys.reset_all();
         redraw(&mut st, &mut scene, &mut ntags);
@@ -749,7 +749,7 @@ fn input(
         for e in fx {
             match e {
                 Effect::Sound(n) => {
-                    se.write(PlaySe::number(n, None));
+                    crate::menu::menu_sound::play(&mut se, n);
                 }
                 Effect::Page(page) => {
                     menu.page = page;

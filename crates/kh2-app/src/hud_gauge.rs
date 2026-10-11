@@ -224,6 +224,30 @@ pub struct SoraPanel {
     face_group: Option<usize>,
     last_hp: i32,
     lag_hp: i32,
+    /// The danger alarm is sounding (`DAT_0036f58c`, set by 0x2c1528 and cleared by 0x2c1550).
+    alarm: bool,
+}
+
+/// The danger alarm: system sound 9 of bank 2 (`FUN_002c1528` -> `FUN_002c14a8(9, 0)` -> `FUN_002be49c(2, 9, 0,
+/// 0x3fff, 0x40)`), the app's `PlaySe::number(2009)`.
+pub const DANGER_ALARM_SE: u32 = 2009;
+
+/// The alarm's rule, run every panel frame (0x157310 without an event; 0x157040 on a hit, 0x157108 on a heal):
+/// not knocked out, in danger and the alarm silent -> it starts; knocked out, or the alarm sounding and the
+/// danger over -> it stops (`FUN_002c1550`: `FUN_002c14f0(9, 0x3c, 0)`, a fade of 0x3c frames). Returns the
+/// change: `Some(true)` start, `Some(false)` stop.
+pub fn alarm_step(alarm: &mut bool, state: PanelState) -> Option<bool> {
+    match (state, *alarm) {
+        (PanelState::Danger, false) => {
+            *alarm = true;
+            Some(true)
+        }
+        (PanelState::Normal | PanelState::KnockedOut, true) => {
+            *alarm = false;
+            Some(false)
+        }
+        _ => None,
+    }
 }
 
 /// Where a HP value sits: on the ring (sweep in radians) or as a bar (length in pixels).
@@ -248,6 +272,7 @@ pub fn update(
     sora: Query<&Sora>,
     time: Res<Time>,
     mut demo: Local<bool>,
+    mut se: MessageWriter<crate::audio::PlaySe>,
 ) {
     let Ok(s) = sora.single() else { return };
     let now = time.elapsed_secs();
@@ -278,6 +303,16 @@ pub fn update(
     }
     let p = &mut *panel;
     panel_frame(&mut scene, p, hp, max, ko_test());
+    // The danger alarm (WP-F1 item 13). The app's mixer has no stop: the sound plays once per start, and the
+    // game's fade-out (0x2c1550, 0x3c frames) is only logged.
+    match alarm_step(&mut p.alarm, PanelState::of(hp, max, ko_test())) {
+        Some(true) => {
+            info!("hud: danger alarm starts (0x2c1528: bank 2 sound 9, hp {hp}/{max})");
+            se.write(crate::audio::PlaySe::number(DANGER_ALARM_SE, None));
+        }
+        Some(false) => info!("hud: danger alarm stops (0x2c1550: fade 0x3c frames; not ported, the sound runs out) hp {hp}/{max}"),
+        None => {}
+    }
     for (layer, value) in [(0, max), (1, p.lag_hp), (2, hp)] {
         let (ring, bar) = (p.ring[layer], p.bar[layer]);
         match fill(value) {
@@ -631,5 +666,23 @@ mod tests {
         panel_frame(&mut scene, &mut p, 3, 20, true);
         assert_eq!(scene.nodes[p.face.unwrap()].player.group, Some(2));
         assert_eq!(scene.nodes[p.circle].player.group, Some(137));
+    }
+
+    /// The danger alarm (0x157310 / 0x157040 / 0x157108): one start when danger begins, nothing while it
+    /// lasts, one stop when it ends or Sora is knocked out; bank 2 sound 9 is `PlaySe::number(2009)`.
+    #[test]
+    fn the_danger_alarm_starts_once_and_stops_when_danger_ends() {
+        let st = |hp: i32, ko: bool| PanelState::of(hp, 20, ko);
+        let mut alarm = false;
+        assert_eq!(alarm_step(&mut alarm, st(20, false)), None);
+        assert_eq!(alarm_step(&mut alarm, st(6, false)), None, "6 > 20 >> 2: no danger");
+        assert_eq!(alarm_step(&mut alarm, st(5, false)), Some(true), "5 <= 5: danger starts the alarm");
+        assert_eq!(alarm_step(&mut alarm, st(3, false)), None, "a second hit in danger: nothing new");
+        assert_eq!(alarm_step(&mut alarm, st(4, false)), None, "a heal that stays in danger: nothing");
+        assert_eq!(alarm_step(&mut alarm, st(12, false)), Some(false), "healed out of danger: the stop");
+        assert_eq!(alarm_step(&mut alarm, st(2, false)), Some(true));
+        assert_eq!(alarm_step(&mut alarm, st(0, true)), Some(false), "knocked out: the stop (0x157310's first branch)");
+        assert_eq!(alarm_step(&mut alarm, st(0, true)), None);
+        assert_eq!(DANGER_ALARM_SE, 2000 + 9);
     }
 }

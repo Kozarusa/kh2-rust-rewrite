@@ -1060,6 +1060,21 @@ impl CoreEnv<'_> {
                 return Ok(None);
             }
 
+            // 1.141 probe_ground_down (FUN_00172538 -> FUN_001a5c30(distance, 0, point, out, mask 4)): the
+            // host answers the point found (`Value::Vec`, game space) or anything else for "nothing below".
+            // The found point, or the point itself, goes through the second argument, which is the script's
+            // own memory (MAGNET_*.mag passes a stack local), and the return is 1 or 0 (WP-F1 item 1).
+            (1, 141) => {
+                let from = self.vec(mem, a[0])?;
+                let call = Call::Func { group: g, index: i, args: self.decode_args(mem, "vpf", a)? };
+                let (found, point) = match self.host.call(&call) {
+                    Value::Vec(p) => (true, p),
+                    _ => (false, from),
+                };
+                HostVec(&mut *self.host).write_vec(mem, a[1], point)?;
+                return Ok(Some(found as u32));
+            }
+
             // Everything else that has been named is decoded by its kinds.
             _ => match names::lookup(g, i) {
                 Some(f) => Call::Func { group: g, index: i, args: self.decode_args(mem, f.kinds, a)? },

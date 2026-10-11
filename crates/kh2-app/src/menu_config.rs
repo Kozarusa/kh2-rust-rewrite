@@ -417,14 +417,14 @@ fn input(
         if before != page.ui {
             info!("menu: config row {row} -> {} ({imm:?})", page.ui[row]);
         }
-        se.write(PlaySe::number(menu_sound::CURSOR, None));
+        menu_sound::play(&mut se, menu_sound::CURSOR);
         show_rows(&mut scene, &page, menu.nodes.help);
     } else if let Some(wrap) = step {
         let new = super::step_cursor(page.cursor, ROWS, dir, wrap);
         if new != page.cursor {
             page.cursor = new;
             info!("menu: config cursor {new}");
-            se.write(PlaySe::number(menu_sound::CURSOR, None));
+            menu_sound::play(&mut se, menu_sound::CURSOR);
             if new < page.scroll {
                 page.scroll = new;
             } else if new >= page.scroll + VISIBLE {
@@ -445,7 +445,7 @@ fn enter(menu: &mut Menu, scene: &mut MenuScene, page: &mut ConfigPage, se: &mut
     page.scroll = 0;
     page.held = (0, 0.0);
     menu.page = PAGE;
-    se.write(PlaySe::number(CONFIRM, None));
+    menu_sound::play(se, CONFIRM);
     // The list of page 0 gives way to the page; the cards that were showing come back with it.
     let n = &menu.nodes;
     for &r in &n.rows {
@@ -483,7 +483,7 @@ fn leave(menu: &mut Menu, scene: &mut MenuScene, page: &mut ConfigPage, se: &mut
         super::close(menu, scene, se, true);
         return;
     }
-    se.write(PlaySe::number(menu_sound::CANCEL, None));
+    menu_sound::play(se, menu_sound::CANCEL);
     // Page 0 comes back with its cursor where it was.
     let n = &menu.nodes;
     for (k, &r) in n.rows.iter().enumerate() {

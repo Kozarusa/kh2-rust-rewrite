@@ -128,6 +128,9 @@ pub struct Member {
     /// The record's words at +0x20 and +0x24, which the game copies to the object's spawn
     /// parameters 1 and 2 (FUN_0016b870; host 1.39).
     pub spawn_params: [i32; 2],
+    /// The record's `00objentry` id (`FUN_001699a8` answers it for the object; the form experience of a
+    /// defeat, `prize::defeat_exp`, is keyed by it).
+    pub object_id: u32,
 }
 
 /// A spawn group of the area's battle script that holds enemies the app has.
@@ -206,6 +209,7 @@ pub fn area_groups(disc: &Disc, area: &str) -> Vec<AreaGroup> {
                             yaw: std::f32::consts::PI - e.rotation[1],
                             spawn_kind: e.spawn_kind as i32,
                             spawn_params: [0x20, 0x24].map(|o| i32::from_le_bytes(e.raw[o..o + 4].try_into().unwrap_or_default())),
+                            object_id: e.object,
                         });
                     }
                     None if row.object_type == OBJECT_ENEMY => g.skipped.push(row.model_name.clone()),
@@ -257,6 +261,8 @@ pub struct Enemy {
     /// The lowest HP a hit can leave (word 2 of the HP record of the status block, which the game's
     /// HP change FUN_001a0100 clamps to; scripts set it with host 1.231). 0 unless a script sets it.
     pub min_hp: i32,
+    /// The `00objentry` id of the spawn record (`Member::object_id`); 0 for the harness's own waves.
+    pub object_id: u32,
 }
 
 impl Enemy {
@@ -334,7 +340,7 @@ fn spawn_enemy(
     rig: Arc<Rig>,
     at: Vec3,
     yaw: f32,
-    (spawn_kind, spawn_params): (i32, Option<[i32; 2]>),
+    (spawn_kind, spawn_params, object_id): (i32, Option<[i32; 2]>, u32),
     data: &GameData,
     assets: (&mut Assets<Mesh>, &mut Assets<StandardMaterial>, &mut Assets<Image>, &mut Assets<SkinnedMeshInverseBindposes>),
 ) {
@@ -362,6 +368,7 @@ fn spawn_enemy(
             spawn_kind,
             spawn_params,
             min_hp: 0,
+            object_id,
         },
         Fighter { team: Team::Enemy, attack_bodies: vec![body], hurt_body: body, landed: Default::default(), hittable: false },
     ));
@@ -443,7 +450,7 @@ pub fn spawn_waves(
             // On the floor under the record's point (the record's height is the game's own floor).
             let y = col.ground_m(m.at.x, m.at.z, m.at.y + 1.0).unwrap_or(m.at.y);
             let at = m.at.with_y(y);
-            spawn_enemy(&mut commands, m.kind, rig, at, m.yaw, (m.spawn_kind, Some(m.spawn_params)), &data, (&mut meshes, &mut materials, &mut images, &mut bindposes));
+            spawn_enemy(&mut commands, m.kind, rig, at, m.yaw, (m.spawn_kind, Some(m.spawn_params), m.object_id), &data, (&mut meshes, &mut materials, &mut images, &mut bindposes));
         }
         // The program's mission command (opcode 0x15) creates the mission manager (WP-7E, struggle.rs).
         if let Some((id, name)) = &g.mission {
@@ -471,7 +478,7 @@ pub fn spawn_waves(
         let kind: &'static Kind = if waves.count > 1 && i == 0 { &SOLDIER } else { &SHADOW };
         let Some(rig) = rigs.get(kind) else { continue };
         let yaw = { let d = p.translation - Vec3::new(x, y, z); f32::atan2(d.x, d.z) };
-        spawn_enemy(&mut commands, kind, rig, Vec3::new(x, y, z), yaw, (-1, None), &data, (&mut meshes, &mut materials, &mut images, &mut bindposes));
+        spawn_enemy(&mut commands, kind, rig, Vec3::new(x, y, z), yaw, (-1, None, 0), &data, (&mut meshes, &mut materials, &mut images, &mut bindposes));
     }
 }
 
@@ -619,7 +626,27 @@ fn row_damage<'a>(data: &'a GameData, h: &Hit, from: &Stats, to: &Stats) -> Opti
     Some((atk, data.damage(atk, from, to)))
 }
 
-/// Sora's hits on enemies: damage, then the victim reaction of the attack row
+/// A party member's stats for the damage formula, from its saved record (`Progress::member`: strength,
+/// magic, defense, level, maximum HP). [inferred] The equipment pass of the status rebuild is not applied:
+/// the hand-0 weapon's attack and magic (`item_stat`) are not added, unlike Sora's keyblade in
+/// `GameData::sora_stats`.
+fn member_stats(progress: Option<&crate::progress::Progress>, neo: u16) -> Option<Stats> {
+    let m = progress?.member(neo)?;
+    Some(Stats {
+        level: m.level as i32,
+        max_hp: m.hp_max as i32,
+        strength: m.strength as i32,
+        magic: m.magic as i32,
+        defense: m.defense as i32,
+        max_taken: i32::MAX,
+        min_taken: 1,
+        max_dealt: i32::MAX,
+        min_dealt: 0,
+        weakness: [100; 7],
+    })
+}
+
+/// Sora's and the party's hits on enemies: damage, then the victim reaction of the attack row
 /// (`reaction_rules::victim_outcome`): nothing, a push, a flinch, a flinch with a push, or a blow.
 #[allow(clippy::too_many_arguments)]
 pub fn receive_hits(
@@ -637,10 +664,18 @@ pub fn receive_hits(
     drive: (Option<Res<crate::drive::DriveRules>>, Option<Res<crate::drive::DriveState>>),
     abilities: Option<Res<crate::abilities::Abilities>>,
     (pull_data, spells, mut rng): (Option<Res<PullData>>, Option<Res<crate::magic::SpellAttacks>>, Local<PullRng>),
+    (members, progress, mut form_exp): (Query<&crate::party::PartyMember>, Option<Res<crate::progress::Progress>>, MessageWriter<crate::prize::FormExpGain>),
 ) {
-    let from = sora.single().map(|s| (s.stats, s.hits)).ok();
+    let sora_from = sora.single().map(|s| (s.stats, s.hits)).ok();
     let Some(reaction) = reaction else { return };
     for h in hits.read() {
+        // The attacker's stats: Sora's, or the party member's own record (WP-F1 item 5; the game's damage
+        // formula FUN_001a0610 reads the attacker's status block +0x188 / +0x18a, rebuilt from the saved
+        // record by FUN_0019fd30 -> FUN_0019f920). A member's hit carries no combo count.
+        let from = match members.get(h.attacker) {
+            Ok(m) => member_stats(progress.as_deref(), m.neo).map(|s| (s, 0)),
+            Err(_) => sora_from,
+        };
         let (Ok((mut e, mut f, status)), Some((from, combo_hits))) = (q.get_mut(h.target), from) else { continue };
         if !e.alive() {
             continue;
@@ -656,7 +691,22 @@ pub fn receive_hits(
             dmg = crate::abilities::attacker_bonuses(ab.block(), combo_hits, atk, dmg);
         }
         // FUN_001a0100: the new HP is held between word 2 (`min_hp`) and the maximum.
+        let was_alive = e.hp > 0;
         e.hp = (e.hp - dmg).max(e.min_hp);
+        // Form experience (WP-F1 item 7): the enemies' hit method (0x1849d8) calls FUN_001d4078 for the hit
+        // (Valor, the attacker the player: +0x588 bit 0x80, in the object list per FUN_0019a3f8), and the
+        // defeat method FUN_00184a30 calls FUN_001d40e0(object id) when the player defeated it.
+        if members.get(h.attacker).is_err()
+            && let Some(state) = &drive.1
+        {
+            let form = state.object_form();
+            let hit_exp = crate::prize::valor_hit_exp(form);
+            let defeat = if was_alive && e.hp <= 0 { crate::prize::defeat_exp(form, e.object_id) } else { 0 };
+            for amount in [hit_exp, defeat].into_iter().filter(|&a| a > 0) {
+                info!("{} hit by Sora in form {form}: form experience +{amount} (FUN_001d4078 / FUN_001d40e0, object {:#x})", e.name, e.object_id);
+                form_exp.write(crate::prize::FormExpGain { form, amount });
+            }
+        }
         if e.hp == 0 && e.kind.death_effect {
             // The damage method starts the death at the moment HP reaches 0 (FUN_00186530 -> the
             // `dead` mode); a second request for the same victim is ignored by `fx`.

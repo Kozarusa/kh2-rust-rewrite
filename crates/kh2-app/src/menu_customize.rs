@@ -671,7 +671,7 @@ fn input(
     let (Some(md), Some(p)) = (magic.as_deref(), progress.as_deref()) else {
         // Without the spell tables the page cannot name a spell command: the row refuses like the others.
         if st.machine.is_none() && menu.page == 0 && menu.current_entry() == Some(ENTRY) && keys.just_pressed(KeyCode::KeyJ) {
-            se.write(PlaySe::number(snd::REFUSED, None));
+            crate::menu::menu_sound::play(&mut se, snd::REFUSED);
             keys.reset_all();
         }
         return;
@@ -687,7 +687,7 @@ fn input(
         st.machine = Some(Machine::new(rows, cands));
         st.held = (0, 0.0);
         enter(&mut st, &mut menu, &mut scene);
-        se.write(PlaySe::number(snd::CONFIRM, None));
+        crate::menu::menu_sound::play(&mut se, snd::CONFIRM);
         keys.reset_all();
         redraw(&mut st, &items, &mut scene, p, &cmds);
         return;
@@ -703,7 +703,7 @@ fn input(
         for e in fx {
             match e {
                 Effect::Sound(n) => {
-                    se.write(PlaySe::number(n, None));
+                    crate::menu::menu_sound::play(&mut se, n);
                 }
                 Effect::Page(page) => {
                     menu.page = page;

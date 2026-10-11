@@ -780,7 +780,11 @@ pub fn hit_sparks(
         }
         let pax = spell.or_else(|| {
             fighters.get(h.attacker).ok().and_then(|f| match f.team {
-                Team::Player => Some(lib.keyblade.clone()),
+                // Sora's keyblade, or a party member's own weapon (its `attack_bodies` are the body, then
+                // the hand objects; `party::spawn_party` registers the weapon's effect file); a member
+                // whose weapon has no effect file falls back to the keyblade's [WP-F1 item 5].
+                Team::Player if sora.get(h.attacker).is_ok() => Some(lib.keyblade.clone()),
+                Team::Player => f.attack_bodies.get(1).and_then(|b| anims.get(*b).ok()).and_then(|a| lib.for_rig(&a.rig)).cloned().or_else(|| Some(lib.keyblade.clone())),
                 Team::Enemy => f.attack_bodies.first().and_then(|b| anims.get(*b).ok()).and_then(|a| lib.for_rig(&a.rig)).cloned(),
             })
         });

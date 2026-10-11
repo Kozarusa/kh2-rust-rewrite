@@ -678,7 +678,7 @@ fn run(
                 if cast.vm.is_some() {
                     mlog!("magic(vm): {} event 20 runs in the interpreter", row.file_name);
                     let target = target_point(cast.target);
-                    let mut ctx = VmCtx { commands: &mut commands, game: &game, frames: &frames, running: &mut running, attacks: &mut st.attacks, next: &mut st.next_group, body: body_e, world: &mut st.vm_world, target };
+                    let mut ctx = VmCtx { commands: &mut commands, game: &game, frames: &frames, running: &mut running, attacks: &mut st.attacks, next: &mut st.next_group, body: body_e, world: &mut st.vm_world, map: world.as_deref(), target };
                     vm_slice(&mut cast, &mut ctx, airborne, true);
                 }
                 st.casts.push(cast);
@@ -786,7 +786,7 @@ fn run(
         let im = in_motion(c);
         if c.vm.as_ref().is_some_and(|v| !v.ran) {
             let target = target_point(c.target);
-            let mut ctx = VmCtx { commands: &mut commands, game: &game, frames: &frames, running: &mut running, attacks: &mut st.attacks, next: &mut st.next_group, body: body_e, world: &mut st.vm_world, target };
+            let mut ctx = VmCtx { commands: &mut commands, game: &game, frames: &frames, running: &mut running, attacks: &mut st.attacks, next: &mut st.next_group, body: body_e, world: &mut st.vm_world, map: world.as_deref(), target };
             vm_slice(c, &mut ctx, airborne_now, im);
         }
         if let Some(v) = c.vm.as_mut() {
@@ -1725,6 +1725,8 @@ struct SpellHost<'a> {
     /// The command's target record's point (Bevy space), when the cast has a living target.
     target: Option<Vec3>,
     world: &'a mut VmWorld,
+    /// The area's collision, for the ground probe of host 1.141 (`FUN_001a5c30` with mask 4).
+    map: Option<&'a crate::world::World>,
     vm_attacks: &'a mut Vec<Option<usize>>,
     /// Byte +0xa4 of each attack handle (host 2.66): the clashes it had (FUN_0018d430).
     clashes: Vec<u8>,
@@ -1743,11 +1745,22 @@ impl<'a> SpellHost<'a> {
         frames: &'a Frames,
         target: Option<Vec3>,
         world: &'a mut VmWorld,
+        map: Option<&'a crate::world::World>,
         vm: &'a mut VmCast,
         clashes: Vec<u8>,
     ) -> (SpellHost<'a>, &'a mut kh2_bdx::Runtime) {
-        let host = SpellHost { airborne, motion_state: in_motion as i32, kind, magi, pax, frames, target, world, vm_attacks: &mut vm.attacks, clashes, missing: &mut vm.missing, reqs: Vec::new() };
+        let host = SpellHost { airborne, motion_state: in_motion as i32, kind, magi, pax, frames, target, world, map, vm_attacks: &mut vm.attacks, clashes, missing: &mut vm.missing, reqs: Vec::new() };
         (host, &mut vm.rt)
+    }
+
+    /// Host 1.141 `probe_ground_down(point, out, distance)`: `FUN_001a5c30(distance, 0, point, out, 4)`, a
+    /// collision probe from the point straight down by the distance against the polygons of mask 4
+    /// (the floor the player falls onto). Game space in and out; `None` when nothing is below.
+    fn probe_ground_down(&self, from: [f32; 4], down: f32) -> Option<[f32; 4]> {
+        // Game space (cm, Y down, Z mirrored) to the collision world's (cm, Y up).
+        let p = Vec3::new(from[0], -from[1], -from[2]);
+        let g = self.map?.ground(Vec3::new(p.x, 0.0, p.z), p.y, down.max(0.0))?;
+        Some([from[0], -g.y, from[2], 1.0])
     }
 
     fn effect(&self, h: u32) -> Option<usize> {
@@ -1806,15 +1819,25 @@ impl kh2_bdx::host::Host for SpellHost<'_> {
             // 1.138 (FUN_00173948, not in the decompilation): element `id` started unbound; the scripts
             // place it next with 0.38 [inferred from the use: Thunder, Cure, Magnet].
             Call::Unknown { group: 1, index: 138, args } if args.len() >= 2 => self.new_effect(args[1] as u16, true),
-            // 1.141 `probe_ground_down` (FUN_00172538 -> FUN_001a5c30): the found point goes through the
-            // second argument, a pointer into the script's own stack (MAGNET_*.mag passes local+0x20),
-            // which a host cannot write: the interpreter keeps that memory and `Host::write_mem` only
-            // gets addresses outside it. Answered "no ground" (the place stays the target's position,
-            // not `magi` +0x3c above the ground) [GAP: needs the runtime to write a host call's output
-            // vector, see docs/magic.md].
-            Call::Func { group: 1, index: 141, .. } => {
-                self.missing.insert("1.141 (answered: no ground; its output pointer is script stack)".into());
-                Value::Int(0)
+            // 1.141 `probe_ground_down` (FUN_00172538 -> FUN_001a5c30 with mask 4): the runtime's own arm
+            // decodes the point and the distance, writes the answer through the second argument (the
+            // script's stack local, MAGNET_*.mag local+0x20) and returns 1 or 0; this host only answers
+            // the point found (WP-F1 item 1; before it the call was answered "no ground").
+            Call::Func { group: 1, index: 141, args } => {
+                let from = match args.first() {
+                    Some(Arg::Vec(v)) => *v,
+                    _ => [0.0; 4],
+                };
+                match self.probe_ground_down(from, float(args, 2)) {
+                    Some(p) => {
+                        mlog!("magic(vm): 1.141 ground probe from ({:.0} {:.0} {:.0}) down {:.0}: floor at y {:.0} (game space)", from[0], from[1], from[2], float(args, 2), p[1]);
+                        Value::Vec(p)
+                    }
+                    None => {
+                        mlog!("magic(vm): 1.141 ground probe from ({:.0} {:.0} {:.0}) down {:.0}: no ground{}", from[0], from[1], from[2], float(args, 2), if self.map.is_none() { " (no collision world)" } else { "" });
+                        Value::Int(0)
+                    }
+                }
             }
             // 1.187 / 1.188: bit 3 of the global flag word 0x35d268, set around Final's extra Magnet
             // attack; its readers were not traced [GAP], so nothing changes in the app.
@@ -1965,6 +1988,8 @@ struct VmCtx<'a, 'w, 's, 'rw, 'rs> {
     next: &'a mut u32,
     body: Entity,
     world: &'a mut VmWorld,
+    /// The area's collision (host 1.141).
+    map: Option<&'a crate::world::World>,
     /// The cast's target point (Bevy space).
     target: Option<Vec3>,
 }
@@ -1978,7 +2003,7 @@ fn vm_slice(c: &mut Cast, ctx: &mut VmCtx, airborne: bool, in_motion: bool) {
     let (Some(vm), Some(pax)) = (c.vm.as_mut(), c.pax.clone()) else { return };
     vm.ran = true;
     let clashes: Vec<u8> = vm.attacks.iter().map(|a| a.map_or(0, |i| ctx.attacks[i].clashes)).collect();
-    let (mut host, rt) = SpellHost::new(airborne, in_motion, c.kind, &c.magi, &pax, ctx.frames, ctx.target, ctx.world, vm, clashes);
+    let (mut host, rt) = SpellHost::new(airborne, in_motion, c.kind, &c.magi, &pax, ctx.frames, ctx.target, ctx.world, ctx.map, vm, clashes);
     rt.update(&mut host);
     let reqs = std::mem::take(&mut host.reqs);
     for e in std::mem::take(&mut rt.core.errors) {
@@ -2071,7 +2096,7 @@ mod tests {
     /// One slice of a spell script with the app's host, outside the ECS (tests).
     #[allow(clippy::too_many_arguments)]
     fn test_slice(vm: &mut VmCast, world: &mut VmWorld, airborne: bool, in_motion: bool, kind: u32, magi: &MagiRow, pax: &Arc<LoadedPax>, frames: &Frames, target: Option<Vec3>, clashes: Vec<u8>) -> Vec<VmReq> {
-        let (mut host, rt) = SpellHost::new(airborne, in_motion, kind, magi, pax, frames, target, world, vm, clashes);
+        let (mut host, rt) = SpellHost::new(airborne, in_motion, kind, magi, pax, frames, target, world, None, vm, clashes);
         rt.update(&mut host);
         assert!(rt.core.errors.is_empty(), "{:?}", rt.core.errors);
         host.reqs

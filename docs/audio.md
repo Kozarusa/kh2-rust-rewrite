@@ -323,6 +323,7 @@ Status words as above; nobody has listened to any of this.
   not decoded); (2) no map PAX of tt01, tt02, tt04, tt05, tt10 has an element whose category selects dust
   (tt02: all categories 0; tt04/05: 0 and 0x8000000000000001; tt10: 0x200 damage categories), so the
   lookup never starts anything on these areas: either the effects live elsewhere or the manager is not the
+<<<<<<< HEAD
   map's PAX. Test `foot_dust_starts_the_area_effect_at_the_ground_under_the_foot` reports this and returns.
 
 ## Sound viewer: how to use (WP-SV1; the app's own developer tool, not in the original)
@@ -388,3 +389,23 @@ Tests (`cargo test -p kh2-app soundtest`): `soundtest_step_skips_empty_ids`, `so
 `soundtest_jumps_by_10_and_100`, `soundtest_bank_step_wraps_and_lands_on_first_filled`,
 `soundtest_step_entry_edge_cases`. Added for it: `Driver::stop_se` (keys the sound's notes off and drops
 its player) and `Vsb::line_info` (size and rate of a line without decoding it).
+=======
+  map's PAX. Test `foot_dust_starts_the_area_effect_at_the_ground_under_the_foot` reports this and returns.
+
+## The danger alarm (WP-F1 item 13; verified in the decompilation, implemented; nobody has listened)
+
+The HP panel sounds an alarm while Sora's HP is in danger (`hp <= max >> 2`, `FUN_001a0be0`). Start
+`FUN_002c1528`: sets `DAT_0036f58c`, `FUN_002c14a8(9, 0)` -> `FUN_002be49c(2, 9, 0, 0x3fff, 0x40)`: system
+bank 2, sound 9, full volume, centre pan (the app's `PlaySe::number(2009)`, `hud_gauge::DANGER_ALARM_SE`).
+Stop `FUN_002c1550`: clears the flag, `FUN_002c14f0(9, 0x3c, 0)` -> `FUN_002be5dc(2, 9, 0, -1, 0x3c)`: a fade
+of 0x3c frames. The rule (`hud_gauge::alarm_step`): without an event `FUN_00157310` starts it when not knocked
+out (`FUN_00166710`), the alarm silent (`FUN_002c1518`) and in danger (`FUN_001666e8`), stops it when it sounds
+and the danger is over or Sora is knocked out; the hit handler `FUN_00157040` starts it when the hit leaves the
+panel in state 1 (`FUN_00157cf0`) with the alarm silent; the heal handler `FUN_00157108` stops it when the heal
+ends the danger. Other stops: `FUN_001573c8`, `FUN_002c0d00`, `FUN_002c10b0`, `FUN_002c11e0`, `FUN_002c57b8`
+(panel teardown and sound-system resets, not read further). Port: one `PlaySe::number(2009)` per start, log
+`hud: danger alarm starts (0x2c1528: bank 2 sound 9, hp N/M)`; the stop is logged only (`hud: danger alarm
+stops`): the app's mixer has no stop or fade for a sound effect, so a looping sample would run once through.
+Test `the_danger_alarm_starts_once_and_stops_when_danger_ends`. Harness: `KH2_SOUNDLOG=1 KH2_HUDHP=7:2`
+(the panel's displayed HP drops into danger at 7 s): `se 2:9 (-) volume 0x3fff pan 0x40 playing`.
+>>>>>>> wp/F1r

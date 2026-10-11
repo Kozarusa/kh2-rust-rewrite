@@ -928,7 +928,7 @@ fn act(
     mut sora: Query<&mut Sora>,
     mut anims: Query<&mut Animator>,
     mut running: Query<&mut crate::fx::RunningEffect>,
-    party: Query<(Entity, &PartyMember, Option<&Away>)>,
+    mut party: Query<(Entity, &mut PartyMember, Option<&Away>)>,
     mut objects: Query<&mut SummonObject>,
     gfx: Gfx,
 ) {
@@ -1006,13 +1006,43 @@ fn act(
                 }
             }
             Act::CompanionsBack { frames, alpha } => {
-                for (e, m, away) in &party {
+                for (e, mut m, away) in &mut party {
                     if away.is_some() {
+                        // FUN_001c7ab0 -> FUN_0017d290(lift, min, max, member, no hint): the member is re-created
+                        // at a free spot (FUN_001a5ea8: the same search as the summon's spot, `spot_start` /
+                        // `spot_find`) between `ret_spot` units from the player, searched from `ret_lift` above
+                        // him, facing him (FUN_003003e8 of the difference -> FUN_0010be80) [WP-F1 item 4; the
+                        // collision stand-ins are those of the summon's spot below].
+                        let mut at = s.motor.pos;
+                        if let Some(c) = data.consts {
+                            let origin = s.motor.pos + Vec3::Y * c.ret_lift;
+                            let mut rng = sm.rng;
+                            let mut sector = sm.sector;
+                            let mut search = rules::spot_start(&c.search, &mut rng, &mut sector, c.ret_spot[0], c.ret_spot[1], to_game(origin), 0x10000);
+                            let w = world.as_deref();
+                            let (up, down) = (c.search.probe[0].abs().min(c.search.probe[1].abs()), c.search.probe[0].abs().max(c.search.probe[1].abs()));
+                            let floor = |p: [f32; 4]| {
+                                let a = rules::app(p);
+                                w.and_then(|w| w.ground(a, a.y + up, up + down)).map(|g| to_game(a.with_y(g.y)))
+                            };
+                            let lift = Vec3::Y * c.search.radius_step;
+                            let clear = |from: [f32; 4], to: [f32; 4]| w.is_none_or(|w| w.raycast(rules::app(from) + lift, rules::app(to)).is_none());
+                            if let Some(p) = rules::spot_find(&c.search, &mut search, &floor, &clear) {
+                                at = rules::app(p);
+                            }
+                            sm.rng = rng;
+                            sm.sector = sector;
+                        }
+                        let to_player = (s.motor.pos - at).with_y(0.0);
+                        let yaw = if to_player.length_squared() > 1e-6 { to_player.x.atan2(to_player.z) } else { m.yaw() };
+                        m.place(at, yaw);
                         commands.entity(e).insert(Away { fade: Fade { from: 0.0, to: alpha, frames, t: 0.0 }, gone: false, returning: true });
                         commands.entity(e).insert(Visibility::Inherited);
                         info!(
-                            "summon: companions: {} comes back, fading in over {frames} frames (FUN_001c7ab0; placed where it followed, not at the free spot of FUN_0017d290: {:?} units from a point {} above the player)",
+                            "summon: companions: {} comes back at {:?} ({:.0} units from the player, FUN_0017d290: a free spot {:?} units away searched from {} above him), facing him, fading in over {frames} frames (FUN_001c7ab0)",
                             m.model,
+                            at,
+                            (at - s.motor.pos).with_y(0.0).length(),
                             data.consts.map(|c| c.ret_spot),
                             data.consts.map_or(0.0, |c| c.ret_lift)
                         );

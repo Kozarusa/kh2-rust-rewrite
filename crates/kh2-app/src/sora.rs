@@ -138,6 +138,11 @@ const TAP_TICKS: f32 = 10.0;
 /// 0x1000000 for it, which FUN_0017b6e0 and FUN_00169ee8 read together with bit 0x20 of trigger 3).
 const TRIGGER_NO_GRAVITY_30: u8 = 30;
 
+/// Range trigger 0x31 (49): FUN_00188030 case 0x31 sets bit 0x10 of the motion controller's third
+/// trigger word (actor +0x168); FUN_0017b9e0 and FUN_00183150 (the landing callbacks) play no landing
+/// motion while it is set, so the playing motion continues on the floor.
+const TRIGGER_NO_LANDING_MOTION_49: u8 = 49;
+
 /// The leap of an attack record (`ptya` record fields the selection does not use): FUN_00176050
 /// launches the actor's mover with it when `height` (+0xc) is above 0. Air attacks have one; ground
 /// attacks have none (all zero), except the ledge record key 1.
@@ -357,6 +362,26 @@ impl Pad {
     /// command with the same button, `magic.rs`). True when there was one.
     pub fn steal_attack(&mut self) -> bool {
         Pad::take(&mut self.attack)
+    }
+
+    /// The pad reads as untouched and its pending presses are dropped (WP-F1 item 2): while a mission
+    /// layout plays, the players lose control (`FUN_00196280` -> `FUN_001b7ce8`, read by `FUN_001b7d50`
+    /// through `FUN_001794f0`), and after the fight's stop (`FUN_001b9940`) every command is refused
+    /// (`FUN_001ba2c0` -> `FUN_001b70b8` answers 5) and the player's method +0x60 reports busy.
+    pub fn lock(&mut self) {
+        self.dir = Vec3::ZERO;
+        self.stick = 0.0;
+        self.jump_held = false;
+        self.square_held = false;
+        self.attack = 0;
+        self.jump = 0;
+        self.square = 0;
+        self.lock = 0;
+    }
+
+    /// A press is pending or a button is held.
+    pub fn any_input(&self) -> bool {
+        self.dir != Vec3::ZERO || self.stick > 0.0 || self.jump_held || self.square_held || self.attack > 0 || self.jump > 0 || self.square > 0 || self.lock > 0
     }
 }
 
@@ -1073,9 +1098,18 @@ pub fn tick(
     globals: Query<&GlobalTransform>,
     mut bodies: Query<&mut Transform, Without<Sora>>,
     mut vis: Query<&mut Visibility>,
+    mission: Option<Res<crate::struggle::Mission>>,
 ) {
     let (Ok((mut tf, mut s, mut fighter)), Some(world)) = (sora_q.single_mut(), world) else { return };
     let s = &mut *s;
+    // A playing mission layout or the fight's stop: no input reaches the controller (WP-F1 item 2).
+    let locked = mission.as_deref().is_some_and(|m| m.control_locked() || m.fight_stopped());
+    if locked {
+        if pad.any_input() && move_log() {
+            info!("move: input ignored: the mission's layout locks control or the fight stopped (FUN_001b7d50 / FUN_001b9940)");
+        }
+        pad.lock();
+    }
     // The target points of the enemies, for the attack table's range tests.
     let enemy_points: Vec<(Entity, Vec<TargetPoint>)> = enemies
         .iter()
@@ -1699,7 +1733,9 @@ pub fn tick(
         }
         State::Down => {
             s.motor.vel = Vec3::ZERO;
-            if s.timer > 180.0 {
+            // No revival while the mission holds the player: the original keeps Sora down through the
+            // result (docs/struggle.md), and the app's revival is its own stand-in for the game over.
+            if s.timer > 180.0 && !locked {
                 // KH2 shows the game-over screen here; kh2-rs revives in place.
                 s.hp = s.stats.max_hp;
                 s.invuln = 120.0;
@@ -1785,7 +1821,33 @@ pub fn tick(
             if hover_now { ", gravity held" } else { "" }
         );
     }
-    if landed && was_air {
+    if landed && was_air && matches!(s.state, State::Attack { .. }) {
+        // Landing in the middle of an air swing (WP-F1 item 10, user report: a landing lag after air
+        // attacks). The jump mover's landing callback (vtable 0x35cbe0 +0x14 = FUN_0017bab8 ->
+        // FUN_0017b9e0) plays the landing motion +0x104 (5, set by FUN_0017b1b0) with motion 0 queued
+        // behind it, and sets +0x108 bit 0x8000000, unless +0x168 bit 0x10 (range trigger 49) is set or
+        // +0x104 is negative. The landing motion replaces the swing, so the swing does not play out on
+        // the floor; the ground state's input rules apply from this tick. [inferred] that the attack
+        // command ends with its motion (the game's command object was not traced past the motion swap).
+        if body.trigger(TRIGGER_NO_LANDING_MOTION_49) {
+            if move_log() {
+                info!("move: landed during {} f{:.0}: range trigger 49 keeps the swing (FUN_0017b9e0 plays no landing motion)", body.tag(), body.frame);
+            }
+        } else {
+            if move_log() {
+                info!("move: landed during {} f{:.0}: the landing motion replaces the swing (FUN_0017b9e0: slot 5, then idle)", body.tag(), body.frame);
+            }
+            s.state = State::Ground;
+            s.timer = 0.0;
+            s.hits = 0;
+            s.finishers = 1;
+            s.queued_attack = false;
+            s.lunge_left = 0.0;
+            s.motor.vel = Vec3::ZERO;
+            body.restart(motion(id::LAND), false, 0.0);
+            weapon.play(None, true, BLEND_LOCOMOTION);
+        }
+    } else if landed && was_air {
         land(s, &mut body, motion(id::LAND), dir != Vec3::ZERO);
     } else if !s.motor.grounded && s.state == State::Ground {
         // Walked off a ledge.
@@ -2170,6 +2232,22 @@ mod tests {
         assert_eq!(dash_step(Dash::Run, false, 13.0, 4, 20.0), (Dash::Run, true));
         // Held without Quick Run learned: it ends as a roll.
         assert_eq!(dash_step(Dash::Pending, true, TAP_TICKS, 0, 2.0), (Dash::Roll, true));
+    }
+
+    /// WP-F1 item 2: while a mission layout locks the players (FUN_001b7d50) or the fight is stopped
+    /// (FUN_001b9940), the controller sees no stick and no press, pending presses included.
+    #[test]
+    fn a_locked_pad_reads_as_untouched() {
+        let mut pad = Pad { dir: Vec3::Z, stick: 1.0, jump_held: true, square_held: true, attack: 2, jump: 1, square: 1, lock: 1, ..Default::default() };
+        assert!(pad.any_input());
+        pad.lock();
+        assert!(!pad.any_input());
+        assert!(!Pad::take(&mut pad.attack) && !Pad::take(&mut pad.jump) && !Pad::take(&mut pad.square) && !Pad::take(&mut pad.lock));
+        assert_eq!((pad.dir, pad.stick, pad.jump_held, pad.square_held), (Vec3::ZERO, 0.0, false, false));
+        // The viewer keys are the harness's, not the game's: they stay.
+        pad.viewer = 1;
+        pad.lock();
+        assert!(Pad::take(&mut pad.viewer));
     }
 
     /// The decision table of a Square press on the ground: still / moving x Dodge Roll x Quick Run

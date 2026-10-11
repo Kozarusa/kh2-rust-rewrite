@@ -291,6 +291,21 @@ impl PartyMember {
     pub(crate) fn yaw(&self) -> f32 {
         self.motor.yaw
     }
+
+    /// Puts the member at `at` (game units, the app's axes) facing `yaw`, on the ground, with no
+    /// movement left: the re-creation of `FUN_0017d290` (`FUN_0010be80(yaw, object, entity, position)`)
+    /// after a summon (WP-F1 item 4). `follow_party` writes the transform from the motor.
+    pub(crate) fn place(&mut self, at: Vec3, yaw: f32) {
+        self.motor.pos = at;
+        self.motor.yaw = yaw;
+        self.motor.vel = Vec3::ZERO;
+        self.motor.grounded = true;
+        self.motor.jump = Default::default();
+        self.far = 0;
+        self.held = None;
+        self.attack = None;
+        self.want_yaw = None;
+    }
 }
 
 /// The player's objentry id in spawn records (`PLAYER`, FUN_0016e208).
@@ -366,6 +381,7 @@ fn spawn_party(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
+    mut lib: Option<ResMut<crate::fx::EffectLib>>,
 ) {
     let Some(w) = world else { return };
     if area.loaded == mgr.area {
@@ -442,6 +458,10 @@ fn spawn_party(
         match (data.weapon_files(&row, item, 0), weapon_bone(&row.model_name)) {
             (Some(files), Some(bone)) => match crate::drive::weapon_rig(&disc, &files) {
                 Some(wrig) => {
+                    // The weapon's own effect file (hit sparks come from the attacker's weapon, FUN_0018d090).
+                    if let Some(lib) = lib.as_deref_mut() {
+                        crate::drive::register_effects(&disc, lib, &wrig);
+                    }
                     let socket = commands.spawn((Transform::default(), Visibility::default(), ChildOf(body), MemberHand { body, bone })).id();
                     weapons.push(spawn_skinned(&mut commands, socket, wrig, &mut meshes, &mut materials, &mut images, &mut bindposes, 1.0));
                     info!("party: {} weapon {} (item {item}, motion set {:?}) on bone {bone}", row.model_name, files.model, files.mset);

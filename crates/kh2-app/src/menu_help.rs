@@ -178,7 +178,7 @@ fn input(
     }
     let confirm = keys.just_pressed(KeyCode::KeyJ);
     if confirm {
-        se.write(PlaySe::number(CONFIRM, None));
+        crate::menu::menu_sound::play(&mut se, CONFIRM);
         let Some(a) = help.active.as_mut() else { return };
         a.at += 1;
         if a.at < a.pages.len() {

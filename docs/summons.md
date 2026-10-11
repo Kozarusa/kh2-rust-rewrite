@@ -462,11 +462,19 @@ Tests: `summon_arrival_choice_follows_the_option_and_the_seen_bits`, `summon_gen
 
 Not done, and why:
 
-- The enemies' scripts keep running during the stop: `enemy_ai.rs` (not owned here) would have to skip an
-  enemy's tick while `SummonState::stop` is set. Their movement from the script therefore continues.
-- The companions come back where the party code left them (it keeps moving them while they are hidden):
-  `party.rs` has no way to place a member; FUN_0017d290's spot (200..300 units, searched from 100 units above
-  the player) needs a placement call there.
+- (Closed in WP-F1 item 3.) The enemies' scripts now get no tick while `SummonState::stop` is set: `enemy_ai::ai_update`
+  skips `Runtime::update` for every scripted enemy (the game's actor stop id 2 leaves the actor's update out, so its
+  script thread does not advance), logging `bdx: enemy scripts paused (summon arrival actor stop id 2, 0x35fec0 bit 3)`
+  once and `... resume` when the stop lifts; the trace of each enemy gets `summon arrival stop: no script tick`.
+- (Closed in WP-F1 item 4.) The companions come back at FUN_0017d290's spot: `PartyMember::place` (party.rs) puts
+  the member at the free spot the summon's own search finds (`spot_start` / `spot_find`, FUN_001a5ea8, with
+  `ret_spot` 200..300 units from a point `ret_lift` above the player; the collision stand-ins of the summon's
+  spot apply) facing the player (FUN_003003e8 -> FUN_0010be80), then fades in. Log: `summon: companions: <model>
+  comes back at .. (N units from the player, FUN_0017d290: ..), facing him, fading in over 15 frames`. Seen in
+  tt02 (`KH2_STATE` with item 25, `KH2_DRIVE_POINTS=5 KH2_SUMMON=3 KH2_SUMMON_AT=4 KH2_DISMISS_AT=12`): both members
+  come back at the same spot 200 units from the player: the search runs once per member in the same frame and
+  the first member placed is not an obstacle to the second [inferred; whether the game's FUN_001a5ea8 sees the
+  just-created member was not read].
 - The event that the `appear` mode and the thread wait for is never started (section 7), so the wait ends at once;
   the HUD layers 7..10 are not hidden. The fade list (FUN_0016ff50, FUN_0016f8e0, FUN_0016fb20) is not modelled.
 - The free-spot collision tests FUN_001a5c30 and FUN_001a5bf8 were not read: a floor under the point (`World::ground`)

@@ -142,6 +142,10 @@ therefore adds, on top of the new game and only where missing:
 - one spare Kingdom Key per form that takes one (Valor, Master, Final), then the four form items Valor..Final
   through the original's give, so `FUN_001a2010` hands each of those forms a Kingdom Key as before;
 - the items of magic slots 0..3 (Fire, Blizzard, Thunder, Cure) at count 1 (level 1);
+- (WP-F1 item 6) Donald's weapon word = item 75 and Goofy's = item 49 when they are 0 (`DONALD_STAFF`,
+  `GOOFY_SHIELD`): the original's new game leaves them 0 and their later writer was not found (docs/party.md
+  "Weapons"), so the members' hand objects (`FUN_0016ee98`) come from the baseline, logged as
+  `member 2 weapon item 75 equipped`;
 - the Kingdom Key in Sora's hand 0;
 - Guard equipped in Sora's ability list, unless `KH2_ABILITY_START=data`;
 - Dodge Roll growth level 1 (`Progress::dodge_roll`, the user's wish 2026-10-06). The USA disc has no Dodge

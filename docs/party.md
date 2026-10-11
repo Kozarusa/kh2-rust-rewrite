@@ -631,8 +631,18 @@ Not done or approximated in stage 2:
 - The combo follow-ups (FUN_0010c800 -> FUN_001b0758 not read): a chosen follow-up starts nothing.
 - Items, specials, Cure and the emergency pass (stage 4: they need the member's status block and the MP gate
   FUN_00110f90); they are never feasible here.
-- The members' damage uses Sora's stats (`enemy::receive_hits` takes the attacker's stats from Sora), and the
-  hit sparks use the keyblade's effect file (`fx::hit_sparks` for any player-team attacker).
+- (Closed in WP-F1 item 5.) A member's hit now uses the member's own record: `enemy::receive_hits` builds the
+  attacker's `Stats` from `Progress::member(neo)` (strength, magic, defense, level, max HP: the status block
+  +0x188 / +0x18a that `FUN_001a0610` reads is rebuilt from the saved record, `FUN_0019fd30` -> `FUN_0019f920`),
+  without the hand-0 weapon's attack and magic (`enemy::member_stats`; [inferred] gap: the rebuild's equipment
+  pass is not applied for the members, unlike Sora's keyblade in `GameData::sora_stats`); the combo count is
+  Sora's only for Sora's hits. The hit sparks come from
+  the member's weapon effect file (`fx::hit_sparks`: the first hand object's rig; `party::spawn_party` registers
+  `obj/W_EX020.apdx` / `obj/W_EX030.apdx` with `drive::register_effects`), the keyblade's when the weapon has
+  none. Log: `<enemy> hit: atkp N damage D ... (attacker Donald ...)` lines carry the damage.
+- (WP-F1 item 6.) The app baseline equips item 75 on Donald and item 49 on Goofy (`Progress::apply_baseline`,
+  constants `DONALD_STAFF` / `GOOFY_SHIELD`) when their weapon words are 0, so the weapons show without
+  `KH2_PARTY_WEAPONS`; the original's writer of those words is still not found (above).
 - The settings bytes (record +0xd4) are read as 0 (their new-game value).
 - FUN_00111040 forces motion state 0x1f only for classes 12, 15 and 16, so Donald and Goofy (classes 0, 1)
   may follow through FUN_0010e5e8's body (state 0) rather than FUN_0010e140 as stage 1 assumed; which state a

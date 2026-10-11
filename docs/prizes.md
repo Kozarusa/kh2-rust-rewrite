@@ -173,8 +173,14 @@ gets 1. `FUN_001d40e0(id, player)` is called from the defeat method `FUN_00184a3
 the player: in Wisdom Form an object id (`FUN_001699a8`) in 1000..=2011, in Final Form one in 3000..=4008, gives 1.
 Port: the rules `prize::valor_hit_exp`, `prize::defeat_exp` (test `form_experience_from_hits_and_defeats`) and the
 message `prize::FormExpGain { form, amount }`, applied by `run_prizes` while the player is in that form (log
-`prize: form experience +1 (Valor Form experience ..)`). The senders belong to the hit and defeat code (`enemy.rs`): not
-wired (outside this package's files).
+`prize: form experience +1 (Valor Form experience ..)`). Senders (WP-F1 item 7): `enemy::receive_hits` sends
+`valor_hit_exp` for every hit of Sora's that reaches an enemy and `defeat_exp(form, object id)` when his hit takes the
+enemy's HP to 0; the enemy's `00objentry` id travels from the spawn record (`Member::object_id`, `Enemy::object_id`;
+0 for the harness's own waves). Gates of `FUN_001d4078`: `FUN_0019a3f8(attacker)` = the attacker is in the object list
+(`FUN_001b80e8`, the chain from `DAT_01d5d7a0` through +0x8b4) and has neither +0x108 bit 0x80000 nor 0x10000000
+(`FUN_0019a440`), true for the live player; +0x588 bit 0x80 (the player) and +0xb50 == 1 (Valor): the app sends only
+for Sora's hits, so the gates hold by construction. `form_exp_test` (`KH2_FORMHITS`, `KH2_FORMDEFEATS`) stays as a
+harness aid.
 
 ## Dropped items (verified, ported in WP-7Bb)
 

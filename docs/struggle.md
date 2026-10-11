@@ -181,11 +181,16 @@ the field HUD and the mission HUD with the final score stay), a loss "YOU LOSE" 
 open. The area triggers of the `btl` program and of the `evt` program with the same id (0xb6: events 0x8b and 0x8d,
 jumps) do not take event 7 or 8, and the mission kind sends neither to the area anyway. So the HUD does not come
 down at the end: it stays until the menu ends the manager. **Gaps:** the menu of record 0x1a (`FUN_0024f330`, the
-pause-menu record table of `DAT_01d5df08`) is not in the app: the manager, its HUD and the frozen clock stay after
-the last step (log `struggle: last step (FUN_001b96e0): mission kind 2 opens the menu of record 0x1a`). The app's
-player controller does not read the layout's control lock nor the stop (`Mission::control_locked`,
-`Mission::fight_stopped`; outside this package's files): Sora can still move and attack during "STRUGGLE!" and the
-result, and the counters then change before the HUD shows (they do not after the stop). `FUN_001be6b8`,
+pause-menu record table of `DAT_01d5df08`) is not in the app. Since WP-F1 (item 16, user report: the Struggle UI
+lingered for ever) the last step ends the manager at once in its place (log `struggle: last step (FUN_001b96e0):
+mission kind 2 opens the menu of record 0x1a (FUN_0024f330), which the app does not have; the manager ends as if
+it had closed`, then `struggle: mission manager ended`): the counters, the frozen clock, the result picture, the
+orbs and the player lock go 1000 frames after the result layout started, as `FUN_001b90d0` removes them with the
+manager [inferred: what the game does when that menu closes was not read]. Since WP-F1 (item 2) the player
+controller reads the layout's control lock and the stop (`Mission::control_locked`, `Mission::fight_stopped`):
+`sora::tick` drops every press and the stick (`Pad::lock`) while either holds, and Sora does not revive from
+`State::Down` meanwhile; log (`KH2_MOVELOG=1`) `move: input ignored: the mission's layout locks control or the
+fight stopped (FUN_001b7d50 / FUN_001b9940)`; test `a_locked_pad_reads_as_untouched`. `FUN_001be6b8`,
 `FUN_001d4bf8`, `FUN_001adf78`, the pause-menu records 5 and 8, the start's `FUN_001d3688` / `FUN_001b9ae0`,
 `FUN_001d5048` (equips item 0x180 on 0x33fec0 for missions 0x128..0x12a) and `FUN_001d5320` (the reverse at the
 end) are not ported. Event skipping was not read.

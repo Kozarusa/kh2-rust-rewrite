@@ -43,10 +43,11 @@ pub struct Animator {
     pub finished: bool,
     /// Model-space bone matrices of the current (blended) pose.
     pub pose: Vec<Mat4>,
-    blend_from: Vec<(Vec3, Quat, Vec3)>,
-    blend_t: f32,
-    /// Crossfade length in ticks.
-    blend_len: f32,
+    /// The cross-fade from the pose drawn when the motion was requested (`kh2_anim::blend`).
+    blend: kh2_anim::blend::Blend,
+    /// True once a motion pose has been drawn (the controller's +0x104 bit 0): before it every
+    /// request is a cut.
+    posed: bool,
     /// Current root pose of the motion (zero when it has no root motion).
     pub root: kh2_anim::motion::RootPose,
     /// Root movement over the last tick: model-space translation and yaw.
@@ -58,7 +59,8 @@ pub struct Animator {
 }
 
 impl Animator {
-    /// Starts a motion slot. `blend` is the crossfade length in ticks (60 Hz).
+    /// Starts a motion slot. `blend` is the crossfade length in ticks (60 Hz); 2 or less is a cut
+    /// (`kh2_anim::blend`).
     pub fn play(&mut self, slot: Option<usize>, looping: bool, blend: f32) {
         if slot == self.slot && !self.finished && looping == self.looping && self.extra.is_none() {
             return;
@@ -81,9 +83,9 @@ impl Animator {
     }
 
     fn start(&mut self, slot: Option<usize>, looping: bool, blend: f32) {
-        self.blend_from = self.pose.iter().map(|m| m.to_scale_rotation_translation()).collect();
-        self.blend_t = 0.0;
-        self.blend_len = blend;
+        // FUN_0017dd38: the cross-fade starts from the pose drawn last (an interrupted blend's
+        // mixed pose included), or the request is a cut.
+        self.blend.start(self.posed.then_some(self.pose.as_slice()), blend);
         self.slot = slot;
         self.looping = looping;
         self.finished = false;
@@ -104,6 +106,20 @@ impl Animator {
 
     /// Advances one 60 Hz tick: frame, looping, and root movement.
     pub fn tick(&mut self) {
+        // While a blend runs the new motion is held at its start frame (FUN_0017e3b8 hands the
+        // start +0x38 to the trigger and root code while +0x34 > 0); the step that ends the blend
+        // runs it on by the time left over.
+        let mut step = self.speed;
+        if self.blend.active() {
+            match self.blend.advance(self.speed) {
+                None => {
+                    self.prev_frame = self.frame;
+                    self.root_delta = (Vec3::ZERO, 0.0);
+                    return;
+                }
+                Some(over) => step = over,
+            }
+        }
         // The first tick of a motion covers its first frame too (triggers at frame 0).
         self.prev_frame = if std::mem::take(&mut self.fresh) { self.frame - 1.0 } else { self.frame };
         let Some(m) = self.motion().cloned_meta() else {
@@ -112,7 +128,7 @@ impl Animator {
         };
         let before = self.root;
         let mut moved = (Vec3::ZERO, 0.0);
-        self.frame += m.fps / crate::data::LOGIC_HZ * self.speed;
+        self.frame += m.fps / crate::data::LOGIC_HZ * step;
         if self.frame >= m.end {
             if self.looping {
                 // Root motion up to the end, then from the loop point.
@@ -164,6 +180,16 @@ impl Animator {
 
     pub fn tag(&self) -> &str {
         self.extra.as_deref().or_else(|| self.slot.and_then(|s| self.rig.mset.get(s))).map_or("-", |s| s.tag.as_str())
+    }
+
+    /// Weight of the new motion in the drawn pose (1 when no blend runs).
+    pub fn blend_weight(&self) -> f32 {
+        self.blend.weight()
+    }
+
+    /// True while a cross-fade runs (the controller's +0x34 > 0, as `FUN_0017f400` tests it).
+    pub fn blending(&self) -> bool {
+        self.blend.active()
     }
 
     /// World-space matrix of a bone given the body's global transform.
@@ -220,9 +246,8 @@ pub fn spawn_skinned(
         speed: 1.0,
         looping: true,
         finished: false,
-        blend_from: Vec::new(),
-        blend_t: 1.0,
-        blend_len: 0.0,
+        blend: Default::default(),
+        posed: false,
         root: Default::default(),
         root_delta: (Vec3::ZERO, 0.0),
         rig_state: Default::default(),
@@ -263,41 +288,62 @@ impl Plugin for SkelPlugin {
 pub fn animate(mut q: Query<&mut Animator>, mut joints: Query<&mut Transform>) {
     for mut a in &mut q {
         let a = &mut *a;
-        a.tick();
-        if a.motion().is_none() {
+        if !step(a) {
             continue;
         }
-        let rig = a.rig.clone();
-        let extra = a.extra.clone();
-        let bones: &[Bone] = &rig.model.bones;
-        let motion = match &extra {
-            Some(x) => x.motion.as_ref(),
-            None => a.slot.and_then(|s| rig.mset.get(s)).and_then(|s| s.motion.as_ref()),
-        };
-        let mut pose = motion.map(|mo| mo.pose_with(bones, a.frame, &mut a.rig_state)).unwrap_or_else(|| a.pose.clone());
-        // Poses are kept relative to the motion's root: root motion moves the character
-        // instead, and crossfades between motions stay continuous.
-        if a.root != Default::default() {
-            let undo = (Mat4::from_translation(a.root.translation) * Mat4::from_rotation_y(a.root.yaw)).inverse();
-            for m in &mut pose {
-                *m = undo * *m;
-            }
-        }
-        if a.blend_t < 1.0 && !a.blend_from.is_empty() {
-            a.blend_t = if a.blend_len > 0.0 { (a.blend_t + 1.0 / a.blend_len).min(1.0) } else { 1.0 };
-            let s = a.blend_t * a.blend_t * (3.0 - 2.0 * a.blend_t);
-            for (p, (fs, fr, ft)) in pose.iter_mut().zip(&a.blend_from) {
-                let (ts, tr, tt) = p.to_scale_rotation_translation();
-                *p = Mat4::from_scale_rotation_translation(fs.lerp(ts, s), fr.slerp(tr, s), ft.lerp(tt, s));
-            }
-        }
-        for (j, m) in a.joints.iter().zip(&pose) {
+        for (j, m) in a.joints.iter().zip(&a.pose) {
             if let Ok(mut t) = joints.get_mut(*j) {
                 *t = Transform::from_matrix(*m);
             }
         }
-        a.pose = pose;
     }
+}
+
+/// One tick of one animator: advances the motion and builds the drawn pose into `a.pose`
+/// (false when no motion plays and the pose is left as it was).
+fn step(a: &mut Animator) -> bool {
+    a.tick();
+    if a.motion().is_none() {
+        return false;
+    }
+    let rig = a.rig.clone();
+    let extra = a.extra.clone();
+    let bones: &[Bone] = &rig.model.bones;
+    let motion = match &extra {
+        Some(x) => x.motion.as_ref(),
+        None => a.slot.and_then(|s| rig.mset.get(s)).and_then(|s| s.motion.as_ref()),
+    };
+    let mut pose = motion.map(|mo| mo.pose_with(bones, a.frame, &mut a.rig_state)).unwrap_or_else(|| a.pose.clone());
+    // Poses are kept relative to the motion's root: root motion moves the character
+    // instead, and crossfades between motions stay continuous.
+    if a.root != Default::default() {
+        let undo = (Mat4::from_translation(a.root.translation) * Mat4::from_rotation_y(a.root.yaw)).inverse();
+        for m in &mut pose {
+            *m = undo * *m;
+        }
+    }
+    // FUN_0017e928: while blending, the drawn pose mixes the pose seen at the request with
+    // the new motion (held at its start) by time / blend.
+    a.blend.apply(&mut pose);
+    pose_log(a, &pose);
+    a.pose = pose;
+    a.posed = true;
+    true
+}
+
+/// `KH2_POSELOG=<name>` (a substring of the rig's object name, e.g. `P_EX100`): one line per tick
+/// for each matching animator with its motion, frame, blend weight and the largest distance a
+/// bone origin moved since the last drawn pose (a pop shows as a spike).
+fn pose_log(a: &Animator, pose: &[Mat4]) {
+    static FILTER: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    let Some(f) = FILTER.get_or_init(|| std::env::var("KH2_POSELOG").ok().filter(|s| !s.is_empty())) else { return };
+    let name = a.rig.apdx.as_deref().unwrap_or("-");
+    if !name.contains(f.as_str()) {
+        return;
+    }
+    let d = kh2_anim::blend::max_bone_delta(&a.pose, pose);
+    let held = if a.blending() { " (held at start)" } else { "" };
+    info!("pose: {name} {} frame {:.2}{held} blend {:.3} max bone delta {d:.2}", a.tag(), a.frame, a.blend_weight());
 }
 
 struct Meta {
@@ -333,6 +379,110 @@ mod tests {
             *p = undo * *p;
         }
         pose
+    }
+
+    fn animator(rig: Arc<Rig>) -> Animator {
+        Animator {
+            pose: kh2_model::rest_pose(&rig.model.bones),
+            joints: Vec::new(),
+            slot: None,
+            frame: 0.0,
+            prev_frame: 0.0,
+            fresh: false,
+            speed: 1.0,
+            looping: true,
+            finished: false,
+            blend: Default::default(),
+            posed: false,
+            root: Default::default(),
+            root_delta: (Vec3::ZERO, 0.0),
+            rig_state: Default::default(),
+            extra: None,
+            rig,
+        }
+    }
+
+    /// G6: the motion controller's cross-fade through the one `Animator` path every actor uses, on
+    /// Sora's idle (motion 0), run (2) and first ground attack (A300). The first request of a
+    /// never-drawn object is a cut; idle to run with blend 8 (FUN_0017aeb8, `DAT_0037a4e4`) draws
+    /// the weights 2/8 .. 7/8 with run held at its start frame, and shows run's own start pose on
+    /// the sixth tick after the request; no tick moves a bone more than a quarter of the cut's
+    /// jump. A request during the blend starts from the pose drawn last (no pop).
+    #[test]
+    fn idle_to_run_cross_fades_from_the_drawn_pose() {
+        let Some(iso) = std::env::var("KH2_ISO").ok() else { return };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let mut read = |p: &str| a.read(p).unwrap_or_else(|e| panic!("{p}: {e}"));
+        let model = kh2_model::mdlx(&read("obj/P_EX100.mdlx")).unwrap();
+        let mset = Mset::parse(&read("obj/P_EX100.mset")).unwrap();
+        let state = kh2_anim::PlayerState::BattleWeapon;
+        let (idle, run) = (mset.slot(kh2_anim::id::IDLE, state).unwrap(), mset.slot(kh2_anim::id::RUN, state).unwrap());
+        let attack = mset.by_tag("A300").next().unwrap();
+        let rig = Arc::new(Rig { model, mset, apdx: None });
+        let start_pose = |slot: usize| {
+            let mo = rig.mset.get(slot).and_then(|s| s.motion.as_ref()).unwrap();
+            root_relative_pose(&rig.model, mo, mo.frame_start)
+        };
+        let mut an = animator(rig.clone());
+        an.restart(Some(idle), true, 8.0);
+        assert!(step(&mut an));
+        assert_eq!(an.blend_weight(), 1.0, "the first request of a never-drawn object is a cut");
+        for _ in 0..20 {
+            step(&mut an);
+        }
+        let seen = an.pose.clone();
+        let target = start_pose(run);
+        let cut = kh2_anim::blend::max_bone_delta(&seen, &target);
+        an.restart(Some(run), true, 8.0);
+        let run_start = an.frame;
+        let mut prev = seen.clone();
+        let mut weights = Vec::new();
+        let mut worst: f32 = 0.0;
+        for k in 0..6 {
+            step(&mut an);
+            weights.push(an.blend_weight());
+            assert_eq!(an.frame, run_start, "run held at its start while blending (tick {k})");
+            worst = worst.max(kh2_anim::blend::max_bone_delta(&prev, &an.pose));
+            prev = an.pose.clone();
+        }
+        assert_eq!(weights, vec![0.25, 0.375, 0.5, 0.625, 0.75, 0.875]);
+        step(&mut an);
+        assert!(!an.blending());
+        worst = worst.max(kh2_anim::blend::max_bone_delta(&prev, &an.pose));
+        let end = kh2_anim::blend::max_bone_delta(&an.pose, &target);
+        eprintln!("idle->run: cut jump {cut:.2}, largest blended step {worst:.2}, off run's start pose at the end {end:.4}");
+        assert!(end < 1e-3, "the blend ends on run's start pose");
+        assert!(cut > 1.0 && worst <= cut * 0.25 + 1e-3, "cut {cut} worst {worst}");
+
+        // Interrupted: two ticks into a new idle->run blend, the attack is requested.
+        an.restart(Some(idle), true, 0.0);
+        step(&mut an);
+        an.restart(Some(run), true, 8.0);
+        step(&mut an);
+        step(&mut an);
+        let seen = an.pose.clone();
+        an.restart(Some(attack), false, 8.0);
+        step(&mut an);
+        let jump = kh2_anim::blend::max_bone_delta(&seen, &an.pose);
+        let full = kh2_anim::blend::max_bone_delta(&seen, &start_pose(attack));
+        eprintln!("interrupted: first step {jump:.2} of {full:.2} to the attack's start pose");
+        assert!(jump <= full * 0.25 + 1e-3, "jump {jump} full {full}");
+    }
+
+    /// The blend constants `kh2_anim::blend` carries equal the executable's: the cut limit
+    /// `DAT_0037a58c` and the start time `DAT_0037a588` (both 2.0), and the locomotion blend
+    /// `DAT_0037a4e4` (8.0) Sora's idle/walk/run requests pass.
+    #[test]
+    fn blend_constants_match_the_executable() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let elf = crate::assets::Disc::open(&iso).read_root("SLUS_210.05").expect("exe");
+        let f = |va: u32| crate::party_rules::exe_bytes(&elf, va, 4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+        assert_eq!(f(0x37a58c), Some(kh2_anim::blend::CUT_MAX));
+        assert_eq!(f(0x37a588), Some(kh2_anim::blend::START));
+        assert_eq!(f(0x37a4e4), Some(8.0));
     }
 
     /// A343 (slot 776), "the keyblade shaft missing at motion frames 18 to 20" (WP-5A): skinned on the

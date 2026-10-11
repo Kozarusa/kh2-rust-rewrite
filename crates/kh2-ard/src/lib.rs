@@ -513,6 +513,34 @@ pub mod progress {
         }
         min / 2
     }
+
+    /// The BAR tag of the exit-lock table in `00progress.bin` (the first named entry FUN_0017fd10
+    /// looks up, string at 0x37a5e8; handed to FUN_001951f8, which keeps it at `DAT_01c8a988`).
+    pub const LOCK_TABLE: &str = "dsa";
+
+    /// FUN_00195208: the index of (world, area) in the lock table (`u16 count`, then one
+    /// `u8 world, u8 area` pair per lockable area; `lhu` / `lbu` loads at 0x195210..0x195230), or
+    /// `None` (the game's -1).
+    pub fn lock_index(table: &[u8], world: u8, area: u8) -> Option<usize> {
+        let count = u16::from_le_bytes([*table.first()?, *table.get(1)?]) as usize;
+        (0..count).find(|&i| table.get(2 + 2 * i) == Some(&world) && table.get(3 + 2 * i) == Some(&area))
+    }
+
+    /// FUN_00195358 for Twilight Town's worlds: an exit into (world, area) is locked when the area
+    /// is in the lock table and its save-block halfword (`0x33f918 + index * 4`, `word(index)`)
+    /// is not 0 (`lhu`, then `sltiu (v + 1), 2` / `movz`: every non-zero value, 0xffff included,
+    /// answers -2). With the halfword 0 the game also asks FUN_001d32c0 -> FUN_001d32e0, which
+    /// can lock only world 0x10 (a story-flag table at 0x37c528); that branch is not ported here
+    /// (`locked_world_0x10` is its answer, false outside that world). The halfword is written by
+    /// the flag side effects op 2 (FUN_00195260: state and the prompt's message), op 3
+    /// (FUN_00195288: 0), op 4 (FUN_001952a0: 0xffff and the world point bit) and op 5
+    /// (FUN_00195300: 0 and the world point bit).
+    pub fn exit_locked(table: &[u8], word: impl Fn(usize) -> u16, world: u8, area: u8, locked_world_0x10: bool) -> bool {
+        match lock_index(table, world, area) {
+            None => false,
+            Some(i) => word(i) != 0 || locked_world_0x10,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -578,6 +606,24 @@ mod tests {
         assert_eq!((e[0].opcode, e[0].data.len(), e[1].opcode), (0x15, 4, 0x0f));
         // A size that runs past the data is refused.
         assert!(parse_event(&[9, 0, 1, 0]).is_none());
+    }
+
+    #[test]
+    fn the_exit_lock_table_finds_areas_and_any_nonzero_word_locks() {
+        // count 2: (2, 4), (2, 7).
+        let t = [2, 0, 2, 4, 2, 7];
+        assert_eq!(progress::lock_index(&t, 2, 4), Some(0));
+        assert_eq!(progress::lock_index(&t, 2, 7), Some(1));
+        assert_eq!(progress::lock_index(&t, 2, 3), None);
+        assert_eq!(progress::lock_index(&[], 2, 4), None);
+        let words = [0u16, 0xffff];
+        let w = |i: usize| words[i];
+        assert!(!progress::exit_locked(&t, w, 2, 4, false));
+        assert!(progress::exit_locked(&t, w, 2, 7, false));
+        assert!(progress::exit_locked(&t, |_| 1, 2, 4, false));
+        // Not in the table: never locked (FUN_00195358 answers 0 for index -1).
+        assert!(!progress::exit_locked(&t, |_| 1, 2, 3, true));
+        assert!(progress::exit_locked(&t, w, 2, 4, true));
     }
 
     #[test]

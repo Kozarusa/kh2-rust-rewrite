@@ -24,7 +24,9 @@
 //! movement direction (`FUN_0019b110`, speed `+0x1c` above 0). Other values fail. The two
 //! constants are read from the executable. Exits also do nothing in battle state 2 unless their
 //! gate is 0 (`FUN_00198e10`, `FUN_001903c8`): not ported (the app has no battle state resource
-//! here). The lock `FUN_00195358` (0x33f918 and `FUN_001d32c0`) is not read: nothing is locked.
+//! here). The lock `FUN_00195358` is ported as `ExitLocks` (the `dsa` table of `00progress.bin`
+//! and the save-block halfwords at 0x33f918, all 0 in the app until E5 runs the story flags'
+//! ops 2..5; the world-0x10 branch `FUN_001d32c0` is not ported).
 
 use bevy::prelude::*;
 use kh2_ard::run::{Exit, Jump};
@@ -42,6 +44,7 @@ impl Plugin for AreaJumpPlugin {
         app.init_resource::<Exits>()
             .init_resource::<JumpTask>()
             .init_resource::<ExitConsts>()
+            .init_resource::<ExitLocks>()
             .add_systems(Startup, (load_consts, spawn_fader))
             .add_systems(FixedUpdate, tick.after(Sim::Sora).before(Sim::Enemy))
             .add_systems(Update, draw_fader.in_set(crate::schedule::Frame::Hud));
@@ -63,12 +66,45 @@ pub struct ExitConsts {
 
 const EXE_BIAS: usize = 0xff000;
 
-fn load_consts(disc: Res<Disc>, mut consts: ResMut<ExitConsts>) {
+fn load_consts(disc: Res<Disc>, mut consts: ResMut<ExitConsts>, mut locks: ResMut<ExitLocks>) {
+    if let Some(table) = disc.read("00progress.bin").and_then(|f| kh2_bar::parse(&f).ok()?.into_iter().find(|e| e.tag == kh2_ard::progress::LOCK_TABLE).map(|e| e.data.to_vec())) {
+        let n = table.get(..2).map_or(0, |b| u16::from_le_bytes([b[0], b[1]]) as usize);
+        locks.words = vec![0; n];
+        locks.table = table;
+        if area::arealog() {
+            info!("exits: lock table {} with {n} areas, every lock halfword 0 (no save block 0x33f918 in the app; flag ops 2..5 are E5)", kh2_ard::progress::LOCK_TABLE);
+        }
+    }
+    if area::arealog()
+        && let Some(f) = disc.read("field2d/us/tt0field.2dd")
+        && let Ok(bar) = kh2_bar::parse(&f)
+    {
+        let kinds: Vec<u32> = bar.iter().map(|e| e.kind as u32).collect();
+        info!("exits: fade kind 0 layout = slot {KEYHOLE_SLOT} of tt0field.2dd (image, sequence entries {:?}); not drawn, black stand-in", layout_slot(&kinds, KEYHOLE_SLOT));
+    }
     let Some(exe) = disc.read_root("SLUS_210.05") else { return };
     let f = |va: usize| exe.get(va - EXE_BIAS..va - EXE_BIAS + 4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
     *consts = ExitConsts { angle_base: f(0x37c714), min_dot: f(0x37b358) };
     if area::arealog() {
         info!("exits: gate constants angle base {:?} min dot {:?}", consts.angle_base, consts.min_dot);
+    }
+}
+
+/// The exit lock (`FUN_00195358`): the `dsa` table of `00progress.bin` (`DAT_01c8a988`) and one
+/// lock halfword per entry (the save block's `0x33f918 + index * 4`). The app has no save block
+/// there, so the halfwords stay 0 (open) until the story-flag side effects ops 2..5 are ported
+/// (E5) [inferred: a new game starts with them 0; the new-game initialiser was not read].
+#[derive(Resource, Default, Debug)]
+pub struct ExitLocks {
+    pub table: Vec<u8>,
+    pub words: Vec<u16>,
+}
+
+impl ExitLocks {
+    /// `FUN_00195358(world, area)` != 0. The world-0x10 branch (`FUN_001d32e0`, story flags) is
+    /// not ported: the app has only Twilight Town.
+    pub fn locked(&self, world: u8, area: u8) -> bool {
+        kh2_ard::progress::exit_locked(&self.table, |i| self.words.get(i).copied().unwrap_or(0), world, area, false)
     }
 }
 
@@ -87,6 +123,10 @@ pub struct ExitGroup {
     pub disabled: bool,
     /// The prompt was logged for the current stay in the prompt volume.
     pub prompting: bool,
+    /// App-only: a jump from this group failed (its destination is not on the disc or not in the
+    /// app), `fired` was cleared, and the group waits until Sora is outside all its volumes, so a
+    /// failed exit does not fire again every tick.
+    pub held: bool,
 }
 
 /// The exit groups of the loaded area.
@@ -94,6 +134,21 @@ pub struct ExitGroup {
 pub struct Exits {
     pub area: Option<String>,
     pub groups: Vec<ExitGroup>,
+    /// The id of the group whose walk-in started the running jump (cleared again if it fails).
+    pub jumping: Option<u16>,
+}
+
+/// The area a jump to `dest` loads: `None` (with the reason) when the app has no such area or the
+/// disc lacks its `ard/<name>.ard` or `map/us/<name>.map` (`has` answers whether a disc file
+/// exists). The caller then stays: the fade is lifted and Sora keeps his place.
+pub fn jump_target(dest: &Dest, has: impl Fn(&str) -> bool) -> Result<String, String> {
+    let Some(name) = area::area_name(dest.world, dest.area) else { return Err(format!("{} is not in the app", dest_name(dest))) };
+    for f in [format!("ard/{name}.ard"), format!("map/us/{name}.map")] {
+        if !has(&f) {
+            return Err(format!("{name}: {f} is not on the disc"));
+        }
+    }
+    Ok(name)
 }
 
 /// The exit groups of a run: every loaded group that is an exit, with its volumes.
@@ -102,7 +157,7 @@ pub fn exit_groups(run: &area::AreaRun) -> Vec<ExitGroup> {
     for g in &run.script.groups {
         for grp in run.ard.spawns.get(&g.tag).into_iter().flatten() {
             let Some(exit) = grp.exit() else { continue };
-            out.push(ExitGroup { tag: g.tag.clone(), id: grp.id, exit, volumes: grp.volumes().cloned().collect(), fired: false, disabled: grp.starts_disabled(), prompting: false });
+            out.push(ExitGroup { tag: g.tag.clone(), id: grp.id, exit, volumes: grp.volumes().cloned().collect(), fired: false, disabled: grp.starts_disabled(), prompting: false, held: false });
         }
     }
     out
@@ -126,6 +181,19 @@ pub enum JumpTask {
     Loading { dest: Dest, kind: u32 },
     FadeIn { kind: u32, t: f32 },
 }
+
+/// The layout table of fade kind 0 (`FUN_0013a8a8`, 0x355110): the world's `field2d/<lang>/
+/// <world>0field.2dd` (`FUN_0013a7e8`, format string at 0x378d78, read to 0x3c32c0) gives slot `i`
+/// the `i`-th BAR entry of type 0x18 (the image, 0x355118 + 8i, `FUN_0013a980`) and of type 0x19
+/// (the sequence, 0x35511c + 8i, `FUN_0013a998`). `FUN_0015d058` plays slot 2's group 1 (out),
+/// `FUN_0015d1a8` its group 0 (in). Returns the (image, sequence) entry indices of `slot`.
+pub fn layout_slot(kinds: &[u32], slot: usize) -> Option<(usize, usize)> {
+    let nth = |k: u32| kinds.iter().enumerate().filter(|e| *e.1 == k).nth(slot).map(|e| e.0);
+    Some((nth(0x18)?, nth(0x19)?))
+}
+
+/// Slot of the keyhole layout in that table (`FUN_0013a980(2)`, `FUN_0013a998(2)`).
+pub const KEYHOLE_SLOT: usize = 2;
 
 /// The fader's alpha (0..1) `t` ticks into a fade of `FADE_TICKS`.
 pub fn fade_alpha(out: bool, t: f32) -> f32 {
@@ -216,6 +284,8 @@ fn tick(
     mut rec: ResMut<AreaRecord>,
     mut area: ResMut<CurrentArea>,
     consts: Res<ExitConsts>,
+    locks: Res<ExitLocks>,
+    disc: Res<Disc>,
     sora: Query<&Sora>,
 ) {
     // The jump task.
@@ -227,11 +297,23 @@ fn tick(
             } else {
                 // FUN_00104c68 -> FUN_00104bd0: the destination becomes the record; the area thread
                 // restarts with it (here: `CurrentArea.name`, which `assets::load_area` picks up).
-                let Some(name) = area::area_name(dest.world, dest.area) else {
-                    warn!("jump: {} is not in the app; staying", dest_name(&dest));
-                    *task = JumpTask::FadeIn { kind, t: 0.0 };
-                    return;
+                let name = match jump_target(&dest, |f| disc.read(f).is_some()) {
+                    Ok(name) => name,
+                    Err(why) => {
+                        // Staying: lift the fade, keep Sora where he is, and let the exit fire again
+                        // once he has left its volumes (`ExitGroup::held`).
+                        warn!("jump: {why}; staying");
+                        if let Some(id) = exits.jumping.take()
+                            && let Some(g) = exits.groups.iter_mut().find(|g| g.id == id)
+                        {
+                            g.fired = false;
+                            g.held = true;
+                        }
+                        *task = JumpTask::FadeIn { kind, t: 0.0 };
+                        return;
+                    }
                 };
+                exits.jumping = None;
                 rec.world = dest.world;
                 rec.area = dest.area;
                 rec.entrance = dest.entrance;
@@ -246,7 +328,7 @@ fn tick(
         JumpTask::Loading { dest, kind } => {
             let name = dest_name(&dest);
             if area.loaded.as_deref() == Some(name.as_str()) && rec.placed.as_deref() == Some(name.as_str()) {
-                info!("jump: {name} loaded; fade kind {kind} in{}", if kind == 0 { " (keyhole layout 0x355118 slot 2 not decoded: black stand-in)" } else { "" });
+                info!("jump: {name} loaded; fade kind {kind} in{}", if kind == 0 { " (keyhole layout 0x355118 slot 2 decoded, not drawn: black stand-in)" } else { "" });
                 *task = JumpTask::FadeIn { kind, t: 0.0 };
             }
             return;
@@ -271,17 +353,26 @@ fn tick(
     let Ok(s) = sora.single() else { return };
     let w = Walker { pos: s.motor.pos, facing: s.motor.forward(), vel: s.motor.vel };
     let world = rec.world;
-    let mut start: Option<(Dest, u32)> = None;
+    let mut start: Option<(Dest, u32, u16)> = None;
     for g in exits.groups.iter_mut().filter(|g| !g.fired && !g.disabled) {
         let p = [w.pos.x, -w.pos.y, -w.pos.z];
+        if g.held {
+            g.held = g.volumes.iter().any(|v| v.contains(p));
+            continue;
+        }
         let mut in_prompt = false;
+        // FUN_00198e10 asks FUN_00195358 about the destination before acting on any volume.
+        let locked = {
+            let (dw, da) = g.exit.destination(world);
+            locks.locked(dw, da)
+        };
         for v in &g.volumes {
             if !v.contains(p) {
                 continue;
             }
             match v.option {
                 0 => {
-                    if !gate_passes(g.exit.gate, v, &w, &consts) {
+                    if locked || !gate_passes(g.exit.gate, v, &w, &consts) {
                         continue;
                     }
                     let (dw, da) = g.exit.destination(world);
@@ -290,7 +381,7 @@ fn tick(
                     match walk_in(g, &run.script.triggers, world) {
                         WalkIn::Jump { dest, kind } => {
                             info!("exit -> {} entrance {} (group {} id {:#x}, gate {}, fade kind {kind})", dest_name(&dest), dest.entrance, g.tag, g.id, g.exit.gate);
-                            start = Some((dest, kind));
+                            start = Some((dest, kind, g.id));
                         }
                         WalkIn::Event { tag, arg, jump } => info!("exit {} id {:#x} -> {} entrance {}: trigger (1, {:#x}) plays event {tag} arg {arg} then {jump:?}: event not played (E6)", g.tag, g.id, dest_name(&dest), dest.entrance, g.id),
                         WalkIn::TriggerJump(j) => {
@@ -298,7 +389,7 @@ fn tick(
                             if j.kind == 1 {
                                 let dest = Dest { world: j.world as u8, area: j.area as u8, entrance: j.entrance as u8 };
                                 info!("exit {} id {:#x}: trigger jump type 1 -> {} entrance {} (fade kind {kind}{})", g.tag, g.id, dest_name(&dest), dest.entrance, if instant { ", instant" } else { "" });
-                                start = Some((dest, kind));
+                                start = Some((dest, kind, g.id));
                             } else {
                                 info!("exit {} id {:#x}: trigger jump type {} key {:#x} not ported (E5)", g.tag, g.id, j.kind, j.key);
                             }
@@ -311,7 +402,7 @@ fn tick(
                     in_prompt = true;
                     if !g.prompting {
                         let (dw, da) = g.exit.destination(world);
-                        info!("exit prompt {} (group {} option {}; the name window FUN_0015ad80 is not drawn)", dest_name(&Dest { world: dw, area: da, entrance: g.exit.entrance }), g.tag, v.option);
+                        info!("exit prompt {}{} (group {} option {}; the name window {} is not drawn)", dest_name(&Dest { world: dw, area: da, entrance: g.exit.entrance }), if locked { " locked" } else { "" }, g.tag, v.option, if locked { "FUN_0015acc8" } else { "FUN_0015ad80" });
                     }
                 }
                 _ => {}
@@ -319,11 +410,12 @@ fn tick(
         }
         g.prompting = in_prompt;
     }
-    if let Some((dest, kind)) = start {
+    if let Some((dest, kind, id)) = start {
+        exits.jumping = Some(id);
         if kind > 1 {
             info!("jump: fade kind {kind} not ported (FUN_0013f290 / FUN_0013f3b0): black fade stand-in");
         } else if kind == 0 {
-            info!("jump: fade kind 0 out (keyhole layout 0x355118 slot 2 not decoded: black stand-in, {FADE_TICKS} ticks)");
+            info!("jump: fade kind 0 out (keyhole layout 0x355118 slot 2 decoded, not drawn: black stand-in, {FADE_TICKS} ticks)");
         }
         *task = JumpTask::FadeOut { dest, kind, t: 0.0 };
     }
@@ -364,7 +456,63 @@ mod tests {
     }
 
     fn group(gate: u8, area: u8, id: u16, volumes: Vec<Activator>) -> ExitGroup {
-        ExitGroup { tag: "m_10".into(), id, exit: Exit { area, entrance: 1, gate }, volumes, fired: false, disabled: false, prompting: false }
+        ExitGroup { tag: "m_10".into(), id, exit: Exit { area, entrance: 1, gate }, volumes, fired: false, disabled: false, prompting: false, held: false }
+    }
+
+    #[test]
+    fn a_jump_to_a_missing_area_stays() {
+        let d = |area| Dest { world: 2, area, entrance: 1 };
+        let all = |_: &str| true;
+        assert_eq!(jump_target(&d(3), all).as_deref(), Ok("tt03"));
+        // Not in the app (world 0x12, area 100's mapping): no area name.
+        assert!(jump_target(&Dest { world: 0x12, area: 1, entrance: 0 }, all).is_err());
+        // A Twilight Town number whose files the disc lacks.
+        let only_tt03 = |f: &str| f.contains("tt03");
+        assert_eq!(jump_target(&d(3), only_tt03).as_deref(), Ok("tt03"));
+        let e = jump_target(&d(99), only_tt03).unwrap_err();
+        assert!(e.contains("ard/tt99.ard"), "{e}");
+        let no_map = |f: &str| f.starts_with("ard/");
+        assert!(jump_target(&d(3), no_map).unwrap_err().contains("map/us/tt03.map"));
+    }
+
+    /// Fade kind 0's layout on the user's disc: slot 2 of `tt0field.2dd` is an image and a
+    /// sequence (the same `SEQD` format the HUD draws) with the groups 0 (in) and 1 (out) that
+    /// `FUN_0015d1a8` / `FUN_0015d058` play. Both groups must end (the tasks `FUN_0015cf58` /
+    /// `FUN_0015d0e8` wait for the player to leave its playing states and the group's halfword +4
+    /// to be non-zero). Prints the groups' lengths and their first and last frames' extents.
+    #[test]
+    fn the_keyhole_layout_is_slot_two_of_the_world_field_file() {
+        assert_eq!(layout_slot(&[0x18, 0x19, 0x18, 0x19, 0x18, 0x19], 2), Some((4, 5)));
+        assert_eq!(layout_slot(&[0x18, 0x18, 0x18, 0x19, 0x19, 0x19], 2), Some((2, 5)));
+        assert_eq!(layout_slot(&[0x18, 0x19], 2), None);
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let disc = Disc::open(&iso);
+        let file = disc.read("field2d/us/tt0field.2dd").expect("tt0field.2dd");
+        let bar = kh2_bar::parse(&file).expect("BAR");
+        let kinds: Vec<u32> = bar.iter().map(|e| e.kind as u32).collect();
+        eprintln!("tt0field.2dd entries: {:?}", bar.iter().map(|e| (e.tag, e.kind)).collect::<Vec<_>>());
+        let (i, s) = layout_slot(&kinds, KEYHOLE_SLOT).expect("slot 2");
+        eprintln!("keyhole slot 2: image entry {i} {:?}, sequence entry {s} {:?}", bar[i].tag, bar[s].tag);
+        let img = kh2_image::imgd::decode(bar[i].data).expect("image decodes");
+        let seq = kh2_image::seqd::parse(bar[s].data).expect("sequence parses");
+        eprintln!("keyhole image {}x{}, {} groups", img.width, img.height, seq.groups.len());
+        for g in 0..2 {
+            let grp = &seq.groups[g];
+            let last = seq.last_frame(g);
+            let ext = kh2_image::seqd::Ext::default();
+            let bbox = |f: i32| {
+                let qs = seq.quads(g, f, [0.0, 0.0], &ext);
+                let xs = qs.iter().flat_map(|q| q.pos.iter().map(|p| p[0]));
+                let ys = qs.iter().flat_map(|q| q.pos.iter().map(|p| p[1]));
+                (qs.len(), xs.clone().fold(f32::MAX, f32::min), ys.clone().fold(f32::MAX, f32::min), xs.fold(f32::MIN, f32::max), ys.fold(f32::MIN, f32::max))
+            };
+            eprintln!("keyhole group {g}: loops {} loop start {} last frame {last}; frame 0 quads/bbox {:?}; last frame {:?}", grp.loops, grp.loop_start, bbox(0), bbox(last));
+            assert!(grp.loops != 0, "group {g} must end");
+            assert!(last > 0);
+        }
     }
 
     #[test]

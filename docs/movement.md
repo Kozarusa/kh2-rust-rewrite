@@ -80,6 +80,14 @@ replaces the swing (FUN_0017b9e0: slot 5, then idle)`. Harness: tt00, `KH2_NO_EN
 KH2_KEYS=6:Space,6.4:J`: the jump, an air attack near the apex, the landing cuts it.
 * The landing's own length is the game's: `A005` runs frames 42..55 at 30 fps with its idle range (trigger 2)
   from global frame 12, as the app's ground state already plays it after a jump.
+* NOT REPRODUCED IN THE HARNESS (gap, outside this package's files): in every run tried (tt00 at the arena
+  centre, tt02, tt04, keys `6:Space,6.2:J`, also a ground swing with `KH2_GROWTH=3,0,0,0`) the swing ended in
+  `wall recoil: atkp 131 (BG Hit, keyblade volume) -> motion id 43 slot 172 A350` (ground: atkp 126 -> A320)
+  before any landing, although no wall is within 800 units of tt00's spawn (its COCT is a 2000-unit box).
+  So the recoil motion, not the swing, is what the player sees after an air attack there. Next step
+  (`combat.rs` line 327, `World::touching_m`): log the contact point and the volume's `a`, `b`, `r` for the
+  keyblade volume and check the units (the volume is swept in metres against the world's centimetres through
+  `touching_m`'s `M` factor) and the polygon filter (`n.y.abs() < FLOOR_NY`, mask ATTACK_COLLIDE).
 
 ### Not ported / gaps
 * +0x160 bit 31 (keeps the stick during a swing): its trigger was not identified.

@@ -470,7 +470,11 @@ Not done, and why:
   the member at the free spot the summon's own search finds (`spot_start` / `spot_find`, FUN_001a5ea8, with
   `ret_spot` 200..300 units from a point `ret_lift` above the player; the collision stand-ins of the summon's
   spot apply) facing the player (FUN_003003e8 -> FUN_0010be80), then fades in. Log: `summon: companions: <model>
-  comes back at .. (N units from the player, FUN_0017d290: ..), facing him, fading in over 15 frames`.
+  comes back at .. (N units from the player, FUN_0017d290: ..), facing him, fading in over 15 frames`. Seen in
+  tt02 (`KH2_STATE` with item 25, `KH2_DRIVE_POINTS=5 KH2_SUMMON=3 KH2_SUMMON_AT=4 KH2_DISMISS_AT=12`): both members
+  come back at the same spot 200 units from the player: the search runs once per member in the same frame and
+  the first member placed is not an obstacle to the second [inferred; whether the game's FUN_001a5ea8 sees the
+  just-created member was not read].
 - The event that the `appear` mode and the thread wait for is never started (section 7), so the wait ends at once;
   the HUD layers 7..10 are not hidden. The fade list (FUN_0016ff50, FUN_0016f8e0, FUN_0016fb20) is not modelled.
 - The free-spot collision tests FUN_001a5c30 and FUN_001a5bf8 were not read: a floor under the point (`World::ground`)

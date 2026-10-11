@@ -241,10 +241,16 @@ stores world, area, entrance at `0x33e86c..e`) and restarts the area thread `FUN
   (`FUN_0014a7c8(fader, 1, 0)`) and marks the fade done (`FUN_0013ef38`). The in task
   `FUN_0015d0e8` plays group 0 and ends when the group has ended and the fader is idle (+0xfc 0).
   The test `area_jump::tests::the_keyhole_layout_is_slot_two_of_the_world_field_file` decodes
-  slot 2 of `tt0field.2dd` and prints both groups. **Not drawn yet**: the app's sequence draw
-  path (`hud_gfx::HudScene`) is private to `hud.rs`, outside this work package; the app still
-  draws the black fade as a labelled stand-in (`jump: fade kind 0 ... black stand-in`). Next
-  step in "Gaps" below (section 10).
+  slot 2 of `tt0field.2dd` and prints both groups. **Drawn (WP-E1d)**: `area_jump::Keyhole`
+  adds one hidden root node at (0, 0) on the HUD file that holds slot 2's pair (the HUD loads
+  the world's field file first; `pair_index` gives its `SeqFile::from_bar` index, checked by image
+  size and group count). Out: group 1, then once it has ended a 2-tick fader to black
+  (`wipe_out_step`, about 74 ticks in all); in: group 0 with a 2-tick fader from black, done when
+  the group has ended (about 72 ticks), then the node is hidden. If the pair is not among the HUD's
+  files, kind 0 keeps the 30-tick black fade (logged). The node is drawn in HUD node order, so HUD
+  parts drawn later (the command menu, the area card) show on top of it, and on a window wider
+  than 4:3 the strips beyond the layout's extent (-54..566) stay visible [inferred: the original
+  is 4:3; whether the game hides the HUD during the wipe was not read].
 - Kinds 2 and 3 (`FUN_0013f290` / `FUN_0013f3b0`, in `FUN_0013f2e8` / `FUN_0013f3f0`): not read.
 - Gate (header +0x1e, `FUN_001d88a0(volume, gate)`): 0 passes. 1 and 2 need `FUN_001d8908()`: the
   player is in the controlled-object list at `0x1d5d7a0` (`FUN_001b80e8`), his actor flags +0x108
@@ -613,14 +619,9 @@ Each stage ends with `verify.ps1` passing and the named check.
 - Exit lock: the new-game value of the halfwords at `0x33f918` (assumed 0; the initialiser was not
   read) and the world-0x10 branch `FUN_001d32e0` (not ported). The flag side effects ops 2..5
   that write the halfwords run in E5.
-- The keyhole layout (fade kind 0) is decoded but not drawn. Exact next step: `hud.rs` exports
-  the scene (`pub(crate) use hud_gfx::{HudScene, Node};`), then `area_jump` adds one root node at
-  (0, 0) on the `SeqFile::from_bar` index of `tt0field.2dd`'s slot 2 (`layout_slot`; the field
-  file's pairs are the first entries of `HudScene.files`), plays group 1 at the fade-out and
-  waits for `Player::finished` plus a 2-tick fader to black, plays group 0 at the fade-in with a
-  2-tick fader from black, and hides the node when the group has finished (section 2, kind 0).
-  The window sides beyond the 4:3 picture are not covered by the layout [inferred: the original
-  is 4:3].
+- The keyhole wipe (fade kind 0, drawn since WP-E1d): whether the game hides the HUD while it
+  plays (the app draws the command menu and area card over it), and the window sides beyond
+  the 4:3 picture, which the layout does not cover [inferred: the original is 4:3].
 - The meaning of the area special values 100 and 101 in exits beyond the code's mapping.
 
 ## Decompile index

@@ -163,7 +163,7 @@ This reproduces the previous defaults exactly (`progress::tests::baseline_gives_
 |---|---|---|
 | magic (`magic.rs` setup) | `spell_levels()`: the six slots' item counts | `KH2_MAGIC=f,b,t,c[,m,r]` |
 | drive (`drive.rs` `DriveState::from_env`) | owned forms (`owns_form`: the form items), form levels (records `+2`), second keyblades (records `+0`), spare keyblades (`keyblades()`), outfit (`outfit(world)`) | `KH2_DRIVE_OWNED`, `KH2_DRIVE_LEVEL`, `KH2_DRIVE_INVENTORY` (either of the first or third switches the keyblades back to the old harness rule), `KH2_DRIVE_OUTFIT` |
-| abilities (`abilities.rs` `with_defaults`) | `equipment()` (Sora's weapons, armor, accessories) and Sora's ability list | `KH2_ABILITY_IDS`, `KH2_ABILITIES` (added on top); `KH2_ABILITY_START=data` drops the baseline Guard |
+| abilities (`abilities.rs` `with_defaults`, then `follow_progress` whenever `Progress` changes: WP-G8) | `equipment()` (Sora's weapons, armor, accessories), Sora's ability list (the growth levels are the highest equipped growth ability of each group, docs/menus.md section 17) and `dodge_roll` | `KH2_ABILITY_IDS`, `KH2_ABILITIES` (added on top, kept across the copies); `KH2_ABILITY_START=data` drops the baseline Guard; `KH2_GROWTH` overrides the growth levels outside a form |
 
 Not wired: HP/MP/stats of the member record (the app takes them from `lvup`/`plrp` in `data.rs`), the saved
 drive gauge bytes (the drive system keeps its own start points), the summon state (no summon system yet).
@@ -182,7 +182,7 @@ an error (logged; the app then falls back to the new game + baseline). Example: 
 | `magic` | array of up to 6 ints | spell levels by magic slot (sets the count of the slot's `magc` item) |
 | `weapon` | int | Sora's hand 0 item |
 | `armor`, `accessories` | array of item ids | Sora's slots (the slot count grows to fit, max 8) |
-| `abilities`, `abilities_off` | arrays of ability item ids | replaces Sora's ability list: equipped ones, then unequipped ones |
+| `abilities`, `abilities_off` | arrays of ability item ids | replaces Sora's ability list: equipped ones, then unequipped ones (growth abilities too: 94..97 High Jump, 98..101 Quick Run, 102..105 Aerial Dodge, 106..109 Glide, LV1..MAX; `local/g8/state-swap.json`) |
 | `dodge_roll` | int 0..5 | Sora's Dodge Roll growth level (app field, not an original record; docs/movement.md section 2) |
 | `forms` | object `"<form 1..9>": { "owned": bool, "level": int, "exp": int, "weapon": int }` | `owned: true` gives the form item through the original's give (so the form takes a keyblade by `FUN_001a2010` if the inventory has one); the others set the record |
 | `summon` | `{ "level": int, "exp": int }` | summon level and experience |
@@ -203,6 +203,7 @@ an error (logged; the app then falls back to the new game + baseline). Example: 
 | 0x1a1cc8, 0x1a1d50 | item count; count including members' slots and ability lists |
 | 0x1a1768, 0x1a18b8, 0x1a18d8, 0x1a1a18, 0x1a1c30 | room, can-give, give, count add, take |
 | 0x187728, 0x187868, 0x187f18 | battle item slot, ability slot, form ability slot |
+| 0x1d3f18, 0x1d3da8, 0x37c556 | growth upgrade of an ability list (`Progress::upgrade_ability`, kh2-ee oracle `growth_upgrade_matches_the_game`), the form level-up that calls it on Sora's list at the display level minus one, the growth chains |
 | 0x1a2120, 0x1a1f78, 0x1a4dd0 | consumable list and shortcut 0, shortcut command, magic resource command |
 | 0x1a2010, 0x1a20b0, 0x1b6f48 | form item obtained (keyblade take), first owned item of a type, `cmd` lookup |
 | 0x187d40, 0x1b58d8, 0x187f60 | member record, member index, form record |

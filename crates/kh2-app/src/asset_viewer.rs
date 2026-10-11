@@ -420,6 +420,12 @@ fn start_sound(disc: &Disc, audio: &Audio, cache: &SeCache, bank: &sound_test::B
     }
 }
 
+/// The asset stores a model is spawned into.
+type ModelAssets<'w> = (ResMut<'w, Assets<Mesh>>, ResMut<'w, Assets<StandardMaterial>>, ResMut<'w, Assets<Image>>, ResMut<'w, Assets<SkinnedMeshInverseBindposes>>);
+
+/// The viewer's text node.
+type TextQuery<'w, 's> = Query<'w, 's, (&'static mut Text, &'static mut Visibility), (With<ViewerText>, Without<ViewerImage>)>;
+
 /// Loads, spawns and logs whatever the last keys changed.
 #[allow(clippy::too_many_arguments)]
 fn apply(
@@ -428,7 +434,7 @@ fn apply(
     lib: Option<Res<EffectLib>>,
     time: Res<Time>,
     mut v: ResMut<AssetViewer>,
-    mut assets: (ResMut<Assets<Mesh>>, ResMut<Assets<StandardMaterial>>, ResMut<Assets<Image>>, ResMut<Assets<SkinnedMeshInverseBindposes>>),
+    mut assets: ModelAssets,
     mut anims: Query<&mut Animator>,
     mut vis: Query<&mut Visibility>,
     running: Query<(), With<RunningEffect>>,
@@ -817,7 +823,7 @@ fn show(
     v: Res<AssetViewer>,
     st: Res<SoundTest>,
     anims: Query<&Animator>,
-    mut text: Query<(&mut Text, &mut Visibility), (With<ViewerText>, Without<ViewerImage>)>,
+    mut text: TextQuery,
     mut pic: Query<(&mut ImageNode, &mut Node, &mut Visibility), With<ViewerImage>>,
 ) {
     let open = v.open && !st.open;

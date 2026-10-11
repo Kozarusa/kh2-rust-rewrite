@@ -436,7 +436,7 @@ mod tests {
         pts.push(Vec3::new(100_000.0, 0.0, 0.0));
         let (c, r) = frame_points(&pts).unwrap();
         assert!(c.x.abs() <= 1.0 && c.y == 0.0, "{c:?}");
-        assert!(r <= 11.0 && r >= 8.0, "{r}");
+        assert!((8.0..=11.0).contains(&r), "{r}");
     }
 
     fn default<T: Default>() -> T {

@@ -291,6 +291,21 @@ impl PartyMember {
     pub(crate) fn yaw(&self) -> f32 {
         self.motor.yaw
     }
+
+    /// Puts the member at `at` (game units, the app's axes) facing `yaw`, on the ground, with no
+    /// movement left: the re-creation of `FUN_0017d290` (`FUN_0010be80(yaw, object, entity, position)`)
+    /// after a summon (WP-F1 item 4). `follow_party` writes the transform from the motor.
+    pub(crate) fn place(&mut self, at: Vec3, yaw: f32) {
+        self.motor.pos = at;
+        self.motor.yaw = yaw;
+        self.motor.vel = Vec3::ZERO;
+        self.motor.grounded = true;
+        self.motor.jump = Default::default();
+        self.far = 0;
+        self.held = None;
+        self.attack = None;
+        self.want_yaw = None;
+    }
 }
 
 /// The player's objentry id in spawn records (`PLAYER`, FUN_0016e208).

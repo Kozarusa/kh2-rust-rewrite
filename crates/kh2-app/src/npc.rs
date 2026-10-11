@@ -1006,80 +1006,301 @@ pub struct Peer {
 // The walk path
 
 /// The object's walk path as `FUN_002d3b40` builds it from a group's `WalkPath` (a 0xa0-byte record
-/// at object +0x508): the points in order, whether it loops (header byte +4 bit 0) and the
-/// follower's place on it. The game runs a cubic spline through the points (`FUN_002d32f8`
-/// tangents, `FUN_002d4298` evaluation) and advances a parameter by the asked speed
-/// (`FUN_002d2a98`); this port follows the straight segments between the points [approx: the
-/// spline is not ported, a townsperson cuts the corners the game rounds].
+/// at object +0x508, ctor `FUN_002d2100`): the points (record +0x80, 0x20 bytes each: the position
+/// and its spline tangent, whose w holds the point's index), whether it loops (+0x10, header byte
+/// +4 bit 0), the tension (+0x20: 0.5, `DAT_003837fc`, unless header bit 1), the place (+0x18), the
+/// walking parameter (+0x1c, -2 until the first advance, `DAT_0038379c`), the current segment
+/// (+0x30/+0x40 its start point and tangent, +0x50/+0x60 its end, +0x28 the chord between them),
+/// the direction (+0x84), "turn around at the ends" (+0x85) and the lock (+0x86). The curve between
+/// two points is the cubic Hermite of `FUN_002d4298` / `FUN_002d2460`. Positions are kept in the
+/// app's space (the game's mirrored: lengths, the Hermite and the horizontal distances agree).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PathRun {
     pub id: u16,
     /// The points in the app's space (centimetres).
     pub points: Vec<Vec3>,
-    /// Header byte +4 bit 0 (`FUN_002d3b40` -> record +0x10): the path closes on itself.
+    /// The tangent of each point (`FUN_002d32f8`).
+    pub tangents: Vec<Vec3>,
+    /// Record +0x10: the path closes on itself (cleared for paths of fewer than three points).
     pub loops: bool,
+    /// Record +0x20: the tangents' factor.
+    pub tension: f32,
     /// Record +0x18: the place on the path, segment index plus fraction.
     pub t: f32,
+    /// Record +0x1c: the walking parameter (the start index of the segment plus the Hermite
+    /// parameter inside it).
+    pub cur: f32,
+    /// The current segment's start and end point indices (the tangents' w at +0x4c and +0x6c).
+    pub seg: (usize, usize),
+    /// Record +0x28: the chord of the current segment.
+    pub chord: f32,
     /// Record +0x84: walking from lower to higher indices.
     pub forward: bool,
-    /// Record +0x85: at an end the direction turns around (`FUN_002d2328` is called by the
-    /// advance); clear for objects whose flag 0x588 bit 3 and bit 2 of the bit array are set.
+    /// Record +0x85: at an end the direction turns around (`FUN_002d2328`); clear when the path
+    /// is locked (+0x86, bit 2 of the class-5 bit array).
     pub bounce: bool,
 }
 
+/// `FUN_002d4298(s, out, path, a, b)`: the cubic Hermite between point `a` (position `p0`, tangent
+/// `t0`) and point `b` at parameter `s`: the weights 2s^3 - 3s^2 + 1, -2s^3 + 3s^2, s^3 - 2s^2 + s
+/// and s^3 - s^2 (`DAT_00383818` = 1, `DAT_0038381c` = 3, `DAT_00383820` = -2).
+pub fn hermite(p0: Vec3, t0: Vec3, p1: Vec3, t1: Vec3, s: f32) -> Vec3 {
+    let (s2, s3) = (s * s, s * s * s);
+    p0 * (s3 + s3 - s2 * 3.0 + 1.0) + p1 * (s3 * -2.0 + s2 * 3.0) + t0 * (s3 - (s2 + s2) + s) + t1 * (s3 - s2)
+}
+
+/// `FUN_002d4040(path, &dist, p, a, b)`: the point's distance to the chord from `a` to `b` and its
+/// place along it: before `a` the distance to `a` and 0; past `b` the distance to `b` and 1
+/// (`DAT_00383814`); else the distance to the chord and the projection over the chord's length.
+fn chord_place(p: Vec3, a: Vec3, b: Vec3) -> (f32, f32) {
+    let (ab, ap) = (b - a, p - a);
+    if ab.dot(ap) < 0.0 {
+        return (ap.length(), 0.0);
+    }
+    let len = ab.length();
+    let proj = if len > 0.0 { (ab / len).dot(ap).abs() } else { 0.0 };
+    if proj <= len {
+        let h = ap.length_squared() - proj * proj;
+        (if h <= 0.0 { 0.0 } else { h.sqrt() }, if len > 0.0 { proj / len } else { 0.0 })
+    } else {
+        ((p - b).length(), 1.0)
+    }
+}
+
 impl PathRun {
-    pub fn new(id: u16, p: &kh2_ard::WalkPath, start: Vec3) -> PathRun {
-        let points: Vec<Vec3> = p.points.iter().map(|q| game_to_app(*q)).collect();
-        let mut r = PathRun { id, points, loops: p.header[4] & 1 != 0, t: 0.0, forward: true, bounce: true };
-        r.t = r.nearest(start);
+    /// `FUN_002d3b40` for a class-5 object: the points (with every height taken from the first
+    /// point when bit 3 of the object's bit array is set), the loop flag and the tension from the
+    /// header byte +4, the tangents (`FUN_002d32f8`); the place is set by the caller.
+    pub fn new(id: u16, p: &kh2_ard::WalkPath, flatten: bool) -> PathRun {
+        let first_y = p.points.first().map_or(0.0, |q| q[1]);
+        let points: Vec<Vec3> = p.points.iter().map(|q| game_to_app(if flatten { [q[0], first_y, q[2]] } else { *q })).collect();
+        let mut r = PathRun {
+            id,
+            tangents: vec![Vec3::ZERO; points.len()],
+            points,
+            loops: p.header[4] & 1 != 0,
+            tension: if p.header[4] & 2 == 0 { 0.5 } else { 0.0 },
+            t: 0.0,
+            cur: -2.0,
+            seg: (0, 0),
+            chord: 0.0,
+            forward: true,
+            bounce: true,
+        };
+        r.make_tangents();
         r
     }
 
-    fn seg_count(&self) -> usize {
-        match self.points.len() {
-            0 | 1 => 0,
-            n if self.loops => n,
-            n => n - 1,
-        }
-    }
-
-    /// The point at parameter `t` (segment index plus fraction).
-    pub fn at(&self, t: f32) -> Vec3 {
+    /// `FUN_002d32f8`: with fewer than three points the one tangent is the chord, both points get
+    /// it and the loop flag is cleared. Else every point gets (next - previous) * tension (indices
+    /// wrapping), except the two ends of a path that does not loop: there the quadratic through the
+    /// end and its two neighbours (passing the middle one at the share `f` of the first chord in the
+    /// sum of both) gives the direction at the end, scaled so that its length at the middle point
+    /// equals the inner rule's length there.
+    fn make_tangents(&mut self) {
         let n = self.points.len();
-        if n == 0 {
-            return Vec3::ZERO;
+        let p = &self.points;
+        if n < 3 {
+            if n == 2 {
+                self.tangents = vec![p[1] - p[0]; 2];
+            }
+            self.loops = false;
+            return;
         }
-        if n == 1 {
-            return self.points[0];
+        let end = |a: Vec3, b: Vec3, c: Vec3, at_start: bool, tension: f32| {
+            let (la, lb) = ((b - a).length(), (c - b).length());
+            let f = la / (la + lb);
+            let g = 1.0 - f;
+            let m = (b - a * (g * g) - c * (f * f)) / ((f + f) * g);
+            let d = if at_start { (m - a) * 2.0 } else { (c - m) * 2.0 };
+            let u = a * (g * -2.0) + m * (2.0 - f * 4.0) + c * (2.0 * f);
+            d * (((c - a) * tension).length() / u.length())
+        };
+        for i in 0..n {
+            self.tangents[i] = if !self.loops && i == 0 {
+                end(p[0], p[1], p[2], true, self.tension)
+            } else if !self.loops && i == n - 1 {
+                end(p[n - 3], p[n - 2], p[n - 1], false, self.tension)
+            } else {
+                (p[(i + 1) % n] - p[(i + n - 1) % n]) * self.tension
+            };
         }
-        let segs = self.seg_count() as f32;
-        let t = if self.loops { t.rem_euclid(segs) } else { t.clamp(0.0, segs) };
-        let i = (t.floor() as usize).min(self.seg_count().saturating_sub(1));
-        let f = t - i as f32;
-        let a = self.points[i];
-        let b = self.points[(i + 1) % n];
-        a.lerp(b, f)
     }
 
-    /// The parameter of the point nearest to `p` (`FUN_002d50c0` -> `FUN_002d4dc8` at the path's
-    /// start: the closest segment and the fraction along it; the vertical difference counts too).
-    pub fn nearest(&self, p: Vec3) -> f32 {
-        let mut best = (f32::INFINITY, 0.0);
-        for i in 0..self.seg_count() {
-            let a = self.points[i];
-            let b = self.points[(i + 1) % self.points.len()];
-            let ab = b - a;
-            let f = if ab.length_squared() > 0.0 { ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0) } else { 0.0 };
-            let d = (a + ab * f - p).length_squared();
-            if d < best.0 {
-                best = (d, i as f32 + f);
+    fn last(&self) -> usize {
+        self.points.len().saturating_sub(1)
+    }
+
+    /// The Hermite of segment `i` (from point `i` to point `i + 1`, wrapping) at parameter `s`.
+    pub fn eval(&self, i: usize, s: f32) -> Vec3 {
+        let n = self.points.len();
+        match n {
+            0 => Vec3::ZERO,
+            1 => self.points[0],
+            _ => {
+                let (a, b) = (i % n, (i + 1) % n);
+                hermite(self.points[a], self.tangents[a], self.points[b], self.tangents[b], s)
             }
         }
-        best.1
     }
 
-    /// `FUN_002d2328`: at an end the direction flips unless the path is locked; returns the new
-    /// direction flag.
+    /// The point at a place (segment index plus fraction; `FUN_002d4438` -> `FUN_002d43a0`).
+    pub fn at(&self, t: f32) -> Vec3 {
+        let i = t.max(0.0) as usize;
+        self.eval(i, t - i as f32)
+    }
+
+    /// `FUN_002d4dc8(path, &seg, &frac, p)`: the segment whose chord is nearest to the point (two
+    /// points: the one segment; else every segment, the last one only for a loop; the first of
+    /// equals wins) and the place on it: the chord's share, refined, when strictly inside
+    /// (`DAT_0038385c` .. `DAT_00383860`), by 33 halvings of the curve (`DAT_00383868`) toward the
+    /// half whose chord is nearer. Answers (segment, fraction, chord distance).
+    pub fn nearest(&self, p: Vec3) -> (usize, f32, f32) {
+        let n = self.points.len();
+        if n < 2 {
+            return (0, 0.0, 0.0);
+        }
+        let count = if n == 2 { 1 } else { n - usize::from(!self.loops) };
+        let mut best = (0usize, 0.0f32, 0.0f32);
+        for i in 0..count {
+            let (d, f) = chord_place(p, self.points[i], self.points[(i + 1) % n]);
+            if i == 0 || (0.0 <= d && d < best.2) {
+                best = (i, f, d);
+            }
+        }
+        let (i, f, d) = best;
+        if n == 2 || f <= 1e-4 || f32::from_bits(0x3f7f_f972) <= f {
+            return (i, f, d);
+        }
+        let (mut lo, mut hi) = (0.0f32, 1.0f32);
+        let (mut a, mut b) = (self.points[i], self.points[(i + 1) % n]);
+        let mut s = hi + lo;
+        for _ in 0..33 {
+            s *= 0.5;
+            let m = self.eval(i, s);
+            if chord_place(p, a, m).0 < chord_place(p, m, b).0 {
+                hi = s;
+                b = m;
+            } else {
+                lo = s;
+                a = m;
+            }
+            s = lo + hi;
+        }
+        (i, s * 0.5, d)
+    }
+
+    /// `FUN_002d4688(lo, hi, path, &frac, p, a, b)`: 33 halvings of segment `i` between the
+    /// parameters `lo` and `hi`, keeping the half whose chord (from the segment's start point or the
+    /// last kept point to the middle, and on to the end point or the last kept point) is nearer.
+    /// Answers the fraction and the distance of the last comparison (the larger of the two).
+    fn search_segment(&self, i: usize, mut lo: f32, mut hi: f32, p: Vec3) -> (f32, f32) {
+        let n = self.points.len();
+        let (mut a, mut b) = (self.points[i % n], self.points[(i + 1) % n]);
+        let mut d = 0.0;
+        let mut s = lo + hi;
+        for _ in 0..33 {
+            s *= 0.5;
+            let m = self.eval(i, s);
+            let (da, db) = (chord_place(p, a, m).0, chord_place(p, m, b).0);
+            if da < db {
+                d = db;
+                hi = s;
+                b = m;
+            } else {
+                d = da;
+                lo = s;
+                a = m;
+            }
+            s = lo + hi;
+        }
+        ((lo + hi) * 0.5, d)
+    }
+
+    /// The local search of `FUN_002d51e0` around the current place: `FUN_002d4ad8` for a loop,
+    /// `FUN_002d4800` for an open path. From the place (+0x18), moved over a segment boundary when
+    /// it sits on one in the walking direction (1/10000, `DAT_0038384c` / `DAT_00383850`), the rest
+    /// of the current segment ahead (in the walking direction) and the next segment(s) ahead are
+    /// searched (`FUN_002d4688`); the nearer wins. Answers (segment, fraction, distance) or `None`
+    /// when the distance is not below `reach` (the game's -1, `DAT_00383858` / `DAT_00383848`).
+    fn local_nearest(&self, p: Vec3, reach: f32) -> Option<(usize, f32, f32)> {
+        let n = self.points.len() as i64;
+        let mut seg = self.t.max(0.0) as i64;
+        let mut frac = self.t - seg as f32;
+        if self.forward && frac > f32::from_bits(0x3f7f_f972) {
+            seg += 1;
+            frac = 0.0;
+        } else if !self.forward && frac < 1e-4 {
+            seg -= 1;
+            frac = 1.0;
+        }
+        let (lo, hi) = if self.forward { (frac, 1.0) } else { (0.0, frac) };
+        if self.loops {
+            let seg = seg.rem_euclid(n);
+            let (f1, d1) = self.search_segment(seg as usize, lo, hi, p);
+            let seg2 = if self.forward { (seg + 1) % n } else { (seg + n - 1) % n };
+            let (f2, d2) = self.search_segment(seg2 as usize, 0.0, 1.0, p);
+            let best = if d1 < d2 { (seg as usize, f1, d1) } else { (seg2 as usize, f2, d2) };
+            return (best.2 < reach).then_some(best);
+        }
+        if seg < 0 {
+            return Some((0, 0.0, (p - self.points[0]).length())).filter(|b| b.2 < reach);
+        }
+        if seg >= n - 1 {
+            // [inferred] FUN_002d4800 answers the last point's distance with segment n - 1 (which
+            // FUN_002d51e0 then pairs with point 0); the place is clamped to the path's end here.
+            let last = (n - 1) as usize;
+            return Some((last.saturating_sub(1), 1.0, (p - self.points[last]).length())).filter(|b| b.2 < reach);
+        }
+        let (mut lo, mut hi) = (lo, hi);
+        let mut best: Option<(usize, f32, f32)> = None;
+        let mut cur = seg;
+        for _ in 0..2 {
+            let (f, d) = self.search_segment(cur as usize, lo, hi, p);
+            if best.is_none_or(|b| d < b.2) {
+                best = Some((cur as usize, f, d));
+            }
+            let next = if self.forward { cur + 1 } else { cur - 1 };
+            if next < 0 || next >= n - 1 {
+                break;
+            }
+            cur = next;
+            (lo, hi) = (0.0, 1.0);
+        }
+        best.filter(|b| b.2 < reach)
+    }
+
+    /// Takes segment `i` as the current one (+0x30..+0x60 and the chord +0x28).
+    fn set_seg(&mut self, i: usize) {
+        let n = self.points.len().max(1);
+        self.seg = (i % n, (i + 1) % n);
+        self.chord = (self.points[self.seg.1] - self.points[self.seg.0]).length();
+    }
+
+    /// `FUN_002d50c0(path, p)`: the place nearest to the point becomes the path's place and its
+    /// segment the current one.
+    pub fn place_nearest(&mut self, p: Vec3) {
+        if self.points.len() < 2 {
+            return;
+        }
+        let (i, f, _) = self.nearest(p);
+        self.set_seg(i);
+        self.t = i as f32 + f;
+    }
+
+    /// `FUN_002d5398(path, obj)`: a class-5 object whose bit 1 is clear starts at a random place of
+    /// its path (`FUN_001063b8` of the segment count) walking a random way (`FUN_00106308(2)`);
+    /// the object is put on that point (`FUN_0016a618`), which is answered. The segment of the
+    /// fraction's point is the place's integer part [inferred: the argument is not in the decompile].
+    pub fn random_start(&mut self, rng: &mut Rng) -> Vec3 {
+        let segs = if self.loops { self.points.len() } else { self.points.len().saturating_sub(1) };
+        let t = rng.frac(segs as f32);
+        self.forward = rng.below(2) != 0;
+        self.t = t;
+        self.at(t)
+    }
+
+    /// `FUN_002d2328`: the direction flips unless the path is locked; answers the new direction.
     pub fn toggle(&mut self) -> bool {
         if self.bounce {
             self.forward = !self.forward;
@@ -1087,52 +1308,93 @@ impl PathRun {
         self.forward
     }
 
-    /// The look-ahead of `FUN_002d2a98(speed, path, out, position)`: up to twenty times the point
-    /// at the place is taken; when it lies more than `speed` from the object (horizontally,
-    /// `DAT_003837dc` halves the step) it is the answer, else the place moves on by half of
-    /// `speed` over the segment's length. At an end of a path that does not loop the direction
-    /// turns around when `bounce` is set (`FUN_002d2328`), else the walk stops (`None`: the game
-    /// then answers the facing instead of a direction). After twenty steps the answer is the
-    /// object's own position.
-    pub fn advance(&mut self, speed: f32, pos: Vec3) -> Option<Vec3> {
-        let segs = self.seg_count() as f32;
-        if segs <= 0.0 {
+    /// `FUN_002d2a98(speed, path, out, position)` for an ordinary path (+0x87 clear, no stop index
+    /// +0x8c): the object is first taken onto the curve (`FUN_002d51e0` with the reach `speed * 10`:
+    /// the nearest place, unless it is as far from the object as the old place within 1/10000,
+    /// `DAT_003837d4`, then the old place stays) and the walking parameter starts there. Then, up
+    /// to twenty times, the curve point at the parameter is the answer when it lies more than
+    /// `speed` from the projected point (horizontally), else the parameter moves `speed / chord / 2`
+    /// (`DAT_003837dc`) along: past the segment's end it takes the next segment (wrapping on a loop);
+    /// at an end of a path that does not loop the direction turns around (+0x85, then one more
+    /// pass) or the walk stops (`None`). After the passes the projected point is the answer.
+    /// Answers (the point to walk to, the projected point).
+    pub fn advance(&mut self, speed: f32, pos: Vec3) -> Option<(Vec3, Vec3)> {
+        let n = self.points.len();
+        if n < 2 {
             return None;
         }
-        for _ in 0..20 {
-            let p = self.at(self.t);
-            if (p - pos).with_y(0.0).length() > speed {
-                return Some(p);
+        let old = self.t;
+        let old_point = self.at(old);
+        // FUN_002d51e0: the local search within `speed * 10` (`DAT_003837d0`) for more than two
+        // points, else (or when it fails) the global one.
+        let local = if n > 2 { self.local_nearest(pos, speed * 10.0) } else { None };
+        let (i, f, _) = local.unwrap_or_else(|| self.nearest(pos));
+        self.set_seg(i);
+        self.t = i as f32 + f;
+        let mut proj = self.eval(i, f);
+        let (d_old, d_new) = ((old_point - pos).length(), (proj - pos).length());
+        if (d_new - d_old).abs() < (d_old + d_new) * 1e-4 {
+            self.t = old;
+            proj = old_point;
+        }
+        self.cur = self.t;
+        let last = self.last();
+        for pass in 0..2 {
+            let mut turned = false;
+            for _ in 0..20 {
+                let (s, e) = self.seg;
+                let sample = hermite(self.points[s], self.tangents[s], self.points[e], self.tangents[e], self.cur - s as f32);
+                if (sample - proj).with_y(0.0).length() > speed {
+                    return Some((sample, proj));
+                }
+                let step = speed / self.chord.max(1e-6) * 0.5;
+                if self.forward {
+                    self.cur += step;
+                    if self.cur < s as f32 + 1.0 {
+                        continue;
+                    }
+                    let mut next = (self.cur + 1.0) as usize;
+                    if next > last {
+                        if !self.loops {
+                            if !self.bounce {
+                                return None;
+                            }
+                            self.toggle();
+                            turned = true;
+                            break;
+                        }
+                        next = next - last - 1;
+                    }
+                    self.cur = e as f32;
+                    self.seg = (e, next % n);
+                } else {
+                    self.cur -= step;
+                    if self.cur > s as f32 {
+                        continue;
+                    }
+                    let prev = if s == 0 { last } else { s - 1 };
+                    if self.cur <= 0.0 {
+                        if !self.loops {
+                            if !self.bounce {
+                                return None;
+                            }
+                            self.toggle();
+                            turned = true;
+                            break;
+                        }
+                        self.cur = (last + 1) as f32;
+                    } else {
+                        self.cur = s as f32;
+                    }
+                    self.seg = (prev, s);
+                }
+                self.chord = (self.points[self.seg.1] - self.points[self.seg.0]).length();
             }
-            let i = if self.forward { self.t.floor() } else { (self.t.ceil() - 1.0).max(0.0) };
-            let i = if self.loops { i.rem_euclid(segs) } else { i.clamp(0.0, segs - 1.0) };
-            let len = (self.at(i + 1.0) - self.at(i)).length().max(1e-3);
-            let step = speed / len * 0.5;
-            if self.forward {
-                self.t += step;
-                if self.loops {
-                    self.t = self.t.rem_euclid(segs);
-                } else if self.t >= segs {
-                    self.t = segs;
-                    if !self.bounce {
-                        return None;
-                    }
-                    self.toggle();
-                }
-            } else {
-                self.t -= step;
-                if self.loops {
-                    self.t = self.t.rem_euclid(segs);
-                } else if self.t <= 0.0 {
-                    self.t = 0.0;
-                    if !self.bounce {
-                        return None;
-                    }
-                    self.toggle();
-                }
+            if !turned || pass == 1 {
+                break;
             }
         }
-        Some(pos)
+        Some((proj, proj))
     }
 }
 
@@ -1179,18 +1441,43 @@ impl NpcHost<'_, '_> {
     /// Host 1.177 (0x1719d0 -> `FUN_00183c30(obj, id, 0)`): the walk path with this id in the
     /// object's own spawn group replaces the one at +0x508 (`FUN_00199cc0` compares the path
     /// header's u16 id; a negative id takes the group's first path, which is what `rtn_default`
-    /// asks for with -1); the follower starts at the point of the path nearest to the object
-    /// (`FUN_002d50c0`). Answers 1 when a path was found, 0 otherwise (the game then also tries the
-    /// area's shared paths for objects with flag 0x588 bit 7, which these are not).
+    /// asks for with -1). `FUN_002d3b40` for a class-5 object: bit 3 of its array flattens the
+    /// points to the first one's height, bit 2 locks the path (+0x86; +0x85 "turn around" is its
+    /// opposite); with bit 1 clear the object is put at a random place of the path walking a random
+    /// way (`FUN_002d5398`), with bit 1 set it starts at the place nearest to it (`FUN_002d50c0`).
+    /// Answers 1 when a path was found, 0 otherwise (the game then also tries the area's shared
+    /// paths for objects with flag 0x588 bit 7, which these are not).
     fn set_path(&mut self, id: u32) -> bool {
         let pos = self.inner.obj.motor.pos;
         let paths = &self.fields.group.paths;
         let found = if (id as i32) < 0 { paths.first().cloned() } else { paths.iter().find(|p| u16::from_le_bytes([p.header[0], p.header[1]]) as u32 == id).cloned() };
         match found {
             Some(p) => {
-                let run = PathRun::new(u16::from_le_bytes([p.header[0], p.header[1]]), &p, pos);
+                let mut run = PathRun::new(u16::from_le_bytes([p.header[0], p.header[1]]), &p, self.fields.test_bit(3));
+                let locked = self.fields.test_bit(2);
+                run.bounce = !locked;
+                if self.fields.test_bit(1) {
+                    run.place_nearest(pos);
+                } else {
+                    let at = run.random_start(&mut self.fields.rng);
+                    let at = self.inner.env.world.and_then(|w| w.ground(at, at.y + 100.0, 400.0)).map_or(at, |g| at.with_y(g.y));
+                    self.inner.obj.motor.pos = at;
+                }
                 if self.log {
-                    info!("npc: {} path {} (asked {}) set: {} points, loops {}, start t {:.2}", self.inner.tag, run.id, id as i32, run.points.len(), run.loops, run.t);
+                    let at = self.inner.obj.motor.pos;
+                    info!(
+                        "npc: {} path {} (asked {}) set: {} points, loops {}, locked {locked}, start t {:.2} forward {} at ({:.0}, {:.0}, {:.0})",
+                        self.inner.tag,
+                        run.id,
+                        id as i32,
+                        run.points.len(),
+                        run.loops,
+                        run.t,
+                        run.forward,
+                        at.x,
+                        at.y,
+                        at.z
+                    );
                 }
                 self.fields.path = Some(run);
                 true
@@ -1205,19 +1492,23 @@ impl NpcHost<'_, '_> {
         }
     }
 
-    /// `FUN_002d25b0(speed, blend, out, path, position, facing)` behind hosts 5.3 and 1.178: the
-    /// place on the path moves `speed` (at most 50) along it and the answer is the unit direction
-    /// from the object to the new place; when the advance stops (the end of a path that does not
-    /// turn around) the answer is the object's facing. With the new place less than ten times the
-    /// speed away the game blends the direction from the object's current and its recorded
-    /// position by `blend`; both are the same point here [approx].
+    /// `FUN_002d25b0(speed, blend, out, path, position, facing)` behind hosts 5.3 and 1.178 (both
+    /// with blend 1.0, `DAT_00383e80` / `DAT_003837c4`): the speed is clipped to 50
+    /// (`DAT_003837b8`) and the path advanced (`FUN_002d2a98`); when the walk stops the answer is
+    /// the facing. Else the unit direction from the object to the point found when that point is
+    /// more than ten times the speed away (`DAT_003837c0`); nearer, the blend of it with the unit
+    /// direction from the object's place on the curve, which with blend 1 is the latter alone.
     fn path_direction(&mut self, speed: f32) -> Vec3 {
         let yaw = self.inner.obj.motor.yaw;
         let facing = Vec3::new(yaw.sin(), 0.0, yaw.cos());
         let pos = self.inner.obj.motor.pos;
+        let speed = speed.min(50.0);
         let Some(path) = self.fields.path.as_mut() else { return facing };
-        match path.advance(speed.min(50.0), pos) {
-            Some(target) => (target - pos).normalize_or(facing),
+        match path.advance(speed, pos) {
+            Some((target, _)) if (target - pos).length() > speed * 10.0 => (target - pos).normalize_or(facing),
+            // [approx] the game divides by a zero length when the passes end on the projected point
+            // itself; the facing is answered then.
+            Some((target, proj)) => (target - proj).normalize_or(facing),
             None => facing,
         }
     }
@@ -1257,7 +1548,7 @@ impl NpcHost<'_, '_> {
                     return Some((Value::Vec([0.0; 4]), St::Approx, "no path at +0x508: the game leaves the answer buffer as it was"));
                 }
                 let d = self.path_direction(f32::from_bits(arg(1)));
-                (Value::Vec([d.x, -d.y, -d.z, 1.0]), St::Approx, "the path's straight segments are followed, not the game's cubic spline (FUN_002d2a98)")
+                (Value::Vec([d.x, -d.y, -d.z, 1.0]), St::Approx, "the game's Hermite curve; the projection takes the global nearest search, not the local one of FUN_002d4ad8 / FUN_002d4800")
             }
             // 5.4 (0x2ea290 -> FUN_0018ae08): the follower ends (copied to +0xaa0, reset) and the
             // +0xb00 timer takes the parameter word of its kind.
@@ -1327,14 +1618,14 @@ impl NpcHost<'_, '_> {
                     let pos = self.inner.obj.motor.pos;
                     let to = (other - pos).with_y(0.0);
                     if to.length() >= 0.01 {
-                        let t = p.nearest(pos);
-                        let tangent = (p.at(t + 0.01) - p.at(t - 0.01)).with_y(0.0).normalize_or_zero();
+                        let (i, f, _) = p.nearest(pos);
+                        let tangent = (p.eval(i, f + 0.01) - p.eval(i, f - 0.01)).with_y(0.0).normalize_or_zero();
                         if tangent.length() >= 0.01 {
                             let to = to.normalize();
                             p.forward = to.dot(tangent) >= to.dot(-tangent);
                         }
                     }
-                    (Value::None, St::Approx, "the other object is taken as the player; the tangent is the polyline's, not the spline's")
+                    (Value::None, St::Approx, "the other object is taken as the player; FUN_002d3148's own rule is not read, the curve's tangent at the nearest place is compared")
                 }
                 None => (Value::None, St::Impl, ""),
             },
@@ -1439,7 +1730,7 @@ impl NpcHost<'_, '_> {
             178 => match self.fields.path.is_some() {
                 true => {
                     let d = self.path_direction(20.0);
-                    (Value::Vec([d.x, -d.y, -d.z, 1.0]), St::Approx, "the path's straight segments are followed, not the game's cubic spline (FUN_002d2a98)")
+                    (Value::Vec([d.x, -d.y, -d.z, 1.0]), St::Approx, "the game's Hermite curve; the projection takes the global nearest search, not the local one of FUN_002d4ad8 / FUN_002d4800")
                 }
                 false => (Value::Vec([0.0; 4]), St::Impl, ""),
             },
@@ -1496,58 +1787,83 @@ mod tests {
         let mut header = [0u8; 8];
         header[0] = 7;
         header[2] = points.len() as u8;
-        header[4] = if loops { 1 } else { 2 };
+        header[4] = loops as u8;
         kh2_ard::WalkPath { header, points: points.to_vec() }
     }
 
-    /// A walk path is followed segment by segment; a path that does not loop turns around at its
-    /// ends (FUN_002d2328 flips +0x84), a looping one wraps.
+    /// FUN_002d32f8 / FUN_002d4298: the curve passes through the points, an inner point's tangent
+    /// is half the difference of its neighbours, the ends of an open path take the quadratic's
+    /// direction, and the corner is rounded off the chords; FUN_002d4dc8 finds a place on the curve.
+    #[test]
+    fn the_walk_path_is_the_games_hermite_curve() {
+        let p = path(&[[0.0, 0.0, 0.0], [400.0, 0.0, 0.0], [400.0, 0.0, -400.0]], false);
+        let r = PathRun::new(7, &p, false);
+        let (a, b, c) = (Vec3::ZERO, Vec3::new(400.0, 0.0, 0.0), Vec3::new(400.0, 0.0, 400.0));
+        assert!((r.eval(0, 0.0) - a).length() < 1e-3 && (r.eval(0, 1.0) - b).length() < 1e-3 && (r.eval(1, 1.0) - c).length() < 1e-3);
+        assert!((r.tangents[1] - (c - a) * 0.5).length() < 1e-3, "{:?}", r.tangents[1]);
+        // The start's tangent comes from the quadratic through the three points: along the first
+        // chord, bent away from the third point.
+        assert!(r.tangents[0].x > 0.0 && r.tangents[0].z < 0.0, "{:?}", r.tangents[0]);
+        // The curve leaves the chords near the corner.
+        let mid = r.eval(0, 0.75);
+        assert!(mid.z.abs() > 1.0, "{mid:?}");
+        // A place on the curve is found again.
+        let q = r.eval(1, 0.3);
+        let (i, f, _) = r.nearest(q);
+        assert!((r.eval(i, f) - q).length() < 1.0, "{i} {f}");
+        // Header bit 1 means no tension (tangents of zero), bit 0 a loop.
+        let mut h = path(&[[0.0, 0.0, 0.0], [400.0, 0.0, 0.0], [400.0, 0.0, -400.0]], true);
+        h.header[4] |= 2;
+        let l = PathRun::new(7, &h, false);
+        assert!(l.loops && l.tension == 0.0 && l.tangents.iter().all(|t| t.length() < 1e-6));
+        // Two points: the chord is the tangent and the path cannot loop.
+        let two = PathRun::new(7, &path(&[[0.0, 0.0, 0.0], [400.0, 0.0, 0.0]], true), false);
+        assert!(!two.loops && (two.tangents[0] - b).length() < 1e-3);
+    }
+
+    /// Walking the way FUN_002d2a98 points (a step of 8 cm toward each answer): an open path is
+    /// followed to its end and turned around (FUN_002d2328), a locked one stops there, a loop wraps.
     #[test]
     fn a_walk_path_is_followed_and_turns_around_at_its_ends() {
-        // Game space: Y down, Z mirrored; the points lie along the game's +X.
-        let p = path(&[[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [100.0, 0.0, -100.0]], false);
-        let mut r = PathRun::new(7, &p, Vec3::new(10.0, 0.0, 0.0));
-        assert!((r.t - 0.1).abs() < 1e-4, "{}", r.t);
-        // The look-ahead: the first sampled place (steps of half the speed over the segment's
-        // length: 0.3, 0.5, 0.7) that lies more than 40 cm from the object.
-        let q = r.advance(40.0, Vec3::new(10.0, 0.0, 0.0)).unwrap();
-        assert!((q - Vec3::new(70.0, 0.0, 0.0)).length() < 1e-3 && (r.t - 0.7).abs() < 1e-4, "{q:?} t {}", r.t);
-        // Walking to each answer in turn reaches the end (app (100, 0, 100)) and turns around.
-        let mut pos = q;
-        let mut flipped = None;
-        for _ in 0..40 {
-            pos = r.advance(40.0, pos).expect("a bouncing path never stops");
-            if !r.forward {
-                flipped = Some(pos);
-                break;
-            }
-        }
-        let back = flipped.expect("the end turns the walk around");
-        assert!(back.x > 99.0 && back.z < 100.0, "{back:?}");
-        // A locked path stops at its end instead.
-        let mut locked = PathRun::new(7, &p, Vec3::ZERO);
-        locked.bounce = false;
-        let mut pos = Vec3::ZERO;
-        let mut stopped = false;
-        for _ in 0..40 {
-            match locked.advance(40.0, pos) {
-                Some(q) => pos = q,
-                None => {
-                    stopped = true;
+        let walk = |r: &mut PathRun, mut pos: Vec3, steps: usize| -> (Vec3, bool, bool) {
+            let (mut flipped, mut stopped) = (false, false);
+            for _ in 0..steps {
+                match r.advance(40.0, pos) {
+                    Some((a, _)) => pos += (a - pos).with_y(0.0).normalize_or_zero() * 8.0,
+                    None => {
+                        stopped = true;
+                        break;
+                    }
+                }
+                if !r.forward {
+                    flipped = true;
                     break;
                 }
             }
-        }
-        assert!(stopped && pos.z > 50.0, "{pos:?}");
-        // A loop wraps and keeps going forward.
-        let mut l = PathRun::new(7, &path(&[[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [0.0, 0.0, -100.0]], true), Vec3::ZERO);
+            (pos, flipped, stopped)
+        };
+        let p = path(&[[0.0, 0.0, 0.0], [400.0, 0.0, 0.0], [400.0, 0.0, -400.0]], false);
+        let mut r = PathRun::new(7, &p, false);
+        r.place_nearest(Vec3::new(40.0, 0.0, 0.0));
+        assert!((r.at(r.t) - Vec3::new(40.0, 0.0, 0.0)).length() < 15.0, "{}", r.t);
+        let (end, flipped, _) = walk(&mut r, Vec3::new(40.0, 0.0, 0.0), 400);
+        assert!(flipped && end.z > 330.0 && end.x > 380.0, "{end:?}");
+        let mut locked = PathRun::new(7, &p, false);
+        locked.bounce = false;
+        locked.place_nearest(Vec3::ZERO);
+        let (end, _, stopped) = walk(&mut locked, Vec3::ZERO, 400);
+        assert!(stopped && end.z > 330.0, "{end:?}");
+        let mut l = PathRun::new(7, &path(&[[0.0, 0.0, 0.0], [400.0, 0.0, 0.0], [0.0, 0.0, -400.0]], true), false);
+        l.place_nearest(Vec3::ZERO);
         let (mut pos, mut wrapped, mut last_t) = (Vec3::ZERO, false, 0.0);
-        for _ in 0..60 {
-            pos = l.advance(40.0, pos).unwrap();
-            wrapped |= l.t < last_t;
+        for _ in 0..400 {
+            if let Some((a, _)) = l.advance(40.0, pos) {
+                pos += (a - pos).with_y(0.0).normalize_or_zero() * 8.0;
+            }
+            wrapped |= l.t < last_t - 1.0;
             last_t = l.t;
         }
-        assert!(wrapped && l.forward && (0.0..3.0).contains(&l.t), "t {}", l.t);
+        assert!(wrapped && l.forward, "t {}", l.t);
     }
 
     fn entity(object: u32, serial: u16) -> kh2_ard::Entity {
@@ -1663,6 +1979,27 @@ mod tests {
             assert_eq!(g.kind & 0xff, 6);
             let e = &g.entities[0];
             let named: Vec<u32> = g.returns.iter().filter(|r| r[0] == 0 && r[3] == 1).map(|r| u32::from_le_bytes([r[4], r[5], r[6], r[7]])).collect();
+            // Walking each path forward with steps of 5 cm toward the answers of the advance (speed
+            // 5, rtn_default's) goes round the whole loop, the place growing segment by segment.
+            for p in &g.paths {
+                let mut r = PathRun::new(0, p, false);
+                r.place_nearest(r.points[0]);
+                let mut pos = r.at(r.t);
+                let (mut back, mut laps, mut last) = (0, 0, r.t);
+                for _ in 0..20000 {
+                    let Some((a, _)) = r.advance(5.0, pos) else { break };
+                    pos += (a - pos).with_y(0.0).normalize_or_zero() * 5.0;
+                    let d = r.t - last;
+                    if d < -(r.points.len() as f32) / 2.0 {
+                        laps += 1;
+                    } else if d < -0.01 {
+                        back += 1;
+                        eprintln!("{:#x}: back from {last:.3} to {:.3} at {pos:?}", e.object, r.t);
+                    }
+                    last = r.t;
+                }
+                assert!(laps >= 1 && back == 0, "{:#x}: laps {laps}, steps back {back}", e.object);
+            }
             people.push((e.object, named, objs.iter().find(|r| r.object_id == e.object).map(|r| r.model_name.clone()).unwrap_or_default()));
         }
         assert_eq!(people.len(), 3);

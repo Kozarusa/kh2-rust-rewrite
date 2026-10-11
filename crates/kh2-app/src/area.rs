@@ -31,7 +31,17 @@ pub struct AreaPlugin;
 impl Plugin for AreaPlugin {
     fn build(&self, app: &mut App) {
         let entrance: Option<u8> = std::env::var("KH2_ENTRANCE").ok().and_then(|v| v.parse().ok());
-        app.insert_resource(AreaRecord { world: TWILIGHT_TOWN, area: 0, entrance: entrance.unwrap_or(0), programs: [0; 3], place_on_load: entrance.is_some(), run: None, placed: None })
+        // Harness (WP-E2): `KH2_PROGRAMS=<map>,<btl>,<evt>` (hex) sets the program bytes 3..5 of the
+        // record until E5 fills them from the story flags; a townspeople group of tt02 is loaded by
+        // map programs other than 0.
+        let programs = std::env::var("KH2_PROGRAMS").ok().map_or([0; 3], |v| {
+            let mut p = [0u8; 3];
+            for (k, s) in v.split(',').take(3).enumerate() {
+                p[k] = u8::from_str_radix(s.trim().trim_start_matches("0x"), 16).unwrap_or(0);
+            }
+            p
+        });
+        app.insert_resource(AreaRecord { world: TWILIGHT_TOWN, area: 0, entrance: entrance.unwrap_or(0), programs, place_on_load: entrance.is_some(), run: None, placed: None })
             .add_systems(Update, run_area_script.after(crate::assets::load_area).before(crate::schedule::Frame::Pad));
     }
 }

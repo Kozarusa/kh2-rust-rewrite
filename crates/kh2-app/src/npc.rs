@@ -33,7 +33,7 @@ use crate::area::{app_yaw, game_to_app, AreaRecord};
 use crate::assets::{AreaPart, Disc};
 use crate::enemy_ai::AiTrace;
 use crate::enemy_host::{BevyHost, Env, St};
-use crate::enemy_obj::{from_game, to_game, Obj, OBJ_SIZE, SELF_BASE};
+use crate::enemy_obj::{from_game, to_game, Obj, OBJ_SIZE, PLAYER, SELF_BASE};
 use crate::schedule::Sim;
 use crate::skel::{spawn_skinned, Animator, Rig};
 use crate::sora::Sora;
@@ -125,18 +125,32 @@ struct NpcSpawned {
 /// (reached through the object's group pointer +0x818 in the game) and its own record.
 pub struct NpcGroup {
     pub tag: String,
+    /// The group header's kind (+0) and id (+2); host 1.170 answers the id.
+    pub kind: u16,
+    pub id: u16,
     pub paths: Vec<kh2_ard::WalkPath>,
+    /// The return parameters (16 bytes each): for a kind-6 group the class reads them as its
+    /// behaviour entries (`FUN_00199ca0` hands them out only then).
     pub returns: Vec<[u8; 0x10]>,
+}
+
+/// `FUN_0018b1e0`: the motion number of a behaviour entry's byte 1 (a jump table of 14 entries at
+/// 0x37ab9c): 0 and 1 give 0, 2 gives 0x11f, 3 gives 0, 4..13 give the index plus 0x117, higher
+/// values 0.
+pub fn entry_motion(k: u8) -> i32 {
+    match k {
+        2 => 0x11f,
+        4..=13 => k as i32 + 0x117,
+        _ => 0,
+    }
 }
 
 /// A townsperson in the world: its body and the state the script does not own.
 #[derive(Component)]
 pub struct Npc {
-    pub model: String,
     pub body: Entity,
     pub yaw: f32,
     pub grounded: bool,
-    pub group: Arc<NpcGroup>,
     /// The entity record (position, rotation, the spawn-record bytes).
     pub record: kh2_ard::Entity,
 }
@@ -169,6 +183,7 @@ fn npc_spawn(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
+    mut sora: Query<(&mut Transform, &mut Sora)>,
 ) {
     let Some(run) = rec.run.as_ref() else { return };
     if spawned.area.as_deref() == Some(run.name.as_str()) {
@@ -181,11 +196,16 @@ fn npc_spawn(
         return;
     }
     assets.load_once(&disc);
+    // Harness: `KH2_NPC_WATCH=<n>` puts Sora three metres in front of the n-th townsperson spawned
+    // (1-based), facing it (a test aid for screenshots, not the game's rule).
+    let watch: Option<usize> = std::env::var("KH2_NPC_WATCH").ok().and_then(|v| v.parse().ok());
     let mut count = 0;
-    for g in run.script.groups.iter().filter(|g| g.script == "map") {
+    // Every group the three scripts loaded (FUN_00181728 makes the objects of each; in tt02 the
+    // townspeople's kind-6 groups a72_, b72_, c72_ come from `evt` programs 0x10 / 0x12, b50_ from 0xc).
+    for g in run.script.groups.iter() {
         let Some(groups) = run.ard.spawns.get(&g.tag) else { continue };
         for grp in groups {
-            let shared = Arc::new(NpcGroup { tag: g.tag.clone(), paths: grp.paths.clone(), returns: grp.returns.clone() });
+            let shared = Arc::new(NpcGroup { tag: g.tag.clone(), kind: grp.kind, id: grp.id, paths: grp.paths.clone(), returns: grp.returns.clone() });
             for e in &grp.entities {
                 if !kh2_ard::run::entity_for_entrance(e, rec.entrance) {
                     continue;
@@ -210,7 +230,7 @@ fn npc_spawn(
                 let body = spawn_skinned(&mut commands, root, rig, &mut meshes, &mut materials, &mut images, &mut bindposes, SCALE);
                 let tag = format!("{model}#{serial}");
                 let mut ent = commands.entity(root);
-                ent.insert(Npc { model: model.clone(), body, yaw, grounded: true, group: shared.clone(), record: e.clone() });
+                ent.insert(Npc { body, yaw, grounded: true, record: e.clone() });
                 let scripted = script.is_some();
                 if let Some(prog) = script {
                     let mut rt = Runtime::new((*prog).clone());
@@ -234,11 +254,19 @@ fn npc_spawn(
                     });
                 }
                 count += 1;
+                if watch == Some(count) && let Ok((mut tf, mut s)) = sora.single_mut() {
+                    let a = yaw;
+                    let p = at + Vec3::new(a.sin(), 0.0, a.cos()) * 300.0;
+                    let p = world.ground(p, p.y + 100.0, 400.0).map_or(p, |g| p.with_y(g.y));
+                    crate::sora::respawn(&mut s, p);
+                    s.motor.yaw = a + std::f32::consts::PI;
+                    tf.translation = p * SCALE;
+                    tf.rotation = Quat::from_rotation_y(s.motor.yaw);
+                    info!("npc: KH2_NPC_WATCH: Sora put in front of {tag} at ({:.0}, {:.0}, {:.0})", p.x, p.y, p.z);
+                }
+                info!("npc: {} group {} (kind {}, id {}) spawned {tag} (object {:#x})", run.name, g.tag, grp.kind, grp.id, e.object);
                 info!(
-                    "npc: {} group {} spawned {tag} (object {:#x}) at ({:.0}, {:.0}, {:.0}) yaw {yaw:.3}, spawn flags {:#x}, {} walk paths{}",
-                    run.name,
-                    g.tag,
-                    e.object,
+                    "npc: {tag} at ({:.0}, {:.0}, {:.0}) yaw {yaw:.3}, spawn flags {:#x}, {} paths{}",
                     at.x,
                     at.y,
                     at.z,
@@ -249,7 +277,7 @@ fn npc_spawn(
             }
         }
     }
-    info!("npc: {}: {count} townspeople spawned from the map program's groups", run.name);
+    info!("npc: {}: {count} townspeople spawned from the loaded groups", run.name);
 }
 
 /// One tick of every townsperson's script: run it, carry out its motion and movement requests.
@@ -262,11 +290,14 @@ fn npc_update(
     sora: Query<&Sora>,
     mut q: Query<(Entity, &mut Transform, &mut Npc, &mut NpcBrain)>,
     mut anims: Query<&mut Animator>,
+    mut tick: Local<u64>,
 ) {
     let (Some(mut trace), Ok(s)) = (trace, sora.single()) else { return };
     let paired = HashMap::new();
     let cam = cam.single().ok();
     let log = npclog();
+    *tick += 1;
+    let status_tick = tick.is_multiple_of(60);
     for (ent, mut tf, mut npc, mut brain) in &mut q {
         let Ok(mut anim) = anims.get_mut(npc.body) else { continue };
         let rig = anim.rig.clone();
@@ -306,6 +337,22 @@ fn npc_update(
             rt.spawn(&mut host, handle);
         }
         rt.update(&mut host);
+        // Host 5.33 named a block in the script's globals: copy its nine words now.
+        if let Some(at) = fields.params_ptr.take() {
+            let base = rt.shared.layout.globals;
+            let o = at.wrapping_sub(base) as usize;
+            match rt.shared.globals.get(o..o + 36) {
+                Some(b) => {
+                    for (k, w) in b.chunks(4).enumerate() {
+                        fields.params[k] = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+                    }
+                    if log {
+                        info!("npc: {tag} parameter block (5.33): {:?}", fields.params.map(f32::from_bits));
+                    }
+                }
+                None => warn!("npc: {tag}: host 5.33 named a block outside the script's globals ({at:#x}); parameters stay 0"),
+            }
+        }
         let now = rt.current_mode();
         if now != *mode {
             if log {
@@ -316,18 +363,39 @@ fn npc_update(
         for entry in rt.core.mode_log.as_mut().map(std::mem::take).unwrap_or_default() {
             trace.line(tag, &format!("mode {entry}"));
         }
+        if log && status_tick {
+            let p = obj.motor.pos;
+            info!(
+                "npc: {tag} status: mode {} slot {:?} at ({:.0}, {:.0}, {:.0}) yaw {:.2} path t {}",
+                mode.as_deref().unwrap_or("-"),
+                obj.slot,
+                p.x,
+                p.y,
+                p.z,
+                obj.motor.yaw,
+                fields.path.as_ref().map_or("-".to_string(), |p| format!("{:.2}", p.t))
+            );
+        }
         for (pc, err) in &rt.core.errors[*errors_seen..] {
             warn!("npc: {tag}: script error {err:?} at {pc:#06x}");
         }
         *errors_seen = rt.core.errors.len();
 
         // ---- carry out the requests (as `enemy_ai::ai_update` does for enemies)
+        let looping_slot = |s: usize| rig.mset.get(s).and_then(|s| s.motion.as_ref()).is_some_and(|m| m.frame_return < m.frame_end);
         if let Some(req) = obj.motion_req.take() {
-            let looping = rig.mset.get(req.slot).and_then(|s| s.motion.as_ref()).is_some_and(|m| m.frame_return < m.frame_end);
-            anim.restart(Some(req.slot), looping, req.blend);
+            anim.restart(Some(req.slot), looping_slot(req.slot), req.blend);
             if let Some(s) = req.start {
                 anim.frame = s;
                 anim.prev_frame = s;
+            }
+        } else if let Some((slot, blend)) = fields.queued.filter(|_| anim.finished || anim.slot.is_none()) {
+            // The queued motion (host 1.13) follows the playing one when it ends.
+            fields.queued = None;
+            if rig.mset.has(slot) {
+                trace.line(tag, &format!("motion request slot {slot} blend {blend} (queued)"));
+                anim.restart(Some(slot), looping_slot(slot), blend);
+                obj.slot = Some(slot);
             }
         }
         let (root_t, root_yaw) = anim.root_delta;
@@ -417,6 +485,15 @@ pub struct NpcFields {
     pub path: Option<PathRun>,
     /// The spawn group's walk paths (`FUN_00199cc0` searches them by id) and return parameters.
     pub group: Arc<NpcGroup>,
+    /// The object's own spawn record (the game's +0x81c).
+    pub record: kh2_ard::Entity,
+    /// The block host 5.33 named, when it lies in the script's own memory (read after the tick,
+    /// `NpcBrain::read_params`).
+    pub params_ptr: Option<u32>,
+    /// Host 1.13 on this object: the motion queued behind the playing one (slot, blend). The
+    /// game's motion controller queue is not ported; the app starts it when the playing motion
+    /// ends [approx].
+    pub queued: Option<(usize, f32)>,
 }
 
 impl NpcFields {
@@ -435,6 +512,9 @@ impl NpcFields {
             prev: Follower::default(),
             path: None,
             group: group.clone(),
+            record: e.clone(),
+            params_ptr: None,
+            queued: None,
         };
         // FUN_001899d0: bits 0..6 of the record's word +0x24; with bit 0 set the follower is put in
         // kind 2 (the walk path) at once, with mode 0.
@@ -448,6 +528,15 @@ impl NpcFields {
             f.follower.kind = 2;
             f.follower.mode = 0;
             f.follower.motion = 0;
+            // The behaviour entries of a kind-6 group (FUN_00199ca0): an entry whose byte 0 is 0 and
+            // byte 3 is 4 names the fixed idle motion by its byte 1 (the last such entry wins).
+            if group.kind & 0xff == 6 {
+                for r in &group.returns {
+                    if r[0] == 0 && r[3] == 4 {
+                        f.follower.motion = entry_motion(r[1]);
+                    }
+                }
+            }
         }
         f
     }
@@ -578,35 +667,44 @@ impl PathRun {
         self.forward
     }
 
-    /// Moves the place on the path `dist` centimetres along the current direction and returns the
-    /// point there; `None` when a non-looping path's end stops the walk (the game then answers
-    /// the facing instead of a direction). At an end of a non-looping path the direction turns
-    /// around when `bounce` is set, as `FUN_002d2a98` does through `FUN_002d2328`.
-    pub fn advance(&mut self, dist: f32) -> Option<Vec3> {
+    /// The look-ahead of `FUN_002d2a98(speed, path, out, position)`: up to twenty times the point
+    /// at the place is taken; when it lies more than `speed` from the object (horizontally,
+    /// `DAT_003837dc` halves the step) it is the answer, else the place moves on by half of
+    /// `speed` over the segment's length. At an end of a path that does not loop the direction
+    /// turns around when `bounce` is set (`FUN_002d2328`), else the walk stops (`None`: the game
+    /// then answers the facing instead of a direction). After twenty steps the answer is the
+    /// object's own position.
+    pub fn advance(&mut self, speed: f32, pos: Vec3) -> Option<Vec3> {
         let segs = self.seg_count() as f32;
         if segs <= 0.0 {
             return None;
         }
-        let mut left = dist.max(0.0);
-        let mut guard = 0;
-        while left > 0.0 && guard < 64 {
-            guard += 1;
+        for _ in 0..20 {
+            let p = self.at(self.t);
+            if (p - pos).with_y(0.0).length() > speed {
+                return Some(p);
+            }
             let i = if self.forward { self.t.floor() } else { (self.t.ceil() - 1.0).max(0.0) };
             let i = if self.loops { i.rem_euclid(segs) } else { i.clamp(0.0, segs - 1.0) };
-            let a = self.at(i);
-            let b = self.at(i + 1.0);
-            let len = (b - a).length().max(1e-3);
-            let f = self.t - i;
-            let (room, dir) = if self.forward { ((1.0 - f) * len, 1.0) } else { (f * len, -1.0) };
-            if left <= room {
-                self.t += dir * left / len;
-                left = 0.0;
-            } else {
-                left -= room;
-                self.t = if self.forward { i + 1.0 } else { i };
+            let len = (self.at(i + 1.0) - self.at(i)).length().max(1e-3);
+            let step = speed / len * 0.5;
+            if self.forward {
+                self.t += step;
                 if self.loops {
                     self.t = self.t.rem_euclid(segs);
-                } else if (self.forward && self.t >= segs) || (!self.forward && self.t <= 0.0) {
+                } else if self.t >= segs {
+                    self.t = segs;
+                    if !self.bounce {
+                        return None;
+                    }
+                    self.toggle();
+                }
+            } else {
+                self.t -= step;
+                if self.loops {
+                    self.t = self.t.rem_euclid(segs);
+                } else if self.t <= 0.0 {
+                    self.t = 0.0;
                     if !self.bounce {
                         return None;
                     }
@@ -614,7 +712,7 @@ impl PathRun {
                 }
             }
         }
-        Some(self.at(self.t))
+        Some(pos)
     }
 }
 
@@ -658,17 +756,19 @@ impl NpcHost<'_, '_> {
 
     /// Host 1.177 (0x1719d0 -> `FUN_00183c30(obj, id, 0)`): the walk path with this id in the
     /// object's own spawn group replaces the one at +0x508 (`FUN_00199cc0` compares the path
-    /// header's u16 id); the follower starts at the point of the path nearest to the object
+    /// header's u16 id; a negative id takes the group's first path, which is what `rtn_default`
+    /// asks for with -1); the follower starts at the point of the path nearest to the object
     /// (`FUN_002d50c0`). Answers 1 when a path was found, 0 otherwise (the game then also tries the
     /// area's shared paths for objects with flag 0x588 bit 7, which these are not).
     fn set_path(&mut self, id: u32) -> bool {
         let pos = self.inner.obj.motor.pos;
-        let found = self.fields.group.paths.iter().find(|p| u16::from_le_bytes([p.header[0], p.header[1]]) as u32 == id).cloned();
+        let paths = &self.fields.group.paths;
+        let found = if (id as i32) < 0 { paths.first().cloned() } else { paths.iter().find(|p| u16::from_le_bytes([p.header[0], p.header[1]]) as u32 == id).cloned() };
         match found {
             Some(p) => {
-                let run = PathRun::new(id as u16, &p, pos);
+                let run = PathRun::new(u16::from_le_bytes([p.header[0], p.header[1]]), &p, pos);
                 if self.log {
-                    info!("npc: {} path {id} set: {} points, loops {}, start t {:.2}", self.inner.tag, run.points.len(), run.loops, run.t);
+                    info!("npc: {} path {} (asked {}) set: {} points, loops {}, start t {:.2}", self.inner.tag, run.id, id as i32, run.points.len(), run.loops, run.t);
                 }
                 self.fields.path = Some(run);
                 true
@@ -694,7 +794,7 @@ impl NpcHost<'_, '_> {
         let facing = Vec3::new(yaw.sin(), 0.0, yaw.cos());
         let pos = self.inner.obj.motor.pos;
         let Some(path) = self.fields.path.as_mut() else { return facing };
-        match path.advance(speed.min(50.0)) {
+        match path.advance(speed.min(50.0), pos) {
             Some(target) => (target - pos).normalize_or(facing),
             None => facing,
         }
@@ -825,23 +925,11 @@ impl NpcHost<'_, '_> {
                 (Value::None, St::Impl, "")
             }
             // 5.33 (0x2ea808 -> FUN_00189990): the nine words at the second argument copied to
-            // object +0xb10 (the class's parameter block).
+            // object +0xb10 (the class's parameter block). `rtn_default` keeps the block in its
+            // context (script globals), which the host reads after the tick (`read_params`).
             33 => {
-                let at = arg(1);
-                let mut all = true;
-                for k in 0..9u32 {
-                    let mut b = [0u8; 4];
-                    if self.inner.read_mem(at.wrapping_add(4 * k), &mut b) {
-                        self.fields.params[k as usize] = u32::from_le_bytes(b);
-                    } else {
-                        all = false;
-                    }
-                }
-                if all {
-                    (Value::None, St::Impl, "")
-                } else {
-                    (Value::None, St::Missing, "5.33 with a block outside the object's memory")
-                }
+                self.fields.params_ptr = Some(arg(1));
+                (Value::None, St::Impl, "")
             }
             // 5.34 (0x2ea380 -> FUN_0016bbe8): a point of the object: the position of its part of
             // kind 0x11 (FUN_001894d0, a collision record) when it has one, else its lock-on point
@@ -852,9 +940,73 @@ impl NpcHost<'_, '_> {
         })
     }
 
-    fn group1(&mut self, index: u16, a: &[u32]) -> Option<(Value, St, &'static str)> {
+    /// `FUN_001af650(obj, point)` behind hosts 1.172 (the point is the player's lock-on point,
+    /// `FUN_0016bbe8`) and 1.173: without a part of kind 0x14 on the object, the angle between its
+    /// facing (+0x550) and the horizontal direction to the point is below `DAT_0037b950` (15
+    /// degrees); with one, the part's own cone (its halfword +0x10 in degrees) and point are used.
+    fn in_front(&self, point: Vec3) -> bool {
+        let pos = self.inner.obj.motor.pos;
+        let yaw = self.inner.obj.motor.yaw;
+        let d = (point - pos).with_y(0.0);
+        if d.length() < 1e-3 {
+            return true;
+        }
+        let d = d.normalize();
+        // FUN_0017bf10: acos of the dot product when it is inside (-1, 1), else 0 or pi.
+        let dot = (d.x * yaw.sin() + d.z * yaw.cos()).clamp(-1.0, 1.0);
+        dot.acos().abs() < f32::from_bits(0x3e86_0a91)
+    }
+
+    fn group0(&mut self, index: u16, c: &Call) -> Option<(Value, St, &'static str)> {
+        match (index, c) {
+            // 0.21 angle_between (0x16cfd0): the wrapped turn from direction a to direction b,
+            // atan2(b.x, b.z) - atan2(a.x, a.z) through FUN_0017bbc0.
+            (21, Call::Func { args, .. }) => match (args.first(), args.get(1)) {
+                (Some(Arg::Vec(a)), Some(Arg::Vec(b))) => Some((Value::Float(crate::enemy_host::game_wrap_angle(b[0].atan2(b[2]) - a[0].atan2(a[2]))), St::Impl, "")),
+                _ => Some((Value::Float(0.0), St::Missing, "angle_between without two vectors")),
+            },
+            _ => None,
+        }
+    }
+
+    fn group1(&mut self, index: u16, a: &[u32], c: &Call) -> Option<(Value, St, &'static str)> {
         let arg = |k: usize| a.get(k).copied().unwrap_or(0);
+        let me = self.inner.obj.handle;
         Some(match index {
+            // 1.161 has_link (0x1706c8 -> FUN_001beb00) on this object: its +0x570 is never set here
+            // (the app has no object links).
+            161 if arg(0) == me => (Value::Bool(false), St::Approx, "the app has no object links: never linked"),
+            // 1.222 objentry_word0 (0x170808): the first word of the object's objentry row, its id.
+            222 if arg(0) == me => (Value::Int(self.fields.record.object as i32), St::Impl, ""),
+            // 1.170 spawn_record_id (0x171b30): the halfword +2 of the object's group header (+0x818
+            // -> +8): the spawn group's id.
+            170 if arg(0) == me => (Value::Int(self.fields.group.id as i32), St::Impl, ""),
+            // 1.145 obj_word_aa8 (0x1705d0) on the player: the group id of the townsperson he faces
+            // for a talk [role inferred from rtn_default comparing it with 1.170]; the player side
+            // of the app does not write it: no group.
+            145 if arg(0) == PLAYER => (Value::Int(-1), St::Approx, "the player's +0xaa8 (the group he talks to) is not written by the app: -1, no match"),
+            // 1.18 link_start on a companion object (the pets of four townspeople): the companions
+            // are not spawned (1.114 answers no object), so this is not reached in practice.
+            18 => (Value::None, St::Stub, "object links are not in the app"),
+            // 1.172 (0x1718d0 -> FUN_001af878): the player's lock-on point is inside the object's
+            // talk cone; 1.173 (0x171908 -> FUN_001af650) the same for a given point.
+            172 => (Value::Bool(self.in_front(self.inner.env.player)), St::Approx, "the kind-0x14 part's cone and point are not read: a 15 degree cone about the facing (DAT_0037b950) toward the player's origin"),
+            173 => match args_vec(c, 1) {
+                Some(v) => (Value::Bool(self.in_front(from_game(v))), St::Approx, "the kind-0x14 part's cone is not read: a 15 degree cone about the facing (DAT_0037b950)"),
+                None => (Value::Bool(false), St::Missing, "1.173 without a point"),
+            },
+            // 1.13 queue_motion on this object (0x1702b8 -> the motion controller's queue, which
+            // `rtn_default` uses to go from the turn (129) through the idle (0) to the walk (1)).
+            13 if arg(0) == me => {
+                let slot = arg(1) as i32;
+                self.fields.queued = usize::try_from(slot).ok().map(|s| (s, f32::from_bits(arg(2))));
+                (Value::None, St::Approx, "the motion controller's queue is not ported: the queued motion starts when the playing one ends")
+            }
+            // 1.174 / 1.175 / 1.176 (0x171940, 0x171978, 0x1719a8 -> FUN_001aece8, FUN_001aec78,
+            // FUN_001aec50): the head look-at controller at object +0x4a0 is started toward an object
+            // or a point over n frames, or tweened back to zero. The app has no look-at controller:
+            // the head stays with the motion.
+            174 | 175 | 176 => (Value::None, St::Stub, "the look-at controller at +0x4a0 (FUN_001abf40 tweens, applied by FUN_00189dc8) is not ported: the head follows the motion"),
             // 1.177 (0x1719d0 -> FUN_00183c30): set the walk path by id.
             177 => {
                 let ok = self.set_path(arg(1));
@@ -874,19 +1026,34 @@ impl NpcHost<'_, '_> {
     }
 }
 
+/// Argument `k` of a decoded call when it is a vector.
+fn args_vec(c: &Call, k: usize) -> Option<kh2_bdx::Vec4> {
+    match c {
+        Call::Func { args, .. } => match args.get(k) {
+            Some(Arg::Vec(v)) => Some(*v),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 impl Host for NpcHost<'_, '_> {
     fn call(&mut self, c: &Call) -> Value {
-        if let Some((g, index, a)) = words(c) {
-            let answer = match g {
-                5 => self.group5(index, &a),
-                1 => self.group1(index, &a),
+        let answer = match c {
+            // 1.114 bind_object for an entity other than the player: the companions (pets) of four
+            // townspeople, which the app does not spawn.
+            Call::FindObject { value, .. } if *value != kh2_ard::run::PLAYER as i32 => Some((Value::Handle(0), St::Stub, "companion objects are not spawned: no object")),
+            _ => match words(c) {
+                Some((5, index, a)) => self.group5(index, &a),
+                Some((1, index, a)) => self.group1(index, &a, c),
+                Some((0, index, _)) => self.group0(index, c),
                 _ => None,
-            };
-            if let Some((v, st, why)) = answer {
-                let tag = self.inner.tag;
-                self.trace().record(tag, c, &v, st, why);
-                return v;
-            }
+            },
+        };
+        if let Some((v, st, why)) = answer {
+            let tag = self.inner.tag;
+            self.trace().record(tag, c, &v, st, why);
+            return v;
         }
         self.inner.call(c)
     }
@@ -920,21 +1087,46 @@ mod tests {
         let p = path(&[[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [100.0, 0.0, -100.0]], false);
         let mut r = PathRun::new(7, &p, Vec3::new(10.0, 0.0, 0.0));
         assert!((r.t - 0.1).abs() < 1e-4, "{}", r.t);
-        assert_eq!(r.advance(40.0), Some(Vec3::new(50.0, 0.0, 0.0)));
-        // Past the corner: 50 to the corner, then 30 along the second segment (app +Z).
-        assert_eq!(r.advance(80.0), Some(Vec3::new(100.0, 0.0, 30.0)));
-        // Past the end: the rest of the way back.
-        let end = r.advance(100.0).unwrap();
-        assert!(!r.forward);
-        assert!((end - Vec3::new(100.0, 0.0, 70.0)).length() < 1e-3, "{end:?}");
+        // The look-ahead: the first sampled place (steps of half the speed over the segment's
+        // length: 0.3, 0.5, 0.7) that lies more than 40 cm from the object.
+        let q = r.advance(40.0, Vec3::new(10.0, 0.0, 0.0)).unwrap();
+        assert!((q - Vec3::new(70.0, 0.0, 0.0)).length() < 1e-3 && (r.t - 0.7).abs() < 1e-4, "{q:?} t {}", r.t);
+        // Walking to each answer in turn reaches the end (app (100, 0, 100)) and turns around.
+        let mut pos = q;
+        let mut flipped = None;
+        for _ in 0..40 {
+            pos = r.advance(40.0, pos).expect("a bouncing path never stops");
+            if !r.forward {
+                flipped = Some(pos);
+                break;
+            }
+        }
+        let back = flipped.expect("the end turns the walk around");
+        assert!(back.x > 99.0 && back.z < 100.0, "{back:?}");
         // A locked path stops at its end instead.
         let mut locked = PathRun::new(7, &p, Vec3::ZERO);
         locked.bounce = false;
-        assert_eq!(locked.advance(500.0), None);
-        // A loop wraps.
+        let mut pos = Vec3::ZERO;
+        let mut stopped = false;
+        for _ in 0..40 {
+            match locked.advance(40.0, pos) {
+                Some(q) => pos = q,
+                None => {
+                    stopped = true;
+                    break;
+                }
+            }
+        }
+        assert!(stopped && pos.z > 50.0, "{pos:?}");
+        // A loop wraps and keeps going forward.
         let mut l = PathRun::new(7, &path(&[[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [0.0, 0.0, -100.0]], true), Vec3::ZERO);
-        let q = l.advance(100.0 + 100.0 * 2f32.sqrt() + 100.0 + 10.0).unwrap();
-        assert!((q - Vec3::new(10.0, 0.0, 0.0)).length() < 1e-2, "{q:?}");
+        let (mut pos, mut wrapped, mut last_t) = (Vec3::ZERO, false, 0.0);
+        for _ in 0..60 {
+            pos = l.advance(40.0, pos).unwrap();
+            wrapped |= l.t < last_t;
+            last_t = l.t;
+        }
+        assert!(wrapped && l.forward && (0.0..3.0).contains(&l.t), "t {}", l.t);
     }
 
     /// The spawn record's word +0x24 fills bits 0..6 of the object's bit array (FUN_001899d0) and
@@ -944,11 +1136,17 @@ mod tests {
         let mut raw = [0u8; 0x40];
         raw[0x24] = 0x85;
         let e = kh2_ard::Entity { object: 0x4d8, position: [0.0; 3], rotation: [0.0; 3], spawn_kind: 0, spawn_arg: 0, serial: 0, raw };
-        let g = Arc::new(NpcGroup { tag: "a_00".into(), paths: Vec::new(), returns: Vec::new() });
+        // A kind-6 group with one behaviour entry (byte 0 = 0, byte 3 = 4) naming motion index 5.
+        let mut entry = [0u8; 0x10];
+        entry[1] = 5;
+        entry[3] = 4;
+        let g = Arc::new(NpcGroup { tag: "a72_".into(), kind: 6, id: 0x191, paths: Vec::new(), returns: vec![[0; 0x10], entry] });
         let f = NpcFields::new(&e, &g);
         assert!(f.test_bit(0) && f.test_bit(2) && !f.test_bit(1));
         assert!(!f.test_bit(7), "only bits 0..6 are copied");
         assert_eq!(f.follower.kind, 2);
+        assert_eq!(f.follower.motion, 5 + 0x117, "FUN_0018b1e0 of the entry's byte 1");
+        assert_eq!((entry_motion(0), entry_motion(2), entry_motion(3), entry_motion(13), entry_motion(14)), (0, 0x11f, 0, 13 + 0x117, 0));
         let mut f = f;
         f.params[8] = 90f32.to_bits();
         f.end_follower();

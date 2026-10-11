@@ -37,9 +37,40 @@ pub mod flag {
     pub const NOT_COUNTED: u32 = 1;
     /// An attack: needs a valid target in range; a combo follow-up may chain after it.
     pub const ATTACK: u32 = 2;
+    /// The emergency pass's first and second lists (FUN_0010f8d8).
+    pub const EMERGENCY_1: u32 = 0x10;
+    pub const EMERGENCY_2: u32 = 0x20;
     /// Continuous: re-tested and kept while it holds (FUN_0010fcd0's first step).
     pub const CONTINUOUS: u32 = 0x200;
 }
+
+/// The item choice orders of the HP item handler FUN_00113888 (one target, several targets) and of
+/// the MP item handler FUN_00113b08, u32 item ids in the executable.
+#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
+pub const HP_ITEMS_ONE: u32 = 0x352e28;
+#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
+pub const HP_ITEMS_MANY: u32 = 0x352e3c;
+#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
+pub const HP_ITEM_CHOICES: usize = 5;
+#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
+pub const MP_ITEMS_ONE: u32 = 0x352e50;
+#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
+pub const MP_ITEMS_MANY: u32 = 0x352e60;
+#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
+pub const MP_ITEM_CHOICES: usize = 4;
+/// The HP fraction of FUN_00113888 (`DAT_003785c8`) and the MP fraction of FUN_00113b08 (`DAT_003785d4`).
+#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
+pub const HP_ITEM_FRACTION: u32 = 0x3785c8;
+#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
+pub const MP_ITEM_FRACTION: u32 = 0x3785d4;
+/// FUN_00110f90's MP-gate weights (`DAT_00378598`, `DAT_0037859c`).
+#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
+pub const MP_GATE_SLOPE: u32 = 0x378598;
+#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
+pub const MP_GATE_BASE: u32 = 0x37859c;
+/// FUN_0010c800: degrees to radians (`DAT_003784a0`).
+#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
+pub const DEG_TO_RAD: u32 = 0x3784a0;
 
 /// Parameter entry flags (+0xc).
 pub mod entry_flag {
@@ -154,11 +185,38 @@ pub struct Params {
     pub followups: u32,
 }
 
+/// A 0x20-byte combo follow-up of the class's block (+0xac, FUN_001135a0), as FUN_0010c800 reads its
+/// first five words (the instructions at 0x10c82c..0x10c898: the decompilation's argument order is
+/// not the register order): a jump away from the target after an attack.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct FollowUp {
+    /// +0: the jump direction's angle in degrees, added to the member's yaw (+0x55c) (Donald 180: a
+    /// hop backwards).
+    pub angle: f32,
+    /// +4: the jump height (FUN_001b0758 reads it from the vector's Y and zeroes it).
+    pub height: f32,
+    /// +8: the horizontal speed per frame (the vector's W, multiplied into the velocity).
+    pub speed: f32,
+    /// +0xc: the motion speed of the jump motion (FUN_0017e220's second argument).
+    pub motion_speed: f32,
+    /// +0x10: frames to the apex (FUN_001b0758: gravity `2h / t^2`, rise `g x t`).
+    pub frames: f32,
+}
+
 /// A class's actions.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct ClassAi {
     pub params: Params,
     pub records: Vec<Record>,
+    pub followups: Vec<FollowUp>,
+}
+
+/// FUN_0010c800's jump direction: the member's yaw plus the entry's angle, as (sin, 0, cos) in the
+/// game's axes; the app's facing has the same form (`Vec3::new(yaw.sin(), 0, yaw.cos())`).
+#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
+pub fn followup_dir(yaw: f32, f: &FollowUp, deg_to_rad: f32) -> bevy::math::Vec3 {
+    let a = yaw + f.angle * deg_to_rad;
+    bevy::math::Vec3::new(a.sin(), 0.0, a.cos())
 }
 
 fn rw(elf: &[u8], va: u32) -> Option<u32> {
@@ -247,8 +305,22 @@ impl ClassAi {
                 });
             }
         }
-        Some(ClassAi { params, records })
+        // FUN_001135a0: the follow-ups at block + (+0xac), 0x20 bytes each.
+        let fu_at = block + rw(elf, block + 0xac)?;
+        let followups = (0..params.followups.min(16))
+            .filter_map(|k| {
+                let e = fu_at + k * 0x20;
+                Some(FollowUp { angle: rf(elf, e)?, height: rf(elf, e + 4)?, speed: rf(elf, e + 8)?, motion_speed: rf(elf, e + 0xc)?, frames: rf(elf, e + 0x10)? })
+            })
+            .collect();
+        Some(ClassAi { params, records, followups })
     }
+}
+
+/// The item ids of an item choice order of the executable (`HP_ITEMS_ONE` and the others).
+#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
+pub fn item_order(elf: &[u8], at: u32, n: usize) -> Vec<u16> {
+    (0..n as u32).filter_map(|k| rw(elf, at + 4 * k).map(|v| v as u16)).collect()
 }
 
 /// FUN_0017da30's slot orders (the table at 0x37a5c8, 4 bytes per motion state).
@@ -508,6 +580,166 @@ pub fn battle_distance(base: f32, style: u8, half: f32) -> f32 {
     }
 }
 
+// ---------------------------------------------------------------------------------------------------
+// Stages 3 and 4: the status block, danger, the MP gate, the emergency pass, items and Cure
+
+/// FUN_001a0be0 ("HP in danger"): `HP <= maxHP / 4` with the division toward zero.
+#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
+pub fn in_danger(hp: i32, max: i32) -> bool {
+    hp <= max / 4
+}
+
+/// FUN_0010f490 / FUN_0010f4d0 ("below a fraction"): `value < int(max x fraction)`.
+#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
+pub fn below_fraction(value: i32, max: i32, fraction: f32) -> bool {
+    value < (max as f32 * fraction) as i32
+}
+
+/// FUN_00110f90: the MP gate bit (+0xb7c 0x20) of this frame: with a status block, set when a roll
+/// in 0..1 is at most the class's MP-use chance factor (block +0x60) times
+/// `MP / maxMP x slope + base` (`DAT_00378598` = 0.75, `DAT_0037859c` = 0.25 as the executable holds them).
+#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
+pub fn mp_gate(roll: f32, mp_chance: f32, mp: i32, max_mp: i32, slope: f32, base: f32) -> bool {
+    let ratio = mp as f32 / max_mp as f32;
+    let threshold = mp_chance * (ratio * slope + base);
+    // A zero maximum divides by zero in the game too (inf or NaN); the comparison then decides as
+    // written: a NaN threshold refuses.
+    roll <= threshold
+}
+
+/// One of the three party objects FUN_0010f830 and the item handlers look at: the player
+/// (`DAT_0034e908[0]`), the member itself, the other member (FUN_00111be8).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
+pub enum Who {
+    Player,
+    Me,
+    Other,
+}
+
+/// HP and MP of a status block as the handlers read them (+0, +4, +0x180, +0x184).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
+pub struct Vital {
+    pub hp: i32,
+    pub hp_max: i32,
+    pub mp: i32,
+    pub mp_max: i32,
+}
+
+/// FUN_0010f830: the member in danger (+0xce4): the player when his HP is in danger; else, for a
+/// party member (not a summon class, FUN_001124b8), itself, else the other member; else nobody.
+#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
+pub fn danger_member(player: Vital, me: Vital, other: Option<Vital>, summon_class: bool) -> Option<Who> {
+    if in_danger(player.hp, player.hp_max) {
+        return Some(Who::Player);
+    }
+    if summon_class {
+        return None;
+    }
+    if in_danger(me.hp, me.hp_max) {
+        return Some(Who::Me);
+    }
+    other.filter(|o| in_danger(o.hp, o.hp_max)).map(|_| Who::Other)
+}
+
+/// The target and item of an item handler's phase 1 (FUN_00113888 for HP, FUN_00113b08 for MP):
+/// the target starts as the member in danger (+0xce4); each of the member itself, the player and
+/// the other member whose value is below `fraction` of its maximum (FUN_0010f490 / FUN_0010f4d0)
+/// becomes the target when none is set yet and is counted. With a target, the choice order is
+/// `one` for fewer than two in need, else `many`; the first item whose setting byte is below 2 (or,
+/// when someone is in danger, any setting) and which the member has in stock (FUN_0010f510 ->
+/// FUN_001a1d50: in its own battle item slots) is taken. `None`: nothing to do.
+#[allow(clippy::too_many_arguments)]
+#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
+pub fn item_pick(
+    danger: Option<Who>,
+    me: Vital,
+    player: Vital,
+    other: Option<Vital>,
+    fraction: f32,
+    value: impl Fn(&Vital) -> (i32, i32),
+    one: &[u16],
+    many: &[u16],
+    setting: impl Fn(u16) -> u8,
+    stock: impl Fn(u16) -> bool,
+) -> Option<(Who, u16)> {
+    let mut target = danger;
+    let mut count = 0;
+    let candidates = [Some((Who::Me, me)), Some((Who::Player, player)), other.map(|o| (Who::Other, o))];
+    for (who, v) in candidates.into_iter().flatten() {
+        let (val, max) = value(&v);
+        if below_fraction(val, max, fraction) {
+            if target.is_none() {
+                target = Some(who);
+            }
+            count += 1;
+        }
+    }
+    let target = target?;
+    let order = if count < 2 { one } else { many };
+    let item = order.iter().copied().find(|&item| (setting(item) < 2 || danger.is_some()) && stock(item))?;
+    Some((target, item))
+}
+
+/// FUN_00113e68's target (Cure): the member in danger, else the first of the member, the player and
+/// the other member whose HP is below the entry's fraction (+0x3c); `None` when nobody needs it.
+#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
+pub fn cure_target(danger: Option<Who>, me: Vital, player: Vital, other: Option<Vital>, fraction: f32) -> Option<Who> {
+    if danger.is_some() {
+        return danger;
+    }
+    let low = |v: &Vital| below_fraction(v.hp, v.hp_max, fraction);
+    if low(&me) {
+        return Some(Who::Me);
+    }
+    if low(&player) {
+        return Some(Who::Player);
+    }
+    other.filter(low).map(|_| Who::Other)
+}
+
+/// FUN_0010f8d8, the emergency pass, run when someone is in danger and the script is not busy: the
+/// MP gate is set, the last three choices are cleared (FUN_0010ecc0) and the repeat count reset;
+/// then the records with flag 0x10, and if none is feasible the records with flag 0x20, are tested
+/// (`can(i)`, phase 1; a record whose entry costs MP is skipped while the MP charge runs); one of the
+/// feasible ones is picked at random and becomes the current record (counted unless flag 1).
+/// `None`: nothing was feasible (the previous current record is kept, as the game restores it).
+#[allow(dead_code)] // WP-P3: wired into party.rs by the follow-up WP
+pub fn emergency(recs: &[Record], st: &mut Choosing, status: bool, mp_charge: bool, mut can: impl FnMut(usize) -> bool, mut rand: impl FnMut(u32) -> u32) -> Option<usize> {
+    let saved = st.current;
+    st.last = [None; 3];
+    st.current = None;
+    st.repeats = 0;
+    for pass_flag in [flag::EMERGENCY_1, flag::EMERGENCY_2] {
+        let mut cands: Vec<usize> = Vec::new();
+        for (i, r) in recs.iter().enumerate() {
+            if matches!(r.handler, Handler::Other(0)) || r.flags & pass_flag == 0 {
+                continue;
+            }
+            if r.entry.is_some_and(|e| e.mp >= 1) && status && mp_charge {
+                continue;
+            }
+            if can(i) && cands.len() < MAX_CANDIDATES {
+                cands.push(i);
+            }
+        }
+        if !cands.is_empty() {
+            let k = cands[rand(cands.len() as u32) as usize];
+            if recs[k].flags & flag::NOT_COUNTED == 0 {
+                push_last(&mut st.last, k);
+                st.repeats += 1;
+            } else {
+                st.repeats = 0;
+            }
+            st.current = Some(k);
+            return Some(k);
+        }
+    }
+    st.current = saved;
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -581,6 +813,63 @@ mod tests {
         assert_eq!(remap(-1, [1, 0, 2, 3], |_| true), None);
     }
 
+    /// FUN_001a0be0, FUN_0010f490, FUN_00110f90, FUN_0010f830: danger, the fraction test, the MP gate
+    /// and the member in danger.
+    #[test]
+    fn party_danger_and_mp_gate_rules() {
+        assert!(in_danger(5, 20) && !in_danger(6, 20) && in_danger(0, 3));
+        assert!(below_fraction(8, 20, 0.45) && !below_fraction(9, 20, 0.45));
+        // Full MP: the factor itself; empty MP: a quarter of it.
+        assert!(mp_gate(0.5, 0.5, 100, 100, 0.75, 0.25) && !mp_gate(0.51, 0.5, 100, 100, 0.75, 0.25));
+        assert!(mp_gate(0.125, 0.5, 0, 100, 0.75, 0.25) && !mp_gate(0.13, 0.5, 0, 100, 0.75, 0.25));
+        let v = |hp: i32| Vital { hp, hp_max: 20, mp: 0, mp_max: 10 };
+        assert_eq!(danger_member(v(5), v(20), None, false), Some(Who::Player));
+        assert_eq!(danger_member(v(20), v(5), None, false), Some(Who::Me));
+        assert_eq!(danger_member(v(20), v(5), None, true), None, "a summon class looks only at the player");
+        assert_eq!(danger_member(v(20), v(20), Some(v(2)), false), Some(Who::Other));
+        assert_eq!(danger_member(v(20), v(20), Some(v(20)), false), None);
+    }
+
+    /// FUN_00113888's phase 1: the target order, the one/many lists, the setting and stock gates.
+    #[test]
+    fn party_item_pick_follows_fun_00113888() {
+        let v = |hp: i32| Vital { hp, hp_max: 100, mp: 0, mp_max: 10 };
+        let hp = |x: &Vital| (x.hp, x.hp_max);
+        let (one, many) = ([1u16, 2, 5, 4, 7], [5u16, 1, 2, 4, 7]);
+        // Only the player is low: the single-target list, the first item in stock.
+        let pick = item_pick(None, v(100), v(40), None, 0.45, hp, &one, &many, |_| 0, |i| i == 2);
+        assert_eq!(pick, Some((Who::Player, 2)));
+        // Two in need: the group list.
+        let pick = item_pick(None, v(10), v(40), None, 0.45, hp, &one, &many, |_| 0, |_| true);
+        assert_eq!(pick, Some((Who::Me, 5)));
+        // Setting 2 keeps an item out unless someone is in danger.
+        assert_eq!(item_pick(None, v(100), v(40), None, 0.45, hp, &one, &many, |_| 2, |_| true), None);
+        assert_eq!(item_pick(Some(Who::Player), v(100), v(40), None, 0.45, hp, &one, &many, |_| 2, |_| true), Some((Who::Player, 1)));
+        // Nobody low and nobody in danger: nothing.
+        assert_eq!(item_pick(None, v(100), v(100), Some(v(100)), 0.45, hp, &one, &many, |_| 0, |_| true), None);
+        assert_eq!(cure_target(None, v(100), v(30), None, 0.4), Some(Who::Player));
+        assert_eq!(cure_target(None, v(100), v(100), Some(v(10)), 0.4), Some(Who::Other));
+        assert_eq!(cure_target(Some(Who::Me), v(100), v(100), None, 0.4), Some(Who::Me));
+    }
+
+    /// FUN_0010f8d8: the first list before the second; the current record is restored when nothing fits.
+    #[test]
+    fn party_emergency_pass_order() {
+        let recs = vec![rec(Handler::HpItem, flag::EMERGENCY_2), rec(Handler::Cure, flag::EMERGENCY_1 | flag::NOT_COUNTED), rec(Handler::Attack, flag::ATTACK)];
+        let mut st = Choosing { current: Some(2), last: [Some(2); 3], ..Choosing::default() };
+        assert_eq!(emergency(&recs, &mut st, false, false, |_| true, |_| 0), Some(1));
+        assert_eq!((st.current, st.last, st.repeats), (Some(1), [None; 3], 0));
+        let mut st = Choosing { current: Some(2), ..Choosing::default() };
+        assert_eq!(emergency(&recs, &mut st, false, false, |i| i == 0, |_| 0), Some(0));
+        assert_eq!((st.current, st.repeats), (Some(0), 1));
+        let mut st = Choosing { current: Some(2), ..Choosing::default() };
+        assert_eq!(emergency(&recs, &mut st, false, false, |_| false, |_| 0), None);
+        assert_eq!(st.current, Some(2));
+        let f = FollowUp { angle: 180.0, height: 15.0, speed: 12.0, motion_speed: 0.98, frames: 12.0 };
+        let d = followup_dir(0.0, &f, std::f32::consts::PI / 180.0);
+        assert!(d.z < -0.999 && d.x.abs() < 1e-3, "a 180 degree entry hops backwards: {d:?}");
+    }
+
     /// The nearest surface within the range wins.
     #[test]
     fn party_style0_nearest_surface() {
@@ -604,6 +893,9 @@ mod tests {
         for class in [0u8, 1] {
             let ai = ClassAi::from_exe(&elf, class).expect("class");
             eprintln!("class {class}: {:?}", ai.params);
+            eprintln!("  follow-ups (FUN_0010c800 entries): {:?}", ai.followups);
+            assert_eq!(ai.followups.len(), ai.params.followups as usize);
+            assert!(ai.followups.iter().all(|f| f.frames > 0.0 && f.height > 0.0));
             for (i, r) in ai.records.iter().enumerate() {
                 eprintln!("  {i:2} flags {:#06x} {:?} id {:#x} ability {} item {} setting {} mode {:?} entry {:?}", r.flags, r.handler, r.id, r.ability, r.item, r.setting, r.mode, r.entry);
             }

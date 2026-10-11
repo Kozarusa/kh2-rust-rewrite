@@ -164,10 +164,19 @@ pub fn spawn_point(world: &World, cam_world: &World) -> (Vec3, Vec3) {
     }
 }
 
-pub fn sky_follow(cam: Query<&Transform, (With<Camera3d>, Without<Sky>)>, mut sky: Query<&mut Transform, With<Sky>>) {
-    let Ok(c) = cam.single() else { return };
+/// The sky stays where the game puts it. The area's sky objects are made by `FUN_0015e6c0` →
+/// `FUN_0015f3a0` with position (0, 0, 0) and no rotation, and nothing in their per-frame update
+/// (`FUN_0015fef8`: the model's texture players only) moves them with the camera. The sky model's
+/// own ground meshes lie at world height -200 and are anchored in the world (tt05's covers
+/// x -60935..65904, z -43041..48327; its green backdrop was drawn 2 m under the camera by the old
+/// camera-following, which hid the floor); only the dome meshes are millions of units wide.
+/// The game orders the sky before the map (`FUN_00148440` marks it, `FUN_00147300` draws it
+/// first); the opaque world meshes still overdraw it here through the depth test. `[inferred]`:
+/// that no other code moves the sky object (its per-frame matrix, vtable 0x35a820, was not traced
+/// further).
+pub fn sky_follow(_cam: Query<&Transform, (With<Camera3d>, Without<Sky>)>, mut sky: Query<&mut Transform, With<Sky>>) {
     for mut s in &mut sky {
-        s.translation = c.translation;
+        s.translation = Vec3::ZERO;
     }
 }
 

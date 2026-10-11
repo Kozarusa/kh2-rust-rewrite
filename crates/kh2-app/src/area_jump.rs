@@ -287,6 +287,7 @@ fn tick(
     locks: Res<ExitLocks>,
     disc: Res<Disc>,
     sora: Query<&Sora>,
+    mut refused: Local<u32>,
 ) {
     // The jump task.
     match *task {
@@ -347,6 +348,10 @@ fn tick(
             for g in &exits.groups {
                 let (w, a) = g.exit.destination(rec.world);
                 info!("exits {}: {} id {:#x} -> world {w} area {a} entrance {} gate {}{} volumes {:?}", run.name, g.tag, g.id, g.exit.entrance, g.exit.gate, if g.disabled { " disabled" } else { "" }, g.volumes.iter().map(|v| (v.shape, v.option)).collect::<Vec<_>>());
+                for v in &g.volumes {
+                    let dir = consts.angle_base.map(|b| exit_direction(v, b));
+                    info!("exits {}: {} volume option {} at app {:.0} half size {:?} rotation y {:.3} exit direction {dir:?}", run.name, g.tag, v.option, area::game_to_app(v.position), v.scale, v.rotation[1]);
+                }
             }
         }
     }
@@ -373,6 +378,11 @@ fn tick(
             match v.option {
                 0 => {
                     if locked || !gate_passes(g.exit.gate, v, &w, &consts) {
+                        *refused += 1;
+                        if area::arealog() && *refused % 30 == 1 {
+                            let dir = consts.angle_base.map(|b| exit_direction(v, b)).unwrap_or_default();
+                            info!("exit {} walk-in refused (locked {locked}, gate {}): pos {:.0} facing . dir {:.2}, velocity {:.2} . dir {:.2}", g.tag, g.exit.gate, w.pos, w.facing.dot(dir), w.vel, w.vel.normalize_or_zero().dot(dir));
+                        }
                         continue;
                     }
                     let (dw, da) = g.exit.destination(world);

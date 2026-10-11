@@ -417,9 +417,56 @@ fn update_drive(scene: &mut HudScene, p: &mut SoraPanel, d: &DriveGauge, tables:
     };
     scene.nodes[fill].reveal = Some(reveal);
     scene.nodes[max].visible = full && d.mode == DriveMode::Normal;
-    for n in [bar, fill, digit] {
-        scene.nodes[n].visible = true;
+    // `FUN_00155f50`: in the locked mode (4) the fill and the digit are hidden under the chains; every
+    // other mode shows the bar, the fill and the digit.
+    scene.nodes[bar].visible = true;
+    for n in [fill, digit] {
+        scene.nodes[n].visible = d.mode != DriveMode::Locked;
     }
+}
+
+/// Feeds the HUD gauge from the drive state every frame (the game's panel reads the player's status
+/// block: mode +0x1af, whole points +0x1b1, maximum +0x1b2, fraction +0x1b0, and in the timer modes
+/// the segment count +0x1b3 and the timer +0x1b4 / +0x1b8). Mode 1 (`GaugeMode::Normal`) is the
+/// default art, mode 2 (a drive form is active) the form art with the timer's segment digit and fill
+/// (`FUN_00155bf0`, `drive::rules::segment_display`). Mode 3 (the summon timer) is fed by `summon.rs`
+/// and left alone here. The locked mode 4 (bit 0x40000 of `DAT_0035d268`, set by `FUN_001abfe8` case 5)
+/// is not modelled by the app; `KH2_HUDDRIVE` forces it. `KH2_HUDDRIVE` also stops this feed so the
+/// forced values stay on screen.
+pub fn feed_drive(drive: Option<Res<crate::drive::DriveState>>, mut gauge: ResMut<DriveGauge>, sora: Query<(), With<Sora>>) {
+    if drive_test_set() || sora.is_empty() {
+        return;
+    }
+    let Some(st) = drive else { return };
+    let Some(next) = gauge_of(st.gauge_mode, st.points, st.timer, st.segments) else { return };
+    if gauge.enabled != next.enabled || gauge.mode != next.mode || gauge.points != next.points || gauge.max != next.max || gauge.fraction != next.fraction || gauge.time_fill != next.time_fill {
+        *gauge = next;
+    }
+}
+
+/// What the gauge shows for a drive state; `None` in mode 3, which `summon.rs` feeds.
+pub fn gauge_of(mode: crate::drive::rules::GaugeMode, points: crate::drive::rules::Points, timer: crate::drive::rules::FormTimer, segments: u8) -> Option<DriveGauge> {
+    use crate::drive::rules::GaugeMode;
+    Some(match mode {
+        GaugeMode::Summon => return None,
+        GaugeMode::Normal => DriveGauge { enabled: true, mode: DriveMode::Normal, points: points.whole, max: points.max, fraction: points.fraction, time_fill: None },
+        GaugeMode::Form => {
+            let (digit, fill, seg) = crate::drive::rules::segment_display(timer.left, timer.total, segments);
+            DriveGauge {
+                enabled: true,
+                mode: DriveMode::FormA,
+                points: digit.min(9) as u8,
+                max: points.max,
+                fraction: 0,
+                time_fill: Some(if seg > 0 { fill as f32 / seg as f32 } else { 0.0 }),
+            }
+        }
+    })
+}
+
+fn drive_test_set() -> bool {
+    static SET: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SET.get_or_init(|| std::env::var_os("KH2_HUDDRIVE").is_some())
 }
 
 /// One frame of the panel's reaction to Sora's HP: the event handlers run by 0x157e48 (hit 0x157040,
@@ -569,6 +616,24 @@ fn build(scene: &mut HudScene, p: &mut SoraPanel, face_file: Option<usize>, hp: 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn feed_follows_the_drive_state() {
+        use super::*;
+        use crate::drive::rules::{FormTimer, GaugeMode, Points};
+        let timer = FormTimer { left: 0.0, total: 0.0 };
+        let pts = Points { whole: 2, fraction: 40, max: 5 };
+        let g = gauge_of(GaugeMode::Normal, pts, timer, 0).unwrap();
+        assert!(g.enabled && g.mode == DriveMode::Normal && g.points == 2 && g.max == 5 && g.fraction == 40 && g.time_fill.is_none());
+        // Mode 2: the digit and fill of the timer's segment (segments of 100 units, timer 250 of 400: digit 2, fill 0.5).
+        let g = gauge_of(GaugeMode::Form, pts, FormTimer { left: 250.0, total: 400.0 }, 4).unwrap();
+        assert!(g.enabled && g.mode == DriveMode::FormA && g.points == 2 && g.time_fill == Some(0.5));
+        // A full timer shows the last digit with a full fill.
+        let g = gauge_of(GaugeMode::Form, pts, FormTimer { left: 400.0, total: 400.0 }, 4).unwrap();
+        assert!(g.points == 3 && g.time_fill == Some(1.0));
+        // Mode 3 belongs to the summon module.
+        assert!(gauge_of(GaugeMode::Summon, pts, timer, 3).is_none());
+    }
+
     use super::*;
     use super::super::hud_gfx::SeqFile;
     use kh2_image::seqd::{Anim, AnimGroup, Seqd};

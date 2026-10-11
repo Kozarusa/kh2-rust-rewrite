@@ -220,7 +220,7 @@ pub(crate) fn call_id(c: &Call) -> (u16, u16) {
 
 /// FUN_0017bbc0 (host 0.43): an angle into -pi..pi with fmod by 2 pi, from above for a positive angle
 /// and from below otherwise (pi and 2 pi are the floats at 0x37a528 / 0x37a52c, 0x40490fdb / 0x40c90fdb).
-fn game_wrap_angle(x: f32) -> f32 {
+pub(crate) fn game_wrap_angle(x: f32) -> f32 {
     let (pi, two_pi) = (f32::from_bits(0x4049_0fdb), f32::from_bits(0x40c9_0fdb));
     if x > 0.0 { (x + pi) % two_pi - pi } else { pi - (pi - x) % two_pi }
 }

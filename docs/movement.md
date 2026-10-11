@@ -395,7 +395,7 @@ Evidence: `cargo test -p kh2-anim blend` (weights 2/8 .. 7/8 then the pose, cut 
 blend), `cargo test -p kh2-app --bin kh2-game skel::tests::idle_to_run_cross_fades_from_the_drawn_pose`
 (disc: `idle->run: cut jump 83.03, largest blended step 20.76, off run's start pose at the end 0.0000`;
 `interrupted: first step 7.78 of 31.10 to the attack's start pose`). Harness: `KH2_POSELOG=P_EX100`
-prints `pose: obj/P_EX100.apdx <tag> frame <f> blend <w> max bone delta <d>` per tick.
+prints `pose: obj/P_EX100.apdx <tag> frame <f>[ (held at start)] blend <w> max bone delta <d>` per tick.
 
 ### Not ported / gaps
 * The app's Sora passes 4 for attacks (`sora::BLEND_ATTACK`); the original's `FUN_00176050` passes 0 (a

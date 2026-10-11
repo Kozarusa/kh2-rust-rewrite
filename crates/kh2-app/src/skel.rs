@@ -342,7 +342,8 @@ fn pose_log(a: &Animator, pose: &[Mat4]) {
         return;
     }
     let d = kh2_anim::blend::max_bone_delta(&a.pose, pose);
-    info!("pose: {name} {} frame {:.2} blend {:.3} max bone delta {d:.2}", a.tag(), a.frame, a.blend_weight());
+    let held = if a.blending() { " (held at start)" } else { "" };
+    info!("pose: {name} {} frame {:.2}{held} blend {:.3} max bone delta {d:.2}", a.tag(), a.frame, a.blend_weight());
 }
 
 struct Meta {

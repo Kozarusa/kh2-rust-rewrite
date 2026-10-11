@@ -379,8 +379,10 @@ impl AbilityRules {
         (bit != 0).then(|| self.id_of_bit(bit)).flatten()
     }
 
-    /// `FUN_001c1340`: the highest growth level set per group (0 when none).
-    fn growth_levels(&self, block: &Block) -> [u8; 4] {
+    /// `FUN_001c1340`: the highest growth level set per group (0 when none). The bits come only from
+    /// applied abilities (`FUN_001c0e50` applies a list slot only when its bit 15 is set), so a growth
+    /// group's level is the highest *equipped* level: an unequipped LV3 under an equipped LV1 is LV1.
+    pub fn growth_levels(&self, block: &Block) -> [u8; 4] {
         let mut out = [0u8; 4];
         for (g, levels) in self.growth_bits.iter().enumerate() {
             for (l, &bit) in levels.iter().enumerate() {
@@ -409,8 +411,12 @@ pub struct Slot {
 #[derive(Resource)]
 pub struct Abilities {
     rules: Arc<AbilityRules>,
-    /// The character's ability list (`party record + 0x54`, 64 slots).
+    /// The character's ability list (`party record + 0x54`, 64 slots): the first `mirrored` entries
+    /// are `Progress`'s list (its non-empty slots in slot order, kept in step by `follow_progress`),
+    /// the rest the harness's additions (`KH2_ABILITY_IDS`, `KH2_ABILITIES`).
     pub learned: Vec<Slot>,
+    /// How many entries of `learned` mirror `Progress` (0 without it).
+    mirrored: usize,
     /// Equipped items: keyblade, armor, accessories. Each grants its `item_stat` ability.
     pub equipment: Vec<u16>,
     /// While a drive form is active: the form's own ability list (`FUN_001c0e50`, 16 slots). Then
@@ -428,7 +434,7 @@ pub struct Abilities {
 
 impl Abilities {
     pub fn new(rules: Arc<AbilityRules>) -> Abilities {
-        let mut s = Abilities { rules, learned: Vec::new(), equipment: vec![KINGDOM_KEY], form: None, raw_bits: Vec::new(), level: 1, block: Block::default(), dodge_roll: 0 };
+        let mut s = Abilities { rules, learned: Vec::new(), mirrored: 0, equipment: vec![KINGDOM_KEY], form: None, raw_bits: Vec::new(), level: 1, block: Block::default(), dodge_roll: 0 };
         s.recompute();
         s
     }
@@ -441,9 +447,7 @@ impl Abilities {
         let mut s = Abilities::new(rules);
         match progress {
             Some(p) => {
-                s.equipment = p.equipment();
-                s.learned = p.sora().abilities.iter().map(|&(id, equipped)| Slot { id, equipped }).collect();
-                s.dodge_roll = p.dodge_roll;
+                s.follow_progress(p);
             }
             None if std::env::var("KH2_ABILITY_START").as_deref() != Ok("data") => {
                 s.equip_ability(id::GUARD);
@@ -469,6 +473,38 @@ impl Abilities {
 
     pub fn rules(&self) -> &AbilityRules {
         &self.rules
+    }
+
+    /// Sora's list as `Progress` holds it (record `+0x54`, the non-empty slots in slot order).
+    fn progress_list(p: &crate::progress::Progress) -> Vec<Slot> {
+        p.sora().abilities.iter().map(|&(id, equipped)| Slot { id, equipped }).collect()
+    }
+
+    /// Whether `follow_progress` would change anything (read only, so a caller can keep change
+    /// detection quiet when nothing moved).
+    pub fn differs_from(&self, p: &crate::progress::Progress) -> bool {
+        self.learned.get(..self.mirrored) != Some(&Self::progress_list(p)[..]) || self.equipment != p.equipment() || self.dodge_roll != p.dodge_roll
+    }
+
+    /// The record is the state (`FUN_001c0e50` reads the record's list each time the status is
+    /// rebuilt, `FUN_0019fb98`): Sora's ability list, his equipment and the app's Dodge Roll level are
+    /// copied from `Progress` and the block is rebuilt. The harness's additions stay after the copy.
+    /// So whatever writes the record (the Abilities menu's toggle `FUN_0027d8b8`, a level-up's gift
+    /// `FUN_001a18d8(id, 1, 0)`, a form level-up's growth upgrade `FUN_001d3f18`, `KH2_STATE`) reaches
+    /// the growth levels and the ability bits. Returns whether anything changed.
+    pub fn follow_progress(&mut self, p: &crate::progress::Progress) -> bool {
+        if !self.differs_from(p) {
+            return false;
+        }
+        let list = Self::progress_list(p);
+        let n = self.mirrored.min(self.learned.len());
+        self.learned.splice(..n, list.iter().copied());
+        self.mirrored = list.len();
+        self.learned.truncate(64);
+        self.equipment = p.equipment();
+        self.dodge_roll = p.dodge_roll;
+        self.recompute();
+        true
     }
 
     /// Learns and equips an ability (a second copy is a second slot, as in the game).
@@ -651,17 +687,31 @@ pub fn growth_of(a: &Abilities) -> Growth {
 fn sync_controller(a: Res<Abilities>, over: Option<Res<GrowthOverride>>, mut view: ResMut<sora::Abilities>, growth: Option<ResMut<Growth>>) {
     *view = sora::Abilities::from_block(&a);
     let from_block = growth_of(&a);
-    let next = match over.and_then(|o| o.0) {
-        Some(o) if !a.in_form() => o,
-        _ => from_block,
+    let (next, source) = match over.and_then(|o| o.0) {
+        Some(o) if !a.in_form() => (o, "the KH2_GROWTH override"),
+        _ if a.in_form() => (from_block, "the drive form's own list"),
+        _ => (from_block, "Sora's equipped abilities"),
     };
     if let Some(mut g) = growth
         && *g != next
     {
         *g = next;
+        info!(
+            "abilities: growth level High Jump {}, Quick Run {}, Aerial Dodge {}, Glide {}, Dodge Roll {} (from {source})",
+            next.high_jump, next.quick_run, next.aerial_dodge, next.glide, next.dodge_roll
+        );
     }
     if log_on() {
         info!("abilities: controller view: combo {}+finisher x{}, air {}, growth {:?}, bits {:#x}", view.max_ground, view.max_finishers, view.max_air, next, view.bits);
+    }
+}
+
+/// `Abilities::follow_progress` whenever `Progress` changed; `Abilities` is only marked changed (and
+/// the controller view rebuilt) when the record really moved.
+fn follow_progress(p: Option<Res<crate::progress::Progress>>, mut a: ResMut<Abilities>) {
+    let Some(p) = p else { return };
+    if a.differs_from(&p) && a.follow_progress(&p) && log_on() {
+        info!("abilities: Sora's record changed; the block is rebuilt from it");
     }
 }
 
@@ -684,7 +734,16 @@ impl Plugin for AbilitiesPlugin {
         app.insert_resource(sora::Abilities::from_block(&abilities))
             .insert_resource(abilities)
             .add_systems(Update, log_changes.run_if(resource_changed::<Abilities>))
-            .add_systems(FixedUpdate, sync_controller.after(Sim::Weapon).before(Sim::Sora).run_if(resource_changed::<Abilities>));
+            .add_systems(
+                FixedUpdate,
+                (
+                    follow_progress.run_if(resource_changed::<crate::progress::Progress>),
+                    sync_controller.run_if(resource_changed::<Abilities>),
+                )
+                    .chain()
+                    .after(Sim::Weapon)
+                    .before(Sim::Sora),
+            );
     }
 }
 
@@ -771,6 +830,73 @@ mod tests {
         assert_eq!(with(&r, &[]).growth(0), 0);
         assert_eq!(r.growth_bits[0], [2, 3, 4, 5]);
         assert_eq!(r.growth_bits[3], [14, 15, 16, 17]);
+    }
+
+    /// The growth rule with the disc's rows: a group's level is the highest *equipped* level
+    /// (`FUN_001c0e50` applies a slot only with bit 15, `FUN_001c1340` takes the highest set bit of the
+    /// group). Quick Run is 98..=101, Glide 106..=109.
+    #[test]
+    fn growth_level_is_the_highest_equipped_level() {
+        let Some(r) = rules() else { return };
+        // Every growth row is a kind 3 (Growth group) ability with a name; print the costs.
+        for g in 0..4 {
+            for l in 1..=4u8 {
+                let id = r.growth_ability(g, l).expect("growth row");
+                let i = r.abilities[&id];
+                assert_eq!(i.kind, 3, "id {id} is a growth ability");
+                eprintln!("growth group {g} LV{l}: id {id}, bit {}, AP {}", i.bit, i.ap);
+            }
+        }
+        let mut a = with(&r, &[98, 99, 100]);
+        assert_eq!(a.growth(1), 3);
+        a.unequip_ability(100);
+        assert_eq!(a.growth(1), 2, "LV3 taken off: LV2 is the highest equipped");
+        a.unequip_ability(98);
+        assert_eq!(a.growth(1), 2, "LV1 off changes nothing while LV2 is on");
+        a.unequip_ability(99);
+        assert_eq!(a.growth(1), 0, "nothing equipped: not learned");
+        // Learned but not equipped counts for nothing; equipping it again restores the level.
+        a.learned.push(Slot { id: 109, equipped: false });
+        a.recompute();
+        assert_eq!(a.growth(3), 0);
+        a.learned.last_mut().unwrap().equipped = true;
+        a.recompute();
+        assert_eq!(a.growth(3), 4);
+        assert_eq!(growth_of(&a), Growth { high_jump: 0, quick_run: 0, aerial_dodge: 0, glide: 4, dodge_roll: 0 });
+        // A lower level equipped beside a higher one: the higher wins (the loop runs from the top).
+        let b = with(&r, &[106, 108]);
+        assert_eq!(b.growth(3), 3);
+    }
+
+    /// The block follows Sora's record: a menu toggle, a growth upgrade or a gift written to `Progress`
+    /// reaches the growth levels; the harness's own additions stay.
+    #[test]
+    fn the_block_follows_the_record() {
+        let Some(r) = rules() else { return };
+        let mut p = crate::progress::Progress::from_block(&[], Arc::new(crate::progress::ItemIndex::default()));
+        p.apply_json(r#"{"abilities": [82, 94], "abilities_off": [98], "dodge_roll": 1}"#).unwrap();
+        let mut a = Abilities::with_defaults(r.clone(), Some(&p));
+        a.equip_ability(id::COMBO_PLUS);
+        assert_eq!((a.growth(0), a.growth(1), a.growth(4)), (1, 0, 1));
+        assert!(!a.differs_from(&p));
+        assert!(!a.follow_progress(&p), "nothing moved: no rebuild");
+        // The Abilities menu's toggle (FUN_0027d8b8) on the Quick Run slot.
+        let slot = p.ability_slots(crate::progress::SORA).iter().find(|s| s.1 == 98).unwrap().0;
+        p.set_ability_equipped(crate::progress::SORA, slot, true);
+        assert!(a.differs_from(&p));
+        assert!(a.follow_progress(&p));
+        assert_eq!(a.growth(1), 1);
+        // A form level-up's growth upgrade (FUN_001d3f18): LV1 -> LV2 keeps the equipped bit.
+        p.upgrade_ability(crate::progress::SORA, 98, 99);
+        a.follow_progress(&p);
+        assert_eq!(a.growth(1), 2);
+        // Taking High Jump off.
+        let hj = p.ability_slots(crate::progress::SORA).iter().find(|s| s.1 == 94).unwrap().0;
+        p.set_ability_equipped(crate::progress::SORA, hj, false);
+        a.follow_progress(&p);
+        assert_eq!(a.growth(0), 0);
+        assert!(a.has(id::COMBO_PLUS) && a.ground_combo() == 4, "the harness's Combo Plus stays");
+        assert_eq!(a.learned.len(), 4);
     }
 
     #[test]

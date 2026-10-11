@@ -1081,6 +1081,21 @@ impl Progress {
         true
     }
 
+    /// `FUN_001d3f18(record + 0x54, 0x40, form, level)` on a member's 64-slot list: the first slot whose
+    /// id (`& 0x7fff`) is `old` takes `new`, keeping its bit 15; at most one slot changes. `old` 0 matches
+    /// the first empty slot, which has bit 15 clear, so a new growth ability arrives **unequipped**
+    /// (`FUN_001d3da8` calls it for Sora at the form row's display level minus one; `old` / `new` are
+    /// the growth chain's ids at 0x37c556, `prize::GrowthChains`). Returns the slot written, `None` when
+    /// no slot matches (nothing changes) or the member does not exist.
+    pub fn upgrade_ability(&mut self, member: u16, old: u16, new: u16) -> Option<usize> {
+        let r = Self::member_off(member)?;
+        let slot = (0..rec::ABILITY_SLOTS).find(|&i| self.u16_at(r + rec::ABILITIES + 2 * i) & 0x7fff == old)?;
+        let o = r + rec::ABILITIES + 2 * slot;
+        let v = self.u16_at(o);
+        self.set_u16(o, v & 0x8000 | new & 0x7fff);
+        Some(slot)
+    }
+
     /// `FUN_00187f18`: an ability into the first empty slot of a form's list, always equipped.
     fn put_form_ability(&mut self, r: usize, v: u16) {
         for i in 0..16 {
@@ -1717,6 +1732,84 @@ mod tests {
         assert_eq!(p.sora().abilities, vec![(82, false), (394, true)]);
         assert!(!p.set_ability_equipped(SORA, 64, true), "slot 64 does not exist");
         assert!(!p.set_ability_equipped(99, 0, true), "no such member");
+    }
+
+    /// `FUN_001d3f18` on Sora's list: the first slot holding the level below takes the new level and keeps
+    /// its bit 15; the first growth level fills the first empty slot unequipped; no match changes nothing.
+    /// The same as `prize::growth_upgrade` (the array form the form level-up log uses).
+    #[test]
+    fn growth_upgrade_keeps_the_equipped_bit_and_matches_the_array_form() {
+        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        let r = Progress::member_off(SORA).unwrap();
+        p.put_ability(r, 82, true);
+        let chains = crate::prize::GrowthChains([[0; 5], [0, 94, 95, 96, 97], [0, 98, 99, 100, 101], [0; 5], [0; 5]]);
+        let mut arr = [0u16; 64];
+        arr[0] = 82 | 0x8000;
+        let step = |p: &mut Progress, arr: &mut [u16; 64], form: u8, level: u8| {
+            let old = if level == 0 { chains.at(form - 1, 4) } else { chains.at(form, level - 1) };
+            let got = p.upgrade_ability(SORA, old, chains.at(form, level));
+            crate::prize::growth_upgrade(arr, &chains, form, level);
+            let words: Vec<u16> = (0..64).map(|i| p.u16_at(r + rec::ABILITIES + 2 * i)).collect();
+            assert_eq!(words, arr.to_vec(), "form {form} level {level}");
+            got
+        };
+        assert_eq!(step(&mut p, &mut arr, 1, 1), Some(1), "High Jump LV1 into the first empty slot");
+        assert_eq!(p.ability_slots(SORA), vec![(0, 82, true), (1, 94, false)], "it arrives unequipped");
+        p.set_ability_equipped(SORA, 1, true);
+        arr[1] |= 0x8000;
+        assert_eq!(step(&mut p, &mut arr, 1, 2), Some(1));
+        assert_eq!(p.ability_slots(SORA), vec![(0, 82, true), (1, 95, true)], "LV2 keeps LV1's equipped bit");
+        assert_eq!(step(&mut p, &mut arr, 2, 2), None, "no Quick Run LV1 to upgrade: nothing changes");
+        assert_eq!(step(&mut p, &mut arr, 2, 1), Some(2));
+        assert_eq!(step(&mut p, &mut arr, 2, 2), Some(2));
+        assert_eq!(p.ability_slots(SORA), vec![(0, 82, true), (1, 95, true), (2, 99, false)]);
+        assert_eq!(p.upgrade_ability(99, 0, 94), None, "no such member");
+    }
+
+    /// The oracle for `upgrade_ability`: the game's `FUN_001d3f18(list, 0x40, form, level)` (a leaf) runs in
+    /// kh2-ee on the user's executable over a 64-slot list, with the chain table at 0x37c556 as the
+    /// executable holds it; the port gets the chain's ids at `level - 1` (the routine's `puVar1[-1]`, which
+    /// for level 0 is the previous form's entry 4) and `level`. Every form 0..=4 and level 0..=4, twice
+    /// round, with one slot taken off between the rounds; the 64 words must stay equal.
+    #[test]
+    fn growth_upgrade_matches_the_game() {
+        use kh2_ee::Ee;
+        const STACK: u32 = 0x01ff_0000;
+        const LIST: u32 = 0x0180_0000;
+        const CHAINS: u32 = crate::prize::GROWTH_CHAINS;
+        let Some(mut tb) = tables() else { return };
+        let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| tb.archive.iso().read(p).ok()).expect("executable");
+        let mut ee = Ee::new();
+        ee.load_elf(&elf).expect("elf");
+        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        let r = Progress::member_off(SORA).unwrap();
+        p.put_ability(r, 82, true);
+        p.put_ability(r, 162, false);
+        let words = |p: &Progress| (0..64).map(|i| p.u16_at(r + rec::ABILITIES + 2 * i)).collect::<Vec<u16>>();
+        let bytes: Vec<u8> = words(&p).iter().flat_map(|w| w.to_le_bytes()).collect();
+        ee.write(LIST, &bytes);
+        let (mut changed, mut cases) = (0, 0);
+        for round in 0..2 {
+            for form in 0..=4u32 {
+                for level in 0..=4u32 {
+                    let at = CHAINS + 10 * form + 2 * level;
+                    let (old, new) = (ee.r16(at - 2), ee.r16(at));
+                    ee.call(0x001d_3f18, &[LIST as u64, 0x40, form as u64, level as u64], &[], STACK).expect("FUN_001d3f18");
+                    changed += p.upgrade_ability(SORA, old, new).is_some() as u32;
+                    cases += 1;
+                    let game: Vec<u16> = (0..64).map(|i| ee.r16(LIST + 2 * i)).collect();
+                    assert_eq!(game, words(&p), "round {round} form {form} level {level} (old {old}, new {new})");
+                }
+            }
+            // Take the first growth slot off (FUN_0027d8b8) in both, then go round again.
+            if let Some(&(slot, _, _)) = p.ability_slots(SORA).iter().find(|s| s.1 != 82 && s.1 != 162) {
+                p.set_ability_equipped(SORA, slot, false);
+                let v = ee.r16(LIST + 2 * slot as u32);
+                ee.write(LIST + 2 * slot as u32, &(v & 0x7fff).to_le_bytes());
+            }
+        }
+        eprintln!("oracle: FUN_001d3f18 equal for {cases} calls ({changed} slots written); Sora's list {:?}", p.ability_slots(SORA));
+        assert!(changed > 0);
     }
 
     /// The Customize writers: the shortcut words and the spell switch bits, and the stat boost bytes.

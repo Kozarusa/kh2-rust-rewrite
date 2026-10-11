@@ -847,7 +847,7 @@ fn show(
     let keys = match v.nav.kind {
         Kind::Model => "Left/Right model (Shift 100) | PgUp/PgDn 10 | Up/Down group",
         Kind::Motion => "Left/Right motion | PgUp/PgDn 10 | Up/Down model | Enter restart",
-        Kind::Texture => "Left/Right image | PgUp/PgDn 10 | Up/Down source (model, effect file, image files)",
+        Kind::Texture => "Left/Right image | PgUp/PgDn 10 | Up/Down source (model, effect file, texcommon.dpd, image files; Shift 10)",
         Kind::Effect => "Left/Right element id | PgUp/PgDn 10 | Up/Down effect file | Enter replay",
         Kind::Audio => "Left/Right id | PgUp/PgDn 10 | Up/Down bank | Enter play (F10: sound viewer)",
     };

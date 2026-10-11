@@ -468,6 +468,22 @@ mod tests {
         assert!(jump <= full * 0.25 + 1e-3, "jump {jump} full {full}");
     }
 
+    /// The blend constants `kh2_anim::blend` carries equal the executable's: the cut limit
+    /// `DAT_0037a58c` and the start time `DAT_0037a588` (both 2.0), and the locomotion blend
+    /// `DAT_0037a4e4` (8.0) Sora's idle/walk/run requests pass.
+    #[test]
+    fn blend_constants_match_the_executable() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let elf = crate::assets::Disc::open(&iso).read_root("SLUS_210.05").expect("exe");
+        let f = |va: u32| crate::party_rules::exe_bytes(&elf, va, 4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+        assert_eq!(f(0x37a58c), Some(kh2_anim::blend::CUT_MAX));
+        assert_eq!(f(0x37a588), Some(kh2_anim::blend::START));
+        assert_eq!(f(0x37a4e4), Some(8.0));
+    }
+
     /// A343 (slot 776), "the keyblade shaft missing at motion frames 18 to 20" (WP-5A): skinned on the
     /// CPU exactly as the GPU does it (joint pose times inverse rest pose, weights normalised), on
     /// Sora's hand bone 178 (both poses equal the game's evaluator there, `kh2 rig`), the blade

@@ -569,20 +569,15 @@ impl Plugin for MenuAbilitiesPlugin {
     }
 }
 
-/// Reads the item rows and the executable tables once.
-fn load(disc: Res<Disc>, mut st: ResMut<AbilitiesMenu>) {
-    let items = {
-        let mut a = disc.0.lock().unwrap();
-        kh2_tables::load::<t::Item>(&mut a, &t::ITEM).ok().map(|d| d.rows)
-    };
-    let Some(items) = items else {
-        warn!("abilities: the item table is not readable; the Abilities pages are off");
-        return;
-    };
+/// Every ability row of the item table (type 0x13), the first row of an id winning: what the page
+/// reads of each (`FUN_0027a7e8`: item `+6` kind, `+7` cost; `+8` name, `+0xa` help, `+0x17` icon).
+/// Growth abilities (kind 3: High Jump, Quick Run, Aerial Dodge, Glide, four levels each) are rows like
+/// any other and land in the Growth group.
+pub fn infos(items: &[t::Item]) -> BTreeMap<u16, Info> {
+    let mut out = BTreeMap::new();
     for (order, i) in items.iter().enumerate() {
-        st.item_types.entry(i.id).or_insert(i.r#type);
         if i.r#type == crate::progress::item_type::ABILITY {
-            st.info.entry(i.id).or_insert(Info {
+            out.entry(i.id).or_insert(Info {
                 id: i.id,
                 kind: (i.stat_entry & 0xff) as u8,
                 cost: (i.stat_entry >> 8) as u8,
@@ -593,6 +588,23 @@ fn load(disc: Res<Disc>, mut st: ResMut<AbilitiesMenu>) {
             });
         }
     }
+    out
+}
+
+/// Reads the item rows and the executable tables once.
+fn load(disc: Res<Disc>, mut st: ResMut<AbilitiesMenu>) {
+    let items = {
+        let mut a = disc.0.lock().unwrap();
+        kh2_tables::load::<t::Item>(&mut a, &t::ITEM).ok().map(|d| d.rows)
+    };
+    let Some(items) = items else {
+        warn!("abilities: the item table is not readable; the Abilities pages are off");
+        return;
+    };
+    for i in &items {
+        st.item_types.entry(i.id).or_insert(i.r#type);
+    }
+    st.info = infos(&items);
     let Some(exe) = disc.read_root("SLUS_210.05").and_then(Exe::load) else {
         warn!("abilities: the executable is not readable; the Abilities pages are off");
         return;
@@ -1158,6 +1170,97 @@ mod tests {
         // Item ids in table order: a growth ability, an action one, two support ones.
         let mk = |id: u16, kind: u8, cost: u8, order: usize| (id, Info { id, kind, cost, name: 0, description: 0, icon: 0, order });
         BTreeMap::from([mk(94, 3, 1, 4), mk(82, 2, 0, 1), mk(162, 0, 3, 7), mk(160, 0, 2, 5), mk(500, 2, 0, 9)])
+    }
+
+    /// Every ability row of the disc as the page shows it when Sora holds it (WP-G8): each becomes a row
+    /// of its group with its own name, help text and AP, and is equippable when it costs AP. The test
+    /// prints the inventory of docs/menus.md section 17: id, name, group, AP, bit, and what in the app
+    /// reads it (growth level, stat block, attack table gate, limit gate, magic lock-on, or nothing yet).
+    #[test]
+    fn every_ability_row_of_the_disc_is_a_menu_row() {
+        use crate::abilities::{AbilityRules, Block};
+        let iso = std::env::var("KH2_ISO").ok().or_else(|| {
+            let f = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../local/iso.txt");
+            std::fs::read_to_string(f).ok().map(|s| s.trim().to_string())
+        });
+        let Some(iso) = iso else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let items = kh2_tables::load::<t::Item>(&mut a, &t::ITEM).expect("item").rows;
+        let limt = kh2_tables::load::<t::Limt>(&mut a, &t::LIMT).expect("limt").rows;
+        let msgs = kh2_image::text::Messages::from_bar(&a.read("msg/us/sys.bar").expect("sys.bar")).expect("messages");
+        let moves = kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY)
+            .ok()
+            .and_then(|o| o.rows.into_iter().find(|r| r.model_name == "P_EX100"))
+            .and_then(|r| kh2_anim::moveset::Moveset::parse(&kh2_tables::subfile(&mut a, &t::PTYA).ok()?, r.neo_moveset as usize))
+            .expect("Sora's moveset");
+        let rules = AbilityRules::load(&mut a).expect("rules");
+        let info = infos(&items);
+        assert!(!info.is_empty());
+        // The page in chunks of 64 slots (the list's size): every id is a row of its group with its cost.
+        let ids: Vec<u16> = info.keys().copied().collect();
+        for chunk in ids.chunks(64) {
+            let slots: Vec<(usize, u16, bool)> = chunk.iter().enumerate().map(|(s, &id)| (s, id, false)).collect();
+            let table = Table::build(&slots, None, &info, 999);
+            assert_eq!(table.rows.len(), chunk.len());
+            for r in &table.rows {
+                let i = info[&r.id];
+                assert_eq!((r.group, r.cost), (group_of_kind(i.kind), i.cost), "id {}", r.id);
+                assert_eq!(i.cost, rules.abilities[&r.id].ap, "the AP the page shows is the block's");
+            }
+        }
+        let gates: std::collections::BTreeSet<u16> = moves.actions.iter().map(|x| x.ability).filter(|&b| b != 0).collect();
+        let bit_of = |id: u16| rules.abilities.get(&id).map(|i| i.bit);
+        let limit_ids: std::collections::BTreeSet<u16> = limt.iter().map(|l| l.limit).collect();
+        let group_names = ["Action", "Growth", "Support"];
+        let (mut used, mut unread) = (0, Vec::new());
+        for (id, i) in &info {
+            let name = msgs.text(u32::from(i.name)).unwrap_or_default();
+            assert!(!name.is_empty(), "ability {id} has a name");
+            let bit = bit_of(*id).unwrap_or(0);
+            let mut b = Block::default();
+            b.apply(*id, None, &rules.tuning);
+            let mut uses = Vec::new();
+            if i.kind == 3 {
+                uses.push("growth level (sora::Growth)");
+            }
+            if b != Block::default() {
+                uses.push("stat block");
+            }
+            if gates.contains(&bit) {
+                uses.push("attack table gate");
+            }
+            if limit_ids.contains(id) {
+                uses.push("limit gate");
+            }
+            if bit == crate::magic_rules::BIT_MAGIC_LOCK_ON {
+                uses.push("magic lock-on");
+            }
+            if uses.is_empty() {
+                unread.push(*id);
+            } else {
+                used += 1;
+            }
+            eprintln!(
+                "ability {id:3} {name:<22} {:<7} kind {} AP {:2} bit {bit:3} equippable {}: {}",
+                group_names.get(group_of_kind(i.kind) as usize).unwrap_or(&"?"),
+                i.kind,
+                i.cost,
+                i.cost != 0,
+                if uses.is_empty() { "no reader in the app".to_string() } else { uses.join(", ") }
+            );
+        }
+        eprintln!("{} ability rows: {used} read by the app, {} not yet ({unread:?})", info.len(), unread.len());
+        // The four growth groups are among the rows, each level with its AP.
+        for g in 0..4 {
+            for l in 1..=4u8 {
+                let id = rules.growth_ability(g, l).expect("growth row");
+                assert_eq!(group_of_kind(info[&id].kind), 1, "growth id {id} is in the Growth group");
+                assert!(info[&id].cost > 0, "growth id {id} costs AP, so it can be equipped and taken off");
+            }
+        }
     }
 
     #[test]

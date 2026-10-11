@@ -123,6 +123,19 @@ are in code (`sora::square_ground`, `sora::TAP_TICKS`), no Final Mix data or ass
   `KH2_GROWTH=a,b,c,d,e` (fifth value) or F6; hidden in a drive form [inferred: a form's growth is its
   own ability]. The baseline gives Sora Dodge Roll level 1 (the user's wish, docs/progress.md);
   `KH2_ABILITY_START=data` drops it with the Guard so the USA rules stay reachable.
+* **Where the levels come from (WP-G8).** High Jump, Quick Run, Aerial Dodge and Glide are the growth
+  ability items 94..109 in Sora's ability list; the level `FUN_001c13b8` returns is the highest *equipped*
+  level of the group (`FUN_001c0e50` applies only slots with bit 15, `FUN_001c1340` takes the highest bit
+  of 0x37bda0). The app keeps `sora::Growth` equal to that: `abilities::Abilities` follows `Progress`
+  (the Abilities menu's toggle, a `KH2_STATE` list, a level-up's gift) and `sync_controller` writes the
+  levels and logs `abilities: growth level High Jump a, Quick Run b, Aerial Dodge c, Glide d, Dodge Roll e
+  (from Sora's equipped abilities | the drive form's own list | the KH2_GROWTH override)`. `KH2_GROWTH`
+  still wins outside a form; F6 still cycles the controller's levels directly until the next ability
+  change. Jump height (`jump_height`: `fmab` row of the High Jump level), Quick Run, Aerial Dodge and
+  Glide all read `sora::Growth`, so taking an ability off in the menu changes the movement at once (log
+  example docs/menus.md section 17: `sora quick run: Square held 10 ticks, Quick Run level 1` with Quick Run
+  LV1 equipped, `... but Quick Run is not learned (level 0)` with it learned and taken off). The new game
+  owns none of the four (docs/progress.md); the drive forms' level-ups give them (`FUN_001d3f18`).
 * Decision table (`sora::square_ground`, test `square_decision_table`), after the explicit keys:
 
   | stick | Dodge Roll | Quick Run | Square does |

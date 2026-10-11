@@ -437,15 +437,22 @@ fn update_mixes(
 /// The voice bank of a request: a `.vsb` file, or the entry of type [`VOICE_BAR_ENTRY`] of the
 /// BAR file the request names (cached by file).
 fn voice_bank(disc: &Disc, cache: &SeCache, v: &PlayVoice) -> Option<Arc<Vsb>> {
-    let key = if v.in_bar { format!("{}#{VOICE_BAR_ENTRY:#x}", v.file) } else { v.file.clone() };
+    voice_bank_file(disc, cache, &v.file, v.in_bar)
+}
+
+/// The voice bank of `file` (a `.vsb`, or with `in_bar` the [`VOICE_BAR_ENTRY`] entry of the BAR),
+/// through the same cache the voice requests use. The sound viewer (`sound_test.rs`) reads banks
+/// through it.
+pub(crate) fn voice_bank_file(disc: &Disc, cache: &SeCache, file: &str, in_bar: bool) -> Option<Arc<Vsb>> {
+    let key = if in_bar { format!("{file}#{VOICE_BAR_ENTRY:#x}") } else { file.to_string() };
     cache
         .voices
         .lock()
         .ok()?
         .entry(key)
         .or_insert_with(|| {
-            let raw = disc.read(&v.file)?;
-            if v.in_bar {
+            let raw = disc.read(file)?;
+            if in_bar {
                 let bar = kh2_bar::parse(&raw).ok()?;
                 Vsb::parse(bar.iter().find(|e| e.kind == VOICE_BAR_ENTRY)?.data).map(Arc::new)
             } else {
@@ -966,7 +973,7 @@ pub fn enemy_footsteps(
 }
 
 /// World codes in the game's world order (OpenKH `docs/kh2/worlds.md`).
-const WORLDS: [&str; 19] = ["zz", "es", "tt", "di", "hb", "bb", "he", "al", "mu", "po", "lk", "lm", "dc", "wi", "nm", "wm", "ca", "tr", "eh"];
+pub(crate) const WORLDS: [&str; 19] = ["zz", "es", "tt", "di", "hb", "bb", "he", "al", "mu", "po", "lk", "lm", "dc", "wi", "nm", "wm", "ca", "tr", "eh"];
 
 /// Field and battle music of an area from `03system.bin`'s `arif` table (BGM set 0): a header
 /// (version, world count, per world: u16 area count, u16 offset) and 0x40-byte area records with

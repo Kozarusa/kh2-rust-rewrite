@@ -35,6 +35,19 @@ impl Vsb {
         self.lines.is_empty()
     }
 
+    /// Size in bytes of the ADPCM data of line `index` and its sample rate, without decoding it
+    /// (`None` for an empty slot or a line that is not a VAG). The duration in seconds is
+    /// `bytes / 16 * 28 / rate` (16-byte blocks of 28 samples).
+    pub fn line_info(&self, index: usize) -> Option<(usize, u32)> {
+        let (o, size) = (*self.lines.get(index)?)?;
+        let vag = self.data.get(o..(o + size).min(self.data.len()))?;
+        if vag.get(..4) != Some(b"VAGp") {
+            return None;
+        }
+        let rate = u32::from_be_bytes(vag.get(0x10..0x14)?.try_into().ok()?);
+        Some((vag.len().saturating_sub(0x30), rate))
+    }
+
     /// Line `index` decoded, with its sample rate.
     pub fn line(&self, index: usize) -> Option<(Sample, u32)> {
         let (o, size) = (*self.lines.get(index)?)?;

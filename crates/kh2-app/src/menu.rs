@@ -496,16 +496,18 @@ pub(crate) fn input(
     }
 }
 
-/// System sounds of the menu: bank 2 of the sound driver, indices from the executable's tables
-/// (docs/menus.md 1.7: kind -> id through 0x36cb48 and 0x37f654: cursor 1, confirm 2, cancel 4,
-/// refused 5, close 2, open 3). `FUN_002be49c(2, id, ...)` is bank 2, index `id`
-/// (`FUN_002c2b70` calls the same function with the slot's bank at +0x18 and index at +0x10).
+/// System sounds of the menu: entries of the boot bank `se/se000.seb` (game bank 0), indices from
+/// the executable's tables (docs/menus.md 1.7: kind -> id through 0x36cb48 and 0x37f654: cursor 1,
+/// confirm 2, cancel 4, refused 5, close 2, open 3). `FUN_002be49c(2, id, ...)`: the 2 is the driver
+/// SLOT that holds `se000.seb` (`FUN_002c0eb0` loads it, `FUN_002c0da8` names slot 2 bank 0), the
+/// sound is entry `id` of it (docs/audio.md "System sounds"; WP-SE2 corrects the earlier "bank 2").
 pub mod menu_sound {
     use bevy::prelude::*;
 
     use crate::audio::PlaySe;
 
-    const BANK: u32 = 2000;
+    /// Game bank number of the system sounds (`kh2_audio::ssl::SYSTEM_BANK`).
+    const BANK: u32 = 0;
     pub const CURSOR: u32 = BANK + 1;
     pub const CANCEL: u32 = BANK + 4;
     pub const REFUSED: u32 = BANK + 5;
@@ -514,17 +516,39 @@ pub mod menu_sound {
 
     /// The one switch for every menu sound effect (the pause menu and its pages: Items, Magic,
     /// Abilities, Customize, Equipment, Status, Config, Help). The user finds the app's menu sounds
-    /// wrong (play-test report 2026-10-10, WP-F1 item 14), so they are muted until the system bank
-    /// mapping is verified: with `false` no menu request reaches the mixer (`KH2_SOUNDLOG=1` logs
-    /// `menu se <n> muted` instead). Set it to `true` to hear them again; the ids stay in the code.
+    /// wrong (play-test report 2026-10-10, WP-F1 item 14), so they are muted (the system bank
+    /// mapping was corrected in WP-SE2: the sounds are `se 0:<id>`, entries of `se000.seb`; the user
+    /// has not asked for them back yet): with `false` no menu request reaches the mixer
+    /// (`KH2_SOUNDLOG=1` logs `menu se 0:<id> muted` instead). Set it to `true` to hear them again.
     pub const MENU_SOUND_ENABLED: bool = false;
 
     /// Every menu sound request goes through here (`FUN_0023e738(kind, play)` -> `FUN_002be49c(2, id, ...)`).
     pub fn play(se: &mut MessageWriter<PlaySe>, n: u32) {
+        let n = system_id(n);
         if MENU_SOUND_ENABLED {
-            se.write(PlaySe::number(n, None));
+            se.write(PlaySe::system(n));
         } else if std::env::var_os("KH2_SOUNDLOG").is_some() {
-            info!("menu se {n} muted (menu_sound::MENU_SOUND_ENABLED is false)");
+            info!("menu se 0:{n} muted (menu_sound::MENU_SOUND_ENABLED is false)");
+        }
+    }
+
+    /// The pages' own constants still hold the old "bank 2" form `2000 + id` (menu_items.rs,
+    /// menu_abilities.rs, menu_status.rs, menu_config.rs, menu_help.rs: other WPs' files); the
+    /// system sound is the id alone.
+    pub fn system_id(n: u32) -> u32 {
+        if (2000..3000).contains(&n) { n - 2000 } else { n }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn menu_sounds_are_entries_of_the_boot_bank() {
+            assert_eq!([CURSOR, CLOSE, OPEN, CANCEL, REFUSED], [1, 2, 3, 4, 5]);
+            assert_eq!(system_id(2002), 2, "the pages' old 2000 + id form");
+            assert_eq!(system_id(2037), 37);
+            assert_eq!(system_id(4), 4);
         }
     }
 }

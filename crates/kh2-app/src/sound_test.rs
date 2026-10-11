@@ -115,6 +115,14 @@ impl Bank {
     fn filled(&self, i: usize) -> bool {
         self.entries.get(i).is_some_and(|e| e.filled)
     }
+
+    /// A note for the boot banks the game loads at start (`FUN_002c0eb0`, slots 2 and 3 of the
+    /// driver; `FUN_002c0da8` names them banks 0 and 999): the interface sounds, the HUD alarm and
+    /// the item sounds are bank 0, so `se 0:9` is the danger alarm.
+    pub fn system_note(&self) -> Option<String> {
+        let slot = kh2_audio::ssl::boot_slot(self.number?).filter(|_| self.source == Source::Se)?;
+        Some(format!("boot bank, driver slot {slot}"))
+    }
 }
 
 /// Every bank the viewer knows, in display order: the SE banks by number, the object banks, the
@@ -290,7 +298,10 @@ fn list_banks(disc: Res<Disc>, info: Res<VoiceInfo>, mut st: ResMut<SoundTest>) 
         let first = (0..b.entries.len()).find(|&i| b.filled(i));
         let last = (0..b.entries.len()).rev().find(|&i| b.filled(i));
         match (first, last) {
-            (Some(f), Some(l)) => info!("soundtest list {:?} {} ({}): {filled} of {} ids filled, {} .. {}", b.source, b.name, b.file, b.entries.len(), b.log_form(f), b.log_form(l)),
+            (Some(f), Some(l)) => {
+                let note = b.system_note().map(|n| format!(" [{n}]")).unwrap_or_default();
+                info!("soundtest list {:?} {} ({}): {filled} of {} ids filled, {} .. {}{note}", b.source, b.name, b.file, b.entries.len(), b.log_form(f), b.log_form(l))
+            }
             _ => info!("soundtest list {:?} {} ({}): no ids", b.source, b.name, b.file),
         }
     }
@@ -478,7 +489,7 @@ fn show(st: Res<SoundTest>, audio: Res<Audio>, mut text: Query<(&mut Text, &mut 
     t.0 = format!(
         "[SOUND TEST]  F10 close | Left/Right id (Shift 100) | PgUp/PgDn 10 | Up/Down bank | Enter/Space play | Backspace stop\n\
          source: {}\n\
-         bank {}/{}: {}  ({})\n\
+         bank {}/{}: {}  ({}) {}\n\
          entry {}/{} ({} filled)  id {}  log: {}\n\
          data: {}\n\
          mix: volume {:#x} pan {:#x} (no position: the game's interface-sound mix)\n\
@@ -488,6 +499,7 @@ fn show(st: Res<SoundTest>, audio: Res<Audio>, mut text: Query<(&mut Text, &mut 
         cat.banks.len(),
         b.name,
         b.file,
+        b.system_note().unwrap_or_default(),
         c.entry,
         b.entries.len(),
         filled,
@@ -585,6 +597,10 @@ mod tests {
         // Ids and log forms follow the game's numbering: bank * 1000 + index, `se <bank>:<index>`.
         assert_eq!(cat.banks[0].id(1), 2001);
         assert_eq!(cat.banks[0].log_form(1), "se 2:1");
+        assert_eq!(cat.banks[0].system_note(), None, "bank 2 is an area bank, not a boot bank");
+        let sys = Bank { source: Source::Se, name: "se000".into(), file: "se/se000.seb".into(), number: Some(0), entries: vec![] };
+        assert_eq!(sys.log_form(9), "se 0:9", "the HUD danger alarm");
+        assert_eq!(sys.system_note().as_deref(), Some("boot bank, driver slot 2"));
         let voice = Bank { source: Source::Voice, name: "voice/us/battle/tt0_sora.vsb".into(), file: "voice/us/battle/tt0_sora.vsb".into(), number: None, entries: vec![] };
         assert_eq!(voice.log_form(5), "voice voice/us/battle/tt0_sora.vsb:5");
         let bgm = Bank { source: Source::Bgm, name: "bgm".into(), file: String::new(), number: None, entries: vec![] };

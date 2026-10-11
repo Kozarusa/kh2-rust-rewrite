@@ -363,7 +363,7 @@ game log id mean the same thing:
 
 - a sound effect: the game's number is `bank * 1000 + index` (`FUN_002c2258`: `n / 1000`, `n % 1000`);
   the log prints `se <bank>:<index> (<apdx or ->)`, the viewer shows `id 2001` and `log: se 2:1` for
-  entry 1 of `se002`. The menu's system sounds are bank 2 (`PlaySe::number(2000 + id)`, docs/menus.md).
+  entry 1 of `se002`. The interface sounds are NOT in `se002`: they are entries of `se000` (`se 0:<id>`, section "System sounds" below; `se000` and `se999` are listed with a `[boot bank, driver slot N]` note).
   An object's own bank (`PlaySe::apdx`) is listed by its file; the log form adds the file in brackets.
 - a voice line: `voice <file>:<line>` (`<file>#0x22` for an enemy's bank inside its object file). The
   viewer's id is the line.
@@ -389,19 +389,56 @@ Tests (`cargo test -p kh2-app soundtest`): `soundtest_step_skips_empty_ids`, `so
 `soundtest_step_entry_edge_cases`. Added for it: `Driver::stop_se` (keys the sound's notes off and drops
 its player) and `Vsb::line_info` (size and rate of a line without decoding it).
 
+## System sounds: the interface bank is `se000.seb`, not "bank 2" (WP-SE2; verified in the decompilation, implemented)
+
+Earlier docs read `FUN_002be49c(2, id, ...)` as "bank 2, index id" and the app played `PlaySe::number(2000 + id)`
+(`se002.seb` has two entries, so the log said `se 2:9 (-) ... not found` and the interface sounds never played). The
+`2` is the driver SLOT, not the game's bank number. Chain (all read in the decompilation):
+
+- A request by number: `FUN_002c2338` splits `n` with `FUN_002c2258` (bank = `n / 1000`, index = `n % 1000`) and turns the bank
+  number into a driver slot with `FUN_002c19d0` -> `FUN_002c3e48(0x1e33b50, bank)`: a table of (slot, bank number, state) triples,
+  the slot of the entry whose bank number matches and whose state is 1 (loaded), else -1 (the request is dropped: state 3 in
+  `FUN_002c2298`). `FUN_002c2b70` then calls `FUN_002be49c(slot, index, id, volume, pan)` with that slot (+0x18).
+- The interface calls skip the lookup: `FUN_002c14a8(sound, 0)` is `FUN_002be49c(2, sound, 0, 0x3fff, 0x40)`: slot 2 directly.
+- Which file is in slot 2: the boot routine `FUN_002c0eb0` (called from `FUN_002c0e00` at 0x2c0e28) reads the file names at
+  0x383238 (`se/se000.seb`), 0x383248 (`se/se999.seb`), 0x383258 (`se/wave0000.wd`), 0x383268 (`se/wave0001.wd`) and loads
+  `se000.seb` into slot 2 (`FUN_002c1378(2, ..)` at 0x2c0f10 -> `FUN_002be054`, which checks the "Se" tag and sends IOP command
+  4/0xd), `se999.seb` into slot 3 (0x2c0f74), `wave0000.wd` into wave slot 2 (`FUN_002c1348(2, ..)` -> `FUN_002bde74`, IOP
+  command 5/0xb) and `wave0001.wd` into slot 3. `FUN_002c0da8` registers the slots in the table: `FUN_002c3a90(0x1e33b50, 2, 0)`
+  and `(.., 3, 999)`, i.e. slot 2 is game bank 0 and slot 3 is game bank 999 ([inferred] that `FUN_002c0da8` runs at boot: its
+  callers were not traced; the slot contents come from `FUN_002c0eb0` either way).
+- So: **system sound `id` = entry `id` of `se/se000.seb` = request number `id` (bank 0)**; the log form is `se 0:<id>`.
+  Cursor 1, confirm 2, open 3, cancel 4, refused 5, the HUD danger alarm 9, an item used 37 are entries of `se000.seb` (the
+  ids themselves come from the tables in docs/menus.md section 9 and `FUN_002c1528`). The prize and item sounds of the field
+  (`number(0xe)`, `number(0x12)`) were always bank 0 and are the same bank.
+- Other banks are area banks: the area's sound record names the banks it needs, `FUN_001365d0` loads them (`FUN_002c1270` /
+  `FUN_002c12b8` build the `se<nnn>.seb` / `wave<nnnn>.wd` names at 0x383278 / 0x383288 from the area's bank numbers) into
+  streaming slots chosen by `FUN_002c3cd8` and registers the number with `FUN_002c3a90`. Bank 2 (a two-entry `se002.seb`) is
+  such a bank: a request `2xxx` finds a slot only while an area that names bank 2 is loaded. The app keeps `se<bank>.seb` by
+  bank number for these (`audio::load_bank`) [inferred: the file name equals the bank number for every file the app uses; the
+  header's bank field equals the file number for the files listed by the viewer].
+
+Port: `kh2_audio::ssl::SYSTEM_BANK` (0), `SYSTEM_BANK_2` (999), `boot_slot`; `audio::PlaySe::system(id)`;
+`hud_gauge::DANGER_ALARM_SE = 9`; `menu::menu_sound` constants 1..5 (`menu_sound::system_id` maps the pages' old `2000 + id`
+constants). Test `system_sounds_resolve_in_the_boot_bank` (needs the disc): `se000` entries 1, 2, 3, 4, 5 and 9 have tracks and
+entry 9's wave bank loads. The sound viewer lists `se000` as `se 0:1 .. se 0:313` with `[boot bank, driver slot 2]`, `se999` with
+`[.. slot 3]`; `KH2_SOUNDTEST_LIST=1` prints it. Gap: the bank 999 sounds (`se999.seb`) are not requested by any app code yet
+(who plays them was not searched). Nobody has listened.
+
 ## The danger alarm (WP-F1 item 13; verified in the decompilation, implemented; nobody has listened)
 
 The HP panel sounds an alarm while Sora's HP is in danger (`hp <= max >> 2`, `FUN_001a0be0`). Start
-`FUN_002c1528`: sets `DAT_0036f58c`, `FUN_002c14a8(9, 0)` -> `FUN_002be49c(2, 9, 0, 0x3fff, 0x40)`: system
-bank 2, sound 9, full volume, centre pan (the app's `PlaySe::number(2009)`, `hud_gauge::DANGER_ALARM_SE`).
+`FUN_002c1528`: sets `DAT_0036f58c`, `FUN_002c14a8(9, 0)` -> `FUN_002be49c(2, 9, 0, 0x3fff, 0x40)`: driver slot 2
+(= `se000.seb`, game bank 0; WP-SE2 corrected the earlier "bank 2"), sound 9, full volume, centre pan (the app's
+`PlaySe::number(9)` = `se 0:9`, `hud_gauge::DANGER_ALARM_SE`).
 Stop `FUN_002c1550`: clears the flag, `FUN_002c14f0(9, 0x3c, 0)` -> `FUN_002be5dc(2, 9, 0, -1, 0x3c)`: a fade
 of 0x3c frames. The rule (`hud_gauge::alarm_step`): without an event `FUN_00157310` starts it when not knocked
 out (`FUN_00166710`), the alarm silent (`FUN_002c1518`) and in danger (`FUN_001666e8`), stops it when it sounds
 and the danger is over or Sora is knocked out; the hit handler `FUN_00157040` starts it when the hit leaves the
 panel in state 1 (`FUN_00157cf0`) with the alarm silent; the heal handler `FUN_00157108` stops it when the heal
 ends the danger. Other stops: `FUN_001573c8`, `FUN_002c0d00`, `FUN_002c10b0`, `FUN_002c11e0`, `FUN_002c57b8`
-(panel teardown and sound-system resets, not read further). Port: one `PlaySe::number(2009)` per start, log
-`hud: danger alarm starts (0x2c1528: bank 2 sound 9, hp N/M)`; the stop is logged only (`hud: danger alarm
+(panel teardown and sound-system resets, not read further). Port: one `PlaySe::number(9)` per start, log
+`hud: danger alarm starts (0x2c1528: system sound 9, se000, hp N/M)`; the stop is logged only (`hud: danger alarm
 stops`): the app's mixer has no stop or fade for a sound effect, so a looping sample would run once through.
 Test `the_danger_alarm_starts_once_and_stops_when_danger_ends`. Harness: `KH2_SOUNDLOG=1 KH2_HUDHP=7:2`
-(the panel's displayed HP drops into danger at 7 s): `se 2:9 (-) volume 0x3fff pan 0x40 playing`.
+(the panel's displayed HP drops into danger at 7 s): `se 0:9 (-) volume 0x3fff pan 0x40 playing` (before WP-SE2: `se 2:9 (-) ... not found`).

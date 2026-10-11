@@ -201,6 +201,14 @@ impl PlaySe {
         Some(PlaySe { bank: OWN_BANK, index: base + (counter & 1) as u16, apdx, pos: None })
     }
 
+    /// A system sound: entry `sound` of the boot bank `se/se000.seb` (game bank 0). The game's
+    /// `FUN_002c14a8(sound, 0)` (interface sounds, the HUD alarm) is `FUN_002be49c(2, sound, ..)`:
+    /// the first argument is the driver SLOT 2 that holds `se000.seb`, not a bank number
+    /// ([`kh2_audio::ssl::SYSTEM_BANK`], docs/audio.md "System sounds").
+    pub fn system(sound: u32) -> PlaySe {
+        PlaySe::number(kh2_audio::ssl::SYSTEM_BANK as u32 * 1000 + sound, None)
+    }
+
     pub fn number(n: u32, apdx: Option<String>) -> PlaySe {
         PlaySe { bank: (n / 1000) as u16, index: (n % 1000) as u16, apdx, pos: None }
     }
@@ -1067,6 +1075,26 @@ mod tests {
     use super::*;
     use kh2_audio::footstep::footstep_number;
     use kh2_map::{Coct, flags};
+
+    /// The interface sounds and the HUD alarm live in the boot bank `se000.seb` (driver slot 2,
+    /// `FUN_002c0eb0` / `FUN_002c0da8`), not in `se002.seb` (an area bank with two entries).
+    #[test]
+    fn system_sounds_resolve_in_the_boot_bank() {
+        assert_eq!(kh2_audio::ssl::boot_slot(0), Some(2));
+        assert_eq!(kh2_audio::ssl::boot_slot(999), Some(3));
+        assert_eq!(kh2_audio::ssl::boot_slot(2), None);
+        let req = PlaySe::system(9);
+        assert_eq!((req.bank, req.index), (0, 9));
+        let Some(d) = disc() else { return };
+        let cache = SeCache::default();
+        let bank = load_bank(&d, &cache, req.bank, None).expect("se000.seb");
+        // cursor 1, confirm 2, open 3, cancel 4, refused 5, danger alarm 9
+        for sound in [1usize, 2, 3, 4, 5, 9] {
+            let e = bank.block.entries.get(sound).unwrap_or_else(|| panic!("se000 has no entry {sound}"));
+            assert!(!e.tracks.is_empty(), "se000 entry {sound} is empty");
+        }
+        assert!(load_wd(&d, &cache, bank.block.entries[9].wd).is_some(), "the alarm's wave bank loads");
+    }
 
     fn disc() -> Option<Disc> {
         let iso = crate::assets::iso_path().ok().filter(|p| p.exists());

@@ -80,7 +80,7 @@ fn pause_log(
         return;
     }
     *frame += 1;
-    if *frame % 30 != 0 {
+    if !frame.is_multiple_of(30) {
         return;
     }
     let v = |p: Vec3| format!("({:.1} {:.1} {:.1})", p.x, p.y, p.z);

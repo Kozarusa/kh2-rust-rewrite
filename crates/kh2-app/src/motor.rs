@@ -159,11 +159,22 @@ impl Motor {
         self.ground = None;
     }
 
-    /// An attack's leap (FUN_00176050 -> the mover's launch FUN_001796a8 -> FUN_0017b278 /
-    /// FUN_0017b1e0): a new jump of `h` from here that the jump button cannot cut short.
+    /// A launch of the jump mover (its method +8, FUN_001796a8 -> FUN_0017b278 / FUN_0017b1e0): an
+    /// attack's leap (FUN_00176050) or the air wall recoil (FUN_00185978). `h` at or above 0 is a
+    /// new jump of `h` from here (FUN_0017b1e0: base +0xd8 0, rise +0xdc -h, clock 0, rise time
+    /// FUN_0017bee0); below 0 it is a fall already under way, as if it had started `-h` above
+    /// (clock sqrt(h x -2 / g), DAT_0037a4f0 = -2, DAT_0037a4f4 = g; no rise). The jump button cannot
+    /// cut either short (FUN_0017b328 clears the release watch because the launch did not set
+    /// +0x108 bit 0x10000).
     pub fn start_leap(&mut self, h: f32) {
-        self.start_jump(h);
-        self.jump.release_cuts = false;
+        if h >= 0.0 {
+            self.start_jump(h);
+            self.jump.release_cuts = false;
+        } else {
+            self.jump = Jump::fall(-h, self.pos.y);
+            self.grounded = false;
+            self.ground = None;
+        }
     }
 
     pub fn start_fall(&mut self) {
@@ -399,6 +410,18 @@ mod tests {
         n.t += 1.0;
         let drop = f.target_y() - n.target_y();
         assert!((f.target_y() - 100.0).abs() < 1e-3 && (drop - (6.0 + 0.5 * G)).abs() < 1e-3, "{drop}");
+    }
+
+    #[test]
+    fn a_negative_launch_is_a_fall_under_way() {
+        // FUN_0017b1e0 with a height below 0: no rise, clock sqrt(2|h|/g), base |h| above.
+        let mut m = Motor { pos: Vec3::new(0.0, 100.0, 0.0), ..Motor::default() };
+        m.start_leap(-30.0);
+        assert!(!m.grounded && m.jump.rise == 0.0 && !m.jump.rising());
+        assert!((m.jump.target_y() - 100.0).abs() < 1e-3);
+        let dy = m.jump_dy(1.0e6);
+        // Already moving down at sqrt(2 g 30) a tick.
+        assert!(dy < -(2.0 * G * 30.0).sqrt() + 0.01, "{dy}");
     }
 
     #[test]

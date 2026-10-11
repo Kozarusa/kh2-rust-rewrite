@@ -490,3 +490,78 @@ once, the app waits for its own timer (it differs only while an enemy is inside 
 outside the app's lock-on range). Searched without finding the writers of weapon +0x10c bit 0x100 other than
 the weapon class method at 0x331590 (`FUN_00331590`, called on both weapons by `FUN_00176588`; its callers
 were not traced), and `FUN_001793a8`, `FUN_0019af28`, `FUN_002c56c0` were not read.
+
+## 6. Air swing physics and the air wall recoil (WP-G7; user play-test 2026-10-11)
+
+User report: "faithfully recreate the physics (airstall, positioning-behavior, gravity) that aerial attacks
+in the original game had"; "when an aerial attack clashes against the wall the player should be moved upwards
+and back a little bit before falling".
+
+### What moves Sora during an air swing (all read again, constants from the executable)
+* The swing does not install a special mover: the jump mover (vtable 0x35cbe0) keeps running. Its tick
+  `FUN_0017b620` advances the clock +0xd0 by the frame step DAT_00356f40 (1.0; `FUN_0014cdd0` /
+  `FUN_0014cbf8` set it from the vsync count and a global slow factor 0x356f3c, whose only writers are event
+  resets `FUN_0014cbd0` called from `FUN_00196170` / `FUN_00196348`: no per-hit slow-down was found).
+* Horizontal: `FUN_001832b8(0.9, 0.95)` (DAT_0037a508, DAT_0037a50c): no stick (zeroed by `FUN_001778e8`
+  outside the idle ranges 0, 1, 2; none of A330..A344 has one) means v = 0.95 v every tick.
+* Vertical: `FUN_0017b6e0`, the eased curve d8 + dc x sin(sin(t/T x pi/2) x pi/2) while t < T, then
+  0.5 x DAT_0037a518 x (t - T)^2 (g = 20/49 = DAT_0037a518 = DAT_0037a538 = DAT_0037a4f4), each step capped
+  by +0x120; 0 while trigger 3 (bit 0x20), 24 (0x40) or 30 (0x1000000) covers the frame.
+* The "stall" is the per-swing LEAP: `FUN_00176050` with record +0xc above 0 launches the mover again
+  (`FUN_001796a8` -> `FUN_0017b278` -> `FUN_0017b1e0`): a new jump of h from the current height, rise time
+  sqrt(2h/g) (`FUN_0017bee0`). A330 (key 9): h 21 without a target (target: clamp(target height above
+  Sora, +0x14 = 21, +0x10 = 71)), speed 8 (+0x1c) a tick. So one swing rises 21 units in 10 ticks and then
+  falls on the same curve; the next swing of a chain (combo window = trigger 11 from global frame 22 on
+  A330) relaunches it. Gravity is suspended only by trigger 3 on A341 (16-24), A342 (16-44), A343 (16-100),
+  A344 (20-36) (`cargo run -p kh2 -- mset obj/P_EX100.mset A3`). When the swing ends in the air its queued
+  motion is the fall (record +0x38 = 4) on the same mover: no new fall, the vertical speed is the curve's.
+* All of this was already ported (sections 1 and the F1 landing rule). Measured, unchanged before and after
+  this WP (tt00 open ground, `KH2_NO_ENEMIES=1 KH2_MOVELOG=1 KH2_TRACE=1 KH2_KEYS=5:S:0.6,6:Space,6.4:J`):
+  `sora leap: key 9 height 21.0 speed 8.0 (along the facing)`, `move: air swing A330 f0: velocity (0.0 -8.0)
+  horizontal 8.0, moved (0.0 5.0 -8.0)`, ..., `move: air swing A330 f15: velocity (0.0 -1.7) horizontal 1.7,
+  moved (0.0 -8.3 -1.7)`, `move: landed during A330 f16`. Test
+  `sora::tests::air_swing_path_follows_the_jump_mover_with_the_disc_leap` (disc A330 record): apex 21.00 at
+  tick 10, horizontal step 8 x 0.95^n, after 60 ticks y = 21 - 0.5 g (60 - T)^2.
+
+### What changed
+* **Attack turns (positioning).** Range triggers 22 and 28 (`FUN_00188030` cases 0x16 / 0x1c ->
+  `FUN_00186118` / `FUN_001861b8` -> `FUN_00186018` -> `FUN_00183848`) turn the attacker toward the target by
+  at most the trigger's parameter in degrees a tick (x DAT_0037a988 = pi/180; parameter 0 = the turn speed
+  +0x11c), and not at all while the target is within DAT_0037a970 = 50 units horizontally. The app turned at
+  `prty` turn speed for both. Now `sora::attack_turn_rate` (test `attack_turn_rate_is_the_trigger_parameter`;
+  the disc's A330 carries trigger 28 over global frames 0..23 with 15). Trigger 28 aims at the player's target
+  (+0xb40), 22 at the attack's stored target (+0x9f4); the app has one target and aims at its first target
+  point [inferred, `FUN_0018efa0` not read].
+* **Air wall recoil.** `FUN_00175668` -> `FUN_00185d30(DAT_0037a4a4 = -1 -> power DAT_0037a964 = 50)`; in the
+  air (`FUN_0019aa28`) it requests motion 43 (A350) with motion 4 queued and calls `FUN_00185978(power,
+  actor, facing x DAT_0037a968 = -1)`, which (when `FUN_0019b1d0` allows a push [inferred true for Sora])
+  launches the mover with (x, DAT_0037a960 = 50, z, power x sstm HitBackToJump (+0x38, 0.048 on the USA
+  disc)). `FUN_0017b278` normalises the horizontal part: a new jump of 50 with 2.4 units a tick backwards,
+  braked 0.95 a tick by the jump mover. The launch set the landing motion (+0x104 = 5, `FUN_0017b1b0`), so a
+  landing during A350 plays A005. Before, the app used the ground push (`FUN_001857b0`) in the air and kept
+  falling. Code: `sora::air_recoil_launch`, `receive_wall_hits`, the `State::Hurt if s.air_recoil` arm.
+  Test `air_wall_recoil_jumps_up_and_back_with_the_disc_constants` (apex +50 at tick 15, 39.7 units back
+  after 40 ticks).
+  Run (tt04 spawn faces a wall; `KH2_NO_ENEMIES=1 KH2_MOVELOG=1 KH2_HITLOG=1 KH2_TRACE=1
+  KH2_KEYS=6:Space,6.4:J`): before, `wall recoil: atkp 131 ... A350, push power 50 speed 5.0` then
+  `trace Hurt A350 f0.5 pos (-2015 111 1288)` falling to y 40 by f6.0; after, `wall recoil in the air: jump
+  mover launched (FUN_00185978): jump 50.0 from y 125.5, velocity (-0.00 -2.40) = 2.4 a tick backwards (power
+  50 x HitBackToJump 0.048)`, `trace Hurt A350 f0.5 pos (-2015 133 1281)` ... `f8.0 pos (-2015 176 1258)`
+  (top), then down; A350 ends airborne, the fall plays and Sora lands.
+* **Negative launches.** `Motor::start_leap` follows `FUN_0017b1e0` for a height below 0 (a fall already
+  under way from |h| above; DAT_0037a4f0 = -2). Test `motor::tests::a_negative_launch_is_a_fall_under_way`.
+* **Attack blend 0** (from WP-G6): `FUN_00176050` requests the attack motion with blend 0 (`mtc1 r0,$f20`
+  at 0x176090), and `FUN_001759b8` motion 40 too (0x1759c8): `BLEND_ATTACK` is 0, attack to attack is a cut.
+  The guard and counter motions use the same constant [inferred: their own request blends were not read].
+
+### Gaps (G7)
+* The app still snaps Sora's facing to the target at every attack start; `FUN_00176050` writes no facing,
+  and the turn comes from triggers 22/28 (and a desired yaw +0x66c set by `FUN_0016a948` from
+  `FUN_00174bd8` / `FUN_00185ee0`, whose consumer was not traced). Kept until that consumer is read.
+* Frame trigger 21 (A332, A340, A344, A322: `21@0[360]`) was not identified (searched `FUN_00180b48`,
+  `FUN_00191108`; the motion frame-trigger handler was not found).
+* The writer of the fall cap +0x120 for Sora (only `FUN_001a3448` via `FUN_0018e5e8`, an indirect copy);
+  the app keeps sstm FallMax.
+* No hit stop on the attacker was found (`FUN_0018c6d0`, `FUN_0018b618`, `FUN_001864b8` = hit effect only).
+* The air chain against an enemy was not observed in a harness run: in tt00 the first air swing from the
+  0.6 s jump starts 190 units above the Shadow and misses (`move: attack press refused ... hit landed false`).

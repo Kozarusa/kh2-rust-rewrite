@@ -239,6 +239,60 @@ pub fn leap_launch(l: &Leap, flags: u32, jump_height: f32, facing: Vec3, target:
     (flat.normalize_or_zero(), speed, h)
 }
 
+/// Constants of the air swing's movement rules, read from the executable at start-up.
+///
+/// The air wall recoil: FUN_00175668 (the actor's wall method +0x70) calls FUN_00185d30, whose
+/// airborne branch (FUN_0019aa28) requests motion 43 with motion 4 (the fall) queued and, for a power
+/// above 0, calls FUN_00185978 with the facing (FUN_0016a890, actor +0x550) times `recoil_facing`.
+/// FUN_00185978 (when FUN_0019b1d0 allows a push) builds the launch vector (x, `recoil_height`, z,
+/// power x sstm HitBackToJump) and launches the actor's mover with it (method +8; the jump mover's
+/// FUN_001796a8 -> FUN_0017b278).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SwingConsts {
+    /// DAT_0037a960: the recoil launch vector's y, the jump height FUN_0017b1e0 starts.
+    pub recoil_height: f32,
+    /// DAT_0037a968: the factor on the facing (FUN_00185d30); -1 sends Sora backwards.
+    pub recoil_facing: f32,
+    /// DAT_0037a970: FUN_00186018 turns nothing while the target is this close (horizontal units).
+    pub turn_min_gap: f32,
+    /// DAT_0037a988: the trigger parameter's unit for the turn rate (degrees to radians).
+    pub turn_unit: f32,
+}
+
+impl SwingConsts {
+    pub fn from_exe(exe: &[u8]) -> Option<SwingConsts> {
+        let f = |va: u32| crate::reaction_rules::exe_f32(exe, va);
+        Some(SwingConsts { recoil_height: f(0x37a960)?, recoil_facing: f(0x37a968)?, turn_min_gap: f(0x37a970)?, turn_unit: f(0x37a988)? })
+    }
+}
+
+/// The air wall recoil's launch (FUN_00185978 -> FUN_0017b278): the horizontal velocity per tick
+/// and the jump height of the new jump (`Motor::start_leap`). FUN_0017b278 zeroes the vector's y,
+/// normalises it and scales it by its w, power x HitBackToJump; FUN_0017b328 copies the result into
+/// the velocity. None when the power is not above 0 (FUN_00185d30 calls no push then).
+pub fn air_recoil_launch(facing: Vec3, power: f32, hit_back_to_jump: f32, c: &SwingConsts) -> Option<(Vec3, f32)> {
+    if power <= 0.0 {
+        return None;
+    }
+    let dir = (facing * c.recoil_facing).with_y(0.0).normalize_or_zero();
+    Some((dir * (power * hit_back_to_jump), c.recoil_height))
+}
+
+/// The turn of range triggers 22 and 28 (FUN_00188030 cases 0x16 / 0x1c -> FUN_00186118 /
+/// FUN_001861b8 -> FUN_00186018 -> FUN_00183848), per tick while the trigger covers the frame: the
+/// largest turn toward the target in radians, the trigger's first parameter x `turn_unit` (a
+/// parameter of 0 takes the actor's turn speed +0x11c, here `turn_speed`). None while the target is
+/// within `turn_min_gap` horizontally (FUN_00186018 skips the turn) or without the constants.
+/// Trigger 28 aims at the player's target (+0xb40), trigger 22 at the attack's own target (+0x9f4,
+/// stored by FUN_00176050); the app has one target for both.
+pub fn attack_turn_rate(param: i16, turn_speed: f32, to_target: Vec3, c: Option<&SwingConsts>) -> Option<f32> {
+    let c = c?;
+    if to_target.with_y(0.0).length() <= c.turn_min_gap {
+        return None;
+    }
+    let rate = param as f32 * c.turn_unit;
+    Some(if rate == 0.0 { turn_speed } else { rate })
+}
 /// The phase of a Square dash on the ground (`State::QuickRun`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Dash {
@@ -305,7 +359,9 @@ pub fn dash_step(phase: Dash, held: bool, ticks: f32, quick_run: u8, run_left: f
 const BLEND_LOCOMOTION: f32 = 8.0;
 const BLEND_FALL: f32 = 8.0;
 const BLEND_GLIDE: f32 = 16.0;
-const BLEND_ATTACK: f32 = 4.0;
+/// The attack start (FUN_00176050) requests its motion with blend 0 (`mtc1 r0,$f20` at 0x176090):
+/// attack to attack is a cut.
+const BLEND_ATTACK: f32 = 0.0;
 /// Stick magnitude below which Sora walks.
 const WALK_STICK: f32 = 0.8;
 
@@ -451,6 +507,11 @@ pub struct Sora {
     hover: bool,
     /// The last tick's real displacement after collisions (actor +0x860, FUN_00181e00).
     last_move: Vec3,
+    /// The air wall recoil (motion 43) is playing on the jump mover it launched (`air_recoil_launch`):
+    /// the mover's brake and gravity run, and a landing plays the landing motion (FUN_0017b9e0).
+    air_recoil: bool,
+    /// The executable's constants of the air recoil and the attack turns (None: not readable).
+    swing: Option<SwingConsts>,
     /// One Aerial Dodge per airtime below MAX.
     aerial_dodge_ready: bool,
     lunge_left: f32,
@@ -737,7 +798,7 @@ fn blown_press(
     let moves = s.moves.clone();
     match moves.recovery(&blow, jump, square, &mut chain) {
         Ok(Recovery::AerialRecovery) => {
-            // FUN_001759b8: motion 40 with blend 4, then the mover's launch (its method +8 with a
+            // FUN_001759b8: motion 40 with blend 0 (0x1759c8), then the mover's launch (its method +8 with a
             // vector built from the stick direction, plyr BlowRecoveryH and BlowRecoveryV; the
             // launch itself was not decoded). The app ends the flight and lets Sora fall.
             body.restart(rig.mset.slot(id::DAMAGE_BLOW_RECOV, pstate), false, 4.0);
@@ -934,6 +995,10 @@ pub fn setup(
     // Hand 0 only: the game attaches the second hand in a drive form (FUN_00176f88).
     let weapons = spawn_weapons(&mut commands, body, &[(0, rigs.keyblade.clone())], &mut meshes, &mut materials, &mut images, &mut bindposes);
     let stats = data.sora_stats(1);
+    let swing = disc.read_root("SLUS_210.05").and_then(|e| SwingConsts::from_exe(&e));
+    if swing.is_none() {
+        warn!("sora: the air swing constants are not readable from SLUS_210.05; the air wall recoil uses the ground push and the attack turns use the turn speed");
+    }
     let attack_bodies = weapons.iter().copied().chain([body]).collect();
     commands.entity(root).insert((
         Sora {
@@ -962,6 +1027,8 @@ pub fn setup(
             dash: Dash::Pending,
             hover: false,
             last_move: Vec3::ZERO,
+            air_recoil: false,
+            swing,
             aerial_dodge_ready: false,
             lunge_left: 0.0,
             lunge_speed: 0.0,
@@ -1153,6 +1220,10 @@ pub fn tick(
     let lock_pressed = Pad::take(&mut pad.lock);
     s.invuln = (s.invuln - 1.0).max(0.0);
     s.timer += 1.0;
+    // Another system (a hit, a reaction, a spell) took Sora out of the air recoil.
+    if s.state != State::Hurt {
+        s.air_recoil = false;
+    }
     fighter.hittable = s.invuln <= 0.0 && !matches!(s.state, State::Down | State::Viewer | State::FormChange);
     // Set by the attack and guard starts; applied to the battle flag at the end of the tick.
     let keep_out = std::cell::Cell::new(false);
@@ -1660,10 +1731,23 @@ pub fn tick(
                 }
                 lunge_move = s.motor.forward() * step;
             }
-            if let Some(tp) = target_pos
-                && (body.trigger(range::TURN_TO_LOCK) || body.trigger(range::TURN_TO_TARGET))
-            {
-                s.motor.turn_to(tp - s.motor.pos, prty.turn_speed);
+            // Range triggers 22 and 28 turn Sora toward the target at the trigger's own rate
+            // (`attack_turn_rate`); the target point is the target's first target shape, as the
+            // game's FUN_0018efa0 [inferred: the game takes the point the target record names].
+            if let Some(tp) = target_point.map(|p| p.pos).or(target_pos) {
+                let gframe = body.gframe();
+                let rates: Vec<f32> = body
+                    .triggers()
+                    .map(|t| {
+                        t.active(gframe)
+                            .filter(|r| r.id == range::TURN_TO_LOCK || r.id == range::TURN_TO_TARGET)
+                            .filter_map(|r| attack_turn_rate(r.params.first().copied().unwrap_or(0), prty.turn_speed, tp - s.motor.pos, s.swing.as_ref()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                for rate in rates {
+                    s.motor.turn_to(tp - s.motor.pos, rate);
+                }
             }
             // Gravity is held only while trigger 3, 24 or 30 covers the frame (FUN_0017b6e0); the
             // fall restarts when they end (`hover`, before the match).
@@ -1719,6 +1803,28 @@ pub fn tick(
                 s.state = if s.motor.grounded { State::Ground } else { State::Air };
                 if attack && s.motor.grounded {
                     request(s, &mut body, &mut weapon, false, Windows { free: true, combo: false }, false);
+                }
+            }
+        }
+        State::Hurt if s.air_recoil => {
+            // The air wall recoil runs on the jump mover the recoil launched (FUN_00185978): its
+            // horizontal step FUN_001832b8 brakes by 0.95 a tick while the stick is zeroed outside an
+            // idle range (FUN_001778e8) and steers with the 0.9 blend inside one; gravity is the jump
+            // curve's. When motion 43 ends, the queued motion 4 (the fall) plays on the same mover.
+            let idle = body.trigger(range::GROUNDED) || body.trigger(range::AIR) || body.trigger(range::BLEND_TO_IDLE);
+            if idle {
+                s.motor.air_velocity(dir, move_speed);
+            } else {
+                s.motor.air_velocity(Vec3::ZERO, 0.0);
+            }
+            if !s.motor.grounded {
+                airborne_dy = Some(s.motor.jump_dy(fall_max));
+            }
+            if body.finished {
+                s.air_recoil = false;
+                s.state = if s.motor.grounded { State::Ground } else { State::Air };
+                if s.state == State::Air {
+                    body.play(motion(id::FALL), true, BLEND_FALL);
                 }
             }
         }
@@ -1834,10 +1940,16 @@ pub fn tick(
     let before = s.motor.pos;
     let landed = s.motor.move_by(&world, delta, dy);
     s.last_move = s.motor.pos - before;
-    if move_log() && matches!(s.state, State::Attack { .. } | State::Air) && !s.motor.grounded {
+    if move_log() && (matches!(s.state, State::Attack { .. } | State::Air) || s.air_recoil) && !s.motor.grounded {
         info!(
             "move: {} {} f{:.0}: velocity ({:.1} {:.1}) horizontal {:.1}, moved ({:.1} {:.1} {:.1}){}",
-            if s.state == State::Air { "airborne" } else { "air swing" },
+            if s.state == State::Air {
+                "airborne"
+            } else if s.air_recoil {
+                "air recoil"
+            } else {
+                "air swing"
+            },
             body.tag(),
             body.frame,
             s.motor.vel.x,
@@ -1871,6 +1983,21 @@ pub fn tick(
             s.finishers = 1;
             s.queued_attack = false;
             s.lunge_left = 0.0;
+            s.motor.vel = Vec3::ZERO;
+            body.restart(motion(id::LAND), false, 0.0);
+            weapon.play(None, true, BLEND_LOCOMOTION);
+        }
+    } else if landed && was_air && s.state == State::Hurt && s.air_recoil {
+        // The recoil's launch went through FUN_0017b1e0 -> FUN_0017b1b0, which sets the landing motion
+        // +0x104 to 5: the jump mover's landing callback (FUN_0017bab8 -> FUN_0017b9e0) plays A005 with
+        // motion 0 behind it in place of the rest of motion 43, unless range trigger 49 is active.
+        s.air_recoil = false;
+        if !body.trigger(TRIGGER_NO_LANDING_MOTION_49) {
+            if move_log() {
+                info!("move: landed during the air recoil {} f{:.0}: the landing motion replaces it (FUN_0017b9e0: slot 5, then idle)", body.tag(), body.frame);
+            }
+            s.state = State::Ground;
+            s.timer = 0.0;
             s.motor.vel = Vec3::ZERO;
             body.restart(motion(id::LAND), false, 0.0);
             weapon.play(None, true, BLEND_LOCOMOTION);
@@ -2004,7 +2131,8 @@ pub fn track_connects(mut hits: MessageReader<Hit>, mut walls: MessageReader<Wal
 /// Sora's attack volume touching a wall: the generic recoil of the actor class (FUN_00175668, then
 /// FUN_00185d30). It runs for rows with BG Hit (the wall message only exists for those), whatever
 /// the row's `RefactSelf` says: motion 41 (A320) or, in the air, 43 (A350), the combo counter goes
-/// down by one, and Sora is pushed backwards along his own facing. The spark and the sound are
+/// down by one, and Sora is pushed backwards along his own facing (on the ground) or launched up and
+/// back on a new jump (in the air, `air_recoil_launch`). The spark and the sound are
 /// started by `fx::hit_sparks` and `audio::wall_sounds` from the same message.
 pub fn receive_wall_hits(
     mut walls: MessageReader<WallHit>,
@@ -2032,9 +2160,21 @@ pub fn receive_wall_hits(
         body.restart(slot, false, 2.0);
         let mut weapon = WeaponCue::default();
         weapon.restart(slot, false, 2.0);
-        // Ground: FUN_001857b0. In the air the game calls FUN_00185978 instead (a jump-back push
-        // scaled by HitBackToJump, not decoded); the ground push stands in for it.
-        s.push = Push::new(-s.motor.forward(), rc.push_power, 0.0, &reaction.consts);
+        // Ground: FUN_001857b0, a decaying push backwards along the facing. In the air FUN_00185d30
+        // calls FUN_00185978 instead: the jump mover is launched again with a jump of
+        // `SwingConsts::recoil_height` and a backward velocity of power x HitBackToJump (up and back,
+        // then the fall). Without the executable's constants the ground push stands in.
+        let air = rc.airborne.then(|| s.swing.as_ref().and_then(|c| air_recoil_launch(s.motor.forward(), rc.push_power, data.sstm.hit_back_to_jump, c))).flatten();
+        s.motor.vel = Vec3::ZERO;
+        s.push = None;
+        s.air_recoil = false;
+        if let Some((vel, h)) = air {
+            s.motor.vel = vel;
+            s.motor.start_leap(h);
+            s.air_recoil = true;
+        } else {
+            s.push = Push::new(-s.motor.forward(), rc.push_power, 0.0, &reaction.consts);
+        }
         let hits_before = s.hits;
         if rc.refund_combo_step {
             s.hits = s.hits.saturating_sub(1);
@@ -2051,9 +2191,19 @@ pub fn receive_wall_hits(
             hits_before,
             s.hits
         );
+        if let Some((vel, h)) = air {
+            info!(
+                "wall recoil in the air: jump mover launched (FUN_00185978): jump {h:.1} from y {:.1}, velocity ({:.2} {:.2}) = {:.1} a tick backwards (power {} x HitBackToJump {})",
+                s.motor.pos.y,
+                vel.x,
+                vel.z,
+                vel.length(),
+                rc.push_power,
+                data.sstm.hit_back_to_jump
+            );
+        }
         weapon.apply(&s.weapons, &mut anims);
         s.state = State::Hurt;
-        s.motor.vel = Vec3::ZERO;
         s.finishers = 1;
         s.queued_attack = false;
         s.timer = 0.0;
@@ -2095,6 +2245,8 @@ pub fn receive_hits(
             continue;
         }
         let Some(atk) = data.atkp(h.atkp) else { continue };
+        // A hit that lands ends the air recoil's own movement (its reaction sets the motion and mover).
+        s.air_recoil = false;
         let from = enemies.get(h.attacker).map(|e| e.stats).unwrap_or(s.stats);
         let useless = crate::combat::hit_is_ineffective(atk, &s.stats);
         let dmg = if useless { data.damage(atk, &from, &s.stats) } else { data.damage(atk, &from, &s.stats).max(1) };
@@ -2630,4 +2782,137 @@ mod tests {
         let normal = Action { key: 6, group: 1, alt: -1, arg: 0, flags: 0, motion: 153, next_motion: 0, distance: [0.0; 2], height: [0.0; 2], angle: [0.0; 2], ability: 0 };
         assert_eq!(plus.check(&normal), Err(moveset::Reject::FinisherDone));
     }
-}
+
+    /// The user's disc: the archive (None, test skipped, without one).
+    fn open_disc() -> Option<kh2_archive::Archive> {
+        let iso = std::env::var("KH2_ISO").ok().or_else(|| {
+            let f = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../local/iso.txt");
+            std::fs::read_to_string(f).ok().map(|s| s.trim().to_string())
+        });
+        let Some(iso) = iso else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return None;
+        };
+        kh2_archive::Archive::open(&iso).map_err(|e| eprintln!("skipped: {iso}: {e}")).ok()
+    }
+
+    /// One tick of the jump mover while the stick is zeroed (FUN_0017b620: FUN_001832b8 brakes, then
+    /// FUN_0017b6e0 gives the curve's step), applied to `m` without a world. Returns the step.
+    fn mover_tick(m: &mut Motor, fall_max: f32) -> Vec3 {
+        m.air_velocity(Vec3::ZERO, 0.0);
+        let dy = m.jump_dy(fall_max);
+        let step = m.vel.with_y(dy);
+        m.pos += step;
+        step
+    }
+
+    /// The air swing's movement with the disc's A330 record (key 9): FUN_00176050 launches the jump
+    /// mover (height +0xc 21, speed +0x1c 8 along the facing without a target); the mover rises in
+    /// sqrt(2h/g) ticks (FUN_0017bee0, g = DAT_0037a518 = DAT_0037a538 = 20/49), brakes 0.95 a tick
+    /// (DAT_0037a50c) and then falls on the same curve; nothing holds gravity (A330 has no trigger
+    /// 3, 24 or 30). After the 60 ticks of A330 Sora is far below his start: the "stall" of one
+    /// swing is the leap's 21 units and ~10 ticks of rise.
+    #[test]
+    fn air_swing_path_follows_the_jump_mover_with_the_disc_leap() {
+        let Some(mut a) = open_disc() else { return };
+        let ptya = kh2_tables::subfile(&mut a, &t::PTYA).expect("ptya");
+        let moves = real_moves().expect("moveset");
+        let a330 = moves.by_key(9).expect("key 9").clone();
+        assert_eq!(a330.motion, 181);
+        let leap = AttackLeaps::parse(&ptya).of(&a330);
+        let (d, speed, h) = leap_launch(&leap, a330.flags, 185.0, Vec3::Z, None);
+        assert_eq!((d, speed, h), (Vec3::Z, 8.0, 21.0), "{leap:?}");
+        let mut m = Motor::default();
+        m.vel = d * speed;
+        m.start_leap(h);
+        let rise = m.jump.rise;
+        assert!((rise - (2.0 * 21.0 / crate::motor::G).sqrt()).abs() < 1e-4 && (rise - 10.14).abs() < 0.01, "{rise}");
+        let mut top: f32 = 0.0;
+        let mut top_tick = 0;
+        let mut z = 0.0;
+        for tick in 1..=60 {
+            let s = mover_tick(&mut m, 1.0e6);
+            z += s.z;
+            if m.pos.y > top {
+                top = m.pos.y;
+                top_tick = tick;
+            }
+            // The horizontal step is the braked velocity: 8 x 0.95^tick.
+            assert!((s.z - 8.0 * 0.95f32.powi(tick)).abs() < 1e-3, "tick {tick}: {}", s.z);
+        }
+        assert!((top - 21.0).abs() < 0.05 && top_tick == 10, "apex {top} at tick {top_tick}");
+        let want_z = 8.0 * 0.95 * (1.0 - 0.95f32.powi(60)) / 0.05;
+        assert!((z - want_z).abs() < 0.01, "{z} {want_z}");
+        let want_y = 21.0 - 0.5 * crate::motor::G * (60.0 - rise) * (60.0 - rise);
+        assert!((m.pos.y - want_y).abs() < 0.01, "{} {want_y}", m.pos.y);
+        eprintln!("A330 without a target: apex {top:.2} at tick {top_tick}, after 60 ticks y {:.1}, z {z:.1}", m.pos.y);
+    }
+
+    /// The air wall recoil with the executable's constants and the disc's sstm row: FUN_00175668 ->
+    /// FUN_00185d30 (power: DAT_0037a4a4 = -1 selects DAT_0037a964) -> FUN_00185978: a jump of
+    /// DAT_0037a960 from the current height, backwards (DAT_0037a968 x facing) at power x
+    /// HitBackToJump a tick, braked 0.95 a tick by the jump mover, then the fall.
+    #[test]
+    fn air_wall_recoil_jumps_up_and_back_with_the_disc_constants() {
+        let Some(mut a) = open_disc() else { return };
+        let Ok(exe) = a.iso().read("SLUS_210.05") else {
+            eprintln!("skipped: no executable on the disc");
+            return;
+        };
+        let c = SwingConsts::from_exe(&exe).expect("swing constants");
+        assert_eq!((c.recoil_height, c.recoil_facing, c.turn_min_gap), (50.0, -1.0, 50.0));
+        assert!((c.turn_unit - std::f32::consts::PI / 180.0).abs() < 1e-7, "{}", c.turn_unit);
+        let consts = crate::reaction_rules::ExeConsts::from_exe(&exe).expect("exe constants");
+        let power = rules::recoil_power(consts.wall_power, &consts);
+        assert_eq!(power, 50.0);
+        let sstm = kh2_tables::load::<t::PrefSstm>(&mut a, &t::PREF_SSTM).expect("sstm").rows.into_iter().next().expect("sstm row");
+        let hbtj = sstm.hit_back_to_jump;
+        assert!(hbtj > 0.0, "{hbtj}");
+        // Facing +z: launched along -z at 50 x HitBackToJump, with a jump of 50.
+        let (vel, h) = air_recoil_launch(Vec3::Z, power, hbtj, &c).expect("launch");
+        assert!((vel - Vec3::new(0.0, 0.0, -power * hbtj)).length() < 1e-4, "{vel}");
+        assert_eq!(h, 50.0);
+        // No power, no push (FUN_00185d30 tests the power above 0).
+        assert!(air_recoil_launch(Vec3::Z, 0.0, hbtj, &c).is_none());
+        // The path: up 50 in sqrt(100/g) = 15.65 ticks while moving back, then down.
+        let mut m = Motor { pos: Vec3::new(0.0, 300.0, 0.0), ..Motor::default() };
+        m.vel = vel;
+        m.start_leap(h);
+        assert!(!m.jump.release_cuts, "the recoil's rise is not cut by the jump button");
+        let mut top: f32 = 0.0;
+        let mut top_tick = 0;
+        let mut back = 0.0;
+        for tick in 1..=40 {
+            let s = mover_tick(&mut m, 1.0e6);
+            back -= s.z;
+            if m.pos.y > top {
+                top = m.pos.y;
+                top_tick = tick;
+            }
+        }
+        // The eased rise is flat at its top: tick 15 is 0.0003 below the apex, tick 16 already past it.
+        assert!((top - 350.0).abs() < 0.05 && top_tick == 15, "apex {top} at tick {top_tick}");
+        let want_back = power * hbtj * 0.95 * (1.0 - 0.95f32.powi(40)) / 0.05;
+        assert!((back - want_back).abs() < 0.01 && back > 0.0, "{back} {want_back}");
+        assert!(m.pos.y < 300.0, "falling after the rise: {}", m.pos.y);
+        eprintln!("air recoil: HitBackToJump {hbtj}, speed {:.2} a tick, apex +{:.1} at tick {top_tick}, {back:.1} back after 40 ticks", vel.length(), top - 300.0);
+    }
+
+    /// Triggers 22 and 28 turn at the trigger's parameter in degrees a tick (A330: 28 over global
+    /// frames 0..23 with 15), the turn speed for a parameter of 0, and not at all within 50 units.
+    #[test]
+    fn attack_turn_rate_is_the_trigger_parameter() {
+        let c = SwingConsts { recoil_height: 50.0, recoil_facing: -1.0, turn_min_gap: 50.0, turn_unit: std::f32::consts::PI / 180.0 };
+        let far = Vec3::new(0.0, 80.0, 300.0);
+        assert!((attack_turn_rate(15, 0.2, far, Some(&c)).unwrap() - 15f32.to_radians()).abs() < 1e-6);
+        assert_eq!(attack_turn_rate(0, 0.2, far, Some(&c)), Some(0.2));
+        // Within the gap (horizontal; the height does not count): no turn.
+        assert_eq!(attack_turn_rate(15, 0.2, Vec3::new(30.0, 400.0, 30.0), Some(&c)), None);
+        assert_eq!(attack_turn_rate(15, 0.2, far, None), None);
+        // The disc's A330 carries trigger 28 over 0..23 with parameter 15.
+        let Some(mut a) = open_disc() else { return };
+        let mset = kh2_anim::Mset::parse(&a.read("obj/P_EX100.mset").expect("mset")).expect("parse");
+        let a330 = mset.get(181 * 4).expect("A330 slot");
+        let r = a330.triggers.ranges.iter().find(|r| r.id == range::TURN_TO_LOCK).expect("trigger 28");
+        assert_eq!((r.start, r.end, r.params.first().copied()), (0, 23, Some(15)));
+    }}

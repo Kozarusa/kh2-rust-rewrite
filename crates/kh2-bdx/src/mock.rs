@@ -2,7 +2,7 @@
 //! the player standing some distance away, motions that last a fixed number of frames, and a log of
 //! every call the script made. Nothing here comes from the game.
 
-use crate::host::{Call, Host, Value, Vec4};
+use crate::host::{Arg, Call, Host, Value, Vec4};
 
 pub const SELF_OBJ: u32 = 0x100;
 pub const PLAYER: u32 = 0x200;
@@ -134,6 +134,13 @@ impl Host for MockHost {
             Call::MotionState { .. } => Value::Int(0),
             // 1.98 ground_position: the toy world is flat at the object's height.
             Call::Func { group: 1, index: 98, .. } => Value::Vec(self.position),
+            // 1.141 probe_ground_down(point, out, distance): the toy floor is at the object's height (game
+            // space, Y down); found when the probe from the point reaches it, else nothing. The runtime writes
+            // the answer through `out` and returns 1 or 0.
+            Call::Func { group: 1, index: 141, args } => match (args.first(), args.get(2)) {
+                (Some(Arg::Vec(p)), Some(Arg::Float(down))) if (self.position[1] - p[1]).abs() <= *down => Value::Vec([p[0], self.position[1], p[2], 1.0]),
+                _ => Value::None,
+            },
             Call::MotionLength { .. } | Call::MotionEnd { .. } => Value::Float(self.motion_length),
             Call::OnScreen { .. } => Value::Bool(true),
             Call::Airborne { .. } => Value::Bool(self.airborne > 0),

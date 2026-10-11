@@ -472,15 +472,15 @@ WP-7M2 named 0.39 (`effect_set_vector2`, `pv`), 1.141 (`probe_ground_down`, `vpf
 `Ovf`), 1.248 (`scatter_point`, `vffff -> v`) and 2.14 (`attack_hit_anything`, `p -> b`) in `kh2_bdx::names` (rows in
 docs/bdx.md). 0.39 is now read: Magnet's sphere grows from 0 to 1 and shrinks back (test
 `magnet_script_runs_in_the_interpreter` samples element 3's scale: first 0.0, maximum 1, last 0.0096).
-1.141 is decoded but still answered "no ground" [GAP]: its second argument is where FUN_001a5c30 writes the found
-point (or copies the start point), and MAGNET_*.mag passes `lea local+0x20`, an address in the script's own stack.
-The interpreter (`kh2_bdx::runtime`) keeps that memory itself; `Host::write_mem` is only asked for addresses outside
-it, and a host call has no way to return a second value. Answering "found" would make the script copy the
-unwritten local. Needed (outside this work package, `crates/kh2-bdx/src/runtime.rs`, `host_call`): an arm for
-(1, 141) that passes the decoded call to the host and, when the host answers `Value::Vec(p)`, writes `p` to `a[1]`
-(`mem.write_vec4`) and pushes 1, else writes the start point to `a[1]` and pushes 0; `SpellHost` then answers with
-the ground point from `World::ground_m` (it needs the world in `VmCtx`). Until then Magnet's attack stays at the
-target's position instead of `magi` +0x3c above the ground under it.
+1.141 (WP-F1 item 1, closed): its second argument is where FUN_001a5c30 writes the found point (or copies the start
+point), and MAGNET_*.mag passes `lea local+0x20`, an address in the script's own stack, which a host cannot write.
+The runtime (`kh2_bdx::runtime`, `dispatch`) now has its own arm for (1, 141): it decodes the point and the distance
+(`vpf`), passes the call to the host, writes the host's `Value::Vec(p)` to the second argument and returns 1, or
+writes the start point there and returns 0 when the host answers anything else (test
+`probe_ground_down_writes_the_found_point_through_the_script_pointer`). `SpellHost::probe_ground_down` answers from
+the area's collision (`World::ground` from the point straight down by the distance; `VmCtx::map`), so Magnet's attack
+sits `magi` +0x3c above the floor under the place. Log (`KH2_MAGIC_LOG=1`): `magic(vm): 1.141 ground probe from
+(x y z) down 10000: floor at y N (game space)`.
 
 ### Effect colours (Fire's sparks)
 
@@ -497,8 +497,8 @@ overlap: not changed.]
 
 - The menu's input code (cursor, wrap, closing after a cast), above.
 - Running Blizzard, Thunder and Cure in the interpreter (above). Phase 2 gaps closed in WP-7M2: Magnet's pull,
-  Final Thunder's scatter, Blizzard's shot flag and push, host 0.39. Still open: host 1.141's output (the runtime
-  change above); the pull mover 15 (air) against 14; the pull mover's leave method 0x331388; the line-test mask 2
+  Final Thunder's scatter, Blizzard's shot flag and push, host 0.39, and (WP-F1) host 1.141's output. Still open:
+  the pull mover 15 (air) against 14; the pull mover's leave method 0x331388; the line-test mask 2
   of host 1.248 (every triangle blocks in the app); Sora as the victim of reaction class 5 (`sora.rs` still takes
   it as `NotDecoded`); a pull by an attack that is not a spell's (the app knows only spell attack objects).
 - The lock-on controller's mode-1 marker and timer (above). Which target record the menu code puts into a spell's

@@ -242,6 +242,47 @@ fn functions_missing_from_the_executable_table_get_their_signature_from_the_scri
     );
 }
 
+/// WP-F1 item 1: 1.141 `probe_ground_down(point, out, distance)` is answered by the runtime's own arm, because
+/// `out` is the script's memory: the host's point goes through it with a return of 1, else the point itself
+/// with 0 (FUN_00172538 -> FUN_001a5c30). The mock's floor is at the object's height, y 0.
+#[test]
+fn probe_ground_down_writes_the_found_point_through_the_script_pointer() {
+    const POINT: u16 = 0x20;
+    const OUT: u16 = 0x30;
+    const OUT2: u16 = 0x40;
+    const R1: u16 = 0x50;
+    const R2: u16 = 0x54;
+    let mut a = Asm { w: vec![0; base(1)] };
+    let main = a.here();
+    // Game space, Y down: a point 300 above the floor.
+    for (k, v) in [10.0f32, -300.0, 20.0, 1.0].into_iter().enumerate() {
+        a.push_f(v).store_global(POINT + 4 * k as u16);
+    }
+    // 500 down reaches the floor: 1, and the point on the floor is written to `out`.
+    a.lea_global(POINT).lea_global(OUT).push_f(500.0).host(1, 141).store_global(R1);
+    // 100 down does not: 0, and the point itself is copied.
+    a.lea_global(POINT).lea_global(OUT2).push_f(100.0).host(1, 141).store_global(R2);
+    let spin = a.here();
+    a.yield_().jmp(spin);
+    let img = image(&[(1, main as u32)], &a.w[base(1)..], 0x80);
+    let prog = Program::parse(&img).expect("parse");
+    let mut rt = Runtime::new(prog);
+    let mut host = MockHost::new();
+    assert!(rt.spawn(&mut host, SELF_OBJ));
+    rt.update(&mut host);
+    assert!(rt.core.errors.is_empty(), "{:?}", rt.core.errors);
+    let f = |off: u16| f32::from_bits(word(&rt, off));
+    let vec = |off: u16| [f(off), f(off + 4), f(off + 8), f(off + 12)];
+    assert_eq!(word(&rt, R1), 1);
+    assert_eq!(vec(OUT), [10.0, 0.0, 20.0, 1.0]);
+    assert_eq!(word(&rt, R2), 0);
+    assert_eq!(vec(OUT2), [10.0, -300.0, 20.0, 1.0]);
+    let probes: Vec<_> = host.calls().filter_map(|c| if let Call::Func { group: 1, index: 141, args } = c { Some(args.clone()) } else { None }).collect();
+    assert_eq!(probes.len(), 2);
+    assert_eq!(probes[0][0], Arg::Vec([10.0, -300.0, 20.0, 1.0]));
+    assert_eq!(probes[0][2], Arg::Float(500.0));
+}
+
 #[test]
 fn named_functions_arrive_with_decoded_arguments_and_lookups_fill_the_context() {
     let (mut rt, mut host) = start();

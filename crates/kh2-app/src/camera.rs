@@ -115,6 +115,8 @@ struct CamState {
     last_yaw: f32,
     last_dist: f32,
     prev_pos: Vec3,
+    /// The area `area::AreaRecord.placed` named when the rig was last rebuilt for it.
+    placed: Option<String>,
     pending: Pending,
     /// `KH2_CAM_LOG=1`: log the camera twice a second.
     log: bool,
@@ -284,11 +286,28 @@ fn tick(
     targets: Query<&GlobalTransform>,
     mut cam: Query<(&mut Transform, &mut OrbitCamera, &mut Projection)>,
     options: Option<Res<crate::menu::config::Options>>,
+    area_rec: Option<Res<crate::area::AreaRecord>>,
 ) {
     let options = options.map(|o| *o).unwrap_or_default();
     let (Some(params), Ok(mut s), Ok((mut t, mut o, mut proj))) = (params, sora.single_mut(), cam.single_mut()) else { return };
     let (Some(mode0), false) = (st.mode, st.area.is_none()) else { return };
     let st = &mut *st;
+    // Area start (`FUN_001047a8` -> `FUN_00149bb8` -> `FUN_00140c00` -> `FUN_0013f470`): the
+    // camera is placed straight behind the player, before the fade-in (`FUN_0013efe8`). Sora is
+    // put at the entrance by `area::run_area_script` (after a jump or with `KH2_ENTRANCE`),
+    // possibly after the rig was built for the area, so the rig is rebuilt once he stands there
+    // [inferred: the game spawns the player before `FUN_001047a8`].
+    // A jump clears `placed` until Sora stands at the new entrance (also a jump into the same area).
+    match area_rec.as_ref().and_then(|r| r.placed.as_ref()) {
+        None => st.placed = None,
+        Some(placed) if st.placed.as_ref() != Some(placed) => {
+            st.placed = Some(placed.clone());
+            st.rig = None;
+            st.prev_pos = s.motor.pos;
+            info!("camera: placed behind Sora at the entrance of {placed} (FUN_0013f470)");
+        }
+        Some(_) => {}
+    }
     let params = &params.0;
     let use_render = std::env::var_os("KH2_CAM_RENDER").is_some();
     let collider: Option<&World> = if use_render { render_world.as_deref().map(|w| &w.0) } else { st.collision.as_ref() };

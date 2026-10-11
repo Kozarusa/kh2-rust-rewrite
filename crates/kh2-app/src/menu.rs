@@ -332,6 +332,14 @@ fn load(
     menu.loaded = true;
 }
 
+/// The close faded the row, area and help labels to nothing (`tick`, Closing): a reopen starts every label at full
+/// strength again. (Play-test 2026-10-11: after one close the second open showed no row names, area name or help.)
+fn restore_fades(scene: &mut MenuScene) {
+    for n in &mut scene.nodes {
+        n.label_fade = 1.0;
+    }
+}
+
 /// Creates every node the page uses, hidden. Indices only grow: a parent comes before its child.
 fn build_nodes(scene: &mut MenuScene) -> Nodes {
     let mut n = Nodes::default();
@@ -632,6 +640,7 @@ fn open(
         n.label = None;
         n.visible = k < menu.rows.len();
     }
+    restore_fades(scene);
     let pitch = scene.seqs.get(SEQ_MAIN).and_then(|s| s.groups.get(0x86)).map_or(26, |g| g.unk20) as f32;
     for (k, &e) in menu.rows.iter().enumerate() {
         let entry = menu.entries[e].clone();
@@ -864,8 +873,9 @@ fn refresh(menu: &Menu, scene: &mut MenuScene, progress: Option<&Progress>) {
             Some(d) => {
                 let want = group::MUNNY_DIGIT + usize::from(d);
                 n.pos = [at::DIGIT_RIGHT - at::DIGIT_PITCH * from_right as f32, at::MUNNY_TOP];
+                // Visible on every refresh: the close hid every node while the group stayed the same.
+                n.visible = true;
                 if n.player.group != Some(want) {
-                    n.visible = true;
                     scene.set_group(id, want);
                 }
             }
@@ -890,12 +900,55 @@ fn refresh(menu: &Menu, scene: &mut MenuScene, progress: Option<&Progress>) {
         match cells.get(i) {
             Some(&(g, x)) => {
                 scene.nodes[id].pos = [x, at::TIME_TOP];
+                scene.nodes[id].visible = true;
                 if scene.nodes[id].player.group != Some(g) {
-                    scene.nodes[id].visible = true;
                     scene.set_group(id, g);
                 }
             }
             None => scene.nodes[id].visible = false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression (play-test 2026-10-11, "upon opening the menu most text vanishes"): a second open must show the
+    /// labels the first close had faded out.
+    #[test]
+    fn a_reopen_restores_the_label_fades() {
+        let mut scene = MenuScene::default();
+        for fade in [0.0, 0.4, 1.0] {
+            let mut n = Node::new(None);
+            n.label_fade = fade;
+            scene.add(n);
+        }
+        restore_fades(&mut scene);
+        assert!(scene.nodes.iter().all(|n| n.label_fade == 1.0));
+    }
+
+    /// Regression: the close hid every node but left the digits' groups; the refresh only showed a digit whose group
+    /// changed, so the Munny and Time numbers stayed invisible after a reopen.
+    #[test]
+    fn the_refresh_shows_a_digit_whose_group_did_not_change() {
+        let mut scene = MenuScene::default();
+        let mut menu = Menu::default();
+        for _ in 0..6 {
+            let mut n = Node::new(None);
+            n.visible = false;
+            n.player.group = Some(group::MUNNY_DIGIT);
+            menu.nodes.munny_digits.push(scene.add(n));
+        }
+        for _ in 0..5 {
+            let mut n = Node::new(None);
+            n.visible = false;
+            menu.nodes.time_digits.push(scene.add(n));
+        }
+        refresh(&menu, &mut scene, None);
+        let first = menu.nodes.munny_digits[0];
+        assert!(scene.nodes[first].visible, "the last Munny digit (a 0 with an empty wallet) is shown again");
+        // The Time cells are placed too (their groups are unset in a node without a sequence, so they show).
+        assert!(menu.nodes.time_digits.iter().any(|&t| scene.nodes[t].visible));
     }
 }

@@ -483,8 +483,10 @@ Not done, and why:
   the next step; a store through a computed base or an overlay was not searched]. With 0 the port gives Genie
   the first owned form and the free spot its minimum radius.
 - System effect 0x13 is element 19 of `00effect.bar` (`kh2 pax 00effect.bar`: effect 18, bone 67, flags 0x805,
-  sound 180), but `kh2_fx::Effect::new` refuses its particle program, so nothing is drawn (logged `not started:
-  its particle program did not start`); fx.rs / kh2-fx are not owned here.
+  sound 180). WP-FX13 status: it starts and draws (`KH2_FXLOG=1`: `summon: system effect 0x13 (00effect.bar) bound
+  to the player: started`, then `fx 19 objs 9 batches 7 verts 1176` per frame); the earlier "Effect::new refuses
+  its particle program" was the app's DPX place lookup, fixed by WP-7Bc (docs/effects-damage.md "The summon
+  arrival effect 0x13"). The `why` string in `summon.rs` that names `Effect::new` is stale.
 - The free spot's direction is (sin, 0, cos) of the angle and the LCG word is read unsigned (both oracle-checked).
 
 Harness (the runs behind the status, tt02, Donald and Goofy spawned by the map script):

@@ -165,22 +165,29 @@ pub fn parse_script(d: &[u8]) -> Option<Vec<Program>> {
             return None;
         }
         let end = off + size;
-        let mut p = off + 4;
-        let mut commands = Vec::new();
-        while p < end {
-            let (opcode, n) = (u16_at(d, p)?, u16_at(d, p + 2)? as usize);
-            let args = (0..n).map(|k| u32_at(d, p + 4 + 4 * k)).collect::<Option<Vec<u32>>>()?;
-            commands.push(Command { opcode, args });
-            p += 4 + 4 * n;
-        }
-        if p != end {
-            return None;
-        }
+        let commands = parse_commands(d.get(off + 4..end)?)?;
         out.push(Program { id, commands });
         off = end;
     }
     Some(out)
 }
+
+/// Splits a run of area-script commands (`u16 opcode, u16 count, count u32`) that fills `d`
+/// exactly (a program's body, or the nested commands of opcode 0x1c). `None` when the sizes do
+/// not add up to the length.
+pub fn parse_commands(d: &[u8]) -> Option<Vec<Command>> {
+    let mut p = 0;
+    let mut commands = Vec::new();
+    while p < d.len() {
+        let (opcode, n) = (u16_at(d, p)?, u16_at(d, p + 2)? as usize);
+        let args = (0..n).map(|k| u32_at(d, p + 4 + 4 * k)).collect::<Option<Vec<u32>>>()?;
+        commands.push(Command { opcode, args });
+        p += 4 + 4 * n;
+    }
+    (p == d.len()).then_some(commands)
+}
+
+pub mod run;
 
 /// One object of a spawn group.
 #[derive(Debug, Clone, PartialEq)]

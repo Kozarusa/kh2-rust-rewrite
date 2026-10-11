@@ -34,6 +34,7 @@ use crate::assets::{AreaPart, Disc};
 use crate::enemy_ai::AiTrace;
 use crate::enemy_host::{BevyHost, Env, St};
 use crate::enemy_obj::{from_game, to_game, Obj, OBJ_SIZE, PLAYER, SELF_BASE};
+use crate::reaction_parts as parts;
 use crate::schedule::Sim;
 use crate::skel::{spawn_skinned, Animator, Rig};
 use crate::sora::Sora;
@@ -69,6 +70,11 @@ struct NpcAssets {
     scripts: HashMap<String, Option<Arc<Program>>>,
     objs: Vec<t::Objentry>,
     table: Option<kh2_bdx::HostTable>,
+    /// The collision records of each model (BAR entry 23, the game's object +0x8d8).
+    parts: HashMap<String, Option<Arc<parts::Table>>>,
+    /// The player's own body volume (record type 1 of `P_EX100`), which `FUN_0018aa08` tests
+    /// against a townsperson's type-5 part.
+    player_body: Option<parts::Rec>,
     loaded: bool,
 }
 
@@ -82,6 +88,11 @@ impl NpcAssets {
         if let Ok(mut a) = disc.0.lock() {
             self.objs = kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).map(|d| d.rows).unwrap_or_default();
         }
+        self.player_body = disc.read("obj/P_EX100.mdlx").and_then(|f| parts::Table::from_mdlx(&f)).and_then(|t| t.first(parts::TYPE_BODY).copied());
+    }
+
+    fn parts(&mut self, disc: &Disc, model: &str) -> Option<Arc<parts::Table>> {
+        self.parts.entry(model.to_string()).or_insert_with(|| disc.read(&format!("obj/{model}.mdlx")).and_then(|f| parts::Table::from_mdlx(&f)).map(Arc::new)).clone()
     }
 
     fn rig(&mut self, disc: &Disc, model: &str) -> Option<Arc<Rig>> {
@@ -132,6 +143,66 @@ pub struct NpcGroup {
     /// The return parameters (16 bytes each): for a kind-6 group the class reads them as its
     /// behaviour entries (`FUN_00199ca0` hands them out only then).
     pub returns: Vec<[u8; 0x10]>,
+    /// The group's event activators: for a kind-6 group the class-5 code reads them as the
+    /// "regions" a townsperson walks through (`FUN_00198750` makes a volume of every one of them,
+    /// `FUN_00199d68` finds the one a point is in).
+    pub activators: Vec<kh2_ard::Activator>,
+}
+
+impl NpcGroup {
+    /// `FUN_00199d68(group, point)`: for a kind-6 group (header byte 0), the first of the group's
+    /// volumes (in record order, `FUN_00198750` appends them) whose record halfword +0x2c is 0 and
+    /// that contains the point (the volume's own test, vtable slot +8: box, cylinder or always);
+    /// `None` for other groups or when no volume contains it. `p` is in the game's space.
+    pub fn region_at(&self, p: [f32; 3]) -> Option<usize> {
+        if self.kind & 0xff != 6 {
+            return None;
+        }
+        self.activators.iter().position(|a| u16::from_le_bytes([a.raw[0x2c], a.raw[0x2d]]) == 0 && a.contains(p))
+    }
+}
+
+/// `FUN_001d8c18(volume, point)`: the point's place across the volume along its own x axis, 0 at
+/// -x extent and 1 at +x extent: the point is taken into the volume's frame (its inverse matrix at
+/// +0x10, `FUN_001d8600`) and `(x + sx) / (2 sx)` is answered with `sx` the record's +0x10
+/// (volume +0x50). `p` is in the game's space.
+pub fn region_coord(a: &kh2_ard::Activator, p: [f32; 3]) -> f32 {
+    let sx = a.scale[0];
+    (a.local(p)[0] + sx) / (sx + sx)
+}
+
+/// The game's `rand()` (`FUN_003117a8`) as the class-5 code uses it; a per-object xorshift stands in
+/// for the one global generator [approx: the game's sequence is not reproduced, only the ranges].
+#[derive(Clone, Debug)]
+pub struct Rng(pub u32);
+
+/// `DAT_003780e0` / `DAT_003780e4`: the divisor that turns `rand()` into a fraction.
+const RAND_DIV: f32 = 2_147_483_520.0;
+
+impl Rng {
+    fn next(&mut self) -> u32 {
+        let mut x = self.0.max(1);
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.0 = x;
+        x >> 1
+    }
+
+    /// `FUN_001063b8(x)`: `x * rand() / DAT_003780e4`, a float in [0, x].
+    pub fn frac(&mut self, x: f32) -> f32 {
+        x * self.next() as f32 / RAND_DIV
+    }
+
+    /// `FUN_00106408(lo, hi)`: `lo + FUN_001063b8(hi - lo)`.
+    pub fn range(&mut self, lo: f32, hi: f32) -> f32 {
+        lo + self.frac(hi - lo)
+    }
+
+    /// `FUN_00106308(n)`: `n * rand() / DAT_003780e0` truncated to an integer (0..n).
+    pub fn below(&mut self, n: u32) -> u32 {
+        (n as f32 * self.next() as f32 / RAND_DIV) as u32
+    }
 }
 
 /// `FUN_0018b1e0`: the motion number of a behaviour entry's byte 1 (a jump table of 14 entries at
@@ -153,6 +224,8 @@ pub struct Npc {
     pub grounded: bool,
     /// The entity record (position, rotation, the spawn-record bytes).
     pub record: kh2_ard::Entity,
+    /// The model's collision records (the type-0 and type-5 parts the class-5 code tests).
+    pub parts: Option<Arc<parts::Table>>,
 }
 
 /// The script runtime of one townsperson.
@@ -205,7 +278,14 @@ fn npc_spawn(
     for g in run.script.groups.iter() {
         let Some(groups) = run.ard.spawns.get(&g.tag) else { continue };
         for grp in groups {
-            let shared = Arc::new(NpcGroup { tag: g.tag.clone(), kind: grp.kind, id: grp.id, paths: grp.paths.clone(), returns: grp.returns.clone() });
+            let shared = Arc::new(NpcGroup {
+                tag: g.tag.clone(),
+                kind: grp.kind,
+                id: grp.id,
+                paths: grp.paths.clone(),
+                returns: grp.returns.clone(),
+                activators: grp.activators.clone(),
+            });
             for e in &grp.entities {
                 if !kh2_ard::run::entity_for_entrance(e, rec.entrance) {
                     continue;
@@ -221,6 +301,7 @@ fn npc_spawn(
                     continue;
                 };
                 let script = assets.script(&disc, &model);
+                let model_parts = assets.parts(&disc, &model);
                 let at = game_to_app(e.position);
                 let at = world.ground(at, at.y + 100.0, 400.0).map_or(at, |g| at.with_y(g.y));
                 let yaw = app_yaw(e.rotation[1]);
@@ -230,7 +311,7 @@ fn npc_spawn(
                 let body = spawn_skinned(&mut commands, root, rig, &mut meshes, &mut materials, &mut images, &mut bindposes, SCALE);
                 let tag = format!("{model}#{serial}");
                 let mut ent = commands.entity(root);
-                ent.insert(Npc { body, yaw, grounded: true, record: e.clone() });
+                ent.insert(Npc { body, yaw, grounded: true, record: e.clone(), parts: model_parts });
                 let scripted = script.is_some();
                 if let Some(prog) = script {
                     let mut rt = Runtime::new((*prog).clone());
@@ -245,7 +326,7 @@ fn npc_spawn(
                         obj: Obj::new(handle),
                         tag: tag.clone(),
                         flags124,
-                        fields: NpcFields::new(e, &shared),
+                        fields: NpcFields::new(e, &shared, serial),
                         started: false,
                         errors_seen: 0,
                         mode: None,
@@ -288,6 +369,7 @@ fn npc_update(
     trace: Option<ResMut<AiTrace>>,
     cam: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     sora: Query<&Sora>,
+    assets: Res<NpcAssets>,
     mut q: Query<(Entity, &mut Transform, &mut Npc, &mut NpcBrain)>,
     mut anims: Query<&mut Animator>,
     mut tick: Local<u64>,
@@ -298,6 +380,58 @@ fn npc_update(
     let log = npclog();
     *tick += 1;
     let status_tick = tick.is_multiple_of(60);
+
+    // ---- the class's own logic first (FUN_00189ae8 -> FUN_0018a130 for objects whose bit 0 is
+    // clear) [inferred order: the object's update before its script's tick].
+    let player_body = assets.player_body.as_ref().and_then(|r| parts::shape_of(r, s.motor.pos, s.motor.yaw));
+    {
+        let mut rows: Vec<_> = q.iter_mut().collect();
+        let tags: Vec<String> = rows.iter().map(|r| r.3.tag.clone()).collect();
+        let mut minds: Vec<Mind> = rows
+            .iter_mut()
+            .map(|(_, tf, npc, brain)| {
+                let pos = tf.translation / SCALE;
+                let shape = |kind: u8| npc.parts.as_ref().and_then(|t| t.first(kind)).and_then(|r| parts::shape_of(r, pos, npc.yaw));
+                Mind {
+                    handle: brain.obj.handle,
+                    object: npc.record.object,
+                    serial: npc.record.serial,
+                    pos,
+                    yaw: npc.yaw,
+                    body: shape(0),
+                    talk: shape(parts::TYPE_REACTION),
+                    fields: &mut brain.fields,
+                }
+            })
+            .collect();
+        for i in 0..minds.len() {
+            if minds[i].fields.test_bit(0) {
+                continue;
+            }
+            let before = minds[i].fields.region;
+            let what = class_tick(&mut minds, i, player_body.as_ref());
+            if log {
+                match what {
+                    Attention::Player => info!("npc: {} attention: the player meets the talk part: kind-4 follower (timer {:.0})", tags[i], minds[i].fields.follower.timer),
+                    Attention::Pair(j) => info!("npc: {} attention: paired with {} (kind 5, timer {:.0})", tags[i], tags[j], minds[i].fields.follower.timer),
+                    Attention::None => {
+                        let f = &minds[i].fields.follower;
+                        if minds[i].fields.region != before {
+                            info!(
+                                "npc: {} attention: region {:?} -> {:?}: follower kind {} mode {} motion {} timer {:.0} flag {}",
+                                tags[i], before, minds[i].fields.region, f.kind, f.mode, f.motion, f.timer, f.flag
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let peers: HashMap<u32, Peer> = q
+        .iter()
+        .map(|(_, tf, npc, brain)| (brain.obj.handle, Peer { pos: tf.translation / SCALE, target: brain.fields.follower.target, slot: anims.get(npc.body).ok().and_then(|a| a.slot) }))
+        .collect();
+
     for (ent, mut tf, mut npc, mut brain) in &mut q {
         let Ok(mut anim) = anims.get_mut(npc.body) else { continue };
         let rig = anim.rig.clone();
@@ -330,8 +464,7 @@ fn npc_update(
             event_active: false,
         };
         let handle = obj.handle;
-        fields.tick();
-        let mut host = NpcHost { inner: BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() }, fields, log };
+        let mut host = NpcHost { inner: BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() }, fields, peers: &peers, log };
         if !*started {
             *started = true;
             rt.spawn(&mut host, handle);
@@ -454,14 +587,41 @@ pub struct Follower {
     pub target: u32,
     /// +0x10: the target point (mode 3), the game's space.
     pub point: [f32; 4],
-    /// +0x24 (object +0xa64): a flag byte the script reads (host 5.7).
+    /// +0x20: the region (a volume of the group, `FUN_0018b308`) whose crossing ends the follower;
+    /// the index into the group's activators.
+    pub region: Option<usize>,
+    /// +0x24 (object +0xa64): a flag byte the script reads (host 5.7): turn the walk around after
+    /// the action.
     pub flag: u8,
+    /// +0x28: the place across the region (`FUN_001063b8(1.0)`, `DAT_0037abd4`) at which the
+    /// follower's test passes.
+    pub threshold: f32,
+    /// +0x2c: the object's place across the region when the follower started (`FUN_001d8c18`).
+    pub start: f32,
     /// +0x30 (object +0xa70): set by host 5.0 when the follower's test passed.
     pub done: u8,
     /// +0x31: forced done.
     pub forced: u8,
     /// +0x50: a timer counted down by one per frame (`FUN_0018b228`, `DAT_00356f40` = 1).
     pub timer: f32,
+}
+
+impl Follower {
+    /// `FUN_0018b0f0`: clears +0x31, +0x30, the kind, the mode, the target and the region (the
+    /// motion, the point, the flag and the timer keep their values).
+    pub fn reset(&mut self) {
+        self.forced = 0;
+        self.done = 0;
+        self.kind = 0;
+        self.mode = 0;
+        self.target = 0;
+        self.region = None;
+    }
+
+    /// `FUN_0018b110`: the follower is live when it is forced or has a region.
+    pub fn live(&self) -> bool {
+        self.forced != 0 || self.region.is_some()
+    }
 }
 
 /// The fields of the class-5 object that the group 5 hosts read and write (game offsets in the
@@ -494,6 +654,13 @@ pub struct NpcFields {
     /// game's motion controller queue is not ported; the app starts it when the playing motion
     /// ends [approx].
     pub queued: Option<(usize, f32)>,
+    /// +0xa30: the region the object stood in when `FUN_0018a4b0` last looked.
+    pub region: Option<usize>,
+    /// This frame's `FUN_0018aa08(obj, 5)`: the object's first type-5 part meets the player's
+    /// type-1 body volume (computed by the class pass, read by host 5.11).
+    pub player_in_part: bool,
+    /// The object's random numbers (the game's global `rand()`).
+    pub rng: Rng,
 }
 
 impl NpcFields {
@@ -502,8 +669,11 @@ impl NpcFields {
         u32::from_le_bytes(e.raw[0x24..0x28].try_into().unwrap_or_default())
     }
 
-    pub fn new(e: &kh2_ard::Entity, group: &Arc<NpcGroup>) -> NpcFields {
+    pub fn new(e: &kh2_ard::Entity, group: &Arc<NpcGroup>, seed: u32) -> NpcFields {
         let mut f = NpcFields {
+            region: None,
+            player_in_part: false,
+            rng: Rng(0x9E37_79B9 ^ seed.wrapping_mul(0x85EB_CA6B)),
             bits: [0; 2],
             word_b08: 0,
             params: [0; 9],
@@ -551,35 +721,285 @@ impl NpcFields {
         }
     }
 
-    /// The per-frame count-downs of the class (`FUN_0018a130`: +0xb00; `FUN_0018b228`: the
-    /// follower's +0x50), one frame each.
-    fn tick(&mut self) {
-        if self.timer_b00 > 0.0 {
-            self.timer_b00 -= 1.0;
-        }
-        if self.follower.timer > 0.0 {
-            self.follower.timer -= 1.0;
-        }
+    /// Parameter word `k` of the block at +0xb10 as a float.
+    fn param(&self, k: usize) -> f32 {
+        f32::from_bits(self.params[k])
     }
 
-    /// Host 5.4 (`FUN_0018ae08`): the follower is copied to the previous slot and reset, and the
-    /// timer +0xb00 takes the parameter word of its kind (+0xb18 for kind 4, +0xb24 for 5, +0xb30
-    /// otherwise).
+    /// Host 5.4 (`FUN_0018ae08`): the follower is copied to the previous slot (+0xaa0), its +0x30
+    /// cleared (`FUN_0018b138(f, 0)`) and reset (`FUN_0018b0f0`); then the timer +0xb00 takes
+    /// +0xb18 when the follower's kind is 4, +0xb24 when 5, else +0xb30. The kind is read after the
+    /// reset cleared it (the instructions at 0x18aeb0..0x18aed0: `jal 0x18b0f0`, then `lw 0xa40`),
+    /// so the game always takes +0xb30.
     fn end_follower(&mut self) {
         self.prev = self.follower.clone();
         self.follower.done = 0;
-        self.follower.forced = 0;
-        self.follower.kind = 0;
-        self.follower.mode = 0;
-        self.follower.target = 0;
-        self.follower.timer = 0.0;
-        let w = match self.prev.kind {
-            4 => self.params[2],
-            5 => self.params[5],
-            _ => self.params[8],
+        self.follower.reset();
+        let k = match self.follower.kind {
+            4 => 2,
+            5 => 5,
+            _ => 8,
         };
-        self.timer_b00 = f32::from_bits(w);
+        self.timer_b00 = self.param(k);
     }
+
+    /// The previous follower takes the current one when it has a kind (`FUN_0018a130` copies
+    /// +0xa40..+0xa90 to +0xaa0 before starting a kind-4 or a kind-5 follower).
+    fn keep_previous(&mut self) {
+        if self.follower.kind != 0 {
+            self.prev = self.follower.clone();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// The class's own attention logic (vtable slot 3, FUN_00189ae8 -> FUN_0018a130)
+
+/// The objentry id `FUN_0016b078` treats as the player (`DAT_0035c998`).
+pub const OBJECT_PLAYER: u32 = 0x236;
+
+/// One townsperson as the class pass sees it: what the other objects' code reads of it, and its
+/// own fields.
+pub struct Mind<'a> {
+    /// The script handle (the object's address in the app's model).
+    pub handle: u32,
+    /// The objentry id (`FUN_0016b078` finds objects by it).
+    pub object: u32,
+    /// The spawn record's halfword +0x1e (`FUN_0016b928`: `FUN_0018a918` skips objects with the
+    /// same one).
+    pub serial: u16,
+    /// Position (app space, cm) and facing (+0x550, `FUN_0016a890`).
+    pub pos: Vec3,
+    pub yaw: f32,
+    /// The first type-0 part (`FUN_0016b558(obj, 0, -1)` placed by `FUN_001894d0`).
+    pub body: Option<parts::Shape>,
+    /// The first type-5 part (the talk part).
+    pub talk: Option<parts::Shape>,
+    pub fields: &'a mut NpcFields,
+}
+
+/// `FUN_0016b078(id)`: the player for 0x236, else the first object (in the object list) whose
+/// objentry is `id`. Only the townspeople and the player are searched here [approx: the game's
+/// list also holds the enemies and other objects]; 0 when none.
+fn object_by_id(minds: &[Mind], id: u32) -> u32 {
+    if id == OBJECT_PLAYER {
+        return PLAYER;
+    }
+    minds.iter().find(|m| m.object == id).map_or(0, |m| m.handle)
+}
+
+/// `FUN_0018a7a0(a, b)`: the first return entry of `a`'s group with byte 0 = 0 whose word +4 names
+/// (by objentry id) the object `b`.
+fn entry_naming(minds: &[Mind], a: usize, b: u32) -> Option<[u8; 0x10]> {
+    minds[a].fields.group.returns.iter().find(|r| r[0] == 0 && object_by_id(minds, u32::from_le_bytes([r[4], r[5], r[6], r[7]])) == b).copied()
+}
+
+/// `FUN_0018a598(obj)`: a partner townsperson. `FUN_0018a918(obj, 0)` takes the first other
+/// object (not of the same spawn record serial) whose first type-0 part meets this object's
+/// (`FUN_00189208`); it must be a class-5 object (+0x588 bit 3, every townsperson) whose follower
+/// is not done, and the return entries of both must name each other. Answers the partner and the
+/// two entries (this one's, the partner's).
+fn partner(minds: &[Mind], i: usize) -> Option<(usize, [u8; 0x10], [u8; 0x10])> {
+    let me = minds[i].body?;
+    // [approx] the object list order is the app's spawn order; only townspeople are in it.
+    let j = minds.iter().enumerate().position(|(j, m)| j != i && m.serial != minds[i].serial && m.body.is_some_and(|b| parts::overlaps(&me, &b) == Some(true)))?;
+    if minds[j].fields.follower.done != 0 {
+        return None;
+    }
+    let mine = entry_naming(minds, i, minds[j].handle)?;
+    let theirs = entry_naming(minds, j, minds[i].handle)?;
+    Some((j, mine, theirs))
+}
+
+/// `FUN_0018a828(timer, obj, entry, target, flag)`: the object's follower becomes a forced kind-5
+/// follower toward `target` (mode 1) with the entry's motion.
+fn start_pair(f: &mut Follower, timer: f32, entry: &[u8; 0x10], target: u32, flag: u8) {
+    f.reset();
+    f.timer = timer;
+    f.forced = 1;
+    f.kind = 5;
+    f.target = target;
+    f.mode = 1;
+    f.flag = flag;
+    f.motion = entry_motion(entry[1]);
+}
+
+/// `FUN_0018b308(lo, hi, follower, position, count, entries, region)`: a weighted draw among the
+/// return entries keyed to the region (byte 0 equal to the volume record's +2): a number below 100
+/// (`FUN_00106308`) falls into the entry whose byte 2 (its weight) covers it; entries whose byte 1
+/// is 3 take no part in the draw and the last of them gives the flag (+0x24) with the chance of
+/// its byte 2. The chosen entry makes a kind-6 follower when its byte 1 is 1 (the script then
+/// stops the walker for good), else a kind-2 one, with the motion of its byte 1, the target of its
+/// byte 3 (1 an object by the objentry id at +4, 2 the player, 3 the point at +4..+0xc, else
+/// none), the region, a random threshold across it, the place across it now and a timer from
+/// `lo..hi`. Answers whether an entry was chosen.
+#[allow(clippy::too_many_arguments)]
+pub fn pick_entry(f: &mut Follower, rng: &mut Rng, group: &NpcGroup, region: usize, pos: [f32; 3], lo: f32, hi: f32, by_id: impl Fn(u32) -> u32) -> bool {
+    let Some(vol) = group.activators.get(region) else { return false };
+    let roll = rng.below(100);
+    let (mut sum, mut chosen, mut flag_entry) = (0u32, None, None);
+    for e in group.returns.iter().filter(|e| e[0] as u16 == vol.option) {
+        if e[1] == 3 {
+            flag_entry = Some(*e);
+            continue;
+        }
+        let before = sum;
+        sum += e[2] as u32;
+        if before <= roll && roll < sum {
+            chosen = Some(*e);
+        }
+    }
+    let Some(e) = chosen else { return false };
+    f.reset();
+    f.kind = if e[1] == 1 { 6 } else { 2 };
+    f.motion = entry_motion(e[1]);
+    let word = |o: usize| [e[o], e[o + 1], e[o + 2], e[o + 3]];
+    match e[3] {
+        1 => {
+            f.mode = 1;
+            f.target = by_id(u32::from_le_bytes(word(4)));
+        }
+        2 => f.mode = 2,
+        3 => {
+            f.mode = 3;
+            f.point = [f32::from_le_bytes(word(4)), f32::from_le_bytes(word(8)), f32::from_le_bytes(word(12)), 0.0];
+        }
+        _ => f.mode = 0,
+    }
+    f.flag = 0;
+    if let Some(fe) = flag_entry
+        && rng.below(100) < fe[2] as u32
+    {
+        f.flag = 1;
+    }
+    f.region = Some(region);
+    f.threshold = rng.frac(1.0);
+    f.start = region_coord(vol, pos);
+    f.timer = rng.range(lo, hi);
+    true
+}
+
+/// `FUN_0018a4b0(obj)`: the region the object stands in (its position 10 cm higher,
+/// `DAT_0037ab88`) is looked up in its group (`FUN_00199d68`); when it differs from the last one
+/// (+0xa30) and the follower is not done, the follower is reset and, inside a region, a return
+/// entry of that region is drawn (`FUN_0018b308` with the timer range +0xb28 / +0xb2c).
+fn region_step(minds: &mut [Mind], i: usize) {
+    let p = to_game(minds[i].pos);
+    let probe = [p[0], p[1] - 10.0, p[2]];
+    let group = minds[i].fields.group.clone();
+    let r = group.region_at(probe);
+    if r == minds[i].fields.region {
+        return;
+    }
+    if minds[i].fields.follower.done == 0 {
+        minds[i].fields.follower.reset();
+        let Some(region) = r else {
+            minds[i].fields.region = None;
+            return;
+        };
+        let ids: Vec<(u32, u32)> = minds.iter().map(|m| (m.object, m.handle)).collect();
+        let by_id = |id: u32| if id == OBJECT_PLAYER { PLAYER } else { ids.iter().find(|(o, _)| *o == id).map_or(0, |(_, h)| *h) };
+        let (lo, hi) = (minds[i].fields.param(6), minds[i].fields.param(7));
+        let f = &mut *minds[i].fields;
+        pick_entry(&mut f.follower, &mut f.rng, &group, region, [p[0], p[1], p[2]], lo, hi, by_id);
+    }
+    minds[i].fields.region = r;
+}
+
+/// `FUN_0018b148(follower, position)`: true when the follower is forced (+0x31); with a region
+/// (+0x20) the object's place across it (`FUN_001d8c18`) against the threshold (+0x28): at or below
+/// it when the follower started in the upper half (+0x2c >= 0.5, `DAT_0037ab98`), at or above it
+/// otherwise; false without a region. `p` is in the game's space.
+pub fn follower_test(f: &Follower, group: &NpcGroup, p: [f32; 3]) -> bool {
+    if f.forced != 0 {
+        return true;
+    }
+    let Some(vol) = f.region.and_then(|r| group.activators.get(r)) else { return false };
+    let at = region_coord(vol, p);
+    if f.start >= 0.5 { at <= f.threshold } else { f.threshold <= at }
+}
+
+/// What the class pass reports for the log.
+#[derive(Debug, PartialEq)]
+pub enum Attention {
+    None,
+    /// A kind-4 follower: the player came into the talk part.
+    Player,
+    /// A kind-5 pair with the townsperson at this index.
+    Pair(usize),
+}
+
+/// `FUN_0018a130(obj)` for townsperson `i`, once per frame while bit 0 of its array is clear (the
+/// object is not linked, `FUN_001beb00`, in the app). The follower's timer and +0xb00 count down;
+/// then, unless the follower already looks at the player (kind 4) or the last one did and +0xb00
+/// still runs: the player's body meeting the object's talk part (`FUN_0018aa08(obj, 5)`) starts a
+/// forced kind-4 follower toward the player (mode 2) with a timer from +0xb10..+0xb14. Else, unless
+/// the follower is of kind 4 or 5 (or the last one was 5 and +0xb00 runs), a partner
+/// (`FUN_0018a598`) starts a kind-5 pair on both objects with one timer from +0xb1c..+0xb20: this
+/// one's flag set, the partner's set when the two face away from each other (the dot product of
+/// their facings, `FUN_0016a890`, is negative). Else, once +0xb00 ran out, the region step
+/// (`FUN_0018a4b0`).
+pub fn class_tick(minds: &mut [Mind], i: usize, player_body: Option<&parts::Shape>) -> Attention {
+    {
+        let f = &mut *minds[i].fields;
+        if f.follower.timer > 0.0 {
+            f.follower.timer -= 1.0;
+        }
+        if f.timer_b00 > 0.0 {
+            f.timer_b00 -= 1.0;
+        }
+    }
+    let meets = matches!((minds[i].talk, player_body), (Some(t), Some(b)) if parts::overlaps(&t, b) == Some(true));
+    minds[i].fields.player_in_part = meets;
+    let kind = minds[i].fields.follower.kind;
+    if kind != 4 && (minds[i].fields.prev.kind != 4 || minds[i].fields.timer_b00 <= 0.0) && meets {
+        let f = &mut *minds[i].fields;
+        f.keep_previous();
+        f.follower.reset();
+        f.follower.timer = {
+            let (lo, hi) = (f.param(0), f.param(1));
+            f.rng.range(lo, hi)
+        };
+        f.follower.forced = 1;
+        f.follower.kind = 4;
+        f.follower.flag = 0;
+        f.follower.mode = 2;
+        return Attention::Player;
+    }
+    if !(kind == 4 || kind == 5) {
+        if minds[i].fields.prev.kind == 5 && minds[i].fields.timer_b00 > 0.0 {
+            return Attention::None;
+        }
+        if let Some((j, mine, theirs)) = partner(minds, i) {
+            minds[i].fields.keep_previous();
+            let timer = {
+                let f = &mut *minds[i].fields;
+                let (lo, hi) = (f.param(3), f.param(4));
+                f.rng.range(lo, hi)
+            };
+            let facing = |m: &Mind| Vec3::new(m.yaw.sin(), 0.0, m.yaw.cos());
+            let away = facing(&minds[i]).dot(facing(&minds[j])) < 0.0;
+            let (hi_, hj) = (minds[i].handle, minds[j].handle);
+            start_pair(&mut minds[i].fields.follower, timer, &mine, hj, 1);
+            start_pair(&mut minds[j].fields.follower, timer, &theirs, hi_, away as u8);
+            return Attention::Pair(j);
+        }
+    }
+    if minds[i].fields.timer_b00 <= 0.0 {
+        minds[i].fields.timer_b00 = 0.0;
+        region_step(minds, i);
+    }
+    Attention::None
+}
+
+/// What host 5.11 and 5.6 read of the other townspeople (taken after the class pass).
+#[derive(Clone, Copy, Debug)]
+pub struct Peer {
+    pub pos: Vec3,
+    /// The follower's target (+0xa4c).
+    pub target: u32,
+    /// The motion last requested (+0x154).
+    pub slot: Option<usize>,
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -724,6 +1144,8 @@ impl PathRun {
 pub(crate) struct NpcHost<'a, 'b> {
     pub(crate) inner: BevyHost<'a>,
     pub(crate) fields: &'b mut NpcFields,
+    /// The townspeople by script handle as the class pass left them this frame.
+    pub(crate) peers: &'b HashMap<u32, Peer>,
     pub(crate) log: bool,
 }
 
@@ -805,20 +1227,19 @@ impl NpcHost<'_, '_> {
         let me = self.inner.obj.handle;
         Some(match index {
             // 5.0 (0x2ea050 -> FUN_0018a8b0): while the follower is not done, FUN_0018b148 tests it:
-            // true when it is forced (+0x31), or when it has a region (+0x20) and the object's
-            // position inside it compared with the follower's threshold passes; a passing test sets
-            // +0x30 (done). Without a region the test fails. The app has no regions: a follower
-            // without one never passes, as in the game.
+            // true when it is forced (+0x31); with a region (+0x20) the object's place across it
+            // (FUN_001d8c18) is compared with the threshold (+0x28): at or below it when the
+            // follower started in the upper half (+0x2c >= 0.5, DAT_0037ab98), at or above it
+            // otherwise; without a region false. A passing test sets +0x30 (FUN_0018b138(f, 1)).
             0 => {
+                let p = to_game(self.inner.obj.motor.pos);
+                let group = self.fields.group.clone();
                 let f = &mut self.fields.follower;
-                if f.done != 0 {
-                    (Value::Int(0), St::Impl, "")
-                } else if f.forced != 0 {
+                let pass = f.done == 0 && follower_test(f, &group, [p[0], p[1], p[2]]);
+                if pass {
                     f.done = 1;
-                    (Value::Int(1), St::Impl, "")
-                } else {
-                    (Value::Int(0), St::Approx, "the follower's region test (FUN_001d8c18 on +0x20) is not ported: no region, the test fails as the game's does without one")
                 }
+                (Value::Int(pass as i32), St::Impl, "")
             }
             // 5.2 (0x2ea230 -> FUN_002d2328): flips the walk direction of the object's path (+0x84)
             // unless the path is locked (+0x86) and answers the new direction; 0 without a path.
@@ -850,37 +1271,50 @@ impl NpcHost<'_, '_> {
                 let f = &self.fields.follower;
                 (Value::Vec([f32::from_bits(f.kind as u32), f32::from_bits(f.mode as u32), f32::from_bits(f.motion as u32), 0.0]), St::Impl, "")
             }
-            // 5.6 (0x2ea300 -> FUN_0018af10): the unit direction from the object to the follower's
-            // target: mode 1 the target object, 2 the player, 3 the point; the object's facing when
-            // the follower is not live (FUN_0018b110: forced or with a region) or has no target.
+            // 5.6 (0x2ea300 -> FUN_0018af10): the unit direction from the object (its height taken
+            // as 0) to the follower's target: mode 2 the player and mode 1 the target object (when
+            // it still exists, FUN_0019a3f8) at height 0, mode 3 the point with its own height; the
+            // object's facing (+0x550, FUN_0016a890) when the follower is not live (FUN_0018b110:
+            // forced or with a region) or has no target mode. Kind 3 answers the saved vector at
+            // +0xa80 instead, a follower the class never makes here (not ported: the facing).
             6 => {
                 let yaw = self.inner.obj.motor.yaw;
                 let facing = Vec3::new(yaw.sin(), 0.0, yaw.cos());
-                let pos = self.inner.obj.motor.pos;
+                let own = self.inner.obj.motor.pos.with_y(0.0);
                 let f = &self.fields.follower;
-                let live = f.forced != 0;
-                let target = match (live, f.mode) {
-                    (true, 2) => Some(self.inner.env.player),
+                let target = match (f.live() && f.kind != 3, f.mode) {
+                    (true, 2) => Some(self.inner.env.player.with_y(0.0)),
+                    (true, 1) if f.target == PLAYER => Some(self.inner.env.player.with_y(0.0)),
+                    (true, 1) if f.target == me => Some(own),
+                    (true, 1) => self.peers.get(&f.target).map(|p| p.pos.with_y(0.0)),
                     (true, 3) => Some(from_game(f.point)),
-                    (true, 1) if f.target == me => Some(pos),
                     _ => None,
                 };
                 match target {
-                    Some(t) => (vec_value((t - pos).normalize_or(facing)), St::Approx, "mode 1 targets other than self are not known to this host; a follower without a region counts as not live"),
-                    None => (vec_value(facing), St::Approx, "the follower is not live (no region, not forced) or has no target: the facing"),
+                    Some(t) => (vec_value((t - own).normalize_or(facing)), St::Impl, ""),
+                    None => (vec_value(facing), St::Impl, ""),
                 }
             }
             // 5.7 (0x2ea350 -> FUN_0018af08): the byte at object +0xa64 (the follower's +0x24).
             7 => (Value::Int(self.fields.follower.flag as i32), St::Impl, ""),
-            // 5.11 (0x2ea618 -> FUN_00189e70 -> FUN_0018b250): 1 unless the follower is done (+0x30)
-            // with a positive timer (+0x50) and (kind 4) the player's part 5 still meets the object's,
-            // or (kind 5) the partner object still exists, points back at this object and plays
-            // motion 0x32; then 0. Without the part test (the app has no NPC collision parts) kind 4
-            // keeps 1 as the game does when the parts do not meet.
+            // 5.11 (0x2ea618 -> FUN_00189e70 -> FUN_0018b250): "the action is over". 1 unless the
+            // follower is done (+0x30) and its timer (+0x50) runs; then a kind-4 follower holds (0)
+            // while the player's body still meets the object's talk part (FUN_0018aa08), a kind-5
+            // one while the partner (+0xc) exists, points back at this object (its +0xa4c) and does
+            // not play motion 0x32 (its +0x154); every other kind holds until the timer ends.
             11 => {
                 let f = &self.fields.follower;
-                let v = if f.done != 0 && f.timer > 0.0 && f.kind == 5 { 0 } else { 1 };
-                (Value::Int(v), St::Approx, "the part test of kind 4 (FUN_0018aa08) and the partner's motion test of kind 5 are not ported")
+                let v = if f.done == 0 || f.timer <= 0.0 || (f.kind == 4 && !self.fields.player_in_part) {
+                    1
+                } else if f.kind == 5 {
+                    match self.peers.get(&f.target) {
+                        Some(p) if p.target == me => (p.slot == Some(0x32)) as i32,
+                        _ => 1,
+                    }
+                } else {
+                    0
+                };
+                (Value::Int(v), St::Impl, "")
             }
             // 5.16 (0x2ea768 -> FUN_002d3148): with a path and a second object, decides the walk
             // direction (+0x84) from the dot products of the direction to that object and the path's
@@ -955,18 +1389,6 @@ impl NpcHost<'_, '_> {
         // FUN_0017bf10: acos of the dot product when it is inside (-1, 1), else 0 or pi.
         let dot = (d.x * yaw.sin() + d.z * yaw.cos()).clamp(-1.0, 1.0);
         dot.acos().abs() < f32::from_bits(0x3e86_0a91)
-    }
-
-    fn group0(&mut self, index: u16, c: &Call) -> Option<(Value, St, &'static str)> {
-        match (index, c) {
-            // 0.21 angle_between (0x16cfd0): the wrapped turn from direction a to direction b,
-            // atan2(b.x, b.z) - atan2(a.x, a.z) through FUN_0017bbc0.
-            (21, Call::Func { args, .. }) => match (args.first(), args.get(1)) {
-                (Some(Arg::Vec(a)), Some(Arg::Vec(b))) => Some((Value::Float(crate::enemy_host::game_wrap_angle(b[0].atan2(b[2]) - a[0].atan2(a[2]))), St::Impl, "")),
-                _ => Some((Value::Float(0.0), St::Missing, "angle_between without two vectors")),
-            },
-            _ => None,
-        }
     }
 
     fn group1(&mut self, index: u16, a: &[u32], c: &Call) -> Option<(Value, St, &'static str)> {
@@ -1046,7 +1468,6 @@ impl Host for NpcHost<'_, '_> {
             _ => match words(c) {
                 Some((5, index, a)) => self.group5(index, &a),
                 Some((1, index, a)) => self.group1(index, &a, c),
-                Some((0, index, _)) => self.group0(index, c),
                 _ => None,
             },
         };
@@ -1129,6 +1550,136 @@ mod tests {
         assert!(wrapped && l.forward && (0.0..3.0).contains(&l.t), "t {}", l.t);
     }
 
+    fn entity(object: u32, serial: u16) -> kh2_ard::Entity {
+        kh2_ard::Entity { object, position: [0.0; 3], rotation: [0.0; 3], spawn_kind: 0, spawn_arg: 0, serial, raw: [0; 0x40] }
+    }
+
+    fn group(returns: Vec<[u8; 0x10]>, activators: Vec<kh2_ard::Activator>) -> Arc<NpcGroup> {
+        Arc::new(NpcGroup { tag: "t".into(), kind: 6, id: 1, paths: Vec::new(), returns, activators })
+    }
+
+    /// The fields of a walker (bit 0 clear) with the nine floats `rtn_default` hands to host 5.33.
+    fn walker(object: u32, serial: u16, g: &Arc<NpcGroup>) -> NpcFields {
+        let mut f = NpcFields::new(&entity(object, serial), g, serial as u32);
+        f.params = [360.0f32, 720.0, 180.0, 360.0, 720.0, 180.0, 360.0, 720.0, 180.0].map(f32::to_bits);
+        f
+    }
+
+    /// FUN_0018a130: two townspeople whose kind-0 parts meet and whose return entries name each
+    /// other (byte 0 = 0, the objentry id at +4) start a kind-5 pair together; the player's body
+    /// meeting a talk part (type 5) then starts a kind-4 follower toward him.
+    #[test]
+    fn the_class_pass_pairs_townspeople_and_turns_them_to_the_player() {
+        let entry = |id: u32| {
+            let mut e = [0u8; 0x10];
+            (e[1], e[3]) = (2, 1);
+            e[4..8].copy_from_slice(&id.to_le_bytes());
+            e
+        };
+        let (ga, gb) = (group(vec![entry(0x51f)], vec![]), group(vec![entry(0x51d)], vec![]));
+        let (mut fa, mut fb) = (walker(0x51d, 26, &ga), walker(0x51f, 30, &gb));
+        // The tt townspeople's parts: type 0 a sphere of 90 lifted 115, type 5 a sphere of 200 at 200 up.
+        let body = |p: Vec3| Some(parts::Shape { kind: 3, center: p + Vec3::Y * 115.0, r: [90.0, 90.0] });
+        let talk = |p: Vec3| Some(parts::Shape { kind: 3, center: p + Vec3::Y * 200.0, r: [200.0, 200.0] });
+        let (pa, pb) = (Vec3::ZERO, Vec3::new(150.0, 0.0, 0.0));
+        let mut minds = vec![
+            Mind { handle: 0x100, object: 0x51d, serial: 26, pos: pa, yaw: 0.0, body: body(pa), talk: talk(pa), fields: &mut fa },
+            Mind { handle: 0x200, object: 0x51f, serial: 30, pos: pb, yaw: std::f32::consts::PI, body: body(pb), talk: talk(pb), fields: &mut fb },
+        ];
+        let far = parts::Shape { kind: 0, center: Vec3::new(5000.0, 85.0, 0.0), r: [35.0, 55.0] };
+        assert_eq!(class_tick(&mut minds, 0, Some(&far)), Attention::Pair(1));
+        let (a, b) = (minds[0].fields.follower.clone(), minds[1].fields.follower.clone());
+        assert_eq!((a.kind, a.mode, a.target, a.forced, a.flag, a.motion), (5, 1, 0x200, 1, 1, 0x11f));
+        // The partner faces the other way (dot of the facings < 0): its flag is set too.
+        assert_eq!((b.kind, b.mode, b.target, b.forced, b.flag), (5, 1, 0x100, 1, 1));
+        assert!(a.timer == b.timer && (360.0..=720.0).contains(&a.timer), "{}", a.timer);
+        // The partner's own pass does not pair again (its follower is of kind 5).
+        assert_eq!(class_tick(&mut minds, 1, Some(&far)), Attention::None);
+        assert_eq!(minds[1].fields.follower.target, 0x100);
+        // Sora walks into the first one's talk part: a forced kind-4 follower toward the player;
+        // the pair is kept as the previous follower.
+        let near = parts::Shape { kind: 0, center: Vec3::new(0.0, 85.0, 150.0), r: [35.0, 55.0] };
+        assert_eq!(class_tick(&mut minds, 0, Some(&near)), Attention::Player);
+        let f = &minds[0].fields;
+        assert_eq!((f.follower.kind, f.follower.mode, f.follower.forced, f.prev.kind), (4, 2, 1, 5));
+        assert!(f.player_in_part);
+        // While it lasts nothing else starts.
+        assert_eq!(class_tick(&mut minds, 0, Some(&near)), Attention::None);
+        assert_eq!(minds[0].fields.follower.kind, 4);
+    }
+
+    /// FUN_0018a4b0 / FUN_0018b308 / FUN_0018b148: walking into a kind-6 group's volume draws one of
+    /// the return entries keyed to the volume's +2 by weight; the follower ends when the object
+    /// crosses the volume past the random threshold; leaving the volume first resets it.
+    #[test]
+    fn a_region_draws_a_weighted_entry_that_ends_past_a_threshold() {
+        let act = kh2_ard::Activator { shape: 0, option: 2, position: [0.0; 3], scale: [50.0, 100.0, 20.0], rotation: [0.0; 3], raw: [0; 0x40] };
+        let mut look = [0u8; 0x10];
+        (look[0], look[2], look[3]) = (2, 100, 2);
+        let mut flag = [0u8; 0x10];
+        (flag[0], flag[1], flag[2]) = (2, 3, 100);
+        let mut other = [0u8; 0x10];
+        (other[0], other[2]) = (1, 100);
+        let g = group(vec![other, look, flag], vec![act.clone()]);
+        let mut f = walker(0x51d, 1, &g);
+        let place = |x: f32| Vec3::new(x, 0.0, 0.0);
+        let mut minds = vec![Mind { handle: 0x100, object: 0x51d, serial: 1, pos: place(-40.0), yaw: 0.0, body: None, talk: None, fields: &mut f }];
+        assert_eq!(class_tick(&mut minds, 0, None), Attention::None);
+        let fl = minds[0].fields.follower.clone();
+        assert_eq!((fl.kind, fl.mode, fl.region, fl.flag, fl.motion), (2, 2, Some(0), 1, 0));
+        assert!((fl.start - 0.1).abs() < 1e-4, "{}", fl.start);
+        assert!((360.0..=720.0).contains(&fl.timer));
+        assert_eq!(minds[0].fields.region, Some(0));
+        // The same volume draws nothing new.
+        minds[0].fields.follower.motion = 77;
+        class_tick(&mut minds, 0, None);
+        assert_eq!(minds[0].fields.follower.motion, 77);
+        // Started in the lower half: the test passes at or above the threshold.
+        let mut t = fl.clone();
+        t.threshold = 0.5;
+        assert!(!follower_test(&t, &g, [-40.0, 0.0, 0.0]));
+        assert!(follower_test(&t, &g, [10.0, 0.0, 0.0]));
+        t.start = 0.9;
+        assert!(follower_test(&t, &g, [-40.0, 0.0, 0.0]) && !follower_test(&t, &g, [10.0, 0.0, 0.0]));
+        // Leaving the volume before the follower is done resets it.
+        minds[0].pos = place(500.0);
+        class_tick(&mut minds, 0, None);
+        assert_eq!((minds[0].fields.follower.kind, minds[0].fields.follower.region, minds[0].fields.region), (0, None, None));
+        // Host 5.4 always reloads +0xb00 from +0xb30 (180 here).
+        minds[0].fields.end_follower();
+        assert_eq!(minds[0].fields.timer_b00, 180.0);
+    }
+
+    /// The townspeople of tt02's kind-6 groups name each other as partners, and their models carry
+    /// the parts the class tests (type 0 and type 5 on the object's own frame), as does Sora's body.
+    #[test]
+    fn tt02_townspeople_name_each_other_and_carry_their_parts() {
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else { return eprintln!("skipped: no disc (set KH2_ISO)") };
+        let disc = Disc::open(&iso);
+        let (area, _) = kh2_ard::Area::parse(&disc.read("ard/tt02.ard").expect("tt02.ard")).expect("area");
+        let objs = disc.0.lock().ok().and_then(|mut a| kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).ok()).map(|d| d.rows).unwrap_or_default();
+        let mut people = Vec::new();
+        for g in ["a72_", "b72_", "c72_"].iter().filter_map(|t| area.spawns.get(*t)).flatten() {
+            assert_eq!(g.kind & 0xff, 6);
+            let e = &g.entities[0];
+            let named: Vec<u32> = g.returns.iter().filter(|r| r[0] == 0 && r[3] == 1).map(|r| u32::from_le_bytes([r[4], r[5], r[6], r[7]])).collect();
+            people.push((e.object, named, objs.iter().find(|r| r.object_id == e.object).map(|r| r.model_name.clone()).unwrap_or_default()));
+        }
+        assert_eq!(people.len(), 3);
+        for (me, named, model) in &people {
+            for (other, theirs, _) in people.iter().filter(|p| p.0 != *me) {
+                assert!(named.contains(other) && theirs.contains(me), "{me:#x} and {other:#x} name each other");
+            }
+            let t = disc.read(&format!("obj/{model}.mdlx")).and_then(|f| parts::Table::from_mdlx(&f)).expect("parts");
+            for kind in [0, parts::TYPE_REACTION] {
+                let r = t.first(kind).expect("part");
+                assert!(parts::shape_of(r, Vec3::ZERO, 0.0).is_some(), "{model} part {kind} on the object's frame");
+            }
+        }
+        let p = disc.read("obj/P_EX100.mdlx").and_then(|f| parts::Table::from_mdlx(&f)).expect("P_EX100");
+        assert!(parts::shape_of(p.first(parts::TYPE_BODY).expect("body"), Vec3::ZERO, 0.0).is_some());
+    }
+
     /// The spawn record's word +0x24 fills bits 0..6 of the object's bit array (FUN_001899d0) and
     /// bit 0 puts the follower on the walk path (kind 2).
     #[test]
@@ -1140,8 +1691,8 @@ mod tests {
         let mut entry = [0u8; 0x10];
         entry[1] = 5;
         entry[3] = 4;
-        let g = Arc::new(NpcGroup { tag: "a72_".into(), kind: 6, id: 0x191, paths: Vec::new(), returns: vec![[0; 0x10], entry] });
-        let f = NpcFields::new(&e, &g);
+        let g = Arc::new(NpcGroup { tag: "a72_".into(), kind: 6, id: 0x191, paths: Vec::new(), returns: vec![[0; 0x10], entry], activators: Vec::new() });
+        let f = NpcFields::new(&e, &g, 1);
         assert!(f.test_bit(0) && f.test_bit(2) && !f.test_bit(1));
         assert!(!f.test_bit(7), "only bits 0..6 are copied");
         assert_eq!(f.follower.kind, 2);

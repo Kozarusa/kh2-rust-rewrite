@@ -262,6 +262,14 @@ impl Pax {
     pub fn elements_for(&self, id: u16) -> impl Iterator<Item = &Element> {
         self.elements.iter().filter(move |e| e.id == id)
     }
+
+    /// The DPX entry an element's `effect` word names: the first entry whose number (its third word)
+    /// equals it (`FUN_001db5f0` -> `FUN_001da6f0` -> `FUN_001d9bf0` -> `FUN_001d9720` walks the 0x20-byte
+    /// list comparing that word). The number is not always the entry's place: `00effect.bar` has 14
+    /// entries numbered 0..5 and 11..18.
+    pub fn dpx_effect(&self, number: u16) -> Option<&DpxEffect> {
+        self.effects.iter().find(|f| f.number == number as u32)
+    }
 }
 
 impl Dpd {

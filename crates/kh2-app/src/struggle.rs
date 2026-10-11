@@ -201,6 +201,11 @@ pub struct Layout {
     /// one here: +0xb4 = 2 (`FUN_001b9818`) is record 3's +0x14.
     pub select: u32,
     pub select2: u32,
+    /// Per group of the picture's sequence: the 60 Hz ticks one play takes (`last frame + 1`), `None` for a group
+    /// that loops for ever (it would never end). The 2D object `FUN_00225af0` makes plays the group once and
+    /// destroys itself at its end (`FUN_00225aa8` -> `FUN_00138aa8`, vtable +0x14); its destructor `FUN_00225a50`
+    /// starts a thread of `FUN_00225a20`, which ends the event (`FUN_00223658(0)` -> `FUN_002235c0`) [WP-G1].
+    pub group_ticks: Vec<Option<i32>>,
 }
 
 /// The layout slots of the manager: record 1 (+0x4c, the start), 2 (+0x68, the end), 3 (+0xa0, the failure),
@@ -224,7 +229,17 @@ impl Layout {
         let kind = if kind == 0xc && picture != 0 { 0xd } else { kind };
         let cmds = entries.get(entry as usize).and_then(|e| kh2_ard::parse_event(e.data)).unwrap_or_default();
         let at = |op: u16| cmds.iter().find(|c| c.opcode == op).and_then(|c| c.data.get(0..2)).map(|b| i16::from_le_bytes([b[0], b[1]]) as i32);
-        Some((slot, Layout { op: r.op, kind, entry, picture, object, end: at(8).unwrap_or(-1), picture_at: at(0x50), select: 0, select2: 0 }))
+        let group_ticks = (picture as usize)
+            .checked_sub(1)
+            .and_then(|i| kh2_image::seqd::parse(entries.get(i + 1)?.data))
+            .map(|s| (0..s.groups.len()).map(|g| (s.groups[g].loops == 1).then(|| s.last_frame(g) + 1)).collect())
+            .unwrap_or_default();
+        Some((slot, Layout { op: r.op, kind, entry, picture, object, end: at(8).unwrap_or(-1), picture_at: at(0x50), select: 0, select2: 0, group_ticks }))
+    }
+
+    /// The ticks the picture's chosen group plays for (`None`: no picture, or a group that never ends).
+    pub fn picture_ticks(&self) -> Option<i32> {
+        self.group_ticks.get(self.group()).copied().flatten()
     }
 
     /// The picture's group (`FUN_00225af0`: `DAT_0036bd30` 1 to 5 picks that group, anything else group 1).
@@ -277,9 +292,18 @@ impl Play {
         self.flags & 4 == 0
     }
 
-    /// `FUN_00222668`: the event ends when its frame reaches the end frame.
+    /// The game tick at which the picture's group has played through (`2 * picture_at + ticks of the group`: the
+    /// 2D object starts at event frame `picture_at`, two game ticks per event frame).
+    pub fn picture_end(&self) -> Option<i32> {
+        Some(2 * self.layout.picture_at? + self.layout.picture_ticks()?)
+    }
+
+    /// The event ends when its frame reaches the end frame (`FUN_00222668`), or when its picture's 2D object has
+    /// played its group through and destroyed itself (`FUN_00225a50` -> `FUN_00225a20` -> `FUN_00223658(0)`,
+    /// `FUN_002235c0`). The end frame (500 event frames) is 1000 game ticks, the picture's group in the Struggle's
+    /// files is 90 to 300, so the picture ends the event [inferred: the destroy thread's start takes a tick or two].
     pub fn ended(&self) -> bool {
-        self.layout.end >= 0 && self.frame() >= self.layout.end
+        (self.layout.end >= 0 && self.frame() >= self.layout.end) || self.picture_end().is_some_and(|e| self.ticks >= e)
     }
 
     /// `FUN_00224b98`: frames left (0 without an end frame).
@@ -1711,6 +1735,9 @@ mod tests {
             assert_eq!((h.kind, h.se_start, h.se_end, h.se_fail, h.unlock), (2, 0xbcd, 0xbce, 0xbcf, 0), "{name}");
             assert!(h.ends_in_menu());
             let l = |s: usize| a.layouts[s].as_ref().map(|l| (l.op, l.kind, l.entry, l.picture, l.object, l.end, l.picture_at));
+            // The pictures' groups play 90 (st_t group 1), 300 (ed_t group 1) and 270 (ed_t group 2) ticks.
+            let ticks = |s: usize, g: usize| a.layouts[s].as_ref().and_then(|l| l.group_ticks.get(g).copied().flatten());
+            assert_eq!((ticks(LAYOUT_START, 1), ticks(LAYOUT_END, 1), ticks(LAYOUT_FAIL, 2)), (Some(90), Some(300), Some(270)), "{name}");
             // Record 1: event entry 2 with picture 4 (st_t) -> kind 0xd; records 2 and 3: entries 5 and 8 with the
             // two ed_t pictures; every event ends at frame 500 and shows its picture from frame 11.
             assert_eq!(l(LAYOUT_START), Some((1, 0xd, 2, 4, 0, 500, Some(11))), "{name}");
@@ -1743,8 +1770,9 @@ mod tests {
                 break;
             }
         }
-        // 500 event frames at half the game's frame rate.
-        assert_eq!(shown_at, Some(1000));
+        // The picture starts at event frame 11 (tick 22) and its group of 90 ticks ends the event, not the end
+        // frame (500 event frames = tick 1000): control comes back at tick 22 + 90 = 112 (WP-G1).
+        assert_eq!(shown_at, Some(112));
         assert!(a.play.is_none() && a.clock.pause & 4 == 0 && a.state == 1);
         assert!(a.counters[0].shown && a.clock.state == 1);
     }
@@ -1762,8 +1790,8 @@ mod tests {
             assert!(a.stopped && !a.failed, "{name}");
             assert_eq!((a.state, a.end_ev, a.sounds.clone()), (4, 7, vec![0xbce]), "{name}");
             assert_eq!(a.play.as_ref().map(|p| (p.what, p.locks_control(), p.hides_hud())), Some(("end", true, false)));
-            // The last step comes in the frame the layout's 500 event frames end.
-            assert_eq!(run_to_finish(&mut a, 2000), (Some(Finish::Menu), 1000), "{name}");
+            // The last step comes in the tick the picture's group (300 ticks, from tick 22) has played through.
+            assert_eq!(run_to_finish(&mut a, 2000), (Some(Finish::Menu), 322), "{name}");
             // Lost: host 4.11 -> the failure sound and record 3's layout, then event 8's last step: the menu.
             let mut a = struggle(&disc, name);
             a.shown = true;
@@ -1772,7 +1800,7 @@ mod tests {
             assert!(a.stopped && a.failed, "{name}");
             assert_eq!((a.state, a.end_ev, a.end_arg, a.sounds.clone()), (4, 8, -1, vec![0xbcf]), "{name}");
             assert_eq!(a.play.as_ref().map(|p| (p.what, p.layout.group())), Some(("failure", 2)));
-            assert_eq!(run_to_finish(&mut a, 2000).0, Some(Finish::Menu), "{name}");
+            assert_eq!(run_to_finish(&mut a, 2000), (Some(Finish::Menu), 292), "{name}");
             // A stopped mission's counters stay.
             let v = a.counter_value(0);
             a.change(0, |c| c.add(5));
@@ -1798,10 +1826,11 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(at, Some(992), "event frame 496 = 500 - 4");
-        // No record 0xd: nothing new plays (FUN_001d3538 returns), the end layout runs out, then the last step:
-        // the event goes to the area.
-        assert_eq!(run_to_finish(&mut a, 100), (Some(Finish::Event(7, 3)), 8));
+        // The wait for the last frames ends with the event itself now: the picture's group (300 ticks from tick
+        // 22) ends it before event frame 496.
+        assert_eq!(at, Some(322));
+        // No record 0xd: nothing new plays (FUN_001d3538 returns), then the last step: the event goes to the area.
+        assert_eq!(run_to_finish(&mut a, 100), (Some(Finish::Event(7, 3)), 1));
     }
 
     #[test]
@@ -1851,6 +1880,42 @@ mod tests {
         assert_eq!(orbs_knocked_out(3, 0), 0);
         assert_eq!((side_of(true), side_of(false)), (0, 1));
         assert_eq!((orb_kind(true), orb_kind(false)), (0, 2));
+    }
+
+    /// A start-like layout without a disc: the picture from event frame 11 (tick 22), a group of 90 ticks, an
+    /// end frame of 500 event frames, the start's event kind (holds the player).
+    fn synthetic_play(group_ticks: Option<i32>, picture_at: Option<i32>) -> Play {
+        let layout = Layout { op: 1, kind: 0xd, entry: 2, picture: 4, object: 0, end: 500, picture_at, select: 0, select2: 0, group_ticks: vec![None, group_ticks] };
+        Play { what: "start", layout, flags: 0x60, ticks: 0 }
+    }
+
+    #[test]
+    fn the_start_event_ends_when_its_picture_group_has_played_through() {
+        let mut p = synthetic_play(Some(90), Some(11));
+        assert_eq!(p.picture_end(), Some(112));
+        let mut unlock = None;
+        for t in 1..=1100 {
+            p.ticks = t;
+            assert_eq!(p.picture_shown(), t >= 22,"tick {t}");
+            if p.ended() {
+                unlock = Some(t);
+                break;
+            }
+            assert!(p.locks_control(), "tick {t}: the player is held until the event ends");
+        }
+        assert_eq!(unlock, Some(112), "control returns at 2 * 11 + 90 ticks, not at the end frame (tick 1000)");
+    }
+
+    #[test]
+    fn an_event_without_a_finishing_picture_ends_at_its_end_frame() {
+        // A looping group (None) or no picture command: only the end frame (500 event frames = tick 1000) ends it.
+        for mut p in [synthetic_play(None, Some(11)), synthetic_play(Some(90), None)] {
+            assert_eq!(p.picture_end(), None);
+            p.ticks = 999;
+            assert!(!p.ended());
+            p.ticks = 1000;
+            assert!(p.ended());
+        }
     }
 
     #[test]

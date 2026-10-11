@@ -227,9 +227,24 @@ stores world, area, entrance at `0x33e86c..e`) and restarts the area thread `FUN
 - Kind 0 is the 2D layout in slot 2 of the table at `0x355118` / `0x35511c` (`FUN_0013a980(2)`,
   `FUN_0013a998(2)`): out `FUN_0015d058` plays its animation 1 (`FUN_002368a8(0x3591e0, 1)`), in
   `FUN_0015d1a8` plays animation 0 and a 2-tick fader fade-in (`FUN_0014a7f0(fader, 1, 0)`). The
-  reference video 8.mp4 shows this as the keyhole wipe, then the area card. The layout is not
-  decoded [GAP: the table's loader and the `.2ld` file were not searched]; the app draws the same
-  black fade as a labelled stand-in (`jump: fade kind 0 ... black stand-in`).
+  reference video 8.mp4 shows this as the keyhole wipe, then the area card. **The layout (WP-E1c)**:
+  `FUN_0013a7e8` reads `field2d/<lang>/<world>0field.2dd` (format string at 0x378d78; the
+  world's prefix from `0x349dc0`) to `0x3c32c0` when the world changes; `FUN_0013a8a8` fills the
+  table at 0x355110 with the BAR's count of type-0x19 entries (+4) and per slot `i` the `i`-th
+  entry of type 0x18 (image, 0x355118 + 8i) and of type 0x19 (sequence, 0x35511c + 8i).
+  `FUN_00236650` sets a sequence player on slot 2 (`0x3591e0`, image object `0x359040` from
+  `FUN_002332e0`); its group records are 0x24 bytes with the play count at +4
+  (`FUN_002369e0`) and its animation records 0x90 bytes (`FUN_002379a8`): the `SEQD` format the
+  HUD already draws (`kh2_image::seqd`). The out task `FUN_0015cf58` steps and draws it
+  (`FUN_002378a0`, `FUN_002379a8`) until the group has ended (play count not 0 and the player
+  out of its states 1 and 2, `FUN_002369c0`), then fades the screen fader to black in 2 ticks
+  (`FUN_0014a7c8(fader, 1, 0)`) and marks the fade done (`FUN_0013ef38`). The in task
+  `FUN_0015d0e8` plays group 0 and ends when the group has ended and the fader is idle (+0xfc 0).
+  The test `area_jump::tests::the_keyhole_layout_is_slot_two_of_the_world_field_file` decodes
+  slot 2 of `tt0field.2dd` and prints both groups. **Not drawn yet**: the app's sequence draw
+  path (`hud_gfx::HudScene`) is private to `hud.rs`, outside this work package; the app still
+  draws the black fade as a labelled stand-in (`jump: fade kind 0 ... black stand-in`). Next
+  step in "Gaps" below (section 10).
 - Kinds 2 and 3 (`FUN_0013f290` / `FUN_0013f3b0`, in `FUN_0013f2e8` / `FUN_0013f3f0`): not read.
 - Gate (header +0x1e, `FUN_001d88a0(volume, gate)`): 0 passes. 1 and 2 need `FUN_001d8908()`: the
   player is in the controlled-object list at `0x1d5d7a0` (`FUN_001b80e8`), his actor flags +0x108
@@ -242,8 +257,24 @@ stores world, area, entrance at `0x33e86c..e`) and restarts the area thread `FUN
   fail. Every tt04 exit has gate 2, so walking out needs the player to move along the exit's
   direction. The app ports this as `area_jump::gate_passes` (moving = horizontal velocity above
   0; the busy flags are not ported) and reads the two constants from the executable.
-- Lock: `FUN_00195358(world, area)` reads the halfword at `0x33f918 + FUN_00195208() * 4` (0 =
-  open) and then `FUN_001d32c0(world, area)`; neither was read further [GAP]. The app locks nothing.
+- Lock (WP-E1c): `FUN_00198e10` asks `FUN_00195358(world, area)` about the exit's destination
+  before it acts on a volume; non-zero stops the walk-in and makes the prompt the locked one
+  (`FUN_0015acc8`). `FUN_00195208` finds (world, area) in the table `DAT_01c8a988`: `u16 count`,
+  then `u8 world, u8 area` per entry (`lhu` / `lbu` at 0x195210..0x195230); -1 when absent, and
+  an absent area is never locked. The table is the `dsa` entry of `00progress.bin` (the first
+  named lookup of `FUN_0017fd10`, tag string at 0x37a5e8, handed to `FUN_001951f8`). Entry `i`
+  owns two halfwords of the save block at `0x33f918 + 4i`: the state (read with `lhu`; any
+  non-zero value locks, 0xffff included: `sltiu (v + 1), 2` / `movz` at 0x195398..0x1953a0) and
+  the message the prompt shows (`FUN_001953e0`). With state 0 the game also asks `FUN_001d32c0`
+  -> `FUN_001d32e0`, which locks only in world 0x10 (story flags in the table at 0x37c528).
+  Writers: the story-flag side effects op 2 (`FUN_00195260`: state and message), 3
+  (`FUN_00195288`: 0), 4 (`FUN_001952a0`: 0xffff and the world point bit of the area,
+  `FUN_00194f68` / `FUN_00194fd8`) and 5 (`FUN_00195300`: 0 and the world point bit); the first
+  halfword of each op is the table index (`FUN_0017ff60`). Ported: `kh2_ard::progress::lock_index`
+  / `exit_locked` and `area_jump::ExitLocks` (the table from the disc, the halfwords all 0 until E5
+  runs the flag side effects [inferred: a new game starts with them 0; its initialiser was not
+  read]; the world-0x10 branch is not ported). The test `the_exit_lock_table_and_the_flags_that_write_it`
+  prints the table and every Twilight Town flag that writes it.
 - `FUN_001989d8` clears the group's flag bits 3 and 4 every frame (0xffffffe7) and skips a group
   whose bit 0 (fired, set by `FUN_00198fa0`) is set; bit 4 is the prompt shown this frame
   (`FUN_00198e10`), so the prompt is re-issued every frame while the player faces the volume. In
@@ -476,6 +507,29 @@ tt37; tt40 -> tt19 and area 100. The full list is in the test output.
   game reads `arif` +0x10 for music; not found in this work package. The app's set-0 pair equals what a "free
   roam" program would need only by assumption.]
 - Events change music through their own commands [GAP: which opcode].
+- [V] Per slot (field 0x354e98, battle 0x354ea8) `FUN_001371d8` / `FUN_00137300` leave a slot whose
+  stored number equals the new one alone and take a changed one; number 0 silences the slot
+  (`FUN_00136cf8(slot, 0)`). The app (WP-E1c, `audio::area_bgm` with `audio_bgm::area_pair` and
+  `AreaMusic::load_pair`): once `area::run_area_script` has run, the pair of opcode 0x10 is applied;
+  a run without opcode 0x10 keeps the pair already playing [inferred, above]; before any pair was
+  set (the app starts in an area instead of booting through the story) the `arif` pair stands in,
+  logged `arif stand-in`. The field music restarts only when its number changes; 0 stops both
+  slots. Log: `<area>: music field F battle B (area script opcode 0x10)`. Test:
+  `the_area_pair_comes_from_opcode_0x10_and_restarts_only_a_changed_field_number`.
+
+## 7b. Camera and party at the entrance (WP-E1c)
+
+- [V] `FUN_001047a8` (area start) calls `FUN_00149bb8` -> `FUN_00140c00` -> `FUN_0013f470(0x355840)`:
+  the field camera is placed straight behind the player with no smoothing, before the fade-in
+  `FUN_0013efe8`. The app's `Rig::new` is that placement; `camera.rs` now rebuilds the rig once
+  `AreaRecord.placed` names the area Sora was just put in (a jump or `KH2_ENTRANCE`), logged
+  `camera: placed behind Sora at the entrance of ttNN (FUN_0013f470)` [inferred: the player is
+  created before `FUN_001047a8`, so the game places the camera behind him at his entrance].
+- [V] The friends (`FRIEND_1` / `FRIEND_2`) are spawn-kind-1 entities like the player and pass
+  the same filter `FUN_001981a0`. With a real entrance (a jump or `KH2_ENTRANCE`) `party.rs`
+  takes their rows only from the groups the area scripts loaded and only those the filter creates
+  for the entrance (`party: spawn ... entrance N`); without one the old rule stays (the first row
+  of each friend in the `map` script).
 
 ## 8. Where it goes in the app
 
@@ -514,10 +568,11 @@ Each stage ends with `verify.ps1` passing and the named check.
   entrance's player entity after a jump; `area_jump.rs` tests the option-0 volumes of the loaded
   exit groups every tick (gate 0, 1, 2 as above), logs the option-1/2 prompt, and runs the jump task
   (fade out 30 ticks, load, place, fade in). Triggers on event 1 with an event tag log `event not
-  played (E6)`; type-1 trigger jumps are taken, other types logged. Not done: the music pair of
-  opcode 0x10 is logged, not applied (`audio_bgm` keeps the `arif` pair); the keyhole layout; the
-  exit lock; the battle-state check; the name window of the prompt; the friends' entrance filter
-  and the camera snap after a teleport (both listed under "Later" in the E1b brief).
+  played (E6)`; type-1 trigger jumps are taken, other types logged. Open after E1b (E1c status in
+  brackets): the music pair of opcode 0x10 [applied]; the keyhole layout [decoded, not drawn];
+  the exit lock [ported, halfwords 0 until E5]; the battle-state check [open]; the name window of
+  the prompt [open]; the friends' entrance filter [done] and the camera snap after a teleport
+  [done].
 - **E2 NPC spawn and idle/walk.** Class-5 objects of `map` program groups with their BDX (`rtn_default`), group 5
   hosts for the walk path (+0x508), walk path ids. Accept: tt02 log of spawned `N_EX5xx_RTN` with no `missing`
   host calls in `KH2_BDXLOG`; screenshot with townspeople looked at.
@@ -555,7 +610,17 @@ Each stage ends with `verify.ps1` passing and the named check.
 - The event kind table `DAT_01d6a92c` (rows read by `FUN_001d1128`): its loader was not searched.
 - Event camera key format (opcode 0x13), actor motion playback, music commands of events, skip.
 - Where `arif` music pairs are read by the game (only opcode 0x10 writes the pair the area load reads).
-- `FUN_00195358(world, area)` (exit lock) and `FUN_001d88a0` (walk-in test with header +0x1e): not read.
+- Exit lock: the new-game value of the halfwords at `0x33f918` (assumed 0; the initialiser was not
+  read) and the world-0x10 branch `FUN_001d32e0` (not ported). The flag side effects ops 2..5
+  that write the halfwords run in E5.
+- The keyhole layout (fade kind 0) is decoded but not drawn. Exact next step: `hud.rs` exports
+  the scene (`pub(crate) use hud_gfx::{HudScene, Node};`), then `area_jump` adds one root node at
+  (0, 0) on the `SeqFile::from_bar` index of `tt0field.2dd`'s slot 2 (`layout_slot`; the field
+  file's pairs are the first entries of `HudScene.files`), plays group 1 at the fade-out and
+  waits for `Player::finished` plus a 2-tick fader to black, plays group 0 at the fade-in with a
+  2-tick fader from black, and hides the node when the group has finished (section 2, kind 0).
+  The window sides beyond the 4:3 picture are not covered by the layout [inferred: the original
+  is 4:3].
 - The meaning of the area special values 100 and 101 in exits beyond the code's mapping.
 
 ## Decompile index
@@ -579,4 +644,7 @@ Each stage ends with `verify.ps1` passing and the named check.
 | 0x194ab8, 0x194b68, 0x194b98 (decompiled for this WP), 0x194c08, 0x194d78, 0x194e68, 0x194ee0, 0x194f68, 0x194fa8, 0x195010, 0x19c0f0 | save and world points |
 | 0x196428, 0x195898, 0x195ae0, 0x195c08, 0x1964d0, 0x2232c8, 0x2233d8, 0x223910, 0x223a88, 0x2245d0, 0x224a90, 0x224b18, 0x225028, 0x2275a8, 0x227478, 0x22b0f8, 0x22cbb0 | event player |
 | 0x137150, 0x1371d8, 0x1a7700, 0x1a7720 | music |
+| 0x137300, 0x136ec0, 0x195358, 0x195208, 0x1951f8, 0x1953e0, 0x195260, 0x195288, 0x1952a0, 0x195300, 0x1d32c0, 0x1d32e0, 0x17fd10, 0x17ff60, 0x195130 | music slots, exit lock and its writers (E1c) |
+| 0x13a7e8, 0x13a8a8, 0x13a980, 0x13a998, 0x13a9d0, 0x15d058, 0x15d1a8, 0x15cf58, 0x15d0e8, 0x15d248, 0x236650, 0x2368a8, 0x2369c0, 0x2369e0, 0x2378a0, 0x2379a8, 0x13ef00, 0x13ef48 | keyhole layout (E1c) |
+| 0x1047a8, 0x149bb8, 0x140c00, 0x140e90, 0x13f470, 0x13efe8 | area start camera (E1c) |
 | 0x194188, 0x1be828, 0x1d7970, 0x1a6ff0, 0x195778, 0x1d3a68, 0x1d30d8 | other opcode targets and area start |

@@ -13,7 +13,7 @@ use crate::enemy_ai::AiTrace;
 use crate::enemy_host::{BevyHost, St};
 
 /// What the group-10 entries and the remap read or write of the member (kept on `FriendBrain`).
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct FriendFields {
     /// +0xb7c bit 0x10000: the script set the member's target (host 10.14 with a mode other than 0).
     pub script_target: bool,
@@ -28,7 +28,14 @@ pub struct FriendFields {
     /// The member's target record (+0x9f4) is valid: an enemy target, or the one a special or Cure was
     /// chosen for (FUN_00113d48 copies phase 1's record there). Host 1.140 reads it.
     pub target_valid: bool,
+    /// The attack objects the script created this tick (host 2.10: `atkp` id by handle) and the hits it
+    /// delivered on its target record (host 2.17); `friend_ai` hands the hits to `party`.
+    pub attacks: Vec<(u32, i16)>,
+    pub target_hits: Vec<i16>,
 }
+
+/// Handles of the members' attack objects (host 2.10), apart from the object handles.
+const ATTACK_HANDLE: u32 = 0x7a00_0000;
 
 /// The member's script host.
 pub(crate) struct FriendHost<'a, 'b> {
@@ -127,6 +134,38 @@ impl Host for FriendHost<'_, '_> {
         // 1.140 (0x173740 -> FUN_0018ed58): whether a target record is valid. The members' scripts ask it
         // of their own target (2.23 then 1.140, `kh2 bdx P_EX020` R1559); [inferred] the app answers the
         // member's target record for any record the script names.
+        // 2.10 (0x18e2f0, FUN_001a2ba0): an attack object of the object with `atkp` id arg 1; 2.17
+        // (0x18e6e0): the attack hits the object named (FUN_0018c5f8 / FUN_0018c6d0, then the object's
+        // receive method +0x64). The members' scripts aim 2.17 at their own target record (2.23, Donald's
+        // `cure` R1559 with attack 1525), which `party` resolves (`party_script_hits`). 2.13 (arm) and 2.22
+        // (anchor) need nothing more here: the hit is delivered at once.
+        match words(c) {
+            Some((2, 10, a)) => {
+                let handle = ATTACK_HANDLE + self.fields.attacks.len() as u32;
+                let id = a.get(1).copied().unwrap_or(0) as i32 as i16;
+                self.fields.attacks.push((handle, id));
+                let v = Value::Handle(handle);
+                let tag = self.inner.tag;
+                self.trace().record(tag, c, &v, St::Approx, "a member's attack object: only its atkp id is kept (for 2.17)");
+                return v;
+            }
+            Some((2, 17, a)) => {
+                let handle = a.first().copied().unwrap_or(0);
+                let found = self.fields.attacks.iter().find(|(h, _)| *h == handle).map(|x| x.1);
+                if let Some(id) = found {
+                    self.fields.target_hits.push(id);
+                }
+                let tag = self.inner.tag;
+                self.trace().record(tag, c, &Value::None, St::Approx, "the hit lands on the member's target record (+0x9f4), resolved by party");
+                return Value::None;
+            }
+            Some((2, 13 | 22, a)) if a.first().is_some_and(|h| self.fields.attacks.iter().any(|x| x.0 == *h)) => {
+                let tag = self.inner.tag;
+                self.trace().record(tag, c, &Value::None, St::Approx, "a member's attack object: nothing to arm or anchor");
+                return Value::None;
+            }
+            _ => {}
+        }
         if let Some((1, 140, _)) = words(c) {
             let v = Value::Bool(self.fields.target_valid);
             let tag = self.inner.tag;

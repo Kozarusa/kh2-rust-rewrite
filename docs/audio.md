@@ -323,7 +323,6 @@ Status words as above; nobody has listened to any of this.
   not decoded); (2) no map PAX of tt01, tt02, tt04, tt05, tt10 has an element whose category selects dust
   (tt02: all categories 0; tt04/05: 0 and 0x8000000000000001; tt10: 0x200 damage categories), so the
   lookup never starts anything on these areas: either the effects live elsewhere or the manager is not the
-<<<<<<< HEAD
   map's PAX. Test `foot_dust_starts_the_area_effect_at_the_ground_under_the_foot` reports this and returns.
 
 ## Sound viewer: how to use (WP-SV1; the app's own developer tool, not in the original)
@@ -389,8 +388,6 @@ Tests (`cargo test -p kh2-app soundtest`): `soundtest_step_skips_empty_ids`, `so
 `soundtest_jumps_by_10_and_100`, `soundtest_bank_step_wraps_and_lands_on_first_filled`,
 `soundtest_step_entry_edge_cases`. Added for it: `Driver::stop_se` (keys the sound's notes off and drops
 its player) and `Vsb::line_info` (size and rate of a line without decoding it).
-=======
-  map's PAX. Test `foot_dust_starts_the_area_effect_at_the_ground_under_the_foot` reports this and returns.
 
 ## The danger alarm (WP-F1 item 13; verified in the decompilation, implemented; nobody has listened)
 
@@ -408,4 +405,3 @@ ends the danger. Other stops: `FUN_001573c8`, `FUN_002c0d00`, `FUN_002c10b0`, `F
 stops`): the app's mixer has no stop or fade for a sound effect, so a looping sample would run once through.
 Test `the_danger_alarm_starts_once_and_stops_when_danger_ends`. Harness: `KH2_SOUNDLOG=1 KH2_HUDHP=7:2`
 (the panel's displayed HP drops into danger at 7 s): `se 2:9 (-) volume 0x3fff pan 0x40 playing`.
->>>>>>> wp/F1r

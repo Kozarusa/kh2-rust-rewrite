@@ -135,6 +135,14 @@ pub const SHORTCUTS: usize = 4;
 pub const MAX_EXPERIENCE: i32 = 9_999_999;
 /// Sora's party member id.
 pub const SORA: u16 = 1;
+/// Donald's and Goofy's party member ids (`FUN_001b58d8`: ids 1..=13 are their own record index; the
+/// spawn rows' NeoStatus 2 and 3).
+pub const DONALD: u16 = 2;
+pub const GOOFY: u16 = 3;
+/// The start weapons the app baseline equips on them (`went` of their movesets: item 75 -> `W_EX020`,
+/// item 49 -> `W_EX030`, docs/party.md "Weapons"; the original's writer of the words was not found).
+pub const DONALD_STAFF: u16 = 75;
+pub const GOOFY_SHIELD: u16 = 49;
 
 /// What the rules read of one item row (`item`, 0x18 bytes, found by `FUN_001a66e8`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1276,6 +1284,19 @@ impl Progress {
             if guard && !self.sora().abilities.iter().any(|&(id, _)| id == guard_id) {
                 self.put_ability(r, guard_id, true);
                 added.push(format!("Guard (item {guard_id}) equipped"));
+            }
+        }
+        // WP-F1 item 6: Donald's staff (item 75) and Goofy's shield (item 49) in their weapon words
+        // (record +0, hand 0: `FUN_0016ee98` reads it for the hand object), so the members fight with
+        // their weapons shown. The original's new game (`FUN_00187b38`, `FUN_001c0cb0(0)`: docs/progress.md)
+        // leaves both words 0 and the writer that fills them later was not found (docs/party.md: the item
+        // immediates 0x4b / 0x31 were searched): an app baseline entry, like the spare Kingdom Keys.
+        for (member, item) in [(DONALD, DONALD_STAFF), (GOOFY, GOOFY_SHIELD)] {
+            if let Some(r) = Self::member_off(member)
+                && self.u16_at(r + rec::WEAPONS) == 0
+            {
+                self.set_u16(r + rec::WEAPONS, item);
+                added.push(format!("member {member} weapon item {item} equipped"));
             }
         }
         // The user's wish (2026-10-06): Sora knows the Dodge Roll. It goes with the Guard switch:

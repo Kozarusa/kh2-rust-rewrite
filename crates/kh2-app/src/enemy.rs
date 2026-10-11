@@ -619,7 +619,27 @@ fn row_damage<'a>(data: &'a GameData, h: &Hit, from: &Stats, to: &Stats) -> Opti
     Some((atk, data.damage(atk, from, to)))
 }
 
-/// Sora's hits on enemies: damage, then the victim reaction of the attack row
+/// A party member's stats for the damage formula, from its saved record (`Progress::member`: strength,
+/// magic, defense, level, maximum HP). [inferred] The equipment pass of the status rebuild is not applied:
+/// the hand-0 weapon's attack and magic (`item_stat`) are not added, unlike Sora's keyblade in
+/// `GameData::sora_stats`.
+fn member_stats(progress: Option<&crate::progress::Progress>, neo: u16) -> Option<Stats> {
+    let m = progress?.member(neo)?;
+    Some(Stats {
+        level: m.level as i32,
+        max_hp: m.hp_max as i32,
+        strength: m.strength as i32,
+        magic: m.magic as i32,
+        defense: m.defense as i32,
+        max_taken: i32::MAX,
+        min_taken: 1,
+        max_dealt: i32::MAX,
+        min_dealt: 0,
+        weakness: [100; 7],
+    })
+}
+
+/// Sora's and the party's hits on enemies: damage, then the victim reaction of the attack row
 /// (`reaction_rules::victim_outcome`): nothing, a push, a flinch, a flinch with a push, or a blow.
 #[allow(clippy::too_many_arguments)]
 pub fn receive_hits(
@@ -637,10 +657,18 @@ pub fn receive_hits(
     drive: (Option<Res<crate::drive::DriveRules>>, Option<Res<crate::drive::DriveState>>),
     abilities: Option<Res<crate::abilities::Abilities>>,
     (pull_data, spells, mut rng): (Option<Res<PullData>>, Option<Res<crate::magic::SpellAttacks>>, Local<PullRng>),
+    (members, progress): (Query<&crate::party::PartyMember>, Option<Res<crate::progress::Progress>>),
 ) {
-    let from = sora.single().map(|s| (s.stats, s.hits)).ok();
+    let sora_from = sora.single().map(|s| (s.stats, s.hits)).ok();
     let Some(reaction) = reaction else { return };
     for h in hits.read() {
+        // The attacker's stats: Sora's, or the party member's own record (WP-F1 item 5; the game's damage
+        // formula FUN_001a0610 reads the attacker's status block +0x188 / +0x18a, rebuilt from the saved
+        // record by FUN_0019fd30 -> FUN_0019f920). A member's hit carries no combo count.
+        let from = match members.get(h.attacker) {
+            Ok(m) => member_stats(progress.as_deref(), m.neo).map(|s| (s, 0)),
+            Err(_) => sora_from,
+        };
         let (Ok((mut e, mut f, status)), Some((from, combo_hits))) = (q.get_mut(h.target), from) else { continue };
         if !e.alive() {
             continue;

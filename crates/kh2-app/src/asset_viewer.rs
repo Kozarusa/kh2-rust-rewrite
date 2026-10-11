@@ -64,6 +64,10 @@ const STAGE: Vec3 = Vec3::new(0.0, 3000.0, 0.0);
 const EFFECT_AT: Vec3 = Vec3::new(0.0, 3001.0, 0.0);
 /// Every change at once: the first open, and every open after a close.
 const EVERYTHING: Changed = Changed { kind: true, model: true, motion: true, texture_source: true, texture: true, effect_file: true, effect: true, audio_item: 0, audio_bank: 0, play: false };
+/// The effect textures every effect file is loaded on top of (`fx::load`'s `common`).
+const COMMON_DPD: &str = "effect/texcommon.dpd";
+/// Texture sources before the image files: the shown model, the current effect file, `COMMON_DPD`.
+const TEXTURE_FIXED_SOURCES: usize = 3;
 /// Id base for effect files the viewer loads itself (the effect texture cache keys on it).
 const FX_ID_BASE: usize = 20_000;
 
@@ -93,6 +97,8 @@ struct Shown {
     centre: Vec3,
     radius: f32,
     objentry: String,
+    /// Why nothing is shown (the file is missing or does not decode).
+    note: String,
 }
 
 /// The automatic and mouse orbit of the viewer's camera.
@@ -148,7 +154,7 @@ impl AssetViewer {
         Sizes {
             groups: self.cat.as_ref().map_or(Vec::new(), |c| c.models.iter().map(|g| g.files.len()).collect()),
             motions: self.shown.as_ref().map_or(0, |s| s.motions.len()),
-            texture_sources: 2 + self.cat.as_ref().map_or(0, |c| c.images.len()),
+            texture_sources: TEXTURE_FIXED_SOURCES + self.cat.as_ref().map_or(0, |c| c.images.len()),
             textures: self.images.len(),
             effect_files: self.cat.as_ref().map_or(0, |c| c.effects.len()),
             effects: self.fx_ids.len(),
@@ -469,7 +475,7 @@ fn apply(
         let shown = spawn_shown(&mut commands, &disc, &v.objentry, stage, &file, meshes, materials, images, bindposes);
         let g = v.cat.as_ref().and_then(|c| c.models.get(v.nav.group));
         let text = format!(
-            "{} {} group {} {}/{} objentry {} meshes {} bones {} textures {} motions {}{}",
+            "{} {} group {} {}/{} objentry {} meshes {} bones {} textures {} motions {}{}{}",
             shown.file,
             shown.name,
             g.map_or("-", |g| g.name.as_str()),
@@ -480,7 +486,8 @@ fn apply(
             shown.bones,
             shown.textures.len(),
             shown.motions.len(),
-            shown.mset.as_ref().map_or(String::new(), |m| format!(" ({m})"))
+            shown.mset.as_ref().map_or(String::new(), |m| format!(" ({m})")),
+            shown.note
         );
         v.shown = Some(shown);
         v.orbit.zoom = 1.0;
@@ -531,7 +538,7 @@ fn apply(
         } else if let Some(p) = lib.as_ref().and_then(|l| l.objects.get(&file)) {
             Some(p.clone())
         } else {
-            let common = disc.read("effect/texcommon.dpd").and_then(|b| Dpd::parse(&b).ok());
+            let common = disc.read(COMMON_DPD).and_then(|b| Dpd::parse(&b).ok());
             v.fx_serial += 1;
             fx::load(&disc, &file, FX_ID_BASE + v.fx_serial, common.as_ref()).map(Arc::new)
         };
@@ -566,14 +573,16 @@ fn apply(
     if c.texture || c.texture_source || (c.effect_file && v.nav.tex_source == 1) {
         v.images = match v.nav.tex_source {
             0 => v.shown.as_ref().map_or(Vec::new(), |s| s.textures.clone()),
-            1 => v.fx_file.as_ref().and_then(|(_, p)| p.as_ref()).map_or(Vec::new(), |p| effect_images(p)),
-            n => v.cat.as_ref().and_then(|c| c.images.get(n - 2)).map_or(Vec::new(), |f| file_images(&disc, f)),
+            1 => v.fx_file.as_ref().and_then(|(_, p)| p.as_ref()).map_or(Vec::new(), |p| effect_images(&p.dpds.iter().map(|d| &**d).collect::<Vec<_>>())),
+            2 => disc.read(COMMON_DPD).and_then(|b| Dpd::parse(&b).ok()).map_or(Vec::new(), |d| effect_images(&[&d])),
+            n => v.cat.as_ref().and_then(|c| c.images.get(n - TEXTURE_FIXED_SOURCES)).map_or(Vec::new(), |f| file_images(&disc, f)),
         };
         v.nav.texture = v.nav.texture.min(v.images.len().saturating_sub(1));
         let source = match v.nav.tex_source {
             0 => format!("model {}", v.shown.as_ref().map_or("-", |s| s.file.as_str())),
             1 => format!("effect file {}", v.fx_file.as_ref().map_or("-", |f| f.0.as_str())),
-            n => format!("image file {}", v.cat.as_ref().and_then(|c| c.images.get(n - 2)).map_or("-", |s| s.as_str())),
+            2 => format!("common effect textures {COMMON_DPD}"),
+            n => format!("image file {}", v.cat.as_ref().and_then(|c| c.images.get(n - TEXTURE_FIXED_SOURCES)).map_or("-", |s| s.as_str())),
         };
         let pick = v.images.get(v.nav.texture).cloned();
         v.image = pick.as_ref().and_then(|img| make_image(img, images));
@@ -590,7 +599,7 @@ fn apply(
     if c.kind {
         // Switching kind prints the selection of the new kind again.
         let i = Kind::ALL.iter().position(|&k| k == kind).unwrap_or(0);
-        if matches!(kind, Kind::Model | Kind::Texture) || (kind == Kind::Motion && !c.motion) {
+        if (kind == Kind::Model && !c.model) || (kind == Kind::Texture && !c.texture) || (kind == Kind::Motion && !c.motion) {
             let t = v.lines[i].clone();
             info!("asset {} {t}", kind.word());
         }
@@ -656,7 +665,10 @@ fn spawn_shown(
     if !rows.is_empty() {
         shown.objentry = rows.iter().map(|r| format!("{:#x}", r.0)).collect::<Vec<_>>().join(",");
     }
-    let Some(data) = disc.read(file) else { return shown };
+    let Some(data) = disc.read(file) else {
+        shown.note = " [not readable]".into();
+        return shown;
+    };
     let to_img = |label: String, t: &kh2_model::Texture| {
         let [ru, rv] = t.region;
         Img {
@@ -669,7 +681,10 @@ fn spawn_shown(
     };
     let mut points: Vec<Vec3> = Vec::new();
     if file.ends_with(".map") {
-        let Some(map) = kh2_model::map_file(&data) else { return shown };
+        let Some(map) = kh2_model::map_file(&data) else {
+            shown.note = " [no MAP model in the file]".into();
+            return shown;
+        };
         let root = commands.spawn((Transform::from_scale(Vec3::splat(crate::SCALE)), Visibility::default(), ChildOf(stage))).id();
         crate::assets::spawn_model(commands, root, &map.map, meshes, materials, images);
         shown.meshes = map.map.meshes.len();
@@ -681,7 +696,10 @@ fn spawn_shown(
             shown.textures.extend(sky.textures.iter().enumerate().map(|(i, t)| to_img(format!("SK0 #{i}"), t)));
         }
     } else {
-        let Some(model) = kh2_model::mdlx(&data) else { return shown };
+        let Some(model) = kh2_model::mdlx(&data) else {
+            shown.note = " [no skeletal model (BAR type 4, model type 3) in the file]".into();
+            return shown;
+        };
         let mset_name = rows.first().map(|r| r.2.trim_end_matches(".mset").to_string()).filter(|s| !s.is_empty()).unwrap_or(name.clone());
         let mset_file = format!("obj/{mset_name}.mset");
         let mset = disc.0.lock().ok().and_then(|mut a| a.read(&mset_file).ok()).and_then(|b| kh2_anim::Mset::parse(&b));
@@ -712,9 +730,9 @@ fn spawn_shown(
 }
 
 /// The textures of an effect file's DPDs.
-fn effect_images(p: &LoadedPax) -> Vec<Img> {
+fn effect_images(dpds: &[&Dpd]) -> Vec<Img> {
     let mut out = Vec::new();
-    for (d, dpd) in p.dpds.iter().enumerate() {
+    for (d, dpd) in dpds.iter().enumerate() {
         for (k, t) in dpd.textures.iter().enumerate() {
             let psm = match t.format {
                 0x13 => "PSMT8",
@@ -838,10 +856,10 @@ fn show(
         _ => String::new(),
     };
     t.0 = format!(
-        "[ASSETS]  F11 close | Tab kind | {keys} | R auto-orbit, RMB drag, wheel zoom\n{}\n{}: {}{frame}\nmodel: {}",
+        "[ASSETS]  F11 close | Tab kind | {keys} | R auto-orbit, RMB drag, wheel zoom\n{}\n{}: {}{frame}{}",
         tabs.join("  "),
         v.nav.kind.word(),
         v.lines[i],
-        v.lines[0]
+        if v.nav.kind == Kind::Model { String::new() } else { format!("\nmodel: {}", v.lines[0]) }
     );
 }

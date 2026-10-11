@@ -330,6 +330,82 @@ Station Heights** (tt04 and tt05 are both Sandlot, tt08 Station Plaza).
 * The wall/floor split by the 60-degree normal is the app's; the game's sphere solver pushes out of every
   accepted polygon whatever its slope.
 
+## 6. Blending between motions (WP-G6; user report 2026-10-11: "there needs to be interpolation between animations")
+
+### The original's rule (the motion controller at actor +0x140)
+Every motion request goes through `FUN_0017e220(blend, start, controller, motion)` (`$f12`, `$f13`) ->
+`FUN_0017e000` -> `FUN_0017df10` -> `FUN_0017dd38`. The blend is a length in controller time, one unit per
+60 Hz tick (the step `FUN_0017e3b8` adds the frame unit `DAT_00356f40` = 1.0 times the motion speed +0xf4;
+its caller is the per-object update `FUN_001b74e0`).
+* **Cut.** `FUN_0017dd38` cuts (time = start, +0x34 = 0) when the blend is at most `DAT_0037a58c` (2.0) or
+  the controller's +0x104 bit 0 is clear (set by the pose builder `FUN_0017e928` once the object has been
+  posed). `FUN_0017df10` forces blend 0 when the motion set's flag word (+0xc) has bit 2 (`FUN_001a7d88`).
+* **Blend.** Otherwise `FUN_0017dc80` stores the blend (+0x34) and the start frame (+0x38) and sets the
+  time (+0x30) to `DAT_0037a588` (2.0). At the end of the request's tick `FUN_0017e6c0` snapshots the pose
+  drawn last (+0xd0: a copy of the model's bone matrices, `FUN_00127838`, re-based off the previous motion's
+  root `+0xc0..+0xcc` by `FUN_001248c0`) and the new motion at its start frame (+0xd4). Before the first
+  pose (+0x104 bit 1 clear) the source is the target itself.
+* **While blending** the drawn pose (`FUN_0017e928` -> `FUN_0011c460` -> `FUN_00125d28`) mixes the two
+  snapshots with the weight `time / blend`, linear. The new motion is held at its start: `FUN_0017e3b8`
+  passes +0x38 instead of +0x30 to the trigger code (`FUN_0017f5b8`) and the motion-end test `FUN_0017f400`
+  is false while +0x34 > 0. The request's own tick does not step the time (`FUN_0017e3b8` returns while
+  +0x20 bit 0 is set; `FUN_0017e6c0` clears it).
+* **End.** When the time reaches the blend, +0x34 = 0 and the motion runs on from `start + (time - blend)`;
+  [inferred] frame triggers up to the start fire then (`FUN_0017f588(start, -1)`, the same call the cut
+  path makes at once).
+* So a blend of 8 draws 2/8 on the request tick, then 3/8 .. 7/8, and the motion's start pose on the sixth
+  tick after the request. A request during a blend snapshots the drawn (mixed) pose: no pop.
+* **Mixing** (`FUN_00125470`, `FUN_00125610`): per bone matrix the translation row and two axis rows are
+  lerped, the axes normalised and the third rebuilt by cross products.
+
+Blend values the callers pass (read in the executable; `$f12` read from the instructions where the
+decompilation shows 0):
+| request | motion | blend | where |
+|---|---|---|---|
+| locomotion (idle / walk / run), only in an idle range | 0..2 | 8.0 `DAT_0037a4e4` | `FUN_0017aeb8` -> `FUN_0017e2d8` |
+| fall | 4 | 8.0 `DAT_0037a524` | `FUN_0017b928` |
+| motion 4 from another path [inferred: a fall] | 4 | 16.0 `DAT_0037a4b4` | `FUN_00175860` |
+| landing | 5 | 0 (`mtc1 r0` at 0x17ba9c) | `FUN_0017b9e0` |
+| attack / table action start | record +8 | **0** (`mtc1 r0, $f20` at 0x176090, `mov.s $f12, $f20` at 0x176098) | `FUN_00176050` |
+| motion 40 (blow recovery) | 40 | **0** (`mtc1 r0, $f20` at 0x1759c8) | `FUN_001759b8` |
+| item use | 9 | 8.0 `DAT_0037a4b8` | `FUN_00175e20` |
+| party get-up | 0x37 | 8.0 `DAT_0037a55c` | `FUN_0017cee8` |
+| enemy pull end | 0 | 8.0 `DAT_0037bd28` | `FUN_001bfba8` |
+| drive charge | 0xc1, 0xc0 | 8.0 `DAT_0037c33c` | `FUN_001ce518` |
+| summon call | 0x8a | 8.0 `DAT_0037c358` | `FUN_001cf210` |
+| scripts (hosts 1.11, 1.61, 1.13) | any | the script's argument | `FUN_00170348`, `FUN_00170378`, `FUN_0017e170` |
+Other constants seen at requests (not traced to an app motion): 12.0 `DAT_0037b9a0` (`FUN_001b0da8`),
+`DAT_0037c070` (`FUN_001c7d20`); 16.0 `DAT_0037bdbc`, `DAT_0037bdc0`, `DAT_0037bdcc` (Quick Run movers
+`FUN_001c1770`, `FUN_001c1840`, `FUN_001c1a98`), `DAT_0037aff8` (`FUN_001949a8`); 4.0 `DAT_00378870`,
+`DAT_00378874`, `DAT_00378888` (`FUN_00117cf8`, `FUN_00117ea0`, `FUN_00118aa8`). No blend field was found in
+the motion data or the moveset rows: the blend is always the caller's argument.
+
+### What the app did, and does now
+One path for every actor: `skel::Animator` (Sora, his weapon, enemies, party, townspeople) and the pure
+rule in `kh2_anim::blend`. Before: every request cross-faded from the last pose over `blend` ticks with a
+smoothstep curve while the new motion already played, blends of 2 or less blended too, and a first request
+blended from the rest pose. Now: the rule above (cut at 2 or less and before the first pose; linear weight
+from 2/B; the new motion, its triggers and its root motion held at the start frame until the blend ends;
+the source is the pose drawn last). `Animator::blending()` is the controller's +0x34 > 0.
+[inferred equivalent] The app mixes decomposed bones (translation and scale lerped, rotation slerped) on
+its root-relative model-space poses; the game's row lerp with re-orthogonalisation agrees at both ends and
+is also linear in the weight.
+
+Evidence: `cargo test -p kh2-anim blend` (weights 2/8 .. 7/8 then the pose, cut at 2, overflow, interrupted
+blend), `cargo test -p kh2-app --bin kh2-game skel::tests::idle_to_run_cross_fades_from_the_drawn_pose`
+(disc: `idle->run: cut jump 83.03, largest blended step 20.76, off run's start pose at the end 0.0000`;
+`interrupted: first step 7.78 of 31.10 to the attack's start pose`). Harness: `KH2_POSELOG=P_EX100`
+prints `pose: obj/P_EX100.apdx <tag> frame <f> blend <w> max bone delta <d>` per tick.
+
+### Not ported / gaps
+* The app's Sora passes 4 for attacks (`sora::BLEND_ATTACK`); the original's `FUN_00176050` passes 0 (a
+  cut). Under the ported rule 4 still gives a two-tick blend (2/4, 3/4); left for the owner of `sora.rs`.
+* The motion set flag that forces a cut (`FUN_001a7d88`, mset +0xc bit 2) is not read.
+* The enemy and NPC script objects keep their own blend counter (`enemy_obj.rs` `blend_left`, run down from
+  B by 1 per tick) for host 1.63; the controller's +0x34 ends B - 2 ticks after the request
+  (`Animator::blending()` gives it).
+* The motion queue (`FUN_0017e170`, played at a motion's end by `FUN_0017e3b8`) is not part of the Animator.
+
 ## Decompile index
 | address | read for |
 |---|---|
@@ -347,6 +423,10 @@ Station Heights** (tt04 and tt05 are both Sandlot, tt08 Station Plaza).
 | 0x1778e8, 0x174cf8 | stick zeroed outside idle ranges, command flags |
 | 0x177ea0, 0x178108, 0x178080, 0x178290, 0x1783d8, 0x177fa8, 0x1b7e00 | Square actions |
 | 0x1c1660, 0x1c18c0, 0x1c1840, 0x1c1a48, 0x1c1a78, 0x1c7018, 0x1c70f0, 0x1c7d20 | Quick Run mover, mover 0x16 |
+| 0x17e220, 0x17e000, 0x17df10, 0x17dd38, 0x17dc80, 0x17e118, 0x17e2d8, 0x17e278 | motion request, blend set-up, cut test (section 6) |
+| 0x17e3b8, 0x17e6c0, 0x17e928, 0x11c460, 0x11c2a0, 0x125d28, 0x125470, 0x125610, 0x17f400, 0x1b74e0, 0x1b7be8 | blend step, pose snapshots, pose mix (section 6) |
+| 0x37a588, 0x37a58c, 0x37a590, 0x37a594, 0x356f40 | blend start time, cut limit, trigger start, frame unit |
+| 0x17aeb8, 0x17b928, 0x175860, 0x17b9e0, 0x176050, 0x1759b8, 0x175e20, 0x17cee8 | blend values of the player requests |
 
 ## Gaps (searched without result)
 * A dodge roll and a tap/hold threshold in the USA executable: the Square chain above, the mover table
@@ -365,3 +445,5 @@ Station Heights** (tt04 and tt05 are both Sandlot, tt08 Station Plaza).
   quick run) (speed ...)`, then `sora dodge roll: Square released after N ticks (tap, under 10)`.
 * The writer of +0x108 bit 0x800000 other than `FUN_00169ee8` (scan of `lui 0x80` / `lui 0x100`
   followed by a store to +0x108: only `FUN_00169ee8`).
+* Where the blend-time snapshot +0xd0 is mixed in local or model space (`FUN_00125d28` is 2000 lines of
+  VU code; read only for its per-bone helpers `FUN_00125470` / `FUN_00125610`).

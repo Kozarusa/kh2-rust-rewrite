@@ -347,9 +347,30 @@ tt37; tt40 -> tt19 and area 100. The full list is in the test output.
   non-looping path `FUN_002d2328` flips +0x84 when +0x85 is set, else the walk stops and the facing is answered);
   the answer is the unit vector from the object to that point. 5.2 (`0x2ea230` -> `FUN_002d2328`) flips the
   direction unless locked. 5.16 (`0x2ea768` -> `FUN_002d3148`) picks the direction toward another object. The
-  app follows the straight segments between the points with the same look-ahead rule [approx: the spline is
-  not ported; a townsperson cuts the corners the game rounds]; the movement itself is the root motion of the
-  walk motion, as for enemies (the script never sets a movement vector).
+  movement itself is the root motion of the walk motion, as for enemies (the script never sets a movement vector).
+- *The curve* (WP-E2b, ported in `PathRun`). `FUN_002d3b40` copies the points (position w 1.0, `DAT_003837f8`;
+  with bit 3 of the class-5 array every height is the first point's), +0x10 = header byte +4 bit 0 (loop), +0x20 =
+  0.5 (`DAT_003837fc`) unless bit 1 (tension 0: tangents of zero, the chords walked with an ease), the lock +0x86 =
+  array bit 2 and +0x85 = its opposite; with array bit 1 clear `FUN_002d5398` puts the object at a random place
+  (`FUN_001063b8` of the segment count) walking a random way (`FUN_00106308(2)`), else `FUN_002d50c0` the nearest
+  place. Tangents (`FUN_002d32f8`): fewer than three points: the chord, loop flag cleared; inner points (all
+  points of a loop) (next - previous) * tension, w = the index; the ends of an open path: the quadratic Bezier
+  through the end and its two neighbours, passing the middle at the share f = |P1-P0| / (|P1-P0| + |P2-P1|)
+  (control M = (P1 - P0 g^2 - P2 f^2) / 2fg, g = 1 - f), its end derivative scaled so that its derivative at
+  the middle has the inner rule's length (`DAT_003837e8` 2, `DAT_003837f0` -2, `DAT_003837f4` 4). The curve is
+  the cubic Hermite (`FUN_002d4298` / `FUN_002d2460`, weights 2s^3-3s^2+1, -2s^3+3s^2, s^3-2s^2+s, s^3-s^2).
+  `FUN_002d2a98` (record +0x87 clear, stop index +0x8c = -1 from the ctor `FUN_002d2100`): the object is first
+  projected onto the curve (`FUN_002d51e0`: for more than two points the local search, `FUN_002d4ad8` on a loop /
+  `FUN_002d4800` on an open path: the rest of the current segment ahead and the next one, each by 33 halvings
+  `FUN_002d4688` against the chords `FUN_002d4040`, accepted below `speed * 10`, `DAT_003837d0`; else the
+  global `FUN_002d4dc8`: the nearest chord, refined by halvings strictly inside (1e-4 .. 0.9999)); if the
+  projection is as far from the object as the old place within 1e-4 (`DAT_003837d4`) the old place stays. The
+  walking parameter (+0x1c) then steps `speed / chord * 0.5` up to 20 times until the curve point is more than
+  `speed` (horizontally) from the projection; past a segment end it takes the next one (wrapping on a loop), at
+  an open end it turns around (+0x85, one more pass) or stops. `FUN_002d25b0`: the direction from the object
+  to that point when it is more than `speed * 10` away (`DAT_003837c0`), else (blend 1.0, `DAT_00383e80` for
+  5.3, `DAT_003837c4` for 1.178) from the projection. The tt02 paths are loops of 11 to 14 points with tension
+  0.5 (`tt02_townspeople_name_each_other_and_carry_their_parts` walks each round).
 - *The script* (`rtn_default`, the same program in every `N_EX5x0_RTN` read). Init registers thirteen modes
   (`near_wait`, `near`, `rtn_freeze`, `before_check`, `after_talk`, `encount_player`, `look`, `rtn_avoid`,
   `rtn_action`, `path_move`, `talk`, `static_idle`, `fix_idle`), sets the walk speed 5.0 in its context (+0x44)
@@ -379,12 +400,57 @@ tt37; tt40 -> tt19 and area 100. The full list is in the test output.
   holds; 5.4 (`FUN_0018ae08`) copies the follower to +0xaa0, resets it and loads the +0xb00 timer from +0xb18 /
   +0xb24 / +0xb30 by kind; 5.5 / 5.7 read the follower's words 0..2 and its byte +0x24; 5.6 (`FUN_0018af10`) the
   unit direction to its target. 5.34 (`FUN_0016bbe8`) is the object's part-0x11 point (`FUN_001894d0`) or its
-  lock-on point. **Not ported (GAP, E2)**: `FUN_0018a130` and the region tables, so a follower never leaves kind
-  0 or 2 in the app: walkers walk their loop for ever, fixed townspeople play their entry's motion; 5.0 answers
-  false (no region), 5.11 one, 5.6 the facing; 1.172 / 1.173 use the 15 degree cone without the part's own; 1.174..
-  1.176 (the head look-at controller at +0x4a0, `FUN_001abf40` tweens applied by `FUN_00189dc8`) do nothing;
-  1.13 on the object starts the queued motion when the playing one ends. The native `FUN_00189ae8` also raises
-  +0x108 bit 6 after five frames of spawn kind 2 without `FUN_00190668` (not read further).
+  lock-on point.
+- *The attention logic, ported (WP-E2b, `class_tick` in `npc.rs`).* `FUN_0018a130` per frame while array bit
+  0 is clear (not linked, `FUN_001beb00`): the follower timer (+0x50, `FUN_0018b228`) and +0xb00 count down by
+  1 (`DAT_00356f40`). Unless the follower is of kind 4, or the previous one (+0xaa0) was and +0xb00 runs: the
+  player's type-1 body meeting the object's first type-5 part (`FUN_0018aa08`: `FUN_0016b558(obj, 5)`,
+  `FUN_001894d0`, the player `DAT_0035c998`'s type 1, `FUN_00189208`) keeps the follower as the previous one
+  (when it has a kind) and starts a forced kind-4 follower, mode 2 (the player), flag 0, timer
+  `FUN_00106408(+0xb10, +0xb14)` (360..720 frames from `rtn_default`'s block). Unless the follower is of kind 4 or
+  5 (or the previous was 5 and +0xb00 runs): `FUN_0018a598` finds a partner: `FUN_0018a918(obj, 0)` takes the
+  first other object (spawn-record halfword +0x1e different, `FUN_0016b928`) whose first type-0 part meets this
+  one's; it must have +0x588 bit 3 and a follower not done, and both objects' return entries with byte 0 = 0
+  must name the other by objentry id at +4 (`FUN_0018a7a0`, `FUN_0016b078`: 0x236 is the player, else the
+  first object of that objentry). Then one timer `FUN_00106408(+0xb1c, +0xb20)` and `FUN_0018a828` on both:
+  forced kind 5, mode 1 toward the other, the entry's motion (`FUN_0018b1e0` of byte 1), flag 1 for this one
+  and for the partner when the facings (`FUN_0016a890`, +0x550) point away from each other (dot < 0). Else,
+  once +0xb00 ran out (it is zeroed), `FUN_0018a4b0`: the region the object stands in (its position 10 cm higher,
+  `DAT_0037ab88`; `FUN_00199d68`: kind-6 group only, the first of the group's volumes in record order whose
+  record halfword +0x2c is 0 and that contains the point, `FUN_00198750` makes one per activator) is compared
+  with +0xa30; on a change, unless the follower is done, it is reset and, inside a region, `FUN_0018b308(+0xb28,
+  +0xb2c, ...)` draws: a number below 100 (`FUN_00106308`) against the summed weights (byte 2) of the return
+  entries whose byte 0 equals the volume record's +2 and byte 1 is not 3; the last entry with byte 1 = 3 gives
+  the flag (+0x24) with the chance of its byte 2. The chosen entry makes kind 6 (byte 1 = 1) or kind 2, motion
+  `FUN_0018b1e0(byte 1)`, target by byte 3 (1 object by id, 2 the player, 3 the point at +4..+0xc, else none),
+  region +0x20, threshold +0x28 = `FUN_001063b8(1.0)` (`DAT_0037abd4`), start +0x2c = `FUN_001d8c18(volume,
+  position)` = (x' + sx) / 2sx in the volume's frame (sx at volume +0x50 = record +0x10), timer
+  `FUN_00106408(+0xb28, +0xb2c)`. 5.0 (`FUN_0018b148`) passes when forced, or across the region past the
+  threshold (at or below it when the start was >= 0.5, `DAT_0037ab98`, else at or above); 5.11 (`FUN_0018b250`)
+  holds (0) while done with the timer running and: kind 4 the parts still meet, kind 5 the partner exists,
+  points back (+0xa4c) and does not play motion 0x32 (+0x154), any other kind always; 5.6 (`FUN_0018af10`):
+  live (forced or a region) with a mode: the target at height 0 (mode 3: the point with its own height) minus
+  the object at height 0, normalized, else the facing. 5.4 (`FUN_0018ae08`) reloads +0xb00 always from +0xb30:
+  it reads the kind after `FUN_0018b0f0` cleared it (instructions 0x18aeb0 `jal 0x18b0f0`, 0x18aeb8 `lw 0xa40`).
+  tt02 data: the three townspeople (0x51d, 0x51e, 0x51f) name each other in byte-1 = 2 entries (motion 0x11f,
+  `rtn_action`); their volumes are keyed 0, 1, 2: key 1 stops 30 of 100 (idle motion, flag 30), key 2 40 idle
+  and 20 looking at the player (flag 50). Parts: type 0 a sphere of 90 lifted 115, type 5 a sphere of 200 at
+  200 up, both on the object's own frame; Sora's type 1 an ellipsoid 35 / 55 lifted 85. Log: `KH2_NPCLOG=1`
+  prints `attention: the player meets the talk part`, `attention: paired with`, `attention: region`.
+  [approx] the game's one global `rand()` is a per-object generator; the object list searched for partners and
+  ids holds the townspeople and the player only; the class pass runs before the script's tick and not before
+  the script's first tick [inferred order]; the parts' enable masks are not applied.
+- **Still not ported (GAP)**: 1.172 / 1.173 use the 15 degree cone without the part's own (`FUN_001af878`; the
+  tt models read have no type-0x14 part); 1.174..1.176, the head look-at controller at +0x4a0: the hosts only
+  set tweens (`FUN_001aece8` / `FUN_001aec78` / `FUN_001aec50` -> `FUN_001abf40`; `FUN_00189dc8` ends one), the
+  bone turn itself is `FUN_001aead0` (read by the motion code `FUN_0017e6c0` / `FUN_0017e928`) and the 452-line
+  VU routine `FUN_001aee90`, and the app's skeleton (`skel.rs`, outside this WP) has no per-bone override. Next
+  step: port `FUN_001aead0` / `FUN_001aee90` and give `Animator` a look-at bone input. 1.13 on the object starts
+  the queued motion when the playing one ends; 5.34 answers the position (the tt models have no part 0x11; the
+  lock-on fallback `FUN_0016b6e0` reads a type-3 part on a bone). The native `FUN_00189ae8` also raises +0x108
+  bit 6 after five frames of spawn kind 2 without `FUN_00190668` (not read further); `FUN_00189ff0` (the
+  class's reaction to a talk: it ends the look-at, sets the previous follower to kind 4 and +0xb00 to +0xb18 +
+  `DAT_0037ab84`) is for E3.
 - **Talk** [V for the offer, GAP for the window]. A type-5 reaction part with id 0x83 offers the command in the
   halfword +0x2c of the object's spawn record (docs/limits-reactions.md: 31 "talk" for most townspeople). Command
   31 has `Execute` 31 (`kh2 table cmd`). Executing a reaction command sends event 0xb (command, args) to the
@@ -581,9 +647,12 @@ Each stage ends with `verify.ps1` passing and the named check.
   from `evt` programs, `KH2_PROGRAMS=0,0,10`), runs `rtn_default` through `NpcHost` (group 5, the path hosts
   1.177 / 1.178, 0.21, 1.13 / 1.161 / 1.170 / 1.222 / 1.145 / 1.172..1.176 on the object) over the enemy host,
   follows the walk path's segments with the game's look-ahead rule and applies the walk motions' root motion.
-  Not done: the native attention logic of `FUN_0018a130` (regions, return-parameter behaviours, the kind-4 /
-  5 / 6 followers: townspeople never stop to look at Sora or talk to each other), the spline, the head look-at
-  controller, the companion objects of four townspeople (pets), the talk (E3).
+  **Status (WP-E2b):** the native attention logic `FUN_0018a130` (kind-4 follower toward Sora in the talk part,
+  kind-5 pairs of townspeople, the region draw of `FUN_0018b308`) and hosts 5.0 / 5.4 / 5.6 / 5.11 after it;
+  the walk path's Hermite curve with the game's projection and step (`FUN_002d2a98`) and the random start of
+  `FUN_002d5398`. No group 5 host outside `rtn_default`'s set was reached in the tt02 runs (`KH2_BDXLOG=1`: no
+  `Missing` line for the townspeople). Not done: the head look-at controller (section 3, next step there), the
+  companion objects of four townspeople (pets), the talk (E3).
 - **E3 Talk and message windows in play.** First close the talk GAP (section 3), then offer 31 from the 0x83
   part, deliver event 0xb, open the window class the code opens; hosts 1.32 / 1.33. Accept: `KH2_REACTIONLOG`
   shows 31 offered and executed; a screenshot of the window looked at.
@@ -601,9 +670,8 @@ Each stage ends with `verify.ps1` passing and the named check.
 ## 10. Unknowns (with what was searched)
 
 - The talk handler for command 31 (section 3; constructor callers listed there).
-- The class-5 native attention logic (`FUN_0018a130`: region tables of the kind-6 groups, `FUN_0018b308`'s
-  weighted entries, the kind-4 / 5 / 6 followers) and the spline of the walk path (E2 ported the segments).
-  Host 5.8 / 5.9 / 5.10 / 5.12..5.15 / 5.18..5.25 / 5.28..5.32 (not called by `rtn_default`) are not read.
+- The class-5 head look-at controller (+0x4a0; `FUN_001aead0`, `FUN_001aee90`) and `FUN_0018af10`'s kind-3
+  answer (+0xa80); the walk path's +0x87 mode and +0x8c stop index (no writer found in `FUN_002d3b40`). Host 5.8 / 5.9 / 5.10 / 5.12..5.15 / 5.18..5.25 / 5.28..5.32 (not called by `rtn_default`) are not read.
 - The save menu opener for command 55; `FUN_0024f300` meaning (trigger sub 7).
 - Opcodes 0xa, 0xb, 0xe, 0x11, 0x16 meanings (readers named in the table); trigger subs 3, 6, 8; flag ops 2..5.
 - Group kinds 7 and 9 (`FUN_001ccb10`, `FUN_0019a000` not read); activator +0x28..+0x3f beyond +0x2c/+0x2e/+0x2f.
@@ -640,6 +708,9 @@ Each stage ends with `verify.ps1` passing and the named check.
 | 0x1899d0, 0x189ae8, 0x189c68, 0x189dc8, 0x189e50, 0x189e70, 0x189938, 0x189960, 0x189990, 0x18a130, 0x18a4b0, 0x18a598, 0x18a7a0, 0x18a828, 0x18a8b0, 0x18a918, 0x18aa08, 0x18ae08, 0x18aef8, 0x18af08, 0x18af10, 0x18b0d8, 0x18b0f0, 0x18b110, 0x18b138, 0x18b148, 0x18b1e0 (table 0x37ab9c: 0x18b208, 0x18b210, 0x18b218, 0x18b220), 0x18b228, 0x18b250, 0x18b308, 0x199ca0, 0x199cc0, 0x199d18, 0x199d68, 0x1894d0, 0x189208, 0x1d8c18, 0x16b078, 0x16b960, 0x16bbe8, 0x16b558, 0x16b6e0, 0x16a890 | class 5: init, update, followers, behaviour entries, regions (E2) |
 | 0x183c30, 0x183d08, 0x183dc8, 0x183e18, 0x1719d0, 0x171a08, 0x2d2100, 0x2d2230, 0x2d2328, 0x2d2350, 0x2d23b8, 0x2d2440, 0x2d2448, 0x2d2460, 0x2d25b0, 0x2d27c8, 0x2d2a98, 0x2d3148, 0x2d32f8, 0x2d3b40, 0x2d3d00, 0x2d3db8, 0x2d4040, 0x2d4298, 0x2d43a0, 0x2d4438, 0x2d4478, 0x2d4590, 0x2d4688, 0x2d4800, 0x2d4ad8, 0x2d4dc8, 0x2d50c0, 0x2d51e0, 0x2d5398 | the walk path record and its spline (E2) |
 | 0x16cfd0, 0x1718d0, 0x171908, 0x171940, 0x171978, 0x1719a8, 0x1af878, 0x1af650, 0x1aece8, 0x1aec78, 0x1aec50, 0x1abf40, 0x17bf10, 0x1705d0, 0x1706c8, 0x171b30, 0x170808 | hosts 0.21, 1.172..1.176 (talk cone, look-at), 1.145, 1.161, 1.170, 1.222 (E2) |
+| 0x18a130, 0x18a4b0, 0x18a598, 0x18a7a0, 0x18a828, 0x18a918, 0x18aa08, 0x18b148, 0x18b250, 0x18b308, 0x18ae08 (disassembled 0x18ae08..0x18af18), 0x18af10, 0x18b138, 0x199d68, 0x198750, 0x1d8600, 0x1d8b48, 0x1d89a0, 0x1d8c18, 0x16b078, 0x16b928, 0x16a890, 0x1b7c88, 0x19a3f8, 0x106308, 0x1063b8, 0x106408, 0x189ff0; data 0x37ab88, 0x37ab98, 0x37abd4, 0x3780e0, 0x3780e4, 0x356f40 | class-5 attention logic (E2b) |
+| 0x2d3b40, 0x2d2100, 0x2d2350, 0x2d32f8, 0x2d4298, 0x2d2460, 0x2d43a0, 0x2d4438, 0x2d4040, 0x2d4dc8, 0x2d4ad8, 0x2d4800, 0x2d4688, 0x2d50c0, 0x2d51e0, 0x2d5398, 0x2d2a98, 0x2d25b0, 0x2d27c8, 0x2ea080, 0x183e18; data 0x38379c..0x3837fc, 0x383814..0x383874, 0x383e80 | the walk path curve (E2b) |
+| 0x1aece8, 0x1aec78, 0x1aec50, 0x1aeda8, 0x1aee38, 0x1aead0, 0x1ae9e8, 0x1aee90 (header only), 0x189dc8 | look-at controller, not ported (E2b) |
 | 0x177c20, 0x16b420, 0x16b470, 0x172360, 0x1723f0, 0x2c5cf0 | commands to targets, script message window |
 | 0x194ab8, 0x194b68, 0x194b98 (decompiled for this WP), 0x194c08, 0x194d78, 0x194e68, 0x194ee0, 0x194f68, 0x194fa8, 0x195010, 0x19c0f0 | save and world points |
 | 0x196428, 0x195898, 0x195ae0, 0x195c08, 0x1964d0, 0x2232c8, 0x2233d8, 0x223910, 0x223a88, 0x2245d0, 0x224a90, 0x224b18, 0x225028, 0x2275a8, 0x227478, 0x22b0f8, 0x22cbb0 | event player |

@@ -408,6 +408,12 @@ impl BevyHost<'_> {
             // 0.15 progress_flag_test (FUN_0016d5b8 -> FUN_001802e0): a bit of the story progress array
             // at 0x33f6b0 (0xffff is false). The app has no story progress: every flag reads clear.
             Call::Func { group: 0, index: 15, .. } => stub(Value::Bool(false), "story progress flags: the app has none, all read clear (a new game)"),
+            // 0.21 angle_between (0x16cfd0): the wrapped turn from direction a to direction b,
+            // atan2(b.x, b.z) - atan2(a.x, a.z) through FUN_0017bbc0 (moved here from npc.rs, WP-E2b).
+            Call::Func { group: 0, index: 21, args } => match (args.first(), args.get(1)) {
+                (Some(kh2_bdx::Arg::Vec(a)), Some(kh2_bdx::Arg::Vec(b))) => imp(Value::Float(game_wrap_angle(b[0].atan2(b[2]) - a[0].atan2(a[2])))),
+                _ => missing(Value::Float(0.0), "angle_between without two vectors"),
+            },
             // 0.42 angle_of (FUN_0016d060): atan2(v.x, v.z) through the game's FUN_003003e8.
             Call::Func { group: 0, index: 42, args } => match args.first() {
                 Some(kh2_bdx::Arg::Vec(v)) => approx(Value::Float(v[0].atan2(v[2])), "the platform's atan2, not the game's FUN_003003e8 (same function, last-bit differences possible)"),

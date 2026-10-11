@@ -34,6 +34,7 @@ use crate::assets::{AreaPart, Disc};
 use crate::enemy_ai::AiTrace;
 use crate::enemy_host::{BevyHost, Env, St};
 use crate::enemy_obj::{from_game, to_game, Obj, OBJ_SIZE, PLAYER, SELF_BASE};
+use crate::reaction_parts as parts;
 use crate::schedule::Sim;
 use crate::skel::{spawn_skinned, Animator, Rig};
 use crate::sora::Sora;
@@ -69,6 +70,11 @@ struct NpcAssets {
     scripts: HashMap<String, Option<Arc<Program>>>,
     objs: Vec<t::Objentry>,
     table: Option<kh2_bdx::HostTable>,
+    /// The collision records of each model (BAR entry 23, the game's object +0x8d8).
+    parts: HashMap<String, Option<Arc<parts::Table>>>,
+    /// The player's own body volume (record type 1 of `P_EX100`), which `FUN_0018aa08` tests
+    /// against a townsperson's type-5 part.
+    player_body: Option<parts::Rec>,
     loaded: bool,
 }
 
@@ -82,6 +88,11 @@ impl NpcAssets {
         if let Ok(mut a) = disc.0.lock() {
             self.objs = kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).map(|d| d.rows).unwrap_or_default();
         }
+        self.player_body = disc.read("obj/P_EX100.mdlx").and_then(|f| parts::Table::from_mdlx(&f)).and_then(|t| t.first(parts::TYPE_BODY).copied());
+    }
+
+    fn parts(&mut self, disc: &Disc, model: &str) -> Option<Arc<parts::Table>> {
+        self.parts.entry(model.to_string()).or_insert_with(|| disc.read(&format!("obj/{model}.mdlx")).and_then(|f| parts::Table::from_mdlx(&f)).map(Arc::new)).clone()
     }
 
     fn rig(&mut self, disc: &Disc, model: &str) -> Option<Arc<Rig>> {
@@ -132,6 +143,66 @@ pub struct NpcGroup {
     /// The return parameters (16 bytes each): for a kind-6 group the class reads them as its
     /// behaviour entries (`FUN_00199ca0` hands them out only then).
     pub returns: Vec<[u8; 0x10]>,
+    /// The group's event activators: for a kind-6 group the class-5 code reads them as the
+    /// "regions" a townsperson walks through (`FUN_00198750` makes a volume of every one of them,
+    /// `FUN_00199d68` finds the one a point is in).
+    pub activators: Vec<kh2_ard::Activator>,
+}
+
+impl NpcGroup {
+    /// `FUN_00199d68(group, point)`: for a kind-6 group (header byte 0), the first of the group's
+    /// volumes (in record order, `FUN_00198750` appends them) whose record halfword +0x2c is 0 and
+    /// that contains the point (the volume's own test, vtable slot +8: box, cylinder or always);
+    /// `None` for other groups or when no volume contains it. `p` is in the game's space.
+    pub fn region_at(&self, p: [f32; 3]) -> Option<usize> {
+        if self.kind & 0xff != 6 {
+            return None;
+        }
+        self.activators.iter().position(|a| u16::from_le_bytes([a.raw[0x2c], a.raw[0x2d]]) == 0 && a.contains(p))
+    }
+}
+
+/// `FUN_001d8c18(volume, point)`: the point's place across the volume along its own x axis, 0 at
+/// -x extent and 1 at +x extent: the point is taken into the volume's frame (its inverse matrix at
+/// +0x10, `FUN_001d8600`) and `(x + sx) / (2 sx)` is answered with `sx` the record's +0x10
+/// (volume +0x50). `p` is in the game's space.
+pub fn region_coord(a: &kh2_ard::Activator, p: [f32; 3]) -> f32 {
+    let sx = a.scale[0];
+    (a.local(p)[0] + sx) / (sx + sx)
+}
+
+/// The game's `rand()` (`FUN_003117a8`) as the class-5 code uses it; a per-object xorshift stands in
+/// for the one global generator [approx: the game's sequence is not reproduced, only the ranges].
+#[derive(Clone, Debug)]
+pub struct Rng(pub u32);
+
+/// `DAT_003780e0` / `DAT_003780e4`: the divisor that turns `rand()` into a fraction.
+const RAND_DIV: f32 = 2_147_483_520.0;
+
+impl Rng {
+    fn next(&mut self) -> u32 {
+        let mut x = self.0.max(1);
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.0 = x;
+        x >> 1
+    }
+
+    /// `FUN_001063b8(x)`: `x * rand() / DAT_003780e4`, a float in [0, x].
+    pub fn frac(&mut self, x: f32) -> f32 {
+        x * self.next() as f32 / RAND_DIV
+    }
+
+    /// `FUN_00106408(lo, hi)`: `lo + FUN_001063b8(hi - lo)`.
+    pub fn range(&mut self, lo: f32, hi: f32) -> f32 {
+        lo + self.frac(hi - lo)
+    }
+
+    /// `FUN_00106308(n)`: `n * rand() / DAT_003780e0` truncated to an integer (0..n).
+    pub fn below(&mut self, n: u32) -> u32 {
+        (n as f32 * self.next() as f32 / RAND_DIV) as u32
+    }
 }
 
 /// `FUN_0018b1e0`: the motion number of a behaviour entry's byte 1 (a jump table of 14 entries at
@@ -153,6 +224,8 @@ pub struct Npc {
     pub grounded: bool,
     /// The entity record (position, rotation, the spawn-record bytes).
     pub record: kh2_ard::Entity,
+    /// The model's collision records (the type-0 and type-5 parts the class-5 code tests).
+    pub parts: Option<Arc<parts::Table>>,
 }
 
 /// The script runtime of one townsperson.
@@ -205,7 +278,14 @@ fn npc_spawn(
     for g in run.script.groups.iter() {
         let Some(groups) = run.ard.spawns.get(&g.tag) else { continue };
         for grp in groups {
-            let shared = Arc::new(NpcGroup { tag: g.tag.clone(), kind: grp.kind, id: grp.id, paths: grp.paths.clone(), returns: grp.returns.clone() });
+            let shared = Arc::new(NpcGroup {
+                tag: g.tag.clone(),
+                kind: grp.kind,
+                id: grp.id,
+                paths: grp.paths.clone(),
+                returns: grp.returns.clone(),
+                activators: grp.activators.clone(),
+            });
             for e in &grp.entities {
                 if !kh2_ard::run::entity_for_entrance(e, rec.entrance) {
                     continue;
@@ -221,6 +301,7 @@ fn npc_spawn(
                     continue;
                 };
                 let script = assets.script(&disc, &model);
+                let model_parts = assets.parts(&disc, &model);
                 let at = game_to_app(e.position);
                 let at = world.ground(at, at.y + 100.0, 400.0).map_or(at, |g| at.with_y(g.y));
                 let yaw = app_yaw(e.rotation[1]);
@@ -230,7 +311,7 @@ fn npc_spawn(
                 let body = spawn_skinned(&mut commands, root, rig, &mut meshes, &mut materials, &mut images, &mut bindposes, SCALE);
                 let tag = format!("{model}#{serial}");
                 let mut ent = commands.entity(root);
-                ent.insert(Npc { body, yaw, grounded: true, record: e.clone() });
+                ent.insert(Npc { body, yaw, grounded: true, record: e.clone(), parts: model_parts });
                 let scripted = script.is_some();
                 if let Some(prog) = script {
                     let mut rt = Runtime::new((*prog).clone());
@@ -245,7 +326,7 @@ fn npc_spawn(
                         obj: Obj::new(handle),
                         tag: tag.clone(),
                         flags124,
-                        fields: NpcFields::new(e, &shared),
+                        fields: NpcFields::new(e, &shared, serial),
                         started: false,
                         errors_seen: 0,
                         mode: None,
@@ -288,6 +369,7 @@ fn npc_update(
     trace: Option<ResMut<AiTrace>>,
     cam: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     sora: Query<&Sora>,
+    assets: Res<NpcAssets>,
     mut q: Query<(Entity, &mut Transform, &mut Npc, &mut NpcBrain)>,
     mut anims: Query<&mut Animator>,
     mut tick: Local<u64>,
@@ -298,6 +380,61 @@ fn npc_update(
     let log = npclog();
     *tick += 1;
     let status_tick = tick.is_multiple_of(60);
+
+    // ---- the class's own logic first (FUN_00189ae8 -> FUN_0018a130 for objects whose bit 0 is
+    // clear) [inferred order: the object's update before its script's tick].
+    let player_body = assets.player_body.as_ref().and_then(|r| parts::shape_of(r, s.motor.pos, s.motor.yaw));
+    {
+        let mut rows: Vec<_> = q.iter_mut().collect();
+        let tags: Vec<String> = rows.iter().map(|r| r.3.tag.clone()).collect();
+        // [inferred] the script's init (which hands the parameter block over, host 5.33) runs
+        // before the class's first update: an object whose script has not started is skipped.
+        let started: Vec<bool> = rows.iter().map(|r| r.3.started).collect();
+        let mut minds: Vec<Mind> = rows
+            .iter_mut()
+            .map(|(_, tf, npc, brain)| {
+                let pos = tf.translation / SCALE;
+                let shape = |kind: u8| npc.parts.as_ref().and_then(|t| t.first(kind)).and_then(|r| parts::shape_of(r, pos, npc.yaw));
+                Mind {
+                    handle: brain.obj.handle,
+                    object: npc.record.object,
+                    serial: npc.record.serial,
+                    pos,
+                    yaw: npc.yaw,
+                    body: shape(0),
+                    talk: shape(parts::TYPE_REACTION),
+                    fields: &mut brain.fields,
+                }
+            })
+            .collect();
+        for i in 0..minds.len() {
+            if !started[i] || minds[i].fields.test_bit(0) {
+                continue;
+            }
+            let before = minds[i].fields.region;
+            let what = class_tick(&mut minds, i, player_body.as_ref());
+            if log {
+                match what {
+                    Attention::Player => info!("npc: {} attention: the player meets the talk part: kind-4 follower (timer {:.0})", tags[i], minds[i].fields.follower.timer),
+                    Attention::Pair(j) => info!("npc: {} attention: paired with {} (kind 5, timer {:.0})", tags[i], tags[j], minds[i].fields.follower.timer),
+                    Attention::None => {
+                        let f = &minds[i].fields.follower;
+                        if minds[i].fields.region != before {
+                            info!(
+                                "npc: {} attention: region {:?} -> {:?}: follower kind {} mode {} motion {} timer {:.0} flag {}",
+                                tags[i], before, minds[i].fields.region, f.kind, f.mode, f.motion, f.timer, f.flag
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let peers: HashMap<u32, Peer> = q
+        .iter()
+        .map(|(_, tf, npc, brain)| (brain.obj.handle, Peer { pos: tf.translation / SCALE, target: brain.fields.follower.target, slot: anims.get(npc.body).ok().and_then(|a| a.slot) }))
+        .collect();
+
     for (ent, mut tf, mut npc, mut brain) in &mut q {
         let Ok(mut anim) = anims.get_mut(npc.body) else { continue };
         let rig = anim.rig.clone();
@@ -330,8 +467,7 @@ fn npc_update(
             event_active: false,
         };
         let handle = obj.handle;
-        fields.tick();
-        let mut host = NpcHost { inner: BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() }, fields, log };
+        let mut host = NpcHost { inner: BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() }, fields, peers: &peers, log };
         if !*started {
             *started = true;
             rt.spawn(&mut host, handle);
@@ -454,14 +590,41 @@ pub struct Follower {
     pub target: u32,
     /// +0x10: the target point (mode 3), the game's space.
     pub point: [f32; 4],
-    /// +0x24 (object +0xa64): a flag byte the script reads (host 5.7).
+    /// +0x20: the region (a volume of the group, `FUN_0018b308`) whose crossing ends the follower;
+    /// the index into the group's activators.
+    pub region: Option<usize>,
+    /// +0x24 (object +0xa64): a flag byte the script reads (host 5.7): turn the walk around after
+    /// the action.
     pub flag: u8,
+    /// +0x28: the place across the region (`FUN_001063b8(1.0)`, `DAT_0037abd4`) at which the
+    /// follower's test passes.
+    pub threshold: f32,
+    /// +0x2c: the object's place across the region when the follower started (`FUN_001d8c18`).
+    pub start: f32,
     /// +0x30 (object +0xa70): set by host 5.0 when the follower's test passed.
     pub done: u8,
     /// +0x31: forced done.
     pub forced: u8,
     /// +0x50: a timer counted down by one per frame (`FUN_0018b228`, `DAT_00356f40` = 1).
     pub timer: f32,
+}
+
+impl Follower {
+    /// `FUN_0018b0f0`: clears +0x31, +0x30, the kind, the mode, the target and the region (the
+    /// motion, the point, the flag and the timer keep their values).
+    pub fn reset(&mut self) {
+        self.forced = 0;
+        self.done = 0;
+        self.kind = 0;
+        self.mode = 0;
+        self.target = 0;
+        self.region = None;
+    }
+
+    /// `FUN_0018b110`: the follower is live when it is forced or has a region.
+    pub fn live(&self) -> bool {
+        self.forced != 0 || self.region.is_some()
+    }
 }
 
 /// The fields of the class-5 object that the group 5 hosts read and write (game offsets in the
@@ -494,6 +657,13 @@ pub struct NpcFields {
     /// game's motion controller queue is not ported; the app starts it when the playing motion
     /// ends [approx].
     pub queued: Option<(usize, f32)>,
+    /// +0xa30: the region the object stood in when `FUN_0018a4b0` last looked.
+    pub region: Option<usize>,
+    /// This frame's `FUN_0018aa08(obj, 5)`: the object's first type-5 part meets the player's
+    /// type-1 body volume (computed by the class pass, read by host 5.11).
+    pub player_in_part: bool,
+    /// The object's random numbers (the game's global `rand()`).
+    pub rng: Rng,
 }
 
 impl NpcFields {
@@ -502,8 +672,11 @@ impl NpcFields {
         u32::from_le_bytes(e.raw[0x24..0x28].try_into().unwrap_or_default())
     }
 
-    pub fn new(e: &kh2_ard::Entity, group: &Arc<NpcGroup>) -> NpcFields {
+    pub fn new(e: &kh2_ard::Entity, group: &Arc<NpcGroup>, seed: u32) -> NpcFields {
         let mut f = NpcFields {
+            region: None,
+            player_in_part: false,
+            rng: Rng(0x9E37_79B9 ^ seed.wrapping_mul(0x85EB_CA6B)),
             bits: [0; 2],
             word_b08: 0,
             params: [0; 9],
@@ -551,115 +724,586 @@ impl NpcFields {
         }
     }
 
-    /// The per-frame count-downs of the class (`FUN_0018a130`: +0xb00; `FUN_0018b228`: the
-    /// follower's +0x50), one frame each.
-    fn tick(&mut self) {
-        if self.timer_b00 > 0.0 {
-            self.timer_b00 -= 1.0;
-        }
-        if self.follower.timer > 0.0 {
-            self.follower.timer -= 1.0;
-        }
+    /// Parameter word `k` of the block at +0xb10 as a float.
+    fn param(&self, k: usize) -> f32 {
+        f32::from_bits(self.params[k])
     }
 
-    /// Host 5.4 (`FUN_0018ae08`): the follower is copied to the previous slot and reset, and the
-    /// timer +0xb00 takes the parameter word of its kind (+0xb18 for kind 4, +0xb24 for 5, +0xb30
-    /// otherwise).
+    /// Host 5.4 (`FUN_0018ae08`): the follower is copied to the previous slot (+0xaa0), its +0x30
+    /// cleared (`FUN_0018b138(f, 0)`) and reset (`FUN_0018b0f0`); then the timer +0xb00 takes
+    /// +0xb18 when the follower's kind is 4, +0xb24 when 5, else +0xb30. The kind is read after the
+    /// reset cleared it (the instructions at 0x18aeb0..0x18aed0: `jal 0x18b0f0`, then `lw 0xa40`),
+    /// so the game always takes +0xb30.
     fn end_follower(&mut self) {
         self.prev = self.follower.clone();
         self.follower.done = 0;
-        self.follower.forced = 0;
-        self.follower.kind = 0;
-        self.follower.mode = 0;
-        self.follower.target = 0;
-        self.follower.timer = 0.0;
-        let w = match self.prev.kind {
-            4 => self.params[2],
-            5 => self.params[5],
-            _ => self.params[8],
+        self.follower.reset();
+        let k = match self.follower.kind {
+            4 => 2,
+            5 => 5,
+            _ => 8,
         };
-        self.timer_b00 = f32::from_bits(w);
+        self.timer_b00 = self.param(k);
     }
+
+    /// The previous follower takes the current one when it has a kind (`FUN_0018a130` copies
+    /// +0xa40..+0xa90 to +0xaa0 before starting a kind-4 or a kind-5 follower).
+    fn keep_previous(&mut self) {
+        if self.follower.kind != 0 {
+            self.prev = self.follower.clone();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// The class's own attention logic (vtable slot 3, FUN_00189ae8 -> FUN_0018a130)
+
+/// The objentry id `FUN_0016b078` treats as the player (`DAT_0035c998`).
+pub const OBJECT_PLAYER: u32 = 0x236;
+
+/// One townsperson as the class pass sees it: what the other objects' code reads of it, and its
+/// own fields.
+pub struct Mind<'a> {
+    /// The script handle (the object's address in the app's model).
+    pub handle: u32,
+    /// The objentry id (`FUN_0016b078` finds objects by it).
+    pub object: u32,
+    /// The spawn record's halfword +0x1e (`FUN_0016b928`: `FUN_0018a918` skips objects with the
+    /// same one).
+    pub serial: u16,
+    /// Position (app space, cm) and facing (+0x550, `FUN_0016a890`).
+    pub pos: Vec3,
+    pub yaw: f32,
+    /// The first type-0 part (`FUN_0016b558(obj, 0, -1)` placed by `FUN_001894d0`).
+    pub body: Option<parts::Shape>,
+    /// The first type-5 part (the talk part).
+    pub talk: Option<parts::Shape>,
+    pub fields: &'a mut NpcFields,
+}
+
+/// `FUN_0016b078(id)`: the player for 0x236, else the first object (in the object list) whose
+/// objentry is `id`. Only the townspeople and the player are searched here [approx: the game's
+/// list also holds the enemies and other objects]; 0 when none.
+fn object_by_id(minds: &[Mind], id: u32) -> u32 {
+    if id == OBJECT_PLAYER {
+        return PLAYER;
+    }
+    minds.iter().find(|m| m.object == id).map_or(0, |m| m.handle)
+}
+
+/// `FUN_0018a7a0(a, b)`: the first return entry of `a`'s group with byte 0 = 0 whose word +4 names
+/// (by objentry id) the object `b`.
+fn entry_naming(minds: &[Mind], a: usize, b: u32) -> Option<[u8; 0x10]> {
+    minds[a].fields.group.returns.iter().find(|r| r[0] == 0 && object_by_id(minds, u32::from_le_bytes([r[4], r[5], r[6], r[7]])) == b).copied()
+}
+
+/// `FUN_0018a598(obj)`: a partner townsperson. `FUN_0018a918(obj, 0)` takes the first other
+/// object (not of the same spawn record serial) whose first type-0 part meets this object's
+/// (`FUN_00189208`); it must be a class-5 object (+0x588 bit 3, every townsperson) whose follower
+/// is not done, and the return entries of both must name each other. Answers the partner and the
+/// two entries (this one's, the partner's).
+fn partner(minds: &[Mind], i: usize) -> Option<(usize, [u8; 0x10], [u8; 0x10])> {
+    let me = minds[i].body?;
+    // [approx] the object list order is the app's spawn order; only townspeople are in it.
+    let j = minds.iter().enumerate().position(|(j, m)| j != i && m.serial != minds[i].serial && m.body.is_some_and(|b| parts::overlaps(&me, &b) == Some(true)))?;
+    if minds[j].fields.follower.done != 0 {
+        return None;
+    }
+    let mine = entry_naming(minds, i, minds[j].handle)?;
+    let theirs = entry_naming(minds, j, minds[i].handle)?;
+    Some((j, mine, theirs))
+}
+
+/// `FUN_0018a828(timer, obj, entry, target, flag)`: the object's follower becomes a forced kind-5
+/// follower toward `target` (mode 1) with the entry's motion.
+fn start_pair(f: &mut Follower, timer: f32, entry: &[u8; 0x10], target: u32, flag: u8) {
+    f.reset();
+    f.timer = timer;
+    f.forced = 1;
+    f.kind = 5;
+    f.target = target;
+    f.mode = 1;
+    f.flag = flag;
+    f.motion = entry_motion(entry[1]);
+}
+
+/// `FUN_0018b308(lo, hi, follower, position, count, entries, region)`: a weighted draw among the
+/// return entries keyed to the region (byte 0 equal to the volume record's +2): a number below 100
+/// (`FUN_00106308`) falls into the entry whose byte 2 (its weight) covers it; entries whose byte 1
+/// is 3 take no part in the draw and the last of them gives the flag (+0x24) with the chance of
+/// its byte 2. The chosen entry makes a kind-6 follower when its byte 1 is 1 (the script then
+/// stops the walker for good), else a kind-2 one, with the motion of its byte 1, the target of its
+/// byte 3 (1 an object by the objentry id at +4, 2 the player, 3 the point at +4..+0xc, else
+/// none), the region, a random threshold across it, the place across it now and a timer from
+/// `lo..hi`. Answers whether an entry was chosen.
+#[allow(clippy::too_many_arguments)]
+pub fn pick_entry(f: &mut Follower, rng: &mut Rng, group: &NpcGroup, region: usize, pos: [f32; 3], lo: f32, hi: f32, by_id: impl Fn(u32) -> u32) -> bool {
+    let Some(vol) = group.activators.get(region) else { return false };
+    let roll = rng.below(100);
+    let (mut sum, mut chosen, mut flag_entry) = (0u32, None, None);
+    for e in group.returns.iter().filter(|e| e[0] as u16 == vol.option) {
+        if e[1] == 3 {
+            flag_entry = Some(*e);
+            continue;
+        }
+        let before = sum;
+        sum += e[2] as u32;
+        if before <= roll && roll < sum {
+            chosen = Some(*e);
+        }
+    }
+    let Some(e) = chosen else { return false };
+    f.reset();
+    f.kind = if e[1] == 1 { 6 } else { 2 };
+    f.motion = entry_motion(e[1]);
+    let word = |o: usize| [e[o], e[o + 1], e[o + 2], e[o + 3]];
+    match e[3] {
+        1 => {
+            f.mode = 1;
+            f.target = by_id(u32::from_le_bytes(word(4)));
+        }
+        2 => f.mode = 2,
+        3 => {
+            f.mode = 3;
+            f.point = [f32::from_le_bytes(word(4)), f32::from_le_bytes(word(8)), f32::from_le_bytes(word(12)), 0.0];
+        }
+        _ => f.mode = 0,
+    }
+    f.flag = 0;
+    if let Some(fe) = flag_entry
+        && rng.below(100) < fe[2] as u32
+    {
+        f.flag = 1;
+    }
+    f.region = Some(region);
+    f.threshold = rng.frac(1.0);
+    f.start = region_coord(vol, pos);
+    f.timer = rng.range(lo, hi);
+    true
+}
+
+/// `FUN_0018a4b0(obj)`: the region the object stands in (its position 10 cm higher,
+/// `DAT_0037ab88`) is looked up in its group (`FUN_00199d68`); when it differs from the last one
+/// (+0xa30) and the follower is not done, the follower is reset and, inside a region, a return
+/// entry of that region is drawn (`FUN_0018b308` with the timer range +0xb28 / +0xb2c).
+fn region_step(minds: &mut [Mind], i: usize) {
+    let p = to_game(minds[i].pos);
+    let probe = [p[0], p[1] - 10.0, p[2]];
+    let group = minds[i].fields.group.clone();
+    let r = group.region_at(probe);
+    if r == minds[i].fields.region {
+        return;
+    }
+    if minds[i].fields.follower.done == 0 {
+        minds[i].fields.follower.reset();
+        let Some(region) = r else {
+            minds[i].fields.region = None;
+            return;
+        };
+        let ids: Vec<(u32, u32)> = minds.iter().map(|m| (m.object, m.handle)).collect();
+        let by_id = |id: u32| if id == OBJECT_PLAYER { PLAYER } else { ids.iter().find(|(o, _)| *o == id).map_or(0, |(_, h)| *h) };
+        let (lo, hi) = (minds[i].fields.param(6), minds[i].fields.param(7));
+        let f = &mut *minds[i].fields;
+        pick_entry(&mut f.follower, &mut f.rng, &group, region, [p[0], p[1], p[2]], lo, hi, by_id);
+    }
+    minds[i].fields.region = r;
+}
+
+/// `FUN_0018b148(follower, position)`: true when the follower is forced (+0x31); with a region
+/// (+0x20) the object's place across it (`FUN_001d8c18`) against the threshold (+0x28): at or below
+/// it when the follower started in the upper half (+0x2c >= 0.5, `DAT_0037ab98`), at or above it
+/// otherwise; false without a region. `p` is in the game's space.
+pub fn follower_test(f: &Follower, group: &NpcGroup, p: [f32; 3]) -> bool {
+    if f.forced != 0 {
+        return true;
+    }
+    let Some(vol) = f.region.and_then(|r| group.activators.get(r)) else { return false };
+    let at = region_coord(vol, p);
+    if f.start >= 0.5 { at <= f.threshold } else { f.threshold <= at }
+}
+
+/// What the class pass reports for the log.
+#[derive(Debug, PartialEq)]
+pub enum Attention {
+    None,
+    /// A kind-4 follower: the player came into the talk part.
+    Player,
+    /// A kind-5 pair with the townsperson at this index.
+    Pair(usize),
+}
+
+/// `FUN_0018a130(obj)` for townsperson `i`, once per frame while bit 0 of its array is clear (the
+/// object is not linked, `FUN_001beb00`, in the app). The follower's timer and +0xb00 count down;
+/// then, unless the follower already looks at the player (kind 4) or the last one did and +0xb00
+/// still runs: the player's body meeting the object's talk part (`FUN_0018aa08(obj, 5)`) starts a
+/// forced kind-4 follower toward the player (mode 2) with a timer from +0xb10..+0xb14. Else, unless
+/// the follower is of kind 4 or 5 (or the last one was 5 and +0xb00 runs), a partner
+/// (`FUN_0018a598`) starts a kind-5 pair on both objects with one timer from +0xb1c..+0xb20: this
+/// one's flag set, the partner's set when the two face away from each other (the dot product of
+/// their facings, `FUN_0016a890`, is negative). Else, once +0xb00 ran out, the region step
+/// (`FUN_0018a4b0`).
+pub fn class_tick(minds: &mut [Mind], i: usize, player_body: Option<&parts::Shape>) -> Attention {
+    {
+        let f = &mut *minds[i].fields;
+        if f.follower.timer > 0.0 {
+            f.follower.timer -= 1.0;
+        }
+        if f.timer_b00 > 0.0 {
+            f.timer_b00 -= 1.0;
+        }
+    }
+    let meets = matches!((minds[i].talk, player_body), (Some(t), Some(b)) if parts::overlaps(&t, b) == Some(true));
+    minds[i].fields.player_in_part = meets;
+    let kind = minds[i].fields.follower.kind;
+    if kind != 4 && (minds[i].fields.prev.kind != 4 || minds[i].fields.timer_b00 <= 0.0) && meets {
+        let f = &mut *minds[i].fields;
+        f.keep_previous();
+        f.follower.reset();
+        f.follower.timer = {
+            let (lo, hi) = (f.param(0), f.param(1));
+            f.rng.range(lo, hi)
+        };
+        f.follower.forced = 1;
+        f.follower.kind = 4;
+        f.follower.flag = 0;
+        f.follower.mode = 2;
+        return Attention::Player;
+    }
+    if !(kind == 4 || kind == 5) {
+        if minds[i].fields.prev.kind == 5 && minds[i].fields.timer_b00 > 0.0 {
+            return Attention::None;
+        }
+        if let Some((j, mine, theirs)) = partner(minds, i) {
+            minds[i].fields.keep_previous();
+            let timer = {
+                let f = &mut *minds[i].fields;
+                let (lo, hi) = (f.param(3), f.param(4));
+                f.rng.range(lo, hi)
+            };
+            let facing = |m: &Mind| Vec3::new(m.yaw.sin(), 0.0, m.yaw.cos());
+            let away = facing(&minds[i]).dot(facing(&minds[j])) < 0.0;
+            let (hi_, hj) = (minds[i].handle, minds[j].handle);
+            start_pair(&mut minds[i].fields.follower, timer, &mine, hj, 1);
+            start_pair(&mut minds[j].fields.follower, timer, &theirs, hi_, away as u8);
+            return Attention::Pair(j);
+        }
+    }
+    if minds[i].fields.timer_b00 <= 0.0 {
+        minds[i].fields.timer_b00 = 0.0;
+        region_step(minds, i);
+    }
+    Attention::None
+}
+
+/// What host 5.11 and 5.6 read of the other townspeople (taken after the class pass).
+#[derive(Clone, Copy, Debug)]
+pub struct Peer {
+    pub pos: Vec3,
+    /// The follower's target (+0xa4c).
+    pub target: u32,
+    /// The motion last requested (+0x154).
+    pub slot: Option<usize>,
 }
 
 // ---------------------------------------------------------------------------------------------------
 // The walk path
 
 /// The object's walk path as `FUN_002d3b40` builds it from a group's `WalkPath` (a 0xa0-byte record
-/// at object +0x508): the points in order, whether it loops (header byte +4 bit 0) and the
-/// follower's place on it. The game runs a cubic spline through the points (`FUN_002d32f8`
-/// tangents, `FUN_002d4298` evaluation) and advances a parameter by the asked speed
-/// (`FUN_002d2a98`); this port follows the straight segments between the points [approx: the
-/// spline is not ported, a townsperson cuts the corners the game rounds].
+/// at object +0x508, ctor `FUN_002d2100`): the points (record +0x80, 0x20 bytes each: the position
+/// and its spline tangent, whose w holds the point's index), whether it loops (+0x10, header byte
+/// +4 bit 0), the tension (+0x20: 0.5, `DAT_003837fc`, unless header bit 1), the place (+0x18), the
+/// walking parameter (+0x1c, -2 until the first advance, `DAT_0038379c`), the current segment
+/// (+0x30/+0x40 its start point and tangent, +0x50/+0x60 its end, +0x28 the chord between them),
+/// the direction (+0x84), "turn around at the ends" (+0x85) and the lock (+0x86). The curve between
+/// two points is the cubic Hermite of `FUN_002d4298` / `FUN_002d2460`. Positions are kept in the
+/// app's space (the game's mirrored: lengths, the Hermite and the horizontal distances agree).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PathRun {
     pub id: u16,
     /// The points in the app's space (centimetres).
     pub points: Vec<Vec3>,
-    /// Header byte +4 bit 0 (`FUN_002d3b40` -> record +0x10): the path closes on itself.
+    /// The tangent of each point (`FUN_002d32f8`).
+    pub tangents: Vec<Vec3>,
+    /// Record +0x10: the path closes on itself (cleared for paths of fewer than three points).
     pub loops: bool,
+    /// Record +0x20: the tangents' factor.
+    pub tension: f32,
     /// Record +0x18: the place on the path, segment index plus fraction.
     pub t: f32,
+    /// Record +0x1c: the walking parameter (the start index of the segment plus the Hermite
+    /// parameter inside it).
+    pub cur: f32,
+    /// The current segment's start and end point indices (the tangents' w at +0x4c and +0x6c).
+    pub seg: (usize, usize),
+    /// Record +0x28: the chord of the current segment.
+    pub chord: f32,
     /// Record +0x84: walking from lower to higher indices.
     pub forward: bool,
-    /// Record +0x85: at an end the direction turns around (`FUN_002d2328` is called by the
-    /// advance); clear for objects whose flag 0x588 bit 3 and bit 2 of the bit array are set.
+    /// Record +0x85: at an end the direction turns around (`FUN_002d2328`); clear when the path
+    /// is locked (+0x86, bit 2 of the class-5 bit array).
     pub bounce: bool,
 }
 
+/// `FUN_002d4298(s, out, path, a, b)`: the cubic Hermite between point `a` (position `p0`, tangent
+/// `t0`) and point `b` at parameter `s`: the weights 2s^3 - 3s^2 + 1, -2s^3 + 3s^2, s^3 - 2s^2 + s
+/// and s^3 - s^2 (`DAT_00383818` = 1, `DAT_0038381c` = 3, `DAT_00383820` = -2).
+pub fn hermite(p0: Vec3, t0: Vec3, p1: Vec3, t1: Vec3, s: f32) -> Vec3 {
+    let (s2, s3) = (s * s, s * s * s);
+    p0 * (s3 + s3 - s2 * 3.0 + 1.0) + p1 * (s3 * -2.0 + s2 * 3.0) + t0 * (s3 - (s2 + s2) + s) + t1 * (s3 - s2)
+}
+
+/// `FUN_002d4040(path, &dist, p, a, b)`: the point's distance to the chord from `a` to `b` and its
+/// place along it: before `a` the distance to `a` and 0; past `b` the distance to `b` and 1
+/// (`DAT_00383814`); else the distance to the chord and the projection over the chord's length.
+fn chord_place(p: Vec3, a: Vec3, b: Vec3) -> (f32, f32) {
+    let (ab, ap) = (b - a, p - a);
+    if ab.dot(ap) < 0.0 {
+        return (ap.length(), 0.0);
+    }
+    let len = ab.length();
+    let proj = if len > 0.0 { (ab / len).dot(ap).abs() } else { 0.0 };
+    if proj <= len {
+        let h = ap.length_squared() - proj * proj;
+        (if h <= 0.0 { 0.0 } else { h.sqrt() }, if len > 0.0 { proj / len } else { 0.0 })
+    } else {
+        ((p - b).length(), 1.0)
+    }
+}
+
 impl PathRun {
-    pub fn new(id: u16, p: &kh2_ard::WalkPath, start: Vec3) -> PathRun {
-        let points: Vec<Vec3> = p.points.iter().map(|q| game_to_app(*q)).collect();
-        let mut r = PathRun { id, points, loops: p.header[4] & 1 != 0, t: 0.0, forward: true, bounce: true };
-        r.t = r.nearest(start);
+    /// `FUN_002d3b40` for a class-5 object: the points (with every height taken from the first
+    /// point when bit 3 of the object's bit array is set), the loop flag and the tension from the
+    /// header byte +4, the tangents (`FUN_002d32f8`); the place is set by the caller.
+    pub fn new(id: u16, p: &kh2_ard::WalkPath, flatten: bool) -> PathRun {
+        let first_y = p.points.first().map_or(0.0, |q| q[1]);
+        let points: Vec<Vec3> = p.points.iter().map(|q| game_to_app(if flatten { [q[0], first_y, q[2]] } else { *q })).collect();
+        let mut r = PathRun {
+            id,
+            tangents: vec![Vec3::ZERO; points.len()],
+            points,
+            loops: p.header[4] & 1 != 0,
+            tension: if p.header[4] & 2 == 0 { 0.5 } else { 0.0 },
+            t: 0.0,
+            cur: -2.0,
+            seg: (0, 0),
+            chord: 0.0,
+            forward: true,
+            bounce: true,
+        };
+        r.make_tangents();
         r
     }
 
-    fn seg_count(&self) -> usize {
-        match self.points.len() {
-            0 | 1 => 0,
-            n if self.loops => n,
-            n => n - 1,
-        }
-    }
-
-    /// The point at parameter `t` (segment index plus fraction).
-    pub fn at(&self, t: f32) -> Vec3 {
+    /// `FUN_002d32f8`: with fewer than three points the one tangent is the chord, both points get
+    /// it and the loop flag is cleared. Else every point gets (next - previous) * tension (indices
+    /// wrapping), except the two ends of a path that does not loop: there the quadratic through the
+    /// end and its two neighbours (passing the middle one at the share `f` of the first chord in the
+    /// sum of both) gives the direction at the end, scaled so that its length at the middle point
+    /// equals the inner rule's length there.
+    fn make_tangents(&mut self) {
         let n = self.points.len();
-        if n == 0 {
-            return Vec3::ZERO;
+        let p = &self.points;
+        if n < 3 {
+            if n == 2 {
+                self.tangents = vec![p[1] - p[0]; 2];
+            }
+            self.loops = false;
+            return;
         }
-        if n == 1 {
-            return self.points[0];
+        let end = |a: Vec3, b: Vec3, c: Vec3, at_start: bool, tension: f32| {
+            let (la, lb) = ((b - a).length(), (c - b).length());
+            let f = la / (la + lb);
+            let g = 1.0 - f;
+            let m = (b - a * (g * g) - c * (f * f)) / ((f + f) * g);
+            let d = if at_start { (m - a) * 2.0 } else { (c - m) * 2.0 };
+            let u = a * (g * -2.0) + m * (2.0 - f * 4.0) + c * (2.0 * f);
+            d * (((c - a) * tension).length() / u.length())
+        };
+        for i in 0..n {
+            self.tangents[i] = if !self.loops && i == 0 {
+                end(p[0], p[1], p[2], true, self.tension)
+            } else if !self.loops && i == n - 1 {
+                end(p[n - 3], p[n - 2], p[n - 1], false, self.tension)
+            } else {
+                (p[(i + 1) % n] - p[(i + n - 1) % n]) * self.tension
+            };
         }
-        let segs = self.seg_count() as f32;
-        let t = if self.loops { t.rem_euclid(segs) } else { t.clamp(0.0, segs) };
-        let i = (t.floor() as usize).min(self.seg_count().saturating_sub(1));
-        let f = t - i as f32;
-        let a = self.points[i];
-        let b = self.points[(i + 1) % n];
-        a.lerp(b, f)
     }
 
-    /// The parameter of the point nearest to `p` (`FUN_002d50c0` -> `FUN_002d4dc8` at the path's
-    /// start: the closest segment and the fraction along it; the vertical difference counts too).
-    pub fn nearest(&self, p: Vec3) -> f32 {
-        let mut best = (f32::INFINITY, 0.0);
-        for i in 0..self.seg_count() {
-            let a = self.points[i];
-            let b = self.points[(i + 1) % self.points.len()];
-            let ab = b - a;
-            let f = if ab.length_squared() > 0.0 { ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0) } else { 0.0 };
-            let d = (a + ab * f - p).length_squared();
-            if d < best.0 {
-                best = (d, i as f32 + f);
+    fn last(&self) -> usize {
+        self.points.len().saturating_sub(1)
+    }
+
+    /// The Hermite of segment `i` (from point `i` to point `i + 1`, wrapping) at parameter `s`.
+    pub fn eval(&self, i: usize, s: f32) -> Vec3 {
+        let n = self.points.len();
+        match n {
+            0 => Vec3::ZERO,
+            1 => self.points[0],
+            _ => {
+                let (a, b) = (i % n, (i + 1) % n);
+                hermite(self.points[a], self.tangents[a], self.points[b], self.tangents[b], s)
             }
         }
-        best.1
     }
 
-    /// `FUN_002d2328`: at an end the direction flips unless the path is locked; returns the new
-    /// direction flag.
+    /// The point at a place (segment index plus fraction; `FUN_002d4438` -> `FUN_002d43a0`).
+    pub fn at(&self, t: f32) -> Vec3 {
+        let i = t.max(0.0) as usize;
+        self.eval(i, t - i as f32)
+    }
+
+    /// `FUN_002d4dc8(path, &seg, &frac, p)`: the segment whose chord is nearest to the point (two
+    /// points: the one segment; else every segment, the last one only for a loop; the first of
+    /// equals wins) and the place on it: the chord's share, refined, when strictly inside
+    /// (`DAT_0038385c` .. `DAT_00383860`), by 33 halvings of the curve (`DAT_00383868`) toward the
+    /// half whose chord is nearer. Answers (segment, fraction, chord distance).
+    pub fn nearest(&self, p: Vec3) -> (usize, f32, f32) {
+        let n = self.points.len();
+        if n < 2 {
+            return (0, 0.0, 0.0);
+        }
+        let count = if n == 2 { 1 } else { n - usize::from(!self.loops) };
+        let mut best = (0usize, 0.0f32, 0.0f32);
+        for i in 0..count {
+            let (d, f) = chord_place(p, self.points[i], self.points[(i + 1) % n]);
+            if i == 0 || (0.0 <= d && d < best.2) {
+                best = (i, f, d);
+            }
+        }
+        let (i, f, d) = best;
+        if n == 2 || f <= 1e-4 || f32::from_bits(0x3f7f_f972) <= f {
+            return (i, f, d);
+        }
+        let (mut lo, mut hi) = (0.0f32, 1.0f32);
+        let (mut a, mut b) = (self.points[i], self.points[(i + 1) % n]);
+        let mut s = hi + lo;
+        for _ in 0..33 {
+            s *= 0.5;
+            let m = self.eval(i, s);
+            if chord_place(p, a, m).0 < chord_place(p, m, b).0 {
+                hi = s;
+                b = m;
+            } else {
+                lo = s;
+                a = m;
+            }
+            s = lo + hi;
+        }
+        (i, s * 0.5, d)
+    }
+
+    /// `FUN_002d4688(lo, hi, path, &frac, p, a, b)`: 33 halvings of segment `i` between the
+    /// parameters `lo` and `hi`, keeping the half whose chord (from the segment's start point or the
+    /// last kept point to the middle, and on to the end point or the last kept point) is nearer.
+    /// Answers the fraction and the distance of the last comparison (the larger of the two).
+    fn search_segment(&self, i: usize, mut lo: f32, mut hi: f32, p: Vec3) -> (f32, f32) {
+        let n = self.points.len();
+        let (mut a, mut b) = (self.points[i % n], self.points[(i + 1) % n]);
+        let mut d = 0.0;
+        let mut s = lo + hi;
+        for _ in 0..33 {
+            s *= 0.5;
+            let m = self.eval(i, s);
+            let (da, db) = (chord_place(p, a, m).0, chord_place(p, m, b).0);
+            if da < db {
+                d = db;
+                hi = s;
+                b = m;
+            } else {
+                d = da;
+                lo = s;
+                a = m;
+            }
+            s = lo + hi;
+        }
+        ((lo + hi) * 0.5, d)
+    }
+
+    /// The local search of `FUN_002d51e0` around the current place: `FUN_002d4ad8` for a loop,
+    /// `FUN_002d4800` for an open path. From the place (+0x18), moved over a segment boundary when
+    /// it sits on one in the walking direction (1/10000, `DAT_0038384c` / `DAT_00383850`), the rest
+    /// of the current segment ahead (in the walking direction) and the next segment(s) ahead are
+    /// searched (`FUN_002d4688`); the nearer wins. Answers (segment, fraction, distance) or `None`
+    /// when the distance is not below `reach` (the game's -1, `DAT_00383858` / `DAT_00383848`).
+    fn local_nearest(&self, p: Vec3, reach: f32) -> Option<(usize, f32, f32)> {
+        let n = self.points.len() as i64;
+        let mut seg = self.t.max(0.0) as i64;
+        let mut frac = self.t - seg as f32;
+        if self.forward && frac > f32::from_bits(0x3f7f_f972) {
+            seg += 1;
+            frac = 0.0;
+        } else if !self.forward && frac < 1e-4 {
+            seg -= 1;
+            frac = 1.0;
+        }
+        let (lo, hi) = if self.forward { (frac, 1.0) } else { (0.0, frac) };
+        if self.loops {
+            let seg = seg.rem_euclid(n);
+            let (f1, d1) = self.search_segment(seg as usize, lo, hi, p);
+            let seg2 = if self.forward { (seg + 1) % n } else { (seg + n - 1) % n };
+            let (f2, d2) = self.search_segment(seg2 as usize, 0.0, 1.0, p);
+            let best = if d1 < d2 { (seg as usize, f1, d1) } else { (seg2 as usize, f2, d2) };
+            return (best.2 < reach).then_some(best);
+        }
+        if seg < 0 {
+            return Some((0, 0.0, (p - self.points[0]).length())).filter(|b| b.2 < reach);
+        }
+        if seg >= n - 1 {
+            // [inferred] FUN_002d4800 answers the last point's distance with segment n - 1 (which
+            // FUN_002d51e0 then pairs with point 0); the place is clamped to the path's end here.
+            let last = (n - 1) as usize;
+            return Some((last.saturating_sub(1), 1.0, (p - self.points[last]).length())).filter(|b| b.2 < reach);
+        }
+        let (mut lo, mut hi) = (lo, hi);
+        let mut best: Option<(usize, f32, f32)> = None;
+        let mut cur = seg;
+        for _ in 0..2 {
+            let (f, d) = self.search_segment(cur as usize, lo, hi, p);
+            if best.is_none_or(|b| d < b.2) {
+                best = Some((cur as usize, f, d));
+            }
+            let next = if self.forward { cur + 1 } else { cur - 1 };
+            if next < 0 || next >= n - 1 {
+                break;
+            }
+            cur = next;
+            (lo, hi) = (0.0, 1.0);
+        }
+        best.filter(|b| b.2 < reach)
+    }
+
+    /// Takes segment `i` as the current one (+0x30..+0x60 and the chord +0x28).
+    fn set_seg(&mut self, i: usize) {
+        let n = self.points.len().max(1);
+        self.seg = (i % n, (i + 1) % n);
+        self.chord = (self.points[self.seg.1] - self.points[self.seg.0]).length();
+    }
+
+    /// `FUN_002d50c0(path, p)`: the place nearest to the point becomes the path's place and its
+    /// segment the current one.
+    pub fn place_nearest(&mut self, p: Vec3) {
+        if self.points.len() < 2 {
+            return;
+        }
+        let (i, f, _) = self.nearest(p);
+        self.set_seg(i);
+        self.t = i as f32 + f;
+    }
+
+    /// `FUN_002d5398(path, obj)`: a class-5 object whose bit 1 is clear starts at a random place of
+    /// its path (`FUN_001063b8` of the segment count) walking a random way (`FUN_00106308(2)`);
+    /// the object is put on that point (`FUN_0016a618`), which is answered. The segment of the
+    /// fraction's point is the place's integer part [inferred: the argument is not in the decompile].
+    pub fn random_start(&mut self, rng: &mut Rng) -> Vec3 {
+        let segs = if self.loops { self.points.len() } else { self.points.len().saturating_sub(1) };
+        let t = rng.frac(segs as f32);
+        self.forward = rng.below(2) != 0;
+        self.t = t;
+        self.at(t)
+    }
+
+    /// `FUN_002d2328`: the direction flips unless the path is locked; answers the new direction.
     pub fn toggle(&mut self) -> bool {
         if self.bounce {
             self.forward = !self.forward;
@@ -667,52 +1311,93 @@ impl PathRun {
         self.forward
     }
 
-    /// The look-ahead of `FUN_002d2a98(speed, path, out, position)`: up to twenty times the point
-    /// at the place is taken; when it lies more than `speed` from the object (horizontally,
-    /// `DAT_003837dc` halves the step) it is the answer, else the place moves on by half of
-    /// `speed` over the segment's length. At an end of a path that does not loop the direction
-    /// turns around when `bounce` is set (`FUN_002d2328`), else the walk stops (`None`: the game
-    /// then answers the facing instead of a direction). After twenty steps the answer is the
-    /// object's own position.
-    pub fn advance(&mut self, speed: f32, pos: Vec3) -> Option<Vec3> {
-        let segs = self.seg_count() as f32;
-        if segs <= 0.0 {
+    /// `FUN_002d2a98(speed, path, out, position)` for an ordinary path (+0x87 clear, no stop index
+    /// +0x8c): the object is first taken onto the curve (`FUN_002d51e0` with the reach `speed * 10`:
+    /// the nearest place, unless it is as far from the object as the old place within 1/10000,
+    /// `DAT_003837d4`, then the old place stays) and the walking parameter starts there. Then, up
+    /// to twenty times, the curve point at the parameter is the answer when it lies more than
+    /// `speed` from the projected point (horizontally), else the parameter moves `speed / chord / 2`
+    /// (`DAT_003837dc`) along: past the segment's end it takes the next segment (wrapping on a loop);
+    /// at an end of a path that does not loop the direction turns around (+0x85, then one more
+    /// pass) or the walk stops (`None`). After the passes the projected point is the answer.
+    /// Answers (the point to walk to, the projected point).
+    pub fn advance(&mut self, speed: f32, pos: Vec3) -> Option<(Vec3, Vec3)> {
+        let n = self.points.len();
+        if n < 2 {
             return None;
         }
-        for _ in 0..20 {
-            let p = self.at(self.t);
-            if (p - pos).with_y(0.0).length() > speed {
-                return Some(p);
+        let old = self.t;
+        let old_point = self.at(old);
+        // FUN_002d51e0: the local search within `speed * 10` (`DAT_003837d0`) for more than two
+        // points, else (or when it fails) the global one.
+        let local = if n > 2 { self.local_nearest(pos, speed * 10.0) } else { None };
+        let (i, f, _) = local.unwrap_or_else(|| self.nearest(pos));
+        self.set_seg(i);
+        self.t = i as f32 + f;
+        let mut proj = self.eval(i, f);
+        let (d_old, d_new) = ((old_point - pos).length(), (proj - pos).length());
+        if (d_new - d_old).abs() < (d_old + d_new) * 1e-4 {
+            self.t = old;
+            proj = old_point;
+        }
+        self.cur = self.t;
+        let last = self.last();
+        for pass in 0..2 {
+            let mut turned = false;
+            for _ in 0..20 {
+                let (s, e) = self.seg;
+                let sample = hermite(self.points[s], self.tangents[s], self.points[e], self.tangents[e], self.cur - s as f32);
+                if (sample - proj).with_y(0.0).length() > speed {
+                    return Some((sample, proj));
+                }
+                let step = speed / self.chord.max(1e-6) * 0.5;
+                if self.forward {
+                    self.cur += step;
+                    if self.cur < s as f32 + 1.0 {
+                        continue;
+                    }
+                    let mut next = (self.cur + 1.0) as usize;
+                    if next > last {
+                        if !self.loops {
+                            if !self.bounce {
+                                return None;
+                            }
+                            self.toggle();
+                            turned = true;
+                            break;
+                        }
+                        next = next - last - 1;
+                    }
+                    self.cur = e as f32;
+                    self.seg = (e, next % n);
+                } else {
+                    self.cur -= step;
+                    if self.cur > s as f32 {
+                        continue;
+                    }
+                    let prev = if s == 0 { last } else { s - 1 };
+                    if self.cur <= 0.0 {
+                        if !self.loops {
+                            if !self.bounce {
+                                return None;
+                            }
+                            self.toggle();
+                            turned = true;
+                            break;
+                        }
+                        self.cur = (last + 1) as f32;
+                    } else {
+                        self.cur = s as f32;
+                    }
+                    self.seg = (prev, s);
+                }
+                self.chord = (self.points[self.seg.1] - self.points[self.seg.0]).length();
             }
-            let i = if self.forward { self.t.floor() } else { (self.t.ceil() - 1.0).max(0.0) };
-            let i = if self.loops { i.rem_euclid(segs) } else { i.clamp(0.0, segs - 1.0) };
-            let len = (self.at(i + 1.0) - self.at(i)).length().max(1e-3);
-            let step = speed / len * 0.5;
-            if self.forward {
-                self.t += step;
-                if self.loops {
-                    self.t = self.t.rem_euclid(segs);
-                } else if self.t >= segs {
-                    self.t = segs;
-                    if !self.bounce {
-                        return None;
-                    }
-                    self.toggle();
-                }
-            } else {
-                self.t -= step;
-                if self.loops {
-                    self.t = self.t.rem_euclid(segs);
-                } else if self.t <= 0.0 {
-                    self.t = 0.0;
-                    if !self.bounce {
-                        return None;
-                    }
-                    self.toggle();
-                }
+            if !turned || pass == 1 {
+                break;
             }
         }
-        Some(pos)
+        Some((proj, proj))
     }
 }
 
@@ -724,6 +1409,8 @@ impl PathRun {
 pub(crate) struct NpcHost<'a, 'b> {
     pub(crate) inner: BevyHost<'a>,
     pub(crate) fields: &'b mut NpcFields,
+    /// The townspeople by script handle as the class pass left them this frame.
+    pub(crate) peers: &'b HashMap<u32, Peer>,
     pub(crate) log: bool,
 }
 
@@ -757,18 +1444,43 @@ impl NpcHost<'_, '_> {
     /// Host 1.177 (0x1719d0 -> `FUN_00183c30(obj, id, 0)`): the walk path with this id in the
     /// object's own spawn group replaces the one at +0x508 (`FUN_00199cc0` compares the path
     /// header's u16 id; a negative id takes the group's first path, which is what `rtn_default`
-    /// asks for with -1); the follower starts at the point of the path nearest to the object
-    /// (`FUN_002d50c0`). Answers 1 when a path was found, 0 otherwise (the game then also tries the
-    /// area's shared paths for objects with flag 0x588 bit 7, which these are not).
+    /// asks for with -1). `FUN_002d3b40` for a class-5 object: bit 3 of its array flattens the
+    /// points to the first one's height, bit 2 locks the path (+0x86; +0x85 "turn around" is its
+    /// opposite); with bit 1 clear the object is put at a random place of the path walking a random
+    /// way (`FUN_002d5398`), with bit 1 set it starts at the place nearest to it (`FUN_002d50c0`).
+    /// Answers 1 when a path was found, 0 otherwise (the game then also tries the area's shared
+    /// paths for objects with flag 0x588 bit 7, which these are not).
     fn set_path(&mut self, id: u32) -> bool {
         let pos = self.inner.obj.motor.pos;
         let paths = &self.fields.group.paths;
         let found = if (id as i32) < 0 { paths.first().cloned() } else { paths.iter().find(|p| u16::from_le_bytes([p.header[0], p.header[1]]) as u32 == id).cloned() };
         match found {
             Some(p) => {
-                let run = PathRun::new(u16::from_le_bytes([p.header[0], p.header[1]]), &p, pos);
+                let mut run = PathRun::new(u16::from_le_bytes([p.header[0], p.header[1]]), &p, self.fields.test_bit(3));
+                let locked = self.fields.test_bit(2);
+                run.bounce = !locked;
+                if self.fields.test_bit(1) {
+                    run.place_nearest(pos);
+                } else {
+                    let at = run.random_start(&mut self.fields.rng);
+                    let at = self.inner.env.world.and_then(|w| w.ground(at, at.y + 100.0, 400.0)).map_or(at, |g| at.with_y(g.y));
+                    self.inner.obj.motor.pos = at;
+                }
                 if self.log {
-                    info!("npc: {} path {} (asked {}) set: {} points, loops {}, start t {:.2}", self.inner.tag, run.id, id as i32, run.points.len(), run.loops, run.t);
+                    let at = self.inner.obj.motor.pos;
+                    info!(
+                        "npc: {} path {} (asked {}) set: {} points, loops {}, locked {locked}, start t {:.2} forward {} at ({:.0}, {:.0}, {:.0})",
+                        self.inner.tag,
+                        run.id,
+                        id as i32,
+                        run.points.len(),
+                        run.loops,
+                        run.t,
+                        run.forward,
+                        at.x,
+                        at.y,
+                        at.z
+                    );
                 }
                 self.fields.path = Some(run);
                 true
@@ -783,19 +1495,23 @@ impl NpcHost<'_, '_> {
         }
     }
 
-    /// `FUN_002d25b0(speed, blend, out, path, position, facing)` behind hosts 5.3 and 1.178: the
-    /// place on the path moves `speed` (at most 50) along it and the answer is the unit direction
-    /// from the object to the new place; when the advance stops (the end of a path that does not
-    /// turn around) the answer is the object's facing. With the new place less than ten times the
-    /// speed away the game blends the direction from the object's current and its recorded
-    /// position by `blend`; both are the same point here [approx].
+    /// `FUN_002d25b0(speed, blend, out, path, position, facing)` behind hosts 5.3 and 1.178 (both
+    /// with blend 1.0, `DAT_00383e80` / `DAT_003837c4`): the speed is clipped to 50
+    /// (`DAT_003837b8`) and the path advanced (`FUN_002d2a98`); when the walk stops the answer is
+    /// the facing. Else the unit direction from the object to the point found when that point is
+    /// more than ten times the speed away (`DAT_003837c0`); nearer, the blend of it with the unit
+    /// direction from the object's place on the curve, which with blend 1 is the latter alone.
     fn path_direction(&mut self, speed: f32) -> Vec3 {
         let yaw = self.inner.obj.motor.yaw;
         let facing = Vec3::new(yaw.sin(), 0.0, yaw.cos());
         let pos = self.inner.obj.motor.pos;
+        let speed = speed.min(50.0);
         let Some(path) = self.fields.path.as_mut() else { return facing };
-        match path.advance(speed.min(50.0), pos) {
-            Some(target) => (target - pos).normalize_or(facing),
+        match path.advance(speed, pos) {
+            Some((target, _)) if (target - pos).length() > speed * 10.0 => (target - pos).normalize_or(facing),
+            // [approx] the game divides by a zero length when the passes end on the projected point
+            // itself; the facing is answered then.
+            Some((target, proj)) => (target - proj).normalize_or(facing),
             None => facing,
         }
     }
@@ -805,20 +1521,19 @@ impl NpcHost<'_, '_> {
         let me = self.inner.obj.handle;
         Some(match index {
             // 5.0 (0x2ea050 -> FUN_0018a8b0): while the follower is not done, FUN_0018b148 tests it:
-            // true when it is forced (+0x31), or when it has a region (+0x20) and the object's
-            // position inside it compared with the follower's threshold passes; a passing test sets
-            // +0x30 (done). Without a region the test fails. The app has no regions: a follower
-            // without one never passes, as in the game.
+            // true when it is forced (+0x31); with a region (+0x20) the object's place across it
+            // (FUN_001d8c18) is compared with the threshold (+0x28): at or below it when the
+            // follower started in the upper half (+0x2c >= 0.5, DAT_0037ab98), at or above it
+            // otherwise; without a region false. A passing test sets +0x30 (FUN_0018b138(f, 1)).
             0 => {
+                let p = to_game(self.inner.obj.motor.pos);
+                let group = self.fields.group.clone();
                 let f = &mut self.fields.follower;
-                if f.done != 0 {
-                    (Value::Int(0), St::Impl, "")
-                } else if f.forced != 0 {
+                let pass = f.done == 0 && follower_test(f, &group, [p[0], p[1], p[2]]);
+                if pass {
                     f.done = 1;
-                    (Value::Int(1), St::Impl, "")
-                } else {
-                    (Value::Int(0), St::Approx, "the follower's region test (FUN_001d8c18 on +0x20) is not ported: no region, the test fails as the game's does without one")
                 }
+                (Value::Int(pass as i32), St::Impl, "")
             }
             // 5.2 (0x2ea230 -> FUN_002d2328): flips the walk direction of the object's path (+0x84)
             // unless the path is locked (+0x86) and answers the new direction; 0 without a path.
@@ -836,7 +1551,7 @@ impl NpcHost<'_, '_> {
                     return Some((Value::Vec([0.0; 4]), St::Approx, "no path at +0x508: the game leaves the answer buffer as it was"));
                 }
                 let d = self.path_direction(f32::from_bits(arg(1)));
-                (Value::Vec([d.x, -d.y, -d.z, 1.0]), St::Approx, "the path's straight segments are followed, not the game's cubic spline (FUN_002d2a98)")
+                (Value::Vec([d.x, -d.y, -d.z, 1.0]), St::Approx, "FUN_002d2a98 ported for the ordinary path (+0x87 clear, no stop index +0x8c); a zero direction answers the facing")
             }
             // 5.4 (0x2ea290 -> FUN_0018ae08): the follower ends (copied to +0xaa0, reset) and the
             // +0xb00 timer takes the parameter word of its kind.
@@ -850,37 +1565,50 @@ impl NpcHost<'_, '_> {
                 let f = &self.fields.follower;
                 (Value::Vec([f32::from_bits(f.kind as u32), f32::from_bits(f.mode as u32), f32::from_bits(f.motion as u32), 0.0]), St::Impl, "")
             }
-            // 5.6 (0x2ea300 -> FUN_0018af10): the unit direction from the object to the follower's
-            // target: mode 1 the target object, 2 the player, 3 the point; the object's facing when
-            // the follower is not live (FUN_0018b110: forced or with a region) or has no target.
+            // 5.6 (0x2ea300 -> FUN_0018af10): the unit direction from the object (its height taken
+            // as 0) to the follower's target: mode 2 the player and mode 1 the target object (when
+            // it still exists, FUN_0019a3f8) at height 0, mode 3 the point with its own height; the
+            // object's facing (+0x550, FUN_0016a890) when the follower is not live (FUN_0018b110:
+            // forced or with a region) or has no target mode. Kind 3 answers the saved vector at
+            // +0xa80 instead, a follower the class never makes here (not ported: the facing).
             6 => {
                 let yaw = self.inner.obj.motor.yaw;
                 let facing = Vec3::new(yaw.sin(), 0.0, yaw.cos());
-                let pos = self.inner.obj.motor.pos;
+                let own = self.inner.obj.motor.pos.with_y(0.0);
                 let f = &self.fields.follower;
-                let live = f.forced != 0;
-                let target = match (live, f.mode) {
-                    (true, 2) => Some(self.inner.env.player),
+                let target = match (f.live() && f.kind != 3, f.mode) {
+                    (true, 2) => Some(self.inner.env.player.with_y(0.0)),
+                    (true, 1) if f.target == PLAYER => Some(self.inner.env.player.with_y(0.0)),
+                    (true, 1) if f.target == me => Some(own),
+                    (true, 1) => self.peers.get(&f.target).map(|p| p.pos.with_y(0.0)),
                     (true, 3) => Some(from_game(f.point)),
-                    (true, 1) if f.target == me => Some(pos),
                     _ => None,
                 };
                 match target {
-                    Some(t) => (vec_value((t - pos).normalize_or(facing)), St::Approx, "mode 1 targets other than self are not known to this host; a follower without a region counts as not live"),
-                    None => (vec_value(facing), St::Approx, "the follower is not live (no region, not forced) or has no target: the facing"),
+                    Some(t) => (vec_value((t - own).normalize_or(facing)), St::Impl, ""),
+                    None => (vec_value(facing), St::Impl, ""),
                 }
             }
             // 5.7 (0x2ea350 -> FUN_0018af08): the byte at object +0xa64 (the follower's +0x24).
             7 => (Value::Int(self.fields.follower.flag as i32), St::Impl, ""),
-            // 5.11 (0x2ea618 -> FUN_00189e70 -> FUN_0018b250): 1 unless the follower is done (+0x30)
-            // with a positive timer (+0x50) and (kind 4) the player's part 5 still meets the object's,
-            // or (kind 5) the partner object still exists, points back at this object and plays
-            // motion 0x32; then 0. Without the part test (the app has no NPC collision parts) kind 4
-            // keeps 1 as the game does when the parts do not meet.
+            // 5.11 (0x2ea618 -> FUN_00189e70 -> FUN_0018b250): "the action is over". 1 unless the
+            // follower is done (+0x30) and its timer (+0x50) runs; then a kind-4 follower holds (0)
+            // while the player's body still meets the object's talk part (FUN_0018aa08), a kind-5
+            // one while the partner (+0xc) exists, points back at this object (its +0xa4c) and does
+            // not play motion 0x32 (its +0x154); every other kind holds until the timer ends.
             11 => {
                 let f = &self.fields.follower;
-                let v = if f.done != 0 && f.timer > 0.0 && f.kind == 5 { 0 } else { 1 };
-                (Value::Int(v), St::Approx, "the part test of kind 4 (FUN_0018aa08) and the partner's motion test of kind 5 are not ported")
+                let v = if f.done == 0 || f.timer <= 0.0 || (f.kind == 4 && !self.fields.player_in_part) {
+                    1
+                } else if f.kind == 5 {
+                    match self.peers.get(&f.target) {
+                        Some(p) if p.target == me => (p.slot == Some(0x32)) as i32,
+                        _ => 1,
+                    }
+                } else {
+                    0
+                };
+                (Value::Int(v), St::Impl, "")
             }
             // 5.16 (0x2ea768 -> FUN_002d3148): with a path and a second object, decides the walk
             // direction (+0x84) from the dot products of the direction to that object and the path's
@@ -893,14 +1621,14 @@ impl NpcHost<'_, '_> {
                     let pos = self.inner.obj.motor.pos;
                     let to = (other - pos).with_y(0.0);
                     if to.length() >= 0.01 {
-                        let t = p.nearest(pos);
-                        let tangent = (p.at(t + 0.01) - p.at(t - 0.01)).with_y(0.0).normalize_or_zero();
+                        let (i, f, _) = p.nearest(pos);
+                        let tangent = (p.eval(i, f + 0.01) - p.eval(i, f - 0.01)).with_y(0.0).normalize_or_zero();
                         if tangent.length() >= 0.01 {
                             let to = to.normalize();
                             p.forward = to.dot(tangent) >= to.dot(-tangent);
                         }
                     }
-                    (Value::None, St::Approx, "the other object is taken as the player; the tangent is the polyline's, not the spline's")
+                    (Value::None, St::Approx, "the other object is taken as the player; FUN_002d3148's own rule is not read, the curve's tangent at the nearest place is compared")
                 }
                 None => (Value::None, St::Impl, ""),
             },
@@ -957,18 +1685,6 @@ impl NpcHost<'_, '_> {
         dot.acos().abs() < f32::from_bits(0x3e86_0a91)
     }
 
-    fn group0(&mut self, index: u16, c: &Call) -> Option<(Value, St, &'static str)> {
-        match (index, c) {
-            // 0.21 angle_between (0x16cfd0): the wrapped turn from direction a to direction b,
-            // atan2(b.x, b.z) - atan2(a.x, a.z) through FUN_0017bbc0.
-            (21, Call::Func { args, .. }) => match (args.first(), args.get(1)) {
-                (Some(Arg::Vec(a)), Some(Arg::Vec(b))) => Some((Value::Float(crate::enemy_host::game_wrap_angle(b[0].atan2(b[2]) - a[0].atan2(a[2]))), St::Impl, "")),
-                _ => Some((Value::Float(0.0), St::Missing, "angle_between without two vectors")),
-            },
-            _ => None,
-        }
-    }
-
     fn group1(&mut self, index: u16, a: &[u32], c: &Call) -> Option<(Value, St, &'static str)> {
         let arg = |k: usize| a.get(k).copied().unwrap_or(0);
         let me = self.inner.obj.handle;
@@ -1017,7 +1733,7 @@ impl NpcHost<'_, '_> {
             178 => match self.fields.path.is_some() {
                 true => {
                     let d = self.path_direction(20.0);
-                    (Value::Vec([d.x, -d.y, -d.z, 1.0]), St::Approx, "the path's straight segments are followed, not the game's cubic spline (FUN_002d2a98)")
+                    (Value::Vec([d.x, -d.y, -d.z, 1.0]), St::Approx, "FUN_002d2a98 ported for the ordinary path (+0x87 clear, no stop index +0x8c); a zero direction answers the facing")
                 }
                 false => (Value::Vec([0.0; 4]), St::Impl, ""),
             },
@@ -1046,7 +1762,6 @@ impl Host for NpcHost<'_, '_> {
             _ => match words(c) {
                 Some((5, index, a)) => self.group5(index, &a),
                 Some((1, index, a)) => self.group1(index, &a, c),
-                Some((0, index, _)) => self.group0(index, c),
                 _ => None,
             },
         };
@@ -1075,58 +1790,234 @@ mod tests {
         let mut header = [0u8; 8];
         header[0] = 7;
         header[2] = points.len() as u8;
-        header[4] = if loops { 1 } else { 2 };
+        header[4] = loops as u8;
         kh2_ard::WalkPath { header, points: points.to_vec() }
     }
 
-    /// A walk path is followed segment by segment; a path that does not loop turns around at its
-    /// ends (FUN_002d2328 flips +0x84), a looping one wraps.
+    /// FUN_002d32f8 / FUN_002d4298: the curve passes through the points, an inner point's tangent
+    /// is half the difference of its neighbours, the ends of an open path take the quadratic's
+    /// direction, and the corner is rounded off the chords; FUN_002d4dc8 finds a place on the curve.
+    #[test]
+    fn the_walk_path_is_the_games_hermite_curve() {
+        let p = path(&[[0.0, 0.0, 0.0], [400.0, 0.0, 0.0], [400.0, 0.0, -400.0]], false);
+        let r = PathRun::new(7, &p, false);
+        let (a, b, c) = (Vec3::ZERO, Vec3::new(400.0, 0.0, 0.0), Vec3::new(400.0, 0.0, 400.0));
+        assert!((r.eval(0, 0.0) - a).length() < 1e-3 && (r.eval(0, 1.0) - b).length() < 1e-3 && (r.eval(1, 1.0) - c).length() < 1e-3);
+        assert!((r.tangents[1] - (c - a) * 0.5).length() < 1e-3, "{:?}", r.tangents[1]);
+        // The start's tangent comes from the quadratic through the three points: along the first
+        // chord, bent away from the third point.
+        assert!(r.tangents[0].x > 0.0 && r.tangents[0].z < 0.0, "{:?}", r.tangents[0]);
+        // The curve leaves the chords near the corner.
+        let mid = r.eval(0, 0.75);
+        assert!(mid.z.abs() > 1.0, "{mid:?}");
+        // A place on the curve is found again.
+        let q = r.eval(1, 0.3);
+        let (i, f, _) = r.nearest(q);
+        assert!((r.eval(i, f) - q).length() < 1.0, "{i} {f}");
+        // Header bit 1 means no tension (tangents of zero), bit 0 a loop.
+        let mut h = path(&[[0.0, 0.0, 0.0], [400.0, 0.0, 0.0], [400.0, 0.0, -400.0]], true);
+        h.header[4] |= 2;
+        let l = PathRun::new(7, &h, false);
+        assert!(l.loops && l.tension == 0.0 && l.tangents.iter().all(|t| t.length() < 1e-6));
+        // Two points: the chord is the tangent and the path cannot loop.
+        let two = PathRun::new(7, &path(&[[0.0, 0.0, 0.0], [400.0, 0.0, 0.0]], true), false);
+        assert!(!two.loops && (two.tangents[0] - b).length() < 1e-3);
+    }
+
+    /// Walking the way FUN_002d2a98 points (a step of 8 cm toward each answer): an open path is
+    /// followed to its end and turned around (FUN_002d2328), a locked one stops there, a loop wraps.
     #[test]
     fn a_walk_path_is_followed_and_turns_around_at_its_ends() {
-        // Game space: Y down, Z mirrored; the points lie along the game's +X.
-        let p = path(&[[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [100.0, 0.0, -100.0]], false);
-        let mut r = PathRun::new(7, &p, Vec3::new(10.0, 0.0, 0.0));
-        assert!((r.t - 0.1).abs() < 1e-4, "{}", r.t);
-        // The look-ahead: the first sampled place (steps of half the speed over the segment's
-        // length: 0.3, 0.5, 0.7) that lies more than 40 cm from the object.
-        let q = r.advance(40.0, Vec3::new(10.0, 0.0, 0.0)).unwrap();
-        assert!((q - Vec3::new(70.0, 0.0, 0.0)).length() < 1e-3 && (r.t - 0.7).abs() < 1e-4, "{q:?} t {}", r.t);
-        // Walking to each answer in turn reaches the end (app (100, 0, 100)) and turns around.
-        let mut pos = q;
-        let mut flipped = None;
-        for _ in 0..40 {
-            pos = r.advance(40.0, pos).expect("a bouncing path never stops");
-            if !r.forward {
-                flipped = Some(pos);
-                break;
-            }
-        }
-        let back = flipped.expect("the end turns the walk around");
-        assert!(back.x > 99.0 && back.z < 100.0, "{back:?}");
-        // A locked path stops at its end instead.
-        let mut locked = PathRun::new(7, &p, Vec3::ZERO);
-        locked.bounce = false;
-        let mut pos = Vec3::ZERO;
-        let mut stopped = false;
-        for _ in 0..40 {
-            match locked.advance(40.0, pos) {
-                Some(q) => pos = q,
-                None => {
-                    stopped = true;
+        let walk = |r: &mut PathRun, mut pos: Vec3, steps: usize| -> (Vec3, bool, bool) {
+            let (mut flipped, mut stopped) = (false, false);
+            for _ in 0..steps {
+                match r.advance(40.0, pos) {
+                    Some((a, _)) => pos += (a - pos).with_y(0.0).normalize_or_zero() * 8.0,
+                    None => {
+                        stopped = true;
+                        break;
+                    }
+                }
+                if !r.forward {
+                    flipped = true;
                     break;
                 }
             }
-        }
-        assert!(stopped && pos.z > 50.0, "{pos:?}");
-        // A loop wraps and keeps going forward.
-        let mut l = PathRun::new(7, &path(&[[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [0.0, 0.0, -100.0]], true), Vec3::ZERO);
+            (pos, flipped, stopped)
+        };
+        let p = path(&[[0.0, 0.0, 0.0], [400.0, 0.0, 0.0], [400.0, 0.0, -400.0]], false);
+        let mut r = PathRun::new(7, &p, false);
+        r.place_nearest(Vec3::new(40.0, 0.0, 0.0));
+        assert!((r.at(r.t) - Vec3::new(40.0, 0.0, 0.0)).length() < 15.0, "{}", r.t);
+        let (end, flipped, _) = walk(&mut r, Vec3::new(40.0, 0.0, 0.0), 400);
+        assert!(flipped && end.z > 330.0 && end.x > 380.0, "{end:?}");
+        let mut locked = PathRun::new(7, &p, false);
+        locked.bounce = false;
+        locked.place_nearest(Vec3::ZERO);
+        let (end, _, stopped) = walk(&mut locked, Vec3::ZERO, 400);
+        assert!(stopped && end.z > 330.0, "{end:?}");
+        let mut l = PathRun::new(7, &path(&[[0.0, 0.0, 0.0], [400.0, 0.0, 0.0], [0.0, 0.0, -400.0]], true), false);
+        l.place_nearest(Vec3::ZERO);
         let (mut pos, mut wrapped, mut last_t) = (Vec3::ZERO, false, 0.0);
-        for _ in 0..60 {
-            pos = l.advance(40.0, pos).unwrap();
-            wrapped |= l.t < last_t;
+        for _ in 0..400 {
+            if let Some((a, _)) = l.advance(40.0, pos) {
+                pos += (a - pos).with_y(0.0).normalize_or_zero() * 8.0;
+            }
+            wrapped |= l.t < last_t - 1.0;
             last_t = l.t;
         }
-        assert!(wrapped && l.forward && (0.0..3.0).contains(&l.t), "t {}", l.t);
+        assert!(wrapped && l.forward, "t {}", l.t);
+    }
+
+    fn entity(object: u32, serial: u16) -> kh2_ard::Entity {
+        kh2_ard::Entity { object, position: [0.0; 3], rotation: [0.0; 3], spawn_kind: 0, spawn_arg: 0, serial, raw: [0; 0x40] }
+    }
+
+    fn group(returns: Vec<[u8; 0x10]>, activators: Vec<kh2_ard::Activator>) -> Arc<NpcGroup> {
+        Arc::new(NpcGroup { tag: "t".into(), kind: 6, id: 1, paths: Vec::new(), returns, activators })
+    }
+
+    /// The fields of a walker (bit 0 clear) with the nine floats `rtn_default` hands to host 5.33.
+    fn walker(object: u32, serial: u16, g: &Arc<NpcGroup>) -> NpcFields {
+        let mut f = NpcFields::new(&entity(object, serial), g, serial as u32);
+        f.params = [360.0f32, 720.0, 180.0, 360.0, 720.0, 180.0, 360.0, 720.0, 180.0].map(f32::to_bits);
+        f
+    }
+
+    /// FUN_0018a130: two townspeople whose kind-0 parts meet and whose return entries name each
+    /// other (byte 0 = 0, the objentry id at +4) start a kind-5 pair together; the player's body
+    /// meeting a talk part (type 5) then starts a kind-4 follower toward him.
+    #[test]
+    fn the_class_pass_pairs_townspeople_and_turns_them_to_the_player() {
+        let entry = |id: u32| {
+            let mut e = [0u8; 0x10];
+            (e[1], e[3]) = (2, 1);
+            e[4..8].copy_from_slice(&id.to_le_bytes());
+            e
+        };
+        let (ga, gb) = (group(vec![entry(0x51f)], vec![]), group(vec![entry(0x51d)], vec![]));
+        let (mut fa, mut fb) = (walker(0x51d, 26, &ga), walker(0x51f, 30, &gb));
+        // The tt townspeople's parts: type 0 a sphere of 90 lifted 115, type 5 a sphere of 200 at 200 up.
+        let body = |p: Vec3| Some(parts::Shape { kind: 3, center: p + Vec3::Y * 115.0, r: [90.0, 90.0] });
+        let talk = |p: Vec3| Some(parts::Shape { kind: 3, center: p + Vec3::Y * 200.0, r: [200.0, 200.0] });
+        let (pa, pb) = (Vec3::ZERO, Vec3::new(150.0, 0.0, 0.0));
+        let mut minds = vec![
+            Mind { handle: 0x100, object: 0x51d, serial: 26, pos: pa, yaw: 0.0, body: body(pa), talk: talk(pa), fields: &mut fa },
+            Mind { handle: 0x200, object: 0x51f, serial: 30, pos: pb, yaw: std::f32::consts::PI, body: body(pb), talk: talk(pb), fields: &mut fb },
+        ];
+        let far = parts::Shape { kind: 0, center: Vec3::new(5000.0, 85.0, 0.0), r: [35.0, 55.0] };
+        assert_eq!(class_tick(&mut minds, 0, Some(&far)), Attention::Pair(1));
+        let (a, b) = (minds[0].fields.follower.clone(), minds[1].fields.follower.clone());
+        assert_eq!((a.kind, a.mode, a.target, a.forced, a.flag, a.motion), (5, 1, 0x200, 1, 1, 0x11f));
+        // The partner faces the other way (dot of the facings < 0): its flag is set too.
+        assert_eq!((b.kind, b.mode, b.target, b.forced, b.flag), (5, 1, 0x100, 1, 1));
+        assert!(a.timer == b.timer && (360.0..=720.0).contains(&a.timer), "{}", a.timer);
+        // The partner's own pass does not pair again (its follower is of kind 5).
+        assert_eq!(class_tick(&mut minds, 1, Some(&far)), Attention::None);
+        assert_eq!(minds[1].fields.follower.target, 0x100);
+        // Sora walks into the first one's talk part: a forced kind-4 follower toward the player;
+        // the pair is kept as the previous follower.
+        let near = parts::Shape { kind: 0, center: Vec3::new(0.0, 85.0, 150.0), r: [35.0, 55.0] };
+        assert_eq!(class_tick(&mut minds, 0, Some(&near)), Attention::Player);
+        let f = &minds[0].fields;
+        assert_eq!((f.follower.kind, f.follower.mode, f.follower.forced, f.prev.kind), (4, 2, 1, 5));
+        assert!(f.player_in_part);
+        // While it lasts nothing else starts.
+        assert_eq!(class_tick(&mut minds, 0, Some(&near)), Attention::None);
+        assert_eq!(minds[0].fields.follower.kind, 4);
+    }
+
+    /// FUN_0018a4b0 / FUN_0018b308 / FUN_0018b148: walking into a kind-6 group's volume draws one of
+    /// the return entries keyed to the volume's +2 by weight; the follower ends when the object
+    /// crosses the volume past the random threshold; leaving the volume first resets it.
+    #[test]
+    fn a_region_draws_a_weighted_entry_that_ends_past_a_threshold() {
+        let act = kh2_ard::Activator { shape: 0, option: 2, position: [0.0; 3], scale: [50.0, 100.0, 20.0], rotation: [0.0; 3], raw: [0; 0x40] };
+        let mut look = [0u8; 0x10];
+        (look[0], look[2], look[3]) = (2, 100, 2);
+        let mut flag = [0u8; 0x10];
+        (flag[0], flag[1], flag[2]) = (2, 3, 100);
+        let mut other = [0u8; 0x10];
+        (other[0], other[2]) = (1, 100);
+        let g = group(vec![other, look, flag], vec![act.clone()]);
+        let mut f = walker(0x51d, 1, &g);
+        let place = |x: f32| Vec3::new(x, 0.0, 0.0);
+        let mut minds = vec![Mind { handle: 0x100, object: 0x51d, serial: 1, pos: place(-40.0), yaw: 0.0, body: None, talk: None, fields: &mut f }];
+        assert_eq!(class_tick(&mut minds, 0, None), Attention::None);
+        let fl = minds[0].fields.follower.clone();
+        assert_eq!((fl.kind, fl.mode, fl.region, fl.flag, fl.motion), (2, 2, Some(0), 1, 0));
+        assert!((fl.start - 0.1).abs() < 1e-4, "{}", fl.start);
+        assert!((360.0..=720.0).contains(&fl.timer));
+        assert_eq!(minds[0].fields.region, Some(0));
+        // The same volume draws nothing new.
+        minds[0].fields.follower.motion = 77;
+        class_tick(&mut minds, 0, None);
+        assert_eq!(minds[0].fields.follower.motion, 77);
+        // Started in the lower half: the test passes at or above the threshold.
+        let mut t = fl.clone();
+        t.threshold = 0.5;
+        assert!(!follower_test(&t, &g, [-40.0, 0.0, 0.0]));
+        assert!(follower_test(&t, &g, [10.0, 0.0, 0.0]));
+        t.start = 0.9;
+        assert!(follower_test(&t, &g, [-40.0, 0.0, 0.0]) && !follower_test(&t, &g, [10.0, 0.0, 0.0]));
+        // Leaving the volume before the follower is done resets it.
+        minds[0].pos = place(500.0);
+        class_tick(&mut minds, 0, None);
+        assert_eq!((minds[0].fields.follower.kind, minds[0].fields.follower.region, minds[0].fields.region), (0, None, None));
+        // Host 5.4 always reloads +0xb00 from +0xb30 (180 here).
+        minds[0].fields.end_follower();
+        assert_eq!(minds[0].fields.timer_b00, 180.0);
+    }
+
+    /// The townspeople of tt02's kind-6 groups name each other as partners, and their models carry
+    /// the parts the class tests (type 0 and type 5 on the object's own frame), as does Sora's body.
+    #[test]
+    fn tt02_townspeople_name_each_other_and_carry_their_parts() {
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else { return eprintln!("skipped: no disc (set KH2_ISO)") };
+        let disc = Disc::open(&iso);
+        let (area, _) = kh2_ard::Area::parse(&disc.read("ard/tt02.ard").expect("tt02.ard")).expect("area");
+        let objs = disc.0.lock().ok().and_then(|mut a| kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).ok()).map(|d| d.rows).unwrap_or_default();
+        let mut people = Vec::new();
+        for g in ["a72_", "b72_", "c72_"].iter().filter_map(|t| area.spawns.get(*t)).flatten() {
+            assert_eq!(g.kind & 0xff, 6);
+            let e = &g.entities[0];
+            let named: Vec<u32> = g.returns.iter().filter(|r| r[0] == 0 && r[3] == 1).map(|r| u32::from_le_bytes([r[4], r[5], r[6], r[7]])).collect();
+            // Walking each path forward with steps of 5 cm toward the answers of the advance (speed
+            // 5, rtn_default's) goes round the whole loop, the place growing segment by segment.
+            for p in &g.paths {
+                let mut r = PathRun::new(0, p, false);
+                r.place_nearest(r.points[0]);
+                let mut pos = r.at(r.t);
+                let (mut back, mut laps, mut last) = (0, 0, r.t);
+                for _ in 0..20000 {
+                    let Some((a, _)) = r.advance(5.0, pos) else { break };
+                    pos += (a - pos).with_y(0.0).normalize_or_zero() * 5.0;
+                    let d = r.t - last;
+                    if d < -(r.points.len() as f32) / 2.0 {
+                        laps += 1;
+                    } else if d < -0.01 {
+                        back += 1;
+                        eprintln!("{:#x}: back from {last:.3} to {:.3} at {pos:?}", e.object, r.t);
+                    }
+                    last = r.t;
+                }
+                assert!(laps >= 1 && back == 0, "{:#x}: laps {laps}, steps back {back}", e.object);
+            }
+            people.push((e.object, named, objs.iter().find(|r| r.object_id == e.object).map(|r| r.model_name.clone()).unwrap_or_default()));
+        }
+        assert_eq!(people.len(), 3);
+        for (me, named, model) in &people {
+            for (other, theirs, _) in people.iter().filter(|p| p.0 != *me) {
+                assert!(named.contains(other) && theirs.contains(me), "{me:#x} and {other:#x} name each other");
+            }
+            let t = disc.read(&format!("obj/{model}.mdlx")).and_then(|f| parts::Table::from_mdlx(&f)).expect("parts");
+            for kind in [0, parts::TYPE_REACTION] {
+                let r = t.first(kind).expect("part");
+                assert!(parts::shape_of(r, Vec3::ZERO, 0.0).is_some(), "{model} part {kind} on the object's frame");
+            }
+        }
+        let p = disc.read("obj/P_EX100.mdlx").and_then(|f| parts::Table::from_mdlx(&f)).expect("P_EX100");
+        assert!(parts::shape_of(p.first(parts::TYPE_BODY).expect("body"), Vec3::ZERO, 0.0).is_some());
     }
 
     /// The spawn record's word +0x24 fills bits 0..6 of the object's bit array (FUN_001899d0) and
@@ -1140,8 +2031,8 @@ mod tests {
         let mut entry = [0u8; 0x10];
         entry[1] = 5;
         entry[3] = 4;
-        let g = Arc::new(NpcGroup { tag: "a72_".into(), kind: 6, id: 0x191, paths: Vec::new(), returns: vec![[0; 0x10], entry] });
-        let f = NpcFields::new(&e, &g);
+        let g = Arc::new(NpcGroup { tag: "a72_".into(), kind: 6, id: 0x191, paths: Vec::new(), returns: vec![[0; 0x10], entry], activators: Vec::new() });
+        let f = NpcFields::new(&e, &g, 1);
         assert!(f.test_bit(0) && f.test_bit(2) && !f.test_bit(1));
         assert!(!f.test_bit(7), "only bits 0..6 are copied");
         assert_eq!(f.follower.kind, 2);

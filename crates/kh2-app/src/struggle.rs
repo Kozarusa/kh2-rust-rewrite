@@ -296,7 +296,8 @@ impl Play {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Finish {
     /// Mission kinds 2, 0x19, 0x20 or event 0x9c: the menu of record 0x1a opens (`FUN_001bef10(0x1a)` ->
-    /// `FUN_0024f330`); the manager stays.
+    /// `FUN_0024f330`) and the manager stays while it is open. The app has no such menu: `mission_tick` ends
+    /// the manager at once (WP-F1 item 16).
     Menu,
     /// The event goes to the area (`FUN_00197b70`): a trigger that takes it ends the manager (`FUN_001b9518`);
     /// event 8 that no trigger takes ends it too, with the game-over path (`FUN_001b9ce0`).
@@ -1192,8 +1193,13 @@ fn mission_tick(
     let (p, o) = (a.counter_value(0), a.counter_value(1));
     let gone = match f {
         Finish::Menu => {
-            info!("struggle: last step (FUN_001b96e0): mission kind {} opens the menu of record 0x1a (FUN_0024f330), which the app does not have; the manager stays (player {p} orbs, opponent {o})", a.header.kind);
-            false
+            // The original opens the result menu of pause-menu record 0x1a over the frozen screen and the manager
+            // ends when that menu closes. The app has no such menu, so the manager ends here, at the end of the
+            // result layout (WP-F1 item 16: the counters, the clock, the result picture and the player lock go
+            // with it; before this the HUD stayed for ever) [inferred: what the game does when the menu closes
+            // was not read; the manager ending is the only path the app can take].
+            info!("struggle: last step (FUN_001b96e0): mission kind {} opens the menu of record 0x1a (FUN_0024f330), which the app does not have; the manager ends as if it had closed (player {p} orbs, opponent {o})", a.header.kind);
+            true
         }
         Finish::Event(ev, arg) => {
             out.write(GlobalEvent { id: ev, arg });

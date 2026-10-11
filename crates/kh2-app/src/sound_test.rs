@@ -269,7 +269,8 @@ fn setup(mut commands: Commands) {
         Text::new(""),
         TextFont { font_size: bevy::text::FontSize::Px(15.0), ..default() },
         TextColor(Color::srgb(1.0, 0.95, 0.6)),
-        Node { position_type: PositionType::Absolute, right: Val::Px(12.0), top: Val::Px(10.0), max_width: Val::Px(640.0), ..default() },
+        // Below the debug HUD's two text lines and its enemy list (right-aligned so the two do not overlap).
+        Node { position_type: PositionType::Absolute, right: Val::Px(12.0), top: Val::Px(110.0), max_width: Val::Px(720.0), ..default() },
         Visibility::Hidden,
     ));
 }
@@ -279,7 +280,9 @@ fn list_banks(disc: Res<Disc>, info: Res<VoiceInfo>, mut st: ResMut<SoundTest>) 
     if !std::env::var("KH2_SOUNDTEST_LIST").is_ok_and(|v| v != "0") {
         return;
     }
+    let st = &mut *st;
     let cat = st.catalog.get_or_insert_with(|| Catalog::load(&disc, &info.lang, &info.names.0));
+    st.cursor = cat.step_bank(Cursor::default(), 0);
     let mut total = 0;
     for b in &cat.banks {
         let filled = b.entries.iter().filter(|e| e.filled).count();

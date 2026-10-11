@@ -1551,7 +1551,7 @@ impl NpcHost<'_, '_> {
                     return Some((Value::Vec([0.0; 4]), St::Approx, "no path at +0x508: the game leaves the answer buffer as it was"));
                 }
                 let d = self.path_direction(f32::from_bits(arg(1)));
-                (Value::Vec([d.x, -d.y, -d.z, 1.0]), St::Approx, "the game's Hermite curve; the projection takes the global nearest search, not the local one of FUN_002d4ad8 / FUN_002d4800")
+                (Value::Vec([d.x, -d.y, -d.z, 1.0]), St::Approx, "FUN_002d2a98 ported for the ordinary path (+0x87 clear, no stop index +0x8c); a zero direction answers the facing")
             }
             // 5.4 (0x2ea290 -> FUN_0018ae08): the follower ends (copied to +0xaa0, reset) and the
             // +0xb00 timer takes the parameter word of its kind.
@@ -1733,7 +1733,7 @@ impl NpcHost<'_, '_> {
             178 => match self.fields.path.is_some() {
                 true => {
                     let d = self.path_direction(20.0);
-                    (Value::Vec([d.x, -d.y, -d.z, 1.0]), St::Approx, "the game's Hermite curve; the projection takes the global nearest search, not the local one of FUN_002d4ad8 / FUN_002d4800")
+                    (Value::Vec([d.x, -d.y, -d.z, 1.0]), St::Approx, "FUN_002d2a98 ported for the ordinary path (+0x87 clear, no stop index +0x8c); a zero direction answers the facing")
                 }
                 false => (Value::Vec([0.0; 4]), St::Impl, ""),
             },

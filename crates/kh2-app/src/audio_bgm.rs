@@ -158,6 +158,46 @@ impl AreaMusic {
     pub fn set_area(&mut self, field: u16, battle: u16) {
         *self = AreaMusic { field: Some(field), battle: Some(battle), switching: field != battle, ..Default::default() };
     }
+
+    /// `FUN_00137150` at area load with the pair (`FUN_001371d8` when the numbers are equal,
+    /// `FUN_00137300` when they differ): each slot whose stored number (0x354e98, 0x354ea8)
+    /// equals the new one is left alone; a changed slot takes the new number (0 silences it,
+    /// `FUN_00136cf8(slot, 0)`). Returns true when the field slot changed and must (re)start.
+    /// With an unchanged field number only the battle number (and whether a switch exists) is
+    /// updated; the playing field music and the switch state stay.
+    pub fn load_pair(&mut self, field: u16, battle: u16) -> bool {
+        if self.field != Some(field) {
+            self.set_area(field, battle);
+            return true;
+        }
+        self.battle = Some(battle);
+        self.switching = field != battle;
+        false
+    }
+}
+
+/// Where the music pair applied at an area load came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PairSource {
+    /// Area-script opcode 0x10 of this area's programs (`FUN_001a7700` writes `DAT_01c95638`).
+    Script,
+    /// No opcode 0x10 ran: the word keeps the pair of the previous area (`FUN_00181148` does not
+    /// reset it [inferred: no other writer was found, `mips_scan --addr 0x1c95638 --jal 0x1a7700`]).
+    Kept,
+    /// Nothing set a pair since the app started (it does not boot through the areas before):
+    /// the `arif` pair of `03system.bin` as a labelled stand-in.
+    Arif,
+}
+
+/// The pair `FUN_00137150` reads at area load (`FUN_001a7720` -> `DAT_01c95638`): the area
+/// script's opcode 0x10, else the previous pair, else (nothing set since start-up) the `arif`
+/// stand-in.
+pub fn area_pair(script: Option<[u16; 2]>, previous: Option<(u16, u16)>, arif: impl FnOnce() -> Option<(u16, u16)>) -> Option<((u16, u16), PairSource)> {
+    match (script, previous) {
+        (Some([f, b]), _) => Some(((f, b), PairSource::Script)),
+        (None, Some(p)) => Some((p, PairSource::Kept)),
+        (None, None) => arif().map(|p| (p, PairSource::Arif)),
+    }
 }
 
 /// What the per-frame task asks for.
@@ -432,5 +472,28 @@ mod tests {
         assert_eq!(m.step(false), Switch::Leave);
         assert_eq!(m.step(false), Switch::None);
         assert_eq!(m.step(true), Switch::Enter);
+    }
+
+    #[test]
+    fn the_area_pair_comes_from_opcode_0x10_and_restarts_only_a_changed_field_number() {
+        let arif = || Some((118, 119));
+        // Opcode 0x10 wins; without it the previous pair stays; with neither, the arif stand-in.
+        assert_eq!(area_pair(Some([53, 53]), Some((118, 119)), arif), Some(((53, 53), PairSource::Script)));
+        assert_eq!(area_pair(None, Some((53, 53)), arif), Some(((53, 53), PairSource::Kept)));
+        assert_eq!(area_pair(None, None, arif), Some(((118, 119), PairSource::Arif)));
+        assert_eq!(area_pair(None, None, || None), None);
+        // FUN_001371d8 / FUN_00137300: an equal field number is not restarted.
+        let mut m = AreaMusic::default();
+        assert!(m.load_pair(118, 119));
+        m.step(true);
+        assert!(m.in_battle_music);
+        assert!(!m.load_pair(118, 119));
+        assert!(m.in_battle_music, "same pair: the switch state stays");
+        assert!(!m.load_pair(118, 118));
+        assert!(!m.switching && m.battle == Some(118));
+        assert!(m.load_pair(119, 119));
+        assert!(!m.in_battle_music && m.field == Some(119));
+        // Number 0 is a change too (it silences the slot).
+        assert!(m.load_pair(0, 0));
     }
 }

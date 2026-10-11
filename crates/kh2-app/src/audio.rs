@@ -1006,11 +1006,16 @@ fn area_arif(disc: &Disc, area: &str) -> Option<(u16, u16, u16)> {
     Some((u16_at(rec + 0x30)?, u16_at(rec + 0x10)?, u16_at(rec + 0x12)?))
 }
 
-/// Plays the area's field music whenever a new area finishes loading.
+/// The area's music when a new area finishes loading (`FUN_00137150`): the pair of the area
+/// script's opcode 0x10 once `area::run_area_script` has run (`AreaRecord.run`), else the pair
+/// already playing, else the `arif` pair as a start-up stand-in (`audio_bgm::area_pair`). The
+/// field music restarts only when its number changes (`FUN_001371d8` / `FUN_00137300`); number 0
+/// silences it.
 pub fn area_bgm(
     disc: Res<Disc>,
     audio: Res<Audio>,
     area: Res<crate::assets::CurrentArea>,
+    rec: Option<Res<crate::area::AreaRecord>>,
     mut music: ResMut<crate::audio_bgm::AreaMusic>,
     mut last: Local<Option<String>>,
 ) {
@@ -1018,19 +1023,42 @@ pub fn area_bgm(
     if last.as_deref() == Some(loaded.as_str()) {
         return;
     }
+    // Wait for this area's script run (it may land a frame after the load).
+    let script = match rec.as_deref() {
+        Some(r) => match r.run.as_deref() {
+            Some(run) if run.name == loaded => run.script.music,
+            _ => return,
+        },
+        None => None,
+    };
     *last = Some(loaded.clone());
     if std::env::var_os("KH2_NO_MUSIC").is_some() {
         return;
     }
-    match area_music(&disc, &loaded) {
-        Some((field, battle)) => {
-            info!("{loaded}: music field {field} battle {battle}");
-            music.set_area(field, battle);
-            if !play_bgm(&disc, &audio, field as u32) {
-                warn!("music {field}: cannot load");
-            }
+    let previous = music.field.zip(music.battle);
+    let Some(((field, battle), source)) = crate::audio_bgm::area_pair(script, previous, || area_music(&disc, &loaded)) else {
+        warn!("{loaded}: no area music");
+        return;
+    };
+    let why = match source {
+        crate::audio_bgm::PairSource::Script => "area script opcode 0x10",
+        crate::audio_bgm::PairSource::Kept => "no opcode 0x10: previous pair kept",
+        crate::audio_bgm::PairSource::Arif => "no opcode 0x10 since start-up: arif stand-in",
+    };
+    if !music.load_pair(field, battle) {
+        info!("{loaded}: music field {field} battle {battle} ({why}); field music unchanged, not restarted");
+        return;
+    }
+    info!("{loaded}: music field {field} battle {battle} ({why})");
+    if field == 0 {
+        if let Ok(mut s) = audio.0.lock()
+            && let Some(d) = s.driver.as_mut()
+        {
+            d.bgm_stop(0, false);
+            d.bgm_stop(1, false);
         }
-        None => warn!("{loaded}: no area music"),
+    } else if !play_bgm(&disc, &audio, field as u32) {
+        warn!("music {field}: cannot load");
     }
 }
 

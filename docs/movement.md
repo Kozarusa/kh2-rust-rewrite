@@ -253,11 +253,90 @@ and no other roll. The Square handler chain (section 2) gives, on the USA disc, 
 while moving with Quick Run learned, else the guard. The app keeps the Final Mix rule (tap = the stand-in
 roll played with A150) because the user asked for it; `KH2_GROWTH=0,1,0,0` shows the USA behaviour.
 
+## 5. Which collision polygons stop the walking player (WP-G3; user report 2026-10-11: invisible walls)
+
+The user met invisible walls in Tram Common and Station Heights. Place names (`msg/us/place.bin` through
+`hud_card`, log `hud: area card for tt7: "Market Street: Tram Common"`): **tt07 = Tram Common, tt06 =
+Station Heights** (tt04 and tt05 are both Sandlot, tt08 Station Plaza).
+
+### The original's rule
+* The player's body collider is swept by `FUN_00143840` -> `FUN_00164138` (the sphere, stepped through
+  `FUN_00163f98`; `FUN_0019a8e8` is the actor's entry). The polygons come from `FUN_00141b50`, which walks
+  the map's tree and keeps a polygon when BOTH hold:
+  1. the filter armed by `FUN_00164138` itself (`FUN_00141b30(map, 0xf, 4, 1, 0)`: mask 0xf, value 4,
+     inverted): the attribute's low nibble is **not 4**;
+  2. the handler `FUN_0032e3b8(map, kind)` picks from the table at 0x378f7c accepts the attribute word.
+     `kind` is bits 3..6 of the collider flag word (actor +0x600; `(word << 0x1d) >> 0x20 & 0xf`, the
+     argument of the `FUN_00141b50` call at 0x164138). The handlers (code at 0x32e3dc..0x32e44c, read
+     from the executable's instructions; only index 4 has a decompiled `.c`):
+
+     | kind | handler | accepts |
+     |---|---|---|
+     | 0, 6 | 0x32e438 | attribute & 0x10 (PARTY_COLLIDE) |
+     | 1 | 0x32e3dc | attribute & 0x20 (OBJECT_COLLIDE) |
+     | 2 | 0x32e3f0 | attribute & 0x40 |
+     | 3 | 0x32e3fc | attribute & 0x10 or attribute & 0x80000 |
+     | 4 | 0x32e420 | attribute & 0x80 (ATTACK_COLLIDE; section 3) |
+     | 5 | 0x32e42c | attribute & 0x100 |
+     | 7..15 | 0x32e444 / 0x32e44c | everything |
+
+* Party members have kind 0: their constructors `FUN_001746e0` and `FUN_00174800` clear bits 3..6 of
+  +0x600 (`puVar4[0x180] & 0xffffff87`). Other classes set theirs: `FUN_001a5178`, `FUN_001a51e8` kind 1
+  (objects), `FUN_00189858` kind 3 (townspeople), `FUN_001d5c70`, `FUN_001d5cf8` a computed kind.
+* The solver `FUN_001632b8` then SKIPS a polygon whose attribute has bit 0x100000 (it tests it first, in all
+  three of its passes). It is one-sided: `FUN_001625e0` takes the signed plane distance of the sphere centre
+  and collides only for `0 <= d <= radius`, so a polygon cannot be walked into from behind.
+* `FUN_00330c80` records, for a hit polygon with attribute 0x800 or 0x1000, the polygon index and normal in
+  the collider (+0x62, +0x40 and +0x64, +0x50): the barrier bits, not a collision decision.
+
+### What the app did, and does now
+* Before: `World::slide` (the player's wall slide, `Motor::move_by`) stopped at EVERY wall-like triangle
+  (normal more than 60 degrees from vertical) whatever the polygon's attribute. A map's walls with attack-
+  only (0x82) or object-only (0x22, 0x62, 0x80002) attributes therefore blocked Sora although the game's
+  walking filter drops them. `kh2_map::stops_party(attr)` is the filter; `World::slide` applies it to maps
+  with COCT data (`slide_with(.., party)` takes the choice; the enemies' simple mover `step_m` keeps the old
+  behaviour because their kind was not read).
+* Survey of the disc (wall-like polygons by attribute): the real walls are 0x172, 0x1f2, 0x1172, 0x972,
+  0x3f1, 0x3f2, 0x7f1, 0x803f1; the others are 0x82 (several hundred per Twilight Town area: tt06 352,
+  tt07 480, tt10 861), 0x22 (tt07 114, tt06 7), 0x80002 (tt07 63), 0x62, 0x284. Test of the walk-through
+  below counts them.
+* Tram Common examples (tt07): the box z = 2100..2500, x = 550..1600 (0x80002 on the -z face, 0x22 on
+  the +z face) and the volumes at x = 3700..4100 (0x80002 / 0x22) in the middle of the plaza; Station
+  Heights (tt06): 0x22 slabs at x = -1250, 0x82 walls at x = 1400 and 450 on the lower level.
+* Test `world::tests::invisible_walls_of_tram_common_and_station_heights_do_not_stop_sora` (reads
+  `map/us/tt06.map` and `tt07.map`, needs `KH2_ISO`): five scripted runs of 30 ticks of 8 units into such
+  walls. The old rule (every polygon stops) halts Sora in front of the plane (for example z = 2065 at the
+  box face z = 2100), the walking filter lets him through; four real walls (0x172 at x = 313 in tt06,
+  0x1f2 at z = -1700 in tt07) stop him at the same point under both. Unit test
+  `kh2_map::tests::walking_filter_keeps_party_collide_only` covers the attribute rule.
+* Harness (the log `KH2_TRACE=1` prints one `trace ... pos (x y z)` line per tick; build of the old rule =
+  the integration build in the main checkout):
+  * tt07 `KH2_ENTRANCE=2 KH2_KEYS=6:W:4.0` (Sora at (4650, 0, 1100) facing -x): old rule `pos (4538 0 1100)`
+    and he stays there; walking filter `pos (4522 0 1100)`, `(4122 0 1100)`, `(3722 5 1100)` ... `(3128 -246
+    1114)`: through the x = 4100 volume.
+  * tt06 `KH2_ENTRANCE=0 KH2_KEYS=6:S:3.0` (Sora at (-1175, 0, -300), the wall at x = -1250 behind him): old
+    rule stops at `pos (-1215 20 -300)`; walking filter `(-1223 20 -300)`, `(-1255 40 -300)` ... `(-1786 40 -305)`.
+
+### Not ported / gaps
+* The floor and ceiling probes keep their own rule: `World::ground` takes every upward polygon and
+  `World::ceiling` every downward one; the game's floor ray (`FUN_001423d8`, filter armed by
+  `FUN_00143840`'s callee) was not compared for attributes (PARTY_STAND bit 0x1, "player fall" 0x4).
+* The mode bits of the collider (bits 1..2 of +0x600; `FUN_00169af0` sets bit 1 from byte +4 of the body
+  shape) and the map flag +0xd1 select special passes of `FUN_001632b8` that treat attribute nibble 1
+  differently; not ported (the app uses one pass).
+* Kinds other than 0: enemies (`step_m` keeps stopping at every wall), the townspeople (kind 3) and objects
+  (kind 1) were not matched to their app movers. `prize.rs` calls `World::slide` and therefore gets the party
+  filter now: see the report's outside-ownership note.
+* The wall/floor split by the 60-degree normal is the app's; the game's sphere solver pushes out of every
+  accepted polygon whatever its slope.
+
 ## Decompile index
 | address | read for |
 |---|---|
 | 0x1a27e8, 0x18c8e0, 0x18ca78, 0x1894d0 | attack entry tick, wall cast gate, wall hit, volume centre |
 | 0x143aa0, 0x1657d8, 0x141f08, 0x141b30, 0x141b50, 0x32e3b8, 0x32e420, 0x141d90, 0x1623a0 | the segment cast and its polygon filter |
+| 0x143840, 0x164138, 0x163f98, 0x1632b8, 0x1625e0, 0x330c80, 0x19a8e8, 0x378f7c table (0x32e3dc..0x32e44c) | the walking collider: polygon filter, kinds, solver (section 5) |
+| 0x1746e0, 0x174800, 0x1a5178, 0x1a51e8, 0x189858, 0x1d5c70 | collision kind of each object class (+0x600 bits 3..6) |
 | 0x176050 | attack start: leap or no velocity write |
 | 0x176400, 0x18eec0, 0x18ed58, 0x17bee0 | leap aim: points, radii, rise time |
 | 0x1796a8, 0x17b278, 0x17b1e0, 0x17b328 | mover launch, jump set-up, jump mover start |

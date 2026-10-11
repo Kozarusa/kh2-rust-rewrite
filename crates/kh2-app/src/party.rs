@@ -1098,7 +1098,11 @@ fn party_tick(
                     let mgr = &mut *mgr;
                     let rng = std::cell::RefCell::new(mgr);
                     // FUN_0010f8d8 first when someone is in danger; FUN_0010fcd0 when it found nothing.
-                    let urgent = if emergency_now { battle::emergency(&ai.records, &mut choosing, true, now.mp_charge, |i| can(i, false), |n| rng.borrow_mut().random(n)) } else { None };
+                    // FUN_0010fcd0 and FUN_0010f8d8 (FUN_0010f698) do nothing while the script is busy
+                    // (+0x390): the member stands and the script's motion plays.
+                    let urgent = if script_busy {
+                        None
+                    } else if emergency_now { battle::emergency(&ai.records, &mut choosing, true, now.mp_charge, |i| can(i, false), |n| rng.borrow_mut().random(n)) } else { None };
                     match urgent {
                         Some(k) => {
                             if log {
@@ -1106,6 +1110,7 @@ fn party_tick(
                             }
                             Choice::Do(k)
                         }
+                        None if script_busy => Choice::Busy,
                         None => battle::choose(&ai.records, &mut choosing, &ai.params, m.class, &now, false, chain, setting, can, || rng.borrow_mut().roll(), |n| rng.borrow_mut().random(n)),
                     }
                 };
@@ -1193,6 +1198,7 @@ fn party_tick(
                         }
                         _ => (dir, speed) = toward(m),
                     },
+                    (Choice::Busy, _) => (dir, speed) = (facing, 0.0),
                     (Choice::Stand, _) => {
                         (dir, _) = toward(m);
                         speed = 0.0;
@@ -1948,12 +1954,14 @@ mod tests {
             );
             let rig = data.rig(&disc, &row).expect("rig");
             let order = data.order(1);
-            for motion in [MOTION_DOWN, MOTION_GET_UP, crate::items::USE_MOTION as i32, 3] {
-                let slot = battle::remap(motion, order, |s| rig.mset.has(s));
+            // 192 (0xc0): the spells' cast motion of Donald's `fire` .. `cure` modes (R1559); slot 768 is its
+            // number as the script asks for it.
+            for motion in [MOTION_DOWN, MOTION_GET_UP, crate::items::USE_MOTION as i32, 3, 0xc0] {
+                let slot = battle::remap(motion, order, |s| rig.mset.has(s)).or_else(|| (motion == 0xc0 && rig.mset.has(768)).then_some(768));
                 let tr = slot.and_then(|s| rig.mset.get(s)).map(|s| s.triggers.frames.iter().map(|f| (f.frame, f.id)).collect::<Vec<_>>());
                 let span = slot.and_then(|s| rig.mset.get(s)).and_then(|s| s.motion.as_ref()).map(|mo| (mo.frame_start, mo.frame_end, mo.fps));
                 eprintln!("  motion {motion:#x} -> battle slot {slot:?}, frames (start, end, fps) {span:?}, frame triggers (frame, id) {tr:?}");
-                assert!(slot.is_some(), "{model}: motion {motion:#x}");
+                assert!(slot.is_some() || motion == 0xc0, "{model}: motion {motion:#x}");
             }
         }
     }

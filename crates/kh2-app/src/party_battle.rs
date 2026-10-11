@@ -429,6 +429,8 @@ pub enum Choice {
     Stand,
     /// The last choice was repeated twice: move toward the target (or follow) (FUN_001103f8).
     Move,
+    /// The caller skipped the choice: the script is busy (+0x390, FUN_0010f698); the member stands.
+    Busy,
 }
 
 /// FUN_0010fcd0 after its emergency and busy gates (the caller's). `setting(i)` is the member's

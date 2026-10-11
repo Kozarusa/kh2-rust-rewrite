@@ -115,6 +115,28 @@ fn friend_attach(mut commands: Commands, disc: Res<Disc>, mut scripts: ResMut<Fr
     }
 }
 
+/// The motion controller's trigger bytes (+0x238 / +0x239, hosts 1.150 / 1.151) of the member after the
+/// last advance, as `enemy_ai` builds them for enemies: range triggers 16..19 active, frame triggers 9..12
+/// crossed (the dispatcher 0x188498). The members' scripts wait on bit 0 of +0x239 for the cast (Donald's
+/// R089a after motion 192, whose trigger 9 lies at tick 26). [inferred] Frame triggers are counted from the
+/// motion's first frame, as `party` does for the item motion (docs/party.md section 10).
+fn trigger_bits(anim: &Animator) -> [u8; 2] {
+    let (Some(t), Some(m)) = (anim.triggers(), anim.motion()) else { return [0; 2] };
+    let g = |f: f32| (f - m.frame_start) * crate::data::LOGIC_HZ / m.fps.max(1.0);
+    let mut bits = [0u8; 2];
+    for k in 0..4u8 {
+        if t.is_active(anim.gframe(), 16 + k) {
+            bits[0] |= 1 << k;
+        }
+    }
+    if anim.frame != anim.prev_frame {
+        for ft in t.crossed(g(anim.prev_frame), g(anim.frame)).filter(|f| (9..=12).contains(&f.id)) {
+            bits[1] |= 1 << (ft.id - 9);
+        }
+    }
+    bits
+}
+
 #[allow(clippy::too_many_arguments)]
 fn friend_update(
     world: Option<Res<World>>,
@@ -139,6 +161,7 @@ fn friend_update(
         obj.motor.grounded = true;
         obj.slot = anim.slot;
         obj.frame = anim.frame;
+        obj.trigger_bits = trigger_bits(anim);
         let env = Env {
             player: s.motor.pos,
             player_yaw: s.motor.yaw,

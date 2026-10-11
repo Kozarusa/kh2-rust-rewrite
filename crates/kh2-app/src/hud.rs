@@ -48,7 +48,7 @@ impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(HudGfxPlugin)
             .add_message::<DamagePopup>()
-            .insert_resource(DebugHud(std::env::var("KH2_DEBUGHUD").is_ok_and(|v| v != "0")))
+            .insert_resource(DebugHud(std::env::var("KH2_DEBUGHUD").map_or(true, |v| v != "0")))
             .init_resource::<SoraPanel>()
             .init_resource::<TargetHud>()
             .init_resource::<TargetBubble>()

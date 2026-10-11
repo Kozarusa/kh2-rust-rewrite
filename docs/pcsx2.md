@@ -4,7 +4,7 @@ Set up 2026-10-06 with the user's blessing ("do what you must"). PCSX2 v2.8.2: `
 `C:\Users\KoZa\Documents\PCSX2` (BIOS SCPH-70012/77008/90006, `inis\PCSX2.ini`; backup of the original ini: `PCSX2.ini.bak-kh2rs`).
 Change made: `EnablePINE = true` (PINE slot 28011 = TCP localhost). No savestates exist yet (the user may create some with F1).
 
-Launch (PowerShell): `Start-Process 'C:\Program Files\PCSX2\pcsx2-qt.exe' -ArgumentList '-batch','--','"C:\Users\KoZa\Documents\ClaudeShit\Kingdom Hearts II (USA).iso"'`
+Launch (PowerShell): `Start-Process 'C:\Program Files\PCSX2\pcsx2-qt.exe' -ArgumentList '-batch','--','"C:\Users\KoZa\Documents\AGENTS\ClaudeShit\Kingdom Hearts II (USA).iso"'`
 (boots to the opening cutscene in about 20 s). Close it when done (`Stop-Process -Name pcsx2-qt`): it competes for CPU with builds.
 
 Tools (local/tools):

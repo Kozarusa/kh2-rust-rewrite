@@ -684,7 +684,7 @@ pub fn growth_of(a: &Abilities) -> Growth {
 /// block's growth is the form's own ability; outside one `KH2_GROWTH` overrides it. Runs between
 /// the drive code's swap (`Sim::Weapon`) and the controller (`Sim::Sora`), so a form's list applies
 /// on the tick the body is swapped.
-fn sync_controller(a: Res<Abilities>, over: Option<Res<GrowthOverride>>, mut view: ResMut<sora::Abilities>, growth: Option<ResMut<Growth>>) {
+fn sync_controller(a: Res<Abilities>, over: Option<Res<GrowthOverride>>, mut view: ResMut<sora::Abilities>, growth: Option<ResMut<Growth>>, mut logged: Local<bool>) {
     *view = sora::Abilities::from_block(&a);
     let from_block = growth_of(&a);
     let (next, source) = match over.and_then(|o| o.0) {
@@ -693,8 +693,9 @@ fn sync_controller(a: Res<Abilities>, over: Option<Res<GrowthOverride>>, mut vie
         _ => (from_block, "Sora's equipped abilities"),
     };
     if let Some(mut g) = growth
-        && *g != next
+        && (*g != next || !*logged)
     {
+        *logged = true;
         *g = next;
         info!(
             "abilities: growth level High Jump {}, Quick Run {}, Aerial Dodge {}, Glide {}, Dodge Roll {} (from {source})",

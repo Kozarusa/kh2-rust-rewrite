@@ -13,8 +13,8 @@
 //! 0xf, 0)` out and `FUN_0014a7f0(fader, 0xf, 0)` in; `FUN_0014a710` makes the duration `2 x 15`
 //! ticks and the colour black (`+0xf4` 0) or white. Kind 0 is the 2D layout in slot 2 of the table
 //! at 0x355118 (`FUN_0015d058` plays its animation 1 out, `FUN_0015d1a8` animation 0 in plus a
-//! 2-tick fader fade-in): the keyhole wipe of the reference video. That layout is not decoded, so
-//! kind 0 is drawn as the same black fade, labelled in the log as a stand-in.
+//! 2-tick fader fade-in): the keyhole wipe of the reference video, drawn as a HUD node (`Keyhole`).
+//! When the layout cannot be loaded, kind 0 falls back to the 30-tick black fade.
 //!
 //! Gate (`FUN_001d88a0(volume, header +0x1e)`): 0 passes; 1 and 2 need `FUN_001d8908` (the player
 //! is a controlled object, not busy by actor flags `+0x108` 0x80000 / 0x10000000 [inferred: an
@@ -45,9 +45,10 @@ impl Plugin for AreaJumpPlugin {
             .init_resource::<JumpTask>()
             .init_resource::<ExitConsts>()
             .init_resource::<ExitLocks>()
+            .init_resource::<Keyhole>()
             .add_systems(Startup, (load_consts, spawn_fader))
             .add_systems(FixedUpdate, tick.after(Sim::Sora).before(Sim::Enemy))
-            .add_systems(Update, draw_fader.in_set(crate::schedule::Frame::Hud));
+            .add_systems(Update, (load_keyhole, draw_fader).in_set(crate::schedule::Frame::Hud));
     }
 }
 
@@ -74,13 +75,6 @@ fn load_consts(disc: Res<Disc>, mut consts: ResMut<ExitConsts>, mut locks: ResMu
         if area::arealog() {
             info!("exits: lock table {} with {n} areas, every lock halfword 0 (no save block 0x33f918 in the app; flag ops 2..5 are E5)", kh2_ard::progress::LOCK_TABLE);
         }
-    }
-    if area::arealog()
-        && let Some(f) = disc.read("field2d/us/tt0field.2dd")
-        && let Ok(bar) = kh2_bar::parse(&f)
-    {
-        let kinds: Vec<u32> = bar.iter().map(|e| e.kind as u32).collect();
-        info!("exits: fade kind 0 layout = slot {KEYHOLE_SLOT} of tt0field.2dd (image, sequence entries {:?}); not drawn, black stand-in", layout_slot(&kinds, KEYHOLE_SLOT));
     }
     let Some(exe) = disc.read_root("SLUS_210.05") else { return };
     let f = |va: usize| exe.get(va - EXE_BIAS..va - EXE_BIAS + 4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
@@ -201,6 +195,110 @@ pub fn fade_alpha(out: bool, t: f32) -> f32 {
     if out { k } else { 1.0 - k }
 }
 
+/// The 2-tick screen fader of the keyhole wipe (`FUN_0014a7c8(fader, 1, 0)` out after the layout's
+/// group ended, `FUN_0014a7f0(fader, 1, 0)` in alongside group 0): `2 x 1` ticks.
+pub const WIPE_FADER_TICKS: f32 = 2.0;
+
+/// App-only guard: a wipe whose group never ends stops waiting after this many ticks.
+pub const WIPE_MAX_TICKS: f32 = 600.0;
+
+/// The keyhole wipe: fade kind 0's layout (slot 2 of the world's field file) as one HUD node.
+#[derive(Resource, Default, Debug)]
+pub struct Keyhole {
+    /// The HUD node (`None` when the layout did not load: kind 0 then uses the black fade).
+    pub node: Option<usize>,
+    tried: bool,
+    /// The running jump plays the wipe (set when its fade starts).
+    wiping: bool,
+    /// The fade-out tick at which group 1 ended and the 2-tick fader to black started.
+    black_from: Option<f32>,
+}
+
+/// The fader's alpha (0..1) during the keyhole wipe: out, black once group 1 has ended
+/// (`black_from`) over 2 ticks; in, from black over the first 2 ticks.
+pub fn wipe_alpha(out: bool, t: f32, black_from: Option<f32>) -> f32 {
+    if out {
+        black_from.map_or(0.0, |b| ((t - b) / WIPE_FADER_TICKS).clamp(0.0, 1.0))
+    } else {
+        1.0 - (t / WIPE_FADER_TICKS).clamp(0.0, 1.0)
+    }
+}
+
+/// One fade-out tick of the wipe at tick `t` (`FUN_0015cf58`): records when the group ended and
+/// answers whether the fade is done (the fader has reached black).
+pub fn wipe_out_step(t: f32, group_ended: bool, black_from: &mut Option<f32>) -> bool {
+    if black_from.is_none() && (group_ended || t >= WIPE_MAX_TICKS) {
+        *black_from = Some(t);
+    }
+    black_from.is_some_and(|b| t - b >= WIPE_FADER_TICKS)
+}
+
+/// One fade-in tick (`FUN_0015d0e8`): done when group 0 has ended and the fader is idle.
+pub fn wipe_in_done(t: f32, group_ended: bool) -> bool {
+    t >= WIPE_FADER_TICKS && (group_ended || t >= WIPE_MAX_TICKS)
+}
+
+/// The index in `SeqFile::from_bar`'s list (every BAR entry pair that decodes as an image followed
+/// by a sequence, in order) of the pair starting at image entry `image`; `ok(j)` answers whether
+/// entries `j`, `j + 1` decode as such a pair.
+pub fn pair_index(image: usize, ok: impl Fn(usize) -> bool) -> Option<usize> {
+    ok(image).then(|| (0..image).filter(|&j| ok(j)).count())
+}
+
+/// Finds the keyhole layout once the HUD has its files. The HUD loads the world's
+/// `field2d/us/<world>0field.2dd` first (`SeqFile::from_bar`), so slot 2's pair is one of its
+/// files; the match is checked by image size and sequence before a hidden root node at (0, 0) is
+/// added on it.
+fn load_keyhole(disc: Res<Disc>, area: Res<CurrentArea>, scene: Option<ResMut<crate::hud::HudScene>>, mut key: ResMut<Keyhole>) {
+    let Some(mut scene) = scene else { return };
+    if key.tried || scene.files.is_empty() {
+        return;
+    }
+    key.tried = true;
+    let world = area.name.get(..2).unwrap_or("tt");
+    let name = format!("field2d/us/{world}0field.2dd");
+    let found = (|| {
+        let data = disc.read(&name)?;
+        let bar = kh2_bar::parse(&data).ok()?;
+        let kinds: Vec<u32> = bar.iter().map(|e| e.kind as u32).collect();
+        let (i, s) = layout_slot(&kinds, KEYHOLE_SLOT)?;
+        if s != i + 1 {
+            return None;
+        }
+        let ok = |j: usize| j + 1 < bar.len() && kh2_image::imgd::decode(bar[j].data).is_some() && kh2_image::seqd::parse(bar[j + 1].data).is_some();
+        let idx = pair_index(i, ok)?;
+        let img = kh2_image::imgd::decode(bar[i].data)?;
+        let seq = kh2_image::seqd::parse(bar[s].data)?;
+        let f = scene.files.get(idx)?;
+        (f.width == img.width && f.height == img.height && f.seq.groups.len() == seq.groups.len() && seq.groups.len() >= 2).then_some(idx)
+    })();
+    let Some(file) = found else {
+        warn!("keyhole: slot {KEYHOLE_SLOT} layout of {name} not among the HUD's files; fade kind 0 uses the black fade");
+        return;
+    };
+    let mut node = crate::hud::HudNode::new(file, None);
+    node.visible = false;
+    key.node = Some(scene.add(node));
+    if area::arealog() {
+        info!("keyhole: slot {KEYHOLE_SLOT} of {name} is HUD file {file}; node {:?}", key.node);
+    }
+}
+
+/// Starts group `group` of the wipe on its node and shows it.
+fn play_wipe(scene: &mut Option<ResMut<crate::hud::HudScene>>, key: &Keyhole, group: usize) -> bool {
+    let (Some(scene), Some(n)) = (scene.as_mut(), key.node) else { return false };
+    scene.set_group(n, group);
+    scene.nodes[n].visible = true;
+    true
+}
+
+fn wipe_ended(scene: &Option<ResMut<crate::hud::HudScene>>, key: &Keyhole) -> bool {
+    match (scene.as_ref(), key.node) {
+        (Some(s), Some(n)) => s.nodes[n].player.finished(),
+        _ => true,
+    }
+}
+
 /// The player as the gate and prompt tests see him (app axes, centimetres).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Walker {
@@ -288,12 +386,17 @@ fn tick(
     disc: Res<Disc>,
     sora: Query<&Sora>,
     mut refused: Local<u32>,
+    mut key: ResMut<Keyhole>,
+    mut scene: Option<ResMut<crate::hud::HudScene>>,
 ) {
     // The jump task.
     match *task {
         JumpTask::Idle => {}
         JumpTask::FadeOut { dest, kind, t } => {
-            if t + 1.0 < FADE_TICKS {
+            let ended = wipe_ended(&scene, &key);
+            let k = &mut *key;
+            let done = if k.wiping { wipe_out_step(t + 1.0, ended, &mut k.black_from) } else { t + 1.0 >= FADE_TICKS };
+            if !done {
                 *task = JumpTask::FadeOut { dest, kind, t: t + 1.0 };
             } else {
                 // FUN_00104c68 -> FUN_00104bd0: the destination becomes the record; the area thread
@@ -310,6 +413,7 @@ fn tick(
                             g.fired = false;
                             g.held = true;
                         }
+                        key.wiping = key.wiping && play_wipe(&mut scene, &key, 0);
                         *task = JumpTask::FadeIn { kind, t: 0.0 };
                         return;
                     }
@@ -329,13 +433,23 @@ fn tick(
         JumpTask::Loading { dest, kind } => {
             let name = dest_name(&dest);
             if area.loaded.as_deref() == Some(name.as_str()) && rec.placed.as_deref() == Some(name.as_str()) {
-                info!("jump: {name} loaded; fade kind {kind} in{}", if kind == 0 { " (keyhole layout 0x355118 slot 2 decoded, not drawn: black stand-in)" } else { "" });
+                // FUN_0015d1a8: group 0 of the layout and a 2-tick fader from black.
+                key.wiping = key.wiping && play_wipe(&mut scene, &key, 0);
+                info!("jump: {name} loaded; fade kind {kind} in{}", if key.wiping { " (keyhole wipe group 0, 2-tick fader from black)" } else if kind == 0 { " (black fade: no keyhole layout)" } else { "" });
                 *task = JumpTask::FadeIn { kind, t: 0.0 };
             }
             return;
         }
         JumpTask::FadeIn { kind, t } => {
-            *task = if t + 1.0 < FADE_TICKS { JumpTask::FadeIn { kind, t: t + 1.0 } } else { JumpTask::Idle };
+            let done = if key.wiping { wipe_in_done(t + 1.0, wipe_ended(&scene, &key)) } else { t + 1.0 >= FADE_TICKS };
+            if done && key.wiping {
+                key.wiping = false;
+                if let (Some(s), Some(n)) = (scene.as_mut(), key.node) {
+                    s.nodes[n].visible = false;
+                }
+                info!("jump: keyhole wipe in done after {} ticks", t + 1.0);
+            }
+            *task = if done { JumpTask::Idle } else { JumpTask::FadeIn { kind, t: t + 1.0 } };
             return;
         }
     }
@@ -424,8 +538,12 @@ fn tick(
         exits.jumping = Some(id);
         if kind > 1 {
             info!("jump: fade kind {kind} not ported (FUN_0013f290 / FUN_0013f3b0): black fade stand-in");
-        } else if kind == 0 {
-            info!("jump: fade kind 0 out (keyhole layout 0x355118 slot 2 decoded, not drawn: black stand-in, {FADE_TICKS} ticks)");
+        }
+        // FUN_0015d058: group 1 of the layout; the fader follows once it has ended.
+        key.black_from = None;
+        key.wiping = kind == 0 && play_wipe(&mut scene, &key, 1);
+        if kind == 0 {
+            info!("jump: fade kind 0 out ({})", if key.wiping { "keyhole wipe group 1, then a 2-tick fader to black".to_string() } else { format!("black fade, {FADE_TICKS} ticks: no keyhole layout") });
         }
         *task = JumpTask::FadeOut { dest, kind, t: 0.0 };
     }
@@ -444,11 +562,13 @@ fn spawn_fader(mut commands: Commands) {
     ));
 }
 
-fn draw_fader(task: Res<JumpTask>, mut nodes: Query<&mut BackgroundColor, With<FadeNode>>) {
+fn draw_fader(task: Res<JumpTask>, key: Res<Keyhole>, mut nodes: Query<&mut BackgroundColor, With<FadeNode>>) {
     let a = match *task {
         JumpTask::Idle => 0.0,
+        JumpTask::FadeOut { t, .. } if key.wiping => wipe_alpha(true, t, key.black_from),
         JumpTask::FadeOut { t, .. } => fade_alpha(true, t),
         JumpTask::Loading { .. } => 1.0,
+        JumpTask::FadeIn { t, .. } if key.wiping => wipe_alpha(false, t, None),
         JumpTask::FadeIn { t, .. } => fade_alpha(false, t),
     };
     for mut c in &mut nodes {
@@ -523,6 +643,40 @@ mod tests {
             assert!(grp.loops != 0, "group {g} must end");
             assert!(last > 0);
         }
+        // The HUD's `SeqFile::from_bar` list holds this pair at the index `load_keyhole` uses.
+        let ok = |j: usize| j + 1 < bar.len() && kh2_image::imgd::decode(bar[j].data).is_some() && kh2_image::seqd::parse(bar[j + 1].data).is_some();
+        let idx = pair_index(i, ok).expect("slot 2 pair decodes");
+        eprintln!("keyhole: HUD file index {idx}");
+        assert_eq!(s, i + 1);
+    }
+
+    /// The wipe (`FUN_0015cf58` / `FUN_0015d0e8`): out waits for group 1 to end, then the fader
+    /// reaches black in 2 ticks; in fades from black in 2 ticks and ends with group 0.
+    #[test]
+    fn the_keyhole_wipe_waits_for_its_group_then_fades_in_two_ticks() {
+        let mut b = None;
+        assert!(!wipe_out_step(1.0, false, &mut b));
+        assert_eq!(wipe_alpha(true, 1.0, b), 0.0);
+        assert!(!wipe_out_step(71.0, false, &mut b));
+        assert!(!wipe_out_step(72.0, true, &mut b));
+        assert_eq!(b, Some(72.0));
+        assert_eq!(wipe_alpha(true, 73.0, b), 0.5);
+        assert!(wipe_out_step(74.0, true, &mut b));
+        assert_eq!(wipe_alpha(true, 74.0, b), 1.0);
+        assert_eq!(wipe_alpha(false, 0.0, None), 1.0);
+        assert_eq!(wipe_alpha(false, 1.0, None), 0.5);
+        assert_eq!(wipe_alpha(false, 2.0, None), 0.0);
+        assert!(!wipe_in_done(1.0, true));
+        assert!(!wipe_in_done(40.0, false));
+        assert!(wipe_in_done(72.0, true));
+        // The guard: a group that never ends.
+        let mut b = None;
+        assert!(!wipe_out_step(WIPE_MAX_TICKS, false, &mut b));
+        assert!(wipe_out_step(WIPE_MAX_TICKS + 2.0, false, &mut b));
+        // from_bar's index: pairs that decode before the image entry.
+        assert_eq!(pair_index(4, |j| j % 2 == 0), Some(2));
+        assert_eq!(pair_index(4, |j| j == 4 || j == 0), Some(1));
+        assert_eq!(pair_index(4, |j| j != 4), None);
     }
 
     #[test]

@@ -1171,6 +1171,15 @@ impl Driver {
         self.se.iter().any(|s| s.tag == h.0)
     }
 
+    /// Stops a sound effect now: its sounding notes are keyed off (the release of their envelopes
+    /// runs out in the mixer) and the sequence player is dropped. Nothing for a finished handle.
+    pub fn stop_se(&mut self, h: Handle) {
+        if let Some(i) = self.se.iter().position(|s| s.tag == h.0) {
+            let mut s = self.se.remove(i);
+            s.release_all(&mut self.mixer);
+        }
+    }
+
     /// Plays a one-shot sample (a voice line) at `rate` Hz, centred.
     pub fn play_voice(&mut self, sample: Arc<Sample>, rate: u32, volume: f32) {
         let tag = self.take_tag();

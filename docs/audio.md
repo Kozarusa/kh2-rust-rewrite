@@ -324,3 +324,67 @@ Status words as above; nobody has listened to any of this.
   (tt02: all categories 0; tt04/05: 0 and 0x8000000000000001; tt10: 0x200 damage categories), so the
   lookup never starts anything on these areas: either the effects live elsewhere or the manager is not the
   map's PAX. Test `foot_dust_starts_the_area_effect_at_the_ground_under_the_foot` reports this and returns.
+
+## Sound viewer: how to use (WP-SV1; the app's own developer tool, not in the original)
+
+The original game has no sound test the app can port, so `crates/kh2-app/src/sound_test.rs` is the
+app's own overlay for identifying ids: it steps through every sound the game can play and plays one
+on demand through the same driver and request path the game uses (`audio::play_se`, the voice bank
+cache and `Driver::play_voice_at`, `audio::play_bgm`); there is no second audio backend. Nobody has
+listened to its output; checks are by its log lines and unit tests.
+
+Start: `target\debug\kh2-game.exe tt04` and press **F10**, or start with the viewer open:
+`$env:KH2_SOUNDTEST='1'; target\debug\kh2-game.exe tt04`. Keys while it is open (the game's movement,
+attack, guard, lock-on and camera keys are swallowed, so nothing drives Sora or the camera; close it
+with F10 to play):
+
+| key | does |
+|---|---|
+| Left / Right | previous / next id in the bank (empty ids are skipped, both ends wrap) |
+| Shift + Left / Right | 100 ids |
+| PageUp / PageDown | 10 ids (Shift: 100) |
+| Up / Down | previous / next bank (lands on the bank's first filled id) |
+| Enter or Space | play the current id (the one before is stopped first) |
+| Backspace | stop |
+| F10 | close |
+
+The overlay (top right, debug-HUD style text) shows the source, the bank name and file, the entry
+and id, the data known about it (WD bank, track count, group and flags of a sound effect; duration
+and sample rate of a voice line; WD of a BGM), the volume and pan the driver is given, and the last
+play. Banks, in order: the global SE banks `se/se<nnn>.seb` (`se000` .. `se998`), the private SE
+banks of the objects the app uses (`obj/P_EX100.apdx`, `obj/W_EX010.apdx`, the enemy kinds' files),
+the party voice banks `voice/<lang>/battle/<world><n>_<speaker>.vsb` (every world, `<n>` 0..7, every
+speaker name of the executable), the enemies' own voice banks (entry type 0x22 of their object
+files, named `<file>#0x22`), then `bgm` (`bgm/music<nnn>.bgm`, played in the field slot: it replaces
+the area music until the next area load).
+
+**Id numbering** is the one `KH2_SOUNDLOG=1` prints for the game's own requests, so a viewer id and a
+game log id mean the same thing:
+
+- a sound effect: the game's number is `bank * 1000 + index` (`FUN_002c2258`: `n / 1000`, `n % 1000`);
+  the log prints `se <bank>:<index> (<apdx or ->)`, the viewer shows `id 2001` and `log: se 2:1` for
+  entry 1 of `se002`. The menu's system sounds are bank 2 (`PlaySe::number(2000 + id)`, docs/menus.md).
+  An object's own bank (`PlaySe::apdx`) is listed by its file; the log form adds the file in brackets.
+- a voice line: `voice <file>:<line>` (`<file>#0x22` for an enemy's bank inside its object file). The
+  viewer's id is the line.
+- a BGM: `music <n>`; the id is the number of `bgm/music<nnn>.bgm`.
+
+Every play prints one line: `soundtest bank <name> entry <n> id <id> (<log form>) <data> volume <v>
+pan <p> playing|not started`, for example `soundtest bank se002 entry 1 id 2001 (se 2:1) wd 20 tracks
+1 group 0 flags 0x00 volume 0x3fff pan 0x40 playing`. The viewer plays without a position, as the
+game's interface sounds do (`FUN_002c3318`: volume 0x3fff, pan 0x40; entry flags 0x10 / 0x20 still
+pin the volume or pan in `Driver::play_se_handle`); a voice line is played at the same level and
+centre pan, where the game would place it at its speaker with a minimum volume of 0x1800; a BGM at
+the full slot level 0x3000.
+
+`KH2_SOUNDTEST_LIST=1` prints every bank at start: `soundtest list <Source> <name> (<file>): <filled>
+of <len> ids filled, <first log form> .. <last log form>`, then `soundtest list: <banks> banks, <ids>
+ids`. A harness run with scripted keys (the harness knows Left, Right, Up, Down, Enter, Space,
+Backspace; F10 and PageUp/PageDown are not scriptable): `$env:KH2_SOUNDTEST='1'; $env:KH2_NO_MUSIC='1';
+$env:KH2_SCREENSHOT='local\sv1.png'; $env:KH2_SHOT_AT='9'; $env:KH2_KEYS='7:Right,7.3:Enter,8:Down,8.3:Enter';
+target\debug\kh2-game.exe tt04`.
+
+Tests (`cargo test -p kh2-app soundtest`): `soundtest_step_skips_empty_ids`, `soundtest_step_wraps_at_ends`,
+`soundtest_jumps_by_10_and_100`, `soundtest_bank_step_wraps_and_lands_on_first_filled`,
+`soundtest_step_entry_edge_cases`. Added for it: `Driver::stop_se` (keys the sound's notes off and drops
+its player) and `Vsb::line_info` (size and rate of a line without decoding it).

@@ -80,6 +80,7 @@ impl Plugin for HudPlugin {
                 (
                     toggle_debug,
                     (
+                        hud_gauge::feed_drive,
                         hud_gauge::update,
                         hud_party::update,
                         hud_target::update,

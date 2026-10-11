@@ -31,7 +31,7 @@ of what the code reads from the disc at run time.
 - The weapon list (WP-2B2): `Sora::weapons` holds the weapons in hand order, the body swap spawns them on
   their hand sockets (`sora::spawn_weapons`), and every controller system plays, syncs, shows and trails
   all of them; Anti has none, so nothing has to be hidden.
-- The HUD hook: `DriveGauge` (`hud_drive.rs`), rewritten every tick, plus a one-line debug readout (F9 or
+- The HUD hook: `DriveGauge` (`hud_drive.rs`), rewritten every tick, plus a one-line debug readout. The drawn gauge reads the state through `hud_gauge::feed_drive` (docs/hud.md, WP-G9): the readout's resource is not what the HUD draws. (F9 or
   `KH2_DRIVE`).
 - Hits Sora lands add `DriveDrain` of the attack row to the gauge, or take it off the form timer.
 - The form's ability list (WP-2B2): on the swap the drive code gives the ability system the form record's

@@ -238,7 +238,13 @@ is `menu/us/pause.2ld` (list index 0 of the menu boot, 1.3): one 64x64 image (th
 of 19 groups, one layer. Read from the file [V]: group 0 black at alpha 64/128 (the dim), 14 the band (black gradient to transparent at
 both ends, violet rule top and bottom), 15 the five letters sliding in one after the other (frames 20 to 99) and holding, 11 and 12 a pill
 that opens (red / blue), 2 to 5 and 16 to 18 white flash and black fades, 6 to 9 sparkles, 10 the anchor (256, 216). The port plays 0 (as
-the scene dim), 14 and 15. **Rule [GAP]:** `FUN_00138758` opens the camp (or the save menu when a start prompt object exists,
+the scene dim) and 15 only. **Fix 2026-10-12 (user frame vs the original):** group 15 is the whole band (it carries its own dark body, rows
+-15 to 15, violet rules at rows -17/-15 and 15/17, and the letters); group 14 is a taller band (rows -53 to 53) that the original does not show
+with it, so it is no longer drawn (it caused the two extra rules at about 40% and 63% of the height). The HUD is hidden while the band is up
+(`menu_pause::tick` switches the HUD camera, `hud::HudCamera`, off and back on at the close; the debug text stays). **Veil [GAP]:** the file's only
+dim is group 0 (black, alpha 64 of 128, normal blend; group 1 is opaque black, 2 and 3 white flash / fade); no group holds a pale or additive veil, so
+the hazy, washed-out look of the original is not in this file (a screen-copy effect of the original's draw code, not found) and the port keeps the
+black half-alpha dim. Dump of all 19 groups: test `dump_pause_groups` (`-- --nocapture`). **Rule [GAP]:** `FUN_00138758` opens the camp (or the save menu when a start prompt object exists,
 `FUN_001bf030`) whatever the battle state is; `FUN_0024fa20` (the buffer of the current `.2ld`) has two callers, `FUN_0024f908` (the
 loader) and `FUN_002a04f8` (the list widget, called by the camp, the shop and the journal builders `FUN_002506b8`, `FUN_0025fcd8`,
 `FUN_002761e8`); `0x1dc0e00` and `0x36cdc8` are used only by the loader family (`FUN_0024f558`, `FUN_0024f688`, `FUN_0024f7a8`,

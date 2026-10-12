@@ -789,13 +789,12 @@ fn show_cards(menu: &Menu, scene: &mut MenuScene, party: &[CardData]) {
 /// [GAP]; the shapes and colours here are measured from the footage, the numbers are the app's.
 fn card(scene: &mut MenuScene, nodes: &[usize], x: f32, c: &CardData) {
     let top = at::CARD_TOP;
-    // The reference frames (8.webp, 7.png) [F]: a name plate shaded from grey at its top edge to near black, a light rule
+    // The reference frames (8.webp, 7.png) [F]: a flat grey name plate (the user: no gradient in the original), a light rule
     // on its top edge, a dark see-through body (no light outline), and the HP and MP rows underlined in their colours.
     let (w, h) = (at::CARD_W, at::CARD_H);
-    let plate_top = [0x34, 0x34, 0x38, 0x80];
-    let plate_bottom = [0x0a, 0x0a, 0x0c, 0x80];
+    let plate = [0x24, 0x24, 0x28, 0x80];
     let shapes: [([f32; 4], [[u8; 4]; 4]); 5] = [
-        ([x, top, x + w, top + 24.0], [plate_top, plate_top, plate_bottom, plate_bottom]),
+        ([x, top, x + w, top + 24.0], [plate; 4]),
         ([x, top + 24.0, x + w, top + h], [[0x04, 0x04, 0x08, 0x74]; 4]),
         ([x, top, x + w, top + 1.0], [[0x90, 0x90, 0x98, 0x80]; 4]),
         ([x + 3.0, top + 57.0, x + w - 3.0, top + 58.0], [[0x18, 0x80, 0x10, 0x80]; 4]),

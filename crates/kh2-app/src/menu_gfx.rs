@@ -40,7 +40,7 @@ impl Plugin for MenuGfxPlugin {
         app.add_plugins(Material2dPlugin::<MenuMaterial>::default())
             .init_resource::<MenuScene>()
             .init_resource::<MenuDraw>()
-            .add_systems(Startup, setup_camera)
+            .add_systems(Startup, (setup_camera, window_size))
             .add_systems(Update, draw.in_set(crate::schedule::Frame::Popups));
     }
 }
@@ -161,6 +161,10 @@ pub struct Node {
     pub pic: Option<Pic>,
     /// Alpha multiplier of the label.
     pub label_fade: f32,
+    /// A frame part (header band, side rails, bottom panels, backdrop) that reaches the 4:3 canvas edges: its box at
+    /// rest (x0, y0, x1, y1). The sides of it that touch the canvas edges are carried out to the window's edges
+    /// (`stretch_quads`, docs/menus.md 9.1).
+    pub stretch: Option<[f32; 4]>,
     /// Follow-up group: when a group that plays a limited number of times has finished, the node
     /// switches to this group and steps it once (`hud_gfx::HudScene`, 0x138aa8).
     pub next: Option<usize>,
@@ -185,6 +189,7 @@ impl Node {
             fill: None,
             pic: None,
             label_fade: 1.0,
+            stretch: None,
             next: None,
             anchor: [0.0; 2],
             base: [0.0; 2],
@@ -211,6 +216,8 @@ pub struct MenuScene {
     /// Frames the players advance per 60 Hz tick (the clip's pace, docs/menus.md 1.6).
     pub speed: f32,
     acc: f32,
+    /// The window's visible area in menu units (x0, y0, x1, y1), set by `draw` (zero until the first frame: the canvas).
+    pub view: [f32; 4],
 }
 
 impl MenuScene {
@@ -260,6 +267,24 @@ impl MenuScene {
             }
         }
         ticks
+    }
+
+    /// The visible area in menu units (the canvas until `draw` has measured the window).
+    pub fn view(&self) -> [f32; 4] {
+        if self.view == [0.0; 4] { CANVAS } else { self.view }
+    }
+
+    /// The quads node `i` draws now (its sequence group at the current frame), for logs and tests.
+    pub fn node_quads(&self, i: usize) -> Vec<Quad> {
+        let n = &self.nodes[i];
+        match (n.player.group, n.seq.and_then(|s| self.seqs.get(s))) {
+            (Some(g), Some(s)) if n.visible => {
+                let mut ext = n.ext;
+                ext.time = n.player.uv_time;
+                s.quads(g, n.player.frame(), n.origin, &ext)
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// Resolves positions (parents first: a node's parent always has a lower index).
@@ -317,7 +342,11 @@ impl MenuScene {
             if let (Some(g), Some(s)) = (n.player.group, n.seq.and_then(|s| self.seqs.get(s))) {
                 let mut ext = n.ext;
                 ext.time = n.player.uv_time;
-                for q in s.quads(g, n.player.frame(), n.origin, &ext) {
+                let mut qs = s.quads(g, n.player.frame(), n.origin, &ext);
+                if let Some(rest) = n.stretch {
+                    stretch_quads(&mut qs, rest, self.view());
+                }
+                for q in qs {
                     out.push((n.tex, q));
                 }
             }
@@ -340,6 +369,17 @@ impl MenuScene {
 
 #[derive(Component)]
 pub struct MenuCamera;
+
+/// `KH2_WINDOW=<w>x<h>` (harness aid): the window's size, to look at the menu's edges at other aspects.
+fn window_size(mut win: Query<&mut Window, With<bevy::window::PrimaryWindow>>) {
+    let Some((w, h)) = std::env::var("KH2_WINDOW").ok().and_then(|v| v.split_once('x').and_then(|(w, h)| Some((w.parse::<f32>().ok()?, h.parse::<f32>().ok()?)))) else {
+        return;
+    };
+    if let Ok(mut win) = win.single_mut() {
+        win.resolution.set(w, h);
+        info!("menu: window size {w}x{h} (KH2_WINDOW)");
+    }
+}
 
 fn setup_camera(mut commands: Commands) {
     commands.spawn((
@@ -373,14 +413,88 @@ pub struct MenuDraw {
     materials: HashMap<(usize, u32, bool), Handle<MenuMaterial>>,
 }
 
+/// The 4:3 canvas in menu units (x0, y0, x1, y1): 512 x 448 with the 16 line offset.
+pub const CANVAS: [f32; 4] = [0.0, -Y_BIAS, SCREEN[0], SCREEN[1] - Y_BIAS];
+
+/// How close to a canvas edge a quad side must lie (in its rest place) to be carried to the window's edge: 16 units
+/// (the bottom panels end at 420 of 432, the header band starts at -4) [inferred: the classification; the HD
+/// remaster's frames show these parts at the screen edges].
+const EDGE: f32 = 16.0;
+
+/// Carries the sides of a frame part's quads that lie at the 4:3 canvas edges out to the window's edges. `rest` is
+/// the part's box at rest; the quads' box now may be moved by the part's own slide, and the carried sides move with
+/// it (so the enter and leave slides keep their shape). Per quad: its left side when it starts within `EDGE` of the
+/// canvas's left edge (or beyond it) and the part reaches into the canvas, likewise right, top and bottom. A side
+/// already beyond the window's edge stays where it is.
+pub fn stretch_quads(qs: &mut [Quad], rest: [f32; 4], view: [f32; 4]) {
+    if qs.is_empty() {
+        return;
+    }
+    let mut now = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+    for p in qs.iter().flat_map(|q| q.pos) {
+        now = [now[0].min(p[0]), now[1].min(p[1]), now[2].max(p[0]), now[3].max(p[1])];
+    }
+    // The part's slide (now against rest) and whether it reaches into the canvas at all on each axis.
+    let slide = [now[0] - rest[0], now[1] - rest[1]];
+    let spans_x = rest[2] > CANVAS[0] + EDGE && rest[0] < CANVAS[2] - EDGE;
+    let spans_y = rest[3] > CANVAS[1] + EDGE && rest[1] < CANVAS[3] - EDGE;
+    for q in qs.iter_mut() {
+        let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        for p in q.pos {
+            b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])];
+        }
+        // Only a quad whose texture is already drawn stretched along the axis (a band or a flat fill: its texture span is
+        // at most half its size) is carried; a picture (the Mickey watermark) keeps its shape.
+        let span = |i: usize| {
+            let (lo, hi) = q.uv.iter().fold((f32::MAX, f32::MIN), |(lo, hi), u| (lo.min(u[i]), hi.max(u[i])));
+            hi - lo
+        };
+        let (band_x, band_y) = (span(0) <= 0.5 * (b[2] - b[0]), span(1) <= 0.5 * (b[3] - b[1]));
+        let left = spans_x && band_x && b[0] - slide[0] <= CANVAS[0] + EDGE;
+        let right = spans_x && band_x && b[2] - slide[0] >= CANVAS[2] - EDGE;
+        let top = spans_y && band_y && b[1] - slide[1] <= CANVAS[1] + EDGE;
+        let bottom = spans_y && band_y && b[3] - slide[1] >= CANVAS[3] - EDGE;
+        for p in q.pos.iter_mut() {
+            if left && p[0] <= b[0] + 0.5 {
+                p[0] = p[0].min(view[0] + slide[0]);
+            }
+            if right && p[0] >= b[2] - 0.5 {
+                p[0] = p[0].max(view[2] + slide[0]);
+            }
+            if top && p[1] <= b[1] + 0.5 {
+                p[1] = p[1].min(view[1] + slide[1]);
+            }
+            if bottom && p[1] >= b[3] - 0.5 {
+                p[1] = p[1].max(view[3] + slide[1]);
+            }
+        }
+    }
+}
+
+
+/// The part of the menu canvas the window shows (the menu camera's `AutoMin` fit around the canvas middle).
+pub fn window_view(w: f32, h: f32) -> [f32; 4] {
+    if w <= 0.0 || h <= 0.0 {
+        return CANVAS;
+    }
+    let s = (w / SCREEN[0]).min(h / SCREEN[1]);
+    let (cx, cy) = ((CANVAS[0] + CANVAS[2]) / 2.0, (CANVAS[1] + CANVAS[3]) / 2.0);
+    [cx - w / s / 2.0, cy - h / s / 2.0, cx + w / s / 2.0, cy + h / s / 2.0]
+}
+
+#[allow(clippy::too_many_arguments)]
 fn draw(
     mut commands: Commands,
+    window: Query<&Window, With<bevy::window::PrimaryWindow>>,
     mut scene: ResMut<MenuScene>,
     mut state: ResMut<MenuDraw>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<MenuMaterial>>,
     mut batches: Query<(&mut Mesh2d, &mut MeshMaterial2d<MenuMaterial>, &mut Visibility, &mut Transform)>,
 ) {
+    if let Ok(w) = window.single() {
+        scene.view = window_view(w.width(), w.height());
+    }
     scene.resolve();
     struct Batch {
         key: (usize, u32, bool),
@@ -463,4 +577,45 @@ fn draw(
 /// A 1x1 white texture (the dim quad samples it).
 pub fn white_tex(images: &mut Assets<Image>) -> Tex {
     Tex::new(&kh2_image::imgd::Image { width: 1, height: 1, rgba: vec![255; 4], swizzled: false }, images)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn quad(x0: f32, y0: f32, x1: f32, y1: f32, uv: [f32; 4]) -> Quad {
+        let [u0, v0, u1, v1] = uv;
+        Quad { pos: [[x0, y0], [x1, y0], [x0, y1], [x1, y1]], uv: [[u0, v0], [u1, v0], [u0, v1], [u1, v1]], color: [[0x80; 4]; 4], blend: 0, nearest: true }
+    }
+
+    /// The frame parts of `camp.2ld` (boxes from the `KH2_MENU_QUADS` dump of the frame group 39) at 16:9: the header
+    /// band and the bottom panels reach the window's edges, the rounded caps and the Mickey picture keep their places.
+    #[test]
+    fn frame_parts_reach_the_window_edges() {
+        let view = window_view(1280.0, 720.0);
+        assert!((view[0] + 142.2).abs() < 0.1 && (view[2] - 654.2).abs() < 0.1 && view[1] == -16.0 && view[3] == 432.0, "{view:?}");
+        assert_eq!(window_view(1024.0, 896.0), CANVAS, "an 8:7 window shows the canvas");
+        let rest = [-94.0, -4.0, 539.0, 420.0];
+        let band = [24.5, 215.5, 24.5, 215.5];
+        let mut qs = vec![
+            quad(55.0, -4.0, 525.0, 55.0, band),
+            quad(-94.0, -4.0, 19.0, 55.0, band),
+            quad(143.0, 338.0, 539.0, 420.0, band),
+            quad(-6.0, 338.0, 107.0, 420.0, band),
+            quad(476.0, 341.0, 523.0, 417.0, [106.0, 140.0, 153.0, 216.0]),
+            quad(24.0, 59.0, 35.0, 70.0, [22.0, 191.0, 33.0, 202.0]),
+        ];
+        stretch_quads(&mut qs, rest, view);
+        let b = |q: &Quad| [q.pos[0][0], q.pos[0][1], q.pos[3][0], q.pos[3][1]];
+        assert_eq!(b(&qs[0]), [55.0, view[1], view[2], 55.0], "the header band runs to the right edge and the top");
+        assert_eq!(b(&qs[1]), [view[0], view[1], 19.0, 55.0], "and to the left edge");
+        assert_eq!(b(&qs[2]), [143.0, 338.0, view[2], view[3]], "the help panel to the right and the bottom");
+        assert_eq!(b(&qs[3]), [view[0], 338.0, 107.0, view[3]], "the Munny panel to the left and the bottom");
+        assert_eq!(b(&qs[4]), [476.0, 341.0, 523.0, 417.0], "the Mickey picture keeps its shape");
+        assert_eq!(b(&qs[5]), [24.0, 59.0, 35.0, 70.0], "a corner piece stays");
+        // A part sliding in (100 to the right of its rest place) keeps its shape: the carried edge moves with it.
+        let mut moving = vec![quad(155.0, -4.0, 625.0, 55.0, band)];
+        stretch_quads(&mut moving, [55.0, -4.0, 525.0, 55.0], view);
+        assert_eq!(b(&moving[0])[2], view[2] + 100.0);
+    }
 }

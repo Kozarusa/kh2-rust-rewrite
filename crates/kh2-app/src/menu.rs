@@ -51,12 +51,15 @@ pub mod pause_band;
 // The item pictures (stage M7).
 #[path = "menu_pic.rs"]
 pub mod pictures;
+// The 3D party preview of the top page (WP-MN1).
+#[path = "menu_preview.rs"]
+pub mod preview;
 
 pub struct MenuPlugin;
 
 impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((MenuGfxPlugin, crate::menu_status::StatusPlugin, config::ConfigPlugin, item_pages::ItemPagesPlugin, customize::CustomizePlugin, equipment::EquipmentPlugin, new_tags::NewTagsPlugin, pictures::PicturesPlugin, help::HelpPlugin, pause_band::PausePlugin))
+        app.add_plugins((MenuGfxPlugin, crate::menu_status::StatusPlugin, config::ConfigPlugin, item_pages::ItemPagesPlugin, customize::CustomizePlugin, equipment::EquipmentPlugin, new_tags::NewTagsPlugin, pictures::PicturesPlugin, help::HelpPlugin, pause_band::PausePlugin, preview::PreviewPlugin))
             .init_resource::<Menu>()
             .add_systems(Startup, load)
             // The game's own readers run in `Update`; the menu takes its keys first, in `PreUpdate`
@@ -110,9 +113,16 @@ pub enum Phase {
 pub const CLOSE_FRAMES: u32 = 14;
 /// Brightness of the dimmed picture (clip 10 frame 22: the mean drops to about 30 %).
 pub const DIM_BRIGHTNESS: f32 = 0.3;
-/// The menu's sequences step two frames per 60 Hz tick: the clip's 15-frame groups settle in about
-/// eight clip frames (docs/menus.md 1.6 [F]). How the game steps a menu sequence was not read.
-const PLAYER_SPEED: f32 = 2.0;
+/// The menu's sequences step one frame per 60 Hz tick (docs/menus.md 1.6.1): the frame step 0x2378a0 adds
+/// `DAT_00356f44 * object +0x44`; +0x44 is 1.0 for every 2D object (`FUN_002341e8` / `FUN_00236650` write
+/// 0x37f3c8 / 0x37f404 = 1.0, no menu code writes it), and `DAT_00356f44` is the vblank count of the frame
+/// (`FUN_0014cdd0`), one per frame while a menu scene runs (`FUN_0024ef30` -> `FUN_00239e78` sets the
+/// one-vblank mode). `KH2_MENU_SPEED=<f>` overrides it (harness aid; the old footage-measured pace was 2).
+const PLAYER_SPEED: f32 = 1.0;
+
+fn player_speed() -> f32 {
+    std::env::var("KH2_MENU_SPEED").ok().and_then(|v| v.parse::<f32>().ok()).filter(|v| *v > 0.0).unwrap_or(PLAYER_SPEED)
+}
 /// Key repeat of the list (the repeat word of `FUN_002977a8`): frames before it starts and between
 /// moves. The pad layer's repeat rate was not read [inferred].
 const REPEAT_DELAY: u32 = 24;
@@ -185,6 +195,8 @@ const CARD_NODES: usize = 12;
 #[derive(Clone, Debug, PartialEq)]
 pub struct CardData {
     pub name: String,
+    /// The member's name message (`0x37ba90[member id]`, `FUN_001b5890`); `name` when it is missing.
+    pub name_msg: Option<u32>,
     pub level: i32,
     pub hp: i32,
     pub max_hp: i32,
@@ -196,6 +208,9 @@ pub struct CardData {
 struct Nodes {
     layers: Vec<usize>,
     panel: usize,
+    /// The party preview picture (`menu_preview.rs`): drawn after the panel outline and before the rows and the cards,
+    /// the order of the original's draw (the models stand in front of the panel's scan lines, behind the cards).
+    preview: usize,
     rows: Vec<usize>,
     /// One NEW tag per row of the list, a child of its row (stage M7).
     tags: Vec<usize>,
@@ -246,6 +261,8 @@ pub struct Menu {
     held: (i8, Tick),
     /// Real seconds the menu has existed: the play time the Time plate shows.
     play: f32,
+    /// The members' name messages by member id (the u16 table at 0x37ba90, `FUN_001b5890`).
+    member_names: Vec<u32>,
 }
 
 impl Default for Menu {
@@ -266,6 +283,7 @@ impl Default for Menu {
             frames: 0,
             held: (0, 0),
             play: 0.0,
+            member_names: Vec::new(),
         }
     }
 }
@@ -333,12 +351,13 @@ fn load(
     let mut texs = std::mem::take(&mut scene.texs);
     scene.text = crate::menu_text::MenuText::load(&disc, world, &mut images, &mut texs);
     scene.texs = texs;
-    scene.speed = PLAYER_SPEED;
+    scene.speed = player_speed();
     scene.hidden = true;
     let Layd { layers, layouts, seqs } = two.layd;
     scene.seqs = seqs;
     menu.layd = Layd { layers, layouts, seqs: Vec::new() };
     menu.entries = entries;
+    menu.member_names = (0..16).filter_map(|i| exe.u16(MEMBER_NAMES + 2 * i).map(|v| u32::from(v & 0x7fff))).collect();
     menu.nodes = build_nodes(&mut scene);
     menu.loaded = true;
 }
@@ -363,6 +382,7 @@ fn build_nodes(scene: &mut MenuScene) -> Nodes {
         n.layers.push(new(scene, Some(SEQ_MAIN)));
     }
     n.panel = new(scene, Some(SEQ_MAIN));
+    n.preview = new(scene, None);
     for _ in 0..menu_pages::ENTRIES {
         n.rows.push(new(scene, Some(SEQ_MAIN)));
     }
@@ -389,17 +409,35 @@ fn build_nodes(scene: &mut MenuScene) -> Nodes {
     n
 }
 
-/// The party the cards show: the app's party is Sora alone (no companions, docs/party.md).
-fn party(sora: Option<&Sora>, data: Option<&GameData>) -> Vec<CardData> {
+/// The members' name messages (`FUN_001b5890`: u16 per member id, bit 15 ignored).
+const MEMBER_NAMES: u32 = 0x0037_ba90;
+
+/// The party the cards show, in slot order (`FUN_00250a00` walks the party object's slots 0..2, `FUN_00282968`):
+/// Sora, then the members in the field by their party slot (`party::PartyMember::slot`). The numbers are the live
+/// ones (the status objects the original reads: HP and MP of the field objects), the level is the member's record
+/// (`Progress::member(id).level`, record `+0xf`).
+fn party(
+    sora: Option<&Sora>,
+    data: Option<&GameData>,
+    members: &[(u16, i32, i32, i32, i32)],
+    progress: Option<&Progress>,
+    names: &[u32],
+) -> Vec<CardData> {
     let Some(s) = sora else { return Vec::new() };
-    vec![CardData {
+    let mut out = vec![CardData {
         name: "Sora".into(),
+        name_msg: names.get(usize::from(crate::progress::SORA)).copied(),
         level: s.stats.level,
         hp: s.hp,
         max_hp: s.stats.max_hp,
         mp: s.mp,
         max_mp: data.map_or(100, |d| d.sora_max_mp),
-    }]
+    }];
+    for &(id, hp, max_hp, mp, max_mp) in members.iter().take(2) {
+        let level = progress.and_then(|p| p.member(id)).map_or(1, |m| i32::from(m.level));
+        out.push(CardData { name: format!("member {id}"), name_msg: names.get(usize::from(id)).copied(), level, hp, max_hp, mp, max_mp });
+    }
+    out
 }
 
 impl Menu {
@@ -431,6 +469,7 @@ pub(crate) fn input(
     mut pause: ResMut<Pause>,
     band: Res<pause_band::Band>,
     battle: Option<Res<crate::audio_bgm::BattleFlag>>,
+    members: Query<&crate::party::PartyMember>,
 ) {
     if !menu.loaded {
         return;
@@ -472,7 +511,11 @@ pub(crate) fn input(
                         tags.begin(&items.order, &|id| p.item_count(id), &abilities);
                         info!("menu: new tags: {}", tags.summary());
                     }
-                    open(&mut menu, &mut scene, &mut se, sora.single().ok(), data.as_deref(), &area, has_ability);
+                    let mut field: Vec<&crate::party::PartyMember> = members.iter().collect();
+                    field.sort_by_key(|m| m.slot);
+                    let field: Vec<(u16, i32, i32, i32, i32)> = field.iter().map(|m| (m.neo, m.hp, m.hp_max, m.mp, m.mp_max)).collect();
+                    let cards = party(sora.single().ok(), data.as_deref(), &field, progress.as_deref(), &menu.member_names);
+                    open(&mut menu, &mut scene, &mut se, &cards, &area, has_ability);
                 } else {
                     info!("menu: start refused ({state:?})");
                 }
@@ -650,8 +693,7 @@ fn open(
     menu: &mut Menu,
     scene: &mut MenuScene,
     se: &mut MessageWriter<PlaySe>,
-    sora: Option<&Sora>,
-    data: Option<&GameData>,
+    cards: &[CardData],
     area: &CurrentArea,
     has_ability: bool,
 ) {
@@ -709,18 +751,28 @@ fn open(
     scene.nodes[nodes.area].label = name;
     scene.nodes[nodes.area].visible = true;
     // The party cards.
-    show_cards(menu, scene, &party(sora, data));
+    show_cards(menu, scene, cards);
     menu_sound::play(se, menu_sound::OPEN);
     info!("menu: open ({} rows, {:?})", menu.rows.len(), menu.rows);
+}
+
+/// The left edge of card `i` of `n`: the slot's x of `FUN_00250a00` (0x2f, 0x91, 0xf3 minus `(n * 98 - 98) / n`, the
+/// centre of that slot's 3D preview, `menu_preview.rs`) plus the fit constant measured on clip 10 (the card's left edge
+/// lies 24 units left of the preview's centre, which the reference frame 8 also shows: Sora's card centre is 24 units right
+/// of his model's).
+pub fn card_x(i: usize, n: usize) -> f32 {
+    let n = n.clamp(1, 3);
+    let base = at::CARD_BASE.get(i).copied().unwrap_or(0x10) as f32;
+    at::CARD_FIT + base - ((n as i32 * at::CARD_STEP - at::CARD_STEP) / n as i32) as f32
 }
 
 /// The cards of the party, laid out as `FUN_00250a00` does (the code's x per slot minus the share of
 /// the extra width, then the constant that fits clip 10).
 fn show_cards(menu: &Menu, scene: &mut MenuScene, party: &[CardData]) {
-    let n = party.len().min(4);
+    // At most three cards (`FUN_00250a00` caps the party count `FUN_00282940` at 3).
+    let n = party.len().min(3);
     for (i, c) in party.iter().take(n).enumerate() {
-        let base = at::CARD_BASE.get(i).copied().unwrap_or(0x10) as f32;
-        let x = at::CARD_FIT + base - ((n as i32 * at::CARD_STEP - at::CARD_STEP) / n as i32) as f32;
+        let x = card_x(i, n);
         let nodes = &menu.nodes.cards[i * CARD_NODES..(i + 1) * CARD_NODES];
         card(scene, nodes, x, c);
     }
@@ -759,7 +811,9 @@ fn card(scene: &mut MenuScene, nodes: &[usize], x: f32, c: &CardData) {
     let cyan = [0x10, 0x80, 0x80, 0x80];
     let right = x + at::CARD_W - 6.0;
     let labels = [
-        mk(&c.name, 15.0, [0x80, 0x80, 0x80, 0x80], 2, [x + at::CARD_W / 2.0, top + 5.0]),
+        c.name_msg
+            .and_then(|id| text.message(id, Style { font: 0, size: Some(15.0), color: [0x80, 0x80, 0x80, 0x80], align: 2, ..Style::default() }, [x + at::CARD_W / 2.0, top + 5.0]))
+            .unwrap_or_else(|| mk(&c.name, 15.0, [0x80, 0x80, 0x80, 0x80], 2, [x + at::CARD_W / 2.0, top + 5.0])),
         mk("LV", 12.0, yellow, 0, [x + 5.0, top + 28.0]),
         mk(&c.level.to_string(), 13.0, yellow, 1, [right, top + 27.0]),
         mk("HP", 12.0, green, 0, [x + 5.0, top + 43.0]),
@@ -775,9 +829,32 @@ fn card(scene: &mut MenuScene, nodes: &[usize], x: f32, c: &CardData) {
     }
 }
 
+/// The box of a group's quads at its first frame drawn at `pos` (x0, y0, x1, y1), `None` when it draws nothing.
+fn rest_box(scene: &MenuScene, seq: usize, group: usize, pos: [f32; 2], frame: Option<i32>) -> Option<[f32; 4]> {
+    let s = scene.seqs.get(seq)?;
+    let frame = frame.unwrap_or_else(|| (s.group_len(group) - 1).max(0));
+    let qs = s.quads(group, frame, pos, &kh2_image::seqd::Ext::default());
+    let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+    for p in qs.iter().flat_map(|q| q.pos) {
+        b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])];
+    }
+    (!qs.is_empty()).then_some(b)
+}
+
 fn set_layout(layd: &Layd, nodes: &Nodes, scene: &mut MenuScene, n: usize) {
     let layers = layd.layout(n);
+    // The layout's layers are the frame (backdrop, header band, side rails, bottom panels): each is carried out to the
+    // window's edges where it reaches the canvas's (`menu_gfx::stretch_quads`). Its place at rest: the enter group's
+    // last frame (layout 0), the hold and leave groups' first (layouts 1 and 2).
     for (i, &id) in nodes.layers.iter().enumerate() {
+        let frame = if n == 0 { None } else { Some(0) };
+        let rest = layers.get(i).and_then(|l| rest_box(scene, l.seq, l.group, [l.x as f32, l.y as f32], frame));
+        scene.nodes[id].stretch = if std::env::var_os("KH2_MENU_NO_STRETCH").is_some() { None } else { rest };
+        if n == 0
+            && let Some(r) = rest
+        {
+            info!("menu: frame layer {i} rest box {r:?}, window view {:?} (sides at the canvas edges are carried out)", scene.view());
+        }
         match layers.get(i) {
             Some(l) => {
                 scene.nodes[id].visible = true;
@@ -847,6 +924,29 @@ fn tick(
         Phase::Opening => {
             let done = nodes_layers.iter().filter(|&&l| scene.nodes[l].visible).all(|&l| scene.nodes[l].player.finished());
             if done {
+                info!("menu: open animation done after {} ticks ({} sequence frames per 60 Hz tick)", menu.frames, scene.speed);
+                if std::env::var_os("KH2_MENU_QUADS").is_some() {
+                    scene.resolve();
+                    for i in 0..scene.nodes.len() {
+                        for q in scene.node_quads(i) {
+                            let xs = q.pos.map(|p| p[0]);
+                            let ys = q.pos.map(|p| p[1]);
+                            let mn = |v: [f32; 4]| v.into_iter().fold(f32::MAX, f32::min);
+                            let mx = |v: [f32; 4]| v.into_iter().fold(f32::MIN, f32::max);
+                            info!(
+                                "menu quad: node {i} seq {:?} group {:?} box ({:.0},{:.0})-({:.0},{:.0}) uv {:?} col {:?}",
+                                scene.nodes[i].seq,
+                                scene.nodes[i].player.group,
+                                mn(xs),
+                                mn(ys),
+                                mx(xs),
+                                mx(ys),
+                                q.uv,
+                                q.color[0]
+                            );
+                        }
+                    }
+                }
                 menu.phase = Phase::Open;
                 let m = &*menu;
                 set_layout(&m.layd, &m.nodes, &mut scene, 1);
@@ -946,6 +1046,38 @@ fn refresh(menu: &Menu, scene: &mut MenuScene, progress: Option<&Progress>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The menu's sequence step (docs/menus.md 1.6.1): one frame per 60 Hz tick. Checked against the executable
+    /// (skipped without `KH2_ISO`): the 2D objects' speed +0x44 starts at 0x37f3c8 / 0x37f404 = 1.0 and one vblank adds
+    /// 0x379170 = 1.0 to `DAT_00356f44`.
+    #[test]
+    fn menu_sequences_step_one_frame_per_tick() {
+        assert_eq!(PLAYER_SPEED, 1.0);
+        let mut scene = MenuScene::default();
+        scene.speed = PLAYER_SPEED;
+        assert_eq!(scene.advance(15.0 / 60.0 + 0.001), 15, "a quarter second is 15 ticks");
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else {
+            eprintln!("skipped the disc part: no disc (set KH2_ISO)");
+            return;
+        };
+        let exe = Disc::open(&iso).read_root("SLUS_210.05").and_then(Exe::load).expect("executable");
+        let f32_at = |va: u32| f32::from_bits(u32::from(exe.u16(va).unwrap()) | u32::from(exe.u16(va + 2).unwrap()) << 16);
+        for va in [0x0037_f3c8, 0x0037_f404, 0x0037_9170] {
+            println!("{va:#x} = {}", f32_at(va));
+            assert_eq!(f32_at(va), PLAYER_SPEED, "{va:#x}");
+        }
+    }
+
+    /// Three party cards stand side by side, 98 apart (`FUN_00250a00`), each 24 units right of its member's 3D preview.
+    #[test]
+    fn three_cards_stand_side_by_side_under_their_members() {
+        assert_eq!([card_x(0, 3), card_x(1, 3), card_x(2, 3)], [214.0, 312.0, 410.0]);
+        assert_eq!(card_x(0, 1), 279.0, "one card stands at slot 0's place");
+        for i in 0..3 {
+            assert_eq!(card_x(i, 3) + at::CARD_W / 2.0 - 24.0, 256.0 + preview::slot_x(i, 3));
+        }
+        assert!(card_x(2, 3) + at::CARD_W <= 512.0, "the third card ends inside the canvas");
+    }
 
     /// Regression (play-test 2026-10-11, "upon opening the menu most text vanishes"): a second open must show the
     /// labels the first close had faded out.

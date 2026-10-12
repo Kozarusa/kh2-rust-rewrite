@@ -176,7 +176,24 @@ the same) and the page leave/enter animations (`DAT_0036d1e0` phases); the dim i
 it has finished) [I: that this task is the dim; its brightness curve was not read, so the 30 % and the 14-frame return are the
 footage's numbers]. The open sound is `FUN_0023e738(0xb, 1)` (1.7). **The sequence frames in the clip settle faster than the
 group lengths** (the 15-frame bar finishes in about 8 clip frames): how the game steps a menu sequence (one frame per tick or
-two) was not read; use the clip's timings.
+two) was not read; use the clip's timings. (Superseded by 1.6.1: the PS2 code steps one frame per tick; the remaster clip is faster.)
+
+### 1.6.1 The menu's sequence step (WP-MN1) [V]
+
+The 2D frame step is `FUN_002378a0`: frame `+0xfc` (and the group time `+0x100`) grows by `DAT_00356f44 * object +0x44` per call.
+`+0x44` is the object's speed: `FUN_002341e8` writes 0x37f3c8 and `FUN_00236650` 0x37f404, both 1.0 on this disc, and no menu code
+writes it again (`mips_scan --store-off 0x44` over 0x24f000..0x2a2000: only stack and u16 record stores). `DAT_00356f44` is the frame's
+time step: `FUN_0014cdd0` (each frame, from `FUN_0014ccf8`) sets it to the vblank count since the last frame (`DAT_00356f38`, counted by
+the vblank handler `FUN_0014cc88`) in the fixed mode (`DAT_00356f50 != 0`) or to 2.0 (0x379174) otherwise, capped at 6.0 (0x379178);
+`DAT_00356f4c` is how many extra vblanks a frame waits (`FUN_0014cba0`). The boot (`FUN_0014cd38`) sets fixed mode with one extra vblank
+(the field: 30 frames per second, step 2.0); **a menu scene's start `FUN_0024ef30` (and the other menu starter `FUN_0023ef58`) calls
+`FUN_00239e78`, which saves the mode and sets fixed mode with no extra vblank: the menu runs 60 frames per second with step 1.0**;
+`FUN_0024f028` / `FUN_0023f020` restore it (`FUN_00239ec0`). So a menu sequence advances **one frame per 60 Hz tick**. The 15-frame enter
+groups therefore take about 15 ticks (0.25 s); the port's log measures the whole open phase (until every layer's enter group has
+finished) at 17 to 18 ticks, against 9 at the earlier pace (2 frames per tick, measured on the remaster clip 10), which halved every menu
+animation (open and close slides, row and cursor animations, the hand, the glint, the PAUSE band letters); `menu::PLAYER_SPEED` is now 1.0 (`KH2_MENU_SPEED` overrides it for comparisons). Log line `menu: open animation done after N
+ticks (S sequence frames per 60 Hz tick)`. Test `menu::tests::menu_sequences_step_one_frame_per_tick` (reads the three constants).
+[inferred] a menu frame takes one vblank (the menu draws little); a frame that took two would step 2.0.
 
 ### 1.7 Input and sound [V unless marked]
 
@@ -569,9 +586,24 @@ Sound/Vibration stored only. Acceptance: a test that every row's value survives 
 Code: `menu.rs` (state, input, freeze, transition), `menu_gfx.rs` (draw path and camera, a copy of the HUD's because `hud_gfx` is private), `menu_text.rs`, `menu_pages.rs` (page 0 table and flags), `kh2-image::layd` (the `.2ld` reader).
 
 - **Closed gaps (addresses).** System sounds: `FUN_002be49c(2, id, ...)`: the 2 is the driver SLOT that holds `se/se000.seb` (docs/audio.md "System sounds": `FUN_002c0eb0` loads it at boot, `FUN_002c0da8` names the slot bank 0), not bank 2 (WP-SE2 correction; `se002.seb` is a two-entry area bank, so the earlier `PlaySe::number(2000 + id)` never found its data). The menu sounds are entries of `se000.seb`, request numbers `id` (log form `se 0:<id>`): cursor 1, confirm 2, cancel 4, refused 5, open 3 (`menu::menu_sound`; `FUN_002c2b70` at 0x2c2cd8 is the same call with a slot taken from a request). Row groups: each entry's set is (enter, leave or inactive, loop); `FUN_00296fb8` starts a selected row in set B[0] with B[2] as the follow-up, `FUN_00298808` (list inactive) switches rows to index 1, `FUN_002988e8` back to index 2. Row pitch is the group's `unk20` (`FUN_00296bd0` with `FUN_00237698`), 26. The row text starts at the row group's anchor point (`FUN_00139048` with the group-offset flag cleared by `FUN_00139888`). Layers: camp layouts 0, 1, 2 are the enter, hold and leave phases (groups 12/39/110, 13/30/40/111, 14/41/112). Panel outline groups 0x2e/0x2f/0x30 (`FUN_00250a00`), Munny and Time plates 0x6b/0x6d/0x6c and 0x71/0x73/0x72, digit groups 0x33+d (Munny) and 0x3d+d with colon 0x47 (Time), NEW tag groups 0x31/0x32 (`DAT_003807e8/ec`), hand group 0x19 (`FUN_00253f98`), glint 0x1b/0x1d/0x1c.
-- **Measured from clip 10, not read [F]**: the fit of footage pixels to menu units (x_px = 190 + 1.133 x, y_px = 26.5 + 1.087 (y + 16) at 960x540, which also shows the HUD's 16 line offset applies), row label offset from the anchor (-7, 1.5), the hand and glint offsets from the row anchor, area name, help line and digit placement, party card shapes and colours, the 2 frames per tick pace, the dim (0.3 brightness, in gamma space), the 14-frame close.
+- **Measured from clip 10, not read [F]**: the fit of footage pixels to menu units (x_px = 190 + 1.133 x, y_px = 26.5 + 1.087 (y + 16) at 960x540, which also shows the HUD's 16 line offset applies), row label offset from the anchor (-7, 1.5), the hand and glint offsets from the row anchor, area name, help line and digit placement, party card shapes and colours, the 2 frames per tick pace (replaced by the code's 1 per tick in WP-MN1, 1.6.1), the dim (0.3 brightness, in gamma space), the 14-frame close.
 - **Not done / gaps**: the party card widget (`FUN_00295bc0` object vtable +0x18, `FUN_0023b348`..`FUN_0023b5d0`) was not decoded, so the card is drawn from shapes; NEW tags (`FUN_00293ba0`, `FUN_00294b58`.. decide them) are not drawn; the party is Sora alone; sub-pages beep (refused sound). The deselect group switch of the row the cursor leaves is [I].
 - **Harness**: `KH2_KEYS` knows Enter, Escape, Backspace; scripted keys are pressed in `PreUpdate`. `KH2_MENU_FLAGS=0x70,0x72` replaces the story-flag set (default 0x70..0x73). Log lines: `menu: open`, `menu: page 0 cursor N`, `menu: close`.
+
+### 9.1 The frame at wide windows (WP-MN1, user request 2026-10-12) [inferred rule, F look]
+
+The original draws the camp on the 512 x 448 canvas (a 4:3 picture); the app's menu camera fits that canvas into the window
+(`AutoMin`), so at 16:9 the frame stopped short of the window's sides. The HD remaster's frames (the user's references) show the frame
+parts at the screen's edges and corners. Rule (`menu_gfx::stretch_quads`, applied to the layout's layers, i.e. the frame: the
+backdrop group 12/13, the frame group 39/40 with the header band, the MENU pill bar, the side rails and the bottom panels, the
+orange area rule 110/111, the rail glow 30): per quad, a side that lies (at the part's rest place) within 16 units of a canvas edge or
+beyond it is carried out to the window's edge, when the quad's texture is drawn stretched along that axis (a band or a flat fill:
+texture span at most half the quad's size; pictures such as the Mickey watermark and the rounded corner pieces keep their shape) and
+the part reaches into the canvas on that axis (the rail glow, wholly left of the canvas, keeps its width). The part's rest place is
+its enter group's last frame (layout 0) or its hold / leave group's first frame (layouts 1, 2); while it slides, the carried side moves
+with it. Content (rows, cards, preview, text, cursor) stays on the 4:3 layout. The bottom panels end at y 420 of the canvas's 432 and
+now reach the bottom edge. `KH2_MENU_NO_STRETCH=1` turns it off; `KH2_WINDOW=<w>x<h>` sets the window size (harness aid); log line
+`menu: frame layer N rest box [..], window view [..]`. Test `menu_gfx::tests::frame_parts_reach_the_window_edges`.
 
 ## 10. Status as built (WP-M2)
 
@@ -791,9 +823,52 @@ The item window (`FUN_0029ed50`; page 2 and the pick pages `FUN_0026b1c8`, page 
 
 **Items page overlapping the Magic row (accept scenario `items-page`).** It is the field's command deck (`hud_menu.rs`, the Items sub list under COMMANDS), not a pause menu page: the header plate of ITEMS is drawn over the Magic row. Resolved by WP-F2 item C as the original's own look: the game draws every stacked list in full and places each list's header by its own row count (docs/hud.md, command menu "Structure"), so a one-entry sub list's ITEMS plate sits where the parent's third row is. No change.
 
+**Update (WP-MN1): the x values belong to the 3D preview.** `FUN_00250a00` passes 0x2f, 0x91, 0xf3 (minus `(n * 98 - 98) / n`) to the
+preview object's slot setup (vtable +0x18 = `FUN_0023a520`), not to a card: they are the centres of the members' slot cameras, see 16.8.
+The cards' x (`menu::card_x`) keeps them plus the clip-10 fit constant: each card's centre lies 24 units right of its member's preview
+centre, which the reference frame (8.webp, Ballroom) also shows. The cards' own drawing code is still not found [GAP, searched as above
+and `FUN_0023aca8`, the preview's draw, which draws only the models].
+
 ### 16.7 Harness
 
 `KH2_KEYS` knows `X` (-5) and `Select` / `Tab` (-7). Examples: `KH2_KEYS=6:Enter,6.5:Down,7:J,7.6:X,8.4:X` (Abilities, then to Items, then back); `6:Enter,6.5:Down,7:J,7.6:J,8.2:Tab,9.2:J` (the Help overlay from the Abilities list, then its second page); with `KH2_STATE=local/m7/state-equip.json` (the state of section 15) `6:Enter,6.6:J,7.2:J,7.8:J,9:Down` shows the pick list with the pictures and the NEW tags. Log lines: `menu: new tags: new items N, new spells N, abilities known N (fresh N)`, `menu: help topic T (N pages), return to page 0x..`, `menu: help done, page 0x..`, `menu: item picture N loaded (WxH)`.
+
+### 16.8 Party cards and the 3D party preview (WP-MN1)
+
+**Cards.** One card per party member in slot order, up to three side by side (`FUN_00250a00` walks slots 0..2 of the party object and
+caps the count at 3): Sora, then the members standing in the field by their party slot (`party::PartyMember`). Name: the member's
+message (`0x37ba90[member id]`, `FUN_001b5890`, the table `menu_status` also reads); LV: the member's record `+0xf`
+(`Progress::member(id).level`); HP and MP: the live values (Sora's entity; the members' `PartyMember::hp/hp_max/mp/mp_max`, the HUD's
+source). The card's shapes and colours are still the M1 ones (measured on clip 10) [F].
+
+**Preview** (`menu_preview.rs`) [V for the numbers, I for the rendering]. `FUN_00295720` creates the object `DAT_0036d1f8`
+(`FUN_0023a018`, vtable 0x36ca50: +4 update `FUN_0023a920`, +8 draw `FUN_0023aca8`, +0x18 slot setup `FUN_0023a520`) when a menu scene
+starts. Per slot (`FUN_00250a00`): `FUN_0023a520(slot, model | 0x20000000, 0x8b, 2, x, y)`: x as above, y = 0x60, or 0x3d when the save
+byte `+0xc` is 10 (`FUN_0027c218`); the slot's projection `FUN_0023a848` -> `FUN_00106ba0(512, 0.8, 0.866667, x + 2048, y + 2048, 1,
+1.677e7, 1)` and `FUN_00106c48(0x37f49c = 40 degrees horizontal)`; the field camera's centre is (2048, 2048) (`FUN_001078f0`, 0x37812c),
+so the slot is centred x, y from the screen's middle. View: eye (0, -50, -800) (0x37f468, 0x37f46c), look-at (0, 0, 55) (0x37f470), up
+(0, -1, 0) (0x37f474). Model: translation (0, 0, -100) (`FUN_0023b348(0x3806f8)` writes slot `+0x678`, the z of the translation row that
+`FUN_0023a920` copies into the matrix), rotation 0 (`FUN_0023b3a8`, `FUN_0023b3c8`: slot `+0x660`, `+0x664`, degrees, `FUN_0011b568`),
+scale 1 (0x37f478), colour (0x60, 0x60, 0x60) of 0x80 (`FUN_0023b448`), alpha from the panel outline object's colour (`FUN_0023b4e0`
+with the object `DAT_0036ceac` that `FUN_0023b4b8` attaches). Motion: `FUN_001a7a48(set, 0x8b, 2)` = entry 0x8b * 4 + 2 of a player set
+(fallback +3, +2, +1, +0) or entry 0x8b of another set; it loops; the frame advances by `FUN_0014cbe8` (the frame step, 1 per tick in a
+menu, 1.6.1); `FUN_0023a920` switches to the variant motions `+0x6d8`/`+0x6dc` after a random 10..29 x 0x37f4a8 frames when they exist
+(they are not set on page 0: not ported). The model's draw offset by an attached object (`+0x14e1`, set only by the Party page
+`FUN_0026d8a8`) is not used on page 0. Computed: the slot centres are menu x 238, 336, 434 for three members and the model's feet land at
+menu y 314 (`menu::preview::tests::the_slots_sit_where_the_original_puts_them`), i.e. the feet are behind the cards' upper part.
+**The reference frames (the HD remaster) show the feet at about y 265, just above the cards**; the code read here gives 314 on the PS2.
+The port follows the code [noted difference: the remaster's 3D viewport may differ; not resolved].
+
+Port: a camera of its own (render layer 9, `Camera3d` with the original's vertical focal length 762 menu units, the 512 x 416 buffer
+shown 4:3; 703 horizontally, applied as a horizontal scale of the models) renders the members into a 1024 x 896 picture of the canvas,
+drawn by the menu as a node right after the panel outline: the models stand in front of the dimmed field and the panel's scan lines,
+behind the rows and the cards. The camera and the models exist only while page 0 shows (the open, not the close: [inferred] the
+original fades them with the panel outline; the port removes them at the close). One perspective replaces the camera per slot: each
+model is shifted sideways to its slot centre [inferred: exact at the model's depth]. The models' motion is stepped by the preview
+itself (the simulation and `skel::animate` are stopped while the menu is open). Log lines `menu: party preview slot S of N: <model>
+motion Some(558) at menu (x, y), depth 702`, `menu: party preview removed`; `KH2_NO_MENU_PREVIEW=1` turns it off, `KH2_PREVIEW_YAW=<deg>`
+turns the models (harness aid). Screenshot (tt03, three members): Sora, Donald and Goofy face the camera between the list and the
+right-hand frame, lower legs behind the cards.
 
 ## 17. Growth and the other equippable abilities as menu rows (WP-G8)
 

@@ -789,18 +789,23 @@ fn show_cards(menu: &Menu, scene: &mut MenuScene, party: &[CardData]) {
 /// [GAP]; the shapes and colours here are measured from the footage, the numbers are the app's.
 fn card(scene: &mut MenuScene, nodes: &[usize], x: f32, c: &CardData) {
     let top = at::CARD_TOP;
-    let shapes: [([f32; 4], [u8; 4]); 5] = [
-        ([x, top, x + at::CARD_W, top + at::CARD_H], [0xb0, 0xb0, 0xb8, 0x80]),
-        ([x + 1.0, top + 1.0, x + at::CARD_W - 1.0, top + at::CARD_H - 1.0], [0x06, 0x06, 0x0a, 0x80]),
-        ([x + 1.0, top + 24.0, x + at::CARD_W - 1.0, top + 25.0], [0x60, 0x60, 0x68, 0x80]),
-        ([x + 4.0, top + 57.0, x + at::CARD_W - 4.0, top + 58.0], [0x18, 0x80, 0x10, 0x80]),
-        ([x + 4.0, top + 72.0, x + at::CARD_W - 4.0, top + 73.0], [0x10, 0x70, 0x80, 0x80]),
+    // The reference frames (8.webp, 7.png) [F]: a name plate shaded from grey at its top edge to near black, a light rule
+    // on its top edge, a dark see-through body (no light outline), and the HP and MP rows underlined in their colours.
+    let (w, h) = (at::CARD_W, at::CARD_H);
+    let plate_top = [0x34, 0x34, 0x38, 0x80];
+    let plate_bottom = [0x0a, 0x0a, 0x0c, 0x80];
+    let shapes: [([f32; 4], [[u8; 4]; 4]); 5] = [
+        ([x, top, x + w, top + 24.0], [plate_top, plate_top, plate_bottom, plate_bottom]),
+        ([x, top + 24.0, x + w, top + h], [[0x04, 0x04, 0x08, 0x74]; 4]),
+        ([x, top, x + w, top + 1.0], [[0x90, 0x90, 0x98, 0x80]; 4]),
+        ([x + 3.0, top + 57.0, x + w - 3.0, top + 58.0], [[0x18, 0x80, 0x10, 0x80]; 4]),
+        ([x + 3.0, top + 72.0, x + w - 3.0, top + 73.0], [[0x10, 0x70, 0x80, 0x80]; 4]),
     ];
     for (k, (rect, color)) in shapes.into_iter().enumerate() {
         let n = &mut scene.nodes[nodes[k]];
         n.visible = true;
         n.label = None;
-        n.fill = Some((rect, [color; 4]));
+        n.fill = Some((rect, color));
     }
     let Some(text) = scene.text.as_ref() else { return };
     let mk = |s: &str, size: f32, color: [u8; 4], align: u8, at: [f32; 2]| {
@@ -817,9 +822,10 @@ fn card(scene: &mut MenuScene, nodes: &[usize], x: f32, c: &CardData) {
         mk("LV", 12.0, yellow, 0, [x + 5.0, top + 28.0]),
         mk(&c.level.to_string(), 13.0, yellow, 1, [right, top + 27.0]),
         mk("HP", 12.0, green, 0, [x + 5.0, top + 43.0]),
-        mk(&format!("{}/{}", c.hp.max(0), c.max_hp), 12.0, green, 1, [right, top + 42.5]),
+        // The values one size below the labels, so a three-digit maximum leaves a gap after "MP" as in the reference.
+        mk(&format!("{}/{}", c.hp.max(0), c.max_hp), 11.0, green, 1, [right, top + 43.0]),
         mk("MP", 12.0, cyan, 0, [x + 5.0, top + 58.0]),
-        mk(&format!("{}/{}", c.mp.max(0), c.max_mp), 12.0, cyan, 1, [right, top + 57.5]),
+        mk(&format!("{}/{}", c.mp.max(0), c.max_mp), 11.0, cyan, 1, [right, top + 58.0]),
     ];
     for (k, l) in labels.into_iter().enumerate() {
         let n = &mut scene.nodes[nodes[5 + k]];

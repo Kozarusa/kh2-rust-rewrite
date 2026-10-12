@@ -609,6 +609,12 @@ fn build(scene: &mut HudScene, p: &mut SoraPanel, face_file: Option<usize>, hp: 
     let bar = blank(scene, p.circle);
     p.drive = [bar, blank(scene, bar), blank(scene, bar), blank(scene, bar), blank(scene, bar)];
     scene.set_group(p.drive[3], dg::MAX);
+    // 0x155c78 gives the digit object (+0x16c, +0x170) the x and y of the bar's current group (0x138ed0 with
+    // 0x237618 / 0x237638 on the bar's player, record +0x10 / +0x14): (52, -2) in every intro group of the
+    // gauge. The digit groups carry no placement of their own, so without it the digit sits at the bar's
+    // origin, under the DRIVE label, instead of at the slanted end of the bar beside the MAX tag.
+    let at = scene.files.get(GAUG).and_then(|f| f.seq.groups.get(dg::intro(DriveMode::Normal))).map_or([0.0, 0.0], |g| [g.x as f32, g.y as f32]);
+    scene.nodes[p.drive[2]].off = at;
     p.last_hp = hp;
     p.lag_hp = hp;
     p.built = true;
@@ -658,6 +664,23 @@ mod tests {
         build(&mut scene, &mut p, Some(2), 20);
         let face = p.face.unwrap();
         (scene, p, face)
+    }
+
+    /// 0x155c78 hands the digit the x and y of the bar's group (0x138ed0 with 0x237618 / 0x237638): the digit
+    /// node's own offset is that group's record, so it is drawn beside the MAX tag and not at the bar's origin.
+    #[test]
+    fn drive_digit_sits_at_the_bars_group_offset() {
+        let mut gaug = seq(160, &[]);
+        gaug.seq.groups[dg::intro(DriveMode::Normal)].x = 52;
+        gaug.seq.groups[dg::intro(DriveMode::Normal)].y = -2;
+        let mut scene = HudScene::default();
+        scene.files = vec![seq(1, &[]), gaug, seq(4, &[])];
+        let mut p = SoraPanel::default();
+        build(&mut scene, &mut p, Some(2), 20);
+        assert_eq!(scene.nodes[p.drive[2]].off, [52.0, -2.0], "the digit");
+        for other in [p.drive[1], p.drive[3], p.drive[4]] {
+            assert_eq!(scene.nodes[other].off, [0.0, 0.0], "the fill, MAX tag and burst keep no offset");
+        }
     }
 
     fn ticks(scene: &mut HudScene, n: usize) {

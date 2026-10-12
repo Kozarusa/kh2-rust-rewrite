@@ -33,10 +33,13 @@
 
 use std::f32::consts::PI;
 
+use std::collections::HashMap;
+
 use bevy::prelude::*;
 
 use super::hud_gauge::GAUG;
-use super::hud_gfx::{Edge, HudScene, Node};
+use super::hud_gfx::{self, Edge, HudScene, Node};
+use crate::assets::Disc;
 
 /// Panels the game has (0x13d738 allocates two).
 pub const SLOTS: usize = 2;
@@ -80,6 +83,23 @@ struct Slot {
 pub struct PartyNodes {
     built: bool,
     slots: [Slot; SLOTS],
+    /// Scene file of each member model's `face` pair, by model name (`None`: not loadable).
+    faces: HashMap<String, Option<usize>>,
+}
+
+/// The model each slot's portrait comes from. The member's own object file holds the `face` pair
+/// (member resource +0x7b0, tag "face", fetched by 0x16b998 as for Sora's `P_EX100`), so the model name
+/// is the key. With no member in the field, the harness fill `KH2_HUDPARTY` shows slot 0 as Donald
+/// (`P_EX020`) and slot 1 as Goofy (`P_EX030`), the members' slots in docs/party.md (the panel of slot 1
+/// lies above that of slot 0, as in the user's picture of the original: Goofy on top, Donald below).
+fn model_of(slot: usize, members: &[&str]) -> Option<String> {
+    if let Some(m) = members.get(slot) {
+        return Some((*m).to_string());
+    }
+    if !members.is_empty() {
+        return None;
+    }
+    ["P_EX020", "P_EX030"].get(slot).map(|m| (*m).to_string())
 }
 
 /// Fraction of a value over its maximum as 0x166730 computes it (float division; 0 for no maximum).
@@ -135,7 +155,16 @@ fn demo() -> Option<Vec<PartyMember>> {
     (!members.is_empty()).then_some(members)
 }
 
-pub fn update(mut scene: ResMut<HudScene>, mut party: ResMut<PartyMembers>, mut nodes: ResMut<PartyNodes>, mut demo_done: Local<bool>) {
+#[allow(clippy::too_many_arguments)]
+pub fn update(
+    mut scene: ResMut<HudScene>,
+    mut party: ResMut<PartyMembers>,
+    mut nodes: ResMut<PartyNodes>,
+    mut demo_done: Local<bool>,
+    disc: Option<Res<Disc>>,
+    mut images: ResMut<Assets<Image>>,
+    in_field: Query<&crate::party::PartyMember>,
+) {
     if scene.files.len() <= GAUG {
         return;
     }
@@ -147,6 +176,30 @@ pub fn update(mut scene: ResMut<HudScene>, mut party: ResMut<PartyMembers>, mut 
     }
     if !nodes.built {
         build(&mut scene, &mut nodes);
+    }
+    // Load each shown member's face once (the `face` pair of `obj/<model>.apdx`).
+    if let Some(disc) = disc {
+        let mut by_slot: Vec<(u8, &str)> = in_field.iter().map(|m| (m.slot, m.model.as_str())).collect();
+        by_slot.sort_by_key(|(s, _)| *s);
+        let names: Vec<&str> = by_slot.iter().map(|(_, m)| *m).collect();
+        for s in 0..party.0.len().min(SLOTS) {
+            if party.0[s].face.is_some() {
+                continue;
+            }
+            let Some(model) = model_of(s, &names) else { continue };
+            let file = match nodes.faces.get(&model) {
+                Some(f) => *f,
+                None => {
+                    let f = hud_gfx::load_files(&disc, &format!("obj/{model}.apdx"), &mut images).pop().map(|f| {
+                        scene.files.push(f);
+                        scene.files.len() - 1
+                    });
+                    nodes.faces.insert(model, f);
+                    f
+                }
+            };
+            party.0[s].face = file;
+        }
     }
     for s in 0..SLOTS {
         let slot = &mut nodes.slots[s];
@@ -199,6 +252,14 @@ pub fn update(mut scene: ResMut<HudScene>, mut party: ResMut<PartyMembers>, mut 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn faces_come_from_the_members_models() {
+        assert_eq!(model_of(0, &["P_EX020", "P_EX030"]).as_deref(), Some("P_EX020"));
+        assert_eq!(model_of(1, &["P_EX020"]), None, "a member that is not in the field has no face");
+        assert_eq!(model_of(0, &[]).as_deref(), Some("P_EX020"), "the harness fill shows Donald in slot 0");
+        assert_eq!(model_of(1, &[]).as_deref(), Some("P_EX030"));
+    }
 
     #[test]
     fn wedges_follow_the_mask_rules() {

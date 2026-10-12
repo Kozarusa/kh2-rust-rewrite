@@ -438,13 +438,14 @@ pub fn stretch_quads(qs: &mut [Quad], rest: [f32; 4], view: [f32; 4]) {
     let slide = [now[0] - rest[0], now[1] - rest[1]];
     let spans_x = rest[2] > CANVAS[0] + EDGE && rest[0] < CANVAS[2] - EDGE;
     let spans_y = rest[3] > CANVAS[1] + EDGE && rest[1] < CANVAS[3] - EDGE;
-    for q in qs.iter_mut() {
+    let pic_shift = picture_shifts(qs, slide, view, [spans_x, spans_y]);
+    for (idx, q) in qs.iter_mut().enumerate() {
         let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
         for p in q.pos {
             b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])];
         }
         // Only a quad whose texture is already drawn stretched along the axis (a band or a flat fill: its texture span is
-        // at most half its size) is carried; a picture (the Mickey watermark) keeps its shape.
+        // at most half its size) is carried; a picture (the Mickey watermark) keeps its shape and is translated below.
         let span = |i: usize| {
             let (lo, hi) = q.uv.iter().fold((f32::MAX, f32::MIN), |(lo, hi), u| (lo.min(u[i]), hi.max(u[i])));
             hi - lo
@@ -454,7 +455,10 @@ pub fn stretch_quads(qs: &mut [Quad], rest: [f32; 4], view: [f32; 4]) {
         let right = spans_x && band_x && b[2] - slide[0] >= CANVAS[2] - EDGE;
         let top = spans_y && band_y && b[1] - slide[1] <= CANVAS[1] + EDGE;
         let bottom = spans_y && band_y && b[3] - slide[1] >= CANVAS[3] - EDGE;
+        let shift = pic_shift[idx].unwrap_or([0.0; 2]);
         for p in q.pos.iter_mut() {
+            p[0] += shift[0];
+            p[1] += shift[1];
             if left && p[0] <= b[0] + 0.5 {
                 p[0] = p[0].min(view[0] + slide[0]);
             }
@@ -471,6 +475,66 @@ pub fn stretch_quads(qs: &mut [Quad], rest: [f32; 4], view: [f32; 4]) {
     }
 }
 
+
+/// The translation of each picture quad of a frame part (a quad whose texture is not stretched along an axis, such as the
+/// Mickey watermark): a group of touching picture quads that reaches one canvas edge of an axis (within `EDGE` of it, not of
+/// the opposite one) moves, as a whole and without a change of size, by the distance of the window's edge to the canvas
+/// edge, so it keeps its distance to the screen's corner. The group is judged at the part's rest place (`slide` removed).
+fn picture_shifts(qs: &[Quad], slide: [f32; 2], view: [f32; 4], spans: [bool; 2]) -> Vec<Option<[f32; 2]>> {
+    let boxes: Vec<[f32; 4]> = qs
+        .iter()
+        .map(|q| {
+            let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+            for p in q.pos {
+                b = [b[0].min(p[0] - slide[0]), b[1].min(p[1] - slide[1]), b[2].max(p[0] - slide[0]), b[3].max(p[1] - slide[1])];
+            }
+            b
+        })
+        .collect();
+    let mut out = vec![None; qs.len()];
+    for axis in 0..2 {
+        if !spans[axis] {
+            continue;
+        }
+        let pic: Vec<usize> = (0..qs.len())
+            .filter(|&i| {
+                let (lo, hi) = qs[i].uv.iter().fold((f32::MAX, f32::MIN), |(lo, hi), u| (lo.min(u[axis]), hi.max(u[axis])));
+                hi - lo > 0.5 * (boxes[i][axis + 2] - boxes[i][axis])
+            })
+            .collect();
+        // Group the touching picture quads (their boxes overlap or meet within one unit).
+        let mut group: Vec<usize> = (0..qs.len()).collect();
+        for &i in &pic {
+            for &j in &pic {
+                let (a, b) = (boxes[i], boxes[j]);
+                if a[0] <= b[2] + 1.0 && b[0] <= a[2] + 1.0 && a[1] <= b[3] + 1.0 && b[1] <= a[3] + 1.0 {
+                    let (gi, gj) = (group[i], group[j]);
+                    let keep = gi.min(gj);
+                    for g in group.iter_mut() {
+                        if *g == gi || *g == gj {
+                            *g = keep;
+                        }
+                    }
+                }
+            }
+        }
+        for &i in &pic {
+            let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+            for &j in pic.iter().filter(|&&j| group[j] == group[i]) {
+                lo = lo.min(boxes[j][axis]);
+                hi = hi.max(boxes[j][axis + 2]);
+            }
+            let (c0, c1) = (CANVAS[axis], CANVAS[axis + 2]);
+            let d = match (lo <= c0 + EDGE, hi >= c1 - EDGE) {
+                (false, true) => view[axis + 2] - c1,
+                (true, false) => view[axis] - c0,
+                _ => continue,
+            };
+            out[i].get_or_insert([0.0; 2])[axis] = d;
+        }
+    }
+    out
+}
 
 /// The part of the menu canvas the window shows (the menu camera's `AutoMin` fit around the canvas middle).
 pub fn window_view(w: f32, h: f32) -> [f32; 4] {
@@ -603,6 +667,7 @@ mod tests {
             quad(143.0, 338.0, 539.0, 420.0, band),
             quad(-6.0, 338.0, 107.0, 420.0, band),
             quad(476.0, 341.0, 523.0, 417.0, [106.0, 140.0, 153.0, 216.0]),
+            quad(429.0, 341.0, 476.0, 417.0, [106.0, 140.0, 153.0, 216.0]),
             quad(24.0, 59.0, 35.0, 70.0, [22.0, 191.0, 33.0, 202.0]),
         ];
         stretch_quads(&mut qs, rest, view);
@@ -611,8 +676,15 @@ mod tests {
         assert_eq!(b(&qs[1]), [view[0], view[1], 19.0, 55.0], "and to the left edge");
         assert_eq!(b(&qs[2]), [143.0, 338.0, view[2], view[3]], "the help panel to the right and the bottom");
         assert_eq!(b(&qs[3]), [view[0], 338.0, 107.0, view[3]], "the Munny panel to the left and the bottom");
-        assert_eq!(b(&qs[4]), [476.0, 341.0, 523.0, 417.0], "the Mickey picture keeps its shape");
-        assert_eq!(b(&qs[5]), [24.0, 59.0, 35.0, 70.0], "a corner piece stays");
+        let (dx, dy) = (view[2] - CANVAS[2], view[3] - CANVAS[3]);
+        assert_eq!(b(&qs[4]), [476.0 + dx, 341.0 + dy, 523.0 + dx, 417.0 + dy], "the Mickey picture keeps its shape and sticks to the corner");
+        assert_eq!(b(&qs[5]), [429.0 + dx, 341.0 + dy, 476.0 + dx, 417.0 + dy], "its other half moves with it (no tear)");
+        assert_eq!(b(&qs[6]), [24.0, 59.0, 35.0, 70.0], "a corner piece stays");
+        // A picture away from the canvas edges stays; one at the left edge moves to the window's left edge only.
+        let mut pics = vec![quad(200.0, 100.0, 247.0, 176.0, [106.0, 140.0, 153.0, 216.0]), quad(-4.0, 200.0, 43.0, 276.0, [106.0, 140.0, 153.0, 216.0])];
+        stretch_quads(&mut pics, rest, view);
+        assert_eq!(b(&pics[0]), [200.0, 100.0, 247.0, 176.0], "a mid-canvas picture stays");
+        assert_eq!(b(&pics[1]), [-4.0 + view[0], 200.0, 43.0 + view[0], 276.0], "a picture at the left edge moves left only");
         // A part sliding in (100 to the right of its rest place) keeps its shape: the carried edge moves with it.
         let mut moving = vec![quad(155.0, -4.0, 625.0, 55.0, band)];
         stretch_quads(&mut moving, [55.0, -4.0, 525.0, 55.0], view);

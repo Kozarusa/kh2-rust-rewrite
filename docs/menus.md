@@ -605,6 +605,15 @@ with it. Content (rows, cards, preview, text, cursor) stays on the 4:3 layout. T
 now reach the bottom edge. `KH2_MENU_NO_STRETCH=1` turns it off; `KH2_WINDOW=<w>x<h>` sets the window size (harness aid); log line
 `menu: frame layer N rest box [..], window view [..]`. Test `menu_gfx::tests::frame_parts_reach_the_window_edges`.
 
+Pictures (WP-MN2, user request 2026-10-12): the Mickey watermark behind the help text (two touching picture quads, canvas box
+429..523 by 341..417) is not stretched but **translated**: a group of touching picture quads (texture span more than half the quad's
+size along the axis) whose box at rest reaches within 16 units of one canvas edge of an axis, and not the opposite one, moves as a
+whole by the distance of the window's edge to the canvas edge (`menu_gfx::picture_shifts`). It keeps its size and its distance to the
+screen's corner (here it overhangs the right edge by 11 units, so it sits partly tucked into the corner, as the remaster's frames show
+it); at 4:3 nothing moves. The group is judged as a whole so the two halves never tear apart; the slide of the part is followed like the
+carried sides. The rounded cap pieces and everything mid-canvas stay (no group of them reaches an edge of its axis). Looked at: 1280x720,
+1024x768 and `KH2_WINDOW=1600x600` (tt03, `KH2_NO_ENEMIES=1 KH2_KEYS=6:Enter,8:Enter,9.5:Enter`, `KH2_SHOT_AT=11`).
+
 ## 10. Status as built (WP-M2)
 
 Code: `menu_status.rs` (the number rules, the tables read from the executable, the two pages), `kh2-image/tests/menu_status.rs` (disc tests

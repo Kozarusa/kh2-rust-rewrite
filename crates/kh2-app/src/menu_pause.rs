@@ -2,10 +2,12 @@
 //!
 //! The picture is `menu/us/pause.2ld` (the file the menu boot `FUN_0024f558` preloads as list index 0, docs/menus.md
 //! 1.3): one 64x64 image that holds the letters P A U S E and a few sparkles, and one sequence of 19 animation
-//! groups. Read from the file: group 0 is a full-screen black at half alpha (the dim), group 14 the dark band with
-//! the thin violet rule at its top and bottom edge, group 15 the five letters that slide in one after the other
-//! and then hold (the group stops at its last frame). The groups 2 to 13 and 16 to 18 (white flash, fades, the
-//! pill that opens into the band, sparkles) are not played: no code that plays them was found [GAP].
+//! groups. Read from the file: group 0 is a full-screen black at half alpha (the dim), group 15 is the whole
+//! band: the dark gradient body (rows -15 to 15), the thin violet rule at its top and bottom edge (rows -17/-15 and
+//! 15/17) and the five letters that slide in one after the other and then hold. Group 14 is a second, taller
+//! band (rows -53 to 53, rules at +-52) that is NOT the PAUSE screen: drawing it too put two extra rules far
+//! above and below the real band (the user's 2026-10-12 frame). The groups 1 to 14 and 16 to 18 (opaque black,
+//! white flash, fades, the pill that opens, sparkles) are not played: no code that plays them was found [GAP].
 //!
 //! The rule that chooses this screen instead of the camp menu was NOT found in the executable [GAP]: the pause
 //! button's task `FUN_00138758` opens the camp (`FUN_0024f0b8(0, -1)`) whatever the battle state is, and no
@@ -24,15 +26,13 @@ use crate::schedule::Pause;
 
 /// Groups of `pause.2ld` sequence 0 that the band plays.
 mod group {
-    pub const BAND: usize = 14;
-    pub const LETTERS: usize = 15;
+    /// The band with its two violet rules and the five sliding letters, all in one group (`dump_pause_groups`).
+    pub const BAND: usize = 15;
 }
 /// Brightness of the dimmed picture: group 0 is black at alpha 64 of 128.
 pub const DIM_BRIGHTNESS: f32 = 0.5;
 /// Middle line of the picture in menu units (the 448 line picture sits 16 lines up, `menu_gfx::Y_BIAS`).
 const CENTER_Y: f32 = menu_gfx::SCREEN[1] / 2.0 - menu_gfx::Y_BIAS;
-/// Group 14's band is centred 32.5 lines below its origin (rows -19 to 84 of the rasterised group).
-const BAND_CENTER: f32 = 32.5;
 
 pub struct PausePlugin;
 
@@ -45,13 +45,13 @@ impl Plugin for PausePlugin {
 /// The band's nodes in the menu scene (empty until the file is loaded).
 #[derive(Resource, Default)]
 pub struct Band {
-    nodes: Option<[usize; 2]>,
+    node: Option<usize>,
 }
 
 impl Band {
     /// The file was read: the band can be shown.
     pub fn is_ready(&self) -> bool {
-        self.nodes.is_some()
+        self.node.is_some()
     }
 }
 
@@ -69,27 +69,21 @@ fn load(disc: Res<Disc>, mut images: ResMut<Assets<Image>>, mut scene: ResMut<Me
     scene.texs.push(menu_gfx::Tex::new(image, &mut images));
     let seq_index = scene.seqs.len();
     scene.seqs.push(seq);
-    let mut make = |pos: [f32; 2]| {
-        let mut n = Node::new(Some(seq_index));
-        n.tex = tex;
-        n.pos = pos;
-        n.visible = false;
-        scene.add(n)
-    };
-    let nodes = [make([menu_gfx::SCREEN[0] / 2.0, CENTER_Y - BAND_CENTER]), make([menu_gfx::SCREEN[0] / 2.0, CENTER_Y])];
-    band.nodes = Some(nodes);
+    let mut n = Node::new(Some(seq_index));
+    n.tex = tex;
+    n.pos = [menu_gfx::SCREEN[0] / 2.0, CENTER_Y];
+    n.visible = false;
+    band.node = Some(scene.add(n));
 }
 
 /// Shows the band and freezes the simulation (the same frame as the open input).
 pub fn open(band: &Band, scene: &mut MenuScene, pause: &mut Pause) -> bool {
-    let Some([b, l]) = band.nodes else { return false };
+    let Some(id) = band.node else { return false };
     pause.band = true;
     scene.hidden = false;
     scene.dim = super::dim_alpha(DIM_BRIGHTNESS);
-    for (id, g) in [(b, group::BAND), (l, group::LETTERS)] {
-        scene.nodes[id].visible = true;
-        scene.set_group(id, g);
-    }
+    scene.nodes[id].visible = true;
+    scene.set_group(id, group::BAND);
     true
 }
 
@@ -98,14 +92,20 @@ pub fn close(band: &Band, scene: &mut MenuScene, pause: &mut Pause) {
     pause.band = false;
     scene.hidden = true;
     scene.dim = 0.0;
-    for id in band.nodes.into_iter().flatten() {
+    if let Some(id) = band.node {
         scene.nodes[id].visible = false;
     }
 }
 
-fn tick(pause: Res<Pause>, mut scene: ResMut<MenuScene>, real: Res<Time<Real>>) {
+fn tick(pause: Res<Pause>, mut scene: ResMut<MenuScene>, real: Res<Time<Real>>, mut hud: Query<&mut Camera, With<crate::hud::HudCamera>>) {
     if pause.band {
         scene.advance(real.delta_secs());
+    }
+    // The original shows no HUD while the PAUSE band is up: the HUD camera is off, back on at the close.
+    for mut cam in &mut hud {
+        if cam.is_active == pause.band {
+            cam.is_active = !pause.band;
+        }
     }
 }
 
@@ -115,13 +115,13 @@ mod tests {
 
     fn scene() -> (MenuScene, Band) {
         let mut scene = MenuScene::default();
-        for _ in 0..2 {
+        for _ in 0..1 {
             let mut n = Node::new(None);
             n.visible = false;
             scene.add(n);
         }
         scene.hidden = true;
-        (scene, Band { nodes: Some([0, 1]) })
+        (scene, Band { node: Some(0) })
     }
 
     #[test]
@@ -142,6 +142,26 @@ mod tests {
         let mut pause = Pause::default();
         assert!(!open(&Band::default(), &mut scene, &mut pause));
         assert!(!pause.frozen());
+    }
+
+    /// `cargo test -p kh2-app dump_pause_groups -- --nocapture` (needs `KH2_ISO`): prints every group of pause.2ld.
+    #[test]
+    fn dump_pause_groups() {
+        let Ok(iso) = std::env::var("KH2_ISO") else { return };
+        let mut a = kh2_archive::Archive::open(&iso).unwrap();
+        let Some(two) = a.read("menu/us/pause.2ld").ok().and_then(|b| kh2_image::layd::parse_2ld(&b)) else { return };
+        let seq = &two.layd.seqs[0];
+        for (gi, g) in seq.groups.iter().enumerate() {
+            println!("group {gi}: loops {} flags {:#x} loop_start {} end {} x {} y {} size {}", g.loops, g.flags, g.loop_start, g.frame_end, g.x, g.y, g.size);
+            for an in seq.anims.iter().skip(g.first).take(g.count) {
+                let sg = &seq.sprite_groups[an.group];
+                let parts: Vec<_> = seq.parts.iter().skip(sg.start).take(sg.count).map(|p| [p.left, p.top, p.right, p.bottom]).collect();
+                println!(
+                    "  anim fr {}..{} flags {:#x} blend {} col {:?}->{:?} tx {:?} ty {:?} scale {:?} sx {:?} sy {:?} parts {:?}",
+                    an.frame_start, an.frame_end, an.flags, an.blend, an.color_start, an.color_end, an.translate_x, an.translate_y, an.scale, an.scale_x, an.scale_y, parts
+                );
+            }
+        }
     }
 
     #[test]

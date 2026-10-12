@@ -36,7 +36,7 @@ mod hud_mission;
 use hud_gauge::{DriveGauge, DriveTables, FaceFile, MpRecharge, SoraPanel};
 use hud_gfx::HudGfxPlugin;
 #[allow(unused_imports)] // re-exported for the keyhole wipe in area_jump.rs
-pub(crate) use hud_gfx::{HudScene, Node as HudNode};
+pub(crate) use hud_gfx::{HudCamera, HudScene, Node as HudNode};
 use hud_banner::{BannerNodes, ExperiencePopups, HudBanner, NumberStrips, StripNodes};
 use hud_card::{AreaCard, CardNodes};
 use hud_menu::{CommandMenu, MenuFile, MenuNodes, MenuTables};

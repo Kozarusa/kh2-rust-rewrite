@@ -168,7 +168,7 @@ impl Track {
     /// frame minus the cut's start.
     pub fn at(&self, f: f32) -> Option<Shot> {
         let fi = f.floor() as i32;
-        let cut = self.cuts.iter().filter(|c| c.start as i32 <= fi && fi <= c.end as i32).last()?;
+        let cut = self.cuts.iter().rfind(|c| c.start as i32 <= fi && fi <= c.end as i32)?;
         let (_, ch) = self.cams.iter().find(|(i, _)| *i == cut.cam)?;
         Some(shot(ch, f - cut.start as f32))
     }

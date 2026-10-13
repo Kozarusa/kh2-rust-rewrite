@@ -491,6 +491,40 @@ fn mv_yp_eff_matches_the_game() {
     }
 }
 
+/// `pppKeDMat` (handler 0x1fa130) against the port: the game leaves view * bind * local in the program's work
+/// slot 1 and projection * that in the draw matrix (+0x50); the port keeps both in world space, so the view (and
+/// here an identity projection) put on the port's matrices must give the game's.
+#[test]
+fn ke_dmat_matches_the_game() {
+    let Some(elf) = exe() else { return };
+    let mut rs = 7u32;
+    for case in 0..12 {
+        let mut r = || pseudo(&mut rs) * 2.0 - 1.0;
+        let bind = Mat4::from_scale_rotation_translation(Vec3::new(1.0 + r().abs(), 1.0, 1.0 + r().abs()), Quat::from_euler(EulerRot::XYZ, r(), r(), r()), Vec3::new(r() * 300.0, r() * 50.0, r() * 300.0));
+        let view = Mat4::look_at_rh(Vec3::new(r() * 500.0, 150.0 + r() * 50.0, -600.0), Vec3::new(r() * 20.0, 100.0, 0.0), Vec3::Y);
+        let Scene { mut ee, env } = scene(&elf, bind, view);
+        let p = Program { kind: 0, param_size: 4, params: vec![0; 8], use_val: vec![0x48, 0x50 + 0x10 * case] };
+        put_program(&mut ee, &p);
+        let local = Mat4::from_scale_rotation_translation(Vec3::splat(0.5 + r().abs()), Quat::from_euler(EulerRot::ZYX, r(), r(), r()), Vec3::new(r() * 40.0, r() * 40.0, r() * 40.0));
+        let mut obj = Obj { group: 0, mem: vec![0; OBJ_SIZE], cursors: vec![0], fresh: false, restart: false, parent: None, ring: Vec::new(), trail_prims: Vec::new(), heap: Vec::new(), seed: 0 };
+        obj.set_mat(OBJ_LOCAL, local);
+        sync_obj(&mut ee, &obj);
+        run(&mut ee, 0x1fa130);
+        let dpd = dpd_with(&raw_shape());
+        let (mut draws, mut spawns, mut rng) = (Vec::new(), Vec::new(), 0u32);
+        let mut ctx = Ctx { env: &env, dpd: &dpd, dpd_index: 0, draws: &mut draws, rng: &mut rng, running: true, fast_forward: false, obj_id: 0, prog_index: 0, parent_local: None, spawns: &mut spawns };
+        crate::prog::ke_dmat(&mut ctx, &mut obj, &p, 0);
+        let slot = OBJ_WORK + p.use_val[1] as usize;
+        for (what, at, port) in [("work slot", slot, view * obj.mat(slot)), ("draw", crate::vm::OBJ_DRAW, view * obj.mat(crate::vm::OBJ_DRAW))] {
+            let g = ee_bytes(&ee, OBJ + at as u32, 64);
+            let game: Vec<f32> = g.chunks(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
+            for (k, (a, b)) in game.iter().zip(port.to_cols_array()).enumerate() {
+                assert!(near(*a, b), "case {case} {what} [{k}]: game {a} port {b}");
+            }
+        }
+    }
+}
+
 #[test]
 fn sno_amplitude_matches_the_game() {
     let Some(elf) = exe() else { return };

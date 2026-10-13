@@ -51,6 +51,7 @@ pub fn handlers(kind: u32) -> Handlers {
         "pppDrawMatrixFront" => frame(draw_matrix_front),
         "pppDrawMatrixWood" => frame(x::draw_matrix_wood),
         "pppKeDMatFr" => frame(x::ke_dmat_fr),
+        "pppKeDMat" => frame(ke_dmat),
         "pppRandFV" => frame(x::rand_fv),
         "pppRandIV" => frame(x::rand_iv),
         "pppRandFloat" => frame(x::rand_float),
@@ -287,6 +288,16 @@ fn matrix_scl(_: &mut Ctx, obj: &mut Obj, p: &Program, _: usize) {
 fn draw_matrix(ctx: &mut Ctx, obj: &mut Obj, _: &Program, _: usize) {
     let m = ctx.env.bind * obj.mat(OBJ_LOCAL);
     obj.set_mat(OBJ_DRAW, m);
+}
+
+/// pppKeDMat (handler 0x1fa130, table entry 0x364bb0): the draw matrix is the bind times the local matrix (the game:
+/// view * bind (0x1db0f80) times the object's +0x10), copied into the program's work slot 1 (the use value at +4 of
+/// the use list), then the projection (0x1db1000) goes on the draw matrix. As for `pppKeDMatFr`, this crate keeps
+/// both in world space (`pppSnoMdlDttNorm` puts the view on the copy).
+pub(crate) fn ke_dmat(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
+    draw_matrix(ctx, obj, p, e);
+    let m = obj.mat(OBJ_DRAW);
+    obj.set_mat(work(p, 1), m);
 }
 
 /// pppDrawMatrixFront: camera-facing. In camera space the axes are the local axes scaled by the

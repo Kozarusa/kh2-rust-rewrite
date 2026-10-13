@@ -21,8 +21,12 @@ use bevy::prelude::*;
 use kh2_image::text::{Style, Token};
 use kh2_image::window::{self, Phase, CLASSES, PROMPT_GROUP};
 
-use super::hud_gfx::{HudScene, Node};
+use super::hud_gfx::{Edge, HudScene, Node};
 use super::hud_text::Label;
+
+/// The tutorial presenter (docs/hud.md "Tutorial windows"): opens windows from the game's own messages.
+#[path = "hud_tutorial.rs"]
+pub(crate) mod hud_tutorial;
 
 /// A window to show: the message and the window class (index into `kh2_image::window::CLASSES`).
 #[derive(Clone, Debug, PartialEq)]
@@ -48,6 +52,8 @@ enum State {
 pub struct WindowNodes {
     frame: Option<usize>,
     prompt: Option<usize>,
+    /// The pointer arrow a message's 0x0f command starts (`pointer_of`).
+    pointer: Option<usize>,
     state: State,
     shown: Option<Request>,
     /// Text box size (even pixels) of the request shown.
@@ -83,11 +89,17 @@ pub fn update(mut win: ResMut<MsgWindow>, mut nodes: ResMut<WindowNodes>, mut sc
         n.visible = false;
         scene.add(n)
     });
+    let pointer = *nodes.pointer.get_or_insert_with(|| {
+        let mut n = Node::new(file, None);
+        n.visible = false;
+        scene.add(n)
+    });
     // A new request (re)opens the window; none closes it at once.
     if win.0 != nodes.shown {
         nodes.shown = win.0.clone();
         scene.nodes[frame].label = None;
         scene.nodes[prompt].visible = false;
+        scene.nodes[pointer].visible = false;
         match nodes.shown.clone() {
             Some(r) => {
                 let c = &CLASSES[r.class];
@@ -128,6 +140,15 @@ pub fn update(mut win: ResMut<MsgWindow>, mut nodes: ResMut<WindowNodes>, mut sc
             n.label = Some(Label { tokens: r.tokens.clone(), style, offset: [(at.text[0] - at.frame[0]) as f32, (at.text[1] - at.frame[1]) as f32] });
             n.label_time = 0.0;
             nodes.state = State::Typing;
+            // The text's first draw runs its 0x0f command: the window's pointer (method +0x2c).
+            if let Some((kind, x, y)) = pointer_of(&r.tokens) {
+                let n = &mut scene.nodes[pointer];
+                n.pos = [x as f32, y as f32];
+                // Positions are in the 512 wide HUD space; the ring and deck sit at the screen edges (docs/hud.md, edge layout) [inferred: the pointer follows the side it is on].
+                n.edge = if x > 256 { Edge::Right } else { Edge::Left };
+                n.visible = true;
+                scene.set_group(pointer, kind as usize + 1);
+            }
         }
         State::Typing => {
             let n = &scene.nodes[frame];
@@ -145,6 +166,17 @@ pub fn update(mut win: ResMut<MsgWindow>, mut nodes: ResMut<WindowNodes>, mut sc
         }
         _ => {}
     }
+}
+
+/// The pointer a message starts: its first 0x0f command carries `(kind u8, x u16, y u16)` (0x1a8210
+/// case 0xf calls the window's method +0x2c with them; its body 0x1aa858 starts group `kind + 1` of the
+/// window sequence when `kind` is not 0 and stores x and y; the window's draw 0x1ab990 draws it there
+/// through 0x1aa8c0). Returns `None` for kind 0 (no pointer).
+pub fn pointer_of(tokens: &[Token]) -> Option<(u8, i32, i32)> {
+    tokens.iter().find_map(|t| match t {
+        Token::Callback(0x0f, a) if a.len() >= 5 && a[0] != 0 => Some((a[0], u16::from_le_bytes([a[1], a[2]]) as i32, u16::from_le_bytes([a[3], a[4]]) as i32)),
+        _ => None,
+    })
 }
 
 /// The text style of a window class: its font, size, colour (for the current world) and alignment.

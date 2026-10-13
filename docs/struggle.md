@@ -317,16 +317,27 @@ name) starts `TT04_MS500`'s manager three seconds in wherever Sora stands (`intr
 `MissionStart`); `KH2_INTRO_HOLD=<event frame>` holds the camera at a frame for screenshots; `KH2_INFO=<hex id>`
 shows the bar with any message.
 
-**Gaps.** (1) Where the fighters stand: the track's keys are map coordinates (docs/camera.md), and the clip's shots
-frame Roxas and Seifer at places the app's group b_45 does not put them (the app puts Sora at the group's player
-entry (156, 0, -4) cm and Seifer at (-194, 0, -4); after the intro the app's field camera looks at a house front
-with three trees where the clip's looks at the board); the wide shot's background (the arched door, the notice
-post) and the Seifer shot's trees agree with the clip, the first shot's does not (the clip shows the board, the
-app a house front). Comparison sheet: `local/i1_compare.png` (clip, integration, this branch).
-Who places the player for this mission in the original was not traced (searched: the record's object 0x236 goes to
-`FUN_00195a78` -> `FUN_001d1160`, which only stores it at event +0x40). (2) The smear: see docs/camera.md "The
-intro camera" (effect 0 draws nothing in the app until `pppKeDMat` is ported in kh2-fx; the ghosting itself was
-not found in code).
+**Gaps.** (1) Where the fighters stand (WP-I2, not resolved). The data: tt04 `btl` program 0xb5 loads only group
+b_45 (opcodes 0x19 flag 0x8db, 0xf, 0x15 the mission, 0x1d 3, 0 `b_45`); its `evt` program 0xb5 sets the music and
+two triggers (events 7 and 0xf with argument -1: jumps) and loads the groups `e55_` and `f55_`; its `map` program only map words.
+b_45 (kind 1) holds the player entity 0x236 at game (155.7, 10, 3.5) facing -90 degrees, the friends 0x237 / 0x238
+at x 255.7, and Seifer (0x678, spawn kind 3) at (-194.3, 10, 3.5) facing +90: the app places them exactly so (log
+`wave 1: Sora placed at the group's player entry`). With those places and the event matrix taken as the unit
+matrix, the wide shot (frames 65 to 95) frames them as the clip does: Seifer left, Sora right, the arched door and
+the notice post behind (`local/i1_compare.png`, row 3). The first two shots (frames 0 to 60: camera at about
+(-9, 113, 164) cm looking at (1, 106, 355), then (-37, 117, 143) looking at (-76, 124, 252)) look toward +z, away
+from both b_45 places, where the clip shows Roxas's back and then Seifer; a player-space reading (the keys in the
+player's frame, +z his facing) frames Seifer at the first look-at (355 ahead = the 350 between the two entries)
+but puts the camera in front of Roxas and misses Seifer in the second shot by about 43 degrees, and breaks the wide
+shot. So neither reading frames all three shots with the b_45 places: in the original something else stands the
+actors elsewhere for frames 0 to 60, or those keys use another space. Not found: the event has no actor opcodes (1,
+2, 0x47); the record's object 0x236 only reaches event +0x40 (`FUN_00195a78` -> `FUN_001d1160`); no tt04 group puts
+the player near (0, 0, 250). The board the clip shows behind Seifer is not in the app's tt04 at all (the app's view
+past Seifer shows the three trees and the house the clip shows behind the board), so it is an object of the story
+state, not map geometry [inferred]. Exact next step: run the tt04 story state of the prologue Seifer fight
+(`KH2_STATE` with the story flags the program's opcode 0x19 names, 0x8db) to see which `evt` groups and entrance
+the area script picks, and read Seifer's script (`N_EX570_BTL` with spawn parameter 4) for position hosts in its
+start mode. Nothing was changed in the placement. (2) The smear: see docs/camera.md "The intro camera".
 
 ## Harness
 

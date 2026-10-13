@@ -165,8 +165,12 @@ mod at {
     pub const CARD_STEP: i32 = 98;
     pub const CARD_FIT: f32 = 232.0;
     pub const CARD_TOP: f32 = 259.0;
-    pub const CARD_W: f32 = 96.0;
-    pub const CARD_H: f32 = 76.0;
+    /// Card width, height, and the distance between two cards' left edges (HD reference frame: 99.6, 71.3, 103.8 units at
+    /// 2.6 pixels per unit) and the shift of the whole row that keeps the third card inside the canvas.
+    pub const CARD_W: f32 = 100.0;
+    pub const CARD_H: f32 = 71.3;
+    pub const CARD_PITCH: f32 = 104.0;
+    pub const CARD_SHIFT: f32 = -4.0;
 }
 
 /// The groups of the objects page 0 builds with literal ids (`FUN_00250a00`, `FUN_002506b8`): the
@@ -188,8 +192,10 @@ mod group {
 
 /// `camp.2ld` sequence 0 holds the bars (unused by page 0), sequence 1 everything else.
 const SEQ_MAIN: usize = 1;
-/// Nodes per party card: five shapes and seven texts.
-const CARD_NODES: usize = 12;
+/// Nodes per party card: twelve shapes (body, three rims, the four steps of the cut corner, the HP and MP gauges with
+/// their tracks) and seven texts.
+const CARD_SHAPES: usize = 12;
+const CARD_NODES: usize = CARD_SHAPES + 7;
 
 /// One party card's numbers.
 #[derive(Clone, Debug, PartialEq)]
@@ -763,7 +769,9 @@ fn open(
 pub fn card_x(i: usize, n: usize) -> f32 {
     let n = n.clamp(1, 3);
     let base = at::CARD_BASE.get(i).copied().unwrap_or(0x10) as f32;
-    at::CARD_FIT + base - ((n as i32 * at::CARD_STEP - at::CARD_STEP) / n as i32) as f32
+    let slot = at::CARD_FIT + base - ((n as i32 * at::CARD_STEP - at::CARD_STEP) / n as i32) as f32;
+    // The cards of the HD reference stand 104 apart (the previews 98), the row's middle where it was.
+    slot + (i as f32 - (n as f32 - 1.0) / 2.0) * (at::CARD_PITCH - at::CARD_STEP as f32) + at::CARD_SHIFT
 }
 
 /// The cards of the party, laid out as `FUN_00250a00` does (the code's x per slot minus the share of
@@ -783,23 +791,40 @@ fn show_cards(menu: &Menu, scene: &mut MenuScene, party: &[CardData]) {
     }
 }
 
-/// One party card from footage (clip 10): a black plate with a light edge, the name above a rule, then
-/// the rows LV (yellow), HP (green) and MP (cyan) with their numbers on the right. The widget that draws
-/// it in the original (`FUN_00295bc0`'s object, vtable +0x18, called by `FUN_00250a00`) was not decoded
-/// [GAP]; the shapes and colours here are measured from the footage, the numbers are the app's.
+/// One party card, measured on the HD reference frame (8.webp, 1920 x 1080, 2.6 pixels per unit by the row pitch of 26): one
+/// dark see-through body for plate and values alike, a light rim along the top (the plate's top corner at the left is cut
+/// 45 degrees), a second light rim where the plate ends, a dim rim down the left edge, the name centred in the plate, then
+/// the rows LV (yellow), HP (green) and MP (cyan) with their values right-aligned, and under HP and MP a coloured line that
+/// is a gauge (its lit part is the share of the member's HP or MP; the rest is a dim track). The widget that draws it in the
+/// original (`FUN_00295bc0`'s object, vtable +0x18, called by `FUN_00250a00`) was not decoded [GAP]; the shapes and
+/// colours are measured, the numbers are the app's. Every number below is units from the card's left or top.
 fn card(scene: &mut MenuScene, nodes: &[usize], x: f32, c: &CardData) {
     let top = at::CARD_TOP;
-    // The reference frames (8.webp, 7.png) [F]: a flat grey name plate (the user: no gradient in the original), a light rule
-    // on its top edge, a dark see-through body (no light outline), and the HP and MP rows underlined in their colours.
     let (w, h) = (at::CARD_W, at::CARD_H);
-    let plate = [0x24, 0x24, 0x28, 0x80];
-    let shapes: [([f32; 4], [[u8; 4]; 4]); 5] = [
-        ([x, top, x + w, top + 24.0], [plate; 4]),
-        ([x, top + 24.0, x + w, top + h], [[0x04, 0x04, 0x08, 0x74]; 4]),
-        ([x, top, x + w, top + 1.0], [[0x90, 0x90, 0x98, 0x80]; 4]),
-        ([x + 3.0, top + 57.0, x + w - 3.0, top + 58.0], [[0x18, 0x80, 0x10, 0x80]; 4]),
-        ([x + 3.0, top + 72.0, x + w - 3.0, top + 73.0], [[0x10, 0x70, 0x80, 0x80]; 4]),
+    let rim = [0x3a, 0x3a, 0x3a, 0x80];
+    let rect = |l: f32, t: f32, r: f32, b: f32, color: [u8; 4]| ([x + l, top + t, x + r, top + b], [color; 4]);
+    // The gauges' lit part: the line spans 4.2 .. w - 4.4; an empty gauge keeps a one-unit stub.
+    let (gl, gr) = (4.2, w - 4.4);
+    let share = |v: i32, max: i32| if max > 0 { (v.max(0) as f32 / max as f32).clamp(0.0, 1.0) } else { 0.0 };
+    let lit = |v: i32, max: i32| gl + (gr - gl) * share(v, max);
+    let mut shapes: Vec<([f32; 4], [[u8; 4]; 4])> = vec![
+        rect(0.0, 0.0, w, h, [0x02, 0x02, 0x04, 0x6c]),
+        rect(7.5, 0.0, w - 1.5, 2.5, rim),
+        rect(0.0, 24.2, w - 1.5, 26.4, [0x32, 0x32, 0x32, 0x80]),
+        rect(0.0, 8.5, 2.3, h, [0x16, 0x16, 0x16, 0x80]),
     ];
+    // The cut corner: four steps from (0, 8.5) up to (7.5, 0).
+    for k in 0..4 {
+        let k = k as f32;
+        shapes.push(rect(1.9 * k, 6.4 - 2.1 * k, 1.9 * k + 2.6, 8.8 - 2.1 * k, rim));
+    }
+    shapes.extend([
+        rect(gl, 53.8, gr, 55.9, [0x01, 0x1c, 0x02, 0x80]),
+        rect(gl, 53.8, lit(c.hp, c.max_hp), 55.9, [0x02, 0x64, 0x01, 0x80]),
+        rect(gl, 69.0, gr, 71.0, [0x07, 0x17, 0x1f, 0x80]),
+        rect(gl, 69.0, lit(c.mp, c.max_mp), 71.0, [0x09, 0x55, 0x74, 0x80]),
+    ]);
+    debug_assert_eq!(shapes.len(), CARD_SHAPES);
     for (k, (rect, color)) in shapes.into_iter().enumerate() {
         let n = &mut scene.nodes[nodes[k]];
         n.visible = true;
@@ -810,24 +835,25 @@ fn card(scene: &mut MenuScene, nodes: &[usize], x: f32, c: &CardData) {
     let mk = |s: &str, size: f32, color: [u8; 4], align: u8, at: [f32; 2]| {
         text.literal(s, Style { font: 0, size: Some(size), color, align, ..Style::default() }, at)
     };
-    let yellow = [0x80, 0x80, 0x10, 0x80];
-    let green = [0x30, 0x80, 0x10, 0x80];
-    let cyan = [0x10, 0x80, 0x80, 0x80];
-    let right = x + at::CARD_W - 6.0;
+    let yellow = [0x7a, 0x6d, 0x14, 0x80];
+    let green = [0x06, 0x64, 0x06, 0x80];
+    let cyan = [0x08, 0x64, 0x74, 0x80];
+    let white = [0x74, 0x74, 0x74, 0x80];
+    let right = x + w - 3.6;
+    let name_at = [x + w / 2.0 + 0.5, top + 7.3];
     let labels = [
         c.name_msg
-            .and_then(|id| text.message(id, Style { font: 0, size: Some(15.0), color: [0x80, 0x80, 0x80, 0x80], align: 2, ..Style::default() }, [x + at::CARD_W / 2.0, top + 5.0]))
-            .unwrap_or_else(|| mk(&c.name, 15.0, [0x80, 0x80, 0x80, 0x80], 2, [x + at::CARD_W / 2.0, top + 5.0])),
-        mk("LV", 12.0, yellow, 0, [x + 5.0, top + 28.0]),
-        mk(&c.level.to_string(), 13.0, yellow, 1, [right, top + 27.0]),
-        mk("HP", 12.0, green, 0, [x + 5.0, top + 43.0]),
-        // The values one size below the labels, so a three-digit maximum leaves a gap after "MP" as in the reference.
-        mk(&format!("{}/{}", c.hp.max(0), c.max_hp), 11.0, green, 1, [right, top + 43.0]),
-        mk("MP", 12.0, cyan, 0, [x + 5.0, top + 58.0]),
-        mk(&format!("{}/{}", c.mp.max(0), c.max_mp), 11.0, cyan, 1, [right, top + 58.0]),
+            .and_then(|id| text.message(id, Style { font: 0, size: Some(15.0), color: white, align: 2, ..Style::default() }, name_at))
+            .unwrap_or_else(|| mk(&c.name, 15.0, white, 2, name_at)),
+        mk("LV", 12.5, yellow, 0, [x + 4.4, top + 30.0]),
+        mk(&c.level.to_string(), 12.5, yellow, 1, [right, top + 30.0]),
+        mk("HP", 12.5, green, 0, [x + 4.4, top + 44.5]),
+        mk(&format!("{}/{}", c.hp.max(0), c.max_hp), 12.0, green, 1, [right, top + 44.5]),
+        mk("MP", 12.5, cyan, 0, [x + 4.4, top + 59.5]),
+        mk(&format!("{}/{}", c.mp.max(0), c.max_mp), 12.0, cyan, 1, [right, top + 59.5]),
     ];
     for (k, l) in labels.into_iter().enumerate() {
-        let n = &mut scene.nodes[nodes[5 + k]];
+        let n = &mut scene.nodes[nodes[CARD_SHAPES + k]];
         n.visible = true;
         n.fill = None;
         n.label = Some(l);
@@ -1076,12 +1102,17 @@ mod tests {
     /// Three party cards stand side by side, 98 apart (`FUN_00250a00`), each 24 units right of its member's 3D preview.
     #[test]
     fn three_cards_stand_side_by_side_under_their_members() {
-        assert_eq!([card_x(0, 3), card_x(1, 3), card_x(2, 3)], [214.0, 312.0, 410.0]);
-        assert_eq!(card_x(0, 1), 279.0, "one card stands at slot 0's place");
-        for i in 0..3 {
-            assert_eq!(card_x(i, 3) + at::CARD_W / 2.0 - 24.0, 256.0 + preview::slot_x(i, 3));
+        assert_eq!([card_x(0, 3), card_x(1, 3), card_x(2, 3)], [204.0, 308.0, 412.0]);
+        assert_eq!(card_x(0, 1), 275.0, "one card stands at slot 0's place");
+        // The middle card keeps its place (centre 22 units right of its member's); the outer ones are 6 units further out
+        // (the HD reference's cards stand 104 apart, the previews 98).
+        assert_eq!(card_x(1, 3) + at::CARD_W / 2.0 - 22.0, 256.0 + preview::slot_x(1, 3));
+        for i in [0, 2] {
+            let d = (card_x(i, 3) + at::CARD_W / 2.0 - 22.0 - 256.0 - preview::slot_x(i, 3)).abs();
+            assert_eq!(d, 6.0);
         }
         assert!(card_x(2, 3) + at::CARD_W <= 512.0, "the third card ends inside the canvas");
+        assert!(card_x(1, 3) - (card_x(0, 3) + at::CARD_W) > 0.0, "a gap between two cards");
     }
 
     /// Regression (play-test 2026-10-11, "upon opening the menu most text vanishes"): a second open must show the

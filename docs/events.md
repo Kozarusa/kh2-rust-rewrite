@@ -720,3 +720,7 @@ Each stage ends with `verify.ps1` passing and the named check.
 | 0x13a7e8, 0x13a8a8, 0x13a980, 0x13a998, 0x13a9d0, 0x15d058, 0x15d1a8, 0x15cf58, 0x15d0e8, 0x15d248, 0x236650, 0x2368a8, 0x2369c0, 0x2369e0, 0x2378a0, 0x2379a8, 0x13ef00, 0x13ef48 | keyhole layout (E1c) |
 | 0x1047a8, 0x149bb8, 0x140c00, 0x140e90, 0x13f470, 0x13efe8 | area start camera (E1c) |
 | 0x194188, 0x1be828, 0x1d7970, 0x1a6ff0, 0x195778, 0x1d3a68, 0x1d30d8 | other opcode targets and area start |
+
+## Tutorial windows opened by mission scripts (WP-T1)
+
+Host 1.296 (`FUN_001744a0`) opens a message window of class `FUN_001abba0` (class 1 of the window table: top centre, dark frame kind 4) with the message id on the stack; `msn/us/TT04_MS107.bar` event 3 calls it with 0x3ef7 at its first instruction. Details, the pointer command (0x0f) and the ids: docs/hud.md "Tutorial windows (WP-T1)". The port opens it on `struggle::MissionStart` of `TT04_MS107`. Host 1.284 (`FUN_00174430`) is the page-sequence object (0x2f46xx family) the same script uses for 0x3ef9: not ported.

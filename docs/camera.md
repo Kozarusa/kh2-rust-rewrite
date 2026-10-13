@@ -182,15 +182,31 @@ The target point the app uses is the locked enemy's position raised 100; the gam
     +4 frame, +6 effect, +8 mode; mode 0 `FUN_001db868(DAT_0036bd54, effect, 1, 3, 0x9c41, 0)`) starts effect 0 of
     the mission's own effect file (BAR type 0x12 `miss`, loaded into the manager's +0xc by `FUN_001db4d0` in
     `FUN_001b8ee8`). Its particle data 0 (life 12): a camera-facing shape (`pppDrawMatrixFront`, `pppDrawShapeX`)
-    and three `pppSnoMdlDttNorm` lens models (the screen shifted along the model's normals, amplitude about -20
-    fading). The app starts it (`intro::tick`, `fx::start`, no owner: the element's own placement), but it draws
-    nothing: the lens takes its model matrix from `pppKeDMat` (handler 0x1fa130: view times the object's matrix
-    into the program's work slot, then the projection; table entry at 0x364bb0), which kh2-fx does not port, so
-    every triangle fails the clip test (w = 0). With a local port (`pppKeDMat` = `draw_matrix` then copy to work
-    slot 1, like `ke_dmat_fr`) the lens draws, 12 frames, but no distortion was visible in screenshots taken
-    during it (`local/i1e_*.png`). The clip's ghosting of the previous view over the new one (a frame-feedback
-    blur) was not found in the event, the event end (`FUN_00195c08` states, `FUN_00196170`, the fades
-    `FUN_0014a7c8` / `FUN_0014a7f0`, `FUN_0013f078`) or the camera hand-over (`FUN_0015c8c8`): **gap**, not drawn.
+    and three `pppSnoMdlDttNorm` lens models (one model, 768 vertices within +-800 x +-800 x -800..300; the screen
+    shifted along the normals, amplitude about -20 fading, colour alpha 112 down to 0). WP-I2 makes it draw:
+    - `pppKeDMat` (handler 0x1fa130, table entry 0x364bb0; view * bind (0x1db0f80) times the object's +0x10 into
+      the program's work slot 1, then the projection 0x1db1000) is ported in kh2-fx (`prog::ke_dmat`; the lens
+      reads its model matrix there; without it every triangle failed the clip test, w = 0). Oracle test
+      `ke_dmat_matches_the_game` (12 random bind, view and local matrices, the game's handler in kh2-ee).
+    - Element flag 0x20000 (both elements of the file have it): `FUN_001dc138` sets bit 2 of the bind record
+      (+0x5c), and `FUN_001dd0d0` then calls `FUN_001dc978` every tick: the element's own translation (+0x1c),
+      rotation (+0x28) and scale (+0x34) are put through the camera's inverse view (`FUN_001068c0(1)`), so the
+      effect rides in camera space. Effect 0's element sits at (0, 0, 5.0) with scale 0.0189: the lens fills the
+      view 5 units in front of the camera. `fx::tick` does the same for any element with the flag
+      (`fx::ELEMENT_IN_CAMERA_SPACE`, `env.bind = view_inv * element_matrix`).
+    - Seen: `local/i2_effect_compare.png` (clip / just before / during): during the 12 ticks the figures show
+      doubled, shifted copies (Seifer's coat and Sora's legs ghosted) and are clean again after.
+    - **Still different** from the clip: there the whole picture smears strongly and radially for about 0.35 s and
+      the HUD is ghosted too (the command deck and HP ring at 4.3 to 4.35 s); here the ghost is light and lasts the
+      effect's 12 ticks. What is missing, precisely: (a) the GS draws each lens triangle from the frame buffer it
+      is drawing into, so the three overlapping lens models shift
+      already-shifted pixels; the app's `DistortMaterial` samples one copy of the opaque 3D pass (Bevy's
+      transmission texture) for all of them; (b) that copy holds no HUD (the HUD camera draws after), while the
+      clip shows the deck and ring smeared, so the game's HUD is in the frame buffer before the lens draws;
+      (c) the effect clock: the app takes one effect frame per 60 Hz tick (`fx::EFFECT_TIME_STEP`, inferred); at
+      half that rate the life of 12 would last 0.4 s, which is the clip's smear length [inferred, not proven].
+      (a) and (b) need a render path that draws the lens after the HUD and feeds each draw the current frame
+      (a ping-pong copy per lens batch), outside the fx engine's material path.
 - **Modes 3, 4, 6, 7, 9, 10** (`FUN_00158bb8`, `FUN_00159648`, `FUN_00158908`, `FUN_00158250`, `FUN_0014e5e0`, `FUN_00158518`) are **not ported**: mode 3 is a lock-on-style framing on a script target (`FUN_00159da8` with `DAT_00379394` and `FUN_0018f0c0(0x358af0)`), the others are the special-purpose cameras (names only inferred, see above). Only the entry points are recorded.
 
 ## What does not change the camera -- verified by absence

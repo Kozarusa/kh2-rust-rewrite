@@ -52,6 +52,15 @@ pub struct CamBlockers(pub Vec<Blocker>);
 pub struct CamEvent {
     pub active: Option<EventCamera>,
     pub handover: Option<View>,
+    /// The intro-camera mode (WP-I1, `intro.rs`): an event's camera track wanted this tick, and whether it is
+    /// pulled in against the map (event opcode 0x46, `DAT_0036bce4`). While it is set the event camera runs it
+    /// through `FUN_0015ce00` (no springs: the track's events have no opcode 0x4c); when it stops coming the
+    /// field camera takes over from the last view (`FUN_0015c8c8`, `Rig::handover`).
+    pub track: Option<(View, bool)>,
+    /// The field camera placed straight behind the player this tick (`FUN_00140e90`: `FUN_0013fc90`,
+    /// `FUN_0013f470`), what an event track's fly-back (opcode 0x31) aims at. Written by `tick`.
+    pub behind: Option<View>,
+    track_owned: bool,
 }
 
 pub struct CameraPlugin;
@@ -336,6 +345,28 @@ fn tick(
     rig.row = row;
     if let Some(v) = event.handover.take() {
         rig.handover(params, &subject, v);
+    }
+    // The intro-camera mode (WP-I1): the event track drives the event camera; when it ends the field camera
+    // takes the last view over.
+    let behind = Rig::new(params, row, &subject, &cast);
+    event.behind = Some(View { look: behind.look, pos: behind.pos, fov: behind.fov, roll: behind.roll });
+    match event.track.take() {
+        Some((v, collide)) => {
+            if !event.track_owned {
+                info!("camera: intro camera on (event camera track, FUN_0022b0f8 -> FUN_0015ce00)");
+            }
+            event.track_owned = true;
+            let ev = event.active.get_or_insert_with(|| EventCamera::start(rig));
+            ev.frame(params, v.pos, v.look, v.fov, v.roll, collide.then_some((&cast as rules::Cast, None)), false);
+        }
+        None if event.track_owned => {
+            event.track_owned = false;
+            if let Some(ev) = event.active.take() {
+                rig.handover(params, &subject, ev.view());
+                info!("camera: intro camera off: the field camera takes over from {:.0} (FUN_0015c8c8)", ev.view().pos);
+            }
+        }
+        None => {}
     }
     let mode_before = rig.mode;
     // An event owns the view: the field camera idles (`FUN_00140a80` skips while

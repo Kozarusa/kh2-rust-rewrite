@@ -196,6 +196,10 @@ pub enum Bind {
     Fixed(Mat4),
 }
 
+/// Element flag 0x20000: the effect is placed in camera space every tick (FUN_001dc138 -> bind record +0x5c bit 2,
+/// FUN_001dd0d0 -> FUN_001dc978).
+pub const ELEMENT_IN_CAMERA_SPACE: u32 = 0x20000;
+
 /// Step of the bind record's clock per 60 Hz tick (inference: the game adds its frame step DAT_00356f40,
 /// 2.0 per update in its own units, which this port takes as one 60 Hz tick).
 pub const EFFECT_TIME_STEP: f32 = 1.0;
@@ -971,6 +975,12 @@ pub fn tick(
         }
         r.time += EFFECT_TIME_STEP;
         let mut env = Env { view: view_inv.inverse(), view_inv, proj, ..Default::default() };
+        // Element flag 0x20000 (WP-I2): the bind record sits in camera space (FUN_001dc138 sets its +0x5c bit 2;
+        // FUN_001dd0d0 then runs FUN_001dc978 every tick: the element's own translation, rotation and scale put
+        // through the camera's inverse view, FUN_001068c0(1)), so the effect stays in front of the camera.
+        if el.flags & ELEMENT_IN_CAMERA_SPACE != 0 {
+            env.bind = view_inv * element_matrix(&el);
+        } else {
         match r.bind {
             Bind::Owner(owner) => {
                 // The bind record follows its owner every tick (FUN_001dd0d0 -> FUN_001dcd08 for mode 1):
@@ -1033,6 +1043,7 @@ pub fn tick(
                 let (sc, rot, t) = m.to_scale_rotation_translation();
                 env.bind = FLIP * Mat4::from_scale_rotation_translation(sc, rot, t / SCALE) * FLIP * element_matrix(&el);
             }
+        }
         }
         // A fade-out (element flag 0x40: FUN_001da080 over the element's fadeout frames) scales the
         // effect's alpha down to nothing, then the effect is gone.

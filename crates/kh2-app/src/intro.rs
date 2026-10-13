@@ -279,7 +279,8 @@ fn tick(mut commands: Commands, disc: Res<Disc>, mission: Res<Mission>, mut intr
     let Some(r) = intro.run.as_mut() else { return };
     // `KH2_INTRO_HOLD=<event frame>` holds the camera at that frame (a harness aid for screenshots).
     let hold = std::env::var("KH2_INTRO_HOLD").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(f32::MAX);
-    let f = (p.ticks as f32 * 0.5).min(hold);
+    let f_real = p.ticks as f32 * 0.5;
+    let f = f_real.min(hold);
     if r.track.has_camera() {
         let shot = match (r.track.follow_at, cam.behind) {
             (Some(start), Some(behind)) if f >= start as f32 && r.track.end > start => {
@@ -298,7 +299,7 @@ fn tick(mut commands: Commands, disc: Res<Disc>, mission: Res<Mission>, mut intr
         }
     }
     for (i, &(frame, id, mode)) in r.track.effects.iter().enumerate() {
-        if r.started[i] || f < frame as f32 {
+        if r.started[i] || f_real < frame as f32 {
             continue;
         }
         r.started[i] = true;

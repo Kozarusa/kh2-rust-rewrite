@@ -23,6 +23,10 @@
 
 use bevy::prelude::*;
 
+// The INFORMATION bar (WP-I1) sits beside this file; a submodule so `hud.rs` stays untouched.
+#[path = "hud_info.rs"]
+pub(crate) mod hud_info;
+
 use super::hud_gfx::{Edge, HudScene, Node, SeqFile};
 use crate::assets::Disc;
 use crate::struggle::{Clock, Element, Mission};
@@ -115,6 +119,8 @@ pub struct MissionHud {
     layout_done: Option<(u32, u8, usize)>,
     /// Field HUD nodes this module hid while a layout hides the field HUD, to show again after it.
     hidden: Vec<usize>,
+    /// The INFORMATION bar (draw tag 7: an event's field-HUD hide leaves it up).
+    info: hud_info::InfoBar,
 }
 
 
@@ -210,6 +216,7 @@ fn own_nodes(hud: &MissionHud) -> Vec<usize> {
         v.extend([c.frame, c.g3, c.g9].into_iter().chain(c.digits).chain(c.seps).chain(c.warn));
     }
     v.extend(hud.layouts.iter().map(|(_, n)| *n));
+    v.extend(hud.info.nodes());
     v
 }
 
@@ -313,7 +320,7 @@ fn load_picture(file: &[u8], e: &Element, scene: &mut HudScene, images: &mut Ass
     Some(scene.files.len() - 1)
 }
 
-pub fn update(disc: Res<Disc>, mission: Res<Mission>, mut hud: ResMut<MissionHud>, mut scene: ResMut<HudScene>, mut images: ResMut<Assets<Image>>) {
+pub fn update(disc: Res<Disc>, time: Res<Time>, mission: Res<Mission>, mut hud: ResMut<MissionHud>, mut scene: ResMut<HudScene>, mut images: ResMut<Assets<Image>>) {
     if !hud.loaded {
         hud.loaded = true;
         hud.tables = disc.read_root("SLUS_210.05").and_then(|e| read_tables(&e));
@@ -321,6 +328,7 @@ pub fn update(disc: Res<Disc>, mission: Res<Mission>, mut hud: ResMut<MissionHud
             warn!("hud: the mission digit tables are not readable from SLUS_210.05; no mission HUD");
         }
     }
+    hud_info::update(&mut scene, &mission, &mut hud.info, time.delta_secs());
     let Some(t) = hud.tables.clone() else { return };
     layout_picture(&mission, &mut hud, &mut scene, &mut images);
     field_hud_hide(mission.hud_hidden(), &mut hud, &mut scene);

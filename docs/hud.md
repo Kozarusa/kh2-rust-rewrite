@@ -129,6 +129,46 @@ Module `hud_banner.rs`.
 - Experience popup (0x15b198 builds, 0x15ae80 lays out, 0x15b010 formats): the root is group 16 (the munny symbol), the digits are groups 6 to 15 (table 0x358c50), the amount is formatted with `%d`. Each digit advances by the `unk20` of its group; the root's offset is half the total width minus the symbol's width and digit `k` is at `sum of earlier advances - half`, so the group is centred on the popup's position. The game places the popup at a projected world point and the counter caps at 9,999,999 (seven digits). The value it shows is the one `FUN_001b51e0` adds to the experience total at 0x340e48 (see docs/prizes.md, correction: that word is the experience, not the munny; the "OBTAINED MUNNY!" strip is raised by the prize pickup 0x1a39b0). Verified in code; not hooked to a game event.
 - Inputs: `HudBanner(Option<{ kind, pos }>)` and `ExperiencePopups(Vec<{ amount, pos }>)`. `KH2_HUDBANNER=<push|chance|combo|finish|nextlevel|munny>[:x:y]`, `KH2_HUDEXP=<amount>[:x:y]` (older name `KH2_HUDMUNNY` still read), and `KH2_HUDFREEZE=<frame>` to hold their sequences at a frame for a screenshot.
 
+## The INFORMATION bar (WP-I1)
+
+Module `hud_info.rs` (a submodule of `hud_mission.rs`, run from its `update`). The strip at the top left with the
+italic word INFORMATION and the mission objective under it (reference clip 3.mp4: "Defeat Seifer!").
+
+- **Who shows it** (verified): the mission start `FUN_001b8ee8` ends with `FUN_001b9a08(0)`: the header's u16 at +6,
+  when not 0, is looked up (`FUN_00190c40`) and passed to `FUN_0014f1e8`, which builds the bar object
+  `DAT_0035852c` (made by `FUN_0014ef70`, vtable 0x358668) with `FUN_00150428`, or swaps the text of a bar that
+  is up (`FUN_001505b0`). `FUN_0014f240(id)` closes it early (`FUN_001507d8`). Mission messages: docs/struggle.md
+  "The battle intro" (`TT04_MS500` 0x48c1, `TT04_MS108` 0x375a, `TT03_MS400` 0x48bf; the Struggle `TT04_MS00` has 0).
+- **The pieces** (verified): `gaug` (the field file's second pair, `FUN_0013a998(1)`). The text object (+0x30,
+  `FUN_00138fc8`: font 0, colour 0xe5e5e5 alpha 0x80, size the group record's +0x18 or 15, flags 4, 8 and 0x10)
+  plays group 0 (11 frames: the bar and the INFORMATION plate fade in) with follow-up group 1 (+0x1ac; loops from
+  frame 61: the plate's shine); the second object (+0x220, a plain sequence object) plays group 0 with follow-up
+  group 2 (+0x39c; a black sprite that slides from x 0 to 360 over frames 20 to 100: it uncovers the text from
+  left to right). Both draw tag 7 at priority 8000 (`FUN_00139430`), so an event's field-HUD hide (tags 3 to 6,
+  `FUN_0014ef48`) leaves them up; `hud_mission` keeps them out of its hide. Group records: x 6, y -12, +0x1c 45
+  (the height for the stacking, `FUN_0014f8b0` row 1 of column 0), +0x20 360 (the scissor width).
+- **The update** `FUN_00150688` (verified): the object's +0x188 (set by `FUN_00138aa8` when a follow-up starts)
+  raises flag 2; from then the text's scissor is (0, stack y, the group's +0x20, 64) (`FUN_0014b6c0`, before it 1
+  x 1), a wait of 180.0 (0x3792b0) runs down by `DAT_00356f44` per update, then the text's x (+0x1c0, the text
+  object's +0x190, set to the group record's x by `FUN_00150510`) drops by 1 per update until it is below the
+  start x minus the text width (`FUN_001a7ed8`), and `FUN_001507d8` sets group 3 (20 frames: everything fades out,
+  no follow-up, so the object ends, `FUN_00138aa8` vtable +0x14) and hides the second object. `FUN_00150510`
+  plays system sound 0x22 (`FUN_002c14a8`; not played here, as for the item messages).
+- **The text's place** (`FUN_00139048`, verified): the group's anchor (`FUN_00138f38`) plus the group record's x,
+  y (flag 0x10) plus the stacking offset (+0x164, +0x168) plus the scrolled x.
+- **Port** (`hud_info::update`, `hud_info::step`): as above, with [measured] 0.5 units per 60 Hz tick for the
+  scroll (the clip moves the text about 27 capture pixels a second; the 180 wait reads as 3 s at 60 Hz, so the
+  update that moves the text by 1 runs every other frame [inferred]). The scissor: the bar is `Edge::Left` (the
+  user's widescreen rule), so its left edge, screen x 0, is the window's edge; glyphs left of it are dropped whole
+  (the app's text path has no scissor) [approximation]. Tests
+  `the_information_text_waits_then_scrolls_out_and_the_bar_closes`,
+  `the_seifer_missions_name_their_objective_in_the_header`. Logs `hud: INFORMATION bar: message 0x48c1 "Defeat
+  Seifer!" ...`, `hud: INFORMATION bar open`, `... scrolled out, closing (group 3, FUN_001507d8)`, `hud:
+  INFORMATION bar gone`. Harness `KH2_INFO=<hex id>` shows any message. Looked at: `local/i1_b45_6.png` (bar,
+  plate and text at the top left as in the clip at 1.5 s), `local/i1_compare.png`.
+- **Not ported**: the stacking with other row-0 elements of column 0 (none in these missions), `FUN_001505b0`'s
+  re-show and `FUN_0014f240`'s early close (their callers were not traced), the sound.
+
 ## Damage numbers
 
 The original draws no damage numbers. The only floating-number system found is the digit popup at 0x15b198 (above), called from the enemy-defeat code (0x1b25d0) and 0x1c46a8 with a value that is added to the experience total (0x1b51e0, capped at 9,999,999). So it is an experience gain popup. The old floating damage text remains only as a debug aid behind `KH2_DEBUGHUD=1` or F9.

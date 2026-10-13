@@ -31,6 +31,7 @@ mod friend_host;
 mod fx;
 mod harness;
 mod hud;
+mod intro;
 mod items;
 mod limit;
 mod magic;
@@ -118,6 +119,6 @@ fn main() {
         // The third tuple: later plugins go here (the second is near the 15-entry limit).
         // `progress::ensure` lets the plugins above that read `Progress` while they build insert it
         // first, so its place here does not matter.
-        .add_plugins((progress::ProgressPlugin, prize::PrizePlugin, menu::MenuPlugin, menu_abilities::MenuAbilitiesPlugin, items::ItemsPlugin, party::PartyPlugin, struggle::StrugglePlugin, summon::SummonPlugin, sound_test::SoundTestPlugin, asset_viewer::AssetViewerPlugin, area::AreaPlugin, area_jump::AreaJumpPlugin, npc::NpcPlugin, hud::hud_msgwin::hud_tutorial::TutorialPlugin))
+        .add_plugins((progress::ProgressPlugin, prize::PrizePlugin, menu::MenuPlugin, menu_abilities::MenuAbilitiesPlugin, items::ItemsPlugin, party::PartyPlugin, struggle::StrugglePlugin, summon::SummonPlugin, sound_test::SoundTestPlugin, asset_viewer::AssetViewerPlugin, area::AreaPlugin, area_jump::AreaJumpPlugin, npc::NpcPlugin, hud::hud_msgwin::hud_tutorial::TutorialPlugin, intro::IntroPlugin))
         .run();
 }

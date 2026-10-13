@@ -275,6 +275,59 @@ taken as 0; the target gauge of the app is hidden while a side-1 counter shows (
 gauge over the TIME plate"). Widescreen: the user's edge rule (left counter left, right counter right).
 Test `counter_digits_blank_their_leading_zeros`, `the_struggle_pictures_have_the_groups_the_code_uses`.
 
+## The battle intro (WP-I1): camera, effect, INFORMATION bar
+
+The reference clip `3.mp4` (Roxas against Seifer in the Sandlot, prologue) is mission `TT04_MS500` (tt04 `btl`
+program 0xb5, group b_45, header +6 message 0x48c1 "Defeat Seifer!"; test
+`the_seifer_missions_name_their_objective_in_the_header`). The b_50 Struggle (`TT04_MS00`) has no intro camera
+and no objective message: its start event (`re_m`, entry 2) holds only the picture (opcodes 0, 0xf, 0x10, 8, 0x14,
+0x50), its header +6 is 0 (test `the_seifer_intro_is_the_start_event_camera_and_the_struggle_has_none`). The other
+"Defeat Seifer!" missions: `TT04_MS108` (b_42, message 0x375a, start event `1b` with a camera), `TT03_MS400` (tt03
+b_41, 0x48bf, the same `1a` event as MS500).
+
+**What the clip shows** [measured, 60 fps frames at 0.05 to 0.1 s steps, `local/videoframes/3_*.png`]: 0.0 to 0.3 s
+the picture fades in from black; 0.1 to 1.4 s a close view over Roxas's shoulder toward the board, 1.5 to 2.8 s
+Seifer alone in the middle of the plaza (trees and a street lamp behind him), 2.9 to 3.9 s a wide shot from far
+with Seifer left, Roxas right, townspeople and the arched door behind; 4.0 to 4.5 s the camera rushes back behind
+Roxas while the picture smears (the previous view stays as a fading, stretched ghost over the new one; the
+command deck and HP ring appear doubled at 4.3 to 4.35 s), then play with the deck and the HP ring. The
+INFORMATION bar is up from the first visible frame; its text comes in left to right at 0.6 to 1.0 s, stands
+still to about 3.55 s, then runs left (about 27 capture pixels a second) and is gone at 7.2 s; the bar fades out
+by 7.8 s.
+
+**The data** (mission file `msn/us/TT04_MS500.bar`): layout record 1 (word 0x02360002: event entry 2, no picture,
+object 0x236 the player) plays event `re_msstart-1a` (kind 0xc, `evtp` flags 0x70: control locked, field HUD
+hidden). Its commands: opcode 8 end frame 130 (4.33 s), opcode 0x13 one camera record (eight channels, 191 keys),
+opcode 6 cut camera 0 from frame 0 to 130, opcode 0x46 (+6 = 0: pulled in against the map, no blockers), opcode
+0x31 at frame 103 with mode 1 (the fly-back to the field camera), opcode 0x3c at frame 120 (effect 0 of the
+mission's effect file, mode 0 = start). How each is read and run: docs/camera.md "The intro camera".
+
+**In the app** (`intro.rs`): `intro::tick` follows the mission's start layout (`Mission.m.play`, `what ==
+"start"`), parses its event (`Track::parse`), and every tick hands the camera the track's view at the event frame
+(game ticks times 0.5, `FUN_00222728`), then the fly-back from frame 103, through `CamEvent::track`; opcode 0x3c
+starts the effect (`fx::load` of the mission file's BAR type 0x12 entry, the manager's +0xc group that
+`FUN_001b8ee8` loads with `FUN_001db4d0`). The control lock and the field-HUD hide are the start layout's, as
+before. The INFORMATION bar is `hud_info.rs` (docs/hud.md "The INFORMATION bar"). Logs: `intro: TT04_MS500 start
+event (entry 2): 1 camera record(s), cuts [(0, 0, 130)], end frame 130, fly-back from frame Some(103), ...`,
+`camera: intro camera on`, `intro: frame 103: the camera flies to the field camera behind the player`, `intro:
+frame 120: effect 0 of TT04_MS500's effect file started`, `camera: intro camera off: the field camera takes over`.
+
+Harness: `KH2_WAVE_GROUP=b_45 ... kh2-game tt04` (the mission starts about 4 s in); `KH2_INTRO=1` (or a mission
+name) starts `TT04_MS500`'s manager three seconds in wherever Sora stands (`intro::standalone`, sends
+`MissionStart`); `KH2_INTRO_HOLD=<event frame>` holds the camera at a frame for screenshots; `KH2_INFO=<hex id>`
+shows the bar with any message.
+
+**Gaps.** (1) Where the fighters stand: the track's keys are map coordinates (docs/camera.md), and the clip's shots
+frame Roxas and Seifer at places the app's group b_45 does not put them (the app puts Sora at the group's player
+entry (156, 0, -4) cm and Seifer at (-194, 0, -4); after the intro the app's field camera looks at a house front
+with three trees where the clip's looks at the board); the wide shot's background (the arched door, the notice
+post) and the Seifer shot's trees agree with the clip, the first shot's does not (the clip shows the board, the
+app a house front). Comparison sheet: `local/i1_compare.png` (clip, integration, this branch).
+Who places the player for this mission in the original was not traced (searched: the record's object 0x236 goes to
+`FUN_00195a78` -> `FUN_001d1160`, which only stores it at event +0x40). (2) The smear: see docs/camera.md "The
+intro camera" (effect 0 draws nothing in the app until `pppKeDMat` is ported in kh2-fx; the ghosting itself was
+not found in code).
+
 ## Harness
 
 ```
@@ -316,3 +369,4 @@ the app already removed them when their group finished.
 | 0x195898, 0x195ae0, 0x1959f0, 0x195c08, 0x196170, 0x1962a0, 0x196280, 0x196418, 0x196668, 0x196760, 0x1964d0, 0x1968c8, 0x1d1118, 0x1d1128, 0x193610, 0x1b7ce8, 0x1b7d18, 0x1b7d50, 0x2232c8, 0x2245d0, 0x226fb0, 0x225af0, 0x225998, 0x222668, 0x222728, 0x2236d8, 0x224b98, 0x1bef10, 0x1bef48, 0x1befc0, 0x1beff8, 0x1bf030, 0x138758 | events, event kinds, pause-menu records |
 | 0x1b8d80, 0x1908b0, 0x15b798, 0x15bc10, 0x1cec00, 0x1ce718, 0x1ce820, 0x178c88, 0x175f10, 0x186238, 0x186530, 0x1a0100, 0x19f920, 0x1a0030, 0x1a0968, 0x1b8218, 0x175ad8, 0x1789d8, 0x190668, 0x1b70b8, 0x1ba2c0 | flags of `DAT_0035d268`, the knock-out |
 | 0x185a08, 0x185a38, 0x1cadd8, 0x19b4a8, 0x19b3f0, 0x154498, 0x153f98, 0x13da78, 0x14f8b0, 0x187250 | pickup skips, target gauge, messages |
+| 0x1b9a08, 0x1b8ee8, 0x1d3538, 0x195898, 0x195a78, 0x1d1160, 0x195ae0, 0x2232c8, 0x11b460, 0x1db4d0 | the battle intro: the objective message, the start event and its matrix, the effect group (WP-I1) |

@@ -143,7 +143,54 @@ The target point the app uses is the locked enemy's position raised 100; the gam
 - **Override**: `FUN_001406e8` runs every tick after the mode update: when `DAT_00359038` is set (by `FUN_0015c8f8(1)`, called from the event/cutscene frame `FUN_002233d8` while an event with a camera track is playing) the camera object's drawn look-at, position, fov and roll are replaced by the event's (`0x5206f0`, `0x520700`, `0x520710`, roll `0x520714`) and the flag is cleared again; the event player sets it each frame. `FUN_0015c8c8` ends the override (clears the flag, fades the player in, un-pauses the camera task `FUN_00106818(1)`, and `FUN_0015ca08` reseeds the event springs from the field camera).
 - **Per event frame** (`FUN_0015ce00`, called from `FUN_0022b0f8` once per camera track entry with the track's position, look-at, fov and roll): the previous wanted values are saved (`FUN_0015cb08`); optionally (`param_6`) the position is pulled in with `FUN_0013f8f8` (blockers per `param_7`); optionally (`param_8`) the three springs run (`FUN_0015cb70`, `FUN_0015cd20`): look-at with (t 0.1, k 2.5, c 0.5, rest 1), position (t 0.07, same k, c, rest), and (fov, roll) (t 0.07, k 2.5, c 0.5, rest 0.001); the result goes to the projection. Constants are `0x379470..0x379490`, read at run time (`EventParams`).
 - **Hand-over**: `FUN_0015c8f8(1)` (the event camera starts) pauses the field camera task (`FUN_00106818(0)`), and calls `FUN_00140e90`, which places the field camera behind the player (`FUN_0013fc90`, `FUN_0013f470`), runs one forced tick (`FUN_00140a80(.., 1)`: no collision, warp-style) and returns its position/look-at pair; then the event's drawn values are read from the projection (`FUN_001071c8`, `FUN_001072d8`, `FUN_00106d90`, `FUN_00107318`). At the end `FUN_0015c8c8` clears the override, resumes the task and reseeds the event springs (`FUN_0015ca08`). Which values the field camera continues from after an event is **inferred**: the app's `Rig::handover` resets the rig behind the subject and installs the event's final view so the spring runs on from there. The one-forced-tick details beyond this are **not ported**.
-- **App**: `EventCamera` (`start`, `frame`, `view`) is the pure rule; the `CamEvent` resource holds an active event camera (the field camera idles while it is set, like `FUN_00106818(1)`) and a pending hand-over view. No map script drives it yet.
+- **App**: `EventCamera` (`start`, `frame`, `view`) is the pure rule; the `CamEvent` resource holds an active event camera (the field camera idles while it is set, like `FUN_00106818(1)`) and a pending hand-over view. A mission's start event drives it since WP-I1 (below); no map script does yet.
+- **The intro camera (WP-I1, `intro.rs`, `CamEvent::track`).** A mission's start event (docs/struggle.md "The
+  battle intro") carries a camera track, and the app now plays it:
+  - *Records* (event opcode 0x13, setup `FUN_0022b4f8` stores the command by its index +4 in `DAT_0036bbb0`):
+    eight channels, each a pair (u16 first key, i16 key count) at +6..+0x24, keys of 16 bytes from +0x28: word 0 the
+    type (top 3 bits) and the time in 1/512 s (low 29 bits, signed), then value, incoming and outgoing tangent.
+    Channels in order (`FUN_0022adb8`): position x, y, z, look-at x, y, z, roll and field of view, both in degrees
+    (0x37f144 / 0x37f148 and 0x37f15c are pi / 180); y and z are negated into the game's Y-down space, so the keys
+    are the app's (Y up) coordinates as they stand; a channel with no keys keeps 0 (the field of view 1.0,
+    0x37f154). Port `intro::Track`, `intro::shot`.
+  - *Evaluation* (`FUN_0022ab08`): time = event frame / 30 (0x37f138) in seconds, key time units 512 a second
+    (0x37f13c); before the first key and after the last the value runs on along a line (to the neighbour for a
+    linear key, else the key's own tangent, per key time unit); between keys `FUN_0022a9d8`: type 0 holds, 1 is
+    linear, 2..4 a cubic Hermite with key i's outgoing and key i+1's incoming tangent, others 0. Port
+    `intro::channel`; test `the_camera_keys_evaluate_as_fun_0022ab08_does` runs the game's own `FUN_0022ab08` in
+    kh2-ee over every channel of the Seifer intro and 160 frames (worst relative difference 3.7e-6).
+  - *Cuts* (opcode 6, `FUN_0022a970` -> 128 entries `id, start, end` at `DAT_0036bbb4`): each frame
+    `FUN_0022b0f8` evaluates every record whose cut holds the event frame `DAT_0036bcf0` at the frame minus the cut
+    start, transforms position and look-at by the event's matrix `DAT_0036bce8` and calls `FUN_0015ce00` with the
+    roll, the field of view, the map pull-in flag (`DAT_0036bce4`, opcode 0x46) and its blocker flag
+    (`DAT_0036bce5`, opcode 0x46 +6) and the spring flag (`DAT_0036bcdb`, opcode 0x4c). `DAT_0036bce8` is the
+    event object's +0x50 (`FUN_00195ae0` -> `FUN_002232c8` param 2), which `FUN_00195898` fills by `FUN_0011b460`
+    from 0x354a60 (zero in the file: filled at run time) [inferred: the unit matrix, so the keys are map
+    coordinates; the app uses the unit matrix, and the clip's wide shot and Seifer shot backgrounds agree].
+  - *The fly-back* (opcode 0x31 +6 = 1, `FUN_0022bc40` -> `FUN_0022b590`, at its frame +4): two keys of type 2 with
+    zero tangents per channel (the work track at `DAT_0036bd60`), at `(frame << 9) / 30` the view drawn then
+    (`FUN_001071c8`, `FUN_001072d8`, `FUN_00107318`) and at the end frame `DAT_0036bcf8` the field camera placed
+    behind the player (`FUN_00140e90`), both kept in the player's space (`FUN_0016aa08`, the player's matrix); from
+    then on `FUN_0022b0f8` evaluates this track (`FUN_0022af88`) instead of the records. The app takes both ends
+    in map space at the first frame (the player does not move while the start layout holds him) and eases between
+    them (`intro::follow`; `CamEvent::behind` is `Rig::new` for the current subject, filled by `camera::tick`).
+    Test `the_fly_back_eases_from_the_event_view_to_the_field_camera`.
+  - *Hand-over*: while `CamEvent::track` comes the event camera runs `EventCamera::frame` with it (no springs: the
+    intro has no opcode 0x4c; the pull-in against the map when opcode 0x46 is present); when it stops the field
+    camera takes the last view over (`Rig::handover`, as `FUN_0015c8c8`). Logs `camera: intro camera on` / `off`.
+  - *The smear at the cut* (the clip, 4.0 to 4.5 s): the start event's opcode 0x3c at frame 120 (`FUN_00226188`:
+    +4 frame, +6 effect, +8 mode; mode 0 `FUN_001db868(DAT_0036bd54, effect, 1, 3, 0x9c41, 0)`) starts effect 0 of
+    the mission's own effect file (BAR type 0x12 `miss`, loaded into the manager's +0xc by `FUN_001db4d0` in
+    `FUN_001b8ee8`). Its particle data 0 (life 12): a camera-facing shape (`pppDrawMatrixFront`, `pppDrawShapeX`)
+    and three `pppSnoMdlDttNorm` lens models (the screen shifted along the model's normals, amplitude about -20
+    fading). The app starts it (`intro::tick`, `fx::start`, no owner: the element's own placement), but it draws
+    nothing: the lens takes its model matrix from `pppKeDMat` (handler 0x1fa130: view times the object's matrix
+    into the program's work slot, then the projection; table entry at 0x364bb0), which kh2-fx does not port, so
+    every triangle fails the clip test (w = 0). With a local port (`pppKeDMat` = `draw_matrix` then copy to work
+    slot 1, like `ke_dmat_fr`) the lens draws, 12 frames, but no distortion was visible in screenshots taken
+    during it (`local/i1e_*.png`). The clip's ghosting of the previous view over the new one (a frame-feedback
+    blur) was not found in the event, the event end (`FUN_00195c08` states, `FUN_00196170`, the fades
+    `FUN_0014a7c8` / `FUN_0014a7f0`, `FUN_0013f078`) or the camera hand-over (`FUN_0015c8c8`): **gap**, not drawn.
 - **Modes 3, 4, 6, 7, 9, 10** (`FUN_00158bb8`, `FUN_00159648`, `FUN_00158908`, `FUN_00158250`, `FUN_0014e5e0`, `FUN_00158518`) are **not ported**: mode 3 is a lock-on-style framing on a script target (`FUN_00159da8` with `DAT_00379394` and `FUN_0018f0c0(0x358af0)`), the others are the special-purpose cameras (names only inferred, see above). Only the entry points are recorded.
 
 ## What does not change the camera -- verified by absence
@@ -152,7 +199,7 @@ The follow and lock-on updates read the player's position, facing and run speed,
 
 ## Gaps (not ported, or unknown)
 
-- Modes 3, 4, 6, 7, 9, 10 (scripted/talk/cannon/scope/book/light-cycle cameras): entry points only (above). The event camera is a data structure plus the spring rule; no script, cutscene or map event feeds it. What sets `DAT_00359038` per frame (`FUN_002233d8`, `FUN_0022b0f8`) was read but the event track's data format is not decoded.
+- Modes 3, 4, 6, 7, 9, 10 (scripted/talk/cannon/scope/book/light-cycle cameras): entry points only (above). The event camera track's format is decoded and a mission's start event drives it (WP-I1, "The intro camera"); map-script events (area triggers) do not yet. The smear at the intro's cut is a gap (see there).
 - The area camera opcode (what sets `DAT_0035cd38`) and its argument are not decoded; the types work through `KH2_CAM_TYPE`.
 - The dynamic blocker list is ported and tested, but nothing fills it: the objects' collision shapes of kind 0x12 (`FUN_0016b4e0(obj, 0x12)`, `FUN_001894d0`) are not decoded in the app.
 - The look-around: the fade (`actor+0x834`) is applied to the model (`sora::apply_player_fade`); the player's pose while looking is not found in the original and not invented; the stand-in for the player-state flags (`FUN_0019ae30`, `FUN_001b7e00`: ground state only); the left stick while looking (ignored in the app, see "The player while looking"); the pitch sign; the direction of the look-at collision cast. Whether the original plays a player motion while looking is not found in the camera code.

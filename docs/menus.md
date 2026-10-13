@@ -838,6 +838,22 @@ The cards' x (`menu::card_x`) keeps them plus the clip-10 fit constant: each car
 centre, which the reference frame (8.webp, Ballroom) also shows. The cards' own drawing code is still not found [GAP, searched as above
 and `FUN_0023aca8`, the preview's draw, which draws only the models].
 
+**Card look (WP-MN3, user request 2026-10-13, "make it look like the original")** [F, measured on the HD reference 8.webp, 1920 x 1080].
+Scale of that frame: 2.6 pixels per unit (the list's row pitch of 26 units is 67.6 px there); cross-check: the card top lies 67.5
+units above the bottom panel's top edge there and 67.6 units in the app. Measured, in units from the card's left or top: card 99.6
+wide and 71.3 high; cards 103.8 apart (gap about 4); one dark see-through body (colour about (2, 2, 4), alpha 0.84) for plate and
+rows alike (no lighter plate fill, no gradient); a light rim 2.5 thick along the top, its left end cut at 45 degrees from (0, 8.5) to
+(7.5, 0); a second light rim 2.2 thick at y 24.2 where the plate ends; a dim rim 2.3 wide down the left edge; name cap height 11.9,
+its cap top at y 8, centred; LV, HP and MP centres at y 34.7, 49.2 and 64.2, labels 4.6 from the left, values 5 from the right;
+cap heights 9.1 (labels, LV value) and 8.6 (HP and MP values). The two lines under HP (y 54.8, 2.1 thick) and MP (y 70, 2 thick) span
+4.2 .. width - 4.4 and are **gauges**: the lit part is the share hp / max hp and mp / max mp (the original frame shows Donald's MP
+20/100 and Goofy's 33/100 with a short cyan part and a dim track to the right). Colours (display values): yellow (244, 218, 40), green
+(0, 200, 0), cyan (16, 200, 232), name white (232), rims 100 to 120 on top and middle, 45 on the left. The app: `menu::card`, the `at::CARD_*`
+constants, `card_x` (pitch 104 around the middle card, the row shifted 4 left so the third card ends at the canvas edge: the middle
+card keeps its place over its member's preview, the outer two are 6 units further out; the previews keep the code's 98).
+Not matched [GAP]: the original's value glyphs advance about 20 % wider than the app's font at the same cap height (the app's text
+layer has no letter spacing); the original's rims are slightly bevelled (brighter centre), ours are flat.
+
 ### 16.7 Harness
 
 `KH2_KEYS` knows `X` (-5) and `Select` / `Tab` (-7). Examples: `KH2_KEYS=6:Enter,6.5:Down,7:J,7.6:X,8.4:X` (Abilities, then to Items, then back); `6:Enter,6.5:Down,7:J,7.6:J,8.2:Tab,9.2:J` (the Help overlay from the Abilities list, then its second page); with `KH2_STATE=local/m7/state-equip.json` (the state of section 15) `6:Enter,6.6:J,7.2:J,7.8:J,9:Down` shows the pick list with the pictures and the NEW tags. Log lines: `menu: new tags: new items N, new spells N, abilities known N (fresh N)`, `menu: help topic T (N pages), return to page 0x..`, `menu: help done, page 0x..`, `menu: item picture N loaded (WxH)`.
@@ -848,7 +864,7 @@ and `FUN_0023aca8`, the preview's draw, which draws only the models].
 caps the count at 3): Sora, then the members standing in the field by their party slot (`party::PartyMember`). Name: the member's
 message (`0x37ba90[member id]`, `FUN_001b5890`, the table `menu_status` also reads); LV: the member's record `+0xf`
 (`Progress::member(id).level`); HP and MP: the live values (Sora's entity; the members' `PartyMember::hp/hp_max/mp/mp_max`, the HUD's
-source). The card's shapes and colours are still the M1 ones (measured on clip 10) [F].
+source). The card's look since WP-MN3: see the "Card look" paragraph before 16.7.
 
 **Preview** (`menu_preview.rs`) [V for the numbers, I for the rendering]. `FUN_00295720` creates the object `DAT_0036d1f8`
 (`FUN_0023a018`, vtable 0x36ca50: +4 update `FUN_0023a920`, +8 draw `FUN_0023aca8`, +0x18 slot setup `FUN_0023a520`) when a menu scene

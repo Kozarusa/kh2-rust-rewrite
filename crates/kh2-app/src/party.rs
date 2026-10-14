@@ -104,6 +104,8 @@ pub struct PartyData {
     /// out-of-battle revive count-down scale, +0x7c the MP-charge feed of an MP gain.
     sstm: Option<kh2_tables::player::Sstm>,
     weapons: WeaponTables,
+    /// `lvup` (00battle.bin): the level tables by character (FUN_001b50c0), the first Sora's.
+    lvup: Vec<Vec<t::Lvup>>,
     /// Stage 4's executable values: FUN_00110f90's MP-gate weights (0x378598, 0x37859c), FUN_0010c800's
     /// degrees to radians (0x3784a0), the item handlers' fractions (0x3785c8 HP, 0x3785d4 MP) and choice
     /// orders (0x352e28 / 0x352e3c HP, 0x352e50 / 0x352e60 MP).
@@ -144,6 +146,10 @@ impl PartyData {
             half = f(0x3784ac).unwrap_or(half);
             stop = (f(0x378564).unwrap_or(0.0), f(0x378568).unwrap_or(0.0));
         }
+        let lvup = match disc.0.lock() {
+            Ok(mut a) => kh2_tables::subfile(&mut a, &t::LVUP).ok().and_then(|b| kh2_tables::rt::decode_lvup::<t::Lvup>(&b)).unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
         let (objs, memt, prty, weapons, prty_offsets, sstm) = match disc.0.lock() {
             Ok(mut a) => (
                 kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).map(|d| d.rows).unwrap_or_default(),
@@ -160,7 +166,38 @@ impl PartyData {
             ),
             Err(_) => (Vec::new(), None, Vec::new(), WeaponTables::default(), Vec::new(), None),
         };
-        PartyData { consts, ai, orders, half, stop, objs, memt, prty, prty_offsets, sstm, weapons, mp_gate_w, deg_to_rad, item_frac, hp_items, mp_items, rigs: HashMap::new() }
+        PartyData { consts, ai, orders, half, stop, objs, memt, prty, prty_offsets, sstm, weapons, lvup, mp_gate_w, deg_to_rad, item_frac, hp_items, mp_items, rigs: HashMap::new() }
+    }
+
+    /// A member's status numbers +0x188 (strength), +0x18a (magic), +0x18c (defense) as FUN_0019f920
+    /// rebuilds them from the saved record: the `lvup` row of the record's level (+0xf) in the member's
+    /// table, plus the record's own bytes +9 / +0xa / +0xb, plus the `item_stat` Attack / Magic /
+    /// Defense of each equipped item (FUN_001a0c08 on the two weapon words, then the armor and accessory
+    /// slots). FUN_001b50c0 picks the table: FUN_001b58d8(NeoStatus) (1..15, with 14 -> 1 and 15 -> 6;
+    /// 0 counts as 1), the first table (Sora's) when that index is past the table count or its offset
+    /// is 0, and the row of the level held at the table's level count. A level of 0 is taken as 1
+    /// [inferred: FUN_001b50c0 would read before the table].
+    pub(crate) fn member_status(&self, neo: u16, rec: &crate::progress::Member) -> (i32, i32, i32) {
+        let k = match neo {
+            14 => 1,
+            15 => 6,
+            n @ 1..=13 => n as usize,
+            _ => 1,
+        };
+        let table = self.lvup.get(k - 1).filter(|t| !t.is_empty()).or_else(|| self.lvup.first());
+        let row = table.and_then(|t| t.get((rec.level.max(1) as usize).min(t.len()) - 1));
+        let (mut s, mut m, mut d) = row.map_or((0, 0, 0), |r| (r.strength as i32, r.magic as i32, r.defense as i32));
+        s += rec.strength as i32;
+        m += rec.magic as i32;
+        d += rec.defense as i32;
+        for item in rec.weapons.iter().chain(&rec.armor).chain(&rec.accessories).filter(|&&i| i != 0) {
+            if let Some(st) = self.weapons.items.iter().find(|i| i.id == *item).and_then(|i| self.weapons.stats.iter().find(|x| x.id == i.stat_entry)) {
+                s += st.attack as i32;
+                m += st.magic as i32;
+                d += st.defense as i32;
+            }
+        }
+        (s, m, d)
     }
 
     /// The record at +0x12c (and the movement block at +0x110): the `prty` row of the object's
@@ -1830,15 +1867,14 @@ fn party_script_hits(
             continue;
         }
         let ids = std::mem::take(&mut m.script_hits);
-        let Some(mut caster) = crate::enemy::member_stats(progress.as_deref(), m.neo) else { continue };
-        // [inferred] The status rebuild's equipment pass (FUN_0019f920) adds the hand-0 weapon's attack and
-        // magic, as `GameData::sora_stats` adds the keyblade's; `enemy::member_stats` leaves it out.
-        let weapon = progress.as_ref().and_then(|p| p.member(m.neo)).map_or(0, |r| r.weapons[0]);
-        if let Some(st) = data.weapons.items.iter().find(|i| i.id == weapon).and_then(|i| data.weapons.stats.iter().find(|s| s.id == i.stat_entry)) {
-            caster.strength += st.attack as i32;
-            caster.magic += st.magic as i32;
-        }
-        info!("party: {} script hits {ids:?}: caster strength {} magic {} (weapon item {weapon})", m.model, caster.strength, caster.magic);
+        let (Some(mut caster), Some(rec)) = (crate::enemy::member_stats(progress.as_deref(), m.neo), progress.as_ref().and_then(|p| p.member(m.neo))) else { continue };
+        // FUN_001a0610 reads the caster's status +0x188 / +0x18a, which FUN_0019f920 rebuilt from the saved
+        // record: the `lvup` row of the level, the record's bytes and the equipment (`member_status`).
+        (caster.strength, caster.magic, caster.defense) = data.member_status(m.neo, &rec);
+        info!(
+            "party: {} script hits {ids:?}: caster strength {} magic {} defense {} (FUN_0019f920: lvup level {} + record {}/{}/{} + equipment {:?})",
+            m.model, caster.strength, caster.magic, caster.defense, rec.level, rec.strength, rec.magic, rec.defense, rec.weapons
+        );
         for id in ids {
             let Some(atk) = game.atkp(id) else { continue };
             match m.special_who {

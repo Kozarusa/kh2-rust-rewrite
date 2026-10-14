@@ -45,7 +45,15 @@ pub struct FriendFields {
     pub effects_made: u32,
     /// The motion slot host 1.13 queued after the running motion (FUN_0017e170).
     pub queued: Option<usize>,
+    /// The object the member's target record (+0x9f4) names while a special runs (FUN_00113d48 copies
+    /// phase 1's record): the record's word 0 (`TARGET_OTHER` / `TARGET_ENEMY` stand for the other
+    /// member and the enemy).
+    pub special: Option<crate::party::SpecialOn>,
 }
+
+/// Object handles the members' target record names for the other member and an enemy.
+pub(crate) const TARGET_OTHER: u32 = 0x7c00_0001;
+pub(crate) const TARGET_ENEMY: u32 = 0x7c00_0002;
 
 /// An effect handle of the member's script and what became of its instance.
 #[derive(Clone, Debug, PartialEq)]
@@ -74,8 +82,9 @@ pub struct FxLive {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum FxReq {
     /// 1.87 (FUN_0016a570 with owner 0 = the object) / 1.149 (FUN_0016a570 with another owner):
-    /// `FUN_001db868(obj + 0x80, id, .., 1, .., owner)`: bound to the owner.
-    Bound { id: u16, on_target: bool },
+    /// `FUN_001db868(obj + 0x80, id, .., 1, .., owner)`: bound to the owner (`None`: the member; else
+    /// the object handle the script named: the player, `TARGET_OTHER`, `TARGET_ENEMY`).
+    Bound { id: u16, on: Option<u32> },
     /// 1.22 (FUN_0016a5b8): `FUN_0016a530` (no owner), then the effect's position (FUN_001d9d00) is
     /// overwritten with the vector: game units, the app's axes.
     At { id: u16, pos: Vec3 },
@@ -268,6 +277,14 @@ impl FriendHost<'_, '_> {
                 }
                 Some(Value::None)
             }
+            // 1.130 obj_diff (0x170510): the difference of the two contexts' objects, 0 when either is 0 or
+            // they are the same (Donald's `cure` R1570 tells healing itself from healing another).
+            Call::Func { group: 1, index: 130, args } if args.len() >= 2 => {
+                let (a, b) = (raw(&args[0]), raw(&args[1]));
+                let v = Value::Int(if a == 0 || b == 0 || a == b { 0 } else { a.wrapping_sub(b) as i32 });
+                self.record(c, &v, St::Impl, "");
+                Some(v)
+            }
             // 1.13 queue_motion (0x1703d8 -> FUN_0017e170): the motion goes into the controller's queue
             // (+0x3c, 4 entries) and follows the running one when it ends; `party` plays it then (one
             // entry kept; the blend is the member's own).
@@ -311,7 +328,7 @@ impl FriendHost<'_, '_> {
             }
             // 1.87 spawn_attached (0x171800 -> FUN_0016a570, owner = the object).
             Call::SpawnAttached { obj, id, .. } if *obj == me => {
-                let v = self.new_effect(FxReq::Bound { id: (*id).max(0) as u16, on_target: false });
+                let v = self.new_effect(FxReq::Bound { id: (*id).max(0) as u16, on: None });
                 self.record(c, &v, St::Approx, "element `id` of the member's effect file bound to the member; the flag and extra arguments are not modelled");
                 Some(v)
             }
@@ -320,9 +337,9 @@ impl FriendHost<'_, '_> {
             // element 12 to the object of its target record (R15cb).
             Call::Func { group: 1, index: 149, args } if args.first().is_some_and(|a| raw(a) == me) => {
                 let id = args.get(1).map_or(0, |a| a.int().max(0) as u16);
-                let on_target = args.get(2).is_none_or(|a| raw(a) != me);
-                let v = self.new_effect(FxReq::Bound { id, on_target });
-                self.record(c, &v, St::Approx, "element `id` of the member's effect file bound to the owner named; an owner other than the member is taken to be the object of its target record [inferred]");
+                let on = args.get(2).map(raw).filter(|&o| o != me && o != 0);
+                let v = self.new_effect(FxReq::Bound { id, on });
+                self.record(c, &v, St::Approx, "element `id` of the member's effect file bound to the owner named (the member, the player, or the object of its target record)");
                 Some(v)
             }
             _ => None,
@@ -504,6 +521,22 @@ impl Host for FriendHost<'_, '_> {
     }
 
     fn read_mem(&mut self, addr: u32, out: &mut [u8]) -> bool {
+        // The member's target record (host 2.23): laid out as the enemy host's (FUN_0018ed40 +
+        // FUN_0018f490: object, position index, 0, -1, 0), its object the one the special's record names
+        // (the enemy host's record names the player).
+        let t = addr.wrapping_sub(crate::enemy_obj::TARGET) as usize;
+        if t + out.len() <= 20 {
+            let mut r = crate::enemy_host::target_record();
+            let obj = match self.fields.special {
+                Some(crate::party::SpecialOn::Me) => self.inner.obj.handle,
+                Some(crate::party::SpecialOn::Other) => TARGET_OTHER,
+                Some(crate::party::SpecialOn::Enemy(_)) => TARGET_ENEMY,
+                Some(crate::party::SpecialOn::Player) | None => crate::enemy_obj::PLAYER,
+            };
+            r[0..4].copy_from_slice(&obj.to_le_bytes());
+            out.copy_from_slice(&r[t..t + out.len()]);
+            return true;
+        }
         self.inner.read_mem(addr, out)
     }
 

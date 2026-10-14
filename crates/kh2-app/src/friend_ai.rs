@@ -27,8 +27,8 @@ use crate::combat::{Fighter, Hit, Team};
 use crate::data::GameData;
 use crate::enemy_ai::AiTrace;
 use crate::enemy_host::{BevyHost, Env};
-use crate::friend_host::{FriendFields, FriendHost, FxReq};
-use crate::enemy_obj::{Obj, OBJ_SIZE, SELF_BASE};
+use crate::friend_host::{FriendFields, FriendHost, FxReq, TARGET_ENEMY, TARGET_OTHER};
+use crate::enemy_obj::{Obj, OBJ_SIZE, PLAYER, SELF_BASE};
 use crate::fx::{Bind, Placement};
 use crate::party::{PartyMember, SpecialOn};
 use crate::schedule::Sim;
@@ -36,8 +36,10 @@ use crate::skel::Animator;
 use crate::sora::Sora;
 use crate::world::World;
 
-/// Script handles of the members: past the enemies' range (`enemy_ai` uses serials below 0x1000).
-const HANDLE_BASE: u32 = 0x1000;
+/// Script handles of the members: past the enemies' range (`enemy_ai` uses serials below 0x1000), and
+/// one further on so that slot 0's handle is not `SELF_BASE + 0x1000 x OBJ_SIZE` = `PLAYER` (0x0200_0000):
+/// with 0x1000 Donald's script read as the player in every host arm that tests for the player (WP-S3).
+const HANDLE_BASE: u32 = 0x1001;
 
 /// The mode the stage puts a new member's script in.
 const START_MODE: &str = "idle";
@@ -290,14 +292,18 @@ fn element_position(pax: &crate::fx::LoadedPax, id: u16, owner: Entity, anims: &
     Some(m.transform_point3(Vec3::new(t[0], -t[1], -t[2])))
 }
 
-/// The model entity an effect bound to "the object of the target record" follows (1.149): the one the
-/// special's record names (FUN_00113d48 phase 1: Cure's party member, else the enemy target).
-fn special_owner(m: &PartyMember, s: &Sora, bodies: &[(u8, Entity)], fighters: &Query<&Fighter, Without<PartyMember>>) -> Option<Entity> {
-    match m.special_on()? {
-        SpecialOn::Player => Some(s.body),
-        SpecialOn::Me => Some(m.body),
-        SpecialOn::Other => bodies.iter().find(|(slot, _)| *slot != m.slot).map(|(_, b)| *b),
-        SpecialOn::Enemy(e) => fighters.get(e).ok().map(|f| f.hurt_body),
+/// The model entity an effect bound to an object follows (1.87 the member, 1.149 the object named: the
+/// player, or the object the special's target record names, `FriendHost::read_mem`).
+fn fx_owner(on: Option<u32>, m: &PartyMember, s: &Sora, bodies: &[(u8, Entity)], fighters: &Query<&Fighter, Without<PartyMember>>) -> Option<Entity> {
+    match on {
+        None => Some(m.body),
+        Some(PLAYER) => Some(s.body),
+        Some(TARGET_OTHER) => bodies.iter().find(|(slot, _)| *slot != m.slot).map(|(_, b)| *b),
+        Some(TARGET_ENEMY) => match m.special_on()? {
+            SpecialOn::Enemy(e) => fighters.get(e).ok().map(|f| f.hurt_body),
+            _ => None,
+        },
+        Some(_) => None,
     }
 }
 
@@ -343,6 +349,7 @@ fn friend_update(
         fields.free = m.free;
         fields.target_valid = m.target_valid();
         fields.target_point = m.target_point;
+        fields.special = m.special_on();
         // Before the slice: which instances have ended (host 0.49) and where the bound ones are (0.53).
         let pax = lib.as_deref().and_then(|l| l.for_rig(&rig)).cloned();
         for f in fields.fx.iter_mut() {
@@ -356,9 +363,9 @@ fn friend_update(
                 f.gone_ticks += 1;
                 continue;
             }
-            let (FxReq::Bound { id, on_target }, Some(p)) = (f.req, &pax) else { continue };
-            let owner = if on_target { special_owner(&m, s, &bodies, &fighters) } else { Some(m.body) };
-            let hands: Vec<Option<crate::fx::ObjectFrame>> = if on_target { Vec::new() } else { hands_of(member_fighters.get(me).ok(), &anims, &gts) };
+            let (FxReq::Bound { id, on }, Some(p)) = (f.req, &pax) else { continue };
+            let owner = fx_owner(on, &m, s, &bodies, &fighters);
+            let hands: Vec<Option<crate::fx::ObjectFrame>> = if on.is_some() { Vec::new() } else { hands_of(member_fighters.get(me).ok(), &anims, &gts) };
             if let Some(at) = owner.and_then(|o| element_position(p, id, o, &anims, &gts, &hands)) {
                 f.pos = at / crate::SCALE;
             }
@@ -411,8 +418,7 @@ fn friend_update(
         // started, moved, stopped and destroyed as it asked.
         for f in fields.fx.iter_mut() {
             let owner = match f.req {
-                FxReq::Bound { on_target: false, .. } => Some(m.body),
-                FxReq::Bound { on_target: true, .. } => special_owner(&m, s, &bodies, &fighters),
+                FxReq::Bound { on, .. } => fx_owner(on, &m, s, &bodies, &fighters),
                 FxReq::At { .. } => None,
             };
             if !f.started {

@@ -646,6 +646,16 @@ pub(crate) fn member_stats(progress: Option<&crate::progress::Progress>, neo: u1
     })
 }
 
+/// `member_stats` with the strength, magic and defense of the rebuilt status (`PartyData::member_status`:
+/// the lvup row, the record and the equipment) when the party data is loaded.
+pub(crate) fn member_stats_rebuilt(progress: Option<&crate::progress::Progress>, party: Option<&crate::party::PartyData>, neo: u16) -> Option<Stats> {
+    let mut s = member_stats(progress, neo)?;
+    if let (Some(party), Some(rec)) = (party, progress.and_then(|p| p.member(neo))) {
+        (s.strength, s.magic, s.defense) = party.member_status(neo, &rec);
+    }
+    Some(s)
+}
+
 /// Sora's and the party's hits on enemies: damage, then the victim reaction of the attack row
 /// (`reaction_rules::victim_outcome`): nothing, a push, a flinch, a flinch with a push, or a blow.
 #[allow(clippy::too_many_arguments)]
@@ -664,7 +674,7 @@ pub fn receive_hits(
     drive: (Option<Res<crate::drive::DriveRules>>, Option<Res<crate::drive::DriveState>>),
     abilities: Option<Res<crate::abilities::Abilities>>,
     (pull_data, spells, mut rng): (Option<Res<PullData>>, Option<Res<crate::magic::SpellAttacks>>, Local<PullRng>),
-    (members, progress, mut form_exp): (Query<&crate::party::PartyMember>, Option<Res<crate::progress::Progress>>, MessageWriter<crate::prize::FormExpGain>),
+    (members, progress, mut form_exp, party): (Query<&crate::party::PartyMember>, Option<Res<crate::progress::Progress>>, MessageWriter<crate::prize::FormExpGain>, Option<Res<crate::party::PartyData>>),
 ) {
     let sora_from = sora.single().map(|s| (s.stats, s.hits)).ok();
     let Some(reaction) = reaction else { return };
@@ -673,7 +683,7 @@ pub fn receive_hits(
         // formula FUN_001a0610 reads the attacker's status block +0x188 / +0x18a, rebuilt from the saved
         // record by FUN_0019fd30 -> FUN_0019f920). A member's hit carries no combo count.
         let from = match members.get(h.attacker) {
-            Ok(m) => member_stats(progress.as_deref(), m.neo).map(|s| (s, 0)),
+            Ok(m) => member_stats_rebuilt(progress.as_deref(), party.as_deref(), m.neo).map(|s| (s, 0)),
             Err(_) => sora_from,
         };
         let (Ok((mut e, mut f, status)), Some((from, combo_hits))) = (q.get_mut(h.target), from) else { continue };
@@ -886,6 +896,23 @@ mod tests {
 
     fn stats(strength: i32, magic: i32) -> Stats {
         Stats { level: 1, max_hp: 1000, strength, magic, defense: 0, max_taken: i32::MAX, min_taken: 1, max_dealt: i32::MAX, min_dealt: 0, weakness: [100; 7] }
+    }
+
+    /// A member's hit takes the rebuilt status: Donald's magic is the lvup row plus record plus staff, above the
+    /// bare record's. Needs `KH2_ISO`.
+    #[test]
+    fn member_hit_uses_the_rebuilt_magic() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let party = crate::party::PartyData::load(&disc);
+        let p = crate::progress::Progress::start(&disc).expect("progress");
+        let bare = member_stats(Some(&p), 2).expect("bare");
+        let built = member_stats_rebuilt(Some(&p), Some(&party), 2).expect("rebuilt");
+        assert!(built.magic > bare.magic, "{} vs {}", built.magic, bare.magic);
+        assert_eq!(member_stats_rebuilt(Some(&p), None, 2).expect("fallback").magic, bare.magic);
     }
 
     /// A spell hit whose `Hit::row` names SubId 2 deals the damage of that row (its own Power), not the

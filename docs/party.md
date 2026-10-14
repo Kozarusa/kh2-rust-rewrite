@@ -928,3 +928,4 @@ the scripts ask for (1.262 on a member goes to the enemy voice path, which finds
 - `docs/player-data.md` / `docs/drive-forms.md`: FUN_001c77a8 takes **every** member in forms 3..5 (any
   NeoStatus), not "both".
 - `docs/player-data.md`, ability block +0x58: it also scales the party member's revive time (FUN_0017ce60).
+- (WP-S4: `receive_hits` takes a member's strength / magic / defense from the rebuilt status too, `enemy::member_stats_rebuilt`; Donald's thunder no longer does 2.)

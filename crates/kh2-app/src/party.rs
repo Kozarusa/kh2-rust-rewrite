@@ -119,7 +119,7 @@ pub struct PartyData {
 }
 
 impl PartyData {
-    fn load(disc: &Disc) -> PartyData {
+    pub(crate) fn load(disc: &Disc) -> PartyData {
         let exe = disc.read_root("SLUS_210.05");
         let consts = exe.as_deref().and_then(Consts::from_exe);
         if consts.is_none() {

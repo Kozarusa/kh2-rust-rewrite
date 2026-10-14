@@ -81,11 +81,16 @@ pub struct Batch {
     pub depth_scale: f32,
     /// Whether the GS depth test is on for the batch (ZTST GREATER; false: ALWAYS).
     pub depth_test: bool,
+    /// Distortion batches only: the texture is the display buffer (the picture shown last frame, HUD
+    /// included: GS page 0, 512 x 448) instead of the draw buffer the scene is being drawn into (page 0xd8).
+    /// `pppSnoMdlDttNorm` entry byte +0x14 picks it (handler 0x20a7e8 reads `DAT_00360b04`/`b08`/`b1c` when
+    /// set, `DAT_00360b0c`/`b10`/`b18` when clear; `FUN_0014dcd0` sets the two buffers up).
+    pub display_buffer: bool,
 }
 
 impl Default for Batch {
     fn default() -> Batch {
-        Batch { dpd: 0, tex0: None, alpha: 0, verts: Vec::new(), indices: Vec::new(), offsets: Vec::new(), depth_scale: 1.0, depth_test: true }
+        Batch { dpd: 0, tex0: None, alpha: 0, verts: Vec::new(), indices: Vec::new(), offsets: Vec::new(), depth_scale: 1.0, depth_test: true, display_buffer: false }
     }
 }
 

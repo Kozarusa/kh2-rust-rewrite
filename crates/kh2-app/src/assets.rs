@@ -174,7 +174,7 @@ pub fn spawn_point(world: &World, cam_world: &World) -> (Vec3, Vec3) {
 /// first); the opaque world meshes still overdraw it here through the depth test. `[inferred]`:
 /// that no other code moves the sky object (its per-frame matrix, vtable 0x35a820, was not traced
 /// further).
-pub fn sky_follow(_cam: Query<&Transform, (With<Camera3d>, Without<Sky>)>, mut sky: Query<&mut Transform, With<Sky>>) {
+pub fn sky_follow(_cam: Query<&Transform, (With<Camera3d>, Without<Sky>, Without<crate::menu::preview::PreviewCamera>)>, mut sky: Query<&mut Transform, With<Sky>>) {
     for mut s in &mut sky {
         s.translation = Vec3::ZERO;
     }

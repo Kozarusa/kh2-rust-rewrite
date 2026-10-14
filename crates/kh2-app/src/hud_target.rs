@@ -79,7 +79,7 @@ pub fn update(
     bubble: Res<TargetBubble>,
     sora: Query<&Sora>,
     enemies: Query<(Entity, &GlobalTransform, &Enemy)>,
-    cam: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    cam: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::menu::preview::PreviewCamera>)>,
 ) {
     if scene.files.len() <= GAUG {
         return;

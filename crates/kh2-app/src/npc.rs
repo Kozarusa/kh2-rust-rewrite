@@ -367,7 +367,7 @@ fn npc_update(
     mut commands: Commands,
     world: Option<Res<World>>,
     trace: Option<ResMut<AiTrace>>,
-    cam: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    cam: Query<(&Camera, &GlobalTransform), (With<Camera3d>, Without<crate::menu::preview::PreviewCamera>)>,
     sora: Query<&Sora>,
     assets: Res<NpcAssets>,
     mut q: Query<(Entity, &mut Transform, &mut Npc, &mut NpcBrain)>,

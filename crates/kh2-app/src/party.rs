@@ -1686,7 +1686,8 @@ type VoiceRes<'w> = (Option<Res<'w, crate::audio::VoiceTable>>, Option<Res<'w, c
 /// Enemy hits on the members (stage 3): the friend's receive method FUN_001106b8 -> FUN_0017cde0 ->
 /// FUN_00175340. A KO'd member ignores the hit (FUN_00175340 returns for attack kinds other than 5 and
 /// 6, which no enemy of the app uses [inferred]). The damage is the `atkp` row's on the member's stats
-/// from its saved record (`enemy::member_stats`) by the attacker's stats, at least 1 unless ineffective,
+/// from its status rebuilt from the saved record (`PartyData::member_status`: the defense of the `lvup` row,
+/// the record and the equipment, FUN_0019f920) by the attacker's stats, at least 1 unless ineffective,
 /// as Sora's (`sora::receive_hits`), through the HP method (FUN_00185a68 -> FUN_00176c98 ->
 /// FUN_00186238): HP 0 knocks out (FUN_0017ce60: voice 2, the revive timer). Voice 9 when the hit takes
 /// the HP into danger (FUN_0017cde0, FUN_001a0be0). The reaction is the party class's (+0x68, the rule
@@ -1717,7 +1718,11 @@ fn party_receive_hits(
             info!("party: {} not hit by atkp {}: invincible ({:.0} frames left, +0xb00)", m.model, h.atkp, m.invuln);
             continue;
         }
-        let (Some(atk), Ok(from), Some(to)) = (game.hit_row(h), enemies.get(h.attacker).map(|e| e.stats), crate::enemy::member_stats(progress.as_deref(), m.neo)) else { continue };
+        let (Some(atk), Ok(from), Some(mut to)) = (game.hit_row(h), enemies.get(h.attacker).map(|e| e.stats), crate::enemy::member_stats(progress.as_deref(), m.neo)) else { continue };
+        // The victim's defense is the status +0x18c FUN_0019f920 rebuilt (WP-S3, `member_status`).
+        if let Some(rec) = progress.as_ref().and_then(|p| p.member(m.neo)) {
+            (to.strength, to.magic, to.defense) = data.member_status(m.neo, &rec);
+        }
         let useless = crate::combat::hit_is_ineffective(atk, &to);
         let dmg = if useless { game.damage(atk, &from, &to) } else { game.damage(atk, &from, &to).max(1) };
         let (before, danger_before) = (m.hp, battle::in_danger(m.hp, m.hp_max));

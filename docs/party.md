@@ -827,7 +827,8 @@ index is past the count or its offset is 0; the level held at the table's count)
 Defense). `PartyData::member_status`; test `party_member_status_from_lvup_record_and_equipment` (Sora's come out as
 the status page's 5 / 7 / 2). Donald at the app's start: magic 6, so Cure (atkp 1525, type 6, Power 200) heals
 `(6 x 200 + 99) / 100` = 12 (log `party: P_EX020 heals Sora with atkp 1525 (type 6, FUN_00185a68): +12, HP 4 -> 16`).
-[inferred] A level of 0 is read as 1. **Gap**: the members' motion-trigger and attack-object hits on enemies are
+[inferred] A level of 0 is read as 1. A member's defense when an enemy hits it (`party_receive_hits`) is the same
+rebuilt +0x18c (Donald 2 at the app's start instead of the record's 0). **Gap**: the members' motion-trigger and attack-object hits on enemies are
 damaged by `enemy::receive_hits` with `enemy::member_stats` (the record's bytes only, no `lvup` row and no
 equipment): thunder does 2 on a Dusk where the status would give more (outside-ownership change, report).
 

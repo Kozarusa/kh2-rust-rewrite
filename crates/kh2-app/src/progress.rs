@@ -289,6 +289,10 @@ pub struct Progress {
     /// The option word (save `+0x31b0`, `0x33fa10`: the ten Config rows of docs/menus.md 2.8) and the game
     /// mode (save `+0x1658`, read-only on that page). Outside the party block, so kept apart like `wallet`.
     config: [u32; 2],
+    /// The story flags, the area program table and the exit-lock halfwords (`Story`, save block
+    /// `0x33f6b0`, `0x33e86f`, `0x33f918`). Shared with the script hosts (`shared_story`): a clone of
+    /// `Progress` shares it too.
+    story: StoryHandle,
 }
 
 /// The option word `FUN_0023e9a0` writes on a new game: it keeps bits 0, 3 and 11 up and sets 0x40b, so
@@ -352,7 +356,26 @@ impl Progress {
         let mut block = vec![0u8; off::LEN];
         let n = bytes.len().min(off::LEN);
         block[..n].copy_from_slice(&bytes[..n]);
-        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT] }
+        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT], story: StoryHandle::default() }
+    }
+
+    // --- story flags ------------------------------------------------------------------------
+
+    /// The story state (flags, program table, exit locks). Hold the guard briefly.
+    pub fn story(&self) -> std::sync::MutexGuard<'_, Story> {
+        self.story.lock()
+    }
+
+    /// The handle the script hosts share (`install_shared_story`).
+    pub fn story_handle(&self) -> StoryHandle {
+        self.story.clone()
+    }
+
+    /// The `KH2_STATE` keys that rebuild the story flags: `{"story_flags": [set ids]}` (applying it
+    /// sets each flag through `FUN_0017ff60`, so its side effects run again in id order).
+    pub fn story_json(&self) -> String {
+        let ids: Vec<String> = self.story().set_flags().iter().map(|i| i.to_string()).collect();
+        format!("{{\"story_flags\": [{}]}}", ids.join(", "))
     }
 
     // --- records ----------------------------------------------------------------------------
@@ -1155,7 +1178,16 @@ impl Progress {
     /// The new-game state: the party block after `FUN_00187b38` on the cleared save block and the
     /// `plrp` rows with `Id` 0 (`FUN_001c0cb0(0)`).
     pub fn new_game(items: Arc<ItemIndex>, plrp: &[Plrp]) -> Progress {
-        let mut p = Progress { block: vec![0; off::LEN], items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT] };
+        let mut p = Progress {
+            block: vec![0; off::LEN],
+            items,
+            source: Source::NewGame,
+            baseline: Vec::new(),
+            dodge_roll: 0,
+            wallet: 0,
+            config: [OPTION_DEFAULT, GAME_MODE_DEFAULT],
+            story: StoryHandle::default(),
+        };
         p.init_party();
         p.apply_plrp(plrp, 0);
         p
@@ -1415,6 +1447,21 @@ impl Progress {
                 "spell_switch" => self.set_u32(off::SPELL_SWITCH, int(v, "spell_switch")? as u32),
                 "option_word" => self.config[0] = int(v, "option_word")? as u32,
                 "game_mode" => self.config[1] = int(v, "game_mode")?.clamp(0, 2) as u32,
+                // Story flags: each id set through the game's setter `FUN_0017ff60` (its side effects
+                // from `00progress.bin` run: area programs, exit locks, other flags), in file order.
+                "story_flags" => {
+                    let mut s = self.story();
+                    for id in list(v, "story_flags")? {
+                        s.set(id);
+                    }
+                }
+                // Each id cleared through `FUN_00180298` (only the bit; no side effects).
+                "story_clear" => {
+                    let mut s = self.story();
+                    for id in list(v, "story_clear")? {
+                        s.clear(id);
+                    }
+                }
                 "comment" | "_comment" => {}
                 other => return Err(format!("unknown field '{other}'")),
             }
@@ -1448,7 +1495,17 @@ impl Progress {
             )
         };
         let index = Arc::new(ItemIndex::new(&items, &cmds, &magc));
+        // `FUN_0017fd10`: the 19 type-2 world entries of `00progress.bin` (the flag side effects).
+        let effects: Arc<Vec<Vec<u8>>> = Arc::new(
+            disc.read("00progress.bin")
+                .and_then(|f| Some(kh2_bar::parse(&f).ok()?.into_iter().filter(|e| e.kind == 2).take(story::WORLDS).map(|e| e.data.to_vec()).collect()))
+                .unwrap_or_default(),
+        );
+        if effects.is_empty() {
+            warn!("progress: 00progress.bin not readable; story flags set without their side effects");
+        }
         let mut p = Progress::new_game(index.clone(), &plrp);
+        p.story().effects = effects.clone();
         match std::env::var("KH2_STATE") {
             Ok(path) if !path.is_empty() => match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|s| p.apply_json(&s)) {
                 Ok(()) => p.source = Source::File(path),
@@ -1456,6 +1513,7 @@ impl Progress {
                     // A file that failed half way is dropped as a whole.
                     warn!("progress: KH2_STATE={path}: {e}; using the new game and the app baseline");
                     p = Progress::new_game(index, &plrp);
+                    p.story().effects = effects;
                     p.apply_baseline(std::env::var("KH2_ABILITY_START").as_deref() != Ok("data"));
                 }
             },
@@ -1498,7 +1556,206 @@ impl Progress {
             self.spell_switch_word(),
             self.option_word(),
             inv.join(" "),
-        )
+        ) + &format!("; story flags {:x?}", self.story().set_flags())
+    }
+}
+
+// --- story flags, area programs, exit locks (save block) ------------------------------------------
+
+/// EE addresses of the story state (docs/events.md sections 0, 2 and 5).
+pub mod story {
+    /// The flag array: 19 pages of 0x20 bytes, one per world (`FUN_001802e0`, `FUN_00180298`,
+    /// `FUN_0017ff60`). It ends at 0x33f910, where the world-point bits of `FUN_00194fd8` start.
+    pub const FLAGS: u32 = 0x0033_f6b0;
+    pub const PAGE: usize = 0x20;
+    pub const WORLDS: usize = 19;
+    /// The area program table: `(map, btl, evt)` at `0x33e86f + world * 0xc0 + area * 3`
+    /// (`FUN_00104bd0` copies it into the area record, flag op 1 writes it through `FUN_00104b90`).
+    pub const PROGRAMS: u32 = 0x0033_e86f;
+    pub const PROGRAMS_PER_WORLD: usize = 0xc0;
+    /// The exit-lock halfwords: entry `i` of the `dsa` table owns `0x33f918 + 4i` (state) and
+    /// `+2` (the locked prompt's message); `FUN_00195260` .. `FUN_00195300`, read by `FUN_00195358`.
+    pub const LOCKS: u32 = 0x0033_f918;
+}
+
+/// What the save block keeps of the story: the flag bits, the area program table and the exit-lock
+/// halfwords, plus the side-effect lists of `00progress.bin` that setting a flag runs. The new game
+/// has every byte 0 (`FUN_00105638` clears the save block at boot) [inferred: no later new-game writer
+/// of these three regions was found; docs/events.md section 10].
+#[derive(Clone, Debug, Default)]
+pub struct Story {
+    /// The flag words (`story::FLAGS`), `WORLDS * PAGE / 4` of them.
+    words: Vec<u32>,
+    /// `story::PROGRAMS`, `WORLDS * PROGRAMS_PER_WORLD` bytes.
+    programs: Vec<u8>,
+    /// `story::LOCKS`: (state, message) per `dsa` entry; entries past the end read 0.
+    locks: Vec<[u16; 2]>,
+    /// The 19 type-2 world entries of `00progress.bin` (`FUN_0017fd10` keeps them at `0x35ccc0`).
+    /// Empty: flags are set without side effects.
+    pub effects: Arc<Vec<Vec<u8>>>,
+    /// Side-effect ops met that the app does not act on (6, 8, 9, 0xd and the world-point bits of
+    /// ops 4 and 5), with the flag that ran them; for the logs.
+    pub unported: Vec<(u16, u8)>,
+}
+
+/// `Story` behind a lock, shared by `Progress` and the script hosts.
+#[derive(Clone, Debug, Default)]
+pub struct StoryHandle(Arc<std::sync::Mutex<Story>>);
+
+impl StoryHandle {
+    pub fn new(s: Story) -> StoryHandle {
+        StoryHandle(Arc::new(std::sync::Mutex::new(s)))
+    }
+
+    pub fn lock(&self) -> std::sync::MutexGuard<'_, Story> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+static SHARED_STORY: std::sync::Mutex<Option<StoryHandle>> = std::sync::Mutex::new(None);
+
+/// Makes `h` the story the script hosts read and write (hosts 0.14, 0.15, 0.70). The game's flags
+/// are one fixed array in the save block; the hosts' `Env` is built in files outside the story code,
+/// so they reach it through this one process-wide handle. `ensure` installs the app's.
+pub fn install_shared_story(h: StoryHandle) {
+    *SHARED_STORY.lock().unwrap_or_else(|e| e.into_inner()) = Some(h);
+}
+
+/// The installed story (`None` in unit tests and tools: the hosts then answer as before, all clear).
+pub fn shared_story() -> Option<StoryHandle> {
+    SHARED_STORY.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+impl Story {
+    /// A new-game story whose flags run the side effects of these world entries.
+    pub fn with_effects(effects: Arc<Vec<Vec<u8>>>) -> Story {
+        Story { effects, ..Story::default() }
+    }
+
+    fn ensure(&mut self) {
+        if self.words.is_empty() {
+            self.words = vec![0; story::WORLDS * story::PAGE / 4];
+            self.programs = vec![0; story::WORLDS * story::PROGRAMS_PER_WORLD];
+        }
+    }
+
+    /// The word index and bit of flag `id`: page `id >> 10` (0x20 bytes), word `(id & 0x3ff) >> 5`,
+    /// bit `id & 0x1f` (`FUN_001802e0`). `None` past the array: a page beyond the 19 worlds, or a
+    /// word past the end [inferred: the game would address memory after the array; no flag list
+    /// names such an id, each world uses 256 flags].
+    fn slot(id: u16) -> Option<(usize, u32)> {
+        let w = (id as usize >> 10) * (story::PAGE / 4) + ((id as usize & 0x3ff) >> 5);
+        (w < story::WORLDS * story::PAGE / 4).then_some((w, 1 << (id & 0x1f)))
+    }
+
+    /// `FUN_001802e0`: flag `id` is set (0xffff is always clear).
+    pub fn test(&self, id: u16) -> bool {
+        id != 0xffff && Self::slot(id).is_some_and(|(w, m)| self.words.get(w).is_some_and(|v| v & m != 0))
+    }
+
+    /// `FUN_00180298`: clears the bit (no side effects).
+    pub fn clear(&mut self, id: u16) {
+        self.ensure();
+        if let Some((w, m)) = Self::slot(id) {
+            self.words[w] &= !m;
+        }
+    }
+
+    /// `FUN_0017ff60`: sets the bit, then runs the flag's side-effect list from the world entry
+    /// `id >> 10` at the offset in halfword `id & 0x3ff` (`kh2_ard::progress::effects`):
+    /// op 1 writes (map, btl, evt) of area `record[0]` of the flag's world (0xff keeps,
+    /// `FUN_00104b90`); op 2 the lock entry's state and message (`FUN_00195260`); op 3 the state 0
+    /// (`FUN_00195288`); op 4 the state 0xffff (`FUN_001952a0`); op 5 the state 0 (`FUN_00195300`);
+    /// op 7 clears each flag (`FUN_00180298`); op 0xc sets each flag not yet set (recursive). The
+    /// first halfword of ops 2..5 is the `dsa` index, each called once. Not acted on (recorded in
+    /// `unported`): op 6 (`FUN_001a7730`, `0x33fe0c[world]`), 8 / 9 (the record bits 0x33fdb0,
+    /// `FUN_001a52b0` / `FUN_001a52f0`), 0xd (`FUN_001b4e80`: `0x341858 + 4 * world` bytes 1, 2), the
+    /// world-point bit ops 4 and 5 clear (`FUN_00194f68`, `FUN_00194fd8` on 0x33f910), and the calls
+    /// after the list (`FUN_001803b0`, `FUN_00180450`, `FUN_001805d0`, `FUN_00180558`, `FUN_001d39d0`,
+    /// `FUN_001d3238`, `FUN_001b6da0`, `FUN_001be9c8`, `FUN_001d5718`, `FUN_0019d890` for 0x8d0,
+    /// `FUN_00195130`).
+    pub fn set(&mut self, id: u16) {
+        self.ensure();
+        let Some((w, m)) = Self::slot(id) else { return };
+        self.words[w] |= m;
+        let world = id as usize >> 10;
+        let effects = self.effects.clone();
+        let Some(list) = effects.get(world).and_then(|e| kh2_ard::progress::effects(e, id & 0x3ff)) else { return };
+        for e in list {
+            let h = e.flags();
+            let h0 = h.first().copied().unwrap_or(0) as usize;
+            match e.op {
+                1 => {
+                    for [area, prog @ ..] in e.programs() {
+                        let o = world * story::PROGRAMS_PER_WORLD + area as usize * 3;
+                        for (k, b) in prog.iter().enumerate() {
+                            if *b != 0xff
+                                && let Some(slot) = self.programs.get_mut(o + k)
+                            {
+                                *slot = *b;
+                            }
+                        }
+                    }
+                }
+                2 => {
+                    let v = [h.get(1).copied().unwrap_or(0), h.get(2).copied().unwrap_or(0)];
+                    self.lock_entry(h0)[..].copy_from_slice(&v);
+                }
+                3 => self.lock_entry(h0)[0] = 0,
+                4 | 5 => {
+                    self.lock_entry(h0)[0] = if e.op == 4 { 0xffff } else { 0 };
+                    self.unported.push((id, e.op));
+                }
+                7 => h.iter().for_each(|&f| self.clear(f)),
+                0xc => {
+                    for f in h {
+                        if !self.test(f) {
+                            self.set(f);
+                        }
+                    }
+                }
+                op => self.unported.push((id, op)),
+            }
+        }
+    }
+
+    fn lock_entry(&mut self, i: usize) -> &mut [u16; 2] {
+        if self.locks.len() <= i {
+            self.locks.resize(i + 1, [0, 0]);
+        }
+        &mut self.locks[i]
+    }
+
+    /// The lock state halfword of `dsa` entry `i` (`0x33f918 + 4i`, read by `FUN_00195358`).
+    pub fn lock_state(&self, i: usize) -> u16 {
+        self.locks.get(i).map_or(0, |l| l[0])
+    }
+
+    /// The locked prompt's message halfword of entry `i` (`0x33f91a + 4i`, `FUN_001953e0`).
+    pub fn lock_message(&self, i: usize) -> u16 {
+        self.locks.get(i).map_or(0, |l| l[1])
+    }
+
+    /// The (map, btl, evt) bytes of the program table for (world, area) (`FUN_00104bd0` reads
+    /// `0x33e86f`, `0x33e870`, `0x33e871` + `world * 0xc0 + area * 3`); 0 for each in a new game.
+    pub fn programs(&self, world: u8, area: u8) -> [u8; 3] {
+        let o = world as usize * story::PROGRAMS_PER_WORLD + area as usize * 3;
+        let b = |k: usize| self.programs.get(o + k).copied().unwrap_or(0);
+        [b(0), b(1), b(2)]
+    }
+
+    /// Every set flag id, in order.
+    pub fn set_flags(&self) -> Vec<u16> {
+        let mut out = Vec::new();
+        for (w, &v) in self.words.iter().enumerate() {
+            for b in 0..32 {
+                if v >> b & 1 != 0 {
+                    let page = w / (story::PAGE / 4);
+                    out.push(((page << 10) | ((w % (story::PAGE / 4)) << 5) | b) as u16);
+                }
+            }
+        }
+        out
     }
 }
 
@@ -1522,6 +1779,15 @@ pub fn ensure(app: &mut App) -> bool {
             info!("progress: app baseline (not the original's new game, docs/progress.md): {}", p.baseline.join("; "));
         }
     }
+    {
+        let s = p.story();
+        if !s.set_flags().is_empty() {
+            let tt: Vec<String> = (0..64u8).filter(|&a| s.programs(2, a) != [0; 3]).map(|a| format!("tt{a:02} {:x?}", s.programs(2, a))).collect();
+            let locks: Vec<String> = (0..64).filter(|&i| s.lock_state(i) != 0).map(|i| format!("{i}: {:#x}", s.lock_state(i))).collect();
+            info!("progress: story flags {:x?}; Twilight Town program table (map, btl, evt) [{}]; exit locks [{}]; side effects not ported {:x?}", s.set_flags(), tt.join(", "), locks.join(", "), s.unported);
+        }
+    }
+    install_shared_story(p.story_handle());
     app.insert_resource(p);
     true
 }
@@ -2114,6 +2380,174 @@ mod tests {
         assert_eq!(p.outfit(2), 1);
         assert!(p.spell_switch(0) && !p.spell_switch(1) && p.spell_switch(2));
         assert!(p.apply_json(r#"{"munnny": 1}"#).is_err(), "typos are reported");
+    }
+
+    /// A world entry of `00progress.bin` with `n` flags whose lists are given (the others end at once):
+    /// the offset table, then a shared end byte, then each list.
+    fn flag_entry(n: usize, lists: &[(u16, Vec<u8>)]) -> Vec<u8> {
+        let end = 2 * n;
+        let mut d = vec![0u8; end + 1];
+        for k in 0..n {
+            d[2 * k..2 * k + 2].copy_from_slice(&(end as u16).to_le_bytes());
+        }
+        for (index, list) in lists {
+            let at = d.len() as u16;
+            d[2 * *index as usize..2 * *index as usize + 2].copy_from_slice(&at.to_le_bytes());
+            d.extend_from_slice(list);
+            d.push(0);
+        }
+        d
+    }
+
+    /// WP-E5 item 1: the flag array at 0x33f6b0 addressed by id (`FUN_001802e0` test, `FUN_00180298`
+    /// clear, `FUN_0017ff60` set), without side effects.
+    #[test]
+    fn story_flags_set_test_and_clear_by_id() {
+        let mut s = Story::default();
+        assert!(!s.test(0x883), "a new game has every flag clear");
+        s.set(0x883);
+        // Page 2 (0x883 >> 10), word 4 ((0x83) >> 5), bit 3.
+        assert_eq!(Story::slot(0x883), Some((2 * 8 + 4, 1 << 3)));
+        assert!(s.test(0x883) && !s.test(0x882) && !s.test(0x483));
+        s.set(0x8db);
+        s.set(0x0);
+        assert_eq!(s.set_flags(), vec![0x0, 0x883, 0x8db]);
+        s.clear(0x883);
+        assert!(!s.test(0x883) && s.test(0x8db));
+        // 0xffff always tests clear; a page past the 19 worlds is not in the array.
+        assert!(!s.test(0xffff));
+        s.set(19 << 10);
+        assert!(!s.test(19 << 10));
+        assert_eq!(s.set_flags(), vec![0x0, 0x8db]);
+        assert_eq!(s.programs(2, 4), [0, 0, 0]);
+    }
+
+    /// `FUN_0017ff60`'s side effects on a synthetic world-2 entry: op 1 writes the program bytes of
+    /// the flag's world (0xff keeps), op 2 a lock entry, op 0xc sets flags not yet set (and their
+    /// lists run), op 7 clears, op 4 / 3 write the lock state; op 6 is recorded as not ported.
+    #[test]
+    fn story_flag_side_effects_write_programs_locks_and_flags() {
+        let lists = vec![
+            // 0x883: area 4 btl 1; lock entry 3 = (5, 0x1234); set 0x805.
+            (0x83, vec![1, 2, 4, 0xff, 1, 0xff, 2, 3, 3, 0, 5, 0, 0x34, 0x12, 0xc, 1, 0x05, 0x08]),
+            // 0x805: clear 0x806; lock entry 3 state 0xffff; op 6.
+            (0x05, vec![7, 1, 0x06, 0x08, 4, 1, 3, 0, 6, 1, 2, 0]),
+            // 0x807: lock entry 3 state 0.
+            (0x07, vec![3, 1, 3, 0]),
+        ];
+        let mut s = Story { effects: Arc::new(vec![Vec::new(), Vec::new(), flag_entry(0x100, &lists)]), ..Story::default() };
+        s.set(0x806);
+        s.set(0x883);
+        assert_eq!(s.programs(2, 4), [0, 1, 0]);
+        assert_eq!(s.programs(2, 3), [0, 0, 0]);
+        assert!(s.test(0x805) && !s.test(0x806), "0xc set 0x805, whose op 7 cleared 0x806");
+        assert_eq!((s.lock_state(3), s.lock_message(3)), (0xffff, 0x1234));
+        assert_eq!(s.unported, vec![(0x805, 4), (0x805, 6)]);
+        s.set(0x807);
+        assert_eq!(s.lock_state(3), 0);
+        assert_eq!(s.lock_state(40), 0, "entries no flag wrote read 0");
+        // A flag of another world (no entry) only sets its bit.
+        s.set(0x1883);
+        assert!(s.test(0x1883) && s.programs(6, 4) == [0; 3]);
+    }
+
+    /// The `story_flags` / `story_clear` keys of the state file, and `story_json` read back.
+    #[test]
+    fn story_flags_round_trip_through_the_state_file() {
+        let ix = Arc::new(ItemIndex::default());
+        let mut p = Progress::from_block(&[], ix.clone());
+        p.apply_json(r#"{"story_flags": [2179, 2267, 4096, 2050], "story_clear": [2050]}"#).unwrap();
+        assert_eq!(p.story().set_flags(), vec![0x883, 0x8db, 0x1000]);
+        let text = p.story_json();
+        assert_eq!(text, r#"{"story_flags": [2179, 2267, 4096]}"#);
+        let mut q = Progress::from_block(&[], ix);
+        q.apply_json(&text).unwrap();
+        assert_eq!(q.story().set_flags(), p.story().set_flags());
+        assert!(q.apply_json(r#"{"story_flags": 3}"#).is_err());
+        // A clone shares the story (the hosts' handle is the same store).
+        let r = q.clone();
+        q.story().clear(0x883);
+        assert!(!r.story().test(0x883));
+    }
+
+    /// The oracle for `FUN_0017ff60` (WP-E5): for every flag of every world entry of `00progress.bin`,
+    /// the game's setter runs in kh2-ee on a cleared save block and the port must leave the same flag
+    /// words (0x33f6b0, 0x260 bytes), program table (0x33e86f, 19 * 0xc0 bytes) and lock halfwords
+    /// (0x33f918, 4 per `dsa` entry). The calls after the list (`FUN_001803b0` .. `FUN_00195130`, which
+    /// reach menus, tutorials and the world map) are `jr ra` stubs: they do not write these regions
+    /// [inferred from their names in docs/events.md section 5; not read]. The world-point table
+    /// `DAT_01c8a984` points at zeros, so ops 4 and 5 find no point (as the port, which leaves the bits).
+    #[test]
+    fn story_flag_setter_matches_the_game() {
+        use kh2_ee::Ee;
+        const STACK: u32 = 0x01ff_0000;
+        let Some(mut tb) = tables() else { return };
+        let file = tb.archive.read("00progress.bin").expect("00progress.bin");
+        let bar = kh2_bar::parse(&file).expect("BAR");
+        let entries: Vec<Vec<u8>> = bar.iter().filter(|e| e.kind == 2).take(story::WORLDS).map(|e| e.data.to_vec()).collect();
+        let dsa = bar.iter().find(|e| e.tag == kh2_ard::progress::LOCK_TABLE).expect("dsa").data.to_vec();
+        let locks = u16::from_le_bytes([dsa[0], dsa[1]]) as usize;
+        let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| tb.archive.iso().read(p).ok()).expect("executable");
+        let mut ee = Ee::new();
+        ee.load_elf(&elf).expect("elf");
+        let mut at = 0x0180_0000u32;
+        for (w, e) in entries.iter().enumerate() {
+            ee.write(at, e);
+            ee.w32(0x0035_ccc0 + 4 * w as u32, at);
+            at = (at + e.len() as u32 + 0xf) & !0xf;
+        }
+        ee.write(at, &dsa);
+        ee.w32(0x01c8_a988, at);
+        at = (at + dsa.len() as u32 + 0xf) & !0xf;
+        ee.write(at, &[0u8; 0x100]);
+        ee.w32(0x01c8_a984, at);
+        for stub in [0x001803b0u32, 0x00180450, 0x001805d0, 0x00180558, 0x001d39d0, 0x001d3238, 0x001b6da0, 0x001be9c8, 0x001d5718, 0x0019d890, 0x00195130] {
+            ee.w32(stub, 0x03e0_0008);
+            ee.w32(stub + 4, 0);
+        }
+        let effects = Arc::new(entries.clone());
+        let flags_len = story::WORLDS * story::PAGE;
+        let prog_len = story::WORLDS * story::PROGRAMS_PER_WORLD;
+        let mut checked = 0;
+        let mut with_effects = 0;
+        for (w, e) in entries.iter().enumerate() {
+            for f in 0..kh2_ard::progress::flag_count(e) as u16 {
+                let id = (w as u16) << 10 | f;
+                ee.write(story::FLAGS, &vec![0u8; flags_len]);
+                ee.write(story::PROGRAMS, &vec![0u8; prog_len]);
+                ee.write(story::LOCKS, &vec![0u8; 4 * locks]);
+                ee.call(0x0017_ff60, &[id as u64], &[], STACK).unwrap_or_else(|e| panic!("FUN_0017ff60({id:#x}): {e:?}"));
+                let mut s = Story { effects: effects.clone(), ..Story::default() };
+                s.set(id);
+                let words: Vec<u32> = (0..flags_len / 4).map(|k| ee.r32(story::FLAGS + 4 * k as u32)).collect();
+                assert_eq!(s.words, words, "flag {id:#x}: flag words");
+                let prog: Vec<u8> = (0..prog_len).map(|k| ee.r8(story::PROGRAMS + k as u32)).collect();
+                assert_eq!(s.programs, prog, "flag {id:#x}: program table");
+                for i in 0..locks {
+                    let game = (ee.r16(story::LOCKS + 4 * i as u32), ee.r16(story::LOCKS + 4 * i as u32 + 2));
+                    assert_eq!((s.lock_state(i), s.lock_message(i)), game, "flag {id:#x}: lock entry {i}");
+                }
+                checked += 1;
+                with_effects += (s.set_flags().len() > 1 || s.programs != vec![0; prog_len] || s.locks.iter().any(|l| *l != [0, 0])) as usize;
+            }
+        }
+        eprintln!("oracle: FUN_0017ff60 equal for {checked} flags of {} worlds ({with_effects} change more than their own bit)", entries.len());
+        assert!(checked > 1000 && with_effects > 100, "{checked} {with_effects}");
+    }
+
+    /// WP-E5 item 3 data: on the disc, setting flag 0x883 gives tt04 btl program 1 (docs/events.md
+    /// section 5), and 0x814 sets tt04 back to (0, 0, 0).
+    #[test]
+    fn flag_0x883_selects_tt04_btl_program_one() {
+        let Some(mut tb) = tables() else { return };
+        let file = tb.archive.read("00progress.bin").expect("00progress.bin");
+        let entries: Vec<Vec<u8>> = kh2_bar::parse(&file).expect("BAR").iter().filter(|e| e.kind == 2).map(|e| e.data.to_vec()).collect();
+        let mut s = Story { effects: Arc::new(entries), ..Story::default() };
+        s.set(0x883);
+        eprintln!("after 0x883: flags {:x?} tt04 {:?} unported {:x?}", s.set_flags(), s.programs(2, 4), s.unported);
+        assert_eq!(s.programs(2, 4)[1], 1);
+        s.set(0x814);
+        assert_eq!(s.programs(2, 4), [0, 0, 0]);
     }
 
     /// `FUN_0026c698` (equip a battle item, the pause menu writer) and the `sora_items` state key

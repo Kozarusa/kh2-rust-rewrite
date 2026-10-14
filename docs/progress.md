@@ -188,7 +188,34 @@ an error (logged; the app then falls back to the new game + baseline). Example: 
 | `summon` | `{ "level": int, "exp": int }` | summon level and experience |
 | `outfits` | object `"<world>": outfit` | low 5 bits of the world record's byte 0 |
 | `spell_switch` | int | the switch bit word |
+| `story_flags` | array of flag ids | each set through the game's setter `FUN_0017ff60` in file order, side effects included (area program table, exit locks, other flags; section "Story flags" below) |
+| `story_clear` | array of flag ids | each cleared through `FUN_00180298` (only the bit) |
 | `comment` | any | ignored |
+
+`Progress::story_json` writes the set flags back as `{"story_flags": [...]}` (test
+`story_flags_round_trip_through_the_state_file`). Reading it runs the side effects again in id order, so it
+rebuilds the flags exactly and the program table and locks as those setters leave them.
+
+## Story flags (WP-E5)
+
+`progress::Story` (held by `Progress`, shared with the script hosts through `progress::shared_story`) keeps three
+save-block regions, all 0 in a new game (`FUN_00105638` clears the block at boot) [inferred: no other new-game
+writer of them was found]:
+
+| region | EE address | layout | writers / readers |
+|---|---|---|---|
+| flags | `0x33f6b0`, 0x260 bytes | 19 pages of 0x20 bytes, one per world: flag `id` is bit `id & 0x1f` of word `(id & 0x3ff) >> 5` of page `id >> 10` (0xffff tests clear). The world-point bits of `FUN_00194fd8` start right after, at `0x33f910` | `FUN_001802e0` test, `FUN_00180298` clear, `FUN_0017ff60` set |
+| area programs | `0x33e86f + world * 0xc0 + area * 3` | (map, btl, evt) | flag op 1 (`FUN_00104b90`, 0xff keeps), read by `FUN_00104bd0` into the area record (`area.rs`) |
+| exit locks | `0x33f918 + 4i` | (state, message) per `dsa` entry `i` | flag ops 2 `FUN_00195260`, 3 `FUN_00195288`, 4 `FUN_001952a0` (0xffff), 5 `FUN_00195300` (0); read by `FUN_00195358` (`area_jump::ExitLocks`) |
+
+The setter runs the flag's list from `00progress.bin` (world entry `id >> 10`): ops 1, 2, 3, 4, 5, 7 (clear) and
+0xc (set those not yet set, recursive) are ported; ops 6 (`FUN_001a7730`: `0x33fe0c[world]`), 8 / 9 (record bits
+`0x33fdb0`), 0xd (`FUN_001b4e80`: `0x341858 + 4 * world`), the world-point bits of ops 4 / 5 and the calls after the
+list (`FUN_001803b0` .. `FUN_00195130`) are not (recorded in `Story::unported`, logged at start). The kh2-ee oracle
+`story_flag_setter_matches_the_game` runs `FUN_0017ff60` for every flag of every world and compares the three regions.
+Users: hosts 0.14 / 0.15 / 0.70 (`enemy_host.rs`), area-script opcode 0x19 (`area.rs`), the Struggle mission's
+flag reads (`struggle.rs`). Not yet wired to it: the menus' and items' flag tests (`items.rs`, `menu_*.rs` still
+assume "no story flag set").
 
 ## Decompile index
 

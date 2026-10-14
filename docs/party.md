@@ -840,13 +840,40 @@ next special's request of the same slot did not restart it: the cast trigger nev
 0x0200_0000 = `PLAYER`, so every host arm that tests for the player took Donald's own calls as the player's (his
 script's contexts named the player; 1.130 and 1.149 showed it). They start at 0x1001 now.
 
-**Goofy's specials** (`kh2 bdx P_EX030`: `tornado` main R07af, `turbo` R0b4e, `blade` R0d30). Not done: `tornado`
-moves Goofy himself (1.111 set_move toward the target with the turn 0.46 = FUN_0017c0f8 by 10 degrees a frame, a
-height bobbing `sin(a) x 35 + 65` above the ground, 3 or 10 or 2 units a frame) while range trigger 16 is on, with
-attack 1188 radius 200 kept 100 above him, invulnerable for the motion's length (1.91 -> FUN_00175aa8: +0xb00);
-`blade` throws the shield object (1.234 the weapon list +0xaf8, 1.83, 1.148 / 1.89 on the weapon, attack 1161 on
-it, 2.38 a callback); `turbo` was not read. The app's member is moved by `party_tick` only, and its hand objects
-are not objects a script can move.
+**Goofy's specials** (`kh2 bdx P_EX030`: `tornado` main R07af, `turbo` R0b4e, `blade` R0d30).
+- `tornado` (R07af -> R07bd) [V for the script, the hosts as marked]: motion 191 (1.12), invincible for the motion's
+  length (1.67 then 1.91 -> FUN_00175aa8: +0xb00 = it; FUN_00175ab0 counts it down in the party tick, FUN_00175ad8
+  refuses hits: `party_receive_hits` logs `not hit by atkp ..: invincible`), motion 4 queued; once range trigger 16
+  is on (1.150 bit 1) and the motion is still 191 (1.15 answers the motion number the script asked for, not the
+  remapped slot): attack 1188 radius 200; each frame while the motion runs (1.14): a goal (the target's point at
+  Goofy's height, or the player when the target is nearer than 150, or 100 ahead without a target), `h = sin(a) x
+  35 + 65` above it (a ground probe from 80 above when far), the direction (start (0, -1, 0, 1)) turned toward the
+  goal by 10 degrees (0.46 = FUN_0016d138 -> FUN_0017c0f8, `friend_host::turn_vec`, test
+  `member_turn_vec_follows_fun_0017c0f8`), `a` += 5 degrees, the attack 100 above Goofy (2.12); while trigger 16 is
+  on 1.111 moves him along the direction at 3 / 10 / 2 a frame, else the attack is released and he stops; at the
+  end motion 4 and 1.74. 6.3 / 6.5 (the target search FUN_002f01a0 / FUN_002f04a8, used only without a valid target)
+  are not ported. Atkp 1188 has Power 0 and reaction class 5 (a pull toward the attack object, which
+  `enemy::receive_hits` decodes only for spells: `NotDecoded { class: 5 }`); the damage comes from the spin's own
+  motion volumes (atkp 1160, damage 1 with a blow on a Dusk). Log (tt04 b_44, `KH2_PARTY_ABILITIES=423,-429`):
+  `P_EX030#1 invincible for 215 frames (1.91, +0xb00)`, `attack object 0x7a000001: atkp 1188 group 0x101 at ..
+  radius 200 ..`, `script mode "tornado" -> "-"` 7.3 s later. [inferred] The movement: the enemy host's 1.111 keeps
+  the ground part of direction x speed and the member's motor its gravity (the goal's height is not reached:
+  Goofy spins on the ground); the motion's length (motion frames) is taken as frames of +0xb00 (one per 60 Hz tick),
+  so the invincibility ends halfway through the app's motion; the units of the two were not compared.
+- The runtime (`kh2-bdx`, `runtime.rs`) hands 0.45 / 0.46 the two vectors and the scalar and writes the host's answer
+  back into the first (their pointer is the script's memory, which the host cannot reach); the enemy and spell hosts
+  do not answer them (unchanged). `friend_host::advance_vec` is 0.45 (FUN_0016d098, test
+  `member_advance_vec_follows_fun_0016d098`).
+- `blade` (R0d30) **not done**: a child thread (1.82) throws the shield object (1.234 the weapon list +0xaf8, 1.83,
+  1.148 / 1.89 / 1.79 / 1.11 on the weapon, attack 1161 with a new group (2.67) anchored to it and a callback 2.38,
+  2.40) and the mode waits for it (context +0x20). The app's hand objects are not objects a script can move, so the
+  child thread fails (a script error reading through the null weapon object at 0x0e14 in the base run, then the mode
+  waits forever: Goofy stops choosing actions after his first `blade`; this was so before WP-S3).
+- `turbo` (R0b4e) not read.
+
+**The script's motion, again**: a script motion that ended stays on its last frame (`Animator::play` would start a
+finished motion again, so the script's 1.14 never saw it end and Goofy's `tornado` never left its loop); the queued
+motion (1.13) is put on by `friend_ai` after the slice that saw the end.
 
 Not verified: the spark element each hit starts (only the effect file is chosen as the game does); voices 6 / 21 / 3
 the scripts ask for (1.262 on a member goes to the enemy voice path, which finds no enemy of that name).

@@ -419,6 +419,13 @@ pub struct PartyMember {
     /// motion it queued after it (host 1.13, FUN_0017e170).
     pub(crate) script_restart: bool,
     pub(crate) script_queue: Option<usize>,
+    /// The script's movement this tick (1.111: the ground part of direction x speed, per frame) and its
+    /// facing (app yaw), carried out while it runs a special (Goofy's `tornado`).
+    pub(crate) script_move: Option<Vec3>,
+    pub(crate) script_yaw: Option<f32>,
+    /// +0xb00, the invincibility timer (FUN_00175aa8 writes it, FUN_00175ab0 counts it down in the party
+    /// tick, FUN_00175ad8 refuses hits while it is above 0).
+    pub(crate) invuln: f32,
     /// FUN_0017da30's state row now (1 battle, 2 field).
     pub(crate) motion_row: usize,
     pub(crate) free: bool,
@@ -811,6 +818,9 @@ fn spawn_party(
                 script_slot: None,
                 script_restart: false,
                 script_queue: None,
+                script_move: None,
+                script_yaw: None,
+                invuln: 0.0,
                 motion_row: battle::motion_state(false, false),
                 free: true,
                 // Harness: `KH2_PARTY_HP=<n>` starts the members with n HP (to see a KO soon).
@@ -997,6 +1007,10 @@ fn party_tick(
         if m.timer > 0.0 {
             m.timer -= FRAME;
         }
+        // FUN_00175ab0 (the party tick FUN_00174b68): the invincibility timer +0xb00 counts down.
+        if m.invuln > 0.0 {
+            m.invuln = (m.invuln - FRAME).max(0.0);
+        }
         // FUN_00175f48 -> FUN_001a0540: the MP charge runs down (the ability block's MP regeneration
         // +0x34 is the default 1.0 for the members [inferred]); at its end MP refills (FUN_001a05a8).
         if m.charge.tick(1.0) {
@@ -1152,9 +1166,16 @@ fn party_tick(
                 let setting = |_: usize| Some(0u8);
                 // Harness: `KH2_PARTY_ABILITIES=<item>,...` counts those ability items as equipped on every
                 // member (the new game's records hold only Donald Thunder and Cure; Fire 165, Blizzard 166,
-                // Goofy's specials need a later record). A test aid, not the game's rule.
-                let aid = |item: u32| std::env::var("KH2_PARTY_ABILITIES").is_ok_and(|v| v.split(',').any(|s| s.trim().parse::<u32>().ok() == Some(item)));
-                let equipped = |r: &battle::Record| aid(r.item) || member.as_ref().is_some_and(|mm| mm.abilities.iter().any(|&(id, on)| on && id as u32 == r.item));
+                // Goofy's Tornado 423 and Turbo 425 need a later record); `-<item>` counts it as not
+                // equipped. A test aid, not the game's rule.
+                let aid = |item: u32| -> Option<bool> {
+                    let v = std::env::var("KH2_PARTY_ABILITIES").ok()?;
+                    v.split(',').map(str::trim).find_map(|s| match s.strip_prefix('-') {
+                        Some(n) => (n.parse::<u32>().ok() == Some(item)).then_some(false),
+                        None => (s.parse::<u32>().ok() == Some(item)).then_some(true),
+                    })
+                };
+                let equipped = |r: &battle::Record| aid(r.item).unwrap_or_else(|| member.as_ref().is_some_and(|mm| mm.abilities.iter().any(|&(id, on)| on && id as u32 == r.item)));
                 let skip = battle::repeated(m.choosing.last, m.class);
                 let any_attack = |skip: Option<usize>| ai.records.iter().enumerate().any(|(i, r)| r.flags & battle::flag::ATTACK != 0 && Some(i) != skip && !matches!(r.handler, Handler::Other(0)) && r.handler == Handler::Attack && battle::feasible(r, &now, setting(i), equipped(r)));
                 let (current, timer, changed) = (m.choosing.current, m.timer, m.target_changed);
@@ -1318,6 +1339,16 @@ fn party_tick(
             }
             m.speed = sp;
             delta = d.with_y(0.0).normalize_or_zero() * sp;
+            // A special's script moves and turns the member itself (1.111 / 1.4, last tick's slice) [inferred:
+            // the script's movement replaces the AI's held stand; the app's motor keeps its gravity].
+            if hold {
+                if let Some(v) = m.script_move.take() {
+                    delta = v;
+                }
+                if let Some(y) = m.script_yaw.take() {
+                    m.motor.yaw = y;
+                }
+            }
         } else if m.attack.is_none() {
             // KO'd or in a reaction / get-up motion: no movement of its own.
             m.speed = 0.0;
@@ -1465,14 +1496,14 @@ fn party_tick(
                 && let Some(slot) = m.script_slot.filter(|&s| has(s))
             {
                 // The script's request (its `idle` mode asks for motion 0, a special's cast motion 192)
-                // while the member stands: a new request starts the motion again (FUN_0017e220), and
-                // once it has ended the motion the script queued (host 1.13, FUN_0017e170) follows.
+                // while the member stands: a new request starts the motion again (FUN_0017e220); the
+                // queued motion (host 1.13, FUN_0017e170) comes the same way once `friend_ai` saw the
+                // requested one end.
+                // A motion that ended stays on its last frame (`play` would start a finished one again,
+                // and the script's 1.14 would never see it end).
                 if std::mem::take(&mut m.script_restart) {
                     a.restart(Some(slot), looping(slot), BLEND);
-                } else if a.finished && a.slot == Some(slot) && let Some(q) = m.script_queue.take().filter(|&q| has(q)) {
-                    m.script_slot = Some(q);
-                    a.restart(Some(q), looping(q), BLEND);
-                } else {
+                } else if a.slot != Some(slot) {
                     a.play(Some(slot), looping(slot), BLEND);
                 }
             } else {
@@ -1679,6 +1710,11 @@ fn party_receive_hits(
     for h in hits.read() {
         let Ok((me, mut m, mut fighter, place)) = q.get_mut(h.target) else { continue };
         if m.ko {
+            continue;
+        }
+        // FUN_00175ad8: no hit while the invincibility timer +0xb00 runs (Goofy's `tornado`, host 1.91).
+        if m.invuln > 0.0 {
+            info!("party: {} not hit by atkp {}: invincible ({:.0} frames left, +0xb00)", m.model, h.atkp, m.invuln);
             continue;
         }
         let (Some(atk), Ok(from), Some(to)) = (game.hit_row(h), enemies.get(h.attacker).map(|e| e.stats), crate::enemy::member_stats(progress.as_deref(), m.neo)) else { continue };

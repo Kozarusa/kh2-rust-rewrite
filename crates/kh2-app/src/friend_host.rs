@@ -45,6 +45,12 @@ pub struct FriendFields {
     pub effects_made: u32,
     /// The motion slot host 1.13 queued after the running motion (FUN_0017e170).
     pub queued: Option<usize>,
+    /// The motion numbers the script asked for and the slots they play (FUN_0017e000 writes the number
+    /// to +0x154, which host 1.15 reads): the last request and the queued one.
+    pub motion: Option<(i32, usize)>,
+    pub queued_motion: Option<(i32, usize)>,
+    /// Host 1.91 (FUN_00175aa8): the invincibility timer +0xb00 the script set this tick (frames).
+    pub invuln: Option<f32>,
     /// The object the member's target record (+0x9f4) names while a special runs (FUN_00113d48 copies
     /// phase 1's record): the record's word 0 (`TARGET_OTHER` / `TARGET_ENEMY` stand for the other
     /// member and the enemy).
@@ -116,6 +122,43 @@ pub struct AttackObj {
     pub released: bool,
     /// Passes of FUN_001a2cc0 run on it (for the log).
     pub steps: u32,
+}
+
+/// Host 0.45 (FUN_0016d098): `a + b / |b.xyz| x step x DAT_00356f40` on all four lanes (the frame step 1.0).
+pub(crate) fn advance_vec(a: [f32; 4], b: [f32; 4], step: f32) -> [f32; 4] {
+    let len = (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]).sqrt();
+    let q = if len > 0.0 { step / len } else { 0.0 };
+    std::array::from_fn(|k| a[k] + b[k] * q)
+}
+
+/// Host 0.46 (FUN_0016d138 -> FUN_0017c0f8): `a` turned toward `b` by at most `rate` (times the frame step
+/// 1.0). Both are normalised by their xyz length; the angle between them is FUN_0017bf10's (acos of the dot,
+/// 0 at or above 1.0 `DAT_0037a53c`, pi at or below -1.0 `DAT_0037a540` / `DAT_0037a544`), held at `rate`;
+/// FUN_0017bf88 builds the rotation by that angle about the unit `a x b` (rows `x^2 t + c, xy t + z s, xz t -
+/// y s` .., `t = 1 - c`), and the result is `a` through it with w 0. A zero cross product gives a zero axis
+/// (the vector unit's division by zero times 0): the result is `a x cos(angle)`.
+pub(crate) fn turn_vec(a: [f32; 4], b: [f32; 4], rate: f32) -> [f32; 4] {
+    let unit = |v: [f32; 4]| {
+        let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        if l > 0.0 { [v[0] / l, v[1] / l, v[2] / l] } else { [0.0; 3] }
+    };
+    let (u, w) = (unit(a), unit(b));
+    let dot = u[0] * w[0] + u[1] * w[1] + u[2] * w[2];
+    let angle = if dot >= 1.0 {
+        0.0
+    } else if dot <= -1.0 {
+        std::f32::consts::PI
+    } else {
+        dot.acos()
+    };
+    let step = angle.min(rate);
+    let k = unit([u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0], 0.0]);
+    let (s, c) = step.sin_cos();
+    let t = 1.0 - c;
+    let (x, y, z) = (k[0], k[1], k[2]);
+    let rows = [[x * x * t + c, x * y * t + z * s, x * z * t - y * s], [x * y * t - z * s, y * y * t + c, y * z * t + x * s], [x * z * t + y * s, y * z * t - x * s, z * z * t + c]];
+    let r: [f32; 3] = std::array::from_fn(|j| rows[0][j] * u[0] + rows[1][j] * u[1] + rows[2][j] * u[2]);
+    [r[0], r[1], r[2], 0.0]
 }
 
 /// Handles of the members' attack objects (host 2.10), apart from the object handles.
@@ -277,6 +320,15 @@ impl FriendHost<'_, '_> {
                 }
                 Some(Value::None)
             }
+            // 0.45 / 0.46 (the runtime hands the two vectors and the scalar; the answer goes back into the
+            // first): `advance_vec` (FUN_0016d098) and `turn_vec` (FUN_0016d138 -> FUN_0017c0f8).
+            Call::Func { group: 0, index: i @ (45 | 46), args } if args.len() >= 3 => {
+                let (Arg::Vec(a), Arg::Vec(b)) = (&args[0], &args[1]) else { return None };
+                let s = args[2].float();
+                let v = Value::Vec(if *i == 45 { advance_vec(*a, *b, s) } else { turn_vec(*a, *b, s) });
+                self.record(c, &v, St::Approx, "the platform's sqrt / acos / sin / cos, not the vector unit's and the game's kernels");
+                Some(v)
+            }
             // 1.130 obj_diff (0x170510): the difference of the two contexts' objects, 0 when either is 0 or
             // they are the same (Donald's `cure` R1570 tells healing itself from healing another).
             Call::Func { group: 1, index: 130, args } if args.len() >= 2 => {
@@ -289,9 +341,26 @@ impl FriendHost<'_, '_> {
             // (+0x3c, 4 entries) and follows the running one when it ends; `party` plays it then (one
             // entry kept; the blend is the member's own).
             Call::Func { group: 1, index: 13, args } if args.first().is_some_and(|a| raw(a) == me) => {
-                let slot = usize::try_from(self.remap(args.get(1).map_or(-1, |a| a.int()))).ok().filter(|&s| self.inner.env.rig.mset.has(s));
+                let motion = args.get(1).map_or(-1, |a| a.int());
+                let slot = usize::try_from(self.remap(motion)).ok().filter(|&s| self.inner.env.rig.mset.has(s));
                 self.fields.queued = slot;
+                self.fields.queued_motion = slot.map(|s| (motion, s));
                 self.record(c, &Value::None, St::Approx, "one queued motion after the running one; its blend is not kept");
+                Some(Value::None)
+            }
+            // 1.91 (0x172fe8 -> FUN_00175aa8): the invincibility timer +0xb00 = the frames given (Goofy's
+            // `tornado` gives the length of its motion); FUN_00175ad8 refuses hits while it runs.
+            Call::Unknown { group: 1, index: 91, .. } | Call::Func { group: 1, index: 91, .. } => {
+                let frames = words(c).and_then(|(_, _, a)| a.get(1).copied()).map_or(0.0, f32::from_bits);
+                self.fields.invuln = Some(frames);
+                self.record(c, &Value::None, St::Impl, "");
+                Some(Value::None)
+            }
+            // 6.3 (0x2ee718 -> FUN_002f01a0) sets up a target-search block, 6.5 (0x2ee750 -> FUN_002f04a8)
+            // searches the objects for a target into a record: Goofy's `tornado` asks it only when his
+            // target record is not valid. Not ported: the record stays as it is.
+            Call::Unknown { group: 6, index: 3 | 5, .. } | Call::Func { group: 6, index: 3 | 5, .. } => {
+                self.record(c, &Value::None, St::Stub, "the target search FUN_002f04a8 is not ported: the member's target record stays");
                 Some(Value::None)
             }
             // 1.120 target_position (0x173688): the point of the member's target record.
@@ -397,17 +466,35 @@ impl FriendHost<'_, '_> {
 impl Host for FriendHost<'_, '_> {
     fn call(&mut self, c: &Call) -> Value {
         let me = self.inner.obj.handle;
-        match c {
-            Call::PlayMotion { obj, motion, blend } if *obj == me => {
-                return self.inner.call(&Call::PlayMotion { obj: *obj, motion: self.remap(*motion), blend: *blend });
+        let played = match c {
+            Call::PlayMotion { obj, motion, .. } | Call::PlayMotionChecked { obj, motion, .. } | Call::PlayMotionAt { obj, motion, .. } if *obj == me => Some((*motion, self.remap(*motion))),
+            _ => None,
+        };
+        if let Some((motion, slot)) = played {
+            if let Ok(s) = usize::try_from(slot) {
+                self.fields.motion = Some((motion, s));
             }
-            Call::PlayMotionChecked { obj, motion, blend } if *obj == me => {
-                return self.inner.call(&Call::PlayMotionChecked { obj: *obj, motion: self.remap(*motion), blend: *blend });
-            }
-            Call::PlayMotionAt { obj, motion, start, blend } if *obj == me => {
-                return self.inner.call(&Call::PlayMotionAt { obj: *obj, motion: self.remap(*motion), start: *start, blend: *blend });
-            }
-            _ => {}
+            return match c {
+                Call::PlayMotion { obj, blend, .. } => self.inner.call(&Call::PlayMotion { obj: *obj, motion: slot, blend: *blend }),
+                Call::PlayMotionChecked { obj, blend, .. } => self.inner.call(&Call::PlayMotionChecked { obj: *obj, motion: slot, blend: *blend }),
+                Call::PlayMotionAt { obj, start, blend, .. } => self.inner.call(&Call::PlayMotionAt { obj: *obj, motion: slot, start: *start, blend: *blend }),
+                _ => Value::None,
+            };
+        }
+        // 1.15 motion_state (0x170450): the word +0x154, the motion number FUN_0017e000 was asked for
+        // (Goofy's `tornado` compares it with 191), not the slot the remap played.
+        if let Call::MotionState { obj } = c
+            && *obj == me
+        {
+            let slot = self.inner.obj.slot;
+            let id = match (self.fields.motion, self.fields.queued_motion) {
+                (Some((id, s)), _) if slot == Some(s) => id,
+                (_, Some((id, s))) if slot == Some(s) => id,
+                _ => slot.map_or(-1, |s| s as i32),
+            };
+            let v = Value::Int(id);
+            self.record(c, &v, St::Approx, "the motion number of the script's last request (or the queued one) while its slot plays, else the slot");
+            return v;
         }
         // 1.276 (0x170a00): for a party object (+0x588 bit 4) FUN_001769e0 pays the pending MP byte
         // +0xaf4 (FUN_00186368 with minus it) and clears it. [inferred] The object named is the member
@@ -542,5 +629,33 @@ impl Host for FriendHost<'_, '_> {
 
     fn write_mem(&mut self, addr: u32, data: &[u8]) -> bool {
         self.inner.write_mem(addr, data)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Host 0.46 (FUN_0017c0f8): the first vector, made unit, turned toward the second by at most the
+    /// rate (the rotation FUN_0017bf88 builds about `a x b`), w 0; a smaller angle than the rate lands on
+    /// the second. Goofy's `tornado` starts from (0, -1, 0) (up in the game's axes) and turns 10 degrees a
+    /// frame toward its goal.
+    #[test]
+    fn member_turn_vec_follows_fun_0017c0f8() {
+        let rate = 10f32.to_radians();
+        let v = turn_vec([0.0, -1.0, 0.0, 1.0], [1.0, 0.0, 0.0, 0.0], rate);
+        assert!((v[0] - rate.sin()).abs() < 1e-6 && (v[1] + rate.cos()).abs() < 1e-6 && v[2].abs() < 1e-6 && v[3] == 0.0, "{v:?}");
+        let v = turn_vec([2.0, 0.0, 0.0, 5.0], [1.0, 0.0, 0.1, 0.0], rate);
+        let w = 0.1f32.atan();
+        assert!((v[0] - w.cos()).abs() < 1e-5 && (v[2] - w.sin()).abs() < 1e-5, "{v:?}");
+        // Parallel: no turn, the unit vector.
+        assert_eq!(turn_vec([0.0, 0.0, 3.0, 1.0], [0.0, 0.0, 1.0, 0.0], rate), [0.0, 0.0, 1.0, 0.0]);
+    }
+
+    /// Host 0.45 (FUN_0016d098): the second vector's direction times the scalar added on all four lanes.
+    #[test]
+    fn member_advance_vec_follows_fun_0016d098() {
+        assert_eq!(advance_vec([1.0, 2.0, 3.0, 1.0], [0.0, 0.0, 2.0, 0.0], 5.0), [1.0, 2.0, 8.0, 1.0]);
+        assert_eq!(advance_vec([1.0, 2.0, 3.0, 1.0], [0.0, 0.0, 0.0, 0.0], 5.0), [1.0, 2.0, 3.0, 1.0]);
     }
 }

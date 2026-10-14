@@ -375,6 +375,8 @@ fn friend_update(
         obj.slot = anim.slot;
         obj.frame = anim.frame;
         obj.trigger_bits = trigger_bits(anim);
+        // Host 1.14 (bit 1 of +0x160): the motion ended, or a looping one wrapped (as `enemy_ai`).
+        obj.done = anim.slot.is_some() && (anim.finished || anim.looping && anim.frame < anim.prev_frame);        let yaw_before = obj.motor.yaw;
         let env = Env {
             player: s.motor.pos,
             player_yaw: s.motor.yaw,
@@ -483,9 +485,29 @@ fn friend_update(
             m.script_slot = Some(req.slot);
             m.script_restart = true;
             m.script_queue = None;
+        } else if obj.done
+            && anim.slot.is_some()
+            && anim.slot == m.script_slot
+            && let Some(q) = m.script_queue.take()
+        {
+            // The requested motion ended (the script saw it through 1.14 in this slice): the queued one
+            // follows (FUN_0017e170's queue).
+            m.script_slot = Some(q);
+            m.script_restart = true;
         }
         if let Some(q) = fields.queued.take() {
             m.script_queue = Some(q);
+        }
+        // The script's movement (1.111 set_move: the enemy host keeps its ground part, one tick) and
+        // facing (1.4 / 1.79 / 1.80), and the invincibility timer (1.91), for `party_tick` to carry out
+        // while the script is busy with a special.
+        m.script_move = (obj.move_vel != Vec3::ZERO).then_some(obj.move_vel);
+        m.script_yaw = (obj.motor.yaw != yaw_before).then_some(obj.motor.yaw);
+        if let Some(f) = fields.invuln.take() {
+            m.invuln = f;
+            if log {
+                info!("party: {tag} invincible for {f} frames (1.91, +0xb00)");
+            }
         }
         // Nothing else the script asked for is carried out.
         obj.move_vel = Vec3::ZERO;

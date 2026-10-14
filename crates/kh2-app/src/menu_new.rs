@@ -62,6 +62,8 @@ pub struct NewTags {
     /// The type of every item id the camp saw at its start (0xff: none).
     kind: Vec<u8>,
     seen: [u32; WORDS],
+    /// The seen words came from the loaded progress once (`load_once`).
+    synced: bool,
     fresh: [u32; WORDS],
     /// Abilities the leader ever had, in the order he got them, and the seen and fresh flags per index.
     known: Vec<u16>,
@@ -119,6 +121,28 @@ impl NewTags {
         for (i, a) in self.known.clone().into_iter().enumerate() {
             if !abilities.contains(&a) {
                 self.known_seen[i] = true;
+            }
+        }
+    }
+
+    /// The seen array as words (what a slot file stores).
+    pub fn seen_words(&self) -> Vec<u32> {
+        self.seen.to_vec()
+    }
+
+    /// Replace the seen array with stored words (up to `WORDS`).
+    pub fn set_seen_words(&mut self, w: &[u32]) {
+        self.seen = [0; WORDS];
+        let n = w.len().min(WORDS);
+        self.seen[..n].copy_from_slice(&w[..n]);
+    }
+
+    /// Take the progress's stored words the first time only (a slot loaded at start); later the tags own them.
+    pub fn load_once(&mut self, w: &[u32]) {
+        if !self.synced {
+            self.synced = true;
+            if !w.is_empty() {
+                self.set_seen_words(w);
             }
         }
     }
@@ -248,6 +272,20 @@ mod tests {
             1 | 10 | 40 | 50 => 1,
             _ => 0,
         }
+    }
+
+    #[test]
+    fn seen_bits_round_trip_through_a_slot_file() {
+        let mut t = NewTags::with_types(&[0]);
+        t.view(77);
+        let mut p = crate::progress::Progress::from_block(&[], std::sync::Arc::new(crate::progress::ItemIndex::default()));
+        p.set_new_seen(&t.seen_words());
+        let info = crate::progress::SlotInfo { level: 1, munny: 0, play_seconds: 0, area: "tt00".into() };
+        let mut q = crate::progress::Progress::from_block(&[], std::sync::Arc::new(crate::progress::ItemIndex::default()));
+        q.apply_json(&p.slot_json(&info)).expect("parses");
+        let mut u = NewTags::with_types(&[0]);
+        u.load_once(q.new_seen());
+        assert!(bit(&u.seen, 77) && !bit(&u.seen, 78));
     }
 
     #[test]

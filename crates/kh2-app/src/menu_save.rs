@@ -830,7 +830,7 @@ fn tick(
     mut save: ResMut<SaveMenu>,
     mut scene: ResMut<MenuScene>,
     real: Res<Time<Real>>,
-    progress: Option<Res<Progress>>,
+    (progress, tags): (Option<Res<Progress>>, Res<super::new_tags::NewTags>),
     mut se: MessageWriter<PlaySe>,
 ) {
     if !save.loaded || save.flow.stage == Stage::Closed {
@@ -858,7 +858,9 @@ fn tick(
             let slot = save.flow.slot;
             if let Some(p) = progress.as_deref() {
                 let info = info_now(p, &save.area, save.play);
-                match write_slot(&save.dir, slot, p, &info) {
+                let mut stored = p.clone();
+                stored.set_new_seen(&tags.seen_words());
+                match write_slot(&save.dir, slot, &stored, &info) {
                     Ok(path) => {
                         info!("menu: save slot {} written ({})", slot + 1, path.display());
                         menu_sound::play(&mut se, WRITTEN);

@@ -530,6 +530,7 @@ pub(crate) fn input(
                     // The camp's start builds the NEW sets (`FUN_00293808`).
                     if let Some(p) = progress.as_deref() {
                         let abilities: Vec<u16> = p.sora().abilities.iter().map(|a| a.0).collect();
+                        tags.load_once(p.new_seen());
                         tags.begin(&items.order, &|id| p.item_count(id), &abilities);
                         info!("menu: new tags: {}", tags.summary());
                     }

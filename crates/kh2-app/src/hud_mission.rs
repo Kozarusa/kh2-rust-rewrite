@@ -320,7 +320,7 @@ fn load_picture(file: &[u8], e: &Element, scene: &mut HudScene, images: &mut Ass
     Some(scene.files.len() - 1)
 }
 
-pub fn update(disc: Res<Disc>, time: Res<Time>, mission: Res<Mission>, mut hud: ResMut<MissionHud>, mut scene: ResMut<HudScene>, mut images: ResMut<Assets<Image>>) {
+pub fn update(disc: Res<Disc>, time: Res<Time>, pause: Res<crate::schedule::Pause>, mission: Res<Mission>, mut hud: ResMut<MissionHud>, mut scene: ResMut<HudScene>, mut images: ResMut<Assets<Image>>) {
     if !hud.loaded {
         hud.loaded = true;
         hud.tables = disc.read_root("SLUS_210.05").and_then(|e| read_tables(&e));
@@ -328,7 +328,7 @@ pub fn update(disc: Res<Disc>, time: Res<Time>, mission: Res<Mission>, mut hud: 
             warn!("hud: the mission digit tables are not readable from SLUS_210.05; no mission HUD");
         }
     }
-    hud_info::update(&mut scene, &mission, &mut hud.info, time.delta_secs());
+    hud_info::update(&mut scene, &mission, &mut hud.info, hud_info::step_dt(pause.frozen(), time.delta_secs()));
     let Some(t) = hud.tables.clone() else { return };
     layout_picture(&mission, &mut hud, &mut scene, &mut images);
     field_hud_hide(mission.hud_hidden(), &mut hud, &mut scene);

@@ -179,7 +179,7 @@ fn skies_per_area_sk0_and_sk1() {
     let Some(mut a) = open() else { return };
     let mut report = Vec::new();
     for n in (0..=28).map(|i| format!("tt{i:02}")) {
-        let Some(file) = a.read(&format!("map/us/{n}.map")) else { continue };
+        let Ok(file) = a.read(&format!("map/us/{n}.map")) else { continue };
         let Ok(e) = kh2_bar::parse(&file) else { continue };
         let count = |tag: &str| e.iter().filter(|x| x.tag == tag && x.kind == 4).count();
         let m = kh2_model::map_file(&file);

@@ -185,7 +185,7 @@ pub fn sky_follow(_cam: Query<&Transform, (With<Camera3d>, Without<Sky>)>, mut s
 /// far plane (Bevy's perspective projection is infinite in depth; its `far` only feeds frustum
 /// culling), so every sky mesh is exempt from culling. The PS2 has no far clip (`[inferred]`: the
 /// game's projection `FUN_001078f0` sets only the near plane; no far-plane test was found).
-pub fn sky_unculled(mut commands: Commands, new: Query<(Entity, &ChildOf), (Added<Mesh3d>, Without<bevy::camera::visibility::NoFrustumCulling>)>, sky: Query<(), With<Sky>>) {
+pub fn sky_unculled(mut commands: Commands, new: Query<(Entity, &ChildOf), Added<Mesh3d>>, sky: Query<(), With<Sky>>) {
     for (e, parent) in &new {
         if sky.contains(parent.parent()) {
             commands.entity(e).insert(bevy::camera::visibility::NoFrustumCulling);

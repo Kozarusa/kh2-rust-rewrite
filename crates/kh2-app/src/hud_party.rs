@@ -85,6 +85,23 @@ pub struct PartyNodes {
     slots: [Slot; SLOTS],
     /// Scene file of each member model's `face` pair, by model name (`None`: not loadable).
     faces: HashMap<String, Option<usize>>,
+    /// The model each slot's portrait was set up for: a change (a member leaves or swaps slots) reloads it.
+    models: [Option<String>; SLOTS],
+}
+
+/// Index of the `face` pair in a member's object file: the first two adjacent entries tagged `face` (IMGD, SEQD;
+/// member resource +0x7b0 tag "face", docs/hud.md), not simply the file's last pair.
+pub fn face_pair(tags: &[&str]) -> Option<usize> {
+    tags.windows(2).position(|w| w[0] == "face" && w[1] == "face")
+}
+
+/// The member's `face` picture from the bytes of `obj/<model>.apdx`.
+fn load_face(data: &[u8], images: &mut Assets<Image>) -> Option<hud_gfx::SeqFile> {
+    let entries = kh2_bar::parse(data).ok()?;
+    let i = face_pair(&entries.iter().map(|e| e.tag).collect::<Vec<_>>())?;
+    let img = kh2_image::imgd::decode(entries[i].data)?;
+    let seq = kh2_image::seqd::parse(entries[i + 1].data)?;
+    Some(hud_gfx::SeqFile::new(&img, seq, images))
 }
 
 /// The model each slot's portrait comes from. The member's own object file holds the `face` pair
@@ -182,15 +199,29 @@ pub fn update(
         let mut by_slot: Vec<(u8, &str)> = in_field.iter().map(|m| (m.slot, m.model.as_str())).collect();
         by_slot.sort_by_key(|(s, _)| *s);
         let names: Vec<&str> = by_slot.iter().map(|(_, m)| *m).collect();
-        for s in 0..party.0.len().min(SLOTS) {
-            if party.0[s].face.is_some() {
+        for s in 0..SLOTS {
+            let want = if s < party.0.len() { model_of(s, &names) } else { None };
+            if nodes.models[s] != want {
+                // The slot's member changed (left, or swapped slots): drop the old portrait, load the new one.
+                if nodes.models[s].is_some() {
+                    if let Some(f) = nodes.slots[s].face.take() {
+                        scene.nodes[f].visible = false;
+                    }
+                    if let Some(p) = party.0.get_mut(s) {
+                        p.face = None;
+                    }
+                    info!("hud: party slot {s}: portrait {:?} -> {:?}", nodes.models[s], want);
+                }
+                nodes.models[s] = want.clone();
+            }
+            if s >= party.0.len() || party.0[s].face.is_some() {
                 continue;
             }
-            let Some(model) = model_of(s, &names) else { continue };
+            let Some(model) = want else { continue };
             let file = match nodes.faces.get(&model) {
                 Some(f) => *f,
                 None => {
-                    let f = hud_gfx::load_files(&disc, &format!("obj/{model}.apdx"), &mut images).pop().map(|f| {
+                    let f = disc.read(&format!("obj/{model}.apdx")).and_then(|d| load_face(&d, &mut images)).map(|f| {
                         scene.files.push(f);
                         scene.files.len() - 1
                     });
@@ -259,6 +290,31 @@ mod tests {
         assert_eq!(model_of(1, &["P_EX020"]), None, "a member that is not in the field has no face");
         assert_eq!(model_of(0, &[]).as_deref(), Some("P_EX020"), "the harness fill shows Donald in slot 0");
         assert_eq!(model_of(1, &[]).as_deref(), Some("P_EX030"));
+    }
+
+    #[test]
+    fn the_face_pair_is_found_by_tag_not_by_position() {
+        assert_eq!(face_pair(&["mdlx", "face", "face", "eff", "eff2"]), Some(1));
+        assert_eq!(face_pair(&["face", "mdlx"]), None);
+        assert_eq!(face_pair(&[]), None);
+    }
+
+    /// The members' portraits load through the tag lookup (skipped without a disc), and it agrees with the old
+    /// "last pair" reading for the three models the HUD uses.
+    #[test]
+    fn member_faces_load_by_tag() {
+        let Ok(iso) = std::env::var("KH2_ISO") else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let mut images = Assets::<Image>::default();
+        for m in ["P_EX020", "P_EX030", "P_EX100"] {
+            let d = a.read(&format!("obj/{m}.apdx")).unwrap();
+            let by_tag = load_face(&d, &mut images).unwrap_or_else(|| panic!("{m}: no face pair by tag"));
+            let last = hud_gfx::SeqFile::from_bar(&d, &mut images).pop().unwrap();
+            assert_eq!((by_tag.width, by_tag.height), (last.width, last.height), "{m}");
+        }
     }
 
     #[test]

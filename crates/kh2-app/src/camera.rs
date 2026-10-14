@@ -84,6 +84,8 @@ pub fn setup(mut commands: Commands) {
         Projection::Perspective(PerspectiveProjection { near: 0.01, ..default() }),
         Transform::from_xyz(0.0, 3.0, 6.0).looking_at(Vec3::ZERO, Vec3::Y),
         OrbitCamera { yaw: 0.0, pitch: 0.0, distance: 0.0, first_person: false, player_fade: 1.0 },
+        // The lens pass draws over this camera's picture (fx_lens.rs).
+        crate::fx::lens::LensScene,
     ));
 }
 

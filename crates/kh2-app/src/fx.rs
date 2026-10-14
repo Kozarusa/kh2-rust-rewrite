@@ -32,6 +32,10 @@ use crate::enemy::Enemy;
 use crate::skel::Animator;
 use crate::sora::Sora;
 
+/// The lens pass: distortion batches that read the display buffer (WP-I3).
+#[path = "fx_lens.rs"]
+pub mod lens;
+
 /// The game's world axes relative to Bevy's (Y and Z negated).
 const FLIP: Mat4 = Mat4::from_cols(Vec4::X, Vec4::NEG_Y, Vec4::NEG_Z, Vec4::W);
 
@@ -203,6 +207,12 @@ pub const ELEMENT_IN_CAMERA_SPACE: u32 = 0x20000;
 /// Step of the bind record's clock per 60 Hz tick (inference: the game adds its frame step DAT_00356f40,
 /// 2.0 per update in its own units, which this port takes as one 60 Hz tick).
 pub const EFFECT_TIME_STEP: f32 = 1.0;
+/// 60 Hz ticks per particle-program frame (WP-I3, measured): the effect library runs one program frame per
+/// field frame (the draw `FUN_001e3d00` advances the instance by one `FUN_001e6240`; the update `FUN_001e3898`
+/// adds one more only for each 2.0 (`DAT_0037ce98`) of frame step beyond the first, a catch-up for slow frames),
+/// and a field frame is two vblanks (step 2.0, `FUN_0014cdd0`). So a program frame takes two of the app's ticks:
+/// an effect life of N frames lasts N / 30 s. Test `kh2-fx/tests/clock_oracle.rs`.
+pub const TICKS_PER_PROGRAM_FRAME: u32 = 2;
 /// Added to a bound element's start wait (DAT_0037c778, FUN_001db5f0).
 pub const BOUND_WAIT_EXTRA: f32 = 0.1;
 
@@ -218,6 +228,10 @@ pub struct RunningEffect {
     parts: Vec<(Entity, Handle<Mesh>)>,
     /// The bind record's clock (+0x4c): `EFFECT_TIME_STEP` per tick from 0.
     time: f32,
+    /// Ticks since the instance started; the programs run on every `TICKS_PER_PROGRAM_FRAME`-th, from the first.
+    beat: u32,
+    /// The display-buffer lens batches of the last program frame (`lens::LensDraws`).
+    lens: Vec<lens::LensBatch>,
     /// The element's start wait (+0x14, plus `BOUND_WAIT_EXTRA` for a bound element): the instance
     /// starts and its sound plays once the clock reaches it (FUN_001db5f0, FUN_001dd0d0).
     wait: f32,
@@ -238,7 +252,7 @@ pub struct RunningEffect {
 impl RunningEffect {
     fn new(lib: Arc<LoadedPax>, element: Element, effect: kh2_fx::Effect, dpd: usize, bind: Bind, game_id: u16) -> RunningEffect {
         let wait = element.start_wait + if element.flags & element_flag::BIND != 0 { BOUND_WAIT_EXTRA } else { 0.0 };
-        RunningEffect { lib, element, effect, dpd, bind, game_id, parts: Vec::new(), time: 0.0, wait, se_played: false, bind_once: None, two_point: None, last_bind: None, orphan: false, fade: None }
+        RunningEffect { lib, element, effect, dpd, bind, game_id, parts: Vec::new(), time: 0.0, beat: 0, lens: Vec::new(), wait, se_played: false, bind_once: None, two_point: None, last_bind: None, orphan: false, fade: None }
     }
 }
 
@@ -283,7 +297,7 @@ impl Plugin for FxPlugin {
     fn build(&self, app: &mut App) {
         use crate::schedule::Sim;
         embedded_asset!(app, "fx_distort.wgsl");
-        app.add_plugins(MaterialPlugin::<DistortMaterial>::default())
+        app.add_plugins((MaterialPlugin::<DistortMaterial>::default(), lens::LensPlugin))
             .add_message::<StartEffect>()
             .add_message::<StartSystemEffect>()
             .add_message::<StartBoundSystemEffect>()
@@ -690,9 +704,10 @@ pub struct Evicted;
 #[derive(Component)]
 pub struct RingSpark;
 
-/// Whether a looping ring spark has run its program life (`pd.life`, `TICK` per frame) on the clock `time`.
+/// Whether a looping ring spark has run its program life (`pd.life`, `TICK` per program frame, each
+/// `TICKS_PER_PROGRAM_FRAME` ticks) on the clock `time` (ticks).
 pub fn ring_spark_expired(time: f32, life: i32) -> bool {
-    time >= (life / kh2_fx::pax::TICK) as f32
+    time >= ((life / kh2_fx::pax::TICK) as u32 * TICKS_PER_PROGRAM_FRAME) as f32
 }
 
 /// `FUN_001c09f8` for a freshly started spark (`None`: no element, nothing to register).
@@ -942,11 +957,13 @@ pub fn tick(
     mut cache: ResMut<FxCache>,
     distort: Res<DistortHandle>,
     projection: Res<FxProjection>,
+    mut lens_draws: ResMut<lens::LensDraws>,
     mut se: MessageWriter<crate::audio::PlaySe>,
 ) {
     let view_inv = camera.single().map(|(c, _)| game_camera(c.to_matrix())).unwrap_or(Mat4::IDENTITY);
     // The game's projection for the camera's field of view (camera.rs makes the vertical field from the
     // game's horizontal one at 4:3: fov = 2 atan(0.75 tan(hfov / 2))).
+    let mut gone = Vec::new();
     let proj = projection.0.and_then(|p| {
         let (_, Projection::Perspective(pp)) = camera.single().ok()? else { return None };
         let hfov = 2.0 * ((pp.fov * 0.5).tan() / 0.75).atan();
@@ -974,6 +991,20 @@ pub fn tick(
             }
         }
         r.time += EFFECT_TIME_STEP;
+        // One program frame per field frame (`TICKS_PER_PROGRAM_FRAME` ticks): between them the last frame's
+        // draws stay and only the fade steps (FUN_001da1e8 moves it by the frame step every update).
+        r.beat += 1;
+        if (r.beat - 1) % TICKS_PER_PROGRAM_FRAME != 0 {
+            if let Some((level, step)) = r.fade {
+                if level + step <= 0.0 {
+                    gone.push(e);
+                commands.entity(e).despawn();
+                    continue;
+                }
+                r.fade = Some((level + step, step));
+            }
+            continue;
+        }
         let mut env = Env { view: view_inv.inverse(), view_inv, proj, ..Default::default() };
         // Element flag 0x20000 (WP-I2): the bind record sits in camera space (FUN_001dc138 sets its +0x5c bit 2;
         // FUN_001dd0d0 then runs FUN_001dc978 every tick: the element's own translation, rotation and scale put
@@ -1031,7 +1062,8 @@ pub fn tick(
                     }
                 }
                 let Some(m) = now.or(r.last_bind) else {
-                    commands.entity(e).despawn();
+                    gone.push(e);
+                commands.entity(e).despawn();
                     continue;
                 };
                 r.last_bind = Some(m);
@@ -1050,6 +1082,7 @@ pub fn tick(
         if let Some((level, step)) = r.fade {
             let level = level + step;
             if level <= 0.0 {
+                gone.push(e);
                 commands.entity(e).despawn();
                 continue;
             }
@@ -1059,7 +1092,8 @@ pub fn tick(
         env.bind_scale = Vec3::new(env.bind.x_axis.truncate().length(), env.bind.y_axis.truncate().length(), env.bind.z_axis.truncate().length());
         let draws = r.effect.tick(&env);
         if r.effect.done {
-            commands.entity(e).despawn();
+            gone.push(e);
+                commands.entity(e).despawn();
             continue;
         }
         if std::env::var_os("KH2_FXLOG").is_some() {
@@ -1080,6 +1114,14 @@ pub fn tick(
                 }
             }
         }
+        // Lens batches that read the display buffer (last frame's picture, HUD included) are drawn by the lens
+        // pass (`lens.rs`), not as meshes. A camera-space element keeps its geometry in view space, so the pass
+        // places it in front of the camera as it is drawn.
+        let camera_space = el.flags & ELEMENT_IN_CAMERA_SPACE != 0;
+        r.lens = draws.iter().filter(|b| !b.offsets.is_empty() && b.display_buffer).map(|b| lens::LensBatch::of(b, &env.view, camera_space)).collect();
+        if !r.lens.is_empty() {
+            lens_draws.frame = lens_draws.frame.wrapping_add(1);
+        }
         // One child mesh per batch; spare children are hidden (empty meshes upset the renderer).
         while r.parts.len() < draws.len() {
             let mesh = meshes.add(build_mesh(&draws[r.parts.len()]));
@@ -1089,7 +1131,7 @@ pub fn tick(
             r.parts.push((child, mesh));
         }
         for (i, (child, mesh)) in r.parts.clone().into_iter().enumerate() {
-            match draws.get(i).filter(|b| !b.indices.is_empty()) {
+            match draws.get(i).filter(|b| !b.indices.is_empty() && !(b.display_buffer && !b.offsets.is_empty())) {
                 Some(b) => {
                     if let Some(mut m) = meshes.get_mut(&mesh) {
                         *m = build_mesh(b);
@@ -1109,6 +1151,8 @@ pub fn tick(
             }
         }
     }
+    // What the lens pass draws this frame: every running effect's lens of its last program frame.
+    lens_draws.batches = effects.iter().filter(|(e, _)| !gone.contains(e)).flat_map(|(_, r)| r.lens.iter().cloned()).collect();
 }
 
 /// FUN_001dd060: starts the end of an element's effect once. Element flag 0x80 stops it like a
@@ -1611,7 +1655,7 @@ mod tests {
     }
 
     /// [inferred] rule `ring_spark_expired`: a looping ring spark is faded once its program life is over (a
-    /// 60-frame life starts the 4-frame fade at frame 60, gone at 63). Since WP-7Bc the clash spark 0xd itself is
+    /// 60-frame life, two ticks a program frame, starts the 4-tick fade at tick 120, gone at 123). Since WP-7Bc the clash spark 0xd itself is
     /// not looping (its DPX entry is found by number, `dpx_effect`): it ends by itself within its 24-frame life,
     /// so the rule does not touch it. Skips the disc part without a disc.
     #[test]
@@ -1627,8 +1671,8 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(start, 60);
-        assert_eq!(gone, Some(63), "a looping ring spark is gone about 64 frames after it started");
+        assert_eq!(start, 120);
+        assert_eq!(gone, Some(123), "a looping ring spark is gone about 124 ticks after it started");
         let Ok(iso) = crate::assets::iso_path() else { return };
         if !iso.exists() {
             return;

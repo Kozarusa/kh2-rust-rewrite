@@ -281,6 +281,15 @@ fn tick(mut commands: Commands, disc: Res<Disc>, mission: Res<Mission>, mut intr
     let hold = std::env::var("KH2_INTRO_HOLD").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(f32::MAX);
     let f_real = p.ticks as f32 * 0.5;
     let f = f_real.min(hold);
+    // `KH2_INTRO_SHOTS=<path prefix>` with `KH2_INTRO_SHOTS_AT=<event frame>,...`: a screenshot at each of those
+    // event frames, `<prefix>_<frame>.png` (a harness aid for comparing the intro with the reference clip).
+    if let (Ok(prefix), Ok(at)) = (std::env::var("KH2_INTRO_SHOTS"), std::env::var("KH2_INTRO_SHOTS_AT")) {
+        if f_real.fract() == 0.0 && at.split(',').any(|x| x.trim().parse::<f32>().ok() == Some(f_real)) {
+            use bevy::render::view::screenshot::{Screenshot, save_to_disk};
+            info!("intro: screenshot at event frame {f_real}");
+            commands.spawn(Screenshot::primary_window()).observe(save_to_disk(format!("{prefix}_{f_real}.png")));
+        }
+    }
     if r.track.has_camera() {
         let shot = match (r.track.follow_at, cam.behind) {
             (Some(start), Some(behind)) if f >= start as f32 && r.track.end > start => {

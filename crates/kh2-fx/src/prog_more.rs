@@ -367,7 +367,9 @@ pub fn sno_draw(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
     // 0x20b0b4): the outer product (p1 - p0) x (p2 - p1) of the screen positions, and the VU MAC
     // flag's sign bit of its z (0x20) skips the triangle.
     let cull = model.flags & 2 == 0;
-    let mut batch = Batch { dpd: ctx.dpd_index, tex0: None, alpha, depth_scale, depth_test, ..Default::default() };
+    // Entry byte +0x14: the texture is the display buffer (last frame's picture) rather than the draw buffer.
+    let display_buffer = pb(p, e, 0x14) != 0;
+    let mut batch = Batch { dpd: ctx.dpd_index, tex0: None, alpha, depth_scale, depth_test, display_buffer, ..Default::default() };
     for blk in model.blocks.iter().filter(|b| b.kind == 1) {
         for pr in &blk.prims {
             let base = batch.verts.len() as u32;

@@ -39,9 +39,34 @@ pub struct FriendFields {
     /// The point of the member's target record (host 1.120): the target's hurt shape centre, game
     /// units with the app's axes; `None` without a target. `party_tick` writes it.
     pub target_point: Option<Vec3>,
-    /// The effects the script started this tick (hosts 1.22, 1.87, 1.149); `friend_ai` starts them.
-    pub fx: Vec<FxReq>,
+    /// The effects the script holds handles to (hosts 1.22, 1.87, 1.149); `friend_ai` starts, moves,
+    /// stops and destroys their instances and tells the script whether they still run.
+    pub fx: Vec<FxLive>,
     pub effects_made: u32,
+    /// The motion slot host 1.13 queued after the running motion (FUN_0017e170).
+    pub queued: Option<usize>,
+}
+
+/// An effect handle of the member's script and what became of its instance.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FxLive {
+    pub handle: u32,
+    pub req: FxReq,
+    /// The instance (`None` before `friend_ai` started it, or when it could not start).
+    pub entity: Option<Entity>,
+    /// `friend_ai` has handled the start request.
+    pub started: bool,
+    /// The position FUN_001d9d00 answers (host 0.53): the element's bone frame times its translation
+    /// for a bound element, the point given for a placed one; game units, the app's axes.
+    pub pos: Vec3,
+    /// The instance has ended (FUN_001da0d8 says so: host 0.49 false).
+    pub gone: bool,
+    /// Asked by the script: stop emitting (0.44 / 0.52), destroy at once (0.51), placed anew (0.38).
+    pub stop: bool,
+    pub destroy: bool,
+    pub moved: bool,
+    /// Ticks since the instance ended (the record is dropped some time after).
+    pub gone_ticks: u32,
 }
 
 /// An effect element of the member's own effect file (`obj/<model>.apdx`, the object's +0x80) the
@@ -80,6 +105,8 @@ pub struct AttackObj {
     pub from: (f32, f32),
     /// +4 bit 0x800: released (FUN_0018dc98); FUN_0018c2d8 destroys it on its next pass.
     pub released: bool,
+    /// Passes of FUN_001a2cc0 run on it (for the log).
+    pub steps: u32,
 }
 
 /// Handles of the members' attack objects (host 2.10), apart from the object handles.
@@ -141,19 +168,83 @@ impl FriendHost<'_, '_> {
         };
         self.fields.made += 1;
         let handle = ATTACK_HANDLE + self.fields.made;
-        self.fields.attacks.push(AttackObj { handle, atkp, kind, group, pos: None, prev: None, radius: 0.0, height: 0.0, grow: 0.0, t: 0.0, from: (0.0, 0.0), released: false });
+        self.fields.attacks.push(AttackObj { handle, atkp, kind, group, pos: None, prev: None, radius: 0.0, height: 0.0, grow: 0.0, t: 0.0, from: (0.0, 0.0), released: false, steps: 0 });
         Value::Handle(handle)
     }
 
     fn new_effect(&mut self, req: FxReq) -> Value {
-        self.fields.fx.push(req);
         self.fields.effects_made += 1;
-        Value::Handle(EFFECT_HANDLE + self.fields.effects_made)
+        let handle = EFFECT_HANDLE + self.fields.effects_made;
+        let pos = match req {
+            FxReq::At { pos, .. } => pos,
+            FxReq::Bound { .. } => self.inner.obj.motor.pos,
+        };
+        self.fields.fx.push(FxLive { handle, req, entity: None, started: false, pos, gone: false, stop: false, destroy: false, moved: false, gone_ticks: 0 });
+        Value::Handle(handle)
+    }
+
+    fn effect(&mut self, handle: u32) -> Option<&mut FxLive> {
+        self.fields.fx.iter_mut().find(|f| f.handle == handle && !f.destroy)
+    }
+
+    /// The effect-handle functions of group 0 on the member's own effects. `None`: not one of them or
+    /// not one of the member's handles.
+    fn effect_calls(&mut self, c: &Call) -> Option<Value> {
+        let Call::Func { group: 0, index, args } = c else { return None };
+        let h = args.first().map(|a| a.int() as u32)?;
+        if !(EFFECT_HANDLE..EFFECT_HANDLE + 0x100_0000).contains(&h) {
+            return None;
+        }
+        let (v, st, why) = match index {
+            // 0.49 effect_alive (0x16dbd0 -> FUN_001da0d8): the instance still runs.
+            49 => (Value::Bool(self.effect(h).is_some_and(|f| !f.gone)), St::Approx, "the instance entity still exists"),
+            // 0.50 effect_valid (0x16dc00): the handle has an instance (+0x1c).
+            50 => (Value::Bool(self.effect(h).is_some_and(|f| !f.gone)), St::Approx, "the instance entity still exists"),
+            // 0.53 effect_position (0x16dc88 -> FUN_001d9d00): the bind record's position.
+            53 => {
+                let own = self.inner.obj.motor.pos;
+                let p = self.effect(h).map_or(own, |f| f.pos);
+                (Value::Vec(crate::enemy_obj::to_game(p)), St::Approx, "the element's bone frame times its translation (bound) or the point given (placed), one tick old")
+            }
+            // 0.44 effect_stop (FUN_001e0298) / 0.85 (and the stop mark): the instance stops emitting.
+            // 0.52 effect_fade: [inferred] taken as a stop (the alpha ramp is not modelled).
+            44 | 85 | 52 => {
+                if let Some(f) = self.effect(h) {
+                    f.stop = true;
+                }
+                (Value::None, if *index == 52 { St::Approx } else { St::Impl }, "a fade is taken as a stop")
+            }
+            // 0.51 effect_destroy (0x16dc30): the instance is destroyed at once.
+            51 => {
+                if let Some(f) = self.effect(h) {
+                    f.destroy = true;
+                }
+                (Value::None, St::Impl, "")
+            }
+            // 0.38 effect_set_position (0x16da90): the effect's position.
+            38 => {
+                let p = match args.get(1) {
+                    Some(Arg::Vec(v)) => crate::enemy_obj::from_game(*v),
+                    _ => return None,
+                };
+                if let Some(f) = self.effect(h) {
+                    f.pos = p;
+                    f.moved = true;
+                }
+                (Value::None, St::Impl, "")
+            }
+            _ => return None,
+        };
+        self.record(c, &v, st, why);
+        Some(v)
     }
 
     /// The attack-object hosts of group 2 and the effect starts of group 1 the members' specials use
     /// (`kh2 bdx P_EX020` thunder R13c8, cure R1559). `None`: not one of them.
     fn specials(&mut self, c: &Call) -> Option<Value> {
+        if let Some(v) = self.effect_calls(c) {
+            return Some(v);
+        }
         let me = self.inner.obj.handle;
         let raw = |a: &Arg| match a {
             Arg::Float(f) => f.to_bits(),
@@ -175,6 +266,15 @@ impl FriendHost<'_, '_> {
                 } else {
                     self.record(c, &Value::None, St::Missing, "2.12 on a handle that is not a live attack object of the member");
                 }
+                Some(Value::None)
+            }
+            // 1.13 queue_motion (0x1703d8 -> FUN_0017e170): the motion goes into the controller's queue
+            // (+0x3c, 4 entries) and follows the running one when it ends; `party` plays it then (one
+            // entry kept; the blend is the member's own).
+            Call::Func { group: 1, index: 13, args } if args.first().is_some_and(|a| raw(a) == me) => {
+                let slot = usize::try_from(self.remap(args.get(1).map_or(-1, |a| a.int()))).ok().filter(|&s| self.inner.env.rig.mset.has(s));
+                self.fields.queued = slot;
+                self.record(c, &Value::None, St::Approx, "one queued motion after the running one; its blend is not kept");
                 Some(Value::None)
             }
             // 1.120 target_position (0x173688): the point of the member's target record.

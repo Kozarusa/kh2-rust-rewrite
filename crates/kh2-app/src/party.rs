@@ -378,6 +378,10 @@ pub struct PartyMember {
     /// The motion slot the member's script asked for last (FUN_0017e220 remapped), played while the
     /// member stands; `friend_ai` writes it.
     pub(crate) script_slot: Option<usize>,
+    /// The script asked for a motion this tick (FUN_0017e220 starts it again even when it plays), and the
+    /// motion it queued after it (host 1.13, FUN_0017e170).
+    pub(crate) script_restart: bool,
+    pub(crate) script_queue: Option<usize>,
     /// FUN_0017da30's state row now (1 battle, 2 field).
     pub(crate) motion_row: usize,
     pub(crate) free: bool,
@@ -768,6 +772,8 @@ fn spawn_party(
                 want_yaw: None,
                 chosen: Vec::new(),
                 script_slot: None,
+                script_restart: false,
+                script_queue: None,
                 motion_row: battle::motion_state(false, false),
                 free: true,
                 // Harness: `KH2_PARTY_HP=<n>` starts the members with n HP (to see a KO soon).
@@ -1107,7 +1113,11 @@ fn party_tick(
                 let member = progress.as_ref().and_then(|p| p.member(m.neo));
                 // The setting bytes (party record +0xd4) are zero at a new game (`Progress::init_party`).
                 let setting = |_: usize| Some(0u8);
-                let equipped = |r: &battle::Record| member.as_ref().is_some_and(|mm| mm.abilities.iter().any(|&(id, on)| on && id as u32 == r.item));
+                // Harness: `KH2_PARTY_ABILITIES=<item>,...` counts those ability items as equipped on every
+                // member (the new game's records hold only Donald Thunder and Cure; Fire 165, Blizzard 166,
+                // Goofy's specials need a later record). A test aid, not the game's rule.
+                let aid = |item: u32| std::env::var("KH2_PARTY_ABILITIES").is_ok_and(|v| v.split(',').any(|s| s.trim().parse::<u32>().ok() == Some(item)));
+                let equipped = |r: &battle::Record| aid(r.item) || member.as_ref().is_some_and(|mm| mm.abilities.iter().any(|&(id, on)| on && id as u32 == r.item));
                 let skip = battle::repeated(m.choosing.last, m.class);
                 let any_attack = |skip: Option<usize>| ai.records.iter().enumerate().any(|(i, r)| r.flags & battle::flag::ATTACK != 0 && Some(i) != skip && !matches!(r.handler, Handler::Other(0)) && r.handler == Handler::Attack && battle::feasible(r, &now, setting(i), equipped(r)));
                 let (current, timer, changed) = (m.choosing.current, m.timer, m.target_changed);
@@ -1411,11 +1421,23 @@ fn party_tick(
         {
             let rig = a.rig.clone();
             let has = |s: usize| rig.mset.has(s);
+            // A motion loops when its data has a loop range (`frame_return < frame_end`), as `enemy_ai`
+            // plays the scripts' requests.
+            let looping = |s: usize| rig.mset.get(s).and_then(|x| x.motion.as_ref()).is_some_and(|mo| mo.frame_return < mo.frame_end);
             if m.speed <= 0.0
                 && let Some(slot) = m.script_slot.filter(|&s| has(s))
             {
-                // The script's request (its `idle` mode asks for motion 0) while the member stands.
-                a.play(Some(slot), true, BLEND);
+                // The script's request (its `idle` mode asks for motion 0, a special's cast motion 192)
+                // while the member stands: a new request starts the motion again (FUN_0017e220), and
+                // once it has ended the motion the script queued (host 1.13, FUN_0017e170) follows.
+                if std::mem::take(&mut m.script_restart) {
+                    a.restart(Some(slot), looping(slot), BLEND);
+                } else if a.finished && a.slot == Some(slot) && let Some(q) = m.script_queue.take().filter(|&q| has(q)) {
+                    m.script_slot = Some(q);
+                    a.restart(Some(q), looping(q), BLEND);
+                } else {
+                    a.play(Some(slot), looping(slot), BLEND);
+                }
             } else {
                 let motion = if m.speed <= 0.0 { id::IDLE } else if m.speed < m.run { id::WALK } else { id::RUN };
                 let slot = battle::remap(motion as i32, order, has);

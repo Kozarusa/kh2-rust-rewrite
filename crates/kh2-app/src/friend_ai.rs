@@ -213,6 +213,7 @@ fn step_attacks(
         !a.released
     });
     for a in fields.attacks.iter_mut() {
+        a.steps += 1;
         if a.grow > 0.0 {
             a.t += 1.0;
             if a.grow < a.t {
@@ -230,12 +231,12 @@ fn step_attacks(
             continue;
         }
         let Some(base) = crate::magic_rules::attack_row(&game.atkp, a.atkp, a.kind) else {
-            if a.t <= 1.0 {
+            if a.steps == 1 {
                 warn!("party: {} attack object atkp {} kind {}: no atkp row", m.model, a.atkp, a.kind);
             }
             continue;
         };
-        if log && a.t <= 1.0 {
+        if log && a.steps == 1 {
             info!("party: {} attack object {:#x}: atkp {} group {:#x} at {:.0?} radius {r} height {h} for {} frames", m.model, a.handle, a.atkp, a.group, pos, a.grow);
         }
         let points = sweep_points(pos, a.prev, step);
@@ -263,6 +264,32 @@ fn step_attacks(
     }
 }
 
+/// Ticks an ended effect's record is kept for the script's polls (0.49) before it is dropped.
+const FX_FORGET: u32 = 600;
+
+/// The frames of a member's hand objects (its `Fighter` attack bodies after the body), for the bone
+/// numbers 0x4003.. (`fx::object_bone`).
+fn hands_of(f: Option<&Fighter>, anims: &Query<&Animator>, gts: &Query<&GlobalTransform>) -> Vec<Option<crate::fx::ObjectFrame>> {
+    f.map_or(Vec::new(), |f| f.attack_bodies.iter().skip(1).map(|w| Some(crate::fx::ObjectFrame::of(anims.get(*w).ok()?, gts.get(*w).ok()?.to_matrix()))).collect())
+}
+
+/// The position of an element bound to `owner` (host 0.53, FUN_001d9d00: the bind record's position):
+/// the frame its bone names (FUN_0016aa18; `fx::object_bone` for the numbers with 0x4000, the bone's
+/// world matrix otherwise) times the element's translation (game axes, Y and Z flipped). Bevy space,
+/// from the owner's last drawn pose (one tick old).
+fn element_position(pax: &crate::fx::LoadedPax, id: u16, owner: Entity, anims: &Query<&Animator>, gts: &Query<&GlobalTransform>, hands: &[Option<crate::fx::ObjectFrame>]) -> Option<Vec3> {
+    let (a, g) = (anims.get(owner).ok()?, gts.get(owner).ok()?);
+    let e = pax.pax.elements_for(id).next()?;
+    let t = e.translation;
+    let bone = e.bone as u16;
+    let m = if bone & 0x4000 != 0 || e.bone < 0 {
+        crate::fx::object_bone(bone, &crate::fx::ObjectFrame::of(a, g.to_matrix()), hands, true)
+    } else {
+        a.bone_world(g, bone as usize)
+    };
+    Some(m.transform_point3(Vec3::new(t[0], -t[1], -t[2])))
+}
+
 /// The model entity an effect bound to "the object of the target record" follows (1.149): the one the
 /// special's record names (FUN_00113d48 phase 1: Cure's party member, else the enemy target).
 fn special_owner(m: &PartyMember, s: &Sora, bodies: &[(u8, Entity)], fighters: &Query<&Fighter, Without<PartyMember>>) -> Option<Entity> {
@@ -288,6 +315,8 @@ fn friend_update(
     gts: Query<&GlobalTransform>,
     mut memory: Local<VictimMemory>,
     (mut hits, mut spell_hits): (MessageWriter<Hit>, MessageWriter<crate::fx::SpellHit>),
+    mut running: Query<&mut crate::fx::RunningEffect>,
+    member_fighters: Query<&Fighter, With<PartyMember>>,
 ) {
     let (Some(mut trace), Ok(s)) = (trace, sora.single()) else { return };
     let log = std::env::var("KH2_PARTYLOG").is_ok_and(|v| !v.is_empty() && v != "0");
@@ -314,6 +343,26 @@ fn friend_update(
         fields.free = m.free;
         fields.target_valid = m.target_valid();
         fields.target_point = m.target_point;
+        // Before the slice: which instances have ended (host 0.49) and where the bound ones are (0.53).
+        let pax = lib.as_deref().and_then(|l| l.for_rig(&rig)).cloned();
+        for f in fields.fx.iter_mut() {
+            if let Some(e) = f.entity
+                && running.get(e).is_err()
+            {
+                f.entity = None;
+                f.gone = true;
+            }
+            if f.gone {
+                f.gone_ticks += 1;
+                continue;
+            }
+            let (FxReq::Bound { id, on_target }, Some(p)) = (f.req, &pax) else { continue };
+            let owner = if on_target { special_owner(&m, s, &bodies, &fighters) } else { Some(m.body) };
+            let hands: Vec<Option<crate::fx::ObjectFrame>> = if on_target { Vec::new() } else { hands_of(member_fighters.get(me).ok(), &anims, &gts) };
+            if let Some(at) = owner.and_then(|o| element_position(p, id, o, &anims, &gts, &hands)) {
+                f.pos = at / crate::SCALE;
+            }
+        }
         obj.motor.pos = m.position();
         obj.motor.yaw = m.yaw();
         obj.motor.grounded = true;
@@ -358,22 +407,53 @@ fn friend_update(
         // Hosts 2.10 / 2.17: the script's attack hits on its target record, for `party` to deliver.
         m.script_hits.append(&mut host.fields.target_hits);
         m.pending_mp = host.fields.pending_mp;
-        // The effects the script started (1.22, 1.87, 1.149): elements of the member's own effect file.
-        let pax = lib.as_deref().and_then(|l| l.for_rig(&rig)).cloned();
-        for req in std::mem::take(&mut fields.fx) {
-            let (id, bind, place) = match req {
-                FxReq::Bound { id, on_target: false } => (id, Some(Bind::Owner(m.body)), Placement::default()),
-                FxReq::Bound { id, on_target: true } => (id, special_owner(&m, s, &bodies, &fighters).map(Bind::Owner), Placement::default()),
-                FxReq::At { id, pos } => (id, Some(Bind::Fixed(Mat4::from_translation(pos * crate::SCALE))), Placement { replace_translation: true, ..default() }),
+        // The effects the script holds (1.22, 1.87, 1.149): elements of the member's own effect file,
+        // started, moved, stopped and destroyed as it asked.
+        for f in fields.fx.iter_mut() {
+            let owner = match f.req {
+                FxReq::Bound { on_target: false, .. } => Some(m.body),
+                FxReq::Bound { on_target: true, .. } => special_owner(&m, s, &bodies, &fighters),
+                FxReq::At { .. } => None,
             };
-            let started = match (&pax, bind) {
-                (Some(p), Some(b)) => crate::fx::start_placed(&mut commands, p, id, b, place).is_some(),
-                _ => false,
-            };
-            if log {
-                info!("party: {tag} effect element {id} of {} ({req:?}): {}", rig.apdx.as_deref().unwrap_or("no effect file"), if started { "started" } else { "not started (no such element, file or owner)" });
+            if !f.started {
+                f.started = true;
+                let (id, bind, place) = match f.req {
+                    FxReq::Bound { id, .. } => (id, owner.map(Bind::Owner), Placement::default()),
+                    FxReq::At { id, pos } => (id, Some(Bind::Fixed(Mat4::from_translation(pos * crate::SCALE))), Placement { replace_translation: true, ..default() }),
+                };
+                f.entity = match (&pax, bind) {
+                    (Some(p), Some(b)) => crate::fx::start_placed(&mut commands, p, id, b, place),
+                    _ => None,
+                };
+                if f.entity.is_none() {
+                    f.gone = true;
+                }
+                if log {
+                    info!("party: {tag} effect element {id} of {} ({:?}): {}", rig.apdx.as_deref().unwrap_or("no effect file"), f.req, if f.entity.is_some() { "started" } else { "not started (no such element, file or owner)" });
+                }
+            }
+            if let Some(e) = f.entity {
+                if f.destroy {
+                    if running.get(e).is_ok() {
+                        commands.entity(e).despawn();
+                    }
+                    if log {
+                        info!("party: {tag} effect {:#x} destroyed (0.51)", f.handle);
+                    }
+                    f.entity = None;
+                    continue;
+                }
+                if let Ok(mut r) = running.get_mut(e) {
+                    if std::mem::take(&mut f.stop) {
+                        r.effect.end();
+                    }
+                    if std::mem::take(&mut f.moved) {
+                        r.bind = Bind::Fixed(Mat4::from_translation(f.pos * crate::SCALE));
+                    }
+                }
             }
         }
+        fields.fx.retain(|f| !f.destroy && f.gone_ticks < FX_FORGET);
         // FUN_0018c2d8's pass over the member's attack objects.
         let mut out = Vec::new();
         step_attacks(me, &m, fields, &game, &victims, &mut memory, pax.as_ref(), log, &mut out);
@@ -396,6 +476,11 @@ fn friend_update(
                 info!("party: {tag} script asked for slot {} (FUN_0017da30 row {}): played while the member stands", req.slot, m.motion_row);
             }
             m.script_slot = Some(req.slot);
+            m.script_restart = true;
+            m.script_queue = None;
+        }
+        if let Some(q) = fields.queued.take() {
+            m.script_queue = Some(q);
         }
         // Nothing else the script asked for is carried out.
         obj.move_vel = Vec3::ZERO;

@@ -196,17 +196,52 @@ The target point the app uses is the locked enemy's position raised 100; the gam
       (`fx::ELEMENT_IN_CAMERA_SPACE`, `env.bind = view_inv * element_matrix`).
     - Seen: `local/i2_effect_compare.png` (clip / just before / during): during the 12 ticks the figures show
       doubled, shifted copies (Seifer's coat and Sora's legs ghosted) and are clean again after.
-    - **Still different** from the clip: there the whole picture smears strongly and radially for about 0.35 s and
-      the HUD is ghosted too (the command deck and HP ring at 4.3 to 4.35 s); here the ghost is light and lasts the
-      effect's 12 ticks. What is missing, precisely: (a) the GS draws each lens triangle from the frame buffer it
-      is drawing into, so the three overlapping lens models shift
-      already-shifted pixels; the app's `DistortMaterial` samples one copy of the opaque 3D pass (Bevy's
-      transmission texture) for all of them; (b) that copy holds no HUD (the HUD camera draws after), while the
-      clip shows the deck and ring smeared, so the game's HUD is in the frame buffer before the lens draws;
-      (c) the effect clock: the app takes one effect frame per 60 Hz tick (`fx::EFFECT_TIME_STEP`, inferred); at
-      half that rate the life of 12 would last 0.4 s, which is the clip's smear length [inferred, not proven].
-      (a) and (b) need a render path that draws the lens after the HUD and feeds each draw the current frame
-      (a ping-pong copy per lens batch), outside the fx engine's material path.
+    - **WP-I3: the lens reads the display buffer.** The effect has ONE `pppSnoMdlDttNorm` program (group 2,
+      three keyed entries at frames 0, 8 and 12), and every entry has byte +0x14 set, +0x15 set (taper), +0x16
+      clear, +0x17 set (no depth test), +0x1c zero (ALPHA 0x44) (test `kh2-fx/tests/intro_lens.rs`
+      `the_intro_lens_reads_the_display_buffer`). With +0x14 set the draw handler 0x20a7e8 builds the texture
+      register from `DAT_00360b04`, `DAT_00360b08`, `DAT_00360b1c` (512 x 448 at GS page 0), else from `DAT_00360b0c`,
+      `DAT_00360b10`, `DAT_00360b18` (512 x 416 at page 0xd8); the values come from `FUN_001da4b8` ->
+      `FUN_001e4350` (stack arguments 0x70, 0xd8, 0: read from the instructions at 0x1da528..0x1da598).
+      `FUN_0014dcd0` sets page 0 up as the display buffer (512 x 448) and page 0xd8 as the draw buffer (512 x 416,
+      Z at 0x70), and `FUN_0014dfe8` builds the packet that copies each finished frame from the draw buffer to the
+      display buffer; the field's FRAME register is 0x800d8 (the draw buffer) in `FUN_0011d4f8`, `FUN_0013e858`,
+      `FUN_0014b000` and others. So while the scene is drawn the lens shows the PREVIOUS frame's picture, HUD
+      included, shifted along the normals and tinted, blended over the new scene; frame after frame the ghost is
+      carried on and shifted again. That is what the clip shows [measured, `local/clip_sheet.png`]: at 4.10 to
+      4.30 s the camera already looks at the board behind Roxas while a fading ghost of the wide shot (Seifer on
+      the left, the arched door) stays over it; at 4.35 s the HUD's INFORMATION text and deck appear doubled.
+      The earlier reading (each lens batch reads the frame buffer being drawn, three batches compounding) is
+      wrong: there is one batch and it reads the other buffer.
+    - **The effect clock** (WP-I3, measured): one program frame per field frame. The draw `FUN_001e3d00` advances
+      the instance by one frame (`FUN_001e6240`: time +0x58 += 0x1000, the objects step, the life test); the
+      update `FUN_001e3898` adds the frame step (`DAT_00360b00` = `DAT_00356f40`, set by `FUN_001daa20` through
+      `FUN_001e4620`) to an accumulator +0x98 and runs one more frame only for each 2.0 (`DAT_0037ce98`) beyond the
+      first, a catch-up for slow frames. The field frame takes two vblanks (step 2.0), so an effect frame lasts
+      1/30 s and the lens's life of 12 frames 0.4 s (frames 120 to 132 of the event, the clip's 4.0 to 4.4 s).
+      Oracle test `kh2-fx/tests/clock_oracle.rs` `the_effect_program_runs_one_frame_per_two_vblanks` (the game's
+      update and draw in kh2-ee: step 2.0 x 30 frames -> 30 program frames; step 4.0 x 15 -> 30). The app ran
+      one per 60 Hz tick: every effect ran twice too fast. `fx::TICKS_PER_PROGRAM_FRAME` = 2 now applies to all
+      effects (the bind record's clock, the start wait and the fade still step every tick, as the game scales
+      them by the frame step).
+    - **The app** (`fx_lens.rs`, `fx::lens`): batches with byte +0x14 set are not meshes; `fx::tick` keeps them as
+      `LensBatch`es (camera-space elements in view space, so they stay in front of the camera as drawn) in
+      `LensDraws`. Render: the 2D cameras (HUD, menu) copy the finished picture into a history texture after they
+      draw (Core2d post-process); the 3D camera's post-process copies the scene and draws the lens triangles over
+      it from the history of the previous effect frame (blend SrcAlpha / OneMinusSrcAlpha, texture position and
+      colour interpolated linearly on the screen, as the GS does). The history textures swap only when a new
+      effect frame drew a lens (or no lens is up), so both rendered frames of a field frame show the same ghost.
+      Batches with +0x14 clear keep the transmission path (`DistortMaterial`). Seen:
+      `local/i3/compare1.png` (clip 4.10 / 4.20 / 4.30 s against event frames 122 / 126 / 128): strong ghosts of
+      the earlier views stay over the new view and the INFORMATION bar is doubled, as in the clip. Harness:
+      `KH2_INTRO_SHOTS=<prefix> KH2_INTRO_SHOTS_AT=116,118,...` with `KH2_WAVE_GROUP=b_45 ... kh2-game tt04`.
+    - **Still different** [measured, same images]: the clip's ghost is a smooth stretched blur, the app's shows
+      separate copies a few pixels apart (the app's picture is 1280 x 720 against the console's 512 x 416, so
+      the same shift in screen fractions leaves sharper steps; the console's bilinear sample of a half-size
+      buffer smooths them) [inferred]; and the views ghosted differ because the fighters stand elsewhere in shots
+      1 and 2 (docs/struggle.md gap 1). Not modelled: the vertical offset between the 448-line display buffer
+      and the 416-line draw buffer (taken as the same screen), GS alpha factors above 1.0 (clamped by the blend),
+      and the depth test for display-buffer lenses with byte +0x17 clear (none is known).
 - **Modes 3, 4, 6, 7, 9, 10** (`FUN_00158bb8`, `FUN_00159648`, `FUN_00158908`, `FUN_00158250`, `FUN_0014e5e0`, `FUN_00158518`) are **not ported**: mode 3 is a lock-on-style framing on a script target (`FUN_00159da8` with `DAT_00379394` and `FUN_0018f0c0(0x358af0)`), the others are the special-purpose cameras (names only inferred, see above). Only the entry points are recorded.
 
 ## What does not change the camera -- verified by absence
@@ -215,7 +250,7 @@ The follow and lock-on updates read the player's position, facing and run speed,
 
 ## Gaps (not ported, or unknown)
 
-- Modes 3, 4, 6, 7, 9, 10 (scripted/talk/cannon/scope/book/light-cycle cameras): entry points only (above). The event camera track's format is decoded and a mission's start event drives it (WP-I1, "The intro camera"); map-script events (area triggers) do not yet. The smear at the intro's cut is a gap (see there).
+- Modes 3, 4, 6, 7, 9, 10 (scripted/talk/cannon/scope/book/light-cycle cameras): entry points only (above). The event camera track's format is decoded and a mission's start event drives it (WP-I1, "The intro camera"); map-script events (area triggers) do not yet. The smear at the intro's cut is drawn since WP-I3 (a display-buffer feedback lens); what still differs is listed there.
 - The area camera opcode (what sets `DAT_0035cd38`) and its argument are not decoded; the types work through `KH2_CAM_TYPE`.
 - The dynamic blocker list is ported and tested, but nothing fills it: the objects' collision shapes of kind 0x12 (`FUN_0016b4e0(obj, 0x12)`, `FUN_001894d0`) are not decoded in the app.
 - The look-around: the fade (`actor+0x834`) is applied to the model (`sora::apply_player_fade`); the player's pose while looking is not found in the original and not invented; the stand-in for the player-state flags (`FUN_0019ae30`, `FUN_001b7e00`: ground state only); the left stick while looking (ignored in the app, see "The player while looking"); the pitch sign; the direction of the look-at collision cast. Whether the original plays a player motion while looking is not found in the camera code.

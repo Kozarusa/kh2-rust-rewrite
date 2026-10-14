@@ -104,8 +104,10 @@ computes within 3e-5, which is about 0.03 pixel):
   origin to the vertex (in view space); when clear the direction is the vertex's stored normal (4.12
   fixed, through the matrix's 3x3 part and **not** normalised, so the matrix's scale shrinks the
   displacement with it). Entry byte +0x15 (taper): the displacement's x and y are multiplied by the
-  unit direction's view-space z. Byte +0x14 only picks which frame-buffer size globals the packet
-  setup reads; byte +0x17 is copied into the draw's setup, its use was not found.
+  unit direction's view-space z. Byte +0x14 picks the texture: set, the display buffer (GS page 0, 512 x 448: last
+  frame's finished picture, HUD included); clear, the draw buffer the scene is being drawn into (page 0xd8,
+  512 x 416) (WP-I3, docs/camera.md "The intro camera"; `kh2_fx::Batch::display_buffer`, drawn by `fx_lens.rs`);
+  byte +0x17 is copied into the draw's setup, its use was not found.
 * The texture coordinate of each vertex is the projected screen position of (view-space position +
   displacement), in pixels, minus the frame buffer offset, divided by 1024; the triangle is drawn where
   the undisplaced vertex projects. The frame buffer is the texture, tinted by the vertex color times
@@ -561,3 +563,16 @@ call `FUN_00176680`.
 * The `+0x17` depth-test-off mapping and the clock unit of the start wait are inferences.
 * Category tests: all category-selected lookups are first-match (FUN_001db9e0); nothing else uses more than the
   first element.
+
+## The effect clock (WP-I3, measured)
+
+A particle-program frame (0x1000 of program time) runs once per field frame, not once per 60 Hz tick: the draw
+`FUN_001e3d00` advances each instance by one `FUN_001e6240`, and the update `FUN_001e3898` runs further frames only
+for each 2.0 (`DAT_0037ce98`) of frame step (`DAT_00360b00`, set from `DAT_00356f40` by `FUN_001daa20` ->
+`FUN_001e4620`) beyond the first. The field's frame step is 2.0 (two vblanks), so N program frames last N / 30 s.
+Oracle test `kh2-fx/tests/clock_oracle.rs`. The app runs `kh2_fx::Effect::tick` on every `fx::TICKS_PER_PROGRAM_FRAME`
+(2) ticks from an effect's first, keeping the last draws in between; the bind record's clock and start wait
+(+0x4c, the frame step per update) and the fade (`FUN_001da1e8`, alpha step times the frame step) still step every
+tick. Before WP-I3 every effect ran twice too fast. `ring_spark_expired` counts the life in ticks accordingly
+(test `lone_clash_spark_ends_by_itself`: tick 120 for a 60-frame life). Checked after the change: a ground combo's
+hit sparks and trail and system effect 0x12 still draw (`local/i3/others.png`).

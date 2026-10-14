@@ -337,7 +337,20 @@ past Seifer shows the three trees and the house the clip shows behind the board)
 state, not map geometry [inferred]. Exact next step: run the tt04 story state of the prologue Seifer fight
 (`KH2_STATE` with the story flags the program's opcode 0x19 names, 0x8db) to see which `evt` groups and entrance
 the area script picks, and read Seifer's script (`N_EX570_BTL` with spawn parameter 4) for position hosts in its
-start mode. Nothing was changed in the placement. (2) The smear: see docs/camera.md "The intro camera".
+start mode. Nothing was changed in the placement. WP-I3 followed those steps; still not resolved, and these are
+ruled out [measured]: (a) the `evt` groups `e55_` and `f55_` (kind 6) hold one object each, 0x523 at (205.8, 0,
+-1254.2) and 0x524 at (-106.0, 0, -1257.1): nothing near the fighters or the camera's +z view; (b) the story
+flag: the `btl` program 0xb5 sets flag 0x8db (opcode 0x19) and its other commands are the world record (0xf), the
+battle manager with `TT04_MS500` (0x15), party reset 3 (0x1d) and the spawn of `b_45`; `KH2_STATE` has no
+story-flag key (docs/progress.md schema), so a story-state run is not available in the app, and nothing in the
+three 0xb5 programs reads the flag to choose other groups; (c) Seifer's script `N_EX570_BTL` (`cargo run -p kh2 --
+bdx N_EX570_BTL`, 3369 lines) has no position setter: its movement hosts are 1.111 `set_move` (3), 1.58
+`set_dash` (2), 1.1 `set_yaw` (2), 1.4 `face_direction` (4); 1.147 `position` and 1.120 `target_position` only
+read; (d) the camera record (opcode 0x13) holds its index and the eight channel pairs and keys, every byte
+accounted for: no target actor. Remaining hypothesis [inferred, not checked]: the actors keep the places the
+story event before the mission left them (the prologue scene at the notice board) until the battle layout takes
+over; that event and its hand-over to the mission are not decoded. (2) The smear: drawn since WP-I3 as the
+display-buffer feedback lens, docs/camera.md "The intro camera".
 
 ## Harness
 

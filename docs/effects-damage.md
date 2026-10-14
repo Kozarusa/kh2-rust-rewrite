@@ -554,6 +554,22 @@ appear: weapon 0 shown, effect element 0 (FUN_00184498): started`. Tests: `weapo
 `the_keyblade_appearance_effect_starts_when_the_weapon_is_shown`. Not done: the weapon's colour fade and the owner
 call `FUN_00176680`.
 
+## Party members' script effects and attack-object sparks (WP-S3)
+
+The members' special scripts start elements of the member's **own** effect file (`obj/P_EX020.apdx`, the object's
++0x80): host 1.87 (0x171800) and 1.149 (0x171840) through FUN_0016a570 -> `FUN_001db868(obj + 0x80, id, a, 1, b,
+owner)`, bound to the owner (the member, or for 1.149 the object named: Cure's element 12 on the one healed);
+host 1.22 (0x1717c0 -> FUN_0016a5b8) starts the element with no owner and overwrites its position (FUN_001d9d00)
+with the script's vector (thunder's bolt, element 8 on the ground or 9 in the air). `friend_ai` starts them with
+`fx::start_placed` (`Bind::Owner(body)` / `Bind::Fixed` with `replace_translation`, as `magic.rs` does for the
+spells' placed elements). `party::spawn_party` registers the member's file with `drive::register_effects`, so the
+member's motion-triggered effects (`fx::motion_effects`) now find it too. The members' attack objects are anchored
+to the member's +0x80 (host 2.22, 0x18e7c8), so their hit sparks come from that file: `friend_ai` sends an
+`fx::SpellHit` with it and the hit names its row (`Hit::row`), which `hit_sparks` pairs (docs/party.md section 15).
+Screenshots (looked at, `local/S3/`): `thunder_hits_dusks.png` (the bolt from the sky and its burst among the
+Dusks, damage 2 over several), `fire_hits_dusk.png` (flames at the lower left, damage 1, 1, 3, a Dusk blown),
+`cure_on_sora.png` (green leaves around Sora, HP 16/20).
+
 ## What is not done
 
 * Hit-point accuracy: the rule is above; `combat.rs` needs the edit (not made, not in this package's ownership).

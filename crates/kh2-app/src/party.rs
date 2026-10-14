@@ -104,6 +104,8 @@ pub struct PartyData {
     /// out-of-battle revive count-down scale, +0x7c the MP-charge feed of an MP gain.
     sstm: Option<kh2_tables::player::Sstm>,
     weapons: WeaponTables,
+    /// `lvup` (00battle.bin): the level tables by character (FUN_001b50c0), the first Sora's.
+    lvup: Vec<Vec<t::Lvup>>,
     /// Stage 4's executable values: FUN_00110f90's MP-gate weights (0x378598, 0x37859c), FUN_0010c800's
     /// degrees to radians (0x3784a0), the item handlers' fractions (0x3785c8 HP, 0x3785d4 MP) and choice
     /// orders (0x352e28 / 0x352e3c HP, 0x352e50 / 0x352e60 MP).
@@ -144,6 +146,10 @@ impl PartyData {
             half = f(0x3784ac).unwrap_or(half);
             stop = (f(0x378564).unwrap_or(0.0), f(0x378568).unwrap_or(0.0));
         }
+        let lvup = match disc.0.lock() {
+            Ok(mut a) => kh2_tables::subfile(&mut a, &t::LVUP).ok().and_then(|b| kh2_tables::rt::decode_lvup::<t::Lvup>(&b)).unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
         let (objs, memt, prty, weapons, prty_offsets, sstm) = match disc.0.lock() {
             Ok(mut a) => (
                 kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).map(|d| d.rows).unwrap_or_default(),
@@ -160,7 +166,38 @@ impl PartyData {
             ),
             Err(_) => (Vec::new(), None, Vec::new(), WeaponTables::default(), Vec::new(), None),
         };
-        PartyData { consts, ai, orders, half, stop, objs, memt, prty, prty_offsets, sstm, weapons, mp_gate_w, deg_to_rad, item_frac, hp_items, mp_items, rigs: HashMap::new() }
+        PartyData { consts, ai, orders, half, stop, objs, memt, prty, prty_offsets, sstm, weapons, lvup, mp_gate_w, deg_to_rad, item_frac, hp_items, mp_items, rigs: HashMap::new() }
+    }
+
+    /// A member's status numbers +0x188 (strength), +0x18a (magic), +0x18c (defense) as FUN_0019f920
+    /// rebuilds them from the saved record: the `lvup` row of the record's level (+0xf) in the member's
+    /// table, plus the record's own bytes +9 / +0xa / +0xb, plus the `item_stat` Attack / Magic /
+    /// Defense of each equipped item (FUN_001a0c08 on the two weapon words, then the armor and accessory
+    /// slots). FUN_001b50c0 picks the table: FUN_001b58d8(NeoStatus) (1..15, with 14 -> 1 and 15 -> 6;
+    /// 0 counts as 1), the first table (Sora's) when that index is past the table count or its offset
+    /// is 0, and the row of the level held at the table's level count. A level of 0 is taken as 1
+    /// [inferred: FUN_001b50c0 would read before the table].
+    pub(crate) fn member_status(&self, neo: u16, rec: &crate::progress::Member) -> (i32, i32, i32) {
+        let k = match neo {
+            14 => 1,
+            15 => 6,
+            n @ 1..=13 => n as usize,
+            _ => 1,
+        };
+        let table = self.lvup.get(k - 1).filter(|t| !t.is_empty()).or_else(|| self.lvup.first());
+        let row = table.and_then(|t| t.get((rec.level.max(1) as usize).min(t.len()) - 1));
+        let (mut s, mut m, mut d) = row.map_or((0, 0, 0), |r| (r.strength as i32, r.magic as i32, r.defense as i32));
+        s += rec.strength as i32;
+        m += rec.magic as i32;
+        d += rec.defense as i32;
+        for item in rec.weapons.iter().chain(&rec.armor).chain(&rec.accessories).filter(|&&i| i != 0) {
+            if let Some(st) = self.weapons.items.iter().find(|i| i.id == *item).and_then(|i| self.weapons.stats.iter().find(|x| x.id == i.stat_entry)) {
+                s += st.attack as i32;
+                m += st.magic as i32;
+                d += st.defense as i32;
+            }
+        }
+        (s, m, d)
     }
 
     /// The record at +0x12c (and the movement block at +0x110): the `prty` row of the object's
@@ -378,6 +415,17 @@ pub struct PartyMember {
     /// The motion slot the member's script asked for last (FUN_0017e220 remapped), played while the
     /// member stands; `friend_ai` writes it.
     pub(crate) script_slot: Option<usize>,
+    /// The script asked for a motion this tick (FUN_0017e220 starts it again even when it plays), and the
+    /// motion it queued after it (host 1.13, FUN_0017e170).
+    pub(crate) script_restart: bool,
+    pub(crate) script_queue: Option<usize>,
+    /// The script's movement this tick (1.111: the ground part of direction x speed, per frame) and its
+    /// facing (app yaw), carried out while it runs a special (Goofy's `tornado`).
+    pub(crate) script_move: Option<Vec3>,
+    pub(crate) script_yaw: Option<f32>,
+    /// +0xb00, the invincibility timer (FUN_00175aa8 writes it, FUN_00175ab0 counts it down in the party
+    /// tick, FUN_00175ad8 refuses hits while it is above 0).
+    pub(crate) invuln: f32,
     /// FUN_0017da30's state row now (1 battle, 2 field).
     pub(crate) motion_row: usize,
     pub(crate) free: bool,
@@ -418,6 +466,18 @@ pub struct PartyMember {
     /// 2.10 / 2.17, riend_ai fills them; party_script_hits carries them out).
     special_who: Option<ScriptTarget>,
     pub(crate) script_hits: Vec<i16>,
+    /// The point of the target record (+0x9f4) host 1.120 answers: the centre of the hurt shape the
+    /// member targets (game units, the app's axes), kept while the member is not free.
+    pub(crate) target_point: Option<Vec3>,
+}
+
+/// Whom a special's target record names, for the effects bound to its object (host 1.149).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum SpecialOn {
+    Player,
+    Me,
+    Other,
+    Enemy(Entity),
 }
 
 /// Motion ids of FUN_0017ca70 / FUN_0017cee8: lying KO'd (0x36) and getting up (0x37).
@@ -445,6 +505,16 @@ impl PartyMember {
     /// The member's target record (+0x9f4) is valid (host 1.140).
     pub(crate) fn target_valid(&self) -> bool {
         self.special_target || self.target.is_some()
+    }
+
+    /// The object of the target record while a special runs (FUN_00113d48 copied phase 1's record).
+    pub(crate) fn special_on(&self) -> Option<SpecialOn> {
+        Some(match self.special_who? {
+            ScriptTarget::Party(battle::Who::Player) => SpecialOn::Player,
+            ScriptTarget::Party(battle::Who::Me) => SpecialOn::Me,
+            ScriptTarget::Party(battle::Who::Other) => SpecialOn::Other,
+            ScriptTarget::Enemy(t) => SpecialOn::Enemy(t.entity),
+        })
     }
 
     /// The status block's HP and MP as the danger test and the item handlers read them.
@@ -672,6 +742,11 @@ fn spawn_party(
         next_slot += 1;
         let root = commands.spawn((AreaPart, Transform::from_translation(motor.pos * SCALE).with_rotation(Quat::from_rotation_y(yaw)), Visibility::default())).id();
         let body = spawn_skinned(&mut commands, root, rig.clone(), &mut meshes, &mut materials, &mut images, &mut bindposes, SCALE);
+        // The member's own effect file (the object's +0x80): its scripts' effects (hosts 1.22, 1.87,
+        // 1.149) and its attack objects' hit sparks (2.22) come from it.
+        if let Some(lib) = lib.as_deref_mut() {
+            crate::drive::register_effects(&disc, lib, &rig);
+        }
         // FUN_0017c718: the hand objects. Hand 0 is the member's saved weapon word (FUN_0016ee98).
         // The app's new game leaves this word 0 (its writer in the original was not found): no hand
         // object then, as FUN_0016ee98 answers 0. `KH2_PARTY_WEAPONS=<Donald item>,<Goofy item>` is a
@@ -741,6 +816,11 @@ fn spawn_party(
                 want_yaw: None,
                 chosen: Vec::new(),
                 script_slot: None,
+                script_restart: false,
+                script_queue: None,
+                script_move: None,
+                script_yaw: None,
+                invuln: 0.0,
                 motion_row: battle::motion_state(false, false),
                 free: true,
                 // Harness: `KH2_PARTY_HP=<n>` starts the members with n HP (to see a KO soon).
@@ -765,6 +845,7 @@ fn spawn_party(
                 special_target: false,
                 special_who: None,
                 script_hits: Vec::new(),
+                target_point: None,
             },
             // The members' attacks hit enemies (stage 2) and enemies' attacks hit them (stage 3,
             // `party_receive_hits`).
@@ -926,6 +1007,10 @@ fn party_tick(
         if m.timer > 0.0 {
             m.timer -= FRAME;
         }
+        // FUN_00175ab0 (the party tick FUN_00174b68): the invincibility timer +0xb00 counts down.
+        if m.invuln > 0.0 {
+            m.invuln = (m.invuln - FRAME).max(0.0);
+        }
         // FUN_00175f48 -> FUN_001a0540: the MP charge runs down (the ability block's MP regeneration
         // +0x34 is the default 1.0 for the members [inferred]); at its end MP refills (FUN_001a05a8).
         if m.charge.tick(1.0) {
@@ -1018,6 +1103,7 @@ fn party_tick(
                 m.target = None;
             }
             let tshape = m.target.and_then(|t| shape_of(t, &enemies));
+            m.target_point = tshape.map(|(ct, _)| ct);
             let rel_t = tshape.map_or(Rel::default(), |(ct, _)| relation(pos, ct));
             // FUN_0010ca88: a valid target and bit 0x40 clear.
             let target_ok = tshape.is_some() && !too_far;
@@ -1078,7 +1164,18 @@ fn party_tick(
                 let member = progress.as_ref().and_then(|p| p.member(m.neo));
                 // The setting bytes (party record +0xd4) are zero at a new game (`Progress::init_party`).
                 let setting = |_: usize| Some(0u8);
-                let equipped = |r: &battle::Record| member.as_ref().is_some_and(|mm| mm.abilities.iter().any(|&(id, on)| on && id as u32 == r.item));
+                // Harness: `KH2_PARTY_ABILITIES=<item>,...` counts those ability items as equipped on every
+                // member (the new game's records hold only Donald Thunder and Cure; Fire 165, Blizzard 166,
+                // Goofy's Tornado 423 and Turbo 425 need a later record); `-<item>` counts it as not
+                // equipped. A test aid, not the game's rule.
+                let aid = |item: u32| -> Option<bool> {
+                    let v = std::env::var("KH2_PARTY_ABILITIES").ok()?;
+                    v.split(',').map(str::trim).find_map(|s| match s.strip_prefix('-') {
+                        Some(n) => (n.parse::<u32>().ok() == Some(item)).then_some(false),
+                        None => (s.parse::<u32>().ok() == Some(item)).then_some(true),
+                    })
+                };
+                let equipped = |r: &battle::Record| aid(r.item).unwrap_or_else(|| member.as_ref().is_some_and(|mm| mm.abilities.iter().any(|&(id, on)| on && id as u32 == r.item)));
                 let skip = battle::repeated(m.choosing.last, m.class);
                 let any_attack = |skip: Option<usize>| ai.records.iter().enumerate().any(|(i, r)| r.flags & battle::flag::ATTACK != 0 && Some(i) != skip && !matches!(r.handler, Handler::Other(0)) && r.handler == Handler::Attack && battle::feasible(r, &now, setting(i), equipped(r)));
                 let (current, timer, changed) = (m.choosing.current, m.timer, m.target_changed);
@@ -1242,6 +1339,16 @@ fn party_tick(
             }
             m.speed = sp;
             delta = d.with_y(0.0).normalize_or_zero() * sp;
+            // A special's script moves and turns the member itself (1.111 / 1.4, last tick's slice) [inferred:
+            // the script's movement replaces the AI's held stand; the app's motor keeps its gravity].
+            if hold {
+                if let Some(v) = m.script_move.take() {
+                    delta = v;
+                }
+                if let Some(y) = m.script_yaw.take() {
+                    m.motor.yaw = y;
+                }
+            }
         } else if m.attack.is_none() {
             // KO'd or in a reaction / get-up motion: no movement of its own.
             m.speed = 0.0;
@@ -1382,11 +1489,23 @@ fn party_tick(
         {
             let rig = a.rig.clone();
             let has = |s: usize| rig.mset.has(s);
+            // A motion loops when its data has a loop range (`frame_return < frame_end`), as `enemy_ai`
+            // plays the scripts' requests.
+            let looping = |s: usize| rig.mset.get(s).and_then(|x| x.motion.as_ref()).is_some_and(|mo| mo.frame_return < mo.frame_end);
             if m.speed <= 0.0
                 && let Some(slot) = m.script_slot.filter(|&s| has(s))
             {
-                // The script's request (its `idle` mode asks for motion 0) while the member stands.
-                a.play(Some(slot), true, BLEND);
+                // The script's request (its `idle` mode asks for motion 0, a special's cast motion 192)
+                // while the member stands: a new request starts the motion again (FUN_0017e220); the
+                // queued motion (host 1.13, FUN_0017e170) comes the same way once `friend_ai` saw the
+                // requested one end.
+                // A motion that ended stays on its last frame (`play` would start a finished one again,
+                // and the script's 1.14 would never see it end).
+                if std::mem::take(&mut m.script_restart) {
+                    a.restart(Some(slot), looping(slot), BLEND);
+                } else if a.slot != Some(slot) {
+                    a.play(Some(slot), looping(slot), BLEND);
+                }
             } else {
                 let motion = if m.speed <= 0.0 { id::IDLE } else if m.speed < m.run { id::WALK } else { id::RUN };
                 let slot = battle::remap(motion as i32, order, has);
@@ -1567,7 +1686,8 @@ type VoiceRes<'w> = (Option<Res<'w, crate::audio::VoiceTable>>, Option<Res<'w, c
 /// Enemy hits on the members (stage 3): the friend's receive method FUN_001106b8 -> FUN_0017cde0 ->
 /// FUN_00175340. A KO'd member ignores the hit (FUN_00175340 returns for attack kinds other than 5 and
 /// 6, which no enemy of the app uses [inferred]). The damage is the `atkp` row's on the member's stats
-/// from its saved record (`enemy::member_stats`) by the attacker's stats, at least 1 unless ineffective,
+/// from its status rebuilt from the saved record (`PartyData::member_status`: the defense of the `lvup` row,
+/// the record and the equipment, FUN_0019f920) by the attacker's stats, at least 1 unless ineffective,
 /// as Sora's (`sora::receive_hits`), through the HP method (FUN_00185a68 -> FUN_00176c98 ->
 /// FUN_00186238): HP 0 knocks out (FUN_0017ce60: voice 2, the revive timer). Voice 9 when the hit takes
 /// the HP into danger (FUN_0017cde0, FUN_001a0be0). The reaction is the party class's (+0x68, the rule
@@ -1593,7 +1713,16 @@ fn party_receive_hits(
         if m.ko {
             continue;
         }
-        let (Some(atk), Ok(from), Some(to)) = (game.hit_row(h), enemies.get(h.attacker).map(|e| e.stats), crate::enemy::member_stats(progress.as_deref(), m.neo)) else { continue };
+        // FUN_00175ad8: no hit while the invincibility timer +0xb00 runs (Goofy's `tornado`, host 1.91).
+        if m.invuln > 0.0 {
+            info!("party: {} not hit by atkp {}: invincible ({:.0} frames left, +0xb00)", m.model, h.atkp, m.invuln);
+            continue;
+        }
+        let (Some(atk), Ok(from), Some(mut to)) = (game.hit_row(h), enemies.get(h.attacker).map(|e| e.stats), crate::enemy::member_stats(progress.as_deref(), m.neo)) else { continue };
+        // The victim's defense is the status +0x18c FUN_0019f920 rebuilt (WP-S3, `member_status`).
+        if let Some(rec) = progress.as_ref().and_then(|p| p.member(m.neo)) {
+            (to.strength, to.magic, to.defense) = data.member_status(m.neo, &rec);
+        }
         let useless = crate::combat::hit_is_ineffective(atk, &to);
         let dmg = if useless { game.damage(atk, &from, &to) } else { game.damage(atk, &from, &to).max(1) };
         let (before, danger_before) = (m.hp, battle::in_danger(m.hp, m.hp_max));
@@ -1779,15 +1908,14 @@ fn party_script_hits(
             continue;
         }
         let ids = std::mem::take(&mut m.script_hits);
-        let Some(mut caster) = crate::enemy::member_stats(progress.as_deref(), m.neo) else { continue };
-        // [inferred] The status rebuild's equipment pass (FUN_0019f920) adds the hand-0 weapon's attack and
-        // magic, as `GameData::sora_stats` adds the keyblade's; `enemy::member_stats` leaves it out.
-        let weapon = progress.as_ref().and_then(|p| p.member(m.neo)).map_or(0, |r| r.weapons[0]);
-        if let Some(st) = data.weapons.items.iter().find(|i| i.id == weapon).and_then(|i| data.weapons.stats.iter().find(|s| s.id == i.stat_entry)) {
-            caster.strength += st.attack as i32;
-            caster.magic += st.magic as i32;
-        }
-        info!("party: {} script hits {ids:?}: caster strength {} magic {} (weapon item {weapon})", m.model, caster.strength, caster.magic);
+        let (Some(mut caster), Some(rec)) = (crate::enemy::member_stats(progress.as_deref(), m.neo), progress.as_ref().and_then(|p| p.member(m.neo))) else { continue };
+        // FUN_001a0610 reads the caster's status +0x188 / +0x18a, which FUN_0019f920 rebuilt from the saved
+        // record: the `lvup` row of the level, the record's bytes and the equipment (`member_status`).
+        (caster.strength, caster.magic, caster.defense) = data.member_status(m.neo, &rec);
+        info!(
+            "party: {} script hits {ids:?}: caster strength {} magic {} defense {} (FUN_0019f920: lvup level {} + record {}/{}/{} + equipment {:?})",
+            m.model, caster.strength, caster.magic, caster.defense, rec.level, rec.strength, rec.magic, rec.defense, rec.weapons
+        );
         for id in ids {
             let Some(atk) = game.atkp(id) else { continue };
             match m.special_who {
@@ -1967,6 +2095,36 @@ mod tests {
             models.push(row.model_name.clone());
         }
         assert_eq!(models, ["P_EX020", "P_EX030"]);
+    }
+
+    /// WP-S3: the caster's numbers for the scripts' hits (Cure's heal) are the status FUN_0019f920
+    /// rebuilds. Sora's (NeoStatus 1) come out as the status page's leader numbers that
+    /// `the_leaders_numbers_follow_lvup_the_record_and_the_abilities_resource` checks (strength 5, magic 7,
+    /// defense 2 at the app's start); Donald's use his own `lvup` table (FUN_001b58d8: NeoStatus 2 ->
+    /// table 2) and his staff, and Cure (atkp 1525, type 6) heals `(magic x Power + 99) / 100` with
+    /// them. Needs `KH2_ISO`.
+    #[test]
+    fn party_member_status_from_lvup_record_and_equipment() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let data = PartyData::load(&disc);
+        let p = crate::progress::Progress::start(&disc).expect("progress");
+        assert_eq!(data.member_status(1, &p.member(1).expect("Sora")), (5, 7, 2), "Sora: the leader's status numbers");
+        let rec = p.member(2).expect("Donald");
+        let (s, m, d) = data.member_status(2, &rec);
+        let row = &data.lvup[1][(rec.level.max(1) as usize).min(data.lvup[1].len()) - 1];
+        let staff = data.weapons.items.iter().find(|i| i.id == rec.weapons[0]).and_then(|i| data.weapons.stats.iter().find(|x| x.id == i.stat_entry)).map_or(0, |x| x.magic as i32);
+        eprintln!("Donald: level {} lvup {}/{}/{} record {}/{}/{} weapons {:?} (staff magic {staff}) -> {s}/{m}/{d}", rec.level, row.strength, row.magic, row.defense, rec.strength, rec.magic, rec.defense, rec.weapons);
+        assert_eq!(m, row.magic as i32 + rec.magic as i32 + staff);
+        let game = GameData::load(&disc);
+        let cure = game.atkp(1525).expect("atkp 1525");
+        let caster = crate::data::Stats { magic: m, strength: s, defense: d, ..crate::enemy::member_stats(Some(&p), 2).expect("stats") };
+        let heal = game.damage(cure, &caster, &caster);
+        eprintln!("Cure (atkp 1525 type {} Power {}): heals {heal}", cure.r#type, cure.power);
+        assert_eq!(heal, (m * cure.power as i32 + 99) / 100);
     }
 
     /// The members' hand objects: the new game's saved weapon word of Donald and Goofy, the `went`

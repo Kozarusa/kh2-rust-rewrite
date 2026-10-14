@@ -876,6 +876,20 @@ impl CoreEnv<'_> {
             (0, 79) => Call::ReleaseEffect { handle: a[0] },
             // The game heap (FUN_0016dea8 allocates through the allocator at 0x33e850, FUN_0016ded8 frees
             // with FUN_00104fe0): served by the runtime's own heap, see `HEAP_BASE`.
+            // 0.45 (FUN_0016d098: the first vector plus the second normalised times the scalar and the
+            // frame step) and 0.46 (FUN_0016d138 -> FUN_0017c0f8: the first vector turned toward the second
+            // by at most the scalar) change the vector the first argument points at, usually the script's own
+            // memory. The host answers the new vector (`Value::Vec`) from the two vectors and the scalar, and
+            // the runtime writes it back; any other answer leaves the vector as it is (WP-S3).
+            (0, 45 | 46) if a.len() >= 3 => {
+                let (x, y) = (self.vec(mem, a[0])?, self.vec(mem, a[1])?);
+                let call = Call::Func { group: 0, index: i, args: vec![Arg::Vec(x), Arg::Vec(y), Arg::Float(f32::from_bits(a[2]))] };
+                if let Value::Vec(v) = self.host.call(&call) {
+                    let mut hh = HeapHost { heap: &mut self.core.heap, host: &mut *self.host };
+                    HostVec(&mut hh).write_vec(mem, a[0], v)?;
+                }
+                return Ok(None);
+            }
             (0, 47) => return Ok(Some(self.core.heap_alloc(a[0]))),
             (0, 48) => return Ok(None),
             // Start a thread under the thread this one runs for (FUN_0016d458): tag, routine, cleanup

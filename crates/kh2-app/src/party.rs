@@ -2056,6 +2056,36 @@ mod tests {
         assert_eq!(models, ["P_EX020", "P_EX030"]);
     }
 
+    /// WP-S3: the caster's numbers for the scripts' hits (Cure's heal) are the status FUN_0019f920
+    /// rebuilds. Sora's (NeoStatus 1) come out as the status page's leader numbers that
+    /// `the_leaders_numbers_follow_lvup_the_record_and_the_abilities_resource` checks (strength 5, magic 7,
+    /// defense 2 at the app's start); Donald's use his own `lvup` table (FUN_001b58d8: NeoStatus 2 ->
+    /// table 2) and his staff, and Cure (atkp 1525, type 6) heals `(magic x Power + 99) / 100` with
+    /// them. Needs `KH2_ISO`.
+    #[test]
+    fn party_member_status_from_lvup_record_and_equipment() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let data = PartyData::load(&disc);
+        let p = crate::progress::Progress::start(&disc).expect("progress");
+        assert_eq!(data.member_status(1, &p.member(1).expect("Sora")), (5, 7, 2), "Sora: the leader's status numbers");
+        let rec = p.member(2).expect("Donald");
+        let (s, m, d) = data.member_status(2, &rec);
+        let row = &data.lvup[1][(rec.level.max(1) as usize).min(data.lvup[1].len()) - 1];
+        let staff = data.weapons.items.iter().find(|i| i.id == rec.weapons[0]).and_then(|i| data.weapons.stats.iter().find(|x| x.id == i.stat_entry)).map_or(0, |x| x.magic as i32);
+        eprintln!("Donald: level {} lvup {}/{}/{} record {}/{}/{} weapons {:?} (staff magic {staff}) -> {s}/{m}/{d}", rec.level, row.strength, row.magic, row.defense, rec.strength, rec.magic, rec.defense, rec.weapons);
+        assert_eq!(m, row.magic as i32 + rec.magic as i32 + staff);
+        let game = GameData::load(&disc);
+        let cure = game.atkp(1525).expect("atkp 1525");
+        let caster = crate::data::Stats { magic: m, strength: s, defense: d, ..crate::enemy::member_stats(Some(&p), 2).expect("stats") };
+        let heal = game.damage(cure, &caster, &caster);
+        eprintln!("Cure (atkp 1525 type {} Power {}): heals {heal}", cure.r#type, cure.power);
+        assert_eq!(heal, (m * cure.power as i32 + 99) / 100);
+    }
+
     /// The members' hand objects: the new game's saved weapon word of Donald and Goofy, the `went`
     /// object of their movesets for it and the `wmst` motion set (printed); both resolve to a loadable
     /// weapon. Needs `KH2_ISO`.

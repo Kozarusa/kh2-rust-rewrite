@@ -154,21 +154,20 @@ struct VictimMemory(HashMap<(Entity, Entity), crate::magic_rules::HitMemory>);
 /// volume is tested at the position and then in steps of `min(radius, height)` toward the previous
 /// one while more than half a step is left (`DAT_0037b460` 0.5). Game units, the app's axes.
 fn sweep_points(pos: Vec3, prev: Option<Vec3>, step: f32) -> Vec<Vec3> {
-    let mut out = vec![pos];
-    let Some(prev) = prev else { return out };
-    let d = prev - pos;
-    let mut left = d.length();
-    if left <= 2.0 || step <= 0.0 {
-        return out;
-    }
-    let dir = d / left;
-    let mut p = pos;
-    while left > step * 0.5 {
+    let d = prev.map_or(Vec3::ZERO, |p| p - pos);
+    // +4 bit 4 clear: the distance left is 0 and the loop tests once.
+    let mut left = if d.length() > 2.0 { d.length() } else { 0.0 };
+    let dir = d.normalize_or_zero();
+    let (mut p, mut out) = (pos, Vec::new());
+    // do { test; p += step vector; left -= step } while (step x 0.5 < left)
+    loop {
+        out.push(p);
         p += dir * step;
         left -= step;
-        out.push(p);
+        if step * 0.5 >= left {
+            return out;
+        }
     }
-    out
 }
 
 /// The size FUN_001a2cc0 tests with: with a growth (+0xcc > 0) the start size eased toward the final
@@ -503,5 +502,41 @@ fn friend_update(
             warn!("party: {tag}: script error {err:?} at {pc:#06x}");
         }
         *errors_seen = rt.core.errors.len();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::friend_host::AttackObj;
+
+    fn attack(grow: f32, t: f32) -> AttackObj {
+        AttackObj { handle: 1, atkp: 1165, kind: 0, group: 0x101, pos: Some(Vec3::ZERO), prev: None, radius: 25.0, height: 320.0, grow, t, from: (20.0, 25.0), released: false, steps: 0 }
+    }
+
+    /// FUN_001a2cc0's size with a growth (host 2.62, FUN_001a3480): the start size at frame 0, the size
+    /// of 2.11 at the growth's last frame, eased by `sin(t / frames x pi / 2)` between; without a growth
+    /// the size of 2.11. (Donald's thunder column: 2.11 (25, 320), 2.62 (20, 25, 320).)
+    #[test]
+    fn member_attack_grows_from_its_start_size() {
+        assert_eq!(attack_size(&attack(20.0, 0.0)), (20.0, 25.0));
+        let (r, h) = attack_size(&attack(20.0, 20.0));
+        assert!((r - 25.0).abs() < 1e-4 && (h - 320.0).abs() < 1e-3, "{r} {h}");
+        let (r, _) = attack_size(&attack(20.0, 10.0));
+        let s = (0.25 * std::f32::consts::PI).sin();
+        assert!((r - (20.0 * (1.0 - s) + 25.0 * s)).abs() < 1e-4);
+        assert_eq!(attack_size(&attack(0.0, 7.0)), (25.0, 320.0));
+    }
+
+    /// FUN_001a2cc0's sweep (0x1a2e60..0x1a2f80): a move of two frame units or less tests the position
+    /// only; a longer one tests, steps toward the previous position by `min(radius, height)` and takes
+    /// the step off the distance left, and goes on while more than half a step is left.
+    #[test]
+    fn member_attack_sweeps_toward_its_previous_position() {
+        assert_eq!(sweep_points(Vec3::ZERO, None, 10.0), vec![Vec3::ZERO]);
+        assert_eq!(sweep_points(Vec3::ZERO, Some(Vec3::X * 2.0), 10.0), vec![Vec3::ZERO]);
+        assert_eq!(sweep_points(Vec3::ZERO, Some(Vec3::X * 30.0), 10.0), vec![Vec3::ZERO, Vec3::X * 10.0, Vec3::X * 20.0]);
+        assert_eq!(sweep_points(Vec3::ZERO, Some(Vec3::X * 26.0), 10.0), vec![Vec3::ZERO, Vec3::X * 10.0, Vec3::X * 20.0]);
+        assert_eq!(sweep_points(Vec3::ZERO, Some(Vec3::X * 36.0), 10.0), vec![Vec3::ZERO, Vec3::X * 10.0, Vec3::X * 20.0, Vec3::X * 30.0]);
     }
 }

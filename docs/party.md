@@ -745,7 +745,111 @@ ability block, the attacker memory +0xcec, the panel flashes, limits and forms (
   rebuild's equipment pass, FUN_0019f920, as GameData::sora_stats adds the keyblade); with the new game's record
   Donald's magic is 1, so Cure heals 2.
 - Harness: KH2_PARTY_HIT=<s>:<atkp>[:<model>] (the model limits the hit to one member).
-- Not done: thunder's / fire's moving attack objects (2.11 / 2.12) and every effect of the specials (1.149, 1.87).
+- (Done in WP-S3, section 15: thunder's / fire's attack objects and the specials' effects; the caster's
+  magic is the rebuilt status, so Cure heals 12, not 2.)
+
+## 15. Status: the specials' attack objects and effects (WP-S3)
+
+Files: `friend_host.rs` (the hosts), `friend_ai.rs` (the attack-object pass, the effects), `party.rs` (the
+status numbers, the script motion, the target point). Log `KH2_PARTYLOG=1`: `attack object 0x7a000001: atkp
+1165 group 0x101 at .. radius 160 height 160 for 20 frames`, `attack object .. hits <enemy>: atkp .. SubId ..
+(hit n, Power .., Element .., Interval ..)`, `released after its 20 frames`, `destroyed (FUN_0018c2d8)`, `effect
+element 8 of obj/P_EX020.apdx (At { .. }): started`; `KH2_HITLOG=1` prints the damage (`Dusk hit: atkp 1165
+damage 2 ..`). Harness `KH2_PARTY_ABILITIES=<item>,..` counts ability items as equipped on the members (the
+new game holds Donald Thunder 167 and Cure 168 only; Fire 165, Blizzard 166, Goofy Tornado 423, Turbo 425,
+Bash 429 from the table 0x352ec0).
+
+**Attack objects** [V unless marked]. Host 2.10 (0x18e2f0 -> FUN_001a2ba0 -> FUN_0018bd08): an object of
+0x140 bytes in the global list `DAT_01c89b58` (+0xc0 the next): +0x14 the `atkp` id (argument 1), +0x18 the
+sub key (argument 3; FUN_0019e788 picks the row), +0x20 the hit group (the row's ComboGroup +0x2c when not 0,
+else argument 2, else FUN_001bdf00's next), +0x1c a serial (FUN_001bde48). 2.31 (0x18e488 -> FUN_001a2c58):
+a new object with the given `atkp` id and the first one's owner, sub key, group, serial and anchor +0x24 (its
+size and growth start cleared). 2.11 (FUN_001a30e0): radius +0x100, half height +0x104 (the radius when not
+positive). 2.12 (FUN_001a2fc8): +0xf0 = the old position once the object has one (+4 bit 1), +0xe0 = the new
+one, +4 bit 4 when it moved more than two frame units. 2.62 (0x18e680 -> FUN_001a3480): +0xc8 = 0, +0xcc =
+frames, +0xd0 / +0xd4 the start size (the final one when not positive). 2.13 (FUN_0018dc98): +4 |= 0x800.
+Each frame the task FUN_0018c2d8 (registered by FUN_0018c3f0, priority 21000) destroys every object with
+0x800 (vtable +4) and runs every other one's +0x10 = FUN_001a2cc0 (vtable 0x35e788): with +0xcc > 0 the clock
++0xc8 gains a frame (`DAT_00356f40`, not while the pause bit 0x20 of 0x35d268 is set) and past +0xcc the
+object is released (no test that frame); the tested size is `start x (1 - s) + final x s`, `s =
+sin(t / frames x pi x 0.5)` (FUN_00300278 = sinf, `DAT_0037b45c` pi, `DAT_0037b460` 0.5); the volume
+(FUN_00189610, a sphere when radius = height) is tested at +0xe0 and, with bit 4, in steps of `min(radius,
+height)` toward +0xf0 while more than half a step is left (`friend_ai::sweep_points`, test
+`member_attack_sweeps_toward_its_previous_position`; growth: `member_attack_grows_from_its_start_size`). An
+object with +0xc4 (2.61, an effect it follows) takes the effect's position first; no member script on the
+disc uses it in the specials done here. [inferred] The victims are the enemies' hurt shapes (the member's
+team, +0x3b0, is the player's); FUN_0018d768's own test and its early stop were not read: as `magic.rs`, every
+victim is tested at every sweep point and the first overlapping point is taken. The victim's hit memory and
+the row variant are `magic_rules::HitMemory` / `variant` (FUN_001be108 / FUN_001be190 / FUN_001be300,
+FUN_0019e7e0), kept per (member, victim) [inferred]. A hit is a `combat::Hit` with the variant's SubId
+(`Hit::row`), so `enemy::receive_hits` does the damage and reaction, and an `fx::SpellHit` with the member's
+own effect file (2.22 anchors the attack to the object's +0x80, the file FUN_0018d090 takes the spark from).
+
+**Effects.** 1.87 (0x171800 -> FUN_0016a570(obj, id, a, b, 0)) and 1.149 (0x171840 -> FUN_0016a570 with the
+third argument's object as the owner) start the first element `id` of the object's own file
+(`FUN_001db868(obj + 0x80, id, a, 1, b, owner)`) bound to the owner; 1.22 (0x1717c0 -> FUN_0016a5b8:
+FUN_0016a530, no owner) starts it and overwrites its position (FUN_001d9d00) with the vector. The member's
+file is `obj/<model>.apdx` (`spawn_party` registers it). The handles answer 0.49 / 0.50 (the instance runs),
+0.53 (FUN_001d9d00: for a bound element its bone frame times its translation, `fx::object_bone`; one tick
+old), 0.38 (placed anew), 0.44 / 0.85 (stop), 0.51 (destroyed); [inferred] 0.52 (fade) is taken as a stop.
+
+**The target record.** 1.120 answers the centre of the hurt shape the member targets (`party_tick` keeps it in
+`target_point`) [inferred: the record's point]; 1.141 is the floor under the point (`World::ground`, not
+FUN_001a5c30's mask-4 cast). The record's word 0 (the object) names what FUN_00113d48 copied: the member itself,
+the player, the other member or the enemy (`friend_host::read_mem`), so Cure's 1.149 binds element 12 to the one
+healed and 1.130 (0x170510, the objects' difference) tells healing itself from another.
+
+**Donald's specials** (`kh2 bdx P_EX020`; modes registered at R0206..R0296: main / exit / enter routines).
+- `thunder` (R13c1 -> R13c8): voice 6 (1.262), motion 192 then 0 queued, the cast trigger (R089a: bit 0 of
+  +0x239), element 7 on Donald, 10 frames, MP (1.276), the target's point (else 300 ahead), a ground probe from 80
+  above: ground less than 160 below -> element 8 at the point, else element 9; attack 1165 at the point, radius
+  160 for 20 frames (2.62 (20, 160)), and its copy (2.31) radius 25, half height 320, 320 above, for 20 frames;
+  the mode waits 20 frames. Log (b_44, tt04): `attack object 0x7a000001 hits 2605v0: atkp 1165 SubId 0 (hit 0, Power
+  100, Element 3, Interval 8)` and `Dusk hit: atkp 1165 damage 2 hp 30 ..`; every Dusk in the radius is hit, again
+  after the row's Interval (8 frames): three hits in 20 frames.
+- `fire` (R07d3 -> R07e1): voice 6, motion 192, the trigger, MP, element 0, 4 frames, element 1 kept at the
+  context +0x18, attack 1163 at +0x1c anchored, radius 220 half height 70; for 60 frames while element 1 runs the
+  attack follows its position (0.53 -> 2.12); then released (R0967), and the mode waits for the element's end.
+  Log: `hits 2731v0: atkp 1163 SubId 0 (hit 0, Power 50, Element 1, Interval 12)`, then `SubId 2 (hit 2, Power
+  125 ..)` (FUN_0019e7e0's variant) with a blow.
+- `cure` (R1552 -> R1559): as in section 14; its elements 11 (on Donald) and 12 (on the one healed) start.
+- `blizzard` (R0a0b -> R0a19): voice 6, motion 191, the trigger, MP, element 3, then a request thread (2.20) at
+  word 0xaf8 (a homing projectile library, listed with `cargo run -p kh2-bdx --example listing -- P_EX020 af8`)
+  that needs hosts 1.21, 1.88, 1.160, 2.19, 2.29, 2.38, 2.39, 2.43, 2.44, 2.57, 6.9, 6.51, 6.54, 0.41, 0.45, 0.46.
+  **Not done.**
+
+**The caster's numbers** [V]. FUN_001a0610 reads the attacker's status +0x188 / +0x18a, which FUN_0019f920 rebuilds
+from the saved record: the `lvup` row (byte +4 strength, +5 magic, +6 defense) of the record's level (+0xf) in the
+table FUN_001b50c0 picks (FUN_001b58d8(NeoStatus): 1..15, 14 -> 1, 15 -> 6, else 0 -> 1; the first table when the
+index is past the count or its offset is 0; the level held at the table's count), plus the record's bytes +9 / +0xa /
++0xb, plus FUN_001a0c08 for the two weapon words, the armor and the accessory slots (the `item_stat` Attack / Magic /
+Defense). `PartyData::member_status`; test `party_member_status_from_lvup_record_and_equipment` (Sora's come out as
+the status page's 5 / 7 / 2). Donald at the app's start: magic 6, so Cure (atkp 1525, type 6, Power 200) heals
+`(6 x 200 + 99) / 100` = 12 (log `party: P_EX020 heals Sora with atkp 1525 (type 6, FUN_00185a68): +12, HP 4 -> 16`).
+[inferred] A level of 0 is read as 1. **Gap**: the members' motion-trigger and attack-object hits on enemies are
+damaged by `enemy::receive_hits` with `enemy::member_stats` (the record's bytes only, no `lvup` row and no
+equipment): thunder does 2 on a Dusk where the status would give more (outside-ownership change, report).
+
+**The script's motion** (fixes a member stuck in a special): a motion request of the script (1.11, FUN_0017e220)
+starts the motion again even when it plays, and loops only when its data has a loop range (as `enemy_ai`); 1.13
+(0x1703d8 -> FUN_0017e170, the controller's queue +0x3c) plays the queued motion once the requested one has ended
+[inferred: one queue entry, the member's blend]. Before, the cast motion 192 kept looping after a special, and the
+next special's request of the same slot did not restart it: the cast trigger never came and the mode waited forever.
+
+**Member handles.** The members' script handles were `SELF_BASE + (0x1000 + slot) x OBJ_SIZE`: slot 0 (Donald) is
+0x0200_0000 = `PLAYER`, so every host arm that tests for the player took Donald's own calls as the player's (his
+script's contexts named the player; 1.130 and 1.149 showed it). They start at 0x1001 now.
+
+**Goofy's specials** (`kh2 bdx P_EX030`: `tornado` main R07af, `turbo` R0b4e, `blade` R0d30). Not done: `tornado`
+moves Goofy himself (1.111 set_move toward the target with the turn 0.46 = FUN_0017c0f8 by 10 degrees a frame, a
+height bobbing `sin(a) x 35 + 65` above the ground, 3 or 10 or 2 units a frame) while range trigger 16 is on, with
+attack 1188 radius 200 kept 100 above him, invulnerable for the motion's length (1.91 -> FUN_00175aa8: +0xb00);
+`blade` throws the shield object (1.234 the weapon list +0xaf8, 1.83, 1.148 / 1.89 on the weapon, attack 1161 on
+it, 2.38 a callback); `turbo` was not read. The app's member is moved by `party_tick` only, and its hand objects
+are not objects a script can move.
+
+Not verified: the spark element each hit starts (only the effect file is chosen as the game does); voices 6 / 21 / 3
+the scripts ask for (1.262 on a member goes to the enemy voice path, which finds no enemy of that name).
 ## Decompile index
 
 | address | what |
@@ -776,6 +880,9 @@ ability block, the attacker memory +0xcec, the panel flashes, limits and forms (
 | 0x17ce60, 0x17ca70, 0x17cc20, 0x17cee8, 0x186238, 0x176c98, 0x186530, 0x186580, 0x1a0100, 0x1903c8, 0x1b7e00, 0x1d9f20, 0x17cde0, 0x1106b8, 0x175340, 0x185a68, 0x175f10, 0x37a55c, 0x37a560 | WP-P3b: hits, KO, revive |
 | 0x111070, 0x110f90, 0x10f830, 0x10f8d8, 0x10c800, 0x1b0758, 0x113888, 0x10c9d0, 0x175e20, 0x1b8710, 0x10f510, 0x1a1d50, 0x113d48, 0x113e68, 0x114828, 0x1870d8, 0x187458, 0x186e70 | WP-P3b: battle branch, follow-up, items, specials |
 | 0x170a00 (1.276), 0x1769e0, 0x186368, 0x186440, 0x1a0180, 0x1a0540, 0x1a05a8, 0x1a05d0, 0x37a974, 0x173740 (1.140), 0x18ed58 | WP-P3b: the MP-cost host and the MP charge |
+| 0x18e2f0 (2.10), 0x1a2ba0, 0x18bd08, 0x18e488 (2.31), 0x1a2c58, 0x18e348 (2.11), 0x1a30e0, 0x18e3a0 (2.12), 0x1a2fc8, 0x18e680 (2.62), 0x1a3480, 0x18e3c0 (2.13), 0x18dc98, 0x18dce0, 0x18c2d8, 0x18c3f0, 0x18c0d8, 0x1a2cc0, 0x300278, vtables 0x35e788 / 0x35cf58, 0x37b45c, 0x37b460, 0x356f40 | WP-S3: the attack objects |
+| 0x171800 (1.87), 0x171840 (1.149), 0x1717c0 (1.22), 0x16a570, 0x16a530, 0x16a5b8, 0x170510 (1.130), 0x16d098 (0.45), 0x16d138 (0.46), 0x172fe8 (1.91), 0x175aa8, 0x2ee718 (6.3), 0x2f01a0, 0x2ee750 (6.5), 0x2f04a8 | WP-S3: the effect starts and Goofy's tornado hosts |
+| 0x19f920, 0x1b50c0, 0x1b58d8, 0x1a0c08 (named), 0x352ec0 | WP-S3: the rebuilt status numbers, the special ability items |
 
 ## Corrections to other docs (for the orchestrator)
 

@@ -5,7 +5,9 @@
 //! area is entered). `AreaRecord` is that record. When `CurrentArea` finishes loading, the area
 //! file's three scripts run through `kh2_ard::run::run_area` (the port of `FUN_00181148`) and the
 //! result is kept here for the exit volumes (`area_jump`), the log and later stages (the groups,
-//! triggers and music; E5 fills the program table, E6 plays events).
+//! triggers and music; E6 plays events). The program bytes come from the story's program table
+//! (`progress::Story::programs`, written by the story flags' op 1; WP-E5) and opcode 0x19 of the
+//! run sets its story flags.
 //!
 //! Placement: an entity of spawn kind 1 is created only for its entrance (`FUN_001981a0`), and
 //! the player stands at his entity of the `map` program's groups. After a jump (or with
@@ -32,16 +34,25 @@ impl Plugin for AreaPlugin {
     fn build(&self, app: &mut App) {
         let entrance: Option<u8> = std::env::var("KH2_ENTRANCE").ok().and_then(|v| v.parse().ok());
         // Harness (WP-E2): `KH2_PROGRAMS=<map>,<btl>,<evt>` (hex) sets the program bytes 3..5 of the
-        // record until E5 fills them from the story flags; a townspeople group of tt02 is loaded by
-        // map programs other than 0.
-        let programs = std::env::var("KH2_PROGRAMS").ok().map_or([0; 3], |v| {
+        // record for every area, over the program table (a townspeople group of tt02 is loaded by
+        // map programs other than 0). Without it the bytes come from the story's program table.
+        let programs_override = std::env::var("KH2_PROGRAMS").ok().map(|v| {
             let mut p = [0u8; 3];
             for (k, s) in v.split(',').take(3).enumerate() {
                 p[k] = u8::from_str_radix(s.trim().trim_start_matches("0x"), 16).unwrap_or(0);
             }
             p
         });
-        app.insert_resource(AreaRecord { world: TWILIGHT_TOWN, area: 0, entrance: entrance.unwrap_or(0), programs, place_on_load: entrance.is_some(), run: None, placed: None })
+        app.insert_resource(AreaRecord {
+            world: TWILIGHT_TOWN,
+            area: 0,
+            entrance: entrance.unwrap_or(0),
+            programs: programs_override.unwrap_or([0; 3]),
+            programs_override,
+            place_on_load: entrance.is_some(),
+            run: None,
+            placed: None,
+        })
             .add_systems(Update, run_area_script.after(crate::assets::load_area).before(crate::schedule::Frame::Pad));
     }
 }
@@ -58,9 +69,12 @@ pub struct AreaRecord {
     pub area: u8,
     /// Byte 2: read by opcode 0x1c and the entity filter `FUN_001981a0`.
     pub entrance: u8,
-    /// Bytes 3..5: the `map`, `btl`, `evt` program ids. All 0 until E5 ports the program table at
-    /// `0x33e86f + world * 0xc0 + area * 3`.
+    /// Bytes 3..5: the `map`, `btl`, `evt` program ids. `FUN_00104bd0` copies them from the program
+    /// table (`progress::Story::programs`, `0x33e86f + world * 0xc0 + area * 3`) when an area is
+    /// entered; the story flags' op 1 writes that table (all 0 in a new game).
     pub programs: [u8; 3],
+    /// `KH2_PROGRAMS` (harness): used instead of the table for every area.
+    pub programs_override: Option<[u8; 3]>,
     /// Put Sora at the entrance's player entity once the area has loaded (a jump, or
     /// `KH2_ENTRANCE`).
     pub place_on_load: bool,
@@ -106,10 +120,22 @@ pub fn arealog() -> bool {
 
 /// Runs the area's scripts when a new area has loaded and, when asked, places Sora at the
 /// entrance's player entity (on the collision floor under the record's point).
-pub fn run_area_script(disc: Res<Disc>, area: Res<CurrentArea>, mut rec: ResMut<AreaRecord>, world: Option<Res<World>>, mut sora: Query<(&mut Transform, &mut Sora)>) {
+pub fn run_area_script(
+    disc: Res<Disc>,
+    area: Res<CurrentArea>,
+    mut rec: ResMut<AreaRecord>,
+    world: Option<Res<World>>,
+    progress: Option<Res<crate::progress::Progress>>,
+    mut sora: Query<(&mut Transform, &mut Sora)>,
+) {
     let Some(loaded) = area.loaded.clone() else { return };
     if rec.run.as_ref().is_none_or(|r| r.name != loaded) {
         rec.area = area_number(&loaded).unwrap_or(0);
+        // FUN_00104bd0: the program bytes of the table for (world, area). The app's jumps carry no
+        // program bytes of their own (exits and type-1 trigger jumps; FUN_00104b90 would let them
+        // override with anything but 0xff).
+        let from_table = progress.as_ref().map_or([0; 3], |p| p.story().programs(rec.world, rec.area));
+        rec.programs = rec.programs_override.unwrap_or(from_table);
         let ard = disc.read(&format!("ard/{loaded}.ard")).and_then(|d| kh2_ard::Area::parse(&d)).map(|(a, _)| a);
         let Some(ard) = ard else {
             warn!("area {loaded}: ard/{loaded}.ard not readable; no area script runs");
@@ -117,9 +143,26 @@ pub fn run_area_script(disc: Res<Disc>, area: Res<CurrentArea>, mut rec: ResMut<
             return;
         };
         let script = run::run_area(&ard, rec.programs, rec.entrance);
+        // Opcode 0x19 (FUN_00180b48): each flag not yet set goes through FUN_0017ff60, side effects
+        // included (they change the program table for the next entry, not this run's bytes).
+        let mut newly = Vec::new();
+        if let Some(p) = progress.as_ref() {
+            let mut s = p.story();
+            for &f in &script.story_flags {
+                if !s.test(f as u16) {
+                    s.set(f as u16);
+                    newly.push(f);
+                }
+            }
+        }
         if arealog() {
             let [m, b, e] = rec.programs;
             info!("area {loaded} entrance {} programs ({m}, {b}, {e})", rec.entrance);
+            let from = if rec.programs_override.is_some() { "KH2_PROGRAMS" } else { "the program table 0x33e86f (story flags, FUN_00104bd0)" };
+            info!("area {loaded}: map program {m}, btl program {b}, evt program {e} from {from}");
+            if !script.story_flags.is_empty() {
+                info!("area {loaded}: opcode 0x19 story flags {:x?}, newly set {newly:x?}", script.story_flags);
+            }
             for g in &script.groups {
                 let n: usize = ard.spawns.get(&g.tag).map_or(0, |gs| gs.iter().map(|g| g.entities.len()).sum());
                 info!("area {loaded}: {} program {:#x} loads group {}{} ({n} entities)", g.script, g.program, g.tag, if g.alt { " (alt)" } else { "" });

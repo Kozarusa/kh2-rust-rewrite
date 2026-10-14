@@ -38,7 +38,8 @@ pub struct ScriptRun {
     pub camera_type: u32,
     /// Opcode 4 (`DAT_01c893b8`, default 10000.0 at 0x37a868).
     pub capacity: f32,
-    /// Opcode 0x19 arguments (story flags to set when not yet set; E5 applies them).
+    /// Opcode 0x19 arguments (story flags to set through FUN_0017ff60 when not yet set; the app's
+    /// `area::run_area_script` applies them to its story).
     pub story_flags: Vec<u32>,
     /// Opcode 0x1d arguments (FUN_001abfe8 party reset kinds).
     pub party_resets: Vec<u32>,

@@ -156,6 +156,28 @@ Cause: the sky model (`SK0`) has ground meshes at world height -200 (tt05 mesh 7
 z -43041..48327), while the app moved the whole sky to the camera, which put that backdrop 2 m below the camera
 and through the floor. The game builds the sky object at position 0 (FUN_0015e6c0 -> FUN_0015f3a0) and its update
 (FUN_0015fef8) only advances texture players, so the app now keeps the sky at the origin
-(`assets::sky_follow`). `[inferred]`: that no other code moves it. Gap: maps also carry `SK1` skies (tt00, tt03,
-tt24..28; counts at map +0x6c SK0 / +0x70 SK1, FUN_00149348) that `kh2_model::map_file` does not load, and the
-dome meshes (about 3.5 million units wide) lie beyond the camera's far plane.
+(`assets::sky_follow`). `[inferred]`: that no other code moves it.
+
+### SK1 (WP-SK1)
+
+Maps carry up to two skies. `FUN_00149348` counts the BAR entries tagged `SK0` (map object +0x6c) and `SK1`
+(+0x70) (the tag strings are at 0x379058 / 0x379060, next to `MAP` / `BOB`) and keeps the model and texture
+container pairs after the map's own. `FUN_0015e6c0` builds a sky object (0x2f0 bytes, `FUN_0015f3a0`, position 0,
+scale `DAT_003794d8`) for SK0 when its count is exactly 1, then for SK1 when its count is exactly 1; `FUN_00146d88`
+stores them at draw manager +0x5370 (SK0) / +0x5374 (SK1). Only the SK0 object gets the extra setup in `FUN_0015f3a0`
+(`param_7 == 0`: a flag bit and the colour bytes 0x80,0x80,0x80,0xff at +0x1d0..); what they do was not traced.
+`kh2_model::map_file` now also returns `sky1`; the app spawns both skies at the origin.
+Disc test `skies_per_area_sk0_and_sk1` prints the entry counts per area.
+
+Draw order: `FUN_00148440` sets flag 4 on both sky objects; `FUN_00147300` sorts the flag-4 objects by the key
+`FUN_001487a8` returns (ascending, `FUN_001471d0`) and draws them from the end of the list (`FUN_001479c0`), and
+`FUN_001484b0` has a special path for them. Whether the GS draws them without depth test or write was not read
+(gap: the GS state `FUN_00147c98` / `FUN_00147bb8` set for flag 4). The app draws the sky through the normal
+depth test; it lies far behind the world, so the world covers it, which is the original's look `[inferred]`.
+
+Far plane: Bevy's perspective projection has an infinite far plane in depth (`far` only feeds frustum
+culling), so the 3.5 million unit dome needs no change to the camera. The app marks sky meshes
+`NoFrustumCulling` (`assets::sky_unculled`) so the far value cannot hide them. Measured: SK0 areas (tt03,
+tt04) drew the sky before this change as well, so the cull exemption was not shown to be necessary; it is a
+precaution. Not changed: `camera.rs`. tt00 (SK1 only) shows a grey sky where it showed nothing before.
+Gap: the sky's own per-frame matrix (vtable 0x35a820) was still not traced.

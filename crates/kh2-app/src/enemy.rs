@@ -658,7 +658,7 @@ pub(crate) fn member_stats_rebuilt(progress: Option<&crate::progress::Progress>,
 
 /// Sora's and the party's hits on enemies: damage, then the victim reaction of the attack row
 /// (`reaction_rules::victim_outcome`): nothing, a push, a flinch, a flinch with a push, or a blow.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn receive_hits(
     mut hits: MessageReader<Hit>,
     data: Res<GameData>,

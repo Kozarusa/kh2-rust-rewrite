@@ -65,8 +65,12 @@ New host functions the Dusk needs are in the table of `docs/enemy-ai.md` (0.15, 
   Sora is put there first (b_44: the centre of the Sandlot). With `KH2_WAVE_AT_GROUP=1` a forced group without a
   player entry (b_00, b_21) puts Sora at the centre of its members instead (a test aid, WP-7D; not the game's rule).
 
-**Gaps.** Which `btl` program the game runs, and when, depends on story progress and the event scripts, which the
-app does not have: the groups take turns instead. Whether the game moves the player to a battle group's player
+**Gaps.** Which `btl` program the game runs, and when, depends on story progress and the event scripts. Since
+WP-E5 the area record takes its `btl` byte from the story's program table (`KH2_STATE` `story_flags`, e.g. flag
+0x883 gives tt04 `btl program 1` = group b_00, logged by `KH2_AREALOG=1`), but the waves here (`enemy.rs`) still
+take turns instead of spawning that program's groups. The Dusk's drop row reads story flags 2267, 2256, 2122,
+2091 through host 0.15, which now answers from the same story (all clear without a state file, so the row is
+unchanged then). Whether the game moves the player to a battle group's player
 entry when the battle starts was not read (inferred from the group listing the player; only the harness does it).
 Sora's own start point in tt04 is the app's (`assets::load_area`), about 22 m from b_00, outside the Dusks' battle
 radius (2000 cm, set by the script at +0x38): a b_00 wave appears, finds Sora too far, and leaves (mode `leave`)

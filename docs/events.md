@@ -277,9 +277,9 @@ stores world, area, entrance at `0x33e86c..e`) and restarts the area thread `FUN
   (`FUN_00195288`: 0), 4 (`FUN_001952a0`: 0xffff and the world point bit of the area,
   `FUN_00194f68` / `FUN_00194fd8`) and 5 (`FUN_00195300`: 0 and the world point bit); the first
   halfword of each op is the table index (`FUN_0017ff60`). Ported: `kh2_ard::progress::lock_index`
-  / `exit_locked` and `area_jump::ExitLocks` (the table from the disc, the halfwords all 0 until E5
-  runs the flag side effects [inferred: a new game starts with them 0; its initialiser was not
-  read]; the world-0x10 branch is not ported). The test `the_exit_lock_table_and_the_flags_that_write_it`
+  / `exit_locked` and `area_jump::ExitLocks` (the table from the disc, the halfwords from
+  `progress::Story`, which the flag side effects ops 2..5 write since WP-E5 [inferred: a new game
+  starts with them 0; its initialiser was not read]; the world-0x10 branch is not ported). The test `the_exit_lock_table_and_the_flags_that_write_it`
   prints the table and every Twilight Town flag that writes it.
 - `FUN_001989d8` clears the group's flag bits 3 and 4 every frame (0xffffffe7) and skips a group
   whose bit 0 (fired, set by `FUN_00198fa0`) is set; bit 4 is the prompt shown this frame
@@ -501,7 +501,8 @@ tt37; tt40 -> tt19 and area 100. The full list is in the test output.
   type-2 world entries at `0x35ccc0` and hands the named entries `dsa`, `wldf`, `epsd`, `wlds`, `link`, `wmky` and the
   type-0x2c entry to other systems): commands `u8 op, u8 n, n halfwords`, op 0 ends (`kh2_ard::progress`). Ops: 1
   area programs (records `area, map, btl, evt` written to `0x33e86f + world * 0xc0 + area * 3`, 0xff keeps), 2..5
-  `FUN_00195260` / `FUN_00195288` / `FUN_001952a0` / `FUN_00195300` [GAP], 6 `FUN_001a7730(world, x)`, 7 clear flags, 8
+  `FUN_00195260` (lock entry h0 = state h1, message h2) / `FUN_00195288` (state 0) / `FUN_001952a0` (state
+  0xffff, clears the world-point bit) / `FUN_00195300` (state 0, clears the bit) on the `dsa` entry h0, 6 `FUN_001a7730(world, x)`, 7 clear flags, 8
   / 9 `FUN_001a52b0` / `FUN_001a52f0` per halfword, 0xc set flags (recursive), 0xd two bytes of the world's record
   (`FUN_001b4e80`). After the list: `FUN_001803b0`, `FUN_00180450`, `FUN_001805d0`, `FUN_001d39d0`,
   `FUN_001d3238`, `FUN_001b6da0`, `FUN_001be9c8`, `FUN_001d5718`, `FUN_00195130`. Twilight Town: 186 of 256 flags
@@ -668,6 +669,33 @@ Each stage ends with `verify.ps1` passing and the named check.
   hosts 0.14/0.15 real, the btl program from the area record, triggers with events 2/3 and the battle manager
   results (jump records type 1/2). Accept: with a state file setting flag 0x883, tt04 logs `btl program 1`; the
   Dusk drop rows of docs/enemies.md now follow real flags.
+  **Status (WP-E5):** `progress::Story` holds the flag array (0x33f6b0, 19 pages of 0x20 bytes), the program
+  table (0x33e86f) and the lock halfwords (0x33f918); `Story::set` is `FUN_0017ff60` with ops 1, 2, 3, 4, 5, 7
+  and 0xc (oracle `story_flag_setter_matches_the_game`: 1415 flags of 19 worlds equal in kh2-ee, 870 of
+  them change more than their own bit); `KH2_STATE` keys `story_flags` / `story_clear` (docs/progress.md).
+  Hosts 0.14 / 0.15 / 0.70 use it (`progress::shared_story`). `area.rs` takes the record's program bytes
+  from the table on every area load (`KH2_PROGRAMS` still overrides) and applies opcode 0x19. Exits read
+  the lock halfwords (test `story_flag_ops_lock_and_unlock_exits`). Run (`KH2_AREALOG=1`, state file
+  `{"story_flags": [2179]}`): `area tt04: map program 0, btl program 1, evt program 0 from the program
+  table 0x33e86f (story flags, FUN_00104bd0)` and `btl program 0x1 loads group b_00`; flag 0x883 also
+  writes tt03 (3, 1, 0), tt06..tt08 btl 1, tt13 btl 2, tt14 evt 3. Without a state file the log reads
+  `programs (0, 0, 0)` as before and tt04's program-0 scripts have no opcode 0x19 (no `opcode 0x19` line). Not done: the waves of `enemy.rs`
+  still take turns (they do not spawn the btl program's groups); trigger sub 2 (flag on fire), events
+  2 / 3 and the battle manager's result jumps; jump type 2 (`07localset.bin`, all three bytes = the key)
+  is still logged as not ported in `area_jump.rs`.
+  **The prologue Seifer fight (TT04_MS500) with its story state** [measured]: flag 0x8db (the one `btl`
+  program 0xb5 sets by opcode 0x19) has one side effect, op 6 (`FUN_001a7730(2, 1)`: `0x33fe0c[2]`), so
+  it changes no program byte, lock or flag; nothing in the three 0xb5 programs tests a flag. The game
+  reaches 0xb5 through a type-2 jump with key 0xb5 (`07localset.bin` gives tt04), which makes map, btl
+  and evt all 0xb5. Run `KH2_PROGRAMS=b5,b5,b5 KH2_WAVE_GROUP=b_45 KH2_STATE=<{"story_flags":[2267]}>
+  KH2_AREALOG=1 kh2-game tt04`: `opcode 0x19 story flags [8db], newly set []`, groups b_45, `e55_`,
+  `f55_`; the `evt` groups spawn two townspeople, `N_EX580_RTN` (object 0x523) at app (206, 0, 1254)
+  and `N_EX590_RTN` (0x524) at (-106, 0, 1257), both class-5 `_RTN` objects with no walk path (not a
+  board or a prop). Screenshot at 5.2 s (during the intro camera) looked at: the INFORMATION bar
+  "Defeat Seifer!" and those two townspeople in front of a house wall with two trees, no fighter in view.
+  So the story state does not move Roxas or Seifer: b_45's places stand; the intro's first shots look
+  at where `evt` 0xb5 puts the two onlookers [inferred: they are the spectators of the fight; the clip's
+  notice board is still not found in any 0xb5 group].
 - **E6 The event player for one short event.** Parse, setup reader, frame counter, actors (opcode 1, 2), motions
   (0x24 + `.anb`), message lines (0x15, 0x2d), the camera cut table (opcode 6) into `CamEvent`; skip later. Start
   with a tt01 event of under 600 bytes (`100`, `200`, `400`, `600`). Accept: log of commands at their frames; a
@@ -686,7 +714,8 @@ Each stage ends with `verify.ps1` passing and the named check.
 - Where `arif` music pairs are read by the game (only opcode 0x10 writes the pair the area load reads).
 - Exit lock: the new-game value of the halfwords at `0x33f918` (assumed 0; the initialiser was not
   read) and the world-0x10 branch `FUN_001d32e0` (not ported). The flag side effects ops 2..5
-  that write the halfwords run in E5.
+  that write the halfwords run since E5; the world-point bits ops 4 / 5 clear (`FUN_00194f68` on
+  the table `DAT_01c8a984`, `FUN_00194fd8` on 0x33f910) are not kept (no world map).
 - The keyhole wipe (fade kind 0, drawn since WP-E1d): whether the game hides the HUD while it
   plays (the app draws the command menu and area card over it), and the window sides beyond
   the 4:3 picture, which the layout does not cover [inferred: the original is 4:3].
@@ -705,6 +734,7 @@ Each stage ends with `verify.ps1` passing and the named check.
 | 0x13ef68, 0x13efe8, 0x13f148, 0x13f1a0, 0x14a7c8, 0x14a7f0, 0x14a710, 0x15d058, 0x15d1a8, 0x104d58 | fade kinds and the jump task (E1b) |
 | 0x104e18, 0x104d58, 0x104c68, 0x104ce0, 0x104bd0, 0x104b90, 0x105188, 0x105010, 0x19d8f0, 0x19d9d8, 0x13ef68, 0x13efe8, 0x198080, 0x198058, 0x172118, 0x172170, 0x149df0, 0x1abfe8 | jumps |
 | 0x1802e0, 0x180298, 0x17ff60, 0x17fd10, 0x180350 | story flags |
+| 0x16d5a0, 0x16d5b8, 0x16d5e8, 0x180330, 0x104b90, 0x104bd0, 0x195260, 0x195288, 0x1952a0, 0x195300, 0x194f68, 0x194fd8, 0x1a7730, 0x1b4e80, 0x1a52b0, 0x1a52f0, 0x195130 | story flag hosts, side effects, program table (E5) |
 | 0x16e8c0, 0x189858, 0x1a51e8, 0x2ea050..0x2ea978 | objects by type, NPC class, group 5 hosts |
 | 0x1899d0, 0x189ae8, 0x189c68, 0x189dc8, 0x189e50, 0x189e70, 0x189938, 0x189960, 0x189990, 0x18a130, 0x18a4b0, 0x18a598, 0x18a7a0, 0x18a828, 0x18a8b0, 0x18a918, 0x18aa08, 0x18ae08, 0x18aef8, 0x18af08, 0x18af10, 0x18b0d8, 0x18b0f0, 0x18b110, 0x18b138, 0x18b148, 0x18b1e0 (table 0x37ab9c: 0x18b208, 0x18b210, 0x18b218, 0x18b220), 0x18b228, 0x18b250, 0x18b308, 0x199ca0, 0x199cc0, 0x199d18, 0x199d68, 0x1894d0, 0x189208, 0x1d8c18, 0x16b078, 0x16b960, 0x16bbe8, 0x16b558, 0x16b6e0, 0x16a890 | class 5: init, update, followers, behaviour entries, regions (E2) |
 | 0x183c30, 0x183d08, 0x183dc8, 0x183e18, 0x1719d0, 0x171a08, 0x2d2100, 0x2d2230, 0x2d2328, 0x2d2350, 0x2d23b8, 0x2d2440, 0x2d2448, 0x2d2460, 0x2d25b0, 0x2d27c8, 0x2d2a98, 0x2d3148, 0x2d32f8, 0x2d3b40, 0x2d3d00, 0x2d3db8, 0x2d4040, 0x2d4298, 0x2d43a0, 0x2d4438, 0x2d4478, 0x2d4590, 0x2d4688, 0x2d4800, 0x2d4ad8, 0x2d4dc8, 0x2d50c0, 0x2d51e0, 0x2d5398 | the walk path record and its spline (E2) |

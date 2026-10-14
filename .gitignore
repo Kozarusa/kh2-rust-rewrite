@@ -29,3 +29,6 @@
 *.dll
 target/
 **/local/
+# The Save menu's slot files (progress::save_dir; KH2_SAVE_DIR may name any folder, it is the user's own).
+local/saves/
+saves/

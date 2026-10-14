@@ -45,7 +45,7 @@ use crate::SCALE;
 pub const OBJECT_TOWNSPERSON: u8 = 15;
 
 /// Script handles of the NPCs: past the enemies' (below 0x1000) and the friends' (0x1000..).
-const HANDLE_BASE: u32 = 0x2000;
+const HANDLE_BASE: u32 = 0x2001;
 
 pub struct NpcPlugin;
 

@@ -289,6 +289,9 @@ pub struct Progress {
     /// The option word (save `+0x31b0`, `0x33fa10`: the ten Config rows of docs/menus.md 2.8) and the game
     /// mode (save `+0x1658`, read-only on that page). Outside the party block, so kept apart like `wallet`.
     config: [u32; 2],
+    /// The "seen" words of the NEW tags (save `+0x31b4`, docs/menus.md 16.1) as a save slot carries them: empty until a slot
+    /// that holds them is loaded or the menu stores them (`set_new_seen`).
+    new_seen: Vec<u32>,
 }
 
 /// The option word `FUN_0023e9a0` writes on a new game: it keeps bits 0, 3 and 11 up and sets 0x40b, so
@@ -352,7 +355,7 @@ impl Progress {
         let mut block = vec![0u8; off::LEN];
         let n = bytes.len().min(off::LEN);
         block[..n].copy_from_slice(&bytes[..n]);
-        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT] }
+        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT], new_seen: Vec::new() }
     }
 
     // --- records ----------------------------------------------------------------------------
@@ -1155,7 +1158,7 @@ impl Progress {
     /// The new-game state: the party block after `FUN_00187b38` on the cleared save block and the
     /// `plrp` rows with `Id` 0 (`FUN_001c0cb0(0)`).
     pub fn new_game(items: Arc<ItemIndex>, plrp: &[Plrp]) -> Progress {
-        let mut p = Progress { block: vec![0; off::LEN], items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT] };
+        let mut p = Progress { block: vec![0; off::LEN], items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT], new_seen: Vec::new() };
         p.init_party();
         p.apply_plrp(plrp, 0);
         p
@@ -1416,6 +1419,17 @@ impl Progress {
                 "option_word" => self.config[0] = int(v, "option_word")? as u32,
                 "game_mode" => self.config[1] = int(v, "game_mode")?.clamp(0, 2) as u32,
                 "comment" | "_comment" => {}
+                // The save slot keys (WP-M8, `slot_json`): the whole party block, the app fields beside it and the
+                // row data the Save menu shows (ignored here).
+                "format" | "slot" => {}
+                "block" => {
+                    let Json::Str(h) = v else { return Err("block: expected a hex string".into()) };
+                    self.block = unhex(h, off::LEN).ok_or_else(|| format!("block: expected {} hex bytes", off::LEN))?;
+                }
+                "new_seen" => {
+                    let Json::Arr(a) = v else { return Err("new_seen: expected an array".into()) };
+                    self.new_seen = a.iter().map(|x| int(x, "new_seen").map(|n| n as u32)).collect::<Result<_, _>>()?;
+                }
                 other => return Err(format!("unknown field '{other}'")),
             }
         }
@@ -1499,6 +1513,89 @@ impl Progress {
             self.option_word(),
             inv.join(" "),
         )
+    }
+}
+
+// --- save slots (WP-M8, docs/menus.md 18) ------------------------------------------------------
+
+/// What a slot's row on the Save menu shows besides the state itself: the leader's level, the munny, the play time and the
+/// area the file was written in (the area's code, `tt03`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SlotInfo {
+    pub level: u32,
+    pub munny: u32,
+    pub play_seconds: u64,
+    pub area: String,
+}
+
+/// The save slots the Save menu lists (the footage shows four rows).
+pub const SLOTS: usize = 4;
+
+/// The folder the slots live in: `KH2_SAVE_DIR`, else `local/saves` below the working directory (git-ignored). The app never
+/// reads or writes anywhere else (a PS2 memory card is not touched).
+pub fn save_dir() -> std::path::PathBuf {
+    std::env::var_os("KH2_SAVE_DIR").filter(|v| !v.is_empty()).map_or_else(|| std::path::PathBuf::from("local/saves"), std::path::PathBuf::from)
+}
+
+/// The file of slot `n` (0-based).
+pub fn slot_path(dir: &std::path::Path, n: usize) -> std::path::PathBuf {
+    dir.join(format!("slot{:02}.json", n + 1))
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+fn unhex(s: &str, len: usize) -> Option<Vec<u8>> {
+    (s.len() == 2 * len && s.is_ascii()).then(|| (0..len).map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).ok()).collect::<Option<Vec<u8>>>()).flatten()
+}
+
+impl Progress {
+    /// The state as a slot file: a JSON object that `apply_json` (and so `KH2_STATE`) reads back. The party block goes as hex,
+    /// the app fields kept beside it (munny, option word, game mode, Dodge Roll level, the NEW tags' seen words) as the keys
+    /// of the state schema, and `slot` carries the row data. Rows are keys of the same schema, so a slot file is also a
+    /// state file.
+    pub fn slot_json(&self, info: &SlotInfo) -> String {
+        let area: String = info.area.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+        let seen: Vec<String> = self.new_seen.iter().map(u32::to_string).collect();
+        format!(
+            "{{\n  \"format\": 1,\n  \"slot\": {{\"level\": {}, \"munny\": {}, \"play_seconds\": {}, \"area\": \"{}\"}},\n  \"block\": \"{}\",\n  \"munny\": {},\n  \"option_word\": {},\n  \"game_mode\": {},\n  \"dodge_roll\": {},\n  \"new_seen\": [{}]\n}}\n",
+            info.level,
+            info.munny,
+            info.play_seconds,
+            area,
+            hex(&self.block),
+            self.wallet,
+            self.config[0],
+            self.config[1],
+            self.dodge_roll,
+            seen.join(", ")
+        )
+    }
+
+    /// The row data of a slot file (`None` for text that is not a slot file).
+    pub fn slot_info(text: &str) -> Option<SlotInfo> {
+        let j = Json::parse(text).ok()?;
+        let s = j.get("slot")?;
+        let n = |k: &str| s.get(k).and_then(Json::int).map(|v| v.max(0));
+        Some(SlotInfo {
+            level: n("level")? as u32,
+            munny: n("munny")? as u32,
+            play_seconds: n("play_seconds")? as u64,
+            area: match s.get("area") {
+                Some(Json::Str(a)) => a.clone(),
+                _ => return None,
+            },
+        })
+    }
+
+    /// The NEW tags' seen words (save `+0x31b4`) a loaded slot carried.
+    pub fn new_seen(&self) -> &[u32] {
+        &self.new_seen
+    }
+
+    pub fn set_new_seen(&mut self, words: &[u32]) {
+        self.new_seen = words.to_vec();
     }
 }
 
@@ -1866,6 +1963,31 @@ mod tests {
         p.set_auto_reload(SORA, 1, true);
         assert_eq!(p.battle_items(SORA), vec![(1, 1), (0, 0), (3, 3), (0, 0)]);
         assert!(!p.reload_off_needs_question(SORA, 1), "reserved and carried: no question");
+    }
+
+    /// The Save menu's slot file (docs/menus.md 18): written from one state, read back through `apply_json` (the path
+    /// `KH2_STATE` takes) into another, it reproduces the party block byte for byte and the app fields beside it.
+    #[test]
+    fn a_slot_file_restores_the_block_byte_for_byte() {
+        let bytes: Vec<u8> = (0..off::LEN).map(|i| (i * 7 + 3) as u8).collect();
+        let mut p = Progress::from_block(&bytes, Arc::new(ItemIndex::default()));
+        p.wallet = 123_456;
+        p.config = [0x41b, 2];
+        p.dodge_roll = 3;
+        p.set_new_seen(&[1, 0xffff_ffff, 7]);
+        let info = SlotInfo { level: 7, munny: 123_456, play_seconds: 3725, area: "tt03".into() };
+        let text = p.slot_json(&info);
+        assert_eq!(Progress::slot_info(&text), Some(info));
+        let mut q = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        assert_ne!(q.block(), p.block());
+        q.apply_json(&text).expect("a slot file is a state file");
+        assert_eq!(q.block(), p.block(), "the party block, byte for byte");
+        assert_eq!((q.wallet(), q.option_word(), q.game_mode(), q.dodge_roll), (123_456, 0x41b, 2, 3));
+        assert_eq!(q.new_seen(), [1, 0xffff_ffff, 7]);
+        // A block of the wrong length is refused, and the slot's row data is not a state key of its own.
+        let short = text.replacen("\"block\": \"", "\"block\": \"00", 1);
+        assert!(q.apply_json(&short).is_err());
+        assert_eq!(Progress::slot_info("{\"munny\": 1}"), None);
     }
 
     struct Tables {

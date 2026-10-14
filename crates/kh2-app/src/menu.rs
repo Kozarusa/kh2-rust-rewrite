@@ -54,12 +54,15 @@ pub mod pictures;
 // The 3D party preview of the top page (WP-MN1).
 #[path = "menu_preview.rs"]
 pub mod preview;
+// The Save menu (kinds 7 and 8, docs/menus.md 18).
+#[path = "menu_save.rs"]
+pub mod save;
 
 pub struct MenuPlugin;
 
 impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((MenuGfxPlugin, crate::menu_status::StatusPlugin, config::ConfigPlugin, item_pages::ItemPagesPlugin, customize::CustomizePlugin, equipment::EquipmentPlugin, new_tags::NewTagsPlugin, pictures::PicturesPlugin, help::HelpPlugin, pause_band::PausePlugin, preview::PreviewPlugin))
+        app.add_plugins((MenuGfxPlugin, crate::menu_status::StatusPlugin, config::ConfigPlugin, item_pages::ItemPagesPlugin, customize::CustomizePlugin, equipment::EquipmentPlugin, new_tags::NewTagsPlugin, pictures::PicturesPlugin, help::HelpPlugin, pause_band::PausePlugin, preview::PreviewPlugin, save::SavePlugin))
             .init_resource::<Menu>()
             .add_systems(Startup, load)
             // The game's own readers run in `Update`; the menu takes its keys first, in `PreUpdate`
@@ -483,7 +486,7 @@ pub(crate) fn input(
     items: Res<item_pages::ItemsMenu>,
     mut pause: ResMut<Pause>,
     band: Res<pause_band::Band>,
-    (battle, mission): (Option<Res<crate::audio_bgm::BattleFlag>>, Option<Res<crate::struggle::Mission>>),
+    (battle, mission, save): (Option<Res<crate::audio_bgm::BattleFlag>>, Option<Res<crate::struggle::Mission>>, Res<save::SaveMenu>),
     members: Query<&crate::party::PartyMember>,
 ) {
     if !menu.loaded {
@@ -503,6 +506,8 @@ pub(crate) fn input(
                 info!("menu: pause band closed");
             }
         }
+        // The Save menu (menu_save.rs) owns the pad while it is up.
+        Phase::Closed if save.is_open() => {}
         Phase::Closed => {
             if start && start_locked(mission.as_deref()) {
                 info!("menu: start refused: a mission layout / event holds the field (FUN_00138758 gate, DAT_00354f70)");
@@ -586,12 +591,12 @@ pub(crate) fn input(
         tags.end(&worn);
     }
     // Every press that arrives while the menu is up belongs to the menu.
-    if menu.phase != Phase::Closed || band_up || pause.band {
+    if menu.phase != Phase::Closed || band_up || pause.band || save.is_open() {
         keys.reset_all();
         mouse.reset_all();
     }
     // The simulation stops in the frame of the open input and runs again once the close has finished (`schedule::Pause`).
-    let open = menu.phase != Phase::Closed;
+    let open = menu.phase != Phase::Closed || save.is_open();
     if pause.menu != open {
         pause.menu = open;
     }

@@ -63,6 +63,8 @@ fn auto_screenshot(
                 "Q" => KeyCode::KeyQ,
                 "Space" => KeyCode::Space,
                 "F3" => KeyCode::F3,
+                // The Save menu (docs/menus.md 18): the app has no save point object, so F2 stands for the field Save command.
+                "F2" => KeyCode::F2,
                 "F4" => KeyCode::F4,
                 "W" => KeyCode::KeyW,
                 "E" => KeyCode::KeyE,

@@ -28,19 +28,71 @@ pub struct FriendFields {
     /// The member's target record (+0x9f4) is valid: an enemy target, or the one a special or Cure was
     /// chosen for (FUN_00113d48 copies phase 1's record there). Host 1.140 reads it.
     pub target_valid: bool,
-    /// The attack objects the script created this tick (host 2.10: `atkp` id by handle) and the hits it
-    /// delivered on its target record (host 2.17); `friend_ai` hands the hits to `party`.
-    pub attacks: Vec<(u32, i16)>,
+    /// The member's attack objects (host 2.10 / 2.31), kept from tick to tick until they are released
+    /// and destroyed (FUN_0018c2d8), and the hits the script delivered on its target record (host
+    /// 2.17); `friend_ai` steps the objects and hands the 2.17 hits to `party`.
+    pub attacks: Vec<AttackObj>,
     pub target_hits: Vec<i16>,
+    /// Attack objects made so far (their handles) and the hit groups taken (FUN_001bdf00 stand-in).
+    pub made: u32,
+    pub groups: u32,
+    /// The point of the member's target record (host 1.120): the target's hurt shape centre, game
+    /// units with the app's axes; `None` without a target. `party_tick` writes it.
+    pub target_point: Option<Vec3>,
+    /// The effects the script started this tick (hosts 1.22, 1.87, 1.149); `friend_ai` starts them.
+    pub fx: Vec<FxReq>,
+    pub effects_made: u32,
+}
+
+/// An effect element of the member's own effect file (`obj/<model>.apdx`, the object's +0x80) the
+/// script asked for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FxReq {
+    /// 1.87 (FUN_0016a570 with owner 0 = the object) / 1.149 (FUN_0016a570 with another owner):
+    /// `FUN_001db868(obj + 0x80, id, .., 1, .., owner)`: bound to the owner.
+    Bound { id: u16, on_target: bool },
+    /// 1.22 (FUN_0016a5b8): `FUN_0016a530` (no owner), then the effect's position (FUN_001d9d00) is
+    /// overwritten with the vector: game units, the app's axes.
+    At { id: u16, pos: Vec3 },
+}
+
+/// A member's attack object (FUN_001a2ba0 -> FUN_0018bd08, 0x140 bytes; the fields by game offset).
+/// Positions are game units with the app's axes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AttackObj {
+    pub handle: u32,
+    /// +0x14 the `atkp` id (2.10 argument 1) and +0x18 the sub key (argument 3): FUN_0019e788 picks
+    /// the row (`magic_rules::attack_row`).
+    pub atkp: u16,
+    pub kind: u32,
+    /// +0x20: the hit group (the row's ComboGroup +0x2c when not 0, else argument 2, else a new one).
+    pub group: u32,
+    /// +0xe0 the position and +0xf0 the one before (FUN_001a2fc8); `None` before the first move.
+    pub pos: Option<Vec3>,
+    pub prev: Option<Vec3>,
+    /// +0x100 the radius and +0x104 the half height (FUN_001a30e0: the radius when not positive).
+    pub radius: f32,
+    pub height: f32,
+    /// +0xcc the frames of the growth (FUN_001a3480; 0 = none), +0xc8 the frames run, +0xd0 / +0xd4
+    /// the size it starts from (FUN_001a2cc0 eases to +0x100 / +0x104 and releases the object after).
+    pub grow: f32,
+    pub t: f32,
+    pub from: (f32, f32),
+    /// +4 bit 0x800: released (FUN_0018dc98); FUN_0018c2d8 destroys it on its next pass.
+    pub released: bool,
 }
 
 /// Handles of the members' attack objects (host 2.10), apart from the object handles.
 const ATTACK_HANDLE: u32 = 0x7a00_0000;
+/// Handles of the effects the members' scripts start (1.22, 1.87, 1.149).
+const EFFECT_HANDLE: u32 = 0x7b00_0000;
 
 /// The member's script host.
 pub(crate) struct FriendHost<'a, 'b> {
     pub(crate) inner: BevyHost<'a>,
     pub(crate) fields: &'b mut FriendFields,
+    /// The `atkp` rows (the attack objects' rows, FUN_0019e788).
+    pub(crate) game: &'b crate::data::GameData,
 }
 
 fn words(c: &Call) -> Option<(u16, u16, Vec<u32>)> {
@@ -63,6 +115,118 @@ fn words(c: &Call) -> Option<(u16, u16, Vec<u32>)> {
 impl FriendHost<'_, '_> {
     fn trace(&mut self) -> &mut AiTrace {
         &mut *self.inner.trace
+    }
+
+    fn record(&mut self, c: &Call, v: &Value, st: St, why: &'static str) {
+        let tag = self.inner.tag;
+        self.trace().record(tag, c, v, st, why);
+    }
+
+    fn attack(&mut self, handle: u32) -> Option<&mut AttackObj> {
+        self.fields.attacks.iter_mut().find(|a| a.handle == handle && !a.released)
+    }
+
+    /// FUN_0018bd08's part the app keeps: the row's sub key and the hit group (+0x20 = the row's
+    /// ComboGroup when not 0, else the group given, else a new one from FUN_001bdf00 [the app's own
+    /// counter: the victims' memory in `friend_ai` is the members' own]).
+    fn new_attack(&mut self, atkp: u16, kind: u32, group: Option<u32>) -> Value {
+        let combo = self.game.atkp.iter().find(|r| r.id == atkp && (r.sub_id >> 8) as u32 == kind).map_or(0, |r| r.combo_group as u32);
+        let group = match (combo, group) {
+            (c, _) if c != 0 => c,
+            (_, Some(g)) => g,
+            _ => {
+                self.fields.groups += 1;
+                0x100 + self.fields.groups
+            }
+        };
+        self.fields.made += 1;
+        let handle = ATTACK_HANDLE + self.fields.made;
+        self.fields.attacks.push(AttackObj { handle, atkp, kind, group, pos: None, prev: None, radius: 0.0, height: 0.0, grow: 0.0, t: 0.0, from: (0.0, 0.0), released: false });
+        Value::Handle(handle)
+    }
+
+    fn new_effect(&mut self, req: FxReq) -> Value {
+        self.fields.fx.push(req);
+        self.fields.effects_made += 1;
+        Value::Handle(EFFECT_HANDLE + self.fields.effects_made)
+    }
+
+    /// The attack-object hosts of group 2 and the effect starts of group 1 the members' specials use
+    /// (`kh2 bdx P_EX020` thunder R13c8, cure R1559). `None`: not one of them.
+    fn specials(&mut self, c: &Call) -> Option<Value> {
+        let me = self.inner.obj.handle;
+        let raw = |a: &Arg| match a {
+            Arg::Float(f) => f.to_bits(),
+            a => a.int() as u32,
+        };
+        match c {
+            // 2.12 attack_move_to (0x18e3a0 -> FUN_001a2fc8): the previous position is kept for the swept
+            // test once the object has a position (+4 bit 1), the new one stored; bit 4 (a move of more
+            // than two frame units) is what the sweep of FUN_001a2cc0 reads, `friend_ai` measures it.
+            Call::Func { group: 2, index: 12, args } => {
+                let (h, at) = match (args.first(), args.get(1)) {
+                    (Some(h), Some(Arg::Vec(v))) => (raw(h), crate::enemy_obj::from_game(*v)),
+                    _ => return None,
+                };
+                if let Some(a) = self.attack(h) {
+                    a.prev = a.pos.or(Some(at));
+                    a.pos = Some(at);
+                    self.record(c, &Value::None, St::Impl, "");
+                } else {
+                    self.record(c, &Value::None, St::Missing, "2.12 on a handle that is not a live attack object of the member");
+                }
+                Some(Value::None)
+            }
+            // 1.120 target_position (0x173688): the point of the member's target record.
+            Call::TargetPosition { .. } => {
+                let p = self.fields.target_point.unwrap_or(self.inner.obj.motor.pos);
+                let v = Value::Vec(crate::enemy_obj::to_game(p));
+                self.record(c, &v, St::Approx, "the centre of the hurt shape the member targets (its own position without a target) [inferred: the record's point]");
+                Some(v)
+            }
+            // 1.141 probe_ground_down (FUN_00172538 -> FUN_001a5c30 with mask 4): from the point straight
+            // down by the distance; the runtime writes the answer through the second argument.
+            Call::Func { group: 1, index: 141, args } => {
+                let from = match args.first() {
+                    Some(Arg::Vec(v)) => *v,
+                    _ => [0.0; 4],
+                };
+                let down = args.get(2).map_or(0.0, |a| a.float());
+                let p = Vec3::new(from[0], -from[1], -from[2]);
+                let found = self.inner.env.world.and_then(|w| w.ground(Vec3::new(p.x, 0.0, p.z), p.y, down.max(0.0)));
+                let v = found.map_or(Value::Int(0), |g| Value::Vec([from[0], -g.y, from[2], 1.0]));
+                self.record(c, &v, St::Approx, "the area's floor polygons under the point (World::ground), not FUN_001a5c30's mask-4 cast");
+                Some(v)
+            }
+            // 1.22 spawn_effect_at (0x1717c0 -> FUN_0016a5b8): element `id` of the object's own effect file,
+            // its position then the vector.
+            Call::Func { group: 1, index: 22, args } if args.first().is_some_and(|a| raw(a) == me) => {
+                let (id, pos) = match (args.get(1), args.get(2)) {
+                    (Some(id), Some(Arg::Vec(v))) => (id.int().max(0) as u16, crate::enemy_obj::from_game(*v)),
+                    _ => return None,
+                };
+                let v = self.new_effect(FxReq::At { id, pos });
+                self.record(c, &v, St::Approx, "element `id` of the member's effect file placed at the point; the two last arguments are not modelled");
+                Some(v)
+            }
+            // 1.87 spawn_attached (0x171800 -> FUN_0016a570, owner = the object).
+            Call::SpawnAttached { obj, id, .. } if *obj == me => {
+                let v = self.new_effect(FxReq::Bound { id: (*id).max(0) as u16, on_target: false });
+                self.record(c, &v, St::Approx, "element `id` of the member's effect file bound to the member; the flag and extra arguments are not modelled");
+                Some(v)
+            }
+            // 1.149 spawn_effect_for (0x171840 -> FUN_0016a570 with the third argument's object as owner):
+            // element `id` of the first object's file bound to the other object. Donald's `cure` binds
+            // element 12 to the object of its target record (R15cb).
+            Call::Func { group: 1, index: 149, args } if args.first().is_some_and(|a| raw(a) == me) => {
+                let id = args.get(1).map_or(0, |a| a.int().max(0) as u16);
+                let on_target = args.get(2).is_none_or(|a| raw(a) != me);
+                let v = self.new_effect(FxReq::Bound { id, on_target });
+                self.record(c, &v, St::Approx, "element `id` of the member's effect file bound to the owner named; an owner other than the member is taken to be the object of its target record [inferred]");
+                Some(v)
+            }
+            _ => None,
+        }
     }
 
     /// FUN_0017da30 on a motion number of the member's own player-type motion set: the slot the
@@ -139,29 +303,79 @@ impl Host for FriendHost<'_, '_> {
         // receive method +0x64). The members' scripts aim 2.17 at their own target record (2.23, Donald's
         // `cure` R1559 with attack 1525), which `party` resolves (`party_script_hits`). 2.13 (arm) and 2.22
         // (anchor) need nothing more here: the hit is delivered at once.
+        if let Some(v) = self.specials(c) {
+            return v;
+        }
+        let float = |w: u32| f32::from_bits(w);
         match words(c) {
+            // 2.10 attack_create (0x18e2f0 -> FUN_001a2ba0(obj, owner, a1, a2, a3, -1)): `atkp` id a1, hit
+            // group a2 (-1: a new one), sub key a3.
             Some((2, 10, a)) => {
-                let handle = ATTACK_HANDLE + self.fields.attacks.len() as u32;
-                let id = a.get(1).copied().unwrap_or(0) as i32 as i16;
-                self.fields.attacks.push((handle, id));
-                let v = Value::Handle(handle);
-                let tag = self.inner.tag;
-                self.trace().record(tag, c, &v, St::Approx, "a member's attack object: only its atkp id is kept (for 2.17)");
+                let arg = |k: usize| a.get(k).copied().unwrap_or(0);
+                let v = self.new_attack(arg(1) as u16, arg(3), (arg(2) as i32 >= 0).then_some(arg(2)));
+                self.record(c, &v, St::Impl, "");
                 return v;
+            }
+            // 2.31 (0x18e488 -> FUN_001a2c58): a new attack object with the `atkp` id given and the first
+            // one's owner, hit group (+0x20), sub key (+0x18) and anchor (+0x24); its size and growth are
+            // its own (FUN_001a2ba0 clears them).
+            Some((2, 31, a)) => {
+                let src = self.fields.attacks.iter().find(|x| Some(x.handle) == a.first().copied()).map(|x| (x.kind, x.group));
+                let v = match src {
+                    Some((kind, group)) => {
+                        let v = self.new_attack(a.get(1).copied().unwrap_or(0) as u16, kind, Some(group));
+                        self.record(c, &v, St::Impl, "");
+                        v
+                    }
+                    None => {
+                        self.record(c, &Value::Int(0), St::Missing, "2.31 on a handle that is not an attack object of the member");
+                        Value::Int(0)
+                    }
+                };
+                return v;
+            }
+            // 2.11 attack_set_size (0x18e348 -> FUN_001a30e0): +0x100 = a, +0x104 = b when b > 0 else a.
+            Some((2, 11, a)) if a.len() >= 3 => {
+                let (r, h) = (float(a[1]), float(a[2]));
+                if let Some(o) = self.attack(a[0]) {
+                    o.radius = r;
+                    o.height = if h > 0.0 { h } else { r };
+                }
+                self.record(c, &Value::None, St::Impl, "");
+                return Value::None;
+            }
+            // 2.62 attack_set_shape2 (0x18e680 -> FUN_001a3480): +0xc8 = 0, +0xcc = a (the growth's frames),
+            // +0xd0 = b (the radius +0x100 unless b > 0), +0xd4 = c (the height +0x104 unless c > 0).
+            Some((2, 62, a)) if a.len() >= 4 => {
+                let (d, r, h) = (float(a[1]), float(a[2]), float(a[3]));
+                if let Some(o) = self.attack(a[0]) {
+                    o.t = 0.0;
+                    o.grow = d;
+                    o.from = (if r > 0.0 { r } else { o.radius }, if h > 0.0 { h } else { o.height });
+                }
+                self.record(c, &Value::None, St::Impl, "");
+                return Value::None;
+            }
+            // 2.13 attack_arm (0x18e3c0 -> FUN_0018dc98): +4 |= 0x800, the object is released.
+            Some((2, 13, a)) if a.first().is_some_and(|h| self.fields.attacks.iter().any(|x| x.handle == *h)) => {
+                if let Some(o) = self.attack(a[0]) {
+                    o.released = true;
+                }
+                self.record(c, &Value::None, St::Impl, "");
+                return Value::None;
+            }
+            // 2.22 attack_anchor (0x18e7c8): +0x24 = the object's +0x80 (its effect file): the hit spark comes
+            // from the member's own file (`friend_ai` sends it with the hit).
+            Some((2, 22, a)) if a.first().is_some_and(|h| self.fields.attacks.iter().any(|x| x.handle == *h)) => {
+                self.record(c, &Value::None, St::Approx, "the anchor is always the member's own effect file");
+                return Value::None;
             }
             Some((2, 17, a)) => {
                 let handle = a.first().copied().unwrap_or(0);
-                let found = self.fields.attacks.iter().find(|(h, _)| *h == handle).map(|x| x.1);
-                if let Some(id) = found {
+                if let Some(id) = self.fields.attacks.iter().find(|x| x.handle == handle).map(|x| x.atkp as i16) {
                     self.fields.target_hits.push(id);
                 }
-                let tag = self.inner.tag;
-                self.trace().record(tag, c, &Value::None, St::Approx, "the hit lands on the member's target record (+0x9f4), resolved by party");
-                return Value::None;
-            }
-            Some((2, 13 | 22, a)) if a.first().is_some_and(|h| self.fields.attacks.iter().any(|x| x.0 == *h)) => {
-                let tag = self.inner.tag;
-                self.trace().record(tag, c, &Value::None, St::Approx, "a member's attack object: nothing to arm or anchor");
+                self.record(c, &Value::None, St::Approx, "the hit lands on the member's target record (+0x9f4), resolved by party");
                 return Value::None;
             }
             _ => {}

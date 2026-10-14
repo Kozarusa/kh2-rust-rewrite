@@ -418,6 +418,18 @@ pub struct PartyMember {
     /// 2.10 / 2.17, riend_ai fills them; party_script_hits carries them out).
     special_who: Option<ScriptTarget>,
     pub(crate) script_hits: Vec<i16>,
+    /// The point of the target record (+0x9f4) host 1.120 answers: the centre of the hurt shape the
+    /// member targets (game units, the app's axes), kept while the member is not free.
+    pub(crate) target_point: Option<Vec3>,
+}
+
+/// Whom a special's target record names, for the effects bound to its object (host 1.149).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum SpecialOn {
+    Player,
+    Me,
+    Other,
+    Enemy(Entity),
 }
 
 /// Motion ids of FUN_0017ca70 / FUN_0017cee8: lying KO'd (0x36) and getting up (0x37).
@@ -445,6 +457,16 @@ impl PartyMember {
     /// The member's target record (+0x9f4) is valid (host 1.140).
     pub(crate) fn target_valid(&self) -> bool {
         self.special_target || self.target.is_some()
+    }
+
+    /// The object of the target record while a special runs (FUN_00113d48 copied phase 1's record).
+    pub(crate) fn special_on(&self) -> Option<SpecialOn> {
+        Some(match self.special_who? {
+            ScriptTarget::Party(battle::Who::Player) => SpecialOn::Player,
+            ScriptTarget::Party(battle::Who::Me) => SpecialOn::Me,
+            ScriptTarget::Party(battle::Who::Other) => SpecialOn::Other,
+            ScriptTarget::Enemy(t) => SpecialOn::Enemy(t.entity),
+        })
     }
 
     /// The status block's HP and MP as the danger test and the item handlers read them.
@@ -672,6 +694,11 @@ fn spawn_party(
         next_slot += 1;
         let root = commands.spawn((AreaPart, Transform::from_translation(motor.pos * SCALE).with_rotation(Quat::from_rotation_y(yaw)), Visibility::default())).id();
         let body = spawn_skinned(&mut commands, root, rig.clone(), &mut meshes, &mut materials, &mut images, &mut bindposes, SCALE);
+        // The member's own effect file (the object's +0x80): its scripts' effects (hosts 1.22, 1.87,
+        // 1.149) and its attack objects' hit sparks (2.22) come from it.
+        if let Some(lib) = lib.as_deref_mut() {
+            crate::drive::register_effects(&disc, lib, &rig);
+        }
         // FUN_0017c718: the hand objects. Hand 0 is the member's saved weapon word (FUN_0016ee98).
         // The app's new game leaves this word 0 (its writer in the original was not found): no hand
         // object then, as FUN_0016ee98 answers 0. `KH2_PARTY_WEAPONS=<Donald item>,<Goofy item>` is a
@@ -765,6 +792,7 @@ fn spawn_party(
                 special_target: false,
                 special_who: None,
                 script_hits: Vec::new(),
+                target_point: None,
             },
             // The members' attacks hit enemies (stage 2) and enemies' attacks hit them (stage 3,
             // `party_receive_hits`).
@@ -1018,6 +1046,7 @@ fn party_tick(
                 m.target = None;
             }
             let tshape = m.target.and_then(|t| shape_of(t, &enemies));
+            m.target_point = tshape.map(|(ct, _)| ct);
             let rel_t = tshape.map_or(Rel::default(), |(ct, _)| relation(pos, ct));
             // FUN_0010ca88: a valid target and bit 0x40 clear.
             let target_ok = tshape.is_some() && !too_far;

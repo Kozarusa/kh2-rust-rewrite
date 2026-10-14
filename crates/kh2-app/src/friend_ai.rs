@@ -20,12 +20,17 @@ use bevy::prelude::*;
 use kh2_bdx::{Program, Runtime};
 use kh2_tables::tables as t;
 
+use kh2_model::collision::kind as shape_kind;
+
 use crate::assets::Disc;
+use crate::combat::{Fighter, Hit, Team};
+use crate::data::GameData;
 use crate::enemy_ai::AiTrace;
 use crate::enemy_host::{BevyHost, Env};
-use crate::friend_host::{FriendFields, FriendHost};
+use crate::friend_host::{FriendFields, FriendHost, FxReq};
 use crate::enemy_obj::{Obj, OBJ_SIZE, SELF_BASE};
-use crate::party::PartyMember;
+use crate::fx::{Bind, Placement};
+use crate::party::{PartyMember, SpecialOn};
 use crate::schedule::Sim;
 use crate::skel::Animator;
 use crate::sora::Sora;
@@ -137,25 +142,178 @@ fn trigger_bits(anim: &Animator) -> [u8; 2] {
     bits
 }
 
+/// The victims' hit memory for the members' attack objects (the victim's block +0xa50: FUN_001be108
+/// tests, FUN_001be190 marks, FUN_001be300 counts down), by (member, victim). [inferred] Kept apart
+/// from the spells' memory in `magic.rs`: the groups of the two never meet.
+#[derive(Default)]
+struct VictimMemory(HashMap<(Entity, Entity), crate::magic_rules::HitMemory>);
+
+/// FUN_001a2cc0's sweep: after a move of more than two frame units (+4 bit 4, FUN_001a2fc8) the
+/// volume is tested at the position and then in steps of `min(radius, height)` toward the previous
+/// one while more than half a step is left (`DAT_0037b460` 0.5). Game units, the app's axes.
+fn sweep_points(pos: Vec3, prev: Option<Vec3>, step: f32) -> Vec<Vec3> {
+    let mut out = vec![pos];
+    let Some(prev) = prev else { return out };
+    let d = prev - pos;
+    let mut left = d.length();
+    if left <= 2.0 || step <= 0.0 {
+        return out;
+    }
+    let dir = d / left;
+    let mut p = pos;
+    while left > step * 0.5 {
+        p += dir * step;
+        left -= step;
+        out.push(p);
+    }
+    out
+}
+
+/// The size FUN_001a2cc0 tests with: with a growth (+0xcc > 0) the start size eased toward the final
+/// one by `s = sin(t / frames x pi x 0.5)` (FUN_00300278 = sinf; `DAT_0037b45c` pi, `DAT_0037b460`
+/// 0.5): `from x (1 - s) + final x s`; else the final size.
+fn attack_size(a: &crate::friend_host::AttackObj) -> (f32, f32) {
+    if a.grow > 0.0 {
+        let s = (a.t / a.grow * std::f32::consts::PI * 0.5).sin();
+        (a.from.0 * (1.0 - s) + a.radius * s, a.from.1 * (1.0 - s) + a.height * s)
+    } else {
+        (a.radius, a.height)
+    }
+}
+
+/// An attack volume (FUN_00189610 with the radius and half height; kind 3, a sphere, when they are
+/// equal): as `magic.rs`, a vertical segment of `height - radius` either side of the centre with the
+/// radius [inferred shape]. Bevy space in, metres.
+fn attack_volume(c: Vec3, radius: f32, height: f32) -> crate::combat::Volume {
+    let half = (height - radius).max(0.0) * crate::SCALE;
+    crate::combat::Volume { a: c - Vec3::Y * half, b: c + Vec3::Y * half, r: radius * crate::SCALE }
+}
+
+/// One pass of FUN_0018c2d8 over the member's attack objects: a released object (+4 bit 0x800) is
+/// destroyed; any other runs FUN_001a2cc0: the growth's clock (+0xc8) counts one frame (`DAT_00356f40`)
+/// and past +0xcc the object is released without a test; otherwise its volume is tested against the
+/// enemies' hurt shapes. A hit takes the victim's memory (`HitMemory`: once per group until the row's
+/// Interval) and the row variant of the hit count (FUN_0019e7e0, `magic_rules::variant`).
+#[allow(clippy::too_many_arguments)]
+fn step_attacks(
+    me: Entity,
+    m: &PartyMember,
+    fields: &mut FriendFields,
+    game: &GameData,
+    victims: &[(Entity, Vec<(crate::combat::Volume, crate::combat::HurtSpheroid)>)],
+    memory: &mut VictimMemory,
+    pax: Option<&std::sync::Arc<crate::fx::LoadedPax>>,
+    log: bool,
+    out: &mut Vec<(Hit, Option<crate::fx::SpellHit>)>,
+) {
+    fields.attacks.retain(|a| {
+        if a.released && log {
+            info!("party: {} attack object {:#x} (atkp {} group {:#x}) destroyed (FUN_0018c2d8)", m.model, a.handle, a.atkp, a.group);
+        }
+        !a.released
+    });
+    for a in fields.attacks.iter_mut() {
+        if a.grow > 0.0 {
+            a.t += 1.0;
+            if a.grow < a.t {
+                a.released = true;
+                if log {
+                    info!("party: {} attack object {:#x} (atkp {}) released after its {} frames (FUN_001a2cc0 -> FUN_0018dc98)", m.model, a.handle, a.atkp, a.grow);
+                }
+                continue;
+            }
+        }
+        let Some(pos) = a.pos else { continue };
+        let (r, h) = attack_size(a);
+        let step = r.min(h);
+        if step <= 0.0 {
+            continue;
+        }
+        let Some(base) = crate::magic_rules::attack_row(&game.atkp, a.atkp, a.kind) else {
+            if a.t <= 1.0 {
+                warn!("party: {} attack object atkp {} kind {}: no atkp row", m.model, a.atkp, a.kind);
+            }
+            continue;
+        };
+        if log && a.t <= 1.0 {
+            info!("party: {} attack object {:#x}: atkp {} group {:#x} at {:.0?} radius {r} height {h} for {} frames", m.model, a.handle, a.atkp, a.group, pos, a.grow);
+        }
+        let points = sweep_points(pos, a.prev, step);
+        for (ve, shapes) in victims {
+            let mem = memory.0.entry((me, *ve)).or_default();
+            if !mem.may_hit(game.atkp[base].r#type, a.group) {
+                continue;
+            }
+            let Some((from, sph)) = points.iter().find_map(|&c| {
+                let v = attack_volume(c * crate::SCALE, r, h);
+                shapes.iter().find(|(hv, _)| crate::combat::overlap(&v, hv)).map(|(_, s)| (c * crate::SCALE, *s))
+            }) else {
+                continue;
+            };
+            let n = mem.count_hit(a.group);
+            let vi = crate::magic_rules::variant(&game.atkp, base, n);
+            let row = &game.atkp[vi];
+            mem.mark(a.group, row.interval);
+            let point = crate::combat::victim_point(&sph, from);
+            let dir = (sph.center - m.position() * crate::SCALE).with_y(0.0).normalize_or(Vec3::Z);
+            let hit = Hit { attacker: me, target: *ve, atkp: row.id as i16, dir, point, row: Some(row.sub_id) };
+            info!("party: {} attack object {:#x} hits {ve:?}: atkp {} SubId {} (hit {n}, Power {}, Element {}, Interval {})", m.model, a.handle, row.id, row.sub_id, row.power, row.element, row.interval);
+            out.push((hit, pax.map(|p| crate::fx::SpellHit { target: *ve, atkp: hit.atkp, pax: p.clone() })));
+        }
+    }
+}
+
+/// The model entity an effect bound to "the object of the target record" follows (1.149): the one the
+/// special's record names (FUN_00113d48 phase 1: Cure's party member, else the enemy target).
+fn special_owner(m: &PartyMember, s: &Sora, bodies: &[(u8, Entity)], fighters: &Query<&Fighter, Without<PartyMember>>) -> Option<Entity> {
+    match m.special_on()? {
+        SpecialOn::Player => Some(s.body),
+        SpecialOn::Me => Some(m.body),
+        SpecialOn::Other => bodies.iter().find(|(slot, _)| *slot != m.slot).map(|(_, b)| *b),
+        SpecialOn::Enemy(e) => fighters.get(e).ok().map(|f| f.hurt_body),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn friend_update(
+    mut commands: Commands,
     world: Option<Res<World>>,
     trace: Option<ResMut<AiTrace>>,
     sora: Query<&Sora>,
-    data: Res<crate::party::PartyData>,
-    mut q: Query<(&mut PartyMember, &mut FriendBrain)>,
+    (data, game, lib): (Res<crate::party::PartyData>, Res<GameData>, Option<Res<crate::fx::EffectLib>>),
+    mut q: Query<(Entity, &mut PartyMember, &mut FriendBrain)>,
     anims: Query<&Animator>,
+    fighters: Query<&Fighter, Without<PartyMember>>,
+    fighter_roots: Query<Entity, (With<Fighter>, Without<PartyMember>)>,
+    gts: Query<&GlobalTransform>,
+    mut memory: Local<VictimMemory>,
+    (mut hits, mut spell_hits): (MessageWriter<Hit>, MessageWriter<crate::fx::SpellHit>),
 ) {
     let (Some(mut trace), Ok(s)) = (trace, sora.single()) else { return };
     let log = std::env::var("KH2_PARTYLOG").is_ok_and(|v| !v.is_empty() && v != "0");
     let paired = HashMap::new();
-    for (mut m, mut brain) in &mut q {
+    // The enemies' hurt shapes (the victims of the members' attack objects), and the members' bodies.
+    let victims: Vec<_> = fighter_roots
+        .iter()
+        .filter_map(|e| {
+            let f = fighters.get(e).ok().filter(|f| f.team == Team::Enemy && f.hittable)?;
+            let (a, g) = (anims.get(f.hurt_body).ok()?, gts.get(f.hurt_body).ok()?);
+            let shapes = a.rig.model.shapes.iter().filter(|sh| sh.kind == shape_kind::BATTLE || sh.kind == shape_kind::TARGET);
+            Some((e, shapes.map(|sh| (crate::combat::shape_volume(sh, a, g), crate::combat::hurt_spheroid(sh, a, g))).collect::<Vec<_>>()))
+        })
+        .collect();
+    let bodies: Vec<(u8, Entity)> = q.iter().map(|(_, m, _)| (m.slot, m.body)).collect();
+    for m in memory.0.values_mut() {
+        m.tick();
+    }
+    for (me, mut m, mut brain) in &mut q {
         let Ok(anim) = anims.get(m.body) else { continue };
         let rig = anim.rig.clone();
         let FriendBrain { rt, obj, tag, flags124, started, errors_seen, mode, fields } = &mut *brain;
         fields.order = data.order(m.motion_row);
         fields.free = m.free;
         fields.target_valid = m.target_valid();
+        fields.target_point = m.target_point;
         obj.motor.pos = m.position();
         obj.motor.yaw = m.yaw();
         obj.motor.grounded = true;
@@ -177,7 +335,7 @@ fn friend_update(
             event_active: false,
         };
         let handle = obj.handle;
-        let mut host = FriendHost { inner: BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() }, fields };
+        let mut host = FriendHost { inner: BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() }, fields, game: &game };
         if !*started {
             *started = true;
             rt.spawn(&mut host, handle);
@@ -198,9 +356,33 @@ fn friend_update(
             m.pay_mp(cost);
         }
         // Hosts 2.10 / 2.17: the script's attack hits on its target record, for `party` to deliver.
-        host.fields.attacks.clear();
         m.script_hits.append(&mut host.fields.target_hits);
         m.pending_mp = host.fields.pending_mp;
+        // The effects the script started (1.22, 1.87, 1.149): elements of the member's own effect file.
+        let pax = lib.as_deref().and_then(|l| l.for_rig(&rig)).cloned();
+        for req in std::mem::take(&mut fields.fx) {
+            let (id, bind, place) = match req {
+                FxReq::Bound { id, on_target: false } => (id, Some(Bind::Owner(m.body)), Placement::default()),
+                FxReq::Bound { id, on_target: true } => (id, special_owner(&m, s, &bodies, &fighters).map(Bind::Owner), Placement::default()),
+                FxReq::At { id, pos } => (id, Some(Bind::Fixed(Mat4::from_translation(pos * crate::SCALE))), Placement { replace_translation: true, ..default() }),
+            };
+            let started = match (&pax, bind) {
+                (Some(p), Some(b)) => crate::fx::start_placed(&mut commands, p, id, b, place).is_some(),
+                _ => false,
+            };
+            if log {
+                info!("party: {tag} effect element {id} of {} ({req:?}): {}", rig.apdx.as_deref().unwrap_or("no effect file"), if started { "started" } else { "not started (no such element, file or owner)" });
+            }
+        }
+        // FUN_0018c2d8's pass over the member's attack objects.
+        let mut out = Vec::new();
+        step_attacks(me, &m, fields, &game, &victims, &mut memory, pax.as_ref(), log, &mut out);
+        for (h, sh) in out {
+            hits.write(h);
+            if let Some(sh) = sh {
+                spell_hits.write(sh);
+            }
+        }
         let now = rt.current_mode();
         m.script_mode = now.clone();
         if now != *mode {

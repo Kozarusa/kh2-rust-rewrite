@@ -649,7 +649,7 @@ impl Active {
     /// Host 4.3 (`FUN_001b9780`): the end with event 7, or 0x9c when the mission kind is 0x1e (`FUN_001ba100`) and
     /// the trigger for (7, argument) has a story flag that is set.
     fn host_end(&mut self, arg: i32) {
-        let set = self.header.kind == 0x1e && self.trigger(7, arg).and_then(|t| t.story_flag).is_some_and(|f| f != 0xffff && self.story.contains(&(f as i32)));
+        let set = self.header.kind == 0x1e && self.trigger(7, arg).and_then(|t| t.story_flag).is_some_and(|f| f != 0xffff && (self.story.contains(&(f as i32)) || crate::progress::shared_story().is_some_and(|s| s.lock().test(f))));
         self.end_through(if set { 0x9c } else { 7 }, arg);
     }
 
@@ -893,7 +893,9 @@ impl Host for MissionHost<'_> {
                 a.story.insert(arg(0));
                 Value::None
             }
-            (0, 15) => Value::Bool(a.story.contains(&arg(0))),
+            // The read also sees the app's story flags (`progress::shared_story`, WP-E5); the
+            // mission's own sets stay in `story` for the session.
+            (0, 15) => Value::Bool(a.story.contains(&arg(0)) || crate::progress::shared_story().is_some_and(|s| s.lock().test(arg(0) as u16))),
             // 0.69 (0x16e088 -> FUN_001a52b0) / 0.89 (0x16e0b8 -> FUN_001a5328): a bit of the array at 0x33fdb0.
             (0, 69) => {
                 a.records.insert(arg(0));

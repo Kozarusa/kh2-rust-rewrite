@@ -33,7 +33,7 @@ impl Plugin for AssetsPlugin {
         app.insert_resource(disc)
             .insert_resource(game_data)
             .insert_resource(CurrentArea { name: self.start.clone(), loaded: None })
-            .add_systems(Update, ((switch_area, load_area).chain(), sky_follow.in_set(Frame::Sky)));
+            .add_systems(Update, ((switch_area, load_area).chain(), (sky_follow, sky_unculled).in_set(Frame::Sky)));
     }
 }
 
@@ -129,7 +129,8 @@ pub fn load_area(
     }
     let root = commands.spawn((AreaPart, Transform::from_scale(Vec3::splat(SCALE)), Visibility::default())).id();
     spawn_model(&mut commands, root, &map.map, &mut meshes, &mut materials, &mut images);
-    if let Some(sky) = &map.sky {
+    // SK0 then SK1: the game builds one object per tag, in that order (`FUN_0015e6c0`).
+    for sky in [&map.sky, &map.sky1].into_iter().flatten() {
         let s = commands.spawn((AreaPart, Sky, Transform::from_scale(Vec3::splat(SCALE)), Visibility::default())).id();
         spawn_model(&mut commands, s, sky, &mut meshes, &mut materials, &mut images);
     }
@@ -177,6 +178,18 @@ pub fn spawn_point(world: &World, cam_world: &World) -> (Vec3, Vec3) {
 pub fn sky_follow(_cam: Query<&Transform, (With<Camera3d>, Without<Sky>)>, mut sky: Query<&mut Transform, With<Sky>>) {
     for mut s in &mut sky {
         s.translation = Vec3::ZERO;
+    }
+}
+
+/// The dome meshes lie millions of units out (tens of kilometres at `SCALE`), beyond the camera's
+/// far plane (Bevy's perspective projection is infinite in depth; its `far` only feeds frustum
+/// culling), so every sky mesh is exempt from culling. The PS2 has no far clip (`[inferred]`: the
+/// game's projection `FUN_001078f0` sets only the near plane; no far-plane test was found).
+pub fn sky_unculled(mut commands: Commands, new: Query<(Entity, &ChildOf), Added<Mesh3d>>, sky: Query<(), With<Sky>>) {
+    for (e, parent) in &new {
+        if sky.contains(parent.parent()) {
+            commands.entity(e).insert(bevy::camera::visibility::NoFrustumCulling);
+        }
     }
 }
 

@@ -242,10 +242,13 @@ fn append_skinned(mesh: &mut Mesh, p: &VpuPacket, slots: &[usize], rest: &[Mat4]
     }
 }
 
-/// A map file (`.map`, a BAR): the `MAP` model + textures, plus optional sky (`SK0`).
+/// A map file (`.map`, a BAR): the `MAP` model + textures, plus the optional skies `SK0` and `SK1`
+/// (the game's map object keeps one count per tag, +0x6c / +0x70, `FUN_00149348`; `FUN_0015e6c0`
+/// builds a sky object for each tag whose count is exactly 1).
 pub struct MapFile {
     pub map: Model,
     pub sky: Option<Model>,
+    pub sky1: Option<Model>,
 }
 
 pub fn map_file(file: &[u8]) -> Option<MapFile> {
@@ -260,5 +263,5 @@ pub fn map_file(file: &[u8]) -> Option<MapFile> {
             ..Default::default()
         })
     };
-    Some(MapFile { map: pair("MAP")?, sky: pair("SK0") })
+    Some(MapFile { map: pair("MAP")?, sky: pair("SK0"), sky1: pair("SK1") })
 }

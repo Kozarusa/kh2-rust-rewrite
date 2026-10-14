@@ -170,3 +170,30 @@ fn keyblade_meshes_report_their_blend_flags_and_winding() {
         }
     }
 }
+
+/// WP-SK1: which maps carry which sky. The game counts the entries tagged `SK0` / `SK1` (map object
+/// +0x6c / +0x70, FUN_00149348) and builds a sky object for a tag only when its count is exactly 1
+/// (FUN_0015e6c0). tt00 has only SK1; tt03 and tt24..28 have both (docs/render.md "Sky placement").
+#[test]
+fn skies_per_area_sk0_and_sk1() {
+    let Some(mut a) = open() else { return };
+    let mut report = Vec::new();
+    for n in (0..=28).map(|i| format!("tt{i:02}")) {
+        let Ok(file) = a.read(&format!("map/us/{n}.map")) else { continue };
+        let Ok(e) = kh2_bar::parse(&file) else { continue };
+        let count = |tag: &str| e.iter().filter(|x| x.tag == tag && x.kind == 4).count();
+        let m = kh2_model::map_file(&file);
+        let (s0, s1) = (count("SK0"), count("SK1"));
+        let loaded = m.as_ref().map(|m| (m.sky.is_some(), m.sky1.is_some()));
+        eprintln!("{n}: SK0 entries {s0}, SK1 entries {s1}; map_file sky {loaded:?}");
+        assert_eq!(loaded, Some((s0 > 0, s1 > 0)), "{n}");
+        report.push((n, s0, s1));
+    }
+    let find = |n: &str| report.iter().find(|r| r.0 == n).cloned();
+    if let Some((_, s0, s1)) = find("tt00") {
+        assert!(s0 == 0 && s1 == 1, "tt00 has only SK1");
+    }
+    if let Some((_, s0, s1)) = find("tt04") {
+        assert!(s0 == 1 && s1 == 0);
+    }
+}

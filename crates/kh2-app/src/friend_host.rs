@@ -452,7 +452,9 @@ impl FriendHost<'_, '_> {
                 let at = arg(0).wrapping_add(4);
                 let mut b = [0u8; 4];
                 if !self.inner.read_mem(at, &mut b) {
-                    return Some((Value::None, St::Missing, "10.55 on a word outside the member's memory"));
+                    // Goofy's `tornado` / `turbo` point it at their target-search block in the script's own
+                    // globals (context +0x24 / +0x20), which only 6.5 (FUN_002f04a8, not ported) reads.
+                    return Some((Value::None, St::Stub, "10.55 on the script's own memory (a target-search block only 6.5 reads, not ported)"));
                 }
                 let w = u32::from_le_bytes(b) & !0x1_0000 | u32::from(arg(1) != 0) << 16;
                 self.inner.write_mem(at, &w.to_le_bytes());

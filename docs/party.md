@@ -714,7 +714,8 @@ Done:
   charge starts (MP 0, length = the row's MpDrive 1200 x `DAT_0037a974` 1.0) when MP is short (Goofy's `blade`
   pays 10 per use in a b_44 run). Host 1.140 (0x173740 -> FUN_0018ed58) answers the member's target record.
 
-Not done: (Cure's heal and the specials' payment: section 14) the specials' moving attack objects and effects, the members'
+Not done: (Cure's heal and the specials' payment: section 14; Donald's thunder, fire, cure and Goofy's tornado
+attack objects and effects: section 15) Donald's blizzard, Goofy's blade and turbo, the members'
 ability block, the attacker memory +0xcec, the panel flashes, limits and forms (stages 5, 6).
 - FUN_00111040 forces motion state 0x1f only for classes 12, 15 and 16, so Donald and Goofy (classes 0, 1)
   may follow through FUN_0010e5e8's body (state 0) rather than FUN_0010e140 as stage 1 assumed; which state a
@@ -869,7 +870,14 @@ script's contexts named the player; 1.130 and 1.149 showed it). They start at 0x
   2.40) and the mode waits for it (context +0x20). The app's hand objects are not objects a script can move, so the
   child thread fails (a script error reading through the null weapon object at 0x0e14 in the base run, then the mode
   waits forever: Goofy stops choosing actions after his first `blade`; this was so before WP-S3).
-- `turbo` (R0b4e) not read.
+- `turbo` (R0b4e -> R0b5c) **not done**: motion, 1.91 for its length (186), motion queued, then while the motion runs
+  a dash steered with 0.46 toward the target or toward points of 1.247 `random_free_point` (FUN_001726d8 ->
+  FUN_001a6068 / FUN_001a6198, a spiral search with the game's second generator) and 6.4 / 6.5 (target search),
+  moved with 1.111 while range trigger 16 is on; no attack object (the motion's volumes hit). In the app 1.247 is not
+  answered: the script reads through its 0 answer (`script error BadAddress(0) at 0x0beb`) and the mode ends after
+  ~1.7 s (log `turbo.log` with `KH2_PARTY_ABILITIES=425,-429`).
+- 10.55 on the script's own memory (Goofy's search blocks) is classed a stub: the host cannot reach the script's
+  globals, and only 6.5 reads the bit.
 
 **The script's motion, again**: a script motion that ended stays on its last frame (`Animator::play` would start a
 finished motion again, so the script's 1.14 never saw it end and Goofy's `tornado` never left its loop); the queued

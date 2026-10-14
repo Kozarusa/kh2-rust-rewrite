@@ -405,9 +405,28 @@ impl BevyHost<'_> {
     fn group0(&mut self, c: &Call) -> (Value, St, &'static str) {
         match c {
             Call::ReleaseEffect { .. } => stub(Value::None, "effects run to their end"),
-            // 0.15 progress_flag_test (FUN_0016d5b8 -> FUN_001802e0): a bit of the story progress array
-            // at 0x33f6b0 (0xffff is false). The app has no story progress: every flag reads clear.
-            Call::Func { group: 0, index: 15, .. } => stub(Value::Bool(false), "story progress flags: the app has none, all read clear (a new game)"),
+            // 0.14 progress_flag_set (FUN_0016d5a0 -> FUN_0017ff60): set the flag and run its side
+            // effects (`progress::Story::set`). 0.15 progress_flag_test (FUN_0016d5b8 -> FUN_001802e0):
+            // the bit of the array at 0x33f6b0 (0xffff is false). 0.70 (FUN_0016d5e8 -> FUN_00180330):
+            // flag 0x102b. All on the app's story (`progress::shared_story`); with none installed (unit
+            // tests, tools) every flag reads clear, as a new game.
+            Call::Func { group: 0, index: 14, args } => {
+                let id = args.first().map_or(0xffff, |a| a.int()) as u16;
+                match crate::progress::shared_story() {
+                    Some(s) => {
+                        s.lock().set(id);
+                        imp(Value::None)
+                    }
+                    None => stub(Value::None, "no story installed: the flag is not kept"),
+                }
+            }
+            Call::Func { group: 0, index: 15 | 70, args } => {
+                let id = if matches!(c, Call::Func { index: 70, .. }) { 0x102b } else { args.first().map_or(0xffff, |a| a.int()) as u16 };
+                match crate::progress::shared_story() {
+                    Some(s) => imp(Value::Bool(s.lock().test(id))),
+                    None => stub(Value::Bool(false), "no story installed: every flag reads clear (a new game)"),
+                }
+            }
             // 0.21 angle_between (0x16cfd0): the wrapped turn from direction a to direction b,
             // atan2(b.x, b.z) - atan2(a.x, a.z) through FUN_0017bbc0 (moved here from npc.rs, WP-E2b).
             Call::Func { group: 0, index: 21, args } => match (args.first(), args.get(1)) {

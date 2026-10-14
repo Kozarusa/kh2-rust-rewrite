@@ -25,8 +25,8 @@
 //! constants are read from the executable. Exits also do nothing in battle state 2 unless their
 //! gate is 0 (`FUN_00198e10`, `FUN_001903c8`): not ported (the app has no battle state resource
 //! here). The lock `FUN_00195358` is ported as `ExitLocks` (the `dsa` table of `00progress.bin`
-//! and the save-block halfwords at 0x33f918, all 0 in the app until E5 runs the story flags'
-//! ops 2..5; the world-0x10 branch `FUN_001d32c0` is not ported).
+//! and the save-block halfwords at 0x33f918, which the story flags' ops 2..5 write in
+//! `progress::Story`, WP-E5; 0 in a new game; the world-0x10 branch `FUN_001d32c0` is not ported).
 
 use bevy::prelude::*;
 use kh2_ard::run::{Exit, Jump};
@@ -67,13 +67,14 @@ pub struct ExitConsts {
 
 const EXE_BIAS: usize = 0xff000;
 
-fn load_consts(disc: Res<Disc>, mut consts: ResMut<ExitConsts>, mut locks: ResMut<ExitLocks>) {
+fn load_consts(disc: Res<Disc>, mut consts: ResMut<ExitConsts>, mut locks: ResMut<ExitLocks>, progress: Option<Res<crate::progress::Progress>>) {
     if let Some(table) = disc.read("00progress.bin").and_then(|f| kh2_bar::parse(&f).ok()?.into_iter().find(|e| e.tag == kh2_ard::progress::LOCK_TABLE).map(|e| e.data.to_vec())) {
         let n = table.get(..2).map_or(0, |b| u16::from_le_bytes([b[0], b[1]]) as usize);
-        locks.words = vec![0; n];
         locks.table = table;
+        locks.story = progress.map(|p| p.story_handle());
         if area::arealog() {
-            info!("exits: lock table {} with {n} areas, every lock halfword 0 (no save block 0x33f918 in the app; flag ops 2..5 are E5)", kh2_ard::progress::LOCK_TABLE);
+            let set: Vec<String> = locks.story.as_ref().map(|s| s.lock()).map_or(Vec::new(), |s| (0..n).filter(|&i| s.lock_state(i) != 0).map(|i| format!("{i} ({:?}) {:#x}", locks.entry(i), s.lock_state(i))).collect());
+            info!("exits: lock table {} with {n} areas; lock halfwords set (0x33f918, story flag ops 2..5): [{}]", kh2_ard::progress::LOCK_TABLE, set.join(", "));
         }
     }
     let Some(exe) = disc.read_root("SLUS_210.05") else { return };
@@ -85,20 +86,28 @@ fn load_consts(disc: Res<Disc>, mut consts: ResMut<ExitConsts>, mut locks: ResMu
 }
 
 /// The exit lock (`FUN_00195358`): the `dsa` table of `00progress.bin` (`DAT_01c8a988`) and one
-/// lock halfword per entry (the save block's `0x33f918 + index * 4`). The app has no save block
-/// there, so the halfwords stay 0 (open) until the story-flag side effects ops 2..5 are ported
-/// (E5) [inferred: a new game starts with them 0; the new-game initialiser was not read].
+/// lock halfword per entry (the save block's `0x33f918 + index * 4`), kept by the story
+/// (`progress::Story::lock_state`): the story flags' side effects ops 2..5 write it, so a
+/// `KH2_STATE` file with `story_flags` locks and unlocks exits [inferred: a new game starts with
+/// them 0; the new-game initialiser was not read].
 #[derive(Resource, Default, Debug)]
 pub struct ExitLocks {
     pub table: Vec<u8>,
-    pub words: Vec<u16>,
+    /// The app's story (none: every halfword reads 0).
+    pub story: Option<crate::progress::StoryHandle>,
 }
 
 impl ExitLocks {
     /// `FUN_00195358(world, area)` != 0. The world-0x10 branch (`FUN_001d32e0`, story flags) is
     /// not ported: the app has only Twilight Town.
     pub fn locked(&self, world: u8, area: u8) -> bool {
-        kh2_ard::progress::exit_locked(&self.table, |i| self.words.get(i).copied().unwrap_or(0), world, area, false)
+        let story = self.story.as_ref().map(|s| s.lock());
+        kh2_ard::progress::exit_locked(&self.table, |i| story.as_ref().map_or(0, |s| s.lock_state(i)), world, area, false)
+    }
+
+    /// The (world, area) of `dsa` entry `i`.
+    pub fn entry(&self, i: usize) -> Option<(u8, u8)> {
+        Some((*self.table.get(2 + 2 * i)?, *self.table.get(3 + 2 * i)?))
     }
 }
 
@@ -587,6 +596,34 @@ mod tests {
 
     fn group(gate: u8, area: u8, id: u16, volumes: Vec<Activator>) -> ExitGroup {
         ExitGroup { tag: "m_10".into(), id, exit: Exit { area, entrance: 1, gate }, volumes, fired: false, disabled: false, prompting: false, held: false }
+    }
+
+    /// WP-E5 item 4: the lock halfwords are the story's; a flag whose op 2 writes entry 1 locks
+    /// tt03 (any non-zero state, `FUN_00195358`), one whose op 3 writes 0 opens it again, op 4
+    /// (0xffff) locks. Without a story every exit is open, as before.
+    #[test]
+    fn story_flag_ops_lock_and_unlock_exits() {
+        // dsa: two entries, (2, 4) and (2, 3).
+        let table = vec![2, 0, 2, 4, 2, 3];
+        let mut locks = ExitLocks { table, story: None };
+        assert!(!locks.locked(2, 3));
+        // World 2 entry with 3 flags: 0x800 op 2 (entry 1, state 1, message 0x4321), 0x801 op 3
+        // (entry 1), 0x802 op 4 (entry 1).
+        let mut e = vec![6, 0, 15, 0, 20, 0];
+        e.extend_from_slice(&[2, 3, 1, 0, 1, 0, 0x21, 0x43, 0]);
+        e.extend_from_slice(&[3, 1, 1, 0, 0]);
+        e.extend_from_slice(&[4, 1, 1, 0, 0]);
+        let story = crate::progress::StoryHandle::new(crate::progress::Story::with_effects(std::sync::Arc::new(vec![Vec::new(), Vec::new(), e])));
+        locks.story = Some(story.clone());
+        assert!(!locks.locked(2, 3) && !locks.locked(2, 4));
+        story.lock().set(0x800);
+        assert!(locks.locked(2, 3) && !locks.locked(2, 4));
+        assert_eq!(story.lock().lock_message(1), 0x4321);
+        story.lock().set(0x801);
+        assert!(!locks.locked(2, 3));
+        story.lock().set(0x802);
+        assert!(locks.locked(2, 3));
+        assert_eq!(locks.entry(1), Some((2, 3)));
     }
 
     #[test]

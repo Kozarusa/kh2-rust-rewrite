@@ -85,7 +85,9 @@ with a default, nothing in the app reads it; Missing = fails visibly. Addresses 
 | 0.79 release_effect | Stub | effects run to their end |
 | 2.9 set_obj_param | Impl | the game builds the object's status block from the `enmp` row (FUN_001b2148 -> FUN_0019f8a8); the app built it at spawn, the call checks the row number (Shadow 34, Soldier 33) |
 | 1.110 spawn_kind | Impl | byte +0x1c of the spawn record (FUN_0016b858): the area group's value for enemies spawned from an area script (`docs/enemies.md`), -1 for the app's own waves |
-| 0.15 progress_flag_test | Stub | a bit of the story progress array at 0x33f6b0 (FUN_001802e0); the app has no story progress, every flag reads clear. The Dusk uses flags 2267, 2256, 2122, 2091 only to pick its drop row |
+| 0.14 progress_flag_set | Impl | FUN_0016d5a0 -> FUN_0017ff60 on the app's story (`progress::Story::set`: the bit at 0x33f6b0 and its `00progress.bin` side effects, docs/events.md section 5); Stub (not kept) when no story is installed (unit tests) |
+| 0.15 progress_flag_test | Impl | a bit of the story progress array at 0x33f6b0 (FUN_0016d5b8 -> FUN_001802e0) read from the app's story (`progress::shared_story`, WP-E5): clear in a new game, set by `KH2_STATE` `story_flags`, area-script opcode 0x19 and host 0.14. Stub (all clear) without a story. The Dusk uses flags 2267, 2256, 2122, 2091 only to pick its drop row |
+| 0.70 progress_flag_102b | Impl | FUN_0016d5e8 -> FUN_00180330: flag 0x102b of the same story |
 | 1.63 motion_near_end | Impl | FUN_0017f400: a motion plays, no blend left (the request's blend, run down per tick) and the controller time has reached the value of the motion's method +0x1c, read as the return frame [inferred: FUN_0017e3b8 wraps a loop to time - end + that value] |
 | 1.69 obj_f_170 | Impl | object +0x170 is the motion controller's (+0x140) time (+0x30): the playing frame, or the first frame of a motion requested this tick |
 | 1.66 set_flag_27 | Stub | bit 27 of +0x108, no consumer |

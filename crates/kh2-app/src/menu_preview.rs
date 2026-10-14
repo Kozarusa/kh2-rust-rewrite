@@ -109,6 +109,9 @@ pub fn motion_slot(rig: &Rig) -> Option<usize> {
 #[derive(Component)]
 pub struct PreviewCamera;
 
+/// The filter of every query for THE game camera (the preview's own `Camera3d` is left out).
+pub type GameCamera = (With<Camera3d>, Without<PreviewCamera>);
+
 #[derive(Component)]
 struct PreviewModel {
     body: Entity,

@@ -1601,7 +1601,7 @@ fn form_exp(
 fn show_prizes(
     mut commands: Commands,
     lib: Res<PrizeLib>,
-    cam: Query<&GlobalTransform, (With<Camera3d>, Without<crate::menu::preview::PreviewCamera>)>,
+    cam: Query<&GlobalTransform, crate::menu::preview::GameCamera>,
     mut prizes: Query<(Entity, &mut PrizeObj, &mut Transform, &mut Visibility)>,
     mut ticks: Local<f32>,
     time: Res<Time>,

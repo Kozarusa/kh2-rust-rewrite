@@ -458,6 +458,15 @@ impl Menu {
     }
 }
 
+/// The field task `FUN_00138758` does not open the camp (nor, in the app, the PAUSE band) while `DAT_00354f70` is non-zero.
+/// Its writers: `FUN_00195898` sets bit 1 when an event is created with flag 0x80 (cleared by `FUN_00195968` /
+/// `FUN_001959f0`), `FUN_001ad378` sets bit 2 for a running mission (cleared by `FUN_001ad790`, which also clears the
+/// "fight stopped" bit of `DAT_0035d268`). The app's mapping: a playing event/layout (`event_active`, which holds the
+/// intro's start event and its camera) or a stopped fight [inferred: the 0x80 flag is not parsed per event].
+fn start_locked(mission: Option<&crate::struggle::Mission>) -> bool {
+    mission.is_some_and(|m| m.event_active() || m.control_locked() || m.fight_stopped())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn input(
     mut menu: ResMut<Menu>,
@@ -474,7 +483,7 @@ pub(crate) fn input(
     items: Res<item_pages::ItemsMenu>,
     mut pause: ResMut<Pause>,
     band: Res<pause_band::Band>,
-    battle: Option<Res<crate::audio_bgm::BattleFlag>>,
+    (battle, mission): (Option<Res<crate::audio_bgm::BattleFlag>>, Option<Res<crate::struggle::Mission>>),
     members: Query<&crate::party::PartyMember>,
 ) {
     if !menu.loaded {
@@ -495,7 +504,9 @@ pub(crate) fn input(
             }
         }
         Phase::Closed => {
-            if start {
+            if start && start_locked(mission.as_deref()) {
+                info!("menu: start refused: a mission layout / event holds the field (FUN_00138758 gate, DAT_00354f70)");
+            } else if start {
                 // The gate of `FUN_00138758` that the app has: the player is in control of Sora (the
                 // original also needs no scene change and no event running [inferred mapping]).
                 let state = sora.single().ok().map(|s| s.state);
@@ -1077,6 +1088,14 @@ fn refresh(menu: &Menu, scene: &mut MenuScene, progress: Option<&Progress>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Without a mission layout, event or stop the Start button is free; the locked states are the
+    /// mission's own predicates `event_active` / `control_locked` / `fight_stopped` (tests in `struggle.rs`).
+    #[test]
+    fn start_is_free_without_a_mission_event() {
+        assert!(!start_locked(None));
+        assert!(!start_locked(Some(&crate::struggle::Mission::default())));
+    }
 
     /// The menu's sequence step (docs/menus.md 1.6.1): one frame per 60 Hz tick. Checked against the executable
     /// (skipped without `KH2_ISO`): the 2D objects' speed +0x44 starts at 0x37f3c8 / 0x37f404 = 1.0 and one vblank adds

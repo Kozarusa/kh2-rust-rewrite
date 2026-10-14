@@ -314,7 +314,8 @@ frame 120: effect 0 of TT04_MS500's effect file started`, `camera: intro camera 
 
 Harness: `KH2_WAVE_GROUP=b_45 ... kh2-game tt04` (the mission starts about 4 s in); `KH2_INTRO=1` (or a mission
 name) starts `TT04_MS500`'s manager three seconds in wherever Sora stands (`intro::standalone`, sends
-`MissionStart`); `KH2_INTRO_HOLD=<event frame>` holds the camera at a frame for screenshots; `KH2_INFO=<hex id>`
+`MissionStart`), but on tt04 the area's default mission (`TT04_MS107`) starts about a second later and ends that intro, so
+`KH2_INTRO=1` alone does not reproduce the intro's log lines there: use `KH2_WAVE_GROUP=b_45` for the intro on tt04; `KH2_INTRO_HOLD=<event frame>` holds the camera at a frame for screenshots; `KH2_INFO=<hex id>`
 shows the bar with any message.
 
 **Gaps.** (1) Where the fighters stand (WP-I2, not resolved). The data: tt04 `btl` program 0xb5 loads only group

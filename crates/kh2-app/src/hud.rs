@@ -216,7 +216,7 @@ pub fn popups(
     mut commands: Commands,
     time: Res<Time>,
     mut msgs: MessageReader<DamagePopup>,
-    cam: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    cam: Query<(&Camera, &GlobalTransform), crate::menu::preview::GameCamera>,
     mut q: Query<(Entity, &mut Popup, &mut Node, &mut TextColor)>,
 ) {
     for m in msgs.read() {

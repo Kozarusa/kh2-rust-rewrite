@@ -104,6 +104,14 @@ pub fn motion_slot(rig: &Rig) -> Option<usize> {
     }
 }
 
+/// Marks the preview's own `Camera3d`. Every system that looks for THE game camera filters `Without<PreviewCamera>`:
+/// with two 3D cameras alive `Query::single()` would fail (the effects' view fell back to identity, the HUD lost its projection).
+#[derive(Component)]
+pub struct PreviewCamera;
+
+/// The filter of every query for THE game camera (the preview's own `Camera3d` is left out).
+pub type GameCamera = (With<Camera3d>, Without<PreviewCamera>);
+
 #[derive(Component)]
 struct PreviewModel {
     body: Entity,
@@ -191,6 +199,7 @@ fn show(
     let camera = commands
         .spawn((
             Camera3d::default(),
+            PreviewCamera,
             Camera { order: -1, clear_color: ClearColorConfig::Custom(Color::NONE), ..default() },
             RenderTarget::Image(preview.target.clone().into()),
             Projection::Perspective(PerspectiveProjection { fov, near: 0.01, far: 100.0, ..default() }),
@@ -302,5 +311,17 @@ mod tests {
         assert!((z - 702.0).abs() < 2.0 && pitch > 0.05 && pitch < 0.06, "{z} {pitch}");
         assert!(at.y > 304.0 && at.y < 316.0, "{at:?}");
         assert_eq!(at.x, 238.0);
+    }
+
+    /// With the preview camera alive the game camera is still the only match of the queries the other systems use.
+    #[test]
+    fn main_camera_queries_resolve_with_the_preview_camera_present() {
+        let mut world = World::new();
+        let main = world.spawn((Camera3d::default(), Transform::default())).id();
+        world.spawn((Camera3d::default(), PreviewCamera));
+        let mut q = world.query_filtered::<Entity, (With<Camera3d>, Without<PreviewCamera>)>();
+        assert_eq!(q.single(&world).unwrap(), main);
+        let mut all = world.query_filtered::<Entity, With<Camera3d>>();
+        assert!(all.single(&world).is_err(), "the unfiltered query is ambiguous, which is the bug");
     }
 }

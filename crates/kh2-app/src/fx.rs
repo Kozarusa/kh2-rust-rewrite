@@ -935,7 +935,7 @@ pub fn tick(
     owners: Query<&Animator>,
     sora: Query<&Sora>,
     locals: Query<(&Transform, Option<&ChildOf>)>,
-    camera: Query<(&GlobalTransform, &Projection), With<Camera3d>>,
+    camera: Query<(&GlobalTransform, &Projection), crate::menu::preview::GameCamera>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,

@@ -1321,7 +1321,7 @@ fn show_orbs(
     mut commands: Commands,
     draws: Res<OrbDraws>,
     mut mission: ResMut<Mission>,
-    cam: Query<&GlobalTransform, With<Camera3d>>,
+    cam: Query<&GlobalTransform, crate::menu::preview::GameCamera>,
     mut tfs: Query<(&mut Transform, &mut Visibility)>,
     mut ticks: Local<f32>,
     time: Res<Time>,

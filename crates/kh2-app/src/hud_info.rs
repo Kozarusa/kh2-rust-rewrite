@@ -109,6 +109,16 @@ fn forced() -> Option<u32> {
     u32::from_str_radix(v.trim_start_matches("0x"), 16).ok()
 }
 
+/// The INFORMATION bar's clock is the field's: it stands still while the camp menu or the PAUSE band is up (the original
+/// stops the field's tasks by the scene change, docs/menus.md 1.1; the app's `schedule::Pause`).
+pub fn step_dt(frozen: bool, dt: f32) -> f32 {
+    if frozen {
+        0.0
+    } else {
+        dt
+    }
+}
+
 pub fn update(scene: &mut HudScene, mission: &crate::struggle::Mission, bar: &mut InfoBar, dt: f32) {
     if scene.files.len() <= GAUG {
         return;
@@ -221,6 +231,16 @@ fn show(scene: &mut HudScene, bar: &mut InfoBar, id: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The wait and the scroll step from `step_dt`: zero while the menu or the PAUSE band freezes the field.
+    #[test]
+    fn the_bar_stands_still_while_frozen() {
+        assert_eq!(step_dt(true, 0.016), 0.0);
+        assert_eq!(step_dt(false, 0.016), 0.016);
+        // A frozen frame gives step() zero ticks: the wait does not advance.
+        let p = Phase::Shown { left: WAIT, x: 10.0 };
+        assert_eq!(step(p, true, 10.0, 100.0, 0.0), p);
+    }
 
     /// `FUN_00150688`: nothing moves before the follow-up group starts; then 180 ticks of wait, then the text
     /// runs left until it is one text width left of its start, and the bar closes.

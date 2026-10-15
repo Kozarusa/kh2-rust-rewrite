@@ -438,6 +438,19 @@ impl KindTwo {
                 let back_at = part.header[0x23];
                 if back_at != 0 && back_at <= self.wave {
                     self.wave = part.header[0x24];
+                    // FUN_00199858: before the wave is set, each spawn-kind-2 entity whose wave byte is not below the new
+                    // wave and that FUN_001995c8 finds defeated (in the table, object absent) is taken out of the table
+                    // (FUN_001942c8), so it comes back in the next lap.
+                    let wave = self.wave;
+                    let part_ix = self.part;
+                    let gone: Vec<u16> = g
+                        .members
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, m)| m.part == part_ix && m.spawn_kind == 2 && m.wave >= wave && self.killed.contains(&m.serial) && !alive(*i))
+                        .map(|(_, m)| m.serial)
+                        .collect();
+                    self.killed.retain(|s| !gone.contains(s));
                 }
                 // FUN_00199698
                 if part.entities.iter().any(|e| e.0 == 2 && e.1 == self.wave) {
@@ -1608,6 +1621,38 @@ mod tests {
         let mut two = KindTwo { part: 0, timer: 0.0, wave: 100, killed: Vec::new() };
         two.removed(&g2, &g2.members[1]);
         assert!(two.killed.is_empty());
+    }
+
+    /// Review finding 1 (`FUN_00199858`): when the waves wrap back, the members defeated for good in the lap before
+    /// leave the table of the defeated, so they come again; one still alive stays out.
+    #[test]
+    fn a_wave_wrap_takes_the_defeated_members_out_of_the_table() {
+        let mut header = [0u8; 0x2c];
+        header[0x22] = 9; // SpawnLimiter sum allowed
+        header[0x23] = 2; // go back at wave 2
+        header[0x24] = 0; // to wave 0
+        let entities = vec![(2, 0, 1), (2, 1, 1)];
+        let part = GroupPart { id: 0x8a, kind: 2, disabled: false, header, activators: Vec::new(), entities, counted: Vec::new() };
+        let g = AreaGroup {
+            program: 0x50,
+            name: "b_t".into(),
+            parts: vec![part],
+            members: vec![member(0, 2, 1, 10, 0), member(0, 2, 2, 10, 1)],
+            skipped: Vec::new(),
+            player: None,
+            mission: None,
+            orb_pool: false,
+            triggers: Vec::new(),
+        };
+        let mut two = KindTwo { part: 0, timer: 0.0, wave: 0, killed: vec![1, 2] };
+        // Both are defeated, so nothing is created on the way up; at wave 2 the walk goes back to wave 0 and takes both out
+        // of the table, and the first is created in the new lap.
+        assert_eq!(two.run(&g, |_| false), [0]);
+        assert!(two.killed.is_empty(), "wave 0 <= wave byte: both were taken out");
+        // A member that is still there stays in the table (FUN_001995c8 needs the object absent).
+        let mut two = KindTwo { part: 0, timer: 0.0, wave: 0, killed: vec![1, 2] };
+        assert_eq!(two.run(&g, |i| i == 1), [0]);
+        assert_eq!(two.killed, [2]);
     }
 
     /// A member's hit takes the rebuilt status: Donald's magic is the lvup row plus record plus staff, above the

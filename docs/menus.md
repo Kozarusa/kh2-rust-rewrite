@@ -997,7 +997,7 @@ Code: `menu_save.rs` (child module `menu::save`, registered in `MenuPlugin`'s tu
 
 Open: `F2` (harness key `F2`; it stands for the field Save command, for which the app has no object [inferred]) with the camp's gate (the player in control, no event or mission layout, no menu or PAUSE band): the picture dims as the camp's, the frame's enter groups play, the open sound id 3. **Top:** one row, "Save", selected, with the hand and the help `0x3858`; confirm (id 2) goes on, cancel or Start closes (id 4). **Checking:** the tab under the header, the information box with `0xa89`, 45 ticks [inferred from the footage: about a second]. **Files:** four rows from the slot folder; a row shows the file number, the world's logo (`logo_group`), LV, Munny, the play time as `h:mm` and the area's name (`place.bin`), or "Save new file."; Up and Down move the hand and wrap; confirm on an empty row writes at once, on an occupied one asks (the question starts on No [inferred from the footage: the hand rests on No]; Left and Right move between Yes and No); cancel on the list returns to the top page. **Writing:** the box with `0xa90` or `0xa92` for 45 ticks, then the slot file is written, id 0x24 sounds and the menu closes (`FUN_0025a158` ends the kind after the write; the remaster's clip shows the list once more, which the disc code does not). Log lines: `menu: save open (dir ...)`, `menu: save page 0 (pointer list, 1 row)`, `menu: save page 2 (checking ...)`, `menu: save page 0xb (file list, slots [..])`, `menu: save file cursor N`, `menu: save slot N is occupied: overwrite question`, `menu: save question Yes|No`, `menu: save slot N writing (overwrite|new file)`, `menu: save slot N written (<path>)`, `menu: save close`.
 
-**The slot files.** `progress::save_dir()` is `KH2_SAVE_DIR` or `local/saves` (git-ignored; nothing else is written, and the PS2 memory cards are never touched). Slot `n` is `slot0n.json`: a JSON object in the `KH2_STATE` schema (docs/progress.md): `block` (the party block as hex), `munny`, `option_word`, `game_mode`, `dodge_roll`, `new_seen` (the NEW tags' seen words, save `+0x31b4`), plus `format` and `slot` (the row's data: level, munny, play time in seconds, area code; the state reader ignores them). `KH2_STATE=local/saves/slot01.json` restores the state: `Progress::apply_json` puts the block back byte for byte (test `progress::tests::a_slot_file_restores_the_block_byte_for_byte`).
+**The slot files.** `progress::save_dir()` is `KH2_SAVE_DIR` or `local/saves` (git-ignored; nothing else is written, and the PS2 memory cards are never touched). Slot `n` is `slot0n.json`: a JSON object in the `KH2_STATE` schema (docs/progress.md): `block` (the party block as hex), `munny`, `option_word`, `game_mode`, `dodge_roll`, `new_seen` (the NEW tags' seen words, save `+0x31b4`), `moogle`, `shop_seen`, `shop_visits`, `record_bits`, `story_raw` and `world_points` (the state kept outside the block, docs/progress.md; WP-PRG1), plus `format` and `slot` (the row's data: level, munny, play time in seconds, area code; the state reader ignores them). `KH2_STATE=local/saves/slot01.json` restores the state: `Progress::apply_json` puts the block back byte for byte (test `progress::tests::a_slot_file_restores_the_block_byte_for_byte`).
 
 ### 18.4 Gaps
 
@@ -1516,6 +1516,11 @@ field (FUN_001038a0)`, `struggle menu: event 0x8d: trigger jump type 1 to world 
 7's frame, the header group +0x16, the menu sounds' set-up `FUN_0023e860` (the sounds go through `menu_sound`, muted).
 Code 0xc's picture page and the other rows' codes (1, 5, 6, 10, 0x11) are not reached by row 0x1a; the port takes
 only codes 3 and 4 to the manager (`Mission::menu_exit`).
+WP-PRG1: a record without +0x25 bit 0 can be cancelled; `FUN_0026fda0` only closes the page for the cancel (page -2 ->
+`FUN_0023e8b0`) and never reaches `FUN_001b9c58`, so the original leaves the manager running. The port ends it
+(`menu_exit(0)`, no jump) because with the menu gone nothing could [inferred, a port choice against a soft lock]. A code
+chosen while a jump task runs is queued and applied when the task is idle [inferred]. Tests
+`a_cancel_ends_the_manager_and_a_choice_during_a_jump_is_queued`.
 
 ## 22. Shops: menu kind 4 (WP-SH1)
 
@@ -1658,8 +1663,8 @@ recipe (bit 2r learned); +0x18 one bit per list entry made (entry 2r the item, 2
 once seen; +0x28 the unlock bits (`FUN_002903b8`): 0..2 the development sets, 3 the points and halving bonuses, 4 the
 higher rank, 5 two bonuses at once, 6..9 the made list's halving per rank, 10 the recipe row; +0x30 the points (at most
 99,999); +0x34 the stock and +0xfc the totals, a word per material slot (at most 999); +0x1c4 the level. The port keeps
-it as `progress::Moogle` (`Progress::moogle`; not in the slot files yet; `KH2_STATE` key `moogle`: `unlocks`, `points`,
-`level`).
+it as `progress::Moogle` (`Progress::moogle`; a slot file carries it; `KH2_STATE` key `moogle`: the bit sets, `points`,
+`level`, `stock`, `totals`).
 
 ### 23.3 The pages [V unless marked]
 
@@ -1834,7 +1839,7 @@ only in these three (`mips_scan --store-off 0x112d`), so leaving page 0xb, 0x17 
 `menu_shop::synth::pay_rewards` / `cond_met` (the rewards), `Session` (page 0xb as `Page::Rewards`, `Marks`, `see`,
 `entry_mark`, `row_mark`, `has_new`), `menu_shop::{item_place, fresh_at_open, item_tag, buy_tag, first_visit_bit}` and
 `Page::First` (page 7) in `crates/kh2-app/src/menu_shop.rs`; `Progress` keeps the save bytes (`shop_seen` +0x3714,
-`shop_visit` +0x3724, `Moogle::rewards` +8; not in the slot files yet). The tags are the sprite groups 0x77 / 0x78 on
+`shop_visit` +0x3724, `Moogle::rewards` +8; all three are in the slot files since WP-PRG1). The tags are the sprite groups 0x77 / 0x78 on
 the file's NEW! art; their place (left of the hand) and the page 0xb rows' columns are the port's [inferred: the rows have
 no plate]. `X` is -5.
 Harness (a state file; `KH2_STATE` is a path, `local/sh3/state-moogle.json` is
@@ -1867,4 +1872,4 @@ NEW tags of the material pages 10 and 0x17 (`FUN_0028f490`, `FUN_0028f698`, `FUN
 `FUN_0028f9a8`: the session sets +0x10 and +0x20); the look of the message window of page 7 (the port's text in the
 synthesis window style); the difference between the VIEWED group 0x77 and the NEW group 0x78 beyond the animation
 length (both use the same art rectangle); the entries `FUN_002783f8` adds to the lists (story flag 0x4837) are still out;
-`+0x3714`, `+0x3724` and the record `+8` are not in the slot files.
+`+0x3714`, `+0x3724` and the record `+8` are in the slot files since WP-PRG1 (a reload does not pay the rewards again).

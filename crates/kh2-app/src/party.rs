@@ -1127,7 +1127,9 @@ struct TargetCtx<'a> {
 /// The member's battle style: setting byte 0 of its record (`Progress::member_setting`, party record +0xd4; 0 at a
 /// new game). `KH2_PARTY_STYLE=<n>` is a harness override for every member.
 fn style_of(progress: Option<&crate::progress::Progress>, neo: u16) -> u8 {
-    resolve_style(std::env::var("KH2_PARTY_STYLE").ok().and_then(|v| v.trim().parse::<u8>().ok()), progress.and_then(|p| p.member_setting(neo, 0)))
+    static ENV_STYLE: std::sync::OnceLock<Option<u8>> = std::sync::OnceLock::new();
+    let env = *ENV_STYLE.get_or_init(|| std::env::var("KH2_PARTY_STYLE").ok().and_then(|v| v.trim().parse::<u8>().ok()));
+    resolve_style(env, progress.and_then(|p| p.member_setting(neo, 0)))
 }
 
 /// The setting byte of an AI record whose setting index is `index` (`FUN_0010f220`: record `+0xd4`, byte `1 + index`); a
@@ -1139,8 +1141,11 @@ fn record_setting(member: Option<&crate::progress::Member>, index: i32) -> Optio
     }
 }
 
+/// The style table has six rows (0..=5); a larger byte (a hand-edited slot file) would read past it in the original, so the
+/// port takes style 0, the new game's value [inferred].
 fn resolve_style(env: Option<u8>, saved: Option<u8>) -> u8 {
-    env.or(saved).unwrap_or(0)
+    let style = env.or(saved).unwrap_or(0);
+    if style > 5 { 0 } else { style }
 }
 
 /// FUN_0010df08's target refresh for a member of `class` with battle style `style` (setting byte 0):
@@ -2391,6 +2396,8 @@ mod tests {
     #[test]
     fn party_style_comes_from_the_setting_byte() {
         assert_eq!((resolve_style(None, None), resolve_style(None, Some(2)), resolve_style(Some(4), Some(2))), (0, 2, 4));
+        // A style past the table's six rows (a hand-edited slot) reads as 0, not as a row that does not exist.
+        assert_eq!((resolve_style(None, Some(6)), resolve_style(Some(200), None), resolve_style(None, Some(5))), (0, 0, 5));
         let mut p = crate::progress::Progress::from_block(&[], std::sync::Arc::new(Default::default()));
         assert_eq!(p.member_setting(2, 0), Some(0));
         // PA2's scene: the style read back from the record picks A (style 2), the nearest B (style 0) or nothing (style 4).

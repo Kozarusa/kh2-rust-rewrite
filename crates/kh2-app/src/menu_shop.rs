@@ -1919,6 +1919,11 @@ pub mod synth {
     /// reached, then the Free Development sets they open (`FUN_00290cc0`); `FUN_00290bb8` the level.
     pub fn make(b: &Book, s: &mut dyn Store, kind: u8, e: u16, flags: u8, item: u16) -> Option<Made> {
         let (r, odd) = recipe(b, e)?;
+        // The bag limit `make_check` tests (more than 0x62 of the item is the FULL notice): a caller that skipped the check
+        // gets nothing taken and nothing added.
+        if s.count(item) > 0x62 {
+            return None;
+        }
         s.add(item, 1);
         let points = points(b, r, flags & 1 != 0);
         let div = divisor(b, s.moogle(), kind, r.rank, flags & 2 != 0);
@@ -2837,6 +2842,47 @@ mod tests {
         assert_eq!((x.page, x.entries.clone()), (synth::Page::List(2), vec![]), "made: off the Recipes list");
         assert_eq!(synth::top_rows(&b, &s.m), vec![0, 2, 3, 4, 5, 6], "the Creations row shows");
         assert_eq!(synth::entries(&b, &s.m, 0), vec![0]);
+    }
+
+    /// Review finding 2: the paid-reward bits go through a slot file, so a reload does not pay the rewards again.
+    #[test]
+    fn rewards_are_not_paid_again_after_a_reload() {
+        let (mut mix, t, mats) = mix();
+        mix.conds = vec![cond(0, 0x30, 0xe, 5, 0, 1), cond(1, 7, 0xe, 5, 0, 1)];
+        let b = Book { mix: &mix, t: &t, mats: &mats, rank: &rk, flag1: &cat };
+        let mut s = Fake::default();
+        s.items.insert(0x200, 2);
+        let (_, o) = Session::start(&b, &mut s);
+        assert_eq!((o.rewards.fresh > 0, s.m.rewards, s.count(0x30)), (true, 0b11, 1), "paid once");
+        // Save, then load into a new state with an empty bag.
+        let mut p = Progress::from_block(&[], std::sync::Arc::new(crate::progress::ItemIndex::default()));
+        p.moogle = s.m.clone();
+        let text = p.slot_json(&crate::progress::SlotInfo { level: 1, munny: 0, play_seconds: 0, area: "tt04".into() });
+        let mut q = Progress::from_block(&[], std::sync::Arc::new(crate::progress::ItemIndex::default()));
+        q.apply_json(&text).expect("a slot file loads");
+        assert_eq!(q.moogle, s.m, "the record came back whole");
+        let mut s2 = Fake { m: q.moogle.clone(), ..Fake::default() };
+        let (_, o) = Session::start(&b, &mut s2);
+        assert_eq!((o.rewards.fresh, s2.count(0x30), s2.records.len()), (0, 0, 0), "nothing is paid again");
+    }
+
+    /// A review finding: `make` on a full bag (a caller that skipped `make_check`) takes nothing and adds nothing.
+    #[test]
+    fn a_make_into_a_full_bag_changes_nothing() {
+        let (mix, t, mats) = mix();
+        let b = Book { mix: &mix, t: &t, mats: &mats, rank: &rank, flag1: &flag1 };
+        let mut s = Fake::default();
+        s.m.unlocks = 1 << 10;
+        s.m.learned = 1;
+        s.m.set_stock(0, 7);
+        s.m.set_stock(1, 1);
+        s.items.insert(0x50, 99);
+        let before = s.m.clone();
+        assert_eq!(synth::make(&b, &mut s, 2, 0, 0, 0x50), None);
+        assert_eq!((s.count(0x50), s.m.clone()), (99, before));
+        s.items.insert(0x50, 98);
+        assert!(synth::make(&b, &mut s, 2, 0, 0, 0x50).is_some());
+        assert_eq!(s.count(0x50), 99);
     }
 
     #[test]

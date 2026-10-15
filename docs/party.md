@@ -424,7 +424,9 @@ refresh: re-target test, then the choice) runs `dispatch(class, style)` for ever
 
 - `style` = `PartyMember::style`, the setting byte 0 (WP-PA3: `Progress::member_setting(neo, 0)`, re-read every
   frame in `party_tick`; 0 at a new game; a `KH2_STATE` key `party_settings` sets it, docs/progress.md; the
-  harness `KH2_PARTY_STYLE=<n>` still overrides both members). [GAP: no page writes it yet: the page that does is
+  harness `KH2_PARTY_STYLE=<n>` still overrides both members; read once per run, not per frame). A style byte above 5 (the
+  table has six rows) reads as 0 [inferred; the original would read past the table]; `party_settings` in a state file rejects
+  a style above 5 and any value above 255 instead of truncating. [GAP: no page writes it yet: the page that does is
   Customize page 0x1b for Donald / Goofy (`FUN_00271078` with another character, docs/menus.md 2.4), which is not
   ported (`menu_customize.rs`, outside WP-PA3's ownership; the Party page 0x14/0x16 only swaps slots, WP-MN7/MN8).
   Searched: docs/menus.md and docs/party.md, `menu_party.rs`, `menu_config.rs` (the Config rows are the option

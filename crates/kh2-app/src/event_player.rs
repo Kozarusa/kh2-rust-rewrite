@@ -107,6 +107,49 @@ pub struct Window {
     pub kind: i16,
 }
 
+/// The message windows opcode 0x2d opened (the slots at `0x1dc00e0` of `FUN_002275a8`, up to 32, keyed by
+/// (key, message id)) and the counter hold of its action 2.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WindowSlots {
+    open: Vec<(i16, u16)>,
+    /// `DAT_0036b9c9` (`FUN_00222528` sets, `FUN_00222538` clears): while set `FUN_00222728` does not advance
+    /// the event's counter.
+    pub hold: bool,
+}
+
+impl WindowSlots {
+    /// Action 0: the window is in a slot (a full table of 32 drops it).
+    pub fn open(&mut self, key: i16, message: u16) {
+        if self.open.len() < 32 {
+            self.open.push((key, message));
+        }
+    }
+
+    /// Action 1: find the slot, close the window (the caller sends vtable +0x20), clear the slot, so no wait follows
+    /// for it. Returns whether the slot was found.
+    pub fn close(&mut self, key: i16, message: u16) -> bool {
+        let n = self.open.len();
+        self.open.retain(|&s| s != (key, message));
+        self.open.len() != n
+    }
+
+    /// Action 2: with the slot found, the counter is held until the window waits (state 3). No slot, no hold.
+    pub fn wait(&mut self, key: i16, message: u16) -> bool {
+        self.hold = self.open.contains(&(key, message));
+        self.hold
+    }
+
+    /// One tick: whether the counter advances. A held counter lets go once the window is at state 3 (`waiting`);
+    /// `closed` also lets it go [inferred: a window that never opened, or was closed, cannot reach state 3 and
+    /// the original's wait would not end on its own].
+    pub fn tick(&mut self, waiting: bool, closed: bool) -> bool {
+        if self.hold && (waiting || closed) {
+            self.hold = false;
+        }
+        !self.hold
+    }
+}
+
 /// An event's commands sorted into what the player uses.
 #[derive(Clone, Debug, Default)]
 pub struct Event {
@@ -271,6 +314,8 @@ struct Play {
     motions: HashMap<String, Option<Arc<kh2_anim::Slot>>>,
     /// The event kind row's flags (`evtp` +2 of kind `arg & 0x3f`, `FUN_00195898` -> `FUN_001d1128`).
     flags: u16,
+    /// The windows opcode 0x2d opened and the counter hold of its action 2.
+    windows: WindowSlots,
 }
 
 #[derive(Resource, Default)]
@@ -384,7 +429,7 @@ fn start(time: Res<Time<Real>>, rec: Res<AreaRecord>, disc: Res<Disc>, mut playe
         ev.movies,
         ev.other
     );
-    player.play = Some(Play { area: run.name.clone(), tag, cmds, ev, cursor: 0, ticks: 0, actors: HashMap::new(), lines: Vec::new(), motions: HashMap::new(), flags });
+    player.play = Some(Play { area: run.name.clone(), tag, cmds, ev, cursor: 0, ticks: 0, actors: HashMap::new(), lines: Vec::new(), motions: HashMap::new(), flags, windows: WindowSlots::default() });
 }
 
 fn view(s: super::Shot) -> View {
@@ -407,6 +452,12 @@ fn step(
 ) {
     let player = &mut *player;
     let Some(p) = player.play.as_mut() else { return };
+    // Opcode 0x2d action 2 (`FUN_00222528`): the counter stands still until the window is at state 3 (`FUN_00222728`).
+    if let Some(m) = msg.as_ref()
+        && !p.windows.tick(m.waiting, m.closed)
+    {
+        return;
+    }
     p.ticks += 1;
     // FUN_00222728: the counter is the frame count times 0.5 (no movie is played, so never the movie's frame).
     let f = p.ticks as f32 * 0.5;
@@ -513,13 +564,37 @@ fn step(
             }
             0x2d => {
                 let w = Window { frame: le16(d, 0) as i32, key: le16(d, 2), message: le16(d, 4) as u16, action: le16(d, 6), kind: le16(d, 8) };
-                if w.action == 0
-                    && let Some(m) = msg.as_mut()
-                {
-                    m.open = Some((w.message as u32, w.kind.clamp(0, 1) as usize));
-                    m.closed = false;
+                let mut note = "";
+                match w.action {
+                    0 => {
+                        p.windows.open(w.key, w.message);
+                        if let Some(m) = msg.as_mut() {
+                            m.open = Some((w.message as u32, w.kind.clamp(0, 1) as usize));
+                            m.closed = false;
+                            m.waiting = false;
+                        }
+                    }
+                    1 => {
+                        // FUN_002275a8: the slot's window gets the close method (vtable +0x20), the slot is cleared.
+                        if p.windows.close(w.key, w.message) {
+                            if let Some(m) = msg.as_mut() {
+                                m.close = true;
+                            }
+                            note = " (closed, no wait)";
+                        } else {
+                            note = " (no such window open)";
+                        }
+                    }
+                    2 => {
+                        note = if p.windows.wait(w.key, w.message) { " (counter held until the window is at state 3)" } else { " (no such window open: no wait)" };
+                    }
+                    _ => note = " (action not known)",
                 }
-                info!("event: frame {fi} (cmd frame {at}): op 0x2d window kind {} key {} message {:#x} action {}{}", w.kind, w.key, w.message, w.action, if w.action == 0 { "" } else { " (close / wait not ported)" });
+                if log || w.action != 0 {
+                    info!("event: frame {fi} (cmd frame {at}): op 0x2d window kind {} key {} message {:#x} action {}{}", w.kind, w.key, w.message, w.action, note);
+                } else {
+                    info!("event: frame {fi} (cmd frame {at}): op 0x2d window kind {} key {} message {:#x} action {}", w.kind, w.key, w.message, w.action);
+                }
             }
             6 => {
                 if log {
@@ -672,6 +747,28 @@ mod tests {
 
     fn h(v: i16) -> [u8; 2] {
         v.to_le_bytes()
+    }
+
+    #[test]
+    fn opcode_2d_close_clears_the_slot_and_wait_holds_the_counter() {
+        let mut w = WindowSlots::default();
+        w.open(1, 0x4cc6);
+        // Action 2 on an open window holds the counter until the window is at state 3.
+        assert!(w.wait(1, 0x4cc6));
+        assert!(!w.tick(false, false));
+        assert!(!w.tick(false, false));
+        assert!(w.tick(true, false), "state 3 lets the counter go");
+        assert!(!w.hold);
+        assert!(w.tick(false, false));
+        // Action 1 closes without waiting: the slot is gone, so a wait after it finds nothing.
+        assert!(w.close(1, 0x4cc6));
+        assert!(!w.wait(1, 0x4cc6));
+        assert!(w.tick(false, false));
+        assert!(!w.close(1, 0x4cc6));
+        // A window that was closed (or never opened) does not hold the counter for ever.
+        w.open(2, 7);
+        assert!(w.wait(2, 7));
+        assert!(w.tick(false, true));
     }
 
     #[test]

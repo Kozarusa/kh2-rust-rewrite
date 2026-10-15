@@ -55,6 +55,14 @@ pub struct ScriptWindow {
     pub open: Option<(u32, usize)>,
     /// The window opened through `open` was closed by the player.
     pub closed: bool,
+    /// Close the window opened through `open` (the owner's vtable +0x20, `FUN_001aacb0`: the closing
+    /// states start at once, without the button). The event player's opcode 0x2d action 1 sets it
+    /// (`FUN_002275a8`); the window takes it in its next update. Ignored when no such window is open.
+    pub close: bool,
+    /// The window's state is 3 (state +0x70 of `FUN_001ab170`): the button closed it and the closing
+    /// groups run. The event player's opcode 0x2d action 2 waits for it (`FUN_00222588`). Cleared when
+    /// a new window opens.
+    pub waiting: bool,
 }
 
 /// The speech tail of class 0x1ab9e0 (0x1aa628(1, 1, 0)): its group, and its closing group (0x1aa680:
@@ -152,6 +160,9 @@ pub fn update(
     }
     // A window opened by game code: its pages; the box is the largest page (0x191570).
     if let Some((id, class)) = script.as_mut().and_then(|s| s.open.take()) {
+        if let Some(s) = script.as_mut() {
+            s.waiting = false;
+        }
         match scene.text.as_ref().and_then(|t| message_pages(t, id)) {
             Some(p) => {
                 win.0 = Some(Request { tokens: p[0].clone(), class: class.min(CLASSES.len() - 1) });
@@ -166,6 +177,8 @@ pub fn update(
             }
         }
     }
+    // A close request (the owner's +0x20) with no game-opened window open is dropped.
+    let close_req = script.as_mut().is_some_and(|s| std::mem::take(&mut s.close));
     let tail = *nodes.tail.get_or_insert_with(|| {
         let mut n = Node::new(file, None);
         n.visible = false;
@@ -281,6 +294,21 @@ pub fn update(
         n.pos = [(at.frame[0] - nodes.text_box[0] / 2) as f32, (at.frame[1] - nodes.text_box[1] / 2) as f32];
         n.visible = true;
     }
+    if close_req && nodes.pages.is_some() && !matches!(nodes.state, State::Off | State::ClosingTail | State::ClosingFrame) {
+        // 0x1aacb0: the closing starts at once (state 4), whatever the window was doing [inferred: no
+        // prompt group 0x42, which only the button's method +0 (0x1ab328) starts].
+        scene.nodes[prompt].visible = false;
+        if c.ctor == SPEECH_TAIL_CLASS {
+            scene.set_group(tail, TAIL_GROUP + 1);
+        }
+        nodes.closing = Some(r.class);
+        nodes.state = State::ClosingTail;
+        nodes.pages = None;
+        nodes.shown = None;
+        win.0 = None;
+        info!("hud: message window closed by its owner (vtable +0x20, the closing groups)");
+        return;
+    }
     match nodes.state {
         State::Opening if scene.nodes[frame].player.finished() => {
             scene.set_group(frame, window::frame_group(c.kind, Phase::Idle));
@@ -347,6 +375,7 @@ pub fn update(
                 win.0 = None;
                 if let Some(s) = script.as_mut() {
                     s.closed = true;
+                    s.waiting = true;
                 }
                 info!("hud: message window closed by the button (state 3, then the closing groups)");
             }

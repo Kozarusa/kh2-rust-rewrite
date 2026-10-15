@@ -740,7 +740,7 @@ tt37; tt40 -> tt19 and area 100. The full list is in the test output.
 | new `npc.rs` (done) | class-5 objects with their BDX and the group 5 hosts (paths); `KH2_PROGRAMS`, `KH2_NPC_WATCH`, `KH2_NPCLOG`, `KH2_NO_NPC` | E2 |
 | `enemy_host.rs` | hosts 0.14 / 0.15 on `Progress` story flags; 1.30 / 1.31 jumps; 1.32 / 1.33 message windows; 1.202 / 1.203 | E2, E3, E5 |
 | `progress.rs` | story flag bits (0x33f6b0) and the area program table (0x33e86f), flag side effects from `00progress.bin` | E5 |
-| `hud_msgwin.rs` | open/close from hosts and event commands (closing states 4..7 are a known gap there) | E3, E6 |
+| `hud_msgwin.rs` | open/close from hosts and event commands (`ScriptWindow` `close` and `waiting`, E6c) | E3, E6, E6c |
 | new `savepoint.rs` | type-7 objects, effect elements 1 and 2, the heal rule, the world point bit | E4 |
 | `camera.rs` | `CamEvent` fed by the event player | E6 |
 | new `event_player.rs` | `parse_event`, the setup and timeline readers, frame counter, message commands | E6 |
@@ -928,8 +928,19 @@ Each stage ends with `verify.ps1` passing and the named check.
   the party faces under the subtitle; with `KH2_EVENT_ARG=12` (kind 0xc, flags 0x70) the same frame has no
   field HUD. Kind 0 has no row (the `evtp` rows are 1..9, 0xb..0x13): nothing is held back for it. No code was
   found that hides the player or party models (section 6). (3) The subtitle label is a `hud::Label` built
-  directly. (4) Opcode 0x2d close and wait: rule read (section 6, "Message lines"), not ported: `ScriptWindow`
-  (`hud_msgwin.rs`, outside this WP) has no close request and does not tell its state.
+  directly. (4) Opcode 0x2d close and wait: rule read (section 6, "Message lines"); ported by WP-E6c (below).
+  **Status (WP-E6c):** opcode 0x2d actions 1 and 2 are ported. `hud_msgwin::ScriptWindow` has a close request
+  (`close`, the owner's vtable +0x20 = `FUN_001aacb0`: the closing groups start at once, from any open state; no
+  prompt group 0x42, which only the button's method +0 starts [inferred]) and a state-3 flag (`waiting`, set when
+  the button closes the last page, cleared by a new open). `event_player::WindowSlots` is the slot table of
+  `FUN_002275a8` (32 slots keyed by key +6 and message +8): action 0 fills a slot and opens the window, action 1
+  closes the slot's window and clears the slot (a window not in a slot: nothing), action 2 sets the hold
+  (`DAT_0036b9c9`) only when the slot exists, and `step` then does not advance the frame counter
+  (`FUN_00222728`) until `waiting` is set; `closed` also releases the hold [inferred: a window that never
+  opened cannot reach state 3]. The skip test of `FUN_002225e0` is not ported (no skipping). Test
+  `opcode_2d_close_clears_the_slot_and_wait_holds_the_counter`. Log lines (`op 0x2d ... action 1 (closed, no
+  wait)`, `action 2 (counter held ...)`) appear without `KH2_EVENTLOG`. The disc's events: see the run in the report
+  (tt02 `102` has no 0x2d action 1 or 2 if its log shows only action 0 or none).
   **The prologue Seifer intro (TT04_MS500)** [V, test `the_seifer_mission_events_have_no_actors`]: the mission
   file's two events (`re_msstart-1a`, end 130, one camera cut; `re_mscomp-0a`, end 15) have no opcode 1, 2 or
   0x2c: the events place no actor, so the b_45 places of Roxas and Seifer stand and `intro.rs` is unchanged.
@@ -951,7 +962,7 @@ Each stage ends with `verify.ps1` passing and the named check.
   `FUN_00196760` is also called by `FUN_00196258` (no `jal` or address reference found, `mips_scan --jal
   0x196258 --addr 0x196258`), `FUN_0024f0b8` (menu start) and `FUN_002c6a40`; `FUN_0014ef48` by `FUN_002cc1e0`,
   `FUN_002d16b8` (not read). The event commands 3, 0xd, 0xf, 0x10 (actor show/hide candidates) were not read.
-- Opcode 0x2d close / wait in the app: needs a close request and the window state from `hud_msgwin::ScriptWindow`.
+- Opcode 0x2d: the event skip branch of action 2 (`FUN_002225e0`) is not ported; the window state used is the port's state 3 (the button closed it).
 - What pause-menu record 0xc (`FUN_001bef48(0xc)`, table `DAT_01d5df08`) allows or forbids; bit 4 of
   `DAT_00356f1c` stops the play clock (`FUN_0014c7b8`) and is tested by the pause menu `FUN_0014a080`.
 - Music commands of events, skip; opcode 0x2c +6 / +0xa / +0xc and opcode 2 +6 (not read by their handlers);

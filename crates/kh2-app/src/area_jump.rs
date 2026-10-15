@@ -43,6 +43,7 @@ impl Plugin for AreaJumpPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Exits>()
             .init_resource::<JumpTask>()
+            .init_resource::<LastExit>()
             .init_resource::<ExitConsts>()
             .init_resource::<ExitLocks>()
             .init_resource::<Keyhole>()
@@ -211,12 +212,85 @@ pub fn exit_groups(run: &area::AreaRun) -> Vec<ExitGroup> {
     out
 }
 
-/// A destination (the six bytes `FUN_00104e18` receives, without the program overrides).
+/// A destination: the six bytes `FUN_00104e18` receives (world, area, entrance, then the map, btl and evt
+/// program bytes). A byte of 0xff means "keep the record's" (`FUN_00104bd0`; `FUN_00104b90` for the programs,
+/// where it keeps the story table's byte).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Dest {
     pub world: u8,
     pub area: u8,
     pub entrance: u8,
+    pub programs: [u8; 3],
+}
+
+/// The "keep" byte of a destination.
+pub const KEEP: u8 = 0xff;
+
+impl Dest {
+    /// A destination without program bytes (exits and type-1 jumps).
+    pub fn new(world: u8, area: u8, entrance: u8) -> Dest {
+        Dest { world, area, entrance, programs: [KEEP; 3] }
+    }
+
+    /// `FUN_00104bd0`: the bytes that are 0xff become the record's current world, area and entrance
+    /// (`cur`); the program bytes stay as they are (0xff keeps the table's bytes).
+    pub fn apply(self, cur: (u8, u8, u8)) -> Dest {
+        let k = |b: u8, c: u8| if b == KEEP { c } else { b };
+        Dest { world: k(self.world, cur.0), area: k(self.area, cur.1), entrance: k(self.entrance, cur.2), programs: self.programs }
+    }
+
+    /// The program bytes as the log shows them: `0xb5`, or `-` for a byte that keeps the table's.
+    pub fn programs_text(&self) -> String {
+        let b: Vec<String> = self.programs.iter().map(|p| if *p == KEEP { "-".to_string() } else { format!("{p:#x}") }).collect();
+        format!("({})", b.join(", "))
+    }
+}
+
+/// The destination of the last exit's walk-in: the six bytes at `0x33e840` that `FUN_00198fa0` writes
+/// (the exit's world, area and entrance, programs 0xff) before it asks the trigger or starts the jump, and
+/// that a type-3 jump record jumps to (`FUN_0019d9d8`). Initially all 0xff (`FUN_00105420`), which keeps the
+/// current record. Other writers of `0x33e840`, `FUN_00172250` and `FUN_001722c0`, have no direct caller in
+/// the executable (docs/events.md section 4, gaps).
+#[derive(Resource, Debug, Default, PartialEq, Eq)]
+pub struct LastExit(pub Option<Dest>);
+
+impl LastExit {
+    /// `FUN_00198fa0`: remembers an exit's destination (the programs are 0xff).
+    pub fn record(&mut self, dest: Dest) {
+        self.0 = Some(Dest::new(dest.world, dest.area, dest.entrance));
+    }
+}
+
+/// What a trigger's jump record (`FUN_0019d9d8`, parsed by `FUN_0019d8f0`) jumps to, with `cur` the record's
+/// world, area and entrance, `last` the remembered exit and `localset(world, key)` the area `07localset.bin`
+/// gives. Type 1: the record's own world, area, entrance. Type 2: `FUN_00198080(key, world)`: a negative world
+/// is the current one; the area is the first pair of the table with the key, entrance the record's, and map,
+/// btl and evt programs all the key; an unknown key leaves world and area at the current ones (every byte 0xff
+/// then `FUN_00104bd0`). Type 3: the remembered exit (`0x33e840`). Types 4, 5 and 6 are not ported: `Err`.
+pub fn resolve_jump(j: &Jump, cur: (u8, u8, u8), last: Option<Dest>, localset: impl Fn(u8, u16) -> Option<u8>) -> Result<Dest, String> {
+    match j.kind {
+        1 => Ok(Dest::new(j.world as u8, j.area as u8, j.entrance as u8).apply(cur)),
+        2 => {
+            let world = if (j.world as i16) < 0 { cur.0 } else { j.world as u8 };
+            let entrance = j.entrance as u8;
+            Ok(match localset(world, j.key) {
+                Some(area) => Dest { world, area, entrance, programs: [j.key as u8; 3] },
+                None => Dest::new(KEEP, KEEP, entrance),
+            }
+            .apply(cur))
+        }
+        3 => Ok(last.unwrap_or(Dest::new(KEEP, KEEP, KEEP)).apply(cur)),
+        4 => Err("type 4 (a world-map case decided by story flags 0x1071, 0x1072, 0x140f, 0x1822, 0x200b, 0x8cd, 0x3834, 0x1c1c; FUN_00149df0): the app has no world map".to_string()),
+        5 => Err("type 5 (opens menu 0xe, FUN_0024f0b8): not ported".to_string()),
+        6 => Err("type 6 (FUN_00149f38): not ported".to_string()),
+        k => Err(format!("jump type {k}: FUN_0019d9d8 does nothing for it")),
+    }
+}
+
+/// `FUN_00198080` on the disc's `07localset.bin`: the area the story program `key` belongs to in `world`.
+pub fn disc_localset(disc: &Disc, world: u8, key: u16) -> Option<u8> {
+    let entry = kh2_ard::localset::world_entry(&disc.read("07localset.bin")?, world)?;
+    kh2_ard::localset::area_for(&entry, key)
 }
 
 /// The jump task (`FUN_00104d58`): ticks count the fade.
@@ -427,13 +501,24 @@ pub fn walk_in(g: &ExitGroup, triggers: &[Trigger], world: u8) -> WalkIn {
         };
     }
     let (w, a) = g.exit.destination(world);
-    WalkIn::Jump { dest: Dest { world: w, area: a, entrance: g.exit.entrance }, kind: (w != world) as u32 }
+    WalkIn::Jump { dest: Dest::new(w, a, g.exit.entrance), kind: (w != world) as u32 }
 }
 
 /// The fade kind of a trigger's jump record: the flags word, where bit 0x4000 means "record the
 /// kind only" (`FUN_0013ef68` with bit 31 set) and the kind is the low bits.
 pub fn jump_fade_kind(j: &Jump) -> (u32, bool) {
     ((j.flags & 0x3fff) as u32, j.flags & 0x4000 != 0)
+}
+
+/// `KH2_JUMP=<type>:<key>:<entrance>` (hex) as a jump record: the world is the current one (-1), a type-1 key is
+/// the area, the fade kind 0.
+fn harness_jump() -> Option<Jump> {
+    let v = std::env::var("KH2_JUMP").ok()?;
+    let mut f = v.split(':').map(|x| u16::from_str_radix(x.trim().trim_start_matches("0x"), 16).ok());
+    let kind = f.next()??;
+    let key = f.next().flatten().unwrap_or(0);
+    let entrance = f.next().flatten().unwrap_or(0xffff);
+    Some(Jump { kind, world: 0xffff, area: if kind == 1 { key } else { 0xffff }, entrance, key, flags: 0 })
 }
 
 fn dest_name(d: &Dest) -> String {
@@ -456,6 +541,7 @@ fn tick(
     mut scene: Option<ResMut<crate::hud::HudScene>>,
     player: Option<Res<crate::intro::event_player::EventPlayer>>,
     mut forced: Local<u32>,
+    mut last: ResMut<LastExit>,
 ) {
     // The jump task.
     match *task {
@@ -492,8 +578,15 @@ fn tick(
                 rec.entrance = dest.entrance;
                 rec.place_on_load = true;
                 rec.placed = None;
+                // FUN_00104b90: the destination's program bytes over the story table's, at the next area start. The
+                // game restarts the area thread on every jump; the app reloads only a different area, so a jump
+                // that carries program bytes into the loaded area runs its scripts again [inferred].
+                rec.dest_programs = dest.programs;
+                if area.loaded.as_deref() == Some(name.as_str()) && dest.programs != [KEEP; 3] {
+                    rec.run = None;
+                }
                 area.name = name;
-                info!("jump: area {} entrance {} (fade kind {kind} out done)", area.name, dest.entrance);
+                info!("jump: area {} entrance {} (fade kind {kind} out done); programs {}", area.name, dest.entrance, dest.programs_text());
                 *task = JumpTask::Loading { dest, kind };
             }
             return;
@@ -528,18 +621,19 @@ fn tick(
         }
         let ae = exits.after_event.take().unwrap();
         match ae.jump {
-            Some(j) if j.kind == 1 => {
-                let (kind, _) = jump_fade_kind(&j);
-                let dest = Dest { world: j.world as u8, area: j.area as u8, entrance: j.entrance as u8 };
-                info!("jump after the event (FUN_00196170 -> FUN_0019d9d8 with bit 31): type 1 -> {} entrance {} (fade kind {kind}, no fade-out)", dest_name(&dest), dest.entrance);
-                exits.jumping = Some(ae.group);
-                key.black_from = None;
-                key.wiping = false;
-                // Bit 31: no fade-out; the task goes straight to the load.
-                *task = JumpTask::FadeOut { dest, kind, t: FADE_TICKS - 1.0 };
-                return;
-            }
-            Some(j) => info!("jump after the event: type {} key {:#x} not ported (E5)", j.kind, j.key),
+            Some(j) => match resolve_jump(&j, (rec.world, rec.area, rec.entrance), last.0, |w, k| disc_localset(&disc, w, k)) {
+                Ok(dest) => {
+                    let (kind, _) = jump_fade_kind(&j);
+                    info!("jump after the event (FUN_00196170 -> FUN_0019d9d8 with bit 31): type {} key {:#x} -> {} entrance {} programs {} (fade kind {kind}, no fade-out)", j.kind, j.key, dest_name(&dest), dest.entrance, dest.programs_text());
+                    exits.jumping = Some(ae.group);
+                    key.black_from = None;
+                    key.wiping = false;
+                    // Bit 31: no fade-out; the task goes straight to the load.
+                    *task = JumpTask::FadeOut { dest, kind, t: FADE_TICKS - 1.0 };
+                    return;
+                }
+                Err(why) => info!("jump after the event: {why}; not ported"),
+            },
             None => info!("event over: the trigger has no jump record (FUN_0019d9c8 = 0)"),
         }
     }
@@ -572,13 +666,26 @@ fn tick(
         let at = std::env::var("KH2_WALKIN_AT").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(3.0);
         *forced == (at * 60.0) as u32
     });
+    // Harness: `KH2_JUMP=<type>:<key>:<entrance>` (hex; a type-1 jump's key is the area in the current world) runs a
+    // trigger jump record through `resolve_jump` and the real fade and load path at `KH2_JUMP_AT` seconds (default 3).
+    if let Some(j) = harness_jump().filter(|_| *forced == (std::env::var("KH2_JUMP_AT").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(3.0) * 60.0) as u32) {
+        info!("jump: forced by KH2_JUMP: record {j:?}");
+        match resolve_jump(&j, (rec.world, rec.area, rec.entrance), last.0, |w, k| disc_localset(&disc, w, k)) {
+            Ok(dest) => {
+                info!("jump: type {} key {:#x} -> {} entrance {} programs {}", j.kind, j.key, dest_name(&dest), dest.entrance, dest.programs_text());
+                start = Some((dest, jump_fade_kind(&j).0, 0xffff));
+            }
+            Err(why) => info!("jump: {why}; not ported"),
+        }
+    }
     for g in exits.groups.iter_mut().filter(|g| !g.fired && !g.disabled) {
         let p = [w.pos.x, -w.pos.y, -w.pos.z];
         if force == Some(g.id) {
             info!("exit {} id {:#x}: walk-in forced by KH2_WALKIN", g.tag, g.id);
             let (dw, da) = g.exit.destination(world);
-            let dest = Dest { world: dw, area: da, entrance: g.exit.entrance };
+            let dest = Dest::new(dw, da, g.exit.entrance);
             g.fired = true;
+            last.record(dest);
             match walk_in(g, &run.script.triggers, world) {
                 WalkIn::Event { tag, arg, jump } => {
                     info!("exit {} id {:#x} -> {} entrance {}: trigger (1, {:#x}) plays event {tag} arg {arg}, then the jump {jump:?} (FUN_00196428)", g.tag, g.id, dest_name(&dest), dest.entrance, g.id);
@@ -614,8 +721,10 @@ fn tick(
                         continue;
                     }
                     let (dw, da) = g.exit.destination(world);
-                    let dest = Dest { world: dw, area: da, entrance: g.exit.entrance };
+                    let dest = Dest::new(dw, da, g.exit.entrance);
                     g.fired = true;
+                    // FUN_00198fa0 stores the destination at 0x33e840 before it asks the trigger.
+                    last.record(dest);
                     match walk_in(g, &run.script.triggers, world) {
                         WalkIn::Jump { dest, kind } => {
                             info!("exit -> {} entrance {} (group {} id {:#x}, gate {}, fade kind {kind})", dest_name(&dest), dest.entrance, g.tag, g.id, g.exit.gate);
@@ -627,12 +736,12 @@ fn tick(
                         }
                         WalkIn::TriggerJump(j) => {
                             let (kind, instant) = jump_fade_kind(&j);
-                            if j.kind == 1 {
-                                let dest = Dest { world: j.world as u8, area: j.area as u8, entrance: j.entrance as u8 };
-                                info!("exit {} id {:#x}: trigger jump type 1 -> {} entrance {} (fade kind {kind}{})", g.tag, g.id, dest_name(&dest), dest.entrance, if instant { ", instant" } else { "" });
-                                start = Some((dest, kind, g.id));
-                            } else {
-                                info!("exit {} id {:#x}: trigger jump type {} key {:#x} not ported (E5)", g.tag, g.id, j.kind, j.key);
+                            match resolve_jump(&j, (rec.world, rec.area, rec.entrance), last.0, |w, k| disc_localset(&disc, w, k)) {
+                                Ok(dest) => {
+                                    info!("exit {} id {:#x}: trigger jump type {} key {:#x} -> {} entrance {} programs {} (fade kind {kind}{})", g.tag, g.id, j.kind, j.key, dest_name(&dest), dest.entrance, dest.programs_text(), if instant { ", instant" } else { "" });
+                                    start = Some((dest, kind, g.id));
+                                }
+                                Err(why) => info!("exit {} id {:#x}: trigger jump {why}; not ported", g.tag, g.id),
                             }
                         }
                         WalkIn::TriggerOnly => info!("exit {} id {:#x}: trigger (1, {:#x}) without event or jump: not ported", g.tag, g.id, g.id),
@@ -643,7 +752,7 @@ fn tick(
                     in_prompt = true;
                     if !g.prompting {
                         let (dw, da) = g.exit.destination(world);
-                        info!("exit prompt {}{} (group {} option {}; the name window {} is not drawn)", dest_name(&Dest { world: dw, area: da, entrance: g.exit.entrance }), if locked { " locked" } else { "" }, g.tag, v.option, if locked { "FUN_0015acc8" } else { "FUN_0015ad80" });
+                        info!("exit prompt {}{} (group {} option {}; the name window {} is not drawn)", dest_name(&Dest::new(dw, da, g.exit.entrance)), if locked { " locked" } else { "" }, g.tag, v.option, if locked { "FUN_0015acc8" } else { "FUN_0015ad80" });
                     }
                 }
                 _ => {}
@@ -739,11 +848,11 @@ mod tests {
 
     #[test]
     fn a_jump_to_a_missing_area_stays() {
-        let d = |area| Dest { world: 2, area, entrance: 1 };
+        let d = |area| Dest::new(2, area, 1);
         let all = |_: &str| true;
         assert_eq!(jump_target(&d(3), all).as_deref(), Ok("tt03"));
         // Not in the app (world 0x12, area 100's mapping): no area name.
-        assert!(jump_target(&Dest { world: 0x12, area: 1, entrance: 0 }, all).is_err());
+        assert!(jump_target(&Dest::new(0x12, 1, 0), all).is_err());
         // A Twilight Town number whose files the disc lacks.
         let only_tt03 = |f: &str| f.contains("tt03");
         assert_eq!(jump_target(&d(3), only_tt03).as_deref(), Ok("tt03"));
@@ -873,10 +982,10 @@ mod tests {
     fn a_walk_in_jumps_by_the_exit_unless_a_trigger_on_event_one_takes_it() {
         let g = group(2, 3, 0x20, vec![volume(0, [0.0; 3], 0.0)]);
         // No trigger: the exit's own destination in the same world, fade kind 0.
-        assert_eq!(walk_in(&g, &[], 2), WalkIn::Jump { dest: Dest { world: 2, area: 3, entrance: 1 }, kind: 0 });
+        assert_eq!(walk_in(&g, &[], 2), WalkIn::Jump { dest: Dest::new(2, 3, 1), kind: 0 });
         // Area 100 is world 0x12 area 1: a world change, fade kind 1.
         let far = group(0, 100, 0x9, vec![]);
-        assert_eq!(walk_in(&far, &[], 2), WalkIn::Jump { dest: Dest { world: 0x12, area: 1, entrance: 1 }, kind: 1 });
+        assert_eq!(walk_in(&far, &[], 2), WalkIn::Jump { dest: Dest::new(0x12, 1, 1), kind: 1 });
         // A trigger (1, 0x20) with an event tag "110" and a jump record.
         let ev = Trigger { event: 1, arg: 0x20, subs: vec![(0, vec![2, 0x3131, 0x30]), (1, vec![0, 1, 2, 8, 0, 0, 0x4001])] };
         match walk_in(&g, &[ev.clone()], 2) {
@@ -958,5 +1067,73 @@ mod tests {
         }
         eprintln!("walk-in triggers with an event: {found}");
         assert!(found > 0, "Twilight Town has trigger (1, ..) walk-ins that play an event");
+    }
+
+    fn jump(kind: u16, world: u16, area: u16, entrance: u16, key: u16) -> Jump {
+        Jump { kind, world, area, entrance, key, flags: 0 }
+    }
+
+    /// WP-JT2 A: a type-2 record goes to the area the table gives for the key, with map, btl and evt programs all
+    /// the key and the record's entrance (`FUN_0019d8f0` -> `FUN_00198080`); a negative world is the current one;
+    /// an unknown key keeps the current world and area (every byte 0xff, `FUN_00104bd0`).
+    #[test]
+    fn a_type_two_jump_goes_to_the_keys_area_with_all_three_programs() {
+        let table = |w: u8, k: u16| (w == 2 && (k == 0xb5 || k == 0x4d)).then_some(4u8);
+        let cur = (2, 3, 7);
+        let d = resolve_jump(&jump(2, 0xffff, 0xffff, 0, 0xb5), cur, None, table).unwrap();
+        assert_eq!(d, Dest { world: 2, area: 4, entrance: 0, programs: [0xb5; 3] });
+        assert_eq!(d.programs_text(), "(0xb5, 0xb5, 0xb5)");
+        let d = resolve_jump(&jump(2, 2, 0, 5, 0x4d), cur, None, table).unwrap();
+        assert_eq!((d.world, d.area, d.entrance, d.programs), (2, 4, 5, [0x4d; 3]));
+        // Unknown key: stays in the current area at the record's entrance, the table's programs.
+        let d = resolve_jump(&jump(2, 0xffff, 0xffff, 1, 0x01), cur, None, table).unwrap();
+        assert_eq!(d, Dest { world: 2, area: 3, entrance: 1, programs: [KEEP; 3] });
+        // An entrance of 0xff keeps the current one.
+        assert_eq!(resolve_jump(&jump(2, 0xffff, 0xffff, 0xffff, 0xb5), cur, None, table).unwrap().entrance, 7);
+    }
+
+    /// Type 1 keeps its own bytes (0xff keeps the current record's); type 3 goes where the last exit pointed, and
+    /// before any exit has fired (all 0xff) stays where it is; the exit's walk-in is what records the target.
+    #[test]
+    fn a_type_three_jump_returns_to_the_last_exits_target() {
+        let none = |_: u8, _: u16| None;
+        let cur = (2, 4, 2);
+        assert_eq!(resolve_jump(&jump(1, 2, 8, 0, 0), cur, None, none).unwrap(), Dest::new(2, 8, 0));
+        assert_eq!(resolve_jump(&jump(1, 0xffff, 9, 0xffff, 0), cur, None, none).unwrap(), Dest::new(2, 9, 2));
+        let mut last = LastExit::default();
+        assert_eq!(resolve_jump(&jump(3, 0, 0, 0, 0), cur, last.0, none).unwrap(), Dest::new(2, 4, 2), "no exit yet: the record stays");
+        // An exit to tt03 entrance 1 fires (the programs of the remembered record are 0xff, whatever the exit passed).
+        last.record(Dest { world: 2, area: 3, entrance: 1, programs: [9, 9, 9] });
+        assert_eq!(last.0, Some(Dest::new(2, 3, 1)));
+        assert_eq!(resolve_jump(&jump(3, 0, 0, 0, 0), cur, last.0, none).unwrap(), Dest::new(2, 3, 1));
+        // The next exit replaces it (world 0x12 area 1 for the exit area 100).
+        last.record(Dest::new(0x12, 1, 0));
+        assert_eq!(resolve_jump(&jump(3, 0, 0, 0, 0), cur, last.0, none).unwrap(), Dest::new(0x12, 1, 0));
+    }
+
+    /// Types 4, 5, 6 (and an unknown one) are not ported and say why.
+    #[test]
+    fn jump_types_four_to_six_are_not_ported() {
+        let none = |_: u8, _: u16| None;
+        for k in [4u16, 5, 6, 7] {
+            let e = resolve_jump(&jump(k, 0, 0, 0, 0), (2, 4, 0), None, none).unwrap_err();
+            assert!(!e.is_empty(), "type {k}");
+        }
+        assert!(resolve_jump(&jump(4, 0, 0, 0, 0), (2, 4, 0), None, none).unwrap_err().contains("0x1071"));
+    }
+
+    /// WP-JT2 A on the disc: the localset table the app reads gives key 0xb5 and 0x4d tt04.
+    #[test]
+    fn the_disc_localset_gives_the_prologue_keys_tt04() {
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let disc = Disc::open(&iso);
+        assert_eq!(disc_localset(&disc, 2, 0xb5), Some(4));
+        assert_eq!(disc_localset(&disc, 2, 0x4d), Some(4));
+        let d = resolve_jump(&jump(2, 0xffff, 0xffff, 0, 0xb5), (2, 3, 0), None, |w, k| disc_localset(&disc, w, k)).unwrap();
+        assert_eq!(dest_name(&d), "tt04");
+        eprintln!("type 2 key 0xb5 from tt03 -> {} entrance {} programs {}", dest_name(&d), d.entrance, d.programs_text());
     }
 }

@@ -202,6 +202,35 @@ entrance, map, btl, evt; 0xff keeps the current one).
   (e.g. tt04 owns 0x4c..0x53, 0xb2, 0xb5..0xb8, 0xcc, 0xcd). So the "story programs" are world-wide numbers, and
   a type-2 jump to program 0x4d always lands in tt04 with map, btl and evt program 0x4d. Host 1.31 does the same
   jump from a script.
+- **Jump types, status (WP-JT2)** [V unless marked]. The record is parsed when the trigger is built
+  (`FUN_0019d8f0`), so type 2 is resolved there: `FUN_00198080(out, key = record word 4, world = record word 1)`
+  (a negative world means the current one, `DAT_0033e830`) fills the six destination bytes with (world, the first
+  pair's area, 0, key, key, key) and the record's entrance byte (word 3) replaces the 0; an unknown key leaves all
+  six 0xff, which `FUN_00104bd0` reads as "keep the current world and area" (the entrance still changes).
+  `FUN_00104b90` then lays the three program bytes over the story table's (a byte of 0xff keeps the table's). The
+  app: `kh2_ard::localset` (world entry, pairs, `area_for`), `area_jump::resolve_jump` and `Dest.programs`,
+  `AreaRecord.dest_programs` (applied by `area::run_area_script` at the next area start; `KH2_PROGRAMS` still
+  wins). Type 1 is the record's own bytes, 0xff keeping the current ones (the same rule). Type 3 jumps to the six
+  bytes at `0x33e840`: **written** by `FUN_00198fa0` on every exit walk-in (the exit's destination world, area,
+  entrance and programs 0xff, before the trigger on event 1 is asked, so an exit that a trigger takes over also
+  records it); initialised to all 0xff by `FUN_00105420` (a type 3 before any exit stays in the current area).
+  App: `area_jump::LastExit`, recorded at both walk-in sites. Tests: `a_type_two_jump_goes_to_the_keys_area_with_all_three_programs`,
+  `a_type_three_jump_returns_to_the_last_exits_target`, `the_disc_localset_gives_the_prologue_keys_tt04`
+  (disc), `localset_gives_the_story_programs_their_areas` (disc: Twilight Town 144 pairs, 0x33..0xd1, keys 0xb5
+  and 0x4d give area 4). Harness: `KH2_JUMP=<type>:<key>:<entrance>` (hex; a type-1 key is the area) at
+  `KH2_JUMP_AT` seconds runs the record through the real fade and load path.
+  A type-2 jump into the area that is already loaded makes the app run that area's scripts again so the new
+  program bytes take effect (the game restarts the area thread on every jump) [inferred].
+  **Not ported**: types 4, 5, 6 (logged, no jump). Type 4 is decided by the flags above and ends in the world map
+  (`FUN_00149df0`, world byte 4 with the area kept) or in `FUN_00198080(0x40, 0x12)` (world 0x12): the app has
+  only Twilight Town and no world map; 5 opens menu 0xe (`FUN_0024f0b8`); 6 calls `FUN_00149f38` (not
+  read). Also not ported: the record's words 4 to 6 (the delay before the jump, the party-reset flag, the
+  "menu before" code); `FUN_0019d8f0` does not fill them, so they come from the record's creator [gap: searched
+  `FUN_0019d8f0`, `FUN_0019d9d8` only]. **Gaps**: the other
+  two writers of `0x33e840`, `FUN_00172250` (current world, area, entrance + 1) and `FUN_001722c0` (the record saved
+  in `0x33e848` by `FUN_00177248`, world 0x11 remapped to area 0x32 / 0x37), have no direct call site in the
+  executable (`mips_scan.py --jal` finds none for them; `FUN_00177248`'s only caller is `FUN_00177788`), so a
+  type 3 after those paths is not modelled.
 
 **The jump itself** [V]. `FUN_00104e18` starts the task `FUN_00104d58` (destination kept at `0x33e838`), which
 waits its delay, starts the fade-out kind (`FUN_0013ef68`: kinds 0..3 run `FUN_0015d058`, `FUN_0013f148`,
@@ -916,8 +945,8 @@ Each stage ends with `verify.ps1` passing and the named check.
   writes tt03 (3, 1, 0), tt06..tt08 btl 1, tt13 btl 2, tt14 evt 3. Without a state file the log reads
   `programs (0, 0, 0)` as before and tt04's program-0 scripts have no opcode 0x19 (no `opcode 0x19` line). Not done: the waves of `enemy.rs`
   still take turns (they do not spawn the btl program's groups); trigger sub 2 (flag on fire), events
-  2 / 3 and the battle manager's result jumps; jump type 2 (`07localset.bin`, all three bytes = the key)
-  is still logged as not ported in `area_jump.rs`.
+  2 / 3 and the battle manager's result jumps. (Jump types 2 and 3 are ported since WP-JT2: section 4,
+  "Jump types, status".)
   **The prologue Seifer fight (TT04_MS500) with its story state** [measured]: flag 0x8db (the one `btl`
   program 0xb5 sets by opcode 0x19) has one side effect, op 6 (`FUN_001a7730(2, 1)`: `0x33fe0c[2]`), so
   it changes no program byte, lock or flag; nothing in the three 0xb5 programs tests a flag. The game

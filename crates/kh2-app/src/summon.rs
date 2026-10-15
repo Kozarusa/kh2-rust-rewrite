@@ -1675,6 +1675,10 @@ pub struct SummonState {
     /// `DAT_003716a0` and `DAT_0035e9b0` (the game's LCG and the free-spot sector counter).
     pub rng: u32,
     pub sector: i32,
+    /// The form command of "Drive!" waiting to reach Genie's script as event 11.
+    pub pending_form: Option<u16>,
+    /// The enemy the player's latest hit landed on (a stand-in for `0x34e9c4`, FUN_00112850 at his attack's start).
+    pub player_hit: Option<Entity>,
     /// The leave thread (0x1c6810) runs.
     leaving: bool,
     /// The mode-3 tick counter (for the once-a-second log line).
@@ -1714,6 +1718,10 @@ pub enum SummonRequest {
     Dismiss,
     /// A change of the mode-3 timer through `FUN_001788d8` (already multiplied by `sstm[0x70]`).
     Gauge(f32),
+    /// Genie's "Drive!" list: the form command chosen (535..538, `Execute` handled by the generic executor FUN_00177c20 ->
+    /// FUN_0016b420, which raises event 11 on the first summon object's script with (the player, the command, a target
+    /// record)). The command menu issues it (`items.rs`); the harness `KH2_GENIE_FORM`.
+    Form(u16),
 }
 
 #[derive(Resource, Default)]
@@ -1724,6 +1732,8 @@ pub struct SummonQueue(pub Vec<SummonRequest>);
 struct Harness {
     summon: Option<(f32, u16)>,
     dismiss_at: Option<f32>,
+    /// `KH2_GENIE_FORM=<command>` at `KH2_GENIE_FORM_AT` seconds: the "Drive!" choice.
+    form: Option<(f32, u16)>,
     force_party: bool,
     log: bool,
 }
@@ -1843,6 +1853,8 @@ struct SummonEnv {
     recent: Option<u32>,
     /// FUN_001903d8 (host 1.244): a battle runs.
     battle: bool,
+    /// The enemy of the player's latest landed hit (`SummonState::player_hit`; `0x34e9c4` is the object of his attack).
+    player_hit: Option<Entity>,
     /// The constants of Chicken Little's, Peter Pan's and Tinker Bell's classes.
     scripted: Option<scripted::Consts>,
 }
@@ -1861,8 +1873,8 @@ struct EnemyView {
     handle: u32,
     pos: Vec3,
     reacting: bool,
-    /// The objentry row's Flags word (the objentry record's +8, host 10.44).
-    flags: u32,
+    /// The enemy is in a blow (`EState::Blown`: the mover with flag 0x40, hosts 10.22 / 10.30).
+    blown: bool,
 }
 
 /// The keyed buffers of host 2.21 (the list at 0x1c95528, FUN_001a5040), kept for the run.
@@ -2066,8 +2078,8 @@ impl SummonHost<'_, '_> {
                 let part = self.env.enemy(a(0)).and_then(|e| self.env.parts.iter().filter(|p| p.entity == e.entity).min_by(|x, y| x.point.distance_squared(v).total_cmp(&y.point.distance_squared(v)))).map_or(-1, |p| p.part as i32);
                 (Value::Int(part), St::Approx, "the TARGET shapes' ids (group) and centres stand for the collision records of type 2")
             }
-            // 10.44 (0x2f7390): the objentry record's flags word has bit 0x10.
-            (10, 44) => (Value::Bool(self.env.enemy(a(0)).is_some_and(|e| e.flags & 0x10 != 0)), St::Approx, "the objentry row's Flags of the enemy's model"),
+            // 10.44 (0x2f7390): the object's mover has flag 0x10 in +8 [role unknown: no enemy of the app is read to have it].
+            (10, 44) => (Value::Bool(false), St::Stub, "mover flag 0x10 is not modelled"),
             // 1.88 lockon_point (0x172f40 -> FUN_0016b6e0): the object's lock-on point. An enemy's is the centre of its
             // first target shape (its root without one); the player's and the summon's own is the position.
             (1, 88) => {
@@ -2126,11 +2138,38 @@ impl SummonHost<'_, '_> {
                 self.ai.scripted.follow_asked = true;
                 (Value::None, St::Impl, "the follow step runs after the script's slice, with the steer (FUN_00110468)")
             }
-            // 10.22 / 10.30 (0x2f6f60 / 0x2f70e0): the record at object +0xc (the objentry side) has bit 0x40 in
-            // +8 [and, for 10.30, the object is in a limit: +0x10c bit 0x20000].
-            (10, 22) | (10, 30) => (Value::Bool(false), St::Stub, "the objentry record's word +8 bit 0x40 is not read (role unknown)"),
-            // 10.23 (0x2f6f88): object +0xae4 (the last attacker) is the second object. The summon is never hit.
-            (10, 23) => (Value::Bool(false), St::Approx, "the summon is never hit in the app: +0xae4 stays 0"),
+            // 10.22 / 10.30 (0x2f6f60 / 0x2f70e0): the object's mover (+0xc) has flag 0x40 in +8, a blow mover (the object
+            // is knocked away: docs/hit-reaction.md); 10.30 also tests +0x10c bit 0x20000 [role unknown: read set].
+            (10, 22) | (10, 30) => (Value::Bool(self.env.enemy(a(0)).is_some_and(|e| e.blown)), St::Approx, "an enemy in `EState::Blown` has the blow mover; +0x10c bit 0x20000 (10.30) is read as set"),
+            // 10.23 (0x2f6f88): object +0xae4 (the last attacker) is the second object: the player's latest landed hit.
+            (10, 23) => {
+                let hit = self.env.player_hit;
+                (Value::Bool(a(1) == crate::enemy_obj::PLAYER && self.env.enemy(a(0)).is_some_and(|e| Some(e.entity) == hit)), St::Approx, "the last attacker of an enemy is the player when his latest landed hit was on it")
+            }
+            // 7.24 / 7.25 (0x2ef848 / 0x2ef868 -> FUN_0010f6b8 / FUN_0010f6d0): object +0xb7c bit 0x400 cleared / set. Nothing
+            // read in the class reads the bit [GAP: readers of +0xb7c bit 0x400 not searched].
+            (7, 24) => {
+                self.ai.b7c &= !0x400;
+                (Value::None, St::Impl, "")
+            }
+            (7, 25) => {
+                self.ai.b7c |= 0x400;
+                (Value::None, St::Impl, "")
+            }
+            // 7.19 (0x2ef760 -> FUN_0010df08): the target refresh. Peter Pan's chooser (FUN_00119d60) takes, among the
+            // objects the player has attacked that are blown (10.30), the nearest; without one and with the join window
+            // open (FUN_00119ce8) the object of the player's attack (FUN_0010d848); else the target stays. The answer
+            // is whether the target changed (+0xb7c bit 3).
+            (7, 19) => {
+                let before = self.ai.scripted.target;
+                let hit = self.env.player_hit.filter(|h| self.env.enemies.iter().any(|e| e.entity == *h));
+                let blown = hit.filter(|h| self.env.enemies.iter().any(|e| e.entity == *h && e.blown));
+                let join = self.env.scripted.is_some_and(|k| scripted::join_ready(&k, self.ai.b7c | if self.ai.scripted.joined { 0x200 } else { 0 }, if self.ai.scripted.armed.is_some() { 0 } else { -1 }, 0.0, 0.0));
+                let still = before.filter(|b| self.env.enemies.iter().any(|e| e.entity == *b));
+                let pick = blown.or(if join { hit } else { None }).or(still);
+                self.ai.scripted.target = pick;
+                (Value::Bool(pick != before), St::Approx, "the candidates are the player's latest hit (the game's list: objects with +0x10c bit 0x20000, mover flag 0x40, last attacker the player); the surface distance order is not needed with one")
+            }
             // 10.25 / 10.26 (0x2f6fe8 / 0x2f7020): FUN_00119ce8 on +0xb7c, and the mark 0x200 (FUN_0011a1d0).
             (10, 25) => match self.env.scripted {
                 Some(k) => (Value::Bool(scripted::join_ready(&k, self.ai.b7c | if self.ai.scripted.joined { 0x200 } else { 0 }, if self.ai.scripted.armed.is_some() { 0 } else { -1 }, 0.0, 0.0)), St::Approx, "the player's attack window (DAT_0034e9c8..d0, FUN_00112850 at the attack's start) is the app's: his attack state, the motion that started it"),
@@ -2341,6 +2380,7 @@ impl Plugin for SummonPlugin {
         let harness = Harness {
             summon,
             dismiss_at: env_f("KH2_DISMISS_AT"),
+            form: std::env::var("KH2_GENIE_FORM").ok().and_then(|v| v.trim().parse::<u16>().ok()).map(|c| (env_f("KH2_GENIE_FORM_AT").unwrap_or(12.0), c)),
             force_party: std::env::var("KH2_SUMMON_PARTY").is_ok_and(|v| v == "1"),
             log: std::env::var("KH2_SUMMONLOG").is_ok_and(|v| !v.is_empty() && v != "0"),
         };
@@ -2365,9 +2405,34 @@ impl Plugin for SummonPlugin {
             .init_resource::<Originals>()
             .init_resource::<SharedBlocks>()
             .init_resource::<PlayerSide>()
-            .add_systems(Update, (keys.before(crate::magic::harness_keys), harness_requests, hud_feed.before(crate::hud::hud_gauge::update)))
-            .add_systems(FixedUpdate, (tick, act, objects, companions).chain().in_set(Sim::Sounds))
+            .init_resource::<crate::hud::hud_party::SummonFace>()
+            .add_systems(Update, (keys.before(crate::magic::harness_keys), harness_requests, hud_feed.before(crate::hud::hud_gauge::update), face_feed.before(crate::hud::hud_party::update)))
+            .add_systems(FixedUpdate, (track_player_hits, tick, act, objects, companions).chain().in_set(Sim::Sounds))
             .add_systems(FixedUpdate, stops.after(Sim::Enemy).before(Sim::Detect).run_if(crate::schedule::sim_running));
+    }
+}
+
+/// The summon face panel's request (`hud_party::SummonFace`): while the gauge is in mode 3 and a summon object holds party
+/// slot 0 the panel shows its face (FUN_00156ca8 waits for the object, FUN_00156fe8 starts group 0x9a / 0x9b); when the gauge
+/// leaves mode 3 the panel plays group 0x9c (FUN_00156c78 -> FUN_00157020).
+fn face_feed(drive: Res<DriveState>, objects: Query<&SummonObject>, mut face: ResMut<crate::hud::hud_party::SummonFace>) {
+    let want = (drive.gauge_mode == GaugeMode::Summon).then(|| objects.iter().find(|o| o.slot == 0).map(|o| o.model.clone())).flatten();
+    if face.model != want {
+        face.model = want;
+    }
+}
+
+/// The enemy the player hit last (a stand-in for `DAT_0034e9c4`, written by FUN_00112850 at the start of his attack).
+fn track_player_hits(mut hits: MessageReader<Hit>, sora: Query<(), With<Sora>>, enemies: Query<(), With<Enemy>>, objects: Query<&SummonObject>, h: Res<Harness>, mut sm: ResMut<SummonState>) {
+    for hit in hits.read() {
+        if sora.contains(hit.attacker) && enemies.contains(hit.target) {
+            sm.player_hit = Some(hit.target);
+        }
+        if let Ok(o) = objects.get(hit.attacker)
+            && h.log
+        {
+            info!("summon: {} hits {:?} with atkp {} (the body's attack volume)", o.tag, hit.target, hit.atkp);
+        }
     }
 }
 
@@ -2400,6 +2465,11 @@ fn harness_requests(time: Res<Time>, h: Res<Harness>, mut queue: ResMut<SummonQu
         && crossed(at)
     {
         queue.0.push(SummonRequest::Dismiss);
+    }
+    if let Some((at, c)) = h.form
+        && crossed(at)
+    {
+        queue.0.push(SummonRequest::Form(c));
     }
 }
 
@@ -2573,6 +2643,15 @@ fn tick(
                     leave(sm, st, acts, "dismiss", &name);
                 } else {
                     info!("summon: Dismiss refused (summon state {}, limit task {})", sm.state, sm.limit_task);
+                }
+            }
+            SummonRequest::Form(c) => {
+                // Only while Genie is out (the menu lists "Drive!" in that state: FUN_001bc6e0 with state 2 and NeoStatus 201).
+                if sm.state == 2 && sm.present.contains(&genie::NEO) {
+                    sm.pending_form = Some(c);
+                    info!("summon: Drive! chose command {c} (event 11 for Genie)");
+                } else {
+                    info!("summon: Drive! command {c} refused: Genie is not out (state {})", sm.state);
                 }
             }
             SummonRequest::Gauge(d) => {
@@ -2888,6 +2967,9 @@ fn act(
                 if let Ok(mut b) = anims.get_mut(body) {
                     b.play(idle, true, 0.0);
                 }
+                // The motions' attack triggers are generic (the game evaluates them for any object): the body can hit the
+                // enemies, and nothing hits it (the summon takes no damage: FUN_001c60f8 drains the gauge instead).
+                commands.entity(root).insert(Fighter { team: crate::combat::Team::Player, attack_bodies: vec![body], hurt_body: body, landed: Default::default(), hittable: false });
                 commands.entity(root).insert(SummonObject {
                     neo: o.neo_status,
                     model: o.model_name.clone(),
@@ -2987,8 +3069,13 @@ fn objects(
         .iter()
         .filter(|(_, e, f)| e.alive() && f.hittable)
         .filter_map(|(te, e, _)| {
-            let flags = data.objs.iter().find(|r| r.model_name == e.kind.model).map_or(0, |r| r.flags as u32);
-            Some(EnemyView { entity: te, handle: crate::friend_host::enemy_handle(te), pos: gts.get(te).ok()?.translation() / SCALE, reacting: matches!(e.state, crate::enemy::EState::Hurt | crate::enemy::EState::Blown), flags })
+            Some(EnemyView {
+                entity: te,
+                handle: crate::friend_host::enemy_handle(te),
+                pos: gts.get(te).ok()?.translation() / SCALE,
+                reacting: matches!(e.state, crate::enemy::EState::Hurt | crate::enemy::EState::Blown),
+                blown: matches!(e.state, crate::enemy::EState::Blown),
+            })
         })
         .collect();
     let victims: Vec<_> = enemies
@@ -3032,6 +3119,7 @@ fn objects(
         enemies: views.clone(),
         parts: parts.clone(),
         battle: battle.active(),
+        player_hit: sm.player_hit,
         recent: s.lock.or(s.target).and_then(|e| views.iter().find(|v| v.entity == e)).map(|v| v.handle),
         scripted: data.scripted.as_ref().map(|d| d.0),
     };
@@ -3148,6 +3236,14 @@ fn objects(
                 rt.set_mode_priority(&mut host, name);
             }
             pre = Some((*cls, out));
+        }
+        // Genie's "Drive!" (FUN_00177c20 -> FUN_0016b420): event 11 with (the player, the form command, a target record).
+        if neo == genie::NEO
+            && let Some(cmd) = sm.pending_form.take()
+        {
+            let rec = host.f.inner.obj.new_record(crate::enemy_obj::PLAYER, 0);
+            let handled = rt.event(&mut host, 11, &[crate::enemy_obj::PLAYER, cmd as u32, rec]);
+            info!("summon: {tag} event 11 (Drive!: form command {cmd}): handler {}", if handled { "ran" } else { "absent" });
         }
         rt.update(&mut host);
         if std::mem::take(&mut ai.player_heal) > 0 {

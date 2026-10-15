@@ -157,6 +157,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 0.32 | `fader_out(f)` | 0x16d880 | 36 | screen fader at 0x3564d0: mode 1 over `seconds * DAT_0037a250` frames, flag 1 (FUN_0014a7f0); role inferred |
 | 0.35 | `vec_scale_in_place(vf)` | 0x16d038 | 105 | multiply all four lanes of the vector by the scalar, in place |
 | 0.36 | `vec_scale(vf) -> v` | 0x16cd88 | 569 | multiply all four lanes by a scalar into a new vector |
+| 0.37 | `vec_div(vf) -> v` | 0x16ce08 | 3 | divide all four lanes by a scalar into a new vector (FUN_0016ce08: the vector unit's reciprocal times each lane; a division by zero saturates) |
 | 0.38 | `effect_set_position(pv)` | 0x16da90 | 78 | copy a vector into the effect's position (the 16 bytes behind FUN_001d9d00(handle)) |
 | 0.39 | `effect_set_vector2(pv)` | 0x16dad0 | 19 | copy a vector into the 16 bytes behind FUN_001d9d28(handle), the vector after the effect's position; MAGNET_*.mag writes (s, s, s, 1) there to grow and shrink its sphere, so it reads as the scale (role inferred) |
 | 0.40 | `effect_set_vec2_raw(pv)` | 0x16db10 | not counted | copy a vector into the 16 bytes behind FUN_001d9d50(handle), the effect instance's second vector, without the angle conversion of 0.41 (FUN_0016db10 is 0.39's body on FUN_001d9d50's vector instead of FUN_001d9d28's); Peter Pan's Tinker Bell script passes its angles [inferred] |
@@ -447,6 +448,9 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 6.23 | `part_nearest(Ov) -> i` | 0x2ee858 | 0 | FUN_002ee858: the part id (byte +1 of the collision record of type 2) of the object whose part point lies nearest to the vector; -1 when it has none |
 | 6.24 | `obj_vec_8a0(O) -> v` | 0x2ee960 | 12 | the 16 bytes at object +0x8a0 copied to a static buffer |
 | 6.58 | `queue_mode_remote(ps)` | 0x2ef018 | 3 | queue the named mode and mark the entry for another object: when it comes up the host switches that object to the mode instead (FUN_00186f50; see runtime.rs) |
+| 7.19 | `ai_retarget(Oi) -> b` | 0x2ef760 | 4 | FUN_0010df08(object, flag != 0): the class's target refresh (the chooser of the class table at 0x352d28 / 0x352ce8, Peter Pan's FUN_00119d60) writes the object's target record +0x9f4; true when the target changed (+0xb7c bit 3) |
+| 7.24 | `ai_b7c_400_clear(O)` | 0x2ef848 | 4 | FUN_0010f6b8: object +0xb7c bit 0x400 cleared (Peter Pan's attack modes bracket the attack with 7.24 / 7.25) |
+| 7.25 | `ai_b7c_400_set(O)` | 0x2ef868 | 6 | FUN_0010f6d0: object +0xb7c bit 0x400 set |
 | 10.1 | `ai_walk_to(Ov)` | 0x2f6a98 | 3 | the friend AI object (+0xb60, FUN_0010c5f0) is placed at the vector: FUN_001175a0 sets AI +0x630 bit 0, copies it to the position +0x640 (its w to the wanted yaw +0x65c, the depth +0x648 = DAT_00378840) and once builds the parent matrix (FUN_00117320, FUN_00193228); docs/summons.md, Status (WP-SUM4b) |
 | 10.3 | `ai_vcall_28(O)` | 0x2f6b28 | 3 | the friend AI object's virtual method +0x28 (Stitch FUN_001191a8: links the player and his hand objects to the summon for a limit) |
 | 10.4 | `ai_vcall_2c(O)` | 0x2f6b58 | 4 | the friend AI object's virtual method +0x2c (Stitch FUN_00119360: undoes FUN_001191a8) |
@@ -461,14 +465,14 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 10.18 | `flag_588_400(o) -> b` | 0x2f6e48 | 4 | object +0x588 bit 0x400 (a boss: FUN_001acf20) |
 | 10.19 | `in_limit(o) -> b` | 0x2f6e60 | 18 | object +0x10c bit 0x10000 (the limit task marks its participants, FUN_001b2c10) |
 | 10.20 | `ai_follow(O)` | 0x2f6e80 | 2 | FUN_001102c8 (the members' follow step with the class speed rule), then the object's +0x10 / +0x20 vectors take the results at +0xc00 / +0xc20 (FUN_0010f7f0 / FUN_0010f820) |
-| 10.22 | `obj_entry_flag_40(o) -> b` | 0x2f6f60 | 0 | the object has an objentry-side record (+0xc) with bit 0x40 in its word +8 |
+| 10.22 | `obj_entry_flag_40(o) -> b` | 0x2f6f60 | 0 | the object's mover (+0xc) has bit 0x40 in its flags word +8 (a blow mover: the object is knocked away) |
 | 10.23 | `target_is(OO) -> b` | 0x2f6f88 | 1 | object +0xae4 (the last attacker) is the second object |
 | 10.25 | `ai_join_ready(O) -> b` | 0x2f6fe8 | 4 | FUN_0011a1a8 -> FUN_00119ce8 on object +0xb7c: bit 0x200 clear, the player's attack window (DAT_0034e9d0 >= 0) and DAT_0034e9c8 + 8 >= DAT_0034e9cc |
 | 10.26 | `ai_join_mark(O)` | 0x2f7020 | 1 | when 10.25 holds: object +0xb7c |= 0x200 (FUN_0011a1d0) |
 | 10.27 | `ai_enter_27(O)` | 0x2f7070 | 3 | FUN_0010f6e0: class 0x20 -> motion request 0x1f; else object +0xb7c bit 0x4000 cleared |
 | 10.28 | `ai_enter_28(O)` | 0x2f7090 | 3 | FUN_0010f728: class 0x1f -> motion request 0x20; else object +0xb7c bit 0x4000 set |
 | 10.29 | `ai_use_item(OiOi)` | 0x2f70b0 | 4 | FUN_0010c9d0(object, item, target object, arg): +0xb78 = 0, the target record names the target, the item's command is started with motion request 9 (FUN_00175e20) |
-| 10.30 | `entry_flag_40_in_limit(o) -> b` | 0x2f70e0 | 1 | the object's record (+0xc) has bit 0x40 in +8 and the object's +0x10c has bit 0x20000 |
+| 10.30 | `entry_flag_40_in_limit(o) -> b` | 0x2f70e0 | 1 | the object's mover (+0xc) has bit 0x40 in its flags word +8 (blown) and the object's +0x10c has bit 0x20000 |
 | 10.31 | `is_summon(o) -> b` | 0x2f7118 | 66 | object +0x588 bit 0x400000 (a summon object) |
 | 10.32 | `ai_stitch_32(Oi)` | 0x2f7138 | 1 | Stitch's FUN_00118aa8 on the friend AI object: a goal (FUN_00116780), motion 0xa1 and the move record (the one FUN_00114280 finds with handler FUN_00117ea0) made the current action (FUN_0010ecb0), +0xb7c |= 4 |
 | 10.33 | `recent_target(i) -> o` | 0x2f7170 | 2 | FUN_001127f0(-1): the most recent object of the player's lock-on list (8 entries at 0x34e988, FUN_00112770 appends); a non-zero argument then drops it and every older entry (FUN_00112668 with the flag set) |
@@ -477,7 +481,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 10.37 | `flag_160_40000000(O) -> b` | 0x2f7270 | 2 | object +0x160 bit 0x40000000 |
 | 10.39 | `ai_action_clear(O)` | 0x2f72c0 | 5 | FUN_0010ecb0(object, 0, 0): object +0xc60 and +0xc64 cleared |
 | 10.41 | `ai_flag_b7c_40000000(O)` | 0x2f7328 | 4 | FUN_001129f0: object +0xb7c |= 0x40000000 |
-| 10.44 | `objentry_flag_10(O) -> b` | 0x2f7390 | 0 | the object's objentry record (+0xc) has bit 0x10 in its flags word +8 |
+| 10.44 | `objentry_flag_10(O) -> b` | 0x2f7390 | 0 | the object's mover (+0xc) has bit 0x10 in its flags word +8 |
 | 10.45 | `status_f_1b4(p) -> f` | 0x2f73b0 | 4 | the float at +0x1b4 of a status block (1.84): the drive / summon timer |
 | 10.51 | `ai_find_target(Opff)` | 0x2f7450 | 2 | FUN_0011a6d8(half width, half height, the AI object, record): the record names the valid enemy whose projected position lies in the screen box, the nearest to the centre (Chicken Little's FPS aim) |
 | 10.59 | `ai_set_aim_vec(Ov)` | 0x2f75c0 | 2 | FUN_0011a6b8: AI +0x40 = the vector |
@@ -506,15 +510,15 @@ Group 5 is the NPC routine library (`*_RTN` scripts), group 4 the mission and ar
 1.318x11 1.207x11 0.99x11 0.68x11 9.9x10 6.56x10 4.41x10 4.17x10 3.134x10 2.58x10 1.255x10 0.97x10 0.84x10
 3.60x9 3.178x9 3.127x9 3.111x9 3.101x9 10.40x9 1.76x9 1.267x9 1.197x9 0.73x9 0.45x9 9.11x8 7.2x8 6.57x8 6.32x8 3.95x8
 3.93x8 3.61x8 3.40x8 3.170x8 3.165x8 3.164x8 3.16x8 3.12x8 3.109x8 3.106x8 10.35x8 1.45x8 0.61x8 7.0x7 6.53x7
-5.32x7 5.30x7 4.27x7 3.62x7 3.31x7 3.167x7 3.14x7 3.115x7 3.100x7 1.86x7 1.256x7 1.194x7 7.32x6 7.25x6 6.43x6 6.0x6
+5.32x7 5.30x7 4.27x7 3.62x7 3.31x7 3.167x7 3.14x7 3.115x7 3.100x7 1.86x7 1.256x7 1.194x7 7.32x6 6.43x6 6.0x6
 4.47x6 4.45x6 4.42x6 4.39x6 4.26x6 4.13x6 3.98x6 3.94x6 3.68x6 3.52x6 3.163x6 3.162x6 3.150x6 3.137x6 3.130x6 3.13x6
 3.125x6 3.124x6 3.117x6 2.86x6 2.59x6 2.57x6 1.331x6 1.320x6 1.226x6 1.223x6 1.199x6 0.76x6 0.65x6 9.4x5 9.17x5 6.55x5
 6.25x5 6.11x5 5.13x5 3.51x5 3.22x5 3.19x5 3.171x5 3.128x5 3.119x5 3.107x5 3.0x5 2.37x5 1.274x5
-1.153x5 1.117x5 0.96x5 0.91x5 9.19x4 7.24x4 7.19x4 6.46x4 6.45x4 6.12x4 4.21x4 4.10x4 3.145x4 3.133x4 3.1x4 10.54x4
+1.153x5 1.117x5 0.96x5 0.91x5 9.19x4 6.46x4 6.45x4 6.12x4 4.21x4 4.10x4 3.145x4 3.133x4 3.1x4 10.54x4
 10.53x4 10.43x4 1.340x4 1.339x4 1.337x4 1.332x4 1.328x4 1.290x4 1.285x4
 1.279x4 1.278x4 1.269x4 1.268x4 1.249x4 1.242x4 0.89x4 9.37x3 9.36x3 9.26x3 7.26x3 7.21x3 6.6x3 6.42x3 6.14x3 5.23x3
 4.25x3 3.83x3 3.82x3 3.67x3 3.59x3 3.159x3 3.146x3 3.121x3 3.108x3 3.104x3 3.103x3 2.89x3 2.18x3
-1.95x3 1.44x3 1.293x3 1.243x3 1.135x3 1.118x3 0.95x3 0.37x3 9.35x2 9.25x2 9.24x2 9.16x2 9.0x2
+1.95x3 1.44x3 1.293x3 1.243x3 1.135x3 1.118x3 0.95x3 9.35x2 9.25x2 9.24x2 9.16x2 9.0x2
 8.2x2 7.30x2 7.3x2 7.28x2 7.11x2 6.63x2 6.59x2 6.49x2 6.44x2 6.30x2 6.29x2 6.28x2 6.27x2 6.26x2 6.21x2 4.53x2 4.52x2
 4.51x2 4.49x2 3.33x2 3.161x2 3.155x2 3.153x2 3.15x2 3.144x2 3.140x2 3.123x2 2.93x2 2.71x2 10.58x2
 10.38x2 10.21x2 1.355x2 1.349x2 1.342x2 1.329x2 1.291x2 1.260x2 1.259x2

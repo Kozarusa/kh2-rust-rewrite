@@ -922,3 +922,57 @@ fn chicken_little_whistle_threads_run() {
     assert!(attacks >= 1, "a thread read the record's object and made its attack object");
     assert!(rt.core.errors.is_empty(), "{:?}", rt.core.errors);
 }
+
+/// Genie's "Drive!" (WP-SUM8): the generic executor raises event 11 on his script with (the player, the form command,
+/// a target record). For each of the four form commands 535..538 the handler plays motion 241, queues motion 0 and
+/// calls host 10.9 with the command; another command does nothing.
+#[test]
+fn genie_drive_event_plays_the_form_motion_and_sets_the_form() {
+    use kh2_bdx::host::{Host, Value};
+    struct H {
+        mock: MockHost,
+        seen: Vec<Call>,
+    }
+    impl Host for H {
+        fn call(&mut self, c: &Call) -> Value {
+            self.seen.push(c.clone());
+            match c {
+                Call::Func { group: 1, index: 94, .. } => Value::Bool(true),
+                Call::Func { group: 1, index: 84, .. } => Value::Handle(0x7900_0000),
+                Call::Func { group: 10, index: 45, .. } => Value::Float(600.0),
+                Call::Func { group: 10, index: 19, .. } | Call::Func { group: 1, index: 272, .. } => Value::Bool(false),
+                Call::Func { group: 10, index: 10, .. } => Value::Int(0),
+                Call::Func { group: 10, .. } | Call::Func { group: 1, index: 165, .. } => Value::None,
+                _ => self.mock.call(c),
+            }
+        }
+        fn read_mem(&mut self, addr: u32, out: &mut [u8]) -> bool {
+            self.mock.read_mem(addr, out)
+        }
+        fn write_mem(&mut self, addr: u32, data: &[u8]) -> bool {
+            self.mock.write_mem(addr, data)
+        }
+    }
+    let Some((mut a, elf)) = open() else { return };
+    let table = HostTable::from_exe(&elf).expect("table");
+    let data = object_script(&mut a, "obj/P_AL010.mdlx");
+    for (cmd, handled) in [(535, true), (536, true), (537, true), (538, true), (539, false), (0, false)] {
+        let mut rt = Runtime::new(Program::parse(&data).expect("P_AL010 parses"));
+        rt.set_host_table(table.clone());
+        let mut h = H { mock: MockHost::new(), seen: Vec::new() };
+        rt.spawn(&mut h, SELF_OBJ);
+        rt.set_mode_named(&mut h, "appear_skip");
+        for _ in 0..40 {
+            h.mock.tick();
+            rt.update(&mut h);
+        }
+        h.seen.clear();
+        assert!(rt.event(&mut h, 11, &[0x200, cmd, 0x600_0000]), "Genie's script has an event 11 handler");
+        let motions: Vec<i32> = h.seen.iter().filter_map(|c| match c { Call::PlayMotion { motion, .. } => Some(*motion), _ => None }).collect();
+        let forms: Vec<i32> = h.seen.iter().filter_map(|c| match c { Call::Func { group: 10, index: 9, args } => Some(args[1].int()), _ => None }).collect();
+        eprintln!("command {cmd}: motions {motions:?}, 10.9 {forms:?}");
+        assert_eq!(motions.contains(&241), handled, "command {cmd}");
+        assert_eq!(forms, if handled { vec![cmd as i32] } else { vec![] }, "command {cmd}");
+        assert!(rt.core.errors.is_empty(), "{:?}", rt.core.errors);
+    }
+}

@@ -699,4 +699,29 @@ mod tests {
         eprintln!("tt02 102: {} motions, {found} files found; end frame {}; other {:x?}", e.motions.len(), e.end, e.other);
         assert_eq!(found, e.motions.len());
     }
+    /// The prologue's "Defeat Seifer!" (TT04_MS500, group b_45): the start event of the mission file (layout
+    /// record 1) and every other event entry (BAR type 0x16) of it, with their actors and placements.
+    #[test]
+    fn the_seifer_mission_events_have_no_actors() {
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let disc = Disc::open(&iso);
+        let file = disc.read("msn/us/TT04_MS500.bar").expect("TT04_MS500");
+        let entries = kh2_bar::parse(&file).expect("BAR");
+        let mut events = 0;
+        for (i, e) in entries.iter().enumerate() {
+            eprintln!("TT04_MS500 entry {i}: {} kind {:#x} {} bytes", e.tag, e.kind, e.data.len());
+            let Some(cmds) = kh2_ard::parse_event(e.data).filter(|c| c.first().is_some_and(|c| c.opcode == 0)) else { continue };
+            events += 1;
+            let ev = Event::parse(&cmds);
+            eprintln!(
+                "  event {}: end {}, actors {:?}, places {:?}, motions {}, lines {}, cuts {}, other {:x?}",
+                ev.name, ev.end, ev.actors, ev.places, ev.motions.len(), ev.lines.len(), ev.track.cuts.len(), ev.other
+            );
+            assert!(ev.actors.is_empty() && ev.places.is_empty() && ev.motions.is_empty(), "{:?}", ev.actors);
+        }
+        assert!(events >= 1);
+    }
 }

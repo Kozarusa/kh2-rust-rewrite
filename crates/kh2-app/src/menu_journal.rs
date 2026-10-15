@@ -459,6 +459,10 @@ pub struct Journal {
     worlds: Vec<World>,
     /// `jiminy.bar` entries 1 (story texts), 7 (minigames) and 8 (quests).
     stor: Vec<u8>,
+    /// `msg/us/jm.bar`, the scene's message file in message slot 0 (task 0x276338: `FUN_002765a0` ->
+    /// `FUN_00190e70(0x65, 0)`; `FUN_00190dd0` names file 0x65 "jm"), searched before the system messages
+    /// (`FUN_00190c40` walks the slots in order).
+    msgs: Option<kh2_image::text::Messages>,
     mini: Vec<u8>,
     ques: Vec<u8>,
     world_index: Vec<i8>,
@@ -513,6 +517,7 @@ fn load(j: &mut Journal, disc: &Disc, scene: &mut MenuScene, images: &mut Assets
     };
     let entry = |k: usize| entries.get(k).map(|e| e.data.to_vec()).unwrap_or_default();
     (j.stor, j.mini, j.ques) = (entry(1), entry(7), entry(8));
+    j.msgs = disc.read("msg/us/jm.bar").and_then(|b| kh2_image::text::Messages::from_bar(&b));
     let Some(exe) = disc.read_root("SLUS_210.05").and_then(Exe::load) else { return };
     let (Some(index), Some(l0), Some(l1), Some(h), Some(tables)) =
         (read_world_index(&exe), triple(&exe, addr::LAYOUTS), triple(&exe, addr::LAYOUTS_ROXAS), triple(&exe, addr::HEADER), read_page_tables(&exe))
@@ -776,11 +781,16 @@ fn build0(j: &mut Journal, scene: &mut MenuScene, world: i8, test: &dyn Fn(u16) 
 /// A text of font 1 (`FUN_00296b48` / `FUN_0029b6c0` write +0x1a0 = 1) in the colour `FUN_00138fc8` gives
 /// (0xe5e5e5), the size of the node's group (+0x18, 15 when none), drawn from the group's x/y when the object keeps
 /// flag 0x10 (`FUN_00139048`).
-fn text(scene: &MenuScene, node: usize, group: usize, id: u16, align: u8, group_offset: bool) -> Option<Label> {
+fn text(j: &Journal, scene: &MenuScene, node: usize, group: usize, id: u16, align: u8, group_offset: bool) -> Option<Label> {
     let g = scene.nodes[node].seq.and_then(|s| scene.seqs.get(s)).and_then(|s| s.groups.get(group)).copied().unwrap_or_default();
     let size = if g.size > 0 { g.size as f32 } else { TEXT_SIZE };
     let offset = if group_offset { [g.x as f32, g.y as f32] } else { [0.0; 2] };
-    scene.text.as_ref()?.message(u32::from(id), Style { font: 1, size: Some(size), align, ..Style::default() }, offset)
+    let t = scene.text.as_ref()?;
+    let style = Style { font: 1, size: Some(size), align, ..Style::default() };
+    match j.msgs.as_ref().and_then(|m| m.tokens(u32::from(id))) {
+        Some(tokens) => Some(Label { tokens, style: Style { world: t.world, ..style }, offset }),
+        None => t.message(u32::from(id), style, offset),
+    }
 }
 
 fn build12(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Assets<Image>, page: u16, world: i8, test: &dyn Fn(u16) -> bool) {
@@ -795,7 +805,7 @@ fn build12(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Ass
         scene.nodes[id].visible = true;
         scene.nodes[id].off = [0.0; 2];
         scene.set_group(id, groups[k]);
-        scene.nodes[id].label = texts[k].and_then(|(m, a, go)| text(scene, id, groups[k], m, a, go));
+        scene.nodes[id].label = texts[k].and_then(|(m, a, go)| text(j, scene, id, groups[k], m, a, go));
     }
     // The `jm_top` pictures (`FUN_002a45b0`): page 2 the world's code (world 1's alternative once its second flag is
     // set), page 1 Roxas's name; picture 0 sits at layer 0's group x/y, picture 1 on layer 1.
@@ -846,17 +856,20 @@ fn build12(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Ass
         for id in [r, kid[0], kid[1]] {
             scene.set_group(id, ROW_GROUP);
         }
-        scene.nodes[r].label = cats.get(k).and_then(|&c| text(scene, r, ROW_GROUP, j.tables.row_text[c], 0, true));
+        scene.nodes[r].label = cats.get(k).and_then(|&c| text(j, scene, r, ROW_GROUP, j.tables.row_text[c], 0, true));
     }
     // Page 2's title on the object 0x350 (`FUN_00277258`, `FUN_00277640`).
     let title = j.nodes.title;
     if page == 2 {
         scene.nodes[title].visible = true;
         scene.set_group_then(title, TITLE[0], TITLE[1]);
-        scene.nodes[title].label = record.as_ref().and_then(|w| text(scene, title, TITLE[1], w.title(test), 2, true));
+        scene.nodes[title].label = record.as_ref().and_then(|w| text(j, scene, title, TITLE[1], w.title(test), 2, true));
+        // The text starts at the object's position (`FUN_00138f38` -> `FUN_002375c0`): for this root object the
+        // group's animated anchor (as `menu_gfx`'s `label_anchor` reads it for the camp's rows).
+        scene.nodes[title].label_anchor = Some([0.0; 2]);
     }
     info!(
-        "journal: page {page} (FUN_002a3540 / FUN_002a4188): world {world} '{}', jm_top_{name}.2ld {} pictures, story texts {:#x?}, rows {:?}, text {}",
+        "journal: page {page} (FUN_002a3540 / FUN_002a4188): world {world} '{}', jm_top_{name}.2ld {} pictures, story texts {:x?}, rows {:?}, text {}",
         record.as_ref().map_or("", |w| w.code.as_str()),
         tops.len(),
         story,
@@ -1085,6 +1098,10 @@ mod tests {
             assert!(s5.groups.len() > *g, "group {g:#x}");
         }
         assert!(s5.groups[LAYERS_P2[0]].unk1c > 0, "the row pitch");
+        for g in [TITLE[1], 3, 0x91] {
+            let x = s5.groups[g];
+            eprintln!("group {g:#x}: x {} y {} size {} 1c {} 20 {}", x.x, x.y, x.size, x.unk1c, x.unk20);
+        }
         for s in t.pic_seq {
             assert!(two.layd.seqs[s].groups.len() > 2);
         }

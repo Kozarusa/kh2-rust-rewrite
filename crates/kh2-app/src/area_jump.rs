@@ -443,6 +443,7 @@ fn tick(
     mut key: ResMut<Keyhole>,
     mut scene: Option<ResMut<crate::hud::HudScene>>,
     player: Option<Res<crate::intro::event_player::EventPlayer>>,
+    mut forced: Local<u32>,
 ) {
     // The jump task.
     match *task {
@@ -551,8 +552,32 @@ fn tick(
     let world = rec.world;
     let mut start: Option<(Dest, u32, u16)> = None;
     let mut after: Option<AfterEvent> = None;
+    // Harness: `KH2_WALKIN=<group id, hex>` fires that exit group's walk-in once `KH2_WALKIN_AT` seconds (default 3)
+    // of simulation have passed, as if Sora had entered its option-0 volume past the gate (the decision and
+    // everything after it are the real path).
+    *forced += 1;
+    let force = std::env::var("KH2_WALKIN").ok().and_then(|v| u16::from_str_radix(v.trim_start_matches("0x"), 16).ok()).filter(|_| {
+        let at = std::env::var("KH2_WALKIN_AT").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(3.0);
+        *forced == (at * 60.0) as u32
+    });
     for g in exits.groups.iter_mut().filter(|g| !g.fired && !g.disabled) {
         let p = [w.pos.x, -w.pos.y, -w.pos.z];
+        if force == Some(g.id) {
+            info!("exit {} id {:#x}: walk-in forced by KH2_WALKIN", g.tag, g.id);
+            let (dw, da) = g.exit.destination(world);
+            let dest = Dest { world: dw, area: da, entrance: g.exit.entrance };
+            g.fired = true;
+            match walk_in(g, &run.script.triggers, world) {
+                WalkIn::Event { tag, arg, jump } => {
+                    info!("exit {} id {:#x} -> {} entrance {}: trigger (1, {:#x}) plays event {tag} arg {arg}, then the jump {jump:?} (FUN_00196428)", g.tag, g.id, dest_name(&dest), dest.entrance, g.id);
+                    crate::intro::event_player::request(&tag, arg);
+                    after = Some(AfterEvent::new(jump, g.id));
+                }
+                WalkIn::Jump { dest, kind } => start = Some((dest, kind, g.id)),
+                other => info!("exit {}: forced walk-in {other:?} not handled by the harness", g.tag),
+            }
+            continue;
+        }
         if g.held {
             g.held = g.volumes.iter().any(|v| v.contains(p));
             continue;

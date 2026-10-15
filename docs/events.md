@@ -892,6 +892,29 @@ Each stage ends with `verify.ps1` passing and the named check.
   0x1a, 0x1b, 0x22, 0x23, 0x29, 0x2a, 0x2b, 0x2e, 0x36, 0x3d (logged `not ported`), the voices
   (`voice/<world>/event/`), skipping, the event object's states `FUN_00195c08`, the end events 0x12 / 99
   (`FUN_00225028`) and the chain 0x4c.
+  **Status (WP-E6b):** (1) The jump after a trigger's event (section 6, "What the start holds back"):
+  `area_jump::AfterEvent` keeps the trigger's jump record while the event plays and takes it on the first tick
+  the player no longer plays (`FUN_00196170` -> `FUN_0019d9d8(+0xc, 0x80000000)`), type 1 only, with no fade-out
+  [inferred: bit 31 makes `FUN_00104e18` record the kind without fading, as the 0x4000 bit does]; an event that
+  never starts holds it two ticks at most [inferred]. Test `the_jump_after_a_trigger_event_waits_for_the_events_end`.
+  The disc's walk-in triggers with an event (test `twilight_town_walk_in_triggers_with_events`): tt03 `evt`
+  program 4, groups 0x3a / 0x2a / 0x3c -> event `605` arg 5, then type-1 jumps to tt02 / tt04 / tt06 entrance 0.
+  The harness cannot walk Sora into those option-0 volumes (he stops short of them at entrances 0 and 1), so
+  `KH2_WALKIN=<group id hex>` (`KH2_WALKIN_AT`, default 3 s) fires a group's walk-in decision directly. Run
+  `KH2_PROGRAMS=0,0,4 KH2_ENTRANCE=0 KH2_WALKIN=3a KH2_EVENTLOG=1 KH2_NO_ENEMIES=1 KH2_NO_NPC=1 kh2-game tt03`:
+  `trigger (1, 0x3a) plays event 605 arg 5, then the jump Some(Jump { kind: 1, world: 2, area: 2, ...`,
+  `tt03 605 over at frame 360`, `jump after the event (FUN_00196170 -> FUN_0019d9d8 with bit 31): type 1 -> tt02
+  entrance 0`, `jump: tt02 loaded`. (2) The event kind (`evtp` row of `arg & 0x3f`): the pad is locked only for
+  flag bit 3 clear, the field HUD hidden only for bit 2 clear (`event_player::field_hud_hide`, at the end of the
+  HUD chain of `hud.rs`: every visible node but the subtitle line, given back at the end) [inferred which app
+  nodes are the tags 3 to 6, as `hud_mission`]; `KH2_EVENT` takes `KH2_EVENT_ARG`, else the loaded trigger's
+  arg for the tag, else 0. **The original's tt02 `102` (trigger arg 2, kind 2, flags 0x65) keeps the field HUD**
+  (bit 2 set): the screenshot of `KH2_EVENT=102 KH2_EVENT_ARG=2` at 29 s shows the command menu, the gauges and
+  the party faces under the subtitle; with `KH2_EVENT_ARG=12` (kind 0xc, flags 0x70) the same frame has no
+  field HUD. Kind 0 has no row (the `evtp` rows are 1..9, 0xb..0x13): nothing is held back for it. No code was
+  found that hides the player or party models (section 6). (3) The subtitle label is a `hud::Label` built
+  directly. (4) Opcode 0x2d close and wait: rule read (section 6, "Message lines"), not ported: `ScriptWindow`
+  (`hud_msgwin.rs`, outside this WP) has no close request and does not tell its state.
   **The prologue Seifer intro (TT04_MS500)** [V, test `the_seifer_mission_events_have_no_actors`]: the mission
   file's two events (`re_msstart-1a`, end 130, one camera cut; `re_mscomp-0a`, end 15) have no opcode 1, 2 or
   0x2c: the events place no actor, so the b_45 places of Roxas and Seifer stand and `intro.rs` is unchanged.
@@ -906,7 +929,15 @@ Each stage ends with `verify.ps1` passing and the named check.
   (trigger sub 7).
 - Opcodes 0xa, 0xb, 0xe, 0x11, 0x16 meanings (readers named in the table); trigger subs 3, 6, 8; flag ops 2..5.
 - Group kinds 7 and 9 (`FUN_001ccb10`, `FUN_0019a000` not read); activator +0x28..+0x3f beyond +0x2c/+0x2e/+0x2f.
-- The event kind table `DAT_01d6a92c` (rows read by `FUN_001d1128`): its loader was not searched.
+- The event kind table `DAT_01d6a92c` (rows read by `FUN_001d1128`): its loader was not searched (the rows are
+  the `evtp` entry of `03system.bin`, `struggle::event_kinds`).
+- Whether anything else hides the field HUD during a kind-2 event such as tt02 `102` (flags 0x65, bit 2 set):
+  `FUN_00196760` is also called by `FUN_00196258` (no `jal` or address reference found, `mips_scan --jal
+  0x196258 --addr 0x196258`), `FUN_0024f0b8` (menu start) and `FUN_002c6a40`; `FUN_0014ef48` by `FUN_002cc1e0`,
+  `FUN_002d16b8` (not read). The event commands 3, 0xd, 0xf, 0x10 (actor show/hide candidates) were not read.
+- Opcode 0x2d close / wait in the app: needs a close request and the window state from `hud_msgwin::ScriptWindow`.
+- What pause-menu record 0xc (`FUN_001bef48(0xc)`, table `DAT_01d5df08`) allows or forbids; bit 4 of
+  `DAT_00356f1c` stops the play clock (`FUN_0014c7b8`) and is tested by the pause menu `FUN_0014a080`.
 - Music commands of events, skip; opcode 0x2c +6 / +0xa / +0xc and opcode 2 +6 (not read by their handlers);
   load sub-records 0x26 / 0x39 / 0x3e (`FUN_0022c070`, `FUN_00227df0`, `FUN_00226100` not read); how `anm/`
   paths reach the `anm/us/` copies on the USA disc (`FUN_00167e58` not read).
@@ -926,6 +957,7 @@ Each stage ends with `verify.ps1` passing and the named check.
 |---|---|
 | 0x1048e0, 0x1689c0, 0x180870, 0x181148, 0x180a68, 0x180ad8, 0x180b48 | area thread, load, script run, interpreter |
 | 0x180ff8, 0x1975e0, 0x197588, 0x197670, 0x1978b0, 0x1979f8, 0x197a60, 0x197b70, 0x197780, 0x1976d8 | triggers and event firing |
+| 0x196428, 0x195898, 0x195ae0, 0x1959f0, 0x1964d0, 0x195c08, 0x195d28, 0x196138, 0x196170, 0x19d9c8, 0x19d9d8, 0x196280, 0x1962a0, 0x196760, 0x196790, 0x196258, 0x1bef10, 0x1bef48 (disassembled), 0x1befc0, 0x14c748, 0x14c760, 0x14c780, 0x14c650, 0x138708, 0x138728, 0x1b7ce8, 0x1b7d18, 0x1d1128, 0x2275a8, 0x222528, 0x222538, 0x222588, 0x2225e0, 0x222728, 0x2c6a40 | event object start / end, kind flags, jump after the event, opcode 0x2d (WP-E6b) |
 | 0x181728, 0x1817f0, 0x198430, 0x198750, 0x198920, 0x1981a0, 0x198220, 0x1982c8, 0x1989d8, 0x198b30 | spawn groups |
 | 0x198e10, 0x198fa0, 0x199058, 0x1991a0, 0x199518, 0x199930, 0x199b18, 0x199e68, 0x199e98, 0x199f70, 0x199c48, 0x199c70 | group kinds |
 | 0x1d8b48, 0x1d8600, 0x1d89a0, 0x1d8a70, 0x334388 | activator volumes |

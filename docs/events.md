@@ -1127,7 +1127,7 @@ Each stage ends with `verify.ps1` passing and the named check.
   Not ported. [WP-E6f] The tag writers, traced: the tag (resource +0x28) is the second argument of
   `FUN_0016f9c0` (`FUN_0016f358` stores it); its only caller `FUN_0016fae0` is called by `FUN_0016e430` (the
   object's model load) and `FUN_001d1c80` (tag 5000, a fixed resource). `FUN_0016e430` takes the tag from its
-  `param_2` unless that is -1; with -1 it is the word table at 0x37a278 indexed by the object entry's ObjectType
+  its second argument unless that is -1; with -1 it is the word table at 0x37a278 indexed by the object entry's ObjectType
   byte (entry +4; row = `FUN_001d1470`), except 0x960 (`FUN_0016f138`, an area-state tag) and a few ids
   `FUN_0016ef80` / `FUN_0016efd8` say are special. That table reads (types 0..23): 2300 2400 2500 2600 2700 1090
   1090 2100 1090 2500 1100 1110 2600 1090 5100 2500 2500 2500 1030 5000 2100 2700 2200 1090, so by the default

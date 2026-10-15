@@ -101,7 +101,7 @@ fn projection() -> (f32, f32, f32) {
     (fy * y / z, z, pitch)
 }
 
-/// How far below the projection centre a model's origin lands (10.2 menu units). The Party page puts the centre on the
+/// How far below the projection centre a model's origin lands (9.8 menu units). The Party page puts the centre on the
 /// name plate's anchor (`FUN_0026d8a8` attaches each model to its plate), so the origin stands this far below it.
 pub fn model_drop() -> f32 {
     projection().0

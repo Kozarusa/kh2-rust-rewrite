@@ -372,13 +372,25 @@ fn input(
 fn swap_members(bytes: &mut [u8; 4], members: &mut Query<&mut PartyMember>, a: usize, b: usize) {
     swap_bytes(bytes, a, b);
     for mut m in members.iter_mut() {
-        let slot = usize::from(m.slot) + 1;
-        if slot == a {
-            m.slot = (b - 1) as u8;
-        } else if slot == b {
-            m.slot = (a - 1) as u8;
-        }
+        m.slot = (traded_slot(usize::from(m.slot) + 1, a, b) - 1) as u8;
     }
+}
+
+/// The party slot a member standing in `slot` has after slots `a` and `b` trade places.
+pub fn traded_slot(slot: usize, a: usize, b: usize) -> usize {
+    if slot == a {
+        b
+    } else if slot == b {
+        a
+    } else {
+        slot
+    }
+}
+
+/// Where a row's model stands (`FUN_0026d8a8`, `FUN_0023aca8`): the frame layer's anchor, the plate group's anchor and the
+/// row's offset along the layer (`pitch * row`), the origin of the model a little under the anchor (`drop`).
+pub fn model_origin(frame: [f32; 2], plate: [f32; 2], pitch: f32, row: usize, drop: f32) -> Vec2 {
+    Vec2::new(frame[0] + plate[0] + pitch * row as f32, frame[1] + plate[1] + drop)
 }
 
 /// Creates the nodes (hidden), once the menu's sequences are loaded. `preview` is the page-0 picture node of the 3D models.
@@ -536,7 +548,7 @@ fn draw(ui: &PartyUi, n: &Nodes, scene: &mut MenuScene, rows: &[Row], stage: &mu
         scene.nodes[p].label_fade = 1.0;
         // The model stands at the plate's anchor, a little lower (`FUN_0023b4b8`, the draw of `FUN_0023aca8`).
         let a = plate_anchor[usize::from(row.locked)];
-        stage.origins.push(Vec2::new(frame[0] + a[0] + pitch * k as f32, frame[1] + a[1] + drop));
+        stage.origins.push(model_origin(frame, a, pitch, k, drop));
     }
     // The marker pulses on the row the active list's hand is on (`FUN_0026ed88`); the hands: the active one on the cursor,
     // the first list's on the chosen row while page 0x16 runs (`FUN_00251d38`).
@@ -637,37 +649,89 @@ mod tests {
         assert_eq!(partner_list(&locked, 1), (0b111, 0));
     }
 
-    /// The groups the page draws, read from `camp.2ld` (skipped without `KH2_ISO`): printed with their extents.
-    #[test]
-    fn the_party_groups_exist_in_camp() {
+    fn disc() -> Option<kh2_archive::Archive> {
         let iso = std::env::var("KH2_ISO").ok().or_else(|| {
             let f = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../local/iso.txt");
             std::fs::read_to_string(f).ok().map(|s| s.trim().to_string())
         });
         let Some(iso) = iso else {
             eprintln!("skipped: no disc (set KH2_ISO)");
-            return;
+            return None;
         };
-        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        kh2_archive::Archive::open(&iso).ok()
+    }
+
+    /// The groups the page draws, read from `camp.2ld` (skipped without `KH2_ISO`): the frame is the 492 x 254 panel with
+    /// an enter, a hold and a leave group, the columns and plates repeat every 118 units, the leader's plate and the fourth
+    /// column have colours of their own, the marker pulses (docs/menus.md 19.2). Printed with their extents.
+    #[test]
+    fn the_party_groups_exist_in_camp() {
+        let Some(mut a) = disc() else { return };
         let bar = a.read("menu/us/camp.2ld").expect("camp.2ld");
         let two = kh2_image::layd::parse_2ld(&bar).expect("a .2ld");
         let seq = &two.layd.seqs[1];
-        for g in [0x138usize, 0x139, 0x13a, 0x13b, 0x13c, 0x13d, 0x13e, 0x13f, 0x7b, 0x19, 0x17] {
-            let gr = &seq.groups[g];
-            let anchor = seq.anchor(g, 0, &Default::default());
-            println!("group {g:#x}: loops {} flags {:#x} len {} last {} xy ({}, {}) size {} pitch {} {} anchor {anchor:?}", gr.loops, gr.flags, seq.group_len(g), seq.last_frame(g), gr.x, gr.y, gr.size, gr.unk1c, gr.unk20);
-            for f in [0, seq.last_frame(g) / 2, seq.last_frame(g)] {
-                let q = seq.quads(g, f, [0.0, 0.0], &Default::default());
-                let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
-                for p in q.iter().flat_map(|q| q.pos) {
-                    x0 = x0.min(p[0]);
-                    x1 = x1.max(p[0]);
-                    y0 = y0.min(p[1]);
-                    y1 = y1.max(p[1]);
-                }
-                println!("   frame {f}: {} quads, bbox ({x0:.0}, {y0:.0})-({x1:.0}, {y1:.0}) alpha {:?}", q.len(), q.first().map(|q| q.color[0]));
+        let bbox = |g: usize, f: i32| {
+            let q = seq.quads(g, f, [0.0, 0.0], &Default::default());
+            let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+            for p in q.iter().flat_map(|q| q.pos) {
+                x0 = x0.min(p[0]);
+                x1 = x1.max(p[0]);
+                y0 = y0.min(p[1]);
+                y1 = y1.max(p[1]);
             }
+            ([x0, y0, x1, y1], q.len(), q.first().map(|q| q.color[0]))
+        };
+        for g in [0x138usize, 0x139, 0x13a, 0x13b, 0x13c, 0x13d, 0x13e, 0x13f, 0x19, 0x17] {
+            let gr = &seq.groups[g];
+            println!("group {g:#x}: loops {} len {} xy ({}, {}) pitch {} {} anchor {:?} bbox {:?}", gr.loops, seq.group_len(g), gr.x, gr.y, gr.unk1c, gr.unk20, seq.anchor(g, 0, &Default::default()), bbox(g, 0));
         }
+        let (frame, _, _) = bbox(group::FRAME[0], seq.last_frame(group::FRAME[0]));
+        assert_eq!(frame, [12.0, 72.0, 504.0, 326.0]);
+        assert_eq!(seq.anchor(group::FRAME[0], 0, &Default::default()), Some([24, 83]));
+        // The three frame groups: a 16-frame enter that plays once, a looping hold, a leave that plays once.
+        assert_eq!([seq.group_len(group::FRAME[0]), seq.group_len(group::FRAME[1]), seq.group_len(group::FRAME[2])], [16, 8, 8]);
+        assert_eq!([seq.groups[group::FRAME[0]].loops, seq.groups[group::FRAME[1]].loops, seq.groups[group::FRAME[2]].loops], [1, 0, 1]);
+        // Rows and plates are laid out by the group's x pitch `unk20`: 118 for the column, the marker and both plates.
+        for g in [0x13b, 0x13c, 0x13d, 0x13e, 0x13f] {
+            assert_eq!(seq.groups[g].unk20, 118, "group {g:#x}");
+        }
+        // The column is a 116 x 210 plate, the plate a strip under it; the leader's plate and the fourth column differ in colour.
+        assert_eq!(bbox(0x13b, 0).0, [-5.0, -4.0, 111.0, 206.0]);
+        assert_eq!(bbox(0x13e, 0).0[1], 189.0);
+        assert_ne!(bbox(0x13e, 0).2, bbox(0x13f, 0).2);
+        assert_ne!(bbox(0x13b, 0).2, bbox(0x13c, 0).2);
+        assert_eq!(seq.anchor(0x13e, 0, &Default::default()), Some([51, 189]));
+        // The marker's colour changes over its loop (the pulse).
+        assert_ne!(bbox(0x13d, 0).2, bbox(0x13d, 30).2);
+        // The first model stands under the plate's anchor on the first column: x 24 + 51, y 83 + 189 + the projection's drop.
+        let o = model_origin([24.0, 83.0], [51.0, 189.0], 118.0, 0, crate::menu::preview::model_drop());
+        assert_eq!(o.x, 75.0);
+        assert!((o.y - 281.83).abs() < 0.05, "{o:?}");
+        assert_eq!(model_origin([24.0, 83.0], [51.0, 189.0], 118.0, 2, 0.0).x, 311.0);
+    }
+
+    /// The executable's words (skipped without `KH2_ISO`): the plate groups, the two help messages and the member names.
+    #[test]
+    fn the_executables_tables_name_the_plates_and_the_help_lines() {
+        let Some(mut a) = disc() else { return };
+        let exe = Exe::load(a.iso().read("SLUS_210.05").or_else(|_| a.iso().read("SLUS_210.05;1")).expect("the executable")).expect("an ELF");
+        let t = Tables::read(&exe).expect("tables");
+        println!("{t:?}");
+        assert_eq!((t.plate_free, t.plate_locked), (0x13e, 0x13f));
+        assert_eq!((t.help_pick, t.help_blocked), (0x46b, 0x3b88));
+        assert_eq!(t.member_names.len(), 16);
+        // Every message the page shows exists in the system table.
+        let m = kh2_image::text::Messages::from_bar(&a.read("msg/us/sys.bar").expect("sys.bar")).expect("messages");
+        for id in [t.help_pick, t.help_blocked, HELP_SWITCH, t.member_names[2], t.member_names[3], t.member_names[1]] {
+            assert!(m.text(id).is_some_and(|s| !s.is_empty()), "message {id:#x}");
+        }
+    }
+
+    #[test]
+    fn two_members_trade_their_party_slots() {
+        // Slots 1 and 2 trade: a member in slot 1 goes to 2, in 2 to 1, anything else stays.
+        assert_eq!((traded_slot(1, 1, 2), traded_slot(2, 1, 2), traded_slot(3, 1, 2), traded_slot(0, 1, 2)), (2, 1, 3, 0));
+        assert_eq!(traded_slot(3, 3, 1), 1);
     }
 
     #[test]

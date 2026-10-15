@@ -45,7 +45,7 @@ fn ability_bit_tests_in_scripts() {
     for (label, data) in scripts(&mut a) {
         let Ok(p) = Program::parse(&data) else { continue };
         let Ok(an) = analyze(&p) else { continue };
-        let code: Vec<_> = an.code.iter().map(|(pc, (i, _))| (*pc, i.clone())).collect();
+        let code: Vec<_> = an.code.iter().map(|(pc, (i, _))| (*pc, *i)).collect();
         for (n, (pc, i)) in code.iter().enumerate() {
             if !matches!(i, Insn::Host { group: 1, index: 343 }) {
                 continue;

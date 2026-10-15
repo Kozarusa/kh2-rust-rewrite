@@ -363,26 +363,62 @@ ability-gated action needs the ability equipped (FUN_0010f578) and a setting oth
 the MP gate bit 0x20 and no MP charge; an attack needs a valid target (FUN_0010ca88) in range (FUN_0010f118)
 and in front (dot >= 0) unless entry flag 0x10.
 
-### Targets (battle style = setting byte 0) [V]
+### Targets (battle style = setting byte 0) [V; WP-PA1]
 
-FUN_0010dcf0 picks the target by style through the table at 0x352d28 (re-target test 0x352cd0):
+FUN_0010df08 asks FUN_0010cf90 whether to re-target and then FUN_0010dcf0 for a new record. Both index a
+table by the style (vtable +0x98 = setting byte 0) for classes up to 0xd (0x352d28 choose, 0x352cd0
+re-target, 8 bytes per row), and by the class for classes above 0xd (FUN_001124b8: +0xb6c > 0xd; choose
+0x352ce8 + 8 x class, re-target 0x352c90 + 8 x class). While a limit runs (FUN_001b3c00) the choose
+function is 0x352d48's FUN_0010d700 (empty: no target) and the re-target answer is always yes. The re-target
+answer is also yes when the target is not valid (FUN_0010ca88: +0xb7c bit 0x40, FUN_00112b28, FUN_0018edd8).
+FUN_0010dcf0 clears the record before the choice (a choice that finds nothing leaves no target), clears it
+again when the result does not answer, and sets +0xb7c bit 8 when the record changed (FUN_0018f298).
 
-| style | choose | re-target when (FUN_0010cf90, also always when the target is not valid) |
+| style | choose | re-target when (the target is valid) |
 |---|---|---|
-| 0 | FUN_0010d0c0 [GAP: not read] | FUN_0010cbe0: an attacker is remembered (+0xcec) and is not the target, or the target is farther than FUN_00114068's range |
-| 1 | FUN_0010d270: FUN_0010d848's pick, else the player's target (`0x34e9b0`) | FUN_0010cc80 [GAP] |
-| 2 | FUN_0010d378: the nearest enemy within FUN_00114058's range of the member and within FUN_00114118's range of the player | FUN_0010ccf8 [GAP] |
-| 3 | FUN_0010d538: among enemies within 2x range, the one farthest from the player | FUN_0010ce40 [GAP] |
-| 4, 5 | FUN_0010d700 / FUN_0010d708 (short) | FUN_0010cf80 (always) / FUN_0010cf88 (never) |
+| 0 | FUN_0010d0c0: the remembered attacker's (+0xcec) nearest shape within +0x68 (FUN_00112b88); else among the targetable objects' enabled shapes the nearest surface below +0x68 | FUN_0010cbe0: an attacker is remembered and is not the target's object, or the target point is farther than +0x6c |
+| 1 | FUN_0010d270: FUN_0010d848's pick when its shape is enabled; else, when the player's target passes FUN_00112b28, that object's nearest shape within +0x68 (FUN_00112b88) | FUN_0010cc80: the player's target record answers and names another object |
+| 2 | FUN_0010d378: the nearest surface to the member below +0x68 whose surface distance to the player is below +0x84 | FUN_0010ccf8: the target point farther than +0x6c from the member, or farther than (+0x84 + +0x88) x `DAT_003784a4` (0.5) from the player |
+| 3 | FUN_0010d538: among the shapes within 2 x +0x68 of the member, the one farthest from the player (start `DAT_003784a8` = -1) | FUN_0010ce40: the running record (+0xc60) exists and lacks flag 1; or the target point farther than +0x6c from the member; or closer than +0x88 to the player |
+| 4 | FUN_0010d700: nothing | FUN_0010cf80: always |
+| 5 | FUN_0010d708 = FUN_0010d0c0 | FUN_0010cf88: never |
+
+Classes above 0xd (printed by `party_target_tables_from_the_executable`): 14 nothing / always; 15 and 17
+FUN_0010d0c0 / never; 16 0x119d60 / 0x119d58 [GAP: not read; the app chooses nothing]; 18 FUN_0010d0c0 /
+FUN_0010cbe0.
+
+"Surface distance" = |shape centre - position| - shape radius (FUN_001894d0 gives centre and radius). The
+walks visit the object list (FUN_0018f348 over FUN_001b7c88) in order, comparisons strict as written:
+
+- FUN_00112b88(range, object, out, position): the object's enabled shapes; a shape is taken when the best so
+  far is <= 0 or its distance is below the best, and becomes the best (starting at `range`). So a range of
+  0 or less, or a taken distance of 0 or less, lets every later shape of that object win. With no position it
+  takes the first enabled shape (not reached from the friend AI).
+- FUN_0010d848 (style 1): needs `0x34e9c4`, the object of the player's latest attack start
+  (FUN_00176050 -> FUN_00112850(1, record): written only when FUN_00112b28 accepts the record; zeroed by
+  FUN_00112270 and by FUN_00111d18 when the object dies). When the player's target record (`0x34e9b0`, copied
+  from the player's +0x9f4 by FUN_00111d18) answers and names that object, it is taken whole; else that
+  object's shapes (no enabled test here) with the best starting at 0: the first is taken, then any nearer.
+- FUN_00112b28(record) = FUN_0018ed58 (the record answers: +8 non-zero or FUN_0018ee20) and FUN_00112ac0 on
+  the object (alive FUN_0019a3f8, +0x588 bit 0x10, +0x7f8 bit 4 clear, +0x108 bit 0x8000 clear).
+- The second distance of FUN_0010ccf8 / FUN_0010ce40 is the target point's to the player. The decompilation
+  shows a confusing vector copy there (`if (a != b) a = c`); the kh2-ee run of the four tests
+  (`party_retarget_tests_match_the_executable`, 3840 cases) settles it.
 
 Battle distance (FUN_0010df08): when the member's ground distance to the player (+0xbac) exceeds block +0x80
 (x2 for styles 3 and 5, x0.5 for style 2), +0xb7c bit 0x40 is set, and a target with that bit set is not valid
 (FUN_0010ca88): the member drops its target and follows (the follow step clears the bit). The target is
 refreshed only in battle, when the member is not busy (+0x390), has no script-set target (+0xb7c bit 0x10000,
-host 10.14) and the re-target test asks for it. During a limit (FUN_001b3c00) FUN_0010d700 is used. Hits on
-the member remember the attacker in +0xcec
-(FUN_001106b8, when FUN_00112ac0 accepts it). [GAP: FUN_0010d0c0, FUN_0010d848, FUN_00112b28, FUN_00112b88
-not read; the style names are not known]
+host 10.14) and the re-target test asks for it. Hits on the member remember the attacker in +0xcec
+(FUN_001106b8: the AI vtable +0xc, FUN_0017cde0, then +0xcec = the hit's +0x10 when FUN_00112ac0 accepts it).
+FUN_00110728 (the other hook beside it) is the AI vtable +0x10 then FUN_001767a8 (a limit's FUN_001b3d18, or a
+forward to the ridden object's +0x74, then message 0xf to +0x484): it reads no attacker statistics and has
+no part in the target choice. [GAP: the style names; who besides the setting menu writes setting byte 0.]
+
+In the app (`party_battle.rs`): `choose_style0..3`, `player_hit_pick`, `nearest_shape_of`, `dispatch`,
+`choose_target`, `needs_retarget`. `party.rs` (lines ~1275..1300) still passes style 0 (the setting bytes
+are 0 at a new game) through `nearest_target` / `retarget_style0`, which now run the dispatch; it does not yet
+feed +0xcec, `0x34e9b0` / `0x34e9c4` or a limit flag (see "Corrections to other docs").
 
 ## 5. Host group 10 (table 0x371810, 60 entries) [V for the wrappers]
 
@@ -458,7 +494,8 @@ Auron 10.29, 10.31 x2, 10.55; Riku 10.14 x4, 10.17, 10.18, 10.29, 10.31, 10.35, 
   when HP enters danger, attacker remembered), +0x74 attacker callback FUN_00110728, +0x7c attack motion
   FUN_00110790, +0x84 FUN_001115a0 (FUN_00174c28 unless +0xb7c bit 0x400).
 - **Attacks**: the member's motion set's attack volumes with `atkp` rows, as for any object (combat.rs);
-  the attacker's stats from its status block. [GAP: FUN_00110728 not read]
+  the attacker's stats from its status block. (FUN_00110728, read in WP-PA1: the AI vtable +0x10 then
+  FUN_001767a8, no statistics; section 4 "Targets".)
 - **Invulnerability**: +0x7f8 bit 0x10 (hidden), the party tick FUN_00174b68 timers (docs/hit-reaction.md
   +0xb00) apply. [I] events: not traced.
 - **Reaction commands**: the party code offers limits through FUN_0019d430 -> FUN_001d25e0 (docs/player-data.md
@@ -1153,6 +1190,10 @@ Files: `party_rules.rs` (`apply_world_records`), `party.rs` (`spawn_party`), `kh
 
 | address | what |
 |---|---|
+| 0x10dcf0, 0x10cf90, 0x352d28, 0x352cd0, 0x352ce8, 0x352c90, 0x352d48 | target choose / re-target dispatch tables (WP-PA1) |
+| 0x10d0c0, 0x10d270, 0x10d848, 0x10d378, 0x10d538, 0x10d700, 0x10d708, 0x112b88, 0x112b28, 0x112ac0 | the choose functions and their walks |
+| 0x10cbe0, 0x10cc80, 0x10ccf8, 0x10ce40, 0x10cf80, 0x10cf88, 0x114058, 0x114068, 0x114118, 0x114128, 0x3784a4, 0x3784a8 | the re-target tests and their block words |
+| 0x112850, 0x112270, 0x111d18 (0x34e9b0, 0x34e9c4), 0x1106b8, 0x110728, 0x1767a8 | the player's target and attacked object; the hit hooks |
 | 0x16e8c0, 0x16e208, 0x17cd20, 0x17cd78 | object factory, stand-in ids, slot -> object |
 | 0x1a6f48, 0x1a6ff0, 0x1a6f70, 0x1802e0 | memt pointers, merge, record test, story flag |
 | 0x1a71c0, 0x1a71e8, 0x1a7128, 0x1a7118, 0x1a7200, 0x1a7250, 0x1a72c0, 0x1a7330, 0x1a7500, 0x1a7558, 0x1a7608, 0x1a7268, 0x1a7698 | slot bytes, presets, member index, in-party test |
@@ -1192,6 +1233,12 @@ Files: `party_rules.rs` (`apply_world_records`), `party.rs` (`spawn_party`), `kh
 | 0x172f90 (1.89), 0x183418, 0x181e00, 0x1b74e0, 0x172d98 (1.79), 0x16a828, 0x16a7f0, 0x19ad98, 0x16a9a8 | WP-S6: the hand object's velocity and facing |
 
 ## Corrections to other docs (for the orchestrator)
+
+- (WP-PA1) `crates/kh2-app/src/party.rs` ~1275..1300 should call `battle::dispatch(m.class, style)`, then
+  `battle::needs_retarget` / `battle::choose_target` with a `TargetScene` built from the fighters' shapes
+  (`Cand` per shape, in the fighters' order), the member's remembered attacker (+0xcec), the player's target
+  record (`0x34e9b0`) and attacked object (`0x34e9c4`), with `style` = the member's setting byte 0 (party record
+  +0xd4); today it passes style 0 and no attacker.
 
 - `docs/player-data.md`, `memt`: the 16 words at +0x10 are member objects by member index (0 player, 1 Donald,
   2 Goofy, 3 partner, 4..8 forms, 9 Mickey, 10..15 keyblades), merged per world; index 0..3 are not "world

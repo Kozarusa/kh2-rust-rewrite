@@ -388,7 +388,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 2.17 | `attack_hit_object(pOip)` | 0x18e6e0 | 61 | when the attack may hit the object (FUN_0018c5f8): build the hit record (FUN_0018c6d0), mark it, call the object's virtual method +100 with it (delivers the damage) |
 | 2.19 | `attack_set_positions(pvv)` | 0x18e7a0 | 1 | attack +0xe0 = the first vector, +0xf0 (the previous position of the swept test) = the second, +4 gets bit 0x20 (FUN_001a30a8) |
 | 2.20 | `start_request(ip) -> h` | 0x18e898 | 278 | start a detached thread at routine `pc` with one argument (FUN_001a4738: FUN_0016c838 makes the thread on the running thread's program, FUN_001a42b8 links it into the list at 0x1c95518; the task body FUN_001a4428 runs every listed thread once per frame and destroys it when it ends); returns the list node |
-| 2.21 | `shared_block(ii) -> p` | 0x18e928 | 156 | the persistent buffer registered under a key (FUN_001a5040): the first call allocates and zeroes size + 1 bytes, every call sets the first byte to 1 and returns the buffer |
+| 2.21 | `shared_block(ii) -> p` | 0x18e928 | 156 | the persistent buffer registered under a key (FUN_001a5040): the first call for a key allocates and zeroes size + 1 bytes with the first byte 0; a later call with the same key sets the first byte to 1; both return the buffer |
 | 2.22 | `attack_anchor(pO)` | 0x18e7c8 | 67 | set the attack's anchor (+0x24) to the other object's +0x80 |
 | 2.23 | `target(O) -> p` | 0x18ddb0 | 3225 | the object's current target record (+0x9f4) |
 | 2.24 | `hit_attacker_block(p) -> p` | 0x18e7e0 | 21 | the word at hit +0xc: pointer to a 16-byte block whose +4 holds the attacker's object (copied by scripts into a context); role inferred |
@@ -424,6 +424,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 2.70 | `hit_byte_25(p) -> i` | 0x18e1e8 | 1 | byte at hit +0x25 |
 | 2.72 | `hit_atkp_type_5_or_6(p) -> b` | 0x18e1f8 | 13 | Type of the atkp row is 5 or 6 |
 | 2.74 | `attack_callback_98(pii)` | 0x18e870 | 1 | as attack_callback_8c, at +0x98 |
+| 2.75 | `tinker_bell_ready() -> b` | 0x18eba8 | 1 | FUN_001c69b0: a summon is out (DAT_01d5e368), it is the `sumn` row of command 0x132 Peter Pan (FUN_001d4ca0) and DAT_00340c88 byte 7 is set (Tinker Bell's revive not used yet, cleared by FUN_001adeb8) |
 | 2.76 | `set_f_af4(Of)` | 0x18e068 | 52 | store a float at object +0xaf4 |
 | 2.77 | `vec_new(pv) -> h` | 0x18ebd0 | 12 | allocate 0x40 bytes and fill it with a vector and a value (FUN_001d1808); role inferred |
 | 2.78 | `free_alloc(p)` | 0x18ec18 | 16 | release an allocation made by 2.77 (FUN_001d18e0, free) |

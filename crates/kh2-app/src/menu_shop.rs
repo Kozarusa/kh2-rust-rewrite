@@ -740,10 +740,10 @@ fn draw_page(m: &ShopMenu, scene: &mut MenuScene, text: &MenuText, owned: &dyn F
     for id in n.texts() {
         set_label(scene, id, None);
     }
-    set_label(scene, n.title, Some(text_label(&text, message(&text, u32::from(o.stock.message)), at::SELECTED, 0, at::TITLE)));
-    set_label(scene, n.munny, Some(text_label(&text, literal(&text, &format!("{munny}")), at::SELECTED, 1, at::MUNNY)));
+    set_label(scene, n.title, Some(text_label(text, message(text, u32::from(o.stock.message)), at::SELECTED, 0, at::TITLE)));
+    set_label(scene, n.munny, Some(text_label(text, literal(text, &format!("{munny}")), at::SELECTED, 1, at::MUNNY)));
     let row_y = |k: usize| at::ROWS[1] + at::PITCH * k as f32;
-    let hand = text_label(&text, literal(&text, ">"), at::SELECTED, 0, [0.0, 0.0]);
+    let hand = text_label(text, literal(text, ">"), at::SELECTED, 0, [0.0, 0.0]);
     let put_hand = |scene: &mut MenuScene, k: usize| {
         let mut l = hand.clone();
         l.offset = [at::HAND[0], row_y(k)];
@@ -753,7 +753,7 @@ fn draw_page(m: &ShopMenu, scene: &mut MenuScene, text: &MenuText, owned: &dyn F
         Page::Top => {
             for (k, &r) in o.flow.rows.iter().enumerate() {
                 let c = if k == o.flow.top { at::SELECTED } else { at::IDLE };
-                set_label(scene, n.rows[k], Some(text_label(&text, message(&text, m.row_names[r]), c, 0, [at::ROWS[0], row_y(k)])));
+                set_label(scene, n.rows[k], Some(text_label(text, message(text, m.row_names[r]), c, 0, [at::ROWS[0], row_y(k)])));
             }
             put_hand(scene, o.flow.top);
         }
@@ -763,23 +763,23 @@ fn draw_page(m: &ShopMenu, scene: &mut MenuScene, text: &MenuText, owned: &dyn F
             for (k, (w, have)) in list.iter().enumerate().skip(first).take(LIST_ROWS) {
                 let row = k - first;
                 let c = if !row_open(sell, w, *have, munny) { at::GREY } else if k == o.flow.list { at::SELECTED } else { at::IDLE };
-                set_label(scene, n.list[row], Some(text_label(&text, message(&text, u32::from(w.name)), c, 0, [at::ROWS[0], row_y(row)])));
-                let price = literal(&text, &format!("{}", if sell { w.sell } else { w.buy }));
-                set_label(scene, n.prices[row], Some(text_label(&text, price, c, 1, [at::PRICE_RIGHT, row_y(row)])));
-                set_label(scene, n.owned[row], Some(text_label(&text, literal(&text, &format!("{have}")), c, 1, [at::OWNED_RIGHT, row_y(row)])));
+                set_label(scene, n.list[row], Some(text_label(text, message(text, u32::from(w.name)), c, 0, [at::ROWS[0], row_y(row)])));
+                let price = literal(text, &format!("{}", if sell { w.sell } else { w.buy }));
+                set_label(scene, n.prices[row], Some(text_label(text, price, c, 1, [at::PRICE_RIGHT, row_y(row)])));
+                set_label(scene, n.owned[row], Some(text_label(text, literal(text, &format!("{have}")), c, 1, [at::OWNED_RIGHT, row_y(row)])));
             }
             if matches!(o.flow.page, Page::List { .. }) {
                 put_hand(scene, o.flow.list - first);
             } else {
                 let d = o.flow.deal;
-                let mut tokens: Vec<Token> = m.wares.iter().find(|w| w.id == d.item).map(|w| message(&text, u32::from(w.name))).unwrap_or_default().into_iter().filter(|t| *t != Token::End).collect();
-                tokens.extend(literal(&text, &format!("  x{}  {}", d.qty, d.total())));
-                set_label(scene, n.detail, Some(text_label(&text, tokens, at::SELECTED, 0, at::DETAIL)));
+                let mut tokens: Vec<Token> = m.wares.iter().find(|w| w.id == d.item).map(|w| message(text, u32::from(w.name))).unwrap_or_default().into_iter().filter(|t| *t != Token::End).collect();
+                tokens.extend(literal(text, &format!("  x{}  {}", d.qty, d.total())));
+                set_label(scene, n.detail, Some(text_label(text, tokens, at::SELECTED, 0, at::DETAIL)));
             }
             if matches!(o.flow.page, Page::Question { .. }) {
                 for (k, id) in [msg::NO, msg::YES].into_iter().enumerate() {
                     let c = if k == o.flow.ask { at::SELECTED } else { at::IDLE };
-                    set_label(scene, n.question[k], Some(text_label(&text, message(&text, id), c, 0, [at::DETAIL[0] + 300.0 + 60.0 * k as f32, at::DETAIL[1]])));
+                    set_label(scene, n.question[k], Some(text_label(text, message(text, id), c, 0, [at::DETAIL[0] + 300.0 + 60.0 * k as f32, at::DETAIL[1]])));
                 }
             }
         }

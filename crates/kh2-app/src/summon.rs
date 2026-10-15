@@ -37,7 +37,10 @@
 //! Stitch's class (module `stitch`, WP-SUM4b) moves him in his camera-space plane, chooses his records and
 //! fires his blast; its motion requests play on his body.
 //!
-//! What the app does not have (docs/summons.md "Status"): the friend AI of the other summons (they stand where
+//! Genie's class (module `genie`, WP-SUM5) runs the members' follow and his two records, and answers his hosts
+//! 10.9 / 10.10.
+//!
+//! What the app does not have (docs/summons.md "Status"): the friend AI of Chicken Little and Peter Pan (they stand where
 //! they were put; their script's motion requests are logged, not played), the event itself (nothing in the app starts it: the wait for it ends at
 //! once), the HUD layers the event hides, the screen fade list (`FUN_0016ff50`), the free-spot
 //! collision tests (`FUN_001a5c30` / `FUN_001a5bf8`: a floor under the point stands in), the

@@ -536,23 +536,22 @@ pub fn choose(
 /// FUN_0010d0c0's scan (style 0, no remembered attacker): among the valid enemies' hurt shapes, the one
 /// whose surface (distance to its centre minus its radius) is nearest the member, and nearer than the
 /// class's range. `shapes` are (index, centre, radius); returns the index.
+/// Runs through the style dispatch with style 0 (the setting byte at a new game) and no attacker.
 pub fn nearest_target(member: bevy::math::Vec3, range: f32, shapes: impl Iterator<Item = (usize, bevy::math::Vec3, f32)>) -> Option<usize> {
-    let mut best = range;
-    let mut out = None;
-    for (i, c, r) in shapes {
-        let d = (c - member).length() - r;
-        if d < best {
-            best = d;
-            out = Some(i);
-        }
-    }
-    out
+    let cands: Vec<Cand> = shapes.map(|(i, centre, radius)| Cand { fighter: i, shape: 0, centre, radius, enabled: true, targetable: true }).collect();
+    let p = Params { range, ..Params::default() };
+    let (chooser, _) = dispatch(0, 0)?;
+    choose_target(chooser, false, &p, &TargetScene { member, cands: &cands, ..TargetScene::default() }).map(|t| t.0)
 }
 
 /// FUN_0010cbe0 (style 0's re-target test): when an attacker is remembered and it is not the target,
 /// or the target lies farther than the re-target range (squared distance of the target point).
+/// (FUN_0010cf90 with style 0 and a valid target, `needs_retarget`.)
 pub fn retarget_style0(attacker_differs: bool, target_dist: f32, retarget: f32) -> bool {
-    attacker_differs || target_dist * target_dist > retarget * retarget
+    let p = Params { retarget, ..Params::default() };
+    let s = TargetScene { attacker: attacker_differs.then_some(1), ..TargetScene::default() };
+    let (_, test) = dispatch(0, 0).expect("style 0");
+    needs_retarget(test, false, Some(((0, 0), bevy::math::Vec3::new(target_dist, 0.0, 0.0))), false, &p, &s)
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -1296,6 +1295,15 @@ mod tests {
         Cand { fighter, shape, centre: bevy::math::Vec3::new(x, 0.0, z), radius: r, enabled: true, targetable: true }
     }
 
+    /// FUN_0010df08's target refresh for a member of `class` with battle style `style` (setting byte 0):
+    /// `None` keeps the current target; `Some(t)` is the new record (FUN_0010dcf0 clears the record first,
+    /// so a choice that finds nothing leaves no target). A style outside the table keeps the target.
+    #[allow(clippy::too_many_arguments)]
+    fn target_step(class: u8, style: u8, limit: bool, p: &Params, s: &TargetScene, current: Option<(Pick, bevy::math::Vec3)>, current_counted: bool) -> Option<Option<Pick>> {
+        let (c, t) = dispatch(class, style)?;
+        needs_retarget(t, limit, current, current_counted, p, s).then(|| choose_target(c, limit, p, s))
+    }
+
     fn tparams() -> Params {
         Params { range: 1000.0, retarget: 1200.0, player_range: 500.0, player_near: 300.0, retarget_half: 0.5, farthest_start: -1.0, ..Params::default() }
     }
@@ -1358,6 +1366,29 @@ mod tests {
         assert_eq!(choose_style3(&p, &s), Some((4, 0)), "within 2000 of the member, farthest from the player");
         let none = TargetScene { cands: &[], ..s };
         assert_eq!((choose_style2(&p, &none), choose_style3(&p, &none)), (None, None));
+    }
+
+    /// FUN_0010df08 -> FUN_0010cf90 / FUN_0010dcf0: keep, switch, drop; style 4 never targets, style 5
+    /// never re-targets a valid target; a limit drops the target.
+    #[test]
+    fn party_target_step_keeps_and_switches() {
+        use bevy::math::Vec3;
+        let p = tparams();
+        let cands = [cand(1, 0, 200.0, 0.0, 10.0), cand(2, 0, 700.0, 0.0, 10.0)];
+        let s = TargetScene { cands: &cands, ..TargetScene::default() };
+        let cur = Some(((2, 0), Vec3::new(700.0, 0.0, 0.0)));
+        assert_eq!(target_step(0, 0, false, &p, &s, None, false), Some(Some((1, 0))), "no target: choose");
+        assert_eq!(target_step(0, 0, false, &p, &s, cur, false), None, "style 0 keeps a target within the re-target range");
+        let far = Some(((2, 0), Vec3::new(1300.0, 0.0, 0.0)));
+        assert_eq!(target_step(0, 0, false, &p, &s, far, false), Some(Some((1, 0))), "beyond the re-target range: switch");
+        let s_att = TargetScene { attacker: Some(1), ..s };
+        assert_eq!(target_step(0, 0, false, &p, &s_att, cur, false), Some(Some((1, 0))), "an attacker other than the target: switch to it");
+        assert_eq!(target_step(0, 4, false, &p, &s, cur, false), Some(None), "style 4: the target is dropped");
+        assert_eq!(target_step(0, 5, false, &p, &s, far, false), None, "style 5 keeps any valid target");
+        assert_eq!(target_step(0, 5, false, &p, &s, None, false), Some(Some((1, 0))));
+        assert_eq!(target_step(0, 0, true, &p, &s, cur, false), Some(None), "a limit: no target");
+        assert_eq!(target_step(0, 9, false, &p, &s, cur, false), None);
+        assert_eq!(target_step(16, 0, false, &p, &s, cur, false), Some(None), "class 16's unread routines: no target");
     }
 
     /// FUN_0010cf90's dispatch through 0x352d28 / 0x352cd0, read from the executable: every row names

@@ -547,7 +547,7 @@ Sound/Vibration stored only. Acceptance: a test that every row's value survives 
 - **The dim and the transition curves** (1.6): taken from the footage; the game's helper task `0x2a14d0` and the sequence step were not read.
 - **The "NEW!" tags**, the cards' source fields and the Munny/Time plate code (page 0 layers): `FUN_00251100`, `FUN_002506b8` only skimmed.
 - **Pages 3, 4, 0x16** and the Items category list code (page 2, 5..9): purposes inferred from callers and message tables. (Pages 0xa..0xe were read in WP-M3, section 13; 0x19..0x1f in section 14.)
-- **Party (0x14, 0x16: read in WP-MN7, section 19; 0x15 not ported), the Help pages (0x25) and the tutorial `.bar` resources, Journal, Save pages (kinds 7, 8):** not read beyond
+- **Party (0x14, 0x16: read in WP-MN7, section 19; 0x15 not ported), the Help pages (0x25) and the tutorial `.bar` resources, Journal (page 0 read in WP-MN9, section 20), Save pages (kinds 7, 8):** not read beyond
   structure. (Status 0x17, 0x18 was read in WP-M2: section 10; its open gaps are listed there: the forms', summons' and members' tabs are not ported, the layout origin is [I].)
 - **Menu kinds 1, 2, 4, 6, 9, 0xa..0xf:** named by inference only.
 - **Where flags 0x70..0x73 are set** (tutorial/story bits at 0x33fdb0): not searched.

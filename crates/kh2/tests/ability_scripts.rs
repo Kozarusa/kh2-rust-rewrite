@@ -64,4 +64,8 @@ fn ability_bit_tests_in_scripts() {
     }
     eprintln!("{calls} calls; bits: {:?}", bits.keys().collect::<Vec<_>>());
     assert!(calls > 0, "the scan sees the host calls the CLI scan counts");
+    // docs/abilities.md "Ability readers": Leaf Bracer's bit 114 is the one the scripts read, by
+    // every `CURE_*.mag` script.
+    let leaf = bits.get(&114).expect("bit 114 (Leaf Bracer) is read by a script");
+    assert!(leaf.iter().all(|l| l.to_ascii_uppercase().contains("CURE")), "bit 114 readers: {leaf:?}");
 }

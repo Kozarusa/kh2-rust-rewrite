@@ -608,8 +608,7 @@ impl WeaponRigs {
 impl Sora {
     /// Leaf Bracer at a Cure cast's event 20 (`abilities::leaf_bracer_frames`): with the ability and
     /// the cast on Sora himself, he is untouchable for 60 ticks. Returns whether it started.
-    /// The caller is Cure's event 20 in `magic.rs` (not this module's file: until it calls this, the
-    /// timer is only started by tests).
+    /// The caller is Cure's cast in `magic.rs` (since commit 7ab807f) and the tests.
     pub fn start_leaf_bracer(&mut self, abilities: &Abilities, target_is_caster: bool) -> bool {
         let Some(t) = crate::abilities::leaf_bracer_frames(abilities.has_bit(crate::abilities::BIT_LEAF_BRACER), target_is_caster) else { return false };
         self.leaf_bracer = t;
@@ -832,11 +831,11 @@ fn blown_press(
     let moves = s.moves.clone();
     match moves.recovery(&blow, jump, square, &mut chain) {
         Ok(Recovery::AerialRecovery) => {
-            // FUN_001759b8: motion 40 with blend 0 (0x1759c8), then the mover's launch (its method +8 with a
+            // FUN_001759b8: motion 40 with blend 0 (`mtc1 r0, $f20` at 0x1759c8, $f12 = $f13 = 0 for both requests), then the mover's launch (its method +8 with a
             // vector built from the stick direction, plyr BlowRecoveryH and BlowRecoveryV; the
             // launch itself was not decoded). The app ends the flight and lets Sora fall.
-            body.restart(rig.mset.slot(id::DAMAGE_BLOW_RECOV, pstate), false, 4.0);
-            weapon.restart(None, false, 4.0);
+            body.restart(rig.mset.slot(id::DAMAGE_BLOW_RECOV, pstate), false, BLEND_ATTACK);
+            weapon.restart(None, false, BLEND_ATTACK);
             s.blow = None;
             s.push = None;
             s.motor.vel = Vec3::ZERO;
@@ -1282,6 +1281,14 @@ pub fn tick(
     };
     if lock_pressed {
         s.lock = if s.lock.is_some() { None } else { nearest(lock_range) };
+        // The lock sets the target marker (FUN_0019b3f0), which binds the target's HP gauge only with
+        // Scan (FUN_0019b4a8). App enemies are in the actor list, have a status block and keep no
+        // +0x108 flags 0x4000 / 0x80000 / 0x10000000 [inferred: no app writer], so the gate is the bit.
+        if s.lock.is_some() && std::env::var_os("KH2_ABILITYLOG").is_some() {
+            let scan = abilities.has_bit(crate::abilities::BIT_SCAN);
+            let bound = crate::abilities::scan_binds_gauge(true, scan, true, 0, true);
+            info!("abilities: lock-on target marker: Scan (bit {}) {}: target gauge {}", crate::abilities::BIT_SCAN, if scan { "set" } else { "not set" }, if bound { "bound (FUN_0019b4a8)" } else { "not bound" });
+        }
     }
     if let Some(l) = s.lock
         && !alive.iter().any(|(e, p)| *e == l && p.distance(pos_m) <= data.sstm.lock_on_release_range * SCALE)

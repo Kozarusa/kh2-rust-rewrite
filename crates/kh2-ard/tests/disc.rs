@@ -428,3 +428,24 @@ fn twilight_town_tt01_short_events() {
         eprintln!("tt02 102: op {:#x} ({} bytes) {:02x?}", c.opcode, c.data.len(), &c.data[..c.data.len().min(64)]);
     }
 }
+/// WP-P3: every area-script program of Twilight Town that carries opcode 0xf (FUN_00180b48 -> FUN_001a7330 on the current
+/// world's slot bytes), by script and program id, with the preset it names and whether it also starts a mission (0x15).
+#[test]
+fn twilight_town_world_record_programs() {
+    let Some(mut a) = open() else { return };
+    let mut n = 0;
+    for (name, ard) in &tt_areas(&mut a) {
+        for (tag, progs) in &ard.scripts {
+            for p in progs {
+                let presets: Vec<u32> = p.commands.iter().filter(|c| c.opcode == 0xf).filter_map(|c| c.args.first().copied()).collect();
+                if presets.is_empty() {
+                    continue;
+                }
+                n += 1;
+                let mission = p.commands.iter().find(|c| c.opcode == 0x15).and_then(|c| c.args.first().copied());
+                eprintln!("{name} {tag} program {:#x}: opcode 0xf presets {presets:?}, mission {mission:x?}", p.id);
+            }
+        }
+    }
+    eprintln!("{n} programs carry opcode 0xf");
+}

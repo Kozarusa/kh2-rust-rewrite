@@ -211,6 +211,18 @@ pub fn mission_presets(btl: &[kh2_ard::Program], mission: u32) -> Vec<u32> {
         .unwrap_or_default()
 }
 
+/// The area's own opcode 0xf commands at area load (FUN_00181148 runs the `map`, `btl` and `evt` programs, FUN_00180b48
+/// case 0xf -> FUN_001a7330 on the current world's record): each argument names a preset of the end of `memt`
+/// (`presets`, the trailing words), applied in program order to `cur`. A preset the table lacks is skipped.
+pub fn apply_world_records(mut cur: [u8; 4], records: &[u32], presets: &[u32]) -> [u8; 4] {
+    for &r in records {
+        if let Some(p) = presets.get(r as usize) {
+            cur = apply_preset(cur, p.to_le_bytes());
+        }
+    }
+    cur
+}
+
 /// FUN_0010b780: the friend-AI class (index into the table at 0x34ea00) for an object's NeoStatus
 /// and NeoMoveset; `None` = no AI object (Sora 1, Mickey 4, Roxas 14). An unlisted NeoStatus gets
 /// the default class (FUN_001133e0) bound to the table's first block.
@@ -957,6 +969,28 @@ mod tests {
         assert!((1..4).all(|i| slot_object(&rec, after[i]).is_none()));
         // The next program that applies preset 1 brings Donald and Goofy back.
         assert_eq!(apply_preset(after, [0, 1, 2, EMPTY]), [0, 1, 2, EMPTY]);
+    }
+
+    /// WP-P3: a mission program applies preset 0 (Donald and Goofy go); the next area load, whose programs apply
+    /// preset 1 (opcode 0xf), brings them back; an area whose programs have no 0xf leaves the bytes alone.
+    #[test]
+    fn party_return_after_the_mission_program() {
+        let presets = [0x1010_1000u32, 0x1002_0100];
+        let start = apply_preset([0, EMPTY, EMPTY, EMPTY], presets[1].to_le_bytes());
+        assert_eq!(start, [0, 1, 2, EMPTY]);
+        let mut rec = [0u16; 24];
+        rec[9] = 0x5a;
+        rec[10] = 0x5b;
+        let wanted = |b: [u8; 4]| (1..4).filter(|&i| slot_object(&rec, b[i]).is_some()).count();
+        let mission = apply_world_records(start, &[0], &presets);
+        assert_eq!(mission, [0, EMPTY, EMPTY, EMPTY]);
+        assert_eq!(wanted(mission), 0, "Sora alone");
+        assert_eq!(apply_world_records(mission, &[], &presets), mission, "no 0xf: unchanged");
+        assert_eq!(apply_world_records(mission, &[7], &presets), mission, "a preset the table lacks is skipped");
+        let back = apply_world_records(mission, &[1], &presets);
+        assert_eq!(back, [0, 1, 2, EMPTY]);
+        assert_eq!(wanted(back), 2, "the members are wanted again");
+        assert_eq!(apply_world_records(start, &[0, 1], &presets), [0, 1, 2, EMPTY], "in program order: the last wins");
     }
 
     fn toy_free() -> FreePointConsts {

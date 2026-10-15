@@ -2,6 +2,18 @@
 
 One short section per work package. "Verified" says how; nothing here was checked by watching video, and audio was listened to only where stated.
 
+## Shift 11 (2026-10-15/16)
+
+- **WP-E6 (event player).** `event_player.rs` parses an area event (actors, placements, motions, subtitle lines, movies, camera via `intro::Track`), runs its commands at their frames, and returns control at the end frame. Verified by four unit/disc tests and a tt02 event 102 screenshot (three townspeople, one subtitle line). Open: movie player, player/party hiding, voices, many opcodes.
+- **WP-E6b (event follow-ups).** The jump after a trigger's event is taken at the event's end; the event kind row decides the control lock and the field HUD hide (`KH2_EVENT_ARG`); subtitle label built directly. Verified by `the_jump_after_a_trigger_event_waits_for_the_events_end` and a tt03 walk-in run. Open: other HUD hides, opcode 0x3/0xd/0xf/0x10.
+- **WP-E6c (event window close).** Opcode 0x2d close and wait; `ScriptWindow` close request and waiting state. Verified by `opcode_2d_close_clears_the_slot_and_wait_holds_the_counter`.
+- **WP-E3b (offer wiring).** `reaction_cmd` dispatches talk (0x1f) and save point (0x37) accepts through `npc::part_offer`; world-point bits persisted in `progress.rs`. Verified by tt02 runs (offer and execute once each).
+- **WP-E7 (save point menu).** Accepting command 55 opens menu kind 1 (the point's save list) through `menu_save`; the second row (World Map) is not ported. Verified by the menu kind 1 disc test and a tt02 screenshot.
+- **WP-E8 (talk camera).** Camera mode 4 (FUN_00159688) places the camera at the speaker's head record and cuts back at the talk's end. The original has no NPC hold. Verified by `talk_pose_places_the_camera_past_the_player_or_in_the_objects_frame` and a mid-talk screenshot. Open: the screen dissolve at both cuts.
+- **WP-MN8 (party slots).** Slot bytes survive area loads; members rebuild when the set changes; slot 3 spawns a partner. Verified by two unit tests only (rebuild not run in the game).
+- **WP-MN9 (Journal page 0).** Jiminy's Journal world grid opens from the camp's Journal rows. Verified by six tests and screenshots. Open: pages 1 and 2, children, text.
+- **WP-A1 / WP-A2 (ability readers).** Second Chance, Once More (kh2-ee oracle, 1400 cases), Leaf Bracer (started by Cure), Scan gate (oracle, 80 cases) and Aerial Recovery's blend 0. Auto Healing, Auto Change and Auto Limit documented as not portable yet.
+- **WP-FIXR1 (reviewer findings).** Party rebuild keeps members when it cannot build and resets the trail; the talk camera ends on area load; only the first event walk-in of a tick is taken; world points capped at 0x36 records; stronger tests.
 ## Shift 10 (2026-10-14/15)
 
 - **WP-H1 / MN6 (text colour).** HUD and menu text use the exact glyph atlas (texel times vertex colour over 128 as the game does); colours above 0x80 no longer clamp to white; the per-bar compensation is gone. Verified by font and hud_text tests and before/after screenshots. Open: none.

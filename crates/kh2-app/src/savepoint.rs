@@ -375,9 +375,6 @@ fn point_heal(
     }
 }
 
-/// Menu kind 1's mode word (record +0xc of the kind table; `FUN_0024f498` reads it).
-pub const MENU_KIND1_MODE: u32 = 0x0036_cd28;
-
 /// The accept of command 55 (`FUN_00177b18` case 0x37 -> `FUN_001784b8`), dispatched by
 /// `reaction_cmd::accept` (an available offer, Execute 0x37, left in `Talk::accepted`): menu kind 1
 /// with mode 0 (world point) or 2 (save point), served by `menu_save` (`SaveMenu::request_point`).
@@ -483,6 +480,8 @@ mod tests {
         let disc = Disc::open(&iso);
         let exe = disc.read_root("SLUS_210.05").expect("exe");
         let w = |va: u32| crate::struggle::exe_word(&exe, va).expect("in the executable");
+        // The mode word (record +0xc; `FUN_0024f498` reads it).
+        const MENU_KIND1_MODE: u32 = 0x0036_cd28;
         let rec = 0x0038_0560 + 0x10;
         assert_eq!(w(rec) & 0xffff, 1, "kind");
         assert_eq!(w(rec) >> 16, 3, "scene");

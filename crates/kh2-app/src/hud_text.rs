@@ -71,16 +71,16 @@ impl TextSys {
         for id in 0..6 {
             let f = Font::get(id);
             let key = (atlas_key(f.atlas), f.clut_row());
-            map.entry(key).or_insert_with(|| add(set.atlas_rgba(f.atlas, f.clut_row()), files));
+            map.entry(key).or_insert_with(|| add(set.atlas_rgba_ps2(f.atlas, f.clut_row()), files));
         }
-        let icon_file = add(set.icons_rgba(), files);
+        let icon_file = add(set.icons_rgba_ps2(), files);
         let world = text::WORLDS.iter().position(|w| *w == world).unwrap_or(0);
         Some(TextSys { set, messages, world_messages, places, colors, files: map, icon_file, world, frame_file })
     }
 
-    /// Colour `id` of the font-style table for the current world (0x1a7df8), white if missing.
+    /// Colour `id` of the font-style table for the current world (0x1a7df8), white if missing. (The atlas texels are the\n    /// palette's own, so 0x80 is a mid grey and white needs 0xff: see docs/hud.md "Text colour".)
     pub fn color(&self, id: u32) -> [u8; 4] {
-        self.colors.as_ref().and_then(|c| c.color(id, self.world)).unwrap_or([0x80; 4])
+        self.colors.as_ref().and_then(|c| c.color(id, self.world)).unwrap_or([0xff, 0xff, 0xff, 0x80])
     }
 
     /// Lays `tokens` out with `style` and tells whether the typewriter has reached the end
@@ -171,12 +171,36 @@ pub fn demo(mut scene: ResMut<super::hud_gfx::HudScene>, mut done: Local<bool>) 
         let size = p.get(2).and_then(|v| v.parse::<f32>().ok());
         let x = p.get(3).and_then(|v| v.parse().ok()).unwrap_or(24.0);
         let ypos = p.get(4).and_then(|v| v.parse().ok()).unwrap_or(y);
-        let Some(label) = scene.text.as_ref().and_then(|t| t.message(id, Style { font, size, ..Style::default() }, [0.0, 0.0])) else { continue };
+        let Some(label) = scene.text.as_ref().and_then(|t| t.message(id, Style { font, size, color: [0xe5, 0xe5, 0xe5, 0x80], ..Style::default() }, [0.0, 0.0])) else { continue };
         let h = scene.text.as_ref().map(|t| t.measure(&label)[1]).unwrap_or(20.0);
         let mut n = Node::new(usize::MAX, None);
         n.pos = [x, ypos];
         n.label = Some(label);
         scene.add(n);
         y += h + 8.0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Text colours above 0x80 (the light bar colour 0xb4, the window colour 0xe5, 0xff) reach the
+    /// quad unchanged: the atlas texels are the palette's own (`atlas_rgba_ps2`), so the renderer's
+    /// `colour / 128` gives the game's `texel * colour >> 7` without any per-caller halving.
+    #[test]
+    fn quad_keeps_text_colours_above_0x80() {
+        for colour in [[0xb4, 0x64, 0x00, 0x80], [0xe5, 0xe5, 0xe5, 0x80], [0xff, 0x01, 0x00, 0x80]] {
+            let g = GlyphQuad { kind: Kind::Glyph(0), pos: [0.0, 0.0, 10.0, 10.0], uv: [0.0; 4], color: colour, skew: 0.0 };
+            let q = to_quad(&g, 1.0);
+            assert_eq!(q.color[0], colour);
+            assert_eq!(q.color[3], colour);
+        }
+    }
+
+    #[test]
+    fn fade_scales_only_alpha() {
+        let g = GlyphQuad { kind: Kind::Glyph(0), pos: [0.0; 4], uv: [0.0; 4], color: [0xe5, 0xb4, 0x64, 0x80], skew: 0.0 };
+        assert_eq!(to_quad(&g, 0.5).color[0], [0xe5, 0xb4, 0x64, 0x40]);
     }
 }

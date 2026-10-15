@@ -180,6 +180,19 @@ impl FontSet {
     /// row (`Font::clut_row` plus the page). Colour is the palette's, alpha the palette's (0x80 =
     /// opaque, expanded to 0xff).
     pub fn atlas_rgba(&self, atlas: Atlas, row: usize) -> (usize, usize, Vec<u8>) {
+        self.atlas_pixels(atlas, row, 2)
+    }
+
+    /// Like [`atlas_rgba`](Self::atlas_rgba) but with the palette colour as it is (0x80 stays
+    /// 128/255). The game draws text as `texel * vertex colour >> 7` (0x230738, per docs/hud.md)
+    /// with the palette's 0x80 as the texel, so the product is `colour / 255` of full brightness;
+    /// a renderer that divides the vertex colour by 128 (`hud_gfx`) gets that product only from
+    /// these texels. The doubled atlas above makes every colour above 0x80 clamp to white.
+    pub fn atlas_rgba_ps2(&self, atlas: Atlas, row: usize) -> (usize, usize, Vec<u8>) {
+        self.atlas_pixels(atlas, row, 1)
+    }
+
+    fn atlas_pixels(&self, atlas: Atlas, row: usize, gain: u8) -> (usize, usize, Vec<u8>) {
         let (src, h) = match atlas {
             Atlas::Sys => (&self.sys, SYS_H),
             Atlas::Evt => (&self.evt, EVT_H),
@@ -187,18 +200,27 @@ impl FontSet {
         let mut out = Vec::with_capacity(ATLAS_W * h * 4);
         for &n in src.iter() {
             let c = self.clut[(row * 16 + n as usize) & 255];
-            out.extend_from_slice(&[c[0].saturating_mul(2), c[1].saturating_mul(2), c[2].saturating_mul(2), kh2_ps2::gs::alpha(c[3])]);
+            out.extend_from_slice(&[c[0].saturating_mul(gain), c[1].saturating_mul(gain), c[2].saturating_mul(gain), kh2_ps2::gs::alpha(c[3])]);
         }
         (ATLAS_W, h, out)
     }
 
     /// RGBA pixels of the icon atlas (8-bit indices through the palette).
     pub fn icons_rgba(&self) -> (usize, usize, Vec<u8>) {
+        self.icon_pixels(2)
+    }
+
+    /// The icon atlas with the palette colour as it is (see [`atlas_rgba_ps2`](Self::atlas_rgba_ps2)).
+    pub fn icons_rgba_ps2(&self) -> (usize, usize, Vec<u8>) {
+        self.icon_pixels(1)
+    }
+
+    fn icon_pixels(&self, gain: u8) -> (usize, usize, Vec<u8>) {
         let mut out = Vec::with_capacity(ICON_W * ICON_H * 4);
         for &ix in &self.icons {
             // The 8-bit pixels use the CLUT in its GS order as well, so the logical index is the raw one.
             let c = self.clut[ix as usize];
-            out.extend_from_slice(&[c[0].saturating_mul(2), c[1].saturating_mul(2), c[2].saturating_mul(2), kh2_ps2::gs::alpha(c[3])]);
+            out.extend_from_slice(&[c[0].saturating_mul(gain), c[1].saturating_mul(gain), c[2].saturating_mul(gain), kh2_ps2::gs::alpha(c[3])]);
         }
         (ICON_W, ICON_H, out)
     }
@@ -207,5 +229,58 @@ impl FontSet {
     pub fn icon_cell(&self, i: usize) -> [u32; 4] {
         let (x, y) = ((i % ICON_COLS) * ICON_CELL, (i / ICON_COLS) * ICON_CELL);
         [x as u32, y as u32, (x + ICON_CELL) as u32, (y + ICON_CELL) as u32]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A synthetic set whose palette row 8 maps pixel value 3 to the game's opaque white (0x80).
+    fn set_with_white() -> FontSet {
+        let mut s = FontSet::synthetic(10);
+        s.sys[0] = 3;
+        s.clut[8 * 16 + 3] = [0x80, 0x80, 0x80, 0x80];
+        s.icons[0] = 7;
+        s.clut[7] = [0x40, 0x80, 0x60, 0x80];
+        s
+    }
+
+    #[test]
+    fn exact_atlas_keeps_the_palette_colour() {
+        let s = set_with_white();
+        let (_, _, px) = s.atlas_rgba_ps2(Atlas::Sys, 8);
+        assert_eq!(&px[..4], &[0x80, 0x80, 0x80, 0xff]);
+        let (_, _, px) = s.icons_rgba_ps2();
+        assert_eq!(&px[..4], &[0x40, 0x80, 0x60, 0xff]);
+    }
+
+    #[test]
+    fn doubled_atlas_is_twice_the_exact_one() {
+        let s = set_with_white();
+        let (_, _, a) = s.atlas_rgba(Atlas::Sys, 8);
+        let (_, _, b) = s.atlas_rgba_ps2(Atlas::Sys, 8);
+        assert_eq!(a.len(), b.len());
+        assert_eq!(&a[..4], &[255, 255, 255, 0xff]);
+        for (x, y) in a.chunks(4).zip(b.chunks(4)).take(64) {
+            for c in 0..3 {
+                assert_eq!(x[c], y[c].saturating_mul(2));
+            }
+            assert_eq!(x[3], y[3]);
+        }
+    }
+
+    /// The renderer (`hud_gfx`) multiplies the exact texel by `colour / 128`; the game computes
+    /// `texel * colour >> 7` with texel 0x80, i.e. the colour itself. Every colour up to 0xff
+    /// must come out unclamped.
+    #[test]
+    fn exact_texel_times_colour_over_128_is_the_game_product() {
+        for colour in [0x30u32, 0x64, 0x80, 0xb4, 0xe5, 0xff] {
+            let game = (0x80 * colour) >> 7;
+            let port = (0x80 as f32 / 255.0) * (colour as f32 / 128.0);
+            assert_eq!(game, colour);
+            assert!((port - game as f32 / 255.0).abs() < 1e-6, "colour {colour:#x}");
+            assert!(port <= 1.0);
+        }
     }
 }

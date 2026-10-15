@@ -1059,6 +1059,33 @@ not read. Blade still runs (log: `hand object off the hand (1.102)`, `atkp 1161 
 **Gaps**: FUN_0019a6a0's bit arrays +0x474 / +0x47c (who sets them) and the collision list's enable word; the
 writer of +0x108 bit 0x8000 on enemies (10.55 skips them); FUN_001d1648's masks (6.51); FUN_0018bd08's +0x84.
 
+## 18. Status: the slot bytes across area loads, member rebuild, the third slot (WP-MN8)
+
+Files: `party.rs` (`PartySlots::enter_world`, `wanted_members`, `member_key`, `spawn_party`).
+
+- **Carry-over.** Before, every area load re-applied preset 1 to an empty party, so a Party-page swap was lost at the
+  next area. The original keeps one four-byte record per world (`0x340c9c + world x 4`, FUN_001a71c0) in the save data;
+  only the area-script command 0xf (FUN_001a7330, `rules::apply_preset`) rewrites it. The app's `PartySlots` now keeps a
+  record per world it has entered: `enter_world(world, fresh)` stores the bytes of the world being left, restores the
+  record of the world entered, and calls `fresh` (preset 1) only for a world with no record. [inferred] The app has no
+  new-game writer and does not run command 0xf for these bytes (gap, section 10), so preset 1 stays the start value.
+  Test `slot_bytes_survive_area_loads`.
+- **Rebuild.** `spawn_party` also runs when the bytes change inside an area. `member_key(bytes, merged)` is the sorted
+  list of objects the slot bytes 1..3 name through the merged `memt` (FUN_0017cd20, `rules::slot_object`); when it differs
+  from the key the standing members were built for, their entities are despawned and the named members spawned again,
+  each at the place of a standing member of the same NeoStatus, else at Sora's [inferred]. A swap of two slots (the Party
+  page) keeps the key, so nothing is rebuilt: the entities already trade `slot` (`menu_party::swap_members`). Test
+  `slot_changes_change_the_member_set`. Nothing in the app changes the set yet (Party In / Out, page 0x15, is a gap),
+  so the rebuild path is covered by the key test only; it was not run in the game.
+- **Slot 3.** A filled byte 3 spawns a third member (`PARTNER`) on an area load, beside Sora [inferred: no map script row
+  places a third member; FRIEND_1 / FRIEND_2 are the only stand-ins, FUN_0016e208]. It takes the next free party slot
+  (FUN_0017cd08, `slot` 2). `follow_points` (FUN_00111670) is built for two followers, so the third member's follow point
+  falls back to the player [inferred]. The preset 1 start has an empty byte 3, so nobody extra spawns in the default game.
+
+**Gaps** (not read): page 0x15 and its caller; the writers of the hidden-member list FUN_001c7be8 (so the "locked by the
+hidden list" rule of `menu_party::rows` stays byte-bit-0x80 only); the members' leave / enter animations; the model tweaks
+of FUN_0023b5d0 / FUN_0023b5b0; a third follow point in FUN_00111670.
+
 ## Decompile index
 
 | address | what |

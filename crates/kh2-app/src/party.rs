@@ -269,6 +269,40 @@ fn prty_offsets(a: &mut kh2_archive::Archive) -> Vec<u32> {
 pub struct PartySlots {
     pub world: u16,
     pub bytes: [u8; 4],
+    /// The bytes of the worlds left so far (the original keeps one record per world at `0x340c9c + world x 4`,
+    /// FUN_001a71c0; they survive an area load, only the area-script command 0xf, FUN_001a7330, rewrites them).
+    saved: HashMap<u16, [u8; 4]>,
+    started: bool,
+}
+
+impl PartySlots {
+    /// An area of `world` loads: the world's bytes stay as they are (the Party page's edits included); a world
+    /// with no record yet starts from `fresh` [inferred: the app has no new-game writer, docs/party.md section 10].
+    /// Returns whether the bytes were carried over.
+    pub fn enter_world(&mut self, world: u16, fresh: impl FnOnce() -> [u8; 4]) -> bool {
+        if self.started {
+            self.saved.insert(self.world, self.bytes);
+        }
+        let carried = self.saved.get(&world).copied();
+        self.bytes = carried.unwrap_or_else(fresh);
+        self.world = world;
+        self.started = true;
+        carried.is_some()
+    }
+}
+
+/// The members the slot bytes ask for: (slot byte index 1..=3, object id), in slot order, resolved through the
+/// world's merged `memt` (FUN_0017cd20, `rules::slot_object`); slots that name nobody are left out.
+pub fn wanted_members(bytes: [u8; 4], merged: &[u16; 24]) -> Vec<(usize, u16)> {
+    (1..4).filter_map(|i| rules::slot_object(merged, bytes[i]).map(|o| (i, o))).collect()
+}
+
+/// What decides whether the standing members still match the slots: the objects asked for, in sorted order (a swap
+/// of two slots keeps it, a different member in a slot changes it).
+pub fn member_key(bytes: [u8; 4], merged: &[u16; 24]) -> Vec<u16> {
+    let mut v: Vec<u16> = wanted_members(bytes, merged).into_iter().map(|(_, o)| o).collect();
+    v.sort_unstable();
+    v
 }
 
 /// The party manager's state (FUN_00112168 / FUN_00111d18).
@@ -283,6 +317,10 @@ struct Manager {
     log: bool,
     forced_done: bool,
     in_battle: bool,
+    /// `member_key` of the members standing now (`None`: the area has no party, nothing is rebuilt).
+    built: Option<Vec<u16>>,
+    /// The slot bytes the last spawn pass looked at (the key is recomputed only when they change).
+    seen: [u8; 4],
 }
 
 impl Manager {
@@ -700,26 +738,48 @@ fn spawn_party(
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
     mut lib: Option<ResMut<crate::fx::EffectLib>>,
     rec: Option<Res<crate::area::AreaRecord>>,
+    old: Query<(Entity, &PartyMember)>,
 ) {
     let Some(w) = world else { return };
-    if area.loaded == mgr.area {
-        return;
+    let world_id = drive_world.map_or(2, |d| d.id);
+    // WP-MN8: the slot bytes changed while the area stays (the Party page, a Party In / Out): when the
+    // members they name differ from the ones standing, the members are rebuilt in place. A plain swap of two
+    // slots keeps the set (`member_key`) and rebuilds nothing.
+    let rebuild = area.loaded == mgr.area;
+    if rebuild {
+        if mgr.built.is_none() || slots.bytes == mgr.seen {
+            return;
+        }
+        mgr.seen = slots.bytes;
+        let Some(memt) = data.memt.as_ref() else { return };
+        let key = member_key(slots.bytes, &crate::drive::rules::memt_merge(memt, world_id, |_| false));
+        if mgr.built.as_ref() == Some(&key) {
+            return;
+        }
+        info!("party: the slot bytes {:02x?} name other members than the {} standing: rebuilding", slots.bytes, old.iter().count());
     }
     // WP-E1c: with a real entrance (a jump, `KH2_ENTRANCE`) wait for this area's script run.
-    let at = match rec.as_deref().filter(|r| r.place_on_load) {
+    let at = match rec.as_deref().filter(|r| r.place_on_load && !rebuild) {
         Some(r) => match r.run.as_deref().filter(|run| area.loaded.as_ref() == Some(&run.name)) {
             Some(run) => Some((run.script.groups.iter().map(|g| g.tag.clone()).collect::<Vec<_>>(), r.entrance)),
             None => return,
         },
         None => None,
     };
-    mgr.area = area.loaded.clone();
-    mgr.trail = Trail::default();
+    let old_places: Vec<(u16, Vec3, f32)> = old.iter().map(|(_, m)| (m.neo, m.motor.pos, m.motor.yaw)).collect();
+    if rebuild {
+        for (e, _) in &old {
+            commands.entity(e).despawn();
+        }
+    } else {
+        mgr.area = area.loaded.clone();
+        mgr.trail = Trail::default();
+        mgr.built = None;
+    }
     let Some(name) = area.loaded.clone() else { return };
     if std::env::var("KH2_NO_PARTY").is_ok_and(|v| v != "0") {
         return;
     }
-    let world_id = drive_world.map_or(2, |d| d.id);
     // FUN_00112270: warp mode 1 in world 8 area 8 and world 13 area 3, else 2 (the area number is
     // the digits of the area's name).
     let area_no: u16 = name.trim_start_matches(|c: char| c.is_ascii_alphabetic()).parse().unwrap_or(0);
@@ -729,14 +789,36 @@ fn spawn_party(
         return;
     };
     let preset = memt.trailing.get(rules::DEFAULT_PRESET).map_or([0, rules::EMPTY, rules::EMPTY, rules::EMPTY], |w| w.to_le_bytes());
-    slots.world = world_id;
-    slots.bytes = rules::apply_preset([0, rules::EMPTY, rules::EMPTY, rules::EMPTY], preset);
+    // WP-MN8: the world's bytes survive the area load; only a world with no record starts from the preset.
+    if !rebuild {
+        let carried = slots.enter_world(world_id, || rules::apply_preset([0, rules::EMPTY, rules::EMPTY, rules::EMPTY], preset));
+        info!("party: {name} world {world_id} slot bytes {:02x?} ({}), warp mode {}", slots.bytes, if carried { "carried over".to_string() } else { format!("preset {}", rules::DEFAULT_PRESET) }, mgr.warp_mode);
+    }
+    mgr.seen = slots.bytes;
     let merged = crate::drive::rules::memt_merge(&memt, world_id, |_| false);
-    info!("party: {name} world {world_id} slot bytes {:02x?} (preset {}), warp mode {}", slots.bytes, rules::DEFAULT_PRESET, mgr.warp_mode);
     let Some(consts) = data.consts.clone() else { return };
-    let (player_rec, records): (Vec<_>, Vec<_>) = friend_records(&disc, &name, at).into_iter().partition(|r| r.0 == PLAYER_ENTITY);
-    if records.is_empty() {
+    let sora_at = sora.single().ok().map(|(_, s)| (s.motor.pos, s.motor.yaw));
+    // What to spawn: (slot byte, label, group, place, entrance). On an area load FRIEND_1 / FRIEND_2 stand at their
+    // rows of the map script and the byte-3 partner beside the player [inferred: no map script row places a third
+    // member]; in a rebuild every named member keeps its place (or takes the player's).
+    let (player_rec, records): (Vec<_>, Vec<_>) = if rebuild { (Vec::new(), Vec::new()) } else { friend_records(&disc, &name, at).into_iter().partition(|r| r.0 == PLAYER_ENTITY) };
+    if records.is_empty() && !rebuild {
         info!("party: {name}: the map script places no FRIEND_1 / FRIEND_2");
+    }
+    type Request = (u8, &'static str, String, Option<(Vec3, f32)>, u8);
+    let mut requests: Vec<Request> = Vec::new();
+    if rebuild {
+        for (i, _) in wanted_members(slots.bytes, &merged) {
+            requests.push((slots.bytes[i], ["", "SLOT_1", "SLOT_2", "SLOT_3"][i], String::new(), None, 0));
+        }
+    } else if !records.is_empty() {
+        for (entity, group, at, yaw, entrance) in &records {
+            let first = *entity == rules::FRIEND_1;
+            requests.push((slots.bytes[if first { 1 } else { 2 }], if first { "FRIEND_1" } else { "FRIEND_2" }, group.clone(), Some((*at, *yaw)), *entrance));
+        }
+        if rules::slot_object(&merged, slots.bytes[3]).is_some() {
+            requests.push((slots.bytes[3], "PARTNER", String::new(), None, 0));
+        }
     }
     // Harness: `KH2_PARTY_AT_RECORD=1` puts Sora at the player's row of the friends' group (the app
     // starts him at its own spawn point; the game places the player at his row, docs/events.md). A
@@ -751,10 +833,9 @@ fn spawn_party(
         info!("party: Sora placed at the player's row of {} at {at:?}", r.1);
     }
     let mut next_slot = 0u8;
-    for (entity, group, at, yaw, entrance) in records {
-        let byte = slots.bytes[if entity == rules::FRIEND_1 { 1 } else { 2 }];
+    for (byte, label, group, place, entrance) in requests {
         let Some(obj) = rules::slot_object(&merged, byte) else {
-            info!("party: {group}: object {entity:#x}: slot byte {byte:#04x} names nobody");
+            info!("party: {group}: {label}: slot byte {byte:#04x} names nobody");
             continue;
         };
         let Some(row) = data.objs.iter().find(|r| r.object_id == obj as u32).cloned() else { continue };
@@ -763,6 +844,7 @@ fn spawn_party(
             warn!("party: {}: model or motion set {} not loadable", row.model_name, row.animation_name);
             continue;
         };
+        let Some((at, yaw)) = place.or_else(|| old_places.iter().find(|p| p.0 == row.neo_status).map(|p| (p.1, p.2))).or(sora_at) else { continue };
         let (radius, height) = body_shape(&rig);
         // +0x110..+0x11c and the record at +0x12c: the `prty` row of the NeoMoveset (FUN_00194438).
         let prty = data.prty_row(row.neo_moveset);
@@ -811,7 +893,7 @@ fn spawn_party(
         info!(
             "party: spawn {} slot {slot} ({} at {group} entrance {entrance}, NeoStatus {}, AI class {class}, walk {walk} run {run}, radius {radius}) at {:?}",
             row.model_name,
-            if entity == rules::FRIEND_1 { "FRIEND_1" } else { "FRIEND_2" },
+            label,
             row.neo_status,
             motor.pos
         );
@@ -890,10 +972,12 @@ fn spawn_party(
             // `party_receive_hits`).
             Fighter { team: Team::Player, attack_bodies, hurt_body: body, landed: Default::default(), hittable: true },
         ));
-        if next_slot >= 2 {
+        if next_slot >= 3 {
             break;
         }
     }
+    // The set the standing members were built for (`None` when the area has no party: nothing to rebuild).
+    mgr.built = (rebuild || !records.is_empty()).then(|| member_key(slots.bytes, &merged));
 }
 
 /// Keeps every member's weapon socket on its hand bone (the joint entities are siblings under the
@@ -2115,6 +2199,50 @@ fn party_fade(
 mod tests {
     use super::*;
     use kh2_anim::PlayerState;
+
+    /// A merged `memt` stand-in: member index i (at 8 + i) names object 100 + i for 1..=9, nobody for the rest.
+    fn merged() -> [u16; 24] {
+        let mut m = [0u16; 24];
+        for i in 1..10 {
+            m[8 + i] = 100 + i as u16;
+        }
+        m
+    }
+
+    /// WP-MN8 A: the slot bytes survive an area load. The second `enter_world` of the same world keeps an edit of
+    /// the Party page; another world starts from its own preset and comes back with its own bytes.
+    #[test]
+    fn slot_bytes_survive_area_loads() {
+        let mut s = PartySlots::default();
+        let preset = [0, 1, 2, rules::EMPTY];
+        assert!(!s.enter_world(2, || preset), "the first load starts from the preset");
+        assert_eq!(s.bytes, preset);
+        s.bytes = [0, 2, 1, 3]; // the Party page's edit
+        assert!(s.enter_world(2, || panic!("carried: the preset is not read")), "the next area of the world");
+        assert_eq!(s.bytes, [0, 2, 1, 3]);
+        assert!(!s.enter_world(5, || [0, 3, rules::EMPTY, rules::EMPTY]), "another world has no record yet");
+        assert_eq!((s.world, s.bytes), (5, [0, 3, rules::EMPTY, rules::EMPTY]));
+        assert!(s.enter_world(2, || preset));
+        assert_eq!(s.bytes, [0, 2, 1, 3], "world 2's edit is still there");
+    }
+
+    /// WP-MN8 B: the members asked for follow the slot bytes. A different member in a slot changes the key (a
+    /// rebuild), a swap does not, and a filled slot 3 adds the partner.
+    #[test]
+    fn slot_changes_change_the_member_set() {
+        let m = merged();
+        let e = rules::EMPTY;
+        assert_eq!(wanted_members([0, 1, 2, e], &m), vec![(1, 101), (2, 102)]);
+        assert_eq!(wanted_members([0, 1, 2, 5], &m), vec![(1, 101), (2, 102), (3, 105)], "slot 3 filled: the partner");
+        assert_eq!(wanted_members([0, 3, e, e], &m), vec![(1, 103)]);
+        let base = member_key([0, 1, 2, e], &m);
+        assert_eq!(member_key([0, 2, 1, e], &m), base, "a swap keeps the set");
+        assert_ne!(member_key([0, 1, 2, 5], &m), base, "a partner joins");
+        assert_ne!(member_key([0, 1, 5, e], &m), base, "another member in slot 2");
+        assert_ne!(member_key([0, 1, e, e], &m), base, "a member leaves");
+        // Flags (0x80 / 0x40) do not name another member.
+        assert_eq!(member_key([0, 0x81, 2, e], &m), base);
+    }
 
     /// tt02's map script places FRIEND_1 and FRIEND_2; with preset 1 in Twilight Town (world 2) they
     /// are Donald (`P_EX020`) and Goofy (`P_EX030`), friend-AI classes 0 and 1, with their models and

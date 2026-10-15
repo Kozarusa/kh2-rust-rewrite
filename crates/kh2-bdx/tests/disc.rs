@@ -347,3 +347,96 @@ fn every_script_on_the_disc_parses() {
         assert!(ok > 1000);
     }
 }
+
+/// Goofy's `blade` (P_EX030 R0d30, WP-S5) on the mock world with a hand object: the child thread R0d94
+/// takes the object off the hand (1.161 / 1.102), places it at its bone 3 (1.83, 1.148), flies it with
+/// 1.89 and its attack 1161 (2.10) whose hit routine (2.38, R10f7) the host calls as FUN_0018cf50 does
+/// (`Runtime::call_routine`); the routine sets the context's hit word and names the victim in the target
+/// record (1.160), the shield waits on the target, the thread ends, the main routine links the object back
+/// (1.18) and plays motion 193. No script error (the base run stopped at 0x0e14 on a 0 hand object).
+#[test]
+fn goofy_blade_throws_and_takes_back_the_hand_object() {
+    use kh2_bdx::host::{Arg, Host, Value};
+    const WEAPON: u32 = 0x600;
+    const ATTACK: u32 = 0x700;
+    const VICTIM: u32 = 0x800;
+    struct BladeHost {
+        mock: MockHost,
+        linked: bool,
+        callback: Option<(u32, u32)>,
+    }
+    impl Host for BladeHost {
+        fn call(&mut self, c: &Call) -> Value {
+            let word = |a: &Arg| a.int() as u32;
+            match c {
+                Call::Func { group: 1, index: 234, .. } => {
+                    self.mock.log.push((self.mock.frame, c.clone()));
+                    Value::Handle(WEAPON)
+                }
+                Call::Func { group: 1, index: 161, args } if args.first().map(word) == Some(WEAPON) => Value::Bool(self.linked),
+                Call::Func { group: 1, index: 102, args } if args.first().map(word) == Some(WEAPON) => {
+                    self.linked = false;
+                    self.mock.call(c)
+                }
+                Call::Func { group: 1, index: 18, args } if args.first().map(word) == Some(WEAPON) => {
+                    self.linked = true;
+                    self.mock.call(c)
+                }
+                Call::Func { group: 1, index: 83, .. } => {
+                    self.mock.call(c);
+                    Value::Vec([10.0, -100.0, 20.0, 1.0])
+                }
+                Call::Func { group: 1, index: 94 | 140 | 151, .. } => {
+                    self.mock.call(c);
+                    Value::Bool(true)
+                }
+                Call::Func { group: 2, index: 10, .. } => {
+                    self.mock.call(c);
+                    Value::Handle(ATTACK)
+                }
+                Call::Func { group: 2, index: 38, args } => {
+                    self.callback = Some((word(&args[1]), word(&args[2])));
+                    self.mock.call(c)
+                }
+                _ => self.mock.call(c),
+            }
+        }
+        fn read_mem(&mut self, addr: u32, out: &mut [u8]) -> bool {
+            self.mock.read_mem(addr, out)
+        }
+        fn write_mem(&mut self, addr: u32, data: &[u8]) -> bool {
+            self.mock.write_mem(addr, data)
+        }
+    }
+    let Some((mut a, elf)) = open() else { return };
+    let data = object_script(&mut a, "obj/P_EX030.mdlx");
+    let mut rt = Runtime::new(Program::parse(&data).unwrap());
+    rt.set_host_table(HostTable::from_exe(&elf).expect("table"));
+    rt.core.mode_log = Some(Vec::new());
+    let mut host = BladeHost { mock: MockHost::new(), linked: true, callback: None };
+    assert!(rt.spawn(&mut host, SELF_OBJ));
+    rt.set_mode_named(&mut host, "blade");
+    let mut called = None;
+    for frame in 0..400 {
+        if called.is_none()
+            && frame > 30
+            && let Some((pc, arg)) = host.callback
+        {
+            rt.call_routine(&mut host, pc, &[arg, VICTIM, ATTACK]);
+            called = Some(frame);
+        }
+        rt.update(&mut host);
+        host.mock.tick();
+    }
+    assert!(rt.core.errors.is_empty(), "{:?}", rt.core.errors);
+    let calls: Vec<&Call> = host.mock.calls().collect();
+    let on_weapon = |g: u16, i: u16| calls.iter().any(|c| matches!(c, Call::Func { group, index, args } if *group == g && *index == i && args.first().is_some_and(|a| a.int() as u32 == WEAPON)));
+    assert!(on_weapon(1, 102) && on_weapon(1, 148) && on_weapon(1, 18), "the hand object is taken off, placed and linked back");
+    assert!(calls.iter().any(|c| matches!(c, Call::SetVelocity { obj, speed, .. } if *obj == WEAPON && *speed > 0.0)), "it flies");
+    assert!(called.is_some(), "the attack's hit routine was registered (2.38)");
+    assert!(calls.iter().any(|c| matches!(c, Call::Unknown { group: 1, index: 160, args } if args.get(1) == Some(&VICTIM))), "the hit routine names the victim (1.160)");
+    assert!(calls.iter().any(|c| matches!(c, Call::PlayMotion { obj: SELF_OBJ, motion: 193, .. })), "the catch motion 193 after the throw");
+    assert!(host.linked, "back on the hand");
+    let modes = rt.core.mode_log.take().unwrap();
+    eprintln!("blade: callback at frame {called:?}, modes {modes:?}");
+}

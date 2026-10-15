@@ -1747,9 +1747,9 @@ impl Progress {
                         _ => Vec::new(),
                     };
                     let mut st = self.story();
-                    st.words = words.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+                    st.words = words.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
                     st.programs = programs;
-                    st.locks = locks.chunks_exact(2).map(|c| [c[0], c[1]]).collect();
+                    st.locks = locks.as_chunks::<2>().0.to_vec();
                 }
                 "comment" | "_comment" => {}
                 // The save slot keys (WP-M8, `slot_json`): the whole party block, the app fields beside it and the

@@ -662,6 +662,89 @@ ends, the forced pick takes the refill when MP is the lower fraction), `stitch_c
 oracle `stitch_plane_rules_match_the_game` (FUN_00116530, FUN_00116aa0, FUN_00116658 and FUN_00116780 cases 0..7
 in kh2-ee over 300 random rounds).
 
+### Status (WP-SUM5: the next summon, Genie)
+
+**A. The measure.** The SUM4b harness (tt04, `KH2_WAVE_GROUP=b_44`, `KH2_STATE` with the summon's charm / summon level 1 /
+option word 11, `KH2_DRIVE_POINTS=5 KH2_SUMMON=<row> KH2_SUMMON_AT=7 KH2_SUMMON_PARTY=1 KH2_BDXLOG=1 KH2_SUMMONLOG=1`, 22 s;
+charms: row 1 item 383, row 2 item 159, row 4 item 160) on the base of this work package. "Reached" is what each summon
+object's script asked of the host in that run (the `first host call` lines of its tag, the `unimplemented host call` lines
+for `missing`); "listing" counts the distinct host functions of the whole script (`kh2 bdx <model>`) and those without a
+name in `names.rs`.
+
+| summon | script | reached in the run (class) | listing: distinct / unnamed | unnamed group 10 |
+|---|---|---|---|---|
+| Chicken Little (1) | P_EX350 | 1.13 Approx, 1.87 Approx, 2.10 Impl, **2.21 missing**; then `script error BadAddress(4)` at 0x1638 and 0x1268 (the thread stops) | 107 / 24 | 10.5, 10.8, 10.17, 10.18, 10.20, 10.29, 10.31, 10.33, 10.34, 10.36, 10.37, 10.51, 10.59 |
+| Genie (2) | P_AL010 | 1.13 Approx, 1.84 Impl, 1.94 Approx, 1.165 Stub, 1.272 Impl, 10.19 Approx, 10.45 Impl, **10.10 missing** (x2040, twice a frame) | 81 / 12 | 10.9, 10.10 |
+| Peter Pan (4) | P_EX330 | 0.49 Approx, 0.51 Impl, 1.13 Approx, 1.21 Approx, 1.84 Impl, 1.87 Approx, 1.94 Approx, 1.165 Stub, 1.272 Impl, 10.19 Approx, 10.45 Impl, **2.75 missing** | 133 / 34 (Tinker Bell P_EX340: 37 / 1) | 10.17, 10.18, 10.20, 10.23, 10.25, 10.26, 10.27, 10.28, 10.30, 10.31, 10.36, 10.37 |
+
+Chosen: **Genie**. It reaches one missing host (as the others), its whole script has the fewest distinct and unnamed host
+functions (81 / 12 against 107 / 24 and 133 / 34) and only two unnamed group 10 entries (10.9, 10.10), and its script
+runs without an error (Chicken Little's stops on a bad address after the missing 2.21).
+
+**B. Genie's class** (`summon.rs` module `genie`, run from `objects` for NeoStatus 201 while the script is not in
+`leave`).
+
+- FUN_0010b780 gives NeoStatus 201 the class 0xf, the AI object FUN_001199f8 (0x18 bytes: FUN_001133c0, then +0x10 =
+  0x3548a8, vtable 0x354910, +0xc = 2 records) and +0xb7c |= 0x800, but keeps the members' update (+0xb64 =
+  `PTR_FUN_00378488` = FUN_00111070). So Genie runs the same decision loop as Donald and Goofy: out of battle
+  FUN_001102c8 (the player relation), in battle FUN_0010f830 (summon class: only the player can be in danger),
+  FUN_0010f8d8 (the emergency pass over flag 0x10 records) or FUN_0010fcd0, then the steer FUN_00110468. The app
+  runs party_rules' follow point (FUN_00111670, party slot 0), follow step (row of the battle state) and steer with
+  the class 0xf thresholds and the `prty` row of Genie's NeoMoveset (walk +0x110, run +0x114, turn +0x11c).
+- The records (0x3548a8, stride 0x24): 0 = flags 0x201, FUN_00119af8 (always feasible; phase 0 FUN_001102c8, whose
+  class 0xf branch raises a speed above the walk speed to the player's movement +0x860 plus `DAT_00378574` when
+  that is faster); 1 = flags 0x10, FUN_00119b28 (feasible while the player's HP is below `DAT_003788d0` of its
+  maximum, FUN_0010f490, which also targets the player; phase 0 FUN_0010c9d0(object, 1, player, 0): speed mode 0,
+  object +0xb2c = the command of item 1 (FUN_001a1fc0(1): FUN_001a66e8 finds item 1 in 03system.bin `item`,
+  loaded by FUN_00193610 -> FUN_001a66b8, its +0x10 is the command), +0xb30 = the target, motion request 9 through
+  FUN_00175e20).
+- The form: the first update (FUN_001112e8, +0xb7c bit 0x20000000 clear) calls the object's vtable +0x94
+  (FUN_0010c630, at 0x352e1c and 0x35feac), which calls the AI's +0x18: Genie's FUN_00119a40 = FUN_00119c18 with
+  FUN_001c6b28's command (byte 7 through the table at 0x37c036). FUN_00119c18 (also host 10.9 from the event 11
+  handler with the "Drive!" command): AI +0x14 = the command, parts 2..6 hidden and part row + 2 shown (FUN_00192ce8
+  / FUN_00192cd0 -> object +0x670's vtable +0x40 / +0x3c), byte 7 = row + 1 (6 when the command is not in the table).
+  Host 10.10 (FUN_00119ca8) gives the limit command paired with AI +0x14; the main thread (event 1) offers it every
+  frame in slot 2 through 1.165 while the timer is above 0 (as Stitch's Ohana).
+
+Hosts reached by `P_AL010#summon0` in the harness (`KH2_STATE` with item 159 / level 1 / option word 11,
+`KH2_DRIVE_POINTS=5 KH2_SUMMON=2 KH2_SUMMON_AT=7 KH2_SUMMON_PARTY=1 KH2_BDXLOG=1 KH2_SUMMONLOG=1`, tt04 `b_44`):
+1.13 Approx, 1.84 Impl, 1.94 Approx, 1.165 Stub (summon limit offers: stage 5), 1.272 Impl, 10.10 Impl, 10.19 Approx,
+10.45 Impl: none `missing`. 10.9 (event 11, Genie's "Drive!" commands) is not reached: the menu does not offer
+"Drive!" (section 2) and nothing sends event 11; it is Approx (the parts are not drawn).
+
+Log lines of that run: `summon: P_AL010#summon0 first update (FUN_00119a40): byte 7 = 0 -> form command 0`, `... form
+command 0 (FUN_00119c18): parts [2, 3, 4, 5, 6] hidden, part None shown (not drawn), byte 7 = 6, limit command 0`,
+`... record 0 (handler 0x119af8) starts`, and once a second `... follow: N units from the player, speed mode m speed
+s (walk 2.0 run 8.0)`: with Sora walking (`KH2_KEYS=12:W:3`) the distance rose to 356 with mode 2 (run 8.0), then
+fell back to 270 and Genie stopped (mode 0). With no drive form owned (the harness state) byte 7 is 0, so the first
+update shows no form part and 10.10 gives 0 (the script offers command 0).
+
+Inferred or left out:
+
+- [inferred] Genie flies (+0xb7c 0x800; FUN_002f6320 picks his motions by NeoStatus): the app keeps him at the player's
+  height and does no ground probe. Who reads +0xb7c bit 0x800 was not found [GAP: the patterns `0xb7c) & 0x800`,
+  `0xb7c).*0x800` find nothing in the decompilation].
+- His motions: only record 1's motion 9 is played; the follow's motions (FUN_002f6320's flying set) are not ported,
+  so the body keeps the idle slot the spawn chose (slot 1 in the harness; the screenshot shows him with his arms
+  spread) [GAP].
+- The model parts of FUN_00119c18 (object +0x670, vtable +0x40 / +0x3c with +0x104) are logged, not drawn [GAP: the
+  part object at +0x670 was not read].
+- Record 1's command (item 1's) is not carried out: the item use of the members (motion 9's trigger, party.rs) is not
+  run for a summon; the log says `the command's effect is not carried out` [GAP]. Genie is not free until motion 9
+  ends [inferred, as the members' item use].
+- [inferred] When FUN_0010fcd0 chooses nothing the follow runs (FUN_001103f8's player relation).
+- [inferred] The player's movement +0x860 is the length of Sora's horizontal velocity per tick (`Motor::vel`).
+- The generator is party.rs's xorshift stand-in (`stitch::Rng`), as for Stitch.
+- The fifth table pair (607, 608) has no byte 7 command in the table at 0x37c036 (it reads 0 there).
+
+**C. Tests.** `genie_class_from_the_executable_and_its_decision` (the records, the form table both ways, the decision
+out of battle, healthy in battle, in danger through the emergency pass, the class 0xf speed rule); the oracle
+`genie_form_and_limit_match_the_game` (FUN_00119ca8, FUN_00119c18 with its part calls logged by stubs at FUN_00192ce8
+/ FUN_00192cd0 and the game's FUN_001c6b48 writing byte 7, FUN_001c6b10, and FUN_0010f490 over 300 random rounds, in
+kh2-ee); kh2-bdx `genie_summon_script_offers_the_form_limit_while_the_timer_runs` (P_AL010 in `appear_skip` on the
+mock host: no group 10 call without a signature, 10.10 asked every frame, the limit 544 of the form command 536
+offered only with the timer above 0 and no limit task); `P_AL010` in the interpreter oracle (0 failures).
+
 ## 7. Unknowns (with what was searched)
 
 - What starts the arrival event that FUN_001c6260 and the `appear` mode wait on: FUN_0014f198 only hides

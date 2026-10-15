@@ -350,6 +350,8 @@ pub static HOST_FUNCS: &[HostFn] = &[
     f(10, 1, "ai_walk_to", "Ov", '-', 0x2f6a98, "the friend AI object (+0xb60, FUN_0010c5f0) is placed at the vector: FUN_001175a0 sets AI +0x630 bit 0, copies it to the position +0x640 (its w to the wanted yaw +0x65c, the depth +0x648 = DAT_00378840) and once builds the parent matrix (FUN_00117320, FUN_00193228); docs/summons.md, Status (WP-SUM4b)"),
     f(10, 3, "ai_vcall_28", "O", '-', 0x2f6b28, "the friend AI object's virtual method +0x28 (Stitch FUN_001191a8: links the player and his hand objects to the summon for a limit)"),
     f(10, 4, "ai_vcall_2c", "O", '-', 0x2f6b58, "the friend AI object's virtual method +0x2c (Stitch FUN_00119360: undoes FUN_001191a8)"),
+    f(10, 9, "ai_genie_form", "Oi", '-', 0x2f6c68, "Genie's FUN_00119c18 on the friend AI object: AI +0x14 = the command; the object's parts 2..6 hidden (FUN_00192ce8) and the part of the command's row in the table at 0x3548f0 shown (row + 2, FUN_00192cd0); byte 7 of `DAT_00340c88` = row + 1, or 6 without a row (FUN_001c6b48)"),
+    f(10, 10, "ai_genie_limit", "O", 'i', 0x2f6ca0, "Genie's FUN_00119ca8: the limit command paired with AI +0x14 in the table at 0x3548f0 (five pairs), 0 without"),
     f(10, 12, "ai_slot_start", "OiOiiiii", 'i', 0x2f6d00, "FUN_00117708 on the friend AI object: a slot of its 0x18-slot list at +0x20 with the kind, the object of the third argument's context (0 without), four words and a flag; returns the slot index"),
     f(10, 13, "ai_stitch_13", "Oi", '-', 0x2f6d68, "Stitch's FUN_001195e8 on the friend AI object: AI slots of kind 1 and, with a target, attack objects of atkp 0x373 around it (FUN_001130d0)"),
     f(10, 16, "ai_slot_mark", "Oi", '-', 0x2f6df8, "FUN_00117840: AI slot n flags |= 0x40000000"),

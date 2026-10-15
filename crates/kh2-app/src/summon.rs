@@ -2207,14 +2207,21 @@ fn objects(
                 && let Ok(mut a) = anims.get_mut(body)
             {
                 let rig = a.rig.clone();
+                // Stitch's motion set holds his motions at their own numbers (slots 0, 0xa1, 0xc9..0xce, 0xe7, 0xf1,
+                // 0xf2 in N_HB040_BTL's set): FUN_0017da30 uses the four-slot order only for a motion set whose header
+                // +0xc has bit 0 (FUN_0017d960 -> FUN_001a7d70), else the number is the slot. [inferred] Stitch's set
+                // has the bit clear (the header bit is not read here): a slot at the number wins, the order is the
+                // fallback.
                 let state = crate::party_battle::motion_state(battle.active(), false);
-                let slot = crate::party_battle::remap(m as i32, order[state], |x| rig.mset.has(x));
+                let slot = if rig.mset.has(m as usize) { Some(m as usize) } else { crate::party_battle::remap(m as i32, order[state], |x| rig.mset.has(x)) };
                 let looping = slot.and_then(|x| rig.mset.get(x)).and_then(|x| x.motion.as_ref()).is_some_and(|mo| mo.frame_return < mo.frame_end);
-                if h.log {
-                    info!("summon: {tag} motion request {m:#x} -> slot {slot:?} (looping {looping})");
+                if h.log && (a.slot != slot || slot.is_none()) {
+                    let near: Vec<usize> = (0..rig.mset.slots.len()).filter(|&x| rig.mset.has(x)).collect();
+                    info!("summon: {tag} motion request {m:#x} -> slot {slot:?} (looping {looping}){}", if slot.is_none() { format!("; the motion set has slots {near:?}") } else { String::new() });
                 }
+                // A request of the motion that plays changes nothing; a new one starts (FUN_0017e220).
                 if slot.is_some() {
-                    a.restart(slot, looping, 0.0);
+                    a.play(slot, looping, 0.0);
                 }
             }
             if st.attached

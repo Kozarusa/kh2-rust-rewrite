@@ -22,8 +22,10 @@
 //!   `jm_top_<world>.2ld` pictures, the story texts and the title; page 1 (`FUN_002a4188` / `FUN_002a44a8`) is
 //!   Roxas's one-row page with the same layer objects in other groups.
 //!
-//! What the port draws: pages 0, 1 and 2 (docs/menus.md 20.7). The category pages (3..0x20) are not ported: a
-//! confirm on a page 2 row, or on a page 0 cell of id above 0xe, is refused with a log line.
+//! What the port draws: pages 0, 1 and 2 (docs/menus.md 20.7), and since WP-MN11 (20.8) the help line, the list
+//! cursor, the L1 / R1 hints and switches between pages 0 and 2, and page 3 (the story). The other category pages
+//! (4..0x20) are not ported: a confirm on their rows, an L1 / R1 to page 0xc, or a confirm on a page 0 cell of id
+//! above 0xe, is refused with a log line.
 
 use bevy::prelude::*;
 use kh2_image::layd::{self, Layd};
@@ -33,7 +35,7 @@ use crate::audio::PlaySe;
 use crate::menu::{menu_sound, Menu, Phase};
 use crate::menu_gfx::{self, MenuScene, Node};
 use crate::menu_text::Label;
-use kh2_image::text::Style;
+use kh2_image::text::{Style, Token};
 use crate::menu_pages::Exe;
 use crate::progress::Progress;
 
@@ -68,13 +70,51 @@ mod addr {
     /// Pointers to the alternative `jm_top_` names (page 1's, and world 1's once its second flag is set; `FUN_002a45b0`).
     pub const TOP_NAME_ROXAS: u32 = 0x0036_d45c;
     pub const TOP_NAME_ALT: u32 = 0x0036_d460;
+    /// The three page names of the L1 / R1 hints (u16: pages 0, 2 and 0xc, `FUN_00277860` / `FUN_00277928`).
+    pub const HINTS: u32 = 0x0038_1fb8;
+    /// The plate module's group triples (`FUN_0029cf78(0, 5, .., 0x381fc0, 0x381fc8)`): the plates (the category
+    /// name tab, `FUN_0029d1d0`) and the follower object every plate and the list cursor carry (`FUN_0029af00`,
+    /// `FUN_002771c0` object 0x7571).
+    pub const PLATE_GROUPS: u32 = 0x0038_1fc0;
+    pub const FOLLOW_GROUPS: u32 = 0x0038_1fc8;
+    /// The category pages' backdrop object 0x755a (`FUN_00278658`): u16 group by page family (+2 for 0xf/0x12/0x15).
+    pub const BACKDROP: u32 = 0x0038_1f88;
+    /// Pairs (pad mask, icon) ending with -1 (`FUN_00255418`; icon 0xb when the mask is not listed).
+    pub const PAD_ICONS: u32 = 0x0038_0ab0;
+    /// Page 2's help lines by category (u16 x 8, `FUN_002a4a68`).
+    pub const HELP: u32 = 0x0038_2b98;
 }
 
 /// The literal messages of `FUN_002a3d08` (the labels beside the two story texts).
 mod msg {
     pub const LABEL_A: u32 = 0x3253;
     pub const LABEL_B: u32 = 0x3254;
+    /// Page 1's help line (`FUN_002a4a68` when the page is 1).
+    pub const HELP_ROXAS: u16 = 0x493f;
+    /// Page 3's help line (`FUN_002a54a8`).
+    pub const HELP_STORY: u16 = 0x48d7;
 }
+
+/// The pad masks of L1 and R1 the hints show (`FUN_00277740`: `FUN_00255418(0x400)` before the left name,
+/// `FUN_00255418(0x800)` after the right one).
+const PAD_L1: u16 = 0x400;
+const PAD_R1: u16 = 0x800;
+/// The help line object 0x755d (`FUN_00278468`: group 0x7b, a child of the plate 0x7558).
+const HELP_GROUP: usize = 0x7b;
+/// The list cursor (`FUN_00277158` -> `FUN_0029a9c0(0, seq 5, .., 0x21, 0x21)`).
+const CURSOR_GROUP: usize = 0x21;
+/// The L1 / R1 hint objects (`FUN_002774e8`: `DAT_0036d0f0` groups 0x2f then 0x30, `+0x1a8` groups 0x32 then 0x33,
+/// both centred).
+const HINT_L: [usize; 2] = [0x2f, 0x30];
+const HINT_R: [usize; 2] = [0x32, 0x33];
+/// Page 3 (the story, `FUN_002a4c38`): the two layer objects, the row's and the marks' group.
+const STORY_LAYERS: [usize; 2] = [0x5e, 0x62];
+const STORY_ROW: usize = 2;
+/// Lines the story page shows (`FUN_00299010(list, 10)`, the draw `0x2a54c8` stops after ten line heights) and
+/// the line mark objects (`FUN_002a4c38` creates ten at +0xa4a0).
+pub const STORY_LINES: usize = 10;
+/// The story text's font (`0x2a54c8`: `FUN_001a7ed8(ctx, 3, ..)`).
+const STORY_FONT: usize = 3;
 
 /// The layer objects of pages 2 (`FUN_002a3540`) and 1 (`FUN_002a4188`): six objects of sequence 5; 0 and 1 and the
 /// two holders 2 and 4 hang from the header object (`DAT_0036d0e8`), 3 from 2 and 5 from 4.
@@ -225,6 +265,91 @@ pub fn category_page(cat: usize) -> u16 {
     }
 }
 
+/// The pages of the three hint names (`FUN_00277928`: the place of a name in the table 0x381fb8 gives 0, 2 or 0xc).
+const HINT_PAGES: [u16; 3] = [0, 2, 0xc];
+
+/// The names of the L1 and R1 hints on `page` (`FUN_00277860`): page 0 is name 0, pages 1 and 2 name 1, page 0xc
+/// name 2; the left hint is the previous name, the right one the next (wrapping). When the journal world byte is
+/// above 0xe (unsigned: `lbu`, so -1 too), a hint that would name 1 (page 2) names 0 (or 2 on page 0xc) instead.
+pub fn hints(page: u16, world: i8, table: &[u16; 3]) -> [u16; 2] {
+    let u: usize = match page {
+        1 | 2 => 1,
+        0xc => 2,
+        _ => 0,
+    };
+    let l = if u == 0 { 2 } else { u - 1 };
+    let r = if u < 2 { u + 1 } else { 0 };
+    let mut out = [table[l], table[r]];
+    if world as u8 > 0xe {
+        let other = if u == 2 { 0 } else { 2 };
+        for (k, i) in [l, r].into_iter().enumerate() {
+            if i == 1 {
+                out[k] = table[other];
+            }
+        }
+    }
+    out
+}
+
+/// The page a hint name leads to (`FUN_00277928`: the first place of the name in the table; -1 when absent).
+pub fn hint_page(name: u16, table: &[u16; 3]) -> Option<u16> {
+    table.iter().position(|&t| t == name).map(|i| HINT_PAGES[i])
+}
+
+/// The icon of a pad mask (`FUN_00255418`: the pairs at 0x380ab0 up to a -1 mask; 0xb when the mask is absent).
+pub fn pad_icon(pairs: &[(u16, u16)], mask: u16) -> u8 {
+    pairs.iter().find(|p| p.0 == mask).map_or(0xb, |p| p.1 as u8)
+}
+
+/// Page 3's entries (`FUN_002a5060`): every record of `jiminy.bar` entry 1 of the world (+0) whose story flag
+/// (+0xa, `FUN_002a1e78`) is set, in file order: (the text, +8; the record's index).
+pub fn story_entries(stor: &[u8], world: i8, test: &dyn Fn(u16) -> bool) -> Vec<(u16, usize)> {
+    records(stor, 0xc)
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r[0] as i8 == world && test(u16::from_le_bytes([r[10], r[11]])))
+        .map(|(i, r)| (u16::from_le_bytes([r[8], r[9]]), i))
+        .collect()
+}
+
+/// The list count of page 3 (`FUN_002a4c38`): the lines of every entry but the last, plus one, plus the last
+/// entry's lines beyond ten. A cursor value is the first line shown.
+pub fn story_count(lines: &[usize]) -> usize {
+    let Some((&last, rest)) = lines.split_last() else { return 1 };
+    rest.iter().sum::<usize>() + 1 + last.saturating_sub(STORY_LINES)
+}
+
+/// The line height and the extra gap of page 3 (`FUN_002a5060`, `0x2a54c8`): the line height is the layer group's
+/// +0x1c, at least the text size plus the font's line gap; the gap the draw adds (`FUN_001a8cc0`) is what is
+/// left of the line height over the size and the font's line gap (never negative).
+pub fn story_metrics(pitch: i32, size: i32, font_gap: i32) -> (i32, i32) {
+    let gap = (pitch - size - font_gap).max(0);
+    (pitch.max(size + font_gap), gap)
+}
+
+/// Page 3's state machine (`FUN_002a5218`): Up/Down move the first line shown [inferred: one line, no wrap]; L1 /
+/// R1 a page of ten (the list's page step +0x1c = 10, `FUN_00299010`; with +0x27 set by `FUN_00298fe0(list, 1)`
+/// the list pages itself, `FUN_00298370`, instead of returning -9 / -8) [inferred: clamped at the ends]; -2 goes
+/// back to page 2, -4 ends the scene.
+pub fn page3(key: Key, top: usize, count: usize) -> Act {
+    let last = count.saturating_sub(1);
+    let to = match key {
+        Key::Start => return Act::Close,
+        Key::Cancel => return Act::Back,
+        Key::Move(_, dy) if dy != 0 => {
+            let to = top as i64 + i64::from(dy.signum());
+            if to < 0 || to > last as i64 {
+                return Act::None;
+            }
+            to as usize
+        }
+        Key::L1 => top.saturating_sub(STORY_LINES),
+        Key::R1 => (top + STORY_LINES).min(last),
+        _ => return Act::None,
+    };
+    if to == top { Act::None } else { Act::Cursor(to) }
+}
+
 /// The cells of page 0 in order: (record index, picture id). `FUN_002a2248` / `FUN_002a2bc0`: a record with an id
 /// below 0x10 whose flag is set shows its own picture; with the all-worlds flag set, one whose flag is clear shows
 /// the locked picture.
@@ -289,6 +414,11 @@ pub enum Key {
     /// The -4 result (Start) [inferred: the camp's Start key].
     Start,
     Move(i32, i32),
+    /// The list's -9 (L1) and -8 (R1) results (`FUN_00297148`: bits 0x8000 / 0x4000 of the pad word, enabled by the
+    /// list flags 0x2000 / 0x1000 that `FUN_002a2248` / `FUN_002a3540` set; -8 takes the right hint's page,
+    /// `FUN_002a27d8` / `FUN_002a3da0`) [inferred: -9 is L1 and -8 R1, the buttons the hints show on their side].
+    L1,
+    R1,
 }
 
 /// The outcome of a key on page 0.
@@ -304,6 +434,14 @@ pub enum Act {
     Back,
     /// A confirm on a page 2 row: the category and the page it opens.
     Category { cat: usize, page: u16 },
+    /// An L1 / R1 page switch (`FUN_00277928`): the page the hint names (`None`: the name is not in the table).
+    Switch(Option<u16>),
+}
+
+/// The L1 / R1 switch of pages 0 and 2.
+fn switch(key: Key, page: u16, world: i8, table: &[u16; 3]) -> Act {
+    let h = hints(page, world, table);
+    Act::Switch(hint_page(if key == Key::R1 { h[1] } else { h[0] }, table))
 }
 
 /// Page 2's state machine (`FUN_002a3da0`): Up/Down move the row cursor (a new press past the ends wraps, the list
@@ -321,6 +459,8 @@ pub fn page2(key: Key, row: usize, cats: &[usize]) -> Act {
             Act::Cursor((row as i32 + dy.signum()).rem_euclid(n) as usize)
         }
         Key::Confirm => cats.get(row).map_or(Act::None, |&cat| Act::Category { cat, page: category_page(cat) }),
+        // L1 / R1: `switch` (it needs the hint table).
+        Key::L1 | Key::R1 => Act::None,
     }
 }
 
@@ -344,6 +484,7 @@ pub fn page0(key: Key, cursor: usize, shown: &[(usize, u8)], worlds: &[World]) -
             Some(w) => Act::Open { page: if w.id > 0xe { 0xc } else { 2 }, world: w.id },
             None => Act::None,
         },
+        Key::L1 | Key::R1 => Act::None,
     }
 }
 
@@ -392,12 +533,37 @@ pub struct PageTables {
     pub pic_group: [[usize; 2]; 2],
     pub top_roxas: String,
     pub top_alt: String,
+    /// The hint names (0x381fb8), page 2's help lines (0x382b98).
+    pub hints: [u16; 3],
+    pub help: [u16; 8],
+    /// The plate and follower group triples (0x381fc0, 0x381fc8), the backdrop groups (0x381f88, four).
+    pub plate: [usize; 3],
+    pub follow: [usize; 3],
+    pub backdrop: [usize; 4],
+    /// The icons of L1 and R1 (`FUN_00255418`).
+    pub icon_l1: u8,
+    pub icon_r1: u8,
 }
 
 pub fn read_page_tables(exe: &Exe) -> Option<PageTables> {
-    let mut row_text = [0; 8];
-    for (k, t) in row_text.iter_mut().enumerate() {
-        *t = exe.u16(addr::ROW_TEXT + 2 * k as u32)?;
+    let u16s = |va: u32, out: &mut [u16]| -> Option<()> {
+        for (k, t) in out.iter_mut().enumerate() {
+            *t = exe.u16(va + 2 * k as u32)?;
+        }
+        Some(())
+    };
+    let (mut row_text, mut help, mut hints, mut back) = ([0; 8], [0; 8], [0; 3], [0u16; 4]);
+    u16s(addr::ROW_TEXT, &mut row_text)?;
+    u16s(addr::HELP, &mut help)?;
+    u16s(addr::HINTS, &mut hints)?;
+    u16s(addr::BACKDROP, &mut back)?;
+    let mut pairs = Vec::new();
+    for k in 0..64u32 {
+        let m = exe.u16(addr::PAD_ICONS + 4 * k)?;
+        if m == 0xffff {
+            break;
+        }
+        pairs.push((m, exe.u16(addr::PAD_ICONS + 4 * k + 2)?));
     }
     let w = |k: u32| u32_at(exe, addr::PIC_SEQ + 4 * k).map(|v| v as usize);
     Some(PageTables {
@@ -406,6 +572,13 @@ pub fn read_page_tables(exe: &Exe) -> Option<PageTables> {
         pic_group: [[w(4)?, w(5)?], [w(2)?, w(3)?]],
         top_roxas: name_at(exe, addr::TOP_NAME_ROXAS)?,
         top_alt: name_at(exe, addr::TOP_NAME_ALT)?,
+        hints,
+        help,
+        plate: triple(exe, addr::PLATE_GROUPS)?,
+        follow: triple(exe, addr::FOLLOW_GROUPS)?,
+        backdrop: back.map(usize::from),
+        icon_l1: pad_icon(&pairs, PAD_L1),
+        icon_r1: pad_icon(&pairs, PAD_R1),
     })
 }
 
@@ -423,9 +596,31 @@ struct Nodes {
     title: usize,
     rows: Vec<usize>,
     row_kids: Vec<[usize; 2]>,
+    /// The help line 0x755d, the list cursor and its follower 0x7571, the two hints.
+    help: usize,
+    cursor: usize,
+    follow: usize,
+    hints: [usize; 2],
+    /// The category pages: the name tab (plate 0 of `FUN_0029d1d0`) and its follower, the backdrop 0x755a.
+    tab: usize,
+    tab_follow: usize,
+    backdrop: usize,
+    /// Page 3: the two layers, the text row and the ten line marks.
+    story_lay: Vec<usize>,
+    story_row: usize,
+    story_marks: Vec<usize>,
 }
 
 impl Nodes {
+    fn page3(&self) -> Vec<usize> {
+        let mut v = vec![self.tab, self.tab_follow, self.backdrop, self.story_row];
+        v.extend(&self.story_lay);
+        v.extend(&self.story_marks);
+        v
+    }
+    fn chrome(&self) -> Vec<usize> {
+        vec![self.help, self.cursor, self.follow, self.hints[0], self.hints[1]]
+    }
     fn page0(&self) -> Vec<usize> {
         let mut v = self.cells.clone();
         v.extend(self.marks.iter().flatten());
@@ -444,6 +639,8 @@ impl Nodes {
         let mut v = vec![self.layer, self.header, self.plate];
         v.extend(self.page0());
         v.extend(self.page12());
+        v.extend(self.page3());
+        v.extend(self.chrome());
         v
     }
 }
@@ -491,6 +688,16 @@ struct Open {
     cats: Vec<usize>,
     saved: Vec<(usize, bool)>,
     roxas: bool,
+    /// Page 2's row cursor kept for the way back (`FUN_00277dc8(page, row)` at the confirm, `FUN_00277de8` at the
+    /// build).
+    back_row: usize,
+    /// Page 3: the first line shown, the list count, the text lines of all entries in order.
+    top: usize,
+    count: usize,
+    lines: Vec<Vec<Token>>,
+    /// Page 3's extra line gap (`FUN_001a8cc0`), its text size.
+    gap: u8,
+    size: f32,
 }
 
 pub struct JournalPlugin;
@@ -581,6 +788,23 @@ fn load(j: &mut Journal, disc: &Disc, scene: &mut MenuScene, images: &mut Assets
         nodes.rows.push(r);
         nodes.row_kids.push([add(scene, list, tex, Some(r)), add(scene, list, tex, Some(r))]);
     }
+    // The category pages (`FUN_0029d1d0`, `FUN_00278658`, page 3 `FUN_002a4c38`).
+    nodes.tab = add(scene, list, tex, None);
+    nodes.tab_follow = add(scene, list, tex, Some(nodes.tab));
+    nodes.backdrop = add(scene, list, tex, Some(header));
+    for _ in 0..2 {
+        nodes.story_lay.push(add(scene, list, tex, Some(header)));
+    }
+    nodes.story_row = add(scene, list, tex, Some(nodes.story_lay[0]));
+    for _ in 0..STORY_LINES {
+        nodes.story_marks.push(add(scene, list, tex, Some(nodes.story_lay[0])));
+    }
+    // The help line (a child of the plate, `FUN_00278468`), the hints (roots), the cursor and its follower (moved
+    // under the cursor row or cell when shown: those all have lower indices).
+    nodes.help = add(scene, list, tex, Some(plate));
+    nodes.hints = [add(scene, list, tex, None), add(scene, list, tex, None)];
+    nodes.cursor = add(scene, list, tex, None);
+    nodes.follow = add(scene, list, tex, None);
     j.nodes = nodes;
     j.loaded = true;
     info!("journal: loaded jmemo.2ld, {} world pictures, {} world records", j.world_tex.len(), j.worlds.len());
@@ -631,18 +855,25 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
         Some(Key::Move(0, -1))
     } else if keys.just_pressed(KeyCode::ArrowDown) {
         Some(Key::Move(0, 1))
+    } else if keys.just_pressed(KeyCode::KeyQ) || keys.just_pressed(KeyCode::PageUp) {
+        // [inferred] the keyboard's L1 / R1: Q / E (and PageUp / PageDown).
+        Some(Key::L1)
+    } else if keys.just_pressed(KeyCode::KeyE) || keys.just_pressed(KeyCode::PageDown) {
+        Some(Key::R1)
     } else {
         None
     };
-    for k in [KeyCode::KeyJ, KeyCode::Escape, KeyCode::Backspace, KeyCode::KeyK, KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::ArrowLeft, KeyCode::ArrowRight, KeyCode::ArrowUp, KeyCode::ArrowDown] {
+    for k in [KeyCode::KeyJ, KeyCode::Escape, KeyCode::Backspace, KeyCode::KeyK, KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::ArrowLeft, KeyCode::ArrowRight, KeyCode::ArrowUp, KeyCode::ArrowDown, KeyCode::KeyQ, KeyCode::KeyE, KeyCode::PageUp, KeyCode::PageDown] {
         keys.clear_just_pressed(k);
     }
     let (Some(key), true, None) = (key, j.loaded, j.goto) else { return };
     let Some(o) = j.open.as_ref() else { return };
     let (page, world_byte) = (o.page, o.world);
-    let act = match page {
-        0 => page0(key, o.cursor, &o.shown, &j.worlds),
-        2 => page2(key, o.row, &o.cats),
+    let act = match (page, key) {
+        (0 | 2, Key::L1 | Key::R1) => switch(key, page, world_byte, &j.tables.hints),
+        (0, _) => page0(key, o.cursor, &o.shown, &j.worlds),
+        (2, _) => page2(key, o.row, &o.cats),
+        (3, _) => page3(key, o.top, o.count),
         _ => page1(key),
     };
     match act {
@@ -651,14 +882,38 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
             let old = o.cursor;
             j.open.as_mut().unwrap().cursor = c;
             select(&j, &mut scene, Some(old));
+            place_cursor(&j, &mut scene);
             menu_sound::play(&mut se, menu_sound::CURSOR);
             info!("journal: page 0 cursor {c}");
+        }
+        Act::Cursor(t) if page == 3 => {
+            j.open.as_mut().unwrap().top = t;
+            story_text(&j, &mut scene);
+            menu_sound::play(&mut se, menu_sound::CURSOR);
+            info!("journal: page 3 first line {t}");
         }
         Act::Cursor(r) => {
             let o = j.open.as_mut().unwrap();
             o.row = r;
-            menu_sound::play(&mut se, menu_sound::CURSOR);
             info!("journal: page 2 row {r} (category {})", o.cats[r]);
+            place_cursor(&j, &mut scene);
+            menu_sound::play(&mut se, menu_sound::CURSOR);
+        }
+        Act::Switch(Some(to @ (0 | 2))) if !(to == 2 && world_byte as u8 > 0xe) => {
+            menu_sound::play(&mut se, crate::menu_status::CONFIRM);
+            info!("journal: page {page} {} -> page {to} (FUN_00277928)", if key == Key::R1 { "R1 (-8)" } else { "L1 (-9)" });
+            j.goto = Some((to, world_byte));
+        }
+        Act::Switch(to) => {
+            menu_sound::play(&mut se, menu_sound::REFUSED);
+            info!("journal: page {page} {} -> page {to:x?} not ported (FUN_00277928); refused", if key == Key::R1 { "R1 (-8)" } else { "L1 (-9)" });
+        }
+        Act::Category { cat: 1, page: 3 } => {
+            menu_sound::play(&mut se, crate::menu_status::CONFIRM);
+            info!("journal: page 2 row category 1 -> page 3, the story (FUN_002a3da0 -> FUN_002a4c38)");
+            let o = j.open.as_mut().unwrap();
+            o.back_row = o.row;
+            j.goto = Some((3, world_byte));
         }
         Act::Open { page: 2, world } => {
             menu_sound::play(&mut se, crate::menu_status::CONFIRM);
@@ -672,6 +927,11 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
         Act::Category { cat, page } => {
             menu_sound::play(&mut se, menu_sound::REFUSED);
             info!("journal: page 2 row category {cat} -> page {page:#x} not ported (FUN_002a3da0); refused");
+        }
+        Act::Back if page == 3 => {
+            menu_sound::play(&mut se, menu_sound::CANCEL);
+            info!("journal: page 3 cancel -> page 2 (FUN_002a5218 case -2)");
+            j.goto = Some((2, world_byte));
         }
         Act::Back => {
             menu_sound::play(&mut se, menu_sound::CANCEL);
@@ -732,19 +992,43 @@ fn show(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Assets
     scene.set_group_then(n.header, j.header[0], j.header[2]);
     scene.nodes[n.plate].visible = true;
     scene.set_group_then(n.plate, group::PLATE[0], group::PLATE[1]);
-    j.open = Some(Open { page, world, cursor: 0, shown: Vec::new(), row: 0, cats: Vec::new(), saved, roxas });
+    j.open = Some(Open {
+        page,
+        world,
+        cursor: 0,
+        shown: Vec::new(),
+        row: 0,
+        cats: Vec::new(),
+        saved,
+        roxas,
+        back_row: 0,
+        top: 0,
+        count: 0,
+        lines: Vec::new(),
+        gap: 0,
+        size: TEXT_SIZE,
+    });
     build(j, scene, disc, images, page, world, test);
 }
 
 /// Builds `page` (0, 1 or 2) after hiding the other page's nodes (`FUN_002a3da0`'s switch, `FUN_00276740`).
 fn build(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Assets<Image>, page: u16, world: i8, test: &dyn Fn(u16) -> bool) {
-    for id in j.nodes.page0().into_iter().chain(j.nodes.page12()) {
-        scene.nodes[id].visible = false;
+    // Page 3 keeps the title of page 2 (the category teardown `FUN_00277ec0` frees the `DAT_0036d100` objects
+    // only; the title is `DAT_0036d0f0 + 0x350`).
+    let title = j.nodes.title;
+    let n = &j.nodes;
+    let ids: Vec<usize> = n.page0().into_iter().chain(n.page12()).chain(n.page3()).chain([n.help, n.cursor, n.follow]).collect();
+    for id in ids {
+        if !(page == 3 && id == title) {
+            scene.nodes[id].visible = false;
+        }
     }
     match page {
         1 | 2 => build12(j, scene, disc, images, page, world, test),
+        3 => build3(j, scene, world, test),
         _ => build0(j, scene, world, test),
     }
+    chrome(j, scene, page);
 }
 
 fn build0(j: &mut Journal, scene: &mut MenuScene, world: i8, test: &dyn Fn(u16) -> bool) {
@@ -877,7 +1161,192 @@ fn build12(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Ass
         if scene.text.is_some() && scene.nodes[row_ids[0]].label.is_some() { "drawn" } else { "missing" }
     );
     let o = j.open.as_mut().unwrap();
-    (o.page, o.world, o.row, o.cats) = (page, world, 0, cats);
+    // The row cursor the confirm kept (`FUN_00277de8`), then cleared (`FUN_00277dc8(page, 0, 0)`).
+    let row = if o.back_row < cats.len() { o.back_row } else { 0 };
+    (o.page, o.world, o.row, o.cats, o.back_row) = (page, world, row, cats, 0);
+}
+
+/// The text tokens of a message: the journal's file first, then the system messages (`FUN_00190c40`).
+fn tokens(j: &Journal, scene: &MenuScene, id: u16) -> Option<Vec<Token>> {
+    j.msgs.as_ref().and_then(|m| m.tokens(u32::from(id))).or_else(|| scene.text.as_ref()?.messages.as_ref()?.tokens(u32::from(id)))
+}
+
+/// A label of font 1 in the default colour from `tokens`, with or without the group's x/y (`FUN_00139048`).
+fn label_of(scene: &MenuScene, node: usize, group: usize, tokens: Vec<Token>, align: u8, group_offset: bool) -> Option<Label> {
+    let g = scene.nodes[node].seq.and_then(|s| scene.seqs.get(s)).and_then(|s| s.groups.get(group)).copied().unwrap_or_default();
+    let size = if g.size > 0 { g.size as f32 } else { TEXT_SIZE };
+    let offset = if group_offset { [g.x as f32, g.y as f32] } else { [0.0; 2] };
+    let world = scene.text.as_ref()?.world;
+    Some(Label { tokens, style: Style { font: 1, size: Some(size), align, world, ..Style::default() }, offset })
+}
+
+/// The help line, the hints and the list cursor of `page` (built after the page's own objects).
+fn chrome(j: &mut Journal, scene: &mut MenuScene, page: u16) {
+    let Some(o) = j.open.as_ref() else { return };
+    let n = &j.nodes;
+    let (help, hint_nodes) = (n.help, n.hints);
+    // The help line (`FUN_00278468`): page 2 the category of the cursor row at the build (`FUN_002a4a68`; nothing
+    // else calls it), page 1 0x493f, page 3 0x48d7; page 0 sets none.
+    let help_id = match page {
+        2 => o.cats.get(o.row).map(|&c| j.tables.help[c]),
+        1 => Some(msg::HELP_ROXAS),
+        3 => Some(msg::HELP_STORY),
+        _ => None,
+    };
+    scene.nodes[help].visible = help_id.is_some();
+    if let Some(id) = help_id {
+        scene.set_group(help, HELP_GROUP);
+        let t = tokens(j, scene, id);
+        scene.nodes[help].label = t.and_then(|t| label_of(scene, help, HELP_GROUP, t, 0, true));
+    }
+    // The L1 / R1 hints (`FUN_00277860` / `FUN_00277740` from the builds of pages 0 and 2; page 1 makes none; the
+    // category pages keep them: their teardown `FUN_00277ec0` leaves the `DAT_0036d0f0` objects alone).
+    match page {
+        0 | 2 => {
+            let names = hints(page, o.world, &j.tables.hints);
+            let (il, ir) = (j.tables.icon_l1, j.tables.icon_r1);
+            for (k, (id, groups)) in [(names[0], HINT_L), (names[1], HINT_R)].into_iter().enumerate() {
+                let node = hint_nodes[k];
+                scene.nodes[node].visible = true;
+                scene.set_group_then(node, groups[0], groups[1]);
+                let label = tokens(j, scene, id).map(|t| {
+                    let mut v = Vec::new();
+                    if k == 0 {
+                        v.push(Token::Icon(il));
+                    }
+                    v.extend(t.into_iter().filter(|t| *t != Token::End));
+                    if k == 1 {
+                        v.push(Token::Icon(ir));
+                    }
+                    v
+                });
+                scene.nodes[node].label = label.and_then(|t| label_of(scene, node, groups[1], t, 2, true));
+                scene.nodes[node].label_anchor = Some([0.0; 2]);
+            }
+        }
+        1 => {
+            for h in hint_nodes {
+                scene.nodes[h].visible = false;
+            }
+        }
+        _ => {}
+    }
+    place_cursor(j, scene);
+}
+
+/// The list cursor (`FUN_00276bb0`, each frame while the page's list has objects and the scene is idle): object
+/// 0x21 of slot 0 and the follower 0x7571 (groups 0x381fc8) on the cursor's row or cell (`FUN_0029ac68`,
+/// `FUN_0029b3a0`: the object follows its target, flag 0x800 [inferred: drawn at the target's position]). Pages
+/// that set `DAT_0036d104` (`FUN_00277e70(1)`: 1 and the category pages) have none.
+fn place_cursor(j: &Journal, scene: &mut MenuScene) {
+    let Some(o) = j.open.as_ref() else { return };
+    let n = &j.nodes;
+    let target = match o.page {
+        0 => n.cells.get(o.cursor).copied().filter(|_| o.cursor < o.shown.len()),
+        2 => n.rows.get(o.row).copied().filter(|_| o.row < o.cats.len()),
+        _ => None,
+    };
+    let follow = j.tables.follow;
+    for (id, first) in [(n.cursor, true), (n.follow, false)] {
+        let fresh = scene.nodes[id].parent != target || !scene.nodes[id].visible;
+        scene.nodes[id].visible = target.is_some();
+        scene.nodes[id].parent = target;
+        scene.nodes[id].off = [0.0; 2];
+        if target.is_some() && fresh {
+            if first {
+                scene.set_group(id, CURSOR_GROUP);
+            } else {
+                scene.set_group_then(id, follow[0], follow[2]);
+            }
+        }
+    }
+}
+
+/// Page 3, the story (`FUN_002a4c38`): the category tab, the backdrop, two layers, the text row and the line marks.
+fn build3(j: &mut Journal, scene: &mut MenuScene, world: i8, test: &dyn Fn(u16) -> bool) {
+    let n = &j.nodes;
+    let (tab, tab_follow, backdrop, lay, row, marks) = (n.tab, n.tab_follow, n.backdrop, n.story_lay.clone(), n.story_row, n.story_marks.clone());
+    // The tab of plate 0 (`FUN_0029d1d0(0, -1, 0)`) with the category name the confirm put there (`FUN_0029d820(0,
+    // 0x382b88[cat])`); the follower of the plate (`FUN_0029af00(.., 0x381fc8)`).
+    let (plate, follow) = (j.tables.plate, j.tables.follow);
+    scene.nodes[tab].visible = true;
+    scene.nodes[tab].pos = [0.0; 2];
+    scene.set_group_then(tab, plate[0], plate[2]);
+    let name = tokens(j, scene, j.tables.row_text[1]);
+    scene.nodes[tab].label = name.and_then(|t| label_of(scene, tab, plate[2], t, 0, false));
+    scene.nodes[tab].label_anchor = Some([0.0; 2]);
+    scene.nodes[tab_follow].visible = true;
+    scene.set_group_then(tab_follow, follow[0], follow[2]);
+    // The backdrop 0x755a (`FUN_00278658`): page family 1 (`FUN_00277d60(1)` of page 2's build).
+    scene.nodes[backdrop].visible = true;
+    scene.set_group(backdrop, j.tables.backdrop[1]);
+    for (k, &id) in lay.iter().enumerate() {
+        scene.nodes[id].visible = true;
+        scene.nodes[id].off = [0.0; 2];
+        scene.set_group(id, STORY_LAYERS[k]);
+    }
+    let list = j.seq_base + SEQ_LIST;
+    let g = scene.seqs.get(list).and_then(|s| s.groups.get(STORY_LAYERS[0])).copied().unwrap_or_default();
+    let size = if g.size > 0 { g.size } else { TEXT_SIZE as i32 };
+    let font_gap = kh2_image::font::Font::get(STORY_FONT).line_gap as i32;
+    let (line_h, gap) = story_metrics(g.unk1c, size, font_gap);
+    for (k, &id) in marks.iter().enumerate() {
+        scene.nodes[id].visible = true;
+        scene.nodes[id].off = [0.0, (k as i32 * g.unk1c) as f32];
+        // The marks' groups 0x382ba8 / 0x382bac follow the journal's read bits (`FUN_002b9360` / `FUN_002b9480`,
+        // `DAT_0036d4e8`), which the app does not have: they stay on 2.
+        scene.set_group(id, STORY_ROW);
+    }
+    // The entries and their lines (`FUN_002a5060`; `FUN_00191760` counts a text's lines).
+    let entries = story_entries(&j.stor, world, test);
+    let mut lines: Vec<Vec<Token>> = Vec::new();
+    let mut counts = Vec::new();
+    for &(id, _) in &entries {
+        let t = tokens(j, scene, id).unwrap_or_default();
+        let mut cur = Vec::new();
+        let mut c = 0;
+        for tok in t.into_iter().filter(|t| *t != Token::End) {
+            if tok == Token::Newline {
+                lines.push(std::mem::take(&mut cur));
+                c += 1;
+            } else {
+                cur.push(tok);
+            }
+        }
+        lines.push(cur);
+        counts.push(c + 1);
+    }
+    let count = story_count(&counts);
+    scene.nodes[row].visible = true;
+    scene.nodes[row].off = [0.0; 2];
+    scene.set_group(row, STORY_ROW);
+    info!(
+        "journal: page 3 (FUN_002a4c38): world {world}, {} story entries {:x?}, {} lines, list count {count}, line height {line_h}, gap {gap}",
+        entries.len(),
+        entries.iter().map(|e| e.0).collect::<Vec<_>>(),
+        lines.len()
+    );
+    let o = j.open.as_mut().unwrap();
+    (o.page, o.world, o.top, o.count, o.lines, o.gap, o.size) = (3, world, 0, count, lines, gap.min(255) as u8, size as f32);
+    story_text(j, scene);
+}
+
+/// The story row's text: ten lines from the first one shown (`0x2a54c8`: the scissor of ten line heights, every
+/// entry from the one that holds the first line), in font 3, with the extra gap; the colour is the row's +0x198
+/// 0x60000008 [inferred: the value `FUN_002a4c38` writes there is the draw's colour argument].
+fn story_text(j: &Journal, scene: &mut MenuScene) {
+    let Some(o) = j.open.as_ref() else { return };
+    let mut t = vec![Token::Gap(o.gap)];
+    for (k, l) in o.lines.iter().skip(o.top).take(STORY_LINES).enumerate() {
+        if k > 0 {
+            t.push(Token::Newline);
+        }
+        t.extend(l.iter().cloned());
+    }
+    t.push(Token::End);
+    let world = scene.text.as_ref().map_or(0, |x| x.world);
+    let style = Style { font: STORY_FONT, size: Some(o.size), align: 0, world, color: [0x08, 0x00, 0x00, 0x60], ..Style::default() };
+    scene.nodes[j.nodes.story_row].label = Some(Label { tokens: t, style, offset: [0.0; 2] });
 }
 
 fn close(j: &mut Journal, scene: &mut MenuScene, menu: &mut Menu) {
@@ -1079,6 +1548,91 @@ mod tests {
         assert_eq!(story_texts(&d, 0, &|_| true), [0x20, 0x21]);
         assert_eq!(story_texts(&d, 2, &|_| true), [NO_TEXT; 2]);
         assert!(has_world(&d, 0xc, 1) && !has_world(&d, 0xc, 2));
+    }
+
+    #[test]
+    fn hints_name_the_neighbour_pages() {
+        let t = [0x10, 0x20, 0x30];
+        // Page 0: left the third name (page 0xc), right the second (page 2).
+        assert_eq!(hints(0, 0, &t), [0x30, 0x20]);
+        assert_eq!(hints(2, 0, &t), [0x10, 0x30]);
+        assert_eq!(hints(1, 0, &t), [0x10, 0x30]);
+        assert_eq!(hints(0xc, 0, &t), [0x20, 0x10]);
+        // A world byte above 0xe (or -1) never names page 2.
+        assert_eq!(hints(0, -1, &t), [0x30, 0x30]);
+        assert_eq!(hints(0xc, 0x10, &t), [0x10, 0x10]);
+        assert_eq!(hint_page(0x20, &t), Some(2));
+        assert_eq!(hint_page(0x30, &t), Some(0xc));
+        assert_eq!(hint_page(0x99, &t), None);
+        assert_eq!(switch(Key::R1, 0, 0, &t), Act::Switch(Some(2)));
+        assert_eq!(switch(Key::L1, 2, 0, &t), Act::Switch(Some(0)));
+        assert_eq!(switch(Key::R1, 2, 0, &t), Act::Switch(Some(0xc)));
+        assert_eq!(pad_icon(&[(0x400, 0x2b), (0x800, 0x2c)], 0x800), 0x2c);
+        assert_eq!(pad_icon(&[], 0x800), 0xb);
+    }
+
+    #[test]
+    fn story_page_entries_lines_and_state_machine() {
+        let mut d = vec![0u8; 0x10 + 3 * 0xc];
+        d[8] = 3;
+        for (k, (w, text, f)) in [(0i8, 0x100u16, 1u16), (1, 0x200, 1), (0, 0x300, 2)].into_iter().enumerate() {
+            let r = 0x10 + k * 0xc;
+            d[r] = w as u8;
+            d[r + 8..r + 10].copy_from_slice(&text.to_le_bytes());
+            d[r + 10..r + 12].copy_from_slice(&f.to_le_bytes());
+        }
+        assert_eq!(story_entries(&d, 0, &|_| true), vec![(0x100, 0), (0x300, 2)]);
+        assert_eq!(story_entries(&d, 0, &|f| f == 2), vec![(0x300, 2)]);
+        // The list count: all lines but the last entry's, plus one, plus the last entry's lines beyond ten.
+        assert_eq!(story_count(&[3, 4]), 4);
+        assert_eq!(story_count(&[3, 12]), 6);
+        assert_eq!(story_count(&[]), 1);
+        assert_eq!(story_metrics(28, 18, 2), (28, 8));
+        assert_eq!(story_metrics(10, 18, 2), (20, 0));
+        assert_eq!(page3(Key::Move(0, 1), 0, 4), Act::Cursor(1));
+        assert_eq!(page3(Key::Move(0, 1), 3, 4), Act::None);
+        assert_eq!(page3(Key::Move(0, -1), 0, 4), Act::None);
+        assert_eq!(page3(Key::Cancel, 2, 4), Act::Back);
+        assert_eq!(page3(Key::Start, 2, 4), Act::Close);
+        assert_eq!(page3(Key::Confirm, 2, 4), Act::None);
+        assert_eq!(page3(Key::R1, 0, 32), Act::Cursor(10));
+        assert_eq!(page3(Key::R1, 25, 32), Act::Cursor(31));
+        assert_eq!(page3(Key::L1, 5, 32), Act::Cursor(0));
+        assert_eq!(page3(Key::L1, 0, 32), Act::None);
+    }
+
+    /// The executable's hint, help, plate and icon tables and the story page's groups (skipped without `KH2_ISO`).
+    #[test]
+    fn the_disc_category_page_tables() {
+        let Ok(iso) = std::env::var("KH2_ISO") else { return };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok()).unwrap();
+        let t = read_page_tables(&Exe::load(elf).unwrap()).expect("the page tables");
+        eprintln!("hints {:x?} help {:x?} plate {:x?} follow {:x?} backdrop {:x?} icons {:x} {:x}", t.hints, t.help, t.plate, t.follow, t.backdrop, t.icon_l1, t.icon_r1);
+        assert!(t.hints.iter().all(|&m| m != 0 && m != 0xffff));
+        assert!(t.help.iter().all(|&m| m != 0));
+        assert_ne!(t.icon_l1, t.icon_r1, "L1 and R1 have their own icons");
+        let two = layd::parse_2ld(&a.read("menu/us/jmemo.2ld").unwrap()).unwrap();
+        let s5 = &two.layd.seqs[SEQ_LIST];
+        for g in [HELP_GROUP, CURSOR_GROUP, HINT_L[0], HINT_L[1], HINT_R[0], HINT_R[1], STORY_LAYERS[0], STORY_LAYERS[1], STORY_ROW, t.backdrop[1]]
+            .into_iter()
+            .chain(t.plate)
+            .chain(t.follow)
+        {
+            assert!(s5.groups.len() > g, "group {g:#x}");
+        }
+        assert!(s5.groups[STORY_LAYERS[0]].unk1c > 0, "the story line height");
+        let bar = a.read("menu/us/jiminy.bar").unwrap();
+        let e = kh2_bar::parse(&bar).unwrap();
+        // Twilight Town (journal world 0) has story records, all with a text.
+        let all = story_entries(e[1].data, 0, &|_| true);
+        assert!(!all.is_empty() && all.iter().all(|r| r.0 != 0));
+        let flags: Vec<u16> = records(e[1].data, 0xc).iter().filter(|r| r[0] == 0).map(|r| u16::from_le_bytes([r[10], r[11]])).collect();
+        eprintln!("Twilight Town story records: texts {:x?}, flags {flags:?}", all.iter().map(|r| r.0).collect::<Vec<_>>());
+        let msgs = kh2_image::text::Messages::from_bar(&a.read("msg/us/jm.bar").unwrap()).unwrap();
+        for id in t.hints.iter().chain(&t.help).copied().chain([msg::HELP_ROXAS, msg::HELP_STORY]).chain(all.iter().map(|r| r.0)) {
+            assert!(msgs.tokens(u32::from(id)).is_some(), "message {id:#x} in jm.bar");
+        }
     }
 
     /// Pages 1 and 2's data on the disc (skipped without `KH2_ISO`).

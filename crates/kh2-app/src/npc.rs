@@ -57,6 +57,7 @@ impl Plugin for NpcPlugin {
             .init_resource::<NpcSpawned>()
             .init_resource::<Talk>()
             .init_resource::<crate::hud::hud_msgwin::ScriptWindow>()
+            .add_plugins(crate::savepoint::SavePointPlugin)
             .add_systems(FixedUpdate, (npc_spawn, npc_update).chain().in_set(Sim::Enemy).after(crate::enemy::spawn_waves))
             // After the reaction manager's own offer and accept (`reaction_cmd`, `Sim::Effects`).
             .add_systems(FixedUpdate, (talk_offer, talk_step).chain().after(Sim::Effects).before(Sim::Sounds).run_if(sim_running))
@@ -73,7 +74,7 @@ fn npclog() -> bool {
 /// The townspeople's models and scripts by model name (loaded once each), the `objentry` rows and
 /// the executable's host table.
 #[derive(Resource, Default)]
-struct NpcAssets {
+pub(crate) struct NpcAssets {
     rigs: HashMap<String, Option<Arc<Rig>>>,
     scripts: HashMap<String, Option<Arc<Program>>>,
     objs: Vec<t::Objentry>,
@@ -386,7 +387,7 @@ fn npc_spawn(
 
 /// One tick of every townsperson's script: run it, carry out its motion and movement requests.
 #[allow(clippy::too_many_arguments)]
-fn npc_update(
+pub(crate) fn npc_update(
     mut commands: Commands,
     world: Option<Res<World>>,
     trace: Option<ResMut<AiTrace>>,
@@ -647,8 +648,11 @@ pub const TALK_END_TIMER: f32 = 60.0;
 pub struct Talk {
     world: Option<String>,
     lib: Option<kh2_ard::libretto::Libretto>,
-    /// The townsperson's candidate for the player's slot 1 this tick.
+    /// The candidate for the player's slot 1 this tick (a townsperson's, or a save point's that
+    /// `savepoint.rs` puts in after it).
     pub offer: Option<crate::reaction_cmd::Active>,
+    /// The townspeople's own candidate (for the log).
+    npc_offer: Option<crate::reaction_cmd::Active>,
     /// The accept key (R, or `KH2_REACTION_PRESS`) was pressed.
     press: bool,
     run: Option<TalkRun>,
@@ -682,6 +686,11 @@ impl Talk {
     /// Whether a talk runs (the player's control is locked, bit 0 of 0x1d5d7b8).
     pub fn running(&self) -> bool {
         self.run.is_some()
+    }
+
+    /// Takes a pending accept press (for the save points' use, `savepoint.rs`).
+    pub fn take_press(&mut self) -> bool {
+        std::mem::take(&mut self.press)
     }
 }
 
@@ -723,7 +732,7 @@ pub fn part_offer(
             continue;
         }
         let Some(shape) = parts::shape_of(r, pos, yaw) else { continue };
-        if parts::overlaps(&shape, player) != Some(true) {
+        if crate::savepoint::overlaps(&shape, player) != Some(true) {
             continue;
         }
         let dist = (shape.center - player_pos).length();
@@ -751,7 +760,7 @@ fn reaction_log() -> bool {
 /// enemies): the best part offer of every townsperson; an enemy offer of a higher or equal
 /// priority keeps the slot [approx: FUN_0019c520 also compares the distance].
 #[allow(clippy::too_many_arguments)]
-fn talk_offer(
+pub(crate) fn talk_offer(
     mut talk: ResMut<Talk>,
     rules: Option<Res<crate::reaction_cmd::ReactionRules>>,
     slot: Option<Res<crate::reaction_cmd::ReactionOffer>>,
@@ -763,7 +772,7 @@ fn talk_offer(
     battle: Res<crate::sora::Battle>,
 ) {
     use crate::reaction_cmd::{window_at, Active, Ctx};
-    let before = talk.offer.map(|a| (a.cmd, a.from, a.status));
+    let before = talk.npc_offer.map(|a| (a.cmd, a.from, a.status));
     talk.offer = None;
     let mut tag = String::new();
     if let (Some(rules), Ok(s), Some(body)) = (rules.as_deref(), sora.single(), assets.player_body.as_ref())
@@ -804,6 +813,7 @@ fn talk_offer(
             }
         }
     }
+    talk.npc_offer = talk.offer;
     if reaction_log() && talk.offer.map(|a| (a.cmd, a.from, a.status)) != before {
         match talk.offer {
             Some(a) => info!(
@@ -858,7 +868,7 @@ fn talk_hide_offer(talk: Res<Talk>, mut slot: Option<ResMut<crate::reaction_cmd:
 /// The accept (FUN_0019c670 -> FUN_001cf030 -> FUN_00177b18 case 0x1f) and the talk task
 /// (FUN_001a5728) step by step.
 #[allow(clippy::too_many_arguments)]
-fn talk_step(
+pub(crate) fn talk_step(
     mut talk: ResMut<Talk>,
     rules: Option<Res<crate::reaction_cmd::ReactionRules>>,
     mut win: ResMut<crate::hud::hud_msgwin::ScriptWindow>,

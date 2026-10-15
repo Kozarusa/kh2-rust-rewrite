@@ -196,13 +196,39 @@ In tt04 the Struggle header has flag 0x40 and kind 2: a win plays "YOU WIN!" (re
 the field HUD and the mission HUD with the final score stay), a loss "YOU LOSE" (record 3); then the menu 0x1a would
 open. The area triggers of the `btl` program and of the `evt` program with the same id (0xb6: events 0x8b and 0x8d,
 jumps) do not take event 7 or 8, and the mission kind sends neither to the area anyway. So the HUD does not come
-down at the end: it stays until the menu ends the manager. **Gaps:** the menu of record 0x1a (`FUN_0024f330`, the
-pause-menu record table of `DAT_01d5df08`) is not in the app. Since WP-F1 (item 16, user report: the Struggle UI
-lingered for ever) the last step ends the manager at once in its place (log `struggle: last step (FUN_001b96e0):
-mission kind 2 opens the menu of record 0x1a (FUN_0024f330), which the app does not have; the manager ends as if
-it had closed`, then `struggle: mission manager ended`): the counters, the frozen clock, the result picture, the
-orbs and the player lock go 322 ticks (292 for "YOU LOSE") after the result layout started, as `FUN_001b90d0` removes them with the
-manager [inferred: what the game does when that menu closes was not read]. Since WP-F1 (item 2) the player
+down at the end: it stays until the menu ends the manager.
+
+**The result menu (WP-STRM)** [V unless marked]. `FUN_001b96e0` calls `FUN_0024f330(FUN_001bef10(0x1a), 0)`.
+`FUN_001bef10` is a binary search (`FUN_0030ff40`, rows of 0x40 bytes sorted by the u16 key at +0) of the table
+`DAT_01d5df08`, which `FUN_001d3408` (`FUN_001beed0`) points at entry `slct` (tag at 0x37c558) of `14mission.bar`
+(+4 the row count, 23 rows, from +8). `FUN_0024f330` is the field Save command's opener (docs/menus.md 18.1 and
+section 21): menu kind 7, whose kind 8 shows the row as a pointer list. Row 0x1a: two options, code 4 with message
+0x8ab2 ("Quit") and code 3 with 0x8ab1 ("Retry"), cursor on the first (+3 = 0), +0x14 = -1, +0x16 = 0xd, no
+information message, +0x25 = 1: the list's cancel and -4 are off (`FUN_0026f508` clears flags 0x60), so a row must
+be picked. A row runs `FUN_001b9c58(code)` (`FUN_0026fda0`): code 3 -> event 0x8b (`FUN_001d58e0` too for mission
+kind 0x1e), code 4 -> event 0x8d and the party reset `FUN_001abfe8(9)`; then `FUN_001b9518` ends the manager and
+`FUN_00197a60` copies the jump record of the area trigger for (event, -1) into `FUN_0019d9d8(record, 0x40000000)`.
+In tt04 (log of `KH2_WAVE_GROUP=b_50`): trigger 0x8b jumps by type 2 with key 0xb6 (`07localset.bin`, the Struggle
+programs again), trigger 0x8d by type 1 to tt04 entrance 55. So "Retry" restarts the match and "Quit" leaves it.
+
+The app (`menu_struggle.rs`, `Mission::menu_request`, `Mission::menu_exit`): the last step sets the request and the
+manager stays (log `struggle: last step (FUN_001b96e0): mission kind 2 opens the menu of record 0x1a
+(FUN_001bef10(0x1a) -> FUN_0024f330); the manager stays`); the menu reads the row from the disc, dims the field,
+freezes the simulation, draws the two rows with the disc's texts (`struggle menu: open record 0x1a ...: rows [(4,
+8ab2), (3, 8ab1)], cursor 0, no cancel true`), ignores the cancel, and after a row and the close fade
+(`struggle menu: closed: back to the field (FUN_001038a0)`) ends the manager (`struggle: menu code N (FUN_001b9c58):
+event ..`, `struggle: mission manager ended`) and takes a type-1 jump through `area_jump::JumpTask` ("Quit": `jump:
+area tt04 entrance 55`). Tests `the_table_rows_parse_and_the_search_finds_by_key`,
+`the_result_list_moves_wraps_refuses_the_cancel_and_takes_a_row`, `the_disc_result_menu_row_texts_and_groups`.
+[inferred] the jump starts when the close fade ends (the original requests it in the row's frame); the rows' look
+is the Save menu port's (`save.2ld` groups 77/79 and hand 12, its placements). **Gaps:** "Retry" ends the manager
+but its type-2 jump is not taken (the app's jumps carry no program bytes, `area.rs`; log `trigger jump [2, 2, 0, 0,
+182, 1] not taken`), so the match does not restart; the party reset `FUN_001abfe8(9)`, `FUN_001d58e0`, the flag
+0x40000000 of `FUN_0019d9d8`, word +0xfc of `FUN_0014a918`'s object, `FUN_0023e860`'s sound set-up, the header
+group +0x16 (0xd of the file behind kind 8's resource ids 0x753c / 0x7532, not resolved) and kind 7's frame are not
+ported.
+
+Since WP-F1 (item 2) the player
 controller reads the layout's control lock and the stop (`Mission::control_locked`, `Mission::fight_stopped`):
 `sora::tick` drops every press and the stick (`Pad::lock`) while either holds, and Sora does not revive from
 `State::Down` meanwhile; log (`KH2_MOVELOG=1`) `move: input ignored: the mission's layout locks control or the
@@ -397,6 +423,7 @@ the app already removed them when their group finished.
 | 0x184e80, 0x179078, 0x18b700, 0x1caeb0, 0x1cad50, 0x1cadd8, 0x1cac70, 0x1c0400, 0x184d98, 0x185a08, 0x185a38 | orbs |
 | 0x1a3cb0, 0x1c5b10, 0x1c5bf8, 0x1d54d8, 0x1d55d8, 0x1ce6c0 | the drop and the other two mini-game pools (subtypes 4 and 0xd, not in tt04) |
 | 0x197b70, 0x195718, 0x195690, 0x1954f8, 0x16b470, 0x1727b0, 0x173b70, 0x16e088, 0x16e0b8, 0x1a5328 | global events and the script's other hosts |
+| 0x1b96e0, 0x1bef10, 0x30ff40, 0x1beed0, 0x1d3408, 0x24f330, 0x254a18, 0x24f4f0, 0x23e860, 0x1b9c58, 0x1d3480, 0x1d58e0, 0x197a60, 0x1abfe8, 0x1b9518, 0x26f698, 0x26f508, 0x26fda0, 0x298cf0, 0x297148, 0x2544b8 | the result menu: record 0x1a of `14mission.bar` `slct`, the pointer list, the rows' codes (WP-STRM) |
 | 0x1b8ee8, 0x1b9140, 0x1b95a0, 0x1b96e0, 0x1b9780, 0x1b97f0, 0x1b9818, 0x1b98a8, 0x1b9908, 0x1b9940, 0x1b9c00, 0x1b9ce0, 0x1b9518, 0x1b90d0, 0x1b8b10, 0x1ba100, 0x1ba140, 0x1ba150, 0x1b9ec8, 0x1d3490, 0x1d3538, 0x1d3390, 0x1d5320, 0x1d5048, 0x1d51b8, 0x1b9a08 | the start and the end (WP-7E2) |
 | 0x195898, 0x195ae0, 0x1959f0, 0x195c08, 0x196170, 0x1962a0, 0x196280, 0x196418, 0x196668, 0x196760, 0x1964d0, 0x1968c8, 0x1d1118, 0x1d1128, 0x193610, 0x1b7ce8, 0x1b7d18, 0x1b7d50, 0x2232c8, 0x2245d0, 0x226fb0, 0x225af0, 0x225998, 0x222668, 0x222728, 0x2236d8, 0x224b98, 0x1bef10, 0x1bef48, 0x1befc0, 0x1beff8, 0x1bf030, 0x138758 | events, event kinds, pause-menu records |
 | 0x1b8d80, 0x1908b0, 0x15b798, 0x15bc10, 0x1cec00, 0x1ce718, 0x1ce820, 0x178c88, 0x175f10, 0x186238, 0x186530, 0x1a0100, 0x19f920, 0x1a0030, 0x1a0968, 0x1b8218, 0x175ad8, 0x1789d8, 0x190668, 0x1b70b8, 0x1ba2c0 | flags of `DAT_0035d268`, the knock-out |

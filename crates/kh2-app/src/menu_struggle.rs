@@ -392,6 +392,11 @@ fn tick(mut m: ResMut<StruggleMenu>, mut scene: ResMut<MenuScene>, real: Res<Tim
     hide_all(&m, &mut scene);
     info!("struggle menu: closed: back to the field (FUN_001038a0)");
     let Some(code) = m.flow.chosen.take() else { return };
+    if !matches!(code, 3 | 4) {
+        // Codes 1, 5, 6, 10, 0x11 and the party handler (FUN_0026fda0) are not on the result menu's row: not ported.
+        info!("struggle menu: code {code} is not ported; the manager stays");
+        return;
+    }
     let Some(exit) = mission.menu_exit(code) else { return };
     match exit.jump {
         Some([1, world, area, entrance, _key, flags]) if *task == JumpTask::Idle => {

@@ -619,7 +619,12 @@ tt37; tt40 -> tt19 and area 100. The full list is in the test output.
   `.anb` name; the rest not read.
 - **Message lines** [V]. Opcode 0x2d (`FUN_002275a8`): +4 frame, +6 key, +8 message id, +0xa action (0 open,
   1 close, 2 wait until the window reaches state 3), +0xc window kind (0: class 0x1ab6a8, 1: class 0x1ab8e0;
-  docs/hud.md). Opcode 0x15 (`FUN_00227478`): +4 frame, +6 key, +8 message id, +0xa 0 open / else close, the
+  docs/hud.md). [V, WP-E6b] Action 1 finds the slot of (key +6, message +8) among the 32, calls the window's
+  close method (vtable +0x20) and clears the slot, so the wait that follows finds nothing and returns at once
+  (close without waiting). Action 2 finds the slot and, unless the event is skipped (`FUN_002225e0`), sets
+  `DAT_0036b9c9` (`FUN_00222528`) and yields until the window's state (+0x70) is 3, then clears it
+  (`FUN_00222538`); while `DAT_0036b9c9` is set `FUN_00222588` answers 1 and `FUN_00222728` does not advance the
+  counter: the event's frame stands still until the window waits for the button. Opcode 0x15 (`FUN_00227478`): +4 frame, +6 key, +8 message id, +0xa 0 open / else close, the
   subtitle line class 0x1aae60. Up to 32 open windows at `0x1dc00e0` keyed by (key, message id). In tt02 event 102
   the 0x15 lines open and close ids 0x3376..0x337b.
 - **Start and end** [V]. A trigger with an event tag calls `FUN_00196428`: a 0xb0-byte event object
@@ -629,6 +634,24 @@ tt37; tt40 -> tt19 and area 100. The full list is in the test output.
   `FUN_00195c08` steps the object's own states (0..9). When the event ends (`FUN_001964d0`) the chain event 0x4c
   fires for kinds with bit 0; the event's end (`FUN_00225028`) fires 0x12 or 99. Other starters: `FUN_001ad1c0`,
   `FUN_001ad378` (revive), `FUN_001b3468`.
+- **What the start holds back, and what the end gives back** [V, WP-E6b]. `FUN_00195898` takes the kind row of
+  `arg & 0x3f` (`FUN_001d1128`: `FUN_0030ff40` searches the `evtp` rows of `03system.bin`, 8 bytes, by their kind
+  byte; +2 the flags; `struggle::event_kinds`). `FUN_00195ae0` then: flag bit 3 clear -> `FUN_00196280`
+  (`FUN_001b7ce8(0)`, `(1)`: the players' control bits of 0x1d5d7b8); bit 2 clear -> `FUN_00196760` (`FUN_0014ef48`
+  -> `FUN_0013da78`: the field HUD's draw tags 3 to 6, docs/struggle.md). The two calls the brief named are not HUD
+  hides: `FUN_001bef48(0xc)` (disassembled: `a0` passes to `FUN_001bef10`, a search of the 0x40-byte rows of
+  `DAT_01d5df08`, whose row is copied into slot `row +0x24` of 0x1d5dd88; `FUN_001befc0(0xc)` clears the slot)
+  is pause-menu record 0xc (docs/struggle.md: the pause-menu record table), and `FUN_0014c748(4)` sets bit 4 of
+  `DAT_00356f1c`, which only `FUN_0014c780` reads (callers `FUN_0014a080` pause menu, `FUN_0014c4a8`, `FUN_0014c7b8`
+  the play clock): both are undone by `FUN_001959f0` (`FUN_0014c760(4)`, `FUN_001befc0(0xc)`) when the object is
+  destroyed. **Nothing hides the player or the party models**: `FUN_00195ae0`, `FUN_00195d28` (state 0: the fade by
+  kind row +1, `FUN_0014a918` / `FUN_0015d058`), `FUN_00196280` and `FUN_00196760` touch control bits, faders and
+  HUD only [the event's own commands may hide actors: opcodes 3, 0xd, 0xf, 0x10 not read].
+  State 9 (`FUN_00196170`): `FUN_0019d9c8(+0xc)` (the jump record's word 0 is not 0) decides; without a jump the
+  fade-ins of kind flag bit 4 (`FUN_0014a7f0(.., 6, 0)` on two faders), `FUN_0016f8e0(-200)` for flag bit 0,
+  control back (`FUN_001962a0`) and, for bit 2 clear, the field HUD back (`FUN_00196790`); with or without, it then
+  calls `FUN_0019d9d8(+0xc, 0x80000000)`, the trigger jump of `area_jump.rs` with bit 31 in the fade flags
+  (`FUN_00104e18`).
 - **Skipping** [GAP]: `FUN_00224b18` (an event is running and `FUN_002c17e0`) and `FUN_00222630` drop commands;
   the pad check and what a skip jumps to were not read.
 - **The timeline cursor** [V, WP-E6]. The setup reader and the timeline thread each keep one offset into the

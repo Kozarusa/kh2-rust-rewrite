@@ -139,6 +139,51 @@ pub struct Exits {
     pub groups: Vec<ExitGroup>,
     /// The id of the group whose walk-in started the running jump (cleared again if it fails).
     pub jumping: Option<u16>,
+    /// A trigger's event is playing and its jump waits for the end (`FUN_00196428`).
+    pub after_event: Option<AfterEvent>,
+}
+
+/// The jump a trigger's event leaves behind. `FUN_00196428` copies the trigger's jump record into the event
+/// object (+0xc..+0x28); when the object's states reach 9 after the event (`FUN_00195c08` -> `FUN_00196170`)
+/// it hands the record to `FUN_0019d9d8(record, 0x80000000)`, the same jump a trigger without an event takes,
+/// with bit 31 or-ed into the fade flags (`FUN_00104e18` records the kind without fading out: the
+/// event's own end left the screen as it is) [inferred for the meaning of bit 31, as `jump_fade_kind`'s 0x4000].
+/// A record whose word 0 is 0 (`FUN_0019d9c8`) is no jump: then `FUN_00196170` gives control and the field HUD
+/// back itself (`FUN_001962a0`, `FUN_00196790`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AfterEvent {
+    pub jump: Option<Jump>,
+    /// The exit group whose walk-in fired the trigger.
+    pub group: u16,
+    /// The event player was seen playing it.
+    pub seen_playing: bool,
+    /// Ticks waited without the event playing.
+    pub waited: u32,
+}
+
+impl AfterEvent {
+    pub fn new(jump: Option<Jump>, group: u16) -> AfterEvent {
+        AfterEvent { jump, group, seen_playing: false, waited: 0 }
+    }
+
+    /// One tick with the event player `playing` or not: `true` once the event is over and the jump is due.
+    /// An event that never starts (the area has no such entry: `FUN_00180a28` gives 0 and `FUN_00195ae0`
+    /// starts no player) does not hold the jump: after `START_TICKS` the jump is due [inferred: the object's
+    /// states then run without a player].
+    pub fn step(&mut self, playing: bool) -> bool {
+        if playing {
+            self.seen_playing = true;
+            return false;
+        }
+        if self.seen_playing {
+            return true;
+        }
+        self.waited += 1;
+        self.waited > Self::START_TICKS
+    }
+
+    /// Ticks the event player takes at most to start a requested event (it takes requests every tick).
+    pub const START_TICKS: u32 = 2;
 }
 
 /// The area a jump to `dest` loads: `None` (with the reason) when the app has no such area or the
@@ -397,6 +442,7 @@ fn tick(
     mut refused: Local<u32>,
     mut key: ResMut<Keyhole>,
     mut scene: Option<ResMut<crate::hud::HudScene>>,
+    player: Option<Res<crate::intro::event_player::EventPlayer>>,
 ) {
     // The jump task.
     match *task {
@@ -462,6 +508,28 @@ fn tick(
             return;
         }
     }
+    // A trigger's event: the exits wait while it plays, then its jump is taken (FUN_00196170).
+    if let Some(ae) = exits.after_event.as_mut() {
+        if !ae.step(player.as_ref().is_some_and(|p| p.playing())) {
+            return;
+        }
+        let ae = exits.after_event.take().unwrap();
+        match ae.jump {
+            Some(j) if j.kind == 1 => {
+                let (kind, _) = jump_fade_kind(&j);
+                let dest = Dest { world: j.world as u8, area: j.area as u8, entrance: j.entrance as u8 };
+                info!("jump after the event (FUN_00196170 -> FUN_0019d9d8 with bit 31): type 1 -> {} entrance {} (fade kind {kind}, no fade-out)", dest_name(&dest), dest.entrance);
+                exits.jumping = Some(ae.group);
+                key.black_from = None;
+                key.wiping = false;
+                // Bit 31: no fade-out; the task goes straight to the load.
+                *task = JumpTask::FadeOut { dest, kind, t: FADE_TICKS - 1.0 };
+                return;
+            }
+            Some(j) => info!("jump after the event: type {} key {:#x} not ported (E5)", j.kind, j.key),
+            None => info!("event over: the trigger has no jump record (FUN_0019d9c8 = 0)"),
+        }
+    }
     // The exit groups of the loaded area.
     let Some(run) = rec.run.clone() else { return };
     if exits.area.as_deref() != Some(run.name.as_str()) {
@@ -482,6 +550,7 @@ fn tick(
     let w = Walker { pos: s.motor.pos, facing: s.motor.forward(), vel: s.motor.vel };
     let world = rec.world;
     let mut start: Option<(Dest, u32, u16)> = None;
+    let mut after: Option<AfterEvent> = None;
     for g in exits.groups.iter_mut().filter(|g| !g.fired && !g.disabled) {
         let p = [w.pos.x, -w.pos.y, -w.pos.z];
         if g.held {
@@ -517,8 +586,9 @@ fn tick(
                             start = Some((dest, kind, g.id));
                         }
                         WalkIn::Event { tag, arg, jump } => {
-                            info!("exit {} id {:#x} -> {} entrance {}: trigger (1, {:#x}) plays event {tag} arg {arg} then {jump:?} (the jump after the event is not taken yet)", g.tag, g.id, dest_name(&dest), dest.entrance, g.id);
+                            info!("exit {} id {:#x} -> {} entrance {}: trigger (1, {:#x}) plays event {tag} arg {arg}, then the jump {jump:?} (FUN_00196428)", g.tag, g.id, dest_name(&dest), dest.entrance, g.id);
                             crate::intro::event_player::request(&tag, arg);
+                            after = Some(AfterEvent::new(jump, g.id));
                         }
                         WalkIn::TriggerJump(j) => {
                             let (kind, instant) = jump_fade_kind(&j);
@@ -545,6 +615,9 @@ fn tick(
             }
         }
         g.prompting = in_prompt;
+    }
+    if after.is_some() {
+        exits.after_event = after;
     }
     if let Some((dest, kind, id)) = start {
         exits.jumping = Some(id);
@@ -789,5 +862,51 @@ mod tests {
         let toward = Walker { pos: Vec3::ZERO, facing: Vec3::NEG_Z, vel: Vec3::ZERO };
         assert!(faces_volume(&pv, &toward));
         assert!(!faces_volume(&pv, &Walker { facing: Vec3::Z, ..toward }));
+    }
+
+    /// WP-E6b: the jump a trigger's event leaves waits while the event plays and is due on the first tick it
+    /// no longer plays (`FUN_00196170`); an event that never starts does not hold it longer than
+    /// `AfterEvent::START_TICKS`.
+    #[test]
+    fn the_jump_after_a_trigger_event_waits_for_the_events_end() {
+        let j = Jump { kind: 1, world: 2, area: 8, entrance: 0, key: 0, flags: 0x4001 };
+        let mut ae = AfterEvent::new(Some(j), 0x20);
+        assert!(!ae.step(false), "the request is taken on the next tick");
+        for _ in 0..500 {
+            assert!(!ae.step(true));
+        }
+        assert!(ae.step(false), "the event is over: the jump is due");
+        let mut never = AfterEvent::new(None, 0x20);
+        let due: Vec<bool> = (0..4).map(|_| never.step(false)).collect();
+        assert_eq!(due, vec![false, false, true, true]);
+    }
+
+    /// WP-E6b: every Twilight Town trigger on event 1 (an exit's walk-in) that names an event, with its jump
+    /// record and whether the area file holds the event.
+    #[test]
+    fn twilight_town_walk_in_triggers_with_events() {
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let disc = Disc::open(&iso);
+        let mut found = 0;
+        for n in 0..64u8 {
+            let Some(name) = area::area_name(2, n) else { continue };
+            let Some(file) = disc.read(&format!("ard/{name}.ard")) else { continue };
+            let Some((ard, _)) = kh2_ard::Area::parse(&file) else { continue };
+            for (tag, progs) in &ard.scripts {
+                for p in progs {
+                    for c in p.commands.iter().filter(|c| c.opcode == 0xc) {
+                        let Some(t) = kh2_ard::parse_trigger(&c.args) else { continue };
+                        if let Some((ev, arg)) = t.event_tag() {
+                            found += (t.event == 1) as usize;
+                            eprintln!("{name} {tag} program {:#x}: trigger ({:#x}, {:#x}) event {ev} arg {arg} (in the area: {}) jump {:?}", p.id, t.event, t.arg, ard.events.contains_key(&ev), t.jump());
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("walk-in triggers with an event: {found}");
     }
 }

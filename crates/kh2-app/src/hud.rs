@@ -37,6 +37,8 @@ use hud_gauge::{DriveGauge, DriveTables, FaceFile, MpRecharge, SoraPanel};
 use hud_gfx::HudGfxPlugin;
 #[allow(unused_imports)] // re-exported for the keyhole wipe in area_jump.rs
 pub(crate) use hud_gfx::{HudCamera, HudScene, Node as HudNode};
+/// A node's text, for the event player's subtitle lines (`event_player::subtitles`).
+pub(crate) use hud_text::Label;
 use hud_banner::{BannerNodes, ExperiencePopups, HudBanner, NumberStrips, StripNodes};
 use hud_card::{AreaCard, CardNodes};
 use hud_menu::{CommandMenu, MenuFile, MenuNodes, MenuTables};
@@ -92,6 +94,7 @@ impl Plugin for HudPlugin {
                         hud_msgwin::update,
                         hud_mission::update,
                         hud_text::demo,
+                        crate::intro::event_player::field_hud_hide,
                     )
                         .chain(),
                     debug_text.run_if(debug_on),

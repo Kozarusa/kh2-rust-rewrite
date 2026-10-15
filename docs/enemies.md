@@ -53,28 +53,83 @@ New host functions the Dusk needs are in the table of `docs/enemy-ai.md` (0.15, 
 
 ## Waves
 
-`enemy::spawn_waves` keeps its timer (a wave 4 s after the last enemy is gone) and the F3 key. What a wave is:
+**What the game does (WP-EN1)** [V unless marked]. An area's enemies come from its scripts, not from a timer:
 
-- In an area whose `btl` script loads groups with enemies of `enemy::KINDS` (tt04), a wave is the next such
-  group in script order: b_00, b_44, b_43, b_21. Each enemy stands where its record puts it (game space converted:
-  `(x, -y, -z)`, then put on the floor under it) with the record's facing (game yaw `r` is the app's `PI - r`) and
-  spawn kind. Members the app does not have are logged and left out (none left in tt04 since WP-7D).
-- Elsewhere (tt00, tt02) and with `KH2_AREA_WAVES=0`: the app's own wave of Shadows around Sora with a Soldier from
-  the second wave on, as before. These are not from the disc.
-- `KH2_WAVE_GROUP=<tag>` (harness) makes every wave that group; when the group holds the player's entity (0x236)
-  Sora is put there first (b_44: the centre of the Sandlot). With `KH2_WAVE_AT_GROUP=1` a forced group without a
-  player entry (b_00, b_21) puts Sora at the centre of its members instead (a test aid, WP-7D; not the game's rule).
+- `FUN_00181148` runs the `map`, `btl` and `evt` programs named by the area record (docs/events.md section 1);
+  opcode 0 (`spawn`) loads every named type-12 group (`FUN_00181728`: one live group per record of the tag,
+  `FUN_00198430`). Setting a group up (`FUN_00198750`) creates its entities by spawn kind (record +0x1c):
+  0 and 3 at once (`FUN_00198920` -> `FUN_001982c8` -> `FUN_00198220`), 1 only for the current entrance
+  (`FUN_001981a0`), 2 only counted (`FUN_001994c8`) for an enemy (object type 4 or 0x15); a disabled group
+  (kind 5 or flag bit 0, `FUN_00198430`; `FUN_00198920` tests bit 0) and a kind-9 group create nothing.
+- A **kind-2 group** creates its spawn-kind-2 members on demand: every frame `FUN_001989d8` runs the group's
+  timer (+0x14) down by the frame step `DAT_00356f40` and, while the player is inside one of its volumes, calls
+  `FUN_001991a0` (through `FUN_00198b30`). That walks the members in record order; once the timer runs it stops.
+  A member that is absent (`FUN_0016b0d8` by the serial +0x1e), not in the table at 0x35d278, and whose wave byte
+  (+0x30) is at most the group's wave (+0x20, 0 at set-up) is created (placement by +0x1d: 0 the record's point,
+  1 near the player `FUN_00199970`, 2 within the radius +0x2e of the point `FUN_00199a80`) and the timer becomes
+  its delay (+0x2a). When the walk ends with the timer at 0, `FUN_00199618` moves to the next wave that has
+  members, if the `00objentry` `SpawnLimiter` bytes (row +0x54) of the members in play (spawn kinds 0, 3, and 2 of
+  the waves so far, except those defeated for good; `FUN_001996f0`, `FUN_001995c8`) add up to at most header
+  +0x22; header +0x23 (not 0) is the wave at which it goes back to wave +0x24 (`FUN_001997f8`, `FUN_00199858`).
+  The timer starts at header +0x1c (`FUN_00198430`).
+- **Defeats.** `FUN_00198220` enters a created enemy (object types 4, 0xd, 0x15, 0x17, `FUN_00198150`) in the table
+  at 0x35d278; when the object is removed (`FUN_001d5db8` -> `FUN_001993f8`) it leaves the table if it was alive
+  (+0x7f8 bit 4 clear) or if its wave byte is above 99 (`FUN_00199378`), and the group's timer becomes header
+  +0x20. So a defeated member of a wave up to 99 does not come back; the table is kept per area for four areas
+  (`FUN_00194188`). The emptied group fires event 3 with its id, all groups emptied event 2 (`FUN_00199518`).
+- **No refill timer.** Nothing in this path re-creates a group after its enemies are defeated: the app's former
+  "a wave 4 s after the last enemy" in tt04 was the app's own and is gone there.
+- **Unload.** The jump task's unload `FUN_00104ce0` calls `FUN_00168ca0` -> `FUN_001b8800` (frees every object of
+  the list at 0x1d5d7e0) and `FUN_00168ce8` -> `FUN_00181af8` (frees the loaded groups) [inferred: these are the
+  area's actors; the objects' own teardown was not read].
 
-**Gaps.** Which `btl` program the game runs, and when, depends on story progress and the event scripts. Since
-WP-E5 the area record takes its `btl` byte from the story's program table (`KH2_STATE` `story_flags`, e.g. flag
-0x883 gives tt04 `btl program 1` = group b_00, logged by `KH2_AREALOG=1`), but the waves here (`enemy.rs`) still
-take turns instead of spawning that program's groups. The Dusk's drop row reads story flags 2267, 2256, 2122,
-2091 through host 0.15, which now answers from the same story (all clear without a state file, so the row is
-unchanged then). Whether the game moves the player to a battle group's player
-entry when the battle starts was not read (inferred from the group listing the player; only the harness does it).
-Sora's own start point in tt04 is the app's (`assets::load_area`), about 22 m from b_00, outside the Dusks' battle
-radius (2000 cm, set by the script at +0x38): a b_00 wave appears, finds Sora too far, and leaves (mode `leave`)
-unless Sora walks into the Sandlot.
+tt04's groups (test `tt04_btl_programs_choose_their_groups`, disc): there is no `btl` program 0, so a new game (all
+program bytes 0) has **no enemies in tt04**; program 1 (flag 0x883) loads b_00: a kind-2 group (0xe1, a box volume
+over the Sandlot) with three spawn-kind-2 Dusks, none at load; 0x7 loads b_21 (kind 2: the Dancer and two Dusks, all
+spawn kind 2); 0x50 loads b_44: kind-1 group 0x89 (the player and friends) and kind-2 group 0x8a (volume shape 2,
+always inside) with three spawn-kind-3 Dusks (at load), one spawn-kind-2 Dusk of wave 0 and three of wave 1
+(placement 1), plus four `M_EX940`; the Struggle groups b_41, b_42, b_45, b_50, b_52 (kind 1) have their opponent
+at spawn kind 3 (b_51: 0), so it appears at load with the program's mission (opcode 0x15). All tt04 group headers
+have +0x1c, +0x20 and +0x22..+0x24 = 0, and every member's delay is 0.
+
+**The app (`enemy::spawn_waves`)**. When the area's scripts run (`area::run_area_script`: every area load, and a
+type-2 jump into the loaded area), the groups the `btl` program loaded (`enemy::btl_groups`) are set up:
+`created_at_load` members appear at once (on the floor under the record's point, with the record's facing: game
+`(x, y, z)` is the app's `(x, -y, -z)`, game yaw `r` is the app's `PI - r`), and each kind-2 group keeps an
+`enemy::KindTwo` (the walk above; its timer in 60 Hz frames [inferred: the frame step `DAT_00356f40`]; `killed`
+for the table). An enemy counts as removed when its HP reaches 0 [inferred: the game removes the object after its
+death motion]. The program's mission (opcode 0x15) starts with its group. F3 sets the groups up again. The jump's
+unload (`area_jump::unload_area_actors`) despawns every `area_jump::AreaActor` (the enemies) when the task reaches
+`Loading`, and the groups are set up again by the next run of the scripts, so the Struggle's Retry needs no
+special clearing.
+
+- `KH2_WAVE_GROUP=<tag>` (harness) sets up that group (from the first program that loads it) instead of the
+  program's; when the group holds the player's entity (0x236) Sora is put there first (b_44: the centre of the
+  Sandlot). With `KH2_WAVE_AT_GROUP=1` a forced group without a player entry (b_00, b_21) puts Sora at the centre
+  of its members instead (a test aid, WP-7D; not the game's rule). b_00 and b_21 hold only spawn-kind-2 members,
+  so their enemies appear once Sora is inside the group's box.
+- Areas whose `btl` script loads no group with enemies the app has (tt00, tt02), and `KH2_AREA_WAVES=0`: the app's
+  own waves of Shadows around Sora with a Soldier from the second wave on, one 4 s after the last enemy is gone or
+  on F3. These are not from the disc (kept, `local/DEVIATIONS.md`).
+
+Logs: `area tt04: btl program 0x50 group b_44 (KH2_WAVE_GROUP): 3 enemies at load (FUN_00198750), 4 on demand by
+kind-2 group [8a]`, `area group b_44 kind-2 group 0x8a: Dusk (serial 0x24, wave 1) created; ...`, `... gone; timer
+0 frames, defeated for good`, `jump: area unload (FUN_00104ce0): 1 area actors removed before tt04`, and without a
+program that has enemies `area tt04: btl program 0x0 loads no group with enemies of the app (FUN_00181148); no
+enemies`.
+
+**Gaps.** Placements 1 and 2 of a kind-2 member (`FUN_00199970`, `FUN_00199a80`: near the player / within a
+radius, ground searches `FUN_001a5ea8` / `FUN_001a5ee0` chosen by objentry +0x48 bit 3) are not ported: the member
+stands at its record's point. The `FUN_00190668` test that skips the group walk in `FUN_001989d8` was not read (the
+app always walks). Entities the app cannot create (`M_EX940`, object type 0x15) are left out of the walk and of the
+`SpawnLimiter` sum [inferred stand-in: counting them would hold b_44's wave 1 back for ever]. The table at 0x35d278
+lives for one run of the area's scripts here, not four areas (`FUN_00194188`'s slots and ages are not ported).
+Events 2 and 3 of an emptied group (`FUN_00199518`) are not fired, and the +0x588 bit 0x800 test before them was
+not read. Kind-6 groups (`FUN_00199e98`) and the other group kinds are not ported (tt04's enemy groups are kinds 1
+and 2). Prize orbs on the ground are not removed by the unload (`prize.rs` keeps its pool count; not owned here).
+The Dusk's drop row reads story flags 2267, 2256, 2122, 2091 through host 0.15, which answers from the story (all
+clear without a state file). Whether the game moves the player to a battle group's player entry when the battle
+starts was not read (only the harness does it).
 
 ## Acceptance run (6C)
 

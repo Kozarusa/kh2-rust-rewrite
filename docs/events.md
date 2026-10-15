@@ -808,7 +808,7 @@ tt37; tt40 -> tt19 and area 100. The full list is in the test output.
 | new `area.rs` (kh2-app) | `AreaRecord` resource (world, area, entrance, programs) and `AreaPrograms` (the 0xc0-byte table per world from the save block) | E1, E5 |
 | new `area_script.rs` | port of `FUN_00181148` / `FUN_00180b48`: run `map`, `btl`, `evt` programs, spawn groups, record triggers, music, map visibility | E1 |
 | `assets.rs` | `load_area`: take the player placement from spawn kind 1 entities of the entrance; load by the area record | E1 |
-| `enemy.rs` | `area_groups` / waves: read the btl program from the area record instead of taking turns | E5 |
+| `enemy.rs` | `area_groups` / waves: read the btl program from the area record instead of taking turns | E5; done in EN1 (docs/enemies.md "Waves") |
 | new `area_jump.rs` | exit volumes (`Activator` shape tests), the jump task with fade kinds, triggers and `FUN_00197b70` events | E1 |
 | new `npc.rs` (done) | class-5 objects with their BDX and the group 5 hosts (paths); `KH2_PROGRAMS`, `KH2_NPC_WATCH`, `KH2_NPCLOG`, `KH2_NO_NPC` | E2 |
 | `enemy_host.rs` | hosts 0.14 / 0.15 on `Progress` story flags; 1.30 / 1.31 jumps; 1.32 / 1.33 message windows; 1.202 / 1.203 | E2, E3, E5 |
@@ -943,8 +943,8 @@ Each stage ends with `verify.ps1` passing and the named check.
   `{"story_flags": [2179]}`): `area tt04: map program 0, btl program 1, evt program 0 from the program
   table 0x33e86f (story flags, FUN_00104bd0)` and `btl program 0x1 loads group b_00`; flag 0x883 also
   writes tt03 (3, 1, 0), tt06..tt08 btl 1, tt13 btl 2, tt14 evt 3. Without a state file the log reads
-  `programs (0, 0, 0)` as before and tt04's program-0 scripts have no opcode 0x19 (no `opcode 0x19` line). Not done: the waves of `enemy.rs`
-  still take turns (they do not spawn the btl program's groups); trigger sub 2 (flag on fire), events
+  `programs (0, 0, 0)` as before and tt04's program-0 scripts have no opcode 0x19 (no `opcode 0x19` line). Not done (done since WP-EN1: `enemy.rs` sets up the btl
+  program's groups at load, docs/enemies.md "Waves"): the waves of `enemy.rs` still took turns; trigger sub 2 (flag on fire), events
   2 / 3 and the battle manager's result jumps. (Jump types 2 and 3 are ported since WP-JT2: section 4,
   "Jump types, status".)
   **The prologue Seifer fight (TT04_MS500) with its story state** [measured]: flag 0x8db (the one `btl`

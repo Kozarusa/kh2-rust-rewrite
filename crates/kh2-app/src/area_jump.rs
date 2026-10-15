@@ -48,7 +48,7 @@ impl Plugin for AreaJumpPlugin {
             .init_resource::<ExitLocks>()
             .init_resource::<Keyhole>()
             .add_systems(Startup, (load_consts, spawn_fader))
-            .add_systems(FixedUpdate, tick.after(Sim::Sora).before(Sim::Enemy).run_if(crate::schedule::sim_running))
+            .add_systems(FixedUpdate, (tick, unload_area_actors).chain().after(Sim::Sora).before(Sim::Enemy).run_if(crate::schedule::sim_running))
             .add_systems(Update, (load_keyhole, draw_fader).in_set(crate::schedule::Frame::Hud));
     }
 }
@@ -302,6 +302,31 @@ pub enum JumpTask {
     /// The destination is set on `CurrentArea`; waits until it is loaded and Sora is placed.
     Loading { dest: Dest, kind: u32 },
     FadeIn { kind: u32, t: f32 },
+}
+
+/// An actor that belongs to the loaded area: the area's unload removes it (the enemies of `enemy.rs`).
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct AreaActor;
+
+/// The area's unload in the jump task (`FUN_00104d58` -> `FUN_00104ce0`, after the fade-out, before the
+/// destination is applied): `FUN_00168ca0` -> `FUN_001b8800` frees every object of the list at `0x1d5d7e0`, and
+/// `FUN_00168ce8` -> `FUN_00181af8` the loaded spawn groups [inferred: those are the area's actors; the objects'
+/// own teardown was not read]. Here: the task's change to `Loading` despawns every `AreaActor`, once per jump.
+/// The party and Sora stay (the app keeps them across areas).
+pub fn unload_area_actors(task: Res<JumpTask>, mut done: Local<bool>, actors: Query<Entity, With<AreaActor>>, mut commands: Commands) {
+    match *task {
+        JumpTask::Loading { dest, .. } => {
+            if !*done {
+                *done = true;
+                let n = actors.iter().count();
+                for e in &actors {
+                    commands.entity(e).despawn();
+                }
+                info!("jump: area unload (FUN_00104ce0): {n} area actors removed before {}", dest_name(&dest));
+            }
+        }
+        _ => *done = false,
+    }
 }
 
 /// The layout table of fade kind 0 (`FUN_0013a8a8`, 0x355110): the world's `field2d/<lang>/
@@ -816,6 +841,24 @@ mod tests {
 
     fn group(gate: u8, area: u8, id: u16, volumes: Vec<Activator>) -> ExitGroup {
         ExitGroup { tag: "m_10".into(), id, exit: Exit { area, entrance: 1, gate }, volumes, fired: false, disabled: false, prompting: false, held: false }
+    }
+
+    /// EN1: the jump's unload removes the area's actors once, when the task reaches `Loading`; other
+    /// entities (Sora, the party) stay; a task that never loads removes nothing.
+    #[test]
+    fn a_jump_clears_the_area_enemies() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut w = bevy::ecs::world::World::new();
+        let actors: Vec<Entity> = (0..3).map(|_| w.spawn(AreaActor).id()).collect();
+        let other = w.spawn_empty().id();
+        let dest = Dest::new(area::TWILIGHT_TOWN, 4, 0);
+        w.insert_resource(JumpTask::FadeOut { dest, kind: 0, t: 0.0 });
+        w.run_system_once(unload_area_actors).unwrap();
+        assert!(actors.iter().all(|&e| w.get_entity(e).is_ok()), "the fade-out keeps them");
+        w.insert_resource(JumpTask::Loading { dest, kind: 0 });
+        w.run_system_once(unload_area_actors).unwrap();
+        assert!(actors.iter().all(|&e| w.get_entity(e).is_err()), "the unload removes the area actors");
+        assert!(w.get_entity(other).is_ok(), "other entities stay");
     }
 
     /// WP-E5 item 4: the lock halfwords are the story's; a flag whose op 2 writes entry 1 locks

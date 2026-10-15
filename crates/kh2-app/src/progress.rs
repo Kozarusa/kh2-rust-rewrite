@@ -378,7 +378,9 @@ impl Progress {
     /// sets each flag through `FUN_0017ff60`, so its side effects run again in id order).
     pub fn story_json(&self) -> String {
         let ids: Vec<String> = self.story().set_flags().iter().map(|i| i.to_string()).collect();
-        format!("{{\"story_flags\": [{}]}}", ids.join(", "))
+        let points: Vec<String> = self.story().world_points().iter().map(|i| i.to_string()).collect();
+        let points = if points.is_empty() { String::new() } else { format!(", \"world_points\": [{}]", points.join(", ")) };
+        format!("{{\"story_flags\": [{}]{points}}}", ids.join(", "))
     }
 
     // --- records ----------------------------------------------------------------------------
@@ -1466,6 +1468,13 @@ impl Progress {
                         s.clear(id);
                     }
                 }
+                // World-point bits (0x33f910), set through `FUN_00194fa8`.
+                "world_points" => {
+                    let mut s = self.story();
+                    for id in list(v, "world_points")? {
+                        s.set_world_point(id as usize);
+                    }
+                }
                 "comment" | "_comment" => {}
                 // The save slot keys (WP-M8, `slot_json`): the whole party block, the app fields beside it and the
                 // row data the Save menu shows (ignored here).
@@ -1611,6 +1620,9 @@ pub struct Story {
     /// Side-effect ops met that the app does not act on (6, 8, 9, 0xd and the world-point bits of
     /// ops 4 and 5), with the flag that ran them; for the logs.
     pub unported: Vec<(u16, u8)>,
+    /// The world-point bits at `0x33f910` (`FUN_00194fa8` sets bit `i` for record `i` of
+    /// `00worldpoint.bin`, at most 0x36 of them; `FUN_00194fd8` clears, not ported). Two words.
+    world_bits: [u32; 2],
 }
 
 /// `Story` behind a lock, shared by `Progress` and the script hosts.
@@ -1757,6 +1769,23 @@ impl Story {
         let o = world as usize * story::PROGRAMS_PER_WORLD + area as usize * 3;
         let b = |k: usize| self.programs.get(o + k).copied().unwrap_or(0);
         [b(0), b(1), b(2)]
+    }
+
+    /// `FUN_00194fa8`: sets world-point bit `i` (`None` past the two words).
+    pub fn set_world_point(&mut self, i: usize) {
+        if let Some(w) = self.world_bits.get_mut(i >> 5) {
+            *w |= 1 << (i & 31);
+        }
+    }
+
+    /// Whether world-point bit `i` is set (the reader of the bits `FUN_00194fd8` tests).
+    pub fn world_point(&self, i: usize) -> bool {
+        self.world_bits.get(i >> 5).is_some_and(|w| w >> (i & 31) & 1 != 0)
+    }
+
+    /// Every set world-point bit, in order.
+    pub fn world_points(&self) -> Vec<usize> {
+        (0..self.world_bits.len() * 32).filter(|&i| self.world_point(i)).collect()
     }
 
     /// Every set flag id, in order.
@@ -2572,6 +2601,25 @@ mod tests {
         // A flag of another world (no entry) only sets its bit.
         s.set(0x1883);
         assert!(s.test(0x1883) && s.programs(6, 4) == [0; 3]);
+    }
+
+    /// The world-point bits (0x33f910, `FUN_00194fa8`) are kept in the save block's story and ride the
+    /// state file as `world_points`.
+    #[test]
+    fn world_point_bits_are_kept_and_round_trip() {
+        let ix = Arc::new(ItemIndex::default());
+        let p = Progress::from_block(&[], ix.clone());
+        assert!(p.story().world_points().is_empty());
+        assert_eq!(p.story_json(), r#"{"story_flags": []}"#, "a new game has none");
+        p.story().set_world_point(1);
+        p.story().set_world_point(33);
+        p.story().set_world_point(0x36 + 100); // past the two words: ignored
+        assert!(p.story().world_point(1) && p.story().world_point(33) && !p.story().world_point(2));
+        let text = p.story_json();
+        assert_eq!(text, r#"{"story_flags": [], "world_points": [1, 33]}"#);
+        let mut q = Progress::from_block(&[], ix);
+        q.apply_json(&text).unwrap();
+        assert_eq!(q.story().world_points(), vec![1, 33]);
     }
 
     /// The `story_flags` / `story_clear` keys of the state file, and `story_json` read back.

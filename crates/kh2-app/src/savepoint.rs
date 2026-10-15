@@ -101,9 +101,6 @@ pub struct SavePoint {
 #[derive(Resource, Default)]
 pub struct SavePoints {
     area: Option<String>,
-    /// 0x33f910: one bit per `00worldpoint.bin` record, set when that point is created
-    /// (`FUN_00194fa8`). Kept here; the save block (`progress.rs`) does not hold them yet.
-    pub world_bits: [u32; 2],
     table: Option<Vec<[u8; 4]>>,
     common: Option<Option<kh2_fx::Dpd>>,
     /// The offer this point made last tick (for the log).
@@ -116,13 +113,6 @@ pub struct SavePoints {
 /// area, among the first 0x36.
 pub fn world_point_index(table: &[[u8; 4]], world: u8, area: u8) -> Option<usize> {
     table.iter().take(WORLD_POINTS).position(|r| r[0] == world && r[1] == area)
-}
-
-/// `FUN_00194fa8`: set bit `i` of the world-point bits.
-pub fn set_world_point(bits: &mut [u32; 2], i: usize) {
-    if let Some(w) = bits.get_mut(i >> 5) {
-        *w |= 1 << (i & 31);
-    }
 }
 
 /// `FUN_00189208` for every pair of shape kinds the parts use: `parts::overlaps` for ellipsoids and
@@ -187,6 +177,7 @@ fn point_spawn(
     mut points: ResMut<SavePoints>,
     mut objs: Local<Option<Vec<t::Objentry>>>,
     mut sora: Query<(&mut Transform, &mut Sora)>,
+    progress: Option<Res<crate::progress::Progress>>,
 ) {
     let Some(run) = rec.run.as_ref() else { return };
     if points.area.as_deref() == Some(run.name.as_str()) {
@@ -253,8 +244,12 @@ fn point_spawn(
                 if e.object == OBJECT_WORLD_POINT {
                     match world_point_index(&table, rec.world, rec.area) {
                         Some(i) => {
-                            set_world_point(&mut points.world_bits, i);
-                            info!("save point: world point {i} of 00worldpoint.bin (world {}, area {}) seen: bit set (FUN_00194fa8, 0x33f910)", rec.world, rec.area);
+                            // FUN_00194fa8: the bit lives in the save block (`progress.rs`, 0x33f910).
+                            let set = progress.as_deref().map(|p| {
+                                p.story().set_world_point(i);
+                                p.story().world_point(i)
+                            });
+                            info!("save point: world point {i} of 00worldpoint.bin (world {}, area {}) seen: bit set (FUN_00194fa8, 0x33f910), read back {set:?}", rec.world, rec.area);
                         }
                         None => info!("save point: no 00worldpoint.bin record for world {} area {}", rec.world, rec.area),
                     }
@@ -379,19 +374,14 @@ fn point_heal(
     }
 }
 
-/// The accept of command 55 (`FUN_00177b18` case 0x37 -> `FUN_001784b8`): menu kind 1 is not
-/// ported, so the use is logged.
+/// The accept of command 55 (`FUN_00177b18` case 0x37 -> `FUN_001784b8`), dispatched by
+/// `reaction_cmd::accept` (an available offer, Execute 0x37, left in `Talk::accepted`): menu kind 1
+/// is not ported, so the use is logged.
 fn point_use(mut talk: ResMut<Talk>, points: Query<&SavePoint>) {
-    let Some(a) = talk.offer else { return };
+    let Some(a) = talk.accepted.filter(|a| points.contains(a.from)) else { return };
+    talk.accepted = None;
     let Ok(p) = points.get(a.from) else { return };
-    if !talk.take_press() {
-        return;
-    }
     let mode = if p.object == OBJECT_WORLD_POINT { 0 } else { 2 };
-    if a.status != Status::Available {
-        info!("save point: accept pressed for command {}, refused ({:?})", a.cmd, a.status);
-        return;
-    }
     let word = u32::from_le_bytes(p.record.raw[0x20..0x24].try_into().unwrap_or_default());
     info!(
         "save point: accepted command {} (Execute {EXECUTE_SAVE:#x}): FUN_001784b8 sets 0x33e86e = {:#x} and opens menu kind 1 (scene 3) with mode {mode} (FUN_0024f0b8(1, {mode})); menu kind 1 is not ported",
@@ -434,9 +424,6 @@ mod tests {
         let table = vec![[1, 4, 0, 0], [2, 2, 1, 0], [2, 2, 3, 0]];
         assert_eq!(world_point_index(&table, 2, 2), Some(1));
         assert_eq!(world_point_index(&table, 2, 5), None);
-        let mut bits = [0; 2];
-        set_world_point(&mut bits, 33);
-        assert_eq!(bits, [0, 2]);
     }
 
     /// The two type-7 objects on the disc: no mesh, one type-5 part (id 55, a cylinder) and an effect

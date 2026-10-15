@@ -51,9 +51,17 @@ pub struct NpcPlugin;
 
 impl Plugin for NpcPlugin {
     fn build(&self, app: &mut App) {
+        use crate::hud::hud_menu::mirror_reaction;
+        use crate::schedule::{sim_running, Frame};
         app.init_resource::<NpcAssets>()
             .init_resource::<NpcSpawned>()
-            .add_systems(FixedUpdate, (npc_spawn, npc_update).chain().in_set(Sim::Enemy).after(crate::enemy::spawn_waves));
+            .init_resource::<Talk>()
+            .init_resource::<crate::hud::hud_msgwin::ScriptWindow>()
+            .add_systems(FixedUpdate, (npc_spawn, npc_update).chain().in_set(Sim::Enemy).after(crate::enemy::spawn_waves))
+            // After the reaction manager's own offer and accept (`reaction_cmd`, `Sim::Effects`).
+            .add_systems(FixedUpdate, (talk_offer, talk_step).chain().after(Sim::Effects).before(Sim::Sounds).run_if(sim_running))
+            .add_systems(Update, (talk_keys, talk_lock_pad).chain().after(Frame::Pad).before(Frame::Hud))
+            .add_systems(Update, (talk_show_offer.before(mirror_reaction), talk_hide_offer.after(mirror_reaction)).in_set(Frame::Hud));
     }
 }
 
@@ -226,6 +234,8 @@ pub struct Npc {
     pub record: kh2_ard::Entity,
     /// The model's collision records (the type-0 and type-5 parts the class-5 code tests).
     pub parts: Option<Arc<parts::Table>>,
+    /// The talk reader kept between talks (the object's +0x504, `FUN_001a53f8`).
+    pub talk: kh2_ard::libretto::Reader,
 }
 
 /// The script runtime of one townsperson.
@@ -241,6 +251,9 @@ pub struct NpcBrain {
     mode: Option<String>,
     last_frame: f32,
     visible: bool,
+    /// A mode the native code switches the script to before its next tick (`FUN_00186db0` from
+    /// `FUN_00189ff0`: "after_talk" when the talk ends), if the script has it (`FUN_001870d8`).
+    pending_mode: Option<&'static str>,
 }
 
 /// Spawns the townspeople of the loaded area's `map` program when the area run changes.
@@ -257,6 +270,7 @@ fn npc_spawn(
     mut images: ResMut<Assets<Image>>,
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
     mut sora: Query<(&mut Transform, &mut Sora)>,
+    mut talk: ResMut<Talk>,
 ) {
     let Some(run) = rec.run.as_ref() else { return };
     if spawned.area.as_deref() == Some(run.name.as_str()) {
@@ -265,6 +279,10 @@ fn npc_spawn(
     // The collision world is inserted by `load_area` (deferred: present from the frame it loads).
     let Some(world) = world else { return };
     spawned.area = Some(run.name.clone());
+    // FUN_00168ba8 -> FUN_001b6408: the world's talk table is loaded with the area.
+    talk.load(&disc, run.name.get(..2).unwrap_or("tt"));
+    talk.offer = None;
+    talk.run = None;
     if std::env::var("KH2_NO_NPC").is_ok_and(|v| v != "0") {
         return;
     }
@@ -272,6 +290,8 @@ fn npc_spawn(
     // Harness: `KH2_NPC_WATCH=<n>` puts Sora three metres in front of the n-th townsperson spawned
     // (1-based), facing it (a test aid for screenshots, not the game's rule).
     let watch: Option<usize> = std::env::var("KH2_NPC_WATCH").ok().and_then(|v| v.parse().ok());
+    // `KH2_NPC_WATCH_DIST=<cm>`: how far in front (default 300).
+    let watch_dist: f32 = std::env::var("KH2_NPC_WATCH_DIST").ok().and_then(|v| v.parse().ok()).unwrap_or(300.0);
     let mut count = 0;
     // Every group the three scripts loaded (FUN_00181728 makes the objects of each; in tt02 the
     // townspeople's kind-6 groups a72_, b72_, c72_ come from `evt` programs 0x10 / 0x12, b50_ from 0xc).
@@ -311,7 +331,7 @@ fn npc_spawn(
                 let body = spawn_skinned(&mut commands, root, rig, &mut meshes, &mut materials, &mut images, &mut bindposes, SCALE);
                 let tag = format!("{model}#{serial}");
                 let mut ent = commands.entity(root);
-                ent.insert(Npc { body, yaw, grounded: true, record: e.clone(), parts: model_parts });
+                ent.insert(Npc { body, yaw, grounded: true, record: e.clone(), parts: model_parts, talk: Default::default() });
                 let scripted = script.is_some();
                 if let Some(prog) = script {
                     let mut rt = Runtime::new((*prog).clone());
@@ -332,12 +352,13 @@ fn npc_spawn(
                         mode: None,
                         last_frame: 0.0,
                         visible: true,
+                        pending_mode: None,
                     });
                 }
                 count += 1;
                 if watch == Some(count) && let Ok((mut tf, mut s)) = sora.single_mut() {
                     let a = yaw;
-                    let p = at + Vec3::new(a.sin(), 0.0, a.cos()) * 300.0;
+                    let p = at + Vec3::new(a.sin(), 0.0, a.cos()) * watch_dist;
                     let p = world.ground(p, p.y + 100.0, 400.0).map_or(p, |g| p.with_y(g.y));
                     crate::sora::respawn(&mut s, p);
                     s.motor.yaw = a + std::f32::consts::PI;
@@ -347,11 +368,13 @@ fn npc_spawn(
                 }
                 info!("npc: {} group {} (kind {}, id {}) spawned {tag} (object {:#x})", run.name, g.tag, grp.kind, grp.id, e.object);
                 info!(
-                    "npc: {tag} at ({:.0}, {:.0}, {:.0}) yaw {yaw:.3}, spawn flags {:#x}, {} paths{}",
+                    "npc: {tag} at ({:.0}, {:.0}, {:.0}) yaw {yaw:.3}, spawn flags {:#x}, talk id {:#x}, part command {}, {} paths{}",
                     at.x,
                     at.y,
                     at.z,
                     NpcFields::spawn_flags(e),
+                    e.talk_id(),
+                    e.part_command(),
                     shared.paths.len(),
                     if scripted { "" } else { " (no script: stands)" }
                 );
@@ -438,7 +461,7 @@ fn npc_update(
     for (ent, mut tf, mut npc, mut brain) in &mut q {
         let Ok(mut anim) = anims.get_mut(npc.body) else { continue };
         let rig = anim.rig.clone();
-        let NpcBrain { rt, obj, tag, flags124, fields, started, errors_seen, mode, last_frame, visible } = &mut *brain;
+        let NpcBrain { rt, obj, tag, flags124, fields, started, errors_seen, mode, last_frame, visible, pending_mode } = &mut *brain;
         obj.motor.pos = tf.translation / SCALE;
         obj.motor.yaw = npc.yaw;
         obj.motor.grounded = npc.grounded;
@@ -471,6 +494,13 @@ fn npc_update(
         if !*started {
             *started = true;
             rt.spawn(&mut host, handle);
+        }
+        if let Some(m) = pending_mode.take() {
+            // FUN_001870d8 asks whether the script registered the mode; FUN_00186db0 switches to it.
+            rt.set_mode_named(&mut host, m);
+            if log {
+                info!("npc: {tag} native mode switch to {m:?} (FUN_00189ff0 -> FUN_00186db0): now {:?}", rt.current_mode());
+            }
         }
         rt.update(&mut host);
         // Host 5.33 named a block in the script's globals: copy its nine words now.
@@ -569,6 +599,383 @@ fn npc_update(
         if obj.hidden {
             trace.line(tag, "hidden: despawned");
             commands.entity(ent).despawn();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Talk (WP-E3, docs/events.md section 3 "Talk")
+//
+// The offer: the player's controller asks every object for reaction candidates (FUN_0019cb70): a
+// type-5 collision part whose volume the player's type-1 body touches offers its id as a command,
+// and a part with id 0x83 offers the halfword +0x2c of the object's spawn record instead (31, the
+// talk, for nearly every townsperson). The gates (FUN_0019cf58), the status (FUN_001ba2c0) and the
+// cone are `reaction_cmd`'s.
+//
+// The command: Sora's class (FUN_001cf030) hands Execute 0x1f to FUN_00177b18, whose case 0x1f does
+// NOT take the generic path FUN_00177c20 (no use counter, no CmdAction, no event 0xb to the
+// target's script): FUN_00177d28 clears the player's velocities (+0x20, +0x10, his target +0x9c0),
+// then FUN_001a56c0 marks HUD list record 0xc (FUN_001bef48), locks the player's control (bit 0 of
+// 0x1d5d7b8, FUN_001b7ce8; read by FUN_001b7d50 through FUN_00176a18) and starts the talk task
+// FUN_001a5728 (FUN_001a53f8: the reader of the target's talk id +0x500 kept at +0x504).
+//
+// The task (FUN_001a5728): the player faces the target (FUN_0016a948), the class-5 target faces the
+// player unless bit 4 of its array is set (FUN_00189f40) and plays motion 0x32 (FUN_0017e220), the
+// talk camera starts (FUN_00159688, kind 4) and the party members' heads turn (FUN_001abf40); then
+// the program runs (FUN_001a53b8 -> FUN_001b6578, callback FUN_001a5a60: op 1 opens window class
+// FUN_001aba58 with the message and waits until the window reaches state 3). When no event started
+// (FUN_00196418), the target's facing comes back (FUN_0016a828) and FUN_00189ff0 ends the talk on the
+// class-5 object: its motion becomes the follower's (+0xa48) when array bit 0 is set, else 0; with
+// bit 0 clear the previous follower takes kind 4, the follower is reset and +0xb00 = +0xb18 + 60
+// (`DAT_0037ab84`); the script goes to its "after_talk" mode when it has one. Then the camera comes
+// back (FUN_00159768), the lock is released (FUN_001b7d18) and the HUD record cleared (FUN_001befc0).
+
+/// A reaction part with this id offers the command of the object's spawn record (+0x2c).
+pub const PART_FROM_RECORD: u16 = 0x83;
+/// The Execute value FUN_00177b18 turns into a talk (case 0x1f).
+pub const EXECUTE_TALK: u16 = 0x1f;
+/// The motion the talked-to object plays (FUN_001a5728: `FUN_0017e220(.., obj + 0x140, 0x32)`).
+pub const MOTION_TALK: usize = 0x32;
+/// The window the talk opens: FUN_001aba58 builds the values of FUN_001ab9e0 (font 3, colour 5, at
+/// (256, 336), frame kind 0, the speech tail), class 3 of `kh2_image::window::CLASSES`.
+pub const TALK_WINDOW_CLASS: usize = 3;
+/// `DAT_0037ab84`: added to +0xb18 when a talk ends (FUN_00189ff0).
+pub const TALK_END_TIMER: f32 = 60.0;
+
+/// The talk state: the world's talk table, the current offer and the talk that runs.
+#[derive(Resource, Default)]
+pub struct Talk {
+    world: Option<String>,
+    lib: Option<kh2_ard::libretto::Libretto>,
+    /// The townsperson's candidate for the player's slot 1 this tick.
+    pub offer: Option<crate::reaction_cmd::Active>,
+    /// The accept key (R, or `KH2_REACTION_PRESS`) was pressed.
+    press: bool,
+    run: Option<TalkRun>,
+}
+
+struct TalkRun {
+    npc: Entity,
+    tag: String,
+    ops: Vec<kh2_ard::libretto::Op>,
+    at: usize,
+    /// A message window of this run is open.
+    window: bool,
+    /// The target's facing before the talk (FUN_0016a890), given back at the end.
+    yaw: f32,
+}
+
+impl Talk {
+    /// `FUN_001b6408`: `libretto-<world>.bar`'s talk table (once per world).
+    fn load(&mut self, disc: &Disc, world: &str) {
+        if self.world.as_deref() == Some(world) {
+            return;
+        }
+        self.world = Some(world.to_string());
+        self.lib = disc.read(&format!("libretto-{world}.bar")).and_then(|f| kh2_ard::libretto::Libretto::from_bar(&f));
+        match &self.lib {
+            Some(l) => info!("npc: talk table libretto-{world}.bar: {} talk ids (FUN_001b6408)", l.records.len()),
+            None => warn!("npc: libretto-{world}.bar is not readable; townspeople cannot be talked to"),
+        }
+    }
+
+    /// Whether a talk runs (the player's control is locked, bit 0 of 0x1d5d7b8).
+    pub fn running(&self) -> bool {
+        self.run.is_some()
+    }
+}
+
+/// One offer candidate of an object's reaction parts.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PartOffer {
+    pub cmd: u16,
+    pub part: u8,
+    pub status: crate::reaction_cmd::Status,
+    pub priority: u8,
+    /// Distance from the part's centre to the player (the tie-break of FUN_0019c520).
+    pub dist: f32,
+}
+
+/// FUN_0019cb70 for one object: every usable type-5 part whose volume touches the player's body
+/// offers its id, a part with id 0x83 the record's +0x2c (`record_cmd`); the best by priority, then
+/// by distance (FUN_0019c520). `on` / `off` are the parameters of the range triggers 4 and 5 of the
+/// object's playing motion; positions are the app's space in centimetres.
+#[allow(clippy::too_many_arguments)]
+pub fn part_offer(
+    rules: &crate::reaction_cmd::ReactionRules,
+    table: &parts::Table,
+    record_cmd: u16,
+    (on, off): (&[i16], &[i16]),
+    (pos, yaw): (Vec3, f32),
+    player: &parts::Shape,
+    (player_pos, player_yaw): (Vec3, f32),
+    (ctx, window): (&crate::reaction_cmd::Ctx, Option<u16>),
+) -> Option<PartOffer> {
+    use crate::reaction_cmd::{native_gate, status, Ctx, Status};
+    let mut best: Option<PartOffer> = None;
+    for r in table.reaction_parts() {
+        if !parts::part_usable(table, r.part, on, off) {
+            continue;
+        }
+        let cmd = if r.id == PART_FROM_RECORD { record_cmd } else { r.id };
+        let Some(c) = rules.cmd(cmd) else { continue };
+        if !native_gate(c, ctx.battle, window) {
+            continue;
+        }
+        let Some(shape) = parts::shape_of(r, pos, yaw) else { continue };
+        if parts::overlaps(&shape, player) != Some(true) {
+            continue;
+        }
+        let dist = (shape.center - player_pos).length();
+        if best.is_some_and(|b| c.priority < b.priority || (c.priority == b.priority && b.dist <= dist)) {
+            continue;
+        }
+        let mut st = status(&rules.cmds, c, &Ctx { distance: (pos - player_pos).with_y(0.0).length(), ..*ctx });
+        if st == Status::Available && c.range > -1.0 {
+            let face = Vec3::new(player_yaw.sin(), 0.0, player_yaw.cos());
+            if (pos - player_pos).normalize_or_zero().dot(face) < c.range {
+                st = Status::TooFar;
+            }
+        }
+        best = Some(PartOffer { cmd, part: r.part, status: st, priority: c.priority, dist });
+    }
+    best
+}
+
+fn reaction_log() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("KH2_REACTIONLOG").is_ok_and(|v| v != "0"))
+}
+
+/// The townspeople's candidates for the player's slot 1 (after `reaction_cmd` filled it from the
+/// enemies): the best part offer of every townsperson; an enemy offer of a higher or equal
+/// priority keeps the slot [approx: FUN_0019c520 also compares the distance].
+#[allow(clippy::too_many_arguments)]
+fn talk_offer(
+    mut talk: ResMut<Talk>,
+    rules: Option<Res<crate::reaction_cmd::ReactionRules>>,
+    slot: Option<Res<crate::reaction_cmd::ReactionOffer>>,
+    assets: Res<NpcAssets>,
+    sora: Query<&Sora>,
+    npcs: Query<(Entity, &Transform, &Npc, &NpcBrain)>,
+    anims: Query<&Animator>,
+    drive: Option<Res<crate::drive::DriveState>>,
+    battle: Res<crate::sora::Battle>,
+) {
+    use crate::reaction_cmd::{window_at, Active, Ctx};
+    let before = talk.offer.map(|a| (a.cmd, a.from, a.status));
+    talk.offer = None;
+    let mut tag = String::new();
+    if let (Some(rules), Ok(s), Some(body)) = (rules.as_deref(), sora.single(), assets.player_body.as_ref())
+        && talk.run.is_none()
+        && s.hp > 0
+        && !matches!(s.state, crate::sora::State::Down | crate::sora::State::Viewer)
+    {
+        let form = drive.as_deref().map_or(0, |d| d.object_form());
+        let battle = battle.active() || drive.as_deref().is_some_and(|d| d.force_battle);
+        let ctx = Ctx { form, battle, mp: s.mp, ..Default::default() };
+        let window = anims.get(s.body).ok().and_then(|a| a.triggers().and_then(|tg| window_at(tg, a.gframe())));
+        let (ppos, pyaw) = (s.motor.pos, s.motor.yaw);
+        if let Some(player) = parts::shape_of(body, ppos, pyaw) {
+            let mut best: Option<(PartOffer, Entity, &str)> = None;
+            for (e, tf, npc, brain) in &npcs {
+                let Some(table) = npc.parts.as_deref() else { continue };
+                let (mut on, mut off) = (Vec::new(), Vec::new());
+                if let Some((tg, f)) = anims.get(npc.body).ok().and_then(|a| a.triggers().map(|t| (t, a.gframe()))) {
+                    for r in tg.active(f) {
+                        match (r.id, r.params.first()) {
+                            (4, Some(&p)) => on.push(p),
+                            (5, Some(&p)) => off.push(p),
+                            _ => {}
+                        }
+                    }
+                }
+                let Some(o) = part_offer(rules, table, npc.record.part_command(), (&on, &off), (tf.translation / SCALE, npc.yaw), &player, (ppos, pyaw), (&ctx, window)) else { continue };
+                if best.is_some_and(|(b, _, _)| o.priority < b.priority || (o.priority == b.priority && b.dist <= o.dist)) {
+                    continue;
+                }
+                best = Some((o, e, brain.tag.as_str()));
+            }
+            let enemy = slot.as_deref().and_then(|o| o.0).and_then(|a| rules.cmd(a.cmd)).map(|c| c.priority);
+            if let Some((o, e, t)) = best.filter(|(o, _, _)| enemy.is_none_or(|p| p < o.priority)) {
+                let message = rules.cmd(o.cmd).map_or(0, |c| c.message_id as u32);
+                talk.offer = Some(Active { cmd: o.cmd, pos: o.part as i16, from: e, status: o.status, message });
+                tag = t.to_string();
+            }
+        }
+    }
+    if reaction_log() && talk.offer.map(|a| (a.cmd, a.from, a.status)) != before {
+        match talk.offer {
+            Some(a) => info!(
+                "reaction: offered command {} (message {}) by {tag} {:?} from its part {} (id 0x83: spawn record +0x2c, FUN_0019cb70), status {:?}",
+                a.cmd, a.message, a.from, a.pos, a.status
+            ),
+            None => info!("reaction: townsperson offer withdrawn"),
+        }
+    }
+}
+
+/// The accept key for the townspeople's offers: R (Triangle), or `KH2_REACTION_PRESS=<s>[,<s>...]`
+/// (as `reaction_cmd` reads it).
+fn talk_keys(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, mut talk: ResMut<Talk>, mut scripted: Local<Option<Vec<f32>>>) {
+    let at = scripted.get_or_insert_with(|| {
+        std::env::var("KH2_REACTION_PRESS").map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect()).unwrap_or_default()
+    });
+    let (now, dt) = (time.elapsed_secs(), time.delta_secs());
+    if keys.just_pressed(KeyCode::KeyR) || at.iter().any(|&t| now >= t && now - dt < t) {
+        talk.press = true;
+    }
+}
+
+/// While a talk runs the player's control is locked (bit 0 of 0x1d5d7b8, FUN_001b7d50): the pad
+/// reads as untouched.
+fn talk_lock_pad(talk: Res<Talk>, mut pad: ResMut<crate::sora::Pad>) {
+    if talk.running() {
+        pad.lock();
+    }
+}
+
+/// The HUD's capsule reads the player's slot 1 (`hud_menu::mirror_reaction`): the townsperson's
+/// offer is put there for it when the enemies left the slot empty...
+fn talk_show_offer(talk: Res<Talk>, mut slot: Option<ResMut<crate::reaction_cmd::ReactionOffer>>) {
+    if let (Some(slot), Some(o)) = (slot.as_deref_mut(), talk.offer)
+        && slot.0.is_none()
+    {
+        slot.0 = Some(o);
+    }
+}
+
+/// ...and taken out again after it, so `reaction_cmd`'s own offer and accept never see it (they
+/// handle the enemies' offers; see the outside-ownership note in docs/events.md section 3).
+fn talk_hide_offer(talk: Res<Talk>, mut slot: Option<ResMut<crate::reaction_cmd::ReactionOffer>>) {
+    if let (Some(slot), Some(o)) = (slot.as_deref_mut(), talk.offer)
+        && slot.0 == Some(o)
+    {
+        slot.0 = None;
+    }
+}
+
+/// The accept (FUN_0019c670 -> FUN_001cf030 -> FUN_00177b18 case 0x1f) and the talk task
+/// (FUN_001a5728) step by step.
+#[allow(clippy::too_many_arguments)]
+fn talk_step(
+    mut talk: ResMut<Talk>,
+    rules: Option<Res<crate::reaction_cmd::ReactionRules>>,
+    mut win: ResMut<crate::hud::hud_msgwin::ScriptWindow>,
+    mut sora: Query<(&mut Transform, &mut Sora), Without<Npc>>,
+    mut npcs: Query<(&mut Transform, &mut Npc, &mut NpcBrain), Without<Sora>>,
+    mut anims: Query<&mut Animator>,
+) {
+    use kh2_ard::libretto::Op;
+    let talk = &mut *talk;
+    let press = std::mem::take(&mut talk.press);
+    if talk.run.is_none() {
+        let (Some(o), true) = (talk.offer, press) else { return };
+        if o.status != crate::reaction_cmd::Status::Available {
+            if reaction_log() {
+                info!("reaction: accept pressed for command {}, refused ({:?})", o.cmd, o.status);
+            }
+            return;
+        }
+        let Some(c) = rules.as_deref().and_then(|r| r.cmd(o.cmd)) else { return };
+        let (Ok((mut stf, mut s)), Ok((mut ntf, mut npc, brain))) = (sora.single_mut(), npcs.get_mut(o.from)) else { return };
+        if c.execute != EXECUTE_TALK {
+            // Execute 0x1e (the shops' 30, FUN_001a54a8), 0x20, 0x37 and the others are not this talk.
+            if reaction_log() {
+                info!("reaction: accepted command {} (Execute {}) from {}: not ported for townspeople", o.cmd, c.execute, brain.tag);
+            }
+            return;
+        }
+        // FUN_00177d28: the player's velocities are cleared.
+        s.motor.vel = Vec3::ZERO;
+        // FUN_001a5728: the player faces the target (FUN_0016a948 with the target point minus his
+        // position; the point is the object's position [inferred: FUN_0018efa0 of the target record]).
+        let (ppos, npos) = (s.motor.pos, ntf.translation / SCALE);
+        let to_npc = (npos - ppos).with_y(0.0);
+        if to_npc.length_squared() > 1e-6 {
+            s.motor.yaw = to_npc.x.atan2(to_npc.z);
+            stf.rotation = Quat::from_rotation_y(s.motor.yaw);
+        }
+        // FUN_00189f40: the class-5 target faces the player unless bit 4 of its array is set.
+        let saved = npc.yaw;
+        if !brain.fields.test_bit(4) && to_npc.length_squared() > 1e-6 {
+            npc.yaw = (-to_npc.x).atan2(-to_npc.z);
+            ntf.rotation = Quat::from_rotation_y(npc.yaw);
+        }
+        if let Ok(mut a) = anims.get_mut(npc.body)
+            && a.rig.mset.has(MOTION_TALK)
+        {
+            let looping = a.rig.mset.get(MOTION_TALK).and_then(|m| m.motion.as_ref()).is_some_and(|m| m.frame_return < m.frame_end);
+            a.restart(Some(MOTION_TALK), looping, 0.0);
+        }
+        // FUN_001a53f8 / FUN_001a53b8: the program from the kept place (FUN_001b6578).
+        let id = npc.record.talk_id();
+        let program = talk.lib.as_ref().and_then(|l| l.program(id)).unwrap_or_default();
+        let ops: Vec<Op> = npc.talk.take(&program).iter().map(|c| c.kind()).collect();
+        if reaction_log() {
+            info!(
+                "reaction: accepted command {} (Execute {}) from {} {:?}: talk (FUN_00177b18 case 0x1f -> FUN_001a56c0), talk id {id:#x}, ops {ops:?}; no script event 0xb (FUN_00177c20 is not called)",
+                o.cmd, c.execute, brain.tag, o.from
+            );
+        }
+        if npclog() {
+            info!("npc: {} talk starts: motion {MOTION_TALK:#x}, facing the player, program {id:#x} {ops:?}", brain.tag);
+        }
+        talk.run = Some(TalkRun { npc: o.from, tag: brain.tag.clone(), ops, at: 0, window: false, yaw: saved });
+        talk.offer = None;
+        return;
+    }
+    let Some(run) = talk.run.as_mut() else { return };
+    // A window of this run is up: wait until it is closed (the window's state 3).
+    if run.window {
+        if !std::mem::take(&mut win.closed) {
+            return;
+        }
+        run.window = false;
+        run.at += 1;
+    }
+    while let Some(op) = run.ops.get(run.at).copied() {
+        match op {
+            Op::Message(id) => {
+                // FUN_001a5a60: window class FUN_001aba58 with the message.
+                win.open = Some((id, TALK_WINDOW_CLASS));
+                win.closed = false;
+                run.window = true;
+                if npclog() {
+                    info!("npc: {} talk: message {id:#x} in window class {TALK_WINDOW_CLASS} (FUN_001aba58)", run.tag);
+                }
+                return;
+            }
+            Op::Event(e) => {
+                // FUN_00197b70(e, 0): 0x65 goes to FUN_0023f108 [not ported].
+                info!("npc: {} talk: event {e:#x} fired (FUN_00197b70); not ported", run.tag);
+            }
+            other => info!("npc: {} talk: op {other:?} not ported", run.tag),
+        }
+        run.at += 1;
+    }
+    // The end (FUN_001a5728 after FUN_001a53b8; no event runs in the app, FUN_00196418 is 0).
+    let run = talk.run.take().expect("run");
+    if let Ok((mut ntf, mut npc, mut brain)) = npcs.get_mut(run.npc) {
+        npc.yaw = run.yaw;
+        ntf.rotation = Quat::from_rotation_y(npc.yaw);
+        // FUN_00189ff0.
+        let f = &mut brain.fields;
+        let motion = if f.test_bit(0) { f.follower.motion.max(0) as usize } else { 0 };
+        if !f.test_bit(0) {
+            f.prev.kind = 4;
+            f.follower.reset();
+            f.timer_b00 = f.param(2) + TALK_END_TIMER;
+        }
+        brain.pending_mode = Some("after_talk");
+        if let Ok(mut a) = anims.get_mut(npc.body)
+            && a.rig.mset.has(motion)
+        {
+            let looping = a.rig.mset.get(motion).and_then(|m| m.motion.as_ref()).is_some_and(|m| m.frame_return < m.frame_end);
+            a.restart(Some(motion), looping, 0.0);
+        }
+        if npclog() || reaction_log() {
+            info!("npc: {} talk ends (FUN_00189ff0): motion {motion}, previous follower kind {}, +0xb00 {:.0}, mode after_talk", run.tag, brain.fields.prev.kind, brain.fields.timer_b00);
         }
     }
 }
@@ -2043,5 +2450,90 @@ mod tests {
         f.end_follower();
         assert_eq!((f.prev.kind, f.follower.kind), (2, 0));
         assert_eq!(f.timer_b00, 90.0);
+    }
+
+    fn cmd_row(id: u16, priority: u8) -> crate::reaction_cmd::CmdRow {
+        crate::reaction_cmd::CmdRow {
+            id,
+            execute: id,
+            flags: 0,
+            disable_form: 0,
+            dist_range: 0,
+            range: -1.0,
+            priority,
+            message_id: 1000 + id as i32,
+            cmd_action: 0,
+            reaction_count: 0,
+            require: 0,
+            cost: 0,
+        }
+    }
+
+    /// FUN_0019cb70 for a townsperson: its type-5 part with id 0x83 offers the spawn record's +0x2c
+    /// while the player's body touches the part; a part with its own id offers that id and the higher
+    /// priority wins (FUN_0019c520); a disabled part offers nothing.
+    #[test]
+    fn the_0x83_part_offers_the_record_command() {
+        use crate::reaction_cmd::{Ctx, ReactionRules, Status};
+        let rules = ReactionRules { cmds: vec![cmd_row(31, 100), cmd_row(30, 100), cmd_row(40, 120)] };
+        let sphere = |part: u8, id: u16| parts::Rec { part, id, kind: parts::TYPE_REACTION, shape: 3, joint: parts::JOINT_OBJECT, off: [0, 0, 0], lift: 200, r: [200, 200] };
+        let table = parts::Table { default_mask: 1, recs: vec![sphere(0, PART_FROM_RECORD)] };
+        let body = |at: Vec3| parts::Shape { kind: 3, center: at + Vec3::Y * 85.0, r: [35.0, 55.0] };
+        let ctx = Ctx::default();
+        let near = Vec3::new(0.0, 0.0, 150.0);
+        let o = part_offer(&rules, &table, 31, (&[], &[]), (Vec3::ZERO, 0.0), &body(near), (near, std::f32::consts::PI), (&ctx, None)).expect("offer");
+        assert_eq!((o.cmd, o.part, o.status), (31, 0, Status::Available));
+        assert_eq!(part_offer(&rules, &table, 30, (&[], &[]), (Vec3::ZERO, 0.0), &body(near), (near, 0.0), (&ctx, None)).map(|o| o.cmd), Some(30), "the record names the command");
+        let far = Vec3::new(0.0, 0.0, 400.0);
+        assert_eq!(part_offer(&rules, &table, 31, (&[], &[]), (Vec3::ZERO, 0.0), &body(far), (far, 0.0), (&ctx, None)), None, "outside the part");
+        assert_eq!(part_offer(&rules, &table, 31, (&[], &[0]), (Vec3::ZERO, 0.0), &body(near), (near, 0.0), (&ctx, None)), None, "a trigger 5 turns the part off");
+        let two = parts::Table { default_mask: 3, recs: vec![sphere(0, PART_FROM_RECORD), sphere(1, 40)] };
+        assert_eq!(part_offer(&rules, &two, 31, (&[], &[]), (Vec3::ZERO, 0.0), &body(near), (near, 0.0), (&ctx, None)).map(|o| (o.cmd, o.part)), Some((40, 1)));
+    }
+
+    /// The pages of a message: a page ends at text command 0x10 where the command walk reaches it,
+    /// not at a 0x10 inside a command's arguments (0x190fa8).
+    #[test]
+    fn a_message_splits_into_pages_at_command_0x10() {
+        use crate::hud::hud_msgwin::pages;
+        // 'A' page end 'B' end.
+        let p = pages(&[0x21, 0x10, 0x22, 0x00]);
+        assert_eq!(p.len(), 2);
+        // A wait command (0x14) whose argument is 0x10: one page.
+        let one = pages(&[0x21, 0x14, 0x10, 0x00, 0x22, 0x00]);
+        assert_eq!(one.len(), 1, "{one:?}");
+        assert_eq!(one[0].len(), 4, "glyph, wait, glyph, end: {one:?}");
+    }
+
+    /// The tt02 townspeople's talk ids have programs in `libretto-tt.bar`, each a single message of
+    /// `msg/us/tt.bar`, and their motion sets have the talk motion 0x32.
+    #[test]
+    fn tt02_townspeople_have_talk_programs_messages_and_the_talk_motion() {
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else { return eprintln!("skipped: no disc (set KH2_ISO)") };
+        let disc = Disc::open(&iso);
+        let lib = disc.read("libretto-tt.bar").and_then(|f| kh2_ard::libretto::Libretto::from_bar(&f)).expect("libretto-tt.bar");
+        let msgs = disc.read("msg/us/tt.bar").and_then(|b| kh2_image::text::Messages::from_bar(&b)).expect("tt.bar");
+        let (area, _) = kh2_ard::Area::parse(&disc.read("ard/tt02.ard").expect("tt02.ard")).expect("area");
+        let objs = disc.0.lock().ok().and_then(|mut a| kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).ok()).map(|d| d.rows).unwrap_or_default();
+        let mut seen = 0;
+        for tag in ["a72_", "b72_", "c72_", "b50_"] {
+            for g in area.spawns.get(tag).expect("group") {
+                for e in &g.entities {
+                    let Some(o) = objs.iter().find(|o| o.object_id == e.object && o.object_type == OBJECT_TOWNSPERSON) else { continue };
+                    assert_eq!(e.part_command(), 31, "{tag} {}", o.model_name);
+                    let prog = lib.program(e.talk_id()).expect("program");
+                    let ops: Vec<_> = prog.iter().map(|c| c.kind()).collect();
+                    let [kh2_ard::libretto::Op::Message(id)] = ops[..] else { panic!("{tag}: {ops:?}") };
+                    let b = msgs.bytes(id).expect("message");
+                    let pages = crate::hud::hud_msgwin::pages(b);
+                    eprintln!("{tag} {} talk {:#x}: message {id:#x}, {} page(s): {:?}", o.model_name, e.talk_id(), pages.len(), pages.iter().map(|p| kh2_image::text::to_text(p).len()).collect::<Vec<_>>());
+                    assert!(!pages.is_empty());
+                    let mset = disc.read(&format!("obj/{}.mset", o.model_name)).and_then(|d| kh2_anim::Mset::parse(&d)).expect("mset");
+                    assert!(mset.has(MOTION_TALK), "{} has motion 0x32", o.model_name);
+                    seen += 1;
+                }
+            }
+        }
+        assert_eq!(seen, 4);
     }
 }

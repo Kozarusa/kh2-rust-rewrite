@@ -442,6 +442,17 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 6.9 | `target_distance(pv) -> f` | 0x2eeb30 | 55 | the distance from the point to the surface of a target record's shape (FUN_0018f308: FUN_0018eec0 builds the shape, FUN_00189628 measures; a sphere's is the centre distance minus the radius, a spheroid's is measured with the height scaled to the radius) |
 | 6.24 | `obj_vec_8a0(O) -> v` | 0x2ee960 | 12 | the 16 bytes at object +0x8a0 copied to a static buffer |
 | 6.58 | `queue_mode_remote(ps)` | 0x2ef018 | 3 | queue the named mode and mark the entry for another object: when it comes up the host switches that object to the mode instead (FUN_00186f50; see runtime.rs) |
+| 10.1 | `ai_walk_to(Ov)` | 0x2f6a98 | 3 | the friend AI object (+0xb60, FUN_0010c5f0) takes the vector as its goal: FUN_001175a0 sets AI +0x630 bit 0, copies it to +0x640 and starts the class's motion (FUN_00117320) |
+| 10.3 | `ai_vcall_28(O)` | 0x2f6b28 | 3 | the friend AI object's virtual method +0x28 (Stitch FUN_001191a8: links the player and his hand objects to the summon for a limit) |
+| 10.4 | `ai_vcall_2c(O)` | 0x2f6b58 | 4 | the friend AI object's virtual method +0x2c (Stitch FUN_00119360: undoes FUN_001191a8) |
+| 10.12 | `ai_slot_start(OiOiiiii) -> i` | 0x2f6d00 | 5 | FUN_00117708 on the friend AI object: a slot of its 0x18-slot list at +0x20 with the kind, the object of the third argument's context (0 without), four words and a flag; returns the slot index |
+| 10.13 | `ai_stitch_13(Oi)` | 0x2f6d68 | 1 | Stitch's FUN_001195e8 on the friend AI object: AI slots of kind 1 and, with a target, attack objects of atkp 0x373 around it (FUN_001130d0) |
+| 10.16 | `ai_slot_mark(Oi)` | 0x2f6df8 | 1 | FUN_00117840: AI slot n flags |= 0x40000000 |
+| 10.19 | `in_limit(o) -> b` | 0x2f6e60 | 18 | object +0x10c bit 0x10000 (the limit task marks its participants, FUN_001b2c10) |
+| 10.32 | `ai_stitch_32(Oi)` | 0x2f7138 | 1 | Stitch's FUN_00118aa8 on the friend AI object: a goal (FUN_00116780), motion 0xa1 and the action of a record (FUN_00114280, FUN_0010ecb0) |
+| 10.39 | `ai_action_clear(O)` | 0x2f72c0 | 5 | FUN_0010ecb0(object, 0, 0): object +0xc60 and +0xc64 cleared |
+| 10.41 | `ai_flag_b7c_40000000(O)` | 0x2f7328 | 4 | FUN_001129f0: object +0xb7c |= 0x40000000 |
+| 10.45 | `status_f_1b4(p) -> f` | 0x2f73b0 | 4 | the float at +0x1b4 of a status block (1.84): the drive / summon timer |
 
 ### Not named
 
@@ -460,7 +471,7 @@ Group 5 is the NPC routine library (`*_RTN` scripts), group 4 the mission and ar
 3.80x28 3.72x28 10.55x28 3.70x27 3.42x27 4.40x26 3.90x26 0.46x26 6.47x25 3.65x25 3.131x25 0.83x25 3.7x24 3.41x24
 3.129x24 3.114x24 1.296x24 3.89x23 3.87x23 3.30x23 3.135x23 1.91x23 6.4x22 10.14x22 1.213x22 3.113x21 3.86x20 3.71x20
 1.73x20 1.263x20 1.185x20 6.51x19 6.1x19 3.166x19 1.93x19 1.323x19 1.280x19 0.82x19 3.58x18 3.43x18 3.126x18 2.31x18
-10.19x18 1.142x18 0.39x18 3.81x17 1.304x17 1.189x17 1.165x17 6.9x16 1.305x16 1.302x16 1.295x16 1.220x16 1.100x16
+1.142x18 0.39x18 3.81x17 1.304x17 1.189x17 1.165x17 6.9x16 1.305x16 1.302x16 1.295x16 1.220x16 1.100x16
 0.75x16 0.69x16 6.16x15 5.14x15 3.84x15 3.54x15 3.102x15 1.252x15 2.50x14 2.1x14 1.85x14 1.292x14 1.235x14 1.156x14
 1.146x14 6.8x13 6.41x13 6.39x13 4.8x13 4.48x13 3.34x13 3.148x13 3.112x13 1.75x13 1.306x13 6.54x12 3.88x12 3.85x12
 3.29x12 1.343x12 1.186x12 1.164x12 1.126x12 0.100x12 4.15x11 3.50x11 3.36x11 3.139x11 3.120x11 3.110x11 1.40x11
@@ -470,12 +481,12 @@ Group 5 is the NPC routine library (`*_RTN` scripts), group 4 the mission and ar
 5.32x7 5.30x7 4.27x7 3.62x7 3.31x7 3.167x7 3.14x7 3.115x7 3.100x7 1.86x7 1.256x7 1.194x7 7.32x6 7.25x6 6.43x6 6.0x6
 4.47x6 4.45x6 4.42x6 4.39x6 4.26x6 4.13x6 3.98x6 3.94x6 3.68x6 3.52x6 3.163x6 3.162x6 3.150x6 3.137x6 3.130x6 3.13x6
 3.125x6 3.124x6 3.117x6 2.86x6 2.59x6 2.57x6 1.331x6 1.320x6 1.226x6 1.223x6 1.199x6 0.76x6 0.65x6 9.4x5 9.17x5 6.55x5
-6.25x5 6.11x5 5.13x5 3.51x5 3.22x5 3.19x5 3.171x5 3.128x5 3.119x5 3.107x5 3.0x5 2.37x5 10.39x5 10.17x5 10.12x5 1.274x5
+6.25x5 6.11x5 5.13x5 3.51x5 3.22x5 3.19x5 3.171x5 3.128x5 3.119x5 3.107x5 3.0x5 2.37x5 10.17x5 1.274x5
 1.153x5 1.117x5 0.96x5 0.91x5 9.19x4 7.24x4 7.19x4 6.46x4 6.45x4 6.12x4 4.21x4 4.10x4 3.145x4 3.133x4 3.1x4 10.54x4
-10.53x4 10.45x4 10.43x4 10.41x4 10.4x4 10.29x4 10.25x4 10.18x4 1.340x4 1.339x4 1.337x4 1.332x4 1.328x4 1.290x4 1.285x4
+10.53x4 10.43x4 10.29x4 10.25x4 10.18x4 1.340x4 1.339x4 1.337x4 1.332x4 1.328x4 1.290x4 1.285x4
 1.279x4 1.278x4 1.269x4 1.268x4 1.249x4 1.242x4 0.89x4 9.37x3 9.36x3 9.26x3 7.26x3 7.21x3 6.6x3 6.42x3 6.14x3 5.23x3
-4.25x3 3.83x3 3.82x3 3.67x3 3.59x3 3.159x3 3.146x3 3.121x3 3.108x3 3.104x3 3.103x3 2.89x3 2.18x3 10.3x3 10.28x3
-10.27x3 10.1x3 1.95x3 1.44x3 1.293x3 1.244x3 1.243x3 1.135x3 1.118x3 0.95x3 0.37x3 9.35x2 9.25x2 9.24x2 9.16x2 9.0x2
+4.25x3 3.83x3 3.82x3 3.67x3 3.59x3 3.159x3 3.146x3 3.121x3 3.108x3 3.104x3 3.103x3 2.89x3 2.18x3 10.28x3
+10.27x3 1.95x3 1.44x3 1.293x3 1.244x3 1.243x3 1.135x3 1.118x3 0.95x3 0.37x3 9.35x2 9.25x2 9.24x2 9.16x2 9.0x2
 8.2x2 7.30x2 7.3x2 7.28x2 7.11x2 6.63x2 6.59x2 6.49x2 6.44x2 6.30x2 6.29x2 6.28x2 6.27x2 6.26x2 6.21x2 4.53x2 4.52x2
 4.51x2 4.49x2 3.33x2 3.161x2 3.155x2 3.153x2 3.15x2 3.144x2 3.140x2 3.123x2 2.93x2 2.71x2 10.59x2 10.58x2 10.51x2
 10.38x2 10.37x2 10.36x2 10.33x2 10.21x2 10.20x2 10.10x2 1.355x2 1.349x2 1.342x2 1.329x2 1.291x2 1.260x2 1.259x2
@@ -483,7 +494,7 @@ Group 5 is the NPC routine library (`*_RTN` scripts), group 4 the mission and ar
 9.20x1 9.18x1 9.15x1 9.14x1 9.13x1 9.10x1 9.1x1 8.7x1 8.6x1 8.3x1 8.0x1 7.33x1 7.27x1 6.66x1 6.60x1 6.40x1 6.36x1
 6.20x1 6.19x1 6.18x1 5.8x1 5.28x1 4.7x1 4.23x1 3.92x1 3.55x1 3.47x1 3.26x1 3.177x1 3.175x1 3.174x1 3.173x1 3.160x1
 3.156x1 3.147x1 3.143x1 3.138x1 3.116x1 2.19x1 2.0x1 10.9x1 10.8x1 10.7x1 10.56x1 10.5x1 10.48x1 10.42x1 10.34x1
-10.32x1 10.30x1 10.26x1 10.23x1 10.16x1 10.13x1 1.356x1 1.352x1 1.348x1 1.347x1 1.341x1 1.334x1 1.333x1 1.330x1
+10.30x1 10.26x1 10.23x1 1.356x1 1.352x1 1.348x1 1.347x1 1.341x1 1.334x1 1.333x1 1.330x1
 1.327x1 1.322x1 1.321x1 1.319x1 1.316x1 1.315x1 1.314x1 1.313x1 1.312x1 1.297x1 1.283x1 1.281x1 1.277x1 1.245x1
 1.236x1 1.221x1 1.113x1 0.94x1 0.93x1 0.92x1 0.22x1 0.101x1
 ```

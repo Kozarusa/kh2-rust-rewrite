@@ -715,7 +715,7 @@ Done:
   pays 10 per use in a b_44 run). Host 1.140 (0x173740 -> FUN_0018ed58) answers the member's target record.
 
 Not done: (Cure's heal and the specials' payment: section 14; Donald's thunder, fire, cure and Goofy's tornado
-attack objects and effects: section 15) Donald's blizzard, Goofy's blade and turbo, the members'
+attack objects and effects: section 15; Donald's blizzard, Goofy's blade and turbo: section 16) the members'
 ability block, the attacker memory +0xcec, the panel flashes, limits and forms (stages 5, 6).
 - FUN_00111040 forces motion state 0x1f only for classes 12, 15 and 16, so Donald and Goofy (classes 0, 1)
   may follow through FUN_0010e5e8's body (state 0) rather than FUN_0010e140 as stage 1 assumed; which state a

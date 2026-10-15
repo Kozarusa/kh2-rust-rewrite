@@ -524,6 +524,10 @@ pub enum Key {
     /// `FUN_002a27d8` / `FUN_002a3da0`) [inferred: -9 is L1 and -8 R1, the buttons the hints show on their side].
     L1,
     R1,
+    /// L2 / R2: the picture page's own pair (`FUN_002a62d0`: its help line shows the L2 and R2 icons, masks 0x100 / 0x200 of the
+    /// table 0x380ab0; list results -11 / -10, `FUN_002a6578`) [inferred: the keyboard's `[` / `]` and Z / C].
+    L2,
+    R2,
 }
 
 /// The outcome of a key on page 0.
@@ -548,6 +552,8 @@ pub enum Act {
     Navigate(lists::Nav),
     /// A confirm on an Album row: the picture viewer, page 5 (`FUN_002a6010`).
     Photo(usize),
+    /// L1 / R1 on the picture page: the previous (-1) or next (+1) picture (`FUN_002a6850`).
+    Browse(i32),
 }
 
 /// The L1 / R1 switch of pages 0 and 2.
@@ -572,7 +578,7 @@ pub fn page2(key: Key, row: usize, cats: &[usize]) -> Act {
         }
         Key::Confirm => cats.get(row).map_or(Act::None, |&cat| Act::Category { cat, page: category_page(cat) }),
         // L1 / R1: `switch` (it needs the hint table).
-        Key::L1 | Key::R1 => Act::None,
+        Key::L1 | Key::R1 | Key::L2 | Key::R2 => Act::None,
     }
 }
 
@@ -596,6 +602,17 @@ pub fn page_album(key: Key, row: usize, n: usize) -> Act {
         Key::Cancel => Act::Back,
         Key::Move(_, dy) if dy != 0 && n > 1 => Act::Cursor((row as i32 + dy.signum()).rem_euclid(n as i32) as usize),
         Key::Confirm if n > 0 => Act::Photo(row),
+        _ => Act::None,
+    }
+}
+
+/// The picture page's state machine (`FUN_002a6578`): L1 / R1 (-11 / -10) change the picture, -2 goes back to the list, -4 closes.
+pub fn page_photo(key: Key) -> Act {
+    match key {
+        Key::Start => Act::Close,
+        Key::Cancel => Act::Back,
+        Key::L2 => Act::Browse(-1),
+        Key::R2 => Act::Browse(1),
         _ => Act::None,
     }
 }
@@ -637,7 +654,7 @@ pub fn page0(key: Key, cursor: usize, shown: &[(usize, u8)], worlds: &[World]) -
             Some(w) => Act::Open { page: if w.id > 0xe { 0xc } else { 2 }, world: w.id },
             None => Act::None,
         },
-        Key::L1 | Key::R1 => Act::None,
+        Key::L1 | Key::R1 | Key::L2 | Key::R2 => Act::None,
     }
 }
 
@@ -818,6 +835,9 @@ struct AlbumNodes {
     layer: usize,
     rows: [usize; album_page::ROWS],
     tags: [usize; album_page::ROWS],
+    /// The picture page (5, `FUN_002a62d0`): its layer (group 0x54), the title (0x56), the caption (a list row of group 0x55)
+    /// and the picture (sequence 1, a child of the layer).
+    photo: [usize; 4],
 }
 
 impl AlbumNodes {
@@ -825,6 +845,7 @@ impl AlbumNodes {
         let mut v = vec![self.layer];
         v.extend(self.rows);
         v.extend(self.tags);
+        v.extend(self.photo);
         v
     }
 }
@@ -947,8 +968,9 @@ pub struct Journal {
     /// The `trsr` and `item` rows of `03system.bin` (pages 7 and 8) and a cursor press the scene has not handled yet.
     tables_lists: treasure_page::Tables,
     nav: Option<lists::Nav>,
-    /// `jiminy.bar` entry 2 ("albu"), parsed.
+    /// `jiminy.bar` entry 2 ("albu"), parsed, and the picture files already turned into textures by name.
     album: Vec<album_page::Rec>,
+    photo_tex: std::collections::HashMap<String, Option<usize>>,
     /// The mode a camp row asked for (taken by `tick`).
     request: Option<i32>,
     /// A page switch asked for by `input` (page, world byte), built by `tick`.
@@ -994,6 +1016,8 @@ struct Open {
     /// Page 4: the album record behind each row, and the row the picture page (5) kept for the way back.
     album_rows: Vec<usize>,
     back_album: usize,
+    /// Whether each Album row's picture exists (its flag is set; the rows of unset flags show only with the all-worlds flag).
+    album_exist: Vec<bool>,
 }
 
 pub struct JournalPlugin;
@@ -1118,7 +1142,16 @@ fn load(j: &mut Journal, disc: &Disc, scene: &mut MenuScene, images: &mut Assets
         let layer = add(scene, list, tex, Some(header));
         let rows: Vec<usize> = (0..album_page::ROWS).map(|_| add(scene, list, tex, Some(layer))).collect();
         let tags: Vec<usize> = rows.iter().map(|&r| add(scene, list, tex, Some(r))).collect();
-        nodes.album = AlbumNodes { layer, rows: rows.try_into().unwrap_or_default(), tags: tags.try_into().unwrap_or_default() };
+        let p_layer = add(scene, list, tex, Some(header));
+        let p_title = add(scene, list, tex, Some(header));
+        let p_caption = add(scene, list, tex, Some(p_layer));
+        let p_pic = add(scene, j.seq_base + 1, tex, Some(p_layer));
+        nodes.album = AlbumNodes {
+            layer,
+            rows: rows.try_into().unwrap_or_default(),
+            tags: tags.try_into().unwrap_or_default(),
+            photo: [p_layer, p_title, p_caption, p_pic],
+        };
     }
     // The help line (a child of the plate, `FUN_00278468`), the hints (roots), the cursor and its follower (moved
     // under the cursor row or cell when shown: those all have lower indices).
@@ -1197,10 +1230,14 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
         Some(Key::L1)
     } else if keys.just_pressed(KeyCode::KeyE) || keys.just_pressed(KeyCode::PageDown) {
         Some(Key::R1)
+    } else if keys.just_pressed(KeyCode::BracketLeft) || keys.just_pressed(KeyCode::KeyZ) {
+        Some(Key::L2)
+    } else if keys.just_pressed(KeyCode::BracketRight) || keys.just_pressed(KeyCode::KeyC) {
+        Some(Key::R2)
     } else {
         None
     };
-    for k in [KeyCode::KeyJ, KeyCode::Escape, KeyCode::Backspace, KeyCode::KeyK, KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::ArrowLeft, KeyCode::ArrowRight, KeyCode::ArrowUp, KeyCode::ArrowDown, KeyCode::KeyQ, KeyCode::KeyE, KeyCode::PageUp, KeyCode::PageDown] {
+    for k in [KeyCode::KeyJ, KeyCode::Escape, KeyCode::Backspace, KeyCode::KeyK, KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::ArrowLeft, KeyCode::ArrowRight, KeyCode::ArrowUp, KeyCode::ArrowDown, KeyCode::KeyQ, KeyCode::KeyE, KeyCode::PageUp, KeyCode::PageDown, KeyCode::BracketLeft, KeyCode::BracketRight, KeyCode::KeyZ, KeyCode::KeyC] {
         keys.clear_just_pressed(k);
     }
     let (Some(key), true, None) = (key, j.loaded, j.goto) else { return };
@@ -1214,6 +1251,7 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
         (6 | 0xb, _) => page_faces(key, o.sel),
         (7 | 8, _) => page_lists(key),
         (4, _) => page_album(key, o.row, o.album_rows.len()),
+        (5, _) => page_photo(key),
         _ => page1(key),
     };
     match act {
@@ -1257,8 +1295,27 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
         }
         Act::Navigate(nav) => j.nav = Some(nav),
         Act::Photo(r) => {
-            menu_sound::play(&mut se, menu_sound::REFUSED);
-            info!("journal: page 4 confirm on row {r} -> page 5, the picture (FUN_002a62d0) not ported; refused");
+            menu_sound::play(&mut se, crate::menu_status::CONFIRM);
+            info!("journal: page 4 confirm on row {r} -> page 5, the picture (FUN_002a6010 -> FUN_002a62d0)");
+            j.open.as_mut().unwrap().row = r;
+            j.goto = Some((5, world_byte));
+        }
+        Act::Browse(dir) => {
+            let o = j.open.as_mut().unwrap();
+            let to = album_page::browse(&o.album_exist, o.row, dir);
+            if to != o.row {
+                o.row = to;
+                menu_sound::play(&mut se, menu_sound::CURSOR);
+                info!("journal: page 5 picture {to} (FUN_002a6850)");
+                j.goto = Some((5, world_byte));
+            }
+        }
+        Act::Back if page == 5 => {
+            menu_sound::play(&mut se, menu_sound::CANCEL);
+            info!("journal: page 5 cancel -> page 4 (FUN_002a6578 case -2)");
+            let o = j.open.as_mut().unwrap();
+            o.back_album = o.row;
+            j.goto = Some((4, world_byte));
         }
         Act::Cursor(r) if page == 4 => {
             j.open.as_mut().unwrap().row = r;
@@ -1399,6 +1456,7 @@ fn show(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Assets
         bar_group: STORY_LAYERS[1],
         album_rows: Vec::new(),
         back_album: 0,
+        album_exist: Vec::new(),
     });
     build(j, scene, disc, images, page, world, test, items);
 }
@@ -1412,7 +1470,7 @@ fn build(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Asset
     let n = &j.nodes;
     let ids: Vec<usize> = n.page0().into_iter().chain(n.page12()).chain(n.page3()).chain([n.help, n.cursor, n.follow]).collect();
     for id in ids {
-        if !(matches!(page, 3 | 4 | 6 | 7 | 8 | 0xb) && id == title) {
+        if !(matches!(page, 3 | 4 | 5 | 6 | 7 | 8 | 0xb) && id == title) {
             scene.nodes[id].visible = false;
         }
     }
@@ -1422,6 +1480,7 @@ fn build(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Asset
         6 | 0xb => build_faces(j, scene, disc, images, page, world, test, items),
         7 | 8 => treasure_page::build(j, scene, page, world, &treasure_page::Game { flag: test, items }),
         4 => album_page::build(j, scene, world, test),
+        5 => album_page::build_photo(j, scene, disc, images, world, test),
         _ => build0(j, scene, world, test, items),
     }
     chrome(j, scene, page);
@@ -1624,6 +1683,7 @@ fn chrome(j: &mut Journal, scene: &mut MenuScene, page: u16) {
         3 => Some(msg::HELP_STORY),
         6 | 0xb => Some(j.tables.face.help[usize::from(page != 6)]),
         4 => Some(album_page::HELP),
+        5 => Some(album_page::HELP_PHOTO),
         7 => Some(msg::HELP_TREASURE),
         8 => Some(msg::HELP_MAP),
         _ => None,
@@ -2479,6 +2539,84 @@ mod tests {
         assert!(l.sections.iter().enumerate().all(|(w, s)| w == 8 || w >= 0xf || s.rows > 0), "{:?}", l.sections);
         assert!(l.total > lists::VIEW_ROWS, "{} rows", l.total);
         assert_eq!(l.entries.len(), l.sections.iter().map(|s| s.count).sum::<usize>());
+    }
+
+    /// The face, list, album and picture pages' button handling (WP-MN12).
+    #[test]
+    fn the_new_pages_read_their_buttons() {
+        // Faces: cancel back, start closes, confirm carries the face under the pointer; the arrows are the pointer's, not events.
+        assert_eq!(page_faces(Key::Cancel, None), Act::Back);
+        assert_eq!(page_faces(Key::Start, Some(2)), Act::Close);
+        assert_eq!(page_faces(Key::Confirm, Some(2)), Act::Face(Some(2)));
+        assert_eq!(page_faces(Key::Confirm, None), Act::Face(None));
+        assert_eq!(page_faces(Key::Move(1, 0), None), Act::None);
+        // Treasures and Maps: every direction and L1 / R1 are cursor presses, a confirm does nothing.
+        use lists::Nav;
+        assert_eq!(page_lists(Key::Move(0, -1)), Act::Navigate(Nav::Up));
+        assert_eq!(page_lists(Key::Move(0, 1)), Act::Navigate(Nav::Down));
+        assert_eq!(page_lists(Key::Move(-1, 0)), Act::Navigate(Nav::Left));
+        assert_eq!(page_lists(Key::Move(1, 0)), Act::Navigate(Nav::Right));
+        assert_eq!(page_lists(Key::L1), Act::Navigate(Nav::PageUp));
+        assert_eq!(page_lists(Key::R1), Act::Navigate(Nav::PageDown));
+        assert_eq!(page_lists(Key::Confirm), Act::None);
+        assert_eq!((page_lists(Key::Cancel), page_lists(Key::Start)), (Act::Back, Act::Close));
+        // Album: the list widget's wrapping cursor, a confirm on a row opens its picture, nothing to confirm on an empty list.
+        assert_eq!(page_album(Key::Move(0, 1), 2, 8), Act::Cursor(3));
+        assert_eq!(page_album(Key::Move(0, 1), 7, 8), Act::Cursor(0));
+        assert_eq!(page_album(Key::Move(0, -1), 0, 8), Act::Cursor(7));
+        assert_eq!(page_album(Key::Move(0, 1), 0, 1), Act::None, "one row: nowhere to go");
+        assert_eq!(page_album(Key::Confirm, 3, 8), Act::Photo(3));
+        assert_eq!(page_album(Key::Confirm, 0, 0), Act::None);
+        assert_eq!(page_album(Key::Cancel, 0, 0), Act::Back);
+        // The picture page switches with L2 / R2, not with L1 / R1 (its help line shows the L2 and R2 icons).
+        assert_eq!((page_photo(Key::L2), page_photo(Key::R2)), (Act::Browse(-1), Act::Browse(1)));
+        assert_eq!((page_photo(Key::L1), page_photo(Key::R1)), (Act::None, Act::None));
+        assert_eq!((page_photo(Key::Cancel), page_photo(Key::Start)), (Act::Back, Act::Close));
+        // Page 2's rows open the new pages.
+        let cats = categories(0, false, false);
+        assert_eq!(page2(Key::Confirm, 0, &cats), Act::Category { cat: 0, page: 6 });
+        assert_eq!(page2(Key::Confirm, 2, &cats), Act::Category { cat: 2, page: 4 });
+        assert_eq!(page2(Key::Confirm, 3, &cats), Act::Category { cat: 3, page: 7 });
+        assert_eq!(page2(Key::Confirm, 4, &cats), Act::Category { cat: 4, page: 8 });
+    }
+
+    /// The Album's data on the disc (skipped without `KH2_ISO`): the records, their texts, the picture files and the page's groups.
+    #[test]
+    fn the_disc_album_data() {
+        let Ok(iso) = std::env::var("KH2_ISO") else { return };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok()).unwrap();
+        let t = read_page_tables(&Exe::load(elf).unwrap()).expect("the page tables");
+        let two = layd::parse_2ld(&a.read("menu/us/jmemo.2ld").unwrap()).unwrap();
+        let s5 = &two.layd.seqs[SEQ_LIST];
+        for g in [album_page::LAYER, album_page::TAG[0], album_page::TAG[1], album_page::PHOTO_LAYER, album_page::PHOTO_TITLE, album_page::PHOTO_CAPTION] {
+            assert!(s5.groups.len() > g, "group {g:#x}");
+        }
+        assert_eq!(s5.groups[album_page::LAYER].unk1c, 26, "the rows' pitch");
+        assert!(two.layd.seqs[1].groups.len() > 2, "the picture's groups 1 and 2 in sequence 1");
+        let bar = a.read("menu/us/jiminy.bar").unwrap();
+        let e = kh2_bar::parse(&bar).unwrap();
+        let recs = album_page::parse(e[2].data);
+        assert_eq!(recs.len(), 100);
+        let msgs = kh2_image::text::Messages::from_bar(&a.read("msg/us/jm.bar").unwrap()).unwrap();
+        for m in [album_page::HELP, album_page::HELP_PHOTO, 0x32dd] {
+            assert!(msgs.tokens(u32::from(m)).is_some(), "message {m:#x}");
+        }
+        let mut worlds = std::collections::BTreeSet::new();
+        for r in &recs {
+            assert!(msgs.tokens(u32::from(r.title)).is_some() && msgs.tokens(u32::from(r.caption)).is_some(), "texts of {r:?}");
+            let code = &t.face.names[usize::try_from(r.world).unwrap()];
+            let file = format!("menu/us/jm_photo/{code}{}{}.bin", r.photo[0] as char, r.photo[1] as char);
+            let bytes = a.read(&file).unwrap_or_else(|_| panic!("{file}"));
+            let pics = kh2_bar::parse(&bytes).unwrap();
+            assert!(pics.first().is_some_and(|p| kh2_image::imgd::decode(p.data).is_some()), "{file}");
+            worlds.insert(r.world);
+        }
+        assert_eq!(worlds.len(), 15, "a list for every world: {worlds:?}");
+        // No world lists more rows than the list has.
+        for w in 0..15 {
+            assert!(recs.iter().filter(|r| r.world == w).count() <= album_page::ROWS, "world {w}");
+        }
     }
 
     /// Pages 1 and 2's data on the disc (skipped without `KH2_ISO`).

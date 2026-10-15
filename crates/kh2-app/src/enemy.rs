@@ -142,6 +142,8 @@ pub struct Member {
     pub delay: u16,
     /// The record's byte +0x30: the wave of a kind-2 group from which the entity may appear (`FUN_001991a0`).
     pub wave: u8,
+    /// The `00objentry` `SpawnLimiter` byte (row +0x54) of the object, which `FUN_001996f0` sums.
+    pub limiter: u8,
 }
 
 /// One group record of a spawn tag (BAR type 12; `FUN_00198430` builds the live group from it).
@@ -271,6 +273,7 @@ pub fn area_groups(disc: &Disc, area: &str) -> Vec<AreaGroup> {
                             serial: e.serial,
                             delay: u16::from_le_bytes([e.raw[0x2a], e.raw[0x2b]]),
                             wave: e.raw[0x30],
+                            limiter: row.spawn_limiter,
                         });
                     }
                     None if row.object_type == OBJECT_ENEMY => g.skipped.push(row.model_name.clone()),
@@ -322,18 +325,32 @@ pub struct KindTwo {
     pub timer: f32,
     /// The wave (+0x20, 0 at set-up, at most 200).
     pub wave: u8,
+    /// Serials of the members defeated for good: the table at 0x35d278 that `FUN_00198220` enters an enemy in when
+    /// it is created (`FUN_00198150`: object types 4, 0xd, 0x15, 0x17) and `FUN_001993f8` takes it out of when it
+    /// is removed alive, or dead with a wave byte above 99 (`FUN_00199378`). The game keeps the table for four
+    /// areas (`FUN_00194188`); the app keeps it for one run of the area's scripts.
+    pub killed: Vec<u16>,
 }
 
 impl KindTwo {
     pub fn new(g: &AreaGroup, part: usize) -> KindTwo {
-        KindTwo { part, timer: g.parts[part].start_delay() as f32, wave: 0 }
+        KindTwo { part, timer: g.parts[part].start_delay() as f32, wave: 0, killed: Vec::new() }
+    }
+
+    /// `FUN_001993f8`: member `m` of the group is gone (here: its HP reached 0). The timer restarts at header +0x20;
+    /// a member of a wave up to 99 stays defeated (`FUN_00199378`).
+    pub fn removed(&mut self, g: &AreaGroup, m: &Member) {
+        self.timer = g.parts[self.part].removal_delay() as f32;
+        if m.wave <= 99 && !self.killed.contains(&m.serial) {
+            self.killed.push(m.serial);
+        }
     }
 
     /// `FUN_001991a0`, run on a frame the player is inside one of the group's volumes (`FUN_001989d8` ->
     /// `FUN_00198b30`). Returns the members (indices into `g.members`) to create now; `alive(i)` says whether
     /// member `i`'s object exists (`FUN_0016b0d8` by serial). Walks the entities in order: once the timer runs it
     /// stops; an absent member of spawn kind 2 whose wave byte is at most the group's wave is created and sets the
-    /// timer to its delay (+0x2a). When the walk ends with the timer at 0, `FUN_00199618` moves to the next wave
+    /// timer to its delay (+0x2a); a member defeated for good (`killed`) does not come back. When the walk ends with the timer at 0, `FUN_00199618` moves to the next wave
     /// that has members, if the `SpawnLimiter` sum of the members in play (`FUN_001996f0`) is at most header +0x22;
     /// header +0x23 (not 0) is the wave at which it goes back to wave +0x24 (`FUN_001997f8`, `FUN_00199858`).
     pub fn run(&mut self, g: &AreaGroup, alive: impl Fn(usize) -> bool) -> Vec<usize> {
@@ -345,7 +362,7 @@ impl KindTwo {
                 if self.timer > 0.0 {
                     return out;
                 }
-                if m.spawn_kind == 2 && m.wave <= self.wave && !alive(i) && !out.contains(&i) {
+                if m.spawn_kind == 2 && m.wave <= self.wave && !alive(i) && !self.killed.contains(&m.serial) && !out.contains(&i) {
                     out.push(i);
                     self.timer = m.delay as f32;
                 }
@@ -353,10 +370,18 @@ impl KindTwo {
             if self.timer > 0.0 {
                 return out;
             }
-            // FUN_001996f0: the members of spawn kinds 0 and 3, and those of kind 2 of the waves so far [the game
-            // leaves out a member recorded in the table at 0x35d278 whose object is gone (FUN_001995c8); the app
-            // keeps no such record across areas, so none is left out].
-            let sum: u32 = part.entities.iter().filter(|(sk, w, _)| matches!(sk, 0 | 3) || (*sk == 2 && *w <= self.wave)).map(|e| e.2 as u32).sum();
+            // FUN_001996f0: the SpawnLimiter bytes of the members of spawn kinds 0 and 3 and of kind 2 of the waves so
+            // far, except those defeated for good (FUN_001995c8: in the table and absent). Only the members the app
+            // has are summed [inferred stand-in: the game also counts the entities the app cannot create, such as
+            // b_44's M_EX940, which would hold the waves back here for ever].
+            let sum: u32 = g
+                .members
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| m.part == self.part && (matches!(m.spawn_kind, 0 | 3) || (m.spawn_kind == 2 && m.wave <= self.wave)))
+                .filter(|(i, m)| !(self.killed.contains(&m.serial) && !alive(*i)))
+                .map(|(_, m)| m.limiter as u32)
+                .sum();
             if self.wave >= 200 || sum > part.header[0x22] as u32 {
                 return out;
             }
@@ -393,7 +418,7 @@ impl KindTwo {
 pub struct BattleGroups {
     /// The area run (`AreaRecord::run`, by address) the groups were set up for.
     run: usize,
-    pub live: Vec<(AreaGroup, KindTwo, usize)>,
+    pub live: Vec<(AreaGroup, KindTwo, Vec<u16>)>,
 }
 
 /// What the reaction code tracks: a hit reaction in progress, or nothing (the script is in charge).
@@ -675,7 +700,9 @@ pub fn spawn_waves(
                 for k in twos {
                     let two = KindTwo::new(g, k);
                     info!("area group {} kind-2 group {:#x}: timer {} frames (header +0x1c), {} after a removal (+0x20), limit {} (+0x22)", g.name, g.parts[k].id, two.timer, g.parts[k].removal_delay(), g.parts[k].header[0x22]);
-                    battle.live.push((g.clone(), two, 0));
+                    // The members created at load are there (FUN_00198750 enters them as it creates them).
+                    let there = g.members.iter().filter(|m| m.part == k && created_at_load(m, &g.parts[k], rec.entrance)).map(|m| m.serial).collect();
+                    battle.live.push((g.clone(), two, there));
                 }
                 // The program's mission command (opcode 0x15) creates the mission manager (WP-7E, struggle.rs).
                 if let Some((id, name)) = &g.mission {
@@ -691,25 +718,28 @@ pub fn spawn_waves(
         for (g, two, prev) in battle.live.iter_mut() {
             let part = &g.parts[two.part];
             let pid = part.id;
-            let n = enemies.iter().filter(|e| e.alive() && e.serial.is_some_and(|s| s.0 == pid)).count();
-            if n < *prev {
-                // FUN_001993f8 (an object of the group removed): the timer restarts at header +0x20.
-                two.timer = part.removal_delay() as f32;
+            let live: Vec<u16> = enemies.iter().filter(|e| e.alive()).filter_map(|e| e.serial.filter(|s| s.0 == pid).map(|s| s.1)).collect();
+            // FUN_001993f8: a member that was there and is gone.
+            let tp = two.part;
+            for m in g.members.iter().filter(|m| m.part == tp && prev.contains(&m.serial) && !live.contains(&m.serial)) {
+                two.removed(g, m);
+                info!("area group {} kind-2 group {pid:#x}: {} (serial {:#x}, wave {}) gone; timer {} frames{}", g.name, m.kind.name, m.serial, m.wave, two.timer, if two.killed.contains(&m.serial) { ", defeated for good" } else { "" });
             }
+            let part = &g.parts[two.part];
             if two.timer > 0.0 {
                 two.timer -= frames;
             }
-            let mut made = 0;
+            let mut made = Vec::new();
             if part.activators.iter().any(|v| v.contains(at)) {
                 let alive = |i: usize| enemies.iter().any(|e| e.alive() && e.serial == Some((pid, g.members[i].serial)));
                 for i in two.run(g, alive) {
                     let m = &g.members[i];
                     info!("area group {} kind-2 group {pid:#x}: {} (serial {:#x}, wave {}) created; next in {} frames, group wave {}", g.name, m.kind.name, m.serial, m.wave, m.delay, two.wave);
                     spawn_member(&mut commands, m, pid, &col, &rigs, &data, (&mut meshes, &mut materials, &mut images, &mut bindposes));
-                    made += 1;
+                    made.push(m.serial);
                 }
             }
-            *prev = n + made;
+            *prev = live.into_iter().chain(made).collect();
         }
         return;
     }
@@ -1166,6 +1196,111 @@ mod tests {
 
     fn stats(strength: i32, magic: i32) -> Stats {
         Stats { level: 1, max_hp: 1000, strength, magic, defense: 0, max_taken: i32::MAX, min_taken: 1, max_dealt: i32::MAX, min_dealt: 0, weakness: [100; 7] }
+    }
+
+    /// tt04's `btl` programs pick their groups (disc): program 0 (a new game) is not in the script and loads none;
+    /// program 1 (story flag 0x883) loads b_00, whose three Dusks are all spawn kind 2 of a kind-2 group (none at
+    /// load, created on demand); program 0x50 loads b_44, whose kind-2 group has Dusks of both kinds. Needs `KH2_ISO`.
+    #[test]
+    fn tt04_btl_programs_choose_their_groups() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let groups = area_groups(&disc, "tt04");
+        let ard = disc.read("ard/tt04.ard").and_then(|d| kh2_ard::Area::parse(&d)).map(|(a, _)| a).expect("tt04.ard");
+        let pick = |btl: u8| {
+            let run = kh2_ard::run::run_area(&ard, [0, btl, 0], 0);
+            btl_groups(&groups, &run).into_iter().cloned().collect::<Vec<_>>()
+        };
+        let split = |g: &AreaGroup| {
+            let now = g.members.iter().filter(|m| created_at_load(m, &g.parts[m.part], 0)).count();
+            let later = g.members.iter().filter(|m| m.spawn_kind == 2 && g.parts[m.part].kind == 2).count();
+            (now, later)
+        };
+        for btl in [0u8, 1, 4, 5, 7, 0x1b, 0x1c, 0x4c, 0x4d, 0x4e, 0x4f, 0x50, 0xb5, 0xb6, 0xb7, 0xb8] {
+            for g in pick(btl) {
+                let (now, later) = split(&g);
+                eprintln!(
+                    "tt04 btl {btl:#x}: {} parts {:?} at load {now}, on demand {later}, mission {:?}",
+                    g.name,
+                    g.parts.iter().map(|p| (p.id, p.kind, p.start_delay(), p.removal_delay(), p.header[0x22], p.header[0x23], p.header[0x24])).collect::<Vec<_>>(),
+                    g.mission
+                );
+                for m in &g.members {
+                    eprintln!("    {} part {} sk {} arg {} serial {:#x} delay {} wave {}", m.kind.name, m.part, m.spawn_kind, m.spawn_arg, m.serial, m.delay, m.wave);
+                }
+            }
+        }
+        assert!(pick(0).is_empty(), "tt04 has no btl program 0");
+        let one = pick(1);
+        assert_eq!(one.iter().map(|g| g.name.as_str()).collect::<Vec<_>>(), ["b_00"]);
+        assert_eq!(split(&one[0]), (0, 3), "b_00: three spawn-kind-2 Dusks of a kind-2 group");
+        let b44 = pick(0x50).into_iter().find(|g| g.name == "b_44").expect("program 0x50 loads b_44");
+        let (now, later) = split(&b44);
+        assert!(now > 0 && later > 0, "b_44: {now} at load, {later} on demand");
+        assert!(b44.members.iter().all(|m| m.kind.name == DUSK.name));
+    }
+
+    fn member(part: usize, spawn_kind: i32, serial: u16, delay: u16, wave: u8) -> Member {
+        Member { kind: &DUSK, at: Vec3::ZERO, yaw: 0.0, spawn_kind, spawn_params: [0; 2], object_id: 0x13e, part, spawn_arg: 0, serial, delay, wave, limiter: 1 }
+    }
+
+    /// `FUN_001991a0`: a kind-2 group creates one absent spawn-kind-2 member at a time and waits its delay; members
+    /// of a later wave come once the defeats of the waves before allow it (`FUN_00199618`), a defeated member of a wave
+    /// up to 99 does not come back, kinds 0/3 are left to the set-up.
+    #[test]
+    fn a_kind_two_group_creates_one_member_per_delay_and_moves_on_waves() {
+        let mut header = [0u8; 0x2c];
+        header[0x1c] = 30; // start delay
+        header[0x20] = 90; // after a removal
+        header[0x22] = 2; // SpawnLimiter sum allowed before the next wave
+        let entities = vec![(3, 0, 1), (2, 0, 1), (2, 0, 1), (2, 1, 1)];
+        let part = GroupPart { id: 0x8a, kind: 2, disabled: false, header, activators: Vec::new(), entities };
+        let g = AreaGroup {
+            program: 0x50,
+            name: "b_t".into(),
+            parts: vec![part],
+            members: vec![member(0, 3, 1, 0, 0), member(0, 2, 2, 10, 0), member(0, 2, 3, 20, 0), member(0, 2, 4, 5, 1)],
+            skipped: Vec::new(),
+            player: None,
+            mission: None,
+            orb_pool: false,
+            triggers: Vec::new(),
+        };
+        assert!(created_at_load(&g.members[0], &g.parts[0], 0));
+        assert!(!created_at_load(&g.members[1], &g.parts[0], 0));
+        let mut two = KindTwo::new(&g, 0);
+        assert_eq!(two.timer, 30.0);
+        let mut alive = vec![true, false, false, false];
+        assert!(two.run(&g, |i| alive[i]).is_empty(), "the start delay runs");
+        two.timer = 0.0;
+        assert_eq!(two.run(&g, |i| alive[i]), [1]);
+        assert_eq!(two.timer, 10.0);
+        alive[1] = true;
+        two.timer = 0.0;
+        assert_eq!(two.run(&g, |i| alive[i]), [2]);
+        alive[2] = true;
+        two.timer = 0.0;
+        // Wave 0's sum is 1 + 1 + 1 = 3 > 2: no next wave, nothing to create.
+        assert!(two.run(&g, |i| alive[i]).is_empty());
+        assert_eq!(two.wave, 0);
+        // Member 2 is defeated: the timer restarts at +0x20 and it stays defeated (wave 0 <= 99, FUN_00199378).
+        alive[2] = false;
+        two.removed(&g, &g.members[2]);
+        assert_eq!((two.timer, two.killed.clone()), (90.0, vec![3]));
+        assert!(two.run(&g, |i| alive[i]).is_empty(), "the removal delay runs");
+        two.timer = 0.0;
+        // It does not come back; the sum drops to 2, so the walk moves to wave 1 and creates its member.
+        assert_eq!(two.run(&g, |i| alive[i]), [3]);
+        assert_eq!(two.wave, 1);
+        // A member of a wave above 99 comes back after its defeat.
+        let mut g2 = g.clone();
+        g2.members[1].wave = 100;
+        let mut two = KindTwo { part: 0, timer: 0.0, wave: 100, killed: Vec::new() };
+        two.removed(&g2, &g2.members[1]);
+        assert!(two.killed.is_empty());
     }
 
     /// A member's hit takes the rebuilt status: Donald's magic is the lvup row plus record plus staff, above the

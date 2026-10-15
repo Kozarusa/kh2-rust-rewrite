@@ -843,6 +843,24 @@ mod tests {
         ExitGroup { tag: "m_10".into(), id, exit: Exit { area, entrance: 1, gate }, volumes, fired: false, disabled: false, prompting: false, held: false }
     }
 
+    /// EN1: the jump's unload removes the area's actors once, when the task reaches `Loading`; other
+    /// entities (Sora, the party) stay; a task that never loads removes nothing.
+    #[test]
+    fn a_jump_clears_the_area_enemies() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut w = bevy::ecs::world::World::new();
+        let actors: Vec<Entity> = (0..3).map(|_| w.spawn(AreaActor).id()).collect();
+        let other = w.spawn_empty().id();
+        let dest = Dest::new(area::TWILIGHT_TOWN, 4, 0);
+        w.insert_resource(JumpTask::FadeOut { dest, kind: 0, t: 0.0 });
+        w.run_system_once(unload_area_actors).unwrap();
+        assert!(actors.iter().all(|&e| w.get_entity(e).is_ok()), "the fade-out keeps them");
+        w.insert_resource(JumpTask::Loading { dest, kind: 0 });
+        w.run_system_once(unload_area_actors).unwrap();
+        assert!(actors.iter().all(|&e| w.get_entity(e).is_err()), "the unload removes the area actors");
+        assert!(w.get_entity(other).is_ok(), "other entities stay");
+    }
+
     /// WP-E5 item 4: the lock halfwords are the story's; a flag whose op 2 writes entry 1 locks
     /// tt03 (any non-zero state, `FUN_00195358`), one whose op 3 writes 0 opens it again, op 4
     /// (0xffff) locks. Without a story every exit is open, as before.

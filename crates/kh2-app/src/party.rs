@@ -1129,6 +1129,7 @@ struct TargetCtx<'a> {
 /// (FUN_0010dcf0). `valid` is FUN_0010ca88's answer for the current target (it answers, bit 0x40 clear);
 /// `current_counted` the running record exists and lacks flag 1. `limit` is false until limits exist.
 /// Returns the new target (`current` kept when no choice ran). `None` for a style outside the table.
+#[allow(clippy::too_many_arguments)]
 fn refresh_target(class: u8, style: u8, p: &battle::Params, pos: Vec3, current: Option<Target>, valid: bool, current_counted: bool, ctx: &TargetCtx) -> Option<Option<Target>> {
     let (chooser, test) = battle::dispatch(class, style)?;
     let index = |e: Entity| ctx.enemies.iter().position(|f| f.0 == e);

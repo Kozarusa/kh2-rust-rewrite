@@ -400,7 +400,7 @@ fn tick(mut m: ResMut<StruggleMenu>, mut scene: ResMut<MenuScene>, real: Res<Tim
     let Some(exit) = mission.menu_exit(code) else { return };
     match exit.jump {
         Some([1, world, area, entrance, _key, flags]) if *task == JumpTask::Idle => {
-            let dest = Dest { world: world as u8, area: area as u8, entrance: entrance as u8 };
+            let dest = Dest::new(world as u8, area as u8, entrance as u8);
             let kind = u32::from(flags & 0x3fff);
             info!("struggle menu: event {:#x}: trigger jump type 1 to world {world} area {area} entrance {entrance} (fade kind {kind}; FUN_0019d9d8 with 0x40000000)", exit.event);
             *task = JumpTask::FadeOut { dest, kind, t: 0.0 };

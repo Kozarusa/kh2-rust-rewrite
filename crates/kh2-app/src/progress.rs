@@ -2219,6 +2219,7 @@ impl Progress {
         let words: Vec<u8> = st.words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let locks: Vec<u16> = st.locks.iter().flat_map(|l| [l[0], l[1]]).collect();
         let points = nums(st.world_points());
+        let seen_pairs = format!("[{}]", self.journal_seen.iter().map(|(c, e)| format!("[{c}, {e}]")).collect::<Vec<_>>().join(", "));
         format!(
             "  \"moogle\": {{\"known\": {}, \"learned\": {}, \"made\": {}, \"seen\": {}, \"unlocks\": {}, \"rewards\": {}, \"points\": {}, \"level\": {}, \"stock\": {}, \"totals\": {}}},
   \"shop_seen\": {},
@@ -2241,7 +2242,7 @@ impl Progress {
             nums(shop_seen),
             nums(shop_visits),
             nums(self.record_bits.iter().copied()),
-            format!("[{}]", self.journal_seen.iter().map(|(c, e)| format!("[{c}, {e}]")).collect::<Vec<_>>().join(", ")),
+            seen_pairs,
             hex(&words),
             hex(&st.programs),
             nums(locks),

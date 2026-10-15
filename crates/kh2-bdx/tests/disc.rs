@@ -840,3 +840,85 @@ fn peter_pan_script_heals_the_player_and_sets_the_effect_vector() {
     assert!(!h.seen.iter().any(|c| matches!(c, Call::Unknown { group: 0, index: 40, .. } | Call::Unknown { group: 1, index: 155, .. })));
     assert!(rt.core.errors.is_empty(), "{:?}", rt.core.errors);
 }
+
+/// Chicken Little's `whistle` mode (WP-SUM8) walks the enemies (2.4), clones the object's target record for each in range
+/// (1.131: a pool record the host serves from memory) and starts a detached thread (2.20) that reads the record's object
+/// (word 0) as a context and attacks it. With the host answering the walk, the record and the object queries the threads
+/// run without a bad address.
+#[test]
+fn chicken_little_whistle_threads_run() {
+    use kh2_bdx::host::{Host, Value};
+    use kh2_bdx::shared::SharedBlocks;
+    const GAUGES: u32 = 0x7900_0000;
+    const ENEMIES: [u32; 2] = [0x7e00_0001, 0x7e00_0002];
+    const RECORDS: u32 = 0x0600_0000;
+    struct H {
+        mock: MockHost,
+        shared: SharedBlocks,
+        seen: Vec<Call>,
+        records: Vec<[u8; 20]>,
+    }
+    impl Host for H {
+        fn call(&mut self, c: &Call) -> Value {
+            self.seen.push(c.clone());
+            match c {
+                Call::Func { group: 2, index: 21, args } => Value::Handle(self.shared.get(args[0].int(), args[1].int())),
+                Call::Func { group: 2, index: 4, args } => {
+                    let prev = args[0].int() as u32;
+                    Value::Handle(match prev {
+                        0 => ENEMIES[0],
+                        p if p == ENEMIES[0] => ENEMIES[1],
+                        _ => 0,
+                    })
+                }
+                Call::Position { obj } if ENEMIES.contains(obj) => Value::Vec([300.0, 0.0, 100.0, 1.0]),
+                // 1.131: a record from the pool naming the first enemy.
+                Call::FreeTarget { .. } => {
+                    let mut r = [0u8; 20];
+                    r[0..4].copy_from_slice(&ENEMIES[0].to_le_bytes());
+                    r[12..16].copy_from_slice(&(-1i32).to_le_bytes());
+                    self.records.push(r);
+                    Value::Handle(RECORDS + 0x20 * (self.records.len() as u32 - 1))
+                }
+                Call::Func { group: 1, index: 94, .. } => Value::Bool(true),
+                Call::Func { group: 1, index: 84, .. } => Value::Handle(GAUGES),
+                Call::Func { group: 10, index: 45, .. } => Value::Float(600.0),
+                Call::Func { group: 10, index: 19, .. } | Call::Func { group: 1, index: 272, .. } => Value::Bool(false),
+                Call::Func { group: 10, .. } | Call::Func { group: 1, index: 165, .. } => Value::None,
+                _ => self.mock.call(c),
+            }
+        }
+        fn read_mem(&mut self, addr: u32, out: &mut [u8]) -> bool {
+            let r = addr.wrapping_sub(RECORDS);
+            if let Some(rec) = self.records.get((r / 0x20) as usize) {
+                let k = (r % 0x20) as usize;
+                if let Some(b) = rec.get(k..k + out.len()) {
+                    out.copy_from_slice(b);
+                    return true;
+                }
+            }
+            self.shared.read(addr, out) || self.mock.read_mem(addr, out)
+        }
+        fn write_mem(&mut self, addr: u32, data: &[u8]) -> bool {
+            self.shared.write(addr, data) || self.mock.write_mem(addr, data)
+        }
+    }
+    let Some((mut a, elf)) = open() else { return };
+    let table = HostTable::from_exe(&elf).expect("table");
+    let data = object_script(&mut a, "obj/P_EX350.mdlx");
+    let mut rt = Runtime::new(Program::parse(&data).expect("P_EX350 parses"));
+    rt.set_host_table(table);
+    let mut h = H { mock: MockHost::new(), shared: SharedBlocks::default(), seen: Vec::new(), records: Vec::new() };
+    rt.spawn(&mut h, SELF_OBJ);
+    rt.set_mode_named(&mut h, "whistle");
+    for _ in 0..200 {
+        h.mock.tick();
+        rt.update(&mut h);
+    }
+    let clones = h.seen.iter().filter(|c| matches!(c, Call::FreeTarget { .. })).count();
+    let attacks = h.seen.iter().filter(|c| matches!(c, Call::Func { group: 2, index: 10, .. })).count();
+    eprintln!("1.131 x{clones}, attack objects {attacks}; errors {:?}", rt.core.errors);
+    assert!(clones >= 1, "the whistle clones a target record per enemy in range");
+    assert!(attacks >= 1, "a thread read the record's object and made its attack object");
+    assert!(rt.core.errors.is_empty(), "{:?}", rt.core.errors);
+}

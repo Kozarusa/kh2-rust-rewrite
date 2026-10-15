@@ -345,6 +345,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.239 | `spawn_flag_8_or_none(O) -> b` | 0x171bc8 | 8 | the object has no spawn record (+0x818) or the record's flag 8 (+4) is set |
 | 1.240 | `nop_240(ppp)` | 0x1710d8 | 0 | empty function |
 | 1.241 | `broadcast_message(sf)` | 0x172098 | 0 | like send_message without a sender |
+| 1.244 | `in_battle() -> b` | 0x173ab8 | 3 | FUN_001903d8: a battle runs |
 | 1.246 | `nop_246()` | 0x1737d8 | 0 | empty function |
 | 1.247 | `random_free_point(vff) -> v` | 0x1726d8 | 68 | search around a position for a free point between two radii: samples a spiral with the game's second random generator and tests collisions (FUN_001a6068, FUN_001a6198); returns the point in a static buffer; role inferred |
 | 1.248 | `scatter_point(vffff) -> v` | 0x172730 | 36 | a free place around a position (FUN_001a5ee0 with mask 2): radius random between the first two values, start angle from a counter of eighths (0x35e9b0) and the game's generator, a height random between the last two; tries eighths of a turn with a line test, shrinking the radius; the point in a static buffer (Final Thunder) |
@@ -374,6 +375,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.351 | `gflags_clear_100000()` | 0x173ba0 | 1 | clear bit 20 of the global flag word at 0x35d268 |
 | 2.2 | `react_flinch_push(Opf)` | 0x18df00 | 11 | reaction class 3: flinch plus push on the object (FUN_001850c8; see hit-reaction.md) |
 | 2.3 | `react_push(Opf)` | 0x18df28 | 24 | reaction class 1: push only (FUN_00185098, sets flag 1 at +0x18) |
+| 2.4 | `next_enemy(p) -> o` | 0x18df50 | 10 | FUN_00184ac8: the next object of the global object list (linked through +0x8b4, FUN_001b7c88) that has +0x588 bit 0x10 (the enemies), after the one given; 0 starts the walk and ends it |
 | 2.5 | `hit_stun(O) -> b` | 0x18df80 | 1243 | bit 9 of the object's status word (+0x160) |
 | 2.6 | `in_reaction(O) -> b` | 0x18dfa0 | 25 | the object's motion state (+0x154) is between 10 and 39 (FUN_00185a08) |
 | 2.7 | `hit_reaction(p) -> i` | 0x18e0d0 | 50 | byte at hit +0x26: the effective reaction |
@@ -442,21 +444,43 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 2.92 | `hit_kind(p) -> i` | 0x18e290 | 21 | FUN_0018b748 of the byte at hit +0x27 |
 | 6.2 | `player_word_b50() -> i` | 0x2ee668 | 8 | word at +0xb50 of the player object (pointer at 0x35c998) |
 | 6.9 | `target_distance(pv) -> f` | 0x2eeb30 | 55 | the distance from the point to the surface of a target record's shape (FUN_0018f308: FUN_0018eec0 builds the shape, FUN_00189628 measures; a sphere's is the centre distance minus the radius, a spheroid's is measured with the height scaled to the radius) |
+| 6.23 | `part_nearest(Ov) -> i` | 0x2ee858 | 0 | FUN_002ee858: the part id (byte +1 of the collision record of type 2) of the object whose part point lies nearest to the vector; -1 when it has none |
 | 6.24 | `obj_vec_8a0(O) -> v` | 0x2ee960 | 12 | the 16 bytes at object +0x8a0 copied to a static buffer |
 | 6.58 | `queue_mode_remote(ps)` | 0x2ef018 | 3 | queue the named mode and mark the entry for another object: when it comes up the host switches that object to the mode instead (FUN_00186f50; see runtime.rs) |
 | 10.1 | `ai_walk_to(Ov)` | 0x2f6a98 | 3 | the friend AI object (+0xb60, FUN_0010c5f0) is placed at the vector: FUN_001175a0 sets AI +0x630 bit 0, copies it to the position +0x640 (its w to the wanted yaw +0x65c, the depth +0x648 = DAT_00378840) and once builds the parent matrix (FUN_00117320, FUN_00193228); docs/summons.md, Status (WP-SUM4b) |
 | 10.3 | `ai_vcall_28(O)` | 0x2f6b28 | 3 | the friend AI object's virtual method +0x28 (Stitch FUN_001191a8: links the player and his hand objects to the summon for a limit) |
 | 10.4 | `ai_vcall_2c(O)` | 0x2f6b58 | 4 | the friend AI object's virtual method +0x2c (Stitch FUN_00119360: undoes FUN_001191a8) |
+| 10.5 | `ai_aim_vec(O) -> v` | 0x2f6b88 | 1 | Chicken Little's AI +0x40 (FUN_0011a6a0): the aim point the class update keeps (the target record's position, else 200 units in front of the object, FUN_0011a2e8) |
+| 10.8 | `target_vec(O) -> v` | 0x2f6c20 | 1 | the 16 bytes at object +0xbe0 (FUN_00112538): the position the party manager copies from the object's target record (FUN_00111d18) |
 | 10.9 | `ai_genie_form(Oi)` | 0x2f6c68 | 1 | Genie's FUN_00119c18 on the friend AI object: AI +0x14 = the command; the object's parts 2..6 hidden (FUN_00192ce8) and the part of the command's row in the table at 0x3548f0 shown (row + 2, FUN_00192cd0); byte 7 of `DAT_00340c88` = row + 1, or 6 without a row (FUN_001c6b48); docs/summons.md, Status (WP-SUM5) |
 | 10.10 | `ai_genie_limit(O) -> i` | 0x2f6ca0 | 2 | Genie's FUN_00119ca8: the limit command paired with AI +0x14 in the table at 0x3548f0 (five pairs), 0 without |
 | 10.12 | `ai_slot_start(OiOiiiii) -> i` | 0x2f6d00 | 5 | FUN_00117708 on the friend AI object: a slot of its 0x18-slot list at +0x20 with the kind, the object of the third argument's context (0 without), four words and a flag; returns the slot index |
 | 10.13 | `ai_stitch_13(Oi)` | 0x2f6d68 | 1 | Stitch's FUN_001195e8 on the friend AI object: AI slots of kind 1 and, with a target, attack objects of atkp 0x373 around it (FUN_001130d0) |
 | 10.16 | `ai_slot_mark(Oi)` | 0x2f6df8 | 1 | FUN_00117840: AI slot n flags |= 0x40000000 |
+| 10.17 | `flag_588_800(o) -> b` | 0x2f6e30 | 5 | object +0x588 bit 0x800 |
+| 10.18 | `flag_588_400(o) -> b` | 0x2f6e48 | 4 | object +0x588 bit 0x400 (a boss: FUN_001acf20) |
 | 10.19 | `in_limit(o) -> b` | 0x2f6e60 | 18 | object +0x10c bit 0x10000 (the limit task marks its participants, FUN_001b2c10) |
+| 10.20 | `ai_follow(O)` | 0x2f6e80 | 2 | FUN_001102c8 (the members' follow step with the class speed rule), then the object's +0x10 / +0x20 vectors take the results at +0xc00 / +0xc20 (FUN_0010f7f0 / FUN_0010f820) |
+| 10.22 | `obj_entry_flag_40(o) -> b` | 0x2f6f60 | 0 | the object has an objentry-side record (+0xc) with bit 0x40 in its word +8 |
+| 10.23 | `target_is(OO) -> b` | 0x2f6f88 | 1 | object +0xae4 (the last attacker) is the second object |
+| 10.25 | `ai_join_ready(O) -> b` | 0x2f6fe8 | 4 | FUN_0011a1a8 -> FUN_00119ce8 on object +0xb7c: bit 0x200 clear, the player's attack window (DAT_0034e9d0 >= 0) and DAT_0034e9c8 + 8 >= DAT_0034e9cc |
+| 10.26 | `ai_join_mark(O)` | 0x2f7020 | 1 | when 10.25 holds: object +0xb7c |= 0x200 (FUN_0011a1d0) |
+| 10.27 | `ai_enter_27(O)` | 0x2f7070 | 3 | FUN_0010f6e0: class 0x20 -> motion request 0x1f; else object +0xb7c bit 0x4000 cleared |
+| 10.28 | `ai_enter_28(O)` | 0x2f7090 | 3 | FUN_0010f728: class 0x1f -> motion request 0x20; else object +0xb7c bit 0x4000 set |
+| 10.29 | `ai_use_item(OiOi)` | 0x2f70b0 | 4 | FUN_0010c9d0(object, item, target object, arg): +0xb78 = 0, the target record names the target, the item's command is started with motion request 9 (FUN_00175e20) |
+| 10.30 | `entry_flag_40_in_limit(o) -> b` | 0x2f70e0 | 1 | the object's record (+0xc) has bit 0x40 in +8 and the object's +0x10c has bit 0x20000 |
+| 10.31 | `is_summon(o) -> b` | 0x2f7118 | 66 | object +0x588 bit 0x400000 (a summon object) |
 | 10.32 | `ai_stitch_32(Oi)` | 0x2f7138 | 1 | Stitch's FUN_00118aa8 on the friend AI object: a goal (FUN_00116780), motion 0xa1 and the move record (the one FUN_00114280 finds with handler FUN_00117ea0) made the current action (FUN_0010ecb0), +0xb7c |= 4 |
+| 10.33 | `recent_target(i) -> o` | 0x2f7170 | 2 | FUN_001127f0(-1): the most recent object of the player's lock-on list (8 entries at 0x34e988, FUN_00112770 appends); a non-zero argument then drops it and every older entry (FUN_00112668 with the flag set) |
+| 10.34 | `recent_target_set(oi)` | 0x2f71d0 | 1 | FUN_00112668(object, flag != 0): flag clear removes the object from the list; flag set drops it and every older entry (the entries after it stay) |
+| 10.36 | `flag_160_free(O) -> b` | 0x2f7230 | 2 | object +0x160 has bit 4, 8 or 0x10 |
+| 10.37 | `flag_160_40000000(O) -> b` | 0x2f7270 | 2 | object +0x160 bit 0x40000000 |
 | 10.39 | `ai_action_clear(O)` | 0x2f72c0 | 5 | FUN_0010ecb0(object, 0, 0): object +0xc60 and +0xc64 cleared |
 | 10.41 | `ai_flag_b7c_40000000(O)` | 0x2f7328 | 4 | FUN_001129f0: object +0xb7c |= 0x40000000 |
+| 10.44 | `objentry_flag_10(O) -> b` | 0x2f7390 | 0 | the object's objentry record (+0xc) has bit 0x10 in its flags word +8 |
 | 10.45 | `status_f_1b4(p) -> f` | 0x2f73b0 | 4 | the float at +0x1b4 of a status block (1.84): the drive / summon timer |
+| 10.51 | `ai_find_target(Opff)` | 0x2f7450 | 2 | FUN_0011a6d8(half width, half height, the AI object, record): the record names the valid enemy whose projected position lies in the screen box, the nearest to the centre (Chicken Little's FPS aim) |
+| 10.59 | `ai_set_aim_vec(Ov)` | 0x2f75c0 | 2 | FUN_0011a6b8: AI +0x40 = the vector |
 
 ### Not named
 
@@ -468,37 +492,37 @@ Group 5 is the NPC routine library (`*_RTN` scripts), group 4 the mission and ar
 4.54x350 0.19x336 1.139x295 5.27x277 4.3x264 3.172x263 4.11x259 4.22x253 4.16x253 5.3x240 1.177x238 3.37x233 5.7x228
 5.33x227 5.26x227 3.23x169 3.39x167 4.37x166 4.4x134 4.36x118 6.48x117 4.35x116 3.24x115 4.29x110 4.5x109 1.41x108
 4.9x106 3.6x106 4.1x105 4.0x105 3.5x94 3.69x93 6.33x91 3.8x91 3.78x91 3.57x82 2.47x75 3.73x74 1.261x74 4.12x69 3.44x67
-10.31x66 3.38x65 1.183x65 6.5x63 4.38x62 3.74x62 3.75x59 3.63x59 1.17x59 3.66x57 1.276x57 4.44x56 3.96x55 3.32x55
-1.138x55 4.50x54 4.46x54 4.18x54 6.3x53 3.2x53 6.34x52 1.141x51 4.30x50 1.298x50 3.79x49 3.4x49 4.33x46 3.17x46
+3.38x65 1.183x65 6.5x63 4.38x62 3.74x62 3.75x59 3.63x59 1.17x59 3.66x57 1.276x57 4.44x56 3.96x55 3.32x55
+1.138x55 4.50x54 4.46x54 4.18x54 6.3x53 3.2x53 6.34x52 4.30x50 1.298x50 3.79x49 3.4x49 4.33x46 3.17x46
 4.20x45 3.9x45 3.11x45 3.25x44 3.77x43 3.10x43 4.43x42 3.76x42 3.53x42 1.299x42 2.54x38 1.160x38 1.144x38 1.162x37
-3.64x36 3.45x35 1.266x35 1.184x34 1.129x34 3.27x33 3.132x33 1.271x33 3.18x32 1.248x32 4.6x31 3.21x31 1.190x30 1.181x29
+3.64x36 3.45x35 1.266x35 1.184x34 1.129x34 3.27x33 3.132x33 1.271x33 3.18x32 4.6x31 3.21x31 1.190x30 1.181x29
 3.80x28 3.72x28 10.55x28 3.70x27 3.42x27 4.40x26 3.90x26 0.46x26 6.47x25 3.65x25 3.131x25 0.83x25 3.7x24 3.41x24
 3.129x24 3.114x24 1.296x24 3.89x23 3.87x23 3.30x23 3.135x23 1.91x23 6.4x22 10.14x22 1.213x22 3.113x21 3.86x20 3.71x20
 1.73x20 1.263x20 1.185x20 6.51x19 6.1x19 3.166x19 1.93x19 1.323x19 1.280x19 0.82x19 3.58x18 3.43x18 3.126x18 2.31x18
-1.142x18 0.39x18 3.81x17 1.304x17 1.189x17 1.165x17 6.9x16 1.305x16 1.302x16 1.295x16 1.220x16 1.100x16
+1.142x18 3.81x17 1.304x17 1.189x17 1.305x16 1.302x16 1.295x16 1.220x16 1.100x16
 0.75x16 0.69x16 6.16x15 5.14x15 3.84x15 3.54x15 3.102x15 1.252x15 2.50x14 2.1x14 1.85x14 1.292x14 1.235x14 1.156x14
-1.146x14 6.8x13 6.41x13 6.39x13 4.8x13 4.48x13 3.34x13 3.148x13 3.112x13 1.75x13 1.306x13 6.54x12 3.88x12 3.85x12
+6.8x13 6.41x13 6.39x13 4.8x13 4.48x13 3.34x13 3.148x13 3.112x13 1.75x13 1.306x13 6.54x12 3.88x12 3.85x12
 3.29x12 1.343x12 1.186x12 1.164x12 1.126x12 0.100x12 4.15x11 3.50x11 3.36x11 3.139x11 3.120x11 3.110x11 1.40x11
-1.318x11 1.207x11 0.99x11 0.68x11 9.9x10 6.56x10 4.41x10 4.17x10 3.134x10 2.58x10 2.4x10 1.255x10 0.97x10 0.84x10
+1.318x11 1.207x11 0.99x11 0.68x11 9.9x10 6.56x10 4.41x10 4.17x10 3.134x10 2.58x10 1.255x10 0.97x10 0.84x10
 3.60x9 3.178x9 3.127x9 3.111x9 3.101x9 10.40x9 1.76x9 1.267x9 1.197x9 0.73x9 0.45x9 9.11x8 7.2x8 6.57x8 6.32x8 3.95x8
-3.93x8 3.61x8 3.40x8 3.170x8 3.165x8 3.164x8 3.16x8 3.12x8 3.109x8 3.106x8 10.35x8 1.45x8 1.325x8 0.61x8 7.0x7 6.53x7
+3.93x8 3.61x8 3.40x8 3.170x8 3.165x8 3.164x8 3.16x8 3.12x8 3.109x8 3.106x8 10.35x8 1.45x8 0.61x8 7.0x7 6.53x7
 5.32x7 5.30x7 4.27x7 3.62x7 3.31x7 3.167x7 3.14x7 3.115x7 3.100x7 1.86x7 1.256x7 1.194x7 7.32x6 7.25x6 6.43x6 6.0x6
 4.47x6 4.45x6 4.42x6 4.39x6 4.26x6 4.13x6 3.98x6 3.94x6 3.68x6 3.52x6 3.163x6 3.162x6 3.150x6 3.137x6 3.130x6 3.13x6
 3.125x6 3.124x6 3.117x6 2.86x6 2.59x6 2.57x6 1.331x6 1.320x6 1.226x6 1.223x6 1.199x6 0.76x6 0.65x6 9.4x5 9.17x5 6.55x5
-6.25x5 6.11x5 5.13x5 3.51x5 3.22x5 3.19x5 3.171x5 3.128x5 3.119x5 3.107x5 3.0x5 2.37x5 10.17x5 1.274x5
+6.25x5 6.11x5 5.13x5 3.51x5 3.22x5 3.19x5 3.171x5 3.128x5 3.119x5 3.107x5 3.0x5 2.37x5 1.274x5
 1.153x5 1.117x5 0.96x5 0.91x5 9.19x4 7.24x4 7.19x4 6.46x4 6.45x4 6.12x4 4.21x4 4.10x4 3.145x4 3.133x4 3.1x4 10.54x4
-10.53x4 10.43x4 10.29x4 10.25x4 10.18x4 1.340x4 1.339x4 1.337x4 1.332x4 1.328x4 1.290x4 1.285x4
+10.53x4 10.43x4 1.340x4 1.339x4 1.337x4 1.332x4 1.328x4 1.290x4 1.285x4
 1.279x4 1.278x4 1.269x4 1.268x4 1.249x4 1.242x4 0.89x4 9.37x3 9.36x3 9.26x3 7.26x3 7.21x3 6.6x3 6.42x3 6.14x3 5.23x3
-4.25x3 3.83x3 3.82x3 3.67x3 3.59x3 3.159x3 3.146x3 3.121x3 3.108x3 3.104x3 3.103x3 2.89x3 2.18x3 10.28x3
-10.27x3 1.95x3 1.44x3 1.293x3 1.244x3 1.243x3 1.135x3 1.118x3 0.95x3 0.37x3 9.35x2 9.25x2 9.24x2 9.16x2 9.0x2
+4.25x3 3.83x3 3.82x3 3.67x3 3.59x3 3.159x3 3.146x3 3.121x3 3.108x3 3.104x3 3.103x3 2.89x3 2.18x3
+1.95x3 1.44x3 1.293x3 1.243x3 1.135x3 1.118x3 0.95x3 0.37x3 9.35x2 9.25x2 9.24x2 9.16x2 9.0x2
 8.2x2 7.30x2 7.3x2 7.28x2 7.11x2 6.63x2 6.59x2 6.49x2 6.44x2 6.30x2 6.29x2 6.28x2 6.27x2 6.26x2 6.21x2 4.53x2 4.52x2
-4.51x2 4.49x2 3.33x2 3.161x2 3.155x2 3.153x2 3.15x2 3.144x2 3.140x2 3.123x2 2.93x2 2.71x2 10.59x2 10.58x2 10.51x2
-10.38x2 10.37x2 10.36x2 10.33x2 10.21x2 10.20x2 10.10x2 1.355x2 1.349x2 1.342x2 1.329x2 1.291x2 1.260x2 1.259x2
+4.51x2 4.49x2 3.33x2 3.161x2 3.155x2 3.153x2 3.15x2 3.144x2 3.140x2 3.123x2 2.93x2 2.71x2 10.58x2
+10.38x2 10.21x2 1.355x2 1.349x2 1.342x2 1.329x2 1.291x2 1.260x2 1.259x2
 1.258x2 1.257x2 1.251x2 1.2x2 1.178x2 1.159x2 1.158x2 0.98x2 0.102x2 9.8x1 9.6x1 9.34x1 9.32x1 9.23x1 9.22x1 9.21x1
 9.20x1 9.18x1 9.15x1 9.14x1 9.13x1 9.10x1 9.1x1 8.7x1 8.6x1 8.3x1 8.0x1 7.33x1 7.27x1 6.66x1 6.60x1 6.40x1 6.36x1
 6.20x1 6.19x1 6.18x1 5.8x1 5.28x1 4.7x1 4.23x1 3.92x1 3.55x1 3.47x1 3.26x1 3.177x1 3.175x1 3.174x1 3.173x1 3.160x1
-3.156x1 3.147x1 3.143x1 3.138x1 3.116x1 2.19x1 2.0x1 10.9x1 10.8x1 10.7x1 10.56x1 10.5x1 10.48x1 10.42x1 10.34x1
-10.30x1 10.26x1 10.23x1 1.356x1 1.352x1 1.348x1 1.347x1 1.341x1 1.334x1 1.333x1 1.330x1
+3.156x1 3.147x1 3.143x1 3.138x1 3.116x1 2.0x1 10.7x1 10.56x1 10.48x1 10.42x1
+1.356x1 1.352x1 1.348x1 1.347x1 1.341x1 1.334x1 1.333x1 1.330x1
 1.327x1 1.322x1 1.321x1 1.319x1 1.316x1 1.315x1 1.314x1 1.313x1 1.312x1 1.297x1 1.283x1 1.281x1 1.277x1 1.245x1
 1.236x1 1.221x1 1.113x1 0.94x1 0.93x1 0.92x1 0.22x1 0.101x1
 ```

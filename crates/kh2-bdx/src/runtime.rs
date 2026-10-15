@@ -666,6 +666,26 @@ impl Core {
         Ok(())
     }
 
+    /// As [`set_mode_priority`](Self::set_mode_priority) for a name held by the host (the friend AI's record
+    /// handlers pass the record's mode string: FUN_0011a590 / FUN_0011a118 -> FUN_00186e70).
+    pub fn set_mode_priority_str(&mut self, prog: &Program, code: &[u8], sh: &mut Shared, host: &mut dyn Host, name: &str) -> Result<(), VmError> {
+        if self.modes.flags & 1 != 0 || self.modes.table == 0 {
+            return Ok(());
+        }
+        let found = vm::with_shared(code, sh, |mem| -> Result<Option<(u32, i32)>, VmError> {
+            Ok(match self.modes.find_str(mem, name)? {
+                Some(rec) => Some((rec, ModeMachine::rec_u16(mem, rec, 4)? as i32)),
+                None => None,
+            })
+        })?;
+        if let Some((rec, prio)) = found
+            && self.modes.priority <= prio
+        {
+            self.switch_to(prog, code, sh, host, Some(rec));
+        }
+        Ok(())
+    }
+
     /// Stops the running mode and puts the named one at the front of the queue, so it starts on the next
     /// pass of the mode machine (FUN_00186fa8). The priority drops to zero.
     pub fn interrupt_mode(&mut self, prog: &Program, code: &[u8], sh: &mut Shared, host: &mut dyn Host, name: u32) -> Result<(), VmError> {
@@ -1066,6 +1086,14 @@ impl CoreEnv<'_> {
             (1, 301) => Call::GlobalByte301,
             (1, 309) => Call::Flag309 { obj: a[0] },
 
+            // 1.160 (0x173770 -> FUN_0018f490(record, the context's object, 0)): the record names the object. The call
+            // stays `Unknown` (the members' hosts match its raw words) with the context's object as a third word (the second
+            // word itself when it is no context, as the throw callback's `TARGET_ENEMY` handle).
+            (1, 160) if a.len() >= 2 => {
+                let obj = self.obj_of(mem, a[1]).unwrap_or(a[1]);
+                Call::Unknown { group: g, index: i, args: vec![a[0], a[1], obj] }
+            }
+
             // ---- group 2 ----
             (2, 5) => Call::HitStun { obj: self.obj_of(mem, a[0])? },
             (2, 8) => Call::HitIsReal { hit: a[0] },
@@ -1445,6 +1473,13 @@ impl Runtime {
     pub fn set_mode_named(&mut self, host: &mut dyn Host, name: &str) {
         let (prog, code) = (&self.prog, &self.code);
         let _ = self.core.set_mode_named(prog, code, &mut self.shared, host, name);
+    }
+
+    /// Switches this object to the named mode when its priority is at least the running one's (FUN_00186e70,
+    /// the friend AI records' mode start).
+    pub fn set_mode_priority(&mut self, host: &mut dyn Host, name: &str) {
+        let (prog, code) = (&self.prog, &self.code);
+        let _ = self.core.set_mode_priority_str(prog, code, &mut self.shared, host, name);
     }
 
     /// Name of the running mode, if any.

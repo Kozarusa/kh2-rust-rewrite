@@ -156,7 +156,7 @@ fn friend_attach(mut commands: Commands, disc: Res<Disc>, mut scripts: ResMut<Fr
 /// crossed (the dispatcher 0x188498). The members' scripts wait on bit 0 of +0x239 for the cast (Donald's
 /// R089a after motion 192, whose trigger 9 lies at tick 26). [inferred] Frame triggers are counted from the
 /// motion's first frame, as `party` does for the item motion (docs/party.md section 10).
-fn trigger_bits(anim: &Animator) -> [u8; 2] {
+pub(crate) fn trigger_bits(anim: &Animator) -> [u8; 2] {
     let (Some(t), Some(m)) = (anim.triggers(), anim.motion()) else { return [0; 2] };
     let g = |f: f32| (f - m.frame_start) * crate::data::LOGIC_HZ / m.fps.max(1.0);
     let mut bits = [0u8; 2];
@@ -177,7 +177,7 @@ fn trigger_bits(anim: &Animator) -> [u8; 2] {
 /// tests, FUN_001be190 marks, FUN_001be300 counts down), by (member, victim). [inferred] Kept apart
 /// from the spells' memory in `magic.rs`: the groups of the two never meet.
 #[derive(Default)]
-struct VictimMemory(HashMap<(Entity, Entity), crate::magic_rules::HitMemory>);
+pub(crate) struct VictimMemory(pub(crate) HashMap<(Entity, Entity), crate::magic_rules::HitMemory>);
 
 /// FUN_001a2cc0's sweep: after a move of more than two frame units (+4 bit 4, FUN_001a2fc8) the
 /// volume is tested at the position and then in steps of `min(radius, height)` toward the previous
@@ -225,9 +225,10 @@ fn attack_volume(c: Vec3, radius: f32, height: f32) -> crate::combat::Volume {
 /// enemies' hurt shapes. A hit takes the victim's memory (`HitMemory`: once per group until the row's
 /// Interval) and the row variant of the hit count (FUN_0019e7e0, `magic_rules::variant`).
 #[allow(clippy::too_many_arguments)]
-fn step_attacks(
+pub(crate) fn step_attacks(
     me: Entity,
-    m: &PartyMember,
+    model: &str,
+    origin: Vec3,
     fields: &mut FriendFields,
     game: &GameData,
     victims: &[(Entity, Vec<(crate::combat::Volume, crate::combat::HurtSpheroid)>)],
@@ -239,7 +240,7 @@ fn step_attacks(
 ) {
     fields.attacks.retain(|a| {
         if a.released && log {
-            info!("party: {} attack object {:#x} (atkp {} group {:#x}) destroyed (FUN_0018c2d8)", m.model, a.handle, a.atkp, a.group);
+            info!("party: {} attack object {:#x} (atkp {} group {:#x}) destroyed (FUN_0018c2d8)", model, a.handle, a.atkp, a.group);
         }
         !a.released
     });
@@ -250,7 +251,7 @@ fn step_attacks(
             if a.grow < a.t {
                 a.released = true;
                 if log {
-                    info!("party: {} attack object {:#x} (atkp {}) released after its {} frames (FUN_001a2cc0 -> FUN_0018dc98)", m.model, a.handle, a.atkp, a.grow);
+                    info!("party: {} attack object {:#x} (atkp {}) released after its {} frames (FUN_001a2cc0 -> FUN_0018dc98)", model, a.handle, a.atkp, a.grow);
                 }
                 continue;
             }
@@ -263,12 +264,12 @@ fn step_attacks(
         }
         let Some(base) = crate::magic_rules::attack_row(&game.atkp, a.atkp, a.kind) else {
             if a.steps == 1 {
-                warn!("party: {} attack object atkp {} kind {}: no atkp row", m.model, a.atkp, a.kind);
+                warn!("party: {} attack object atkp {} kind {}: no atkp row", model, a.atkp, a.kind);
             }
             continue;
         };
         if log && a.steps == 1 {
-            info!("party: {} attack object {:#x}: atkp {} group {:#x} at {:.0?} radius {r} height {h} for {} frames", m.model, a.handle, a.atkp, a.group, pos, a.grow);
+            info!("party: {} attack object {:#x}: atkp {} group {:#x} at {:.0?} radius {r} height {h} for {} frames", model, a.handle, a.atkp, a.group, pos, a.grow);
         }
         let points = sweep_points(pos, a.prev, step);
         for (ve, shapes) in victims {
@@ -287,9 +288,9 @@ fn step_attacks(
             let row = &game.atkp[vi];
             mem.mark(a.group, row.interval);
             let point = crate::combat::victim_point(&sph, from);
-            let dir = (sph.center - m.position() * crate::SCALE).with_y(0.0).normalize_or(Vec3::Z);
+            let dir = (sph.center - origin * crate::SCALE).with_y(0.0).normalize_or(Vec3::Z);
             let hit = Hit { attacker: me, target: *ve, atkp: row.id as i16, dir, point, row: Some(row.sub_id) };
-            info!("party: {} attack object {:#x} hits {ve:?}: atkp {} SubId {} (hit {n}, Power {}, Element {}, Interval {})", m.model, a.handle, row.id, row.sub_id, row.power, row.element, row.interval);
+            info!("party: {} attack object {:#x} hits {ve:?}: atkp {} SubId {} (hit {n}, Power {}, Element {}, Interval {})", model, a.handle, row.id, row.sub_id, row.power, row.element, row.interval);
             a.hit = true;
             out.push((hit, pax.map(|p| crate::fx::SpellHit { target: *ve, atkp: hit.atkp, pax: p.clone() }), a.handle));
         }
@@ -309,18 +310,18 @@ fn step_attacks(
         {
             a.wall = true;
             if log {
-                info!("party: {} attack object {:#x} (atkp {}) meets the terrain at {:.2?} (FUN_0018c8e0 -> FUN_0018ca78)", m.model, a.handle, a.atkp, at);
+                info!("party: {} attack object {:#x} (atkp {}) meets the terrain at {:.2?} (FUN_0018c8e0 -> FUN_0018ca78)", model, a.handle, a.atkp, at);
             }
         }
     }
 }
 
 /// Ticks an ended effect's record is kept for the script's polls (0.49) before it is dropped.
-const FX_FORGET: u32 = 600;
+pub(crate) const FX_FORGET: u32 = 600;
 
 /// The frames of a member's hand objects (its `Fighter` attack bodies after the body), for the bone
 /// numbers 0x4003.. (`fx::object_bone`).
-fn hands_of(f: Option<&Fighter>, anims: &Query<&Animator>, gts: &Query<&GlobalTransform>) -> Vec<Option<crate::fx::ObjectFrame>> {
+pub(crate) fn hands_of(f: Option<&Fighter>, anims: &Query<&Animator>, gts: &Query<&GlobalTransform>) -> Vec<Option<crate::fx::ObjectFrame>> {
     f.map_or(Vec::new(), |f| f.attack_bodies.iter().skip(1).map(|w| Some(crate::fx::ObjectFrame::of(anims.get(*w).ok()?, gts.get(*w).ok()?.to_matrix()))).collect())
 }
 
@@ -328,7 +329,7 @@ fn hands_of(f: Option<&Fighter>, anims: &Query<&Animator>, gts: &Query<&GlobalTr
 /// the frame its bone names (FUN_0016aa18; `fx::object_bone` for the numbers with 0x4000, the bone's
 /// world matrix otherwise) times the element's translation (game axes, Y and Z flipped). Bevy space,
 /// from the owner's last drawn pose (one tick old).
-fn element_position(pax: &crate::fx::LoadedPax, id: u16, owner: Entity, anims: &Query<&Animator>, gts: &Query<&GlobalTransform>, hands: &[Option<crate::fx::ObjectFrame>]) -> Option<Vec3> {
+pub(crate) fn element_position(pax: &crate::fx::LoadedPax, id: u16, owner: Entity, anims: &Query<&Animator>, gts: &Query<&GlobalTransform>, hands: &[Option<crate::fx::ObjectFrame>]) -> Option<Vec3> {
     let (a, g) = (anims.get(owner).ok()?, gts.get(owner).ok()?);
     let e = pax.pax.elements_for(id).next()?;
     let t = e.translation;
@@ -568,7 +569,7 @@ fn friend_update(
         fields.fx.retain(|f| !f.destroy && f.gone_ticks < FX_FORGET);
         // FUN_0018c2d8's pass over the member's attack objects.
         let mut out = Vec::new();
-        step_attacks(me, &m, fields, &game, &victims, &mut memory, pax.as_ref(), world.as_deref(), log, &mut out);
+        step_attacks(me, &m.model, m.position(), fields, &game, &victims, &mut memory, pax.as_ref(), world.as_deref(), log, &mut out);
         for a in fields.attacks.iter().filter(|a| !a.released) {
             if let Some(p) = a.pos {
                 pulls.places.insert(MemberAttacks::key(m.slot, a.handle), p * crate::SCALE);

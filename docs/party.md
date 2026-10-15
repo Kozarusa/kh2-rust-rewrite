@@ -416,9 +416,27 @@ forward to the ridden object's +0x74, then message 0xf to +0x484): it reads no a
 no part in the target choice. [GAP: the style names; who besides the setting menu writes setting byte 0.]
 
 In the app (`party_battle.rs`): `choose_style0..3`, `player_hit_pick`, `nearest_shape_of`, `dispatch`,
-`choose_target`, `needs_retarget`. `party.rs` (lines ~1275..1300) still passes style 0 (the setting bytes
-are 0 at a new game) through `nearest_target` / `retarget_style0`, which now run the dispatch; it does not yet
-feed +0xcec, `0x34e9b0` / `0x34e9c4` or a limit flag (see "Corrections to other docs").
+`choose_target`, `needs_retarget`. WP-PA2 wired them into `party.rs`: `refresh_target` (the FUN_0010df08
+refresh: re-target test, then the choice) runs `dispatch(class, style)` for every member in battle, and
+`battle_distance` takes the member's style. Inputs:
+
+- `style` = `PartyMember::style`, the setting byte 0. The app has no per-member setting bytes yet
+  (`Progress` keeps the record's +0xd4 block zeroed and exposes no reader), so it defaults to 0, the new game's
+  value; the harness `KH2_PARTY_STYLE=<n>` sets it on both members. [GAP: the Party / Status page does not write
+  it; see "Corrections to other docs".] A style outside 0..5 makes no choice (the table has six rows).
+- +0xcec, the remembered attacker: `PartyMember::attacker`, set in `party_receive_hits` for every enemy hit the
+  member takes (all enemies in the app are targetable objects).
+- `0x34e9b0`, the player's target record: Sora's lock-on, else its auto target, on shape 0 [inferred: the app
+  keeps the object, not the shape]; dropped when that enemy is gone.
+- `0x34e9c4`, the player's latest attacked object: `Manager::player_hit`, the object of the player's latest landed
+  hit [inferred: the game writes it when the attack starts, FUN_00176050]; cleared when the object is gone.
+- `current_counted`: the running action record (`Choosing::current`) lacks flag 1. Target validity (FUN_0010ca88)
+  includes bit 0x40 (too far from the player by the style's battle distance).
+- `limit` is false (no limits exist in the app yet); every enemy shape is enabled and targetable.
+
+Log: `KH2_PARTYLOG=1` prints `party: <model> style <n> target ...` when the target changes. Tests:
+`party_every_style_chooses_by_its_own_rule` (all six styles, the re-target tests, a class above 0xd, a style
+outside the table) and `party_battle_distance_follows_the_style`.
 
 ## 5. Host group 10 (table 0x371810, 60 entries) [V for the wrappers]
 
@@ -1234,11 +1252,12 @@ Files: `party_rules.rs` (`apply_world_records`), `party.rs` (`spawn_party`), `kh
 
 ## Corrections to other docs (for the orchestrator)
 
-- (WP-PA1) `crates/kh2-app/src/party.rs` ~1275..1300 should call `battle::dispatch(m.class, style)`, then
-  `battle::needs_retarget` / `battle::choose_target` with a `TargetScene` built from the fighters' shapes
-  (`Cand` per shape, in the fighters' order), the member's remembered attacker (+0xcec), the player's target
-  record (`0x34e9b0`) and attacked object (`0x34e9c4`), with `style` = the member's setting byte 0 (party record
-  +0xd4); today it passes style 0 and no attacker.
+- (WP-PA1, done in WP-PA2) `party.rs` now calls `battle::dispatch` / `needs_retarget` / `choose_target` with the
+  remembered attacker, the player's target and attacked object. Still open: the member's setting byte 0 (party
+  record +0xd4) is not read from `Progress` or written by the Party / Status page (`menu*.rs`, `progress.rs`, not
+  owned); `PartyMember::style` stays 0 unless `KH2_PARTY_STYLE` is set. The page should write the byte into the
+  record and `Progress` should expose it (e.g. `Member::settings: [u8; 32]`), then `spawn_party` / `party_tick`
+  read it instead of the env var.
 
 - `docs/player-data.md`, `memt`: the 16 words at +0x10 are member objects by member index (0 player, 1 Donald,
   2 Goofy, 3 partner, 4..8 forms, 9 Mickey, 10..15 keyblades), merged per world; index 0..3 are not "world

@@ -291,6 +291,7 @@ pub static HOST_FUNCS: &[HostFn] = &[
     f(2, 15, "hit_set_flag1", "p", '-', 0x18e190, "set bit 0 of the flags at hit +0x18"),
     f(2, 16, "hit_flag1", "p", 'b', 0x18e1a8, "bit 0 of the flags at +0x18 (2.15 sets it)"),
     f(2, 17, "attack_hit_object", "pOip", '-', 0x18e6e0, "when the attack may hit the object (FUN_0018c5f8): build the hit record (FUN_0018c6d0), mark it, call the object's virtual method +100 with it (delivers the damage)"),
+    f(2, 19, "attack_set_positions", "pvv", '-', 0x18e7a0, "attack +0xe0 = the first vector, +0xf0 (the previous position of the swept test) = the second, +4 gets bit 0x20 (FUN_001a30a8)"),
     f(2, 20, "start_request", "ip", 'h', 0x18e898, "start a detached thread at routine `pc` with one argument (FUN_001a4738: FUN_0016c838 makes the thread on the running thread's program, FUN_001a42b8 links it into the list at 0x1c95518; the task body FUN_001a4428 runs every listed thread once per frame and destroys it when it ends); returns the list node"),
     f(2, 21, "shared_block", "ii", 'p', 0x18e928, "the persistent buffer registered under a key (FUN_001a5040): the first call allocates and zeroes size + 1 bytes, every call sets the first byte to 1 and returns the buffer"),
     f(2, 22, "attack_anchor", "pO", '-', 0x18e7c8, "set the attack's anchor (+0x24) to the other object's +0x80"),

@@ -386,6 +386,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 2.15 | `hit_set_flag1(p)` | 0x18e190 | 136 | set bit 0 of the flags at hit +0x18 |
 | 2.16 | `hit_flag1(p) -> b` | 0x18e1a8 | 0 | bit 0 of the flags at +0x18 (2.15 sets it) |
 | 2.17 | `attack_hit_object(pOip)` | 0x18e6e0 | 61 | when the attack may hit the object (FUN_0018c5f8): build the hit record (FUN_0018c6d0), mark it, call the object's virtual method +100 with it (delivers the damage) |
+| 2.19 | `attack_set_positions(pvv)` | 0x18e7a0 | 1 | attack +0xe0 = the first vector, +0xf0 (the previous position of the swept test) = the second, +4 gets bit 0x20 (FUN_001a30a8) |
 | 2.20 | `start_request(ip) -> h` | 0x18e898 | 278 | start a detached thread at routine `pc` with one argument (FUN_001a4738: FUN_0016c838 makes the thread on the running thread's program, FUN_001a42b8 links it into the list at 0x1c95518; the task body FUN_001a4428 runs every listed thread once per frame and destroys it when it ends); returns the list node |
 | 2.21 | `shared_block(ii) -> p` | 0x18e928 | 156 | the persistent buffer registered under a key (FUN_001a5040): the first call allocates and zeroes size + 1 bytes, every call sets the first byte to 1 and returns the buffer |
 | 2.22 | `attack_anchor(pO)` | 0x18e7c8 | 67 | set the attack's anchor (+0x24) to the other object's +0x80 |

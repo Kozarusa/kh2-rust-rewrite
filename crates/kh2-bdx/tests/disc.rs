@@ -30,6 +30,19 @@ fn signatures_match_the_executable() {
     }
 }
 
+/// The functions the runtime answers itself without a `names.rs` row (the target search 6.3 / 6.4 / 6.5 /
+/// 10.55 and the static vector 6.54) take the argument counts it reads, per the executable's table.
+#[test]
+fn runtime_group_6_signatures_match_the_executable() {
+    let Some((_, elf)) = open() else { return };
+    let table = HostTable::from_exe(&elf).expect("table");
+    for (g, i, n, ret) in [(6, 3, 2, false), (6, 4, 1, false), (6, 5, 7, false), (10, 55, 2, false), (6, 54, 1, true)] {
+        let s = table.get(g, i).unwrap_or_else(|| panic!("{g}.{i} missing"));
+        assert_eq!((s.nargs, s.returns), (n, ret), "{g}.{i}");
+    }
+    assert!(table.search.is_some(), "the search numbers 0x383fb4..0x383fbc, 0x37a528 / 0x37a52c");
+}
+
 #[test]
 fn shadow_and_soldier_parse_and_run() {
     let Some((mut a, _)) = open() else { return };

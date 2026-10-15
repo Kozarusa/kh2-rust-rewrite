@@ -1088,6 +1088,12 @@ impl CoreEnv<'_> {
             (6, 3 | 5) if a.len() >= if i == 3 { 2 } else { 7 } && self.search_consts().is_some() => return self.search_block(mem, g, i, a),
 
             // ---- group 6 ----
+            // 6.54 (0x2ef110): the vector copied into the static buffer 0x1e35680, whose address is the
+            // answer (the scratch vectors stand for it, as for the other vector answers).
+            (6, 54) if a.len() == 1 => {
+                let v = self.vec(mem, a[0])?;
+                return Ok(Some(mem.sh.put_vec(v)));
+            }
             (6, 58) => {
                 self.core.queue_mode_remote(code, mem.sh, a[1])?;
                 return Ok(None);

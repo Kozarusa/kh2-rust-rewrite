@@ -648,6 +648,33 @@ impl FriendHost<'_, '_> {
                 self.record(c, &v, St::Approx, "the member's target record whatever record is named; its shape taken as a sphere (kind 3) of the app's target part");
                 Some(v)
             }
+            // 2.19 attack_set_positions (0x18e7a0 -> FUN_001a30a8): +0xe0 = the first vector, +0xf0 (the
+            // previous position the sweep starts from) = the second, +4 |= 0x20.
+            Call::Func { group: 2, index: 19, args } => {
+                let (Some(h), Some(Arg::Vec(p)), Some(Arg::Vec(q))) = (args.first(), args.get(1), args.get(2)) else { return None };
+                let (p, q) = (crate::enemy_obj::from_game(*p), crate::enemy_obj::from_game(*q));
+                if let Some(a) = self.attack(raw(h)) {
+                    a.pos = Some(p);
+                    a.prev = Some(q);
+                }
+                self.record(c, &Value::None, St::Approx, "bit 0x20 of +4 is not kept (its reader was not read)");
+                Some(Value::None)
+            }
+            // 2.44 attack_word_84 (0x18e5d8): the word +0x84, the attack object's owner (FUN_001a3280 reads the
+            // owner's target record +0x9f4 through it): the member.
+            Call::Func { group: 2, index: 44, args } if args.first().is_some_and(|a| self.fields.attacks.iter().any(|x| x.handle == raw(a))) => {
+                let v = Value::Handle(me);
+                self.record(c, &v, St::Approx, "the owner +0x84 taken as the member (FUN_0018bd08's write of +0x84 was not read)");
+                Some(v)
+            }
+            // Donald's `blizzard` library (P_EX020 R0af8) calls these only behind request fields its script
+            // only ever sets to 0 (+0x100 for 1.88, +0x118 for 2.57, +0x108 for 6.51; R0b1b / R1312 / R1385
+            // are the only writers) or behind the bounce branch at R0cce, which tests the constant `-1 >= 0`
+            // (R0d3a: 1.160, 2.43). Not reached: no answer is ported.
+            Call::Func { group: 1, index: 88, .. } | Call::Unknown { group: 1, index: 160, .. } | Call::Unknown { group: 2, index: 43 | 57, .. } | Call::Unknown { group: 6, index: 51, .. } => {
+                self.record(c, &Value::Int(0), St::Stub, "not reached by the members' scripts (P_EX020 R0af8: request fields only ever 0, the bounce branch tests -1 >= 0): not ported");
+                Some(Value::Int(0))
+            }
             // 1.87 spawn_attached (0x171800 -> FUN_0016a570, owner = the object).
             Call::SpawnAttached { obj, id, .. } if *obj == me => {
                 let v = self.new_effect(FxReq::Bound { id: (*id).max(0) as u16, on: None });

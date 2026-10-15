@@ -1193,7 +1193,7 @@ fn input(
             let (s, o) = synth::Session::start(&book, &mut Inv(p));
             menu_sound::play(&mut se, crate::menu_status::CONFIRM);
             info!(
-                "synth: open the third row (FUN_00284c10): handed over {:x?} (FUN_002887c8), recipes taken {:x?} (FUN_002889e0), notices {:#x}, page {} (rows {:?}), unlocks {:#x}, level {}, points {}",
+                "synth: open the third row (FUN_00284c10): handed over {:x?} (FUN_002887c8), recipes taken {:x?} (FUN_002889e0), notices {:#x}, page {:#x} (rows {:?}), unlocks {:#x}, level {}, points {}",
                 o.handed,
                 o.recipes,
                 o.notices,

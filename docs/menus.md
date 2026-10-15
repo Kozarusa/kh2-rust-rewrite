@@ -1074,7 +1074,7 @@ Code: `menu_party.rs` (child module `menu::party_page`, `PartyPlugin` in `MenuPl
 - **World index `FUN_00277c88`.** A jump table at 0x381f38, one stub per game world (19), each `jr ra` with the index in the
   delay slot: -1 for worlds 0, 3 and 15, 0 for Twilight Town (2), and so on (read at run time: `read_world_index`).
 - **Task 0x276338** (no `.c`; read from the instructions): `FUN_002552c0(3, task)` (waits for the files), `FUN_00277be8`,
-  `FUN_002a1858(0, 0)` (the `jiminy.bar` request), `FUN_00276550` / `FUN_002765a0` (sound requests 0x65), `FUN_002b4890`,
+  `FUN_002a1858(0, 0)` (the `jiminy.bar` request), `FUN_00276550` / `FUN_002765a0` (the message file 0x65 = `msg/us/jm.bar`, WP-MN10: 20.7), `FUN_002b4890`,
   yields, `FUN_002a1bd0` / `FUN_002a1c30(0)` unless `DAT_0036d040 & 4`, `FUN_002b48c8`, `FUN_00276488(page)` (the page's own
   `jiminy.bar` sub-files), waits while `DAT_0036d106`, `FUN_002b7100`, `FUN_002b9b28`, **the build `FUN_00276740`**, the list
   widget `FUN_002a04f8`, the open sound (`FUN_0023e738(0xb, 1)`), then each frame `FUN_00233cd8` and **`FUN_00276918`** until
@@ -1131,9 +1131,9 @@ A confirm on camp entry 5 or 6 sets the mode (1 / 2), takes `menu.page` (0x300, 
 next frame: it loads `jmemo.2ld`, `jm_world.2ld` and `jiminy.bar` once, hides every node the camp had (restored on the way
 back), plays layout `t[0]` then `t[2]` (the frame, carried out to the window's edges as the camp's frame is [inferred]), the
 header object (0x381fa8 groups) and the plate 0x7558 (0x2c, 0x2d), and the cells of 20.3 with the app's story flags
-(`Progress::story`). **Start page 1 or 2 is not ported: the port shows page 0**, the page one cancel of page 2 shows in the
-original, with the cursor on the current world. Left/Right/Up/Down move the cursor [inferred: one cell, one row of six, no
-wrap], a confirm logs the page the original would open and is refused, K / Esc / Enter close the scene and the camp's
+(`Progress::story`). (WP-MN10: start pages 1 and 2 are now built, 20.7; page 0 follows a cancel on page 2, with the cursor on the
+world.) Left/Right/Up/Down move the cursor [inferred: one cell, one row of six, no
+wrap], a confirm opens page 2 (ids above 0xe: refused with a log line), K / Esc / Enter close the scene and the camp's
 page 0 comes back. Tests: `menu_journal::tests::{the_start_page_follows_the_mode_and_the_world,
 camp_rows_five_and_six_write_modes_one_and_two, cells_need_the_story_flag_or_the_all_worlds_flag,
 the_grid_centres_rows_of_six, page_zero_state_machine, the_disc_journal_files_and_tables}`. Run (rows of a `KH2_STATE` with the
@@ -1144,16 +1144,15 @@ node's box once.
 
 ### 20.5 Gaps
 
-- **Pages 1 to 0x20** (the world's categories, characters, enemies, the album, Ansem's reports, limits, minigames, quests,
-  the Roxas pages, the photo and face files): not read beyond the exits of page 2. Roxas's Journal (mode 2) therefore shows
-  the Jiminy world grid with the Roxas layouts 3/4 instead of page 1 (`FUN_002a4188`).
+- **Pages 3 to 0x20** (WP-MN10 ported 1 and 2: 20.7) (the world's categories, characters, enemies, the album, Ansem's reports, limits, minigames, quests,
+  the Roxas pages, the photo and face files): not read beyond the exits of page 2.
 - **The children's groups 0x98 / 0x99 / 0x9a** (`FUN_002b9658`, `FUN_002b9798`, `FUN_002baf08`: a per-world state the port
   has no data for, the words at 0x382aec / 0x382af0): the children stay on group 1.
 - **The plates `FUN_0029cf78(0, 5, .., 0x381fc0, 0x381fc8)`** (groups 0x71/0x73/0x72 and 0x23/0x25/0x24): not drawn; what
   they show on this scene was not read.
 - **Text:** the world names (record +4 / +6) and any help line of page 0 (`FUN_0029d820` is called for page 10 only) were
   not traced to a drawer: the port draws no text on the page.
-- **Sounds:** the scene's sound requests (`FUN_00276550`: 0x65 / 0x13ec) were not read; the menu sounds are muted anyway.
+- **Sounds:** none of the scene's own were read (`FUN_00276550` / `FUN_002765a0` are the message file, 20.7); the menu sounds are muted anyway.
 - **The wipe** (`FUN_00296470`: `pause.2ld` group 5 as object 0x7554) is not played; the camp's cursor on the way back
   stays where it was [inferred].
 - **Footage:** no reference clip shows the journal (`local/VIDEOS.md`); the screen was compared with nothing but the code.
@@ -1169,3 +1168,64 @@ node's box once.
 `FUN_002a2f38`, `FUN_002a3008`, `FUN_002a31e8`, `FUN_002a3540`, `FUN_002a3da0`, `FUN_002783f8`, `FUN_00237678`,
 `FUN_00237698`, `FUN_0024f0b8`, `FUN_0024f3c0`, `FUN_0024f4d0`, `FUN_0024f4e0`, `FUN_0024f4f0`, `FUN_00250ec8`,
 `FUN_00296278`, `FUN_00296458`, `FUN_00296470`, `FUN_001038a0`, `FUN_00103d58`, camp handler 0x251c38 (instructions).
+
+### 20.7 Pages 2 and 1 (WP-MN10) [V unless marked]
+
+- **Message file.** Task 0x276338's `FUN_002765a0` calls `FUN_00190e70(0x65, 0)`: `FUN_00190dd0(0x65)` builds
+  `msg/%s/%s.bar` with "jm" (0x37ad38), and `FUN_00190b70(0, file)` puts it in message slot 0; `FUN_00190c40` looks an id
+  up slot by slot (0x1c8a7f4, three slots), so the journal's ids come from `msg/us/jm.bar` before the system file.
+  (`FUN_00276550` asks the same file with 0x13ec through `FUN_0016fac8`; what that second argument is was not read.)
+- **Objects** (`FUN_002a3540` page 2, `FUN_002a4188` page 1). Six layer objects of sequence 5, groups 0x89, 0x93, 0x91,
+  3, 0x92, 3 (page 1: 0x8d, 0x90, 0x94, 3, 0x95, 3); 0, 1, 2 and 4 hang from the header object `DAT_0036d0e8` (the 0x7559
+  of `FUN_002779f8`), 3 from 2 and 5 from 4. `FUN_002a3d08` gives 2 and 4 the two story texts of the world
+  (`FUN_002a1e98`: `jiminy.bar` entry 1, 0xc-byte records, +0 world, +4 / +6 the ids, used when the flag +0xa is set,
+  the last such record wins, 0x8adc otherwise) and 3 and 5 the labels 0x3253 / 0x3254, centred (+0x1a4 = 2).
+- **Text placement** (`FUN_00139048`): from the object's position (`FUN_00138f38`), plus the group's x/y (+0x10/+0x14)
+  when flag 0x10 is set, in font +0x1a0 (1 for these objects), size the group's +0x18 (15 when 0), colour +0x198
+  (0xe5e5e5, `FUN_00138fc8`) when flag 8 is set. `FUN_00138fc8` sets flags 4, 8, 0x10; `FUN_00139888` clears 0x10,
+  `FUN_00139860` clears 8. The port: rows and the holders 2/4 use the group offset, 3/5 do not; holders 2/4 lose flag 8
+  (colour from the group: the port keeps 0xe5e5e5 [inferred]).
+- **Rows** (page 2): 8 list objects (`FUN_00296b48`, both group sets four 3s: the row's group does not change with the
+  cursor) as children of layer 0, `k *` the 0x89 group's +0x1c apart (`FUN_00138ed0`), each with two children on group 3
+  (the marks: `FUN_002a39b8` puts the first on 0x8a and the second on 0x8b / 0x8c (0x382b80/84) from the categories'
+  progress tests: not ported, GAP). The rows are categories 0..7 (`FUN_002a4960`) without 3 for journal world 8
+  (`FUN_002b1650`), 5 unless `FUN_002b6f00` (entry 8, 0x10-byte records, u16 world) and 6 unless `FUN_002b5bb0` (entry 7,
+  8-byte records) finds a record that the all-worlds flag 0x4837 or a progress test opens. **The port opens 5 and 6
+  only with the all-worlds flag** [conservative: the progress tests `FUN_002b6d40` and the minigame bytes 0x341620 have no
+  app data]. A row's text is the u16 at 0x382b88 + 2 * category; its help line the one at 0x382b98 (`FUN_002a4a68` ->
+  `FUN_00278430` -> `FUN_00278468`, object 0x755d: not drawn, GAP).
+- **Title** (page 2): object `DAT_0036d0f0 + 0x350` (`FUN_00277258`: groups 0x35 then 0x36, centred), text
+  `FUN_002a3070(world, 0)`: the world record's +4, or +0xa when its flag +0xe is set (`FUN_00277640`). A root object: the
+  port draws its text from the group's anchor (`label_anchor`) [inferred: the reading `menu_gfx` uses for the camp rows].
+- **Pictures** (`FUN_002a45b0`, `FUN_002a4750`): `jm_top_<name>.2ld` (`FUN_002a19c8(2, name)`), name = the world
+  record's code on page 2 (world 1 with its second flag: the string at 0x36d460), the string at 0x36d45c on page 1; picture
+  0 in sequence 0x382b6c at layer 0's group x/y, picture 1 in sequence 0x382b68 on layer 1; groups 0x382b78 / 0x382b7c
+  and 0x382b70 / 0x382b74 (enter, hold) when the file arrives after the build (the per-frame `FUN_002a4750(1)`), the hold
+  alone when it was already there [inferred: the port plays enter then hold].
+- **Handlers.** Page 2 (`FUN_002a3da0`): Up/Down move the row cursor (the list widget, wrap on a new press), a confirm
+  opens the category page 6, 3, 4, 7, 8, 9, 10 or 0xb (**not ported: refused with a log line**), -2 goes to page 0
+  (`FUN_002a2248`, the cursor on the world), -4 closes the scene. Page 1 (`FUN_002a44a8`): -2 and -4 close the scene.
+  Page 0's confirm on a world up to id 0xe now builds page 2.
+- **First cursor of page 0** (review fix): the index is taken within the shown cells (`first_cursor`), since records
+  0x10..0x13 that `FUN_002a2f38` counts have no cell.
+- **Port.** `menu_journal::{build12, page2, page1, categories, story_texts, read_page_tables}`. Tests:
+  `menu_journal::tests::{page_two_rows_and_state_machine, story_texts_take_the_last_open_record, the_disc_page_two_data,
+  the_first_cursor_indexes_the_shown_cells}`. Run as in 20.4; the log: `journal: page 2 (FUN_002a3540 / FUN_002a4188):
+  world 0 'tt', jm_top_tt.2ld 2 pictures, story texts [8adc, 8adc], rows [0, 1, 2, 3, 4, 7], text drawn`.
+- **Gaps.** The row cursor's highlight (no group change; the widget's cursor object was not found), the help line, the
+  L/R page hints (`FUN_00277860` / `FUN_00277740`: ids from 0x381fb8 with a button prefix, `FUN_002774e8` objects 0x2f/0x30
+  and 0x32/0x33), the marks, the page switches -8/-9 (`FUN_00277928`), the category pages, the children groups of page 0
+  (`FUN_002b9658` / `FUN_002b9798` / `FUN_002baf08` aggregate the same per-category progress tests). Roxas's page 1 is
+  ported but was not reached in a run (the test state's camp has no Roxas row). No footage of the journal exists.
+- **Decompile index (MN10).** `FUN_002a3540`, `FUN_002a3da0`, `FUN_002a4188`, `FUN_002a44a8`, `FUN_002a4750`,
+  `FUN_002a3d08`, `FUN_002a39b8`, `FUN_002a4a68`, `FUN_002a45b0`, `FUN_002a4960`, `FUN_002a46d8`, `FUN_002a34a8`,
+  `FUN_002a3070`, `FUN_002a1e98`, `FUN_002a1e78`, `FUN_002a3008`, `FUN_002b1650`, `FUN_002b6f00`, `FUN_002b6d40`,
+  `FUN_002b5bb0`, `FUN_001d36e8`, `FUN_00277640`, `FUN_00277740`, `FUN_00277860`, `FUN_00277258`, `FUN_002774e8`,
+  `FUN_002772d0`, `FUN_00278430`, `FUN_00278468`, `FUN_002779f8`, `FUN_00277b20`, `FUN_00277eb0`, `FUN_00277d40`,
+  `FUN_00277d60`, `FUN_00277dc8`, `FUN_00277de8`, `FUN_002a19c8`, `FUN_002a4b18`, `FUN_002a4b28`, `FUN_0029b600`,
+  `FUN_0029b6c0`, `FUN_0029ba00`, `FUN_00296b48`, `FUN_00296aa8`, `FUN_00299f30`, `FUN_00299e38`, `FUN_00138fc8`,
+  `FUN_00138948`, `FUN_00139430`, `FUN_001389b0`, `FUN_00138a60`, `FUN_00138ed0`, `FUN_00138f38`, `FUN_00139048`,
+  `FUN_00139850`, `FUN_00139860`, `FUN_00139878`, `FUN_00139888`, `FUN_001398a0`, `FUN_00237518`, `FUN_00237618`,
+  `FUN_00237638`, `FUN_00237658`, `FUN_00237678`, `FUN_001a7ed8`, `FUN_00190c40`, `FUN_00190dd0`, `FUN_00190e40`,
+  `FUN_00190e70`, `FUN_00190b70`, `FUN_00276550`, `FUN_002765a0`, `FUN_002b9658`, `FUN_002b9798`, `FUN_002baf08`,
+  `FUN_002a04f8`; data 0x382b68..0x382ba6, 0x381fb8, 0x36d45c, 0x36d460, 0x37ad38.

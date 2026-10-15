@@ -18,10 +18,12 @@
 //!   (`FUN_002a31e8`). A confirm opens the world's page (2, or 0xc for an id above 0xe); a cancel (-2) or -4 ends the
 //!   scene (`FUN_00295ba0`).
 //!
-//! What the port draws: page 0 only (the layout, the header 0x7559 and the plate 0x7558, the cells with their world
-//! pictures). The other pages (1, 2, 3..0x20: the world's lists, characters, enemies, treasures, reports ...) are not
-//! ported: a start page of 1 or 2 shows page 0, as one cancel on page 2 does in the original (`FUN_002a3da0` case
-//! -2 -> page 0), and a confirm on a cell is refused with a log line.
+//! - Page 2 (`FUN_002a3540` / `FUN_002a3da0`, WP-MN10): the world's category rows with their texts, the two
+//!   `jm_top_<world>.2ld` pictures, the story texts and the title; page 1 (`FUN_002a4188` / `FUN_002a44a8`) is
+//!   Roxas's one-row page with the same layer objects in other groups.
+//!
+//! What the port draws: pages 0, 1 and 2 (docs/menus.md 20.7). The category pages (3..0x20) are not ported: a
+//! confirm on a page 2 row, or on a page 0 cell of id above 0xe, is refused with a log line.
 
 use bevy::prelude::*;
 use kh2_image::layd::{self, Layd};
@@ -30,6 +32,8 @@ use crate::assets::{CurrentArea, Disc};
 use crate::audio::PlaySe;
 use crate::menu::{menu_sound, Menu, Phase};
 use crate::menu_gfx::{self, MenuScene, Node};
+use crate::menu_text::Label;
+use kh2_image::text::Style;
 use crate::menu_pages::Exe;
 use crate::progress::Progress;
 
@@ -56,7 +60,34 @@ mod addr {
     /// The jump table of `FUN_00277c88`: per game world, a stub that returns the world's journal index (or -1).
     pub const WORLD_STUBS: u32 = 0x0038_1f38;
     pub const WORLDS: u32 = 0x13;
+    /// Page 2's row texts by category (u16 x 8, `FUN_002a39b8`; also the help line source of `FUN_002a3da0`).
+    pub const ROW_TEXT: u32 = 0x0038_2b88;
+    /// The sequences of the two `jm_top` pictures (u32: picture 1's, then picture 0's, `FUN_002a4750`).
+    pub const PIC_SEQ: u32 = 0x0038_2b68;
+    // The pictures' groups follow at 0x382b70 (u32: picture 1 enter, hold, picture 0 enter, hold): read as PIC_SEQ + 8..
+    /// Pointers to the alternative `jm_top_` names (page 1's, and world 1's once its second flag is set; `FUN_002a45b0`).
+    pub const TOP_NAME_ROXAS: u32 = 0x0036_d45c;
+    pub const TOP_NAME_ALT: u32 = 0x0036_d460;
 }
+
+/// The literal messages of `FUN_002a3d08` (the labels beside the two story texts).
+mod msg {
+    pub const LABEL_A: u32 = 0x3253;
+    pub const LABEL_B: u32 = 0x3254;
+}
+
+/// The layer objects of pages 2 (`FUN_002a3540`) and 1 (`FUN_002a4188`): six objects of sequence 5; 0 and 1 and the
+/// two holders 2 and 4 hang from the header object (`DAT_0036d0e8`), 3 from 2 and 5 from 4.
+const LAYERS_P2: [usize; 6] = [0x89, 0x93, 0x91, 3, 0x92, 3];
+const LAYERS_P1: [usize; 6] = [0x8d, 0x90, 0x94, 3, 0x95, 3];
+/// Every list row and its two children play group 3 (both group sets of `FUN_00296b48` are four 3s).
+const ROW_GROUP: usize = 3;
+/// Page 2's rows (`FUN_002a3540` creates 8 list objects).
+pub const ROWS: usize = 8;
+/// The title object (`DAT_0036d0f0 + 0x350`, `FUN_00277258`: enter 0x35, hold 0x36, centred text).
+const TITLE: [usize; 2] = [0x35, 0x36];
+/// The text size when a group gives none (`FUN_00138fc8`).
+const TEXT_SIZE: f32 = 15.0;
 
 /// Literal groups of `jmemo.2ld` sequence 5 the code names.
 mod group {
@@ -111,6 +142,16 @@ pub struct World {
     pub flag: u16,
     /// A second flag (+0xe, `FUN_002a1de8`, read by page 2 for id 1).
     pub flag2: u16,
+    /// Message ids +4 and +6, and +0xa and +0xc used instead when `flag2` is set (`FUN_002a3070`: the first of
+    /// each pair is page 2's title).
+    pub names: [u16; 4],
+}
+
+impl World {
+    /// Page 2's title (`FUN_002a3070(world, 0)`): +4, or +0xa when the second flag is set.
+    pub fn title(&self, test: &dyn Fn(u16) -> bool) -> u16 {
+        if test(self.flag2) { self.names[2] } else { self.names[0] }
+    }
 }
 
 /// Parses `jiminy.bar` entry 0.
@@ -124,9 +165,64 @@ pub fn parse_worlds(d: &[u8]) -> Option<Vec<World>> {
             let r = d.get(0x10 + 0x10 * i..0x20 + 0x10 * i)?;
             let u16_at = |o: usize| u16::from_le_bytes([r[o], r[o + 1]]);
             let code = r[1..4].iter().take_while(|&&b| b != 0).map(|&b| b as char).collect();
-            Some(World { id: r[0] as i8, code, flag: u16_at(8), flag2: u16_at(0xe) })
+            Some(World { id: r[0] as i8, code, flag: u16_at(8), flag2: u16_at(0xe), names: [u16_at(4), u16_at(6), u16_at(0xa), u16_at(0xc)] })
         })
         .collect()
+}
+
+/// The records of a `jiminy.bar` entry (a 0x10-byte header with the count at +8) of `stride` bytes each.
+pub fn records(d: &[u8], stride: usize) -> Vec<&[u8]> {
+    let n = d.get(8..12).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()) as usize);
+    (0..n).map_while(|i| d.get(0x10 + stride * i..0x10 + stride * (i + 1))).collect()
+}
+
+/// The message used when a story record does not apply (`FUN_002a1e98` starts both outputs with it).
+pub const NO_TEXT: u16 = 0x8adc;
+
+/// The two texts of pages 1 and 2 (`FUN_002a1e98(world)`, entry 1 "stor", 0xc-byte records): every record of the
+/// world whose flag (+0xa, `FUN_002a1e78`) is set overwrites them with its +4 and +6; the last one wins.
+pub fn story_texts(stor: &[u8], world: i8, test: &dyn Fn(u16) -> bool) -> [u16; 2] {
+    let mut out = [NO_TEXT; 2];
+    for r in records(stor, 0xc) {
+        let u16_at = |o: usize| u16::from_le_bytes([r[o], r[o + 1]]);
+        if r[0] as i8 == world && test(u16_at(10)) {
+            out = [u16_at(4), u16_at(6)];
+        }
+    }
+    out
+}
+
+/// Whether an entry with `stride`-byte records starting with the u16 world has a record for `world`.
+pub fn has_world(d: &[u8], stride: usize, world: i8) -> bool {
+    records(d, stride).iter().any(|r| u16::from_le_bytes([r[0], r[1]]) == world as i16 as u16)
+}
+
+/// Page 2's rows (`FUN_002a4960` / `FUN_002a39b8`): the categories 0..8 in order, without 3 for journal world 8
+/// (`FUN_002b1650`), 5 unless the quest list has an entry (`FUN_002b6f00`, entry 8) and 6 unless the minigame list
+/// has one (`FUN_002b5bb0`, entry 7). `quests` / `games` are those tests' results.
+pub fn categories(world: i8, quests: bool, games: bool) -> Vec<usize> {
+    (0..8)
+        .filter(|&c| match c {
+            3 => world != 8,
+            5 => quests,
+            6 => games,
+            _ => true,
+        })
+        .collect()
+}
+
+/// The page a category row opens (`FUN_002a3da0`).
+pub fn category_page(cat: usize) -> u16 {
+    match cat {
+        0 => 6,
+        1 => 3,
+        2 => 4,
+        3 => 7,
+        4 => 8,
+        5 => 9,
+        6 => 10,
+        _ => 0xb,
+    }
 }
 
 /// The cells of page 0 in order: (record index, picture id). `FUN_002a2248` / `FUN_002a2bc0`: a record with an id
@@ -148,10 +244,12 @@ pub fn cells(worlds: &[World], test: &dyn Fn(u16) -> bool) -> Vec<(usize, u8)> {
 
 /// The first cursor of page 0 (`FUN_002a2f38`): the index of the world `want` (0xf when the byte is negative) among
 /// the shown records with an id below 0x14; `None` when it is not shown [inferred: the list then starts at 0].
-pub fn first_cursor(worlds: &[World], test: &dyn Fn(u16) -> bool, want: i8) -> Option<usize> {
+///
+/// The original counts the shown records with an id below 0x14, but records 0x10..0x13 get no cell, so the index is
+/// taken within the cells actually shown (`shown`, from `cells`): the cursor always lands on the cell of that world.
+pub fn first_cursor(worlds: &[World], shown: &[(usize, u8)], want: i8) -> Option<usize> {
     let want = if want < 0 { 0xf } else { want };
-    let all = test(ALL_WORLDS_FLAG);
-    worlds.iter().filter(|w| w.id < 0x14 && (w.id >= 0x10 || test(w.flag) || all)).position(|w| w.id == want)
+    shown.iter().position(|&(i, _)| worlds.get(i).is_some_and(|w| w.id == want))
 }
 
 /// The cell offsets from the layout's anchor (`FUN_002a25f0`): rows of six, each row centred, the rows centred; the
@@ -202,6 +300,36 @@ pub enum Act {
     Open { page: u16, world: i8 },
     /// -2 / -4: the scene ends; the scene stack runs the camp next.
     Close,
+    /// Page 2's cancel (-2): page 0 (`FUN_002a3da0`: `FUN_00295a00(0)`).
+    Back,
+    /// A confirm on a page 2 row: the category and the page it opens.
+    Category { cat: usize, page: u16 },
+}
+
+/// Page 2's state machine (`FUN_002a3da0`): Up/Down move the row cursor (a new press past the ends wraps, the list
+/// widget `FUN_002977a8`), a confirm opens the row's category page, -2 goes back to page 0, -4 ends the scene.
+pub fn page2(key: Key, row: usize, cats: &[usize]) -> Act {
+    match key {
+        Key::Start => Act::Close,
+        Key::Cancel => Act::Back,
+        Key::Move(_, 0) => Act::None,
+        Key::Move(_, dy) => {
+            let n = cats.len() as i32;
+            if n < 2 {
+                return Act::None;
+            }
+            Act::Cursor((row as i32 + dy.signum()).rem_euclid(n) as usize)
+        }
+        Key::Confirm => cats.get(row).map_or(Act::None, |&cat| Act::Category { cat, page: category_page(cat) }),
+    }
+}
+
+/// Page 1 (Roxas's Journal, `FUN_002a44a8`): one row; -2 and -4 end the scene.
+pub fn page1(key: Key) -> Act {
+    match key {
+        Key::Cancel | Key::Start => Act::Close,
+        _ => Act::None,
+    }
 }
 
 /// Page 0's state machine.
@@ -243,6 +371,44 @@ fn triple(exe: &Exe, va: u32) -> Option<[usize; 3]> {
     Some([usize::from(exe.u16(va)?), usize::from(exe.u16(va + 2)?), usize::from(exe.u16(va + 4)?)])
 }
 
+fn u32_at(exe: &Exe, va: u32) -> Option<u32> {
+    Some(u32::from(exe.u16(va)?) | u32::from(exe.u16(va + 2)?) << 16)
+}
+
+/// The NUL-terminated name a pointer of the executable points at.
+fn name_at(exe: &Exe, ptr: u32) -> Option<String> {
+    let a = u32_at(exe, ptr)?;
+    let s: String = (0..16).map_while(|k| exe.u8(a + k).filter(|&b| b != 0)).map(|b| b as char).collect();
+    (!s.is_empty()).then_some(s)
+}
+
+/// The executable's page 1 / 2 tables.
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
+pub struct PageTables {
+    pub row_text: [u16; 8],
+    /// Picture 0's and picture 1's sequence (`FUN_002a4750`: 0x382b6c for 0, 0x382b68 for 1).
+    pub pic_seq: [usize; 2],
+    /// Picture 0's and 1's (enter, hold) groups.
+    pub pic_group: [[usize; 2]; 2],
+    pub top_roxas: String,
+    pub top_alt: String,
+}
+
+pub fn read_page_tables(exe: &Exe) -> Option<PageTables> {
+    let mut row_text = [0; 8];
+    for (k, t) in row_text.iter_mut().enumerate() {
+        *t = exe.u16(addr::ROW_TEXT + 2 * k as u32)?;
+    }
+    let w = |k: u32| u32_at(exe, addr::PIC_SEQ + 4 * k).map(|v| v as usize);
+    Some(PageTables {
+        row_text,
+        pic_seq: [w(1)?, w(0)?],
+        pic_group: [[w(4)?, w(5)?], [w(2)?, w(3)?]],
+        top_roxas: name_at(exe, addr::TOP_NAME_ROXAS)?,
+        top_alt: name_at(exe, addr::TOP_NAME_ALT)?,
+    })
+}
+
 #[derive(Default)]
 struct Nodes {
     layer: usize,
@@ -251,14 +417,33 @@ struct Nodes {
     cells: Vec<usize>,
     marks: Vec<[usize; 2]>,
     icons: Vec<usize>,
+    /// Pages 1 and 2: the six layer objects, the two `jm_top` pictures, the title, the rows and their children.
+    lay: Vec<usize>,
+    pics: Vec<usize>,
+    title: usize,
+    rows: Vec<usize>,
+    row_kids: Vec<[usize; 2]>,
 }
 
 impl Nodes {
-    fn all(&self) -> Vec<usize> {
-        let mut v = vec![self.layer, self.header, self.plate];
-        v.extend(&self.cells);
+    fn page0(&self) -> Vec<usize> {
+        let mut v = self.cells.clone();
         v.extend(self.marks.iter().flatten());
         v.extend(&self.icons);
+        v
+    }
+    fn page12(&self) -> Vec<usize> {
+        let mut v = self.lay.clone();
+        v.extend(&self.pics);
+        v.push(self.title);
+        v.extend(&self.rows);
+        v.extend(self.row_kids.iter().flatten());
+        v
+    }
+    fn all(&self) -> Vec<usize> {
+        let mut v = vec![self.layer, self.header, self.plate];
+        v.extend(self.page0());
+        v.extend(self.page12());
         v
     }
 }
@@ -272,20 +457,38 @@ pub struct Journal {
     world_tex: Vec<Option<usize>>,
     layd: Layd,
     worlds: Vec<World>,
+    /// `jiminy.bar` entries 1 (story texts), 7 (minigames) and 8 (quests).
+    stor: Vec<u8>,
+    /// `msg/us/jm.bar`, the scene's message file in message slot 0 (task 0x276338: `FUN_002765a0` ->
+    /// `FUN_00190e70(0x65, 0)`; `FUN_00190dd0` names file 0x65 "jm"), searched before the system messages
+    /// (`FUN_00190c40` walks the slots in order).
+    msgs: Option<kh2_image::text::Messages>,
+    mini: Vec<u8>,
+    ques: Vec<u8>,
     world_index: Vec<i8>,
     layouts: [[usize; 3]; 2],
     header: [usize; 3],
+    tables: PageTables,
+    /// `jm_top_<name>.2ld` pictures already turned into textures, by name.
+    top_tex: std::collections::HashMap<String, Vec<usize>>,
     nodes: Nodes,
     /// The mode a camp row asked for (taken by `tick`).
     request: Option<i32>,
+    /// A page switch asked for by `input` (page, world byte), built by `tick`.
+    goto: Option<(u16, i8)>,
     /// The scene is up: page, cursor, the shown cells, the scene nodes it hid and their visibility.
     open: Option<Open>,
 }
 
 struct Open {
     page: u16,
+    /// The journal world byte (`*DAT_0036d0dc`).
+    world: i8,
     cursor: usize,
     shown: Vec<(usize, u8)>,
+    /// Page 2: the row cursor and the categories of the rows.
+    row: usize,
+    cats: Vec<usize>,
     saved: Vec<(usize, bool)>,
     roxas: bool,
 }
@@ -306,12 +509,19 @@ fn load(j: &mut Journal, disc: &Disc, scene: &mut MenuScene, images: &mut Assets
         warn!("journal: menu/us/jmemo.2ld is not readable; the Journal rows do nothing");
         return;
     };
-    let Some(worlds) = disc.read("menu/us/jiminy.bar").and_then(|b| kh2_bar::parse(&b).ok().and_then(|e| e.first().and_then(|e| parse_worlds(e.data)))) else {
+    let Some(bar) = disc.read("menu/us/jiminy.bar") else { return };
+    let Ok(entries) = kh2_bar::parse(&bar) else { return };
+    let Some(worlds) = entries.first().and_then(|e| parse_worlds(e.data)) else {
         warn!("journal: menu/us/jiminy.bar entry 0 is not readable; the Journal rows do nothing");
         return;
     };
+    let entry = |k: usize| entries.get(k).map(|e| e.data.to_vec()).unwrap_or_default();
+    (j.stor, j.mini, j.ques) = (entry(1), entry(7), entry(8));
+    j.msgs = disc.read("msg/us/jm.bar").and_then(|b| kh2_image::text::Messages::from_bar(&b));
     let Some(exe) = disc.read_root("SLUS_210.05").and_then(Exe::load) else { return };
-    let (Some(index), Some(l0), Some(l1), Some(h)) = (read_world_index(&exe), triple(&exe, addr::LAYOUTS), triple(&exe, addr::LAYOUTS_ROXAS), triple(&exe, addr::HEADER)) else {
+    let (Some(index), Some(l0), Some(l1), Some(h), Some(tables)) =
+        (read_world_index(&exe), triple(&exe, addr::LAYOUTS), triple(&exe, addr::LAYOUTS_ROXAS), triple(&exe, addr::HEADER), read_page_tables(&exe))
+    else {
         warn!("journal: the executable's journal tables are not readable");
         return;
     };
@@ -322,16 +532,7 @@ fn load(j: &mut Journal, disc: &Disc, scene: &mut MenuScene, images: &mut Assets
     j.tex = scene.texs.len();
     scene.texs.push(menu_gfx::Tex::new(image, images));
     // `jm_world.2ld`: a BAR of IMGD pictures, one per journal world id (`FUN_0023c478`).
-    let pics = disc.read("menu/us/jm_world.2ld").map(|b| kh2_bar::parse(&b).map(|e| e.iter().map(|e| kh2_image::imgd::decode(e.data)).collect::<Vec<_>>()).unwrap_or_default()).unwrap_or_default();
-    j.world_tex = pics
-        .into_iter()
-        .map(|p| {
-            p.map(|img| {
-                scene.texs.push(menu_gfx::Tex::new(&img, images));
-                scene.texs.len() - 1
-            })
-        })
-        .collect();
+    j.world_tex = bar_pictures(disc, "menu/us/jm_world.2ld", scene, images);
     j.seq_base = scene.seqs.len();
     let Layd { layers, layouts, seqs } = two.layd;
     scene.seqs.extend(seqs);
@@ -340,6 +541,7 @@ fn load(j: &mut Journal, disc: &Disc, scene: &mut MenuScene, images: &mut Assets
     j.world_index = index;
     j.layouts = [l0, l1];
     j.header = h;
+    j.tables = tables;
     // The nodes, hidden; a parent always has a lower index.
     let (list, icon) = (j.seq_base + SEQ_LIST, j.seq_base + SEQ_ICON);
     let add = |scene: &mut MenuScene, seq: usize, tex: usize, parent: Option<usize>| {
@@ -360,9 +562,41 @@ fn load(j: &mut Journal, disc: &Disc, scene: &mut MenuScene, images: &mut Assets
         nodes.marks.push([add(scene, list, tex, Some(c)), add(scene, list, tex, Some(c))]);
         nodes.icons.push(add(scene, icon, tex, Some(c)));
     }
+    // Pages 1 and 2 (`FUN_002a3540` / `FUN_002a4188`).
+    for k in 0..6 {
+        let parent = match k {
+            3 => nodes.lay[2],
+            5 => nodes.lay[4],
+            _ => header,
+        };
+        nodes.lay.push(add(scene, list, tex, Some(parent)));
+    }
+    for k in 0..2 {
+        let seq = j.seq_base + j.tables.pic_seq[k];
+        nodes.pics.push(add(scene, seq, tex, Some(nodes.lay[k])));
+    }
+    nodes.title = add(scene, list, tex, None);
+    for _ in 0..ROWS {
+        let r = add(scene, list, tex, Some(nodes.lay[0]));
+        nodes.rows.push(r);
+        nodes.row_kids.push([add(scene, list, tex, Some(r)), add(scene, list, tex, Some(r))]);
+    }
     j.nodes = nodes;
     j.loaded = true;
     info!("journal: loaded jmemo.2ld, {} world pictures, {} world records", j.world_tex.len(), j.worlds.len());
+}
+
+/// The IMGD pictures of a BAR file as textures (`FUN_0023c478`).
+fn bar_pictures(disc: &Disc, path: &str, scene: &mut MenuScene, images: &mut Assets<Image>) -> Vec<Option<usize>> {
+    let pics = disc.read(path).map(|b| kh2_bar::parse(&b).map(|e| e.iter().map(|e| kh2_image::imgd::decode(e.data)).collect::<Vec<_>>()).unwrap_or_default()).unwrap_or_default();
+    pics.into_iter()
+        .map(|p| {
+            p.map(|img| {
+                scene.texs.push(menu_gfx::Tex::new(&img, images));
+                scene.texs.len() - 1
+            })
+        })
+        .collect()
 }
 
 fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<ButtonInput<KeyCode>>, mut se: MessageWriter<PlaySe>, mut scene: ResMut<MenuScene>) {
@@ -403,20 +637,46 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
     for k in [KeyCode::KeyJ, KeyCode::Escape, KeyCode::Backspace, KeyCode::KeyK, KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::ArrowLeft, KeyCode::ArrowRight, KeyCode::ArrowUp, KeyCode::ArrowDown] {
         keys.clear_just_pressed(k);
     }
-    let (Some(key), true) = (key, j.loaded) else { return };
+    let (Some(key), true, None) = (key, j.loaded, j.goto) else { return };
     let Some(o) = j.open.as_ref() else { return };
-    match page0(key, o.cursor, &o.shown, &j.worlds) {
+    let (page, world_byte) = (o.page, o.world);
+    let act = match page {
+        0 => page0(key, o.cursor, &o.shown, &j.worlds),
+        2 => page2(key, o.row, &o.cats),
+        _ => page1(key),
+    };
+    match act {
         Act::None => {}
-        Act::Cursor(c) => {
+        Act::Cursor(c) if page == 0 => {
             let old = o.cursor;
             j.open.as_mut().unwrap().cursor = c;
             select(&j, &mut scene, Some(old));
             menu_sound::play(&mut se, menu_sound::CURSOR);
             info!("journal: page 0 cursor {c}");
         }
+        Act::Cursor(r) => {
+            let o = j.open.as_mut().unwrap();
+            o.row = r;
+            menu_sound::play(&mut se, menu_sound::CURSOR);
+            info!("journal: page 2 row {r} (category {})", o.cats[r]);
+        }
+        Act::Open { page: 2, world } => {
+            menu_sound::play(&mut se, crate::menu_status::CONFIRM);
+            info!("journal: page 0 world {world} -> page 2 (FUN_002a27d8)");
+            j.goto = Some((2, world));
+        }
         Act::Open { page, world } => {
             menu_sound::play(&mut se, menu_sound::REFUSED);
-            info!("journal: page 0 world {world} -> page {page:#x} not ported (FUN_002a3540 and the pages after it); refused");
+            info!("journal: page 0 world {world} -> page {page:#x} not ported; refused");
+        }
+        Act::Category { cat, page } => {
+            menu_sound::play(&mut se, menu_sound::REFUSED);
+            info!("journal: page 2 row category {cat} -> page {page:#x} not ported (FUN_002a3da0); refused");
+        }
+        Act::Back => {
+            menu_sound::play(&mut se, menu_sound::CANCEL);
+            info!("journal: page 2 cancel -> page 0 (FUN_002a3da0 case -2)");
+            j.goto = Some((0, world_byte));
         }
         Act::Close => {
             menu_sound::play(&mut se, menu_sound::CANCEL);
@@ -436,7 +696,8 @@ fn select(j: &Journal, scene: &mut MenuScene, old: Option<usize>) {
     }
 }
 
-fn show(j: &mut Journal, scene: &mut MenuScene, mode: i32, world_number: Option<usize>, test: &dyn Fn(u16) -> bool) {
+/// The scene's open: hides the camp, plays the layout, the header and the plate, then builds the start page.
+fn show(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Assets<Image>, mode: i32, world_number: Option<usize>, test: &dyn Fn(u16) -> bool) {
     let jw = world_number.and_then(|w| j.world_index.get(w).copied()).unwrap_or(-1);
     let (page, world) = start(mode, jw);
     let roxas = mode == 2;
@@ -446,14 +707,7 @@ fn show(j: &mut Journal, scene: &mut MenuScene, mode: i32, world_number: Option<
     for i in 0..first {
         scene.nodes[i].visible = false;
     }
-    let shown = cells(&j.worlds, test);
-    let cursor = first_cursor(&j.worlds, test, world).filter(|&c| c < shown.len()).unwrap_or(0);
-    info!(
-        "journal: open (FUN_002756f8): mode {mode}, journal world {jw}, start page {page} with world byte {world}; {} cells {:?}{}",
-        shown.len(),
-        shown.iter().map(|&(i, p)| (j.worlds[i].code.clone(), p)).collect::<Vec<_>>(),
-        if page == 0 { String::new() } else { format!("; page {page} is not ported: page 0 (the page its cancel shows)") }
-    );
+    info!("journal: open (FUN_002756f8): mode {mode}, journal world {jw}, start page {page} with world byte {world}");
     // The layout object: the enter layout, then the hold layout (`FUN_0029b530(.., t[0], t[2])`).
     let t = j.layouts[usize::from(roxas)];
     let layer = j.layd.layout(t[0]).first().cloned();
@@ -478,6 +732,26 @@ fn show(j: &mut Journal, scene: &mut MenuScene, mode: i32, world_number: Option<
     scene.set_group_then(n.header, j.header[0], j.header[2]);
     scene.nodes[n.plate].visible = true;
     scene.set_group_then(n.plate, group::PLATE[0], group::PLATE[1]);
+    j.open = Some(Open { page, world, cursor: 0, shown: Vec::new(), row: 0, cats: Vec::new(), saved, roxas });
+    build(j, scene, disc, images, page, world, test);
+}
+
+/// Builds `page` (0, 1 or 2) after hiding the other page's nodes (`FUN_002a3da0`'s switch, `FUN_00276740`).
+fn build(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Assets<Image>, page: u16, world: i8, test: &dyn Fn(u16) -> bool) {
+    for id in j.nodes.page0().into_iter().chain(j.nodes.page12()) {
+        scene.nodes[id].visible = false;
+    }
+    match page {
+        1 | 2 => build12(j, scene, disc, images, page, world, test),
+        _ => build0(j, scene, world, test),
+    }
+}
+
+fn build0(j: &mut Journal, scene: &mut MenuScene, world: i8, test: &dyn Fn(u16) -> bool) {
+    let shown = cells(&j.worlds, test);
+    let cursor = first_cursor(&j.worlds, &shown, world).unwrap_or(0);
+    info!("journal: page 0: {} cells {:?}, cursor {cursor}", shown.len(), shown.iter().map(|&(i, p)| (j.worlds[i].code.clone(), p)).collect::<Vec<_>>());
+    let n = &j.nodes;
     let list = j.seq_base + SEQ_LIST;
     let (px, py) = scene.seqs.get(list).and_then(|s| s.groups.get(group::CELL_IDLE)).map_or((80, 98), |g| (g.unk20, g.unk1c));
     let at = grid(shown.len(), px, py);
@@ -492,19 +766,123 @@ fn show(j: &mut Journal, scene: &mut MenuScene, mode: i32, world_number: Option<
         }
         scene.nodes[c].pos = [at[k][0] as f32, at[k][1] as f32];
         scene.set_group(c, group::CELL_IDLE);
-        // The two children start in group 1 (0x98 / 0x99 / 0x9a follow data the port does not have: docs/menus.md 20.4).
+        // The two children start in group 1 (0x98 / 0x99 / 0x9a follow data the port does not have: docs/menus.md 20.5).
         scene.set_group(m[0], group::START);
         scene.set_group(m[1], group::START);
         let pic = shown[k].1;
         scene.nodes[ic].tex = j.world_tex.get(usize::from(pic)).copied().flatten().unwrap_or(j.tex);
         scene.set_group_then(ic, group::ICON[0], group::ICON[1]);
     }
-    j.open = Some(Open { page: 0, cursor, shown, saved, roxas });
+    let o = j.open.as_mut().unwrap();
+    (o.page, o.world, o.cursor, o.shown) = (0, world, cursor, shown);
     select(j, scene, None);
+}
+
+/// A text of font 1 (`FUN_00296b48` / `FUN_0029b6c0` write +0x1a0 = 1) in the colour `FUN_00138fc8` gives
+/// (0xe5e5e5), the size of the node's group (+0x18, 15 when none), drawn from the group's x/y when the object keeps
+/// flag 0x10 (`FUN_00139048`).
+fn text(j: &Journal, scene: &MenuScene, node: usize, group: usize, id: u16, align: u8, group_offset: bool) -> Option<Label> {
+    let g = scene.nodes[node].seq.and_then(|s| scene.seqs.get(s)).and_then(|s| s.groups.get(group)).copied().unwrap_or_default();
+    let size = if g.size > 0 { g.size as f32 } else { TEXT_SIZE };
+    let offset = if group_offset { [g.x as f32, g.y as f32] } else { [0.0; 2] };
+    let t = scene.text.as_ref()?;
+    let style = Style { font: 1, size: Some(size), align, ..Style::default() };
+    match j.msgs.as_ref().and_then(|m| m.tokens(u32::from(id))) {
+        Some(tokens) => Some(Label { tokens, style: Style { world: t.world, ..style }, offset }),
+        None => t.message(u32::from(id), style, offset),
+    }
+}
+
+fn build12(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Assets<Image>, page: u16, world: i8, test: &dyn Fn(u16) -> bool) {
+    let groups = if page == 2 { LAYERS_P2 } else { LAYERS_P1 };
+    let story = story_texts(&j.stor, world, test);
+    let record = j.worlds.iter().find(|w| w.id == world).cloned();
+    // `FUN_002a3d08`: the holders 2 and 4 show the story texts, their children the two labels, centred (+0x1a4 = 2).
+    let texts: [Option<(u16, u8, bool)>; 6] = [None, None, Some((story[0], 0, true)), Some((msg::LABEL_A as u16, 2, false)), Some((story[1], 0, true)), Some((msg::LABEL_B as u16, 2, false))];
+    let lay = j.nodes.lay.clone();
+    for k in 0..6 {
+        let id = lay[k];
+        scene.nodes[id].visible = true;
+        scene.nodes[id].off = [0.0; 2];
+        scene.set_group(id, groups[k]);
+        scene.nodes[id].label = texts[k].and_then(|(m, a, go)| text(j, scene, id, groups[k], m, a, go));
+    }
+    // The `jm_top` pictures (`FUN_002a45b0`): page 2 the world's code (world 1's alternative once its second flag is
+    // set), page 1 Roxas's name; picture 0 sits at layer 0's group x/y, picture 1 on layer 1.
+    let name = match (&record, page) {
+        (Some(w), 2) if w.id == 1 && test(w.flag2) => j.tables.top_alt.clone(),
+        (Some(w), 2) => w.code.clone(),
+        _ => j.tables.top_roxas.clone(),
+    };
+    if !j.top_tex.contains_key(&name) {
+        let t = bar_pictures(disc, &format!("menu/us/jm_top_{name}.2ld"), scene, images).into_iter().flatten().collect();
+        j.top_tex.insert(name.clone(), t);
+    }
+    let tops = j.top_tex.get(&name).cloned().unwrap_or_default();
+    let ext0 = scene.extent(j.seq_base + SEQ_LIST, groups[0]);
+    for k in 0..2 {
+        let id = j.nodes.pics[k];
+        let Some(&tex) = tops.get(k) else { continue };
+        scene.nodes[id].tex = tex;
+        scene.nodes[id].visible = true;
+        scene.nodes[id].off = if k == 0 { ext0 } else { [0.0; 2] };
+        // [inferred] the file arrives after the build: the per-frame call `FUN_002a4750(1)` plays enter then hold.
+        let [e, h] = j.tables.pic_group[k];
+        scene.set_group_then(id, e, h);
+    }
+    let (row_ids, kids) = (j.nodes.rows.clone(), j.nodes.row_kids.clone());
+    let cats = if page == 2 {
+        let all = test(ALL_WORLDS_FLAG);
+        // [conservative] the quest / minigame rows also show without the all-worlds flag once a record's progress
+        // test passes (`FUN_002b6d40`, the minigame bytes at 0x341620): the app has no such progress.
+        categories(world, all && has_world(&j.ques, 0x10, world), all && has_world(&j.mini, 8, world))
+    } else {
+        Vec::new()
+    };
+    let rows = if page == 2 { cats.len() } else { 1 };
+    let pitch = scene.seqs.get(j.seq_base + SEQ_LIST).and_then(|s| s.groups.get(groups[0])).map_or(0, |g| g.unk1c);
+    for k in 0..ROWS {
+        let (r, kid) = (row_ids[k], kids[k]);
+        let on = k < rows;
+        for id in [r, kid[0], kid[1]] {
+            scene.nodes[id].visible = on;
+        }
+        if !on {
+            continue;
+        }
+        // Rows hang from layer 0 one pitch (the 0x89 group's +0x1c) apart (`FUN_00138ed0(row, 0, k * pitch)`); page 1's
+        // one row from layer 0 too, without text.
+        scene.nodes[r].off = [0.0, (k as i32 * pitch) as f32];
+        for id in [r, kid[0], kid[1]] {
+            scene.set_group(id, ROW_GROUP);
+        }
+        scene.nodes[r].label = cats.get(k).and_then(|&c| text(j, scene, r, ROW_GROUP, j.tables.row_text[c], 0, true));
+    }
+    // Page 2's title on the object 0x350 (`FUN_00277258`, `FUN_00277640`).
+    let title = j.nodes.title;
+    if page == 2 {
+        scene.nodes[title].visible = true;
+        scene.set_group_then(title, TITLE[0], TITLE[1]);
+        scene.nodes[title].label = record.as_ref().and_then(|w| text(j, scene, title, TITLE[1], w.title(test), 2, true));
+        // The text starts at the object's position (`FUN_00138f38` -> `FUN_002375c0`): for this root object the
+        // group's animated anchor (as `menu_gfx`'s `label_anchor` reads it for the camp's rows).
+        scene.nodes[title].label_anchor = Some([0.0; 2]);
+    }
+    info!(
+        "journal: page {page} (FUN_002a3540 / FUN_002a4188): world {world} '{}', jm_top_{name}.2ld {} pictures, story texts {:x?}, rows {:?}, text {}",
+        record.as_ref().map_or("", |w| w.code.as_str()),
+        tops.len(),
+        story,
+        cats,
+        if scene.text.is_some() && scene.nodes[row_ids[0]].label.is_some() { "drawn" } else { "missing" }
+    );
+    let o = j.open.as_mut().unwrap();
+    (o.page, o.world, o.row, o.cats) = (page, world, 0, cats);
 }
 
 fn close(j: &mut Journal, scene: &mut MenuScene, menu: &mut Menu) {
     let Some(o) = j.open.take() else { return };
+    j.goto = None;
     for id in j.nodes.all() {
         scene.nodes[id].visible = false;
     }
@@ -533,6 +911,8 @@ fn tick(
         j.request = None;
         return;
     }
+    let story = progress.as_ref().map(|p| p.story());
+    let test = |id: u16| story.as_ref().is_some_and(|s| s.test(id));
     if let Some(mode) = j.request.take() {
         if !j.tried && scene.texs.len() >= 2 {
             load(&mut j, &disc, &mut scene, &mut images);
@@ -542,9 +922,13 @@ fn tick(
             return;
         }
         let world = area.name.get(..2).and_then(|w| crate::audio::WORLDS.iter().position(|&n| n == w));
-        let story = progress.as_ref().map(|p| p.story());
-        let test = |id: u16| story.as_ref().is_some_and(|s| s.test(id));
-        show(&mut j, &mut scene, mode, world, &test);
+        show(&mut j, &mut scene, &disc, &mut images, mode, world, &test);
+    }
+    if let Some((page, world)) = j.goto.take()
+        && j.open.is_some()
+    {
+        build(&mut j, &mut scene, &disc, &mut images, page, world, &test);
+        *logged = 0;
     }
     // The camp redraws its plates and digits every frame: keep its nodes hidden while the journal is up.
     if let Some(o) = j.open.as_ref() {
@@ -580,7 +964,7 @@ mod tests {
     fn worlds() -> Vec<World> {
         [(0x0f, "jm", 0x831), (0, "tt", 0x831), (1, "hb", 0x1002), (2, "bb", 0x1402), (0x10, "jm", 0x831)]
             .iter()
-            .map(|&(id, c, f)| World { id, code: c.into(), flag: f, flag2: 0 })
+            .map(|&(id, c, f)| World { id, code: c.into(), flag: f, flag2: 0, names: [0; 4] })
             .collect()
     }
 
@@ -615,9 +999,20 @@ mod tests {
         assert_eq!(cells(&w, &all), vec![(0, 0x0f), (1, 0), (2, LOCKED_ICON), (3, LOCKED_ICON)]);
         assert!(cells(&w, &|_| false).is_empty());
         // The first cursor is the world's place among the shown records (0xf for a negative byte).
-        assert_eq!(first_cursor(&w, &tt_only, 0), Some(1));
-        assert_eq!(first_cursor(&w, &tt_only, -1), Some(0));
-        assert_eq!(first_cursor(&w, &tt_only, 2), None);
+        let s = cells(&w, &tt_only);
+        assert_eq!(first_cursor(&w, &s, 0), Some(1));
+        assert_eq!(first_cursor(&w, &s, -1), Some(0));
+        assert_eq!(first_cursor(&w, &s, 2), None);
+    }
+
+    #[test]
+    fn the_first_cursor_indexes_the_shown_cells() {
+        // A record with id 0x10..0x13 before the wanted world gets no cell: the cursor still lands on that world's cell.
+        let mut w = worlds();
+        w.insert(0, World { id: 0x11, code: "zz".into(), flag: 0x831, flag2: 0, names: [0; 4] });
+        let s = cells(&w, &|id| id == 0x831);
+        let c = first_cursor(&w, &s, 0).unwrap();
+        assert_eq!(w[s[c].0].id, 0);
     }
 
     #[test]
@@ -648,6 +1043,78 @@ mod tests {
         assert_eq!(page0(Key::Confirm, 0, &[], &w), Act::None);
         assert_eq!(step(2, 14, 0, 1), 8);
         assert_eq!(step(10, 14, 0, 1), 10);
+    }
+
+    #[test]
+    fn page_two_rows_and_state_machine() {
+        // Category 3 is left out for journal world 8, 5 and 6 need their lists.
+        assert_eq!(categories(0, false, false), vec![0, 1, 2, 3, 4, 7]);
+        assert_eq!(categories(8, true, true), vec![0, 1, 2, 4, 5, 6, 7]);
+        let cats = categories(0, false, false);
+        assert_eq!(page2(Key::Move(0, 1), 0, &cats), Act::Cursor(1));
+        assert_eq!(page2(Key::Move(0, -1), 0, &cats), Act::Cursor(5), "a new press wraps");
+        assert_eq!(page2(Key::Move(0, 1), 5, &cats), Act::Cursor(0));
+        assert_eq!(page2(Key::Move(1, 0), 0, &cats), Act::None);
+        assert_eq!(page2(Key::Confirm, 3, &cats), Act::Category { cat: 3, page: 7 });
+        assert_eq!(page2(Key::Confirm, 5, &cats), Act::Category { cat: 7, page: 0xb });
+        assert_eq!(page2(Key::Cancel, 0, &cats), Act::Back);
+        assert_eq!(page2(Key::Start, 0, &cats), Act::Close);
+        assert_eq!(page1(Key::Cancel), Act::Close);
+        assert_eq!(page1(Key::Confirm), Act::None);
+        assert_eq!((0..8).map(category_page).collect::<Vec<_>>(), vec![6, 3, 4, 7, 8, 9, 10, 0xb]);
+    }
+
+    #[test]
+    fn story_texts_take_the_last_open_record() {
+        let mut d = vec![0u8; 0x10 + 3 * 0xc];
+        d[8] = 3;
+        for (k, (w, a, b, f)) in [(0i8, 0x10u16, 0x11u16, 1u16), (0, 0x20, 0x21, 2), (1, 0x30, 0x31, 1)].into_iter().enumerate() {
+            let r = 0x10 + k * 0xc;
+            d[r] = w as u8;
+            d[r + 4..r + 6].copy_from_slice(&a.to_le_bytes());
+            d[r + 6..r + 8].copy_from_slice(&b.to_le_bytes());
+            d[r + 10..r + 12].copy_from_slice(&f.to_le_bytes());
+        }
+        assert_eq!(story_texts(&d, 0, &|f| f == 1), [0x10, 0x11]);
+        assert_eq!(story_texts(&d, 0, &|_| true), [0x20, 0x21]);
+        assert_eq!(story_texts(&d, 2, &|_| true), [NO_TEXT; 2]);
+        assert!(has_world(&d, 0xc, 1) && !has_world(&d, 0xc, 2));
+    }
+
+    /// Pages 1 and 2's data on the disc (skipped without `KH2_ISO`).
+    #[test]
+    fn the_disc_page_two_data() {
+        let Ok(iso) = std::env::var("KH2_ISO") else { return };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok()).unwrap();
+        let t = read_page_tables(&Exe::load(elf).unwrap()).expect("the page tables");
+        assert_eq!(t.pic_seq, [4, 3]);
+        assert_eq!(t.pic_group, [[1, 2], [1, 2]]);
+        assert_eq!(t.top_roxas, "tt2");
+        assert!(t.row_text.iter().all(|&m| m != 0));
+        let two = layd::parse_2ld(&a.read("menu/us/jmemo.2ld").unwrap()).unwrap();
+        let s5 = &two.layd.seqs[SEQ_LIST];
+        for g in LAYERS_P2.iter().chain(&LAYERS_P1).chain(&TITLE) {
+            assert!(s5.groups.len() > *g, "group {g:#x}");
+        }
+        assert!(s5.groups[LAYERS_P2[0]].unk1c > 0, "the row pitch");
+        for g in [TITLE[1], 3, 0x91] {
+            let x = s5.groups[g];
+            eprintln!("group {g:#x}: x {} y {} size {} 1c {} 20 {}", x.x, x.y, x.size, x.unk1c, x.unk20);
+        }
+        for s in t.pic_seq {
+            assert!(two.layd.seqs[s].groups.len() > 2);
+        }
+        let bar = a.read("menu/us/jiminy.bar").unwrap();
+        let e = kh2_bar::parse(&bar).unwrap();
+        let w = parse_worlds(e[0].data).unwrap();
+        assert!(!records(e[1].data, 0xc).is_empty(), "story records");
+        // Every world code with an id below 0xf, and Roxas's name, has a jm_top file of pictures.
+        for name in w.iter().filter(|w| (0..0xf).contains(&w.id)).map(|w| w.code.clone()).chain([t.top_roxas.clone(), t.top_alt.clone()]) {
+            let f = a.read(&format!("menu/us/jm_top_{name}.2ld")).unwrap_or_else(|_| panic!("jm_top_{name}.2ld"));
+            let pics = kh2_bar::parse(&f).unwrap();
+            assert!(pics.len() >= 2 && pics.iter().take(2).all(|p| kh2_image::imgd::decode(p.data).is_some()), "{name}");
+        }
     }
 
     /// The disc's files and the executable's tables (skipped without `KH2_ISO`).

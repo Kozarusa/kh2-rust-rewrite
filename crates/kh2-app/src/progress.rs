@@ -317,6 +317,10 @@ pub struct Progress {
     /// The shops' first-visit byte (save `+0x3724`): bit 0 / bit 1 once the opening text of a shop with the state's
     /// `+0xd` clear / set was dismissed (`FUN_002621a0`, `FUN_00265498`). Saved in the slot files (key `shop_visits`).
     shop_visits: u8,
+    /// The journal's seen set (save `+0x38f0`, `FUN_002b70e0`, docs/menus.md 20.9): one (category, entry) pair per entry the
+    /// journal has marked seen (`menu_journal::marks::Cat` as a number). The original keeps bits at per-category offsets; the
+    /// app keeps the pairs [inferred storage, same meaning]. Saved in the slot files (key `journal_seen`).
+    journal_seen: std::collections::BTreeSet<(u8, u32)>,
 }
 
 /// The synthesis record at save `+0x3728` (`FUN_002906c0` answers its address). Bit sets are kept as u64 (the
@@ -349,6 +353,9 @@ pub struct Moogle {
 }
 
 /// The material slots of the record (`FUN_002887c8` and `FUN_00290400` walk 0x32).
+/// The first chest bit in the record array: `0x33fdcc - 0x33fdb0` bytes is 224 bits (`FUN_001a6a90` vs `FUN_001a5328`).
+pub const CHEST_BITS: u16 = 224;
+
 pub const MOOGLE_MATERIALS: usize = 0x32;
 
 impl Moogle {
@@ -456,7 +463,7 @@ impl Progress {
         let mut block = vec![0u8; off::LEN];
         let n = bytes.len().min(off::LEN);
         block[..n].copy_from_slice(&bytes[..n]);
-        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT], story: StoryHandle::default(), new_seen: Vec::new(), record_bits: Vec::new(), moogle: Moogle::default(), shop_seen: [0; 4], shop_visits: 0 }
+        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT], story: StoryHandle::default(), new_seen: Vec::new(), record_bits: Vec::new(), moogle: Moogle::default(), shop_seen: [0; 4], shop_visits: 0, journal_seen: Default::default() }
     }
 
     // --- story flags ------------------------------------------------------------------------
@@ -792,6 +799,34 @@ impl Progress {
         if n < 128 {
             self.shop_seen[n >> 5] |= 1 << (n & 31);
         }
+    }
+
+    /// `FUN_001a6a90`: the chest with `OverallChestIndex` `n` has been opened. The chest bits are the word array at
+    /// `0x33fdcc`, which is the record array (`0x33fdb0`) from bit 224 on, so they share `record_bits`.
+    pub fn chest_opened(&self, n: u16) -> bool {
+        n != 0 && self.record_bit(CHEST_BITS + n)
+    }
+
+    /// Marks the chest `n` opened (the chest's open path sets its bit in the same array).
+    pub fn set_chest_opened(&mut self, n: u16) {
+        if n != 0 {
+            self.set_record_bit(CHEST_BITS + n);
+        }
+    }
+
+    /// The journal's seen set (save `+0x38f0`): entry `key` of category `cat` was marked seen.
+    pub fn journal_seen(&self, cat: u8, key: u32) -> bool {
+        self.journal_seen.contains(&(cat, key))
+    }
+
+    /// Marks an entry of the journal seen.
+    pub fn set_journal_seen(&mut self, cat: u8, key: u32) {
+        self.journal_seen.insert((cat, key));
+    }
+
+    /// Every (category, entry) pair of the journal's seen set.
+    pub fn journal_seen_all(&self) -> impl Iterator<Item = (u8, u32)> + '_ {
+        self.journal_seen.iter().copied()
     }
 
     /// `FUN_00265498`: bit `n` (0 or 1) of the first-visit byte (save `+0x3724`).
@@ -1359,6 +1394,7 @@ impl Progress {
             moogle: Moogle::default(),
             shop_seen: [0; 4],
             shop_visits: 0,
+            journal_seen: Default::default(),
         };
         p.init_party();
         p.apply_plrp(plrp, 0);
@@ -1692,6 +1728,21 @@ impl Progress {
                         self.set_shop_seen(usize::from(n));
                     }
                 }
+                // The opened chests (`OverallChestIndex` numbers, bits of the record array from 224 on) and the journal's seen
+                // set (save +0x38f0): `"chests": [indexes]`, `"journal_seen": [[category, entry], ..]`.
+                "chests" => {
+                    for n in list(v, "chests")? {
+                        self.set_chest_opened(n);
+                    }
+                }
+                "journal_seen" => {
+                    let Json::Arr(a) = v else { return Err("journal_seen: expected an array of [category, entry]".into()) };
+                    for p in a {
+                        let Json::Arr(p) = p else { return Err("journal_seen: expected [category, entry] pairs".into()) };
+                        let (Some(c), Some(e)) = (p.first(), p.get(1)) else { return Err("journal_seen: expected [category, entry] pairs".into()) };
+                        self.set_journal_seen(int(c, "journal_seen")?.clamp(0, 255) as u8, int(e, "journal_seen")?.max(0) as u32);
+                    }
+                }
                 "shop_visits" => {
                     for n in list(v, "shop_visits")? {
                         self.set_shop_visit(n as u8);
@@ -1762,6 +1813,7 @@ impl Progress {
                     self.moogle = Moogle::default();
                     self.shop_seen = [0; 4];
                     self.shop_visits = 0;
+                    self.journal_seen.clear();
                     self.record_bits.clear();
                 }
                 "new_seen" => {
@@ -2172,6 +2224,7 @@ impl Progress {
   \"shop_seen\": {},
   \"shop_visits\": {},
   \"record_bits\": {},
+  \"journal_seen\": {},
   \"story_raw\": {{\"words\": \"{}\", \"programs\": \"{}\", \"locks\": {}}},
   \"world_points\": {}
 ",
@@ -2188,6 +2241,7 @@ impl Progress {
             nums(shop_seen),
             nums(shop_visits),
             nums(self.record_bits.iter().copied()),
+            format!("[{}]", self.journal_seen.iter().map(|(c, e)| format!("[{c}, {e}]")).collect::<Vec<_>>().join(", ")),
             hex(&words),
             hex(&st.programs),
             nums(locks),
@@ -2637,6 +2691,31 @@ mod tests {
         let short = text.replacen("\"block\": \"", "\"block\": \"00", 1);
         assert!(q.apply_json(&short).is_err());
         assert_eq!(Progress::slot_info("{\"munny\": 1}"), None);
+    }
+
+    /// WP-MN13: the opened chests and the journal's seen set go through a slot file and the `chests` / `journal_seen` keys;
+    /// the chest bits are the record array from bit 224 on (`FUN_001a6a90` reads `0x33fdcc`, `FUN_001a5328` `0x33fdb0`).
+    #[test]
+    fn opened_chests_and_the_journal_seen_set_are_saved() {
+        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        assert!(!p.chest_opened(7) && !p.chest_opened(0));
+        p.set_chest_opened(7);
+        p.set_chest_opened(0);
+        p.set_journal_seen(3, 9);
+        p.set_journal_seen(0, 1);
+        assert!(p.chest_opened(7) && !p.chest_opened(8) && !p.chest_opened(0), "chest 0 is no chest");
+        assert!(p.record_bit(224 + 7) && !p.record_bit(7), "the chest bits sit behind the 224 record bits");
+        let text = p.slot_json(&SlotInfo { level: 1, munny: 0, play_seconds: 0, area: "tt04".into() });
+        let mut q = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        q.set_journal_seen(5, 5);
+        q.apply_json(&text).expect("loads");
+        assert!(q.chest_opened(7) && !q.chest_opened(6));
+        assert!(q.journal_seen(3, 9) && q.journal_seen(0, 1) && !q.journal_seen(5, 5), "the block key reset the old pair");
+        assert_eq!(q.journal_seen_all().collect::<Vec<_>>(), [(0, 1), (3, 9)]);
+        let mut r = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        r.apply_json("{\"chests\": [12, 300], \"journal_seen\": [[4, 2]]}").expect("the keys load");
+        assert!(r.chest_opened(12) && r.chest_opened(300) && r.journal_seen(4, 2));
+        assert!(r.apply_json("{\"journal_seen\": [3]}").is_err());
     }
 
     /// WP-PRG1: the moogle's record, the shops' bits, the record bits, the story arrays and the world points go through a

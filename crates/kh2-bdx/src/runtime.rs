@@ -222,6 +222,31 @@ impl Host for HeapHost<'_> {
             None => self.host.write_mem(addr, data),
         }
     }
+
+    fn target_parts(&mut self, kind: i32, skip_flagged: bool) -> Option<Vec<crate::search::TargetPart>> {
+        self.host.target_parts(kind, skip_flagged)
+    }
+
+    fn target_found(&mut self, record: u32, found: Option<(u32, u8)>, walked: u8) {
+        self.host.target_found(record, found, walked)
+    }
+}
+
+/// Reads `out.len()` bytes the script points at: its own memory, else the heap, else the host's.
+fn read_bytes(mem: &mut Mem<'_>, host: &mut dyn Host, addr: u32, out: &mut [u8]) -> Result<(), VmError> {
+    match mem.read(addr, out) {
+        Ok(()) => Ok(()),
+        Err(Outside::Ext(_)) if host.read_mem(addr, out) => Ok(()),
+        Err(Outside::Ext(a) | Outside::Fault(a)) => Err(VmError::BadAddress(a)),
+    }
+}
+
+fn write_bytes(mem: &mut Mem<'_>, host: &mut dyn Host, addr: u32, data: &[u8]) -> Result<(), VmError> {
+    match mem.write(addr, data) {
+        Ok(()) => Ok(()),
+        Err(Outside::Ext(_)) if host.write_mem(addr, data) => Ok(()),
+        Err(Outside::Ext(a) | Outside::Fault(a)) => Err(VmError::BadAddress(a)),
+    }
 }
 
 fn heap_span(heap_len: usize, addr: u32, len: usize) -> Option<std::ops::Range<usize>> {
@@ -1056,6 +1081,12 @@ impl CoreEnv<'_> {
             (2, 23) => Call::Target { obj: self.obj_of(mem, a[0])? },
             (2, 88) => Call::LastAttacker { obj: self.obj_of(mem, a[0])? },
 
+            // ---- the target search on a block in the script's memory (`crate::search`) ----
+            // 6.3 (0x2ee718 -> FUN_002f01a0) and 6.5 (0x2ee750 -> FUN_002f04a8) need the executable's
+            // numbers; 6.4 (0x2ee738 -> FUN_002f0748) and 10.55 (0x2f7540 -> FUN_002f0758) only memory.
+            (6, 4) | (10, 55) if a.len() >= 1 + (i == 55) as usize => return self.search_block(mem, g, i, a),
+            (6, 3 | 5) if a.len() >= if i == 3 { 2 } else { 7 } && self.search_consts().is_some() => return self.search_block(mem, g, i, a),
+
             // ---- group 6 ----
             (6, 58) => {
                 self.core.queue_mode_remote(code, mem.sh, a[1])?;
@@ -1097,6 +1128,65 @@ impl CoreEnv<'_> {
         };
         let v = self.host.call(&call);
         Ok(Some(convert(v, mem)))
+    }
+
+    fn search_consts(&self) -> Option<crate::search::SearchConsts> {
+        self.core.exe_table.as_ref().and_then(|t| t.search)
+    }
+
+    /// Hosts 6.3, 6.4, 6.5 and 10.55 on the target-search block the first argument points at (Goofy's
+    /// `tornado` and `turbo` keep it in their globals). 6.5 answers the record the second argument points
+    /// at from the host's target parts ([`Host::target_parts`]); a host without them gets the call as
+    /// before (`Call::Unknown`).
+    fn search_block(&mut self, mem: &mut Mem<'_>, g: u16, i: u16, a: &[u32]) -> Result<Option<u32>, VmError> {
+        use crate::search::{Block, block_size, search};
+        let k = self.search_consts();
+        let mut hh = HeapHost { heap: &mut self.core.heap, host: &mut *self.host };
+        let at = a[0];
+        match (g, i) {
+            // FUN_002f0758: bit 16 of the word at +4 = (the second argument != 0).
+            (10, 55) => {
+                let mut w = [0u8; 4];
+                read_bytes(mem, &mut hh, at.wrapping_add(4), &mut w)?;
+                let v = u32::from_le_bytes(w) & !0x1_0000 | u32::from(a[1] != 0) << 16;
+                write_bytes(mem, &mut hh, at.wrapping_add(4), &v.to_le_bytes())?;
+            }
+            // FUN_002f0748: byte +4 (the next history slot) and word +8 (the history count) cleared.
+            (6, 4) => {
+                write_bytes(mem, &mut hh, at.wrapping_add(4), &[0])?;
+                write_bytes(mem, &mut hh, at.wrapping_add(8), &[0; 4])?;
+            }
+            // FUN_002f01a0: the first seven words (the history entries are left as they are).
+            (6, 3) => {
+                let k = k.expect("search numbers");
+                let b = Block::new(a[1] as i32, &k).bytes();
+                let mut hh = HeapHost { heap: &mut self.core.heap, host: &mut *self.host };
+                write_bytes(mem, &mut hh, at, &b[..0x1c])?;
+            }
+            // FUN_002f04a8 (via 0x2ee750: block, record, point, direction, nearest, flat, history).
+            _ => {
+                let k = k.expect("search numbers");
+                let mut w = [0u8; 4];
+                read_bytes(mem, &mut hh, at, &mut w)?;
+                let mut bytes = vec![0u8; block_size(i32::from_le_bytes(w))];
+                read_bytes(mem, &mut hh, at, &mut bytes)?;
+                let mut block = Block::read(&bytes);
+                let Some(parts) = hh.target_parts(block.kind, block.skips_flagged()) else {
+                    let v = self.host.call(&Call::Unknown { group: g, index: i, args: a.to_vec() });
+                    return Ok(Some(convert(v, mem)));
+                };
+                let (point, dir) = (self.vec(mem, a[2])?, self.vec(mem, a[3])?);
+                let found = search(&mut block, &parts, point, dir, a[4] != 0, a[5] != 0, a[6] != 0, &k);
+                let mut hh = HeapHost { heap: &mut self.core.heap, host: &mut *self.host };
+                write_bytes(mem, &mut hh, at, &block.bytes())?;
+                // FUN_0018ed40 then FUN_0018f490: object, part, 0, -1.
+                let (o, p) = found.map_or((0, 0), |(o, p)| (o, p as u32));
+                let rec: Vec<u8> = [o, p, 0, u32::MAX].iter().flat_map(|x| x.to_le_bytes()).collect();
+                write_bytes(mem, &mut hh, a[1], &rec)?;
+                hh.target_found(a[1], found, block.walked);
+            }
+        }
+        Ok(None)
     }
 
     /// Turns argument words into typed arguments by the kind letters of `names::HostFn::kinds`.

@@ -448,13 +448,17 @@ impl FriendHost<'_, '_> {
                 w.pos = crate::enemy_obj::from_game(*v);
                 (Value::None, St::Impl, "")
             }
-            // 1.89 set_velocity (0x172f90): +0x880 = the direction made unit, the speed in w; [inferred] the free
-            // hand object moves by it each frame (its mover's consumer was not read).
+            // 1.89 set_velocity (0x172f90 -> FUN_00183418): +0x880 = the direction made unit, +0x88c the speed;
+            // FUN_00181e00 adds direction x speed x the frame unit to that frame's displacement and clears
+            // +0x880 (`friend_ai` moves the free hand object by it once and clears it).
             Call::SetVelocity { obj, dir, speed } if is_w(*obj) => {
                 let d = crate::enemy_obj::from_game(*dir).normalize_or_zero();
                 self.fields.weapon.as_mut().expect("weapon").vel = d * *speed;
-                (Value::None, St::Approx, "the free hand object moves by direction x speed each frame [inferred consumer]")
+                (Value::None, St::Approx, "the free hand object moves by direction x speed in the frame it was set (FUN_00181e00); its mover's own displacement is not modelled")
             }
+            // 1.79 face_toward (0x172d98 -> FUN_0016a828): without the lock bit (+0x7f8 bit 8, FUN_0019ad98) a yaw
+            // only, atan2 of the direction's x and z (FUN_003003e8), into the wanted yaw +0x66c (FUN_0016a7f0):
+            // the hand object's facing is flat in the game too.
             Call::FaceToward { obj, dir } | Call::FaceDirection { obj, dir } if is_w(*obj) => {
                 let d = crate::enemy_obj::from_game(*dir);
                 if d.x != 0.0 || d.z != 0.0 {

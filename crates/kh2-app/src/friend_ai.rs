@@ -599,12 +599,18 @@ fn friend_update(
                 spell_hits.write(sh);
             }
         }
-        // The free hand object moves by its velocity (1.89) [inferred: once a frame after the script],
-        // and `party::member_hands` draws it at its own place while it is off the hand.
+        // The free hand object moves by its secondary velocity (1.89, +0x880): FUN_00181e00 (the object's
+        // movement, from FUN_001b74e0) adds the direction times the speed +0x88c times the frame unit to the
+        // frame's displacement and then clears +0x880, so it moves only in frames the script set it
+        // [inferred: after the script's slice; its mover's own part (+0xc vtable +0x1c) and FUN_00182370's
+        // are not modelled]; `party::member_hands` draws it at its own place while it is off the hand.
         if let Some(w) = fields.weapon.as_mut()
             && !w.linked
         {
             w.pos += w.vel;
+        }
+        if let Some(w) = fields.weapon.as_mut() {
+            w.vel = Vec3::ZERO;
         }
         let thrown = fields.weapon.as_ref().filter(|w| !w.linked).map(|w| (w.pos, w.yaw, w.motion));
         if log && thrown.is_some() != m.thrown.is_some() {

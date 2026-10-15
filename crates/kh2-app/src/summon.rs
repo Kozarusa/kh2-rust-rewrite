@@ -776,7 +776,7 @@ pub mod stitch {
                     s.choosing.current = before;
                     can(c, recs, &s, now, i, cont)
                 };
-                battle::choose(recs, &mut st, &Params::default(), CLASS, &MemberNow::default(), false, false, |_| None, &mut can_f, || roll(), |n| rand(n))
+                battle::choose(recs, &mut st, &Params::default(), CLASS, &MemberNow::default(), false, false, |_| None, &mut can_f, &mut *roll, &mut *rand)
             };
             ai.choosing = st;
             match choice {
@@ -2088,7 +2088,7 @@ fn objects(
             let body = gts.get(f.hurt_body).ok()?;
             let a = anims.get(f.hurt_body).ok()?;
             let (cc, cg) = camera?;
-            let vols = crate::combat::hurt_volumes(&a, body);
+            let vols = crate::combat::hurt_volumes(a, body);
             let p = vols.iter().map(|v| (v.a + v.b) * 0.5).min_by(|x, y| x.distance_squared(cg.translation()).total_cmp(&y.distance_squared(cg.translation()))).unwrap_or(body.translation());
             let ndc = cc.world_to_ndc(cg, p)?;
             (ndc.x.abs() <= 1.0 && ndc.y.abs() <= 1.0 && (0.0..=1.0).contains(&ndc.z)).then_some((te, p))
@@ -2783,7 +2783,7 @@ mod tests {
             let case = round % 8;
             ee.call(0x0011_6780, &[AI as u64, case as u64], &[], STACK).expect("FUN_00116780");
             let mut want = g;
-            stitch::goal(&c, case as i32, p, &mut want, &mut || 0.0, &mut |_| 0);
+            stitch::goal(&c, case, p, &mut want, &mut || 0.0, &mut |_| 0);
             let got = get(&mut ee, 0x650);
             assert_eq!(&got[..3], &want[..3], "goal case {case}");
             n += 1;

@@ -632,7 +632,7 @@ mod at {
     pub const OWNED_RIGHT: f32 = 400.0;
     pub const DETAIL: [f32; 2] = [70.0, 360.0];
     pub const MUNNY: [f32; 2] = [470.0, 396.0];
-    pub const TAG_X: f32 = 250.0;
+    pub const TAG_X: f32 = 46.0;
     pub const WINDOW: [f32; 2] = [70.0, 200.0];
     pub const HAND: [f32; 2] = [52.0, 120.0];
     pub const IDLE: [u8; 4] = [0x9f, 0x9f, 0xaf, 0x80];
@@ -681,7 +681,7 @@ struct Open {
 }
 
 /// The NEW / VIEWED tags of the shop rows.
-#[derive(Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Tags {
     /// The Buy row of the top page (`FUN_00262bd0`) and the third row (`FUN_002919e8`).
     buy: Option<Tag>,
@@ -786,8 +786,11 @@ fn load(m: &mut ShopMenu, disc: &Disc, scene: &mut MenuScene, images: &mut Asset
     n.detail = add(scene, None, tex);
     n.munny = add(scene, None, tex);
     n.question = [add(scene, None, tex), add(scene, None, tex)];
+    // The tag's rectangle (0, 128)-(40, 140) is the NEW! art of the file's second image [inferred: the port's sequences
+    // draw from one image each; the loader's rule for which one a sequence uses was not read].
+    let tag_tex = if scene.texs.len() > m.tex + 1 { m.tex + 1 } else { m.tex };
     for _ in 0..LIST_ROWS + 3 {
-        n.marks.push(add(scene, mark_seq.map(|q| m.seq_base + q), tex));
+        n.marks.push(add(scene, mark_seq.map(|q| m.seq_base + q), tag_tex));
     }
     m.mark_seq = mark_seq;
     m.nodes = n;
@@ -860,11 +863,15 @@ fn refresh_tags(m: &mut ShopMenu, p: Option<&Progress>) {
     let ShopMenu { shops, open, .. } = m;
     let (Some(o), Some(p)) = (open.as_mut(), p) else { return };
     let seen = |n: usize| p.shop_seen(n);
-    o.tags = Tags {
+    let tags = Tags {
         buy: buy_tag(o.fresh, &seen),
         third: (o.stock.rows_bits & 2 != 0 && synth::has_new(&p.moogle)).then_some(Tag::New),
         items: o.stock.items.iter().map(|&id| (id, item_tag(shops, o.fresh, id, &seen))).collect(),
     };
+    if tags != o.tags {
+        info!("shop: tags Buy row {:?}, third row {:?}, items {:?} (FUN_00262bd0, FUN_002919e8, FUN_002626e8)", tags.buy, tags.third, tags.items);
+        o.tags = tags;
+    }
 }
 
 /// Shows tag `k` at `at` (nothing for `None`). The group restarts only when it changes.
@@ -884,8 +891,9 @@ fn put_tag(m: &ShopMenu, scene: &mut MenuScene, k: usize, tag: Option<Tag>, at: 
     }
 }
 
-/// Where the tags sit: at the right of the row's text [inferred: the original parents the tag to the row widget at
-/// the extent of the row group (`FUN_00138ed0(tag, FUN_00237618(row + 0x18), ..)`); the port's rows have no plate].
+/// Where the tags sit: left of the row's hand (the tag sprite is 40 wide and ends at its origin) [inferred: the original
+/// parents the tag to the row widget at the extent of the row group (`FUN_00138ed0(tag, FUN_00237618(row + 0x18), ..)`,
+/// group 0x62's extent is 0x10e); the port's rows have no plate, so the tag takes the free space at the left].
 fn tag_at(row_y: f32) -> [f32; 2] {
     [at::TAG_X, row_y]
 }
@@ -2345,8 +2353,8 @@ pub mod synth {
         pub fn key(&mut self, k: super::Key, b: &Book, s: &mut dyn Store) -> Act {
             let before = self.page;
             let act = self.key_inner(k, b, s);
-            // `+0x112d` falls once a page the opening showed is left for another (`FUN_00285388`, `FUN_00285b30`).
-            if act == Act::Page && self.page != before && matches!(before, Page::Top | Page::Materials { .. } | Page::Rewards | Page::List(_)) {
+            // `+0x112d` falls when page 9, page 10 or the Recipes list is left (`FUN_00285388`, `FUN_00285b30`, `FUN_00286580`).
+            if act == Act::Page && self.page != before && matches!(before, Page::Top | Page::Materials { totals: true } | Page::List(2)) {
                 self.marks.fresh = false;
             }
             self.see(s.moogle_mut());
@@ -2881,6 +2889,7 @@ mod tests {
         let mats: Vec<u16> = items.iter().filter(|i| i.r#type == synth::MATERIAL_TYPE).map(|i| i.id).take(crate::progress::MOOGLE_MATERIALS).collect();
         let msgs = kh2_image::text::Messages::from_bar(&a.read("msg/us/sys.bar").unwrap()).unwrap();
         let name = |id: u16| items.iter().find(|i| i.id == id).and_then(|i| msgs.text(u32::from(i.name))).unwrap_or_default();
+        eprintln!("materials (id, category, rank, name): {:?}", items.iter().filter(|i| i.r#type == synth::MATERIAL_TYPE).map(|i| (i.id, i.flag1, i.rank, name(i.id))).collect::<Vec<_>>());
         eprintln!("{} materials (type 0x10), levels {:?}", mats.len(), mix.levels.iter().map(|l| (l.unlock, l.points)).collect::<Vec<_>>());
         for r in &mix.recipes {
             assert!(r.mats.iter().all(|(id, n)| mats.contains(id) && *n > 0), "recipe {:#x}: every line is a material", r.id);
@@ -3235,6 +3244,43 @@ mod tests {
         f.page = Page::First;
         assert_eq!(f.key(Key::Cancel, &v), Act::Page);
         assert_eq!(f.page, Page::Top);
+    }
+
+
+    /// The disc: `itemshop.2ld` has the tag groups 0x77 / 0x78 and the rows' plate groups, and `cond` rows read like
+    /// the rules `cond_met` ports (skipped without `KH2_ISO`).
+    #[test]
+    fn the_disc_shop_layout_has_the_tag_groups_and_the_rewards_read_as_conditions() {
+        let Ok(iso) = std::env::var("KH2_ISO") else { return };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let two = layd::parse_2ld(&a.read("menu/us/itemshop.2ld").unwrap()).unwrap();
+        for (i, q) in two.layd.seqs.iter().enumerate() {
+            let tags: Vec<(usize, usize, i32, i32)> = [TAG_VIEWED, TAG_NEW, 0x24, 0x61, 0x62].iter().filter_map(|&g| q.groups.get(g).map(|x| (g, q.last_frame(g) as usize, x.x, x.y))).collect();
+            eprintln!("itemshop.2ld seq {i}: {} groups, (group, last frame, x, y) {tags:x?}", q.groups.len());
+        }
+        let seq = two.layd.seqs.iter().position(|q| q.groups.len() > TAG_NEW.max(TAG_VIEWED)).expect("a sequence with the tag groups");
+        eprintln!("tag sequence {seq}; {} images {:?}", two.images.len(), two.images.iter().map(|i| (i.width, i.height)).collect::<Vec<_>>());
+        for g in [TAG_VIEWED, TAG_NEW] {
+            let q = &two.layd.seqs[seq];
+            let ext = kh2_image::seqd::Ext::default();
+            for f in [0, 5, 30, 60, 100] {
+                let quads = q.quads(g, f, [0.0, 0.0], &ext);
+                eprintln!("group {g:#x} frame {f}: {} quads {:?}", quads.len(), quads.iter().take(3).map(|x| (x.pos[0], x.pos[3], x.uv[0], x.uv[3])).collect::<Vec<_>>());
+            }
+        }
+        let mix = Mix::parse(&a.read("menu/us/mixdata.bar").unwrap()).unwrap();
+        let items = kh2_tables::load::<t::Item>(&mut a, &t::ITEM).unwrap().rows;
+        let msgs = kh2_image::text::Messages::from_bar(&a.read("msg/us/sys.bar").unwrap()).unwrap();
+        let name = |id: u16| items.iter().find(|i| i.id == id).and_then(|i| msgs.text(u32::from(i.name))).unwrap_or_default();
+        let mut kinds = [0usize; 4];
+        for (k, c) in mix.conds.iter().enumerate() {
+            kinds[usize::from(c.kind.min(3))] += 1;
+            let reward = if c.kind == 0 { name(c.reward) } else { format!("unlock {}", c.reward) };
+            eprintln!("reward {k}: \"{}\" kind {} a {:#x} b {} c {} count {} bit {:#x} -> {reward}", msgs.text(u32::from(c.text)).unwrap_or_default(), c.kind, c.a, c.b, c.c, c.count, c.bit);
+        }
+        eprintln!("reward kinds {kinds:?}");
+        assert!(mix.conds.iter().all(|c| c.count > 0 && c.a <= 0x10 && c.b <= 5 && c.c <= 1), "the condition bytes are in the ranges the tests read");
+        assert!(mix.conds.iter().filter(|c| c.kind == 0).all(|c| items.iter().any(|i| i.id == c.reward)), "an item reward is an item row");
     }
 
 }

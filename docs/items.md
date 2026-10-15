@@ -190,6 +190,12 @@ their points in `mixdata.bar`'s `exp`). Opening the moogle's third row (docs/men
 into the moogle's stock (save +0x3728 +0x34, `progress::Moogle`) with `FUN_001a1c30`, and, once the record's unlock bit
 10 is set, takes the recipe items (`reci` +0: ids such as 0x17e and 0x1c1..0x1df) that teach a recipe. A make adds its
 item with `FUN_001a1a18(item, 1)` and refuses when 99 are held (`FUN_00290e68`).
+
+WP-SH3: the opening also pays the moogle's collection rewards (docs/menus.md 24.3): 24 of the 50 `cond` rewards are items
+(`FUN_001a1a18(item, 1)` when `FUN_001a18b8` allows it: fewer than 99 held, a unique item not yet owned), the others
+unlock a Free Development set (rewards 0 and 1) or a record bit that opens a group of the moogle's shop (0x49..0x60,
+docs/menus.md 22.2). A shop item that is new (save `+0x3714` bit of its place in the shop file's list clear) carries a
+NEW tag in the Buy list until the cursor has been on it (docs/menus.md 24.2).
 ## Decompile index
 
 | address | what |

@@ -189,6 +189,9 @@ an error (logged; the app then falls back to the new game + baseline). Example: 
 | `outfits` | object `"<world>": outfit` | low 5 bits of the world record's byte 0 |
 | `spell_switch` | int | the switch bit word |
 | `party_settings` | object `"<member id>": byte` or `"<member id>": [bytes]` | a member's AI settings block (record `+0xd4`, 32 bytes, zero at a new game by `FUN_001875c8`): a single number is byte 0, the battle style 0..5; an array sets bytes from 0 on (byte `1 + k` = use setting of item / ability `k`, docs/party.md). Member ids are the party ids (2 Donald, 3 Goofy). `Progress::member_setting` / `set_member_setting` read and write it; a slot file's `block` carries it (test `member_settings_default_to_zero_and_round_trip`). `party.rs` reads byte 0 every frame (`KH2_PARTY_STYLE` still overrides) and, since WP-PA4, the use-setting bytes; the Customize page 0x1b (docs/menus.md 14b) writes them (`menu::customize::write_friend`; test `the_pages_writes_survive_a_state_file_round_trip`) |
+| `shop_seen` | array of places 0..127 | shop items seen (save `+0x3714`, one bit per place in the shop file's item list; `Progress::shop_seen` / `set_shop_seen`; WP-SH3, docs/menus.md 24.2). Not in the slot files yet |
+| `shop_visits` | array of bits 0 / 1 | the shops' first-visit bits (save `+0x3724`; `Progress::shop_visit` / `set_shop_visit`; docs/menus.md 24.1). Not in the slot files yet |
+| `moogle` | `{ "unlocks": [bits], "points": n, "level": n, "rewards": [bits] }` | the moogle's synthesis record (save `+0x3728`; `Progress::moogle`; `rewards` is the reward word at `+8`, docs/menus.md 24.3) |
 | `story_flags` | array of flag ids | each set through the game's setter `FUN_0017ff60` in file order, side effects included (area program table, exit locks, other flags; section "Story flags" below) |
 | `story_clear` | array of flag ids | each cleared through `FUN_00180298` (only the bit) |
 | `comment` | any | ignored |

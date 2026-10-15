@@ -1072,12 +1072,14 @@ Each stage ends with `verify.ps1` passing and the named check.
   0x2c: the events place no actor, so the b_45 places of Roxas and Seifer stand and `intro.rs` is unchanged.
   **Status (WP-E6d):** opcodes 3, 0xd, 0xf, 0x10, opcode 0x2c +0xa / +0xc and load sub-records 0x26 / 0x39 /
   0x3e read (section 6). None of 3, 0xd, 0xf, 0x10 is an actor show/hide: 3 has no handler, 0xf opens the
-  timeline, 0x10 sets the end fade's length, 0xd calls a model-instance method not resolved [GAP]. Ported in
-  `event_player.rs`: `Event::begins` (no 0xf, no timeline), `Event::end_fade` (logged), `Motion::loop_start` /
+  timeline, 0x10 sets the length of the fade-in after the setup (E6d called it an "end fade"; that was wrong,
+  see the E6e status below), 0xd calls a model-instance method (resolved in E6e: the drawn mesh groups).
+  Ported in `event_player.rs`: `Event::begins` (no 0xf, no timeline), `Event::end_fade` (the opcode-0x10 value, logged), `Motion::loop_start` /
   `loop_end` with `MotionClock` (`FUN_0022ca18`, test `motion_slots_loop_past_their_end_frame`),
   `Event::voices` / `effects` / `layouts` with `voice_path` / `effect_path` / `layout_path` and `REGION` (test
   `twilight_town_event_load_records_name_files_on_the_disc`); the movie log now names `movie/us/`. Requests
-  carry the area they were made in (`take_request`, test `a_request_made_in_another_area_is_dropped`). Run
+  carry the area they were made in (`take_request`, test `a_request_made_in_another_area_is_dropped`). [E6d's
+  "Not ported" list below is superseded by the E6e status for the fade, opcode 0xd and the put-back place.] Run
   `KH2_EVENT=102 KH2_EVENT_ARG=2 KH2_EVENTLOG=1 KH2_NO_ENEMIES=1 KH2_NO_NPC=1 kh2-game tt02`: `event: 102 load
   blocks name 32 voice(s) ["voice/us/event/tt10203or.vag", ...], layouts ["event/layout/us/tt_telop.2ld"] ...
   op 0xf present: the timeline runs (FUN_00226f50); end fade Some(20) frames`, `frame 3164 ...: op 0x2c actor 2
@@ -1085,6 +1087,20 @@ Each stage ends with `verify.ps1` passing and the named check.
   motion anm_tt/ETT00008E loops back to frame 199`, `op 0xd actor 2 model instance (+0x670) method +0x34 ...
   not ported`. Not ported: voices, event effects and layouts (loaded only), the end fade, opcode 0xd, the place
   put back at a loop.
+  **Status (WP-E6e):** the event object's screen fades are computed and the three E6d leftovers are ported
+  (section 6, opcodes 0x10, 0xd, 0x2c loops). `kind_rows` reads the `evtp` rows; `start_fade` (state 0,
+  `FUN_00195d28`: out to black or white over the row's length, times `DAT_0037b050`) holds the timeline until it
+  has run (`FUN_001966f8`); `setup_fade` (`FUN_00195ff8`: in over twice the opcode-0x10 frames times
+  `DAT_0037b054`, from black for row byte 1 or 3, from white for 2) starts after the setup;
+  `EventPlayer::screen_fade` answers (alpha, white). Opcode 0xd hides the actor's mesh entities of unlisted groups
+  (`mesh_groups`, `mesh_flags`); a looping motion puts its actor back at the place kept at the loop's first step
+  (`keep_place`, `put_back`); opcode 0x4d is logged only (which objects fall below tag 2000 is unresolved, so
+  nothing is hidden). Tests `the_event_object_fades_out_then_in_by_its_kind_row`,
+  `opcode_0xd_draws_only_the_listed_mesh_groups`, `a_looping_motion_puts_its_actor_back_where_the_loop_began`.
+  Not ported: the keyhole layout of fade kind 3, the flag-bit-4 faders, the end-of-event faders.
+  **Status (WP-E6f):** `area_jump::draw_fader` draws the event fade: the one full-screen node takes the stronger
+  alpha of the jump's black and the event's fade, white when the event's wins (`combined_fade`, test
+  `the_event_fade_and_the_jump_fade_share_the_node`).
 
 ## 10. Unknowns (with what was searched)
 
@@ -1108,7 +1124,18 @@ Each stage ends with `verify.ps1` passing and the named check.
   `FUN_00196348`, `FUN_001963e0`, `FUN_00223a88`, `FUN_002233d8`, `FUN_002235c0`, `FUN_002234e0`, and every
   `0x22xxxx` event handler that calls into `0x1a0000..0x1bffff`: the only object hide is opcode 0x4d
   (`FUN_00226e80`, section 6), whose selection (resource tag below 2000) is not resolved; 6 commands in tt.
-  Not ported.
+  Not ported. [WP-E6f] The tag writers, traced: the tag (resource +0x28) is the second argument of
+  `FUN_0016f9c0` (`FUN_0016f358` stores it); its only caller `FUN_0016fae0` is called by `FUN_0016e430` (the
+  object's model load) and `FUN_001d1c80` (tag 5000, a fixed resource). `FUN_0016e430` takes the tag from its
+  `param_2` unless that is -1; with -1 it is the word table at 0x37a278 indexed by the object entry's ObjectType
+  byte (entry +4; row = `FUN_001d1470`), except 0x960 (`FUN_0016f138`, an area-state tag) and a few ids
+  `FUN_0016ef80` / `FUN_0016efd8` say are special. That table reads (types 0..23): 2300 2400 2500 2600 2700 1090
+  1090 2100 1090 2500 1100 1110 2600 1090 5100 2500 2500 2500 1030 5000 2100 2700 2200 1090, so by the default
+  path types 0..4 (the player and party types) get tags of 2300 or more and are NOT below 2000; types 5, 6, 8, 10,
+  11, 13, 18 and 23 are [inferred: the objects opcode 0x4d hides]. Not proved: the callers of `FUN_0016e430`
+  that pass an explicit tag (not enumerated) could override it for Sora. Result: no event flag or command found
+  that hides Sora and the party; nothing ported (opcode 0x4d stays logged, because mapping the app's entities to
+  ObjectType and the explicit-tag callers is not done).
 - Opcode 0x2d: the event skip branch of action 2 (`FUN_002225e0`) is not ported; the window state used is the port's state 3 (the button closed it).
 - What pause-menu record 0xc (`FUN_001bef48(0xc)`, table `DAT_01d5df08`) allows or forbids; bit 4 of
   `DAT_00356f1c` stops the play clock (`FUN_0014c7b8`) and is tested by the pause menu `FUN_0014a080`.

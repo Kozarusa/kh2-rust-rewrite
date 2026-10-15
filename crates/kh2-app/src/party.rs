@@ -986,7 +986,7 @@ fn spawn_party(
                 choosing: Default::default(),
                 timer: 0.0,
                 target: None,
-                style: std::env::var("KH2_PARTY_STYLE").ok().and_then(|v| v.trim().parse::<u8>().ok()).unwrap_or(0),
+                style: style_of(progress.as_deref(), row.neo_status),
                 attacker: None,
                 target_changed: false,
                 held: None,
@@ -1122,6 +1122,16 @@ struct TargetCtx<'a> {
     attacker: Option<Entity>,
     player_target: Option<Target>,
     player_hit: Option<Entity>,
+}
+
+/// The member's battle style: setting byte 0 of its record (`Progress::member_setting`, party record +0xd4; 0 at a
+/// new game). `KH2_PARTY_STYLE=<n>` is a harness override for every member.
+fn style_of(progress: Option<&crate::progress::Progress>, neo: u16) -> u8 {
+    resolve_style(std::env::var("KH2_PARTY_STYLE").ok().and_then(|v| v.trim().parse::<u8>().ok()), progress.and_then(|p| p.member_setting(neo, 0)))
+}
+
+fn resolve_style(env: Option<u8>, saved: Option<u8>) -> u8 {
+    env.or(saved).unwrap_or(0)
 }
 
 /// FUN_0010df08's target refresh for a member of `class` with battle style `style` (setting byte 0):
@@ -1335,6 +1345,8 @@ fn party_tick(
                 m.far += 1;
             }
             let ai = data.ai.get(&m.class);
+            // The battle style is read from the record every frame (the Party / Customize page may write it).
+            m.style = style_of(progress.as_deref(), m.neo);
             // FUN_0010df08: bit 0x40 when the member is farther from the player than the battle
             // distance (style 0: the class's +0x80); then, in battle, the target (style 0, FUN_0010d0c0)
             // when the re-target test asks for one (FUN_0010cf90 -> FUN_0010cbe0).
@@ -2358,6 +2370,28 @@ mod tests {
         // A style outside the table makes no choice; a class above 0xd uses its own row whatever the style.
         assert_eq!(refresh_target(2, 9, &p, Vec3::ZERO, None, false, false, &none), None);
         assert_eq!(refresh_target(15, 3, &p, Vec3::ZERO, None, false, false, &none), Some(at(b)), "class 15 chooses like style 0");
+    }
+
+    /// WP-PA3: the style comes from the record's setting byte 0 (the env override wins), and a changed byte changes the
+    /// target `refresh_target` picks.
+    #[test]
+    fn party_style_comes_from_the_setting_byte() {
+        assert_eq!((resolve_style(None, None), resolve_style(None, Some(2)), resolve_style(Some(4), Some(2))), (0, 2, 4));
+        let mut p = crate::progress::Progress::from_block(&[], std::sync::Arc::new(Default::default()));
+        assert_eq!(p.member_setting(2, 0), Some(0));
+        // PA2's scene: the style read back from the record picks A (style 2), the nearest B (style 0) or nothing (style 4).
+        let mut w = bevy::ecs::world::World::new();
+        let (a, b) = (w.spawn_empty().id(), w.spawn_empty().id());
+        let enemies = vec![(a, vec![(Vec3::new(300.0, 0.0, 0.0), 0.0)]), (b, vec![(Vec3::new(-150.0, 0.0, 0.0), 0.0)])];
+        let params = battle::Params { range: 400.0, retarget: 500.0, player_range: 220.0, player_near: 50.0, retarget_half: 0.5, farthest_start: -1.0, ..Default::default() };
+        let ctx = TargetCtx { enemies: &enemies, player: Vec3::new(100.0, 0.0, 0.0), attacker: None, player_target: None, player_hit: None };
+        let mut pick = |p: &mut crate::progress::Progress, byte| {
+            p.set_member_setting(2, 0, byte);
+            let style = resolve_style(None, p.member_setting(2, 0));
+            refresh_target(2, style, &params, Vec3::ZERO, None, false, false, &ctx).expect("style in the table")
+        };
+        let at = |e| Some(Target { entity: e, shape: 0 });
+        assert_eq!((pick(&mut p, 0), pick(&mut p, 2), pick(&mut p, 4)), (at(b), at(a), None));
     }
 
     /// WP-PA2: the battle distance follows the member's style (double for 3 and 5, halved for 2).

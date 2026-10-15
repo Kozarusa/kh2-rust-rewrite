@@ -420,10 +420,14 @@ In the app (`party_battle.rs`): `choose_style0..3`, `player_hit_pick`, `nearest_
 refresh: re-target test, then the choice) runs `dispatch(class, style)` for every member in battle, and
 `battle_distance` takes the member's style. Inputs:
 
-- `style` = `PartyMember::style`, the setting byte 0. The app has no per-member setting bytes yet
-  (`Progress` keeps the record's +0xd4 block zeroed and exposes no reader), so it defaults to 0, the new game's
-  value; the harness `KH2_PARTY_STYLE=<n>` sets it on both members. [GAP: the Party / Status page does not write
-  it; see "Corrections to other docs".] A style outside 0..5 makes no choice (the table has six rows).
+- `style` = `PartyMember::style`, the setting byte 0 (WP-PA3: `Progress::member_setting(neo, 0)`, re-read every
+  frame in `party_tick`; 0 at a new game; a `KH2_STATE` key `party_settings` sets it, docs/progress.md; the
+  harness `KH2_PARTY_STYLE=<n>` still overrides both members). [GAP: no page writes it yet: the page that does is
+  Customize page 0x1b for Donald / Goofy (`FUN_00271078` with another character, docs/menus.md 2.4), which is not
+  ported (`menu_customize.rs`, outside WP-PA3's ownership; the Party page 0x14/0x16 only swaps slots, WP-MN7/MN8).
+  Searched: docs/menus.md and docs/party.md, `menu_party.rs`, `menu_config.rs` (the Config rows are the option
+  word, not per-member). The Customize page's row builder for the others' table (0x381d48: kinds 3, 4, 2) was
+  not read.] A style outside 0..5 makes no choice (the table has six rows).
 - +0xcec, the remembered attacker: `PartyMember::attacker`, set in `party_receive_hits` for every enemy hit the
   member takes (all enemies in the app are targetable objects).
 - `0x34e9b0`, the player's target record: Sora's lock-on, else its auto target, on shape 0 [inferred: the app
@@ -719,7 +723,8 @@ Not done or approximated in stage 2:
 - (WP-F1 item 6.) The app baseline equips item 75 on Donald and item 49 on Goofy (`Progress::apply_baseline`,
   constants `DONALD_STAFF` / `GOOFY_SHIELD`) when their weapon words are 0, so the weapons show without
   `KH2_PARTY_WEAPONS`; the original's writer of those words is still not found (above).
-- The settings bytes (record +0xd4) are read as 0 (their new-game value).
+- The settings bytes (record +0xd4) are read from `Progress` (WP-PA3; byte 0 = the battle style); the item / ability use
+  settings (bytes 1..) are still read as 0 by the feasibility test (`setting` in `party_tick`).
 - (WP-P3b) The walk/run/turn/jump speeds now come from the `prty` row of the NeoMoveset (FUN_00194438; Donald
   row 17 and Goofy row 20: walk 2, run 8), no longer the row of the NeoStatus (run 12) that stage 1 inferred.
 
@@ -1253,11 +1258,9 @@ Files: `party_rules.rs` (`apply_world_records`), `party.rs` (`spawn_party`), `kh
 ## Corrections to other docs (for the orchestrator)
 
 - (WP-PA1, done in WP-PA2) `party.rs` now calls `battle::dispatch` / `needs_retarget` / `choose_target` with the
-  remembered attacker, the player's target and attacked object. Still open: the member's setting byte 0 (party
-  record +0xd4) is not read from `Progress` or written by the Party / Status page (`menu*.rs`, `progress.rs`, not
-  owned); `PartyMember::style` stays 0 unless `KH2_PARTY_STYLE` is set. The page should write the byte into the
-  record and `Progress` should expose it (e.g. `Member::settings: [u8; 32]`), then `spawn_party` / `party_tick`
-  read it instead of the env var.
+  remembered attacker, the player's target and attacked object. (WP-PA3 done: `Member::settings`, the
+  `party_settings` state key, `party.rs` reads byte 0.) Still open: no menu page writes the byte; it is Customize
+  page 0x1b (Donald / Goofy), not ported (`menu_customize.rs`).
 
 - `docs/player-data.md`, `memt`: the 16 words at +0x10 are member objects by member index (0 player, 1 Donald,
   2 Goofy, 3 partner, 4..8 forms, 9 Mickey, 10..15 keyblades), merged per world; index 0..3 are not "world

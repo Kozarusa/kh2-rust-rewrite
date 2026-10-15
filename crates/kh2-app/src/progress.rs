@@ -111,6 +111,9 @@ mod rec {
     pub const RESERVED: usize = 0x44;
     pub const ABILITIES: usize = 0x54;
     pub const ABILITY_SLOTS: usize = 64;
+    /// The AI settings block (FUN_00112308): byte 0 the battle style, bytes 1.. the item / ability use settings.
+    pub const SETTINGS: usize = 0xd4;
+    pub const SETTINGS_LEN: usize = 32;
 }
 
 /// Item types the rules switch on (`item` +2).
@@ -244,6 +247,9 @@ pub struct Member {
     pub items: Vec<u16>,
     /// The ability list (64 slots, bit 15 = equipped), non-empty slots only.
     pub abilities: Vec<(u16, bool)>,
+    /// The AI settings block (record `+0xd4`, 32 bytes; FUN_00112308 reads it, `Progress::init_member` zeroes it).
+    /// Byte 0 is the battle style 0..5, byte `1 + k` the use setting of item or ability `k` (docs/party.md).
+    pub settings: [u8; rec::SETTINGS_LEN],
 }
 
 /// A drive form record (`FUN_00187f60`), decoded.
@@ -510,7 +516,29 @@ impl Progress {
                 .filter(|v| v & 0x7fff != 0)
                 .map(|v| (v & 0x7fff, v & 0x8000 != 0))
                 .collect(),
+            settings: self.settings_at(r),
         })
+    }
+
+    fn settings_at(&self, r: usize) -> [u8; rec::SETTINGS_LEN] {
+        self.block[r + rec::SETTINGS..r + rec::SETTINGS + rec::SETTINGS_LEN].try_into().unwrap()
+    }
+
+    /// A member's setting byte `index` (0 = the battle style, `1 + k` = the use setting of item or ability `k`).
+    /// `None` for an unknown member or an index past the block.
+    pub fn member_setting(&self, member: u16, index: usize) -> Option<u8> {
+        let r = Self::member_off(member)?;
+        (index < rec::SETTINGS_LEN).then(|| self.u8_at(r + rec::SETTINGS + index))
+    }
+
+    /// Writes a member's setting byte (what the party menu's settings page stores). False when nothing was written.
+    pub fn set_member_setting(&mut self, member: u16, index: usize, value: u8) -> bool {
+        let Some(r) = Self::member_off(member) else { return false };
+        if index >= rec::SETTINGS_LEN {
+            return false;
+        }
+        self.set_u8(r + rec::SETTINGS + index, value);
+        true
     }
 
     pub fn sora(&self) -> Member {
@@ -1365,7 +1393,7 @@ impl Progress {
         self.set_u8(r + rec::ARMOR_SLOTS, 1);
         self.set_u8(r + rec::ITEM_SLOTS, 0);
         self.zero(r + rec::ABILITIES, 2 * rec::ABILITY_SLOTS);
-        self.zero(r + 0xd4, 32);
+        self.zero(r + rec::SETTINGS, rec::SETTINGS_LEN);
     }
 
     /// `FUN_001c0cb0(id)`: the first `plrp` row with this `Id` and the rows after it with the same
@@ -1590,6 +1618,24 @@ impl Progress {
                     }
                     if let Some(n) = v.get("level") {
                         self.moogle.level = int(n, "moogle.level")?.clamp(0, 8) as u8;
+                    }
+                }
+                // The members' AI settings (record +0xd4): `{"2": 2, "3": [3, 1]}` = member id -> the style byte, or the
+                // bytes from byte 0 on (docs/progress.md).
+                "party_settings" => {
+                    let Json::Obj(m) = v else { return Err("party_settings: expected an object of member id: byte or bytes".into()) };
+                    for (k, b) in m {
+                        let member = id_of(k, "party_settings")?;
+                        if Self::member_off(member).is_none() {
+                            return Err(format!("party_settings: no member record {member}"));
+                        }
+                        let bytes = match b {
+                            Json::Arr(_) => list(b, "party_settings")?,
+                            _ => vec![int(b, "party_settings")? as u16],
+                        };
+                        for (i, x) in bytes.into_iter().enumerate().take(rec::SETTINGS_LEN) {
+                            self.set_member_setting(member, i, x as u8);
+                        }
                     }
                 }
                 "comment" | "_comment" => {}
@@ -2409,6 +2455,27 @@ mod tests {
         let short = text.replacen("\"block\": \"", "\"block\": \"00", 1);
         assert!(q.apply_json(&short).is_err());
         assert_eq!(Progress::slot_info("{\"munny\": 1}"), None);
+    }
+
+    /// WP-PA3: the members' setting block is zero at a new game (FUN_001875c8), the `party_settings` state key and the
+    /// setter write it, and a slot file carries it with the block.
+    #[test]
+    fn member_settings_default_to_zero_and_round_trip() {
+        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        p.init_party();
+        assert_eq!(p.member(2).unwrap().settings, [0; 32]);
+        assert_eq!(p.member_setting(2, 0), Some(0));
+        p.apply_json("{\"party_settings\": {\"2\": 2, \"3\": [4, 1, 3]}}").unwrap();
+        assert_eq!(p.member_setting(2, 0), Some(2));
+        assert_eq!(p.member(3).unwrap().settings[..4], [4, 1, 3, 0]);
+        assert_eq!(p.member_setting(1, 0), Some(0), "Sora's record is untouched");
+        assert!(p.set_member_setting(2, 0, 5));
+        assert!(!p.set_member_setting(2, 32, 1) && !p.set_member_setting(99, 0, 1));
+        assert!(p.apply_json("{\"party_settings\": {\"99\": 1}}").is_err());
+        let text = p.slot_json(&SlotInfo { level: 1, munny: 0, play_seconds: 0, area: "tt04".into() });
+        let mut q = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        q.apply_json(&text).unwrap();
+        assert_eq!((q.member_setting(2, 0), q.member_setting(3, 2)), (Some(5), Some(3)));
     }
 
     struct Tables {

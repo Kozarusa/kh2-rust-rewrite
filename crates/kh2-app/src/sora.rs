@@ -93,6 +93,9 @@ pub fn motion_state(weapon_out: bool, battle_flag: bool) -> PlayerState {
 #[derive(Resource, Clone, Debug)]
 pub struct Abilities {
     pub bits: u128,
+    /// The block's bits 128..255 (Once More 128, Auto Limit 129, ...), which the attack table does
+    /// not gate.
+    pub high: u128,
     pub max_ground: u8,
     pub max_air: u8,
     pub max_finishers: u8,
@@ -100,14 +103,25 @@ pub struct Abilities {
 
 impl Default for Abilities {
     fn default() -> Abilities {
-        Abilities { bits: 1u128 << ABILITY_GUARD, max_ground: BASE_HITS_GROUND, max_air: BASE_HITS_AIR, max_finishers: BASE_FINISHERS }
+        Abilities { bits: 1u128 << ABILITY_GUARD, high: 0, max_ground: BASE_HITS_GROUND, max_air: BASE_HITS_AIR, max_finishers: BASE_FINISHERS }
     }
 }
 
 impl Abilities {
     /// The controller's view of the ability block.
     pub fn from_block(a: &crate::abilities::Abilities) -> Abilities {
-        Abilities { bits: a.bits(), max_ground: a.ground_combo(), max_air: a.air_combo(), max_finishers: a.finishers() }
+        let w = &a.block().bits;
+        let high = (4..8).fold(0u128, |h, i| h | u128::from(w[i]) << (32 * (i - 4)));
+        Abilities { bits: a.bits(), high, max_ground: a.ground_combo(), max_air: a.air_combo(), max_finishers: a.finishers() }
+    }
+
+    /// One bit of the block (0..256).
+    pub fn has_bit(&self, bit: u16) -> bool {
+        match bit {
+            0..128 => self.bits >> bit & 1 != 0,
+            128..256 => self.high >> (bit - 128) & 1 != 0,
+            _ => false,
+        }
     }
 
     /// Every ability bit set (the low 128 of the block's 256).
@@ -487,6 +501,13 @@ pub struct Sora {
     pub mp: i32,
     /// Invincible ticks left.
     pub invuln: f32,
+    /// Leaf Bracer's untouchable ticks (actor +0xb00, written by Cure's script through host 1.91,
+    /// lowered each tick by `FUN_00175ab0`): every hit is dropped while it is above 0
+    /// (`FUN_00175ad8`, `FUN_00175340`). Start it with `Sora::start_leaf_bracer`.
+    pub leaf_bracer: f32,
+    /// The damage motion id playing (10..=39 for the hit reactions), for Once More (`FUN_00185a08`
+    /// reads the actor's motion id +0x154); None outside a hit reaction.
+    pub damage_motion: Option<usize>,
     pub lock: Option<Entity>,
     pub target: Option<Entity>,
     pub body: Entity,
@@ -585,6 +606,20 @@ impl WeaponRigs {
 }
 
 impl Sora {
+    /// Leaf Bracer at a Cure cast's event 20 (`abilities::leaf_bracer_frames`): with the ability and
+    /// the cast on Sora himself, he is untouchable for 60 ticks. Returns whether it started.
+    /// The caller is Cure's event 20 in `magic.rs` (not this module's file: until it calls this, the
+    /// timer is only started by tests).
+    #[allow(dead_code)]
+    pub fn start_leaf_bracer(&mut self, abilities: &Abilities, target_is_caster: bool) -> bool {
+        let Some(t) = crate::abilities::leaf_bracer_frames(abilities.has_bit(crate::abilities::BIT_LEAF_BRACER), target_is_caster) else { return false };
+        self.leaf_bracer = t;
+        if std::env::var_os("KH2_ABILITYLOG").is_some() {
+            info!("abilities: Leaf Bracer: Cure on Sora, untouchable for {t} ticks (host 1.91 -> +0xb00)");
+        }
+        true
+    }
+
     pub fn grounded(&self) -> bool {
         self.motor.grounded
     }
@@ -1017,6 +1052,8 @@ pub fn setup(
             mp: data.sora_max_mp,
             stats,
             invuln: 0.0,
+            leaf_bracer: 0.0,
+            damage_motion: None,
             lock: None,
             target: None,
             body,
@@ -1219,6 +1256,14 @@ pub fn tick(
     let square = Pad::take(&mut pad.square);
     let lock_pressed = Pad::take(&mut pad.lock);
     s.invuln = (s.invuln - 1.0).max(0.0);
+    // FUN_00175ab0: lowered by the frame step while above 0 (one tick here [inferred: the app's tick is
+    // the game's frame step]).
+    if s.leaf_bracer > 0.0 {
+        s.leaf_bracer -= 1.0;
+    }
+    if !matches!(s.state, State::Hurt | State::Blown) {
+        s.damage_motion = None;
+    }
     s.timer += 1.0;
     // Another system (a hit, a reaction, a spell) took Sora out of the air recoil.
     if s.state != State::Hurt {
@@ -2221,11 +2266,20 @@ pub fn receive_hits(
     mut sora_q: Query<(Entity, &mut Sora, &mut Fighter, Option<&ReactionStatus>)>,
     mut anims: Query<&mut Animator>,
     mut ineffective: MessageWriter<IneffectiveHit>,
+    abilities: Res<Abilities>,
 ) {
     let Ok((me, mut s, mut fighter, status)) = sora_q.single_mut() else { return };
     let Some(reaction) = reaction else { return };
     for h in hits.read().filter(|h| h.target == me) {
         if s.invuln > 0.0 || matches!(s.state, State::Down | State::Viewer | State::FormChange) {
+            continue;
+        }
+        // Leaf Bracer (FUN_00175340 drops the hit while vtable +0x60 = FUN_00175ad8 answers
+        // untouchable; enemy hits are never heals).
+        if s.leaf_bracer > 0.0 {
+            if std::env::var_os("KH2_ABILITYLOG").is_some() {
+                info!("abilities: Leaf Bracer drops atkp {} ({:.0} ticks left)", h.atkp, s.leaf_bracer);
+            }
             continue;
         }
         let Ok(mut body) = anims.get_mut(s.body) else { return };
@@ -2250,6 +2304,22 @@ pub fn receive_hits(
         let from = enemies.get(h.attacker).map(|e| e.stats).unwrap_or(s.stats);
         let useless = crate::combat::hit_is_ineffective(atk, &s.stats);
         let dmg = if useless { data.damage(atk, &from, &s.stats) } else { data.damage(atk, &from, &s.stats).max(1) };
+        // FUN_00185a68: a hit that would bring HP to the minimum (0 for Sora) asks vtable +0x58
+        // (FUN_00176d78: Second Chance, Once More) whether he survives it with 1 HP.
+        let second_chance = abilities.has_bit(crate::abilities::BIT_SECOND_CHANCE);
+        let once_more = abilities.has_bit(crate::abilities::BIT_ONCE_MORE);
+        let lethal = s.hp - dmg <= 0;
+        let survives = lethal && crate::abilities::survives_lethal_hit(second_chance, once_more, s.hp, s.damage_motion);
+        let dmg = crate::abilities::lethal_hit_damage(s.hp, 0, dmg, survives);
+        if survives && std::env::var_os("KH2_ABILITYLOG").is_some() {
+            info!(
+                "abilities: {} keeps Sora at 1 HP: HP {} damage {dmg} (atkp {}, damage motion {:?})",
+                if second_chance && s.hp >= 2 { "Second Chance" } else { "Once More" },
+                s.hp,
+                h.atkp,
+                s.damage_motion
+            );
+        }
         s.hp = (s.hp - dmg).max(0);
         if useless {
             ineffective.write(IneffectiveHit { attacker: h.attacker, target: me, atkp: h.atkp, point: h.point });
@@ -2291,6 +2361,7 @@ pub fn receive_hits(
                 body.restart(first_slot(&[motion as usize, fallback as usize]), false, 2.0);
                 weapon.restart(None, false, 2.0);
                 s.state = State::Hurt;
+                s.damage_motion = Some(if rig.mset.slot(motion as usize, pstate).is_some() { motion as usize } else { fallback as usize });
                 s.motor.vel = Vec3::ZERO;
             }
             VictimAction::Class14 { motion, strength, face_attacker } => {
@@ -2300,6 +2371,7 @@ pub fn receive_hits(
                 body.restart(first_slot(&[motion as usize, id::DAMAGE_S_FRONT_HIGH]), false, 2.0);
                 weapon.restart(None, false, 2.0);
                 s.state = State::Hurt;
+                s.damage_motion = Some(if rig.mset.slot(motion as usize, pstate).is_some() { motion as usize } else { id::DAMAGE_S_FRONT_HIGH });
                 s.motor.vel = Vec3::ZERO;
             }
             VictimAction::Blow { motion, up, horiz, face_attacker } => {
@@ -2314,6 +2386,7 @@ pub fn receive_hits(
                 s.state = State::Blown;
                 s.timer = 0.0;
                 s.blown_back = !from_front;
+                s.damage_motion = Some(motion as usize);
                 body.restart(rig.mset.slot(motion as usize, pstate), false, 2.0);
                 weapon.restart(None, false, 2.0);
             }
@@ -2755,6 +2828,15 @@ mod tests {
         assert!(v.bits() >> ABILITY_GUARD & 1 == 0);
         ab.set_form(None);
         assert_eq!(Abilities::from_block(&ab).combo_block(), (4, 3, 1));
+        // WP-A1: the view carries the block's bits above 127 too (Once More 128).
+        for x in [402, 415, 416] {
+            ab.equip_ability(x);
+        }
+        let v = Abilities::from_block(&ab);
+        for b in [abilities::BIT_LEAF_BRACER, abilities::BIT_SECOND_CHANCE, abilities::BIT_ONCE_MORE] {
+            assert!(v.has_bit(b), "bit {b}");
+        }
+        assert!(!v.has_bit(abilities::BIT_AUTO_LIMIT) && !v.has_bit(300));
     }
 
     #[test]

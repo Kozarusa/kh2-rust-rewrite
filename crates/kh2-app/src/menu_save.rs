@@ -580,7 +580,7 @@ fn open(save: &mut SaveMenu, scene: &mut MenuScene, se: &mut MessageWriter<PlayS
         let tokens = t.place_name(world, num)?;
         Some(crate::menu_text::Label {
             tokens,
-            style: Style { font: 2, size: Some(16.0), color: [0x80, 0x48, 0x08, 0x80], align: 1, world: t.world, ..Style::default() },
+            style: Style { font: 2, size: Some(16.0), color: [0xff, 0x8f, 0x10, 0x80], align: 1, world: t.world, ..Style::default() },
             offset: [at::AREA_RIGHT, at::AREA_TOP],
         })
     });
@@ -620,11 +620,11 @@ fn text_label(scene: &MenuScene, id: u32, font: usize, size: f32, color: [u8; 4]
 fn slot_message(scene: &MenuScene, id: u32, at: [f32; 2], size: f32) -> Option<crate::menu_text::Label> {
     let t = scene.text.as_ref()?;
     let one = t.literal("1", Style::default(), [0.0; 2]).tokens;
-    Some(label(t, fill(tokens_of(t, id), &[one]), 0, size, [0x80; 4], 0, at))
+    Some(label(t, fill(tokens_of(t, id), &[one]), 0, size, [0xe5, 0xe5, 0xe5, 0x80], 0, at))
 }
 
 fn set_help(save: &SaveMenu, scene: &mut MenuScene, id: u32) {
-    let l = text_label(scene, id, 0, 15.0, [0x45, 0x78, 0x2e, 0x80], 0, at::HELP);
+    let l = text_label(scene, id, 0, 15.0, [0x8a, 0xef, 0x5c, 0x80], 0, at::HELP);
     scene.nodes[save.nodes.help].label = l;
     scene.nodes[save.nodes.help].visible = true;
 }
@@ -704,8 +704,8 @@ fn show_files(save: &SaveMenu, scene: &mut MenuScene) {
         scene.nodes[*a].pos = pos::ARROWS[k];
         scene.set_group(*a, [g::ARROW_UP, g::ARROW_DOWN][k]);
     }
-    let orange = [0x80, 0x40, 0x10, 0x80];
-    let grey = [0x72, 0x72, 0x72, 0x80];
+    let orange = [0xff, 0x80, 0x20, 0x80];
+    let grey = [0xe3, 0xe3, 0xe3, 0x80];
     for (k, f) in n.files.iter().enumerate() {
         let selected = k == save.flow.file;
         let y0 = pos::FILE_PITCH * k as f32;
@@ -721,7 +721,7 @@ fn show_files(save: &SaveMenu, scene: &mut MenuScene) {
             }
         }
         let base_y = pos::FILE_TOP + y0;
-        let color = if selected { [0x80; 4] } else { grey };
+        let color = if selected { [0xe5, 0xe5, 0xe5, 0x80] } else { grey };
         let number = text.literal(&format!("{:02}", k + 1), Style { font: 1, size: Some(16.0), color: orange, align: 2, ..Style::default() }, [pos::FILE_NUMBER, base_y + 22.0]);
         scene.nodes[fn_.number].label = Some(number);
         scene.nodes[fn_.number].visible = true;
@@ -782,7 +782,7 @@ fn show_files(save: &SaveMenu, scene: &mut MenuScene) {
 /// The overwrite question over the list.
 fn show_question(save: &SaveMenu, scene: &mut MenuScene) {
     let n = &save.nodes;
-    let l = text_label(scene, msg::OVERWRITE_ASK, 0, 15.0, [0x80; 4], 0, pos::BOX_TEXT);
+    let l = text_label(scene, msg::OVERWRITE_ASK, 0, 15.0, [0xe5, 0xe5, 0xe5, 0x80], 0, pos::BOX_TEXT);
     show_box(save, scene, l);
     for k in 0..2 {
         let selected = k == save.flow.ask;

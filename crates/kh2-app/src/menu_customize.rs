@@ -440,7 +440,7 @@ mod at {
     pub const TAB_LABEL: [f32; 2] = [0.0, 1.0];
     pub const TAB_PITCH: f32 = 120.0;
     pub const LABEL: [f32; 2] = [0.0, 1.0];
-    pub const COLOR: [u8; 4] = [0x80; 4];
+    pub const COLOR: [u8; 4] = [0xe5, 0xe5, 0xe5, 0x80];
     pub const SELECTED: [u8; 4] = [0xe5, 0xe5, 0xe5, 0x80];
     /// The tag text of a section and the sub page's rows from the window anchor [inferred from the groups' boxes].
     pub const TAG_LABEL: [f32; 2] = [-86.0, 1.0];

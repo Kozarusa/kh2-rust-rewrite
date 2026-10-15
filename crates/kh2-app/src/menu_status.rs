@@ -591,7 +591,7 @@ mod at {
     pub const LABEL: [f32; 2] = [-7.0, 1.5];
     pub const VALUE_TOP: f32 = -17.5;
     pub const HAND: [f32; 2] = [-13.0, 0.0];
-    pub const IDLE: [u8; 4] = [0x50, 0x50, 0x58, 0x80];
+    pub const IDLE: [u8; 4] = [0x9f, 0x9f, 0xaf, 0x80];
     pub const SELECTED: [u8; 4] = [0xe5, 0xe5, 0xe5, 0x80];
     pub const VALUE: [u8; 4] = [0xe5, 0xe5, 0xe5, 0x80];
     pub const HELP: [f32; 2] = [137.0, 337.0];
@@ -1017,7 +1017,7 @@ fn draw(ui: &StatusUi, n: &Nodes, scene: &mut MenuScene, numbers: &Numbers) {
     }
     if let (Some(id), Some(text)) = (help, scene.text.as_ref()) {
         let variable = help_variable.and_then(|v| text.messages.as_ref()?.tokens(v)).unwrap_or_default();
-        let l = text.message(id, Style { font: 0, size: Some(15.0), color: [0x30, 0x7c, 0x80, 0x80], variable, ..Style::default() }, at::HELP);
+        let l = text.message(id, Style { font: 0, size: Some(15.0), color: [0x60, 0xf7, 0xff, 0x80], variable, ..Style::default() }, at::HELP);
         scene.nodes[n.help].label = l;
         scene.nodes[n.help].visible = true;
     }

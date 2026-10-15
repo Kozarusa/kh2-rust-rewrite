@@ -727,10 +727,10 @@ mod at {
     pub const TAB_LABEL: [f32; 2] = [0.0, 1.0];
     pub const TAB_PITCH: f32 = 120.0;
     pub const HELP: [f32; 2] = [137.0, 337.0];
-    pub const COLOR: [u8; 4] = [0x80; 4];
-    pub const GREY: [u8; 4] = [0x48, 0x48, 0x50, 0x80];
+    pub const COLOR: [u8; 4] = [0xe5, 0xe5, 0xe5, 0x80];
+    pub const GREY: [u8; 4] = [0x8f, 0x8f, 0x9f, 0x80];
     pub const SELECTED: [u8; 4] = [0xe5, 0xe5, 0xe5, 0x80];
-    pub const HELP_COLOR: [u8; 4] = [0x30, 0x7c, 0x80, 0x80];
+    pub const HELP_COLOR: [u8; 4] = [0x60, 0xf7, 0xff, 0x80];
     pub const LABEL: [f32; 2] = [0.0, 1.0];
     /// The right edge of a stock cell's count from the cell's anchor (the selected cell group is 216 wide).
     pub const COUNT_RIGHT: f32 = 204.0;
@@ -1446,7 +1446,7 @@ fn redraw(st: &mut ItemsMenu, scene: &mut MenuScene, progress: Option<&Progress>
                 set(scene, r, usize::from(g[0]), Some(usize::from(g[2])), prev);
                 scene.nodes[r].label_anchor = Some([-7.0, 1.5]);
                 let tokens = if k == m.members { tokens_of(&text, STOCK_LABEL) } else { text.literal("Sora", Style::default(), [0.0; 2]).tokens };
-                scene.nodes[r].label = Some(label(&text, tokens, 1, 15.0, if selected { at::SELECTED } else { [0x50, 0x50, 0x58, 0x80] }, 0, [0.0, 0.0]));
+                scene.nodes[r].label = Some(label(&text, tokens, 1, 15.0, if selected { at::SELECTED } else { [0x9f, 0x9f, 0xaf, 0x80] }, 0, [0.0, 0.0]));
             }
             let sel = rows[m.cursor1.min(rows.len() - 1)];
             scene.nodes[hand].parent = Some(sel);

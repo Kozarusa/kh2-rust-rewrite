@@ -61,9 +61,9 @@ impl MenuText {
         for id in 0..6 {
             let f = Font::get(id);
             let key = (atlas_key(f.atlas), f.clut_row());
-            map.entry(key).or_insert_with(|| add(set.atlas_rgba(f.atlas, f.clut_row()), texs));
+            map.entry(key).or_insert_with(|| add(set.atlas_rgba_ps2(f.atlas, f.clut_row()), texs));
         }
-        let icon_file = add(set.icons_rgba(), texs);
+        let icon_file = add(set.icons_rgba_ps2(), texs);
         let world = text::WORLDS.iter().position(|w| *w == world).unwrap_or(0);
         Some(MenuText { set, messages, places, colors, files: map, icon_file, world })
     }

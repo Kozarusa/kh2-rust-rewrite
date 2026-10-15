@@ -146,7 +146,7 @@ mod at {
     pub const HAND: [f32; 2] = [-13.0, 0.0];
     pub const GLINT: [f32; 2] = [94.0, -3.0];
     /// Unselected and selected row text colour (the clip: grey and white).
-    pub const ROW_IDLE: [u8; 4] = [0x50, 0x50, 0x58, 0x80];
+    pub const ROW_IDLE: [u8; 4] = [0x9f, 0x9f, 0xaf, 0x80];
     pub const ROW_SELECTED: [u8; 4] = [0xe5, 0xe5, 0xe5, 0x80];
     /// Row label size: `FUN_00139048` draws it with the group's size or 15 (`FUN_00138fc8`).
     pub const ROW_FONT: usize = 1;
@@ -711,7 +711,7 @@ fn select_row(menu: &Menu, scene: &mut MenuScene, old: Option<usize>) {
 fn update_help(menu: &Menu, scene: &mut MenuScene) {
     let Some(text) = scene.text.as_ref() else { return };
     let id = menu.entries[menu.rows[menu.cursor]].help;
-    let label = text.message(id, Style { font: 0, size: Some(15.0), color: [0x30, 0x7c, 0x80, 0x80], ..Style::default() }, at::HELP);
+    let label = text.message(id, Style { font: 0, size: Some(15.0), color: [0x60, 0xf7, 0xff, 0x80], ..Style::default() }, at::HELP);
     scene.nodes[menu.nodes.help].label = label;
     scene.nodes[menu.nodes.help].visible = true;
 }
@@ -771,7 +771,7 @@ fn open(
         let tokens = t.place_name(world, n)?;
         Some(crate::menu_text::Label {
             tokens,
-            style: Style { font: 2, size: Some(16.0), color: [0x80, 0x48, 0x08, 0x80], align: 1, world: t.world, ..Style::default() },
+            style: Style { font: 2, size: Some(16.0), color: [0xff, 0x8f, 0x10, 0x80], align: 1, world: t.world, ..Style::default() },
             offset: [at::AREA_RIGHT, at::AREA_TOP],
         })
     });
@@ -863,10 +863,10 @@ fn card(scene: &mut MenuScene, nodes: &[usize], x: f32, c: &CardData) {
         }
         l
     };
-    let yellow = [0x7a, 0x6d, 0x14, 0x80];
-    let green = [0x06, 0x64, 0x06, 0x80];
-    let cyan = [0x08, 0x64, 0x74, 0x80];
-    let white = [0x74, 0x74, 0x74, 0x80];
+    let yellow = [0xf3, 0xd9, 0x28, 0x80];
+    let green = [0x0c, 0xc7, 0x0c, 0x80];
+    let cyan = [0x10, 0xc7, 0xe7, 0x80];
+    let white = [0xe7, 0xe7, 0xe7, 0x80];
     let right = x + w - 3.6;
     let name_at = [x + w / 2.0 + 0.5, top + 7.3];
     let labels = [

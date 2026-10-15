@@ -42,7 +42,7 @@ fn palette_rows_are_the_alpha_ramps() {
     // Row 9 (page 1) picks by the high two bits.
     assert_eq!([alpha(9, 0), alpha(9, 4), alpha(9, 8), alpha(9, 12)], [0, 42, 98, 128]);
     // The atlas only uses the low two bits.
-    let (w, h, rgba) = set.atlas_rgba(Font::get(0).atlas, 8);
+    let (w, h, rgba) = set.atlas_rgba_ps2(Font::get(0).atlas, 8);
     assert_eq!((w, h), (512, 256));
     assert!(rgba.chunks(4).any(|p| p[3] == 255));
 }

@@ -243,14 +243,14 @@ fn show_page(help: &mut Help, scene: &mut MenuScene, disc: &Disc, images: &mut A
     let title_msg = help.titles.get(usize::from(topic)).copied();
     scene.nodes[title].visible = true;
     scene.nodes[title].label_anchor = Some([0.0, 1.0]);
-    scene.nodes[title].label = title_msg.map(|m| label(&text, tokens_of(&text, m), 1, 15.0, [0x80; 4], 2, [0.0, 0.0]));
+    scene.nodes[title].label = title_msg.map(|m| label(&text, tokens_of(&text, m), 1, 15.0, [0xe5, 0xe5, 0xe5, 0x80], 2, [0.0, 0.0]));
     // The counter: "PAGE" and "n/m".
     let mut tokens = tokens_of(&text, COUNTER_MESSAGE);
     tokens.push(kh2_image::text::Token::Space);
     tokens.extend(text.literal(&format!("{}/{}", at + 1, count), Style::default(), [0.0; 2]).tokens);
     scene.nodes[counter].visible = true;
     scene.nodes[counter].label_anchor = Some([0.0, 1.0]);
-    scene.nodes[counter].label = Some(label(&text, tokens, 1, 15.0, [0x80; 4], 2, [0.0, 0.0]));
+    scene.nodes[counter].label = Some(label(&text, tokens, 1, 15.0, [0xe5, 0xe5, 0xe5, 0x80], 2, [0.0, 0.0]));
     scene.text = Some(text);
     scene.set_group_then(title, TITLE_GROUPS[0], TITLE_GROUPS[1]);
     scene.set_group_then(counter, COUNTER_GROUPS[0], COUNTER_GROUPS[1]);

@@ -34,8 +34,11 @@
 //! The object's script runs through `SummonHost` (WP-SUM4): the party host plus the group 10 entries of
 //! Stitch's script (the AI object's fields in `ai::SummonAi`).
 //!
-//! What the app does not have (docs/summons.md "Status"): the friend AI (the object stands where it was
-//! put; its script's motion requests are logged, not played), the event itself (nothing in the app starts it: the wait for it ends at
+//! Stitch's class (module `stitch`, WP-SUM4b) moves him in his camera-space plane, chooses his records and
+//! fires his blast; its motion requests play on his body.
+//!
+//! What the app does not have (docs/summons.md "Status"): the friend AI of the other summons (they stand where
+//! they were put; their script's motion requests are logged, not played), the event itself (nothing in the app starts it: the wait for it ends at
 //! once), the HUD layers the event hides, the screen fade list (`FUN_0016ff50`), the free-spot
 //! collision tests (`FUN_001a5c30` / `FUN_001a5bf8`: a floor under the point stands in), the
 //! companions' return position (party.rs keeps their movement; they fade in where they are), the
@@ -142,9 +145,10 @@ pub mod ai {
     #[derive(Clone, Debug)]
     pub struct SummonAi {
         pub slots: [Slot; SLOTS],
-        /// +0x630 bit 0 (FUN_001175a0 sets it) and +0x640 the vector it copies (game units and axes).
+        /// +0x630 bit 0 (FUN_001175a0 sets it).
         pub flags_630: u32,
-        pub goal: [f32; 4],
+        /// Stitch's class fields (+0x620.., the position +0x640 FUN_001175a0 writes): `super::stitch`.
+        pub stitch: super::stitch::StitchAi,
         /// Object +0xc60 / +0xc64 (FUN_0010ecb0): the action the class runs and its argument.
         pub action: (u32, u32),
         /// Object +0xb7c (FUN_001129f0 ors 0x40000000).
@@ -160,7 +164,7 @@ pub mod ai {
 
     impl Default for SummonAi {
         fn default() -> Self {
-            SummonAi { slots: [Slot::default(); SLOTS], flags_630: 0, goal: [0.0; 4], action: (0, 0), b7c: 0, flag_7f8_4: false, callbacks_98: Vec::new(), link_calls: (0, 0) }
+            SummonAi { slots: [Slot::default(); SLOTS], flags_630: 0, stitch: Default::default(), action: (0, 0), b7c: 0, flag_7f8_4: false, callbacks_98: Vec::new(), link_calls: (0, 0) }
         }
     }
 
@@ -221,6 +225,589 @@ pub mod ai {
                 s.flags |= 0x4000_0000;
             }
         }
+    }
+}
+
+/// Stitch's friend AI (WP-SUM4b): the class FUN_001179c0 (vtable 0x354870, class 0xe at object +0xb6c), its
+/// update FUN_001155e0 (object +0xb64, set by FUN_0010b780 for NeoStatus 200 in place of the members'
+/// FUN_00111070) and its seven action records at 0x354708, chosen by the friend engine's FUN_0010fcd0
+/// (`party_battle::choose`).
+///
+/// Stitch has no ground follow: FUN_001155e0 never calls the members' follow (FUN_00110468 / FUN_00110f90).
+/// He moves in a plane of his own: the position +0x640 is (x, y, depth, yaw) with the depth held at
+/// `DAT_00378840` / `DAT_003787d0` (1024 in the executable), x wrapped across `DAT_003787b8..c0` and y across
+/// `DAT_003787c4..cc` (FUN_00116530), goals from FUN_00116780's fixed spots and two tables of six. FUN_001175a0
+/// builds a matrix from it (FUN_00117320: the rotation by the yaw, the translation `+0x640 x DAT_0037882c`) at
+/// AI +0x6c0 and hands it to the object as its parent matrix (FUN_00193228: object +0x790, +0x10c |= 0x40,
+/// +0x768 |= 0x1000); with +0x10c bit 0x40 the object's movement adds no gravity or collision (FUN_00181e00).
+/// [inferred] The plane is the camera's: the depth is constant, the wrap ranges are screen-sized, the class
+/// update's slot kind 3 puts effects through the camera's inverse view (FUN_00116b48 with FUN_001068c0(1)),
+/// and the blast (FUN_00118110) aims from the camera's position (FUN_001071c8 of FUN_001068c0(1)). Who reads
+/// object +0x790 was not found (GAP: `mips_scan --load-off 0x790` finds no load; the decompilation has only
+/// the two writers FUN_00193228 / FUN_00193248).
+pub mod stitch {
+    use crate::party_battle::{self as battle, Choice, Choosing, Handler, MemberNow, Params, Record};
+
+    /// Stitch's NeoStatus and AI class (FUN_0010b780: +0xb6c = 0xe).
+    pub const NEO: u16 = 200;
+    pub const CLASS: u8 = 0xe;
+    /// FUN_001179c0: +0xc = 7 records, +0x10 = 0x354708.
+    pub const RECORDS: u32 = 0x354708;
+    pub const RECORD_COUNT: u32 = 7;
+    /// FUN_001179c0: +0x14 = the class block's entry with id 0x80 (FUN_00114228, the list at block +0xb0/+0xb4).
+    pub const ENTRY_ID: u32 = 0x80;
+    /// The handlers (record +4).
+    pub const STAND: u32 = 0x117cf8;
+    pub const MOVE: u32 = 0x117ea0;
+    pub const BLAST: u32 = 0x118348;
+    pub const REFILL: u32 = 0x118730;
+    pub const LINK: u32 = 0x118db8;
+    /// Motion requests (immediates): stand (FUN_00117cf8, FUN_0017e2d8 with motion 0), move (0xa1), the blast
+    /// (0xcb), the MP refill (0xcc).
+    pub const M_STAND: u16 = 0;
+    pub const M_MOVE: u16 = 0xa1;
+    pub const M_BLAST: u16 = 0xcb;
+    pub const M_REFILL: u16 = 0xcc;
+    /// The blast's attack object (FUN_00118110 -> FUN_0018bef0 with `atkp` 0x4ba).
+    pub const BLAST_ATKP: i16 = 0x4ba;
+    /// FUN_00118110's slots (FUN_00117708 kinds 0xc and 0xd with argument 0x13 on Stitch) and FUN_00118730's
+    /// (kind 0xb on Stitch) and its effect on the player (FUN_0016a570(object, 10, 1, 0, player)).
+    pub const BLAST_SLOTS: [(i32, bool, u32); 2] = [(0xc, false, u32::MAX), (0xd, true, 0x13)];
+    pub const REFILL_SLOT: i32 = 0xb;
+    pub const REFILL_EFFECT: i32 = 10;
+
+    /// The executable's numbers the class reads.
+    #[derive(Clone, Copy, Debug, PartialEq, Default)]
+    pub struct Consts {
+        /// `DAT_003787d0` (goal depth, FUN_00116780) and `DAT_00378840` (place depth, FUN_001175a0).
+        pub depth: f32,
+        pub place_depth: f32,
+        /// FUN_00116780's fixed spots: `DAT_003787d4/d8` (case 0, overwritten by case 1's), `DAT_003787dc`
+        /// and `DAT_003787e4` (x), `DAT_003787e0` and `DAT_003787e8` (y), `DAT_003787ec/f0` (case 6),
+        /// `DAT_003787f4/f8` (case 7).
+        pub x_a: f32,
+        pub x_b: f32,
+        pub y_a: f32,
+        pub y_b: f32,
+        pub case0: [f32; 2],
+        pub case6: [f32; 2],
+        pub case7: [f32; 2],
+        /// The random spots: FUN_001166d0 (0x354808) and FUN_00116728 (0x354838), six (x, y) each.
+        pub left: [[f32; 2]; 6],
+        pub right: [[f32; 2]; 6],
+        /// `DAT_003787fc` (the roll split), `DAT_00378800` (the shift scale), `DAT_00378804` (x shift) and
+        /// `DAT_00378808` (y shift) of FUN_00116780's random branch.
+        pub split: f32,
+        pub shift: f32,
+        pub shift_x: f32,
+        pub shift_y: f32,
+        /// FUN_00116530: x below `DAT_003787b8` / above `DAT_003787c0` moves by `DAT_003787bc`, y below
+        /// `DAT_003787c4` / above `DAT_003787cc` by `DAT_003787c8`.
+        pub wrap_x: [f32; 3],
+        pub wrap_y: [f32; 3],
+        /// FUN_001179c0: +0x628 = `DAT_0037885c` (the speed cap and arrival distance), +0x62c = `DAT_00378860`
+        /// (the turn per frame and the arrival angle).
+        pub max_speed: f32,
+        pub turn: f32,
+        /// FUN_00117cf8: in battle the wait is `2 w + DAT_00378864`; above `DAT_00378868` of yaw it is times
+        /// `DAT_0037886c`.
+        pub stand_add: f32,
+        pub stand_angle: f32,
+        pub stand_short: f32,
+        /// FUN_00118348 / FUN_00118730: the first leg ends nearer than `DAT_00378878` / `DAT_0037887c`.
+        pub near_blast: f32,
+        pub near_refill: f32,
+        /// FUN_00117320: the translation scale `DAT_0037882c`.
+        pub scale: f32,
+        /// The class block (0x34ea00 + offset[0xe]) +0x70 / +0x74: the stand wait.
+        pub wait: (f32, f32),
+        /// The entry 0x80: +4 the 0x674 period, +8 the HP fraction of the blast, +0xc the MP fraction of the
+        /// refill, +0x10 the choice count and +0x14 the chance of FUN_001155e0's forced pick.
+        pub period: f32,
+        pub hp_frac: f32,
+        pub mp_frac: f32,
+        pub count: f32,
+        pub chance: f32,
+        /// `DAT_00356f40` (the frame unit) and `DAT_00356f48` (the speed unit).
+        pub frame: f32,
+        pub unit: f32,
+    }
+
+    fn w(elf: &[u8], va: u32) -> Option<u32> {
+        crate::party_rules::exe_bytes(elf, va, 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+
+    fn f(elf: &[u8], va: u32) -> Option<f32> {
+        w(elf, va).map(f32::from_bits)
+    }
+
+    impl Consts {
+        pub fn from_exe(elf: &[u8]) -> Option<Consts> {
+            let block = crate::party_rules::AI_PARAMS + w(elf, crate::party_rules::AI_PARAMS + 4 * CLASS as u32)?;
+            let (n, at) = (w(elf, block + 0xb0)?, block + w(elf, block + 0xb4)?);
+            let entry = (0..n.min(64)).map(|k| at + k * 0x80).find(|&e| w(elf, e) == Some(ENTRY_ID))?;
+            let table = |base: u32| -> Option<[[f32; 2]; 6]> {
+                let mut t = [[0.0; 2]; 6];
+                for (k, v) in t.iter_mut().enumerate() {
+                    *v = [f(elf, base + 8 * k as u32)?, f(elf, base + 8 * k as u32 + 4)?];
+                }
+                Some(t)
+            };
+            Some(Consts {
+                depth: f(elf, 0x3787d0)?,
+                place_depth: f(elf, 0x378840)?,
+                case0: [f(elf, 0x3787d4)?, f(elf, 0x3787d8)?],
+                x_a: f(elf, 0x3787dc)?,
+                y_a: f(elf, 0x3787e0)?,
+                x_b: f(elf, 0x3787e4)?,
+                y_b: f(elf, 0x3787e8)?,
+                case6: [f(elf, 0x3787ec)?, f(elf, 0x3787f0)?],
+                case7: [f(elf, 0x3787f4)?, f(elf, 0x3787f8)?],
+                left: table(0x354808)?,
+                right: table(0x354838)?,
+                split: f(elf, 0x3787fc)?,
+                shift: f(elf, 0x378800)?,
+                shift_x: f(elf, 0x378804)?,
+                shift_y: f(elf, 0x378808)?,
+                wrap_x: [f(elf, 0x3787b8)?, f(elf, 0x3787bc)?, f(elf, 0x3787c0)?],
+                wrap_y: [f(elf, 0x3787c4)?, f(elf, 0x3787c8)?, f(elf, 0x3787cc)?],
+                max_speed: f(elf, 0x37885c)?,
+                turn: f(elf, 0x378860)?,
+                stand_add: f(elf, 0x378864)?,
+                stand_angle: f(elf, 0x378868)?,
+                stand_short: f(elf, 0x37886c)?,
+                near_blast: f(elf, 0x378878)?,
+                near_refill: f(elf, 0x37887c)?,
+                scale: f(elf, 0x37882c)?,
+                wait: (f(elf, block + 0x70)?, f(elf, block + 0x74)?),
+                period: f(elf, entry + 4)?,
+                hp_frac: f(elf, entry + 8)?,
+                mp_frac: f(elf, entry + 0xc)?,
+                count: f(elf, entry + 0x10)?,
+                chance: f(elf, entry + 0x14)?,
+                frame: f(elf, 0x356f40)?,
+                unit: f(elf, 0x356f48)?,
+            })
+        }
+    }
+
+    /// The seven records (flags, handler; no parameter entries: their +0xc ids are 0).
+    pub fn records(elf: &[u8]) -> Option<Vec<Record>> {
+        (0..RECORD_COUNT)
+            .map(|i| {
+                let r = RECORDS + i * 0x24;
+                Some(Record {
+                    flags: w(elf, r)?,
+                    handler: Handler::from_addr(w(elf, r + 4)?),
+                    id: w(elf, r + 0xc)?,
+                    entry: None,
+                    ability: w(elf, r + 0x14)?,
+                    item: w(elf, r + 0x18)?,
+                    setting: w(elf, r + 0x1c)? as i32,
+                    mode: String::new(),
+                })
+            })
+            .collect()
+    }
+
+    /// The handler address of a record (`Handler::Other` for Stitch's own).
+    pub fn addr(r: &Record) -> u32 {
+        match r.handler {
+            Handler::Other(a) => a,
+            _ => 0,
+        }
+    }
+
+    /// Stitch's AI fields (offsets of the AI object unless they say "object").
+    #[derive(Clone, Debug, Default)]
+    pub struct StitchAi {
+        /// +0x640: (x, y, depth, yaw); +0x650 the goal (x, y, depth, yaw); +0x660 the direction and +0x66c
+        /// the speed; +0x65c is the goal's w, the wanted yaw.
+        pub pos: [f32; 4],
+        pub goal: [f32; 4],
+        pub dir: [f32; 3],
+        pub speed: f32,
+        /// +0x634: the phase of the blast and the refill.
+        pub phase: i32,
+        /// +0x788: choices since the last forced pick (FUN_001155e0).
+        pub count: i32,
+        /// Object +0xcd4: the stand wait (FUN_0010f648 / FUN_0010f670).
+        pub timer: f32,
+        /// FUN_0010fcd0's state (object +0xc60, +0xb7c bit 4, the last three).
+        pub choosing: Choosing,
+        /// Object +0x10c bit 0x40 / +0x790: the parent matrix is set (FUN_00193228).
+        pub attached: bool,
+        /// The motion requested last (object +0x154) and whether a new request is pending.
+        pub motion: Option<u16>,
+        pub motion_new: bool,
+        /// +0x620 / +0x624: the blast's attack object and the motion it lives in (FUN_00118110).
+        pub attack: Option<u16>,
+        pub rng: Rng,
+    }
+
+    /// [inferred] A stand-in for the game's generator FUN_00106308: an xorshift, as party.rs's `Manager`
+    /// (the game's generator is not ported).
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct Rng(pub u32);
+
+    impl Rng {
+        /// FUN_0010f420(n): 0..n.
+        pub fn rand(&mut self, n: u32) -> u32 {
+            if self.0 == 0 {
+                self.0 = 0x2545_f491;
+            }
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 17;
+            self.0 ^= self.0 << 5;
+            self.0 % n.max(1)
+        }
+
+        /// FUN_0010f438: 0..1, as party.rs's stand-in.
+        pub fn roll(&mut self) -> f32 {
+            self.rand(20001) as f32 / 20000.0
+        }
+    }
+
+    /// `update` with the AI's own generator.
+    pub fn tick(c: &Consts, recs: &[Record], ai: &mut StitchAi, now: &Now) -> Out {
+        let rng = std::cell::RefCell::new(std::mem::take(&mut ai.rng));
+        let out = update(c, recs, ai, now, &mut || rng.borrow_mut().roll(), &mut |n| rng.borrow_mut().rand(n));
+        ai.rng = rng.into_inner();
+        out
+    }
+
+    /// What the update reads of the game.
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct Now {
+        /// FUN_001903d8 (a battle) and FUN_001b3c00 (a limit task).
+        pub battle: bool,
+        pub limit: bool,
+        /// The player's status block: HP / max HP (+0, +4) and MP / max MP (+0x180, +0x184).
+        pub hp: (i32, i32),
+        pub mp: (i32, i32),
+        /// FUN_00118068: enemies (FUN_0010cae8) not out of view (FUN_0019ada8).
+        pub in_view: usize,
+        /// The body's motion ended (object +0x160 bit 2 [inferred]).
+        pub motion_done: bool,
+    }
+
+    /// What one update asks of the world.
+    #[derive(Clone, Debug, Default, PartialEq)]
+    pub struct Out {
+        /// A record started (index, forced by FUN_001155e0's pick).
+        pub started: Option<(usize, bool)>,
+        /// FUN_00118110 runs this frame (the attack object exists and hits).
+        pub blast: bool,
+        /// FUN_001a0240 on the player's status (the MP refill).
+        pub refill: bool,
+        /// AI slots started (kind, on Stitch, argument 3) and effects on the player (FUN_0016a570).
+        pub slots: Vec<(i32, bool, u32)>,
+        pub player_effect: Option<i32>,
+    }
+
+    /// FUN_00106408 as the party uses it: a value in `[a, b]` from a 0..1 roll [inferred].
+    fn between(roll: f32, a: f32, b: f32) -> f32 {
+        a + (b - a) * roll
+    }
+
+    /// FUN_001166d0 (`left`) / FUN_00116728 (`right`): one of six spots by FUN_0010f420(6), into the goal's x and
+    /// y. [inferred] The calls the decompilation shows with two arguments write y too (the third argument
+    /// register still holds +0x654 there).
+    fn pick(t: &[[f32; 2]; 6], goal: &mut [f32; 4], rand: &mut dyn FnMut(u32) -> u32) {
+        let k = (rand(6) as usize).min(5);
+        goal[0] = t[k][0];
+        goal[1] = t[k][1];
+    }
+
+    /// FUN_00116780(ai, case): the goal's depth, then the case's spot; case 5 is the origin; any other case the
+    /// random branch: below the split a spot on Stitch's side, else a spot of a side shifted by FUN_0010f420(4)'s
+    /// rule (0, 1: across in x by the roll's shift or the wrap width; 2, 3: in y).
+    pub fn goal(c: &Consts, case: i32, pos: [f32; 4], goal: &mut [f32; 4], roll: &mut dyn FnMut() -> f32, rand: &mut dyn FnMut(u32) -> u32) {
+        goal[2] = c.depth;
+        match case {
+            0 | 1 => (goal[0], goal[1]) = (c.x_a, c.y_a),
+            2 => (goal[0], goal[1]) = (c.x_b, c.y_a),
+            3 => (goal[0], goal[1]) = (c.x_b, c.y_b),
+            4 => (goal[0], goal[1]) = (c.x_a, c.y_b),
+            5 => (goal[0], goal[1]) = (0.0, 0.0),
+            6 => (goal[0], goal[1]) = (c.case6[0], c.case6[1]),
+            7 => (goal[0], goal[1]) = (c.case7[0], c.case7[1]),
+            _ => {
+                let r = roll();
+                if r < c.split {
+                    if 0.0 <= pos[0] { pick(&c.right, goal, rand) } else { pick(&c.left, goal, rand) }
+                    return;
+                }
+                let s = (roll() * c.split + c.split) * c.shift;
+                let left_side = pos[0] < 0.0;
+                match rand(4) {
+                    // Across in x: a spot of the other side, moved by the wrap width (1) or the shift (0).
+                    k @ (0 | 1) => {
+                        let d = if k == 1 { c.shift_x } else { s };
+                        if left_side {
+                            pick(&c.right, goal, rand);
+                            goal[0] -= d;
+                        } else {
+                            pick(&c.left, goal, rand);
+                            goal[0] += d;
+                        }
+                    }
+                    // In y: a spot of Stitch's side, y down by the height (3) or up by the height less the shift (2).
+                    k @ (2 | 3) => {
+                        if left_side { pick(&c.left, goal, rand) } else { pick(&c.right, goal, rand) }
+                        if k == 3 {
+                            goal[1] -= c.shift_y;
+                        } else {
+                            goal[1] += c.shift_y - s;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// FUN_00116530 (with AI +0x630 bit 0): position and goal both beyond an edge move across together.
+    pub fn wrap(c: &Consts, pos: &mut [f32; 4], goal: &mut [f32; 4]) {
+        for (k, [lo, step, hi]) in [(0usize, c.wrap_x), (1, c.wrap_y)] {
+            if pos[k] < lo && goal[k] < lo {
+                pos[k] += step;
+                goal[k] += step;
+            }
+            if hi < pos[k] && hi < goal[k] {
+                pos[k] -= step;
+                goal[k] -= step;
+            }
+        }
+    }
+
+    /// The handlers' shared step: the direction to the goal (x, y, depth) and the speed, the distance times
+    /// `DAT_00356f48` capped at +0x628. Returns the distance.
+    pub fn toward(c: &Consts, ai: &mut StitchAi) -> f32 {
+        let d = [ai.goal[0] - ai.pos[0], ai.goal[1] - ai.pos[1], ai.goal[2] - ai.pos[2]];
+        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        ai.dir = if len > 0.0 { [d[0] / len, d[1] / len, d[2] / len] } else { [0.0; 3] };
+        ai.speed = (len * c.unit).min(c.max_speed);
+        len
+    }
+
+    /// FUN_00116aa0: nearer than +0x628 (times the frame unit) and turned to within +0x62c of the goal's yaw.
+    pub fn arrived(c: &Consts, pos: [f32; 4], goal: [f32; 4]) -> bool {
+        let d = [pos[0] - goal[0], pos[1] - goal[1], pos[2] - goal[2]];
+        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        len < c.max_speed * c.frame && crate::camera::rules::wrap(pos[3] - goal[3]).abs() < c.turn * c.frame
+    }
+
+    /// FUN_00116658: with a direction in x or y, the wanted yaw +0x65c = atan2(x, -y) (FUN_003003e8).
+    pub fn face(ai: &mut StitchAi) {
+        if ai.dir[0] != 0.0 || ai.dir[1] != 0.0 {
+            ai.goal[3] = ai.dir[0].atan2(-ai.dir[1]);
+        }
+    }
+
+    /// FUN_001175a0 (host 10.1): +0x630 |= 1 (the caller's), the position and the wanted yaw from the vector,
+    /// the depth `DAT_00378840`, and once the parent matrix (FUN_00117320, FUN_00193228). The yaw loses the
+    /// motion's root rotation (FUN_0017ecf0's w) [inferred 0: the summon's root motion is not read].
+    pub fn place(c: &Consts, ai: &mut StitchAi, v: [f32; 4]) {
+        ai.pos = v;
+        ai.goal[3] = v[3];
+        ai.pos[2] = c.place_depth;
+        ai.attached = true;
+    }
+
+    fn request(ai: &mut StitchAi, m: u16) {
+        ai.motion = Some(m);
+        ai.motion_new = true;
+    }
+
+    /// FUN_0010f490 / FUN_0010f4d0: the value below `frac` of its maximum (`(int)(max x frac) > value`).
+    pub fn below(v: (i32, i32), frac: f32) -> bool {
+        ((v.1 as f32 * frac) as i32) > v.0
+    }
+
+    /// A record's phase 1 (the handler called with the test flag): `cont` is +0xb7c bit 4.
+    pub fn can(c: &Consts, recs: &[Record], ai: &StitchAi, now: &Now, i: usize, cont: bool) -> bool {
+        let gates = !now.limit;
+        // FUN_001180c0: the player's HP below the entry's fraction and an enemy in view.
+        let blast_fresh = gates && below(now.hp, c.hp_frac) && now.in_view > 0;
+        // FUN_0010ed20: another record with flag 2 feasible (fresh) [the record FUN_0010fc68 names is none for
+        // a class above 13]; of Stitch's flag-2 records only the blast can start fresh (FUN_00118db8 never does;
+        // FUN_00118ec0 and FUN_00119068 were not read and count as never).
+        let other = |me: usize| recs.iter().enumerate().any(|(k, r)| k != me && r.flags & battle::flag::ATTACK != 0 && addr(r) == BLAST && blast_fresh);
+        match recs.get(i).map(addr) {
+            Some(STAND) => gates && !other(i) && (!cont || ai.timer > 0.0),
+            Some(MOVE) => gates && !other(i) && if cont { !arrived(c, ai.pos, ai.goal) } else { ai.choosing.current != Some(i) },
+            Some(BLAST) => gates && if cont { ai.phase != 4 } else { blast_fresh },
+            Some(REFILL) => gates && if cont { ai.phase != 3 } else { below(now.mp, c.mp_frac) },
+            Some(LINK) => cont && ai.motion == Some(0xc9),
+            _ => false,
+        }
+    }
+
+    /// A record's phase 0 (the handler called without the test flag).
+    #[allow(clippy::too_many_arguments)]
+    pub fn run(c: &Consts, recs: &[Record], ai: &mut StitchAi, now: &Now, i: usize, cont: bool, out: &mut Out, roll: &mut dyn FnMut() -> f32, rand: &mut dyn FnMut(u32) -> u32) {
+        match recs.get(i).map(addr) {
+            // FUN_00117cf8: a new wait from the class block's +0x70..+0x74 (in battle 2 w + 60, a third and less
+            // when turned away), motion 0, standing.
+            Some(STAND) => {
+                if !cont {
+                    let (mut a, mut b) = c.wait;
+                    if now.battle {
+                        a = a + a + c.stand_add;
+                        b = b + b + c.stand_add;
+                    }
+                    if crate::camera::rules::wrap(ai.pos[3]).abs() > c.stand_angle {
+                        a *= c.stand_short;
+                        b *= c.stand_short;
+                    }
+                    ai.timer = between(roll(), a, b);
+                }
+                request(ai, M_STAND);
+                ai.dir = [0.0; 3];
+            }
+            // FUN_00117ea0: a random goal and motion 0xa1, then the step toward it and the facing.
+            Some(MOVE) => {
+                if !cont {
+                    let pos = ai.pos;
+                    goal(c, -1, pos, &mut ai.goal, roll, rand);
+                    request(ai, M_MOVE);
+                }
+                toward(c, ai);
+                face(ai);
+            }
+            Some(h @ (BLAST | REFILL)) => {
+                let (case, near, last) = if h == BLAST { (6, c.near_blast, 3) } else { (7, c.near_refill, 2) };
+                if !cont {
+                    ai.phase = 0;
+                    let pos = ai.pos;
+                    goal(c, case, pos, &mut ai.goal, roll, rand);
+                }
+                match ai.phase {
+                    0 => {
+                        let d = toward(c, ai);
+                        face(ai);
+                        if d < near {
+                            ai.goal[3] = 0.0;
+                            ai.phase = 1;
+                        }
+                    }
+                    1 => {
+                        toward(c, ai);
+                        if arrived(c, ai.pos, ai.goal) {
+                            ai.phase = 2;
+                        }
+                    }
+                    p if (2..=last).contains(&p) => {
+                        ai.dir = [0.0; 3];
+                        ai.pos = ai.goal;
+                        if h == REFILL {
+                            // FUN_00118730 phase 2: motion 0xcc, FUN_001a0240 on the player, effect 10 on him, a slot.
+                            request(ai, M_REFILL);
+                            out.refill = true;
+                            out.player_effect = Some(REFILL_EFFECT);
+                            out.slots.push((REFILL_SLOT, true, u32::MAX));
+                            ai.phase += 1;
+                        } else {
+                            // FUN_00118348 phases 2 and 3: motion 0xcb and the two slots once, then the blast each
+                            // frame while 0xcb plays; the phase moves on when it ended.
+                            if p == 2 {
+                                request(ai, M_BLAST);
+                                out.slots.extend(BLAST_SLOTS);
+                                ai.phase += 1;
+                            } else if ai.motion == Some(M_BLAST) {
+                                if now.motion_done {
+                                    ai.phase += 1;
+                                }
+                            } else {
+                                ai.phase += 1;
+                            }
+                            if ai.attack.is_none() {
+                                ai.attack = Some(M_BLAST);
+                            }
+                            out.blast = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => ai.dir = [0.0; 3],
+        }
+    }
+
+    /// FUN_001155e0 while the object is free: the wrap, the stopped direction, the forced pick (in battle, no
+    /// limit, more than the entry's count of choices, the entry's chance: the refill when MP is the lower
+    /// fraction, else the blast) or FUN_0010fcd0, the turn toward the wanted yaw and the step; then the class
+    /// update's release of the attack object (FUN_00116b48: the motion is not 0xcb any more or it ended).
+    pub fn update(c: &Consts, recs: &[Record], ai: &mut StitchAi, now: &Now, roll: &mut dyn FnMut() -> f32, rand: &mut dyn FnMut(u32) -> u32) -> Out {
+        let mut out = Out::default();
+        if !ai.attached {
+            // FUN_001155e0: +0x630 bit 0 clear -> FUN_001175a0 with the zero vector.
+            place(c, ai, [0.0; 4]);
+        }
+        let (mut pos, mut g) = (ai.pos, ai.goal);
+        wrap(c, &mut pos, &mut g);
+        (ai.pos, ai.goal) = (pos, g);
+        ai.dir = [0.0; 3];
+        if ai.timer > 0.0 {
+            // [inferred] The wait counts down one frame unit per frame (as party.rs's +0xcd4).
+            ai.timer -= c.frame;
+        }
+        let forced = now.battle && !now.limit && c.count < ai.count as f32 && {
+            ai.count = 0;
+            roll() < c.chance
+        };
+        if forced {
+            let k = if (now.mp.0 as i64) * (now.hp.1 as i64) < (now.hp.0 as i64) * (now.mp.1 as i64) { REFILL } else { BLAST };
+            if let Some(i) = recs.iter().position(|r| addr(r) == k) {
+                ai.choosing.current = Some(i);
+                ai.choosing.continuing = false;
+                run(c, recs, ai, now, i, false, &mut out, roll, rand);
+                out.started = Some((i, true));
+            }
+        } else {
+            let before = ai.choosing.current;
+            let mut st = std::mem::take(&mut ai.choosing);
+            st.current = before;
+            let snapshot = ai.clone();
+            let choice = {
+                let mut can_f = |i: usize, cont: bool| {
+                    let mut s = snapshot.clone();
+                    s.choosing.current = before;
+                    can(c, recs, &s, now, i, cont)
+                };
+                battle::choose(recs, &mut st, &Params::default(), CLASS, &MemberNow::default(), false, false, |_| None, &mut can_f, &mut *roll, &mut *rand)
+            };
+            ai.choosing = st;
+            match choice {
+                Choice::Keep(i) => run(c, recs, ai, now, i, true, &mut out, roll, rand),
+                Choice::Do(i) => {
+                    run(c, recs, ai, now, i, false, &mut out, roll, rand);
+                    out.started = Some((i, false));
+                }
+                // [inferred] FUN_001103f8 (the members' move when nothing is chosen) was not read for Stitch:
+                // he stands.
+                _ => ai.dir = [0.0; 3],
+            }
+            if before != ai.choosing.current || !ai.choosing.continuing {
+                ai.count += 1;
+            }
+        }
+        // The turn toward +0x65c by +0x62c and the step: +0x640 += direction x speed x frame.
+        ai.pos[3] = crate::camera::rules::approach_angle(ai.pos[3], ai.goal[3], c.turn * c.frame);
+        for k in 0..3 {
+            ai.pos[k] += ai.dir[k] * ai.speed * c.frame;
+        }
+        if ai.attack.is_some() && (ai.motion != Some(M_BLAST) || (now.motion_done && !ai.motion_new)) {
+            ai.attack = None;
+        }
+        out
+    }
+
+    /// FUN_00117320's translation: the position in the parent's (the camera's [inferred]) space, game units
+    /// and axes (x right, y down, z forward).
+    pub fn camera_point(c: &Consts, pos: [f32; 4]) -> [f32; 3] {
+        [pos[0] * c.scale, pos[1] * c.scale, pos[2] * c.scale]
     }
 }
 
@@ -423,6 +1010,9 @@ pub struct SummonData {
     pub cmds: Vec<Cmd>,
     pub tuning: drive_rules::SummonTuning,
     pub consts: Option<SummonConsts>,
+    /// Stitch's class (WP-SUM4b): its constants and records, and FUN_0017da30's motion slot orders.
+    pub stitch: Option<(stitch::Consts, Vec<crate::party_battle::Record>)>,
+    motion_orders: Option<[[u8; 4]; 4]>,
     objs: Vec<t::Objentry>,
     host_table: Option<kh2_bdx::HostTable>,
     /// Command names for the log (`msg/us/sys.bar`).
@@ -434,7 +1024,13 @@ pub struct SummonData {
 
 impl SummonData {
     fn load(disc: &Disc) -> Option<SummonData> {
-        let consts = disc.read_root("SLUS_210.05").and_then(|exe| SummonConsts::from_exe(&exe).map(|c| (c, kh2_bdx::HostTable::from_exe(&exe))));
+        let exe = disc.read_root("SLUS_210.05");
+        let stitch = exe.as_deref().and_then(|e| Some((stitch::Consts::from_exe(e)?, stitch::records(e)?)));
+        if stitch.is_none() {
+            warn!("summon: Stitch's class constants (FUN_001179c0) not readable: Stitch stands where he appears");
+        }
+        let motion_orders = exe.as_deref().and_then(crate::party_battle::motion_orders);
+        let consts = exe.and_then(|exe| SummonConsts::from_exe(&exe).map(|c| (c, kh2_bdx::HostTable::from_exe(&exe))));
         let mut a = disc.0.lock().ok()?;
         let rows = kh2_tables::load::<t::Sumn>(&mut a, &t::SUMN).ok()?.rows;
         let cmds = kh2_tables::load::<Cmd>(&mut a, &t::CMD).ok()?.rows;
@@ -456,6 +1052,8 @@ impl SummonData {
             cmds,
             tuning: drive_rules::SummonTuning::from_sstm(&sstm),
             consts,
+            stitch,
+            motion_orders,
             objs,
             host_table,
             names,
@@ -670,6 +1268,10 @@ pub struct SummonObject {
     /// effects) of the script.
     ai: ai::SummonAi,
     fields: crate::friend_host::FriendFields,
+    /// The targets the blast's attack object has hit (FUN_0018c5f8: once per attack object).
+    blast_hit: std::collections::HashSet<Entity>,
+    /// Ticks the class has run (for the once-a-second log line).
+    ticks: u32,
 }
 
 /// The status block handle host 1.84 gives for the player (his +0x48c): host 10.45 reads its +0x1b4.
@@ -681,6 +1283,9 @@ struct SummonEnv {
     timer: f32,
     /// A limit task runs (`LimitTask`, `DAT_01d5d6b0`).
     limit: bool,
+    /// Stitch's class constants and the index of his move record (FUN_00117ea0).
+    stitch: Option<stitch::Consts>,
+    move_record: Option<usize>,
 }
 
 /// The summon object's script host: the party members' host (`FriendHost`: attack objects, effects,
@@ -727,14 +1332,17 @@ impl SummonHost<'_, '_> {
                 self.ai.callbacks_98.push((a(0), a(1), a(2)));
                 (Value::None, St::Impl, "")
             }
-            // 10.1 (0x2f6a98 -> FUN_001175a0): AI +0x630 |= 1, +0x640 = the vector. The rest (+0x65c, +0x648,
-            // FUN_00117320, FUN_00193228, FUN_0017ecf0) belongs to the class update, not ported.
+            // 10.1 (0x2f6a98 -> FUN_001175a0): AI +0x630 |= 1, the position +0x640 and the wanted yaw from the
+            // vector, the depth, the parent matrix (stitch::place).
             (10, 1) => {
                 self.ai.flags_630 |= 1;
-                if let Some(Arg::Vec(v)) = args.get(1) {
-                    self.ai.goal = *v;
+                match (args.get(1), self.env.stitch.as_ref()) {
+                    (Some(Arg::Vec(v)), Some(k)) => {
+                        stitch::place(k, &mut self.ai.stitch, *v);
+                        (Value::None, St::Approx, "the motion's root rotation (FUN_0017ecf0's w) is taken as 0")
+                    }
+                    _ => (Value::None, St::Stub, "Stitch's constants are not readable"),
                 }
-                (Value::None, St::Approx, "the goal is kept; Stitch's class update (FUN_00116b48) that walks to it is not ported")
             }
             // 10.3 / 10.4: Stitch's vtable +0x28 (FUN_001191a8) / +0x2c (FUN_00119360), the player's link
             // for a summon limit (stage 5).
@@ -762,10 +1370,29 @@ impl SummonHost<'_, '_> {
             // 10.19 (0x2f6e60): object +0x10c bit 0x10000, set by the limit task for its participants
             // (FUN_001b2c10). While a summon is out only summon limits run (FUN_001d1ce0 refuses the others).
             (10, 19) => (Value::Bool(a(0) == me && self.env.limit), St::Approx, "in a limit = a limit task runs (only summon limits can run while a summon is out)"),
-            (10, 32) => (Value::None, St::Stub, "FUN_00118aa8 (a goal, motion 0xa1 and a record's action) belongs to the class update, not ported"),
+            // 10.32 (0x2f7138 -> FUN_00118aa8): a goal (FUN_00116780), motion 0xa1, the record whose handler is
+            // `_PTR_FUN_00378880` (FUN_00117ea0, the move) made the current action (FUN_0010ecb0) and +0xb7c |= 4.
+            (10, 32) => match self.env.stitch.as_ref() {
+                Some(k) => {
+                    let st = &mut self.ai.stitch;
+                    let pos = st.pos;
+                    let mut rng = std::mem::take(&mut st.rng);
+                    let rng_c = std::cell::RefCell::new(&mut rng);
+                    stitch::goal(k, -1, pos, &mut st.goal, &mut || rng_c.borrow_mut().roll(), &mut |n| rng_c.borrow_mut().rand(n));
+                    st.rng = rng;
+                    st.motion = Some(stitch::M_MOVE);
+                    st.motion_new = true;
+                    st.choosing.current = self.env.move_record;
+                    st.choosing.continuing = true;
+                    self.ai.action = (stitch::MOVE, 0);
+                    (Value::None, St::Approx, "FUN_00116780's case is a register the wrapper leaves (taken as the random branch)")
+                }
+                None => (Value::None, St::Stub, "Stitch's constants are not readable"),
+            },
             // 10.39 (0x2f72c0 -> FUN_0010ecb0(object, 0, 0)).
             (10, 39) => {
                 self.ai.action = (0, 0);
+                self.ai.stitch.choosing.current = None;
                 (Value::None, St::Impl, "")
             }
             // 10.41 (0x2f7328 -> FUN_001129f0).
@@ -1400,6 +2027,8 @@ fn act(
                     originals: HashMap::new(),
                     ai: ai::SummonAi::default(),
                     fields: crate::friend_host::FriendFields::default(),
+                    blast_hit: Default::default(),
+                    ticks: 0,
                 });
             }
             Act::Leave => {
@@ -1416,6 +2045,17 @@ fn act(
     }
 }
 
+/// What Stitch's class reaches beside his object: the game camera (his plane's parent [inferred]), the
+/// enemies and their bodies, the hits his blast sends, the MP charge his refill ends, the battle flag.
+type StitchWorld<'w, 's> = (
+    Query<'w, 's, (&'static Camera, &'static GlobalTransform), crate::menu::preview::GameCamera>,
+    Query<'w, 's, (Entity, &'static Enemy, &'static Fighter)>,
+    Query<'w, 's, &'static GlobalTransform>,
+    MessageWriter<'w, Hit>,
+    Option<ResMut<'w, crate::magic::MagicState>>,
+    Res<'w, Battle>,
+);
+
 /// The summon objects' scripts (run every tick through the enemy host, as the party's in
 /// `friend_ai.rs`), their fades and their end.
 #[allow(clippy::too_many_arguments)]
@@ -1424,23 +2064,43 @@ fn objects(
     h: Res<Harness>,
     world: Option<Res<World>>,
     trace: Option<ResMut<AiTrace>>,
-    sora: Query<&Sora>,
+    mut sora: Query<&mut Sora>,
     mut q: Query<(Entity, &mut Transform, &mut SummonObject)>,
-    anims: Query<&Animator>,
+    mut anims: Query<&mut Animator>,
     children: Query<&Children>,
     handles: Query<&MeshMaterial3d<StandardMaterial>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    (game, drive, limit_task): (Res<GameData>, Res<DriveState>, Option<Res<crate::limit::LimitTask>>),
+    (game, drive, limit_task, data): (Res<GameData>, Res<DriveState>, Option<Res<crate::limit::LimitTask>>, Res<SummonData>),
+    (cam, enemies, gts, mut hits, mut magic, battle): StitchWorld,
 ) {
-    let (Some(mut trace), Ok(s)) = (trace, sora.single()) else { return };
+    let (Some(mut trace), Ok(mut s)) = (trace, sora.single_mut()) else { return };
     let paired = HashMap::new();
-    let senv = SummonEnv { timer: drive.timer.left, limit: limit_task.is_some_and(|l| l.0.is_some()) };
+    let move_record = data.stitch.as_ref().and_then(|(_, r)| r.iter().position(|r| stitch::addr(r) == stitch::MOVE));
+    let senv = SummonEnv { timer: drive.timer.left, limit: limit_task.is_some_and(|l| l.0.is_some()), stitch: data.stitch.as_ref().map(|d| d.0), move_record };
+    let camera = cam.iter().next();
+    // FUN_00118068 / FUN_00118110's targets: valid enemies (FUN_00112ac0: alive, hittable) not out of view
+    // (FUN_0019ada8 -> FUN_001a5db0, the camera's frustum [inferred: the point's projection inside the screen]),
+    // each with the centre of its nearest hurt volume (FUN_00112d20) in app units.
+    let targets: Vec<(Entity, Vec3)> = enemies
+        .iter()
+        .filter(|(_, e, f)| e.alive() && f.hittable)
+        .filter_map(|(te, _, f)| {
+            let body = gts.get(f.hurt_body).ok()?;
+            let a = anims.get(f.hurt_body).ok()?;
+            let (cc, cg) = camera?;
+            let vols = crate::combat::hurt_volumes(a, body);
+            let p = vols.iter().map(|v| (v.a + v.b) * 0.5).min_by(|x, y| x.distance_squared(cg.translation()).total_cmp(&y.distance_squared(cg.translation()))).unwrap_or(body.translation());
+            let ndc = cc.world_to_ndc(cg, p)?;
+            (ndc.x.abs() <= 1.0 && ndc.y.abs() <= 1.0 && (0.0..=1.0).contains(&ndc.z)).then_some((te, p))
+        })
+        .collect();
     for (ent, mut tf, mut so) in &mut q {
         let so = &mut *so;
         let Ok(anim) = anims.get(so.body) else { continue };
         let rig = anim.rig.clone();
         so.obj.slot = anim.slot;
         so.obj.frame = anim.frame;
+        let motion_done = anim.finished;
         let env = Env {
             player: s.motor.pos,
             player_yaw: s.motor.yaw,
@@ -1455,7 +2115,8 @@ fn objects(
             mission_counters: None,
             event_active: false,
         };
-        let SummonObject { rt, obj, tag, started, leave, mode, errors_seen, ai, fields, .. } = so;
+        let (neo, body) = (so.neo, so.body);
+        let SummonObject { rt, obj, tag, started, leave, mode, errors_seen, ai, fields, blast_hit, ticks, .. } = so;
         let Some(rt) = rt.as_mut() else {
             // No script: nothing ends the object but the leave [inferred].
             if std::mem::take(leave) {
@@ -1487,7 +2148,111 @@ fn objects(
         if let Some(req) = obj.motion_req.take()
             && h.log
         {
-            info!("summon: {tag} script asked for motion {} (not applied: the friend AI's motion mapping is stage 4)", req.slot);
+            info!("summon: {tag} script asked for motion {} (not applied: the class's own requests drive the body)", req.slot);
+        }
+        // Stitch's class (FUN_001155e0 and its records, WP-SUM4b) while he is not leaving.
+        let mut placed = None;
+        if neo == stitch::NEO
+            && let Some((k, recs)) = data.stitch.as_ref()
+            && rt.current_mode().as_deref() != Some("leave")
+        {
+            *ticks += 1;
+            let st = &mut ai.stitch;
+            let now = stitch::Now { battle: battle.active(), limit: senv.limit, hp: (s.hp, s.stats.max_hp), mp: (s.mp, game.sora_max_mp), in_view: targets.len(), motion_done };
+            let out = stitch::tick(k, recs, st, &now);
+            if let Some((i, forced)) = out.started {
+                info!(
+                    "summon: {tag} record {i} (handler {:#x}{}) starts: position ({:.0}, {:.0}) goal ({:.0}, {:.0}), player HP {}/{} MP {}/{}, enemies in view {}",
+                    stitch::addr(&recs[i]),
+                    if forced { ", FUN_001155e0's forced pick" } else { "" },
+                    st.pos[0],
+                    st.pos[1],
+                    st.goal[0],
+                    st.goal[1],
+                    now.hp.0,
+                    now.hp.1,
+                    now.mp.0,
+                    now.mp.1,
+                    now.in_view
+                );
+            }
+            for (kind, own, a3) in &out.slots {
+                // FUN_00116b48 starts each slot's effect (FUN_0016a530 with the kind as the effect number of
+                // Stitch's own file); the slot effects are not drawn [GAP: the slot list's effect start and its
+                // placement types 1..3 are not ported].
+                info!("summon: {tag} AI slot kind {kind:#x} on {} (argument {a3:#x}): effect not drawn", if *own { "Stitch" } else { "nothing" });
+            }
+            if out.refill {
+                let ended = crate::magic::refill_mp(magic.as_deref_mut().map(|m| &mut m.charge), &mut s.mp, game.sora_max_mp);
+                info!("summon: {tag} MP refill (FUN_00118730 -> FUN_001a0240): player MP {} (charge ended {ended}); effect {} on the player not drawn", s.mp, out.player_effect.unwrap_or(-1));
+            }
+            if st.attack.is_none() && !blast_hit.is_empty() {
+                info!("summon: {tag} blast attack object released ({} hit)", blast_hit.len());
+                blast_hit.clear();
+            }
+            if out.blast
+                && let Some((_, cg)) = camera
+            {
+                // FUN_00118110: the attack object (atkp 0x4ba) hits each target once (FUN_0018c5f8), aimed from the
+                // camera's position (FUN_001071c8).
+                for &(te, p) in &targets {
+                    if !blast_hit.insert(te) {
+                        continue;
+                    }
+                    let dir = (p - cg.translation()).with_y(0.0).normalize_or_zero();
+                    hits.write(Hit { attacker: ent, target: te, atkp: stitch::BLAST_ATKP, dir, point: p, row: None });
+                    info!("summon: {tag} blast (FUN_00118110, atkp {:#x}) hits {te:?} at {:.0?}", stitch::BLAST_ATKP, p / SCALE);
+                }
+            }
+            // The motion the class asked for (FUN_0017e220 / FUN_0017e2d8), through FUN_0017da30's slot order.
+            if std::mem::take(&mut st.motion_new)
+                && let (Some(m), Some(order)) = (st.motion, data.motion_orders)
+                && let Ok(mut a) = anims.get_mut(body)
+            {
+                let rig = a.rig.clone();
+                // Stitch's motion set holds his motions at their own numbers (slots 0, 0xa1, 0xc9..0xce, 0xe7, 0xf1,
+                // 0xf2 in N_HB040_BTL's set): FUN_0017da30 uses the four-slot order only for a motion set whose header
+                // +0xc has bit 0 (FUN_0017d960 -> FUN_001a7d70), else the number is the slot. [inferred] Stitch's set
+                // has the bit clear (the header bit is not read here): a slot at the number wins, the order is the
+                // fallback.
+                let state = crate::party_battle::motion_state(battle.active(), false);
+                let slot = if rig.mset.has(m as usize) { Some(m as usize) } else { crate::party_battle::remap(m as i32, order[state], |x| rig.mset.has(x)) };
+                let looping = slot.and_then(|x| rig.mset.get(x)).and_then(|x| x.motion.as_ref()).is_some_and(|mo| mo.frame_return < mo.frame_end);
+                if h.log && (a.slot != slot || slot.is_none()) {
+                    let near: Vec<usize> = (0..rig.mset.slots.len()).filter(|&x| rig.mset.has(x)).collect();
+                    info!("summon: {tag} motion request {m:#x} -> slot {slot:?} (looping {looping}){}", if slot.is_none() { format!("; the motion set has slots {near:?}") } else { String::new() });
+                }
+                // A request of the motion that plays changes nothing; a new one starts (FUN_0017e220).
+                if slot.is_some() {
+                    a.play(slot, looping, 0.0);
+                }
+            }
+            if st.attached
+                && let Some((_, cg)) = camera
+            {
+                // FUN_00117320: the matrix of the position in the parent's space; the camera's [inferred], game
+                // camera axes (x right, y down, z forward) to the app's camera axes (x right, y up, -z forward).
+                let p = stitch::camera_point(k, st.pos);
+                let world_at = cg.transform_point(Vec3::new(p[0], -p[1], -p[2]) * SCALE);
+                obj.motor.pos = world_at / SCALE;
+                placed = Some(cg.rotation() * Quat::from_rotation_y(-st.pos[3]));
+            }
+            if h.log && *ticks % 60 == 1 {
+                info!(
+                    "summon: {tag} plane ({:.0}, {:.0}, {:.0}) yaw {:.2} goal ({:.0}, {:.0}) speed {:.1} record {:?} phase {} -> world {:.0?} ({:.0} units from the player)",
+                    st.pos[0],
+                    st.pos[1],
+                    st.pos[2],
+                    st.pos[3],
+                    st.goal[0],
+                    st.goal[1],
+                    st.speed,
+                    st.choosing.current,
+                    st.phase,
+                    obj.motor.pos,
+                    (obj.motor.pos - s.motor.pos).length()
+                );
+            }
         }
         // Nothing else the script asks for is carried out before stage 4 (docs/summons.md).
         obj.move_vel = Vec3::ZERO;
@@ -1506,7 +2271,7 @@ fn objects(
         *errors_seen = rt.core.errors.len();
         obj.advance_fade();
         tf.translation = obj.motor.pos * SCALE;
-        tf.rotation = Quat::from_rotation_y(obj.motor.yaw);
+        tf.rotation = placed.unwrap_or_else(|| Quat::from_rotation_y(obj.motor.yaw));
         let alpha = if obj.hidden { 0.0 } else { obj.alpha.clamp(0.0, 1.0) };
         if (alpha - so.alpha).abs() > 1e-4 {
             so.alpha = alpha;
@@ -1830,6 +2595,200 @@ mod tests {
             }
         }
         eprintln!("oracle: FUN_001c65f0 equal in {n} cases");
+    }
+
+    /// Test numbers for Stitch's class (not the executable's: those are read in the disc tests).
+    fn stitch_test_consts() -> stitch::Consts {
+        stitch::Consts {
+            depth: 100.0,
+            place_depth: 100.0,
+            x_a: -50.0,
+            x_b: 50.0,
+            y_a: -30.0,
+            y_b: 30.0,
+            case0: [1.0, 2.0],
+            case6: [-40.0, 20.0],
+            case7: [40.0, 20.0],
+            left: [[-10.0, 1.0], [-20.0, 2.0], [-30.0, 3.0], [-40.0, 4.0], [-50.0, 5.0], [-60.0, 6.0]],
+            right: [[10.0, 1.0], [20.0, 2.0], [30.0, 3.0], [40.0, 4.0], [50.0, 5.0], [60.0, 6.0]],
+            split: 0.5,
+            shift: 10.0,
+            shift_x: 160.0,
+            shift_y: 120.0,
+            wrap_x: [-80.0, 160.0, 80.0],
+            wrap_y: [-60.0, 120.0, 60.0],
+            max_speed: 3.0,
+            turn: 0.2,
+            stand_add: 6.0,
+            stand_angle: 0.8,
+            stand_short: 0.5,
+            near_blast: 10.0,
+            near_refill: 10.0,
+            scale: 0.5,
+            wait: (9.0, 18.0),
+            period: 60.0,
+            hp_frac: 0.25,
+            mp_frac: 0.75,
+            count: 5.0,
+            chance: 0.5,
+            frame: 1.0,
+            unit: 1.0,
+        }
+    }
+
+    fn stitch_test_records() -> Vec<crate::party_battle::Record> {
+        use crate::party_battle::{Handler, Record};
+        [(0x201, stitch::STAND), (0x201, stitch::MOVE), (0x212, stitch::BLAST), (0x220, stitch::REFILL), (0x212, stitch::LINK)]
+            .iter()
+            .map(|&(flags, a)| Record { flags, handler: Handler::Other(a), id: 0, entry: None, ability: 0, item: 0, setting: -1, mode: String::new() })
+            .collect()
+    }
+
+    /// The follow decision of Stitch's class (FUN_001155e0 with FUN_0010fcd0 and the records' phases): out of
+    /// battle he only stands and moves between goals in his plane, each move ends at its goal, a goal beyond an
+    /// edge comes back across it; with the player's HP low and an enemy in view the blast is the only choice
+    /// (FUN_0010ed20 rules stand and move out), it walks to its spot and fires until its motion ends; with MP
+    /// the lower fraction in battle the forced pick is the refill.
+    #[test]
+    fn stitch_follow_decision_and_blast() {
+        let c = stitch_test_consts();
+        let recs = stitch_test_records();
+        let mut ai = stitch::StitchAi { rng: stitch::Rng(7), ..Default::default() };
+        let calm = stitch::Now { battle: false, limit: false, hp: (100, 100), mp: (100, 100), in_view: 0, motion_done: false };
+        let (mut moves, mut stands, mut moved) = (0, 0, 0.0f32);
+        for _ in 0..2000 {
+            let before = ai.pos;
+            let out = stitch::tick(&c, &recs, &mut ai, &calm);
+            match out.started.map(|(i, _)| stitch::addr(&recs[i])) {
+                Some(stitch::MOVE) => moves += 1,
+                Some(stitch::STAND) => stands += 1,
+                Some(a) => panic!("out of battle with full HP only stand and move start, not {a:#x}"),
+                None => {}
+            }
+            assert!(!out.blast && !out.refill);
+            moved += ((ai.pos[0] - before[0]).powi(2) + (ai.pos[1] - before[1]).powi(2)).sqrt();
+            assert!(ai.speed <= c.max_speed + 1e-4);
+            assert!(ai.pos[0].abs() <= 80.0 + 160.0 && ai.pos[1].abs() <= 60.0 + 120.0, "wrapped back: {:?}", ai.pos);
+            assert_eq!(ai.pos[2], 100.0, "the depth stays");
+        }
+        assert!(moves > 3 && stands > 3 && moved > 100.0, "moves {moves} stands {stands} distance {moved}");
+        // A move ends at its goal: arrived ends the record (its phase 1 fails once arrived).
+        let mut a2 = stitch::StitchAi { pos: [0.0, 0.0, 100.0, 0.0], goal: [9.0, 0.0, 100.0, 0.0], ..Default::default() };
+        a2.choosing.current = Some(1);
+        assert!(stitch::can(&c, &recs, &a2, &calm, 1, true));
+        a2.pos = [8.0, 0.0, 100.0, 0.0];
+        assert!(!stitch::can(&c, &recs, &a2, &calm, 1, true), "nearer than the cap and facing the goal's yaw: arrived");
+        // The blast: HP below a quarter and an enemy in view.
+        let hurt = stitch::Now { hp: (20, 100), in_view: 2, battle: true, ..calm };
+        assert!(!stitch::can(&c, &recs, &ai, &hurt, 0, false) && !stitch::can(&c, &recs, &ai, &hurt, 1, false), "stand and move give way to a feasible blast");
+        assert!(stitch::can(&c, &recs, &ai, &hurt, 2, false));
+        assert!(!stitch::can(&c, &recs, &ai, &stitch::Now { in_view: 0, ..hurt }, 2, false), "no enemy in view: no blast");
+        let mut ai = stitch::StitchAi { rng: stitch::Rng(3), ..Default::default() };
+        let (mut fired, mut phase3, mut done) = (0, false, false);
+        for t in 0..400 {
+            let now = stitch::Now { motion_done: phase3 && t % 50 == 0, ..hurt };
+            let out = stitch::tick(&c, &recs, &mut ai, &now);
+            if out.blast {
+                fired += 1;
+                assert_eq!(ai.motion, Some(stitch::M_BLAST));
+                assert_eq!((ai.pos[0], ai.pos[1]), (c.case6[0], c.case6[1]), "it fires from its spot");
+            }
+            phase3 |= ai.phase == 3;
+            if ai.phase == 4 {
+                done = true;
+                break;
+            }
+        }
+        assert!(fired > 0 && done, "fired {fired} done {done}");
+        // The forced pick: in battle after more than `count` choices, the refill when MP is the lower fraction.
+        let low_mp = stitch::Now { battle: true, hp: (90, 100), mp: (10, 100), ..calm };
+        let mut ai = stitch::StitchAi { rng: stitch::Rng(11), count: 6, ..Default::default() };
+        let mut refilled = false;
+        for _ in 0..200 {
+            let out = stitch::tick(&c, &recs, &mut ai, &low_mp);
+            if let Some((i, true)) = out.started {
+                assert_eq!(stitch::addr(&recs[i]), stitch::REFILL);
+            }
+            refilled |= out.refill;
+        }
+        assert!(refilled, "the refill ran");
+    }
+
+    /// The executable's numbers and records of Stitch's class.
+    #[test]
+    fn stitch_class_from_the_executable() {
+        let Some(mut a) = archive() else { return };
+        let exe = elf(&mut a);
+        let c = stitch::Consts::from_exe(&exe).expect("constants");
+        let recs = stitch::records(&exe).expect("records");
+        eprintln!("{c:?}");
+        let handlers: Vec<u32> = recs.iter().map(stitch::addr).collect();
+        assert_eq!(&handlers[..5], &[stitch::STAND, stitch::MOVE, stitch::BLAST, stitch::REFILL, stitch::LINK]);
+        assert_eq!(c.depth, c.place_depth);
+        assert!(c.max_speed > 0.0 && c.turn > 0.0 && c.wrap_x[1] > 0.0 && c.wrap_y[1] > 0.0 && c.hp_frac > 0.0 && c.mp_frac > c.hp_frac);
+    }
+
+    /// Oracle (PLAYBOOK R2): the game's FUN_00116530 (wrap), FUN_00116aa0 (arrived), FUN_00116658 (face) and
+    /// FUN_00116780 with its fixed cases 0..7 against `stitch::wrap`, `arrived`, `face` and `goal`, over random
+    /// positions and goals on an AI object laid out at a free address (+0x628 / +0x62c from the constants as
+    /// FUN_001179c0 writes them).
+    #[test]
+    fn stitch_plane_rules_match_the_game() {
+        use kh2_ee::Ee;
+        const STACK: u32 = 0x01ff_0000;
+        const AI: u32 = 0x0180_0000;
+        let Some(mut a) = archive() else { return };
+        let exe = elf(&mut a);
+        let c = stitch::Consts::from_exe(&exe).expect("constants");
+        let mut ee = Ee::new();
+        ee.load_elf(&exe).expect("elf");
+        let mut seed = 0x51f1_7c4du32;
+        let mut next = |span: f32| {
+            seed = seed.wrapping_mul(0x0019_660d).wrapping_add(0x3c6e_f35f);
+            ((seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5) * 2.0 * span
+        };
+        let put = |ee: &mut Ee, off: u32, v: [f32; 4]| {
+            for (k, x) in v.iter().enumerate() {
+                ee.wf32(AI + off + 4 * k as u32, *x);
+            }
+        };
+        let get = |ee: &mut Ee, off: u32| -> [f32; 4] { std::array::from_fn(|k| ee.f32_at(AI + off + 4 * k as u32)) };
+        let mut n = 0;
+        for round in 0..300 {
+            ee.write(AI, &[0u8; 0x790]);
+            ee.wf32(AI + 0x628, c.max_speed);
+            ee.wf32(AI + 0x62c, c.turn);
+            ee.w32(AI + 0x630, 1);
+            // Near the edges half the time, small distances a third of the time (the arrival test).
+            let span = if round % 2 == 0 { 600.0 } else { 300.0 };
+            let pos = [next(span), next(span), c.depth + next(2.0), next(3.0)];
+            let goal = if round % 3 == 0 { [pos[0] + next(20.0), pos[1] + next(20.0), pos[2] + next(5.0), pos[3] + next(0.3)] } else { [next(span), next(span), c.depth, next(3.0)] };
+            put(&mut ee, 0x640, pos);
+            put(&mut ee, 0x650, goal);
+            ee.call(0x0011_6530, &[AI as u64], &[], STACK).expect("FUN_00116530");
+            let (mut p, mut g) = (pos, goal);
+            stitch::wrap(&c, &mut p, &mut g);
+            assert_eq!((get(&mut ee, 0x640), get(&mut ee, 0x650)), (p, g), "wrap round {round}");
+            let arrived = ee.call(0x0011_6aa0, &[AI as u64], &[], STACK).expect("FUN_00116aa0") != 0;
+            assert_eq!(arrived, stitch::arrived(&c, p, g), "arrived round {round}: {p:?} {g:?}");
+            // FUN_00116658 on a direction (zero now and then).
+            let dir = if round % 7 == 0 { [0.0, 0.0, next(1.0)] } else { [next(1.0), next(1.0), next(1.0)] };
+            put(&mut ee, 0x660, [dir[0], dir[1], dir[2], 0.0]);
+            ee.wf32(AI + 0x65c, g[3]);
+            ee.call(0x0011_6658, &[AI as u64], &[], STACK).expect("FUN_00116658");
+            let mut s = stitch::StitchAi { goal: g, dir, ..Default::default() };
+            stitch::face(&mut s);
+            assert!((ee.f32_at(AI + 0x65c) - s.goal[3]).abs() < 1e-5, "face round {round}: {} vs {}", ee.f32_at(AI + 0x65c), s.goal[3]);
+            // FUN_00116780's fixed cases.
+            let case = round % 8;
+            ee.call(0x0011_6780, &[AI as u64, case as u64], &[], STACK).expect("FUN_00116780");
+            let mut want = g;
+            stitch::goal(&c, case, p, &mut want, &mut || 0.0, &mut |_| 0);
+            let got = get(&mut ee, 0x650);
+            assert_eq!(&got[..3], &want[..3], "goal case {case}");
+            n += 1;
+        }
+        eprintln!("oracle: FUN_00116530, FUN_00116aa0, FUN_00116658 and FUN_00116780 (cases 0..7) equal in {n} rounds");
     }
 
     /// The AI slot list of hosts 10.12 / 10.16 without the disc: the first free slot is taken, the flags

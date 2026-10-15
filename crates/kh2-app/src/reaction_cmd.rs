@@ -75,8 +75,8 @@ pub fn scan_mset(m: &kh2_anim::Mset) -> Vec<(usize, String, Offer, i16, i16)> {
 
 /// Execute values the player's availability switch (FUN_001ba2c0) handles itself. A reaction command
 /// with one of these is not decided by flags alone and is reported as not ported. 0x1c4 (452) is
-/// ported in [`status`].
-const EXECUTE_SWITCH: &[u16] = &[1, 2, 4, 5, 0x37, 0x48, 0x51, 0x67, 0x68, 0x7f, 0x13c, 0x14a];
+/// ported in [`status`], and 0x7f (the Shop rows and the other event rows) too (WP-SH1).
+const EXECUTE_SWITCH: &[u16] = &[1, 2, 4, 5, 0x37, 0x48, 0x51, 0x67, 0x68, 0x13c, 0x14a];
 
 /// Execute 0x1c4 (command 452): the case of FUN_001ba2c0.
 const EXECUTE_MP_COMMAND: u16 = 0x1c4;
@@ -121,6 +121,8 @@ pub enum Status {
 pub struct CmdRow {
     pub id: u16,
     pub execute: u16,
+    /// The row's Argument (+4): the event of an Execute 0x7f row (`FUN_00177b18`) [inferred, see `menu_shop`].
+    pub argument: i16,
     pub flags: u32,
     pub disable_form: u16,
     pub dist_range: u16,
@@ -141,6 +143,7 @@ impl From<&t::Cmd> for CmdRow {
         CmdRow {
             id: c.id,
             execute: c.execute,
+            argument: c.argument,
             flags: c.flags,
             disable_form: c.disable_form,
             dist_range: c.dist_range,
@@ -178,6 +181,12 @@ pub fn status(cmds: &[CmdRow], c: &CmdRow, ctx: &Ctx) -> Status {
     // FUN_001ba2c0 case 0x1c4: 5 while the status block's +0x1c0 timer runs, else 2 when the MP
     // (+0x180) is below the row's Cost; the flags and form tests below still run and win with 5.
     let mut own = Status::Available;
+    // FUN_001ba2c0 case 0x7f (with 0x37, the save point's): 5 while FUN_001c6c08(0x35fec0, 0) answers non-zero. Of
+    // that state word the app has the drive form (bit 1, as `savepoint::save_status` reads it); the summon and the
+    // third state are not tracked [approx].
+    if c.execute == crate::menu_shop::EXECUTE_EVENT && ctx.form != 0 {
+        own = Status::Blocked;
+    }
     if c.execute == EXECUTE_MP_COMMAND {
         if ctx.mp_timer {
             own = Status::Blocked;
@@ -550,6 +559,7 @@ fn accept(
     targets: Query<&Enemy>,
     mut player_cmds: MessageWriter<PlayerReactionCmd>,
     mut talk: Option<ResMut<crate::npc::Talk>>,
+    mut shop: Option<ResMut<crate::menu_shop::ShopRequest>>,
 ) {
     if !std::mem::take(&mut press.0) {
         return;
@@ -572,12 +582,25 @@ fn accept(
         }
         // FUN_001cf030 -> FUN_00177b18: Execute 0x1f is the talk (FUN_001a56c0), 0x37 the save point
         // (FUN_001784b8). Neither takes the generic path of FUN_00177c20 (no event 0xb to a script).
-        if matches!(c.execute, crate::npc::EXECUTE_TALK | crate::savepoint::EXECUTE_SAVE) {
+        // 0x1e is Examine (FUN_001a54a8: the talk program in the top window, `npc.rs`). 0x7f fires the field event of
+        // the pending command (`FUN_00197b70(+6, 0)`) [inferred: the row's Argument]: the Shop rows' events open menu
+        // kind 4 (`menu_shop.rs`); other events are not ported.
+        if matches!(c.execute, crate::npc::EXECUTE_TALK | crate::npc::EXECUTE_EXAMINE | crate::savepoint::EXECUTE_SAVE) {
             if let Some(t) = talk.as_deref_mut() {
                 t.accepted = Some(a);
             }
+        } else if c.execute == crate::menu_shop::EXECUTE_EVENT {
+            let event = c.argument as u16 as u32;
+            if crate::menu_shop::opens_shop(event)
+                && let Some(s) = shop.as_deref_mut()
+            {
+                s.0 = Some(event as u16);
+                info!("reaction: accepted command {} (Execute 0x7f, FUN_00177b18): event {event:#x} (FUN_00197b70) opens menu kind 4", a.cmd);
+            } else {
+                info!("reaction: accepted command {} (Execute 0x7f): event {event:#x} (FUN_00197b70) not ported", a.cmd);
+            }
         } else if log.0 {
-            info!("reaction: accepted command {} (Execute {}): not ported (shops FUN_001a54a8 and the others)", a.cmd, c.execute);
+            info!("reaction: accepted command {} (Execute {}): not ported", a.cmd, c.execute);
         }
         return;
     }
@@ -661,7 +684,7 @@ mod tests {
     }
 
     fn mk(flags: u32, disable: u16, dist: u16) -> CmdRow {
-        CmdRow { id: 900, execute: 900, flags, disable_form: disable, dist_range: dist, range: -1.0, priority: 100, message_id: 0, cmd_action: 0, reaction_count: 0, require: 0, cost: 0 }
+        CmdRow { id: 900, execute: 900, argument: 0, flags, disable_form: disable, dist_range: dist, range: -1.0, priority: 100, message_id: 0, cmd_action: 0, reaction_count: 0, require: 0, cost: 0 }
     }
 
     /// FUN_0019cf58 by hand: row 287's Flags 0xb959 (bits 4 and 6 set) and Require 286.

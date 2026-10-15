@@ -956,10 +956,10 @@ fn tick(
                         WalkIn::Event { tag, arg, jump } => {
                             info!("exit {} id {:#x} -> {} entrance {}: trigger (1, {:#x}) plays event {tag} arg {arg}, then the jump {jump:?} (FUN_00196428)", g.tag, g.id, dest_name(&dest), dest.entrance, g.id);
                             if start_event_walk_in(&mut after, jump, g.id, || crate::intro::event_player::request(&tag, arg))
-                        && let Some(ae) = after.as_mut()
-                    {
-                        ae.extras = run.script.triggers.iter().find(|t| t.matches(1, g.id)).map(|t| JumpExtras::from_subs(&t.subs)).unwrap_or_default();
-                    }
+                                && let Some(ae) = after.as_mut()
+                            {
+                                ae.extras = run.script.triggers.iter().find(|t| t.matches(1, g.id)).map(|t| JumpExtras::from_subs(&t.subs)).unwrap_or_default();
+                            }
                         }
                         WalkIn::TriggerJump(j) => {
                             let (kind, instant) = record_fade(&j);
@@ -1219,7 +1219,7 @@ mod tests {
     #[test]
     fn exit_gates_pass_zero_and_need_a_walker_along_the_exit_for_one_and_two() {
         // The executable's values (DAT_0037c714 = -PI/2, DAT_0037b358 = 0.7) as the test reads them.
-        let c = ExitConsts { angle_base: Some(-FRAC_PI_2), min_dot: Some(0.7) };
+        let c = ExitConsts { angle_base: Some(-FRAC_PI_2), min_dot: Some(0.7), ..Default::default() };
         // A volume with rotation y 0: the exit direction is (sin(-PI/2), 0, cos(-PI/2)) = -X in the
         // game's space, which is -X in the app too.
         let v = volume(0, [0.0; 3], 0.0);
@@ -1380,15 +1380,93 @@ mod tests {
         assert_eq!(resolve_jump(&jump(3, 0, 0, 0, 0), cur, last.0, none).unwrap(), Dest::new(0x12, 1, 0));
     }
 
-    /// Types 4, 5, 6 (and an unknown one) are not ported and say why.
+    /// `resolve_jump` handles types 1 to 3 only; 4 to 6 go through `resolve_record`; type 7 does nothing.
     #[test]
-    fn jump_types_four_to_six_are_not_ported() {
+    fn resolve_jump_leaves_types_four_to_six_to_resolve_record() {
         let none = |_: u8, _: u16| None;
         for k in [4u16, 5, 6, 7] {
             let e = resolve_jump(&jump(k, 0, 0, 0, 0), (2, 4, 0), None, none).unwrap_err();
             assert!(!e.is_empty(), "type {k}");
         }
         assert!(resolve_jump(&jump(4, 0, 0, 0, 0), (2, 4, 0), None, none).unwrap_err().contains("0x1071"));
+    }
+
+    fn table() -> MapEntrances {
+        let mut t = [(0, 0); 15];
+        for (i, e) in t.iter_mut().enumerate() {
+            *e = (i as u32 + 100, i as u32 + 1);
+        }
+        t
+    }
+
+    #[test]
+    fn type_four_decides_by_story_flags() {
+        let none = |_: u8, _: u16| None;
+        let with = |ids: &'static [u16]| move |f: u16| ids.contains(&f);
+        // 0x1071 set, 0x1072 clear, one of 0x140f: world 4, remembers the record's world.
+        let (d, m) = type4_dest(with(&[0x1071, 0x140f]), 7, None, &table(), none);
+        assert_eq!((d.world, d.area, d.entrance), (4, 0, 0));
+        assert_eq!(m, Some(7));
+        // 0x1072 set blocks the first case; 0x8cd then takes the second: world 0x12, programs 0x40.
+        let (d, m) = type4_dest(with(&[0x1071, 0x1072, 0x140f, 0x8cd]), 7, None, &table(), |w, k| (w == 0x12 && k == 0x40).then_some(3));
+        assert_eq!((d.world, d.area, d.entrance, d.programs), (0x12, 3, 0, [0x40; 3]));
+        assert_eq!(m, Some(7));
+        // Without the key the second case keeps every byte.
+        let (d, _) = type4_dest(with(&[0x1c1c]), 7, None, &table(), none);
+        assert_eq!((d.world, d.area), (KEEP, KEEP));
+        // No flag: the world map, entrance by the record's world (world 3 -> 102), memory used then cleared.
+        let (d, m) = type4_dest(with(&[]), 3, None, &table(), none);
+        assert_eq!((d.world, d.area, d.entrance), (WORLD_MAP, 0, 102));
+        assert_eq!(m, None);
+        let (d, m) = type4_dest(with(&[]), 3, Some(5), &table(), none);
+        assert_eq!(d.entrance, 104);
+        assert_eq!(m, None);
+        // A world not in the table gives entrance 0.
+        assert_eq!(map_entrance(&table(), 0x30), 0);
+    }
+
+    #[test]
+    fn type_four_to_the_world_map_is_not_available() {
+        let mut mem = None;
+        let j = jump(4, 3, 0, 0, 0);
+        let Outcome::Go(d) = resolve_record(&j, (2, 4, 0), None, |_, _| None, |_| false, &table(), &mut mem).unwrap() else { panic!("type 4 goes") };
+        assert_eq!(d.world, WORLD_MAP);
+        let err = jump_target(&d, |_| true).unwrap_err();
+        assert!(err.contains("world map is not available"), "{err}");
+    }
+
+    #[test]
+    fn types_five_and_six_open_a_menu_or_freeze_without_a_jump() {
+        let mut mem = None;
+        let mut r = |k| resolve_record(&jump(k, 0, 0, 0, 0), (2, 4, 0), None, |_, _| None, |_| false, &table(), &mut mem).unwrap();
+        assert_eq!(r(5), Outcome::OpenMenu { kind: 0xe, arg: -1 });
+        assert_eq!(r(6), Outcome::FreezeFade);
+        assert!(matches!(r(1), Outcome::Go(_)));
+    }
+
+    #[test]
+    fn record_words_four_to_six_parse_with_defaults() {
+        let d = JumpExtras::from_subs(&[]);
+        assert_eq!(d, JumpExtras { party: 0, reset: -1, menu_before: 0, flag: false });
+        assert_eq!(d.delay_ticks(), 0);
+        assert!(d.resets_party());
+        assert_eq!(d.text(), "");
+        let e = JumpExtras::from_subs(&[(4, vec![2]), (5, vec![0]), (7, vec![2]), (8, vec![]), (5, vec![0])]);
+        assert_eq!((e.party, e.reset, e.menu_before, e.flag), (2, 0, 2, true));
+        assert_eq!(e.delay_ticks(), 2);
+        assert_eq!(e.menu_before_arg(), Some(2));
+        assert!(!e.resets_party());
+        assert_eq!(JumpExtras { menu_before: 1, ..d }.menu_before_arg(), Some(0));
+        assert_eq!(JumpExtras { menu_before: 3, ..d }.menu_before_arg(), None);
+        // A negative party word skips both the delay and the menu.
+        let n = JumpExtras { party: -1, menu_before: 1, ..d };
+        assert_eq!((n.delay_ticks(), n.menu_before_arg()), (0, None));
+        assert!(!e.text().is_empty());
+    }
+
+    #[test]
+    fn a_type_four_record_always_fades_with_kind_one() {
+        assert_eq!(record_fade(&jump(4, 0, 0, 0, 0)), (1, false));
     }
 
     /// WP-JT2 A on the disc: the localset table the app reads gives key 0xb5 and 0x4d tt04.

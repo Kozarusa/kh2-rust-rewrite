@@ -163,6 +163,10 @@ pub mod ai {
         pub callbacks_98: Vec<(u32, u32, u32)>,
         /// The vtable +0x28 / +0x2c calls (hosts 10.3 / 10.4) seen, for the log.
         pub link_calls: (u32, u32),
+        /// The player's HP and maximum as this tick starts (set by `objects`), and the HP added to it by host 1.155 this tick
+        /// (applied after the script ran).
+        pub player_hp: (i32, i32),
+        pub player_heal: i32,
         /// Genie's class fields (AI +0x14 and the members' follow state): `super::genie`.
         pub genie: super::genie::GenieAi,
     }
@@ -178,6 +182,8 @@ pub mod ai {
                 flag_7f8_4: false,
                 callbacks_98: Vec::new(),
                 link_calls: (0, 0),
+                player_hp: (0, 0),
+                player_heal: 0,
                 genie: Default::default(),
             }
         }
@@ -1613,6 +1619,35 @@ impl SummonHost<'_, '_> {
             // 1.165 offer_command (0x1734a8): Stitch's main thread offers Ohana (519) in slot 2 while the
             // timer is above 0 (docs/summons.md section 4). Summon limits are stage 5.
             (1, 165) => (Value::None, St::Stub, "summon limit offers are stage 5: the offer is logged, the command menu does not show it"),
+            // 1.155 obj_method_78 (0x171c48): the player's virtual method +0x78 = FUN_00186238 (docs/magic.md; the same
+            // slot as the enemies') with (amount, part, flag). Peter Pan's script passes (5, 0, 0) next to the effect it
+            // starts on the player. A positive amount is added to the HP of part 0 and the result held between its lowest
+            // (0) and its maximum (FUN_001a0100); the method returns that HP. The app adds it after the tick.
+            (1, 155) if a(0) == crate::enemy_obj::PLAYER && a(2) == 0 => {
+                let (hp, max) = self.ai.player_hp;
+                let amount = a(1) as i32;
+                if amount <= 0 {
+                    (Value::Int(hp), St::Stub, "a negative amount (a hit through the method) is not taken: the summon's scripts only heal [inferred]")
+                } else {
+                    let new = crate::magic_rules::healed(hp, max, amount);
+                    self.ai.player_heal += new - hp;
+                    self.ai.player_hp.0 = new;
+                    (Value::Int(new), St::Approx, "the amount is added to the player's HP and clamped; the revive branch (+0x7f8 bit 4, FUN_0017cee8), the panel's heal event (FUN_0013de10) and the death method are not reproduced")
+                }
+            }
+            // 0.40 (0x16db10): the vector copied raw into the instance's second vector (FUN_001d9d50). Its only
+            // other writer, 0.41, stores the angles of a direction there, which the friend host turns into the
+            // element's rotation; the angles of this call are taken the same way (pitch, yaw; the third is dropped).
+            (0, 40) => match (args.first(), args.get(1)) {
+                (Some(h), Some(Arg::Vec(v))) => {
+                    let (sp, cp, sy, cy) = (v[0].sin(), v[0].cos(), v[1].sin(), v[1].cos());
+                    let dir = Arg::Vec([sy * cp, -sp, cy * cp, 1.0]);
+                    let turn = Call::Func { group: 0, index: 41, args: vec![h.clone(), dir] };
+                    kh2_bdx::Host::call(&mut self.f, &turn);
+                    (Value::None, St::Approx, "the vector is taken as the angles 0.41 would write (pitch, yaw) and becomes the element's rotation; the instance's own use of the vector was not read, the roll is dropped [inferred]")
+                }
+                _ => (Value::None, St::Stub, "no vector argument"),
+            },
             // 2.21 shared_block (0x18e928 -> FUN_001a5040): the buffer registered under the key.
             (2, 21) => (Value::Handle(self.shared.get(a(0) as i32, a(1) as i32)), St::Impl, ""),
             // 2.75 (0x18eba8 -> FUN_001c69b0): Tinker Bell's revive is ready.
@@ -2455,6 +2490,8 @@ fn objects(
         let handle = obj.handle;
         let inner = BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() };
         let f = crate::friend_host::FriendHost { inner, fields, game: &game, free: None, targets: &[] };
+        ai.player_hp = (s.hp, s.stats.max_hp);
+        ai.player_heal = 0;
         let mut host = SummonHost { f, ai, env: &senv, shared: &mut shared.0 };
         if let Some(m) = started.take() {
             rt.spawn(&mut host, handle);
@@ -2464,6 +2501,11 @@ fn objects(
             rt.set_mode_named(&mut host, "leave");
         }
         rt.update(&mut host);
+        if std::mem::take(&mut ai.player_heal) > 0 {
+            let before = s.hp;
+            s.hp = ai.player_hp.0;
+            info!("summon: {tag} healed the player (host 1.155): HP {before} -> {}", s.hp);
+        }
         let now = rt.current_mode();
         if now != *mode {
             info!("summon: {tag} script mode {:?} -> {:?}", mode.as_deref().unwrap_or("-"), now.as_deref().unwrap_or("-"));

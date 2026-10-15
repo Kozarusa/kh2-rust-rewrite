@@ -64,6 +64,7 @@ pub static HOST_FUNCS: &[HostFn] = &[
     f(0, 36, "vec_scale", "vf", 'v', 0x16cd88, "multiply all four lanes by a scalar into a new vector"),
     f(0, 38, "effect_set_position", "pv", '-', 0x16da90, "copy a vector into the effect's position (the 16 bytes behind FUN_001d9d00(handle))"),
     f(0, 39, "effect_set_vector2", "pv", '-', 0x16dad0, "copy a vector into the 16 bytes behind FUN_001d9d28(handle), the vector after the effect's position; MAGNET_*.mag writes (s, s, s, 1) there to grow and shrink its sphere, so it reads as the scale (role inferred)"),
+    f(0, 40, "effect_set_vec2_raw", "pv", '-', 0x16db10, "copy a vector into the 16 bytes behind FUN_001d9d50(handle), the effect instance's second vector, without the angle conversion of 0.41 (FUN_0016db10 is 0.39's body on FUN_001d9d50's vector instead of FUN_001d9d28's); Peter Pan's Tinker Bell script passes its angles [inferred]"),
     f(0, 41, "effect_set_vec2", "pv", '-', 0x16db50, "copy a vector (through FUN_0017be00) into the second vector of the effect instance (the 16 bytes behind FUN_001d9d50(handle)); role unknown"),
     f(0, 42, "angle_of", "v", 'f', 0x16d060, "atan2(v.x, v.z), the yaw of a direction"),
     f(0, 43, "wrap_angle", "f", 'f', 0x16de78, "wrap an angle in radians into -pi..pi (FUN_0017bbc0)"),

@@ -516,7 +516,10 @@ fn tick(
                             info!("exit -> {} entrance {} (group {} id {:#x}, gate {}, fade kind {kind})", dest_name(&dest), dest.entrance, g.tag, g.id, g.exit.gate);
                             start = Some((dest, kind, g.id));
                         }
-                        WalkIn::Event { tag, arg, jump } => info!("exit {} id {:#x} -> {} entrance {}: trigger (1, {:#x}) plays event {tag} arg {arg} then {jump:?}: event not played (E6)", g.tag, g.id, dest_name(&dest), dest.entrance, g.id),
+                        WalkIn::Event { tag, arg, jump } => {
+                            info!("exit {} id {:#x} -> {} entrance {}: trigger (1, {:#x}) plays event {tag} arg {arg} then {jump:?} (the jump after the event is not taken yet)", g.tag, g.id, dest_name(&dest), dest.entrance, g.id);
+                            crate::intro::event_player::request(&tag, arg);
+                        }
                         WalkIn::TriggerJump(j) => {
                             let (kind, instant) = jump_fade_kind(&j);
                             if j.kind == 1 {

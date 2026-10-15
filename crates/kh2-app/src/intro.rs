@@ -193,6 +193,10 @@ use std::sync::Arc;
 
 use bevy::prelude::*;
 
+/// The event player (WP-E6): a submodule so `main.rs` stays untouched; `IntroPlugin` adds its plugin.
+#[path = "event_player.rs"]
+pub(crate) mod event_player;
+
 use crate::assets::Disc;
 use crate::camera::CamEvent;
 use crate::camera::rules::View;
@@ -202,7 +206,8 @@ pub struct IntroPlugin;
 
 impl Plugin for IntroPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Intro>()
+        app.add_plugins(event_player::EventPlayerPlugin)
+            .init_resource::<Intro>()
             .add_systems(Update, standalone)
             .add_systems(FixedUpdate, tick.in_set(crate::schedule::Sim::EffectTick).run_if(crate::schedule::sim_running));
     }

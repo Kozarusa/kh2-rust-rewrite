@@ -392,3 +392,36 @@ fn twilight_town_talk_programs() {
     eprintln!("townspeople with a talk id: {talkers}; part commands (+0x2c) over all townspeople: {commands:?}; without a program: {missing:?}");
     assert!(talkers > 0);
 }
+/// WP-E6: Twilight Town's short events (tt01 `100`, `200`, `400`, `600`) command by command, and
+/// the area-script triggers that name an event tag (the tags the event player is handed).
+#[test]
+fn twilight_town_tt01_short_events() {
+    let Some(mut a) = open() else { return };
+    let file = a.read("ard/tt01.ard").expect("tt01");
+    let (ard, _) = kh2_ard::Area::parse(&file).expect("BAR");
+    let sizes: Vec<(String, usize)> = ard.events.iter().map(|(t, d)| (t.clone(), d.len())).collect();
+    eprintln!("tt01 events (tag, bytes): {sizes:?}");
+    for (tag, progs) in &ard.scripts {
+        for p in progs {
+            for c in p.commands.iter().filter(|c| c.opcode == 0xc) {
+                if let Some(t) = kh2_ard::parse_trigger(&c.args) {
+                    eprintln!("tt01 {tag} program {:#x}: trigger ({:#x}, {:#x}) {:x?}", p.id, t.event, t.arg, t.subs);
+                }
+            }
+        }
+    }
+    for tag in ["100", "200", "400", "600"] {
+        let Some(d) = ard.events.get(tag) else { continue };
+        let cmds = kh2_ard::parse_event(d).expect("event");
+        for c in &cmds {
+            eprintln!("tt01 {tag}: op {:#x} ({} bytes) {:02x?}", c.opcode, c.data.len(), c.data);
+        }
+    }
+    // An event with actors, motions and a camera (tt02 102), for the layouts of opcodes 1, 2, 0x24, 0x2c.
+    let file = a.read("ard/tt02.ard").expect("tt02");
+    let (ard, _) = kh2_ard::Area::parse(&file).expect("BAR");
+    let cmds = kh2_ard::parse_event(&ard.events["102"]).expect("event");
+    for c in cmds.iter().filter(|c| c.opcode != 0x13) {
+        eprintln!("tt02 102: op {:#x} ({} bytes) {:02x?}", c.opcode, c.data.len(), &c.data[..c.data.len().min(64)]);
+    }
+}

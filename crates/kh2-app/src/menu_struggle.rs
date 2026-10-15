@@ -28,7 +28,8 @@ use bevy::prelude::*;
 use kh2_image::layd;
 use kh2_image::text::Style;
 
-use crate::area_jump::{Dest, JumpTask};
+use crate::area::AreaRecord;
+use crate::area_jump::{disc_localset, resolve_jump, Dest, JumpTask, LastExit};
 use crate::assets::Disc;
 use crate::audio::PlaySe;
 use crate::menu::{close_brightness, dim_alpha, menu_sound, CLOSE_FRAMES, DIM_BRIGHTNESS};
@@ -373,7 +374,7 @@ fn input(
     }
 }
 
-fn tick(mut m: ResMut<StruggleMenu>, mut scene: ResMut<MenuScene>, real: Res<Time<Real>>, mut mission: ResMut<Mission>, mut task: ResMut<JumpTask>) {
+fn tick(mut m: ResMut<StruggleMenu>, mut scene: ResMut<MenuScene>, real: Res<Time<Real>>, mut mission: ResMut<Mission>, mut task: ResMut<JumpTask>, rec: Res<AreaRecord>, last: Res<LastExit>, disc: Res<Disc>) {
     if !m.is_open() {
         return;
     }
@@ -399,15 +400,26 @@ fn tick(mut m: ResMut<StruggleMenu>, mut scene: ResMut<MenuScene>, real: Res<Tim
     }
     let Some(exit) = mission.menu_exit(code) else { return };
     match exit.jump {
-        Some([1, world, area, entrance, _key, flags]) if *task == JumpTask::Idle => {
-            let dest = Dest::new(world as u8, area as u8, entrance as u8);
-            let kind = u32::from(flags & 0x3fff);
-            info!("struggle menu: event {:#x}: trigger jump type 1 to world {world} area {area} entrance {entrance} (fade kind {kind}; FUN_0019d9d8 with 0x40000000)", exit.event);
-            *task = JumpTask::FadeOut { dest, kind, t: 0.0 };
-        }
-        Some(j) => info!("struggle menu: event {:#x}: trigger jump {j:?} not taken (type {} not ported, or a jump is running)", exit.event, j[0]),
+        Some(j) if *task == JumpTask::Idle => match exit_dest(j, (rec.world, rec.area, rec.entrance), last.0, |w, k| disc_localset(&disc, w, k)) {
+            Ok((dest, kind)) => {
+                info!("jump: type {} key {:#x} -> w{} a{} entrance {} programs {} (struggle menu event {:#x}: FUN_0019d9d8 with 0x40000000; fade kind {kind})", j[0], j[4], dest.world, dest.area, dest.entrance, dest.programs_text(), exit.event);
+                *task = JumpTask::FadeOut { dest, kind, t: 0.0 };
+            }
+            Err(why) => info!("struggle menu: event {:#x}: trigger jump {j:?}: {why}; not taken", exit.event),
+        },
+        Some(j) => info!("struggle menu: event {:#x}: trigger jump {j:?} not taken (a jump is running)", exit.event),
         None => info!("struggle menu: event {:#x}: no trigger jump", exit.event),
     }
+}
+
+/// The result menu's jump (`FUN_001b9c58` -> `FUN_0019d9d8(record, 0x40000000)`): the trigger's jump record
+/// `[type, world, area, entrance, key, flags]` resolved by the same rule as every other trigger jump
+/// (`area_jump::resolve_jump`: type 1 the record's area, type 2 the `07localset.bin` area and the key as the
+/// map, btl and evt programs, so "Retry" `[2, 2, 0, 0, 0xb6, 1]` reloads the Struggle with programs 0xb6),
+/// with the fade kind from the flags (`flags & 0x3fff`).
+fn exit_dest(j: [u16; 6], cur: (u8, u8, u8), last: Option<Dest>, localset: impl Fn(u8, u16) -> Option<u8>) -> Result<(Dest, u32), String> {
+    let jump = kh2_ard::run::Jump { kind: j[0], world: j[1], area: j[2], entrance: j[3], key: j[4], flags: j[5] };
+    resolve_jump(&jump, cur, last, localset).map(|d| (d, u32::from(j[5] & 0x3fff)))
 }
 
 #[cfg(test)]
@@ -436,6 +448,19 @@ mod tests {
             d.extend(r);
         }
         d
+    }
+
+    #[test]
+    fn retry_takes_its_type_2_jump_with_the_programs_and_quit_its_type_1() {
+        let cur = (2, 4, 7);
+        // Retry: the record seen in tt04 (type 2, key 0xb6): the area the table gives, the key as all three programs.
+        let (d, kind) = exit_dest([2, 2, 0, 0, 0xb6, 1], cur, None, |w, k| (w == 2 && k == 0xb6).then_some(4)).unwrap();
+        assert_eq!((d.world, d.area, d.entrance, d.programs, kind), (2, 4, 0, [0xb6; 3], 1));
+        // Quit: type 1 to tt04 entrance 55, no program bytes.
+        let (d, _) = exit_dest([1, 2, 4, 55, 0, 0], cur, None, |_, _| None).unwrap();
+        assert_eq!(d, Dest { world: 2, area: 4, entrance: 55, programs: [0xff; 3] });
+        // A type not ported is refused, not guessed.
+        assert!(exit_dest([5, 0, 0, 0, 0, 0], cur, None, |_, _| None).is_err());
     }
 
     #[test]

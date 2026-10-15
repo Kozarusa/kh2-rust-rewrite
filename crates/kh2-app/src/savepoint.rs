@@ -198,7 +198,7 @@ fn point_spawn(
     let objs = objs.get_or_insert_with(|| disc.0.lock().ok().and_then(|mut a| kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).ok()).map(|d| d.rows).unwrap_or_default());
     let table = points
         .table
-        .get_or_insert_with(|| disc.read("00worldpoint.bin").map(|b| b.chunks_exact(4).map(|c| [c[0], c[1], c[2], c[3]]).collect()).unwrap_or_default())
+        .get_or_insert_with(|| disc.read("00worldpoint.bin").map(|b| b.as_chunks::<4>().0.to_vec()).unwrap_or_default())
         .clone();
     let common = points.common.get_or_insert_with(|| disc.read("effect/texcommon.dpd").and_then(|b| kh2_fx::Dpd::parse(&b).ok())).clone();
     let mut serial = 0;
@@ -468,7 +468,7 @@ mod tests {
         assert_eq!(at("m_20").map(|p| p.1), at("m_21").map(|p| p.1));
         let wp = disc.read("00worldpoint.bin").expect("00worldpoint.bin");
         assert_eq!(wp.len(), WORLD_POINTS * 4);
-        let table: Vec<[u8; 4]> = wp.chunks_exact(4).map(|c| [c[0], c[1], c[2], c[3]]).collect();
+        let table: Vec<[u8; 4]> = wp.as_chunks::<4>().0.to_vec();
         let i = world_point_index(&table, 2, 2).expect("tt02 has a world point");
         eprintln!("tt02 world point: record {i} {:?}", table[i]);
         let cmds: Vec<t::Cmd> = disc.0.lock().ok().and_then(|mut a| kh2_tables::load::<t::Cmd>(&mut a, &t::CMD).ok()).map(|d| d.rows).unwrap_or_default();

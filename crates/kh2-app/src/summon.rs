@@ -160,11 +160,23 @@ pub mod ai {
         pub callbacks_98: Vec<(u32, u32, u32)>,
         /// The vtable +0x28 / +0x2c calls (hosts 10.3 / 10.4) seen, for the log.
         pub link_calls: (u32, u32),
+        /// Genie's class fields (AI +0x14 and the members' follow state): `super::genie`.
+        pub genie: super::genie::GenieAi,
     }
 
     impl Default for SummonAi {
         fn default() -> Self {
-            SummonAi { slots: [Slot::default(); SLOTS], flags_630: 0, stitch: Default::default(), action: (0, 0), b7c: 0, flag_7f8_4: false, callbacks_98: Vec::new(), link_calls: (0, 0) }
+            SummonAi {
+                slots: [Slot::default(); SLOTS],
+                flags_630: 0,
+                stitch: Default::default(),
+                action: (0, 0),
+                b7c: 0,
+                flag_7f8_4: false,
+                callbacks_98: Vec::new(),
+                link_calls: (0, 0),
+                genie: Default::default(),
+            }
         }
     }
 
@@ -811,6 +823,220 @@ pub mod stitch {
     }
 }
 
+/// Genie's friend AI (WP-SUM5): the class FUN_001199f8 (0x18 bytes, vtable 0x354910, class 0xf at object +0xb6c,
+/// object +0xb7c |= 0x800), two action records at 0x3548a8. Unlike Stitch, FUN_0010b780 leaves Genie the members'
+/// update (object +0xb64 = `PTR_FUN_00378488` = FUN_00111070): out of battle the player relation (FUN_001102c8),
+/// in battle the danger test (FUN_0010f830, summon class: the player only), the emergency pass (FUN_0010f8d8) and
+/// the choice (FUN_0010fcd0); then the steer (FUN_00110468). The follow rules are party_rules' (the same routines
+/// as Donald's and Goofy's), with the class's own thresholds (0x34ea00 + offset[0xf]).
+///
+/// - Record 0 (flags 0x201, FUN_00119af8): always feasible; phase 0 is FUN_001102c8, the follow of the player,
+///   whose class 0xf branch raises a speed above the walk speed to the player's last movement (+0x860) plus
+///   `DAT_00378574` when that is faster.
+/// - Record 1 (flags 0x10, FUN_00119b28): feasible while the player's HP is below `DAT_003788d0` of its maximum
+///   (FUN_0010f490), which also makes the player the record's target; phase 0 is FUN_0010c9d0(object, 1, target,
+///   0): speed mode 0, the command of item 1 (FUN_001a1fc0(1): FUN_001a66e8 finds item 1 in 03system.bin `item`,
+///   its +0x10 is the command, FUN_001b6f48 the `cmd` row) kept at object +0xb2c with the target at +0xb30, and
+///   motion request 9 (FUN_00175e20, blend `DAT_0037a4b8`).
+/// - The first update (FUN_001112e8, object +0xb7c bit 0x20000000 clear) calls the object's vtable +0x94
+///   (FUN_0010c630 in 0x352e1c and 0x35feac), which calls the AI's vtable +0x18: Genie's FUN_00119a40 reads byte 7
+///   back (FUN_001c6b28 -> FUN_001c6b10: the table at 0x37c036) and runs FUN_00119c18 with that command.
+pub mod genie {
+    use crate::party_battle::{self as battle, Choice, Choosing, Handler, MemberNow, Params, Record};
+
+    /// Genie's NeoStatus and AI class (FUN_0010b780: +0xb6c = 0xf).
+    pub const NEO: u16 = 201;
+    pub const CLASS: u8 = 0xf;
+    /// FUN_001199f8: +0x10 = 0x3548a8, +0xc = 2 records.
+    pub const RECORDS: u32 = 0x3548a8;
+    pub const RECORD_COUNT: u32 = 2;
+    /// The handlers (record +4).
+    pub const FOLLOW: u32 = 0x119af8;
+    pub const POTION: u32 = 0x119b28;
+    /// FUN_00119c18 / FUN_00119ca8: five (form command, limit command) pairs of i16.
+    pub const FORMS: u32 = 0x3548f0;
+    pub const FORM_COUNT: usize = 5;
+    /// FUN_001c6b10: byte 7 to the form command (u16 per byte value).
+    pub const FORM_COMMANDS: u32 = 0x37c036;
+    /// FUN_00119b28: the player's HP fraction (`DAT_003788d0`); FUN_001102c8: the speed added to the player's
+    /// movement (`DAT_00378574`).
+    pub const HEAL_FRACTION: u32 = 0x3788d0;
+    pub const SPEED_ADD: u32 = 0x378574;
+    /// FUN_00119b28 -> FUN_0010c9d0(object, 1, ..): the item whose command Genie uses on the player.
+    pub const POTION_ITEM: u16 = 1;
+    /// FUN_00175e20's motion request.
+    pub const M_USE: u16 = 9;
+
+    /// The executable's numbers the class reads.
+    #[derive(Clone, Copy, Debug, PartialEq, Default)]
+    pub struct Consts {
+        pub forms: [(i16, i16); FORM_COUNT],
+        /// `0x37c036` + 2 x byte 7, for byte 7 = 0..5.
+        pub form_commands: [u16; 6],
+        pub heal_fraction: f32,
+        pub speed_add: f32,
+    }
+
+    fn w(elf: &[u8], va: u32) -> Option<u32> {
+        crate::party_rules::exe_bytes(elf, va, 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+
+    fn h(elf: &[u8], va: u32) -> Option<i16> {
+        crate::party_rules::exe_bytes(elf, va, 2).map(|b| i16::from_le_bytes([b[0], b[1]]))
+    }
+
+    impl Consts {
+        pub fn from_exe(elf: &[u8]) -> Option<Consts> {
+            let mut forms = [(0, 0); FORM_COUNT];
+            for (k, p) in forms.iter_mut().enumerate() {
+                *p = (h(elf, FORMS + 4 * k as u32)?, h(elf, FORMS + 4 * k as u32 + 2)?);
+            }
+            let mut form_commands = [0; 6];
+            for (k, c) in form_commands.iter_mut().enumerate() {
+                *c = h(elf, FORM_COMMANDS + 2 * k as u32)? as u16;
+            }
+            Some(Consts { forms, form_commands, heal_fraction: f32::from_bits(w(elf, HEAL_FRACTION)?), speed_add: f32::from_bits(w(elf, SPEED_ADD)?) })
+        }
+    }
+
+    /// The two records (flags, handler; no parameter entries).
+    pub fn records(elf: &[u8]) -> Option<Vec<Record>> {
+        (0..RECORD_COUNT)
+            .map(|i| {
+                let r = RECORDS + i * 0x24;
+                Some(Record {
+                    flags: w(elf, r)?,
+                    handler: Handler::from_addr(w(elf, r + 4)?),
+                    id: w(elf, r + 0xc)?,
+                    entry: None,
+                    ability: w(elf, r + 0x14)?,
+                    item: w(elf, r + 0x18)?,
+                    setting: w(elf, r + 0x1c)? as i32,
+                    mode: String::new(),
+                })
+            })
+            .collect()
+    }
+
+    /// FUN_00119ca8 (host 10.10): the limit command paired with AI +0x14, 0 when none.
+    pub fn limit(c: &Consts, cmd: i32) -> i32 {
+        c.forms.iter().find(|p| p.0 as i32 == cmd).map_or(0, |p| p.1 as i32)
+    }
+
+    /// What FUN_00119c18 did: the parts it hid (FUN_00192ce8: object +0x670's vtable +0x40 with the part), the part
+    /// it showed (FUN_00192cd0: vtable +0x3c) and the new byte 7 (FUN_001c6b48).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Form {
+        pub hidden: [i32; FORM_COUNT],
+        pub shown: Option<i32>,
+        pub byte7: u8,
+    }
+
+    /// FUN_00119c18 (host 10.9, and FUN_00119a40): AI +0x14 = `cmd` (the caller's); parts 2..6 hidden; the row k
+    /// whose form command is `cmd` shows part k + 2 and sets byte 7 to k + 1; without a row byte 7 becomes 6.
+    pub fn form(c: &Consts, cmd: i32) -> Form {
+        let hidden = [2, 3, 4, 5, 6];
+        match c.forms.iter().position(|p| p.0 as i32 == cmd) {
+            Some(k) => Form { hidden, shown: Some(k as i32 + 2), byte7: k as u8 + 1 },
+            None => Form { hidden, shown: None, byte7: FORM_COUNT as u8 + 1 },
+        }
+    }
+
+    /// FUN_001c6b10: the form command of byte 7 (0 past the table, [inferred]: the game reads on).
+    pub fn start_command(c: &Consts, byte7: u8) -> i32 {
+        c.form_commands.get(byte7 as usize).map_or(0, |&v| v as i32)
+    }
+
+    /// Genie's fields (AI +0x14 and the object's fields the members' engine keeps).
+    #[derive(Clone, Debug, Default)]
+    pub struct GenieAi {
+        /// AI +0x14: the form command (FUN_00119c18).
+        pub cmd: i32,
+        /// Object +0xb7c bit 0x20000000: the first update ran (FUN_001112e8).
+        pub init: bool,
+        /// The members' follow state (+0xb78, +0xb7c bit 0x10, the steer ring).
+        pub follow: crate::party_rules::Follow,
+        /// FUN_0010fcd0's state.
+        pub choosing: Choosing,
+        /// FUN_00119c18's last outcome, for the world to apply (the parts and byte 7).
+        pub form: Option<Form>,
+        /// Record 1 ran: motion 9 plays and the object is not free until it ends [inferred, as the members'
+        /// item use].
+        pub using: bool,
+        pub rng: super::stitch::Rng,
+    }
+
+    /// What the update reads.
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct Now {
+        /// FUN_001903d8.
+        pub battle: bool,
+        /// The player's HP and maximum (his status block +0, +4).
+        pub hp: (i32, i32),
+    }
+
+    /// What one decision asks of the world.
+    #[derive(Clone, Copy, Debug, Default, PartialEq)]
+    pub struct Out {
+        /// A record started (index, by the emergency pass).
+        pub started: Option<(usize, bool)>,
+        /// Record 0 (or the field) runs FUN_001102c8: follow the player.
+        pub follow: bool,
+        /// Record 1's phase 0: the potion command on the player with motion 9.
+        pub potion: bool,
+    }
+
+    /// A record's phase 1.
+    pub fn can(c: &Consts, recs: &[Record], now: &Now, i: usize) -> bool {
+        match recs.get(i).map(|r| r.handler) {
+            Some(Handler::Other(FOLLOW)) => true,
+            Some(Handler::Other(POTION)) => battle::below_fraction(now.hp.0, now.hp.1, c.heal_fraction),
+            _ => false,
+        }
+    }
+
+    /// FUN_00111070's decision while the object is free: out of battle the follow; in battle the emergency pass when
+    /// the player is in danger (FUN_0010f830 for a summon class), else FUN_0010fcd0, and the chosen record's phase 0.
+    pub fn decide(c: &Consts, recs: &[Record], ai: &mut GenieAi, now: &Now) -> Out {
+        let mut out = Out::default();
+        if !now.battle {
+            out.follow = true;
+            return out;
+        }
+        let rng = std::cell::RefCell::new(std::mem::take(&mut ai.rng));
+        let player = battle::Vital { hp: now.hp.0, hp_max: now.hp.1, ..Default::default() };
+        let danger = battle::danger_member(player, battle::Vital::default(), None, true);
+        let mut st = std::mem::take(&mut ai.choosing);
+        let urgent = if danger.is_some() { battle::emergency(recs, &mut st, false, false, |i| can(c, recs, now, i), |n| rng.borrow_mut().rand(n)) } else { None };
+        let choice = match urgent {
+            Some(k) => Choice::Do(k),
+            None => battle::choose(recs, &mut st, &Params::default(), CLASS, &MemberNow::default(), false, false, |_| None, |i, _| can(c, recs, now, i), || rng.borrow_mut().roll(), |n| rng.borrow_mut().rand(n)),
+        };
+        ai.choosing = st;
+        ai.rng = rng.into_inner();
+        let rec = match choice {
+            Choice::Keep(i) => Some(i),
+            Choice::Do(i) => {
+                out.started = Some((i, urgent.is_some()));
+                Some(i)
+            }
+            _ => None,
+        };
+        match rec.and_then(|i| recs.get(i)).map(|r| r.handler) {
+            Some(Handler::Other(POTION)) => out.potion = true,
+            // Record 0, and FUN_001103f8 when nothing was chosen [inferred: its player relation].
+            _ => out.follow = true,
+        }
+        out
+    }
+
+    /// FUN_001102c8's class 0xf branch: a speed above the walk speed becomes the player's movement plus
+    /// `DAT_00378574` when that is faster.
+    pub fn follow_speed(c: &Consts, speed: f32, walk: f32, player_move: f32) -> f32 {
+        if walk < speed && speed < player_move { player_move + c.speed_add } else { speed }
+    }
+}
+
 /// The pure rules of stage 3, each with the address it ports.
 pub mod rules {
     use bevy::prelude::Vec3;
@@ -1013,6 +1239,13 @@ pub struct SummonData {
     /// Stitch's class (WP-SUM4b): its constants and records, and FUN_0017da30's motion slot orders.
     pub stitch: Option<(stitch::Consts, Vec<crate::party_battle::Record>)>,
     motion_orders: Option<[[u8; 4]; 4]>,
+    /// Genie's class (WP-SUM5) and the members' follow rules it runs (party_rules, the class 0xf thresholds).
+    pub genie: Option<(genie::Consts, Vec<crate::party_battle::Record>)>,
+    follow: Option<crate::party_rules::Consts>,
+    /// 03system.bin `pref` `prty` and its row offsets: walk, run and turn of a NeoMoveset (FUN_00194438, as
+    /// party.rs reads them).
+    prty: Vec<t::PrefPrty>,
+    prty_offsets: Vec<u32>,
     objs: Vec<t::Objentry>,
     host_table: Option<kh2_bdx::HostTable>,
     /// Command names for the log (`msg/us/sys.bar`).
@@ -1030,6 +1263,11 @@ impl SummonData {
             warn!("summon: Stitch's class constants (FUN_001179c0) not readable: Stitch stands where he appears");
         }
         let motion_orders = exe.as_deref().and_then(crate::party_battle::motion_orders);
+        let genie = exe.as_deref().and_then(|e| Some((genie::Consts::from_exe(e)?, genie::records(e)?)));
+        let follow = exe.as_deref().and_then(crate::party_rules::Consts::from_exe);
+        if genie.is_none() || follow.is_none() {
+            warn!("summon: Genie's class constants (FUN_001199f8) or the follow rules not readable: Genie stands where he appears");
+        }
         let consts = exe.and_then(|exe| SummonConsts::from_exe(&exe).map(|c| (c, kh2_bdx::HostTable::from_exe(&exe))));
         let mut a = disc.0.lock().ok()?;
         let rows = kh2_tables::load::<t::Sumn>(&mut a, &t::SUMN).ok()?.rows;
@@ -1037,6 +1275,8 @@ impl SummonData {
         let objs = kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).map(|d| d.rows).unwrap_or_default();
         let sstm = kh2_tables::player::load_sstm(&mut a).ok()?;
         let msg = kh2_tables::player::load_messages(&mut a);
+        let prty = kh2_tables::load::<t::PrefPrty>(&mut a, &t::PREF_PRTY).map(|d| d.rows).unwrap_or_default();
+        let prty_offsets = prty_offsets(&mut a);
         let names = rows
             .iter()
             .map(|r| r.command)
@@ -1054,12 +1294,21 @@ impl SummonData {
             consts,
             stitch,
             motion_orders,
+            genie,
+            follow,
+            prty,
+            prty_offsets,
             objs,
             host_table,
             names,
             rigs: HashMap::new(),
             scripts: HashMap::new(),
         })
+    }
+
+    /// The `prty` row of a NeoMoveset (FUN_001cc140 with fallback row 1, as party.rs's `prty_row`).
+    fn prty_row(&self, moveset: u16) -> Option<&t::PrefPrty> {
+        crate::party_battle::pref_row(&self.prty_offsets, moveset as usize, 1).and_then(|k| self.prty.get(k))
     }
 
     pub fn name(&self, c: u16) -> String {
@@ -1096,6 +1345,21 @@ impl SummonData {
             .clone();
         (rig, prog)
     }
+}
+
+/// The row offsets of 03system.bin `pref` `prty` (the same read as party.rs's: a count, then one offset per row).
+fn prty_offsets(a: &mut kh2_archive::Archive) -> Vec<u32> {
+    let Ok(file) = a.read("03system.bin") else { return Vec::new() };
+    let Some(sub) = kh2_bar::parse(&file).ok().and_then(|top| {
+        let pref = kh2_bar::find(&top, "pref")?;
+        let inner = kh2_bar::parse(pref.data).ok()?;
+        Some(kh2_bar::find(&inner, "prty")?.data.to_vec())
+    }) else {
+        return Vec::new();
+    };
+    let w = |o: usize| sub.get(o..o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let n = w(0).unwrap_or(0) as usize;
+    (0..n).map_while(|k| w(4 + 4 * k)).collect()
 }
 
 /// The summon's state (the game keeps it in `DAT_00340c88` bytes 5..7, `DAT_00340e4c`,
@@ -1272,6 +1536,17 @@ pub struct SummonObject {
     blast_hit: std::collections::HashSet<Entity>,
     /// Ticks the class has run (for the once-a-second log line).
     ticks: u32,
+    /// The movement block the members' follow reads (Genie, WP-SUM5).
+    moves: Moves,
+}
+
+/// Object +0x110 walk, +0x114 run, +0x11c turn speed and the body radius +0x5b8.
+#[derive(Clone, Copy, Debug, Default)]
+struct Moves {
+    walk: f32,
+    run: f32,
+    turn: f32,
+    radius: f32,
 }
 
 /// The status block handle host 1.84 gives for the player (his +0x48c): host 10.45 reads its +0x1b4.
@@ -1286,6 +1561,8 @@ struct SummonEnv {
     /// Stitch's class constants and the index of his move record (FUN_00117ea0).
     stitch: Option<stitch::Consts>,
     move_record: Option<usize>,
+    /// Genie's class constants (the form table of hosts 10.9 / 10.10).
+    genie: Option<genie::Consts>,
 }
 
 /// The summon object's script host: the party members' host (`FriendHost`: attack objects, effects,
@@ -1354,6 +1631,21 @@ impl SummonHost<'_, '_> {
                 self.ai.link_calls.1 += 1;
                 (Value::None, St::Stub, "FUN_00119360 (the limit's link undone) is stage 5")
             }
+            // 10.9 (0x2f6c68 -> FUN_00119c18): Genie's form command at AI +0x14, the parts and byte 7. The parts
+            // (FUN_00192ce8 / FUN_00192cd0 through object +0x670's vtable +0x40 / +0x3c) are logged, not drawn.
+            (10, 9) => match self.env.genie.as_ref() {
+                Some(k) => {
+                    self.ai.genie.cmd = a(1) as i32;
+                    self.ai.genie.form = Some(genie::form(k, a(1) as i32));
+                    (Value::None, St::Approx, "AI +0x14 and byte 7 as FUN_00119c18; the model parts it hides and shows (object +0x670) are not drawn")
+                }
+                None => (Value::None, St::Stub, "Genie's constants are not readable"),
+            },
+            // 10.10 (0x2f6ca0 -> FUN_00119ca8): the limit command of the form command at AI +0x14.
+            (10, 10) => match self.env.genie.as_ref() {
+                Some(k) => (Value::Int(genie::limit(k, self.ai.genie.cmd)), St::Impl, ""),
+                None => (Value::Int(0), St::Stub, "Genie's constants are not readable"),
+            },
             // 10.12 (0x2f6d00 -> FUN_00117708): the slot index.
             (10, 12) => {
                 let who = ai::Who { own: me, player: crate::enemy_obj::PLAYER };
@@ -2029,6 +2321,13 @@ fn act(
                     fields: crate::friend_host::FriendFields::default(),
                     blast_hit: Default::default(),
                     ticks: 0,
+                    moves: {
+                        // +0x110 walk, +0x114 run, +0x11c turn: the `prty` row of the NeoMoveset (FUN_00194438); the
+                        // body radius +0x5b8 from the model's first shape of kind 0 or 4 (35 without), as party.rs.
+                        let p = data.prty_row(o.neo_moveset);
+                        let radius = rig.model.shapes.iter().find(|s| s.kind == 0 || s.kind == 4).map_or(35.0, |s| s.radius.abs());
+                        Moves { walk: p.map_or(0.0, |p| p.walk_speed), run: p.map_or(0.0, |p| p.run_speed), turn: p.map_or(0.0, |p| p.turn_speed), radius }
+                    },
                 });
             }
             Act::Leave => {
@@ -2070,13 +2369,13 @@ fn objects(
     children: Query<&Children>,
     handles: Query<&MeshMaterial3d<StandardMaterial>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    (game, drive, limit_task, data): (Res<GameData>, Res<DriveState>, Option<Res<crate::limit::LimitTask>>, Res<SummonData>),
+    (game, drive, limit_task, data, mut sm): (Res<GameData>, Res<DriveState>, Option<Res<crate::limit::LimitTask>>, Res<SummonData>, ResMut<SummonState>),
     (cam, enemies, gts, mut hits, mut magic, battle): StitchWorld,
 ) {
     let (Some(mut trace), Ok(mut s)) = (trace, sora.single_mut()) else { return };
     let paired = HashMap::new();
     let move_record = data.stitch.as_ref().and_then(|(_, r)| r.iter().position(|r| stitch::addr(r) == stitch::MOVE));
-    let senv = SummonEnv { timer: drive.timer.left, limit: limit_task.is_some_and(|l| l.0.is_some()), stitch: data.stitch.as_ref().map(|d| d.0), move_record };
+    let senv = SummonEnv { timer: drive.timer.left, limit: limit_task.is_some_and(|l| l.0.is_some()), stitch: data.stitch.as_ref().map(|d| d.0), move_record, genie: data.genie.as_ref().map(|d| d.0) };
     let camera = cam.iter().next();
     // FUN_00118068 / FUN_00118110's targets: valid enemies (FUN_00112ac0: alive, hittable) not out of view
     // (FUN_0019ada8 -> FUN_001a5db0, the camera's frustum [inferred: the point's projection inside the screen]),
@@ -2116,7 +2415,7 @@ fn objects(
             event_active: false,
         };
         let (neo, body) = (so.neo, so.body);
-        let SummonObject { rt, obj, tag, started, leave, mode, errors_seen, ai, fields, blast_hit, ticks, .. } = so;
+        let SummonObject { rt, obj, tag, started, leave, mode, errors_seen, ai, fields, blast_hit, ticks, moves, .. } = so;
         let Some(rt) = rt.as_mut() else {
             // No script: nothing ends the object but the leave [inferred].
             if std::mem::take(leave) {
@@ -2252,6 +2551,96 @@ fn objects(
                     obj.motor.pos,
                     (obj.motor.pos - s.motor.pos).length()
                 );
+            }
+        }
+        // Genie's class (WP-SUM5): the members' update FUN_00111070 with Genie's two records, while he is not leaving.
+        if neo == genie::NEO
+            && let (Some((k, recs)), Some(fc)) = (data.genie.as_ref(), data.follow.as_ref())
+            && rt.current_mode().as_deref() != Some("leave")
+        {
+            use crate::party_rules as pr;
+            let g = &mut ai.genie;
+            // FUN_001112e8's first update: the object's vtable +0x94 -> FUN_0010c630 -> the AI's +0x18 (FUN_00119a40):
+            // byte 7's form command (FUN_001c6b28) through FUN_00119c18.
+            if !g.init {
+                g.init = true;
+                g.cmd = genie::start_command(k, sm.extra);
+                g.form = Some(genie::form(k, g.cmd));
+                info!("summon: {tag} first update (FUN_00119a40): byte 7 = {} -> form command {} (FUN_001c6b10)", sm.extra, g.cmd);
+            }
+            if let Some(f) = g.form.take() {
+                sm.extra = f.byte7;
+                info!("summon: {tag} form command {} (FUN_00119c18): parts {:?} hidden, part {:?} shown (not drawn), byte 7 = {}, limit command {}", g.cmd, f.hidden, f.shown, f.byte7, genie::limit(k, g.cmd));
+            }
+            *ticks += 1;
+            if g.using && motion_done {
+                g.using = false;
+            }
+            if !g.using {
+                let now = genie::Now { battle: battle.active(), hp: (s.hp, s.stats.max_hp) };
+                let out = genie::decide(k, recs, g, &now);
+                if let Some((i, urgent)) = out.started {
+                    info!("summon: {tag} record {i} (handler {:#x}{}) starts: player HP {}/{}", stitch::addr(&recs[i]), if urgent { ", the emergency pass FUN_0010f8d8" } else { "" }, now.hp.0, now.hp.1);
+                }
+                let (pos, player) = (obj.motor.pos, s.motor.pos);
+                let facing = obj.motor.forward();
+                let t = fc.thresholds(genie::CLASS);
+                let mv = *moves;
+                let to_player = player - pos;
+                let ground_dir = to_player.with_y(0.0).normalize_or_zero();
+                let (mut dir, mut speed) = (facing, 0.0);
+                if out.follow {
+                    // FUN_001102c8: the follow point (FUN_00111670, party slot 0: the summon is the only member) and the
+                    // follow step (FUN_0010e5e8) with the row of the battle state, then the class 0xf speed rule.
+                    let d = pr::follow_distance(&t, mv.radius, fc);
+                    let point = pr::follow_points(player, s.motor.yaw, [Some((pos, d)), None], fc)[0].unwrap_or(player);
+                    let input = pr::FollowIn { to_point: point - pos, to_player: to_player.normalize_or_zero(), dist: to_player.length(), ground_dir, facing, walk: mv.walk, run: mv.run };
+                    let row = if now.battle { pr::ROW_BATTLE_PLAYER } else { pr::ROW_FIELD };
+                    (dir, speed) = pr::follow_step_row(&mut g.follow, &input, &t, row, fc);
+                    speed = genie::follow_speed(k, speed, mv.walk, s.motor.vel.length());
+                }
+                if out.potion {
+                    // FUN_0010c9d0 -> FUN_00175e20: speed mode 0, the potion command on the player, motion 9.
+                    g.follow.mode = 0;
+                    info!(
+                        "summon: {tag} record 1 (FUN_00119b28): the command of item {} on the player (FUN_0010c9d0, motion {}); the command's effect is not carried out",
+                        genie::POTION_ITEM,
+                        genie::M_USE
+                    );
+                    if let Ok(mut a) = anims.get_mut(body) {
+                        let slot = if rig.mset.has(genie::M_USE as usize) { Some(genie::M_USE as usize) } else { data.motion_orders.and_then(|o| crate::party_battle::remap(genie::M_USE as i32, o[crate::party_battle::motion_state(true, false)], |x| rig.mset.has(x))) };
+                        if h.log {
+                            info!("summon: {tag} motion request {:#x} -> slot {slot:?}", genie::M_USE);
+                        }
+                        if slot.is_some() {
+                            a.play(slot, false, 0.0);
+                        }
+                        // [inferred] Not free until motion 9 ends, as the members' item use.
+                        g.using = slot.is_some();
+                    }
+                }
+                // FUN_00110468: the steer.
+                let (d, sp) = pr::steer(&mut g.follow, dir, speed, mv.walk, mv.run, fc);
+                let sp = if out.potion { 0.0 } else { sp };
+                let delta = d.with_y(0.0).normalize_or_zero() * sp;
+                // [inferred] Genie flies (+0xb7c 0x800): no ground probe; he keeps the player's height.
+                obj.motor.pos = (pos + delta).with_y(player.y);
+                if delta != Vec3::ZERO {
+                    obj.motor.turn_to(delta, mv.turn);
+                } else if g.follow.turning {
+                    obj.motor.turn_to(ground_dir, mv.turn);
+                }
+                if h.log && *ticks % 60 == 1 {
+                    info!(
+                        "summon: {tag} follow: {:.0} units from the player, speed mode {} speed {sp:.1} (walk {:.1} run {:.1}), record {:?}, battle {}",
+                        (obj.motor.pos - player).length(),
+                        g.follow.mode,
+                        mv.walk,
+                        mv.run,
+                        g.choosing.current,
+                        now.battle
+                    );
+                }
             }
         }
         // Nothing else the script asks for is carried out before stage 4 (docs/summons.md).
@@ -2872,5 +3261,112 @@ mod tests {
             n += 1;
         }
         eprintln!("oracle: FUN_00117708 equal in {n} calls");
+    }
+
+    /// Genie's class from the executable: the two records (FUN_001199f8: 0x3548a8, count 2), the form table and
+    /// the decision: out of battle the follow; in battle the follow until the player's HP is in danger, then the
+    /// emergency pass takes the potion record, and the class 0xf speed rule.
+    #[test]
+    fn genie_class_from_the_executable_and_its_decision() {
+        let Some(mut a) = archive() else { return };
+        let exe = elf(&mut a);
+        let k = genie::Consts::from_exe(&exe).expect("constants");
+        let recs = genie::records(&exe).expect("records");
+        let handlers: Vec<u32> = recs.iter().map(stitch::addr).collect();
+        assert_eq!(handlers, [genie::FOLLOW, genie::POTION]);
+        assert_eq!(recs.iter().map(|r| r.flags).collect::<Vec<_>>(), [0x201, 0x10]);
+        eprintln!("genie: forms {:?}, byte 7 commands {:?}, heal fraction {}, speed add {}", k.forms, k.form_commands, k.heal_fraction, k.speed_add);
+        // Every form command maps to its limit and back to its byte 7 through FUN_001c6b10.
+        for (row, &(cmd, lim)) in k.forms.iter().enumerate() {
+            assert_eq!(genie::limit(&k, cmd as i32), lim as i32);
+            let f = genie::form(&k, cmd as i32);
+            assert_eq!((f.shown, f.byte7), (Some(row as i32 + 2), row as u8 + 1));
+            if row < 4 {
+                assert_eq!(genie::start_command(&k, f.byte7), cmd as i32, "byte 7 {} reads back its command", f.byte7);
+            }
+        }
+        assert_eq!(genie::limit(&k, 0), 0);
+        assert_eq!(genie::form(&k, 0).byte7, 6);
+        let mut ai = genie::GenieAi { rng: stitch::Rng(5), ..Default::default() };
+        let calm = genie::Now { battle: false, hp: (100, 100) };
+        assert_eq!(genie::decide(&k, &recs, &mut ai, &calm), genie::Out { follow: true, ..Default::default() });
+        let fight = genie::Now { battle: true, hp: (100, 100) };
+        for _ in 0..50 {
+            let out = genie::decide(&k, &recs, &mut ai, &fight);
+            assert!(out.follow && !out.potion, "healthy: only the follow record is feasible");
+        }
+        let low = genie::Now { battle: true, hp: (20, 100) };
+        let out = genie::decide(&k, &recs, &mut ai, &low);
+        assert_eq!((out.potion, out.started), (true, Some((1, true))), "in danger: the emergency pass takes record 1");
+        assert_eq!(genie::follow_speed(&k, 8.0, 4.0, 10.0), 10.0 + k.speed_add);
+        assert_eq!(genie::follow_speed(&k, 3.0, 4.0, 10.0), 3.0, "at or below the walk speed the speed stays");
+        assert_eq!(genie::follow_speed(&k, 12.0, 4.0, 10.0), 12.0);
+    }
+
+    /// Oracle: FUN_00119ca8 (host 10.10), FUN_00119c18 (host 10.9, with FUN_00192ce8 / FUN_00192cd0 replaced by
+    /// stubs that log their part argument, FUN_001c6b48 the game's own) and FUN_00119a40's FUN_001c6b10 run by
+    /// kh2-ee on the user's executable against `genie::limit`, `genie::form` and `genie::start_command` for every
+    /// table command and other values; FUN_0010f490 against `party_battle::below_fraction` over random HP.
+    #[test]
+    fn genie_form_and_limit_match_the_game() {
+        use kh2_ee::Ee;
+        const STACK: u32 = 0x01ff_0000;
+        const AI: u32 = 0x0180_0000;
+        const OBJ: u32 = 0x0181_0000;
+        const STATUS: u32 = 0x0182_0000;
+        const LOG: u32 = 0x0190_0000;
+        const STUBS: u32 = 0x0188_0000;
+        let Some(mut a) = archive() else { return };
+        let exe = elf(&mut a);
+        let k = genie::Consts::from_exe(&exe).expect("constants");
+        let mut ee = Ee::new();
+        ee.load_elf(&exe).expect("elf");
+        // Two stubs: log[count] = part | tag; count += 1 (lui t0, LOG; lw t1; sll t2, t1, 2; addu t2, t2, t0;
+        // addiu t3, a1, tag; sw t3, 4(t2); addiu t1, t1, 1; sw t1; jr ra; nop), and jumps to them.
+        for (at, tag) in [(STUBS, 0x100u32), (STUBS + 0x40, 0x200)] {
+            let code = [0x3c08_0000 | (LOG >> 16), 0x8d09_0000, 0x0009_5080, 0x0148_5021, 0x24ab_0000 | tag, 0xad4b_0004, 0x2529_0001, 0xad09_0000, 0x03e0_0008, 0];
+            for (i, w) in code.iter().enumerate() {
+                ee.w32(at + 4 * i as u32, *w);
+            }
+        }
+        ee.w32(0x0019_2ce8, 0x0800_0000 | (STUBS >> 2));
+        ee.w32(0x0019_2cec, 0);
+        ee.w32(0x0019_2cd0, 0x0800_0000 | ((STUBS + 0x40) >> 2));
+        ee.w32(0x0019_2cd4, 0);
+        let mut cmds: Vec<i32> = k.forms.iter().map(|p| p.0 as i32).collect();
+        cmds.extend([0, 1, 534, 539, 606, 608, -1]);
+        for &cmd in &cmds {
+            ee.w32(AI + 4, OBJ);
+            ee.w32(AI + 0x14, cmd as u32);
+            let got = ee.call(0x0011_9ca8, &[AI as u64], &[], STACK).expect("FUN_00119ca8") as u32 as i32;
+            assert_eq!(got, genie::limit(&k, cmd), "FUN_00119ca8 for {cmd}");
+            ee.w32(LOG, 0);
+            ee.w32(AI + 0x14, 0);
+            ee.call(0x0011_9c18, &[AI as u64, cmd as i64 as u64], &[], STACK).expect("FUN_00119c18");
+            let want = genie::form(&k, cmd);
+            assert_eq!(ee.r32(AI + 0x14) as i32, cmd, "AI +0x14");
+            let n = ee.r32(LOG) as usize;
+            let log: Vec<u32> = (0..n).map(|i| ee.r32(LOG + 4 + 4 * i as u32)).collect();
+            let mut expect: Vec<u32> = want.hidden.iter().map(|&p| 0x100 + p as u32).collect();
+            expect.extend(want.shown.map(|p| 0x200 + p as u32));
+            assert_eq!(log, expect, "FUN_00119c18 parts for {cmd}");
+            assert_eq!(ee.r8(0x0034_0c8f), want.byte7, "byte 7 for {cmd}");
+        }
+        for b in 0..5u8 {
+            let got = ee.call(0x001c_6b10, &[b as u64], &[], STACK).expect("FUN_001c6b10") as u16;
+            assert_eq!(got as i32, genie::start_command(&k, b), "FUN_001c6b10({b})");
+        }
+        let mut seed = 0x9e37_79b9u32;
+        for _ in 0..300 {
+            seed = seed.wrapping_mul(0x0019_660d).wrapping_add(0x3c6e_f35f);
+            let max = (seed >> 8) % 400 + 1;
+            let hp = (seed >> 20) % (max + 1);
+            ee.w32(OBJ + 0x48c, STATUS);
+            ee.w32(STATUS, hp);
+            ee.w32(STATUS + 4, max);
+            let got = ee.call(0x0010_f490, &[OBJ as u64], &[k.heal_fraction], STACK).expect("FUN_0010f490") != 0;
+            assert_eq!(got, crate::party_battle::below_fraction(hp as i32, max as i32, k.heal_fraction), "FUN_0010f490 hp {hp}/{max}");
+        }
+        eprintln!("oracle: FUN_00119ca8, FUN_00119c18, FUN_001c6b10 equal for {} commands; FUN_0010f490 over 300 rounds", cmds.len());
     }
 }

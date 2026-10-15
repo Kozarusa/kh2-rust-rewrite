@@ -217,14 +217,14 @@ impl Obj {
     /// The object a record of this object's list names (word 0), by the record's handle.
     pub(crate) fn record_object(&self, handle: u32) -> Option<u32> {
         let r = handle.wrapping_sub(RECORD);
-        let rec = self.records.get((r / RECORD_SIZE) as usize).filter(|_| r % RECORD_SIZE == 0)?;
+        let rec = self.records.get((r / RECORD_SIZE) as usize).filter(|_| r.is_multiple_of(RECORD_SIZE))?;
         Some(u32::from_le_bytes([rec[0], rec[1], rec[2], rec[3]]))
     }
 
     /// FUN_0018f490 on a record of this object's list: it names `obj` (position index 0). False when `handle` is no record.
     pub(crate) fn set_record_object(&mut self, handle: u32, obj: u32) -> bool {
         let r = handle.wrapping_sub(RECORD);
-        let Some(rec) = self.records.get_mut((r / RECORD_SIZE) as usize).filter(|_| r % RECORD_SIZE == 0) else { return false };
+        let Some(rec) = self.records.get_mut((r / RECORD_SIZE) as usize).filter(|_| r.is_multiple_of(RECORD_SIZE)) else { return false };
         rec[0..4].copy_from_slice(&obj.to_le_bytes());
         rec[4..8].copy_from_slice(&0u32.to_le_bytes());
         true

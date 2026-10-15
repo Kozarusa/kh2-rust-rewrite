@@ -1293,7 +1293,7 @@ pub mod scripted {
     /// player's recorded motion `DAT_0034e9d0` is not negative and `DAT_0034e9c8 + window` has not fallen below
     /// `DAT_0034e9cc`.
     pub fn join_ready(c: &Consts, b7c: u32, motion: i32, since: f32, mark: f32) -> bool {
-        motion >= 0 && b7c & 0x200 == 0 && !(since + c.join_window < mark)
+        motion >= 0 && b7c & 0x200 == 0 && !matches!((since + c.join_window).partial_cmp(&mark), Some(std::cmp::Ordering::Less))
     }
 }
 

@@ -254,6 +254,8 @@ impl Plugin for EventPlayerPlugin {
 struct Spawned {
     root: Entity,
     body: Entity,
+    /// The motion to start: (motion, cross-fade, start frame), in game frames.
+    motion: Option<(Arc<kh2_anim::Slot>, f32, f32)>,
 }
 
 struct Play {
@@ -348,7 +350,6 @@ fn step(
     mut player: ResMut<EventPlayer>,
     mut cam: ResMut<CamEvent>,
     mut anims: Query<&mut Animator>,
-    mut tfs: Query<&mut Transform>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
@@ -392,7 +393,7 @@ fn step(
                         Some(rig) => {
                             let root = commands.spawn((Transform::default(), Visibility::Hidden, AreaPart, EventActor)).id();
                             let body = spawn_skinned(&mut commands, root, rig, &mut meshes, &mut materials, &mut images, &mut bindposes, SCALE);
-                            p.actors.insert(m.index, Spawned { root, body });
+                            p.actors.insert(m.index, Spawned { root, body, motion: None });
                             info!("event: frame {fi}: actor {} {} (object {:#x}, model {}) made (op 0x2c, FUN_0016e8c0)", m.index, actor.name, actor.object, model.unwrap_or_default());
                         }
                         None => {
@@ -401,7 +402,8 @@ fn step(
                         }
                     }
                 }
-                let path = anb_path(&m.name, &actor.name);
+                // FUN_0022cd90: the model name by the actor's objentry id (FUN_002290e8), then the record by name.
+                let path = anb_path(&m.name, p.ev.model_of(actor.object).unwrap_or(&actor.name));
                 let slot = p
                     .motions
                     .entry(m.name.clone() + "|" + &actor.name)
@@ -417,17 +419,17 @@ fn step(
                         Some(Arc::new(kh2_anim::Slot { tag: m.name.clone(), motion, triggers }))
                     })
                     .clone();
-                let Some(sp) = p.actors.get(&m.index) else { continue };
-                match (slot, anims.get_mut(sp.body)) {
-                    (Some(slot), Ok(mut a)) => {
-                        // FUN_0017dd38(blend = 2 * +0x10, start = 2 * +8): game frames.
-                        a.play_external(slot, 2.0 * m.blend as f32);
-                        a.frame += 2.0 * m.start as f32;
+                let Some(sp) = p.actors.get_mut(&m.index) else { continue };
+                match slot {
+                    Some(slot) => {
+                        // FUN_0017dd38(blend = 2 * +0x10, start = 2 * +8): game frames. Applied below (a body
+                        // made this tick is in the world from the next).
+                        sp.motion = Some((slot, 2.0 * m.blend as f32, 2.0 * m.start as f32));
                         if log {
                             info!("event: frame {fi} (cmd frame {at}): op 0x2c actor {} {} plays {} (start {}, blend {})", m.index, actor.name, path.unwrap_or_default(), m.start, m.blend);
                         }
                     }
-                    _ => info!("event: frame {fi}: op 0x2c actor {} motion {:?} not found", m.index, path),
+                    None => info!("event: frame {fi}: op 0x2c actor {} motion {:?} not found", m.index, path),
                 }
             }
             2 => {
@@ -435,12 +437,11 @@ fn step(
                 if pl.gate != 0 {
                     continue;
                 }
-                match p.actors.get(&pl.index).and_then(|s| tfs.get_mut(s.root).ok().map(|t| (s.root, t))) {
-                    Some((root, mut tf)) => {
+                match p.actors.get(&pl.index) {
+                    Some(s) => {
                         let at_app = game_to_app(pl.pos);
-                        tf.translation = at_app * SCALE;
-                        tf.rotation = Quat::from_rotation_y(app_yaw(pl.rot[1].to_radians()));
-                        commands.entity(root).insert(Visibility::Inherited);
+                        let tf = Transform::from_translation(at_app * SCALE).with_rotation(Quat::from_rotation_y(app_yaw(pl.rot[1].to_radians())));
+                        commands.entity(s.root).insert((tf, Visibility::Inherited));
                         if log {
                             info!("event: frame {fi} (cmd frame {at}): op 2 actor {} at ({:.0}, {:.0}, {:.0}) yaw {:.0} deg", pl.index, at_app.x, at_app.y, at_app.z, pl.rot[1]);
                         }
@@ -484,6 +485,17 @@ fn step(
             }
         }
     }
+    for s in p.actors.values_mut() {
+        if let Some((slot, blend, start)) = s.motion.take() {
+            match anims.get_mut(s.body) {
+                Ok(mut a) => {
+                    a.play_external(slot, blend);
+                    a.frame += start;
+                }
+                Err(_) => s.motion = Some((slot, blend, start)),
+            }
+        }
+    }
     if p.ev.track.has_camera()
         && let Some(s) = p.ev.track.at(f)
     {
@@ -503,9 +515,32 @@ fn step(
 pub struct EventActor;
 
 /// The pad is the event's while it plays [inferred: the field's player task does not run in the event state].
-fn lock_pad(player: Res<EventPlayer>, mut pad: ResMut<crate::sora::Pad>) {
+/// With `KH2_EVENTLOG=1` Sora's place is logged while the event plays and six seconds after its end (shows
+/// that the pad drives him again).
+fn lock_pad(
+    time: Res<Time<Real>>,
+    player: Res<EventPlayer>,
+    mut pad: ResMut<crate::sora::Pad>,
+    sora: Query<&Transform, With<crate::sora::Sora>>,
+    mut ended: Local<Option<(f32, Vec3, bool)>>,
+    mut began: Local<Option<Vec3>>,
+) {
+    let at = sora.single().map(|t| t.translation / SCALE).unwrap_or_default();
     if player.playing() {
         pad.lock();
+        began.get_or_insert(at);
+        *ended = Some((time.elapsed_secs(), at, false));
+        return;
+    }
+    if let Some((t, end, logged)) = ended.as_mut()
+        && !*logged
+        && time.elapsed_secs() - *t >= 6.0
+    {
+        *logged = true;
+        let during = began.take().map_or(0.0, |b| (*end - b).length());
+        if eventlog() {
+            info!("event: Sora moved {during:.0} cm while the event played; 6 s after its end he is at ({:.0}, {:.0}, {:.0}), {:.0} cm from where the event left him", at.x, at.y, at.z, (at - *end).length());
+        }
     }
 }
 

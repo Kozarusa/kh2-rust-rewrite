@@ -1368,11 +1368,11 @@ fn input(
             info!("shop: page {} key {key:?} refused (FUN_00265550 / FUN_00261a28)", before.number());
         }
         Act::Page => {
-            if before == Page::First {
-                if let (Some(p), Some(bit)) = (progress.as_deref_mut(), first_bit) {
-                    p.set_shop_visit(bit);
-                    info!("shop: page 7 dismissed: save +0x3724 bit {bit} set (FUN_002621a0), page 0");
-                }
+            if before == Page::First
+                && let (Some(p), Some(bit)) = (progress.as_deref_mut(), first_bit)
+            {
+                p.set_shop_visit(bit);
+                info!("shop: page 7 dismissed: save +0x3724 bit {bit} set (FUN_002621a0), page 0");
             }
             let sound = if matches!(before, Page::Question { .. }) && key == Key::Confirm {
                 snd::BACK
@@ -1457,13 +1457,13 @@ fn input(
         set_layout(&m, &mut scene, screen.1);
     }
     // `FUN_00260a78`, `FUN_00264668`: on the buy list the item under the cursor is marked seen (`FUN_00265348`).
-    if let (Some(p), Some(o)) = (progress.as_deref_mut(), m.open.as_ref()) {
-        if o.flow.page == (Page::List { sell: false }) {
-            let wares = buy_wares(&m, &o.stock);
-            if let Some(place) = wares.get(o.flow.list).and_then(|w| item_place(&m.shops, w.id)).filter(|&n| o.fresh >> n & 1 != 0 && !p.shop_seen(n)) {
-                p.set_shop_seen(place);
-                info!("shop: item place {place} seen (save +0x3714 bit set, FUN_00265348)");
-            }
+    if let (Some(p), Some(o)) = (progress.as_deref_mut(), m.open.as_ref())
+        && o.flow.page == (Page::List { sell: false })
+    {
+        let wares = buy_wares(&m, &o.stock);
+        if let Some(place) = wares.get(o.flow.list).and_then(|w| item_place(&m.shops, w.id)).filter(|&n| o.fresh >> n & 1 != 0 && !p.shop_seen(n)) {
+            p.set_shop_seen(place);
+            info!("shop: item place {place} seen (save +0x3714 bit set, FUN_00265348)");
         }
     }
     refresh_tags(&mut m, progress.as_deref());
@@ -2704,8 +2704,10 @@ mod tests {
             self.items.get(&id).copied().unwrap_or(0)
         }
         fn add(&mut self, id: u16, n: u8) -> u8 {
-            *self.items.entry(id).or_default() += n;
-            n
+            let c = self.items.entry(id).or_default();
+            let taken = n.min(99 - *c);
+            *c += taken;
+            taken
         }
         fn remove(&mut self, id: u16, n: u8) {
             let c = self.items.entry(id).or_default();
@@ -3099,14 +3101,15 @@ mod tests {
 
     #[test]
     fn a_full_bag_still_pays_the_reward_bit_but_the_item_is_not_added() {
-        // `Fake::add` never refuses; the real store stops at 99 (`Progress::add_item`): the reward is paid either way.
+        // `FUN_00291140` sets the reward bit and the notice, and adds the item only when `FUN_001a18b8` allows it (below 99 held).
         let (mut mix, t, mats) = mix();
         mix.conds = vec![cond(0, 0x30, 0xe, 5, 0, 1)];
         let b = Book { mix: &mix, t: &t, mats: &mats, rank: &rk, flag1: &cat };
         let mut s = Fake::default();
         s.items.insert(0x200, 1);
+        s.items.insert(0x30, 99);
         let (_, o) = Session::start(&b, &mut s);
-        assert_eq!((o.rewards.notices, s.m.rewards), (2, 1));
+        assert_eq!((o.rewards.notices, s.m.rewards, s.count(0x30)), (2, 1, 99));
     }
 
     #[test]

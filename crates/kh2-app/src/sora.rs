@@ -610,7 +610,6 @@ impl Sora {
     /// the cast on Sora himself, he is untouchable for 60 ticks. Returns whether it started.
     /// The caller is Cure's event 20 in `magic.rs` (not this module's file: until it calls this, the
     /// timer is only started by tests).
-    #[allow(dead_code)]
     pub fn start_leaf_bracer(&mut self, abilities: &Abilities, target_is_caster: bool) -> bool {
         let Some(t) = crate::abilities::leaf_bracer_frames(abilities.has_bit(crate::abilities::BIT_LEAF_BRACER), target_is_caster) else { return false };
         self.leaf_bracer = t;

@@ -638,6 +638,10 @@ fn run(
                 let mslot = body.rig.mset.slot(motion_id as usize, pstate);
                 body.restart(mslot, false, blend);
                 s.enter(State::Magic, None);
+                if own {
+                    // Cure's script starts Leaf Bracer on the caster (host 1.343 bit 114, then 1.91; docs/abilities.md).
+                    s.start_leaf_bracer(&abilities, true);
+                }
                 if airborne {
                     // The mover's method +0xc with sstm MagicJump (FUN_001a4798) [inferred: a jump start].
                     s.motor.start_jump(game.sstm.magic_jump);

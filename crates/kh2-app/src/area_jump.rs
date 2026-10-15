@@ -816,7 +816,22 @@ fn spawn_fader(mut commands: Commands) {
     ));
 }
 
-fn draw_fader(task: Res<JumpTask>, key: Res<Keyhole>, mut nodes: Query<&mut BackgroundColor, With<FadeNode>>) {
+/// The one fader node serves two owners: the area jump (always black) and a playing event
+/// (`EventPlayer::screen_fade`, black or white, `FUN_0014a7c8` / `FUN_0014a710`). The stronger alpha wins;
+/// on a tie the jump's black stays. Returns (alpha, white).
+fn combined_fade(jump_alpha: f32, event: Option<(f32, bool)>) -> (f32, bool) {
+    match event {
+        Some((a, white)) if a > jump_alpha => (a, white),
+        _ => (jump_alpha, false),
+    }
+}
+
+fn draw_fader(
+    task: Res<JumpTask>,
+    key: Res<Keyhole>,
+    player: Option<Res<crate::intro::event_player::EventPlayer>>,
+    mut nodes: Query<&mut BackgroundColor, With<FadeNode>>,
+) {
     let a = match *task {
         JumpTask::Idle => 0.0,
         JumpTask::FadeOut { t, .. } if key.wiping => wipe_alpha(true, t, key.black_from),
@@ -825,8 +840,9 @@ fn draw_fader(task: Res<JumpTask>, key: Res<Keyhole>, mut nodes: Query<&mut Back
         JumpTask::FadeIn { t, .. } if key.wiping => wipe_alpha(false, t, None),
         JumpTask::FadeIn { t, .. } => fade_alpha(false, t),
     };
-    for mut c in &mut nodes {
-        c.0 = Color::srgba(0.0, 0.0, 0.0, a);
+    let (a, white) = combined_fade(a, player.and_then(|p| p.screen_fade()));
+    let c = if white { 1.0 } else { 0.0 };    for mut n in &mut nodes {
+        n.0 = Color::srgba(c, c, c, a);
     }
 }
 
@@ -841,6 +857,16 @@ mod tests {
 
     fn group(gate: u8, area: u8, id: u16, volumes: Vec<Activator>) -> ExitGroup {
         ExitGroup { tag: "m_10".into(), id, exit: Exit { area, entrance: 1, gate }, volumes, fired: false, disabled: false, prompting: false, held: false }
+    }
+
+    #[test]
+    fn the_event_fade_and_the_jump_fade_share_the_node() {
+        assert_eq!(combined_fade(0.0, None), (0.0, false));
+        assert_eq!(combined_fade(0.4, None), (0.4, false));
+        assert_eq!(combined_fade(0.0, Some((0.7, true))), (0.7, true));
+        assert_eq!(combined_fade(0.0, Some((0.7, false))), (0.7, false));
+        assert_eq!(combined_fade(1.0, Some((1.0, true))), (1.0, false), "a tie keeps the jump's black");
+        assert_eq!(combined_fade(0.9, Some((0.3, true))), (0.9, false));
     }
 
     /// EN1: the jump's unload removes the area's actors once, when the task reaches `Loading`; other

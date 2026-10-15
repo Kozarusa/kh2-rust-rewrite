@@ -171,7 +171,7 @@ pub fn demo(mut scene: ResMut<super::hud_gfx::HudScene>, mut done: Local<bool>) 
         let size = p.get(2).and_then(|v| v.parse::<f32>().ok());
         let x = p.get(3).and_then(|v| v.parse().ok()).unwrap_or(24.0);
         let ypos = p.get(4).and_then(|v| v.parse().ok()).unwrap_or(y);
-        let Some(label) = scene.text.as_ref().and_then(|t| t.message(id, Style { font, size, ..Style::default() }, [0.0, 0.0])) else { continue };
+        let Some(label) = scene.text.as_ref().and_then(|t| t.message(id, Style { font, size, color: [0xe5, 0xe5, 0xe5, 0x80], ..Style::default() }, [0.0, 0.0])) else { continue };
         let h = scene.text.as_ref().map(|t| t.measure(&label)[1]).unwrap_or(20.0);
         let mut n = Node::new(usize::MAX, None);
         n.pos = [x, ypos];

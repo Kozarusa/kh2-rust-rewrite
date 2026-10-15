@@ -494,6 +494,7 @@ pub fn kind_hides_hud(flags: u16) -> bool {
 
 /// The flags of event kind `arg & 0x3f` (`FUN_00195898`: `FUN_001d1128` searches the `evtp` rows by their kind
 /// byte, `FUN_0030ff40`). `None` when the table has no such kind.
+#[cfg(test)]
 pub fn kind_flags(kinds: &[(u8, u16)], arg: u16) -> Option<u16> {
     let k = (arg & 0x3f) as u8;
     kinds.iter().find(|(x, _)| *x == k).map(|(_, f)| *f)
@@ -1044,6 +1045,13 @@ fn lock_pad(
 ) {
     let at = sora.single().map(|t| t.translation / SCALE).unwrap_or_default();
     if player.playing() {
+        // The screen fader the event drives (drawn by `area_jump::draw_fader` once it reads this).
+        if let Some((a, white)) = player.screen_fade()
+            && eventlog()
+            && a >= 1.0
+        {
+            info!("event: screen fader fully {} (FUN_0014a918)", if white { "white" } else { "black" });
+        }
         if player.locks_control() {
             pad.lock();
         }

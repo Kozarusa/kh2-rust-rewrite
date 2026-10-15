@@ -482,6 +482,10 @@ pub fn spawn_waves(
     }
 }
 
+/// What the class-5 pull reads: the executable's numbers and the attack objects of the spells and of
+/// the party members (their places by group).
+type PullSources<'w> = (Option<Res<'w, PullData>>, Option<Res<'w, crate::magic::SpellAttacks>>, Option<Res<'w, crate::friend_ai::MemberAttacks>>);
+
 /// The hit reactions of the enemies (`Hurt`, `Blown`) and the movement they need. A scripted enemy
 /// (`AiBrain`) moves and animates itself in `enemy_ai.rs` whenever no reaction plays.
 #[allow(clippy::too_many_arguments)]
@@ -493,7 +497,7 @@ pub fn think(
     sora: Query<&Transform, (With<Sora>, Without<Enemy>)>,
     mut q: Query<(Entity, &mut Transform, &mut Enemy, Has<crate::enemy_ai::AiBrain>)>,
     mut anims: Query<&mut Animator>,
-    (pull_data, spells, member_attacks): (Option<Res<PullData>>, Option<Res<crate::magic::SpellAttacks>>, Option<Res<crate::friend_ai::MemberAttacks>>),
+    (pull_data, spells, member_attacks): PullSources,
 ) {
     let (Some(col), Ok(_)) = (collider, sora.single()) else { return };
     let dt = time.delta_secs().min(0.05);

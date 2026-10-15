@@ -18,7 +18,7 @@
 //! The menu keeps its own nodes in the shared `MenuScene` and does not touch the camp's page state: while it is open
 //! `Menu.phase` stays `Closed`, `SaveMenu::is_open` holds the field frozen and the pad.
 //!
-//! Save points (WP-E7, docs/menus.md 18.4): the accept of command 55 (`FUN_001784b8`) opens menu kind 1 (scene 3, init
+//! Save points (WP-E7, docs/menus.md 18.5): the accept of command 55 (`FUN_001784b8`) opens menu kind 1 (scene 3, init
 //! `FUN_00255598`, task 0x2556f0, page machine `FUN_00255a10`), the points' own copy of the file screens with the same
 //! memory card driver and `save.2ld` groups. Its top page (`FUN_00255c10`) lists the row messages at 0x380d02 + 0x24 *
 //! row ("Save", and a second row only while the kind's mode word 0x36cd28 is not 2: the world point's); after a write

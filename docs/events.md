@@ -552,8 +552,11 @@ tt37; tt40 -> tt19 and area 100. The full list is in the test output.
   +0x820, copied by `FUN_0016b870`), bit 0 of 0x33febc = the player's objentry kind is 0xe (`FUN_001699a8`), then
   `FUN_0024f0b8(1, 0)` for the world point (objentry 0x239) or `FUN_0024f0b8(1, 2)` for the save point: **menu kind
   1** (scene 3, init `FUN_00255598`, which sets the three message ids 0x9fcf..0x9fd1 or a list from 0x380cd0 via
-  `FUN_00254bf0`, and starts the task 0x2556f0), not the field save menu kind 7 that `menu_save.rs` ports [GAP: the
-  kind-1 task 0x2556f0 is not in the decompilation; what its modes 0 and 2 show was not read].
+  `FUN_00254bf0`, and starts the task 0x2556f0), not the field save menu kind 7. **Kind 1 is the points' save
+  screen** [V, WP-E7, read from the instructions of 0x2556f0 and the decompiled callees; docs/menus.md 18.5]: the
+  same memory card driver and `save.2ld` groups as the file screens of kind 2, with a top list of "Save" (0x8a7e)
+  and "World Map" (0x8a80); the mode word (0x36cd28, `FUN_0024f498`) 2 drops the World Map row, so the save point
+  shows only "Save" and the world point both. `menu_save.rs` serves it (`SaveMenu::request_point`).
 
 ## 5. Story progress
 
@@ -810,7 +813,12 @@ Each stage ends with `verify.ps1` passing and the named check.
   heal: HP 5/20 MP 100/100`, `effect element 2 started`, `effect element 2 ended`, `save point heal: done, HP
   20/20`, `save point: accepted command 55 (Execute 0x37): ... menu kind 1 (scene 3) with mode 0`. Not ported:
   the friends' slots of the heal (party.rs), the MP charge shortening (`DAT_00360130` +0x7c), bits 2 and 3 of
-  0x35fec0, menu kind 1.
+  0x35fec0. **WP-E7:** the accept now opens menu kind 1 through `menu_save.rs` (docs/menus.md 18.5). Run
+  `KH2_REACTION_PRESS=8 KH2_SAVEPOINT_WATCH=5 KH2_REACTIONLOG=1 KH2_NO_ENEMIES=1 KH2_KEYS=11:Down,12:J,13:K
+  kh2-game tt02`: `... with mode 0 (FUN_0024f0b8(1, 0)): requested from menu_save`, `menu: save open (menu kind 1
+  mode 0 from a save point, rows [8a7e, 8a80], ...)`, `menu: save point row 1 (0x8a80): ... not ported`, `menu:
+  save point menu closed (menu kind 1 mode 0): back to the field (FUN_001038a0)`. tt02's world point (m_20) wins
+  the offer over the save point (m_21) standing at the same place, so this run shows mode 0.
 - **E5 Story flags selecting battle programs.** Story flags in `Progress` (bits, side effects op 1, 7, 0xc),
   hosts 0.14/0.15 real, the btl program from the area record, triggers with events 2/3 and the battle manager
   results (jump records type 1/2). Accept: with a state file setting flag 0x883, tt04 logs `btl program 1`; the
@@ -886,8 +894,9 @@ Each stage ends with `verify.ps1` passing and the named check.
   +0x670 list; whether the townsperson's script is held during a talk (section 3, E3 status).
 - The class-5 head look-at controller (+0x4a0; `FUN_001aead0`, `FUN_001aee90`) and `FUN_0018af10`'s kind-3
   answer (+0xa80); the walk path's +0x87 mode and +0x8c stop index (no writer found in `FUN_002d3b40`). Host 5.8 / 5.9 / 5.10 / 5.12..5.15 / 5.18..5.25 / 5.28..5.32 (not called by `rtn_default`) are not read.
-- Menu kind 1 (the points' menu, task 0x2556f0 not decompiled) and its modes 0 / 2; `FUN_0024f300` meaning
-  (trigger sub 7).
+- Menu kind 1's World Map row (`FUN_00257e70` question, `FUN_002580b8` -> `FUN_0014a7c8(.., 0xf, 0)`, page 0x14
+  `FUN_002580e8` -> `FUN_00103b18(1)`: what the exit loads was not read) and its page-0 help (docs/menus.md 18.5);
+  `FUN_0024f300` meaning (trigger sub 7).
 - Opcodes 0xa, 0xb, 0xe, 0x11, 0x16 meanings (readers named in the table); trigger subs 3, 6, 8; flag ops 2..5.
 - Group kinds 7 and 9 (`FUN_001ccb10`, `FUN_0019a000` not read); activator +0x28..+0x3f beyond +0x2c/+0x2e/+0x2f.
 - The event kind table `DAT_01d6a92c` (rows read by `FUN_001d1128`): its loader was not searched.

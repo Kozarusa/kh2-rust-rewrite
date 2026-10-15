@@ -42,45 +42,48 @@ pub struct Kind {
     /// The script's `dead` mode starts element 2 of the object's effect file (the death effect), so
     /// the damage code starts it when HP reaches 0 (`GameEffect::Death`).
     pub death_effect: bool,
+    /// The object has a status block, so a hit can hurt it: false for an object whose `00objentry` row has `NeoStatus` 0
+    /// and whose script never calls `set_obj_param` (`M_EX850`): nothing builds the block (FUN_001b2148 is the only builder).
+    pub status: bool,
 }
 
-pub const SHADOW: Kind = Kind { name: "Shadow", enmp: 34, model: "M_EX020", death_effect: true };
+pub const SHADOW: Kind = Kind { name: "Shadow", enmp: 34, model: "M_EX020", death_effect: true, status: true };
 
-pub const SOLDIER: Kind = Kind { name: "Soldier", enmp: 33, model: "M_EX010", death_effect: true };
+pub const SOLDIER: Kind = Kind { name: "Soldier", enmp: 33, model: "M_EX010", death_effect: true, status: true };
 
 /// The Dusk. Its `enmp` row is the constant its script hands to `set_obj_param` (host 2.9, the
 /// call that builds the status block from the row, FUN_001b2148): 41 (BDX `M_EX990` at 0x073c).
-pub const DUSK: Kind = Kind { name: "Dusk", enmp: 41, model: "M_EX990", death_effect: true };
+pub const DUSK: Kind = Kind { name: "Dusk", enmp: 41, model: "M_EX990", death_effect: true, status: true };
 
 /// The Struggle opponent `N_EX570_BTL` (object 0x678; Seifer by the community's model names), in
 /// tt04's battle groups b_41, b_42, b_45 and b_51. Its script picks the `enmp` row it hands to
 /// `set_obj_param` from spawn parameter 1 (BDX `N_EX570_BTL` R1864 at 0x077d): 155 for 3 and 4, else
 /// 135. The kind starts with 135; host 2.9 rebuilds the stats from the row the script asks for. Its
 /// `dead` mode (BDX 0x174d) plays motion 16 or 10 and waits for ever: no death effect, no fade.
-pub const SEIFER: Kind = Kind { name: "Seifer", enmp: 135, model: "N_EX570_BTL", death_effect: false };
+pub const SEIFER: Kind = Kind { name: "Seifer", enmp: 135, model: "N_EX570_BTL", death_effect: false, status: true };
 
 /// The Nobody `M_EX930` (object 0x138), with two Dusks in tt04's battle group b_21; "Dancer" is
 /// inferred from its mode names (`atk_force_dance`, `atk_spin_*`, `atk_kick`). Its script hands
 /// `enmp` row 48 to `set_obj_param` (BDX `M_EX930` R0f13 at 0x0f3a, the constant pushed at 0x04ce). Its `dead` mode (R06bd) starts element 2 of its effect file, fades out and hides, like
 /// the Dusk's.
-pub const DANCER: Kind = Kind { name: "Dancer", enmp: 48, model: "M_EX930", death_effect: true };
+pub const DANCER: Kind = Kind { name: "Dancer", enmp: 48, model: "M_EX930", death_effect: true, status: true };
 
 /// The Struggle opponent `N_EX500_BTL` (object 0x4d7) of tt04's battle group b_50, called by its model
 /// (its name is not in the data the app reads). Its script hands `enmp` row 150 to `set_obj_param`
 /// (BDX `N_EX500_BTL` 0x0736). Unlike `N_EX570_BTL` its `dead` mode (R0900) starts element 2 of its
 /// effect file, fades out and hides, as the Dusk's does.
-pub const N_EX500: Kind = Kind { name: "N_EX500", enmp: 150, model: "N_EX500_BTL", death_effect: true };
+pub const N_EX500: Kind = Kind { name: "N_EX500", enmp: 150, model: "N_EX500_BTL", death_effect: true, status: true };
 
 /// The Struggle opponent `N_EX600_BTL` (object 0x82f) of tt04's battle group b_52, called by its model.
 /// Its script hands `enmp` row 158 to `set_obj_param` (BDX `N_EX600_BTL` 0x07fd); its `dead` mode
 /// (R09c8) starts element 2 of its effect file, fades out and hides.
-pub const N_EX600: Kind = Kind { name: "N_EX600", enmp: 158, model: "N_EX600_BTL", death_effect: true };
+pub const N_EX600: Kind = Kind { name: "N_EX600", enmp: 158, model: "N_EX600_BTL", death_effect: true, status: true };
 
 /// `M_EX940` (object 0x139, `ObjectType` 0x15: the second enemy class, `FUN_0016e8c0` -> `FUN_001c1ec8`), four of
 /// them in tt04's b_44, called by its model. Its BDX script (5159 words; modes `atk_brush`, `atk_jump`, `atk_throw`,
 /// `atk_fullpower`, `mode_battle_boss`) hands `enmp` row 49 to `set_obj_param` (host 2.9, constant 49 pushed at
 /// 0x06e2 for `R124c`); its `dead` mode (R08db) starts element 2 of its effect file, fades out and hides.
-pub const M_EX940: Kind = Kind { name: "M_EX940", enmp: 49, model: "M_EX940", death_effect: true };
+pub const M_EX940: Kind = Kind { name: "M_EX940", enmp: 49, model: "M_EX940", death_effect: true, status: true };
 
 /// Every enemy kind the app has.
 pub const KINDS: [&Kind; 8] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940];

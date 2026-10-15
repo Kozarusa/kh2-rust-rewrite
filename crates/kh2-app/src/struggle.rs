@@ -89,6 +89,9 @@ pub struct Trig {
     /// The trigger plays an event (sub-command 0) or jumps (sub-command 1): what the game does when it fires.
     pub plays_event: bool,
     pub jumps: bool,
+    /// Sub-command 1's jump record (type, world, area, entrance, key, flags; `FUN_0019d8f0`), which
+    /// `FUN_00197a60` copies for the result menu's jump (`FUN_001b9c58`).
+    pub jump: Option<[u16; 6]>,
 }
 
 impl Trig {
@@ -99,6 +102,7 @@ impl Trig {
             story_flag: t.subs.iter().find(|(op, _)| *op == 2).and_then(|(_, h)| h.first().copied()),
             plays_event: t.subs.iter().any(|(op, _)| *op == 0),
             jumps: t.subs.iter().any(|(op, _)| *op == 1),
+            jump: t.jump().map(|j| [j.kind, j.world, j.area, j.entrance, j.key, j.flags]),
         }
     }
 
@@ -320,8 +324,8 @@ impl Play {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Finish {
     /// Mission kinds 2, 0x19, 0x20 or event 0x9c: the menu of record 0x1a opens (`FUN_001bef10(0x1a)` ->
-    /// `FUN_0024f330`) and the manager stays while it is open. The app has no such menu: `mission_tick` ends
-    /// the manager at once (WP-F1 item 16).
+    /// `FUN_0024f330`) and the manager stays while it is open (`Mission::menu_request`, `menu_struggle`); a row of
+    /// the menu ends it (`Mission::menu_exit`).
     Menu,
     /// The event goes to the area (`FUN_00197b70`): a trigger that takes it ends the manager (`FUN_001b9518`);
     /// event 8 that no trigger takes ends it too, with the game-over path (`FUN_001b9ce0`).
@@ -497,6 +501,55 @@ pub struct Mission {
     pub m: Option<Box<Active>>,
     /// Orb entities left by a manager that ended, for `show_orbs` to remove.
     pub gone: Vec<Entity>,
+    /// The end's last step asked for the menu of this pause-menu record (`FUN_001bef10(0x1a)` -> `FUN_0024f330`);
+    /// `menu_struggle` takes it and opens the menu while the manager stays.
+    pub menu_request: Option<u16>,
+}
+
+/// The pause-menu record the end's last step opens (`FUN_001b96e0`: `FUN_001bef10(0x1a)`).
+pub const RESULT_MENU_RECORD: u16 = 0x1a;
+
+/// What a row of the result menu does to the manager (`FUN_001b9c58(code)`, the pointer list's codes 3 and 4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MenuExit {
+    /// The event sent to the area: 0x8b for code 3, 0x8d for code 4, -1 for any other code.
+    pub event: i32,
+    /// The jump record of the area trigger that answers the event with any argument (`FUN_00197a60(buf, event)` ->
+    /// `FUN_00197588(event, -1)`), handed to `FUN_0019d9d8(record, 0x40000000)`.
+    pub jump: Option<[u16; 6]>,
+}
+
+impl Mission {
+    /// `FUN_001b9c58(code)`: code 3 -> event 0x8b (and `FUN_001d58e0` when the mission kind is 0x1e), code 4 ->
+    /// event 0x8d (and `FUN_001abfe8(9)`); then the manager ends (`FUN_001b9518`) and the trigger's jump record of
+    /// the event is taken. `None` when no manager runs.
+    pub fn menu_exit(&mut self, code: u16) -> Option<MenuExit> {
+        let a = self.m.as_deref()?;
+        let event = match code {
+            3 => 0x8b,
+            4 => 0x8d,
+            _ => -1,
+        };
+        if code == 3 && a.header.kind == 0x1e {
+            info!("struggle: menu code 3 with mission kind 0x1e: FUN_001d58e0 (clears four words of FUN_001b8218's object, party reset 0xc) is not ported");
+        }
+        if code == 4 {
+            info!("struggle: menu code 4: party reset kind 9 (FUN_001abfe8(9) -> FUN_001ac130 for members 1..15) is not ported");
+        }
+        let jump = if event < 0 { None } else { a.trigger(event as u32, -1).and_then(|t| t.jump) };
+        info!("struggle: menu code {code} (FUN_001b9c58): event {event:#x}, the trigger's jump {jump:?}; the manager ends (FUN_001b9518)");
+        self.end();
+        Some(MenuExit { event, jump })
+    }
+
+    /// `FUN_001b9518` -> `FUN_001b90d0`: the elements and the clock go with the manager; the orbs' entities are removed.
+    fn end(&mut self) {
+        let Some(mut a) = self.m.take() else { return };
+        let (p, o) = (a.counter_value(0), a.counter_value(1));
+        let orbs: Vec<Entity> = a.orbs.drain(..).flat_map(|o| o.ent).chain(a.gone.drain(..)).collect();
+        self.gone.extend(orbs);
+        info!("struggle: mission manager ended (player {p} orbs, opponent {o})");
+    }
 }
 
 pub struct Active {
@@ -1217,15 +1270,14 @@ fn mission_tick(
     }
     let Some(f) = a.pending.take() else { return };
     let (p, o) = (a.counter_value(0), a.counter_value(1));
+    let mut menu = false;
     let gone = match f {
         Finish::Menu => {
-            // The original opens the result menu of pause-menu record 0x1a over the frozen screen and the manager
-            // ends when that menu closes. The app has no such menu, so the manager ends here, at the end of the
-            // result layout (WP-F1 item 16: the counters, the clock, the result picture and the player lock go
-            // with it; before this the HUD stayed for ever) [inferred: what the game does when the menu closes
-            // was not read; the manager ending is the only path the app can take].
-            info!("struggle: last step (FUN_001b96e0): mission kind {} opens the menu of record 0x1a (FUN_0024f330), which the app does not have; the manager ends as if it had closed (player {p} orbs, opponent {o})", a.header.kind);
-            true
+            // FUN_001bef10(0x1a) -> FUN_0024f330: menu kind 7 with the `slct` row 0x1a of 14mission.bar
+            // (`menu_struggle`). The manager stays; a row of the menu ends it (FUN_001b9c58, `Mission::menu_exit`).
+            info!("struggle: last step (FUN_001b96e0): mission kind {} opens the menu of record 0x1a (FUN_001bef10(0x1a) -> FUN_0024f330); the manager stays (player {p} orbs, opponent {o})", a.header.kind);
+            menu = true;
+            false
         }
         Finish::Event(ev, arg) => {
             out.write(GlobalEvent { id: ev, arg });
@@ -1250,12 +1302,11 @@ fn mission_tick(
         }
         Finish::Gone => true,
     };
+    if menu {
+        mission.menu_request = Some(RESULT_MENU_RECORD);
+    }
     if gone {
-        // FUN_001b90d0: the elements and the clock go with the manager; the orbs' entities are removed.
-        let orbs: Vec<Entity> = a.orbs.drain(..).flat_map(|o| o.ent).chain(a.gone.drain(..)).collect();
-        mission.gone.extend(orbs);
-        mission.m = None;
-        info!("struggle: mission manager ended (player {p} orbs, opponent {o})");
+        mission.end();
     }
 }
 /// The log lines of the events the Struggle cares about.
@@ -1816,7 +1867,7 @@ mod tests {
         let mut a = struggle(&disc, "TT04_MS00");
         a.header.flags &= !0x40;
         a.header.kind = 0;
-        a.triggers = vec![Trig { event: 7, arg: 0xffff, story_flag: None, plays_event: false, jumps: true }];
+        a.triggers = vec![Trig { event: 7, arg: 0xffff, story_flag: None, plays_event: false, jumps: true, jump: None }];
         a.end_through(7, 3);
         assert_eq!(a.state, 2);
         // State 2 -> 3, then the wait for 4 frames left (FUN_00196668 against 4.0 at 0x37bbc8), then state 4.
@@ -1849,7 +1900,7 @@ mod tests {
 
     #[test]
     fn area_triggers_match_by_event_and_argument() {
-        let t = Trig { event: 7, arg: 0xffff, story_flag: Some(2083), plays_event: true, jumps: true };
+        let t = Trig { event: 7, arg: 0xffff, story_flag: Some(2083), plays_event: true, jumps: true, jump: Some([2, 2, 0, 0, 126, 1]) };
         assert!(t.matches(7, -1) && t.matches(7, 5));
         assert!(!t.matches(8, -1));
         let u = Trig { arg: 2, ..t };

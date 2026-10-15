@@ -42,6 +42,7 @@ mod menu_gfx;
 mod menu_journal;
 mod menu_pages;
 mod menu_status;
+mod menu_struggle;
 mod menu_text;
 mod motor;
 mod npc;
@@ -123,6 +124,6 @@ fn main() {
         // first, so its place here does not matter.
         .add_plugins((progress::ProgressPlugin, prize::PrizePlugin, menu::MenuPlugin, menu_abilities::MenuAbilitiesPlugin, items::ItemsPlugin, party::PartyPlugin, struggle::StrugglePlugin, summon::SummonPlugin, sound_test::SoundTestPlugin, asset_viewer::AssetViewerPlugin, area::AreaPlugin, area_jump::AreaJumpPlugin, npc::NpcPlugin, hud::hud_msgwin::hud_tutorial::TutorialPlugin, intro::IntroPlugin))
         // The fourth tuple (the third is full).
-        .add_plugins((menu_journal::JournalPlugin,))
+        .add_plugins((menu_journal::JournalPlugin, menu_struggle::StruggleMenuPlugin))
         .run();
 }

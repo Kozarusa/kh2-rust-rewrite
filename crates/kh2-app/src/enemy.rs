@@ -414,8 +414,8 @@ impl KindTwo {
             }
             // FUN_001996f0: the SpawnLimiter bytes of the members of spawn kinds 0 and 3 and of kind 2 of the waves so
             // far, except those defeated for good (FUN_001995c8: in the table and absent). Only the members the app
-            // has are summed [inferred stand-in: the game also counts the entities the app cannot create, such as
-            // b_44's M_EX940, which would hold the waves back here for ever].
+            // has are summed [inferred stand-in: the game also counts the entities the app cannot create, which
+            // would hold the waves back here for ever; since WP-EN2 b_44's M_EX940 are not among them].
             let sum: u32 = g
                 .members
                 .iter()

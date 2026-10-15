@@ -265,6 +265,17 @@ Record: +0, +1 the world and area bytes (0x33e830, 0x33e831), +2 the item id (15
 `place_bytes` (test `the_obtained_log_is_a_ring_of_32`); written by the item objects and the form level-ups. No reader of
 the log was searched for.
 
+## Unload (WP-EN2)
+
+The area's unload (`FUN_00104ce0` -> `FUN_00168ca0` -> `FUN_001b8800`) frees every object of the list at 0x1d5d7e0 [V for the
+free; inferred: the `PRIZE` manager `DAT_0035e7a0` (object 0x5c3: it owns the pool of orbs and munny) and the item objects
+(type 0x12, `FUN_001bd0d0`) are in that list like the area's other objects; the objects' own teardown was not read]. The app
+(`prize::unload_prizes`, test `a_jump_clears_prizes_and_items`): when `area_jump::JumpTask` reaches `Loading` every prize
+and item object is despawned once and the pool count (`PrizePool::live`) is 0, so a jump (and the Struggle's Retry) leaves
+no orb of the old area. What a prize had not paid out is lost, as it would be. Run: `KH2_NO_ENEMIES=1 KH2_PRIZETEST=0,1,2,3,4,5 KH2_JUMP=1:3:0 KH2_JUMP_AT=9 kh2-game tt04` launches six prizes at 4 s (one is
+drawn into Sora and picked up) and logs, at the jump's unload, `prize: area unload (FUN_00104ce0): 5 prize and item objects removed`
+(after `jump: area unload (FUN_00104ce0): 0 area actors removed before tt03`). The Struggle's own orb pool objects are `struggle.rs`'s (not touched).
+
 ## Collect-all (`FUN_002eece8`, host 6.31)
 
 `FUN_001a40b8` (mode 1 above) and `FUN_001bda98`: every object with +0x588 bit 0x40000 (the item objects) is handed to

@@ -198,6 +198,19 @@ pub fn apply_preset(cur: [u8; 4], preset: [u8; 4]) -> [u8; 4] {
     out
 }
 
+/// The party presets the `btl` program that starts `mission` applies (WP-S8): the area-script interpreter
+/// FUN_00180b48 runs a program's commands in order; opcode 0x15 (FUN_001b9338) creates the mission manager with
+/// argument 0 the mission id, opcode 0xf (FUN_001a7330) applies preset argument 0 to the current world's slot
+/// bytes. The program's FRIEND_1 / FRIEND_2 entities then resolve through those bytes (FUN_0016e208 ->
+/// FUN_0017cd20, none for an empty byte). Returns the 0xf arguments of the first program whose 0x15 names the
+/// mission, in program order (tt04 0xb6..0xb8, the Struggle: `[0]`, Sora alone).
+pub fn mission_presets(btl: &[kh2_ard::Program], mission: u32) -> Vec<u32> {
+    btl.iter()
+        .find(|p| p.commands.iter().any(|c| c.opcode == 0x15 && c.args.first() == Some(&mission)))
+        .map(|p| p.commands.iter().filter(|c| c.opcode == 0xf).filter_map(|c| c.args.first().copied()).collect())
+        .unwrap_or_default()
+}
+
 /// FUN_0010b780: the friend-AI class (index into the table at 0x34ea00) for an object's NeoStatus
 /// and NeoMoveset; `None` = no AI object (Sora 1, Mickey 4, Roxas 14). An unlisted NeoStatus gets
 /// the default class (FUN_001133e0) bound to the table's first block.
@@ -921,6 +934,29 @@ mod tests {
         assert_eq!(ai_class(2, 17), Some(0));
         assert_eq!(ai_class(3, 0x15), Some(13));
         assert_eq!(ai_class(1, 0), None);
+    }
+
+    /// WP-S8: the program that starts a mission names its preset (opcode 0xf); preset 0 `[0,-,-,-]` empties the
+    /// companions' slots whatever stood there, so FRIEND_1 / FRIEND_2 name nobody. Another mission's program
+    /// is not read, and a mission no program starts applies nothing.
+    #[test]
+    fn a_struggle_program_leaves_sora_alone() {
+        let cmd = |opcode: u16, args: &[u32]| kh2_ard::Command { opcode, args: args.to_vec() };
+        let progs = vec![
+            kh2_ard::Program { id: 0x4c, commands: vec![cmd(0xf, &[1]), cmd(0x15, &[0xac, 0])] },
+            kh2_ard::Program { id: 0xb6, commands: vec![cmd(0xf, &[0]), cmd(0x15, &[0x128, 0]), cmd(0x1d, &[1]), cmd(0, &[0x30355f62])] },
+        ];
+        assert_eq!(mission_presets(&progs, 0x128), vec![0]);
+        assert_eq!(mission_presets(&progs, 0xac), vec![1]);
+        assert!(mission_presets(&progs, 0x999).is_empty());
+        let after = apply_preset([0, 1, 2, EMPTY], [0, EMPTY, EMPTY, EMPTY]);
+        assert_eq!(after, [0, EMPTY, EMPTY, EMPTY]);
+        let mut rec = [0u16; 24];
+        rec[9] = 0x5a;
+        rec[10] = 0x5b;
+        assert!((1..4).all(|i| slot_object(&rec, after[i]).is_none()));
+        // The next program that applies preset 1 brings Donald and Goofy back.
+        assert_eq!(apply_preset(after, [0, 1, 2, EMPTY]), [0, 1, 2, EMPTY]);
     }
 
     fn toy_free() -> FreePointConsts {

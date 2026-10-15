@@ -60,7 +60,7 @@ impl Plugin for PartyPlugin {
         app.insert_resource(data)
             .init_resource::<PartySlots>()
             .insert_resource(Manager { log: std::env::var("KH2_PARTYLOG").is_ok_and(|v| !v.is_empty() && v != "0"), rng: 0x2545_f491, ..Default::default() })
-            .add_systems(FixedUpdate, (spawn_party, party_tick, party_push_apart, party_fade, party_hits).chain().in_set(PartyTick).in_set(Sim::Enemy))
+            .add_systems(FixedUpdate, (mission_party, spawn_party, party_tick, party_push_apart, party_fade, party_hits).chain().in_set(PartyTick).in_set(Sim::Enemy))
             .add_systems(FixedUpdate, member_hands.in_set(Sim::Enemy).before(PartyTick))
             .add_systems(FixedUpdate, (party_receive_hits, party_item_uses, party_script_hits).chain().in_set(Sim::SoraHurt))
             .add_systems(FixedUpdate, party_hud.after(Sim::SoraHurt).run_if(crate::schedule::sim_running))
@@ -725,6 +725,31 @@ fn body_shape(rig: &Rig) -> (f32, f32) {
 /// the constants are read. A rebuild checks this before it despawns the standing members.
 fn can_build(area_loaded: bool, no_party: bool, have_memt: bool, have_consts: bool) -> bool {
     area_loaded && !no_party && have_memt && have_consts
+}
+
+/// The `btl` program that starts a mission (the wave spawner's `MissionStart`) applies its party presets
+/// (area-script opcode 0xf, FUN_001a7330) to the slot bytes before its groups spawn (`rules::mission_presets`).
+/// When the members they name differ, `spawn_party` rebuilds them: in the Struggle (tt04 0xb6..0xb8, preset 0)
+/// Donald and Goofy go and Sora fights alone; the bytes stay so until another opcode 0xf (or the Party page)
+/// rewrites them (FUN_001a71c0's record survives area loads).
+fn mission_party(
+    mut starts: MessageReader<crate::struggle::MissionStart>,
+    disc: Res<Disc>,
+    area: Res<CurrentArea>,
+    data: Res<PartyData>,
+    mut slots: ResMut<PartySlots>,
+) {
+    for s in starts.read() {
+        let Some(name) = area.loaded.as_deref() else { continue };
+        let Some((ard, _)) = disc.read(&format!("ard/{name}.ard")).and_then(|f| kh2_ard::Area::parse(&f)) else { continue };
+        let btl = ard.scripts.get("btl").map(Vec::as_slice).unwrap_or_default();
+        for p in rules::mission_presets(btl, s.id) {
+            let Some(preset) = data.memt.as_ref().and_then(|m| m.trailing.get(p as usize)).map(|w| w.to_le_bytes()) else { continue };
+            let before = slots.bytes;
+            slots.bytes = rules::apply_preset(before, preset);
+            info!("party: mission {:#x} {}: its btl program applies preset {p} (opcode 0xf, FUN_001a7330): slot bytes {before:02x?} -> {:02x?}", s.id, s.name, slots.bytes);
+        }
+    }
 }
 
 /// Spawns the members of a newly loaded area (they are area parts: the next area load removes them).
@@ -2271,6 +2296,32 @@ mod tests {
         assert_ne!(member_key([0, 1, e, e], &m), base, "a member leaves");
         // Flags (0x80 / 0x40) do not name another member.
         assert_eq!(member_key([0, 0x81, 2, e], &m), base);
+    }
+
+    /// WP-S8, from the disc: tt04's Struggle programs (0xb6..0xb8, missions 0x128..0x12a) and the Seifer program
+    /// 0xb5 (0x127) apply preset 0, which leaves only Sora in world 2's party: no member is wanted, so the
+    /// rebuild removes Donald and Goofy. Needs `KH2_ISO`.
+    #[test]
+    fn party_the_struggle_programs_leave_sora_alone() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let data = PartyData::load(&disc);
+        let memt = data.memt.clone().expect("memt");
+        let (ard, _) = kh2_ard::Area::parse(&disc.read("ard/tt04.ard").expect("tt04")).expect("ard");
+        let btl = ard.scripts.get("btl").expect("btl");
+        let merged = crate::drive::rules::memt_merge(&memt, 2, |_| false);
+        let start = rules::apply_preset([0, rules::EMPTY, rules::EMPTY, rules::EMPTY], memt.trailing[rules::DEFAULT_PRESET].to_le_bytes());
+        assert_eq!(wanted_members(start, &merged).len(), 2, "preset 1 names Donald and Goofy");
+        for mission in [0x127, 0x128, 0x129, 0x12a] {
+            let presets = rules::mission_presets(btl, mission);
+            assert_eq!(presets, vec![0], "mission {mission:#x}");
+            let bytes = rules::apply_preset(start, memt.trailing[0].to_le_bytes());
+            eprintln!("mission {mission:#x}: presets {presets:?}, slot bytes {start:02x?} -> {bytes:02x?}");
+            assert!(wanted_members(bytes, &merged).is_empty(), "mission {mission:#x}");
+        }
     }
 
     /// tt02's map script places FRIEND_1 and FRIEND_2; with preset 1 in Twilight Town (world 2) they

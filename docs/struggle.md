@@ -237,6 +237,13 @@ so the factor is 1. Port: `mission_tick` sends event 0x5a when Sora's HP falls t
 revives Sora after 3 s (`sora.rs`); in the original he stays down through the result [inferred from the absence of a
 revive in `FUN_001cec00`].
 
+## Sora fights alone (WP-S8, verified)
+
+The Struggle `btl` programs (0xb6..0xb8) run opcode 0xf with preset 0 (`FUN_001a7330`) before they spawn the
+group, so the slot bytes name no companion and the group's FRIEND_1 / FRIEND_2 rows create nothing
+(`FUN_0016e208` -> `FUN_0017cd20`). The app applies the program's presets when the mission starts
+(`party::mission_party`) and the party rebuild removes Donald and Goofy. Details and gaps: docs/party.md section 19.
+
 ## The pickup skips (verified)
 
 `FUN_001cadd8` passes a fighter by while `FUN_00185a08` (controller +0x140 present and the last requested motion

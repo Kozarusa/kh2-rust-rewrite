@@ -24,11 +24,24 @@ pub enum Cat {
     Map,
 }
 
+impl Cat {
+    /// The category's number in the save's seen set (`Progress::journal_seen`).
+    pub fn code(self) -> u8 {
+        self as u8
+    }
+
+    /// The category of a saved number.
+    pub fn from_code(c: u8) -> Option<Cat> {
+        [Cat::Story, Cat::Char, Cat::Album, Cat::Treasure, Cat::Map].get(usize::from(c)).copied()
+    }
+}
+
 /// The new / seen bit sets. Keys are the record's own number (story: the record's index in `jiminy.bar` entry 1; character:
 /// the index in entry 3; album: the record index of entry 2; treasure and map: the row of the `trsr` table).
 #[derive(Default)]
 pub struct Marks {
     seen: HashSet<(Cat, usize)>,
+    dirty: bool,
     new: HashSet<(Cat, usize)>,
 }
 
@@ -50,7 +63,23 @@ impl Marks {
 
     /// `FUN_002b95d8` (story), `FUN_002b73b8` (characters) and the like: the entry's seen bit.
     pub fn see(&mut self, cat: Cat, key: usize) {
-        self.seen.insert((cat, key));
+        self.dirty |= self.seen.insert((cat, key));
+    }
+
+    /// Replaces the seen set by the one the save carries (`Progress::journal_seen_all`: category numbers and entries).
+    pub fn load_seen(&mut self, pairs: impl IntoIterator<Item = (u8, u32)>) {
+        let loaded: HashSet<(Cat, usize)> = pairs.into_iter().filter_map(|(c, k)| Some((Cat::from_code(c)?, k as usize))).collect();
+        // What was marked this run and not yet saved stays.
+        if !self.dirty {
+            self.seen = loaded;
+        } else {
+            self.seen.extend(loaded);
+        }
+    }
+
+    /// The pairs marked since the last call (for `Progress::set_journal_seen`), `None` when there are none.
+    pub fn take_dirty(&mut self) -> Option<Vec<(u8, u32)>> {
+        std::mem::take(&mut self.dirty).then(|| self.seen.iter().map(|&(c, k)| (c.code(), k as u32)).collect())
     }
 
     /// The tag group of an entry on a list page (`FUN_002a5708`): `None` for an entry without a new bit.
@@ -153,6 +182,25 @@ impl Bar {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_seen_set_goes_to_and_from_the_save() {
+        let mut m = Marks::default();
+        assert_eq!(m.take_dirty(), None);
+        m.see(Cat::Album, 4);
+        m.see(Cat::Map, 2);
+        let mut saved = m.take_dirty().expect("two entries were marked");
+        saved.sort_unstable();
+        assert_eq!(saved, [(Cat::Album.code(), 4), (Cat::Map.code(), 2)]);
+        assert_eq!(m.take_dirty(), None, "nothing new since");
+        let mut n = Marks::default();
+        n.load_seen(saved.iter().copied().chain([(99, 1)]));
+        n.snapshot([(Cat::Album, 4), (Cat::Album, 5)]);
+        assert_eq!(n.tag(Cat::Album, 4), None, "seen in the save before the scene opened");
+        assert_eq!(n.tag(Cat::Album, 5), Some(Tag::New));
+        assert_eq!(n.take_dirty(), None, "loading marks nothing new");
+        assert_eq!(Cat::from_code(Cat::Treasure.code()), Some(Cat::Treasure));
+    }
 
     #[test]
     fn a_tag_needs_a_new_bit_and_turns_on_seeing() {

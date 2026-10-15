@@ -82,6 +82,8 @@ pub fn maps_present(rows: &[Row], is_map: &dyn Fn(u16) -> bool, owned: &dyn Fn(u
 pub struct Game<'a> {
     pub flag: &'a dyn Fn(u16) -> bool,
     pub items: &'a dyn Fn(u16) -> i32,
+    /// A chest's opened bit by its `OverallChestIndex` (`FUN_001a6a90`).
+    pub opened: &'a dyn Fn(i16) -> bool,
 }
 
 fn cat_of(page: u16) -> Cat {
@@ -98,8 +100,7 @@ fn make_layout(j: &Journal, page: u16, g: &Game) -> Layout {
     let wi = |w: u8| j.world_index.get(usize::from(w)).copied().unwrap_or(-1);
     let all = (g.flag)(ALL_WORLDS_FLAG);
     let entries = if page == 7 {
-        // [no chest data] the app records no opened chest: every listed chest is not found.
-        lists::treasures(&j.tables_lists.rows, &wi, g.flag, all, &|_| false)
+        lists::treasures(&j.tables_lists.rows, &wi, g.flag, all, g.opened)
     } else {
         let is_map = |i: u16| j.tables_lists.items.get(&i).is_some_and(|r| r.kind == MAP_KIND);
         lists::maps(&j.tables_lists.rows, &wi, &is_map, &|i| (g.items)(i) > 0, all)
@@ -330,9 +331,9 @@ pub fn map_keys(rows: &[Row], world_index: &dyn Fn(u8) -> i8, is_map: &dyn Fn(u1
 }
 
 /// `FUN_002ba6d8`: the treasures of a world are complete when every chest of it has been opened [inferred from the bit set
-/// the completion buffer takes at +0xd0: the app has no opened chests, so only a world without chests is complete].
-pub fn treasures_complete(rows: &[Row], world_index: &dyn Fn(u8) -> i8, world: i8) -> bool {
-    treasure_keys(rows, world_index, Some(world)).is_empty()
+/// the completion buffer takes at +0xd0); `opened` is the chest's bit (`FUN_001a6a90`).
+pub fn treasures_complete(rows: &[Row], world_index: &dyn Fn(u8) -> i8, world: i8, opened: &dyn Fn(i16) -> bool) -> bool {
+    treasure_keys(rows, world_index, Some(world)).iter().all(|&(_, i)| rows[i].chest != 0 && opened(rows[i].chest))
 }
 
 /// `FUN_002ba898`: the maps of a world are complete when it has all of them (the bits at +0x110).
@@ -362,8 +363,9 @@ mod tests {
         let wi = |w: u8| if w == 2 { 0 } else { 1 };
         assert_eq!(treasure_keys(&rows, &wi, Some(0)), vec![(Cat::Treasure, 0)]);
         assert_eq!(treasure_keys(&rows, &wi, None).len(), 2);
-        assert!(!treasures_complete(&rows, &wi, 0), "a chest that cannot be opened in the app");
-        assert!(treasures_complete(&rows, &wi, 5), "a world without chests");
+        assert!(!treasures_complete(&rows, &wi, 0, &|_| false), "a chest not opened yet");
+        assert!(treasures_complete(&rows, &wi, 0, &|c| c == 1), "its chest is open");
+        assert!(treasures_complete(&rows, &wi, 5, &|_| false), "a world without chests");
         let is_map = |i: u16| i == 12 || i == 13;
         assert_eq!(map_keys(&rows, &wi, &is_map, Some(0)), vec![(Cat::Map, 2)]);
         assert!(maps_complete(&rows, &wi, &is_map, &|i| i == 12, 0));

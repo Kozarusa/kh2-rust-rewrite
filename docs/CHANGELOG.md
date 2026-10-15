@@ -14,6 +14,12 @@ One short section per work package. "Verified" says how; nothing here was checke
 - **WP-MN9 (Journal page 0).** Jiminy's Journal world grid opens from the camp's Journal rows. Verified by six tests and screenshots. Open: pages 1 and 2, children, text.
 - **WP-A1 / WP-A2 (ability readers).** Second Chance, Once More (kh2-ee oracle, 1400 cases), Leaf Bracer (started by Cure), Scan gate (oracle, 80 cases) and Aerial Recovery's blend 0. Auto Healing, Auto Change and Auto Limit documented as not portable yet.
 - **WP-FIXR1 (reviewer findings).** Party rebuild keeps members when it cannot build and resets the trail; the talk camera ends on area load; only the first event walk-in of a tick is taken; world points capped at 0x36 records; stronger tests.
+- **WP-EN1 (btl groups at load).** The area's btl program sets up its enemy groups at load (kind-2 groups on demand, defeated members stay out), a jump unloads the area's actors; tt04 with no story state has no enemies as in the original. Verified by three tests and the accept sweep.
+- **WP-STRM2 (Retry).** The Struggle's Retry row takes its type-2 jump and the match starts again. Verified by a unit test and a harness run.
+- **WP-SH2 (synthesis).** The shop's third row: recipes, materials, points and levels from `mixdata.bar`, the moogle record in `Progress`. Verified by four tests and screenshots. Open: page 0xb, collection rewards.
+- **WP-SUM4b / SUM5 / SUM6 (summons).** Stitch moves in his own plane and fires his blast, Genie follows, Chicken Little's script error was the missing host 2.21 (now answered), host 2.75 for Peter Pan. Verified by oracle tests and screenshots. Open: Peter Pan's hosts 1.155 and 0.40, Genie's motions.
+- **WP-PA1 / PA2 / PA3 (party targets).** The friend AI's target choice and re-target rules for styles 0 to 5 (oracle-checked), wired into party.rs; the member setting block (+0xd4) lives in `Progress`. Open: the Customize page that writes the style.
+- **WP-E6e (event fades).** Event object fades by the kind row, opcode 0xd mesh groups, the loop's put-back place. Open: the screen fade is not drawn (needs `area_jump::draw_fader` to read `EventPlayer::screen_fade`), hiding the player and party.
 ## Shift 10 (2026-10-14/15)
 
 - **WP-H1 / MN6 (text colour).** HUD and menu text use the exact glyph atlas (texel times vertex colour over 128 as the game does); colours above 0x80 no longer clamp to white; the per-bar compensation is gone. Verified by font and hud_text tests and before/after screenshots. Open: none.

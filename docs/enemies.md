@@ -72,6 +72,11 @@ New host functions the Dusk needs are in the table of `docs/enemy-ai.md` (0.15, 
   members, if the `00objentry` `SpawnLimiter` bytes (row +0x54) of the members in play (spawn kinds 0, 3, and 2 of
   the waves so far, except those defeated for good; `FUN_001996f0`, `FUN_001995c8`) add up to at most header
   +0x22; header +0x23 (not 0) is the wave at which it goes back to wave +0x24 (`FUN_001997f8`, `FUN_00199858`).
+  On that wrap `FUN_00199858` first walks the group's entities: each spawn-kind-2 one whose wave byte (+0x30) is not below
+  the new wave and that `FUN_001995c8` finds defeated (serial in the table and the object absent, `FUN_0016b0d8`) is taken
+  out of the table (`FUN_001942c8` -> `FUN_001940d8`, which zeroes the serial's entry), so it comes again in the next lap
+  (`KindTwo::run`, test `a_wave_wrap_takes_the_defeated_members_out_of_the_table`). [inferred] that `FUN_001942c8` takes the
+  serial as its second argument: Ghidra's signature shows one parameter, the call site loads the serial halfword.
   The timer starts at header +0x1c (`FUN_00198430`).
 - **Defeats.** `FUN_00198220` enters a created enemy (object types 4, 0xd, 0x15, 0x17, `FUN_00198150`) in the table
   at 0x35d278; when the object is removed (`FUN_001d5db8` -> `FUN_001993f8`) it leaves the table if it was alive

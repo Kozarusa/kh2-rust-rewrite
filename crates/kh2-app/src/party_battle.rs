@@ -60,6 +60,9 @@ pub const MP_GATE_SLOPE: u32 = 0x378598;
 pub const MP_GATE_BASE: u32 = 0x37859c;
 /// FUN_0010c800: degrees to radians (`DAT_003784a0`).
 pub const DEG_TO_RAD: u32 = 0x3784a0;
+/// FUN_0010ccf8's factor (`DAT_003784a4`) and FUN_0010d538's start value (`DAT_003784a8`).
+pub const RETARGET_HALF: u32 = 0x3784a4;
+pub const FARTHEST_START: u32 = 0x3784a8;
 
 /// Parameter entry flags (+0xc).
 pub mod entry_flag {
@@ -172,6 +175,14 @@ pub struct Params {
     pub battle: f32,
     /// +0xa8: count of combo follow-ups (FUN_00113588).
     pub followups: u32,
+    /// +0x84 (FUN_00114118): style 2's range around the player; +0x88 (FUN_00114128): the second
+    /// distance of the style 2 and 3 re-target tests.
+    pub player_range: f32,
+    pub player_near: f32,
+    /// `DAT_003784a4` (style 2's re-target factor on +0x84 + +0x88) and `DAT_003784a8` (style 3's start
+    /// value of the farthest distance, a "none yet" mark), executable constants.
+    pub retarget_half: f32,
+    pub farthest_start: f32,
 }
 
 /// A 0x20-byte combo follow-up of the class's block (+0xac, FUN_001135a0), as FUN_0010c800 reads its
@@ -240,6 +251,10 @@ impl ClassAi {
             wait_b: (rf(elf, block + 0x78)?, rf(elf, block + 0x7c)?),
             battle: rf(elf, block + 0x80)?,
             followups: rw(elf, block + 0xa8)?,
+            player_range: rf(elf, block + 0x84)?,
+            player_near: rf(elf, block + 0x88)?,
+            retarget_half: rf(elf, RETARGET_HALF)?,
+            farthest_start: rf(elf, FARTHEST_START)?,
         };
         let (entries_n, entries_at) = (rw(elf, block + 0xa0)? as usize, block + rw(elf, block + 0xa4)?);
         let mut records = Vec::new();
@@ -521,23 +536,280 @@ pub fn choose(
 /// FUN_0010d0c0's scan (style 0, no remembered attacker): among the valid enemies' hurt shapes, the one
 /// whose surface (distance to its centre minus its radius) is nearest the member, and nearer than the
 /// class's range. `shapes` are (index, centre, radius); returns the index.
+/// Runs through the style dispatch with style 0 (the setting byte at a new game) and no attacker.
 pub fn nearest_target(member: bevy::math::Vec3, range: f32, shapes: impl Iterator<Item = (usize, bevy::math::Vec3, f32)>) -> Option<usize> {
+    let cands: Vec<Cand> = shapes.map(|(i, centre, radius)| Cand { fighter: i, shape: 0, centre, radius, enabled: true, targetable: true }).collect();
+    let p = Params { range, ..Params::default() };
+    let (chooser, _) = dispatch(0, 0)?;
+    choose_target(chooser, false, &p, &TargetScene { member, cands: &cands, ..TargetScene::default() }).map(|t| t.0)
+}
+
+/// FUN_0010cbe0 (style 0's re-target test): when an attacker is remembered and it is not the target,
+/// or the target lies farther than the re-target range (squared distance of the target point).
+/// (FUN_0010cf90 with style 0 and a valid target, `needs_retarget`.)
+pub fn retarget_style0(attacker_differs: bool, target_dist: f32, retarget: f32) -> bool {
+    let p = Params { retarget, ..Params::default() };
+    let s = TargetScene { attacker: attacker_differs.then_some(1), ..TargetScene::default() };
+    let (_, test) = dispatch(0, 0).expect("style 0");
+    needs_retarget(test, false, Some(((0, 0), bevy::math::Vec3::new(target_dist, 0.0, 0.0))), false, &p, &s)
+}
+
+// ---------------------------------------------------------------------------------------------------
+// The target choice and re-target tests of every battle style (FUN_0010dcf0, FUN_0010cf90)
+
+/// One hurt shape the game's object walk (FUN_0018f348 over FUN_001b7c88's list) visits, in walk order.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Cand {
+    /// The object (the target record's +0) and the shape's place in it.
+    pub fighter: usize,
+    pub shape: usize,
+    /// FUN_001894d0: the shape's centre and radius (the surface distance is `|centre - p| - radius`).
+    pub centre: bevy::math::Vec3,
+    pub radius: f32,
+    /// FUN_0018edd8: the shape answers (FUN_0019a5d0 on the record).
+    pub enabled: bool,
+    /// FUN_00112ac0 on the object: alive, +0x588 bit 0x10, +0x7f8 bit 4 clear, +0x108 bit 0x8000 clear.
+    pub targetable: bool,
+}
+
+/// A target record (+0x9f4, `0x34e9b0`): the object and the shape.
+pub type Pick = (usize, usize);
+
+/// What the choose and re-target functions read besides the class's block.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TargetScene<'a> {
+    /// FUN_0016b960 of the member and of the player (`DAT_0034e908`).
+    pub member: bevy::math::Vec3,
+    pub player: bevy::math::Vec3,
+    /// +0xcec: the last object whose hit FUN_00112ac0 accepted (FUN_001106b8).
+    pub attacker: Option<usize>,
+    /// `0x34e9b0`: the player's target record, copied from the player's +0x9f4 by FUN_00111d18 and
+    /// cleared there when it no longer answers (FUN_0018ed58 and a non-zero object).
+    pub player_target: Option<Pick>,
+    /// `0x34e9c4`: the object of the player's attack start (FUN_00176050 -> FUN_00112850(1, record),
+    /// kept only when FUN_00112b28 accepts it; zeroed by FUN_00112270 and when the object dies).
+    pub player_hit: Option<usize>,
+    /// The object walk, in order.
+    pub cands: &'a [Cand],
+}
+
+fn surface(c: &Cand, p: bevy::math::Vec3) -> f32 {
+    (c.centre - p).length() - c.radius
+}
+
+/// FUN_00112b88(range, object, out, position): the object's enabled shapes in walk order; a shape is
+/// taken when the best distance so far is at most 0 or its surface distance is below it, and then
+/// becomes the best. The best starts at `range`: so with a range of 0 or less (or once a taken shape's
+/// surface distance is 0 or less) every later enabled shape replaces the pick, as the code reads.
+pub fn nearest_shape_of(range: f32, fighter: usize, pos: bevy::math::Vec3, cands: &[Cand]) -> Option<Pick> {
     let mut best = range;
     let mut out = None;
-    for (i, c, r) in shapes {
-        let d = (c - member).length() - r;
-        if d < best {
+    for c in cands.iter().filter(|c| c.fighter == fighter && c.enabled) {
+        let d = surface(c, pos);
+        if best <= 0.0 || d < best {
+            out = Some((c.fighter, c.shape));
             best = d;
-            out = Some(i);
         }
     }
     out
 }
 
-/// FUN_0010cbe0 (style 0's re-target test): when an attacker is remembered and it is not the target,
-/// or the target lies farther than the re-target range (squared distance of the target point).
-pub fn retarget_style0(attacker_differs: bool, target_dist: f32, retarget: f32) -> bool {
-    attacker_differs || target_dist * target_dist > retarget * retarget
+fn find(cands: &[Cand], p: Pick) -> Option<&Cand> {
+    cands.iter().find(|c| (c.fighter, c.shape) == p)
+}
+
+/// FUN_00112b28 on a record: it answers and its object is targetable.
+fn record_ok(cands: &[Cand], p: Pick) -> bool {
+    find(cands, p).is_some_and(|c| c.targetable)
+}
+
+/// Style 0 (FUN_0010d0c0; style 5 FUN_0010d708 calls it): the remembered attacker's nearest shape
+/// within the range (FUN_00112b88 with +0x68), else among the targetable objects' enabled shapes the
+/// nearest surface below the range.
+pub fn choose_style0(p: &Params, s: &TargetScene) -> Option<Pick> {
+    if let Some(a) = s.attacker
+        && let Some(t) = nearest_shape_of(p.range, a, s.member, s.cands)
+    {
+        return Some(t);
+    }
+    let mut best = p.range;
+    let mut out = None;
+    for c in s.cands.iter().filter(|c| c.targetable && c.enabled) {
+        let d = surface(c, s.member);
+        if d < best {
+            best = d;
+            out = Some((c.fighter, c.shape));
+        }
+    }
+    out
+}
+
+/// FUN_0010d848 (style 1's pick): nothing without `0x34e9c4`; the player's target record itself when it
+/// answers and is on that object; else that object's shapes in walk order (no enabled test here),
+/// the first taken while the best is still 0, then any with a smaller surface distance.
+pub fn player_hit_pick(s: &TargetScene) -> Option<Pick> {
+    let hit = s.player_hit?;
+    if let Some(t) = s.player_target
+        && t.0 == hit
+    {
+        return Some(t);
+    }
+    let mut best = 0.0f32;
+    let mut out = None;
+    for c in s.cands.iter().filter(|c| c.fighter == hit) {
+        let d = surface(c, s.member);
+        if best == 0.0 || d < best {
+            out = Some((c.fighter, c.shape));
+            best = d;
+        }
+    }
+    out
+}
+
+/// Style 1 (FUN_0010d270): FUN_0010d848's pick when it answers and its shape is enabled; else, when
+/// the player's target passes FUN_00112b28, that object's nearest shape within the range
+/// (FUN_00112b88 with +0x68).
+pub fn choose_style1(p: &Params, s: &TargetScene) -> Option<Pick> {
+    if let Some(t) = player_hit_pick(s)
+        && find(s.cands, t).is_some_and(|c| c.enabled)
+    {
+        return Some(t);
+    }
+    match s.player_target {
+        Some(t) if record_ok(s.cands, t) => nearest_shape_of(p.range, t.0, s.member, s.cands),
+        _ => None,
+    }
+}
+
+/// Style 2 (FUN_0010d378): among the targetable objects' enabled shapes, the nearest surface to the
+/// member below +0x68 whose surface distance to the player is below +0x84.
+pub fn choose_style2(p: &Params, s: &TargetScene) -> Option<Pick> {
+    let mut best = p.range;
+    let mut out = None;
+    for c in s.cands.iter().filter(|c| c.targetable && c.enabled) {
+        let d = surface(c, s.member);
+        if d < best && surface(c, s.player) < p.player_range {
+            best = d;
+            out = Some((c.fighter, c.shape));
+        }
+    }
+    out
+}
+
+/// Style 3 (FUN_0010d538): among the targetable objects' enabled shapes within twice +0x68 of the
+/// member (surface distance), the one whose surface lies farthest from the player. The best starts at
+/// `DAT_003784a8` (-1): any first candidate is taken while it is negative.
+pub fn choose_style3(p: &Params, s: &TargetScene) -> Option<Pick> {
+    let mut best = p.farthest_start;
+    let mut out = None;
+    for c in s.cands.iter().filter(|c| c.targetable && c.enabled) {
+        if surface(c, s.member) < p.range + p.range {
+            let dp = surface(c, s.player);
+            if best < 0.0 || best < dp {
+                best = dp;
+                out = Some((c.fighter, c.shape));
+            }
+        }
+    }
+    out
+}
+
+/// The choose function of the table at 0x352d28 (classes up to 0xd) or 0x352ce8 + 8 x class (classes
+/// above 0xd, FUN_001124b8), and the re-target test of 0x352cd0 / 0x352c90 + 8 x class, by name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Chooser {
+    /// FUN_0010d0c0 (style 0; style 5's FUN_0010d708 calls it).
+    Nearest,
+    /// FUN_0010d270.
+    PlayerTarget,
+    /// FUN_0010d378.
+    NearPlayer,
+    /// FUN_0010d538.
+    FarFromPlayer,
+    /// FUN_0010d700: an empty function, no target.
+    None,
+    /// A routine not read (class 16's 0x119d60).
+    Unread(u32),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Retest {
+    /// FUN_0010cbe0.
+    Attacker,
+    /// FUN_0010cc80.
+    PlayerTarget,
+    /// FUN_0010ccf8.
+    NearPlayer,
+    /// FUN_0010ce40.
+    FarFromPlayer,
+    /// FUN_0010cf80 (1) and FUN_0010cf88 (0).
+    Always,
+    Never,
+    /// A routine not read (class 16's 0x119d58).
+    Unread(u32),
+}
+
+/// FUN_0010dcf0's and FUN_0010cf90's dispatch (the tables as the executable holds them: printed by
+/// `party_target_tables_from_the_executable`). `None` for a style outside 0..5 (the table has six rows).
+pub fn dispatch(class: u8, style: u8) -> Option<(Chooser, Retest)> {
+    if class > 0xd {
+        return Some(match class {
+            14 => (Chooser::None, Retest::Always),
+            15 | 17 => (Chooser::Nearest, Retest::Never),
+            16 => (Chooser::Unread(0x119d60), Retest::Unread(0x119d58)),
+            18 => (Chooser::Nearest, Retest::Attacker),
+            _ => return None,
+        });
+    }
+    Some(match style {
+        0 => (Chooser::Nearest, Retest::Attacker),
+        1 => (Chooser::PlayerTarget, Retest::PlayerTarget),
+        2 => (Chooser::NearPlayer, Retest::NearPlayer),
+        3 => (Chooser::FarFromPlayer, Retest::FarFromPlayer),
+        4 => (Chooser::None, Retest::Always),
+        5 => (Chooser::Nearest, Retest::Never),
+        _ => return None,
+    })
+}
+
+/// Runs a choose function. `limit`: FUN_001b3c00 (a limit runs): 0x352d48's FUN_0010d700, no target.
+/// An unread routine keeps no target [the routine was not read].
+pub fn choose_target(c: Chooser, limit: bool, p: &Params, s: &TargetScene) -> Option<Pick> {
+    if limit {
+        return None;
+    }
+    match c {
+        Chooser::Nearest => choose_style0(p, s),
+        Chooser::PlayerTarget => choose_style1(p, s),
+        Chooser::NearPlayer => choose_style2(p, s),
+        Chooser::FarFromPlayer => choose_style3(p, s),
+        Chooser::None | Chooser::Unread(_) => None,
+    }
+}
+
+/// FUN_0010cf90: re-target when the target is not valid (FUN_0010ca88: none, bit 0x40, FUN_00112b28 or
+/// FUN_0018edd8 refuse), when a limit runs, else by the style's test. `target`: the current record
+/// when FUN_0010ca88 accepts it. `current_counted`: the running action record (+0xc60) exists and
+/// lacks flag 1 (FUN_0010ce40 then always re-targets). An unread test re-targets.
+pub fn needs_retarget(t: Retest, limit: bool, target: Option<(Pick, bevy::math::Vec3)>, current_counted: bool, p: &Params, s: &TargetScene) -> bool {
+    let Some((pick, point)) = target else { return true };
+    if limit {
+        return true;
+    }
+    // FUN_0018efa0 (the target point) minus the member's position, squared length.
+    let d2 = (point - s.member).length_squared();
+    let sq = |x: f32| x * x;
+    match t {
+        Retest::Attacker => s.attacker.is_some_and(|a| a != pick.0) || d2 > sq(p.retarget),
+        Retest::PlayerTarget => s.player_target.is_some_and(|pt| pt.0 != pick.0),
+        // The second distance is the target point's to the player (FUN_0016b960 of `DAT_0034e908`), as
+        // the oracle test shows (the decompilation's vector copy reads ambiguously).
+        Retest::NearPlayer => d2 > sq(p.retarget) || (point - s.player).length_squared() > sq((p.player_range + p.player_near) * p.retarget_half),
+        // A target closer to the player than +0x88 re-targets.
+        Retest::FarFromPlayer => current_counted || d2 > sq(p.retarget) || (point - s.player).length_squared() < sq(p.player_near),
+        Retest::Always | Retest::Unread(_) => true,
+        Retest::Never => false,
+    }
 }
 
 /// FUN_0010e5e8's body (motion state 0) with the target relation (+0xbb0, via FUN_001103e0): the
@@ -1017,5 +1289,221 @@ mod tests {
             }
         }
         eprintln!("FUN_0010f118: {n} cases equal");
+    }
+
+    fn cand(fighter: usize, shape: usize, x: f32, z: f32, r: f32) -> Cand {
+        Cand { fighter, shape, centre: bevy::math::Vec3::new(x, 0.0, z), radius: r, enabled: true, targetable: true }
+    }
+
+    /// FUN_0010df08's target refresh for a member of `class` with battle style `style` (setting byte 0):
+    /// `None` keeps the current target; `Some(t)` is the new record (FUN_0010dcf0 clears the record first,
+    /// so a choice that finds nothing leaves no target). A style outside the table keeps the target.
+    #[allow(clippy::too_many_arguments)]
+    fn target_step(class: u8, style: u8, limit: bool, p: &Params, s: &TargetScene, current: Option<(Pick, bevy::math::Vec3)>, current_counted: bool) -> Option<Option<Pick>> {
+        let (c, t) = dispatch(class, style)?;
+        needs_retarget(t, limit, current, current_counted, p, s).then(|| choose_target(c, limit, p, s))
+    }
+
+    fn tparams() -> Params {
+        Params { range: 1000.0, retarget: 1200.0, player_range: 500.0, player_near: 300.0, retarget_half: 0.5, farthest_start: -1.0, ..Params::default() }
+    }
+
+    /// FUN_0010d0c0: the remembered attacker first (its nearest shape within the range), else the nearest
+    /// targetable enabled surface; FUN_00112b88's "best <= 0" rule.
+    #[test]
+    fn party_target_style0_attacker_then_nearest() {
+        use bevy::math::Vec3;
+        let p = tparams();
+        let cands = [cand(1, 0, 600.0, 0.0, 10.0), cand(1, 1, 400.0, 0.0, 10.0), cand(2, 0, 100.0, 0.0, 10.0), Cand { targetable: false, ..cand(3, 0, 50.0, 0.0, 10.0) }, Cand { enabled: false, ..cand(4, 0, 20.0, 0.0, 10.0) }];
+        let mut s = TargetScene { cands: &cands, ..TargetScene::default() };
+        assert_eq!(choose_style0(&p, &s), Some((2, 0)), "nearest targetable and enabled");
+        s.attacker = Some(1);
+        assert_eq!(choose_style0(&p, &s), Some((1, 1)), "the attacker's nearest shape");
+        s.attacker = Some(9);
+        assert_eq!(choose_style0(&p, &s), Some((2, 0)), "an attacker without shapes falls through");
+        // A shape the member stands in (surface below 0) makes every later shape of that object win.
+        let inside = [cand(1, 0, 0.0, 0.0, 50.0), cand(1, 1, 900.0, 0.0, 10.0)];
+        assert_eq!(nearest_shape_of(1000.0, 1, Vec3::ZERO, &inside), Some((1, 1)));
+        assert_eq!(nearest_shape_of(0.0, 1, Vec3::ZERO, &cands), Some((1, 1)), "range 0 takes the last shape");
+        assert_eq!(nearest_shape_of(100.0, 1, Vec3::ZERO, &cands), None);
+    }
+
+    /// FUN_0010d270 / FUN_0010d848: the player's attacked object, its exact record when it is the player's
+    /// target, else its nearest shape; then the player's target object's nearest shape within the range.
+    #[test]
+    fn party_target_style1_follows_the_player() {
+        let p = tparams();
+        let cands = [cand(1, 0, 600.0, 0.0, 10.0), cand(1, 1, 400.0, 0.0, 10.0), cand(2, 0, 100.0, 0.0, 10.0), cand(2, 1, 1500.0, 0.0, 10.0)];
+        let mut s = TargetScene { cands: &cands, ..TargetScene::default() };
+        assert_eq!(choose_style1(&p, &s), None, "no player target, no attack: nothing");
+        s.player_target = Some((2, 1));
+        assert_eq!(choose_style1(&p, &s), Some((2, 0)), "the player's target object's nearest shape");
+        s.player_hit = Some(2);
+        assert_eq!(choose_style1(&p, &s), Some((2, 1)), "the player's exact record when it is on the attacked object");
+        s.player_hit = Some(1);
+        assert_eq!(choose_style1(&p, &s), Some((1, 1)));
+        // A disabled pick falls back to the player's target.
+        let off = [Cand { enabled: false, ..cands[0] }, Cand { enabled: false, ..cands[1] }, cands[2], cands[3]];
+        s.cands = &off;
+        assert_eq!(choose_style1(&p, &s), Some((2, 0)));
+        // An untargetable player target gives nothing.
+        let untarget = [cands[0], cands[1], Cand { targetable: false, ..cands[2] }, Cand { targetable: false, ..cands[3] }];
+        s.cands = &untarget;
+        s.player_hit = None;
+        assert_eq!(choose_style1(&p, &s), None);
+    }
+
+    /// FUN_0010d378 and FUN_0010d538: near the member and the player; within twice the range and farthest
+    /// from the player.
+    #[test]
+    fn party_target_styles_2_and_3() {
+        use bevy::math::Vec3;
+        let p = tparams();
+        // The player stands at x = 1000.
+        let cands = [cand(1, 0, 200.0, 0.0, 10.0), cand(2, 0, 700.0, 0.0, 10.0), cand(3, 0, 1900.0, 0.0, 10.0), cand(4, 0, -1500.0, 0.0, 10.0)];
+        let s = TargetScene { player: Vec3::new(1000.0, 0.0, 0.0), cands: &cands, ..TargetScene::default() };
+        assert_eq!(choose_style2(&p, &s), Some((2, 0)), "object 1 is nearer the member but too far from the player");
+        assert_eq!(choose_style3(&p, &s), Some((4, 0)), "within 2000 of the member, farthest from the player");
+        let none = TargetScene { cands: &[], ..s };
+        assert_eq!((choose_style2(&p, &none), choose_style3(&p, &none)), (None, None));
+    }
+
+    /// FUN_0010df08 -> FUN_0010cf90 / FUN_0010dcf0: keep, switch, drop; style 4 never targets, style 5
+    /// never re-targets a valid target; a limit drops the target.
+    #[test]
+    fn party_target_step_keeps_and_switches() {
+        use bevy::math::Vec3;
+        let p = tparams();
+        let cands = [cand(1, 0, 200.0, 0.0, 10.0), cand(2, 0, 700.0, 0.0, 10.0)];
+        let s = TargetScene { cands: &cands, ..TargetScene::default() };
+        let cur = Some(((2, 0), Vec3::new(700.0, 0.0, 0.0)));
+        assert_eq!(target_step(0, 0, false, &p, &s, None, false), Some(Some((1, 0))), "no target: choose");
+        assert_eq!(target_step(0, 0, false, &p, &s, cur, false), None, "style 0 keeps a target within the re-target range");
+        let far = Some(((2, 0), Vec3::new(1300.0, 0.0, 0.0)));
+        assert_eq!(target_step(0, 0, false, &p, &s, far, false), Some(Some((1, 0))), "beyond the re-target range: switch");
+        let s_att = TargetScene { attacker: Some(1), ..s };
+        assert_eq!(target_step(0, 0, false, &p, &s_att, cur, false), Some(Some((1, 0))), "an attacker other than the target: switch to it");
+        assert_eq!(target_step(0, 4, false, &p, &s, cur, false), Some(None), "style 4: the target is dropped");
+        assert_eq!(target_step(0, 5, false, &p, &s, far, false), None, "style 5 keeps any valid target");
+        assert_eq!(target_step(0, 5, false, &p, &s, None, false), Some(Some((1, 0))));
+        assert_eq!(target_step(0, 0, true, &p, &s, cur, false), Some(None), "a limit: no target");
+        assert_eq!(target_step(0, 9, false, &p, &s, cur, false), None);
+        assert_eq!(target_step(16, 0, false, &p, &s, cur, false), Some(None), "class 16's unread routines: no target");
+    }
+
+    /// FUN_0010cf90's dispatch through 0x352d28 / 0x352cd0, read from the executable: every row names
+    /// the routine `dispatch` maps it to. Needs `KH2_ISO`.
+    #[test]
+    fn party_target_tables_from_the_executable() {
+        let Some(elf) = exe() else { return };
+        let ch = |c: Chooser| match c {
+            Chooser::Nearest => vec![0x10d0c0, 0x10d708],
+            Chooser::PlayerTarget => vec![0x10d270],
+            Chooser::NearPlayer => vec![0x10d378],
+            Chooser::FarFromPlayer => vec![0x10d538],
+            Chooser::None => vec![0x10d700],
+            Chooser::Unread(a) => vec![a],
+        };
+        let rt = |t: Retest| match t {
+            Retest::Attacker => 0x10cbe0,
+            Retest::PlayerTarget => 0x10cc80,
+            Retest::NearPlayer => 0x10ccf8,
+            Retest::FarFromPlayer => 0x10ce40,
+            Retest::Always => 0x10cf80,
+            Retest::Never => 0x10cf88,
+            Retest::Unread(a) => a,
+        };
+        for style in 0..6u8 {
+            let (c, t) = dispatch(0, style).expect("style");
+            let (cv, tv) = (rw(&elf, 0x352d28 + 8 * style as u32).unwrap(), rw(&elf, 0x352cd0 + 8 * style as u32).unwrap());
+            eprintln!("style {style}: choose {cv:#x} re-target {tv:#x}");
+            assert!(ch(c).contains(&cv) && rt(t) == tv, "style {style}");
+        }
+        for class in 14..=18u8 {
+            let (c, t) = dispatch(class, 0).expect("class");
+            let (cv, tv) = (rw(&elf, 0x352ce8 + 8 * class as u32).unwrap(), rw(&elf, 0x352c90 + 8 * class as u32).unwrap());
+            eprintln!("class {class}: choose {cv:#x} re-target {tv:#x}");
+            assert!(ch(c).contains(&cv) && rt(t) == tv, "class {class}");
+        }
+        assert_eq!(rw(&elf, 0x352d48), Some(0x10d700), "a limit chooses nothing");
+        let p = ClassAi::from_exe(&elf, 0).expect("class 0").params;
+        eprintln!("class 0 target params: range {} retarget {} player {} near {} half {} start {}", p.range, p.retarget, p.player_range, p.player_near, p.retarget_half, p.farthest_start);
+        assert!(p.farthest_start < 0.0);
+    }
+
+    const MEMBER: u32 = 0x0182_0000;
+    const PLAYER: u32 = 0x0182_8000;
+    const AI: u32 = 0x0183_0000;
+    const BLOCK: u32 = 0x0184_0000;
+    const CUR: u32 = 0x0185_0000;
+    const POINT: u32 = 0x0186_0000;
+
+    /// The four re-target tests FUN_0010cbe0, FUN_0010cc80, FUN_0010ccf8, FUN_0010ce40 in kh2-ee against
+    /// `needs_retarget` over a sweep. Their callees that only hand over inputs are replaced by stubs:
+    /// FUN_0016b960 (the position getter) answers `obj + 0x540`, FUN_0018efa0 (the target point) copies
+    /// the vector at `POINT`, FUN_0018ee20 answers 0 (so FUN_0018ed58 is "record +8 non-zero").
+    #[test]
+    fn party_retarget_tests_match_the_executable() {
+        use bevy::math::Vec3;
+        let Some(elf) = exe() else { return };
+        let mut ee = kh2_ee::Ee::new();
+        ee.load_elf(&elf).expect("elf");
+        let code = |ee: &mut kh2_ee::Ee, at: u32, words: &[u32]| words.iter().enumerate().for_each(|(i, &w)| ee.w32(at + 4 * i as u32, w));
+        code(&mut ee, 0x16b960, &[0x03e0_0008, 0x2482_0540]);
+        code(&mut ee, 0x18ee20, &[0x03e0_0008, 0x0000_1021]);
+        let hi = 0x3c08_0000 | (POINT >> 16);
+        code(&mut ee, 0x18efa0, &[hi, 0x8d09_0000, 0xac89_0000, 0x8d09_0004, 0xac89_0004, 0x8d09_0008, 0xac89_0008, 0x8d09_000c, 0xac89_000c, 0x03e0_0008, 0x0080_1021]);
+        let mut p = tparams();
+        let mut n = 0;
+        let wv = |ee: &mut kh2_ee::Ee, at: u32, v: Vec3| {
+            ee.wf32(at, v.x);
+            ee.wf32(at + 4, v.y);
+            ee.wf32(at + 8, v.z);
+            ee.wf32(at + 12, 1.0);
+        };
+        ee.w32(MEMBER + 0xb60, AI);
+        ee.w32(AI + 8, BLOCK);
+        ee.w32(0x34e908, PLAYER);
+        for (near, player_range) in [(300.0f32, 500.0f32), (900.0, 1500.0)] {
+            p.player_near = near;
+            p.player_range = player_range;
+            ee.wf32(BLOCK + 0x6c, p.retarget);
+            ee.wf32(BLOCK + 0x84, p.player_range);
+            ee.wf32(BLOCK + 0x88, p.player_near);
+            p.retarget_half = rf(&elf, RETARGET_HALF).unwrap();
+            for member in [Vec3::ZERO, Vec3::new(100.0, -50.0, 30.0)] {
+                for dist in [0.0f32, 100.0, 299.0, 301.0, 399.0, 401.0, 700.0, 1199.0, 1201.0, 3000.0] {
+                    for player in [Vec3::ZERO, Vec3::new(800.0, 0.0, 0.0)] {
+                        for (attacker, target, ptarget) in [(0usize, 7usize, 0usize), (7, 7, 7), (8, 7, 8), (0, 7, 7)] {
+                            for cur in [None, Some(0u32), Some(1)] {
+                                let point = member + Vec3::new(dist * 0.6, 0.0, dist * 0.8);
+                                wv(&mut ee, MEMBER + 0x540, member);
+                                wv(&mut ee, PLAYER + 0x540, player);
+                                wv(&mut ee, POINT, point);
+                                ee.w32(MEMBER + 0x9f4, target as u32);
+                                ee.w32(MEMBER + 0xcec, attacker as u32);
+                                ee.w32(0x34e9b0, ptarget as u32);
+                                ee.w32(0x34e9b8, 1);
+                                match cur {
+                                    None => ee.w32(MEMBER + 0xc60, 0),
+                                    Some(f) => {
+                                        ee.w32(MEMBER + 0xc60, CUR);
+                                        ee.w32(CUR, f);
+                                    }
+                                }
+                                let s = TargetScene { member, player, attacker: (attacker != 0).then_some(attacker), player_target: (ptarget != 0).then_some((ptarget, 0)), cands: &[], ..TargetScene::default() };
+                                let tgt = Some(((target, 0), point));
+                                for (addr, t) in [(0x10cbe0, Retest::Attacker), (0x10cc80, Retest::PlayerTarget), (0x10ccf8, Retest::NearPlayer), (0x10ce40, Retest::FarFromPlayer)] {
+                                    let game = ee.call(addr, &[MEMBER as u64], &[], STACK).expect("re-target test") & 0xff;
+                                    assert_eq!(game != 0, needs_retarget(t, false, tgt, cur == Some(0), &p, &s), "{addr:#x} member {member} dist {dist} player {player} a/t/p {attacker}/{target}/{ptarget} cur {cur:?} near {near}");
+                                    n += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("re-target tests: {n} cases equal");
     }
 }

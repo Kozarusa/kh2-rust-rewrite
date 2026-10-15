@@ -1084,7 +1084,7 @@ impl CoreEnv<'_> {
             // ---- the target search on a block in the script's memory (`crate::search`) ----
             // 6.3 (0x2ee718 -> FUN_002f01a0) and 6.5 (0x2ee750 -> FUN_002f04a8) need the executable's
             // numbers; 6.4 (0x2ee738 -> FUN_002f0748) and 10.55 (0x2f7540 -> FUN_002f0758) only memory.
-            (6, 4) | (10, 55) if a.len() >= 1 + (i == 55) as usize => return self.search_block(mem, g, i, a),
+            (6, 4) | (10, 55) if a.len() > (i == 55) as usize => return self.search_block(mem, g, i, a),
             (6, 3 | 5) if a.len() >= if i == 3 { 2 } else { 7 } && self.search_consts().is_some() => return self.search_block(mem, g, i, a),
 
             // ---- group 6 ----

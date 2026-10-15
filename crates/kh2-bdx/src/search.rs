@@ -155,6 +155,7 @@ pub fn wrap(x: f32, k: &SearchConsts) -> f32 {
 /// z, FUN_003003e8; the difference wrapped by FUN_0017bbc0), and answers the nearest (or, without
 /// `nearest`, the farthest; the first of equals). With `history` the answer goes into the history.
 /// `None`: the record is left cleared (FUN_0018ed40).
+#[allow(clippy::too_many_arguments)]
 pub fn search(block: &mut Block, parts: &[TargetPart], point: Vec4, dir: Vec4, nearest: bool, flat: bool, history: bool, k: &SearchConsts) -> Option<(u32, u8)> {
     block.walked = 0;
     let mut best: Option<(u32, u8)> = None;

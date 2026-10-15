@@ -82,6 +82,14 @@ pub fn slot_x(slot: usize, count: usize) -> f32 {
 /// Where the model's origin lands, in menu units, its depth in the slot camera, and the camera's pitch (radians, the
 /// view looks down by it).
 pub fn origin_on_screen(slot: usize, count: usize, world10: bool) -> (Vec2, f32, f32) {
+    let (drop, z, pitch) = projection();
+    let cy = SLOT_Y[usize::from(world10)];
+    (Vec2::new(256.0 + slot_x(slot, count), 208.0 + cy + drop), z, pitch)
+}
+
+/// The slot camera's numbers for a model at `MODEL_AT`: how far below the projection centre its origin lands (menu
+/// units), its depth, and the camera's pitch.
+fn projection() -> (f32, f32, f32) {
     let d = LOOK_AT - EYE;
     let pitch = d.y.atan2(d.z);
     let rel = MODEL_AT - EYE;
@@ -90,8 +98,13 @@ pub fn origin_on_screen(slot: usize, count: usize, world10: bool) -> (Vec2, f32,
     let z = rel.y * s + rel.z * c;
     let y = rel.y * c - rel.z * s;
     let (_, fy) = focal();
-    let cy = SLOT_Y[usize::from(world10)];
-    (Vec2::new(256.0 + slot_x(slot, count), 208.0 + cy + fy * y / z), z, pitch)
+    (fy * y / z, z, pitch)
+}
+
+/// How far below the projection centre a model's origin lands (9.8 menu units). The Party page puts the centre on the
+/// name plate's anchor (`FUN_0026d8a8` attaches each model to its plate), so the origin stands this far below it.
+pub fn model_drop() -> f32 {
+    projection().0
 }
 
 /// The motion entry `FUN_001a7a48(set, 0x8b, 2)` picks.
@@ -120,10 +133,13 @@ struct PreviewModel {
 }
 
 #[derive(Resource, Default)]
-struct Preview {
+pub(super) struct Preview {
     target: Handle<Image>,
     camera: Option<Entity>,
     roots: Vec<Entity>,
+    /// What the models standing now were built for: whether for the Party page's places, and the members in order.
+    /// A change (the page, or a switch of two members) builds them again.
+    key: Option<(bool, Vec<u16>)>,
 }
 
 /// The world whose slot y is 0x3d instead of 0x60 (`FUN_00250a00` asks `FUN_0027c218`: byte `+0xc` of the save block
@@ -142,7 +158,8 @@ pub fn alpha_of(quads: &[kh2_image::seqd::Quad]) -> f32 {
 /// Fades the picture with the panel outline: the models' draw takes the outline's alpha (docs/menus.md 16.8).
 /// The port draws the models into a picture, so the picture carries the alpha (`Node::label_fade`).
 fn fade(menu: Res<Menu>, mut scene: ResMut<MenuScene>, mut last: Local<f32>) {
-    if !menu.loaded || scene.nodes.get(menu.nodes.preview).is_none() {
+    // The Party page draws the models in a node of its own and fades them itself (menu_party.rs).
+    if !menu.loaded || menu.page != 0 || scene.nodes.get(menu.nodes.preview).is_none() {
         return;
     }
     let a = alpha_of(&scene.node_quads(menu.nodes.panel));
@@ -189,7 +206,7 @@ fn party_rigs(sora: &Query<&crate::sora::Sora>, members: &Query<&crate::party::P
 }
 
 #[allow(clippy::too_many_arguments)]
-fn show(
+pub(super) fn show(
     mut commands: Commands,
     menu: Res<Menu>,
     mut preview: ResMut<Preview>,
@@ -198,6 +215,7 @@ fn show(
     members: Query<&crate::party::PartyMember>,
     anims: Query<&Animator>,
     area: Res<crate::assets::CurrentArea>,
+    stage: Res<super::party_page::Stage>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
@@ -206,8 +224,24 @@ fn show(
     if !menu.loaded || scene.nodes.get(menu.nodes.preview).is_none_or(|n| n.pic.is_none()) {
         return;
     }
-    // The preview lives through the close too: its alpha follows the panel outline's leave group (`fade`).
-    let want = matches!(menu.phase, Phase::Opening | Phase::Open | Phase::Closing) && menu.page == 0 && std::env::var_os("KH2_NO_MENU_PREVIEW").is_none();
+    // The preview lives through the close too: its alpha follows the panel outline's leave group (`fade`). The Party
+    // pages (0x14, 0x16) show it as well, on the places of their name plates (`Stage`, menu_party.rs).
+    let party_page = super::party_page::PAGES.contains(&menu.page) && !stage.origins.is_empty();
+    let want = matches!(menu.phase, Phase::Opening | Phase::Open | Phase::Closing)
+        && (menu.page == 0 || party_page)
+        && std::env::var_os("KH2_NO_MENU_PREVIEW").is_none();
+    let mut order: Vec<&crate::party::PartyMember> = members.iter().collect();
+    order.sort_by_key(|m| m.slot);
+    let key = (party_page, order.iter().map(|m| m.neo).collect::<Vec<_>>());
+    if want && preview.camera.is_some() && preview.key.as_ref() != Some(&key) {
+        // The page changed or two members traded places: the models stand again in the new order.
+        if let Some(c) = preview.camera.take() {
+            commands.entity(c).despawn();
+        }
+        for e in preview.roots.drain(..) {
+            commands.entity(e).despawn();
+        }
+    }
     if !want {
         if let Some(c) = preview.camera.take() {
             // The camera exists only while the preview shows (other systems expect a single 3D camera).
@@ -216,6 +250,7 @@ fn show(
                 commands.entity(e).despawn();
             }
             scene.nodes[menu.nodes.preview].visible = false;
+            preview.key = None;
             info!("menu: party preview removed");
         }
         return;
@@ -223,6 +258,7 @@ fn show(
     if preview.camera.is_some() {
         return;
     }
+    preview.key = Some(key);
     let (fx, fy) = focal();
     let fov = 2.0 * (224.0 / fy).atan();
     let camera = commands
@@ -237,13 +273,20 @@ fn show(
         ))
         .id();
     preview.camera = Some(camera);
-    scene.nodes[menu.nodes.preview].visible = true;
+    // On the Party pages the page's own node shows the picture (menu_party.rs: it stands between the columns and the plates).
+    scene.nodes[menu.nodes.preview].visible = !party_page;
     let rigs = party_rigs(&sora, &members, &anims);
     let n = rigs.len();
     let world10 = in_world_10(&area.name);
     let yaw = std::env::var("KH2_PREVIEW_YAW").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0).to_radians();
     for (slot, rig) in rigs.into_iter().enumerate() {
-        let (at, z, pitch) = origin_on_screen(slot, n, world10);
+        let (mut at, z, pitch) = origin_on_screen(slot, n, world10);
+        if party_page {
+            // The Party page: the model's origin is where the page says (the plate's anchor and the projection's drop).
+            if let Some(o) = stage.origins.get(slot) {
+                at = *o;
+            }
+        }
         // KH2 units to Bevy (0.01); the picture is the canvas, its middle the canvas middle (256, 208).
         let depth = z * crate::SCALE;
         let local = Vec3::new((at.x - 256.0) * depth / fy, -(at.y - 208.0) * depth / fy, -depth);

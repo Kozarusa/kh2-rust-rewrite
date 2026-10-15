@@ -57,12 +57,15 @@ pub mod preview;
 // The Save menu (kinds 7 and 8, docs/menus.md 18).
 #[path = "menu_save.rs"]
 pub mod save;
+// The Party page (pages 0x14 and 0x16, docs/menus.md 19, WP-MN7).
+#[path = "menu_party.rs"]
+pub mod party_page;
 
 pub struct MenuPlugin;
 
 impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((MenuGfxPlugin, crate::menu_status::StatusPlugin, config::ConfigPlugin, item_pages::ItemPagesPlugin, customize::CustomizePlugin, equipment::EquipmentPlugin, new_tags::NewTagsPlugin, pictures::PicturesPlugin, help::HelpPlugin, pause_band::PausePlugin, preview::PreviewPlugin, save::SavePlugin))
+        app.add_plugins((MenuGfxPlugin, crate::menu_status::StatusPlugin, config::ConfigPlugin, item_pages::ItemPagesPlugin, customize::CustomizePlugin, equipment::EquipmentPlugin, new_tags::NewTagsPlugin, pictures::PicturesPlugin, help::HelpPlugin, pause_band::PausePlugin, preview::PreviewPlugin, save::SavePlugin, party_page::PartyPlugin))
             .init_resource::<Menu>()
             .add_systems(Startup, load)
             // The game's own readers run in `Update`; the menu takes its keys first, in `PreUpdate`
@@ -572,7 +575,7 @@ pub(crate) fn input(
             } else if confirm {
                 // M1 has no sub-page: the row refuses (sound kind 4).
                 let target = menu.rows.get(menu.cursor).and_then(|&e| menu_pages::page_of(e));
-                if let Some(p) = target.filter(|p| crate::menu_status::PAGES.contains(p)) {
+                if let Some(p) = target.filter(|p| crate::menu_status::PAGES.contains(p) || party_page::PAGES.contains(p)) {
                     menu.page = p;
                     menu_sound::play(&mut se, crate::menu_status::CONFIRM);
                     info!("menu: page {p:#x}");

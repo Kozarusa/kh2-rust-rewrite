@@ -272,6 +272,7 @@ fn npc_spawn(
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
     mut sora: Query<(&mut Transform, &mut Sora)>,
     mut talk: ResMut<Talk>,
+    mut cam: ResMut<crate::camera::CamEvent>,
 ) {
     let Some(run) = rec.run.as_ref() else { return };
     if spawned.area.as_deref() == Some(run.name.as_str()) {
@@ -283,7 +284,9 @@ fn npc_spawn(
     // FUN_00168ba8 -> FUN_001b6408: the world's talk table is loaded with the area.
     talk.load(&disc, run.name.get(..2).unwrap_or("tt"));
     talk.offer = None;
-    talk.run = None;
+    if let Some(end) = talk.drop_run() {
+        cam.talk = Some(end);
+    }
     if std::env::var("KH2_NO_NPC").is_ok_and(|v| v != "0") {
         return;
     }
@@ -710,6 +713,12 @@ struct TalkRun {
 }
 
 impl Talk {
+    /// Drops the running talk (an area load ends it without the talk task's own ending). A run that
+    /// started the talk camera hands back the request that ends it, so the rig does not stay in mode 4.
+    fn drop_run(&mut self) -> Option<crate::camera::TalkCam> {
+        self.run.take().filter(|r| r.camera).map(|_| crate::camera::TalkCam::End)
+    }
+
     /// `FUN_001b6408`: `libretto-<world>.bar`'s talk table (once per world).
     fn load(&mut self, disc: &Disc, world: &str) {
         if self.world.as_deref() == Some(world) {
@@ -2245,6 +2254,20 @@ impl Host for NpcHost<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// FIX-R1 5: an area load that drops a running talk with the camera started asks the rig to end it;
+    /// a run without the camera, or no run, asks for nothing.
+    #[test]
+    fn dropping_a_talk_with_the_camera_ends_the_camera() {
+        let run = |camera| TalkRun { npc: Entity::PLACEHOLDER, tag: String::new(), ops: Vec::new(), at: 0, window: false, yaw: 0.0, camera };
+        let mut t = Talk { run: Some(run(true)), ..Default::default() };
+        assert_eq!(t.drop_run(), Some(crate::camera::TalkCam::End));
+        assert!(t.run.is_none());
+        let mut t = Talk { run: Some(run(false)), ..Default::default() };
+        assert_eq!(t.drop_run(), None);
+        assert!(t.run.is_none());
+        assert_eq!(Talk::default().drop_run(), None);
+    }
 
     fn path(points: &[[f32; 3]], loops: bool) -> kh2_ard::WalkPath {
         let mut header = [0u8; 8];

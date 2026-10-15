@@ -777,8 +777,10 @@ impl Rig {
     }
 
     /// `FUN_00159768` -> the task `FUN_00159728`: the warp flag is set (`FUN_00140e28`) and the
-    /// mode goes back to 0, or 2 when a lock-on is held (`FUN_00140ce8`; the rig takes the
-    /// lock-on from its input). The next tick snaps to the follow camera's wanted view.
+    /// mode goes back to 0, or 2 when a lock-on is held (`FUN_00140ce8`). The rig has no mode 2
+    /// state (it takes the lock-on from `TickIn::lock` every tick), so the mode is set to
+    /// `Follow` here and the next tick picks the lock-on view when the input holds one. The
+    /// next tick snaps to the follow camera's wanted view.
     pub fn end_talk(&mut self) {
         if self.mode == Mode::Talk {
             self.mode = Mode::Follow;

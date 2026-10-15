@@ -17,6 +17,12 @@
 //!
 //! The menu keeps its own nodes in the shared `MenuScene` and does not touch the camp's page state: while it is open
 //! `Menu.phase` stays `Closed`, `SaveMenu::is_open` holds the field frozen and the pad.
+//!
+//! Save points (WP-E7, docs/menus.md 18.5): the accept of command 55 (`FUN_001784b8`) opens menu kind 1 (scene 3, init
+//! `FUN_00255598`, task 0x2556f0, page machine `FUN_00255a10`), the points' own copy of the file screens with the same
+//! memory card driver and `save.2ld` groups. Its top page (`FUN_00255c10`) lists the row messages at 0x380d02 + 0x24 *
+//! row ("Save", and a second row only while the kind's mode word 0x36cd28 is not 2: the world point's); after a write
+//! the list shows again (`FUN_00257880` state 0x2b: page 0xb) instead of closing. `SaveMenu::request_point` opens it.
 
 use bevy::prelude::*;
 use kh2_image::layd::{self, Layd};
@@ -61,8 +67,10 @@ mod g {
     pub const MUNNY_DIGIT: usize = 27;
     pub const TIME_DIGIT: usize = 37;
     pub const COLON: usize = 47;
-    /// The pointer list row, selected (red, outline and glint; the idle groups 78, 79, 80 are not used: one row).
+    /// The pointer list row, selected (red, outline and glint). Idle rows (enter 78, hold 79, leave 80) appear only on menu
+    /// kind 1's two-row page (its row records at 0x380cf0 name 78/80/79 idle and 78/80/77 selected).
     pub const ROW_SELECTED: usize = 77;
+    pub const ROW_IDLE: usize = 79;
     /// The hand.
     pub const HAND: usize = 12;
     /// The "Save" tab under the header while the files show: the red plate (loops).
@@ -88,6 +96,7 @@ mod pos {
     /// The pointer list row (group 77 / 78 at its own origin) and its pitch (`unk20` of the group).
     pub const ROW: [f32; 2] = [0.0, 0.0];
     pub const ROW_LABEL: [f32; 2] = [70.0, 80.0];
+    pub const ROW_PITCH: f32 = 26.0;
     pub const HAND: [f32; 2] = [62.0, 80.0];
     /// The tab under the header and its text.
     pub const TAB: [f32; 2] = [35.0, 41.0];
@@ -184,6 +193,9 @@ pub enum Action {
     Declined,
     /// Close the whole menu.
     Close,
+    /// Menu kind 1's second row (the world point's; `FUN_00257e70`: a Yes/No question, then `FUN_002580b8` and page 0x14,
+    /// which leaves the area): not ported.
+    SecondRow,
 }
 
 /// The state machine apart from the scene (tested without a disc).
@@ -195,13 +207,25 @@ pub struct Flow {
     pub ask: usize,
     /// The slot the question or the write is about.
     pub slot: usize,
+    /// Rows of the top page (0 counts as 1: the field menu's one "Save" row) and its cursor.
+    pub rows: usize,
+    pub row: usize,
+    /// Menu kind 1: after a write the file list shows again (`FUN_00257880` state 0x2b sets page 0xb).
+    pub relist: bool,
 }
 
 impl Flow {
     /// A press in the current stage. `occupied[i]`: slot `i` holds a file.
     pub fn press(&mut self, p: Press, occupied: &[bool; SLOTS]) -> Action {
+        let rows = self.rows.max(1);
         match (self.stage, p) {
-            (Stage::Top, Press::Confirm) => Action::OpenFiles,
+            // The top list moves only with more than one row; it wraps [inferred: the list widget `FUN_002967b8(list, 4, 1)`].
+            (Stage::Top, Press::Up | Press::Down) if rows > 1 => {
+                self.row = if p == Press::Up { (self.row + rows - 1) % rows } else { (self.row + 1) % rows };
+                Action::Cursor
+            }
+            (Stage::Top, Press::Confirm) if self.row == 0 => Action::OpenFiles,
+            (Stage::Top, Press::Confirm) => Action::SecondRow,
             (Stage::Top, Press::Cancel) => Action::Close,
             (Stage::Files, Press::Up) => {
                 self.file = (self.file + SLOTS - 1) % SLOTS;
@@ -261,6 +285,9 @@ struct Nodes {
     help: usize,
     row: usize,
     row_text: usize,
+    /// Menu kind 1's second row.
+    row1: usize,
+    row1_text: usize,
     hand: usize,
     tab: usize,
     tab_text: usize,
@@ -305,6 +332,14 @@ pub struct SaveMenu {
     play: f32,
     /// Set by the input system for the `tick` of the same frame.
     area: String,
+    /// Menu kind 1's top rows as the executable lists them (`point_rows`).
+    point_rows: Vec<u32>,
+    /// The rows of the open menu (the field menu: `[msg::SAVE]`).
+    rows: Vec<u32>,
+    /// A save point's request (the kind's mode word), opened by the next `input`.
+    request: Option<i32>,
+    /// The open menu is kind 1 with this mode.
+    point: Option<i32>,
 }
 
 impl SaveMenu {
@@ -312,6 +347,33 @@ impl SaveMenu {
     pub fn is_open(&self) -> bool {
         self.flow.stage != Stage::Closed
     }
+
+    /// `FUN_0024f0b8(1, mode)` from a save point's accept (`FUN_001784b8`): mode 2 for the save point, 0 for the world
+    /// point. False when the menu cannot open (no `save.2ld`, or a menu is up).
+    pub fn request_point(&mut self, mode: i32) -> bool {
+        if !self.loaded || self.is_open() || self.request.is_some() {
+            return false;
+        }
+        self.request = Some(mode);
+        true
+    }
+}
+
+/// `FUN_00255c10`: the top page of menu kind 1 has two rows; row `r`'s message is the u16 at 0x380d02 + 0x24 * r (bit 15 is
+/// ignored by the text lookup). Empty when the executable is not readable.
+pub fn point_rows(exe: &[u8]) -> Vec<u32> {
+    (0..2u32)
+        .map_while(|r| {
+            let va = 0x0038_0d02 + 0x24 * r;
+            crate::struggle::exe_word(exe, va & !3).map(|w| if va & 2 != 0 { w >> 16 } else { w & 0xffff })
+        })
+        .collect()
+}
+
+/// The rows menu kind 1 shows for its mode: the second only while the mode is not 2 (`FUN_00255c10` stops at row 1 when
+/// `FUN_0024f498()`, the mode word, is 2).
+pub fn rows_for_mode(rows: &[u32], mode: i32) -> Vec<u32> {
+    rows.iter().take(if mode == 2 { 1 } else { 2 }).copied().collect()
 }
 
 pub struct SavePlugin;
@@ -344,6 +406,10 @@ fn load(disc: Res<Disc>, mut images: ResMut<Assets<Image>>, mut scene: ResMut<Me
     save.layd = Layd { layers, layouts, seqs: Vec::new() };
     save.dir = progress::save_dir();
     save.nodes = build_nodes(&mut scene, save.tex_base, save.seq_base);
+    save.point_rows = disc.read_root("SLUS_210.05").map(|e| point_rows(&e)).unwrap_or_default();
+    if save.point_rows.is_empty() {
+        warn!("menu: menu kind 1's rows are not readable from SLUS_210.05; a save point opens the field menu's one row");
+    }
     save.loaded = true;
 }
 
@@ -372,6 +438,8 @@ fn build_nodes(scene: &mut MenuScene, tex: usize, seq: usize) -> Nodes {
     n.help = text(scene);
     n.row = main(scene);
     n.row_text = text(scene);
+    n.row1 = main(scene);
+    n.row1_text = text(scene);
     n.hand = main(scene);
     n.tab = main(scene);
     n.tab_text = text(scene);
@@ -403,7 +471,7 @@ fn build_nodes(scene: &mut MenuScene, tex: usize, seq: usize) -> Nodes {
 fn all_nodes(n: &Nodes) -> Vec<usize> {
     let mut v: Vec<usize> = n.layers.clone();
     v.extend(n.munny_digits.iter().chain(&n.time_digits));
-    v.extend([n.munny, n.time, n.area, n.help, n.row, n.row_text, n.hand, n.tab, n.tab_text, n.boxn, n.box_text, n.pill_hand, n.panel, n.bar, n.file_hand]);
+    v.extend([n.munny, n.time, n.area, n.help, n.row, n.row_text, n.row1, n.row1_text, n.hand, n.tab, n.tab_text, n.boxn, n.box_text, n.pill_hand, n.panel, n.bar, n.file_hand]);
     v.extend(n.pills.iter().chain(&n.pill_text).chain(&n.arrows));
     for f in &n.files {
         v.extend([f.plate, f.number, f.logo, f.lv, f.munny, f.time, f.area]);
@@ -453,6 +521,20 @@ fn input(
         return;
     }
     save.play = real.elapsed_secs();
+    if save.flow.stage == Stage::Closed
+        && let Some(mode) = save.request.take()
+    {
+        // A save point's accept: menu kind 1. The point's gate is its own (the offer); the menu opens when no other is up.
+        if menu.phase == Phase::Closed && !pause.band {
+            let rows = if save.point_rows.is_empty() { vec![msg::SAVE] } else { rows_for_mode(&save.point_rows, mode) };
+            let area_name = area.name.clone();
+            open(&mut save, &mut scene, &mut se, &area_name, rows, Some(mode));
+        } else {
+            info!("menu: save point menu refused (menu {:?}, band {})", menu.phase, pause.band);
+        }
+        keys.reset_all();
+        return;
+    }
     if save.flow.stage == Stage::Closed {
         // F2 stands for the field Save command (the app has no save point object). The gate is the camp's: the player is in
         // control, no event or mission layout holds the field, no menu or PAUSE band is up.
@@ -463,7 +545,7 @@ fn input(
             );
             if menu.phase == Phase::Closed && !pause.band && free && !super::start_locked(mission.as_deref()) {
                 let area_name = area.name.clone();
-                open(&mut save, &mut scene, &mut se, &area_name);
+                open(&mut save, &mut scene, &mut se, &area_name, vec![msg::SAVE], None);
             } else {
                 info!("menu: save refused (menu {:?}, band {}, free {free})", menu.phase, pause.band);
             }
@@ -511,6 +593,16 @@ fn input(
     let action = save.flow.press(press, &occupied);
     match action {
         Action::None => {}
+        Action::Cursor if save.flow.stage == Stage::Top => {
+            menu_sound::play(&mut se, menu_sound::CURSOR);
+            info!("menu: save point row cursor {}", save.flow.row);
+            show_top(&mut save, &mut scene);
+        }
+        Action::SecondRow => {
+            // FUN_00257e70 asks (0x7549, messages 0x380cb0) and its Yes leaves the area (FUN_002580b8, page 0x14):
+            // not ported, the row does nothing.
+            info!("menu: save point row 1 ({:#x}): the world point's question and exit (FUN_00257e70, FUN_002580b8) are not ported", save.rows.get(1).copied().unwrap_or(0));
+        }
         Action::Cursor => {
             menu_sound::play(&mut se, menu_sound::CURSOR);
             info!("menu: save file cursor {}", save.flow.file);
@@ -552,8 +644,10 @@ fn input(
 }
 
 /// Opens the menu: the dim, the frame's enter animations, the pointer list.
-fn open(save: &mut SaveMenu, scene: &mut MenuScene, se: &mut MessageWriter<PlaySe>, area: &str) {
-    save.flow = Flow { stage: Stage::Opening, ..Flow::default() };
+fn open(save: &mut SaveMenu, scene: &mut MenuScene, se: &mut MessageWriter<PlaySe>, area: &str, rows: Vec<u32>, point: Option<i32>) {
+    save.flow = Flow { stage: Stage::Opening, rows: rows.len(), relist: point.is_some(), ..Flow::default() };
+    save.rows = rows;
+    save.point = point;
     save.frames = 0;
     save.area = area.to_string();
     scene.hidden = false;
@@ -589,7 +683,14 @@ fn open(save: &mut SaveMenu, scene: &mut MenuScene, se: &mut MessageWriter<PlayS
     save.slots = read_slots(&save.dir);
     show_top(save, scene);
     menu_sound::play(se, menu_sound::OPEN);
-    info!("menu: save open (dir {})", save.dir.display());
+    match point {
+        Some(mode) => info!(
+            "menu: save open (menu kind 1 mode {mode} from a save point, rows {:x?}, dir {})",
+            save.rows,
+            save.dir.display()
+        ),
+        None => info!("menu: save open (dir {})", save.dir.display()),
+    }
 }
 
 /// The layer groups of layout `n` (0 enter, 1 hold, 2 leave) on the four layer nodes.
@@ -637,17 +738,40 @@ fn show_top(save: &mut SaveMenu, scene: &mut MenuScene) {
     let files = all_files(n);
     hide(scene, &files);
     hide(scene, &[n.tab, n.tab_text, n.boxn, n.box_text, n.pills[0], n.pills[1], n.pill_text[0], n.pill_text[1], n.pill_hand]);
-    scene.nodes[n.row].visible = true;
-    scene.nodes[n.row].pos = pos::ROW;
-    scene.set_group(n.row, g::ROW_SELECTED);
-    let l = text_label(scene, msg::SAVE, at::ROW_FONT, at::ROW_SIZE, at::ROW_SELECTED, 0, pos::ROW_LABEL);
-    scene.nodes[n.row_text].label = l;
-    scene.nodes[n.row_text].visible = true;
+    let rows = if save.rows.is_empty() { vec![msg::SAVE] } else { save.rows.clone() };
+    let cursor = save.flow.row.min(rows.len() - 1);
+    for (k, (row, text)) in [(n.row, n.row_text), (n.row1, n.row1_text)].into_iter().enumerate() {
+        let Some(&id) = rows.get(k) else {
+            hide(scene, &[row, text]);
+            continue;
+        };
+        let selected = k == cursor;
+        let dy = pos::ROW_PITCH * k as f32;
+        scene.nodes[row].visible = true;
+        scene.nodes[row].pos = [pos::ROW[0], pos::ROW[1] + dy];
+        let want = if selected { g::ROW_SELECTED } else { g::ROW_IDLE };
+        if scene.nodes[row].player.group != Some(want) {
+            scene.set_group(row, want);
+        }
+        let color = if selected { at::ROW_SELECTED } else { at::ROW_IDLE };
+        let l = text_label(scene, id & 0x7fff, at::ROW_FONT, at::ROW_SIZE, color, 0, [pos::ROW_LABEL[0], pos::ROW_LABEL[1] + dy]);
+        scene.nodes[text].label = l;
+        scene.nodes[text].visible = true;
+    }
     scene.nodes[n.hand].visible = true;
-    scene.nodes[n.hand].pos = pos::HAND;
-    scene.set_group(n.hand, g::HAND);
-    set_help(save, scene, msg::HELP_TOP);
-    info!("menu: save page 0 (pointer list, 1 row)");
+    scene.nodes[n.hand].pos = [pos::HAND[0], pos::HAND[1] + pos::ROW_PITCH * cursor as f32];
+    if scene.nodes[n.hand].player.group != Some(g::HAND) {
+        scene.set_group(n.hand, g::HAND);
+    }
+    if save.point.is_some() {
+        // Kind 1's top page sets no help of kind 8's (0x3858); which help it shows was not read [GAP]: none is drawn.
+        let help = save.nodes.help;
+        hide(scene, &[help]);
+        info!("menu: save point page 0 (menu kind 1, {} row{}, cursor {cursor})", rows.len(), if rows.len() == 1 { "" } else { "s" });
+    } else {
+        set_help(save, scene, msg::HELP_TOP);
+        info!("menu: save page 0 (pointer list, 1 row)");
+    }
 }
 
 fn all_files(n: &Nodes) -> Vec<usize> {
@@ -673,7 +797,7 @@ fn start_checking(save: &mut SaveMenu, scene: &mut MenuScene) {
     save.frames = 0;
     save.slots = read_slots(&save.dir);
     let n = &save.nodes;
-    hide(scene, &[n.row, n.row_text, n.hand]);
+    hide(scene, &[n.row, n.row_text, n.row1, n.row1_text, n.hand]);
     scene.nodes[n.tab].visible = true;
     scene.nodes[n.tab].pos = pos::TAB;
     scene.set_group(n.tab, g::TAB);
@@ -820,7 +944,7 @@ fn close(save: &mut SaveMenu, scene: &mut MenuScene) {
     scene.set_group(n.munny, g::MUNNY[2]);
     scene.set_group(n.time, g::TIME[2]);
     let mut ids = all_files(n);
-    ids.extend([n.row, n.row_text, n.hand, n.tab, n.tab_text, n.boxn, n.box_text, n.pill_hand, n.pills[0], n.pills[1], n.pill_text[0], n.pill_text[1]]);
+    ids.extend([n.row, n.row_text, n.row1, n.row1_text, n.hand, n.tab, n.tab_text, n.boxn, n.box_text, n.pill_hand, n.pills[0], n.pills[1], n.pill_text[0], n.pill_text[1]]);
     hide(scene, &ids);
     info!("menu: save close");
 }
@@ -871,12 +995,26 @@ fn tick(
                 warn!("menu: save slot {} not written: no game state", slot + 1);
             }
             save.slots = read_slots(&save.dir);
-            close(&mut save, &mut scene);
+            if save.flow.relist {
+                // Menu kind 1: `FUN_00257880` state 0x2b plays sound kind 0xc (id 0x24, the same entry as 0xd) and sets
+                // page 0xb: the file list again.
+                save.flow.stage = Stage::Files;
+                let ids = [save.nodes.boxn, save.nodes.box_text];
+                hide(&mut scene, &ids);
+                info!("menu: save point page 0xb again after the write (FUN_00257880), slots {:?}", save.slots.iter().map(Option::is_some).collect::<Vec<_>>());
+                show_files(&save, &mut scene);
+            } else {
+                close(&mut save, &mut scene);
+            }
         }
         Stage::Closing => {
             scene.dim = dim_alpha(close_brightness(save.frames));
             if save.frames >= CLOSE_FRAMES {
                 save.flow.stage = Stage::Closed;
+                if let Some(mode) = save.point.take() {
+                    // FUN_00255a10's end: FUN_00258838, then FUN_001038a0 returns to the field scene.
+                    info!("menu: save point menu closed (menu kind 1 mode {mode}): back to the field (FUN_001038a0)");
+                }
                 scene.hidden = true;
                 scene.dim = 0.0;
                 let ids = all_nodes(&save.nodes);
@@ -944,7 +1082,25 @@ mod tests {
     use super::*;
 
     fn flow(stage: Stage) -> Flow {
-        Flow { stage, file: 0, ask: 0, slot: 0 }
+        Flow { stage, ..Flow::default() }
+    }
+
+    #[test]
+    fn the_point_menu_lists_its_second_row_only_outside_mode_2() {
+        let rows = [0x8a7e, 0x8a80];
+        assert_eq!(rows_for_mode(&rows, 2), vec![0x8a7e], "the save point (FUN_0024f0b8(1, 2))");
+        assert_eq!(rows_for_mode(&rows, 0), vec![0x8a7e, 0x8a80], "the world point (FUN_0024f0b8(1, 0))");
+        let none = [false; SLOTS];
+        let mut f = Flow { stage: Stage::Top, rows: 2, ..Flow::default() };
+        assert_eq!(f.press(Press::Down, &none), Action::Cursor);
+        assert_eq!(f.row, 1);
+        assert_eq!(f.press(Press::Confirm, &none), Action::SecondRow);
+        assert_eq!(f.press(Press::Down, &none), Action::Cursor);
+        assert_eq!(f.row, 0, "wraps");
+        assert_eq!(f.press(Press::Confirm, &none), Action::OpenFiles);
+        let mut one = Flow { stage: Stage::Top, rows: 1, ..Flow::default() };
+        assert_eq!(one.press(Press::Down, &none), Action::None, "one row does not move");
+        assert_eq!(one.press(Press::Cancel, &none), Action::Close);
     }
 
     #[test]
@@ -1023,7 +1179,7 @@ mod tests {
         let two = layd::parse_2ld(&Disc::open(&iso).read("menu/us/save.2ld").expect("save.2ld")).expect("a .2ld");
         let s0 = &two.layd.seqs[0];
         let groups = [
-            g::MUNNY[0], g::MUNNY[1], g::MUNNY[2], g::TIME[0], g::TIME[1], g::TIME[2], g::MUNNY_DIGIT + 9, g::TIME_DIGIT + 9, g::COLON, g::ROW_SELECTED,
+            g::MUNNY[0], g::MUNNY[1], g::MUNNY[2], g::TIME[0], g::TIME[1], g::TIME[2], g::MUNNY_DIGIT + 9, g::TIME_DIGIT + 9, g::COLON, g::ROW_SELECTED, g::ROW_IDLE,
             g::HAND, g::TAB, g::BOX[0], g::BOX[1], g::PILL_SELECTED, g::PILL_IDLE, g::PANEL[0], g::PANEL[1], g::FILE_SELECTED,
             g::FILE_IDLE[0], g::FILE_IDLE[1], g::BAR, g::ARROW_UP, g::ARROW_DOWN,
         ];

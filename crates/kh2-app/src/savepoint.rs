@@ -29,8 +29,9 @@
 //!   the members' method +0x88 (`FUN_00176758`), byte 0x33e86e = the point's spawn word +0x20
 //!   (`FUN_0016b940(point, 1)`), bit 0 of 0x33febc = the player is of objentry kind 0xe, then
 //!   `FUN_0024f0b8(1, 0)` for the world point and `FUN_0024f0b8(1, 2)` for the save point: menu kind 1
-//!   (scene 3, `FUN_00255598`, docs/menus.md 1.2), NOT the field save menu of kind 7 that
-//!   `menu_save.rs` ports. Kind 1 is not ported: the app logs the use and opens nothing.
+//!   (scene 3, `FUN_00255598`, task 0x2556f0, docs/menus.md 18.5): the points' own copy of the
+//!   file screens (same memory card driver, same `save.2ld` groups), not kind 7. `menu_save.rs`
+//!   serves it (`SaveMenu::request_point`): one "Save" row in mode 2, a second row in mode 0.
 //!
 //! Log lines: `save point: ...` (spawn, offer, use) always; `save point heal: ...` when a heal run
 //! starts and ends.
@@ -376,17 +377,21 @@ fn point_heal(
 
 /// The accept of command 55 (`FUN_00177b18` case 0x37 -> `FUN_001784b8`), dispatched by
 /// `reaction_cmd::accept` (an available offer, Execute 0x37, left in `Talk::accepted`): menu kind 1
-/// is not ported, so the use is logged.
-fn point_use(mut talk: ResMut<Talk>, points: Query<&SavePoint>) {
+/// with mode 0 (world point) or 2 (save point), served by `menu_save` (`SaveMenu::request_point`).
+/// The menu's open freezes the field (`schedule::Pause`, as the original's scene change stops the
+/// field scene) and its close returns to it (`FUN_001038a0`); the area is not reloaded.
+fn point_use(mut talk: ResMut<Talk>, points: Query<&SavePoint>, mut save: ResMut<crate::menu::save::SaveMenu>) {
     let Some(a) = talk.accepted.filter(|a| points.contains(a.from)) else { return };
     talk.accepted = None;
     let Ok(p) = points.get(a.from) else { return };
     let mode = if p.object == OBJECT_WORLD_POINT { 0 } else { 2 };
     let word = u32::from_le_bytes(p.record.raw[0x20..0x24].try_into().unwrap_or_default());
+    let opened = save.request_point(mode);
     info!(
-        "save point: accepted command {} (Execute {EXECUTE_SAVE:#x}): FUN_001784b8 sets 0x33e86e = {:#x} and opens menu kind 1 (scene 3) with mode {mode} (FUN_0024f0b8(1, {mode})); menu kind 1 is not ported",
+        "save point: accepted command {} (Execute {EXECUTE_SAVE:#x}): FUN_001784b8 sets 0x33e86e = {:#x} and opens menu kind 1 (scene 3) with mode {mode} (FUN_0024f0b8(1, {mode})): {}",
         a.cmd,
-        word & 0xff
+        word & 0xff,
+        if opened { "requested from menu_save" } else { "the save menu cannot open (not loaded or already open)" }
     );
 }
 
@@ -464,5 +469,33 @@ mod tests {
         let row = CmdRow::from(c);
         assert_eq!(save_status(&[], &row, &Ctx::default(), false), Status::Available);
         assert_eq!(save_status(&[], &row, &Ctx::default(), true), Status::Blocked);
+    }
+
+    /// Menu kind 1 in the executable: its record (scene 3, init `FUN_00255598`, mode word 0x36cd28,
+    /// the word `FUN_0024f498` returns) and the two rows of its top page (`FUN_00255c10`: message at
+    /// 0x380d02 + 0x24 * row; row 1 only while the mode is not 2), printed with their texts.
+    #[test]
+    fn menu_kind_one_is_the_points_save_list() {
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else { return eprintln!("skipped: no disc (set KH2_ISO)") };
+        let disc = Disc::open(&iso);
+        let exe = disc.read_root("SLUS_210.05").expect("exe");
+        let w = |va: u32| crate::struggle::exe_word(&exe, va).expect("in the executable");
+        // The mode word (record +0xc; `FUN_0024f498` reads it).
+        const MENU_KIND1_MODE: u32 = 0x0036_cd28;
+        let rec = 0x0038_0560 + 0x10;
+        assert_eq!(w(rec) & 0xffff, 1, "kind");
+        assert_eq!(w(rec) >> 16, 3, "scene");
+        assert_eq!((w(rec + 4), w(rec + 8), w(rec + 12)), (0x0025_5598, 0x0025_5608, MENU_KIND1_MODE));
+        let msgs = kh2_image::text::Messages::from_bar(&disc.read("msg/us/sys.bar").expect("sys.bar")).expect("messages");
+        let rows = crate::menu::save::point_rows(&exe);
+        for (i, id) in rows.iter().enumerate() {
+            eprintln!("kind 1 row {i}: message {id:#x} {:?}", msgs.text(id & 0x7fff));
+        }
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0] & 0x7fff, 0xa7e, "row 0 is the Save row of the field menu");
+        assert_eq!(msgs.text(rows[1] & 0x7fff).as_deref(), Some("World Map"), "row 1, the world point's");
+        for id in [0x8a7b_u32, 0x8a7c, 0x8a7d] {
+            eprintln!("row 1 question (0x380cb0): message {id:#x} {:?}", msgs.text(id & 0x7fff));
+        }
     }
 }

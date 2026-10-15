@@ -375,7 +375,7 @@ fn step(
                     continue;
                 };
                 // FUN_0022cd90: the actor's object is made at its first motion (FUN_0016e8c0, objentry id).
-                if !p.actors.contains_key(&m.index) {
+                if let std::collections::hash_map::Entry::Vacant(slot) = p.actors.entry(m.index) {
                     let objs = player.objs.get_or_insert_with(|| disc.0.lock().ok().and_then(|mut a| kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).ok()).map(|d| d.rows).unwrap_or_default());
                     let model = objs.iter().find(|r| r.object_id == actor.object as u32).map(|r| r.model_name.clone());
                     let rig = model.as_ref().and_then(|model| {
@@ -393,7 +393,7 @@ fn step(
                         Some(rig) => {
                             let root = commands.spawn((Transform::default(), Visibility::Hidden, AreaPart, EventActor)).id();
                             let body = spawn_skinned(&mut commands, root, rig, &mut meshes, &mut materials, &mut images, &mut bindposes, SCALE);
-                            p.actors.insert(m.index, Spawned { root, body, motion: None });
+                            slot.insert(Spawned { root, body, motion: None });
                             info!("event: frame {fi}: actor {} {} (object {:#x}, model {}) made (op 0x2c, FUN_0016e8c0)", m.index, actor.name, actor.object, model.unwrap_or_default());
                         }
                         None => {

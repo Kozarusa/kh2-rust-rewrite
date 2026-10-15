@@ -662,6 +662,25 @@ ends, the forced pick takes the refill when MP is the lower fraction), `stitch_c
 oracle `stitch_plane_rules_match_the_game` (FUN_00116530, FUN_00116aa0, FUN_00116658 and FUN_00116780 cases 0..7
 in kh2-ee over 300 random rounds).
 
+### Status (WP-SUM5: the next summon, Genie)
+
+**A. The measure.** The SUM4b harness (tt04, `KH2_WAVE_GROUP=b_44`, `KH2_STATE` with the summon's charm / summon level 1 /
+option word 11, `KH2_DRIVE_POINTS=5 KH2_SUMMON=<row> KH2_SUMMON_AT=7 KH2_SUMMON_PARTY=1 KH2_BDXLOG=1 KH2_SUMMONLOG=1`, 22 s;
+charms: row 1 item 383, row 2 item 159, row 4 item 160) on the base of this work package. "Reached" is what each summon
+object's script asked of the host in that run (the `first host call` lines of its tag, the `unimplemented host call` lines
+for `missing`); "listing" counts the distinct host functions of the whole script (`kh2 bdx <model>`) and those without a
+name in `names.rs`.
+
+| summon | script | reached in the run (class) | listing: distinct / unnamed | unnamed group 10 |
+|---|---|---|---|---|
+| Chicken Little (1) | P_EX350 | 1.13 Approx, 1.87 Approx, 2.10 Impl, **2.21 missing**; then `script error BadAddress(4)` at 0x1638 and 0x1268 (the thread stops) | 107 / 24 | 10.5, 10.8, 10.17, 10.18, 10.20, 10.29, 10.31, 10.33, 10.34, 10.36, 10.37, 10.51, 10.59 |
+| Genie (2) | P_AL010 | 1.13 Approx, 1.84 Impl, 1.94 Approx, 1.165 Stub, 1.272 Impl, 10.19 Approx, 10.45 Impl, **10.10 missing** (x2040, twice a frame) | 81 / 12 | 10.9, 10.10 |
+| Peter Pan (4) | P_EX330 | 0.49 Approx, 0.51 Impl, 1.13 Approx, 1.21 Approx, 1.84 Impl, 1.87 Approx, 1.94 Approx, 1.165 Stub, 1.272 Impl, 10.19 Approx, 10.45 Impl, **2.75 missing** | 133 / 34 (Tinker Bell P_EX340: 37 / 1) | 10.17, 10.18, 10.20, 10.23, 10.25, 10.26, 10.27, 10.28, 10.30, 10.31, 10.36, 10.37 |
+
+Chosen: **Genie**. It reaches one missing host (as the others), its whole script has the fewest distinct and unnamed host
+functions (81 / 12 against 107 / 24 and 133 / 34) and only two unnamed group 10 entries (10.9, 10.10), and its script
+runs without an error (Chicken Little's stops on a bad address after the missing 2.21).
+
 ## 7. Unknowns (with what was searched)
 
 - What starts the arrival event that FUN_001c6260 and the `appear` mode wait on: FUN_0014f198 only hides

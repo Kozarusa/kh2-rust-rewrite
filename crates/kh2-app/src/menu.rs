@@ -174,6 +174,10 @@ mod at {
     pub const CARD_H: f32 = 71.3;
     pub const CARD_PITCH: f32 = 104.0;
     pub const CARD_SHIFT: f32 = -4.0;
+    /// The card's text sizes: the HP and MP values, and the LV row with the width (percent) that keeps its advance.
+    pub const CARD_VALUE_SIZE: f32 = 12.4;
+    pub const CARD_LV_SIZE: f32 = 11.0;
+    pub const CARD_LV_WIDTH: u8 = 113;
 }
 
 /// The groups of the objects page 0 builds with literal ids (`FUN_00250a00`, `FUN_002506b8`): the
@@ -849,8 +853,15 @@ fn card(scene: &mut MenuScene, nodes: &[usize], x: f32, c: &CardData) {
         n.fill = Some((rect, color));
     }
     let Some(text) = scene.text.as_ref() else { return };
+    // Sizes and widths fitted to clip 10 (menu frame 0.5, 2.163 pixels per unit, the same pixel-box method on the app's
+    // shot): the HP and MP digits are 8.3..8.8 high, 7.9..8.3 wide, 10.6 apart (the app's 12.0 gave 8.1, 7.5, 9.96: 6 % small), the
+    // LV letters 8.8 high and 14.3 wide (12.5 gave 10.0 and 14.3: too tall, so a smaller size at a wider advance).
     let mk = |s: &str, size: f32, color: [u8; 4], align: u8, at: [f32; 2]| {
-        text.literal(s, Style { font: 0, size: Some(size), color, align, ..Style::default() }, at)
+        let mut l = text.literal(s, Style { font: 0, size: Some(size), color, align, ..Style::default() }, at);
+        if size == at::CARD_LV_SIZE {
+            l.tokens.insert(0, kh2_image::text::Token::Width(at::CARD_LV_WIDTH));
+        }
+        l
     };
     let yellow = [0x7a, 0x6d, 0x14, 0x80];
     let green = [0x06, 0x64, 0x06, 0x80];
@@ -862,12 +873,12 @@ fn card(scene: &mut MenuScene, nodes: &[usize], x: f32, c: &CardData) {
         c.name_msg
             .and_then(|id| text.message(id, Style { font: 0, size: Some(15.0), color: white, align: 2, ..Style::default() }, name_at))
             .unwrap_or_else(|| mk(&c.name, 15.0, white, 2, name_at)),
-        mk("LV", 12.5, yellow, 0, [x + 4.4, top + 30.0]),
-        mk(&c.level.to_string(), 12.5, yellow, 1, [right, top + 30.0]),
+        mk("LV", at::CARD_LV_SIZE, yellow, 0, [x + 4.4, top + 30.0]),
+        mk(&c.level.to_string(), at::CARD_LV_SIZE, yellow, 1, [right, top + 30.0]),
         mk("HP", 12.5, green, 0, [x + 4.4, top + 44.5]),
-        mk(&format!("{}/{}", c.hp.max(0), c.max_hp), 12.0, green, 1, [right, top + 44.5]),
+        mk(&format!("{}/{}", c.hp.max(0), c.max_hp), at::CARD_VALUE_SIZE, green, 1, [right, top + 44.5]),
         mk("MP", 12.5, cyan, 0, [x + 4.4, top + 59.5]),
-        mk(&format!("{}/{}", c.mp.max(0), c.max_mp), 12.0, cyan, 1, [right, top + 59.5]),
+        mk(&format!("{}/{}", c.mp.max(0), c.max_mp), at::CARD_VALUE_SIZE, cyan, 1, [right, top + 59.5]),
     ];
     for (k, l) in labels.into_iter().enumerate() {
         let n = &mut scene.nodes[nodes[CARD_SHAPES + k]];

@@ -669,3 +669,120 @@ fn stitch_summon_script_offers_ohana_while_the_timer_runs() {
         assert_eq!(ohana > 0, offers, "timer {timer} limit {in_limit}: Ohana offered {ohana} times");
     }
 }
+/// Chicken Little's script (P_EX350) keeps a host 2.21 buffer (key 48, 12 bytes) at its global +0x14 and
+/// stores its attack handle at the buffer's +4 (0x1620..0x1637). A 2.21 answered with 0 makes that store
+/// (and the read at 0x1264) reach address 4: the `BadAddress(4)` of WP-SUM5's run. With the buffer of
+/// FUN_001a5040 (`kh2_bdx::shared`) the script runs without an error.
+#[test]
+fn chicken_little_script_needs_the_shared_block() {
+    use kh2_bdx::host::{Host, Value};
+    use kh2_bdx::shared::SharedBlocks;
+    const GAUGES: u32 = 0x7900_0000;
+    struct ChickenHost {
+        mock: MockHost,
+        shared: Option<SharedBlocks>,
+        seen: Vec<Call>,
+    }
+    impl Host for ChickenHost {
+        fn call(&mut self, c: &Call) -> Value {
+            self.seen.push(c.clone());
+            match c {
+                Call::Func { group: 2, index: 21, args } => match self.shared.as_mut() {
+                    Some(s) => Value::Handle(s.get(args[0].int(), args[1].int())),
+                    None => Value::Int(0),
+                },
+                Call::Func { group: 1, index: 94, .. } => Value::Bool(true),
+                Call::Func { group: 1, index: 84, .. } => Value::Handle(GAUGES),
+                Call::Func { group: 10, index: 45, .. } => Value::Float(600.0),
+                Call::Func { group: 10, index: 19, .. } | Call::Func { group: 1, index: 272, .. } => Value::Bool(false),
+                Call::Func { group: 10, .. } | Call::Func { group: 1, index: 165, .. } => Value::None,
+                _ => self.mock.call(c),
+            }
+        }
+        fn read_mem(&mut self, addr: u32, out: &mut [u8]) -> bool {
+            self.shared.as_mut().is_some_and(|s| s.read(addr, out)) || self.mock.read_mem(addr, out)
+        }
+        fn write_mem(&mut self, addr: u32, data: &[u8]) -> bool {
+            self.shared.as_mut().is_some_and(|s| s.write(addr, data)) || self.mock.write_mem(addr, data)
+        }
+    }
+    let Some((mut a, elf)) = open() else { return };
+    let table = HostTable::from_exe(&elf).expect("table");
+    let data = object_script(&mut a, "obj/P_EX350.mdlx");
+    for with in [false, true] {
+        let mut rt = Runtime::new(Program::parse(&data).expect("P_EX350 parses"));
+        rt.set_host_table(table.clone());
+        let mut h = ChickenHost { mock: MockHost::new(), shared: with.then(SharedBlocks::default), seen: Vec::new() };
+        rt.spawn(&mut h, SELF_OBJ);
+        rt.set_mode_named(&mut h, "appear_skip");
+        for _ in 0..120 {
+            h.mock.tick();
+            rt.update(&mut h);
+        }
+        let asked: Vec<_> = h.seen.iter().filter_map(|c| match c { Call::Func { group: 2, index: 21, args } => Some((args[0].int(), args[1].int())), _ => None }).collect();
+        eprintln!("shared block {with}: 2.21 asked {asked:?}, errors {:?}", rt.core.errors);
+        assert!(asked.contains(&(48, 12)), "the attack routine asks for key 48, 12 bytes");
+        let bad4 = rt.core.errors.iter().any(|e| format!("{e:?}").contains("BadAddress(4)"));
+        if with {
+            assert!(rt.core.errors.is_empty(), "{:?}", rt.core.errors);
+            assert_eq!(h.shared.as_ref().unwrap().len(), 1);
+        } else {
+            assert!(bad4, "without the buffer the store reaches address 4: {:?}", rt.core.errors);
+        }
+    }
+}
+
+/// Peter Pan's script (P_EX330) asks host 2.75 (FUN_001c69b0, Tinker Bell's revive ready); with the
+/// signature row the call decodes and the script runs in `appear_skip` either way without an error.
+#[test]
+fn peter_pan_script_asks_whether_tinker_bell_is_ready() {
+    use kh2_bdx::host::{Host, Value};
+    const GAUGES: u32 = 0x7900_0000;
+    struct PeterHost {
+        mock: MockHost,
+        ready: bool,
+        seen: Vec<Call>,
+    }
+    impl Host for PeterHost {
+        fn call(&mut self, c: &Call) -> Value {
+            self.seen.push(c.clone());
+            match c {
+                Call::Func { group: 2, index: 75, .. } => Value::Bool(self.ready),
+                // 0.49 effect_alive: the effect the thread watches lives (the loop at 0x14c8 asks 2.75 then).
+                Call::Func { group: 0, index: 49, .. } => Value::Bool(true),
+                Call::Func { group: 1, index: 94, .. } => Value::Bool(true),
+                Call::Func { group: 1, index: 84, .. } => Value::Handle(GAUGES),
+                Call::Func { group: 10, index: 45, .. } => Value::Float(600.0),
+                Call::Func { group: 10, index: 19, .. } | Call::Func { group: 1, index: 272, .. } => Value::Bool(false),
+                Call::Func { group: 10, .. } | Call::Func { group: 1, index: 165, .. } => Value::None,
+                _ => self.mock.call(c),
+            }
+        }
+        fn read_mem(&mut self, addr: u32, out: &mut [u8]) -> bool {
+            self.mock.read_mem(addr, out)
+        }
+        fn write_mem(&mut self, addr: u32, data: &[u8]) -> bool {
+            self.mock.write_mem(addr, data)
+        }
+    }
+    let Some((mut a, elf)) = open() else { return };
+    let table = HostTable::from_exe(&elf).expect("table");
+    let data = object_script(&mut a, "obj/P_EX330.mdlx");
+    for ready in [true, false] {
+        let mut rt = Runtime::new(Program::parse(&data).expect("P_EX330 parses"));
+        rt.set_host_table(table.clone());
+        let mut h = PeterHost { mock: MockHost::new(), ready, seen: Vec::new() };
+        rt.spawn(&mut h, SELF_OBJ);
+        rt.set_mode_named(&mut h, "appear_skip");
+        for _ in 0..120 {
+            h.mock.tick();
+            rt.update(&mut h);
+        }
+        let asked = h.seen.iter().filter(|c| matches!(c, Call::Func { group: 2, index: 75, .. })).count();
+        let unknown2: Vec<_> = h.seen.iter().filter(|c| matches!(c, Call::Unknown { group: 2, .. })).collect();
+        eprintln!("ready {ready}: 2.75 asked {asked} times, {} calls, errors {:?}", h.seen.len(), rt.core.errors);
+        assert!(unknown2.is_empty(), "group 2 calls without a signature: {unknown2:?}");
+        assert!(asked > 0, "the script asks 2.75");
+        assert!(rt.core.errors.is_empty(), "{:?}", rt.core.errors);
+    }
+}

@@ -3,7 +3,7 @@
 An experimental, from-scratch Rust rewrite of **Kingdom Hearts II** (PS2, USA, `SLUS_210.05`).
 It reads all game data at runtime from **your own disc image**. No game assets, extracted files or decompiled code are in this repository, and none ever will be.
 
-Status: a playable combat slice in Twilight Town (`tt00`, `tt02`, `tt04`). Everything is decoded from your disc at startup: maps, sky, textures, models, animations, hitboxes, stats, enemy scripts, effects and audio.
+Status: a playable combat slice in Twilight Town (`tt00`, `tt02`, `tt04`) with the camp menu, shops and the first events. Everything is decoded from your disc at startup: maps, sky, textures, models, animations, hitboxes, stats, enemy scripts, effects and audio.
 
 Sora:
 - **Movement:** runs, walks, turns and jumps with his real speeds and jump height from the game's `pref` tables.
@@ -23,6 +23,10 @@ Sora (continued):
 - **Camera:** the game's field camera model, look-around (the model fades), area camera types and collision.
 - **Magic (phase 1):** a Magic page in the command menu (T/G move, B back, J casts) with Fire, Blizzard, Thunder and Cure at level 1, their MP cost, charge and damage rows.
 - **HUD:** gauges, the command menu with its reaction capsule, text with commands, the area-name card, banners and message windows.
+- **Party:** Donald and Goofy follow, fight with the friend AI's target styles, and their Battle Style and use settings are set on the Customize page.
+- **Summons:** the gauge, the Summon and Dismiss commands, and the Stitch, Genie, Chicken Little and Peter Pan scripts.
+- **Menus:** the camp menu with Status, Abilities, Items, Equipment, Customize, Config, Party, Help, Save, Jiminy's Journal (world grid and story page) and the moogle's shop with synthesis and collection rewards.
+- **Story and events:** story flags with their side effects, NPC talk, save points and an event player (actors, camera, subtitles, fades).
 - **Audio:** the game's sound driver, area music with the battle switch, voices and footsteps, and positional volume and pan. Mostly unlistened.
 
 Enemies:
@@ -30,11 +34,13 @@ Enemies:
 - **Behaviour:** they run the game's own AI scripts (BDX) in an interpreter that was checked against the game's code, so they chase, sink and resurface (Shadows), attack, flinch, get blown away and die as in the original.
 
 Not done yet:
-- Magic beyond level 1 (Magnet, Reflect, drive-form casts), items and summons (spec in `docs/summons.md`).
-- Other enemy types.
-- NPCs, events, menus and the world map.
+- Magic beyond level 1 (Magnet, Reflect, drive-form casts).
+- Summons: Genie's follow motions and model parts, Stitch strength, summon limits and the face panel, Tinker Bell.
+- Party: the class 16 chooser, Auto Healing, Auto Change and Auto Limit.
+- Other enemy types and some area-script group kinds.
+- Journal pages beyond the world grid and story, the World Map row of the save point menu, and the world map itself.
+- Events: the movie player, hiding the player and party, voices and several opcodes.
 - Final Mix differences (only the USA release is supported).
-- Message windows are drawn but nothing in play opens them yet.
 - Some audio gaps (the landing footstep) and some effects (munny payout).
 - COCT collision is used; some camera blockers and the Quick Run camera speed are open.
 

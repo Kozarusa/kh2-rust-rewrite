@@ -457,39 +457,103 @@ tt37; tt40 -> tt19 and area 100. The full list is in the test output.
   bit 6 after five frames of spawn kind 2 without `FUN_00190668` (not read further); `FUN_00189ff0` (the
   class's reaction to a talk: it ends the look-at, sets the previous follower to kind 4 and +0xb00 to +0xb18 +
   `DAT_0037ab84`) is for E3.
-- **Talk** [V for the offer, GAP for the window]. A type-5 reaction part with id 0x83 offers the command in the
-  halfword +0x2c of the object's spawn record (docs/limits-reactions.md: 31 "talk" for most townspeople). Command
-  31 has `Execute` 31 (`kh2 table cmd`). Executing a reaction command sends event 0xb (command, args) to the
-  target's script (`FUN_00177c20` -> `FUN_0016b420`), after counting it (`FUN_00187f88`). The tt townsperson
-  script has **no event 0xb handler**, so the message must be opened elsewhere [GAP: searched every caller of
-  the four window constructors (`mips_scan --jal 0x1ab6a8 0x1ab8e0 0x1ab7d8 0x1ab9e0 0x1aae60 0x1aae08`): host 1.32
-  (`FUN_00172360`, script message window class 0x1ab6a8, returns its handle; 1.33 closes it through the window's
-  method +0x20), the event commands 0x2d and 0x15 (section 6), `FUN_001a5608`, `FUN_001ab708`, `FUN_001abad0`
-  (window children), `FUN_002c5cf0` / `FUN_002c5db0` (called from `FUN_002c4c58`, minigame code); no talk path
-  found. Next step: trace what the reaction executor does for `Execute` 31 (its per-command switch was not
-  located; `FUN_001cf030` is not in the decompilation) and look for a type-0x16 event started by the talk].
+- **Talk** [V; closed by WP-E3]. A type-5 reaction part with id 0x83 offers the command in the
+  halfword +0x2c of the object's spawn record (docs/limits-reactions.md: 31 "talk" for most townspeople;
+  `twilight_town_talk_programs` counts 206 townspeople with 31, one with 30, others 209..213, 293,
+  555..559, 633). Command 31 has `Execute` 31 (0x1f). Earlier notes said every reaction command reaches
+  the target's script as event 0xb; **that is not so for the talk**: Sora's class handler
+  `FUN_001cf030` (decompiled for this WP: its own cases are Execute 0x48, 4, 5, 0x51, 0x49, 0x13c)
+  hands everything else to `FUN_00177b18`, which has its own cases before the generic path
+  `FUN_00177c20`: 0x1e (`FUN_00177d28` + `FUN_001a54a8`), **0x1f (`FUN_00177d28` + `FUN_001a56c0`)**,
+  0x20 (`FUN_001a6db8`), 0x37 (`FUN_001784b8`, section 4) and 0x7f (`FUN_00197b70(record +6, 0)`). So
+  the talk bumps no use counter, applies no CmdAction and sends no event 0xb (which is why
+  `rtn_default` has no handler for it).
+  - `FUN_00177d28` clears the player's vectors +0x20, +0x10 and his target record's +0x9c0.
+    `FUN_001a56c0`: `FUN_001bef48(0xc)` (HUD list record 0xc), `FUN_001b7ce8(0)` (bit 0 of
+    0x1d5d7b8: the player's control is locked; `FUN_001b7d50` tests the bit of the object's objentry
+    type, read through `FUN_00176a18` by `FUN_001794f0`), then `FUN_001a53f8(target + 0x500, player,
+    target record, task FUN_001a5728, callback FUN_001a5a60)`.
+  - **The talk table** (`kh2_ard::libretto`). `FUN_0016b870` copies the spawn record's halfword
+    +0x28 into the object's +0x500 (when not 0): the talk id. `FUN_001b6408` (called by `FUN_00168ba8`
+    at area load) loads `libretto-%s.bar` with the world prefix (`FUN_001b6398`, format at 0x35f1d4)
+    and keeps its first type-2 entry: a u32 count at +4, records of 8 bytes from +8 (`u16 id, u16 n,
+    u32 offset`), searched by binary search (`FUN_001b64b0` -> `FUN_0030ff40`, compare
+    `FUN_00332dc8` = key - id). `FUN_001a53f8` takes a reader from a pool of 8 (`FUN_001b6740`,
+    `FUN_001b6510`) and keeps it at +0x504; the program is `u16 op, u16 count, count u32` commands
+    ended by op 0 (`FUN_001d8d18`); `FUN_001b65e0` runs 2 wait (`FUN_00102460`), 3 fire event
+    (`FUN_00197b70(w, 0)`), 4 stop (the place is kept: the next talk goes on after it,
+    `FUN_001b6578` / `FUN_001a53b8`), 5..8 fades (`FUN_0014a7c8` / `FUN_0014a7f0`, time x
+    `DAT_0037bb08` 0.5); other ops go to the callback: `FUN_001a5a60` op 1 = a message window of class
+    `FUN_001aba58` (the same values as `FUN_001ab9e0`: font 3, colour 5, (256, 336), frame kind 0, the
+    speech tail `FUN_001aa628(1, 1, 0)`) with the word as message id, registered (`FUN_001aad78`),
+    waited for until its state (+0x70) is 3, then closed through its +0x20. The wait also ends when
+    `FUN_001a5b18(10)` answers 0 (`FUN_0019abb0` of the player with command row 10) [GAP: which
+    player state that is; not ported]. On the disc (`twilight_town_talk_programs`): 305 talk ids,
+    ops used 1 (333) and 3 (4, event 101 = 0x65 after a message, tt11/tt12/tt36 `b51m`); nine tt
+    entities name talk id 0x4a6 or 0x402, which have no record (they talk to nothing). tt02's four
+    townspeople (`a72_`, `b72_`, `c72_`, `b50_`) each say one message of two pages.
+  - **The task** `FUN_001a5728`: player record +0xb40 +0x2c bit 0 and 0x35d268 bit 8 are set, the
+    target's +0x108 bit 2 (its only reader found is `FUN_0019a530`); the player faces the target
+    (`FUN_0016a948` with `FUN_0018efa0` of the target record minus his position); the talk camera
+    (`FUN_00159688`: camera kind 4 with the record, `FUN_00140d08` +0x40 = 4) [not ported: camera.rs];
+    the three party members turn their heads (`FUN_001abf40` on +0x82c) [not ported]; the target faces
+    the player (`FUN_0016a828`, or for class-5 objects `FUN_00189f40`: unless array bit 4, and its
+    companion +0xb08 plays motion 0x32) and plays motion 0x32 (`FUN_0017e220`); `FUN_00192c50(target,
+    0x21)` (on the object's +0x670 list, meaning GAP). After the program, unless an event runs
+    (`FUN_00196418`): the facing comes back, `FUN_00192c68`, the class-5 end `FUN_00189ff0` (motion
+    = the follower's +0xa48 with array bit 0, else 0; with bit 0 clear the head look-at ends, the
+    previous follower +0xaa0 takes kind 4, the follower is reset and +0xb00 = +0xb18 + 60
+    (`DAT_0037ab84`); the script goes to mode "after_talk" (`FUN_001870d8` / `FUN_00186db0`, string
+    0x37ab78) when it has one), the camera comes back (`FUN_00159768`), the heads, the lock bit
+    (`FUN_001b7d18`) and the flags are cleared, `FUN_001befc0(0xc)`. Command 30 (`FUN_001a54a8`, the
+    shop people) runs the same table with callback `FUN_001a5608` (window class `FUN_001ab7d8`, wait
+    `FUN_001a5b18(0xe)`) around the script's "before_check" mode (`FUN_00189eb8`, string 0x37ab68)
+    [read, not ported].
+  - **The window** (docs/hud.md "Message windows"). The base update `FUN_001ab170`: state 1 waits
+    for the page (`FUN_001a8b48`) and starts the prompt (`FUN_001aa3a0`), state 2 reads the pad
+    (`FUN_001aa430`: logical bits 0x40c, sound 0x18 `FUN_002c14a8`, then `FUN_001aacd8`: the next page
+    when `FUN_001a8c78` -> `FUN_00190fa8` finds text after a command 0x10 (back to state 1), else the
+    window's method +0 (`FUN_001ab328` for this class: prompt group 0x42, state 3)); the owner's +0x20
+    (`FUN_001ab358` -> `FUN_001aacb0`: state 4, `FUN_00197b70(0x22, +0x80)`), state 4 the tail's
+    closing group (`FUN_001aa680`: group + 1), 5 waits for it and starts the frame's closing group, 6
+    waits, 7 gone. The tail is drawn from state 1 on at (x + w x -0.5, y - h / 2) (`FUN_001ab370` ->
+    `FUN_001aa6b8`, `DAT_0035ea68` = {-0.5, -0.15, 0.15, 0.5}).
 
 ## 4. Save points and world points
 
 - **Objects** [V]. `SAVE_POINT` (objentry 570) and `WORLD_POINT` (569) have type 7 -> `FUN_00194ab8` (0xa00 bytes,
-  vtable `0x35e300`): sets object flag +0x588 |= 0x1000, starts its own effect element 1 (`FUN_0016a570(obj, 1,
+  vtable `0x35e300`): sets object flag +0x588 |= 0x1000, +0x9fd = 1, starts its own effect element 1 (`FUN_0016a570(obj, 1,
   ..)`, handle +0x9f4, ended by `FUN_00194b68`). For object 569 (the world point) the pair (world, area) is looked
-  up in `00worldpoint.bin` (`FUN_00194ee0`, 4-byte records world, area, entrance, -; at most 0x36) and that
-  point's bit is set at `0x33f910` (`FUN_00194fa8`; `FUN_00195010` answers 0 unseen, 1 seen, 2 seen and locked).
-  In tt02 they stand in `m_20` (world point) and `m_21` (save point).
+  up in `00worldpoint.bin` (`FUN_00194f68`: 4-byte records world, area, entrance, -; at most 0x36; the file is 216
+  bytes, 0x36 records) and that point's bit is set at `0x33f910` (`FUN_00194fa8`; `FUN_00195010` answers 0 unseen,
+  1 seen, 2 seen and locked). In tt02 they stand in `m_20` (world point) and `m_21` (save point), both at the same
+  place; with the programs (0, 0, 0) the app loads `m_20` only (run below; tt02 is record 47). The object files hold no mesh and no motion
+  set: one collision record (type 5, id 55, shape 1 = a cylinder of radius 50 and half height 50, lifted 50) and
+  the effect file `obj/<name>.apdx` (elements 0, 1, 2) [V, `savepoint::tests::the_points_on_the_disc`].
+- **The offer** [V]. The part offers command 55 like any object part (`FUN_0019cb70`). The cylinder against the
+  player's ellipsoid is `FUN_00188fd0` (cylinder pairs `FUN_001890d8`; dispatch `FUN_00189208`; ported in
+  `savepoint::overlaps`, the other pairs stay `reaction_parts::overlaps`). Its status (`FUN_001ba2c0` case 0x37):
+  5 while the word 0x35fec0 has any bit (`FUN_001c6c08`: bit 1 the drive form start `FUN_001b44c8`, bit 2 a summon
+  `FUN_001b4170`, bit 3 `FUN_001c6578`), then the flags and form mask as for every command.
 - **On approach** [V]. The player's reaction manager `FUN_0019c0f0`: while the offered command (+0x26) is 55 and
-  the offer status is below 4, `FUN_00194c08(the point)` restores the four party slots' HP and MP to their maximum
-  (`FUN_001a0140`, `FUN_001a0210`; a knocked-out member is revived with `FUN_001a0240` + `FUN_001a0100`), and when
-  something was restored (or on the first frame) sets +0x9fc; the point's update `FUN_00194b98` then starts effect
-  element 2 (handle +0x9f8) once [V; I: the heal sparkle]. So healing happens while the save prompt is shown, not
-  on use.
-- **On use** [V for the delivery, GAP for the menu]: command 55 (`Execute` 55, message 34054) goes to the point as
-  event 0xb like every reaction command. The save menu opener was not found [GAP: searched `FUN_0024f0b8` callers
-  above; `00common.bdx` is run by `FUN_00194d78` (event 7, at boot) and `FUN_00194e68` (event 0xc with an
-  argument)]. The world point leads to the world map (jump type 4 / `FUN_00149df0`: world 0xf) [I].
-- **What the app needs**: spawn the two objects from the `map` program's groups with their own effect files; the
-  offer of command 55 (the part in the object's collision records, docs/limits-reactions.md); the heal rule above
-  in the reaction tick; a stub save menu.
+  the offer status is below 4, `FUN_00194c08(the point)` runs every frame over the four party slots: a member
+  whose object is not in the world (status block +0x24c = 0) gets its MP refilled (`FUN_001a0240`) and its maximum
+  HP added (`FUN_001a0100`); a member in the world that is full (HP at maximum, no MP charge `FUN_001a05d0`, MP at
+  maximum) is left; else it gains **1 HP** (`FUN_001a0140` -> method +0x78 = `FUN_001792f0` -> `FUN_00176c98` ->
+  `FUN_00186238`) and **1 MP** (`FUN_001a0210` -> `FUN_00186368` -> `FUN_001a0180`; during a charge the charge's
+  time is shortened by the factor at `DAT_00360130` +0x7c instead, `FUN_001a0540`) and +0x9fc is set; the first
+  call also sets +0x9fc (+0x9fd). The point's update `FUN_00194b98` starts effect element 2 (handle +0x9f8) when
+  +0x9fc is set and none runs, and ends a running one (`FUN_001d9f20`) when it is clear; +0x9fc is cleared every
+  frame. So the heal is gradual (60 HP a second) while the prompt is shown, not on use, and the heal effect plays
+  only while something is restored. (Earlier notes read "restored to their maximum": corrected.)
+- **On use** [V]. Command 55 (`Execute` 0x37, message 34054) does not reach the point's script: `FUN_00177b18`
+  case 0x37 = `FUN_001784b8(player, point)`: party reset kind 7 (`FUN_001abfe8`), every member's method +0x88
+  (`FUN_00176758`), byte 0x33e86e = the low byte of the point's spawn word +0x20 (`FUN_0016b940(point, 1)` reads
+  +0x820, copied by `FUN_0016b870`), bit 0 of 0x33febc = the player's objentry kind is 0xe (`FUN_001699a8`), then
+  `FUN_0024f0b8(1, 0)` for the world point (objentry 0x239) or `FUN_0024f0b8(1, 2)` for the save point: **menu kind
+  1** (scene 3, init `FUN_00255598`, which sets the three message ids 0x9fcf..0x9fd1 or a list from 0x380cd0 via
+  `FUN_00254bf0`, and starts the task 0x2556f0), not the field save menu kind 7 that `menu_save.rs` ports [GAP: the
+  kind-1 task 0x2556f0 is not in the decompilation; what its modes 0 and 2 show was not read].
 
 ## 5. Story progress
 
@@ -663,8 +727,50 @@ Each stage ends with `verify.ps1` passing and the named check.
 - **E3 Talk and message windows in play.** First close the talk GAP (section 3), then offer 31 from the 0x83
   part, deliver event 0xb, open the window class the code opens; hosts 1.32 / 1.33. Accept: `KH2_REACTIONLOG`
   shows 31 offered and executed; a screenshot of the window looked at.
+  **Status (WP-E3):** the GAP is closed (section 3, "Talk"): the talk is `FUN_00177b18` case 0x1f, not event
+  0xb (the brief's "deliver event 0xb" does not happen in the original, so the port does not send it). Ported:
+  `kh2_ard::libretto` (the talk table, oracle-free: layout read in the code, checked on the disc by
+  `twilight_town_talk_programs`); `npc.rs` offers the part's command (`npc::part_offer` = `FUN_0019cb70` for an
+  object: the 0x83 part takes the record's +0x2c, the gates, status and cone of `reaction_cmd`), accepts it with
+  R / `KH2_REACTION_PRESS`, runs the talk task (Sora's velocity cleared and turned to the townsperson, the
+  townsperson turned to Sora unless array bit 4 and playing motion 0x32, the pad locked while the talk runs, the
+  program from the kept place, op 1 windows, op 3 logged), and ends it with `FUN_00189ff0` (motion, the previous
+  follower kind 4, +0xb00 = +0xb18 + 60, mode "after_talk"). `hud_msgwin.rs` opens windows by message id
+  (`ScriptWindow`), splits pages at command 0x10, measures the box over every page, draws the speech tail
+  (group 47) of class 3, and for these windows reads the button in state 2 (J or K [inferred, as the
+  tutorial], sound 0x18), types the next page or closes through prompt group 0x42, the tail's closing group 48
+  and the frame's closing group. Run: `KH2_PROGRAMS=0,0,10 KH2_NPC_WATCH=1 KH2_NPC_WATCH_DIST=120
+  KH2_REACTIONLOG=1 KH2_NPCLOG=1 KH2_REACTION_PRESS=7 KH2_KEYS=11:J,14:J kh2-game tt02`: `reaction: offered
+  command 31 (message 33258) by N_EX500_RTN#1`, `reaction: accepted command 31 (Execute 31) ... talk id 0x58e,
+  ops [Message(17945)]; no script event 0xb`, `hud: message window class 3 (ctor 0x1ab9e0) ... 2 page(s)`,
+  `page 2 of 2`, `closed by the button`, `talk ends (FUN_00189ff0) ... mode after_talk`. Hosts 1.32 / 1.33 (the
+  script message window) are enemy_host.rs's (outside this WP) and no talk path uses them.
+  [inferred] the townsperson's own script and class pass keep running during the talk (no pause of the
+  object was found: +0x108 bit 2, set by the task, is read only by `FUN_0019a530`); in the run above the
+  kind-4 follower's timer (360..720 frames) ran out 1.8 s into the talk and `rtn_default` left
+  `encount_player` for `path_move`, so the townsperson walked on while talking [to compare with footage].
+  Not ported: the talk camera (`FUN_00159688` / `FUN_00159768`, camera.rs), the party's head turns, the
+  wait's early end (`FUN_001a5b18`), op 3 events (0x65 goes to `FUN_0023f108`), the shops' command 30,
+  HUD record 0xc. **Outside ownership**: `reaction_cmd.rs` iterates enemies only, so `npc.rs` puts the
+  townsperson's (and the save point's) candidate into `ReactionOffer` only around `hud_menu::mirror_reaction`
+  (for the HUD's capsule) and reads the accept key itself; `reaction_cmd`'s own accept then logs `reaction:
+  accept pressed, nothing offered` for the same press. The clean form is `reaction_cmd::offer` calling
+  `npc::part_offer` / the save points and `accept` dispatching Execute 0x1f / 0x37 to them.
 - **E4 Save points.** Type-7 objects, effect elements 1/2, heal while command 55 is offered, the world point bit.
   Accept: log `save point heal` when HP was below max; screenshot of the point.
+  **Status (WP-E4):** `savepoint.rs` spawns every type-7 entity of the loaded groups (no mesh: an effect
+  bound to the record's place), starts element 1, sets the world point's bit (`SavePoints::world_bits`; the save
+  block in `progress.rs` does not hold 0x33f910 yet), offers command 55 from the cylinder part with the status of
+  `FUN_001ba2c0` case 0x37 (the drive form is the only bit of 0x35fec0 the app knows), heals Sora 1 HP and 1 MP a
+  frame while the offer is available (`FUN_00194c08`; MP left alone during a charge), starts element 2 while
+  something is restored and ends it after (`FUN_00194b98`), and logs the use (`FUN_001784b8`: menu kind 1 with
+  mode 0 or 2, not ported; the save point does not open `menu_save.rs`'s kind 7, which the original's point does
+  not open either). Run: `KH2_SAVEPOINT_WATCH=5 KH2_NO_ENEMIES=1 KH2_REACTION_PRESS=8 kh2-game tt02`: `save point:
+  world point 47 of 00worldpoint.bin (world 2, area 2) seen`, `save point: offered command 55`, `save point
+  heal: HP 5/20 MP 100/100`, `effect element 2 started`, `effect element 2 ended`, `save point heal: done, HP
+  20/20`, `save point: accepted command 55 (Execute 0x37): ... menu kind 1 (scene 3) with mode 0`. Not ported:
+  the friends' slots of the heal (party.rs), the MP charge shortening (`DAT_00360130` +0x7c), bits 2 and 3 of
+  0x35fec0, menu kind 1.
 - **E5 Story flags selecting battle programs.** Story flags in `Progress` (bits, side effects op 1, 7, 0xc),
   hosts 0.14/0.15 real, the btl program from the area record, triggers with events 2/3 and the battle manager
   results (jump records type 1/2). Accept: with a state file setting flag 0x883, tt04 logs `btl program 1`; the
@@ -703,10 +809,12 @@ Each stage ends with `verify.ps1` passing and the named check.
 
 ## 10. Unknowns (with what was searched)
 
-- The talk handler for command 31 (section 3; constructor callers listed there).
+- The talk wait's early end (`FUN_001a5b18`: `FUN_0019abb0` of the player with command row 10) and `FUN_00192c50`'s
+  +0x670 list; whether the townsperson's script is held during a talk (section 3, E3 status).
 - The class-5 head look-at controller (+0x4a0; `FUN_001aead0`, `FUN_001aee90`) and `FUN_0018af10`'s kind-3
   answer (+0xa80); the walk path's +0x87 mode and +0x8c stop index (no writer found in `FUN_002d3b40`). Host 5.8 / 5.9 / 5.10 / 5.12..5.15 / 5.18..5.25 / 5.28..5.32 (not called by `rtn_default`) are not read.
-- The save menu opener for command 55; `FUN_0024f300` meaning (trigger sub 7).
+- Menu kind 1 (the points' menu, task 0x2556f0 not decompiled) and its modes 0 / 2; `FUN_0024f300` meaning
+  (trigger sub 7).
 - Opcodes 0xa, 0xb, 0xe, 0x11, 0x16 meanings (readers named in the table); trigger subs 3, 6, 8; flag ops 2..5.
 - Group kinds 7 and 9 (`FUN_001ccb10`, `FUN_0019a000` not read); activator +0x28..+0x3f beyond +0x2c/+0x2e/+0x2f.
 - The event kind table `DAT_01d6a92c` (rows read by `FUN_001d1128`): its loader was not searched.
@@ -743,7 +851,10 @@ Each stage ends with `verify.ps1` passing and the named check.
 | 0x2d3b40, 0x2d2100, 0x2d2350, 0x2d32f8, 0x2d4298, 0x2d2460, 0x2d43a0, 0x2d4438, 0x2d4040, 0x2d4dc8, 0x2d4ad8, 0x2d4800, 0x2d4688, 0x2d50c0, 0x2d51e0, 0x2d5398, 0x2d2a98, 0x2d25b0, 0x2d27c8, 0x2ea080, 0x183e18; data 0x38379c..0x3837fc, 0x383814..0x383874, 0x383e80 | the walk path curve (E2b) |
 | 0x1aece8, 0x1aec78, 0x1aec50, 0x1aeda8, 0x1aee38, 0x1aead0, 0x1ae9e8, 0x1aee90 (header only), 0x189dc8 | look-at controller, not ported (E2b) |
 | 0x177c20, 0x16b420, 0x16b470, 0x172360, 0x1723f0, 0x2c5cf0 | commands to targets, script message window |
-| 0x194ab8, 0x194b68, 0x194b98 (decompiled for this WP), 0x194c08, 0x194d78, 0x194e68, 0x194ee0, 0x194f68, 0x194fa8, 0x195010, 0x19c0f0 | save and world points |
+| 0x1cf030 (decompiled for E3), 0x177b18, 0x177d28, 0x1a56c0, 0x1a54a8, 0x1a53f8, 0x1a5728, 0x1a5a60, 0x1a5510, 0x1a5608 (0x1a5728/0x1a5a60/0x1a5510 decompiled for E3), 0x1a53b8, 0x1a5b18, 0x1b6408, 0x1b6398, 0x1b64b0, 0x1b64e0, 0x1b6510, 0x1b6578, 0x1b65e0, 0x1b6740, 0x1b67a0, 0x1d8d18, 0x30ff40, 0x332dc8, 0x16b870, 0x1b7ce8, 0x1b7d18, 0x1b7d50, 0x176a18, 0x169978, 0x189ff0, 0x189f28, 0x189f40, 0x189e90, 0x189eb8, 0x189ae8, 0x19a530, 0x192c50, 0x192c68, 0x196418, 0x102460, 0x159688, 0x159768, 0x19abb0, 0x1b6f48; data 0x35f1d4, 0x37ab68, 0x37ab78, 0x37ab84, 0x37bb08 | the talk (E3) |
+| 0x1aba58, 0x1ab9e0, 0x1aa628, 0x1aa6b8, 0x1aa680, 0x1aa780, 0x1ab170, 0x1ab328, 0x1ab358, 0x1aacb0, 0x1aacd8, 0x1aa430, 0x1aa3a0, 0x1aa3f8, 0x1aa4e8, 0x1ab370, 0x1ab4e8, 0x1a8c78, 0x1a8b48, 0x190fa8, 0x190f68, 0x1aad78; data 0x35eb40, 0x35ea68 | the talk window: tail, button, pages, closing (E3) |
+| 0x1784b8, 0x16b940, 0x1699a8, 0x169958, 0x176758, 0x255598, 0x254bf0, 0x1ba2c0, 0x1c6c08, 0x1c6bd0, 0x194c08, 0x194b98 (decompiled), 0x1a0140, 0x1a0210, 0x1a0240, 0x1a0100, 0x1a0180, 0x1a05d0, 0x1a0540, 0x186368, 0x1792f0, 0x176c98, 0x19fe48, 0x19ffb8, 0x194f68, 0x194f08, 0x189208, 0x188fd0, 0x1890d8, 0x188f08, 0x16a570, 0x1d9f20, 0x1d9f48, 0x1d9f80; data 0x380560, 0x37ab20, 0x37ab24 | save points: offer, heal, use (E4) |
+| 0x194ab8, 0x194b68, 0x194b98 (decompiled for WP-7G and E4), 0x194c08, 0x194d78, 0x194e68, 0x194ee0, 0x194f68, 0x194fa8, 0x195010, 0x19c0f0 | save and world points |
 | 0x196428, 0x195898, 0x195ae0, 0x195c08, 0x1964d0, 0x2232c8, 0x2233d8, 0x223910, 0x223a88, 0x2245d0, 0x224a90, 0x224b18, 0x225028, 0x2275a8, 0x227478, 0x22b0f8, 0x22cbb0 | event player |
 | 0x137150, 0x1371d8, 0x1a7700, 0x1a7720 | music |
 | 0x137300, 0x136ec0, 0x195358, 0x195208, 0x1951f8, 0x1953e0, 0x195260, 0x195288, 0x1952a0, 0x195300, 0x1d32c0, 0x1d32e0, 0x17fd10, 0x17ff60, 0x195130 | music slots, exit lock and its writers (E1c) |

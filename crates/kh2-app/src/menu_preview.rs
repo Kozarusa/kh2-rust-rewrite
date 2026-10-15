@@ -40,7 +40,7 @@ impl Plugin for PreviewPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Preview>()
             .add_systems(Startup, setup.after(super::load))
-            .add_systems(Update, (show, animate, layer_and_tint).chain().after(super::tick).before(crate::schedule::Frame::Popups));
+            .add_systems(Update, (show, fade, animate, layer_and_tint).chain().after(super::tick).before(crate::schedule::Frame::Popups));
     }
 }
 
@@ -126,6 +126,33 @@ struct Preview {
     roots: Vec<Entity>,
 }
 
+/// The world whose slot y is 0x3d instead of 0x60 (`FUN_00250a00` asks `FUN_0027c218`: byte `+0xc` of the save block
+/// 0x33e860 is 10). World index 10 is `lk` (Pride Lands) in the table at 0x349dc0 (docs/hud.md); that byte is the
+/// world the player stands in [inferred: `FUN_00149df0` saves it and writes 0xf, the world map, on leaving].
+pub fn in_world_10(area: &str) -> bool {
+    area.get(..2) == Some("lk")
+}
+
+/// The opacity the preview models have: the panel outline's colour alpha (`FUN_0023b4e0` reads the object
+/// `DAT_0036ceac`, which `FUN_00250a00` builds from the groups 0x2e / 0x2f / 0x30 of the camp's sequence), 0x80 = 1.
+pub fn alpha_of(quads: &[kh2_image::seqd::Quad]) -> f32 {
+    quads.iter().map(|q| q.color[0][3] as f32 / 128.0).fold(0.0, f32::max).clamp(0.0, 1.0)
+}
+
+/// Fades the picture with the panel outline: the models' draw takes the outline's alpha (docs/menus.md 16.8).
+/// The port draws the models into a picture, so the picture carries the alpha (`Node::label_fade`).
+fn fade(menu: Res<Menu>, mut scene: ResMut<MenuScene>, mut last: Local<f32>) {
+    if !menu.loaded || scene.nodes.get(menu.nodes.preview).is_none() {
+        return;
+    }
+    let a = alpha_of(&scene.node_quads(menu.nodes.panel));
+    if (a - *last).abs() > 0.001 && std::env::var_os("KH2_MENU_LOG_FADE").is_some() {
+        info!("menu: party preview alpha {a:.2} (phase {:?})", menu.phase);
+    }
+    *last = a;
+    scene.nodes[menu.nodes.preview].label_fade = a;
+}
+
 /// The picture the preview camera draws into, as a texture of the menu, and the page-0 node that shows it.
 fn setup(mut preview: ResMut<Preview>, mut images: ResMut<Assets<Image>>, mut scene: ResMut<MenuScene>, menu: Res<Menu>) {
     if !menu.loaded {
@@ -170,6 +197,7 @@ fn show(
     sora: Query<&crate::sora::Sora>,
     members: Query<&crate::party::PartyMember>,
     anims: Query<&Animator>,
+    area: Res<crate::assets::CurrentArea>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
@@ -178,7 +206,8 @@ fn show(
     if !menu.loaded || scene.nodes.get(menu.nodes.preview).is_none_or(|n| n.pic.is_none()) {
         return;
     }
-    let want = matches!(menu.phase, Phase::Opening | Phase::Open) && menu.page == 0 && std::env::var_os("KH2_NO_MENU_PREVIEW").is_none();
+    // The preview lives through the close too: its alpha follows the panel outline's leave group (`fade`).
+    let want = matches!(menu.phase, Phase::Opening | Phase::Open | Phase::Closing) && menu.page == 0 && std::env::var_os("KH2_NO_MENU_PREVIEW").is_none();
     if !want {
         if let Some(c) = preview.camera.take() {
             // The camera exists only while the preview shows (other systems expect a single 3D camera).
@@ -211,9 +240,10 @@ fn show(
     scene.nodes[menu.nodes.preview].visible = true;
     let rigs = party_rigs(&sora, &members, &anims);
     let n = rigs.len();
+    let world10 = in_world_10(&area.name);
     let yaw = std::env::var("KH2_PREVIEW_YAW").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0).to_radians();
     for (slot, rig) in rigs.into_iter().enumerate() {
-        let (at, z, pitch) = origin_on_screen(slot, n, false);
+        let (at, z, pitch) = origin_on_screen(slot, n, world10);
         // KH2 units to Bevy (0.01); the picture is the canvas, its middle the canvas middle (256, 208).
         let depth = z * crate::SCALE;
         let local = Vec3::new((at.x - 256.0) * depth / fy, -(at.y - 208.0) * depth / fy, -depth);
@@ -311,6 +341,25 @@ mod tests {
         assert!((z - 702.0).abs() < 2.0 && pitch > 0.05 && pitch < 0.06, "{z} {pitch}");
         assert!(at.y > 304.0 && at.y < 316.0, "{at:?}");
         assert_eq!(at.x, 238.0);
+    }
+
+    /// Pride Lands (world index 10, `lk`) uses the slot y 0x3d, every other area 0x60 (`FUN_00250a00`, `FUN_0027c218`).
+    #[test]
+    fn pride_lands_raise_the_slot() {
+        assert!(in_world_10("lk03") && !in_world_10("tt03") && !in_world_10("l"));
+        let (a, ..) = origin_on_screen(0, 3, false);
+        let (b, ..) = origin_on_screen(0, 3, true);
+        assert!((a.y - b.y - 35.0).abs() < 0.01, "{a:?} {b:?}");
+    }
+
+    /// The preview's alpha is the outline's quad alpha (0x80 = 1), 0 without quads.
+    #[test]
+    fn the_alpha_follows_the_outline_quads() {
+        use kh2_image::seqd::Quad;
+        let q = |a: u8| Quad { pos: [[0.0; 2]; 4], uv: [[0.0; 2]; 4], color: [[0x80, 0x80, 0x80, a]; 4], blend: 0, nearest: false };
+        assert_eq!(alpha_of(&[]), 0.0);
+        assert_eq!(alpha_of(&[q(0x40), q(0x20)]), 0.5);
+        assert_eq!(alpha_of(&[q(0x80)]), 1.0);
     }
 
     /// With the preview camera alive the game camera is still the only match of the queries the other systems use.

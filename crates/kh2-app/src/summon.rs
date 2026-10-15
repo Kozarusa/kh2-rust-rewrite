@@ -2358,6 +2358,9 @@ type StitchWorld<'w, 's> = (
     Res<'w, Battle>,
 );
 
+/// The game state the summon objects read: the game data, the drive gauge, the limit task, the summon data and state.
+type SummonRes<'w> = (Res<'w, GameData>, Res<'w, DriveState>, Option<Res<'w, crate::limit::LimitTask>>, Res<'w, SummonData>, ResMut<'w, SummonState>);
+
 /// The summon objects' scripts (run every tick through the enemy host, as the party's in
 /// `friend_ai.rs`), their fades and their end.
 #[allow(clippy::too_many_arguments)]
@@ -2372,7 +2375,7 @@ fn objects(
     children: Query<&Children>,
     handles: Query<&MeshMaterial3d<StandardMaterial>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    (game, drive, limit_task, data, mut sm): (Res<GameData>, Res<DriveState>, Option<Res<crate::limit::LimitTask>>, Res<SummonData>, ResMut<SummonState>),
+    (game, drive, limit_task, data, mut sm): SummonRes,
     (cam, enemies, gts, mut hits, mut magic, battle): StitchWorld,
 ) {
     let (Some(mut trace), Ok(mut s)) = (trace, sora.single_mut()) else { return };

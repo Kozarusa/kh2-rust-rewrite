@@ -479,7 +479,7 @@ Not done, and why:
   the HUD layers 7..10 are not hidden. The fade list (FUN_0016ff50, FUN_0016f8e0, FUN_0016fb20) is not modelled.
 - The free-spot collision tests FUN_001a5c30 and FUN_001a5bf8 were not read: a floor under the point (`World::ground`)
   stands in for the first, the second always passes [inferred].
-- No friend AI, no group 10 hosts, no motion requests (stage 4); summon limits are not offered by the scripts
+- No friend AI, no motion requests (stage 4; WP-SUM4 below answers Stitch's group 10 hosts); summon limits are not offered by the scripts
   (host 1.165) and the limit task body is not run (stage 5); the summon face panel, Genie's "Drive!", Tinker
   Bell's reraise and the area re-entry (stage 6).
 - Byte 5 and byte 7 are kept in `SummonState`, not written to `Progress` (no setters for them).
@@ -504,6 +504,64 @@ plus `KH2_DISMISS_AT=12` (Dismiss) or `KH2_SUMMON_AT=2 KH2_LIMIT=519 KH2_DISMISS
 `limit: summon limit cost 100 x 12 = -1200 to the summon timer`, `summon: Dismiss refused (summon state 2, limit
 task true)`). Without `option_word` the default Auto plays the event path on the first summon.
 
+### Status (WP-SUM4: stage 4 for Stitch, the group 10 hosts)
+
+Stitch's script (`N_HB040_BTL`, `kh2 bdx N_HB040_BTL`) calls 88 distinct host functions; its group 10 entries are
+10.1, 10.3, 10.4, 10.12, 10.13, 10.16, 10.19, 10.32, 10.39, 10.41 and 10.45. All eleven now have a name and a
+signature in `kh2-bdx` `names.rs` and docs/bdx.md (checked against the executable's table at 0x371810 by
+`signatures_match_the_executable`), so the runtime decodes their arguments (the AI calls take the script's
+context, whose word +4 is the object; 10.1 a vector). Every wrapper that names the AI reads object +0xb60
+(FUN_0010c5f0), the AI object FUN_0010b780 made.
+
+The summon object's script now runs through `summon::SummonHost`: the party members' host (`FriendHost`:
+attack objects 2.10 / 2.11 / 2.12 / 2.13 / 2.22, effects, the target record) with the summon's own entries in
+front of it. The AI object's fields the hosts reach are `summon::ai::SummonAi` (one field per game field, each
+with its offset). Motion requests still go to the enemy host unremapped and are logged, not played.
+
+Host calls of Stitch's script, as the harness run reaches them (`KH2_BDXLOG=1 KH2_SUMMONLOG=1 KH2_STATE=<items
+{"25": 1}, summon level 1, option_word 11> KH2_DRIVE_POINTS=5 KH2_SUMMON=3 KH2_SUMMON_AT=4 kh2-game tt02`; the
+`appear_skip` mode, the main thread and the battle start). No call of `N_HB040_BTL#summon0` is `missing` (before
+this work package: 1.84, 1.272, 2.10, 2.22, 2.74, 10.1, 10.12, 10.19, 10.32, 10.45 were):
+
+| host | class | what the app does |
+|---|---|---|
+| 1.84 gauges on the player | Impl | the player's status block handle (his +0x48c) |
+| 10.45 status_f_1b4 (0x2f73b0) | Impl | the float +0x1b4 of that block: `DriveState::timer.left` (the mode-3 timer) |
+| 10.19 in_limit (0x2f6e60) | Approx | object +0x10c bit 0x10000 = a limit task runs (`LimitTask`) [inferred: while a summon is out only summon limits can run, FUN_001d1ce0, and the limit task marks its participants, FUN_001b2c10] |
+| 1.272 flag_7f8_4 (0x171cb0) | Impl | (object +0x7f8 & 4) != 0; set only by FUN_00186580 (callers FUN_001865a8 = host wrapper 0x171cd0, FUN_00175f10, FUN_001b25d0), never for the summon in the app |
+| 1.165 offer_command | Stub | Ohana (519, slot 2) is offered every frame while the timer is above 0; summon limit offers are stage 5, the menu does not show it |
+| 10.12 ai_slot_start (0x2f6d00 -> FUN_00117708) | Impl | the AI's 0x18-slot list at +0x20 (FUN_00117668 takes the first slot with kind < 0 and no effect) |
+| 10.1 ai_walk_to (0x2f6a98 -> FUN_001175a0) | Approx | AI +0x630 bit 0 and the goal +0x640 kept; FUN_00117320, FUN_00193228, FUN_0017ecf0 (the class's motion toward it) not ported |
+| 10.32 ai_stitch_32 (0x2f7138 -> FUN_00118aa8) | Stub | a goal (FUN_00116780), motion request 0xa1 and a record's action (FUN_00114280 -> FUN_0010ecb0): the class update is not ported |
+| 2.10, 2.11, 2.12 | Impl | (the party host) Stitch's body attack object: `atkp` row, size, position each frame |
+| 2.22 | Approx | (the party host) the anchor is the object's own effect file |
+| 2.74 attack_callback_98 | Impl | the routine and argument kept; FUN_0018d430 (a clash of two attacks) is its only caller and never happens for the summon |
+| 1.13, 1.11, 1.94, 1.262 | Approx | as for enemies (enemy host) |
+
+Not reached in the harness (classed as the host would answer them): 10.3 / 10.4 (Stitch's vtable +0x28
+FUN_001191a8 / +0x2c FUN_00119360: the player and his hand objects linked to Stitch for Ohana, stage 5) Stub;
+10.13 (FUN_001195e8, event 17 code 1000: AI slots of kind 1 and attack objects of `atkp` 0x373 around the target,
+stage 5) Stub; 10.16 (FUN_00117840: slot flags |= 0x40000000) Impl; 10.39 (FUN_0010ecb0(object, 0, 0)) Impl;
+10.41 (FUN_001129f0: object +0xb7c |= 0x40000000) Impl. The battle modes (`mode_battle`, `btl_*`) never run:
+the native AI starts them.
+
+Tests: `stitch_summon_script_offers_ohana_while_the_timer_runs` (kh2-bdx disc: the script in `appear_skip` on the
+mock world decodes every group 10 call, asks for AI slots, offers Ohana only with the timer above 0 and no
+limit), `summon_ai_slots_take_the_first_free_one` and the oracle `summon_ai_slot_start_matches_the_game`
+(FUN_00117708 with FUN_00117668 in kh2-ee over 200 random slot lists), the interpreter oracle with
+`N_HB040_BTL` added (`cargo test -p kh2-bdx --test oracle`: 0 failures).
+
+Not done: Stitch neither follows the player nor attacks. Both are native: Stitch's AI class FUN_001179c0 (vtable
+0x354870) binds 7 action records at 0x354708 (stride 0x24) whose handlers are Stitch's own, FUN_00117cf8 (stand:
+the wait +0x70..+0x74, motion request `DAT_00378870`), FUN_00117ea0 (a goal from FUN_00116780 and motion request
+`DAT_00378874` / 0xa1, facing FUN_00116658), FUN_00118348 and FUN_00118730 (AI slots through FUN_00117708,
+motions through FUN_0017e220 / FUN_0017e378, FUN_00118730 also an effect FUN_0016a570), FUN_00118db8 (motion 0xc9
+and the player linked with 0xfe), chosen by the friend engine's record choice (FUN_0010fcd0, ported for Donald
+and Goofy in `party_battle.rs`); the class update FUN_00116b48 (531 lines: the slot list, effects, FUN_0016aa18)
+runs the slots and the goal. None of these were ported [GAP: read only as far as the calls listed here; the
+summon object has no locomotion of its own in the app (party.rs owns the members' movement)]. So no hit by
+Stitch's attacks is logged.
+
 ## 7. Unknowns (with what was searched)
 
 - What starts the arrival event that FUN_001c6260 and the `appear` mode wait on: FUN_0014f198 only hides
@@ -513,7 +571,8 @@ task true)`). Without `option_word` the default Auto plays the event path on the
   decompilation: only FUN_001b28a0 (to the limit task's thread).
 - Summon stats (strength, max HP) and where the party setup reads them: no `plrp` row for 200..204;
   FUN_0010b780 and FUN_0010be80 not read past the AI selection.
-- The friend AI engine (288 functions) and the per-summon AI classes (FUN_001179c0 etc.): not read.
+- The friend AI engine (288 functions) and the per-summon AI classes: not ported. Stitch's (FUN_001179c0) was read
+  as far as WP-SUM4's status lists (its records at 0x354708 and their handlers, the slot list FUN_00117708).
 - Meanings of `DAT_00356f1c` bit 0x10, battle record +0x528 bit 1, the player's +0x108 bits 0x1 and 0x4,
   the summon's slot +0x54 override (FUN_001970b8 -> FUN_001ae798 with +0x9b8).
 - The initial summon level (byte 6) of a new game: save initialisation not traced.

@@ -31,9 +31,11 @@
 //!   `FUN_001c79c8`; its cleanup clears `0x35feb8` bit 0) and gauge mode 1. The state is 0 again when
 //!   the last summon object is gone (its destructor, `FUN_001c5f80` / `FUN_001c6038`).
 //!
-//! What the app does not have (docs/summons.md "Status"): the friend AI and the group 10 hosts (the
-//! object stands where it was put; its script's motion requests are logged, not played, as the party's
-//! are in `friend_ai.rs`), the event itself (nothing in the app starts it: the wait for it ends at
+//! The object's script runs through `SummonHost` (WP-SUM4): the party host plus the group 10 entries of
+//! Stitch's script (the AI object's fields in `ai::SummonAi`).
+//!
+//! What the app does not have (docs/summons.md "Status"): the friend AI (the object stands where it was
+//! put; its script's motion requests are logged, not played), the event itself (nothing in the app starts it: the wait for it ends at
 //! once), the HUD layers the event hides, the screen fade list (`FUN_0016ff50`), the free-spot
 //! collision tests (`FUN_001a5c30` / `FUN_001a5bf8`: a floor under the point stands in), the
 //! companions' return position (party.rs keeps their movement; they fade in where they are), the

@@ -299,6 +299,83 @@ pub struct Progress {
     /// The record bits (the word array at `0x33fdb0`, save `+0x1550`, outside the party block): `FUN_001a5328` tests
     /// bit n, `FUN_001a52b0` sets it. The shops read and set them (`menu_shop::stock`); nothing else in the app does yet.
     record_bits: Vec<u32>,
+    /// The moogle's synthesis record (save `+0x3728`, `FUN_002906c0`; docs/menus.md 23), read and written by the shop's
+    /// third row (`menu_shop::synth`). Outside the party block, so kept apart like `wallet`. Not in the slot files yet.
+    pub moogle: Moogle,
+}
+
+/// The synthesis record at save `+0x3728` (`FUN_002906c0` answers its address). Bit sets are kept as u64 (the
+/// original's two words); a bit past 63 is dropped.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Moogle {
+    /// +0, +4: one bit per material (its place in the material list) set by its first hand-over (`FUN_002887c8`).
+    pub known: u64,
+    /// +0x10: two bits per recipe, bit 2r = the recipe is learned (`FUN_002889e0` for recipe items, `FUN_00290cc0`
+    /// for the Free Development sets).
+    pub learned: u64,
+    /// +0x18: one bit per list entry (2r the item, 2r+1 the higher rank) once made (`FUN_00288228`).
+    pub made: u64,
+    /// +0x20: the same entries once looked at (`FUN_00288fc0` sets it on the list cursor; `FUN_00288228` on a make).
+    pub seen: u64,
+    /// +0x28: the unlock bits `FUN_002903b8(n)` tests: 0..2 the Free Development sets, 3 the first two bonus rows, 4 the
+    /// higher rank, 5 two bonuses at once, 6..9 the halved costs of a rank on the Creations list, 10 the Recipes row
+    /// (`FUN_00290c28` sets the level rows' bits; the writer of bit 10 was not found).
+    pub unlocks: u64,
+    /// +0x30: the moogle's points (`FUN_002909d0`, at most 99,999).
+    pub points: u32,
+    /// +0x34: the materials in stock, by place in the material list (50 words; at most 999).
+    pub stock: Vec<u32>,
+    /// +0xfc: every material ever handed over, by place (50 words; at most 999).
+    pub totals: Vec<u32>,
+    /// +0x1c4: the moogle's level (`FUN_00290bb8`).
+    pub level: u8,
+}
+
+/// The material slots of the record (`FUN_002887c8` and `FUN_00290400` walk 0x32).
+pub const MOOGLE_MATERIALS: usize = 0x32;
+
+impl Moogle {
+    pub fn bit(set: u64, n: u32) -> bool {
+        n < 64 && set >> n & 1 != 0
+    }
+
+    pub fn with(set: &mut u64, n: u32) {
+        if n < 64 {
+            *set |= 1 << n;
+        }
+    }
+
+    /// `FUN_002903b8(n)`.
+    pub fn unlocked(&self, n: u32) -> bool {
+        Self::bit(self.unlocks, n)
+    }
+
+    /// The stock word of material slot `i` (0 past the end).
+    pub fn stock_at(&self, i: usize) -> u32 {
+        self.stock.get(i).copied().unwrap_or(0)
+    }
+
+    pub fn total_at(&self, i: usize) -> u32 {
+        self.totals.get(i).copied().unwrap_or(0)
+    }
+
+    pub fn set_stock(&mut self, i: usize, v: u32) {
+        if self.stock.len() < MOOGLE_MATERIALS {
+            self.stock.resize(MOOGLE_MATERIALS, 0);
+        }
+        if let Some(s) = self.stock.get_mut(i) {
+            *s = v;
+        }
+    }
+
+    pub fn set_total(&mut self, i: usize, v: u32) {
+        if self.totals.len() < MOOGLE_MATERIALS {
+            self.totals.resize(MOOGLE_MATERIALS, 0);
+        }
+        if let Some(s) = self.totals.get_mut(i) {
+            *s = v;
+        }
+    }
 }
 
 /// The option word `FUN_0023e9a0` writes on a new game: it keeps bits 0, 3 and 11 up and sets 0x40b, so
@@ -362,7 +439,7 @@ impl Progress {
         let mut block = vec![0u8; off::LEN];
         let n = bytes.len().min(off::LEN);
         block[..n].copy_from_slice(&bytes[..n]);
-        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT], story: StoryHandle::default(), new_seen: Vec::new(), record_bits: Vec::new() }
+        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT], story: StoryHandle::default(), new_seen: Vec::new(), record_bits: Vec::new(), moogle: Moogle::default() }
     }
 
     // --- story flags ------------------------------------------------------------------------
@@ -1218,6 +1295,7 @@ impl Progress {
             story: StoryHandle::default(),
             new_seen: Vec::new(),
             record_bits: Vec::new(),
+            moogle: Moogle::default(),
         };
         p.init_party();
         p.apply_plrp(plrp, 0);
@@ -1498,6 +1576,20 @@ impl Progress {
                     let mut s = self.story();
                     for id in list(v, "world_points")? {
                         s.set_world_point(id as usize);
+                    }
+                }
+                // The moogle's synthesis record (save +0x3728): `{"unlocks": [bits], "points": n, "level": n}`.
+                "moogle" => {
+                    if let Some(u) = v.get("unlocks") {
+                        for b in list(u, "moogle.unlocks")? {
+                            Moogle::with(&mut self.moogle.unlocks, u32::from(b));
+                        }
+                    }
+                    if let Some(n) = v.get("points") {
+                        self.moogle.points = int(n, "moogle.points")?.clamp(0, 99_999) as u32;
+                    }
+                    if let Some(n) = v.get("level") {
+                        self.moogle.level = int(n, "moogle.level")?.clamp(0, 8) as u8;
                     }
                 }
                 "comment" | "_comment" => {}

@@ -1431,7 +1431,7 @@ holding on its hold layout; the rows, names, prices, counts, the detail line, th
 the port places [inferred positions, not read from the list widget]. A close plays the leave layout and the camp's
 close dim. Examine (command 30) runs the talk program in window class 2 (`npc.rs`).
 
-Not ported: the third row (synthesis, page 8 and after), page 7 (the first-visit text), the "new" marks (save +0x3714),
+Not ported: page 7 (the first-visit text), the "new" marks (save +0x3714),
 the list widget's own look (row plates, the pointer, scrolling), the help line, the munny plate's digits art, the open
 sound's exact entry [inferred: kind k is the u16 at 0x37f654 + 2 k, the rule of kinds 0xc and 0xd].
 
@@ -1456,4 +1456,109 @@ accepted command 212 (Execute 0x7f, FUN_00177b18): event 0x6a`, `shop: open menu
 
 Gaps: the writer of the pending command's +6 (searched: `FUN_001778e8`, `FUN_0019c670`); the readers of the record's words
 +6..+0xc; `FUN_001c6c08`'s bits 2 and 3 of 0x35fec0; `FUN_001a5b18(0xe)`; `FUN_0023e680`; the list widget's positions
-(`FUN_00296b48`, `FUN_0029b600`, `FUN_00296d10`); pages 7, 8 and after.
+(`FUN_00296b48`, `FUN_0029b600`, `FUN_00296d10`); page 7. The third row (pages 8 and after): section 23.
+
+## 23. The shop's third row: synthesis (WP-SH2)
+
+### 23.1 The data [V]
+
+`FUN_00284798` (the third row's setup) allocates the page state (`DAT_0036d194`, 0x1130 bytes), the screen objects
+(`DAT_0036d198`), the data holder (`DAT_0036d19c`) and the session marks (`DAT_0036d1a0`), and lists the item rows of type
+0x10 in table order into the state's +0x314 (the material list, at most 0x32; 50 on the disc). `FUN_00291ae0` loads
+`menu/us/mixdata.bar` (name at `PTR_s_mixdata_bar_0036d190`); `FUN_0029e630(holder, k)` answers entry k:
+
+| k | tag | layout (after a 0x10-byte header: magic, version 3, u32 count) | readers |
+|---|---|---|---|
+| 0 | `reci` | 0x20 per recipe: +0 the recipe's item id, +2 kind (0 taught by its item, 1..3 a development set), +3 rank, +4 the item made, +6 the higher-rank item (0 none), +8 six (u16 material, i16 count) lines ending at a non-positive id | `FUN_002906e0`, `FUN_00290058`, `FUN_00290ef8`, `FUN_00290468` |
+| 1 | `cond` | 0xc per collection reward (+0 text, +2 reward, +4 type, +5..+7 condition, +8 count, +0xa record bit) | `FUN_00291140` (not ported) |
+| 2 | `leve` | 0xc per level: +0 name, +2 text, +4 i16 unlock bit, +8 u32 points | `FUN_00290bb8`, `FUN_00290c28` |
+| 3 | `exp` | +0x10..+0x16 the points of a material by its rank (item +5), +0x18 f32 the first bonus' factor, +0x1c a story flag, +0x1e the unlock bit it grants | `FUN_00290468`, `FUN_00284c10` |
+
+On the disc (`menu_shop::tests::the_disc_mixdata_recipes_levels_and_tables`): 23 recipes (10 of kind 0), 50 rewards, 9
+levels with rising thresholds, factor 2.0, the story flag's bit is 10. The executable's tables: 0x3825e0 the seven row
+messages of page 9, 0x382690 / 0x382688 / 0x382680 the bonus materials by rank (`FUN_002910f0(rank, k)` for k 0, 1, 2),
+0x382578 a byte per rank (the unlock bit that halves that rank on the made list), 0x382548 the detail rows' help,
+0x382628 the opening notices, 0x3826a0 the level names, 0x3825b8 the layout triple (8, 10, 9) of these screens.
+
+### 23.2 The record [V]
+
+`FUN_002906c0` answers save +0x3728. +0/+4 a bit per material once handed over; +8 the reward bits; +0x10 two bits per
+recipe (bit 2r learned); +0x18 one bit per list entry made (entry 2r the item, 2r + 1 the higher rank); +0x20 the same
+once seen; +0x28 the unlock bits (`FUN_002903b8`): 0..2 the development sets, 3 the points and halving bonuses, 4 the
+higher rank, 5 two bonuses at once, 6..9 the made list's halving per rank, 10 the recipe row; +0x30 the points (at most
+99,999); +0x34 the stock and +0xfc the totals, a word per material slot (at most 999); +0x1c4 the level. The port keeps
+it as `progress::Moogle` (`Progress::moogle`; not in the slot files yet; `KH2_STATE` key `moogle`: `unlocks`, `points`,
+`level`).
+
+### 23.3 The pages [V unless marked]
+
+- **Opening** (`FUN_00284c10`, page 8): the `exp` story flag set grants its bit (10). `FUN_00288758` / `FUN_002887c8`:
+  every material held goes to the stock and the totals (999 at most each) and leaves the inventory; its known bit is
+  set. With bit 10, `FUN_002888f8` / `FUN_002889e0`: a kind-0 recipe whose item is held and that is not learned is
+  learned and its item taken (a learned one's item stays; an item of the other kinds is taken). `FUN_00291140` checks
+  the rewards [not ported]. The first page is 10 after a hand-over, else 0x10 after recipes, else 9; the notices of
+  the state's +0x130 bits come first (`FUN_00287950`, page 0x13: bit 0 the hand-over, bit 5 the recipes, 1..4 rewards).
+- **Page 9** (`FUN_00284ea8`, `FUN_00285388`): seven rows; row 0 shows when something was made, row 1 with a set bit
+  0..2, row 2 with bit 10, rows 3..6 always. Row k leads (`FUN_0028a6f0`): 0 -> 0xc, 1 -> 0xe, 2 -> 0x10, 3 -> 0x17,
+  4 -> 10, 5 -> 0xb, 6 -> page 0 (the shop's top rows, `FUN_0025fef0`); a cancel -> page 0, -4 the end.
+- **Pages 0xc / 0xe / 0x10** (`FUN_00290058`, `FUN_00288fc0`, `FUN_00286580`): the made list (every entry made), the
+  development list (learned recipes of sets 1..3 whose bit is set, not made), the recipe list (learned kind-0 recipes not
+  made); at most 0x2d entries, an empty list shows 0xbe22. An entry is dimmed and refused (`FUN_00291b58`) unless some
+  way of making it is in stock. A confirm opens its detail page with rows (+0x106b): make and quit always, the points
+  bonus and the halving bonus with bit 3, the higher rank (a recipe with +6) with bit 4 (`FUN_002908c0`); the cursor
+  starts on make when the item can be made as it is, else row 2 (3 for a higher-rank entry) [inferred: the widget
+  keeps a cursor past the last row on the last].
+- **Need** (`FUN_002906e0`, `FUN_00290618`): a line needs `count / div` rounded up, at least 1; div is 1, 2 with the
+  rank's bit (0x382578) on the made list, doubled by the halving bonus. The higher-rank bonus and the halving bonus
+  each need one of their material (k 2, k 1); both at once need bit 5.
+- **Detail pages 0xd / 0xf / 0x11** (`FUN_00286bc8`, jump table 0x38249c): row kinds 1..3 toggle the bonus flags
+  +0x106a bits 0..2 when `FUN_00291b58` allows (a flag already set always; else fewer set than allowed, 1 or 2 with bit
+  5, and `FUN_002908c0` with the stock check; on 0xf and 0x11 not the higher rank; the flag tested is the shown row's
+  minus one). Make (0x286f40): a higher-rank entry without that bonus -> 0xbef4, no way in stock -> 0xbef5, the item
+  at 99 -> 0xbf06 (page 0x12, a text then back); else page 0x14 (`FUN_0028ee28`: 0xbef6 and the item's name). Quit and
+  a cancel go back to the list.
+- **Pages 0x14..0x16**: closing the result window makes it (`FUN_00287fb0` -> `FUN_00288170`: `FUN_001a1a18(item, 1)`,
+  the item being +4 for a plain entry without the higher-rank bonus, else +6). `FUN_00290ef8` / `FUN_002909d0` take
+  each line's need and one of each chosen bonus material from the stock and add the points (`FUN_00290468`: each line's
+  full count times its rank's points, times the factor with the points bonus) [the original counts them down a frame
+  at a time; the port at once]. `FUN_00288228` marks the entry made and seen (2r + 1 when the bonus raised a plain
+  entry), `FUN_00290c28` grants the bits of the levels reached and the development sets they open (`FUN_00290cc0`),
+  `FUN_00290bb8` sets the level; each level gained shows 0xbed1 with its name (page 0x16), then the list again.
+- **Pages 10 and 0x17** (`FUN_002858e8`, `FUN_00287240`, `FUN_0028f9a8`): the materials with a total (10, titled 0xbcdf)
+  or with stock (0x17, 0xbd90); a cancel goes to page 9 [inferred: the rows show the material's name and the number;
+  `FUN_0028b188` and the row drawing were not read].
+
+### 23.4 What the port does (`menu_shop::synth`)
+
+`ShopMenu` loads `mixdata.bar` and the tables with the shop; the third row's confirm runs `synth::Session::start` (the
+opening) and the pages above (`Session::key`, `entries`, `entry_open`, `detail_rows`, `make_check`, `make`), drawn as
+text labels over the synthesis layout triple like the shop pages [inferred positions; the detail page also lists each
+line as name and need / stock, an inferred layout: `FUN_002894f0` and `FUN_00289aa8` were not read]. Harness:
+`KH2_PROGRAMS=0,0,16 KH2_NPC_WATCH=5 KH2_NPC_WATCH_DIST=60 KH2_REACTION_PRESS=8 KH2_STATE=<{"munny": 500, "items":
+{"382": 1, "345": 6, "329": 2, "317": 2, "333": 2}, "moogle": {"unlocks": [10]}}> KH2_KEYS=10:J,11:J,11.6:J,12.2:K,12.8:J,
+13.4:J,14:J,14.6:J,15.2:K,15.8:K,16.4:K kh2-game tt07` makes a Mega-Potion at the moogle (`N_EX640_SHOP_RTN`, event
+0x6b): `synth: open the third row`, `synth: made item 0x5`, `shop: close`.
+
+Not ported: page 0xb (row 5), the rewards (`cond`, `FUN_00291140`), the session's NEW marks (`DAT_0036d1a0`), the
+moogle's animation (`FUN_00283520`, item +0x14), the window and list widgets' own look, the frame-by-frame count-down.
+
+### 23.5 Decompile index (WP-SH2)
+
+| address | what |
+|---|---|
+| 0x260540 | the page switch, pages 8..0x17 |
+| 0x284798, 0x284908, 0x291ae0, 0x291b38, 0x29e4a8, 0x29e630 | setup, teardown, `mixdata.bar`, entries |
+| 0x284c10, 0x288758, 0x2887c8, 0x2888f8, 0x2889e0, 0x291140 | the opening |
+| 0x284ea8, 0x285388, 0x28a6f0, 0x28a748 | page 9 |
+| 0x286378, 0x286580, 0x288fc0, 0x290058, 0x291b58, 0x2906e0, 0x290618, 0x290400, 0x2910b0, 0x2910f0 | the lists, the need |
+| 0x286bc8, 0x38249c (0x286f40 .. 0x287228), 0x2908c0, 0x290978, 0x289bf8, 0x290e68 | the detail page |
+| 0x287780, 0x28e980, 0x287950, 0x2879e8, 0x2877a0 | texts, the opening notices |
+| 0x287ee0, 0x28ee28, 0x287fb0, 0x288170, 0x288228, 0x290ef8, 0x2909d0, 0x290468, 0x290c28, 0x290bb8, 0x290cc0, 0x288480, 0x2884e8 | the make, points, levels |
+| 0x2858e8, 0x285b30, 0x287240, 0x287498, 0x28ffc8, 0x28f9a8, 0x28aa40 | the material pages |
+| 0x2906c0, 0x2903b8, 0x2783f8 | the record, the unlock bits, story flag 0x4837 |
+
+Gaps: page 0xb (`FUN_00286060`, `FUN_00285e10`, `FUN_0028b470`); the rewards' conditions (`FUN_00291418`, `FUN_00291628`);
+the result window's key handling (`FUN_0028e7f0`, `FUN_0028f2c0`: the port makes the item on any confirm or cancel);
+the list widget (`FUN_00296b48`, `FUN_00299878`); the entries `FUN_002783f8` (story flag 0x4837) adds with mark 0x80 are
+left out; `FUN_002909d0` with a bonus material outside the list writes the stock at slot -1 (the points word) [not
+ported].

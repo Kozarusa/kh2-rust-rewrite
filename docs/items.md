@@ -183,6 +183,13 @@ Logs: `items: list <n> opened (...)`, `items: <name> chosen for member <m>`, `it
 slots first, then the stock; the received list fills), e.g. `local/state-potions.json`
 `{ "sora_items": [1, 1], "magic": [1, 1, 1, 1] }`.
 
+## 7. Synthesis materials and recipe items (WP-SH2)
+
+Items of type 0x10 are the synthesis materials (`FUN_00284798` lists them in table order; their rank, item +5, picks
+their points in `mixdata.bar`'s `exp`). Opening the moogle's third row (docs/menus.md 23) moves every material held
+into the moogle's stock (save +0x3728 +0x34, `progress::Moogle`) with `FUN_001a1c30`, and, once the record's unlock bit
+10 is set, takes the recipe items (`reci` +0: ids such as 0x17e and 0x1c1..0x1df) that teach a recipe. A make adds its
+item with `FUN_001a1a18(item, 1)` and refuses when 99 are held (`FUN_00290e68`).
 ## Decompile index
 
 | address | what |

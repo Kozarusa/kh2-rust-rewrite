@@ -410,7 +410,8 @@ record (offset in brackets) [V]:
 All other abilities only set their bit and are read where they act: for example Guard, the slash and
 aerial moves, Scan, Aerial Recovery, Leaf Bracer, Magic Lock-On, No Experience, Second Chance, Once More, Auto Limit,
 Auto Change, Auto Healing, the Auto-form abilities (offer commands, see forms), Donald/Goofy/other member
-abilities. To implement one of them, find its bit consumers by the pattern
+abilities (readers of Second Chance, Once More, Leaf Bracer, Auto Healing, Auto Limit, Auto Change, Scan and Aerial
+Recovery: docs/abilities.md "Ability readers"). To implement one of them, find its bit consumers by the pattern
 `bit(FUN_001768a8(object))` (FUN_001768a8 returns the status +0x1cc block). The many readers of that function are
 listed in the decompile index (callers of FUN_001768a8).
 

@@ -75,6 +75,46 @@ pub fn attacker_bonuses(block: &Block, hits: u8, atk: &t::Atkp, dmg: i32) -> i32
     }
 }
 
+/// Ability bits of the combat abilities whose readers were traced (WP-A1; the rows own these bits,
+/// checked against the disc in `combat_ability_bits_are_the_rows_bits`). Word / mask in the block:
+/// Leaf Bracer word 3 0x40000, Second Chance word 3 0x80000000, Once More word 4 0x1, Auto Limit
+/// word 4 0x2 (`FUN_001d25e0`, a party member's block), Auto Change word 4 0x4 (`FUN_0017ce60`),
+/// Auto Healing word 4 0x10 (`FUN_0017d4b8`).
+pub const BIT_LEAF_BRACER: u16 = 114;
+pub const BIT_SECOND_CHANCE: u16 = 127;
+pub const BIT_ONCE_MORE: u16 = 128;
+pub const BIT_AUTO_LIMIT: u16 = 129;
+pub const BIT_AUTO_CHANGE: u16 = 130;
+pub const BIT_AUTO_HEALING: u16 = 132;
+
+/// Sora's answer to "does this hit leave me alive?" (vtable slot +0x58 of his class, `FUN_00176d78`,
+/// asked by `FUN_00185a68` only for a hit that would bring HP to the minimum or below):
+/// Second Chance and HP at least 2 (status +0); else Once More and a damage motion playing
+/// (`FUN_00185a08`: actor +0x140 set and the motion id +0x154 in 10..=39); else the base class's
+/// answer (`FUN_00185be0`, from the actor's invincibility flags +0xabc/+0xac0/+0xac4 and +0x588,
+/// which the app does not model: false here).
+pub fn survives_lethal_hit(second_chance: bool, once_more: bool, hp: i32, motion: Option<usize>) -> bool {
+    (second_chance && hp >= 2) || (once_more && motion.is_some_and(|m| (10..40).contains(&m)))
+}
+
+/// The damage `FUN_00185a68` applies for a non-healing hit of `dmg` on HP `hp` with the status
+/// minimum `min` (status +8): when `hp - dmg <= min` and the victim survives the hit
+/// (`survives`), the damage becomes `hp - min - 1` (never below 0), so HP ends at `min + 1`.
+pub fn lethal_hit_damage(hp: i32, min: i32, dmg: i32, survives: bool) -> i32 {
+    if hp - dmg <= min && survives { (hp - min - 1).max(0) } else { dmg }
+}
+
+/// Leaf Bracer (Cure's script, event 20 at word 0x1e8 of every `CURE_*.mag`): when the caster has
+/// bit 114 (host 1.343 = `FUN_00170c28`) and the cast's target is the caster itself (host 1.130
+/// answers 0), host 1.91 (`FUN_00172fe8` -> `FUN_00175aa8`) writes 60.0 into the caster's +0xb00.
+/// `FUN_00175ab0` lowers it by the frame step each tick and `FUN_00175ad8` (vtable +0x60) answers
+/// "untouchable" while it is above 0, which makes the receive handler `FUN_00175340` drop every hit
+/// except heals (attack types 5 and 6). Returns the frames, or None.
+pub const LEAF_BRACER_FRAMES: f32 = 60.0;
+pub fn leaf_bracer_frames(leaf_bracer: bool, target_is_caster: bool) -> Option<f32> {
+    (leaf_bracer && target_is_caster).then_some(LEAF_BRACER_FRAMES)
+}
+
 /// Ability ids that `FUN_001c0f40` has a stat effect for (item ids of type 19).
 pub mod id {
     pub const GUARD: u16 = 82;
@@ -978,6 +1018,30 @@ mod tests {
         assert_eq!(r.growth_ability(0, 1), Some(94));
         assert_eq!(r.growth_ability(3, 4), Some(109));
         assert_eq!(r.growth_ability(0, 0), None);
+    }
+
+    #[test]
+    fn combat_ability_bits_are_the_rows_bits() {
+        let Some(r) = rules() else { return };
+        for (id, bit) in [(402, BIT_LEAF_BRACER), (415, BIT_SECOND_CHANCE), (416, BIT_ONCE_MORE), (417, BIT_AUTO_LIMIT), (418, BIT_AUTO_CHANGE), (420, BIT_AUTO_HEALING)] {
+            assert_eq!(r.abilities[&id].bit, bit, "ability {id}");
+        }
+    }
+
+    #[test]
+    fn lethal_hit_rules() {
+        // Second Chance: HP 2 or more survives with 1; at HP 1 it does not.
+        assert!(survives_lethal_hit(true, false, 2, None));
+        assert!(!survives_lethal_hit(true, false, 1, None));
+        assert_eq!(lethal_hit_damage(5, 0, 9, survives_lethal_hit(true, false, 5, None)), 4);
+        // Once More: only in a damage motion 10..=39.
+        assert!(survives_lethal_hit(false, true, 1, Some(10)) && survives_lethal_hit(false, true, 1, Some(39)));
+        assert!(!survives_lethal_hit(false, true, 1, Some(40)) && !survives_lethal_hit(false, true, 1, None));
+        assert_eq!(lethal_hit_damage(1, 0, 3, true), 0);
+        // Not lethal: unchanged.
+        assert_eq!(lethal_hit_damage(10, 0, 3, true), 3);
+        assert_eq!(leaf_bracer_frames(true, true), Some(60.0));
+        assert_eq!(leaf_bracer_frames(true, false), None);
     }
 
     #[test]

@@ -538,6 +538,80 @@ fn goofy_blade_throws_and_takes_back_the_hand_object() {
 /// command 519) only while the timer +0x1b4 of the player's status block (1.84 then 10.45) is above 0 and
 /// the summon is in no limit (10.19).
 #[test]
+fn genie_summon_script_offers_the_form_limit_while_the_timer_runs() {
+    use kh2_bdx::host::{Host, Value};
+    const GAUGES: u32 = 0x7900_0000;
+    /// The pairs of the table at 0x3548f0 as FUN_00119ca8 reads them (form command, limit command).
+    fn limit_of(elf: &[u8], cmd: i32) -> i32 {
+        let seg = |va: u32| -> Option<i16> {
+            let u32_ = |o: usize| u32::from_le_bytes(elf[o..o + 4].try_into().unwrap());
+            let (phoff, n) = (u32_(0x1c) as usize, u16::from_le_bytes([elf[0x2c], elf[0x2d]]) as usize);
+            let size = u16::from_le_bytes([elf[0x2a], elf[0x2b]]) as usize;
+            (0..n).map(|i| phoff + i * size).find_map(|p| {
+                let (off, base, len) = (u32_(p + 4), u32_(p + 8), u32_(p + 16));
+                (u32_(p) == 1 && va >= base && va + 2 <= base + len).then(|| i16::from_le_bytes([elf[(off + va - base) as usize], elf[(off + va - base) as usize + 1]]))
+            })
+        };
+        (0..5).find_map(|k| (seg(0x3548f0 + 4 * k)? as i32 == cmd).then(|| seg(0x3548f2 + 4 * k)).flatten()).map_or(0, |v| v as i32)
+    }
+    struct GenieHost {
+        mock: MockHost,
+        timer: f32,
+        in_limit: bool,
+        cmd: i32,
+        limit: i32,
+        seen: Vec<Call>,
+    }
+    impl Host for GenieHost {
+        fn call(&mut self, c: &Call) -> Value {
+            self.seen.push(c.clone());
+            match c {
+                Call::Func { group: 1, index: 94, .. } => Value::Bool(true),
+                Call::Func { group: 1, index: 84, .. } => Value::Handle(GAUGES),
+                Call::Func { group: 10, index: 45, args } if args[0].int() as u32 == GAUGES => Value::Float(self.timer),
+                Call::Func { group: 10, index: 19, .. } => Value::Bool(self.in_limit),
+                Call::Func { group: 1, index: 272, .. } => Value::Bool(false),
+                // 10.10: the limit of the form command at AI +0x14 (set by the first update, FUN_00119a40).
+                Call::Func { group: 10, index: 10, .. } => Value::Int(if self.cmd != 0 { self.limit } else { 0 }),
+                Call::Func { group: 10, .. } | Call::Func { group: 1, index: 165, .. } => Value::None,
+                _ => self.mock.call(c),
+            }
+        }
+        fn read_mem(&mut self, addr: u32, out: &mut [u8]) -> bool {
+            self.mock.read_mem(addr, out)
+        }
+        fn write_mem(&mut self, addr: u32, data: &[u8]) -> bool {
+            self.mock.write_mem(addr, data)
+        }
+    }
+    let Some((mut a, elf)) = open() else { return };
+    let table = HostTable::from_exe(&elf).expect("table");
+    let data = object_script(&mut a, "obj/P_AL010.mdlx");
+    let limit = limit_of(&elf, 536);
+    assert_eq!(limit, 544, "Wisdom Genie's limit (the table at 0x3548f0)");
+    for (timer, in_limit, cmd, offers) in [(600.0f32, false, 536, true), (0.0, false, 536, false), (600.0, true, 536, false), (600.0, false, 0, true)] {
+        let mut rt = Runtime::new(Program::parse(&data).expect("P_AL010 parses"));
+        rt.set_host_table(table.clone());
+        let mut h = GenieHost { mock: MockHost::new(), timer, in_limit, cmd, limit, seen: Vec::new() };
+        rt.spawn(&mut h, SELF_OBJ);
+        rt.set_mode_named(&mut h, "appear_skip");
+        for _ in 0..120 {
+            h.mock.tick();
+            rt.update(&mut h);
+        }
+        assert!(rt.core.errors.is_empty(), "timer {timer} limit {in_limit}: {:?}", rt.core.errors);
+        let unknown10: Vec<_> = h.seen.iter().filter(|c| matches!(c, Call::Unknown { group: 10, .. })).collect();
+        assert!(unknown10.is_empty(), "group 10 calls without a signature: {unknown10:?}");
+        let want = if cmd != 0 { limit } else { 0 };
+        let offered = h.seen.iter().filter(|c| matches!(c, Call::Func { group: 1, index: 165, args } if args[0].int() == 2 && args[1].int() == want)).count();
+        let limits = h.seen.iter().filter(|c| matches!(c, Call::Func { group: 10, index: 10, .. })).count();
+        eprintln!("timer {timer} limit {in_limit} form {cmd}: {} calls, {limits} 10.10 calls, {offered} offers of {want}", h.seen.len());
+        assert!(limits > 0, "the main thread asks for the form's limit (10.10)");
+        assert_eq!(offered > 0, offers, "timer {timer} limit {in_limit}: offered {offered} times");
+    }
+}
+
+#[test]
 fn stitch_summon_script_offers_ohana_while_the_timer_runs() {
     use kh2_bdx::host::{Host, Value};
     const GAUGES: u32 = 0x7900_0000;

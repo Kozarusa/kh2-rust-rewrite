@@ -188,6 +188,7 @@ an error (logged; the app then falls back to the new game + baseline). Example: 
 | `summon` | `{ "level": int, "exp": int }` | summon level and experience |
 | `outfits` | object `"<world>": outfit` | low 5 bits of the world record's byte 0 |
 | `spell_switch` | int | the switch bit word |
+| `party_settings` | object `"<member id>": byte` or `"<member id>": [bytes]` | a member's AI settings block (record `+0xd4`, 32 bytes, zero at a new game by `FUN_001875c8`): a single number is byte 0, the battle style 0..5; an array sets bytes from 0 on (byte `1 + k` = use setting of item / ability `k`, docs/party.md). Member ids are the party ids (2 Donald, 3 Goofy). `Progress::member_setting` / `set_member_setting` read and write it; a slot file's `block` carries it (test `member_settings_default_to_zero_and_round_trip`). `party.rs` reads byte 0 every frame (`KH2_PARTY_STYLE` still overrides) |
 | `story_flags` | array of flag ids | each set through the game's setter `FUN_0017ff60` in file order, side effects included (area program table, exit locks, other flags; section "Story flags" below) |
 | `story_clear` | array of flag ids | each cleared through `FUN_00180298` (only the bit) |
 | `comment` | any | ignored |

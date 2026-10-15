@@ -657,7 +657,7 @@ mod at {
     /// The setting icon at the right end of a companion's ability and item rows, and the extra text of page 0x1f's
     /// rows [inferred: `FUN_00272b20` and `FUN_002747d0` draw them into lists the port has no layout of].
     pub const MARK: [f32; 2] = [200.0, 1.0];
-    pub const EXTRA: [f32; 2] = [120.0, 1.0];
+    pub const EXTRA: [f32; 2] = [128.0, 1.0];
     /// The character list's rows below the first [inferred].
     pub const CHAR_PITCH: f32 = 26.0;
     /// The information window's text and rows from its anchor (255, 126), by eye as on the Items pages.
@@ -1889,5 +1889,32 @@ mod tests {
         for id in [2usize, 3] {
             assert!(m.text(t.member_names[id]).is_some_and(|s| !s.is_empty()), "name {id}");
         }
+    }
+
+    /// A companion's settings written by the pages come back through a slot file (`Progress::slot_json` /
+    /// `apply_json`, the state file's own format), each in its member's record.
+    #[test]
+    fn the_pages_writes_survive_a_state_file_round_trip() {
+        let t = friend_tables();
+        let mut p = party_progress();
+        for (member, e) in [
+            (2, Effect::Style(4)),
+            (2, Effect::Ability { id: 0xa6, value: 2 }),
+            (3, Effect::Style(1)),
+            (3, Effect::FriendItem { item: 3, state: 2 }),
+        ] {
+            write_friend(&mut p, &t, member, &e);
+        }
+        let text = p.slot_json(&crate::progress::SlotInfo { level: 1, munny: 0, play_seconds: 0, area: "tt04".into() });
+        let mut q = party_progress();
+        q.apply_json(&text).unwrap();
+        // Donald: style 4, the ability byte 1 + (7 + 1); Goofy: style 1, item 3's byte 1 + 2 holds the use setting 2.
+        assert_eq!((q.member_setting(2, 0), q.member_setting(2, 9)), (Some(4), Some(2)));
+        assert_eq!((q.member_setting(3, 0), q.member_setting(3, 3)), (Some(1), Some(2)));
+        assert_eq!((q.member_setting(1, 0), q.member_setting(2, 3)), (Some(0), Some(0)), "the other records are untouched");
+        // The harness key sets the same bytes: `{"party_settings": {"2": 4}}`.
+        let mut r = party_progress();
+        r.apply_json("{\"party_settings\": {\"2\": 4}}").unwrap();
+        assert_eq!(r.member_setting(2, 0), Some(4));
     }
 }

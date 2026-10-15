@@ -112,7 +112,9 @@ its slot byte has 0x80, or its index is in the hidden list (below). FUN_0017d150
   (Potion, Hi-Potion, Ether, Elixir, Mega-Potion, Mega-Ether, Megalixir; table 0x352eb0), k 7 and up the
   member's special abilities in the order of the table at 0x352ec0 (FUN_00114348 / FUN_001144d0). Values
   used by the code: 1 = only while MP >= the action's cost, 2 = only as a fallback (second pass), 3 = never
-  (FUN_0010fcd0, FUN_0010f220). [I] these are the party menu's Customize settings.
+  (FUN_0010fcd0, FUN_0010f220). [V, WP-PA4] these are the Customize page 0x1b settings: the Battle Style row
+  writes byte 0 (`FUN_00275398`), an ability row byte `1 + FUN_00114348(id)` with the values 0, 1, 2 (`FUN_00275410`),
+  an item row Auto-Reload and the byte 0 or 2 (`FUN_00274f70`); docs/menus.md 14b. Value 3 ("never") has no menu row.
 - `ptya`: the moveset table (docs/moveset-selection.md); party members have their own `NeoMoveset`
   (Donald 17, Goofy 20, ... printed). `patn` is the hit-state conversion (docs/hit-reaction.md), shared.
   `vbrt`: [I] the controller vibration table (frame trigger 31, docs/hit-reaction.md); nothing party-specific
@@ -606,7 +608,9 @@ Each stage ends with `verify.ps1` passing and the named check.
   the same bit the warp's spot test rejects (FUN_001108c8 after FUN_00143840). Which collision sets it was not
   read; the app counts a tick whose step was blocked [I].
 - Attacker callback FUN_00110728, the combo follow-up FUN_001b0758, item use FUN_001a1fc0 fields.
-- The meaning of the settings' values 0..3 and styles 0..5 in the party menu (FUN_00112308 readers only).
+- The meaning of the settings' values 0..3 (WP-PA4: the menu offers 0 "Often"-type, 1, 2 "Last hope!", never 3; the page's
+  messages say how it reads) and the styles 0..5 (Technic, Target, Huddle, Party, Sora, Relentless Attack: messages
+  0x486..0x48b, docs/menus.md 14b; what each does is the target table of section 4).
 - Who writes the save slot bytes at new game; `lvup` table order beyond Sora.
 - Per-class constructors of the world partners (FUN_00114890..FUN_001154d0) and their action records were not
   dumped; the oracle test prints only their thresholds.
@@ -724,7 +728,8 @@ Not done or approximated in stage 2:
   constants `DONALD_STAFF` / `GOOFY_SHIELD`) when their weapon words are 0, so the weapons show without
   `KH2_PARTY_WEAPONS`; the original's writer of those words is still not found (above).
 - The settings bytes (record +0xd4) are read from `Progress` (WP-PA3; byte 0 = the battle style); the item / ability use
-  settings (bytes 1..) are still read as 0 by the feasibility test (`setting` in `party_tick`).
+  settings (bytes 1..) are read by the feasibility test (`record_setting`: byte `1 + record.setting`) and the HP / MP item handler
+  (`item_setting`: consumable `id` is byte `id`, `FUN_00113888`) since WP-PA4; the Customize page 0x1b writes them.
 - (WP-P3b) The walk/run/turn/jump speeds now come from the `prty` row of the NeoMoveset (FUN_00194438; Donald
   row 17 and Goofy row 20: walk 2, run 8), no longer the row of the NeoStatus (run 12) that stage 1 inferred.
 
@@ -1259,8 +1264,8 @@ Files: `party_rules.rs` (`apply_world_records`), `party.rs` (`spawn_party`), `kh
 
 - (WP-PA1, done in WP-PA2) `party.rs` now calls `battle::dispatch` / `needs_retarget` / `choose_target` with the
   remembered attacker, the player's target and attacked object. (WP-PA3 done: `Member::settings`, the
-  `party_settings` state key, `party.rs` reads byte 0.) Still open: no menu page writes the byte; it is Customize
-  page 0x1b (Donald / Goofy), not ported (`menu_customize.rs`).
+  `party_settings` state key, `party.rs` reads byte 0.) (WP-PA4 done: the Customize page 0x1b writes
+  byte 0 and the use-setting bytes, `menu_customize.rs`, docs/menus.md 14b.)
 
 - `docs/player-data.md`, `memt`: the 16 words at +0x10 are member objects by member index (0 player, 1 Donald,
   2 Goofy, 3 partner, 4..8 forms, 9 Mickey, 10..15 keyblades), merged per world; index 0..3 are not "world

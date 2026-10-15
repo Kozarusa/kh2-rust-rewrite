@@ -537,6 +537,7 @@ pub fn choose(
 /// whose surface (distance to its centre minus its radius) is nearest the member, and nearer than the
 /// class's range. `shapes` are (index, centre, radius); returns the index.
 /// Runs through the style dispatch with style 0 (the setting byte at a new game) and no attacker.
+#[cfg(test)]
 pub fn nearest_target(member: bevy::math::Vec3, range: f32, shapes: impl Iterator<Item = (usize, bevy::math::Vec3, f32)>) -> Option<usize> {
     let cands: Vec<Cand> = shapes.map(|(i, centre, radius)| Cand { fighter: i, shape: 0, centre, radius, enabled: true, targetable: true }).collect();
     let p = Params { range, ..Params::default() };
@@ -544,15 +545,6 @@ pub fn nearest_target(member: bevy::math::Vec3, range: f32, shapes: impl Iterato
     choose_target(chooser, false, &p, &TargetScene { member, cands: &cands, ..TargetScene::default() }).map(|t| t.0)
 }
 
-/// FUN_0010cbe0 (style 0's re-target test): when an attacker is remembered and it is not the target,
-/// or the target lies farther than the re-target range (squared distance of the target point).
-/// (FUN_0010cf90 with style 0 and a valid target, `needs_retarget`.)
-pub fn retarget_style0(attacker_differs: bool, target_dist: f32, retarget: f32) -> bool {
-    let p = Params { retarget, ..Params::default() };
-    let s = TargetScene { attacker: attacker_differs.then_some(1), ..TargetScene::default() };
-    let (_, test) = dispatch(0, 0).expect("style 0");
-    needs_retarget(test, false, Some(((0, 0), bevy::math::Vec3::new(target_dist, 0.0, 0.0))), false, &p, &s)
-}
 
 // ---------------------------------------------------------------------------------------------------
 // The target choice and re-target tests of every battle style (FUN_0010dcf0, FUN_0010cf90)

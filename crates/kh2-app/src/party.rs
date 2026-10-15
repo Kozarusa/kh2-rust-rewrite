@@ -321,6 +321,8 @@ struct Manager {
     built: Option<Vec<u16>>,
     /// The slot bytes the last spawn pass looked at (the key is recomputed only when they change).
     seen: [u8; 4],
+    /// `0x34e9c4`: the object of the player's latest attack (style 1 reads it).
+    player_hit: Option<Entity>,
 }
 
 impl Manager {
@@ -445,6 +447,12 @@ pub struct PartyMember {
     choosing: battle::Choosing,
     timer: f32,
     target: Option<Target>,
+    /// The battle style, setting byte 0 (party record +0xd4; FUN_0010df08 reads it through vtable +0x98).
+    /// 0 at a new game (`Progress::init_party` zeroes the bytes); `KH2_PARTY_STYLE=<n>` sets both members.
+    /// The Party page does not write it yet (docs/party.md section 4).
+    pub style: u8,
+    /// +0xcec: the last enemy whose hit the member took (FUN_001106b8).
+    attacker: Option<Entity>,
     target_changed: bool,
     held: Option<(Vec3, f32)>,
     attack: Option<Attacking>,
@@ -978,6 +986,8 @@ fn spawn_party(
                 choosing: Default::default(),
                 timer: 0.0,
                 target: None,
+                style: std::env::var("KH2_PARTY_STYLE").ok().and_then(|v| v.trim().parse::<u8>().ok()).unwrap_or(0),
+                attacker: None,
                 target_changed: false,
                 held: None,
                 attack: None,
@@ -1103,6 +1113,53 @@ fn shape_of(t: Target, fighters: &[(Entity, Vec<(Vec3, f32)>)]) -> Option<(Vec3,
     fighters.iter().find(|f| f.0 == t.entity).and_then(|f| f.1.get(t.shape).copied())
 }
 
+/// What FUN_0010dcf0 / FUN_0010cf90 read besides the member: the enemies' shapes (the object walk,
+/// in the fighters' order), the member's remembered attacker (+0xcec), the player's target record
+/// (`0x34e9b0`) and the object of the player's latest attack (`0x34e9c4`).
+struct TargetCtx<'a> {
+    enemies: &'a [(Entity, Vec<(Vec3, f32)>)],
+    player: Vec3,
+    attacker: Option<Entity>,
+    player_target: Option<Target>,
+    player_hit: Option<Entity>,
+}
+
+/// FUN_0010df08's target refresh for a member of `class` with battle style `style` (setting byte 0):
+/// the re-target test (FUN_0010cf90) on the current target, then, when it asks, the choice
+/// (FUN_0010dcf0). `valid` is FUN_0010ca88's answer for the current target (it answers, bit 0x40 clear);
+/// `current_counted` the running record exists and lacks flag 1. `limit` is false until limits exist.
+/// Returns the new target (`current` kept when no choice ran). `None` for a style outside the table.
+#[allow(clippy::too_many_arguments)]
+fn refresh_target(class: u8, style: u8, p: &battle::Params, pos: Vec3, current: Option<Target>, valid: bool, current_counted: bool, ctx: &TargetCtx) -> Option<Option<Target>> {
+    let (chooser, test) = battle::dispatch(class, style)?;
+    let index = |e: Entity| ctx.enemies.iter().position(|f| f.0 == e);
+    let cands: Vec<battle::Cand> = ctx
+        .enemies
+        .iter()
+        .enumerate()
+        .flat_map(|(fi, (_, shapes))| shapes.iter().enumerate().map(move |(si, &(centre, radius))| battle::Cand { fighter: fi, shape: si, centre, radius, enabled: true, targetable: true }))
+        .collect();
+    let scene = battle::TargetScene {
+        member: pos,
+        player: ctx.player,
+        attacker: ctx.attacker.and_then(index),
+        player_target: ctx.player_target.and_then(|t| index(t.entity).map(|f| (f, t.shape))),
+        player_hit: ctx.player_hit.and_then(index),
+        cands: &cands,
+    };
+    let now = current.filter(|_| valid).and_then(|t| Some(((index(t.entity)?, t.shape), shape_of(t, ctx.enemies)?.0)));
+    if !battle::needs_retarget(test, false, now, current_counted, p, &scene) {
+        return Some(current);
+    }
+    Some(battle::choose_target(chooser, false, p, &scene).map(|(f, s)| Target { entity: ctx.enemies[f].0, shape: s }))
+}
+
+/// The player's target record (+0x9f4 copied to `0x34e9b0`): the lock-on, else the auto target, on its
+/// first hurt shape [inferred: the app keeps the object only, not the shape].
+fn player_target(e: Option<Entity>) -> Option<Target> {
+    e.map(|entity| Target { entity, shape: 0 })
+}
+
 /// The relation FUN_0010b428 keeps (+0xb80 player, +0xbb0 target): the GAME's height difference
 /// (target Y minus own Y with Y down), the ground direction and distance (the 3D parts are not used).
 #[derive(Clone, Copy, Debug, Default)]
@@ -1160,6 +1217,12 @@ fn party_tick(
             Some((e, shapes.map(|s| crate::combat::hurt_spheroid(s, a, g)).map(|h| (h.center / SCALE, h.radius / SCALE)).collect()))
         })
         .collect();
+
+    // FUN_00111d18: the player's target record and attacked object (cleared when the object is gone).
+    let sora_target = s.lock.or(s.target).filter(|e| enemies.iter().any(|f| f.0 == *e));
+    if mgr.player_hit.is_some_and(|e| !enemies.iter().any(|f| f.0 == e)) {
+        mgr.player_hit = None;
+    }
 
     // FUN_00110e08 by harness: at the given second every member asks for a forced warp.
     if !mgr.forced_done && let Some(at) = std::env::var("KH2_PARTY_WARP").ok().and_then(|v| v.parse::<f32>().ok()) && mgr.tick as f32 >= at * 60.0 {
@@ -1276,27 +1339,26 @@ fn party_tick(
             // distance (style 0: the class's +0x80); then, in battle, the target (style 0, FUN_0010d0c0)
             // when the re-target test asks for one (FUN_0010cf90 -> FUN_0010cbe0).
             let rel_player = relation(pos, player);
-            let too_far = ai.is_some_and(|a| battle::battle_distance(a.params.battle, 0, data.half) < rel_player.gd);
+            let too_far = ai.is_some_and(|a| battle::battle_distance(a.params.battle, m.style, data.half) < rel_player.gd);
             m.target_changed = false;
             if in_battle {
-                let valid = m.target.and_then(|t| shape_of(t, &enemies));
-                let retarget = match (valid, ai) {
-                    (Some((ct, _)), Some(a)) => battle::retarget_style0(false, (ct - pos).length(), a.params.retarget),
-                    _ => true,
-                };
-                if retarget && let Some(a) = ai {
-                    let all = enemies.iter().enumerate().flat_map(|(fi, (_, shapes))| shapes.iter().enumerate().map(move |(si, &(ct, r))| (fi * 256 + si, ct, r)));
-                    let new = battle::nearest_target(pos, a.params.range, all).map(|k| Target { entity: enemies[k / 256].0, shape: k % 256 });
-                    if new != m.target {
-                        m.target_changed = true;
-                        if log {
-                            match new {
-                                Some(t) => info!("party: {} target {:?} shape {} ({:.0} away)", m.model, t.entity, t.shape, shape_of(t, &enemies).map_or(0.0, |(ct, _)| (ct - pos).length())),
-                                None => info!("party: {} no target within {:.0}", m.model, a.params.range),
+                if let Some(a) = ai {
+                    // FUN_0010ca88: the target answers and bit 0x40 (too far from the player) is clear.
+                    let valid = m.target.is_some_and(|t| shape_of(t, &enemies).is_some()) && !too_far;
+                    let counted = m.choosing.current.and_then(|i| a.records.get(i)).is_some_and(|r| r.flags & battle::flag::NOT_COUNTED == 0);
+                    let ctx = TargetCtx { enemies: &enemies, player, attacker: m.attacker, player_target: player_target(sora_target), player_hit: mgr.player_hit };
+                    if let Some(new) = refresh_target(m.class, m.style, &a.params, pos, m.target, valid, counted, &ctx) {
+                        if new != m.target {
+                            m.target_changed = true;
+                            if log {
+                                match new {
+                                    Some(t) => info!("party: {} style {} target {:?} shape {} ({:.0} away)", m.model, m.style, t.entity, t.shape, shape_of(t, &enemies).map_or(0.0, |(ct, _)| (ct - pos).length())),
+                                    None => info!("party: {} style {} no target (range {:.0})", m.model, m.style, a.params.range),
+                                }
                             }
                         }
+                        m.target = new;
                     }
-                    m.target = new;
                 }
             } else {
                 m.target = None;
@@ -1848,8 +1910,14 @@ fn party_push_apart(
 }
 
 /// `KH2_PARTYLOG`: the members' landed hits (the enemy's own line prints the damage).
-fn party_hits(mut hits: MessageReader<Hit>, mgr: Res<Manager>, q: Query<&PartyMember>) {
+///
+/// Also remembers `0x34e9c4`, the object of the player's latest attack: here the object of the player's
+/// latest landed hit [inferred: the game writes it at the attack's start, FUN_00176050 -> FUN_00112850].
+fn party_hits(mut hits: MessageReader<Hit>, mut mgr: ResMut<Manager>, q: Query<&PartyMember>, sora: Query<(), With<Sora>>) {
     for h in hits.read() {
+        if sora.contains(h.attacker) {
+            mgr.player_hit = Some(h.target);
+        }
         if let Ok(m) = q.get(h.attacker)
             && mgr.log
         {
@@ -1919,6 +1987,8 @@ fn party_receive_hits(
             continue;
         }
         let (Some(atk), Ok(from), Some(mut to)) = (game.hit_row(h), enemies.get(h.attacker).map(|e| e.stats), crate::enemy::member_stats(progress.as_deref(), m.neo)) else { continue };
+        // FUN_001106b8: +0xcec = the attacker, for a hit the object test (FUN_00112ac0) accepts.
+        m.attacker = Some(h.attacker);
         // The victim's defense is the status +0x18c FUN_0019f920 rebuilt (WP-S3, `member_status`).
         if let Some(rec) = progress.as_ref().and_then(|p| p.member(m.neo)) {
             (to.strength, to.magic, to.defense) = data.member_status(m.neo, &rec);
@@ -2248,6 +2318,56 @@ fn party_fade(
 mod tests {
     use super::*;
     use kh2_anim::PlayerState;
+
+    /// WP-PA2: the entry point `refresh_target` runs every style on one synthetic scene. The member is at the origin,
+    /// the player at x 100; enemy A stands at x 300 (member 300, player 200 away), enemy B at x -150 (member 150,
+    /// player 250). Each style picks by its own rule (docs/party.md section 4).
+    #[test]
+    fn party_every_style_chooses_by_its_own_rule() {
+        let mut w = bevy::ecs::world::World::new();
+        let (a, b) = (w.spawn_empty().id(), w.spawn_empty().id());
+        let enemies = vec![(a, vec![(Vec3::new(300.0, 0.0, 0.0), 0.0)]), (b, vec![(Vec3::new(-150.0, 0.0, 0.0), 0.0)])];
+        let p = battle::Params { range: 400.0, retarget: 500.0, player_range: 220.0, player_near: 50.0, retarget_half: 0.5, farthest_start: -1.0, ..Default::default() };
+        let ctx = |attacker, player_target, player_hit| TargetCtx { enemies: &enemies, player: Vec3::new(100.0, 0.0, 0.0), attacker, player_target, player_hit };
+        let at = |e| Some(Target { entity: e, shape: 0 });
+        let pick = |style, current: Option<Target>, c: &TargetCtx| refresh_target(2, style, &p, Vec3::ZERO, current, current.is_some(), false, c).expect("style in the table");
+        let none = ctx(None, None, None);
+        // 0: the nearest surface; a remembered attacker wins while it is in range.
+        assert_eq!(pick(0, None, &none), at(b));
+        assert_eq!(pick(0, None, &ctx(Some(a), None, None)), at(a));
+        // 1: nothing until the player has attacked or targeted something; then that object.
+        assert_eq!(pick(1, None, &none), None);
+        assert_eq!(pick(1, None, &ctx(None, at(a), Some(a))), at(a));
+        assert_eq!(pick(1, None, &ctx(None, at(a), None)), at(a), "the player's target alone: its nearest shape");
+        // 2: B is 250 from the player (beyond +0x84 = 220): only A qualifies although B is nearer.
+        assert_eq!(pick(2, None, &none), at(a));
+        // 3: the farthest from the player among those within twice the range.
+        assert_eq!(pick(3, None, &none), at(b));
+        // 4: no target. 5: the nearest, and never re-targets.
+        assert_eq!(pick(4, None, &none), None);
+        assert_eq!(pick(5, None, &none), at(b));
+        assert_eq!(pick(5, at(a), &ctx(Some(b), None, None)), at(a), "style 5 keeps its target");
+        // The re-target tests: style 0 leaves a valid target unless an attacker names another object.
+        assert_eq!(pick(0, at(a), &none), at(a));
+        assert_eq!(pick(0, at(a), &ctx(Some(b), None, None)), at(b));
+        // Style 1 follows the player's target record; style 4 always asks (and finds nothing).
+        assert_eq!(pick(1, at(b), &ctx(None, at(a), Some(a))), at(a));
+        assert_eq!(pick(4, at(a), &none), None);
+        // A target that no longer answers is replaced by the style's choice.
+        assert_eq!(refresh_target(2, 0, &p, Vec3::ZERO, at(a), false, false, &none), Some(at(b)));
+        // A style outside the table makes no choice; a class above 0xd uses its own row whatever the style.
+        assert_eq!(refresh_target(2, 9, &p, Vec3::ZERO, None, false, false, &none), None);
+        assert_eq!(refresh_target(15, 3, &p, Vec3::ZERO, None, false, false, &none), Some(at(b)), "class 15 chooses like style 0");
+    }
+
+    /// WP-PA2: the battle distance follows the member's style (double for 3 and 5, halved for 2).
+    #[test]
+    fn party_battle_distance_follows_the_style() {
+        assert_eq!(battle::battle_distance(100.0, 0, 0.5), 100.0);
+        assert_eq!(battle::battle_distance(100.0, 3, 0.5), 200.0);
+        assert_eq!(battle::battle_distance(100.0, 5, 0.5), 200.0);
+        assert_eq!(battle::battle_distance(100.0, 2, 0.5), 50.0);
+    }
 
     /// A merged `memt` stand-in: member index i (at 8 + i) names object 100 + i for 1..=9, nobody for the rest.
     fn merged() -> [u16; 24] {

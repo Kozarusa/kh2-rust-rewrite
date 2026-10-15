@@ -25,6 +25,8 @@ pub struct Signature {
 #[derive(Debug, Default, Clone)]
 pub struct HostTable {
     entries: HashMap<(u16, u16), Signature>,
+    /// The numbers the target search (hosts 6.3 / 6.5) reads from the executable.
+    pub search: Option<crate::search::SearchConsts>,
 }
 
 impl HostTable {
@@ -82,6 +84,9 @@ impl HostTable {
                 i += 1;
             }
         }
-        Some(HostTable { entries })
+        let num = |va: u32| word(va).map(f32::from_bits);
+        let [a, b, c, d, e] = crate::search::SearchConsts::ADDRS;
+        let search = (|| Some(crate::search::SearchConsts { max: num(a)?, angle: num(b)?, gate: num(c)?, wrap_pi: num(d)?, wrap_two_pi: num(e)? }))();
+        Some(HostTable { entries, search })
     }
 }

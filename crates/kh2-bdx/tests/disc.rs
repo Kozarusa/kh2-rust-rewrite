@@ -30,6 +30,19 @@ fn signatures_match_the_executable() {
     }
 }
 
+/// The functions the runtime answers itself without a `names.rs` row (the target search 6.3 / 6.4 / 6.5 /
+/// 10.55 and the static vector 6.54) take the argument counts it reads, per the executable's table.
+#[test]
+fn runtime_group_6_signatures_match_the_executable() {
+    let Some((_, elf)) = open() else { return };
+    let table = HostTable::from_exe(&elf).expect("table");
+    for (g, i, n, ret) in [(6, 3, 2, false), (6, 4, 1, false), (6, 5, 7, false), (10, 55, 2, false), (6, 54, 1, true)] {
+        let s = table.get(g, i).unwrap_or_else(|| panic!("{g}.{i} missing"));
+        assert_eq!((s.nargs, s.returns), (n, ret), "{g}.{i}");
+    }
+    assert!(table.search.is_some(), "the search numbers 0x383fb4..0x383fbc, 0x37a528 / 0x37a52c");
+}
+
 #[test]
 fn shadow_and_soldier_parse_and_run() {
     let Some((mut a, _)) = open() else { return };
@@ -346,6 +359,83 @@ fn every_script_on_the_disc_parses() {
     if std::fs::metadata("../../local/kh2idx.txt").is_ok() {
         assert!(ok > 1000);
     }
+}
+
+/// Goofy's `turbo` (P_EX030 R0b5c, WP-S6) on the mock world with two target parts: the block at the
+/// context +0x20 is set up by 6.3 (capacity 5), 10.55 and the script's own distance (0..500) and angle (2 pi)
+/// writes; every 30 frames 6.5 searches with the history on (the nearest part first, then the other one,
+/// since the history skips the first) into the target record of 2.23 (the host's memory), and the host is
+/// told each answer (`Host::target_found`). No script error.
+#[test]
+fn goofy_turbo_searches_its_targets() {
+    use kh2_bdx::host::{Host, Value};
+    use kh2_bdx::search::TargetPart;
+    /// What `target_found` was told: the record, the part found, the parts walked.
+    type Found = (u32, Option<(u32, u8)>, u8);
+    struct TurboHost {
+        mock: MockHost,
+        found: Vec<Found>,
+        asked: Vec<(i32, bool)>,
+    }
+    impl Host for TurboHost {
+        fn call(&mut self, c: &Call) -> Value {
+            match c {
+                Call::MotionState { .. } => {
+                    self.mock.call(c);
+                    Value::Int(self.mock.motion)
+                }
+                Call::Func { group: 1, index: 150, .. } => {
+                    self.mock.call(c);
+                    Value::Bool(true)
+                }
+                // Goofy stays where he is, so the distances stay as laid out.
+                Call::SetMove { .. } => Value::None,
+                // 1.247 random_free_point: the centre (the toy world is open).
+                Call::Func { group: 1, index: 247, .. } => {
+                    self.mock.call(c);
+                    Value::Vec(self.mock.position)
+                }
+                _ => self.mock.call(c),
+            }
+        }
+        fn read_mem(&mut self, addr: u32, out: &mut [u8]) -> bool {
+            self.mock.read_mem(addr, out)
+        }
+        fn write_mem(&mut self, addr: u32, data: &[u8]) -> bool {
+            self.mock.write_mem(addr, data)
+        }
+        fn target_parts(&mut self, kind: i32, skip_flagged: bool) -> Option<Vec<TargetPart>> {
+            self.asked.push((kind, skip_flagged));
+            Some(vec![TargetPart { obj: 0x900, part: 1, point: [0.0, 0.0, 450.0, 1.0] }, TargetPart { obj: 0xa00, part: 0, point: [200.0, 0.0, 0.0, 1.0] }, TargetPart { obj: 0xb00, part: 0, point: [700.0, 0.0, 0.0, 1.0] }])
+        }
+        fn target_found(&mut self, record: u32, found: Option<(u32, u8)>, walked: u8) {
+            self.found.push((record, found, walked));
+        }
+    }
+    let Some((mut a, elf)) = open() else { return };
+    let data = object_script(&mut a, "obj/P_EX030.mdlx");
+    let mut rt = Runtime::new(Program::parse(&data).unwrap());
+    rt.set_host_table(HostTable::from_exe(&elf).expect("table"));
+    let mut host = TurboHost { mock: MockHost::new(), found: Vec::new(), asked: Vec::new() };
+    host.mock.motion_length = 200.0;
+    assert!(rt.spawn(&mut host, SELF_OBJ));
+    rt.set_mode_named(&mut host, "turbo");
+    for _ in 0..200 {
+        rt.update(&mut host);
+        host.mock.tick();
+    }
+    assert!(rt.core.errors.is_empty(), "{:?}", rt.core.errors);
+    eprintln!("turbo: searches {:?}", host.found);
+    assert!(host.asked.iter().all(|&a| a == (0, true)), "kind 0 (enemies), the 0x8000 objects skipped (10.55): {:?}", host.asked);
+    let found: Vec<Option<(u32, u8)>> = host.found.iter().map(|f| f.1).collect();
+    assert!(found.len() >= 6, "a search every 30 frames: {found:?}");
+    assert_eq!(&found[..3], &[Some((0xa00, 0)), Some((0x900, 1)), None], "nearest within 500, then the other, then none left (history of 5)");
+    assert_eq!(found[5], Some((0xa00, 0)), "after five searches 6.4 empties the history (R0c12)");
+    assert!(host.found.iter().all(|f| f.0 == kh2_bdx::mock::TARGET && f.2 == 3), "the target record of 2.23, three parts walked");
+    // The record in the host's memory: object, part, 0, -1 (FUN_0018f490).
+    let mut rec = [0u8; 16];
+    assert!(host.mock.read_mem(kh2_bdx::mock::TARGET, &mut rec));
+    assert_eq!(&rec[12..16], &[0xff; 4]);
 }
 
 /// Goofy's `blade` (P_EX030 R0d30, WP-S5) on the mock world with a hand object: the child thread R0d94

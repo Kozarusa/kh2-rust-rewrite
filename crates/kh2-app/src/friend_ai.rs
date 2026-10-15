@@ -27,7 +27,7 @@ use crate::combat::{Fighter, Hit, Team};
 use crate::data::GameData;
 use crate::enemy_ai::AiTrace;
 use crate::enemy_host::{BevyHost, Env};
-use crate::friend_host::{FriendFields, FriendHost, FxReq, TARGET_ENEMY, TARGET_OTHER, WEAPON_HANDLE, WeaponObj};
+use crate::friend_host::{FriendFields, FriendHost, FxReq, SearchPart, TARGET_ENEMY, TARGET_OTHER, WEAPON_HANDLE, WeaponObj};
 use crate::enemy_obj::{Obj, OBJ_SIZE, PLAYER, SELF_BASE};
 use crate::fx::{Bind, Placement};
 use crate::party::{PartyMember, SpecialOn};
@@ -387,6 +387,25 @@ fn friend_update(
             Some((e, shapes.map(|sh| (crate::combat::shape_volume(sh, a, g), crate::combat::hurt_spheroid(sh, a, g))).collect::<Vec<_>>()))
         })
         .collect();
+    // The enemies' target parts (TARGET shapes) a target search (host 6.5) walks, in the fighters' order.
+    let targets: Vec<SearchPart> = fighter_roots
+        .iter()
+        .filter_map(|e| {
+            let f = fighters.get(e).ok().filter(|f| f.team == Team::Enemy && f.hittable)?;
+            let (a, g) = (anims.get(f.hurt_body).ok()?, gts.get(f.hurt_body).ok()?);
+            let shapes = a.rig.model.shapes.iter().filter(|sh| sh.kind == shape_kind::BATTLE || sh.kind == shape_kind::TARGET).enumerate();
+            Some(
+                shapes
+                    .filter(|(_, sh)| sh.kind == shape_kind::TARGET)
+                    .map(|(i, sh)| {
+                        let h = crate::combat::hurt_spheroid(sh, a, g);
+                        SearchPart { entity: e, shape: i, part: sh.group, point: h.center / crate::SCALE, radius: h.radius / crate::SCALE }
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .flatten()
+        .collect();
     let bodies: Vec<(u8, Entity)> = q.iter().map(|(_, m, _)| (m.slot, m.body)).collect();
     for m in memory.0.values_mut() {
         m.tick();
@@ -465,7 +484,7 @@ fn friend_update(
             event_active: false,
         };
         let handle = obj.handle;
-        let mut host = FriendHost { inner: BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() }, fields, game: &game, free: scripts.free.as_ref() };
+        let mut host = FriendHost { inner: BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() }, fields, game: &game, free: scripts.free.as_ref(), targets: &targets };
         if !*started {
             *started = true;
             rt.spawn(&mut host, handle);
@@ -481,6 +500,16 @@ fn friend_update(
             }
         }
         rt.update(&mut host);
+        // Host 6.5 (FUN_002f04a8) wrote the member's target record: it names the part found, or nothing.
+        if let Some((found, walked)) = host.fields.searched.take() {
+            if log {
+                match found {
+                    Some((e, shape)) => info!("party: {tag} target search (6.5, FUN_002f04a8): {walked} parts walked, the record names {e:?} shape {shape}"),
+                    None => info!("party: {tag} target search (6.5, FUN_002f04a8): {walked} parts walked, none found: the record is cleared"),
+                }
+            }
+            m.search_target(found);
+        }
         // Host 1.276 paid the pending MP: FUN_00186368 on the member (an MP charge when it is short).
         if let Some(cost) = host.fields.paid.take() {
             m.pay_mp(cost);
@@ -550,7 +579,7 @@ fn friend_update(
         let calls: Vec<(u32, u32, u32, Entity)> = out.iter().filter_map(|(h, _, handle)| fields.attacks.iter().find(|a| a.handle == *handle)?.callback.map(|(pc, arg)| (pc, arg, *handle, h.target))).collect();
         for (pc, arg, handle, victim) in calls {
             fields.callback_victim = Some(victim);
-            let mut host = FriendHost { inner: BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() }, fields, game: &game, free: scripts.free.as_ref() };
+            let mut host = FriendHost { inner: BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() }, fields, game: &game, free: scripts.free.as_ref(), targets: &targets };
             rt.call_routine(&mut host, pc, &[arg, TARGET_ENEMY, handle]);
             if log {
                 info!("party: {tag} attack object {handle:#x} hit {victim:?}: its routine R{pc:04x} runs (2.38, FUN_0018cf50)");
@@ -570,12 +599,18 @@ fn friend_update(
                 spell_hits.write(sh);
             }
         }
-        // The free hand object moves by its velocity (1.89) [inferred: once a frame after the script],
-        // and `party::member_hands` draws it at its own place while it is off the hand.
+        // The free hand object moves by its secondary velocity (1.89, +0x880): FUN_00181e00 (the object's
+        // movement, from FUN_001b74e0) adds the direction times the speed +0x88c times the frame unit to the
+        // frame's displacement and then clears +0x880, so it moves only in frames the script set it
+        // [inferred: after the script's slice; its mover's own part (+0xc vtable +0x1c) and FUN_00182370's
+        // are not modelled]; `party::member_hands` draws it at its own place while it is off the hand.
         if let Some(w) = fields.weapon.as_mut()
             && !w.linked
         {
             w.pos += w.vel;
+        }
+        if let Some(w) = fields.weapon.as_mut() {
+            w.vel = Vec3::ZERO;
         }
         let thrown = fields.weapon.as_ref().filter(|w| !w.linked).map(|w| (w.pos, w.yaw, w.motion));
         if log && thrown.is_some() != m.thrown.is_some() {

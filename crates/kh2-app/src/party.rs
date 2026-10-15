@@ -518,6 +518,27 @@ impl PartyMember {
         }
     }
 
+    /// Host 6.5 (FUN_002f04a8 -> FUN_0018ed40 / FUN_0018f490) on the member's target record (+0x9f4): it names
+    /// the enemy's shape found (the special's record too: it is the same record), or is cleared (then no
+    /// longer valid for 1.140). [inferred] The app's own re-target pass (`party_tick`) still runs while a
+    /// special does and may pick the nearest enemy again after a clear.
+    pub(crate) fn search_target(&mut self, found: Option<(Entity, usize)>) {
+        let t = found.map(|(entity, shape)| Target { entity, shape });
+        self.target_changed = t != self.target;
+        self.target = t;
+        match t {
+            Some(t) => {
+                if self.special_target || self.special_who.is_some() {
+                    self.special_who = Some(ScriptTarget::Enemy(t));
+                }
+            }
+            None => {
+                self.special_who = None;
+                self.special_target = false;
+            }
+        }
+    }
+
     /// The member's target record (+0x9f4) is valid (host 1.140).
     pub(crate) fn target_valid(&self) -> bool {
         self.special_target || self.target.is_some()

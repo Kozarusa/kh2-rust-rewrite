@@ -240,4 +240,20 @@ pub trait Host {
     fn write_mem(&mut self, _addr: u32, _data: &[u8]) -> bool {
         false
     }
+
+    /// Host 6.5 (FUN_002f04a8) walks the game's object list (FUN_001b7c88) and keeps the objects that pass
+    /// FUN_002f0218 for `kind` (0: +0x588 bit 0x10; 1, 2: bit 4; else any; an object linked to a parent
+    /// with +0x588 bit 0x80 never) and FUN_002f03f8 (kind 2 or bit 4, else FUN_0019a5d0: a targetable
+    /// object with a target part), without those with +0x108 bit 0x8000 when `skip_flagged`; the host
+    /// answers their target parts (FUN_0016b4e0 type 3) in list order with their points (FUN_001894d0).
+    /// The runtime does the rest (`crate::search`). `None`: the host keeps no object list; the call then
+    /// reaches [`Host::call`] as before.
+    fn target_parts(&mut self, _kind: i32, _skip_flagged: bool) -> Option<Vec<crate::search::TargetPart>> {
+        None
+    }
+
+    /// The answer of a host 6.5 search the runtime made: the record at `record` (the script's or the
+    /// host's memory) now names `found` (object, part id), or is cleared (`None`). `walked` is the
+    /// block's byte +5.
+    fn target_found(&mut self, _record: u32, _found: Option<(u32, u8)>, _walked: u8) {}
 }

@@ -3,8 +3,8 @@
 //! motion requests (FUN_0017e000 -> FUN_0017da30).
 //!
 //! Group 10 entries the members' scripts reach (`kh2 bdx P_EX020` / `P_EX030`: Donald 10.31; Goofy 10.14,
-//! 10.31, 10.40, 10.55) are answered here; the rest of group 10 goes to the enemy host, which reports it
-//! as missing in the `KH2_BDXLOG` table. Everything else is the enemy host's.
+//! 10.31, 10.40; 10.55 is the runtime's) are answered here; the rest of group 10 goes to the enemy host,
+//! which reports it as missing in the `KH2_BDXLOG` table. Everything else is the enemy host's.
 
 use bevy::prelude::*;
 use kh2_bdx::host::{Arg, Call, Host, Value};
@@ -67,7 +67,32 @@ pub struct FriendFields {
     /// then wrote into the member's target record.
     pub callback_victim: Option<Entity>,
     pub retarget: Option<Entity>,
+    /// What a target search (host 6.5, FUN_002f04a8) wrote into the member's target record this tick:
+    /// `Some(None)` cleared it, `Some(Some((enemy, shape)))` names an enemy's part (the shape's index among
+    /// its BATTLE / TARGET shapes, as `party` keeps it), with the parts the search walked (byte +5).
+    pub searched: Option<(Option<(Entity, usize)>, u8)>,
 }
+
+/// One target part a member's target search (host 6.5) may pick: an enemy's TARGET shape (the collision
+/// record of type 3 FUN_0016b4e0 walks) with its id (byte 0, `Shape::group`), its index among the
+/// enemy's BATTLE / TARGET shapes (`party`'s target), its point (the hurt shape's centre, as
+/// FUN_001894d0's bone frame times the offset moved up by the lift; game units, the app's axes) and radius.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SearchPart {
+    pub entity: Entity,
+    pub shape: usize,
+    pub part: u8,
+    pub point: Vec3,
+    pub radius: f32,
+}
+
+/// The object handle a search part's enemy has in the members' scripts (the history of the search block
+/// keeps it from search to search): past the hand objects, the entity's index.
+pub(crate) fn enemy_handle(e: Entity) -> u32 {
+    ENEMY_HANDLE + (e.to_bits() as u32 & 0xff_ffff)
+}
+
+const ENEMY_HANDLE: u32 = 0x7e00_0000;
 
 /// The member's hand object as a scripted object (the weapon list +0xaf8 holds it; FUN_0017c718 made it):
 /// linked to the hand (1.18 / 1.102) or free, then placed by the script (1.148) and moved by its secondary
@@ -219,6 +244,8 @@ pub(crate) struct FriendHost<'a, 'b> {
     pub(crate) game: &'b crate::data::GameData,
     /// Host 1.247's numbers from the executable (`None`: not readable; the call is then missing).
     pub(crate) free: Option<&'b crate::party_rules::FreePointConsts>,
+    /// The enemies' target parts host 6.5 walks (`friend_ai` lists them each tick).
+    pub(crate) targets: &'b [SearchPart],
 }
 
 fn words(c: &Call) -> Option<(u16, u16, Vec<u32>)> {
@@ -421,13 +448,17 @@ impl FriendHost<'_, '_> {
                 w.pos = crate::enemy_obj::from_game(*v);
                 (Value::None, St::Impl, "")
             }
-            // 1.89 set_velocity (0x172f90): +0x880 = the direction made unit, the speed in w; [inferred] the free
-            // hand object moves by it each frame (its mover's consumer was not read).
+            // 1.89 set_velocity (0x172f90 -> FUN_00183418): +0x880 = the direction made unit, +0x88c the speed;
+            // FUN_00181e00 adds direction x speed x the frame unit to that frame's displacement and clears
+            // +0x880 (`friend_ai` moves the free hand object by it once and clears it).
             Call::SetVelocity { obj, dir, speed } if is_w(*obj) => {
                 let d = crate::enemy_obj::from_game(*dir).normalize_or_zero();
                 self.fields.weapon.as_mut().expect("weapon").vel = d * *speed;
-                (Value::None, St::Approx, "the free hand object moves by direction x speed each frame [inferred consumer]")
+                (Value::None, St::Approx, "the free hand object moves by direction x speed in the frame it was set (FUN_00181e00); its mover's own displacement is not modelled")
             }
+            // 1.79 face_toward (0x172d98 -> FUN_0016a828): without the lock bit (+0x7f8 bit 8, FUN_0019ad98) a yaw
+            // only, atan2 of the direction's x and z (FUN_003003e8), into the wanted yaw +0x66c (FUN_0016a7f0):
+            // the hand object's facing is flat in the game too.
             Call::FaceToward { obj, dir } | Call::FaceDirection { obj, dir } if is_w(*obj) => {
                 let d = crate::enemy_obj::from_game(*dir);
                 if d.x != 0.0 || d.z != 0.0 {
@@ -541,13 +572,12 @@ impl FriendHost<'_, '_> {
                 self.record(c, &Value::None, St::Impl, "");
                 Some(Value::None)
             }
-            // 6.3 (0x2ee718 -> FUN_002f01a0) sets up a target-search block, 6.5 (0x2ee750 -> FUN_002f04a8)
-            // searches the objects for a target into a record (Goofy's `tornado` asks it only when his
-            // target record is not valid, `turbo` every 30 frames), 6.4 (0x2ee738 -> FUN_002f0748) clears the
-            // block's count byte +4 and its history count +8. The block lives in the script's own memory. Not
-            // ported (docs/party.md section 16): the record stays as it is.
+            // 6.3 (0x2ee718 -> FUN_002f01a0), 6.4 (0x2ee738 -> FUN_002f0748) and 6.5 (0x2ee750 ->
+            // FUN_002f04a8) work on a block in the script's own memory: the runtime does them
+            // (`kh2_bdx::search`, docs/party.md section 17) and asks `target_parts` below. They reach the host
+            // only when the executable's numbers (0x383fb4..0x383fbc) could not be read.
             Call::Unknown { group: 6, index: 3..=5, .. } | Call::Func { group: 6, index: 3..=5, .. } => {
-                self.record(c, &Value::None, St::Stub, "the target search FUN_002f04a8 is not ported: the member's target record stays");
+                self.record(c, &Value::None, St::Missing, "the executable's numbers of the target search are not readable: the member's target record stays");
                 Some(Value::None)
             }
             // 1.247 random_free_point (0x1726d8 -> FUN_001a5ea8, mask 1): a free floor point between the two
@@ -622,6 +652,33 @@ impl FriendHost<'_, '_> {
                 self.record(c, &v, St::Approx, "the member's target record whatever record is named; its shape taken as a sphere (kind 3) of the app's target part");
                 Some(v)
             }
+            // 2.19 attack_set_positions (0x18e7a0 -> FUN_001a30a8): +0xe0 = the first vector, +0xf0 (the
+            // previous position the sweep starts from) = the second, +4 |= 0x20.
+            Call::Func { group: 2, index: 19, args } => {
+                let (Some(h), Some(Arg::Vec(p)), Some(Arg::Vec(q))) = (args.first(), args.get(1), args.get(2)) else { return None };
+                let (p, q) = (crate::enemy_obj::from_game(*p), crate::enemy_obj::from_game(*q));
+                if let Some(a) = self.attack(raw(h)) {
+                    a.pos = Some(p);
+                    a.prev = Some(q);
+                }
+                self.record(c, &Value::None, St::Approx, "bit 0x20 of +4 is not kept (its reader was not read)");
+                Some(Value::None)
+            }
+            // 2.44 attack_word_84 (0x18e5d8): the word +0x84, the attack object's owner (FUN_001a3280 reads the
+            // owner's target record +0x9f4 through it): the member.
+            Call::Func { group: 2, index: 44, args } if args.first().is_some_and(|a| self.fields.attacks.iter().any(|x| x.handle == raw(a))) => {
+                let v = Value::Handle(me);
+                self.record(c, &v, St::Approx, "the owner +0x84 taken as the member (FUN_0018bd08's write of +0x84 was not read)");
+                Some(v)
+            }
+            // Donald's `blizzard` library (P_EX020 R0af8) calls these only behind request fields its script
+            // only ever sets to 0 (+0x100 for 1.88, +0x118 for 2.57, +0x108 for 6.51; R0b1b / R1312 / R1385
+            // are the only writers) or behind the bounce branch at R0cce, which tests the constant `-1 >= 0`
+            // (R0d3a: 1.160, 2.43). Not reached: no answer is ported.
+            Call::Func { group: 1, index: 88, .. } | Call::Unknown { group: 1, index: 160, .. } | Call::Unknown { group: 2, index: 43 | 57, .. } | Call::Unknown { group: 6, index: 51, .. } => {
+                self.record(c, &Value::Int(0), St::Stub, "not reached by the members' scripts (P_EX020 R0af8: request fields only ever 0, the bounce branch tests -1 >= 0): not ported");
+                Some(Value::Int(0))
+            }
             // 1.87 spawn_attached (0x171800 -> FUN_0016a570, owner = the object).
             Call::SpawnAttached { obj, id, .. } if *obj == me => {
                 let v = self.new_effect(FxReq::Bound { id: (*id).max(0) as u16, on: None });
@@ -674,19 +731,8 @@ impl FriendHost<'_, '_> {
             // 10.40 (0x2f72e8 -> FUN_0017eb48): whether the second object's motion controller is linked
             // under the first's (+0x94 / +0x9c chain). The app links no controllers.
             40 => (Value::Bool(false), St::Approx, "the app links no motion controllers: read false"),
-            // 10.55 (0x2f7540 -> FUN_002f0758): bit 16 of the word at the first argument + 4 = (second != 0).
-            55 => {
-                let at = arg(0).wrapping_add(4);
-                let mut b = [0u8; 4];
-                if !self.inner.read_mem(at, &mut b) {
-                    // Goofy's `tornado` / `turbo` point it at their target-search block in the script's own
-                    // globals (context +0x24 / +0x20), which only 6.5 (FUN_002f04a8, not ported) reads.
-                    return Some((Value::None, St::Stub, "10.55 on the script's own memory (a target-search block only 6.5 reads, not ported)"));
-                }
-                let w = u32::from_le_bytes(b) & !0x1_0000 | u32::from(arg(1) != 0) << 16;
-                self.inner.write_mem(at, &w.to_le_bytes());
-                (Value::None, St::Impl, "")
-            }
+            // 10.55 (0x2f7540 -> FUN_002f0758) is the runtime's (`kh2_bdx::search`): bit 16 of the word at the
+            // first argument + 4, on Goofy's target-search block in the script's own globals.
             _ => return None,
         })
     }
@@ -874,7 +920,44 @@ impl Host for FriendHost<'_, '_> {
     }
 
     fn write_mem(&mut self, addr: u32, data: &[u8]) -> bool {
+        // The member's target record: only a target search (6.5) writes it; `target_found` carries what it
+        // names, and `read_mem` keeps answering the record from the member's state.
+        let t = addr.wrapping_sub(crate::enemy_obj::TARGET) as usize;
+        if t + data.len() <= 20 {
+            return true;
+        }
         self.inner.write_mem(addr, data)
+    }
+
+    /// Host 6.5's objects (FUN_001b7c88's walk with FUN_002f0218 / FUN_002f03f8): for kind 0 (+0x588 bit
+    /// 0x10, the enemy class FUN_00184820 sets) the hittable enemies' TARGET shapes; kinds 1 / 2 (+0x588 bit
+    /// 4, the player and the members) are not listed.
+    fn target_parts(&mut self, kind: i32, skip_flagged: bool) -> Option<Vec<kh2_bdx::search::TargetPart>> {
+        let parts: Vec<kh2_bdx::search::TargetPart> = if matches!(kind, 1 | 2) {
+            Vec::new()
+        } else {
+            self.targets.iter().map(|p| kh2_bdx::search::TargetPart { obj: enemy_handle(p.entity), part: p.part, point: crate::enemy_obj::to_game(p.point) }).collect()
+        };
+        let c = Call::Unknown { group: 6, index: 5, args: vec![kind as u32, skip_flagged as u32] };
+        let v = Value::Int(parts.len() as i32);
+        let why = match kind {
+            1 | 2 => "kinds 1 / 2 (the player and the members, +0x588 bit 4) are not listed: nothing found",
+            _ => "the hittable enemies' TARGET shapes in the app's order (FUN_0019a5d0's +0x7f8 bit 0x400 / +0x108 bit 0x20 read as `hittable`; the collision list's enable mask and +0x108 bit 0x8000 (10.55) not modelled)",
+        };
+        self.record(&c, &v, St::Approx, why);
+        Some(parts)
+    }
+
+    fn target_found(&mut self, record: u32, found: Option<(u32, u8)>, walked: u8) {
+        if record != crate::enemy_obj::TARGET {
+            return;
+        }
+        let hit = found.and_then(|(o, part)| self.targets.iter().find(|p| enemy_handle(p.entity) == o && p.part == part));
+        // The record names the part from now on: the member's target (1.140 / 1.120 / 6.9) follows at once.
+        self.fields.target_valid = hit.is_some();
+        self.fields.target_point = hit.map(|p| p.point);
+        self.fields.target_radius = hit.map_or(0.0, |p| p.radius);
+        self.fields.searched = Some((hit.map(|p| (p.entity, p.shape)), walked));
     }
 }
 

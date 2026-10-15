@@ -309,13 +309,13 @@ pub struct Progress {
     /// bit n, `FUN_001a52b0` sets it. The shops read and set them (`menu_shop::stock`); nothing else in the app does yet.
     record_bits: Vec<u32>,
     /// The moogle's synthesis record (save `+0x3728`, `FUN_002906c0`; docs/menus.md 23), read and written by the shop's
-    /// third row (`menu_shop::synth`). Outside the party block, so kept apart like `wallet`. Not in the slot files yet.
+    /// third row (`menu_shop::synth`). Outside the party block, so kept apart like `wallet`. Saved in the slot files (key `moogle`).
     pub moogle: Moogle,
     /// The shops' "seen" bits (save `+0x3714`, 0x80 bits over the shop file's item list, `FUN_00265ad0`): an item whose
-    /// bit is clear is NEW in a shop's Buy list until the cursor reaches it (`FUN_00265348`). Not in the slot files yet.
+    /// bit is clear is NEW in a shop's Buy list until the cursor reaches it (`FUN_00265348`). Saved in the slot files (key `shop_seen`).
     shop_seen: [u32; 4],
     /// The shops' first-visit byte (save `+0x3724`): bit 0 / bit 1 once the opening text of a shop with the state's
-    /// `+0xd` clear / set was dismissed (`FUN_002621a0`, `FUN_00265498`). Not in the slot files yet.
+    /// `+0xd` clear / set was dismissed (`FUN_002621a0`, `FUN_00265498`). Saved in the slot files (key `shop_visits`).
     shop_visits: u8,
 }
 
@@ -1659,6 +1659,31 @@ impl Progress {
                             Moogle::with(&mut self.moogle.rewards, u32::from(b));
                         }
                     }
+                    for (name, field) in [("known", 0), ("learned", 1), ("made", 2), ("seen", 3)] {
+                        if let Some(u) = v.get(name) {
+                            let set = match field {
+                                0 => &mut self.moogle.known,
+                                1 => &mut self.moogle.learned,
+                                2 => &mut self.moogle.made,
+                                _ => &mut self.moogle.seen,
+                            };
+                            for b in list(u, "moogle bit set")? {
+                                Moogle::with(set, u32::from(b));
+                            }
+                        }
+                    }
+                    for (name, totals) in [("stock", false), ("totals", true)] {
+                        if let Some(Json::Arr(a)) = v.get(name) {
+                            for (i, x) in a.iter().enumerate().take(MOOGLE_MATERIALS) {
+                                let n = int(x, "moogle.stock")?.clamp(0, 999) as u32;
+                                if totals {
+                                    self.moogle.set_total(i, n);
+                                } else {
+                                    self.moogle.set_stock(i, n);
+                                }
+                            }
+                        }
+                    }
                 }
                 // The shops' seen bits (save +0x3714, places in the shop file's item list) and first-visit bits
                 // (save +0x3724): `"shop_seen": [places]`, `"shop_visits": [bits]`.
@@ -1681,14 +1706,50 @@ impl Progress {
                         if Self::member_off(member).is_none() {
                             return Err(format!("party_settings: no member record {member}"));
                         }
-                        let bytes = match b {
-                            Json::Arr(_) => list(b, "party_settings")?,
-                            _ => vec![int(b, "party_settings")? as u16],
+                        // Rejected, not truncated: a value past 255 is no byte and byte 0 (the battle style) is 0..5
+                        // (the six rows of the style table, docs/party.md).
+                        let items: Vec<&Json> = match b {
+                            Json::Arr(a) => a.iter().collect(),
+                            one => vec![one],
                         };
-                        for (i, x) in bytes.into_iter().enumerate().take(rec::SETTINGS_LEN) {
-                            self.set_member_setting(member, i, x as u8);
+                        let mut bytes = Vec::new();
+                        for (i, x) in items.into_iter().enumerate().take(rec::SETTINGS_LEN) {
+                            let n = int(x, "party_settings")?;
+                            if !(0..=255).contains(&n) || (i == 0 && n > 5) {
+                                return Err(format!("party_settings: member {member} byte {i} = {n} is out of range (0..=255, the style 0..=5)"));
+                            }
+                            bytes.push(n as u8);
+                        }
+                        for (i, x) in bytes.into_iter().enumerate() {
+                            self.set_member_setting(member, i, x);
                         }
                     }
+                }
+                // The record bits (save `+0x1550`): the words as integers.
+                "record_bits" => {
+                    let Json::Arr(a) = v else { return Err("record_bits: expected an array".into()) };
+                    self.record_bits = a.iter().map(|x| int(x, "record_bits").map(|n| n as u32)).collect::<Result<_, _>>()?;
+                }
+                // The story arrays of a slot file (`slot_json`): the flag words and the area program table as hex
+                // and the exit locks as a flat list of (state, message) pairs. Replaces them; the effect lists stay.
+                "story_raw" => {
+                    let hex_of = |k: &str| match v.get(k) {
+                        Some(Json::Str(h)) if h.len() % 2 == 0 && h.is_ascii() => {
+                            (0..h.len() / 2).map(|i| u8::from_str_radix(&h[2 * i..2 * i + 2], 16).ok()).collect::<Option<Vec<u8>>>()
+                        }
+                        _ => None,
+                    };
+                    let (Some(words), Some(programs)) = (hex_of("words"), hex_of("programs")) else {
+                        return Err("story_raw: expected hex strings words and programs".into());
+                    };
+                    let locks = match v.get("locks") {
+                        Some(Json::Arr(a)) => a.iter().map(|x| int(x, "story_raw.locks").map(|n| n as u16)).collect::<Result<Vec<_>, _>>()?,
+                        _ => Vec::new(),
+                    };
+                    let mut st = self.story();
+                    st.words = words.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+                    st.programs = programs;
+                    st.locks = locks.chunks_exact(2).map(|c| [c[0], c[1]]).collect();
                 }
                 "comment" | "_comment" => {}
                 // The save slot keys (WP-M8, `slot_json`): the whole party block, the app fields beside it and the
@@ -1697,6 +1758,11 @@ impl Progress {
                 "block" => {
                     let Json::Str(h) = v else { return Err("block: expected a hex string".into()) };
                     self.block = unhex(h, off::LEN).ok_or_else(|| format!("block: expected {} hex bytes", off::LEN))?;
+                    // A slot file is a whole state: what it does not carry (an older file) loads as the default.
+                    self.moogle = Moogle::default();
+                    self.shop_seen = [0; 4];
+                    self.shop_visits = 0;
+                    self.record_bits.clear();
                 }
                 "new_seen" => {
                     let Json::Arr(a) = v else { return Err("new_seen: expected an array".into()) };
@@ -2069,7 +2135,7 @@ impl Progress {
         let area: String = info.area.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
         let seen: Vec<String> = self.new_seen.iter().map(u32::to_string).collect();
         format!(
-            "{{\n  \"format\": 1,\n  \"slot\": {{\"level\": {}, \"munny\": {}, \"play_seconds\": {}, \"area\": \"{}\"}},\n  \"block\": \"{}\",\n  \"munny\": {},\n  \"option_word\": {},\n  \"game_mode\": {},\n  \"dodge_roll\": {},\n  \"new_seen\": [{}]\n}}\n",
+            "{{\n  \"format\": 1,\n  \"slot\": {{\"level\": {}, \"munny\": {}, \"play_seconds\": {}, \"area\": \"{}\"}},\n  \"block\": \"{}\",\n  \"munny\": {},\n  \"option_word\": {},\n  \"game_mode\": {},\n  \"dodge_roll\": {},\n  \"new_seen\": [{}],\n{}}}\n",
             info.level,
             info.munny,
             info.play_seconds,
@@ -2079,7 +2145,53 @@ impl Progress {
             self.config[0],
             self.config[1],
             self.dodge_roll,
-            seen.join(", ")
+            seen.join(", "),
+            self.persisted_json()
+        )
+    }
+
+    /// The slot keys for the state kept outside the party block (the moogle's record, the shops' bits, the record bits,
+    /// the story arrays and the world points), as JSON lines for `slot_json`. Bit sets are lists of the set bits.
+    fn persisted_json(&self) -> String {
+        fn bits(set: u64) -> String {
+            let v: Vec<String> = (0..64).filter(|&n| Moogle::bit(set, n)).map(|n| n.to_string()).collect();
+            format!("[{}]", v.join(", "))
+        }
+        fn nums<T: ToString>(v: impl IntoIterator<Item = T>) -> String {
+            format!("[{}]", v.into_iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "))
+        }
+        let m = &self.moogle;
+        let shop_seen: Vec<usize> = (0..128).filter(|&n| self.shop_seen(n)).collect();
+        let shop_visits: Vec<u8> = (0..8).filter(|&n| self.shop_visit(n)).collect();
+        let st = self.story();
+        let words: Vec<u8> = st.words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let locks: Vec<u16> = st.locks.iter().flat_map(|l| [l[0], l[1]]).collect();
+        let points = nums(st.world_points());
+        format!(
+            "  \"moogle\": {{\"known\": {}, \"learned\": {}, \"made\": {}, \"seen\": {}, \"unlocks\": {}, \"rewards\": {}, \"points\": {}, \"level\": {}, \"stock\": {}, \"totals\": {}}},
+  \"shop_seen\": {},
+  \"shop_visits\": {},
+  \"record_bits\": {},
+  \"story_raw\": {{\"words\": \"{}\", \"programs\": \"{}\", \"locks\": {}}},
+  \"world_points\": {}
+",
+            bits(m.known),
+            bits(m.learned),
+            bits(m.made),
+            bits(m.seen),
+            bits(m.unlocks),
+            bits(m.rewards),
+            m.points,
+            m.level,
+            nums((0..MOOGLE_MATERIALS).map(|i| m.stock_at(i))),
+            nums((0..MOOGLE_MATERIALS).map(|i| m.total_at(i))),
+            nums(shop_seen),
+            nums(shop_visits),
+            nums(self.record_bits.iter().copied()),
+            hex(&words),
+            hex(&st.programs),
+            nums(locks),
+            points
         )
     }
 
@@ -2525,6 +2637,59 @@ mod tests {
         let short = text.replacen("\"block\": \"", "\"block\": \"00", 1);
         assert!(q.apply_json(&short).is_err());
         assert_eq!(Progress::slot_info("{\"munny\": 1}"), None);
+    }
+
+    /// WP-PRG1: the moogle's record, the shops' bits, the record bits, the story arrays and the world points go through a
+    /// slot file; a file without the keys (an older one) loads the defaults; the party settings are range-checked.
+    #[test]
+    fn a_slot_file_carries_the_moogle_the_shop_bits_and_the_story() {
+        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        p.moogle = Moogle { known: 5, learned: 1 << 40, made: 6, seen: 7, unlocks: 1 << 10 | 3, rewards: 1 | 1 << 49, points: 1234, level: 3, stock: Vec::new(), totals: Vec::new() };
+        p.moogle.set_stock(0, 7);
+        p.moogle.set_stock(49, 999);
+        p.moogle.set_total(3, 12);
+        p.set_shop_seen(0);
+        p.set_shop_seen(127);
+        p.set_shop_visit(1);
+        p.set_record_bit(0x45);
+        {
+            let mut st = p.story();
+            st.set(0x801);
+            st.set_world_point(5);
+            st.lock_entry(2)[..].copy_from_slice(&[0xffff, 9]);
+        }
+        let text = p.slot_json(&SlotInfo { level: 1, munny: 0, play_seconds: 0, area: "tt04".into() });
+        let mut q = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        q.set_shop_seen(9);
+        q.moogle.points = 99;
+        q.apply_json(&text).expect("loads");
+        assert_eq!(q.moogle.known, 5);
+        assert_eq!((q.moogle.learned, q.moogle.made, q.moogle.seen, q.moogle.unlocks, q.moogle.rewards), (p.moogle.learned, 6, 7, p.moogle.unlocks, p.moogle.rewards));
+        assert_eq!((q.moogle.points, q.moogle.level), (1234, 3));
+        assert_eq!((q.moogle.stock_at(0), q.moogle.stock_at(49), q.moogle.total_at(3)), (7, 999, 12));
+        assert!(q.shop_seen(0) && q.shop_seen(127) && !q.shop_seen(9), "the block key reset the old bit");
+        assert!(q.shop_visit(1) && !q.shop_visit(0));
+        assert!(q.record_bit(0x45) && !q.record_bit(0x44));
+        {
+            let st = q.story();
+            assert!(st.test(0x801) && st.world_point(5) && !st.world_point(6));
+            assert_eq!((st.lock_state(2), st.lock_message(2)), (0xffff, 9));
+        }
+        // An older slot file (no such keys) loads them as the defaults.
+        let old = text.split("  \"moogle\"").next().unwrap().trim_end().trim_end_matches(',').to_string() + "
+}
+";
+        let mut r = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        r.moogle.points = 5;
+        r.set_shop_seen(3);
+        r.apply_json(&old).expect("an old file loads");
+        assert_eq!((r.moogle.clone(), r.shop_seen(3), r.shop_visit(1)), (Moogle::default(), false, false));
+        // The party settings: a byte past 255 and a style past 5 are refused, not truncated.
+        assert!(r.apply_json("{\"party_settings\": {\"2\": 256}}").is_err());
+        assert!(r.apply_json("{\"party_settings\": {\"2\": 6}}").is_err());
+        assert!(r.apply_json("{\"party_settings\": {\"2\": [5, 300]}}").is_err());
+        assert!(r.apply_json("{\"party_settings\": {\"2\": [5, 255]}}").is_ok());
+        assert_eq!((r.member_setting(2, 0), r.member_setting(2, 1)), (Some(5), Some(255)));
     }
 
     /// WP-PA3: the members' setting block is zero at a new game (FUN_001875c8), the `party_settings` state key and the

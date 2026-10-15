@@ -39,6 +39,7 @@ mod magic_rules;
 mod menu;
 mod menu_abilities;
 mod menu_gfx;
+mod menu_journal;
 mod menu_pages;
 mod menu_status;
 mod menu_text;
@@ -121,5 +122,7 @@ fn main() {
         // `progress::ensure` lets the plugins above that read `Progress` while they build insert it
         // first, so its place here does not matter.
         .add_plugins((progress::ProgressPlugin, prize::PrizePlugin, menu::MenuPlugin, menu_abilities::MenuAbilitiesPlugin, items::ItemsPlugin, party::PartyPlugin, struggle::StrugglePlugin, summon::SummonPlugin, sound_test::SoundTestPlugin, asset_viewer::AssetViewerPlugin, area::AreaPlugin, area_jump::AreaJumpPlugin, npc::NpcPlugin, hud::hud_msgwin::hud_tutorial::TutorialPlugin, intro::IntroPlugin))
+        // The fourth tuple (the third is full).
+        .add_plugins((menu_journal::JournalPlugin,))
         .run();
 }

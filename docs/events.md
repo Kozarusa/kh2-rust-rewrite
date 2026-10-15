@@ -676,21 +676,61 @@ tt37; tt40 -> tt19 and area 100. The full list is in the test output.
   `FUN_00222a88` takes the next block while `DAT_0036bcf0` lies within its +6..+8 frames. +4 counts the
   sub-records from +0xc (`u16 kind, u16 size`): 0x25 a motion (`FUN_0022cc88`: +4 objentry id, +6 actor
   index, +8 flag, +0xa name `anm_tt/ETT10201E`), 0x26 (`FUN_0022c070`), 0x38 a model (+4 objentry id, +6 index,
-  +8 name), 0x39 (`FUN_00227df0`), 0x3e (`FUN_00226100`) [the last three not read]. The `.anb` path
+  +8 name), 0x39 (`FUN_00227df0`), 0x3e (`FUN_00226100`) [read by WP-E6d, below]. The `.anb` path
   (`FUN_0022cbb0`, strings 0x37f208 `anm/`, 0x37f210 `/`, 0x37f218 `.anb`): `anm/` + the name's prefix past
   its first four characters + `/` + model + the rest + `.anb`, e.g. `anm/tt/h_ex510/ETT10201E.anb`.
 - **Motions, opcode 0x2c** [V, WP-E6]. `FUN_0022cd90`: at frame +4, actor +0xe: the actor's object is made
   here if it has none (`FUN_0016e8c0(DAT_0037f220, objentry | 0x40000000)`), the motion record of (model, name
   +0x12) is found (`FUN_002242a0`) and started through `FUN_0017e1c8(2 * +0x10, 2 * +8, object + 0x140, ..)`
-  = `FUN_0017dd38(blend, start frame, ..)` (the same start as every other motion). +6 and +0xa / +0xc are not
-  read there [GAP].
+  = `FUN_0017dd38(blend, start frame, ..)` (the same start as every other motion). +6 is read by no handler
+  [GAP]; +0xa / +0xc are a loop (below, WP-E6d).
 - **Placements, opcode 2** [V, WP-E6]. `FUN_002293b8`: only when +4 is 0, at frame +0x26, actor +0x24:
   position +8..+0x14 (`FUN_0016a700`, the game's space) and rotation +0x14..+0x20 in degrees (`FUN_002292b0`,
   `DAT_0037f0c0` = pi / 180; yaw only when x and z are 0, `FUN_0016a7f0`).
 - **Fades, opcode 0x12** [V for the layout]. `FUN_00226830`: at frame +4, +8 picks the fade object
   (`FUN_0014a978`, `FUN_0014a948`, `FUN_0014a918`) and +6 its length; not ported.
-- **Movies, opcode 0x44** [V]. `FUN_00225860`: at frame +4, plays `movie/<world>/<+6>.pss` (format 0x37f010
-  with `DAT_00349d40`) and waits for it; the tt01 events `100`, `200`, `400`, `600` are the movies `opn`,
+- **Motion loops, opcode 0x2c +0xa / +0xc** [V, WP-E6d]. `FUN_0022c9b0` fills the actor's row of the motion
+  slots `DAT_0036bbc8` (64 rows of 0x40 bytes; `FUN_0022c928` the actor's row by index +0xe, `FUN_0022c970` a
+  free one): +0x10 a counter = 2 * (+8 - +0x10), +0x14 = 2 * +8, +0x18 = +0xa, +0x1a = +0xc, +0x30 = 1.
+  `FUN_0022ca18` (every frame, called at `0x22482c` by the setup reader `FUN_002245d0`) steps every row: with
+  +0x1a not -1 and 2 * +0x1a < counter, the counter becomes 2 * +0x18 + the overshoot and the motion is started
+  again there with no cross-fade (`FUN_0017e1c8(0, frame, ..)`), and unless `FUN_001beb00` the object is put
+  back at the place `FUN_0016b960` kept at the row's first step (+0x20); then the counter counts
+  `DAT_00356f40` (1.0). In tt02/03/04, 306 of 1159 opcode-0x2c commands loop. Ported (`MotionClock`) except
+  the place put back [the app's event actors take no root motion, inferred].
+- **Opcode 2 +6** [GAP]: `FUN_002293b8` reads +4 (must be 0), +8..+0x20, +0x24, +0x26 only; values seen 0,
+  1247, 2258, 30716. No other reader searched beyond the two switches.
+- **Opcode 3** [V for the readers]: in neither switch (`FUN_002245d0`, `FUN_00223a88`), so both readers pass it.
+  Every tt02/03/04 event has one: `u16 area number, "tt"` (tt02: 2, tt03: 3, tt04: 4) [inferred: the area the
+  event belongs to]. Not a show/hide.
+- **Opcode 0xd** [V for the call, GAP for the meaning]. `FUN_00228b48`: at frame +4, actor +8's object
+  (`FUN_002244b0`, row +8), `FUN_0011c550(object +0x670, cmd + 0xa)`: object +0x670 is the model instance
+  (`FUN_00168d30`: made by the model resource's method +0x24); `FUN_0011c550` calls method +0x34 of its +0x14
+  with its +0x104 and a pointer to the u16 table at +0xa (seen: `0, 2, 3, 4, 5, ..` or `1, 3, 4, ..`). The
+  method behind the vtable was not resolved, so whether this hides parts, switches textures or something else
+  is unknown; not ported (logged). 150 commands in tt02/03/04.
+- **Opcode 0xf** [V]. Setup reader, `FUN_00226f50`: waits while `FUN_001962c0` (the event object not yet in
+  its play states), sets `DAT_0036bd10` = 1 (the timeline thread `FUN_00223a88` waits for it before anything)
+  and makes the event's tables (`FUN_00222cc0`: the camera table `DAT_0036bbb4`, the motion slots, the actor
+  table, ...). Every tt02/03/04 event has it. Ported: without it the timeline does not run.
+- **Opcode 0x10** [V]. Setup reader, `FUN_00226fa0`: `DAT_0036bd0c` = +4. The thread, before its first command,
+  calls `FUN_00196348(2 * DAT_0036bd0c)`: event object +0x90 = that, state 5. State 6 (`FUN_00195ff8`) fades
+  with fader `FUN_0014a918` by kind row byte +1 (2: `FUN_0014a7f0(.., +0x90 * 0.5 (DAT_0037b054), 1)`; 1 and 3:
+  the same with 0): the end fade lasts +4 frames. tt events: 0x14 (20). Not a show/hide. Parsed and logged; the
+  fade is not ported (no event fades yet, as opcode 0x12).
+- **Load sub-records 0x26, 0x39, 0x3e** [V, WP-E6d]. 0x26 (`FUN_0022c070(rec + 4, block parity)`): a voice,
+  `FUN_0022bff8` = 0x37f178 `voice/%s/event/` with `DAT_00349d40` + name + 0x37f188 `.vag`, loaded into a file
+  slot of kind 3 (`FUN_00224200`, `DAT_0036bbc0`, 128 rows of 0x54) through `FUN_00224030` / `FUN_00167d20`
+  (callback 0x222a28). 0x39 (`FUN_00227df0(rec + 6, rec +4)`): an effect, a free slot (`FUN_002241c8`) of kind
+  2 with +4 at slot +0xc, `FUN_00227d80` = 0x37f090 `event/effect/` + name + 0x37f0a0 `.pax`. 0x3e
+  (`FUN_00226100(rec + 4)`): `FUN_002260b0` = 0x37f038 `event/layout/%s/%s.2ld` with `DAT_00349d40` and the
+  name, handle at `DAT_01dc0078`, `FUN_0016fac8(.., 0x13ec, 0)`. `DAT_00349d40` is the region (`us`), not the
+  world [inferred: the USA disc has `voice/us/event/tt10203or.vag`, `event/layout/us/tt_telop.2ld`,
+  `movie/us/opn.pss` and no `tt` folder there]. Test `twilight_town_event_load_records_name_files_on_the_disc`:
+  35 events, 290 voices, 8 effects, 1 layout, every file on the disc. Ported: parsed, paths logged at the
+  start; the voices are not played (which command starts one was not read), the effects and layout not drawn.
+- **Movies, opcode 0x44** [V]. `FUN_00225860`: at frame +4, plays `movie/<region>/<+6>.pss` (format 0x37f010
+  with `DAT_00349d40`, `us`; WP-E6d) and waits for it; the tt01 events `100`, `200`, `400`, `600` are the movies `opn`,
   `me2`, `me4`, `me6` with their subtitle lines (test `the_tt01_short_events_are_movies_with_subtitle_lines`).
 
 ## 7. Area music
@@ -960,6 +1000,21 @@ Each stage ends with `verify.ps1` passing and the named check.
   **The prologue Seifer intro (TT04_MS500)** [V, test `the_seifer_mission_events_have_no_actors`]: the mission
   file's two events (`re_msstart-1a`, end 130, one camera cut; `re_mscomp-0a`, end 15) have no opcode 1, 2 or
   0x2c: the events place no actor, so the b_45 places of Roxas and Seifer stand and `intro.rs` is unchanged.
+  **Status (WP-E6d):** opcodes 3, 0xd, 0xf, 0x10, opcode 0x2c +0xa / +0xc and load sub-records 0x26 / 0x39 /
+  0x3e read (section 6). None of 3, 0xd, 0xf, 0x10 is an actor show/hide: 3 has no handler, 0xf opens the
+  timeline, 0x10 sets the end fade's length, 0xd calls a model-instance method not resolved [GAP]. Ported in
+  `event_player.rs`: `Event::begins` (no 0xf, no timeline), `Event::end_fade` (logged), `Motion::loop_start` /
+  `loop_end` with `MotionClock` (`FUN_0022ca18`, test `motion_slots_loop_past_their_end_frame`),
+  `Event::voices` / `effects` / `layouts` with `voice_path` / `effect_path` / `layout_path` and `REGION` (test
+  `twilight_town_event_load_records_name_files_on_the_disc`); the movie log now names `movie/us/`. Requests
+  carry the area they were made in (`take_request`, test `a_request_made_in_another_area_is_dropped`). Run
+  `KH2_EVENT=102 KH2_EVENT_ARG=2 KH2_EVENTLOG=1 KH2_NO_ENEMIES=1 KH2_NO_NPC=1 kh2-game tt02`: `event: 102 load
+  blocks name 32 voice(s) ["voice/us/event/tt10203or.vag", ...], layouts ["event/layout/us/tt_telop.2ld"] ...
+  op 0xf present: the timeline runs (FUN_00226f50); end fade Some(20) frames`, `frame 3164 ...: op 0x2c actor 2
+  n_ex500 plays anm/tt/n_ex500/ETT00008E.anb (start 99, blend 0, loops 99..164 (FUN_0022ca18))`, `frame 3229:
+  motion anm_tt/ETT00008E loops back to frame 199`, `op 0xd actor 2 model instance (+0x670) method +0x34 ...
+  not ported`. Not ported: voices, event effects and layouts (loaded only), the end fade, opcode 0xd, the place
+  put back at a loop.
 
 ## 10. Unknowns (with what was searched)
 
@@ -977,12 +1032,15 @@ Each stage ends with `verify.ps1` passing and the named check.
 - Whether anything else hides the field HUD during a kind-2 event such as tt02 `102` (flags 0x65, bit 2 set):
   `FUN_00196760` is also called by `FUN_00196258` (no `jal` or address reference found, `mips_scan --jal
   0x196258 --addr 0x196258`), `FUN_0024f0b8` (menu start) and `FUN_002c6a40`; `FUN_0014ef48` by `FUN_002cc1e0`,
-  `FUN_002d16b8` (not read). The event commands 3, 0xd, 0xf, 0x10 (actor show/hide candidates) were not read.
+  `FUN_002d16b8` (not read). The event commands 3, 0xd, 0xf, 0x10 were read (WP-E6d): none hides an actor.
 - Opcode 0x2d: the event skip branch of action 2 (`FUN_002225e0`) is not ported; the window state used is the port's state 3 (the button closed it).
 - What pause-menu record 0xc (`FUN_001bef48(0xc)`, table `DAT_01d5df08`) allows or forbids; bit 4 of
   `DAT_00356f1c` stops the play clock (`FUN_0014c7b8`) and is tested by the pause menu `FUN_0014a080`.
-- Music commands of events, skip; opcode 0x2c +6 / +0xa / +0xc and opcode 2 +6 (not read by their handlers);
-  load sub-records 0x26 / 0x39 / 0x3e (`FUN_0022c070`, `FUN_00227df0`, `FUN_00226100` not read); how `anm/`
+- Music commands of events, skip; opcode 0x2c +6 and opcode 2 +6 (not read by their handlers `FUN_0022cd90`,
+  `FUN_0022c9b0`, `FUN_002293b8`; no other reader searched); opcode 0xd's method (`FUN_0011c550` -> the model
+  instance's +0x14 vtable +0x34: the vtable was not resolved; `mips_scan --store-off 0x670` writers
+  `FUN_00168d30`, `FUN_001178d0`, `FUN_001179c0`); which command plays the event voices that sub-record 0x26
+  loads; the users of sub-record 0x39's effects and 0x3e's layout handle `DAT_01dc0078`; how `anm/`
   paths reach the `anm/us/` copies on the USA disc (`FUN_00167e58` not read).
 - Where `arif` music pairs are read by the game (only opcode 0x10 writes the pair the area load reads).
 - Exit lock: the new-game value of the halfwords at `0x33f918` (assumed 0; the initialiser was not
@@ -1028,6 +1086,7 @@ Each stage ends with `verify.ps1` passing and the named check.
 | 0x13a7e8, 0x13a8a8, 0x13a980, 0x13a998, 0x13a9d0, 0x15d058, 0x15d1a8, 0x15cf58, 0x15d0e8, 0x15d248, 0x236650, 0x2368a8, 0x2369c0, 0x2369e0, 0x2378a0, 0x2379a8, 0x13ef00, 0x13ef48 | keyhole layout (E1c) |
 | 0x1047a8, 0x149bb8, 0x140c00, 0x140e90, 0x13f470, 0x13efe8 | area start camera (E1c) |
 | 0x194188, 0x1be828, 0x1d7970, 0x1a6ff0, 0x195778, 0x1d3a68, 0x1d30d8 | other opcode targets and area start |
+| 0x226f50, 0x226fa0, 0x196348, 0x195ff8, 0x228b48, 0x11c550, 0x168d30, 0x22c9b0, 0x22c928, 0x22c970, 0x22ca18, 0x22c070, 0x22bff8, 0x224200, 0x227df0, 0x227d80, 0x2241c8, 0x226100, 0x2260b0, 0x222cc0 | event opcodes 0xd, 0xf, 0x10, the motion loop, load records 0x26 / 0x39 / 0x3e (E6d) |
 
 ## Tutorial windows opened by mission scripts (WP-T1)
 

@@ -449,3 +449,21 @@ fn twilight_town_world_record_programs() {
     }
     eprintln!("{n} programs carry opcode 0xf");
 }
+
+/// WP-JT2 A: `07localset.bin` on the user's disc (docs/events.md section 4): Twilight Town's entry holds 144
+/// `(program, area)` pairs, the prologue's Seifer fight key 0xb5 and the event chain's key 0x4d both belong to
+/// tt04 (area 4), and a key the world does not list gives no area.
+#[test]
+fn localset_gives_the_story_programs_their_areas() {
+    let Some(mut a) = open() else { return };
+    let file = a.read("07localset.bin").expect("07localset.bin");
+    let tt = kh2_ard::localset::world_entry(&file, 2).expect("Twilight Town entry");
+    let pairs = kh2_ard::localset::pairs(&tt);
+    assert_eq!(pairs.len(), 144);
+    assert_eq!(u16::from_le_bytes([tt[0], tt[1]]) as usize, 144);
+    assert_eq!((pairs.iter().map(|p| p.0).min(), pairs.iter().map(|p| p.0).max()), (Some(0x33), Some(0xd1)));
+    assert_eq!(kh2_ard::localset::area_for(&tt, 0xb5), Some(4));
+    assert_eq!(kh2_ard::localset::area_for(&tt, 0x4d), Some(4));
+    assert_eq!(kh2_ard::localset::area_for(&tt, 0x01), None);
+    eprintln!("localset tt: 144 pairs, key 0xb5 -> tt04, key 0x4d -> tt04");
+}

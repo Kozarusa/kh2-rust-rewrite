@@ -2116,7 +2116,7 @@ mod tests {
     /// leaves the other slots (and the empty slots between them) alone.
     #[test]
     fn ability_toggle_sets_and_clears_bit_15_of_the_right_slot() {
-        let p = Progress::from_block(&[], ix.clone());
+        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
         let r = Progress::member_off(SORA).unwrap();
         p.put_ability(r, 82, true);
         p.put_ability(r, 162, false);
@@ -2140,7 +2140,7 @@ mod tests {
     /// The same as `prize::growth_upgrade` (the array form the form level-up log uses).
     #[test]
     fn growth_upgrade_keeps_the_equipped_bit_and_matches_the_array_form() {
-        let p = Progress::from_block(&[], ix.clone());
+        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
         let r = Progress::member_off(SORA).unwrap();
         p.put_ability(r, 82, true);
         let chains = crate::prize::GrowthChains([[0; 5], [0, 94, 95, 96, 97], [0, 98, 99, 100, 101], [0; 5], [0; 5]]);
@@ -2182,7 +2182,7 @@ mod tests {
         let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| tb.archive.iso().read(p).ok()).expect("executable");
         let mut ee = Ee::new();
         ee.load_elf(&elf).expect("elf");
-        let p = Progress::from_block(&[], ix.clone());
+        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
         let r = Progress::member_off(SORA).unwrap();
         p.put_ability(r, 82, true);
         p.put_ability(r, 162, false);
@@ -2216,7 +2216,7 @@ mod tests {
     /// The Customize writers: the shortcut words and the spell switch bits, and the stat boost bytes.
     #[test]
     fn shortcuts_spell_switches_and_boosts_write_their_words() {
-        let p = Progress::from_block(&[], ix.clone());
+        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
         assert_eq!(p.shortcuts(), [0; 4]);
         assert!(p.set_shortcut(2, 0x1234));
         assert_eq!((p.shortcut(2), p.shortcut(0), p.shortcut(4)), (0x1234, 0, 0));
@@ -2248,7 +2248,7 @@ mod tests {
     /// `FUN_00274f70`'s slot loop and `FUN_00275288`'s question test.
     #[test]
     fn auto_reload_reserves_and_releases_every_slot_of_the_item() {
-        let p = Progress::from_block(&[], ix.clone());
+        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
         let r = Progress::member_off(SORA).unwrap();
         p.set_item_slots(r, 4);
         // Slot 0 carries item 1, slot 1 reserves 1 and is empty, slot 2 carries item 3, slot 3 is free.

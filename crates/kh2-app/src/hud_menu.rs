@@ -264,22 +264,12 @@ pub fn demo_menu(spec: &str, disc: &Disc) -> Option<CommandMenu> {
 
 /// The label of a bar: the command's message through the game's lookup (0x190c40: the system table,
 /// then the world's, then message 0x8adc) at the bar's text offset, font and size (0x13abf0), in the
-/// colour the status picks (0x13ba80).
+/// colour the status picks (0x13ba80). The colour goes to the text engine as the table has it: the
+/// game's product is `texel (0x80) * colour >> 7`, which the exact atlas of `hud_text` reproduces
+/// (docs/hud.md "Text colour"), so no per-bar compensation is needed.
 fn name_label(text: &super::hud_text::TextSys, message: u32, color: [u8; 4]) -> Option<Label> {
     let tokens = text.lookup(message)?;
-    Some(Label { tokens, style: Style { world: text.world, font: TEXT_FONT, size: Some(TEXT_SIZE), color: bar_color(color), ..Style::default() }, offset: TEXT_OFFSET })
-}
-
-/// The table colour as the text engine takes it. The game multiplies the glyph texel (white is
-/// 0x80, the palette rows of docs/hud.md) by the vertex colour with `>> 7` (0x230738), so a bar's
-/// text shows `colour / 255` of full brightness: the light colour 0xb4 is 70 %, the grey 0x64 is
-/// 39 % (clip 4.mp4: "Items" at 0.8 and "?" at 0.45 to 0.55 of the selected bar's text, ratios
-/// 0.78 and 0.43 by the tables). The port's atlas stores the texel doubled (`font.rs atlas_rgba`),
-/// so the same colour would clamp to white and make every bar equal; halving the channels gives the
-/// game's product. Alpha is kept (it is the opacity, 0x80 is 1.0). [inferred from the clip's ratios
-/// and the atlas code; the shared text path in hud_text.rs is untouched]
-fn bar_color(c: [u8; 4]) -> [u8; 4] {
-    [c[0] / 2, c[1] / 2, c[2] / 2, c[3]]
+    Some(Label { tokens, style: Style { world: text.world, font: TEXT_FONT, size: Some(TEXT_SIZE), color, ..Style::default() }, offset: TEXT_OFFSET })
 }
 
 /// `KH2_HUDMENULOG=1`: one line per page whenever the drawn lists change (message id, status, name).
@@ -443,7 +433,7 @@ pub fn update(
     set(&mut scene, c, group);
     scene.nodes[c].pos = [36.0, y];
     let label: Option<Label> = menu.reaction.as_ref().filter(|_| show).and_then(|r| {
-        scene.text.as_ref().and_then(|t| t.message(r.message, Style { font: TEXT_FONT, size: Some(TEXT_SIZE), ..Style::default() }, TEXT_OFFSET))
+        scene.text.as_ref().and_then(|t| t.message(r.message, Style { font: TEXT_FONT, size: Some(TEXT_SIZE), color: [0xff, 0xff, 0xff, 0x80], ..Style::default() }, TEXT_OFFSET))
     });
     scene.nodes[c].label = label;
 }
@@ -530,14 +520,6 @@ mod tests {
             }
             assert_ne!(table[2][..3], table[0][..3]);
         }
-    }
-
-    #[test]
-    fn bar_text_colour_is_the_ps2_product() {
-        // The glyph texel is 0x80 (1.0) on the PS2, so a bar shows colour/255; the port's glyph
-        // atlas is stored doubled (1.0 = 255), so the table colour goes in halved. Alpha is kept.
-        assert_eq!(bar_color([0xb4, 0x64, 0x00, 0x80]), [0x5a, 0x32, 0x00, 0x80]);
-        assert_eq!(bar_color([0xff, 0x01, 0x00, 0x80]), [0x7f, 0x00, 0x00, 0x80]);
     }
 
     #[test]

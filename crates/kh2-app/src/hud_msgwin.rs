@@ -186,7 +186,7 @@ fn style(scene: &HudScene, class: usize) -> Style {
     Style {
         font: c.font,
         size: c.size,
-        color: text.map(|t| t.color(c.color)).unwrap_or([0x80; 4]),
+        color: text.map(|t| t.color(c.color)).unwrap_or([0xff, 0xff, 0xff, 0x80]),
         align: c.align,
         world: text.map(|t| t.world).unwrap_or(0),
         ..Style::default()

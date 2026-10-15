@@ -786,3 +786,57 @@ fn peter_pan_script_asks_whether_tinker_bell_is_ready() {
         assert!(rt.core.errors.is_empty(), "{:?}", rt.core.errors);
     }
 }
+
+/// Peter Pan's script (P_EX330) in `appear_skip` with Tinker Bell ready: it heals the player through host 1.155
+/// (`obj_method_78`: object, amount 5, part 0, flag 0) and sets the effect's second vector through host 0.40
+/// (`effect_set_vec2_raw`, a vector argument). Both calls decode with their signature rows (no `Unknown`) and the
+/// script runs on without an error.
+#[test]
+fn peter_pan_script_heals_the_player_and_sets_the_effect_vector() {
+    use kh2_bdx::host::{Arg, Host, Value};
+    struct PeterHost {
+        mock: MockHost,
+        seen: Vec<Call>,
+    }
+    impl Host for PeterHost {
+        fn call(&mut self, c: &Call) -> Value {
+            self.seen.push(c.clone());
+            match c {
+                Call::Func { group: 2, index: 75, .. } | Call::Func { group: 0, index: 49, .. } | Call::Func { group: 1, index: 94, .. } => Value::Bool(true),
+                Call::Func { group: 1, index: 84, .. } => Value::Handle(0x7900_0000),
+                Call::Func { group: 10, index: 45, .. } => Value::Float(600.0),
+                Call::Func { group: 10, index: 19, .. } | Call::Func { group: 1, index: 272, .. } => Value::Bool(false),
+                Call::Func { group: 1, index: 155, .. } => Value::Int(15),
+                Call::Func { group: 10, .. } | Call::Func { group: 1, index: 165, .. } | Call::Func { group: 0, index: 40, .. } => Value::None,
+                _ => self.mock.call(c),
+            }
+        }
+        fn read_mem(&mut self, addr: u32, out: &mut [u8]) -> bool {
+            self.mock.read_mem(addr, out)
+        }
+        fn write_mem(&mut self, addr: u32, data: &[u8]) -> bool {
+            self.mock.write_mem(addr, data)
+        }
+    }
+    let Some((mut a, elf)) = open() else { return };
+    let table = HostTable::from_exe(&elf).expect("table");
+    let data = object_script(&mut a, "obj/P_EX330.mdlx");
+    let mut rt = Runtime::new(Program::parse(&data).expect("P_EX330 parses"));
+    rt.set_host_table(table);
+    let mut h = PeterHost { mock: MockHost::new(), seen: Vec::new() };
+    rt.spawn(&mut h, SELF_OBJ);
+    rt.set_mode_named(&mut h, "appear_skip");
+    for _ in 0..120 {
+        h.mock.tick();
+        rt.update(&mut h);
+    }
+    let heals: Vec<_> = h.seen.iter().filter_map(|c| match c { Call::Func { group: 1, index: 155, args } => Some(args.clone()), _ => None }).collect();
+    let vecs: Vec<_> = h.seen.iter().filter_map(|c| match c { Call::Func { group: 0, index: 40, args } => Some(args.clone()), _ => None }).collect();
+    eprintln!("1.155: {heals:?}; 0.40 x{} first {:?}; errors {:?}", vecs.len(), vecs.first(), rt.core.errors);
+    assert!(!heals.is_empty(), "the script heals through 1.155");
+    assert!(heals.iter().all(|x| x.len() == 4 && x[1].int() == 5 && x[2].int() == 0 && x[3].int() == 0), "{heals:?}");
+    assert!(!vecs.is_empty(), "the script sets the vector through 0.40");
+    assert!(vecs.iter().all(|x| matches!(x.get(1), Some(Arg::Vec(_)))), "{vecs:?}");
+    assert!(!h.seen.iter().any(|c| matches!(c, Call::Unknown { group: 0, index: 40, .. } | Call::Unknown { group: 1, index: 155, .. })));
+    assert!(rt.core.errors.is_empty(), "{:?}", rt.core.errors);
+}

@@ -856,8 +856,19 @@ cap heights 9.1 (labels, LV value) and 8.6 (HP and MP values). The two lines und
 (0, 200, 0), cyan (16, 200, 232), name white (232), rims 100 to 120 on top and middle, 45 on the left. The app: `menu::card`, the `at::CARD_*`
 constants, `card_x` (pitch 104 around the middle card, the row shifted 4 left so the third card ends at the canvas edge: the middle
 card keeps its place over its member's preview, the outer two are 6 units further out; the previews keep the code's 98).
-Not matched [GAP]: the original's value glyphs advance about 20 % wider than the app's font at the same cap height (the app's text
-layer has no letter spacing); the original's rims are slightly bevelled (brighter centre), ours are flat.
+Text sizes re-fitted by WP-MN5 (below, "Card text, WP-MN5"). Not matched [GAP]: the original's rims are slightly bevelled
+(brighter centre), ours are flat.
+
+**Card text, WP-MN5** [F, measured]. The earlier "20 % wider" note came from the 8.webp frame (2.6 pixels per unit); the clip frame
+`10_menu_open_close_0.5` has a different scale: its content is the 4:3 picture at **2.163 pixels per unit**, x centre 960, y 0 at
+pixel row 90 (row pitch 56.2 px = 26 units, card 98.5 units wide, `CARD_TOP` 259 lands at row 651). A pixel-box measurement (bright
+green / cyan / yellow pixels per glyph) on that frame and on the app's shot at the same unit scale gave, for the original: HP and MP
+digits 8.3 to 8.8 high, 7.9 to 8.3 wide, **10.6 apart**; "LV" 8.8 high and 14.3 wide. The app at the old sizes (12.0 / 12.5): digits
+8.1 high, 7.5 wide, 9.96 apart; "LV" 10.0 high and 14.3 wide. So the digits were about 6 % **small**, not too wide, and the LV row
+was 13 % too tall at the right width. Now `at::CARD_VALUE_SIZE` 12.4 (digits 8.7 high, 8.1 wide, 10.6 apart) and `at::CARD_LV_SIZE`
+11.0 with `Token::Width(113)` (`at::CARD_LV_WIDTH`; "LV" 8.7 high, 13.7 wide). The HP and MP labels keep 12.5 (their glyphs
+touch the gauge lines in the frame, not measurable). The card widget's own draw code is still not found [GAP, searched above], so
+these are fits to the footage, not rules from the code. The name keeps its size.
 
 ### 16.7 Harness
 
@@ -886,19 +897,48 @@ menu, 1.6.1); `FUN_0023a920` switches to the variant motions `+0x6d8`/`+0x6dc` a
 (they are not set on page 0: not ported). The model's draw offset by an attached object (`+0x14e1`, set only by the Party page
 `FUN_0026d8a8`) is not used on page 0. Computed: the slot centres are menu x 238, 336, 434 for three members and the model's feet land at
 menu y 314 (`menu::preview::tests::the_slots_sit_where_the_original_puts_them`), i.e. the feet are behind the cards' upper part.
-**The reference frames (the HD remaster) show the feet at about y 265, just above the cards**; the code read here gives 314 on the PS2.
-The port follows the code [noted difference: the remaster's 3D viewport may differ; not resolved].
+**WP-MN5 re-measured the placement against clip 10** (frame 0.5, 2.163 pixels per unit, y 0 at row 90; the app's shot of the same
+area scaled alike, `tt03` with `KH2_KEYS=3:Enter`, shot at 7 s): Sora's hair top is at y 131.8 in the clip and 133.3 in the app, his
+centre at x 237.5 (the code says 238), his belt at 224 and 223.5; Donald's head top 212.7 against 220.5 and Goofy's hat 145.6 against
+128.4 differ by their poses (the clip stands in a different frame of the idle loop), their x centres agree. So the position and the
+scale of the code's camera match the footage within about 2 units for Sora; the feet are hidden behind the cards in the clip too (the
+cards' top is at y 259; the legs show through the dark card bodies in the 8.webp frame). The earlier "feet at about y 265" came from
+8.webp (a different pixel scale), where the legs vanish behind the cards, not from a visible foot; nothing in the clips shows a foot
+at 265. **No change to the rule.** One real difference found in the code: the slot y is 0x3d, not 0x60, when byte `+0xc` of the save
+block (0x33e860, `FUN_001057a8`) is 10 (`FUN_0027c218`); world index 10 is `lk` (Pride Lands, the table at 0x349dc0): the models
+stand 35 units higher there (feet at 279). The app passed `false` always; `menu_preview::in_world_10(area name)` now passes the
+area's world [inferred: that byte is the world the player stands in; `FUN_00149df0` saves it and writes 0xf (the world map)]. Test
+`menu::preview::tests::pride_lands_raise_the_slot`. Side-by-side: `local/mn5-cmp-feet.png` (not committed).
 
 Port: a camera of its own (render layer 9, `Camera3d` with the original's vertical focal length 762 menu units, the 512 x 416 buffer
 shown 4:3; 703 horizontally, applied as a horizontal scale of the models) renders the members into a 1024 x 896 picture of the canvas,
 drawn by the menu as a node right after the panel outline: the models stand in front of the dimmed field and the panel's scan lines,
-behind the rows and the cards. The camera and the models exist only while page 0 shows (the open, not the close: [inferred] the
-original fades them with the panel outline; the port removes them at the close). One perspective replaces the camera per slot: each
+behind the rows and the cards. The camera and the models exist only while page 0 shows (the open and the close, WP-MN5: see "Fade"). One perspective replaces the camera per slot: each
 model is shifted sideways to its slot centre [inferred: exact at the model's depth]. The models' motion is stepped by the preview
 itself (the simulation and `skel::animate` are stopped while the menu is open). Log lines `menu: party preview slot S of N: <model>
 motion Some(558) at menu (x, y), depth 702`, `menu: party preview removed`; `KH2_NO_MENU_PREVIEW=1` turns it off, `KH2_PREVIEW_YAW=<deg>`
 turns the models (harness aid). Screenshot (tt03, three members): Sora, Donald and Goofy face the camera between the list and the
 right-hand frame, lower legs behind the cards.
+
+**Fade (WP-MN5).** The models' alpha is the panel outline object's colour alpha (`FUN_0023b4e0` reads `DAT_0036ceac`, the object
+`FUN_00250a00` builds with the groups 0x2e / 0x2f / 0x30 of `camp.2ld` sequence 1). The preview picture's node takes that alpha every
+frame (`menu_preview::fade`, from the outline node's quads: `alpha_of`; the picture's quad alpha is `Node::label_fade`, `menu_gfx`),
+and the camera now lives through the close (`Phase::Closing`) and is removed when the menu is closed. Measured with
+`KH2_MENU_LOG_FADE=1`: `menu: party preview alpha 0.06 .. 0.94 (phase Opening)` in 16 steps of 0.0625 (one per tick), `1.00 (phase
+Open)`, then `0.86, 0.72, 0.58, 0.43, 0.29, 0.15, 0.00 (phase Closing)` in 7 ticks. One alpha on the finished picture instead of per
+model: models do not blend through one another (the original's per-model alpha would show a body through an arm). The app's skeleton
+alpha path (`enemy_ai.rs`, the look-around fade) was not used: it fades each material, the picture alpha does the same with one
+number [inferred: the same look]. Screenshots (`KH2_KEYS=3:Enter,5:Escape`, `KH2_SHOT_AT` 3.15 and 5.05): the models are see-through
+at both, full in the hold.
+
+**Face rings under the frame (WP-MN5, item D) [GAP, not done].** In clip 10 the party faces (the HUD rings at the right edge) stay
+bright over the dim and sit **under** the menu's frame (the bottom panel cuts the third ring). In the app the HUD camera (order 10)
+is dimmed by the menu's dim quad and drawn under the whole menu (camera order 11, one scene), so the rings are dark, and the frame
+covers them already. Matching the clip needs the dim to stay under the HUD and the frame above it: a second menu camera (or the
+dim drawn by a camera below the HUD, order 9) plus a split of `MenuScene::quads` into "dim and backdrop" and "frame", and the HUD
+camera is in `hud_gfx.rs` (not this WP's). Also unknown: whether the rings are the field HUD or the camp's own objects (the camp
+is a scene of its own in the original, 1.1, so the field HUD is not running there; `FUN_00250a00` does not draw rings; searched:
+`FUN_00250a00`, `FUN_002506b8`). Left out rather than guessed.
 
 ## 17. Growth and the other equippable abilities as menu rows (WP-G8)
 

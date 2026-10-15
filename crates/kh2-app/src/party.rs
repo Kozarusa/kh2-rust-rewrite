@@ -805,7 +805,8 @@ fn spawn_party(
     if records.is_empty() && !rebuild {
         info!("party: {name}: the map script places no FRIEND_1 / FRIEND_2");
     }
-    let mut requests: Vec<(u8, &'static str, String, Option<(Vec3, f32)>, u8)> = Vec::new();
+    type Request = (u8, &'static str, String, Option<(Vec3, f32)>, u8);
+    let mut requests: Vec<Request> = Vec::new();
     if rebuild {
         for (i, _) in wanted_members(slots.bytes, &merged) {
             requests.push((slots.bytes[i], ["", "SLOT_1", "SLOT_2", "SLOT_3"][i], String::new(), None, 0));

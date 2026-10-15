@@ -344,8 +344,8 @@ fn input(
             }
         }
         _ => {
-            if confirm && switchable && ui.disabled >> ui.cursor & 1 == 0 {
-                let (a, b) = (rows[ui.chosen], rows[ui.cursor]);
+            let pair = rows.get(ui.chosen).zip(rows.get(ui.cursor)).filter(|_| confirm && switchable && ui.disabled >> ui.cursor & 1 == 0);
+            if let Some((&a, &b)) = pair {
                 swap_members(&mut slots.bytes, &mut members, a.slot, b.slot);
                 info!("menu: party switched {} (slot {}) with {} (slot {}), slot bytes {:02x?}", a.id, a.slot, b.id, b.slot, slots.bytes);
                 ui.cursor = ui.chosen;
@@ -432,6 +432,9 @@ fn tick(
     disc: Res<Disc>,
     slots: Res<PartySlots>,
     members: Query<&PartyMember>,
+    sora: Query<&crate::sora::Sora>,
+    data: Option<Res<crate::data::GameData>>,
+    progress: Option<Res<crate::progress::Progress>>,
     real: Res<Time<Real>>,
 ) {
     let want = if matches!(menu.phase, Phase::Opening | Phase::Open | Phase::Closing) && PAGES.contains(&menu.page) { menu.page } else { 0 };
@@ -483,6 +486,11 @@ fn tick(
                 scene.nodes[i].visible = v;
             }
             stage.origins.clear();
+            // The cards of page 0 follow the order the members now stand in (`FUN_00250a00` builds them from the party object,
+            // which `FUN_00282908` rebuilt after the swap).
+            let field: Vec<(u16, i32, i32, i32, i32)> = ui.roster.iter().map(|r| (r.id, r.hp, r.hp_max, r.mp, r.mp_max)).collect();
+            let cards = crate::menu::party(sora.single().ok(), data.as_deref(), &field, progress.as_deref(), &ui.tables.member_names);
+            crate::menu::show_cards(&menu, &mut scene, &cards);
         }
         ui.page = want;
         ui.drawn = None;

@@ -1443,7 +1443,8 @@ Layout triples (enter, leave, hold) at 0x381240: (0xf, 0x11, 0x10), (4, 6, 5), (
   and `FUN_001a1a18(item, count)`; selling `FUN_0023e620(total)` and `FUN_001a1c30(item, count)` (`FUN_00283480` when the
   item is gone); then the munny digits, the lists again (`FUN_00264be8`) and page 1 / 4.
 - **Page 7** (`FUN_00262140`, `FUN_002621a0`): when `FUN_00265498` (flags not 0x200 alone, and the save's byte +0x3724 bit
-  `1 << (state +0xd != 0)` clear) the shop opens on a text (0x381128 or 0x38112c) and sets that bit [not ported].
+  `1 << (state +0xd != 0)` clear) the shop opens on a text (0x381128 or 0x38112c) and sets that bit [ported in WP-SH3:
+  section 24.1].
 - The end (`FUN_00260540` once closing): waits for the objects, `FUN_00284ae0`, `FUN_00262de0`, `FUN_001038a0` (back to
   the field).
 
@@ -1458,8 +1459,7 @@ holding on its hold layout; the rows, names, prices, counts, the detail line, th
 the port places [inferred positions, not read from the list widget]. A close plays the leave layout and the camp's
 close dim. Examine (command 30) runs the talk program in window class 2 (`npc.rs`).
 
-Not ported: page 7 (the first-visit text), the "new" marks (save +0x3714),
-the list widget's own look (row plates, the pointer, scrolling), the help line, the munny plate's digits art, the open
+Not ported (the first-visit text and the "new" marks came in WP-SH3, section 24): the list widget's own look (row plates, the pointer, scrolling), the help line, the munny plate's digits art, the open
 sound's exact entry [inferred: kind k is the u16 at 0x37f654 + 2 k, the rule of kinds 0xc and 0xd].
 
 Harness: `KH2_PROGRAMS=0,0,10 KH2_NPC_WATCH=2 KH2_NPC_WATCH_DIST=60 KH2_STATE=<{"munny": 500}> KH2_REACTION_PRESS=8
@@ -1497,7 +1497,7 @@ Gaps: the writer of the pending command's +6 (searched: `FUN_001778e8`, `FUN_001
 | k | tag | layout (after a 0x10-byte header: magic, version 3, u32 count) | readers |
 |---|---|---|---|
 | 0 | `reci` | 0x20 per recipe: +0 the recipe's item id, +2 kind (0 taught by its item, 1..3 a development set), +3 rank, +4 the item made, +6 the higher-rank item (0 none), +8 six (u16 material, i16 count) lines ending at a non-positive id | `FUN_002906e0`, `FUN_00290058`, `FUN_00290ef8`, `FUN_00290468` |
-| 1 | `cond` | 0xc per collection reward (+0 text, +2 reward, +4 type, +5..+7 condition, +8 count, +0xa record bit) | `FUN_00291140` (not ported) |
+| 1 | `cond` | 0xc per collection reward (+0 text, +2 reward, +4 type, +5..+7 condition, +8 count, +0xa record bit) | `FUN_00291140` (ported in WP-SH3: 24.3) |
 | 2 | `leve` | 0xc per level: +0 name, +2 text, +4 i16 unlock bit, +8 u32 points | `FUN_00290bb8`, `FUN_00290c28` |
 | 3 | `exp` | +0x10..+0x16 the points of a material by its rank (item +5), +0x18 f32 the first bonus' factor, +0x1c a story flag, +0x1e the unlock bit it grants | `FUN_00290468`, `FUN_00284c10` |
 
@@ -1523,7 +1523,7 @@ it as `progress::Moogle` (`Progress::moogle`; not in the slot files yet; `KH2_ST
   every material held goes to the stock and the totals (999 at most each) and leaves the inventory; its known bit is
   set. With bit 10, `FUN_002888f8` / `FUN_002889e0`: a kind-0 recipe whose item is held and that is not learned is
   learned and its item taken (a learned one's item stays; an item of the other kinds is taken). `FUN_00291140` checks
-  the rewards [not ported]. The first page is 10 after a hand-over, else 0x10 after recipes, else 9; the notices of
+  the rewards [ported in WP-SH3: 24.3]. The first page is 10 after a hand-over, else 0x10 after recipes, else 9; the notices of
   the state's +0x130 bits come first (`FUN_00287950`, page 0x13: bit 0 the hand-over, bit 5 the recipes, 1..4 rewards).
 - **Page 9** (`FUN_00284ea8`, `FUN_00285388`): seven rows; row 0 shows when something was made, row 1 with a set bit
   0..2, row 2 with bit 10, rows 3..6 always. Row k leads (`FUN_0028a6f0`): 0 -> 0xc, 1 -> 0xe, 2 -> 0x10, 3 -> 0x17,
@@ -1566,7 +1566,7 @@ line as name and need / stock, an inferred layout: `FUN_002894f0` and `FUN_00289
 13.4:J,14:J,14.6:J,15.2:K,15.8:K,16.4:K kh2-game tt07` makes a Mega-Potion at the moogle (`N_EX640_SHOP_RTN`, event
 0x6b): `synth: open the third row`, `synth: made item 0x5`, `shop: close`.
 
-Not ported: page 0xb (row 5), the rewards (`cond`, `FUN_00291140`), the session's NEW marks (`DAT_0036d1a0`), the
+Not ported (page 0xb, the rewards and the NEW marks came in WP-SH3, section 24): the
 moogle's animation (`FUN_00283520`, item +0x14), the window and list widgets' own look, the frame-by-frame count-down.
 
 ### 23.5 Decompile index (WP-SH2)
@@ -1584,8 +1584,143 @@ moogle's animation (`FUN_00283520`, item +0x14), the window and list widgets' ow
 | 0x2858e8, 0x285b30, 0x287240, 0x287498, 0x28ffc8, 0x28f9a8, 0x28aa40 | the material pages |
 | 0x2906c0, 0x2903b8, 0x2783f8 | the record, the unlock bits, story flag 0x4837 |
 
-Gaps: page 0xb (`FUN_00286060`, `FUN_00285e10`, `FUN_0028b470`); the rewards' conditions (`FUN_00291418`, `FUN_00291628`);
-the result window's key handling (`FUN_0028e7f0`, `FUN_0028f2c0`: the port makes the item on any confirm or cancel);
+Gaps: (page 0xb and the rewards' conditions are closed in section 24); the result window's key handling (`FUN_0028e7f0`, `FUN_0028f2c0`: the port makes the item on any confirm or cancel);
 the list widget (`FUN_00296b48`, `FUN_00299878`); the entries `FUN_002783f8` (story flag 0x4837) adds with mark 0x80 are
 left out; `FUN_002909d0` with a bonus material outside the list writes the stock at slot -1 (the points word) [not
 ported].
+
+## 24. Page 7, the shop's NEW marks, the collection rewards and page 0xb (WP-SH3)
+
+### 24.1 Page 7: the first-visit text [V]
+
+`FUN_0025fcd8` builds the screen, runs `FUN_0025fef0` (the top rows) and then asks `FUN_00265498`; true opens page 7 and
+runs `FUN_00262140`. `FUN_00265498`: the state's halfword at +0xc (bit 0 the Buy and Sell rows, bit 1 the third row, byte
++0xd the "first group" flag of `FUN_00265688`) must not be exactly 2 under the mask 0xff02, i.e. the shop is not the
+third row alone, and the save's byte at +0x3724 must have the bit `1 << (+0xd != 0)` clear. So there are two classes of
+shop: those whose record has no flag 0x80 and a first group with items (the moogle's records, flags 0x31f; bit 1) and
+the shared ones (flag 0x80: Twilight Town's weapon, armor, accessory and item shops, flags 0x181..0x188; bit 0). A
+moogle without wares of its own (the third row alone: tt07's `N_EX640_SHOP_RTN`, event 0x6b) never shows a text.
+The text is the message id held in a word of the executable: 0x381128 when +0xd is clear, 0x38112c when it is set
+(0xc401 and 0xc402 on the disc, read at run time; both say that items of earlier shops reach the shops of the bigger
+towns). `FUN_00262140` opens a message window through `FUN_00262350` (window object 0x7546 and a list widget 0x7549, the
+text by `FUN_00190c40`). `FUN_002621a0` waits: only a list result of 0 (confirm) or -2 (cancel) closes it
+(`FUN_00262450`); a Start press just plays its sound. When the window has gone (`FUN_002624a0`) it sets the bit
+(`|= 1 << (+0xd != 0)` in the save byte) and returns to page 0.
+
+### 24.2 The shop's NEW marks [V]
+
+The shop file's list of up to 0x80 item ids (`FUN_00265ad0`: an item's place in it, -1 past the end) has one bit per
+place in the save at +0x3714 (4 words). `FUN_0025fef0` runs `FUN_00265280` at every open: each item of the buy list
+(state +0xa count, +0x10 ids) whose save bit is clear sets its bit in a per-visit set (`DAT_0036cfd0`, 0x14 bytes): the
+items that are NEW this visit. `FUN_00265348(item)` sets the item's save bit when it is NEW this visit and the bit is
+still clear (`FUN_002653d8`: NEW this visit; `FUN_00265420`: NEW this visit and its save bit is set now). It is called
+for the item under the cursor when page 1 is entered (`FUN_00260a78`) and when the cursor moves (`FUN_00264668`,
+`FUN_00260ec8`). The tags are sprite groups of `itemshop.2ld`: NEW = group 0x78 (word 0x381238), VIEWED = group 0x77
+(word 0x38123c).
+- Buy list rows (`FUN_002626e8`, page 1 only): an item that is NEW this visit has the NEW tag until its save bit is
+  set, then the VIEWED tag.
+- Top page (`FUN_00262bd0`): the Buy row (its display index `FUN_00264e80(0)`) has a tag when any item is NEW this visit:
+  NEW while one of them is unseen, else VIEWED. The third row has a NEW tag (group 0x78, literal) when `FUN_002919e8`
+  answers non-zero and the record has the third row: a recipe learned (record +0x10 bit) and not seen (+0x20), else a
+  made entry (+0x18) not seen, over 0x2d bits.
+`itemshop.2ld`'s sequence 2 (257 groups) holds the groups: 0x77 (last frame 9) and 0x78 (last frame 0x77) are one 40 x
+12 rectangle ending at the origin (quad x -39..1, y 6..18) over (0, 128)-(40, 140) of the file's second image, which is the
+atlas with the NEW! art (the first image is the frame panel). The row plate group 0x62 has the extent 0x10e (the camp's
+tags sit at the plate extent: `FUN_00138ed0(tag, FUN_00237618(row + 0x18), ..)`).
+
+### 24.3 The collection rewards [V]
+
+`FUN_00284c10` runs `FUN_00291140` after the hand-over (so the totals are the new ones). It clears the page's list (state
++0x184, 8 bytes per entry: the reward index and a byte "reached"; +0x60 the count) and walks the 50 `cond` rows:
+`FUN_00291418(a, b, c, count)` with the row's bytes +5, +6, +7 and halfword +8 decides "reached"; a row that is not
+reached is listed only when story flag 0x4837 is set (`FUN_002783f8`). For a reached row whose bit in the record's
+reward word (+8) is clear: the bit is set, the session's reward mark (`DAT_0036d1a0` +0x18) too, and
+- kind (+4) 0: the item (+2) is added with `FUN_001a1a18` when `FUN_001a18b8(item, 100, 1)` allows (count below 99; a
+  unique item not yet owned), notice bit 2 (value 2 of the state's +0x130);
+- kind 1, reward 0: unlock bit 0 (record +0x28), notice 4, then `FUN_00290cc0` learns the Free Development recipes of set
+  1; reward 1: unlock bit 1, notice 8, the same; any other reward n: unlock bit n, notice 0x10, the record bit of
+  halfword +0xa (`FUN_001a52b0`) and the first material of the row's category and rank is marked in the state's +0x134
+  (`FUN_00291628`; the mark has no reader in the port).
+The notices are the opening's texts 1..4 of the table at 0x382628.
+The test `FUN_00291418` walks the 50 material slots (state +0x314: the item ids of type 0x10 in table order) with the
+record's totals (+0xfc, the amount of each ever handed over): the slot counts when `FUN_00291560(item +4, a)` and
+`FUN_002915f8(item +5, b)` hold: a in 0xd, 0xe any category; below 0xd the category itself; 0x10 one of three special
+categories (the bytes at 0x382698: 9, 10, 11 on the disc); any other value one that is not special. b 4 and 5 any
+rank; below 4 the rank itself. A matching slot with a total of 0 fails the whole test when a is 0xd or b is 4 (the
+"collect all" rows); otherwise the totals add (at most 99,999) and the matching slots with a total are counted; c 0
+compares the sum with the count, else the number of slots. The disc's 50 rows read as their texts say (test
+`the_disc_shop_layout_has_the_tag_groups_and_the_rewards_read_as_conditions` prints them): 0..10 "Get n types of
+Materials" (a 0xe, b 5, c 1; n = 1, 5 .. 45, all 50 with a 0xd, b 4), 11..15 "Obtain total amount of n" (c 0), 16..21 "all
+materials of a category" (a 6..0xb, b 4, count 4), 22..25 "all of a rank" (a 0xd, b 0..3, count 12 or 13), 26..49
+"n or more of one category and rank" (c 0; reward kind 1 with the record bits 0x49..0x60, the gated groups of the moogle's
+shop, section 22.2). Rewards 0, 2, 3 and so on are items (24 of the 50), 26 are unlocks.
+
+### 24.4 Page 0xb, the reward list [V]
+
+Row 5 of page 9 leads to page 0xb (`FUN_00285388`, `FUN_0028a6f0`). `FUN_00285e10` builds it (the list widget
+`FUN_00296b48`, 8 visible rows from state +0x60 entries; `FUN_0028aa40` -> `FUN_0028b470` the row widgets,
+`FUN_0028bc70(0xbce1)` the title, message 0xbce1) and `FUN_0028a1b8` fills the rows (the same filler serves page 10's
+twin): each listed reward shows its `cond` text (+0), a plate group 0x61 when reached (0x24 when not), the text style
+of the table at 0x382608 (reached / not), and a session NEW tag (group 0x78 when the page's byte +0x112d is set, else
+0x77; `DAT_003825ac` / `DAT_003825b0`) when the reward is among the ones paid at this opening. An empty list shows the text
+0xc194. A reached reward's detail text is the item for kind 0, else the texts 0xc1c3 (reward 0), 0xcc7d (reward 1),
+0xc1c4 (the rest); the detail of an unreached one was not decoded (`FUN_002553c0`, the tables 0x382640 / 0x382660,
+`FUN_001a1f40`, `FUN_00191870`, `FUN_0029bb48`). The handler `FUN_00286060`: Up and Down move; a confirm only plays the
+refused sound (`FUN_00291b58` answers 0 for page 0xb); cancel (-2) goes to page 9 (the cursor on row 5);
+**-5 goes to page 10** (state +0 = 4) and **-5 on page 10 comes back** (`FUN_00285b30`, state +0 = 5): the two pages are
+tabs of each other; -4 ends the menu. The help text of the page is 0xbce0 (`FUN_00288f00`).
+
+### 24.5 The synthesis marks [V]
+
+`DAT_0036d1a0` (0x28 bytes, cleared by `FUN_00284c10`) holds the visit's marks: +0 the entries (bit 2r, 2r + 1) learned or
+made and not seen (`FUN_002916d8` at the end of the opening, over 0x2d bits) plus the ones learned during the visit
+(`FUN_002889e0`, `FUN_00290cc0`); +8 the materials handed over for the first time (`FUN_002887c8`); +0x18 the rewards
+paid. The state's byte +0x112d is set by the opening and cleared by the handlers that finish leaving page 9
+(`FUN_00285388`), page 10 (`FUN_00285b30`) and the Recipes list, page 0x10 (`FUN_00286580`); the stores of that byte are
+only in these three (`mips_scan --store-off 0x112d`), so leaving page 0xb, 0x17 or the other lists keeps it.
+- Page 9 (`FUN_00284ea8`): rows 3 and 4 have a tag while +8 has a bit, row 5 while +0x18 has one, NEW while +0x112d is
+  set and VIEWED after; row 1 (Free Development sets) and row 2 (Recipes) when the session's entries hold one of their
+  entries (`FUN_002917c8`): NEW while one of them is unseen (`FUN_00291880`, record +0x20), else VIEWED; row 0 (Creations)
+  a VIEWED tag when `FUN_00291960` finds a made entry among the session's.
+- The lists (`FUN_00288fc0`): the cursor's entry is marked seen in the record (+0x20) every frame; an entry of the
+  session's marks has the NEW tag while its seen bit is clear, VIEWED after.
+
+### 24.6 What the port does (WP-SH3)
+
+`menu_shop::synth::pay_rewards` / `cond_met` (the rewards), `Session` (page 0xb as `Page::Rewards`, `Marks`, `see`,
+`entry_mark`, `row_mark`, `has_new`), `menu_shop::{item_place, fresh_at_open, item_tag, buy_tag, first_visit_bit}` and
+`Page::First` (page 7) in `crates/kh2-app/src/menu_shop.rs`; `Progress` keeps the save bytes (`shop_seen` +0x3714,
+`shop_visit` +0x3724, `Moogle::rewards` +8; not in the slot files yet). The tags are the sprite groups 0x77 / 0x78 on
+the file's NEW! art; their place (left of the hand) and the page 0xb rows' columns are the port's [inferred: the rows have
+no plate]. `X` is -5.
+Harness (a state file; `KH2_STATE` is a path, `local/sh3/state-moogle.json` is
+`{"munny": 500, "items": {"317": 2, "329": 2, "333": 2, "345": 6, "349": 1}}`; keys `shop_seen`, `shop_visits` and
+`moogle.rewards` set the new bytes):
+- Page 7 and the tags at Wantz's: `KH2_PROGRAMS=0,0,10 KH2_NPC_WATCH=2 KH2_NPC_WATCH_DIST=60 KH2_REACTION_PRESS=8
+  KH2_KEYS=10:J,11:J kh2-game tt06` (log `shop: first visit of this class (save +0x3724 bit 0 clear): page 7, text 0xc401`,
+  `shop: page 7 dismissed: save +0x3724 bit 0 set`, `shop: 2 NEW items`, `shop: item place 4 seen (save +0x3714 bit set,
+  FUN_00265348)`, `shop: tags Buy row Some(New), ...`).
+- The rewards and page 0xb at the moogle: `KH2_PROGRAMS=0,0,16 KH2_NPC_WATCH=5 KH2_NPC_WATCH_DIST=60
+  KH2_REACTION_PRESS=8 KH2_STATE=local/sh3/state-moogle.json KH2_KEYS=10:J,11:J,12:J,13:J,14.5:X kh2-game tt07` (the
+  third row opens with three notices, page 10, then -5 to page 0xb; log `synth: open the third row ... notices 0x7`,
+  `synth: page 0xa -> page 0xb`).
+
+### 24.7 Decompile index (WP-SH3)
+
+| address | what |
+|---|---|
+| 0x25fcd8, 0x265498, 0x262140, 0x262350, 0x2621a0, 0x262450, 0x2624a0, 0x262540, 0x262558 | page 7 |
+| 0x265280, 0x265ad0, 0x265348, 0x2653d8, 0x265420, 0x262bd0, 0x2626e8, 0x260a78, 0x264668, 0x260ec8, 0x264e80 | the shop's NEW marks |
+| 0x291140, 0x291418, 0x291560, 0x2915f8, 0x291628, 0x2783f8, 0x1a18b8, 0x1a1768, 0x1a52b0, 0x290cc0 | the rewards |
+| 0x286060, 0x285e10, 0x28b470, 0x28aa40, 0x28a1b8, 0x28ba50, 0x285b30, 0x285388, 0x288f00, 0x288da8 | page 0xb and the neighbours |
+| 0x2916d8, 0x2917c8, 0x291880, 0x291960, 0x2919e8, 0x284ea8, 0x288fc0, 0x2889e0, 0x2887c8, 0x28f490 | the synthesis marks |
+| data 0x381128, 0x381238, 0x382698, 0x3825ac, 0x382608, 0x382628 | first-visit texts, tag groups, special categories, row mark groups, row styles, notices |
+
+Gaps: the exact place and look of the tags and of the page 0xb rows (the widgets `FUN_00296b48`, `FUN_0029b600`,
+`FUN_00299878` were not followed; the port's columns are inferred); the detail text of an unreached reward
+(`FUN_002553c0`, tables 0x382640 / 0x382660, `FUN_001a1f40`, `FUN_00191870`); the state's +0x134 and +0x13c marks and the
+NEW tags of the material pages 10 and 0x17 (`FUN_0028f490`, `FUN_0028f698`, `FUN_0028f850`, `FUN_0028fea0`,
+`FUN_0028f9a8`: the session sets +0x10 and +0x20); the look of the message window of page 7 (the port's text in the
+synthesis window style); the difference between the VIEWED group 0x77 and the NEW group 0x78 beyond the animation
+length (both use the same art rectangle); the entries `FUN_002783f8` adds to the lists (story flag 0x4837) are still out;
+`+0x3714`, `+0x3724` and the record `+8` are not in the slot files.

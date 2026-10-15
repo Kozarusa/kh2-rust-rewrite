@@ -311,6 +311,12 @@ pub struct Progress {
     /// The moogle's synthesis record (save `+0x3728`, `FUN_002906c0`; docs/menus.md 23), read and written by the shop's
     /// third row (`menu_shop::synth`). Outside the party block, so kept apart like `wallet`. Not in the slot files yet.
     pub moogle: Moogle,
+    /// The shops' "seen" bits (save `+0x3714`, 0x80 bits over the shop file's item list, `FUN_00265ad0`): an item whose
+    /// bit is clear is NEW in a shop's Buy list until the cursor reaches it (`FUN_00265348`). Not in the slot files yet.
+    shop_seen: [u32; 4],
+    /// The shops' first-visit byte (save `+0x3724`): bit 0 / bit 1 once the opening text of a shop with the state's
+    /// `+0xd` clear / set was dismissed (`FUN_002621a0`, `FUN_00265498`). Not in the slot files yet.
+    shop_visits: u8,
 }
 
 /// The synthesis record at save `+0x3728` (`FUN_002906c0` answers its address). Bit sets are kept as u64 (the
@@ -330,6 +336,8 @@ pub struct Moogle {
     /// higher rank, 5 two bonuses at once, 6..9 the halved costs of a rank on the Creations list, 10 the Recipes row
     /// (`FUN_00290c28` sets the level rows' bits; the writer of bit 10 was not found).
     pub unlocks: u64,
+    /// +8: one bit per collection reward (`cond` row k) once paid (`FUN_00291140`).
+    pub rewards: u64,
     /// +0x30: the moogle's points (`FUN_002909d0`, at most 99,999).
     pub points: u32,
     /// +0x34: the materials in stock, by place in the material list (50 words; at most 999).
@@ -448,7 +456,7 @@ impl Progress {
         let mut block = vec![0u8; off::LEN];
         let n = bytes.len().min(off::LEN);
         block[..n].copy_from_slice(&bytes[..n]);
-        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT], story: StoryHandle::default(), new_seen: Vec::new(), record_bits: Vec::new(), moogle: Moogle::default() }
+        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT], story: StoryHandle::default(), new_seen: Vec::new(), record_bits: Vec::new(), moogle: Moogle::default(), shop_seen: [0; 4], shop_visits: 0 }
     }
 
     // --- story flags ------------------------------------------------------------------------
@@ -772,6 +780,28 @@ impl Progress {
             self.record_bits.resize(w + 1, 0);
         }
         self.record_bits[w] |= 1 << (n & 31);
+    }
+
+    /// `FUN_00265348`'s test: the shop item at place `n` of the shop file's list was seen (save `+0x3714`).
+    pub fn shop_seen(&self, n: usize) -> bool {
+        n < 128 && self.shop_seen[n >> 5] >> (n & 31) & 1 != 0
+    }
+
+    /// `FUN_00265348`: marks the item at place `n` seen (`|=` of its bit in save `+0x3714`).
+    pub fn set_shop_seen(&mut self, n: usize) {
+        if n < 128 {
+            self.shop_seen[n >> 5] |= 1 << (n & 31);
+        }
+    }
+
+    /// `FUN_00265498`: bit `n` (0 or 1) of the first-visit byte (save `+0x3724`).
+    pub fn shop_visit(&self, n: u8) -> bool {
+        self.shop_visits >> (n & 7) & 1 != 0
+    }
+
+    /// `FUN_002621a0`: sets bit `n` of the first-visit byte.
+    pub fn set_shop_visit(&mut self, n: u8) {
+        self.shop_visits |= 1 << (n & 7);
     }
 
     /// `FUN_0023e6b0`: takes `n` from the munny (`FUN_0023e680` runs first [GAP: not read]); the shop's buy only
@@ -1327,6 +1357,8 @@ impl Progress {
             new_seen: Vec::new(),
             record_bits: Vec::new(),
             moogle: Moogle::default(),
+            shop_seen: [0; 4],
+            shop_visits: 0,
         };
         p.init_party();
         p.apply_plrp(plrp, 0);
@@ -1609,7 +1641,7 @@ impl Progress {
                         s.set_world_point(id as usize);
                     }
                 }
-                // The moogle's synthesis record (save +0x3728): `{"unlocks": [bits], "points": n, "level": n}`.
+                // The moogle's synthesis record (save +0x3728): `{"unlocks": [bits], "points": n, "level": n, "rewards": [bits]}`.
                 "moogle" => {
                     if let Some(u) = v.get("unlocks") {
                         for b in list(u, "moogle.unlocks")? {
@@ -1621,6 +1653,23 @@ impl Progress {
                     }
                     if let Some(n) = v.get("level") {
                         self.moogle.level = int(n, "moogle.level")?.clamp(0, 8) as u8;
+                    }
+                    if let Some(u) = v.get("rewards") {
+                        for b in list(u, "moogle.rewards")? {
+                            Moogle::with(&mut self.moogle.rewards, u32::from(b));
+                        }
+                    }
+                }
+                // The shops' seen bits (save +0x3714, places in the shop file's item list) and first-visit bits
+                // (save +0x3724): `"shop_seen": [places]`, `"shop_visits": [bits]`.
+                "shop_seen" => {
+                    for n in list(v, "shop_seen")? {
+                        self.set_shop_seen(usize::from(n));
+                    }
+                }
+                "shop_visits" => {
+                    for n in list(v, "shop_visits")? {
+                        self.set_shop_visit(n as u8);
                     }
                 }
                 // The members' AI settings (record +0xd4): `{"2": 2, "3": [3, 1]}` = member id -> the style byte, or the
@@ -2433,6 +2482,24 @@ mod tests {
         p.set_auto_reload(SORA, 1, true);
         assert_eq!(p.battle_items(SORA), vec![(1, 1), (0, 0), (3, 3), (0, 0)]);
         assert!(!p.reload_off_needs_question(SORA, 1), "reserved and carried: no question");
+    }
+
+    /// The shops' seen bits (save `+0x3714`), first-visit bits (`+0x3724`) and the moogle's reward bits (record `+8`):
+    /// set by the accessors and by the `KH2_STATE` keys `shop_seen`, `shop_visits` and `moogle.rewards`.
+    #[test]
+    fn the_shop_seen_bits_the_first_visit_bits_and_the_reward_bits_are_kept() {
+        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        assert!(!p.shop_seen(0) && !p.shop_seen(127) && !p.shop_visit(0) && !p.shop_visit(1));
+        p.set_shop_seen(5);
+        p.set_shop_seen(127);
+        p.set_shop_seen(128);
+        assert!(p.shop_seen(5) && p.shop_seen(127) && !p.shop_seen(6) && !p.shop_seen(128), "128 places, the 129th is dropped");
+        p.set_shop_visit(1);
+        assert!(p.shop_visit(1) && !p.shop_visit(0));
+        p.apply_json(r#"{"shop_seen": [0, 33], "shop_visits": [0], "moogle": {"rewards": [0, 49]}}"#).unwrap();
+        assert!(p.shop_seen(0) && p.shop_seen(33) && p.shop_visit(0));
+        assert_eq!(p.moogle.rewards, 1 | 1 << 49);
+        assert!(p.apply_json(r#"{"shop_seen": 3}"#).is_err());
     }
 
     /// The Save menu's slot file (docs/menus.md 18): written from one state, read back through `apply_json` (the path

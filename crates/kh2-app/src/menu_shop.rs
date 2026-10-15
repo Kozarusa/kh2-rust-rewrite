@@ -49,6 +49,9 @@ pub mod addr {
     /// The layout triples (enter, leave, hold) by screen (`FUN_00263f00`, `FUN_0025fcd8`): 0 the top rows, 1 the buy
     /// list, 2 the sell list [inferred: the cancel of page 1 passes 1, of page 4 passes 2].
     pub const LAYOUTS: u32 = 0x0038_1240;
+    /// The first-visit texts (`FUN_00262140`): the message of a shop whose state `+0xd` is clear at 0x381128, set at
+    /// 0x38112c (u32 each).
+    pub const FIRST_VISIT: u32 = 0x0038_1128;
 }
 
 /// The sound kinds the pages play (`FUN_0023e738(kind, 1)`), as ids of the system bank: kind k is the u16 at
@@ -216,6 +219,55 @@ pub fn top_rows(s: &Stock) -> Vec<usize> {
     .collect()
 }
 
+/// `FUN_00265ad0`: an item's place in the shop file's list of seen-marks (at most 0x80).
+pub fn item_place(shops: &Shops, id: u16) -> Option<usize> {
+    shops.seen_ids.iter().take(0x80).position(|&x| x == id)
+}
+
+/// `FUN_00265280` (run by `FUN_0025fef0` at the open): the places of the buy list's items whose save bit (`+0x3714`) is
+/// still clear. They are the shop's NEW items for this visit, as a bit set over the 0x80 places.
+pub fn fresh_at_open(shops: &Shops, items: &[u16], seen: &dyn Fn(usize) -> bool) -> u128 {
+    let mut fresh = 0u128;
+    for &id in items {
+        if let Some(p) = item_place(shops, id).filter(|&p| !seen(p)) {
+            fresh |= 1 << p;
+        }
+    }
+    fresh
+}
+
+/// A NEW mark of a shop row: group 0x78 (`DAT_00381238`) while the item was not seen, 0x77 (`DAT_0038123c`) once the
+/// cursor has been on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tag {
+    New,
+    Viewed,
+}
+
+/// `FUN_002626e8` (buy list rows): a row of an item that was fresh at the open (`FUN_002653d8`) carries a tag, NEW until
+/// its save bit is set (`FUN_00265420`, set by `FUN_00265348` when the cursor reaches it), then VIEWED.
+pub fn item_tag(shops: &Shops, fresh: u128, id: u16, seen: &dyn Fn(usize) -> bool) -> Option<Tag> {
+    let p = item_place(shops, id).filter(|&p| fresh >> p & 1 != 0)?;
+    Some(if seen(p) { Tag::Viewed } else { Tag::New })
+}
+
+/// `FUN_00262bd0` (the top page): the Buy row carries a tag when any item was fresh at the open: NEW while one of them is
+/// still unseen, else VIEWED.
+pub fn buy_tag(fresh: u128, seen: &dyn Fn(usize) -> bool) -> Option<Tag> {
+    if fresh == 0 {
+        return None;
+    }
+    Some(if (0..0x80).any(|p| fresh >> p & 1 != 0 && !seen(p)) { Tag::New } else { Tag::Viewed })
+}
+
+/// `FUN_00265498`: the first-visit text (page 7) shows unless the shop is the third row only (`rows_bits` 2 and the state's
+/// `+0xd` clear), and only while the save's `+0x3724` bit `1 << first_group` is clear. Answers that bit.
+pub fn first_visit_bit(s: &Stock, visited: &dyn Fn(u8) -> bool) -> Option<u8> {
+    let third_only = s.rows_bits & 2 != 0 && !s.first_group;
+    let bit = u8::from(s.first_group);
+    (!third_only && !visited(bit)).then_some(bit)
+}
+
 // --- the item rows the pages read -------------------------------------------------------------------
 
 /// What the shop reads of an item row (`item`, 0x18 bytes): `Type` (+2), `Name` (+8), `ShopBuy` (+0xc), `ShopSell`
@@ -229,11 +281,13 @@ pub struct Ware {
     pub sell: u16,
     /// +5: the rank (a synthesis material's points, `synth::points`).
     pub rank: u8,
+    /// +4: the material's category (the collection rewards' first condition byte, `FUN_00291560`).
+    pub flag1: u8,
 }
 
 impl Ware {
     pub fn of(i: &t::Item) -> Ware {
-        Ware { id: i.id, kind: i.r#type, name: i.name, buy: i.shop_buy, sell: i.shop_sell, rank: i.rank }
+        Ware { id: i.id, kind: i.r#type, name: i.name, buy: i.shop_buy, sell: i.shop_sell, rank: i.rank, flag1: i.flag1 }
     }
 }
 
@@ -282,6 +336,8 @@ pub fn step_quantity(sell: bool, qty: i32, owned: i32, price: i32, munny: i32, d
 pub enum Page {
     /// Page 0: the top rows.
     Top,
+    /// Page 7: the first-visit text, up before page 0 until it is dismissed.
+    First,
     /// Pages 1 (buy) and 4 (sell).
     List { sell: bool },
     /// Pages 2 and 5.
@@ -295,6 +351,7 @@ impl Page {
     pub fn number(self) -> u8 {
         match self {
             Page::Top => 0,
+            Page::First => 7,
             Page::List { sell } => if sell { 4 } else { 1 },
             Page::Quantity { sell } => if sell { 5 } else { 2 },
             Page::Question { sell } => if sell { 6 } else { 3 },
@@ -304,7 +361,7 @@ impl Page {
     /// The screen whose layout triple the page shows (0 top, 1 buy, 2 sell).
     fn screen(self) -> usize {
         match self {
-            Page::Top => 0,
+            Page::Top | Page::First => 0,
             Page::List { sell } | Page::Quantity { sell } | Page::Question { sell } => 1 + usize::from(sell),
         }
     }
@@ -319,6 +376,8 @@ pub enum Key {
     Right,
     Confirm,
     Cancel,
+    /// The list result -5 (the footage's X button; `X` in the port): the reward and collection pages switch to each other.
+    Switch,
     Start,
 }
 
@@ -385,6 +444,16 @@ impl Flow {
 
     /// One key (the page handlers `FUN_00260748`, `FUN_00260ec8`, `FUN_002614e0`, `FUN_00261d70`).
     pub fn key(&mut self, k: Key, v: &View) -> Act {
+        // Page 7 (`FUN_002621a0`): only a confirm or a cancel ends the text (the sound of Start is all it does).
+        if self.page == Page::First {
+            return match k {
+                Key::Confirm | Key::Cancel => {
+                    self.page = Page::Top;
+                    Act::Page
+                }
+                _ => Act::None,
+            };
+        }
         if k == Key::Start {
             return Act::Close;
         }
@@ -456,6 +525,7 @@ impl Flow {
                         return Act::Page;
                     }
                     Key::Start => return Act::Close,
+                    Key::Switch => return Act::None,
                 };
                 let owned = i32::from((v.owned)(self.deal.item));
                 let munny = v.munny.min(i32::MAX as u32) as i32;
@@ -490,8 +560,10 @@ impl Flow {
                     self.page = Page::List { sell };
                     Act::Deal
                 }
+                Key::Switch => Act::None,
                 Key::Start => Act::Close,
             },
+            Page::First => Act::None,
         }
     }
 }
@@ -528,12 +600,15 @@ struct Nodes {
     detail: usize,
     munny: usize,
     question: [usize; 2],
+    /// The NEW / VIEWED tag sprites, one per row.
+    marks: Vec<usize>,
 }
 
 impl Nodes {
     fn all(&self) -> Vec<usize> {
         let mut v = self.layers.clone();
         v.extend(self.texts());
+        v.extend(&self.marks);
         v
     }
 
@@ -557,6 +632,8 @@ mod at {
     pub const OWNED_RIGHT: f32 = 400.0;
     pub const DETAIL: [f32; 2] = [70.0, 360.0];
     pub const MUNNY: [f32; 2] = [470.0, 396.0];
+    pub const TAG_X: f32 = 46.0;
+    pub const WINDOW: [f32; 2] = [70.0, 200.0];
     pub const HAND: [f32; 2] = [52.0, 120.0];
     pub const IDLE: [u8; 4] = [0x9f, 0x9f, 0xaf, 0x80];
     pub const SELECTED: [u8; 4] = [0xe5, 0xe5, 0xe5, 0x80];
@@ -580,6 +657,10 @@ pub struct ShopMenu {
     open: Option<Open>,
     /// The third row's data (`mixdata.bar`, the executable's tables, the material list); `None` when unreadable.
     mix: Option<(synth::Mix, synth::Tables, Vec<u16>)>,
+    /// The first-visit texts (message ids at 0x381128 / 0x38112c).
+    first_msgs: [u32; 2],
+    /// The sequence of `itemshop.2ld` that holds the tag groups.
+    mark_seq: Option<usize>,
 }
 
 struct Open {
@@ -591,6 +672,22 @@ struct Open {
     /// The sell list as `sell_list` built it (rebuilt after a deal, `FUN_00264be8`).
     sell: Vec<(Ware, u8)>,
     closing: u32,
+    /// The buy list's items that were NEW at the open (`FUN_00265280`): a bit per place in the shop file's list.
+    fresh: u128,
+    /// The bit of save `+0x3724` page 7 sets when it is dismissed (`None`: no first-visit text).
+    first_bit: Option<u8>,
+    /// The tags the pages show (refreshed before each redraw).
+    tags: Tags,
+}
+
+/// The NEW / VIEWED tags of the shop rows.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Tags {
+    /// The Buy row of the top page (`FUN_00262bd0`) and the third row (`FUN_002919e8`).
+    buy: Option<Tag>,
+    third: Option<Tag>,
+    /// The buy list's rows by item id (`FUN_002626e8`).
+    items: Vec<(u16, Option<Tag>)>,
 }
 
 impl ShopMenu {
@@ -636,11 +733,12 @@ fn load(m: &mut ShopMenu, disc: &Disc, scene: &mut MenuScene, images: &mut Asset
             *v = exe.u16(addr::LAYOUTS + 2 * (3 * k + i) as u32).map_or(0, usize::from);
         }
     }
+    m.first_msgs = [exe.u16(addr::FIRST_VISIT).map_or(0, u32::from), exe.u16(addr::FIRST_VISIT + 4).map_or(0, u32::from)];
     let tables = synth::Tables::read(&|a| exe.u16(a), &|a| exe.u8(a));
     m.mix = match (disc.read("menu/us/mixdata.bar").and_then(|b| synth::Mix::parse(&b)), tables) {
         (Some(mix), Some(t)) => {
             let mats: Vec<u16> = wares.iter().filter(|w| w.kind == synth::MATERIAL_TYPE).map(|w| w.id).take(crate::progress::MOOGLE_MATERIALS).collect();
-            info!("shop: loaded mixdata.bar ({} recipes, {} levels, {} rewards), {} materials, synthesis rows {:x?}", mix.recipes.len(), mix.levels.len(), mix.conds, mats.len(), t.rows);
+            info!("shop: loaded mixdata.bar ({} recipes, {} levels, {} rewards), {} materials, synthesis rows {:x?}", mix.recipes.len(), mix.levels.len(), mix.conds.len(), mats.len(), t.rows);
             layouts[3] = t.layouts.map(usize::from);
             Some((mix, t, mats))
         }
@@ -658,6 +756,8 @@ fn load(m: &mut ShopMenu, disc: &Disc, scene: &mut MenuScene, images: &mut Asset
     }
     m.seq_base = scene.seqs.len();
     let Layd { layers, layouts: lays, seqs } = two.layd;
+    // The NEW / VIEWED tag groups (0x78, 0x77) are in the first sequence that has that many groups.
+    let mark_seq = seqs.iter().position(|q| q.groups.len() > TAG_NEW.max(TAG_VIEWED));
     scene.seqs.extend(seqs);
     m.layd = Layd { layers, layouts: lays, seqs: Vec::new() };
     let add = |scene: &mut MenuScene, seq: Option<usize>, tex: usize| {
@@ -686,6 +786,13 @@ fn load(m: &mut ShopMenu, disc: &Disc, scene: &mut MenuScene, images: &mut Asset
     n.detail = add(scene, None, tex);
     n.munny = add(scene, None, tex);
     n.question = [add(scene, None, tex), add(scene, None, tex)];
+    // The tag's rectangle (0, 128)-(40, 140) is the NEW! art of the file's second image [inferred: the port's sequences
+    // draw from one image each; the loader's rule for which one a sequence uses was not read].
+    let tag_tex = if scene.texs.len() > m.tex + 1 { m.tex + 1 } else { m.tex };
+    for _ in 0..LIST_ROWS + 3 {
+        n.marks.push(add(scene, mark_seq.map(|q| m.seq_base + q), tag_tex));
+    }
+    m.mark_seq = mark_seq;
     m.nodes = n;
     m.shops = shops;
     m.wares = wares;
@@ -747,6 +854,50 @@ fn sell_wares(m: &ShopMenu, p: Option<&Progress>) -> Vec<(Ware, u8)> {
     sell_list(&m.wares, &count).into_iter().filter_map(|(id, n)| m.wares.iter().find(|w| w.id == id).map(|w| (*w, n))).collect()
 }
 
+/// The tag sprite groups: `DAT_00381238` (NEW) and `DAT_0038123c` (VIEWED).
+const TAG_NEW: usize = 0x78;
+const TAG_VIEWED: usize = 0x77;
+
+/// Recomputes the tags from the save (`FUN_00262bd0`, `FUN_002626e8`, `FUN_002919e8`).
+fn refresh_tags(m: &mut ShopMenu, p: Option<&Progress>) {
+    let ShopMenu { shops, open, .. } = m;
+    let (Some(o), Some(p)) = (open.as_mut(), p) else { return };
+    let seen = |n: usize| p.shop_seen(n);
+    let tags = Tags {
+        buy: buy_tag(o.fresh, &seen),
+        third: (o.stock.rows_bits & 2 != 0 && synth::has_new(&p.moogle)).then_some(Tag::New),
+        items: o.stock.items.iter().map(|&id| (id, item_tag(shops, o.fresh, id, &seen))).collect(),
+    };
+    if tags != o.tags {
+        info!("shop: tags Buy row {:?}, third row {:?}, items {:?} (FUN_00262bd0, FUN_002919e8, FUN_002626e8)", tags.buy, tags.third, tags.items);
+        o.tags = tags;
+    }
+}
+
+/// Shows tag `k` at `at` (nothing for `None`). The group restarts only when it changes.
+fn put_tag(m: &ShopMenu, scene: &mut MenuScene, k: usize, tag: Option<Tag>, at: [f32; 2]) {
+    let Some(&id) = m.nodes.marks.get(k) else { return };
+    let (Some(tag), Some(seq)) = (tag, m.mark_seq) else {
+        scene.nodes[id].visible = false;
+        return;
+    };
+    let group = if tag == Tag::New { TAG_NEW } else { TAG_VIEWED };
+    let n = &mut scene.nodes[id];
+    n.visible = true;
+    n.seq = Some(m.seq_base + seq);
+    n.pos = at;
+    if n.player.group != Some(group) {
+        scene.set_group(id, group);
+    }
+}
+
+/// Where the tags sit: left of the row's hand (the tag sprite is 40 wide and ends at its origin) [inferred: the original
+/// parents the tag to the row widget at the extent of the row group (`FUN_00138ed0(tag, FUN_00237618(row + 0x18), ..)`,
+/// group 0x62's extent is 0x10e); the port's rows have no plate, so the tag takes the free space at the left].
+fn tag_at(row_y: f32) -> [f32; 2] {
+    [at::TAG_X, row_y]
+}
+
 /// Draws the page the flow is on.
 fn redraw(m: &ShopMenu, scene: &mut MenuScene, owned: &dyn Fn(u16) -> u8, munny: u32, moogle: &Moogle) {
     // The text is taken out of the scene while the labels are set, and put back.
@@ -765,6 +916,9 @@ fn draw_page(m: &ShopMenu, scene: &mut MenuScene, text: &MenuText, owned: &dyn F
     for id in n.texts() {
         set_label(scene, id, None);
     }
+    for k in 0..n.marks.len() {
+        put_tag(m, scene, k, None, [0.0; 2]);
+    }
     set_label(scene, n.title, Some(text_label(text, message(text, u32::from(o.stock.message)), at::SELECTED, 0, at::TITLE)));
     set_label(scene, n.munny, Some(text_label(text, literal(text, &format!("{munny}")), at::SELECTED, 1, at::MUNNY)));
     let row_y = |k: usize| at::ROWS[1] + at::PITCH * k as f32;
@@ -775,10 +929,21 @@ fn draw_page(m: &ShopMenu, scene: &mut MenuScene, text: &MenuText, owned: &dyn F
         set_label(scene, n.hand, Some(l));
     };
     match o.flow.page {
+        // Page 7 (`FUN_00262140`, `FUN_00262350`): the text of the shop's class in a window on the top of the screen.
+        Page::First => {
+            let id = m.first_msgs[usize::from(o.first_bit.unwrap_or(0))];
+            set_label(scene, n.detail, Some(text_label(text, message(text, id), at::SELECTED, 0, at::WINDOW)));
+        }
         Page::Top => {
             for (k, &r) in o.flow.rows.iter().enumerate() {
                 let c = if k == o.flow.top { at::SELECTED } else { at::IDLE };
                 set_label(scene, n.rows[k], Some(text_label(text, message(text, m.row_names[r]), c, 0, [at::ROWS[0], row_y(k)])));
+                let tag = match r {
+                    0 => o.tags.buy,
+                    2 => o.tags.third,
+                    _ => None,
+                };
+                put_tag(m, scene, k, tag, tag_at(row_y(k)));
             }
             put_hand(scene, o.flow.top);
         }
@@ -792,6 +957,10 @@ fn draw_page(m: &ShopMenu, scene: &mut MenuScene, text: &MenuText, owned: &dyn F
                 let price = literal(text, &format!("{}", if sell { w.sell } else { w.buy }));
                 set_label(scene, n.prices[row], Some(text_label(text, price, c, 1, [at::PRICE_RIGHT, row_y(row)])));
                 set_label(scene, n.owned[row], Some(text_label(text, literal(text, &format!("{have}")), c, 1, [at::OWNED_RIGHT, row_y(row)])));
+                if !sell {
+                    let tag = o.tags.items.iter().find(|(id, _)| *id == w.id).and_then(|(_, t)| *t);
+                    put_tag(m, scene, row, tag, tag_at(row_y(row)));
+                }
             }
             if matches!(o.flow.page, Page::List { .. }) {
                 put_hand(scene, o.flow.list - first);
@@ -833,6 +1002,9 @@ impl synth::Store for Inv<'_> {
     fn story(&self, flag: u16) -> bool {
         self.0.story().test(flag)
     }
+    fn set_record_bit(&mut self, n: u16) {
+        self.0.set_record_bit(n)
+    }
 }
 
 fn moogle_of(p: Option<&Progress>) -> Moogle {
@@ -865,7 +1037,8 @@ fn synth_key(m: &mut ShopMenu, scene: &mut MenuScene, se: &mut MessageWriter<Pla
     let (Some((mix, t, mats)), Some(o)) = (mix.as_ref(), open.as_mut()) else { return };
     let Some(mut s) = o.synth.take() else { return };
     let rank = |id: u16| wares.iter().find(|w| w.id == id).map_or(0, |w| w.rank);
-    let book = synth::Book { mix, t, mats, rank: &rank };
+    let flag1 = |id: u16| wares.iter().find(|w| w.id == id).map_or(0, |w| w.flag1);
+    let book = synth::Book { mix, t, mats, rank: &rank, flag1: &flag1 };
     let before = s.page;
     let act = s.key(key, &book, &mut Inv(p));
     let entry = s.entry();
@@ -901,15 +1074,12 @@ fn synth_key(m: &mut ShopMenu, scene: &mut MenuScene, se: &mut MessageWriter<Pla
                 );
             }
         }
-        S::NotPorted => {
-            menu_sound::play(se, menu_sound::REFUSED);
-            info!("synth: row 5 (page 0xb, FUN_00286060) is not ported; refused");
-        }
         S::Back => {
             menu_sound::play(se, menu_sound::CANCEL);
             info!("synth: back to the shop's top rows (page 9 -> page 0, FUN_0025fef0)");
             o.flow.page = Page::Top;
             set_layout(m, scene, 0);
+            refresh_tags(m, Some(p));
             let moogle = p.moogle.clone();
             let (owned, munny) = (|id: u16| p.item_count(id), p.wallet());
             redraw(m, scene, &owned, munny, &moogle);
@@ -934,11 +1104,16 @@ fn draw_synth(m: &ShopMenu, scene: &mut MenuScene, text: &MenuText, owned: &dyn 
     let (Some(o), Some((mix, t, mats))) = (m.open.as_ref(), m.mix.as_ref()) else { return };
     let Some(s) = o.synth.as_ref() else { return };
     let rank = |id: u16| m.wares.iter().find(|w| w.id == id).map_or(0, |w| w.rank);
-    let book = synth::Book { mix, t, mats, rank: &rank };
+    let flag1 = |id: u16| m.wares.iter().find(|w| w.id == id).map_or(0, |w| w.flag1);
+    let book = synth::Book { mix, t, mats, rank: &rank, flag1: &flag1 };
     let n = &m.nodes;
     for id in n.texts() {
         set_label(scene, id, None);
     }
+    for k in 0..n.marks.len() {
+        put_tag(m, scene, k, None, [0.0; 2]);
+    }
+    let tag_of = |b: Option<bool>| b.map(|new| if new { Tag::New } else { Tag::Viewed });
     let name = |id: u16| -> Vec<Token> { m.wares.iter().find(|w| w.id == id).map(|w| message(text, u32::from(w.name))).unwrap_or_default().into_iter().filter(|t| *t != Token::End).collect() };
     let row_y = |k: usize| at::ROWS[1] + at::PITCH * k as f32;
     let row = |scene: &mut MenuScene, k: usize, tokens: Vec<Token>, c: [u8; 4], right: Option<String>| {
@@ -962,6 +1137,7 @@ fn draw_synth(m: &ShopMenu, scene: &mut MenuScene, text: &MenuText, owned: &dyn 
             title(scene, message(text, u32::from(o.stock.message)));
             for (k, &r) in s.rows.iter().enumerate() {
                 row(scene, k, message(text, u32::from(t.rows[usize::from(r)])), pick(k, s.top, true), None);
+                put_tag(m, scene, k, tag_of(synth::row_mark(&book, moogle, &s.marks, r)), tag_at(row_y(k)));
             }
             hand(scene, s.top);
         }
@@ -975,6 +1151,7 @@ fn draw_synth(m: &ShopMenu, scene: &mut MenuScene, text: &MenuText, owned: &dyn 
                 let Some((r, odd)) = synth::recipe(&book, e) else { continue };
                 let item = if odd { r.upgraded } else { r.result };
                 row(scene, k - first, name(item), pick(k, s.list, synth::entry_open(&book, moogle, kind, e)), Some(format!("{}", owned(item))));
+                put_tag(m, scene, k - first, tag_of(s.entry_mark(moogle, e)), tag_at(row_y(k - first)));
             }
             if !s.entries.is_empty() {
                 hand(scene, s.list - first);
@@ -1012,6 +1189,39 @@ fn draw_synth(m: &ShopMenu, scene: &mut MenuScene, text: &MenuText, owned: &dyn 
             }
             let help = synth::row_kind(s.detail, s.row).and_then(|k| t.help.get(usize::from(k))).copied().unwrap_or(0);
             set_label(scene, n.question[0], Some(text_label(text, message(text, u32::from(help)), at::IDLE, 0, at::DETAIL)));
+        }
+        // Page 0xb (`FUN_0028a1b8`, rows built by `FUN_0028b470`): the reward's text; a reward earned shows what it gave
+        // [inferred layout: the text of an item reward is the item's name, of the others the messages 0xc1c3 (set 0),
+        // 0xcc7d (set 1), 0xc1c4 (an unlock bit); an unearned one (listed with story flag 0x4837) is dimmed and hides it;
+        // the original's strings for the unearned (`FUN_002553c0`, table 0x382640) were not decoded].
+        synth::Page::Rewards => {
+            title(scene, message(text, synth::msg::REWARDS));
+            if s.rewards.is_empty() {
+                set_label(scene, n.detail, Some(text_label(text, message(text, synth::msg::NO_REWARDS), at::IDLE, 0, at::DETAIL)));
+            }
+            let first = s.rew.saturating_sub(LIST_ROWS - 1);
+            for (k, &(ci, met)) in s.rewards.iter().enumerate().skip(first).take(LIST_ROWS) {
+                let Some(c) = mix.conds.get(usize::from(ci)) else { continue };
+                let r = k - first;
+                row(scene, r, message(text, u32::from(c.text)), pick(k, s.rew, met), None);
+                if met {
+                    let given: Vec<Token> = if c.kind == 0 {
+                        name(c.reward)
+                    } else {
+                        message(text, match c.reward {
+                            0 => synth::msg::REWARD_SET0,
+                            1 => synth::msg::REWARD_SET1,
+                            _ => synth::msg::REWARD_UNLOCK,
+                        })
+                    };
+                    set_label(scene, n.owned[r], Some(text_label(text, given, pick(k, s.rew, true), 0, [at::PRICE_RIGHT + 20.0, row_y(r)])));
+                }
+                let mark = Moogle::bit(s.marks.rewards, u32::from(ci)).then_some(s.marks.fresh);
+                put_tag(m, scene, r, tag_of(mark), tag_at(row_y(r)));
+            }
+            if !s.rewards.is_empty() {
+                hand(scene, s.rew - first);
+            }
         }
         synth::Page::Materials { totals } => {
             title(scene, message(text, if totals { synth::msg::COLLECTION } else { synth::msg::MATERIALS }));
@@ -1086,11 +1296,22 @@ fn input(
             sell.len()
         );
         let third = stock.rows_bits & 2 != 0;
-        m.open = Some(Open { event, flow: Flow::new(rows), stock, sell, closing: 0, synth: None });
+        // `FUN_0025fef0` -> `FUN_00265280`: the buy list's items whose save bit is clear are this visit's NEW items;
+        // `FUN_0025fcd8` -> `FUN_00265498`: the first-visit text (page 7) while the class's visit bit is clear.
+        let fresh = progress.as_deref().map_or(0, |p| fresh_at_open(&m.shops, &stock.items, &|n| p.shop_seen(n)));
+        let first_bit = progress.as_deref().and_then(|p| first_visit_bit(&stock, &|b| p.shop_visit(b)));
+        let mut flow = Flow::new(rows);
+        if let Some(bit) = first_bit {
+            flow.page = Page::First;
+            info!("shop: first visit of this class (save +0x3724 bit {bit} clear): page 7, text {:#x} (FUN_00262140)", m.first_msgs[usize::from(bit)]);
+        }
+        info!("shop: {} NEW items (save +0x3714 bits clear, FUN_00265280): places {:#x}", fresh.count_ones(), fresh);
+        m.open = Some(Open { event, flow, stock, sell, closing: 0, synth: None, fresh, first_bit, tags: Tags::default() });
         scene.hidden = false;
         scene.dim = crate::menu::dim_alpha(crate::menu::DIM_BRIGHTNESS);
         hide_all(&m, &mut scene);
         set_layout(&m, &mut scene, 0);
+        refresh_tags(&mut m, progress.as_deref());
         let munny = progress.as_deref().map_or(0, |p| p.wallet());
         let owned = |id: u16| progress.as_deref().map_or(0, |p| p.item_count(id));
         redraw(&m, &mut scene, &owned, munny, &moogle_of(progress.as_deref()));
@@ -1110,6 +1331,8 @@ fn input(
         Some(Key::Cancel)
     } else if pressed(KeyCode::KeyJ) {
         Some(Key::Confirm)
+    } else if pressed(KeyCode::KeyX) {
+        Some(Key::Switch)
     } else if pressed(KeyCode::ArrowUp) {
         Some(Key::Up)
     } else if pressed(KeyCode::ArrowDown) {
@@ -1136,6 +1359,7 @@ fn input(
         flow.key(key, &View { buy: &buy, sell: &sell, owned: &owned, munny })
     };
     let before = o.flow.page;
+    let first_bit = o.first_bit;
     match act {
         Act::None => {}
         Act::Moved => menu_sound::play(&mut se, menu_sound::CURSOR),
@@ -1144,6 +1368,12 @@ fn input(
             info!("shop: page {} key {key:?} refused (FUN_00265550 / FUN_00261a28)", before.number());
         }
         Act::Page => {
+            if before == Page::First
+                && let (Some(p), Some(bit)) = (progress.as_deref_mut(), first_bit)
+            {
+                p.set_shop_visit(bit);
+                info!("shop: page 7 dismissed: save +0x3724 bit {bit} set (FUN_002621a0), page 0");
+            }
             let sound = if matches!(before, Page::Question { .. }) && key == Key::Confirm {
                 snd::BACK
             } else if key == Key::Cancel {
@@ -1189,7 +1419,8 @@ fn input(
                 return;
             };
             let rank = |id: u16| wares.iter().find(|w| w.id == id).map_or(0, |w| w.rank);
-            let book = synth::Book { mix, t, mats, rank: &rank };
+            let flag1 = |id: u16| wares.iter().find(|w| w.id == id).map_or(0, |w| w.flag1);
+            let book = synth::Book { mix, t, mats, rank: &rank, flag1: &flag1 };
             let (s, o) = synth::Session::start(&book, &mut Inv(p));
             menu_sound::play(&mut se, crate::menu_status::CONFIRM);
             info!(
@@ -1214,6 +1445,7 @@ fn input(
         }
     }
     if act == Act::ThirdRow {
+        refresh_tags(&mut m, progress.as_deref());
         redraw(&m, &mut scene, &|id| progress.as_deref().map_or(0, |p| p.item_count(id)), progress.as_deref().map_or(0, |p| p.wallet()), &moogle_of(progress.as_deref()));
         return;
     }
@@ -1224,6 +1456,17 @@ fn input(
     if screen.0 != screen.1 {
         set_layout(&m, &mut scene, screen.1);
     }
+    // `FUN_00260a78`, `FUN_00264668`: on the buy list the item under the cursor is marked seen (`FUN_00265348`).
+    if let (Some(p), Some(o)) = (progress.as_deref_mut(), m.open.as_ref())
+        && o.flow.page == (Page::List { sell: false })
+    {
+        let wares = buy_wares(&m, &o.stock);
+        if let Some(place) = wares.get(o.flow.list).and_then(|w| item_place(&m.shops, w.id)).filter(|&n| o.fresh >> n & 1 != 0 && !p.shop_seen(n)) {
+            p.set_shop_seen(place);
+            info!("shop: item place {place} seen (save +0x3714 bit set, FUN_00265348)");
+        }
+    }
+    refresh_tags(&mut m, progress.as_deref());
     let munny = progress.as_deref().map_or(0, |p| p.wallet());
     let owned = |id: u16| progress.as_deref().map_or(0, |p| p.item_count(id));
     redraw(&m, &mut scene, &owned, munny, &moogle_of(progress.as_deref()));
@@ -1281,6 +1524,8 @@ pub mod synth {
         pub const LEVEL_NAMES: u32 = 0x0038_26a0;
         /// The synthesis screens' layout triple (enter, leave, hold) (`FUN_00284c10` -> `FUN_0025ee78(0x3825b8, ..)`).
         pub const LAYOUTS: u32 = 0x0038_25b8;
+        /// Three category bytes (`FUN_00291560`).
+        pub const SPECIAL: u32 = 0x0038_2698;
     }
 
     /// Message ids the pages pass as immediates.
@@ -1303,6 +1548,13 @@ pub mod synth {
         /// `FUN_0028aa40`, `FUN_00286378`: the titles of the material pages.
         pub const COLLECTION: u32 = 0xbcdf;
         pub const MATERIALS: u32 = 0xbd90;
+        /// `FUN_0028aa40`: the title of page 0xb; `FUN_0028a1b8`: the empty list, and the text of a reward that opens
+        /// Free Development set 0, set 1 or an unlock bit.
+        pub const REWARDS: u32 = 0xbce1;
+        pub const NO_REWARDS: u32 = 0xc194;
+        pub const REWARD_SET0: u32 = 0xc1c3;
+        pub const REWARD_SET1: u32 = 0xcc7d;
+        pub const REWARD_UNLOCK: u32 = 0xc1c4;
     }
 
     /// The type of the synthesis materials (`FUN_00284798` lists the item rows of type 0x10, at most 0x32).
@@ -1333,6 +1585,21 @@ pub mod synth {
         pub points: u32,
     }
 
+    /// A collection reward (`cond`, 0xc bytes from +0x10; `FUN_00291140`): +0 its text, +2 the reward (the item for
+    /// kind 0; else 0 and 1 open the Free Development sets 0 and 1, any other value is an unlock bit), +4 the kind (0 an
+    /// item), +5..+7 the condition `FUN_00291418` tests, +8 the count it needs, +0xa the record bit a bit reward sets.
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct Cond {
+        pub text: u16,
+        pub reward: u16,
+        pub kind: u8,
+        pub a: u8,
+        pub b: u8,
+        pub c: u8,
+        pub count: u16,
+        pub bit: u16,
+    }
+
     /// `mixdata.bar`.
     #[derive(Clone, Debug, Default, PartialEq)]
     pub struct Mix {
@@ -1344,8 +1611,8 @@ pub mod synth {
         pub factor: f32,
         pub story_flag: u16,
         pub story_bit: u16,
-        /// `cond`: the collection rewards (`FUN_00291140`; not ported).
-        pub conds: usize,
+        /// `cond`: the collection rewards (`FUN_00291140`).
+        pub conds: Vec<Cond>,
     }
 
     impl Mix {
@@ -1377,6 +1644,12 @@ pub mod synth {
                 .collect::<Option<Vec<_>>>()?;
             let exp = get("exp")?;
             let cond = get("cond")?;
+            let conds = (0..u32_at(cond, 8)? as usize)
+                .map(|i| {
+                    let r = 0x10 + 0xc * i;
+                    Some(Cond { text: u16_at(cond, r)?, reward: u16_at(cond, r + 2)?, kind: *cond.get(r + 4)?, a: *cond.get(r + 5)?, b: *cond.get(r + 6)?, c: *cond.get(r + 7)?, count: u16_at(cond, r + 8)?, bit: u16_at(cond, r + 0xa)? })
+                })
+                .collect::<Option<Vec<_>>>()?;
             Some(Mix {
                 recipes,
                 levels,
@@ -1384,7 +1657,7 @@ pub mod synth {
                 factor: f32::from_bits(u32_at(exp, 0x18)?),
                 story_flag: u16_at(exp, 0x1c)?,
                 story_bit: u16_at(exp, 0x1e)?,
-                conds: u32_at(cond, 8)? as usize,
+                conds,
             })
         }
     }
@@ -1399,6 +1672,8 @@ pub mod synth {
         pub notices: [u16; 6],
         pub level_names: [u16; 9],
         pub layouts: [u16; 3],
+        /// The categories a collection reward's condition `0x10` / `0xf` splits on (`FUN_00291560`: the bytes at 0x382698).
+        pub special: [u8; 3],
     }
 
     impl Tables {
@@ -1427,6 +1702,9 @@ pub mod synth {
             for (k, v) in t.layouts.iter_mut().enumerate() {
                 *v = u16_at(addr::LAYOUTS + 2 * k as u32)?;
             }
+            for (k, v) in t.special.iter_mut().enumerate() {
+                *v = u8_at(addr::SPECIAL + k as u32)?;
+            }
             Some(t)
         }
 
@@ -1443,6 +1721,8 @@ pub mod synth {
         pub t: &'a Tables,
         pub mats: &'a [u16],
         pub rank: &'a dyn Fn(u16) -> u8,
+        /// An item's +4 byte (the category the collection rewards test).
+        pub flag1: &'a dyn Fn(u16) -> u8,
     }
 
     /// The inventory and the record the pages change.
@@ -1457,6 +1737,8 @@ pub mod synth {
         fn remove(&mut self, id: u16, n: u8);
         /// `FUN_001802e0(flag)`: a story flag.
         fn story(&self, flag: u16) -> bool;
+        /// `FUN_001a52b0(n)`: sets record bit `n` (a collection reward's bit).
+        fn set_record_bit(&mut self, n: u16);
     }
 
     /// `FUN_002910b0`: a material's place in the list.
@@ -1627,6 +1909,8 @@ pub mod synth {
         pub used: Vec<(u16, i32)>,
         pub entry: u16,
         pub level: (u8, u8),
+        /// The Free Development entries this make's level newly learned (`FUN_00290cc0`'s session marks).
+        pub learned: u64,
     }
 
     /// Pages 0x15 and on: `FUN_00288170` adds the item; `FUN_00290ef8` / `FUN_002909d0` take each line's need and one of
@@ -1655,13 +1939,13 @@ pub mod synth {
         Moogle::with(&mut m.made, u32::from(entry));
         Moogle::with(&mut m.seen, u32::from(entry));
         let before = m.level;
-        grant_levels(b, m);
-        Some(Made { item, points, used, entry, level: (before, m.level) })
+        let learned = grant_levels(b, m);
+        Some(Made { item, points, used, entry, level: (before, m.level), learned })
     }
 
     /// `FUN_00290c28` + `FUN_00290bb8`: the level rows 1..8 whose points are reached grant their unlock bit; the level
     /// is the count of rows reached in order (at most 8).
-    pub fn grant_levels(b: &Book, m: &mut Moogle) {
+    pub fn grant_levels(b: &Book, m: &mut Moogle) -> u64 {
         for l in b.mix.levels.iter().skip(1).take(8) {
             if l.points > m.points {
                 break;
@@ -1670,17 +1954,165 @@ pub mod synth {
                 Moogle::with(&mut m.unlocks, l.unlock as u32);
             }
         }
-        learn_sets(b, m);
+        let learned = learn_sets(b, m);
         m.level = b.mix.levels.iter().skip(1).take(8).take_while(|l| l.points <= m.points).count() as u8;
+        learned
     }
 
-    /// `FUN_00290cc0`: a Free Development recipe (set 1..3) is learned once its set's bit (0..2) is unlocked.
-    pub fn learn_sets(b: &Book, m: &mut Moogle) {
+    /// `FUN_00290cc0`: a Free Development recipe (set 1..3) is learned once its set's bit (0..2) is unlocked. Answers
+    /// the entries newly learned (the session's NEW marks take them, `Marks::entries`).
+    pub fn learn_sets(b: &Book, m: &mut Moogle) -> u64 {
+        let mut fresh = 0;
         for (i, r) in b.mix.recipes.iter().enumerate() {
-            if (1..=3).contains(&r.unlock) && m.unlocked(u32::from(r.unlock) - 1) {
-                Moogle::with(&mut m.learned, 2 * i as u32);
+            let e = 2 * i as u32;
+            if (1..=3).contains(&r.unlock) && m.unlocked(u32::from(r.unlock) - 1) && !Moogle::bit(m.learned, e) {
+                Moogle::with(&mut m.learned, e);
+                Moogle::with(&mut fresh, e);
             }
         }
+        fresh
+    }
+
+    /// `FUN_00291560(item +4, a)`: the first condition byte of a reward. 0xd and 0xe: any category; below 0xd: that
+    /// category; 0x10: one of the three special categories (`Tables::special`); any other value: none of them.
+    pub fn category_matches(t: &Tables, flag1: u8, a: u8) -> bool {
+        if matches!(a, 0xd | 0xe) {
+            return true;
+        }
+        if a < 0xd {
+            return flag1 == a;
+        }
+        if t.special.contains(&flag1) { a == 0x10 } else { a != 0x10 }
+    }
+
+    /// `FUN_002915f8(item +5, b)`: the second condition byte. 4 and 5: any rank; below 4: that rank.
+    pub fn rank_matches(rank: u8, b: u8) -> bool {
+        matches!(b, 4 | 5) || (b < 4 && rank == b)
+    }
+
+    /// `FUN_00291418(a, b, c, count)`: walks the materials (`record +0xfc`: the totals ever handed over) that match the
+    /// two condition bytes. A matching material never handed over fails the test when `a` is 0xd or `b` is 4 (the
+    /// "collect them all" rewards). Else the totals add up (to 99,999) and the number of matching materials with a total
+    /// is counted; `c` 0 compares the sum with `count`, any other value the number.
+    pub fn cond_met(b: &Book, m: &Moogle, c: &Cond) -> bool {
+        let (mut sum, mut kinds) = (0u32, 0u32);
+        for (i, &id) in b.mats.iter().take(MOOGLE_MATERIALS).enumerate() {
+            if id == 0 || !category_matches(b.t, (b.flag1)(id), c.a) || !rank_matches((b.rank)(id), c.b) {
+                continue;
+            }
+            let total = m.total_at(i);
+            if total == 0 {
+                if c.a == 0xd || c.b == 4 {
+                    return false;
+                }
+            } else {
+                sum = (sum + total).min(99_999);
+                kinds += 1;
+            }
+        }
+        u32::from(c.count) <= if c.c == 0 { sum } else { kinds }
+    }
+
+    /// What `FUN_00291140` did.
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct Rewards {
+        /// The page 0xb list (state `+0x184`, `+0x60` entries): the reward and whether its condition is met. A reward
+        /// whose condition is not met is listed only with the story flag 0x4837 (`FUN_002783f8`).
+        pub list: Vec<(u16, bool)>,
+        /// The bits it adds to the state's `+0x130`: 2 an item, 4 and 8 the Free Development sets 0 and 1, 0x10 an unlock bit.
+        pub notices: u8,
+        /// The rewards paid now (the session's `+0x18` marks).
+        pub fresh: u64,
+        /// (reward, item) paid in items.
+        pub items: Vec<(u16, u16)>,
+        /// The Free Development entries the new set bits learned.
+        pub learned: u64,
+    }
+
+    /// The story flag `FUN_002783f8` tests: with it set the reward list shows the rewards not earned yet too.
+    pub const STORY_ALL_REWARDS: u16 = 0x4837;
+
+    /// `FUN_00291140`: every reward whose condition is met and whose record bit (`+8`) is clear is paid: the bit is set,
+    /// an item reward (kind 0) is added once (`FUN_001a1a18`; the notice 2 comes with it even when the bag is full), a
+    /// set reward 0 or 1 sets unlock bit 0 or 1 and learns the sets (`FUN_00290cc0`), any other value sets that unlock
+    /// bit and the reward's record bit (`FUN_001a52b0`).
+    pub fn pay_rewards(b: &Book, s: &mut dyn Store) -> Rewards {
+        let mut r = Rewards::default();
+        let all = s.story(STORY_ALL_REWARDS);
+        for (k, c) in b.mix.conds.iter().enumerate() {
+            let met = cond_met(b, s.moogle(), c);
+            if !met && !all {
+                continue;
+            }
+            r.list.push((k as u16, met));
+            if !met || Moogle::bit(s.moogle().rewards, k as u32) {
+                continue;
+            }
+            Moogle::with(&mut s.moogle_mut().rewards, k as u32);
+            Moogle::with(&mut r.fresh, k as u32);
+            if c.kind == 0 {
+                r.notices |= 2;
+                s.add(c.reward, 1);
+                r.items.push((k as u16, c.reward));
+                continue;
+            }
+            match c.reward {
+                0 | 1 => {
+                    r.notices |= if c.reward == 0 { 4 } else { 8 };
+                    Moogle::with(&mut s.moogle_mut().unlocks, u32::from(c.reward));
+                    r.learned |= learn_sets(b, s.moogle_mut());
+                }
+                n => {
+                    r.notices |= 0x10;
+                    Moogle::with(&mut s.moogle_mut().unlocks, u32::from(n));
+                    s.set_record_bit(c.bit);
+                }
+            }
+        }
+        r
+    }
+
+    /// The session's marks (`DAT_0036d1a0`, rebuilt at each opening) and the state's `+0x112d` byte.
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct Marks {
+        /// `+0`: entries (2r, 2r + 1) learned or made and not yet looked at (`FUN_002916d8` at the opening), plus those
+        /// learned during the visit (`FUN_002889e0`, `FUN_00290cc0`).
+        pub entries: u64,
+        /// `+8`: the materials handed over for the first time (`FUN_002887c8`).
+        pub known: u64,
+        /// `+0x18`: the rewards paid at the opening (`FUN_00291140`).
+        pub rewards: u64,
+        /// `+0x112d`: set at the opening, cleared when the first page is left: a mark is NEW while it is set, VIEWED after.
+        pub fresh: bool,
+    }
+
+    /// `FUN_002916d8`: the 45 entries (bits 0..0x2c) that are learned or made and not yet seen (record `+0x20`).
+    pub fn unseen_entries(m: &Moogle) -> u64 {
+        (m.learned | m.made) & !m.seen & ((1u64 << 45) - 1)
+    }
+
+    /// `FUN_002919e8`: the shop's third row carries a NEW mark (the top page of the shop): a learned recipe (record
+    /// `+0x10`) not seen yet (`+0x20`), else a made entry (`+0x18`) not seen.
+    pub fn has_new(m: &Moogle) -> bool {
+        unseen_entries(m) != 0
+    }
+
+    /// The mark on a row of page 9: `None`, or `Some(true)` NEW (group 0x78) / `Some(false)` VIEWED (group 0x77)
+    /// (`FUN_00284ea8`). Rows 3 and 4 (the materials) carry one while the opening handed a material over for the first
+    /// time, row 5 while it paid a reward, both NEW until `fresh` falls. Rows 1 and 2 carry one for the sets / recipes
+    /// in the session's entries (NEW while one of them is unseen, `FUN_00291880`), row 0 (`FUN_00291960`) a VIEWED one
+    /// while a made entry is among them.
+    pub fn row_mark(b: &Book, m: &Moogle, k: &Marks, row: u8) -> Option<bool> {
+        if (matches!(row, 3 | 4) && k.known != 0) || (row == 5 && k.rewards != 0) {
+            return Some(k.fresh);
+        }
+        if matches!(row, 1 | 2) {
+            let want_item = row == 2;
+            let mask = (0..b.mix.recipes.len()).filter(|&i| (b.mix.recipes[i].unlock == 0) == want_item).fold(0u64, |a, i| a | 1 << (2 * i));
+            let new = k.entries & mask;
+            return (new != 0).then_some(new & !m.seen != 0);
+        }
+        (row == 0 && k.entries & m.made != 0).then_some(false)
     }
 
     /// The opening of the third row (`FUN_00284c10`).
@@ -1690,8 +2122,14 @@ pub mod synth {
         pub handed: Vec<(u16, u8)>,
         /// `FUN_002889e0`: the recipe items taken.
         pub recipes: Vec<u16>,
-        /// The bits of the state's +0x130 (0 materials, 5 recipes; 1..4 the collection rewards, not ported).
+        /// The bits of the state's +0x130 (0 materials, 5 recipes, 1..4 the collection rewards).
         pub notices: u8,
+        /// `FUN_00291140`: the reward list and what it paid.
+        pub rewards: Rewards,
+        /// The materials handed over for the first time (the session's `+8` marks).
+        pub known: u64,
+        /// The entries learned by the recipe items and the sets the rewards opened.
+        pub learned: u64,
         /// The first page: 10 after a hand-over, else 0x10 after recipes, else 9.
         pub page: Page,
     }
@@ -1699,7 +2137,8 @@ pub mod synth {
     /// `FUN_00284c10`: the story flag of `exp` grants its bit (10, the Recipes row); every material the player holds goes
     /// to the stock and the totals (at most 999 each; the first one sets its known bit); with bit 10, the recipe items
     /// held are handed over (`FUN_002888f8` / `FUN_002889e0`: a kind-0 recipe not learned yet is learned and its item
-    /// taken; an item of the other kinds is only taken). Not ported: the collection rewards (`FUN_00291140`, `cond`).
+    /// taken; an item of the other kinds is only taken). The collection rewards (`pay_rewards`, `FUN_00291140`) come
+    /// between the two, after the totals changed.
     pub fn open(b: &Book, s: &mut dyn Store) -> Opening {
         let mut o = Opening { page: Page::Top, ..Opening::default() };
         if s.story(b.mix.story_flag) {
@@ -1713,6 +2152,9 @@ pub mod synth {
             let m = s.moogle_mut();
             m.set_stock(i, (m.stock_at(i) + u32::from(n)).min(999));
             m.set_total(i, (m.total_at(i) + u32::from(n)).min(999));
+            if !Moogle::bit(m.known, i as u32) {
+                Moogle::with(&mut o.known, i as u32);
+            }
             Moogle::with(&mut m.known, i as u32);
             s.remove(id, n);
             o.handed.push((id, n));
@@ -1721,7 +2163,10 @@ pub mod synth {
             o.notices |= 1;
             o.page = Page::Materials { totals: true };
         }
-        learn_sets(b, s.moogle_mut());
+        o.rewards = pay_rewards(b, s);
+        o.notices |= o.rewards.notices;
+        o.learned |= o.rewards.learned;
+        o.learned |= learn_sets(b, s.moogle_mut());
         if s.moogle().unlocked(10) {
             let fresh = b.mix.recipes.iter().enumerate().any(|(i, r)| r.unlock == 0 && s.count(r.id) > 0 && !Moogle::bit(s.moogle().learned, 2 * i as u32));
             if fresh {
@@ -1734,6 +2179,7 @@ pub mod synth {
                             continue;
                         }
                         Moogle::with(&mut s.moogle_mut().learned, 2 * i as u32);
+                        Moogle::with(&mut o.learned, 2 * i as u32);
                     }
                     s.remove(r.id, s.count(r.id));
                     o.recipes.push(r.id);
@@ -1778,6 +2224,8 @@ pub mod synth {
         LevelUp,
         /// Page 10 (`totals`: every material handed over) and page 0x17 (the stock).
         Materials { totals: bool },
+        /// Page 0xb: the collection rewards.
+        Rewards,
         /// Page 0x13: the opening's notices.
         Opening,
     }
@@ -1792,6 +2240,7 @@ pub mod synth {
                 Page::Result => 0x14,
                 Page::LevelUp => 0x16,
                 Page::Materials { totals } => if totals { 10 } else { 0x17 },
+                Page::Rewards => 0xb,
                 Page::Opening => 0x13,
             }
         }
@@ -1821,6 +2270,11 @@ pub mod synth {
         pub item: u16,
         pub levels: Vec<u16>,
         pub last: Option<Made>,
+        /// Page 0xb: the listed rewards (`Rewards::list`) and the cursor.
+        pub rewards: Vec<(u16, bool)>,
+        pub rew: usize,
+        /// The NEW marks of this visit.
+        pub marks: Marks,
     }
 
     /// What a key did.
@@ -1837,17 +2291,17 @@ pub mod synth {
         Back,
         /// -4 (Start) on any page: the menu ends (`FUN_00284b80`).
         Close,
-        /// A row that is not ported (row 5 "Lists", page 0xb).
-        NotPorted,
     }
 
     impl Session {
         /// The third row is confirmed: the opening, then its notices and its first page.
         pub fn start(b: &Book, s: &mut dyn Store) -> (Session, Opening) {
             let o = open(b, s);
-            let mut x = Session { rows: top_rows(b, s.moogle()), ..Session::default() };
+            let marks = Marks { entries: unseen_entries(s.moogle()), known: o.known, rewards: o.rewards.fresh, fresh: true };
+            let mut x = Session { rows: top_rows(b, s.moogle()), rewards: o.rewards.list.clone(), marks, ..Session::default() };
             x.queue = (0..6).filter(|k| o.notices >> k & 1 != 0).map(|k| u32::from(b.t.notices[k])).collect();
             x.goto(b, s.moogle(), o.page);
+            x.see(s.moogle_mut());
             if !x.queue.is_empty() {
                 x.ret = x.page;
                 x.text = x.queue.remove(0);
@@ -1856,7 +2310,7 @@ pub mod synth {
             (x, o)
         }
 
-        fn goto(&mut self, b: &Book, m: &Moogle, p: Page) {
+        pub fn goto(&mut self, b: &Book, m: &Moogle, p: Page) {
             match p {
                 Page::Top => self.rows = top_rows(b, m),
                 Page::List(k) => {
@@ -1873,6 +2327,18 @@ pub mod synth {
             self.page = p;
         }
 
+        /// `FUN_00288fc0`: on a list page the entry under the cursor is marked seen (record `+0x20`) every frame.
+        fn see(&mut self, m: &mut Moogle) {
+            if let (Page::List(_), Some(e)) = (self.page, self.entry()) {
+                Moogle::with(&mut m.seen, u32::from(e));
+            }
+        }
+
+        /// The mark of list entry `e` (`FUN_00288fc0`): an entry among the session's marks is NEW while its seen bit is clear.
+        pub fn entry_mark(&self, m: &Moogle, e: u16) -> Option<bool> {
+            Moogle::bit(self.marks.entries, u32::from(e)).then(|| !Moogle::bit(m.seen, u32::from(e)))
+        }
+
         fn notice(&mut self, text: u32) {
             self.ret = self.page;
             self.text = text;
@@ -1885,6 +2351,17 @@ pub mod synth {
         }
 
         pub fn key(&mut self, k: super::Key, b: &Book, s: &mut dyn Store) -> Act {
+            let before = self.page;
+            let act = self.key_inner(k, b, s);
+            // `+0x112d` falls when page 9, page 10 or the Recipes list is left (`FUN_00285388`, `FUN_00285b30`, `FUN_00286580`).
+            if act == Act::Page && self.page != before && matches!(before, Page::Top | Page::Materials { totals: true } | Page::List(2)) {
+                self.marks.fresh = false;
+            }
+            self.see(s.moogle_mut());
+            act
+        }
+
+        fn key_inner(&mut self, k: super::Key, b: &Book, s: &mut dyn Store) -> Act {
             use super::Key;
             if k == Key::Start {
                 return Act::Close;
@@ -1918,7 +2395,11 @@ pub mod synth {
                             self.goto(b, s.moogle(), Page::Materials { totals: true });
                             Act::Page
                         }
-                        Some(5) => Act::NotPorted,
+                        Some(5) => {
+                            self.rew = 0;
+                            self.goto(b, s.moogle(), Page::Rewards);
+                            Act::Page
+                        }
                         Some(_) => Act::Back,
                         None => Act::None,
                     },
@@ -2009,6 +2490,7 @@ pub mod synth {
                     Key::Confirm | Key::Cancel => {
                         let (Some(e), Page::Detail(kind)) = (self.entry(), self.ret) else { return Act::None };
                         self.last = make(b, s, kind, e, self.flags, self.item);
+                        self.marks.entries |= self.last.as_ref().map_or(0, |m| m.learned);
                         let (from, to) = self.last.as_ref().map_or((0, 0), |m| m.level);
                         self.levels = (from + 1..=to).map(|l| b.t.level_names.get(usize::from(l)).copied().unwrap_or(0)).collect();
                         self.goto(b, s.moogle(), Page::List(kind));
@@ -2038,6 +2520,29 @@ pub mod synth {
                         self.goto(b, s.moogle(), Page::Top);
                         Act::Page
                     }
+                    // -5 (`FUN_00285b30`): to the reward list, the page 9 cursor on its row.
+                    Key::Switch if matches!(self.page, Page::Materials { totals: true }) => {
+                        self.rew = 0;
+                        self.goto(b, s.moogle(), Page::Rewards);
+                        self.top = self.rows.iter().position(|&r| r == 5).unwrap_or(self.top);
+                        Act::Page
+                    }
+                    _ => Act::None,
+                },
+                // Page 0xb (`FUN_00286060`): a read-only list. Confirm is refused (`FUN_00291b58` answers 0 on this page),
+                // cancel goes to page 9, -5 to page 10 (the page 9 cursor on its row).
+                Page::Rewards => match k {
+                    _ if vertical => step(&mut self.rew, self.rewards.len(), k),
+                    Key::Confirm => Act::Refused,
+                    Key::Cancel => {
+                        self.goto(b, s.moogle(), Page::Top);
+                        Act::Page
+                    }
+                    Key::Switch => {
+                        self.goto(b, s.moogle(), Page::Materials { totals: true });
+                        self.top = self.rows.iter().position(|&r| r == 4).unwrap_or(self.top);
+                        Act::Page
+                    }
                     _ => Act::None,
                 },
             }
@@ -2050,7 +2555,7 @@ mod tests {
     use super::*;
 
     fn ware(id: u16, kind: u8, buy: u16, sell: u16) -> Ware {
-        Ware { id, kind, name: 0, buy, sell, rank: 0 }
+        Ware { id, kind, name: 0, buy, sell, rank: 0, flag1: 0 }
     }
 
     fn shops() -> Shops {
@@ -2185,6 +2690,7 @@ mod tests {
         m: Moogle,
         items: std::collections::HashMap<u16, u8>,
         flags: Vec<u16>,
+        records: Vec<u16>,
     }
 
     impl Store for Fake {
@@ -2198,8 +2704,10 @@ mod tests {
             self.items.get(&id).copied().unwrap_or(0)
         }
         fn add(&mut self, id: u16, n: u8) -> u8 {
-            *self.items.entry(id).or_default() += n;
-            n
+            let c = self.items.entry(id).or_default();
+            let taken = n.min(99 - *c);
+            *c += taken;
+            taken
         }
         fn remove(&mut self, id: u16, n: u8) {
             let c = self.items.entry(id).or_default();
@@ -2207,6 +2715,9 @@ mod tests {
         }
         fn story(&self, flag: u16) -> bool {
             self.flags.contains(&flag)
+        }
+        fn set_record_bit(&mut self, n: u16) {
+            self.records.push(n);
         }
     }
 
@@ -2225,9 +2736,9 @@ mod tests {
             factor: 2.0,
             story_flag: 0x814,
             story_bit: 10,
-            conds: 0,
+            conds: Vec::new(),
         };
-        let t = Tables { rows: [0xbc8c, 0xbc8d, 0xbc8e, 0xc48e, 0xbc8b, 0xbcdd, 0xbc8f], bonus: [[0x210; 4], [0x211; 4], [0x212; 4]], rank_bits: [6, 7, 8, 9], help: [0; 5], notices: [0xbc89, 0, 0, 0, 0, 0xbc8a], level_names: [0, 1, 2, 3, 4, 5, 6, 7, 8], layouts: [8, 10, 9] };
+        let t = Tables { rows: [0xbc8c, 0xbc8d, 0xbc8e, 0xc48e, 0xbc8b, 0xbcdd, 0xbc8f], bonus: [[0x210; 4], [0x211; 4], [0x212; 4]], rank_bits: [6, 7, 8, 9], help: [0; 5], notices: [0xbc89, 0, 0, 0, 0, 0xbc8a], level_names: [0, 1, 2, 3, 4, 5, 6, 7, 8], layouts: [8, 10, 9], special: [9, 10, 11] };
         (mix, t, vec![0x200, 0x201, 0x210, 0x211, 0x212])
     }
 
@@ -2235,10 +2746,14 @@ mod tests {
         u8::from(id == 0x201)
     }
 
+    fn flag1(_: u16) -> u8 {
+        0
+    }
+
     #[test]
     fn the_synthesis_opening_hands_over_materials_and_recipes() {
         let (mix, t, mats) = mix();
-        let b = Book { mix: &mix, t: &t, mats: &mats, rank: &rank };
+        let b = Book { mix: &mix, t: &t, mats: &mats, rank: &rank, flag1: &flag1 };
         let mut s = Fake::default();
         s.items.insert(0x200, 4);
         s.items.insert(0x1c1, 1);
@@ -2280,14 +2795,15 @@ mod tests {
         x.top = 5;
         assert_eq!(x.key(Key::Confirm, &b, &mut s), synth::Act::Back);
         x.top = 4;
-        assert_eq!(x.key(Key::Confirm, &b, &mut s), synth::Act::NotPorted, "row 5 (page 0xb)");
+        assert_eq!(x.key(Key::Confirm, &b, &mut s), synth::Act::Page, "row 5 (page 0xb)");
+        assert_eq!(x.page, synth::Page::Rewards);
         assert_eq!(x.key(Key::Start, &b, &mut s), synth::Act::Close);
     }
 
     #[test]
     fn a_make_takes_the_lines_adds_the_item_the_points_and_the_level() {
         let (mix, t, mats) = mix();
-        let b = Book { mix: &mix, t: &t, mats: &mats, rank: &rank };
+        let b = Book { mix: &mix, t: &t, mats: &mats, rank: &rank, flag1: &flag1 };
         let mut s = Fake::default();
         s.m.unlocks = 1 << 10;
         s.m.learned = 1;
@@ -2326,7 +2842,7 @@ mod tests {
     #[test]
     fn the_bonus_rows_halve_and_raise_the_rank() {
         let (mix, t, mats) = mix();
-        let b = Book { mix: &mix, t: &t, mats: &mats, rank: &rank };
+        let b = Book { mix: &mix, t: &t, mats: &mats, rank: &rank, flag1: &flag1 };
         let mut s = Fake::default();
         s.m.unlocks = (1 << 3) | (1 << 4);
         s.m.made = 1;
@@ -2369,12 +2885,13 @@ mod tests {
         let Ok(iso) = std::env::var("KH2_ISO") else { return };
         let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
         let mix = Mix::parse(&a.read("menu/us/mixdata.bar").unwrap()).expect("reci, cond, leve, exp");
-        assert_eq!((mix.recipes.len(), mix.levels.len(), mix.conds), (23, 9, 50));
+        assert_eq!((mix.recipes.len(), mix.levels.len(), mix.conds.len()), (23, 9, 50));
         assert_eq!((mix.story_bit, mix.factor), (10, 2.0), "the Recipes row's bit; the points bonus doubles");
         let items = kh2_tables::load::<t::Item>(&mut a, &t::ITEM).unwrap().rows;
         let mats: Vec<u16> = items.iter().filter(|i| i.r#type == synth::MATERIAL_TYPE).map(|i| i.id).take(crate::progress::MOOGLE_MATERIALS).collect();
         let msgs = kh2_image::text::Messages::from_bar(&a.read("msg/us/sys.bar").unwrap()).unwrap();
         let name = |id: u16| items.iter().find(|i| i.id == id).and_then(|i| msgs.text(u32::from(i.name))).unwrap_or_default();
+        eprintln!("materials (id, category, rank, name): {:?}", items.iter().filter(|i| i.r#type == synth::MATERIAL_TYPE).map(|i| (i.id, i.flag1, i.rank, name(i.id))).collect::<Vec<_>>());
         eprintln!("{} materials (type 0x10), levels {:?}", mats.len(), mix.levels.iter().map(|l| (l.unlock, l.points)).collect::<Vec<_>>());
         for r in &mix.recipes {
             assert!(r.mats.iter().all(|(id, n)| mats.contains(id) && *n > 0), "recipe {:#x}: every line is a material", r.id);
@@ -2471,4 +2988,302 @@ mod tests {
         eprintln!("layout triples {lay:x?}");
         assert!(lay.iter().all(|&l| (l as usize) < two.layd.layouts.len()), "{lay:?}");
     }
+
+    /// Materials 0x200 (category 9, rank 0), 0x201 (category 1, rank 1), 0x210 (category 2, rank 2), 0x211 and 0x212
+    /// (category 3, rank 3) for the reward tests.
+    fn cat(id: u16) -> u8 {
+        match id {
+            0x200 => 9,
+            0x201 => 1,
+            0x210 => 2,
+            _ => 3,
+        }
+    }
+
+    fn rk(id: u16) -> u8 {
+        match id {
+            0x200 => 0,
+            0x201 => 1,
+            0x210 => 2,
+            _ => 3,
+        }
+    }
+
+    fn cond(kind: u8, reward: u16, a: u8, b: u8, c: u8, count: u16) -> synth::Cond {
+        synth::Cond { text: 0xc000 + reward, reward, kind, a, b, c, count, bit: 0x40 + reward }
+    }
+
+    #[test]
+    fn a_reward_condition_sums_totals_or_counts_kinds_and_collect_all_needs_every_one() {
+        let (mix, t, mats) = mix();
+        let b = Book { mix: &mix, t: &t, mats: &mats, rank: &rk, flag1: &cat };
+        let mut m = Moogle::default();
+        // c 0: the sum of the totals of the matching materials (any category, any rank).
+        let sum5 = cond(0, 1, 0xe, 5, 0, 5);
+        m.set_total(0, 3);
+        m.set_total(1, 1);
+        assert!(!synth::cond_met(&b, &m, &sum5), "4 of 5");
+        m.set_total(1, 2);
+        assert!(synth::cond_met(&b, &m, &sum5), "5 of 5");
+        // c 1: the number of different materials: category 2 and 3 (0x210, 0x211, 0x212): 2 needed; the category byte 1 is only 0x201.
+        let kinds = cond(0, 2, 3, 5, 1, 2);
+        assert!(!synth::cond_met(&b, &m, &kinds));
+        m.set_total(3, 1);
+        m.set_total(4, 1);
+        assert!(synth::cond_met(&b, &m, &kinds), "0x211 and 0x212 are two materials of category 3");
+        // The rank byte: rank 1 matches only 0x201 (category 1).
+        let ranked = cond(0, 3, 0xe, 1, 0, 2);
+        assert!(synth::cond_met(&b, &m, &ranked), "0x201 was handed over twice");
+        assert!(!synth::cond_met(&b, &m, &cond(0, 3, 0xe, 1, 0, 3)));
+        // 0x10: the special categories (9, 10, 11): 0x200 only; 0xf: the others.
+        assert!(synth::cond_met(&b, &m, &cond(0, 4, 0x10, 5, 1, 1)));
+        assert!(!synth::cond_met(&b, &m, &cond(0, 4, 0x10, 5, 1, 2)));
+        assert!(synth::cond_met(&b, &m, &cond(0, 4, 0xf, 5, 1, 3)), "0x201, 0x211 and 0x212 have a total, 0x210 has none");
+        assert!(!synth::cond_met(&b, &m, &cond(0, 4, 0xf, 5, 1, 4)));
+    }
+
+    #[test]
+    fn a_collect_all_reward_fails_while_one_matching_material_was_never_handed_over() {
+        let (mix, t, mats) = mix();
+        let b = Book { mix: &mix, t: &t, mats: &mats, rank: &rk, flag1: &cat };
+        let mut m = Moogle::default();
+        let all = cond(1, 5, 0xd, 5, 1, 1);
+        for i in 0..4 {
+            m.set_total(i, 1);
+        }
+        assert!(!synth::cond_met(&b, &m, &all), "0x212 never handed over");
+        m.set_total(4, 1);
+        assert!(synth::cond_met(&b, &m, &all));
+        // b = 4 also means "all of them": the one material of category 9 passes with a total, fails without.
+        let mut m = Moogle::default();
+        m.set_total(0, 1);
+        assert!(synth::cond_met(&b, &m, &cond(1, 5, 9, 4, 1, 1)));
+        m.set_total(0, 0);
+        assert!(!synth::cond_met(&b, &m, &cond(1, 5, 9, 4, 1, 1)));
+    }
+
+    #[test]
+    fn rewards_are_paid_once_with_their_notices_unlocks_and_record_bits() {
+        let (mut mix, t, mats) = mix();
+        mix.conds = vec![
+            // An item reward (0x30), a set reward (set 0), another set reward (set 1) and an unlock bit 7 with a record bit.
+            cond(0, 0x30, 0xe, 5, 0, 1),
+            cond(1, 0, 0xe, 5, 0, 1),
+            cond(1, 1, 0xe, 5, 0, 99),
+            cond(1, 7, 0xe, 5, 0, 1),
+        ];
+        let b = Book { mix: &mix, t: &t, mats: &mats, rank: &rk, flag1: &cat };
+        let mut s = Fake::default();
+        s.items.insert(0x200, 2);
+        let (x, o) = Session::start(&b, &mut s);
+        // Rewards 0, 1 and 3 are met (2 handed over); 2 needs 99.
+        assert_eq!(o.rewards.list, vec![(0, true), (1, true), (3, true)], "the unmet one is not listed without story flag 0x4837");
+        assert_eq!(o.rewards.notices, 2 | 4 | 0x10);
+        assert_eq!(o.notices, 1 | 2 | 4 | 0x10, "the hand-over's notice and the rewards'");
+        assert_eq!(s.count(0x30), 1, "the item reward was added");
+        assert_eq!((s.m.rewards, s.m.unlocks), (0b1011, 1 | 1 << 7), "reward bits, unlock bit 0 and 7");
+        assert_eq!(s.records, vec![0x40 + 7], "the unlock-bit reward set its record bit");
+        assert_eq!(o.rewards.items, vec![(0, 0x30)]);
+        assert_eq!(x.rewards.len(), 3);
+        assert_eq!(x.marks.rewards, 0b1011);
+        // The notices come in table order, the first one on screen: the hand-over, then 1 (item), 2 (set 0), 4 (unlock).
+        assert_eq!((x.text, x.queue.len()), (0xbc89, 3));
+        // Opening again pays nothing new (the bits are set), the list stays.
+        let (x, o) = Session::start(&b, &mut s);
+        assert_eq!((o.notices, o.rewards.fresh, s.count(0x30)), (0, 0, 1));
+        assert_eq!(x.rewards.len(), 3);
+        // With story flag 0x4837 the unmet reward is listed too, not paid.
+        s.flags.push(0x4837);
+        let (_, o) = Session::start(&b, &mut s);
+        assert_eq!(o.rewards.list, vec![(0, true), (1, true), (2, false), (3, true)]);
+        assert_eq!(s.m.rewards & 0b100, 0);
+    }
+
+    #[test]
+    fn a_full_bag_still_pays_the_reward_bit_but_the_item_is_not_added() {
+        // `FUN_00291140` sets the reward bit and the notice, and adds the item only when `FUN_001a18b8` allows it (below 99 held).
+        let (mut mix, t, mats) = mix();
+        mix.conds = vec![cond(0, 0x30, 0xe, 5, 0, 1)];
+        let b = Book { mix: &mix, t: &t, mats: &mats, rank: &rk, flag1: &cat };
+        let mut s = Fake::default();
+        s.items.insert(0x200, 1);
+        s.items.insert(0x30, 99);
+        let (_, o) = Session::start(&b, &mut s);
+        assert_eq!((o.rewards.notices, s.m.rewards, s.count(0x30)), (2, 1, 99));
+    }
+
+    #[test]
+    fn page_0xb_lists_the_rewards_read_only_and_switches_with_page_10() {
+        let (mut mix, t, mats) = mix();
+        mix.conds = vec![cond(0, 0x30, 0xe, 5, 0, 1), cond(1, 0, 0xe, 5, 0, 1)];
+        let b = Book { mix: &mix, t: &t, mats: &mats, rank: &rk, flag1: &cat };
+        let mut s = Fake::default();
+        s.items.insert(0x200, 3);
+        let (mut x, _) = Session::start(&b, &mut s);
+        // Dismiss the notices; the hand-over leaves us on page 10.
+        while x.page == synth::Page::Opening {
+            x.key(Key::Confirm, &b, &mut s);
+        }
+        assert_eq!(x.page, synth::Page::Materials { totals: true });
+        // -5 on page 10 -> page 0xb with the page 9 cursor on row 5.
+        assert_eq!(x.key(Key::Switch, &b, &mut s), synth::Act::Page);
+        assert_eq!((x.page, x.page.number()), (synth::Page::Rewards, 0xb));
+        assert_eq!(x.rows[x.top], 5);
+        // Down moves in the list, a confirm is refused, and the list does not change.
+        assert_eq!(x.key(Key::Down, &b, &mut s), synth::Act::Moved);
+        assert_eq!(x.rew, 1);
+        assert_eq!(x.key(Key::Confirm, &b, &mut s), synth::Act::Refused);
+        assert_eq!(x.page, synth::Page::Rewards);
+        // -5 back to page 10 (cursor on row 4), cancel to page 9.
+        assert_eq!(x.key(Key::Switch, &b, &mut s), synth::Act::Page);
+        assert_eq!((x.page, x.rows[x.top]), (synth::Page::Materials { totals: true }, 4));
+        assert_eq!(x.key(Key::Switch, &b, &mut s), synth::Act::Page);
+        assert_eq!(x.key(Key::Cancel, &b, &mut s), synth::Act::Page);
+        assert_eq!(x.page, synth::Page::Top);
+        // Page 0x17 (stock) has no switch.
+        x.goto(&b, s.moogle(), synth::Page::Materials { totals: false });
+        assert_eq!(x.key(Key::Switch, &b, &mut s), synth::Act::None);
+    }
+
+    #[test]
+    fn the_marks_follow_the_session_and_fall_once_page_9_is_left() {
+        let (mut mix, t, mats) = mix();
+        mix.conds = vec![cond(0, 0x30, 0xe, 5, 0, 1)];
+        let b = Book { mix: &mix, t: &t, mats: &mats, rank: &rk, flag1: &cat };
+        let mut s = Fake::default();
+        s.items.insert(0x200, 1);
+        s.items.insert(0x1c1, 1);
+        s.flags.push(0x814);
+        let (mut x, o) = Session::start(&b, &mut s);
+        assert_eq!((o.known, o.rewards.fresh, o.learned), (1, 1, 1), "material 0 is new, reward 0 is paid, recipe 0 is learned");
+        // Rows 3 and 4 (materials) and row 5 (rewards) carry a NEW mark; the Recipes row (2) a NEW mark for the learned item recipe.
+        assert_eq!(synth::row_mark(&b, &s.m, &x.marks, 3), Some(true));
+        assert_eq!(synth::row_mark(&b, &s.m, &x.marks, 4), Some(true));
+        assert_eq!(synth::row_mark(&b, &s.m, &x.marks, 5), Some(true));
+        assert_eq!(synth::row_mark(&b, &s.m, &x.marks, 2), Some(true));
+        assert_eq!(synth::row_mark(&b, &s.m, &x.marks, 6), None);
+        assert!(synth::has_new(&s.m), "the third row of the shop carries a NEW mark while a recipe is unseen");
+        // Leaving the first page lowers `+0x112d`: the marks become VIEWED.
+        while x.page == synth::Page::Opening {
+            x.key(Key::Confirm, &b, &mut s);
+        }
+        assert!(x.marks.fresh);
+        x.page = synth::Page::Top;
+        x.rows = synth::top_rows(&b, s.moogle());
+        x.top = x.rows.iter().position(|&r| r == 3).unwrap();
+        assert_eq!(x.key(Key::Confirm, &b, &mut s), synth::Act::Page);
+        assert!(!x.marks.fresh);
+        assert_eq!(synth::row_mark(&b, &s.m, &x.marks, 5), Some(false));
+        // The Recipes list: the entry of the learned recipe is marked NEW; the cursor marks it seen (record +0x20).
+        x.page = synth::Page::Top;
+        x.top = x.rows.iter().position(|&r| r == 2).unwrap();
+        assert_eq!(x.key(Key::Confirm, &b, &mut s), synth::Act::Page);
+        assert_eq!(x.page, synth::Page::List(2));
+        assert!(Moogle::bit(s.m.seen, 0), "the cursor was on entry 0");
+        assert_eq!(x.entry_mark(&s.m, 0), Some(false), "NEW became VIEWED");
+        assert!(!synth::has_new(&s.m));
+    }
+
+    #[test]
+    fn the_shops_new_items_are_the_ones_whose_save_bit_is_clear_and_the_cursor_marks_them() {
+        let mut sh = shops();
+        sh.seen_ids = vec![0x50, 1, 2, 0x83];
+        // Place of 1 is 1, of 0x83 is 3; 7 is not in the list.
+        assert_eq!((item_place(&sh, 1), item_place(&sh, 0x83), item_place(&sh, 7)), (Some(1), Some(3), None));
+        let mut seen = [false; 4];
+        let fresh = fresh_at_open(&sh, &[1, 0x83, 7], &|p| seen[p]);
+        assert_eq!(fresh, 0b1010);
+        // Place 2 (item 2) was not in the stock, so it is not fresh; an item already seen is not fresh either.
+        seen[3] = true;
+        assert_eq!(fresh_at_open(&sh, &[1, 0x83], &|p| seen[p]), 0b10);
+        let fresh = 0b1010;
+        seen = [false; 4];
+        assert_eq!(buy_tag(fresh, &|p| seen[p]), Some(Tag::New));
+        assert_eq!(item_tag(&sh, fresh, 1, &|p| seen[p]), Some(Tag::New));
+        assert_eq!(item_tag(&sh, fresh, 2, &|p| seen[p]), None, "not fresh at the open");
+        // The cursor on item 1 sets its bit: its tag turns VIEWED, the Buy row stays NEW while 0x83 is unseen.
+        seen[1] = true;
+        assert_eq!(item_tag(&sh, fresh, 1, &|p| seen[p]), Some(Tag::Viewed));
+        assert_eq!(buy_tag(fresh, &|p| seen[p]), Some(Tag::New));
+        seen[3] = true;
+        assert_eq!(buy_tag(fresh, &|p| seen[p]), Some(Tag::Viewed));
+        assert_eq!(buy_tag(0, &|_| false), None);
+    }
+
+    #[test]
+    fn the_first_visit_text_shows_once_per_class_of_shop() {
+        let shop = |event| stock(&shops(), event, &|_| false, &kind).unwrap();
+        // A weapon shop (flags 0x181: flag 0x80 set, so the state's +0xd is clear): the text of bit 0.
+        let weapon = shop(0x67);
+        assert!(!weapon.first_group);
+        assert_eq!(first_visit_bit(&weapon, &|_| false), Some(0));
+        assert_eq!(first_visit_bit(&weapon, &|b| b == 0), None);
+        // The moogle (flags 0x31f: flag 0x80 clear and its first group has items): the text of bit 1, even with the third row.
+        let moogle = shop(0x70);
+        assert!(moogle.first_group && moogle.rows_bits & 2 != 0);
+        assert_eq!(first_visit_bit(&moogle, &|_| false), Some(1));
+        assert_eq!(first_visit_bit(&moogle, &|b| b == 0), Some(1), "the other class's bit does not count");
+        assert_eq!(first_visit_bit(&moogle, &|b| b == 1), None);
+        // The third row alone (no first group): never a text (`FUN_00265498`: 0xff02 == 2).
+        let mut third = moogle.clone();
+        third.first_group = false;
+        assert_eq!(first_visit_bit(&third, &|_| false), None);
+    }
+
+    #[test]
+    fn page_7_waits_for_a_confirm_or_a_cancel_then_shows_the_top_rows() {
+        let none: [(Ware, u8); 0] = [];
+        let owned = |_: u16| 0u8;
+        let v = View { buy: &[], sell: &none, owned: &owned, munny: 0 };
+        let mut f = Flow::new(vec![0, 1, 3]);
+        f.page = Page::First;
+        assert_eq!(f.page.number(), 7);
+        for k in [Key::Up, Key::Down, Key::Start, Key::Switch] {
+            assert_eq!(f.key(k, &v), Act::None, "{k:?} does nothing on page 7");
+            assert_eq!(f.page, Page::First);
+        }
+        assert_eq!(f.key(Key::Confirm, &v), Act::Page);
+        assert_eq!(f.page, Page::Top);
+        f.page = Page::First;
+        assert_eq!(f.key(Key::Cancel, &v), Act::Page);
+        assert_eq!(f.page, Page::Top);
+    }
+
+
+    /// The disc: `itemshop.2ld` has the tag groups 0x77 / 0x78 and the rows' plate groups, and `cond` rows read like
+    /// the rules `cond_met` ports (skipped without `KH2_ISO`).
+    #[test]
+    fn the_disc_shop_layout_has_the_tag_groups_and_the_rewards_read_as_conditions() {
+        let Ok(iso) = std::env::var("KH2_ISO") else { return };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let two = layd::parse_2ld(&a.read("menu/us/itemshop.2ld").unwrap()).unwrap();
+        for (i, q) in two.layd.seqs.iter().enumerate() {
+            let tags: Vec<(usize, usize, i32, i32)> = [TAG_VIEWED, TAG_NEW, 0x24, 0x61, 0x62].iter().filter_map(|&g| q.groups.get(g).map(|x| (g, q.last_frame(g) as usize, x.x, x.y))).collect();
+            eprintln!("itemshop.2ld seq {i}: {} groups, (group, last frame, x, y) {tags:x?}", q.groups.len());
+        }
+        let seq = two.layd.seqs.iter().position(|q| q.groups.len() > TAG_NEW.max(TAG_VIEWED)).expect("a sequence with the tag groups");
+        eprintln!("tag sequence {seq}; {} images {:?}", two.images.len(), two.images.iter().map(|i| (i.width, i.height)).collect::<Vec<_>>());
+        for g in [TAG_VIEWED, TAG_NEW] {
+            let q = &two.layd.seqs[seq];
+            let ext = kh2_image::seqd::Ext::default();
+            for f in [0, 5, 30, 60, 100] {
+                let quads = q.quads(g, f, [0.0, 0.0], &ext);
+                eprintln!("group {g:#x} frame {f}: {} quads {:?}", quads.len(), quads.iter().take(3).map(|x| (x.pos[0], x.pos[3], x.uv[0], x.uv[3])).collect::<Vec<_>>());
+            }
+        }
+        let mix = Mix::parse(&a.read("menu/us/mixdata.bar").unwrap()).unwrap();
+        let items = kh2_tables::load::<t::Item>(&mut a, &t::ITEM).unwrap().rows;
+        let msgs = kh2_image::text::Messages::from_bar(&a.read("msg/us/sys.bar").unwrap()).unwrap();
+        let name = |id: u16| items.iter().find(|i| i.id == id).and_then(|i| msgs.text(u32::from(i.name))).unwrap_or_default();
+        let mut kinds = [0usize; 4];
+        for (k, c) in mix.conds.iter().enumerate() {
+            kinds[usize::from(c.kind.min(3))] += 1;
+            let reward = if c.kind == 0 { name(c.reward) } else { format!("unlock {}", c.reward) };
+            eprintln!("reward {k}: \"{}\" kind {} a {:#x} b {} c {} count {} bit {:#x} -> {reward}", msgs.text(u32::from(c.text)).unwrap_or_default(), c.kind, c.a, c.b, c.c, c.count, c.bit);
+        }
+        eprintln!("reward kinds {kinds:?}");
+        assert!(mix.conds.iter().all(|c| c.count > 0 && c.a <= 0x10 && c.b <= 5 && c.c <= 1), "the condition bytes are in the ranges the tests read");
+        assert!(mix.conds.iter().filter(|c| c.kind == 0).all(|c| items.iter().any(|i| i.id == c.reward)), "an item reward is an item row");
+    }
+
 }

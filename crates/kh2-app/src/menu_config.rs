@@ -565,7 +565,7 @@ fn show_rows(scene: &mut MenuScene, page: &ConfigPage, menu_help: usize) {
         info!("menu: config row {row} value {} help message {help_id:#x} resolves {}", page.ui[row], scene.text.as_ref().is_some_and(|t| t.message(help_id, Style::default(), [0.0; 2]).is_some()));
     }
     let text = scene.text.as_ref().unwrap();
-    let help = text.message(help_id, Style { font: 0, size: Some(15.0), color: [0x30, 0x7c, 0x80, 0x80], ..Style::default() }, at::HELP);
+    let help = text.message(help_id, Style { font: 0, size: Some(15.0), color: [0x60, 0xf7, 0xff, 0x80], ..Style::default() }, at::HELP);
     let h = menu_help;
     scene.nodes[h].label = help;
     scene.nodes[h].visible = true;

@@ -17,8 +17,8 @@ fn main() {
     let font = Font::get(font_id);
     let (w, h) = (640usize, 480usize);
     let mut canvas = vec![0.25f32; w * h * 3];
-    let (aw, ah, arg) = set.atlas_rgba(font.atlas, font.clut_row());
-    let (iw, ih, icn) = set.icons_rgba();
+    let (aw, ah, arg) = set.atlas_rgba_ps2(font.atlas, font.clut_row());
+    let (iw, ih, icn) = set.icons_rgba_ps2();
     let mut y = 8.0;
     for id in &a[4..] {
         let id = u32::from_str_radix(id.trim_start_matches("0x"), 16).unwrap();

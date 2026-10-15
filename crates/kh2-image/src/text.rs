@@ -415,7 +415,9 @@ pub struct Style {
     pub font: usize,
     /// Nominal glyph size in pixels (`None` = the font's own size).
     pub size: Option<f32>,
-    /// Default colour (0x80 = 1.0 per channel).
+    /// Default colour: the vertex colour as the game's product `texel * colour >> 7` takes it (so 0xff is
+    /// full brightness, 0x80 half). The default is the window text colour of the font-style table (`ftst`,
+    /// 0x1a7df8: 0xe5e5e5); alpha 0x80 = opaque.
     pub color: [u8; 4],
     /// Alignment: 0 left, 1 right, 2 centre, 3 centre both ways, 4 centre x and bottom, 5 bottom,
     /// applied to the message block (the game's table at 0x37b5e4).
@@ -433,7 +435,7 @@ pub struct Style {
 
 impl Default for Style {
     fn default() -> Style {
-        Style { font: 0, size: None, color: [0x80; 4], align: 0, variable: Vec::new(), world: 0, time: 0.0 }
+        Style { font: 0, size: None, color: [0xe5, 0xe5, 0xe5, 0x80], align: 0, variable: Vec::new(), world: 0, time: 0.0 }
     }
 }
 

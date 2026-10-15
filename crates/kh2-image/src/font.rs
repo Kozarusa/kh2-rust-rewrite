@@ -177,17 +177,14 @@ impl FontSet {
     }
 
     /// RGBA pixels of a glyph atlas as the game's palette row turns them: `row` is the palette
-    /// row (`Font::clut_row` plus the page). Colour is the palette's, alpha the palette's (0x80 =
-    /// opaque, expanded to 0xff).
-    pub fn atlas_rgba(&self, atlas: Atlas, row: usize) -> (usize, usize, Vec<u8>) {
-        self.atlas_pixels(atlas, row, 2)
-    }
-
-    /// Like [`atlas_rgba`](Self::atlas_rgba) but with the palette colour as it is (0x80 stays
-    /// 128/255). The game draws text as `texel * vertex colour >> 7` (0x230738, per docs/hud.md)
+    /// row (`Font::clut_row` plus the page). The palette colour is kept as it is (0x80 stays
+    /// 128/255) and alpha is the palette's (0x80 = opaque, expanded to 0xff).
+    ///
+    /// The game draws text as `texel * vertex colour >> 7` (0x230738, per docs/hud.md)
     /// with the palette's 0x80 as the texel, so the product is `colour / 255` of full brightness;
     /// a renderer that divides the vertex colour by 128 (`hud_gfx`) gets that product only from
-    /// these texels. The doubled atlas above makes every colour above 0x80 clamp to white.
+    /// these texels. (An atlas with the colour doubled made every colour above 0x80 clamp to white;
+    /// it was removed with WP-MN6, the last user being the menu text.)
     pub fn atlas_rgba_ps2(&self, atlas: Atlas, row: usize) -> (usize, usize, Vec<u8>) {
         self.atlas_pixels(atlas, row, 1)
     }
@@ -205,12 +202,8 @@ impl FontSet {
         (ATLAS_W, h, out)
     }
 
-    /// RGBA pixels of the icon atlas (8-bit indices through the palette).
-    pub fn icons_rgba(&self) -> (usize, usize, Vec<u8>) {
-        self.icon_pixels(2)
-    }
-
-    /// The icon atlas with the palette colour as it is (see [`atlas_rgba_ps2`](Self::atlas_rgba_ps2)).
+    /// RGBA pixels of the icon atlas (8-bit indices through the palette), the palette colour as it is
+    /// (see [`atlas_rgba_ps2`](Self::atlas_rgba_ps2)).
     pub fn icons_rgba_ps2(&self) -> (usize, usize, Vec<u8>) {
         self.icon_pixels(1)
     }
@@ -253,21 +246,6 @@ mod tests {
         assert_eq!(&px[..4], &[0x80, 0x80, 0x80, 0xff]);
         let (_, _, px) = s.icons_rgba_ps2();
         assert_eq!(&px[..4], &[0x40, 0x80, 0x60, 0xff]);
-    }
-
-    #[test]
-    fn doubled_atlas_is_twice_the_exact_one() {
-        let s = set_with_white();
-        let (_, _, a) = s.atlas_rgba(Atlas::Sys, 8);
-        let (_, _, b) = s.atlas_rgba_ps2(Atlas::Sys, 8);
-        assert_eq!(a.len(), b.len());
-        assert_eq!(&a[..4], &[255, 255, 255, 0xff]);
-        for (x, y) in a.chunks(4).zip(b.chunks(4)).take(64) {
-            for c in 0..3 {
-                assert_eq!(x[c], y[c].saturating_mul(2));
-            }
-            assert_eq!(x[3], y[3]);
-        }
     }
 
     /// The renderer (`hud_gfx`) multiplies the exact texel by `colour / 128`; the game computes

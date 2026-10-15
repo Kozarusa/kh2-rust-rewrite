@@ -501,9 +501,9 @@ mod at {
     /// The AP number: its right edge and top.
     pub const AP_TEXT: [f32; 2] = [497.0, 283.0];
     pub const HELP: [f32; 2] = [137.0, 337.0];
-    pub const COLOR: [u8; 4] = [0x80; 4];
-    pub const GREY: [u8; 4] = [0x48, 0x48, 0x50, 0x80];
-    pub const HELP_COLOR: [u8; 4] = [0x30, 0x7c, 0x80, 0x80];
+    pub const COLOR: [u8; 4] = [0xe5, 0xe5, 0xe5, 0x80];
+    pub const GREY: [u8; 4] = [0x8f, 0x8f, 0x9f, 0x80];
+    pub const HELP_COLOR: [u8; 4] = [0x60, 0xf7, 0xff, 0x80];
 }
 
 /// The message that says a character has no abilities (`FUN_0027b9a8`: 0xb372, bit 15 ignored).
@@ -1083,7 +1083,7 @@ fn redraw(st: &mut AbilitiesMenu, scene: &mut MenuScene, ntags: &mut NewTags) {
                 if r.cost != 0 {
                     set(scene, costs[k], group::COST_PLATE, None, was_of(costs[k]));
                     scene.nodes[costs[k]].label_anchor = Some(at::COST_LABEL);
-                    scene.nodes[costs[k]].label = Some(label(&text, text.literal(&r.cost.to_string(), Style::default(), [0.0; 2]).tokens, 1, 15.0, [0x80, 0x80, 0x10, 0x80], 1, [0.0, 0.0]));
+                    scene.nodes[costs[k]].label = Some(label(&text, text.literal(&r.cost.to_string(), Style::default(), [0.0; 2]).tokens, 1, 15.0, [0xff, 0xff, 0x20, 0x80], 1, [0.0, 0.0]));
                 }
                 if prev_group != Some(r.group) {
                     let tag = [0x114usize, 0x116, 0x118, 0x11b][g];

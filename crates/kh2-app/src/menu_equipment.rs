@@ -509,7 +509,7 @@ mod at {
     pub const TAB_LABEL: [f32; 2] = [0.0, 1.0];
     pub const TAB_PITCH: f32 = 120.0;
     pub const LABEL: [f32; 2] = [0.0, 1.0];
-    pub const COLOR: [u8; 4] = [0x80; 4];
+    pub const COLOR: [u8; 4] = [0xe5, 0xe5, 0xe5, 0x80];
     pub const SELECTED: [u8; 4] = [0xe5, 0xe5, 0xe5, 0x80];
     pub const TAG_LABEL: [f32; 2] = [-86.0, 1.0];
     pub const INFO_OK_TEXT: [f32; 2] = [-170.0, -4.0];

@@ -660,6 +660,24 @@ mod tests {
     }
 
     #[test]
+    fn ring_panels_are_the_right_edge_trees_with_three_children() {
+        let mut s = HudScene::default();
+        let mut panel = |s: &mut HudScene, edge: Edge, kids: usize| {
+            let mut root = Node::new(0, None);
+            root.edge = edge;
+            let r = s.add(root);
+            let k: Vec<usize> = (0..kids).map(|_| s.add(Node::new(0, Some(r)))).collect();
+            (r, k)
+        };
+        let (ring_root, ring_kids) = panel(&mut s, Edge::Right, 4);
+        let (left_root, _) = panel(&mut s, Edge::Left, 4);
+        let (lone_root, _) = panel(&mut s, Edge::Right, 1);
+        let flags = s.ring_panels();
+        assert!(flags[ring_root] && ring_kids.iter().all(|&k| flags[k]));
+        assert!(!flags[left_root] && !flags[lone_root]);
+    }
+
+    #[test]
     fn scrolled_sprite_repeats_inside_its_rectangle() {
         // The steam strip of the Twilight Town deck: texels u 256..287, v 0..63, scrolled 10 rows down.
         let uv = [[256.0, 10.0], [287.0, 10.0], [287.0, 73.0], [256.0, 73.0]];

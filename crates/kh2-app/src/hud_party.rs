@@ -69,6 +69,50 @@ pub struct PartyMember {
 #[derive(Resource, Default, Clone, Debug)]
 pub struct PartyMembers(pub Vec<PartyMember>);
 
+/// What the summon asks of the party panel (WP-SUM8, docs/summons.md "The summon face panel"). While a summon
+/// object holds party slot 0 and the gauge is in mode 3, the party panels give way to one panel built like a party
+/// panel: sequence group 154 (once), then 155 (looping), with the summon's own `face` picture in it; when the
+/// gauge leaves mode 3 group 156 plays out (FUN_00156fe8 / FUN_00157020 -> FUN_00156e30). `summon.rs` fills it.
+#[derive(Resource, Default, Clone, Debug, PartialEq, Eq)]
+pub struct SummonFace {
+    /// The model of the summon object in party slot 0 (`obj/<model>.apdx` holds its face); `None` for none.
+    pub model: Option<String>,
+}
+
+/// The sequence groups of the summon panel (0x9a, 0x9b, 0x9c of the field file).
+pub mod summon_group {
+    pub const IN: usize = 154;
+    pub const IDLE: usize = 155;
+    pub const OUT: usize = 156;
+}
+
+/// What the summon panel does when its request changes: show it (the circle plays `IN` then `IDLE`), play `OUT` out, or
+/// nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SummonStep {
+    Show,
+    Leave,
+    Keep,
+}
+
+pub fn summon_step(shown: bool, wanted: bool) -> SummonStep {
+    match (shown, wanted) {
+        (false, true) => SummonStep::Show,
+        (true, false) => SummonStep::Leave,
+        _ => SummonStep::Keep,
+    }
+}
+
+/// The summon panel's nodes and phase.
+#[derive(Default)]
+struct SummonPanel {
+    circle: Option<usize>,
+    face: Option<usize>,
+    shown: bool,
+    /// Seconds of group 156 still to play before the panel is hidden.
+    leaving: Option<f32>,
+}
+
 #[derive(Clone, Copy, Default)]
 struct Slot {
     circle: usize,
@@ -87,6 +131,8 @@ pub struct PartyNodes {
     faces: HashMap<String, Option<usize>>,
     /// The model each slot's portrait was set up for: a change (a member leaves or swaps slots) reloads it.
     models: [Option<String>; SLOTS],
+    /// The summon's panel (`SummonFace`).
+    summon: SummonPanel,
 }
 
 /// Index of the `face` pair in a member's object file: the first two adjacent entries tagged `face` (IMGD, SEQD;
@@ -181,6 +227,7 @@ pub fn update(
     disc: Option<Res<Disc>>,
     mut images: ResMut<Assets<Image>>,
     in_field: Query<&crate::party::PartyMember>,
+    (summon, time): (Res<SummonFace>, Res<Time>),
 ) {
     if scene.files.len() <= GAUG {
         return;
@@ -195,7 +242,7 @@ pub fn update(
         build(&mut scene, &mut nodes);
     }
     // Load each shown member's face once (the `face` pair of `obj/<model>.apdx`).
-    if let Some(disc) = disc {
+    if let Some(disc) = disc.as_deref() {
         let mut by_slot: Vec<(u8, &str)> = in_field.iter().map(|m| (m.slot, m.model.as_str())).collect();
         by_slot.sort_by_key(|(s, _)| *s);
         let names: Vec<&str> = by_slot.iter().map(|(_, m)| *m).collect();
@@ -232,9 +279,11 @@ pub fn update(
             party.0[s].face = file;
         }
     }
+    // The party's panels give way to the summon's while it holds slot 0 (the companions are out of their slots).
+    let summoned = summon.model.is_some();
     for s in 0..SLOTS {
         let slot = &mut nodes.slots[s];
-        let Some(m) = party.0.get(s).copied() else {
+        let Some(m) = party.0.get(s).copied().filter(|_| !summoned) else {
             if slot.shown {
                 slot.shown = false;
                 scene.nodes[slot.circle].visible = false;
@@ -276,6 +325,69 @@ pub fn update(
             let n = &mut scene.nodes[r];
             n.sweep_start = start;
             n.sweep = Some(sweep);
+        }
+    }
+    summon_panel(&mut scene, &mut nodes, &summon, disc.as_deref(), &mut images, time.delta_secs());
+}
+
+/// The summon's panel: a circle built like a party panel's (group 154 once, then 155 looping, at slot 0's place) with the
+/// summon's `face` picture (group 3) inside; group 156 plays when the summon goes.
+fn summon_panel(scene: &mut HudScene, nodes: &mut PartyNodes, req: &SummonFace, disc: Option<&Disc>, images: &mut Assets<Image>, dt: f32) {
+    let panel_shown = nodes.summon.shown;
+    match summon_step(panel_shown, req.model.is_some()) {
+        SummonStep::Show => {
+            let file = req.model.as_ref().and_then(|model| {
+                let disc = disc?;
+                *nodes.faces.entry(model.clone()).or_insert_with(|| {
+                    disc.read(&format!("obj/{model}.apdx")).and_then(|d| load_face(&d, images)).map(|f| {
+                        scene.files.push(f);
+                        scene.files.len() - 1
+                    })
+                })
+            });
+            let p = &mut nodes.summon;
+            // Built on the first request and reused: the circle and its face node keep their place. The circle is a child of
+            // Sora's HP circle (FUN_00156e30 stores the panel's +0x1980 as the node's parent, as the drive gauge's nodes do): the
+            // groups' own offsets (-71, -17) are from his circle.
+            let sora = scene.nodes.iter().position(|n| n.file == GAUG && n.parent.is_none() && n.edge == Edge::Right && matches!(n.player.group, Some(137 | 132 | 135)));
+            let circle = *p.circle.get_or_insert_with(|| scene.add(Node::new(GAUG, sora)));
+            if p.face.is_none()
+                && let Some(file) = file
+            {
+                p.face = Some(scene.add(Node::new(file, Some(circle))));
+            }
+            scene.nodes[circle].visible = true;
+            scene.set_group_then(circle, summon_group::IN, summon_group::IDLE);
+            if let Some(f) = p.face {
+                scene.nodes[f].visible = true;
+                scene.set_group(f, super::hud_gauge::FACE_NORMAL);
+            }
+            p.shown = true;
+            p.leaving = None;
+            info!("hud: summon panel: group {} then {}, face {:?} (the summon's face pair)", summon_group::IN, summon_group::IDLE, file);
+        }
+        SummonStep::Leave => {
+            let p = &mut nodes.summon;
+            p.shown = false;
+            if let Some(c) = p.circle {
+                scene.set_group(c, summon_group::OUT);
+                let frames = scene.files.get(GAUG).map_or(0, |f| f.seq.last_frame(summon_group::OUT) + 1);
+                p.leaving = Some(frames as f32 / 60.0);
+                info!("hud: summon panel: group {} plays out ({frames} frames)", summon_group::OUT);
+            }
+        }
+        SummonStep::Keep => {}
+    }
+    let p = &mut nodes.summon;
+    if let Some(left) = p.leaving {
+        let left = left - dt;
+        if left <= 0.0 {
+            p.leaving = None;
+            for n in [p.circle, p.face].into_iter().flatten() {
+                scene.nodes[n].visible = false;
+            }
+        } else {
+            p.leaving = Some(left);
         }
     }
 }

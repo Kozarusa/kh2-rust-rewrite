@@ -776,6 +776,69 @@ among the `unimplemented host call` / `script error` warnings (the end-of-run ta
   order]; the script's branch structure was not read further); Tinker Bell's own object (`P_EX340`) was not looked for in this run; the
   two summons' friend-AI classes (follow, attack choice) are still not ported: they stand where they were put.
 
+### Status (WP-SUM8: the classes of Chicken Little, Peter Pan and Tinker Bell, the face panel, Genie's "Drive!")
+
+**The classes** (`summon.rs` module `scripted`; FUN_0010b780 -> FUN_0011a450 / FUN_0011a048 / FUN_0011a230). Class 0x12 (Chicken Little,
+NeoStatus 204), 0x10 (Peter Pan, 202) and 0x11 (Tinker Bell, 203) keep the members' update FUN_00111070 (Chicken Little's own update
+FUN_0011a2e8 runs it first, then keeps the aim point AI +0x40: the target's position, else 200 units ahead, read by 10.5; +0xb7c |= 0x1000
+by FUN_00113190). Chicken Little and Peter Pan have one record each (0x3549f0, 0x354948: flags 3, handler FUN_0011a590 / FUN_0011a118,
+mode string `"battle"` at +0x20); Tinker Bell none. The handler's phase 0 is FUN_00186e70 (`Runtime::set_mode_priority`): it starts the
+script's `battle` mode, and that is all the class decides. `battle` (R2be0 in P_EX350) tests `1.244` (FUN_001903d8), 10.36, 10.37 and no
+event, picks `follow_player`, `ball` (the shot), `whistle`, `surprise` or `use_potion` by its own tests (the enemy walk 2.4, distances to
+the player, the player's HP fraction 1.230 below 0.25, the player's lock-on 10.33) and queues `battle` again. FUN_00111070 runs the record
+only while the script is idle (FUN_0010fcd0 returns at once while object +0x390, the running mode record, is set: `current_mode()` is
+`Some`); out of battle it runs the follow (FUN_001102c8, whose class speed rule is for the classes 0xc, 0xf and 0x10 only), and the script's
+`follow_player` mode calls host 10.20 (FUN_001102c8 and the vector copies) every frame. The steer FUN_00110468 follows. In the app:
+`scripted::decide` / `follow_speed` / `aim_point` / `join_ready`, and the motion table of FUN_002f6320 per class (`scripted::Data::loco`: the
+default {1, 2, -1, -1, -1} for 0x12 and 0x11, Peter Pan's {0xa5, 0xa1, 0xa2, 0xa3, 0xa4}) for the walk and run motions while motion 0 or
+one of the table's plays.
+
+**Hosts** (docs/bdx.md, rows added): 10.5, 10.8, 10.17, 10.18, 10.20, 10.22, 10.23, 10.25, 10.26, 10.27, 10.28, 10.29, 10.30, 10.31,
+10.33, 10.34, 10.36, 10.37, 10.44, 10.51, 10.59, 7.19, 7.24, 7.25, 6.23, 2.4, 1.244, 0.37 (`kh2-bdx` `math.rs`). The summons' object
+walk (2.4: the alive hittable enemies, handles `friend_host::enemy_handle`) answers the enemies' position, reaction and boss flags; the
+object's own target record is `SummonAi::scripted.target` (the script names it with 1.160, clears it with 6.16; the runtime's dispatch hands
+1.160 the context's object as a third word); 1.131 clones a record into the object's pool (`Obj::new_record`); attack objects (2.10 ..),
+2.17 (hits the named enemy: `combat::Hit` with the atkp row), 1.83 bone_to_world and effects (1.87, 1.21, 1.22, 1.149 on the object's own
+`.apdx`, registered with the effect library at the spawn) run as for the members (`friend_ai::step_attacks`). The script's own motion
+requests (1.11, 1.12, 1.13 queue) are played on the body for every summon but Stitch. The bodies carry a `Fighter` (player team, not
+hittable): the summons' motion triggers hit the enemies as any object's (Peter Pan's atkp 691 and 1135 in the harness).
+
+**Run** (harness of SUM5, `KH2_SUMMON=1|4`, tt04, 30 s): Chicken Little goes `appear_skip` -> `battle` -> `surprise` / `follow_player` /
+`ball` / `whistle` / `use_potion`; Peter Pan `follow_player` / `attack_empty` / `attack_small` / `attack_blow`; no `P_EX350` or `P_EX330`
+line among the `unimplemented host call` / `script error` warnings except Chicken Little's `1.0 create_object` / `1.148` in `surprise`
+(Gaps). Peter Pan heals the player through 1.155 while he follows. Chicken Little's `ball` shot made an attack object (atkp 1441) that met
+the terrain between his muzzle and the Dusk (the wall cast in `friend_ai::step_attacks`), so no enemy was hit by it in tt04; the `whistle`
+threads (2.20, one per enemy in range) run clean (`chicken_little_whistle_threads_run`).
+
+**The summon face panel** (`hud_party.rs` `SummonFace`, `summon_panel`; `summon.rs` `face_feed`). FUN_00156d08 (the gauge mode into 3) starts
+the task FUN_00156ca8 that waits for a summon object in party slot 0 (+0x588 bit 0x400000); FUN_00156fe8 then calls FUN_00156e30(panel, 0x9a,
+0x9b): a node of the field file's group 154 (plays once, then 155 looping) whose parent is Sora's HP circle (the panel's +0x1980; the groups'
+own offsets are (-71, -17)), and a child node with the summon's own `face` picture (`obj/<model>.apdx`, BAR types 0x18 / 0x19 fetched by
+FUN_0016b998; group 3 of its SEQD). When the mode leaves 3 (FUN_00156c78) FUN_00157020 plays group 156 (0x9c, 17 frames). The party panels
+give way while the summon holds the slot. Screenshot `local/sum8/face2.png` (Chicken Little, tt04, 14 s) [looked at]: his face in a circle
+left of Sora's portrait, Donald's and Goofy's circles gone. Gaps: the HUD layer order of the nodes (Z 7000 / 13000) is the scene's add
+order; FUN_00156d08's other objects (group 0x82 at +0xccc and the two text objects at +0x2c40 / +0x2dd0) are not built.
+
+**Genie's "Drive!"**: the choice of a form command (535..538, receiver 1) reaches his script as event 11 with (player, command, record)
+through FUN_00177c20 -> FUN_0016b420; `SummonRequest::Form(cmd)` (harness `KH2_GENIE_FORM=<cmd> KH2_GENIE_FORM_AT=<s>`) delivers it while Genie
+is out (`summon: event 11 (Drive!: form command 536): handler ran`, then motion 241 and `form command 536 (FUN_00119c18) ... byte 7 = 2, limit
+command 544` in the harness). Test `genie_drive_event_plays_the_form_motion_and_sets_the_form`. Not done: the menu entry itself (FUN_001bc6e0's
+entry 2 "Drive!" 605 while Genie is out, the list of FUN_001bcf10 with the forms the player owns, the Execute 535..538 case): `items.rs`, which
+this work package does not own (the report lists the edit).
+
+**Not done / gaps**: (1) Chicken Little's `surprise` creates objentry 2098 (`P_EX360`, a scripted bouncing object, type 9) with host 1.0 and
+places it with 1.148: the app creates no objects of its own (missing, logged once); Peter Pan's `appear` creates Tinker Bell the same way
+(1.0 with objentry 1268) and sets her mode through 1.8 on her context, which the runtime applies to the calling script (cross-object mode
+switches are not routed: 1.8 on another object's context needs `Call::RemoteSetMode`), so Tinker Bell does not appear and her class and
+script (`reraise`, 1.277 = FUN_00178df0, the player's revive with full HP) are untested beyond the constants
+(`scripted_classes_from_the_executable_and_their_decision`). (2) The FPS limit of Chicken Little (hosts 10.3 / 10.4 = FUN_0011ae60 /
+FUN_0011b008: player flags, camera, `0x35d268`, the screen box target search 10.51 = FUN_0011a6d8, aim 10.59) is stage 5 and not ported.
+(3) 10.29's item command is not carried out (motion 9 only); 10.22 / 10.30 read the blow mover only; 10.44 (mover flag 0x10) reads false;
+7.19 stands the object the player attacked last for FUN_00119d60's list (+0x10c bit 0x20000 not modelled); 7.24 / 7.25 set +0xb7c bit 0x400
+with no reader found [GAP]; 1.18 / 1.102 / 1.157 / 1.220 (the arrival event's link and its effect from the object's own BAR entry `"00"` of
+type 0x16) are not answered; 2.57 / 6.51 answer 0. (4) Summon limits (stage 5) are untouched. (5) The summons' damage strength is still
+the open gap above.
+
 ## 7. Unknowns (with what was searched)
 
 - What starts the arrival event that FUN_001c6260 and the `appear` mode wait on: FUN_0014f198 only hides

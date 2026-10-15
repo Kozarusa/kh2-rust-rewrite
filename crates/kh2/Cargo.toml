@@ -20,3 +20,6 @@ kh2-bdx.workspace = true
 glam = "0.32"
 serde_json.workspace = true
 png = "0.17"
+
+[dev-dependencies]
+kh2-app = { path = "../kh2-app" }

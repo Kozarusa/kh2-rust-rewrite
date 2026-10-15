@@ -448,7 +448,7 @@ fn row_marks(j: &Journal, cat: usize, world: i8, test: &dyn Fn(u16) -> bool, ite
         2 => (j.marks.aggregate(album_page::keys(&j.album, Some(world))), album_page::complete(&j.album, world, test)),
         3 => {
             let wi = |w: u8| j.world_index.get(usize::from(w)).copied().unwrap_or(-1);
-            (j.marks.aggregate(treasure_page::treasure_keys(&j.tables_lists.rows, &wi, Some(world))), treasure_page::treasures_complete(&j.tables_lists.rows, &wi, world))
+            (j.marks.aggregate(treasure_page::treasure_keys(&j.tables_lists.rows, &wi, Some(world))), treasure_page::treasures_complete(&j.tables_lists.rows, &wi, world, &|c| j.opened.contains(&c)))
         }
         4 => {
             let wi = |w: u8| j.world_index.get(usize::from(w)).copied().unwrap_or(-1);
@@ -961,6 +961,8 @@ pub struct Journal {
     nodes: Nodes,
     /// The journal's new / seen bits (`marks.rs`).
     marks: Marks,
+    /// The `OverallChestIndex` numbers of the chests the player has opened (`Progress::chest_opened`), refreshed every frame.
+    opened: std::collections::HashSet<i16>,
     /// `jiminy.bar` entries 5 ("diag", the face groups) and 3 ("char", the characters), parsed, and the face files already
     /// turned into textures by name.
     diag: Vec<u8>,
@@ -1476,11 +1478,12 @@ fn build(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Asset
             scene.nodes[id].visible = false;
         }
     }
+    let opened = j.opened.clone();
     match page {
         1 | 2 => build12(j, scene, disc, images, page, world, test, items),
         3 => build3(j, scene, world, test),
         6 | 0xb => build_faces(j, scene, disc, images, page, world, test, items),
-        7 | 8 => treasure_page::build(j, scene, page, world, &treasure_page::Game { flag: test, items }),
+        7 | 8 => treasure_page::build(j, scene, page, world, &treasure_page::Game { flag: test, items, opened: &|c| opened.contains(&c) }),
         4 => album_page::build(j, scene, world, test),
         5 => album_page::build_photo(j, scene, disc, images, world, test),
         _ => build0(j, scene, world, test, items),
@@ -2122,13 +2125,21 @@ fn tick(
     mut images: ResMut<Assets<Image>>,
     disc: Res<Disc>,
     area: Res<CurrentArea>,
-    progress: Option<Res<Progress>>,
+    mut progress: Option<ResMut<Progress>>,
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     mut se: MessageWriter<PlaySe>,
     mut frames: Local<f32>,
     mut logged: Local<u32>,
 ) {
+    // The entries the journal marked seen go into the save (key `journal_seen`).
+    if let Some(pairs) = j.marks.take_dirty()
+        && let Some(p) = progress.as_mut()
+    {
+        for (c, k) in pairs {
+            p.set_journal_seen(c, k);
+        }
+    }
     if menu.phase == Phase::Closed {
         if j.open.is_some() {
             close(&mut j, &mut scene, &mut menu);
@@ -2139,6 +2150,13 @@ fn tick(
     let story = progress.as_ref().map(|p| p.story());
     let test = |id: u16| story.as_ref().is_some_and(|s| s.test(id));
     let items = |id: u16| progress.as_ref().map_or(0, |p| i32::from(p.item_count(id)));
+    // The opened chests (`FUN_001a6a90`) and the saved seen set (save +0x38f0) the marks start from.
+    if let Some(p) = progress.as_ref() {
+        j.opened = j.tables_lists.rows.iter().map(|r| r.chest).filter(|&c| c > 0 && p.chest_opened(c as u16)).collect();
+        if j.open.is_none() {
+            j.marks.load_seen(p.journal_seen_all());
+        }
+    }
     if let Some(mode) = j.request.take() {
         if !j.tried && scene.texs.len() >= 2 {
             load(&mut j, &disc, &mut scene, &mut images);

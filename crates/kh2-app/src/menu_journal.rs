@@ -351,11 +351,11 @@ fn load(j: &mut Journal, disc: &Disc, scene: &mut MenuScene, images: &mut Assets
     };
     let tex = j.tex;
     let layer = add(scene, list, tex, None);
-    let header = add(scene, list, tex, Some(layer));
-    let plate = add(scene, list, tex, Some(layer));
+    let header = add(scene, list, tex, None);
+    let plate = add(scene, list, tex, None);
     let mut nodes = Nodes { layer, header, plate, ..Nodes::default() };
     for _ in 0..CELLS {
-        let c = add(scene, list, tex, Some(layer));
+        let c = add(scene, list, tex, None);
         nodes.cells.push(c);
         nodes.marks.push([add(scene, list, tex, Some(c)), add(scene, list, tex, Some(c))]);
         nodes.icons.push(add(scene, icon, tex, Some(c)));
@@ -465,6 +465,14 @@ fn show(j: &mut Journal, scene: &mut MenuScene, mode: i32, world_number: Option<
         scene.nodes[id].visible = true;
         let hold = j.layd.layout(t[2]).first().map_or(l.group, |h| h.group);
         scene.set_group_then(id, l.group, hold);
+        // The frame reaches the 4:3 canvas edges: carried out to the window's as the camp's frame is (docs/menus.md
+        // 9.1) [inferred: the same rule for this scene's layout]. Its box at rest: the hold group's first frame.
+        let qs = scene.seqs.get(j.seq_base + l.seq).map(|s| s.quads(hold, 0, [l.x as f32, l.y as f32], &scene.nodes[id].ext)).unwrap_or_default();
+        let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        for p in qs.iter().flat_map(|q| q.pos) {
+            b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])];
+        }
+        scene.nodes[id].stretch = (!qs.is_empty()).then_some(b);
     }
     scene.nodes[n.header].visible = true;
     scene.set_group_then(n.header, j.header[0], j.header[2]);
@@ -482,7 +490,7 @@ fn show(j: &mut Journal, scene: &mut MenuScene, mode: i32, world_number: Option<
         if !on {
             continue;
         }
-        scene.nodes[c].off = [at[k][0] as f32, at[k][1] as f32];
+        scene.nodes[c].pos = [at[k][0] as f32, at[k][1] as f32];
         scene.set_group(c, group::CELL_IDLE);
         // The two children start in group 1 (0x98 / 0x99 / 0x9a follow data the port does not have: docs/menus.md 20.4).
         scene.set_group(m[0], group::START);
@@ -516,6 +524,7 @@ fn tick(
     disc: Res<Disc>,
     area: Res<CurrentArea>,
     progress: Option<Res<Progress>>,
+    mut logged: Local<u32>,
 ) {
     if menu.phase == Phase::Closed {
         if j.open.is_some() {
@@ -542,6 +551,25 @@ fn tick(
         for &(i, _) in &o.saved {
             scene.nodes[i].visible = false;
         }
+        // `KH2_JOURNAL_QUADS=1`: the box each journal node draws, once, a second after the open (harness aid).
+        *logged += 1;
+        if *logged == 60 && std::env::var_os("KH2_JOURNAL_QUADS").is_some() {
+            scene.resolve();
+            for id in j.nodes.all() {
+                let qs = scene.node_quads(id);
+                if qs.is_empty() {
+                    continue;
+                }
+                let (mut a, mut b) = ([f32::MAX; 2], [f32::MIN; 2]);
+                for p in qs.iter().flat_map(|q| q.pos) {
+                    a = [a[0].min(p[0]), a[1].min(p[1])];
+                    b = [b[0].max(p[0]), b[1].max(p[1])];
+                }
+                info!("journal: node {id} group {:?} box ({:.0},{:.0})-({:.0},{:.0})", scene.nodes[id].player.group, a[0], a[1], b[0], b[1]);
+            }
+        }
+    } else {
+        *logged = 0;
     }
 }
 

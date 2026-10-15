@@ -75,8 +75,8 @@ pub fn scan_mset(m: &kh2_anim::Mset) -> Vec<(usize, String, Offer, i16, i16)> {
 
 /// Execute values the player's availability switch (FUN_001ba2c0) handles itself. A reaction command
 /// with one of these is not decided by flags alone and is reported as not ported. 0x1c4 (452) is
-/// ported in [`status`].
-const EXECUTE_SWITCH: &[u16] = &[1, 2, 4, 5, 0x37, 0x48, 0x51, 0x67, 0x68, 0x7f, 0x13c, 0x14a];
+/// ported in [`status`], and 0x7f (the Shop rows and the other event rows) too (WP-SH1).
+const EXECUTE_SWITCH: &[u16] = &[1, 2, 4, 5, 0x37, 0x48, 0x51, 0x67, 0x68, 0x13c, 0x14a];
 
 /// Execute 0x1c4 (command 452): the case of FUN_001ba2c0.
 const EXECUTE_MP_COMMAND: u16 = 0x1c4;
@@ -181,6 +181,12 @@ pub fn status(cmds: &[CmdRow], c: &CmdRow, ctx: &Ctx) -> Status {
     // FUN_001ba2c0 case 0x1c4: 5 while the status block's +0x1c0 timer runs, else 2 when the MP
     // (+0x180) is below the row's Cost; the flags and form tests below still run and win with 5.
     let mut own = Status::Available;
+    // FUN_001ba2c0 case 0x7f (with 0x37, the save point's): 5 while FUN_001c6c08(0x35fec0, 0) answers non-zero. Of
+    // that state word the app has the drive form (bit 1, as `savepoint::save_status` reads it); the summon and the
+    // third state are not tracked [approx].
+    if c.execute == crate::menu_shop::EXECUTE_EVENT && ctx.form != 0 {
+        own = Status::Blocked;
+    }
     if c.execute == EXECUTE_MP_COMMAND {
         if ctx.mp_timer {
             own = Status::Blocked;

@@ -104,12 +104,15 @@ impl NpcAssets {
         self.parts.entry(model.to_string()).or_insert_with(|| disc.read(&format!("obj/{model}.mdlx")).and_then(|f| parts::Table::from_mdlx(&f)).map(Arc::new)).clone()
     }
 
-    fn rig(&mut self, disc: &Disc, model: &str) -> Option<Arc<Rig>> {
+    /// The object's model and its motion set: the objentry's AnimationName (a shopkeeper such as `N_EX650_TT_ITEM_RTN`
+    /// shares another townsperson's set), the model's own name when that is empty.
+    fn rig(&mut self, disc: &Disc, model: &str, anim: &str) -> Option<Arc<Rig>> {
+        let anim = Some(anim.trim_end_matches(".mset")).filter(|a| !a.is_empty()).unwrap_or(model).to_string();
         self.rigs
             .entry(model.to_string())
             .or_insert_with(|| {
                 let m = disc.read(&format!("obj/{model}.mdlx")).and_then(|d| kh2_model::mdlx(&d))?;
-                let s = disc.read(&format!("obj/{model}.mset")).and_then(|d| kh2_anim::Mset::parse(&d))?;
+                let s = disc.read(&format!("obj/{anim}.mset")).and_then(|d| kh2_anim::Mset::parse(&d))?;
                 let apdx = Some(format!("obj/{model}.apdx")).filter(|a| disc.read(a).is_some());
                 Some(Arc::new(Rig { model: m, mset: s, apdx }))
             })
@@ -320,7 +323,8 @@ fn npc_spawn(
                 }
                 let model = row.model_name.clone();
                 let flags124 = row.flags & 8 != 0;
-                let Some(rig) = assets.rig(&disc, &model) else {
+                let anim = row.animation_name.clone();
+                let Some(rig) = assets.rig(&disc, &model, &anim) else {
                     warn!("npc: {model}: model or motion set not readable; not spawned");
                     continue;
                 };

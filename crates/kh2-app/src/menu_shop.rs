@@ -1161,6 +1161,12 @@ mod tests {
             for (tag, groups) in &ard.spawns {
                 for e in groups.iter().flat_map(|g| &g.entities) {
                     if let Some(&(id, ev)) = shop_rows.iter().find(|r| r.0 == e.part_command()) {
+                        // The programs whose commands name the group (the harness's KH2_PROGRAMS for a screenshot).
+                        for (script, progs) in &ard.scripts {
+                            for p in progs.iter().filter(|p| p.commands.iter().any(|c| tag.len() == 4 && c.args.contains(&u32::from_le_bytes(tag.as_bytes().try_into().unwrap())))) {
+                                eprintln!("tt{n:02} group {tag}: named by script {script} program {:#x}", p.id);
+                            }
+                        }
                         let name = objs.iter().find(|o| o.object_id == e.object).map_or(String::new(), |o| o.model_name.clone());
                         keepers.push(format!("tt{n:02} {tag} {name} command {id} event {ev:#x}"));
                     }

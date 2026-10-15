@@ -44,6 +44,7 @@ impl Plugin for AreaJumpPlugin {
         app.init_resource::<Exits>()
             .init_resource::<JumpTask>()
             .init_resource::<LastExit>()
+            .init_resource::<Type4Memory>()
             .init_resource::<ExitConsts>()
             .init_resource::<ExitLocks>()
             .init_resource::<Keyhole>()
@@ -64,6 +65,8 @@ pub struct ExitConsts {
     pub angle_base: Option<f32>,
     /// `DAT_0037b358`: the smallest dot product that passes.
     pub min_dot: Option<f32>,
+    /// The table at 0x3790a8 that `FUN_00149db8` searches (type-4 jumps): `(entrance, world)` pairs.
+    pub map_entrances: MapEntrances,
 }
 
 const EXE_BIAS: usize = 0xff000;
@@ -80,7 +83,12 @@ fn load_consts(disc: Res<Disc>, mut consts: ResMut<ExitConsts>, mut locks: ResMu
     }
     let Some(exe) = disc.read_root("SLUS_210.05") else { return };
     let f = |va: usize| exe.get(va - EXE_BIAS..va - EXE_BIAS + 4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
-    *consts = ExitConsts { angle_base: f(0x37c714), min_dot: f(0x37b358) };
+    let word = |va: usize| exe.get(va - EXE_BIAS..va - EXE_BIAS + 4).map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let mut map_entrances = [(0, 0); 15];
+    for (i, e) in map_entrances.iter_mut().enumerate() {
+        *e = (word(0x3790a8 + i * 8), word(0x3790a8 + i * 8 + 4));
+    }
+    *consts = ExitConsts { angle_base: f(0x37c714), min_dot: f(0x37b358), map_entrances };
     if area::arealog() {
         info!("exits: gate constants angle base {:?} min dot {:?}", consts.angle_base, consts.min_dot);
     }
@@ -160,11 +168,13 @@ pub struct AfterEvent {
     pub seen_playing: bool,
     /// Ticks waited without the event playing.
     pub waited: u32,
+    /// The record words 4 to 6 of the trigger.
+    pub extras: JumpExtras,
 }
 
 impl AfterEvent {
     pub fn new(jump: Option<Jump>, group: u16) -> AfterEvent {
-        AfterEvent { jump, group, seen_playing: false, waited: 0 }
+        AfterEvent { jump, group, seen_playing: false, waited: 0, extras: JumpExtras::default() }
     }
 
     /// One tick with the event player `playing` or not: `true` once the event is over and the jump is due.
@@ -191,6 +201,9 @@ impl AfterEvent {
 /// disc lacks its `ard/<name>.ard` or `map/us/<name>.map` (`has` answers whether a disc file
 /// exists). The caller then stays: the fade is lifted and Sora keeps his place.
 pub fn jump_target(dest: &Dest, has: impl Fn(&str) -> bool) -> Result<String, String> {
+    if dest.world == WORLD_MAP {
+        return Err("the world map is not available (the app has only Twilight Town)".to_string());
+    }
     let Some(name) = area::area_name(dest.world, dest.area) else { return Err(format!("{} is not in the app", dest_name(dest))) };
     for f in [format!("ard/{name}.ard"), format!("map/us/{name}.map")] {
         if !has(&f) {
@@ -261,6 +274,10 @@ impl LastExit {
     }
 }
 
+/// `DAT_01c8bd90`: the world byte a type-4 jump remembers between two records (-1 at the start).
+#[derive(Resource, Debug, Default, PartialEq, Eq)]
+pub struct Type4Memory(pub Option<u8>);
+
 /// What a trigger's jump record (`FUN_0019d9d8`, parsed by `FUN_0019d8f0`) jumps to, with `cur` the record's
 /// world, area and entrance, `last` the remembered exit and `localset(world, key)` the area `07localset.bin`
 /// gives. Type 1: the record's own world, area, entrance. Type 2: `FUN_00198080(key, world)`: a negative world
@@ -280,10 +297,161 @@ pub fn resolve_jump(j: &Jump, cur: (u8, u8, u8), last: Option<Dest>, localset: i
             .apply(cur))
         }
         3 => Ok(last.unwrap_or(Dest::new(KEEP, KEEP, KEEP)).apply(cur)),
-        4 => Err("type 4 (a world-map case decided by story flags 0x1071, 0x1072, 0x140f, 0x1822, 0x200b, 0x8cd, 0x3834, 0x1c1c; FUN_00149df0): the app has no world map".to_string()),
+        4 => Err("type 4 (use resolve_record: a world-map case decided by story flags 0x1071, 0x1072, 0x140f, 0x1822, 0x200b, 0x8cd, 0x3834, 0x1c1c; FUN_00149df0): the app has no world map".to_string()),
         5 => Err("type 5 (opens menu 0xe, FUN_0024f0b8): not ported".to_string()),
         6 => Err("type 6 (FUN_00149f38): not ported".to_string()),
         k => Err(format!("jump type {k}: FUN_0019d9d8 does nothing for it")),
+    }
+}
+
+/// The record words 4 to 6 and the object flag that the jump record does not carry: `FUN_00180ff8` sets them from
+/// a trigger's sub-commands 4, 5, 7 and 8 into the trigger object (+0x44, +0x48, +0x4c, +0x50), after `FUN_0019d8f0`
+/// filled the first words from sub-command 1; `FUN_00197780` gives the defaults [V]. `FUN_0019d9d8` reads them as
+/// `param_1[4]`, `[5]` and `[6]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JumpExtras {
+    /// Sub-command 4 (+0x44, default 0): a party arrangement index; 0 or more makes `FUN_0019d9d8` reorder the
+    /// destination world's party (`FUN_001a7330(FUN_001a71c0(world), index)`). Not ported (no party order in the app).
+    pub party: i16,
+    /// Sub-command 5 (+0x48, default -1): the party reset code handed to `FUN_00104e18` and `FUN_001abfe8`; 0 is no
+    /// reset, anything else resets the party objects (`FUN_001ac130` for each of the slots 1 to 15). Not ported.
+    pub reset: i16,
+    /// Sub-command 7 (+0x4c, default 0): the "menu before" code: 1 or 2 opens menu kind 5 first
+    /// (`FUN_0024f300(0 | 2)` -> `FUN_0024f0b8(5, ..)`), any other non-zero value only delays the jump.
+    pub menu_before: i16,
+    /// Sub-command 8 (+0x50 bit 0). `FUN_0019d9d8` does not read it.
+    pub flag: bool,
+}
+
+impl Default for JumpExtras {
+    fn default() -> Self {
+        JumpExtras { party: 0, reset: -1, menu_before: 0, flag: false }
+    }
+}
+
+impl JumpExtras {
+    /// `FUN_00180ff8` cases 4, 5, 7, 8 over a trigger's sub-commands (`(op, words)`; the value is `words[0]`, a
+    /// signed short); a later one of the same kind wins.
+    pub fn from_subs(subs: &[(u16, Vec<u16>)]) -> JumpExtras {
+        let mut e = JumpExtras::default();
+        for (op, h) in subs {
+            let v = h.first().map(|v| *v as i16);
+            match (op, v) {
+                (4, Some(v)) => e.party = v,
+                (5, Some(v)) => e.reset = v,
+                (7, Some(v)) => e.menu_before = v,
+                (8, _) => e.flag = true,
+                _ => {}
+            }
+        }
+        e
+    }
+
+    /// Ticks the jump task waits before its fade-out (`uVar10` in `FUN_0019d9d8`): 2 when the "menu before" code
+    /// is not 0 (and the party word is 0 or more), else 0. The wait follows a menu the app cannot open, so it is
+    /// only logged.
+    pub fn delay_ticks(&self) -> u32 {
+        if self.party >= 0 && self.menu_before != 0 { 2 } else { 0 }
+    }
+
+    /// The argument of the menu kind 5 opened before the jump: `Some(0)` for code 1, `Some(2)` for code 2
+    /// (`FUN_0024f300(arg, ..)`); other codes open nothing.
+    pub fn menu_before_arg(&self) -> Option<u32> {
+        if self.party < 0 {
+            return None;
+        }
+        match self.menu_before {
+            1 => Some(0),
+            2 => Some(2),
+            _ => None,
+        }
+    }
+
+    /// Whether the jump runs the party reset (`FUN_001abfe8(code)`; 0 returns at once).
+    pub fn resets_party(&self) -> bool {
+        self.reset != 0
+    }
+
+    /// A short text for the log; empty when everything is the default.
+    pub fn text(&self) -> String {
+        if *self == JumpExtras::default() {
+            return String::new();
+        }
+        format!(" (party index {}, reset code {}, menu before {}{})", self.party, self.reset, self.menu_before, if self.flag { ", flag" } else { "" })
+    }
+}
+
+/// What a trigger's jump record does (`FUN_0019d9d8`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    /// `FUN_00104e18` with the destination.
+    Go(Dest),
+    /// Type 5: `FUN_0024f0b8(kind, arg)` opens a menu and no jump follows. The app has no menu kind 0xe
+    /// (scene 9: init `FUN_00292f18`, task `FUN_00292fc8`, page `FUN_00293020`): the hook for it.
+    OpenMenu { kind: u16, arg: i32 },
+    /// Type 6 (`FUN_00149f38`): the task `FUN_00149eb0` freezes the screen (`FUN_0014dcb0`, `FUN_0014de00`), fades
+    /// the screen fader to black (`FUN_0014a7c8(fader, 0xf, 0)`), waits until it is black and ends; no jump follows.
+    /// Nothing that fades it back in was found [gap].
+    FreezeFade,
+}
+
+/// The world and key `FUN_00198080(0x40, 0x12)` is called with in the second type-4 case.
+const TYPE4_STORY_WORLD: u8 = 0x12;
+const TYPE4_STORY_KEY: u16 = 0x40;
+/// The world map's world byte (`FUN_00149df0`: `*(0x33e860 + 0xc) = 0xf`).
+pub const WORLD_MAP: u8 = 0xf;
+/// The table at 0x3790a8 of `(entrance, world)` pairs that `FUN_00149db8` searches by world.
+pub type MapEntrances = [(u32, u32); 15];
+
+/// `FUN_00149db8`: the world map entrance for the world a type-4 jump leaves (0 when the world is not in the table).
+pub fn map_entrance(table: &MapEntrances, world: u8) -> u8 {
+    table.iter().find(|(_, w)| *w == u32::from(world)).map_or(0, |(e, _)| *e as u8)
+}
+
+/// What a type-4 record decides (`FUN_0019d9d8` case 4, `FUN_00149df0`) from the story flags (`flag`), the record's
+/// world byte `rec` (`FUN_0019d8f0` stores its word 1) and the remembered byte `memory` (`DAT_01c8bd90`, -1 at the
+/// start). Returns the destination and the new memory. The fade kind is always 1 (`uVar9 = 1`).
+/// 1. Flag 0x1071 set and 0x1072 clear, and one of 0x140f, 0x1822, 0x200b set: remember `rec`; go to world 4, area 0,
+///    entrance 0, programs kept.
+/// 2. Else one of 0x8cd, 0x3834, 0x1c1c set: remember `rec`; go to `FUN_00198080(0x40, 0x12)`: world 0x12, the first
+///    area the table lists for key 0x40, entrance 0, programs 0x40 (unknown key: every byte kept).
+/// 3. Else the world map: the remembered byte replaces `rec` if there is one (and is forgotten); jump to world 0xf,
+///    area 0, entrance `FUN_00149db8(byte)`, programs kept, at once (`FUN_00149df0`).
+pub fn type4_dest(flag: impl Fn(u16) -> bool, rec: u8, memory: Option<u8>, table: &MapEntrances, localset: impl Fn(u8, u16) -> Option<u8>) -> (Dest, Option<u8>) {
+    if flag(0x1071) && !flag(0x1072) && (flag(0x140f) || flag(0x1822) || flag(0x200b)) {
+        return (Dest { world: 4, area: 0, entrance: 0, programs: [KEEP; 3] }, Some(rec));
+    }
+    if flag(0x8cd) || flag(0x3834) || flag(0x1c1c) {
+        let dest = match localset(TYPE4_STORY_WORLD, TYPE4_STORY_KEY) {
+            Some(area) => Dest { world: TYPE4_STORY_WORLD, area, entrance: 0, programs: [TYPE4_STORY_KEY as u8; 3] },
+            None => Dest::new(KEEP, KEEP, 0),
+        };
+        return (dest, Some(rec));
+    }
+    let from = memory.unwrap_or(rec);
+    (Dest { world: WORLD_MAP, area: 0, entrance: map_entrance(table, from), programs: [KEEP; 3] }, None)
+}
+
+/// `FUN_0019d9d8` for every type: types 1 to 3 as `resolve_jump`; 4 as `type4_dest` (always a destination: world 4,
+/// 0x12 or 0xf, none of them in the app, so the caller stays); 5 and 6 as `Outcome`. `memory` is `DAT_01c8bd90`.
+pub fn resolve_record(
+    j: &Jump,
+    cur: (u8, u8, u8),
+    last: Option<Dest>,
+    localset: impl Fn(u8, u16) -> Option<u8>,
+    flag: impl Fn(u16) -> bool,
+    table: &MapEntrances,
+    memory: &mut Option<u8>,
+) -> Result<Outcome, String> {
+    match j.kind {
+        4 => {
+            let (dest, m) = type4_dest(flag, j.world as u8, *memory, table, &localset);
+            *memory = m;
+            Ok(Outcome::Go(dest.apply(cur)))
+        }
+        5 => Ok(Outcome::OpenMenu { kind: 0xe, arg: -1 }),
+        6 => Ok(Outcome::FreezeFade),
+        _ => resolve_jump(j, cur, last, localset).map(Outcome::Go),
     }
 }
 
@@ -546,6 +714,34 @@ fn harness_jump() -> Option<Jump> {
     Some(Jump { kind, world: 0xffff, area: if kind == 1 { key } else { 0xffff }, entrance, key, flags: 0 })
 }
 
+/// The fade kind of a record and whether it is instant: a type-4 record always uses kind 1 (`FUN_0019d9d8` sets
+/// `uVar9 = 1` and ignores the record's flags), the others the flags word (`jump_fade_kind`).
+pub fn record_fade(j: &Jump) -> (u32, bool) {
+    if j.kind == 4 { (1, false) } else { jump_fade_kind(j) }
+}
+
+/// Runs a record through `resolve_record`: the destination of a jump, or `None` after logging why nothing jumps (a
+/// menu or a fade the app does not have, an unknown type).
+#[allow(clippy::too_many_arguments)]
+fn take_record(j: &Jump, extras: &JumpExtras, cur: (u8, u8, u8), last: Option<Dest>, disc: &Disc, locks: &ExitLocks, consts: &ExitConsts, memory: &mut Type4Memory) -> Option<Dest> {
+    let flag = |id: u16| locks.story.as_ref().is_some_and(|s| s.lock().test(id));
+    match resolve_record(j, cur, last, |w, k| disc_localset(disc, w, k), flag, &consts.map_entrances, &mut memory.0) {
+        Ok(Outcome::Go(d)) => Some(d),
+        Ok(Outcome::OpenMenu { kind, arg }) => {
+            info!("jump record type {}: opens menu kind {kind:#x} (FUN_0024f0b8({kind:#x}, {arg})); the app has no such menu: no menu, no jump{}", j.kind, extras.text());
+            None
+        }
+        Ok(Outcome::FreezeFade) => {
+            info!("jump record type {}: FUN_00149f38 freezes the screen and fades to black, no jump; not ported (nothing in the app fades back in){}", j.kind, extras.text());
+            None
+        }
+        Err(why) => {
+            info!("jump record {why}; not ported");
+            None
+        }
+    }
+}
+
 fn dest_name(d: &Dest) -> String {
     area::area_name(d.world, d.area).unwrap_or_else(|| format!("world {} area {}", d.world, d.area))
 }
@@ -567,6 +763,7 @@ fn tick(
     player: Option<Res<crate::intro::event_player::EventPlayer>>,
     mut forced: Local<u32>,
     mut last: ResMut<LastExit>,
+    mut memory: ResMut<Type4Memory>,
 ) {
     // The jump task.
     match *task {
@@ -646,10 +843,10 @@ fn tick(
         }
         let ae = exits.after_event.take().unwrap();
         match ae.jump {
-            Some(j) => match resolve_jump(&j, (rec.world, rec.area, rec.entrance), last.0, |w, k| disc_localset(&disc, w, k)) {
-                Ok(dest) => {
-                    let (kind, _) = jump_fade_kind(&j);
-                    info!("jump after the event (FUN_00196170 -> FUN_0019d9d8 with bit 31): type {} key {:#x} -> {} entrance {} programs {} (fade kind {kind}, no fade-out)", j.kind, j.key, dest_name(&dest), dest.entrance, dest.programs_text());
+            Some(j) => match take_record(&j, &ae.extras, (rec.world, rec.area, rec.entrance), last.0, &disc, &locks, &consts, &mut memory) {
+                Some(dest) => {
+                    let (kind, _) = record_fade(&j);
+                    info!("jump after the event (FUN_00196170 -> FUN_0019d9d8 with bit 31): type {} key {:#x} -> {} entrance {} programs {} (fade kind {kind}, no fade-out){}", j.kind, j.key, dest_name(&dest), dest.entrance, dest.programs_text(), ae.extras.text());
                     exits.jumping = Some(ae.group);
                     key.black_from = None;
                     key.wiping = false;
@@ -657,7 +854,7 @@ fn tick(
                     *task = JumpTask::FadeOut { dest, kind, t: FADE_TICKS - 1.0 };
                     return;
                 }
-                Err(why) => info!("jump after the event: {why}; not ported"),
+                None => {}
             },
             None => info!("event over: the trigger has no jump record (FUN_0019d9c8 = 0)"),
         }
@@ -695,12 +892,9 @@ fn tick(
     // trigger jump record through `resolve_jump` and the real fade and load path at `KH2_JUMP_AT` seconds (default 3).
     if let Some(j) = harness_jump().filter(|_| *forced == (std::env::var("KH2_JUMP_AT").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(3.0) * 60.0) as u32) {
         info!("jump: forced by KH2_JUMP: record {j:?}");
-        match resolve_jump(&j, (rec.world, rec.area, rec.entrance), last.0, |w, k| disc_localset(&disc, w, k)) {
-            Ok(dest) => {
-                info!("jump: type {} key {:#x} -> {} entrance {} programs {}", j.kind, j.key, dest_name(&dest), dest.entrance, dest.programs_text());
-                start = Some((dest, jump_fade_kind(&j).0, 0xffff));
-            }
-            Err(why) => info!("jump: {why}; not ported"),
+        if let Some(dest) = take_record(&j, &JumpExtras::default(), (rec.world, rec.area, rec.entrance), last.0, &disc, &locks, &consts, &mut memory) {
+            info!("jump: type {} key {:#x} -> {} entrance {} programs {}", j.kind, j.key, dest_name(&dest), dest.entrance, dest.programs_text());
+            start = Some((dest, record_fade(&j).0, 0xffff));
         }
     }
     for g in exits.groups.iter_mut().filter(|g| !g.fired && !g.disabled) {
@@ -714,7 +908,11 @@ fn tick(
             match walk_in(g, &run.script.triggers, world) {
                 WalkIn::Event { tag, arg, jump } => {
                     info!("exit {} id {:#x} -> {} entrance {}: trigger (1, {:#x}) plays event {tag} arg {arg}, then the jump {jump:?} (FUN_00196428)", g.tag, g.id, dest_name(&dest), dest.entrance, g.id);
-                    start_event_walk_in(&mut after, jump, g.id, || crate::intro::event_player::request(&tag, arg));
+                    if start_event_walk_in(&mut after, jump, g.id, || crate::intro::event_player::request(&tag, arg))
+                        && let Some(ae) = after.as_mut()
+                    {
+                        ae.extras = run.script.triggers.iter().find(|t| t.matches(1, g.id)).map(|t| JumpExtras::from_subs(&t.subs)).unwrap_or_default();
+                    }
                 }
                 WalkIn::Jump { dest, kind } => start = Some((dest, kind, g.id)),
                 other => info!("exit {}: forced walk-in {other:?} not handled by the harness", g.tag),
@@ -757,16 +955,18 @@ fn tick(
                         }
                         WalkIn::Event { tag, arg, jump } => {
                             info!("exit {} id {:#x} -> {} entrance {}: trigger (1, {:#x}) plays event {tag} arg {arg}, then the jump {jump:?} (FUN_00196428)", g.tag, g.id, dest_name(&dest), dest.entrance, g.id);
-                            start_event_walk_in(&mut after, jump, g.id, || crate::intro::event_player::request(&tag, arg));
+                            if start_event_walk_in(&mut after, jump, g.id, || crate::intro::event_player::request(&tag, arg))
+                        && let Some(ae) = after.as_mut()
+                    {
+                        ae.extras = run.script.triggers.iter().find(|t| t.matches(1, g.id)).map(|t| JumpExtras::from_subs(&t.subs)).unwrap_or_default();
+                    }
                         }
                         WalkIn::TriggerJump(j) => {
-                            let (kind, instant) = jump_fade_kind(&j);
-                            match resolve_jump(&j, (rec.world, rec.area, rec.entrance), last.0, |w, k| disc_localset(&disc, w, k)) {
-                                Ok(dest) => {
-                                    info!("exit {} id {:#x}: trigger jump type {} key {:#x} -> {} entrance {} programs {} (fade kind {kind}{})", g.tag, g.id, j.kind, j.key, dest_name(&dest), dest.entrance, dest.programs_text(), if instant { ", instant" } else { "" });
-                                    start = Some((dest, kind, g.id));
-                                }
-                                Err(why) => info!("exit {} id {:#x}: trigger jump {why}; not ported", g.tag, g.id),
+                            let (kind, instant) = record_fade(&j);
+                            let extras = run.script.triggers.iter().find(|t| t.matches(1, g.id)).map(|t| JumpExtras::from_subs(&t.subs)).unwrap_or_default();
+                            if let Some(dest) = take_record(&j, &extras, (rec.world, rec.area, rec.entrance), last.0, &disc, &locks, &consts, &mut memory) {
+                                info!("exit {} id {:#x}: trigger jump type {} key {:#x} -> {} entrance {} programs {} (fade kind {kind}{}){}", g.tag, g.id, j.kind, j.key, dest_name(&dest), dest.entrance, dest.programs_text(), if instant { ", instant" } else { "" }, extras.text());
+                                start = Some((dest, kind, g.id));
                             }
                         }
                         WalkIn::TriggerOnly => info!("exit {} id {:#x}: trigger (1, {:#x}) without event or jump: not ported", g.tag, g.id, g.id),

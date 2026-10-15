@@ -533,6 +533,9 @@ impl Plugin for EnemyPlugin {
 /// The assets and the area a wave is made from.
 type WaveSource<'a> = (Res<'a, Disc>, Res<'a, CurrentArea>, ResMut<'a, AreaWaves>, Res<'a, EnemyRigs>, Res<'a, crate::area::AreaRecord>, ResMut<'a, BattleGroups>, Res<'a, crate::area_jump::JumpTask>);
 
+/// What a spawn record gives an enemy: spawn kind, spawn parameters, `00objentry` id, (group id, serial).
+type SpawnRecord = (i32, Option<[i32; 2]>, u32, Option<(u16, u16)>);
+
 /// Spawns one enemy: its model under a new root at `at` (metres), stats from its `enmp` row.
 #[allow(clippy::too_many_arguments)]
 fn spawn_enemy(
@@ -541,7 +544,7 @@ fn spawn_enemy(
     rig: Arc<Rig>,
     at: Vec3,
     yaw: f32,
-    (spawn_kind, spawn_params, object_id, serial): (i32, Option<[i32; 2]>, u32, Option<(u16, u16)>),
+    (spawn_kind, spawn_params, object_id, serial): SpawnRecord,
     data: &GameData,
     assets: (&mut Assets<Mesh>, &mut Assets<StandardMaterial>, &mut Assets<Image>, &mut Assets<SkinnedMeshInverseBindposes>),
 ) {
@@ -1275,7 +1278,7 @@ mod tests {
         assert!(!created_at_load(&g.members[1], &g.parts[0], 0));
         let mut two = KindTwo::new(&g, 0);
         assert_eq!(two.timer, 30.0);
-        let mut alive = vec![true, false, false, false];
+        let mut alive = [true, false, false, false];
         assert!(two.run(&g, |i| alive[i]).is_empty(), "the start delay runs");
         two.timer = 0.0;
         assert_eq!(two.run(&g, |i| alive[i]), [1]);

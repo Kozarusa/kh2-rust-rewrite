@@ -1086,6 +1086,36 @@ Files: `party.rs` (`PartySlots::enter_world`, `wanted_members`, `member_key`, `s
 hidden list" rule of `menu_party::rows` stays byte-bit-0x80 only); the members' leave / enter animations; the model tweaks
 of FUN_0023b5d0 / FUN_0023b5b0; a third follow point in FUN_00111670.
 
+## 19. Status: no members in the Struggle (WP-S8)
+
+Files: `party_rules.rs` (`mission_presets`), `party.rs` (`mission_party`).
+
+- **The rule [V].** Nothing removes members at a mission's start: the members are never made. tt04's Struggle `btl`
+  programs (0xb6, 0xb7, 0xb8; read from the disc) are `0xf [0]; 0x15 [mission]; 0x1d [1]; spawn b_5x; spawn b_60`,
+  and their `map` programs spawn no group. Opcode 0xf (FUN_00180b48 -> FUN_001a7330) applies preset 0 `[0,-,-,-]`
+  (section 1) to the world's slot bytes, which empties slots 1..3. The groups b_50 / b_51 / b_52 do hold FRIEND_1 /
+  FRIEND_2 rows (0x237 / 0x238, spawn kind 0) beside the player's, but the factory resolves them through the slot
+  bytes (FUN_0016e208 -> FUN_0017cd20: FUN_001a71c0(-1) the current world's record, FUN_001a71e8 the byte & 0x1f,
+  0x10 -> no object), so nobody is created and Sora fights alone. The Seifer programs 0x4c, 0x4d, 0x4e and 0xb5
+  also apply preset 0 (test output). Opcode 0x1d [1] (FUN_001abfe8 case 1) ends a drive form if one is active, else
+  calls FUN_001ac130 on the status blocks 1..15 (FUN_001a0240, FUN_001a0100) [inferred: a heal back to full]; it
+  removes nobody and is not ported here.
+- **The return [V].** The slot bytes stay as preset 0 left them (the record survives area loads, section 18) until
+  the next opcode 0xf or the Party page rewrites them; applying preset 1 again gives Donald and Goofy back
+  (`apply_preset`).
+- **The port.** The app does not run a `btl` program at area load: the wave spawner loads the group and sends
+  `struggle::MissionStart`. `mission_party` reads that message, finds the area's `btl` program whose opcode 0x15
+  names the mission (`rules::mission_presets`) and applies its 0xf presets to `PartySlots`; `spawn_party`'s
+  rebuild (section 18) then despawns the members, since the bytes name nobody. Log: `party: mission 0x128
+  TT04_MS00: its btl program applies preset 0 (opcode 0xf, FUN_001a7330): slot bytes [00, 01, 02, 10] -> [00, 10,
+  10, 10]`, then `party: the slot bytes ... name other members than the 2 standing: rebuilding`. Tests
+  `a_struggle_program_leaves_sora_alone`, `party_the_struggle_programs_leave_sora_alone`.
+- **Gaps.** [inferred] The app's rebuild removes the standing members at once (the original never created them,
+  since the program runs before the area's objects). The app does not apply opcode 0xf at area load (the
+  area-script run, `ScriptRun::world_records`, is collected but no system applies it), so after a Struggle the
+  members stay out in world 2 for the session unless the Party page changes the bytes; in the original the next
+  program with an 0xf preset would restore them. Opcode 0x1d's status reset is not ported.
+
 ## Decompile index
 
 | address | what |
@@ -1094,6 +1124,7 @@ of FUN_0023b5d0 / FUN_0023b5b0; a third follow point in FUN_00111670.
 | 0x1a6f48, 0x1a6ff0, 0x1a6f70, 0x1802e0 | memt pointers, merge, record test, story flag |
 | 0x1a71c0, 0x1a71e8, 0x1a7128, 0x1a7118, 0x1a7200, 0x1a7250, 0x1a72c0, 0x1a7330, 0x1a7500, 0x1a7558, 0x1a7608, 0x1a7268, 0x1a7698 | slot bytes, presets, member index, in-party test |
 | 0x180b48 | area-script commands (0xf preset, 0x10) |
+| 0x1abfe8, 0x1ac130, 0x1ac170, 0x19fe48, 0x19ffb8 | opcode 0x1d party reset (WP-S8: removes nobody) |
 | 0x17d1b0, 0x17d290, 0x10b780, 0x10be80, 0x17c718, 0x19fd30, 0x19fdc0 | spawn, re-create, friend class, friend base, status blocks |
 | 0x17c968, 0x17c9b8, 0x17ca48, 0x17ca70, 0x17cc20, 0x17cc70, 0x17cc98, 0x17cde0, 0x17ce60, 0x17cee8, 0x17cfc0, 0x17d030, 0x17d0a8, 0x17d0f0, 0x17d150 | friend base methods (panel, tick, KO, revive, in-party) |
 | 0x10c5f8, 0x10c630, 0x10c658, 0x10c6e0, 0x1106b8, 0x110790, 0x1112e8, 0x1115a0 | friend vtable overrides |

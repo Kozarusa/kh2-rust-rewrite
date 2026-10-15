@@ -1171,10 +1171,10 @@ node's box once.
 
 ### 20.5 Gaps
 
-- **Pages 4 to 0x20** (WP-MN10 ported 1 and 2: 20.7; WP-MN11 page 3, the help line, the cursor and L1/R1: 20.8) (the world's categories, characters, enemies, the album, Ansem's reports, limits, minigames, quests,
+- **Pages 4 to 0x20** (WP-MN10 ported 1 and 2: 20.7; WP-MN11 page 3, the help line, the cursor and L1/R1: 20.8; WP-MN12 pages 4, 5, 6, 7, 8 and 0xb: 20.9) (the world's categories, characters, enemies, the album, Ansem's reports, limits, minigames, quests,
   the Roxas pages, the photo and face files): not read beyond the exits of page 2.
-- **The children's groups 0x98 / 0x99 / 0x9a** (`FUN_002b9658`, `FUN_002b9798`, `FUN_002baf08`: a per-world state the port
-  has no data for, the words at 0x382aec / 0x382af0): the children stay on group 1.
+- **The children's groups 0x98 / 0x99 / 0x9a** (`FUN_002b9658`, `FUN_002b9798`, `FUN_002baf08`, the words at 0x382aec /
+  0x382af0): WP-MN12 ported 0x98 / 0x99 (20.9); 0x9a (every category complete) is still open.
 - **The plates `FUN_0029cf78(0, 5, .., 0x381fc0, 0x381fc8)`** (groups 0x71/0x73/0x72 and 0x23/0x25/0x24): not drawn; what
   they show on this scene was not read.
 - **Text:** the world names (record +4 / +6) and any help line of page 0 (`FUN_0029d820` is called for page 10 only) were
@@ -1313,7 +1313,7 @@ node's box once.
   (`journal: page 3 (FUN_002a4c38): world 0, 4 story entries [2afa, 2afb, 2afc, 2afd], 41 lines, list count 32,
   line height 26, gap 6`, then `first line 10`, `first line 11`). Tests: `menu_journal::tests::{hints_name_the_neighbour_pages,
   story_page_entries_lines_and_state_machine, the_disc_category_page_tables}`.
-- **Gaps.** Characters (page 6 / 0xb, `FUN_002ae3e8`, handler `FUN_002ae790`): the faces come from entry 5
+- **Gaps** (WP-MN12 ported Characters, Character Links, Treasures, Maps and the Album: 20.9; what is still open is listed there). Characters (page 6 / 0xb, `FUN_002ae3e8`, handler `FUN_002ae790`): the faces come from entry 5
   (`FUN_002af398`: records of the world opened by `FUN_002a2018`, story flags or an item count) placed at the
   record's x/y in groups from 0x382f30, but their marks and the "met" state are the bits of `DAT_0036d4e8`
   (`FUN_002b7208` / `FUN_002b72c0`, the journal's own save data) and the face file `jmface_` (`FUN_002af7a0`,
@@ -1338,6 +1338,150 @@ node's box once.
   `FUN_002b5e50`, `FUN_002b4b18`, `FUN_002b7208`, `FUN_002b72c0`, `FUN_002b9360`, `FUN_002b9480`, `FUN_002a2018`,
   `FUN_002af688`, `FUN_002a1e78`, `FUN_00139918`; data 0x381f88, 0x381fb8, 0x381fc0, 0x381fc8, 0x380ab0,
   0x382b98, 0x382ba8, 0x382bac, 0x382f04..0x382f30.
+
+### 20.9 Scroll bar, NEW tags, Characters, Character Links, Treasures, Maps, Album (WP-MN12) [V unless marked]
+
+Code: `menu_journal.rs` and its submodules `menu_journal/{marks,chars,lists,treasure_page,album_page}.rs` (`marks`, `lists` and the
+data parts of `chars` / `album_page` are pure functions with tests; the rest is node glue).
+
+- **Text colour (the rule behind several pages).** `FUN_00139048` draws an object's text with the colour `FUN_00237518`
+  gives (`+0xdc` of the sprite player, computed by `FUN_00236cf8` together with the group's anchor: the animation flagged 2 that
+  covers the frame, its colour blended from start to end). Flag 8 (set by `FUN_00138fc8`, cleared by `FUN_00139860`) replaces the
+  RGB with the object's own word `+0x198` (0xe5e5e5), keeping the group's alpha. Objects that clear flag 8 therefore take the
+  group's whole colour: group 2 (64, 70, 60, 0x80: the dark ink of the album rows), 0x46 (16, 24, 0: the Treasures labels), 0x53
+  (16, 24, 0: the name plate), 0x7e (240, 240, 240: the info text on its black bar), 0x7f (250, 240, 0: the total's count), 0x55 /
+  0x56 (16, 8, 0 / 16, 16, 0 with alpha 100 / 96: the picture page's caption and title). The port reads the end colour of the group's
+  last flagged animation (`group_color`; a fade-in such as the total label's is not followed). The holders of pages 1 and 2
+  (flag 8 kept) and the rows of page 2 (WP-MN10, group 3: 0x80 white, the same look) are left as they were.
+- **Holder texts of pages 1 and 2** (fix): `FUN_00139048` starts at the object's position `FUN_00138f38` (the group's animated
+  anchor) and adds the group's x / y when flag 0x10 is kept; the port drew them from the node's origin, at the screen's corner.
+  They now use `label_anchor` (the Summary and Objective texts sit in their panes).
+- **Scroll bar** (`FUN_00299878`, called by the builds of page 3 with the 0x62 layer and of pages 7 / 8 with the 0x43 layer;
+  `FUN_00299c10` moves it): a four-part object (`FUN_0029bdd0`: a part is a layout object with a group, a follow-up group in +0x150
+  and an offset / scale; `FUN_0029cae8` places them from the parent's position plus the object's x / y) whose groups come from the
+  table 0x381fd0 (three equal sets 1, 0x75, 0x74, 0x76: track [empty], top cap, body, bottom cap; a part's follow-up is the same
+  group again, so it loops). x / y = the parent layer's current group x / y; the track is that group's +0x18 (224 on page 3, 200
+  on pages 7 / 8), the body's own length the +0x18 of group 0x74 (100). Body scale y = `track / body * min(visible / total, 1)`
+  (`total` as given, `visible` 10 or 9). `FUN_00299c10(pos)`: `pos` is clamped to `total - visible` (`total` here is the larger of
+  the two numbers); parts 1 and 2 sit at `(int)(track / total * pos)`, part 3 at that plus `(int)(track * min(visible / total, 1))`,
+  one less when the list fits and the sum is exact. Port: `marks::Bar` (tested), `place_bar`, `bar_pos`.
+- **Page 3 opens on the last entry** (fix): `FUN_002a4c38` ends with `FUN_00298d98(list, n)` and `FUN_00299c10(bar, n)`
+  where `n` is the sum of the lines of every entry but the last; the first line shown is the last entry's first line (the
+  port started at line 0). The scroll bar is made for `n + max(10, last entry's lines)`.
+- **New / seen bit sets** (`marks.rs`). `DAT_0036d4e8` (0x128 bytes, allocated by `FUN_002b7060` at the scene's init;
+  `FUN_002b7100` fills it at every open: `FUN_002b7160` characters (+0), `7590` the Ansem reports (entry 4, +0x120), `7818` album
+  (entry 2, +0x34 + 4 * world), `7cd0` limits (entry 6, +0x74), `7f58` quests (entry 8, +0x80), `8390` minigames (entry 7,
+  +0x78), `87b8` treasures (+0xd0), `8b88` maps (+0x110), `8f18` (+0x124), `9198` story (entry 1, +0x90 + 4 * world)) holds a bit for
+  every entry that exists now and is not in the seen set. The seen set is in the save at `FUN_002b70e0` = `0x33e860 + 0x38f0`
+  (the same offsets). A tag is drawn for an entry with a new bit: new until the seen bit is set, then the seen group (`FUN_002b9360`
+  / `FUN_002b9480` and siblings: story 0x39 / 0x3a at 0x382ba8 / 0x382bac, rows 0x8b / 0x8c at 0x382b80 / 0x382b84, cells 0x98 / 0x99
+  at 0x382aec / 0x382af0, characters 0x18 / 0x19 and links 0x1b / 0x1c at 0x382f0c.., treasure and map labels 0x3f / 0x40 at
+  0x382f58 / 0x382f5c, album 0x5a / 0x5b at 0x382bdc / 0x382be0). `DAT_0036d4f4` is a second set (the completion percentage
+  `FUN_002b9bf0`: every entry that exists, no seen filter); its aggregate (`FUN_002baca8` story, `ba080` album, `ba6d8` treasures,
+  `ba898` maps, `bad98` characters / links) draws the completion mark 0x8a on page 2's rows. Port: the app has no journal save
+  data, so the seen set lives in the `Journal` resource for the run and starts empty (a state that never opened the journal shows
+  everything as new [inferred: the new-game save has the bits clear]); the new set is rebuilt in `show` from the story flags, the
+  item counts and the tables below.
+  - *Page 3's marks* (`FUN_002a5708`, every cursor move through the list callback `FUN_002a5450`): the entries that start in the
+    ten rows get a tag on their first row; the entry whose first line is on row 0 is marked seen first (`FUN_002b95d8`).
+    `marks::story_mark_rows`.
+  - *Page 2's rows* (`FUN_002a39b8`): per category the second child shows the aggregate (any entry new: 0x8b, all of them seen:
+    0x8c) and the first the completion mark 0x8a. Characters: `FUN_002af5e0(0, world)`, links `(1, -1)`.
+  - *Page 0's cells* (`FUN_002a2248`): an open world's second child shows `FUN_002b9658` / `FUN_002b9798` (any category new /
+    all seen; world 0xf takes every world); the first child's 0x9a (`FUN_002baf08`: every category complete) needs the quest,
+    minigame and limit lists the app has no data for: GAP.
+- **Characters (6) and Character Links (0xb)** (one builder `FUN_002ae3e8`, handler `FUN_002ae790`; page 6 is category 0, 0xb
+  category 7; page 0x20, which shares the builder and is reached from page 0xc, is not ported). The faces are the sub-records (8 bytes: character u16, x, y i16, +6 drawn when not 0)
+  of the groups of `jiminy.bar` entry 5 (0xc-byte headers: +0 flag, +2 off flag, +4 family = the journal world or 0x10 for the
+  links, +5 count, +6 kind: 0 base, 1 flag, 2 item count, +8 offset), `FUN_002af398`: the base group when it is on
+  (`FUN_002a2018`: kind 2 reads `FUN_001a1cc8(item) > 0`, else the story flag, and not the off flag), then every group of the
+  family that is on, in file order. A face is a frame object (group from 0x382f30 by the character record's style byte +2: 0xa..0xf,
+  0x10..0x15 for the links), its picture (a child in sequence 0 of `jmemo.2ld`: groups 1 then 2, links 4 then 5, at
+  0x382f20 / 0x382f24 / +6; the texture is picture `+1` of `jmface_<name>.2ld`, `<name>` from the pointer table 0x36d3f8 by
+  family: tt hb bb he al mu po lk lm dc wi nm ca tr eh, "", ex, heart, no) and a tag child. Entry 3 ("char", 0x24-byte records): +1 picture, +2 style,
+  +4 bit, +6 name message, +0x10 flags (0x400: the world's name is the message's variable, `FUN_00191a30`). The pointer is object
+  0x7571 group 0x22 moved three units a frame while a direction is held inside the bounds of group 0x52 (its anchor to its x /
+  y: (60, 80) to (490, 370); `FUN_002aeea8`, digital branch; left beats right, up beats down), first at the middle of the bounds
+  or on the face the page was left on (`FUN_002aebb8`). The face under it is the first whose centre is within half the frame
+  group's +0x20 (32) on both axes (`FUN_002af180`, inclusive); its name goes on the plate (group 0x53, font 3, centred, the
+  group's colour) and the hover frame (0x16, 0x1a on the links, a child of the face's picture) appears. The tag of a face:
+  0x18 / 0x19 (links 0x1b / 0x1c) for a character with a new bit. Cancel goes back to page 2 (row kept), Start closes; a confirm
+  opens the character's own page 0xf (`FUN_002aa358`, with its list pages 0xe / 0x10): **not ported, refused with a log line**,
+  so a character's seen bit (`FUN_002b73b8`, set there) never gets set in the app. Help line 0x48d5 (page 6), 0x48d6.
+  Run (the state of an area that has Sora, Donald, Goofy and the friends): `local\x\state-c.json`-like
+  `{"story_flags": [..., 2197, 2201, 5161]}`, `KH2_KEYS=7:Enter,8:Down,8.2:Down,8.4:Down,8.6:Down,9.2:J,10.5:J` (page 6),
+  `KH2_JOURNAL_HOLD=11.5:Down:0.6` holds a direction for the pointer (the scripted keys are released every frame while the
+  window has no focus), links: five Downs on page 2, then J. Log: `journal: page 0x6 (FUN_002ae3e8): family 0x0, 6 faces ...`,
+  `journal: pointer [275, 303] -> face Some(2)`.
+- **Treasures (7) and Maps (8)** (one builder `FUN_002afca0`; objects `FUN_002b0e78`; redraw `FUN_002b0678`, `FUN_002b09e8`,
+  `FUN_002b0cc8`; handler `FUN_002afe98`; cursor `FUN_002b1890`; pages 0x19 / 0x1a, the same builder reached from page 0xc [inferred: Roxas's], are not ported). The rows of the table `trsr`
+  (`03system.bin`, `DAT_01c95590`, 0xc-byte rows, iterated by `FUN_001a68d0`): treasures (`FUN_002b00e0`) are the chests (type 0)
+  whose flag (+8) is neither 0 nor 0x800 and is set (or the all-worlds flag 0x4837 `FUN_002783f8`); maps (`FUN_002b0228`) are
+  the rows whose item is of type 0x16, owned (`FUN_001a1cc8`) or listed by the all-worlds flag. An entry: the journal world
+  index of the row's game world (`FUN_00277c88`), found (a treasure: the chest's bit `FUN_001a6a90` at `DAT_0033fdcc`; a map: owned),
+  the row's ordinal and item. Sorted by world then ordinal (`FUN_002b0358`); a section per world of ceil(n / 8) rows, an open
+  world without entries keeps one (empty) row, treasures leave out world 8 (`FUN_002b1650`). Page objects: layers 0x3b and 0x43,
+  nine rows of eight cells (group pitch 28 x 28 from 0x48; found / not found 0x48 / 0x47, maps 0x3e / 0x3d, blank 2), a label per
+  row (font 3, group 0x46, shown where a section starts; the world's name, or one question mark per glyph while the world's cell
+  does not exist `FUN_0029bb48`: glyph 41, the sprintf of `FUN_001918a0` turns the ASCII `?` into it) with "There's nothing yet!"
+  (0x4a0f / 0x4a12) at the label's offset for an empty section and the new tag 0x3f / 0x40, the info text under the cursor
+  (`FUN_002b0cc8`: found: the item's name, with its second icon on page 7 (`FUN_001a1ee0`: control 9, item +0x17); not found:
+  question marks; group 0x7e, centred, offset = the layer group's x / y), the total `found/listed` (only with the all-worlds
+  flag; label 0x4a11 / 0x4a13 group 0x3c, count group 0x7f), the scroll bar (parent 0x43) and the cursor frame 0x41 (0x42 on
+  an empty row) with the list hand (0x21, `FUN_00277158`) on it. The page opens scrolled to the journal world's section
+  (`FUN_002b1e18`). Cursor (`FUN_002b1890`, `lists::navigate`, tested): Down / Up step a row and scroll at the view's edge, a new
+  press wraps at the ends; L1 / R1 move a view (to the end, then to the row's last cell, then wrap); Left / Right wrap inside
+  the row; the column is cut to the new row's cells. Each move marks the world under the cursor seen (`FUN_002b0df8` ->
+  `FUN_002b8a98` / `FUN_002b8e38`). Help 0x48f4 / 0x48f5. **The app has no opened-chest data, so every listed chest is "not
+  found"** and a world's treasure completion mark needs a world without chests. Run: `local\x\state-t.json`-like flags of the
+  chests (`2256 2210 2286` for Twilight Town), `KH2_KEYS=...,10:Down,10.2:Down,10.4:Down,11:J` (treasures), four Downs
+  (maps; the all-worlds flag 18487 lists unowned maps). Log: `journal: page 7 (FUN_002afca0): 164 entries (164 new), 0 found,
+  24 rows, cursor ..., section rows [...]`, `journal: page 7 cursor Some(Cursor { top: 9, at: 1 }) after Right`.
+- **Album (4)** (`FUN_002a5a68`, handler `FUN_002a6010`, helpers `FUN_002a5ef0`, `FUN_002a6e48`, `FUN_002a6e78`). Entry 2 ("albu",
+  0xc bytes): +0 world, +1 / +2 two ASCII digits, +6 flag, +8 title, +0xa caption (messages of `jm.bar`). The list: the
+  records of the world whose flag is set (or all of them with the all-worlds flag: those show question marks), eight rows from
+  layer 0x58 (pitch 26), font 3, group 2's colour, a tag child (0x5a new / 0x5b seen), or one row "There's nothing yet!"
+  (0x32dd). The row under the cursor counts as seen. Up / Down wrap (the list widget), cancel goes to page 2 (row kept), a confirm
+  opens page 5; page 4's own first row is the one page 5 kept (`FUN_00277de8(4)`), else 0. Help 0x48d8.
+  - *Picture page 5* (`FUN_002a62d0`, `FUN_002a6850`, `FUN_002a6c80`, `FUN_002a6bd8`, `FUN_002a6ad0`): layer 0x54, the picture
+    (a sequence-1 object, groups 1 then 2, at the layer group's x / y (160, -113)) from `jm_photo/<world code><digits>.bin` (a BAR
+    of one image), the title (text object group 0x56) and the caption (list row 0, group 0x55). L1 / R1 go to the next / previous
+    existing picture (`FUN_002a6850`, wrapping), cancel goes back to page 4 with the row kept (`FUN_00277dc8`), help 0x48d9.
+- **Gaps (WP-MN12).** The characters' own page 0xf and its list pages (`FUN_002aa358`, `FUN_002ab7d8`, `FUN_002a98f0`; confirm on a
+  face is refused); the album's and the characters' seen bits of the entries only those pages mark; the minigames and quests
+  pages (9, 10: `FUN_002b5e50`, `FUN_002b4b18`) and Roxas's pages 0xc, 0x19 .. 0x20; page 0's completion mark 0x9a and the quest /
+  minigame / limit aggregates; opened chests (treasures never show as found); the wipe, sounds and the `FUN_002779f8(0, 2)` header
+  hide the handlers do when a direction is pressed; the stick-driven pointer (`FUN_002aeea8` analog branch: `stick * 6 + 0.5`);
+  the held-pad auto-repeat of the cursor moves (the port takes one step per press, wraps on every press).
+  Text colour of page 2's rows (see the rule above) was left at the WP-MN10 reading.
+- **Decompile index (MN12).** `FUN_00299878`, `FUN_00299bf0`, `FUN_0029bdd0`, `FUN_0029bfa0`, `FUN_0029be88`, `FUN_0029c0b0`,
+  `FUN_0029c130`, `FUN_0029c208`, `FUN_0029c2d8`, `FUN_0029c408`, `FUN_0029c440`, `FUN_0029c490`, `FUN_0029c568`, `FUN_0029c5b0`,
+  `FUN_0029c880`, `FUN_0029c8f0`, `FUN_0029cae8`, `FUN_00299c10`, `FUN_00277e58`, `FUN_00298d98`, `FUN_00298d58`, `FUN_00298e08`,
+  `FUN_00296fb8`, `FUN_002a4c38`, `FUN_002a5450`, `FUN_002a5708`, `FUN_002a5060`, `FUN_002b7060`, `FUN_002b70a8`, `FUN_002b70e0`,
+  `FUN_002b7100`, `FUN_002b7160`, `FUN_002b7208`, `FUN_002b72c0`, `FUN_002b73b8`, `FUN_002b7408`, `FUN_002b74b8`, `FUN_002b7590`,
+  `FUN_002b7668`, `FUN_002b76e8`, `FUN_002b7818`, `FUN_002b7928`, `FUN_002b79d8`, `FUN_002b7af8`, `FUN_002b7c50`, `FUN_002b7e28`,
+  `FUN_002b7f58`, `FUN_002b8048`, `FUN_002b8390`, `FUN_002b87b8`, `FUN_002b88b0`, `FUN_002b8990`, `FUN_002b8a98`, `FUN_002b8c58`,
+  `FUN_002b8d38`, `FUN_002b8e38`, `FUN_002b8fd0`, `FUN_002b9058`, `FUN_002b9198`, `FUN_002b92b0`, `FUN_002b9360`, `FUN_002b9480`,
+  `FUN_002b95d8`, `FUN_002b9658`, `FUN_002b9798`, `FUN_002b99d0`, `FUN_002b9ab0`, `FUN_002b9b28`, `FUN_002b9bf0`, `FUN_002b9ce8`,
+  `FUN_002b9e30`, `FUN_002b9f68`, `FUN_002baca8`, `FUN_002ba080`, `FUN_002ba6d8`, `FUN_002ba898`, `FUN_002bad98`, `FUN_002baf08`,
+  `FUN_002a1c30`, `FUN_002a1f58`, `FUN_002a1f78`, `FUN_002a1ff8`, `FUN_002a2018`, `FUN_002a2090`, `FUN_002a39b8`, `FUN_002af5e0`,
+  `FUN_002ae3e8`, `FUN_002ae790`, `FUN_002ae230`, `FUN_002ae2a0`, `FUN_002af180`, `FUN_002af2b0`, `FUN_002af398`, `FUN_002af688`,
+  `FUN_002af6c0`, `FUN_002af730`, `FUN_002af7a0`, `FUN_002af800`, `FUN_002aebb8`, `FUN_002aecf0`, `FUN_002aee60`, `FUN_002aeea8`,
+  `FUN_002afa00`, `FUN_002aa358`, `FUN_002a19f8`, `FUN_002a18e8`, `FUN_002a19c8`, `FUN_002a1858`, `FUN_00278658`, `FUN_00277d60`,
+  `FUN_0029d1d0`, `FUN_0029d820`, `FUN_002afca0`, `FUN_002afe98`, `FUN_002b0228`, `FUN_002b00e0`, `FUN_002b0358`, `FUN_002b0e78`,
+  `FUN_002b1e18`, `FUN_002b0df8`, `FUN_002b0c98`, `FUN_002b0678`, `FUN_002b09e8`, `FUN_002b0cc8`, `FUN_002b1c30`, `FUN_002b1ca0`,
+  `FUN_002b1d78`, `FUN_002b1398`, `FUN_002b1890`, `FUN_002b16e0`, `FUN_002b16a0`, `FUN_002b1650`, `FUN_002b1660`, `FUN_002b1680`,
+  `FUN_001a68d0`, `FUN_001a66e8`, `FUN_001a6a90`, `FUN_001a1cc8`, `FUN_001a1ee0`, `FUN_0029bb48`, `FUN_00191660`, `FUN_00191020`,
+  `FUN_00190f68`, `FUN_001918a0`, `FUN_00277158`, `FUN_002771c0`, `FUN_0029a9c0`, `FUN_002783f8`, `FUN_002a3120`, `FUN_002a3008`,
+  `FUN_002a5a68`, `FUN_002a6010`, `FUN_002a6578`, `FUN_002a5ef0`, `FUN_002a5fd8`, `FUN_002a6e48`, `FUN_002a6e78`, `FUN_002a59d8`,
+  `FUN_002a62d0`, `FUN_002a6850`, `FUN_002a6c80`, `FUN_002a6b80`, `FUN_002a6bd8`, `FUN_002a6a38`, `FUN_002a6ad0`, `FUN_00139048`,
+  `FUN_00138fc8`, `FUN_00139860`, `FUN_00139888`, `FUN_00237518`, `FUN_00237618`, `FUN_00237638`, `FUN_00237658`, `FUN_00237678`,
+  `FUN_00237698`; data 0x381fd0, 0x381fe8, 0x382aec..0x382af0, 0x382b80, 0x382ba8..0x382bac, 0x382bdc..0x382be0, 0x382ef4..0x382f64,
+  0x382f50, 0x3828b8, 0x36d3f8..0x36d460, 0x33fdcc.
+- **Tests (WP-MN12).** `menu_journal::marks::tests::*` (tags, aggregates, the mark rows, the thumb), `chars::tests::*` (groups of a
+  family, items, pointer, hit test, tags), `lists::tests::*` (rows and sections, the start, the cursor moves, pages, the view),
+  `treasure_page::tests::*`, `album_page::tests::*`, `menu_journal::tests::{story_records_exist_with_their_flag_and_complete_with_the_last,
+  the_disc_face_page_data, the_disc_list_page_data, the_disc_category_page_tables}`.
 
 ## 21. The pause-menu record table and the Struggle's result menu (WP-STRM)
 

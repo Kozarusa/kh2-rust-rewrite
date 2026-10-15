@@ -23,13 +23,23 @@
 //!   Roxas's one-row page with the same layer objects in other groups.
 //!
 //! What the port draws: pages 0, 1 and 2 (docs/menus.md 20.7), and since WP-MN11 (20.8) the help line, the list
-//! cursor, the L1 / R1 hints and switches between pages 0 and 2, and page 3 (the story). The other category pages
-//! (4..0x20) are not ported: a confirm on their rows, an L1 / R1 to page 0xc, or a confirm on a page 0 cell of id
-//! above 0xe, is refused with a log line.
+//! cursor, the L1 / R1 hints and switches between pages 0 and 2, and page 3 (the story). WP-MN12 (20.9) added the scroll bar
+//! object, the NEW tags (`marks.rs`), the Characters and Character Links pages (6, 0xb: `chars.rs`), Treasures and Maps (7,
+//! 8: `lists.rs`, `treasure_page.rs`) and the Album (4, 5: `album_page.rs`). The other pages (9, 10, 0xc and the Roxas pages) and
+//! a character's own page (0xf) are not ported: a confirm on their rows, an L1 / R1 to page 0xc, or a confirm on a page 0
+//! cell of id above 0xe, is refused with a log line.
+
+mod album_page;
+mod chars;
+mod lists;
+mod marks;
+mod treasure_page;
 
 use bevy::prelude::*;
 use kh2_image::layd::{self, Layd};
 
+use self::chars::{CharRec, Face, Group as FaceGroup};
+use self::marks::{Bar, Cat, Marks, Tag};
 use crate::assets::{CurrentArea, Disc};
 use crate::audio::PlaySe;
 use crate::menu::{menu_sound, Menu, Phase};
@@ -83,6 +93,23 @@ mod addr {
     pub const PAD_ICONS: u32 = 0x0038_0ab0;
     /// Page 2's help lines by category (u16 x 8, `FUN_002a4a68`).
     pub const HELP: u32 = 0x0038_2b98;
+    /// The scroll bar's part groups (u16 x 4, three equal sets; `FUN_00299878` via `FUN_00277e58`).
+    pub const BAR: u32 = 0x0038_1fd0;
+    /// Page 2's row tags (u32: new, new and seen; `FUN_002a39b8`), page 3's line tags (`FUN_002a5708`) and page 0's
+    /// cell tags (`FUN_002a2248`: any new, all seen).
+    pub const ROW_TAG: u32 = 0x0038_2b80;
+    pub const LINE_TAG: u32 = 0x0038_2ba8;
+    pub const CELL_TAG: u32 = 0x0038_2aec;
+    /// The face page (`FUN_002ae3e8`): the hover groups (u32: page 6, other pages), the help messages (u32), the new / seen
+    /// tag groups (u32 x 4: family 0 then links), the picture groups (u16 pairs at +0 / +4 with a 6-byte stride per
+    /// family), the frame groups by style (u16 x 12) and the face file names by family (pointers).
+    pub const FACE_HOVER: u32 = 0x0038_2efc;
+    pub const FACE_HELP: u32 = 0x0038_2f04;
+    pub const FACE_TAG: u32 = 0x0038_2f0c;
+    pub const FACE_PIC: u32 = 0x0038_2f20;
+    pub const FACE_STYLE: u32 = 0x0038_2f30;
+    pub const FACE_NAMES: u32 = 0x0036_d3f8;
+    pub const LIST_TEXT: u32 = 0x0038_1fe8;
 }
 
 /// The literal messages of `FUN_002a3d08` (the labels beside the two story texts).
@@ -93,6 +120,14 @@ mod msg {
     pub const HELP_ROXAS: u16 = 0x493f;
     /// Page 3's help line (`FUN_002a54a8`).
     pub const HELP_STORY: u16 = 0x48d7;
+    /// Pages 7 and 8's help lines (`FUN_002b0c98`), "There's nothing yet!" for a world's empty section (`FUN_002b0678`) and
+    /// the total's label (`FUN_002b0e78`).
+    pub const HELP_TREASURE: u16 = 0x48f4;
+    pub const HELP_MAP: u16 = 0x48f5;
+    pub const NOTHING_TREASURE: u16 = 0x4a0f;
+    pub const NOTHING_MAP: u16 = 0x4a12;
+    pub const TOTAL_TREASURE: u16 = 0x4a11;
+    pub const TOTAL_MAP: u16 = 0x4a13;
 }
 
 /// The pad masks of L1 and R1 the hints show (`FUN_00277740`: `FUN_00255418(0x400)` before the left name,
@@ -120,6 +155,8 @@ const STORY_FONT: usize = 3;
 /// two holders 2 and 4 hang from the header object (`DAT_0036d0e8`), 3 from 2 and 5 from 4.
 const LAYERS_P2: [usize; 6] = [0x89, 0x93, 0x91, 3, 0x92, 3];
 const LAYERS_P1: [usize; 6] = [0x8d, 0x90, 0x94, 3, 0x95, 3];
+/// The completion mark of page 2's rows (`FUN_002a39b8`: the first child on 0x8a).
+const ROW_DONE: usize = 0x8a;
 /// Every list row and its two children play group 3 (both group sets of `FUN_00296b48` are four 3s).
 const ROW_GROUP: usize = 3;
 /// Page 2's rows (`FUN_002a3540` creates 8 list objects).
@@ -367,6 +404,76 @@ pub fn cells(worlds: &[World], test: &dyn Fn(u16) -> bool) -> Vec<(usize, u8)> {
         .collect()
 }
 
+/// The story records that exist now (`FUN_002b9198`: the world byte below 0xf and the flag +0xa set): their keys for the
+/// new bits.
+pub fn story_present(stor: &[u8], test: &dyn Fn(u16) -> bool) -> Vec<(Cat, usize)> {
+    records(stor, 0xc)
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| (r[0] as i8) < 0xf && test(u16::from_le_bytes([r[10], r[11]])))
+        .map(|(i, _)| (Cat::Story, i))
+        .collect()
+}
+
+/// The keys of every story record of `world` (the argument of `FUN_002b9360` / `FUN_002b9480` with the index -1).
+pub fn story_keys(stor: &[u8], world: Option<i8>) -> Vec<(Cat, usize)> {
+    records(stor, 0xc).iter().enumerate().filter(|(_, r)| world.is_none_or(|w| r[0] as i8 == w)).map(|(i, _)| (Cat::Story, i)).collect()
+}
+
+/// The new tag of a world's cell on page 0 (`FUN_002b9658` / `FUN_002b9798`): the categories' aggregates joined: `None`
+/// when nothing in the world is new, else whether everything new has been seen. World 0xf counts every world.
+fn world_aggregate(j: &Journal, world: i8, test: &dyn Fn(u16) -> bool, items: &dyn Fn(u16) -> i32) -> Option<bool> {
+    let all = world == 0xf;
+    let chars_of = |family: u8| face_keys(j, family, test, items);
+    let wi = |w: u8| j.world_index.get(usize::from(w)).copied().unwrap_or(-1);
+    let is_map = |i: u16| j.tables_lists.items.get(&i).is_some_and(|r| r.kind == treasure_page::MAP_KIND);
+    let parts = [
+        j.marks.aggregate(story_keys(&j.stor, if all { None } else { Some(world) })),
+        // `FUN_002af5e0(0, world)` and the links `FUN_002af5e0(1, -1)`; world 0xf takes every character (`FUN_002b7408(-1)`).
+        j.marks.aggregate(if all { (0..j.chars.len()).map(|c| (Cat::Char, c)).collect() } else { chars_of(world as u8) }),
+        j.marks.aggregate(chars_of(LINKS)),
+        j.marks.aggregate(album_page::keys(&j.album, if all { None } else { Some(world) })),
+        j.marks.aggregate(treasure_page::treasure_keys(&j.tables_lists.rows, &wi, if all { None } else { Some(world) })),
+        j.marks.aggregate(treasure_page::map_keys(&j.tables_lists.rows, &wi, &is_map, if all { None } else { Some(world) })),
+    ];
+    parts.iter().any(Option::is_some).then(|| parts.iter().all(|p| p.unwrap_or(true)))
+}
+
+/// What page 2's row of category `cat` shows (`FUN_002a39b8`): the new tag state (`None`: no new entry, else whether all
+/// have been seen) and whether the category is complete (the first child's 0x8a).
+fn row_marks(j: &Journal, cat: usize, world: i8, test: &dyn Fn(u16) -> bool, items: &dyn Fn(u16) -> i32) -> (Option<bool>, bool) {
+    match cat {
+        0 => (j.marks.aggregate(face_keys(j, world as u8, test, items)), chars::family_complete(&j.groups, world as u8, test, items)),
+        7 => (j.marks.aggregate(face_keys(j, LINKS, test, items)), chars::family_complete(&j.groups, LINKS, test, items)),
+        2 => (j.marks.aggregate(album_page::keys(&j.album, Some(world))), album_page::complete(&j.album, world, test)),
+        3 => {
+            let wi = |w: u8| j.world_index.get(usize::from(w)).copied().unwrap_or(-1);
+            (j.marks.aggregate(treasure_page::treasure_keys(&j.tables_lists.rows, &wi, Some(world))), treasure_page::treasures_complete(&j.tables_lists.rows, &wi, world))
+        }
+        4 => {
+            let wi = |w: u8| j.world_index.get(usize::from(w)).copied().unwrap_or(-1);
+            let is_map = |i: u16| j.tables_lists.items.get(&i).is_some_and(|r| r.kind == treasure_page::MAP_KIND);
+            (j.marks.aggregate(treasure_page::map_keys(&j.tables_lists.rows, &wi, &is_map, Some(world))), treasure_page::maps_complete(&j.tables_lists.rows, &wi, &is_map, &|i| items(i) > 0, world))
+        }
+        1 => (j.marks.aggregate(story_keys(&j.stor, Some(world))), story_complete(&j.stor, world, test)),
+        _ => (None, false),
+    }
+}
+
+/// The family of the Character Links page (`FUN_002af398(1, -1)`).
+const LINKS: u8 = 0x10;
+
+/// The keys of the characters a family shows now (`FUN_002af5e0` walks the list `FUN_002af398` builds).
+fn face_keys(j: &Journal, family: u8, test: &dyn Fn(u16) -> bool, items: &dyn Fn(u16) -> i32) -> Vec<(Cat, usize)> {
+    chars::faces(&j.diag, &j.groups, family, test, items).iter().map(|f| (Cat::Char, f.ch)).collect()
+}
+
+/// The story category is complete for `world` when the last of its records exists (`FUN_002baca8`: the bit of the world's
+/// last record in the completion buffer; a world without records counts as complete).
+pub fn story_complete(stor: &[u8], world: i8, test: &dyn Fn(u16) -> bool) -> bool {
+    records(stor, 0xc).iter().rfind(|r| r[0] as i8 == world).is_none_or(|r| test(u16::from_le_bytes([r[10], r[11]])))
+}
+
 /// The first cursor of page 0 (`FUN_002a2f38`): the index of the world `want` (0xf when the byte is negative) among
 /// the shown records with an id below 0x14; `None` when it is not shown [inferred: the list then starts at 0].
 ///
@@ -419,6 +526,10 @@ pub enum Key {
     /// `FUN_002a27d8` / `FUN_002a3da0`) [inferred: -9 is L1 and -8 R1, the buttons the hints show on their side].
     L1,
     R1,
+    /// L2 / R2: the picture page's own pair (`FUN_002a62d0`: its help line shows the L2 and R2 icons, masks 0x100 / 0x200 of the
+    /// table 0x380ab0; list results -11 / -10, `FUN_002a6578`) [inferred: the keyboard's `[` / `]` and Z / C].
+    L2,
+    R2,
 }
 
 /// The outcome of a key on page 0.
@@ -436,6 +547,15 @@ pub enum Act {
     Category { cat: usize, page: u16 },
     /// An L1 / R1 page switch (`FUN_00277928`): the page the hint names (`None`: the name is not in the table).
     Switch(Option<u16>),
+    /// A confirm on the face page (6, 0xb): the face under the pointer (`FUN_002ae790`: sound 2 and page 0xf, or sound 4 with
+    /// nothing under it).
+    Face(Option<usize>),
+    /// A cursor press on the Treasures / Maps pages (`FUN_002b1890`).
+    Navigate(lists::Nav),
+    /// A confirm on an Album row: the picture viewer, page 5 (`FUN_002a6010`).
+    Photo(usize),
+    /// L1 / R1 on the picture page: the previous (-1) or next (+1) picture (`FUN_002a6850`).
+    Browse(i32),
 }
 
 /// The L1 / R1 switch of pages 0 and 2.
@@ -460,7 +580,59 @@ pub fn page2(key: Key, row: usize, cats: &[usize]) -> Act {
         }
         Key::Confirm => cats.get(row).map_or(Act::None, |&cat| Act::Category { cat, page: category_page(cat) }),
         // L1 / R1: `switch` (it needs the hint table).
-        Key::L1 | Key::R1 => Act::None,
+        Key::L1 | Key::R1 | Key::L2 | Key::R2 => Act::None,
+    }
+}
+
+/// The face pages' state machine (`FUN_002ae790`, the button part): a cancel (-2: the triangle button, bit 8) goes back to
+/// page 2, Start (bit 0x100) closes the scene, a confirm (bit 4) acts on the face under the pointer. The pointer itself
+/// moves with the held direction (`chars::step_pointer`).
+pub fn page_faces(key: Key, sel: Option<usize>) -> Act {
+    match key {
+        Key::Start => Act::Close,
+        Key::Cancel => Act::Back,
+        Key::Confirm => Act::Face(sel),
+        _ => Act::None,
+    }
+}
+
+/// The Album page's state machine (`FUN_002a6010`): the list widget's wrapping cursor, a confirm opens the picture (page 5),
+/// -2 goes back to page 2, -4 closes.
+pub fn page_album(key: Key, row: usize, n: usize) -> Act {
+    match key {
+        Key::Start => Act::Close,
+        Key::Cancel => Act::Back,
+        Key::Move(_, dy) if dy != 0 && n > 1 => Act::Cursor((row as i32 + dy.signum()).rem_euclid(n as i32) as usize),
+        Key::Confirm if n > 0 => Act::Photo(row),
+        _ => Act::None,
+    }
+}
+
+/// The picture page's state machine (`FUN_002a6578`): L1 / R1 (-11 / -10) change the picture, -2 goes back to the list, -4 closes.
+pub fn page_photo(key: Key) -> Act {
+    match key {
+        Key::Start => Act::Close,
+        Key::Cancel => Act::Back,
+        Key::L2 => Act::Browse(-1),
+        Key::R2 => Act::Browse(1),
+        _ => Act::None,
+    }
+}
+
+/// The Treasures / Maps pages' state machine (`FUN_002afe98`): the four directions and L1 / R1 move the cursor, a cancel
+/// goes back to page 2, Start closes the scene; a confirm does nothing.
+pub fn page_lists(key: Key) -> Act {
+    use lists::Nav;
+    match key {
+        Key::Start => Act::Close,
+        Key::Cancel => Act::Back,
+        Key::Move(_, dy) if dy < 0 => Act::Navigate(Nav::Up),
+        Key::Move(_, dy) if dy > 0 => Act::Navigate(Nav::Down),
+        Key::Move(dx, _) if dx < 0 => Act::Navigate(Nav::Left),
+        Key::Move(dx, _) if dx > 0 => Act::Navigate(Nav::Right),
+        Key::L1 => Act::Navigate(Nav::PageUp),
+        Key::R1 => Act::Navigate(Nav::PageDown),
+        _ => Act::None,
     }
 }
 
@@ -484,7 +656,7 @@ pub fn page0(key: Key, cursor: usize, shown: &[(usize, u8)], worlds: &[World]) -
             Some(w) => Act::Open { page: if w.id > 0xe { 0xc } else { 2 }, world: w.id },
             None => Act::None,
         },
-        Key::L1 | Key::R1 => Act::None,
+        Key::L1 | Key::R1 | Key::L2 | Key::R2 => Act::None,
     }
 }
 
@@ -543,6 +715,33 @@ pub struct PageTables {
     /// The icons of L1 and R1 (`FUN_00255418`).
     pub icon_l1: u8,
     pub icon_r1: u8,
+    /// The scroll bar's four part groups, and the (new, new and seen) tag groups of page 2's rows, page 3's lines and
+    /// page 0's cells.
+    pub bar: [usize; 4],
+    pub row_tag: [usize; 2],
+    pub line_tag: [usize; 2],
+    pub cell_tag: [usize; 2],
+    pub face: FaceTables,
+    /// The text objects' groups of the list pages (u16 at 0x381fe8: the info text's, then two more; the total's count is
+    /// the third, `FUN_00278418(2)`).
+    pub list_text: [usize; 3],
+}
+
+/// The executable's tables of the Characters / Character Links pages.
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
+pub struct FaceTables {
+    /// The frame group by style (u16 x 12: styles 0..5 of family 0, then of the links).
+    pub style: [usize; 12],
+    /// The face picture's (first, following) group for family 0 and for the links.
+    pub pic: [[usize; 2]; 2],
+    /// The new / seen tag groups: family 0, then the links.
+    pub tag: [usize; 4],
+    /// The hover frame's group on page 6 and on the others.
+    pub hover: [usize; 2],
+    /// The help line's message on page 6 and on the others.
+    pub help: [u16; 2],
+    /// The face file name of each family (index 0..0x12; empty when the pointer is null).
+    pub names: Vec<String>,
 }
 
 pub fn read_page_tables(exe: &Exe) -> Option<PageTables> {
@@ -579,6 +778,19 @@ pub fn read_page_tables(exe: &Exe) -> Option<PageTables> {
         backdrop: back.map(usize::from),
         icon_l1: pad_icon(&pairs, PAD_L1),
         icon_r1: pad_icon(&pairs, PAD_R1),
+        bar: [0, 1, 2, 3].map(|k| exe.u16(addr::BAR + 2 * k).map_or(0, usize::from)),
+        row_tag: [0, 1].map(|k| u32_at(exe, addr::ROW_TAG + 4 * k).map_or(0, |v| v as usize)),
+        line_tag: [0, 1].map(|k| u32_at(exe, addr::LINE_TAG + 4 * k).map_or(0, |v| v as usize)),
+        cell_tag: [0, 1].map(|k| u32_at(exe, addr::CELL_TAG + 4 * k).map_or(0, |v| v as usize)),
+        list_text: [0, 1, 2].map(|k| exe.u16(addr::LIST_TEXT + 2 * k).map_or(0, usize::from)),
+        face: FaceTables {
+            style: std::array::from_fn(|k| exe.u16(addr::FACE_STYLE + 2 * k as u32).map_or(0, usize::from)),
+            pic: [0u32, 6].map(|o| [exe.u16(addr::FACE_PIC + o).map_or(0, usize::from), exe.u16(addr::FACE_PIC + 4 + o).map_or(0, usize::from)]),
+            tag: std::array::from_fn(|k| u32_at(exe, addr::FACE_TAG + 4 * k as u32).map_or(0, |v| v as usize)),
+            hover: [0, 1].map(|k| u32_at(exe, addr::FACE_HOVER + 4 * k).map_or(0, |v| v as usize)),
+            help: [0, 1].map(|k| u32_at(exe, addr::FACE_HELP + 4 * k).map_or(0, |v| v as u16)),
+            names: (0..19).map(|k| name_at(exe, addr::FACE_NAMES + 4 * k).unwrap_or_default()).collect(),
+        },
     })
 }
 
@@ -609,6 +821,80 @@ struct Nodes {
     story_lay: Vec<usize>,
     story_row: usize,
     story_marks: Vec<usize>,
+    /// The scroll bar's four parts (`FUN_00299878`), hung from the layer that holds the track group.
+    scroll: [usize; 4],
+    /// The Characters / Character Links pages' own objects.
+    chars: CharNodes,
+    /// The Treasures / Maps pages' objects.
+    lists: ListNodes,
+    /// The Album page's objects.
+    album: AlbumNodes,
+}
+
+/// The objects of the Album page (`FUN_002a5a68`): the layer (group 0x58), eight rows and a new tag under each.
+#[derive(Default, Clone, Copy)]
+struct AlbumNodes {
+    layer: usize,
+    rows: [usize; album_page::ROWS],
+    tags: [usize; album_page::ROWS],
+    /// The picture page (5, `FUN_002a62d0`): its layer (group 0x54), the title (0x56), the caption (a list row of group 0x55)
+    /// and the picture (sequence 1, a child of the layer).
+    photo: [usize; 4],
+}
+
+impl AlbumNodes {
+    fn all(&self) -> Vec<usize> {
+        let mut v = vec![self.layer];
+        v.extend(self.rows);
+        v.extend(self.tags);
+        v.extend(self.photo);
+        v
+    }
+}
+
+/// The objects of pages 7 and 8 (`FUN_002b0e78`): the two layers (0x3b and 0x43), the nine rows of eight cells, a label per
+/// row (with its "nothing yet" text and its new tag), the total, the info text and the cursor frame.
+#[derive(Default, Clone)]
+struct ListNodes {
+    layers: [usize; 2],
+    cells: Vec<usize>,
+    labels: Vec<[usize; 3]>,
+    total: [usize; 2],
+    info: usize,
+    frame: usize,
+}
+
+impl ListNodes {
+    fn all(&self) -> Vec<usize> {
+        let mut v = self.layers.to_vec();
+        v.extend(&self.cells);
+        v.extend(self.labels.iter().flatten());
+        v.extend(self.total);
+        v.extend([self.info, self.frame]);
+        v
+    }
+    fn clone_ids(&self) -> ListNodes {
+        self.clone()
+    }
+}
+
+/// The objects of pages 6 and 0xb (`FUN_002ae3e8`): the page's layer (group 0x51), the name plate (0x53), the pointer
+/// (0x22), the hover frame, and a (frame, picture, tag) triple per face, made as the pages need them.
+#[derive(Default)]
+struct CharNodes {
+    layer: usize,
+    name: usize,
+    pointer: usize,
+    hover: usize,
+    faces: Vec<[usize; 3]>,
+}
+
+impl CharNodes {
+    fn all(&self) -> Vec<usize> {
+        let mut v = vec![self.layer, self.name, self.pointer, self.hover];
+        v.extend(self.faces.iter().flatten());
+        v
+    }
 }
 
 impl Nodes {
@@ -616,6 +902,10 @@ impl Nodes {
         let mut v = vec![self.tab, self.tab_follow, self.backdrop, self.story_row];
         v.extend(&self.story_lay);
         v.extend(&self.story_marks);
+        v.extend(&self.scroll);
+        v.extend(self.chars.all());
+        v.extend(self.lists.all());
+        v.extend(self.album.all());
         v
     }
     fn chrome(&self) -> Vec<usize> {
@@ -669,6 +959,20 @@ pub struct Journal {
     /// `jm_top_<name>.2ld` pictures already turned into textures, by name.
     top_tex: std::collections::HashMap<String, Vec<usize>>,
     nodes: Nodes,
+    /// The journal's new / seen bits (`marks.rs`).
+    marks: Marks,
+    /// `jiminy.bar` entries 5 ("diag", the face groups) and 3 ("char", the characters), parsed, and the face files already
+    /// turned into textures by name.
+    diag: Vec<u8>,
+    groups: Vec<FaceGroup>,
+    chars: Vec<CharRec>,
+    face_tex: std::collections::HashMap<String, Vec<Option<usize>>>,
+    /// The `trsr` and `item` rows of `03system.bin` (pages 7 and 8) and a cursor press the scene has not handled yet.
+    tables_lists: treasure_page::Tables,
+    nav: Option<lists::Nav>,
+    /// `jiminy.bar` entry 2 ("albu"), parsed, and the picture files already turned into textures by name.
+    album: Vec<album_page::Rec>,
+    photo_tex: std::collections::HashMap<String, Option<usize>>,
     /// The mode a camp row asked for (taken by `tick`).
     request: Option<i32>,
     /// A page switch asked for by `input` (page, world byte), built by `tick`.
@@ -698,6 +1002,24 @@ struct Open {
     /// Page 3's extra line gap (`FUN_001a8cc0`), its text size.
     gap: u8,
     size: f32,
+    /// Page 3: each entry's record (index in `jiminy.bar` entry 1) and line count, and the scroll bar.
+    entries: Vec<(usize, usize)>,
+    bar: Option<Bar>,
+    /// Pages 6 and 0xb: the faces, the one under the pointer (kept for the way back), the pointer and its bounds.
+    faces: Vec<Face>,
+    sel: Option<usize>,
+    pointer: [i32; 2],
+    bounds: chars::Bounds,
+    /// The half-width of a face's reach (`FUN_002af180`).
+    half: i32,
+    /// Pages 7 and 8: the layout and the cursor; the scroll bar's track group.
+    lists: Option<(lists::Layout, lists::Cursor)>,
+    bar_group: usize,
+    /// Page 4: the album record behind each row, and the row the picture page (5) kept for the way back.
+    album_rows: Vec<usize>,
+    back_album: usize,
+    /// Whether each Album row's picture exists (its flag is set; the rows of unset flags show only with the all-worlds flag).
+    album_exist: Vec<bool>,
 }
 
 pub struct JournalPlugin;
@@ -724,6 +1046,11 @@ fn load(j: &mut Journal, disc: &Disc, scene: &mut MenuScene, images: &mut Assets
     };
     let entry = |k: usize| entries.get(k).map(|e| e.data.to_vec()).unwrap_or_default();
     (j.stor, j.mini, j.ques) = (entry(1), entry(7), entry(8));
+    j.diag = entry(5);
+    j.groups = chars::parse_groups(&j.diag);
+    j.chars = chars::parse_chars(&entry(3));
+    j.tables_lists = treasure_page::load_tables(disc);
+    j.album = album_page::parse(&entry(2));
     j.msgs = disc.read("msg/us/jm.bar").and_then(|b| kh2_image::text::Messages::from_bar(&b));
     let Some(exe) = disc.read_root("SLUS_210.05").and_then(Exe::load) else { return };
     let (Some(index), Some(l0), Some(l1), Some(h), Some(tables)) =
@@ -799,12 +1126,57 @@ fn load(j: &mut Journal, disc: &Disc, scene: &mut MenuScene, images: &mut Assets
     for _ in 0..STORY_LINES {
         nodes.story_marks.push(add(scene, list, tex, Some(nodes.story_lay[0])));
     }
+    // The Treasures / Maps pages (`FUN_002b0e78`): before the cursor and the hints, which draw over them.
+    {
+        let layers = [add(scene, list, tex, Some(header)), add(scene, list, tex, Some(header))];
+        let cells: Vec<usize> = (0..lists::VIEW_ROWS * lists::COLS).map(|_| add(scene, list, tex, Some(layers[0]))).collect();
+        let labels: Vec<[usize; 3]> = (0..lists::VIEW_ROWS)
+            .map(|_| {
+                let label = add(scene, list, tex, Some(layers[0]));
+                [label, add(scene, list, tex, Some(label)), add(scene, list, tex, Some(label))]
+            })
+            .collect();
+        let total_label = add(scene, list, tex, Some(layers[0]));
+        let total = [total_label, add(scene, list, tex, Some(total_label))];
+        let info = add(scene, list, tex, Some(layers[0]));
+        let frame = add(scene, list, tex, Some(layers[0]));
+        nodes.lists = ListNodes { layers, cells, labels, total, info, frame };
+        let layer = add(scene, list, tex, Some(header));
+        let rows: Vec<usize> = (0..album_page::ROWS).map(|_| add(scene, list, tex, Some(layer))).collect();
+        let tags: Vec<usize> = rows.iter().map(|&r| add(scene, list, tex, Some(r))).collect();
+        let p_layer = add(scene, list, tex, Some(header));
+        let p_title = add(scene, list, tex, Some(header));
+        let p_caption = add(scene, list, tex, Some(p_layer));
+        let p_pic = add(scene, j.seq_base + 1, tex, Some(p_layer));
+        nodes.album = AlbumNodes {
+            layer,
+            rows: rows.try_into().unwrap_or_default(),
+            tags: tags.try_into().unwrap_or_default(),
+            photo: [p_layer, p_title, p_caption, p_pic],
+        };
+    }
     // The help line (a child of the plate, `FUN_00278468`), the hints (roots), the cursor and its follower (moved
     // under the cursor row or cell when shown: those all have lower indices).
     nodes.help = add(scene, list, tex, Some(plate));
     nodes.hints = [add(scene, list, tex, None), add(scene, list, tex, None)];
     nodes.cursor = add(scene, list, tex, None);
     nodes.follow = add(scene, list, tex, None);
+    // The scroll bar's parts: children of page 3's second layer (`FUN_00299878(.., parent 0x62 layer)`).
+    for k in 0..4 {
+        nodes.scroll[k] = add(scene, list, tex, Some(nodes.story_lay[1]));
+    }
+    // The face pages (`FUN_002ae3e8`): layer and name plate under the header, the pointer and the hover frame free.
+    // The pool of faces (the most one page shows: the links' 36) goes before the pointer and the hover frame, which draw over
+    // the faces.
+    let (layer, name) = (add(scene, list, tex, Some(header)), add(scene, list, tex, Some(header)));
+    let seq_face = j.seq_base + SEQ_FACE;
+    let faces: Vec<[usize; 3]> = (0..FACE_POOL)
+        .map(|_| {
+            let frame = add(scene, list, tex, Some(layer));
+            [frame, add(scene, seq_face, tex, Some(frame)), add(scene, list, tex, Some(frame))]
+        })
+        .collect();
+    nodes.chars = CharNodes { layer, name, pointer: add(scene, list, tex, None), hover: add(scene, list, tex, None), faces };
     j.nodes = nodes;
     j.loaded = true;
     info!("journal: loaded jmemo.2ld, {} world pictures, {} world records", j.world_tex.len(), j.worlds.len());
@@ -860,10 +1232,14 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
         Some(Key::L1)
     } else if keys.just_pressed(KeyCode::KeyE) || keys.just_pressed(KeyCode::PageDown) {
         Some(Key::R1)
+    } else if keys.just_pressed(KeyCode::BracketLeft) || keys.just_pressed(KeyCode::KeyZ) {
+        Some(Key::L2)
+    } else if keys.just_pressed(KeyCode::BracketRight) || keys.just_pressed(KeyCode::KeyC) {
+        Some(Key::R2)
     } else {
         None
     };
-    for k in [KeyCode::KeyJ, KeyCode::Escape, KeyCode::Backspace, KeyCode::KeyK, KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::ArrowLeft, KeyCode::ArrowRight, KeyCode::ArrowUp, KeyCode::ArrowDown, KeyCode::KeyQ, KeyCode::KeyE, KeyCode::PageUp, KeyCode::PageDown] {
+    for k in [KeyCode::KeyJ, KeyCode::Escape, KeyCode::Backspace, KeyCode::KeyK, KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::ArrowLeft, KeyCode::ArrowRight, KeyCode::ArrowUp, KeyCode::ArrowDown, KeyCode::KeyQ, KeyCode::KeyE, KeyCode::PageUp, KeyCode::PageDown, KeyCode::BracketLeft, KeyCode::BracketRight, KeyCode::KeyZ, KeyCode::KeyC] {
         keys.clear_just_pressed(k);
     }
     let (Some(key), true, None) = (key, j.loaded, j.goto) else { return };
@@ -874,6 +1250,10 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
         (0, _) => page0(key, o.cursor, &o.shown, &j.worlds),
         (2, _) => page2(key, o.row, &o.cats),
         (3, _) => page3(key, o.top, o.count),
+        (6 | 0xb, _) => page_faces(key, o.sel),
+        (7 | 8, _) => page_lists(key),
+        (4, _) => page_album(key, o.row, o.album_rows.len()),
+        (5, _) => page_photo(key),
         _ => page1(key),
     };
     match act {
@@ -888,11 +1268,11 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
         }
         Act::Cursor(t) if page == 3 => {
             j.open.as_mut().unwrap().top = t;
-            story_text(&j, &mut scene);
+            story_view(&mut j, &mut scene);
             menu_sound::play(&mut se, menu_sound::CURSOR);
             info!("journal: page 3 first line {t}");
         }
-        Act::Cursor(r) => {
+        Act::Cursor(r) if page == 2 => {
             let o = j.open.as_mut().unwrap();
             o.row = r;
             info!("journal: page 2 row {r} (category {})", o.cats[r]);
@@ -915,6 +1295,52 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
             o.back_row = o.row;
             j.goto = Some((3, world_byte));
         }
+        Act::Navigate(nav) => j.nav = Some(nav),
+        Act::Photo(r) => {
+            menu_sound::play(&mut se, crate::menu_status::CONFIRM);
+            info!("journal: page 4 confirm on row {r} -> page 5, the picture (FUN_002a6010 -> FUN_002a62d0)");
+            j.open.as_mut().unwrap().row = r;
+            j.goto = Some((5, world_byte));
+        }
+        Act::Browse(dir) => {
+            let o = j.open.as_mut().unwrap();
+            let to = album_page::browse(&o.album_exist, o.row, dir);
+            if to != o.row {
+                o.row = to;
+                menu_sound::play(&mut se, menu_sound::CURSOR);
+                info!("journal: page 5 picture {to} (FUN_002a6850)");
+                j.goto = Some((5, world_byte));
+            }
+        }
+        Act::Back if page == 5 => {
+            menu_sound::play(&mut se, menu_sound::CANCEL);
+            info!("journal: page 5 cancel -> page 4 (FUN_002a6578 case -2)");
+            let o = j.open.as_mut().unwrap();
+            o.back_album = o.row;
+            j.goto = Some((4, world_byte));
+        }
+        Act::Cursor(r) if page == 4 => {
+            j.open.as_mut().unwrap().row = r;
+            place_cursor(&j, &mut scene);
+            album_page::seen_row(&mut j, &mut scene);
+            menu_sound::play(&mut se, menu_sound::CURSOR);
+            info!("journal: page 4 row {r}");
+        }
+        Act::Cursor(_) => {}
+        Act::Category { cat: 0 | 2 | 3 | 4 | 7, page: to @ (4 | 6 | 7 | 8 | 0xb) } => {
+            menu_sound::play(&mut se, crate::menu_status::CONFIRM);
+            info!("journal: page 2 row -> page {to}, the {} (FUN_002a3da0 -> FUN_002ae3e8 / FUN_002afca0)", match to { 4 => "album", 6 => "characters", 7 => "treasures", 8 => "maps", _ => "character links" });
+            let o = j.open.as_mut().unwrap();
+            o.back_row = o.row;
+            j.goto = Some((to, world_byte));
+        }
+        Act::Face(sel) => {
+            menu_sound::play(&mut se, menu_sound::REFUSED);
+            match sel {
+                Some(s) => info!("journal: page {page:#x} confirm on face {s} -> page 0xf (the character's page, FUN_002aa358) not ported; refused"),
+                None => info!("journal: page {page:#x} confirm with nothing under the pointer (sound 4, FUN_002ae790)"),
+            }
+        }
         Act::Open { page: 2, world } => {
             menu_sound::play(&mut se, crate::menu_status::CONFIRM);
             info!("journal: page 0 world {world} -> page 2 (FUN_002a27d8)");
@@ -928,9 +1354,9 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
             menu_sound::play(&mut se, menu_sound::REFUSED);
             info!("journal: page 2 row category {cat} -> page {page:#x} not ported (FUN_002a3da0); refused");
         }
-        Act::Back if page == 3 => {
+        Act::Back if matches!(page, 3 | 4 | 6 | 7 | 8 | 0xb) => {
             menu_sound::play(&mut se, menu_sound::CANCEL);
-            info!("journal: page 3 cancel -> page 2 (FUN_002a5218 case -2)");
+            info!("journal: page {page:#x} cancel -> page 2 (FUN_002a5218 / FUN_002ae790 case -2)");
             j.goto = Some((2, world_byte));
         }
         Act::Back => {
@@ -957,7 +1383,8 @@ fn select(j: &Journal, scene: &mut MenuScene, old: Option<usize>) {
 }
 
 /// The scene's open: hides the camp, plays the layout, the header and the plate, then builds the start page.
-fn show(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Assets<Image>, mode: i32, world_number: Option<usize>, test: &dyn Fn(u16) -> bool) {
+#[allow(clippy::too_many_arguments)]
+fn show(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Assets<Image>, mode: i32, world_number: Option<usize>, test: &dyn Fn(u16) -> bool, items: &dyn Fn(u16) -> i32) {
     let jw = world_number.and_then(|w| j.world_index.get(w).copied()).unwrap_or(-1);
     let (page, world) = start(mode, jw);
     let roxas = mode == 2;
@@ -988,6 +1415,19 @@ fn show(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Assets
         }
         scene.nodes[id].stretch = (!qs.is_empty()).then_some(b);
     }
+    // `FUN_002b7100` (task 0x276338, once per scene open): the new bits of every category the app has data for.
+    let mut present = story_present(&j.stor, test);
+    present.extend(chars::present(&j.diag, &j.groups, test, items).into_iter().map(|c| (Cat::Char, c)));
+    {
+        let wi = |w: u8| j.world_index.get(usize::from(w)).copied().unwrap_or(-1);
+        let open = |w: usize| j.worlds.iter().find(|r| usize::try_from(r.id).is_ok_and(|id| id == w)).is_some_and(|r| test(r.flag));
+        let is_map = |i: u16| j.tables_lists.items.get(&i).is_some_and(|r| r.kind == treasure_page::MAP_KIND);
+        present.extend(album_page::present(&j.album, test));
+        present.extend(treasure_page::treasures_present(&j.tables_lists.rows, &wi, test, &open));
+        present.extend(treasure_page::maps_present(&j.tables_lists.rows, &is_map, &|i| items(i) > 0));
+    }
+    j.marks.snapshot(present);
+    let n = &j.nodes;
     scene.nodes[n.header].visible = true;
     scene.set_group_then(n.header, j.header[0], j.header[2]);
     scene.nodes[n.plate].visible = true;
@@ -1007,31 +1447,48 @@ fn show(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Assets
         lines: Vec::new(),
         gap: 0,
         size: TEXT_SIZE,
+        entries: Vec::new(),
+        bar: None,
+        faces: Vec::new(),
+        sel: None,
+        pointer: [0; 2],
+        bounds: [0; 4],
+        half: 32,
+        lists: None,
+        bar_group: STORY_LAYERS[1],
+        album_rows: Vec::new(),
+        back_album: 0,
+        album_exist: Vec::new(),
     });
-    build(j, scene, disc, images, page, world, test);
+    build(j, scene, disc, images, page, world, test, items);
 }
 
 /// Builds `page` (0, 1 or 2) after hiding the other page's nodes (`FUN_002a3da0`'s switch, `FUN_00276740`).
-fn build(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Assets<Image>, page: u16, world: i8, test: &dyn Fn(u16) -> bool) {
+#[allow(clippy::too_many_arguments)]
+fn build(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Assets<Image>, page: u16, world: i8, test: &dyn Fn(u16) -> bool, items: &dyn Fn(u16) -> i32) {
     // Page 3 keeps the title of page 2 (the category teardown `FUN_00277ec0` frees the `DAT_0036d100` objects
     // only; the title is `DAT_0036d0f0 + 0x350`).
     let title = j.nodes.title;
     let n = &j.nodes;
     let ids: Vec<usize> = n.page0().into_iter().chain(n.page12()).chain(n.page3()).chain([n.help, n.cursor, n.follow]).collect();
     for id in ids {
-        if !(page == 3 && id == title) {
+        if !(matches!(page, 3 | 4 | 5 | 6 | 7 | 8 | 0xb) && id == title) {
             scene.nodes[id].visible = false;
         }
     }
     match page {
-        1 | 2 => build12(j, scene, disc, images, page, world, test),
+        1 | 2 => build12(j, scene, disc, images, page, world, test, items),
         3 => build3(j, scene, world, test),
-        _ => build0(j, scene, world, test),
+        6 | 0xb => build_faces(j, scene, disc, images, page, world, test, items),
+        7 | 8 => treasure_page::build(j, scene, page, world, &treasure_page::Game { flag: test, items }),
+        4 => album_page::build(j, scene, world, test),
+        5 => album_page::build_photo(j, scene, disc, images, world, test),
+        _ => build0(j, scene, world, test, items),
     }
     chrome(j, scene, page);
 }
 
-fn build0(j: &mut Journal, scene: &mut MenuScene, world: i8, test: &dyn Fn(u16) -> bool) {
+fn build0(j: &mut Journal, scene: &mut MenuScene, world: i8, test: &dyn Fn(u16) -> bool, items: &dyn Fn(u16) -> i32) {
     let shown = cells(&j.worlds, test);
     let cursor = first_cursor(&j.worlds, &shown, world).unwrap_or(0);
     info!("journal: page 0: {} cells {:?}, cursor {cursor}", shown.len(), shown.iter().map(|&(i, p)| (j.worlds[i].code.clone(), p)).collect::<Vec<_>>());
@@ -1050,9 +1507,16 @@ fn build0(j: &mut Journal, scene: &mut MenuScene, world: i8, test: &dyn Fn(u16) 
         }
         scene.nodes[c].pos = [at[k][0] as f32, at[k][1] as f32];
         scene.set_group(c, group::CELL_IDLE);
-        // The two children start in group 1 (0x98 / 0x99 / 0x9a follow data the port does not have: docs/menus.md 20.5).
+        // The two children start in group 1; an open world's second child shows the new tag of any category (0x98 until
+        // everything new in it has been seen, then 0x99: `FUN_002b9658` / `FUN_002b9798`). The first child's 0x9a
+        // (`FUN_002baf08`: every category complete) needs the quest, minigame and limit lists the app has no data for.
         scene.set_group(m[0], group::START);
         scene.set_group(m[1], group::START);
+        if shown[k].1 != LOCKED_ICON
+            && let Some(all_seen) = world_aggregate(j, j.worlds[shown[k].0].id, test, items)
+        {
+            scene.set_group(m[1], j.tables.cell_tag[usize::from(all_seen)]);
+        }
         let pic = shown[k].1;
         scene.nodes[ic].tex = j.world_tex.get(usize::from(pic)).copied().flatten().unwrap_or(j.tex);
         scene.set_group_then(ic, group::ICON[0], group::ICON[1]);
@@ -1077,7 +1541,8 @@ fn text(j: &Journal, scene: &MenuScene, node: usize, group: usize, id: u16, alig
     }
 }
 
-fn build12(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Assets<Image>, page: u16, world: i8, test: &dyn Fn(u16) -> bool) {
+#[allow(clippy::too_many_arguments)]
+fn build12(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Assets<Image>, page: u16, world: i8, test: &dyn Fn(u16) -> bool, items: &dyn Fn(u16) -> i32) {
     let groups = if page == 2 { LAYERS_P2 } else { LAYERS_P1 };
     let story = story_texts(&j.stor, world, test);
     let record = j.worlds.iter().find(|w| w.id == world).cloned();
@@ -1090,6 +1555,9 @@ fn build12(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Ass
         scene.nodes[id].off = [0.0; 2];
         scene.set_group(id, groups[k]);
         scene.nodes[id].label = texts[k].and_then(|(m, a, go)| text(j, scene, id, groups[k], m, a, go));
+        // The holders' texts start at the object's position (`FUN_00138f38`: the group's animated anchor) plus the
+        // group's x / y (flag 0x10 kept, `FUN_00139048`): inside the pane, not at the screen's corner (WP-MN12).
+        scene.nodes[id].label_anchor = (go_offset(k)).then_some([0.0; 2]);
     }
     // The `jm_top` pictures (`FUN_002a45b0`): page 2 the world's code (world 1's alternative once its second flag is
     // set), page 1 Roxas's name; picture 0 sits at layer 0's group x/y, picture 1 on layer 1.
@@ -1142,6 +1610,18 @@ fn build12(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Ass
         }
         scene.nodes[r].label = cats.get(k).and_then(|&c| text(j, scene, r, ROW_GROUP, j.tables.row_text[c], 0, true));
     }
+    // The rows' tags (`FUN_002a39b8`): the second child shows the new tag, the first the completion mark 0x8a.
+    if page == 2 {
+        for (k, &c) in cats.iter().enumerate() {
+            let (new, done) = row_marks(j, c, world, test, items);
+            if let Some(all_seen) = new {
+                scene.set_group(kids[k][1], j.tables.row_tag[usize::from(all_seen)]);
+            }
+            if done {
+                scene.set_group(kids[k][0], ROW_DONE);
+            }
+        }
+    }
     // Page 2's title on the object 0x350 (`FUN_00277258`, `FUN_00277640`).
     let title = j.nodes.title;
     if page == 2 {
@@ -1165,6 +1645,25 @@ fn build12(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Ass
     let row = if o.back_row < cats.len() { o.back_row } else { 0 };
     (o.page, o.world, o.row, o.cats, o.back_row) = (page, world, row, cats, 0);
 }
+
+/// The layer objects of pages 1 and 2 whose text takes the group's x / y (the two story-text holders, 2 and 4).
+fn go_offset(k: usize) -> bool {
+    k == 2 || k == 4
+}
+
+/// The colour of a text object whose flag 8 was cleared (`FUN_00139860`): `FUN_00139048` then takes the whole colour from its
+/// sprite group (`FUN_00237518`) instead of replacing the colour's RGB with the object's own (0xe5e5e5, `FUN_00138fc8`). That
+/// colour is the one `FUN_00236cf8` computes with the group's anchor, from the animation flagged 2 that covers the frame; the
+/// port takes the steady state, the end colour of the last such animation (a fade-in is not followed). RGBA with 0x80 = 1.0, as
+/// the text styles take them.
+fn group_color(scene: &MenuScene, seq: usize, group: usize) -> [u8; 4] {
+    let Some(s) = scene.seqs.get(seq) else { return DEFAULT_TEXT };
+    let Some(g) = s.groups.get(group) else { return DEFAULT_TEXT };
+    s.anims.iter().skip(g.first).take(g.count).filter(|a| a.flags & 2 != 0).max_by_key(|a| a.frame_end).map_or(DEFAULT_TEXT, |a| a.color_end)
+}
+
+/// The default window text colour (0xe5e5e5, alpha 0x80).
+const DEFAULT_TEXT: [u8; 4] = [0xe5, 0xe5, 0xe5, 0x80];
 
 /// The text tokens of a message: the journal's file first, then the system messages (`FUN_00190c40`).
 fn tokens(j: &Journal, scene: &MenuScene, id: u16) -> Option<Vec<Token>> {
@@ -1191,6 +1690,11 @@ fn chrome(j: &mut Journal, scene: &mut MenuScene, page: u16) {
         2 => o.cats.get(o.row).map(|&c| j.tables.help[c]),
         1 => Some(msg::HELP_ROXAS),
         3 => Some(msg::HELP_STORY),
+        6 | 0xb => Some(j.tables.face.help[usize::from(page != 6)]),
+        4 => Some(album_page::HELP),
+        5 => Some(album_page::HELP_PHOTO),
+        7 => Some(msg::HELP_TREASURE),
+        8 => Some(msg::HELP_MAP),
         _ => None,
     };
     scene.nodes[help].visible = help_id.is_some();
@@ -1244,6 +1748,9 @@ fn place_cursor(j: &Journal, scene: &mut MenuScene) {
     let target = match o.page {
         0 => n.cells.get(o.cursor).copied().filter(|_| o.cursor < o.shown.len()),
         2 => n.rows.get(o.row).copied().filter(|_| o.row < o.cats.len()),
+        // The Treasures / Maps pages' hand sits on their cursor frame (`FUN_002b16e0`: `FUN_00277158(0, frame)`).
+        7 | 8 => Some(n.lists.frame),
+        4 => n.album.rows.get(o.row).copied().filter(|_| !o.album_rows.is_empty()),
         _ => None,
     };
     let follow = j.tables.follow;
@@ -1263,23 +1770,30 @@ fn place_cursor(j: &Journal, scene: &mut MenuScene) {
 }
 
 /// Page 3, the story (`FUN_002a4c38`): the category tab, the backdrop, two layers, the text row and the line marks.
-fn build3(j: &mut Journal, scene: &mut MenuScene, world: i8, test: &dyn Fn(u16) -> bool) {
+/// What every category page of a world puts up before its own objects: the tab of plate 0 with the category's name (the
+/// confirm on page 2's row put it there, `FUN_0029d820(0, 0x382b88[cat])`, then `FUN_0029d1d0(0, -1, 0)` made the tab) with
+/// its follower (`FUN_0029af00(.., 0x381fc8)`), and the backdrop 0x755a (`FUN_00278658`: page family 1, set by page 2's
+/// build with `FUN_00277d60(1)`).
+fn category_frame(j: &Journal, scene: &mut MenuScene, cat: usize) {
     let n = &j.nodes;
-    let (tab, tab_follow, backdrop, lay, row, marks) = (n.tab, n.tab_follow, n.backdrop, n.story_lay.clone(), n.story_row, n.story_marks.clone());
-    // The tab of plate 0 (`FUN_0029d1d0(0, -1, 0)`) with the category name the confirm put there (`FUN_0029d820(0,
-    // 0x382b88[cat])`); the follower of the plate (`FUN_0029af00(.., 0x381fc8)`).
+    let (tab, tab_follow, backdrop) = (n.tab, n.tab_follow, n.backdrop);
     let (plate, follow) = (j.tables.plate, j.tables.follow);
     scene.nodes[tab].visible = true;
     scene.nodes[tab].pos = [0.0; 2];
     scene.set_group_then(tab, plate[0], plate[2]);
-    let name = tokens(j, scene, j.tables.row_text[1]);
+    let name = tokens(j, scene, j.tables.row_text[cat]);
     scene.nodes[tab].label = name.and_then(|t| label_of(scene, tab, plate[2], t, 0, false));
     scene.nodes[tab].label_anchor = Some([0.0; 2]);
     scene.nodes[tab_follow].visible = true;
     scene.set_group_then(tab_follow, follow[0], follow[2]);
-    // The backdrop 0x755a (`FUN_00278658`): page family 1 (`FUN_00277d60(1)` of page 2's build).
     scene.nodes[backdrop].visible = true;
     scene.set_group(backdrop, j.tables.backdrop[1]);
+}
+
+fn build3(j: &mut Journal, scene: &mut MenuScene, world: i8, test: &dyn Fn(u16) -> bool) {
+    let n = &j.nodes;
+    let (lay, row, marks) = (n.story_lay.clone(), n.story_row, n.story_marks.clone());
+    category_frame(j, scene, 1);
     for (k, &id) in lay.iter().enumerate() {
         scene.nodes[id].visible = true;
         scene.nodes[id].off = [0.0; 2];
@@ -1293,8 +1807,6 @@ fn build3(j: &mut Journal, scene: &mut MenuScene, world: i8, test: &dyn Fn(u16) 
     for (k, &id) in marks.iter().enumerate() {
         scene.nodes[id].visible = true;
         scene.nodes[id].off = [0.0, (k as i32 * g.unk1c) as f32];
-        // The marks' groups 0x382ba8 / 0x382bac follow the journal's read bits (`FUN_002b9360` / `FUN_002b9480`,
-        // `DAT_0036d4e8`), which the app does not have: they stay on 2.
         scene.set_group(id, STORY_ROW);
     }
     // The entries and their lines (`FUN_002a5060`; `FUN_00191760` counts a text's lines).
@@ -1317,6 +1829,11 @@ fn build3(j: &mut Journal, scene: &mut MenuScene, world: i8, test: &dyn Fn(u16) 
         counts.push(c + 1);
     }
     let count = story_count(&counts);
+    // The list opens on the last entry's first line (`FUN_002a4c38`: the scroll offset is set to the lines of every entry
+    // but the last, `FUN_00298d98(list, lines)`; the scroll bar `FUN_00299c10(bar, lines)` follows).
+    let before_last = counts.split_last().map_or(0, |(_, rest)| rest.iter().sum::<usize>());
+    let last = counts.last().copied().unwrap_or(0);
+    let bar_total = if last > STORY_LINES - 1 { before_last + last } else { before_last + STORY_LINES };
     scene.nodes[row].visible = true;
     scene.nodes[row].off = [0.0; 2];
     scene.set_group(row, STORY_ROW);
@@ -1326,9 +1843,78 @@ fn build3(j: &mut Journal, scene: &mut MenuScene, world: i8, test: &dyn Fn(u16) 
         entries.iter().map(|e| e.0).collect::<Vec<_>>(),
         lines.len()
     );
+    let track = scene.seqs.get(list).and_then(|s| s.groups.get(STORY_LAYERS[1])).copied().unwrap_or_default();
+    let body = scene.seqs.get(list).and_then(|s| s.groups.get(j.tables.bar[2])).map_or(1, |g| g.size.max(1));
+    let bar = Bar::new(track.size, body, bar_total as i32, STORY_LINES as i32);
     let o = j.open.as_mut().unwrap();
-    (o.page, o.world, o.top, o.count, o.lines, o.gap, o.size) = (3, world, 0, count, lines, gap.min(255) as u8, size as f32);
+    (o.page, o.world, o.top, o.count, o.lines, o.gap, o.size) = (3, world, before_last, count, lines, gap.min(255) as u8, size as f32);
+    o.entries = entries.iter().map(|e| e.1).zip(counts).collect();
+    o.bar = Some(bar);
+    let bar_parent = j.nodes.story_lay[1];
+    place_bar(j, scene, bar_parent, STORY_LAYERS[1]);
+    story_view(j, scene);
+}
+
+/// The scroll bar's four parts (`FUN_00299878`): the groups of the bar table, hung from the layer that holds the track
+/// group `track_group` (the parts sit at that group's x / y), the body's y scale from the share of the list shown.
+fn place_bar(j: &mut Journal, scene: &mut MenuScene, parent: usize, track_group: usize) {
+    let Some(bar) = j.open.as_ref().and_then(|o| o.bar) else { return };
+    let g = scene.seqs.get(j.seq_base + SEQ_LIST).and_then(|s| s.groups.get(track_group)).copied().unwrap_or_default();
+    if let Some(o) = j.open.as_mut() {
+        o.bar_group = track_group;
+    }
+    for k in 0..4 {
+        let id = j.nodes.scroll[k];
+        scene.nodes[id].parent = Some(parent);
+        scene.nodes[id].visible = true;
+        scene.nodes[id].ext = kh2_image::seqd::Ext::default();
+        if k == 2 {
+            scene.nodes[id].ext.scale[2] = bar.body_scale();
+        }
+        // The hold group is the same group again (`FUN_0029c2d8` with the third set of the table): it loops.
+        scene.set_group_then(id, j.tables.bar[k], j.tables.bar[k]);
+        scene.nodes[id].off = [g.x as f32, g.y as f32];
+    }
+}
+
+/// `FUN_00299c10(bar, pos)`: the thumb parts at list line `pos`.
+fn bar_pos(j: &Journal, scene: &mut MenuScene, pos: usize) {
+    let Some(o) = j.open.as_ref() else { return };
+    let Some(bar) = o.bar else { return };
+    let g = scene.seqs.get(j.seq_base + SEQ_LIST).and_then(|s| s.groups.get(o.bar_group)).copied().unwrap_or_default();
+    let y = bar.offsets(pos as i32);
+    for (k, dy) in y.into_iter().enumerate() {
+        scene.nodes[j.nodes.scroll[k + 1]].off = [g.x as f32, (g.y + dy) as f32];
+    }
+}
+
+/// Page 3's marks (`FUN_002a5708`): the new / seen tag of every entry that starts in view; an entry whose first line is
+/// the top row is marked seen first (`FUN_002b95d8`).
+fn story_marks(j: &mut Journal, scene: &mut MenuScene) {
+    let Some(o) = j.open.as_ref() else { return };
+    let (top, entries) = (o.top, o.entries.clone());
+    for &id in &j.nodes.story_marks {
+        scene.set_group(id, STORY_ROW);
+    }
+    let lines: Vec<usize> = entries.iter().map(|e| e.1).collect();
+    for (row, e) in marks::story_mark_rows(&lines, top, STORY_LINES) {
+        let key = entries[e].0;
+        if row == 0 {
+            j.marks.see(Cat::Story, key);
+        }
+        if let Some(tag) = j.marks.tag(Cat::Story, key) {
+            let g = j.tables.line_tag[usize::from(tag == Tag::Seen)];
+            scene.set_group(j.nodes.story_marks[row], g);
+        }
+    }
+}
+
+/// Everything that follows page 3's first line: the text, the thumb and the marks.
+fn story_view(j: &mut Journal, scene: &mut MenuScene) {
+    let top = j.open.as_ref().map_or(0, |o| o.top);
     story_text(j, scene);
+    bar_pos(j, scene, top);
+    story_marks(j, scene);
 }
 
 /// The story row's text: ten lines from the first one shown (`0x2a54c8`: the scissor of ten line heights, every
@@ -1347,6 +1933,172 @@ fn story_text(j: &Journal, scene: &mut MenuScene) {
     let world = scene.text.as_ref().map_or(0, |x| x.world);
     let style = Style { font: STORY_FONT, size: Some(o.size), align: 0, world, color: [0x08, 0x00, 0x00, 0x60], ..Style::default() };
     scene.nodes[j.nodes.story_row].label = Some(Label { tokens: t, style, offset: [0.0; 2] });
+}
+
+/// The face pages' literal groups of `jmemo.2ld` sequence 5 (`FUN_002ae3e8`): the layer 0x51, the name plate 0x53 (its text
+/// is the face's name), the pointer 0x22 (`FUN_002aebb8`: object 0x7571) and the bounds object 0x52 (`FUN_002ae790`).
+const FACE_LAYER: usize = 0x51;
+const FACE_BOUNDS: usize = 0x52;
+const FACE_NAME: usize = 0x53;
+const FACE_POINTER: usize = 0x22;
+/// The sequence of the face pictures (`FUN_002af800`: `FUN_00239020(.., 0)`).
+const SEQ_FACE: usize = 0;
+/// Faces a page can show: the Character Links family has 36 drawn sub-records (`jiminy.bar` entry 5).
+const FACE_POOL: usize = 40;
+/// The name's font (`FUN_002ae3e8`: `+0x644 = 3`).
+const NAME_FONT: usize = 3;
+
+/// The text of a world's name for a message that holds a variable (`FUN_002a3070(world, 1)`: record +6, or +0xc once the
+/// second flag is set).
+fn world_name(j: &Journal, scene: &MenuScene, world: i8, test: &dyn Fn(u16) -> bool) -> Vec<Token> {
+    let Some(w) = j.worlds.iter().find(|w| w.id == world).or(j.worlds.first()) else { return Vec::new() };
+    let id = if w.flag2 != 0 && test(w.flag2) { w.names[3] } else { w.names[1] };
+    tokens(j, scene, id).map(|t| t.into_iter().filter(|t| *t != Token::End).collect()).unwrap_or_default()
+}
+
+/// Characters (page 6) and Character Links (page 0xb): the faces of the family, the pointer, the name plate.
+#[allow(clippy::too_many_arguments)]
+fn build_faces(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Assets<Image>, page: u16, world: i8, test: &dyn Fn(u16) -> bool, items: &dyn Fn(u16) -> i32) {
+    let links = page != 6;
+    let family: u8 = if links { LINKS } else { world as u8 };
+    category_frame(j, scene, if links { 7 } else { 0 });
+    let list = j.seq_base + SEQ_LIST;
+    let (layer, plate, pointer, hover) = (j.nodes.chars.layer, j.nodes.chars.name, j.nodes.chars.pointer, j.nodes.chars.hover);
+    for (id, g) in [(layer, FACE_LAYER), (plate, FACE_NAME)] {
+        scene.nodes[id].visible = true;
+        scene.nodes[id].off = [0.0; 2];
+        scene.set_group(id, g);
+    }
+    scene.nodes[plate].label = None;
+    // The faces (`FUN_002af398`) and their pictures (`FUN_002af6c0` / `FUN_002af800`, the file `jmface_<name>.2ld`).
+    let faces = chars::faces(&j.diag, &j.groups, family, test, items);
+    let file = j.tables.face.names.get(usize::from(family)).cloned().unwrap_or_default();
+    if !file.is_empty() && !j.face_tex.contains_key(&file) {
+        let t = bar_pictures(disc, &format!("menu/us/jmface_{file}.2ld"), scene, images);
+        j.face_tex.insert(file.clone(), t);
+    }
+    let pics = j.face_tex.get(&file).cloned().unwrap_or_default();
+    let faces: Vec<Face> = faces.into_iter().take(FACE_POOL).collect();
+    let ft = j.tables.face.clone();
+    let mut missing = 0;
+    for (k, &[frame, pic, tag]) in j.nodes.chars.faces.clone().iter().enumerate() {
+        let on = k < faces.len();
+        for id in [frame, pic, tag] {
+            scene.nodes[id].visible = on;
+        }
+        if !on {
+            continue;
+        }
+        let f = faces[k];
+        let rec = j.chars.get(f.ch).copied().unwrap_or_default();
+        scene.nodes[frame].off = [f.x as f32, f.y as f32];
+        scene.set_group(frame, ft.style[usize::from(links) * 6 + usize::from(rec.style).min(5)]);
+        // The picture: `FUN_00138948(.., group, 0)` with the follow-up group in +0x17c.
+        let [first, then] = ft.pic[usize::from(links)];
+        match pics.get(usize::from(rec.face)).copied().flatten() {
+            Some(t) => {
+                scene.nodes[pic].tex = t;
+                scene.nodes[pic].off = [0.0; 2];
+                scene.set_group_then(pic, first, then);
+            }
+            None => {
+                scene.nodes[pic].visible = false;
+                missing += 1;
+            }
+        }
+        // The tag: group 2 (blank) unless the character has a new bit (`FUN_002b7208` / `FUN_002b72c0`).
+        scene.set_group(tag, STORY_ROW);
+        if let Some(g) = chars::tag_group(ft.tag, links, j.marks.tag(Cat::Char, f.ch)) {
+            scene.set_group(tag, g);
+        }
+    }
+    // The pointer's bounds: the position of the bounds object's group 0x52 (its anchor) to the group's x / y
+    // (`FUN_002ae790`: +0x48 / +0x4c from `FUN_00138f20`, +0x4a / +0x4e from `FUN_00237618` / `FUN_00237638`).
+    let g52 = scene.seqs.get(list).and_then(|s| s.groups.get(FACE_BOUNDS)).copied().unwrap_or_default();
+    let anchor = scene.seqs.get(list).and_then(|s| s.anchor(FACE_BOUNDS, 0, &kh2_image::seqd::Ext::default())).unwrap_or([0, 0]);
+    let bounds = [anchor[0], g52.x, anchor[1], g52.y];
+    let half = faces
+        .first()
+        .and_then(|f| j.chars.get(f.ch))
+        .and_then(|r| scene.seqs.get(list).and_then(|s| s.groups.get(ft.style[usize::from(links) * 6 + usize::from(r.style).min(5)])))
+        .map_or(32, |g| g.unk20 / 2);
+    let start = chars::first_pointer(&faces, None, bounds);
+    scene.nodes[pointer].visible = true;
+    scene.nodes[pointer].parent = None;
+    scene.nodes[pointer].pos = [start[0] as f32, start[1] as f32];
+    scene.set_group(pointer, FACE_POINTER);
+    scene.nodes[hover].visible = false;
+    info!(
+        "journal: page {page:#x} (FUN_002ae3e8): family {family:#x}, {} faces, file jmface_{file}.2ld {} pictures ({missing} faces without one), bounds {bounds:?}, half {half}, pointer {start:?}",
+        faces.len(),
+        pics.len()
+    );
+    let o = j.open.as_mut().unwrap();
+    (o.page, o.world, o.faces, o.sel, o.pointer, o.bounds, o.half) = (page, world, faces, None, start, bounds, half);
+    faces_update(j, scene, test, true);
+}
+
+/// `FUN_002af180` / `FUN_002af2b0` / `FUN_002aecf0`: the face under the pointer, its name on the plate and the hover frame.
+/// `force` redoes them when nothing moved (the build).
+fn faces_update(j: &mut Journal, scene: &mut MenuScene, test: &dyn Fn(u16) -> bool, force: bool) {
+    let Some(o) = j.open.as_ref() else { return };
+    let sel = chars::hit(&o.faces, o.pointer, o.half);
+    if sel == o.sel && !force {
+        return;
+    }
+    let (page, world, face, was) = (o.page, o.world, sel.and_then(|s| o.faces.get(s)).copied(), o.sel.is_some());
+    let (plate, hover) = (j.nodes.chars.name, j.nodes.chars.hover);
+    let links = page != 6;
+    j.open.as_mut().unwrap().sel = sel;
+    // The name (`FUN_002af2b0`): the record's message; with flag 0x400 its variable is the world's name.
+    let list = j.seq_base + SEQ_LIST;
+    let rec = face.and_then(|f| j.chars.get(f.ch)).copied();
+    let g = scene.seqs.get(list).and_then(|s| s.groups.get(FACE_NAME)).copied().unwrap_or_default();
+    let size = if g.size > 0 { g.size as f32 } else { TEXT_SIZE };
+    let label = rec.and_then(|r| {
+        let t = tokens(j, scene, r.name)?;
+        let text_world = scene.text.as_ref()?.world;
+        let variable = if r.flags & 0x400 != 0 { world_name(j, scene, if links { LINKS as i8 } else { world }, test) } else { Vec::new() };
+        let color = group_color(scene, list, FACE_NAME);
+        Some(Label { tokens: t, style: Style { font: NAME_FONT, size: Some(size), align: 2, world: text_world, variable, color, ..Style::default() }, offset: [0.0; 2] })
+    });
+    scene.nodes[plate].label = label;
+    scene.nodes[plate].label_anchor = Some([0.0; 2]);
+    // The hover frame (`FUN_002aecf0`): made on the first face the pointer reaches, moved to the next one without
+    // restarting, removed when the pointer leaves every face.
+    match (face.is_some(), was) {
+        (true, false) => {
+            let hg = j.tables.face.hover[usize::from(links)];
+            scene.nodes[hover].visible = true;
+            scene.set_group(hover, hg);
+        }
+        (false, _) => scene.nodes[hover].visible = false,
+        _ => {}
+    }
+    if let Some(s) = sel {
+        scene.nodes[hover].parent = j.nodes.chars.faces.get(s).map(|f| f[1]);
+        scene.nodes[hover].off = [0.0; 2];
+    }
+}
+
+/// The pointer's frames: `steps` 60 Hz steps of the held direction.
+fn move_pointer(j: &mut Journal, scene: &mut MenuScene, steps: u32, dir: (i32, i32), test: &dyn Fn(u16) -> bool) {
+    let Some(o) = j.open.as_mut() else { return };
+    let mut p = o.pointer;
+    for _ in 0..steps {
+        p = chars::step_pointer(p, o.bounds, dir.0, dir.1);
+    }
+    if p == o.pointer {
+        return;
+    }
+    o.pointer = p;
+    scene.nodes[j.nodes.chars.pointer].pos = [p[0] as f32, p[1] as f32];
+    let before = j.open.as_ref().and_then(|o| o.sel);
+    faces_update(j, scene, test, false);
+    let after = j.open.as_ref().and_then(|o| o.sel);
+    if after != before {
+        info!("journal: pointer {p:?} -> face {after:?}");
+    }
 }
 
 fn close(j: &mut Journal, scene: &mut MenuScene, menu: &mut Menu) {
@@ -1371,6 +2123,10 @@ fn tick(
     disc: Res<Disc>,
     area: Res<CurrentArea>,
     progress: Option<Res<Progress>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
+    mut se: MessageWriter<PlaySe>,
+    mut frames: Local<f32>,
     mut logged: Local<u32>,
 ) {
     if menu.phase == Phase::Closed {
@@ -1382,6 +2138,7 @@ fn tick(
     }
     let story = progress.as_ref().map(|p| p.story());
     let test = |id: u16| story.as_ref().is_some_and(|s| s.test(id));
+    let items = |id: u16| progress.as_ref().map_or(0, |p| i32::from(p.item_count(id)));
     if let Some(mode) = j.request.take() {
         if !j.tried && scene.texs.len() >= 2 {
             load(&mut j, &disc, &mut scene, &mut images);
@@ -1391,13 +2148,51 @@ fn tick(
             return;
         }
         let world = area.name.get(..2).and_then(|w| crate::audio::WORLDS.iter().position(|&n| n == w));
-        show(&mut j, &mut scene, &disc, &mut images, mode, world, &test);
+        show(&mut j, &mut scene, &disc, &mut images, mode, world, &test, &items);
     }
     if let Some((page, world)) = j.goto.take()
         && j.open.is_some()
     {
-        build(&mut j, &mut scene, &disc, &mut images, page, world, &test);
+        build(&mut j, &mut scene, &disc, &mut images, page, world, &test, &items);
         *logged = 0;
+    }
+    // The Treasures / Maps pages' cursor presses (`FUN_002b1890`).
+    if let Some(nav) = j.nav.take()
+        && j.open.as_ref().is_some_and(|o| matches!(o.page, 7 | 8))
+        && treasure_page::navigate(&mut j, &mut scene, nav, &test)
+    {
+        menu_sound::play(&mut se, menu_sound::CURSOR);
+        let (page, at) = j.open.as_ref().map_or((0, None), |o| (o.page, o.lists.as_ref().map(|l| l.1)));
+        info!("journal: page {page} cursor {at:?} after {nav:?}");
+    }
+    // The face pages' pointer: three units a 60 Hz frame while a direction is held (`FUN_002aeea8`).
+    *frames = (*frames + time.delta_secs() * 60.0).min(6.0);
+    let steps = frames.floor() as u32;
+    *frames -= steps as f32;
+    if j.open.as_ref().is_some_and(|o| matches!(o.page, 6 | 0xb)) {
+        let (mut dx, mut dy) = (
+            i32::from(keys.pressed(KeyCode::ArrowRight)) - i32::from(keys.pressed(KeyCode::ArrowLeft)),
+            i32::from(keys.pressed(KeyCode::ArrowDown)) - i32::from(keys.pressed(KeyCode::ArrowUp)),
+        );
+        // `KH2_JOURNAL_HOLD=<at>:<Left|Right|Up|Down>:<seconds>,..` (harness aid: the scripted keys of `KH2_KEYS` are released
+        // again every frame while the window has no focus, so a held direction cannot be scripted there).
+        if let Ok(spec) = std::env::var("KH2_JOURNAL_HOLD") {
+            let now = time.elapsed_secs();
+            for item in spec.split(',') {
+                let mut f = item.split(':');
+                let (Some(at), Some(k), Some(len)) = (f.next().and_then(|v| v.parse::<f32>().ok()), f.next(), f.next().and_then(|v| v.parse::<f32>().ok())) else { continue };
+                if (at..at + len).contains(&now) {
+                    match k {
+                        "Left" => dx = -1,
+                        "Right" => dx = 1,
+                        "Up" => dy = -1,
+                        "Down" => dy = 1,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        move_pointer(&mut j, &mut scene, steps, (dx, dy), &test);
     }
     // The camp redraws its plates and digits every frame: keep its nodes hidden while the journal is up.
     if let Some(o) = j.open.as_ref() {
@@ -1551,6 +2346,26 @@ mod tests {
     }
 
     #[test]
+    fn story_records_exist_with_their_flag_and_complete_with_the_last() {
+        let mut d = vec![0u8; 0x10 + 4 * 0xc];
+        d[8] = 4;
+        for (k, (w, f)) in [(0i8, 1u16), (0, 2), (1, 3), (0x13, 1)].into_iter().enumerate() {
+            let r = 0x10 + k * 0xc;
+            d[r] = w as u8;
+            d[r + 10..r + 12].copy_from_slice(&f.to_le_bytes());
+        }
+        let has = |set: &'static [u16]| move |f: u16| set.contains(&f);
+        // World 0x13 is above 0xe: never new. A record needs its flag.
+        assert_eq!(story_present(&d, &has(&[1, 3])), vec![(Cat::Story, 0), (Cat::Story, 2)]);
+        assert_eq!(story_keys(&d, Some(0)), vec![(Cat::Story, 0), (Cat::Story, 1)]);
+        assert_eq!(story_keys(&d, None).len(), 4);
+        // Complete: the world's last record exists (world 0: record 1, flag 2); a world without records is complete.
+        assert!(!story_complete(&d, 0, &has(&[1])));
+        assert!(story_complete(&d, 0, &has(&[2])));
+        assert!(story_complete(&d, 5, &has(&[])));
+    }
+
+    #[test]
     fn hints_name_the_neighbour_pages() {
         let t = [0x10, 0x20, 0x30];
         // Page 0: left the third name (page 0xc), right the second (page 2).
@@ -1622,6 +2437,12 @@ mod tests {
             assert!(s5.groups.len() > g, "group {g:#x}");
         }
         assert!(s5.groups[STORY_LAYERS[0]].unk1c > 0, "the story line height");
+        // WP-MN12: the scroll bar's parts and the tags' groups.
+        assert_eq!((t.bar, t.row_tag, t.line_tag, t.cell_tag), ([1, 0x75, 0x74, 0x76], [0x8b, 0x8c], [0x39, 0x3a], [0x98, 0x99]));
+        for g in t.bar.into_iter().chain(t.row_tag).chain(t.line_tag).chain(t.cell_tag).chain([ROW_DONE, STORY_LAYERS[1]]) {
+            assert!(s5.groups.len() > g, "group {g:#x}");
+        }
+        assert!(s5.groups[t.bar[2]].size > 0 && s5.groups[STORY_LAYERS[1]].size > 0, "the thumb's body and the track have a length");
         let bar = a.read("menu/us/jiminy.bar").unwrap();
         let e = kh2_bar::parse(&bar).unwrap();
         // Twilight Town (journal world 0) has story records, all with a text.
@@ -1632,6 +2453,198 @@ mod tests {
         let msgs = kh2_image::text::Messages::from_bar(&a.read("msg/us/jm.bar").unwrap()).unwrap();
         for id in t.hints.iter().chain(&t.help).copied().chain([msg::HELP_ROXAS, msg::HELP_STORY]).chain(all.iter().map(|r| r.0)) {
             assert!(msgs.tokens(u32::from(id)).is_some(), "message {id:#x} in jm.bar");
+        }
+    }
+
+    /// The face pages' data on the disc (skipped without `KH2_ISO`): the executable's tables, every family's faces with every
+    /// flag set, the character records and the face files (WP-MN12).
+    #[test]
+    fn the_disc_face_page_data() {
+        let Ok(iso) = std::env::var("KH2_ISO") else { return };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok()).unwrap();
+        let t = read_page_tables(&Exe::load(elf).unwrap()).expect("the page tables");
+        let f = &t.face;
+        eprintln!("style {:x?} pic {:x?} tag {:x?} hover {:x?} help {:x?} names {:?}", f.style, f.pic, f.tag, f.hover, f.help, f.names);
+        assert_eq!(f.style, [0xa, 0xb, 0xc, 0xd, 0xe, 0xf, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15]);
+        assert_eq!((f.pic, f.tag, f.hover, f.help), ([[1, 2], [4, 5]], [0x18, 0x19, 0x1b, 0x1c], [0x16, 0x1a], [0x48d5, 0x48d6]));
+        assert_eq!(&f.names[..3], ["tt", "hb", "bb"]);
+        assert_eq!(f.names[0x10], "ex");
+        let two = layd::parse_2ld(&a.read("menu/us/jmemo.2ld").unwrap()).unwrap();
+        let s5 = &two.layd.seqs[SEQ_LIST];
+        for g in f.style.into_iter().chain(f.tag).chain(f.hover).chain([FACE_LAYER, FACE_BOUNDS, FACE_NAME, FACE_POINTER]) {
+            assert!(s5.groups.len() > g, "group {g:#x}");
+        }
+        let face_seq = &two.layd.seqs[SEQ_FACE];
+        for g in f.pic.into_iter().flatten() {
+            assert!(face_seq.groups.len() > g, "face picture group {g}");
+        }
+        assert!(s5.groups[f.style[0]].unk20 / 2 == 32, "the reach of a face is half its frame's pitch");
+        let g52 = s5.groups[FACE_BOUNDS];
+        let anchor = s5.anchor(FACE_BOUNDS, 0, &kh2_image::seqd::Ext::default()).expect("the bounds object has an anchor");
+        assert!(anchor[0] < g52.x && anchor[1] < g52.y, "the pointer's bounds {anchor:?} .. ({}, {})", g52.x, g52.y);
+        let bar = a.read("menu/us/jiminy.bar").unwrap();
+        let e = kh2_bar::parse(&bar).unwrap();
+        let chars = chars::parse_chars(e[3].data);
+        let groups = chars::parse_groups(e[5].data);
+        assert_eq!((chars.len(), groups.len()), (309, 181));
+        let msgs = kh2_image::text::Messages::from_bar(&a.read("msg/us/jm.bar").unwrap()).unwrap();
+        let mut most = 0;
+        for family in (0..0xfu8).chain([LINKS]) {
+            let faces = chars::faces(e[5].data, &groups, family, &|_| true, &|_| 1);
+            assert!(!faces.is_empty(), "family {family}");
+            let name = &f.names[usize::from(family)];
+            let pics = kh2_bar::parse(&a.read(&format!("menu/us/jmface_{name}.2ld")).unwrap()).unwrap().len();
+            for face in &faces {
+                let r = chars.get(face.ch).unwrap_or_else(|| panic!("family {family}: character {}", face.ch));
+                assert!(usize::from(r.face) < pics, "family {family}: face picture {} of {pics} ({name})", r.face);
+                assert!(r.style < 6, "style {}", r.style);
+                assert!(msgs.tokens(u32::from(r.name)).is_some(), "name message {:#x}", r.name);
+                assert!((60..=490).contains(&face.x) && (80..=370).contains(&face.y), "face {face:?} inside the bounds");
+            }
+            most = most.max(faces.len());
+        }
+        assert!(most <= FACE_POOL, "the face pool holds {most}");
+        eprintln!("most faces on a page: {most}");
+    }
+
+    /// The Treasures and Maps pages' data on the disc (skipped without `KH2_ISO`): the `trsr` and `item` rows, every row's
+    /// world and item name, the groups the pages name, and the layout with every world listed (WP-MN12).
+    #[test]
+    fn the_disc_list_page_data() {
+        let Ok(iso) = std::env::var("KH2_ISO") else { return };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok()).unwrap();
+        let exe = Exe::load(elf).unwrap();
+        let t = read_page_tables(&exe).expect("the page tables");
+        assert_eq!(t.list_text[0], 0x7e);
+        assert_eq!(t.list_text[2], 0x7f);
+        let two = layd::parse_2ld(&a.read("menu/us/jmemo.2ld").unwrap()).unwrap();
+        let s5 = &two.layd.seqs[SEQ_LIST];
+        use treasure_page::{CELL_MAP, CELL_TREASURE, FRAME, LABEL, LABEL_TAG, LAYERS, TOTAL};
+        for g in LAYERS.into_iter().chain(CELL_MAP).chain(CELL_TREASURE).chain(FRAME).chain(LABEL_TAG).chain([LABEL, TOTAL, t.list_text[0], t.list_text[2]]) {
+            assert!(s5.groups.len() > g, "group {g:#x}");
+        }
+        assert_eq!((s5.groups[CELL_TREASURE[0]].unk1c, s5.groups[CELL_TREASURE[0]].unk20), (28, 28), "the cells' pitch");
+        assert_eq!(s5.groups[LAYERS[1]].size, 200, "the track");
+        let tb = treasure_page::tables_from(Some(a.read("03system.bin").unwrap()));
+        assert_eq!(tb.rows.len(), 382, "the treasure table");
+        assert!(tb.items.len() > 400, "the item table: {}", tb.items.len());
+        let maps = tb.rows.iter().filter(|r| tb.items.get(&r.item).is_some_and(|i| i.kind == treasure_page::MAP_KIND)).count();
+        assert!(maps > 0, "map rows");
+        let idx = read_world_index(&exe).unwrap();
+        let wi = |w: u8| idx.get(usize::from(w)).copied().unwrap_or(-1);
+        let sysmsg = kh2_image::text::Messages::from_bar(&a.read("msg/us/sys.bar").unwrap()).unwrap();
+        let chests = lists::treasures(&tb.rows, &wi, &|_| true, true, &|_| false);
+        let owned = lists::maps(&tb.rows, &wi, &|i| tb.items.get(&i).is_some_and(|r| r.kind == treasure_page::MAP_KIND), &|_| true, true);
+        eprintln!("chests {} maps {} of {} rows", chests.len(), owned.len(), tb.rows.len());
+        assert!(chests.len() > 100 && !owned.is_empty());
+        for e in chests.iter().chain(&owned) {
+            let it = tb.items.get(&e.item).unwrap_or_else(|| panic!("item {} of row {}", e.item, e.idx));
+            assert!(sysmsg.tokens(u32::from(it.name)).is_some(), "name message {:#x} of item {}", it.name, e.item);
+        }
+        // Every journal world but 8 has chests; the layout counts a section per world and the rows in all.
+        let l = lists::layout(lists::sorted(chests), &|_| true, Some(8));
+        assert!(l.sections.iter().enumerate().all(|(w, s)| w == 8 || w >= 0xf || s.rows > 0), "{:?}", l.sections);
+        assert!(l.total > lists::VIEW_ROWS, "{} rows", l.total);
+        assert_eq!(l.entries.len(), l.sections.iter().map(|s| s.count).sum::<usize>());
+    }
+
+    /// The face, list, album and picture pages' button handling (WP-MN12).
+    #[test]
+    fn the_new_pages_read_their_buttons() {
+        // Faces: cancel back, start closes, confirm carries the face under the pointer; the arrows are the pointer's, not events.
+        assert_eq!(page_faces(Key::Cancel, None), Act::Back);
+        assert_eq!(page_faces(Key::Start, Some(2)), Act::Close);
+        assert_eq!(page_faces(Key::Confirm, Some(2)), Act::Face(Some(2)));
+        assert_eq!(page_faces(Key::Confirm, None), Act::Face(None));
+        assert_eq!(page_faces(Key::Move(1, 0), None), Act::None);
+        // Treasures and Maps: every direction and L1 / R1 are cursor presses, a confirm does nothing.
+        use lists::Nav;
+        assert_eq!(page_lists(Key::Move(0, -1)), Act::Navigate(Nav::Up));
+        assert_eq!(page_lists(Key::Move(0, 1)), Act::Navigate(Nav::Down));
+        assert_eq!(page_lists(Key::Move(-1, 0)), Act::Navigate(Nav::Left));
+        assert_eq!(page_lists(Key::Move(1, 0)), Act::Navigate(Nav::Right));
+        assert_eq!(page_lists(Key::L1), Act::Navigate(Nav::PageUp));
+        assert_eq!(page_lists(Key::R1), Act::Navigate(Nav::PageDown));
+        assert_eq!(page_lists(Key::Confirm), Act::None);
+        assert_eq!((page_lists(Key::Cancel), page_lists(Key::Start)), (Act::Back, Act::Close));
+        // Album: the list widget's wrapping cursor, a confirm on a row opens its picture, nothing to confirm on an empty list.
+        assert_eq!(page_album(Key::Move(0, 1), 2, 8), Act::Cursor(3));
+        assert_eq!(page_album(Key::Move(0, 1), 7, 8), Act::Cursor(0));
+        assert_eq!(page_album(Key::Move(0, -1), 0, 8), Act::Cursor(7));
+        assert_eq!(page_album(Key::Move(0, 1), 0, 1), Act::None, "one row: nowhere to go");
+        assert_eq!(page_album(Key::Confirm, 3, 8), Act::Photo(3));
+        assert_eq!(page_album(Key::Confirm, 0, 0), Act::None);
+        assert_eq!(page_album(Key::Cancel, 0, 0), Act::Back);
+        // The picture page switches with L2 / R2, not with L1 / R1 (its help line shows the L2 and R2 icons).
+        assert_eq!((page_photo(Key::L2), page_photo(Key::R2)), (Act::Browse(-1), Act::Browse(1)));
+        assert_eq!((page_photo(Key::L1), page_photo(Key::R1)), (Act::None, Act::None));
+        assert_eq!((page_photo(Key::Cancel), page_photo(Key::Start)), (Act::Back, Act::Close));
+        // Page 2's rows open the new pages.
+        let cats = categories(0, false, false);
+        assert_eq!(page2(Key::Confirm, 0, &cats), Act::Category { cat: 0, page: 6 });
+        assert_eq!(page2(Key::Confirm, 2, &cats), Act::Category { cat: 2, page: 4 });
+        assert_eq!(page2(Key::Confirm, 3, &cats), Act::Category { cat: 3, page: 7 });
+        assert_eq!(page2(Key::Confirm, 4, &cats), Act::Category { cat: 4, page: 8 });
+    }
+
+    /// The text colours the pages whose flag 8 is cleared take from their groups (skipped without `KH2_ISO`).
+    #[test]
+    fn the_disc_group_colours_of_the_text_objects() {
+        let Ok(iso) = std::env::var("KH2_ISO") else { return };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let two = layd::parse_2ld(&a.read("menu/us/jmemo.2ld").unwrap()).unwrap();
+        let mut scene = MenuScene::default();
+        scene.seqs = two.layd.seqs;
+        // The dark ink of the rows (group 2), of the Treasures labels (0x46) and of the name plate (0x53), white on the info bar
+        // (0x7e), yellow on the total's count (0x7f); a group with no flagged animation keeps the default.
+        assert_eq!(group_color(&scene, SEQ_LIST, 2), [64, 70, 60, 0x80]);
+        assert_eq!(group_color(&scene, SEQ_LIST, treasure_page::LABEL), [16, 24, 0, 0x80]);
+        assert_eq!(group_color(&scene, SEQ_LIST, FACE_NAME), [16, 24, 0, 0x80]);
+        assert_eq!(group_color(&scene, SEQ_LIST, 0x7e), [240, 240, 240, 0x80]);
+        assert_eq!(group_color(&scene, SEQ_LIST, 0x7f), [250, 240, 0, 0x80]);
+        assert_eq!(group_color(&scene, SEQ_LIST, treasure_page::TOTAL), [240, 240, 240, 0x80], "the fade-in's end");
+        assert_eq!(group_color(&scene, SEQ_LIST, 9999), DEFAULT_TEXT);
+        assert_eq!(group_color(&scene, 99, 2), DEFAULT_TEXT);
+    }
+
+    /// The Album's data on the disc (skipped without `KH2_ISO`): the records, their texts, the picture files and the page's groups.
+    #[test]
+    fn the_disc_album_data() {
+        let Ok(iso) = std::env::var("KH2_ISO") else { return };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok()).unwrap();
+        let t = read_page_tables(&Exe::load(elf).unwrap()).expect("the page tables");
+        let two = layd::parse_2ld(&a.read("menu/us/jmemo.2ld").unwrap()).unwrap();
+        let s5 = &two.layd.seqs[SEQ_LIST];
+        for g in [album_page::LAYER, album_page::TAG[0], album_page::TAG[1], album_page::PHOTO_LAYER, album_page::PHOTO_TITLE, album_page::PHOTO_CAPTION] {
+            assert!(s5.groups.len() > g, "group {g:#x}");
+        }
+        assert_eq!(s5.groups[album_page::LAYER].unk1c, 26, "the rows' pitch");
+        assert!(two.layd.seqs[1].groups.len() > 2, "the picture's groups 1 and 2 in sequence 1");
+        let bar = a.read("menu/us/jiminy.bar").unwrap();
+        let e = kh2_bar::parse(&bar).unwrap();
+        let recs = album_page::parse(e[2].data);
+        assert_eq!(recs.len(), 100);
+        let msgs = kh2_image::text::Messages::from_bar(&a.read("msg/us/jm.bar").unwrap()).unwrap();
+        for m in [album_page::HELP, album_page::HELP_PHOTO, 0x32dd] {
+            assert!(msgs.tokens(u32::from(m)).is_some(), "message {m:#x}");
+        }
+        let mut worlds = std::collections::BTreeSet::new();
+        for r in &recs {
+            assert!(msgs.tokens(u32::from(r.title)).is_some() && msgs.tokens(u32::from(r.caption)).is_some(), "texts of {r:?}");
+            let code = &t.face.names[usize::try_from(r.world).unwrap()];
+            let file = format!("menu/us/jm_photo/{code}{}{}.bin", r.photo[0] as char, r.photo[1] as char);
+            let bytes = a.read(&file).unwrap_or_else(|_| panic!("{file}"));
+            let pics = kh2_bar::parse(&bytes).unwrap();
+            assert!(pics.first().is_some_and(|p| kh2_image::imgd::decode(p.data).is_some()), "{file}");
+            worlds.insert(r.world);
+        }
+        assert_eq!(worlds.len(), 15, "a list for every world: {worlds:?}");
+        // No world lists more rows than the list has.
+        for w in 0..15 {
+            assert!(recs.iter().filter(|r| r.world == w).count() <= album_page::ROWS, "world {w}");
         }
     }
 

@@ -336,7 +336,7 @@ impl MenuScene {
                 let (w, h) = (t.width as f32, t.height as f32 * p.v_end);
                 out.push((
                     p.tex,
-                    Quad { pos: [[x0, y0], [x1, y0], [x0, y1], [x1, y1]], uv: [[0.0, 0.0], [w, 0.0], [0.0, h], [w, h]], color: [[0x80; 4]; 4], blend: 0, nearest: false },
+                    Quad { pos: [[x0, y0], [x1, y0], [x0, y1], [x1, y1]], uv: [[0.0, 0.0], [w, 0.0], [0.0, h], [w, h]], color: [[0x80, 0x80, 0x80, (128.0 * n.label_fade.clamp(0.0, 1.0)) as u8]; 4], blend: 0, nearest: false },
                 ));
             }
             if let (Some(g), Some(s)) = (n.player.group, n.seq.and_then(|s| self.seqs.get(s))) {

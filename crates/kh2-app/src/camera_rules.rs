@@ -89,6 +89,16 @@ pub struct EventParams {
     pub rest_fov: f32,
 }
 
+/// Talk camera (mode 4) constants (`FUN_00159688`, `FUN_001592d8`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TalkParams {
+    /// Field of view of the talk view (`DAT_00520500`, set from 0x3793e4 by the static
+    /// initialiser `FUN_00159808` -> `FUN_001597a0`).
+    pub fov: f32,
+    /// Ticks of the player's fade-in when a talk ends the look-around (`FUN_00140f28(DAT_003793d8)`).
+    pub look_fade_ticks: f32,
+}
+
 /// The camera's numbers, read from the user's executable (see [`Params::from_exe`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Params {
@@ -108,6 +118,7 @@ pub struct Params {
     pub look: LookParams,
     pub overhead: OverheadParams,
     pub event: EventParams,
+    pub talk: TalkParams,
 }
 
 /// Virtual address of the first byte of the main executable image; file offset = VA - 0xff000.
@@ -172,6 +183,7 @@ impl Params {
                 c_fov: f(0x37948c)?,
                 rest_fov: f(0x379490)?,
             },
+            talk: TalkParams { fov: f(0x3793e4)?, look_fade_ticks: f(0x3793d8)? },
         };
         p.sane().then_some(p)
     }
@@ -208,6 +220,9 @@ impl Params {
             && self.event.t_look > 0.0
             && self.event.t_pos > 0.0
             && self.event.t_fov > 0.0
+            && self.talk.fov > 0.3
+            && self.talk.fov < 3.0
+            && self.talk.look_fade_ticks > 0.0
     }
 }
 
@@ -485,6 +500,8 @@ pub enum Mode {
     Follow = 0,
     /// Look-around from the player's eye (`FUN_00140678`).
     Look = 1,
+    /// Talk camera (`FUN_00159648`; started by `FUN_00159688`, ended by `FUN_00159768`).
+    Talk = 4,
     /// Overhead camera of area camera type 1 (`FUN_00158eb0`).
     Overhead = 5,
     /// Always-behind camera of area camera type 3 (`FUN_001581a0`).
@@ -500,6 +517,48 @@ pub fn area_setup(camera_type: u8, indoor: bool) -> (usize, Mode) {
         2 => (2, Mode::Follow),
         3 => (3, Mode::Behind),
         _ => (usize::from(indoor), Mode::Follow),
+    }
+}
+
+/// Where the talk camera is placed relative to its look-at point (`FUN_001592d8`'s two branches,
+/// chosen by the second argument of `FUN_00159688`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TalkFrame {
+    /// Argument 1: on the line from the look-at point through the player, `dist` beyond the
+    /// look-at point and `height` above it (yaw `atan2` of the player minus the look-at point,
+    /// `FUN_003003e8`, rotating `(0, 0, dist)` by `FUN_0011b4d8`).
+    AroundPlayer,
+    /// Argument 0: in the talked-to object's own frame (its matrix at +0x6b0): the look-at point
+    /// taken into the object's frame, moved by `-dist` along its local z and `height` up, and
+    /// back to the world. `forward` is the object's local +z in the app's space [inferred: the
+    /// matrix is the object's facing rotation, as `reaction_parts::shape_of` reads it].
+    Object { forward: Vec3 },
+}
+
+/// The talk camera's input (`FUN_0018f108` of the target record copied to `0x358b18`): the
+/// look-at point (the centre of the target's collision record of type 0x13 with the talk part's
+/// index, `FUN_001894d0`), the distance and height (that record's two radii, +0x10 and +0x12).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TalkShot {
+    pub look: Vec3,
+    pub dist: f32,
+    pub height: f32,
+    pub frame: TalkFrame,
+}
+
+/// `FUN_001592d8`: the talk camera's wanted position for a player standing at `player` (feet,
+/// `FUN_0016b960` of the followed object).
+pub fn talk_pose(shot: &TalkShot, player: Vec3) -> Vec3 {
+    let up = Vec3::Y * shot.height;
+    match shot.frame {
+        TalkFrame::AroundPlayer => {
+            // Game (x, z) = app (x, -z); atan2(x, z) and the rotation of (0, 0, d) give the
+            // horizontal unit vector toward the player; atan2(0, 0) = 0 is game +z = app -z.
+            let d = (player - shot.look).with_y(0.0);
+            let dir = if d.length_squared() > 0.0 { d.normalize() } else { Vec3::NEG_Z };
+            shot.look + dir * shot.dist + up
+        }
+        TalkFrame::Object { forward } => shot.look - forward.with_y(0.0).normalize_or(Vec3::Z) * shot.dist + up,
     }
 }
 
@@ -628,6 +687,12 @@ pub struct Rig {
     pub fade: Fade,
     /// Overhead camera: Select switched to the fixed view (`DAT_00358b08`).
     pub overhead_fixed: bool,
+    /// The talk camera's input (`0x358b18..0x358b28`), while mode 4 runs.
+    pub talk: Option<TalkShot>,
+    /// `DAT_00358b10`: the talk view is placed on the next mode-4 tick.
+    talk_new: bool,
+    /// The warp flag (`0x38`, `FUN_00140e28`) set for the next tick.
+    warp_next: bool,
     wanted_look: Vec3,
     prev_wanted_look: Vec3,
     wanted_pos: Vec3,
@@ -659,6 +724,9 @@ impl Rig {
             look_pitch: 0.0,
             fade: Fade { value: 1.0, step: 0.0 },
             overhead_fixed: false,
+            talk: None,
+            talk_new: false,
+            warp_next: false,
             wanted_look: look,
             prev_wanted_look: look,
             wanted_pos: pos,
@@ -694,6 +762,53 @@ impl Rig {
         self.pos = v.pos;
         self.fov = v.fov;
         self.roll = v.roll;
+    }
+
+    /// `FUN_00159688`: the talk camera starts. The look-around ends (`FUN_00140f28` with
+    /// `DAT_003793d8` ticks of fade-in), the mode is 4, the shot is kept and the view is placed on
+    /// the next tick (`DAT_00358b10`). The follow camera's yaw and radius are left as they are.
+    pub fn start_talk(&mut self, p: &Params, shot: TalkShot) {
+        if self.mode == Mode::Look {
+            self.fade = Fade::set(0.0, p.look.fade_to, p.talk.look_fade_ticks);
+        }
+        self.mode = Mode::Talk;
+        self.talk = Some(shot);
+        self.talk_new = true;
+    }
+
+    /// `FUN_00159768` -> the task `FUN_00159728`: the warp flag is set (`FUN_00140e28`) and the
+    /// mode goes back to 0, or 2 when a lock-on is held (`FUN_00140ce8`; the rig takes the
+    /// lock-on from its input). The next tick snaps to the follow camera's wanted view.
+    pub fn end_talk(&mut self) {
+        if self.mode == Mode::Talk {
+            self.mode = Mode::Follow;
+        }
+        self.talk = None;
+        self.talk_new = false;
+        self.warp_next = true;
+    }
+
+    /// Mode 4 (`FUN_00159648`): on the first tick the view is placed (`FUN_001592d8`: wanted
+    /// look-at, position, fov `DAT_00520500` and roll 0, then `FUN_0013f560` copies them to the
+    /// last-tick and drawn values: a cut); every tick the wanted position is collided with the
+    /// blockers and the map (`FUN_0013fbc0`).
+    fn talk_tick(&mut self, p: &Params, i: &TickIn) {
+        let Some(shot) = self.talk else { return };
+        if std::mem::take(&mut self.talk_new) {
+            self.wanted_look = shot.look;
+            self.wanted_pos = talk_pose(&shot, i.subject.pos);
+            self.wanted_fov = p.talk.fov;
+            self.roll = 0.0;
+            self.prev_wanted_look = self.wanted_look;
+            self.prev_wanted_pos = self.wanted_pos;
+            self.prev_wanted_fov = self.wanted_fov;
+            self.look = self.wanted_look;
+            self.pos = self.wanted_pos;
+            self.fov = self.wanted_fov;
+        }
+        if let Some(c) = collide(p, self.wanted_look, self.wanted_pos, i.cast, Some(i.blockers), false) {
+            self.wanted_pos = c;
+        }
     }
 
     fn clamp_radius(&mut self) {
@@ -820,6 +935,15 @@ impl Rig {
 
     /// One 60 Hz tick (`FUN_00140a80`).
     pub fn tick(&mut self, p: &Params, i: &TickIn) {
+        // The warp flag a talk's end set (`FUN_00140e48` after the mode update snaps the drawn
+        // values to the wanted ones).
+        let warped;
+        let i = if std::mem::take(&mut self.warp_next) {
+            warped = TickIn { warp: true, ..*i };
+            &warped
+        } else {
+            i
+        };
         self.prev_wanted_look = self.wanted_look;
         self.prev_wanted_pos = self.wanted_pos;
         self.prev_wanted_fov = self.wanted_fov;
@@ -831,6 +955,11 @@ impl Rig {
         let mut snap_yaw = false;
         if self.mode == Mode::Overhead {
             self.overhead_tick(p, i);
+            return;
+        }
+        if self.mode == Mode::Talk {
+            self.talk_tick(p, i);
+            self.smooth_and_collide(p, i, chest, false);
             return;
         }
         // Lock-on starts by ending the look-around (`FUN_0015a180` calls `FUN_00140f28`).
@@ -943,6 +1072,10 @@ impl Rig {
             }
             return;
         }
+        // Mode 4 is not in `FUN_001407b8`'s collision cases.
+        if self.mode == Mode::Talk {
+            return;
+        }
         let from = if lock { chest } else { self.look };
         if let Some(c) = collide(p, from, self.pos, i.cast, Some(i.blockers), false) {
             self.pos = c;
@@ -1041,6 +1174,7 @@ mod tests {
                 fov: 1.05,
             },
             event: EventParams { k: 2.5, c: 0.5, t_look: 0.1, rest: 1.0, t_pos: 0.07, t_fov: 0.07, k_fov: 2.5, c_fov: 0.5, rest_fov: 0.001 },
+            talk: TalkParams { fov: 1.0, look_fade_ticks: 30.0 },
         }
     }
 
@@ -1537,6 +1671,76 @@ mod tests {
         assert!(rig.pos.z > 390.0, "{}", rig.pos);
     }
 
+    /// `FUN_001592d8` argument 1: the camera on the line from the look-at point through the
+    /// player, `dist` out and `height` up; argument 0: behind the object along its local z.
+    #[test]
+    fn talk_pose_places_the_camera_past_the_player_or_in_the_objects_frame() {
+        let look = Vec3::new(100.0, 150.0, 200.0);
+        let shot = TalkShot { look, dist: 300.0, height: 40.0, frame: TalkFrame::AroundPlayer };
+        let pos = talk_pose(&shot, Vec3::new(100.0, 0.0, 300.0));
+        assert!((pos - Vec3::new(100.0, 190.0, 500.0)).length() < 1e-3, "{pos}");
+        // The direction is horizontal whatever the heights, and its length is the distance.
+        let pos = talk_pose(&shot, Vec3::new(400.0, -80.0, -200.0));
+        let off = (pos - look).with_y(0.0);
+        assert!((off.length() - 300.0).abs() < 1e-3 && (pos.y - 190.0).abs() < 1e-3);
+        assert!(off.normalize().dot(Vec3::new(300.0, 0.0, -400.0).normalize()) > 0.9999);
+        // A player on the look-at point: atan2(0, 0) = 0, game +z, the app's -z.
+        let pos = talk_pose(&shot, look);
+        assert!((pos - Vec3::new(100.0, 190.0, -100.0)).length() < 1e-3, "{pos}");
+        let obj = TalkShot { frame: TalkFrame::Object { forward: Vec3::X }, ..shot };
+        let pos = talk_pose(&obj, Vec3::ZERO);
+        assert!((pos - Vec3::new(-200.0, 190.0, 200.0)).length() < 1e-3, "{pos}");
+    }
+
+    /// The talk camera cuts to its view on the first tick, holds it while the player stands
+    /// (the sticks do nothing), and its end snaps back to the follow camera of before.
+    #[test]
+    fn talk_camera_cuts_in_holds_and_warps_back() {
+        let p = params();
+        let s = subject(Vec3::ZERO);
+        let rig = &mut Rig::new(&p, row(), &s, &no_wall);
+        for _ in 0..60 {
+            rig.tick(&p, &input(s, &no_wall));
+        }
+        let (before_pos, before_look, yaw, radius) = (rig.pos, rig.look, rig.yaw, rig.radius);
+        let shot = TalkShot { look: Vec3::new(0.0, 160.0, -200.0), dist: 350.0, height: 30.0, frame: TalkFrame::AroundPlayer };
+        rig.start_talk(&p, shot);
+        let mut i = input(s, &no_wall);
+        i.sticks = Sticks { right: Vec2::new(1.0, 0.0), right_mag: 1.0, ..Sticks::default() };
+        rig.tick(&p, &i);
+        let want = talk_pose(&shot, s.pos);
+        assert_eq!(rig.mode, Mode::Talk);
+        assert!(rig.pos.distance(want) < 1e-3 && rig.look.distance(shot.look) < 1e-3, "cut: {} {}", rig.pos, rig.look);
+        assert!((rig.fov - p.talk.fov).abs() < 1e-6 && rig.roll == 0.0);
+        for _ in 0..120 {
+            rig.tick(&p, &i);
+        }
+        assert!(rig.pos.distance(want) < 1e-2 && (rig.fov - p.talk.fov).abs() < 1e-4, "held: {}", rig.pos);
+        assert_eq!((rig.yaw, rig.radius), (yaw, radius), "the follow camera's yaw and radius are kept");
+        // A wall between the look-at point and the view pulls the wanted position in.
+        let wall_shot = TalkShot { look: Vec3::new(-100.0, 160.0, 0.0), dist: 400.0, height: 0.0, frame: TalkFrame::AroundPlayer };
+        let s2 = subject(Vec3::new(100.0, 0.0, 0.0));
+        rig.start_talk(&p, wall_shot);
+        for _ in 0..200 {
+            rig.tick(&p, &input(s2, &wall));
+        }
+        assert!(rig.pos.x < 0.0 && rig.pos.x > -10.0, "pulled in front of the wall: {}", rig.pos);
+        rig.start_talk(&p, shot);
+        rig.tick(&p, &input(s, &no_wall));
+        rig.end_talk();
+        rig.tick(&p, &input(s, &no_wall));
+        assert_eq!(rig.mode, Mode::Follow);
+        assert!(rig.pos.distance(before_pos) < 1e-2 && rig.look.distance(before_look) < 1e-2, "warped back: {} {}", rig.pos, rig.look);
+        assert!((rig.fov - row().fov).abs() < 1e-4);
+        // From the look-around the talk ends it and the player fades back in.
+        let rig = &mut Rig::new(&p, row(), &s, &no_wall);
+        rig.tick(&p, &TickIn { select: true, ..input(s, &no_wall) });
+        assert_eq!(rig.mode, Mode::Look);
+        rig.start_talk(&p, shot);
+        assert_eq!(rig.mode, Mode::Talk);
+        assert!(rig.fade.step > 0.0 && (rig.fade.step - p.look.fade_to / p.talk.look_fade_ticks).abs() < 1e-6);
+    }
+
     #[test]
     fn exe_table_round_trip() {
         // A fake image with the table's addresses filled, to check the offsets are consistent.
@@ -1551,7 +1755,7 @@ mod tests {
             (0x3793cc, 200.0), (0x3793a8, 600.0), (0x3793b0, -500.0), (0x3793b4, 51.0), (0x3793b8, -1492.0), (0x3793bc, 256.0),
             (0x3793c0, -1777.0), (0x3793c4, 1.5), (0x3793d0, 1.05), (0x379470, 2.5), (0x379474, 0.5), (0x379478, 0.1),
             (0x37947c, 1.0), (0x379480, 0.07), (0x379484, 0.07), (0x379488, 2.5), (0x37948c, 0.5), (0x379490, 0.001),
-            (0x37a4c8, -0.05), (0x37a4cc, 0.05),
+            (0x37a4c8, -0.05), (0x37a4cc, 0.05), (0x3793e4, 1.04), (0x3793d8, 30.0),
         ] {
             put(va, v);
         }
@@ -1562,6 +1766,7 @@ mod tests {
         assert_eq!(p.overhead.offset, Vec3::new(600.0, 500.0, 0.0), "Y flipped to up");
         assert_eq!(p.look.distance, 350.0);
         assert_eq!((p.look.turn_left, p.look.turn_right), (-0.05, 0.05));
+        assert_eq!(p.talk, TalkParams { fov: 1.04, look_fade_ticks: 30.0 });
         assert!(Params::from_exe(&exe[..1000]).is_none());
         assert!(Params::from_exe(&vec![0u8; 0x380000 - EXE_BIAS]).is_none());
     }

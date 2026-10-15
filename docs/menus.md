@@ -1144,7 +1144,7 @@ node's box once.
 
 ### 20.5 Gaps
 
-- **Pages 3 to 0x20** (WP-MN10 ported 1 and 2: 20.7) (the world's categories, characters, enemies, the album, Ansem's reports, limits, minigames, quests,
+- **Pages 4 to 0x20** (WP-MN10 ported 1 and 2: 20.7; WP-MN11 page 3, the help line, the cursor and L1/R1: 20.8) (the world's categories, characters, enemies, the album, Ansem's reports, limits, minigames, quests,
   the Roxas pages, the photo and face files): not read beyond the exits of page 2.
 - **The children's groups 0x98 / 0x99 / 0x9a** (`FUN_002b9658`, `FUN_002b9798`, `FUN_002baf08`: a per-world state the port
   has no data for, the words at 0x382aec / 0x382af0): the children stay on group 1.
@@ -1229,3 +1229,85 @@ node's box once.
   `FUN_00237638`, `FUN_00237658`, `FUN_00237678`, `FUN_001a7ed8`, `FUN_00190c40`, `FUN_00190dd0`, `FUN_00190e40`,
   `FUN_00190e70`, `FUN_00190b70`, `FUN_00276550`, `FUN_002765a0`, `FUN_002b9658`, `FUN_002b9798`, `FUN_002baf08`,
   `FUN_002a04f8`; data 0x382b68..0x382ba6, 0x381fb8, 0x36d45c, 0x36d460, 0x37ad38.
+
+### 20.8 Help line, cursor, L1/R1, page 3 the story (WP-MN11) [V unless marked]
+
+- **Help line** (`FUN_00278468`, instructions 0x278468..0x278554): object `DAT_0036d100 + 0xe78`, type 0x755d,
+  sequence 5, **group 0x7b**, a child of the plate 0x7558 (`DAT_0036d0f0 + 0x4f8`) when that one is alive; the text
+  goes to +0x18c; flag 8 cleared (`FUN_00139860`); a second call on a live object plays 0x7b again; `FUN_002785a0`
+  plays 0x7c (the leave) at every page switch. Callers: page 2's build through `FUN_002a4a68` (page 1: 0x493f, else
+  the u16 at 0x382b98 + 2 * the cursor row's category), page 3's build through `FUN_002a54a8` (0x48d7), the other
+  category pages (`FUN_002afa00`: 0x382f04 / 0x382f08). **Nothing calls `FUN_002a4a68` on a cursor move** (`--jal
+  0x2a4a68`: the build only; a tail `j` was not scanned): the line keeps the category of the row the build put the
+  cursor on. Page 0 sets none (the bar stays empty). Port: `chrome`.
+- **List cursor** (`FUN_00276bb0`, the per-frame draw): while the list `DAT_0036d0e0` has a live row object
+  (`FUN_00298a90`), +0xe is 0, the scene is idle (`FUN_00295ad0() == 1`) and `DAT_0036d104` is 0, it creates cursor
+  slot 0 (`FUN_00277158` -> `FUN_0029a9c0(0, seq 5, .., 0x21, 0x21)`) and hands it the cursor row
+  (`FUN_0029ac68`: target +0x180, flag 0x800 `FUN_00139918`), and object 0x7571 (`FUN_002771c0` ->
+  `FUN_0029af00(DAT_0036d0fc, 0x7571, .., 0x381fc8)`: the follower groups, enter [0] then [2]) on the same row
+  unless `DAT_0036d105` (no writer found with `--addr 0x36d105`: taken as 0 [inferred]). `DAT_0036d104` is set by
+  `FUN_00277e70(1)` in the builds of page 1 (`FUN_002a4188`) and page 3 (`FUN_002a4c38`): those pages have none.
+  Port: the cursor (group 0x21) and the follower drawn at the cursor row of page 2 or the cursor cell of page 0
+  [inferred: an object with a target is drawn at the target's position]; `place_cursor`. This is the row
+  highlight MN10 looked for (the rows' own groups never change).
+- **L1 / R1** (`FUN_00277860`, `FUN_00277740`, `FUN_002774e8`, `FUN_00277928`): the names at 0x381fb8 belong to
+  pages 0, 2 and 0xc (`FUN_00277928` maps a name's place in the table to 0, 2, 0xc). On page 0 the left hint is name 2
+  and the right name 1; on pages 1 and 2 left 0, right 2; on 0xc left 1, right 0. When the journal world byte read
+  with `lbu` is above 0xe (so -1 too) a hint that would name page 2 names 0 (page 0xc: 2) instead. The texts:
+  left = icon `FUN_00255418(0x400)` (pairs at 0x380ab0, 0xb when absent) + the name, right = the name + icon
+  `FUN_00255418(0x800)` (control code 9, `FUN_002554c0`). Objects `DAT_0036d0f0` (groups 0x2f then 0x30) and
+  `DAT_0036d0f0 + 0x1a8` (0x32 then 0x33), centred (+0x1a4 = 2), made by `FUN_00277258` -> `FUN_002774e8`; only the
+  builds of pages 0 and 2 write the texts; the category teardown `FUN_00277ec0` frees the `DAT_0036d100` objects
+  only, so the hints and the title stay on page 3 [inferred from the teardown]. The list results -9 and -8 come from
+  bits 0x8000 / 0x4000 of the pad word when the list flags 0x2000 / 0x1000 are set (`FUN_00297148`; the builds OR
+  0x3000 in); -8 takes the right hint's page (`FUN_002a27d8`, `FUN_002a3da0`). Port: -9 = L1 = Q / PageUp, -8 = R1 =
+  E / PageDown [inferred: the side each icon is drawn on]; pages 0 and 2 switch to each other, page 0xc is refused.
+- **Page 3, the story** (category 1; build `FUN_002a4c38`, data `FUN_002a5060`, draw callback 0x2a54c8 (no `.c`,
+  read from the instructions), marks `FUN_002a5708`, handler `FUN_002a5218`). Entries: every record of `jiminy.bar`
+  entry 1 of the journal world whose flag +0xa is set (`FUN_002a1e78`), in file order, text +8; `FUN_00191760`
+  counts each text's lines. Objects: the tab of plate 0 (`FUN_0029d1d0(0, -1, 0)`: groups 0x381fc0 [0] then [2],
+  the category's row text put there by page 2's confirm `FUN_0029d820(0, ..)`, font 1, its follower 0x381fc8), the
+  backdrop 0x755a (`FUN_00278658`: group 0x381f88[family], family 1 from `FUN_00277d60(1)` of page 2), layers 0x5e
+  and 0x62 under the header, one list row (groups 2) under 0x5e carrying the draw callback, ten mark objects (group
+  2) one line height apart. The callback clips to ten line heights (`FUN_0014b6c0`), starts with the entry that
+  holds the first shown line, draws each text in **font 3** at the 0x5e group's size (15 when 0) with an extra gap
+  of `pitch - size - font gap` (`FUN_001a8cc0`, never below 0) so a line is the group's +0x1c high, and moves down
+  an entry's lines times the line height. The list count is the lines of all entries but the last, plus one, plus
+  the last's lines beyond ten (`story_count`); Up/Down step a line; L1/R1 a page of ten (+0x1c = 10,
+  `FUN_00299010`; +0x27 set: the list pages itself in `FUN_00298370` and returns no -9/-8) [inferred: clamped];
+  -2 goes back to page 2 with the row the confirm kept (`FUN_00277dc8` / `FUN_00277de8`), -4 closes. The colour is
+  the row's +0x198 = 0x60000008 [inferred: that word is the callback's colour argument]. Port: `build3`,
+  `story_text`; the scroll bar `FUN_00299878(DAT_0036d0f8, ..)` is not drawn as its own object (the 0x62 layer
+  draws its arrows); the marks stay on group 2 (their 0x382ba8 / 0x382bac follow the read bits of `DAT_0036d4e8`,
+  which the app has no data for).
+- **Run.** The MN10 command with a `KH2_STATE` holding Twilight Town's first story flags:
+  `KH2_STATE=<{"story_flags": [2097, 4098, 5122, 6195, 7204, 8193, 9217, 10243, 2197, 2200, 2201, 2204]}>
+  KH2_NO_ENEMIES=1 KH2_KEYS=7:Enter,8:Down,8.2:Down,8.4:Down,8.6:Down,9.2:J,10.5:Down,11:J,12:E,12.5:Down kh2-game tt02`
+  (`journal: page 3 (FUN_002a4c38): world 0, 4 story entries [2afa, 2afb, 2afc, 2afd], 41 lines, list count 32,
+  line height 26, gap 6`, then `first line 10`, `first line 11`). Tests: `menu_journal::tests::{hints_name_the_neighbour_pages,
+  story_page_entries_lines_and_state_machine, the_disc_category_page_tables}`.
+- **Gaps.** Characters (page 6 / 0xb, `FUN_002ae3e8`, handler `FUN_002ae790`): the faces come from entry 5
+  (`FUN_002af398`: records of the world opened by `FUN_002a2018`, story flags or an item count) placed at the
+  record's x/y in groups from 0x382f30, but their marks and the "met" state are the bits of `DAT_0036d4e8`
+  (`FUN_002b7208` / `FUN_002b72c0`, the journal's own save data) and the face file `jmface_` (`FUN_002af7a0`,
+  `FUN_002a19f8`) with `FUN_002af6c0` / `FUN_002af800` were not read: not ported. Album (page 4, `FUN_002a5a68`,
+  entry 2 and `FUN_002b79d8`), Treasures / Maps (7 / 8, `FUN_002afca0`), quests (9, `FUN_002b5e50`), minigames (10,
+  `FUN_002b4b18`), Character Links (0xb, `FUN_002ae3e8` with the second family) and page 0xc (`FUN_002a7220`): not
+  read beyond their first calls; whether they draw an empty frame without data was not established, so they stay
+  refused. The help line's colour (flag 8 cleared: the group's colour) is kept at 0xe5e5e5 [inferred]. Page 0's
+  cursor and follower are drawn on the cell (the same draw code runs there) on top of the 0x96 group. No footage of
+  the journal exists (`local/VIDEOS.md`).
+- **Decompile index (MN11).** `FUN_00278468` (instructions), `FUN_002785a0`, `FUN_002785d8`, `FUN_00277740`,
+  `FUN_00277860`, `FUN_002774e8`, `FUN_00277928`, `FUN_00277258`, `FUN_00277338`, `FUN_002776e0`, `FUN_002779f8`,
+  `FUN_00277b20`, `FUN_00277b40`, `FUN_00277e70`, `FUN_00277eb0`, `FUN_00277ec0`, `FUN_00278658`, `FUN_00276bb0`,
+  `FUN_00277158`, `FUN_002771c0`, `FUN_0029a9c0`, `FUN_0029ac68`, `FUN_0029ad48`, `FUN_0029aaf8`, `FUN_0029af00`,
+  `FUN_0029b3a0`, `FUN_0029cf78`, `FUN_0029d1d0`, `FUN_0029d3e8`, `FUN_0029d820`, `FUN_0029d860`, `FUN_00297148`,
+  `FUN_002977a8`, `FUN_002978f8`, `FUN_00298370`, `FUN_00298a80`, `FUN_00298a90`, `FUN_00298ce0`, `FUN_00298cf0`,
+  `FUN_00298d58`, `FUN_00298fb0`, `FUN_00298fe0`, `FUN_00299010`, `FUN_002967b8`, `FUN_00296c50`, `FUN_00296f98`,
+  `FUN_00296fb8`, `FUN_00255418`, `FUN_002554c0`, `FUN_002554e8`, `FUN_002554f0`, `FUN_00295bf0`, 0x2a4ac0
+  (instructions), `FUN_002a46d8`, `FUN_002a34a8`, `FUN_002a4680`, `FUN_002a4c38`, `FUN_002a5060`, 0x2a54c8
+  (instructions), `FUN_002a5708`, `FUN_002a54a8`, `FUN_002a5218`, `FUN_002a4ba8`, `FUN_002a39b8`, `FUN_002a5a68`,
+  `FUN_002ae3e8`, `FUN_002af398`, `FUN_002af2b0`, `FUN_002afa00`, `FUN_002af7a0`, `FUN_002ae790`, `FUN_002afca0`,
+  `FUN_002b5e50`, `FUN_002b4b18`, `FUN_002b7208`, `FUN_002b72c0`, `FUN_002b9360`, `FUN_002b9480`, `FUN_002a2018`,
+  `FUN_002af688`, `FUN_002a1e78`, `FUN_00139918`; data 0x381f88, 0x381fb8, 0x381fc0, 0x381fc8, 0x380ab0,
+  0x382b98, 0x382ba8, 0x382bac, 0x382f04..0x382f30.

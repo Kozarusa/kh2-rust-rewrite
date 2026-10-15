@@ -22,8 +22,10 @@
 //!   `jm_top_<world>.2ld` pictures, the story texts and the title; page 1 (`FUN_002a4188` / `FUN_002a44a8`) is
 //!   Roxas's one-row page with the same layer objects in other groups.
 //!
-//! What the port draws: pages 0, 1 and 2 (docs/menus.md 20.7). The category pages (3..0x20) are not ported: a
-//! confirm on a page 2 row, or on a page 0 cell of id above 0xe, is refused with a log line.
+//! What the port draws: pages 0, 1 and 2 (docs/menus.md 20.7), and since WP-MN11 (20.8) the help line, the list
+//! cursor, the L1 / R1 hints and switches between pages 0 and 2, and page 3 (the story). The other category pages
+//! (4..0x20) are not ported: a confirm on their rows, an L1 / R1 to page 0xc, or a confirm on a page 0 cell of id
+//! above 0xe, is refused with a log line.
 
 use bevy::prelude::*;
 use kh2_image::layd::{self, Layd};

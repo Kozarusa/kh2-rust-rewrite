@@ -25,10 +25,11 @@ spawn group every program of every script loads (a group loaded by two programs 
 | 0x138 | `M_EX930` | 1 | tt04 `btl`: b_21 |
 | 0x4d7 | `N_EX500_BTL` | 1 | tt04 `btl`: b_50 |
 | 0x82f | `N_EX600_BTL` | 1 | tt04 `btl`: b_52 |
+| 0x139 | `M_EX940` (type 0x15) | 4 | tt04 `btl`: b_44 (0x50: serial 0x26 wave 1; 0x102..0x104 wave 2) |
 
 tt00 spawns only the player; tt02 spawns the player, the two friends, save and world points, `F_EX000` and event
 actors (ObjectType 15). Neither Shadow nor Soldier is in any of the three scripts: the app's Shadow/Soldier waves
-are its own (see "Waves"). `M_EX940` (object 0x139, four in b_44) has ObjectType 21, not 4.
+are its own (see "Waves"). `M_EX940` (object 0x139, four in b_44) has ObjectType 21 (0x15, the second enemy class; spawned since WP-EN2, "M_EX940 and the object type 0x15").
 
 The most common enemy is the Dusk. Its model, motion set (`obj/M_EX990.mset`, 46 motions), effect file
 (`obj/M_EX990.apdx`) and BDX script (BAR type 3 of the model file, 6378 words) are on the disc; the test asserts that.
@@ -66,7 +67,7 @@ New host functions the Dusk needs are in the table of `docs/enemy-ai.md` (0.15, 
   `FUN_001991a0` (through `FUN_00198b30`). That walks the members in record order; once the timer runs it stops.
   A member that is absent (`FUN_0016b0d8` by the serial +0x1e), not in the table at 0x35d278, and whose wave byte
   (+0x30) is at most the group's wave (+0x20, 0 at set-up) is created (placement by +0x1d: 0 the record's point,
-  1 near the player `FUN_00199970`, 2 within the radius +0x2e of the point `FUN_00199a80`) and the timer becomes
+  1 near the player `FUN_00199970`, 2 within the radius +0x2e of the point `FUN_00199a80`; both below) and the timer becomes
   its delay (+0x2a). When the walk ends with the timer at 0, `FUN_00199618` moves to the next wave that has
   members, if the `00objentry` `SpawnLimiter` bytes (row +0x54) of the members in play (spawn kinds 0, 3, and 2 of
   the waves so far, except those defeated for good; `FUN_001996f0`, `FUN_001995c8`) add up to at most header
@@ -81,7 +82,8 @@ New host functions the Dusk needs are in the table of `docs/enemy-ai.md` (0.15, 
   "a wave 4 s after the last enemy" in tt04 was the app's own and is gone there.
 - **Unload.** The jump task's unload `FUN_00104ce0` calls `FUN_00168ca0` -> `FUN_001b8800` (frees every object of
   the list at 0x1d5d7e0) and `FUN_00168ce8` -> `FUN_00181af8` (frees the loaded groups) [inferred: these are the
-  area's actors; the objects' own teardown was not read].
+  area's actors, among them the PRIZE manager with its orbs and the item objects (`prize::unload_prizes`); the objects' own
+  teardown was not read].
 
 tt04's groups (test `tt04_btl_programs_choose_their_groups`, disc): there is no `btl` program 0, so a new game (all
 program bytes 0) has **no enemies in tt04**; program 1 (flag 0x883) loads b_00: a kind-2 group (0xe1, a box volume
@@ -118,18 +120,118 @@ kind-2 group [8a]`, `area group b_44 kind-2 group 0x8a: Dusk (serial 0x24, wave 
 program that has enemies `area tt04: btl program 0x0 loads no group with enemies of the app (FUN_00181148); no
 enemies`.
 
-**Gaps.** Placements 1 and 2 of a kind-2 member (`FUN_00199970`, `FUN_00199a80`: near the player / within a
-radius, ground searches `FUN_001a5ea8` / `FUN_001a5ee0` chosen by objentry +0x48 bit 3) are not ported: the member
-stands at its record's point. The `FUN_00190668` test that skips the group walk in `FUN_001989d8` was not read (the
-app always walks). Entities the app cannot create (`M_EX940`, object type 0x15) are left out of the walk and of the
-`SpawnLimiter` sum [inferred stand-in: counting them would hold b_44's wave 1 back for ever]. The table at 0x35d278
-lives for one run of the area's scripts here, not four areas (`FUN_00194188`'s slots and ages are not ported).
-Events 2 and 3 of an emptied group (`FUN_00199518`) are not fired, and the +0x588 bit 0x800 test before them was
-not read. Kind-6 groups (`FUN_00199e98`) and the other group kinds are not ported (tt04's enemy groups are kinds 1
-and 2). Prize orbs on the ground are not removed by the unload (`prize.rs` keeps its pool count; not owned here).
-The Dusk's drop row reads story flags 2267, 2256, 2122, 2091 through host 0.15, which answers from the story (all
-clear without a state file). Whether the game moves the player to a battle group's player entry when the battle
-starts was not read (only the harness does it).
+### Placements 1 and 2 of a kind-2 member (WP-EN2)
+
+`FUN_001991a0` creates a member by the record byte +0x1d: 0 at the record's point (`FUN_001982c8`), 1 near the
+player (`FUN_00199970`), 2 within a radius of the point (`FUN_00199a80`, radius = the record's halfword +0x2e,
+centimetres) [V]. Both are a ring search on the collision, chosen by the object's `00objentry` flags (+0x48) bit 3:
+clear searches the floor (`FUN_001a5ea8` -> `FUN_001a6198`), set searches in the air (`FUN_001a5ee0` ->
+`FUN_001a63c8`) [V]. Their floating-point arguments (the decompiler drops them) were read from the instructions:
+
+| placement | centre | radii (cm) | air heights (cm) |
+| --- | --- | --- | --- |
+| 1 (`FUN_00199970`) | the player's position (`FUN_0016b960` of `DAT_0035c998` [inferred: the object's position]) with y -200 (raised 2 m) | 150 .. 450 (`DAT_0037b2f8`, `0x37b2fc`) | -100 .. 100 (`0x37b300`, `0x37b304`) |
+| 2 (`FUN_00199a80`) | the record's point | 0 .. the record's radius | 0 .. 0 |
+
+The search (`FUN_001a6068` sets it up, `FUN_001a6198` / `FUN_001a63c8` run it) [V]:
+
+1. Draw a radius `r` = min + u1 (max - min) and an octant: `(c & 4) >> 2 | c << 1` for the counter `c` = `DAT_0035e9b0`
+   (which then counts 0..7 round) times 45 degrees (`DAT_0037b5a8`) plus u2 times 45 degrees. `u` is the generator
+   `DAT_003716a0` (`seed * 0x10dcd`, unsigned, times 2^-32). The try `n` (1, 2, ..) is at the octant angle plus `n` steps of
+   45 degrees (`DAT_0037b5b4`), the point at `r` round the centre (x = cos, game z = sin).
+2. On the floor: the point's floor is the first hit of the line from 200 cm above the point to 1000 cm below it
+   (`FUN_001a5c30(1000, 200, ..)`, `0x37b5bc` / `0x37b5c0`, the collision ray `FUN_001d1648`); it is taken when the line
+   from the centre to a spot 20 cm further out (`0x37b5b8`) and 100 cm above that floor (`0x37b5b0`) is free
+   (`FUN_001a5bf8`). In the air: a random height of the range is added to the point (a generator step per try) and the
+   same line test, to 100 cm above the point, decides.
+3. After 8 tries the radius shrinks by 100 cm (`DAT_0037b5b0`) until it is below the minimum. Nothing found: the floor
+   under the centre (the same ray) or, in the air, the centre.
+
+The app (`enemy::ring_place`, `member_ring`, `ring_place_in`; tests `ring_search_*`, `member_rings_follow_the_placement_byte`,
+`place_rng_follows_the_games_generator`): the same loop in metres with its own generator (the game's one is shared with
+every other caller, and the executable holds 0 as its seed, so the start value is the app's [inferred: nothing else
+depends on the sequence]); the floor ray is `World::ground_m` from 2 m above the point (at most 12 m below) and the line test is
+`World::blocked_m`, which meets walls only [inferred approximation: `FUN_001d1648` meets floors too]. tt04's b_44 has three
+Dusks of wave 1 with placement 1 (serials 0x24, 0x25, 0x101; test `tt04_btl_programs_choose_their_groups`); no tt04 member
+has placement 2. Run `KH2_WAVE_GROUP=b_44` (acceptance below): `kind-2 group 0x8a: Dusk (serial 0x24, wave 1) created near
+the player (FUN_00199970) at Vec3(-2.98, -0.10, -6.12)`, and the same for 0x25 and 0x101 at other points round Sora.
+
+### Group events 2 and 3 and kind-6 groups (WP-EN2)
+
+- **The counter.** The group object's +0x18 counts the group's enemy-class entities (object types 4 and 0x15,
+  `FUN_00198150`): `FUN_00198750` counts the spawn-kind-2 ones (`FUN_001994c8`, once per entity not in the table at
+  0x35d278), and `FUN_00198920` the ones of kinds 0, 3 and 1 (current entrance) that it creates, in a group that is not
+  disabled [V]. `counted_at_load` is the port; b_44 counts 3 + 8 = 11.
+- **Removal.** `FUN_001993f8` (an object of the group is removed) calls `FUN_00199518` only for spawn kinds 0, 1 and 3 whose
+  +0x588 bit 0x800 is set; the enemy classes' constructor `FUN_001b0270` (also the type-0x15 one, `FUN_001c1ec8`) sets that
+  bit, so it holds for every enemy [V]. A spawn-kind-2 member's removal never lowers the counter [V: `lVar1 == 2` skips it],
+  so a group whose enemies are all kind 2 (tt04's b_00, b_21, b_44) never empties.
+- **The events.** `FUN_00199518`: counter - 1; at 0 `FUN_00197b70(3, header +2)` (group emptied); then, when the counters of
+  all live groups (`FUN_00199580`: the 0x38-byte records from 0x1c8af90) sum to 0, `FUN_00197b70(2, 0)` (all emptied) [V].
+  `FUN_00197b70` broadcasts to every object (their method +0x34) and matches the area triggers (docs/events.md "Firing").
+  The app (`removal_events`, test `emptied_groups_raise_events_3_and_2`) writes `struggle::GlobalEvent` (enemy scripts get
+  it as event 10) and logs a matching trigger of the btl program: `area group b_42 group record 0x5d: member serial 0x14
+  removed: global event 3 (93) (FUN_00199518)`. Removal is "its HP reached 0" [inferred, as for the kind-2 walk]. The
+  entities the app cannot create still count in the game's counter and never leave it here, so such a group does not fire.
+  What a matching trigger does (the story flag, the event, the jump) is not applied: no Twilight Town script has a trigger
+  on event 2 or 3 (test `no_twilight_town_data_uses_group_events_or_kind_six_enemies`, tt00..tt41), so nothing in the data
+  needs it (a gap for other worlds).
+- **Kind-6 groups** (`FUN_00198b30` case 6 -> `FUN_00199e98`) [V]. `FUN_001989d8` visits a kind-6 group's volumes (only those
+  whose activator halfword +0x2c is 1) and, while the player is inside one, creates every absent spawn-kind-2 entity at its record's
+  point (`FUN_001982c8`: no timer, wave, table of the defeated or placement byte), and starts a 0 -> value ramp on the new
+  object (`FUN_001abf40` on +0x82c: an appear fade, not ported). Port: `kind_six_creates` (test
+  `a_kind_six_group_creates_its_absent_members_at_once`); the system calls it every tick. [inferred: an enemy counts as present until it is removed, so a corpse that is
+  still lying there blocks the next creation; the game's check is the object table, `FUN_0016b0d8`.] The 231 kind-6
+  groups of tt00..tt41 hold no enemy-class entity (same test), so the port has no user in the three areas the app loads.
+  Kind 3, 4, 7, 8, 9 and 10 groups are not ported (kinds 3 and 4 hold no enemies in the data; 7 and 8 are other
+  object kinds).
+
+**Gaps.** The `FUN_00190668` test that skips the group walk in `FUN_001989d8` was not read (the app always walks).
+Entities the app cannot create (other than those it has) are left out of the walk and of the `SpawnLimiter` sum [inferred
+stand-in: counting them would hold a wave back for ever]; since WP-EN2 `M_EX940` is no longer one of them (below). The table
+at 0x35d278 lives for one run of the area's scripts here, not four areas (`FUN_00194188`'s slots and ages are not
+ported). The effect of a trigger that matches group event 2 or 3 is not applied (no data needs it). Prize orbs and items are
+removed by the jump's unload since WP-EN2 (`docs/prizes.md` "Unload"). The Dusk's drop row reads story flags 2267, 2256,
+2122, 2091 through host 0.15, which answers from the story (all clear without a state file). Whether the game moves the
+player to a battle group's player entry when the battle starts was not read (only the harness does it).
+
+### M_EX940 and the object type 0x15 (WP-EN2)
+
+`FUN_0016e8c0` makes the object of an entity by the objentry `ObjectType`: type 4 `FUN_001b02b0` (vtable 0x35eea8) and type
+0x15 `FUN_001c1ec8` (size 0xb00 like type 4, which it calls `FUN_001b0270` for, then vtable 0x35f580 and +0xabc bit 0x80) [V].
+The two vtables are equal up to +0x78 (the same object methods) and differ in the second table (+0x84..+0x138: the link
+interface, `FUN_001c26c0`, `FUN_001c2b70`, `FUN_001c2650`, `FUN_00169ee8` ..). So an object of type 0x15 is a scripted enemy
+like the others; the objentry rows with type 0x15 are the large ones (weight 500: `M_EX570`, `M_EX640`, `M_EX670`, `M_EX680`,
+`M_EX940`). It can be spawned with the existing machinery: `enemy::M_EX940` (object 0x139, model `M_EX940`; the name is the model's,
+the data gives none). Its script (5159 words; modes `appear`, `btl_attack`, `atk_brush`, `atk_jump`, `atk_throw`,
+`atk_fullpower`, `mode_revenge`, `leave`, `dead`) hands `enmp` row 49 to `set_obj_param` (constant pushed at 0x06e2 for `R124c`): 50 HP at world level 1;
+`dead` (R08db) is the Dusk's (element 2 of its effect file, flags 3 and 6, fade, hide). New host calls: 1.97 `obj_part_110`
+(the address of object +0x110, the init stores a float at its +0xc), 1.53 `bits_480_set` (+ 1.54 now clears in the same memory:
+no reader of either bit array was traced), 1.108 / 1.109 `link_method_3c/40` (stubs: no link record in the app).
+
+Run `KH2_BDXLOG=1 KH2_WAVE_GROUP=b_44 ... kh2-game tt04` (acceptance below): four M_EX940 appear (wave 1 and wave 2 of
+group 0x8a) and enter `appear`, `mode_battle`, `btl_long`, `btl_short`, `atk_jump`, `atk_brush`, `atk_fullpower`,
+`atk_throw`, `back_target`, `mode_revenge`, `rvg_short`, `idle`, `leave`, `dead`; the only unimplemented host call is 1.0.
+**Gap (visible).** The blow-class hits (hit reaction 7, 9 or 11, R016a at 0x01a7) make the script call `R0082`, which
+creates a second object with host 1.0 `create_object` (0x170190 -> `FUN_0016e8c0`) for the objentry id 0x6bf = the
+`SpawnObject1` of M_EX940 = `M_EX850` (type 4, its own 3101-word script with a mode "burserk start"), and hides itself
+(1.28) when that object is valid [V from the BDX listing; the transformation is [inferred] from the two]. The app has no
+`create_object`, so after that hit the M_EX940 keeps fighting (`atk_fullpower`) and, in the run, walked away from Sora in
+`atk_fullpower` with motion 204 for the rest of the run instead of changing form. Not ported: 1.0, the second enemy, its
+host calls on the created object (1.98 / 1.148 / 1.28 on another handle), `obj_valid` for objects other than self and the player.
+
+### Acceptance runs (WP-EN2)
+
+- `powershell -NoProfile -ExecutionPolicy Bypass -File localccept.ps1 -SkipAudio -Only tt04-dusk,tt04-seifer,combat-ground,reaction-34-forced -Out localccept\en2`:
+  tt04-seifer, combat-ground and reaction-34-forced PASS; tt04-dusk WARN `soft-missing: death effect` (a soft line; the base
+  checkout's exe gives the same WARN for that scenario, `localccept\en2-base`), its hard `Dusk` expectation met; the screenshot
+  shows a Dusk in front of Sora in the Sandlot with its HP bar and the HUD.
+- Placements: the b_44 run above (`KH2_BDXLOG=1 KH2_WAVE_GROUP=b_44 KH2_NO_SOUND=1 KH2_NO_MUSIC=1`, Sora attacking from 6.3 s): wave 1's
+  Dusks (serials 0x24, 0x25, 0x101) are `created near the player (FUN_00199970)` at three different points, 3.5 to 9 m from Sora,
+  the wave 0 member and the M_EX940 at the record's point (placement byte 0).
+- Group events: `KH2_BDXLOG=1 KH2_WAVE_GROUP=b_42 ...` (Seifer defeated at about 21 s): `area group b_42 group record 0x5d (kind 1): 1
+  enemies counted (FUN_001994c8)`, then `member serial 0x14 removed: global event 3 (93) (FUN_00199518)` and `... global event 2
+  (0) (FUN_00199518)`; the Seifer's script runs its event-10 handler for both (`global event 3 (93); handler ran`).
 
 ## Acceptance run (6C)
 

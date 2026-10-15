@@ -76,8 +76,14 @@ pub const N_EX500: Kind = Kind { name: "N_EX500", enmp: 150, model: "N_EX500_BTL
 /// (R09c8) starts element 2 of its effect file, fades out and hides.
 pub const N_EX600: Kind = Kind { name: "N_EX600", enmp: 158, model: "N_EX600_BTL", death_effect: true };
 
+/// `M_EX940` (object 0x139, `ObjectType` 0x15: the second enemy class, `FUN_0016e8c0` -> `FUN_001c1ec8`), four of
+/// them in tt04's b_44, called by its model. Its BDX script (5159 words; modes `atk_brush`, `atk_jump`, `atk_throw`,
+/// `atk_fullpower`, `mode_battle_boss`) hands `enmp` row 49 to `set_obj_param` (host 2.9, constant 49 pushed at
+/// 0x06e2 for `R124c`); its `dead` mode (R08db) starts element 2 of its effect file, fades out and hides.
+pub const M_EX940: Kind = Kind { name: "M_EX940", enmp: 49, model: "M_EX940", death_effect: true };
+
 /// Every enemy kind the app has.
-pub const KINDS: [&Kind; 7] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600];
+pub const KINDS: [&Kind; 8] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940];
 
 /// The rigs of the enemy kinds, by `Kind::name` (Shadow and Soldier share `sora::Rigs`' copies).
 #[derive(Resource, Default)]
@@ -144,6 +150,12 @@ pub struct Member {
     pub wave: u8,
     /// The `00objentry` `SpawnLimiter` byte (row +0x54) of the object, which `FUN_001996f0` sums.
     pub limiter: u8,
+    /// The record's halfword +0x2e: the radius (centimetres) of placement 2, which `FUN_001991a0` passes to
+    /// `FUN_00199a80`.
+    pub radius: u16,
+    /// `00objentry` flags (+0x48) bit 3: placements 1 and 2 pick a point in the air (`FUN_001a5ee0`) instead of one
+    /// on the floor (`FUN_001a5ea8`).
+    pub flies: bool,
 }
 
 /// One group record of a spawn tag (BAR type 12; `FUN_00198430` builds the live group from it).
@@ -160,6 +172,21 @@ pub struct GroupPart {
     /// Every entity of the record (also the ones the app does not have): spawn kind, wave byte +0x30 and the
     /// `00objentry` `SpawnLimiter` byte (row +0x54), which `FUN_001996f0` sums.
     pub entities: Vec<(u8, u8, u8)>,
+    /// Every entity of the record as the group's enemy counter sees it (`FUN_00198750`, `FUN_001994c8`).
+    pub counted: Vec<Counted>,
+}
+
+/// One entity of a group record for the group's counter of enemies (`FUN_00198750`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Counted {
+    /// Record byte +0x1c.
+    pub spawn_kind: u8,
+    /// Record byte +0x1d (the entrance of a spawn-kind-1 entity).
+    pub arg: u8,
+    /// Record halfword +0x1e.
+    pub serial: u16,
+    /// `00objentry` `ObjectType` 4 or 0x15: the entities `FUN_001994c8` counts.
+    pub enemy: bool,
 }
 
 impl GroupPart {
@@ -207,6 +234,9 @@ pub struct AreaWaves {
 
 /// `ObjectType` of enemies in `00objentry`.
 const OBJECT_ENEMY: u8 = 4;
+/// `ObjectType` 0x15: the second enemy class (`FUN_0016e8c0` -> `FUN_001c1ec8`, the type-4 constructor with another
+/// vtable, 0x35f580; `FUN_00198750` counts it like type 4).
+const OBJECT_ENEMY_B: u8 = 0x15;
 /// The player's entity id in spawn records (`00objentry` row `PLAYER`; FUN_0016b078 finds the player by it).
 const PLAYER_ENTITY: u32 = 0x236;
 
@@ -250,6 +280,16 @@ pub fn area_groups(disc: &Disc, area: &str) -> Vec<AreaGroup> {
                     header: rec.header,
                     activators: rec.activators.clone(),
                     entities: rec.entities.iter().map(|e| (e.spawn_kind, e.raw[0x30], limiter(e.object))).collect(),
+                    counted: rec
+                        .entities
+                        .iter()
+                        .map(|e| Counted {
+                            spawn_kind: e.spawn_kind,
+                            arg: e.spawn_arg,
+                            serial: e.serial,
+                            enemy: rows.iter().any(|r| r.object_id == e.object && (r.object_type == OBJECT_ENEMY || r.object_type == OBJECT_ENEMY_B)),
+                        })
+                        .collect(),
                 });
             }
             for (part, e) in ard.spawns.get(&name).into_iter().flatten().enumerate().flat_map(|(i, g)| g.entities.iter().map(move |e| (i, e))) {
@@ -274,6 +314,8 @@ pub fn area_groups(disc: &Disc, area: &str) -> Vec<AreaGroup> {
                             delay: u16::from_le_bytes([e.raw[0x2a], e.raw[0x2b]]),
                             wave: e.raw[0x30],
                             limiter: row.spawn_limiter,
+                            radius: u16::from_le_bytes([e.raw[0x2e], e.raw[0x2f]]),
+                            flies: row.flags >> 3 & 1 != 0,
                         });
                     }
                     None if row.object_type == OBJECT_ENEMY => g.skipped.push(row.model_name.clone()),
@@ -372,8 +414,8 @@ impl KindTwo {
             }
             // FUN_001996f0: the SpawnLimiter bytes of the members of spawn kinds 0 and 3 and of kind 2 of the waves so
             // far, except those defeated for good (FUN_001995c8: in the table and absent). Only the members the app
-            // has are summed [inferred stand-in: the game also counts the entities the app cannot create, such as
-            // b_44's M_EX940, which would hold the waves back here for ever].
+            // has are summed [inferred stand-in: the game also counts the entities the app cannot create, which
+            // would hold the waves back here for ever; since WP-EN2 b_44's M_EX940 are not among them].
             let sum: u32 = g
                 .members
                 .iter()
@@ -413,12 +455,202 @@ impl KindTwo {
     }
 }
 
+/// The game's random generator `DAT_003716a0` as the placement code reads it (`FUN_001a6068`): `seed * 0x10dcd`
+/// (32 bits, no increment), taken unsigned and scaled by 2^-32; and the counter `DAT_0035e9b0` that picks the
+/// octant the next search starts in. The game shares one generator among all its callers and the app keeps one for
+/// the placements [inferred: nothing else here depends on the sequence]; the game's seed is not known (the executable
+/// holds 0), the start value is the app's.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlaceRng {
+    seed: u32,
+    sector: u32,
+}
+
+impl Default for PlaceRng {
+    fn default() -> PlaceRng {
+        PlaceRng { seed: 0x2545_f491, sector: 0 }
+    }
+}
+
+impl PlaceRng {
+    /// One step: a value in [0, 1).
+    pub fn next(&mut self) -> f32 {
+        self.seed = self.seed.wrapping_mul(0x10dcd);
+        self.seed as f32 * (1.0 / 4_294_967_296.0)
+    }
+
+    /// `FUN_001a6068`'s octant number: `(c & 4) >> 2 | c << 1` for the counter `c`, which then counts 0..7 round.
+    fn octant(&mut self) -> u32 {
+        let c = self.sector;
+        self.sector = (c + 1) % 8;
+        (c & 4) >> 2 | c << 1
+    }
+}
+
+/// A ring search (`FUN_001a6068` sets it up; `FUN_001a6198` on the floor, `FUN_001a63c8` in the air): metres, the
+/// app's space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ring {
+    pub centre: Vec3,
+    /// The smallest and largest radius; the search starts at a random one in between.
+    pub min: f32,
+    pub max: f32,
+    /// In the air: the offset range of the height (the game's `FUN_001a63c8` args); `None` on the floor.
+    pub heights: Option<(f32, f32)>,
+}
+
+/// The ring search of `FUN_001a6198` / `FUN_001a63c8` (the part of `FUN_001a5ea8` / `FUN_001a5ee0` after the set-up).
+/// A radius `r` is drawn between the ring's limits and an octant, then points are tried at `r` round the centre in
+/// steps of 45 degrees (the angle of try `n` is the start plus `n` steps; `x = cos`, game `z = sin`, so the app's
+/// `z = -sin`): on the floor, `ground(point)` is the floor found from 2 m above the point down to 12 m below
+/// (`FUN_001a5c30`, 200 and 1000 cm) and the point is taken when the line from the centre to a spot 20 cm further
+/// out and 1 m above that floor is `clear` (`FUN_001a5bf8`); in the air, a random height in `heights` is added to
+/// the point and the same line test (to 1 m above the point) decides. After 8 tries the radius shrinks by 1 m, until
+/// it falls below the minimum. Nothing found: the floor under the centre (`ground`, else the centre) or, in the air,
+/// the centre. `ground` and `clear` are the collision queries.
+pub fn ring_place(rng: &mut PlaceRng, ring: &Ring, ground: &dyn Fn(Vec3) -> Option<Vec3>, clear: &dyn Fn(Vec3, Vec3) -> bool) -> Vec3 {
+    const STEP: f32 = std::f32::consts::FRAC_PI_4;
+    let mut r = ring.min + rng.next() * (ring.max - ring.min);
+    let start = rng.octant() as f32 * STEP + rng.next() * STEP;
+    let mut tries = 0;
+    while r >= ring.min {
+        tries += 1;
+        let a = start + tries as f32 * STEP;
+        let dir = Vec3::new(a.cos(), 0.0, -a.sin());
+        let spot = ring.centre + dir * r;
+        let mut beyond = ring.centre + dir * (r + 0.2);
+        match ring.heights {
+            None => {
+                if let Some(hit) = ground(spot) {
+                    beyond.y = hit.y + 1.0;
+                    if clear(ring.centre, beyond) {
+                        return hit;
+                    }
+                }
+            }
+            Some((lo, hi)) => {
+                let h = lo + rng.next() * (hi - lo);
+                let at = spot + Vec3::Y * h;
+                beyond.y = at.y + 1.0;
+                if clear(ring.centre, beyond) {
+                    return at;
+                }
+            }
+        }
+        if tries >= 8 {
+            tries = 0;
+            r -= 1.0;
+        }
+    }
+    match ring.heights {
+        None => ground(ring.centre).unwrap_or(ring.centre),
+        Some(_) => ring.centre,
+    }
+}
+
+/// Where a kind-2 member is created (`FUN_001991a0`, by the record byte +0x1d): 1 near the player
+/// (`FUN_00199970`: a ring of 1.5 to 4.5 m round the player's position raised by 2 m, in the air 1 m up or down),
+/// 2 within the record's radius of its point (`FUN_00199a80`: 0 to the radius, in the air at the point's height);
+/// anything else the record's point (`FUN_001982c8`), which is `None` here. `player` is the player's position
+/// (`FUN_0016b960` of `DAT_0035c998` [inferred: the object's position]).
+pub fn member_ring(m: &Member, player: Vec3) -> Option<Ring> {
+    match m.spawn_arg {
+        1 => Some(Ring { centre: player + Vec3::Y * 2.0, min: 1.5, max: 4.5, heights: m.flies.then_some((-1.0, 1.0)) }),
+        2 => Some(Ring { centre: m.at, min: 0.0, max: m.radius as f32 * SCALE, heights: m.flies.then_some((0.0, 0.0)) }),
+        _ => None,
+    }
+}
+
+/// The ring search on the loaded area's collision (`World`): the floor probe is `World::ground_m` from 2 m above the
+/// point (at most 12 m below), the line test `World::blocked_m` [inferred approximation: the game's line test
+/// (`FUN_001d1648`) meets floors too; `blocked_m` only walls].
+pub fn ring_place_in(rng: &mut PlaceRng, ring: &Ring, col: &World) -> Vec3 {
+    let ground = |p: Vec3| col.ground_m(p.x, p.z, p.y + 2.0).filter(|y| *y >= p.y - 12.0).map(|y| p.with_y(y));
+    let clear = |a: Vec3, b: Vec3| !col.blocked_m(a, b);
+    ring_place(rng, ring, &ground, &clear)
+}
+
+/// `FUN_00199e98` for a kind-6 group record (`FUN_00198b30` case 6), run on a frame the player is inside one of its
+/// volumes whose activator halfword +0x2c is 1 (`FUN_001989d8` skips the others; `inside(volume)` is the volume
+/// test): every spawn-kind-2 entity whose object is absent (`present(serial)`, `FUN_0016b0d8`) is created at once at
+/// its record's point (`FUN_001982c8`), with no timer, no wave and no table of the defeated. Returns the members
+/// (indices into `g.members`). [gap: the appear fade the game starts on the new object, `FUN_001abf40` on its
+/// +0x82c, is not ported.]
+pub fn kind_six_creates(g: &AreaGroup, part: usize, inside: impl Fn(&kh2_ard::Activator) -> bool, present: impl Fn(u16) -> bool) -> Vec<usize> {
+    let p = &g.parts[part];
+    if p.kind != 6 || p.disabled || !p.activators.iter().any(|v| u16::from_le_bytes([v.raw[0x2c], v.raw[0x2d]]) == 1 && inside(v)) {
+        return Vec::new();
+    }
+    g.members.iter().enumerate().filter(|(_, m)| m.part == part && m.spawn_kind == 2 && !present(m.serial)).map(|(i, _)| i).collect()
+}
+
+/// A group record's counter of enemies (the group object's +0x18) and the group's id (header +2).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PartCount {
+    pub id: u16,
+    pub count: i32,
+    pub disabled: bool,
+}
+
+/// What `FUN_00198750` counts for a group record when it is set up: every enemy-class entity (`FUN_001994c8`: object
+/// types 4 and 0x15) that is not in the table of the defeated (`killed`): the spawn-kind-2 ones always (they are only
+/// counted), kinds 0 and 3 when the group is not disabled (`FUN_00198920`), kind 1 when its entrance is the current
+/// one (`FUN_001981a0`). A kind-9 group sets up nothing.
+pub fn counted_at_load(part: &GroupPart, entrance: u8, killed: &[u16]) -> i32 {
+    if part.kind == 9 {
+        return 0;
+    }
+    part.counted
+        .iter()
+        .filter(|c| c.enemy && !killed.contains(&c.serial))
+        .filter(|c| match c.spawn_kind {
+            2 => true,
+            0 | 3 => !part.disabled,
+            1 => !part.disabled && c.arg == entrance,
+            _ => false,
+        })
+        .count() as i32
+}
+
+/// `FUN_00199518`, run when an object of spawn kind 0, 1 or 3 of group `i` is removed (`FUN_001993f8`; the object's
+/// +0x588 bit 0x800 it also tests is set by the enemy classes' constructor `FUN_001b0270`, so it holds for object
+/// types 4 and 0x15): the group's counter drops by 1 and, at 0, global event 3 with the group's id is raised; then,
+/// when the counters of all groups are 0, event 2 with 0 (`FUN_00199580` sums them). Spawn-kind-2 members never
+/// lower the counter. Returns the events in order.
+pub fn removal_events(counts: &mut [PartCount], i: usize) -> Vec<(u32, i32)> {
+    let mut out = Vec::new();
+    if counts[i].disabled {
+        return out;
+    }
+    counts[i].count -= 1;
+    if counts[i].count == 0 {
+        out.push((3, counts[i].id as i32));
+    }
+    if counts.iter().map(|c| c.count).sum::<i32>() == 0 {
+        out.push((2, 0));
+    }
+    out
+}
+
+/// A group record's members the app tracks for its events: the serials of the spawn-kind 0, 1 and 3 members that
+/// were alive last tick.
+#[derive(Clone)]
+pub struct EventPart {
+    pub group: AreaGroup,
+    pub part: usize,
+    pub present: Vec<u16>,
+}
+
 /// The kind-2 groups of the loaded area and what they need between frames.
 #[derive(Resource, Default)]
 pub struct BattleGroups {
     /// The area run (`AreaRecord::run`, by address) the groups were set up for.
     run: usize,
     pub live: Vec<(AreaGroup, KindTwo, Vec<u16>)>,
+    /// Every group record of the set-up groups (the events and kind-6 groups); `counts` is parallel to it.
+    pub events: Vec<EventPart>,
+    pub counts: Vec<PartCount>,
+    rng: PlaceRng,
 }
 
 /// What the reaction code tracks: a hit reaction in progress, or nothing (the script is in charge).
@@ -584,23 +816,26 @@ fn has(rig: &Rig, s: usize) -> Option<usize> {
     rig.mset.has(s).then_some(s)
 }
 
-/// Creates one member of an area group on the floor under its record's point (the record's height is the
-/// game's own floor). A kind-2 member whose placement byte (+0x1d) is 1 (near the player, `FUN_00199970`) or 2
-/// (within the radius +0x2e of the point, `FUN_00199a80`) also stands at its record's point: those placements
-/// are not ported.
+/// The floor under a member's record point (the record's height is the game's own floor).
+fn record_spot(m: &Member, col: &World) -> Vec3 {
+    let y = col.ground_m(m.at.x, m.at.z, m.at.y + 1.0).unwrap_or(m.at.y);
+    m.at.with_y(y)
+}
+
+/// Creates one member of an area group at `at` (metres): the record's point for the members created at load, a
+/// placement (`member_ring`) for the kind-2 members that ask for one.
 #[allow(clippy::too_many_arguments)]
 fn spawn_member(
     commands: &mut Commands,
     m: &Member,
     part_id: u16,
-    col: &World,
+    at: Vec3,
     rigs: &EnemyRigs,
     data: &GameData,
     assets: (&mut Assets<Mesh>, &mut Assets<StandardMaterial>, &mut Assets<Image>, &mut Assets<SkinnedMeshInverseBindposes>),
 ) {
     let Some(rig) = rigs.get(m.kind) else { return };
-    let y = col.ground_m(m.at.x, m.at.z, m.at.y + 1.0).unwrap_or(m.at.y);
-    spawn_enemy(commands, m.kind, rig, m.at.with_y(y), m.yaw, (m.spawn_kind, Some(m.spawn_params), m.object_id, Some((part_id, m.serial))), data, assets);
+    spawn_enemy(commands, m.kind, rig, at, m.yaw, (m.spawn_kind, Some(m.spawn_params), m.object_id, Some((part_id, m.serial))), data, assets);
 }
 
 /// The area's enemies (module header). When an area run starts (`AreaRecord::run`: every area load, and a
@@ -627,6 +862,7 @@ pub fn spawn_waves(
     mut images: ResMut<Assets<Image>>,
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
     mut missions: MessageWriter<crate::struggle::MissionStart>,
+    mut events: MessageWriter<crate::struggle::GlobalEvent>,
 ) {
     let (Some(col), Ok((mut sora_tf, mut sora))) = (collider, sora.single_mut()) else { return };
     let p = *sora_tf;
@@ -656,6 +892,8 @@ pub fn spawn_waves(
         if matches!(*task, crate::area_jump::JumpTask::Loading { .. }) {
             battle.run = 0;
             battle.live.clear();
+            battle.events.clear();
+            battle.counts.clear();
             return;
         }
         // The run of the loaded area (`area::run_area_script`, the port of FUN_00181148).
@@ -664,6 +902,8 @@ pub fn spawn_waves(
         if battle.run != id || keys.just_pressed(KeyCode::F3) {
             battle.run = id;
             battle.live.clear();
+            battle.events.clear();
+            battle.counts.clear();
             // Harness: `KH2_WAVE_GROUP=<tag>` sets up that group instead of the program's and, when the group holds
             // the player's entity, puts Sora there first (the record's place for the player; that the game moves
             // the player there when such a battle starts is [inferred]).
@@ -687,7 +927,7 @@ pub fn spawn_waves(
                 }
                 let mut now = 0;
                 for m in g.members.iter().filter(|m| created_at_load(m, &g.parts[m.part], rec.entrance)) {
-                    spawn_member(&mut commands, m, g.parts[m.part].id, &col, &rigs, &data, (&mut meshes, &mut materials, &mut images, &mut bindposes));
+                    spawn_member(&mut commands, m, g.parts[m.part].id, record_spot(m, &col), &rigs, &data, (&mut meshes, &mut materials, &mut images, &mut bindposes));
                     now += 1;
                 }
                 let twos: Vec<usize> = (0..g.parts.len()).filter(|&k| g.parts[k].kind == 2 && !g.parts[k].disabled && g.members.iter().any(|m| m.part == k && m.spawn_kind == 2)).collect();
@@ -707,6 +947,15 @@ pub fn spawn_waves(
                     let there = g.members.iter().filter(|m| m.part == k && created_at_load(m, &g.parts[k], rec.entrance)).map(|m| m.serial).collect();
                     battle.live.push((g.clone(), two, there));
                 }
+                // The group records' counters of enemies (FUN_00198750 -> FUN_001994c8) for the group events.
+                for (k, part) in g.parts.iter().enumerate() {
+                    let count = counted_at_load(part, rec.entrance, &[]);
+                    if count > 0 {
+                        info!("area group {} group record {:#x} (kind {}): {count} enemies counted (FUN_001994c8)", g.name, part.id, part.kind);
+                    }
+                    battle.counts.push(PartCount { id: part.id, count, disabled: part.disabled });
+                    battle.events.push(EventPart { group: g.clone(), part: k, present: Vec::new() });
+                }
                 // The program's mission command (opcode 0x15) creates the mission manager (WP-7E, struggle.rs).
                 if let Some((id, name)) = &g.mission {
                     missions.write(crate::struggle::MissionStart { id: *id, name: name.clone(), orb_pool: g.orb_pool, triggers: g.triggers.clone() });
@@ -720,7 +969,9 @@ pub fn spawn_waves(
         let frames = 60.0 / LOGIC_HZ;
         let pos = sora.motor.pos;
         let at = [pos.x, -pos.y, -pos.z];
-        for (g, two, prev) in battle.live.iter_mut() {
+        let player = sora_tf.translation;
+        let b = &mut *battle;
+        for (g, two, prev) in b.live.iter_mut() {
             let part = &g.parts[two.part];
             let pid = part.id;
             let live: Vec<u16> = enemies.iter().filter(|e| e.alive()).filter_map(|e| e.serial.filter(|s| s.0 == pid).map(|s| s.1)).collect();
@@ -739,12 +990,53 @@ pub fn spawn_waves(
                 let alive = |i: usize| enemies.iter().any(|e| e.alive() && e.serial == Some((pid, g.members[i].serial)));
                 for i in two.run(g, alive) {
                     let m = &g.members[i];
-                    info!("area group {} kind-2 group {pid:#x}: {} (serial {:#x}, wave {}) created; next in {} frames, group wave {}", g.name, m.kind.name, m.serial, m.wave, m.delay, two.wave);
-                    spawn_member(&mut commands, m, pid, &col, &rigs, &data, (&mut meshes, &mut materials, &mut images, &mut bindposes));
+                    let (spot, how) = match member_ring(m, player) {
+                        Some(ring) => (ring_place_in(&mut b.rng, &ring, &col), if m.spawn_arg == 1 { "near the player (FUN_00199970)" } else { "within its radius (FUN_00199a80)" }),
+                        None => (record_spot(m, &col), "at the record's point"),
+                    };
+                    info!(
+                        "area group {} kind-2 group {pid:#x}: {} (serial {:#x}, wave {}) created {how} at {:.2?}; next in {} frames, group wave {}",
+                        g.name, m.kind.name, m.serial, m.wave, spot, m.delay, two.wave
+                    );
+                    spawn_member(&mut commands, m, pid, spot, &rigs, &data, (&mut meshes, &mut materials, &mut images, &mut bindposes));
                     made.push(m.serial);
                 }
             }
             *prev = live.into_iter().chain(made).collect();
+        }
+        // Kind-6 groups (FUN_00199e98): see `kind_six_creates`. The object counts as present from its creation to its
+        // removal, so a defeated enemy that is still lying there does not come back yet.
+        for ep in &b.events {
+            let pid = ep.group.parts[ep.part].id;
+            for i in kind_six_creates(&ep.group, ep.part, |v| v.contains(at), |s| enemies.iter().any(|e| e.serial == Some((pid, s)))) {
+                let m = &ep.group.members[i];
+                info!("area group {} kind-6 group {pid:#x}: {} (serial {:#x}) created at the record's point (FUN_00199e98)", ep.group.name, m.kind.name, m.serial);
+                spawn_member(&mut commands, m, pid, record_spot(m, &col), &rigs, &data, (&mut meshes, &mut materials, &mut images, &mut bindposes));
+            }
+        }
+        // Group events: an object of spawn kind 0, 1 or 3 removed (here: its HP reached 0) lowers its group record's
+        // counter; 0 raises event 3 with the group's id, all counters 0 event 2 (FUN_001993f8 -> FUN_00199518).
+        for i in 0..b.events.len() {
+            let (pid, part_idx) = (b.events[i].group.parts[b.events[i].part].id, b.events[i].part);
+            let now: Vec<u16> = enemies
+                .iter()
+                .filter(|e| e.alive())
+                .filter_map(|e| e.serial.filter(|s| s.0 == pid).map(|s| s.1))
+                .filter(|s| b.events[i].group.members.iter().any(|m| m.part == part_idx && m.serial == *s && matches!(m.spawn_kind, 0 | 1 | 3)))
+                .collect();
+            let gone: Vec<u16> = b.events[i].present.iter().copied().filter(|s| !now.contains(s)).collect();
+            b.events[i].present = now;
+            for serial in gone {
+                for (id, arg) in removal_events(&mut b.counts, i) {
+                    let hit = b.events[i].group.triggers.iter().find(|t| t.matches(id, arg)).copied();
+                    info!(
+                        "area group {} group record {pid:#x}: member serial {serial:#x} removed: global event {id} ({arg}) (FUN_00199518){}",
+                        b.events[i].group.name,
+                        hit.map_or(String::new(), |t| format!("; area trigger {t:?} matches (its effects are not applied here)"))
+                    );
+                    events.write(crate::struggle::GlobalEvent { id, arg });
+                }
+            }
         }
         return;
     }
@@ -1245,11 +1537,21 @@ mod tests {
         let b44 = pick(0x50).into_iter().find(|g| g.name == "b_44").expect("program 0x50 loads b_44");
         let (now, later) = split(&b44);
         assert!(now > 0 && later > 0, "b_44: {now} at load, {later} on demand");
-        assert!(b44.members.iter().all(|m| m.kind.name == DUSK.name));
+        assert!(b44.members.iter().all(|m| m.kind.name == DUSK.name || m.kind.name == M_EX940.name));
+        assert_eq!(b44.members.iter().filter(|m| m.kind.name == M_EX940.name).count(), 4, "b_44 holds four M_EX940 (object type 0x15)");
+        // Placement 1 (near the player, FUN_00199970) is the record byte +0x1d of the three Dusks of wave 1.
+        let near: Vec<u16> = b44.members.iter().filter(|m| m.spawn_kind == 2 && m.spawn_arg == 1).map(|m| m.serial).collect();
+        assert_eq!(near, [0x24, 0x25, 0x101]);
+        assert!(b44.members.iter().filter(|m| m.spawn_arg == 1).all(|m| m.kind.name == DUSK.name && m.wave == 1));
+        // Every enemy-class entity of the group is counted (FUN_001994c8): the 3 spawn-kind-3 Dusks at load, the 4+4
+        // spawn-kind-2 entities (type 4 and 0x15) in the record.
+        let counts: Vec<i32> = b44.parts.iter().map(|p| counted_at_load(p, 0, &[])).collect();
+        eprintln!("b_44 counters at load: {counts:?}");
+        assert_eq!(counts.iter().sum::<i32>(), 3 + 8);
     }
 
     fn member(part: usize, spawn_kind: i32, serial: u16, delay: u16, wave: u8) -> Member {
-        Member { kind: &DUSK, at: Vec3::ZERO, yaw: 0.0, spawn_kind, spawn_params: [0; 2], object_id: 0x13e, part, spawn_arg: 0, serial, delay, wave, limiter: 1 }
+        Member { kind: &DUSK, at: Vec3::ZERO, yaw: 0.0, spawn_kind, spawn_params: [0; 2], object_id: 0x13e, part, spawn_arg: 0, serial, delay, wave, limiter: 1, radius: 0, flies: false }
     }
 
     /// `FUN_001991a0`: a kind-2 group creates one absent spawn-kind-2 member at a time and waits its delay; members
@@ -1262,7 +1564,7 @@ mod tests {
         header[0x20] = 90; // after a removal
         header[0x22] = 2; // SpawnLimiter sum allowed before the next wave
         let entities = vec![(3, 0, 1), (2, 0, 1), (2, 0, 1), (2, 1, 1)];
-        let part = GroupPart { id: 0x8a, kind: 2, disabled: false, header, activators: Vec::new(), entities };
+        let part = GroupPart { id: 0x8a, kind: 2, disabled: false, header, activators: Vec::new(), entities, counted: Vec::new() };
         let g = AreaGroup {
             program: 0x50,
             name: "b_t".into(),
@@ -1364,5 +1666,223 @@ mod tests {
             }
         }
         assert!(checked > 0, "at least one id deals different damage through its SubId 2 row");
+    }
+
+    /// `FUN_001a6068`: the generator is `seed * 0x10dcd` read unsigned and scaled by 2^-32; the octant number
+    /// counts 0..7 round as `(c & 4) >> 2 | c << 1`.
+    #[test]
+    fn place_rng_follows_the_games_generator() {
+        let mut r = PlaceRng::default();
+        let s0 = r.seed;
+        let v = r.next();
+        assert_eq!(v, s0.wrapping_mul(0x10dcd) as f32 / 4_294_967_296.0);
+        assert!((0.0..1.0).contains(&v));
+        let octants: Vec<u32> = (0..9).map(|_| r.octant()).collect();
+        assert_eq!(octants, [0, 2, 4, 6, 9, 11, 13, 15, 0]);
+    }
+
+    fn flat(p: Vec3) -> Option<Vec3> {
+        Some(p.with_y(0.0))
+    }
+
+    /// `FUN_001a6198`: on open floor the first try is taken, at the drawn radius (between the limits) from the
+    /// centre, on the floor.
+    #[test]
+    fn ring_search_on_open_floor_takes_the_first_try() {
+        let ring = Ring { centre: Vec3::new(3.0, 2.0, -4.0), min: 1.5, max: 4.5, heights: None };
+        let mut rng = PlaceRng::default();
+        let mut seen = (f32::MAX, 0.0f32);
+        for _ in 0..200 {
+            let p = ring_place(&mut rng, &ring, &flat, &|_, _| true);
+            let d = Vec2::new(p.x - 3.0, p.z + 4.0).length();
+            assert!((1.5 - 1e-3..=4.5 + 1e-3).contains(&d), "distance {d}");
+            assert_eq!(p.y, 0.0);
+            seen = (seen.0.min(d), seen.1.max(d));
+        }
+        assert!(seen.0 < 2.0 && seen.1 > 4.0, "the radius covers the ring: {seen:?}");
+    }
+
+    /// With floor only close to the centre the radius shrinks by 1 m after 8 tries until a floor is found
+    /// (the loop of `FUN_001a6198`), and the point is never beyond the floor.
+    #[test]
+    fn ring_search_shrinks_until_it_finds_floor() {
+        let ring = Ring { centre: Vec3::ZERO, min: 0.5, max: 4.5, heights: None };
+        let near = |p: Vec3| (Vec2::new(p.x, p.z).length() <= 1.6).then(|| p.with_y(0.0));
+        let mut rng = PlaceRng::default();
+        for _ in 0..100 {
+            let p = ring_place(&mut rng, &ring, &near, &|_, _| true);
+            let d = Vec2::new(p.x, p.z).length();
+            assert!(d <= 1.6 + 1e-3, "{d}");
+        }
+    }
+
+    /// A line test that refuses everything, or no floor anywhere: the floor under the centre (else the centre).
+    #[test]
+    fn ring_search_falls_back_to_the_centre() {
+        let ring = Ring { centre: Vec3::new(1.0, 2.0, 1.0), min: 1.5, max: 4.5, heights: None };
+        let mut rng = PlaceRng::default();
+        assert_eq!(ring_place(&mut rng, &ring, &flat, &|_, _| false), Vec3::new(1.0, 0.0, 1.0));
+        assert_eq!(ring_place(&mut rng, &ring, &|_| None, &|_, _| true), ring.centre);
+        let air = Ring { heights: Some((-1.0, 1.0)), ..ring };
+        assert_eq!(ring_place(&mut rng, &air, &flat, &|_, _| false), ring.centre);
+    }
+
+    /// The line test decides which directions are used: with every line toward +x blocked no point lies at +x.
+    #[test]
+    fn ring_search_respects_the_line_test() {
+        let ring = Ring { centre: Vec3::new(0.0, 2.0, 0.0), min: 1.5, max: 4.5, heights: None };
+        let mut rng = PlaceRng::default();
+        for _ in 0..200 {
+            let p = ring_place(&mut rng, &ring, &flat, &|_, to| to.x < 0.0);
+            assert!(p.x < 0.0, "{p:?}");
+        }
+    }
+
+    /// `FUN_001a63c8`: in the air the height is the centre's plus a random offset in the range.
+    #[test]
+    fn ring_search_in_the_air_adds_a_height() {
+        let ring = Ring { centre: Vec3::new(0.0, 3.0, 0.0), min: 1.5, max: 4.5, heights: Some((-1.0, 1.0)) };
+        let mut rng = PlaceRng::default();
+        let mut ys = Vec::new();
+        for _ in 0..100 {
+            let p = ring_place(&mut rng, &ring, &|_| None, &|_, _| true);
+            let d = Vec2::new(p.x, p.z).length();
+            assert!((1.5 - 1e-3..=4.5 + 1e-3).contains(&d) && (2.0..=4.0).contains(&p.y), "{p:?}");
+            ys.push(p.y);
+        }
+        assert!(ys.iter().any(|y| *y < 2.8) && ys.iter().any(|y| *y > 3.2));
+        let still = Ring { heights: Some((0.0, 0.0)), ..ring };
+        assert_eq!(ring_place(&mut rng, &still, &|_| None, &|_, _| true).y, 3.0);
+    }
+
+    /// `FUN_001991a0`: placement byte 1 rings the player (centre raised 2 m), 2 the record's point with the record's
+    /// radius; other values use the point.
+    #[test]
+    fn member_rings_follow_the_placement_byte() {
+        let mut m = member(0, 2, 1, 0, 0);
+        m.at = Vec3::new(5.0, 0.0, 6.0);
+        m.radius = 800;
+        assert_eq!(member_ring(&m, Vec3::ZERO), None);
+        m.spawn_arg = 1;
+        assert_eq!(member_ring(&m, Vec3::new(1.0, 0.0, 1.0)), Some(Ring { centre: Vec3::new(1.0, 2.0, 1.0), min: 1.5, max: 4.5, heights: None }));
+        m.flies = true;
+        assert_eq!(member_ring(&m, Vec3::ZERO).unwrap().heights, Some((-1.0, 1.0)));
+        m.spawn_arg = 2;
+        assert_eq!(member_ring(&m, Vec3::ZERO), Some(Ring { centre: Vec3::new(5.0, 0.0, 6.0), min: 0.0, max: 8.0, heights: Some((0.0, 0.0)) }));
+        m.spawn_arg = 0;
+        assert_eq!(member_ring(&m, Vec3::ZERO), None);
+    }
+
+    fn counted(spawn_kind: u8, arg: u8, serial: u16, enemy: bool) -> Counted {
+        Counted { spawn_kind, arg, serial, enemy }
+    }
+
+    fn part_of(kind: u8, disabled: bool, counted: Vec<Counted>) -> GroupPart {
+        GroupPart { id: 0x8a, kind, disabled, header: [0; 0x2c], activators: Vec::new(), entities: Vec::new(), counted }
+    }
+
+    /// `FUN_00198750` / `FUN_001994c8`: the counter holds the enemy-class entities, spawn kind 2 always, 0 and 3 in
+    /// an enabled group, 1 for the current entrance; the table of the defeated and a kind-9 group count nothing.
+    #[test]
+    fn the_group_counter_counts_enemy_entities() {
+        let cs = vec![counted(3, 0, 1, true), counted(0, 0, 2, true), counted(2, 0, 3, true), counted(1, 4, 4, true), counted(1, 5, 5, true), counted(3, 0, 6, false)];
+        assert_eq!(counted_at_load(&part_of(2, false, cs.clone()), 4, &[]), 4);
+        assert_eq!(counted_at_load(&part_of(2, false, cs.clone()), 4, &[1, 3]), 2);
+        assert_eq!(counted_at_load(&part_of(2, true, cs.clone()), 4, &[]), 1, "a disabled group counts only its kind-2 entities");
+        assert_eq!(counted_at_load(&part_of(9, false, cs), 4, &[]), 0);
+    }
+
+    /// `FUN_00199518`: the last removal of a group raises event 3 with its id; when every group is empty event 2
+    /// follows; a disabled group raises nothing.
+    #[test]
+    fn emptied_groups_raise_events_3_and_2() {
+        let mut c = vec![PartCount { id: 0x10, count: 2, disabled: false }, PartCount { id: 0x11, count: 1, disabled: false }, PartCount { id: 0x12, count: 5, disabled: true }];
+        assert_eq!(removal_events(&mut c, 0), vec![]);
+        assert_eq!(removal_events(&mut c, 0), vec![(3, 0x10)]);
+        assert_eq!(removal_events(&mut c, 2), vec![]);
+        assert_eq!(c[2].count, 5);
+        // The disabled group's five still count in the sum (FUN_00199580 adds every group): no event 2 yet.
+        assert_eq!(removal_events(&mut c, 1), vec![(3, 0x11)]);
+        c[2].count = 0;
+        c[0].count = 1;
+        assert_eq!(removal_events(&mut c, 0), vec![(3, 0x10), (2, 0)]);
+    }
+
+    /// A kind-6 group creates every absent spawn-kind-2 member at once while the player is in a volume whose
+    /// activator halfword +0x2c is 1; it creates nothing outside, in another group kind, or when disabled.
+    #[test]
+    fn a_kind_six_group_creates_its_absent_members_at_once() {
+        let mut vol = kh2_ard::Activator { shape: 2, option: 0, position: [0.0; 3], scale: [1.0; 3], rotation: [0.0; 3], raw: [0; 0x40] };
+        let mut other = vol.clone();
+        vol.raw[0x2c] = 1;
+        other.raw[0x2c] = 2;
+        let mut part = part_of(6, false, Vec::new());
+        part.activators = vec![other.clone(), vol.clone()];
+        let g = AreaGroup {
+            program: 1,
+            name: "k6".into(),
+            parts: vec![part],
+            members: vec![member(0, 2, 1, 0, 0), member(0, 2, 2, 30, 5), member(0, 3, 3, 0, 0), member(0, 2, 4, 0, 0)],
+            skipped: Vec::new(),
+            player: None,
+            mission: None,
+            orb_pool: false,
+            triggers: Vec::new(),
+        };
+        let only_vol = |v: &kh2_ard::Activator| v.raw[0x2c] == 1;
+        // Wave bytes and delays are ignored; the spawn-kind-3 member is the set-up's; present ones are skipped.
+        assert_eq!(kind_six_creates(&g, 0, only_vol, |s| s == 2), vec![0, 3]);
+        assert_eq!(kind_six_creates(&g, 0, |v| v.raw[0x2c] == 2, |_| false), Vec::<usize>::new(), "a volume of another type does not count");
+        assert_eq!(kind_six_creates(&g, 0, |_| false, |_| false), Vec::<usize>::new(), "the player is outside");
+        let mut off = g.clone();
+        off.parts[0].disabled = true;
+        assert_eq!(kind_six_creates(&off, 0, only_vol, |_| false), Vec::<usize>::new());
+        let mut two = g.clone();
+        two.parts[0].kind = 2;
+        assert_eq!(kind_six_creates(&two, 0, only_vol, |_| false), Vec::<usize>::new(), "a kind-2 group has its own walk");
+    }
+
+    /// Survey (disc, WP-EN2): no Twilight Town area script has a trigger on the group events 2 and 3, and no group
+    /// of kind 3, 4 or 6 holds an enemy-class entity, so the events and kind-6 creation have no user in tt00..tt41.
+    /// Needs `KH2_ISO`.
+    #[test]
+    fn no_twilight_town_data_uses_group_events_or_kind_six_enemies() {
+        use kh2_tables::tables as t;
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let rows = {
+            let mut a = disc.0.lock().unwrap();
+            kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).map(|d| d.rows).unwrap_or_default()
+        };
+        let enemy = |o: u32| rows.iter().any(|r| r.object_id == o && (r.object_type == OBJECT_ENEMY || r.object_type == OBJECT_ENEMY_B));
+        let (mut areas, mut kind6, mut triggers) = (0, 0, 0);
+        for n in 0..=41 {
+            let name = format!("tt{n:02}");
+            let Some(ard) = disc.read(&format!("ard/{name}.ard")).and_then(|d| kh2_ard::Area::parse(&d)).map(|(a, _)| a) else { continue };
+            areas += 1;
+            for p in ard.scripts.values().flatten() {
+                for c in p.commands.iter().filter(|c| c.opcode == 0xc) {
+                    if let Some(tr) = kh2_ard::parse_trigger(&c.args)
+                        && (tr.event == 2 || tr.event == 3)
+                    {
+                        triggers += 1;
+                    }
+                }
+            }
+            for (tag, groups) in &ard.spawns {
+                for g in groups {
+                    if matches!(g.kind & 0xff, 3 | 4 | 6) {
+                        kind6 += (g.kind & 0xff == 6) as usize;
+                        assert!(!g.entities.iter().any(|e| enemy(e.object)), "{name} group {tag}: kind {} holds an enemy-class entity", g.kind & 0xff);
+                    }
+                }
+            }
+        }
+        eprintln!("{areas} tt areas, {kind6} kind-6 groups, {triggers} triggers on events 2 or 3");
+        assert!(areas > 30 && kind6 > 100);
+        assert_eq!(triggers, 0);
     }
 }

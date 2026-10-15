@@ -1000,7 +1000,8 @@ impl Plugin for PrizePlugin {
             .add_message::<FormExpGain>()
             .init_resource::<ObtainedLog>()
             .init_resource::<PrizePool>()
-            .init_resource::<PickupGlow>();
+            .init_resource::<PickupGlow>()
+            .add_systems(FixedUpdate, unload_prizes.in_set(Sim::EffectTick));
         let Some(disc) = app.world().get_resource::<Disc>() else { return };
         let Some(elf) = disc.read_root("SLUS_210.05") else {
             warn!("prize: SLUS_210.05 is not readable; drops make no prize or item objects");
@@ -1031,6 +1032,41 @@ impl Plugin for PrizePlugin {
             .add_systems(Startup, build_draws)
             .add_systems(FixedUpdate, (prize_test, form_exp_test, spawn_drops, run_prizes).chain().in_set(Sim::EffectTick))
             .add_systems(Update, show_prizes);
+    }
+}
+
+/// Every prize and item object.
+type PrizeOrItem = Or<(With<PrizeObj>, With<ItemObj>)>;
+
+/// The area's unload takes the prizes and item objects with it. The jump task's unload (`FUN_00104ce0` ->
+/// `FUN_00168ca0` -> `FUN_001b8800`) frees every object of the list at 0x1d5d7e0 [inferred: the `PRIZE` manager
+/// `DAT_0035e7a0` (object 0x5c3, whose pool holds the orbs and munny) and the item objects (type 0x12) are in that
+/// list like the area's other objects; their own teardown was not read]. Here: the change of the task to `Loading`
+/// despawns every prize and item object once per jump and empties the pool count; what a prize had not paid out yet
+/// is lost, as it would be.
+fn unload_prizes(
+    task: Option<Res<crate::area_jump::JumpTask>>,
+    mut done: Local<bool>,
+    objects: Query<Entity, PrizeOrItem>,
+    mut pool: ResMut<PrizePool>,
+    mut commands: Commands,
+) {
+    let loading = task.is_some_and(|t| matches!(*t, crate::area_jump::JumpTask::Loading { .. }));
+    if !loading {
+        *done = false;
+        return;
+    }
+    if *done {
+        return;
+    }
+    *done = true;
+    let n = objects.iter().count();
+    for e in &objects {
+        commands.entity(e).despawn();
+    }
+    pool.live = 0;
+    if n > 0 {
+        info!("prize: area unload (FUN_00104ce0): {n} prize and item objects removed");
     }
 }
 
@@ -2462,5 +2498,27 @@ mod tests {
         }
         assert_eq!(p.item_count(potion), crate::progress::MAX_COUNT, "from {n0}, {given} given");
         assert_eq!(give_item(&mut p, potion), None, "a full count refuses");
+    }
+
+    /// EN2: the jump's unload removes the prizes and item objects once, when the task reaches `Loading`, and empties
+    /// the pool count; other entities stay; a task that never loads removes nothing.
+    #[test]
+    fn a_jump_clears_prizes_and_items() {
+        use crate::area_jump::{Dest, JumpTask};
+        use bevy::ecs::system::RunSystemOnce;
+        let mut w = bevy::ecs::world::World::new();
+        w.insert_resource(PrizePool { live: 3 });
+        let prizes: Vec<Entity> = (0..3).map(|_| w.spawn(PrizeObj { p: launch(&consts(), 0, [0; 3], Vec3::ZERO), shown: None, kids: Vec::new() }).id()).collect();
+        let other = w.spawn_empty().id();
+        let dest = Dest::new(crate::area::TWILIGHT_TOWN, 4, 0);
+        w.insert_resource(JumpTask::FadeOut { dest, kind: 0, t: 0.0 });
+        w.run_system_once(unload_prizes).unwrap();
+        assert!(prizes.iter().all(|&e| w.get_entity(e).is_ok()), "the fade-out keeps them");
+        assert_eq!(w.resource::<PrizePool>().live, 3);
+        w.insert_resource(JumpTask::Loading { dest, kind: 0 });
+        w.run_system_once(unload_prizes).unwrap();
+        assert!(prizes.iter().all(|&e| w.get_entity(e).is_err()), "the unload removes the prizes");
+        assert!(w.get_entity(other).is_ok(), "other entities stay");
+        assert_eq!(w.resource::<PrizePool>().live, 0);
     }
 }

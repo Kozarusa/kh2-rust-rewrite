@@ -2,6 +2,14 @@
 
 One short section per work package. "Verified" says how; nothing here was checked by watching video, and audio was listened to only where stated.
 
+## Shift 12 (2026-10-15)
+
+- **WP-E6f (event screen fade).** `area_jump::draw_fader` draws the event's screen fade; the one full-screen node takes the stronger alpha of the jump's black and the event's fade. The tag writers behind opcode 0x4d were traced (docs/events.md); nothing is hidden by it yet. Verified by `the_event_fade_and_the_jump_fade_share_the_node`. Open: hiding the player and party, the keyhole layout of fade kind 3.
+- **WP-SUM7 (Peter Pan hosts).** Hosts 1.155 (heals the player, applied after the script tick) and 0.40 (the effect's second vector); Chicken Little and Peter Pan now run without a missing host. Verified by `peter_pan_script_heals_the_player_and_sets_the_effect_vector`, the interpreter oracle (0 failures) and a harness run. Open: Genie's motions, Tinker Bell, summon friend-AI classes.
+- **WP-PA4 (Customize page 0x1b).** Donald's and Goofy's Battle Style row and ability and item use settings write the member setting bytes; `party.rs` reads the use bytes. Verified by a round-trip test and a test driving the page into `refresh_target`. Open: setting value 3 has no menu row.
+- **WP-SH3 (shop rewards).** The synthesis opening pays the 50 collection rewards (FUN_00291418, FUN_00291140), page 0xb lists them read-only, NEW tags in the Buy list and synthesis rows, page 7 first-visit text; `shop_seen` and `shop_visits` live in `Progress`. Verified by a disc test that prints the rewards and tag groups, and unit tests. Open: the shop bits are not in the slot files.
+- **Bookkeeping (WP-BK1).** `sheets/systems.json` rows for the story flags, events, talk, save menus, Journal, shops, friend AI, tutorial, intro, lens, asset viewer and sound viewer; stale rows and the README lists brought to the docs' open items.
+
 ## Shift 11 (2026-10-15/16)
 
 - **WP-E6 (event player).** `event_player.rs` parses an area event (actors, placements, motions, subtitle lines, movies, camera via `intro::Track`), runs its commands at their frames, and returns control at the end frame. Verified by four unit/disc tests and a tt02 event 102 screenshot (three townspeople, one subtitle line). Open: movie player, player/party hiding, voices, many opcodes.

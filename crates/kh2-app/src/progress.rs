@@ -158,6 +158,8 @@ pub struct ItemInfo {
     pub command: u16,
     /// Index into the count array and the bit sets (item +0x12).
     pub slot: u16,
+    /// `StatEntry` (item +6); an ability's low byte is the kind the Customize page of a companion tests (2).
+    pub stat: u16,
 }
 
 impl ItemInfo {
@@ -194,6 +196,7 @@ impl ItemIndex {
                 word4: i.flag1 as u16 | (i.rank as u16) << 8,
                 command: i.command,
                 slot: i.slot,
+                stat: i.stat_entry,
             })
             .collect();
         let mut by_id = BTreeMap::new();
@@ -2954,7 +2957,7 @@ mod tests {
     /// An item index without the disc: keyblades 10 and 11, armor 20, accessories 30 and 31, consumables 1 and 2
     /// (the count slot of each is its id).
     fn small_index() -> Arc<ItemIndex> {
-        let row = |id: u16, kind: u8| ItemInfo { id, kind, flag0: 0, word4: 0, command: 0, slot: id };
+        let row = |id: u16, kind: u8| ItemInfo { id, kind, flag0: 0, word4: 0, command: 0, slot: id, stat: 0 };
         let rows = vec![row(1, 0), row(2, 0), row(10, 2), row(11, 2), row(20, item_type::ARMOR), row(30, item_type::ACCESSORY), row(31, item_type::ACCESSORY)];
         let by_id = rows.iter().enumerate().map(|(n, r)| (r.id, n)).collect();
         Arc::new(ItemIndex { rows, by_id, ..ItemIndex::default() })

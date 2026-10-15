@@ -817,7 +817,7 @@ healed and 1.130 (0x170510, the objects' difference) tells healing itself from a
 - `blizzard` (R0a0b -> R0a19): voice 6, motion 191, the trigger, MP, element 3, then a request thread (2.20) at
   word 0xaf8 (a homing projectile library, listed with `cargo run -p kh2-bdx --example listing -- P_EX020 af8`)
   that needs hosts 1.21, 1.88, 1.160, 2.19, 2.29, 2.38, 2.39, 2.43, 2.44, 2.57, 6.9, 6.51, 6.54, 0.41, 0.45, 0.46.
-  **Not done.**
+  (Done in WP-S5, section 16.)
 
 **The caster's numbers** [V]. FUN_001a0610 reads the attacker's status +0x188 / +0x18a, which FUN_0019f920 rebuilds
 from the saved record: the `lvup` row (byte +4 strength, +5 magic, +6 defense) of the record's level (+0xf) in the
@@ -866,12 +866,12 @@ script's contexts named the player; 1.130 and 1.149 showed it). They start at 0x
   back into the first (their pointer is the script's memory, which the host cannot reach); the enemy and spell hosts
   do not answer them (unchanged). `friend_host::advance_vec` is 0.45 (FUN_0016d098, test
   `member_advance_vec_follows_fun_0016d098`).
-- `blade` (R0d30) **not done**: a child thread (1.82) throws the shield object (1.234 the weapon list +0xaf8, 1.83,
+- `blade` (R0d30) (done in WP-S5, section 16; as found by WP-S3): a child thread (1.82) throws the shield object (1.234 the weapon list +0xaf8, 1.83,
   1.148 / 1.89 / 1.79 / 1.11 on the weapon, attack 1161 with a new group (2.67) anchored to it and a callback 2.38,
   2.40) and the mode waits for it (context +0x20). The app's hand objects are not objects a script can move, so the
   child thread fails (a script error reading through the null weapon object at 0x0e14 in the base run, then the mode
   waits forever: Goofy stops choosing actions after his first `blade`; this was so before WP-S3).
-- `turbo` (R0b4e -> R0b5c) **not done**: motion, 1.91 for its length (186), motion queued, then while the motion runs
+- `turbo` (R0b4e -> R0b5c) (done in WP-S5, section 16; as found by WP-S3): motion, 1.91 for its length (186), motion queued, then while the motion runs
   a dash steered with 0.46 toward the target or toward points of 1.247 `random_free_point` (FUN_001726d8 ->
   FUN_001a6068 / FUN_001a6198, a spiral search with the game's second generator) and 6.4 / 6.5 (target search),
   moved with 1.111 while range trigger 16 is on; no attack object (the motion's volumes hit). In the app 1.247 is not
@@ -886,6 +886,93 @@ motion (1.13) is put on by `friend_ai` after the slice that saw the end.
 
 Not verified: the spark element each hit starts (only the effect file is chosen as the game does); voices 6 / 21 / 3
 the scripts ask for (1.262 on a member goes to the enemy voice path, which finds no enemy of that name).
+
+## 16. Status: Goofy's turbo and blade, Donald's blizzard (WP-S5)
+
+Files: `party_rules.rs` (`free_point`), `friend_host.rs` (the hosts), `friend_ai.rs` (the hand object, the
+callbacks, the wall test, `MemberAttacks`), `party.rs` (`member_hands` draws a thrown hand object,
+`retarget`), `enemy.rs` (the class-5 pull), `kh2-bdx` (`Runtime::call_routine`, the empty copy, name 6.9).
+
+**Turbo** (`P_EX030` R0b5c) [V for the script and 1.247]. Host 1.247 (0x1726d8 -> FUN_001a5ea8 with mask 1):
+FUN_001a6068 builds the search block: the centre, the radius `lo + r x (hi - lo)` and a start angle of
+`((t & 4) >> 2 | t << 1) x 0x37b5a8 + r x 0x37b5a8` (`r` the second generator 0x3716a0 times 0x37b5ac, `t`
+the counter 0x35e9b0, then `t + 1` modulo 8), as host 1.248's. FUN_001a6198: one step of 0x37b5b4 (pi / 4)
+further each try, the candidate `centre + (sin a, 0, cos a) x radius` is cast for a floor from 0x37b5c0 (200)
+above to 0x37b5bc (1000) below (FUN_001a5c30 -> FUN_001d1648); with a floor the line from the centre to the
+point 0x37b5b8 (20) further out and 0x37b5b0 (100) above the floor must be clear (FUN_001a5bf8), and the floor
+point is the answer; after eight tries the radius shrinks by 100; below `lo` the floor under the centre
+(else the centre). Test `party_free_point_matches_fun_001a5ea8` (kh2-ee, the two collision queries stubbed:
+the point, 0x3716a0 and 0x35e9b0 agree in 7 cases) and `party_free_point_by_hand`. [inferred] The floor cast
+is `World::ground` and the line test `World::raycast` (the masks of FUN_001d1648 were not read); each member
+keeps its own generator and counter (the game shares them). Log (tt04 b_44, `KH2_PARTY_ABILITIES=425,-429,-423`):
+`script mode "-" -> "turbo"` at t 8.5, `"turbo" -> "-"` at t 14.5 (the whole motion; before: the script error
+at 0x0beb after ~1.7 s); the host table shows `1.247 random_free_point Approx x10` and no missing call but
+6.4 before it was classed (below).
+
+**The target search 6.3 / 6.4 / 6.5** [V for what was read, **not ported**]. 6.3 (FUN_002f01a0): block word 0 =
+the argument (5, the history length [inferred]), +0x14 = 0x383fb4 (1000), +0x18 = 0x383fb8 (pi), the rest 0; the
+script then writes +0x10 / +0x14 (0 / 500) and +0x18 (2 pi) itself. 6.4 (FUN_002f0748): byte +4 and word +8 = 0.
+6.5 (FUN_002f04a8): clears the record (FUN_0018ed40), walks the object list (FUN_001b7c88), keeps objects that pass
+FUN_002f0218 (the kind +0xc: 0 = +0x588 bit 0x10, 1 / 2 = bit 4) and FUN_002f03f8 (FUN_0019a5d0 unless kind 2 or
+bit 4), skips +0x108 bit 0x8000 when block +4 bit 0x10000 is set (10.55), takes each target part
+(FUN_0016b4e0(obj, 3, ..), FUN_001894d0 its point), with history on skips parts in the history (FUN_002f01d8),
+measures the (flat when asked) distance to the point given, keeps those within +0x10..+0x14 and, when +0x18 is
+below 0x383fbc (pi), within that angle of the direction given; the nearest (or farthest) goes into the record
+(FUN_0018f490) and, with history on, into the history (FUN_002f0438 -> FUN_002f02f8, not read). The block lives
+in the script's own memory, which the host cannot reach, and FUN_002f02f8 / FUN_0019a5d0 were not read: all three
+are a stub, the member keeps its own target (Goofy's `tornado` and `turbo` dash at it).
+
+**Blade** (`P_EX030` R0d30 / R0d94, exit R13f5) [V for the script; the hosts as marked]. The member's hand-0 object
+is a scripted object (`friend_host::WeaponObj`, handle `WEAPON_HANDLE + slot`): 1.234 (0x174280, +0xaf8) names it;
+the child thread R0d94 waits for the throw trigger (R0f55: 1.151 bit 0), takes it off the hand (1.161 has_link ->
+1.102 link_end), places it at its bone 3 (1.83 -> FUN_0016aa18 on the last drawn pose, 1.148), makes attack 1161
+with a new group (2.67) anchored to it (2.22), radius 60, and registers R10f7 as its hit routine (2.38: +0x8c the
+thread, +0x90 the routine, +0x94 the argument; disassembly of 0x18e4f0), plays motion 201 on it and flies it for at
+most 180 frames: each frame the homing step R110b, 0.45, 1.89 (the secondary velocity +0x880; [inferred] the free
+object moves by it once a frame, `friend_ai`), 2.12 to its position, 1.79; it stops on a wall (2.40) or a hit. A
+hit runs the routine (FUN_0018cf50: after the spark and the owner's +0x74, FUN_0018dbd8 -> FUN_0016c550 with
+(argument, victim, attack); `Runtime::call_routine`): R10f7 sets the context's +0x40 and points the target record at
+the victim (1.160 -> FUN_0018f490; `PartyMember::retarget`). The object then holds still on the target (1.89 speed
+0) while hits keep coming, ending 16 frames after the last one; the main routine links it back (R13ac: 1.235 the
+joint, 1.18 link_start), plays motion 193 and queues 0; the mode's exit (R13f5 -> R0a96 -> R0ad9) releases the
+attack (2.13). `party::member_hands` draws a free hand object at its own root and facing (one tick behind) with
+the motion asked for, [inferred] the motion number as the hand object's slot (not a player-type object) and a
+yaw-only facing. Test `goofy_blade_throws_and_takes_back_the_hand_object` (kh2-bdx disc test, the mock world
+with a hand object; no script error). Log (tt04 b_44, `KH2_PARTY_ABILITIES=-423,-425 KH2_PARTY_WEAPONS=75,49`):
+`hand object off the hand (1.102)`, `attack object 0x7a000001: atkp 1161 ..`, `.. hits 2985v0: atkp 1161`,
+`its routine R10f7 runs (2.38, FUN_0018cf50)`, `target record now names 2985v0 (1.160 ..)`, `hand object back on
+the hand (1.18)`, `script mode "blade" -> "-"`, then `P_EX030 chose record 5 Attack ..`: Goofy goes on choosing
+(before: BadAddress(0) at 0x0e14 and the mode waited forever). With no hand object (the new game's weapon word 0
+without `KH2_PARTY_WEAPONS`) 1.234 answers 0 and the script still fails as before.
+
+**Blizzard** (`P_EX020` R0a19 -> R0acf, request thread R0af8) [V for the script]. The cast (motion 191, the
+trigger, MP, element 3 on Donald) starts a request (2.20) of 288 bytes at R0af8 with the facing: element 4 of
+Donald's file unbound (1.21 -> FUN_0016a530) and attack 1164 (2.10, radius 80 by 2.11); each frame the homing
+step R0f2b (1.140 / 1.120 / 6.9 on the target record copied by 1.131, 0.21 / 0.13 / 0.46 turns), 0.45 along the
+direction, 0.38 the shard's place, 2.12 the attack there, 0.41 its direction (FUN_0017be00's angles: the element's
+rotation, as the hit spark's); it ends when the attack meets a wall (2.29) or clashes (2.39) or after its 30-frame
+life (then 0.52 fade 8 and 2.13). Hits on enemies are `combat::Hit`s with the rebuilt status (WP-S4). Log (tt04
+b_44, `KH2_PARTY_ABILITIES=166,-167,-168,-165`): `attack object 0x7a000001 hits 2733v0: atkp 1164 ..` and `Dusk
+hit: atkp 1164 damage 10 hp 22 reaction 4 ..`; no missing call. It needed one interpreter fix: R1312 copies 0 bytes
+from address 0 (`copyto [local0]+0x118, 0`), which the game's interpreter does with memcpy (FUN_001d7cb0 case 2 ->
+FUN_00310af4) and so reads nothing; the runtime raised BadAddress(0) at 0x137f (test `copy_of_no_bytes_reads_nothing`).
+Not reached by blizzard (the request's +0x100, +0x108, +0xfc, +0x118 stay 0 from R1312 / R1385, and the bounce
+branch tests `-1 >= 0`): 1.88, 1.160 (R0d3a), 2.19, 2.43, 2.44, 2.57, 6.51, 6.54; they stay unanswered by the
+members' host (the enemy host's `missing` if a script reached them). Not seen in a run: a shard meeting a wall.
+
+**Wall test of the members' attack objects** (FUN_001a2cc0 -> FUN_0018c8e0): after a move of more than two
+units (+4 & 4) a row with BG Hit (+0x12 bit 0) whose object has hit nothing and met no wall casts the segment from
+the previous position to the new one, then down by FloorCheck (`combat::wall_cast`, mask 4); a hit sets 8 or 0x10
+(FUN_0018ca78). [inferred] +4 bit 0x100 (testing after a hit) is not modelled; the wall spark is not shown.
+
+**Tornado's pull** (atkp 1188, reaction class 5). FUN_00185668 -> FUN_001bf920 keeps the attack object in the victim
+(+0xaac) for any attack object, so a member's object pulls like a spell's: `friend_ai::MemberAttacks` holds the
+members' live objects (keys with bit 31, the slot and the handle) and this tick's hits; `enemy::receive_hits` and
+`think` read it after `magic::SpellAttacks`. Log (tt04 b_44, `KH2_PARTY_ABILITIES=423,-425,-429 KH2_REACTIONLOG=1`):
+`Dusk hit: atkp 1188 damage 0 .. reaction 5 effective 5`, `Dusk pulled (reaction class 5, FUN_001bf920): attack
+2164260865 ..`, `Dusk pull: 201 units from attack ..`; the spin's own motion hit (atkp 1160) then replaces the pull
+(FUN_0016b698), as for the spells.
+
 ## Decompile index
 
 | address | what |
@@ -919,6 +1006,9 @@ the scripts ask for (1.262 on a member goes to the enemy voice path, which finds
 | 0x18e2f0 (2.10), 0x1a2ba0, 0x18bd08, 0x18e488 (2.31), 0x1a2c58, 0x18e348 (2.11), 0x1a30e0, 0x18e3a0 (2.12), 0x1a2fc8, 0x18e680 (2.62), 0x1a3480, 0x18e3c0 (2.13), 0x18dc98, 0x18dce0, 0x18c2d8, 0x18c3f0, 0x18c0d8, 0x1a2cc0, 0x300278, vtables 0x35e788 / 0x35cf58, 0x37b45c, 0x37b460, 0x356f40 | WP-S3: the attack objects |
 | 0x171800 (1.87), 0x171840 (1.149), 0x1717c0 (1.22), 0x16a570, 0x16a530, 0x16a5b8, 0x170510 (1.130), 0x16d098 (0.45), 0x16d138 (0.46), 0x172fe8 (1.91), 0x175aa8, 0x2ee718 (6.3), 0x2f01a0, 0x2ee750 (6.5), 0x2f04a8 | WP-S3: the effect starts and Goofy's tornado hosts |
 | 0x19f920, 0x1b50c0, 0x1b58d8, 0x1a0c08 (named), 0x352ec0 | WP-S3: the rebuilt status numbers, the special ability items |
+| 0x1726d8 (1.247), 0x1a5ea8, 0x1a6068, 0x1a6198, 0x1a5c30, 0x1a5bf8, 0x37b5a8..0x37b5c0, 0x2ee718 (6.3), 0x2f01a0, 0x2ee738 (6.4), 0x2f0748, 0x2ee750 (6.5), 0x2f04a8, 0x2f0218, 0x2f03f8, 0x2f01d8, 0x2f0438, 0x16b4e0, 0x1894d0, 0x18ed40, 0x383fb4..0x383fbc | WP-S5: turbo, the target search |
+| 0x174280 (1.234), 0x172e68 (1.83), 0x170658 (1.148), 0x172f90 (1.89), 0x1706c8 (1.161), 0x170e38 (1.102), 0x170dd8 (1.18), 0x18e4f0 (2.38, disassembled), 0x18cf50, 0x18dbd8, 0x16c550, 0x173770 (1.160), 0x18f490, 0x18e530 (2.40), 0x18e828 (2.67), 0x18c890, 0x18c8e0, 0x18ca78, 0x18d430, 0x1a2cc0 | WP-S5: blade, the attack flags and the wall test |
+| 0x171780 (1.21), 0x16a530, 0x16db50 (0.41), 0x17be00, 0x1d9d50, 0x2eeb30 (6.9), 0x18f308, 0x18eec0, 0x189628, 0x18e420 (2.29), 0x18e518 (2.39), 0x18e7a0 (2.19), 0x18e570 (2.43), 0x18ea60 (2.57), 0x2ef040 (6.51), 0x2ef110 (6.54), 0x1d7cb0, 0x310af4 | WP-S5: blizzard and the interpreter's copy |
 
 ## Corrections to other docs (for the orchestrator)
 

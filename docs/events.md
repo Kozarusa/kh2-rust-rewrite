@@ -622,7 +622,12 @@ tt37; tt40 -> tt19 and area 100. The full list is in the test output.
   `.anb` name; the rest not read.
 - **Message lines** [V]. Opcode 0x2d (`FUN_002275a8`): +4 frame, +6 key, +8 message id, +0xa action (0 open,
   1 close, 2 wait until the window reaches state 3), +0xc window kind (0: class 0x1ab6a8, 1: class 0x1ab8e0;
-  docs/hud.md). Opcode 0x15 (`FUN_00227478`): +4 frame, +6 key, +8 message id, +0xa 0 open / else close, the
+  docs/hud.md). [V, WP-E6b] Action 1 finds the slot of (key +6, message +8) among the 32, calls the window's
+  close method (vtable +0x20) and clears the slot, so the wait that follows finds nothing and returns at once
+  (close without waiting). Action 2 finds the slot and, unless the event is skipped (`FUN_002225e0`), sets
+  `DAT_0036b9c9` (`FUN_00222528`) and yields until the window's state (+0x70) is 3, then clears it
+  (`FUN_00222538`); while `DAT_0036b9c9` is set `FUN_00222588` answers 1 and `FUN_00222728` does not advance the
+  counter: the event's frame stands still until the window waits for the button. Opcode 0x15 (`FUN_00227478`): +4 frame, +6 key, +8 message id, +0xa 0 open / else close, the
   subtitle line class 0x1aae60. Up to 32 open windows at `0x1dc00e0` keyed by (key, message id). In tt02 event 102
   the 0x15 lines open and close ids 0x3376..0x337b.
 - **Start and end** [V]. A trigger with an event tag calls `FUN_00196428`: a 0xb0-byte event object
@@ -632,6 +637,24 @@ tt37; tt40 -> tt19 and area 100. The full list is in the test output.
   `FUN_00195c08` steps the object's own states (0..9). When the event ends (`FUN_001964d0`) the chain event 0x4c
   fires for kinds with bit 0; the event's end (`FUN_00225028`) fires 0x12 or 99. Other starters: `FUN_001ad1c0`,
   `FUN_001ad378` (revive), `FUN_001b3468`.
+- **What the start holds back, and what the end gives back** [V, WP-E6b]. `FUN_00195898` takes the kind row of
+  `arg & 0x3f` (`FUN_001d1128`: `FUN_0030ff40` searches the `evtp` rows of `03system.bin`, 8 bytes, by their kind
+  byte; +2 the flags; `struggle::event_kinds`). `FUN_00195ae0` then: flag bit 3 clear -> `FUN_00196280`
+  (`FUN_001b7ce8(0)`, `(1)`: the players' control bits of 0x1d5d7b8); bit 2 clear -> `FUN_00196760` (`FUN_0014ef48`
+  -> `FUN_0013da78`: the field HUD's draw tags 3 to 6, docs/struggle.md). The two calls the brief named are not HUD
+  hides: `FUN_001bef48(0xc)` (disassembled: `a0` passes to `FUN_001bef10`, a search of the 0x40-byte rows of
+  `DAT_01d5df08`, whose row is copied into slot `row +0x24` of 0x1d5dd88; `FUN_001befc0(0xc)` clears the slot)
+  is pause-menu record 0xc (docs/struggle.md: the pause-menu record table), and `FUN_0014c748(4)` sets bit 4 of
+  `DAT_00356f1c`, which only `FUN_0014c780` reads (callers `FUN_0014a080` pause menu, `FUN_0014c4a8`, `FUN_0014c7b8`
+  the play clock): both are undone by `FUN_001959f0` (`FUN_0014c760(4)`, `FUN_001befc0(0xc)`) when the object is
+  destroyed. **Nothing hides the player or the party models**: `FUN_00195ae0`, `FUN_00195d28` (state 0: the fade by
+  kind row +1, `FUN_0014a918` / `FUN_0015d058`), `FUN_00196280` and `FUN_00196760` touch control bits, faders and
+  HUD only [the event's own commands may hide actors: opcodes 3, 0xd, 0xf, 0x10 not read].
+  State 9 (`FUN_00196170`): `FUN_0019d9c8(+0xc)` (the jump record's word 0 is not 0) decides; without a jump the
+  fade-ins of kind flag bit 4 (`FUN_0014a7f0(.., 6, 0)` on two faders), `FUN_0016f8e0(-200)` for flag bit 0,
+  control back (`FUN_001962a0`) and, for bit 2 clear, the field HUD back (`FUN_00196790`); with or without, it then
+  calls `FUN_0019d9d8(+0xc, 0x80000000)`, the trigger jump of `area_jump.rs` with bit 31 in the fade flags
+  (`FUN_00104e18`).
 - **Skipping** [GAP]: `FUN_00224b18` (an event is running and `FUN_002c17e0`) and `FUN_00222630` drop commands;
   the pad check and what a skip jumps to were not read.
 - **The timeline cursor** [V, WP-E6]. The setup reader and the timeline thread each keep one offset into the
@@ -884,6 +907,29 @@ Each stage ends with `verify.ps1` passing and the named check.
   0x1a, 0x1b, 0x22, 0x23, 0x29, 0x2a, 0x2b, 0x2e, 0x36, 0x3d (logged `not ported`), the voices
   (`voice/<world>/event/`), skipping, the event object's states `FUN_00195c08`, the end events 0x12 / 99
   (`FUN_00225028`) and the chain 0x4c.
+  **Status (WP-E6b):** (1) The jump after a trigger's event (section 6, "What the start holds back"):
+  `area_jump::AfterEvent` keeps the trigger's jump record while the event plays and takes it on the first tick
+  the player no longer plays (`FUN_00196170` -> `FUN_0019d9d8(+0xc, 0x80000000)`), type 1 only, with no fade-out
+  [inferred: bit 31 makes `FUN_00104e18` record the kind without fading, as the 0x4000 bit does]; an event that
+  never starts holds it two ticks at most [inferred]. Test `the_jump_after_a_trigger_event_waits_for_the_events_end`.
+  The disc's walk-in triggers with an event (test `twilight_town_walk_in_triggers_with_events`): tt03 `evt`
+  program 4, groups 0x3a / 0x2a / 0x3c -> event `605` arg 5, then type-1 jumps to tt02 / tt04 / tt06 entrance 0.
+  The harness cannot walk Sora into those option-0 volumes (he stops short of them at entrances 0 and 1), so
+  `KH2_WALKIN=<group id hex>` (`KH2_WALKIN_AT`, default 3 s) fires a group's walk-in decision directly. Run
+  `KH2_PROGRAMS=0,0,4 KH2_ENTRANCE=0 KH2_WALKIN=3a KH2_EVENTLOG=1 KH2_NO_ENEMIES=1 KH2_NO_NPC=1 kh2-game tt03`:
+  `trigger (1, 0x3a) plays event 605 arg 5, then the jump Some(Jump { kind: 1, world: 2, area: 2, ...`,
+  `tt03 605 over at frame 360`, `jump after the event (FUN_00196170 -> FUN_0019d9d8 with bit 31): type 1 -> tt02
+  entrance 0`, `jump: tt02 loaded`. (2) The event kind (`evtp` row of `arg & 0x3f`): the pad is locked only for
+  flag bit 3 clear, the field HUD hidden only for bit 2 clear (`event_player::field_hud_hide`, at the end of the
+  HUD chain of `hud.rs`: every visible node but the subtitle line, given back at the end) [inferred which app
+  nodes are the tags 3 to 6, as `hud_mission`]; `KH2_EVENT` takes `KH2_EVENT_ARG`, else the loaded trigger's
+  arg for the tag, else 0. **The original's tt02 `102` (trigger arg 2, kind 2, flags 0x65) keeps the field HUD**
+  (bit 2 set): the screenshot of `KH2_EVENT=102 KH2_EVENT_ARG=2` at 29 s shows the command menu, the gauges and
+  the party faces under the subtitle; with `KH2_EVENT_ARG=12` (kind 0xc, flags 0x70) the same frame has no
+  field HUD. Kind 0 has no row (the `evtp` rows are 1..9, 0xb..0x13): nothing is held back for it. No code was
+  found that hides the player or party models (section 6). (3) The subtitle label is a `hud::Label` built
+  directly. (4) Opcode 0x2d close and wait: rule read (section 6, "Message lines"), not ported: `ScriptWindow`
+  (`hud_msgwin.rs`, outside this WP) has no close request and does not tell its state.
   **The prologue Seifer intro (TT04_MS500)** [V, test `the_seifer_mission_events_have_no_actors`]: the mission
   file's two events (`re_msstart-1a`, end 130, one camera cut; `re_mscomp-0a`, end 15) have no opcode 1, 2 or
   0x2c: the events place no actor, so the b_45 places of Roxas and Seifer stand and `intro.rs` is unchanged.
@@ -899,7 +945,15 @@ Each stage ends with `verify.ps1` passing and the named check.
   `FUN_0024f300` meaning (trigger sub 7).
 - Opcodes 0xa, 0xb, 0xe, 0x11, 0x16 meanings (readers named in the table); trigger subs 3, 6, 8; flag ops 2..5.
 - Group kinds 7 and 9 (`FUN_001ccb10`, `FUN_0019a000` not read); activator +0x28..+0x3f beyond +0x2c/+0x2e/+0x2f.
-- The event kind table `DAT_01d6a92c` (rows read by `FUN_001d1128`): its loader was not searched.
+- The event kind table `DAT_01d6a92c` (rows read by `FUN_001d1128`): its loader was not searched (the rows are
+  the `evtp` entry of `03system.bin`, `struggle::event_kinds`).
+- Whether anything else hides the field HUD during a kind-2 event such as tt02 `102` (flags 0x65, bit 2 set):
+  `FUN_00196760` is also called by `FUN_00196258` (no `jal` or address reference found, `mips_scan --jal
+  0x196258 --addr 0x196258`), `FUN_0024f0b8` (menu start) and `FUN_002c6a40`; `FUN_0014ef48` by `FUN_002cc1e0`,
+  `FUN_002d16b8` (not read). The event commands 3, 0xd, 0xf, 0x10 (actor show/hide candidates) were not read.
+- Opcode 0x2d close / wait in the app: needs a close request and the window state from `hud_msgwin::ScriptWindow`.
+- What pause-menu record 0xc (`FUN_001bef48(0xc)`, table `DAT_01d5df08`) allows or forbids; bit 4 of
+  `DAT_00356f1c` stops the play clock (`FUN_0014c7b8`) and is tested by the pause menu `FUN_0014a080`.
 - Music commands of events, skip; opcode 0x2c +6 / +0xa / +0xc and opcode 2 +6 (not read by their handlers);
   load sub-records 0x26 / 0x39 / 0x3e (`FUN_0022c070`, `FUN_00227df0`, `FUN_00226100` not read); how `anm/`
   paths reach the `anm/us/` copies on the USA disc (`FUN_00167e58` not read).
@@ -919,6 +973,7 @@ Each stage ends with `verify.ps1` passing and the named check.
 |---|---|
 | 0x1048e0, 0x1689c0, 0x180870, 0x181148, 0x180a68, 0x180ad8, 0x180b48 | area thread, load, script run, interpreter |
 | 0x180ff8, 0x1975e0, 0x197588, 0x197670, 0x1978b0, 0x1979f8, 0x197a60, 0x197b70, 0x197780, 0x1976d8 | triggers and event firing |
+| 0x196428, 0x195898, 0x195ae0, 0x1959f0, 0x1964d0, 0x195c08, 0x195d28, 0x196138, 0x196170, 0x19d9c8, 0x19d9d8, 0x196280, 0x1962a0, 0x196760, 0x196790, 0x196258, 0x1bef10, 0x1bef48 (disassembled), 0x1befc0, 0x14c748, 0x14c760, 0x14c780, 0x14c650, 0x138708, 0x138728, 0x1b7ce8, 0x1b7d18, 0x1d1128, 0x2275a8, 0x222528, 0x222538, 0x222588, 0x2225e0, 0x222728, 0x2c6a40 | event object start / end, kind flags, jump after the event, opcode 0x2d (WP-E6b) |
 | 0x181728, 0x1817f0, 0x198430, 0x198750, 0x198920, 0x1981a0, 0x198220, 0x1982c8, 0x1989d8, 0x198b30 | spawn groups |
 | 0x198e10, 0x198fa0, 0x199058, 0x1991a0, 0x199518, 0x199930, 0x199b18, 0x199e68, 0x199e98, 0x199f70, 0x199c48, 0x199c70 | group kinds |
 | 0x1d8b48, 0x1d8600, 0x1d89a0, 0x1d8a70, 0x334388 | activator volumes |

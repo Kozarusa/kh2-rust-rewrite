@@ -33,7 +33,7 @@ use crate::area::{app_yaw, game_to_app, AreaRecord};
 use crate::assets::{AreaPart, Disc};
 use crate::camera::rules::View;
 use crate::camera::CamEvent;
-use crate::hud::{HudNode, HudScene};
+use crate::hud::{HudNode, HudScene, Label};
 use crate::skel::{spawn_skinned, Animator, Rig};
 use crate::SCALE;
 
@@ -269,11 +269,17 @@ struct Play {
     /// Open subtitle lines (key, message), in open order.
     lines: Vec<(i16, u16)>,
     motions: HashMap<String, Option<Arc<kh2_anim::Slot>>>,
+    /// The event kind row's flags (`evtp` +2 of kind `arg & 0x3f`, `FUN_00195898` -> `FUN_001d1128`).
+    flags: u16,
 }
 
 #[derive(Resource, Default)]
 pub struct EventPlayer {
     play: Option<Play>,
+    /// The event kind rows (`03system.bin` `evtp`, `struggle::event_kinds`).
+    kinds: Option<Vec<(u8, u16)>>,
+    /// HUD nodes the field-HUD hide turned off (shown again at the end).
+    hidden: Vec<usize>,
     objs: Option<Vec<t::Objentry>>,
     rigs: HashMap<String, Option<Arc<Rig>>>,
     /// `KH2_EVENT` was taken.
@@ -287,11 +293,40 @@ impl EventPlayer {
     pub fn playing(&self) -> bool {
         self.play.is_some()
     }
+
+    /// `FUN_00195ae0`: kind flag bit 3 clear -> `FUN_00196280` (`FUN_001b7ce8(0)`, `(1)`: players 0 and 1 lose
+    /// control) until `FUN_00196170` -> `FUN_001962a0` gives it back.
+    pub fn locks_control(&self) -> bool {
+        self.play.as_ref().is_some_and(|p| kind_locks_control(p.flags))
+    }
+
+    /// `FUN_00195ae0`: kind flag bit 2 clear -> `FUN_00196760` -> `FUN_0014ef48` hides the field HUD (draw tags 3
+    /// to 6, `FUN_0013da78`) until `FUN_00196170` -> `FUN_00196790`.
+    pub fn hides_hud(&self) -> bool {
+        self.play.as_ref().is_some_and(|p| kind_hides_hud(p.flags))
+    }
+}
+
+/// Kind flag bit 3 clear: the event takes the players' control (`FUN_00195ae0` -> `FUN_00196280`).
+pub fn kind_locks_control(flags: u16) -> bool {
+    flags & 8 == 0
+}
+
+/// Kind flag bit 2 clear: the event hides the field HUD (`FUN_00195ae0` -> `FUN_00196760`).
+pub fn kind_hides_hud(flags: u16) -> bool {
+    flags & 4 == 0
+}
+
+/// The flags of event kind `arg & 0x3f` (`FUN_00195898`: `FUN_001d1128` searches the `evtp` rows by their kind
+/// byte, `FUN_0030ff40`). `None` when the table has no such kind.
+pub fn kind_flags(kinds: &[(u8, u16)], arg: u16) -> Option<u16> {
+    let k = (arg & 0x3f) as u8;
+    kinds.iter().find(|(x, _)| *x == k).map(|(_, f)| *f)
 }
 
 /// Starts a requested event: `request` (a trigger) or the harness `KH2_EVENT=<tag>` (the loaded area's event,
 /// `KH2_EVENT_AT=<app seconds>`, default 2).
-fn start(time: Res<Time<Real>>, rec: Res<AreaRecord>, mut player: ResMut<EventPlayer>) {
+fn start(time: Res<Time<Real>>, rec: Res<AreaRecord>, disc: Res<Disc>, mut player: ResMut<EventPlayer>) {
     let Some(run) = rec.run.as_ref() else { return };
     let mut next = REQUESTS.lock().ok().and_then(|mut q| (!q.is_empty()).then(|| q.remove(0)));
     if next.is_none() && !player.env_done {
@@ -300,7 +335,10 @@ fn start(time: Res<Time<Real>>, rec: Res<AreaRecord>, mut player: ResMut<EventPl
             && time.elapsed_secs() >= at
         {
             player.env_done = true;
-            next = Some((tag, 0));
+            // The argument: `KH2_EVENT_ARG`, else the one the loaded scripts' trigger for this tag passes (tt02
+            // `102`: arg 2), else 0.
+            let arg = std::env::var("KH2_EVENT_ARG").ok().and_then(|v| v.parse::<u16>().ok()).or_else(|| run.script.triggers.iter().find_map(|t| t.event_tag().filter(|(e, _)| *e == tag).map(|(_, a)| a))).unwrap_or(0);
+            next = Some((tag, arg));
         }
     }
     let Some((tag, arg)) = next else { return };
@@ -317,6 +355,17 @@ fn start(time: Res<Time<Real>>, rec: Res<AreaRecord>, mut player: ResMut<EventPl
         return;
     };
     let ev = Event::parse(&cmds);
+    let kinds = player.kinds.get_or_insert_with(|| disc.read("03system.bin").map(|s| crate::struggle::event_kinds(&s)).unwrap_or_default());
+    // FUN_001d1128 answers no row for a kind the table lacks [inferred: then nothing is held back, flags 0xffff].
+    let flags = kind_flags(kinds, arg);
+    info!(
+        "event: kind {:#x} flags {}: control {}, field HUD {} (FUN_00195ae0; HUD list record 0xc FUN_001bef48 and DAT_00356f1c bit 4 FUN_0014c748 are the pause-menu record and the play clock, not ported)",
+        arg & 0x3f,
+        flags.map_or("none (no evtp row)".to_string(), |f| format!("{f:#06x}")),
+        if flags.is_some_and(kind_locks_control) { "locked" } else { "kept" },
+        if flags.is_some_and(kind_hides_hud) { "hidden" } else { "kept" }
+    );
+    let flags = flags.unwrap_or(0xffff);
     info!(
         "event: {} {tag} ({}, arg {arg}) starts: {} commands, end frame {}, {} actor(s) {:?}, {} motion load(s), {} placement(s), {} motion(s), {} subtitle command(s), {} window command(s), camera {} record(s) {} cut(s), movies {:?}; not ported opcodes {:x?}",
         run.name,
@@ -335,7 +384,7 @@ fn start(time: Res<Time<Real>>, rec: Res<AreaRecord>, mut player: ResMut<EventPl
         ev.movies,
         ev.other
     );
-    player.play = Some(Play { area: run.name.clone(), tag, cmds, ev, cursor: 0, ticks: 0, actors: HashMap::new(), lines: Vec::new(), motions: HashMap::new() });
+    player.play = Some(Play { area: run.name.clone(), tag, cmds, ev, cursor: 0, ticks: 0, actors: HashMap::new(), lines: Vec::new(), motions: HashMap::new(), flags });
 }
 
 fn view(s: super::Shot) -> View {
@@ -514,7 +563,37 @@ fn step(
 #[derive(Component)]
 pub struct EventActor;
 
-/// The pad is the event's while it plays [inferred: the field's player task does not run in the event state].
+/// The field-HUD hide of an event whose kind has flag bit 2 clear (`FUN_00195ae0` -> `FUN_00196760` ->
+/// `FUN_0014ef48` -> `FUN_0013da78`: draw tags 3 to 6), lifted when it ends (`FUN_00196170` -> `FUN_00196790`):
+/// every visible HUD node but the subtitle line is turned off while the event plays and the ones turned off
+/// here are shown again after [inferred: which of the app's HUD modules are the tags 3 to 5 was not traced, as
+/// in `hud_mission::field_hud_hide`]. Runs at the end of the HUD chain (`hud.rs`), so it sees what the HUD
+/// modules showed this frame.
+pub(crate) fn field_hud_hide(mut player: ResMut<EventPlayer>, mut scene: ResMut<HudScene>) {
+    let player = &mut *player;
+    if player.hides_hud() {
+        for (i, n) in scene.nodes.iter_mut().enumerate() {
+            if n.visible && Some(i) != player.node {
+                n.visible = false;
+                if !player.hidden.contains(&i) {
+                    player.hidden.push(i);
+                }
+            }
+        }
+    } else if !player.hidden.is_empty() {
+        let n = player.hidden.len();
+        for i in player.hidden.drain(..) {
+            if let Some(node) = scene.nodes.get_mut(i) {
+                node.visible = true;
+            }
+        }
+        if eventlog() {
+            info!("event: field HUD back ({n} node(s), FUN_00196790)");
+        }
+    }
+}
+
+/// The pad is the event's while it plays when the kind takes control (`kind_locks_control`).
 /// With `KH2_EVENTLOG=1` Sora's place is logged while the event plays and six seconds after its end (shows
 /// that the pad drives him again).
 fn lock_pad(
@@ -527,7 +606,9 @@ fn lock_pad(
 ) {
     let at = sora.single().map(|t| t.translation / SCALE).unwrap_or_default();
     if player.playing() {
-        pad.lock();
+        if player.locks_control() {
+            pad.lock();
+        }
         began.get_or_insert(at);
         *ended = Some((time.elapsed_secs(), at, false));
         return;
@@ -570,11 +651,7 @@ fn subtitles(mut player: ResMut<EventPlayer>, mut scene: ResMut<HudScene>) {
             tokens.extend(t.lookup(*id as u32)?);
         }
         let style = Style { font: 4, color: t.color(3), align: 4, world: t.world, ..Style::default() };
-        // The HUD's label type is private to `hud.rs`: the label is made from the system table's fallback
-        // message 0x8adc (the one 0x190c40 falls back to) and given the lines' text.
-        let mut label = t.message(0x8adc, style, [0.0, 0.0])?;
-        label.tokens = tokens;
-        (!label.tokens.is_empty()).then_some(label)
+        (!tokens.is_empty()).then_some(Label { tokens, style, offset: [0.0, 0.0] })
     });
     let n = &mut scene.nodes[node];
     let changed = n.label.as_ref().map(|l| &l.tokens) != label.as_ref().map(|l| &l.tokens);
@@ -646,6 +723,29 @@ mod tests {
         assert_eq!(wait_frame(&cmd(2, &p)), Some(37));
         assert_eq!(e.model_of(0x5a), Some("p_ex110"));
         assert_eq!(anb_path("anm_tt/ETT99901E", "p_ex110").as_deref(), Some("anm/tt/p_ex110/ETT99901E.anb"));
+    }
+
+    /// WP-E6b: the kind row is found by its kind byte (`arg & 0x3f`); bit 3 clear takes control, bit 2 clear
+    /// hides the field HUD. On the disc: the Struggle start kinds 0xd..0xf (`struggle.rs`) and the row of kind 0
+    /// that `KH2_EVENT` (arg 0) uses.
+    #[test]
+    fn the_event_kind_row_decides_control_and_the_field_hud() {
+        let kinds = [(0u8, 0x0000u16), (0xd, 0x60), (0xe, 0x44), (0xf, 0x64)];
+        assert_eq!(kind_flags(&kinds, 0x8d), Some(0x60), "bit 7 of the argument is not part of the kind");
+        assert_eq!(kind_flags(&kinds, 0x11), None);
+        assert!(kind_locks_control(0x60) && kind_hides_hud(0x60));
+        assert!(kind_locks_control(0x44) && !kind_hides_hud(0x44));
+        assert!(!kind_locks_control(0x08) && kind_hides_hud(0x08));
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let disc = Disc::open(&iso);
+        let rows = crate::struggle::event_kinds(&disc.read("03system.bin").expect("03system.bin"));
+        eprintln!("evtp rows (kind, flags): {:x?}", rows);
+        assert_eq!(kind_flags(&rows, 0xd), Some(0x60));
+        let k0 = kind_flags(&rows, 0);
+        eprintln!("kind 0: {k0:x?}");
     }
 
     /// The disc's tt01 short events (`100`, `200`, `400`, `600`) are movies with subtitle lines: opcode 0x44

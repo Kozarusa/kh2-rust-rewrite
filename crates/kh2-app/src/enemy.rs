@@ -509,7 +509,7 @@ pub struct Ring {
 /// it falls below the minimum. Nothing found: the floor under the centre (`ground`, else the centre) or, in the air,
 /// the centre. `ground` and `clear` are the collision queries.
 pub fn ring_place(rng: &mut PlaceRng, ring: &Ring, ground: &dyn Fn(Vec3) -> Option<Vec3>, clear: &dyn Fn(Vec3, Vec3) -> bool) -> Vec3 {
-    const STEP: f32 = 0.785_398_2;
+    const STEP: f32 = std::f32::consts::FRAC_PI_4;
     let mut r = ring.min + rng.next() * (ring.max - ring.min);
     let start = rng.octant() as f32 * STEP + rng.next() * STEP;
     let mut tries = 0;

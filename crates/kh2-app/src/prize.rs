@@ -1035,6 +1035,9 @@ impl Plugin for PrizePlugin {
     }
 }
 
+/// Every prize and item object.
+type PrizeOrItem = Or<(With<PrizeObj>, With<ItemObj>)>;
+
 /// The area's unload takes the prizes and item objects with it. The jump task's unload (`FUN_00104ce0` ->
 /// `FUN_00168ca0` -> `FUN_001b8800`) frees every object of the list at 0x1d5d7e0 [inferred: the `PRIZE` manager
 /// `DAT_0035e7a0` (object 0x5c3, whose pool holds the orbs and munny) and the item objects (type 0x12) are in that
@@ -1044,7 +1047,7 @@ impl Plugin for PrizePlugin {
 fn unload_prizes(
     task: Option<Res<crate::area_jump::JumpTask>>,
     mut done: Local<bool>,
-    objects: Query<Entity, Or<(With<PrizeObj>, With<ItemObj>)>>,
+    objects: Query<Entity, PrizeOrItem>,
     mut pool: ResMut<PrizePool>,
     mut commands: Commands,
 ) {

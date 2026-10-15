@@ -1566,7 +1566,13 @@ struct SummonEnv {
     move_record: Option<usize>,
     /// Genie's class constants (the form table of hosts 10.9 / 10.10).
     genie: Option<genie::Consts>,
+    /// FUN_001c69b0 (host 2.75): a summon is out, it is Peter Pan's row and byte 7 is set.
+    tinker_ready: bool,
 }
+
+/// The keyed buffers of host 2.21 (the list at 0x1c95528, FUN_001a5040), kept for the run.
+#[derive(Resource, Default)]
+pub struct SharedBlocks(pub kh2_bdx::shared::SharedBlocks);
 
 /// The summon object's script host: the party members' host (`FriendHost`: attack objects, effects,
 /// target record) with the summon's own group 10 entries and the calls the summon's script makes of the
@@ -1576,6 +1582,7 @@ struct SummonHost<'a, 'b> {
     f: crate::friend_host::FriendHost<'a, 'b>,
     ai: &'b mut ai::SummonAi,
     env: &'b SummonEnv,
+    shared: &'b mut kh2_bdx::shared::SharedBlocks,
 }
 
 impl SummonHost<'_, '_> {
@@ -1606,6 +1613,10 @@ impl SummonHost<'_, '_> {
             // 1.165 offer_command (0x1734a8): Stitch's main thread offers Ohana (519) in slot 2 while the
             // timer is above 0 (docs/summons.md section 4). Summon limits are stage 5.
             (1, 165) => (Value::None, St::Stub, "summon limit offers are stage 5: the offer is logged, the command menu does not show it"),
+            // 2.21 shared_block (0x18e928 -> FUN_001a5040): the buffer registered under the key.
+            (2, 21) => (Value::Handle(self.shared.get(a(0) as i32, a(1) as i32)), St::Impl, ""),
+            // 2.75 (0x18eba8 -> FUN_001c69b0): Tinker Bell's revive is ready.
+            (2, 75) => (Value::Bool(self.env.tinker_ready), St::Impl, ""),
             // 2.74 attack_callback_98 (0x18e870): attack +0x98 = routine, +0xa0 = argument. Only FUN_0018d430
             // (two attacks clash) runs it; the summon's attack objects meet no other attack.
             (2, 74) => {
@@ -1717,11 +1728,11 @@ impl kh2_bdx::Host for SummonHost<'_, '_> {
     }
 
     fn read_mem(&mut self, addr: u32, out: &mut [u8]) -> bool {
-        self.f.read_mem(addr, out)
+        self.shared.read(addr, out) || self.f.read_mem(addr, out)
     }
 
     fn write_mem(&mut self, addr: u32, data: &[u8]) -> bool {
-        self.f.write_mem(addr, data)
+        self.shared.write(addr, data) || self.f.write_mem(addr, data)
     }
 
     fn target_parts(&mut self, kind: i32, skip_flagged: bool) -> Option<Vec<kh2_bdx::search::TargetPart>> {
@@ -1788,6 +1799,7 @@ impl Plugin for SummonPlugin {
             .init_resource::<HudSaved>()
             .init_resource::<Acts>()
             .init_resource::<Originals>()
+            .init_resource::<SharedBlocks>()
             .init_resource::<PlayerSide>()
             .add_systems(Update, (keys.before(crate::magic::harness_keys), harness_requests, hud_feed.before(crate::hud::hud_gauge::update)))
             .add_systems(FixedUpdate, (tick, act, objects, companions).chain().in_set(Sim::Sounds))
@@ -2359,7 +2371,14 @@ type StitchWorld<'w, 's> = (
 );
 
 /// The game state the summon objects read: the game data, the drive gauge, the limit task, the summon data and state.
-type SummonRes<'w> = (Res<'w, GameData>, Res<'w, DriveState>, Option<Res<'w, crate::limit::LimitTask>>, Res<'w, SummonData>, ResMut<'w, SummonState>);
+type SummonRes<'w> = (Res<'w, GameData>, Res<'w, DriveState>, Option<Res<'w, crate::limit::LimitTask>>, Res<'w, SummonData>, ResMut<'w, SummonState>, ResMut<'w, SharedBlocks>);
+
+/// FUN_001c69b0: the summon state is not 0, byte 5 is the `sumn` row of Peter Pan's command (0x132,
+/// FUN_001d4ca0: 0 when absent) and byte 7 is set (1 from the start, FUN_001c6168; cleared by the revive
+/// FUN_001adeb8 through FUN_001c6a10).
+fn tinker_ready(sm: &SummonState, data: &SummonData) -> bool {
+    sm.state != 0 && sm.index == data.index_of(cmd::PETER_PAN).unwrap_or(0) && sm.extra != 0
+}
 
 /// The summon objects' scripts (run every tick through the enemy host, as the party's in
 /// `friend_ai.rs`), their fades and their end.
@@ -2375,13 +2394,13 @@ fn objects(
     children: Query<&Children>,
     handles: Query<&MeshMaterial3d<StandardMaterial>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    (game, drive, limit_task, data, mut sm): SummonRes,
+    (game, drive, limit_task, data, mut sm, mut shared): SummonRes,
     (cam, enemies, gts, mut hits, mut magic, battle): StitchWorld,
 ) {
     let (Some(mut trace), Ok(mut s)) = (trace, sora.single_mut()) else { return };
     let paired = HashMap::new();
     let move_record = data.stitch.as_ref().and_then(|(_, r)| r.iter().position(|r| stitch::addr(r) == stitch::MOVE));
-    let senv = SummonEnv { timer: drive.timer.left, limit: limit_task.is_some_and(|l| l.0.is_some()), stitch: data.stitch.as_ref().map(|d| d.0), move_record, genie: data.genie.as_ref().map(|d| d.0) };
+    let senv = SummonEnv { timer: drive.timer.left, limit: limit_task.is_some_and(|l| l.0.is_some()), stitch: data.stitch.as_ref().map(|d| d.0), move_record, genie: data.genie.as_ref().map(|d| d.0), tinker_ready: tinker_ready(&sm, &data) };
     let camera = cam.iter().next();
     // FUN_00118068 / FUN_00118110's targets: valid enemies (FUN_00112ac0: alive, hittable) not out of view
     // (FUN_0019ada8 -> FUN_001a5db0, the camera's frustum [inferred: the point's projection inside the screen]),
@@ -2436,7 +2455,7 @@ fn objects(
         let handle = obj.handle;
         let inner = BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() };
         let f = crate::friend_host::FriendHost { inner, fields, game: &game, free: None, targets: &[] };
-        let mut host = SummonHost { f, ai, env: &senv };
+        let mut host = SummonHost { f, ai, env: &senv, shared: &mut shared.0 };
         if let Some(m) = started.take() {
             rt.spawn(&mut host, handle);
             rt.set_mode_named(&mut host, m);

@@ -14,6 +14,7 @@ pub mod program;
 pub mod reaction;
 pub mod runtime;
 pub mod search;
+pub mod shared;
 pub mod signatures;
 pub mod trig;
 pub mod vm;

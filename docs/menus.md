@@ -1318,12 +1318,14 @@ Code: `menu_journal.rs` and its submodules `menu_journal/{marks,chars,lists,trea
 data parts of `chars` / `album_page` are pure functions with tests; the rest is node glue).
 
 - **Text colour (the rule behind several pages).** `FUN_00139048` draws an object's text with the colour `FUN_00237518`
-  gives (the object's current sprite group: its first animation's colour). Flag 8 (set by `FUN_00138fc8`, cleared by
-  `FUN_00139860`) replaces the RGB with the object's own word `+0x198` (0xe5e5e5), keeping the group's alpha. Objects that
-  clear flag 8 therefore take the group's whole colour: group 2 (64, 70, 60, 0x80: the dark ink of the album rows), 0x46 (187,
-  202, 153, 0x50: the Treasures labels, as pale as their plate), 0x53 (16, 24, 0: the name plate), 0x7e (240, 240, 240: the info
-  text on its black bar). The port reads the colour from `Anim::color_start` of the group (`group_color`). The holders of pages 1
-  and 2 (flag 8 kept) and the rows of page 2 (WP-MN10, group 3: 0x80 white) are left as they were.
+  gives (`+0xdc` of the sprite player, computed by `FUN_00236cf8` together with the group's anchor: the animation flagged 2 that
+  covers the frame, its colour blended from start to end). Flag 8 (set by `FUN_00138fc8`, cleared by `FUN_00139860`) replaces the
+  RGB with the object's own word `+0x198` (0xe5e5e5), keeping the group's alpha. Objects that clear flag 8 therefore take the
+  group's whole colour: group 2 (64, 70, 60, 0x80: the dark ink of the album rows), 0x46 (16, 24, 0: the Treasures labels), 0x53
+  (16, 24, 0: the name plate), 0x7e (240, 240, 240: the info text on its black bar), 0x7f (250, 240, 0: the total's count), 0x55 /
+  0x56 (16, 8, 0 / 16, 16, 0 with alpha 100 / 96: the picture page's caption and title). The port reads the end colour of the group's
+  last flagged animation (`group_color`; a fade-in such as the total label's is not followed). The holders of pages 1 and 2
+  (flag 8 kept) and the rows of page 2 (WP-MN10, group 3: 0x80 white, the same look) are left as they were.
 - **Holder texts of pages 1 and 2** (fix): `FUN_00139048` starts at the object's position `FUN_00138f38` (the group's animated
   anchor) and adds the group's x / y when flag 0x10 is kept; the port drew them from the node's origin, at the screen's corner.
   They now use `label_anchor` (the Summary and Objective texts sit in their panes).
@@ -1339,20 +1341,20 @@ data parts of `chars` / `album_page` are pure functions with tests; the rest is 
 - **Page 3 opens on the last entry** (fix): `FUN_002a4c38` ends with `FUN_00298d98(list, n)` and `FUN_00299c10(bar, n)`
   where `n` is the sum of the lines of every entry but the last; the first line shown is the last entry's first line (the
   port started at line 0). The scroll bar is made for `n + max(10, last entry's lines)`.
-- **New / seen bit sets** (`marks.rs`). `DAT_0036d4e8` (0x128 bytes, allocated by `FUN_002b7060` at the scene's init,
-  `FUN_002b7100` fills it at every open: `FUN_002b7160` characters, `7590` limits, `7818` album, `7cd0`, `7f58` quests, `8390`
-  minigames, `87b8` treasures, `8b88` maps, `8f18`, `9198` story) holds a bit for every entry that exists now and is not in the
-  seen set. The seen set is in the save at `FUN_002b70e0` = `0x33e860 + 0x38f0` (same offsets: characters +0, album +0x34
-  (+ 4 * world), minigames +0x74, quests +0x80, story +0x90 (+ 4 * world), treasures +0xd0, maps +0x110, limits +0x120). A tag is
-  drawn for an entry with a new bit: new until the seen bit is set, then the seen group (`FUN_002b9360` / `FUN_002b9480` and
-  siblings: story 0x39 / 0x3a at 0x382ba8 / 0x382bac, rows 0x8b / 0x8c at 0x382b80 / 0x382b84, cells 0x98 / 0x99 at 0x382aec /
-  0x382af0, characters 0x18 / 0x19 and links 0x1b / 0x1c at 0x382f0c.., treasure and map labels 0x3f / 0x40 at 0x382f58 /
-  0x382f5c, album 0x5a / 0x5b at 0x382bdc / 0x382be0). `DAT_0036d4f4` is a second set (the completion percentage `FUN_002b9bf0`:
-  every entry that exists, no seen filter); its aggregate (`FUN_002baca8` story, `ba080` album, `ba6d8` treasures, `ba898` maps,
-  `bad98` characters / links) draws the completion mark 0x8a on page 2's rows. Port: the app has no journal save data, so the
-  seen set lives in the `Journal` resource for the run and starts empty (a state that never opened the journal shows everything
-  as new [inferred: the new-game save has the bits clear]); the new set is rebuilt in `show` from the story flags, the item counts
-  and the tables below.
+- **New / seen bit sets** (`marks.rs`). `DAT_0036d4e8` (0x128 bytes, allocated by `FUN_002b7060` at the scene's init;
+  `FUN_002b7100` fills it at every open: `FUN_002b7160` characters (+0), `7590` the Ansem reports (entry 4, +0x120), `7818` album
+  (entry 2, +0x34 + 4 * world), `7cd0` limits (entry 6, +0x74), `7f58` quests (entry 8, +0x80), `8390` minigames (entry 7,
+  +0x78), `87b8` treasures (+0xd0), `8b88` maps (+0x110), `8f18` (+0x124), `9198` story (entry 1, +0x90 + 4 * world)) holds a bit for
+  every entry that exists now and is not in the seen set. The seen set is in the save at `FUN_002b70e0` = `0x33e860 + 0x38f0`
+  (the same offsets). A tag is drawn for an entry with a new bit: new until the seen bit is set, then the seen group (`FUN_002b9360`
+  / `FUN_002b9480` and siblings: story 0x39 / 0x3a at 0x382ba8 / 0x382bac, rows 0x8b / 0x8c at 0x382b80 / 0x382b84, cells 0x98 / 0x99
+  at 0x382aec / 0x382af0, characters 0x18 / 0x19 and links 0x1b / 0x1c at 0x382f0c.., treasure and map labels 0x3f / 0x40 at
+  0x382f58 / 0x382f5c, album 0x5a / 0x5b at 0x382bdc / 0x382be0). `DAT_0036d4f4` is a second set (the completion percentage
+  `FUN_002b9bf0`: every entry that exists, no seen filter); its aggregate (`FUN_002baca8` story, `ba080` album, `ba6d8` treasures,
+  `ba898` maps, `bad98` characters / links) draws the completion mark 0x8a on page 2's rows. Port: the app has no journal save
+  data, so the seen set lives in the `Journal` resource for the run and starts empty (a state that never opened the journal shows
+  everything as new [inferred: the new-game save has the bits clear]); the new set is rebuilt in `show` from the story flags, the
+  item counts and the tables below.
   - *Page 3's marks* (`FUN_002a5708`, every cursor move through the list callback `FUN_002a5450`): the entries that start in the
     ten rows get a tag on their first row; the entry whose first line is on row 0 is marked seen first (`FUN_002b95d8`).
     `marks::story_mark_rows`.
@@ -1362,7 +1364,7 @@ data parts of `chars` / `album_page` are pure functions with tests; the rest is 
     all seen; world 0xf takes every world); the first child's 0x9a (`FUN_002baf08`: every category complete) needs the quest,
     minigame and limit lists the app has no data for: GAP.
 - **Characters (6) and Character Links (0xb)** (one builder `FUN_002ae3e8`, handler `FUN_002ae790`; page 6 is category 0, 0xb
-  category 7; 0x20 is Roxas's, not ported). The faces are the sub-records (8 bytes: character u16, x, y i16, +6 drawn when not 0)
+  category 7; page 0x20, which shares the builder and is reached from page 0xc, is not ported). The faces are the sub-records (8 bytes: character u16, x, y i16, +6 drawn when not 0)
   of the groups of `jiminy.bar` entry 5 (0xc-byte headers: +0 flag, +2 off flag, +4 family = the journal world or 0x10 for the
   links, +5 count, +6 kind: 0 base, 1 flag, 2 item count, +8 offset), `FUN_002af398`: the base group when it is on
   (`FUN_002a2018`: kind 2 reads `FUN_001a1cc8(item) > 0`, else the story flag, and not the off flag), then every group of the
@@ -1385,7 +1387,7 @@ data parts of `chars` / `album_page` are pure functions with tests; the rest is 
   window has no focus), links: five Downs on page 2, then J. Log: `journal: page 0x6 (FUN_002ae3e8): family 0x0, 6 faces ...`,
   `journal: pointer [275, 303] -> face Some(2)`.
 - **Treasures (7) and Maps (8)** (one builder `FUN_002afca0`; objects `FUN_002b0e78`; redraw `FUN_002b0678`, `FUN_002b09e8`,
-  `FUN_002b0cc8`; handler `FUN_002afe98`; cursor `FUN_002b1890`; pages 0x19 / 0x1a are Roxas's). The rows of the table `trsr`
+  `FUN_002b0cc8`; handler `FUN_002afe98`; cursor `FUN_002b1890`; pages 0x19 / 0x1a, the same builder reached from page 0xc [inferred: Roxas's], are not ported). The rows of the table `trsr`
   (`03system.bin`, `DAT_01c95590`, 0xc-byte rows, iterated by `FUN_001a68d0`): treasures (`FUN_002b00e0`) are the chests (type 0)
   whose flag (+8) is neither 0 nor 0x800 and is set (or the all-worlds flag 0x4837 `FUN_002783f8`); maps (`FUN_002b0228`) are
   the rows whose item is of type 0x16, owned (`FUN_001a1cc8`) or listed by the all-worlds flag. An entry: the journal world

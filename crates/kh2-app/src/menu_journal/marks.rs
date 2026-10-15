@@ -13,8 +13,8 @@
 
 use std::collections::HashSet;
 
-/// The journal's categories that have their own bit sets (the offsets inside the buffers: characters +0, album +0x34,
-/// minigames +0x74, quests +0x80, story +0x90, treasures +0xd0, maps +0x110, limits +0x120).
+/// The journal's categories that have their own bit sets (the offsets inside the buffers: characters +0, album +0x34, limits
+/// +0x74, minigames +0x78, quests +0x80, story +0x90, treasures +0xd0, maps +0x110, the Ansem reports +0x120).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Cat {
     Story,

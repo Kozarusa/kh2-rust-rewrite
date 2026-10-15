@@ -1652,11 +1652,18 @@ fn go_offset(k: usize) -> bool {
 }
 
 /// The colour of a text object whose flag 8 was cleared (`FUN_00139860`): `FUN_00139048` then takes the whole colour from its
-/// sprite group (`FUN_00237518`: the group's first animation) instead of replacing the colour's RGB with the object's own
-/// (0xe5e5e5, `FUN_00138fc8`). RGBA with 0x80 = 1.0, as the text styles take them.
+/// sprite group (`FUN_00237518`) instead of replacing the colour's RGB with the object's own (0xe5e5e5, `FUN_00138fc8`). That
+/// colour is the one `FUN_00236cf8` computes with the group's anchor, from the animation flagged 2 that covers the frame; the
+/// port takes the steady state, the end colour of the last such animation (a fade-in is not followed). RGBA with 0x80 = 1.0, as
+/// the text styles take them.
 fn group_color(scene: &MenuScene, seq: usize, group: usize) -> [u8; 4] {
-    scene.seqs.get(seq).and_then(|s| s.groups.get(group).and_then(|g| s.anims.get(g.first))).map_or([0xe5, 0xe5, 0xe5, 0x80], |a| a.color_start)
+    let Some(s) = scene.seqs.get(seq) else { return DEFAULT_TEXT };
+    let Some(g) = s.groups.get(group) else { return DEFAULT_TEXT };
+    s.anims.iter().skip(g.first).take(g.count).filter(|a| a.flags & 2 != 0).max_by_key(|a| a.frame_end).map_or(DEFAULT_TEXT, |a| a.color_end)
 }
+
+/// The default window text colour (0xe5e5e5, alpha 0x80).
+const DEFAULT_TEXT: [u8; 4] = [0xe5, 0xe5, 0xe5, 0x80];
 
 /// The text tokens of a message: the journal's file first, then the system messages (`FUN_00190c40`).
 fn tokens(j: &Journal, scene: &MenuScene, id: u16) -> Option<Vec<Token>> {
@@ -2580,6 +2587,26 @@ mod tests {
         assert_eq!(page2(Key::Confirm, 2, &cats), Act::Category { cat: 2, page: 4 });
         assert_eq!(page2(Key::Confirm, 3, &cats), Act::Category { cat: 3, page: 7 });
         assert_eq!(page2(Key::Confirm, 4, &cats), Act::Category { cat: 4, page: 8 });
+    }
+
+    /// The text colours the pages whose flag 8 is cleared take from their groups (skipped without `KH2_ISO`).
+    #[test]
+    fn the_disc_group_colours_of_the_text_objects() {
+        let Ok(iso) = std::env::var("KH2_ISO") else { return };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let two = layd::parse_2ld(&a.read("menu/us/jmemo.2ld").unwrap()).unwrap();
+        let mut scene = MenuScene::default();
+        scene.seqs = two.layd.seqs;
+        // The dark ink of the rows (group 2), of the Treasures labels (0x46) and of the name plate (0x53), white on the info bar
+        // (0x7e), yellow on the total's count (0x7f); a group with no flagged animation keeps the default.
+        assert_eq!(group_color(&scene, SEQ_LIST, 2), [64, 70, 60, 0x80]);
+        assert_eq!(group_color(&scene, SEQ_LIST, treasure_page::LABEL), [16, 24, 0, 0x80]);
+        assert_eq!(group_color(&scene, SEQ_LIST, FACE_NAME), [16, 24, 0, 0x80]);
+        assert_eq!(group_color(&scene, SEQ_LIST, 0x7e), [240, 240, 240, 0x80]);
+        assert_eq!(group_color(&scene, SEQ_LIST, 0x7f), [250, 240, 0, 0x80]);
+        assert_eq!(group_color(&scene, SEQ_LIST, treasure_page::TOTAL), [240, 240, 240, 0x80], "the fade-in's end");
+        assert_eq!(group_color(&scene, SEQ_LIST, 9999), DEFAULT_TEXT);
+        assert_eq!(group_color(&scene, 99, 2), DEFAULT_TEXT);
     }
 
     /// The Album's data on the disc (skipped without `KH2_ISO`): the records, their texts, the picture files and the page's groups.

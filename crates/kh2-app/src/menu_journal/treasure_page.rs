@@ -178,7 +178,7 @@ pub fn masked(t: &[Token]) -> Vec<Token> {
 
 /// The group colour of a node's sequence.
 fn node_group_color(scene: &MenuScene, node: usize, group: usize) -> [u8; 4] {
-    scene.nodes[node].seq.map_or([0xe5, 0xe5, 0xe5, 0x80], |s| group_color(scene, s, group))
+    scene.nodes[node].seq.map_or(DEFAULT_TEXT, |s| group_color(scene, s, group))
 }
 
 /// A label of `font` from `tokens` (the page's text objects: group offset off, `FUN_00139888`).

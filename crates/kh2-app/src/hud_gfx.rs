@@ -24,6 +24,9 @@ use crate::assets::Disc;
 
 /// Render layer of the HUD camera and everything it draws.
 pub const HUD_LAYER: usize = 7;
+/// Render layer of the ring panels (see [`HudScene::ring_panels`]): their camera (order 12) sits above the menu's dim
+/// (11) and under the menu frame (13), as in the pause menu's clip (WP-MN6).
+pub const RING_LAYER: usize = 6;
 /// The game's screen, in HUD units.
 pub const SCREEN: [f32; 2] = [512.0, 448.0];
 /// The HUD draw code places everything at GS y = 0x7300 + 16 * y while the screen origin is 0x7200
@@ -309,13 +312,37 @@ impl HudScene {
         }
     }
 
+    /// Which nodes belong to a ring panel: the tree of a node anchored to the right screen edge that has three or more
+    /// children: Sora's circle (HP ring, MP bar, drive gauge, face; `hud_gauge`) and the party's circles (three rings
+    /// and a face; `hud_party`). Those stay bright under the pause menu's dim and sit under the menu frame (clip 10:
+    /// the rings are bright, the bottom one is cut by the frame's top edge); the rest of the HUD is dimmed.
+    /// [inferred: the structural rule stands in for a flag the two builders do not set; the clip shows the rings and
+    /// not the command deck bright, the original's draw order of the menu objects was not read.]
+    pub fn ring_panels(&self) -> Vec<bool> {
+        let root = |mut i: usize| {
+            while let Some(p) = self.nodes[i].parent {
+                i = p;
+            }
+            i
+        };
+        let mut children = vec![0usize; self.nodes.len()];
+        for n in &self.nodes {
+            if let Some(p) = n.parent {
+                children[root(p)] += 1;
+            }
+        }
+        (0..self.nodes.len()).map(|i| self.nodes[root(i)].edge == Edge::Right && children[root(i)] >= 3).collect()
+    }
+
     /// All quads to draw, in draw order, with the texture file they use.
     fn quads(&self) -> Vec<Drawn> {
         let mut out = Vec::new();
-        for n in &self.nodes {
+        let rings = self.ring_panels();
+        for (ni, n) in self.nodes.iter().enumerate() {
             if !n.visible {
                 continue;
             }
+            let ring = rings[ni];
             if let (Some(g), Some(f)) = (n.player.group, self.files.get(n.file)) {
                 let mut ext = n.ext;
                 ext.time = n.player.uv_time;
@@ -334,12 +361,12 @@ impl HudScene {
                     lo + (hi - lo) * r.clamp(0.0, 1.0)
                 });
                 for (k, q) in qs.into_iter().enumerate() {
-                    out.push((n.file, q, n.origin, n.sweep.map(|s| (n.sweep_start, s)), max_x, regions.get(k).copied().flatten()));
+                    out.push((n.file, q, n.origin, n.sweep.map(|s| (n.sweep_start, s)), max_x, regions.get(k).copied().flatten(), ring));
                 }
             }
             if let (Some(label), Some(text)) = (&n.label, &self.text) {
                 for (file, q) in text.quads(label, n.origin, n.label_fade, n.label_time) {
-                    out.push((file, q, n.origin, None, None, None));
+                    out.push((file, q, n.origin, None, None, None, ring));
                 }
             }
         }
@@ -348,8 +375,8 @@ impl HudScene {
 }
 
 /// One quad to draw: texture file, the quad, its node's origin, the ring wedge (start, sweep), the
-/// x limit and the texel rectangle a scrolling sprite repeats in.
-type Drawn = (usize, Quad, [f32; 2], Option<(f32, f32)>, Option<f32>, Option<[f32; 4]>);
+/// x limit, the texel rectangle a scrolling sprite repeats in, and whether it belongs to a ring panel.
+type Drawn = (usize, Quad, [f32; 2], Option<(f32, f32)>, Option<f32>, Option<[f32; 4]>, bool);
 
 #[derive(Component)]
 pub struct HudCamera;
@@ -366,6 +393,17 @@ fn setup_camera(mut commands: Commands) {
         // HUD coordinates have y pointing down; geometry is built with y negated.
         Transform::from_xyz(SCREEN[0] / 2.0, -SCREEN[1] / 2.0, 100.0),
         RenderLayers::layer(HUD_LAYER),
+    ));
+    // The ring panels' camera: above the pause menu's dim, under its frame.
+    commands.spawn((
+        Camera2d,
+        Camera { order: 12, clear_color: ClearColorConfig::None, ..default() },
+        Projection::Orthographic(OrthographicProjection {
+            scaling_mode: ScalingMode::AutoMin { min_width: SCREEN[0], min_height: SCREEN[1] },
+            ..OrthographicProjection::default_2d()
+        }),
+        Transform::from_xyz(SCREEN[0] / 2.0, -SCREEN[1] / 2.0, 100.0),
+        RenderLayers::layer(RING_LAYER),
     ));
 }
 
@@ -659,7 +697,7 @@ fn draw(
     mut state: ResMut<HudDraw>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<HudMaterial>>,
-    mut batches: Query<(&mut Mesh2d, &mut MeshMaterial2d<HudMaterial>, &mut Visibility, &mut Transform)>,
+    mut batches: Query<(&mut Mesh2d, &mut MeshMaterial2d<HudMaterial>, &mut Visibility, &mut Transform, &mut RenderLayers)>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
 ) {
     scene.margin = match windows.single() {
@@ -705,15 +743,15 @@ fn draw(
     }
     // Consecutive quads with the same texture, blend and filter share a draw call.
     struct Batch {
-        key: (usize, u32, bool),
+        key: (usize, u32, bool, bool),
         pos: Vec<[f32; 3]>,
         uv: Vec<[f32; 2]>,
         col: Vec<[f32; 4]>,
     }
     let mut out: Vec<Batch> = Vec::new();
-    for (file, q, origin, sweep, max_x, region) in scene.quads() {
+    for (file, q, origin, sweep, max_x, region, ring) in scene.quads() {
         let Some(f) = scene.files.get(file) else { continue };
-        let key = (file, q.blend, q.nearest);
+        let key = (file, q.blend, q.nearest, ring);
         // Quad corners are TL, TR, BL, BR; as a polygon: TL, TR, BR, BL.
         let poly: Vec<Vert> = [0usize, 1, 3, 2]
             .iter()
@@ -782,15 +820,19 @@ fn draw(
         state.pool.push(e);
     }
     for (i, entity) in state.pool.clone().into_iter().enumerate() {
-        let Ok((mut mesh2d, mut mat, mut vis, mut tf)) = batches.get_mut(entity) else { continue };
+        let Ok((mut mesh2d, mut mat, mut vis, mut tf, mut layer)) = batches.get_mut(entity) else { continue };
         let Some(b) = out.get(i) else {
             *vis = Visibility::Hidden;
             continue;
         };
-        let (file, blend, nearest) = b.key;
+        let (file, blend, nearest, ring) = b.key;
+        let want = RenderLayers::layer(if ring { RING_LAYER } else { HUD_LAYER });
+        if *layer != want {
+            *layer = want;
+        }
         let handle = state
             .materials
-            .entry(b.key)
+            .entry((file, blend, nearest))
             .or_insert_with(|| {
                 let f = &scene.files[file];
                 materials.add(HudMaterial { texture: if nearest { f.nearest.clone() } else { f.linear.clone() }, blend })

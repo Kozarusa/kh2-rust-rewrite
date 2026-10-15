@@ -931,14 +931,7 @@ alpha path (`enemy_ai.rs`, the look-around fade) was not used: it fades each mat
 number [inferred: the same look]. Screenshots (`KH2_KEYS=3:Enter,5:Escape`, `KH2_SHOT_AT` 3.15 and 5.05): the models are see-through
 at both, full in the hold.
 
-**Face rings under the frame (WP-MN5, item D) [GAP, not done].** In clip 10 the party faces (the HUD rings at the right edge) stay
-bright over the dim and sit **under** the menu's frame (the bottom panel cuts the third ring). In the app the HUD camera (order 10)
-is dimmed by the menu's dim quad and drawn under the whole menu (camera order 11, one scene), so the rings are dark, and the frame
-covers them already. Matching the clip needs the dim to stay under the HUD and the frame above it: a second menu camera (or the
-dim drawn by a camera below the HUD, order 9) plus a split of `MenuScene::quads` into "dim and backdrop" and "frame", and the HUD
-camera is in `hud_gfx.rs` (not this WP's). Also unknown: whether the rings are the field HUD or the camp's own objects (the camp
-is a scene of its own in the original, 1.1, so the field HUD is not running there; `FUN_00250a00` does not draw rings; searched:
-`FUN_00250a00`, `FUN_002506b8`). Left out rather than guessed.
+**Face rings above the dim and under the frame (WP-MN5 gap D, done in WP-MN6).** In clip 10 the party faces (the HUD rings at the right edge) stay bright over the dim and sit **under** the menu's frame (the bottom panel cuts the third ring). The port now has four cameras in this order: world (0), HUD (10, layer 7), the **dim** (11, `menu_gfx::DIM_LAYER` 9: a black `Sprite` whose alpha is `MenuScene::dim`, no longer a quad of the menu scene), the **ring panels** (12, `hud_gfx::RING_LAYER` 6) and the menu (13, layer 8: the frame, plates, text, cards). `HudScene::ring_panels` marks the HUD nodes of a ring panel and the HUD draw gives their batches the ring layer: a node tree anchored to the right screen edge with three or more descendants (Sora's circle with HP ring, MP bar, drive gauge and face from `hud_gauge`; the party circles with three rings and a face from `hud_party`). [inferred: the structural rule stands in for an explicit flag, which would need a line in `hud_gauge.rs` and `hud_party.rs`; the clip shows rings bright and the command deck dim, the original's draw order of the menu objects was not read; searched earlier: `FUN_00250a00`, `FUN_002506b8`.] The rings are also drawn by the ring camera when no menu is open (no visible change: nothing else overlaps them). Screenshot `KH2_KEYS=2:Enter KH2_SHOT_AT=3` on `tt04`: Donald's and Goofy's rings bright at the right edge, Sora's cut by the bottom panel's top edge; the command deck stays dim. Open: the menu's open and close fades of the rings (in the clip the rings do not fade with the dim; here they never dim).
 
 ## 17. Growth and the other equippable abilities as menu rows (WP-G8)
 

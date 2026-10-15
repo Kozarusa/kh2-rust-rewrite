@@ -25,6 +25,9 @@ use crate::menu_text::{Label, MenuText};
 
 /// Render layer of the menu camera and everything it draws (the HUD's is 7).
 pub const MENU_LAYER: usize = 8;
+/// Render layer of the dim: its own camera (order 11) between the HUD's (10) and the HUD's ring panels (12, WP-MN6), so
+/// the field and the HUD are dimmed but the party rings stay bright (clip 10) and the menu frame (13) is over both.
+pub const DIM_LAYER: usize = 9;
 /// The game's screen, in menu units (the same canvas as the HUD's).
 pub const SCREEN: [f32; 2] = [512.0, 448.0];
 /// Menu draws go through the same 2D draw path as the HUD, so the same 16 line offset applies
@@ -41,7 +44,7 @@ impl Plugin for MenuGfxPlugin {
             .init_resource::<MenuScene>()
             .init_resource::<MenuDraw>()
             .add_systems(Startup, (setup_camera, window_size))
-            .add_systems(Update, draw.in_set(crate::schedule::Frame::Popups));
+            .add_systems(Update, (draw, draw_dim).in_set(crate::schedule::Frame::Popups));
     }
 }
 
@@ -316,14 +319,6 @@ impl MenuScene {
         if self.hidden {
             return out;
         }
-        if self.dim > 0.0 {
-            let a = (self.dim.clamp(0.0, 1.0) * 128.0) as u8;
-            let (x0, y0, x1, y1) = (-3000.0, -3000.0, 3500.0, 3500.0);
-            out.push((
-                WHITE_TEX,
-                Quad { pos: [[x0, y0], [x1, y0], [x0, y1], [x1, y1]], uv: [[0.5; 2]; 4], color: [[0, 0, 0, a]; 4], blend: 0, nearest: true },
-            ));
-        }
         for n in &self.nodes {
             if !n.visible {
                 continue;
@@ -385,7 +380,7 @@ fn setup_camera(mut commands: Commands) {
     commands.spawn((
         MenuCamera,
         Camera2d,
-        Camera { order: 11, clear_color: ClearColorConfig::None, ..default() },
+        Camera { order: 13, clear_color: ClearColorConfig::None, ..default() },
         Projection::Orthographic(OrthographicProjection {
             scaling_mode: ScalingMode::AutoMin { min_width: SCREEN[0], min_height: SCREEN[1] },
             ..OrthographicProjection::default_2d()
@@ -394,6 +389,36 @@ fn setup_camera(mut commands: Commands) {
         Transform::from_xyz(SCREEN[0] / 2.0, -SCREEN[1] / 2.0, 100.0),
         RenderLayers::layer(MENU_LAYER),
     ));
+    // The dim: a black sprite on a camera of its own (see `DIM_LAYER`).
+    commands.spawn((
+        Camera2d,
+        Camera { order: 11, clear_color: ClearColorConfig::None, ..default() },
+        Projection::Orthographic(OrthographicProjection {
+            scaling_mode: ScalingMode::AutoMin { min_width: SCREEN[0], min_height: SCREEN[1] },
+            ..OrthographicProjection::default_2d()
+        }),
+        Transform::from_xyz(SCREEN[0] / 2.0, -SCREEN[1] / 2.0, 100.0),
+        RenderLayers::layer(DIM_LAYER),
+    ));
+    commands.spawn((
+        MenuDim,
+        Sprite::from_color(Color::srgba(0.0, 0.0, 0.0, 0.0), Vec2::splat(6500.0)),
+        Transform::from_xyz(SCREEN[0] / 2.0, -SCREEN[1] / 2.0, 0.0),
+        Visibility::Hidden,
+        RenderLayers::layer(DIM_LAYER),
+    ));
+}
+
+/// The black the field is dimmed with (`MenuScene::dim`, the same alpha the old dim quad had).
+#[derive(Component)]
+struct MenuDim;
+
+fn draw_dim(scene: Res<MenuScene>, mut dim: Query<(&mut Sprite, &mut Visibility), With<MenuDim>>) {
+    let a = if scene.hidden { 0.0 } else { scene.dim.clamp(0.0, 1.0) };
+    for (mut s, mut v) in &mut dim {
+        s.color = Color::srgba(0.0, 0.0, 0.0, a);
+        *v = if a > 0.0 { Visibility::Inherited } else { Visibility::Hidden };
+    }
 }
 
 #[derive(Clone, Copy)]

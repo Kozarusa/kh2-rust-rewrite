@@ -631,6 +631,39 @@ tt37; tt40 -> tt19 and area 100. The full list is in the test output.
   `FUN_001ad378` (revive), `FUN_001b3468`.
 - **Skipping** [GAP]: `FUN_00224b18` (an event is running and `FUN_002c17e0`) and `FUN_00222630` drop commands;
   the pad check and what a skip jumps to were not read.
+- **The timeline cursor** [V, WP-E6]. The setup reader and the timeline thread each keep one offset into the
+  list (`DAT_0036ba28`, `DAT_0036ba24`); the thread runs the commands in FILE order, and a command of its switch
+  waits in `FUN_00224a90` until `DAT_0036bcf0` reaches its frame, so a later command with an earlier frame runs
+  right after the one before it. Commands outside the switch (the setup ones among them) pass without waiting.
+  Frames: opcode 2 at +0x26, 6 and 0x1f none, the rest +4 [V for 0x12, 0x15, 0x2c, 0x2d, 0x44; inferred for the
+  others]. The counter (`FUN_00222728`): `DAT_0036bcec += DAT_00356f40` (1.0) a game frame, times `DAT_0037ec50`
+  (0.5); while a movie plays (`FUN_002f5ed0`) it is the movie's frame (`FUN_002f5eb8(7, 0)`). The end
+  (`FUN_00222668`): once `DAT_0036bcf8` (opcode 8, -1 when absent, `FUN_002237b8`) is reached, `FUN_002235c0`
+  (state 4). A size-0 command parks the thread for good.
+- **Actor table** [V, WP-E6]. `DAT_0036bbcc`, 0x60 rows of 0x28 bytes (`FUN_00224548` takes the first row with
+  word 0 = -1): word 0 the objentry id (opcode 1 +4), word 1 the actor index (+6), word 2 the object (0 until
+  made), +0x17 the model name (+8). `FUN_002290e8` finds a row by objentry id (the model name for `.anb`
+  paths), `FUN_002244b0` by actor index.
+- **Load blocks, opcode 0x24** [V, WP-E6]. `FUN_00222a48` lists the command (64 slots, `DAT_0036bbd8`);
+  `FUN_00222a88` takes the next block while `DAT_0036bcf0` lies within its +6..+8 frames. +4 counts the
+  sub-records from +0xc (`u16 kind, u16 size`): 0x25 a motion (`FUN_0022cc88`: +4 objentry id, +6 actor
+  index, +8 flag, +0xa name `anm_tt/ETT10201E`), 0x26 (`FUN_0022c070`), 0x38 a model (+4 objentry id, +6 index,
+  +8 name), 0x39 (`FUN_00227df0`), 0x3e (`FUN_00226100`) [the last three not read]. The `.anb` path
+  (`FUN_0022cbb0`, strings 0x37f208 `anm/`, 0x37f210 `/`, 0x37f218 `.anb`): `anm/` + the name's prefix past
+  its first four characters + `/` + model + the rest + `.anb`, e.g. `anm/tt/h_ex510/ETT10201E.anb`.
+- **Motions, opcode 0x2c** [V, WP-E6]. `FUN_0022cd90`: at frame +4, actor +0xe: the actor's object is made
+  here if it has none (`FUN_0016e8c0(DAT_0037f220, objentry | 0x40000000)`), the motion record of (model, name
+  +0x12) is found (`FUN_002242a0`) and started through `FUN_0017e1c8(2 * +0x10, 2 * +8, object + 0x140, ..)`
+  = `FUN_0017dd38(blend, start frame, ..)` (the same start as every other motion). +6 and +0xa / +0xc are not
+  read there [GAP].
+- **Placements, opcode 2** [V, WP-E6]. `FUN_002293b8`: only when +4 is 0, at frame +0x26, actor +0x24:
+  position +8..+0x14 (`FUN_0016a700`, the game's space) and rotation +0x14..+0x20 in degrees (`FUN_002292b0`,
+  `DAT_0037f0c0` = pi / 180; yaw only when x and z are 0, `FUN_0016a7f0`).
+- **Fades, opcode 0x12** [V for the layout]. `FUN_00226830`: at frame +4, +8 picks the fade object
+  (`FUN_0014a978`, `FUN_0014a948`, `FUN_0014a918`) and +6 its length; not ported.
+- **Movies, opcode 0x44** [V]. `FUN_00225860`: at frame +4, plays `movie/<world>/<+6>.pss` (format 0x37f010
+  with `DAT_00349d40`) and waits for it; the tt01 events `100`, `200`, `400`, `600` are the movies `opn`,
+  `me2`, `me4`, `me6` with their subtitle lines (test `the_tt01_short_events_are_movies_with_subtitle_lines`).
 
 ## 7. Area music
 
@@ -806,6 +839,39 @@ Each stage ends with `verify.ps1` passing and the named check.
   (0x24 + `.anb`), message lines (0x15, 0x2d), the camera cut table (opcode 6) into `CamEvent`; skip later. Start
   with a tt01 event of under 600 bytes (`100`, `200`, `400`, `600`). Accept: log of commands at their frames; a
   screenshot with a subtitle line looked at.
+  **Status (WP-E6):** `kh2-app/src/event_player.rs` (a submodule of `intro.rs`, plugin added by `IntroPlugin`).
+  `Event::parse` sorts the commands (opcode 0 name, 8 end, 1 actors, 0x24 motion loads, 2 placements, 0x2c
+  motions, 0x15 subtitle lines, 0x2d windows, 0x44 movies, the camera through `intro::Track`); `due` is the
+  timeline cursor; the frame is game ticks times 0.5. Actors are made at their first 0x2c from the objentry
+  row's model (`obj/<model>.mdlx`), their `.anb` read from `anm/<world>/<model>/` or, when absent there,
+  `anm/us/<world>/<model>/` [inferred: the USA disc keeps the talking motions there; the loader's remap was
+  not read], started with `Animator::play_external` (blend and start in game frames); opcode 2 places them
+  (`game_to_app`, `app_yaw` of the yaw). Subtitle lines draw as a HUD text node: font 4, colour 3, at
+  (256, 365), alignment 4 (docs/hud.md, class 0x1aae60 [inferred there]), the open lines' messages in open
+  order. 0x2d opens `hud_msgwin::ScriptWindow` (kind 0 / 1 = class 0 / 1); its close and wait are not ported.
+  The camera runs `CamEvent::track` while the event has records and cuts. The pad is locked while the event
+  plays [inferred]; at the end frame the actors are removed and control returns. The short tt01 events are
+  movies (above): no movie is played (no PSS decoder) [GAP], the counter runs on game ticks instead of the
+  movie's frame [inferred]. Triggers: the `WalkIn::Event` arm of `area_jump.rs` hands the event to the player
+  (`event_player::request`); the jump after it is not taken yet. No tt01 trigger names `100` .. `600` (they
+  name `101`, `201`, `303`, `401`, `501`, `601` with event 0, test `twilight_town_tt01_short_events`).
+  Harness: `KH2_EVENT=<tag>` plays the loaded area's event at `KH2_EVENT_AT` seconds (default 2);
+  `KH2_EVENTLOG=1` logs every command at its frame and Sora's place around the end. Runs:
+  `KH2_EVENT=102 KH2_EVENTLOG=1 KH2_NO_ENEMIES=1 KH2_NO_NPC=1 kh2-game tt02` logs `event: tt02 102
+  (tt_event_102, arg 0) starts: 387 commands, end frame 5712, 9 actor(s)`, `actor 1 h_ex510 (object 0x2c3, ...)
+  made (op 0x2c, FUN_0016e8c0)`, `op 2 actor 1 at (7, 0, -339) ...`, `frame 788 (cmd frame 788): op 0x15
+  subtitle opens key 0 message 0x3376`; a screenshot at 29 s looked at: three of the friends in the event's
+  camera view and one subtitle line at the bottom centre (the HUD still drawn, see below). `KH2_EVENT=200
+  KH2_KEYS=30:W:3,74:W:3 kh2-game tt01`: `tt01 200 over at frame 2129 (end frame 2129, ...): ... control back
+  to the player`, `Sora moved 0 cm while the event played; 6 s after its end ... 345 cm from where the event
+  left him`. Not ported: the HUD hiding of the event start (`FUN_001bef48(0xc)`, `FUN_0014c748(4)` in
+  `FUN_00196428`), hiding the player and party during the event, opcodes 3, 0xd, 0xf, 0x10, 0x12, 0x14, 0x16..0x19,
+  0x1a, 0x1b, 0x22, 0x23, 0x29, 0x2a, 0x2b, 0x2e, 0x36, 0x3d (logged `not ported`), the voices
+  (`voice/<world>/event/`), skipping, the event object's states `FUN_00195c08`, the end events 0x12 / 99
+  (`FUN_00225028`) and the chain 0x4c.
+  **The prologue Seifer intro (TT04_MS500)** [V, test `the_seifer_mission_events_have_no_actors`]: the mission
+  file's two events (`re_msstart-1a`, end 130, one camera cut; `re_mscomp-0a`, end 15) have no opcode 1, 2 or
+  0x2c: the events place no actor, so the b_45 places of Roxas and Seifer stand and `intro.rs` is unchanged.
 
 ## 10. Unknowns (with what was searched)
 
@@ -818,7 +884,9 @@ Each stage ends with `verify.ps1` passing and the named check.
 - Opcodes 0xa, 0xb, 0xe, 0x11, 0x16 meanings (readers named in the table); trigger subs 3, 6, 8; flag ops 2..5.
 - Group kinds 7 and 9 (`FUN_001ccb10`, `FUN_0019a000` not read); activator +0x28..+0x3f beyond +0x2c/+0x2e/+0x2f.
 - The event kind table `DAT_01d6a92c` (rows read by `FUN_001d1128`): its loader was not searched.
-- Event camera key format (opcode 0x13), actor motion playback, music commands of events, skip.
+- Music commands of events, skip; opcode 0x2c +6 / +0xa / +0xc and opcode 2 +6 (not read by their handlers);
+  load sub-records 0x26 / 0x39 / 0x3e (`FUN_0022c070`, `FUN_00227df0`, `FUN_00226100` not read); how `anm/`
+  paths reach the `anm/us/` copies on the USA disc (`FUN_00167e58` not read).
 - Where `arif` music pairs are read by the game (only opcode 0x10 writes the pair the area load reads).
 - Exit lock: the new-game value of the halfwords at `0x33f918` (assumed 0; the initialiser was not
   read) and the world-0x10 branch `FUN_001d32e0` (not ported). The flag side effects ops 2..5
@@ -856,6 +924,7 @@ Each stage ends with `verify.ps1` passing and the named check.
 | 0x1784b8, 0x16b940, 0x1699a8, 0x169958, 0x176758, 0x255598, 0x254bf0, 0x1ba2c0, 0x1c6c08, 0x1c6bd0, 0x194c08, 0x194b98 (decompiled), 0x1a0140, 0x1a0210, 0x1a0240, 0x1a0100, 0x1a0180, 0x1a05d0, 0x1a0540, 0x186368, 0x1792f0, 0x176c98, 0x19fe48, 0x19ffb8, 0x194f68, 0x194f08, 0x189208, 0x188fd0, 0x1890d8, 0x188f08, 0x16a570, 0x1d9f20, 0x1d9f48, 0x1d9f80; data 0x380560, 0x37ab20, 0x37ab24 | save points: offer, heal, use (E4) |
 | 0x194ab8, 0x194b68, 0x194b98 (decompiled for WP-7G and E4), 0x194c08, 0x194d78, 0x194e68, 0x194ee0, 0x194f68, 0x194fa8, 0x195010, 0x19c0f0 | save and world points |
 | 0x196428, 0x195898, 0x195ae0, 0x195c08, 0x1964d0, 0x2232c8, 0x2233d8, 0x223910, 0x223a88, 0x2245d0, 0x224a90, 0x224b18, 0x225028, 0x2275a8, 0x227478, 0x22b0f8, 0x22cbb0 | event player |
+| 0x229120, 0x224548, 0x224418, 0x2293b8, 0x2292b0, 0x222a48, 0x222a88, 0x22cc88, 0x2290e8, 0x2244b0, 0x2242a0, 0x2241c8, 0x224030, 0x22cd90, 0x22c928, 0x22c970, 0x17e1c8, 0x17dd38, 0x226fb0, 0x222728, 0x222668, 0x2226d0, 0x222588, 0x2225e0, 0x222630, 0x2237b8, 0x2235c0, 0x224b98, 0x224fa8, 0x225330, 0x224e98, 0x226830, 0x225860, 0x226f50, 0x226fa0; data 0x37f208, 0x37f210, 0x37f218, 0x37f0c0, 0x37f0c4, 0x37f0c8, 0x37ec50, 0x356f40 | event player: actors, loads, motions, placements, counter, end (E6) |
 | 0x137150, 0x1371d8, 0x1a7700, 0x1a7720 | music |
 | 0x137300, 0x136ec0, 0x195358, 0x195208, 0x1951f8, 0x1953e0, 0x195260, 0x195288, 0x1952a0, 0x195300, 0x1d32c0, 0x1d32e0, 0x17fd10, 0x17ff60, 0x195130 | music slots, exit lock and its writers (E1c) |
 | 0x13a7e8, 0x13a8a8, 0x13a980, 0x13a998, 0x13a9d0, 0x15d058, 0x15d1a8, 0x15cf58, 0x15d0e8, 0x15d248, 0x236650, 0x2368a8, 0x2369c0, 0x2369e0, 0x2378a0, 0x2379a8, 0x13ef00, 0x13ef48 | keyhole layout (E1c) |

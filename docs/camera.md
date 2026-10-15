@@ -242,6 +242,13 @@ The target point the app uses is the locked enemy's position raised 100; the gam
       1 and 2 (docs/struggle.md gap 1). Not modelled: the vertical offset between the 448-line display buffer
       and the 416-line draw buffer (taken as the same screen), GS alpha factors above 1.0 (clamped by the blend),
       and the depth test for display-buffer lenses with byte +0x17 clear (none is known).
+- **Area events (WP-E6)**: `event_player.rs` drives the same `CamEvent::track` from an area event's camera
+  records (opcode 0x13) and cut table (opcode 6), parsed by `intro::Track`, evaluated at the event frame
+  (`FUN_0022b0f8`) every game tick while the event plays; the keys are taken in map space as for the intro
+  [inferred, same `KEY_SPACE`]. Run `KH2_EVENT=102 kh2-game tt02`: the log lists the event's 23 cuts and the
+  camera logs `intro camera on`; the screenshot at 29 s (looked at) shows the event's view of the friends,
+  not the field camera behind Sora. Not ported: opcode 0x31 fly-back and 0x4c springs for area events (the
+  fields are parsed; only the intro uses the fly-back).
 - **Modes 3, 4, 6, 7, 9, 10** (`FUN_00158bb8`, `FUN_00159648`, `FUN_00158908`, `FUN_00158250`, `FUN_0014e5e0`, `FUN_00158518`) are **not ported**: mode 3 is a lock-on-style framing on a script target (`FUN_00159da8` with `DAT_00379394` and `FUN_0018f0c0(0x358af0)`), the others are the special-purpose cameras (names only inferred, see above). Only the entry points are recorded.
 
 ## What does not change the camera -- verified by absence

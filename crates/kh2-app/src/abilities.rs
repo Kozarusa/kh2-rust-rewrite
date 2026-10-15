@@ -115,6 +115,25 @@ pub fn leaf_bracer_frames(leaf_bracer: bool, target_is_caster: bool) -> Option<f
     (leaf_bracer && target_is_caster).then_some(LEAF_BRACER_FRAMES)
 }
 
+/// Scan (block word 0 0x80000): bit 19 (item 138).
+pub const BIT_SCAN: u16 = 19;
+
+/// The target's `+0x108` flags `FUN_0019b4a8` tests: 0x4000 refuses the gauge; 0x80000 or
+/// 0x10000000 make `FUN_0019a440` answer 1, which `FUN_0019a3f8` turns into "not a gauge target".
+pub const TARGET_NO_GAUGE: u32 = 0x4000;
+pub const TARGET_NOT_SCANNABLE: u32 = 0x8_0000 | 0x1000_0000;
+
+/// Scan: whether the target marker binds the target's HP gauge (`FUN_0019b4a8`, run by the marker's
+/// set `FUN_0019b3f0` and its retarget `FUN_0019b5e8` after the old gauge is released by
+/// `FUN_0019b548`). All of: the marker's player (+0x28) has a status block (+0x48c), Scan in that
+/// block, the target (+4) is in the actor list (`FUN_001b80e8`: the chain from `DAT_01d5d7a0`
+/// through +0x8b4), the target's +0x108 has neither 0x80000 nor 0x10000000 (`FUN_0019a440`) nor
+/// 0x4000, and the target has a status block. The gauge then shows the target's HP record of part
+/// `marker +0x24` (12-byte records from the status block, `FUN_00154688(record[0], record[1])`).
+pub fn scan_binds_gauge(player_status: bool, scan: bool, target_listed: bool, target_flags: u32, target_status: bool) -> bool {
+    player_status && scan && target_listed && target_flags & TARGET_NOT_SCANNABLE == 0 && target_flags & TARGET_NO_GAUGE == 0 && target_status
+}
+
 /// Ability ids that `FUN_001c0f40` has a stat effect for (item ids of type 19).
 pub mod id {
     pub const GUARD: u16 = 82;
@@ -1023,8 +1042,21 @@ mod tests {
     #[test]
     fn combat_ability_bits_are_the_rows_bits() {
         let Some(r) = rules() else { return };
-        for (id, bit) in [(402, BIT_LEAF_BRACER), (415, BIT_SECOND_CHANCE), (416, BIT_ONCE_MORE), (417, BIT_AUTO_LIMIT), (418, BIT_AUTO_CHANGE), (420, BIT_AUTO_HEALING)] {
+        for (id, bit) in [(402, BIT_LEAF_BRACER), (415, BIT_SECOND_CHANCE), (416, BIT_ONCE_MORE), (417, BIT_AUTO_LIMIT), (418, BIT_AUTO_CHANGE), (420, BIT_AUTO_HEALING), (138, BIT_SCAN)] {
             assert_eq!(r.abilities[&id].bit, bit, "ability {id}");
+        }
+    }
+
+    #[test]
+    fn scan_gate_follows_fun_0019b4a8() {
+        assert!(scan_binds_gauge(true, true, true, 0, true));
+        assert!(scan_binds_gauge(true, true, true, 0x3, true), "other +0x108 bits do not matter");
+        assert!(!scan_binds_gauge(true, false, true, 0, true), "no Scan");
+        assert!(!scan_binds_gauge(false, true, true, 0, true));
+        assert!(!scan_binds_gauge(true, true, false, 0, true));
+        assert!(!scan_binds_gauge(true, true, true, 0, false));
+        for f in [0x4000, 0x8_0000, 0x1000_0000] {
+            assert!(!scan_binds_gauge(true, true, true, f, true), "flag {f:#x}");
         }
     }
 

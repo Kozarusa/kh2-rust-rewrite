@@ -95,3 +95,59 @@ fn second_chance_and_once_more_match_the_game() {
     }
     eprintln!("{n} cases equal");
 }
+
+/// The port of Scan's gate (same as kh2-app's `abilities::scan_binds_gauge`).
+fn scan_port(player_status: bool, scan: bool, listed: bool, flags: u32, target_status: bool) -> bool {
+    player_status && scan && listed && flags & (0x8_0000 | 0x1000_0000) == 0 && flags & 0x4000 == 0 && target_status
+}
+
+/// Scan (WP-A2): `FUN_0019b4a8(marker)` runs for real with its callees `FUN_0019b548`, `FUN_001768a8`,
+/// `FUN_0019a3f8`, `FUN_001b80e8` and `FUN_0019a440`; only the gauge bind `FUN_00154688` is replaced
+/// by a stub that returns 0x1234 (it builds the HUD object and does not decide anything). The result
+/// compared is whether the marker's +0x20 was set.
+#[test]
+fn scan_gate_matches_the_game() {
+    let Some(mut ee) = open() else { return };
+    const MARKER: u32 = 0x0185_0000;
+    const PLAYER: u32 = 0x0186_0000;
+    const PSTATUS: u32 = 0x0187_0000;
+    const TARGET: u32 = 0x0188_0000;
+    const TSTATUS: u32 = 0x0189_0000;
+    const OTHER: u32 = 0x018a_0000;
+    const LIST: u32 = 0x01d5_d7a0;
+    // lui v0, 0; ori v0, v0, 0x1234; jr ra; nop.
+    for (i, w) in [0x3c02_0000u32, 0x3442_1234, 0x03e0_0008, 0].iter().enumerate() {
+        ee.w32(0x0015_4688 + 4 * i as u32, *w);
+    }
+    let mut n = 0;
+    for ps in [false, true] {
+        for scan in [false, true] {
+            for listed in [false, true] {
+                for flags in [0u32, 3, 0x4000, 0x8_0000, 0x1000_0000] {
+                    for ts in [false, true] {
+                        for base in [MARKER, PLAYER, PSTATUS, TARGET, TSTATUS, OTHER] {
+                            for o in (0..0x900).step_by(4) {
+                                ee.w32(base + o, 0);
+                            }
+                        }
+                        ee.w32(MARKER + 4, TARGET);
+                        ee.w32(MARKER + 0x28, PLAYER);
+                        ee.w32(MARKER + 0x24, 1);
+                        ee.w32(PLAYER + 0x48c, if ps { PSTATUS } else { 0 });
+                        ee.w32(PSTATUS + 0x1cc, if scan { 0x8_0000 } else { 0 });
+                        // The actor list: another actor first, then the target when listed.
+                        ee.w32(LIST, OTHER);
+                        ee.w32(OTHER + 0x8b4, if listed { TARGET } else { 0 });
+                        ee.w32(TARGET + 0x108, flags);
+                        ee.w32(TARGET + 0x48c, if ts { TSTATUS } else { 0 });
+                        ee.call(0x19b4a8, &[MARKER as u64], &[], STACK).expect("FUN_0019b4a8");
+                        let g = ee.r32(MARKER + 0x20) == 0x1234;
+                        assert_eq!(g, scan_port(ps, scan, listed, flags, ts), "player status {ps} scan {scan} listed {listed} flags {flags:#x} target status {ts}");
+                        n += 1;
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("{n} Scan cases equal");
+}

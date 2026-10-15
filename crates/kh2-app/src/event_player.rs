@@ -76,7 +76,8 @@ pub struct Place {
 /// Opcode 0x2c (`FUN_0022cd90`): at frame +4, actor +0xe plays the motion named at +0x12 (a record a load block
 /// made, found by model and name, `FUN_002242a0`), through `FUN_0017e1c8(2 * (+0x10), 2 * (+8), ..)` =
 /// `FUN_0017dd38(blend, start frame, ..)`: +0x10 the cross-fade and +8 the start, both in event frames.
-/// +6 and +0xa/+0xc are not read by it [GAP: who reads them].
+/// `FUN_0022c9b0` copies +0xa / +0xc into the actor's motion slot (`DAT_0036bbc8` row +0x18 / +0x1a), which
+/// `FUN_0022ca18` reads as a loop (`MotionClock`). +6 is read by neither [GAP].
 #[derive(Clone, Debug, PartialEq)]
 pub struct Motion {
     pub frame: i32,
@@ -84,6 +85,48 @@ pub struct Motion {
     pub start: i16,
     pub blend: i16,
     pub name: String,
+    /// +0xa: the frame the loop goes back to (event frames).
+    pub loop_start: i16,
+    /// +0xc: the frame past which the motion loops (event frames); -1: no loop.
+    pub loop_end: i16,
+}
+
+impl Motion {
+    pub fn read(d: &[u8]) -> Motion {
+        Motion { frame: le16(d, 0) as i32, index: le16(d, 10), start: le16(d, 4), blend: le16(d, 12), name: cstr(d, 14), loop_start: le16(d, 6), loop_end: le16(d, 8) }
+    }
+}
+
+/// An actor's motion slot (`DAT_0036bbc8`, 64 rows of 0x40 bytes, one per actor: `FUN_0022c928` finds the
+/// actor's row, `FUN_0022c970` a free one), as `FUN_0022c9b0` fills it and `FUN_0022ca18` steps it every frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MotionClock {
+    /// Row +0x10: starts at 2 * (+8 - +0x10) and counts up by `DAT_00356f40` (1.0) a frame.
+    pub counter: f32,
+    pub loop_start: i16,
+    pub loop_end: i16,
+}
+
+impl MotionClock {
+    pub fn new(m: &Motion) -> MotionClock {
+        MotionClock { counter: 2.0 * (m.start as i32 - m.blend as i32) as f32, loop_start: m.loop_start, loop_end: m.loop_end }
+    }
+
+    /// One frame of `FUN_0022ca18`: with a loop (+0x1a not -1) and the counter past 2 * end, the counter goes
+    /// to 2 * start + the overshoot and the motion is started again there with no cross-fade
+    /// (`FUN_0017e1c8(0, frame, ..)`); the frame is answered. Then the counter counts one frame.
+    pub fn tick(&mut self) -> Option<f32> {
+        let mut out = None;
+        if self.loop_end != -1 {
+            let end = 2.0 * self.loop_end as f32;
+            if end < self.counter {
+                self.counter = 2.0 * self.loop_start as f32 + (self.counter - end);
+                out = Some(self.counter);
+            }
+        }
+        self.counter += 1.0;
+        out
+    }
 }
 
 /// Opcode 0x15 (`FUN_00227478`): at frame +4 the subtitle line of message +8 opens under key +6 (+0xa 0) or
@@ -166,6 +209,23 @@ pub struct Event {
     pub windows: Vec<Window>,
     /// Opcode 0x44 (`FUN_00225860`): (frame, name) of `movie/<world>/<name>.pss`.
     pub movies: Vec<(i32, String)>,
+    /// Opcode 0x24 sub-records 0x26 (`FUN_0022c070`): voice names, `voice/<world>/event/<name>.vag`
+    /// (`FUN_0022bff8`), loaded into a file slot of kind 3 (`FUN_00224200`).
+    pub voices: Vec<String>,
+    /// Sub-records 0x39 (`FUN_00227df0`): (+4, name +6) of `event/effect/<name>.pax` (`FUN_00227d80`), a file
+    /// slot of kind 2 with +4 at slot +0xc.
+    pub effects: Vec<(i16, String)>,
+    /// Sub-records 0x3e (`FUN_00226100`): `event/layout/<world>/<name>.2ld` (`FUN_002260b0`), kept at
+    /// `DAT_01dc0078`.
+    pub layouts: Vec<String>,
+    /// Opcode 0xf (`FUN_00226f50`): the setup reader waits for the event object (`FUN_001962c0`), sets
+    /// `DAT_0036bd10` = 1 (the timeline thread `FUN_00223a88` waits for it) and makes the tables (`FUN_00222cc0`).
+    /// Without it the timeline never runs.
+    pub begins: bool,
+    /// Opcode 0x10 (`FUN_00226fa0`): `DAT_0036bd0c` = +4; the thread hands 2 * it to the event object +0x90
+    /// (`FUN_00196348`), the length of the end fade (`FUN_00195ff8`: fader `FUN_0014a918` for kind row +1 of 1..3,
+    /// length +0x90 * 0.5 (`DAT_0037b054`)).
+    pub end_fade: Option<i16>,
     pub track: Track,
     /// Opcode counts of the commands the player does not port.
     pub other: BTreeMap<u16, usize>,
@@ -210,8 +270,12 @@ impl Event {
                         if size < 4 || p + size > d.len() {
                             break;
                         }
-                        if kind == 0x25 {
-                            e.loads.push((le16(d, p + 4) as u16, le16(d, p + 6), cstr(d, p + 10)));
+                        match kind {
+                            0x25 => e.loads.push((le16(d, p + 4) as u16, le16(d, p + 6), cstr(d, p + 10))),
+                            0x26 => e.voices.push(cstr(d, p + 4)),
+                            0x39 => e.effects.push((le16(d, p + 4), cstr(d, p + 6))),
+                            0x3e => e.layouts.push(cstr(d, p + 4)),
+                            _ => {}
                         }
                         p += size;
                     }
@@ -223,7 +287,9 @@ impl Event {
                     pos: [le32f(d, 4), le32f(d, 8), le32f(d, 12)],
                     rot: [le32f(d, 16), le32f(d, 20), le32f(d, 24)],
                 }),
-                0x2c => e.motions.push(Motion { frame: le16(d, 0) as i32, index: le16(d, 10), start: le16(d, 4), blend: le16(d, 12), name: cstr(d, 14) }),
+                0x2c => e.motions.push(Motion::read(d)),
+                0xf => e.begins = true,
+                0x10 => e.end_fade = Some(le16(d, 0)),
                 0x15 => e.lines.push(Line { frame: le16(d, 0) as i32, key: le16(d, 2), message: le16(d, 4) as u16, open: le16(d, 6) == 0 }),
                 0x2d => e.windows.push(Window { frame: le16(d, 0) as i32, key: le16(d, 2), message: le16(d, 4) as u16, action: le16(d, 6), kind: le16(d, 8) }),
                 0x44 => e.movies.push((le16(d, 0) as i32, cstr(d, 2))),
@@ -247,6 +313,23 @@ pub fn anb_path(name: &str, model: &str) -> Option<String> {
     Some(format!("anm/{}/{}{}.anb", name.get(4..slash)?, model, &name[slash..]))
 }
 
+/// `DAT_00349d40`, the string the event's file formats take: the region (`us`) [inferred: the USA disc has
+/// `voice/us/event/`, `event/layout/us/`, `movie/us/` and no `tt` folders there].
+pub const REGION: &str = "us";
+
+/// The files a load block's sub-records 0x26, 0x39 and 0x3e name, for region `world` (`DAT_00349d40`):
+/// `FUN_0022bff8` (format 0x37f178 `voice/%s/event/` + name + 0x37f188 `.vag`), `FUN_00227d80` (0x37f090
+/// `event/effect/` + name + 0x37f0a0 `.pax`), `FUN_002260b0` (0x37f038 `event/layout/%s/%s.2ld`).
+pub fn voice_path(world: &str, name: &str) -> String {
+    format!("voice/{world}/event/{name}.vag")
+}
+pub fn effect_path(name: &str) -> String {
+    format!("event/effect/{name}.pax")
+}
+pub fn layout_path(world: &str, name: &str) -> String {
+    format!("event/layout/{world}/{name}.2ld")
+}
+
 /// One step of the timeline cursor (`FUN_00223a88`) at frame `f`: the commands from `cursor` that run now,
 /// stopping at the first whose frame has not come. Setup and unknown opcodes are passed over.
 pub fn due(cmds: &[EventCommand], cursor: &mut usize, f: f32) -> Vec<usize> {
@@ -268,14 +351,31 @@ pub fn due(cmds: &[EventCommand], cursor: &mut usize, f: f32) -> Vec<usize> {
 // ---------------------------------------------------------------------------------------------------
 // In the app
 
-/// Events handed to the player (the area exits' triggers, `area_jump.rs`): (event tag, trigger argument).
-static REQUESTS: Mutex<Vec<(String, u16)>> = Mutex::new(Vec::new());
+/// Events handed to the player (the area exits' triggers, `area_jump.rs`): (area the request was made in, event
+/// tag, trigger argument).
+static REQUESTS: Mutex<Vec<(String, String, u16)>> = Mutex::new(Vec::new());
+/// The area `start` last saw loaded: a request is stamped with it, so a request made in one area never plays
+/// in the next one (the event's tag is an entry of the area file that asked for it).
+static LOADED: Mutex<String> = Mutex::new(String::new());
 
 /// Asks the player to play event `tag` of the loaded area (a trigger with an event tag, `FUN_00196428`).
 pub fn request(tag: &str, arg: u16) {
+    let area = LOADED.lock().map(|a| a.clone()).unwrap_or_default();
     if let Ok(mut q) = REQUESTS.lock() {
-        q.push((tag.to_string(), arg));
+        q.push((area, tag.to_string(), arg));
     }
+}
+
+/// The first request of `queue` that belongs to area `loaded`; requests of other areas are dropped (logged).
+pub fn take_request(queue: &mut Vec<(String, String, u16)>, loaded: &str) -> Option<(String, u16)> {
+    while !queue.is_empty() {
+        let (area, tag, arg) = queue.remove(0);
+        if area == loaded {
+            return Some((tag, arg));
+        }
+        info!("event: {tag} was requested in {area:?}, {loaded} is loaded: dropped");
+    }
+    None
 }
 
 pub fn eventlog() -> bool {
@@ -299,6 +399,8 @@ struct Spawned {
     body: Entity,
     /// The motion to start: (motion, cross-fade, start frame), in game frames.
     motion: Option<(Arc<kh2_anim::Slot>, f32, f32)>,
+    /// The actor's motion slot (`FUN_0022ca18`) and the motion it restarts at a loop.
+    clock: Option<(MotionClock, Arc<kh2_anim::Slot>)>,
 }
 
 struct Play {
@@ -373,7 +475,12 @@ pub fn kind_flags(kinds: &[(u8, u16)], arg: u16) -> Option<u16> {
 /// `KH2_EVENT_AT=<app seconds>`, default 2).
 fn start(time: Res<Time<Real>>, rec: Res<AreaRecord>, disc: Res<Disc>, mut player: ResMut<EventPlayer>) {
     let Some(run) = rec.run.as_ref() else { return };
-    let mut next = REQUESTS.lock().ok().and_then(|mut q| (!q.is_empty()).then(|| q.remove(0)));
+    if let Ok(mut a) = LOADED.lock()
+        && *a != run.name
+    {
+        *a = run.name.clone();
+    }
+    let mut next = REQUESTS.lock().ok().and_then(|mut q| take_request(&mut q, &run.name));
     if next.is_none() && !player.env_done {
         let at = std::env::var("KH2_EVENT_AT").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(2.0);
         if let Ok(tag) = std::env::var("KH2_EVENT")
@@ -411,6 +518,17 @@ fn start(time: Res<Time<Real>>, rec: Res<AreaRecord>, disc: Res<Disc>, mut playe
         if flags.is_some_and(kind_hides_hud) { "hidden" } else { "kept" }
     );
     let flags = flags.unwrap_or(0xffff);
+    let world = REGION;
+    info!(
+        "event: {tag} load blocks name {} voice(s) {:?}, {} effect(s) {:?}, layouts {:?} (FUN_0022c070, FUN_00227df0, FUN_00226100: not played, not drawn); op 0xf {} (FUN_00226f50); end fade {:?} frames (op 0x10, FUN_00195ff8: not ported)",
+        ev.voices.len(),
+        ev.voices.iter().take(3).map(|v| voice_path(world, v)).collect::<Vec<_>>(),
+        ev.effects.len(),
+        ev.effects.iter().map(|(_, e)| effect_path(e)).collect::<Vec<_>>(),
+        ev.layouts.iter().map(|l| layout_path(world, l)).collect::<Vec<_>>(),
+        if ev.begins { "present: the timeline runs" } else { "absent: the timeline never runs" },
+        ev.end_fade
+    );
     info!(
         "event: {} {tag} ({}, arg {arg}) starts: {} commands, end frame {}, {} actor(s) {:?}, {} motion load(s), {} placement(s), {} motion(s), {} subtitle command(s), {} window command(s), camera {} record(s) {} cut(s), movies {:?}; not ported opcodes {:x?}",
         run.name,
@@ -463,13 +581,15 @@ fn step(
     let f = p.ticks as f32 * 0.5;
     let fi = f.floor() as i32;
     let log = eventlog();
-    for i in due(&p.cmds, &mut p.cursor, f) {
+    // FUN_00223a88 waits for DAT_0036bd10, which only opcode 0xf sets (FUN_00226f50).
+    let due_now = if p.ev.begins { due(&p.cmds, &mut p.cursor, f) } else { Vec::new() };
+    for i in due_now {
         let c = &p.cmds[i];
         let d = &c.data;
         let at = wait_frame(c).map_or("-".to_string(), |w| w.to_string());
         match c.opcode {
             0x2c => {
-                let m = Motion { frame: le16(d, 0) as i32, index: le16(d, 10), start: le16(d, 4), blend: le16(d, 12), name: cstr(d, 14) };
+                let m = Motion::read(d);
                 let Some(actor) = p.ev.actors.iter().find(|a| a.index == m.index).cloned() else {
                     info!("event: frame {fi} (cmd frame {at}): op 0x2c actor {} is not in the actor table", m.index);
                     continue;
@@ -493,7 +613,7 @@ fn step(
                         Some(rig) => {
                             let root = commands.spawn((Transform::default(), Visibility::Hidden, AreaPart, EventActor)).id();
                             let body = spawn_skinned(&mut commands, root, rig, &mut meshes, &mut materials, &mut images, &mut bindposes, SCALE);
-                            slot.insert(Spawned { root, body, motion: None });
+                            slot.insert(Spawned { root, body, motion: None, clock: None });
                             info!("event: frame {fi}: actor {} {} (object {:#x}, model {}) made (op 0x2c, FUN_0016e8c0)", m.index, actor.name, actor.object, model.unwrap_or_default());
                         }
                         None => {
@@ -524,9 +644,12 @@ fn step(
                     Some(slot) => {
                         // FUN_0017dd38(blend = 2 * +0x10, start = 2 * +8): game frames. Applied below (a body
                         // made this tick is in the world from the next).
-                        sp.motion = Some((slot, 2.0 * m.blend as f32, 2.0 * m.start as f32));
+                        sp.motion = Some((slot.clone(), 2.0 * m.blend as f32, 2.0 * m.start as f32));
+                        // FUN_0022c9b0: the actor's motion slot gets the loop (+0xa, +0xc) and the counter.
+                        sp.clock = Some((MotionClock::new(&m), slot));
                         if log {
-                            info!("event: frame {fi} (cmd frame {at}): op 0x2c actor {} {} plays {} (start {}, blend {})", m.index, actor.name, path.unwrap_or_default(), m.start, m.blend);
+                            let lp = if m.loop_end == -1 { String::new() } else { format!(", loops {}..{} (FUN_0022ca18)", m.loop_start, m.loop_end) };
+                            info!("event: frame {fi} (cmd frame {at}): op 0x2c actor {} {} plays {} (start {}, blend {}{lp})", m.index, actor.name, path.unwrap_or_default(), m.start, m.blend);
                         }
                     }
                     None => info!("event: frame {fi}: op 0x2c actor {} motion {:?} not found", m.index, path),
@@ -601,7 +724,12 @@ fn step(
                     info!("event: frame {fi}: op 6 camera cut {} frames {}..{}", le16(d, 0), le16(d, 2), le16(d, 4));
                 }
             }
-            0x44 => info!("event: frame {fi} (cmd frame {at}): op 0x44 movie movie/{}/{}.pss not played (no movie player) [GAP]", &p.area[..2.min(p.area.len())], cstr(d, 2)),
+            0xd => {
+                if log {
+                    info!("event: frame {fi} (cmd frame {at}): op 0xd actor {} model instance (+0x670) method +0x34 with the table at +0xa {:?}: not ported [GAP: the method, FUN_00228b48 -> FUN_0011c550]", le16(d, 4), (0..8).map(|k| le16(d, 6 + 2 * k)).collect::<Vec<_>>());
+                }
+            }
+            0x44 => info!("event: frame {fi} (cmd frame {at}): op 0x44 movie movie/{REGION}/{}.pss not played (no movie player) [GAP]", cstr(d, 2)),
             o => {
                 if log {
                     info!("event: frame {fi} (cmd frame {at}): op {o:#x} not ported {:02x?}", &d[..d.len().min(16)]);
@@ -617,6 +745,20 @@ fn step(
                     a.frame += start;
                 }
                 Err(_) => s.motion = Some((slot, blend, start)),
+            }
+        }
+        // FUN_0022ca18 (every frame, from the setup reader's frame path): the motion slots' loops. The position
+        // put back at a loop (`FUN_0016a618` with the place `FUN_0016b960` kept at the slot's first frame, unless
+        // `FUN_001beb00`) is not ported: the app's event actors take no root motion [inferred].
+        if s.motion.is_none()
+            && let Some((clock, slot)) = s.clock.as_mut()
+            && let Some(at) = clock.tick()
+            && let Ok(mut a) = anims.get_mut(s.body)
+        {
+            a.play_external(slot.clone(), 0.0);
+            a.frame += at;
+            if log {
+                info!("event: frame {fi}: motion {} loops back to frame {at} (FUN_0022ca18, {}..{})", slot.tag, clock.loop_start, clock.loop_end);
             }
         }
     }
@@ -815,7 +957,7 @@ mod tests {
         p[0x22..0x24].copy_from_slice(&h(37));
         let e = Event::parse(&[cmd(1, &a), cmd(0x2c, &m), cmd(2, &p)]);
         assert_eq!(e.actors, vec![Actor { object: 0x5a, index: 0, name: "p_ex110".into() }]);
-        assert_eq!(e.motions[0], Motion { frame: 37, index: 0, start: 3, blend: 5, name: "anm_tt/ETT99901E".into() });
+        assert_eq!(e.motions[0], Motion { frame: 37, index: 0, start: 3, blend: 5, name: "anm_tt/ETT99901E".into(), loop_start: 0, loop_end: 0 });
         assert_eq!(e.places[0], Place { frame: 37, index: 0, gate: 0, pos: [7.0, 0.0, 339.0], rot: [0.0, -170.0, 0.0] });
         assert_eq!(wait_frame(&cmd(2, &p)), Some(37));
         assert_eq!(e.model_of(0x5a), Some("p_ex110"));
@@ -920,5 +1062,79 @@ mod tests {
             assert!(ev.actors.is_empty() && ev.places.is_empty() && ev.motions.is_empty(), "{:?}", ev.actors);
         }
         assert!(events >= 1);
+    }
+
+    #[test]
+    fn a_request_made_in_another_area_is_dropped() {
+        let mut q = vec![("tt03".to_string(), "605".to_string(), 5), ("tt02".to_string(), "102".to_string(), 2)];
+        assert_eq!(take_request(&mut q, "tt02"), Some(("102".to_string(), 2)), "tt03's 605 is dropped in tt02");
+        assert!(q.is_empty());
+        let mut q = vec![("tt03".to_string(), "605".to_string(), 5)];
+        assert_eq!(take_request(&mut q, "tt04"), None);
+        assert!(q.is_empty());
+    }
+
+    /// `FUN_0022ca18`: the counter starts at 2 * (start - blend); past 2 * end it goes to 2 * loop start plus the
+    /// overshoot and the motion restarts there; -1 never loops.
+    #[test]
+    fn motion_slots_loop_past_their_end_frame() {
+        let m = Motion { frame: 0, index: 0, start: 3, blend: 1, name: String::new(), loop_start: 0, loop_end: 5 };
+        let mut c = MotionClock::new(&m);
+        assert_eq!(c.counter, 4.0);
+        let mut restarts = Vec::new();
+        for _ in 0..20 {
+            if let Some(f) = c.tick() {
+                restarts.push(f);
+            }
+        }
+        // 4, 5, .., 10 counts; 11 > 10 goes to 0 + 1 = 1; then 1..10, 11 -> 1 again.
+        assert_eq!(restarts, vec![1.0, 1.0]);
+        let mut n = MotionClock::new(&Motion { loop_end: -1, ..m });
+        assert!((0..100).all(|_| n.tick().is_none()));
+        assert_eq!(voice_path(REGION, "tt10203or"), "voice/us/event/tt10203or.vag");
+        assert_eq!(effect_path("tt_event_318"), "event/effect/tt_event_318.pax");
+        assert_eq!(layout_path(REGION, "tt_telop"), "event/layout/us/tt_telop.2ld");
+    }
+
+    /// The Twilight Town events (tt02, tt03, tt04): every one has opcode 0xf; the files their load blocks name
+    /// (voices 0x26, effects 0x39, layouts 0x3e) are on the disc; some motions loop (0x2c +0xc not -1).
+    #[test]
+    fn twilight_town_event_load_records_name_files_on_the_disc() {
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let disc = Disc::open(&iso);
+        let (mut events, mut voices, mut effects, mut layouts, mut loops, mut missing) = (0, 0, 0, 0, 0, Vec::new());
+        for area in ["tt02", "tt03", "tt04"] {
+            let (ard, _) = kh2_ard::Area::parse(&disc.read(&format!("ard/{area}.ard")).expect("area")).expect("area");
+            for (tag, bytes) in &ard.events {
+                let Some(cmds) = kh2_ard::parse_event(bytes) else { continue };
+                let e = Event::parse(&cmds);
+                events += 1;
+                assert!(e.begins, "{area} {tag} has no opcode 0xf");
+                let mut check = |path: String| {
+                    if disc.read(&path).is_none() {
+                        missing.push(path);
+                    }
+                };
+                for v in &e.voices {
+                    check(voice_path(REGION, v));
+                }
+                for (_, x) in &e.effects {
+                    check(effect_path(x));
+                }
+                for l in &e.layouts {
+                    check(layout_path(REGION, l));
+                }
+                voices += e.voices.len();
+                effects += e.effects.len();
+                layouts += e.layouts.len();
+                loops += e.motions.iter().filter(|m| m.loop_end != -1).count();
+            }
+        }
+        eprintln!("{events} events: {voices} voices, {effects} effects, {layouts} layouts, {loops} looping motions; not on the disc: {missing:?}");
+        assert!(voices > 0 && effects > 0 && layouts > 0 && loops > 0);
+        assert!(missing.is_empty(), "{missing:?}");
     }
 }

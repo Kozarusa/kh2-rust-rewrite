@@ -728,27 +728,66 @@ tt37; tt40 -> tt19 and area 100. The full list is in the test output.
   again there with no cross-fade (`FUN_0017e1c8(0, frame, ..)`), and unless `FUN_001beb00` the object is put
   back at the place `FUN_0016b960` kept at the row's first step (+0x20); then the counter counts
   `DAT_00356f40` (1.0). In tt02/03/04, 306 of 1159 opcode-0x2c commands loop. Ported (`MotionClock`) except
-  the place put back [the app's event actors take no root motion, inferred].
+  the place put back [the app's event actors take no root motion, inferred]. [WP-E6e] The put-back is ported:
+  `FUN_0016b960` answers object +0x540 (the position) unless `FUN_001beb00` (object +0x570 set: +0x70), the row
+  copies it at its first step (+0x30 = 1, only on looping rows) and `FUN_0016a618` writes it back to +0x540
+  (w = `DAT_0037a1b4`) and refreshes the object (`FUN_001921e8`) at every loop. Here `keep_place` / `put_back`
+  on the last opcode-2 place (test `a_looping_motion_puts_its_actor_back_where_the_loop_began`); the rotation
+  stays.
+- **Opcode 0x4d: hide or show objects** [V for the call, GAP for which objects, WP-E6e]. `FUN_00226e80`: at
+  frame +4, +6 = 0 -> `FUN_001b7fa8(2000)`, else `FUN_001b8040(2000)`: every object of the list at
+  `DAT_01d5d7a0` (next at +0x8b4) without +0x588 bit 0x20 whose method +0x3c answers below 2000 gets object
+  +0x10c bit 0x80 set (resp. cleared). Bit 0x80 is a hide: `FUN_0019af68` (true when +0x10c 0x80 or 0x100, ...)
+  makes `FUN_00191c18` clear bit 4 of +0x768 [inferred: the draw bit] and the weapon test of docs/movement.md.
+  Method +0x3c of the actor class (vtable 0x35b950) is `FUN_0016bc68`: the +0x28 tag of the object's
+  `obj/%s.mdlx` resource (`FUN_0016ed08`, format 0x37a430; `FUN_0016f800` finds it in the list `DAT_0035bd88`;
+  `FUN_0016f8e0(2000)` at the event start (state 2) moves tags of 2000 and above to 10000+). The tag writers
+  (`FUN_0016f2f8`, `FUN_0016f358`, `FUN_0016f9c0`) were not traced, so whether the player and the party fall
+  below 2000 is unknown: logged, not ported. 6 commands in tt.
 - **Opcode 2 +6** [GAP]: `FUN_002293b8` reads +4 (must be 0), +8..+0x20, +0x24, +0x26 only; values seen 0,
   1247, 2258, 30716. No other reader searched beyond the two switches.
 - **Opcode 3** [V for the readers]: in neither switch (`FUN_002245d0`, `FUN_00223a88`), so both readers pass it.
   Every tt02/03/04 event has one: `u16 area number, "tt"` (tt02: 2, tt03: 3, tt04: 4) [inferred: the area the
   event belongs to]. Not a show/hide.
-- **Opcode 0xd** [V for the call, GAP for the meaning]. `FUN_00228b48`: at frame +4, actor +8's object
+- **Opcode 0xd: the drawn mesh groups** [V, WP-E6e]. `FUN_00228b48`: at frame +4, actor +8's object
   (`FUN_002244b0`, row +8), `FUN_0011c550(object +0x670, cmd + 0xa)`: object +0x670 is the model instance
   (`FUN_00168d30`: made by the model resource's method +0x24); `FUN_0011c550` calls method +0x34 of its +0x14
-  with its +0x104 and a pointer to the u16 table at +0xa (seen: `0, 2, 3, 4, 5, ..` or `1, 3, 4, ..`). The
-  method behind the vtable was not resolved, so whether this hides parts, switches textures or something else
-  is unknown; not ported (logged). 150 commands in tt02/03/04.
+  (the model class) with its +0x104 (one draw-flag byte a mesh) and the u16 list at +0xa. The model classes'
+  vtables were found by the address of their +0x24 create method in the executable's data: 0x354b18
+  (`FUN_0011f390`, a map-style model; +0x34 `FUN_0011f4a0`), 0x354b98 (`FUN_00120b48`, the skeletal model;
+  +0x34 `FUN_00120fd0`, +0x3c `FUN_00121178`, +0x40 `FUN_00121278`), 0x354c00 (`FUN_00123be0`, a multi-model;
+  +0x34 `FUN_00123f68` forwards to each sub-model). `FUN_00120b48` sets every mesh's flag to 1; `FUN_00120fd0`
+  first clears the low four bits of every flag (`FUN_0011eda0`), then for each list value up to 0xffff ORs 1
+  (bit 15 clear) or 2 (bit 15 set) into every mesh whose group, bits 6..10 of its 0x20-byte header's flags word
+  (model +0x1c the count, headers from +0x20), is `value & 0x7fff`; the same for the second model at model +0xc
+  (`FUN_001205b8`, group = bits 0..4). The draw `FUN_00121a78` skips a mesh whose flag has no low bit set. So
+  opcode 0xd says which mesh groups of the actor are drawn (the others are not) [what flag 2 changes in the
+  draw: GAP]. +0x3c / +0x40 show / hide one group (callers `FUN_00192cd0`, `FUN_00192ce8`, `FUN_001485a8`).
+  Ported: `mesh_groups`, `mesh_flags` hide the actor's mesh entities of unlisted groups (test
+  `opcode_0xd_draws_only_the_listed_mesh_groups`: all 150 commands in tt02/03/04 reach a readable model; the
+  tt lists name groups 0 and 2..0x1f, i.e. they hide group 1 (N_EX500_RTN: mesh 2 of 4) [inferred: an alternate part]); the second model is not drawn by the app.
 - **Opcode 0xf** [V]. Setup reader, `FUN_00226f50`: waits while `FUN_001962c0` (the event object not yet in
   its play states), sets `DAT_0036bd10` = 1 (the timeline thread `FUN_00223a88` waits for it before anything)
   and makes the event's tables (`FUN_00222cc0`: the camera table `DAT_0036bbb4`, the motion slots, the actor
   table, ...). Every tt02/03/04 event has it. Ported: without it the timeline does not run.
-- **Opcode 0x10** [V]. Setup reader, `FUN_00226fa0`: `DAT_0036bd0c` = +4. The thread, before its first command,
-  calls `FUN_00196348(2 * DAT_0036bd0c)`: event object +0x90 = that, state 5. State 6 (`FUN_00195ff8`) fades
-  with fader `FUN_0014a918` by kind row byte +1 (2: `FUN_0014a7f0(.., +0x90 * 0.5 (DAT_0037b054), 1)`; 1 and 3:
-  the same with 0): the end fade lasts +4 frames. tt events: 0x14 (20). Not a show/hide. Parsed and logged; the
-  fade is not ported (no event fades yet, as opcode 0x12).
+- **Opcode 0x10: the fade-in after the setup, not an end fade** [V, WP-E6e corrects E6d]. Setup reader,
+  `FUN_00226fa0`: `DAT_0036bd0c` = +4. The thread `FUN_00223a88`, once the setup is done (`DAT_0036b9e0` 2,
+  ready `DAT_0036bcf4`) and the event object has bit 2 (`FUN_00196320`), calls `FUN_00196348(2 *
+  DAT_0036bd0c)` BEFORE its first command: event object +0x90 = that, state 5 (`FUN_00195fb8`), then state 6
+  (`FUN_00195ff8`): fader 0x3564d0 (`FUN_0014a918`) mode 1 (`FUN_0014a7f0`, the fade IN, as area_jump.rs reads
+  it) over `(int)(+0x90 * DAT_0037b054)` frames for kind row byte +1 = 1 or 3 (black, `+0xf4` 0) or 2 (white),
+  then state 7 or 8 (play). tt events: 20 frames, 40 ticks (`FUN_0014a710`: twice the frames). Before it, state
+  0 (`FUN_00195d28`, at the trigger) fades the same fader OUT (`FUN_0014a7c8`, mode 3) over `(int)(row +4 (a
+  float) * DAT_0037b050)` frames for row byte +1 = 1 (black) / 2 (white), or plays the keyhole layout for 3
+  (`FUN_0015d058`); states 1..3 (`FUN_00195e68`, `FUN_00195ef8`, `FUN_00195f68`) wait for that fade
+  (`FUN_001966f8`: fader `+0xfc` != 4) before they set bit 2, so the timeline starts on a covered screen. Flag
+  bit 4 adds two other faders (0x3566f0, 0x356800) at 0 frames (state 6) and 6 frames (state 9, fade-in): not
+  ported. The event's END (`FUN_002233d8` -> `FUN_001963e0`, state 9 `FUN_00196170`) fades only those and the
+  faders 0x356910 / 0x356a20 (`DAT_0036bef0`); the screen fader goes black at the end only through the trigger
+  jump (area_jump.rs). Ported in `event_player.rs` (`kind_rows`, `start_fade`, `setup_fade`, `ScreenFade`,
+  `EventPlayer::screen_fade`; test `the_event_object_fades_out_then_in_by_its_kind_row`): the timeline is held
+  while the start fade runs; drawn only once `area_jump::draw_fader` reads `screen_fade` (outside this WP's
+  files). The keyhole layout of kind 3 is not started from here [GAP].
 - **Load sub-records 0x26, 0x39, 0x3e** [V, WP-E6d]. 0x26 (`FUN_0022c070(rec + 4, block parity)`): a voice,
   `FUN_0022bff8` = 0x37f178 `voice/%s/event/` with `DAT_00349d40` + name + 0x37f188 `.vag`, loaded into a file
   slot of kind 3 (`FUN_00224200`, `DAT_0036bbc0`, 128 rows of 0x54) through `FUN_00224030` / `FUN_00167d20`
@@ -1063,14 +1102,20 @@ Each stage ends with `verify.ps1` passing and the named check.
 - Whether anything else hides the field HUD during a kind-2 event such as tt02 `102` (flags 0x65, bit 2 set):
   `FUN_00196760` is also called by `FUN_00196258` (no `jal` or address reference found, `mips_scan --jal
   0x196258 --addr 0x196258`), `FUN_0024f0b8` (menu start) and `FUN_002c6a40`; `FUN_0014ef48` by `FUN_002cc1e0`,
-  `FUN_002d16b8` (not read). The event commands 3, 0xd, 0xf, 0x10 were read (WP-E6d): none hides an actor.
+  `FUN_002d16b8` (not read). The event commands 3, 0xd, 0xf, 0x10 were read (WP-E6d): none hides an actor. [WP-E6e] Hiding the player and
+  the party during an event: searched `FUN_00195ae0`, `FUN_00195d28`, `FUN_00195e68`, `FUN_00195ef8`,
+  `FUN_00195f68`, `FUN_00195fb8`, `FUN_00195ff8`, `FUN_00196138`, `FUN_00196170`, `FUN_00196280`, `FUN_00196760`,
+  `FUN_00196348`, `FUN_001963e0`, `FUN_00223a88`, `FUN_002233d8`, `FUN_002235c0`, `FUN_002234e0`, and every
+  `0x22xxxx` event handler that calls into `0x1a0000..0x1bffff`: the only object hide is opcode 0x4d
+  (`FUN_00226e80`, section 6), whose selection (resource tag below 2000) is not resolved; 6 commands in tt.
+  Not ported.
 - Opcode 0x2d: the event skip branch of action 2 (`FUN_002225e0`) is not ported; the window state used is the port's state 3 (the button closed it).
 - What pause-menu record 0xc (`FUN_001bef48(0xc)`, table `DAT_01d5df08`) allows or forbids; bit 4 of
   `DAT_00356f1c` stops the play clock (`FUN_0014c7b8`) and is tested by the pause menu `FUN_0014a080`.
 - Music commands of events, skip; opcode 0x2c +6 and opcode 2 +6 (not read by their handlers `FUN_0022cd90`,
-  `FUN_0022c9b0`, `FUN_002293b8`; no other reader searched); opcode 0xd's method (`FUN_0011c550` -> the model
-  instance's +0x14 vtable +0x34: the vtable was not resolved; `mips_scan --store-off 0x670` writers
-  `FUN_00168d30`, `FUN_001178d0`, `FUN_001179c0`); which command plays the event voices that sub-record 0x26
+  `FUN_0022c9b0`, `FUN_002293b8`; no other reader searched); what mesh flag 2 of opcode 0xd changes in the draw
+  (`FUN_00121a78` tests `& 0xf` and bit 2 only; resolved in WP-E6e otherwise); which objects opcode 0x4d hides
+  (the resource tag +0x28 writers `FUN_0016f2f8`, `FUN_0016f358`, `FUN_0016f9c0` not traced); which command plays the event voices that sub-record 0x26
   loads; the users of sub-record 0x39's effects and 0x3e's layout handle `DAT_01dc0078`; how `anm/`
   paths reach the `anm/us/` copies on the USA disc (`FUN_00167e58` not read).
 - Where `arif` music pairs are read by the game (only opcode 0x10 writes the pair the area load reads).
@@ -1118,6 +1163,10 @@ Each stage ends with `verify.ps1` passing and the named check.
 | 0x1047a8, 0x149bb8, 0x140c00, 0x140e90, 0x13f470, 0x13efe8 | area start camera (E1c) |
 | 0x194188, 0x1be828, 0x1d7970, 0x1a6ff0, 0x195778, 0x1d3a68, 0x1d30d8 | other opcode targets and area start |
 | 0x226f50, 0x226fa0, 0x196348, 0x195ff8, 0x228b48, 0x11c550, 0x168d30, 0x22c9b0, 0x22c928, 0x22c970, 0x22ca18, 0x22c070, 0x22bff8, 0x224200, 0x227df0, 0x227d80, 0x2241c8, 0x226100, 0x2260b0, 0x222cc0 | event opcodes 0xd, 0xf, 0x10, the motion loop, load records 0x26 / 0x39 / 0x3e (E6d) |
+| 0x195d28, 0x195e68, 0x195ef8, 0x195f68, 0x195fb8, 0x195ff8, 0x196138, 0x196170, 0x196320, 0x1963e0, 0x1966f8, 0x13f078, 0x14a710, 0x14a7c8, 0x14a7f0, 0x14a918..0x14a978, 0x2233d8, 0x2234e0, 0x2235c0, 0x2273d0, 0x223a88 | event object states and fades (E6e) |
+| 0x11c550, 0x11c580, 0x11c5b0, 0x11c088, 0x11c1f0, 0x11c268, 0x11f390, 0x11f4a0, 0x120b48, 0x120fd0, 0x121178, 0x121278, 0x11eda0, 0x1205b8, 0x123be0, 0x123f68, 0x121a78 (mesh flag test), 0x1485a8, 0x192cd0, 0x192ce8; vtables 0x354b18, 0x354b98, 0x354c00 | opcode 0xd mesh groups (E6e) |
+| 0x226e80, 0x1b7fa8, 0x1b8040, 0x19af68, 0x19af28, 0x19b100, 0x191c18, 0x16bc68, 0x16ed08, 0x170078, 0x16f8e0, 0x16f648; vtable 0x35b950 | opcode 0x4d (E6e) |
+| 0x22ca18, 0x16a618, 0x16b960, 0x1beb00 | loop put-back (E6e) |
 
 ## Tutorial windows opened by mission scripts (WP-T1)
 

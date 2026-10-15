@@ -401,6 +401,16 @@ struct Spawned {
     motion: Option<(Arc<kh2_anim::Slot>, f32, f32)>,
     /// The actor's motion slot (`FUN_0022ca18`) and the motion it restarts at a loop.
     clock: Option<(MotionClock, Arc<kh2_anim::Slot>)>,
+    /// The model's mesh groups (`mesh_groups`).
+    groups: Option<Vec<u8>>,
+    /// Mesh draw flags opcode 0xd set, applied once the body's meshes exist.
+    parts: Option<Vec<u8>>,
+    /// The place opcode 2 gave the actor last (the object's +0x540 position and its rotation).
+    place: Option<Transform>,
+    /// The motion slot's kept place (row +0x20, `FUN_0016b960` at the row's first step, +0x30 = 1) and whether
+    /// that first step is still to come.
+    kept: Option<Vec3>,
+    first: bool,
 }
 
 struct Play {
@@ -418,13 +428,25 @@ struct Play {
     flags: u16,
     /// The windows opcode 0x2d opened and the counter hold of its action 2.
     windows: WindowSlots,
+    /// The event's kind row (`FUN_00195898`), `None` when the table has none.
+    row: Option<KindRow>,
+    /// The screen fader the event object drives (`start_fade`, then `setup_fade`); while the start fade runs
+    /// the timeline is held (states 0..3).
+    fade: Option<ScreenFade>,
+    /// `DAT_0037b054`.
+    c054: f32,
 }
+
+/// `SLUS_210.05` file offset of a virtual address (as `area_jump`).
+const EXE_BIAS: usize = 0xff000;
 
 #[derive(Resource, Default)]
 pub struct EventPlayer {
     play: Option<Play>,
-    /// The event kind rows (`03system.bin` `evtp`, `struggle::event_kinds`).
-    kinds: Option<Vec<(u8, u16)>>,
+    /// The event kind rows (`03system.bin` `evtp`, `kind_rows`).
+    kinds: Option<Vec<KindRow>>,
+    /// `DAT_0037b050`, `DAT_0037b054` (the fade length factors of `FUN_00195d28`, `FUN_00195ff8`).
+    consts: Option<(f32, f32)>,
     /// HUD nodes the field-HUD hide turned off (shown again at the end).
     hidden: Vec<usize>,
     objs: Option<Vec<t::Objentry>>,
@@ -452,6 +474,12 @@ impl EventPlayer {
     pub fn hides_hud(&self) -> bool {
         self.play.as_ref().is_some_and(|p| kind_hides_hud(p.flags))
     }
+
+    /// The screen fader's state while an event drives it: (alpha 0..1, white). For the app's full-screen fade
+    /// node (`area_jump::draw_fader`).
+    pub fn screen_fade(&self) -> Option<(f32, bool)> {
+        self.play.as_ref().and_then(|p| p.fade).map(|f| (f.alpha(), f.white))
+    }
 }
 
 /// Kind flag bit 3 clear: the event takes the players' control (`FUN_00195ae0` -> `FUN_00196280`).
@@ -466,9 +494,120 @@ pub fn kind_hides_hud(flags: u16) -> bool {
 
 /// The flags of event kind `arg & 0x3f` (`FUN_00195898`: `FUN_001d1128` searches the `evtp` rows by their kind
 /// byte, `FUN_0030ff40`). `None` when the table has no such kind.
+#[cfg(test)]
 pub fn kind_flags(kinds: &[(u8, u16)], arg: u16) -> Option<u16> {
     let k = (arg & 0x3f) as u8;
     kinds.iter().find(|(x, _)| *x == k).map(|(_, f)| *f)
+}
+
+/// One `evtp` row of `03system.bin` (8 bytes after an 8-byte head, `FUN_001d1128`): +0 the kind, +1 the fade
+/// kind (`FUN_00195d28` at the start, `FUN_00195ff8` after the setup: 1 black, 2 white, 3 the keyhole layout
+/// `FUN_0015d058`, 0 none), +2 the flags, +4 the length of the start fade (a float, times `DAT_0037b050`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KindRow {
+    pub kind: u8,
+    pub fade: u8,
+    pub flags: u16,
+    pub fade_len: f32,
+}
+
+/// The `evtp` rows (same table as `struggle::event_kinds`, with the fade fields).
+pub fn kind_rows(sys: &[u8]) -> Vec<KindRow> {
+    let Ok(entries) = kh2_bar::parse(sys) else { return Vec::new() };
+    let Some(e) = entries.iter().find(|e| e.tag == "evtp") else { return Vec::new() };
+    e.data.get(8..).unwrap_or_default().as_chunks::<8>().0.iter().map(|r| KindRow { kind: r[0], fade: r[1], flags: u16::from_le_bytes([r[2], r[3]]), fade_len: f32::from_le_bytes([r[4], r[5], r[6], r[7]]) }).collect()
+}
+
+/// `FUN_0014a710`: a fade of `frames` (0 counts as 1) lasts `2 x frames` ticks (one tick a game frame here, as
+/// `area_jump::FADE_TICKS`).
+pub fn fader_ticks(frames: i32) -> f32 {
+    (frames.max(0) as u32).max(1) as f32 * 2.0
+}
+
+/// The screen fader at 0x3564d0 (`FUN_0014a918`) as the event object drives it: `out` is mode 3
+/// (`FUN_0014a7c8`, to the colour), else mode 1 (`FUN_0014a7f0`, from it); `white` is `+0xf4` (`FUN_0014a710`:
+/// 0 black, else white).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScreenFade {
+    pub out: bool,
+    pub white: bool,
+    pub ticks: f32,
+    pub t: f32,
+}
+
+impl ScreenFade {
+    /// The colour's alpha, 0..1 (full is `DAT_00379130` = 128.0 on the PS2, as `area_jump::fade_alpha`).
+    pub fn alpha(&self) -> f32 {
+        let k = (self.t / self.ticks).clamp(0.0, 1.0);
+        if self.out { k } else { 1.0 - k }
+    }
+    pub fn done(&self) -> bool {
+        self.t >= self.ticks
+    }
+}
+
+/// The event object's fades (`FUN_00195c08` states). State 0 (`FUN_00195d28`): fade kind 1 or 2 fades the
+/// screen fader out over `(int)(row +4 * DAT_0037b050)` frames (2: white); 3 plays the keyhole layout
+/// (`FUN_0015d058`, not driven from here [GAP]); states 1 to 3 hold the timeline until the fade is over
+/// (`FUN_001966f8`: fader `+0xfc` != 4), then set the object's bit 2 that the timeline thread waits for
+/// (`FUN_00223a88` -> `FUN_00196320`). The thread then calls `FUN_00196348(2 * DAT_0036bd0c)` (opcode 0x10,
+/// `FUN_00226fa0`): state 5, 6 (`FUN_00195ff8`) fades the fader in over `(int)(+0x90 * DAT_0037b054)` frames
+/// for kinds 1..3 (2: white). Returns the start fade, or `None` (kind 0 and 3 here).
+pub fn start_fade(row: Option<&KindRow>, c050: f32) -> Option<ScreenFade> {
+    let r = row?;
+    matches!(r.fade, 1 | 2).then(|| ScreenFade { out: true, white: r.fade == 2, ticks: fader_ticks((r.fade_len * c050) as i32), t: 0.0 })
+}
+
+/// The fade-in after the setup (`FUN_00195ff8`): `op10` is opcode 0x10's +4 (`DAT_0036bd0c`, 0 when absent),
+/// the object's +0x90 is twice it, times `DAT_0037b054`.
+pub fn setup_fade(row: Option<&KindRow>, op10: i16, c054: f32) -> Option<ScreenFade> {
+    let r = row?;
+    matches!(r.fade, 1..=3).then(|| ScreenFade { out: false, white: r.fade == 2, ticks: fader_ticks((2.0 * op10 as f32 * c054) as i32), t: 0.0 })
+}
+
+/// The draw group of every mesh of a skeletal `.mdlx` (the model block, type 3: +0x1c the mesh count, 0x20-byte
+/// mesh headers from +0x20): bits 6..10 of the header's flags word, the field `FUN_00120fd0` matches. In file
+/// order (as `kh2_model::mdlx` and `skel::spawn_skinned` keep them).
+pub fn mesh_groups(file: &[u8]) -> Option<Vec<u8>> {
+    let entries = kh2_bar::parse(file).ok()?;
+    let b = entries.iter().find(|e| e.kind == 4)?.data.get(kh2_model::RESERVED..)?;
+    let w = |o: usize| b.get(o..o + 4).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]));
+    if w(0)? != 3 {
+        return None;
+    }
+    (0..w(0x1c)?.min(1000) as usize).map(|c| w(0x20 + 0x20 * c).map(|f| (f >> 6 & 0x1f) as u8)).collect()
+}
+
+/// Opcode 0xd (`FUN_00228b48` -> `FUN_0011c550` -> the skeletal model class's method +0x34, `FUN_00120fd0`,
+/// vtable 0x354b98): every mesh's draw flag (instance +0x104, one byte a mesh, 1 at creation, `FUN_00120b48`)
+/// loses its low four bits (`FUN_0011eda0`), then each u16 of the list up to 0xffff ORs 1 (bit 15 clear) or 2
+/// (bit 15 set) into the meshes whose group is `value & 0x7fff`. The draw (`FUN_00121a78`) skips a mesh whose
+/// flag has no low bit set. Returns the flags (0 hidden).
+pub fn mesh_flags(groups: &[u8], list: &[u16]) -> Vec<u8> {
+    let mut flags = vec![0u8; groups.len()];
+    for &v in list.iter().take_while(|&&v| v != 0xffff) {
+        let bit = if v & 0x8000 == 0 { 1 } else { 2 };
+        for (f, &g) in flags.iter_mut().zip(groups) {
+            if g as u16 == v & 0x7fff {
+                *f |= bit;
+            }
+        }
+    }
+    flags
+}
+
+/// `FUN_0022ca18`'s first step of a looping motion row (+0x30 = 1, +0x1a not -1): the row keeps the object's
+/// place (`FUN_0016b960`) and clears the flag.
+pub fn keep_place(first: &mut bool, kept: &mut Option<Vec3>, place: Option<Transform>, loops: bool) {
+    if *first && loops {
+        *first = false;
+        *kept = place.map(|t| t.translation);
+    }
+}
+
+/// At a loop (`FUN_0016a618`): the object's position becomes the kept place; its rotation stays.
+pub fn put_back(kept: Option<Vec3>, place: Option<Transform>) -> Option<Transform> {
+    Some(Transform { translation: kept?, ..place? })
 }
 
 /// Starts a requested event: `request` (a trigger) or the harness `KH2_EVENT=<tag>` (the loaded area's event,
@@ -507,9 +646,26 @@ fn start(time: Res<Time<Real>>, rec: Res<AreaRecord>, disc: Res<Disc>, mut playe
         return;
     };
     let ev = Event::parse(&cmds);
-    let kinds = player.kinds.get_or_insert_with(|| disc.read("03system.bin").map(|s| crate::struggle::event_kinds(&s)).unwrap_or_default());
+    let rows = player.kinds.get_or_insert_with(|| disc.read("03system.bin").map(|s| kind_rows(&s)).unwrap_or_default());
+    let row = rows.iter().find(|r| r.kind == (arg & 0x3f) as u8).copied();
     // FUN_001d1128 answers no row for a kind the table lacks [inferred: then nothing is held back, flags 0xffff].
-    let flags = kind_flags(kinds, arg);
+    let flags = row.map(|r| r.flags);
+    let (c050, c054) = *player.consts.get_or_insert_with(|| {
+        let exe = disc.read_root("SLUS_210.05");
+        let f = |va: usize| exe.as_ref().and_then(|e| e.get(va - EXE_BIAS..va - EXE_BIAS + 4)).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+        (f(0x37b050).unwrap_or(0.0), f(0x37b054).unwrap_or(0.0))
+    });
+    let sf = start_fade(row.as_ref(), c050);
+    let fade = sf.or_else(|| setup_fade(row.as_ref(), ev.end_fade.unwrap_or(0), c054));
+    info!(
+        "event: kind {:#x} fade kind {} start fade {} (FUN_00195d28, row +4 {:?} x DAT_0037b050 {c050}); after the setup {} (FUN_00195ff8, op 0x10 {:?} x 2 x DAT_0037b054 {c054})",
+        arg & 0x3f,
+        row.map_or(-1, |r| r.fade as i32),
+        sf.map_or(if row.is_some_and(|r| r.fade == 3) { "keyhole layout FUN_0015d058: not driven [GAP]".to_string() } else { "none".to_string() }, |f| format!("out to {} over {} ticks", if f.white { "white" } else { "black" }, f.ticks)),
+        row.map(|r| r.fade_len),
+        setup_fade(row.as_ref(), ev.end_fade.unwrap_or(0), c054).map_or("no fade".to_string(), |f| format!("in from {} over {} ticks", if f.white { "white" } else { "black" }, f.ticks)),
+        ev.end_fade
+    );
     info!(
         "event: kind {:#x} flags {}: control {}, field HUD {} (FUN_00195ae0; HUD list record 0xc FUN_001bef48 and DAT_00356f1c bit 4 FUN_0014c748 are the pause-menu record and the play clock, not ported)",
         arg & 0x3f,
@@ -520,7 +676,7 @@ fn start(time: Res<Time<Real>>, rec: Res<AreaRecord>, disc: Res<Disc>, mut playe
     let flags = flags.unwrap_or(0xffff);
     let world = REGION;
     info!(
-        "event: {tag} load blocks name {} voice(s) {:?}, {} effect(s) {:?}, layouts {:?} (FUN_0022c070, FUN_00227df0, FUN_00226100: not played, not drawn); op 0xf {} (FUN_00226f50); end fade {:?} frames (op 0x10, FUN_00195ff8: not ported)",
+        "event: {tag} load blocks name {} voice(s) {:?}, {} effect(s) {:?}, layouts {:?} (FUN_0022c070, FUN_00227df0, FUN_00226100: not played, not drawn); op 0xf {} (FUN_00226f50); setup fade-in {:?} frames (op 0x10, FUN_00196348 -> FUN_00195ff8)",
         ev.voices.len(),
         ev.voices.iter().take(3).map(|v| voice_path(world, v)).collect::<Vec<_>>(),
         ev.effects.len(),
@@ -547,7 +703,7 @@ fn start(time: Res<Time<Real>>, rec: Res<AreaRecord>, disc: Res<Disc>, mut playe
         ev.movies,
         ev.other
     );
-    player.play = Some(Play { area: run.name.clone(), tag, cmds, ev, cursor: 0, ticks: 0, actors: HashMap::new(), lines: Vec::new(), motions: HashMap::new(), flags, windows: WindowSlots::default() });
+    player.play = Some(Play { area: run.name.clone(), tag, cmds, ev, cursor: 0, ticks: 0, actors: HashMap::new(), lines: Vec::new(), motions: HashMap::new(), flags, windows: WindowSlots::default(), row, fade, c054 });
 }
 
 fn view(s: super::Shot) -> View {
@@ -567,9 +723,28 @@ fn step(
     mut images: ResMut<Assets<Image>>,
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
     mut msg: Option<ResMut<crate::hud::hud_msgwin::ScriptWindow>>,
+    children: Query<&Children>,
+    mesh_q: Query<(), With<Mesh3d>>,
 ) {
     let player = &mut *player;
     let Some(p) = player.play.as_mut() else { return };
+    // The event object's fades (`start_fade`, `setup_fade`): the timeline waits while the start fade runs.
+    if let Some(mut fd) = p.fade {
+        fd.t += 1.0;
+        p.fade = Some(fd);
+        if fd.out {
+            if !fd.done() {
+                return;
+            }
+            p.fade = setup_fade(p.row.as_ref(), p.ev.end_fade.unwrap_or(0), p.c054);
+            info!("event: start fade over after {} ticks (FUN_001966f8); the timeline runs; {}", fd.ticks, p.fade.map_or("no fade-in".to_string(), |f| format!("fade-in from {} over {} ticks (FUN_00196348 -> FUN_00195ff8)", if f.white { "white" } else { "black" }, f.ticks)));
+        } else if fd.done() {
+            p.fade = None;
+            if eventlog() {
+                info!("event: setup fade-in over after {} ticks (event frame {:.1})", fd.ticks, p.ticks as f32 * 0.5);
+            }
+        }
+    }
     // Opcode 0x2d action 2 (`FUN_00222528`): the counter stands still until the window is at state 3 (`FUN_00222728`).
     if let Some(m) = msg.as_ref()
         && !p.windows.tick(m.waiting, m.closed)
@@ -613,7 +788,8 @@ fn step(
                         Some(rig) => {
                             let root = commands.spawn((Transform::default(), Visibility::Hidden, AreaPart, EventActor)).id();
                             let body = spawn_skinned(&mut commands, root, rig, &mut meshes, &mut materials, &mut images, &mut bindposes, SCALE);
-                            slot.insert(Spawned { root, body, motion: None, clock: None });
+                            let groups = model.as_ref().and_then(|model| disc.read(&format!("obj/{model}.mdlx"))).and_then(|f| mesh_groups(&f));
+                            slot.insert(Spawned { root, body, motion: None, clock: None, groups, parts: None, place: None, kept: None, first: false });
                             info!("event: frame {fi}: actor {} {} (object {:#x}, model {}) made (op 0x2c, FUN_0016e8c0)", m.index, actor.name, actor.object, model.unwrap_or_default());
                         }
                         None => {
@@ -647,6 +823,7 @@ fn step(
                         sp.motion = Some((slot.clone(), 2.0 * m.blend as f32, 2.0 * m.start as f32));
                         // FUN_0022c9b0: the actor's motion slot gets the loop (+0xa, +0xc) and the counter.
                         sp.clock = Some((MotionClock::new(&m), slot));
+                        sp.first = true;
                         if log {
                             let lp = if m.loop_end == -1 { String::new() } else { format!(", loops {}..{} (FUN_0022ca18)", m.loop_start, m.loop_end) };
                             info!("event: frame {fi} (cmd frame {at}): op 0x2c actor {} {} plays {} (start {}, blend {}{lp})", m.index, actor.name, path.unwrap_or_default(), m.start, m.blend);
@@ -665,6 +842,9 @@ fn step(
                         let at_app = game_to_app(pl.pos);
                         let tf = Transform::from_translation(at_app * SCALE).with_rotation(Quat::from_rotation_y(app_yaw(pl.rot[1].to_radians())));
                         commands.entity(s.root).insert((tf, Visibility::Inherited));
+                        if let Some(s) = p.actors.get_mut(&pl.index) {
+                            s.place = Some(tf);
+                        }
                         if log {
                             info!("event: frame {fi} (cmd frame {at}): op 2 actor {} at ({:.0}, {:.0}, {:.0}) yaw {:.0} deg", pl.index, at_app.x, at_app.y, at_app.z, pl.rot[1]);
                         }
@@ -725,10 +905,29 @@ fn step(
                 }
             }
             0xd => {
+                // FUN_00228b48: actor +8 (cmd +8 = operand 4), the list at cmd +0xa (operand 6) up to 0xffff.
+                let index = le16(d, 4);
+                let list: Vec<u16> = (6..d.len().saturating_sub(1)).step_by(2).map(|o| le16(d, o) as u16).take_while(|&v| v != 0xffff).collect();
+                let note = match p.actors.get_mut(&index) {
+                    Some(s) => match s.groups.as_deref() {
+                        Some(g) => {
+                            let flags = mesh_flags(g, &list);
+                            let shown = flags.iter().filter(|&&f| f != 0).count();
+                            s.parts = Some(flags);
+                            format!("{shown} of {} meshes drawn (groups {:?})", g.len(), g)
+                        }
+                        None => "the model's mesh groups are not readable".to_string(),
+                    },
+                    None => "the actor has no object yet".to_string(),
+                };
                 if log {
-                    info!("event: frame {fi} (cmd frame {at}): op 0xd actor {} model instance (+0x670) method +0x34 with the table at +0xa {:?}: not ported [GAP: the method, FUN_00228b48 -> FUN_0011c550]", le16(d, 4), (0..8).map(|k| le16(d, 6 + 2 * k)).collect::<Vec<_>>());
+                    info!("event: frame {fi} (cmd frame {at}): op 0xd actor {index} draws the mesh groups {list:x?} (FUN_00228b48 -> FUN_00120fd0): {note}");
                 }
             }
+            0x4d => info!(
+                "event: frame {fi} (cmd frame {at}): op 0x4d {} the objects whose model resource tag (+0x28) is below 2000 (FUN_00226e80 -> FUN_001b7fa8 / FUN_001b8040: +0x10c bit 0x80): not ported [GAP: which objects carry such a tag]",
+                if le16(d, 2) == 0 { "hides" } else { "shows" }
+            ),
             0x44 => info!("event: frame {fi} (cmd frame {at}): op 0x44 movie movie/{REGION}/{}.pss not played (no movie player) [GAP]", cstr(d, 2)),
             o => {
                 if log {
@@ -738,6 +937,21 @@ fn step(
         }
     }
     for s in p.actors.values_mut() {
+        // Opcode 0xd's draw flags on the body's mesh entities (`spawn_skinned` keeps the file's mesh order).
+        if let Some(flags) = s.parts.as_ref()
+            && let Ok(kids) = children.get(s.body)
+        {
+            let parts: Vec<Entity> = kids.iter().filter(|e| mesh_q.contains(*e)).collect();
+            if parts.len() == flags.len() {
+                for (e, f) in parts.iter().zip(flags) {
+                    commands.entity(*e).insert(if *f & 0xf != 0 { Visibility::Inherited } else { Visibility::Hidden });
+                }
+                s.parts = None;
+            } else if !parts.is_empty() {
+                info!("event: op 0xd: {} mesh entities for {} model meshes: not applied", parts.len(), flags.len());
+                s.parts = None;
+            }
+        }
         if let Some((slot, blend, start)) = s.motion.take() {
             match anims.get_mut(s.body) {
                 Ok(mut a) => {
@@ -747,18 +961,26 @@ fn step(
                 Err(_) => s.motion = Some((slot, blend, start)),
             }
         }
-        // FUN_0022ca18 (every frame, from the setup reader's frame path): the motion slots' loops. The position
-        // put back at a loop (`FUN_0016a618` with the place `FUN_0016b960` kept at the slot's first frame, unless
-        // `FUN_001beb00`) is not ported: the app's event actors take no root motion [inferred].
+        // FUN_0022ca18 (every frame, from the setup reader's frame path): the motion slots' loops. A looping row
+        // keeps the object's place at its first step (`FUN_0016b960`: +0x540 unless `FUN_001beb00`, the object
+        // has no +0x570 link, which the app's event actors never have) and puts it back at every loop
+        // (`FUN_0016a618`: +0x540 = the kept place, w = 1, `FUN_001921e8`).
         if s.motion.is_none()
             && let Some((clock, slot)) = s.clock.as_mut()
-            && let Some(at) = clock.tick()
-            && let Ok(mut a) = anims.get_mut(s.body)
         {
-            a.play_external(slot.clone(), 0.0);
-            a.frame += at;
-            if log {
-                info!("event: frame {fi}: motion {} loops back to frame {at} (FUN_0022ca18, {}..{})", slot.tag, clock.loop_start, clock.loop_end);
+            keep_place(&mut s.first, &mut s.kept, s.place, clock.loop_end != -1);
+            if let Some(at) = clock.tick()
+                && let Ok(mut a) = anims.get_mut(s.body)
+            {
+                a.play_external(slot.clone(), 0.0);
+                a.frame += at;
+                if let Some(tf) = put_back(s.kept, s.place) {
+                    s.place = Some(tf);
+                    commands.entity(s.root).insert(tf);
+                }
+                if log {
+                    info!("event: frame {fi}: motion {} loops back to frame {at} (FUN_0022ca18, {}..{}); place put back {:?} (FUN_0016a618)", slot.tag, clock.loop_start, clock.loop_end, s.kept.map(|k| k / SCALE));
+                }
             }
         }
     }
@@ -823,6 +1045,13 @@ fn lock_pad(
 ) {
     let at = sora.single().map(|t| t.translation / SCALE).unwrap_or_default();
     if player.playing() {
+        // The screen fader the event drives (drawn by `area_jump::draw_fader` once it reads this).
+        if let Some((a, white)) = player.screen_fade()
+            && eventlog()
+            && a >= 1.0
+        {
+            info!("event: screen fader fully {} (FUN_0014a918)", if white { "white" } else { "black" });
+        }
         if player.locks_control() {
             pad.lock();
         }
@@ -985,6 +1214,110 @@ mod tests {
         assert_eq!(kind_flags(&rows, 0xd), Some(0x60));
         let k0 = kind_flags(&rows, 0);
         eprintln!("kind 0: {k0:x?}");
+    }
+
+    /// WP-E6e: the event object's fades. Fade kind 1 fades the screen fader out to black at the start
+    /// (`FUN_00195d28`) over `(int)(row +4 * DAT_0037b050)` frames = twice that in ticks (`FUN_0014a710`), 2 to
+    /// white; after the setup `FUN_00195ff8` fades in over `(int)(2 * op 0x10 * DAT_0037b054)` frames (kinds 1..3);
+    /// kind 0 has neither, kind 3 (the keyhole) no fader fade-out. On the disc: the rows and the two factors.
+    #[test]
+    fn the_event_object_fades_out_then_in_by_its_kind_row() {
+        let row = |fade| KindRow { kind: 2, fade, flags: 0, fade_len: 30.0 };
+        let s = start_fade(Some(&row(1)), 0.5).expect("kind 1 fades out");
+        assert!(s.out && !s.white);
+        assert_eq!(s.ticks, 30.0);
+        assert_eq!(s.alpha(), 0.0);
+        assert!(start_fade(Some(&row(2)), 0.5).unwrap().white);
+        assert_eq!(start_fade(Some(&row(3)), 0.5), None);
+        assert_eq!(start_fade(Some(&row(0)), 0.5), None);
+        assert_eq!(start_fade(None, 0.5), None);
+        let i = setup_fade(Some(&row(1)), 20, 0.5).expect("kind 1 fades in");
+        assert!(!i.out && !i.white);
+        assert_eq!(i.ticks, 40.0, "20 frames of op 0x10: +0x90 = 40, x 0.5 = 20 frames, 40 ticks");
+        assert_eq!(i.alpha(), 1.0);
+        assert!(setup_fade(Some(&row(2)), 20, 0.5).unwrap().white);
+        assert!(!setup_fade(Some(&row(3)), 20, 0.5).unwrap().white);
+        assert_eq!(setup_fade(Some(&row(0)), 20, 0.5), None);
+        assert_eq!(fader_ticks(0), 2.0, "FUN_0014a710 makes 0 frames 1");
+        let half = ScreenFade { t: 20.0, ..i };
+        assert_eq!(half.alpha(), 0.5);
+        assert!(!half.done() && ScreenFade { t: 40.0, ..i }.done());
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let disc = Disc::open(&iso);
+        let rows = kind_rows(&disc.read("03system.bin").expect("03system.bin"));
+        let old = crate::struggle::event_kinds(&disc.read("03system.bin").unwrap());
+        assert_eq!(rows.iter().map(|r| (r.kind, r.flags)).collect::<Vec<_>>(), old, "same rows as struggle::event_kinds");
+        let exe = disc.read_root("SLUS_210.05").expect("SLUS_210.05");
+        let f = |va: usize| f32::from_le_bytes(exe[va - EXE_BIAS..va - EXE_BIAS + 4].try_into().unwrap());
+        eprintln!("evtp rows: {rows:?}; DAT_0037b050 {} DAT_0037b054 {}", f(0x37b050), f(0x37b054));
+        let r2 = rows.iter().find(|r| r.kind == 2).expect("kind 2 (tt02 102's trigger argument)");
+        eprintln!("kind 2: start {:?}, after the setup of event 102 {:?}", start_fade(Some(r2), f(0x37b050)), setup_fade(Some(r2), 20, f(0x37b054)));
+    }
+
+    /// WP-E6e: a looping motion row keeps the place at its first step only (later placements do not move the
+    /// kept place) and puts the position back at a loop, keeping the rotation (`FUN_0022ca18`, `FUN_0016a618`).
+    #[test]
+    fn a_looping_motion_puts_its_actor_back_where_the_loop_began() {
+        let a = Transform::from_xyz(1.0, 2.0, 3.0);
+        let b = Transform::from_xyz(9.0, 9.0, 9.0).with_rotation(Quat::from_rotation_y(1.0));
+        let (mut first, mut kept) = (true, None);
+        keep_place(&mut first, &mut kept, Some(a), false);
+        assert!(first && kept.is_none(), "a row without a loop keeps nothing");
+        keep_place(&mut first, &mut kept, Some(a), true);
+        keep_place(&mut first, &mut kept, Some(b), true);
+        assert_eq!(kept, Some(a.translation));
+        let back = put_back(kept, Some(b)).unwrap();
+        assert_eq!(back.translation, a.translation);
+        assert_eq!(back.rotation, b.rotation);
+        assert_eq!(put_back(None, Some(b)), None);
+    }
+
+    /// WP-E6e: opcode 0xd draws only the listed mesh groups (`FUN_00120fd0`): bit 15 of a value ORs 2 instead of
+    /// 1, the list ends at 0xffff, unlisted groups are not drawn. On the disc: every op 0xd of the tt02..tt04
+    /// events reaches its actor's model (the tt lists name every group but 1).
+    #[test]
+    fn opcode_0xd_draws_only_the_listed_mesh_groups() {
+        let groups = [0u8, 0, 2, 3, 3, 5];
+        assert_eq!(mesh_flags(&groups, &[0, 3, 0xffff, 2]), vec![1, 1, 0, 1, 1, 0]);
+        assert_eq!(mesh_flags(&groups, &[0x8002, 5]), vec![0, 0, 2, 0, 0, 1]);
+        assert_eq!(mesh_flags(&groups, &[]), vec![0; 6]);
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let disc = Disc::open(&iso);
+        let objs = disc.0.lock().ok().and_then(|mut a| kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).ok()).map(|d| d.rows).unwrap_or_default();
+        let (mut cmds, mut checked, mut unknown) = (0, 0, Vec::new());
+        for area in ["tt02", "tt03", "tt04"] {
+            let (ard, _) = kh2_ard::Area::parse(&disc.read(&format!("ard/{area}.ard")).expect("area")).expect("area");
+            for (tag, bytes) in &ard.events {
+                let Some(list) = kh2_ard::parse_event(bytes) else { continue };
+                let e = Event::parse(&list);
+                for c in list.iter().filter(|c| c.opcode == 0xd) {
+                    cmds += 1;
+                    let d = &c.data;
+                    let Some(a) = e.actors.iter().find(|a| a.index == le16(d, 4)) else { continue };
+                    let Some(model) = objs.iter().find(|r| r.object_id == a.object as u32).map(|r| r.model_name.clone()) else { continue };
+                    let Some(g) = disc.read(&format!("obj/{model}.mdlx")).and_then(|f| mesh_groups(&f)) else { continue };
+                    let list: Vec<u16> = (6..d.len().saturating_sub(1)).step_by(2).map(|o| le16(d, o) as u16).take_while(|&v| v != 0xffff).collect();
+                    checked += 1;
+                    for v in &list {
+                        if !g.contains(&((v & 0x7fff) as u8)) {
+                            unknown.push(format!("{area} {tag} {model} {v:#x} (groups {g:?})"));
+                        }
+                    }
+                    if checked <= 3 {
+                        eprintln!("{area} {tag} actor {} {model}: groups {g:?}, list {list:x?} -> {:?}", a.index, mesh_flags(&g, &list));
+                    }
+                }
+            }
+        }
+        // The lists name groups 0 and 2..0x1f (all but 1): a group the model lacks matches no mesh (no-op).
+        eprintln!("op 0xd: {cmds} commands, {checked} with a readable model, {} listed values match no mesh", unknown.len());
+        assert!(checked > 100, "{checked}");
     }
 
     /// The disc's tt01 short events (`100`, `200`, `400`, `600`) are movies with subtitle lines: opcode 0x44

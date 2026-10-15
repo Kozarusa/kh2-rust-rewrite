@@ -721,6 +721,12 @@ fn body_shape(rig: &Rig) -> (f32, f32) {
     rig.model.shapes.iter().find(|s| s.kind == 0 || s.kind == 4).map_or((35.0, 150.0), |s| (s.radius.abs(), s.height.abs()))
 }
 
+/// Whether `spawn_party` can build members at all: the area is loaded, `KH2_NO_PARTY` is off and the `memt` and
+/// the constants are read. A rebuild checks this before it despawns the standing members.
+fn can_build(area_loaded: bool, no_party: bool, have_memt: bool, have_consts: bool) -> bool {
+    area_loaded && !no_party && have_memt && have_consts
+}
+
 /// Spawns the members of a newly loaded area (they are area parts: the next area load removes them).
 #[allow(clippy::too_many_arguments)]
 fn spawn_party(
@@ -768,9 +774,16 @@ fn spawn_party(
     };
     let old_places: Vec<(u16, Vec3, f32)> = old.iter().map(|(_, m)| (m.neo, m.motor.pos, m.motor.yaw)).collect();
     if rebuild {
+        // Every bail-out of the build comes first: a rebuild that cannot build keeps the members standing.
+        let no_party = std::env::var("KH2_NO_PARTY").is_ok_and(|v| v != "0");
+        if !can_build(area.loaded.is_some(), no_party, data.memt.is_some(), data.consts.is_some()) {
+            return;
+        }
         for (e, _) in &old {
             commands.entity(e).despawn();
         }
+        // The new members start with an empty trail, not the one the despawned members left.
+        mgr.trail = Trail::default();
     } else {
         mgr.area = area.loaded.clone();
         mgr.trail = Trail::default();
@@ -2224,6 +2237,22 @@ mod tests {
         assert_eq!((s.world, s.bytes), (5, [0, 3, rules::EMPTY, rules::EMPTY]));
         assert!(s.enter_world(2, || preset));
         assert_eq!(s.bytes, [0, 2, 1, 3], "world 2's edit is still there");
+    }
+
+    /// FIX-R1 1: a rebuild that cannot build must not despawn the standing members.
+    #[test]
+    fn a_rebuild_that_cannot_build_keeps_the_members() {
+        assert!(can_build(true, false, true, true));
+        assert!(!can_build(false, false, true, true), "no area");
+        assert!(!can_build(true, true, true, true), "KH2_NO_PARTY");
+        assert!(!can_build(true, false, false, true), "no memt");
+        assert!(!can_build(true, false, true, false), "no constants");
+    }
+
+    /// FIX-R1 2: the trail a rebuild resets is the empty one.
+    #[test]
+    fn a_fresh_trail_has_no_head() {
+        assert!(Trail::default().head < 0);
     }
 
     /// WP-MN8 B: the members asked for follow the slot bytes. A different member in a slot changes the key (a

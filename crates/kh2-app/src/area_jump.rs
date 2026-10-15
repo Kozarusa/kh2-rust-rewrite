@@ -403,6 +403,18 @@ pub enum WalkIn {
     TriggerOnly,
 }
 
+/// An event walk-in (`WalkIn::Event`): requests the event and sets the jump that follows it. Two exit groups
+/// firing in one tick would request two events (the event player drops the second while the first plays) and
+/// overwrite `after`; only the first one is taken. Returns whether this call took it.
+fn start_event_walk_in(after: &mut Option<AfterEvent>, jump: Option<Jump>, id: u16, request: impl FnOnce()) -> bool {
+    if after.is_some() {
+        return false;
+    }
+    request();
+    *after = Some(AfterEvent::new(jump, id));
+    true
+}
+
 /// Decides a walk-in of `g` in `world`: the first trigger matching `(1, group id)` takes it over
 /// (`FUN_00197b70` answers non-zero), else the exit's own destination with fade kind 1 when the
 /// world changes and 0 otherwise.
@@ -570,8 +582,7 @@ fn tick(
             match walk_in(g, &run.script.triggers, world) {
                 WalkIn::Event { tag, arg, jump } => {
                     info!("exit {} id {:#x} -> {} entrance {}: trigger (1, {:#x}) plays event {tag} arg {arg}, then the jump {jump:?} (FUN_00196428)", g.tag, g.id, dest_name(&dest), dest.entrance, g.id);
-                    crate::intro::event_player::request(&tag, arg);
-                    after = Some(AfterEvent::new(jump, g.id));
+                    start_event_walk_in(&mut after, jump, g.id, || crate::intro::event_player::request(&tag, arg));
                 }
                 WalkIn::Jump { dest, kind } => start = Some((dest, kind, g.id)),
                 other => info!("exit {}: forced walk-in {other:?} not handled by the harness", g.tag),
@@ -612,8 +623,7 @@ fn tick(
                         }
                         WalkIn::Event { tag, arg, jump } => {
                             info!("exit {} id {:#x} -> {} entrance {}: trigger (1, {:#x}) plays event {tag} arg {arg}, then the jump {jump:?} (FUN_00196428)", g.tag, g.id, dest_name(&dest), dest.entrance, g.id);
-                            crate::intro::event_player::request(&tag, arg);
-                            after = Some(AfterEvent::new(jump, g.id));
+                            start_event_walk_in(&mut after, jump, g.id, || crate::intro::event_player::request(&tag, arg));
                         }
                         WalkIn::TriggerJump(j) => {
                             let (kind, instant) = jump_fade_kind(&j);
@@ -906,6 +916,20 @@ mod tests {
         assert_eq!(due, vec![false, false, true, true]);
     }
 
+    /// FIX-R1 6: two exit groups with an event walk-in in one tick request one event and keep the first jump.
+    #[test]
+    fn only_the_first_event_walk_in_of_a_tick_is_taken() {
+        let j1 = Jump { kind: 1, world: 2, area: 8, entrance: 0, key: 0, flags: 0 };
+        let j2 = Jump { kind: 1, world: 2, area: 9, entrance: 1, key: 0, flags: 0 };
+        let mut after = None;
+        let mut requests = 0;
+        assert!(start_event_walk_in(&mut after, Some(j1), 0x20, || requests += 1));
+        assert!(!start_event_walk_in(&mut after, Some(j2), 0x21, || requests += 1));
+        assert_eq!(requests, 1);
+        let a = after.expect("the first walk-in");
+        assert_eq!((a.group, a.jump), (0x20, Some(j1)));
+    }
+
     /// WP-E6b: every Twilight Town trigger on event 1 (an exit's walk-in) that names an event, with its jump
     /// record and whether the area file holds the event.
     #[test]
@@ -933,5 +957,6 @@ mod tests {
             }
         }
         eprintln!("walk-in triggers with an event: {found}");
+        assert!(found > 0, "Twilight Town has trigger (1, ..) walk-ins that play an event");
     }
 }

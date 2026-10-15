@@ -1625,6 +1625,9 @@ pub struct Story {
     world_bits: [u32; 2],
 }
 
+/// Records of `00worldpoint.bin` `FUN_00194f68` searches (it returns an index 0..=0x35, else -1).
+const WORLD_POINT_RECORDS: usize = 0x36;
+
 /// `Story` behind a lock, shared by `Progress` and the script hosts.
 #[derive(Clone, Debug, Default)]
 pub struct StoryHandle(Arc<std::sync::Mutex<Story>>);
@@ -1771,8 +1774,13 @@ impl Story {
         [b(0), b(1), b(2)]
     }
 
-    /// `FUN_00194fa8`: sets world-point bit `i` (`None` past the two words).
+    /// `FUN_00194fa8`: sets world-point bit `i`. The bit is the record index `FUN_00194f68` finds in
+    /// `00worldpoint.bin`, which stops after 0x36 records (docs/events.md section 4), so an index from
+    /// `WORLD_POINT_RECORDS` up is ignored (it cannot come from the lookup; the two words end at 64).
     pub fn set_world_point(&mut self, i: usize) {
+        if i >= WORLD_POINT_RECORDS {
+            return;
+        }
         if let Some(w) = self.world_bits.get_mut(i >> 5) {
             *w |= 1 << (i & 31);
         }
@@ -2614,7 +2622,17 @@ mod tests {
         p.story().set_world_point(1);
         p.story().set_world_point(33);
         p.story().set_world_point(0x36 + 100); // past the two words: ignored
+        p.story().set_world_point(63); // inside the second word, but not a record (0x36 of them): ignored
+        p.story().set_world_point(64); // the first bit past the two words: ignored
         assert!(p.story().world_point(1) && p.story().world_point(33) && !p.story().world_point(2));
+        assert!(!p.story().world_point(63) && !p.story().world_point(64));
+        p.story().set_world_point(0x35); // the last record
+        assert!(p.story().world_point(0x35));
+        p.story().set_world_point(0x36); // one past the last record
+        assert!(!p.story().world_point(0x36));
+        let p = Progress::from_block(&[], ix.clone());
+        p.story().set_world_point(1);
+        p.story().set_world_point(33);
         let text = p.story_json();
         assert_eq!(text, r#"{"story_flags": [], "world_points": [1, 33]}"#);
         let mut q = Progress::from_block(&[], ix);

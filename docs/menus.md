@@ -1336,9 +1336,9 @@ data parts of `chars` / `album_page` are pure functions with tests; the rest is 
   (`total` as given, `visible` 10 or 9). `FUN_00299c10(pos)`: `pos` is clamped to `total - visible` (`total` here is the larger of
   the two numbers); parts 1 and 2 sit at `(int)(track / total * pos)`, part 3 at that plus `(int)(track * min(visible / total, 1))`,
   one less when the list fits and the sum is exact. Port: `marks::Bar` (tested), `place_bar`, `bar_pos`.
-- **Page 3 opens on the last entry** (fix): `FUN_002a4c38` ends with `FUN_00298d98(list, iVar7)` and `FUN_00299c10(bar, iVar7)`
-  where `iVar7` is the sum of the lines of every entry but the last; the first line shown is the last entry's first line (the
-  port started at line 0). The scroll bar is made for `iVar7 + max(10, last entry's lines)`.
+- **Page 3 opens on the last entry** (fix): `FUN_002a4c38` ends with `FUN_00298d98(list, n)` and `FUN_00299c10(bar, n)`
+  where `n` is the sum of the lines of every entry but the last; the first line shown is the last entry's first line (the
+  port started at line 0). The scroll bar is made for `n + max(10, last entry's lines)`.
 - **New / seen bit sets** (`marks.rs`). `DAT_0036d4e8` (0x128 bytes, allocated by `FUN_002b7060` at the scene's init,
   `FUN_002b7100` fills it at every open: `FUN_002b7160` characters, `7590` limits, `7818` album, `7cd0`, `7f58` quests, `8390`
   minigames, `87b8` treasures, `8b88` maps, `8f18`, `9198` story) holds a bit for every entry that exists now and is not in the

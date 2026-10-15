@@ -127,7 +127,7 @@ pub fn build(j: &mut Journal, scene: &mut MenuScene, page: u16, world: i8, g: &G
     scene.set_group(ln.info, j.tables.list_text[0]);
     scene.nodes[ln.total[1]].off = g3c;
     let layout = make_layout(j, page, g);
-    let cur = lists::start(&layout, usize::try_from(world).unwrap_or(0));
+    let cur = lists::start(&layout, usize::try_from(world).unwrap_or(0).min(lists::WORLDS - 1));
     let track = scene.seqs.get(list).and_then(|s| s.groups.get(LAYERS[1])).map_or(0, |gr| gr.size);
     let body = scene.seqs.get(list).and_then(|s| s.groups.get(j.tables.bar[2])).map_or(1, |gr| gr.size.max(1));
     let bar = Bar::new(track, body, layout.total as i32, lists::VIEW_ROWS as i32);

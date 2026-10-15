@@ -120,7 +120,7 @@ pub struct Bar {
 
 impl Bar {
     /// `FUN_00299878(.., total, visible, ..)`: the larger of the two is the list length the thumb is scaled to
-    /// (`param_1[8]`), `visible` the rows shown (`param_1[9]`).
+    /// (the bar's +0x20 word), `visible` the rows shown (+0x24).
     pub fn new(track: i32, body: i32, total: i32, visible: i32) -> Bar {
         Bar { track, body, total: total.max(visible), visible, made_for: total }
     }

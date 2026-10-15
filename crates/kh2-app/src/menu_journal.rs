@@ -1823,7 +1823,7 @@ fn build3(j: &mut Journal, scene: &mut MenuScene, world: i8, test: &dyn Fn(u16) 
     }
     let count = story_count(&counts);
     // The list opens on the last entry's first line (`FUN_002a4c38`: the scroll offset is set to the lines of every entry
-    // but the last, `FUN_00298d98(list, iVar7)`; the scroll bar `FUN_00299c10(bar, iVar7)` follows).
+    // but the last, `FUN_00298d98(list, lines)`; the scroll bar `FUN_00299c10(bar, lines)` follows).
     let before_last = counts.split_last().map_or(0, |(_, rest)| rest.iter().sum::<usize>());
     let last = counts.last().copied().unwrap_or(0);
     let bar_total = if last > STORY_LINES - 1 { before_last + last } else { before_last + STORY_LINES };

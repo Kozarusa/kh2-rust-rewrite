@@ -296,6 +296,9 @@ pub struct Progress {
     /// The "seen" words of the NEW tags (save `+0x31b4`, docs/menus.md 16.1) as a save slot carries them: empty until a slot
     /// that holds them is loaded or the menu stores them (`set_new_seen`).
     new_seen: Vec<u32>,
+    /// The record bits (the word array at `0x33fdb0`, save `+0x1550`, outside the party block): `FUN_001a5328` tests
+    /// bit n, `FUN_001a52b0` sets it. The shops read and set them (`menu_shop::stock`); nothing else in the app does yet.
+    record_bits: Vec<u32>,
 }
 
 /// The option word `FUN_0023e9a0` writes on a new game: it keeps bits 0, 3 and 11 up and sets 0x40b, so
@@ -359,7 +362,7 @@ impl Progress {
         let mut block = vec![0u8; off::LEN];
         let n = bytes.len().min(off::LEN);
         block[..n].copy_from_slice(&bytes[..n]);
-        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT], story: StoryHandle::default(), new_seen: Vec::new() }
+        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT], story: StoryHandle::default(), new_seen: Vec::new(), record_bits: Vec::new() }
     }
 
     // --- story flags ------------------------------------------------------------------------
@@ -647,6 +650,27 @@ impl Progress {
     /// The game mode (save `+0x1658`).
     pub fn game_mode(&self) -> u32 {
         self.config[1]
+    }
+
+    /// `FUN_001a5328`: record bit `n` (the array at `0x33fdb0`) is set.
+    pub fn record_bit(&self, n: u16) -> bool {
+        self.record_bits.get(n as usize >> 5).is_some_and(|w| w >> (n & 31) & 1 != 0)
+    }
+
+    /// `FUN_001a52b0`: sets record bit `n` (its call of `FUN_001d39d0` after the write is not ported).
+    pub fn set_record_bit(&mut self, n: u16) {
+        let w = n as usize >> 5;
+        if self.record_bits.len() <= w {
+            self.record_bits.resize(w + 1, 0);
+        }
+        self.record_bits[w] |= 1 << (n & 31);
+    }
+
+    /// `FUN_0023e6b0`: takes `n` from the munny (`FUN_0023e680` runs first [GAP: not read]); the shop's buy only
+    /// asks for what the munny covers (`menu_shop::step_quantity`), so the port stops at 0.
+    pub fn spend(&mut self, n: u32) -> u32 {
+        self.wallet = self.wallet.saturating_sub(n);
+        self.wallet
     }
 
     /// The prize munny (save `+0x1600`, see the field).
@@ -1193,6 +1217,7 @@ impl Progress {
             config: [OPTION_DEFAULT, GAME_MODE_DEFAULT],
             story: StoryHandle::default(),
             new_seen: Vec::new(),
+            record_bits: Vec::new(),
         };
         p.init_party();
         p.apply_plrp(plrp, 0);

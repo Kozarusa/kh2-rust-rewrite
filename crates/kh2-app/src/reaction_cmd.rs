@@ -121,6 +121,8 @@ pub enum Status {
 pub struct CmdRow {
     pub id: u16,
     pub execute: u16,
+    /// The row's Argument (+4): the event of an Execute 0x7f row (`FUN_00177b18`) [inferred, see `menu_shop`].
+    pub argument: i16,
     pub flags: u32,
     pub disable_form: u16,
     pub dist_range: u16,
@@ -141,6 +143,7 @@ impl From<&t::Cmd> for CmdRow {
         CmdRow {
             id: c.id,
             execute: c.execute,
+            argument: c.argument,
             flags: c.flags,
             disable_form: c.disable_form,
             dist_range: c.dist_range,
@@ -550,6 +553,7 @@ fn accept(
     targets: Query<&Enemy>,
     mut player_cmds: MessageWriter<PlayerReactionCmd>,
     mut talk: Option<ResMut<crate::npc::Talk>>,
+    mut shop: Option<ResMut<crate::menu_shop::ShopRequest>>,
 ) {
     if !std::mem::take(&mut press.0) {
         return;
@@ -572,12 +576,25 @@ fn accept(
         }
         // FUN_001cf030 -> FUN_00177b18: Execute 0x1f is the talk (FUN_001a56c0), 0x37 the save point
         // (FUN_001784b8). Neither takes the generic path of FUN_00177c20 (no event 0xb to a script).
-        if matches!(c.execute, crate::npc::EXECUTE_TALK | crate::savepoint::EXECUTE_SAVE) {
+        // 0x1e is Examine (FUN_001a54a8: the talk program in the top window, `npc.rs`). 0x7f fires the field event of
+        // the pending command (`FUN_00197b70(+6, 0)`) [inferred: the row's Argument]: the Shop rows' events open menu
+        // kind 4 (`menu_shop.rs`); other events are not ported.
+        if matches!(c.execute, crate::npc::EXECUTE_TALK | crate::npc::EXECUTE_EXAMINE | crate::savepoint::EXECUTE_SAVE) {
             if let Some(t) = talk.as_deref_mut() {
                 t.accepted = Some(a);
             }
+        } else if c.execute == crate::menu_shop::EXECUTE_EVENT {
+            let event = c.argument as u16 as u32;
+            if crate::menu_shop::opens_shop(event)
+                && let Some(s) = shop.as_deref_mut()
+            {
+                s.0 = Some(event as u16);
+                info!("reaction: accepted command {} (Execute 0x7f, FUN_00177b18): event {event:#x} (FUN_00197b70) opens menu kind 4", a.cmd);
+            } else {
+                info!("reaction: accepted command {} (Execute 0x7f): event {event:#x} (FUN_00197b70) not ported", a.cmd);
+            }
         } else if log.0 {
-            info!("reaction: accepted command {} (Execute {}): not ported (shops FUN_001a54a8 and the others)", a.cmd, c.execute);
+            info!("reaction: accepted command {} (Execute {}): not ported", a.cmd, c.execute);
         }
         return;
     }
@@ -661,7 +678,7 @@ mod tests {
     }
 
     fn mk(flags: u32, disable: u16, dist: u16) -> CmdRow {
-        CmdRow { id: 900, execute: 900, flags, disable_form: disable, dist_range: dist, range: -1.0, priority: 100, message_id: 0, cmd_action: 0, reaction_count: 0, require: 0, cost: 0 }
+        CmdRow { id: 900, execute: 900, argument: 0, flags, disable_form: disable, dist_range: dist, range: -1.0, priority: 100, message_id: 0, cmd_action: 0, reaction_count: 0, require: 0, cost: 0 }
     }
 
     /// FUN_0019cf58 by hand: row 287's Flags 0xb959 (bits 4 and 6 set) and Require 286.

@@ -638,6 +638,12 @@ pub(crate) fn npc_update(
 pub const PART_FROM_RECORD: u16 = 0x83;
 /// The Execute value FUN_00177b18 turns into a talk (case 0x1f).
 pub const EXECUTE_TALK: u16 = 0x1f;
+/// Execute 0x1e, "Examine" (command 30, message 0x81eb): `FUN_00177b18` case 0x1e -> `FUN_001a54a8`, the same talk table
+/// with the task `FUN_001a5510` and the callback `FUN_001a5608` (WP-SH1).
+pub const EXECUTE_EXAMINE: u16 = 0x1e;
+/// The window Examine opens: `FUN_001a5608` builds class `FUN_001ab7d8` (`FUN_001aaf20(win, 3, 4, message, 0, 0x100, 0x20,
+/// 3)`: font 3, colour 4, at (256, 32), frame kind 3, alignment 2), class 2 of `kh2_image::window::CLASSES`.
+pub const EXAMINE_WINDOW_CLASS: usize = 2;
 /// The motion the talked-to object plays (FUN_001a5728: `FUN_0017e220(.., obj + 0x140, 0x32)`).
 pub const MOTION_TALK: usize = 0x32;
 /// The window the talk opens: FUN_001aba58 builds the values of FUN_001ab9e0 (font 3, colour 5, at
@@ -710,6 +716,8 @@ struct TalkRun {
     yaw: f32,
     /// The talk camera was started (FUN_00159688).
     camera: bool,
+    /// An Examine (FUN_001a5510), not a talk (FUN_001a5728).
+    examine: bool,
 }
 
 impl Talk {
@@ -916,8 +924,27 @@ pub(crate) fn talk_step(
         // `savepoint::point_use`, which runs first); everything else was answered by `reaction_cmd`.
         let Some(o) = talk.accepted.filter(|o| npcs.contains(o.from)) else { return };
         talk.accepted = None;
-        let Some(c) = rules.as_deref().and_then(|r| r.cmd(o.cmd)).filter(|c| c.execute == EXECUTE_TALK) else { return };
-        let (Ok((mut stf, mut s)), Ok((mut ntf, mut npc, brain))) = (sora.single_mut(), npcs.get_mut(o.from)) else { return };
+        let Some(c) = rules.as_deref().and_then(|r| r.cmd(o.cmd)).filter(|c| c.execute == EXECUTE_TALK || c.execute == EXECUTE_EXAMINE) else { return };
+        let (Ok((mut stf, mut s)), Ok((mut ntf, mut npc, mut brain))) = (sora.single_mut(), npcs.get_mut(o.from)) else { return };
+        if c.execute == EXECUTE_EXAMINE {
+            // FUN_001a5510: the player faces the target (FUN_0016a948 with the target point minus his position); a
+            // class-5 target's script goes to its "before_check" mode (FUN_00189eb8: FUN_001870d8 / FUN_00186db0,
+            // string 0x37ab68) when it has one; no talk camera, no turn of the target, no motion 0x32.
+            s.motor.vel = Vec3::ZERO;
+            let to_npc = (ntf.translation / SCALE - s.motor.pos).with_y(0.0);
+            if to_npc.length_squared() > 1e-6 {
+                s.motor.yaw = to_npc.x.atan2(to_npc.z);
+                stf.rotation = Quat::from_rotation_y(s.motor.yaw);
+            }
+            brain.pending_mode = Some("before_check");
+            let id = npc.record.talk_id();
+            let program = talk.lib.as_ref().and_then(|l| l.program(id)).unwrap_or_default();
+            let ops: Vec<Op> = npc.talk.take(&program).iter().map(|c| c.kind()).collect();
+            info!("reaction: accepted command {} (Execute 0x1e, Examine) from {} {:?}: FUN_001a54a8, talk id {id:#x}, ops {ops:?}", o.cmd, brain.tag, o.from);
+            talk.run = Some(TalkRun { npc: o.from, tag: brain.tag.clone(), ops, at: 0, window: false, yaw: npc.yaw, camera: false, examine: true });
+            talk.offer = None;
+            return;
+        }
         // FUN_00177d28: the player's velocities are cleared.
         s.motor.vel = Vec3::ZERO;
         // FUN_001a5728: the player faces the target (FUN_0016a948 with the target point minus his
@@ -979,7 +1006,7 @@ pub(crate) fn talk_step(
         if npclog() {
             info!("npc: {} talk starts: motion {MOTION_TALK:#x}, facing the player, program {id:#x} {ops:?}", brain.tag);
         }
-        talk.run = Some(TalkRun { npc: o.from, tag: brain.tag.clone(), ops, at: 0, window: false, yaw: saved, camera });
+        talk.run = Some(TalkRun { npc: o.from, tag: brain.tag.clone(), ops, at: 0, window: false, yaw: saved, camera, examine: false });
         talk.offer = None;
         return;
     }
@@ -995,8 +1022,9 @@ pub(crate) fn talk_step(
     while let Some(op) = run.ops.get(run.at).copied() {
         match op {
             Op::Message(id) => {
-                // FUN_001a5a60: window class FUN_001aba58 with the message.
-                win.open = Some((id, TALK_WINDOW_CLASS));
+                // FUN_001a5a60: window class FUN_001aba58 with the message (Examine, FUN_001a5608: class FUN_001ab7d8;
+                // its wait also ends when FUN_001a5b18(0xe) answers 0 [GAP: that player state; not ported]).
+                win.open = Some((id, if run.examine { EXAMINE_WINDOW_CLASS } else { TALK_WINDOW_CLASS }));
                 win.closed = false;
                 run.window = true;
                 if npclog() {
@@ -2259,7 +2287,7 @@ mod tests {
     /// a run without the camera, or no run, asks for nothing.
     #[test]
     fn dropping_a_talk_with_the_camera_ends_the_camera() {
-        let run = |camera| TalkRun { npc: Entity::PLACEHOLDER, tag: String::new(), ops: Vec::new(), at: 0, window: false, yaw: 0.0, camera };
+        let run = |camera| TalkRun { npc: Entity::PLACEHOLDER, tag: String::new(), ops: Vec::new(), at: 0, window: false, yaw: 0.0, camera, examine: false };
         let mut t = Talk { run: Some(run(true)), ..Default::default() };
         assert_eq!(t.drop_run(), Some(crate::camera::TalkCam::End));
         assert!(t.run.is_none());
@@ -2562,6 +2590,7 @@ mod tests {
         crate::reaction_cmd::CmdRow {
             id,
             execute: id,
+            argument: 0,
             flags: 0,
             disable_form: 0,
             dist_range: 0,

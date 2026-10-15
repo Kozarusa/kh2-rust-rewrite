@@ -221,9 +221,14 @@ event ..`, `struggle: mission manager ended`) and takes a type-1 jump through `a
 area tt04 entrance 55`). Tests `the_table_rows_parse_and_the_search_finds_by_key`,
 `the_result_list_moves_wraps_refuses_the_cancel_and_takes_a_row`, `the_disc_result_menu_row_texts_and_groups`.
 [inferred] the jump starts when the close fade ends (the original requests it in the row's frame); the rows' look
-is the Save menu port's (`save.2ld` groups 77/79 and hand 12, its placements). **Gaps:** "Retry" ends the manager
-but its type-2 jump is not taken (the app's jumps carry no program bytes, `area.rs`; log `trigger jump [2, 2, 0, 0,
-182, 1] not taken`), so the match does not restart; the party reset `FUN_001abfe8(9)`, `FUN_001d58e0`, the flag
+is the Save menu port's (`save.2ld` groups 77/79 and hand 12, its placements). **Status (WP-STRM2):** "Retry" now takes its type-2 jump: `menu_struggle::exit_dest` hands the record to
+`area_jump::resolve_jump` (07localset.bin, programs = key; log `jump: type 2 key 0xb6 -> w2 a4 entrance 0 programs
+(0xb6, 0xb6, 0xb6)`, then `area tt04: btl program 0xb6 loads group b_50` with `KH2_AREALOG=1`) and the Struggle starts
+again (`struggle: mission TT04_MS00` a second time; run `KH2_WAVE_GROUP=b_50 KH2_KEYS=94:Down,95:J`, test
+`retry_takes_its_type_2_jump_with_the_programs_and_quit_its_type_1`). The app's jumps keep the enemies of the
+area they leave and `enemy::spawn_waves` waits for the last one to die, so Retry removes them when the load
+starts (`clear_for_retry`) [inferred: the original's area load destroys the actors]; the harness wave spawner
+picks its group by `KH2_WAVE_GROUP`/rotation, not by the loaded btl program. **Gaps:** the party reset `FUN_001abfe8(9)`, `FUN_001d58e0`, the flag
 0x40000000 of `FUN_0019d9d8`, word +0xfc of `FUN_0014a918`'s object, `FUN_0023e860`'s sound set-up, the header
 group +0x16 (0xd of the file behind kind 8's resource ids 0x753c / 0x7532, not resolved) and kind 7's frame are not
 ported.

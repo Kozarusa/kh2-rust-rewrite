@@ -197,6 +197,8 @@ pub struct StruggleMenu {
     rows: Vec<(usize, usize)>,
     hand: usize,
     frames: u32,
+    /// A Retry jump is under way: the live enemies go when the area is entered again (`clear_for_retry`).
+    clear: bool,
 }
 
 impl StruggleMenu {
@@ -211,8 +213,23 @@ impl Plugin for StruggleMenuPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<StruggleMenu>()
             .add_systems(PreUpdate, input.after(crate::menu::input).after(bevy::input::InputSystems).after(crate::harness::Keys))
-            .add_systems(Update, tick.before(crate::schedule::Frame::Popups));
+            .add_systems(Update, (tick.before(crate::schedule::Frame::Popups), clear_for_retry));
     }
+}
+
+/// Entering the area again removes the actors of the match that ended: the app's jumps keep the entities of the
+/// area they leave (`area_jump`, `enemy::spawn_waves` waits for the last enemy to die), so without this the wave
+/// spawner never starts the Struggle's group again [inferred: the original's area load destroys the actors].
+fn clear_for_retry(mut m: ResMut<StruggleMenu>, task: Res<JumpTask>, enemies: Query<Entity, With<crate::enemy::Enemy>>, mut commands: Commands) {
+    if !m.clear || !matches!(*task, JumpTask::Loading { .. }) {
+        return;
+    }
+    m.clear = false;
+    let n = enemies.iter().count();
+    for e in &enemies {
+        commands.entity(e).despawn();
+    }
+    info!("struggle menu: Retry: the area is entered again, {n} enemies of the ended match removed");
 }
 
 fn load(m: &mut StruggleMenu, disc: &Disc, scene: &mut MenuScene, images: &mut Assets<Image>) {
@@ -404,6 +421,7 @@ fn tick(mut m: ResMut<StruggleMenu>, mut scene: ResMut<MenuScene>, real: Res<Tim
             Ok((dest, kind)) => {
                 info!("jump: type {} key {:#x} -> w{} a{} entrance {} programs {} (struggle menu event {:#x}: FUN_0019d9d8 with 0x40000000; fade kind {kind})", j[0], j[4], dest.world, dest.area, dest.entrance, dest.programs_text(), exit.event);
                 *task = JumpTask::FadeOut { dest, kind, t: 0.0 };
+                m.clear = code == 3;
             }
             Err(why) => info!("struggle menu: event {:#x}: trigger jump {j:?}: {why}; not taken", exit.event),
         },

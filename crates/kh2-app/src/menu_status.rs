@@ -10,12 +10,13 @@
 //! are filled by `FUN_002673c0` (jump table 0x3816d0) with `FUN_001918a0` (a `sprintf` into the row's
 //! 0x20 byte buffer).
 //!
-//! Port: the tab list and the Sora tab. The forms' tabs, the summons' tab and the party members' tabs
-//! are [GAP] (their number sources were read, see docs/menus.md 10.2, but the form experience table
-//! `FUN_001d3b90` and the members' stat blocks have no counterpart in the app yet); the app's party is
-//! Sora alone. The numbers are computed from `Progress` (the member record), the `lvup` table and the
-//! `item_stat` rows of the equipment, exactly as `FUN_0019f920` and `FUN_001a0c08` build the status
-//! block the page prints.
+//! Port: the tab list, the Sora tab, the forms' and summons' tabs and (WP-MN7) the party members' tabs.
+//! A member's tab is the same case of `FUN_002673c0` as the leader's (the jump table 0x3816d0 sends tabs
+//! 0, 6, 7 and 8 to 0x267444, with the party slot `tab - 5` for the members) and shows only the rows the
+//! jump table 0x381768 gives it, bits 0..5 and 10..16 (`FUN_00268568`: the case at 0x2685a0 returns after
+//! them unless the tab is the leader's). The numbers are computed from `Progress` (the member record), the
+//! member's own `lvup` table and the `item_stat` rows of the equipment, exactly as `FUN_0019f920` and
+//! `FUN_001a0c08` build the status block the page prints.
 
 use std::collections::BTreeMap;
 
@@ -87,12 +88,6 @@ impl Tab {
             Tab::Summons => 5,
             Tab::Member(m) => 5 + usize::from(m),
         }
-    }
-
-    /// The tabs the port draws: Sora's, the forms' and the summons' (the party members' tabs need the other
-    /// members' status blocks, which the app does not have; see the module doc).
-    pub fn ported(self) -> bool {
-        !matches!(self, Tab::Member(_))
     }
 
     /// Which row table the tab reads (`FUN_00267de0`: 0 the character and the members, 1 the forms, 2 the summons)
@@ -223,6 +218,9 @@ impl From<&Lvup> for LevelRow {
 pub struct StatRules {
     /// Sora's level table (`lvup` character 0).
     pub levels: Vec<LevelRow>,
+    /// Every character's level table (`lvup`, `FUN_001b50c0`: table `member - 1`, see [`StatRules::table_of`]); empty
+    /// until the disc is read, then Sora's `levels` stand in for every member.
+    pub tables: Vec<Vec<LevelRow>>,
     /// Item id -> what the item adds.
     pub gear: BTreeMap<u16, Gear>,
     /// Item id -> the ability's AP cost (the high byte of the item's `StatEntry`, `item + 7`;
@@ -260,16 +258,38 @@ impl StatRules {
                 );
             }
         }
-        StatRules { levels: levels.iter().map(LevelRow::from).collect(), gear, ap_cost, form_levels: FormLevels::default() }
+        StatRules { levels: levels.iter().map(LevelRow::from).collect(), tables: Vec::new(), gear, ap_cost, form_levels: FormLevels::default() }
     }
 
     /// `FUN_001b50c0(character, level)`: the row of `level` (the table is clamped to its length).
     pub fn level_row(&self, level: i32) -> LevelRow {
-        let n = self.levels.len() as i32;
+        Self::row_of(&self.levels, level)
+    }
+
+    fn row_of(table: &[LevelRow], level: i32) -> LevelRow {
+        let n = table.len() as i32;
         if n == 0 {
             return LevelRow::default();
         }
-        self.levels[(level.min(n) - 1).clamp(0, n - 1) as usize]
+        table[(level.min(n) - 1).clamp(0, n - 1) as usize]
+    }
+
+    /// The level table of a party member (`FUN_001b50c0` through `FUN_001b58d8(NeoStatus)`: ids 1..=13 are their own
+    /// table `id - 1`, 14 is Sora's again and 15 the sixth; anything else, and a table that is missing or empty, takes
+    /// the first, Sora's; the same rule as `party::PartyData::member_status`).
+    pub fn table_of(&self, member: u16) -> &[LevelRow] {
+        let k = match member {
+            14 => 1,
+            15 => 6,
+            n @ 1..=13 => usize::from(n),
+            _ => 1,
+        };
+        self.tables.get(k - 1).filter(|t| !t.is_empty()).map_or(self.levels.as_slice(), Vec::as_slice)
+    }
+
+    /// The row of a member's own table at `level`.
+    pub fn member_row(&self, member: u16, level: i32) -> LevelRow {
+        Self::row_of(self.table_of(member), level)
     }
 }
 
@@ -318,6 +338,47 @@ pub struct Live {
     pub summons: bool,
     /// Which summon charms are held.
     pub summons_held: [bool; 4],
+}
+
+/// A party member's tab numbers (`FUN_002673c0` at 0x267444 with the party slot `tab - 5`, WP-MN7): the rows 0..5 and
+/// 10..16 of the leader's case, read from the member's own status block (`FUN_0019f920` on its record): the record's
+/// level (`+0xf`), the party-wide experience total (`0xf88`: the case loads the same word for every tab), the next level's
+/// Exp from the member's own `lvup` table minus that total (`FUN_001878b0(record, table)` subtracts `DAT_00340e48`), HP and
+/// MP, the equipped abilities' AP over the lvup AP plus the record's AP byte plus the equipment's, and the `lvup` row plus
+/// the record's bonus bytes plus every equipped item's `item_stat` row for strength, magic, defense and the resistances.
+/// The equipment is the two weapon words and the armor and accessory slots (a member has no drive forms).
+pub fn member_numbers(p: &Progress, member: u16, rules: &StatRules, live: &Live) -> Numbers {
+    let m = p.member(member).unwrap_or_default();
+    let level = i32::from(m.level);
+    let row = rules.member_row(member, level);
+    let items: Vec<u16> = m.weapons.iter().chain(&m.armor).chain(&m.accessories).copied().filter(|&i| i != 0).collect();
+    let (mut st, mut mg, mut df, mut ap) = (0, 0, 0, 0);
+    let mut res = [100i32; 7];
+    for g in items.iter().filter_map(|i| rules.gear.get(i)) {
+        st += g.strength;
+        mg += g.magic;
+        df += g.defense;
+        ap += g.ap;
+        for (r, &b) in res.iter_mut().zip(&g.resist) {
+            *r = (*r * b + 99) / 100;
+        }
+    }
+    let used: i32 = m.abilities.iter().filter(|&&(_, on)| on).map(|&(id, _)| i32::from(rules.ap_cost.get(&id).copied().unwrap_or(0))).sum();
+    let exp = p.experience();
+    let next = if level < 99 { (row.exp - exp).max(0) } else { 0 };
+    Numbers {
+        level,
+        exp,
+        next,
+        hp: (live.hp.min(live.max_hp).max(0), live.max_hp),
+        mp: (live.mp.min(live.max_mp).max(0), live.max_mp),
+        ap: (used, row.ap + i32::from(m.ap) + ap),
+        strength: row.strength + i32::from(m.strength) + st,
+        magic: row.magic + i32::from(m.magic) + mg,
+        defense: row.defense + i32::from(m.defense) + df,
+        resist: [100 - res[1], 100 - res[2], 100 - res[3], 100 - res[4]],
+        ..Numbers::default()
+    }
 }
 
 /// The Sora tab's numbers as `FUN_0019f920` builds the status block and `FUN_002673c0` prints it:
@@ -389,7 +450,10 @@ pub fn numbers(p: &Progress, rules: &StatRules, live: &Live) -> Numbers {
 /// (`FUN_00268758`).
 pub fn tab_bits(tab: Tab, n: &Numbers) -> Vec<u32> {
     match tab {
-        Tab::Sora | Tab::Member(_) => sora_bits(n),
+        Tab::Sora => sora_bits(n),
+        // `FUN_00268568` case 0x2685a0 returns after bits 0..5 and 10..16 when the tab is not the leader's
+        // (`bne a0, zero, 0x2686d0` at 0x2685f8): no gauge, bonus level, form or summon rows.
+        Tab::Member(_) => member_bits(),
         Tab::Form(_) => (0..4).chain(10..17).collect(),
         Tab::Summons => (0..4).chain(n.summons_held.iter().enumerate().filter(|&(_, &h)| h).map(|(j, _)| 10 + j as u32)).collect(),
     }
@@ -412,6 +476,12 @@ pub fn tab_value(tab: Tab, n: &Numbers, b: u32) -> String {
         (10..=16, _) if matches!(tab, Tab::Form(_)) => value_text(n, b),
         _ => String::new(),
     }
+}
+
+/// The rows a party member's tab shows: level, experience, next level, HP, MP, AP (bits 0..5) and strength,
+/// magic, defense and the four resistances (bits 10..16).
+pub fn member_bits() -> Vec<u32> {
+    (0..6).chain(10..17).collect()
 }
 
 /// The rows the Sora tab shows (`FUN_00268568`'s case 0 at 0x2685a0: bits 0..5 and 10..16 always, 6 with
@@ -623,8 +693,10 @@ pub struct StatusUi {
     page: u16,
     /// Visibility the page-0 nodes had when this screen hid them.
     saved: Vec<(usize, bool)>,
-    /// The tab list as the mask gives it (only the ported ones) and the cursor in it.
+    /// The tab list as the mask gives it and the cursor in it.
     tabs: Vec<Tab>,
+    /// The party members after the leader, in party-slot order (`FUN_00282738`'s entries 1..): the members' tabs.
+    roster: Vec<crate::menu::party_page::Rostered>,
     pub tab: usize,
     /// The cursor of the numbers page: column and the row index in that column's shown rows.
     pub col: usize,
@@ -662,8 +734,14 @@ impl Plugin for StatusPlugin {
     }
 }
 
-/// The numbers of Sora's tab from the app's state.
-fn gather(p: &Progress, ui: &StatusUi, sora: Option<&Sora>, data: Option<&GameData>) -> Numbers {
+/// The numbers of a tab from the app's state: a member's own, or the leader's for the leader, forms and summons tabs.
+fn gather(p: &Progress, ui: &StatusUi, tab: Tab, sora: Option<&Sora>, data: Option<&GameData>) -> Numbers {
+    if let Tab::Member(n) = tab {
+        if let Some(m) = ui.roster.get(usize::from(n).wrapping_sub(1)) {
+            let live = Live { hp: m.hp, max_hp: m.hp_max, mp: m.mp, max_mp: m.mp_max, ..Live::default() };
+            return member_numbers(p, m.id, &ui.rules, &live);
+        }
+    }
     let live = Live {
         hp: sora.map_or(i32::from(p.sora().hp), |s| s.hp),
         max_hp: sora.map_or(i32::from(p.sora().hp_max), |s| s.stats.max_hp),
@@ -701,17 +779,21 @@ fn load(ui: &mut StatusUi, disc: &Disc, data: Option<&GameData>) {
         if let Some(f) = fmlv {
             ui.rules.form_levels = FormLevels::from_rows(&f.rows);
         }
+        // Every character's level table (`FUN_001b50c0` picks the table by the member): the members' tabs.
+        let blob = disc.0.lock().ok().and_then(|mut a| kh2_tables::subfile(&mut a, &t::LVUP).ok());
+        if let Some(all) = blob.and_then(|b| kh2_tables::rt::decode_lvup::<Lvup>(&b)) {
+            ui.rules.tables = all.iter().map(|table| table.iter().map(LevelRow::from).collect()).collect();
+        }
     } else {
         warn!("menu: status: the item tables are not readable");
     }
 }
 
-/// The tabs of the list: the mask of the party, forms and summons, reduced to the tabs the port draws.
+/// The tabs of the list: the mask of the party (the leader and the members standing in the field), forms and summons.
 fn tab_list(p: &Progress, ui: &StatusUi) -> Vec<Tab> {
     let forms = [1, 2, 3, 4].map(|f| p.owns_form(f));
     let summons = ui.tables.summon_items.iter().any(|&i| i != 0 && p.item_count(i) > 0);
-    // The app's party is Sora alone (docs/party.md).
-    tabs(tab_mask(1, forms, summons)).into_iter().filter(|t| t.ported()).collect()
+    tabs(tab_mask(1 + ui.roster.len() as u32, forms, summons))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -750,7 +832,8 @@ fn input(
         }
     }
     let count = ui.tabs.len();
-    let numbers = gather(&p, &ui, sora.single().ok(), data.as_deref());
+    let tab_now = ui.tabs.get(ui.tab).copied().unwrap_or(Tab::Sora);
+    let numbers = gather(&p, &ui, tab_now, sora.single().ok(), data.as_deref());
     match menu.page {
         PAGE_TABS => {
             if let Some(wrap) = step {
@@ -859,6 +942,7 @@ fn tick(
     progress: Option<Res<Progress>>,
     data: Option<Res<GameData>>,
     sora: Query<&Sora>,
+    members: Query<&crate::party::PartyMember>,
     real: Res<Time<Real>>,
 ) {
     let want = if matches!(menu.phase, Phase::Opening | Phase::Open | Phase::Closing) && PAGES.contains(&menu.page) { menu.page } else { 0 };
@@ -882,6 +966,12 @@ fn tick(
     }
     if ui.nodes.is_none() {
         ui.nodes = Some(build(&mut scene));
+    }
+    // The members standing in the field after the leader, in party-slot order (their tabs); live HP and MP.
+    let field = crate::menu::party_page::roster(members.iter());
+    if field != ui.roster {
+        ui.roster = field;
+        ui.drawn = None;
     }
     if want != ui.page {
         let was = ui.page;
@@ -917,13 +1007,22 @@ fn tick(
             scene.nodes[*id].label_fade = fade;
         }
     }
-    let numbers = gather(&p, &ui, sora.single().ok(), data.as_deref());
+    let tab_now = ui.tabs.get(ui.tab).copied().unwrap_or(Tab::Sora);
+    let numbers = gather(&p, &ui, tab_now, sora.single().ok(), data.as_deref());
     let key = (numbers.clone(), ui.page, ui.tab, ui.col, ui.row);
     if ui.drawn.as_ref() != Some(&key) {
         draw(&ui, &nodes, &mut scene, &numbers);
         ui.drawn = Some(key);
     }
     ui.nodes = Some(nodes);
+}
+
+/// The party member id a member's tab shows (`FUN_002673c0`: the party slot `tab - 5`).
+fn member_of(ui: &StatusUi, tab: Tab) -> Option<u16> {
+    match tab {
+        Tab::Member(n) => ui.roster.get(usize::from(n).wrapping_sub(1)).map(|m| m.id),
+        _ => None,
+    }
 }
 
 fn hide(scene: &mut MenuScene, n: &Nodes) {
@@ -951,7 +1050,7 @@ fn draw(ui: &StatusUi, n: &Nodes, scene: &mut MenuScene, numbers: &Numbers) {
             // `FUN_00268b90`: a form's name is the label at 0x381a38 + 2 * form, the summons' tab 0xc5b1.
             Tab::Form(f) => ui.tables.form_names.get(usize::from(*f)).copied(),
             Tab::Summons => Some(SUMMONS_NAME),
-            _ => None,
+            Tab::Member(_) => member_of(ui, *tab).and_then(|id| ui.tables.member_names.get(usize::from(id)).copied()),
         };
         tab_labels.push((k, name.and_then(|id| label(id, !wide && k == ui.tab))));
     }
@@ -970,7 +1069,9 @@ fn draw(ui: &StatusUi, n: &Nodes, scene: &mut MenuScene, numbers: &Numbers) {
     } else {
         ui.tabs.get(ui.tab).map(|t| ui.tables.tab_help[t.index()])
     };
-    let help_variable = ui.tables.member_names.get(usize::from(crate::progress::SORA)).copied();
+    // The help line "{}'s Status." names the tab's member (the leader for the forms' and summons' tabs).
+    let help_member = member_of(ui, tab_now).unwrap_or(crate::progress::SORA);
+    let help_variable = ui.tables.member_names.get(usize::from(help_member)).copied();
     let pitch = scene.seqs.get(SEQ_MAIN).and_then(|s| s.groups.get(0x86)).map_or(at::TAB_PITCH, |g| g.unk20 as f32);
     let origin = if wide { at::WIDE } else { at::PREVIEW };
     let mut hand_on = None;
@@ -1046,6 +1147,8 @@ mod tests {
         StatRules {
             // Row n is level n + 1; the exp column is what the level needs to be left.
             levels: vec![lv(100, 5, 6, 2, 3), lv(250, 6, 7, 3, 4), lv(500, 7, 8, 4, 5)],
+            // Table 1 (Donald) and 2 (Goofy): their own rows, the level cap short of the third row's Exp.
+            tables: vec![vec![], vec![lv(90, 1, 9, 1, 2), lv(210, 2, 11, 2, 3)], vec![lv(120, 8, 1, 5, 1), lv(330, 9, 2, 6, 2)]],
             gear: BTreeMap::from([
                 (41, Gear { strength: 3, magic: 2, defense: 0, ap: 0, resist: [100; 7] }),
                 (60, Gear { strength: 0, magic: 0, defense: 4, ap: 1, resist: [100, 50, 100, 100, 80, 100, 100] }),
@@ -1203,8 +1306,63 @@ mod tests {
         );
         assert_eq!(tab_mask(0, [false; 4], false), 0);
         assert_eq!(Tab::Member(2).index(), 7);
-        assert!(Tab::Sora.ported() && Tab::Form(1).ported() && Tab::Summons.ported() && !Tab::Member(1).ported());
-        assert_eq!((Tab::Sora.table(), Tab::Form(2).table(), Tab::Summons.table()), (0, 1, 2));
+        assert_eq!((Tab::Sora.table(), Tab::Form(2).table(), Tab::Summons.table(), Tab::Member(1).table()), (0, 1, 2, 0));
+    }
+
+    /// Donald's and Goofy's tabs (WP-MN7): the leader's case of `FUN_002673c0` and rows 0..5 and 10..16 only.
+    #[test]
+    fn a_members_tab_shows_the_leaders_rows_without_the_extras() {
+        let n = Numbers { drive: Some((3, 3)), forms: [Some(2); 4], summon: Some(1), ..Numbers::default() };
+        assert_eq!(tab_bits(Tab::Member(1), &n), vec![0, 1, 2, 3, 4, 5, 10, 11, 12, 13, 14, 15, 16]);
+        assert_eq!(tab_bits(Tab::Member(2), &n), member_bits());
+        assert!(tab_bits(Tab::Sora, &n).contains(&bit::BONUS) && !member_bits().contains(&bit::BONUS));
+        // The page object's word has the bits `column * 10 + row`: first column 0..5, second 10..16.
+        let first: Vec<u32> = member_bits().into_iter().filter(|b| b / 10 == 0).collect();
+        assert_eq!((first.len(), member_bits().len()), (6, 13));
+    }
+
+    /// A member's numbers: the record's level, the shared experience total, its own `lvup` table (table `id - 1`), the
+    /// weapon, armor and accessories of the record, the equipped abilities' AP.
+    #[test]
+    fn a_members_numbers_use_its_own_table_record_and_equipment() {
+        let p = block(|b| {
+            // Donald's record is the second 0xf4 bytes of the party block.
+            let r = off::MEMBER_SIZE;
+            b[r + 0xf] = 2; // level 2: row 1 of table 1
+            b[r + 0x9] = 4; // strength bonus byte
+            b[r + 0xa] = 3; // magic bonus byte
+            b[r + 0x8] = 5; // AP byte
+            put16(b, r, 41); // the weapon hand 0 (a keyblade's row stands in for the staff)
+            b[r + 0x10] = 1;
+            put16(b, r + 0x14, 60);
+            put16(b, r + 0x54, 82 | 0x8000);
+            b[off::EXPERIENCE..off::EXPERIENCE + 4].copy_from_slice(&200i32.to_le_bytes());
+        });
+        let live = Live { hp: 14, max_hp: 20, mp: 30, max_mp: 100, ..Live::default() };
+        let n = member_numbers(&p, 2, &rules(), &live);
+        assert_eq!((n.level, n.exp), (2, 200), "the record's level, the party-wide experience word");
+        assert_eq!(n.next, 10, "table 1's row of level 2 (210) minus the 200 gained");
+        assert_eq!((n.hp, n.mp), ((14, 20), (30, 100)));
+        assert_eq!(n.strength, 2 + 4 + 3 + 0, "lvup table 1 row 1 + the record byte + the weapon + the armor");
+        assert_eq!(n.magic, 11 + 3 + 2);
+        assert_eq!(n.defense, 2 + 0 + 0 + 4);
+        assert_eq!(n.ap, (1, 3 + 5 + 0 + 1), "the equipped ability's cost over lvup + record + armor AP");
+        assert_eq!(n.resist, [50, 0, 0, 20], "the armor's fire and dark rows");
+        // Goofy (3) reads table 2, a member without a table of its own the first.
+        let goofy = block(|b| b[2 * off::MEMBER_SIZE + 0xf] = 1);
+        assert_eq!(member_numbers(&goofy, 3, &rules(), &live).strength, 8);
+        assert_eq!(rules().member_row(9, 2), rules().member_row(1, 2), "no table: Sora's");
+        assert_eq!((rules().member_row(14, 1).exp, rules().member_row(15, 1).exp), (100, 100), "14 is Sora's table; 15 the sixth, missing here");
+        // Past the table's end the last row serves, as for the leader (`FUN_001b50c0`).
+        assert_eq!(rules().member_row(2, 50).exp, 210);
+    }
+
+    /// The members' tabs follow the party: tab 6 is the first companion, 7 the second (`FUN_002683c8`).
+    #[test]
+    fn the_tab_list_has_one_tab_per_companion() {
+        assert_eq!(tabs(tab_mask(3, [false; 4], false)), vec![Tab::Sora, Tab::Member(1), Tab::Member(2)]);
+        assert_eq!(tabs(tab_mask(2, [true, false, false, false], false)), vec![Tab::Sora, Tab::Form(1), Tab::Member(1)]);
+        assert_eq!(Tab::Member(1).index(), 6);
     }
 
     fn fmlv() -> FormLevels {

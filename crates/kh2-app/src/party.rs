@@ -1130,6 +1130,15 @@ fn style_of(progress: Option<&crate::progress::Progress>, neo: u16) -> u8 {
     resolve_style(std::env::var("KH2_PARTY_STYLE").ok().and_then(|v| v.trim().parse::<u8>().ok()), progress.and_then(|p| p.member_setting(neo, 0)))
 }
 
+/// The setting byte of an AI record whose setting index is `index` (`FUN_0010f220`: record `+0xd4`, byte `1 + index`); a
+/// record without an index (negative) or a member without a record reads 0, as a new game's block does.
+fn record_setting(member: Option<&crate::progress::Member>, index: i32) -> Option<u8> {
+    match member {
+        Some(m) if index >= 0 => m.settings.get(1 + index as usize).copied(),
+        _ => Some(0),
+    }
+}
+
 fn resolve_style(env: Option<u8>, saved: Option<u8>) -> u8 {
     env.or(saved).unwrap_or(0)
 }
@@ -1436,8 +1445,13 @@ fn party_tick(
                     radius: tshape.map_or(0.0, |s| s.1),
                 };
                 let member = progress.as_ref().and_then(|p| p.member(m.neo));
-                // The setting bytes (party record +0xd4) are zero at a new game (`Progress::init_party`).
-                let setting = |_: usize| Some(0u8);
+                // The setting bytes (party record +0xd4): zero at a new game (`Progress::init_party`), written by the
+                // Customize page 0x1b (WP-PA4). Byte `1 + k` is the use setting of the record's ability index `k`
+                // (`FUN_0010f220`); without a record every byte reads 0.
+                let setting = |i: usize| record_setting(member.as_ref(), ai.records.get(i).map_or(-1, |r| r.setting));
+                // An item handler's setting byte (`FUN_00113888`: byte `1 + FUN_00114348(item)`): the consumables 1..7
+                // are bytes 1..7.
+                let item_setting = |item: u16| member.as_ref().filter(|_| (1..=7).contains(&item)).map_or(0, |mm| mm.settings[usize::from(item)]);
                 // Harness: `KH2_PARTY_ABILITIES=<item>,...` counts those ability items as equipped on every
                 // member (the new game's records hold only Donald Thunder and Cure; Fire 165, Blizzard 166,
                 // Goofy's Tornado 423 and Turbo 425 need a later record); `-<item>` counts it as not
@@ -1462,7 +1476,7 @@ fn party_tick(
                         Handler::HpItem => (data.item_frac.0, &data.hp_items, |v| (v.hp, v.hp_max)),
                         _ => (data.item_frac.1, &data.mp_items, |v| (v.mp, v.mp_max)),
                     };
-                    battle::item_pick(danger, me_v, player_vital, other_v, frac, value, &lists.0, &lists.1, |_| 0, stock)
+                    battle::item_pick(danger, me_v, player_vital, other_v, frac, value, &lists.0, &lists.1, item_setting, stock)
                 };
                 // FUN_00113d48 phase 1: a mode to switch to, the script free to take it, and FUN_0010f220.
                 let special_ok = |i: usize, r: &battle::Record| !r.mode.is_empty() && !script_busy && battle::feasible(r, &now, setting(i), equipped(r));
@@ -2392,6 +2406,52 @@ mod tests {
         };
         let at = |e| Some(Target { entity: e, shape: 0 });
         assert_eq!((pick(&mut p, 0), pick(&mut p, 2), pick(&mut p, 4)), (at(b), at(a), None));
+    }
+
+    /// WP-PA4: the Customize page 0x1b writes what `party.rs` reads. Donald's Style row, driven through the page's machine
+    /// (confirm, two rows down, confirm), stores style 2 in his record and `refresh_target` then picks the far enemy
+    /// (PA3's scene); the ability row's use setting lands in the byte the AI record reads (`record_setting`), and Goofy's
+    /// record is not touched.
+    #[test]
+    fn party_follows_what_the_customize_page_writes() {
+        use crate::menu::customize::{write_friend, Choice, CustomizeTables, Effect, Key, Kind, Machine, Row, FRIEND};
+        let mut p = crate::progress::Progress::from_block(&[], std::sync::Arc::new(Default::default()));
+        let t = CustomizeTables { setting_ids: vec![(0xa5, 0), (0xa6, 1)], uses: vec![Choice::default(); 3], ..Default::default() };
+        let mut m = Machine::new(vec![Row::new(Kind::Style, 0, false, 0)], vec![]);
+        m.members = vec![1, 2, 3];
+        m.who = 1;
+        m.page = FRIEND;
+        let no = |_: u16| false;
+        for key in [Key::Confirm, Key::Down { fresh: true }, Key::Down { fresh: true }, Key::Confirm] {
+            for e in m.press(key, &no) {
+                write_friend(&mut p, &t, 2, &e);
+            }
+        }
+        assert_eq!((p.member_setting(2, 0), p.member_setting(3, 0)), (Some(2), Some(0)));
+        let mut w = bevy::ecs::world::World::new();
+        let (a, b) = (w.spawn_empty().id(), w.spawn_empty().id());
+        let enemies = vec![(a, vec![(Vec3::new(300.0, 0.0, 0.0), 0.0)]), (b, vec![(Vec3::new(-150.0, 0.0, 0.0), 0.0)])];
+        let params = battle::Params { range: 400.0, retarget: 500.0, player_range: 220.0, player_near: 50.0, retarget_half: 0.5, farthest_start: -1.0, ..Default::default() };
+        let ctx = TargetCtx { enemies: &enemies, player: Vec3::new(100.0, 0.0, 0.0), attacker: None, player_target: None, player_hit: None };
+        let pick = |p: &crate::progress::Progress| {
+            let style = resolve_style(None, p.member_setting(2, 0));
+            refresh_target(2, style, &params, Vec3::ZERO, None, false, false, &ctx).expect("style in the table")
+        };
+        assert_eq!(pick(&p), Some(Target { entity: a, shape: 0 }), "style 2 picks the far enemy, as the default style 0 would not");
+        // The quick key moves it on to 3 (the page rebuilds its rows from the record after a write).
+        m.reload(vec![Row { setting: 2, ..Row::new(Kind::Style, 0, false, 0) }]);
+        for e in m.press(Key::Toggle, &no) {
+            write_friend(&mut p, &t, 2, &e);
+        }
+        assert_eq!(p.member_setting(2, 0), Some(3));
+        // An ability row: id 0xa6 is entry 1 of the use-setting table, so its byte is 1 + (7 + 1) = 9.
+        let fx = Effect::Ability { id: 0xa6, value: 3 };
+        write_friend(&mut p, &t, 2, &fx);
+        let member = p.member(2);
+        assert_eq!(record_setting(member.as_ref(), 8), Some(3), "the record's setting index 8 reads byte 9");
+        assert_eq!(record_setting(member.as_ref(), -1), Some(0));
+        assert_eq!(record_setting(None, 8), Some(0));
+        assert_eq!(p.member(3).unwrap().settings[9], 0);
     }
 
     /// WP-PA2: the battle distance follows the member's style (double for 3 and 5, halved for 2).

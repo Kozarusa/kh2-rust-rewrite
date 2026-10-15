@@ -107,7 +107,7 @@ pub struct Row {
 }
 
 impl Row {
-    fn new(kind: Kind, id: u16, on: bool, slot: u8) -> Row {
+    pub fn new(kind: Kind, id: u16, on: bool, slot: u8) -> Row {
         Row { kind, id, on, slot, setting: 0 }
     }
 }

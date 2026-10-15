@@ -191,6 +191,8 @@ pub struct StruggleMenu {
     pub flow: Flow,
     tried: bool,
     loaded: bool,
+    /// A code chosen while a jump was running; applied once the jump task is idle.
+    pending: Option<u16>,
     table: Vec<Block>,
     tex: usize,
     seq: usize,
@@ -376,6 +378,14 @@ fn input(
 
 #[allow(clippy::too_many_arguments)]
 fn tick(mut m: ResMut<StruggleMenu>, mut scene: ResMut<MenuScene>, real: Res<Time<Real>>, mut mission: ResMut<Mission>, mut task: ResMut<JumpTask>, rec: Res<AreaRecord>, last: Res<LastExit>, disc: Res<Disc>) {
+    // A row chosen while a jump was running waits for the jump to finish (the choice is not dropped).
+    if let Some(code) = m.pending
+        && *task == JumpTask::Idle
+    {
+        m.pending = None;
+        info!("struggle menu: the queued code {code} runs now");
+        apply_code(code, &mut mission, &mut task, &rec, &last, &disc);
+    }
     if !m.is_open() {
         return;
     }
@@ -393,22 +403,55 @@ fn tick(mut m: ResMut<StruggleMenu>, mut scene: ResMut<MenuScene>, real: Res<Tim
     scene.dim = 0.0;
     hide_all(&m, &mut scene);
     info!("struggle menu: closed: back to the field (FUN_001038a0)");
-    let Some(code) = m.flow.chosen.take() else { return };
-    if !matches!(code, 3 | 4) {
+    let chosen = m.flow.chosen.take();
+    match after_close(chosen, *task == JumpTask::Idle) {
+        // A cancel (a record without +0x25 bit 0): `FUN_0026fda0` only closes the page for it (page -2 -> `FUN_0023e8b0`),
+        // so the original leaves the manager running. With the menu gone nothing could end it here (a soft lock), so the
+        // port ends it as a failed open does [inferred]; no jump.
+        Closing::EndManager => {
+            info!("struggle menu: cancelled: the manager ends (a port choice, see menu_struggle.rs)");
+            mission.menu_exit(0);
+        }
         // Codes 1, 5, 6, 10, 0x11 and the party handler (FUN_0026fda0) are not on the result menu's row: not ported.
-        info!("struggle menu: code {code} is not ported; the manager stays");
-        return;
+        Closing::NotPorted(code) => info!("struggle menu: code {code} is not ported; the manager stays"),
+        Closing::Queue(code) => {
+            info!("struggle menu: code {code} waits for the running jump [inferred: the original does not say]");
+            m.pending = Some(code);
+        }
+        Closing::Apply(code) => apply_code(code, &mut mission, &mut task, &rec, &last, &disc),
     }
+}
+
+/// What the end of the close does with the chosen code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Closing {
+    EndManager,
+    NotPorted(u16),
+    Queue(u16),
+    Apply(u16),
+}
+
+/// `chosen` is the code a row chose (`None`: the cancel); `idle` is whether no jump task is running.
+fn after_close(chosen: Option<u16>, idle: bool) -> Closing {
+    match chosen {
+        None => Closing::EndManager,
+        Some(code) if !matches!(code, 3 | 4) => Closing::NotPorted(code),
+        Some(code) if !idle => Closing::Queue(code),
+        Some(code) => Closing::Apply(code),
+    }
+}
+
+/// Codes 3 and 4 (`FUN_001b9c58`): the manager ends and the trigger's jump starts. The caller has checked `task` is idle.
+fn apply_code(code: u16, mission: &mut Mission, task: &mut JumpTask, rec: &AreaRecord, last: &LastExit, disc: &Disc) {
     let Some(exit) = mission.menu_exit(code) else { return };
     match exit.jump {
-        Some(j) if *task == JumpTask::Idle => match exit_dest(j, (rec.world, rec.area, rec.entrance), last.0, |w, k| disc_localset(&disc, w, k)) {
+        Some(j) => match exit_dest(j, (rec.world, rec.area, rec.entrance), last.0, |w, k| disc_localset(disc, w, k)) {
             Ok((dest, kind)) => {
                 info!("jump: type {} key {:#x} -> w{} a{} entrance {} programs {} (struggle menu event {:#x}: FUN_0019d9d8 with 0x40000000; fade kind {kind})", j[0], j[4], dest.world, dest.area, dest.entrance, dest.programs_text(), exit.event);
                 *task = JumpTask::FadeOut { dest, kind, t: 0.0 };
             }
             Err(why) => info!("struggle menu: event {:#x}: trigger jump {j:?}: {why}; not taken", exit.event),
         },
-        Some(j) => info!("struggle menu: event {:#x}: trigger jump {j:?} not taken (a jump is running)", exit.event),
         None => info!("struggle menu: event {:#x}: no trigger jump", exit.event),
     }
 }
@@ -499,6 +542,19 @@ mod tests {
     }
 
     /// Row 0x1a of the disc's table, its texts and the pointer list's groups (skipped without `KH2_ISO`).
+    /// Review findings 3 and 4: a cancel ends the manager, and a code chosen while a jump runs is queued, not dropped.
+    #[test]
+    fn a_cancel_ends_the_manager_and_a_choice_during_a_jump_is_queued() {
+        let t = parse_table(&table(&[row(9, &[(3, 1), (4, 2)], 0, 0)]));
+        let mut f = Flow::open(&t[0]);
+        assert_eq!(f.press(Press::Cancel), Action::Cancelled);
+        assert_eq!((f.stage, f.chosen), (Stage::Closing, None));
+        assert_eq!(after_close(f.chosen, true), Closing::EndManager);
+        assert_eq!(after_close(Some(3), true), Closing::Apply(3));
+        assert_eq!(after_close(Some(4), false), Closing::Queue(4));
+        assert_eq!(after_close(Some(5), true), Closing::NotPorted(5));
+    }
+
     #[test]
     fn the_disc_result_menu_row_texts_and_groups() {
         let Ok(iso) = std::env::var("KH2_ISO") else {

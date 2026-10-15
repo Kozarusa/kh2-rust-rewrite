@@ -2323,7 +2323,7 @@ mod tests {
     /// player 250). Each style picks by its own rule (docs/party.md section 4).
     #[test]
     fn party_every_style_chooses_by_its_own_rule() {
-        let mut w = World::new();
+        let mut w = bevy::ecs::world::World::new();
         let (a, b) = (w.spawn_empty().id(), w.spawn_empty().id());
         let enemies = vec![(a, vec![(Vec3::new(300.0, 0.0, 0.0), 0.0)]), (b, vec![(Vec3::new(-150.0, 0.0, 0.0), 0.0)])];
         let p = battle::Params { range: 400.0, retarget: 500.0, player_range: 220.0, player_near: 50.0, retarget_half: 0.5, farthest_start: -1.0, ..Default::default() };

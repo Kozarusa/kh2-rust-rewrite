@@ -61,6 +61,16 @@ pub struct CamEvent {
     /// `FUN_0013f470`), what an event track's fly-back (opcode 0x31) aims at. Written by `tick`.
     pub behind: Option<View>,
     track_owned: bool,
+    /// The talk camera (`npc.rs`'s talk task): `Start` is `FUN_00159688` (mode 4 with the shot),
+    /// `End` is `FUN_00159768` (the warp back to the follow camera). Taken by the next `tick`.
+    pub talk: Option<TalkCam>,
+}
+
+/// A request to the talk camera (mode 4).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TalkCam {
+    Start(rules::TalkShot),
+    End,
 }
 
 pub struct CameraPlugin;
@@ -370,6 +380,21 @@ fn tick(
         }
         None => {}
     }
+    let talk_req = event.talk.take();
+    match talk_req {
+        Some(TalkCam::Start(shot)) => {
+            rig.start_talk(params, shot);
+            info!(
+                "camera: talk camera on (FUN_00159688, mode 4): look {:.0}, distance {:.0}, height {:.0}, {:?}, fov {:.3}",
+                shot.look, shot.dist, shot.height, shot.frame, params.talk.fov
+            );
+        }
+        Some(TalkCam::End) => {
+            rig.end_talk();
+            info!("camera: talk camera off (FUN_00159768 -> FUN_00159728: warp flag, mode {:?})", rig.mode);
+        }
+        None => {}
+    }
     let mode_before = rig.mode;
     // An event owns the view: the field camera idles (`FUN_00140a80` skips while
     // `FUN_00106848` is set).
@@ -435,6 +460,12 @@ fn tick(
         );
         View { look: rig.look, pos: rig.pos, fov: rig.fov, roll: rig.roll }
     };
+    if matches!(talk_req, Some(TalkCam::Start(_))) && event.active.is_none() {
+        info!("camera: talk view placed (FUN_001592d8, a cut): pos {:.0} look {:.0} sora {:.0}", view.pos, view.look, pos);
+    }
+    if matches!(talk_req, Some(TalkCam::End)) && event.active.is_none() {
+        info!("camera: back to the follow camera: pos {:.0} look {:.0} yaw {:.2} radius {:.0}", view.pos, view.look, rig.yaw, rig.radius);
+    }
     if (mode_before == Mode::Look) != (rig.mode == Mode::Look) {
         info!("camera: look-around {} (mode {:?} -> {:?})", if rig.mode == Mode::Look { "on" } else { "off" }, mode_before, rig.mode);
     }

@@ -643,6 +643,43 @@ pub const TALK_WINDOW_CLASS: usize = 3;
 /// `DAT_0037ab84`: added to +0xb18 when a talk ends (FUN_00189ff0).
 pub const TALK_END_TIMER: f32 = 60.0;
 
+/// The collision record type the talk camera reads (`FUN_0018f108`: `FUN_0016b558(target, 0x13,
+/// part)`).
+pub const TYPE_TALK_CAMERA: u8 = 0x13;
+/// The record type `FUN_0018ee20` falls back to (`FUN_0016b558(target, 3, part)`, else the first).
+pub const TYPE_TARGET: u8 = 3;
+
+/// `FUN_0018f108` for the talk camera: the target's type-0x13 record with the talk part's index,
+/// else (`FUN_0018eec0` -> `FUN_0018ee20`) its type-3 record with that index or its first type-3
+/// record. `FUN_001894d0` gives the record's centre (the look-at point) and its two radii (the
+/// distance and the height). `pos`/`yaw` are the target's, in the app's space. A record on a
+/// bone (joint without bit 0x4000) is read through `bone(joint, offset)`, the offset's point in
+/// the app's space (`FUN_0016aa18`, valid once the object's pose ran this frame: `FUN_001b7be8`
+/// sets +0x7f8 bit 0x400, which `FUN_001894d0` requires; without it the record reads as zero).
+/// `None` when no record exists or the bone is unknown: the game then reads the object's
+/// position with an unset distance (a stack value) [GAP: not ported].
+pub fn talk_shot(
+    table: &parts::Table,
+    part: u8,
+    (pos, yaw): (Vec3, f32),
+    frame: crate::camera::rules::TalkFrame,
+    bone: &dyn Fn(usize, Vec3) -> Option<Vec3>,
+) -> Option<(crate::camera::rules::TalkShot, u8)> {
+    let rec = table
+        .recs
+        .iter()
+        .find(|r| r.kind == TYPE_TALK_CAMERA && r.part == part)
+        .or_else(|| table.recs.iter().find(|r| r.kind == TYPE_TARGET && r.part == part))
+        .or_else(|| table.first(TYPE_TARGET))?;
+    let look = if rec.joint & parts::JOINT_OBJECT != 0 {
+        parts::shape_of(rec, pos, yaw)?.center
+    } else {
+        let off = Vec3::new(rec.off[0] as f32, rec.off[1] as f32, rec.off[2] as f32);
+        bone((rec.joint & 0x3fff) as usize, off)? + Vec3::Y * rec.lift as f32
+    };
+    Some((crate::camera::rules::TalkShot { look, dist: rec.r[0] as f32, height: rec.r[1] as f32, frame }, rec.kind))
+}
+
 /// The talk state: the world's talk table, the current offer and the talk that runs.
 #[derive(Resource, Default)]
 pub struct Talk {
@@ -668,6 +705,8 @@ struct TalkRun {
     window: bool,
     /// The target's facing before the talk (FUN_0016a890), given back at the end.
     yaw: f32,
+    /// The talk camera was started (FUN_00159688).
+    camera: bool,
 }
 
 impl Talk {
@@ -859,6 +898,7 @@ pub(crate) fn talk_step(
     mut sora: Query<(&mut Transform, &mut Sora), Without<Npc>>,
     mut npcs: Query<(&mut Transform, &mut Npc, &mut NpcBrain), Without<Sora>>,
     mut anims: Query<&mut Animator>,
+    mut cam: ResMut<crate::camera::CamEvent>,
 ) {
     use kh2_ard::libretto::Op;
     let talk = &mut *talk;
@@ -885,6 +925,32 @@ pub(crate) fn talk_step(
             npc.yaw = (-to_npc.x).atan2(-to_npc.z);
             ntf.rotation = Quat::from_rotation_y(npc.yaw);
         }
+        // FUN_00159688(target record, a1): the talk camera, placed on the camera's next tick from
+        // the target as it stands then [inferred: after the target turned]. a1 is 1 unless the
+        // target is a class-5 object (+0x588 bit 3, every townsperson) whose array has bit 4 or
+        // bit 6 (FUN_00189e90 on +0xb04 & 0x10 / 0x40): then 0, the target's own frame.
+        let mut camera = false;
+        {
+            use crate::camera::rules::TalkFrame;
+            let own_frame = brain.fields.test_bit(4) || brain.fields.test_bit(6);
+            let frame = if own_frame { TalkFrame::Object { forward: Vec3::new(npc.yaw.sin(), 0.0, npc.yaw.cos()) } } else { TalkFrame::AroundPlayer };
+            // A bone's point: the body's last pose (model centimetres under the root, which
+            // carries the position and the facing) [inferred: one frame old, the offset in the
+            // bone's frame as combat.rs reads the attack shapes].
+            let pose = anims.get(npc.body).ok().map(|a| a.pose.clone());
+            let rot = Quat::from_rotation_y(npc.yaw);
+            let bone = |j: usize, off: Vec3| pose.as_ref()?.get(j).map(|m| npos + rot * m.transform_point3(off));
+            match npc.parts.as_deref().and_then(|t| talk_shot(t, o.pos as u8, (npos, npc.yaw), frame, &bone)) {
+                Some((shot, kind)) => {
+                    if npclog() {
+                        info!("npc: {} talk camera: record type {kind:#x} of part {} (FUN_0018f108), look {:.0}, distance {:.0}, height {:.0}", brain.tag, o.pos, shot.look, shot.dist, shot.height);
+                    }
+                    cam.talk = Some(crate::camera::TalkCam::Start(shot));
+                    camera = true;
+                }
+                None => info!("npc: {} talk camera: no record of type 0x13 / 3 on the object's frame for part {}; the camera stays (gap)", brain.tag, o.pos),
+            }
+        }
         if let Ok(mut a) = anims.get_mut(npc.body)
             && a.rig.mset.has(MOTION_TALK)
         {
@@ -904,7 +970,7 @@ pub(crate) fn talk_step(
         if npclog() {
             info!("npc: {} talk starts: motion {MOTION_TALK:#x}, facing the player, program {id:#x} {ops:?}", brain.tag);
         }
-        talk.run = Some(TalkRun { npc: o.from, tag: brain.tag.clone(), ops, at: 0, window: false, yaw: saved });
+        talk.run = Some(TalkRun { npc: o.from, tag: brain.tag.clone(), ops, at: 0, window: false, yaw: saved, camera });
         talk.offer = None;
         return;
     }
@@ -960,6 +1026,10 @@ pub(crate) fn talk_step(
         if npclog() || reaction_log() {
             info!("npc: {} talk ends (FUN_00189ff0): motion {motion}, previous follower kind {}, +0xb00 {:.0}, mode after_talk", run.tag, brain.fields.prev.kind, brain.fields.timer_b00);
         }
+    }
+    // FUN_00159768: the camera comes back.
+    if run.camera {
+        cam.talk = Some(crate::camera::TalkCam::End);
     }
 }
 
@@ -2408,6 +2478,36 @@ mod tests {
         }
         let p = disc.read("obj/P_EX100.mdlx").and_then(|f| parts::Table::from_mdlx(&f)).expect("P_EX100");
         assert!(parts::shape_of(p.first(parts::TYPE_BODY).expect("body"), Vec3::ZERO, 0.0).is_some());
+    }
+
+    /// The talk camera's input on the disc: each of tt02's four townspeople carries a collision
+    /// record of type 0x13 with its talk part's index (the 0x83 part), on the object's own frame,
+    /// whose radii are the camera's distance and height (FUN_0018f108 -> FUN_001894d0).
+    #[test]
+    fn tt02_townspeople_carry_their_talk_camera_records() {
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else { return eprintln!("skipped: no disc (set KH2_ISO)") };
+        let disc = Disc::open(&iso);
+        let (area, _) = kh2_ard::Area::parse(&disc.read("ard/tt02.ard").expect("tt02.ard")).expect("area");
+        let objs = disc.0.lock().ok().and_then(|mut a| kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).ok()).map(|d| d.rows).unwrap_or_default();
+        let mut seen = 0;
+        for g in ["a72_", "b72_", "c72_", "b50_"].iter().filter_map(|t| area.spawns.get(*t)).flatten() {
+            let e = &g.entities[0];
+            let model = objs.iter().find(|r| r.object_id == e.object).map(|r| r.model_name.clone()).expect("objentry row");
+            let file = disc.read(&format!("obj/{model}.mdlx")).expect("mdlx");
+            let t = parts::Table::from_mdlx(&file).expect("parts");
+            let rest = kh2_model::rest_pose(&kh2_model::mdlx(&file).expect("model").bones);
+            let talk = t.reaction_parts().find(|r| r.id == PART_FROM_RECORD).expect("talk part");
+            let cams: Vec<_> = t.recs.iter().filter(|r| r.kind == TYPE_TALK_CAMERA).collect();
+            let bone = |j: usize, off: Vec3| rest.get(j).map(|m| m.transform_point3(off));
+            let (shot, kind) = talk_shot(&t, talk.part, (Vec3::ZERO, 0.0), crate::camera::rules::TalkFrame::AroundPlayer, &bone).expect("talk shot");
+            eprintln!("{model}: talk part {}; type 0x13 records {cams:?}; rest-pose shot {shot:?}", talk.part);
+            assert_eq!(kind, TYPE_TALK_CAMERA, "{model}");
+            assert!(cams.iter().all(|r| r.joint & parts::JOINT_OBJECT == 0), "{model}: on a bone");
+            // The look-at point is high on the body (a head bone) and the distance is set.
+            assert!(shot.dist > 0.0 && shot.look.y > 100.0, "{model}: {shot:?}");
+            seen += 1;
+        }
+        assert_eq!(seen, 4);
     }
 
     /// The spawn record's word +0x24 fills bits 0..6 of the object's bit array (FUN_001899d0) and

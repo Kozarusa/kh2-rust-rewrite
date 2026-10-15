@@ -495,7 +495,9 @@ tt37; tt40 -> tt19 and area 100. The full list is in the test output.
   - **The task** `FUN_001a5728`: player record +0xb40 +0x2c bit 0 and 0x35d268 bit 8 are set, the
     target's +0x108 bit 2 (its only reader found is `FUN_0019a530`); the player faces the target
     (`FUN_0016a948` with `FUN_0018efa0` of the target record minus his position); the talk camera
-    (`FUN_00159688`: camera kind 4 with the record, `FUN_00140d08` +0x40 = 4) [not ported: camera.rs];
+    (`FUN_00159688`: camera kind 4 with the record, `FUN_00140d08` +0x40 = 4; second argument 1, or 0
+    for a class-5 target whose array has bit 0x10 or 0x40, `FUN_00189e90`) [ported in WP-E8: docs/camera.md
+    "Talk camera"];
     the three party members turn their heads (`FUN_001abf40` on +0x82c) [not ported]; the target faces
     the player (`FUN_0016a828`, or for class-5 objects `FUN_00189f40`: unless array bit 4, and its
     companion +0xb08 plays motion 0x32) and plays motion 0x32 (`FUN_0017e220`); `FUN_00192c50(target,
@@ -811,6 +813,20 @@ Each stage ends with `verify.ps1` passing and the named check.
   Not ported: the talk camera (`FUN_00159688` / `FUN_00159768`, camera.rs), the party's head turns, the
   wait's early end (`FUN_001a5b18`), op 3 events (0x65 goes to `FUN_0023f108`), the shops' command 30,
   HUD record 0xc.
+  **Status (WP-E8):** the talk camera is ported (docs/camera.md "Talk camera (mode 4)"): `npc::talk_step`
+  builds the shot from the townsperson's collision record of type 0x13 with the talk part's index
+  (`npc::talk_shot`, `FUN_0018f108`) and hands `camera::TalkCam::Start` / `End` to the camera, which cuts
+  to the view on its next tick and warps back to the follow camera at the end. The townsperson's hold was
+  looked for and is **not in the code**: the talk task sets the target's +0x108 bit 2, whose only reader
+  `FUN_0019a530` is the body push-apart (`FUN_001b5bd0`, `FUN_001b5eb0`, `FUN_001d1908`: an object with the
+  bit is not pushed); the class pass `FUN_0018a130` counts the follower timer (`FUN_0018b228`) and +0xb00
+  every frame unless the object is a child (`FUN_001beb00`: a live parent at +0x570), with no test of the
+  talk or the player's lock; host 5.11 (`FUN_0018b250`) holds a kind-4 follower only while the timer runs
+  and the player meets the talk part. So in the code read the timer the follower got when Sora entered the
+  part (360..720 frames, `FUN_00106408(+0xb10, +0xb14)`) keeps running through the talk, as the app does;
+  no hold is added [the clips show no townsperson talk to compare with]. `FUN_00192c50(target, 0x21)` /
+  `FUN_00192c68` run the entries of the target's +0x670 list through their method +0xc with 0x21
+  (`FUN_0011e8c0` / `FUN_0011e930` -> `FUN_001330f0` / `FUN_00133168`) [GAP: what that list holds; not ported].
   **Status (WP-E3b):** the accept is `reaction_cmd::accept`: with no enemy offer it takes the candidate that
   `npc.rs` / `savepoint.rs` built with `npc::part_offer` (held in `Talk::offer`; `reaction_cmd::native_offers`
   now walks an enemy's parts through the same `part_offer` instead of a copy) and dispatches by the row's

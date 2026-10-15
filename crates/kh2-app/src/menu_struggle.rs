@@ -391,6 +391,7 @@ fn input(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn tick(mut m: ResMut<StruggleMenu>, mut scene: ResMut<MenuScene>, real: Res<Time<Real>>, mut mission: ResMut<Mission>, mut task: ResMut<JumpTask>, rec: Res<AreaRecord>, last: Res<LastExit>, disc: Res<Disc>) {
     if !m.is_open() {
         return;

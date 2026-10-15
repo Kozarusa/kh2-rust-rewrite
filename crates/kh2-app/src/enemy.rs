@@ -570,6 +570,20 @@ pub fn ring_place_in(rng: &mut PlaceRng, ring: &Ring, col: &World) -> Vec3 {
     ring_place(rng, ring, &ground, &clear)
 }
 
+/// `FUN_00199e98` for a kind-6 group record (`FUN_00198b30` case 6), run on a frame the player is inside one of its
+/// volumes whose activator halfword +0x2c is 1 (`FUN_001989d8` skips the others; `inside(volume)` is the volume
+/// test): every spawn-kind-2 entity whose object is absent (`present(serial)`, `FUN_0016b0d8`) is created at once at
+/// its record's point (`FUN_001982c8`), with no timer, no wave and no table of the defeated. Returns the members
+/// (indices into `g.members`). [gap: the appear fade the game starts on the new object, `FUN_001abf40` on its
+/// +0x82c, is not ported.]
+pub fn kind_six_creates(g: &AreaGroup, part: usize, inside: impl Fn(&kh2_ard::Activator) -> bool, present: impl Fn(u16) -> bool) -> Vec<usize> {
+    let p = &g.parts[part];
+    if p.kind != 6 || p.disabled || !p.activators.iter().any(|v| u16::from_le_bytes([v.raw[0x2c], v.raw[0x2d]]) == 1 && inside(v)) {
+        return Vec::new();
+    }
+    g.members.iter().enumerate().filter(|(_, m)| m.part == part && m.spawn_kind == 2 && !present(m.serial)).map(|(i, _)| i).collect()
+}
+
 /// A group record's counter of enemies (the group object's +0x18) and the group's id (header +2).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PartCount {
@@ -990,21 +1004,14 @@ pub fn spawn_waves(
             }
             *prev = live.into_iter().chain(made).collect();
         }
-        // Kind-6 groups (FUN_00199e98, through FUN_00198b30): while the player is inside one of the group's volumes
-        // whose activator halfword +0x2c is 1 (FUN_001989d8 skips the others), every absent spawn-kind-2 entity is
-        // created at once at its record's point, with no timer, wave or table of the defeated (FUN_001982c8).
-        // [gap: the appear fade the game starts on the new object, FUN_001abf40 on its +0x82c, is not ported.]
+        // Kind-6 groups (FUN_00199e98): see `kind_six_creates`. The object counts as present from its creation to its
+        // removal, so a defeated enemy that is still lying there does not come back yet.
         for ep in &b.events {
-            let part = &ep.group.parts[ep.part];
-            if part.kind != 6 || part.disabled || !part.activators.iter().any(|v| u16::from_le_bytes([v.raw[0x2c], v.raw[0x2d]]) == 1 && v.contains(at)) {
-                continue;
-            }
-            for m in ep.group.members.iter().filter(|m| m.part == ep.part && m.spawn_kind == 2) {
-                if enemies.iter().any(|e| e.serial == Some((part.id, m.serial))) {
-                    continue;
-                }
-                info!("area group {} kind-6 group {:#x}: {} (serial {:#x}) created at the record's point (FUN_00199e98)", ep.group.name, part.id, m.kind.name, m.serial);
-                spawn_member(&mut commands, m, part.id, record_spot(m, &col), &rigs, &data, (&mut meshes, &mut materials, &mut images, &mut bindposes));
+            let pid = ep.group.parts[ep.part].id;
+            for i in kind_six_creates(&ep.group, ep.part, |v| v.contains(at), |s| enemies.iter().any(|e| e.serial == Some((pid, s)))) {
+                let m = &ep.group.members[i];
+                info!("area group {} kind-6 group {pid:#x}: {} (serial {:#x}) created at the record's point (FUN_00199e98)", ep.group.name, m.kind.name, m.serial);
+                spawn_member(&mut commands, m, pid, record_spot(m, &col), &rigs, &data, (&mut meshes, &mut materials, &mut images, &mut bindposes));
             }
         }
         // Group events: an object of spawn kind 0, 1 or 3 removed (here: its HP reached 0) lowers its group record's
@@ -1799,5 +1806,83 @@ mod tests {
         c[2].count = 0;
         c[0].count = 1;
         assert_eq!(removal_events(&mut c, 0), vec![(3, 0x10), (2, 0)]);
+    }
+
+    /// A kind-6 group creates every absent spawn-kind-2 member at once while the player is in a volume whose
+    /// activator halfword +0x2c is 1; it creates nothing outside, in another group kind, or when disabled.
+    #[test]
+    fn a_kind_six_group_creates_its_absent_members_at_once() {
+        let mut vol = kh2_ard::Activator { shape: 2, option: 0, position: [0.0; 3], scale: [1.0; 3], rotation: [0.0; 3], raw: [0; 0x40] };
+        let mut other = vol.clone();
+        vol.raw[0x2c] = 1;
+        other.raw[0x2c] = 2;
+        let mut part = part_of(6, false, Vec::new());
+        part.activators = vec![other.clone(), vol.clone()];
+        let g = AreaGroup {
+            program: 1,
+            name: "k6".into(),
+            parts: vec![part],
+            members: vec![member(0, 2, 1, 0, 0), member(0, 2, 2, 30, 5), member(0, 3, 3, 0, 0), member(0, 2, 4, 0, 0)],
+            skipped: Vec::new(),
+            player: None,
+            mission: None,
+            orb_pool: false,
+            triggers: Vec::new(),
+        };
+        let only_vol = |v: &kh2_ard::Activator| v.raw[0x2c] == 1;
+        // Wave bytes and delays are ignored; the spawn-kind-3 member is the set-up's; present ones are skipped.
+        assert_eq!(kind_six_creates(&g, 0, only_vol, |s| s == 2), vec![0, 3]);
+        assert_eq!(kind_six_creates(&g, 0, |v| v.raw[0x2c] == 2, |_| false), Vec::<usize>::new(), "a volume of another type does not count");
+        assert_eq!(kind_six_creates(&g, 0, |_| false, |_| false), Vec::<usize>::new(), "the player is outside");
+        let mut off = g.clone();
+        off.parts[0].disabled = true;
+        assert_eq!(kind_six_creates(&off, 0, only_vol, |_| false), Vec::<usize>::new());
+        let mut two = g.clone();
+        two.parts[0].kind = 2;
+        assert_eq!(kind_six_creates(&two, 0, only_vol, |_| false), Vec::<usize>::new(), "a kind-2 group has its own walk");
+    }
+
+    /// Survey (disc, WP-EN2): no Twilight Town area script has a trigger on the group events 2 and 3, and no group
+    /// of kind 3, 4 or 6 holds an enemy-class entity, so the events and kind-6 creation have no user in tt00..tt41.
+    /// Needs `KH2_ISO`.
+    #[test]
+    fn no_twilight_town_data_uses_group_events_or_kind_six_enemies() {
+        use kh2_tables::tables as t;
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let rows = {
+            let mut a = disc.0.lock().unwrap();
+            kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).map(|d| d.rows).unwrap_or_default()
+        };
+        let enemy = |o: u32| rows.iter().any(|r| r.object_id == o && (r.object_type == OBJECT_ENEMY || r.object_type == OBJECT_ENEMY_B));
+        let (mut areas, mut kind6, mut triggers) = (0, 0, 0);
+        for n in 0..=41 {
+            let name = format!("tt{n:02}");
+            let Some(ard) = disc.read(&format!("ard/{name}.ard")).and_then(|d| kh2_ard::Area::parse(&d)).map(|(a, _)| a) else { continue };
+            areas += 1;
+            for p in ard.scripts.values().flatten() {
+                for c in p.commands.iter().filter(|c| c.opcode == 0xc) {
+                    if let Some(tr) = kh2_ard::parse_trigger(&c.args)
+                        && (tr.event == 2 || tr.event == 3)
+                    {
+                        triggers += 1;
+                    }
+                }
+            }
+            for (tag, groups) in &ard.spawns {
+                for g in groups {
+                    if matches!(g.kind & 0xff, 3 | 4 | 6) {
+                        kind6 += (g.kind & 0xff == 6) as usize;
+                        assert!(!g.entities.iter().any(|e| enemy(e.object)), "{name} group {tag}: kind {} holds an enemy-class entity", g.kind & 0xff);
+                    }
+                }
+            }
+        }
+        eprintln!("{areas} tt areas, {kind6} kind-6 groups, {triggers} triggers on events 2 or 3");
+        assert!(areas > 30 && kind6 > 100);
+        assert_eq!(triggers, 0);
     }
 }

@@ -791,8 +791,35 @@ impl BevyHost<'_> {
             // +0x47c and +0x480 (set by 1.52 / 1.53, which none of the app's scripts call). No reader of
             // either array was traced. N_EX500_BTL clears bit 2 (R1447).
             Call::Func { group: 1, index: 54, args } if args[0].int() as u32 == me => {
-                stub(Value::None, "bit arrays +0x47c / +0x480: nothing in the app sets or reads them")
+                let n = args[1].int() as u32;
+                let o = 0x47c + (n >> 5) as usize * 4;
+                for base in [o, o + 4] {
+                    if let Some(w) = self.obj.mem.get_mut(base..base + 4) {
+                        let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]) & !(1 << (n & 31));
+                        w.copy_from_slice(&v.to_le_bytes());
+                    }
+                }
+                stub(Value::None, "bit arrays +0x47c / +0x480: cleared in the object memory; no reader of either array was traced")
             }
+            // 1.53 bits_480_set (0x1728e8 -> FUN_0019ddb0 on object +0x47c): bit n of the word at +0x480 + 4 * (n >> 5).
+            // M_EX940 sets bits 5 and 7 in its init. No reader was traced (see 1.54).
+            Call::Func { group: 1, index: 53, args } if args[0].int() as u32 == me => {
+                let n = args[1].int() as u32;
+                let o = 0x480 + (n >> 5) as usize * 4;
+                if let Some(w) = self.obj.mem.get_mut(o..o + 4) {
+                    let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]) | 1 << (n & 31);
+                    w.copy_from_slice(&v.to_le_bytes());
+                }
+                stub(Value::None, "bit array +0x480: set in the object memory; no reader was traced")
+            }
+            // 1.97 obj_part_110 (0x173070): the address of the object's block at +0x110 (M_EX940 stores a float at
+            // its +0xc in the init).
+            Call::Func { group: 1, index: 97, args } if args[0].int() as u32 == me => imp(Value::Handle(me + 0x110)),
+            // 1.108 / 1.109 (0x173278 / 0x173298 -> FUN_00192cd0 / FUN_00192ce8 -> FUN_0011c580 / FUN_0011c5b0): virtual
+            // method +0x3c / +0x40 of the object behind the link record at object +0x670 (record +0x14), with the record's
+            // word +0x104 (a joint) and the argument. The app has no link records (the Dancer's grab is not
+            // carried either), so there is no object to call.
+            Call::Func { group: 1, index: 108 | 109, .. } => stub(Value::None, "no link record in the app: the linked object's method is not called"),
             // 1.132: the target record returns to a pool; the app's records are never reused.
             Call::Func { group: 1, index: 132, .. } => stub(Value::None, "target records are not pooled"),
             // The Dancer's (M_EX930) force dance asks these of the player before it grabs him (BDX R0a48,

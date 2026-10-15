@@ -441,7 +441,7 @@ impl FriendHost<'_, '_> {
             }
             // 1.126 / 1.236 (0x171670 / 0x1716a0) on the hand object's motion controller, 1.235 (0x1742a0) the
             // joint for 1.18: the app links no controllers.
-            Call::Unknown { group: 1, index: 126 | 235 | 236, args } if args.iter().any(|&a| is_w(a)) || matches!(c, Call::Unknown { index: 235, .. }) => (Value::Int(0), St::Stub, "the app links no motion controllers; the joint is the member's hand bone"),
+            Call::Unknown { group: 1, index: 126 | 235 | 236, .. } if wh.is_some() => (Value::Int(0), St::Stub, "the app links no motion controllers; the joint is the member's hand bone"),
             // 1.160 (0x173770 -> FUN_0018f490): the target record names the object (position index 0). The
             // throw's callback (R10f7) points the member's target at the enemy hit.
             Call::Unknown { group: 1, index: 160, args } if args.get(1) == Some(&TARGET_ENEMY) => {
@@ -542,9 +542,11 @@ impl FriendHost<'_, '_> {
                 Some(Value::None)
             }
             // 6.3 (0x2ee718 -> FUN_002f01a0) sets up a target-search block, 6.5 (0x2ee750 -> FUN_002f04a8)
-            // searches the objects for a target into a record: Goofy's `tornado` asks it only when his
-            // target record is not valid. Not ported: the record stays as it is.
-            Call::Unknown { group: 6, index: 3 | 5, .. } | Call::Func { group: 6, index: 3 | 5, .. } => {
+            // searches the objects for a target into a record (Goofy's `tornado` asks it only when his
+            // target record is not valid, `turbo` every 30 frames), 6.4 (0x2ee738 -> FUN_002f0748) clears the
+            // block's count byte +4 and its history count +8. The block lives in the script's own memory. Not
+            // ported (docs/party.md section 16): the record stays as it is.
+            Call::Unknown { group: 6, index: 3..=5, .. } | Call::Func { group: 6, index: 3..=5, .. } => {
                 self.record(c, &Value::None, St::Stub, "the target search FUN_002f04a8 is not ported: the member's target record stays");
                 Some(Value::None)
             }

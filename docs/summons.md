@@ -745,6 +745,37 @@ kh2-ee); kh2-bdx `genie_summon_script_offers_the_form_limit_while_the_timer_runs
 mock host: no group 10 call without a signature, 10.10 asked every frame, the limit 544 of the form command 536
 offered only with the timer above 0 and no limit task); `P_AL010` in the interpreter oracle (0 failures).
 
+### Status (WP-SUM6 / WP-SUM7: Chicken Little and Peter Pan run without a missing host)
+
+Measured with the SUM5 harness (`KH2_STATE` = items 160 and 383, summon level 1, option word 11; `KH2_WAVE_GROUP=b_44 KH2_DRIVE_POINTS=5
+KH2_SUMMON=<1|4> KH2_SUMMON_AT=7 KH2_SUMMON_PARTY=1 KH2_BDXLOG=1 KH2_SUMMONLOG=1 kh2-game tt04`, 20 s): no `P_EX350` or `P_EX330` line
+among the `unimplemented host call` / `script error` warnings (the end-of-run table's only `Missing` rows, 1.161 and 1.83, are Goofy's
+`P_EX030`).
+
+- **Chicken Little**: the `BadAddress(4)` at 0x1638 / 0x1268 was the missing answer of host 2.21 (SUM6, FUN_001a5040 keyed buffers,
+  `kh2_bdx::shared`: the script stores through the returned pointer). Test `disc.rs` (the with / without buffer pair, SUM6) reproduces
+  it; the run now reaches 2.21 Impl, 2.10, 1.87, 1.13, 1.272, 10.19, 1.84, 10.45, 1.165 and stays running.
+- **Peter Pan** (`P_EX330#summon0`, `appear_skip`): the two hosts left were **1.155** and **0.40**.
+  - 1.155 (`obj_method_78`, wrapper 0x171c48: the receiver's virtual method +0x78 with (amount, part, flag != 0), result into word 0). The
+    receiver here is the player (Obj 0x2000000), the arguments (5, 0, 0) follow the effect Tinker Bell's script starts on him (1.149). The
+    method of the player is FUN_00186238 (docs/magic.md): with the +0x7f8 bit 4 clear it adds the amount to part 0's HP and holds it between
+    the lowest and the maximum (FUN_001a0100), posts the panel's heal event (FUN_0013de10) and runs the death method only at 0 HP. App:
+    `SummonHost::own` adds the amount with `magic_rules::healed` to `SummonAi::player_hp`, `objects` writes Sora's HP back after the
+    script ran (log `summon: P_EX330#summon0 healed the player (host 1.155): HP 17 -> 20`, Sora HP 20/20 in the screenshot) and the call returns the new HP. Approx: the
+    revive branch (bit 4 set, FUN_0017cee8), the panel event and the face are not run; a negative amount is a Stub (no summon script
+    asks for it [inferred: only this call site was reached]).
+  - 0.40 (wrapper 0x16db10, no `names.rs` row before): copies the vector argument raw into the 16 bytes behind FUN_001d9d50(handle), the
+    effect instance's second vector, the same place 0.41 (0x16db50) fills with the angles of a direction (FUN_0017be00). The script calls
+    it every tick after 0.38 on the effect it started with 1.21. App: the vector is taken as those angles (pitch, yaw) and handed to the
+    friend host's 0.41 as the matching direction, which sets the element's rotation [inferred; the roll is dropped; what the instance
+    reads the vector for was not traced].
+  - Tests: kh2-bdx `peter_pan_script_heals_the_player_and_sets_the_effect_vector` (both calls decode, 1.155 gets (object, 5, 0, 0),
+    0.40 a vector, no `Unknown`, no script error), `peter_pan_script_asks_whether_tinker_bell_is_ready` (SUM6); the interpreter oracle
+    lists `P_EX350` and `P_EX330` and ends `0 failures`.
+- Gaps: whether the 1.155 call sits behind the 2.75 test (the log shows 2.75 asked just before it in the same tick [inferred
+  order]; the script's branch structure was not read further); Tinker Bell's own object (`P_EX340`) was not looked for in this run; the
+  two summons' friend-AI classes (follow, attack choice) are still not ported: they stand where they were put.
+
 ## 7. Unknowns (with what was searched)
 
 - What starts the arrival event that FUN_001c6260 and the `appear` mode wait on: FUN_0014f198 only hides

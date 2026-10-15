@@ -2176,19 +2176,225 @@ mod tests {
         assert!(row_open(true, &w[0], 1, 0) && !row_open(true, &w[1], 1, 0));
     }
 
+    // --- the third row (synthesis) -------------------------------------------------------------------
+
+    use synth::{Book, Make, Mix, Recipe, Session, Store, Tables};
+
+    #[derive(Default)]
+    struct Fake {
+        m: Moogle,
+        items: std::collections::HashMap<u16, u8>,
+        flags: Vec<u16>,
+    }
+
+    impl Store for Fake {
+        fn moogle(&self) -> &Moogle {
+            &self.m
+        }
+        fn moogle_mut(&mut self) -> &mut Moogle {
+            &mut self.m
+        }
+        fn count(&self, id: u16) -> u8 {
+            self.items.get(&id).copied().unwrap_or(0)
+        }
+        fn add(&mut self, id: u16, n: u8) -> u8 {
+            *self.items.entry(id).or_default() += n;
+            n
+        }
+        fn remove(&mut self, id: u16, n: u8) {
+            let c = self.items.entry(id).or_default();
+            *c = c.saturating_sub(n);
+        }
+        fn story(&self, flag: u16) -> bool {
+            self.flags.contains(&flag)
+        }
+    }
+
+    /// Materials 0x200 (rank 0), 0x201 (rank 1); bonus materials 0x210 (k 0), 0x211 (k 1), 0x212 (k 2) of rank 0.
+    fn mix() -> (Mix, Tables, Vec<u16>) {
+        let level = |unlock, points| synth::Level { name: 0, text: 0, unlock, points };
+        let mix = Mix {
+            recipes: vec![
+                // A recipe item (kind 0): 3 of 0x200 and 1 of 0x201 make item 0x50, the higher rank 0x51.
+                Recipe { id: 0x1c1, unlock: 0, rank: 0, result: 0x50, upgraded: 0x51, mats: vec![(0x200, 3), (0x201, 1)] },
+                // Free Development set 1 (bit 0): 5 of 0x200 make 0x60.
+                Recipe { id: 0x1c5, unlock: 1, rank: 0, result: 0x60, upgraded: 0, mats: vec![(0x200, 5)] },
+            ],
+            levels: vec![level(-1, 0), level(3, 5), level(4, 1000)],
+            exp: [2, 3, 4, 5],
+            factor: 2.0,
+            story_flag: 0x814,
+            story_bit: 10,
+            conds: 0,
+        };
+        let t = Tables { rows: [0xbc8c, 0xbc8d, 0xbc8e, 0xc48e, 0xbc8b, 0xbcdd, 0xbc8f], bonus: [[0x210; 4], [0x211; 4], [0x212; 4]], rank_bits: [6, 7, 8, 9], help: [0; 5], notices: [0xbc89, 0, 0, 0, 0, 0xbc8a], level_names: [0, 1, 2, 3, 4, 5, 6, 7, 8], layouts: [8, 10, 9] };
+        (mix, t, vec![0x200, 0x201, 0x210, 0x211, 0x212])
+    }
+
+    fn rank(id: u16) -> u8 {
+        u8::from(id == 0x201)
+    }
+
     #[test]
-    fn scratch_mix() {
+    fn the_synthesis_opening_hands_over_materials_and_recipes() {
+        let (mix, t, mats) = mix();
+        let b = Book { mix: &mix, t: &t, mats: &mats, rank: &rank };
+        let mut s = Fake::default();
+        s.items.insert(0x200, 4);
+        s.items.insert(0x1c1, 1);
+        // Without the story flag (bit 10) the recipe item stays; the materials go to the stock and the totals.
+        let (x, o) = Session::start(&b, &mut s);
+        assert_eq!(o.handed, vec![(0x200, 4)]);
+        assert!(o.recipes.is_empty() && s.count(0x1c1) == 1 && s.count(0x200) == 0);
+        assert_eq!((s.m.stock_at(0), s.m.total_at(0), s.m.known), (4, 4, 1));
+        assert_eq!(x.page, synth::Page::Opening, "the hand-over notice first");
+        assert_eq!((x.text, x.ret), (0xbc89, synth::Page::Materials { totals: true }), "then page 10");
+        assert_eq!(x.rows, vec![3, 4, 5, 6], "no Creations, no Free Development, no Recipes yet");
+        // The story flag grants bit 10: the recipe is learned and its item taken; page 0x10 after the notices.
+        s.flags.push(0x814);
+        s.items.insert(0x200, 1);
+        let (mut x, o) = Session::start(&b, &mut s);
+        assert_eq!((o.recipes.clone(), o.notices), (vec![0x1c1], 0x21));
+        assert!(Moogle::bit(s.m.learned, 0) && s.count(0x1c1) == 0 && s.m.stock_at(0) == 5);
+        assert_eq!(x.queue, vec![0xbc8a]);
+        assert_eq!(x.key(Key::Confirm, &b, &mut s), synth::Act::Page);
+        assert_eq!(x.text, 0xbc8a);
+        assert_eq!(x.key(Key::Confirm, &b, &mut s), synth::Act::Page);
+        assert_eq!(x.page, synth::Page::Materials { totals: true });
+        assert_eq!(x.slots, vec![0]);
+        assert_eq!(x.key(Key::Cancel, &b, &mut s), synth::Act::Page);
+        assert_eq!((x.page, x.rows.clone()), (synth::Page::Top, vec![2, 3, 4, 5, 6]));
+        // Stock 999 at most; a recipe item already learned is not taken again.
+        s.m.set_stock(0, 998);
+        s.items.insert(0x200, 5);
+        s.items.insert(0x1c1, 1);
+        let (_, o) = Session::start(&b, &mut s);
+        assert_eq!((s.m.stock_at(0), o.recipes.len(), s.count(0x1c1)), (999, 0, 1));
+        // The Free Development set is learned once its bit is unlocked; Quit and a cancel on page 9 go back.
+        s.m.unlocks |= 1;
+        let (mut x, _) = Session::start(&b, &mut s);
+        assert!(Moogle::bit(s.m.learned, 2));
+        assert_eq!(x.rows, vec![1, 2, 3, 4, 5, 6]);
+        x.page = synth::Page::Top;
+        assert_eq!(x.key(Key::Cancel, &b, &mut s), synth::Act::Back);
+        x.top = 5;
+        assert_eq!(x.key(Key::Confirm, &b, &mut s), synth::Act::Back);
+        x.top = 4;
+        assert_eq!(x.key(Key::Confirm, &b, &mut s), synth::Act::NotPorted, "row 5 (page 0xb)");
+        assert_eq!(x.key(Key::Start, &b, &mut s), synth::Act::Close);
+    }
+
+    #[test]
+    fn a_make_takes_the_lines_adds_the_item_the_points_and_the_level() {
+        let (mix, t, mats) = mix();
+        let b = Book { mix: &mix, t: &t, mats: &mats, rank: &rank };
+        let mut s = Fake::default();
+        s.m.unlocks = 1 << 10;
+        s.m.learned = 1;
+        s.m.set_stock(0, 2);
+        let mut x = Session { page: synth::Page::Top, rows: synth::top_rows(&b, &s.m), ..Session::default() };
+        x.top = x.rows.iter().position(|&r| r == 2).unwrap();
+        assert_eq!(x.key(Key::Confirm, &b, &mut s), synth::Act::Page);
+        assert_eq!((x.page, x.entries.clone()), (synth::Page::List(2), vec![0]));
+        // 2 of 3 and none of 0x201: the entry cannot be opened.
+        assert!(!synth::entry_open(&b, &s.m, 2, 0));
+        assert_eq!(x.key(Key::Confirm, &b, &mut s), synth::Act::Refused);
+        s.m.set_stock(0, 7);
+        s.m.set_stock(1, 1);
+        assert_eq!(x.key(Key::Confirm, &b, &mut s), synth::Act::Page);
+        assert_eq!((x.page, x.detail, x.row), (synth::Page::Detail(2), 0x11, 0), "Synthesize and Quit, the cursor on Synthesize");
+        // The item at 99: refused with the stock-full text.
+        s.items.insert(0x50, 99);
+        assert_eq!(synth::make_check(&b, &s, 2, 0, 0), Make::Notice(synth::msg::FULL));
+        s.items.insert(0x50, 1);
+        assert_eq!(x.key(Key::Confirm, &b, &mut s), synth::Act::Page);
+        assert_eq!((x.page, x.item), (synth::Page::Result, 0x50));
+        assert_eq!(x.key(Key::Confirm, &b, &mut s), synth::Act::Made);
+        let d = x.last.clone().unwrap();
+        // 3 x rank 0 (2 points) + 1 x rank 1 (3 points) = 9 points: level row 1 (5 points) grants bit 3, level 1.
+        assert_eq!((d.item, d.points, d.used.clone(), d.level), (0x50, 9, vec![(0x200, 3), (0x201, 1)], (0, 1)));
+        assert_eq!((s.count(0x50), s.m.stock_at(0), s.m.stock_at(1), s.m.points), (2, 4, 0, 9));
+        assert!(Moogle::bit(s.m.made, 0) && Moogle::bit(s.m.seen, 0) && s.m.unlocked(3) && s.m.level == 1);
+        assert_eq!(x.page, synth::Page::LevelUp, "one level-up notice");
+        assert_eq!(x.text, 1, "the name of level 1");
+        assert_eq!(x.key(Key::Confirm, &b, &mut s), synth::Act::Page);
+        assert_eq!((x.page, x.entries.clone()), (synth::Page::List(2), vec![]), "made: off the Recipes list");
+        assert_eq!(synth::top_rows(&b, &s.m), vec![0, 2, 3, 4, 5, 6], "the Creations row shows");
+        assert_eq!(synth::entries(&b, &s.m, 0), vec![0]);
+    }
+
+    #[test]
+    fn the_bonus_rows_halve_and_raise_the_rank() {
+        let (mix, t, mats) = mix();
+        let b = Book { mix: &mix, t: &t, mats: &mats, rank: &rank };
+        let mut s = Fake::default();
+        s.m.unlocks = (1 << 3) | (1 << 4);
+        s.m.made = 1;
+        for (i, n) in [2u32, 1, 1, 1, 1].into_iter().enumerate() {
+            s.m.set_stock(i, n);
+        }
+        // Creations (list 0): with bit 4 the higher rank (k 2) shows besides the points (k 0) and Halve (k 1).
+        let (rows, cur) = synth::detail_rows(&b, &s.m, 0, 0);
+        assert_eq!((rows, cur), (0x1f, 2), "2 of 3 in stock: the cursor leaves Synthesize");
+        assert_eq!(synth::make_check(&b, &s, 0, 0, 0), Make::Notice(synth::msg::SHORT));
+        // Halve: 3 -> 2, 1 -> 1, one 0x211 taken.
+        assert!(synth::can_make(&b, &s.m, 0, &mix.recipes[0], false, true));
+        let mut x = Session { page: synth::Page::Detail(0), entries: vec![0], detail: rows, row: 2, kind: 0, ..Session::default() };
+        assert_eq!(x.key(Key::Confirm, &b, &mut s), synth::Act::Toggled);
+        assert_eq!(x.flags, 2);
+        // One bonus at a time without bit 5.
+        x.row = 1;
+        assert_eq!(x.key(Key::Confirm, &b, &mut s), synth::Act::Refused);
+        x.row = 0;
+        assert_eq!(x.key(Key::Confirm, &b, &mut s), synth::Act::Page);
+        assert_eq!(x.key(Key::Confirm, &b, &mut s), synth::Act::Made);
+        let d = x.last.clone().unwrap();
+        assert_eq!(d.used, vec![(0x200, 2), (0x201, 1), (0x211, 1)]);
+        assert_eq!((s.m.stock_at(0), s.m.stock_at(3)), (0, 0));
+        // Rank bit 6 halves rank 0 on the Creations list only.
+        s.m.unlocks |= 1 << 6;
+        assert_eq!((synth::divisor(&b, &s.m, 0, 0, false), synth::divisor(&b, &s.m, 0, 0, true), synth::divisor(&b, &s.m, 2, 0, true)), (2, 4, 2));
+        assert_eq!((synth::need(3, 2), synth::need(1, 4), synth::need(4, 2)), (2, 1, 2));
+        // The higher-rank entry (1) needs its bonus; without it the make row refuses with NEED_RANK.
+        s.m.made |= 2;
+        assert_eq!(synth::entries(&b, &s.m, 0), vec![0, 1]);
+        assert_eq!(synth::make_check(&b, &s, 0, 1, 0), Make::Notice(synth::msg::NEED_RANK));
+        // Points with the first bonus: x2 (exp +0x18).
+        assert_eq!((synth::points(&b, &mix.recipes[0], false), synth::points(&b, &mix.recipes[0], true)), (9, 18));
+    }
+
+    /// The disc: `mixdata.bar` and the executable's synthesis tables (skipped without `KH2_ISO`).
+    #[test]
+    fn the_disc_mixdata_recipes_levels_and_tables() {
         let Ok(iso) = std::env::var("KH2_ISO") else { return };
         let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
-        let bar = a.read("menu/us/mixdata.bar").unwrap();
-        for e in kh2_bar::parse(&bar).unwrap() {
-            let d = e.data;
-            eprintln!("entry {} kind {} len {:#x} head {:02x?}", e.tag, e.kind, d.len(), &d[..d.len().min(0x40)]);
+        let mix = Mix::parse(&a.read("menu/us/mixdata.bar").unwrap()).expect("reci, cond, leve, exp");
+        assert_eq!((mix.recipes.len(), mix.levels.len(), mix.conds), (23, 9, 50));
+        assert_eq!((mix.story_bit, mix.factor), (10, 2.0), "the Recipes row's bit; the points bonus doubles");
+        let items = kh2_tables::load::<t::Item>(&mut a, &t::ITEM).unwrap().rows;
+        let mats: Vec<u16> = items.iter().filter(|i| i.r#type == synth::MATERIAL_TYPE).map(|i| i.id).take(crate::progress::MOOGLE_MATERIALS).collect();
+        let msgs = kh2_image::text::Messages::from_bar(&a.read("msg/us/sys.bar").unwrap()).unwrap();
+        let name = |id: u16| items.iter().find(|i| i.id == id).and_then(|i| msgs.text(u32::from(i.name))).unwrap_or_default();
+        eprintln!("{} materials (type 0x10), levels {:?}", mats.len(), mix.levels.iter().map(|l| (l.unlock, l.points)).collect::<Vec<_>>());
+        for r in &mix.recipes {
+            assert!(r.mats.iter().all(|(id, n)| mats.contains(id) && *n > 0), "recipe {:#x}: every line is a material", r.id);
+            assert!(items.iter().any(|i| i.id == r.result), "recipe {:#x} makes an item", r.id);
+            eprintln!("recipe {:#x} ({}) kind {} rank {}: {} / {} from {:?}", r.id, name(r.id), r.unlock, r.rank, name(r.result), name(r.upgraded), r.mats.iter().map(|(id, n)| (name(*id), *n)).collect::<Vec<_>>());
         }
-        let m = kh2_image::text::Messages::from_bar(&a.read("msg/us/sys.bar").unwrap()).unwrap();
-        for id in [0xbbb5u32, 0xbc8c, 0xbc8d, 0xbc8e, 0xc48e, 0xbc8b, 0xbcdd, 0xbc8f, 0xbc89, 0xbed0, 0xc1ba, 0xcc7e, 0xc193, 0xbc8a, 0xbf1c, 0xbf1e, 0xbf1f, 0xbf20, 0xbf1d, 0xbef4, 0xbef5, 0xbef6, 0xbf06, 0xbf1a, 0xbf1b, 0xbf21, 0xbe22, 0xbcdf, 0xbce1, 0xbd90, 0xbed1, 0x8acf, 0x8ad0] {
-            eprintln!("msg {id:#x}: {:?}", m.text(id));
-        }
+        assert_eq!(mix.recipes.iter().filter(|r| r.unlock == 0).count(), 10, "recipe items");
+        let first = &mix.recipes[0];
+        assert_eq!((first.id, first.mats.len()), (0x1c1, 3));
+        assert!(mix.levels.windows(2).all(|w| w[0].points <= w[1].points), "the level thresholds rise");
+        let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok()).unwrap();
+        let exe = Exe::load(elf).unwrap();
+        let t = Tables::read(&|v| exe.u16(v), &|v| exe.u8(v)).unwrap();
+        let rows: Vec<String> = t.rows.iter().map(|&m| msgs.text(u32::from(m)).unwrap_or_default()).collect();
+        eprintln!("page 9 rows {rows:?}, bonus {:x?}, rank bits {:?}, layouts {:?}", t.bonus, t.rank_bits, t.layouts);
+        assert_eq!(rows.first().map(String::as_str), Some("Creations"));
+        assert_eq!(rows.last().map(String::as_str), Some("Quit"));
+        assert!(t.bonus.iter().flatten().all(|id| mats.contains(id)), "the bonus materials are materials");
+        let two = layd::parse_2ld(&a.read("menu/us/itemshop.2ld").unwrap()).unwrap();
+        assert!(t.layouts.iter().all(|&l| (l as usize) < two.layd.layouts.len()));
     }
 
     /// The disc: the shop file, the "Shop" rows and the shopkeepers that offer them (skipped without `KH2_ISO`).

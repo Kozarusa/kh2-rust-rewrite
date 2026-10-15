@@ -525,32 +525,16 @@ fn native_offers(
     }
     let Some(player) = parts::shape_of(body, player_pos, player_yaw) else { return };
     let (epos, eyaw) = (tr.translation / SCALE, tr.rotation.to_euler(EulerRot::YXZ).0);
-    for r in table.reaction_parts() {
-        if !parts::part_usable(table, r.part, &on, &off) || r.id == 0x83 {
-            continue;
-        }
-        let Some(c) = rules.cmd(r.id) else { continue };
-        if !native_gate(c, ctx.battle, window) {
-            continue;
-        }
-        let Some(shape) = parts::shape_of(r, epos, eyaw) else { continue };
-        if parts::overlaps(&shape, &player) != Some(true) {
-            continue;
-        }
-        let dist = (shape.center - player_pos).length();
-        if best.is_some_and(|(p, d)| c.priority < p || (c.priority == p && d <= dist)) {
-            continue;
-        }
-        let mut st = status(&rules.cmds, c, &Ctx { distance: (epos - player_pos).with_y(0.0).length(), ..*ctx });
-        if st == Status::Available && c.range > -1.0 {
-            let face = Vec3::new(player_yaw.sin(), 0.0, player_yaw.cos());
-            if (epos - player_pos).normalize_or_zero().dot(face) < c.range {
-                st = Status::TooFar;
-            }
-        }
-        *best = Some((c.priority, dist));
-        *slot = Some(Active { cmd: r.id, pos: r.part as i16, from: e, status: st, message: c.message_id as u32 });
+    // The one part walk of FUN_0019cb70 is `npc::part_offer` (the townspeople and the save points use
+    // it too). An enemy has no spawn-record command, so a part with id 0x83 finds none (0xffff names
+    // no row) and is skipped.
+    let Some(o) = crate::npc::part_offer(rules, table, u16::MAX, (&on, &off), (epos, eyaw), &player, (player_pos, player_yaw), (ctx, window)) else { return };
+    if best.is_some_and(|(p, d)| o.priority < p || (o.priority == p && d <= o.dist)) {
+        return;
     }
+    let message = rules.cmd(o.cmd).map_or(0, |c| c.message_id as u32);
+    *best = Some((o.priority, o.dist));
+    *slot = Some(Active { cmd: o.cmd, pos: o.part as i16, from: e, status: o.status, message });
 }
 
 /// The accept key: only an available offer runs (FUN_0019c670 pushes slot 1 when its status is 0).
@@ -565,16 +549,38 @@ fn accept(
     mut sora: Query<&mut Sora>,
     targets: Query<&Enemy>,
     mut player_cmds: MessageWriter<PlayerReactionCmd>,
+    mut talk: Option<ResMut<crate::npc::Talk>>,
 ) {
     if !std::mem::take(&mut press.0) {
         return;
     }
-    let Some(a) = offer.0 else {
-        if log.0 {
+    // The player's slot 1: an enemy's offer, else the townsperson's or save point's candidate that
+    // `npc.rs` / `savepoint.rs` built with `npc::part_offer` (they hold it in `Talk::offer`).
+    let Some(a) = offer.0.or(talk.as_deref().and_then(|t| t.offer)) else {
+        if log.0 && !talk.as_deref().is_some_and(|t| t.running()) {
             info!("reaction: accept pressed, nothing offered");
         }
         return;
     };
+    if offer.0.is_none() {
+        let Some(c) = rules.cmd(a.cmd) else { return };
+        if a.status != Status::Available {
+            if log.0 {
+                info!("reaction: accept pressed for command {}, refused ({:?})", a.cmd, a.status);
+            }
+            return;
+        }
+        // FUN_001cf030 -> FUN_00177b18: Execute 0x1f is the talk (FUN_001a56c0), 0x37 the save point
+        // (FUN_001784b8). Neither takes the generic path of FUN_00177c20 (no event 0xb to a script).
+        if matches!(c.execute, crate::npc::EXECUTE_TALK | crate::savepoint::EXECUTE_SAVE) {
+            if let Some(t) = talk.as_deref_mut() {
+                t.accepted = Some(a);
+            }
+        } else if log.0 {
+            info!("reaction: accepted command {} (Execute {}): not ported (shops FUN_001a54a8 and the others)", a.cmd, c.execute);
+        }
+        return;
+    }
     if a.status != Status::Available {
         if log.0 {
             info!("reaction: accept pressed for command {}, refused ({:?})", a.cmd, a.status);

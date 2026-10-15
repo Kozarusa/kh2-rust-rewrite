@@ -751,16 +751,23 @@ Each stage ends with `verify.ps1` passing and the named check.
   `encount_player` for `path_move`, so the townsperson walked on while talking [to compare with footage].
   Not ported: the talk camera (`FUN_00159688` / `FUN_00159768`, camera.rs), the party's head turns, the
   wait's early end (`FUN_001a5b18`), op 3 events (0x65 goes to `FUN_0023f108`), the shops' command 30,
-  HUD record 0xc. **Outside ownership**: `reaction_cmd.rs` iterates enemies only, so `npc.rs` puts the
-  townsperson's (and the save point's) candidate into `ReactionOffer` only around `hud_menu::mirror_reaction`
-  (for the HUD's capsule) and reads the accept key itself; `reaction_cmd`'s own accept then logs `reaction:
-  accept pressed, nothing offered` for the same press. The clean form is `reaction_cmd::offer` calling
-  `npc::part_offer` / the save points and `accept` dispatching Execute 0x1f / 0x37 to them.
+  HUD record 0xc.
+  **Status (WP-E3b):** the accept is `reaction_cmd::accept`: with no enemy offer it takes the candidate that
+  `npc.rs` / `savepoint.rs` built with `npc::part_offer` (held in `Talk::offer`; `reaction_cmd::native_offers`
+  now walks an enemy's parts through the same `part_offer` instead of a copy) and dispatches by the row's
+  Execute: 0x1f (the talk, `FUN_00177b18` case 0x1f) and 0x37 (the save point, case 0x37) are left in
+  `Talk::accepted` for `npc::talk_step` / `savepoint::point_use`; any other Execute (the shops' 30, ...) logs
+  `reaction: accepted command N (Execute E): not ported`. `npc.rs`'s own accept key is gone (R and
+  `KH2_REACTION_PRESS` are read once, by `reaction_cmd`), and the misleading `accept pressed, nothing offered`
+  no longer follows a talk. Still only the HUD's capsule needs the candidate in `ReactionOffer`
+  (`npc::talk_show_offer` / `talk_hide_offer` around `hud_menu::mirror_reaction`, outside this WP's files).
+  The offer and the accept run one fixed tick apart (the accept reads the candidate of the tick before).
 - **E4 Save points.** Type-7 objects, effect elements 1/2, heal while command 55 is offered, the world point bit.
   Accept: log `save point heal` when HP was below max; screenshot of the point.
   **Status (WP-E4):** `savepoint.rs` spawns every type-7 entity of the loaded groups (no mesh: an effect
-  bound to the record's place), starts element 1, sets the world point's bit (`SavePoints::world_bits`; the save
-  block in `progress.rs` does not hold 0x33f910 yet), offers command 55 from the cylinder part with the status of
+  bound to the record's place), starts element 1, sets the world point's bit (kept in the save block's story,
+  `progress::Story::set_world_point` / `world_point`, 0x33f910; WP-E3b; state-file key `world_points`; the bit is set
+  when the point is created, `FUN_00194ab8` -> `FUN_00194fa8`, not when it is used), offers command 55 from the cylinder part with the status of
   `FUN_001ba2c0` case 0x37 (the drive form is the only bit of 0x35fec0 the app knows), heals Sora 1 HP and 1 MP a
   frame while the offer is available (`FUN_00194c08`; MP left alone during a charge), starts element 2 while
   something is restored and ends it after (`FUN_00194b98`), and logs the use (`FUN_001784b8`: menu kind 1 with

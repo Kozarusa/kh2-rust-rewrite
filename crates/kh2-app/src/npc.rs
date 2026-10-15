@@ -61,7 +61,7 @@ impl Plugin for NpcPlugin {
             .add_systems(FixedUpdate, (npc_spawn, npc_update).chain().in_set(Sim::Enemy).after(crate::enemy::spawn_waves))
             // After the reaction manager's own offer and accept (`reaction_cmd`, `Sim::Effects`).
             .add_systems(FixedUpdate, (talk_offer, talk_step).chain().after(Sim::Effects).before(Sim::Sounds).run_if(sim_running))
-            .add_systems(Update, (talk_keys, talk_lock_pad).chain().after(Frame::Pad).before(Frame::Hud))
+            .add_systems(Update, talk_lock_pad.after(Frame::Pad).before(Frame::Hud))
             .add_systems(Update, (talk_show_offer.before(mirror_reaction), talk_hide_offer.after(mirror_reaction)).in_set(Frame::Hud));
     }
 }
@@ -653,8 +653,9 @@ pub struct Talk {
     pub offer: Option<crate::reaction_cmd::Active>,
     /// The townspeople's own candidate (for the log).
     npc_offer: Option<crate::reaction_cmd::Active>,
-    /// The accept key (R, or `KH2_REACTION_PRESS`) was pressed.
-    press: bool,
+    /// The offer `reaction_cmd::accept` dispatched this tick (Execute 0x1f here, 0x37 in
+    /// `savepoint.rs`): the accept key was pressed while this candidate held the player's slot 1.
+    pub accepted: Option<crate::reaction_cmd::Active>,
     run: Option<TalkRun>,
 }
 
@@ -686,11 +687,6 @@ impl Talk {
     /// Whether a talk runs (the player's control is locked, bit 0 of 0x1d5d7b8).
     pub fn running(&self) -> bool {
         self.run.is_some()
-    }
-
-    /// Takes a pending accept press (for the save points' use, `savepoint.rs`).
-    pub fn take_press(&mut self) -> bool {
-        std::mem::take(&mut self.press)
     }
 }
 
@@ -825,18 +821,6 @@ pub(crate) fn talk_offer(
     }
 }
 
-/// The accept key for the townspeople's offers: R (Triangle), or `KH2_REACTION_PRESS=<s>[,<s>...]`
-/// (as `reaction_cmd` reads it).
-fn talk_keys(keys: Res<ButtonInput<KeyCode>>, time: Res<Time>, mut talk: ResMut<Talk>, mut scripted: Local<Option<Vec<f32>>>) {
-    let at = scripted.get_or_insert_with(|| {
-        std::env::var("KH2_REACTION_PRESS").map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect()).unwrap_or_default()
-    });
-    let (now, dt) = (time.elapsed_secs(), time.delta_secs());
-    if keys.just_pressed(KeyCode::KeyR) || at.iter().any(|&t| now >= t && now - dt < t) {
-        talk.press = true;
-    }
-}
-
 /// While a talk runs the player's control is locked (bit 0 of 0x1d5d7b8, FUN_001b7d50): the pad
 /// reads as untouched.
 fn talk_lock_pad(talk: Res<Talk>, mut pad: ResMut<crate::sora::Pad>) {
@@ -865,8 +849,8 @@ fn talk_hide_offer(talk: Res<Talk>, mut slot: Option<ResMut<crate::reaction_cmd:
     }
 }
 
-/// The accept (FUN_0019c670 -> FUN_001cf030 -> FUN_00177b18 case 0x1f) and the talk task
-/// (FUN_001a5728) step by step.
+/// The talk task (FUN_001a5728) step by step. The accept itself (FUN_0019c670 -> FUN_001cf030 ->
+/// FUN_00177b18 case 0x1f) is `reaction_cmd::accept`, which leaves the offer in `Talk::accepted`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn talk_step(
     mut talk: ResMut<Talk>,
@@ -878,24 +862,13 @@ pub(crate) fn talk_step(
 ) {
     use kh2_ard::libretto::Op;
     let talk = &mut *talk;
-    let press = std::mem::take(&mut talk.press);
     if talk.run.is_none() {
-        let (Some(o), true) = (talk.offer, press) else { return };
-        if o.status != crate::reaction_cmd::Status::Available {
-            if reaction_log() {
-                info!("reaction: accept pressed for command {}, refused ({:?})", o.cmd, o.status);
-            }
-            return;
-        }
-        let Some(c) = rules.as_deref().and_then(|r| r.cmd(o.cmd)) else { return };
+        // Only a townsperson's Execute 0x1f is this talk (the save points take their own 0x37 in
+        // `savepoint::point_use`, which runs first); everything else was answered by `reaction_cmd`.
+        let Some(o) = talk.accepted.filter(|o| npcs.contains(o.from)) else { return };
+        talk.accepted = None;
+        let Some(c) = rules.as_deref().and_then(|r| r.cmd(o.cmd)).filter(|c| c.execute == EXECUTE_TALK) else { return };
         let (Ok((mut stf, mut s)), Ok((mut ntf, mut npc, brain))) = (sora.single_mut(), npcs.get_mut(o.from)) else { return };
-        if c.execute != EXECUTE_TALK {
-            // Execute 0x1e (the shops' 30, FUN_001a54a8), 0x20, 0x37 and the others are not this talk.
-            if reaction_log() {
-                info!("reaction: accepted command {} (Execute {}) from {}: not ported for townspeople", o.cmd, c.execute, brain.tag);
-            }
-            return;
-        }
         // FUN_00177d28: the player's velocities are cleared.
         s.motor.vel = Vec3::ZERO;
         // FUN_001a5728: the player faces the target (FUN_0016a948 with the target point minus his

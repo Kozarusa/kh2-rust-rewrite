@@ -507,10 +507,12 @@ tt37; tt40 -> tt19 and area 100. The full list is in the test output.
     previous follower +0xaa0 takes kind 4, the follower is reset and +0xb00 = +0xb18 + 60
     (`DAT_0037ab84`); the script goes to mode "after_talk" (`FUN_001870d8` / `FUN_00186db0`, string
     0x37ab78) when it has one), the camera comes back (`FUN_00159768`), the heads, the lock bit
-    (`FUN_001b7d18`) and the flags are cleared, `FUN_001befc0(0xc)`. Command 30 (`FUN_001a54a8`, the
-    shop people) runs the same table with callback `FUN_001a5608` (window class `FUN_001ab7d8`, wait
-    `FUN_001a5b18(0xe)`) around the script's "before_check" mode (`FUN_00189eb8`, string 0x37ab68)
-    [read, not ported].
+    (`FUN_001b7d18`) and the flags are cleared, `FUN_001befc0(0xc)`. Command 30 is **Examine** (message
+    0x81eb; WP-SH1 corrects "the shop people"): `FUN_001a54a8` runs the same table with the task `FUN_001a5510`
+    (the player faces the target; no talk camera, no motion 0x32) and callback `FUN_001a5608` (window class
+    `FUN_001ab7d8`, wait `FUN_001a5b18(0xe)`) around the script's "before_check" mode (`FUN_00189eb8`, string
+    0x37ab68) [ported in WP-SH1: `npc::talk_step`, window class 2]. The shops are the "Shop" rows (Execute 0x7f,
+    `FUN_00177b18` case 0x7f -> `FUN_00197b70`): docs/menus.md section 21.
   - **The window** (docs/hud.md "Message windows"). The base update `FUN_001ab170`: state 1 waits
     for the page (`FUN_001a8b48`) and starts the prompt (`FUN_001aa3a0`), state 2 reads the pad
     (`FUN_001aa430`: logical bits 0x40c, sound 0x18 `FUN_002c14a8`, then `FUN_001aacd8`: the next page
@@ -851,7 +853,7 @@ Each stage ends with `verify.ps1` passing and the named check.
   kind-4 follower's timer (360..720 frames) ran out 1.8 s into the talk and `rtn_default` left
   `encount_player` for `path_move`, so the townsperson walked on while talking [to compare with footage].
   Not ported: the talk camera (`FUN_00159688` / `FUN_00159768`, camera.rs), the party's head turns, the
-  wait's early end (`FUN_001a5b18`), op 3 events (0x65 goes to `FUN_0023f108`), the shops' command 30,
+  wait's early end (`FUN_001a5b18`), op 3 events (0x65 goes to `FUN_0023f108`; the shop events 0x13, 0x66.. are menu kind 4, docs/menus.md 21),
   HUD record 0xc.
   **Status (WP-E8):** the talk camera is ported (docs/camera.md "Talk camera (mode 4)"): `npc::talk_step`
   builds the shot from the townsperson's collision record of type 0x13 with the talk part's index

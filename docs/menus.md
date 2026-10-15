@@ -59,7 +59,7 @@ returns to the field through `FUN_001038a0` (the saved return hook `DAT_0033e794
 | 3 | 2 | `FUN_002756f8` / `FUN_00275bd8` | **Jiminy's Journal** (loads `jmemo.2ld`); the camp's Journal entry leaves the camp for this scene (section 20) |
 | 1 | 3 | `FUN_00255598` / `FUN_00255608` | **the save points' save screen** (mode word 0x36cd28: 0 world point, 2 save point; section 18.4) |
 | 2 | 4 | `FUN_002589f0` / `FUN_00258a68` | [I] title: load/save file screens (`FUN_00258b38` loads `save.2ld`, index 1) |
-| 4 | 5 | `FUN_0025f168` / `FUN_0025f710` | [I] shops and synthesis (opened by field events 0x13, 0x66..0x75, 0x83..0x85, 0x8a through `FUN_00197b70`; uses `itemshop.2ld`, index 4) |
+| 4 | 5 | `FUN_0025f168` / `FUN_0025f710` | **shops** and synthesis (opened by field events 0x13, 0x66..0x75, 0x83..0x85, 0x8a through `FUN_00197b70`; uses `itemshop.2ld`, index 4; section 21) |
 | 6 | 6 | `FUN_0025f038` | [I] |
 | 7 | 0x32 | `FUN_002540c8` / `FUN_00254210` | **the in-field save menu** wrapper; starts kind 8 as its page machine |
 | 8 | -1 | `FUN_0026f420` / `FUN_0026f468` | the save pages (sub-menu of kind 7) |
@@ -1169,3 +1169,115 @@ node's box once.
 `FUN_002a2f38`, `FUN_002a3008`, `FUN_002a31e8`, `FUN_002a3540`, `FUN_002a3da0`, `FUN_002783f8`, `FUN_00237678`,
 `FUN_00237698`, `FUN_0024f0b8`, `FUN_0024f3c0`, `FUN_0024f4d0`, `FUN_0024f4e0`, `FUN_0024f4f0`, `FUN_00250ec8`,
 `FUN_00296278`, `FUN_00296458`, `FUN_00296470`, `FUN_001038a0`, `FUN_00103d58`, camp handler 0x251c38 (instructions).
+
+## 21. Shops: menu kind 4 (WP-SH1)
+
+### 21.1 Who opens a shop [V]
+
+Command 30 is **"Examine"** (cmd row 30: Execute 0x1e, message 0x81eb), not a shop. The shopkeepers offer the **"Shop"**
+rows (cmd rows 195..212: message 0x84c7, Execute 0x7f; also 213, 453 and 622 with Execute 0x7f and a shop event). Their
+Arguments (cmd +4) are the shop events: 195 0x66, 196 0x74, 197..200 0x6c..0x6f, 201..204 0x70..0x73, 205 0x75, 206..208
+0x83..0x85, 209..212 0x67..0x6a, 213 0x6b, 453 0x13, 622 0x8a (`menu_shop::tests::the_disc_shop_file_rows_and_shopkeepers`).
+Twilight Town's shopkeepers (townspeople, objentry type 15): tt06 `k01_` `N_EX650_TT_ITEM_RTN` (212, event 0x6a, "Wantz's
+Item Shop"), tt06 `z70_` `N_EX700_TT_WEAPON_RTN` (209, 0x67), tt07 `170_` `N_EX640_SHOP_RTN` (213, 0x6b), `q70_`
+`N_EX680_TT_PROTECT_RTN` (210, 0x68), `t70_` `N_EX690_TT_ACCE_RTN` (211, 0x69); their groups are loaded by tt06 evt
+programs 0xe, 0x10..0x14 and tt07 evt programs 0x10, 0x12, 0x16.
+
+- Offer: the availability switch `FUN_001ba2c0` treats Execute 0x7f as it treats 0x37 (the save point): status 5 while
+  `FUN_001c6c08(0x35fec0, 0)` answers non-zero; then the row's flags and form mask (`FUN_001b70b8`, `FUN_001b7290`).
+- Accept: Sora's class handler gives Execute 0x7f to `FUN_00177b18`, case 0x7f: `FUN_00197b70(halfword +6 of the pending
+  command record at actor +0xb44, 0)`. [inferred: that halfword is the row's Argument; its writer was not traced. Every
+  row with Execute 0x7f whose Argument is a shop event has a record in the shop file.]
+- `FUN_00197b70` sends 0x13, 0x66..0x75, 0x83..0x85, 0x8a to `FUN_0024f0b8(4, event)`: menu kind 4, mode word = event.
+- Examine (`FUN_001a54a8`): `FUN_001bef48(0xc)`, `FUN_001b7ce8(0)`, `FUN_001a53f8(target +0x500, player, record, task
+  FUN_001a5510, callback FUN_001a5608)`. The task turns the player to the target, runs the class-5 script's
+  "before_check" mode around the program (`FUN_00189eb8`, `FUN_00189f28` = `FUN_00189ff0(0)`), and unlocks unless an event
+  runs. The callback's op 1 opens window class `FUN_001ab7d8` (`FUN_001aaf20(win, 3, 4, message, 0, 0x100, 0x20, 3)`:
+  class 2 of `kh2_image::window::CLASSES`, at the top of the screen) and waits for state 3 or `FUN_001a5b18(0xe)` = 0.
+  On the disc the Examine targets are mostly `F_EX000` gimmicks (objentry type 8, 262 entities over all worlds) and one
+  townsperson (tt03 `a61_` `B_EX110_RTN`); every program is one message, none fires a shop event.
+- Text command 0x12 (`FUN_001a8978`, a page's layout) also calls `FUN_00197b70(u16, 0)`; no shop message uses it.
+
+### 21.2 The shop file [V]
+
+`FUN_00193610` keeps `03system.bin`'s type-0x29 entry ("shop") through `FUN_00265ac0` (`DAT_0036cfe4`). `FUN_00265660`:
+magic `TZSH` (u32 0x48535a54), u16 version 7 at +4. +6 i16 record count (21 on the disc), +0xc u32 offset of a list of up
+to 0x80 item ids (`FUN_00265ad0`: an item's place in it is its bit in the save's array at +0x3714, the shop's "new" marks,
+`FUN_00265280`), +0x10 the records, 0x18 bytes each: +0 event, +2 a record bit (array 0x33fdb0), +4 the header message
+(the shop's name), +6..+0xc four words copied to the state [GAP: their readers], +0xe flags, +0x10 group count, +0x14 u32
+group offset. A group is 8 bytes: i16 record bit (negative: always on), u16 count, u32 offset of `count` item ids.
+
+`FUN_00265688(event, state)` (the state is 0x820 bytes at `DAT_0036cfbc`): the record whose +0 is the event; its record
+bit is set when clear (`FUN_001a52b0`); state +0 = message, +2..+8 the words, +0xc bit 0 = flag 0x100, bit 1 = flag 0x200,
++0xd = (flag 0x80 clear and the first group has items). Each group that is on adds its items with the kind mask 0x1f;
+with flag 0x80 the always-on groups of every other record whose record bit is set and whose own flag 0x80 is clear add
+theirs, with the record's flags word as the mask. An item is added once (`FUN_00265970`) and only when its kind bit
+(`FUN_00265a50`: item type 0, 1 -> 8; 2..0xd -> 1; 0xe -> 2; 0xf -> 4; 0x10 -> 0x10) is in the mask. Twilight Town's
+weapon, armor, accessory and item shops have flags 0x181, 0x182, 0x184, 0x188 (one kind each, shared); the moogle
+records 0x31f (every kind, the third row, gated groups 0x49..0x60 of synthesis materials).
+
+### 21.3 The pages [V]
+
+Init `FUN_0025f168`, task `FUN_0025fc18`: loads `itemshop.2ld` (`FUN_0024f738(4)`), builds the screen (`FUN_0025fcd8`,
+`FUN_0025fef0`), opens with sound kind 0x10 when state +0xc bit 1 is set, else 0xb, and runs `FUN_00260540` each frame.
+Layout triples (enter, leave, hold) at 0x381240: (0xf, 0x11, 0x10), (4, 6, 5), (0xc, 0xe, 0xd) (`FUN_00263f00`).
+
+- **Page 0** (`FUN_00260748`): four rows from the table 0x381300 (0x24 bytes, the camp entry layout): Buy 0x8acc, Sell
+  0x8acd, Synthesize 0xbbb5, Quit 0x8ace. `FUN_00264da8`: Buy and Sell need state +0xc bit 0 and a non-empty list, the
+  third row bit 1, Quit always. Confirm: Buy -> page 1, Sell -> page 4, the third row -> page 8 (`FUN_00284c10` and the
+  synthesis pages), Quit or a cancel -> the end. -4 (Start) ends it from any page.
+- **Pages 1 / 4** (`FUN_00260ec8`): the buy list (state +0xa count, +0x10 ids) or the sell list (`FUN_00264be8`: every
+  item row in table order with a type below 0x12, a count, and a sell price; +0x41a count, +0x420 ids, +0x620 counts).
+  `FUN_00265550` refuses a row (the refused sound): buying when the player has more than 0x62 or the price (item +0xc)
+  is above the munny (save +0x1600, `FUN_0023e5c0`); selling when the sell price (item +0xe) is 0. A confirm writes the
+  selection (`DAT_0036cfc4`: item +2, count +4 = 1, price +6, total +8) and goes to page 2 / 5; a cancel to page 0.
+- **Pages 2 / 5** (`FUN_002614e0`, `FUN_00261a28`): the pad bits 0x10, 0x20, 0x40, 0x80 (Up, Down, Left, Right) step the
+  count by +1, -1, -10, +10. Buying, owned + count stops at 99 and a step the munny does not cover is cut to what it
+  covers (none: refused); selling stops at the owned count; the count stays at least 1. Confirm -> page 3 / 6, cancel ->
+  page 1 / 4.
+- **Pages 3 / 6** (`FUN_00261d70`, rows by `FUN_00261bf8`): row 0 "No" (0x8ad0), row 1 "Yes" (0x8acf), the cursor on row 0.
+  Row 0 or a cancel: sound kind 8, back to page 2 / 5. Row 1: sound kind 0xf; buying `FUN_0023e6b0(total)` (munny down)
+  and `FUN_001a1a18(item, count)`; selling `FUN_0023e620(total)` and `FUN_001a1c30(item, count)` (`FUN_00283480` when the
+  item is gone); then the munny digits, the lists again (`FUN_00264be8`) and page 1 / 4.
+- **Page 7** (`FUN_00262140`, `FUN_002621a0`): when `FUN_00265498` (flags not 0x200 alone, and the save's byte +0x3724 bit
+  `1 << (state +0xd != 0)` clear) the shop opens on a text (0x381128 or 0x38112c) and sets that bit [not ported].
+- The end (`FUN_00260540` once closing): waits for the objects, `FUN_00284ae0`, `FUN_00262de0`, `FUN_001038a0` (back to
+  the field).
+
+### 21.4 What the port does (`crates/kh2-app/src/menu_shop.rs`)
+
+`reaction_cmd::status` offers Execute 0x7f rows (blocked in a drive form, the part of 0x35fec0 the app has [approx]);
+`reaction_cmd::accept` turns an accepted Shop row into `ShopRequest(event)`. `ShopPlugin` reads the shop file, the item
+table and `itemshop.2ld` on the first request, builds the stock (`menu_shop::stock`, the record bit kept in
+`Progress::record_bit`), dims the field and freezes it (`Pause::menu`), and runs pages 0..6 with the rules above
+(`menu_shop::Flow`, `step_quantity`, `row_open`, `sell_list`, `deal`). The frame is the layout triple's enter layout
+holding on its hold layout; the rows, names, prices, counts, the detail line, the question and the munny are text labels
+the port places [inferred positions, not read from the list widget]. A close plays the leave layout and the camp's
+close dim. Examine (command 30) runs the talk program in window class 2 (`npc.rs`).
+
+Not ported: the third row (synthesis, page 8 and after), page 7 (the first-visit text), the "new" marks (save +0x3714),
+the list widget's own look (row plates, the pointer, scrolling), the help line, the munny plate's digits art, the open
+sound's exact entry [inferred: kind k is the u16 at 0x37f654 + 2 k, the rule of kinds 0xc and 0xd].
+
+Harness: `KH2_PROGRAMS=0,0,10 KH2_NPC_WATCH=2 KH2_NPC_WATCH_DIST=60 KH2_STATE=<{"munny": 500}> KH2_REACTION_PRESS=8
+KH2_KEYS=10:J,10.6:J,11.2:Up,11.8:J,12.4:Down,13:J kh2-game tt06` buys two Potions at Wantz's. Log lines: `reaction:
+accepted command 212 (Execute 0x7f, FUN_00177b18): event 0x6a`, `shop: open menu kind 4`, `shop: page 1 -> page 2`,
+`shop: bought item 0x1 x2 for 80`, `shop: close`, `shop: menu kind 4 (0x6a) closed`.
+
+### 21.5 Decompile index (WP-SH1)
+
+| address | what |
+|---|---|
+| 0x177b18, 0x1778e8, 0x1ba2c0 | the Execute switch (case 0x7f), the pending command, the availability switch (case 0x7f) |
+| 0x197b70, 0x24f0b8 | events to menu kind 4 |
+| 0x1a54a8, 0x1a5510, 0x1a5608, 0x1a53f8, 0x1a53b8, 0x1ab7d8, 0x1aaf20, 0x1aacb0, 0x189eb8, 0x189f28 | Examine |
+| 0x1a8978 | text command 0x12 fires an event |
+| 0x193610, 0x265ac0, 0x265650, 0x265660, 0x265688, 0x265970, 0x265a50, 0x265ad0, 0x265280 | the shop file and the stock |
+| 0x25f168, 0x25fc18, 0x25fcd8, 0x25fef0, 0x264da8, 0x264e20, 0x265498 | init, task, screen, top rows |
+| 0x260540, 0x260748, 0x260ec8, 0x2614e0, 0x261910, 0x261a28, 0x261bf8, 0x261d70, 0x262140, 0x2621a0, 0x263f00 | the pages |
+| 0x264b98, 0x264be8, 0x265550, 0x255588, 0x1a6730, 0x23e5c0, 0x23e6b0 | rows, the sell list, the refusals, munny |
+| data 0x381240, 0x381300, 0x37f654, 0x381128 | layouts, top rows, sound kinds, first-visit texts |
+
+Gaps: the writer of the pending command's +6 (searched: `FUN_001778e8`, `FUN_0019c670`); the readers of the record's words
++6..+0xc; `FUN_001c6c08`'s bits 2 and 3 of 0x35fec0; `FUN_001a5b18(0xe)`; `FUN_0023e680`; the list widget's positions
+(`FUN_00296b48`, `FUN_0029b600`, `FUN_00296d10`); pages 7, 8 and after.

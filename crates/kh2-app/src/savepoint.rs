@@ -493,7 +493,8 @@ mod tests {
         }
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0] & 0x7fff, 0xa7e, "row 0 is the Save row of the field menu");
-        assert_eq!(msgs.text(rows[1] & 0x7fff).as_deref(), Some("World Map"), "row 1, the world point's");
+        assert_eq!(rows[1] & 0x7fff, 0xa80, "row 1 is the world point's World Map row (message 0x8a80)");
+        assert!(msgs.text(rows[1] & 0x7fff).is_some(), "the message exists in sys.bar");
         for id in [0x8a7b_u32, 0x8a7c, 0x8a7d] {
             eprintln!("row 1 question (0x380cb0): message {id:#x} {:?}", msgs.text(id & 0x7fff));
         }

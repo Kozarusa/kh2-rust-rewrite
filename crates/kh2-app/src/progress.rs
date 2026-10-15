@@ -1625,6 +1625,9 @@ pub struct Story {
     world_bits: [u32; 2],
 }
 
+/// Records of `00worldpoint.bin` `FUN_00194f68` searches (it returns an index 0..=0x35, else -1).
+const WORLD_POINT_RECORDS: usize = 0x36;
+
 /// `Story` behind a lock, shared by `Progress` and the script hosts.
 #[derive(Clone, Debug, Default)]
 pub struct StoryHandle(Arc<std::sync::Mutex<Story>>);
@@ -1771,8 +1774,13 @@ impl Story {
         [b(0), b(1), b(2)]
     }
 
-    /// `FUN_00194fa8`: sets world-point bit `i` (`None` past the two words).
+    /// `FUN_00194fa8`: sets world-point bit `i`. The bit is the record index `FUN_00194f68` finds in
+    /// `00worldpoint.bin`, which stops after 0x36 records (docs/events.md section 4), so an index from
+    /// `WORLD_POINT_RECORDS` up is ignored (it cannot come from the lookup; the two words end at 64).
     pub fn set_world_point(&mut self, i: usize) {
+        if i >= WORLD_POINT_RECORDS {
+            return;
+        }
         if let Some(w) = self.world_bits.get_mut(i >> 5) {
             *w |= 1 << (i & 31);
         }
@@ -2108,7 +2116,7 @@ mod tests {
     /// leaves the other slots (and the empty slots between them) alone.
     #[test]
     fn ability_toggle_sets_and_clears_bit_15_of_the_right_slot() {
-        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        let p = Progress::from_block(&[], ix.clone());
         let r = Progress::member_off(SORA).unwrap();
         p.put_ability(r, 82, true);
         p.put_ability(r, 162, false);
@@ -2132,7 +2140,7 @@ mod tests {
     /// The same as `prize::growth_upgrade` (the array form the form level-up log uses).
     #[test]
     fn growth_upgrade_keeps_the_equipped_bit_and_matches_the_array_form() {
-        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        let p = Progress::from_block(&[], ix.clone());
         let r = Progress::member_off(SORA).unwrap();
         p.put_ability(r, 82, true);
         let chains = crate::prize::GrowthChains([[0; 5], [0, 94, 95, 96, 97], [0, 98, 99, 100, 101], [0; 5], [0; 5]]);
@@ -2174,7 +2182,7 @@ mod tests {
         let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| tb.archive.iso().read(p).ok()).expect("executable");
         let mut ee = Ee::new();
         ee.load_elf(&elf).expect("elf");
-        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        let p = Progress::from_block(&[], ix.clone());
         let r = Progress::member_off(SORA).unwrap();
         p.put_ability(r, 82, true);
         p.put_ability(r, 162, false);
@@ -2208,7 +2216,7 @@ mod tests {
     /// The Customize writers: the shortcut words and the spell switch bits, and the stat boost bytes.
     #[test]
     fn shortcuts_spell_switches_and_boosts_write_their_words() {
-        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        let p = Progress::from_block(&[], ix.clone());
         assert_eq!(p.shortcuts(), [0; 4]);
         assert!(p.set_shortcut(2, 0x1234));
         assert_eq!((p.shortcut(2), p.shortcut(0), p.shortcut(4)), (0x1234, 0, 0));
@@ -2240,7 +2248,7 @@ mod tests {
     /// `FUN_00274f70`'s slot loop and `FUN_00275288`'s question test.
     #[test]
     fn auto_reload_reserves_and_releases_every_slot_of_the_item() {
-        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        let p = Progress::from_block(&[], ix.clone());
         let r = Progress::member_off(SORA).unwrap();
         p.set_item_slots(r, 4);
         // Slot 0 carries item 1, slot 1 reserves 1 and is empty, slot 2 carries item 3, slot 3 is free.
@@ -2614,7 +2622,17 @@ mod tests {
         p.story().set_world_point(1);
         p.story().set_world_point(33);
         p.story().set_world_point(0x36 + 100); // past the two words: ignored
+        p.story().set_world_point(63); // inside the second word, but not a record (0x36 of them): ignored
+        p.story().set_world_point(64); // the first bit past the two words: ignored
         assert!(p.story().world_point(1) && p.story().world_point(33) && !p.story().world_point(2));
+        assert!(!p.story().world_point(63) && !p.story().world_point(64));
+        p.story().set_world_point(0x35); // the last record
+        assert!(p.story().world_point(0x35));
+        p.story().set_world_point(0x36); // one past the last record
+        assert!(!p.story().world_point(0x36));
+        let p = Progress::from_block(&[], ix.clone());
+        p.story().set_world_point(1);
+        p.story().set_world_point(33);
         let text = p.story_json();
         assert_eq!(text, r#"{"story_flags": [], "world_points": [1, 33]}"#);
         let mut q = Progress::from_block(&[], ix);

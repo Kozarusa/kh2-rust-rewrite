@@ -411,8 +411,11 @@ fn twilight_town_tt01_short_events() {
         }
     }
     for tag in ["100", "200", "400", "600"] {
-        let Some(d) = ard.events.get(tag) else { continue };
+        let d = ard.events.get(tag).unwrap_or_else(|| panic!("tt01 holds event {tag}"));
         let cmds = kh2_ard::parse_event(d).expect("event");
+        assert!(!cmds.is_empty(), "tt01 event {tag} has commands");
+        // Opcode 8 is the end marker the timeline thread waits for (docs/events.md, FUN_00222668).
+        assert!(cmds.iter().any(|c| c.opcode == 8), "tt01 event {tag} has its end opcode 8");
         for c in &cmds {
             eprintln!("tt01 {tag}: op {:#x} ({} bytes) {:02x?}", c.opcode, c.data.len(), c.data);
         }

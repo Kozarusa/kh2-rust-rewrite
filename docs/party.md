@@ -942,8 +942,8 @@ with a hand object; no script error). Log (tt04 b_44, `KH2_PARTY_ABILITIES=-423,
 `hand object off the hand (1.102)`, `attack object 0x7a000001: atkp 1161 ..`, `.. hits 2985v0: atkp 1161`,
 `its routine R10f7 runs (2.38, FUN_0018cf50)`, `target record now names 2985v0 (1.160 ..)`, `hand object back on
 the hand (1.18)`, `script mode "blade" -> "-"`, then `P_EX030 chose record 5 Attack ..`: Goofy goes on choosing
-(before: BadAddress(0) at 0x0e14 and the mode waited forever). With no hand object (the new game's weapon word 0
-without `KH2_PARTY_WEAPONS`) 1.234 answers 0 and the script still fails as before.
+(before: BadAddress(0) at 0x0e14 and the mode waited forever). (The members held items 75 / 49 in these runs without
+`KH2_PARTY_WEAPONS` too.) A member without a hand object gets 0 from 1.234, and the script fails as before.
 
 **Blizzard** (`P_EX020` R0a19 -> R0acf, request thread R0af8) [V for the script]. The cast (motion 191, the
 trigger, MP, element 3 on Donald) starts a request (2.20) of 288 bytes at R0af8 with the facing: element 4 of

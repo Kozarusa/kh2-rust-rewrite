@@ -1876,8 +1876,8 @@ fn bar_pos(j: &Journal, scene: &mut MenuScene, pos: usize) {
     let Some(bar) = o.bar else { return };
     let g = scene.seqs.get(j.seq_base + SEQ_LIST).and_then(|s| s.groups.get(o.bar_group)).copied().unwrap_or_default();
     let y = bar.offsets(pos as i32);
-    for k in 0..3 {
-        scene.nodes[j.nodes.scroll[k + 1]].off = [g.x as f32, (g.y as i32 + y[k]) as f32];
+    for (k, dy) in y.into_iter().enumerate() {
+        scene.nodes[j.nodes.scroll[k + 1]].off = [g.x as f32, (g.y + dy) as f32];
     }
 }
 

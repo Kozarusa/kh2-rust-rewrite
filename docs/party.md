@@ -608,7 +608,7 @@ Each stage ends with `verify.ps1` passing and the named check.
   the same bit the warp's spot test rejects (FUN_001108c8 after FUN_00143840). Which collision sets it was not
   read; the app counts a tick whose step was blocked [I].
 - Attacker callback FUN_00110728, the combo follow-up FUN_001b0758, item use FUN_001a1fc0 fields.
-- The meaning of the settings' values 0..3 (WP-PA4: the menu offers 0 "Often"-type, 1, 2 "Last hope!", never 3; the page's
+- The meaning of the settings' values 0..3 (WP-PA4: the menu offers 0 Free / Often, 1 Well-Balanced, 2 Rare / Last hope!, never 3; the page's
   messages say how it reads) and the styles 0..5 (Technic, Target, Huddle, Party, Sora, Relentless Attack: messages
   0x486..0x48b, docs/menus.md 14b; what each does is the target table of section 4).
 - Who writes the save slot bytes at new game; `lvup` table order beyond Sora.

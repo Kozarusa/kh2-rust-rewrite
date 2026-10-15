@@ -325,18 +325,27 @@ pub fn story_metrics(pitch: i32, size: i32, font_gap: i32) -> (i32, i32) {
     (pitch.max(size + font_gap), gap)
 }
 
-/// Page 3's state machine (`FUN_002a5218`): Up/Down move the first line shown [inferred: one line, no wrap],
-/// -2 goes back to page 2, -4 ends the scene.
+/// Page 3's state machine (`FUN_002a5218`): Up/Down move the first line shown [inferred: one line, no wrap]; L1 /
+/// R1 a page of ten (the list's page step +0x1c = 10, `FUN_00299010`; with +0x27 set by `FUN_00298fe0(list, 1)`
+/// the list pages itself, `FUN_00298370`, instead of returning -9 / -8) [inferred: clamped at the ends]; -2 goes
+/// back to page 2, -4 ends the scene.
 pub fn page3(key: Key, top: usize, count: usize) -> Act {
-    match key {
-        Key::Start => Act::Close,
-        Key::Cancel => Act::Back,
+    let last = count.saturating_sub(1);
+    let to = match key {
+        Key::Start => return Act::Close,
+        Key::Cancel => return Act::Back,
         Key::Move(_, dy) if dy != 0 => {
             let to = top as i64 + i64::from(dy.signum());
-            if to < 0 || to >= count as i64 { Act::None } else { Act::Cursor(to as usize) }
+            if to < 0 || to > last as i64 {
+                return Act::None;
+            }
+            to as usize
         }
-        _ => Act::None,
-    }
+        Key::L1 => top.saturating_sub(STORY_LINES),
+        Key::R1 => (top + STORY_LINES).min(last),
+        _ => return Act::None,
+    };
+    if to == top { Act::None } else { Act::Cursor(to) }
 }
 
 /// The cells of page 0 in order: (record index, picture id). `FUN_002a2248` / `FUN_002a2bc0`: a record with an id
@@ -1584,6 +1593,10 @@ mod tests {
         assert_eq!(page3(Key::Cancel, 2, 4), Act::Back);
         assert_eq!(page3(Key::Start, 2, 4), Act::Close);
         assert_eq!(page3(Key::Confirm, 2, 4), Act::None);
+        assert_eq!(page3(Key::R1, 0, 32), Act::Cursor(10));
+        assert_eq!(page3(Key::R1, 25, 32), Act::Cursor(31));
+        assert_eq!(page3(Key::L1, 5, 32), Act::Cursor(0));
+        assert_eq!(page3(Key::L1, 0, 32), Act::None);
     }
 
     /// The executable's hint, help, plate and icon tables and the story page's groups (skipped without `KH2_ISO`).
@@ -1612,6 +1625,8 @@ mod tests {
         // Twilight Town (journal world 0) has story records, all with a text.
         let all = story_entries(e[1].data, 0, &|_| true);
         assert!(!all.is_empty() && all.iter().all(|r| r.0 != 0));
+        let flags: Vec<u16> = records(e[1].data, 0xc).iter().filter(|r| r[0] == 0).map(|r| u16::from_le_bytes([r[10], r[11]])).collect();
+        eprintln!("Twilight Town story records: texts {:x?}, flags {flags:?}", all.iter().map(|r| r.0).collect::<Vec<_>>());
         let msgs = kh2_image::text::Messages::from_bar(&a.read("msg/us/jm.bar").unwrap()).unwrap();
         for id in t.hints.iter().chain(&t.help).copied().chain([msg::HELP_ROXAS, msg::HELP_STORY]).chain(all.iter().map(|r| r.0)) {
             assert!(msgs.tokens(u32::from(id)).is_some(), "message {id:#x} in jm.bar");

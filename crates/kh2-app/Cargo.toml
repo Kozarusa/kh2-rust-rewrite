@@ -5,6 +5,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "kh2_app"
+path = "src/lib.rs"
+
 [[bin]]
 name = "kh2-game"
 path = "src/main.rs"

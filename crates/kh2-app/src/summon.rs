@@ -1830,4 +1830,87 @@ mod tests {
         }
         eprintln!("oracle: FUN_001c65f0 equal in {n} cases");
     }
+
+    /// The AI slot list of hosts 10.12 / 10.16 without the disc: the first free slot is taken, the flags
+    /// follow the object named, a full list answers 0x18 and changes nothing.
+    #[test]
+    fn summon_ai_slots_take_the_first_free_one() {
+        let who = ai::Who { own: 0x10, player: 0x20 };
+        let mut s = ai::SummonAi::default();
+        assert_eq!(s.start(who, 0, 0x10, 19, u32::MAX, false, 1, 0), 0);
+        assert_eq!((s.slots[0].kind, s.slots[0].flags, s.slots[0].a3, s.slots[0].a4, s.slots[0].a6), (0, 0x21, 19, u32::MAX, 1));
+        assert_eq!(s.start(who, 8, 0x20, 0x4000, 0, true, 1, 0), 1);
+        assert_eq!(s.slots[1].flags, 2 | 8);
+        assert_eq!(s.start(who, 9, 0x10, 0x4000, 0, false, 1, 0), 2);
+        assert_eq!(s.slots[2].flags, 1);
+        s.mark(2);
+        assert_eq!(s.slots[2].flags, 0x4000_0001);
+        // A slot whose effect still runs is not free even with a negative kind (FUN_00117668).
+        s.slots[3].effect = 7;
+        assert_eq!(s.start(who, 1, 0, 0, 0, false, 0, 0), 4);
+        for k in 5..ai::SLOTS {
+            s.start(who, 1, 0, 0, 0, false, 0, 0);
+            assert_eq!(s.slots[k].kind, 1);
+        }
+        let before = s.slots;
+        assert_eq!(s.start(who, 1, 0x10, 0, 0, true, 0, 0), ai::SLOTS);
+        assert_eq!(s.slots, before);
+    }
+
+    /// Oracle: FUN_00117708 (host 10.12) with FUN_00117668 run by kh2-ee on the user's executable against
+    /// `SummonAi::start` over random slot lists and arguments; the player is `DAT_0034e908` (FUN_00111c00(0)).
+    #[test]
+    fn summon_ai_slot_start_matches_the_game() {
+        use kh2_ee::Ee;
+        const STACK: u32 = 0x01ff_0000;
+        const AI: u32 = 0x0180_0000;
+        const OWN: u32 = 0x0181_0000;
+        const PLAYER: u32 = 0x0182_0000;
+        const OTHER: u32 = 0x0183_0000;
+        // Contexts whose word +4 is the object, as the host wrapper 0x2f6d00 reads them.
+        let Some(mut a) = archive() else { return };
+        let exe = elf(&mut a);
+        let mut ee = Ee::new();
+        ee.load_elf(&exe).expect("elf");
+        let who = ai::Who { own: OWN, player: PLAYER };
+        let mut seed = 0x1234_5678u32;
+        let mut next = || {
+            seed = seed.wrapping_mul(0x0019_660d).wrapping_add(0x3c6e_f35f);
+            seed
+        };
+        let mut n = 0;
+        for round in 0..200 {
+            // A random list: some slots taken (kind >= 0), some with an effect left.
+            let mut port = ai::SummonAi::default();
+            for (k, s) in port.slots.iter_mut().enumerate() {
+                let r = next();
+                s.kind = if r & 3 == 0 || round % 50 == 49 { (r >> 8) as i32 & 0xff } else { -1 };
+                s.effect = if r & 0x30 == 0x30 { 0x0190_0000 + k as u32 } else { 0 };
+                s.flags = next();
+                let base = AI + 0x20 + 0x40 * k as u32;
+                ee.w32(base, s.flags);
+                ee.w32(base + 4, s.kind as u32);
+                ee.w32(base + 8, s.effect);
+                for o in [0xc, 0x10, 0x14, 0x18] {
+                    ee.w32(base + o, 0);
+                }
+            }
+            ee.w32(AI + 4, OWN);
+            ee.w32(0x0034_e908, PLAYER);
+            let obj = [0, OWN, PLAYER, OTHER][(next() % 4) as usize];
+            let kind = [0i32, 1, 8, 9, 19][(next() % 5) as usize];
+            let (a3, a4, a6, a7) = (next() & 0xffff, next(), next() & 1, next() & 0xff);
+            let flag = next() & 1 == 1;
+            let got = ee.call(0x0011_7708, &[AI as u64, kind as i64 as u64, obj as u64, a3 as u64, a4 as u64, flag as u64, a6 as u64, a7 as u64], &[], STACK).expect("FUN_00117708") as u32 as usize;
+            let want = port.start(who, kind, obj, a3, a4, flag, a6, a7);
+            assert_eq!(got, want, "round {round}: slot index");
+            for (k, s) in port.slots.iter().enumerate() {
+                let base = AI + 0x20 + 0x40 * k as u32;
+                let game = (ee.r32(base), ee.r32(base + 4) as i32, ee.r32(base + 8), ee.r32(base + 0xc), ee.r32(base + 0x10), ee.r32(base + 0x14), ee.r32(base + 0x18));
+                assert_eq!(game, (s.flags, s.kind, s.effect, s.a6, s.a7, s.a4, s.a3), "round {round} slot {k}");
+            }
+            n += 1;
+        }
+        eprintln!("oracle: FUN_00117708 equal in {n} calls");
+    }
 }

@@ -48,7 +48,7 @@ impl Plugin for AreaJumpPlugin {
             .init_resource::<ExitLocks>()
             .init_resource::<Keyhole>()
             .add_systems(Startup, (load_consts, spawn_fader))
-            .add_systems(FixedUpdate, tick.after(Sim::Sora).before(Sim::Enemy).run_if(crate::schedule::sim_running))
+            .add_systems(FixedUpdate, (tick, unload_area_actors).chain().after(Sim::Sora).before(Sim::Enemy).run_if(crate::schedule::sim_running))
             .add_systems(Update, (load_keyhole, draw_fader).in_set(crate::schedule::Frame::Hud));
     }
 }
@@ -302,6 +302,31 @@ pub enum JumpTask {
     /// The destination is set on `CurrentArea`; waits until it is loaded and Sora is placed.
     Loading { dest: Dest, kind: u32 },
     FadeIn { kind: u32, t: f32 },
+}
+
+/// An actor that belongs to the loaded area: the area's unload removes it (the enemies of `enemy.rs`).
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct AreaActor;
+
+/// The area's unload in the jump task (`FUN_00104d58` -> `FUN_00104ce0`, after the fade-out, before the
+/// destination is applied): `FUN_00168ca0` -> `FUN_001b8800` frees every object of the list at `0x1d5d7e0`, and
+/// `FUN_00168ce8` -> `FUN_00181af8` the loaded spawn groups [inferred: those are the area's actors; the objects'
+/// own teardown was not read]. Here: the task's change to `Loading` despawns every `AreaActor`, once per jump.
+/// The party and Sora stay (the app keeps them across areas).
+pub fn unload_area_actors(task: Res<JumpTask>, mut done: Local<bool>, actors: Query<Entity, With<AreaActor>>, mut commands: Commands) {
+    match *task {
+        JumpTask::Loading { dest, .. } => {
+            if !*done {
+                *done = true;
+                let n = actors.iter().count();
+                for e in &actors {
+                    commands.entity(e).despawn();
+                }
+                info!("jump: area unload (FUN_00104ce0): {n} area actors removed before {}", dest_name(&dest));
+            }
+        }
+        _ => *done = false,
+    }
 }
 
 /// The layout table of fade kind 0 (`FUN_0013a8a8`, 0x355110): the world's `field2d/<lang>/

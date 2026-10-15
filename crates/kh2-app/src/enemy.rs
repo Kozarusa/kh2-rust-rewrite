@@ -709,6 +709,8 @@ pub fn spawn_waves(
                     missions.write(crate::struggle::MissionStart { id: *id, name: name.clone(), orb_pool: g.orb_pool, triggers: g.triggers.clone() });
                 }
             }
+            // The members created here are entities from the next tick on: the groups' walk starts then.
+            return;
         }
         // The kind-2 groups, every tick (FUN_001989d8: the timer runs down by the frame step whether or not the
         // player is inside; `DAT_00356f40` [inferred: one 60 Hz frame per frame]).

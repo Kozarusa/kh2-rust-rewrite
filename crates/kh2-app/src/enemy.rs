@@ -493,7 +493,7 @@ pub fn think(
     sora: Query<&Transform, (With<Sora>, Without<Enemy>)>,
     mut q: Query<(Entity, &mut Transform, &mut Enemy, Has<crate::enemy_ai::AiBrain>)>,
     mut anims: Query<&mut Animator>,
-    (pull_data, spells): (Option<Res<PullData>>, Option<Res<crate::magic::SpellAttacks>>),
+    (pull_data, spells, member_attacks): (Option<Res<PullData>>, Option<Res<crate::magic::SpellAttacks>>, Option<Res<crate::friend_ai::MemberAttacks>>),
 ) {
     let (Some(col), Ok(_)) = (collider, sora.single()) else { return };
     let dt = time.delta_secs().min(0.05);
@@ -518,7 +518,7 @@ pub fn think(
                 // height included [inferred: the blow mover's velocity method adds its own gravity
                 // (FUN_0019e4d8), this one adds none].
                 let (group, p) = e.pull.expect("pull");
-                let at = spells.as_ref().and_then(|s| s.places.get(&group).copied());
+                let at = spells.as_ref().and_then(|s| s.places.get(&group).copied()).or_else(|| member_attacks.as_ref().and_then(|m| m.places.get(&group).copied()));
                 match (at, pull_data.as_ref()) {
                     (Some(at), Some(pd)) => {
                         let centre = tf.translation + spells.as_ref().and_then(|s| s.centres.get(&me).copied()).unwrap_or(Vec3::ZERO);
@@ -673,7 +673,7 @@ pub fn receive_hits(
     mut game: MessageWriter<crate::fx::GameEffect>,
     drive: (Option<Res<crate::drive::DriveRules>>, Option<Res<crate::drive::DriveState>>),
     abilities: Option<Res<crate::abilities::Abilities>>,
-    (pull_data, spells, mut rng): (Option<Res<PullData>>, Option<Res<crate::magic::SpellAttacks>>, Local<PullRng>),
+    (pull_data, spells, mut rng, member_attacks): (Option<Res<PullData>>, Option<Res<crate::magic::SpellAttacks>>, Local<PullRng>, Option<Res<crate::friend_ai::MemberAttacks>>),
     (members, progress, mut form_exp, party): (Query<&crate::party::PartyMember>, Option<Res<crate::progress::Progress>>, MessageWriter<crate::prize::FormExpGain>, Option<Res<crate::party::PartyData>>),
 ) {
     let sora_from = sora.single().map(|s| (s.stats, s.hits)).ok();
@@ -772,9 +772,10 @@ pub fn receive_hits(
         }
         // Reaction class 5 (FUN_00185668 -> FUN_001bf920): the victim keeps the attack object and is
         // pulled toward it (see `think`). `victim_outcome` leaves the class to the caller since the
-        // pull needs the attack object; the app has it for spell attacks (`magic::SpellAttacks`).
+        // pull needs the attack object; the app has it for spell attacks (`magic::SpellAttacks`) and the
+        // party members' script attack objects (`friend_ai::MemberAttacks`, Goofy's `tornado`).
         if matches!(action, VictimAction::NotDecoded { class: 5 }) {
-            let group = spells.as_ref().and_then(|s| s.hit_group(h.target, h.atkp));
+            let group = spells.as_ref().and_then(|s| s.hit_group(h.target, h.atkp)).or_else(|| member_attacks.as_ref().and_then(|m| m.hit_group(h.target, h.atkp)));
             match (group, pull_data.as_ref()) {
                 (Some(group), Some(pd)) => {
                     if rng.0 == 0 {

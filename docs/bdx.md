@@ -125,7 +125,7 @@ Group 0 vector math, `fabs` and the random numbers are implemented inside the cr
 
 ## Named host functions
 
-272 of the 812 distinct host functions called by scripts on the disc are named (73 before work package 1E2); the table has 298 entries counting 26 that no script on the disc calls. The named ones account for 86 percent of all host calls in scripts on the disc and
+273 of the 812 distinct host functions called by scripts on the disc are named (73 before work package 1E2); the table has 299 entries counting 26 that no script on the disc calls. The named ones account for 86 percent of all host calls in scripts on the disc and
 98.7 percent of the calls in the enemy and boss scripts (`obj/M_*`, `B_*`, `H_*`). Argument counts and return flags of every row are checked against the executable's table by a test (`signatures_match_the_executable`). Rows marked "role inferred" have their effect on the object read from the game code but
 their game-level meaning guessed from how scripts use them; rows without that mark that only describe a field ("word at +0xaa8") say what the wrapper does, not what the field is for. "Native" is the address of the host function's wrapper in the executable, "uses" the number of call sites in reachable script code on the disc. Object fields are offsets in the game object.
 Group 0 is the library (math, effect handles, flags), group 1 the scripted object, group 2 attacks and hit records (the layout of the hit record is in `docs/hit-reaction.md`), group 6 bosses and NPCs.
@@ -438,6 +438,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 2.91 | `hit_reaction_class(p) -> i` | 0x18e260 | 11 | reaction class of the hit (FUN_0018b700 on the byte at +0x26) |
 | 2.92 | `hit_kind(p) -> i` | 0x18e290 | 21 | FUN_0018b748 of the byte at hit +0x27 |
 | 6.2 | `player_word_b50() -> i` | 0x2ee668 | 8 | word at +0xb50 of the player object (pointer at 0x35c998) |
+| 6.9 | `target_distance(pv) -> f` | 0x2eeb30 | 55 | the distance from the point to the surface of a target record's shape (FUN_0018f308: FUN_0018eec0 builds the shape, FUN_00189628 measures; a sphere's is the centre distance minus the radius, a spheroid's is measured with the height scaled to the radius) |
 | 6.24 | `obj_vec_8a0(O) -> v` | 0x2ee960 | 12 | the 16 bytes at object +0x8a0 copied to a static buffer |
 | 6.58 | `queue_mode_remote(ps)` | 0x2ef018 | 3 | queue the named mode and mark the entry for another object: when it comes up the host switches that object to the mode instead (FUN_00186f50; see runtime.rs) |
 

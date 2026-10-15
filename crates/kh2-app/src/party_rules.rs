@@ -467,6 +467,87 @@ pub fn warp_point_ok(point: Vec3, player: Vec3, member: Vec3, ground_dir: Vec3, 
     if dy.abs() < c.warp_dy { dot <= 0.0 } else { dot <= c.warp_dot }
 }
 
+/// The numbers host 1.247 (`random_free_point`, FUN_001726d8 -> FUN_001a5ea8) reads, from the executable.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FreePointConsts {
+    /// One bucket of the start angle and the angle step between tries (0x37b5a8, 0x37b5b4).
+    pub bucket_angle: f32,
+    pub turn_angle: f32,
+    /// The generator's state to 0..1 (0x37b5ac).
+    pub rand_scale: f32,
+    /// The radius step after eight tries, and how far above the floor found the line test ends (0x37b5b0).
+    pub step: f32,
+    /// The line test reaches this much beyond the candidate (0x37b5b8).
+    pub reach: f32,
+    /// The floor cast FUN_001a5c30 runs from `cast_up` above the candidate to `cast_down` below it
+    /// (0x37b5bc, 0x37b5c0).
+    pub cast_down: f32,
+    pub cast_up: f32,
+}
+
+impl FreePointConsts {
+    pub fn from_exe(elf: &[u8]) -> Option<FreePointConsts> {
+        let f = |va| crate::reaction_rules::exe_f32(elf, va);
+        Some(FreePointConsts { bucket_angle: f(0x37b5a8)?, rand_scale: f(0x37b5ac)?, step: f(0x37b5b0)?, turn_angle: f(0x37b5b4)?, reach: f(0x37b5b8)?, cast_down: f(0x37b5bc)?, cast_up: f(0x37b5c0)? })
+    }
+}
+
+/// Host 1.247 (FUN_001726d8 -> FUN_001a5ea8 with collision mask 1): a free floor point around `centre`
+/// (Goofy's `turbo` dashes to it). FUN_001a6068 draws the radius between `r_min` and `r_max` and the
+/// start angle (a bucket of eighths taken by the counter 0x35e9b0 plus a random part of one) from the
+/// game's second generator, as host 1.248 (`magic_rules::scatter_place`). FUN_001a6198: one eighth further
+/// each try, the candidate `centre + (sin a, 0, cos a) x radius` (the game's axes) is cast for a floor from
+/// `cast_up` above to `cast_down` below it (FUN_001a5c30 -> FUN_001d1648: `ground`, the first hit from the
+/// top); with a floor, the line from the centre to the point `reach` further out and `step` above that
+/// floor must be clear (FUN_001a5bf8: `clear`) and the floor point is the answer; after eight tries the
+/// radius shrinks by `step`; below `r_min` the floor under the centre (else the centre) is the answer.
+/// Game units in the app's axes.
+pub fn free_point(
+    centre: Vec3,
+    r_min: f32,
+    r_max: f32,
+    st: &mut crate::magic_rules::ScatterState,
+    c: &FreePointConsts,
+    mut ground: impl FnMut(Vec3, Vec3) -> Option<Vec3>,
+    mut clear: impl FnMut(Vec3, Vec3) -> bool,
+) -> Vec3 {
+    let mut rand = || {
+        st.seed = st.seed.wrapping_mul(0x10dcd);
+        st.seed as f32 * c.rand_scale
+    };
+    let mut r = r_min + rand() * (r_max - r_min);
+    let t = st.turn;
+    let bucket = ((t & 4) >> 2) | (t << 1);
+    let start = bucket as f32 * c.bucket_angle + rand() * c.bucket_angle;
+    st.turn = (t + 1).rem_euclid(8);
+    let mut cast = |p: Vec3| ground(p + Vec3::Y * c.cast_up, p - Vec3::Y * (c.cast_down + c.cast_up));
+    if r_min <= r {
+        let mut k = 0;
+        loop {
+            k += 1;
+            // FUN_0017bbc0 wraps the angle into -pi..pi.
+            let x = start + k as f32 * c.turn_angle;
+            let (pi, tau) = (std::f32::consts::PI, std::f32::consts::TAU);
+            let a = if x > 0.0 { (x + pi) % tau - pi } else { pi - (pi - x) % tau };
+            let dir = Vec3::new(a.sin(), 0.0, -a.cos());
+            if let Some(hit) = cast(centre + dir * r) {
+                let q = (centre + dir * (r + c.reach)).with_y(hit.y + c.step);
+                if clear(centre, q) {
+                    return hit;
+                }
+            }
+            if k >= 8 {
+                k = 0;
+                r -= c.step;
+            }
+            if r < r_min {
+                break;
+            }
+        }
+    }
+    cast(centre).unwrap_or(centre)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -840,5 +921,94 @@ mod tests {
         assert_eq!(ai_class(2, 17), Some(0));
         assert_eq!(ai_class(3, 0x15), Some(13));
         assert_eq!(ai_class(1, 0), None);
+    }
+
+    fn toy_free() -> FreePointConsts {
+        let q = std::f32::consts::FRAC_PI_4;
+        FreePointConsts { bucket_angle: q, turn_angle: q, rand_scale: 1.0 / 4_294_967_296.0, step: 100.0, reach: 20.0, cast_down: 1000.0, cast_up: 200.0 }
+    }
+
+    /// Host 1.247 by hand: with a floor 30 below everywhere and a clear line the answer is that floor at a
+    /// radius between the two; the floor cast spans 200 above to 1200 below the candidate; the line test
+    /// ends 20 further out and 100 above the floor found. Without a clear line: eight tries per radius,
+    /// shrinking by 100, then the floor under the centre; without any floor, the centre.
+    #[test]
+    fn party_free_point_by_hand() {
+        let c = toy_free();
+        let centre = Vec3::new(10.0, 50.0, -20.0);
+        let mut st = crate::magic_rules::ScatterState::default();
+        for _ in 0..10 {
+            let p = free_point(
+                centre,
+                300.0,
+                500.0,
+                &mut st,
+                &c,
+                |a, b| {
+                    assert!((a.y - b.y - 1400.0).abs() < 1e-3 && a.x == b.x && a.z == b.z);
+                    Some(a - Vec3::Y * 230.0)
+                },
+                |from, to| {
+                    assert_eq!(from, centre);
+                    assert!((to.y - (centre.y - 30.0 + 100.0)).abs() < 1e-3);
+                    true
+                },
+            );
+            let flat = (p - centre).with_y(0.0).length();
+            assert!((300.0..=500.0).contains(&flat), "{flat}");
+            assert!((p.y - (centre.y - 30.0)).abs() < 1e-3);
+        }
+        let mut tries = 0;
+        let p = free_point(centre, 300.0, 500.0, &mut st, &c, |a, _| Some(a - Vec3::Y * 230.0), |_, _| {
+            tries += 1;
+            false
+        });
+        assert_eq!(p, centre - Vec3::Y * 30.0);
+        assert!(tries % 8 == 0 && (8..=24).contains(&tries), "{tries}");
+        assert_eq!(free_point(centre, 300.0, 500.0, &mut st, &c, |_, _| None, |_, _| true), centre);
+    }
+
+    /// Oracle (PLAYBOOK R2): FUN_001a5ea8 (host 1.247's body, Goofy's `turbo` arguments 300 / 500) in kh2-ee
+    /// against `free_point`. The collision queries are stubbed: FUN_001d1648 (the floor cast) answers a hit
+    /// at the segment's start or none, FUN_001a5bf8 (the line test) clear or not. The point, the generator
+    /// 0x3716a0 and the counter 0x35e9b0 after the call must agree.
+    #[test]
+    fn party_free_point_matches_fun_001a5ea8() {
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else {
+            eprintln!("skipped: no disc image (set KH2_ISO)");
+            return;
+        };
+        let elf = crate::assets::Disc::open(&iso).read_root("SLUS_210.05").expect("exe");
+        let c = FreePointConsts::from_exe(&elf).expect("free point constants");
+        let mut ee = kh2_ee::Ee::new();
+        ee.load_elf(&elf).expect("elf");
+        const OUT: u32 = 0x0180_0000;
+        const CENTRE: u32 = 0x0180_0100;
+        let game = Vec4::new(120.0, -35.0, 260.0, 1.0);
+        wv(&mut ee, CENTRE, game);
+        let centre = Vec3::new(game.x, -game.y, -game.z);
+        let mut n = 0;
+        for (floor, clear, seed, turn) in [(true, true, 1u32, 0i32), (true, true, 0x0123_4567, 5), (true, false, 99, 3), (false, true, 7, 7), (true, true, 0xdead_beef, 6), (false, false, 0x8000_0001, 4), (true, true, 0x51ed_270b, 2)] {
+            // FUN_001d1648 (out a0, from a1, to a2): the 16 bytes of `from` into `out`, then v0 = floor.
+            let stub = [0x8ca8_0000u32, 0xac88_0000, 0x8ca8_0004, 0xac88_0004, 0x8ca8_0008, 0xac88_0008, 0x8ca8_000c, 0xac88_000c, 0x03e0_0008, 0x2402_0000 | floor as u32];
+            for (i, w) in stub.iter().enumerate() {
+                ee.w32(0x1d1648 + 4 * i as u32, *w);
+            }
+            ee.w32(0x1a5bf8, 0x03e0_0008);
+            ee.w32(0x1a5bfc, 0x2402_0000 | clear as u32);
+            ee.w32(0x3716a0, seed);
+            ee.w32(0x35e9b0, turn as u32);
+            ee.call(0x1a5ea8, &[OUT as u64, CENTRE as u64, 1], &[300.0, 500.0], STACK).expect("FUN_001a5ea8");
+            let got = rv(&mut ee, OUT).truncate();
+            let mut st = crate::magic_rules::ScatterState { seed, turn };
+            let p = free_point(centre, 300.0, 500.0, &mut st, &c, |a, _| floor.then_some(a), |_, _| clear);
+            let mine = Vec3::new(p.x, -p.y, -p.z);
+            eprintln!("floor {floor} clear {clear} seed {seed:#x} turn {turn}: game {got} port {mine}");
+            assert!((got - mine).abs().max_element() < 0.05, "game {got} port {mine}");
+            assert_eq!(ee.r32(0x3716a0), st.seed, "generator state");
+            assert_eq!(ee.r32(0x35e9b0) as i32, st.turn, "bucket counter");
+            n += 1;
+        }
+        assert_eq!(n, 7);
     }
 }

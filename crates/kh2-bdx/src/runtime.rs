@@ -1251,6 +1251,13 @@ impl Runtime {
         true
     }
 
+    /// Runs the routine at `pc` as a throw-away thread with `args` until its first yield (FUN_0016c550 with
+    /// three arguments): the way an attack object's hit calls the routine host 2.38 registered on it
+    /// (FUN_0018cf50 -> FUN_0018dbd8, arguments: the registered one, the object hit, the attack object).
+    pub fn call_routine(&mut self, host: &mut dyn Host, pc: u32, args: &[u32]) {
+        self.core.run_temp(&self.prog, &self.code, &mut self.shared, host, pc, args);
+    }
+
     /// The script's part of the enemy clash handler (0x1b2478), given the two attack volumes: when the
     /// object has a script thread (+0x484), the running mode's clash hook (slot 8, FUN_00187130) with
     /// (context, own volume, other volume), then event 0x13 with (own volume, other volume). The handler

@@ -640,6 +640,11 @@ fn write_u32(code: &[u8], sh: &mut Shared, th: &mut Thread, env: &mut dyn Env, a
 }
 
 fn copy(code: &[u8], sh: &mut Shared, th: &mut Thread, env: &mut dyn Env, dst: u32, src: u32, n: usize) -> Result<(), VmError> {
+    // The game's interpreter (FUN_001d7cb0, opcodes 2 and 4) copies with memcpy (FUN_00310af4): a copy of
+    // no bytes touches neither address (P_EX020's request reset R1312 copies 0 bytes from address 0).
+    if n == 0 {
+        return Ok(());
+    }
     let mut buf = vec![0u8; n];
     match with_mem(code, sh, th, |m| m.read(src, &mut buf)) {
         Ok(()) => {}

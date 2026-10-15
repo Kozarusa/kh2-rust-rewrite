@@ -273,6 +273,20 @@ fn yield_resumes_where_it_stopped() {
     assert_eq!(env.calls[0].2, vec![1, 2]);
 }
 
+/// A copy of no bytes (opcode 2 with size 0) reads nothing, as the game's memcpy (FUN_001d7cb0 ->
+/// FUN_00310af4): `copyto local+0, 0` from address 0 runs on (Donald's blizzard library resets its request
+/// with it, P_EX020 R1312 at 0x137c).
+#[test]
+fn copy_of_no_bytes_reads_nothing() {
+    let mut a = asm(1);
+    let at = a.here();
+    a.push_i(0).raw(&[0x0002, 0x0000, 0x0000]).push_i(5).push_i(6).host(9, 1).pop().ret();
+    let p = finish(a, &[(1, at as u32)], 0);
+    let mut env = TestEnv { calls: vec![], reply: 0 };
+    assert_eq!(run_entry(&p, at, &[], &mut env).0, Ok(Stop::Done));
+    assert_eq!(env.calls[0].2, vec![5, 6]);
+}
+
 #[test]
 fn errors_are_reported() {
     let mut a = asm(1);

@@ -39,6 +39,8 @@ pub struct FriendFields {
     /// The point of the member's target record (host 1.120): the target's hurt shape centre, game
     /// units with the app's axes; `None` without a target. `party_tick` writes it.
     pub target_point: Option<Vec3>,
+    /// The radius of the hurt shape the member targets (host 6.9).
+    pub target_radius: f32,
     /// The effects the script holds handles to (hosts 1.22, 1.87, 1.149); `friend_ai` starts, moves,
     /// stops and destroys their instances and tells the script whether they still run.
     pub fx: Vec<FxLive>,
@@ -55,7 +57,40 @@ pub struct FriendFields {
     /// phase 1's record): the record's word 0 (`TARGET_OTHER` / `TARGET_ENEMY` stand for the other
     /// member and the enemy).
     pub special: Option<crate::party::SpecialOn>,
+    /// Host 1.247's state: the game's second generator (0x3716a0) and the bucket counter (0x35e9b0).
+    /// [inferred] The game shares both with every other user; each member keeps its own here.
+    pub scatter: crate::magic_rules::ScatterState,
+    /// The member's hand-0 object as its script sees it (host 1.234 names it; Goofy's `blade` throws it).
+    /// `None`: the member holds no hand object.
+    pub weapon: Option<WeaponObj>,
+    /// The enemy an attack object's callback (2.38) was called for (FUN_0018cf50), and the one host 1.160
+    /// then wrote into the member's target record.
+    pub callback_victim: Option<Entity>,
+    pub retarget: Option<Entity>,
 }
+
+/// The member's hand object as a scripted object (the weapon list +0xaf8 holds it; FUN_0017c718 made it):
+/// linked to the hand (1.18 / 1.102) or free, then placed by the script (1.148) and moved by its secondary
+/// velocity (1.89, +0x880) each frame. Positions are game units with the app's axes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WeaponObj {
+    pub handle: u32,
+    /// Linked to the member's hand (+0x570 set): the hand moves it.
+    pub linked: bool,
+    /// The root's position and facing (app yaw) while free; the velocity per frame (1.89).
+    pub pos: Vec3,
+    pub yaw: f32,
+    pub vel: Vec3,
+    /// The motion the script asked for while it is free (1.11; [inferred] the number is the slot, the hand
+    /// object being no player-type object).
+    pub motion: Option<i32>,
+    /// The bones' world matrices (Bevy space) and the root's, from the last drawn pose (host 1.83, 1.147).
+    pub bones: Vec<Mat4>,
+    pub root: Mat4,
+}
+
+/// Handles of the members' hand objects (host 1.234), past the attack and effect handles.
+pub(crate) const WEAPON_HANDLE: u32 = 0x7d00_0000;
 
 /// Object handles the members' target record names for the other member and an enemy.
 pub(crate) const TARGET_OTHER: u32 = 0x7c00_0001;
@@ -79,6 +114,9 @@ pub struct FxLive {
     pub stop: bool,
     pub destroy: bool,
     pub moved: bool,
+    /// Host 0.41: the angles FUN_0017be00 made of a direction, written into the instance's second vector
+    /// (FUN_001d9d50): the element's rotation, as the hit spark's (`fx::hit_rotation`).
+    pub turn: Option<[f32; 3]>,
     /// Ticks since the instance ended (the record is dropped some time after).
     pub gone_ticks: u32,
 }
@@ -122,6 +160,13 @@ pub struct AttackObj {
     pub released: bool,
     /// Passes of FUN_001a2cc0 run on it (for the log).
     pub steps: u32,
+    /// +4 bit 2: it hit a target (FUN_0018d768's hit); bits 8 / 0x10: it met a wall or a floor
+    /// (FUN_0018c8e0 -> FUN_0018ca78). Hosts 2.14 / 2.29 read them (FUN_0018c890).
+    pub hit: bool,
+    pub wall: bool,
+    /// +0x8c..+0x94 (host 2.38): the routine FUN_0018cf50 runs on the script's thread for every hit, with its
+    /// argument (the routine's address, the argument).
+    pub callback: Option<(u32, u32)>,
 }
 
 /// Host 0.45 (FUN_0016d098): `a + b / |b.xyz| x step x DAT_00356f40` on all four lanes (the frame step 1.0).
@@ -172,6 +217,8 @@ pub(crate) struct FriendHost<'a, 'b> {
     pub(crate) fields: &'b mut FriendFields,
     /// The `atkp` rows (the attack objects' rows, FUN_0019e788).
     pub(crate) game: &'b crate::data::GameData,
+    /// Host 1.247's numbers from the executable (`None`: not readable; the call is then missing).
+    pub(crate) free: Option<&'b crate::party_rules::FreePointConsts>,
 }
 
 fn words(c: &Call) -> Option<(u16, u16, Vec<u32>)> {
@@ -220,7 +267,7 @@ impl FriendHost<'_, '_> {
         };
         self.fields.made += 1;
         let handle = ATTACK_HANDLE + self.fields.made;
-        self.fields.attacks.push(AttackObj { handle, atkp, kind, group, pos: None, prev: None, radius: 0.0, height: 0.0, grow: 0.0, t: 0.0, from: (0.0, 0.0), released: false, steps: 0 });
+        self.fields.attacks.push(AttackObj { handle, atkp, kind, group, pos: None, prev: None, radius: 0.0, height: 0.0, grow: 0.0, t: 0.0, from: (0.0, 0.0), released: false, steps: 0, hit: false, wall: false, callback: None });
         Value::Handle(handle)
     }
 
@@ -231,7 +278,7 @@ impl FriendHost<'_, '_> {
             FxReq::At { pos, .. } => pos,
             FxReq::Bound { .. } => self.inner.obj.motor.pos,
         };
-        self.fields.fx.push(FxLive { handle, req, entity: None, started: false, pos, gone: false, stop: false, destroy: false, moved: false, gone_ticks: 0 });
+        self.fields.fx.push(FxLive { handle, req, entity: None, started: false, pos, gone: false, stop: false, destroy: false, moved: false, turn: None, gone_ticks: 0 });
         Value::Handle(handle)
     }
 
@@ -273,6 +320,18 @@ impl FriendHost<'_, '_> {
                 }
                 (Value::None, St::Impl, "")
             }
+            // 0.41 effect_set_vec2 (0x16db50): FUN_0017be00's angles of the direction (pitch atan2(-y, |xz|),
+            // yaw atan2(x, z), 0) into the instance's second vector (FUN_001d9d50).
+            41 => {
+                let dir = match args.get(1) {
+                    Some(Arg::Vec(v)) => crate::enemy_obj::from_game(*v),
+                    _ => return None,
+                };
+                if let Some(f) = self.effect(h) {
+                    f.turn = Some(crate::fx::hit_rotation(dir));
+                }
+                (Value::None, St::Approx, "the angles become the element's rotation (as the hit spark's placement); the instance's own use of the vector was not read")
+            }
             // 0.38 effect_set_position (0x16da90): the effect's position.
             38 => {
                 let p = match args.get(1) {
@@ -291,10 +350,136 @@ impl FriendHost<'_, '_> {
         Some(v)
     }
 
+    /// The hosts on the member's hand object (Goofy's `blade`, `kh2 bdx P_EX030` R0d94: 1.234 names it, the
+    /// link calls take it off the hand and back, 1.83 / 1.148 place it, 1.89 / 1.79 / 1.11 fly it) and
+    /// 1.160 / 2.38 / 2.40 / 2.67 of the throw's attack. `None`: not one of them.
+    fn weapon_calls(&mut self, c: &Call) -> Option<Value> {
+        let me = self.inner.obj.handle;
+        let wh = self.fields.weapon.as_ref().map(|w| w.handle);
+        let raw = |a: &Arg| match a {
+            Arg::Float(f) => f.to_bits(),
+            a => a.int() as u32,
+        };
+        let is_w = |o: u32| wh == Some(o);
+        let (v, st, why): (Value, St, &'static str) = match c {
+            // 1.234 obj_word_af8 (0x174280): the word at +0xaf8 + 4 i, the weapon list FUN_0017c718 fills.
+            Call::Func { group: 1, index: 234, args } if args.first().is_some_and(|a| raw(a) == me) => {
+                let i = args.get(1).map_or(0, |a| a.int());
+                match (i, wh) {
+                    (0, Some(h)) => (Value::Handle(h), St::Impl, ""),
+                    _ => (Value::Int(0), St::Approx, "no hand object in that slot (the app keeps hand 0 only)"),
+                }
+            }
+            Call::Position { obj } if is_w(*obj) => {
+                let w = self.fields.weapon.as_ref().expect("weapon");
+                let p = if w.linked { w.root.w_axis.truncate() / crate::SCALE } else { w.pos };
+                (Value::Vec(crate::enemy_obj::to_game(p)), St::Approx, "the hand object's root: the drawn one while linked, the script's own while free")
+            }
+            Call::FacingVector { obj } if is_w(*obj) => {
+                let w = self.fields.weapon.as_ref().expect("weapon");
+                let f = if w.linked { w.root.z_axis.truncate().with_y(0.0).normalize_or_zero() } else { Vec3::new(w.yaw.sin(), 0.0, w.yaw.cos()) };
+                let g = crate::enemy_obj::to_game(f);
+                (Value::Vec([g[0], g[1], g[2], 0.0]), St::Approx, "the hand object's facing")
+            }
+            // 1.94 obj_valid: the hand object exists.
+            Call::Func { group: 1, index: 94, args } if args.first().is_some_and(|a| is_w(raw(a))) => (Value::Bool(true), St::Impl, ""),
+            // 1.161 has_link (0x1706c8): +0x570 set.
+            Call::Func { group: 1, index: 161, args } if args.first().is_some_and(|a| is_w(raw(a))) => (Value::Bool(self.fields.weapon.as_ref().is_some_and(|w| w.linked)), St::Impl, ""),
+            // 1.102 link_end (0x170e38 -> FUN_001becb8): off the hand; it stays where it was drawn.
+            Call::Func { group: 1, index: 102, args } if args.first().is_some_and(|a| is_w(raw(a))) => {
+                let w = self.fields.weapon.as_mut().expect("weapon");
+                if w.linked {
+                    w.linked = false;
+                    w.pos = w.root.w_axis.truncate() / crate::SCALE;
+                    let f = w.root.z_axis.truncate();
+                    w.yaw = f.x.atan2(f.z);
+                    w.vel = Vec3::ZERO;
+                }
+                (Value::None, St::Approx, "the link record and its routine are not kept: the hand object is free at its drawn place")
+            }
+            // 1.18 link_start (0x170dd8 -> FUN_001beb90): linked to the object named (the member's hand: 1.235
+            // gives the joint), the movement vector cleared.
+            Call::Func { group: 1, index: 18, args } if args.first().is_some_and(|a| is_w(raw(a))) => {
+                let w = self.fields.weapon.as_mut().expect("weapon");
+                w.linked = true;
+                w.vel = Vec3::ZERO;
+                w.motion = None;
+                (Value::None, St::Approx, "linked back to the member's hand bone whatever joint is given")
+            }
+            // 1.83 bone_to_world (0x172e68 -> FUN_0016aa18): the vector through bone `i`'s matrix.
+            Call::Func { group: 1, index: 83, args } if args.first().is_some_and(|a| is_w(raw(a))) => {
+                let (Some(i), Some(Arg::Vec(v))) = (args.get(1).map(|a| a.int()), args.get(2)) else { return None };
+                let w = self.fields.weapon.as_ref().expect("weapon");
+                let m = usize::try_from(i).ok().and_then(|i| w.bones.get(i)).copied().unwrap_or(w.root);
+                let p = m.transform_point3(crate::enemy_obj::from_game(*v)) / crate::SCALE;
+                (Value::Vec(crate::enemy_obj::to_game(p)), St::Approx, "the bone's world matrix of the last drawn pose (one tick old)")
+            }
+            // 1.148 set_position (0x170658): the position (w 1).
+            Call::Func { group: 1, index: 148, args } if args.first().is_some_and(|a| is_w(raw(a))) => {
+                let Some(Arg::Vec(v)) = args.get(1) else { return None };
+                let w = self.fields.weapon.as_mut().expect("weapon");
+                w.pos = crate::enemy_obj::from_game(*v);
+                (Value::None, St::Impl, "")
+            }
+            // 1.89 set_velocity (0x172f90): +0x880 = the direction made unit, the speed in w; [inferred] the free
+            // hand object moves by it each frame (its mover's consumer was not read).
+            Call::SetVelocity { obj, dir, speed } if is_w(*obj) => {
+                let d = crate::enemy_obj::from_game(*dir).normalize_or_zero();
+                self.fields.weapon.as_mut().expect("weapon").vel = d * *speed;
+                (Value::None, St::Approx, "the free hand object moves by direction x speed each frame [inferred consumer]")
+            }
+            Call::FaceToward { obj, dir } | Call::FaceDirection { obj, dir } if is_w(*obj) => {
+                let d = crate::enemy_obj::from_game(*dir);
+                if d.x != 0.0 || d.z != 0.0 {
+                    self.fields.weapon.as_mut().expect("weapon").yaw = d.x.atan2(d.z);
+                }
+                (Value::None, St::Approx, "the hand object turns at once (no lock)")
+            }
+            Call::PlayMotion { obj, motion, .. } | Call::PlayMotionChecked { obj, motion, .. } if is_w(*obj) => {
+                self.fields.weapon.as_mut().expect("weapon").motion = Some(*motion);
+                (Value::None, St::Approx, "the motion number taken as the hand object's slot; the blend is not kept")
+            }
+            // 1.126 / 1.236 (0x171670 / 0x1716a0) on the hand object's motion controller, 1.235 (0x1742a0) the
+            // joint for 1.18: the app links no controllers.
+            Call::Unknown { group: 1, index: 126 | 235 | 236, .. } if wh.is_some() => (Value::Int(0), St::Stub, "the app links no motion controllers; the joint is the member's hand bone"),
+            // 1.160 (0x173770 -> FUN_0018f490): the target record names the object (position index 0). The
+            // throw's callback (R10f7) points the member's target at the enemy hit.
+            Call::Unknown { group: 1, index: 160, args } if args.get(1) == Some(&TARGET_ENEMY) => {
+                self.fields.retarget = self.fields.callback_victim;
+                (Value::None, St::Approx, "the member's target record names the enemy the attack object hit (shape 0)")
+            }
+            // 2.38 attack_callback_8c (0x18e4f0): +0x8c the running thread, +0x90 the routine, +0x94 its argument.
+            Call::Func { group: 2, index: 38, args } if args.len() >= 3 && self.fields.attacks.iter().any(|x| x.handle == raw(&args[0])) => {
+                let (h, pc, arg) = (raw(&args[0]), raw(&args[1]), raw(&args[2]));
+                if let Some(o) = self.fields.attacks.iter_mut().find(|x| x.handle == h) {
+                    o.callback = Some((pc, arg));
+                }
+                (Value::None, St::Approx, "the routine runs as a throw-away thread for every hit (FUN_0018cf50 -> FUN_0016c550), not on the registering thread")
+            }
+            // 2.40 attack_flag_8 (0x18e530): +4 bit 8, a wall (FUN_0018ca78 sets 8 for a polygon of another
+            // kind than 1, 0x10 for kind 1).
+            Call::Func { group: 2, index: 40, args } if args.first().is_some_and(|a| self.fields.attacks.iter().any(|x| x.handle == raw(a))) => {
+                let h = raw(&args[0]);
+                (Value::Bool(self.fields.attacks.iter().any(|x| x.handle == h && x.wall)), St::Approx, "8 and 0x10 (the polygon's kind) are not told apart")
+            }
+            // 2.67 new_hit_group (0x18e828 -> FUN_001bdf00): the next group id (the members' own counter).
+            Call::Func { group: 2, index: 67, .. } => {
+                self.fields.groups += 1;
+                (Value::Int(0x100 + self.fields.groups as i32), St::Approx, "the members' own counter, not the game's 0x1d5dd4c")
+            }
+            _ => return None,
+        };
+        self.record(c, &v, st, why);
+        Some(v)
+    }
+
     /// The attack-object hosts of group 2 and the effect starts of group 1 the members' specials use
     /// (`kh2 bdx P_EX020` thunder R13c8, cure R1559). `None`: not one of them.
     fn specials(&mut self, c: &Call) -> Option<Value> {
         if let Some(v) = self.effect_calls(c) {
+            return Some(v);
+        }
+        if let Some(v) = self.weapon_calls(c) {
             return Some(v);
         }
         let me = self.inner.obj.handle;
@@ -357,11 +542,32 @@ impl FriendHost<'_, '_> {
                 Some(Value::None)
             }
             // 6.3 (0x2ee718 -> FUN_002f01a0) sets up a target-search block, 6.5 (0x2ee750 -> FUN_002f04a8)
-            // searches the objects for a target into a record: Goofy's `tornado` asks it only when his
-            // target record is not valid. Not ported: the record stays as it is.
-            Call::Unknown { group: 6, index: 3 | 5, .. } | Call::Func { group: 6, index: 3 | 5, .. } => {
+            // searches the objects for a target into a record (Goofy's `tornado` asks it only when his
+            // target record is not valid, `turbo` every 30 frames), 6.4 (0x2ee738 -> FUN_002f0748) clears the
+            // block's count byte +4 and its history count +8. The block lives in the script's own memory. Not
+            // ported (docs/party.md section 16): the record stays as it is.
+            Call::Unknown { group: 6, index: 3..=5, .. } | Call::Func { group: 6, index: 3..=5, .. } => {
                 self.record(c, &Value::None, St::Stub, "the target search FUN_002f04a8 is not ported: the member's target record stays");
                 Some(Value::None)
+            }
+            // 1.247 random_free_point (0x1726d8 -> FUN_001a5ea8, mask 1): a free floor point between the two
+            // radii around the vector (`party_rules::free_point`); the answer is the static buffer 0x1c88380.
+            Call::Func { group: 1, index: 247, args } if args.len() >= 3 => {
+                let Arg::Vec(at) = args[0] else { return None };
+                let (lo, hi) = (args[1].float(), args[2].float());
+                let centre = crate::enemy_obj::from_game(at);
+                let Some(k) = self.free else {
+                    let v = Value::Vec(at);
+                    self.record(c, &v, St::Missing, "the executable's numbers for 1.247 are not readable: the centre is answered");
+                    return Some(v);
+                };
+                let world = self.inner.env.world;
+                let ground = |a: Vec3, b: Vec3| world.and_then(|w| w.ground(a, a.y, a.y - b.y)).map(|g| a.with_y(g.y));
+                let clear = |a: Vec3, b: Vec3| world.is_none_or(|w| w.raycast(a, b).is_none());
+                let p = crate::party_rules::free_point(centre, lo, hi, &mut self.fields.scatter, k, ground, clear);
+                let v = Value::Vec(crate::enemy_obj::to_game(p));
+                self.record(c, &v, St::Approx, "the floor cast (FUN_001d1648, mask 1) is the area's highest floor polygon in the span and the line test any polygon (World::raycast): the collision masks are not told apart");
+                Some(v)
             }
             // 1.120 target_position (0x173688): the point of the member's target record.
             Call::TargetPosition { .. } => {
@@ -393,6 +599,27 @@ impl FriendHost<'_, '_> {
                 };
                 let v = self.new_effect(FxReq::At { id, pos });
                 self.record(c, &v, St::Approx, "element `id` of the member's effect file placed at the point; the two last arguments are not modelled");
+                Some(v)
+            }
+            // 1.21 spawn_effect (0x171780 -> FUN_0016a530): element `id` of the object's own effect file with no
+            // owner (Donald's `blizzard` shard R0c82; the script places it with 0.38 at once).
+            Call::Func { group: 1, index: 21, args } if args.first().is_some_and(|a| raw(a) == me) => {
+                let id = args.get(1).map_or(0, |a| a.int().max(0) as u16);
+                let v = self.new_effect(FxReq::At { id, pos: self.inner.obj.motor.pos });
+                self.record(c, &v, St::Approx, "element `id` of the member's effect file, unbound, at the member's position until the script places it; the two last arguments are not modelled");
+                Some(v)
+            }
+            // 6.9 (0x2eeb30 -> FUN_0018f308): the distance from the point to the surface of the record's shape
+            // (FUN_0018eec0 builds it, FUN_00189628 measures: a sphere's is the centre distance minus the
+            // radius). The member's target record names a hurt shape of the app's (a centre and a radius).
+            Call::Func { group: 6, index: 9, args } if args.len() >= 2 => {
+                let Arg::Vec(p) = args[1] else { return None };
+                let at = crate::enemy_obj::from_game(p);
+                let v = Value::Float(match self.fields.target_point {
+                    Some(c) => at.distance(c) - self.fields.target_radius,
+                    None => at.length(),
+                });
+                self.record(c, &v, St::Approx, "the member's target record whatever record is named; its shape taken as a sphere (kind 3) of the app's target part");
                 Some(v)
             }
             // 1.87 spawn_attached (0x171800 -> FUN_0016a570, owner = the object).
@@ -575,6 +802,23 @@ impl Host for FriendHost<'_, '_> {
             Some((2, 22, a)) if a.first().is_some_and(|h| self.fields.attacks.iter().any(|x| x.handle == *h)) => {
                 self.record(c, &Value::None, St::Approx, "the anchor is always the member's own effect file");
                 return Value::None;
+            }
+            // 2.14 attack_hit_anything (0x18e3d8 -> FUN_0018c890): +4 has 2 (a target), 8 / 0x10 (a wall) or
+            // 0x200 (a clash); 2.29 (0x18e420): 8 or 0x10; 2.39 (0x18e518): 0x200. The members' attack
+            // objects are tested against no other attack (no clash), so 0x200 stays clear.
+            Some((2, i @ (14 | 29 | 39), a)) if a.first().is_some_and(|h| self.fields.attacks.iter().any(|x| x.handle == *h)) => {
+                let o = self.fields.attacks.iter().find(|x| x.handle == a[0]).expect("attack");
+                let v = Value::Bool(match i {
+                    14 => o.hit || o.wall,
+                    29 => o.wall,
+                    _ => false,
+                });
+                if i == 39 {
+                    self.record(c, &v, St::Approx, "the members' attack objects meet no other attack: no clash (FUN_0018d430) is ever set");
+                } else {
+                    self.record(c, &v, St::Impl, "");
+                }
+                return v;
             }
             Some((2, 17, a)) => {
                 let handle = a.first().copied().unwrap_or(0);

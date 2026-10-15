@@ -469,6 +469,11 @@ pub struct PartyMember {
     /// The point of the target record (+0x9f4) host 1.120 answers: the centre of the hurt shape the
     /// member targets (game units, the app's axes), kept while the member is not free.
     pub(crate) target_point: Option<Vec3>,
+    /// The radius of that hurt shape (host 6.9 measures to its surface).
+    pub(crate) target_radius: f32,
+    /// The hand object off the hand (Goofy's `blade`, `friend_ai`): its root (game units, the app's axes), its
+    /// facing (app yaw) and the motion the script asked for; `member_hands` draws it there.
+    pub(crate) thrown: Option<(Vec3, f32, Option<i32>)>,
 }
 
 /// Whom a special's target record names, for the effects bound to its object (host 1.149).
@@ -500,6 +505,17 @@ impl PartyMember {
 
     pub(crate) fn yaw(&self) -> f32 {
         self.motor.yaw
+    }
+
+    /// Host 1.160 (FUN_0018f490) on the member's target record (+0x9f4): it names `e` (part 0) from now on,
+    /// and the special's record too while one runs (Goofy's `blade` callback R10f7 after a hit).
+    pub(crate) fn retarget(&mut self, e: Entity) {
+        let t = Target { entity: e, shape: 0 };
+        self.target_changed = self.target.is_none_or(|o| o.entity != e);
+        self.target = Some(t);
+        if matches!(self.special_who, Some(ScriptTarget::Enemy(_))) {
+            self.special_who = Some(ScriptTarget::Enemy(t));
+        }
     }
 
     /// The member's target record (+0x9f4) is valid (host 1.140).
@@ -846,6 +862,8 @@ fn spawn_party(
                 special_who: None,
                 script_hits: Vec::new(),
                 target_point: None,
+                target_radius: 0.0,
+                thrown: None,
             },
             // The members' attacks hit enemies (stage 2) and enemies' attacks hit them (stage 3,
             // `party_receive_hits`).
@@ -864,9 +882,36 @@ fn spawn_party(
 /// The hand objects show only while the battle flag is set [inferred from the user's reference video
 /// `10_menu_open_close.mp4` at 0.0 s: out of battle Donald and Goofy hold nothing; the game's switch
 /// (FUN_001752a0 and +0x588 bit 4 select the weapon rows of FUN_0017da30) was not traced further].
-fn member_hands(flag: Option<Res<crate::audio_bgm::BattleFlag>>, mut sockets: Query<(&MemberHand, &mut Transform, &mut Visibility, &Children)>, mut anims: Query<&mut Animator>) {
+///
+/// A hand object the member's script took off the hand (`PartyMember::thrown`, Goofy's `blade`) is drawn at
+/// its own root and facing instead, playing the motion the script asked for (one tick behind the script).
+fn member_hands(
+    flag: Option<Res<crate::audio_bgm::BattleFlag>>,
+    mut sockets: Query<(&MemberHand, &mut Transform, &mut Visibility, &Children)>,
+    mut anims: Query<&mut Animator>,
+    members: Query<&PartyMember>,
+    gts: Query<&GlobalTransform>,
+) {
     let shown = if flag.is_some_and(|f| f.active()) { Visibility::Inherited } else { Visibility::Hidden };
     for (h, mut t, mut vis, kids) in &mut sockets {
+        let thrown = members.iter().find(|m| m.body == h.body).and_then(|m| m.thrown);
+        if let (Some((pos, yaw, motion)), Ok(body)) = (thrown, gts.get(h.body)) {
+            // The socket hangs under the body: the root's world place brought into the body's space.
+            let (_, rot, _) = body.to_scale_rotation_translation();
+            let inv = body.to_matrix().inverse();
+            *t = Transform { translation: inv.transform_point3(pos * SCALE), rotation: rot.inverse() * Quat::from_rotation_y(yaw), scale: Vec3::ONE };
+            if *vis != Visibility::Inherited {
+                *vis = Visibility::Inherited;
+            }
+            for k in kids.iter() {
+                let Ok(mut w) = anims.get_mut(k) else { continue };
+                let slot = motion.and_then(|m| usize::try_from(m).ok()).filter(|&x| w.rig.mset.has(x));
+                if slot.is_some() && w.slot != slot {
+                    w.restart(slot, true, 0.0);
+                }
+            }
+            continue;
+        }
         if *vis != shown {
             *vis = shown;
         }
@@ -1104,6 +1149,7 @@ fn party_tick(
             }
             let tshape = m.target.and_then(|t| shape_of(t, &enemies));
             m.target_point = tshape.map(|(ct, _)| ct);
+            m.target_radius = tshape.map_or(0.0, |(_, r)| r);
             let rel_t = tshape.map_or(Rel::default(), |(ct, _)| relation(pos, ct));
             // FUN_0010ca88: a valid target and bit 0x40 clear.
             let target_ok = tshape.is_some() && !too_far;

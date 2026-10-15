@@ -343,6 +343,7 @@ pub static HOST_FUNCS: &[HostFn] = &[
     f(2, 91, "hit_reaction_class", "p", 'i', 0x18e260, "reaction class of the hit (FUN_0018b700 on the byte at +0x26)"),
     f(2, 92, "hit_kind", "p", 'i', 0x18e290, "FUN_0018b748 of the byte at hit +0x27"),
     f(6, 2, "player_word_b50", "", 'i', 0x2ee668, "word at +0xb50 of the player object (pointer at 0x35c998)"),
+    f(6, 9, "target_distance", "pv", 'f', 0x2eeb30, "the distance from the point to the surface of a target record's shape (FUN_0018f308: FUN_0018eec0 builds the shape, FUN_00189628 measures; a sphere's is the centre distance minus the radius, a spheroid's is measured with the height scaled to the radius)"),
     f(6, 24, "obj_vec_8a0", "O", 'v', 0x2ee960, "the 16 bytes at object +0x8a0 copied to a static buffer"),
     f(6, 58, "queue_mode_remote", "ps", '-', 0x2ef018, "queue the named mode and mark the entry for another object: when it comes up the host switches that object to the mode instead (FUN_00186f50; see runtime.rs)"),
 ];

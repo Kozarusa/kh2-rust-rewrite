@@ -27,7 +27,7 @@ use crate::combat::{Fighter, Hit, Team};
 use crate::data::GameData;
 use crate::enemy_ai::AiTrace;
 use crate::enemy_host::{BevyHost, Env};
-use crate::friend_host::{FriendFields, FriendHost, FxReq, TARGET_ENEMY, TARGET_OTHER};
+use crate::friend_host::{FriendFields, FriendHost, FxReq, TARGET_ENEMY, TARGET_OTHER, WEAPON_HANDLE, WeaponObj};
 use crate::enemy_obj::{Obj, OBJ_SIZE, PLAYER, SELF_BASE};
 use crate::fx::{Bind, Placement};
 use crate::party::{PartyMember, SpecialOn};
@@ -50,6 +50,8 @@ struct FriendScripts {
     by_model: HashMap<String, Option<(Program, bool)>>,
     table: Option<kh2_bdx::HostTable>,
     objs: Vec<t::Objentry>,
+    /// Host 1.247's numbers (`party_rules::FreePointConsts`).
+    free: Option<crate::party_rules::FreePointConsts>,
     loaded: bool,
 }
 
@@ -57,7 +59,9 @@ impl FriendScripts {
     fn get(&mut self, disc: &Disc, model: &str) -> Option<(Program, bool)> {
         if !self.loaded {
             self.loaded = true;
-            self.table = disc.read_root("SLUS_210.05").and_then(|exe| kh2_bdx::HostTable::from_exe(&exe));
+            let exe = disc.read_root("SLUS_210.05");
+            self.table = exe.as_deref().and_then(kh2_bdx::HostTable::from_exe);
+            self.free = exe.as_deref().and_then(crate::party_rules::FreePointConsts::from_exe);
             if let Ok(mut a) = disc.0.lock() {
                 self.objs = kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).map(|d| d.rows).unwrap_or_default();
             }
@@ -93,9 +97,34 @@ pub struct FriendBrain {
     fields: FriendFields,
 }
 
+/// The members' live attack objects as the class-5 pull (FUN_00185668 -> FUN_001bf920, Goofy's `tornado`
+/// atkp 1188) needs them, like `magic::SpellAttacks` for the spells: the victim keeps the attack object
+/// (+0xaac) and is pulled toward its position until it is finished (FUN_0018ccf8).
+#[derive(Resource, Default)]
+pub struct MemberAttacks {
+    /// The position of every live attack object of the members by key (`MemberAttacks::key`), Bevy space.
+    pub places: HashMap<u32, Vec3>,
+    /// This tick's hits of the members' attack objects: (victim, atkp, key).
+    pub hits: Vec<(Entity, i16, u32)>,
+}
+
+impl MemberAttacks {
+    /// The key of a member's attack object: bit 31 (apart from the spells' hit groups), the slot and the
+    /// object's handle.
+    fn key(slot: u8, handle: u32) -> u32 {
+        0x8000_0000 | (slot as u32) << 24 | (handle & 0x00ff_ffff)
+    }
+
+    /// The attack object behind this tick's hit on `target` with `atkp`.
+    pub fn hit_group(&self, target: Entity, atkp: i16) -> Option<u32> {
+        self.hits.iter().find(|h| h.0 == target && h.1 == atkp).map(|h| h.2)
+    }
+}
+
 /// Registers the systems (called by `party::PartyPlugin`, which runs them after its own tick).
 pub(crate) fn register(app: &mut App) {
-    app.init_resource::<FriendScripts>().add_systems(FixedUpdate, (friend_attach, friend_update).chain().after(crate::party::PartyTick).in_set(Sim::Enemy));
+    app.init_resource::<FriendScripts>()
+        .init_resource::<MemberAttacks>().add_systems(FixedUpdate, (friend_attach, friend_update).chain().after(crate::party::PartyTick).in_set(Sim::Enemy));
 }
 
 fn friend_attach(mut commands: Commands, disc: Res<Disc>, mut scripts: ResMut<FriendScripts>, q: Query<(Entity, &PartyMember), Without<FriendBrain>>) {
@@ -204,8 +233,9 @@ fn step_attacks(
     victims: &[(Entity, Vec<(crate::combat::Volume, crate::combat::HurtSpheroid)>)],
     memory: &mut VictimMemory,
     pax: Option<&std::sync::Arc<crate::fx::LoadedPax>>,
+    world: Option<&World>,
     log: bool,
-    out: &mut Vec<(Hit, Option<crate::fx::SpellHit>)>,
+    out: &mut Vec<(Hit, Option<crate::fx::SpellHit>, u32)>,
 ) {
     fields.attacks.retain(|a| {
         if a.released && log {
@@ -260,7 +290,27 @@ fn step_attacks(
             let dir = (sph.center - m.position() * crate::SCALE).with_y(0.0).normalize_or(Vec3::Z);
             let hit = Hit { attacker: me, target: *ve, atkp: row.id as i16, dir, point, row: Some(row.sub_id) };
             info!("party: {} attack object {:#x} hits {ve:?}: atkp {} SubId {} (hit {n}, Power {}, Element {}, Interval {})", m.model, a.handle, row.id, row.sub_id, row.power, row.element, row.interval);
-            out.push((hit, pax.map(|p| crate::fx::SpellHit { target: *ve, atkp: hit.atkp, pax: p.clone() })));
+            a.hit = true;
+            out.push((hit, pax.map(|p| crate::fx::SpellHit { target: *ve, atkp: hit.atkp, pax: p.clone() }), a.handle));
+        }
+        // FUN_001a2cc0 then FUN_0018c8e0 (after a move of more than two frame units, +4 & 4): for a row with
+        // BG Hit (`atkp` byte +0x12 bit 0) whose object has met no wall and hit nothing yet, the segment from
+        // the previous position (+0xf0) to the new one, then down by the row's FloorCheck, is cast against
+        // the terrain that stops attacks (FUN_00143aa0 mask 4, `combat::wall_cast`); a hit sets +4 bit 8 or
+        // 0x10 (FUN_0018ca78). [inferred] The +4 bit 0x100 (a test after a hit) is not modelled; the wall
+        // spark FUN_0018ca78 starts is not shown.
+        let row = &game.atkp[base];
+        if let (Some(w), Some(prev)) = (world, a.prev)
+            && pos.distance(prev) > 2.0
+            && row.flags & crate::reaction_rules::ATKP_FLAG_BG_HIT != 0
+            && !a.wall
+            && !a.hit
+            && let Some((at, _)) = crate::combat::wall_cast(w, row.floor_check, prev * crate::SCALE, pos * crate::SCALE)
+        {
+            a.wall = true;
+            if log {
+                info!("party: {} attack object {:#x} (atkp {}) meets the terrain at {:.2?} (FUN_0018c8e0 -> FUN_0018ca78)", m.model, a.handle, a.atkp, at);
+            }
         }
     }
 }
@@ -322,6 +372,7 @@ fn friend_update(
     (mut hits, mut spell_hits): (MessageWriter<Hit>, MessageWriter<crate::fx::SpellHit>),
     mut running: Query<&mut crate::fx::RunningEffect>,
     member_fighters: Query<&Fighter, With<PartyMember>>,
+    (scripts, mut pulls): (Res<FriendScripts>, ResMut<MemberAttacks>),
 ) {
     let (Some(mut trace), Ok(s)) = (trace, sora.single()) else { return };
     let log = std::env::var("KH2_PARTYLOG").is_ok_and(|v| !v.is_empty() && v != "0");
@@ -340,6 +391,8 @@ fn friend_update(
     for m in memory.0.values_mut() {
         m.tick();
     }
+    pulls.places.clear();
+    pulls.hits.clear();
     for (me, mut m, mut brain) in &mut q {
         let Ok(anim) = anims.get(m.body) else { continue };
         let rig = anim.rig.clone();
@@ -348,6 +401,7 @@ fn friend_update(
         fields.free = m.free;
         fields.target_valid = m.target_valid();
         fields.target_point = m.target_point;
+        fields.target_radius = m.target_radius;
         fields.special = m.special_on();
         // Before the slice: which instances have ended (host 0.49) and where the bound ones are (0.53).
         let pax = lib.as_deref().and_then(|l| l.for_rig(&rig)).cloned();
@@ -368,6 +422,25 @@ fn friend_update(
             if let Some(at) = owner.and_then(|o| element_position(p, id, o, &anims, &gts, &hands)) {
                 f.pos = at / crate::SCALE;
             }
+        }
+        // The hand-0 object (host 1.234): its drawn bones for 1.83 and its root for 1.147 / 1.102.
+        let weapon = member_fighters.get(me).ok().and_then(|f| f.attack_bodies.get(1).copied()).and_then(|w| Some((anims.get(w).ok()?, gts.get(w).ok()?)));
+        match weapon {
+            Some((wa, wg)) => {
+                let w = fields.weapon.get_or_insert_with(|| WeaponObj {
+                    handle: WEAPON_HANDLE + m.slot as u32,
+                    linked: true,
+                    pos: m.position(),
+                    yaw: m.yaw(),
+                    vel: Vec3::ZERO,
+                    motion: None,
+                    bones: Vec::new(),
+                    root: Mat4::IDENTITY,
+                });
+                w.bones = (0..wa.pose.len()).map(|i| wa.bone_world(wg, i)).collect();
+                w.root = wg.to_matrix();
+            }
+            None => fields.weapon = None,
         }
         obj.motor.pos = m.position();
         obj.motor.yaw = m.yaw();
@@ -392,7 +465,7 @@ fn friend_update(
             event_active: false,
         };
         let handle = obj.handle;
-        let mut host = FriendHost { inner: BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() }, fields, game: &game };
+        let mut host = FriendHost { inner: BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() }, fields, game: &game, free: scripts.free.as_ref() };
         if !*started {
             *started = true;
             rt.spawn(&mut host, handle);
@@ -457,19 +530,58 @@ fn friend_update(
                     if std::mem::take(&mut f.moved) {
                         r.bind = Bind::Fixed(Mat4::from_translation(f.pos * crate::SCALE));
                     }
+                    if let Some(turn) = f.turn.take() {
+                        r.element.rotation = turn;
+                    }
                 }
             }
         }
         fields.fx.retain(|f| !f.destroy && f.gone_ticks < FX_FORGET);
         // FUN_0018c2d8's pass over the member's attack objects.
         let mut out = Vec::new();
-        step_attacks(me, &m, fields, &game, &victims, &mut memory, pax.as_ref(), log, &mut out);
-        for (h, sh) in out {
+        step_attacks(me, &m, fields, &game, &victims, &mut memory, pax.as_ref(), world.as_deref(), log, &mut out);
+        for a in fields.attacks.iter().filter(|a| !a.released) {
+            if let Some(p) = a.pos {
+                pulls.places.insert(MemberAttacks::key(m.slot, a.handle), p * crate::SCALE);
+            }
+        }
+        // FUN_0018cf50: every hit of an attack object with a routine (2.38) calls it (FUN_0018dbd8 ->
+        // FUN_0016c550) with its argument, the object hit and the attack object (Goofy's `blade` R10f7).
+        let calls: Vec<(u32, u32, u32, Entity)> = out.iter().filter_map(|(h, _, handle)| fields.attacks.iter().find(|a| a.handle == *handle)?.callback.map(|(pc, arg)| (pc, arg, *handle, h.target))).collect();
+        for (pc, arg, handle, victim) in calls {
+            fields.callback_victim = Some(victim);
+            let mut host = FriendHost { inner: BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() }, fields, game: &game, free: scripts.free.as_ref() };
+            rt.call_routine(&mut host, pc, &[arg, TARGET_ENEMY, handle]);
+            if log {
+                info!("party: {tag} attack object {handle:#x} hit {victim:?}: its routine R{pc:04x} runs (2.38, FUN_0018cf50)");
+            }
+        }
+        fields.callback_victim = None;
+        if let Some(e) = fields.retarget.take() {
+            m.retarget(e);
+            if log {
+                info!("party: {tag} target record now names {e:?} (1.160, FUN_0018f490)");
+            }
+        }
+        for (h, sh, handle) in out {
+            pulls.hits.push((h.target, h.atkp, MemberAttacks::key(m.slot, handle)));
             hits.write(h);
             if let Some(sh) = sh {
                 spell_hits.write(sh);
             }
         }
+        // The free hand object moves by its velocity (1.89) [inferred: once a frame after the script],
+        // and `party::member_hands` draws it at its own place while it is off the hand.
+        if let Some(w) = fields.weapon.as_mut()
+            && !w.linked
+        {
+            w.pos += w.vel;
+        }
+        let thrown = fields.weapon.as_ref().filter(|w| !w.linked).map(|w| (w.pos, w.yaw, w.motion));
+        if log && thrown.is_some() != m.thrown.is_some() {
+            info!("party: {tag} hand object {}", if thrown.is_some() { "off the hand (1.102): the script moves it" } else { "back on the hand (1.18)" });
+        }
+        m.thrown = thrown;
         let now = rt.current_mode();
         m.script_mode = now.clone();
         if now != *mode {
@@ -533,7 +645,7 @@ mod tests {
     use crate::friend_host::AttackObj;
 
     fn attack(grow: f32, t: f32) -> AttackObj {
-        AttackObj { handle: 1, atkp: 1165, kind: 0, group: 0x101, pos: Some(Vec3::ZERO), prev: None, radius: 25.0, height: 320.0, grow, t, from: (20.0, 25.0), released: false, steps: 0 }
+        AttackObj { handle: 1, atkp: 1165, kind: 0, group: 0x101, pos: Some(Vec3::ZERO), prev: None, radius: 25.0, height: 320.0, grow, t, from: (20.0, 25.0), released: false, steps: 0, hit: false, wall: false, callback: None }
     }
 
     /// FUN_001a2cc0's size with a growth (host 2.62, FUN_001a3480): the start size at frame 0, the size

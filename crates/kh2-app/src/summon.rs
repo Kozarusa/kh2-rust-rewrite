@@ -31,9 +31,11 @@
 //!   `FUN_001c79c8`; its cleanup clears `0x35feb8` bit 0) and gauge mode 1. The state is 0 again when
 //!   the last summon object is gone (its destructor, `FUN_001c5f80` / `FUN_001c6038`).
 //!
-//! What the app does not have (docs/summons.md "Status"): the friend AI and the group 10 hosts (the
-//! object stands where it was put; its script's motion requests are logged, not played, as the party's
-//! are in `friend_ai.rs`), the event itself (nothing in the app starts it: the wait for it ends at
+//! The object's script runs through `SummonHost` (WP-SUM4): the party host plus the group 10 entries of
+//! Stitch's script (the AI object's fields in `ai::SummonAi`).
+//!
+//! What the app does not have (docs/summons.md "Status"): the friend AI (the object stands where it was
+//! put; its script's motion requests are logged, not played), the event itself (nothing in the app starts it: the wait for it ends at
 //! once), the HUD layers the event hides, the screen fade list (`FUN_0016ff50`), the free-spot
 //! collision tests (`FUN_001a5c30` / `FUN_001a5bf8`: a floor under the point stands in), the
 //! companions' return position (party.rs keeps their movement; they fade in where they are), the
@@ -102,6 +104,125 @@ pub const STOP_ID: u16 = 2;
 pub const STOP_MASK: u32 = 0xfff7_ffdc;
 /// Script handles of summon objects: past the enemies' and the party's ranges.
 const HANDLE_BASE: u32 = 0x1800;
+
+/// The summon's friend AI object as far as the group 10 hosts of the summon scripts read and write it
+/// (stage 4 of docs/summons.md: Stitch first). FUN_0010b780 picks the AI object by NeoStatus and stores it
+/// at object +0xb60 (FUN_0010c5f0 reads it back for every group 10 wrapper that names the AI); Stitch's is
+/// FUN_001179c0 (0x790 bytes, vtable 0x354870, 7 action records at 0x354708). Offsets are the AI
+/// object's unless they say "object".
+pub mod ai {
+    /// Slots of the AI object's list at +0x20 (0x18 of 0x40 bytes; FUN_001176a8 clears one).
+    pub const SLOTS: usize = 0x18;
+
+    /// One 0x40-byte slot of the list (written by FUN_00117708; read by the class update FUN_00116b48,
+    /// which is not ported).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Slot {
+        /// +0x20 the flags (1: the object named is the AI's own object, 0x20 too when the kind is 0; 2: the
+        /// object named is the player; 8: argument 5 set; 0x40000000: host 10.16).
+        pub flags: u32,
+        /// +0x24 the kind (-1: free, FUN_001176a8).
+        pub kind: i32,
+        /// +0x28 an effect instance (FUN_00117528 frees the slot once FUN_001da128 says it ended; 0: none).
+        pub effect: u32,
+        /// +0x2c, +0x30, +0x34, +0x38: arguments 6, 7, 4 and 3 of FUN_00117708 as it stores them.
+        pub a6: u32,
+        pub a7: u32,
+        pub a4: u32,
+        pub a3: u32,
+    }
+
+    impl Default for Slot {
+        fn default() -> Self {
+            Slot { flags: 0, kind: -1, effect: 0, a6: 0, a7: 0, a4: 0, a3: 0 }
+        }
+    }
+
+    /// The fields of the AI object the hosts reach, plus the object fields they reach (named "object").
+    #[derive(Clone, Debug)]
+    pub struct SummonAi {
+        pub slots: [Slot; SLOTS],
+        /// +0x630 bit 0 (FUN_001175a0 sets it) and +0x640 the vector it copies (game units and axes).
+        pub flags_630: u32,
+        pub goal: [f32; 4],
+        /// Object +0xc60 / +0xc64 (FUN_0010ecb0): the action the class runs and its argument.
+        pub action: (u32, u32),
+        /// Object +0xb7c (FUN_001129f0 ors 0x40000000).
+        pub b7c: u32,
+        /// Object +0x7f8 bit 4 (FUN_00186580 sets it; host 1.272 reads it).
+        pub flag_7f8_4: bool,
+        /// Attack objects' +0x98 callbacks (host 2.74): (attack handle, routine, argument). FUN_0018d430, the
+        /// clash of two attacks, is their only caller; the summon's attacks meet no other attack in the app.
+        pub callbacks_98: Vec<(u32, u32, u32)>,
+        /// The vtable +0x28 / +0x2c calls (hosts 10.3 / 10.4) seen, for the log.
+        pub link_calls: (u32, u32),
+    }
+
+    impl Default for SummonAi {
+        fn default() -> Self {
+            SummonAi { slots: [Slot::default(); SLOTS], flags_630: 0, goal: [0.0; 4], action: (0, 0), b7c: 0, flag_7f8_4: false, callbacks_98: Vec::new(), link_calls: (0, 0) }
+        }
+    }
+
+    /// What FUN_00117708 compares the object argument with: the AI's own object and the player
+    /// (FUN_00111c00(0), `DAT_0034e908`).
+    #[derive(Clone, Copy, Debug)]
+    pub struct Who {
+        pub own: u32,
+        pub player: u32,
+    }
+
+    impl SummonAi {
+        /// FUN_00117668: the first slot with a negative kind and no effect; its flags are cleared. With none
+        /// free the game takes index 0x18 (past the list) [the app answers 0x18 and writes nothing].
+        pub fn take_slot(&mut self) -> usize {
+            let i = self.slots.iter().position(|s| s.kind < 0 && s.effect == 0).unwrap_or(SLOTS);
+            if let Some(s) = self.slots.get_mut(i) {
+                s.flags = 0;
+            }
+            i
+        }
+
+        /// FUN_00117708(ai, kind, obj, a3, a4, flag, a6, a7) (host 10.12, wrapper 0x2f6d00): a slot from
+        /// FUN_00117668 with +0x30 = a7, +0x34 = a4, +0x2c = a6, +0x38 = a3, +0x20 = 0, +0x24 = kind (the
+        /// vectors +0x40 / +0x50 are set to 0 and (0, 0, 0, 1), not kept); then for a non-zero object: the AI's
+        /// own object ors 1 into the flags (0x21 when the kind is 0, from the flags read before the or), the
+        /// player 2; `flag` ors 8. Returns the slot index.
+        #[allow(clippy::too_many_arguments)]
+        pub fn start(&mut self, who: Who, kind: i32, obj: u32, a3: u32, a4: u32, flag: bool, a6: u32, a7: u32) -> usize {
+            let i = self.take_slot();
+            let Some(s) = self.slots.get_mut(i) else { return i };
+            s.a7 = a7;
+            s.a4 = a4;
+            s.a6 = a6;
+            s.a3 = a3;
+            s.flags = 0;
+            s.kind = kind;
+            if obj != 0 {
+                if obj == who.own {
+                    let before = s.flags;
+                    s.flags = before | 1;
+                    if kind == 0 {
+                        s.flags = before | 0x21;
+                    }
+                } else if obj == who.player {
+                    s.flags |= 2;
+                }
+            }
+            if flag {
+                s.flags |= 8;
+            }
+            i
+        }
+
+        /// FUN_00117840 (host 10.16): slot `i` flags |= 0x40000000 (the game does not test the index).
+        pub fn mark(&mut self, i: i32) {
+            if let Some(s) = usize::try_from(i).ok().and_then(|i| self.slots.get_mut(i)) {
+                s.flags |= 0x4000_0000;
+            }
+        }
+    }
+}
 
 /// The pure rules of stage 3, each with the address it ports.
 pub mod rules {
@@ -545,6 +666,149 @@ pub struct SummonObject {
     leave: bool,
     alpha: f32,
     originals: HashMap<AssetId<StandardMaterial>, AlphaMode>,
+    /// The friend AI object's fields the group 10 hosts keep, and the party host's fields (attack objects,
+    /// effects) of the script.
+    ai: ai::SummonAi,
+    fields: crate::friend_host::FriendFields,
+}
+
+/// The status block handle host 1.84 gives for the player (his +0x48c): host 10.45 reads its +0x1b4.
+const PLAYER_GAUGES: u32 = 0x7900_0000;
+
+/// What the summon host reads of the game beside the object.
+struct SummonEnv {
+    /// The player's status block +0x1b4: the drive gauge's timer (`DriveState::timer.left`).
+    timer: f32,
+    /// A limit task runs (`LimitTask`, `DAT_01d5d6b0`).
+    limit: bool,
+}
+
+/// The summon object's script host: the party members' host (`FriendHost`: attack objects, effects,
+/// target record) with the summon's own group 10 entries and the calls the summon's script makes of the
+/// player; motion requests go straight to the enemy host (the summon's motions are not remapped yet: the
+/// object's motions are logged, not played, docs/summons.md).
+struct SummonHost<'a, 'b> {
+    f: crate::friend_host::FriendHost<'a, 'b>,
+    ai: &'b mut ai::SummonAi,
+    env: &'b SummonEnv,
+}
+
+impl SummonHost<'_, '_> {
+    fn record(&mut self, c: &kh2_bdx::Call, v: &kh2_bdx::Value, st: crate::enemy_host::St, why: &'static str) {
+        let tag = self.f.inner.tag;
+        self.f.inner.trace.record(tag, c, v, st, why);
+    }
+
+    /// The calls answered here; `None` for the rest.
+    fn own(&mut self, c: &kh2_bdx::Call) -> Option<(kh2_bdx::Value, crate::enemy_host::St, &'static str)> {
+        use crate::enemy_host::St;
+        use kh2_bdx::host::Arg;
+        use kh2_bdx::{Call, Value};
+        let me = self.f.inner.obj.handle;
+        let word = |a: Option<&Arg>| match a {
+            Some(Arg::Float(f)) => f.to_bits(),
+            Some(a) => a.int() as u32,
+            None => 0,
+        };
+        let Call::Func { group, index, args } = c else { return None };
+        let a = |k: usize| word(args.get(k));
+        Some(match (*group, *index) {
+            // 1.84 gauges (0x172ee8) of the player: his status block (+0x48c), read by 10.45.
+            (1, 84) if a(0) == crate::enemy_obj::PLAYER => (Value::Handle(PLAYER_GAUGES), St::Impl, ""),
+            // 1.272 (0x171cb0): (object +0x7f8 & 4) != 0. FUN_00186580 sets the bit (host wrapper 0x171cd0
+            // through FUN_001865a8, FUN_00175f10, FUN_001b25d0); nothing sets it for the summon in the app.
+            (1, 272) if a(0) == me => (Value::Bool(self.ai.flag_7f8_4), St::Impl, ""),
+            // 1.165 offer_command (0x1734a8): Stitch's main thread offers Ohana (519) in slot 2 while the
+            // timer is above 0 (docs/summons.md section 4). Summon limits are stage 5.
+            (1, 165) => (Value::None, St::Stub, "summon limit offers are stage 5: the offer is logged, the command menu does not show it"),
+            // 2.74 attack_callback_98 (0x18e870): attack +0x98 = routine, +0xa0 = argument. Only FUN_0018d430
+            // (two attacks clash) runs it; the summon's attack objects meet no other attack.
+            (2, 74) => {
+                self.ai.callbacks_98.push((a(0), a(1), a(2)));
+                (Value::None, St::Impl, "")
+            }
+            // 10.1 (0x2f6a98 -> FUN_001175a0): AI +0x630 |= 1, +0x640 = the vector. The rest (+0x65c, +0x648,
+            // FUN_00117320, FUN_00193228, FUN_0017ecf0) belongs to the class update, not ported.
+            (10, 1) => {
+                self.ai.flags_630 |= 1;
+                if let Some(Arg::Vec(v)) = args.get(1) {
+                    self.ai.goal = *v;
+                }
+                (Value::None, St::Approx, "the goal is kept; Stitch's class update (FUN_00116b48) that walks to it is not ported")
+            }
+            // 10.3 / 10.4: Stitch's vtable +0x28 (FUN_001191a8) / +0x2c (FUN_00119360), the player's link
+            // for a summon limit (stage 5).
+            (10, 3) => {
+                self.ai.link_calls.0 += 1;
+                (Value::None, St::Stub, "FUN_001191a8 (the limit's link of the player to Stitch) is stage 5")
+            }
+            (10, 4) => {
+                self.ai.link_calls.1 += 1;
+                (Value::None, St::Stub, "FUN_00119360 (the limit's link undone) is stage 5")
+            }
+            // 10.12 (0x2f6d00 -> FUN_00117708): the slot index.
+            (10, 12) => {
+                let who = ai::Who { own: me, player: crate::enemy_obj::PLAYER };
+                let i = self.ai.start(who, a(1) as i32, a(2), a(3), a(4), a(5) != 0, a(6), a(7));
+                (Value::Int(i as i32), St::Impl, "")
+            }
+            // 10.13 (0x2f6d68 -> FUN_001195e8): Stitch's event 17 with code 1000 (the limit's shots).
+            (10, 13) => (Value::None, St::Stub, "FUN_001195e8 (event 17 code 1000, the limit's attacks) is stage 5"),
+            // 10.16 (0x2f6df8 -> FUN_00117840).
+            (10, 16) => {
+                self.ai.mark(a(1) as i32);
+                (Value::None, St::Impl, "")
+            }
+            // 10.19 (0x2f6e60): object +0x10c bit 0x10000, set by the limit task for its participants
+            // (FUN_001b2c10). While a summon is out only summon limits run (FUN_001d1ce0 refuses the others).
+            (10, 19) => (Value::Bool(a(0) == me && self.env.limit), St::Approx, "in a limit = a limit task runs (only summon limits can run while a summon is out)"),
+            (10, 32) => (Value::None, St::Stub, "FUN_00118aa8 (a goal, motion 0xa1 and a record's action) belongs to the class update, not ported"),
+            // 10.39 (0x2f72c0 -> FUN_0010ecb0(object, 0, 0)).
+            (10, 39) => {
+                self.ai.action = (0, 0);
+                (Value::None, St::Impl, "")
+            }
+            // 10.41 (0x2f7328 -> FUN_001129f0).
+            (10, 41) => {
+                self.ai.b7c |= 0x4000_0000;
+                (Value::None, St::Impl, "")
+            }
+            // 10.45 (0x2f73b0): the float at +0x1b4 of the status block.
+            (10, 45) if a(0) == PLAYER_GAUGES => (Value::Float(self.env.timer), St::Impl, ""),
+            _ => return None,
+        })
+    }
+}
+
+impl kh2_bdx::Host for SummonHost<'_, '_> {
+    fn call(&mut self, c: &kh2_bdx::Call) -> kh2_bdx::Value {
+        use kh2_bdx::Call;
+        // Motion requests and their state as the enemy host has them (no player-type remap for the summon yet).
+        if matches!(c, Call::PlayMotion { .. } | Call::PlayMotionChecked { .. } | Call::PlayMotionAt { .. } | Call::MotionState { .. }) {
+            return self.f.inner.call(c);
+        }
+        if let Some((v, st, why)) = self.own(c) {
+            self.record(c, &v, st, why);
+            return v;
+        }
+        self.f.call(c)
+    }
+
+    fn read_mem(&mut self, addr: u32, out: &mut [u8]) -> bool {
+        self.f.read_mem(addr, out)
+    }
+
+    fn write_mem(&mut self, addr: u32, data: &[u8]) -> bool {
+        self.f.write_mem(addr, data)
+    }
+
+    fn target_parts(&mut self, kind: i32, skip_flagged: bool) -> Option<Vec<kh2_bdx::search::TargetPart>> {
+        self.f.target_parts(kind, skip_flagged)
+    }
+
+    fn target_found(&mut self, record: u32, found: Option<(u32, u8)>, walked: u8) {
+        self.f.target_found(record, found, walked)
+    }
 }
 
 /// Original alpha modes of the companions' materials while the summon fades them.
@@ -1134,6 +1398,8 @@ fn act(
                     leave: false,
                     alpha: 1.0,
                     originals: HashMap::new(),
+                    ai: ai::SummonAi::default(),
+                    fields: crate::friend_host::FriendFields::default(),
                 });
             }
             Act::Leave => {
@@ -1164,9 +1430,11 @@ fn objects(
     children: Query<&Children>,
     handles: Query<&MeshMaterial3d<StandardMaterial>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    (game, drive, limit_task): (Res<GameData>, Res<DriveState>, Option<Res<crate::limit::LimitTask>>),
 ) {
     let (Some(mut trace), Ok(s)) = (trace, sora.single()) else { return };
     let paired = HashMap::new();
+    let senv = SummonEnv { timer: drive.timer.left, limit: limit_task.is_some_and(|l| l.0.is_some()) };
     for (ent, mut tf, mut so) in &mut q {
         let so = &mut *so;
         let Ok(anim) = anims.get(so.body) else { continue };
@@ -1187,7 +1455,7 @@ fn objects(
             mission_counters: None,
             event_active: false,
         };
-        let SummonObject { rt, obj, tag, started, leave, mode, errors_seen, .. } = so;
+        let SummonObject { rt, obj, tag, started, leave, mode, errors_seen, ai, fields, .. } = so;
         let Some(rt) = rt.as_mut() else {
             // No script: nothing ends the object but the leave [inferred].
             if std::mem::take(leave) {
@@ -1200,7 +1468,9 @@ fn objects(
             continue;
         };
         let handle = obj.handle;
-        let mut host = BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() };
+        let inner = BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() };
+        let f = crate::friend_host::FriendHost { inner, fields, game: &game, free: None, targets: &[] };
+        let mut host = SummonHost { f, ai, env: &senv };
         if let Some(m) = started.take() {
             rt.spawn(&mut host, handle);
             rt.set_mode_named(&mut host, m);
@@ -1560,5 +1830,88 @@ mod tests {
             }
         }
         eprintln!("oracle: FUN_001c65f0 equal in {n} cases");
+    }
+
+    /// The AI slot list of hosts 10.12 / 10.16 without the disc: the first free slot is taken, the flags
+    /// follow the object named, a full list answers 0x18 and changes nothing.
+    #[test]
+    fn summon_ai_slots_take_the_first_free_one() {
+        let who = ai::Who { own: 0x10, player: 0x20 };
+        let mut s = ai::SummonAi::default();
+        assert_eq!(s.start(who, 0, 0x10, 19, u32::MAX, false, 1, 0), 0);
+        assert_eq!((s.slots[0].kind, s.slots[0].flags, s.slots[0].a3, s.slots[0].a4, s.slots[0].a6), (0, 0x21, 19, u32::MAX, 1));
+        assert_eq!(s.start(who, 8, 0x20, 0x4000, 0, true, 1, 0), 1);
+        assert_eq!(s.slots[1].flags, 2 | 8);
+        assert_eq!(s.start(who, 9, 0x10, 0x4000, 0, false, 1, 0), 2);
+        assert_eq!(s.slots[2].flags, 1);
+        s.mark(2);
+        assert_eq!(s.slots[2].flags, 0x4000_0001);
+        // A slot whose effect still runs is not free even with a negative kind (FUN_00117668).
+        s.slots[3].effect = 7;
+        assert_eq!(s.start(who, 1, 0, 0, 0, false, 0, 0), 4);
+        for k in 5..ai::SLOTS {
+            s.start(who, 1, 0, 0, 0, false, 0, 0);
+            assert_eq!(s.slots[k].kind, 1);
+        }
+        let before = s.slots;
+        assert_eq!(s.start(who, 1, 0x10, 0, 0, true, 0, 0), ai::SLOTS);
+        assert_eq!(s.slots, before);
+    }
+
+    /// Oracle: FUN_00117708 (host 10.12) with FUN_00117668 run by kh2-ee on the user's executable against
+    /// `SummonAi::start` over random slot lists and arguments; the player is `DAT_0034e908` (FUN_00111c00(0)).
+    #[test]
+    fn summon_ai_slot_start_matches_the_game() {
+        use kh2_ee::Ee;
+        const STACK: u32 = 0x01ff_0000;
+        const AI: u32 = 0x0180_0000;
+        const OWN: u32 = 0x0181_0000;
+        const PLAYER: u32 = 0x0182_0000;
+        const OTHER: u32 = 0x0183_0000;
+        // Contexts whose word +4 is the object, as the host wrapper 0x2f6d00 reads them.
+        let Some(mut a) = archive() else { return };
+        let exe = elf(&mut a);
+        let mut ee = Ee::new();
+        ee.load_elf(&exe).expect("elf");
+        let who = ai::Who { own: OWN, player: PLAYER };
+        let mut seed = 0x1234_5678u32;
+        let mut next = || {
+            seed = seed.wrapping_mul(0x0019_660d).wrapping_add(0x3c6e_f35f);
+            seed
+        };
+        let mut n = 0;
+        for round in 0..200 {
+            // A random list: some slots taken (kind >= 0), some with an effect left.
+            let mut port = ai::SummonAi::default();
+            for (k, s) in port.slots.iter_mut().enumerate() {
+                let r = next();
+                s.kind = if r & 3 == 0 || round % 50 == 49 { (r >> 8) as i32 & 0xff } else { -1 };
+                s.effect = if r & 0x30 == 0x30 { 0x0190_0000 + k as u32 } else { 0 };
+                s.flags = next();
+                let base = AI + 0x20 + 0x40 * k as u32;
+                ee.w32(base, s.flags);
+                ee.w32(base + 4, s.kind as u32);
+                ee.w32(base + 8, s.effect);
+                for o in [0xc, 0x10, 0x14, 0x18] {
+                    ee.w32(base + o, 0);
+                }
+            }
+            ee.w32(AI + 4, OWN);
+            ee.w32(0x0034_e908, PLAYER);
+            let obj = [0, OWN, PLAYER, OTHER][(next() % 4) as usize];
+            let kind = [0i32, 1, 8, 9, 19][(next() % 5) as usize];
+            let (a3, a4, a6, a7) = (next() & 0xffff, next(), next() & 1, next() & 0xff);
+            let flag = next() & 1 == 1;
+            let got = ee.call(0x0011_7708, &[AI as u64, kind as i64 as u64, obj as u64, a3 as u64, a4 as u64, flag as u64, a6 as u64, a7 as u64], &[], STACK).expect("FUN_00117708") as u32 as usize;
+            let want = port.start(who, kind, obj, a3, a4, flag, a6, a7);
+            assert_eq!(got, want, "round {round}: slot index");
+            for (k, s) in port.slots.iter().enumerate() {
+                let base = AI + 0x20 + 0x40 * k as u32;
+                let game = (ee.r32(base), ee.r32(base + 4) as i32, ee.r32(base + 8), ee.r32(base + 0xc), ee.r32(base + 0x10), ee.r32(base + 0x14), ee.r32(base + 0x18));
+                assert_eq!(game, (s.flags, s.kind, s.effect, s.a6, s.a7, s.a4, s.a3), "round {round} slot {k}");
+            }
+            n += 1;
+        }
+        eprintln!("oracle: FUN_00117708 equal in {n} calls");
     }
 }

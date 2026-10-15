@@ -530,3 +530,68 @@ fn goofy_blade_throws_and_takes_back_the_hand_object() {
     let modes = rt.core.mode_log.take().unwrap();
     eprintln!("blade: callback at frame {called:?}, modes {modes:?}");
 }
+
+/// Stitch's summon script (`obj/N_HB040_BTL`, WP-SUM4, docs/summons.md stage 4) in its `appear_skip` mode on
+/// the mock world, with the group 10 entries it reaches answered as the app's summon host answers them:
+/// every group 10 call is decoded by its `names.rs` signature (none reaches the host as `Unknown`), the
+/// battle start asks the friend AI for slots (10.12), and the main thread offers Ohana (1.165, slot 2,
+/// command 519) only while the timer +0x1b4 of the player's status block (1.84 then 10.45) is above 0 and
+/// the summon is in no limit (10.19).
+#[test]
+fn stitch_summon_script_offers_ohana_while_the_timer_runs() {
+    use kh2_bdx::host::{Host, Value};
+    const GAUGES: u32 = 0x7900_0000;
+    struct StitchHost {
+        mock: MockHost,
+        timer: f32,
+        in_limit: bool,
+        slots: i32,
+        seen: Vec<Call>,
+    }
+    impl Host for StitchHost {
+        fn call(&mut self, c: &Call) -> Value {
+            self.seen.push(c.clone());
+            match c {
+                // 1.94 obj_valid: the summon and the player exist.
+                Call::Func { group: 1, index: 94, .. } => Value::Bool(true),
+                Call::Func { group: 1, index: 84, .. } => Value::Handle(GAUGES),
+                Call::Func { group: 10, index: 45, args } if args[0].int() as u32 == GAUGES => Value::Float(self.timer),
+                Call::Func { group: 10, index: 19, .. } => Value::Bool(self.in_limit),
+                Call::Func { group: 1, index: 272, .. } => Value::Bool(false),
+                Call::Func { group: 10, index: 12, .. } => {
+                    self.slots += 1;
+                    Value::Int(self.slots - 1)
+                }
+                Call::Func { group: 10, .. } | Call::Func { group: 1, index: 165, .. } => Value::None,
+                _ => self.mock.call(c),
+            }
+        }
+        fn read_mem(&mut self, addr: u32, out: &mut [u8]) -> bool {
+            self.mock.read_mem(addr, out)
+        }
+        fn write_mem(&mut self, addr: u32, data: &[u8]) -> bool {
+            self.mock.write_mem(addr, data)
+        }
+    }
+    let Some((mut a, elf)) = open() else { return };
+    let table = HostTable::from_exe(&elf).expect("table");
+    let data = object_script(&mut a, "obj/N_HB040_BTL.mdlx");
+    for (timer, in_limit, offers) in [(600.0f32, false, true), (0.0, false, false), (600.0, true, false)] {
+        let mut rt = Runtime::new(Program::parse(&data).expect("N_HB040_BTL parses"));
+        rt.set_host_table(table.clone());
+        let mut h = StitchHost { mock: MockHost::new(), timer, in_limit, slots: 0, seen: Vec::new() };
+        rt.spawn(&mut h, SELF_OBJ);
+        rt.set_mode_named(&mut h, "appear_skip");
+        for _ in 0..120 {
+            h.mock.tick();
+            rt.update(&mut h);
+        }
+        assert!(rt.core.errors.is_empty(), "timer {timer} limit {in_limit}: {:?}", rt.core.errors);
+        let unknown10: Vec<_> = h.seen.iter().filter(|c| matches!(c, Call::Unknown { group: 10, .. })).collect();
+        assert!(unknown10.is_empty(), "group 10 calls without a signature: {unknown10:?}");
+        assert!(h.slots > 0, "the battle start asks the friend AI for slots (10.12)");
+        let ohana = h.seen.iter().filter(|c| matches!(c, Call::Func { group: 1, index: 165, args } if args[0].int() == 2 && args[1].int() == 519)).count();
+        eprintln!("timer {timer} limit {in_limit}: {} calls, {} slots, {ohana} Ohana offers", h.seen.len(), h.slots);
+        assert_eq!(ohana > 0, offers, "timer {timer} limit {in_limit}: Ohana offered {ohana} times");
+    }
+}

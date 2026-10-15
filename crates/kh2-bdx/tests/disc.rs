@@ -370,7 +370,7 @@ fn every_script_on_the_disc_parses() {
 fn goofy_turbo_searches_its_targets() {
     use kh2_bdx::host::{Host, Value};
     use kh2_bdx::search::TargetPart;
-    /// What 	arget_found was told: the record, the part found, the parts walked.
+    /// What `target_found` was told: the record, the part found, the parts walked.
     type Found = (u32, Option<(u32, u8)>, u8);
     struct TurboHost {
         mock: MockHost,

@@ -736,11 +736,11 @@ impl Plugin for StatusPlugin {
 
 /// The numbers of a tab from the app's state: a member's own, or the leader's for the leader, forms and summons tabs.
 fn gather(p: &Progress, ui: &StatusUi, tab: Tab, sora: Option<&Sora>, data: Option<&GameData>) -> Numbers {
-    if let Tab::Member(n) = tab {
-        if let Some(m) = ui.roster.get(usize::from(n).wrapping_sub(1)) {
-            let live = Live { hp: m.hp, max_hp: m.hp_max, mp: m.mp, max_mp: m.mp_max, ..Live::default() };
-            return member_numbers(p, m.id, &ui.rules, &live);
-        }
+    if let Tab::Member(n) = tab
+        && let Some(m) = ui.roster.get(usize::from(n).wrapping_sub(1))
+    {
+        let live = Live { hp: m.hp, max_hp: m.hp_max, mp: m.mp, max_mp: m.mp_max, ..Live::default() };
+        return member_numbers(p, m.id, &ui.rules, &live);
     }
     let live = Live {
         hp: sora.map_or(i32::from(p.sora().hp), |s| s.hp),

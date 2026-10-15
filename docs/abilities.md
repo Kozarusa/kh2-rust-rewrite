@@ -113,14 +113,42 @@ The game counts equipped copies, so `ground_combo()` and the others are exact; `
    an addition to the attack stat while MP-charging (`FUN_001a05d0`), not ported: the app has no MP charge.
 5. Open: HUD or menu code: `ap_used()` / `ap_max()` for an ability menu.
 
+## Ability readers (WP-A1)
+
+Bits from the disc's rows (test `combat_ability_bits_are_the_rows_bits`): Leaf Bracer 402 bit 114 (block
+word 3 mask 0x40000), Second Chance 415 bit 127 (word 3 0x80000000), Once More 416 bit 128 (word 4 0x1),
+Auto Limit 417 bit 129 (word 4 0x2), Auto Change 418 bit 130 (word 4 0x4), Auto Healing 420 bit 132
+(word 4 0x10). Readers were found by the callers of `FUN_001768a8` (the block) and by the offsets
+`+0x1d8`/`+0x1dc` (`mips_scan.py --jal 0x1768a8`, `--load-off 0x1d8 --load-off 0x1dc`).
+
+| ability | status | rule [V unless marked] |
+|---|---|---|
+| Second Chance | ported, wired | `FUN_00185a68` (HP step of the receive handler `FUN_00175340`): for a non-heal hit of damage `d` on status HP `h` with status minimum `m` (+8), when `h - d <= m` it asks the actor's vtable +0x58; for Sora (class vtable 0x35c908) that is `FUN_00176d78`: Second Chance and `h >= 2` answers yes; then `d = max(h - m - 1, 0)`, so HP ends at `m + 1`. Port `abilities::survives_lethal_hit`, `lethal_hit_damage`; called in `sora::receive_hits`. |
+| Once More | ported, wired | the same routine's second case: Once More and `FUN_00185a08` (actor +0x140 set and motion id +0x154 in 10..=39, the damage motions). The app keeps the motion id it restarts in a hit reaction (`Sora::damage_motion`, cleared outside `Hurt`/`Blown`) [inferred: the app's reaction motion ids stand for +0x154]. The third case, the base class's `FUN_00185be0` (invincibility flags +0xabc/+0xac0/+0xac4, +0x588), is not modelled (answers no). |
+| Leaf Bracer | rule ported, receiver wired, trigger needs `magic.rs` | not read by engine code: every `CURE_*.mag` script (test `ability_bit_tests_in_scripts`: the only 12 uses of host 1.343 = `FUN_00170c28` on the disc, all bit 114, word 0x1ed of Cure's event 20) tests the caster's bit 114, and when the cast's target is the caster (host 1.130 answers 0) calls host 1.91 (`FUN_00172fe8` -> `FUN_00175aa8`: actor +0xb00 = 60.0) and starts a thread (routine word 0x2b8 with 563, 64) [routine not read]. `FUN_00175ab0` lowers +0xb00 by the frame step; while it is above 0 `FUN_00175ad8` (vtable +0x60) answers untouchable and `FUN_00175340` drops every hit but heals (attack types 5, 6). Port: `abilities::leaf_bracer_frames`, `Sora::leaf_bracer` (lowered one per tick [inferred: tick = frame step]), `Sora::start_leaf_bracer`; `receive_hits` drops hits while it runs. The cast start is in `magic.rs` (Cure's event 20), outside this WP: it does not call `start_leaf_bracer` yet. docs/magic.md read this branch as "a target that is not the caster"; the IsZero of host 1.130 says the caster [V: script listing]. |
+| Auto Healing | gap (rule read, nothing to wire) | `FUN_0017d4b8`: a timer `DAT_0035cc08` lowered by the frame step; at 0, for party slots 1..3 (`FUN_001a7200`) whose member is not one of the two field partners (`FUN_0017d400` over `FUN_0017cd08(0..1)` answers 0), with bit 132 in that member's status block (`+0x1dc & 0x10`), the HP method `FUN_001a0140(status, 1, 0, 0)` (+1 HP); then the timer is reset to `sstm +0x168`. So it heals members who are out of the field party. The app keeps no status for a member outside the field party: not ported. Called from `FUN_001b74e0` (0x1b77e4) [caller not read]. |
+| Auto Limit | reader found, not ported | `FUN_001d25e0` (limit pick): a partner's own block word 4 0x2 (bit 129) is required for its limit rows. A party member's ability; party code is outside this WP. |
+| Auto Change | reader found, not ported | `FUN_0017ce60`: word 4 0x4 with `FUN_001b42f0` and `FUN_0017d0f0` true calls `FUN_001b4170` [not read]. |
+| Scan | reader found, not ported | `FUN_0019b4a8`: word 0 0x80000 (bit 19). |
+| Aerial Recovery | reader found, not ported | `FUN_001758b0`: word 0 0x100000 (bit 20) on a hit flag 2 calls `FUN_001759b8`. |
+
+Evidence: `cargo test -p kh2 --test ability_oracle` runs the game's `FUN_00185a68` with Sora's
+`FUN_00176d78` in kh2-ee for 1400 cases (HP, minimum, damage, both bits, motion ids) and compares the HP
+change with the port; `cargo test -p kh2 --test ability_scripts -- --nocapture` lists the host 1.343 uses
+(`KH2_ABILITY_SCRIPT_LIST=1` prints the listing around the first). Harness: `KH2_NO_PARTY=1
+KH2_ABILITIES=127 KH2_ABILITYLOG=1 KH2_MAGIC_HURT=8:3 KH2_WAVE_GROUP=b_44 kh2-game tt04` logs
+`abilities: Second Chance keeps Sora at 1 HP: HP 2 damage 1 (atkp 17, damage motion None)`. Once More was
+not seen in a run: the app's own 36-tick invulnerability after every hit (`receive_hits`, not from the
+game) keeps a second hit from landing during most reactions.
+
 ## Gaps
 
 - Where the real game gives Sora his early abilities (see above), and the selector of `plrp` `Id` 1.
 - Dodge Roll: no row on this disc.
-- Combat abilities that only set their bit (Guard, the slashes, Scan, Aerial Recovery, Leaf Bracer,
-  Magic Lock-On, Second Chance, Once More, Auto Limit, Auto Change, Auto Healing, ...): the bit is
-  provided (`has`, `has_bit`) but their consumers (`bit(FUN_001768a8(object))` readers) were not ported here.
-  Only the attack table's own gates (docs/moveset-selection.md) read these bits in the app.
+- Combat abilities that only set their bit (Guard, the slashes, Scan, Aerial Recovery, Auto Limit,
+  Auto Change, ...): the bit is provided (`has`, `has_bit`); readers located for some of them are in
+  "Ability readers" below, the others were not ported. Second Chance, Once More and Leaf Bracer are
+  ported (WP-A1).
 - The consumers of the stat fields other than the form drain and the damage boosts (MP regeneration, drive
   gain while charging, Damage Drive, MP Rage, drop bonuses, experience multiplier, Defender's low-HP rule,
   Berserk Charge) were not traced or ported; the app computes the numbers exactly but nothing reads them yet.

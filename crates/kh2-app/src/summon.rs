@@ -1479,7 +1479,6 @@ fn objects(
             rt.set_mode_named(&mut host, "leave");
         }
         rt.update(&mut host);
-        drop(host);
         let now = rt.current_mode();
         if now != *mode {
             info!("summon: {tag} script mode {:?} -> {:?}", mode.as_deref().unwrap_or("-"), now.as_deref().unwrap_or("-"));

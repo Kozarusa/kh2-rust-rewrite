@@ -34,8 +34,11 @@
 //! The object's script runs through `SummonHost` (WP-SUM4): the party host plus the group 10 entries of
 //! Stitch's script (the AI object's fields in `ai::SummonAi`).
 //!
-//! What the app does not have (docs/summons.md "Status"): the friend AI (the object stands where it was
-//! put; its script's motion requests are logged, not played), the event itself (nothing in the app starts it: the wait for it ends at
+//! Stitch's class (module `stitch`, WP-SUM4b) moves him in his camera-space plane, chooses his records and
+//! fires his blast; its motion requests play on his body.
+//!
+//! What the app does not have (docs/summons.md "Status"): the friend AI of the other summons (they stand where
+//! they were put; their script's motion requests are logged, not played), the event itself (nothing in the app starts it: the wait for it ends at
 //! once), the HUD layers the event hides, the screen fade list (`FUN_0016ff50`), the free-spot
 //! collision tests (`FUN_001a5c30` / `FUN_001a5bf8`: a floor under the point stands in), the
 //! companions' return position (party.rs keeps their movement; they fade in where they are), the

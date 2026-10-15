@@ -560,7 +560,107 @@ and the player linked with 0xfe), chosen by the friend engine's record choice (F
 and Goofy in `party_battle.rs`); the class update FUN_00116b48 (531 lines: the slot list, effects, FUN_0016aa18)
 runs the slots and the goal. None of these were ported [GAP: read only as far as the calls listed here; the
 summon object has no locomotion of its own in the app (party.rs owns the members' movement)]. So no hit by
-Stitch's attacks is logged.
+Stitch's attacks is logged. (WP-SUM4b below ports them.)
+
+### Status (WP-SUM4b: Stitch moves and attacks)
+
+**What drives Stitch.** FUN_0010b780 gives NeoStatus 200 the class 0xe (+0xb6c), the AI object FUN_001179c0 and,
+at object +0xb64, the update FUN_001155e0 in place of the members' FUN_00111070. FUN_001155e0 never calls the
+members' follow (FUN_00110468, FUN_00110f90, FUN_0010f8d8): Stitch does not follow on the ground. Each frame,
+while the object is free (+0x160 bits 4/8/0x10 or 0x40000000), it
+
+1. places the AI once at the zero vector if +0x630 bit 0 is clear (FUN_001175a0; the script's 10.1 does it first),
+2. wraps the position and the goal across the plane's edges (FUN_00116530) and stops the direction (+0x660 = 0),
+3. in battle (FUN_001903d8), without a limit task (FUN_001b3c00), when the choices counted at +0x788 exceed the
+   entry's +0x10, resets the count and with the entry's chance (+0x14) forces a record: the MP refill
+   (FUN_00118730) when the player's MP is the lower fraction (`mp x maxhp < hp x maxmp`, the status block's +0x180,
+   +4, +0, +0x184), else the blast (FUN_00118348); the record runs its phase 0 at once (`_PTR_FUN_003787a0` /
+   `_PTR_FUN_003787a8` found by FUN_00114280);
+4. otherwise runs the friend engine's choice FUN_0010fcd0 over the seven records and counts a change of record
+   (or a record that is not continuing) at +0x788;
+5. turns the yaw +0x64c toward +0x65c by +0x62c (FUN_0017bc30) and adds direction x speed (+0x660 x +0x66c) to
+   the position +0x640;
+6. every entry +4 frames (+0x674) calls the player's vtable +0x78 with (1, 0, 0) while his HP is below its maximum
+   [GAP: the player's method at vtable +0x78 was not read; not ported].
+
+The entry is the class block's (0x34ea00 + offset[0xe]) parameter entry with id 0x80 (FUN_00114228 over the list at
+block +0xb0 / +0xb4), kept at AI +0x14. FUN_001179c0 sets +0x628 (`DAT_0037885c`, speed cap and arrival distance)
+and +0x62c (`DAT_00378860`, turn per frame and arrival angle).
+
+**The plane.** The position +0x640 is (x, y, depth, yaw): FUN_001175a0 and FUN_00116780 hold the depth at
+`DAT_00378840` / `DAT_003787d0`; FUN_00116530 moves x by `DAT_003787bc` past `DAT_003787b8` / `DAT_003787c0` and y
+by `DAT_003787c8` past `DAT_003787c4` / `DAT_003787cc`, position and goal together. FUN_00117320 makes a matrix of
+it (rotation by the yaw less the motion's root rotation from FUN_0017ecf0, translation `+0x640 x DAT_0037882c`) at
+AI +0x6c0, and FUN_00193228 gives the object that matrix as its parent (+0x790, +0x10c |= 0x40, +0x768 |= 0x1000);
+with +0x10c bit 0x40 the object's movement FUN_00181e00 adds no gravity and no collision. [inferred] The parent is
+the camera: the constant depth, the screen-sized wrap, the class update's placement type 3 through the camera's
+inverse view (FUN_00116b48 with FUN_001068c0(1)) and the blast aimed from the camera's position all point there;
+who reads object +0x790 was not found [GAP: `mips_scan.py --load-off 0x790` finds no load, the decompilation has
+only the writers FUN_00193228 / FUN_00193248; +0x768 bit 0x1000 has no reader by the patterns `0x768) & 0x1000`,
+`0x768) >> 0xc`]. The app puts the object at the camera-space point (x, y, depth) x `DAT_0037882c` (game camera
+axes: x right, y down, z forward) through the game camera's transform, turned by the yaw about the camera's
+vertical axis; the root rotation is taken as 0. So Stitch moves after Sora because the camera does.
+
+**The records** (0x354708, stride 0x24; handler at +4, flags at +0):
+
+| # | flags | handler | phase 1 (test) | phase 0 |
+|---|---|---|---|---|
+| 0 | 0x201 | FUN_00117cf8 stand | no limit task, +0x10c bit 0x800 clear, no flag-2 record feasible (FUN_0010ed20); continuing: the wait +0xcd4 above 0 | new: the wait from block +0x70..+0x74 (FUN_0010f648; in battle `2w + DAT_00378864`; yaw beyond `DAT_00378868`: times `DAT_0037886c`); motion 0 (FUN_0017e2d8 with `DAT_00378870`), stopped |
+| 1 | 0x201 | FUN_00117ea0 move | as 0; new: not the current record (FUN_0010f7a8); continuing: not arrived (FUN_00116aa0) | new: a random goal (FUN_00116780(-1)) and motion 0xa1; the step toward the goal (direction, speed = distance x `DAT_00356f48` capped at +0x628), the facing (FUN_00116658) |
+| 2 | 0x212 | FUN_00118348 blast | gates, +0x160 bit 0x40000000 clear; new: FUN_001180c0 (player HP below entry +8 of its maximum, FUN_0010f490, and an enemy in view, FUN_00118068); continuing: phase +0x634 not 4 | new: phase 0, goal case 6; phase 0: step and face, nearer than `DAT_00378878` -> wanted yaw 0, phase 1; phase 1: step, arrived -> phase 2; phase 2: snap to the goal, motion 0xcb, AI slots 0xc and 0xd (argument 0x13, flag 0x10), phase 3; phase 3: while motion 0xcb plays, its end -> phase 4; phases 2 and 3 run FUN_00118110 |
+| 3 | 0x220 | FUN_00118730 MP refill | gates; new: player MP below entry +0xc of its maximum (FUN_0010f4d0); continuing: phase not 3 | as the blast with goal case 7 and `DAT_0037887c`; phase 2: motion 0xcc, FUN_001a0240 on the player's status (MP to its maximum, a charge ended), effect 10 on the player (FUN_0016a570), AI slot 0xb |
+| 4 | 0x212 | FUN_00118db8 | never new; continuing while motion 0xc9 plays | motion 0xc9, the player linked with motion 0xfe (FUN_0017f160, FUN_0017e390) [not reached] |
+| 5, 6 | 0x212 | FUN_00118ec0, FUN_00119068 | not read [GAP] | not read (both call FUN_001175a0 with the vectors at 0x3b4050 / 0x3b4060) |
+
+FUN_00118110 (the blast): an attack object (FUN_0018bef0 with `atkp` 0x4ba, owner Stitch) kept at +0x620 with the
+motion at +0x624; every object the target walk (FUN_0018f348) gives that is a valid enemy (FUN_00112b28 ->
+FUN_00112ac0), not out of view (FUN_0019ada8) and has a hurt shape (FUN_00112d20, the nearest) is hit once
+(FUN_0018c5f8, FUN_0018c7f0, the target's vtable +0x64) with the direction from the camera's position
+(FUN_001071c8). The class update FUN_00116b48 frees the attack object (FUN_0018dc98) when the motion is no longer
++0x624 or it ended (+0x160 bit 2).
+
+**Motions.** FUN_0017da30 uses the four-slot order only for a motion set whose header +0xc has bit 0 (FUN_0017d960 ->
+FUN_001a7d70); otherwise the number is the slot. N_HB040_BTL's set has slots 0, 161, 201..206, 231, 241, 242: the
+requests 0, 0xa1, 0xcb, 0xcc play at their own numbers. [inferred: the header bit is not read; a slot at the number
+wins, the order is the fallback.]
+
+**In the app** (`summon.rs` module `stitch`, run from `objects` for NeoStatus 200 while the script is not in
+`leave`): `Consts::from_exe` (every address above), `records`, `goal` (FUN_00116780), `wrap` (FUN_00116530),
+`toward`, `arrived` (FUN_00116aa0), `face` (FUN_00116658), `place` (FUN_001175a0), `can` / `run` (the records'
+phases), `update` (FUN_001155e0 with `party_battle::choose` for FUN_0010fcd0). Hosts: 10.1 Approx (the root rotation
+taken as 0), 10.32 Approx (FUN_00118aa8: its FUN_00116780 case is a register the wrapper leaves, taken as the random
+branch), 10.39 also clears the current record. The blast writes `combat::Hit { atkp: 0x4ba }` for each enemy whose
+nearest hurt volume projects inside the screen; the refill calls `magic::refill_mp`.
+
+Inferred or left out:
+
+- [inferred] The generator FUN_00106308 behind FUN_0010f420 / FUN_0010f438 / FUN_00106408 is party.rs's xorshift
+  stand-in (one per summon object), not the game's.
+- [inferred] The stand wait +0xcd4 counts down one frame unit per frame (as party.rs).
+- [inferred] When FUN_0010fcd0 chooses nothing, the members' FUN_001103f8 runs; for Stitch it was not read: he
+  stands.
+- [inferred] The two-argument calls of FUN_001166d0 / FUN_00116728 in FUN_00116780's random branch write y too (the
+  third argument register still holds +0x654).
+- [inferred] "Out of view" (FUN_001a5db0 -> FUN_00146648, a frustum test of the object's +0x740 block) is the hurt
+  volume's centre projecting inside the screen; "free" (+0x160) is always true; +0x10c bit 0x800 and +0x160 bit
+  0x40000000 are never set.
+- The AI slots' effects (FUN_00116b48 starts `FUN_0016a530(object, kind, ..)` and places them by type 1..3), the
+  refill's effect 10 on the player and the 0x674 call are logged, not done [GAP].
+- The attacker's strength for the blast: `enemy.rs` takes Sora's stats for an attacker that is not a party member
+  (the summon's status block is the open gap above); the harness shows damage 0 with `atkp` 1210 and a blow.
+
+Harness (tt04, the Dusk group `b_44`, `KH2_STATE` with item 25 / summon level 1 / option word 11,
+`KH2_DRIVE_POINTS=5 KH2_SUMMON=3 KH2_SUMMON_AT=7 KH2_SUMMON_PARTY=1 KH2_SUMMONLOG=1 KH2_HITLOG=1`): `summon:
+N_HB040_BTL#summon0 record 2 (handler 0x118348, FUN_001155e0's forced pick) starts`, `... blast (FUN_00118110,
+atkp 0x4ba) hits <enemy>`, then `enemy: Dusk hit: atkp 1210 damage 0 ... Blow`; the once-a-second `plane (x, y,
+1024) ... -> world ... (N units from the player)` line shows the plane position and the world point following the
+camera. (`KH2_SUMMON_AT=4` there is refused: the player is airborne at 4 s.)
+
+Tests: `stitch_follow_decision_and_blast` (the choice out of battle is stand or move, a move ends at its goal, the
+plane wraps, the blast is the only choice with low HP and an enemy in view and fires from its spot until its motion
+ends, the forced pick takes the refill when MP is the lower fraction), `stitch_class_from_the_executable`, and the
+oracle `stitch_plane_rules_match_the_game` (FUN_00116530, FUN_00116aa0, FUN_00116658 and FUN_00116780 cases 0..7
+in kh2-ee over 300 random rounds).
 
 ## 7. Unknowns (with what was searched)
 

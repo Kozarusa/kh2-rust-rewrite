@@ -1,7 +1,7 @@
 //! Oracle checks behind docs/abilities.md "Ability readers" (WP-A1): Second Chance and Once More as
 //! the game's own code applies them, run in kh2-ee on the user's executable and compared with the
-//! rule the app ports (`abilities::survives_lethal_hit`, `abilities::lethal_hit_damage`, restated
-//! here because kh2-app is a binary crate). Read-only; skips without a disc.
+//! rule the app ports (`kh2_app::abilities::survives_lethal_hit`, `kh2_app::abilities::lethal_hit_damage`,
+//! called directly). Read-only; skips without a disc.
 //!
 //! `FUN_00185a68(actor, hit)` (the HP step of the receive handler) runs for real; it calls the
 //! actor's vtable slot +0x58, which is Sora's `FUN_00176d78` (also real, with its callees
@@ -41,10 +41,9 @@ fn open() -> Option<Ee> {
     Some(ee)
 }
 
-/// The port (same as kh2-app's `abilities` module).
+/// The app's own rule (`kh2_app::abilities`).
 fn port(second_chance: bool, once_more: bool, hp: i32, min: i32, dmg: i32, motion: Option<usize>) -> i32 {
-    let survives = (second_chance && hp >= 2) || (once_more && motion.is_some_and(|m| (10..40).contains(&m)));
-    if hp - dmg <= min && survives { (hp - min - 1).max(0) } else { dmg }
+    kh2_app::abilities::lethal_hit_damage(hp, min, dmg, kh2_app::abilities::survives_lethal_hit(second_chance, once_more, hp, motion))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -96,9 +95,9 @@ fn second_chance_and_once_more_match_the_game() {
     eprintln!("{n} cases equal");
 }
 
-/// The port of Scan's gate (same as kh2-app's `abilities::scan_binds_gauge`).
+/// The app's own Scan gate (`kh2_app::abilities::scan_binds_gauge`).
 fn scan_port(player_status: bool, scan: bool, listed: bool, flags: u32, target_status: bool) -> bool {
-    player_status && scan && listed && flags & (0x8_0000 | 0x1000_0000) == 0 && flags & 0x4000 == 0 && target_status
+    kh2_app::abilities::scan_binds_gauge(player_status, scan, listed, flags, target_status)
 }
 
 /// Scan (WP-A2): `FUN_0019b4a8(marker)` runs for real with its callees `FUN_0019b548`, `FUN_001768a8`,

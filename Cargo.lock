@@ -3242,6 +3242,7 @@ version = "0.1.0"
 dependencies = [
  "glam",
  "kh2-anim",
+ "kh2-app",
  "kh2-archive",
  "kh2-audio",
  "kh2-bar",

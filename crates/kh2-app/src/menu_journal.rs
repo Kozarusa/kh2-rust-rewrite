@@ -1287,7 +1287,7 @@ fn build3(j: &mut Journal, scene: &mut MenuScene, world: i8, test: &dyn Fn(u16) 
     }
     let list = j.seq_base + SEQ_LIST;
     let g = scene.seqs.get(list).and_then(|s| s.groups.get(STORY_LAYERS[0])).copied().unwrap_or_default();
-    let size = if g.size > 0 { g.size as i32 } else { TEXT_SIZE as i32 };
+    let size = if g.size > 0 { g.size } else { TEXT_SIZE as i32 };
     let font_gap = kh2_image::font::Font::get(STORY_FONT).line_gap as i32;
     let (line_h, gap) = story_metrics(g.unk1c, size, font_gap);
     for (k, &id) in marks.iter().enumerate() {

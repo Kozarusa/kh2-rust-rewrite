@@ -59,7 +59,7 @@ fn length(v: [f32; 4]) -> f32 {
 
 /// True for the indexes of group 0 that this module implements.
 pub fn is_math(index: u16) -> bool {
-    matches!(index, 3 | 4 | 5 | 6 | 7 | 13 | 16 | 17 | 18 | 23 | 35 | 36)
+    matches!(index, 3 | 4 | 5 | 6 | 7 | 13 | 16 | 17 | 18 | 23 | 35 | 36 | 37)
 }
 
 /// Runs math function `index` of group 0. Vector results come back as a pointer into the scratch buffers.
@@ -121,6 +121,12 @@ pub fn call(mem: &mut Mem<'_>, index: u16, a: &[u32], io: &mut dyn VecAccess) ->
             let v = io.read_vec(mem, a[0])?;
             let s = fl(a[1]);
             Ok(Some(mem.sh.put_vec(std::array::from_fn(|k| vm::ee_clamp(v[k] * s)))))
+        }
+        // Divide all four lanes by a scalar: the vector unit's reciprocal (a division by zero saturates) times each lane.
+        37 => {
+            let v = io.read_vec(mem, a[0])?;
+            let q = vm::ee_clamp(1.0 / fl(a[1]));
+            Ok(Some(mem.sh.put_vec(std::array::from_fn(|k| vm::ee_clamp(v[k] * q)))))
         }
         _ => Err(VmError::UnknownHost { group: 0, index }),
     }

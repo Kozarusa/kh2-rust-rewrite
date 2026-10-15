@@ -169,6 +169,8 @@ pub mod ai {
         pub player_heal: i32,
         /// Genie's class fields (AI +0x14 and the members' follow state): `super::genie`.
         pub genie: super::genie::GenieAi,
+        /// The fields of Chicken Little's, Peter Pan's and Tinker Bell's classes: `super::scripted`.
+        pub scripted: super::scripted::ScriptedAi,
     }
 
     impl Default for SummonAi {
@@ -185,6 +187,7 @@ pub mod ai {
                 player_hp: (0, 0),
                 player_heal: 0,
                 genie: Default::default(),
+                scripted: Default::default(),
             }
         }
     }
@@ -1046,6 +1049,254 @@ pub mod genie {
     }
 }
 
+/// Chicken Little, Peter Pan and Tinker Bell (WP-SUM8): the friend AI classes 0x12, 0x10 and 0x11 that
+/// FUN_0010b780 picks for NeoStatus 204, 202 and 203.
+///
+/// Peter Pan and Tinker Bell keep the members' update FUN_00111070; Chicken Little's own update
+/// FUN_0011a2e8 (object +0xb64) runs it first and then keeps the aim point (AI +0x40, below). The classes have
+/// at most one action record (FUN_0011a450 / FUN_0011a048: +0xc = 1, +0x10 = 0x3549f0 / 0x354948; Tinker
+/// Bell's FUN_0011a230 sets neither, so she has none). The record is flagged 3 (not counted, an attack), always
+/// feasible, and its handler (FUN_0011a590 / FUN_0011a118) starts the script mode named by the string at record
+/// +0x20 (`"battle"`) with FUN_00186e70 (the mode switch that checks the running mode's priority): it is the
+/// whole of what the class decides. The script's `battle` mode then picks the sub-mode (`follow_player`, `ball`,
+/// `whistle`, `surprise`, `use_potion`) by its own tests and queues `battle` again.
+///
+/// FUN_00111070 (the members' update) is what runs the record and the follow:
+///
+/// - out of battle (FUN_001903d8 false): FUN_001102c8, the follow step toward the follow point;
+/// - in battle: the choice FUN_0010fcd0, which returns at once while the script is busy (FUN_0010f698: object
+///   +0x390 != 0, the running mode record, so `current_mode()` is `Some`); with no mode running the record is
+///   chosen (nothing else is feasible) and its handler starts `battle`;
+/// - then the steer FUN_00110468 with the direction and speed the follow step left (the script's
+///   `follow_player` mode calls host 10.20 = FUN_001102c8 every frame).
+///
+/// FUN_001102c8 raises a walking speed to the player's movement plus `DAT_00378574` only for the classes 0xc,
+/// 0xf and 0x10: Peter Pan (0x10) has the rule, Chicken Little (0x12) and Tinker Bell (0x11) do not.
+pub mod scripted {
+    use crate::party_battle::{self as battle, Choice, Choosing, Handler, MemberNow, Params, Record};
+
+    /// What FUN_0010b780 gives a NeoStatus.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Class {
+        pub name: &'static str,
+        pub neo: u16,
+        /// Object +0xb6c.
+        pub class: u8,
+        /// AI +0x10 (the records) and +0xc (their count).
+        pub records: u32,
+        pub count: u32,
+        /// The bits FUN_0010b780 ors into object +0xb7c.
+        pub b7c: u32,
+    }
+
+    pub const CHICKEN: Class = Class { name: "Chicken Little", neo: 204, class: 0x12, records: 0x3549f0, count: 1, b7c: 0x1000 };
+    pub const PAN: Class = Class { name: "Peter Pan", neo: 202, class: 0x10, records: 0x354948, count: 1, b7c: 0x800 };
+    pub const TINKER: Class = Class { name: "Tinker Bell", neo: 203, class: 0x11, records: 0, count: 0, b7c: 0x802 };
+    pub const CLASSES: [Class; 3] = [CHICKEN, PAN, TINKER];
+
+    /// The handlers of the one record (FUN_0011a590 for Chicken Little, FUN_0011a118 for Peter Pan): the same
+    /// code, phase 0 switches the script to the record's mode, phase 1 answers 1 and hands the AI's target
+    /// record (+0x9f4) out.
+    pub const START_MODE: [u32; 2] = [0x11a590, 0x11a118];
+    /// `DAT_00378574`, the speed FUN_001102c8 adds for Peter Pan.
+    pub const SPEED_ADD: u32 = 0x378574;
+    /// FUN_0011a2e8 (Chicken Little): `DAT_003788e8`, how far in front of the object the aim point lies without a
+    /// target.
+    pub const AIM_AHEAD: u32 = 0x3788e8;
+    /// FUN_00119ce8: `DAT_003788d8`, the window of frames in which a party member may join the player's attack.
+    pub const JOIN_WINDOW: u32 = 0x3788d8;
+
+    pub fn class_of(neo: u16) -> Option<&'static Class> {
+        CLASSES.iter().find(|c| c.neo == neo)
+    }
+
+    /// The numbers the classes read.
+    #[derive(Clone, Copy, Debug, PartialEq, Default)]
+    pub struct Consts {
+        pub speed_add: f32,
+        pub aim_ahead: f32,
+        pub join_window: f32,
+    }
+
+    fn w(elf: &[u8], va: u32) -> Option<u32> {
+        crate::party_rules::exe_bytes(elf, va, 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+
+    fn cstr(elf: &[u8], va: u32) -> Option<String> {
+        let mut out = Vec::new();
+        for k in 0..32 {
+            let b = crate::party_rules::exe_bytes(elf, va + k, 1)?[0];
+            if b == 0 {
+                return String::from_utf8(out).ok();
+            }
+            out.push(b);
+        }
+        None
+    }
+
+    impl Consts {
+        pub fn from_exe(elf: &[u8]) -> Option<Consts> {
+            let f = |va: u32| w(elf, va).map(f32::from_bits);
+            Some(Consts { speed_add: f(SPEED_ADD)?, aim_ahead: f(AIM_AHEAD)?, join_window: f(JOIN_WINDOW)? })
+        }
+    }
+
+    /// A class with its records and its locomotion motions.
+    #[derive(Clone, Debug)]
+    pub struct Data {
+        pub class: Class,
+        pub records: Vec<Record>,
+        /// FUN_002f6320's motion table of the NeoStatus (0x3716a8, 0x3716c0 for 202 .. 0xca, 0x3716d8 for 201 ..
+        /// 0xc9): walk, run, the stop motion and the two turn motions (-1: none).
+        pub loco: [i32; 5],
+    }
+
+    impl Data {
+        pub fn from_exe(elf: &[u8], c: &Class) -> Option<Data> {
+            let table = if c.neo == PAN.neo { 0x3716c0 } else { 0x3716a8 };
+            let mut loco = [-1; 5];
+            for (k, m) in loco.iter_mut().enumerate() {
+                *m = w(elf, table + 4 * k as u32)? as i32;
+            }
+            Some(Data { class: *c, records: records(elf, c)?, loco })
+        }
+    }
+
+    /// The class's records (flags, handler, mode string at +0x20; no parameter entries).
+    pub fn records(elf: &[u8], c: &Class) -> Option<Vec<Record>> {
+        (0..c.count)
+            .map(|i| {
+                let r = c.records + i * 0x24;
+                Some(Record {
+                    flags: w(elf, r)?,
+                    handler: Handler::from_addr(w(elf, r + 4)?),
+                    id: w(elf, r + 0xc)?,
+                    entry: None,
+                    ability: w(elf, r + 0x14)?,
+                    item: w(elf, r + 0x18)?,
+                    setting: w(elf, r + 0x1c)? as i32,
+                    mode: cstr(elf, w(elf, r + 0x20)?)?,
+                })
+            })
+            .collect()
+    }
+
+    /// The class's fields: what the group 10 hosts keep of the AI object and of the object.
+    #[derive(Clone, Debug, Default)]
+    pub struct ScriptedAi {
+        /// The members' follow state (+0xb78, +0xb7c bit 0x10, the steer ring).
+        pub follow: crate::party_rules::Follow,
+        /// FUN_0010fcd0's state.
+        pub choosing: Choosing,
+        pub rng: super::stitch::Rng,
+        /// Host 10.20 ran this tick (FUN_001102c8: the follow step's direction and speed are fresh).
+        pub follow_asked: bool,
+        /// AI +0x20 bit 0: the FPS mode is on (FUN_0011ae60 sets it, FUN_0011b008 clears it; hosts 10.3 / 10.4).
+        pub fps: bool,
+        /// AI +0x40: the aim point (FUN_0011a2e8 keeps it, host 10.59 sets it, 10.5 reads it).
+        pub aim: [f32; 4],
+        /// Host 10.29 this tick: the item whose command is used on the target and the target's handle.
+        pub item: Option<(i32, u32)>,
+        /// The first update ran (FUN_001112e8, +0xb7c bit 0x20000000).
+        pub init: bool,
+        /// The object's target record (+0x9f4) as the script made it (1.160, a target search), and its position
+        /// (object +0xbe0, host 10.8).
+        pub target: Option<bevy::prelude::Entity>,
+        pub target_pos: [f32; 4],
+        /// The player's attack the member may join (FUN_00112850 at the attack's start: the body slot of his
+        /// attack motion), and whether the mark 0x200 is set (host 10.26).
+        pub armed: Option<usize>,
+        pub joined: bool,
+        /// Host 10.33 / 10.34 took the player's lock-on out of the list.
+        pub recent_taken: bool,
+        /// The motion host 1.13 queued after the running one (FUN_0017e170).
+        pub queued: Option<usize>,
+        /// The hits the script's attack objects landed on named enemies this tick (host 2.17): attack row, victim handle.
+        pub hits: Vec<(i16, u32)>,
+        /// The object's bones' world matrices and the root's (Bevy space), from the last drawn pose (host 1.83).
+        pub bones: Vec<bevy::prelude::Mat4>,
+        pub root: bevy::prelude::Mat4,
+    }
+
+    /// What the decision reads.
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct Now {
+        /// FUN_001903d8.
+        pub battle: bool,
+        /// The script runs a mode (object +0x390 != 0, FUN_0010f698).
+        pub mode_running: bool,
+    }
+
+    /// What one decision asks of the world.
+    #[derive(Clone, Debug, Default, PartialEq)]
+    pub struct Out {
+        /// The record's phase 0: start this mode (FUN_00186e70) and note the record.
+        pub start: Option<(usize, String)>,
+        /// FUN_001102c8 runs in the update itself (out of battle).
+        pub follow: bool,
+    }
+
+    /// FUN_00111070's decision for the classes: out of battle the follow; in battle FUN_0010fcd0 over the
+    /// records (nothing with the script busy), and the record's phase 0.
+    pub fn decide(recs: &[Record], class: u8, ai: &mut ScriptedAi, now: &Now) -> Out {
+        let mut out = Out::default();
+        if !now.battle {
+            out.follow = true;
+            return out;
+        }
+        // FUN_0010f8d8 (the emergency pass over the records flagged 0x10 / 0x20) finds none: the record is
+        // flagged 3. FUN_0010fcd0 returns at once while the script is busy.
+        if now.mode_running {
+            return out;
+        }
+        let rng = std::cell::RefCell::new(std::mem::take(&mut ai.rng));
+        let mut st = std::mem::take(&mut ai.choosing);
+        if st.current.is_some_and(|c| c >= recs.len()) {
+            st.current = None;
+        }
+        let choice = battle::choose(
+            recs,
+            &mut st,
+            &Params::default(),
+            class,
+            &MemberNow::default(),
+            class == PAN.class,
+            false,
+            |_| None,
+            |_, _| true,
+            || rng.borrow_mut().roll(),
+            |n| rng.borrow_mut().rand(n),
+        );
+        ai.choosing = st;
+        ai.rng = rng.into_inner();
+        if let Choice::Do(i) | Choice::Keep(i) = choice {
+            out.start = Some((i, recs[i].mode.clone()));
+        }
+        out
+    }
+
+    /// FUN_001102c8's speed rule for the classes 0xc, 0xf and 0x10 (the others return before it).
+    pub fn follow_speed(class: u8, c: &Consts, speed: f32, walk: f32, player_move: f32) -> f32 {
+        if matches!(class, 0xc | 0xf | 0x10) && walk < speed && speed < player_move { player_move + c.speed_add } else { speed }
+    }
+
+    /// FUN_0011a2e8's aim point: the position of the object's target record when it names a valid target, else the
+    /// object's position plus its facing vector (FUN_0016a890, +0x550) times `DAT_003788e8`.
+    pub fn aim_point(c: &Consts, target: Option<[f32; 4]>, pos: [f32; 4], facing: [f32; 4]) -> [f32; 4] {
+        match target {
+            Some(t) => t,
+            None => [pos[0] + facing[0] * c.aim_ahead, pos[1] + facing[1] * c.aim_ahead, pos[2] + facing[2] * c.aim_ahead, pos[3] + facing[3] * c.aim_ahead],
+        }
+    }
+
+    /// FUN_00119ce8 (host 10.25): a member may join the player's attack: the object's +0x200 mark is clear, the
+    /// player's recorded motion `DAT_0034e9d0` is not negative and `DAT_0034e9c8 + window` has not fallen below
+    /// `DAT_0034e9cc`.
+    pub fn join_ready(c: &Consts, b7c: u32, motion: i32, since: f32, mark: f32) -> bool {
+        motion >= 0 && b7c & 0x200 == 0 && !matches!((since + c.join_window).partial_cmp(&mark), Some(std::cmp::Ordering::Less))
+    }
+}
+
 /// The pure rules of stage 3, each with the address it ports.
 pub mod rules {
     use bevy::prelude::Vec3;
@@ -1251,6 +1502,8 @@ pub struct SummonData {
     /// Genie's class (WP-SUM5) and the members' follow rules it runs (party_rules, the class 0xf thresholds).
     pub genie: Option<(genie::Consts, Vec<crate::party_battle::Record>)>,
     follow: Option<crate::party_rules::Consts>,
+    /// Chicken Little's, Peter Pan's and Tinker Bell's classes (WP-SUM8): the constants and each class's records.
+    pub scripted: Option<(scripted::Consts, Vec<scripted::Data>)>,
     /// 03system.bin `pref` `prty` and its row offsets: walk, run and turn of a NeoMoveset (FUN_00194438, as
     /// party.rs reads them).
     prty: Vec<t::PrefPrty>,
@@ -1274,6 +1527,13 @@ impl SummonData {
         let motion_orders = exe.as_deref().and_then(crate::party_battle::motion_orders);
         let genie = exe.as_deref().and_then(|e| Some((genie::Consts::from_exe(e)?, genie::records(e)?)));
         let follow = exe.as_deref().and_then(crate::party_rules::Consts::from_exe);
+        let scripted = exe.as_deref().and_then(|e| {
+            let all = scripted::CLASSES.iter().map(|c| scripted::Data::from_exe(e, c)).collect::<Option<Vec<_>>>()?;
+            Some((scripted::Consts::from_exe(e)?, all))
+        });
+        if scripted.is_none() {
+            warn!("summon: the classes of Chicken Little, Peter Pan and Tinker Bell (FUN_0011a450 / FUN_0011a048 / FUN_0011a230) not readable: they stand where they appear");
+        }
         if genie.is_none() || follow.is_none() {
             warn!("summon: Genie's class constants (FUN_001199f8) or the follow rules not readable: Genie stands where he appears");
         }
@@ -1305,6 +1565,7 @@ impl SummonData {
             motion_orders,
             genie,
             follow,
+            scripted,
             prty,
             prty_offsets,
             objs,
@@ -1414,6 +1675,10 @@ pub struct SummonState {
     /// `DAT_003716a0` and `DAT_0035e9b0` (the game's LCG and the free-spot sector counter).
     pub rng: u32,
     pub sector: i32,
+    /// The form command of "Drive!" waiting to reach Genie's script as event 11.
+    pub pending_form: Option<u16>,
+    /// The enemy the player's latest hit landed on (a stand-in for `0x34e9c4`, FUN_00112850 at his attack's start).
+    pub player_hit: Option<Entity>,
     /// The leave thread (0x1c6810) runs.
     leaving: bool,
     /// The mode-3 tick counter (for the once-a-second log line).
@@ -1453,6 +1718,10 @@ pub enum SummonRequest {
     Dismiss,
     /// A change of the mode-3 timer through `FUN_001788d8` (already multiplied by `sstm[0x70]`).
     Gauge(f32),
+    /// Genie's "Drive!" list: the form command chosen (535..538, `Execute` handled by the generic executor FUN_00177c20 ->
+    /// FUN_0016b420, which raises event 11 on the first summon object's script with (the player, the command, a target
+    /// record)). The command menu issues it (`items.rs`); the harness `KH2_GENIE_FORM`.
+    Form(u16),
 }
 
 #[derive(Resource, Default)]
@@ -1463,6 +1732,8 @@ pub struct SummonQueue(pub Vec<SummonRequest>);
 struct Harness {
     summon: Option<(f32, u16)>,
     dismiss_at: Option<f32>,
+    /// `KH2_GENIE_FORM=<command>` at `KH2_GENIE_FORM_AT` seconds: the "Drive!" choice.
+    form: Option<(f32, u16)>,
     force_party: bool,
     log: bool,
 }
@@ -1574,6 +1845,36 @@ struct SummonEnv {
     genie: Option<genie::Consts>,
     /// FUN_001c69b0 (host 2.75): a summon is out, it is Peter Pan's row and byte 7 is set.
     tinker_ready: bool,
+    /// The objects host 2.4 walks (FUN_00184ac8: the enemies, +0x588 bit 0x10).
+    enemies: Vec<EnemyView>,
+    /// The enemies' target parts (host 6.23).
+    parts: Vec<crate::friend_host::SearchPart>,
+    /// The newest object of the player's lock-on list (host 10.33).
+    recent: Option<u32>,
+    /// FUN_001903d8 (host 1.244): a battle runs.
+    battle: bool,
+    /// The enemy of the player's latest landed hit (`SummonState::player_hit`; `0x34e9c4` is the object of his attack).
+    player_hit: Option<Entity>,
+    /// The constants of Chicken Little's, Peter Pan's and Tinker Bell's classes.
+    scripted: Option<scripted::Consts>,
+}
+
+impl SummonEnv {
+    fn enemy(&self, h: u32) -> Option<&EnemyView> {
+        self.enemies.iter().find(|e| e.handle == h)
+    }
+}
+
+/// An enemy as the summon scripts' object walk sees it: the handle they hold, its position (game units, the
+/// app's axes) and whether a hit reaction plays.
+#[derive(Clone, Copy, Debug)]
+struct EnemyView {
+    entity: Entity,
+    handle: u32,
+    pos: Vec3,
+    reacting: bool,
+    /// The enemy is in a blow (`EState::Blown`: the mover with flag 0x40, hosts 10.22 / 10.30).
+    blown: bool,
 }
 
 /// The keyed buffers of host 2.21 (the list at 0x1c95528, FUN_001a5040), kept for the run.
@@ -1743,6 +2044,175 @@ impl SummonHost<'_, '_> {
             }
             // 10.45 (0x2f73b0): the float at +0x1b4 of the status block.
             (10, 45) if a(0) == PLAYER_GAUGES => (Value::Float(self.env.timer), St::Impl, ""),
+            // 1.132 target_release (0x173728 -> FUN_0018f458): the record goes back to the pool.
+            (1, 132) => (Value::None, St::Approx, "the records are kept for the run"),
+            // 1.140 target_valid (0x173740 -> FUN_0018ed58): a record answers when it names an object (and the app's
+            // enemy is still there).
+            (1, 140) => {
+                let src = a(0);
+                let valid = if src == crate::enemy_obj::TARGET {
+                    self.ai.scripted.target.is_some_and(|t| self.env.enemies.iter().any(|e| e.entity == t))
+                } else {
+                    self.f.inner.obj.record_object(src).is_some_and(|o| o != 0 && self.env.enemy(o).is_some())
+                };
+                (Value::Bool(valid), St::Approx, "the record's object is an enemy of the walk")
+            }
+            // 2.17 attack_hit_object (0x18e6e0): the attack object hits the object named (FUN_0018c5f8, then the object's
+            // method +100): the hit is handed to the app with the victim.
+            (2, 17) => {
+                let (attack, victim) = (a(0), a(1));
+                match (self.f.fields.attacks.iter().find(|x| x.handle == attack).map(|x| x.atkp as i16), self.env.enemy(victim)) {
+                    (Some(id), Some(_)) => {
+                        self.ai.scripted.hits.push((id, victim));
+                        (Value::None, St::Approx, "the hit lands on the enemy named: the damage rows are the app's (combat::Hit)")
+                    }
+                    _ => (Value::None, St::Stub, "the attack object or the victim is not one of the summon's"),
+                }
+            }
+            // 6.23 (0x2ee858 -> FUN_002ee858): the id of the part of the object whose point is nearest to the vector.
+            (6, 23) => {
+                let v = match args.get(1) {
+                    Some(Arg::Vec(v)) => crate::enemy_obj::from_game(*v),
+                    _ => Vec3::ZERO,
+                };
+                let part = self.env.enemy(a(0)).and_then(|e| self.env.parts.iter().filter(|p| p.entity == e.entity).min_by(|x, y| x.point.distance_squared(v).total_cmp(&y.point.distance_squared(v)))).map_or(-1, |p| p.part as i32);
+                (Value::Int(part), St::Approx, "the TARGET shapes' ids (group) and centres stand for the collision records of type 2")
+            }
+            // 10.44 (0x2f7390): the object's mover has flag 0x10 in +8 [role unknown: no enemy of the app is read to have it].
+            (10, 44) => (Value::Bool(false), St::Stub, "mover flag 0x10 is not modelled"),
+            // 1.88 lockon_point (0x172f40 -> FUN_0016b6e0): the object's lock-on point. An enemy's is the centre of its
+            // first target shape (its root without one); the player's and the summon's own is the position.
+            (1, 88) => {
+                let at = match self.env.enemy(a(0)) {
+                    Some(e) => self.env.parts.iter().find(|p| p.entity == e.entity).map_or(e.pos, |p| p.point),
+                    None => self.f.inner.obj.motor.pos,
+                };
+                (Value::Vec(to_game(at)), St::Approx, "the centre of the enemy's first target shape [inferred: the record's point]; the player and the object itself read as their position")
+            }
+            // 1.192 flag_160_10 (0x171650): object +0x160 bit 0x10 (the controller's flag), which is also bit 4 of the
+            // class's free test (host 10.36): the motion allows the next action [inferred]; it reads set.
+            (1, 192) if a(0) == me => (Value::Bool(true), St::Approx, "the controller's +0x160 bit 0x10 is not modelled: read set"),
+            // 1.83 bone_to_world (0x172e68 -> FUN_0016aa18): the vector through the matrix of the object's bone `i`.
+            (1, 83) if a(0) == me => match (args.get(1).map(|x| x.int()), args.get(2)) {
+                (Some(i), Some(Arg::Vec(v))) => {
+                    let m = usize::try_from(i).ok().and_then(|i| self.ai.scripted.bones.get(i)).copied().unwrap_or(self.ai.scripted.root);
+                    let p = m.transform_point3(crate::enemy_obj::from_game(*v)) / SCALE;
+                    (Value::Vec(to_game(p)), St::Approx, "the bone's world matrix of the last drawn pose (one tick old)")
+                }
+                _ => (Value::Vec([0.0; 4]), St::Stub, "no vector argument"),
+            },
+            // 1.230 (0x174140): float(word 0) / float(word 1) of record `i` of a status block. Record 0 of the player's block
+            // (1.84) is his HP part: current over maximum (Chicken Little's `use_potion` test, below 0.25).
+            (1, 230) if a(0) == PLAYER_GAUGES && a(1) == 0 => {
+                let (hp, max) = self.ai.player_hp;
+                (Value::Float(hp as f32 / max as f32), St::Impl, "")
+            }
+            // 1.244 (0x173ab8 -> FUN_001903d8): a battle runs.
+            (1, 244) => (Value::Bool(self.env.battle), St::Impl, ""),
+            // 2.4 (0x18df50 -> FUN_00184ac8): the next object of the global list that has +0x588 bit 0x10 (the
+            // enemies), after the one given; 0 starts the walk and ends it.
+            (2, 4) => {
+                let list = &self.env.enemies;
+                let next = match a(0) {
+                    0 => list.first(),
+                    h => list.iter().position(|e| e.handle == h).and_then(|i| list.get(i + 1)),
+                };
+                (Value::Handle(next.map_or(0, |e| e.handle)), St::Approx, "the walk is over the enemies that are alive and hittable, in the app's order; the game's list also holds objects with +0x588 bit 0x10 the app does not have")
+            }
+            // The enemies the walk handed out: their position and reaction (hosts 1.147, 2.6, 1.60).
+            (1, 147) if self.env.enemy(a(0)).is_some() => {
+                let e = self.env.enemy(a(0)).copied();
+                (Value::Vec(e.map_or([0.0; 4], |e| to_game(e.pos))), St::Approx, "the enemy's root position")
+            }
+            (2, 6) | (1, 60) if self.env.enemy(a(0)).is_some() => (Value::Bool(self.env.enemy(a(0)).is_some_and(|e| e.reacting)), St::Approx, "a hurt or blown enemy reads as in a reaction"),
+            // 10.5 (0x2f6b88 -> FUN_0011a6a0): AI +0x40, the aim point.
+            (10, 5) => (Value::Vec(self.ai.scripted.aim), St::Impl, ""),
+            // 10.8 (0x2f6c20 -> FUN_00112538): the 16 bytes at object +0xbe0, the position of the object's target
+            // record (FUN_00111d18 copies it every frame with FUN_0018efa0).
+            (10, 8) => (Value::Vec(self.ai.scripted.target_pos), St::Approx, "the object's target record is the script's own (1.160); its position is the enemy's root"),
+            // 10.17 / 10.18 (0x2f6e30 / 0x2f6e48): object +0x588 bits 0x800 / 0x400. Bit 0x400 is set by the boss
+            // constructors (FUN_001acf20); no object of the app has either.
+            (10, 17) | (10, 18) => (Value::Bool(false), St::Approx, "bit 0x800 / 0x400 of +0x588 (the boss classes) is set on no object of the app"),
+            // 10.20 (0x2f6e80 -> FUN_001102c8): the follow step; the object's +0x10 / +0x20 take the results.
+            (10, 20) if a(0) == me => {
+                self.ai.scripted.follow_asked = true;
+                (Value::None, St::Impl, "the follow step runs after the script's slice, with the steer (FUN_00110468)")
+            }
+            // 10.22 / 10.30 (0x2f6f60 / 0x2f70e0): the object's mover (+0xc) has flag 0x40 in +8, a blow mover (the object
+            // is knocked away: docs/hit-reaction.md); 10.30 also tests +0x10c bit 0x20000 [role unknown: read set].
+            (10, 22) | (10, 30) => (Value::Bool(self.env.enemy(a(0)).is_some_and(|e| e.blown)), St::Approx, "an enemy in `EState::Blown` has the blow mover; +0x10c bit 0x20000 (10.30) is read as set"),
+            // 10.23 (0x2f6f88): object +0xae4 (the last attacker) is the second object: the player's latest landed hit.
+            (10, 23) => {
+                let hit = self.env.player_hit;
+                (Value::Bool(a(1) == crate::enemy_obj::PLAYER && self.env.enemy(a(0)).is_some_and(|e| Some(e.entity) == hit)), St::Approx, "the last attacker of an enemy is the player when his latest landed hit was on it")
+            }
+            // 7.24 / 7.25 (0x2ef848 / 0x2ef868 -> FUN_0010f6b8 / FUN_0010f6d0): object +0xb7c bit 0x400 cleared / set. Nothing
+            // read in the class reads the bit [GAP: readers of +0xb7c bit 0x400 not searched].
+            (7, 24) => {
+                self.ai.b7c &= !0x400;
+                (Value::None, St::Impl, "")
+            }
+            (7, 25) => {
+                self.ai.b7c |= 0x400;
+                (Value::None, St::Impl, "")
+            }
+            // 7.19 (0x2ef760 -> FUN_0010df08): the target refresh. Peter Pan's chooser (FUN_00119d60) takes, among the
+            // objects the player has attacked that are blown (10.30), the nearest; without one and with the join window
+            // open (FUN_00119ce8) the object of the player's attack (FUN_0010d848); else the target stays. The answer
+            // is whether the target changed (+0xb7c bit 3).
+            (7, 19) => {
+                let before = self.ai.scripted.target;
+                let hit = self.env.player_hit.filter(|h| self.env.enemies.iter().any(|e| e.entity == *h));
+                let blown = hit.filter(|h| self.env.enemies.iter().any(|e| e.entity == *h && e.blown));
+                let join = self.env.scripted.is_some_and(|k| scripted::join_ready(&k, self.ai.b7c | if self.ai.scripted.joined { 0x200 } else { 0 }, if self.ai.scripted.armed.is_some() { 0 } else { -1 }, 0.0, 0.0));
+                let still = before.filter(|b| self.env.enemies.iter().any(|e| e.entity == *b));
+                let pick = blown.or(if join { hit } else { None }).or(still);
+                self.ai.scripted.target = pick;
+                (Value::Bool(pick != before), St::Approx, "the candidates are the player's latest hit (the game's list: objects with +0x10c bit 0x20000, mover flag 0x40, last attacker the player); the surface distance order is not needed with one")
+            }
+            // 10.25 / 10.26 (0x2f6fe8 / 0x2f7020): FUN_00119ce8 on +0xb7c, and the mark 0x200 (FUN_0011a1d0).
+            (10, 25) => match self.env.scripted {
+                Some(k) => (Value::Bool(scripted::join_ready(&k, self.ai.b7c | if self.ai.scripted.joined { 0x200 } else { 0 }, if self.ai.scripted.armed.is_some() { 0 } else { -1 }, 0.0, 0.0)), St::Approx, "the player's attack window (DAT_0034e9c8..d0, FUN_00112850 at the attack's start) is the app's: his attack state, the motion that started it"),
+                None => (Value::Bool(false), St::Stub, "the class constants are not readable"),
+            },
+            (10, 26) => {
+                if self.ai.scripted.armed.is_some() && !self.ai.scripted.joined {
+                    self.ai.scripted.joined = true;
+                    self.ai.b7c |= 0x200;
+                }
+                (Value::None, St::Approx, "the mark is kept; FUN_0011a1d0 tests 10.25 first")
+            }
+            // 10.27 / 10.28 (0x2f7070 / 0x2f7090 -> FUN_0010f6e0 / FUN_0010f728): +0xb7c bit 0x4000 cleared / set (the
+            // class is neither 0x20 nor 0x1f, whose branch is a motion request).
+            (10, 27) => {
+                self.ai.b7c &= !0x4000;
+                (Value::None, St::Impl, "")
+            }
+            (10, 28) => {
+                self.ai.b7c |= 0x4000;
+                (Value::None, St::Impl, "")
+            }
+            // 10.29 (0x2f70b0 -> FUN_0010c9d0): the item's command on the target, motion request 9.
+            (10, 29) if a(0) == me => {
+                self.ai.scripted.item = Some((a(1) as i32, a(2)));
+                (Value::None, St::Approx, "motion 9 plays; the item's effect on the target is not carried out")
+            }
+            // 10.31 (0x2f7118): +0x588 bit 0x400000: the summon objects.
+            (10, 31) => (Value::Bool(a(0) == me), St::Impl, ""),
+            // 10.33 / 10.34 (0x2f7170 / 0x2f71d0): the player's list of recent lock-on targets (0x34e988).
+            (10, 33) => {
+                let h = self.env.recent;
+                if a(0) != 0 && h.is_some() {
+                    self.ai.scripted.recent_taken = true;
+                }
+                (Value::Handle(h.filter(|_| !self.ai.scripted.recent_taken).unwrap_or(0)), St::Approx, "the list is the player's current lock-on or target; FUN_00112850's other conditions (the object type, the player's state) are not read")
+            }
+            (10, 34) => {
+                self.ai.scripted.recent_taken = true;
+                (Value::None, St::Approx, "the list is emptied up to and including the object")
+            }
+            // 10.36 / 10.37 (0x2f7230 / 0x2f7270): object +0x160 bits 4, 8, 0x10 (free) / 0x40000000.
+            (10, 37) => (Value::Bool(false), St::Approx, "+0x160 bit 0x40000000 is set on no object of the app"),
             _ => return None,
         })
     }
@@ -1755,6 +2225,90 @@ impl kh2_bdx::Host for SummonHost<'_, '_> {
         if matches!(c, Call::PlayMotion { .. } | Call::PlayMotionChecked { .. } | Call::PlayMotionAt { .. } | Call::MotionState { .. }) {
             return self.f.inner.call(c);
         }
+        // The queries on the enemies the object walk (2.4) handed out: their position and reaction.
+        match c {
+            Call::Position { obj } if self.env.enemy(*obj).is_some() => {
+                let v = kh2_bdx::Value::Vec(self.env.enemy(*obj).map_or([0.0; 4], |e| to_game(e.pos)));
+                self.record(c, &v, crate::enemy_host::St::Approx, "the enemy's root position");
+                return v;
+            }
+            Call::Busy { obj } | Call::HitStun { obj } if self.env.enemy(*obj).is_some() => {
+                let v = kh2_bdx::Value::Bool(self.env.enemy(*obj).is_some_and(|e| e.reacting));
+                self.record(c, &v, crate::enemy_host::St::Approx, "a hurt or blown enemy reads as in a reaction");
+                return v;
+            }
+            Call::OnScreen { obj } if self.env.enemy(*obj).is_some() => {
+                let v = kh2_bdx::Value::Bool(true);
+                self.record(c, &v, crate::enemy_host::St::Stub, "the frustum test of enemies is not made: they read as on screen");
+                return v;
+            }
+            _ => {}
+        }
+        // 1.131 free_target (0x1736f8 -> FUN_0018f3f8): a new target record from the pool (0x1c89bd0, 0x14 bytes each),
+        // a copy of the record given. The copy names the same object: the object's own target (`TARGET`), or the
+        // object another copy names.
+        if let Call::FreeTarget { handle } = c {
+            let obj = if *handle == crate::enemy_obj::TARGET {
+                self.ai.scripted.target.and_then(|t| self.env.enemies.iter().find(|e| e.entity == t)).map_or(0, |e| e.handle)
+            } else {
+                self.f.inner.obj.record_object(*handle).unwrap_or(0)
+            };
+            let v = kh2_bdx::Value::Handle(self.f.inner.obj.new_record(obj, 0));
+            self.record(c, &v, crate::enemy_host::St::Approx, "the pool is the object's own list of records (kept for the run); a record in the script's own memory is copied as an empty one");
+            return v;
+        }
+        // 1.120 target_position (0x173688) of a record: the point of its object (the nearest part's point of the enemy).
+        if let Call::TargetPosition { target } = c {
+            let obj = if *target == crate::enemy_obj::TARGET {
+                self.ai.scripted.target.and_then(|t| self.env.enemies.iter().find(|e| e.entity == t)).map(|e| e.handle)
+            } else {
+                self.f.inner.obj.record_object(*target)
+            };
+            if let Some(e) = obj.and_then(|o| self.env.enemy(o)).copied() {
+                let at = self.env.parts.iter().find(|p| p.entity == e.entity).map_or(e.pos, |p| p.point);
+                let v = kh2_bdx::Value::Vec(to_game(at));
+                self.record(c, &v, crate::enemy_host::St::Approx, "the centre of the enemy's first target shape (its root without one) [inferred: the record's point]");
+                return v;
+            }
+        }
+        // The raw-word calls on target records: 1.160 (FUN_0018f490, the third word is the context's object, see the
+        // runtime's dispatch) makes a record name an object, 6.16 (FUN_0018ed40) clears one. The record is the
+        // object's own target (`TARGET`, the app's `ScriptedAi::target`) or one of its pool (1.131).
+        if let Call::Unknown { group, index, args } = c
+            && let Some(&rec) = args.first()
+            && (rec == crate::enemy_obj::TARGET || self.f.inner.obj.record_object(rec).is_some())
+        {
+            let own = rec == crate::enemy_obj::TARGET;
+            match (*group, *index) {
+                (1, 160) => {
+                    let named = args.get(2).copied().unwrap_or(0);
+                    let (st, why) = if own {
+                        match self.env.enemy(named).map(|e| e.entity) {
+                            Some(e) => {
+                                self.ai.scripted.target = Some(e);
+                                (crate::enemy_host::St::Approx, "the object's target record names the enemy (shape 0); the position index and the part are not kept")
+                            }
+                            None => (crate::enemy_host::St::Stub, "the object named is not an enemy of the walk: the record is left as it is")
+                        }
+                    } else {
+                        self.f.inner.obj.set_record_object(rec, named);
+                        (crate::enemy_host::St::Impl, "")
+                    };
+                    self.record(c, &kh2_bdx::Value::None, st, why);
+                    return kh2_bdx::Value::None;
+                }
+                (6, 16) => {
+                    if own {
+                        self.ai.scripted.target = None;
+                    } else {
+                        self.f.inner.obj.set_record_object(rec, 0);
+                    }
+                    self.record(c, &kh2_bdx::Value::None, crate::enemy_host::St::Impl, "");
+                    return kh2_bdx::Value::None;
+                }
+                _ => {}
+            }
+        }
         if let Some((v, st, why)) = self.own(c) {
             self.record(c, &v, st, why);
             return v;
@@ -1763,10 +2317,24 @@ impl kh2_bdx::Host for SummonHost<'_, '_> {
     }
 
     fn read_mem(&mut self, addr: u32, out: &mut [u8]) -> bool {
+        // The object's own target record (host 2.23: object +0x9f4), laid out like the records of event 11 (object,
+        // position index, 0, -1, 0): its object is the enemy the script named (1.160), or none.
+        let t = addr.wrapping_sub(crate::enemy_obj::TARGET) as usize;
+        if t + out.len() <= 20 {
+            let obj = self.ai.scripted.target.and_then(|t| self.env.enemies.iter().find(|e| e.entity == t)).map_or(0, |e| e.handle);
+            let mut r = crate::enemy_host::target_record();
+            r[0..4].copy_from_slice(&obj.to_le_bytes());
+            out.copy_from_slice(&r[t..t + out.len()]);
+            return true;
+        }
         self.shared.read(addr, out) || self.f.read_mem(addr, out)
     }
 
     fn write_mem(&mut self, addr: u32, data: &[u8]) -> bool {
+        // The own target record is the app's (`ScriptedAi::target`): writes into it are taken and dropped.
+        if addr.wrapping_sub(crate::enemy_obj::TARGET) as usize + data.len() <= 20 {
+            return true;
+        }
         self.shared.write(addr, data) || self.f.write_mem(addr, data)
     }
 
@@ -1812,6 +2380,7 @@ impl Plugin for SummonPlugin {
         let harness = Harness {
             summon,
             dismiss_at: env_f("KH2_DISMISS_AT"),
+            form: std::env::var("KH2_GENIE_FORM").ok().and_then(|v| v.trim().parse::<u16>().ok()).map(|c| (env_f("KH2_GENIE_FORM_AT").unwrap_or(12.0), c)),
             force_party: std::env::var("KH2_SUMMON_PARTY").is_ok_and(|v| v == "1"),
             log: std::env::var("KH2_SUMMONLOG").is_ok_and(|v| !v.is_empty() && v != "0"),
         };
@@ -1836,9 +2405,34 @@ impl Plugin for SummonPlugin {
             .init_resource::<Originals>()
             .init_resource::<SharedBlocks>()
             .init_resource::<PlayerSide>()
-            .add_systems(Update, (keys.before(crate::magic::harness_keys), harness_requests, hud_feed.before(crate::hud::hud_gauge::update)))
-            .add_systems(FixedUpdate, (tick, act, objects, companions).chain().in_set(Sim::Sounds))
+            .init_resource::<crate::hud::hud_party::SummonFace>()
+            .add_systems(Update, (keys.before(crate::magic::harness_keys), harness_requests, hud_feed.before(crate::hud::hud_gauge::update), face_feed.before(crate::hud::hud_party::update)))
+            .add_systems(FixedUpdate, (track_player_hits, tick, act, objects, companions).chain().in_set(Sim::Sounds))
             .add_systems(FixedUpdate, stops.after(Sim::Enemy).before(Sim::Detect).run_if(crate::schedule::sim_running));
+    }
+}
+
+/// The summon face panel's request (`hud_party::SummonFace`): while the gauge is in mode 3 and a summon object holds party
+/// slot 0 the panel shows its face (FUN_00156ca8 waits for the object, FUN_00156fe8 starts group 0x9a / 0x9b); when the gauge
+/// leaves mode 3 the panel plays group 0x9c (FUN_00156c78 -> FUN_00157020).
+fn face_feed(drive: Res<DriveState>, objects: Query<&SummonObject>, mut face: ResMut<crate::hud::hud_party::SummonFace>) {
+    let want = (drive.gauge_mode == GaugeMode::Summon).then(|| objects.iter().find(|o| o.slot == 0).map(|o| o.model.clone())).flatten();
+    if face.model != want {
+        face.model = want;
+    }
+}
+
+/// The enemy the player hit last (a stand-in for `DAT_0034e9c4`, written by FUN_00112850 at the start of his attack).
+fn track_player_hits(mut hits: MessageReader<Hit>, sora: Query<(), With<Sora>>, enemies: Query<(), With<Enemy>>, objects: Query<&SummonObject>, h: Res<Harness>, mut sm: ResMut<SummonState>) {
+    for hit in hits.read() {
+        if sora.contains(hit.attacker) && enemies.contains(hit.target) {
+            sm.player_hit = Some(hit.target);
+        }
+        if let Ok(o) = objects.get(hit.attacker)
+            && h.log
+        {
+            info!("summon: {} hits {:?} with atkp {} (the body's attack volume)", o.tag, hit.target, hit.atkp);
+        }
     }
 }
 
@@ -1871,6 +2465,11 @@ fn harness_requests(time: Res<Time>, h: Res<Harness>, mut queue: ResMut<SummonQu
         && crossed(at)
     {
         queue.0.push(SummonRequest::Dismiss);
+    }
+    if let Some((at, c)) = h.form
+        && crossed(at)
+    {
+        queue.0.push(SummonRequest::Form(c));
     }
 }
 
@@ -2046,6 +2645,15 @@ fn tick(
                     info!("summon: Dismiss refused (summon state {}, limit task {})", sm.state, sm.limit_task);
                 }
             }
+            SummonRequest::Form(c) => {
+                // Only while Genie is out (the menu lists "Drive!" in that state: FUN_001bc6e0 with state 2 and NeoStatus 201).
+                if sm.state == 2 && sm.present.contains(&genie::NEO) {
+                    sm.pending_form = Some(c);
+                    info!("summon: Drive! chose command {c} (event 11 for Genie)");
+                } else {
+                    info!("summon: Drive! command {c} refused: Genie is not out (state {})", sm.state);
+                }
+            }
             SummonRequest::Gauge(d) => {
                 if st.gauge_mode == GaugeMode::Summon {
                     let lost = st.timer.change(&tuning, GaugeMode::Summon, st.form, d);
@@ -2144,7 +2752,7 @@ fn tick(
 }
 
 /// The resources `act` reads besides its own.
-type ActRes<'w> = (ResMut<'w, SummonState>, Res<'w, Battle>, Option<Res<'w, World>>, Option<Res<'w, crate::fx::EffectLib>>);
+type ActRes<'w> = (ResMut<'w, SummonState>, Res<'w, Battle>, Option<Res<'w, World>>, Option<ResMut<'w, crate::fx::EffectLib>>);
 /// The asset stores a spawned model needs.
 type Gfx<'w> = (ResMut<'w, Assets<Mesh>>, ResMut<'w, Assets<StandardMaterial>>, ResMut<'w, Assets<Image>>, ResMut<'w, Assets<SkinnedMeshInverseBindposes>>);
 
@@ -2157,7 +2765,7 @@ fn act(
     mut data: ResMut<SummonData>,
     mut acts: ResMut<Acts>,
     mut side: ResMut<PlayerSide>,
-    (mut sm, battle, world, lib): ActRes,
+    (mut sm, battle, world, mut lib): ActRes,
     mut sora: Query<&mut Sora>,
     mut anims: Query<&mut Animator>,
     mut running: Query<&mut crate::fx::RunningEffect>,
@@ -2293,6 +2901,11 @@ fn act(
                     continue;
                 };
                 let Some(slot) = (0..2u8).find(|&k| sm.slots[k as usize].is_none()) else { continue };
+                // The object's own effect file (`obj/<model>.apdx`) is registered with the effect library so its script's
+                // effects (1.87, 1.149, 1.157) can start.
+                if let Some(l) = lib.as_deref_mut() {
+                    crate::drive::register_effects(&disc, l, &rig);
+                }
                 // FUN_0016b960: the player's position; without the event the free spot (FUN_001a5ea8).
                 let mut at = s.motor.pos;
                 if skip && let Some(c) = data.consts {
@@ -2340,6 +2953,8 @@ fn act(
                 let script = rt.as_ref().map(|r| r.prog.name.clone());
                 sm.slots[slot as usize] = Some(body);
                 sm.present.push(o.neo_status);
+                let slots: Vec<usize> = (0..rig.mset.slots.len()).filter(|&x| rig.mset.has(x)).collect();
+                info!("summon: object {} motion set slots {slots:?}", o.model_name);
                 info!(
                     "summon: object {} ({}, objentry {}, type {}, NeoStatus {}) in summon slot {slot} at {at:?}, script {}, mode {mode}; body motion slot {idle:?}",
                     o.model_name,
@@ -2352,6 +2967,9 @@ fn act(
                 if let Ok(mut b) = anims.get_mut(body) {
                     b.play(idle, true, 0.0);
                 }
+                // The motions' attack triggers are generic (the game evaluates them for any object): the body can hit the
+                // enemies, and nothing hits it (the summon takes no damage: FUN_001c60f8 drains the gauge instead).
+                commands.entity(root).insert(Fighter { team: crate::combat::Team::Player, attack_bodies: vec![body], hurt_body: body, landed: Default::default(), hittable: false });
                 commands.entity(root).insert(SummonObject {
                     neo: o.neo_status,
                     model: o.model_name.clone(),
@@ -2405,6 +3023,15 @@ type StitchWorld<'w, 's> = (
     Res<'w, Battle>,
 );
 
+/// What the classes of Chicken Little, Peter Pan and Tinker Bell reach beside Stitch's: the effect library, the victims'
+/// hit memory of their attack objects, the effect hits and the running effects.
+type ScriptedRes<'w, 's> = (
+    Option<Res<'w, crate::fx::EffectLib>>,
+    Local<'s, crate::friend_ai::VictimMemory>,
+    MessageWriter<'w, crate::fx::SpellHit>,
+    Query<'w, 's, &'static mut crate::fx::RunningEffect>,
+);
+
 /// The game state the summon objects read: the game data, the drive gauge, the limit task, the summon data and state.
 type SummonRes<'w> = (Res<'w, GameData>, Res<'w, DriveState>, Option<Res<'w, crate::limit::LimitTask>>, Res<'w, SummonData>, ResMut<'w, SummonState>, ResMut<'w, SharedBlocks>);
 
@@ -2431,11 +3058,71 @@ fn objects(
     mut materials: ResMut<Assets<StandardMaterial>>,
     (game, drive, limit_task, data, mut sm, mut shared): SummonRes,
     (cam, enemies, gts, mut hits, mut magic, battle): StitchWorld,
+    (lib, mut memory, mut spell_hits, mut running): ScriptedRes,
 ) {
     let (Some(mut trace), Ok(mut s)) = (trace, sora.single_mut()) else { return };
     let paired = HashMap::new();
     let move_record = data.stitch.as_ref().and_then(|(_, r)| r.iter().position(|r| stitch::addr(r) == stitch::MOVE));
-    let senv = SummonEnv { timer: drive.timer.left, limit: limit_task.is_some_and(|l| l.0.is_some()), stitch: data.stitch.as_ref().map(|d| d.0), move_record, genie: data.genie.as_ref().map(|d| d.0), tinker_ready: tinker_ready(&sm, &data) };
+    // The object walk of host 2.4 (FUN_00184ac8: the objects with +0x588 bit 0x10, the enemies) and the enemies'
+    // hurt shapes the summons' attack objects are tested against.
+    let views: Vec<EnemyView> = enemies
+        .iter()
+        .filter(|(_, e, f)| e.alive() && f.hittable)
+        .filter_map(|(te, e, _)| {
+            Some(EnemyView {
+                entity: te,
+                handle: crate::friend_host::enemy_handle(te),
+                pos: gts.get(te).ok()?.translation() / SCALE,
+                reacting: matches!(e.state, crate::enemy::EState::Hurt | crate::enemy::EState::Blown),
+                blown: matches!(e.state, crate::enemy::EState::Blown),
+            })
+        })
+        .collect();
+    let victims: Vec<_> = enemies
+        .iter()
+        .filter_map(|(e, _, f)| {
+            let f = (f.team == crate::combat::Team::Enemy && f.hittable).then_some(f)?;
+            let (a, g) = (anims.get(f.hurt_body).ok()?, gts.get(f.hurt_body).ok()?);
+            let shapes = a.rig.model.shapes.iter().filter(|sh| sh.kind == kh2_model::collision::kind::BATTLE || sh.kind == kh2_model::collision::kind::TARGET);
+            Some((e, shapes.map(|sh| (crate::combat::shape_volume(sh, a, g), crate::combat::hurt_spheroid(sh, a, g))).collect::<Vec<_>>()))
+        })
+        .collect();
+    let parts: Vec<crate::friend_host::SearchPart> = enemies
+        .iter()
+        .filter_map(|(e, _, f)| {
+            let f = (f.team == crate::combat::Team::Enemy && f.hittable).then_some(f)?;
+            let (a, g) = (anims.get(f.hurt_body).ok()?, gts.get(f.hurt_body).ok()?);
+            let shapes = a.rig.model.shapes.iter().filter(|sh| sh.kind == kh2_model::collision::kind::BATTLE || sh.kind == kh2_model::collision::kind::TARGET).enumerate();
+            Some(
+                shapes
+                    .filter(|(_, sh)| sh.kind == kh2_model::collision::kind::TARGET)
+                    .map(|(i, sh)| {
+                        let h = crate::combat::hurt_spheroid(sh, a, g);
+                        crate::friend_host::SearchPart { entity: e, shape: i, part: sh.group, point: h.center / SCALE, radius: h.radius / SCALE }
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .flatten()
+        .collect();
+    for m in memory.0.values_mut() {
+        m.tick();
+    }
+    let pax_of = |rig: &Arc<Rig>| lib.as_deref().and_then(|l| l.for_rig(rig)).cloned();
+    let senv = SummonEnv {
+        timer: drive.timer.left,
+        limit: limit_task.is_some_and(|l| l.0.is_some()),
+        stitch: data.stitch.as_ref().map(|d| d.0),
+        move_record,
+        genie: data.genie.as_ref().map(|d| d.0),
+        tinker_ready: tinker_ready(&sm, &data),
+        enemies: views.clone(),
+        parts: parts.clone(),
+        battle: battle.active(),
+        player_hit: sm.player_hit,
+        recent: s.lock.or(s.target).and_then(|e| views.iter().find(|v| v.entity == e)).map(|v| v.handle),
+        scripted: data.scripted.as_ref().map(|d| d.0),
+    };
     let camera = cam.iter().next();
     // FUN_00118068 / FUN_00118110's targets: valid enemies (FUN_00112ac0: alive, hittable) not out of view
     // (FUN_0019ada8 -> FUN_001a5db0, the camera's frustum [inferred: the point's projection inside the screen]),
@@ -2460,6 +3147,9 @@ fn objects(
         so.obj.slot = anim.slot;
         so.obj.frame = anim.frame;
         let motion_done = anim.finished;
+        // Host 1.14 (bit 1 of +0x160): the motion ended, or a looping one wrapped (as `enemy_ai`, `friend_ai`).
+        so.obj.done = anim.slot.is_some() && (anim.finished || anim.looping && anim.frame < anim.prev_frame);
+        so.obj.trigger_bits = crate::friend_ai::trigger_bits(anim);
         let env = Env {
             player: s.motor.pos,
             player_yaw: s.motor.yaw,
@@ -2475,6 +3165,7 @@ fn objects(
             event_active: false,
         };
         let (neo, body) = (so.neo, so.body);
+        let so_model = so.model.clone();
         let SummonObject { rt, obj, tag, started, leave, mode, errors_seen, ai, fields, blast_hit, ticks, moves, .. } = so;
         let Some(rt) = rt.as_mut() else {
             // No script: nothing ends the object but the leave [inferred].
@@ -2488,8 +3179,33 @@ fn objects(
             continue;
         };
         let handle = obj.handle;
+        let pax = pax_of(&rig);
+        if let (Ok(a), Ok(g)) = (anims.get(body), gts.get(body)) {
+            ai.scripted.bones = (0..a.pose.len()).map(|i| a.bone_world(g, i)).collect();
+            ai.scripted.root = g.to_matrix();
+        }
+        // The class's values the script reads through the party host (as `friend_ai` fills them for a member).
+        let target_view = ai.scripted.target.and_then(|t| views.iter().find(|v| v.entity == t));
+        ai.scripted.target_pos = target_view.map_or([0.0; 4], |v| to_game(v.pos));
+        fields.free = true;
+        fields.target_valid = target_view.is_some();
+        fields.target_point = target_view.map(|v| v.pos);
+        fields.target_radius = ai.scripted.target.and_then(|t| parts.iter().find(|p| p.entity == t)).map_or(0.0, |p| p.radius);
+        // The player's attack the member may join (FUN_00112850 at the attack's start): his attack state and the motion
+        // that started it.
+        let player_slot = anims.get(s.body).ok().and_then(|a| a.slot);
+        if matches!(s.state, State::Attack { .. }) {
+            if ai.scripted.armed != player_slot {
+                ai.scripted.armed = player_slot;
+                ai.scripted.joined = false;
+                ai.b7c &= !0x200;
+            }
+        } else {
+            ai.scripted.armed = None;
+        }
+        fx_before(fields, pax.as_ref(), body, s.body, &anims.as_readonly(), &gts, &mut running);
         let inner = BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() };
-        let f = crate::friend_host::FriendHost { inner, fields, game: &game, free: None, targets: &[] };
+        let f = crate::friend_host::FriendHost { inner, fields, game: &game, free: None, targets: &parts };
         ai.player_hp = (s.hp, s.stats.max_hp);
         ai.player_heal = 0;
         let mut host = SummonHost { f, ai, env: &senv, shared: &mut shared.0 };
@@ -2499,6 +3215,35 @@ fn objects(
         }
         if std::mem::take(leave) {
             rt.set_mode_named(&mut host, "leave");
+        }
+        // Chicken Little's, Peter Pan's and Tinker Bell's classes (WP-SUM8): the update's decision before the script's
+        // slice: out of battle the follow, in battle the record that starts the script's `battle` mode once no mode runs.
+        let mut pre = None;
+        if let Some(cls) = scripted::class_of(neo)
+            && let Some((_, classes)) = data.scripted.as_ref()
+            && let Some(sd) = classes.iter().find(|c| c.class.neo == neo)
+            && rt.current_mode().as_deref() != Some("leave")
+        {
+            host.ai.scripted.follow_asked = false;
+            host.ai.scripted.item = None;
+            host.ai.scripted.init = true;
+            let now = scripted::Now { battle: battle.active(), mode_running: rt.current_mode().is_some() };
+            let out = scripted::decide(&sd.records, cls.class, &mut host.ai.scripted, &now);
+            if let Some((i, name)) = &out.start {
+                if h.log {
+                    info!("summon: {tag} record {i} (handler {:#x}) starts script mode {name:?} (FUN_00186e70)", scripted::START_MODE[0]);
+                }
+                rt.set_mode_priority(&mut host, name);
+            }
+            pre = Some((*cls, out));
+        }
+        // Genie's "Drive!" (FUN_00177c20 -> FUN_0016b420): event 11 with (the player, the form command, a target record).
+        if neo == genie::NEO
+            && let Some(cmd) = sm.pending_form.take()
+        {
+            let rec = host.f.inner.obj.new_record(crate::enemy_obj::PLAYER, 0);
+            let handled = rt.event(&mut host, 11, &[crate::enemy_obj::PLAYER, cmd as u32, rec]);
+            info!("summon: {tag} event 11 (Drive!: form command {cmd}): handler {}", if handled { "ran" } else { "absent" });
         }
         rt.update(&mut host);
         if std::mem::take(&mut ai.player_heal) > 0 {
@@ -2511,10 +3256,36 @@ fn objects(
             info!("summon: {tag} script mode {:?} -> {:?}", mode.as_deref().unwrap_or("-"), now.as_deref().unwrap_or("-"));
             *mode = now;
         }
-        if let Some(req) = obj.motion_req.take()
-            && h.log
+        let requested = obj.motion_req.is_some();
+        if let Some(req) = obj.motion_req.take() {
+            if neo == stitch::NEO {
+                if h.log {
+                    info!("summon: {tag} script asked for motion {} (not applied: the class's own requests drive the body)", req.slot);
+                }
+            } else if let Ok(mut a) = anims.get_mut(body) {
+                // The script's own motion request (hosts 1.11 / 1.12 / 1.13): the slot is the motion number (FUN_0017da30
+                // returns the number for these motion sets, as for the enemies), played at once with its blend.
+                let looping = rig.mset.get(req.slot).and_then(|x| x.motion.as_ref()).is_some_and(|mo| mo.frame_return < mo.frame_end);
+                if h.log {
+                    info!("summon: {tag} script motion {} (blend {}, looping {looping})", req.slot, req.blend);
+                }
+                a.restart(Some(req.slot), looping, req.blend);
+                if let Some(f) = req.start {
+                    a.frame = f;
+                    a.prev_frame = f;
+                }
+            }
+        }
+        // Host 1.13 queued a motion after the running one (FUN_0017e170): it follows when that one ends.
+        if let Some(q) = fields.queued.take() {
+            ai.scripted.queued = Some(q);
+        } else if obj.done
+            && !requested
+            && let Some(q) = ai.scripted.queued.take()
+            && let Ok(mut a) = anims.get_mut(body)
         {
-            info!("summon: {tag} script asked for motion {} (not applied: the class's own requests drive the body)", req.slot);
+            let looping = rig.mset.get(q).and_then(|x| x.motion.as_ref()).is_some_and(|mo| mo.frame_return < mo.frame_end);
+            a.restart(Some(q), looping, 0.0);
         }
         // Stitch's class (FUN_001155e0 and its records, WP-SUM4b) while he is not leaving.
         let mut placed = None;
@@ -2710,6 +3481,149 @@ fn objects(
                 }
             }
         }
+        // Chicken Little's, Peter Pan's and Tinker Bell's classes: the object's target, the update's steer and the
+        // locomotion motion (WP-SUM8).
+        if let Some((cls, pre_out)) = pre
+            && let (Some((k, classes)), Some(fc)) = (data.scripted.as_ref(), data.follow.as_ref())
+            && let Some(sd) = classes.iter().find(|c| c.class.neo == neo)
+        {
+            use crate::party_rules as pr;
+            *ticks += 1;
+            let sa = &mut ai.scripted;
+            // The target record the script made (1.160, or a target search 6.5).
+            if let Some(e) = fields.retarget.take() {
+                if sa.target != Some(e) && h.log {
+                    info!("summon: {tag} target record now names {e:?} (1.160, FUN_0018f490)");
+                }
+                sa.target = Some(e);
+            }
+            if let Some((found, walked)) = fields.searched.take() {
+                if h.log {
+                    info!("summon: {tag} target search (6.5): {walked} parts walked, {}", found.map_or("none found".to_string(), |(e, i)| format!("{e:?} shape {i}")));
+                }
+                sa.target = found.map(|(e, _)| e);
+            }
+            if sa.target.is_some_and(|t| !views.iter().any(|v| v.entity == t)) {
+                // FUN_00111d18: a record that no longer answers (FUN_00112b28) is cleared.
+                sa.target = None;
+            }
+            let (pos, player) = (obj.motor.pos, s.motor.pos);
+            let facing = obj.motor.forward();
+            // FUN_0011a2e8 (Chicken Little): the aim point, while the FPS flag (AI +0x20 bit 0) is clear.
+            if neo == scripted::CHICKEN.neo && !sa.fps {
+                let tgt = ai_target_pos(sa.target, &views);
+                sa.aim = scripted::aim_point(k, tgt, to_game(pos), [facing.x, -facing.y, -facing.z, 0.0]);
+            }
+            let t = fc.thresholds(cls.class);
+            let mv = *moves;
+            let to_player = player - pos;
+            let ground_dir = to_player.with_y(0.0).normalize_or_zero();
+            let (mut dir, mut speed) = (facing, 0.0);
+            let follow = pre_out.follow || sa.follow_asked;
+            if follow {
+                // FUN_001102c8: the follow point (FUN_00111670, party slot 0: the summon is the only member) and the
+                // follow step (FUN_0010e5e8) with the row of the battle state.
+                let d = pr::follow_distance(&t, mv.radius, fc);
+                let point = pr::follow_points(player, s.motor.yaw, [Some((pos, d)), None], fc)[0].unwrap_or(player);
+                let input = pr::FollowIn { to_point: point - pos, to_player: to_player.normalize_or_zero(), dist: to_player.length(), ground_dir, facing, walk: mv.walk, run: mv.run };
+                let row = if battle.active() { pr::ROW_BATTLE_PLAYER } else { pr::ROW_FIELD };
+                (dir, speed) = pr::follow_step_row(&mut sa.follow, &input, &t, row, fc);
+                speed = scripted::follow_speed(cls.class, k, speed, mv.walk, s.motor.vel.length());
+            }
+            // FUN_00110468: the steer.
+            let (d, sp) = pr::steer(&mut sa.follow, dir, speed, mv.walk, mv.run, fc);
+            let delta = d.with_y(0.0).normalize_or_zero() * sp;
+            // The script's own movement (1.111 set_move, one tick).
+            let mut new = pos + delta + obj.move_vel;
+            if cls.b7c & 0x800 != 0 {
+                // [inferred] Peter Pan and Tinker Bell fly (+0xb7c bit 0x800): they keep the player's height.
+                new.y = player.y;
+            } else if let Some(w) = world.as_deref()
+                && let Some(g) = w.ground(new, new.y + 60.0, 360.0)
+            {
+                new.y = g.y;
+            }
+            obj.motor.pos = new;
+            let step = (new - pos).with_y(0.0);
+            if delta != Vec3::ZERO {
+                obj.motor.turn_to(delta, mv.turn);
+            } else if sa.follow.turning {
+                obj.motor.turn_to(ground_dir, mv.turn);
+            }
+            // FUN_002f6320: the locomotion motion, only while motion 0 or one of the table's plays (a motion the script
+            // asked for is left alone).
+            if !requested && let Ok(mut a) = anims.get_mut(body) {
+                let cur = a.slot.map_or(0, |c| c as i32);
+                let table = sd.loco;
+                if cur == 0 || table.contains(&cur) {
+                    let moving = sp > 1.0;
+                    let mut want = if moving { if sp >= (mv.walk + mv.run) * 0.5 { table[1] } else { table[0] } } else { 0 };
+                    if !moving && table[2] >= 0 && (cur == table[0] || cur == table[1]) {
+                        want = table[2];
+                    }
+                    if cur == table[2] && table[2] >= 0 && !a.finished && !moving {
+                        want = cur;
+                    }
+                    let state = crate::party_battle::motion_state(battle.active(), false);
+                    let slot = if want >= 0 && rig.mset.has(want as usize) { Some(want as usize) } else { data.motion_orders.and_then(|o| crate::party_battle::remap(want, o[state], |x| rig.mset.has(x))) };
+                    if let Some(sl) = slot
+                        && a.slot != Some(sl)
+                    {
+                        let looping = rig.mset.get(sl).and_then(|x| x.motion.as_ref()).is_some_and(|mo| mo.frame_return < mo.frame_end);
+                        if h.log {
+                            info!("summon: {tag} locomotion motion {want} -> slot {sl} (speed {sp:.1}, walk {:.1} run {:.1})", mv.walk, mv.run);
+                        }
+                        a.play(Some(sl), looping, 8.0);
+                    }
+                }
+            }
+            // Host 10.29 (FUN_0010c9d0): the item's command on the target with the item motion 9 (FUN_00175e20).
+            if let Some((item, target)) = sa.item.take() {
+                info!("summon: {tag} item {item} on {target:#x} (host 10.29, FUN_0010c9d0): motion 9 plays; the command's effect is not carried out");
+                if let Ok(mut a) = anims.get_mut(body) {
+                    let state = crate::party_battle::motion_state(true, false);
+                    let slot = if rig.mset.has(9) { Some(9) } else { data.motion_orders.and_then(|o| crate::party_battle::remap(9, o[state], |x| rig.mset.has(x))) };
+                    if slot.is_some() {
+                        a.play(slot, false, 0.0);
+                    }
+                }
+            }
+            if h.log && *ticks % 60 == 1 {
+                info!(
+                    "summon: {tag} class {:#x}: {:.0} units from the player, step {:.1}, speed mode {} speed {sp:.1} (walk {:.1} run {:.1}), script mode {:?}, battle {}, follow {follow}",
+                    cls.class,
+                    (new - player).with_y(0.0).length(),
+                    step.length(),
+                    sa.follow.mode,
+                    mv.walk,
+                    mv.run,
+                    mode.as_deref().unwrap_or("-"),
+                    battle.active()
+                );
+            }
+        }
+        // The script's attack objects and effects (the members' FUN_0018c2d8 pass and effect starts, as friend_ai).
+        {
+            let model = so_model.as_str();
+            let mut out_hits = Vec::new();
+            crate::friend_ai::step_attacks(ent, model, obj.motor.pos, fields, &game, &victims, &mut memory, pax.as_ref(), world.as_deref(), h.log, &mut out_hits);
+            // Host 2.17: the script's attack objects hit the enemies it named.
+            fields.target_hits.clear();
+            for (id, victim) in std::mem::take(&mut ai.scripted.hits) {
+                let Some(t) = views.iter().find(|v| v.handle == victim) else { continue };
+                let at = t.pos * SCALE;
+                let dir = (at - obj.motor.pos * SCALE).with_y(0.0).normalize_or(Vec3::Z);
+                hits.write(Hit { attacker: ent, target: t.entity, atkp: id, dir, point: at, row: None });
+                info!("summon: {tag} script attack atkp {id} hits {:?} (host 2.17)", t.entity);
+            }
+            for (hit, sh, _) in out_hits {
+                hits.write(hit);
+                if let Some(sh) = sh {
+                    spell_hits.write(sh);
+                }
+            }
+            fx_after(&mut commands, fields, pax.as_ref(), body, s.body, &mut running, h.log, tag);
+        }
         // Nothing else the script asks for is carried out before stage 4 (docs/summons.md).
         obj.move_vel = Vec3::ZERO;
         obj.effects.clear();
@@ -2739,6 +3653,111 @@ fn objects(
             commands.entity(ent).despawn();
         }
     }
+}
+
+/// The position of an enemy view (game units, the app's axes).
+fn ai_target_pos(target: Option<Entity>, views: &[EnemyView]) -> Option<[f32; 4]> {
+    target.and_then(|t| views.iter().find(|v| v.entity == t)).map(|v| to_game(v.pos))
+}
+
+/// The owner entity an effect of a summon's script is bound to (1.87 the object, 1.149 the object named: the player).
+fn fx_owner(on: Option<u32>, body: Entity, player: Entity) -> Option<Entity> {
+    match on {
+        None => Some(body),
+        Some(crate::enemy_obj::PLAYER) => Some(player),
+        Some(_) => None,
+    }
+}
+
+/// Before the script's slice: which effect instances have ended (host 0.49) and where the bound ones are (0.53), as
+/// `friend_ai` does for a member.
+fn fx_before(
+    fields: &mut crate::friend_host::FriendFields,
+    pax: Option<&Arc<crate::fx::LoadedPax>>,
+    body: Entity,
+    player: Entity,
+    anims: &Query<&Animator>,
+    gts: &Query<&GlobalTransform>,
+    running: &mut Query<&mut crate::fx::RunningEffect>,
+) {
+    for f in fields.fx.iter_mut() {
+        if let Some(e) = f.entity
+            && running.get(e).is_err()
+        {
+            f.entity = None;
+            f.gone = true;
+        }
+        if f.gone {
+            f.gone_ticks += 1;
+            continue;
+        }
+        let (crate::friend_host::FxReq::Bound { id, on }, Some(p)) = (f.req, pax) else { continue };
+        if let Some(owner) = fx_owner(on, body, player)
+            && let Some(at) = crate::friend_ai::element_position(p, id, owner, anims, gts, &[])
+        {
+            f.pos = at / SCALE;
+        }
+    }
+}
+
+/// After the script's slice: the effects it asked for are started, moved, stopped and destroyed.
+#[allow(clippy::too_many_arguments)]
+fn fx_after(
+    commands: &mut Commands,
+    fields: &mut crate::friend_host::FriendFields,
+    pax: Option<&Arc<crate::fx::LoadedPax>>,
+    body: Entity,
+    player: Entity,
+    running: &mut Query<&mut crate::fx::RunningEffect>,
+    log: bool,
+    tag: &str,
+) {
+    use crate::fx::{Bind, Placement};
+    use crate::friend_host::FxReq;
+    for f in fields.fx.iter_mut() {
+        let owner = match f.req {
+            FxReq::Bound { on, .. } => fx_owner(on, body, player),
+            FxReq::At { .. } => None,
+        };
+        if !f.started {
+            f.started = true;
+            let (id, bind, place) = match f.req {
+                FxReq::Bound { id, .. } => (id, owner.map(Bind::Owner), Placement::default()),
+                FxReq::At { id, pos } => (id, Some(Bind::Fixed(Mat4::from_translation(pos * SCALE))), Placement { replace_translation: true, ..default() }),
+            };
+            f.entity = match (pax, bind) {
+                (Some(p), Some(b)) => crate::fx::start_placed(commands, p, id, b, place),
+                _ => None,
+            };
+            if f.entity.is_none() {
+                f.gone = true;
+            }
+            if log {
+                info!("summon: {tag} effect element {id} ({:?}): {}", f.req, if f.entity.is_some() { "started" } else { "not started (no such element, file or owner)" });
+            }
+        }
+        if let Some(e) = f.entity {
+            if f.destroy {
+                if running.get(e).is_ok() {
+                    commands.entity(e).despawn();
+                }
+                f.entity = None;
+                continue;
+            }
+            if let Ok(mut r) = running.get_mut(e) {
+                if std::mem::take(&mut f.stop) {
+                    r.effect.end();
+                }
+                if std::mem::take(&mut f.moved) {
+                    r.bind = Bind::Fixed(Mat4::from_translation(f.pos * SCALE));
+                }
+                if let Some(turn) = f.turn.take() {
+                    r.element.rotation = turn;
+                }
+            }
+        }
+    }
+    fields.fx.retain(|f| !f.destroy && f.gone_ticks < crate::friend_ai::FX_FORGET);
 }
 
 /// The companions' fades (`FUN_001abf40` on +0x82c) and, once faded out, their hiding.
@@ -3435,5 +4454,90 @@ mod tests {
             assert_eq!(got, crate::party_battle::below_fraction(hp as i32, max as i32, k.heal_fraction), "FUN_0010f490 hp {hp}/{max}");
         }
         eprintln!("oracle: FUN_00119ca8, FUN_00119c18, FUN_001c6b10 equal for {} commands; FUN_0010f490 over 300 rounds", cmds.len());
+    }
+
+    /// The three classes of Chicken Little, Peter Pan and Tinker Bell from the executable (FUN_0011a450 / FUN_0011a048 /
+    /// FUN_0011a230): their records (one for each of the first two, none for Tinker Bell), the record handlers and mode
+    /// string, the locomotion tables of FUN_002f6320, and the decision of FUN_00111070 for them: out of battle the follow,
+    /// in battle nothing while the script runs a mode (FUN_0010fcd0 returns at once, FUN_0010f698) and the record that
+    /// starts `battle` otherwise.
+    #[test]
+    fn scripted_classes_from_the_executable_and_their_decision() {
+        let Some(mut a) = archive() else { return };
+        let exe = elf(&mut a);
+        let k = scripted::Consts::from_exe(&exe).expect("constants");
+        let all: Vec<_> = scripted::CLASSES.iter().map(|c| scripted::Data::from_exe(&exe, c).expect("class")).collect();
+        let (chicken, pan, tinker) = (&all[0], &all[1], &all[2]);
+        eprintln!("scripted: speed add {} aim ahead {} join window {}; loco {:?} {:?} {:?}", k.speed_add, k.aim_ahead, k.join_window, chicken.loco, pan.loco, tinker.loco);
+        assert_eq!((chicken.records.len(), pan.records.len(), tinker.records.len()), (1, 1, 0));
+        for (d, handler) in [(chicken, scripted::START_MODE[0]), (pan, scripted::START_MODE[1])] {
+            let r = &d.records[0];
+            assert_eq!(r.flags, 3, "not counted, an attack");
+            assert_eq!(r.handler, crate::party_battle::Handler::Other(handler));
+            assert_eq!(r.mode, "battle");
+        }
+        // FUN_002f6320's tables: the default {1, 2, -1, -1, -1} (Chicken Little, Tinker Bell), Peter Pan's own.
+        assert_eq!(chicken.loco, [1, 2, -1, -1, -1]);
+        assert_eq!(tinker.loco, chicken.loco);
+        assert_ne!(pan.loco, chicken.loco);
+        let mut ai = scripted::ScriptedAi { rng: stitch::Rng(7), ..Default::default() };
+        let calm = scripted::Now { battle: false, mode_running: false };
+        assert_eq!(scripted::decide(&chicken.records, 0x12, &mut ai, &calm), scripted::Out { follow: true, ..Default::default() });
+        let busy = scripted::Now { battle: true, mode_running: true };
+        for _ in 0..30 {
+            assert_eq!(scripted::decide(&chicken.records, 0x12, &mut ai, &busy), scripted::Out::default(), "the script is busy: nothing is chosen");
+        }
+        let idle = scripted::Now { battle: true, mode_running: false };
+        for d in [chicken, pan] {
+            let out = scripted::decide(&d.records, d.class.class, &mut ai, &idle);
+            assert_eq!(out.start, Some((0, "battle".to_string())));
+            assert!(!out.follow);
+        }
+        // Tinker Bell has no record: nothing starts.
+        assert_eq!(scripted::decide(&tinker.records, 0x11, &mut ai, &idle), scripted::Out::default());
+        // FUN_001102c8's speed rule is for the classes 0xc, 0xf and 0x10 only.
+        assert_eq!(scripted::follow_speed(0x10, &k, 8.0, 4.0, 10.0), 10.0 + k.speed_add);
+        assert_eq!(scripted::follow_speed(0x12, &k, 8.0, 4.0, 10.0), 8.0);
+        assert_eq!(scripted::follow_speed(0x11, &k, 8.0, 4.0, 10.0), 8.0);
+        assert_eq!(scripted::follow_speed(0x10, &k, 3.0, 4.0, 10.0), 3.0);
+        // FUN_0011a2e8: the aim point is the target's position, else the facing vector times DAT_003788e8 from the object.
+        assert_eq!(scripted::aim_point(&k, Some([1.0, 2.0, 3.0, 1.0]), [9.0; 4], [0.0; 4]), [1.0, 2.0, 3.0, 1.0]);
+        let ahead = scripted::aim_point(&k, None, [10.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 0.0]);
+        assert_eq!(ahead, [10.0, 0.0, k.aim_ahead, 1.0]);
+    }
+
+    /// Oracle: FUN_00119ce8 (host 10.25's test: may a member join the player's attack) run by kh2-ee on the user's
+    /// executable against `scripted::join_ready` over the three globals it reads (`DAT_0034e9d0` the recorded motion,
+    /// `DAT_0034e9c8` / `DAT_0034e9cc` the attack clock and its mark) and the object's +0xb7c.
+    #[test]
+    fn scripted_join_window_matches_the_game() {
+        use kh2_ee::Ee;
+        const STACK: u32 = 0x01ff_0000;
+        let Some(mut a) = archive() else { return };
+        let exe = elf(&mut a);
+        let k = scripted::Consts::from_exe(&exe).expect("constants");
+        let mut ee = Ee::new();
+        ee.load_elf(&exe).expect("elf");
+        let mut seed = 0x1234_5678u32;
+        let mut rnd = move || {
+            seed = seed.wrapping_mul(0x0019_660d).wrapping_add(0x3c6e_f35f);
+            seed
+        };
+        let mut yes = 0;
+        for _ in 0..400 {
+            let motion = (rnd() % 9) as i32 - 3;
+            let since = (rnd() % 40) as f32 - 5.0;
+            let mark = (rnd() % 40) as f32 - 5.0;
+            let b7c = rnd() & 0x7ff;
+            ee.w32(0x0034_e9d0, motion as u32);
+            ee.w32(0x0034_e9c8, since.to_bits());
+            ee.w32(0x0034_e9cc, mark.to_bits());
+            let got = ee.call(0x0011_9ce8, &[b7c as u64], &[], STACK).expect("FUN_00119ce8") & 0xff != 0;
+            let want = scripted::join_ready(&k, b7c, motion, since, mark);
+            assert_eq!(got, want, "motion {motion} clock {since} mark {mark} +0xb7c {b7c:#x}");
+            yes += got as u32;
+        }
+        assert!(yes > 20 && yes < 380, "both answers occur ({yes} of 400)");
+        eprintln!("oracle: FUN_00119ce8 equal to scripted::join_ready over 400 rounds ({yes} yes)");
     }
 }

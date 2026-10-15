@@ -187,7 +187,22 @@ pub fn parse_commands(d: &[u8]) -> Option<Vec<Command>> {
     (p == d.len()).then_some(commands)
 }
 
+pub mod libretto;
 pub mod run;
+
+impl Entity {
+    /// The halfword +0x28 of the spawn record: the object's talk id (`FUN_0016b870` copies it to
+    /// the object's +0x500 when it is not 0; `libretto::Libretto::program` finds its program).
+    pub fn talk_id(&self) -> u16 {
+        u16::from_le_bytes([self.raw[0x28], self.raw[0x29]])
+    }
+
+    /// The halfword +0x2c of the spawn record: the command a reaction part with id 0x83 offers
+    /// (`FUN_0019cb70`; docs/limits-reactions.md).
+    pub fn part_command(&self) -> u16 {
+        u16::from_le_bytes([self.raw[0x2c], self.raw[0x2d]])
+    }
+}
 
 /// One object of a spawn group.
 #[derive(Debug, Clone, PartialEq)]

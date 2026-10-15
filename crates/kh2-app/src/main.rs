@@ -53,6 +53,7 @@ mod progress;
 mod reaction_cmd;
 mod reaction_parts;
 mod reaction_rules;
+mod savepoint;
 mod schedule;
 mod skel;
 mod sora;

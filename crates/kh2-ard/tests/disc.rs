@@ -342,3 +342,53 @@ fn twilight_town_entrances_and_exits_with_program_zero() {
     assert!(tt04.0, "tt04 has no player start for entrance 1 in its program-0 groups");
     assert!(tt04.1, "tt04 has no exit to tt03 in its program-0 groups");
 }
+/// docs/events.md section 3, "Talk" (WP-E3): `libretto-tt.bar` parses, its records are sorted by
+/// id (the game finds them by binary search, `FUN_001b64b0`), every program reads to its op 0, and
+/// every Twilight Town townsperson (objentry type 15) with a talk id (spawn record +0x28) has a
+/// program. Prints each townsperson's talk id, part command (+0x2c) and program.
+#[test]
+fn twilight_town_talk_programs() {
+    let Some(mut a) = open() else { return };
+    let file = a.read("libretto-tt.bar").expect("libretto-tt.bar");
+    let lib = kh2_ard::libretto::Libretto::from_bar(&file).expect("type-2 entry");
+    assert!(!lib.records.is_empty());
+    assert!(lib.records.windows(2).all(|w| w[0].0 < w[1].0), "records sorted by id");
+    let mut ops: BTreeMap<u16, usize> = BTreeMap::new();
+    for &(id, n, _) in &lib.records {
+        if n == 0 {
+            continue;
+        }
+        let p = lib.program(id).unwrap_or_else(|| panic!("talk {id:#x}: program does not read"));
+        for c in &p {
+            *ops.entry(c.op).or_default() += 1;
+        }
+    }
+    eprintln!("libretto-tt: {} records, ops {ops:?}", lib.records.len());
+    let objs = kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).expect("objentry").rows;
+    let (mut talkers, mut missing) = (0, Vec::new());
+    let mut commands: BTreeMap<u16, usize> = BTreeMap::new();
+    for (area, ard) in tt_areas(&mut a) {
+        for (tag, groups) in &ard.spawns {
+            for g in groups {
+                for e in &g.entities {
+                    let Some(o) = objs.iter().find(|o| o.object_id == e.object) else { continue };
+                    if o.object_type != 15 {
+                        continue;
+                    }
+                    *commands.entry(e.part_command()).or_default() += 1;
+                    let id = e.talk_id();
+                    if id == 0 {
+                        continue;
+                    }
+                    talkers += 1;
+                    match lib.program(id) {
+                        Some(p) => eprintln!("{area} {tag} {} (object {:#x}): talk {id:#x}, part command {}, {:?}", o.model_name, e.object, e.part_command(), p.iter().map(|c| c.kind()).collect::<Vec<_>>()),
+                        None => missing.push(format!("{area} {tag} {} talk {id:#x}", o.model_name)),
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("townspeople with a talk id: {talkers}; part commands (+0x2c) over all townspeople: {commands:?}; without a program: {missing:?}");
+    assert!(talkers > 0);
+}

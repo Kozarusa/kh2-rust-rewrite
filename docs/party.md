@@ -1116,6 +1116,39 @@ Files: `party_rules.rs` (`mission_presets`), `party.rs` (`mission_party`).
   members stay out in world 2 for the session unless the Party page changes the bytes; in the original the next
   program with an 0xf preset would restore them. Opcode 0x1d's status reset is not ported.
 
+## 20. Status: the area load applies opcode 0xf, the members return (WP-P3)
+
+Files: `party_rules.rs` (`apply_world_records`), `party.rs` (`spawn_party`), `kh2-ard` disc test
+`twilight_town_world_record_programs`.
+
+- **The rule [V].** The area load runs the `map`, `btl` and `evt` programs the program table names (FUN_00181148,
+  `kh2_ard::run_area`); each opcode 0xf in them reaches FUN_00180b48 case 0xf -> FUN_001a7330 on the current world's
+  record (section 18), in program order, before the area's objects are made. `ScriptRun::world_records` holds the
+  arguments; the app now applies them (`rules::apply_world_records`: argument = index into the trailing `memt`
+  presets, then `apply_preset`) in `spawn_party` right after the world's bytes are restored (`enter_world`) and before
+  the members are chosen, so the first build already names the right members. Log: `party: tt04: the area's programs
+  apply presets [1] (opcode 0xf, FUN_001a7330): slot bytes [..] -> [..]`. An area whose programs have no 0xf leaves the
+  bytes as the record holds them (a Party-page edit survives).
+- **What the disc says [V, test `twilight_town_world_record_programs`, 187 programs].** Opcode 0xf is in the `btl`
+  mission programs (preset 0 almost everywhere; preset 1 in tt04 0x50 mission 0xc2, tt07 0x19 / 0x1a, tt08 0x6c, tt14
+  0xa6, tt25 0x95, tt29 0x98, tt30 0x99, tt40 0xa0, tt41 0xba) and in `evt` programs. The story `evt` programs split
+  by party: tt02 `evt` 1 / 0x47 / 0x48, tt03 `evt` 5, tt04 `evt` 1, tt15 / tt25 / tt27 / tt28 / tt31 / tt38 / tt40
+  `evt` 1 apply preset 1 (members present); the cut-scene programs (tt00 0x33, tt01 0x34..0x3d, tt02 0x3f..0x46,
+  tt03 0x1..0x4b, tt04 0x51..0x53, tt05 1..5, ...) apply preset 0 (the event runs without them).
+  Test `party_the_area_load_brings_the_members_back` (real tt04): bytes `[0,1,2,-]` -> the Struggle program
+  (`run_area` with btl 0xb6) `[0,-,-,-]` -> the load of tt04 with programs (0, 0, 1) `[0,1,2,-]`, Donald and Goofy
+  wanted again. Unit test `party_return_after_the_mission_program`.
+- **In the app.** The programs of a load come from the program table (`progress::Story::programs`, zero in a new game:
+  no program, no 0xf) or from a jump that names them (a type-2 jump to a story program sets map, btl and evt to it,
+  docs/events.md section 4). The members therefore return when the next load's programs apply preset 1: a jump to
+  tt04 program 0x50 (btl, mission 0xc2) or a table entry selecting `evt` 1. A load whose programs apply preset 0
+  (the cut-scene programs) now empties the party, as in the original. A Struggle entered by a type-2 jump to 0xb6..0xb8
+  applies preset 0 at the load already; the wave spawner's `mission_party` (section 19) then finds the same bytes.
+- **Gaps.** Which program the story flags put into tt04's table after a Struggle ends (the table writers, op 1 of
+  FUN_0017ff60, docs/events.md section 4) was not traced here, so in a new game with a zero table nothing restores the
+  members after a Struggle until a jump or flag names a preset-1 program. The programs of other worlds are not in the
+  app's area set. [inferred] A load that runs a mission `btl` program and `evt` program 1 together ends on preset 1
+  (btl runs before evt, FUN_00181148).
 ## Decompile index
 
 | address | what |
@@ -1124,6 +1157,7 @@ Files: `party_rules.rs` (`mission_presets`), `party.rs` (`mission_party`).
 | 0x1a6f48, 0x1a6ff0, 0x1a6f70, 0x1802e0 | memt pointers, merge, record test, story flag |
 | 0x1a71c0, 0x1a71e8, 0x1a7128, 0x1a7118, 0x1a7200, 0x1a7250, 0x1a72c0, 0x1a7330, 0x1a7500, 0x1a7558, 0x1a7608, 0x1a7268, 0x1a7698 | slot bytes, presets, member index, in-party test |
 | 0x180b48 | area-script commands (0xf preset, 0x10) |
+| 0x181148, 0x180a68, 0x180ad8, 0x180b48, 0x1a7330 | WP-P3: the area load runs map / btl / evt, opcode 0xf applies the preset |
 | 0x1abfe8, 0x1ac130, 0x1ac170, 0x19fe48, 0x19ffb8 | opcode 0x1d party reset (WP-S8: removes nobody) |
 | 0x17d1b0, 0x17d290, 0x10b780, 0x10be80, 0x17c718, 0x19fd30, 0x19fdc0 | spawn, re-create, friend class, friend base, status blocks |
 | 0x17c968, 0x17c9b8, 0x17ca48, 0x17ca70, 0x17cc20, 0x17cc70, 0x17cc98, 0x17cde0, 0x17ce60, 0x17cee8, 0x17cfc0, 0x17d030, 0x17d0a8, 0x17d0f0, 0x17d150 | friend base methods (panel, tick, KO, revive, in-party) |

@@ -832,6 +832,17 @@ fn spawn_party(
         let carried = slots.enter_world(world_id, || rules::apply_preset([0, rules::EMPTY, rules::EMPTY, rules::EMPTY], preset));
         info!("party: {name} world {world_id} slot bytes {:02x?} ({}), warp mode {}", slots.bytes, if carried { "carried over".to_string() } else { format!("preset {}", rules::DEFAULT_PRESET) }, mgr.warp_mode);
     }
+    // WP-P3: the area's own programs (the run that `area::run_area_script` made for this load) apply their opcode 0xf
+    // presets to the world's bytes before the members are made (FUN_00181148 -> FUN_00180b48 -> FUN_001a7330), so
+    // the members a Struggle sent away come back with the next area whose program applies preset 1.
+    if !rebuild
+        && let Some(run) = rec.as_deref().and_then(|r| r.run.as_deref()).filter(|run| area.loaded.as_ref() == Some(&run.name))
+        && !run.script.world_records.is_empty()
+    {
+        let before = slots.bytes;
+        slots.bytes = rules::apply_world_records(before, &run.script.world_records, &memt.trailing);
+        info!("party: {name}: the area's programs apply presets {:?} (opcode 0xf, FUN_001a7330): slot bytes {before:02x?} -> {:02x?}", run.script.world_records, slots.bytes);
+    }
     mgr.seen = slots.bytes;
     let merged = crate::drive::rules::memt_merge(&memt, world_id, |_| false);
     let Some(consts) = data.consts.clone() else { return };
@@ -2322,6 +2333,35 @@ mod tests {
             eprintln!("mission {mission:#x}: presets {presets:?}, slot bytes {start:02x?} -> {bytes:02x?}");
             assert!(wanted_members(bytes, &merged).is_empty(), "mission {mission:#x}");
         }
+    }
+
+    /// WP-P3, from the disc: after the Struggle's preset 0 the next area load restores the members. The real tt04
+    /// programs are run as the area load runs them (`kh2_ard::run_area`, map / btl / evt): the evt program 1 carries
+    /// opcode 0xf preset 1 and, applied to the bytes preset 0 left, names Donald and Goofy again; the mission
+    /// programs alone (btl 0xb6) apply preset 0. Needs `KH2_ISO`.
+    #[test]
+    fn party_the_area_load_brings_the_members_back() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let data = PartyData::load(&disc);
+        let memt = data.memt.clone().expect("memt");
+        let merged = crate::drive::rules::memt_merge(&memt, 2, |_| false);
+        let (ard, _) = kh2_ard::Area::parse(&disc.read("ard/tt04.ard").expect("tt04")).expect("ard");
+        let start = rules::apply_preset([0, rules::EMPTY, rules::EMPTY, rules::EMPTY], memt.trailing[rules::DEFAULT_PRESET].to_le_bytes());
+        // The Struggle's mission program (applied by `mission_party` at the mission start).
+        let after = rules::apply_world_records(start, &kh2_ard::run::run_area(&ard, [0, 0xb6, 0], 0).world_records, &memt.trailing);
+        assert!(wanted_members(after, &merged).is_empty(), "the Struggle program leaves Sora alone: {after:02x?}");
+        // The default load of tt04: map 0, btl 0 (absent), evt 1.
+        let load = kh2_ard::run::run_area(&ard, [0, 0, 1], 0);
+        eprintln!("tt04 load programs (0, 0, 1): opcode 0xf records {:?}", load.world_records);
+        assert_eq!(load.world_records, vec![1], "the evt program 1 applies preset 1");
+        let back = rules::apply_world_records(after, &load.world_records, &memt.trailing);
+        eprintln!("slot bytes {start:02x?} -> mission {after:02x?} -> next area load {back:02x?}");
+        assert_eq!(back, start);
+        assert_eq!(wanted_members(back, &merged).len(), 2, "Donald and Goofy are wanted again");
     }
 
     /// tt02's map script places FRIEND_1 and FRIEND_2; with preset 1 in Twilight Town (world 2) they

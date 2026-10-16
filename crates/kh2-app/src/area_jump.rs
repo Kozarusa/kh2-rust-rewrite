@@ -377,7 +377,16 @@ impl JumpExtras {
         if *self == JumpExtras::default() {
             return String::new();
         }
-        format!(" (party index {}, reset code {}, menu before {}{})", self.party, self.reset, self.menu_before, if self.flag { ", flag" } else { "" })
+        format!(
+            " (party index {}, reset code {} (party reset {}), menu before {} (menu kind 5 arg {:?}, delay {} ticks){})",
+            self.party,
+            self.reset,
+            self.resets_party(),
+            self.menu_before,
+            self.menu_before_arg(),
+            self.delay_ticks(),
+            if self.flag { ", flag" } else { "" }
+        )
     }
 }
 
@@ -843,8 +852,8 @@ fn tick(
         }
         let ae = exits.after_event.take().unwrap();
         match ae.jump {
-            Some(j) => match take_record(&j, &ae.extras, (rec.world, rec.area, rec.entrance), last.0, &disc, &locks, &consts, &mut memory) {
-                Some(dest) => {
+            Some(j) => {
+                if let Some(dest) = take_record(&j, &ae.extras, (rec.world, rec.area, rec.entrance), last.0, &disc, &locks, &consts, &mut memory) {
                     let (kind, _) = record_fade(&j);
                     info!("jump after the event (FUN_00196170 -> FUN_0019d9d8 with bit 31): type {} key {:#x} -> {} entrance {} programs {} (fade kind {kind}, no fade-out){}", j.kind, j.key, dest_name(&dest), dest.entrance, dest.programs_text(), ae.extras.text());
                     exits.jumping = Some(ae.group);
@@ -854,8 +863,7 @@ fn tick(
                     *task = JumpTask::FadeOut { dest, kind, t: FADE_TICKS - 1.0 };
                     return;
                 }
-                None => {}
-            },
+            }
             None => info!("event over: the trigger has no jump record (FUN_0019d9c8 = 0)"),
         }
     }

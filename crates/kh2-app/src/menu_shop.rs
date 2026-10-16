@@ -1097,6 +1097,62 @@ fn synth_key(m: &mut ShopMenu, scene: &mut MenuScene, se: &mut MessageWriter<Pla
     redraw(m, scene, &owned, munny, &moogle);
 }
 
+/// The row plate group of the reward and material lists (group 0x62 of the shop's sequence, `FUN_0028b470`): the row
+/// pitch (+0x1c), the text size (+0x18, 0xf when 0) and the second text's x (the group's x, also the NEW tag's origin).
+/// The port's own numbers when the file has no such group.
+fn reward_metrics(m: &ShopMenu) -> (f32, f32, f32) {
+    let g = m.mark_seq.and_then(|q| m.layd.seqs.get(q)).and_then(|q| q.groups.get(ROW_PLATE));
+    g.map_or((at::PITCH, 15.0, at::PRICE_RIGHT + 20.0 - at::ROWS[0]), |g| (g.unk1c as f32, if g.size == 0 { 15.0 } else { g.size as f32 }, g.x as f32))
+}
+
+/// `FUN_0028b470`: the sprite group of a reward row's plate.
+const ROW_PLATE: usize = 0x62;
+
+/// `FUN_00191660`: how many characters a text shows before its end (glyphs and icons; a space is not counted).
+fn shown_chars(tokens: &[Token]) -> usize {
+    tokens.iter().take_while(|t| !matches!(t, Token::Newline | Token::End)).filter(|t| matches!(t, Token::Glyph(_) | Token::Icon(_))).count()
+}
+
+/// `FUN_0029bb48`: a "?" for each character of the text (the string at 0x3828b8).
+fn masked(text: &MenuText, name: &[Token]) -> Vec<Token> {
+    let mut v = Vec::new();
+    for _ in 0..shown_chars(name) {
+        v.extend(literal(text, "?"));
+    }
+    v
+}
+
+/// `FUN_00191a30`: the variables (command 0xd) of a text are replaced one by one by the given texts.
+fn fill(tokens: Vec<Token>, args: &[Vec<Token>]) -> Vec<Token> {
+    let mut next = args.iter();
+    let mut v = Vec::new();
+    for t in tokens {
+        if t != Token::Variable {
+            v.push(t);
+        } else if let Some(a) = next.next() {
+            v.extend(a.iter().filter(|t| **t != Token::End).cloned());
+        }
+    }
+    v
+}
+
+/// The second column of a page 0xb row as tokens (`FUN_0028a1b8`).
+fn reward_tokens(text: &MenuText, r: synth::RewardText) -> Vec<Token> {
+    match r {
+        synth::RewardText::Item { icon, name } => {
+            let mut v = vec![Token::Icon(icon)];
+            v.extend(message(text, name));
+            v
+        }
+        synth::RewardText::Hidden { head, mask } => {
+            let mut v: Vec<Token> = head.map(|h| message(text, h)).unwrap_or_default().into_iter().filter(|t| *t != Token::End).collect();
+            v.extend(masked(text, &message(text, mask)));
+            v
+        }
+        synth::RewardText::Filled { text: id } => fill(message(text, id), &[message(text, synth::msg::REWARD_HEAD)]),
+    }
+}
+
 /// The synthesis pages. The texts are labels the port places, like the shop pages' [inferred positions: the list and
 /// window widgets (`FUN_00296b48`, `FUN_0029b600`, `FUN_00299878`) were not followed]; the detail page also lists the
 /// recipe's lines (material, need, stock) [inferred: `FUN_002894f0` and `FUN_00289aa8`, which draw them, were not read].
@@ -1148,8 +1204,14 @@ fn draw_synth(m: &ShopMenu, scene: &mut MenuScene, text: &MenuText, owned: &dyn 
             }
             let first = s.list.saturating_sub(LIST_ROWS - 1);
             for (k, &e) in s.entries.iter().enumerate().skip(first).take(LIST_ROWS) {
-                let Some((r, odd)) = synth::recipe(&book, e) else { continue };
+                // An entry only story flag 0x4837 lists (`FUN_00288fc0`, flag 0x80): the item's name as "?" and dim.
+                let hidden = e & synth::HIDDEN != 0;
+                let Some((r, odd)) = synth::recipe(&book, e & !synth::HIDDEN) else { continue };
                 let item = if odd { r.upgraded } else { r.result };
+                if hidden {
+                    row(scene, k - first, masked(text, &name(item)), pick(k, s.list, false), None);
+                    continue;
+                }
                 row(scene, k - first, name(item), pick(k, s.list, synth::entry_open(&book, moogle, kind, e)), Some(format!("{}", owned(item))));
                 put_tag(m, scene, k - first, tag_of(s.entry_mark(moogle, e)), tag_at(row_y(k - first)));
             }
@@ -1190,37 +1252,37 @@ fn draw_synth(m: &ShopMenu, scene: &mut MenuScene, text: &MenuText, owned: &dyn 
             let help = synth::row_kind(s.detail, s.row).and_then(|k| t.help.get(usize::from(k))).copied().unwrap_or(0);
             set_label(scene, n.question[0], Some(text_label(text, message(text, u32::from(help)), at::IDLE, 0, at::DETAIL)));
         }
-        // Page 0xb (`FUN_0028a1b8`, rows built by `FUN_0028b470`): the reward's text; a reward earned shows what it gave
-        // [inferred layout: the text of an item reward is the item's name, of the others the messages 0xc1c3 (set 0),
-        // 0xcc7d (set 1), 0xc1c4 (an unlock bit); an unearned one (listed with story flag 0x4837) is dimmed and hides it;
-        // the original's strings for the unearned (`FUN_002553c0`, table 0x382640) were not decoded].
+        // Page 0xb (`FUN_0028a1b8`, rows built by `FUN_0028b470`): the reward's text and, in the second column, what it gives
+        // (`synth::reward_text`: the item behind its icon, or the unlock's message; an unreached reward listed by story flag
+        // 0x4837 shows its icon and a "?" for each letter). The first row's origin is the port's [inferred]; the pitch, the
+        // second column and the text size are the row plate group's.
         synth::Page::Rewards => {
             title(scene, message(text, synth::msg::REWARDS));
             if s.rewards.is_empty() {
                 set_label(scene, n.detail, Some(text_label(text, message(text, synth::msg::NO_REWARDS), at::IDLE, 0, at::DETAIL)));
             }
+            // The rows are the row plate group's (`FUN_0028b470`): row k at k times the group's +0x1c below the first, the
+            // second text at the group's x to its right with the NEW tag ending there, both texts at the group's size.
+            let (pitch, size, col2) = reward_metrics(m);
+            let ry = |r: usize| at::ROWS[1] + pitch * r as f32;
+            let sized = |l: Label| Label { style: Style { size: Some(size), ..l.style }, ..l };
             let first = s.rew.saturating_sub(LIST_ROWS - 1);
             for (k, &(ci, met)) in s.rewards.iter().enumerate().skip(first).take(LIST_ROWS) {
                 let Some(c) = mix.conds.get(usize::from(ci)) else { continue };
                 let r = k - first;
-                row(scene, r, message(text, u32::from(c.text)), pick(k, s.rew, met), None);
-                if met {
-                    let given: Vec<Token> = if c.kind == 0 {
-                        name(c.reward)
-                    } else {
-                        message(text, match c.reward {
-                            0 => synth::msg::REWARD_SET0,
-                            1 => synth::msg::REWARD_SET1,
-                            _ => synth::msg::REWARD_UNLOCK,
-                        })
-                    };
-                    set_label(scene, n.owned[r], Some(text_label(text, given, pick(k, s.rew, true), 0, [at::PRICE_RIGHT + 20.0, row_y(r)])));
+                let color = pick(k, s.rew, met);
+                if r < n.list.len() {
+                    set_label(scene, n.list[r], Some(sized(text_label(text, message(text, u32::from(c.text)), color, 0, [at::ROWS[0], ry(r)]))));
+                }
+                let item = m.wares.iter().find(|w| w.id == c.reward).map(|w| (w.kind, w.flag1, w.name));
+                if let Some(given) = synth::reward_text(t, c, met, item) {
+                    set_label(scene, n.owned[r], Some(sized(text_label(text, reward_tokens(text, given), color, 0, [at::ROWS[0] + col2, ry(r)]))));
                 }
                 let mark = Moogle::bit(s.marks.rewards, u32::from(ci)).then_some(s.marks.fresh);
-                put_tag(m, scene, r, tag_of(mark), tag_at(row_y(r)));
+                put_tag(m, scene, r, tag_of(mark), [at::ROWS[0] + col2, ry(r)]);
             }
             if !s.rewards.is_empty() {
-                hand(scene, s.rew - first);
+                set_label(scene, n.hand, Some(text_label(text, literal(text, ">"), at::SELECTED, 0, [at::HAND[0], ry(s.rew - first)])));
             }
         }
         synth::Page::Materials { totals } => {
@@ -1228,7 +1290,11 @@ fn draw_synth(m: &ShopMenu, scene: &mut MenuScene, text: &MenuText, owned: &dyn 
             let first = s.mat.saturating_sub(LIST_ROWS - 1);
             for (k, &i) in s.slots.iter().enumerate().skip(first).take(LIST_ROWS) {
                 let v = if totals { moogle.total_at(i) } else { moogle.stock_at(i) };
-                row(scene, k - first, name(mats[i]), pick(k, s.mat, true), Some(format!("{v}")));
+                // A material never handed over (listed by story flag 0x4837, `FUN_0028f9a8`) shows its name as "?".
+                let label = if totals && v == 0 { masked(text, &name(mats[i])) } else { name(mats[i]) };
+                row(scene, k - first, label, pick(k, s.mat, true), Some(format!("{v}")));
+                // The NEW / VIEWED tag of a material handed over for the first time at this opening (session `+8`).
+                put_tag(m, scene, k - first, tag_of(synth::material_mark(&s.marks, i)), tag_at(row_y(k - first)));
             }
             if !s.slots.is_empty() {
                 hand(scene, s.mat - first);
@@ -1237,7 +1303,14 @@ fn draw_synth(m: &ShopMenu, scene: &mut MenuScene, text: &MenuText, owned: &dyn 
         _ => {}
     }
     match s.page {
-        synth::Page::Notice | synth::Page::Opening => window(scene, message(text, s.text)),
+        synth::Page::Notice | synth::Page::Opening => {
+            // `FUN_0028e980`: the first variable of the text is the item's kind (a material's category), the second its name.
+            let item = s.text_item.and_then(|id| m.wares.iter().find(|w| w.id == id));
+            let args: Vec<Vec<Token>> = item
+                .map(|w| vec![t.kind_text(w.kind, w.flag1).map(|k| message(text, k)).unwrap_or_default(), message(text, u32::from(w.name))])
+                .unwrap_or_default();
+            window(scene, fill(message(text, s.text), &args));
+        }
         synth::Page::Result => {
             let mut v: Vec<Token> = message(text, synth::msg::MADE).into_iter().filter(|t| *t != Token::End).collect();
             v.extend(literal(text, "  "));
@@ -1526,6 +1599,14 @@ pub mod synth {
         pub const LAYOUTS: u32 = 0x0038_25b8;
         /// Three category bytes (`FUN_00291560`).
         pub const SPECIAL: u32 = 0x0038_2698;
+        /// A message per material category (`FUN_0028a1b8`, `FUN_002879e8`: `PTR_DAT_00382640[item +4]`, 13 entries).
+        pub const CATEGORY_NAMES: u32 = 0x0038_2640;
+        /// The icon of a material category (`FUN_0028a1b8`: the table at 0x382660, indexed by item +4).
+        pub const CATEGORY_ICONS: u32 = 0x0038_2660;
+        /// Pairs (item type, message) ended by a negative type: the name of an item type (`FUN_002553c0`).
+        pub const TYPE_NAMES: u32 = 0x0038_0a60;
+        /// Triples (item type, icon, icon) ended by a negative type (`FUN_00255368`; the first icon with a 0 flag).
+        pub const TYPE_ICONS: u32 = 0x0038_09d0;
     }
 
     /// Message ids the pages pass as immediates.
@@ -1555,6 +1636,8 @@ pub mod synth {
         pub const REWARD_SET0: u32 = 0xc1c3;
         pub const REWARD_SET1: u32 = 0xcc7d;
         pub const REWARD_UNLOCK: u32 = 0xc1c4;
+        /// `FUN_0028a1b8`: the text that fills the variable of an unlock reward's message, and starts the hidden one.
+        pub const REWARD_HEAD: u32 = 0xc1c5;
     }
 
     /// The type of the synthesis materials (`FUN_00284798` lists the item rows of type 0x10, at most 0x32).
@@ -1674,6 +1757,12 @@ pub mod synth {
         pub layouts: [u16; 3],
         /// The categories a collection reward's condition `0x10` / `0xf` splits on (`FUN_00291560`: the bytes at 0x382698).
         pub special: [u8; 3],
+        /// `FUN_0028a1b8`: the category names and icons of the materials (`addr::CATEGORY_NAMES`, `CATEGORY_ICONS`).
+        pub category_names: [u16; 13],
+        pub category_icons: [u16; 13],
+        /// `FUN_002553c0` / `FUN_00255368`: (type, message) and (type, icon) of the other items.
+        pub type_names: Vec<(i16, u16)>,
+        pub type_icons: Vec<(i16, u16)>,
     }
 
     impl Tables {
@@ -1705,6 +1794,24 @@ pub mod synth {
             for (k, v) in t.special.iter_mut().enumerate() {
                 *v = u8_at(addr::SPECIAL + k as u32)?;
             }
+            for k in 0..13 {
+                t.category_names[k] = u16_at(addr::CATEGORY_NAMES + 2 * k as u32)?;
+                t.category_icons[k] = u16_at(addr::CATEGORY_ICONS + 2 * k as u32)?;
+            }
+            for k in 0..64u32 {
+                let ty = u16_at(addr::TYPE_NAMES + 4 * k)? as i16;
+                if ty < 0 {
+                    break;
+                }
+                t.type_names.push((ty, u16_at(addr::TYPE_NAMES + 4 * k + 2)?));
+            }
+            for k in 0..64u32 {
+                let ty = u16_at(addr::TYPE_ICONS + 6 * k)? as i16;
+                if ty < 0 {
+                    break;
+                }
+                t.type_icons.push((ty, u16_at(addr::TYPE_ICONS + 6 * k + 2)?));
+            }
             Some(t)
         }
 
@@ -1712,6 +1819,56 @@ pub mod synth {
         pub fn bonus_item(&self, rank: u8, k: usize) -> u16 {
             self.bonus.get(k).and_then(|b| b.get(rank as usize)).copied().unwrap_or(0)
         }
+
+        /// The message that names an item's kind (`FUN_0028a1b8`, `FUN_002879e8`): a material (type 0x10) its category's
+        /// (`PTR_DAT_00382640[item +4]`), any other item its type's (`FUN_002553c0`, none for a type not in its table).
+        pub fn kind_text(&self, kind: u8, category: u8) -> Option<u32> {
+            if kind == MATERIAL_TYPE {
+                return self.category_names.get(usize::from(category)).map(|&m| u32::from(m));
+            }
+            self.type_names.iter().find(|&&(t, _)| t == i16::from(kind)).map(|&(_, m)| u32::from(m))
+        }
+
+        /// The icon in front of a reward item's name (`FUN_001a1f40(item, icon)`): a material's category icon
+        /// (`PTR_DAT_00382660`), else the type's (`FUN_00255368(type, 0)`, 0xb for a type not in its table).
+        pub fn item_icon(&self, kind: u8, category: u8) -> u8 {
+            if kind == MATERIAL_TYPE {
+                return self.category_icons.get(usize::from(category)).map_or(0xb, |&i| i as u8);
+            }
+            self.type_icons.iter().find(|&&(t, _)| t == i16::from(kind)).map_or(0xb, |&(_, i)| i as u8)
+        }
+    }
+
+    /// What the second column of a page 0xb row shows (`FUN_0028a1b8`, the buffer at state `+0x52a + 0x40 k`).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum RewardText {
+        /// An item reward earned: the item's name behind its icon (`FUN_001a1f40`).
+        Item { icon: u8, name: u32 },
+        /// A reward not earned (listed by story flag 0x4837): the message `head`, then a "?" for each character of the
+        /// message `mask` (`FUN_0029bb48`). The head is the item's kind for an item reward, else message 0xc1c5.
+        Hidden { head: Option<u32>, mask: u32 },
+        /// An unlock reward earned: the message `text` with its variable replaced by the text of message 0xc1c5
+        /// (`FUN_00191a30`).
+        Filled { text: u32 },
+    }
+
+    /// `FUN_0028a1b8`: the second column of a reward's row. `item` is the reward item's (type, category, name message)
+    /// for an item reward (kind 0); an item reward without an item row has no text.
+    pub fn reward_text(t: &Tables, c: &Cond, met: bool, item: Option<(u8, u8, u16)>) -> Option<RewardText> {
+        if c.kind == 0 {
+            let (kind, category, name) = item?;
+            return Some(if met {
+                RewardText::Item { icon: t.item_icon(kind, category), name: u32::from(name) }
+            } else {
+                RewardText::Hidden { head: t.kind_text(kind, category), mask: u32::from(name) }
+            });
+        }
+        let text = match c.reward {
+            0 => msg::REWARD_SET0,
+            1 => msg::REWARD_SET1,
+            _ => msg::REWARD_UNLOCK,
+        };
+        Some(if met { RewardText::Filled { text } } else { RewardText::Hidden { head: Some(msg::REWARD_HEAD), mask: text } })
     }
 
     /// What the pages read: the data, the tables, the material list (`FUN_00284798`: the item ids of type 0x10 in
@@ -1789,17 +1946,37 @@ pub mod synth {
 
     /// `FUN_00290058`: the entries of a list (an entry is 2r for recipe r's item, 2r + 1 for its higher rank). The
     /// Creations list (0): every entry made. Free Development (1): the recipes of sets 1..3 whose set bit (0..2) is
-    /// unlocked, learned and not made. Recipes (2): the learned recipes of kind 0 not made. At most 0x2d. [The
-    /// entries flagged 0x80 that `FUN_002783f8` (story flag 0x4837) adds are left out.]
+    /// unlocked, learned and not made. Recipes (2): the learned recipes of kind 0 not made. At most 0x2d. The entries
+    /// flagged 0x80 that story flag 0x4837 adds (`entries_all`) are left out here.
     pub fn entries(b: &Book, m: &Moogle, kind: u8) -> Vec<u16> {
+        entries_all(b, m, kind, false)
+    }
+
+    /// The flag `FUN_00290058` puts on an entry that only the story flag 0x4837 lists: shown as a row of "?" and never
+    /// opened.
+    pub const HIDDEN: u16 = 0x80;
+
+    /// `FUN_00290058` with story flag 0x4837 (`all`) read: the lists also hold, flagged `HIDDEN`, the entries the player
+    /// cannot have yet. Creations: every entry not made (the higher rank's only for a recipe that has one). Free
+    /// Development and Recipes: a recipe of that list's kind that is not learned (or is made, and not learned).
+    pub fn entries_all(b: &Book, m: &Moogle, kind: u8, all: bool) -> Vec<u16> {
         let n = b.mix.recipes.len() as u32;
         let mut v = Vec::new();
         if kind == 0 {
-            v.extend((0..(2 * n).saturating_sub(1)).filter(|&e| Moogle::bit(m.made, e)).map(|e| e as u16));
+            for e in 0..(2 * n).saturating_sub(1) {
+                if Moogle::bit(m.made, e) {
+                    v.push(e as u16);
+                } else if all && (e & 1 == 0 || b.mix.recipes.get((e >> 1) as usize).is_some_and(|r| r.upgraded != 0)) {
+                    v.push(e as u16 | HIDDEN);
+                }
+            }
         } else {
             for (i, r) in b.mix.recipes.iter().enumerate() {
                 let e = 2 * i as u32;
                 if !Moogle::bit(m.learned, e) || Moogle::bit(m.made, e) {
+                    if all && !Moogle::bit(m.made, e) && (if kind == 1 { r.unlock != 0 } else { r.unlock == 0 }) {
+                        v.push(e as u16 | HIDDEN);
+                    }
                     continue;
                 }
                 let on = if kind == 1 { (1..=3).contains(&r.unlock) && m.unlocked(u32::from(r.unlock) - 1) } else { r.unlock == 0 };
@@ -2032,10 +2209,18 @@ pub mod synth {
         pub items: Vec<(u16, u16)>,
         /// The Free Development entries the new set bits learned.
         pub learned: u64,
+        /// The state's `+0x134` marks (`FUN_00291140` via `FUN_00291628`): a bit per material slot, the first material of
+        /// the category and rank an unlock reward is for. Its notice names it (`FUN_002879e8`).
+        pub materials: u64,
     }
 
     /// The story flag `FUN_002783f8` tests: with it set the reward list shows the rewards not earned yet too.
     pub const STORY_ALL_REWARDS: u16 = 0x4837;
+
+    /// `FUN_00291628(a, b)`: the place of the first material (table order) whose category is `a` and rank `b`.
+    pub fn first_material(b: &Book, a: u8, rank: u8) -> Option<usize> {
+        b.mats.iter().take(MOOGLE_MATERIALS).position(|&id| id > 0 && (b.flag1)(id) == a && (b.rank)(id) == rank)
+    }
 
     /// `FUN_00291140`: every reward whose condition is met and whose record bit (`+8`) is clear is paid: the bit is set,
     /// an item reward (kind 0) is added once (`FUN_001a1a18`; the notice 2 comes with it even when the bag is full), a
@@ -2069,6 +2254,9 @@ pub mod synth {
                 }
                 n => {
                     r.notices |= 0x10;
+                    if let Some(i) = first_material(b, c.a, c.b) {
+                        Moogle::with(&mut r.materials, i as u32);
+                    }
                     Moogle::with(&mut s.moogle_mut().unlocks, u32::from(n));
                     s.set_record_bit(c.bit);
                 }
@@ -2118,6 +2306,12 @@ pub mod synth {
             return (new != 0).then_some(new & !m.seen != 0);
         }
         (row == 0 && k.entries & m.made != 0).then_some(false)
+    }
+
+    /// The mark on a row of page 10 / 0x17 (`FUN_0028f9a8`): a material handed over for the first time at this opening
+    /// (session `+8`) carries NEW (group 0x78) while `+0x112d` is set, VIEWED (group 0x77) after.
+    pub fn material_mark(k: &Marks, slot: usize) -> Option<bool> {
+        Moogle::bit(k.known, slot as u32).then_some(k.fresh)
     }
 
     /// The opening of the third row (`FUN_00284c10`).
@@ -2272,6 +2466,12 @@ pub mod synth {
         /// The text a notice shows, the queued opening texts, the result item, the level-up names.
         pub text: u32,
         pub queue: Vec<u32>,
+        /// The item each queued text names (`FUN_002879e8`: the reward item of notice 1, the material of notice 4), and
+        /// the one the shown text names.
+        pub queue_item: Vec<Option<u16>>,
+        pub text_item: Option<u16>,
+        /// Story flag 0x4837 (`FUN_002783f8`), read when the third row opened: the lists show what is not there yet.
+        pub all: bool,
         pub item: u16,
         pub levels: Vec<u16>,
         pub last: Option<Made>,
@@ -2303,13 +2503,31 @@ pub mod synth {
         pub fn start(b: &Book, s: &mut dyn Store) -> (Session, Opening) {
             let o = open(b, s);
             let marks = Marks { entries: unseen_entries(s.moogle()), known: o.known, rewards: o.rewards.fresh, fresh: true };
-            let mut x = Session { rows: top_rows(b, s.moogle()), rewards: o.rewards.list.clone(), marks, ..Session::default() };
-            x.queue = (0..6).filter(|k| o.notices >> k & 1 != 0).map(|k| u32::from(b.t.notices[k])).collect();
+            let mut x = Session { rows: top_rows(b, s.moogle()), rewards: o.rewards.list.clone(), marks, all: s.story(STORY_ALL_REWARDS), ..Session::default() };
+            // `FUN_002879e8`: notice 1 comes once for each reward item (state `+0x13c`, by reward), notice 4 once for each
+            // material marked (`+0x134`, by place); the others once.
+            for k in (0..6).filter(|k| o.notices >> k & 1 != 0) {
+                let text = u32::from(b.t.notices[k]);
+                let items: Vec<Option<u16>> = match k {
+                    1 => o.rewards.items.iter().map(|&(_, item)| Some(item)).collect(),
+                    4 => (0..MOOGLE_MATERIALS as u32).filter(|&i| Moogle::bit(o.rewards.materials, i)).map(|i| b.mats.get(i as usize).copied()).collect(),
+                    _ => Vec::new(),
+                };
+                if items.is_empty() {
+                    x.queue.push(text);
+                    x.queue_item.push(None);
+                }
+                for item in items {
+                    x.queue.push(text);
+                    x.queue_item.push(item);
+                }
+            }
             x.goto(b, s.moogle(), o.page);
             x.see(s.moogle_mut());
             if !x.queue.is_empty() {
                 x.ret = x.page;
                 x.text = x.queue.remove(0);
+                x.text_item = x.queue_item.remove(0);
                 x.page = Page::Opening;
             }
             (x, o)
@@ -2320,11 +2538,13 @@ pub mod synth {
                 Page::Top => self.rows = top_rows(b, m),
                 Page::List(k) => {
                     self.kind = k;
-                    self.entries = entries(b, m, k);
+                    self.entries = entries_all(b, m, k, self.all);
                     self.list = self.list.min(self.entries.len().saturating_sub(1));
                 }
                 Page::Materials { totals } => {
-                    self.slots = (0..b.mats.len().min(MOOGLE_MATERIALS)).filter(|&i| if totals { m.total_at(i) != 0 } else { m.stock_at(i) != 0 }).collect();
+                    // Page 10 also lists, with story flag 0x4837, the materials never handed over (`FUN_0028f9a8`, `FUN_0028ffc8`).
+                    let all = self.all;
+                    self.slots = (0..b.mats.len().min(MOOGLE_MATERIALS)).filter(|&i| if totals { all || m.total_at(i) != 0 } else { m.stock_at(i) != 0 }).collect();
                     self.mat = 0;
                 }
                 _ => {}
@@ -2335,6 +2555,9 @@ pub mod synth {
         /// `FUN_00288fc0`: on a list page the entry under the cursor is marked seen (record `+0x20`) every frame.
         fn see(&mut self, m: &mut Moogle) {
             if let (Page::List(_), Some(e)) = (self.page, self.entry()) {
+                if e & HIDDEN != 0 {
+                    return;
+                }
                 Moogle::with(&mut m.seen, u32::from(e));
             }
         }
@@ -2347,6 +2570,7 @@ pub mod synth {
         fn notice(&mut self, text: u32) {
             self.ret = self.page;
             self.text = text;
+            self.text_item = None;
             self.page = Page::Notice;
         }
 
@@ -2486,6 +2710,7 @@ pub mod synth {
                             self.page = self.ret;
                         } else {
                             self.text = self.queue.remove(0);
+                            self.text_item = self.queue_item.remove(0);
                         }
                         Act::Page
                     }
@@ -2743,7 +2968,7 @@ mod tests {
             story_bit: 10,
             conds: Vec::new(),
         };
-        let t = Tables { rows: [0xbc8c, 0xbc8d, 0xbc8e, 0xc48e, 0xbc8b, 0xbcdd, 0xbc8f], bonus: [[0x210; 4], [0x211; 4], [0x212; 4]], rank_bits: [6, 7, 8, 9], help: [0; 5], notices: [0xbc89, 0, 0, 0, 0, 0xbc8a], level_names: [0, 1, 2, 3, 4, 5, 6, 7, 8], layouts: [8, 10, 9], special: [9, 10, 11] };
+        let t = Tables { rows: [0xbc8c, 0xbc8d, 0xbc8e, 0xc48e, 0xbc8b, 0xbcdd, 0xbc8f], bonus: [[0x210; 4], [0x211; 4], [0x212; 4]], rank_bits: [6, 7, 8, 9], help: [0; 5], notices: [0xbc89, 0, 0, 0, 0, 0xbc8a], level_names: [0, 1, 2, 3, 4, 5, 6, 7, 8], layouts: [8, 10, 9], special: [9, 10, 11], ..Tables::default() };
         (mix, t, vec![0x200, 0x201, 0x210, 0x211, 0x212])
     }
 
@@ -3298,6 +3523,182 @@ mod tests {
 
     /// The disc: `itemshop.2ld` has the tag groups 0x77 / 0x78 and the rows' plate groups, and `cond` rows read like
     /// the rules `cond_met` ports (skipped without `KH2_ISO`).
+    /// Tables with a category name per material category (message 0x100 + category) and a name for item type 1.
+    fn named() -> Tables {
+        let mut t = mix().1;
+        for k in 0..13 {
+            t.category_names[k] = 0x100 + k as u16;
+            t.category_icons[k] = 0x20 + k as u16;
+        }
+        t.type_names = vec![(0, 0x200), (1, 0x201)];
+        t.type_icons = vec![(1, 7)];
+        t
+    }
+
+    #[test]
+    fn a_reward_row_shows_the_item_behind_its_icon_or_its_kind_and_question_marks() {
+        let t = named();
+        let item = synth::Cond { text: 1, reward: 0x30, kind: 0, a: 0xe, b: 5, c: 1, count: 1, bit: 0 };
+        // A material (type 0x10, category 4): the category's icon; unreached, the category's name and a mask of the name.
+        let mat = Some((synth::MATERIAL_TYPE, 4, 0x777));
+        assert_eq!(synth::reward_text(&t, &item, true, mat), Some(synth::RewardText::Item { icon: 0x24, name: 0x777 }));
+        assert_eq!(synth::reward_text(&t, &item, false, mat), Some(synth::RewardText::Hidden { head: Some(0x104), mask: 0x777 }));
+        // Another type: its icon from the type table (0xb when the type is not in it) and its own name.
+        assert_eq!(synth::reward_text(&t, &item, true, Some((1, 0, 5))), Some(synth::RewardText::Item { icon: 7, name: 5 }));
+        assert_eq!(synth::reward_text(&t, &item, true, Some((9, 0, 5))), Some(synth::RewardText::Item { icon: 0xb, name: 5 }));
+        assert_eq!(synth::reward_text(&t, &item, false, Some((1, 0, 5))), Some(synth::RewardText::Hidden { head: Some(0x201), mask: 5 }));
+        assert_eq!(synth::reward_text(&t, &item, false, Some((9, 0, 5))), Some(synth::RewardText::Hidden { head: None, mask: 5 }), "a type with no name");
+        assert_eq!(synth::reward_text(&t, &item, true, None), None, "an item reward without an item row");
+        // An unlock: the message of its set or bit with the variable filled; unreached, message 0xc1c5 then a mask of it.
+        let unlock = |reward| synth::Cond { reward, kind: 1, ..item.clone() };
+        assert_eq!(synth::reward_text(&t, &unlock(0), true, None), Some(synth::RewardText::Filled { text: synth::msg::REWARD_SET0 }));
+        assert_eq!(synth::reward_text(&t, &unlock(1), false, None), Some(synth::RewardText::Hidden { head: Some(synth::msg::REWARD_HEAD), mask: synth::msg::REWARD_SET1 }));
+        assert_eq!(synth::reward_text(&t, &unlock(5), true, None), Some(synth::RewardText::Filled { text: synth::msg::REWARD_UNLOCK }));
+    }
+
+    #[test]
+    fn a_text_masks_one_question_mark_per_character_and_fills_its_variables_in_order() {
+        use kh2_image::text::Token as T;
+        // Glyphs and icons count; spaces, colours and the end do not (`FUN_00191660`); a newline ends the count.
+        let name = vec![T::Palette(2), T::Glyph(1), T::Space, T::Glyph(2), T::Icon(3), T::Newline, T::Glyph(9), T::End];
+        assert_eq!(shown_chars(&name), 3);
+        let filled = fill(vec![T::Glyph(1), T::Variable, T::Glyph(2), T::Variable, T::Glyph(3), T::Variable], &[vec![T::Glyph(10), T::End], vec![T::Glyph(11)]]);
+        assert_eq!(filled, vec![T::Glyph(1), T::Glyph(10), T::Glyph(2), T::Glyph(11), T::Glyph(3)], "a variable with no text left shows nothing");
+    }
+
+    #[test]
+    fn story_flag_4837_lists_what_the_player_cannot_have_yet_and_never_opens_it() {
+        let (mut mix, t, mats) = mix();
+        mix.conds = vec![cond(0, 0x30, 0xe, 5, 0, 1)];
+        let b = Book { mix: &mix, t: &t, mats: &mats, rank: &rk, flag1: &cat };
+        // Flag clear (the default): nothing made or learned, so every list and page 10 are empty, the reward unlisted.
+        let mut s = Fake::default();
+        let (mut x, _) = Session::start(&b, &mut s);
+        assert!(!x.all);
+        for k in 0..3 {
+            x.goto(&b, &s.m, synth::Page::List(k));
+            assert!(x.entries.is_empty(), "list {k}");
+        }
+        x.goto(&b, &s.m, synth::Page::Materials { totals: true });
+        assert!(x.slots.is_empty());
+        assert!(x.rewards.is_empty());
+        // Flag set: Creations hold every entry not made (the higher rank only of recipe 0, which has one), Free
+        // Development the recipe of set 1 and Recipes the recipe item, all flagged; page 10 every material.
+        s.flags.push(0x4837);
+        let (mut x, _) = Session::start(&b, &mut s);
+        assert!(x.all);
+        let hidden = |e: u16| e | synth::HIDDEN;
+        x.goto(&b, &s.m, synth::Page::List(0));
+        assert_eq!(x.entries, vec![hidden(0), hidden(1), hidden(2)]);
+        x.goto(&b, &s.m, synth::Page::List(1));
+        assert_eq!(x.entries, vec![hidden(2)]);
+        x.goto(&b, &s.m, synth::Page::List(2));
+        assert_eq!(x.entries, vec![hidden(0)]);
+        // A hidden entry is refused and is not marked seen.
+        assert_eq!(x.key(Key::Confirm, &b, &mut s), synth::Act::Refused);
+        assert!(!Moogle::bit(s.m.seen, 0));
+        s.m.learned = 1;
+        x.goto(&b, &s.m, synth::Page::List(2));
+        assert_eq!(x.entries, vec![0], "learned: the plain entry, no hidden twin");
+        x.goto(&b, &s.m, synth::Page::Materials { totals: true });
+        assert_eq!(x.slots, vec![0, 1, 2, 3, 4], "every material, none handed over");
+        x.goto(&b, &s.m, synth::Page::Materials { totals: false });
+        assert!(x.slots.is_empty(), "the stock page lists only what is held");
+        assert_eq!(x.rewards, vec![(0, false)], "the unreached reward is listed");
+        // A made entry is listed plain; only the entries not made are hidden.
+        s.m.made = 1;
+        x.goto(&b, &s.m, synth::Page::List(0));
+        assert_eq!(x.entries, vec![0, hidden(1), hidden(2)]);
+    }
+
+    #[test]
+    fn the_item_and_unlock_notices_name_the_reward_item_and_the_material_the_reward_marks() {
+        let (mut mix, t, mats) = mix();
+        // Rewards 0 and 2: items for one material. Reward 1: an unlock bit 7 for category 3, rank 3 (the first is 0x211, place 3).
+        mix.conds = vec![cond(0, 0x30, 0xe, 5, 0, 1), cond(1, 7, 3, 3, 1, 1), cond(0, 0x31, 0xe, 5, 0, 1)];
+        let b = Book { mix: &mix, t: &t, mats: &mats, rank: &rk, flag1: &cat };
+        assert_eq!(synth::first_material(&b, 3, 3), Some(3));
+        assert_eq!(synth::first_material(&b, 4, 3), None);
+        let mut s = Fake::default();
+        s.items.insert(0x211, 1);
+        let (mut x, o) = Session::start(&b, &mut s);
+        assert_eq!(o.rewards.materials, 1 << 3, "state +0x134: the place of 0x211");
+        assert_eq!(o.rewards.items, vec![(0, 0x30), (2, 0x31)], "state +0x13c: both reward items");
+        // The hand-over (notice 0), the item notice once for each item, the unlock notice for the material.
+        assert_eq!((x.text, x.text_item), (0xbc89, None));
+        assert_eq!(x.queue.len(), 3);
+        assert_eq!(x.queue_item, vec![Some(0x30), Some(0x31), Some(0x211)]);
+        // Each confirm moves to the next text and its item.
+        for want in [Some(0x30), Some(0x31), Some(0x211)] {
+            assert_eq!(x.key(Key::Confirm, &b, &mut s), synth::Act::Page);
+            assert_eq!(x.text_item, want);
+        }
+        assert!(x.queue.is_empty() && x.queue_item.is_empty());
+    }
+
+    #[test]
+    fn a_material_handed_over_for_the_first_time_carries_a_tag_on_the_material_pages() {
+        let mut k = synth::Marks { known: 0b10, fresh: true, ..synth::Marks::default() };
+        assert_eq!((synth::material_mark(&k, 0), synth::material_mark(&k, 1)), (None, Some(true)), "NEW while +0x112d is set");
+        k.fresh = false;
+        assert_eq!(synth::material_mark(&k, 1), Some(false), "VIEWED after");
+    }
+
+    /// The disc's reward rows: every reward has a second-column text, the notices of items and unlocks have two variables
+    /// for the item's kind and name, and the shop's list groups give the row pitch and the second column's x.
+    #[test]
+    fn the_disc_reward_texts_notices_and_list_extents() {
+        let Ok(iso) = std::env::var("KH2_ISO") else { return };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let two = layd::parse_2ld(&a.read("menu/us/itemshop.2ld").unwrap()).unwrap();
+        let seq = two.layd.seqs.iter().position(|q| q.groups.len() > 0x78).expect("the sequence with the row groups");
+        let q = &two.layd.seqs[seq];
+        for g in [0x24usize, 0x60, 0x61, 0x62, 0x65, 0x66, 0x67, 0x68, 0x6e, 0x6f] {
+            if let Some(x) = q.groups.get(g) {
+                eprintln!("group {g:#x}: x {} y {} size {} +0x1c {} +0x20 {}", x.x, x.y, x.size, x.unk1c, x.unk20);
+            }
+        }
+        for l in 0..two.layd.layouts.len() {
+            eprintln!("layout {l}: {:?}", two.layd.layout(l).iter().map(|y| (y.seq, y.group, y.x, y.y)).collect::<Vec<_>>());
+        }
+        let plate = &q.groups[ROW_PLATE];
+        assert_eq!((plate.x, plate.size, plate.unk1c), (270, 13, 23), "FUN_0028b470: the second text at x 270, size 13, rows 23 apart");
+        let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok()).unwrap();
+        let exe = Exe::load(elf).unwrap();
+        let t = synth::Tables::read(&|v| exe.u16(v), &|v| exe.u8(v)).unwrap();
+        eprintln!("category names {:x?} icons {:x?} type names {:x?} type icons {:x?}", t.category_names, t.category_icons, t.type_names, t.type_icons);
+        assert!(t.category_names.iter().all(|&m| m != 0) && !t.type_names.is_empty() && !t.type_icons.is_empty());
+        let mix = Mix::parse(&a.read("menu/us/mixdata.bar").unwrap()).unwrap();
+        let items = kh2_tables::load::<t::Item>(&mut a, &t::ITEM).unwrap().rows;
+        let msgs = kh2_image::text::Messages::from_bar(&a.read("msg/us/sys.bar").unwrap()).unwrap();
+        let txt = |id: u32| msgs.text(id).unwrap_or_default();
+        for k in [1usize, 4] {
+            let toks = msgs.tokens(u32::from(t.notices[k])).unwrap();
+            eprintln!("notice {k} {:#x}: \"{}\" variables {}", t.notices[k], txt(u32::from(t.notices[k])), toks.iter().filter(|x| **x == Token::Variable).count());
+        }
+        for (k, c) in mix.conds.iter().enumerate() {
+            let item = items.iter().find(|i| i.id == c.reward).map(|i| (i.r#type, i.flag1, i.name));
+            for met in [true, false] {
+                let r = synth::reward_text(&t, c, met, item).unwrap_or_else(|| panic!("reward {k} has no text"));
+                let shown = match r {
+                    synth::RewardText::Item { icon, name } => format!("[icon {icon:#x}] {}", txt(name)),
+                    synth::RewardText::Hidden { head, mask } => format!("{}{}", head.map(&txt).unwrap_or_default(), "?".repeat(shown_chars(&msgs.tokens(mask).unwrap()))),
+                    synth::RewardText::Filled { text } => txt(text).replace('\r', &txt(synth::msg::REWARD_HEAD)),
+                };
+                if k < 3 || k % 10 == 0 {
+                    eprintln!("reward {k} met {met}: {shown:?}");
+                }
+                if c.kind == 0 && !met {
+                    assert!(matches!(r, synth::RewardText::Hidden { head: Some(_), .. }), "reward {k}: an unreached item names its kind");
+                }
+            }
+        }
+        for (i, m) in mix.conds.iter().enumerate().filter(|(_, c)| c.kind != 0 && c.reward > 1) {
+            let found = synth::first_material(&synth::Book { mix: &mix, t: &t, mats: &items.iter().filter(|x| x.r#type == synth::MATERIAL_TYPE).map(|x| x.id).collect::<Vec<_>>(), rank: &|id| items.iter().find(|x| x.id == id).map_or(0, |x| x.rank), flag1: &|id| items.iter().find(|x| x.id == id).map_or(0, |x| x.flag1) }, m.a, m.b);
+            assert!(found.is_some(), "unlock reward {i} (category {}, rank {}) marks a material", m.a, m.b);
+        }
+    }
+
     #[test]
     fn the_disc_shop_layout_has_the_tag_groups_and_the_rewards_read_as_conditions() {
         let Ok(iso) = std::env::var("KH2_ISO") else { return };

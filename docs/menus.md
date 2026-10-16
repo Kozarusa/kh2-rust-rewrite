@@ -1983,8 +1983,7 @@ it as `progress::Moogle` (`Progress::moogle`; a slot file carries it; `KH2_STATE
   entry), `FUN_00290c28` grants the bits of the levels reached and the development sets they open (`FUN_00290cc0`),
   `FUN_00290bb8` sets the level; each level gained shows 0xbed1 with its name (page 0x16), then the list again.
 - **Pages 10 and 0x17** (`FUN_002858e8`, `FUN_00287240`, `FUN_0028f9a8`): the materials with a total (10, titled 0xbcdf)
-  or with stock (0x17, 0xbd90); a cancel goes to page 9 [inferred: the rows show the material's name and the number;
-  `FUN_0028b188` and the row drawing were not read].
+  or with stock (0x17, 0xbd90); a cancel goes to page 9 (the rows, their NEW tags and the story flag's extra rows: 24.9).
 
 ### 23.4 What the port does (`menu_shop::synth`)
 
@@ -2016,8 +2015,8 @@ moogle's animation (`FUN_00283520`, item +0x14), the window and list widgets' ow
 | 0x2906c0, 0x2903b8, 0x2783f8 | the record, the unlock bits, story flag 0x4837 |
 
 Gaps: (page 0xb and the rewards' conditions are closed in section 24); the result window's key handling (`FUN_0028e7f0`, `FUN_0028f2c0`: the port makes the item on any confirm or cancel);
-the list widget (`FUN_00296b48`, `FUN_00299878`); the entries `FUN_002783f8` (story flag 0x4837) adds with mark 0x80 are
-left out; `FUN_002909d0` with a bonus material outside the list writes the stock at slot -1 (the points word) [not
+the list widget (`FUN_00296b48`, `FUN_00299878`); the entries `FUN_002783f8` (story flag 0x4837) adds with mark 0x80
+are ported in 24.9; `FUN_002909d0` with a bonus material outside the list writes the stock at slot -1 (the points word) [not
 ported].
 
 ## 24. Page 7, the shop's NEW marks, the collection rewards and page 0xb (WP-SH3)
@@ -2071,7 +2070,7 @@ reward word (+8) is clear: the bit is set, the session's reward mark (`DAT_0036d
 - kind 1, reward 0: unlock bit 0 (record +0x28), notice 4, then `FUN_00290cc0` learns the Free Development recipes of set
   1; reward 1: unlock bit 1, notice 8, the same; any other reward n: unlock bit n, notice 0x10, the record bit of
   halfword +0xa (`FUN_001a52b0`) and the first material of the row's category and rank is marked in the state's +0x134
-  (`FUN_00291628`; the mark has no reader in the port).
+  (`FUN_00291628`; the marks' reader is the notice page, 24.9).
 The notices are the opening's texts 1..4 of the table at 0x382628.
 The test `FUN_00291418` walks the 50 material slots (state +0x314: the item ids of type 0x10 in table order) with the
 record's totals (+0xfc, the amount of each ever handed over): the slot counts when `FUN_00291560(item +4, a)` and
@@ -2095,8 +2094,7 @@ twin): each listed reward shows its `cond` text (+0), a plate group 0x61 when re
 of the table at 0x382608 (reached / not), and a session NEW tag (group 0x78 when the page's byte +0x112d is set, else
 0x77; `DAT_003825ac` / `DAT_003825b0`) when the reward is among the ones paid at this opening. An empty list shows the text
 0xc194. A reached reward's detail text is the item for kind 0, else the texts 0xc1c3 (reward 0), 0xcc7d (reward 1),
-0xc1c4 (the rest); the detail of an unreached one was not decoded (`FUN_002553c0`, the tables 0x382640 / 0x382660,
-`FUN_001a1f40`, `FUN_00191870`, `FUN_0029bb48`). The handler `FUN_00286060`: Up and Down move; a confirm only plays the
+0xc1c4 (the rest); the exact form of the second column, reached and not (24.9). The handler `FUN_00286060`: Up and Down move; a confirm only plays the
 refused sound (`FUN_00291b58` answers 0 for page 0xb); cancel (-2) goes to page 9 (the cursor on row 5);
 **-5 goes to page 10** (state +0 = 4) and **-5 on page 10 comes back** (`FUN_00285b30`, state +0 = 5): the two pages are
 tabs of each other; -4 ends the menu. The help text of the page is 0xbce0 (`FUN_00288f00`).
@@ -2147,13 +2145,10 @@ Harness (a state file; `KH2_STATE` is a path, `local/sh3/state-moogle.json` is
 | 0x2916d8, 0x2917c8, 0x291880, 0x291960, 0x2919e8, 0x284ea8, 0x288fc0, 0x2889e0, 0x2887c8, 0x28f490 | the synthesis marks |
 | data 0x381128, 0x381238, 0x382698, 0x3825ac, 0x382608, 0x382628 | first-visit texts, tag groups, special categories, row mark groups, row styles, notices |
 
-Gaps: the exact place and look of the tags and of the page 0xb rows (the widgets `FUN_00296b48`, `FUN_0029b600`,
-`FUN_00299878` were not followed; the port's columns are inferred); the detail text of an unreached reward
-(`FUN_002553c0`, tables 0x382640 / 0x382660, `FUN_001a1f40`, `FUN_00191870`); the state's +0x134 and +0x13c marks and the
-NEW tags of the material pages 10 and 0x17 (`FUN_0028f490`, `FUN_0028f698`, `FUN_0028f850`, `FUN_0028fea0`,
-`FUN_0028f9a8`: the session sets +0x10 and +0x20); the look of the message window of page 7 (the port's text in the
-synthesis window style); the difference between the VIEWED group 0x77 and the NEW group 0x78 beyond the animation
-length (both use the same art rectangle); the entries `FUN_002783f8` adds to the lists (story flag 0x4837) are still out;
+Gaps: the window origin of the list pages and the exact place of the tags on the shop pages (the widgets `FUN_00296b48`,
+`FUN_0029b600`, `FUN_00299878`: see 24.9); the look of the message window of page 7 (the port's text in the synthesis
+window style); the difference between the VIEWED group 0x77 and the NEW group 0x78 beyond the animation length (both use
+the same art rectangle); the count-up animation of page 10 and the rank and category tabs it highlights (24.9);
 `+0x3714`, `+0x3724` and the record `+8` are in the slot files since WP-PRG1 (a reload does not pay the rewards again).
 
 ### 24.8 The command menu's Genie "Drive!" (WP-FX12b)
@@ -2168,6 +2163,97 @@ app: H swaps the deck (the other deck's cursor kept), T / G move, J confirms, B 
 
 - **MN15 review notes.** [inferred] World 0xf's limits test uses "best count above 0" (`FUN_002a20e0`); the original's `FUN_002ba238` tests the completion bits at `DAT_0036d4f4 + 0x74`, and their equivalence is not shown. `Counted` is now removed when an enemy's HP is above 0 again, so a revive counts each defeat (WP-HK1, 20.11a); `count_defeats` has a system-level test through `count_generic`. Section 14's "0x19..0x1f" for Customize is a different use of the numbers than the journal pages 0x19, 0x1a and 0x20.
 - **MN15 review notes.** [inferred] World 0xf's limits test uses "best count above 0" (`FUN_002a20e0`); the original's `FUN_002ba238` tests the completion bits at `DAT_0036d4f4 + 0x74`, and their equivalence is not shown. The once-only `Counted` marker counts an enemy that revives only on its first defeat; the original counts each defeat. `count_defeats` itself has no system-level test (only `count_one`). Section 14's "0x19..0x1f" for Customize is a different use of the numbers than the journal pages 0x19, 0x1a and 0x20.
+
+### 24.9 Shop gaps closed: reward texts, notice marks, material tags, story flag 0x4837, list geometry (WP-SH4)
+
+**The second column of a page 0xb row [V]** (`FUN_0028a1b8`; the text lands in the row's second text widget,
+`FUN_0028b470`: state `+0x52a + 0x40 k` is its string). Reached (the "reached" byte of the list entry, `FUN_00291140`):
+- an item reward: `FUN_001a1f40(item, icon)` builds the command 9 (an icon) followed by the item's name (item `+8`).
+  The icon is the material's category icon (`0x382660[item +4]`, 0x26..0x32 on the disc) for an item of type 0x10, else
+  `FUN_00255368(type, 0)`: the first icon of the triple table at 0x3809d0 (0xb for a type not in it).
+- another reward: the message 0xc1c3 (set 0), 0xcc7d (set 1) or 0xc1c4 with its variable (command 0xd) replaced by the text
+  of 0xc1c5 (`FUN_00191a30`; on the disc 0xc1c5 is one icon).
+
+Not reached (listed only with story flag 0x4837, below; the entry's byte is 0): the text of message 0xc1c5 for an
+unlock, or the item's kind for an item reward (`0x382640[item +4]` for a material, `FUN_002553c0(type)` = the pairs at
+0x380a60 otherwise; on the disc every kind text is one icon), then `FUN_0029bb48(message)`: the string at 0x3828b8 (`?`)
+once for each character of the message (`FUN_00191660`: glyphs and icons up to a line end; spaces are not counted; 5 in
+other languages), so an unreached reward shows its icon and as many question marks as the reward has letters. The row
+plate group is 0x61 reached, 0x24 not (`DAT_003825a8`, `DAT_003825a0`), the text style the table at 0x382608
+(`FUN_0028f468`). Port: `synth::reward_text` (`RewardText::{Item, Hidden, Filled}`) with `reward_tokens`, `masked`, `fill`
+and `shown_chars` in `menu_shop.rs`; test `a_reward_row_shows_the_item_behind_its_icon_or_its_kind_and_question_marks`
+and the disc test `the_disc_reward_texts_notices_and_list_extents`, which prints every kind text and asserts that each of
+the 50 rewards has a text.
+
+**The state's marks +0x134 and +0x13c [V]** (`FUN_00291140` writes, `FUN_002879e8` reads). Both are bit arrays that
+only name what a notice is about. An item reward sets the bit of its reward index in `+0x13c` (notice 2); an unlock
+reward other than sets 0 and 1 sets, in `+0x134`, the bit of the place of the first material whose category (item `+4`)
+and rank (item `+5`) equal the row's bytes +5 and +6 (`FUN_00291628`, `FUN_002910b0`; notice 0x10). The notice page
+(`FUN_002879e8`, `FUN_00287950`) shows the lowest set bit of `+0x130` and, for notice 1 and notice 4, the lowest bit of
+`+0x13c` / `+0x134` as well: it calls `FUN_0028e980(message, kind text, name)` with the item's kind text (the same as
+above) and the item's name (`+8`), clears that one bit, and clears the notice bit only when the array is empty. So every
+reward item and every marked material has its own notice. The texts 0xbed0 ("Obtained {}{}") and 0xc193 ("{}{} can now be
+purchased at shops") each hold two variables, filled in order by `FUN_00191a30`. Port: `Rewards::materials` (the `+0x134`
+bits, by place), `Rewards::items` (`+0x13c`), `Session::queue` and `queue_item` (one entry per bit), `text_item`,
+`first_material`; test `the_item_and_unlock_notices_name_the_reward_item_and_the_material_the_reward_marks`; the
+screenshot of the first notice reads "Obtained", the item's icon and "Elixir" (the name in yellow), "for completing the
+collection.".
+
+**NEW tags of pages 10 and 0x17 [V]** (`FUN_0028f9a8`, both pages): a material handed over for the first time at this
+opening (session `+8`, `FUN_002887c8`) has the tag group 0x78 (NEW) while the page byte `+0x112d` is set, else 0x77
+(VIEWED); the byte falls when page 10 is left (24.5). The row also has a plate whose group comes from the table at 0x382600
+by rank, the category label (`0x382640`) and the number (page 10 the state's `+0x68`, the displayed total that counts
+up to the record's `+0xfc`, `FUN_0028f490`; page 0x17 the stock). Port: `synth::material_mark`; test
+`a_material_handed_over_for_the_first_time_carries_a_tag_on_the_material_pages`; the screenshot of page 10 shows five
+materials each with a NEW tag. Not ported: the count-up and the session marks `+0x10`, `+0x20`, `+0x24` it writes
+(`FUN_0028f490`, `FUN_0028f698`: a highlight of the rank and category tabs while a total counts up; the port's page shows
+the final totals at once, like the make's count-down) and the grid of rank and category tabs (`FUN_0028aaa8`,
+`FUN_0028f850`, `FUN_0028fea0`): the port has no tabs, so there is nothing to mark.
+
+**Story flag 0x4837 (`FUN_002783f8`) [V]**: the app reads it from the story flag store (`Store::story`, `Session::all`,
+read when the third row opens). The baseline leaves flags clear, so by default none of this shows: the lists are as
+before. With it set:
+- page 0xb lists the rewards not reached too (already ported, 24.3), now with the hidden texts above;
+- page 10 lists every material, those never handed over with their name as question marks and a 0 (`FUN_0028f9a8`,
+  count `FUN_0028ffc8(1)`); page 0x17 is unchanged;
+- the lists of page 9's rows 0, 1 and 2 (`FUN_00290058`) hold entries with the flag 0x80 (`synth::HIDDEN`, `entries_all`):
+  Creations every entry not made (the higher rank's, odd, only of a recipe that has one), Free Development a recipe of
+  set 1..3 and Recipes a recipe item (kind 0) that is not learned and not made. `FUN_00288fc0` shows such an entry as its
+  item's name in question marks, dimmed (`FUN_0028f468(1)`), with no number and no tag, and never marks it seen; a confirm
+  is refused (`FUN_00291b58` finds no recipe for it).
+Not ported: the category tabs of `FUN_0028aaa8`, which also test the flag (the port has no tab grid). Test
+`story_flag_4837_lists_what_the_player_cannot_have_yet_and_never_opens_it`; the screenshot of page 0xb with the flag
+(`KH2_STATE` with `"story_flags": [18487]`) shows nine rows, the unreached ones dim with an icon and question marks, and
+the screenshot of page 10 shows the materials never handed over as question marks with a 0.
+
+**List geometry [V in part]**. The row builder of pages 0xb and 10 (`FUN_0028b470`) places row k's plate widget (group 0x62)
+at `(0, k * +0x1c)` of the window widget, and its second text and the NEW tag at the group's x (`FUN_00138ed0(widget, +0x10,
++0x14)`) from it, both texts at the size the group holds in +0x18 (0xf when 0). On the disc (read by
+`the_disc_reward_texts_notices_and_list_extents`, which asserts them) group 0x62 has x 270, y 0, size 13, +0x1c 23: so the
+rows are 23 apart (the port used 24), the second text starts 270 to the right of the first and the NEW tag ends there
+(quad x -39..1), and the text is 13 pixels tall. Port: `reward_metrics` reads them from the file and page 0xb uses them.
+The buy list's group 0x60 (x 177, size 15, +0x1c 23, +0x20 228) and group 0x6e (x 175, size 16, +0x1c 26, +0x20 28) hold the
+same kind of record for the other widgets. Not found: the window widget's own origin on the screen
+(`FUN_0029b600(window, 0x7537, ..., 0x67, 0x68, 0)` with groups whose records hold x 460, y 123; `FUN_0029ba00` parents it;
+no layout layer carries a position, all are at 0,0; the widget classes `FUN_00296aa8`, `FUN_00299e38`, `FUN_00299878` set
+the rest at run time), so the port keeps its own first row (70, 120), the title and the hand. The shop pages 1 and 4 keep
+the port's pitch and columns for the same reason (their rows come from the generic list widget, not a row builder with
+readable offsets).
+
+Decompile index (WP-SH4):
+
+| address | what |
+|---|---|
+| 0x28a1b8, 0x29bb48, 0x191660, 0x191820, 0x191870, 0x191a30, 0x1a1f40, 0x1a1ee0, 0x2553c0, 0x255368 | the second column of a reward row |
+| 0x291140, 0x291628, 0x2910b0, 0x2879e8, 0x287950, 0x28e980 | the marks +0x134 / +0x13c and the notices |
+| 0x28f9a8, 0x28ffc8, 0x28f490, 0x28f698, 0x28fea0, 0x28f468, 0x2887c8 | pages 10 and 0x17 |
+| 0x290058, 0x288fc0, 0x28aaa8, 0x2783f8 | story flag 0x4837 |
+| 0x28b470, 0x285e10, 0x237618, 0x237638, 0x237658, 0x237678, 0x237698, 0x138ed0, 0x29b6c0, 0x29ba00 | the row geometry |
+| data 0x382640, 0x382660, 0x380a60, 0x3809d0, 0x3828b8, 0x382628, 0x382600 | kind texts, icons, type tables, the mask string, notices, plate groups |
+
+Gaps (WP-SH4): the window origin of the list pages (above); `FUN_0028e980`'s window class (0x7546) and its colour and
+placement, which the port draws as a text window; the second text's clip width (`FUN_00296d10` sets +6..+0xc of the list);
+`FUN_00191a30`'s handling of a text with more variables than texts (the port drops the extra variable).
 
 ## 25. The battle report: menu kind 0xe (WP-JT4)
 

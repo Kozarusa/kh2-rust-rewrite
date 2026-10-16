@@ -113,10 +113,13 @@ pub(crate) struct Other {
 
 /// A call one object makes on another object (host 1.148, 1.28, 1.70, 1.71 with a handle that is not its own),
 /// carried out by `enemy_ai::ai_remote` on the object that owns the handle.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Remote {
     /// `set_position` (FUN_0016a618): centimetres, the app's space.
     Position(Vec3),
+    /// Host 1.8 `set_mode` on the other object's context (FUN_00186db0 on its mode machine at +0x300): the mode it is to
+    /// switch to, taken by its script at the start of its next tick (`Obj::modes_asked`).
+    Mode(String),
     Hide,
     SetFlag(i32),
     ClearFlag(i32),
@@ -275,6 +278,9 @@ pub(crate) struct Obj {
     pub(crate) creates: Vec<(u32, u32)>,
     /// Calls this tick made on other objects, in order.
     pub(crate) remote: Vec<(u32, Remote)>,
+    /// Modes the object that made this one asked for (host 1.8 on this object's context), switched to by its script at the
+    /// start of its next tick (`enemy_ai::ai_update`).
+    pub(crate) modes_asked: Vec<String>,
     /// The other scripted objects as they stood at the start of the tick.
     pub(crate) others: Arc<HashMap<u32, Other>>,
 }
@@ -330,6 +336,7 @@ impl Obj {
             next_serial: 0,
             creates: Vec::new(),
             remote: Vec::new(),
+            modes_asked: Vec::new(),
             others: Arc::default(),
         }
     }
@@ -352,6 +359,16 @@ impl Obj {
             Remote::Position(p) if *h == handle => Some(*p),
             _ => None,
         }).unwrap_or(Vec3::ZERO)
+    }
+
+    /// Host 1.8 on the context of another object this one can call (a made one, `knows`): queued to be carried out on it
+    /// (`enemy_ai::ai_remote`). False for a handle that is this object's own or unknown.
+    pub(crate) fn ask_mode(&mut self, target: u32, name: &str) -> bool {
+        if target == self.handle || !self.knows(target) {
+            return false;
+        }
+        self.remote.push((target, Remote::Mode(name.to_string())));
+        true
     }
 
     /// Host 1.0: makes an object of `00objentry` id `object`. Its handle is the next serial's (the serial counts up
@@ -530,6 +547,21 @@ mod tests {
         assert_eq!(o.made_at(a), Vec3::new(4.0, 5.0, 6.0), "the last point");
         assert_eq!(o.made_at(b), Vec3::ZERO);
         assert_eq!(handle_of_serial(0x1001), handle_of_serial(1), "the handles wrap after 0x1000 objects");
+    }
+
+    /// Host 1.8 on the context of an object this one made (WP-EN4): queued for that object with the mode's name; on this
+    /// object itself or on a handle nobody knows nothing is queued. `ai_remote` hands the queue to the owner, whose
+    /// `modes_asked` the script takes at the start of its tick.
+    #[test]
+    fn a_mode_asked_of_a_made_object_is_queued_for_it() {
+        let mut o = Obj::new(handle_of_serial(5));
+        o.next_serial = 7;
+        let a = o.create(0x6bf);
+        assert!(o.ask_mode(a, "appear"));
+        assert_eq!(o.remote, vec![(a, Remote::Mode("appear".to_string()))]);
+        assert!(!o.ask_mode(o.handle, "leave"), "its own context is the runtime's plain 1.8");
+        assert!(!o.ask_mode(handle_of_serial(99), "leave"), "an object nobody knows");
+        assert_eq!(o.remote.len(), 1);
     }
 
     #[test]

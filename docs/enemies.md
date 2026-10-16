@@ -236,8 +236,10 @@ host. What it does in the original beyond that (its attacks and what the `appear
 
 Ported (`enemy_obj.rs`, `enemy_host.rs`, `enemy.rs::spawn_created`, `enemy_ai.rs::ai_remote`): 1.0 for the objentry ids of the
 app's enemy kinds (`ObjTable::kinds`), 1.148, and 1.28 / 1.70 / 1.71 / 1.15 / 1.94 / 1.98 on another object of the app, applied at the
-end of the tick (calls on an object not yet built wait up to 3 ticks). Not ported: 1.8 on an object an enemy made (only the
-summon scripts do that, summon.rs), objects of kinds the app does not have.
+end of the tick (calls on an object not yet built wait up to 3 ticks). 1.8 on an object an enemy made (WP-EN4): `Obj::ask_mode`
+queues `Remote::Mode`, `ai_remote` hands it to the object's `Obj::modes_asked` and its script takes it at the start of its next tick
+(the game switches it at once, FUN_00186db0); only unit-tested (`a_mode_asked_of_a_made_object_is_queued_for_it`), no enemy of the app
+was seen making the call. Not ported: objects of kinds the app does not have, the host 6.58 queue for another object.
 
 **Overlapping bodies.** `enemy::separate` pushed two bodies on one point both along +X, so they drifted together for ever
 (M_EX850 made on M_EX940's point left the arena at 44 cm per tick and fell: the "moves 44 cm per tick against 15 in the script" of

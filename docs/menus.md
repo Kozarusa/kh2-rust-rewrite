@@ -2226,14 +2226,15 @@ Not ported: the category tabs of `FUN_0028aaa8`, which also test the flag (the p
 (`KH2_STATE` with `"story_flags": [18487]`) shows nine rows, the unreached ones dim with an icon and question marks, and
 the screenshot of page 10 shows the materials never handed over as question marks with a 0.
 
-**List geometry [V in part]**. The row builder of pages 0xb and 10 (`FUN_0028b470`) places row k's plate widget (group 0x62)
+**List geometry [V in part]**. The row builder of page 0xb (`FUN_0028b470`, called from `FUN_0028aa40`, which pages 10 and 0x17 call too) places row k's plate widget (group 0x62)
 at `(0, k * +0x1c)` of the window widget, and its second text and the NEW tag at the group's x (`FUN_00138ed0(widget, +0x10,
 +0x14)`) from it, both texts at the size the group holds in +0x18 (0xf when 0). On the disc (read by
 `the_disc_reward_texts_notices_and_list_extents`, which asserts them) group 0x62 has x 270, y 0, size 13, +0x1c 23: so the
 rows are 23 apart (the port used 24), the second text starts 270 to the right of the first and the NEW tag ends there
 (quad x -39..1), and the text is 13 pixels tall. Port: `reward_metrics` reads them from the file and page 0xb uses them.
-The buy list's group 0x60 (x 177, size 15, +0x1c 23, +0x20 228) and group 0x6e (x 175, size 16, +0x1c 26, +0x20 28) hold the
-same kind of record for the other widgets. Not found: the window widget's own origin on the screen
+Pages 10 and 0x17 then rebuild their rows in `FUN_0028f9a8` from group 0x60 (x 177, size 15, +0x1c 23, +0x20 228: two
+columns of nine, page 10) and group 0x6e (x 175, size 16, +0x1c 26, +0x20 28: page 0x17), so page 10 shares page 0xb's pitch 23 and
+page 0x17 has 26; the port applies these pitches (`group_pitch`) to its single column and not the grid's second column. Not found: the window widget's own origin on the screen
 (`FUN_0029b600(window, 0x7537, ..., 0x67, 0x68, 0)` with groups whose records hold x 460, y 123; `FUN_0029ba00` parents it;
 no layout layer carries a position, all are at 0,0; the widget classes `FUN_00296aa8`, `FUN_00299e38`, `FUN_00299878` set
 the rest at run time), so the port keeps its own first row (70, 120), the title and the hand. The shop pages 1 and 4 keep

@@ -34,6 +34,7 @@ mod album_page;
 mod chars;
 mod games;
 mod games_page;
+mod kills;
 mod lists;
 mod marks;
 mod root_page;
@@ -1146,6 +1147,8 @@ pub struct JournalPlugin;
 impl Plugin for JournalPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Journal>()
+            .add_systems(Startup, kills::load_neo)
+            .add_systems(Update, kills::count_defeats)
             .add_systems(PreUpdate, input.before(crate::menu::input).after(bevy::input::InputSystems).after(crate::harness::Keys))
             .add_systems(Update, tick.before(crate::schedule::Frame::Popups));
     }

@@ -184,6 +184,13 @@ pub mod ai {
         pub kid_serial: u32,
         /// The objects made so far and still there (the handles host 1.94 calls valid), and those made this tick.
         pub kids: Vec<u32>,
+        /// Host 1.18 on this object (link_start): the parent it follows.
+        pub link: Option<Link>,
+        /// The effect instances host 10.53 registered (`register_effect`): the list of the object the call names (the summon's
+        /// object for Chicken Little's child), kept with the script that made the call.
+        pub effect_list: Vec<u32>,
+        /// Host 1.277 was called on the player this tick (applied after the script ran).
+        pub revive: bool,
     }
 
     /// A call a summon's script makes on an object it made with host 1.0 (the object exists a tick later: the calls wait
@@ -244,8 +251,54 @@ pub mod ai {
                 kid_serial: 0,
                 kids: Vec::new(),
                 scripted: Default::default(),
+                link: None,
+                effect_list: Vec::new(),
+                revive: false,
             }
         }
+    }
+
+    /// The link host 1.18 made (FUN_001beb90): this object's parent (+0x570) and the two halfwords it stores (+0x574, +0x576).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Link {
+        pub parent: u32,
+        pub kind: u16,
+        pub flags: u16,
+    }
+
+    impl Link {
+        /// Where the linked object stands this tick when its parent is the player. FUN_001beb90 zeroes the offset vector
+        /// +0x540 (0, 0, 0, 1) and, with bit 1 of +0x576 clear, the facing +0x550; FUN_0016b698(.., 3) gives the object the
+        /// link mover, and FUN_0016b960 reads its pose from the block at +0x70 while linked. The block's later writers were
+        /// not read: [inferred] the pose is the parent's origin with the parent's facing (the cleared offsets), and an
+        /// object whose bit 1 is set keeps its own facing. `None` for a parent that is not the player (the app has no
+        /// other pose to follow).
+        pub fn pose(&self, player_pos: bevy::prelude::Vec3, player_yaw: f32, own_yaw: f32) -> Option<(bevy::prelude::Vec3, f32)> {
+            (self.parent == crate::enemy_obj::PLAYER).then(|| (player_pos, if self.flags & 2 == 0 { player_yaw } else { own_yaw }))
+        }
+    }
+
+    /// Host 10.53 (FUN_002f74c0 -> FUN_0010c5b8, FUN_00136388): the list at an object's +0xb5c holds up to 0x20
+    /// (instance, generation) pairs. FUN_00136388 first drops an entry of the same instance (FUN_00136430), then, when the
+    /// list is full, the oldest (FUN_00136430 on the first entry's instance after FUN_00136250 compacted it), and appends.
+    /// A zero handle is ignored. The generation (FUN_001d9cf8) is not kept: a handle names one instance for its life here.
+    pub fn register_effect(list: &mut Vec<u32>, effect: u32) {
+        if effect == 0 {
+            return;
+        }
+        list.retain(|&e| e != effect);
+        if list.len() >= 0x20 {
+            list.remove(0);
+        }
+        list.push(effect);
+    }
+
+    /// Host 6.49 (FUN_002ee7d8 -> FUN_0019b088): an object is occupied when its +0x518 bit 0 is set (the actor stop,
+    /// FUN_0016bea0), or FUN_0019af28 (its +0x588 bits 4 and 0x40 clear and the summon state is 1: the arrival), or its
+    /// +0x108 bit 0x400, or the manager at DAT_0036f6a4 holds an entry (FUN_002c5680). `stopped`, `flag_400` and
+    /// `manager` are not modelled in the app and read clear; `bits_clear` is [inferred] true for the summon objects.
+    pub fn object_occupied(summon_state: u8, bits_clear: bool, stopped: bool, flag_400: bool, manager: bool) -> bool {
+        stopped || (bits_clear && summon_state == 1) || flag_400 || manager
     }
 
     /// What FUN_00117708 compares the object argument with: the AI's own object and the player
@@ -1964,6 +2017,11 @@ struct SummonEnv {
     /// The `00objentry` ids host 1.0 can make for the summon scripts: the second object a `sumn` row preloads (Tinker Bell
     /// for Peter Pan) and the `SpawnObject1..4` of the summon's own objentry row (Chicken Little's 2098).
     kid_ids: Vec<u32>,
+    /// The summon state (`DAT_01d5e368`, FUN_001c6918): 1 while the summon arrives.
+    summon_state: u8,
+    /// The summon's own object: the `sumn` row's Entity1 (an `00objentry` id) and the script handle of the object (host 1.114
+    /// finds it by that id: Chicken Little's child binds to him with 1736).
+    main: Option<(u32, u32)>,
 }
 
 impl SummonEnv {
@@ -2047,6 +2105,37 @@ impl SummonHost<'_, '_> {
                 }
                 _ => (Value::None, St::Stub, "set_position without a vector"),
             },
+            // 1.277 (0x172030 -> FUN_00178df0): the player's revive: FUN_00178d80 clears the dead bit (+0x7f8 bit 4) and gives
+            // back his normal mover, FUN_001d4a50 resets his flags, and his HP method (+0x78) adds his full HP (the word at
+            // his status block +4). The app sets his HP to the maximum after the tick (`objects`).
+            (1, 277) if a(0) == crate::enemy_obj::PLAYER => {
+                self.ai.revive = true;
+                (Value::None, St::Approx, "HP to the maximum and the stand-up of `sora.rs`; the game's flags and mover resets (FUN_00178d80, FUN_001d4a50) are not modelled")
+            }
+            // 1.18 link_start (0x170dd8 -> FUN_001beb90(child, parent, +0x574, +0x576)) with this object as the child and the
+            // player as the parent (Tinker Bell's `appear`: halfwords 0x4002 and 0). The object's parent becomes the player
+            // (+0x570), its offset and facing are cleared and it gets the link mover (FUN_0016b698(.., 3)); `objects` places it
+            // at the player every tick from then on (`ai::Link::pose`). The routine and argument (the last two arguments, a
+            // callback registered on the link record) are not carried out.
+            (1, 18) if a(0) == me && a(1) == crate::enemy_obj::PLAYER => {
+                self.ai.link = Some(ai::Link { parent: a(1), kind: a(2) as u16, flags: a(3) as u16 });
+                (Value::None, St::Approx, "the object follows the player's origin with his facing [inferred from the cleared offsets, the link mover's own update was not read]; the link's routine is not run")
+            }
+            // 10.53 (0x2f74c0 -> FUN_0010c5b8(object), FUN_00136388(list, effect)): the effect instance is entered in the effect
+            // list at the object's +0xb5c (made on first use, FUN_00135ff8).
+            (10, 53) => {
+                ai::register_effect(&mut self.ai.effect_list, a(1));
+                (Value::None, St::Approx, "the instance is kept in the list of the script that called; the list's readers (the object's end) were not read")
+            }
+            // 10.54 (0x2f74f8 -> FUN_001364d0): the instance is in the list 10.53 fills.
+            (10, 54) => (Value::Bool(self.ai.effect_list.contains(&a(1))), St::Approx, "the list is the calling script's own (see 10.53)"),
+            // 6.49 (0x2ee7d8 -> FUN_0019b088): the object named is occupied (see `ai::object_occupied`). Chicken Little's child
+            // asks it of each enemy its object walk (2.4) hands out; the answer does not depend on which object it is here (the
+            // bits and flags of the other conditions are not modelled), only on the summon state.
+            (6, 49) => {
+                let v = ai::object_occupied(self.env.summon_state, true, false, false, false);
+                (Value::Bool(v), St::Approx, "true while the summon state is 1 (FUN_0019af28); the actor stop bit (+0x518), the object's +0x108 bit 0x400 and the manager at 0x36f6a4 read clear")
+            }
             // 1.94 obj_valid of an object the script made.
             (1, 94) if self.ai.kids.contains(&a(0)) => (Value::Bool(true), St::Approx, "an object made by host 1.0 is in the object list"),
             // 1.165 offer_command (0x1734a8): Stitch's main thread offers Ohana (519) in slot 2 while the
@@ -2371,6 +2460,13 @@ impl kh2_bdx::Host for SummonHost<'_, '_> {
         }
         // The queries on the enemies the object walk (2.4) handed out: their position and reaction.
         match c {
+            // 1.114 bind_object (0x171d10 -> FUN_0016b078(id)): the object whose id is `id`. Chicken Little's child (P_EX360) binds
+            // to the object of the `sumn` row's Entity1 (1736, his own), the one object of the summon the app has.
+            Call::FindObject { by: kh2_bdx::host::ObjectKey::Entity, value } if self.env.main.is_some_and(|(id, _)| id as i32 == *value) => {
+                let v = kh2_bdx::Value::Handle(self.env.main.map_or(0, |(_, h)| h));
+                self.record(c, &v, crate::enemy_host::St::Impl, "");
+                return v;
+            }
             Call::Position { obj } if self.env.enemy(*obj).is_some() => {
                 let v = kh2_bdx::Value::Vec(self.env.enemy(*obj).map_or([0.0; 4], |e| to_game(e.pos)));
                 self.record(c, &v, crate::enemy_host::St::Approx, "the enemy's root position");
@@ -3222,6 +3318,19 @@ fn kid_object_ids(rows: &[t::Sumn], objs: &[t::Objentry], index: u8) -> Vec<u32>
     std::iter::once(row.entity2).chain(named.into_iter().map(u32::from)).filter(|&i| i != 0).collect()
 }
 
+/// Whether the knock-out starts Tinker Bell's revive: Peter Pan is out with byte 7 set (`ready`, FUN_001c69b0), the player lies
+/// down (`State::Down`) with no HP.
+fn revive_due(ready: bool, down: bool, hp: i32) -> bool {
+    ready && down && hp <= 0
+}
+
+/// The summon's own object as host 1.114 finds it: the Entity1 of its `sumn` row (`index` is 1-based, 0 for none) with the
+/// script handle of the object in the summon slot (`None` while there is none).
+fn main_object(rows: &[t::Sumn], index: u8, handle: Option<u32>) -> Option<(u32, u32)> {
+    let row = (index != 0).then(|| rows.get(index as usize - 1)).flatten()?;
+    Some((row.entity1 as u32, handle?))
+}
+
 /// The summon objects' scripts (run every tick through the enemy host, as the party's in
 /// `friend_ai.rs`), their fades and their end.
 #[allow(clippy::too_many_arguments)]
@@ -3244,6 +3353,21 @@ fn objects(
     let paired = HashMap::new();
     // Host 1.0: the objects the summon's rows name (Peter Pan's second object, `SpawnObject1..4` of the summon's own row).
     let kid_ids = kid_object_ids(&data.rows, &data.objs, sm.index);
+    // Tinker Bell's revive (FUN_001cec00 -> FUN_001ad8a8 -> FUN_001adeb8): Peter Pan is out with byte 7 set and the player is
+    // knocked out. FUN_001c6a10 clears byte 7, Tinker Bell (objentry 0x4f4, the row's Entity2) is made at the player and her
+    // mode `reraise` is set (the string at 0x37b880); her script raises the player (host 1.277). The game's revive sequence
+    // (the type-2 fade of FUN_001ad378) is not run: the app's knock-out has no game-over screen either.
+    if revive_due(tinker_ready(&sm, &data), matches!(s.state, State::Down), s.hp)
+        && let Some(id) = kid_ids.first().copied()
+    {
+        sm.extra = 0;
+        sm.kid_serial += 1;
+        let handle = SELF_BASE + (KID_BASE + sm.kid_serial) * OBJ_SIZE as u32;
+        sm.kid_makes.push((handle, id));
+        sm.kid_ops.push((handle, ai::KidOp::Position(s.motor.pos), 0));
+        sm.kid_ops.push((handle, ai::KidOp::Mode("reraise".to_string()), 0));
+        info!("summon: the player is knocked out with Tinker Bell ready (FUN_001c69b0): byte 7 cleared (FUN_001c6a10), Tinker Bell (objentry {id}) made at him in mode \"reraise\" (FUN_001adeb8)");
+    }
     // The calls the scripts made on the objects they made, last tick: carried out now that those objects exist (a call
     // for an object not built yet waits up to `KID_PATIENCE` ticks).
     let summon_out = sm.slots.iter().all(Option::is_none);
@@ -3336,6 +3460,8 @@ fn objects(
         recent: s.lock.or(s.target).and_then(|e| views.iter().find(|v| v.entity == e)).map(|v| v.handle),
         scripted: data.scripted.as_ref().map(|d| d.0),
         kid_ids,
+        summon_state: sm.state,
+        main: main_object(&data.rows, sm.index, q.iter().find(|(_, _, so)| !so.kid).map(|(_, _, so)| so.obj.handle)),
     };
     let camera = cam.iter().next();
     // FUN_00118068 / FUN_00118110's targets: valid enemies (FUN_00112ac0: alive, hittable) not out of view
@@ -3483,6 +3609,21 @@ fn objects(
         sm.kid_ops.extend(ai.remote.drain(..).map(|(h, op)| (h, op, 0)));
         if let Some((before, after)) = ai.apply_heal(&mut s.hp) {
             info!("summon: {tag} healed the player (host 1.155): HP {before} -> {after}");
+        }
+        // Host 1.277 (Tinker Bell's `reraise`): the player is raised with full HP.
+        if std::mem::take(&mut ai.revive) {
+            info!("summon: {tag} revived the player (host 1.277, FUN_00178df0): HP {} -> {}", s.hp, s.stats.max_hp);
+            s.hp = s.stats.max_hp;
+            if matches!(s.state, State::Down) {
+                // The app's own stand-up after a knock-out (`sora.rs`, `State::Down`).
+                s.invuln = 120.0;
+                s.state = State::Hurt;
+                let pstate = if battle.active() { kh2_anim::PlayerState::BattleWeapon } else { kh2_anim::PlayerState::FieldNoWeapon };
+                if let Ok(mut b) = anims.get_mut(s.body) {
+                    let slot = b.rig.mset.slot(kh2_anim::id::DAMAGE_BLOW_RECOV, pstate);
+                    b.restart(slot, false, 6.0);
+                }
+            }
         }
         let now = rt.current_mode();
         if now != *mode {
@@ -3835,6 +3976,17 @@ fn objects(
                 );
             }
         }
+        // Host 1.18 made this object a child of the player (Tinker Bell's `appear`): it stands where the link puts it, after
+        // the class's own steering.
+        if let Some(link) = ai.link
+            && let Some((pos, yaw)) = link.pose(s.motor.pos, s.motor.yaw, obj.motor.yaw)
+        {
+            if h.log && (obj.motor.pos - pos).length() > 50.0 {
+                info!("summon: {tag} linked to the player (host 1.18, kind {:#x}, flags {}): placed at {:.0?}", link.kind, link.flags, pos);
+            }
+            obj.motor.pos = pos;
+            obj.motor.yaw = yaw;
+        }
         // The script's attack objects and effects (the members' FUN_0018c2d8 pass and effect starts, as friend_ai).
         {
             let model = so_model.as_str();
@@ -4136,6 +4288,69 @@ mod tests {
         assert_eq!(kid_object_ids(&rows, &objs, 4), vec![1268]);
         assert_eq!(kid_object_ids(&rows, &objs, 1), vec![2098]);
         assert!(kid_object_ids(&rows, &objs, 2).is_empty() && kid_object_ids(&rows, &objs, 3).is_empty() && kid_object_ids(&rows, &objs, 0).is_empty());
+    }
+
+    /// Host 1.114 on Chicken Little's child: the `sumn` row of index 1 names his own object (Entity1 1736), found by that id
+    /// while he is in his slot; no summon (index 0), a row past the table, or no object in a slot find nothing.
+    #[test]
+    fn host_1_114_finds_the_summons_own_object_by_the_rows_entity() {
+        let Some(mut a) = archive() else { return };
+        let rows = kh2_tables::load::<t::Sumn>(&mut a, &t::SUMN).expect("sumn").rows;
+        assert_eq!(main_object(&rows, 1, Some(0x4242)), Some((1736, 0x4242)));
+        assert_eq!(main_object(&rows, 1, None), None);
+        assert_eq!(main_object(&rows, 0, Some(0x4242)), None);
+        assert_eq!(main_object(&rows, 9, Some(0x4242)), None);
+    }
+
+    /// Host 1.18 with the player as the parent (Tinker Bell's `appear`, halfwords 0x4002 and 0): the object stands at the
+    /// player with his facing; with bit 1 of the second halfword (FUN_001beb90 keeps the facing) it keeps its own; a parent
+    /// that is not the player gives no pose.
+    #[test]
+    fn a_link_to_the_player_places_the_object_at_him() {
+        let link = ai::Link { parent: crate::enemy_obj::PLAYER, kind: 0x4002, flags: 0 };
+        let (p, yaw) = link.pose(Vec3::new(10.0, 20.0, 30.0), 1.5, 0.25).expect("pose");
+        assert_eq!((p, yaw), (Vec3::new(10.0, 20.0, 30.0), 1.5));
+        let keep = ai::Link { flags: 2, ..link };
+        assert_eq!(keep.pose(Vec3::ONE, 1.5, 0.25), Some((Vec3::ONE, 0.25)));
+        let other = ai::Link { parent: 0x1234, ..link };
+        assert_eq!(other.pose(Vec3::ONE, 1.5, 0.25), None);
+    }
+
+    /// Host 10.53: entering an instance twice leaves one entry (FUN_00136430 drops the old one), a zero handle is ignored,
+    /// and a full list (0x20) loses its oldest entry.
+    #[test]
+    fn effect_list_registration_follows_fun_00136388() {
+        let mut l = Vec::new();
+        ai::register_effect(&mut l, 0);
+        assert!(l.is_empty());
+        ai::register_effect(&mut l, 7);
+        ai::register_effect(&mut l, 8);
+        ai::register_effect(&mut l, 7);
+        assert_eq!(l, vec![8, 7]);
+        let mut full: Vec<u32> = (1..=0x20).collect();
+        ai::register_effect(&mut full, 99);
+        assert_eq!((full.len(), full[0], full[0x1f]), (0x20, 2, 99));
+    }
+
+    /// Host 6.49: occupied during the arrival (summon state 1) and not after, whichever of the other three conditions
+    /// (actor stop bit, +0x108 bit 0x400, the manager at 0x36f6a4) holds.
+    #[test]
+    fn host_6_49_is_occupied_in_the_arrival_only() {
+        assert!(ai::object_occupied(1, true, false, false, false));
+        assert!(!ai::object_occupied(2, true, false, false, false));
+        assert!(!ai::object_occupied(0, true, false, false, false));
+        assert!(!ai::object_occupied(1, false, false, false, false), "FUN_0019af28 needs +0x588 bits 4 and 0x40 clear");
+        assert!(ai::object_occupied(2, true, true, false, false) && ai::object_occupied(2, true, false, true, false) && ai::object_occupied(2, true, false, false, true));
+    }
+
+    /// Tinker Bell's revive starts when she is ready (FUN_001c69b0: Peter Pan out, byte 7 set) and the player lies down with no
+    /// HP; not while he still stands, still has HP, or when she is not ready (byte 7 cleared by FUN_001c6a10 after one use).
+    #[test]
+    fn tinker_bells_revive_needs_ready_and_a_knocked_out_player() {
+        assert!(revive_due(true, true, 0));
+        assert!(!revive_due(true, false, 0), "he is not down yet");
+        assert!(!revive_due(true, true, 1), "he has HP");
+        assert!(!revive_due(false, true, 0), "byte 7 is clear or another summon is out");
     }
 
     fn elf(a: &mut kh2_archive::Archive) -> Vec<u8> {

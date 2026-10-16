@@ -191,6 +191,8 @@ pub mod ai {
         pub effect_list: Vec<u32>,
         /// Host 1.277 was called on the player this tick (applied after the script ran).
         pub revive: bool,
+        /// The link host 1.102 (or a second 1.18) broke this tick: the routine it registered is run after the script's tick.
+        pub link_broken: Option<Link>,
     }
 
     /// A call a summon's script makes on an object it made with host 1.0 (the object exists a tick later: the calls wait
@@ -209,6 +211,32 @@ pub mod ai {
     }
 
     impl SummonAi {
+        /// Host 1.18 (FUN_001beb90): a link already there is broken first (FUN_001becb8, its routine runs), then the new one
+        /// is made with the halfwords and the routine and argument of the call.
+        pub fn link_start(&mut self, link: Link) {
+            self.link_end();
+            self.link = Some(link);
+        }
+
+        /// Host 1.102 (FUN_00170e38 -> FUN_001becb8) and the first step of 1.18: with a link made (FUN_001beb00 tests the
+        /// parent at +0x570) the object leaves its parent's list and the parent is cleared; the object stays where the link
+        /// put it. The link's routine is kept in `link_broken` for the tick's end. Without a link nothing happens.
+        pub fn link_end(&mut self) -> bool {
+            let Some(link) = self.link.take() else { return false };
+            if link.routine != 0 {
+                self.link_broken = Some(link);
+            }
+            true
+        }
+
+        /// Host 1.277 on the player (FUN_00178d80, FUN_001d4a50, then his HP method with his status block's word +4, the
+        /// maximum HP, as the amount): the HP method adds the amount and holds the result at the maximum, and the dead bit it
+        /// refuses on (+0x7f8 value 4) is cleared first, so a player with HP left is filled up the same way. Returns the HP
+        /// afterwards and whether he was down (the dead bit set: leaving it is the app's stand-up).
+        pub fn revive_player(hp: i32, max: i32, down: bool) -> (i32, bool) {
+            ((hp.max(0) + max).min(max), down)
+        }
+
         /// Host 1.155 on the player (FUN_00186238 -> FUN_001a0100): `amount` is added to the HP held for this tick and the
         /// result clamped to the maximum; a KO'd player (HP 0) stays as he is (`magic_rules::healed`). Returns the HP the
         /// method gives back. The HP gained is kept in `player_heal`.
@@ -254,6 +282,7 @@ pub mod ai {
                 link: None,
                 effect_list: Vec::new(),
                 revive: false,
+                link_broken: None,
             }
         }
     }
@@ -264,6 +293,10 @@ pub mod ai {
         pub parent: u32,
         pub kind: u16,
         pub flags: u16,
+        /// The routine and its argument host 1.18 registers on the link record (+0x10, +0x14; 0 for none). The link's
+        /// break (FUN_001becb8) runs the routine with the argument (FUN_0016c550).
+        pub routine: u32,
+        pub arg: u32,
     }
 
     impl Link {
@@ -2105,21 +2138,29 @@ impl SummonHost<'_, '_> {
                 }
                 _ => (Value::None, St::Stub, "set_position without a vector"),
             },
-            // 1.277 (0x172030 -> FUN_00178df0): the player's revive: FUN_00178d80 clears the dead bit (+0x7f8 bit 4) and gives
-            // back his normal mover, FUN_001d4a50 resets his flags, and his HP method (+0x78) adds his full HP (the word at
-            // his status block +4). The app sets his HP to the maximum after the tick (`objects`).
+            // 1.277 (0x172030 -> FUN_00178df0): the player's revive: FUN_00178d80 clears the dead bit (+0x7f8 value 4) and gives
+            // back his normal mover, FUN_001d4a50 sets the bits FUN_001d49c8 cleared at his death (+0x9a4 bit 0, +0xa70 bit 0, and
+            // clears +0x20 bit 0 of the object at +0xb3c), and his HP method (+0x78) adds his full HP (the word at his status block
+            // +4). The app sets his HP after the tick (`objects`); the dead bit is `State::Down` and the bits of the +0xb3c object
+            // are what `sora.rs` derives from the state (`hittable`), so leaving `State::Down` carries them.
             (1, 277) if a(0) == crate::enemy_obj::PLAYER => {
                 self.ai.revive = true;
-                (Value::None, St::Approx, "HP to the maximum and the stand-up of `sora.rs`; the game's flags and mover resets (FUN_00178d80, FUN_001d4a50) are not modelled")
+                (Value::None, St::Approx, "full HP and the stand-up of `sora.rs`; the dead bit, the mover and the +0xb3c object's bits (FUN_00178d80, FUN_001d4a50) are the app's `State::Down` and what it derives from it")
             }
-            // 1.18 link_start (0x170dd8 -> FUN_001beb90(child, parent, +0x574, +0x576)) with this object as the child and the
-            // player as the parent (Tinker Bell's `appear`: halfwords 0x4002 and 0). The object's parent becomes the player
-            // (+0x570), its offset and facing are cleared and it gets the link mover (FUN_0016b698(.., 3)); `objects` places it
-            // at the player every tick from then on (`ai::Link::pose`). The routine and argument (the last two arguments, a
-            // callback registered on the link record) are not carried out.
+            // 1.18 link_start (0x170dd8 -> FUN_001beb90(child, parent, +0x574, +0x576), then the record's +0xc / +0x10 / +0x14 when
+            // a routine is given) with this object as the child and the player as the parent (Tinker Bell's `appear`: halfwords
+            // 0x4002 and 0, no routine). The object's parent becomes the player (+0x570), its offset and facing are cleared and it
+            // gets the link mover (FUN_0016b698(.., 3)); `objects` places it at the player every tick from then on
+            // (`ai::Link::pose`). A link already made is broken first (FUN_001becb8). The routine and its argument run when the
+            // link breaks (FUN_001becb8 -> FUN_0016c550).
             (1, 18) if a(0) == me && a(1) == crate::enemy_obj::PLAYER => {
-                self.ai.link = Some(ai::Link { parent: a(1), kind: a(2) as u16, flags: a(3) as u16 });
-                (Value::None, St::Approx, "the object follows the player's origin with his facing [inferred from the cleared offsets, the link mover's own update was not read]; the link's routine is not run")
+                self.ai.link_start(ai::Link { parent: a(1), kind: a(2) as u16, flags: a(3) as u16, routine: a(4), arg: a(5) });
+                (Value::None, St::Approx, "the object follows the player's origin with his facing [inferred from the cleared offsets, the link mover's own update was not read]; the routine runs when the link breaks")
+            }
+            // 1.102 link_end (0x170e38 -> FUN_001becb8): the link of this object is undone; it stays where it stood.
+            (1, 102) if a(0) == me => {
+                let was = self.ai.link_end();
+                (Value::None, St::Approx, if was { "the link is broken and its routine runs after the tick; the facing set from the object's +0x60 / +0x68 (FUN_003003e8, FUN_0016a7f0) and the cleared +0x7f8 value 8 are not modelled" } else { "no link is made: FUN_001beb00 finds no parent and the call does nothing" })
             }
             // 10.53 (0x2f74c0 -> FUN_0010c5b8(object), FUN_00136388(list, effect)): the effect instance is entered in the effect
             // list at the object's +0xb5c (made on first use, FUN_00135ff8).
@@ -3331,6 +3372,17 @@ fn main_object(rows: &[t::Sumn], index: u8, handle: Option<u32>) -> Option<(u32,
     Some((row.entity1, handle?))
 }
 
+/// `KH2_SUMMON_KO=<seconds>`: true once, from that many seconds after the first call on, while a summon is out.
+fn ko_due(summon_out: bool) -> bool {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static SPEC: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    static DONE: AtomicBool = AtomicBool::new(false);
+    let start = *START.get_or_init(std::time::Instant::now);
+    let Some(at) = *SPEC.get_or_init(|| std::env::var("KH2_SUMMON_KO").ok()?.trim().parse().ok()) else { return false };
+    summon_out && start.elapsed().as_secs_f32() >= at && !DONE.swap(true, Ordering::Relaxed)
+}
+
 /// The summon objects' scripts (run every tick through the enemy host, as the party's in
 /// `friend_ai.rs`), their fades and their end.
 #[allow(clippy::too_many_arguments)]
@@ -3353,6 +3405,13 @@ fn objects(
     let paired = HashMap::new();
     // Host 1.0: the objects the summon's rows name (Peter Pan's second object, `SpawnObject1..4` of the summon's own row).
     let kid_ids = kid_object_ids(&data.rows, &data.objs, sm.index);
+    // `KH2_SUMMON_KO=<seconds>` (a harness aid): once, that many seconds after the start, while a summon is out, the player is
+    // knocked out (HP 0, `State::Down`) so Tinker Bell's revive can be seen without waiting for an enemy to do it.
+    if ko_due(sm.state != 0) {
+        info!("summon: KH2_SUMMON_KO: the player is knocked out (HP {} -> 0)", s.hp);
+        s.hp = 0;
+        s.enter(State::Down, None);
+    }
     // Tinker Bell's revive (FUN_001cec00 -> FUN_001ad8a8 -> FUN_001adeb8): Peter Pan is out with byte 7 set and the player is
     // knocked out. FUN_001c6a10 clears byte 7, Tinker Bell (objentry 0x4f4, the row's Entity2) is made at the player and her
     // mode `reraise` is set (the string at 0x37b880); her script raises the player (host 1.277). The game's revive sequence
@@ -3601,6 +3660,12 @@ fn objects(
             info!("summon: {tag} event 11 (Drive!: form command {cmd}): handler {}", if handled { "ran" } else { "absent" });
         }
         rt.update(&mut host);
+        // The routine of a link that broke this tick (host 1.102, or 1.18 over a link): FUN_001becb8 runs it with the
+        // argument registered by 1.18 (FUN_0016c550).
+        if let Some(link) = host.ai.link_broken.take() {
+            info!("summon: {tag} link to the player broken (FUN_001becb8): routine R{:04x} runs with argument {}", link.routine, link.arg);
+            rt.call_routine(&mut host, link.routine, &[link.arg]);
+        }
         // What the script made and asked of the objects it made (host 1.0, 1.148, 1.8, 1.28, 1.70): `act` builds them and the
         // next tick carries the calls out.
         sm.kid_serial = sm.kid_serial.max(ai.kid_serial);
@@ -3610,12 +3675,14 @@ fn objects(
         if let Some((before, after)) = ai.apply_heal(&mut s.hp) {
             info!("summon: {tag} healed the player (host 1.155): HP {before} -> {after}");
         }
-        // Host 1.277 (Tinker Bell's `reraise`): the player is raised with full HP.
+        // Host 1.277 (Tinker Bell's `reraise`): the player's HP method adds his full HP (FUN_00178df0), after the dead bit is
+        // cleared; a player who is down also stands up (the app's own stand-up after a knock-out, `sora.rs`, `State::Down`).
         if std::mem::take(&mut ai.revive) {
-            info!("summon: {tag} revived the player (host 1.277, FUN_00178df0): HP {} -> {}", s.hp, s.stats.max_hp);
-            s.hp = s.stats.max_hp;
-            if matches!(s.state, State::Down) {
-                // The app's own stand-up after a knock-out (`sora.rs`, `State::Down`).
+            let down = matches!(s.state, State::Down);
+            let (hp, down) = ai::SummonAi::revive_player(s.hp, s.stats.max_hp, down);
+            info!("summon: {tag} raised the player (host 1.277, FUN_00178df0): HP {} -> {hp}, {}", s.hp, if down { "he was down and stands up" } else { "he was not down" });
+            s.hp = hp;
+            if down {
                 s.invuln = 120.0;
                 s.state = State::Hurt;
                 let pstate = if battle.active() { kh2_anim::PlayerState::BattleWeapon } else { kh2_anim::PlayerState::FieldNoWeapon };
@@ -4307,7 +4374,7 @@ mod tests {
     /// that is not the player gives no pose.
     #[test]
     fn a_link_to_the_player_places_the_object_at_him() {
-        let link = ai::Link { parent: crate::enemy_obj::PLAYER, kind: 0x4002, flags: 0 };
+        let link = ai::Link { parent: crate::enemy_obj::PLAYER, kind: 0x4002, flags: 0, routine: 0, arg: 0 };
         let (p, yaw) = link.pose(Vec3::new(10.0, 20.0, 30.0), 1.5, 0.25).expect("pose");
         assert_eq!((p, yaw), (Vec3::new(10.0, 20.0, 30.0), 1.5));
         let keep = ai::Link { flags: 2, ..link };
@@ -4351,6 +4418,39 @@ mod tests {
         assert!(!revive_due(true, false, 0), "he is not down yet");
         assert!(!revive_due(true, true, 1), "he has HP");
         assert!(!revive_due(false, true, 0), "byte 7 is clear or another summon is out");
+    }
+
+    /// Host 1.18 stores the routine and argument it is given; host 1.102 (and a second 1.18) breaks the link and leaves the
+    /// routine to run with that argument (FUN_001becb8 -> FUN_0016c550); a link without a routine breaks without a call; 1.102
+    /// without a link does nothing (FUN_001beb00).
+    #[test]
+    fn a_link_break_hands_back_its_routine_and_argument() {
+        let mut ai = ai::SummonAi::default();
+        assert!(!ai.link_end(), "no link, nothing to break");
+        let with = ai::Link { parent: crate::enemy_obj::PLAYER, kind: 0x4002, flags: 0, routine: 0x0a96, arg: 7 };
+        ai.link_start(with);
+        assert_eq!(ai.link, Some(with));
+        assert!(ai.link_broken.is_none());
+        assert!(ai.link_end());
+        assert_eq!((ai.link, ai.link_broken), (None, Some(with)), "the link is gone and its routine is left to run");
+        ai.link_broken = None;
+        ai.link_start(ai::Link { routine: 0, arg: 0, ..with });
+        assert!(ai.link_end());
+        assert_eq!((ai.link, ai.link_broken), (None, None), "no routine registered");
+        ai.link_start(with);
+        let second = ai::Link { kind: 1, ..with };
+        ai.link_start(second);
+        assert_eq!((ai.link, ai.link_broken), (Some(second), Some(with)), "a second link_start breaks the first, running its routine");
+    }
+
+    /// Host 1.277: the HP method adds the maximum and holds the result at it, so a player who is down (HP 0) and one with HP
+    /// left both end at the maximum; only the one who is down stands up.
+    #[test]
+    fn host_1_277_fills_the_players_hp_and_stands_up_only_a_downed_player() {
+        assert_eq!(ai::SummonAi::revive_player(0, 120, true), (120, true));
+        assert_eq!(ai::SummonAi::revive_player(35, 120, false), (120, false));
+        assert_eq!(ai::SummonAi::revive_player(-4, 120, true), (120, true), "a negative HP counts as 0");
+        assert_eq!(ai::SummonAi::revive_player(120, 120, false), (120, false));
     }
 
     fn elf(a: &mut kh2_archive::Archive) -> Vec<u8> {

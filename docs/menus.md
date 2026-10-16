@@ -622,7 +622,7 @@ it); at 4:3 nothing moves. The group is judged as a whole so the two halves neve
 carried sides. The rounded cap pieces and everything mid-canvas stay (no group of them reaches an edge of its axis). Looked at: 1280x720,
 1024x768 and `KH2_WINDOW=1600x600` (tt03, `KH2_NO_ENEMIES=1 KH2_KEYS=6:Enter,8:Enter,9.5:Enter`, `KH2_SHOT_AT=11`).
 
-Bars of pieces (WP-JH1, user report 2026-10-16, `local/reports/journal-help-bar-2026-10-16.png`): the journal's help line is a bar of
+Bars of pieces (WP-JH1, user report 2026-10-16, `local/reports/journal-help-bar-2026-10-16.png`): the journal's help line is a bar of Reviewer finding (2026-10-16): the user's picture is a transient of the journal page 2 open animation (`KH2_SHOT_AT` 10.3 and 10.45 with keys `7:Enter,8:Down,8.2:Down,8.4:Down,8.6:Down,9.2:J,9.8:Down`), present at every window size tried (1280x720 up to 3440x1440, 1000x1000), not a wide-window break; the steady state was fine before. After the fix the transient frame shows one continuous bar at every size. The cause stays [inferred]; no original address was read.
 quads in the layer group of the page frame (group 41, `FUN_00278468` draws the text on object group 0x7b): a left cap (box 47..61 x
 387..409 at rest, picture), a flat body (61..488, texture flat along x), a right cap (488..502) and Jiminy's icon 5 units left of the left cap
 (15.8..41.8 x 388..419, bobbing). `picture_shifts` judged each touching picture group alone: at a wide window the icon (its left side

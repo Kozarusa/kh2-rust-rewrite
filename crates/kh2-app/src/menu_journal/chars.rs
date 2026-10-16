@@ -17,6 +17,9 @@ pub struct Face {
 /// The fields of a character record (entry 3, 0x24 bytes) the page reads.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CharRec {
+    /// +0: the family the record belongs to: a journal world 0..0xe, 0x10 the Character Links, 0x11 the Heartless, 0x12 the Nobodies
+    /// (`FUN_002aa528` lists the records of the page's family; `FUN_002ab7d8` names the face file by it).
+    pub family: u8,
     /// +1: the picture in the face file (`FUN_002af800`: `FUN_0023c478(list, +1)`).
     pub face: u8,
     /// +2: the frame style 0..5 (`FUN_002ae3e8`: the group table at 0x382f30 by style).
@@ -31,9 +34,13 @@ pub struct CharRec {
     pub desc: u16,
     /// +0xa: the sub-title's message (0 for none).
     pub sub: u16,
-    /// +0xc: the 3D model of the character's page (`FUN_002abf60`); not drawn by the port.
+    /// +0xc: the 3D model of the character's page (`FUN_002abf60`); for a record with flag 0x800 it is also the `00objentry` id of the
+    /// enemy whose NeoStatus keys the defeated-enemy counter (`FUN_002a1f78`: `FUN_0016e208(+0xc)` -> `+0x4c`).
     pub model: u16,
 }
+
+/// The flag of the enemy records: the page shows the counter row and the record exists once the enemy has been defeated.
+pub const ENEMY_FLAG: u16 = 0x800;
 
 /// Parses `jiminy.bar` entry 3 ("char").
 pub fn parse_chars(d: &[u8]) -> Vec<CharRec> {
@@ -41,7 +48,7 @@ pub fn parse_chars(d: &[u8]) -> Vec<CharRec> {
         .iter()
         .map(|r| {
             let u16_at = |o: usize| u16::from_le_bytes([r[o], r[o + 1]]);
-            CharRec { face: r[1], style: r[2], bit: u16_at(4), name: u16_at(6), flags: u16_at(0x10), desc: u16_at(8), sub: u16_at(0xa), model: u16_at(0xc) }
+            CharRec { family: r[0], face: r[1], style: r[2], bit: u16_at(4), name: u16_at(6), flags: u16_at(0x10), desc: u16_at(8), sub: u16_at(0xa), model: u16_at(0xc) }
         })
         .collect()
 }
@@ -146,6 +153,17 @@ pub fn present(d: &[u8], groups: &[Group], flag: &dyn Fn(u16) -> bool, item: &dy
         }
     }
     out
+}
+
+/// The enemy records that exist (`FUN_002a1c30`, its first loop): those with flag 0x800 whose defeated-enemy count (`count` of the
+/// record) is not 0. Returns the record indices.
+pub fn enemies_present(recs: &[CharRec], count: &dyn Fn(&CharRec) -> u32) -> Vec<usize> {
+    recs.iter().enumerate().filter(|(_, r)| r.flags & ENEMY_FLAG != 0 && count(r) > 0).map(|(i, _)| i).collect()
+}
+
+/// `FUN_002aa528`: the records of `family` the list page shows: those that exist, or all of them with the all-worlds flag.
+pub fn family_list(recs: &[CharRec], family: u8, exists: &dyn Fn(usize) -> bool, all: bool) -> Vec<usize> {
+    recs.iter().enumerate().filter(|(i, r)| r.family == family && (exists(*i) || all)).map(|(i, _)| i).collect()
 }
 
 /// `FUN_002bad98`: the family is complete when every one of its groups exists (a family without groups counts as complete).
@@ -405,5 +423,28 @@ mod tests {
         assert_eq!(neighbour(&list, 1, &lone, true), 1, "the only one stays");
         assert_eq!(neighbour(&list, 1, &lone, false), 1);
         assert_eq!(neighbour(&list, 0, &|_| false, true), 0);
+    }
+
+    fn rec(family: u8, flags: u16, model: u16) -> CharRec {
+        CharRec { family, flags, model, ..CharRec::default() }
+    }
+
+    #[test]
+    fn an_enemy_record_exists_once_the_enemy_was_defeated() {
+        let recs = [rec(0x11, ENEMY_FLAG, 5), rec(0x11, ENEMY_FLAG, 6), rec(0x11, 0, 7), rec(0, 0, 8), rec(0x12, ENEMY_FLAG | 4, 9)];
+        let count = |r: &CharRec| u32::from(r.model == 6 || r.model == 7 || r.model == 9);
+        // Model 7 has a count but no counter flag: only records with flag 0x800 are made to exist by their count.
+        assert_eq!(enemies_present(&recs, &count), vec![1, 4]);
+        assert_eq!(enemies_present(&recs, &|_| 0), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn a_family_list_has_the_records_that_exist_or_all_with_the_all_worlds_flag() {
+        let recs = [rec(0x11, 0, 0), rec(0x12, 0, 0), rec(0x11, 0, 0), rec(0x11, 0, 0), rec(0, 0, 0)];
+        let there = |i: usize| i == 0 || i == 3 || i == 4;
+        assert_eq!(family_list(&recs, 0x11, &there, false), vec![0, 3]);
+        assert_eq!(family_list(&recs, 0x11, &there, true), vec![0, 2, 3]);
+        assert_eq!(family_list(&recs, 0x12, &there, false), Vec::<usize>::new());
+        assert_eq!(family_list(&recs, 0, &there, false), vec![4]);
     }
 }

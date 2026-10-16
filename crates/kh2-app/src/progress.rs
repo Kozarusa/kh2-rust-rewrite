@@ -329,6 +329,10 @@ pub struct Progress {
     /// for 3000 .. 3011; `FUN_00187dc8` finds the slot, `FUN_00187e08` adds 1 up to 9999 once story flag 0x8d0 is set, `FUN_00187e68`
     /// reads it for the journal's counter row). Only the counters the app has raised are kept. Saved in the slot files (key `enemy_kills`).
     enemy_kills: std::collections::BTreeMap<u16, u32>,
+    /// The reaction commands' use counts (the u16 array at `0x3410b0`, indexed by the command row's `ReactionCount` slot, `FUN_001b7168`; the
+    /// journal's enemy page shows them, capped at 999). Only the slots the app has raised are kept. Saved in the slot files (key
+    /// `reaction_uses`). Nothing writes it in the app yet (`reaction_cmd::ReactionUses` keeps the live counts): a state file fills it.
+    reaction_uses: std::collections::BTreeMap<u16, u16>,
 }
 
 /// The synthesis record at save `+0x3728` (`FUN_002906c0` answers its address). Bit sets are kept as u64 (the
@@ -471,7 +475,7 @@ impl Progress {
         let mut block = vec![0u8; off::LEN];
         let n = bytes.len().min(off::LEN);
         block[..n].copy_from_slice(&bytes[..n]);
-        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT], story: StoryHandle::default(), new_seen: Vec::new(), record_bits: Vec::new(), moogle: Moogle::default(), shop_seen: [0; 4], shop_visits: 0, journal_seen: Default::default(), minigames: Default::default(), enemy_kills: Default::default() }
+        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT], story: StoryHandle::default(), new_seen: Vec::new(), record_bits: Vec::new(), moogle: Moogle::default(), shop_seen: [0; 4], shop_visits: 0, journal_seen: Default::default(), minigames: Default::default(), enemy_kills: Default::default(), reaction_uses: Default::default() }
     }
 
     // --- story flags ------------------------------------------------------------------------
@@ -867,6 +871,25 @@ impl Progress {
         }
         *n += 1;
         true
+    }
+
+    /// The use count of the reaction-command slot `slot` (`0x3410b0 + 2 * slot`).
+    pub fn reaction_use(&self, slot: u16) -> u16 {
+        self.reaction_uses.get(&slot).copied().unwrap_or(0)
+    }
+
+    /// Sets a reaction-command use count (capped at 999 as the journal shows it; 0 removes it).
+    pub fn set_reaction_use(&mut self, slot: u16, n: u16) {
+        if n == 0 {
+            self.reaction_uses.remove(&slot);
+        } else {
+            self.reaction_uses.insert(slot, n.min(999));
+        }
+    }
+
+    /// Every raised reaction-command use count as (slot, count).
+    pub fn reaction_uses_all(&self) -> impl Iterator<Item = (u16, u16)> + '_ {
+        self.reaction_uses.iter().map(|(&i, &c)| (i, c))
     }
 
     /// Every raised defeated-enemy counter as (NeoStatus id, count).
@@ -1462,6 +1485,7 @@ impl Progress {
             journal_seen: Default::default(),
             minigames: Default::default(),
             enemy_kills: Default::default(),
+            reaction_uses: Default::default(),
         };
         p.init_party();
         p.apply_plrp(plrp, 0);
@@ -1835,6 +1859,15 @@ impl Progress {
                         self.set_enemy_defeats(int(i, "enemy_kills")?.clamp(0, 0xffff) as u32, int(c, "enemy_kills")?.clamp(0, 9999) as u32);
                     }
                 }
+                // The reaction commands' use counts: `"reaction_uses": [[slot, count], ..]` (`0x3410b0`, `FUN_001b7168`).
+                "reaction_uses" => {
+                    let Json::Arr(a) = v else { return Err("reaction_uses: expected an array of [slot, count] pairs".into()) };
+                    for p in a {
+                        let Json::Arr(p) = p else { return Err("reaction_uses: expected [slot, count] pairs".into()) };
+                        let (Some(i), Some(c)) = (p.first(), p.get(1)) else { return Err("reaction_uses: expected [slot, count] pairs".into()) };
+                        self.set_reaction_use(int(i, "reaction_uses")?.clamp(0, 0xffff) as u16, int(c, "reaction_uses")?.clamp(0, 999) as u16);
+                    }
+                }
                 "shop_visits" => {
                     for n in list(v, "shop_visits")? {
                         self.set_shop_visit(n as u8);
@@ -1915,6 +1948,7 @@ impl Progress {
                     self.journal_seen.clear();
                     self.minigames.clear();
                     self.enemy_kills.clear();
+                    self.reaction_uses.clear();
                     self.record_bits.clear();
                 }
                 "new_seen" => {
@@ -2343,6 +2377,7 @@ impl Progress {
         let locks: Vec<u16> = st.locks.iter().flat_map(|l| [l[0], l[1]]).collect();
         let games = format!("[{}]", self.minigames.iter().map(|(i, (s, v))| format!("[{i}, {s}, {v}]")).collect::<Vec<_>>().join(", "));
         let kills = format!("[{}]", self.enemy_kills.iter().map(|(i, c)| format!("[{i}, {c}]")).collect::<Vec<_>>().join(", "));
+        let react = format!("[{}]", self.reaction_uses.iter().map(|(i, c)| format!("[{i}, {c}]")).collect::<Vec<_>>().join(", "));
         let seen_pairs = format!("[{}]", self.journal_seen.iter().map(|(c, e)| format!("[{c}, {e}]")).collect::<Vec<_>>().join(", "));
         vec![
             (
@@ -2367,6 +2402,7 @@ impl Progress {
             ("journal_seen", seen_pairs),
             ("minigames", games),
             ("enemy_kills", kills),
+            ("reaction_uses", react),
             ("story_raw", format!("{{\"words\": \"{}\", \"programs\": \"{}\", \"locks\": {}}}", hex(&words), hex(&st.programs), nums(locks))),
             ("world_points", nums(st.world_points())),
         ]
@@ -2883,6 +2919,24 @@ mod tests {
         r.apply_json("{\"enemy_kills\": [[1002, 7], [5, 3]]}").expect("the key loads");
         assert_eq!((r.enemy_defeats(1002), r.enemy_defeats(5)), (7, 0));
         assert!(r.apply_json("{\"enemy_kills\": [3]}").is_err());
+    }
+
+    /// WP-MN15: the reaction commands' use counts go through a slot file and the `reaction_uses` key, capped at 999.
+    #[test]
+    fn reaction_use_counts_are_saved() {
+        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        assert_eq!(p.reaction_use(41), 0);
+        p.set_reaction_use(41, 5000);
+        p.set_reaction_use(2, 7);
+        p.set_reaction_use(3, 9);
+        p.set_reaction_use(3, 0);
+        assert_eq!((p.reaction_use(41), p.reaction_use(2), p.reaction_use(3)), (999, 7, 0));
+        let text = p.slot_json(&SlotInfo { level: 1, munny: 0, play_seconds: 0, area: "tt04".into() });
+        let mut q = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        q.set_reaction_use(9, 1);
+        q.apply_json(&text).expect("loads");
+        assert_eq!((q.reaction_use(41), q.reaction_use(2), q.reaction_use(9)), (999, 7, 0), "the block key reset the old count");
+        assert!(q.apply_json("{\"reaction_uses\": [1]}").is_err());
     }
 
     /// WP-PRG1: the moogle's record, the shops' bits, the record bits, the story arrays and the world points go through a

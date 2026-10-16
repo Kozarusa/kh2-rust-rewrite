@@ -22,16 +22,28 @@ pub struct Counted;
 #[derive(Resource, Default)]
 pub struct NeoByObject(pub HashMap<u32, u16>);
 
-pub fn load_neo(mut commands: Commands, disc: Option<Res<Disc>>) {
+/// `NeoStatus` by `00objentry` id, read from the disc.
+pub fn read_neo(disc: &Disc) -> HashMap<u32, u16> {
     use kh2_tables::tables as t;
-    let mut map = HashMap::new();
-    if let Some(disc) = disc
-        && let Ok(mut a) = disc.0.lock()
-        && let Ok(d) = kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY)
-    {
-        map = d.rows.into_iter().map(|r| (r.object_id as u32, r.neo_status)).collect();
-    }
-    commands.insert_resource(NeoByObject(map));
+    let Ok(mut a) = disc.0.lock() else { return HashMap::new() };
+    kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).map(|d| d.rows.into_iter().map(|r| (r.object_id as u32, r.neo_status)).collect()).unwrap_or_default()
+}
+
+/// The `rcct` rows (five reaction commands per enemy, `FUN_001d0258`).
+pub fn read_rcct(disc: &Disc) -> Vec<kh2_tables::player::Rcct> {
+    let Ok(mut a) = disc.0.lock() else { return Vec::new() };
+    kh2_tables::player::load_rcct(&mut a).map(|r| r.1).unwrap_or_default()
+}
+
+/// Each command's name message (`+8`) and use-counter slot (`ReactionCount`, `+0x26`) by command id (`FUN_001b6f48`).
+pub fn read_cmds(disc: &Disc) -> HashMap<u16, super::enemies::CmdInfo> {
+    use kh2_tables::tables as t;
+    let Ok(mut a) = disc.0.lock() else { return HashMap::new() };
+    kh2_tables::load::<t::Cmd>(&mut a, &t::CMD).map(|d| d.rows.into_iter().map(|c| (c.id, (c.message_id, c.reaction_count))).collect()).unwrap_or_default()
+}
+
+pub fn load_neo(mut commands: Commands, disc: Option<Res<Disc>>) {
+    commands.insert_resource(NeoByObject(disc.map(|d| read_neo(&d)).unwrap_or_default()));
 }
 
 /// The id the counter of a defeated enemy is raised under: its objentry's NeoStatus (`FUN_001699a8`).

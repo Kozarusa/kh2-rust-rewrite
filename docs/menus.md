@@ -634,8 +634,7 @@ translated, so the bar and its text keep the canvas place [inferred: the HD rema
 watermark (pictures only) still moves. Looked at: page 0xe at 1280x720, 1920x1080, 2560x1080, 1600x900, 1024x768, 1000x1000, 800x1000 and
 3440x1440 (one continuous bar with the icon at its left end at every size), pages 0, 0xc (also 0xd), 9 and 0xf at 2560x1080 and 1000x1000.
 Harness: `KH2_JOURNAL_QUADS=late` repeats the node dump every 240 frames, `KH2_JOURNAL_QUADS2=1` adds each quad's rest and drawn corner.
-Seen and left: at 2560x1080 the list pages' left sheet (page 0xd) ends at x 239 of 2000 with a lighter lip under it (the sheet's left edge
-is not carried to the window's edge as the rail is); at 1000x1000 the right side of the camp's area name is clipped (the Mickey rule of 9.1).
+Seen and left: (the list pages' left sheet is carried to the window edge since WP-JR1); at 1000x1000 the right side of the camp's area name is clipped (the Mickey rule of 9.1).
 
 ## 10. Status as built (WP-M2)
 
@@ -1736,8 +1735,18 @@ rules with tests; the rest is node glue), `chars.rs` (the record family, `enemie
 - **Gaps (WP-MN15).** The writer of the limit counters (the limit object's `+0xa0` and where the app ends a limit); the party members' defeat counters
   (ids 0x404 / 0x405, `FUN_001c46a8`) have no reader here; the hook that calls `Progress::count_defeat` is a system in `kills.rs` reading the
   `Enemy` components, not the defeat method; the reaction use counts are not written by `reaction_cmd.rs`; the 3D model and the model pages (0x10,
-  0x13, 0x16) of a character or an enemy; the page-turn sound and wipe; the held-pad auto-repeat of the list cursors; the exact right edge of the
-  right-aligned values (the tag of a limit row overlaps the end of its text on screen).
+  0x13, 0x16) of a character or an enemy; the page-turn sound and wipe (WP-JR1: `FUN_002779f8` has no sound, see above); the held-pad auto-repeat of the list cursors; the exact right edge of the
+  right-aligned values (WP-JR1 moved the text off the limit row's tag).
+- **Journal polish (WP-JR1).** (1) A limit row's NEW tag (`FUN_002b2130`: the tag object is made with group 2, hung from the value object and never
+  moved; `FUN_002b30d8` only switches its group to 0x39 / 0x3a) is centred on the value's origin, which is the right end of the right-aligned text,
+  so it covered the last 23 units of "Hits" [V: the quads of group 0x39 span x -23 .. 23]. The original's right edge of the text is not recoverable from
+  the code [GAP]; the port ends the text at the tag's left edge (`name_list::tag_left_reach`, test `a_limit_value_ends_where_its_tag_begins`) [inferred]:
+  the tag cannot sit right of the text because the scroll bar starts 12 units after its right edge. (2) The list layer's left sheet (page 0xd and the other
+  list pages, group 0x58, box -148 .. 501) is carried to the window's left edge by `stretch_quads` like the frame's rail (`name_list::carry_sheet`)
+  [inferred]; looked at 2560x1080, 1920x1080, 1600x900 and 1280x720 (page 0xd): the sheet reaches the window edge at the wide sizes and nothing moved at 1280x720.
+  The right page keeps its place. (3) The page-turn sound and wipe: `FUN_002779f8(dir, mode)` only switches the header object's group (table 0x381fa8 / 0x381fb0,
+  `FUN_00138e78` or `FUN_0029b600` with a group, then writes +0x17c); it plays no sound. Nothing was ported: the sound the handlers play on a direction (if any) is
+  not in that function [GAP: callers' sound calls not traced], and the header's second / third group animation is not in the port.
 - **Decompile index (MN15).** `FUN_00184a30`, `FUN_001acfe0`, `FUN_001b02f0`, `FUN_001c46a8`, `FUN_00187dc8`, `FUN_00187e08`, `FUN_00187e68`,
   `FUN_00180850`, `FUN_001802e0`, `FUN_001699a8`, `FUN_0016e208`, `FUN_002a1f78`, `FUN_002a1c30`, `FUN_002a1c10`, `FUN_002a1fc0`, `FUN_002a1ff8`,
   `FUN_002a20e0`, `FUN_002a8958`, `FUN_002a8a38`, `FUN_002a8e90`, `FUN_002a8948`, `FUN_002a8568`, `FUN_002a84d8`, `FUN_002a91a0`, `FUN_002a9590`,

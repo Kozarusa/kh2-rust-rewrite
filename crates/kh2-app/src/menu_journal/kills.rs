@@ -64,25 +64,66 @@ pub fn count_one(progress: &mut Progress, neo: &NeoByObject, object_id: u32) -> 
     progress.count_defeat(id).then(|| (id, progress.enemy_defeats(id)))
 }
 
-/// The enemies not counted yet whose component changed this frame.
-type Uncounted = (Without<Counted>, Changed<Enemy>);
+/// What the counting system reads of a defeatable object: the app's `Enemy`, or a stand-in in the tests.
+pub trait Defeatable: Component {
+    fn hp(&self) -> i32;
+    fn object_id(&self) -> u32;
+    fn label(&self) -> &str;
+}
 
-pub fn count_defeats(
+impl Defeatable for Enemy {
+    fn hp(&self) -> i32 {
+        self.hp
+    }
+    fn object_id(&self) -> u32 {
+        self.object_id
+    }
+    fn label(&self) -> &str {
+        self.name
+    }
+}
+
+/// The objects not counted yet whose component changed this frame.
+type Uncounted<T> = (Without<Counted>, Changed<T>);
+/// The counted objects whose component changed this frame (a revive shows here).
+type CountedAgain<T> = (With<Counted>, Changed<T>);
+
+/// The counting system for `T`. A defeat counts once; an object whose HP is above 0 again (a revive) is armed again, so its next
+/// defeat counts too. The original runs `FUN_00184a30` on every entry into the defeat mode (`FUN_001acfe0`, the only direct
+/// caller found), so each defeat of a reviving enemy counts [inferred: a revive re-enters it]. The app has no enemy that revives
+/// yet, so this arm is covered by the test only.
+pub fn count_generic<T: Defeatable>(
     mut commands: Commands,
     progress: Option<ResMut<Progress>>,
     neo: Option<Res<NeoByObject>>,
-    enemies: Query<(Entity, &Enemy), Uncounted>,
+    fresh: Query<(Entity, &T), Uncounted<T>>,
+    counted: Query<(Entity, &T), CountedAgain<T>>,
 ) {
+    for (e, t) in &counted {
+        if t.hp() > 0 {
+            commands.entity(e).remove::<Counted>();
+        }
+    }
     let (Some(mut progress), Some(neo)) = (progress, neo) else { return };
-    for (e, enemy) in &enemies {
-        if enemy.hp > 0 {
+    for (e, t) in &fresh {
+        if t.hp() > 0 {
             continue;
         }
         commands.entity(e).insert(Counted);
-        if let Some((id, n)) = count_one(&mut progress, &neo, enemy.object_id) {
-            info!("journal: {} defeated: counter {id} is now {n} (FUN_00184a30 -> FUN_00187e08)", enemy.name);
+        if let Some((id, n)) = count_one(&mut progress, &neo, t.object_id()) {
+            info!("journal: {} defeated: counter {id} is now {n} (FUN_00184a30 -> FUN_00187e08)", t.label());
         }
     }
+}
+
+pub fn count_defeats(
+    commands: Commands,
+    progress: Option<ResMut<Progress>>,
+    neo: Option<Res<NeoByObject>>,
+    fresh: Query<(Entity, &Enemy), Uncounted<Enemy>>,
+    counted: Query<(Entity, &Enemy), CountedAgain<Enemy>>,
+) {
+    count_generic::<Enemy>(commands, progress, neo, fresh, counted);
 }
 
 #[cfg(test)]
@@ -112,5 +153,76 @@ mod tests {
         assert_eq!(count_one(&mut p, &neo, 0x10), Some((1000, 2)));
         assert_eq!(count_one(&mut p, &neo, 0x12), Some((3005, 1)));
         assert_eq!((count_one(&mut p, &neo, 0x11), count_one(&mut p, &neo, 0)), (None, None));
+    }
+
+    #[derive(Component)]
+    struct Stub {
+        hp: i32,
+        object: u32,
+    }
+
+    impl Defeatable for Stub {
+        fn hp(&self) -> i32 {
+            self.hp
+        }
+        fn object_id(&self) -> u32 {
+            self.object
+        }
+        fn label(&self) -> &str {
+            "stub"
+        }
+    }
+
+    fn app(flag: bool) -> App {
+        let mut p = Progress::from_block(&[], std::sync::Arc::new(crate::progress::ItemIndex::default()));
+        if flag {
+            p.story().set(0x8d0);
+        }
+        let mut app = App::new();
+        app.insert_resource(p).insert_resource(neo()).add_systems(Update, count_generic::<Stub>);
+        app
+    }
+
+    fn hits(app: &App, id: u32) -> u32 {
+        app.world().resource::<Progress>().enemy_defeats(id)
+    }
+
+    /// A defeated enemy counts once however many frames pass; an enemy with HP left counts nothing; the counter needs flag 0x8d0.
+    #[test]
+    fn the_system_counts_a_defeat_once_and_only_with_the_flag() {
+        let mut app = app(true);
+        let dead = app.world_mut().spawn(Stub { hp: 0, object: 0x10 }).id();
+        app.world_mut().spawn(Stub { hp: 5, object: 0x10 });
+        app.world_mut().spawn(Stub { hp: 0, object: 0x99 });
+        app.update();
+        app.update();
+        app.world_mut().get_mut::<Stub>(dead).unwrap().hp = 0;
+        app.update();
+        assert_eq!(hits(&app, 1000), 1);
+        assert!(app.world().entity(dead).contains::<Counted>());
+
+        let mut off = app_without_flag();
+        off.world_mut().spawn(Stub { hp: 0, object: 0x10 });
+        off.update();
+        assert_eq!(hits(&off, 1000), 0, "flag 0x8d0 is clear");
+    }
+
+    fn app_without_flag() -> App {
+        app(false)
+    }
+
+    /// A revived enemy is armed again and its next defeat counts as well.
+    #[test]
+    fn a_revived_enemy_counts_each_defeat() {
+        let mut app = app(true);
+        let e = app.world_mut().spawn(Stub { hp: 0, object: 0x10 }).id();
+        app.update();
+        assert_eq!(hits(&app, 1000), 1);
+        app.world_mut().get_mut::<Stub>(e).unwrap().hp = 30;
+        app.update();
+        assert!(!app.world().entity(e).contains::<Counted>());
+        app.world_mut().get_mut::<Stub>(e).unwrap().hp = 0;
+        app.update();
+        assert_eq!(hits(&app, 1000), 2);
     }
 }

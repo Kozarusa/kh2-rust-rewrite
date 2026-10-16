@@ -331,7 +331,7 @@ pub struct Progress {
     enemy_kills: std::collections::BTreeMap<u16, u32>,
     /// The reaction commands' use counts (the u16 array at `0x3410b0`, indexed by the command row's `ReactionCount` slot, `FUN_001b7168`; the
     /// journal's enemy page shows them, capped at 999). Only the slots the app has raised are kept. Saved in the slot files (key
-    /// `reaction_uses`). Nothing writes it in the app yet (`reaction_cmd::ReactionUses` keeps the live counts): a state file fills it.
+    /// `reaction_uses`). `reaction_cmd::bump_use` writes it on every accepted reaction; a state file also fills it.
     reaction_uses: std::collections::BTreeMap<u16, u16>,
     /// The limits' best counts (the u16 array at `0x3414b0`, indexed by the `limt` row's `Id`, `FUN_001d2590`; `FUN_001d25b0` raises a slot to
     /// the value it is given, never lowers it). A limit is "used" (listed on the journal's limit page) once its slot is above 0. Only the

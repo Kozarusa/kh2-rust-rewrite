@@ -258,6 +258,16 @@ pub struct ReactionOffer(pub Option<Active>);
 #[derive(Resource, Default)]
 pub struct ReactionUses(pub HashMap<u16, u16>);
 
+/// Counts one use of the counter slot (`FUN_00177c20`) in the live map and in the saved game (`Progress::set_reaction_use`,
+/// the journal's enemy pages), both capped at 999.
+pub fn bump_use(uses: &mut ReactionUses, progress: Option<&mut crate::progress::Progress>, slot: u16) {
+    let n = uses.0.entry(slot).or_insert(0);
+    *n = (*n + 1).min(999);
+    if let Some(p) = progress {
+        p.set_reaction_use(slot, *n);
+    }
+}
+
 /// Sent when the player accepts an offer. `enemy_ai.rs` delivers it to the target's script as event
 /// 0xb (event 11) with the arguments (player, `cmd`, target record {target object, `pos`, 0, -1, 0}).
 #[derive(Message, Clone, Copy, Debug)]
@@ -560,6 +570,7 @@ fn accept(
     mut player_cmds: MessageWriter<PlayerReactionCmd>,
     mut talk: Option<ResMut<crate::npc::Talk>>,
     mut shop: Option<ResMut<crate::menu_shop::ShopRequest>>,
+    mut progress: Option<ResMut<crate::progress::Progress>>,
 ) {
     if !std::mem::take(&mut press.0) {
         return;
@@ -629,8 +640,7 @@ fn accept(
     }
     // FUN_00177c20: the use counter first (it is counted even when nothing follows).
     if c.reaction_count != 0 {
-        let n = uses.0.entry(c.reaction_count).or_insert(0);
-        *n = (*n + 1).min(999);
+        bump_use(&mut uses, progress.as_deref_mut(), c.reaction_count);
     }
     // FUN_001b80e8: the target must still be in the object list.
     if targets.get(a.from).is_err() {
@@ -681,6 +691,23 @@ mod tests {
         let o = offers_at(&t, 12.0);
         assert_eq!(o, vec![Offer { cmd: 0x1c8, pos: 3 }, Offer { cmd: 5, pos: 0 }]);
         assert!(offers_at(&t, 31.0).is_empty());
+    }
+
+    /// An accepted reaction counts in the live map and in the saved game, and the saved count survives a slot file.
+    #[test]
+    fn a_use_is_counted_live_and_saved() {
+        use crate::progress::{ItemIndex, Progress, SlotInfo};
+        let mut p = Progress::from_block(&[], std::sync::Arc::new(ItemIndex::default()));
+        let mut uses = ReactionUses::default();
+        for _ in 0..3 {
+            bump_use(&mut uses, Some(&mut p), 41);
+        }
+        bump_use(&mut uses, None, 7);
+        assert_eq!((uses.0[&41], uses.0[&7], p.reaction_use(41), p.reaction_use(7)), (3, 1, 3, 0));
+        let text = p.slot_json(&SlotInfo { level: 1, munny: 0, play_seconds: 0, area: "tt04".into() });
+        let mut q = Progress::from_block(&[], std::sync::Arc::new(ItemIndex::default()));
+        q.apply_json(&text).expect("loads");
+        assert_eq!(q.reaction_use(41), 3);
     }
 
     fn mk(flags: u32, disable: u16, dist: u16) -> CmdRow {

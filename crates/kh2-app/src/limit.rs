@@ -26,6 +26,7 @@ use kh2_tables::tables as t;
 use kh2_tables::player;
 
 use crate::assets::Disc;
+use crate::progress::Progress;
 use crate::schedule::Sim;
 use crate::sora::Sora;
 
@@ -194,6 +195,38 @@ pub struct LimitStarted {
 #[derive(Resource, Default, Debug)]
 pub struct LimitTask(pub Option<(u16, u32)>);
 
+/// The running limit's hit count: the original's gauge object at limit task `+0x68` (`FUN_001b2e08` sets its range 0..999 and
+/// raises its record marker, `+0x38` of the gauge = task `+0xa0`, to the stored best with `FUN_001d00c0`). `FUN_001cffa8` adds to
+/// the count and raises the marker to it; when the task ends `FUN_001b32d8` stores the marker with `FUN_001d25b0` under the
+/// limit's `limt` `Id`. [inferred] That the count is the limit's hit count: the callers of `FUN_001cffa8` are virtual and the
+/// limit task body is not ported, so nothing in the app adds to it yet (`KH2_LIMIT_HITS=<n>` adds `n` at a limit's start, a debug aid).
+#[derive(Resource, Default, Debug)]
+pub struct LimitHits {
+    /// The `limt` `Id` of the running limit (the best-count slot).
+    pub slot: u8,
+    /// The record marker (task `+0xa0`), at most 999.
+    pub marker: u32,
+    count: u32,
+}
+
+impl LimitHits {
+    /// A limit starts: the count is 0 and the marker starts at the saved best (`FUN_001d00c0` in `FUN_001b2e08`).
+    pub fn start(&mut self, slot: u8, best: u16) {
+        *self = LimitHits { slot, marker: u32::from(best), count: 0 };
+    }
+
+    /// `FUN_001cffa8`: adds to the count (clamped to the gauge's 0..999) and raises the marker to it.
+    pub fn add(&mut self, n: i32) {
+        self.count = (self.count as i32 + n).clamp(0, 999) as u32;
+        self.marker = self.marker.max(self.count);
+    }
+
+    /// `FUN_001b32d8` end: stores the marker as the limit's best count (`FUN_001d25b0` never lowers it).
+    pub fn finish(&self, progress: &mut Progress) {
+        progress.raise_limit_best(self.slot, self.marker as u16);
+    }
+}
+
 #[derive(Resource, Default)]
 struct Selected {
     next: usize,
@@ -236,6 +269,7 @@ impl Plugin for LimitPlugin {
             .insert_resource(LimitParty(party))
             .insert_resource(Selected { scripted: env("KH2_LIMIT").and_then(|v| v.parse().ok()), ..Default::default() })
             .init_resource::<LimitTask>()
+            .init_resource::<LimitHits>()
             .add_message::<LimitStarted>()
             .add_systems(Update, read_key)
             .add_systems(FixedUpdate, try_limit.in_set(Sim::Sora));
@@ -262,6 +296,8 @@ fn try_limit(
     mut sora: Query<&mut Sora>,
     mut out: MessageWriter<LimitStarted>,
     mut active: ResMut<LimitTask>,
+    mut hits: ResMut<LimitHits>,
+    mut progress: Option<ResMut<Progress>>,
     summon: SummonSide,
 ) {
     let (sm, drive, summon_data, mut summon_queue) = summon;
@@ -270,6 +306,10 @@ fn try_limit(
         if *left == 0 {
             info!("limit: command {cmd} ended (duration over)");
             active.0 = None;
+            if let Some(p) = progress.as_deref_mut() {
+                hits.finish(p);
+                info!("limit: best count of slot {} is now {} (FUN_001b32d8 -> FUN_001d25b0)", hits.slot, p.limit_best(hits.slot));
+            }
         }
     }
     let Ok(mut s) = sora.single_mut() else { return };
@@ -326,6 +366,10 @@ fn try_limit(
                 .unwrap_or_else(|| "(resource not found)".into());
             info!("limit: {desc} started, MP now {}; resource BAR entries {entries}; the task body is not ported", s.mp);
             active.0 = Some((command, (r.time as u32).max(1)));
+            hits.start(r.id, progress.as_deref().map_or(0, |p| p.limit_best(r.id)));
+            if let Some(n) = std::env::var("KH2_LIMIT_HITS").ok().and_then(|v| v.parse::<i32>().ok()) {
+                hits.add(n);
+            }
             out.write(LimitStarted { command, file: r.file.clone(), time: r.time });
         }
     }
@@ -334,6 +378,28 @@ fn try_limit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The record marker follows the count; the end stores it as the slot's best and never lowers a better one.
+    #[test]
+    fn the_end_of_a_limit_raises_the_slots_best() {
+        let mut p = Progress::from_block(&[], std::sync::Arc::new(crate::progress::ItemIndex::default()));
+        p.raise_limit_best(4, 6);
+        let mut h = LimitHits::default();
+        h.start(4, p.limit_best(4));
+        h.add(3);
+        h.finish(&mut p);
+        assert_eq!(p.limit_best(4), 6, "a lower count keeps the best");
+        h.start(4, p.limit_best(4));
+        h.add(5);
+        h.add(4);
+        assert_eq!(h.marker, 9);
+        h.finish(&mut p);
+        assert_eq!(p.limit_best(4), 9);
+        assert_eq!(p.limit_best(5), 0, "another slot is untouched");
+        h.start(5, 0);
+        h.add(5000);
+        assert_eq!(h.marker, 999, "the gauge ends at 999");
+    }
 
     fn row(members: [u8; 3], world: u16, cost: u8, bit: Option<u16>) -> LimitRow {
         LimitRow { id: 1, members, file: "x.bar".into(), command: 100, item: 0, world, cost, time: 10, message: 0, ability_bit: bit }

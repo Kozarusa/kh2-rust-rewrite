@@ -1863,10 +1863,11 @@ mod tests {
         assert_eq!(two.wave, 200);
         assert!(two.run(&g, |_| false).is_empty());
         assert_eq!(two.wave, 200);
-        // A wrap at 200 (header +0x23) taken on the step from 199 goes back to wave 5 and creates its member.
+        // A wrap at 200 (header +0x23) is taken on the step from 199 and goes back to wave 5, where the only entity is (its
+        // member is alive, so nothing is created): every lap of the walk ends on wave 5 again, never above 200.
         let g = group(part(200, 5, vec![(2, 5, 1)]), vec![member(0, 2, 7, 10, 5)]);
         let mut two = KindTwo { part: 0, timer: 0.0, wave: 199, killed: Vec::new() };
-        assert_eq!(two.run(&g, |_| false), [0]);
+        assert!(two.run(&g, |_| true).is_empty());
         assert_eq!(two.wave, 5);
     }
 

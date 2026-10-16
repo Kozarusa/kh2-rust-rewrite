@@ -98,8 +98,7 @@ pub fn rows(j: &Journal, scene: &MenuScene, all: bool) -> Vec<Row> {
     let msg = |id: u16| -> Vec<Token> { tokens(j, scene, id).map(|t| t.into_iter().filter(|t| *t != Token::End).collect()).unwrap_or_default() };
     (0..ROWS)
         .filter(|&i| row_on(&d.rec, i) || all)
-        .enumerate()
-        .map(|(_, i)| {
+        .map(|i| {
             let group = t.groups[usize::from(complete(d, i))];
             if !row_on(&d.rec, i) {
                 // An unlisted row with the all-worlds flag: question marks and nothing else (`uVar13 = 0x36f8`).
@@ -138,7 +137,7 @@ pub fn build(j: &mut Journal, scene: &mut MenuScene, world: i8, test: &dyn Fn(u1
         scene.nodes[n.rows[k]].label = None;
         scene.nodes[n.values[k]].label = None;
         let Some(r) = r else { continue };
-        let g = gs[k];
+        let g = gs.get(k).copied().unwrap_or_default();
         scene.nodes[n.rows[k]].off = [0.0, (k as i32 * g.unk1c) as f32];
         scene.nodes[n.rows[k]].label_anchor = Some([0.0; 2]);
         scene.set_group(n.rows[k], r.group);

@@ -2416,8 +2416,6 @@ const CHAR_PIC: [usize; 2] = [1, 2];
 const COUNTER_GROUP: usize = 0x4c;
 const COUNTER_MSG: u16 = 0x489b;
 const REACT_GROUP: usize = 0x4d;
-#[cfg(test)]
-const NAME_NOTHING: u16 = name_list::NOTHING;
 
 /// The text of a world's name for a message that holds a variable (`FUN_002a3070(world, 1)`: record +6, or +0xc once the
 /// second flag is set).
@@ -3459,7 +3457,7 @@ mod tests {
         let objs = kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).unwrap().rows;
         let mut neos = std::collections::HashSet::new();
         for (i, r) in recs.iter().enumerate().filter(|(_, r)| r.flags & chars::ENEMY_FLAG != 0) {
-            let neo = objs.iter().find(|o| o.object_id as u32 == u32::from(r.model)).map(|o| u32::from(o.neo_status));
+            let neo = objs.iter().find(|o| o.object_id == u32::from(r.model)).map(|o| u32::from(o.neo_status));
             assert!(neo.is_some_and(Progress::enemy_counter_id), "record {i}: the counter slot of {neo:?}");
             assert!(neos.insert(neo.unwrap()), "record {i}: NeoStatus {neo:?} is shared");
             assert!(matches!(r.family, 0x11 | 0x12) && has(u32::from(r.name)) && has(u32::from(r.desc)), "record {i}");

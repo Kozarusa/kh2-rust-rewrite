@@ -342,12 +342,6 @@ fn moved(j: &mut Journal, scene: &mut MenuScene, se: &mut MessageWriter<PlaySe>,
     }
 }
 
-/// The first row of the world list is the cursor row of the journal's own world (`FUN_002a8a38`); from page 0xc that is row 0.
-/// The row of the entry `id` in a page's rows, if any.
-pub fn row_of(rows: &[Row], id: usize) -> Option<usize> {
-    rows.iter().position(|r| r.id == id)
-}
-
 /// `FUN_002a1c30`: the characters that exist: those of a face group that is on, and the enemy records whose defeat count is not 0.
 pub fn exist_set(j: &Journal, test: &dyn Fn(u16) -> bool, items: &dyn Fn(u16) -> i32) -> std::collections::HashSet<usize> {
     let mut set: std::collections::HashSet<usize> = chars::present(&j.diag, &j.groups, test, items).into_iter().collect();
@@ -380,6 +374,5 @@ mod tests {
         }
         assert!(!is_list(0xf) && !is_list(0xc));
         assert_eq!((family_of(0x11, 3), family_of(0x14, 3), family_of(0xe, 3)), (0x11, 0x12, 3));
-        assert_eq!(row_of(&[Row { id: 4, ..Row::default() }, Row { id: 9, ..Row::default() }], 9), Some(1));
     }
 }

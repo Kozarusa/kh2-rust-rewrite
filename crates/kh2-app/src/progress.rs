@@ -3034,7 +3034,7 @@ mod tests {
         let before = fields.len();
         let persisted: Vec<&str> = p.persisted_fields().iter().map(|f| f.0).collect();
         fields.retain(|f| !persisted.contains(&f.0));
-        assert_eq!((persisted.len(), before - fields.len()), (8, 8), "every persisted key is in the slot file");
+        assert_eq!((persisted.len(), before - fields.len()), (11, 11), "every persisted key is in the slot file (WP-MN15 added enemy_kills, reaction_uses, limit_best)");
         let old = Progress::join_fields(&fields);
         assert!(!old.contains("moogle") && !old.contains("story_raw") && old.contains("\"block\""));
         let mut r = Progress::from_block(&[], Arc::new(ItemIndex::default()));

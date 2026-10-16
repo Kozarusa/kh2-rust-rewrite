@@ -26,7 +26,7 @@ pub struct NeoByObject(pub HashMap<u32, u16>);
 pub fn read_neo(disc: &Disc) -> HashMap<u32, u16> {
     use kh2_tables::tables as t;
     let Ok(mut a) = disc.0.lock() else { return HashMap::new() };
-    kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).map(|d| d.rows.into_iter().map(|r| (r.object_id as u32, r.neo_status)).collect()).unwrap_or_default()
+    kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).map(|d| d.rows.into_iter().map(|r| (r.object_id, r.neo_status)).collect()).unwrap_or_default()
 }
 
 /// The `rcct` rows (five reaction commands per enemy, `FUN_001d0258`).
@@ -64,11 +64,14 @@ pub fn count_one(progress: &mut Progress, neo: &NeoByObject, object_id: u32) -> 
     progress.count_defeat(id).then(|| (id, progress.enemy_defeats(id)))
 }
 
+/// The enemies not counted yet whose component changed this frame.
+type Uncounted = (Without<Counted>, Changed<Enemy>);
+
 pub fn count_defeats(
     mut commands: Commands,
     progress: Option<ResMut<Progress>>,
     neo: Option<Res<NeoByObject>>,
-    enemies: Query<(Entity, &Enemy), (Without<Counted>, Changed<Enemy>)>,
+    enemies: Query<(Entity, &Enemy), Uncounted>,
 ) {
     let (Some(mut progress), Some(neo)) = (progress, neo) else { return };
     for (e, enemy) in &enemies {

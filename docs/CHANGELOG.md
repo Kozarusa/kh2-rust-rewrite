@@ -2,6 +2,17 @@
 
 One short section per work package. "Verified" says how; nothing here was checked by watching video, and audio was listened to only where stated.
 
+## Shift 13 (2026-10-15/16)
+
+- **WP-LB1 (lib/bin split).** `kh2-app` is a library plus a thin binary; plugins sit in domain bundles in `plugins.rs`; the ability oracle test calls the real code. Verified by 917 tests. Open: none.
+- **WP-HUDFIX (embedded shader paths).** The lib split moved `embedded_asset!` to the `kh2_app` crate, so five shader lookups failed and the HUD vanished; paths now follow the crate name. Verified by a test and the idle-hud screenshot. Open: none.
+- **WP-JT3 (jump types 4 to 6).** Type 4 flag decision and record words 4 to 6 parsed; types 5 and 6 only log (no menu kind 0xe, no fade-in found). Verified by tests and harness logs. Open: menu 0xe, type 6 fade-in, party words applied.
+- **WP-EN3 (host 1.0 create_object).** Enemy and summon objects are made by host 1.0 (M_EX850, Tinker Bell, Chicken Little's child), remote calls on other objects, 1.8 on another context, the kind-6 appear ramp, a body-separation fix. Verified by tests and harness logs. Open: Tinker Bell link (1.18), P_EX360 hosts, revive Tinker Bell.
+- **WP-FX12a/b/c (shift 12 review fixes).** Customize byte bound proven, Arc tables, journal refresh on open, explicit Cat codes; Genie Drive! in the Items menu, heal and decide tests; wave counter, place_rng test, prize unload, slot validation, fader. Verified by tests. Open: chest-bit caller (no chest object in the app).
+- **WP-RX1 (reaction-34 scenario).** The offer lasts 0.13 s; the scenario pressed once per second. Docs note only; the scenario now presses every 0.05 s.
+- **WP-MN14 (journal pages).** Character page 0xf, page 0xc, Quests and Minigames pages, minigame records saved, page 0 mark for worlds below 0xf. Verified by tests and harness screenshots. Open: Roxas pages, enemy lists, Ansem reports, limits, moogle list.
+- **Drive gauge (user request).** The bar no longer slides in on a mode change (DEVIATIONS.md).
+
 ## Shift 12 (2026-10-15)
 
 - **WP-E6f (event screen fade).** `area_jump::draw_fader` draws the event's screen fade; the one full-screen node takes the stronger alpha of the jump's black and the event's fade. The tag writers behind opcode 0x4d were traced (docs/events.md); nothing is hidden by it yet. Verified by `the_event_fade_and_the_jump_fade_share_the_node`. Open: hiding the player and party, the keyhole layout of fade kind 3.

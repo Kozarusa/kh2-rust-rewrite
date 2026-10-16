@@ -935,7 +935,12 @@ impl BevyHost<'_> {
             Call::ModeFrozen { .. } => stub(Value::Bool(false), "hit stop is not implemented"),
             Call::ModeInterrupted { .. } => approx(Value::Bool(self.obj.reacting), "FUN_00186b70: the object is in a hit reaction"),
             Call::ModeMayStart { .. } => approx(Value::Bool(!self.obj.reacting), "FUN_001873d0: the object is not in hit stun"),
-            Call::RemoteSetMode { .. } => missing(Value::None, "a mode queued for another object (host 6.58) or host 1.8 on an object an enemy script made: not wired (only the summon scripts do it, summon.rs)"),
+            // Host 1.8 on the context of an object this script made (host 1.0): FUN_00186db0 on that object's mode machine.
+            // Carried out when the object runs its next tick (`enemy_ai::ai_remote` -> `Obj::modes_asked`).
+            Call::RemoteSetMode { obj, name } if self.obj.ask_mode(*obj, name) => {
+                approx(Value::None, "the mode is switched by the made object's own script at the start of its next tick (the game switches it at once)")
+            }
+            Call::RemoteSetMode { .. } => missing(Value::None, "a mode queued for another object (host 6.58) or host 1.8 on an object that is not one this script made: not wired"),
             // 4.29 (FUN_0019ebd0 -> FUN_001d6738(i)): 0 unless the manager at DAT_01d5dd20 exists (set by
             // FUN_001b9338, which the event command FUN_00180b48 runs), then word +0x114 of its entry i
             // (0x38 bytes from +0xf4, used when bit 0 of the entry's first word is set). The Struggle

@@ -531,6 +531,11 @@ fn ai_update(
             *started = true;
             rt.spawn(&mut host, handle);
         }
+        // Host 1.8 on this object by the script that made it (FUN_00186db0 on its mode machine).
+        for m in std::mem::take(&mut host.obj.modes_asked) {
+            host.trace.line(host.tag, &format!("mode {m:?} asked by the script that made this object (host 1.8)"));
+            rt.set_mode_named(&mut host, &m);
+        }
         // Death comes before the damage event: the dead mode refuses later mode switches.
         if e.hp <= 0 && !*dead_sent {
             *dead_sent = true;
@@ -789,6 +794,7 @@ fn ai_remote(mut table: ResMut<ObjTable>, mut q: Query<(&mut Transform, &mut AiB
                 o.motor.pos = p;
                 tf.translation = p * SCALE;
             }
+            Remote::Mode(m) => o.modes_asked.push(m),
             Remote::Hide => {
                 o.hidden = true;
                 o.alpha = 0.0;

@@ -191,8 +191,11 @@ pub mod ai {
         pub effect_list: Vec<u32>,
         /// Host 1.277 was called on the player this tick (applied after the script ran).
         pub revive: bool,
-        /// The link host 1.102 (or a second 1.18) broke this tick: the routine it registered is run after the script's tick.
-        pub link_broken: Option<Link>,
+        /// The links host 1.102 (or a second 1.18) broke this tick, in order, that had a routine: each routine is run after
+        /// the script's tick. The game runs it inside the break (FUN_001becb8 -> FUN_0016c550, synchronously); the app defers
+        /// it to the end of the script's update because the host cannot re-enter the runtime that is calling it [inferred
+        /// deviation: a routine that reads state the rest of the tick changes sees it a few calls later].
+        pub link_broken: Vec<Link>,
     }
 
     /// A call a summon's script makes on an object it made with host 1.0 (the object exists a tick later: the calls wait
@@ -220,11 +223,11 @@ pub mod ai {
 
         /// Host 1.102 (FUN_00170e38 -> FUN_001becb8) and the first step of 1.18: with a link made (FUN_001beb00 tests the
         /// parent at +0x570) the object leaves its parent's list and the parent is cleared; the object stays where the link
-        /// put it. The link's routine is kept in `link_broken` for the tick's end. Without a link nothing happens.
+        /// put it. The link's routine is queued in `link_broken` for the tick's end (see there). Without a link nothing happens.
         pub fn link_end(&mut self) -> bool {
             let Some(link) = self.link.take() else { return false };
             if link.routine != 0 {
-                self.link_broken = Some(link);
+                self.link_broken.push(link);
             }
             true
         }
@@ -282,7 +285,7 @@ pub mod ai {
                 link: None,
                 effect_list: Vec::new(),
                 revive: false,
-                link_broken: None,
+                link_broken: Vec::new(),
             }
         }
     }
@@ -3662,7 +3665,7 @@ fn objects(
         rt.update(&mut host);
         // The routine of a link that broke this tick (host 1.102, or 1.18 over a link): FUN_001becb8 runs it with the
         // argument registered by 1.18 (FUN_0016c550).
-        if let Some(link) = host.ai.link_broken.take() {
+        for link in std::mem::take(&mut host.ai.link_broken) {
             info!("summon: {tag} link to the player broken (FUN_001becb8): routine R{:04x} runs with argument {}", link.routine, link.arg);
             rt.call_routine(&mut host, link.routine, &[link.arg]);
         }
@@ -4430,17 +4433,54 @@ mod tests {
         let with = ai::Link { parent: crate::enemy_obj::PLAYER, kind: 0x4002, flags: 0, routine: 0x0a96, arg: 7 };
         ai.link_start(with);
         assert_eq!(ai.link, Some(with));
-        assert!(ai.link_broken.is_none());
+        assert!(ai.link_broken.is_empty());
         assert!(ai.link_end());
-        assert_eq!((ai.link, ai.link_broken), (None, Some(with)), "the link is gone and its routine is left to run");
-        ai.link_broken = None;
+        assert_eq!((ai.link, ai.link_broken.clone()), (None, vec![with]), "the link is gone and its routine is left to run");
+        ai.link_broken.clear();
         ai.link_start(ai::Link { routine: 0, arg: 0, ..with });
         assert!(ai.link_end());
-        assert_eq!((ai.link, ai.link_broken), (None, None), "no routine registered");
+        assert_eq!((ai.link, ai.link_broken.len()), (None, 0), "no routine registered");
         ai.link_start(with);
         let second = ai::Link { kind: 1, ..with };
         ai.link_start(second);
-        assert_eq!((ai.link, ai.link_broken), (Some(second), Some(with)), "a second link_start breaks the first, running its routine");
+        assert_eq!((ai.link, ai.link_broken.clone()), (Some(second), vec![with]), "a second link_start breaks the first, running its routine");
+    }
+
+    /// A routine registered with host 1.18 runs after the link breaks, with the argument registered, and its effect shows: a
+    /// two-instruction routine stores its argument in a global. Two breaks in one tick keep both routines in order.
+    #[test]
+    fn a_broken_links_routine_runs_with_its_argument() {
+        use kh2_bdx::{Program, Runtime};
+        // The routine at word 10 (after the 10-word entry table of an image with no entries): store its argument, return.
+        let code: [u16; 6] = [0x0001, 0x0000, 0x0030, 0x0000, 0x0041, 0x0000];
+        let mut b = b"summon_test     ".to_vec();
+        for v in [0x20u32, 0x200, 0x200] {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        b.extend_from_slice(&[0; 8]);
+        while (b.len() - 0x10) / 2 < 10 {
+            b.push(0);
+        }
+        for w in code.iter().chain(&[0x0089u16]) {
+            b.extend_from_slice(&w.to_le_bytes());
+        }
+        let mut rt = Runtime::new(Program::parse(&b).expect("parse"));
+        let mut host = kh2_bdx::mock::MockHost::new();
+        rt.spawn(&mut host, kh2_bdx::mock::SELF_OBJ);
+        let mut ai = ai::SummonAi::default();
+        let link = ai::Link { parent: crate::enemy_obj::PLAYER, kind: 0x4002, flags: 0, routine: 10, arg: 77 };
+        ai.link_start(link);
+        ai.link_start(ai::Link { arg: 78, ..link });
+        assert!(ai.link_end());
+        let broken = std::mem::take(&mut ai.link_broken);
+        assert_eq!(broken.iter().map(|l| l.arg).collect::<Vec<_>>(), vec![77, 78], "both breaks keep their routine, in order");
+        let word = |rt: &Runtime| u32::from_le_bytes(rt.shared.globals[0..4].try_into().unwrap());
+        assert_eq!(word(&rt), 0);
+        for l in broken {
+            rt.call_routine(&mut host, l.routine, &[l.arg]);
+        }
+        assert_eq!(word(&rt), 78, "the routine stored its argument; the later break's ran last");
+        assert!(rt.core.errors.is_empty(), "{:?}", rt.core.errors);
     }
 
     /// Host 1.277: the HP method adds the maximum and holds the result at it, so a player who is down (HP 0) and one with HP

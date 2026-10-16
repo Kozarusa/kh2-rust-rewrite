@@ -39,6 +39,7 @@ mod kills;
 mod lists;
 mod marks;
 mod name_list;
+mod report_page;
 mod root_page;
 mod treasure_page;
 
@@ -909,6 +910,8 @@ struct Nodes {
     /// Page 0xe's second plate (the chosen world's name) and its follower.
     tab2: usize,
     tab2_follow: usize,
+    /// The report page's title text.
+    report_title: usize,
     /// Page 3: the two layers, the text row and the ten line marks.
     story_lay: Vec<usize>,
     story_row: usize,
@@ -1031,7 +1034,7 @@ impl CharNodes {
 
 impl Nodes {
     fn page3(&self) -> Vec<usize> {
-        let mut v = vec![self.tab, self.tab_follow, self.tab2, self.tab2_follow, self.backdrop, self.story_row];
+        let mut v = vec![self.tab, self.tab_follow, self.tab2, self.tab2_follow, self.report_title, self.backdrop, self.story_row];
         v.extend(&self.story_lay);
         v.extend(&self.story_marks);
         v.extend(&self.scroll);
@@ -1190,8 +1193,9 @@ struct Open {
     lpos: enemies::Pos,
     lworld: u8,
     kept: Vec<(u16, enemies::Pos)>,
-    /// The report page 0x18 shows (an index into the reports).
-    rpage: Option<usize>,
+    /// The reports of the list page 0x17 and the one page 0x18 shows (`FUN_002ac900` keeps the list for `FUN_002ad998`).
+    rlist: Vec<usize>,
+    rcur: usize,
 }
 
 pub struct JournalPlugin;
@@ -1307,6 +1311,8 @@ fn load(j: &mut Journal, disc: &Disc, scene: &mut MenuScene, images: &mut Assets
     for _ in 0..STORY_LINES {
         nodes.story_marks.push(add(scene, list, tex, Some(nodes.story_lay[0])));
     }
+    // The report page's title (`FUN_002acfb8`): over the layers of the story page it shares.
+    nodes.report_title = add(scene, list, tex, Some(header));
     // The Treasures / Maps pages (`FUN_002b0e78`): before the cursor and the hints, which draw over them.
     {
         let layers = [add(scene, list, tex, Some(header)), add(scene, list, tex, Some(header))];
@@ -1404,7 +1410,7 @@ fn bar_pictures(disc: &Disc, path: &str, scene: &mut MenuScene, images: &mut Ass
         .collect()
 }
 
-fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<ButtonInput<KeyCode>>, mut se: MessageWriter<PlaySe>, mut scene: ResMut<MenuScene>) {
+fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<ButtonInput<KeyCode>>, mut se: MessageWriter<PlaySe>, mut scene: ResMut<MenuScene>, progress: Option<Res<Progress>>) {
     let confirm = keys.just_pressed(KeyCode::KeyJ);
     let cancel = keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::Backspace) || keys.just_pressed(KeyCode::KeyK);
     let start = keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter);
@@ -1456,6 +1462,11 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
     let (page, world_byte) = (o.page, o.world);
     if name_list::is_list(page) {
         name_list::input(&mut j, &mut scene, &mut menu, &mut se, key);
+        return;
+    }
+    if page == 0x18 {
+        let items = |id: u16| progress.as_ref().map_or(0, |p| i32::from(p.item_count(id)));
+        report_page::input(&mut j, &mut scene, &mut menu, &mut se, key, &items);
         return;
     }
     let act = match (page, key) {
@@ -1777,7 +1788,8 @@ fn show(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Assets
         lpos: enemies::Pos::default(),
         lworld: 0,
         kept: Vec::new(),
-        rpage: None,
+        rlist: Vec::new(),
+        rcur: 0,
     });
     build(j, scene, disc, images, page, world, test, items);
 }
@@ -1804,6 +1816,7 @@ fn build(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Asset
         9 | 10 => games_page::build(j, scene, page, world, test),
         0xc => root_page::build(j, scene, disc, images, test, items),
         0xd | 0xe | 0x11 | 0x14 | 0x17 => name_list::build(j, scene, page, test, items),
+        0x18 => report_page::build(j, scene, world),
         7 | 8 => treasure_page::build(j, scene, page, world, &treasure_page::Game { flag: test, items, opened: &|c| opened.contains(&c) }),
         4 => album_page::build(j, scene, world, test),
         5 => album_page::build_photo(j, scene, disc, images, world, test),
@@ -2027,6 +2040,7 @@ fn chrome(j: &mut Journal, scene: &mut MenuScene, page: u16) {
         7 => Some(msg::HELP_TREASURE),
         8 => Some(msg::HELP_MAP),
         p if name_list::is_list(p) => name_list::help(p),
+        0x18 => Some(report_page::HELP),
         _ => None,
     };
     scene.nodes[help].visible = help_id.is_some();
@@ -2570,7 +2584,7 @@ fn enemy_rows(j: &Journal, scene: &mut MenuScene, rec: &chars::CharRec, enemy_pa
         scene.nodes[val].visible = true;
         scene.nodes[val].off = [gr.x as f32, gr.y as f32];
         scene.set_group(val, value_group);
-        scene.nodes[val].label = label(scene, value_group, fmt(count), 1, [gr.size as f32, 0.0]);
+        scene.nodes[val].label = label(scene, value_group, fmt(count), 1, [0.0; 2]);
         scene.nodes[val].label_anchor = Some([0.0; 2]);
         info!("journal: the counter row (group {COUNTER_GROUP:#x}, FUN_002a1f78): {count} defeated");
     }
@@ -2590,7 +2604,7 @@ fn enemy_rows(j: &Journal, scene: &mut MenuScene, rec: &chars::CharRec, enemy_pa
             scene.nodes[val].visible = true;
             scene.nodes[val].off = [gr.x as f32, gr.y as f32];
             scene.set_group(val, value_group);
-            scene.nodes[val].label = label(scene, value_group, fmt(u32::from(r.count)), 1, [gr.size as f32, 0.0]);
+            scene.nodes[val].label = label(scene, value_group, fmt(u32::from(r.count)), 1, [0.0; 2]);
             scene.nodes[val].label_anchor = Some([0.0; 2]);
         }
         info!("journal: enemy page: NeoStatus {neo}, {} reaction rows {:?} (FUN_001d0258 rcct)", rows.len(), rows);

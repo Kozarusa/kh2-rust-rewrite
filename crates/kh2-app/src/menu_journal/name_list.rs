@@ -275,7 +275,8 @@ pub fn input(j: &mut Journal, scene: &mut MenuScene, menu: &mut Menu, se: &mut M
                     j.goto = Some((0xe, wb));
                 }
                 0x17 => {
-                    o.rpage = Some(row.id);
+                    o.rlist = o.lrows.iter().map(|r| r.id).collect();
+                    o.rcur = pos.at();
                     info!("journal: page 0x17 confirm on report {} -> page 0x18 (FUN_002accb8)", row.id);
                     j.goto = Some((0x18, wb));
                 }

@@ -274,7 +274,7 @@ pub mod ai {
         /// object whose bit 1 is set keeps its own facing. `None` for a parent that is not the player (the app has no
         /// other pose to follow).
         pub fn pose(&self, player_pos: bevy::prelude::Vec3, player_yaw: f32, own_yaw: f32) -> Option<(bevy::prelude::Vec3, f32)> {
-            (self.parent == crate::enemy_obj::PLAYER).then(|| (player_pos, if self.flags & 2 == 0 { player_yaw } else { own_yaw }))
+            (self.parent == crate::enemy_obj::PLAYER).then_some((player_pos, if self.flags & 2 == 0 { player_yaw } else { own_yaw }))
         }
     }
 
@@ -3328,7 +3328,7 @@ fn revive_due(ready: bool, down: bool, hp: i32) -> bool {
 /// script handle of the object in the summon slot (`None` while there is none).
 fn main_object(rows: &[t::Sumn], index: u8, handle: Option<u32>) -> Option<(u32, u32)> {
     let row = (index != 0).then(|| rows.get(index as usize - 1)).flatten()?;
-    Some((row.entity1 as u32, handle?))
+    Some((row.entity1, handle?))
 }
 
 /// The summon objects' scripts (run every tick through the enemy host, as the party's in

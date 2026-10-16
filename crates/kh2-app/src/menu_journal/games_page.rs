@@ -52,7 +52,7 @@ impl Nodes {
 pub struct Snap {
     pub bits: std::collections::HashSet<u16>,
     pub minis: std::collections::HashMap<u16, (u8, u32)>,
-    /// The moogle's first record word has a bit set (`FUN_002b47c8`), which lists page 0xc's category 9.
+    /// The moogle row of page 0xc is listed (`FUN_002b4838`: available, or a material handed over).
     pub moogle: bool,
     /// The defeated-enemy counters by NeoStatus id (`Progress::enemy_defeats_all`) and the reaction commands' use counts by
     /// counter slot (`ReactionUses`), copied when the journal opens.

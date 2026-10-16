@@ -141,8 +141,8 @@ pub fn group_exists(g: &Group, flag: &dyn Fn(u16) -> bool, item: &dyn Fn(u16) ->
     if g.kind == 2 { item(g.on) > 0 } else { flag(g.on) }
 }
 
-/// The characters that exist now (`FUN_002a1c30`, its second loop: every sub-record of every group that exists, drawn or
-/// not; the first loop's defeated-enemy bits of the records with flag 0x800 have no app data): the character indices.
+/// The characters that exist now through a face group (`FUN_002a1c30`, its second loop: every sub-record of every group that exists, drawn or
+/// not; the first loop's enemy records are `enemies_present`): the character indices.
 pub fn present(d: &[u8], groups: &[Group], flag: &dyn Fn(u16) -> bool, item: &dyn Fn(u16) -> i32) -> Vec<usize> {
     let mut out = Vec::new();
     for g in groups.iter().filter(|g| group_exists(g, flag, item)) {

@@ -1457,6 +1457,7 @@ data parts of `chars` / `album_page` are pure functions with tests; the rest is 
   the held-pad auto-repeat of the cursor moves (the port takes one step per press, wraps on every press).
   Text colour of page 2's rows (see the rule above) was left at the WP-MN10 reading.
 - **WP-MN14 status.** The character page 0xf, the Quests and Minigames pages, page 0xc and page 0's completion mark 0x9a are ported (20.10); what stays open is the 3D model, the enemy pages, the Ansem reports, limits and the moogle list.
+- **WP-MN15 status.** The text lists of page 0xc (the Character Files worlds and characters, the Heartless, the Nobodies, the Ansem reports, the limits) and the pages behind them, the enemy pages with the defeated-enemy count and the reaction rows, the moogle summary and world 0xf's mark 0x9a are ported (20.11); the defeated-enemy counters, the reaction use counts and the limit counts are saved in the slot (`docs/progress.md`). Open: the writers of the limit and reaction counts, the 3D model pages.
 - **WP-MN13 status.** Nothing in the app opens chests yet (gap, WP-FX12c): the original sets a chest's bit in `FUN_001a6910` (reached by `FUN_001a6a58` from the chest-open sequence `FUN_001a6db8`, and by `FUN_001a6a78` from the reward list of an area trigger in `FUN_001978b0`, whose only callers are `FUN_00197670` and `FUN_00197a60`), and the app has no chest object and does not run a trigger's reward list, so a chest is "found" only through a state file. Done: persistence. `Progress` keeps the opened chests (`chest_opened`, record bits from 224 on) and the journal seen set (`journal_seen`, slot key `journal_seen`); `Marks` loads it when the journal opens (`load_seen`) and the tick writes new marks back (`take_dirty`); the Treasures page marks chests found from the chest bit and a world's treasure completion needs every chest of it opened (`treasures_complete`). Not started (no decompile work done beyond reading): the character page 0xf (`FUN_002aa358` builds layer group 0x49, name 0x4a, sub-title 0x4b from `char` +0xa, a counter row 0x4c when `char` +0x10 has 0x800, scroll arrows 0x4f / 0x50, the face frame by style from 0x382ea0, the description message `char` +8 in a 6-line scissored view (`FUN_002ab678`); pages 0x12 / 0x15 add the four drop rows, so those are the enemy pages; the face is loaded through the slot cache `FUN_002a07c8`), the Quests / Minigames pages (page 9 reads entry 8 via `FUN_002b6478` / `FUN_002b6650`, page 10 entry 7 via `FUN_002b5130` / `FUN_002b52c0`; ten rows of group 0x68 / 0x6a with a child 2, world header rows group 100, values from the minigame records at `0x341620 + 8 * n` (`FUN_001d36e8`: byte 0 state, +4 score) and `FUN_002b6d40` for quests; both lists are empty without the all-worlds flag since the app keeps neither record), page 0xc, Roxas's pages, page 0's mark 0x9a.
 
 - **Decompile index (MN12).** `FUN_00299878`, `FUN_00299bf0`, `FUN_0029bdd0`, `FUN_0029bfa0`, `FUN_0029be88`, `FUN_0029c0b0`,
@@ -1583,7 +1584,7 @@ Code: `menu_journal.rs` (`build_char_page`, `char_view`, `page_char`), `menu_jou
   (`FUN_002a7978`'s switch: 0x17, 0xd, 0x11, 0x14, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1f, 0x20); the pages the app has are run as
   7, 8, 9, 10 and 0xb with a cancel back to page 0xc (`Open::from_c`; they open at their first row: `FUN_002b1e18` zeroes the scroll of
   pages 0x19 / 0x1a, and `FUN_002b6120` / `FUN_002b4dd8` return to 0xc). The others (the Ansem reports, the heartless and nobody lists,
-  categories 8 and 9) are refused with a log line. Tests: `root_page::tests::*`, `menu_journal::tests::the_disc_character_page_data` (the
+  categories 8 and 9) were refused with a log line until WP-MN15 (they open since, 20.11). Tests: `root_page::tests::*`, `menu_journal::tests::the_disc_character_page_data` (the
   table words, the groups).
   Run: `local/x/state-q.json`, `KH2_KEYS=7:Enter,8:Down,8.2:Down,8.4:Down,8.6:Down,9.2:J,10:Escape,11:Left,12:J` (screenshot looked at: the
   picture of Jiminy, "Character Files" with NEW, "The Heartless", "The Nobodies", "Treasures", "Maps", "Missions", "Minigames",
@@ -1607,6 +1608,129 @@ Code: `menu_journal.rs` (`build_char_page`, `char_view`, `page_char`), `menu_jou
   `FUN_002a7190`, `FUN_002a80c0`, `FUN_002a81e8`, `FUN_002ade10`, `FUN_002b37d8`, `FUN_002b4838`, `FUN_002b4798`, `FUN_002b47c8`, `FUN_002ad6a0`,
   `FUN_00277740`, `FUN_00277860`, `FUN_00277b20`, `FUN_00277eb0`, `FUN_00277e18`, `FUN_00277dc8`, `FUN_001d36e8`, `FUN_001a5328`, `FUN_0014c7f0`,
   `FUN_00105cd8`, `FUN_001918a0`, `FUN_002b1e18`, `FUN_002b16a0`, `FUN_002b1650`.
+
+### 20.11 The text lists, enemy pages, Ansem reports, limits and moogle (WP-MN15) [V unless marked]
+
+Code: `menu_journal/{name_list,enemies,report_page,moogle_page,kills}.rs` (`enemies`, the data parts of the others and `kills` hold the pure
+rules with tests; the rest is node glue), `chars.rs` (the record family, `enemies_present`, `family_list`), `marks.rs` (`Cat::Report`,
+`Cat::Limit`, `Cat::Moogle`), `progress.rs` (the counters below). Page 0xc now opens every row it lists: nothing is refused any more.
+
+- **Defeated-enemy counts (the writer).** The enemies' defeat method `FUN_00184a30` (reached by `FUN_001acfe0` and `FUN_001b02f0`) calls
+  `FUN_00187e08(0x33fec0, id)` with `id = FUN_001699a8(actor)` = the NeoStatus (`objentry` `+0x4c`) of the defeated object. The function does
+  nothing unless story flag 0x8d0 is set (`FUN_00180850` -> `FUN_001802e0`), finds the word with `FUN_00187dc8` (`save + 0x1660 + 0xff0 + 4 *
+  (id - 1000)` for ids 1000 .. 1046, `+ 0x1170 + 4 * (id - 3000)` for 3000 .. 3011, nothing else) and adds 1 up to 9999. The party members' defeat
+  method `FUN_001c46a8` counts the ids 0x404 / 0x405 the same way [the journal pages do not read those slots; not traced further]. The reader is `FUN_002a1f78(record)`:
+  for a `char` record with flag 0x800 it takes the objentry named by the record's `+0xc` (`FUN_0016e208`) and returns the counter of its NeoStatus
+  (`FUN_00187e68`). Port: `Progress::{enemy_counter_id, enemy_defeats, count_defeat, set_enemy_defeats}` (slot key `enemy_kills`, pairs
+  `[NeoStatus, count]`), `menu_journal::kills`: a system watches the `Enemy` components, counts each one whose HP has reached 0 once (the `Counted`
+  marker) under the NeoStatus of its spawn record's object id (`NeoByObject`, read from `00objentry`; an enemy of the harness's own waves has
+  object id 0 and counts nothing). The gate is the original's: in a plain run (no state file) the app's baseline leaves story flag 0x8d0 clear, so no count rises until a state file or an area script sets it. The app's defeat point is outside this work package's files; the hook is read-only. Tests
+  `progress::tests::enemy_defeat_counters_count_and_are_saved`, `kills::tests::*`, `menu_journal::tests::the_disc_enemy_list_data` (every one of
+  the 56 enemy records has a distinct objentry NeoStatus with a counter slot).
+- **Existence of a record** (`FUN_002a1c30`, run by `FUN_002b7160` and by page 0xd's mask): the first loop sets the bit of every `char` record whose
+  `FUN_002a1f78` is not 0, that is the enemy records (flag 0x800) of an enemy defeated at least once; the second loop (ported by MN12) the
+  sub-records of every group that exists. `name_list::exist_set` is the union; it feeds the new bits, the lists and the completion marks. The record
+  index is also its bit number (`+4`, checked on the disc).
+- **Record families** (`char` `+0`): 0 .. 0xe the worlds, 0x10 the links, 0x11 the Heartless (57 records, 46 with the counter flag), 0x12 the
+  Nobodies (11, 10 with it). `FUN_002ab7d8` names the face file by it: `ex` for 0x10, `heart` for 0x11, `no` for 0x12 (the table at 0x36d3f8).
+- **Page 0xd** (`FUN_002a8a38`, handler `FUN_002a8e90`; page 0xc row 1 "Character Files"). Ten list objects (layers 0x58 and 0x5d, the second holds the
+  scroll bar's track, pitch from group 0x58), one row per world: a mask built by `FUN_002aa430` (bit 0 always, bit `w + 1` for each world below
+  0xf whose cell exists or with the all-worlds flag); bit 0 shows world 0x10's name ("Other"), bit `k` world `k - 1`. A world whose cell does not
+  exist shows question marks. The tag is the aggregate of the family's records (`FUN_002b7408` any new, `FUN_002b74b8` all seen; the words at
+  0x382e90 / 0x382e94 = groups 0x5a / 0x5b). A confirm keeps the row and the scroll (`FUN_00277dc8(0xd, ..)`), names the chosen world on a second
+  plate (`FUN_0029d820(1, ..)`) and opens page 0xe at its top; a cancel goes to page 0xc. Coming from page 0xc the cursor starts on the first row
+  (`FUN_002a8948` sets the flag that picks the journal's own world, and world 0xf has no row).
+- **Pages 0xe, 0x11, 0x14** (`FUN_002a91a0`, `FUN_002aaae0`, handler `FUN_002a9590`; `FUN_002ac370(0x11 / 0x12)` selects the Heartless and Nobody family).
+  `FUN_002aa528` lists the records of the family that exist (or all with the all-worlds flag: the unknown ones show question marks and no tag,
+  `FUN_0029bb48`), each name from the record's `+6` (flag 0x400: the world's name is the message's variable). With no entry the single row reads the
+  message 0x36b3, the hand is hidden and nothing can be chosen. The redraw (`FUN_002aa848`) also marks the entry under the cursor seen
+  (`FUN_002ac4c8`: `FUN_002b73b8`, and its tag goes to the seen group at once). A confirm opens the character's page: 0xf from 0xe, 0x12 from 0x11,
+  0x15 from 0x14 (`FUN_002aa358` keeps the list; `DAT_0036d49c = 0xff` makes the cancel return to the list page with the cursor on the character
+  shown, L2 / R2 `FUN_002aa600` moving it). A cancel goes to 0xd from 0xe and to 0xc from the others. The widget (`FUN_002977a8` -> `FUN_002978f8`
+  / `FUN_00297af0`, page steps `FUN_00298370` with `FUN_00298fe0(list, 1)`, `FUN_00299010(list, 10)`): a step inside the ten rows moves the
+  cursor, at the edge the view scrolls by one, past the ends a new press wraps [inferred: the wrap byte of these lists, as the Album's]; L1 / R1 move the
+  view by ten, to the end then to the last row, `enemies::step` (tested). The help lines are 0x48ee, 0x48ef, 0x48f0, 0x48f1 (`FUN_002ac450`).
+- **An enemy's page (0x12, 0x15)** is the character page 0xf (`FUN_002a98f0`, `FUN_002aadf0`) plus the counter row and the reaction rows. The
+  picture is group 1 then 2 whatever the family (`FUN_002ab8f0`; the links pages used 4 / 5 before this work package: fixed). *Counter row* (records with flag
+  0x800, group 0x4c): the label is the message 0x489b ("Slain"), the value a child at the group's x / y (136, 0), right aligned, font size 15 (group `+0x18`),
+  the group `FUN_00278418(2)` = 0x7f's colour, the text `FUN_001918a0(buf, 0x382de0, count)` with the format `%d`. *Reaction rows* (pages 0x12 and
+  0x15 only): `FUN_001d0258(NeoStatus)` binary-searches the `rcct` table (five command ids per enemy); each command with a row in the command table
+  (`FUN_001b6f48`) is listed when its use count is not 0 (`FUN_001b7168`: the u16 array at `0x3410b0` indexed by the command's `ReactionCount`, capped
+  at 999) or with the all-worlds flag; group 0x4d, one pitch apart (the pitch is negative, -27: the rows stack upwards), the name from the command's
+  `MessageId` (question marks while the count is 0) and the count in the same child layout. [inferred: a command row of `CmdAction` 2 whose id is not 2 is
+  followed to the party member's own command by `FUN_001a4dd0` in `FUN_001b6f48`; the port lists the row as found.] Port: `enemies::reaction_rows`
+  (tested), `menu_journal::enemy_rows`. The counts live in `reaction_cmd::ReactionUses` (not saved); `Progress` keeps a saved copy (slot key
+  `reaction_uses`, pairs `[slot, count]`) and the journal shows the larger of the two. Run (looked at): `local/x/state-e.json` = the character
+  state's flags (docs 20.10) plus 2256 and `"enemy_kills": [[1000,12],[1001,3],[1002,7],[1034,1],[1013,2],[3000,4],[3003,9]]`,
+  `"reaction_uses": [[2,5],[41,12]]`, `KH2_KEYS=7:Enter,8:Down,8.2:Down,8.4:Down,8.6:Down,9.2:J,10:Escape,11:Left,12:J,13:Down,14:J,15:Down,15.3:Down,16:J`
+  (the Heartless list, Large Body's page: "Slain 7", "Guard 12", "Kickback 5"). Log lines `journal: page 0x11 (...)`, `journal: the counter row (group 0x4c,
+  FUN_002a1f78): 7 defeated`, `journal: enemy page: NeoStatus 1002, 2 reaction rows [...]`. The 3D model and page 0x10 / 0x13 / 0x16 stay out.
+- **Page 0xc's marks** (`FUN_002a7558`): row 1 any new bit in the families 0 .. 0xe and 0x10, complete when `FUN_002b9d88` finds every record of those
+  families existing; rows 2 and 3 the families 0x11 and 0x12 the same way; row 0 the reports (`FUN_002b7668(-1)`, complete `FUN_002b9f10`); row 8 the
+  limits; row 9 the moogle (`FUN_002b8fd0(-1)`, `FUN_002b9058(-1)`, `FUN_002bab48(-1)`).
+- **Ansem reports (pages 0x17, 0x18)**. `jiminy.bar` entry 4 ("JMAN", 13 records of 8 bytes: +0 the item, +2 the title message, +4 the text message). Page
+  0x17 (`FUN_002ac900`, handler `FUN_002accb8`, rows `FUN_002ad760`, redraw `FUN_002adc18`): the reports whose item is owned (`FUN_002a1ff8`) or all with
+  the all-worlds flag (question marks), the new tag from the bits at `+0x120` (words 0x382edc / 0x382ee0), the cursor's entry marked seen
+  (`FUN_002ade80` -> `FUN_002b77c0`), help 0x48ec. Page 0x18 (`FUN_002acfb8`, handler `FUN_002ad3d0`, text `FUN_002adcb0`): layers 0x5f and 0x62
+  (the scroll bar's track), the title centred in group 0x60 (font 3), the text nine lines at a time (the list count is the lines minus eight when
+  there are more than nine), Up / Down one line, L1 / R1 nine [inferred: clamped], L2 / R2 (-11 / -10, `FUN_002ad998`, when more than one is owned) the
+  previous / next owned report, a cancel back to 0x17 with the cursor on it, help 0x48ed. Page 0xc lists row 0 when a report is owned
+  (`FUN_002ade10`). Port: `name_list::report_rows`, `report_page`. Run: the state above plus `"items": {"226":1,"227":1,"228":1,"233":1}`,
+  `12:J,13:J,14:Down,14.5:J,16:E` (the second report, "Secret Ansem Report 2", scrolled a page).
+- **Limits (pages 0x1d, 0x1e)**. `jiminy.bar` entry 6 (21 records of 8 bytes: +0 the limit's command id, +2 the name, +4 the text). The use count of a
+  limit (`FUN_002a20e0`: above 0 = used) is `u16[0x3414b0 + 2 * slot]` where `slot` is byte 0 of the `limt` row whose `Command` is the record's id
+  (`FUN_001d2518`, `FUN_001d2590`; the table has 21 slots, some commands twice). The writer is `FUN_001d25b0(row, value)` from the limit's end
+  (`FUN_001b32d8`, `FUN_001b3178`): the slot is raised to `value = limit object +0xa0` when it is below. The meaning of that field is not traced
+  [GAP: the page prints it with the unit message 0x4b06 ("Hits"), so it is probably the hit count]. The app has no writer yet (outside this work
+  package's files, see the report): `Progress::{limit_best, raise_limit_best}` (slot key `limit_best`, pairs `[slot, count]`) is filled by a state file.
+  Page 0x1d (`FUN_002b2130`, rows `FUN_002b30d8`, handler `FUN_002b25a8`): layers 0x6c and 0x6d, the used limits (or all: question marks and a count
+  of 0), each with a right-aligned child at the layer group's x / y that reads the count (`FUN_001918a0(buf, 0x382f68, n)`, format `%d`) and the
+  unit message 0x4b06, tags 0x39 / 0x3a (the words at 0x382f98), help 0x48f8. Page 0x1e (`FUN_002b2878`, handler `FUN_002b2d78`) is the report page
+  with the title group 0x61 (left aligned: no alignment is set) and the count right-aligned at that group's x / y, help 0x4b00. Page 0xc lists row 8
+  when some limit is used (`FUN_002b37d8`); the tab reads "Combo Attacks". Run: `"limit_best": [[5,14],[4,22],[13,3]]`, rows 6 of page 0xc, `14:J`.
+- **The moogle page (0x1f)**. `FUN_002b3d80` (layer 99), rows `FUN_002b4170`, handler `FUN_002b3f10`, help 0x48f9. The synthesis record (`Moogle`):
+  row 0 "Moogle level N" with the level's name (`level + 1` through `%d`; names at 0x382fc0, messages 0xbcd2 ..) at the right; rows 1 .. 3 the
+  materials known (of 50), the collection rewards paid (of the 50 `cond` rows) and the creations made (bits 0 .. 44 of `made`, of the recipes' entries:
+  one each, two with a higher rank), as `%d` or, with the all-worlds flag, `%d/%d` (0x382fa0, 0x382fa8). Rows 0 and 3 are listed when the moogle is
+  available (unlock bit 0 or 10, `FUN_002b4798`), rows 1 and 2 when some material was handed over (`FUN_002b47c8`); with the all-worlds flag an unlisted
+  row reads the message 0x36f8 (question marks). A row is complete (second group 0x69 instead of 0x68, `FUN_002ba978`) at level 8, 50 materials, 50
+  rewards, 45 creations. The new bits of the listed rows are made at the scene's open (`FUN_002b8f18`) and every row is marked seen when the page is
+  built (`FUN_002b9138`), so a row that was new shows the seen tag 0x3a. Page 0xc lists row 9 when `FUN_002b4838` holds (available, or a material, or
+  the all-worlds flag). Port: `moogle_page`; the totals come from `mixdata.bar` (`FUN_002b48c8`). Run: `"moogle": {"unlocks":[0],"level":3,
+  "known":[0..11],"rewards":[0,1,2],"made":[0,1,2,3,4]}` ("Moogle level 4 Skilled Moogle", 12, 3, 5), `12:J`, seven Downs, `J`.
+- **World 0xf's mark 0x9a (item D).** Page 0's cell builder `FUN_002a2248` picks the mark: for every record below 0x10 whose cell exists
+  it calls `FUN_002baf08(world)` (its only caller) and draws the literal group 0x9a on the cell's first child when it answers yes. World 0xf
+  asks (`FUN_002baf08`, `menu_journal::journal_complete`): every character record exists (`FUN_002b9d88(-1)`), the 13 reports are owned (`FUN_002b9f10`), every
+  limit is used (`FUN_002ba238`: the completion bits at `+0x74`), every quest, minigame, treasure and map of every world is complete, the moogle's
+  four rows are complete (`FUN_002bab48(-1)`: the bits at `+0x124` set by `FUN_002ba978`) and the links are complete (`FUN_002bad98(1, 0xf)`).
+- **Pages 0x19, 0x1a and 0x20 are not Roxas's.** They are page 0xc's own numbers for the Treasures, Maps and Character Links builders (`FUN_002afca0`,
+  `FUN_002afe98`, `FUN_002ae3e8` / `FUN_002ae790`); the only places that read the page number are `FUN_002b1e18` (the scroll starts at 0 for 0x19 / 0x1a),
+  `FUN_002b16a0` (the treasure test: page 7 or 0x19) and the cancel target (page 0xc for 0x19, 0x1a, 0x20, else page 2). The MN14 port already runs them as
+  7, 8 and 0xb with `from_c` set, so nothing further is needed [V by reading the three handlers and builders].
+- **Gaps (WP-MN15).** The writer of the limit counters (the limit object's `+0xa0` and where the app ends a limit); the party members' defeat counters
+  (ids 0x404 / 0x405, `FUN_001c46a8`) have no reader here; the hook that calls `Progress::count_defeat` is a system in `kills.rs` reading the
+  `Enemy` components, not the defeat method; the reaction use counts are not written by `reaction_cmd.rs`; the 3D model and the model pages (0x10,
+  0x13, 0x16) of a character or an enemy; the page-turn sound and wipe; the held-pad auto-repeat of the list cursors; the exact right edge of the
+  right-aligned values (the tag of a limit row overlaps the end of its text on screen).
+- **Decompile index (MN15).** `FUN_00184a30`, `FUN_001acfe0`, `FUN_001b02f0`, `FUN_001c46a8`, `FUN_00187dc8`, `FUN_00187e08`, `FUN_00187e68`,
+  `FUN_00180850`, `FUN_001802e0`, `FUN_001699a8`, `FUN_0016e208`, `FUN_002a1f78`, `FUN_002a1c30`, `FUN_002a1c10`, `FUN_002a1fc0`, `FUN_002a1ff8`,
+  `FUN_002a20e0`, `FUN_002a8958`, `FUN_002a8a38`, `FUN_002a8e90`, `FUN_002a8948`, `FUN_002a8568`, `FUN_002a84d8`, `FUN_002a91a0`, `FUN_002a9590`,
+  `FUN_002aa430`, `FUN_002aa4b0`, `FUN_002aa528`, `FUN_002aa600`, `FUN_002aa848`, `FUN_002aa8d0`, `FUN_002aaae0`, `FUN_002ab8f0`, `FUN_002ac370`,
+  `FUN_002ac450`, `FUN_002ac4c8`, `FUN_002aadf0`, `FUN_001d0258`, `FUN_001b6f48`, `FUN_001b7168`, `FUN_001a4dd0`, `FUN_00278418`, `FUN_001918a0`,
+  `FUN_0029bb48`, `FUN_0029d1d0`, `FUN_0029d820`, `FUN_0029d3e8`, `FUN_0029cf78`, `FUN_00297148`, `FUN_002977a8`, `FUN_002978f8`, `FUN_00297af0`,
+  `FUN_00298370`, `FUN_00296fb8`, `FUN_00298d58`, `FUN_00298fe0`, `FUN_00299010`, `FUN_002ac900`, `FUN_002accb8`, `FUN_002acfb8`, `FUN_002ad3d0`,
+  `FUN_002ad6a0`, `FUN_002ad760`, `FUN_002ad998`, `FUN_002adba0`, `FUN_002adc18`, `FUN_002adc78`, `FUN_002adcb0`, `FUN_002ade10`, `FUN_002ade50`,
+  `FUN_002ade80`, `FUN_002b7668`, `FUN_002b76e8`, `FUN_002b77c0`, `FUN_002b2130`, `FUN_002b25a8`, `FUN_002b2878`, `FUN_002b3018`, `FUN_002b30d8`,
+  `FUN_002b3640`, `FUN_002b37d8`, `FUN_002b3878`, `FUN_002b38a8`, `FUN_001d2518`, `FUN_001d2590`, `FUN_001d25b0`, `FUN_001b32d8`, `FUN_002b3d80`,
+  `FUN_002b3f10`, `FUN_002b3bc0`, `FUN_002b4170`, `FUN_002b4778`, `FUN_002b48c8`, `FUN_002b4798`, `FUN_002b47c8`, `FUN_002b4838`, `FUN_002b8f18`,
+  `FUN_002b8fd0`, `FUN_002b9058`, `FUN_002b9138`, `FUN_002b99d0`, `FUN_002b9b28`, `FUN_002b9bf0`, `FUN_002b9d88`, `FUN_002b9f10`, `FUN_002ba238`,
+  `FUN_002ba978`, `FUN_002babb8`, `FUN_002bab48`, `FUN_002baf08`, `FUN_002a2248`, `FUN_002b1e18`, `FUN_002b16a0`, `FUN_002afe98`, `FUN_00237658`,
+  `FUN_00237678`, `FUN_00237698`; data 0x382de0, 0x382e90, 0x382edc, 0x382f68, 0x382f98, 0x382fa0 .. 0x382fc4, 0x3410b0, 0x3414b0, 0x36d3f8.
+- **Tests (WP-MN15).** `enemies::tests::*` (the widget's moves, the world rows, the reaction rows), `kills::tests::*`, `chars::tests::{an_enemy_record_exists_once_the_enemy_was_defeated,
+  a_family_list_has_the_records_that_exist_or_all_with_the_all_worlds_flag}`, `name_list::tests::*`, `report_page::tests::*`, `moogle_page::tests::*`,
+  `marks::tests::every_category_keeps_its_saved_number`, `menu_journal::tests::{the_disc_enemy_list_data, formats_are_written_with_the_fonts_glyphs}`,
+  `progress::tests::{enemy_defeat_counters_count_and_are_saved, reaction_use_counts_are_saved, limit_best_counts_only_go_up_and_are_saved}`,
+  `root_page::tests::*`.
 
 ### 21.1 The table [V]
 

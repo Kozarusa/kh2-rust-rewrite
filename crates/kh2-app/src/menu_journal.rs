@@ -26,9 +26,10 @@
 //! cursor, the L1 / R1 hints and switches between pages 0 and 2, and page 3 (the story). WP-MN12 (20.9) added the scroll bar
 //! object, the NEW tags (`marks.rs`), the Characters and Character Links pages (6, 0xb: `chars.rs`), Treasures and Maps (7,
 //! 8: `lists.rs`, `treasure_page.rs`) and the Album (4, 5: `album_page.rs`). WP-MN14 (20.10) added a character's own page (0xf),
-//! the Quests and Minigames pages (9, 10: `games.rs`, `games_page.rs`) and page 0xc (`root_page.rs`). The pages behind page 0xc's
-//! other rows (the Ansem reports, the enemy lists, the limits, the moogle list) are not ported: a confirm on such a row is refused
-//! with a log line.
+//! the Quests and Minigames pages (9, 10: `games.rs`, `games_page.rs`) and page 0xc (`root_page.rs`). WP-MN15 (20.11) added the text
+//! lists behind page 0xc's rows (`name_list.rs`: the worlds and characters of the Character Files, the Heartless, the Nobodies, the Ansem
+//! reports, the limits), the enemy pages with their counter and reaction rows (`enemies.rs`, `kills.rs`), the report and limit text pages
+//! (`report_page.rs`) and the moogle summary (`moogle_page.rs`).
 
 mod album_page;
 mod chars;

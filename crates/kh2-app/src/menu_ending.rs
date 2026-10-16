@@ -149,12 +149,6 @@ pub struct EndingMenu {
     open: bool,
 }
 
-impl EndingMenu {
-    pub fn is_open(&self) -> bool {
-        self.open
-    }
-}
-
 pub struct EndingPlugin;
 
 impl Plugin for EndingPlugin {
@@ -243,20 +237,21 @@ fn literal(scene: &MenuScene, text: &str) -> Vec<Token> {
 
 /// The tokens of a value (`%d%%`, `%d` + suffix, name + ` %d` + suffix).
 fn value_tokens(scene: &MenuScene, v: &Value) -> Vec<Token> {
-    let mut out = Vec::new();
-    match v {
-        Value::Message(id) => out = message(scene, *id),
-        Value::Percent(p) => out = literal(scene, &format!("{p}%")),
+    let mut out = match v {
+        Value::Message(id) => message(scene, *id),
+        Value::Percent(p) => literal(scene, &format!("{p}%")),
         Value::Count(n) => {
-            out = literal(scene, &n.to_string());
-            out.extend(message(scene, SUFFIX));
+            let mut o = literal(scene, &n.to_string());
+            o.extend(message(scene, SUFFIX));
+            o
         }
         Value::Named(name, n) => {
-            out = message(scene, *name);
-            out.extend(literal(scene, &format!(" {n}")));
-            out.extend(message(scene, SUFFIX));
+            let mut o = message(scene, *name);
+            o.extend(literal(scene, &format!(" {n}")));
+            o.extend(message(scene, SUFFIX));
+            o
         }
-    }
+    };
     out.retain(|t| *t != Token::End);
     out
 }

@@ -172,7 +172,7 @@ impl Host for MockHost {
             // 1.94 obj_valid: only the objects host 1.0 made are valid in the toy world (the others read false, as before).
             Call::Func { group: 1, index: 94, args } => {
                 let h = args.first().map_or(0, |a| a.int() as u32);
-                Value::Bool(h >= CREATED && (h - CREATED) % 0x1000 == 0 && ((h - CREATED) / 0x1000) < self.created.len() as u32)
+                Value::Bool(h >= CREATED && (h - CREATED).is_multiple_of(0x1000) && ((h - CREATED) / 0x1000) < self.created.len() as u32)
             }
             Call::ProbeGround { .. } => Value::Int(0),
             Call::SpawnAttached { .. } => Value::Handle(0x400),

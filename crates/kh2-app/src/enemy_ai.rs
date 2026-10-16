@@ -347,6 +347,9 @@ fn paired_motions(mset: &[u8]) -> HashMap<usize, Vec<(String, f32)>> {
     out
 }
 
+/// An enemy with no script runtime yet: its handle if host 1.0 made it, and whether it fades in.
+type Unattached = (Entity, &'static Enemy, Option<&'static CreatedHandle>, Option<&'static Appearing>);
+
 /// Gives every new enemy its script runtime. Runs right after the wave spawner, so the
 /// script's first frame is the frame the enemy appears in.
 fn ai_attach(
@@ -354,7 +357,7 @@ fn ai_attach(
     programs: Res<AiPrograms>,
     mut table: ResMut<ObjTable>,
     appear: Option<Res<AppearRamp>>,
-    q: Query<(Entity, &Enemy, Option<&CreatedHandle>, Option<&Appearing>), Without<AiBrain>>,
+    q: Query<Unattached, Without<AiBrain>>,
 ) {
     for (ent, e, made, appearing) in &q {
         let Some(script) = programs.by_kind.get(e.kind.name) else { continue };
@@ -445,12 +448,12 @@ fn ai_update(
     for h in hit_msgs.read() {
         hits.entry(h.target).or_default().push((h.real, h.reaction));
     }
-    if let Some((name, reaction, at)) = forced_hit().filter(|(_, _, at)| !*forced_done && trace.tick >= *at) {
-        if let Some((ent, ..)) = q.iter().find(|(_, _, e, _, _)| e.alive() && e.name == name) {
-            hits.entry(ent).or_default().push((true, *reaction));
-            *forced_done = true;
-            info!("bdx: KH2_BDX_HIT: {name} gets a real hit with reaction {reaction} (tick {at})");
-        }
+    if let Some((name, reaction, at)) = forced_hit().filter(|(_, _, at)| !*forced_done && trace.tick >= *at)
+        && let Some((ent, ..)) = q.iter().find(|(_, _, e, _, _)| e.alive() && e.name == name)
+    {
+        hits.entry(ent).or_default().push((true, *reaction));
+        *forced_done = true;
+        info!("bdx: KH2_BDX_HIT: {name} gets a real hit with reaction {reaction} (tick {at})");
     }
     let mut reactions: HashMap<Entity, Vec<(u16, i16)>> = HashMap::new();
     for r in accepted.read() {

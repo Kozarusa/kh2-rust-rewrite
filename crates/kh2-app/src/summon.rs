@@ -3010,10 +3010,10 @@ fn act(
                     Some((_, id)) => (id, "made by host 1.0".to_string()),
                     None => {
                         let Some(row) = data.rows.get(index as usize - 1).cloned() else { continue };
-                        (row.entity1 as u32, data.name(row.command))
+                        (row.entity1, data.name(row.command))
                     }
                 };
-                let Some(o) = data.objs.iter().find(|r| r.object_id as u32 == object_id).cloned() else {
+                let Some(o) = data.objs.iter().find(|r| r.object_id == object_id).cloned() else {
                     warn!("summon: object {object_id} of summon {index} has no objentry row");
                     continue;
                 };
@@ -3177,9 +3177,9 @@ fn tinker_ready(sm: &SummonState, data: &SummonData) -> bool {
 /// (Chicken Little's 2098, `P_EX360`).
 fn kid_object_ids(rows: &[t::Sumn], objs: &[t::Objentry], index: u8) -> Vec<u32> {
     let Some(row) = (index != 0).then(|| rows.get(index as usize - 1)).flatten() else { return Vec::new() };
-    let own = objs.iter().find(|r| r.object_id as u32 == row.entity1 as u32);
+    let own = objs.iter().find(|r| r.object_id == row.entity1);
     let named = own.map_or([0; 4], |o| [o.spawn_object1, o.spawn_object2, o.spawn_object3, o.spawn_object4]);
-    std::iter::once(row.entity2 as u32).chain(named.into_iter().map(u32::from)).filter(|&i| i != 0).collect()
+    std::iter::once(row.entity2).chain(named.into_iter().map(u32::from)).filter(|&i| i != 0).collect()
 }
 
 /// The summon objects' scripts (run every tick through the enemy host, as the party's in

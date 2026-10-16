@@ -22,6 +22,8 @@ pub enum Cat {
     Album,
     Treasure,
     Map,
+    Quest,
+    Minigame,
 }
 
 impl Cat {
@@ -33,6 +35,8 @@ impl Cat {
             Cat::Album => 2,
             Cat::Treasure => 3,
             Cat::Map => 4,
+            Cat::Quest => 5,
+            Cat::Minigame => 6,
         }
     }
 
@@ -44,6 +48,8 @@ impl Cat {
             2 => Cat::Album,
             3 => Cat::Treasure,
             4 => Cat::Map,
+            5 => Cat::Quest,
+            6 => Cat::Minigame,
             _ => return None,
         })
     }
@@ -199,12 +205,12 @@ mod tests {
     /// The numbers are the save format (`journal_seen` pairs): each category keeps its number and nothing else maps.
     #[test]
     fn every_category_keeps_its_saved_number() {
-        let all = [(Cat::Story, 0u8), (Cat::Char, 1), (Cat::Album, 2), (Cat::Treasure, 3), (Cat::Map, 4)];
+        let all = [(Cat::Story, 0u8), (Cat::Char, 1), (Cat::Album, 2), (Cat::Treasure, 3), (Cat::Map, 4), (Cat::Quest, 5), (Cat::Minigame, 6)];
         for (cat, n) in all {
             assert_eq!(cat.code(), n, "{cat:?}");
             assert_eq!(Cat::from_code(n), Some(cat));
         }
-        assert_eq!(Cat::from_code(5), None);
+        assert_eq!(Cat::from_code(7), None);
         assert_eq!(Cat::from_code(255), None);
     }
 

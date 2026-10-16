@@ -1877,3 +1877,13 @@ NEW tags of the material pages 10 and 0x17 (`FUN_0028f490`, `FUN_0028f698`, `FUN
 synthesis window style); the difference between the VIEWED group 0x77 and the NEW group 0x78 beyond the animation
 length (both use the same art rectangle); the entries `FUN_002783f8` adds to the lists (story flag 0x4837) are still out;
 `+0x3714`, `+0x3724` and the record `+8` are in the slot files since WP-PRG1 (a reload does not pay the rewards again).
+
+### 24.8 The command menu's Genie "Drive!" (WP-FX12b)
+
+The in-play command menu (`items.rs`, not the pause menu) lists "Drive!" (command 605) as the third entry of the second deck while Genie is
+out: `FUN_001bc6e0` tests the summon state `DAT_01d5e368 == 2` (`FUN_001c6918`) and the NeoStatus 0xc9 of the summon object (`FUN_001c6940`), calls
+`FUN_001bcf10` and puts 0x25d where Party sits. `FUN_001bcf10` rebuilds list 3 (the manager's +0x180) from `FUN_001c6a20` (forms 1..4 whose item
+count, `FUN_001a1cc8`, is above 0) and the command table at 0x37c036 (`FUN_001c6b10`; the disc has 535..538). The commands' `Execute` is their id, so
+the generic executor `FUN_00177c20` -> `FUN_0016b420` raises event 11 on Genie's script (summons.md); the app issues `SummonRequest::Form`. Key path in the
+app: H swaps the deck (the other deck's cursor kept), T / G move, J confirms, B goes back. Tests `second_deck_shows_drive_with_genie_and_issues_the_form`,
+`genie_drive_rows_and_table_come_from_the_disc`. Gap: the entry's target-record parameter (`FUN_0018f490(+0xa20, Genie, 0)`).

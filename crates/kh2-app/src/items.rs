@@ -82,6 +82,12 @@ pub mod cmd_id {
     pub const ATTACK_CHARGING: u16 = 0x21d;
     /// Dismiss (FUN_001bc6e0 while the summon state `DAT_01d5e368` is set; docs/summons.md).
     pub const DISMISS: u16 = 0x13c;
+    /// "Drive!" (command 605 = 0x25d, `Execute` 605, `SubMenu` 3): the second deck's third entry while Genie is out
+    /// (FUN_001bc6e0 after FUN_001bcf10).
+    pub const GENIE_DRIVE: u16 = 0x25d;
+    /// The commands of Genie's form list (`FUN_001c6b10`: the table at 0x37c036, indices 1..=4): `Execute` equals the id, no
+    /// sub-menu; FUN_00177c20 -> FUN_0016b420 raises event 11 on Genie's script (summon.rs).
+    pub const GENIE_FORMS: std::ops::RangeInclusive<u16> = 535..=538;
 }
 
 /// Statuses (FUN_001ba2c0 and the overrides of FUN_001ba748): below 4 the command can be chosen
@@ -291,6 +297,9 @@ pub struct BuildCtx<'a> {
     pub summons: Vec<u16>,
     /// The summon state `DAT_01d5e368` is set (the second deck shows Dismiss).
     pub summon_active: bool,
+    /// Genie is out (state 2, NeoStatus 0xc9): the commands FUN_001bcf10 puts in the forms list, one per form 1..=4 whose item is
+    /// owned (`FUN_001c6a20`), and the second deck shows "Drive!" in place of Party. `None` when he is not.
+    pub genie_drive: Option<Vec<u16>>,
     /// The party members of list 4 (FUN_00175b68 0..2 that are valid, not summons and have a
     /// status) and the target command of each (FUN_001b58a8: the table at 0x37bab0).
     pub party: Vec<(u16, u16)>,
@@ -450,7 +459,18 @@ impl CommandLists {
             cmd_id::SUMMON
         };
         self.add(list::ROOT2, summon, 1, ctx);
-        self.add(list::ROOT2, cmd_id::PARTY, 1, ctx);
+        // FUN_001bc6e0: state 2 with Genie out (FUN_001c6918 == 2, FUN_001c6940 == 0xc9): FUN_001bcf10 refills the FORMS list
+        // (the manager's +0x180 = list 3) with his form commands, after FUN_001bca70 and the first deck were built, and
+        // command 0x25d takes Party's place whatever the story flags say.
+        if let Some(forms) = &ctx.genie_drive {
+            self.clear(list::FORMS);
+            for &c in forms {
+                self.add(list::FORMS, c, 1, ctx);
+            }
+            self.add(list::ROOT2, cmd_id::GENIE_DRIVE, 1, ctx);
+        } else {
+            self.add(list::ROOT2, cmd_id::PARTY, 1, ctx);
+        }
         self.add(list::ROOT2, cmd_id::LIMIT, 1, ctx);
     }
 
@@ -828,6 +848,8 @@ pub struct ItemsData {
     pub items: Vec<t::Item>,
     /// The form items by form index 1..=5 (the u16 table at 0x37b420, FUN_001a1e38).
     pub form_items: [u16; 6],
+    /// Genie's form commands by form index 1..=4 (the u16 table at 0x37c036, FUN_001c6b10).
+    pub genie_forms: [u16; 5],
     /// The target command of each party member id (the u16 table at 0x37bab0, FUN_001b58a8).
     pub member_cmds: Vec<u16>,
     /// `sstm` +0x7c: MP gained during the MP charge shortens it by this much per point.
@@ -915,12 +937,16 @@ fn setup(mut commands: Commands, disc: Res<Disc>) {
     for (i, f) in form_items.iter_mut().enumerate().skip(1) {
         *f = exe_u16(&exe, 0x37b420 + 2 * i).unwrap_or(0);
     }
+    let mut genie_forms = [0u16; 5];
+    for (i, f) in genie_forms.iter_mut().enumerate().skip(1) {
+        *f = exe_u16(&exe, 0x37c036 + 2 * i).unwrap_or(0);
+    }
     let member_cmds: Vec<u16> = (0..16).map(|i| exe_u16(&exe, 0x37bab0 + 2 * i).unwrap_or(0)).collect();
     let charge_feed = sstm.as_ref().filter(|s| s.words.len() > 0x7c / 4).map_or(0.0, |s| s.f32(0x7c));
     let use_wait = exe_f32(&exe, 0x37bba4).filter(|v| v.is_finite() && *v > 0.0).unwrap_or(USE_WAIT);
     let messages = disc.read("msg/us/sys.bar").and_then(|b| kh2_image::text::Messages::from_bar(&b));
     info!("items: form items {form_items:?}, Sora's target command {:?}, MP charge feed {charge_feed}, use wait {use_wait}", member_cmds.get(1));
-    commands.insert_resource(ItemsData { cmds, items, form_items, member_cmds, charge_feed, use_wait, messages });
+    commands.insert_resource(ItemsData { cmds, items, form_items, genie_forms, member_cmds, charge_feed, use_wait, messages });
 }
 
 /// The game state the menu reads besides Sora: the drive state, `Progress`, the battle flag, the
@@ -990,6 +1016,10 @@ fn command_menu(
         form_party: &form_party,
         summons: summon.as_ref().map_or_else(Vec::new, |s| s.commands.clone()),
         summon_active: summon.as_ref().is_some_and(|s| s.state != 0),
+        genie_drive: summon.as_ref().filter(|s| s.genie_out()).map(|_| {
+            // FUN_001c6a20: forms 1..=4 (the item at 0x37b420 + 2 i with a count above 0), each as the command at 0x37c036 + 2 i.
+            (1..5).filter(|&i| progress.item_count(data.form_items[i]) > 0).map(|i| data.genie_forms[i]).collect()
+        }),
         party: vec![(SORA, data.member_cmds.get(SORA as usize).copied().unwrap_or(0))],
         world: md.world,
         charging_attack: block_bits & 0x800 != 0 && charging,
@@ -1028,10 +1058,11 @@ fn command_menu(
                 info!("items: {} chosen for member {}", data.cmd_name(cmd), target.unwrap_or(SORA));
                 true
             }
-            // A summon command or Dismiss: summon.rs runs it.
-            cmd_id::SUMMON | cmd_id::DISMISS if summon_queue.is_some() => {
-                let req = if c.execute == cmd_id::DISMISS { crate::summon::SummonRequest::Dismiss } else { crate::summon::SummonRequest::Summon(cmd) };
-                info!("items: {} chosen", data.cmd_name(cmd));
+            // A summon command, Dismiss or one of Genie's "Drive!" forms (535..538): summon.rs runs it (event 11 on his script
+            // for a form, FUN_00177c20 -> FUN_0016b420).
+            _ if summon_request(c, cmd).is_some() && summon_queue.is_some() => {
+                let req = summon_request(c, cmd).unwrap_or(crate::summon::SummonRequest::Dismiss);
+                info!("items: {} chosen ({req:?})", data.cmd_name(cmd));
                 summon_queue.as_deref_mut().into_iter().for_each(|q| q.0.push(req));
                 true
             }
@@ -1065,6 +1096,18 @@ fn command_menu(
     };
     cm.visible = true;
     cm.pages = lists.stack.iter().map(|&l| MenuPage { kind: l as u8, entries: lists.lists[l].entries.iter().map(entry).collect(), cursor: lists.lists[l].cursor }).collect();
+}
+
+/// The request the summon system gets for a chosen command (summon.rs): Summon and Dismiss by their `Execute`, one of Genie's
+/// "Drive!" forms (`Execute` 535..538) as `Form`.
+pub fn summon_request(c: &Cmd, cmd: u16) -> Option<crate::summon::SummonRequest> {
+    use crate::summon::SummonRequest;
+    match c.execute {
+        cmd_id::DISMISS => Some(SummonRequest::Dismiss),
+        cmd_id::SUMMON => Some(SummonRequest::Summon(cmd)),
+        e if cmd_id::GENIE_FORMS.contains(&e) => Some(SummonRequest::Form(cmd)),
+        _ => None,
+    }
 }
 
 /// The item command on Sora: the request, the motion, frame trigger 6, the queued use.
@@ -1252,6 +1295,11 @@ mod tests {
             cmd(42, 42, -1),
             cmd(100, 2, -1),
             cmd(26, 4, -1),
+            cmd(cmd_id::GENIE_DRIVE, cmd_id::GENIE_DRIVE, 3),
+            cmd(535, 535, -1),
+            cmd(536, 536, -1),
+            cmd(537, 537, -1),
+            cmd(538, 538, -1),
         ];
         v.iter_mut().find(|c| c.id == 26).unwrap().argument = 1;
         v
@@ -1274,11 +1322,12 @@ mod tests {
         slots: Vec<(u16, u16)>,
         received: bool,
         forms: Vec<(u16, u8)>,
+        genie: Option<Vec<u16>>,
     }
 
     impl Default for Setup {
         fn default() -> Self {
-            Setup { form: 0, battle: false, spells: vec![100], spell_status: 0, slots: vec![(1, 0), (3, 0), (1, 0)], received: true, forms: vec![(26, 1)] }
+            Setup { form: 0, battle: false, spells: vec![100], spell_status: 0, slots: vec![(1, 0), (3, 0), (1, 0)], received: true, forms: vec![(26, 1)], genie: None }
         }
     }
 
@@ -1298,6 +1347,7 @@ mod tests {
             form_party: &party,
             summons: Vec::new(),
             summon_active: false,
+            genie_drive: s.genie.clone(),
             party: vec![(SORA, 42)],
             world: 2,
             charging_attack: false,
@@ -1344,6 +1394,81 @@ mod tests {
         assert_eq!((l.lists[list::ROOT].entries[3].cmd, l.lists[list::ROOT].entries[3].status), (cmd_id::REVERT, 5));
         // The second deck (FUN_001bc6e0): Attack, the empty bar for Summon (no summon), Party, Limit.
         assert_eq!(l.lists[list::ROOT2].entries.iter().map(|e| e.cmd).collect::<Vec<_>>(), vec![1, cmd_id::EMPTY, cmd_id::PARTY, cmd_id::LIMIT]);
+    }
+
+    /// FUN_001bc6e0 with Genie out: the third entry of the second deck is "Drive!" (0x25d) in place of Party, its list is the
+    /// forms list refilled with his commands (FUN_001bcf10), choosing one issues it, and `summon_request` turns it into
+    /// `SummonRequest::Form`. Without Genie the deck and the forms list are as before.
+    #[test]
+    fn second_deck_shows_drive_with_genie_and_issues_the_form() {
+        use crate::summon::SummonRequest;
+        let cmds = table();
+        let genie = Setup { genie: Some(vec![535, 537]), ..Setup::default() };
+        let mut l = CommandLists::default();
+        build(&cmds, &genie, &mut l);
+        assert_eq!(l.lists[list::ROOT2].entries.iter().map(|e| e.cmd).collect::<Vec<_>>(), vec![1, cmd_id::EMPTY, cmd_id::GENIE_DRIVE, cmd_id::LIMIT]);
+        assert_eq!(ids(&l.lists[list::FORMS]), vec![(535, 1, 0), (537, 1, 0)], "the forms list holds his commands, not Valor's");
+        assert_eq!(l.lists[list::ROOT2].entries[2].status, status::READY, "a non-empty sub-list: choosable");
+        // Open the second deck, the Drive! entry and its list, then choose the second form.
+        let inp = |f: fn(&mut MenuInput)| {
+            let mut m = MenuInput::default();
+            f(&mut m);
+            m
+        };
+        let mut issued = Vec::new();
+        let mut step = |l: &mut CommandLists, m: MenuInput| {
+            build(&cmds, &genie, l);
+            l.select_root();
+            l.input(&cmds, m, &mut |c, t| {
+                issued.push((c, t));
+                true
+            })
+        };
+        step(&mut l, inp(|m| m.left = true));
+        assert_eq!(l.deck, list::ROOT2);
+        step(&mut l, inp(|m| m.down = true));
+        step(&mut l, inp(|m| m.down = true));
+        let out = step(&mut l, inp(|m| m.confirm = true));
+        assert_eq!((out.opened, l.stack.clone()), (Some(list::FORMS), vec![list::ROOT2, list::FORMS]));
+        step(&mut l, inp(|m| m.down = true));
+        let out = step(&mut l, inp(|m| m.confirm = true));
+        assert_eq!(out.issue, Some((537, None)));
+        assert_eq!(issued, vec![(537, None)]);
+        assert_eq!(summon_request(find(&cmds, 537).unwrap(), 537), Some(SummonRequest::Form(537)));
+        assert_eq!(summon_request(find(&cmds, cmd_id::SUMMON).unwrap(), cmd_id::SUMMON), Some(SummonRequest::Summon(cmd_id::SUMMON)));
+        assert_eq!(summon_request(find(&cmds, 23).unwrap(), 23), None, "an item is not a summon request");
+        // No form item owned: the entry is there but unavailable (empty list, FUN_001ba748).
+        let none = Setup { genie: Some(vec![]), ..Setup::default() };
+        let mut l = CommandLists::default();
+        build(&cmds, &none, &mut l);
+        assert_eq!((l.lists[list::ROOT2].entries[2].cmd, l.lists[list::ROOT2].entries[2].status), (cmd_id::GENIE_DRIVE, status::UNAVAILABLE));
+        // Genie gone: Party again and the forms list is Valor's.
+        let mut l = CommandLists::default();
+        build(&cmds, &Setup::default(), &mut l);
+        assert_eq!(l.lists[list::ROOT2].entries[2].cmd, cmd_id::PARTY);
+        assert_eq!(ids(&l.lists[list::FORMS]), vec![(26, 1, 0)]);
+    }
+
+    /// The disc rows behind the "Drive!" list: the table at 0x37c036 names commands 535..538 for forms 1..=4, each an
+    /// `Execute` of its own id with no sub-menu, and command 605's `Execute` is 605 opening list 3 (the forms list). Skipped without a disc.
+    #[test]
+    fn genie_drive_rows_and_table_come_from_the_disc() {
+        let iso = std::env::var("KH2_ISO").ok();
+        let Some(Ok(mut a)) = iso.map(|p| kh2_archive::Archive::open(&p)) else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let cmds = kh2_tables::load::<Cmd>(&mut a, &t::CMD).expect("cmd").rows;
+        let exe = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok()).expect("executable");
+        let table: Vec<u16> = (1..5).map(|i| exe_u16(&exe, 0x37c036 + 2 * i).unwrap()).collect();
+        assert_eq!(table, vec![535, 536, 537, 538]);
+        for c in &table {
+            let row = find(&cmds, *c).expect("row");
+            assert_eq!((row.execute, row.sub_menu), (*c, -1));
+            assert!(cmd_id::GENIE_FORMS.contains(c));
+        }
+        let drive = find(&cmds, cmd_id::GENIE_DRIVE).expect("605");
+        assert_eq!((drive.execute, drive.sub_menu), (605, list::FORMS as i16 as _));
     }
 
     /// FUN_001ba9b0 / FUN_001bb930 / FUN_001bc0c8: wrap both ways, a sub-menu opens on confirm, cancel

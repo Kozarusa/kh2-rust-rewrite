@@ -709,8 +709,8 @@ runs without an error (Chicken Little's stops on a bad address after the missing
 Hosts reached by `P_AL010#summon0` in the harness (`KH2_STATE` with item 159 / level 1 / option word 11,
 `KH2_DRIVE_POINTS=5 KH2_SUMMON=2 KH2_SUMMON_AT=7 KH2_SUMMON_PARTY=1 KH2_BDXLOG=1 KH2_SUMMONLOG=1`, tt04 `b_44`):
 1.13 Approx, 1.84 Impl, 1.94 Approx, 1.165 Stub (summon limit offers: stage 5), 1.272 Impl, 10.10 Impl, 10.19 Approx,
-10.45 Impl: none `missing`. 10.9 (event 11, Genie's "Drive!" commands) is not reached: the menu does not offer
-"Drive!" (section 2) and nothing sends event 11; it is Approx (the parts are not drawn).
+10.45 Impl: none `missing`. 10.9 (event 11, Genie's "Drive!" commands) was not reached in that run (the menu entry came with WP-FX12b,
+see "Genie's Drive!" below); it is Approx (the parts are not drawn).
 
 Log lines of that run: `summon: P_AL010#summon0 first update (FUN_00119a40): byte 7 = 0 -> form command 0`, `... form
 command 0 (FUN_00119c18): parts [2, 3, 4, 5, 6] hidden, part None shown (not drawn), byte 7 = 6, limit command 0`,
@@ -822,9 +822,7 @@ order; FUN_00156d08's other objects (group 0x82 at +0xccc and the two text objec
 **Genie's "Drive!"**: the choice of a form command (535..538, receiver 1) reaches his script as event 11 with (player, command, record)
 through FUN_00177c20 -> FUN_0016b420; `SummonRequest::Form(cmd)` (harness `KH2_GENIE_FORM=<cmd> KH2_GENIE_FORM_AT=<s>`) delivers it while Genie
 is out (`summon: event 11 (Drive!: form command 536): handler ran`, then motion 241 and `form command 536 (FUN_00119c18) ... byte 7 = 2, limit
-command 544` in the harness). Test `genie_drive_event_plays_the_form_motion_and_sets_the_form`. Not done: the menu entry itself (FUN_001bc6e0's
-entry 2 "Drive!" 605 while Genie is out, the list of FUN_001bcf10 with the forms the player owns, the Execute 535..538 case): `items.rs`, which
-this work package does not own (the report lists the edit).
+command 544` in the harness). Test `genie_drive_event_plays_the_form_motion_and_sets_the_form`. **The menu entry (WP-FX12b)**: `items.rs` follows FUN_001bc6e0. With the summon state 2 and Genie's NeoStatus 201 (`FUN_001c6918() == 2`, `FUN_001c6940() == 0xc9`; `SummonState::genie_out`) the second deck's third entry is command 605 (`Execute` 605, `SubMenu` 3 = the forms list, the disc row) in place of Party, whatever the story flags say, and FUN_001bcf10 refills list 3 (the manager's +0x180) with the commands of the table at 0x37c036 (read at run time: 535..538 for forms 1..4) for each of forms 1..4 whose item count is above 0 (FUN_001c6a20; the fifth form item is not in the loop). The refill runs after the first deck was built (FUN_001bc2b8's order: FUN_001bca70, FUN_001bc578, FUN_001bc6e0), so the deck's own Drive entry sees the same list while Genie is out. Choosing a form (`Execute` = its id, no sub-menu) issues `SummonRequest::Form(cmd)` (`items::summon_request`); `summon.rs` takes it only while `genie_out` and raises event 11. Status of the entry: the generic `FUN_001ba748` rule (empty list: unavailable); the entries are ready [inferred: FUN_001ba2c0 has no case for 535..538, the port's default]. Tests `second_deck_shows_drive_with_genie_and_issues_the_form`, `genie_drive_rows_and_table_come_from_the_disc`. Not looked at in a screenshot or played: Genie needs the summon harness, and the menu key path (H for the deck swap) was only run in the unit test. Gap: the entry's target record (`FUN_0018f490(+0xa20, Genie, 0)`, whose pointer goes with each entry as its parameter) is not modelled; the event's record is made by `summon.rs` as before.
 
 **Not done / gaps**: (1) Chicken Little's `surprise` creates objentry 2098 (`P_EX360`, a scripted bouncing object, type 9) with host 1.0 and
 places it with 1.148: the app creates no objects of its own (missing, logged once); Peter Pan's `appear` creates Tinker Bell the same way
@@ -877,3 +875,11 @@ the calls made on them (position, mode, hide, flags) once they exist, and remove
 (Tinker Bell: `appear` then `Hide` about 5.5 s later) and `KH2_SUMMON=1` (nine P_EX360 over the run). Gaps: Tinker Bell stays at
 the origin (her `appear` links to the player with 1.18, which is a stub, so she is not placed near him); P_EX360's script reaches
 1.114, 10.53 and 6.49, which are not mapped; the revive's Tinker Bell (FUN_001adeb8) is not made.
+
+**WP-FX12b follow-ups.** (1) 1.155's app side: `ai::SummonAi::heal_player` (the host arm) and `apply_heal` (`objects`, after the tick) are unit-tested
+(`host_1_155_heal_reaches_the_players_hp`: 10/100 + 5 -> 15 and the HP written, the maximum clamps, a KO'd player (HP 0) stays); the `SummonHost::call`
+arm itself is not run by a test (it needs a whole `BevyHost`), it only calls `heal_player`. (2) `scripted::decide`'s stand-ins for `FUN_0010fcd0`'s reads
+of the member (`MemberNow`, `Params`, the setting byte, the record's phase 1) are tied to the record: only a record whose handler is one of `START_MODE`
+(phase 1 answers 1 in `FUN_0011a590` / `FUN_0011a118`), with setting -1 and no MP-costing entry, is offered [inferred from the one record per class];
+anything else is never chosen (`scripted_decide_offers_only_records_its_stand_ins_fit`). (3) `hud_party::summon_panel` no longer builds the circle at the
+screen origin when Sora's HP circle is not in the scene: it logs a `warn!` once and retries each frame (`summon_panel_waits_for_soras_circle`).

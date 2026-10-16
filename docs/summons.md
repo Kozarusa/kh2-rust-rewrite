@@ -282,7 +282,7 @@ area spawns its party members while a summon is active (FUN_0017d1b0), the membe
 instead and the summon is created again (FUN_001c6710) in mode `"appear_area_start"` (only Peter Pan's
 script has it). [V; I that the other summons then simply keep their default mode]
 
-### Tinker Bell's revive (Peter Pan) [V]
+### Tinker Bell's revive (Peter Pan) [V decomp; the app's trigger condition (player Down with HP 0) is [inferred]; never run in a harness]
 
 While Peter Pan is out and byte 7 is set (FUN_001c69b0; a host-function wrapper FUN_0018eba8 returns it to scripts), a knock-out
 goes to FUN_001ad8a8 (revive sequence of type 2, FUN_001ad378) instead of ending the summon. At its end

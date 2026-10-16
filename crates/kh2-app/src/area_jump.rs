@@ -307,7 +307,7 @@ pub fn resolve_jump(j: &Jump, cur: (u8, u8, u8), last: Option<Dest>, localset: i
 /// The record words 4 to 6 and the object flag that the jump record does not carry: `FUN_00180ff8` sets them from
 /// a trigger's sub-commands 4, 5, 7 and 8 into the trigger object (+0x44, +0x48, +0x4c, +0x50), after `FUN_0019d8f0`
 /// filled the first words from sub-command 1; `FUN_00197780` gives the defaults [V]. `FUN_0019d9d8` reads them as
-/// `param_1[4]`, `[5]` and `[6]`.
+/// the record words `[4]`, `[5]` and `[6]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JumpExtras {
     /// Sub-command 4 (+0x44, default 0): a party arrangement index; 0 or more makes `FUN_0019d9d8` reorder the
@@ -347,7 +347,7 @@ impl JumpExtras {
         e
     }
 
-    /// Ticks the jump task waits before its fade-out (`uVar10` in `FUN_0019d9d8`): 2 when the "menu before" code
+    /// Ticks the jump task waits before its fade-out (a local of `FUN_0019d9d8`): 2 when the "menu before" code
     /// is not 0 (and the party word is 0 or more), else 0. The wait follows a menu the app cannot open, so it is
     /// only logged.
     pub fn delay_ticks(&self) -> u32 {
@@ -419,7 +419,7 @@ pub fn map_entrance(table: &MapEntrances, world: u8) -> u8 {
 
 /// What a type-4 record decides (`FUN_0019d9d8` case 4, `FUN_00149df0`) from the story flags (`flag`), the record's
 /// world byte `rec` (`FUN_0019d8f0` stores its word 1) and the remembered byte `memory` (`DAT_01c8bd90`, -1 at the
-/// start). Returns the destination and the new memory. The fade kind is always 1 (`uVar9 = 1`).
+/// start). Returns the destination and the new memory. The fade kind is always 1 (a local set to 1).
 /// 1. Flag 0x1071 set and 0x1072 clear, and one of 0x140f, 0x1822, 0x200b set: remember `rec`; go to world 4, area 0,
 ///    entrance 0, programs kept.
 /// 2. Else one of 0x8cd, 0x3834, 0x1c1c set: remember `rec`; go to `FUN_00198080(0x40, 0x12)`: world 0x12, the first
@@ -724,7 +724,7 @@ fn harness_jump() -> Option<Jump> {
 }
 
 /// The fade kind of a record and whether it is instant: a type-4 record always uses kind 1 (`FUN_0019d9d8` sets
-/// `uVar9 = 1` and ignores the record's flags), the others the flags word (`jump_fade_kind`).
+/// a local set to 1 and ignores the record's flags), the others the flags word (`jump_fade_kind`).
 pub fn record_fade(j: &Jump) -> (u32, bool) {
     if j.kind == 4 { (1, false) } else { jump_fade_kind(j) }
 }

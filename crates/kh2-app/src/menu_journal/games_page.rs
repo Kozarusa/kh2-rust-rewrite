@@ -58,12 +58,16 @@ pub struct Snap {
     /// counter slot (`ReactionUses`), copied when the journal opens.
     pub kills: std::collections::HashMap<u32, u32>,
     pub uses: std::collections::HashMap<u16, u16>,
+    /// The limits' best counts by `limt` slot (`Progress::limit_best_all`).
+    pub limits: std::collections::HashMap<u8, u16>,
+    /// The synthesis record and the totals the moogle page counts against.
+    pub moogle_data: super::moogle_page::Data,
 }
 
 impl Snap {
     /// Reads the bits and records the lists name from `p`.
     pub fn read(p: &Progress, quests: &[games::Quest], minis: &[games::Minigame]) -> Snap {
-        let mut s = Snap { moogle: p.moogle.known != 0, kills: p.enemy_defeats_all().collect(), uses: p.reaction_uses_all().collect(), ..Snap::default() };
+        let mut s = Snap { moogle: super::moogle_page::listed(&p.moogle, false), moogle_data: super::moogle_page::Data { rec: p.moogle.clone(), ..Default::default() }, kills: p.enemy_defeats_all().collect(), uses: p.reaction_uses_all().collect(), limits: p.limit_best_all().collect(), ..Snap::default() };
         for q in quests {
             for id in [q.id, q.done] {
                 if p.record_bit(id) {

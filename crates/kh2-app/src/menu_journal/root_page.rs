@@ -6,7 +6,7 @@
 //! The categories are 0 the Ansem reports (page 0x17), 1 (0xd), 2 (0x11), 3 (0x14) the character lists, 4 / 5 (0x19 / 0x1a) the
 //! treasures and maps, 6 / 7 (0x1b / 0x1c) the quests and minigames, 8 (0x1d), 9 (0x1f) and 10 (0x20). The reports and the three character
 //! lists open the text lists of `name_list` (WP-MN15), 4 to 7 and 10 run the pages the app has under their own numbers; categories
-//! 8 and 9 are refused with a log line.
+//! 9 and 10 (the moogle summary, the character links) run too: the whole list is ported.
 
 use super::*;
 
@@ -19,16 +19,16 @@ pub const CATEGORIES: usize = 11;
 pub const PAGES: [u16; CATEGORIES] = [0x17, 0xd, 0x11, 0x14, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1f, 0x20];
 /// The categories listed (`FUN_002a80c0`): all but the ones that need something the player does not have yet. The Ansem reports
 /// need one report owned (`FUN_002ade10`), the quests a listed quest (`FUN_002b6f00`), the minigames a played one (`FUN_002b5bb0`),
-/// category 8 a limit that has been used (`FUN_002b37d8`, no app data: only with the all-worlds flag) and category 9 the moogle's
+/// category 8 a limit that has been used (`FUN_002b37d8`) and category 9 the moogle's
 /// first record bit or the flags of the save word at +0x3750 (`FUN_002b4838`; the app has the first only). The all-worlds flag
 /// lists every one of them.
-pub fn listed(reports: bool, quests: bool, games: bool, moogle: bool, all: bool) -> Vec<usize> {
+pub fn listed(reports: bool, quests: bool, games: bool, limits: bool, moogle: bool, all: bool) -> Vec<usize> {
     (0..CATEGORIES)
         .filter(|&c| match c {
             0 => reports || all,
             6 => quests || all,
             7 => games || all,
-            8 => all,
+            8 => limits || all,
             9 => moogle || all,
             _ => true,
         })
@@ -74,6 +74,9 @@ fn marks(j: &Journal, cat: usize, test: &dyn Fn(u16) -> bool, items: &dyn Fn(u16
         3 => (j.marks.aggregate(families(&[0x12])), done(&[0x12])),
         6 => games_page::with_game(j, test, |g| (j.marks.aggregate(games::quest_keys(&j.quests, None)), games::quests_complete(&j.quests, None, g))),
         7 => games_page::with_game(j, test, |g| (j.marks.aggregate(games::game_keys(&j.minis, None)), games::games_complete(&j.minis, None, g))),
+        8 => (j.marks.aggregate((0..j.limit_recs.len()).map(|i| (Cat::Limit, i))), (0..j.limit_recs.len()).all(|i| j.limit_used(i))),
+        // The moogle (`FUN_002b8fd0`, `FUN_002b9058`, `FUN_002bab48(-1)`): the rows' new bits and every row complete.
+        9 => (j.marks.aggregate((0..moogle_page::ROWS).map(|i| (Cat::Moogle, i))), (0..moogle_page::ROWS).all(|i| moogle_page::complete(&j.snap.moogle_data, i))),
         10 => (j.marks.aggregate(face_keys(j, LINKS, test, items)), done(&[LINKS])),
         _ => (None, false),
     }
@@ -87,7 +90,8 @@ pub fn build(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut A
     let cats = {
         let (quests, games) = games_page::with_game(j, test, |g| (games::quests_exist(&j.quests, None, g), games::games_exist(&j.minis, None, g)));
         let reports = j.reports.iter().any(|&i| items(i) > 0);
-        listed(reports, quests, games, j.snap.moogle, test(ALL_WORLDS_FLAG))
+        let limits = (0..j.limit_recs.len()).any(|i| j.limit_used(i));
+        listed(reports, quests, games, limits, j.snap.moogle, test(ALL_WORLDS_FLAG))
     };
     let lay = j.nodes.lay.clone();
     for k in 0..2 {
@@ -166,10 +170,11 @@ mod tests {
     #[test]
     fn the_categories_listed_follow_what_the_player_has() {
         // Nothing yet: the character, treasure, map and link rows only.
-        assert_eq!(listed(false, false, false, false, false), vec![1, 2, 3, 4, 5, 10]);
-        assert_eq!(listed(true, true, false, false, false), vec![0, 1, 2, 3, 4, 5, 6, 10]);
-        assert_eq!(listed(false, false, true, true, false), vec![1, 2, 3, 4, 5, 7, 9, 10]);
-        assert_eq!(listed(false, false, false, false, true), (0..CATEGORIES).collect::<Vec<_>>(), "the all-worlds flag lists them all");
+        assert_eq!(listed(false, false, false, false, false, false), vec![1, 2, 3, 4, 5, 10]);
+        assert_eq!(listed(true, true, false, false, false, false), vec![0, 1, 2, 3, 4, 5, 6, 10]);
+        assert_eq!(listed(false, false, true, false, true, false), vec![1, 2, 3, 4, 5, 7, 9, 10]);
+        assert_eq!(listed(false, false, false, true, false, false), vec![1, 2, 3, 4, 5, 8, 10]);
+        assert_eq!(listed(false, false, false, false, false, true), (0..CATEGORIES).collect::<Vec<_>>(), "the all-worlds flag lists them all");
     }
 
     #[test]

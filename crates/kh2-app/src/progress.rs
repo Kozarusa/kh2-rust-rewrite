@@ -333,6 +333,11 @@ pub struct Progress {
     /// journal's enemy page shows them, capped at 999). Only the slots the app has raised are kept. Saved in the slot files (key
     /// `reaction_uses`). Nothing writes it in the app yet (`reaction_cmd::ReactionUses` keeps the live counts): a state file fills it.
     reaction_uses: std::collections::BTreeMap<u16, u16>,
+    /// The limits' best counts (the u16 array at `0x3414b0`, indexed by the `limt` row's `Id`, `FUN_001d2590`; `FUN_001d25b0` raises a slot to
+    /// the value it is given, never lowers it). A limit is "used" (listed on the journal's limit page) once its slot is above 0. Only the
+    /// slots the app has raised are kept. Saved in the slot files (key `limit_best`). Nothing in the app calls the writer yet: a state file
+    /// fills it.
+    limit_best: std::collections::BTreeMap<u8, u16>,
 }
 
 /// The synthesis record at save `+0x3728` (`FUN_002906c0` answers its address). Bit sets are kept as u64 (the
@@ -475,7 +480,7 @@ impl Progress {
         let mut block = vec![0u8; off::LEN];
         let n = bytes.len().min(off::LEN);
         block[..n].copy_from_slice(&bytes[..n]);
-        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT], story: StoryHandle::default(), new_seen: Vec::new(), record_bits: Vec::new(), moogle: Moogle::default(), shop_seen: [0; 4], shop_visits: 0, journal_seen: Default::default(), minigames: Default::default(), enemy_kills: Default::default(), reaction_uses: Default::default() }
+        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT], story: StoryHandle::default(), new_seen: Vec::new(), record_bits: Vec::new(), moogle: Moogle::default(), shop_seen: [0; 4], shop_visits: 0, journal_seen: Default::default(), minigames: Default::default(), enemy_kills: Default::default(), reaction_uses: Default::default(), limit_best: Default::default() }
     }
 
     // --- story flags ------------------------------------------------------------------------
@@ -871,6 +876,23 @@ impl Progress {
         }
         *n += 1;
         true
+    }
+
+    /// `FUN_001d2590`: the best count of the limit with `limt` slot `slot` (0 for one never used).
+    pub fn limit_best(&self, slot: u8) -> u16 {
+        self.limit_best.get(&slot).copied().unwrap_or(0)
+    }
+
+    /// `FUN_001d25b0`: raises the limit's best count to `n` when it is below (the slot never goes down).
+    pub fn raise_limit_best(&mut self, slot: u8, n: u16) {
+        if n > self.limit_best(slot) {
+            self.limit_best.insert(slot, n);
+        }
+    }
+
+    /// Every raised limit slot as (slot, best count).
+    pub fn limit_best_all(&self) -> impl Iterator<Item = (u8, u16)> + '_ {
+        self.limit_best.iter().map(|(&i, &c)| (i, c))
     }
 
     /// The use count of the reaction-command slot `slot` (`0x3410b0 + 2 * slot`).
@@ -1486,6 +1508,7 @@ impl Progress {
             minigames: Default::default(),
             enemy_kills: Default::default(),
             reaction_uses: Default::default(),
+            limit_best: Default::default(),
         };
         p.init_party();
         p.apply_plrp(plrp, 0);
@@ -1868,6 +1891,15 @@ impl Progress {
                         self.set_reaction_use(int(i, "reaction_uses")?.clamp(0, 0xffff) as u16, int(c, "reaction_uses")?.clamp(0, 999) as u16);
                     }
                 }
+                // The limits' best counts: `"limit_best": [[slot, count], ..]` (`0x3414b0`, `FUN_001d25b0`).
+                "limit_best" => {
+                    let Json::Arr(a) = v else { return Err("limit_best: expected an array of [slot, count] pairs".into()) };
+                    for p in a {
+                        let Json::Arr(p) = p else { return Err("limit_best: expected [slot, count] pairs".into()) };
+                        let (Some(i), Some(c)) = (p.first(), p.get(1)) else { return Err("limit_best: expected [slot, count] pairs".into()) };
+                        self.raise_limit_best(int(i, "limit_best")?.clamp(0, 255) as u8, int(c, "limit_best")?.clamp(0, 0xffff) as u16);
+                    }
+                }
                 "shop_visits" => {
                     for n in list(v, "shop_visits")? {
                         self.set_shop_visit(n as u8);
@@ -1949,6 +1981,7 @@ impl Progress {
                     self.minigames.clear();
                     self.enemy_kills.clear();
                     self.reaction_uses.clear();
+                    self.limit_best.clear();
                     self.record_bits.clear();
                 }
                 "new_seen" => {
@@ -2378,6 +2411,7 @@ impl Progress {
         let games = format!("[{}]", self.minigames.iter().map(|(i, (s, v))| format!("[{i}, {s}, {v}]")).collect::<Vec<_>>().join(", "));
         let kills = format!("[{}]", self.enemy_kills.iter().map(|(i, c)| format!("[{i}, {c}]")).collect::<Vec<_>>().join(", "));
         let react = format!("[{}]", self.reaction_uses.iter().map(|(i, c)| format!("[{i}, {c}]")).collect::<Vec<_>>().join(", "));
+        let limits = format!("[{}]", self.limit_best.iter().map(|(i, c)| format!("[{i}, {c}]")).collect::<Vec<_>>().join(", "));
         let seen_pairs = format!("[{}]", self.journal_seen.iter().map(|(c, e)| format!("[{c}, {e}]")).collect::<Vec<_>>().join(", "));
         vec![
             (
@@ -2403,6 +2437,7 @@ impl Progress {
             ("minigames", games),
             ("enemy_kills", kills),
             ("reaction_uses", react),
+            ("limit_best", limits),
             ("story_raw", format!("{{\"words\": \"{}\", \"programs\": \"{}\", \"locks\": {}}}", hex(&words), hex(&st.programs), nums(locks))),
             ("world_points", nums(st.world_points())),
         ]
@@ -2937,6 +2972,24 @@ mod tests {
         q.apply_json(&text).expect("loads");
         assert_eq!((q.reaction_use(41), q.reaction_use(2), q.reaction_use(9)), (999, 7, 0), "the block key reset the old count");
         assert!(q.apply_json("{\"reaction_uses\": [1]}").is_err());
+    }
+
+    /// WP-MN15: the limits' best counts only go up, and go through a slot file and the `limit_best` key.
+    #[test]
+    fn limit_best_counts_only_go_up_and_are_saved() {
+        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        assert_eq!(p.limit_best(4), 0);
+        p.raise_limit_best(4, 9);
+        p.raise_limit_best(4, 3);
+        p.raise_limit_best(7, 0);
+        assert_eq!((p.limit_best(4), p.limit_best(7)), (9, 0));
+        let text = p.slot_json(&SlotInfo { level: 1, munny: 0, play_seconds: 0, area: "tt04".into() });
+        let mut q = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        q.raise_limit_best(1, 5);
+        q.apply_json(&text).expect("loads");
+        assert_eq!((q.limit_best(4), q.limit_best(1)), (9, 0), "the block key reset the old count");
+        assert!(q.apply_json("{\"limit_best\": [2]}").is_err());
+        assert_eq!(q.limit_best_all().collect::<Vec<_>>(), [(4, 9)]);
     }
 
     /// WP-PRG1: the moogle's record, the shops' bits, the record bits, the story arrays and the world points go through a

@@ -35,6 +35,13 @@ pub fn read_rcct(disc: &Disc) -> Vec<kh2_tables::player::Rcct> {
     kh2_tables::player::load_rcct(&mut a).map(|r| r.1).unwrap_or_default()
 }
 
+/// The `limt` slot of each limit command (`FUN_001d2518`: the row whose Command is the record's id; its `Id` byte indexes the counters).
+pub fn read_limit_slots(disc: &Disc) -> HashMap<u16, u8> {
+    use kh2_tables::tables as t;
+    let Ok(mut a) = disc.0.lock() else { return HashMap::new() };
+    kh2_tables::load::<t::Limt>(&mut a, &t::LIMT).map(|d| d.rows.into_iter().map(|r| (r.command, r.id)).collect()).unwrap_or_default()
+}
+
 /// Each command's name message (`+8`) and use-counter slot (`ReactionCount`, `+0x26`) by command id (`FUN_001b6f48`).
 pub fn read_cmds(disc: &Disc) -> HashMap<u16, super::enemies::CmdInfo> {
     use kh2_tables::tables as t;

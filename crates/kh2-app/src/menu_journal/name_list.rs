@@ -16,11 +16,14 @@ pub const BAR_LAYER: usize = 0x5d;
 /// The message the list shows when it has no entry (`FUN_002aaae0`: `FUN_00190c40(0x36b3)`).
 pub const NOTHING: u16 = 0x36b3;
 /// The help lines (`FUN_002ac450`: pages 0xd, 0xe, 0x11, 0x14; `FUN_002ade50`: page 0x17).
-pub const HELP: [(u16, u16); 5] = [(0xd, 0x48ee), (0xe, 0x48ef), (0x11, 0x48f0), (0x14, 0x48f1), (0x17, 0x48ec)];
+pub const HELP: [(u16, u16); 6] = [(0xd, 0x48ee), (0xe, 0x48ef), (0x11, 0x48f0), (0x14, 0x48f1), (0x17, 0x48ec), (0x1d, 0x48f8)];
+/// The limit page's layers (`FUN_002b2130`: 0x6c and 0x6d) and the message that follows a limit's count (`FUN_002b30d8`).
+pub const LIMIT_LAYERS: [usize; 2] = [0x6c, 0x6d];
+pub const LIMIT_UNIT: u16 = 0x4b06;
 
 /// Whether `page` is one of the text lists.
 pub fn is_list(page: u16) -> bool {
-    matches!(page, 0xd | 0xe | 0x11 | 0x14 | 0x17)
+    matches!(page, 0xd | 0xe | 0x11 | 0x14 | 0x17 | 0x1d)
 }
 
 /// The help line of a list page.
@@ -44,6 +47,8 @@ pub struct Row {
     pub label: Vec<Token>,
     pub keys: Vec<(Cat, usize)>,
     pub id: usize,
+    /// The right-aligned value of a limit row (its count and unit).
+    pub value: Option<Vec<Token>>,
 }
 
 /// The tokens with `Token::Variable` replaced (`FUN_00191a30`).
@@ -75,7 +80,7 @@ pub fn world_rows(j: &Journal, scene: &MenuScene, exists: &dyn Fn(usize) -> bool
             let name = world_name(j, scene, w as i8, test);
             let there = world_exists(j, w, test);
             let keys = if there { j.chars.iter().enumerate().filter(|(i, r)| r.family == w && exists(*i)).map(|(i, _)| (Cat::Char, i)).collect() } else { Vec::new() };
-            Row { label: if there { name } else { treasure_page::masked(&name) }, keys, id: usize::from(w) }
+            Row { label: if there { name } else { treasure_page::masked(&name) }, keys, id: usize::from(w), ..Row::default() }
         })
         .collect()
 }
@@ -88,7 +93,7 @@ pub fn family_rows(j: &Journal, scene: &MenuScene, family: u8, exists: &dyn Fn(u
         .map(|i| {
             let name = char_name(j, scene, &j.chars[i], family, test);
             let there = exists(i);
-            Row { label: if there { name } else { treasure_page::masked(&name) }, keys: if there { vec![(Cat::Char, i)] } else { Vec::new() }, id: i }
+            Row { label: if there { name } else { treasure_page::masked(&name) }, keys: if there { vec![(Cat::Char, i)] } else { Vec::new() }, id: i, ..Row::default() }
         })
         .collect()
 }
@@ -102,14 +107,34 @@ pub fn report_rows(j: &Journal, scene: &MenuScene, items: &dyn Fn(u16) -> i32, t
         .map(|(i, r)| {
             let name = plain(tokens(j, scene, r.title).unwrap_or_default());
             let there = items(r.item) > 0;
-            Row { label: if there { name } else { treasure_page::masked(&name) }, keys: if there { vec![(Cat::Report, i)] } else { Vec::new() }, id: i }
+            Row { label: if there { name } else { treasure_page::masked(&name) }, keys: if there { vec![(Cat::Report, i)] } else { Vec::new() }, id: i, ..Row::default() }
+        })
+        .collect()
+}
+
+/// The rows of page 0x1d (`FUN_002b3018`, `FUN_002b30d8`): the limits that have been used, or all with the all-worlds flag; each with its
+/// best count and the unit message at the right (a limit never used shows question marks and a count of 0).
+pub fn limit_rows(j: &Journal, scene: &MenuScene, test: &dyn Fn(u16) -> bool) -> Vec<Row> {
+    let unit = plain(tokens(j, scene, LIMIT_UNIT).unwrap_or_default());
+    (0..j.limit_recs.len())
+        .filter(|&i| j.limit_used(i) || test(ALL_WORLDS_FLAG))
+        .map(|i| {
+            let name = plain(tokens(j, scene, j.limit_recs[i].title).unwrap_or_default());
+            let used = j.limit_used(i);
+            let mut value = count_tokens(&j.tables.limit_fmt, u32::from(j.limit_best(i)));
+            value.extend(unit.iter().cloned());
+            Row { label: if used { name } else { treasure_page::masked(&name) }, keys: if used { vec![(Cat::Limit, i)] } else { Vec::new() }, id: i, value: Some(value) }
         })
         .collect()
 }
 
 /// The tag groups of a list page (the words at 0x382e90, 0x382edc).
 fn tag_groups(j: &Journal, page: u16) -> [usize; 2] {
-    if page == 0x17 { j.tables.report_tag } else { j.tables.name_tag }
+    match page {
+        0x17 => j.tables.report_tag,
+        0x1d => j.tables.limit_tag,
+        _ => j.tables.name_tag,
+    }
 }
 
 /// Builds a list page.
@@ -120,6 +145,7 @@ pub fn build(j: &mut Journal, scene: &mut MenuScene, page: u16, test: &dyn Fn(u1
     let rows = match page {
         0xd => world_rows(j, scene, &|i| exists.contains(&i), test),
         0x17 => report_rows(j, scene, items, test),
+        0x1d => limit_rows(j, scene, test),
         _ => family_rows(j, scene, family_of(page, world), &|i| exists.contains(&i), test),
     };
     // The tab: the category's name (`FUN_002a7978`: `FUN_0029d820(0, 0x382d08[row])`), and on page 0xe the world's name on a second
@@ -128,6 +154,7 @@ pub fn build(j: &mut Journal, scene: &mut MenuScene, page: u16, test: &dyn Fn(u1
         0x17 => 0,
         0xd | 0xe => 1,
         0x11 => 2,
+        0x1d => 8,
         _ => 3,
     };
     category_tab(j, scene, j.tables.c_text[cat]);
@@ -136,23 +163,28 @@ pub fn build(j: &mut Journal, scene: &mut MenuScene, page: u16, test: &dyn Fn(u1
     }
     let list = j.seq_base + SEQ_LIST;
     let n = j.nodes.games;
-    for (k, g) in [LAYER, BAR_LAYER].into_iter().enumerate() {
+    let layers = if page == 0x1d { LIMIT_LAYERS } else { [LAYER, BAR_LAYER] };
+    for (k, g) in layers.into_iter().enumerate() {
         scene.nodes[n.layers[k]].visible = true;
         scene.nodes[n.layers[k]].off = [0.0; 2];
         scene.set_group(n.layers[k], g);
     }
     let group = |g: usize| scene.seqs.get(list).and_then(|s| s.groups.get(g)).copied().unwrap_or_default();
-    let pitch = group(LAYER).unk1c;
+    let pitch = group(layers[0]).unk1c;
+    // A limit row's value hangs from the row at the layer group's x / y, and its tag from the value (`FUN_002b2130`).
+    let value_at = [group(layers[0]).x as f32, group(layers[0]).y as f32];
     for k in 0..games_page::ROWS {
         scene.nodes[n.rows[k]].off = [0.0, (k as i32 * pitch) as f32];
         scene.nodes[n.rows[k]].label_anchor = Some([0.0; 2]);
-        scene.nodes[n.tags[k]].parent = Some(n.rows[k]);
-        scene.nodes[n.tags[k]].off = [0.0; 2];
         scene.nodes[n.values[k]].visible = false;
+        scene.nodes[n.values[k]].off = value_at;
+        scene.nodes[n.values[k]].label_anchor = Some([0.0; 2]);
+        scene.nodes[n.tags[k]].parent = Some(if page == 0x1d { n.values[k] } else { n.rows[k] });
+        scene.nodes[n.tags[k]].off = [0.0; 2];
     }
     let count = rows.len();
     // The scroll bar (`FUN_00299878(.., max(count, 10), 10, parent = the second layer)`).
-    let track = group(BAR_LAYER);
+    let track = group(layers[1]);
     let body = scene.seqs.get(list).and_then(|s| s.groups.get(j.tables.bar[2])).map_or(1, |g| g.size.max(1));
     let bar = Bar::new(track.size, body, count.max(games_page::ROWS) as i32, games_page::ROWS as i32);
     // The position the page kept (`FUN_00277de8` / `FUN_00277e00`), kept inside the list.
@@ -166,7 +198,7 @@ pub fn build(j: &mut Journal, scene: &mut MenuScene, page: u16, test: &dyn Fn(u1
     let o = j.open.as_mut().unwrap();
     (o.page, o.lrows, o.lpos, o.bar) = (page, rows, pos, Some(bar));
     let layer = j.nodes.games.layers[1];
-    place_bar(j, scene, layer, BAR_LAYER);
+    place_bar(j, scene, layer, layers[1]);
     view(j, scene);
 }
 
@@ -191,7 +223,7 @@ pub fn view(j: &mut Journal, scene: &mut MenuScene) {
     let Some(o) = j.open.as_ref() else { return };
     let (page, pos, count) = (o.page, o.lpos, o.lrows.len());
     // The entry under the cursor counts as seen first (a character `FUN_002ac4c8`, a report `FUN_002ade80`), so its tag reads "seen".
-    if matches!(page, 0xe | 0x11 | 0x14 | 0x17)
+    if matches!(page, 0xe | 0x11 | 0x14 | 0x17 | 0x1d)
         && let Some(r) = o.lrows.get(pos.at()).cloned()
     {
         for k in r.keys {
@@ -209,6 +241,7 @@ pub fn view(j: &mut Journal, scene: &mut MenuScene) {
         let on = k < shown.len() || (empty && k == 0);
         scene.nodes[n.rows[k]].visible = on;
         scene.nodes[n.tags[k]].visible = on;
+        scene.nodes[n.values[k]].visible = false;
         scene.nodes[n.rows[k]].label = None;
         if !on {
             continue;
@@ -220,6 +253,12 @@ pub fn view(j: &mut Journal, scene: &mut MenuScene) {
             None => plain(tokens(j, scene, NOTHING).unwrap_or_default()),
         };
         scene.nodes[n.rows[k]].label = games_page::ink(scene, n.rows[k], STORY_ROW, label, 0);
+        let value = shown.get(k).and_then(|r| r.value.clone());
+        scene.nodes[n.values[k]].visible = value.is_some();
+        if let Some(v) = value {
+            scene.set_group(n.values[k], STORY_ROW);
+            scene.nodes[n.values[k]].label = games_page::ink(scene, n.values[k], STORY_ROW, v, 1);
+        }
         if let Some(r) = shown.get(k)
             && let Some(all_seen) = j.marks.aggregate(r.keys.iter().copied())
         {
@@ -274,11 +313,12 @@ pub fn input(j: &mut Journal, scene: &mut MenuScene, menu: &mut Menu, se: &mut M
                     info!("journal: page 0xd confirm on world {:#x} -> page 0xe (FUN_002a8e90)", row.id);
                     j.goto = Some((0xe, wb));
                 }
-                0x17 => {
+                0x17 | 0x1d => {
                     o.rlist = o.lrows.iter().map(|r| r.id).collect();
                     o.rcur = pos.at();
-                    info!("journal: page 0x17 confirm on report {} -> page 0x18 (FUN_002accb8)", row.id);
-                    j.goto = Some((0x18, wb));
+                    let to = if page == 0x17 { 0x18 } else { 0x1e };
+                    info!("journal: page {page:#x} confirm on entry {} -> page {to:#x} (FUN_002accb8 / FUN_002b25a8)", row.id);
+                    j.goto = Some((to, wb));
                 }
                 _ => {
                     let list: Vec<usize> = o.lrows.iter().map(|r| r.id).collect();

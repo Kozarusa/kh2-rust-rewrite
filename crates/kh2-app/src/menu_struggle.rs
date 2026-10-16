@@ -378,12 +378,7 @@ fn input(
 
 #[allow(clippy::too_many_arguments)]
 fn tick(mut m: ResMut<StruggleMenu>, mut scene: ResMut<MenuScene>, real: Res<Time<Real>>, mut mission: ResMut<Mission>, mut task: ResMut<JumpTask>, rec: Res<AreaRecord>, last: Res<LastExit>, disc: Res<Disc>) {
-    // A row chosen while a jump was running waits for the jump to finish (the choice is not dropped).
-    if let Some(code) = m.pending
-        && *task == JumpTask::Idle
-    {
-        m.pending = None;
-        info!("struggle menu: the queued code {code} runs now");
+    if let Some(code) = take_pending(&mut m, *task == JumpTask::Idle) {
         apply_code(code, &mut mission, &mut task, &rec, &last, &disc);
     }
     if !m.is_open() {
@@ -403,22 +398,45 @@ fn tick(mut m: ResMut<StruggleMenu>, mut scene: ResMut<MenuScene>, real: Res<Tim
     scene.dim = 0.0;
     hide_all(&m, &mut scene);
     info!("struggle menu: closed: back to the field (FUN_001038a0)");
+    if let Some(code) = finish_close(&mut m, &mut mission, *task == JumpTask::Idle) {
+        apply_code(code, &mut mission, &mut task, &rec, &last, &disc);
+    }
+}
+
+/// A row chosen while a jump was running waits for the jump to finish (the choice is not dropped): the queued code
+/// once `idle`, taken out of the queue.
+fn take_pending(m: &mut StruggleMenu, idle: bool) -> Option<u16> {
+    if !idle {
+        return None;
+    }
+    let code = m.pending.take()?;
+    info!("struggle menu: the queued code {code} runs now");
+    Some(code)
+}
+
+/// The close has finished: act on the chosen code. Returns the code to apply now (`apply_code`), if any.
+fn finish_close(m: &mut StruggleMenu, mission: &mut Mission, idle: bool) -> Option<u16> {
     let chosen = m.flow.chosen.take();
-    match after_close(chosen, *task == JumpTask::Idle) {
+    match after_close(chosen, idle) {
         // A cancel (a record without +0x25 bit 0): `FUN_0026fda0` only closes the page for it (page -2 -> `FUN_0023e8b0`),
         // so the original leaves the manager running. With the menu gone nothing could end it here (a soft lock), so the
         // port ends it as a failed open does [inferred]; no jump.
         Closing::EndManager => {
             info!("struggle menu: cancelled: the manager ends (a port choice, see menu_struggle.rs)");
             mission.menu_exit(0);
+            None
         }
         // Codes 1, 5, 6, 10, 0x11 and the party handler (FUN_0026fda0) are not on the result menu's row: not ported.
-        Closing::NotPorted(code) => info!("struggle menu: code {code} is not ported; the manager stays"),
+        Closing::NotPorted(code) => {
+            info!("struggle menu: code {code} is not ported; the manager stays");
+            None
+        }
         Closing::Queue(code) => {
             info!("struggle menu: code {code} waits for the running jump [inferred: the original does not say]");
             m.pending = Some(code);
+            None
         }
-        Closing::Apply(code) => apply_code(code, &mut mission, &mut task, &rec, &last, &disc),
+        Closing::Apply(code) => Some(code),
     }
 }
 
@@ -541,7 +559,6 @@ mod tests {
         assert_eq!(f.chosen, None);
     }
 
-    /// Row 0x1a of the disc's table, its texts and the pointer list's groups (skipped without `KH2_ISO`).
     /// Review findings 3 and 4: a cancel ends the manager, and a code chosen while a jump runs is queued, not dropped.
     #[test]
     fn a_cancel_ends_the_manager_and_a_choice_during_a_jump_is_queued() {
@@ -555,6 +572,33 @@ mod tests {
         assert_eq!(after_close(Some(5), true), Closing::NotPorted(5));
     }
 
+    /// The wiring of `tick`: a code chosen during a jump is queued by `finish_close`, kept while the task is busy and
+    /// handed out exactly once when it is idle; a cancel queues nothing and a code that is not ported stays out.
+    #[test]
+    fn tick_wiring_queues_a_code_during_a_jump_and_applies_it_once_idle() {
+        let mut m = StruggleMenu::default();
+        let mut mission = Mission::default();
+        m.flow.chosen = Some(4);
+        assert_eq!(finish_close(&mut m, &mut mission, false), None);
+        assert_eq!(m.pending, Some(4));
+        assert_eq!(m.flow.chosen, None, "the choice is consumed");
+        assert_eq!(take_pending(&mut m, false), None, "still busy");
+        assert_eq!(m.pending, Some(4));
+        assert_eq!(take_pending(&mut m, true), Some(4));
+        assert_eq!(m.pending, None);
+        assert_eq!(take_pending(&mut m, true), None, "applied once");
+        m.flow.chosen = Some(3);
+        assert_eq!(finish_close(&mut m, &mut mission, true), Some(3));
+        assert_eq!(m.pending, None);
+        m.flow.chosen = Some(5);
+        assert_eq!(finish_close(&mut m, &mut mission, true), None);
+        assert_eq!(m.pending, None);
+        m.flow.chosen = None;
+        assert_eq!(finish_close(&mut m, &mut mission, false), None, "a cancel ends the manager and applies nothing");
+        assert_eq!(m.pending, None);
+    }
+
+    /// Row 0x1a of the disc's table, its texts and the pointer list's groups (skipped without `KH2_ISO`).
     #[test]
     fn the_disc_result_menu_row_texts_and_groups() {
         let Ok(iso) = std::env::var("KH2_ISO") else {

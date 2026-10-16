@@ -445,10 +445,13 @@ impl KindTwo {
                 if steps > 256 {
                     break false;
                 }
-                // FUN_001997f8
-                self.wave += 1;
+                // FUN_001997f8: the wave counts up only while it is below 200 (it stays at 200 after that).
+                let counted = self.wave < 200;
+                if counted {
+                    self.wave += 1;
+                }
                 let back_at = part.header[0x23];
-                if back_at != 0 && back_at <= self.wave {
+                if counted && back_at != 0 && back_at <= self.wave {
                     self.wave = part.header[0x24];
                     // FUN_00199858: before the wave is set, each spawn-kind-2 entity whose wave byte is not below the new
                     // wave and that FUN_001995c8 finds defeated (in the table, object absent) is taken out of the table
@@ -590,9 +593,15 @@ pub fn member_ring(m: &Member, player: Vec3) -> Option<Ring> {
 /// point (at most 12 m below), the line test `World::blocked_m` [inferred approximation: the game's line test
 /// (`FUN_001d1648`) meets floors too; `blocked_m` only walls].
 pub fn ring_place_in(rng: &mut PlaceRng, ring: &Ring, col: &World) -> Vec3 {
-    let ground = |p: Vec3| col.ground_m(p.x, p.z, p.y + 2.0).filter(|y| *y >= p.y - 12.0).map(|y| p.with_y(y));
+    let ground = |p: Vec3| floor_probe(p, |x, z, from| col.ground_m(x, z, from));
     let clear = |a: Vec3, b: Vec3| !col.blocked_m(a, b);
     ring_place(rng, ring, &ground, &clear)
+}
+
+/// The floor probe of `FUN_001a5c30`: the floor found from 2 m above `p` (`floor(x, z, from_y)` is the collision query),
+/// taken only when it is at most 12 m below `p` (the ray's 200 and 1000 cm).
+fn floor_probe(p: Vec3, floor: impl Fn(f32, f32, f32) -> Option<f32>) -> Option<Vec3> {
+    floor(p.x, p.z, p.y + 2.0).filter(|y| *y >= p.y - 12.0).map(|y| p.with_y(y))
 }
 
 /// `FUN_00199e98` for a kind-6 group record (`FUN_00198b30` case 6), run on a frame the player is inside one of its
@@ -620,7 +629,9 @@ pub struct PartCount {
 /// What `FUN_00198750` counts for a group record when it is set up: every enemy-class entity (`FUN_001994c8`: object
 /// types 4 and 0x15) that is not in the table of the defeated (`killed`): the spawn-kind-2 ones always (they are only
 /// counted), kinds 0 and 3 when the group is not disabled (`FUN_00198920`), kind 1 when its entrance is the current
-/// one (`FUN_001981a0`). A kind-9 group sets up nothing.
+/// one (`FUN_001981a0`). A kind-9 group sets up nothing. Not ported: the two filters that skip an entity in
+/// `FUN_00198750` (`FUN_001981a0` fails when `DAT_0035e3a0` is set and `FUN_0016ece0(type) >= 2000`; an object of type 0x10
+/// with `FUN_002d6d28 == 0` is dropped); the Twilight Town data has neither, and no enemy-class entity is type 0x10.
 pub fn counted_at_load(part: &GroupPart, entrance: u8, killed: &[u16]) -> i32 {
     if part.kind == 9 {
         return 0;
@@ -1800,12 +1811,63 @@ mod tests {
     #[test]
     fn place_rng_follows_the_games_generator() {
         let mut r = PlaceRng::default();
-        let s0 = r.seed;
-        let v = r.next();
-        assert_eq!(v, s0.wrapping_mul(0x10dcd) as f32 / 4_294_967_296.0);
-        assert!((0.0..1.0).contains(&v));
+        // Literal values of seed * 0x10dcd (mod 2^32) / 2^32 from the start seed 0x2545f491: 0x5b01351d, 0x24c70139, 0x8fa4dfa5.
+        let seq: Vec<f32> = (0..3).map(|_| r.next()).collect();
+        for (v, want) in seq.iter().zip([0.355_487_17_f32, 0.143_661_58, 0.561_109_5]) {
+            assert!((v - want).abs() < 1e-6, "{v} vs {want}");
+        }
+        assert_eq!(r.seed, 0x8fa4_dfa5);
+        let mut r = PlaceRng::default();
         let octants: Vec<u32> = (0..9).map(|_| r.octant()).collect();
         assert_eq!(octants, [0, 2, 4, 6, 9, 11, 13, 15, 0]);
+    }
+
+    /// The floor probe of `ring_place_in` (`FUN_001a5c30`): the collision is asked from 2 m above the point and a floor more than
+    /// 12 m below the point is not taken.
+    #[test]
+    fn the_floor_probe_asks_from_2_m_above_and_takes_a_floor_up_to_12_m_below() {
+        let p = Vec3::new(1.0, 5.0, -2.0);
+        let asked = std::cell::Cell::new((0.0, 0.0, 0.0));
+        let at = |y: f32| {
+            move |x: f32, z: f32, from: f32| {
+                let _ = (x, z, from);
+                Some(y)
+            }
+        };
+        assert_eq!(floor_probe(p, |x, z, from| {
+            asked.set((x, z, from));
+            Some(-7.0)
+        }), Some(Vec3::new(1.0, -7.0, -2.0)), "12 m below is still taken");
+        assert_eq!(asked.get(), (1.0, -2.0, 7.0));
+        assert_eq!(floor_probe(p, at(-7.01)), None, "past 12 m below");
+        assert_eq!(floor_probe(p, |_, _, _| None), None);
+        assert_eq!(floor_probe(p, at(6.0)), Some(Vec3::new(1.0, 6.0, -2.0)), "a floor above the point (a ceiling's underside is the query's business)");
+    }
+
+    /// Review finding 9 (`FUN_001997f8`): the wave counts up only from below 200, and the wrap test uses the new wave, so a
+    /// wrap at wave 200 still happens on the step from 199 and a group with no wave left stops at 200.
+    #[test]
+    fn the_wave_counter_stops_at_200_and_wraps_there() {
+        let part = |back_at: u8, back_to: u8, entities: Vec<(u8, u8, u8)>| {
+            let mut header = [0u8; 0x2c];
+            header[0x22] = 9;
+            header[0x23] = back_at;
+            header[0x24] = back_to;
+            GroupPart { id: 0x8a, kind: 2, disabled: false, header, activators: Vec::new(), entities, counted: Vec::new() }
+        };
+        let group = |p: GroupPart, members: Vec<Member>| AreaGroup { program: 0x50, name: "b_t".into(), parts: vec![p], members, skipped: Vec::new(), player: None, mission: None, orb_pool: false, triggers: Vec::new() };
+        // No wave to move to: the walk ends at 200 and returns nothing; a second run does not move it.
+        let g = group(part(0, 0, vec![]), vec![]);
+        let mut two = KindTwo { part: 0, timer: 0.0, wave: 198, killed: Vec::new() };
+        assert!(two.run(&g, |_| false).is_empty());
+        assert_eq!(two.wave, 200);
+        assert!(two.run(&g, |_| false).is_empty());
+        assert_eq!(two.wave, 200);
+        // A wrap at 200 (header +0x23) taken on the step from 199 goes back to wave 5 and creates its member.
+        let g = group(part(200, 5, vec![(2, 5, 1)]), vec![member(0, 2, 7, 10, 5)]);
+        let mut two = KindTwo { part: 0, timer: 0.0, wave: 199, killed: Vec::new() };
+        assert_eq!(two.run(&g, |_| false), [0]);
+        assert_eq!(two.wave, 5);
     }
 
     fn flat(p: Vec3) -> Option<Vec3> {

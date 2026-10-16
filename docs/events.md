@@ -1121,7 +1121,8 @@ Each stage ends with `verify.ps1` passing and the named check.
   Not ported: the keyhole layout of fade kind 3, the flag-bit-4 faders, the end-of-event faders.
   **Status (WP-E6f):** `area_jump::draw_fader` draws the event fade: the one full-screen node takes the stronger
   alpha of the jump's black and the event's fade, white when the event's wins (`combined_fade`, test
-  `the_event_fade_and_the_jump_fade_share_the_node`).
+  `the_event_fade_and_the_jump_fade_share_the_node`; `draw_fader` itself: `draw_fader_paints_the_node_from_the_jump_task`). The merge rule
+  (the stronger alpha wins, a tie keeps the jump's black) is the port's own [inferred]: no rule for two faders at once was found.
 
 ## 10. Unknowns (with what was searched)
 

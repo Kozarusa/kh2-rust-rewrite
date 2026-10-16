@@ -807,7 +807,10 @@ impl Progress {
         n != 0 && self.record_bit(CHEST_BITS + n)
     }
 
-    /// Marks the chest `n` opened (the chest's open path sets its bit in the same array).
+    /// Marks the chest `n` opened. The original sets the bit in `FUN_001a6910` (after the reward is given; `FUN_001a6a58`
+    /// mode 1 from the chest-open sequence `FUN_001a6db8`, `FUN_001a6a78` mode 2 from the reward list of an area trigger,
+    /// `FUN_001978b0`). The app has no chest object and does not run a trigger's reward list, so nothing calls this
+    /// outside a state file yet (gap, docs/menus.md "WP-MN13 status").
     pub fn set_chest_opened(&mut self, n: u16) {
         if n != 0 {
             self.set_record_bit(CHEST_BITS + n);
@@ -1568,6 +1571,7 @@ impl Progress {
         let j = Json::parse(text)?;
         let Json::Obj(fields) = &j else { return Err("the state must be a JSON object".into()) };
         let int = |v: &Json, what: &str| v.int().ok_or_else(|| format!("{what}: expected an integer"));
+        let in_range = |n: i64, max: i64, what: &str| if (0..=max).contains(&n) { Ok(n) } else { Err(format!("{what}: {n} is out of range (0..={max})")) };
         let id_of = |k: &str, what: &str| k.trim().parse::<u16>().map_err(|_| format!("{what}: '{k}' is not an id"));
         let list = |v: &Json, what: &str| -> Result<Vec<u16>, String> {
             match v {
@@ -1575,6 +1579,11 @@ impl Progress {
                 _ => Err(format!("{what}: expected an array")),
             }
         };
+        // A slot file is a whole state: one without the story arrays (an older file) loads the new-game story, not the
+        // running session's flags and program table.
+        if j.get("block").is_some() && j.get("story_raw").is_none() {
+            self.story().reset_state();
+        }
         for (key, v) in fields {
             match key.as_str() {
                 "experience" => self.set_experience(int(v, "experience")? as i32),
@@ -1779,7 +1788,7 @@ impl Progress {
                 // The record bits (save `+0x1550`): the words as integers.
                 "record_bits" => {
                     let Json::Arr(a) = v else { return Err("record_bits: expected an array".into()) };
-                    self.record_bits = a.iter().map(|x| int(x, "record_bits").map(|n| n as u32)).collect::<Result<_, _>>()?;
+                    self.record_bits = a.iter().map(|x| in_range(int(x, "record_bits")?, u32::MAX.into(), "record_bits")).collect::<Result<Vec<_>, _>>()?.into_iter().map(|n| n as u32).collect();
                 }
                 // The story arrays of a slot file (`slot_json`): the flag words and the area program table as hex
                 // and the exit locks as a flat list of (state, message) pairs. Replaces them; the effect lists stay.
@@ -1793,10 +1802,17 @@ impl Progress {
                     let (Some(words), Some(programs)) = (hex_of("words"), hex_of("programs")) else {
                         return Err("story_raw: expected hex strings words and programs".into());
                     };
+                    // Rejected, not truncated: the words are whole u32s, the locks whole (state, message) pairs.
+                    if words.len() % 4 != 0 {
+                        return Err(format!("story_raw: words is {} bytes, not a multiple of 4", words.len()));
+                    }
                     let locks = match v.get("locks") {
-                        Some(Json::Arr(a)) => a.iter().map(|x| int(x, "story_raw.locks").map(|n| n as u16)).collect::<Result<Vec<_>, _>>()?,
+                        Some(Json::Arr(a)) => a.iter().map(|x| in_range(int(x, "story_raw.locks")?, u16::MAX.into(), "story_raw.locks").map(|n| n as u16)).collect::<Result<Vec<_>, _>>()?,
                         _ => Vec::new(),
                     };
+                    if locks.len() % 2 != 0 {
+                        return Err(format!("story_raw: locks has {} numbers, not pairs", locks.len()));
+                    }
                     let mut st = self.story();
                     st.words = words.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
                     st.programs = programs;
@@ -1818,7 +1834,7 @@ impl Progress {
                 }
                 "new_seen" => {
                     let Json::Arr(a) = v else { return Err("new_seen: expected an array".into()) };
-                    self.new_seen = a.iter().map(|x| int(x, "new_seen").map(|n| n as u32)).collect::<Result<_, _>>()?;
+                    self.new_seen = a.iter().map(|x| in_range(int(x, "new_seen")?, u32::MAX.into(), "new_seen").map(|n| n as u32)).collect::<Result<_, _>>()?;
                 }
                 other => return Err(format!("unknown field '{other}'")),
             }
@@ -1993,6 +2009,14 @@ impl Story {
     /// A new-game story whose flags run the side effects of these world entries.
     pub fn with_effects(effects: Arc<Vec<Vec<u8>>>) -> Story {
         Story { effects, ..Story::default() }
+    }
+
+    /// The new-game story: every flag, program byte, exit lock and world point clear (`effects` stay: they are tables).
+    fn reset_state(&mut self) {
+        self.words.clear();
+        self.programs.clear();
+        self.locks.clear();
+        self.world_bits = [0; 2];
     }
 
     fn ensure(&mut self) {
@@ -2184,27 +2208,41 @@ impl Progress {
     /// of the state schema, and `slot` carries the row data. Rows are keys of the same schema, so a slot file is also a
     /// state file.
     pub fn slot_json(&self, info: &SlotInfo) -> String {
+        Self::join_fields(&self.slot_fields(info))
+    }
+
+    /// The keys of a slot file as (name, JSON value text) in file order: `block` comes first among the state keys so that
+    /// `apply_json` sees it before the keys it resets.
+    fn slot_fields(&self, info: &SlotInfo) -> Vec<(&'static str, String)> {
         let area: String = info.area.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
         let seen: Vec<String> = self.new_seen.iter().map(u32::to_string).collect();
-        format!(
-            "{{\n  \"format\": 1,\n  \"slot\": {{\"level\": {}, \"munny\": {}, \"play_seconds\": {}, \"area\": \"{}\"}},\n  \"block\": \"{}\",\n  \"munny\": {},\n  \"option_word\": {},\n  \"game_mode\": {},\n  \"dodge_roll\": {},\n  \"new_seen\": [{}],\n{}}}\n",
-            info.level,
-            info.munny,
-            info.play_seconds,
-            area,
-            hex(&self.block),
-            self.wallet,
-            self.config[0],
-            self.config[1],
-            self.dodge_roll,
-            seen.join(", "),
-            self.persisted_json()
-        )
+        let mut f = vec![
+            ("format", "1".to_string()),
+            ("slot", format!("{{\"level\": {}, \"munny\": {}, \"play_seconds\": {}, \"area\": \"{}\"}}", info.level, info.munny, info.play_seconds, area)),
+            ("block", format!("\"{}\"", hex(&self.block))),
+            ("munny", self.wallet.to_string()),
+            ("option_word", self.config[0].to_string()),
+            ("game_mode", self.config[1].to_string()),
+            ("dodge_roll", self.dodge_roll.to_string()),
+            ("new_seen", format!("[{}]", seen.join(", "))),
+        ];
+        f.extend(self.persisted_fields());
+        f
+    }
+
+    /// One key per line, in the order given.
+    fn join_fields(fields: &[(&str, String)]) -> String {
+        let lines: Vec<String> = fields.iter().map(|(k, v)| format!("  \"{k}\": {v}")).collect();
+        format!("{{
+{}
+}}
+", lines.join(",
+"))
     }
 
     /// The slot keys for the state kept outside the party block (the moogle's record, the shops' bits, the record bits,
-    /// the story arrays and the world points), as JSON lines for `slot_json`. Bit sets are lists of the set bits.
-    fn persisted_json(&self) -> String {
+    /// the story arrays and the world points). Bit sets are lists of the set bits.
+    fn persisted_fields(&self) -> Vec<(&'static str, String)> {
         fn bits(set: u64) -> String {
             let v: Vec<String> = (0..64).filter(|&n| Moogle::bit(set, n)).map(|n| n.to_string()).collect();
             format!("[{}]", v.join(", "))
@@ -2218,36 +2256,31 @@ impl Progress {
         let st = self.story();
         let words: Vec<u8> = st.words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let locks: Vec<u16> = st.locks.iter().flat_map(|l| [l[0], l[1]]).collect();
-        let points = nums(st.world_points());
         let seen_pairs = format!("[{}]", self.journal_seen.iter().map(|(c, e)| format!("[{c}, {e}]")).collect::<Vec<_>>().join(", "));
-        format!(
-            "  \"moogle\": {{\"known\": {}, \"learned\": {}, \"made\": {}, \"seen\": {}, \"unlocks\": {}, \"rewards\": {}, \"points\": {}, \"level\": {}, \"stock\": {}, \"totals\": {}}},
-  \"shop_seen\": {},
-  \"shop_visits\": {},
-  \"record_bits\": {},
-  \"journal_seen\": {},
-  \"story_raw\": {{\"words\": \"{}\", \"programs\": \"{}\", \"locks\": {}}},
-  \"world_points\": {}
-",
-            bits(m.known),
-            bits(m.learned),
-            bits(m.made),
-            bits(m.seen),
-            bits(m.unlocks),
-            bits(m.rewards),
-            m.points,
-            m.level,
-            nums((0..MOOGLE_MATERIALS).map(|i| m.stock_at(i))),
-            nums((0..MOOGLE_MATERIALS).map(|i| m.total_at(i))),
-            nums(shop_seen),
-            nums(shop_visits),
-            nums(self.record_bits.iter().copied()),
-            seen_pairs,
-            hex(&words),
-            hex(&st.programs),
-            nums(locks),
-            points
-        )
+        vec![
+            (
+                "moogle",
+                format!(
+                    "{{\"known\": {}, \"learned\": {}, \"made\": {}, \"seen\": {}, \"unlocks\": {}, \"rewards\": {}, \"points\": {}, \"level\": {}, \"stock\": {}, \"totals\": {}}}",
+                    bits(m.known),
+                    bits(m.learned),
+                    bits(m.made),
+                    bits(m.seen),
+                    bits(m.unlocks),
+                    bits(m.rewards),
+                    m.points,
+                    m.level,
+                    nums((0..MOOGLE_MATERIALS).map(|i| m.stock_at(i))),
+                    nums((0..MOOGLE_MATERIALS).map(|i| m.total_at(i)))
+                ),
+            ),
+            ("shop_seen", nums(shop_seen)),
+            ("shop_visits", nums(shop_visits)),
+            ("record_bits", nums(self.record_bits.iter().copied())),
+            ("journal_seen", seen_pairs),
+            ("story_raw", format!("{{\"words\": \"{}\", \"programs\": \"{}\", \"locks\": {}}}", hex(&words), hex(&st.programs), nums(locks))),
+            ("world_points", nums(st.world_points())),
+        ]
     }
 
     /// The row data of a slot file (`None` for text that is not a slot file).
@@ -2756,13 +2789,36 @@ mod tests {
             assert_eq!((st.lock_state(2), st.lock_message(2)), (0xffff, 9));
         }
         // An older slot file (no such keys) loads them as the defaults.
-        let old = text.split("  \"moogle\"").next().unwrap().trim_end().trim_end_matches(',').to_string() + "
-}
-";
+        let info = SlotInfo { level: 1, munny: 0, play_seconds: 0, area: "tt04".into() };
+        let mut fields = p.slot_fields(&info);
+        let before = fields.len();
+        let persisted: Vec<&str> = p.persisted_fields().iter().map(|f| f.0).collect();
+        fields.retain(|f| !persisted.contains(&f.0));
+        assert_eq!((persisted.len(), before - fields.len()), (7, 7), "every persisted key is in the slot file");
+        let old = Progress::join_fields(&fields);
+        assert!(!old.contains("moogle") && !old.contains("story_raw") && old.contains("\"block\""));
         let mut r = Progress::from_block(&[], Arc::new(ItemIndex::default()));
         r.moogle.points = 5;
         r.set_shop_seen(3);
+        {
+            let mut st = r.story();
+            st.set(0x801);
+            st.set_world_point(9);
+        }
         r.apply_json(&old).expect("an old file loads");
+        {
+            let st = r.story();
+            assert!(!st.test(0x801) && !st.world_point(9), "an old slot loads the new-game story, not the running one");
+        }
+        // The story arrays are checked, not truncated or wrapped.
+        assert!(r.apply_json("{\"story_raw\": {\"words\": \"0102030405\", \"programs\": \"\"}}").is_err(), "5 bytes are no u32 words");
+        assert!(r.apply_json("{\"story_raw\": {\"words\": \"\", \"programs\": \"\", \"locks\": [1, 2, 3]}}").is_err(), "an odd lock list");
+        assert!(r.apply_json("{\"story_raw\": {\"words\": \"\", \"programs\": \"\", \"locks\": [65536, 1]}}").is_err());
+        assert!(r.apply_json("{\"record_bits\": [-1]}").is_err());
+        assert!(r.apply_json("{\"record_bits\": [4294967296]}").is_err());
+        assert!(r.apply_json("{\"new_seen\": [-5]}").is_err());
+        r.apply_json("{\"record_bits\": [4294967295, 7]}").unwrap();
+        assert_eq!(r.record_bits, vec![u32::MAX, 7]);
         assert_eq!((r.moogle.clone(), r.shop_seen(3), r.shop_visit(1)), (Moogle::default(), false, false));
         // The party settings: a byte past 255 and a style past 5 are refused, not truncated.
         assert!(r.apply_json("{\"party_settings\": {\"2\": 256}}").is_err());

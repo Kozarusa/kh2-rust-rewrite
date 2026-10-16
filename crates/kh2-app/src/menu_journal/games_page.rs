@@ -22,10 +22,10 @@ pub const ROWS: usize = 10;
 /// The font of the rows (`+0x1a0 = 3`) and their ink (`+0x198 = 0x60000008`, as page 3's text).
 const FONT: usize = 3;
 const INK: [u8; 4] = [0x08, 0x00, 0x00, 0x60];
-/// The quote marks `FUN_001918a0` writes for the apostrophe and the double quote of the time format (glyphs 55 and 64)
-/// [inferred: the atlas has two double-quote glyphs, 64 and 65].
+/// The marks `FUN_001918a0` writes for the apostrophe and the double quote of the time format: its table turns them into the bytes
+/// 0x57 and 0x61, glyphs 55 and 65.
 const APOSTROPHE: u16 = 55;
-const QUOTE: u16 = 64;
+const QUOTE: u16 = 65;
 
 /// The objects of the two pages: the two layers, and per row the text object, its tag and (minigames) the value text.
 #[derive(Default, Clone, Copy)]
@@ -111,10 +111,16 @@ fn value_tokens(j: &Journal, scene: &MenuScene, v: &games::Value) -> Vec<Token> 
             t.extend(number(f, 2));
             t
         }
-        games::Value::Score { n, msg } => {
-            let mut t = number(n, 1);
-            t.extend(plain(j, scene, msg));
-            t
+        games::Value::Score { n, msg, msg_first } => {
+            let (mut t, digits) = (plain(j, scene, msg), number(n, 1));
+            if msg_first {
+                t.extend(digits);
+                t
+            } else {
+                let mut d = digits;
+                d.extend(t);
+                d
+            }
         }
     }
 }

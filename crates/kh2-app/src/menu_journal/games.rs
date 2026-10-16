@@ -233,14 +233,15 @@ pub fn positions(n: usize) -> usize {
     if n > 10 { n - 9 } else { 1 }
 }
 
-/// A minigame row's value text as the pieces `FUN_002b5698` joins for the US language (`FUN_00105cd8() == 1`): state 0 and 1 the
-/// message 0x4b71; state 4 the unit message and the time `%02d'%02d"%02d` of minutes, seconds and hundredths; otherwise
-/// the score as `%d` followed by the message 0x4b80 (state 2) or the unit message.
+/// A minigame row's value text as the pieces `FUN_002b5698` joins for a language other than the one `FUN_00105cd8` answers 1 for
+/// (taken to be Japanese, docs/hud.md; the USA disc's value is the other branch): state 0 and 1 the message 0x4b71; state 4 the
+/// unit message and the time `%02d'%02d"%02d` of minutes, seconds and hundredths; state 2 the message 0x4b80 and then the score
+/// as `%d`; otherwise the score and then the unit message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Value {
     NoScore,
     Time { unit: u16, m: u32, s: u32, f: u32 },
-    Score { n: u32, msg: u16 },
+    Score { n: u32, msg: u16, msg_first: bool },
 }
 
 /// The value of a minigame row from its record.
@@ -251,8 +252,8 @@ pub fn value(m: &Minigame, state: u8, word: u32) -> Value {
             let (_, mm, s, f) = split_time(word);
             Value::Time { unit: m.unit, m: mm, s, f }
         }
-        2 => Value::Score { n: word, msg: MSG_PLAYED },
-        _ => Value::Score { n: word, msg: m.unit },
+        2 => Value::Score { n: word, msg: MSG_PLAYED, msg_first: true },
+        _ => Value::Score { n: word, msg: m.unit, msg_first: false },
     }
 }
 
@@ -405,8 +406,8 @@ mod tests {
         let m = Minigame { world: 1, name: 1, unit: 0x4c00, game: 1 };
         assert_eq!(value(&m, 0, 0), Value::NoScore);
         assert_eq!(value(&m, 1, 5), Value::NoScore);
-        assert_eq!(value(&m, 2, 77), Value::Score { n: 77, msg: MSG_PLAYED });
-        assert_eq!(value(&m, 3, 9), Value::Score { n: 9, msg: 0x4c00 });
+        assert_eq!(value(&m, 2, 77), Value::Score { n: 77, msg: MSG_PLAYED, msg_first: true });
+        assert_eq!(value(&m, 3, 9), Value::Score { n: 9, msg: 0x4c00, msg_first: false });
         assert_eq!(value(&m, 4, 3600 + 61 * 60 + 5), Value::Time { unit: 0x4c00, m: 2, s: 1, f: 8 });
     }
 }

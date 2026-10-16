@@ -1260,6 +1260,18 @@ fn load(j: &mut Journal, disc: &Disc, scene: &mut MenuScene, images: &mut Assets
             photo: [p_layer, p_title, p_caption, p_pic],
         };
     }
+    // The Quests / Minigames pages (`FUN_002b5e50`, `FUN_002b4b18`): two layers, ten rows with a tag and a value text each. Before the
+    // scroll bar's parts, which draw over the second layer's track.
+    {
+        let layers = [add(scene, list, tex, Some(header)), add(scene, list, tex, Some(header))];
+        let mut g = games_page::Nodes { layers, ..games_page::Nodes::default() };
+        for k in 0..games_page::ROWS {
+            g.rows[k] = add(scene, list, tex, Some(layers[0]));
+            g.values[k] = add(scene, list, tex, Some(g.rows[k]));
+            g.tags[k] = add(scene, list, tex, Some(g.rows[k]));
+        }
+        nodes.games = g;
+    }
     // The help line (a child of the plate, `FUN_00278468`), the hints (roots), the cursor and its follower (moved
     // under the cursor row or cell when shown: those all have lower indices).
     nodes.help = add(scene, list, tex, Some(plate));
@@ -1291,17 +1303,6 @@ fn load(j: &mut Journal, disc: &Disc, scene: &mut MenuScene, images: &mut Assets
         let (name, sub) = (add(scene, list, tex, Some(header)), add(scene, list, tex, Some(header)));
         let arrows = [add(scene, list, tex, Some(header)), add(scene, list, tex, Some(header))];
         nodes.cpage = CharPageNodes { layer, name, sub, arrows, frame, pic, desc };
-    }
-    // The Quests / Minigames pages (`FUN_002b5e50`, `FUN_002b4b18`): two layers, ten rows with a tag and a value text each.
-    {
-        let layers = [add(scene, list, tex, Some(header)), add(scene, list, tex, Some(header))];
-        let mut g = games_page::Nodes { layers, ..games_page::Nodes::default() };
-        for k in 0..games_page::ROWS {
-            g.rows[k] = add(scene, list, tex, Some(layers[0]));
-            g.values[k] = add(scene, list, tex, Some(g.rows[k]));
-            g.tags[k] = add(scene, list, tex, Some(g.rows[k]));
-        }
-        nodes.games = g;
     }
     j.nodes = nodes;
     j.loaded = true;
@@ -2895,6 +2896,54 @@ mod tests {
         for g in groups.iter().filter(|g| g.family == 0) {
             eprintln!("family 0 group: on {} off {} kind {} count {}", g.on, g.off, g.kind, g.count);
         }
+    }
+
+    /// The Quests and Minigames pages' data on the disc (skipped without `KH2_ISO`): every record's messages exist, the world headers
+    /// have a world record, and the all-worlds listing fits the list (WP-MN14).
+    #[test]
+    fn the_disc_quest_and_minigame_data() {
+        let Ok(iso) = std::env::var("KH2_ISO") else { return };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let bar = a.read("menu/us/jiminy.bar").unwrap();
+        let e = kh2_bar::parse(&bar).unwrap();
+        let worlds = parse_worlds(e[0].data).unwrap();
+        let (quests, minis) = (games::parse_quests(e[8].data), games::parse_games(e[7].data));
+        let msgs = kh2_image::text::Messages::from_bar(&a.read("msg/us/jm.bar").unwrap()).unwrap();
+        let sys = a.read("msg/us/sys.bar").ok().and_then(|b| kh2_image::text::Messages::from_bar(&b));
+        let has = |id: u16| msgs.tokens(u32::from(id)).is_some() || sys.as_ref().is_some_and(|s| s.tokens(u32::from(id)).is_some());
+        eprintln!("{} quests, {} minigames", quests.len(), minis.len());
+        for id in [0x4b34u16, 0x4b35, 0x4b80, 0x4b71, 0x4c8f] {
+            let t = msgs.tokens(u32::from(id)).or_else(|| sys.as_ref().and_then(|s| s.tokens(u32::from(id))));
+            eprintln!("message {id:#x}: {:?}", t.map(|t| kh2_image::text::to_text(&t)));
+        }
+        assert!(!quests.is_empty() && !minis.is_empty());
+        for q in &quests {
+            assert!(has(q.name), "quest name {:#x}", q.name);
+            assert!(q.group == 0 || has(q.group), "quest group {:#x}", q.group);
+            assert!(worlds.iter().any(|w| w.id as i16 as u16 == q.world), "quest world {}", q.world);
+        }
+        for m in &minis {
+            assert!(has(m.name), "minigame name {:#x}", m.name);
+            assert!(has(m.unit) || m.unit == 0, "minigame unit {:#x}", m.unit);
+            assert!(worlds.iter().any(|w| w.id as i16 as u16 == m.world), "minigame world {}", m.world);
+        }
+        assert!(has(games::MSG_PLAYED) && has(games::MSG_NO_SCORE) && has(games_page::HELP_QUEST) && has(games_page::HELP_GAME));
+        let (story, bit, mini) = (|_: u16| false, |_: u16| false, |_: u16| (0u8, 0u32));
+        let all = games::Game { story: &story, bit: &bit, mini: &mini, all: true };
+        let rows = games::quest_rows(&quests, &all);
+        assert_eq!(rows.iter().filter(|r| matches!(r, games::Row::Item(_))).count(), quests.len(), "every quest is listed with the all-worlds flag");
+        assert_eq!(games::game_rows(&minis, &all).iter().filter(|r| matches!(r, games::Row::Item(_))).count(), minis.len());
+        for (k, q) in quests.iter().take(8).enumerate() {
+            eprintln!("quest {k}: world {} group {:#x} name {:#x} flags {:#x} id {} game {} limit {} done {}", q.world, q.group, q.name, q.flags, q.id, q.game, q.limit, q.done);
+        }
+        for (k, m) in minis.iter().enumerate() {
+            eprintln!("minigame {k}: world {} name {:#x} unit {:#x} game {}", m.world, m.name, m.unit, m.game);
+        }
+        let mut flags: std::collections::BTreeMap<u16, usize> = Default::default();
+        for q in &quests {
+            *flags.entry(q.flags).or_default() += 1;
+        }
+        eprintln!("quest flags used: {flags:x?}");
     }
 
     /// The Treasures and Maps pages' data on the disc (skipped without `KH2_ISO`): the `trsr` and `item` rows, every row's

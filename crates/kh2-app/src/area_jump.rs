@@ -45,6 +45,7 @@ impl Plugin for AreaJumpPlugin {
             .init_resource::<JumpTask>()
             .init_resource::<LastExit>()
             .init_resource::<Type4Memory>()
+            .init_resource::<JumpMenus>()
             .init_resource::<ExitConsts>()
             .init_resource::<ExitLocks>()
             .init_resource::<Keyhole>()
@@ -278,6 +279,16 @@ impl LastExit {
 #[derive(Resource, Debug, Default, PartialEq, Eq)]
 pub struct Type4Memory(pub Option<u8>);
 
+/// What a record asked for besides a jump (types 5 and 6): `menu_ending` takes `ending` (menu kind 0xe), `tick` the
+/// type 6 screen fade.
+#[derive(Resource, Debug, Default, PartialEq, Eq)]
+pub struct JumpMenus {
+    /// Type 5: `FUN_0024f0b8(0xe, -1)` was called; the ending screen opens.
+    pub ending: bool,
+    /// Type 6: `FUN_00149f38` was called; the screen freezes and fades to black.
+    pub black: bool,
+}
+
 /// What a trigger's jump record (`FUN_0019d9d8`, parsed by `FUN_0019d8f0`) jumps to, with `cur` the record's
 /// world, area and entrance, `last` the remembered exit and `localset(world, key)` the area `07localset.bin`
 /// gives. Type 1: the record's own world, area, entrance. Type 2: `FUN_00198080(key, world)`: a negative world
@@ -479,6 +490,13 @@ pub enum JumpTask {
     /// The destination is set on `CurrentArea`; waits until it is loaded and Sora is placed.
     Loading { dest: Dest, kind: u32 },
     FadeIn { kind: u32, t: f32 },
+    /// The jump task's wait before its fade-out (`FUN_00104e18`'s 3rd argument, `JumpExtras::delay_ticks`): `left` ticks,
+    /// then the fade-out starts at tick `t0` (0, or the end of the fade for a jump taken after an event).
+    Wait { dest: Dest, kind: u32, left: u32, t0: f32 },
+    /// Type 6 (`FUN_00149eb0`): the screen is frozen and faded to black over `FADE_TICKS`, then stays black. Nothing in the
+    /// executable fades it back in by itself (the area start's fade-in and the event end's, `FUN_0013f1a0`, `FUN_002233d8`,
+    /// run when something else starts); here the black is lifted when a jump starts or an event plays [inferred].
+    Black { t: f32 },
 }
 
 /// An actor that belongs to the loaded area: the area's unload removes it (the enemies of `enemy.rs`).
@@ -732,16 +750,18 @@ pub fn record_fade(j: &Jump) -> (u32, bool) {
 /// Runs a record through `resolve_record`: the destination of a jump, or `None` after logging why nothing jumps (a
 /// menu or a fade the app does not have, an unknown type).
 #[allow(clippy::too_many_arguments)]
-fn take_record(j: &Jump, extras: &JumpExtras, cur: (u8, u8, u8), last: Option<Dest>, disc: &Disc, locks: &ExitLocks, consts: &ExitConsts, memory: &mut Type4Memory) -> Option<Dest> {
+fn take_record(j: &Jump, extras: &JumpExtras, cur: (u8, u8, u8), last: Option<Dest>, disc: &Disc, locks: &ExitLocks, consts: &ExitConsts, memory: &mut Type4Memory, menus: &mut JumpMenus) -> Option<Dest> {
     let flag = |id: u16| locks.story.as_ref().is_some_and(|s| s.lock().test(id));
     match resolve_record(j, cur, last, |w, k| disc_localset(disc, w, k), flag, &consts.map_entrances, &mut memory.0) {
         Ok(Outcome::Go(d)) => Some(d),
         Ok(Outcome::OpenMenu { kind, arg }) => {
-            info!("jump record type {}: opens menu kind {kind:#x} (FUN_0024f0b8({kind:#x}, {arg})); the app has no such menu: no menu, no jump{}", j.kind, extras.text());
+            menus.ending = kind == 0xe;
+            info!("jump record type {}: opens menu kind {kind:#x} (FUN_0024f0b8({kind:#x}, {arg})): the ending screen, no jump{}", j.kind, extras.text());
             None
         }
         Ok(Outcome::FreezeFade) => {
-            info!("jump record type {}: FUN_00149f38 freezes the screen and fades to black, no jump; not ported (nothing in the app fades back in){}", j.kind, extras.text());
+            menus.black = true;
+            info!("jump record type {}: FUN_00149f38 freezes the screen and fades to black, no jump{}", j.kind, extras.text());
             None
         }
         Err(why) => {
@@ -773,10 +793,36 @@ fn tick(
     mut forced: Local<u32>,
     mut last: ResMut<LastExit>,
     mut memory: ResMut<Type4Memory>,
+    mut menus: ResMut<JumpMenus>,
 ) {
+    // Type 6 (`FUN_00149f38`) asked for the freeze and the fade to black.
+    if std::mem::take(&mut menus.black) && *task == JumpTask::Idle {
+        info!("jump: type 6: the screen freezes and fades to black over {FADE_TICKS} ticks, then stays black (FUN_00149eb0)");
+        *task = JumpTask::Black { t: 0.0 };
+    }
     // The jump task.
     match *task {
         JumpTask::Idle => {}
+        JumpTask::Wait { dest, kind, left, t0 } => {
+            *task = if left <= 1 {
+                if t0 == 0.0 {
+                    begin_fade_out(&mut key, &mut scene, kind);
+                }
+                JumpTask::FadeOut { dest, kind, t: t0 }
+            } else {
+                JumpTask::Wait { dest, kind, left: left - 1, t0 }
+            };
+            return;
+        }
+        JumpTask::Black { t } => {
+            // Held black until a jump starts (the code below replaces the task) or an event plays (see `JumpTask::Black`).
+            if player.as_ref().is_some_and(|p| p.playing()) {
+                info!("jump: the type 6 black is lifted (an event plays) [inferred]");
+                *task = JumpTask::Idle;
+            } else if t < FADE_TICKS {
+                *task = JumpTask::Black { t: t + 1.0 };
+            }
+        }
         JumpTask::FadeOut { dest, kind, t } => {
             let ended = wipe_ended(&scene, &key);
             let k = &mut *key;
@@ -853,14 +899,15 @@ fn tick(
         let ae = exits.after_event.take().unwrap();
         match ae.jump {
             Some(j) => {
-                if let Some(dest) = take_record(&j, &ae.extras, (rec.world, rec.area, rec.entrance), last.0, &disc, &locks, &consts, &mut memory) {
+                if let Some(dest) = take_record(&j, &ae.extras, (rec.world, rec.area, rec.entrance), last.0, &disc, &locks, &consts, &mut memory, &mut menus) {
                     let (kind, _) = record_fade(&j);
                     info!("jump after the event (FUN_00196170 -> FUN_0019d9d8 with bit 31): type {} key {:#x} -> {} entrance {} programs {} (fade kind {kind}, no fade-out){}", j.kind, j.key, dest_name(&dest), dest.entrance, dest.programs_text(), ae.extras.text());
                     exits.jumping = Some(ae.group);
                     key.black_from = None;
                     key.wiping = false;
-                    // Bit 31: no fade-out; the task goes straight to the load.
-                    *task = JumpTask::FadeOut { dest, kind, t: FADE_TICKS - 1.0 };
+                    // Bit 31: no fade-out; the task goes straight to the load (after the record's wait, if any).
+                    let wait = ae.extras.delay_ticks();
+                    *task = if wait > 0 { JumpTask::Wait { dest, kind, left: wait, t0: FADE_TICKS - 1.0 } } else { JumpTask::FadeOut { dest, kind, t: FADE_TICKS - 1.0 } };
                     return;
                 }
             }
@@ -887,6 +934,7 @@ fn tick(
     let w = Walker { pos: s.motor.pos, facing: s.motor.forward(), vel: s.motor.vel };
     let world = rec.world;
     let mut start: Option<(Dest, u32, u16)> = None;
+    let mut wait = 0u32;
     let mut after: Option<AfterEvent> = None;
     // Harness: `KH2_WALKIN=<group id, hex>` fires that exit group's walk-in once `KH2_WALKIN_AT` seconds (default 3)
     // of simulation have passed, as if Sora had entered its option-0 volume past the gate (the decision and
@@ -900,7 +948,7 @@ fn tick(
     // trigger jump record through `resolve_jump` and the real fade and load path at `KH2_JUMP_AT` seconds (default 3).
     if let Some(j) = harness_jump().filter(|_| *forced == (std::env::var("KH2_JUMP_AT").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(3.0) * 60.0) as u32) {
         info!("jump: forced by KH2_JUMP: record {j:?}");
-        if let Some(dest) = take_record(&j, &JumpExtras::default(), (rec.world, rec.area, rec.entrance), last.0, &disc, &locks, &consts, &mut memory) {
+        if let Some(dest) = take_record(&j, &JumpExtras::default(), (rec.world, rec.area, rec.entrance), last.0, &disc, &locks, &consts, &mut memory, &mut menus) {
             info!("jump: type {} key {:#x} -> {} entrance {} programs {}", j.kind, j.key, dest_name(&dest), dest.entrance, dest.programs_text());
             start = Some((dest, record_fade(&j).0, 0xffff));
         }
@@ -972,9 +1020,10 @@ fn tick(
                         WalkIn::TriggerJump(j) => {
                             let (kind, instant) = record_fade(&j);
                             let extras = run.script.triggers.iter().find(|t| t.matches(1, g.id)).map(|t| JumpExtras::from_subs(&t.subs)).unwrap_or_default();
-                            if let Some(dest) = take_record(&j, &extras, (rec.world, rec.area, rec.entrance), last.0, &disc, &locks, &consts, &mut memory) {
+                            if let Some(dest) = take_record(&j, &extras, (rec.world, rec.area, rec.entrance), last.0, &disc, &locks, &consts, &mut memory, &mut menus) {
                                 info!("exit {} id {:#x}: trigger jump type {} key {:#x} -> {} entrance {} programs {} (fade kind {kind}{}){}", g.tag, g.id, j.kind, j.key, dest_name(&dest), dest.entrance, dest.programs_text(), if instant { ", instant" } else { "" }, extras.text());
                                 start = Some((dest, kind, g.id));
+                                wait = extras.delay_ticks();
                             }
                         }
                         WalkIn::TriggerOnly => info!("exit {} id {:#x}: trigger (1, {:#x}) without event or jump: not ported", g.tag, g.id, g.id),
@@ -1001,13 +1050,22 @@ fn tick(
         if kind > 1 {
             info!("jump: fade kind {kind} not ported (FUN_0013f290 / FUN_0013f3b0): black fade stand-in");
         }
-        // FUN_0015d058: group 1 of the layout; the fader follows once it has ended.
-        key.black_from = None;
-        key.wiping = kind == 0 && play_wipe(&mut scene, &key, 1);
-        if kind == 0 {
-            info!("jump: fade kind 0 out ({})", if key.wiping { "keyhole wipe group 1, then a 2-tick fader to black".to_string() } else { format!("black fade, {FADE_TICKS} ticks: no keyhole layout") });
+        if wait > 0 {
+            info!("jump: the record's wait of {wait} ticks before the fade-out (menu before, JumpExtras::delay_ticks)");
+            *task = JumpTask::Wait { dest, kind, left: wait, t0: 0.0 };
+        } else {
+            begin_fade_out(&mut key, &mut scene, kind);
+            *task = JumpTask::FadeOut { dest, kind, t: 0.0 };
         }
-        *task = JumpTask::FadeOut { dest, kind, t: 0.0 };
+    }
+}
+
+/// The start of a fade-out (`FUN_0015d058`: group 1 of the layout; the fader follows once it has ended).
+fn begin_fade_out(key: &mut Keyhole, scene: &mut Option<ResMut<crate::hud::HudScene>>, kind: u32) {
+    key.black_from = None;
+    key.wiping = kind == 0 && play_wipe(scene, key, 1);
+    if kind == 0 {
+        info!("jump: fade kind 0 out ({})", if key.wiping { "keyhole wipe group 1, then a 2-tick fader to black".to_string() } else { format!("black fade, {FADE_TICKS} ticks: no keyhole layout") });
     }
 }
 
@@ -1043,6 +1101,8 @@ fn draw_fader(
 ) {
     let a = match *task {
         JumpTask::Idle => 0.0,
+        JumpTask::Wait { .. } => 0.0,
+        JumpTask::Black { t } => fade_alpha(true, t),
         JumpTask::FadeOut { t, .. } if key.wiping => wipe_alpha(true, t, key.black_from),
         JumpTask::FadeOut { t, .. } => fade_alpha(true, t),
         JumpTask::Loading { .. } => 1.0,
@@ -1088,6 +1148,25 @@ mod tests {
         assert_eq!((half.red, half.green, half.blue), (0.0, 0.0, 0.0));
         assert!((half.alpha - 0.5).abs() < 1e-6, "{}", half.alpha);
         assert_eq!(paint(&mut w, JumpTask::Loading { dest, kind: 1 }).alpha, 1.0);
+    }
+
+    /// The jump's wait leaves the screen clear, and a type 6 record fades to black over `FADE_TICKS` and holds it.
+    #[test]
+    fn the_wait_is_clear_and_the_type_six_black_holds() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut w = bevy::ecs::world::World::new();
+        w.init_resource::<Keyhole>();
+        let node = w.spawn((FadeNode, BackgroundColor(Color::NONE))).id();
+        let dest = Dest::new(crate::area::TWILIGHT_TOWN, 4, 0);
+        let paint = |w: &mut bevy::ecs::world::World, task: JumpTask| {
+            w.insert_resource(task);
+            w.run_system_once(draw_fader).unwrap();
+            w.get::<BackgroundColor>(node).unwrap().0.to_srgba().alpha
+        };
+        assert_eq!(paint(&mut w, JumpTask::Wait { dest, kind: 1, left: 2, t0: 0.0 }), 0.0);
+        assert_eq!(paint(&mut w, JumpTask::Black { t: 0.0 }), 0.0);
+        assert!((paint(&mut w, JumpTask::Black { t: FADE_TICKS / 2.0 }) - 0.5).abs() < 1e-6);
+        assert_eq!(paint(&mut w, JumpTask::Black { t: FADE_TICKS }), 1.0);
     }
 
     #[test]

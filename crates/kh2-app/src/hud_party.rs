@@ -111,6 +111,8 @@ struct SummonPanel {
     shown: bool,
     /// Seconds of group 156 still to play before the panel is hidden.
     leaving: Option<f32>,
+    /// The missing-circle warning was logged for this request (once, not every frame).
+    warned: bool,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -330,12 +332,28 @@ pub fn update(
     summon_panel(&mut scene, &mut nodes, &summon, disc.as_deref(), &mut images, time.delta_secs());
 }
 
+/// Sora's HP circle in the scene: the parent of the summon panel's circle (heuristic: a parentless right-edge node of the gauge
+/// file whose group is one of Sora's three HP circles).
+fn sora_circle(scene: &HudScene) -> Option<usize> {
+    scene.nodes.iter().position(|n| n.file == GAUG && n.parent.is_none() && n.edge == Edge::Right && matches!(n.player.group, Some(137 | 132 | 135)))
+}
+
 /// The summon's panel: a circle built like a party panel's (group 154 once, then 155 looping, at slot 0's place) with the
 /// summon's `face` picture (group 3) inside; group 156 plays when the summon goes.
 fn summon_panel(scene: &mut HudScene, nodes: &mut PartyNodes, req: &SummonFace, disc: Option<&Disc>, images: &mut Assets<Image>, dt: f32) {
     let panel_shown = nodes.summon.shown;
     match summon_step(panel_shown, req.model.is_some()) {
         SummonStep::Show => {
+            // The circle is a child of Sora's HP circle (below): without it the panel would sit at the screen origin, so it
+            // waits (and says so once) until that circle exists.
+            let sora = sora_circle(scene);
+            if nodes.summon.circle.is_none() && sora.is_none() {
+                if !std::mem::replace(&mut nodes.summon.warned, true) {
+                    warn!("hud: summon panel: Sora's HP circle (file {GAUG}, right edge, group 137/132/135) is not in the scene; the panel waits for it");
+                }
+                return;
+            }
+            nodes.summon.warned = false;
             let file = req.model.as_ref().and_then(|model| {
                 let disc = disc?;
                 *nodes.faces.entry(model.clone()).or_insert_with(|| {
@@ -349,7 +367,6 @@ fn summon_panel(scene: &mut HudScene, nodes: &mut PartyNodes, req: &SummonFace, 
             // Built on the first request and reused: the circle and its face node keep their place. The circle is a child of
             // Sora's HP circle (FUN_00156e30 stores the panel's +0x1980 as the node's parent, as the drive gauge's nodes do): the
             // groups' own offsets (-71, -17) are from his circle.
-            let sora = scene.nodes.iter().position(|n| n.file == GAUG && n.parent.is_none() && n.edge == Edge::Right && matches!(n.player.group, Some(137 | 132 | 135)));
             let circle = *p.circle.get_or_insert_with(|| scene.add(Node::new(GAUG, sora)));
             if p.face.is_none()
                 && let Some(file) = file
@@ -395,6 +412,25 @@ fn summon_panel(scene: &mut HudScene, nodes: &mut PartyNodes, req: &SummonFace, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Without Sora's HP circle in the scene the summon panel is not built (it would sit at the screen origin): no node is
+    /// added, the request stays unanswered (`shown` false, so it is retried) and the warning is marked as logged once.
+    #[test]
+    fn summon_panel_waits_for_soras_circle() {
+        let mut scene = HudScene::default();
+        let mut nodes = PartyNodes::default();
+        let mut images = Assets::<Image>::default();
+        let req = SummonFace { model: Some("P_EX350".to_string()) };
+        for _ in 0..3 {
+            summon_panel(&mut scene, &mut nodes, &req, None, &mut images, 0.016);
+        }
+        assert!(scene.nodes.is_empty(), "no node at the origin");
+        assert!(nodes.summon.circle.is_none() && !nodes.summon.shown, "retried when the circle exists");
+        assert!(nodes.summon.warned);
+        // The request going away clears nothing it never built and does not panic.
+        summon_panel(&mut scene, &mut nodes, &SummonFace::default(), None, &mut images, 0.016);
+        assert!(scene.nodes.is_empty());
+    }
 
     #[test]
     fn faces_come_from_the_members_models() {

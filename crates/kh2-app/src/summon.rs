@@ -201,6 +201,30 @@ pub mod ai {
         ClearFlag(i32),
     }
 
+    impl SummonAi {
+        /// Host 1.155 on the player (FUN_00186238 -> FUN_001a0100): `amount` is added to the HP held for this tick and the
+        /// result clamped to the maximum; a KO'd player (HP 0) stays as he is (`magic_rules::healed`). Returns the HP the
+        /// method gives back. The HP gained is kept in `player_heal`.
+        pub fn heal_player(&mut self, amount: i32) -> i32 {
+            let (hp, max) = self.player_hp;
+            let new = crate::magic_rules::healed(hp, max, amount);
+            self.player_heal += new - hp;
+            self.player_hp.0 = new;
+            new
+        }
+
+        /// What `objects` does after the script ran: when host 1.155 healed this tick, the player's HP becomes the held
+        /// value. Returns (HP before, HP after) for the log.
+        pub fn apply_heal(&mut self, hp: &mut i32) -> Option<(i32, i32)> {
+            if std::mem::take(&mut self.player_heal) <= 0 {
+                return None;
+            }
+            let before = *hp;
+            *hp = self.player_hp.0;
+            Some((before, *hp))
+        }
+    }
+
     impl Default for SummonAi {
         fn default() -> Self {
             SummonAi {
@@ -1286,6 +1310,16 @@ pub mod scripted {
         if st.current.is_some_and(|c| c >= recs.len()) {
             st.current = None;
         }
+        // The stand-ins for what FUN_0010fcd0 reads of the member, each tied to the record so a record that does not fit
+        // them is never chosen instead of passing through an always-true test:
+        // - The record's phase 1 (`can`): the handlers FUN_0011a590 / FUN_0011a118 answer 1 (see `START_MODE`); any other
+        //   handler is not ported here and is not offered.
+        // - The setting byte (`setting`): read only for a record whose +0x1c is not -1; the classes' record has -1, any
+        //   other is not offered.
+        // - The MP tests (`MemberNow`, `Params`): read only for a record whose entry costs MP; the classes' record has no
+        //   parameter entry, any other is not offered. [inferred from the one record per class, `Data::from_exe`]
+        // With those tests the stand-ins (`MemberNow::default()`, `Params::default()`) are never read.
+        let fits = |r: &Record| matches!(r.handler, Handler::Other(h) if START_MODE.contains(&h)) && r.setting == -1 && r.entry.is_none_or(|e| e.mp <= 0);
         let choice = battle::choose(
             recs,
             &mut st,
@@ -1295,7 +1329,7 @@ pub mod scripted {
             class == PAN.class,
             false,
             |_| None,
-            |_, _| true,
+            |i, _| fits(&recs[i]),
             || rng.borrow_mut().roll(),
             |n| rng.borrow_mut().rand(n),
         );
@@ -1746,6 +1780,13 @@ impl SummonState {
         drive.gauge_mode == GaugeMode::Summon && drive.timer.left > 0.0
     }
 
+    /// Genie is out: the state is 2 and `FUN_001c6940` (the player-type id of the object at `DAT_01d5e360`) answers his
+    /// NeoStatus 0xc9 (`FUN_001bc6e0`'s test for the "Drive!" entry). The summon objects' NeoStatus is looked up among
+    /// all of them, not only the first slot [inferred: Genie is a single-summon object].
+    pub fn genie_out(&self) -> bool {
+        self.state == 2 && self.present.contains(&genie::NEO)
+    }
+
     /// Dismiss is available (`FUN_001ba2c0` case 0x13c: the state is 2 and `FUN_001b3c00` finds no
     /// limit task).
     pub fn dismiss_ok(&self) -> bool {
@@ -1775,7 +1816,8 @@ pub enum SummonRequest {
     Gauge(f32),
     /// Genie's "Drive!" list: the form command chosen (535..538, `Execute` handled by the generic executor FUN_00177c20 ->
     /// FUN_0016b420, which raises event 11 on the first summon object's script with (the player, the command, a target
-    /// record)). The command menu issues it (`items.rs`); the harness `KH2_GENIE_FORM`.
+    /// record)). The command menu issues it (`items.rs`: the second deck's "Drive!" list while Genie is out, `SummonState::genie_out`);
+    /// the harness also pushes it (`KH2_GENIE_FORM`).
     Form(u16),
 }
 
@@ -2015,14 +2057,12 @@ impl SummonHost<'_, '_> {
             // starts on the player. A positive amount is added to the HP of part 0 and the result held between its lowest
             // (0) and its maximum (FUN_001a0100); the method returns that HP. The app adds it after the tick.
             (1, 155) if a(0) == crate::enemy_obj::PLAYER && a(2) == 0 => {
-                let (hp, max) = self.ai.player_hp;
+                let hp = self.ai.player_hp.0;
                 let amount = a(1) as i32;
                 if amount <= 0 {
                     (Value::Int(hp), St::Stub, "a negative amount (a hit through the method) is not taken: the summon's scripts only heal [inferred]")
                 } else {
-                    let new = crate::magic_rules::healed(hp, max, amount);
-                    self.ai.player_heal += new - hp;
-                    self.ai.player_hp.0 = new;
+                    let new = self.ai.heal_player(amount);
                     (Value::Int(new), St::Approx, "the amount is added to the player's HP and clamped; the revive branch (+0x7f8 bit 4, FUN_0017cee8), the panel's heal event (FUN_0013de10) and the death method are not reproduced")
                 }
             }
@@ -2753,7 +2793,7 @@ fn tick(
             }
             SummonRequest::Form(c) => {
                 // Only while Genie is out (the menu lists "Drive!" in that state: FUN_001bc6e0 with state 2 and NeoStatus 201).
-                if sm.state == 2 && sm.present.contains(&genie::NEO) {
+                if sm.genie_out() {
                     sm.pending_form = Some(c);
                     info!("summon: Drive! chose command {c} (event 11 for Genie)");
                 } else {
@@ -3441,10 +3481,8 @@ fn objects(
         ai.kid_serial = sm.kid_serial;
         sm.kid_makes.append(&mut ai.makes);
         sm.kid_ops.extend(ai.remote.drain(..).map(|(h, op)| (h, op, 0)));
-        if std::mem::take(&mut ai.player_heal) > 0 {
-            let before = s.hp;
-            s.hp = ai.player_hp.0;
-            info!("summon: {tag} healed the player (host 1.155): HP {before} -> {}", s.hp);
+        if let Some((before, after)) = ai.apply_heal(&mut s.hp) {
+            info!("summon: {tag} healed the player (host 1.155): HP {before} -> {after}");
         }
         let now = rt.current_mode();
         if now != *mode {
@@ -4687,7 +4725,9 @@ mod tests {
         // FUN_002f6320's tables: the default {1, 2, -1, -1, -1} (Chicken Little, Tinker Bell), Peter Pan's own.
         assert_eq!(chicken.loco, [1, 2, -1, -1, -1]);
         assert_eq!(tinker.loco, chicken.loco);
-        assert_ne!(pan.loco, chicken.loco);
+        // Peter Pan's own table at 0x3716c0, read from the disc and printed above: motions 165, 161..164.
+        assert_eq!(pan.loco, [165, 161, 162, 163, 164]);
+        assert_eq!((k.speed_add, k.aim_ahead, k.join_window), (2.0, 200.0, 8.0));
         let mut ai = scripted::ScriptedAi { rng: stitch::Rng(7), ..Default::default() };
         let calm = scripted::Now { battle: false, mode_running: false };
         assert_eq!(scripted::decide(&chicken.records, 0x12, &mut ai, &calm), scripted::Out { follow: true, ..Default::default() });
@@ -4712,6 +4752,52 @@ mod tests {
         assert_eq!(scripted::aim_point(&k, Some([1.0, 2.0, 3.0, 1.0]), [9.0; 4], [0.0; 4]), [1.0, 2.0, 3.0, 1.0]);
         let ahead = scripted::aim_point(&k, None, [10.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 0.0]);
         assert_eq!(ahead, [10.0, 0.0, k.aim_ahead, 1.0]);
+    }
+
+    /// Host 1.155 on the player (the arm in `SummonHost::own` calls `SummonAi::heal_player`) and what `objects` does after the
+    /// tick (`apply_heal`): Peter Pan's amount 5 on 10/100 gives 15 and the player's HP becomes 15; the maximum holds; a KO'd
+    /// player (HP 0) is not revived by it; a tick without a heal leaves the HP alone.
+    #[test]
+    fn host_1_155_heal_reaches_the_players_hp() {
+        let mut ai = ai::SummonAi { player_hp: (10, 100), ..Default::default() };
+        assert_eq!(ai.heal_player(5), 15, "the method gives the new HP back");
+        assert_eq!((ai.player_hp.0, ai.player_heal), (15, 5));
+        let mut hp = 10;
+        assert_eq!(ai.apply_heal(&mut hp), Some((10, 15)));
+        assert_eq!((hp, ai.player_heal), (15, 0), "taken once");
+        assert_eq!(ai.apply_heal(&mut hp), None, "no heal this tick");
+        // Two heals in a tick add; the maximum clamps.
+        let mut ai = ai::SummonAi { player_hp: (97, 100), ..Default::default() };
+        assert_eq!(ai.heal_player(5), 100);
+        assert_eq!(ai.heal_player(5), 100);
+        assert_eq!(ai.player_heal, 3);
+        let mut hp = 97;
+        assert_eq!(ai.apply_heal(&mut hp), Some((97, 100)));
+        // KO: nothing changes and nothing is applied.
+        let mut ai = ai::SummonAi { player_hp: (0, 100), ..Default::default() };
+        assert_eq!(ai.heal_player(5), 0);
+        assert_eq!(ai.player_heal, 0);
+        let mut hp = 0;
+        assert_eq!(ai.apply_heal(&mut hp), None);
+        assert_eq!(hp, 0);
+    }
+
+    /// `scripted::decide` offers only a record its stand-ins fit: the handler is one of the class handlers whose phase 1
+    /// answers 1, the setting index is -1 and no MP is spent. A flagged-3 record with another handler, a setting or an MP
+    /// cost is not chosen, instead of passing an always-true test.
+    #[test]
+    fn scripted_decide_offers_only_records_its_stand_ins_fit() {
+        use crate::party_battle::{Handler, Record};
+        let rec = |handler| Record { flags: 3, handler, id: 0, entry: None, ability: 0, item: 0, setting: -1, mode: "battle".to_string() };
+        let idle = scripted::Now { battle: true, mode_running: false };
+        let decide = |r: Record| scripted::decide(&[r], 0x12, &mut scripted::ScriptedAi { rng: stitch::Rng(7), ..Default::default() }, &idle);
+        assert_eq!(decide(rec(Handler::Other(scripted::START_MODE[0]))).start, Some((0, "battle".to_string())));
+        assert_eq!(decide(rec(Handler::Other(scripted::START_MODE[1]))).start, Some((0, "battle".to_string())));
+        assert_eq!(decide(rec(Handler::Other(0x11_1111))).start, None, "another handler: phase 1 not ported");
+        assert_eq!(decide(rec(Handler::Attack)).start, None);
+        let mut with_setting = rec(Handler::Other(scripted::START_MODE[0]));
+        with_setting.setting = 3;
+        assert_eq!(decide(with_setting).start, None, "a setting byte would be read");
     }
 
     /// Oracle: FUN_00119ce8 (host 10.25's test: may a member join the player's attack) run by kh2-ee on the user's

@@ -2954,7 +2954,7 @@ fn tick(
         }
         // `KH2_JOURNAL_QUADS=1`: the box each journal node draws, once, a second after the open (harness aid).
         *logged += 1;
-        if *logged == 60 && std::env::var_os("KH2_JOURNAL_QUADS").is_some() {
+        if (*logged == 60 || (*logged % 240 == 0 && std::env::var("KH2_JOURNAL_QUADS").as_deref() == Ok("late"))) && std::env::var_os("KH2_JOURNAL_QUADS").is_some() {
             scene.resolve();
             for id in j.nodes.all() {
                 let qs = scene.node_quads(id);
@@ -2966,6 +2966,7 @@ fn tick(
                     a = [a[0].min(p[0]), a[1].min(p[1])];
                     b = [b[0].max(p[0]), b[1].max(p[1])];
                 }
+                if std::env::var_os("KH2_JOURNAL_QUADS2").is_some() { for (q, d) in qs.iter().zip(scene.node_quads_drawn(id)) { info!("journal: q{id} rest {:?} drawn {:?} uvx {:?}", q.pos[0], d.pos[0], [q.uv[0][0], q.uv[3][0]]); } }
                 info!("journal: node {id} group {:?} box ({:.0},{:.0})-({:.0},{:.0})", scene.nodes[id].player.group, a[0], a[1], b[0], b[1]);
             }
         }

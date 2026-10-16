@@ -237,16 +237,17 @@ entrance, map, btl, evt; 0xff keeps the current one).
   waits for black and ends; no destination and no fade-in was found [gap], so `Outcome::FreezeFade` is logged only.
   Record words 4 to 6 come from the trigger sub-commands 4, 5, 7, 8 (`FUN_00180ff8`; defaults `FUN_00197780`): word 4
   (sub 4, default 0) a party arrangement index (`FUN_001a7330(FUN_001a71c0(world), index)`, not ported: no party order in
-  the app); word 5 (sub 5, default -1) the party reset code (`FUN_00104e18`, `FUN_001abfe8`; 0 = no reset, not ported);
-  word 6 (sub 7, default 0) "menu before": 1 or 2 opens menu kind 5 first (`FUN_0024f300`), any non-zero code delays the
-  jump 2 ticks (only logged, the menu is missing); sub 8 is not read by `FUN_0019d9d8`. Tests:
+  the app); word 5 (sub 5, default -1) the party reset code (the 5th argument of `FUN_00104e18`; when the record has no destination world and the word is non-zero `FUN_001abfe8()` is called with no argument; not ported);
+  word 6 (sub 7, default 0) "menu before": 1 or 2 opens menu kind 5 first (`FUN_0024f300`) and sets the jump's wait (the 3rd argument of
+  `FUN_00104e18`, read as ticks [inferred]) to 2, logged only (the menu is missing); any other code leaves both at 0
+  (`LAB_0019db28`); sub 8 is not read by `FUN_0019d9d8`. Tests:
   `type_four_decides_by_story_flags`, `type_four_to_the_world_map_is_not_available`,
   `types_five_and_six_open_a_menu_or_freeze_without_a_jump`, `record_words_four_to_six_parse_with_defaults`,
   `a_type_four_record_always_fades_with_kind_one`. Harness `KH2_JUMP=4:2:0`, `5:0:0`, `6:0:0` (quoted lines: "jump: type 4
   key 0x2 -> world 15 area 0 entrance 0 ...", "jump: the world map is not available (the app has only Twilight Town);
   staying", "jump record type 5: opens menu kind 0xe ... no menu, no jump", "jump record type 6: FUN_00149f38 freezes the
-  screen and fades to black, no jump"). Gap: `FUN_0019d8f0`'s callers and `FUN_001d3a68` were not re-scanned for other
-  creators of words 4 to 6; only `FUN_00180ff8` was found. **Gaps**: the other
+  screen and fades to black, no jump"). Scan done: `mips_scan.py --jal 0x19d8f0` has one caller, `FUN_00180ff8` (0x1810a0); `--jal 0x1d3a68` has one caller,
+  `FUN_001051f0` (0x105220), which is not a record creator; so `FUN_00180ff8` is the only creator of words 4 to 6. **Gaps**: the other
   two writers of `0x33e840`, `FUN_00172250` (current world, area, entrance + 1) and `FUN_001722c0` (the record saved
   in `0x33e848` by `FUN_00177248`, world 0x11 remapped to area 0x32 / 0x37), have no direct call site in the
   executable (`mips_scan.py --jal` finds none for them; `FUN_00177248`'s only caller is `FUN_00177788`), so a

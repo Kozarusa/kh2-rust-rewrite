@@ -912,13 +912,13 @@ work package are closed by WP-EN4 below.
 
 **WP-SM1 (summon gaps, part 1).**
 
-- *The link's break and routine (host 1.18, FUN_00169ee8, FUN_001becb8).* 0x170dd8 stores the 5th and 6th arguments on the link record (+0x10 the
-  routine, +0x14 its argument, +0xc a context) when the routine is not 0; `ai::Link` keeps them (`routine`, `arg`). The break FUN_001becb8 (called
+- *The link's break and routine (host 1.18, FUN_00169ee8, FUN_001becb8).* 0x170dd8 stores the 5th and 6th arguments on the link record when the routine is not 0 (record +0xc a context word, +0x10 the
+  routine, +0x14 its argument: object +0x57c, +0x580, +0x584); `ai::Link` keeps them (`routine`, `arg`). The break FUN_001becb8 (called
   by FUN_001beb90 over a link already there, by host 1.102 `link_end`, 0x170e38, and by FUN_00169ee8) takes the object out of the parent's list (+0x760 /
-  +0x764), clears the parent (+0x570), and, when the routine word +0x57c is set, runs it with the argument (FUN_0016c550 with one argument). The app
+  +0x764), clears the parent (+0x570), and, when the context word (object +0x57c) is set, runs the routine (+0x580) with the argument (+0x584) (FUN_0016c550 with one argument). The app
   does the same through `SummonAi::link_start` / `link_end`: the link is dropped, the object stays where the link last put it (FUN_0016a618 at its
-  pose), and `objects` runs the routine after the tick with `Runtime::call_routine` (log `summon: <tag> link to the player broken (FUN_001becb8): routine
-  R<pc> runs with argument <n>`). Tests `a_link_break_hands_back_its_routine_and_argument`. Not carried out: the facing a break gives an
+  pose), and `objects` runs the routine after the tick with `Runtime::call_routine` (the game runs it synchronously inside the break; the app queues it, in order, for the end of the script's update, because the host cannot re-enter the runtime that calls it: an [inferred] deviation; log `summon: <tag> link to the player broken (FUN_001becb8): routine
+  R<pc> runs with argument <n>`). Tests `a_link_break_hands_back_its_routine_and_argument` and `a_broken_links_routine_runs_with_its_argument` (a real routine run through `call_routine`). Not carried out: the facing a break gives an
   object whose flags bit 1 is clear (FUN_003003e8 of -(+0x60), -(+0x68), then FUN_0016a7f0) and the clearing of its +0x7f8 value 8 (set by the link start), because
   the app's summon objects have neither field; neither shows without a moving linked object. The automatic break of FUN_00169ee8 (flags bit 0 set and the
   parent either gone or without bit 0x8000 in its +0x160) is not applicable here: the only link a summon script makes in the app is Tinker Bell's, with flags 0,

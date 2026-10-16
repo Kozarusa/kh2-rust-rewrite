@@ -845,6 +845,7 @@ fn ai_fade(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::enemy_obj::SELF_BASE;
 
     /// FUN_00187250: every message goes to every object of the list, each drawing its own delay from
     /// the generator in list order; a delay of 0 draws nothing.

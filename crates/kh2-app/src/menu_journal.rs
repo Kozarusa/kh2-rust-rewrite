@@ -35,6 +35,7 @@ mod games;
 mod games_page;
 mod lists;
 mod marks;
+mod root_page;
 mod treasure_page;
 
 use bevy::prelude::*;
@@ -115,6 +116,9 @@ mod addr {
     pub const CHAR_FRAME: u32 = 0x0038_2ea0;
     pub const LIST_TEXT: u32 = 0x0038_1fe8;
     pub const QUEST_TAG: u32 = 0x0038_2ff8;
+    pub const C_TEXT: u32 = 0x0038_2d08;
+    pub const C_HELP: u32 = 0x0038_2d20;
+    pub const C_TAG: u32 = 0x0038_2d00;
     pub const GAME_TAG: u32 = 0x0038_2fec;
 }
 
@@ -168,7 +172,7 @@ const ROW_DONE: usize = 0x8a;
 /// Every list row and its two children play group 3 (both group sets of `FUN_00296b48` are four 3s).
 const ROW_GROUP: usize = 3;
 /// Page 2's rows (`FUN_002a3540` creates 8 list objects).
-pub const ROWS: usize = 8;
+pub const ROWS: usize = 11;
 /// The title object (`DAT_0036d0f0 + 0x350`, `FUN_00277258`: enter 0x35, hold 0x36, centred text).
 const TITLE: [usize; 2] = [0x35, 0x36];
 /// The text size when a group gives none (`FUN_00138fc8`).
@@ -776,6 +780,10 @@ pub struct PageTables {
     /// The new / seen tag groups of the Quests page's rows (0x382ff8) and the Minigames page's (0x382fec).
     pub quest_tag: [usize; 2],
     pub game_tag: [usize; 2],
+    /// Page 0xc: the rows' texts (0x382d08) and help lines (0x382d20), and the new tag groups (0x382d00).
+    pub c_text: [u16; 11],
+    pub c_help: [u16; 11],
+    pub c_tag: [usize; 2],
 }
 
 /// The executable's tables of the Characters / Character Links pages.
@@ -838,6 +846,9 @@ pub fn read_page_tables(exe: &Exe) -> Option<PageTables> {
         list_text: [0, 1, 2].map(|k| exe.u16(addr::LIST_TEXT + 2 * k).map_or(0, usize::from)),
         quest_tag: [0, 1].map(|k| u32_at(exe, addr::QUEST_TAG + 4 * k).map_or(0, |v| v as usize)),
         game_tag: [0, 1].map(|k| u32_at(exe, addr::GAME_TAG + 4 * k).map_or(0, |v| v as usize)),
+        c_text: std::array::from_fn(|k| exe.u16(addr::C_TEXT + 2 * k as u32).unwrap_or(0)),
+        c_help: std::array::from_fn(|k| exe.u16(addr::C_HELP + 2 * k as u32).unwrap_or(0)),
+        c_tag: [0, 1].map(|k| u32_at(exe, addr::C_TAG + 4 * k).map_or(0, |v| v as usize)),
         face: FaceTables {
             style: std::array::from_fn(|k| exe.u16(addr::FACE_STYLE + 2 * k as u32).map_or(0, usize::from)),
             pic: [0u32, 6].map(|o| [exe.u16(addr::FACE_PIC + o).map_or(0, usize::from), exe.u16(addr::FACE_PIC + 4 + o).map_or(0, usize::from)]),
@@ -1067,6 +1078,8 @@ pub struct Journal {
     /// The quest (entry 8) and minigame (entry 7) records, parsed, and what their tests read of the save.
     quests: Vec<games::Quest>,
     minis: Vec<games::Minigame>,
+    /// The item of each Ansem report (`jiminy.bar` entry 4, 8-byte records: +0 the item).
+    reports: Vec<u16>,
     snap: games_page::Snap,
     /// `jiminy.bar` entry 2 ("albu"), parsed, and the picture files already turned into textures by name.
     album: Vec<album_page::Rec>,
@@ -1156,6 +1169,7 @@ fn load(j: &mut Journal, disc: &Disc, scene: &mut MenuScene, images: &mut Assets
     j.album = album_page::parse(&entry(2));
     j.quests = games::parse_quests(&j.ques);
     j.minis = games::parse_games(&j.mini);
+    j.reports = records(&entry(4), 8).iter().map(|r| u16::from_le_bytes([r[0], r[1]])).collect();
     j.msgs = disc.read("msg/us/jm.bar").and_then(|b| kh2_image::text::Messages::from_bar(&b));
     let Some(exe) = disc.read_root("SLUS_210.05").and_then(Exe::load) else { return };
     let (Some(index), Some(l0), Some(l1), Some(h), Some(tables)) =
@@ -1373,14 +1387,15 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
     let Some(o) = j.open.as_ref() else { return };
     let (page, world_byte) = (o.page, o.world);
     let act = match (page, key) {
-        (0 | 2, Key::L1 | Key::R1) => switch(key, page, world_byte, &j.tables.hints),
+        (0 | 2 | 0xc, Key::L1 | Key::R1) => switch(key, page, world_byte, &j.tables.hints),
+        (0xc, _) => root_page::page_c(key, o.row, &o.cats),
         (0, _) => page0(key, o.cursor, &o.shown, &j.worlds),
         (2, _) => page2(key, o.row, &o.cats),
         (3, _) => page3(key, o.top, o.count),
         (6 | 0xb, _) => page_faces(key, o.sel),
         (0xf, _) => page_char(key, o.top, o.count, o.cp.list.iter().filter(|c| o.cp.present.contains(c)).count() > 1),
         (7 | 8, _) => page_lists(key),
-        (9 | 10, _) => page3(key, o.top, o.count),
+        (9 | 10 | 0x1b | 0x1c, _) => page3(key, o.top, o.count),
         (4, _) => page_album(key, o.row, o.album_rows.len()),
         (5, _) => page_photo(key),
         _ => page1(key),
@@ -1401,7 +1416,15 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
             menu_sound::play(&mut se, menu_sound::CURSOR);
             info!("journal: page 3 first line {t}");
         }
-        Act::Cursor(t) if matches!(page, 9 | 10) => {
+        Act::Cursor(r) if page == 0xc => {
+            let o = j.open.as_mut().unwrap();
+            o.row = r;
+            info!("journal: page 0xc row {r} (category {})", o.cats[r]);
+            place_cursor(&j, &mut scene);
+            chrome_help(&mut j, &mut scene);
+            menu_sound::play(&mut se, menu_sound::CURSOR);
+        }
+        Act::Cursor(t) if matches!(page, 9 | 10 | 0x1b | 0x1c) => {
             j.open.as_mut().unwrap().top = t;
             games_page::view(&mut j, &mut scene);
             menu_sound::play(&mut se, menu_sound::CURSOR);
@@ -1431,7 +1454,7 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
             place_cursor(&j, &mut scene);
             menu_sound::play(&mut se, menu_sound::CURSOR);
         }
-        Act::Switch(Some(to @ (0 | 2))) if !(to == 2 && world_byte as u8 > 0xe) => {
+        Act::Switch(Some(to @ (0 | 2 | 0xc))) if !(to == 2 && world_byte as u8 > 0xe) => {
             menu_sound::play(&mut se, crate::menu_status::CONFIRM);
             info!("journal: page {page} {} -> page {to} (FUN_00277928)", if key == Key::R1 { "R1 (-8)" } else { "L1 (-9)" });
             j.goto = Some((to, world_byte));
@@ -1479,6 +1502,18 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
             info!("journal: page 4 row {r}");
         }
         Act::Cursor(_) => {}
+        Act::Category { cat: 6 | 7, page: to @ (0x1b | 0x1c) } => {
+            menu_sound::play(&mut se, crate::menu_status::CONFIRM);
+            info!("journal: page 0xc row category {} -> page {to:#x}, the {} (FUN_002a7978 -> FUN_002b5e50 / FUN_002b4b18)", if to == 0x1b { 6 } else { 7 }, if to == 0x1b { "quests" } else { "minigames" });
+            let o = j.open.as_mut().unwrap();
+            o.back_row = o.row;
+            j.goto = Some((to, world_byte));
+        }
+        Act::Back if matches!(page, 0x1b | 0x1c) => {
+            menu_sound::play(&mut se, menu_sound::CANCEL);
+            info!("journal: page {page:#x} cancel -> page 0xc (FUN_002b6120 case -2)");
+            j.goto = Some((0xc, world_byte));
+        }
         Act::Category { cat: 0 | 2..=7, page: to @ (4 | 6..=10 | 0xb) } => {
             menu_sound::play(&mut se, crate::menu_status::CONFIRM);
             info!("journal: page 2 row -> page {to}, the {} (FUN_002a3da0 -> FUN_002ae3e8 / FUN_002afca0)", match to { 4 => "album", 6 => "characters", 7 => "treasures", 8 => "maps", 9 => "quests", 10 => "minigames", _ => "character links" });
@@ -1509,10 +1544,10 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
             info!("journal: page 0xf cancel -> page {back:#x} with face {cur} (FUN_002a9b80 case -2 -> FUN_002a9590 -> FUN_002ae3e8)");
             j.goto = Some((back, world_byte));
         }
-        Act::Open { page: 2, world } => {
+        Act::Open { page: to @ (2 | 0xc), world } => {
             menu_sound::play(&mut se, crate::menu_status::CONFIRM);
-            info!("journal: page 0 world {world} -> page 2 (FUN_002a27d8)");
-            j.goto = Some((2, world));
+            info!("journal: page 0 world {world} -> page {to:#x} (FUN_002a27d8)");
+            j.goto = Some((to, world));
         }
         Act::Open { page, world } => {
             menu_sound::play(&mut se, menu_sound::REFUSED);
@@ -1648,7 +1683,7 @@ fn build(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Asset
     let n = &j.nodes;
     let ids: Vec<usize> = n.page0().into_iter().chain(n.page12()).chain(n.page3()).chain([n.help, n.cursor, n.follow]).collect();
     for id in ids {
-        if !(matches!(page, 3..=11 | 0xf) && id == title) {
+        if !(matches!(page, 3..=11 | 0xf | 0x1b | 0x1c) && id == title) {
             scene.nodes[id].visible = false;
         }
     }
@@ -1658,7 +1693,8 @@ fn build(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Asset
         3 => build3(j, scene, world, test),
         6 | 0xb => build_faces(j, scene, disc, images, page, world, test, items),
         0xf => build_char_page(j, scene, disc, images, page, world, test, items),
-        9 | 10 => games_page::build(j, scene, page, world, test),
+        9 | 10 | 0x1b | 0x1c => games_page::build(j, scene, page, world, test),
+        0xc => root_page::build(j, scene, disc, images, test, items),
         7 | 8 => treasure_page::build(j, scene, page, world, &treasure_page::Game { flag: test, items, opened: &|c| opened.contains(&c) }),
         4 => album_page::build(j, scene, world, test),
         5 => album_page::build_photo(j, scene, disc, images, world, test),
@@ -1874,8 +1910,9 @@ fn chrome(j: &mut Journal, scene: &mut MenuScene, page: u16) {
         3 => Some(msg::HELP_STORY),
         6 | 0xb => Some(j.tables.face.help[usize::from(page != 6)]),
         0xf => Some(msg::HELP_CHAR),
-        9 => Some(games_page::HELP_QUEST),
-        10 => Some(games_page::HELP_GAME),
+        9 | 0x1b => Some(games_page::HELP_QUEST),
+        10 | 0x1c => Some(games_page::HELP_GAME),
+        0xc => root_page::help(j),
         4 => Some(album_page::HELP),
         5 => Some(album_page::HELP_PHOTO),
         7 => Some(msg::HELP_TREASURE),
@@ -1891,7 +1928,7 @@ fn chrome(j: &mut Journal, scene: &mut MenuScene, page: u16) {
     // The L1 / R1 hints (`FUN_00277860` / `FUN_00277740` from the builds of pages 0 and 2; page 1 makes none; the
     // category pages keep them: their teardown `FUN_00277ec0` leaves the `DAT_0036d0f0` objects alone).
     match page {
-        0 | 2 => {
+        0 | 2 | 0xc => {
             let names = hints(page, o.world, &j.tables.hints);
             let (il, ir) = (j.tables.icon_l1, j.tables.icon_r1);
             for (k, (id, groups)) in [(names[0], HINT_L), (names[1], HINT_R)].into_iter().enumerate() {
@@ -1923,6 +1960,13 @@ fn chrome(j: &mut Journal, scene: &mut MenuScene, page: u16) {
     place_cursor(j, scene);
 }
 
+/// The help line of page 0xc follows the cursor row (`FUN_002a81e8`).
+fn chrome_help(j: &mut Journal, scene: &mut MenuScene) {
+    let help = j.nodes.help;
+    let t = root_page::help(j).and_then(|id| tokens(j, scene, id));
+    scene.nodes[help].label = t.and_then(|t| label_of(scene, help, HELP_GROUP, t, 0, true));
+}
+
 /// The list cursor (`FUN_00276bb0`, each frame while the page's list has objects and the scene is idle): object
 /// 0x21 of slot 0 and the follower 0x7571 (groups 0x381fc8) on the cursor's row or cell (`FUN_0029ac68`,
 /// `FUN_0029b3a0`: the object follows its target, flag 0x800 [inferred: drawn at the target's position]). Pages
@@ -1932,7 +1976,7 @@ fn place_cursor(j: &Journal, scene: &mut MenuScene) {
     let n = &j.nodes;
     let target = match o.page {
         0 => n.cells.get(o.cursor).copied().filter(|_| o.cursor < o.shown.len()),
-        2 => n.rows.get(o.row).copied().filter(|_| o.row < o.cats.len()),
+        2 | 0xc => n.rows.get(o.row).copied().filter(|_| o.row < o.cats.len()),
         // The Treasures / Maps pages' hand sits on their cursor frame (`FUN_002b16e0`: `FUN_00277158(0, frame)`).
         7 | 8 => Some(n.lists.frame),
         4 => n.album.rows.get(o.row).copied().filter(|_| !o.album_rows.is_empty()),
@@ -1960,13 +2004,18 @@ fn place_cursor(j: &Journal, scene: &mut MenuScene) {
 /// its follower (`FUN_0029af00(.., 0x381fc8)`), and the backdrop 0x755a (`FUN_00278658`: page family 1, set by page 2's
 /// build with `FUN_00277d60(1)`).
 fn category_frame(j: &Journal, scene: &mut MenuScene, cat: usize) {
+    category_tab(j, scene, j.tables.row_text[cat]);
+}
+
+/// The same with the tab's text given as a message (page 0xc's categories name it from their own table).
+fn category_tab(j: &Journal, scene: &mut MenuScene, msg: u16) {
     let n = &j.nodes;
     let (tab, tab_follow, backdrop) = (n.tab, n.tab_follow, n.backdrop);
     let (plate, follow) = (j.tables.plate, j.tables.follow);
     scene.nodes[tab].visible = true;
     scene.nodes[tab].pos = [0.0; 2];
     scene.set_group_then(tab, plate[0], plate[2]);
-    let name = tokens(j, scene, j.tables.row_text[cat]);
+    let name = tokens(j, scene, msg);
     scene.nodes[tab].label = name.and_then(|t| label_of(scene, tab, plate[2], t, 0, false));
     scene.nodes[tab].label_anchor = Some([0.0; 2]);
     scene.nodes[tab_follow].visible = true;
@@ -2864,8 +2913,19 @@ mod tests {
         let t = read_page_tables(&Exe::load(elf).unwrap()).expect("the page tables");
         assert_eq!(t.face.frame, [10, 11, 12, 13, 14, 15], "the frame group of each style");
         assert_eq!((t.quest_tag, t.game_tag), ([0x39, 0x3a], [0x39, 0x3a]));
+        assert_eq!(t.c_tag, [0x87, 0x88], "page 0xc's new tags");
+        assert_eq!(t.c_text[..4], [13945, 13946, 13947, 13948]);
+        assert!(t.c_text.iter().chain(&t.c_help).all(|&m| m != 0));
         let two = layd::parse_2ld(&a.read("menu/us/jmemo.2ld").unwrap()).unwrap();
         let s5 = &two.layd.seqs[SEQ_LIST];
+        for g in [root_page::LAYERS[0], root_page::LAYERS[1], root_page::DONE, t.c_tag[0], t.c_tag[1]] {
+            assert!(s5.groups.len() > g, "page 0xc group {g:#x}");
+        }
+        let msgs = kh2_image::text::Messages::from_bar(&a.read("msg/us/jm.bar").unwrap()).unwrap();
+        let sys = a.read("msg/us/sys.bar").ok().and_then(|b| kh2_image::text::Messages::from_bar(&b));
+        for m in t.c_text.iter().chain(&t.c_help) {
+            assert!(msgs.tokens(u32::from(*m)).is_some() || sys.as_ref().is_some_and(|s| s.tokens(u32::from(*m)).is_some()), "page 0xc message {m:#x}");
+        }
         for g in [CHAR_LAYER, CHAR_NAME, CHAR_SUB, CHAR_ARROWS[0], CHAR_ARROWS[1], games_page::LAYER, games_page::BAR_LAYER, games_page::WORLD_ROW, games_page::GROUP_ROW, games_page::QUEST_ROW[0], games_page::QUEST_ROW[1], games_page::GAME_ROW]
             .into_iter()
             .chain(t.face.frame)

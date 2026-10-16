@@ -241,6 +241,17 @@ entrance, map, btl, evt; 0xff keeps the current one).
   word 6 (sub 7, default 0) "menu before": 1 or 2 opens menu kind 5 first (`FUN_0024f300`) and sets the jump's wait (the 3rd argument of
   `FUN_00104e18`, read as ticks [inferred]) to 2, logged only (the menu is missing); any other code leaves both at 0
   (`LAB_0019db28`); sub 8 is not read by `FUN_0019d9d8`. Tests:
+  **WP-JT4** (types 5 and 6, "menu before"): type 5 opens menu kind 0xe, the battle report (`menu_ending.rs`, docs/menus.md section 25:
+  `ending.2ld`, title 0xcc24, eight statistic rows; `area_jump::JumpMenus.ending`), and no jump follows. The record's "menu before" code
+  (word 6) is ported only as its wait: the jump task's `JumpTask::Wait` holds `JumpExtras::delay_ticks` (2) ticks before the fade-out
+  (also after a trigger's event, where the fade-out is skipped); the camp it opens first (`FUN_0024f300`) is always page 0x15, the party
+  switch notice, which is not ported (menus.md section 25). Type 6 (`FUN_00149eb0`): `JumpTask::Black` fades to black over 30 ticks
+  (`FUN_0014a7c8(fader, 0xf, 0)`, the black is full when the fader's state `+0xfc` is 4) and holds. Searched for a fade-in: the callers of
+  `FUN_00149f38` (one: `FUN_0019d9d8`) and of `FUN_00149eb0` (only its task start), the fader kind 0xf callers (`FUN_0013f1a0` area-start
+  fade-in, `FUN_0013f2e8`, `FUN_002233d8` event end, out: `FUN_00103fc0`, `FUN_0013f148`, `FUN_0013f290`, `FUN_002580b8`, `FUN_00259e88`): the task
+  ends after the black, and the next fade-in is whichever area start or event end runs later. The app lifts the black when a jump starts or an
+  event plays [inferred]; the screen freeze (`FUN_0014dcb0`, `FUN_0014de00`: the flag `DAT_003584e0`, a screen copy) is not ported (the
+  simulation keeps running under the black). Tests `the_wait_is_clear_and_the_type_six_black_holds`, `the_rows_use_the_tables_of_the_executable`.
   `type_four_decides_by_story_flags`, `type_four_to_the_world_map_is_not_available`,
   `types_five_and_six_open_a_menu_or_freeze_without_a_jump`, `record_words_four_to_six_parse_with_defaults`,
   `a_type_four_record_always_fades_with_kind_one`. Harness `KH2_JUMP=4:2:0`, `5:0:0`, `6:0:0` (quoted lines: "jump: type 4

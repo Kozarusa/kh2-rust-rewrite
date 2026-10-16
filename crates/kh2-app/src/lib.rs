@@ -39,6 +39,7 @@ mod magic;
 mod magic_rules;
 mod menu;
 mod menu_abilities;
+mod menu_ending;
 mod menu_gfx;
 mod menu_journal;
 mod menu_pages;

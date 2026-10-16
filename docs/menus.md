@@ -2132,3 +2132,45 @@ app: H swaps the deck (the other deck's cursor kept), T / G move, J confirms, B 
 `genie_drive_rows_and_table_come_from_the_disc`. Gap: the entry's target-record parameter (`FUN_0018f490(+0xa20, Genie, 0)`).
 
 - **MN15 review notes.** [inferred] World 0xf's limits test uses "best count above 0" (`FUN_002a20e0`); the original's `FUN_002ba238` tests the completion bits at `DAT_0036d4f4 + 0x74`, and their equivalence is not shown. The once-only `Counted` marker counts an enemy that revives only on its first defeat; the original counts each defeat. `count_defeats` itself has no system-level test (only `count_one`). Section 14's "0x19..0x1f" for Customize is a different use of the numbers than the journal pages 0x19, 0x1a and 0x20.
+
+## 25. The battle report: menu kind 0xe (WP-JT4)
+
+**Entry [V].** A trigger's jump record of type 5 (`FUN_0019d9d8` case 5) calls `FUN_0024f0b8(0xe, -1)`: record 0x380650 of the
+table (1.2), scene 9, init `FUN_00292f18`, task `FUN_00292fc8`, page `FUN_00293020`. The init loads `ending.2ld` (`FUN_00293648`,
+`FUN_002935e8`: the name `PTR_s_ending_2ld_0036d1b0`), and the task builds the page once, then loops (`FUN_00233cd8`,
+`FUN_00102438`) without reading the pad. No jump follows.
+
+**The page [V].** The backdrop is a layout of `ending.2ld` chosen by `FUN_001d77d0`: game mode (save `+0x1658`) 1 -> layout 1, mode 0
+-> 0, mode 2 -> 3 when the completion percentage `FUN_002787b0` is 100, else 2. Each layout has three layers (seq 1 groups 1 and 2,
+then seq 0 group 4, "The End"); a layer's `kind` (1 to 4 for the backdrops, 0) is the image of the file it draws from. The page
+object has a title (message 0xcc24 "BATTLE REPORT", group 1 of sequence 0, centred, `+0x1a4 = 2`) and eight rows, each a group 2
+object (pitch 40 = `unk1c` of the group, `FUN_00138ed0(row, 0, 40 * i)`) with a heading (message 0xcc18 .. 0xcc1f) and a value
+object (group 3, offset 204, 20, right-aligned, `+0x108c = 1`). The values are strings built by `FUN_001918a0` (`%d`, `%d%%`,
+` %d`) plus message 0xcc20 ("Times"): row 0 the mode name (0xc331 + mode: Beginner, Standard, Proud Mode); row 1 `FUN_002787b0`
+% ("Completion of Jiminy's Journal"); row 2 `FUN_001de018(save + 0xacc0)` % ("Completion of Gummi Routes", the mean of 27 floats at
+`+0x20` of the records `save + 0xacc0 + 0x40 * (3 * a + b - 1)`); row 3 u16 save `+0x2fdc` ("Healed Party Members"); row 4 u16 `+0x2dbe`
+("Saved by Mickey", written by `FUN_001cda78` / `FUN_001cdb98`); row 5 the form with the largest u16 of the five at `+0x2fe2` ("Most
+used Form": the name from 0x3827e8, entry k + 1 for counter k) and its count; row 6 u16 `+0x2fea` ("Used AntiForm"); row 7 the summon
+with the largest u16 of `+0x2fec + 2 * i`, i = 0 to 3 (names 0xc594 Chicken Little, 0xc592 Genie, 0xc591 Stitch, 0xc593 Peter Pan, table 0x382800). The
+running maximum starts at -1 and only a larger value replaces it, so all zeros give the first entry.
+
+**What the port does.** `menu_ending.rs` (`EndingPlugin`, `Report`, `rows`, `layout_for`, `first_max`): `area_jump::JumpMenus.ending` (set by
+`take_record` on `Outcome::OpenMenu { kind: 0xe }`) opens it; the layout, the title and the rows are drawn from the file with the
+disc's texts; the field is frozen. Tests `the_layout_follows_the_mode_and_completion`, `the_most_used_entry_is_the_first_maximum`,
+`the_rows_use_the_tables_of_the_executable`, `the_file_and_texts_exist`. Harness: `KH2_JUMP=5:0:0 KH2_JUMP_AT=4 KH2_SHOT_AT=8 kh2-game tt02`
+logs "jump record type 5: opens menu kind 0xe ..." and "menu: kind 0xe open ... layout 1, rows [...]"; the screenshot shows the
+black left side with the title, eight headings with their values on the line below, "The End" at the bottom left, and the artwork on the right.
+
+**[inferred], gaps.** The rows' origin (8, 20), the value on the line under its heading (the value offset 204, 20 is the group's x and y;
+on the heading's line the two overlap) and the colour (white) are not read from the code; no original frame of this screen was available.
+Closing on a confirm, cancel or Start is the app's own (the task never reads the pad; the original leaves by a scene change from an
+event). Rows 1 to 7 are 0: no counter exists in the app (`FUN_002787b0` needs the journal's completion aggregate, 20.9; the counters
+at save `+0x2fdc`, `+0x2fe2`, `+0x2fea`, `+0x2fec` have no writer found by `mips_scan --store-off`, so they are written through a
+computed base). Row 0 uses the app's game mode.
+
+**Kind 5, the camp before a jump (`FUN_0024f300`).** `FUN_0024f300(a, b)` is `FUN_0026ef70(b)` (`DAT_0036cffc = b`) then
+`FUN_0024f0b8(5, a)`; `FUN_0019d9d8` passes b = 0x1c8bda0, an address, so `FUN_0026ef80()` is never 0 and kind 5's init
+`FUN_00250450` always opens page 0x15 (the "Party Members have been switched." notice, 19.4), not page 0x14. That page lists
+the members that came in and went out of the party (word 4's arrangement, not ported), so there is nothing to show: not ported
+(gap, addresses `FUN_0024f300`, `FUN_00250450`, `FUN_0026ef80`, `FUN_0026e618`). Only its wait is ported (events.md, WP-JT4).
+

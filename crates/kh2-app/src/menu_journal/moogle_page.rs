@@ -101,7 +101,7 @@ pub fn rows(j: &Journal, scene: &MenuScene, all: bool) -> Vec<Row> {
         .map(|i| {
             let group = t.groups[usize::from(complete(d, i))];
             if !row_on(&d.rec, i) {
-                // An unlisted row with the all-worlds flag: question marks and nothing else (`uVar13 = 0x36f8`).
+                // An unlisted row with the all-worlds flag: question marks and nothing else (the row text is the question-mark string at 0x36f8).
                 return Row { row: i, group, label: msg(HIDDEN), value: None };
             }
             if i == 0 {

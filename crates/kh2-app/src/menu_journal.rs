@@ -25,9 +25,10 @@
 //! What the port draws: pages 0, 1 and 2 (docs/menus.md 20.7), and since WP-MN11 (20.8) the help line, the list
 //! cursor, the L1 / R1 hints and switches between pages 0 and 2, and page 3 (the story). WP-MN12 (20.9) added the scroll bar
 //! object, the NEW tags (`marks.rs`), the Characters and Character Links pages (6, 0xb: `chars.rs`), Treasures and Maps (7,
-//! 8: `lists.rs`, `treasure_page.rs`) and the Album (4, 5: `album_page.rs`). The other pages (9, 10, 0xc and the Roxas pages) and
-//! a character's own page (0xf) are not ported: a confirm on their rows, an L1 / R1 to page 0xc, or a confirm on a page 0
-//! cell of id above 0xe, is refused with a log line.
+//! 8: `lists.rs`, `treasure_page.rs`) and the Album (4, 5: `album_page.rs`). WP-MN14 (20.10) added a character's own page (0xf),
+//! the Quests and Minigames pages (9, 10: `games.rs`, `games_page.rs`) and page 0xc (`root_page.rs`). The pages behind page 0xc's
+//! other rows (the Ansem reports, the enemy lists, the limits, the moogle list) are not ported: a confirm on such a row is refused
+//! with a log line.
 
 mod album_page;
 mod chars;

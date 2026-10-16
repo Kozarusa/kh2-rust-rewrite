@@ -1456,6 +1456,7 @@ data parts of `chars` / `album_page` are pure functions with tests; the rest is 
   hide the handlers do when a direction is pressed; the stick-driven pointer (`FUN_002aeea8` analog branch: `stick * 6 + 0.5`);
   the held-pad auto-repeat of the cursor moves (the port takes one step per press, wraps on every press).
   Text colour of page 2's rows (see the rule above) was left at the WP-MN10 reading.
+- **WP-MN14 status.** The character page 0xf, the Quests and Minigames pages, page 0xc and page 0's completion mark 0x9a are ported (20.10); what stays open is the 3D model, the enemy pages, the Ansem reports, limits and the moogle list.
 - **WP-MN13 status.** Nothing in the app opens chests yet (gap, WP-FX12c): the original sets a chest's bit in `FUN_001a6910` (reached by `FUN_001a6a58` from the chest-open sequence `FUN_001a6db8`, and by `FUN_001a6a78` from the reward list of an area trigger in `FUN_001978b0`, whose only callers are `FUN_00197670` and `FUN_00197a60`), and the app has no chest object and does not run a trigger's reward list, so a chest is "found" only through a state file. Done: persistence. `Progress` keeps the opened chests (`chest_opened`, record bits from 224 on) and the journal seen set (`journal_seen`, slot key `journal_seen`); `Marks` loads it when the journal opens (`load_seen`) and the tick writes new marks back (`take_dirty`); the Treasures page marks chests found from the chest bit and a world's treasure completion needs every chest of it opened (`treasures_complete`). Not started (no decompile work done beyond reading): the character page 0xf (`FUN_002aa358` builds layer group 0x49, name 0x4a, sub-title 0x4b from `char` +0xa, a counter row 0x4c when `char` +0x10 has 0x800, scroll arrows 0x4f / 0x50, the face frame by style from 0x382ea0, the description message `char` +8 in a 6-line scissored view (`FUN_002ab678`); pages 0x12 / 0x15 add the four drop rows, so those are the enemy pages; the face is loaded through the slot cache `FUN_002a07c8`), the Quests / Minigames pages (page 9 reads entry 8 via `FUN_002b6478` / `FUN_002b6650`, page 10 entry 7 via `FUN_002b5130` / `FUN_002b52c0`; ten rows of group 0x68 / 0x6a with a child 2, world header rows group 100, values from the minigame records at `0x341620 + 8 * n` (`FUN_001d36e8`: byte 0 state, +4 score) and `FUN_002b6d40` for quests; both lists are empty without the all-worlds flag since the app keeps neither record), page 0xc, Roxas's pages, page 0's mark 0x9a.
 
 - **Decompile index (MN12).** `FUN_00299878`, `FUN_00299bf0`, `FUN_0029bdd0`, `FUN_0029bfa0`, `FUN_0029be88`, `FUN_0029c0b0`,
@@ -1488,6 +1489,124 @@ data parts of `chars` / `album_page` are pure functions with tests; the rest is 
   the_disc_face_page_data, the_disc_list_page_data, the_disc_category_page_tables}`.
 
 ## 21. The pause-menu record table and the Struggle's result menu (WP-STRM)
+
+### 20.10 A character's own page, Quests, Minigames, page 0xc (WP-MN14) [V unless marked]
+
+Code: `menu_journal.rs` (`build_char_page`, `char_view`, `page_char`), `menu_journal/{games,games_page,root_page}.rs`; the minigame records in
+`progress.rs` (slot key `minigames`, docs/progress.md).
+
+- **A character's own page 0xf** (confirm on a face of page 6 / 0xb; `FUN_002ae790` first marks the character seen, `FUN_002b73b8(char)`,
+  then `FUN_002aa358(list, page)` keeps the page's face list (the u16 character ids at +0x50, 8-byte stride) and the page to return to
+  in `DAT_0036d49c`, stores the face as the page-0xe cursor (`FUN_00277dc8(0xe, min(face, 9), max(face - 9, 0))`) and builds with
+  `FUN_002a98f0`). Objects (`FUN_002aadf0`, parent the page header unless said): the layer `DAT_0036d100` (the same object as page 6's
+  0x51 layer, re-made) group 0x49; under it the face frame (group = the u16 table 0x382ea0 by the record's style, 10 .. 15) and, from
+  `FUN_002ab8f0`, the face picture (the picture `char` +1 of `jmface_<family>.2ld`, groups 1 then 2 as on page 6), both offset by the
+  layer group's x / y (`FUN_00138ed0(.., FUN_00237618, FUN_00237638)` [inferred: the group's x / y, as the face pages' bounds]); the name
+  (group 0x4a, font 3, `+0x198 = 0x60000008`: the ink [8, 0, 0, 0x60] as page 3's text; the message `char` +6, with the world's name as its
+  variable when `+0x10` has 0x400) and the sub-title (0x4b, `char` +0xa when not 0); the description message `char` +8 drawn by
+  the list row's callback `FUN_002ab678` in font 3 with the page's pitch and size from the layer group (as page 3: `story_metrics`), a scissor
+  of seven lines (`FUN_0014b6c0(x, y, 0x200 - x, pitch * 7)`) and the scroll position as a line offset; the list count is `lines - 6` when
+  the text has more than seven lines, else 1 (`FUN_00298d58`); the two arrows 0x4f / 0x50 are shown by `FUN_002ab578` (none with one position,
+  the up arrow hidden at the first, the down arrow at the last). Port: `chars::{desc_positions, arrows, desc_scroll}` (tested). Help line
+  0x48f2 (`FUN_002ac450`, pages 0xf / 0x12 / 0x15). The list flags (`FUN_002a98f0`: 0x200, plus 0xc000 when more than one listed character
+  exists) enable L2 / R2 (-11 / -10); with `FUN_00298fe0(list, 1)` and `FUN_00299010(list, 7)` Up / Down scroll one line and L1 / R1 a page
+  of seven [inferred: clamped, as page 3's list].
+  Handler `FUN_002a9b80`: -11 / -10 call `FUN_002aa600` (`chars::neighbour`: the next / previous listed character that exists, wrapping
+  to the first / last one that does, else the same one; `FUN_002ac4c8` marks it seen) and rebuild the page; -2 (cancel) goes to page 0xe /
+  0x11 / 0x14, whose handler `FUN_002a9590` re-enters the page `DAT_0036d49c` with `FUN_002ae3e8(stored cursor)`: the face page with the
+  pointer on the character last shown (`first_pointer(.., Some(face))`); -4 closes; -6 opens page 0x10 (the 3D model viewer).
+  Run (log lines `journal: page 0xf (FUN_002a98f0): character 116 of 6 (...)`, `journal: page 0xf R2 (-10) (FUN_002aa600) -> character 117`,
+  `journal: page 0xf cancel -> page 0x6 with face 4 ...`): `local/x/state-c.json` = `{"story_flags": [2097, 4098, 5122, 6195, 7204, 8193,
+  9217, 10243, 2197, 2200, 2201, 2204, 5161]}`, `KH2_KEYS=7:Enter,8:Down,8.2:Down,8.4:Down,8.6:Down,9.2:J,10.5:J,13:J`,
+  `KH2_JOURNAL_HOLD=11.5:Down:0.6`, `KH2_SCREENSHOT=.. KH2_SHOT_AT=15`: Hayner's page (the frame group 12 with his picture at the top left
+  of the page, the name on the plate, six lines of description and the down arrow; screenshot looked at). Tests:
+  `chars::tests::{the_description_scrolls_by_lines_and_pages, the_character_pair_skips_those_that_do_not_exist_and_wraps}`,
+  `menu_journal::tests::the_disc_character_page_data` (every character of every family has its name, description and sub-title messages; the
+  frame table is 10 .. 15).
+  Not ported: the 3D model (`FUN_002abf60` loads the model `char` +0xc with the placement fields +0x12 .. +0x20 into the object at
+  `DAT_0036d494` / `FUN_00295bc0`) and the page 0x10 view (-6, rotate -13 / -12 `FUN_002ac228`), the counter row (group 0x4c, message
+  0x489b, `FUN_002a1f78`: the defeated-enemy count of a record with flag 0x800, from `FUN_00187e68(save +0x1660, enemy +0x4c)`), and the
+  four drop rows of the enemy pages 0x12 / 0x15 (the enemy lists 0xd .. 0x16 are not ported).
+- **Quests (9) and Minigames (10)** (`FUN_002b5e50` / `FUN_002b4b18`, handlers `FUN_002b6120` / `FUN_002b4dd8`). Layers 99 (0x63) and 0x6b
+  (holds the scroll bar's track, `FUN_00299878(.., total = max(rows, 10), visible 10)`), ten row objects (`FUN_002b6650` / `FUN_002b52c0`: group 0x68
+  or 0x69 for a quest, 0x6a for a game, font 3, the ink 0x60000008, a child 2 for the tag; a game row also has a text child at the row
+  group's x / y with the value, right aligned), the list count `rows - 9` when there are more than ten (`FUN_00298d58`), L1 / R1 scroll a page of ten
+  (`FUN_00299010(list, 10)`). Row texts and marks (`FUN_002b6920`, `FUN_002b5698`): a world header (group 100, `FUN_002a3070(world, 0)`
+  or question marks while the world's cell does not exist, `FUN_002a3120`), a quest group header (group 0x66, the message with the group's
+  number, question marks unless some quest of the group is known or done, `FUN_002b6fb8`), a quest row (0x68; 0x69 when done; the name
+  `ques` +4, question marks for the all-worlds listing), a game row (the name `mini` +2, question marks below state 2, the value text);
+  the tags are the words 0x382ff8 (quests) and 0x382fec (games), both 0x39 (new) / 0x3a (seen); the rows in view are marked seen when
+  drawn (`FUN_002b6c20`: the quest's index in entry 8 into the seen set +0x80; `FUN_002b5aa8`: the game's index in entry 7, +0x78). Help
+  lines 0x48f6 / 0x48f7. The page opens on the journal world's header row (`FUN_002b63c0` / `FUN_002b5078`: the first row with the world's header, kept inside
+  the list count) except from page 0xc, where it opens at the top (pages 0x1b / 0x1c). Cancel goes to page 2 (page 0xc from 0x1b / 0x1c).
+  - *The lists.* Quests (`FUN_002b6478`, `jiminy.bar` entry 8 "ques", 0x10-byte records: +0 world, +2 group, +4 name message, +6 test flags,
+    +8 the flag / bit, +0xa the minigame record, +0xc the limit, +0xe the done flag / bit): a record is listed when `FUN_002b6d40` gives not 0;
+    a header row for a world's first listed record and one for a record of another group than the last one. Minigames (`FUN_002b5130`, entry 7
+    "mini", 8-byte records: +0 world, +2 name, +4 unit message, +6 the minigame record number): listed when the record's state byte
+    (`FUN_001d36e8(n) = 0x341620 + 8 n`) is 2 or more, or with the all-worlds flag; a header per world. Page 2's rows 5 / 6 need a
+    listed quest of the world (`FUN_002b6f00`) / a game with state above 1 (`FUN_002b5bb0`) or the all-worlds flag. Port: `games::{quest_rows,
+    game_rows, quests_exist, games_exist, first_row, positions}` (tested).
+  - *The quest test* `FUN_002b6d40` (`games::quest_state`): known when the flag +8 is set (a story flag with bit 1 of +6, else the record bit
+    `FUN_001a5328`) and, with bit 4, the minigame record's state is not 0; not known: 3 with the all-worlds flag (the name shows as
+    question marks), else 0. A known quest is done (2) by the first test of its flags: 0x10 the story flag +0xe, 0x20 the record bit +0xe,
+    0x1000 the game's state not 0, 0x2000 state 2 or more, else with a state of 2 or more the score (state 4 is a time, whole seconds
+    rounded up: `FUN_0014c7f0` splits the word, 0x34bc0 frames an hour and 0xe10 a minute) compared with +0xc: 0x100 done at or below,
+    0x200 done at or above; otherwise 1 (open). The disc's quests use the flags 0x11, 0x21, 0x145, 0x245, 0x246, 0x1041 and 0x2042.
+  - *The minigame value* (`FUN_002b5698`, the branch for `FUN_00105cd8() != 1`, which is the USA disc's [inferred: docs/hud.md takes
+    value 1 for Japanese]): state 0 / 1 the message 0x4b71; state 2 the message 0x4b80 ("Round") then the score `%d`; state 4 the unit
+    message and the time `%02d'%02d"%02d` (minutes, seconds, hundredths = `frames % 60 * 1.6667`); other states the score and then the unit
+    message. `FUN_001918a0` maps the apostrophe and the quote to glyphs 55 and 65.
+  - *New bits, aggregates, the world mark.* `FUN_002b7f58` (quests: the records whose state is 1 or 2), `FUN_002b8390` (games: state 2 or
+    more) feed the seen sets (`Cat::Quest` 5, `Cat::Minigame` 6 in the slot's `journal_seen`); the completion buffers (`FUN_002ba2c0`,
+    `FUN_002ba450`) take the quests that are done and the games with state 2 or more, `FUN_002ba3a8` / `FUN_002ba538` ask whether every one
+    of a world is in them. Page 0's cell mark 0x9a (`FUN_002baf08`, world below 0xf): the album (`FUN_002ba080`), quests, games, treasures,
+    maps, story and characters (`FUN_002baca8`, `FUN_002bad98(0, world)`) and the links (`FUN_002bad98(1, world)`) of the world are all
+    complete (`menu_journal::world_complete`); world 0xf adds the limits (`FUN_002ba238`) and the Ansem reports, which have no app data and
+    are not drawn. Page 2's rows 5 / 6 get their new tag and completion mark.
+  - *Persistence.* `Progress::minigame(n)` / `set_minigame(n, state, score)` (slot key `minigames`, triples). Nothing in the app plays a
+    minigame, so only a state file fills them.
+  Run (screenshots looked at): `local/x/state-q.json` = the state-c flags plus 2224 and `"minigames": [[14,4,720],[12,1,0],[15,2,150],
+  [11,4,3600],[13,3,77],[16,2,5]]`; `KH2_KEYS=7:Enter,8:Down,8.2:Down,8.4:Down,8.6:Down,9.2:J,10:Down,10.2:Down,10.4:Down,10.6:Down,10.8:Down,11.2:J`
+  (quests; one more Down for the minigames): the quest page shows "Twilight Town" / "Mail Delivery" / "Try again" / "Complete within 14
+  seconds" with the orange mouse marks and the scroll bar; the minigame page shows five rows with "Time: 00'12"00", "Round 150",
+  "Time: 01'00"00", "77Time:" (the score of a game whose unit is the message "Time:", as the table has it) and "Round 5". With the all-worlds
+  flag (18487) the lists hold 114 quest rows and every minigame, as question marks. Log lines: `journal: page 9 (FUN_002b5e50 / FUN_002b4b18):
+  world 0, 21 rows [...]`, `journal: page 9 first row 10`. Tests: `games::tests::*`, `menu_journal::tests::the_disc_quest_and_minigame_data`.
+- **Page 0xc** (`FUN_002a7220`, handler `FUN_002a7978`; world 0xf's page, reached from page 0 for an id above 0xe, and by L1 / R1 from
+  pages 0 and 2: `hints`). Layers 0x85 and 0x8f, the two `jm_top_jm.2ld` pictures (both in their second group, `FUN_002a7ec0(0)`), the title (world 0xf's
+  name), up to eleven rows of the categories listed by `FUN_002a80c0` (`root_page::listed`): 0 the Ansem reports (page 0x17: needs a report
+  owned, `FUN_002ade10`), 1 / 2 / 3 the character lists (0xd, 0x11, 0x14), 4 / 5 treasures / maps (0x19, 0x1a), 6 quests (0x1b: listed
+  quest), 7 minigames (0x1c: played game), 8 (0x1d: a limit used, `FUN_002b37d8`), 9 (0x1f: the moogle's first word or save word +0x3750,
+  `FUN_002b4838`), 10 the character links (0x20); the all-worlds flag lists every category. The row texts are the words at 0x382d08
+  (13945 .. 13948, 18650 .. 18656), the help lines (`FUN_002a81e8`, at the cursor) the words at 0x382d20, the new tag groups the words at
+  0x382d00 (0x87 / 0x88), the completion mark 0x86 (`FUN_002a7558`). A confirm sets the tab's text from 0x382d08 and opens the row's page
+  (`FUN_002a7978`'s switch: 0x17, 0xd, 0x11, 0x14, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1f, 0x20); the pages the app has are run as
+  7, 8, 9, 10 and 0xb with a cancel back to page 0xc (`Open::from_c`; they open at their first row: `FUN_002b1e18` zeroes the scroll of
+  pages 0x19 / 0x1a, and `FUN_002b6120` / `FUN_002b4dd8` return to 0xc). The others (the Ansem reports, the heartless and nobody lists,
+  categories 8 and 9) are refused with a log line. Tests: `root_page::tests::*`, `menu_journal::tests::the_disc_character_page_data` (the
+  table words, the groups).
+  Run: `local/x/state-q.json`, `KH2_KEYS=7:Enter,8:Down,8.2:Down,8.4:Down,8.6:Down,9.2:J,10:Escape,11:Left,12:J` (screenshot looked at: the
+  picture of Jiminy, "Character Files" with NEW, "The Heartless", "The Nobodies", "Treasures", "Maps", "Missions", "Minigames",
+  "Character Links", the help line "See character information!", the hint buttons "Select World"); then `13:Down` x5, `14.2:J` the
+  quests, `15.5:Escape` back.
+- **Gaps (WP-MN14).** The 3D model and the model view page 0x10 of a character (-6); the counter row and the defeated-enemy counts of
+  the enemy pages; the enemy lists 0xd .. 0x16 and their drop rows; the Ansem reports (0x17, 0x18, entry 4); categories 8 (0x1d, 0x1e: limits,
+  entry 6) and 9 (0x1f: the moogle list, `FUN_002b3d80`); page 0x20 as its own page (it runs as page 0xb); Roxas's own pages 0x19 / 0x1a
+  (they run as the world pages 7 / 8, whose world list is the same table [inferred]); the page-turn sound and wipe the handlers start on
+  a direction (`FUN_002779f8`); the limits' part of page 0's completion mark for world 0xf (`FUN_002ba238`); the Ansem reports' new tag in
+  page 0xc's row 0. Nothing in the app sets the opened-chest bits (WP-MN13) or plays a minigame, so only a state file shows found chests
+  and minigame scores.
+- **Decompile index (MN14).** `FUN_002aa358`, `FUN_002a98f0`, `FUN_002aadf0`, `FUN_002ab678`, `FUN_002ab7d8`, `FUN_002ab838`, `FUN_002ab8f0`,
+  `FUN_002ab578`, `FUN_002ac380`, `FUN_002ac450`, `FUN_002ac4c8`, `FUN_002aa600`, `FUN_002a9b80`, `FUN_002a9590`, `FUN_002aa0b0`, `FUN_002abf60`,
+  `FUN_002abdc8`, `FUN_002abef0`, `FUN_002ab540`, `FUN_002a1fc0`, `FUN_002a1f78`, `FUN_002a07c8` (only through its callers), `FUN_00298fe0`,
+  `FUN_00299010`, `FUN_002977a8`, `FUN_00297148`, `FUN_002b73b8`, `FUN_002b5e50`, `FUN_002b4b18`, `FUN_002b6120`, `FUN_002b4dd8`, `FUN_002b6478`,
+  `FUN_002b6650`, `FUN_002b6920`, `FUN_002b6c20`, `FUN_002b6c00`, `FUN_002b63c0`, `FUN_002b6d40`, `FUN_002b6618`, `FUN_002b6fb8`, `FUN_002b6f00`,
+  `FUN_002b5130`, `FUN_002b52c0`, `FUN_002b5698`, `FUN_002b5078`, `FUN_002b5aa8`, `FUN_002b5a88`, `FUN_002b5288`, `FUN_002b5bb0`, `FUN_002b7f58`,
+  `FUN_002b8048`, `FUN_002b80c8`, `FUN_002b81a0`, `FUN_002b8390`, `FUN_002b8470`, `FUN_002b84f0`, `FUN_002b85c8`, `FUN_002ba3a8`, `FUN_002ba538`,
+  `FUN_002ba2c0`, `FUN_002ba450`, `FUN_002baf08`, `FUN_002a7220`, `FUN_002a7978`, `FUN_002a7558`, `FUN_002a7ec0`, `FUN_002a7d80`, `FUN_002a7e48`,
+  `FUN_002a7190`, `FUN_002a80c0`, `FUN_002a81e8`, `FUN_002ade10`, `FUN_002b37d8`, `FUN_002b4838`, `FUN_002b4798`, `FUN_002b47c8`, `FUN_002ad6a0`,
+  `FUN_00277740`, `FUN_00277860`, `FUN_00277b20`, `FUN_00277eb0`, `FUN_00277e18`, `FUN_00277dc8`, `FUN_001d36e8`, `FUN_001a5328`, `FUN_0014c7f0`,
+  `FUN_00105cd8`, `FUN_001918a0`, `FUN_002b1e18`, `FUN_002b16a0`, `FUN_002b1650`.
 
 ### 21.1 The table [V]
 

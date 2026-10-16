@@ -935,7 +935,7 @@ impl BevyHost<'_> {
             Call::ModeFrozen { .. } => stub(Value::Bool(false), "hit stop is not implemented"),
             Call::ModeInterrupted { .. } => approx(Value::Bool(self.obj.reacting), "FUN_00186b70: the object is in a hit reaction"),
             Call::ModeMayStart { .. } => approx(Value::Bool(!self.obj.reacting), "FUN_001873d0: the object is not in hit stun"),
-            Call::RemoteSetMode { .. } => missing(Value::None, "a mode queued for another object (host 6.58): not wired"),
+            Call::RemoteSetMode { .. } => missing(Value::None, "a mode queued for another object (host 6.58) or host 1.8 on an object an enemy script made: not wired (only the summon scripts do it, summon.rs)"),
             // 4.29 (FUN_0019ebd0 -> FUN_001d6738(i)): 0 unless the manager at DAT_01d5dd20 exists (set by
             // FUN_001b9338, which the event command FUN_00180b48 runs), then word +0x114 of its entry i
             // (0x38 bytes from +0xf4, used when bit 0 of the entry's first word is set). The Struggle

@@ -110,6 +110,11 @@ pub const STOP_ID: u16 = 2;
 pub const STOP_MASK: u32 = 0xfff7_ffdc;
 /// Script handles of summon objects: past the enemies' and the party's ranges.
 const HANDLE_BASE: u32 = 0x1800;
+/// Script handles of the objects a summon's script makes with host 1.0 (Tinker Bell, Chicken Little's surprise): one
+/// `OBJ_SIZE` block each after the two summon slots' handles, counted up from 1 by `SummonState::kid_serial`.
+const KID_BASE: u32 = 0x1810;
+/// Ticks a call on a made object waits for the object to be built.
+const KID_PATIENCE: u8 = 3;
 
 /// The summon's friend AI object as far as the group 10 hosts of the summon scripts read and write it
 /// (stage 4 of docs/summons.md: Stitch first). FUN_0010b780 picks the AI object by NeoStatus and stores it
@@ -171,6 +176,29 @@ pub mod ai {
         pub genie: super::genie::GenieAi,
         /// The fields of Chicken Little's, Peter Pan's and Tinker Bell's classes: `super::scripted`.
         pub scripted: super::scripted::ScriptedAi,
+        /// Host 1.0 this tick: the handle given and the `00objentry` id (`SummonState::kid_makes` after the tick).
+        pub makes: Vec<(u32, u32)>,
+        /// What the script asked of the objects it made, in order (`SummonState::kid_ops` after the tick).
+        pub remote: Vec<(u32, KidOp)>,
+        /// The serial of the last object made (lent from `SummonState::kid_serial` for the tick).
+        pub kid_serial: u32,
+        /// The objects made so far and still there (the handles host 1.94 calls valid), and those made this tick.
+        pub kids: Vec<u32>,
+    }
+
+    /// A call a summon's script makes on an object it made with host 1.0 (the object exists a tick later: the calls wait
+    /// for it, `super::objects`).
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum KidOp {
+        /// Host 1.148 `set_position` (FUN_0016a618), centimetres, the app's space.
+        Position(bevy::prelude::Vec3),
+        /// Host 1.8 `set_mode` (FUN_00186db0 on the other object's mode machine).
+        Mode(String),
+        /// Host 1.28 `hide`.
+        Hide,
+        /// Hosts 1.70 / 1.71.
+        SetFlag(i32),
+        ClearFlag(i32),
     }
 
     impl Default for SummonAi {
@@ -187,6 +215,10 @@ pub mod ai {
                 player_hp: (0, 0),
                 player_heal: 0,
                 genie: Default::default(),
+                makes: Vec::new(),
+                remote: Vec::new(),
+                kid_serial: 0,
+                kids: Vec::new(),
                 scripted: Default::default(),
             }
         }
@@ -1603,7 +1635,23 @@ impl SummonData {
     fn object(&mut self, disc: &Disc, row: &t::Objentry) -> (Option<Arc<Rig>>, Option<Program>) {
         let model = row.model_name.clone();
         let mset = row.animation_name.trim_end_matches(".mset").to_string();
-        let rig = self.rigs.entry(model.clone()).or_insert_with(|| crate::drive::read_rig(disc, &model, &mset)).clone();
+        let rig = self
+            .rigs
+            .entry(model.clone())
+            .or_insert_with(|| {
+                if !mset.is_empty() {
+                    return crate::drive::read_rig(disc, &model, &mset);
+                }
+                // An object with no motion set (Chicken Little's P_EX360, objentry type 9): its file holds a script and
+                // effects but no model (no entry of kind 4), so the object has no body to draw; one with a model keeps
+                // it with no motions, as a weapon.
+                let file = disc.read(&format!("obj/{model}.mdlx"))?;
+                let m = kh2_model::mdlx(&file).unwrap_or_default();
+                let apdx = format!("obj/{model}.apdx");
+                let apdx = disc.read(&apdx).is_some().then_some(apdx);
+                Some(Arc::new(Rig { model: m, mset: kh2_anim::Mset { slots: Vec::new() }, apdx }))
+            })
+            .clone();
         let prog = self
             .scripts
             .entry(model.clone())
@@ -1679,6 +1727,13 @@ pub struct SummonState {
     pub pending_form: Option<u16>,
     /// The enemy the player's latest hit landed on (a stand-in for `0x34e9c4`, FUN_00112850 at his attack's start).
     pub player_hit: Option<Entity>,
+    /// Objects the summon scripts made with host 1.0 (`ai::SummonAi::makes`), waiting for `act` to build them: handle and
+    /// `00objentry` id.
+    kid_makes: Vec<(u32, u32)>,
+    /// What the scripts asked of those objects, with the ticks each call has waited for its object.
+    kid_ops: Vec<(u32, ai::KidOp, u8)>,
+    /// The serial of the last object made (their handles are `KID_BASE + serial`).
+    kid_serial: u32,
     /// The leave thread (0x1c6810) runs.
     leaving: bool,
     /// The mode-3 tick counter (for the once-a-second log line).
@@ -1760,6 +1815,8 @@ enum Act {
     Spawn { index: u8, mode: &'static str, skip: bool },
     /// The first summon object's script switches to `leave` (0x1c6810).
     Leave,
+    /// The object a summon script made with host 1.0: handle and `00objentry` id (at the origin, no summon slot).
+    Kid { handle: u32, object: u32 },
 }
 
 #[derive(Resource, Default)]
@@ -1818,6 +1875,11 @@ pub struct SummonObject {
     ticks: u32,
     /// The movement block the members' follow reads (Genie, WP-SUM5).
     moves: Moves,
+    /// Made by another summon object's host 1.0 (Tinker Bell, Chicken Little's surprise): in no summon slot, gone with
+    /// the summon.
+    kid: bool,
+    /// Modes the object that made this one asked for (host 1.8 on this object), switched to once its script runs.
+    modes_asked: Vec<String>,
 }
 
 /// Object +0x110 walk, +0x114 run, +0x11c turn speed and the body radius +0x5b8.
@@ -1857,6 +1919,9 @@ struct SummonEnv {
     player_hit: Option<Entity>,
     /// The constants of Chicken Little's, Peter Pan's and Tinker Bell's classes.
     scripted: Option<scripted::Consts>,
+    /// The `00objentry` ids host 1.0 can make for the summon scripts: the second object a `sumn` row preloads (Tinker Bell
+    /// for Peter Pan) and the `SpawnObject1..4` of the summon's own objentry row (Chicken Little's 2098).
+    kid_ids: Vec<u32>,
 }
 
 impl SummonEnv {
@@ -1917,6 +1982,31 @@ impl SummonHost<'_, '_> {
             // 1.272 (0x171cb0): (object +0x7f8 & 4) != 0. FUN_00186580 sets the bit (host wrapper 0x171cd0
             // through FUN_001865a8, FUN_00175f10, FUN_001b25d0); nothing sets it for the summon in the app.
             (1, 272) if a(0) == me => (Value::Bool(self.ai.flag_7f8_4), St::Impl, ""),
+            // 1.0 create_object (0x170190 -> FUN_0016e8c0(DAT_0037a484, id, place 0x1c883a0)): the object of objentry `id`
+            // at the zeroed place, so at the origin until the script moves it (host 1.148). The objects the summon rows name
+            // are made by `act` on the next tick and run their own scripts from then.
+            (1, 0) => {
+                let id = a(0);
+                if self.env.kid_ids.contains(&id) {
+                    self.ai.kid_serial += 1;
+                    let h = SELF_BASE + (KID_BASE + self.ai.kid_serial) * OBJ_SIZE as u32;
+                    self.ai.makes.push((h, id));
+                    self.ai.kids.push(h);
+                    (Value::Handle(h), St::Approx, "the object appears a tick later (`act`); only the objentry ids the summon's rows name are made")
+                } else {
+                    (Value::Handle(0), St::Missing, "create_object of an `00objentry` id the summon does not preload")
+                }
+            }
+            // 1.148 set_position (0x170658 -> FUN_0016a618) of an object the script made.
+            (1, 148) if a(0) != me && self.ai.kids.contains(&a(0)) => match args.get(1) {
+                Some(Arg::Vec(v)) => {
+                    self.ai.remote.push((a(0), ai::KidOp::Position(crate::enemy_obj::from_game(*v))));
+                    (Value::None, St::Approx, "carried out on the made object once it exists (its position is the point)")
+                }
+                _ => (Value::None, St::Stub, "set_position without a vector"),
+            },
+            // 1.94 obj_valid of an object the script made.
+            (1, 94) if self.ai.kids.contains(&a(0)) => (Value::Bool(true), St::Approx, "an object made by host 1.0 is in the object list"),
             // 1.165 offer_command (0x1734a8): Stitch's main thread offers Ohana (519) in slot 2 while the
             // timer is above 0 (docs/summons.md section 4). Summon limits are stage 5.
             (1, 165) => (Value::None, St::Stub, "summon limit offers are stage 5: the offer is logged, the command menu does not show it"),
@@ -2224,6 +2314,20 @@ impl kh2_bdx::Host for SummonHost<'_, '_> {
         // Motion requests and their state as the enemy host has them (no player-type remap for the summon yet).
         if matches!(c, Call::PlayMotion { .. } | Call::PlayMotionChecked { .. } | Call::PlayMotionAt { .. } | Call::MotionState { .. }) {
             return self.f.inner.call(c);
+        }
+        // The calls on an object this script made with host 1.0: carried out on it when it exists (`objects`).
+        let made = |o: u32, ai: &ai::SummonAi| ai.kids.contains(&o);
+        let remote = match c {
+            Call::RemoteSetMode { obj, name } if made(*obj, self.ai) => Some((*obj, ai::KidOp::Mode(name.clone()), "a mode asked of the object the script made (host 1.8, FUN_00186db0)")),
+            Call::Hide { obj } if made(*obj, self.ai) => Some((*obj, ai::KidOp::Hide, "host 1.28 on the object the script made")),
+            Call::SetFlag { obj, bit } if made(*obj, self.ai) => Some((*obj, ai::KidOp::SetFlag(*bit), "host 1.70 on the object the script made")),
+            Call::ClearFlag { obj, bit } if made(*obj, self.ai) => Some((*obj, ai::KidOp::ClearFlag(*bit), "host 1.71 on the object the script made")),
+            _ => None,
+        };
+        if let Some((o, op, why)) = remote {
+            self.ai.remote.push((o, op));
+            self.record(c, &kh2_bdx::Value::None, crate::enemy_host::St::Approx, why);
+            return kh2_bdx::Value::None;
         }
         // The queries on the enemies the object walk (2.4) handed out: their position and reaction.
         match c {
@@ -2548,7 +2652,9 @@ fn tick(
         if let Some(sl) = slots.get_mut(o.slot as usize) {
             *sl = Some(o.body);
         }
-        sm.present.push(o.neo);
+        if !o.kid {
+            sm.present.push(o.neo);
+        }
     }
     let had_object = sm.slots.iter().any(Option::is_some);
     sm.slots = slots;
@@ -2776,6 +2882,7 @@ fn act(
     let (mut meshes, mut materials, mut images, mut bindposes) = gfx;
     let Ok(mut s) = sora.single_mut() else {
         acts.0.clear();
+        sm.kid_makes.clear();
         return;
     };
     // The summon motion holds the controller until it ends (the game's motion request with the
@@ -2791,6 +2898,9 @@ fn act(
         }
     }
     let pstate = if battle.active() { kh2_anim::PlayerState::BattleWeapon } else { kh2_anim::PlayerState::FieldNoWeapon };
+    for (handle, object) in std::mem::take(&mut sm.kid_makes) {
+        acts.0.push(Act::Kid { handle, object });
+    }
     for a in std::mem::take(&mut acts.0) {
         match a {
             Act::PlayerMotion(id, blend) => {
@@ -2890,24 +3000,41 @@ fn act(
                     }
                 }
             }
-            Act::Spawn { index, mode, skip } => {
-                let Some(row) = data.rows.get(index as usize - 1).cloned() else { continue };
-                let Some(o) = data.objs.iter().find(|r| r.object_id == row.entity1).cloned() else {
-                    warn!("summon: object {} of summon {index} has no objentry row", row.entity1);
+            Act::Spawn { .. } | Act::Kid { .. } => {
+                let (index, mode, skip, kid) = match a {
+                    Act::Spawn { index, mode, skip } => (index, mode, skip, None),
+                    Act::Kid { handle, object } => (0, "", false, Some((handle, object))),
+                    _ => unreachable!(),
+                };
+                let (object_id, label) = match kid {
+                    Some((_, id)) => (id, "made by host 1.0".to_string()),
+                    None => {
+                        let Some(row) = data.rows.get(index as usize - 1).cloned() else { continue };
+                        (row.entity1 as u32, data.name(row.command))
+                    }
+                };
+                let Some(o) = data.objs.iter().find(|r| r.object_id as u32 == object_id).cloned() else {
+                    warn!("summon: object {object_id} of summon {index} has no objentry row");
                     continue;
                 };
                 let (Some(rig), prog) = data.object(&disc, &o) else {
                     warn!("summon: object: {} model or motion set {} not loadable", o.model_name, o.animation_name);
                     continue;
                 };
-                let Some(slot) = (0..2u8).find(|&k| sm.slots[k as usize].is_none()) else { continue };
+                // A made object takes no summon slot (the slots' handles and the leave thread are the summon's own).
+                let slot = if kid.is_some() {
+                    2
+                } else {
+                    let Some(slot) = (0..2u8).find(|&k| sm.slots[k as usize].is_none()) else { continue };
+                    slot
+                };
                 // The object's own effect file (`obj/<model>.apdx`) is registered with the effect library so its script's
                 // effects (1.87, 1.149, 1.157) can start.
                 if let Some(l) = lib.as_deref_mut() {
                     crate::drive::register_effects(&disc, l, &rig);
                 }
                 // FUN_0016b960: the player's position; without the event the free spot (FUN_001a5ea8).
-                let mut at = s.motor.pos;
+                let mut at = if kid.is_some() { Vec3::ZERO } else { s.motor.pos };
                 if skip && let Some(c) = data.consts {
                     let mut rng = sm.rng;
                     let mut sector = sm.sector;
@@ -2933,11 +3060,11 @@ fn act(
                     info!("summon: free spot {:.0} units from the player (radius {:.0}, start angle {:.2}) at {at:?}", (at - s.motor.pos).with_y(0.0).length(), search.radius, search.angle);
                 }
                 let flags124 = o.flags & 8 != 0;
-                let yaw = s.motor.yaw;
+                let yaw = if kid.is_some() { 0.0 } else { s.motor.yaw };
                 let root = commands.spawn((Transform::from_translation(at * SCALE).with_rotation(Quat::from_rotation_y(yaw)), Visibility::default())).id();
                 let body = spawn_skinned(&mut commands, root, rig.clone(), &mut meshes, &mut materials, &mut images, &mut bindposes, SCALE);
                 let idle = rig.mset.slot(0, kh2_anim::PlayerState::FieldNoWeapon).or_else(|| rig.mset.has(0).then_some(0));
-                let handle = SELF_BASE + (HANDLE_BASE + slot as u32) * OBJ_SIZE as u32;
+                let handle = kid.map_or(SELF_BASE + (HANDLE_BASE + slot as u32) * OBJ_SIZE as u32, |(h, _)| h);
                 let mut obj = Obj::new(handle);
                 obj.motor.pos = at;
                 obj.motor.yaw = yaw;
@@ -2951,14 +3078,15 @@ fn act(
                     rt
                 });
                 let script = rt.as_ref().map(|r| r.prog.name.clone());
-                sm.slots[slot as usize] = Some(body);
-                sm.present.push(o.neo_status);
+                if kid.is_none() {
+                    sm.slots[slot as usize] = Some(body);
+                    sm.present.push(o.neo_status);
+                }
                 let slots: Vec<usize> = (0..rig.mset.slots.len()).filter(|&x| rig.mset.has(x)).collect();
                 info!("summon: object {} motion set slots {slots:?}", o.model_name);
                 info!(
-                    "summon: object {} ({}, objentry {}, type {}, NeoStatus {}) in summon slot {slot} at {at:?}, script {}, mode {mode}; body motion slot {idle:?}",
+                    "summon: object {} ({label}, objentry {}, type {}, NeoStatus {}) in summon slot {slot} at {at:?}, script {}, mode {mode:?}; body motion slot {idle:?}",
                     o.model_name,
-                    data.name(row.command),
                     o.object_id,
                     o.object_type,
                     o.neo_status,
@@ -2977,7 +3105,7 @@ fn act(
                     slot,
                     rt,
                     obj,
-                    tag: format!("{}#summon{slot}", o.model_name),
+                    tag: if kid.is_some() { format!("{}#kid", o.model_name) } else { format!("{}#summon{slot}", o.model_name) },
                     flags124,
                     started: script.map(|_| mode),
                     errors_seen: 0,
@@ -2989,6 +3117,8 @@ fn act(
                     fields: crate::friend_host::FriendFields::default(),
                     blast_hit: Default::default(),
                     ticks: 0,
+                    kid: kid.is_some(),
+                    modes_asked: Vec::new(),
                     moves: {
                         // +0x110 walk, +0x114 run, +0x11c turn: the `prty` row of the NeoMoveset (FUN_00194438); the
                         // body radius +0x5b8 from the model's first shape of kind 0 or 4 (35 without), as party.rs.
@@ -3042,6 +3172,16 @@ fn tinker_ready(sm: &SummonState, data: &SummonData) -> bool {
     sm.state != 0 && sm.index == data.index_of(cmd::PETER_PAN).unwrap_or(0) && sm.extra != 0
 }
 
+/// The `00objentry` ids host 1.0 can make for the summon of `sumn` index `index` (1-based, 0 for none): the second object its
+/// row preloads (`Entity2`: Tinker Bell for Peter Pan) and the `SpawnObject1..4` of the objentry row of its own object
+/// (Chicken Little's 2098, `P_EX360`).
+fn kid_object_ids(rows: &[t::Sumn], objs: &[t::Objentry], index: u8) -> Vec<u32> {
+    let Some(row) = (index != 0).then(|| rows.get(index as usize - 1)).flatten() else { return Vec::new() };
+    let own = objs.iter().find(|r| r.object_id as u32 == row.entity1 as u32);
+    let named = own.map_or([0; 4], |o| [o.spawn_object1, o.spawn_object2, o.spawn_object3, o.spawn_object4]);
+    std::iter::once(row.entity2 as u32).chain(named.into_iter().map(u32::from)).filter(|&i| i != 0).collect()
+}
+
 /// The summon objects' scripts (run every tick through the enemy host, as the party's in
 /// `friend_ai.rs`), their fades and their end.
 #[allow(clippy::too_many_arguments)]
@@ -3062,6 +3202,39 @@ fn objects(
 ) {
     let (Some(mut trace), Ok(mut s)) = (trace, sora.single_mut()) else { return };
     let paired = HashMap::new();
+    // Host 1.0: the objects the summon's rows name (Peter Pan's second object, `SpawnObject1..4` of the summon's own row).
+    let kid_ids = kid_object_ids(&data.rows, &data.objs, sm.index);
+    // The calls the scripts made on the objects they made, last tick: carried out now that those objects exist (a call
+    // for an object not built yet waits up to `KID_PATIENCE` ticks).
+    let summon_out = sm.slots.iter().all(Option::is_none);
+    let kid_handles: Vec<u32> = q.iter().filter(|(_, _, so)| so.kid).map(|(_, _, so)| so.obj.handle).collect();
+    for (h, op, age) in std::mem::take(&mut sm.kid_ops) {
+        let Some((_, mut tf, mut so)) = q.iter_mut().find(|(_, _, so)| so.obj.handle == h) else {
+            if age + 1 < KID_PATIENCE {
+                sm.kid_ops.push((h, op, age + 1));
+            }
+            continue;
+        };
+        let o = &mut so.obj;
+        match op {
+            ai::KidOp::Position(p) => {
+                o.motor.pos = p;
+                tf.translation = p * SCALE;
+            }
+            ai::KidOp::Mode(m) => {
+                info!("summon: {} asked for mode {m:?} by the script that made it", so.tag);
+                so.modes_asked.push(m);
+            }
+            ai::KidOp::Hide => {
+                o.hidden = true;
+                o.alpha = 0.0;
+                o.fade = None;
+            }
+            ai::KidOp::SetFlag(bit) if (0..64).contains(&bit) => o.flags |= 1 << bit,
+            ai::KidOp::ClearFlag(bit) if (0..64).contains(&bit) => o.flags &= !(1 << bit),
+            ai::KidOp::SetFlag(_) | ai::KidOp::ClearFlag(_) => {}
+        }
+    }
     let move_record = data.stitch.as_ref().and_then(|(_, r)| r.iter().position(|r| stitch::addr(r) == stitch::MOVE));
     // The object walk of host 2.4 (FUN_00184ac8: the objects with +0x588 bit 0x10, the enemies) and the enemies'
     // hurt shapes the summons' attack objects are tested against.
@@ -3122,6 +3295,7 @@ fn objects(
         player_hit: sm.player_hit,
         recent: s.lock.or(s.target).and_then(|e| views.iter().find(|v| v.entity == e)).map(|v| v.handle),
         scripted: data.scripted.as_ref().map(|d| d.0),
+        kid_ids,
     };
     let camera = cam.iter().next();
     // FUN_00118068 / FUN_00118110's targets: valid enemies (FUN_00112ac0: alive, hittable) not out of view
@@ -3166,7 +3340,13 @@ fn objects(
         };
         let (neo, body) = (so.neo, so.body);
         let so_model = so.model.clone();
-        let SummonObject { rt, obj, tag, started, leave, mode, errors_seen, ai, fields, blast_hit, ticks, moves, .. } = so;
+        // The objects a summon's script made go with the summon (their maker's object is in a summon slot).
+        if so.kid && summon_out {
+            info!("summon: {} removed with its summon", so.tag);
+            commands.entity(ent).despawn();
+            continue;
+        }
+        let SummonObject { rt, obj, tag, started, leave, mode, errors_seen, ai, fields, blast_hit, ticks, moves, modes_asked, .. } = so;
         let Some(rt) = rt.as_mut() else {
             // No script: nothing ends the object but the leave [inferred].
             if std::mem::take(leave) {
@@ -3179,6 +3359,9 @@ fn objects(
             continue;
         };
         let handle = obj.handle;
+        // The made objects still there (host 1.94) and the serial the next one takes.
+        ai.kids.retain(|h| kid_handles.contains(h));
+        ai.kid_serial = sm.kid_serial;
         let pax = pax_of(&rig);
         if let (Ok(a), Ok(g)) = (anims.get(body), gts.get(body)) {
             ai.scripted.bones = (0..a.pose.len()).map(|i| a.bone_world(g, i)).collect();
@@ -3211,7 +3394,13 @@ fn objects(
         let mut host = SummonHost { f, ai, env: &senv, shared: &mut shared.0 };
         if let Some(m) = started.take() {
             rt.spawn(&mut host, handle);
-            rt.set_mode_named(&mut host, m);
+            if !m.is_empty() {
+                rt.set_mode_named(&mut host, m);
+            }
+        }
+        // Host 1.8 on this object by the script that made it (Tinker Bell's `appear`).
+        for m in std::mem::take(modes_asked) {
+            rt.set_mode_named(&mut host, &m);
         }
         if std::mem::take(leave) {
             rt.set_mode_named(&mut host, "leave");
@@ -3246,6 +3435,12 @@ fn objects(
             info!("summon: {tag} event 11 (Drive!: form command {cmd}): handler {}", if handled { "ran" } else { "absent" });
         }
         rt.update(&mut host);
+        // What the script made and asked of the objects it made (host 1.0, 1.148, 1.8, 1.28, 1.70): `act` builds them and the
+        // next tick carries the calls out.
+        sm.kid_serial = sm.kid_serial.max(ai.kid_serial);
+        ai.kid_serial = sm.kid_serial;
+        sm.kid_makes.append(&mut ai.makes);
+        sm.kid_ops.extend(ai.remote.drain(..).map(|(h, op)| (h, op, 0)));
         if std::mem::take(&mut ai.player_heal) > 0 {
             let before = s.hp;
             s.hp = ai.player_hp.0;
@@ -3890,6 +4085,19 @@ mod tests {
             return None;
         };
         kh2_archive::Archive::open(&iso).ok()
+    }
+
+    /// Host 1.0 makes the objects the summon's rows name: Peter Pan (index 4) Tinker Bell, objentry 1268 (`Entity2` of his
+    /// `sumn` row), Chicken Little (index 1) 2098 (`SpawnObject1` of his own objentry row); Stitch and Genie none; no summon
+    /// (index 0) none.
+    #[test]
+    fn host_1_0_makes_the_objects_the_summon_rows_name() {
+        let Some(mut a) = archive() else { return };
+        let rows = kh2_tables::load::<t::Sumn>(&mut a, &t::SUMN).expect("sumn").rows;
+        let objs = kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).expect("objentry").rows;
+        assert_eq!(kid_object_ids(&rows, &objs, 4), vec![1268]);
+        assert_eq!(kid_object_ids(&rows, &objs, 1), vec![2098]);
+        assert!(kid_object_ids(&rows, &objs, 2).is_empty() && kid_object_ids(&rows, &objs, 3).is_empty() && kid_object_ids(&rows, &objs, 0).is_empty());
     }
 
     fn elf(a: &mut kh2_archive::Archive) -> Vec<u8> {

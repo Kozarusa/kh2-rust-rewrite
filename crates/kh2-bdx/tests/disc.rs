@@ -910,6 +910,55 @@ fn peter_pan_script_heals_the_player_and_sets_the_effect_vector() {
     assert!(rt.core.errors.is_empty(), "{:?}", rt.core.errors);
 }
 
+/// Peter Pan's `appear` mode (P_EX330, R16b9) makes Tinker Bell with host 1.0 (objentry 1268) and switches the object it
+/// made to its own `appear` mode with host 1.8 (`set_mode`, FUN_00170ea0 -> FUN_00186db0 on the mode machine of the object the
+/// context names). The context names another object than the caller, so the runtime hands the host `RemoteSetMode` with
+/// the made object's handle instead of switching its own modes.
+#[test]
+fn peter_pan_makes_tinker_bell_and_sets_her_mode_remotely() {
+    use kh2_bdx::host::{Host, Value};
+    struct H {
+        mock: MockHost,
+        seen: Vec<Call>,
+    }
+    impl Host for H {
+        fn call(&mut self, c: &Call) -> Value {
+            self.seen.push(c.clone());
+            match c {
+                Call::Func { group: 2, index: 75, .. } | Call::Func { group: 0, index: 49, .. } => Value::Bool(true),
+                Call::Func { group: 1, index: 84, .. } => Value::Handle(0x7900_0000),
+                Call::Func { group: 10, index: 45, .. } => Value::Float(600.0),
+                Call::Func { group: 10, index: 19, .. } | Call::Func { group: 1, index: 272, .. } => Value::Bool(false),
+                Call::Func { group: 10, .. } | Call::Func { group: 1, index: 165, .. } | Call::Func { group: 0, index: 40, .. } => Value::None,
+                _ => self.mock.call(c),
+            }
+        }
+        fn read_mem(&mut self, addr: u32, out: &mut [u8]) -> bool {
+            self.mock.read_mem(addr, out)
+        }
+        fn write_mem(&mut self, addr: u32, data: &[u8]) -> bool {
+            self.mock.write_mem(addr, data)
+        }
+    }
+    let Some((mut a, elf)) = open() else { return };
+    let table = HostTable::from_exe(&elf).expect("table");
+    let data = object_script(&mut a, "obj/P_EX330.mdlx");
+    let mut rt = Runtime::new(Program::parse(&data).expect("P_EX330 parses"));
+    rt.set_host_table(table);
+    let mut h = H { mock: MockHost::new(), seen: Vec::new() };
+    rt.spawn(&mut h, SELF_OBJ);
+    rt.set_mode_named(&mut h, "appear");
+    for _ in 0..40 {
+        h.mock.tick();
+        rt.update(&mut h);
+    }
+    assert_eq!(h.mock.created, vec![1268], "Tinker Bell, objentry 1268, made once");
+    let made = kh2_bdx::mock::CREATED;
+    let remote: Vec<_> = h.seen.iter().filter_map(|c| match c { Call::RemoteSetMode { obj, name } => Some((*obj, name.clone())), _ => None }).collect();
+    assert_eq!(remote, vec![(made, "appear".to_string())], "her mode is asked of the made object, not switched on Peter Pan");
+    assert!(rt.core.errors.is_empty(), "{:?}", rt.core.errors);
+}
+
 /// Chicken Little's `whistle` mode (WP-SUM8) walks the enemies (2.4), clones the object's target record for each in range
 /// (1.131: a pool record the host serves from memory) and starts a detached thread (2.20) that reads the record's object
 /// (word 0) as a context and attacks it. With the host answering the walk, the record and the object queries the threads

@@ -790,7 +790,7 @@ struct Ui {
 #[derive(Resource, Default)]
 pub struct CustomizeMenu {
     ready: bool,
-    tables: Option<CustomizeTables>,
+    tables: Option<std::sync::Arc<CustomizeTables>>,
     /// Entry 2 of the top list: its name and group sets.
     entry: Option<Entry>,
     machine: Option<Machine>,
@@ -814,7 +814,7 @@ fn load(disc: Res<Disc>, mut st: ResMut<CustomizeMenu>) {
         warn!("menu: the executable is not readable; the Customize pages are off");
         return;
     };
-    st.tables = CustomizeTables::read(&exe);
+    st.tables = CustomizeTables::read(&exe).map(std::sync::Arc::new);
     st.entry = Entry::read(&exe, ENTRY);
     st.ready = st.tables.is_some() && st.entry.is_some();
     if !st.ready {
@@ -910,7 +910,9 @@ pub fn write_friend(p: &mut Progress, t: &CustomizeTables, member: u16, e: &Effe
         }
         Effect::Ability { id, value } => Some(match t.setting_index(id) {
             Some(k) => {
-                p.set_member_setting(member, 1 + k, value);
+                if !p.set_member_setting(member, 1 + k, value) {
+                    warn!("menu: member {member} ability {id} use setting byte {} is not stored (past the settings block or unknown member)", 1 + k);
+                }
                 format!("member {member} ability {id} use setting {value} (setting byte {} = {:?})", 1 + k, p.member_setting(member, 1 + k))
             }
             None => format!("member {member} ability {id} has no use setting byte; nothing written"),
@@ -919,8 +921,10 @@ pub fn write_friend(p: &mut Progress, t: &CustomizeTables, member: u16, e: &Effe
             let (on, setting) = (state & 1 != 0, if state & 2 != 0 { 2 } else { 0 });
             p.set_auto_reload(member, item, on);
             let k = t.setting_index(item);
-            if let Some(k) = k {
-                p.set_member_setting(member, 1 + k, setting);
+            if let Some(k) = k
+                && !p.set_member_setting(member, 1 + k, setting)
+            {
+                warn!("menu: member {member} item {item} use setting byte {} is not stored (past the settings block or unknown member)", 1 + k);
             }
             Some(format!(
                 "member {member} item {item} auto-reload {} use setting {setting} (byte {:?} = {:?}, slots {:?})",
@@ -1026,7 +1030,7 @@ fn input(
     let pressed = keys_of(&keys, &mut held, real.delta_secs());
     st.held = held;
     let mut close = false;
-    let tables = st.tables.clone().unwrap_or_default();
+    let tables = st.tables.clone().unwrap_or_default(); // an Arc: the per-frame copy is a pointer bump
     for key in pressed {
         let Some(p) = progress.as_deref() else { break };
         let member = st.machine.as_ref().map_or(SORA, |m| m.member());
@@ -1880,6 +1884,13 @@ mod tests {
         assert_eq!(t.item_uses.iter().map(|c| c.value).collect::<Vec<_>>(), vec![0, 2]);
         assert_eq!(t.heading[3..], [0x483, 0x484]);
         assert_eq!(t.setting_ids.len(), 29);
+        let largest = t.setting_ids.iter().filter_map(|e| t.setting_index(e.0 as u16)).max().expect("entries");
+        println!("largest use setting index {largest}, setting byte {}", 1 + largest);
+        let mut p = Progress::from_block(&[], std::sync::Arc::new(Default::default()));
+        for e in &t.setting_ids {
+            let k = t.setting_index(e.0 as u16).expect("listed ids map");
+            assert!(p.set_member_setting(SORA, 1 + k, 1), "id {:#x} maps to setting byte {}, past the settings block", e.0, 1 + k);
+        }
         assert_eq!((t.setting_index(1), t.setting_index(7), t.setting_index(0xa5), t.setting_index(0xbe)), (Some(0), Some(6), Some(7), Some(7 + 2)));
         let m = kh2_image::text::Messages::from_bar(&a.read("msg/us/sys.bar").expect("sys.bar")).expect("messages");
         for c in t.styles.iter().chain(&t.uses).chain(&t.item_uses) {

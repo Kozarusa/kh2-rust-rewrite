@@ -2444,7 +2444,10 @@ mod tests {
             let style = resolve_style(None, p.member_setting(2, 0));
             refresh_target(2, style, &params, Vec3::ZERO, None, false, false, &ctx).expect("style in the table")
         };
-        assert_eq!(pick(&p), Some(Target { entity: a, shape: 0 }), "style 2 picks the far enemy, as the default style 0 would not");
+        assert_eq!(pick(&p), Some(Target { entity: a, shape: 0 }), "style 2 picks the far enemy");
+        // The default style 0 (a record that was never written) picks the other one in the same scene.
+        let fresh = crate::progress::Progress::from_block(&[], std::sync::Arc::new(Default::default()));
+        assert_eq!(pick(&fresh), Some(Target { entity: b, shape: 0 }), "style 0 picks the near enemy");
         // The quick key moves it on to 3 (the page rebuilds its rows from the record after a write).
         m.reload(vec![Row { setting: 2, ..Row::new(Kind::Style, 0, false, 0) }]);
         for e in m.press(Key::Toggle, &no) {

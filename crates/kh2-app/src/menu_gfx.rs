@@ -277,6 +277,15 @@ impl MenuScene {
         if self.view == [0.0; 4] { CANVAS } else { self.view }
     }
 
+    /// The quads node `i` draws now with the window-edge carry applied (`stretch_quads`), for the harness log.
+    pub fn node_quads_drawn(&self, i: usize) -> Vec<Quad> {
+        let mut qs = self.node_quads(i);
+        if let Some(rest) = self.nodes[i].stretch {
+            stretch_quads(&mut qs, rest, self.view());
+        }
+        qs
+    }
+
     /// The quads node `i` draws now (its sequence group at the current frame), for logs and tests.
     pub fn node_quads(&self, i: usize) -> Vec<Quad> {
         let n = &self.nodes[i];
@@ -517,14 +526,17 @@ fn picture_shifts(qs: &[Quad], slide: [f32; 2], view: [f32; 4], spans: [bool; 2]
         })
         .collect();
     let mut out = vec![None; qs.len()];
+    let tied = bar_parts(qs, &boxes);
     for axis in 0..2 {
         if !spans[axis] {
             continue;
         }
         let pic: Vec<usize> = (0..qs.len())
             .filter(|&i| {
-                let (lo, hi) = qs[i].uv.iter().fold((f32::MAX, f32::MIN), |(lo, hi), u| (lo.min(u[axis]), hi.max(u[axis])));
-                hi - lo > 0.5 * (boxes[i][axis + 2] - boxes[i][axis])
+                !tied[i] && {
+                    let (lo, hi) = qs[i].uv.iter().fold((f32::MAX, f32::MIN), |(lo, hi), u| (lo.min(u[axis]), hi.max(u[axis])));
+                    hi - lo > 0.5 * (boxes[i][axis + 2] - boxes[i][axis])
+                }
             })
             .collect();
         // Group the touching picture quads (their boxes overlap or meet within one unit).
@@ -559,6 +571,46 @@ fn picture_shifts(qs: &[Quad], slide: [f32; 2], view: [f32; 4], spans: [bool; 2]
         }
     }
     out
+}
+
+/// How far apart (units) two pieces of a bar may lie and still belong to it: Jiminy's icon stands 5 units left of the bar's cap.
+const BAR_GAP: f32 = 8.0;
+
+/// The quads of bars made of pieces: a chain of touching quads (boxes meet within `BAR_GAP`) that holds a piece drawn
+/// stretched along one axis only (a flat body between two rounded caps, such as the help bar with Jiminy's icon). Such a
+/// chain is one object whose pieces must keep their places to each other (and to the text drawn on it), so its
+/// pictures are not translated by `picture_shifts`: a cap moved to the window's edge while the body stays tore the bar
+/// apart (user report 2026-10-16) [inferred: the remaster's rule for these bars is not known].
+fn bar_parts(qs: &[Quad], boxes: &[[f32; 4]]) -> Vec<bool> {
+    let n = qs.len();
+    let spans = |i: usize| {
+        let b = boxes[i];
+        let mut flat = [false; 2];
+        for (axis, f) in flat.iter_mut().enumerate() {
+            let (lo, hi) = qs[i].uv.iter().fold((f32::MAX, f32::MIN), |(lo, hi), u| (lo.min(u[axis]), hi.max(u[axis])));
+            *f = hi - lo <= 0.5 * (b[axis + 2] - b[axis]);
+        }
+        flat
+    };
+    let flat: Vec<[bool; 2]> = (0..n).map(spans).collect();
+    // Only quads with a picture along some axis join a chain (a flat fill on both axes is a panel, not a part).
+    let member: Vec<bool> = flat.iter().map(|f| !(f[0] && f[1])).collect();
+    let mut group: Vec<usize> = (0..n).collect();
+    for i in (0..n).filter(|&i| member[i]) {
+        for j in (0..n).filter(|&j| member[j]) {
+            let (a, b) = (boxes[i], boxes[j]);
+            if a[0] <= b[2] + BAR_GAP && b[0] <= a[2] + BAR_GAP && a[1] <= b[3] + BAR_GAP && b[1] <= a[3] + BAR_GAP {
+                let (gi, gj) = (group[i], group[j]);
+                let keep = gi.min(gj);
+                for g in group.iter_mut() {
+                    if *g == gi || *g == gj {
+                        *g = keep;
+                    }
+                }
+            }
+        }
+    }
+    (0..n).map(|i| member[i] && (0..n).any(|j| member[j] && group[j] == group[i] && flat[j][0] != flat[j][1])).collect()
 }
 
 /// The part of the menu canvas the window shows (the menu camera's `AutoMin` fit around the canvas middle).
@@ -714,5 +766,33 @@ mod tests {
         let mut moving = vec![quad(155.0, -4.0, 625.0, 55.0, band)];
         stretch_quads(&mut moving, [55.0, -4.0, 525.0, 55.0], view);
         assert_eq!(b(&moving[0])[2], view[2] + 100.0);
+    }
+
+    /// The journal's help bar (boxes from the `KH2_JOURNAL_QUADS2` dump of the layer group): the left cap, the flat body, the
+    /// right cap and Jiminy's icon (which bobs to within 16 units of the canvas's left edge) stay together at wide and tall
+    /// windows, while a lone picture group at an edge (the Mickey watermark) still moves.
+    #[test]
+    fn a_bar_of_pieces_is_not_torn_apart() {
+        let pic = [1.0, 63.0, 15.0, 85.0];
+        let make = || {
+            vec![
+                quad(47.0, 387.0, 61.0, 409.0, pic),
+                quad(61.0, 387.0, 488.0, 409.0, [15.5, 63.0, 15.5, 85.0]),
+                quad(488.0, 387.0, 502.0, 409.0, pic),
+                quad(15.8, 388.0, 41.8, 419.0, [43.0, 63.0, 69.0, 94.0]),
+            ]
+        };
+        let rest = [15.8, 341.0, 523.0, 419.0];
+        for view in [window_view(2560.0, 1080.0), window_view(1000.0, 1000.0)] {
+            let mut qs = make();
+            stretch_quads(&mut qs, rest, view);
+            let before = make();
+            for k in 0..4 {
+                assert_eq!(qs[k].pos, before[k].pos, "bar piece {k} keeps its place at {view:?}");
+            }
+        }
+        let mut qs = vec![quad(476.0, 341.0, 523.0, 417.0, [106.0, 140.0, 153.0, 216.0])];
+        stretch_quads(&mut qs, rest, window_view(1000.0, 1000.0));
+        assert!(qs[0].pos[0][1] > 341.0, "the lone picture still moves to the corner");
     }
 }

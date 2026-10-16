@@ -622,6 +622,21 @@ it); at 4:3 nothing moves. The group is judged as a whole so the two halves neve
 carried sides. The rounded cap pieces and everything mid-canvas stay (no group of them reaches an edge of its axis). Looked at: 1280x720,
 1024x768 and `KH2_WINDOW=1600x600` (tt03, `KH2_NO_ENEMIES=1 KH2_KEYS=6:Enter,8:Enter,9.5:Enter`, `KH2_SHOT_AT=11`).
 
+Bars of pieces (WP-JH1, user report 2026-10-16, `local/reports/journal-help-bar-2026-10-16.png`): the journal's help line is a bar of
+quads in the layer group of the page frame (group 41, `FUN_00278468` draws the text on object group 0x7b): a left cap (box 47..61 x
+387..409 at rest, picture), a flat body (61..488, texture flat along x), a right cap (488..502) and Jiminy's icon 5 units left of the left cap
+(15.8..41.8 x 388..419, bobbing). `picture_shifts` judged each touching picture group alone: at a wide window the icon (its left side
+within 16 units of the canvas edge once it bobs) alone moved to the window's left edge, leaving a cap and the body behind (the user's
+crop); at a tall window (1000x1000) the caps, body and icon moved down by the bottom distance (32 units) while the text, a node of its own,
+stayed. Rule now (`menu_gfx::bar_parts`, test `a_bar_of_pieces_is_not_torn_apart`): quads that are not flat on both axes and lie within
+`BAR_GAP` (8 units) of each other form a chain; a chain with a quad flat along only one axis (the body) is a bar and its pictures are not
+translated, so the bar and its text keep the canvas place [inferred: the HD remaster's rule for these bars is not known]. The Mickey
+watermark (pictures only) still moves. Looked at: page 0xe at 1280x720, 1920x1080, 2560x1080, 1600x900, 1024x768, 1000x1000, 800x1000 and
+3440x1440 (one continuous bar with the icon at its left end at every size), pages 0, 0xc (also 0xd), 9 and 0xf at 2560x1080 and 1000x1000.
+Harness: `KH2_JOURNAL_QUADS=late` repeats the node dump every 240 frames, `KH2_JOURNAL_QUADS2=1` adds each quad's rest and drawn corner.
+Seen and left: at 2560x1080 the list pages' left sheet (page 0xd) ends at x 239 of 2000 with a lighter lip under it (the sheet's left edge
+is not carried to the window's edge as the rail is); at 1000x1000 the right side of the camp's area name is clipped (the Mickey rule of 9.1).
+
 ## 10. Status as built (WP-M2)
 
 Code: `menu_status.rs` (the number rules, the tables read from the executable, the two pages), `kh2-image/tests/menu_status.rs` (disc tests

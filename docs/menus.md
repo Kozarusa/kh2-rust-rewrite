@@ -2130,3 +2130,5 @@ count, `FUN_001a1cc8`, is above 0) and the command table at 0x37c036 (`FUN_001c6
 the generic executor `FUN_00177c20` -> `FUN_0016b420` raises event 11 on Genie's script (summons.md); the app issues `SummonRequest::Form`. Key path in the
 app: H swaps the deck (the other deck's cursor kept), T / G move, J confirms, B goes back. Tests `second_deck_shows_drive_with_genie_and_issues_the_form`,
 `genie_drive_rows_and_table_come_from_the_disc`. Gap: the entry's target-record parameter (`FUN_0018f490(+0xa20, Genie, 0)`).
+
+- **MN15 review notes.** [inferred] World 0xf's limits test uses "best count above 0" (`FUN_002a20e0`); the original's `FUN_002ba238` tests the completion bits at `DAT_0036d4f4 + 0x74`, and their equivalence is not shown. The once-only `Counted` marker counts an enemy that revives only on its first defeat; the original counts each defeat. `count_defeats` itself has no system-level test (only `count_one`). Section 14's "0x19..0x1f" for Customize is a different use of the numbers than the journal pages 0x19, 0x1a and 0x20.

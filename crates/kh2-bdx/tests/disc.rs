@@ -194,6 +194,75 @@ fn dusk_runs_its_mode_cycle() {
 }
 
 
+/// The Nobody M_EX940 (object 0x139, ObjectType 0x15) of tt04's b_44 and the M_EX850 it makes (WP-EN3): a blow-class hit
+/// (hit reaction 7, 9 or 11, R016a at 0x01a7) runs R0082, which makes the object of objentry 0x6bf with host 1.0, stores
+/// its handle at global +0x1084 (R011d) and puts it at the ground point under M_EX940 (1.98 then 1.148). On the mock world
+/// the call order and the handle it hands to 1.148 are the whole of it.
+#[test]
+fn m_ex940_makes_m_ex850_on_a_blow() {
+    let Some((mut a, _)) = open() else { return };
+    assert_enemy_files(&mut a, "M_EX940");
+    let data = object_script(&mut a, "obj/M_EX940.mdlx");
+    let p = Program::parse(&data).unwrap();
+    analyze(&p).unwrap();
+    let mut rt = Runtime::new(p);
+    rt.shared.rng = 3;
+    rt.core.mode_log = Some(Vec::new());
+    let mut host = MockHost::new();
+    host.player_position = [250.0, 0.0, 0.0, 1.0];
+    assert!(rt.spawn(&mut host, SELF_OBJ));
+    for _ in 0..40 {
+        rt.update(&mut host);
+        host.tick();
+    }
+    assert!(host.created.is_empty(), "nothing is made before a hit: {:?}", host.created);
+    host.hit_reaction = 7;
+    rt.event(&mut host, 6, &[0x500]);
+    for _ in 0..5 {
+        rt.update(&mut host);
+        host.tick();
+    }
+    assert!(rt.core.errors.is_empty(), "{:?}", rt.core.errors);
+    assert_eq!(host.created, vec![0x6bf], "one object, the SpawnObject1 of M_EX940's objentry row");
+    let made = kh2_bdx::mock::CREATED;
+    let calls: Vec<&Call> = host.calls().collect();
+    let at = |from: usize, pred: &dyn Fn(&Call) -> bool| from + calls[from..].iter().position(|c| pred(c)).expect("call missing");
+    let create = at(0, &|c| matches!(c, Call::Func { group: 1, index: 0, .. }));
+    let ground = at(create, &|c| matches!(c, Call::Func { group: 1, index: 98, .. }));
+    let place = at(create, &|c| matches!(c, Call::Func { group: 1, index: 148, args } if args.first() == Some(&kh2_bdx::Arg::Obj(made))));
+    assert!(create < ground && ground < place, "create_object, then ground_position, then set_position on the made object: {create} {ground} {place}");
+    // The main loop unlinks again (R033b clears global +0x1070) and a second blow makes a second object; R00b6 first hides
+    // the one made before (1.28 on global +0x1084, then set_flag 6 on it) because host 1.94 calls it valid.
+    for _ in 0..3 {
+        rt.update(&mut host);
+        host.tick();
+    }
+    rt.event(&mut host, 6, &[0x500]);
+    rt.update(&mut host);
+    assert_eq!(host.created, vec![0x6bf, 0x6bf]);
+    assert!(host.calls().any(|c| matches!(c, Call::Hide { obj } if *obj == made)), "the first object is hidden");
+    assert!(host.calls().any(|c| matches!(c, Call::SetFlag { obj, bit: 6 } if *obj == made)), "and flagged 6");
+}
+
+/// The object M_EX940 makes, `M_EX850` (WP-EN3; objentry 0x6bf, ObjectType 4, no `set_obj_param`): its script runs on the
+/// mock world with every host function decoded, starts in `idle` (it has an `appear` mode, which nothing enters on the mock
+/// world) and leaves, and never asks for a status block.
+#[test]
+fn m_ex850_runs_its_modes() {
+    let Some((mut a, _)) = open() else { return };
+    assert_enemy_files(&mut a, "M_EX850");
+    let data = object_script(&mut a, "obj/M_EX850.mdlx");
+    let (seen, unknown) = mode_cycle(&data);
+    eprintln!("M_EX850 modes: {seen:?}");
+    assert_eq!(unknown, 0, "every host function M_EX850 calls is decoded");
+    for m in ["idle", "leave"] {
+        assert!(seen.contains(m), "mode {m} never ran: {seen:?}");
+    }
+    let d = dry_run(&data, 1, 250.0, 120, None);
+    assert!(d.errors.is_empty(), "{:?}", d.errors);
+    assert!(!d.host.calls().any(|c| matches!(c, Call::SetObjParam { .. })), "no status block is asked for");
+}
+
 /// The Struggle opponent N_EX570_BTL (WP-6H) with the spawn parameter 1 of its tt04 groups (b_41: 1,
 /// b_42: 2, b_45: 4, b_51: 5; `docs/enemies.md`).
 #[test]
@@ -838,6 +907,55 @@ fn peter_pan_script_heals_the_player_and_sets_the_effect_vector() {
     assert!(!vecs.is_empty(), "the script sets the vector through 0.40");
     assert!(vecs.iter().all(|x| matches!(x.get(1), Some(Arg::Vec(_)))), "{vecs:?}");
     assert!(!h.seen.iter().any(|c| matches!(c, Call::Unknown { group: 0, index: 40, .. } | Call::Unknown { group: 1, index: 155, .. })));
+    assert!(rt.core.errors.is_empty(), "{:?}", rt.core.errors);
+}
+
+/// Peter Pan's `appear` mode (P_EX330, R16b9) makes Tinker Bell with host 1.0 (objentry 1268) and switches the object it
+/// made to its own `appear` mode with host 1.8 (`set_mode`, FUN_00170ea0 -> FUN_00186db0 on the mode machine of the object the
+/// context names). The context names another object than the caller, so the runtime hands the host `RemoteSetMode` with
+/// the made object's handle instead of switching its own modes.
+#[test]
+fn peter_pan_makes_tinker_bell_and_sets_her_mode_remotely() {
+    use kh2_bdx::host::{Host, Value};
+    struct H {
+        mock: MockHost,
+        seen: Vec<Call>,
+    }
+    impl Host for H {
+        fn call(&mut self, c: &Call) -> Value {
+            self.seen.push(c.clone());
+            match c {
+                Call::Func { group: 2, index: 75, .. } | Call::Func { group: 0, index: 49, .. } => Value::Bool(true),
+                Call::Func { group: 1, index: 84, .. } => Value::Handle(0x7900_0000),
+                Call::Func { group: 10, index: 45, .. } => Value::Float(600.0),
+                Call::Func { group: 10, index: 19, .. } | Call::Func { group: 1, index: 272, .. } => Value::Bool(false),
+                Call::Func { group: 10, .. } | Call::Func { group: 1, index: 165, .. } | Call::Func { group: 0, index: 40, .. } => Value::None,
+                _ => self.mock.call(c),
+            }
+        }
+        fn read_mem(&mut self, addr: u32, out: &mut [u8]) -> bool {
+            self.mock.read_mem(addr, out)
+        }
+        fn write_mem(&mut self, addr: u32, data: &[u8]) -> bool {
+            self.mock.write_mem(addr, data)
+        }
+    }
+    let Some((mut a, elf)) = open() else { return };
+    let table = HostTable::from_exe(&elf).expect("table");
+    let data = object_script(&mut a, "obj/P_EX330.mdlx");
+    let mut rt = Runtime::new(Program::parse(&data).expect("P_EX330 parses"));
+    rt.set_host_table(table);
+    let mut h = H { mock: MockHost::new(), seen: Vec::new() };
+    rt.spawn(&mut h, SELF_OBJ);
+    rt.set_mode_named(&mut h, "appear");
+    for _ in 0..40 {
+        h.mock.tick();
+        rt.update(&mut h);
+    }
+    assert_eq!(h.mock.created, vec![1268], "Tinker Bell, objentry 1268, made once");
+    let made = kh2_bdx::mock::CREATED;
+    let remote: Vec<_> = h.seen.iter().filter_map(|c| match c { Call::RemoteSetMode { obj, name } => Some((*obj, name.clone())), _ => None }).collect();
+    assert_eq!(remote, vec![(made, "appear".to_string())], "her mode is asked of the made object, not switched on Peter Pan");
     assert!(rt.core.errors.is_empty(), "{:?}", rt.core.errors);
 }
 

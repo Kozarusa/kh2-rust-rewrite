@@ -33,7 +33,7 @@ use crate::combat::Fighter;
 use crate::data::GameData;
 use crate::enemy::{EState, Enemy, EnemyClash};
 use crate::enemy_host::{call_id, compute_drop, parse_przt, prize_row, BevyHost, Env, PrizeRow, St};
-use crate::enemy_obj::{Obj, FLAG_UNHITTABLE, HIT, OBJ_SIZE, PLAYER, SELF_BASE};
+use crate::enemy_obj::{handle_of_serial, AppearRamp, Appearing, CreatedHandle, Obj, ObjTable, Other, Remote, FLAG_UNHITTABLE, HIT, PLAYER, REMOTE_PATIENCE};
 use crate::fx::{GameEffect, StartEffect, EFFECT_DEATH};
 use crate::motor::wrap_angle;
 use crate::reaction_cmd::{PlayerReaction, PlayerReactionCmd, ReactionAccepted};
@@ -94,6 +94,20 @@ impl Default for Mailbox {
     fn default() -> Self {
         Mailbox { queue: Vec::new(), seed: 1 }
     }
+}
+
+/// `KH2_BDX_HIT=<enemy name>:<reaction>:<seconds>` (harness): from `<seconds>` on, once, the first living enemy of that name
+/// gets the event-6 hit of a real hit with the given effective reaction (7, 9 and 11 are the blow class), as
+/// `enemy::receive_hits` would report it. Nothing else happens to the enemy (no damage, no reaction motion).
+fn forced_hit() -> Option<&'static (String, u8, u64)> {
+    static HIT: std::sync::OnceLock<Option<(String, u8, u64)>> = std::sync::OnceLock::new();
+    HIT.get_or_init(|| {
+        let v = std::env::var("KH2_BDX_HIT").ok()?;
+        let mut it = v.split(':');
+        let (name, reaction, secs) = (it.next()?.to_string(), it.next()?.trim().parse().ok()?, it.next()?.trim().parse::<f32>().ok()?);
+        Some((name, reaction, (secs * 60.0) as u64))
+    })
+    .as_ref()
 }
 
 /// Size of the game's message queue (FUN_00187170 drops a message when all 0x40 entries are taken).
@@ -246,13 +260,16 @@ impl Plugin for EnemyAiPlugin {
         app.insert_resource(AiTrace { level, tick: 0, calls: BTreeMap::new(), notes: HashSet::new() })
             .init_resource::<AiPrograms>()
             .init_resource::<Mailbox>()
+            .init_resource::<ObjTable>()
             .add_message::<AiHit>()
             .add_systems(Startup, load_programs)
             .add_systems(
                 FixedUpdate,
                 (
                     ai_attach.after(crate::enemy::spawn_waves),
-                    ai_update.after(ai_attach).before(crate::enemy::think),
+                    ai_remote.after(ai_attach),
+                    ai_update.after(ai_remote).before(crate::enemy::think),
+                    crate::enemy::spawn_created.after(ai_update),
                     ai_fade.after(crate::enemy::think),
                 )
                     .in_set(Sim::Enemy),
@@ -261,7 +278,7 @@ impl Plugin for EnemyAiPlugin {
 }
 
 /// Reads the BDX entry (BAR type 3) of each scripted enemy's object file and its `objentry` flags.
-fn load_programs(disc: Res<Disc>, mut programs: ResMut<AiPrograms>) {
+fn load_programs(disc: Res<Disc>, mut programs: ResMut<AiPrograms>, mut table: ResMut<ObjTable>) {
     let entries: Vec<(&'static str, &str)> = crate::enemy::KINDS.iter().map(|k| (k.name, k.model)).collect();
     let rows = {
         let Ok(mut a) = disc.0.lock() else { return };
@@ -271,6 +288,13 @@ fn load_programs(disc: Res<Disc>, mut programs: ResMut<AiPrograms>) {
     // sub-motion per player model, named by `%03d0` of it (FUN_0017ef98 formats the key with the format
     // string at 0x37a598, FUN_0017ee40 looks the name up). Sora's row is P_EX100.
     programs.player_model = rows.iter().find(|r| r.model_name == "P_EX100").map_or(1, |r| r.weapon_joint);
+    // The objects host 1.0 can make: the `00objentry` rows whose model is one of the app's enemy kinds.
+    for r in &rows {
+        if let Some(k) = crate::enemy::KINDS.iter().find(|k| k.model == r.model_name) {
+            table.kinds.insert(r.object_id, k);
+        }
+    }
+    table.creatable = Arc::new(table.kinds.keys().copied().collect());
     programs.prizes = disc
         .read("00battle.bin")
         .and_then(|b| kh2_bar::parse(&b).ok().and_then(|e| e.iter().find(|x| x.tag == "przt").map(|x| parse_przt(x.data))))
@@ -323,22 +347,43 @@ fn paired_motions(mset: &[u8]) -> HashMap<usize, Vec<(String, f32)>> {
     out
 }
 
+/// An enemy with no script runtime yet: its handle if host 1.0 made it, and whether it fades in.
+type Unattached = (Entity, &'static Enemy, Option<&'static CreatedHandle>, Option<&'static Appearing>);
+
 /// Gives every new enemy its script runtime. Runs right after the wave spawner, so the
 /// script's first frame is the frame the enemy appears in.
-fn ai_attach(mut commands: Commands, programs: Res<AiPrograms>, q: Query<(Entity, &Enemy), Without<AiBrain>>, mut serial: Local<u32>) {
-    for (ent, e) in &q {
+fn ai_attach(
+    mut commands: Commands,
+    programs: Res<AiPrograms>,
+    mut table: ResMut<ObjTable>,
+    appear: Option<Res<AppearRamp>>,
+    q: Query<Unattached, Without<AiBrain>>,
+) {
+    for (ent, e, made, appearing) in &q {
         let Some(script) = programs.by_kind.get(e.kind.name) else { continue };
-        *serial += 1;
+        // An object host 1.0 made has the handle that call gave (its serial was taken then).
+        let (serial, handle) = match made {
+            Some(h) => (h.0.wrapping_sub(handle_of_serial(0)) / crate::enemy_obj::OBJ_SIZE as u32, h.0),
+            None => {
+                table.serial += 1;
+                (table.serial, handle_of_serial(table.serial))
+            }
+        };
         let mut rt = Runtime::new(script.prog.clone());
         if let Some(t) = &programs.table {
             rt.set_host_table(t.clone());
         }
         rt.shared.rng = 0x9E37_79B9u32 ^ serial.wrapping_mul(0x85EB_CA6B);
         rt.core.mode_log = Some(Vec::new());
+        let mut obj = Obj::new(handle);
+        // A new object of a kind-6 group fades in (FUN_00199e98: FUN_001abf40 on +0x82c).
+        if let (Some(_), Some(a)) = (appearing, appear.as_deref()) {
+            obj.appear = a.start();
+        }
         commands.entity(ent).insert(AiBrain {
             rt,
-            obj: Obj::new(SELF_BASE + (*serial % 0x1000) * OBJ_SIZE as u32),
-            tag: format!("{}#{}", e.name, *serial),
+            obj,
+            tag: format!("{}#{}", e.name, serial),
             enmp: e.kind.enmp,
             flags124: script.flags124,
             paired: script.paired.clone(),
@@ -378,7 +423,7 @@ fn ai_update(
     mut game: MessageWriter<GameEffect>,
     mut player_cmds: MessageWriter<PlayerReactionCmd>,
     mut player_reaction: ResMut<PlayerReaction>,
-    (mut trace, mut mailbox): (ResMut<AiTrace>, ResMut<Mailbox>),
+    (mut trace, mut mailbox, mut table, appear): (ResMut<AiTrace>, ResMut<Mailbox>, ResMut<ObjTable>, Option<Res<AppearRamp>>),
     (programs, abilities, mission, mut global_events): ScriptWorld,
     (prize_pool, mut prize_drops, mut item_drops, mut collect_all): (
         Option<Res<crate::prize::PrizePool>>,
@@ -386,7 +431,7 @@ fn ai_update(
         MessageWriter<crate::prize::ItemDrop>,
         MessageWriter<crate::prize::CollectAll>,
     ),
-    (summon, mut summon_stop_logged): (Option<Res<crate::summon::SummonState>>, Local<bool>),
+    (summon, mut summon_stop_logged, mut forced_done): (Option<Res<crate::summon::SummonState>>, Local<bool>, Local<bool>),
 ) {
     trace.tick += 1;
     // The summon arrival puts actor stop id 2 on every enemy (FUN_0016bef0(2, 0xfff7ffdc), `SummonState::stop`):
@@ -402,6 +447,13 @@ fn ai_update(
     let mut hits: HashMap<Entity, Vec<(bool, u8)>> = HashMap::new();
     for h in hit_msgs.read() {
         hits.entry(h.target).or_default().push((h.real, h.reaction));
+    }
+    if let Some((name, reaction, at)) = forced_hit().filter(|(_, _, at)| !*forced_done && trace.tick >= *at)
+        && let Some((ent, ..)) = q.iter().find(|(_, _, e, _, _)| e.alive() && e.name == name)
+    {
+        hits.entry(ent).or_default().push((true, *reaction));
+        *forced_done = true;
+        info!("bdx: KH2_BDX_HIT: {name} gets a real hit with reaction {reaction} (tick {at})");
     }
     let mut reactions: HashMap<Entity, Vec<(u16, i16)>> = HashMap::new();
     for r in accepted.read() {
@@ -422,6 +474,9 @@ fn ai_update(
     let event_active = mission.as_deref().is_some_and(|m| m.event_active());
     let Ok(sp) = sora.single() else { return };
     let player = sp.translation / SCALE;
+    // The other objects as they stand now, for the calls one object makes on another (1.15, 1.94, 1.98, 1.147).
+    let others: Arc<HashMap<u32, Other>> = Arc::new(q.iter().map(|(_, tf, _, _, b)| (b.obj.handle, Other { pos: tf.translation / SCALE, slot: b.obj.slot })).collect());
+    let appear_limit = appear.as_deref().map_or(1.0, |a| a.limit);
     let player_yaw = sp.rotation.to_euler(EulerRot::YXZ).0;
     let cam = cam.single().ok();
     for (ent, mut tf, mut e, mut f, mut brain) in &mut q {
@@ -452,6 +507,9 @@ fn ai_update(
         obj.trigger_bits = trigger_bits(&anim);
         obj.hp_max = e.stats.max_hp;
         obj.hp_min = e.min_hp;
+        obj.others = others.clone();
+        obj.creatable = table.creatable.clone();
+        obj.next_serial = table.serial;
         let env = Env {
             player,
             player_yaw,
@@ -523,6 +581,10 @@ fn ai_update(
         } else {
             rt.update(&mut host);
         }
+        // The objects the script made with host 1.0 and its calls on other objects wait for their owners.
+        table.serial = obj.next_serial;
+        table.creates.append(&mut obj.creates);
+        table.remote.extend(obj.remote.drain(..).map(|(h, r)| (h, r, 0)));
         // The game's queue holds 0x40 entries; FUN_00187170 drops a message when it is full.
         for m in obj.outbox.drain(..) {
             if mailbox.queue.len() < MAILBOX_LEN {
@@ -657,6 +719,9 @@ fn ai_update(
         }
         obj.want_vel = asked;
         obj.moved = obj.motor.pos - before;
+        if trace.level >= 2 && obj.moved != Vec3::ZERO {
+            trace.line(tag, &format!("moved {:?} to {:?} (mover delta {delta:?}, grounded {})", obj.moved, obj.motor.pos, obj.motor.grounded));
+        }
         // Falling and landing motions of a jump started with the commit flag.
         let mut follow = None;
         if landed {
@@ -682,7 +747,7 @@ fn ai_update(
         e.vel = Vec3::ZERO;
         tf.translation = obj.motor.pos * SCALE;
         tf.rotation = Quat::from_rotation_y(e.yaw);
-        f.hittable = obj.flags & (1 << FLAG_UNHITTABLE) == 0 && e.hp > 0;
+        f.hittable = obj.flags & (1 << FLAG_UNHITTABLE) == 0 && e.hp > 0 && e.kind.status;
         for id in obj.effects.drain(..) {
             if id == EFFECT_DEATH {
                 game.write(GameEffect::Death { victim: ent });
@@ -691,7 +756,8 @@ fn ai_update(
             }
         }
         obj.advance_fade();
-        let visible = !obj.hidden && obj.alpha > 0.0;
+        obj.appear.tick(appear_limit);
+        let visible = !obj.hidden && obj.shown_alpha() > 0.0;
         if visible != brain.visible {
             brain.visible = visible;
             if let Ok(mut b) = commands.get_entity(e.body) {
@@ -702,6 +768,35 @@ fn ai_update(
         if brain.obj.hidden {
             trace.line(&brain.tag, "hidden: despawned");
             commands.entity(ent).despawn();
+        }
+    }
+}
+
+/// The calls scripted objects made on other objects (`Obj::remote`: 1.148, 1.28, 1.70, 1.71), carried out on the owner of the
+/// handle. A call on an object that is not there yet (one made in this tick) waits a few ticks.
+fn ai_remote(mut table: ResMut<ObjTable>, mut q: Query<(&mut Transform, &mut AiBrain)>) {
+    let ops = std::mem::take(&mut table.remote);
+    for (handle, op, age) in ops {
+        let Some((mut tf, mut brain)) = q.iter_mut().find(|(_, b)| b.obj.handle == handle) else {
+            if age + 1 < REMOTE_PATIENCE {
+                table.remote.push((handle, op, age + 1));
+            }
+            continue;
+        };
+        let o = &mut brain.obj;
+        match op {
+            Remote::Position(p) => {
+                o.motor.pos = p;
+                tf.translation = p * SCALE;
+            }
+            Remote::Hide => {
+                o.hidden = true;
+                o.alpha = 0.0;
+                o.fade = None;
+            }
+            Remote::SetFlag(bit) if (0..64).contains(&bit) => o.flags |= 1 << bit,
+            Remote::ClearFlag(bit) if (0..64).contains(&bit) => o.flags &= !(1 << bit),
+            Remote::SetFlag(_) | Remote::ClearFlag(_) => {}
         }
     }
 }
@@ -734,7 +829,7 @@ fn ai_fade(
     trace: Res<AiTrace>,
 ) {
     for (e, mut brain) in &mut q {
-        let alpha = brain.obj.alpha.clamp(0.0, 1.0);
+        let alpha = brain.obj.shown_alpha().clamp(0.0, 1.0);
         if (alpha - brain.applied_alpha).abs() < 1e-4 {
             continue;
         }
@@ -756,6 +851,7 @@ fn ai_fade(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::enemy_obj::SELF_BASE;
 
     /// FUN_00187250: every message goes to every object of the list, each drawing its own delay from
     /// the generator in list order; a delay of 0 draws nothing.

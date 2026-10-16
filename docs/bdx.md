@@ -181,14 +181,14 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 0.85 | `effect_stop_mark(p)` | 0x16dbb8 | 87 | like effect_stop and also sets bit 0 of the handle's flags (+8) (FUN_001d9f48) |
 | 0.86 | `set_word_4(pp)` | 0x16de68 | 0 | store the second argument at +4 of the first |
 | 0.88 | `fader_88(f)` | 0x16d958 | 1 | screen fader at 0x3564d0 with flag 0 over `seconds * DAT_0037a25c` frames (FUN_0014a7f0); role inferred |
-| 1.0 | `create_object(i) -> h` | 0x170190 | 51 | construct a new object (0x9c0 bytes) for entity id `id` at the origin (FUN_0016e8c0); returns it |
+| 1.0 | `create_object(i) -> h` | 0x170190 | 51 | construct a new object (0x9c0 bytes) for entity id `id` at the origin (FUN_0016e8c0); returns it The wrapper takes one argument (the objentry id); the scripts' `lea local; push id; call` pair leaves the address on the stack and a later routine stores the handle at `[address]+4`, which is how contexts (`Arg::Obj`) name the new object. Served by `enemy_host.rs` (enemy kinds) and `summon.rs` (the summon rows' objects). WP-EN3 |
 | 1.1 | `set_yaw(Of)` | 0x170ac8 | 222 | rebuild the facing vector at +0x550 from an angle (FUN_0016a790), set the yaw at +0x66c, clear flag 8 of +0x7f8; role inferred |
 | 1.3 | `player() -> o` | 0x170260 | 775 | the player's object (Sora) |
 | 1.4 | `face_direction(Ov)` | 0x170ae8 | 1826 | face along the direction at once (yaw = atan2(x, z) at +0x66c) |
 | 1.5 | `modes_clear(p)` | 0x172050 | 716 | clear the mode record table |
 | 1.6 | `modes_register(psippppppppp)` | 0x172068 | 13941 | write a mode record: table, name, priority and flags, nine routine words |
 | 1.7 | `modes_attach(pp)` | 0x170e60 | 716 | attach the mode table and the context structure to the object's mode machine |
-| 1.8 | `set_mode(ps)` | 0x170ea0 | 15744 | switch to the named mode now |
+| 1.8 | `set_mode(ps)` | 0x170ea0 | 15744 | switch to the named mode now. The context is `*(*a0 + 4) + 0x300`, the mode machine of the object it names: a context naming another object than the caller (Peter Pan's `appear` sets Tinker Bell's) reaches the host as `Call::RemoteSetMode { obj, name }` (WP-EN3), no longer switching the caller |
 | 1.9 | `queue_mode(ps)` | 0x170ec8 | 4202 | queue the named mode to start after the running one ends |
 | 1.10 | `mode_pending(p) -> b` | 0x170f18 | 368 | a mode is queued or running |
 | 1.11 | `play_motion(oif)` | 0x170348 | 4450 | start a motion with a blend (motion controller at +0x140, FUN_0017e220) |

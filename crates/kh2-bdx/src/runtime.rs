@@ -968,7 +968,16 @@ impl CoreEnv<'_> {
                 self.core.modes.table = a[1];
                 return Ok(None);
             }
+            // 1.8 (0x170ea0 -> FUN_00186db0(*(*a0 + 4) + 0x300, name)): the mode machine at +0x300 of the object the
+            // context names, which is another object when the script made one (host 1.0) and switches its mode: the
+            // host gets `RemoteSetMode` (the object made may not exist yet; the app waits for it).
             (1, 8) => {
+                let target = self.obj_of(mem, a[0]).unwrap_or(0);
+                if target != 0 && target != self.core.obj {
+                    let name = self.cstr(mem, a[1])?;
+                    self.host.call(&Call::RemoteSetMode { obj: target, name });
+                    return Ok(None);
+                }
                 let (core, host) = (&mut *self.core, &mut *self.host);
                 core.set_mode(p, code, mem.sh, host, a[1])?;
                 return Ok(None);

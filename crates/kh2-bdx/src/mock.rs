@@ -7,6 +7,8 @@ use crate::host::{Arg, Call, Host, Value, Vec4};
 pub const SELF_OBJ: u32 = 0x100;
 pub const PLAYER: u32 = 0x200;
 pub const TARGET: u32 = 0x300;
+/// The first handle host 1.0 (`create_object`) gives in the toy world; the next ones follow in steps of 0x1000.
+pub const CREATED: u32 = 0x8000;
 /// How long the toy world keeps an object in the air after a jump.
 pub const JUMP_FRAMES: u32 = 30;
 
@@ -31,6 +33,11 @@ pub struct MockHost {
     pub object: Vec<u8>,
     /// What host 1.39 (spawn parameter, word i of the object's array at +0x81c) answers; 99 by default.
     pub spawn_param: i32,
+    /// What host 2.7 (`hit_reaction`, byte +0x26 of the hit record) answers; 0 by default.
+    pub hit_reaction: i32,
+    /// The `00objentry` ids host 1.0 (`create_object`) was asked for, in order; the object made as `CREATED + 0x1000 * n`
+    /// is valid for host 1.94.
+    pub created: Vec<i32>,
     /// Every call made by the script, with the frame it happened on.
     pub log: Vec<(u32, Call)>,
 }
@@ -57,6 +64,8 @@ impl MockHost {
             airborne: 0,
             object: vec![0; OBJECT_SIZE],
             spawn_param: 99,
+            hit_reaction: 0,
+            created: Vec::new(),
             log: Vec::new(),
         }
     }
@@ -151,6 +160,20 @@ impl Host for MockHost {
             Call::GlobalByte33e830 | Call::GlobalByte301 => Value::Int(0),
             Call::GlobalFlag4 | Call::GlobalFlag80 | Call::EventActive => Value::Bool(false),
             Call::HitIsReal { .. } => Value::Bool(true),
+            // 1.97 obj_part_110: the address of the object's block at +0x110 (inside the object's memory).
+            Call::Func { group: 1, index: 97, .. } => Value::Handle(SELF_OBJ + 0x110),
+            // 2.7 hit_reaction: the reaction the test chose.
+            Call::Func { group: 2, index: 7, .. } => Value::Int(self.hit_reaction),
+            // 1.0 create_object: the toy world makes any object and keeps its id.
+            Call::Func { group: 1, index: 0, args } => {
+                self.created.push(args.first().map_or(0, |a| a.int()));
+                Value::Handle(CREATED + 0x1000 * (self.created.len() as u32 - 1))
+            }
+            // 1.94 obj_valid: only the objects host 1.0 made are valid in the toy world (the others read false, as before).
+            Call::Func { group: 1, index: 94, args } => {
+                let h = args.first().map_or(0, |a| a.int() as u32);
+                Value::Bool(h >= CREATED && (h - CREATED).is_multiple_of(0x1000) && ((h - CREATED) / 0x1000) < self.created.len() as u32)
+            }
             Call::ProbeGround { .. } => Value::Int(0),
             Call::SpawnAttached { .. } => Value::Handle(0x400),
             Call::SetFlag { bit, .. } => {

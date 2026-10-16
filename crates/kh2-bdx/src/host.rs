@@ -212,6 +212,9 @@ pub enum Call {
     /// A mode queued with host 6.58 (FUN_00186f50) came up in `obj`'s queue: instead of starting it, the
     /// game switches another object to the mode of that name (FUN_00186db0 on FUN_002f4398(1), role of
     /// that object not determined). The host does it with [`crate::Runtime::set_mode_named`].
+    /// Host 1.8 (set_mode) whose context names another object than the caller (the script made it with host 1.0): `obj`
+    /// is that object and the host switches it to the mode of that name. (For the queue entry above `obj` is the owner of
+    /// the queue.)
     RemoteSetMode { obj: u32, name: String },
 
     /// Host 1.114, 1.143 and 1.210: find an object. The interpreter stores the answer in the context

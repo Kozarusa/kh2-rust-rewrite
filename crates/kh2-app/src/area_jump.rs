@@ -359,7 +359,7 @@ impl JumpExtras {
     }
 
     /// Ticks the jump task waits before its fade-out (a local of `FUN_0019d9d8`): 2 when the "menu before" code
-    /// is 1 or 2 (and the party word is 0 or more); other codes leave it 0 (`LAB_0019db28`) [inferred: `uVar10` is `FUN_00104e18`'s wait in ticks], else 0. The wait follows a menu the app cannot open, so it is
+    /// is 1 or 2 (and the party word is 0 or more); other codes leave it 0 (`LAB_0019db28`) [inferred: the wait is a parameter of `FUN_00104e18`, in ticks], else 0. The wait follows a menu the app cannot open, so it is
     /// only logged.
     pub fn delay_ticks(&self) -> u32 {
         if self.party >= 0 && matches!(self.menu_before, 1 | 2) { 2 } else { 0 }

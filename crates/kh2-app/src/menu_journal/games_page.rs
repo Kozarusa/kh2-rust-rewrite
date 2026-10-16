@@ -185,13 +185,9 @@ fn entries(j: &Journal, scene: &MenuScene, quests: bool, rows: &[GRow], test: &d
 
 /// Builds page 9 or 10.
 pub fn build(j: &mut Journal, scene: &mut MenuScene, page: u16, world: i8, test: &dyn Fn(u16) -> bool) {
-    let quests = matches!(page, 9 | 0x1b);
-    if page >= 0x1b {
-        // From page 0xc the tab names the category with that page's own table (`FUN_002a7978`: `FUN_0029d820(0, 0x382d08[category])`).
-        category_tab(j, scene, j.tables.c_text[if quests { 6 } else { 7 }]);
-    } else {
-        category_frame(j, scene, if quests { 5 } else { 6 });
-    }
+    let quests = page == 9;
+    let from_c = j.open.as_ref().is_some_and(|o| o.from_c);
+    category_frame(j, scene, if quests { 5 } else { 6 });
     let list = j.seq_base + SEQ_LIST;
     let n = j.nodes.games;
     for (k, g) in [LAYER, BAR_LAYER].into_iter().enumerate() {
@@ -202,7 +198,7 @@ pub fn build(j: &mut Journal, scene: &mut MenuScene, page: u16, world: i8, test:
     let rows = with_game(j, test, |g| if quests { games::quest_rows(&j.quests, g) } else { games::game_rows(&j.minis, g) });
     let list_entries = entries(j, scene, quests, &rows, test);
     let count = games::positions(rows.len());
-    let top = if page >= 0x1b { 0 } else { games::first_row(&rows, world, count) };
+    let top = if from_c { 0 } else { games::first_row(&rows, world, count) };
     let row_group = if quests { QUEST_ROW[0] } else { GAME_ROW };
     let group = |g: usize| scene.seqs.get(list).and_then(|s| s.groups.get(g)).copied().unwrap_or_default();
     let pitch = group(row_group).unk1c;
@@ -238,7 +234,7 @@ pub fn build(j: &mut Journal, scene: &mut MenuScene, page: u16, world: i8, test:
 /// `FUN_002b5aa8`), so a tag in view reads "seen".
 pub fn view(j: &mut Journal, scene: &mut MenuScene) {
     let Some(o) = j.open.as_ref() else { return };
-    let (quests, top, shown) = (matches!(o.page, 9 | 0x1b), o.top, o.gentries.iter().skip(o.top).take(ROWS).cloned().collect::<Vec<_>>());
+    let (quests, top, shown) = (o.page == 9, o.top, o.gentries.iter().skip(o.top).take(ROWS).cloned().collect::<Vec<_>>());
     let n = j.nodes.games;
     let tags = if quests { j.tables.quest_tag } else { j.tables.game_tag };
     for k in 0..ROWS {

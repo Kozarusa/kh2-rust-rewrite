@@ -144,7 +144,7 @@ pub fn build(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut A
     let o = j.open.as_mut().unwrap();
     // The row the confirm kept (`FUN_00277dc8(page, row)`), else the first.
     let row = if o.back_row < cats.len() { o.back_row } else { 0 };
-    (o.page, o.world, o.row, o.cats, o.back_row) = (0xc, 0xf, row, cats, 0);
+    (o.page, o.world, o.row, o.cats, o.back_row, o.from_c) = (0xc, 0xf, row, cats, 0, false);
 }
 
 /// The help line of the cursor row (`FUN_002a81e8`: the word of the row's category at 0x382d20).

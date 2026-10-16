@@ -1134,6 +1134,8 @@ struct Open {
     /// A character's own page (0xf), and the face the face page it came from puts the pointer on again (`FUN_002ae3e8(face)`).
     cp: CharPage,
     back_face: Option<usize>,
+    /// The category page was opened from page 0xc (its cancel returns there, not to page 2).
+    from_c: bool,
     /// Pages 9 and 10: what each row of the list shows.
     gentries: Vec<games_page::Entry>,
 }
@@ -1395,7 +1397,7 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
         (6 | 0xb, _) => page_faces(key, o.sel),
         (0xf, _) => page_char(key, o.top, o.count, o.cp.list.iter().filter(|c| o.cp.present.contains(c)).count() > 1),
         (7 | 8, _) => page_lists(key),
-        (9 | 10 | 0x1b | 0x1c, _) => page3(key, o.top, o.count),
+        (9 | 10, _) => page3(key, o.top, o.count),
         (4, _) => page_album(key, o.row, o.album_rows.len()),
         (5, _) => page_photo(key),
         _ => page1(key),
@@ -1424,7 +1426,7 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
             chrome_help(&mut j, &mut scene);
             menu_sound::play(&mut se, menu_sound::CURSOR);
         }
-        Act::Cursor(t) if matches!(page, 9 | 10 | 0x1b | 0x1c) => {
+        Act::Cursor(t) if matches!(page, 9 | 10) => {
             j.open.as_mut().unwrap().top = t;
             games_page::view(&mut j, &mut scene);
             menu_sound::play(&mut se, menu_sound::CURSOR);
@@ -1502,17 +1504,23 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
             info!("journal: page 4 row {r}");
         }
         Act::Cursor(_) => {}
-        Act::Category { cat: 6 | 7, page: to @ (0x1b | 0x1c) } => {
+        // Page 0xc's rows open the same builders as page 2's categories, under their own page numbers (0x19 / 0x1a the treasures and
+        // maps, 0x1b / 0x1c the quests and minigames, 0x20 the character links): the lists start at their top and a cancel returns to
+        // page 0xc. The port runs them as pages 7, 8, 9, 10 and 0xb with `from_c` set.
+        Act::Category { cat: 4..=7 | 10, page: to @ (0x19 | 0x1a | 0x1b | 0x1c | 0x20) } => {
             menu_sound::play(&mut se, crate::menu_status::CONFIRM);
-            info!("journal: page 0xc row category {} -> page {to:#x}, the {} (FUN_002a7978 -> FUN_002b5e50 / FUN_002b4b18)", if to == 0x1b { 6 } else { 7 }, if to == 0x1b { "quests" } else { "minigames" });
+            let run = match to {
+                0x19 => 7,
+                0x1a => 8,
+                0x1b => 9,
+                0x1c => 10,
+                _ => 0xb,
+            };
+            info!("journal: page 0xc row -> page {to:#x} (FUN_002a7978), run as page {run:#x}");
             let o = j.open.as_mut().unwrap();
             o.back_row = o.row;
-            j.goto = Some((to, world_byte));
-        }
-        Act::Back if matches!(page, 0x1b | 0x1c) => {
-            menu_sound::play(&mut se, menu_sound::CANCEL);
-            info!("journal: page {page:#x} cancel -> page 0xc (FUN_002b6120 case -2)");
-            j.goto = Some((0xc, world_byte));
+            o.from_c = true;
+            j.goto = Some((run, 0));
         }
         Act::Category { cat: 0 | 2..=7, page: to @ (4 | 6..=10 | 0xb) } => {
             menu_sound::play(&mut se, crate::menu_status::CONFIRM);
@@ -1555,16 +1563,17 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
         }
         Act::Category { cat, page } => {
             menu_sound::play(&mut se, menu_sound::REFUSED);
-            info!("journal: page 2 row category {cat} -> page {page:#x} not ported (FUN_002a3da0); refused");
+            info!("journal: page {:#x} row category {cat} -> page {page:#x} not ported (FUN_002a3da0 / FUN_002a7978); refused", j.open.as_ref().map_or(2, |o| o.page));
         }
         Act::Back if matches!(page, 3 | 4 | 6..=10 | 0xb) => {
             menu_sound::play(&mut se, menu_sound::CANCEL);
-            info!("journal: page {page:#x} cancel -> page 2 (FUN_002a5218 / FUN_002ae790 case -2)");
-            j.goto = Some((2, world_byte));
+            let back = if j.open.as_ref().is_some_and(|o| o.from_c) { 0xc } else { 2 };
+            info!("journal: page {page:#x} cancel -> page {back:#x} (FUN_002a5218 / FUN_002ae790 case -2)");
+            j.goto = Some((back, world_byte));
         }
         Act::Back => {
             menu_sound::play(&mut se, menu_sound::CANCEL);
-            info!("journal: page 2 cancel -> page 0 (FUN_002a3da0 case -2)");
+            info!("journal: page {page:#x} cancel -> page 0 (FUN_002a3da0 / FUN_002a7978 case -2)");
             j.goto = Some((0, world_byte));
         }
         Act::Close => {
@@ -1669,6 +1678,7 @@ fn show(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Assets
         album_exist: Vec::new(),
         cp: CharPage::default(),
         back_face: None,
+        from_c: false,
         gentries: Vec::new(),
     });
     build(j, scene, disc, images, page, world, test, items);
@@ -1683,7 +1693,7 @@ fn build(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Asset
     let n = &j.nodes;
     let ids: Vec<usize> = n.page0().into_iter().chain(n.page12()).chain(n.page3()).chain([n.help, n.cursor, n.follow]).collect();
     for id in ids {
-        if !(matches!(page, 3..=11 | 0xf | 0x1b | 0x1c) && id == title) {
+        if !(matches!(page, 3..=11 | 0xf) && id == title) {
             scene.nodes[id].visible = false;
         }
     }
@@ -1693,7 +1703,7 @@ fn build(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Asset
         3 => build3(j, scene, world, test),
         6 | 0xb => build_faces(j, scene, disc, images, page, world, test, items),
         0xf => build_char_page(j, scene, disc, images, page, world, test, items),
-        9 | 10 | 0x1b | 0x1c => games_page::build(j, scene, page, world, test),
+        9 | 10 => games_page::build(j, scene, page, world, test),
         0xc => root_page::build(j, scene, disc, images, test, items),
         7 | 8 => treasure_page::build(j, scene, page, world, &treasure_page::Game { flag: test, items, opened: &|c| opened.contains(&c) }),
         4 => album_page::build(j, scene, world, test),
@@ -1910,8 +1920,8 @@ fn chrome(j: &mut Journal, scene: &mut MenuScene, page: u16) {
         3 => Some(msg::HELP_STORY),
         6 | 0xb => Some(j.tables.face.help[usize::from(page != 6)]),
         0xf => Some(msg::HELP_CHAR),
-        9 | 0x1b => Some(games_page::HELP_QUEST),
-        10 | 0x1c => Some(games_page::HELP_GAME),
+        9 => Some(games_page::HELP_QUEST),
+        10 => Some(games_page::HELP_GAME),
         0xc => root_page::help(j),
         4 => Some(album_page::HELP),
         5 => Some(album_page::HELP_PHOTO),
@@ -2004,7 +2014,16 @@ fn place_cursor(j: &Journal, scene: &mut MenuScene) {
 /// its follower (`FUN_0029af00(.., 0x381fc8)`), and the backdrop 0x755a (`FUN_00278658`: page family 1, set by page 2's
 /// build with `FUN_00277d60(1)`).
 fn category_frame(j: &Journal, scene: &mut MenuScene, cat: usize) {
-    category_tab(j, scene, j.tables.row_text[cat]);
+    // Opened from page 0xc the tab names the category with that page's own table (`FUN_002a7978`: `FUN_0029d820(0, 0x382d08[row])`).
+    let msg = match (j.open.as_ref().is_some_and(|o| o.from_c), cat) {
+        (true, 3) => j.tables.c_text[4],
+        (true, 4) => j.tables.c_text[5],
+        (true, 5) => j.tables.c_text[6],
+        (true, 6) => j.tables.c_text[7],
+        (true, 7) => j.tables.c_text[10],
+        _ => j.tables.row_text[cat],
+    };
+    category_tab(j, scene, msg);
 }
 
 /// The same with the tab's text given as a message (page 0xc's categories name it from their own table).

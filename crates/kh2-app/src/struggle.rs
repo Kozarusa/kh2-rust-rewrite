@@ -2088,4 +2088,67 @@ mod tests {
         assert_eq!(k.shown, 60);
         assert_eq!(Clock::split(60 * 75 + 30, 100.0 / 60.0), (0, 1, 15, 50));
     }
+
+    /// `FUN_001997f8`: a group already at wave 200 does not count up and so never takes the wrap, even with the wrap
+    /// wave (header +0x23) at 200 and a wave with members to go back to (header +0x24).
+    #[test]
+    fn a_group_at_wave_200_with_the_wrap_at_200_does_not_wrap() {
+        use crate::enemy::{AreaGroup, GroupPart, KindTwo};
+        let mut header = [0u8; 0x2c];
+        header[0x22] = 9;
+        header[0x23] = 200;
+        header[0x24] = 5;
+        let part = GroupPart { id: 0x8a, kind: 2, disabled: false, header, activators: Vec::new(), entities: vec![(2, 5, 1)], counted: Vec::new() };
+        let g = AreaGroup { program: 0x50, name: "b_t".into(), parts: vec![part], members: Vec::new(), skipped: Vec::new(), player: None, mission: None, orb_pool: false, triggers: Vec::new() };
+        let mut two = KindTwo { part: 0, timer: 0.0, wave: 200, killed: vec![7] };
+        for _ in 0..3 {
+            assert!(two.run(&g, |_| false).is_empty());
+            assert_eq!(two.wave, 200, "stays at 200, no wrap to wave 5");
+        }
+        assert_eq!(two.killed, vec![7], "the table of the defeated is not touched by a wrap that did not happen");
+    }
+
+    /// A flat floor at height 0 (centimetres) over +-30 m, with a wall across x = 10 cm.
+    fn floor_and_wall() -> World {
+        let tri = |v: [[f32; 3]; 3]| v;
+        let quad = |a: [f32; 3], b: [f32; 3], c: [f32; 3], d: [f32; 3]| [tri([a, b, c]), tri([a, c, d])];
+        let mut positions = Vec::new();
+        let mut indices = Vec::new();
+        for t in quad([-3000.0, 0.0, -3000.0], [-3000.0, 0.0, 3000.0], [3000.0, 0.0, 3000.0], [3000.0, 0.0, -3000.0])
+            .into_iter()
+            .chain(quad([10.0, -100.0, -3000.0], [10.0, 500.0, -3000.0], [10.0, 500.0, 3000.0], [10.0, -100.0, 3000.0]))
+        {
+            for v in t {
+                indices.push(positions.len() as u32);
+                positions.push(v);
+            }
+        }
+        let mesh = kh2_model::Mesh { positions, uvs: Vec::new(), colors: Vec::new(), indices, texture: 0, transparent: false, joints: Vec::new(), weights: Vec::new(), uv_scroll: 0 };
+        World::from_meshes(&[mesh])
+    }
+
+    /// `ring_place_in` on a real collision `World` (end to end: positions in, placements out): on the flat floor every
+    /// placement lies on the floor (y 0) between the ring's limits; the wall at x = 10 cm blocks the lines toward +x, so
+    /// no placement lies past it; a ring with no floor under it gives the centre back.
+    #[test]
+    fn ring_place_in_on_a_floor_with_a_wall_places_on_the_floor_and_never_past_the_wall() {
+        use crate::enemy::{ring_place_in, PlaceRng, Ring};
+        let col = floor_and_wall();
+        let ring = Ring { centre: Vec3::new(0.0, 0.5, 0.0), min: 1.5, max: 4.5, heights: None };
+        let mut rng = PlaceRng::default();
+        let (mut far_west, mut near_wall) = (false, false);
+        for _ in 0..200 {
+            let p = ring_place_in(&mut rng, &ring, &col);
+            let d = Vec2::new(p.x, p.z).length();
+            assert!((1.5 - 1e-3..=4.5 + 1e-3).contains(&d), "distance {d} from the centre");
+            assert!(p.y.abs() < 1e-4, "on the floor: {p:?}");
+            assert!(p.x < 0.1, "not past the wall at x = 0.1 m: {p:?}");
+            far_west |= p.x < -3.0;
+            near_wall |= p.x > -1.0;
+        }
+        assert!(far_west && near_wall, "the placements spread round the open side");
+        // No floor anywhere under the ring: the search finds nothing and gives the centre.
+        let off = Ring { centre: Vec3::new(500.0, 0.5, 500.0), ..ring };
+        assert_eq!(ring_place_in(&mut rng, &off, &col), off.centre);
+    }
 }

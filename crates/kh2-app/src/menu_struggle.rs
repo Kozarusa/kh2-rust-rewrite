@@ -598,6 +598,73 @@ mod tests {
         assert_eq!(m.pending, None);
     }
 
+    /// `tick` run as a system: a closing menu dims back toward the field and, once the close has run its frames, closes the
+    /// scene; a queued code is kept while the jump task is busy and taken once it is idle (skipped without `KH2_ISO`, the
+    /// system needs a `Disc` resource).
+    #[test]
+    fn tick_as_a_system_finishes_the_close_and_takes_the_queued_code_when_idle() {
+        use bevy::ecs::system::RunSystemOnce;
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let mut w = bevy::ecs::world::World::new();
+        w.insert_resource(Time::<Real>::default());
+        w.insert_resource(Disc::open(&iso));
+        w.insert_resource(AreaRecord {
+            world: 2,
+            area: 4,
+            entrance: 0,
+            programs: [0; 3],
+            programs_override: None,
+            dest_programs: [0xff; 3],
+            place_on_load: false,
+            run: None,
+            placed: None,
+        });
+        w.insert_resource(LastExit::default());
+        w.insert_resource(Mission::default());
+        // A loaded menu always has its hand node, which the close hides.
+        let mut scene = MenuScene::default();
+        let hand = scene.add(Node::new(None));
+        w.insert_resource(scene);
+        w.insert_resource(JumpTask::default());
+        let mut m = StruggleMenu::default();
+        m.hand = hand;
+        m.flow.stage = Stage::Closing;
+        m.flow.chosen = None;
+        m.frames = 7;
+        w.insert_resource(m);
+
+        // Mid close: the dim follows the close brightness at frame 7 and the menu stays closing (no time has passed, so no tick).
+        w.run_system_once(tick).unwrap();
+        assert_eq!(w.resource::<StruggleMenu>().flow.stage, Stage::Closing);
+        assert_eq!(w.resource::<MenuScene>().dim, dim_alpha(close_brightness(7)));
+
+        // The close has run its frames: a cancel closes the scene (and, with no manager running, queues nothing).
+        w.resource_mut::<StruggleMenu>().frames = CLOSE_FRAMES;
+        w.run_system_once(tick).unwrap();
+        assert_eq!(w.resource::<StruggleMenu>().flow.stage, Stage::Closed);
+        assert!(!w.resource::<StruggleMenu>().is_open());
+        assert!(w.resource::<MenuScene>().hidden);
+        assert_eq!(w.resource::<MenuScene>().dim, 0.0);
+        assert_eq!(w.resource::<StruggleMenu>().pending, None);
+
+        // A queued code waits while a jump is running, however long the menu is closed.
+        let busy = JumpTask::Wait { dest: Dest::new(2, 4, 0), kind: 0, left: 5, t0: 0.0 };
+        *w.resource_mut::<JumpTask>() = busy;
+        w.resource_mut::<StruggleMenu>().pending = Some(4);
+        w.run_system_once(tick).unwrap();
+        assert_eq!(w.resource::<StruggleMenu>().pending, Some(4), "kept while busy");
+        assert_eq!(*w.resource::<JumpTask>(), busy);
+
+        // Once idle it is taken exactly once (with no manager running `apply_code` has nothing to end, so the task stays idle).
+        *w.resource_mut::<JumpTask>() = JumpTask::Idle;
+        w.run_system_once(tick).unwrap();
+        assert_eq!(w.resource::<StruggleMenu>().pending, None, "taken once idle");
+        assert_eq!(*w.resource::<JumpTask>(), JumpTask::Idle);
+    }
+
     /// Row 0x1a of the disc's table, its texts and the pointer list's groups (skipped without `KH2_ISO`).
     #[test]
     fn the_disc_result_menu_row_texts_and_groups() {

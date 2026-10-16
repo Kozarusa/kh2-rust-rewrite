@@ -221,12 +221,33 @@ entrance, map, btl, evt; 0xff keeps the current one).
   `KH2_JUMP_AT` seconds runs the record through the real fade and load path.
   A type-2 jump into the area that is already loaded makes the app run that area's scripts again so the new
   program bytes take effect (the game restarts the area thread on every jump) [inferred].
-  **Not ported**: types 4, 5, 6 (logged, no jump). Type 4 is decided by the flags above and ends in the world map
-  (`FUN_00149df0`, world byte 4 with the area kept) or in `FUN_00198080(0x40, 0x12)` (world 0x12): the app has
-  only Twilight Town and no world map; 5 opens menu 0xe (`FUN_0024f0b8`); 6 calls `FUN_00149f38` (not
-  read). Also not ported: the record's words 4 to 6 (the delay before the jump, the party-reset flag, the
-  "menu before" code); `FUN_0019d8f0` does not fill them, so they come from the record's creator [gap: searched
-  `FUN_0019d8f0`, `FUN_0019d9d8` only]. **Gaps**: the other
+  **WP-JT3** (types 4 to 6 and the record's words 4 to 6; `area_jump::resolve_record`, `type4_dest`, `JumpExtras`).
+  Type 4 (`FUN_0019d9d8` case 4 -> `FUN_00149df0`, fade kind always 1) [V]: flag 0x1071 set and 0x1072 clear and one of
+  0x140f / 0x1822 / 0x200b set -> world 4, area 0, entrance 0, programs kept; else one of 0x8cd / 0x3834 / 0x1c1c ->
+  `FUN_00198080(0x40, 0x12)` (world 0x12); in both the record's world byte is remembered in `DAT_01c8bd90`
+  (`Type4Memory`). Otherwise the world map: world 0xf, area 0, entrance `FUN_00149db8(world)` (searches the 15
+  `(entrance, world)` pairs at 0x3790a8, read from the executable at run time, 0 when absent), where the remembered byte
+  replaces the record's world and is forgotten [inferred: that the caller passes the remembered byte as the world
+  argument; the -1 case of `FUN_00149df0` reads the current world byte]. The app has only Twilight Town, so every type-4
+  case ends in the log line "the world map is not available" (world 4 and 0x12 are not in the app either) and the player
+  stays. Type 5: `FUN_0024f0b8(0xe, ..)` opens menu kind 0xe (record 0x380650, scene 9, init `FUN_00292f18`, task
+  `FUN_00292fc8`, page `FUN_00293020`) and no jump follows; the app has no such menu, so `Outcome::OpenMenu` is logged
+  (hook for a later `menu*.rs` kind 0xe) [gap: the page itself]. Type 6: `FUN_00149f38` starts task `FUN_00149eb0`, which
+  freezes the screen (`FUN_0014dcb0`, `FUN_0014de00`), fades the screen fader to black (`FUN_0014a7c8(fader, 0xf, 0)`),
+  waits for black and ends; no destination and no fade-in was found [gap], so `Outcome::FreezeFade` is logged only.
+  Record words 4 to 6 come from the trigger sub-commands 4, 5, 7, 8 (`FUN_00180ff8`; defaults `FUN_00197780`): word 4
+  (sub 4, default 0) a party arrangement index (`FUN_001a7330(FUN_001a71c0(world), index)`, not ported: no party order in
+  the app); word 5 (sub 5, default -1) the party reset code (the 5th argument of `FUN_00104e18`; when the record has no destination world and the word is non-zero `FUN_001abfe8()` is called with no argument; not ported);
+  word 6 (sub 7, default 0) "menu before": 1 or 2 opens menu kind 5 first (`FUN_0024f300`) and sets the jump's wait (the 3rd argument of
+  `FUN_00104e18`, read as ticks [inferred]) to 2, logged only (the menu is missing); any other code leaves both at 0
+  (`LAB_0019db28`); sub 8 is not read by `FUN_0019d9d8`. Tests:
+  `type_four_decides_by_story_flags`, `type_four_to_the_world_map_is_not_available`,
+  `types_five_and_six_open_a_menu_or_freeze_without_a_jump`, `record_words_four_to_six_parse_with_defaults`,
+  `a_type_four_record_always_fades_with_kind_one`. Harness `KH2_JUMP=4:2:0`, `5:0:0`, `6:0:0` (quoted lines: "jump: type 4
+  key 0x2 -> world 15 area 0 entrance 0 ...", "jump: the world map is not available (the app has only Twilight Town);
+  staying", "jump record type 5: opens menu kind 0xe ... no menu, no jump", "jump record type 6: FUN_00149f38 freezes the
+  screen and fades to black, no jump"). Scan done: `mips_scan.py --jal 0x19d8f0` has one caller, `FUN_00180ff8` (0x1810a0); `--jal 0x1d3a68` has one caller,
+  `FUN_001051f0` (0x105220), which is not a record creator; so `FUN_00180ff8` is the only creator of words 4 to 6. **Gaps**: the other
   two writers of `0x33e840`, `FUN_00172250` (current world, area, entrance + 1) and `FUN_001722c0` (the record saved
   in `0x33e848` by `FUN_00177248`, world 0x11 remapped to area 0x32 / 0x37), have no direct call site in the
   executable (`mips_scan.py --jal` finds none for them; `FUN_00177248`'s only caller is `FUN_00177788`), so a

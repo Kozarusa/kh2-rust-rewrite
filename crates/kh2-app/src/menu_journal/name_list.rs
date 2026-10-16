@@ -169,6 +169,7 @@ pub fn build(j: &mut Journal, scene: &mut MenuScene, page: u16, test: &dyn Fn(u1
         scene.nodes[n.layers[k]].off = [0.0; 2];
         scene.set_group(n.layers[k], g);
     }
+    carry_sheet(scene, n.layers[0]);
     let group = |g: usize| scene.seqs.get(list).and_then(|s| s.groups.get(g)).copied().unwrap_or_default();
     let pitch = group(layers[0]).unk1c;
     // A limit row's value hangs from the row at the layer group's x / y, and its tag from the value (`FUN_002b2130`).
@@ -257,7 +258,16 @@ pub fn view(j: &mut Journal, scene: &mut MenuScene) {
         scene.nodes[n.values[k]].visible = value.is_some();
         if let Some(v) = value {
             scene.set_group(n.values[k], STORY_ROW);
-            scene.nodes[n.values[k]].label = games_page::ink(scene, n.values[k], STORY_ROW, v, 1);
+            let mut label = games_page::ink(scene, n.values[k], STORY_ROW, v, 1);
+            if page == 0x1d {
+                // The tag hangs centred on the value's origin, which is the text's right end: the text ends at the tag's left edge instead.
+                let list = j.seq_base + SEQ_LIST;
+                let quads = scene.seqs.get(list).map(|s| s.quads(tags[0], 0, [0.0; 2], &Default::default())).unwrap_or_default();
+                if let Some(l) = label.as_mut() {
+                    l.offset[0] = -tag_left_reach(&quads);
+                }
+            }
+            scene.nodes[n.values[k]].label = label;
         }
         if let Some(r) = shown.get(k)
             && let Some(all_seen) = j.marks.aggregate(r.keys.iter().copied())
@@ -357,6 +367,21 @@ pub fn defeats(j: &Journal, rec: &CharRec) -> u32 {
     j.neo.get(&u32::from(rec.model)).map_or(0, |&n| j.snap.kills.get(&u32::from(n)).copied().unwrap_or(0))
 }
 
+/// The list layer's left sheet reaches the 4:3 canvas's left edge, so at a wide window it is carried out to the window's edge as the
+/// frame's rail is (`stretch_quads`, docs/menus.md 9.1) [inferred: the same rule as the layout's frame; the HD remaster's is not known].
+fn carry_sheet(scene: &mut MenuScene, node: usize) {
+    let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+    for p in scene.node_quads(node).iter().flat_map(|q| q.pos) {
+        b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])];
+    }
+    scene.nodes[node].stretch = (b[0] <= b[2]).then_some(b);
+}
+
+/// How far a tag's quads reach left of its origin (the NEW tag of a limit row is centred on the end of the row's value).
+fn tag_left_reach(quads: &[kh2_image::seqd::Quad]) -> f32 {
+    quads.iter().flat_map(|q| q.pos).map(|p| -p[0]).fold(0.0, f32::max)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,5 +399,24 @@ mod tests {
         }
         assert!(!is_list(0xf) && !is_list(0xc));
         assert_eq!((family_of(0x11, 3), family_of(0x14, 3), family_of(0xe, 3)), (0x11, 0x12, 3));
+    }
+
+    fn quad(x0: f32, x1: f32) -> kh2_image::seqd::Quad {
+        kh2_image::seqd::Quad { pos: [[x0, 5.0], [x1, 5.0], [x0, 21.0], [x1, 21.0]], uv: [[0.0; 2]; 4], color: [[0; 4]; 4], blend: 0, nearest: false }
+    }
+
+    #[test]
+    fn a_limit_value_ends_where_its_tag_begins() {
+        assert_eq!(tag_left_reach(&[quad(-23.0, 23.0)]), 23.0);
+        assert_eq!(tag_left_reach(&[quad(4.0, 20.0)]), 0.0, "a tag wholly right of its origin does not move the text");
+        assert_eq!(tag_left_reach(&[]), 0.0);
+    }
+
+    #[test]
+    fn the_sheet_box_is_carried_whole() {
+        let mut scene = MenuScene::default();
+        let n = scene.add(Node::new(None));
+        carry_sheet(&mut scene, n);
+        assert_eq!(scene.nodes[n].stretch, None, "a node with no quads carries nothing");
     }
 }

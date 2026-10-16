@@ -153,7 +153,7 @@ fn init(mut commands: Commands, device: Res<RenderDevice>, assets: Res<AssetServ
         min_filter: FilterMode::Linear,
         ..default()
     });
-    let shader = assets.load("embedded://kh2_game/fx_lens.wgsl");
+    let shader = assets.load(concat!("embedded://", env!("CARGO_CRATE_NAME"), "/fx_lens.wgsl"));
     commands.insert_resource(LensPipeline { layout, sampler, shader, ids: HashMap::new() });
     commands.insert_resource(LensGpu::default());
 }

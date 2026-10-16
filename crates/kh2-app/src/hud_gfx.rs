@@ -73,7 +73,7 @@ impl From<&HudMaterial> for HudKey {
 
 impl Material2d for HudMaterial {
     fn fragment_shader() -> ShaderRef {
-        ShaderRef::Path("embedded://kh2_game/hud_quad.wgsl".into())
+        ShaderRef::Path(concat!("embedded://", env!("CARGO_CRATE_NAME"), "/hud_quad.wgsl").into())
     }
 
     fn alpha_mode(&self) -> AlphaMode2d {
@@ -559,6 +559,15 @@ fn gamma22(v: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shader paths are `embedded://<crate>/<file>`; `embedded_asset!` registers them under the crate that
+    /// contains the macro call, which `module_path!` names. LB1 renamed the crate from `kh2_game` to `kh2_app`
+    /// and the hard-coded paths missed it (no HUD sprites, no lens or distortion shader).
+    #[test]
+    fn embedded_shader_paths_use_the_crate_that_registers_them() {
+        assert_eq!(module_path!().split("::").next(), Some(env!("CARGO_CRATE_NAME")));
+        assert_eq!(env!("CARGO_CRATE_NAME"), "kh2_app");
+    }
 
     fn square() -> Vec<Vert> {
         [[-10.0, -10.0], [10.0, -10.0], [10.0, 10.0], [-10.0, 10.0]].iter().map(|&pos| Vert { pos, uv: pos, col: [1.0; 4] }).collect()

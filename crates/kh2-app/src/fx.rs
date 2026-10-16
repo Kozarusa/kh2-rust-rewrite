@@ -146,10 +146,10 @@ impl From<&DistortMaterial> for DistortKey {
 
 impl Material for DistortMaterial {
     fn vertex_shader() -> ShaderRef {
-        ShaderRef::Path("embedded://kh2_game/fx_distort.wgsl".into())
+        ShaderRef::Path(concat!("embedded://", env!("CARGO_CRATE_NAME"), "/fx_distort.wgsl").into())
     }
     fn fragment_shader() -> ShaderRef {
-        ShaderRef::Path("embedded://kh2_game/fx_distort.wgsl".into())
+        ShaderRef::Path(concat!("embedded://", env!("CARGO_CRATE_NAME"), "/fx_distort.wgsl").into())
     }
     // The transmission copy of the scene is only readable from the transmissive phase, which takes
     // opaque materials: the shader blends by itself.

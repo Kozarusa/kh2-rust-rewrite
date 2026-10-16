@@ -8,11 +8,11 @@
 use std::collections::HashMap;
 
 use bevy::prelude::*;
-use kh2_bdx::{Call, Host, Value, Vec4};
+use kh2_bdx::{Arg, Call, Host, Value, Vec4};
 
 use crate::enemy_ai::AiTrace;
 use crate::enemy_obj::{
-    from_game, to_game, yaw_of, Fade, MotionReq, Obj, EFFECT, FLAG_BIT_UNHITTABLE, GAUGES, MOVE_VECTOR, PLAYER, RECORD, RECORD_SIZE, TARGET,
+    from_game, to_game, yaw_of, Fade, MotionReq, Obj, Remote, EFFECT, FLAG_BIT_UNHITTABLE, GAUGES, MOVE_VECTOR, PLAYER, RECORD, RECORD_SIZE, TARGET,
 };
 use crate::motor::wrap_angle;
 use crate::reaction_cmd::PlayerReactionCmd;
@@ -274,9 +274,16 @@ impl BevyHost<'_> {
             Some(self.obj.motor.pos)
         } else if obj == PLAYER || obj == TARGET {
             Some(self.env.player)
+        } else if self.obj.creates.iter().any(|c| c.0 == obj) {
+            Some(self.obj.made_at(obj))
         } else {
-            None
+            self.obj.others.get(&obj).map(|o| o.pos)
         }
+    }
+
+    /// Whether a call names another object of the app's (one that existed at the start of the tick or that this tick made).
+    fn names_other(&self, obj: u32) -> bool {
+        obj != self.obj.handle && self.obj.knows(obj)
     }
 
     /// Starts a motion (`checked`: not when the slot already plays). Slots are the script's motion
@@ -476,6 +483,10 @@ impl BevyHost<'_> {
                 approx(Value::Bool(done), "bit 1 of the player's +0x160 from reaction_cmd::PlayerReaction (player_reaction.rs sets it from the real end of his motion, one tick old)")
             }
             Call::MotionDone { .. } => imp(Value::Bool(self.obj.done)),
+            Call::MotionState { obj } if self.names_other(*obj) => {
+                let slot = self.obj.others.get(obj).and_then(|o| o.slot);
+                imp(Value::Int(slot.map_or(-1, |s| s as i32)))
+            }
             Call::MotionState { .. } => imp(Value::Int(self.obj.slot.map_or(-1, |s| s as i32))),
             Call::MotionLength { motion, .. } | Call::MotionEnd { motion, .. } => {
                 let slot = if *motion < 0 { self.obj.slot } else { Some(*motion as usize) };
@@ -544,6 +555,12 @@ impl BevyHost<'_> {
                 self.start_move(*dir, *motion, *blend, *commit);
                 approx(Value::None, "as start_move; the alternate setter FUN_001b4ee0 was not read")
             }
+            // 1.28 on an object of the app other than the caller (M_EX940 hides the M_EX850 it made before): the call is
+            // carried out on that object at the end of the tick (`enemy_ai::ai_remote`).
+            Call::Hide { obj } if self.names_other(*obj) => {
+                self.obj.remote.push((*obj, Remote::Hide));
+                approx(Value::None, "carried out on the other object at the end of the tick")
+            }
             Call::Hide { .. } => {
                 self.obj.hidden = true;
                 self.obj.alpha = 0.0;
@@ -573,6 +590,10 @@ impl BevyHost<'_> {
                 } else {
                     stub(Value::None, "a flag bit of the player other than 3: no consumer in the app")
                 }
+            }
+            Call::SetFlag { obj, bit } | Call::ClearFlag { obj, bit } if self.names_other(*obj) => {
+                self.obj.remote.push((*obj, if matches!(c, Call::SetFlag { .. }) { Remote::SetFlag(*bit) } else { Remote::ClearFlag(*bit) }));
+                approx(Value::None, "carried out on the other object at the end of the tick")
             }
             Call::SetFlag { bit, .. } => {
                 if (0..64).contains(bit) {
@@ -668,6 +689,32 @@ impl BevyHost<'_> {
                 self.obj.dash = None;
                 approx(Value::None, "the mover's own state is not modelled: the movement and jump speeds are cleared")
             }
+            // 1.0 create_object (0x170190 -> FUN_0016e8c0(DAT_0037a484, id, place 0x1c883a0)): the object of `00objentry`
+            // id `id`, built by its `ObjectType` constructor with the place at the origin (the place record is zero
+            // but its last word) and no facing. The app makes the objects of its enemy kinds (`Obj::creatable`).
+            Call::Func { group: 1, index: 0, args } => {
+                let id = args.first().map_or(0, |a| a.int() as u32);
+                if self.obj.creatable.contains(&id) {
+                    let h = self.obj.create(id);
+                    self.trace.line(self.tag, &format!("create_object: objentry {id:#x} made as {h:#x} at the origin"));
+                    approx(Value::Handle(h), "the object appears at the next tick (enemy::spawn_created) and runs its own script from then; only the objentry ids of the app's enemy kinds are made")
+                } else {
+                    missing(Value::Handle(0), "create_object of an `00objentry` id the app has no object for")
+                }
+            }
+            // 1.148 set_position (0x170658 -> FUN_0016a618): the point (w forced to 1.0) becomes the object's position and
+            // the mover is synced.
+            Call::Func { group: 1, index: 148, args } if args.len() >= 2 && (args[0].int() as u32 == me || self.names_other(args[0].int() as u32)) => {
+                let (o, Arg::Vec(v)) = (args[0].int() as u32, &args[1]) else { return missing(Value::None, "set_position without a vector") };
+                let p = from_game(*v);
+                if o == me {
+                    self.obj.motor.pos = p;
+                    imp(Value::None)
+                } else {
+                    self.obj.remote.push((o, Remote::Position(p)));
+                    approx(Value::None, "carried out on the other object at the end of the tick (the object a script made this tick takes the point where it appears); the mover's sync (FUN_0016a618) is the position itself")
+                }
+            }
             Call::Func { group: 1, index: 98, args } => match self.ground_position(args[0].int() as u32) {
                 Some(p) => imp(Value::Vec(to_game(p))),
                 None => missing(Value::Vec([0.0; 4]), "ground position of an object other than self and the player"),
@@ -678,6 +725,8 @@ impl BevyHost<'_> {
                 let o = args.first().map_or(0, |a| a.int() as u32);
                 if o == me || o == PLAYER || o == TARGET {
                     approx(Value::Bool(true), "self and the player are in the object list; the flags of FUN_0019a440 are read clear")
+                } else if self.obj.knows(o) {
+                    approx(Value::Bool(true), "an object of the app (made by host 1.0 or one of the scripted objects) is in the object list; the flags of FUN_0019a440 are read clear")
                 } else {
                     approx(Value::Bool(false), "an object other than self and the player: not known to this host, read as absent")
                 }

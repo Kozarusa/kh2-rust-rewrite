@@ -194,6 +194,75 @@ fn dusk_runs_its_mode_cycle() {
 }
 
 
+/// The Nobody M_EX940 (object 0x139, ObjectType 0x15) of tt04's b_44 and the M_EX850 it makes (WP-EN3): a blow-class hit
+/// (hit reaction 7, 9 or 11, R016a at 0x01a7) runs R0082, which makes the object of objentry 0x6bf with host 1.0, stores
+/// its handle at global +0x1084 (R011d) and puts it at the ground point under M_EX940 (1.98 then 1.148). On the mock world
+/// the call order and the handle it hands to 1.148 are the whole of it.
+#[test]
+fn m_ex940_makes_m_ex850_on_a_blow() {
+    let Some((mut a, _)) = open() else { return };
+    assert_enemy_files(&mut a, "M_EX940");
+    let data = object_script(&mut a, "obj/M_EX940.mdlx");
+    let p = Program::parse(&data).unwrap();
+    analyze(&p).unwrap();
+    let mut rt = Runtime::new(p);
+    rt.shared.rng = 3;
+    rt.core.mode_log = Some(Vec::new());
+    let mut host = MockHost::new();
+    host.player_position = [250.0, 0.0, 0.0, 1.0];
+    assert!(rt.spawn(&mut host, SELF_OBJ));
+    for _ in 0..40 {
+        rt.update(&mut host);
+        host.tick();
+    }
+    assert!(host.created.is_empty(), "nothing is made before a hit: {:?}", host.created);
+    host.hit_reaction = 7;
+    rt.event(&mut host, 6, &[0x500]);
+    for _ in 0..5 {
+        rt.update(&mut host);
+        host.tick();
+    }
+    assert!(rt.core.errors.is_empty(), "{:?}", rt.core.errors);
+    assert_eq!(host.created, vec![0x6bf], "one object, the SpawnObject1 of M_EX940's objentry row");
+    let made = kh2_bdx::mock::CREATED;
+    let calls: Vec<&Call> = host.calls().collect();
+    let at = |from: usize, pred: &dyn Fn(&Call) -> bool| from + calls[from..].iter().position(|c| pred(c)).expect("call missing");
+    let create = at(0, &|c| matches!(c, Call::Func { group: 1, index: 0, .. }));
+    let ground = at(create, &|c| matches!(c, Call::Func { group: 1, index: 98, .. }));
+    let place = at(create, &|c| matches!(c, Call::Func { group: 1, index: 148, args } if args.first() == Some(&kh2_bdx::Arg::Obj(made))));
+    assert!(create < ground && ground < place, "create_object, then ground_position, then set_position on the made object: {create} {ground} {place}");
+    // The main loop unlinks again (R033b clears global +0x1070) and a second blow makes a second object; R00b6 first hides
+    // the one made before (1.28 on global +0x1084, then set_flag 6 on it) because host 1.94 calls it valid.
+    for _ in 0..3 {
+        rt.update(&mut host);
+        host.tick();
+    }
+    rt.event(&mut host, 6, &[0x500]);
+    rt.update(&mut host);
+    assert_eq!(host.created, vec![0x6bf, 0x6bf]);
+    assert!(host.calls().any(|c| matches!(c, Call::Hide { obj } if *obj == made)), "the first object is hidden");
+    assert!(host.calls().any(|c| matches!(c, Call::SetFlag { obj, bit: 6 } if *obj == made)), "and flagged 6");
+}
+
+/// The object M_EX940 makes, `M_EX850` (WP-EN3; objentry 0x6bf, ObjectType 4, no `set_obj_param`): its script runs on the
+/// mock world with every host function decoded, starts in `idle` (it has an `appear` mode, which nothing enters on the mock
+/// world) and leaves, and never asks for a status block.
+#[test]
+fn m_ex850_runs_its_modes() {
+    let Some((mut a, _)) = open() else { return };
+    assert_enemy_files(&mut a, "M_EX850");
+    let data = object_script(&mut a, "obj/M_EX850.mdlx");
+    let (seen, unknown) = mode_cycle(&data);
+    eprintln!("M_EX850 modes: {seen:?}");
+    assert_eq!(unknown, 0, "every host function M_EX850 calls is decoded");
+    for m in ["idle", "leave"] {
+        assert!(seen.contains(m), "mode {m} never ran: {seen:?}");
+    }
+    let d = dry_run(&data, 1, 250.0, 120, None);
+    assert!(d.errors.is_empty(), "{:?}", d.errors);
+    assert!(!d.host.calls().any(|c| matches!(c, Call::SetObjParam { .. })), "no status block is asked for");
+}
+
 /// The Struggle opponent N_EX570_BTL (WP-6H) with the spawn parameter 1 of its tt04 groups (b_41: 1,
 /// b_42: 2, b_45: 4, b_51: 5; `docs/enemies.md`).
 #[test]

@@ -85,8 +85,17 @@ pub const N_EX600: Kind = Kind { name: "N_EX600", enmp: 158, model: "N_EX600_BTL
 /// 0x06e2 for `R124c`); its `dead` mode (R08db) starts element 2 of its effect file, fades out and hides.
 pub const M_EX940: Kind = Kind { name: "M_EX940", enmp: 49, model: "M_EX940", death_effect: true, status: true };
 
+/// `M_EX850` (object 0x6bf, `ObjectType` 4), the object `M_EX940` makes with host 1.0 when a blow-class hit lands (BDX
+/// `M_EX940` R0082 at 0x0082: `create_object(1727)`, the `SpawnObject1` of its objentry row). It is nobody's group
+/// member: the script places it at the ground point under `M_EX940` (1.98, 1.148) and it runs its own script (3101 words;
+/// modes `appear`, `idle`, `idle_time`, `freeze`, `event` ..; its event-11 handler answers reaction commands 481, 528 and
+/// 586). Its script never calls `set_obj_param` and its objentry row has `NeoStatus` 0, so nothing builds a status block
+/// (FUN_001b2148 is the only builder) and `Kind::status` is false: it cannot be hurt. `enmp` is only a stand-in for the
+/// numbers `spawn_enemy` asks of the data (any row: HP only has to be above 0) [inferred].
+pub const M_EX850: Kind = Kind { name: "M_EX850", enmp: 49, model: "M_EX850", death_effect: false, status: false };
+
 /// Every enemy kind the app has.
-pub const KINDS: [&Kind; 8] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940];
+pub const KINDS: [&Kind; 9] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850];
 
 /// The rigs of the enemy kinds, by `Kind::name` (Shadow and Soldier share `sora::Rigs`' copies).
 #[derive(Resource, Default)]
@@ -762,6 +771,13 @@ impl Plugin for EnemyPlugin {
             }
             None => warn!("enemy: SLUS_210.05 not readable; reaction class 5 (pull) is not played"),
         }
+        // The appear ramp of the objects a kind-6 group makes (FUN_00199e98, FUN_001abf40 / FUN_001abf78).
+        match app.world().resource::<Disc>().read_root("SLUS_210.05").and_then(|e| crate::enemy_obj::AppearRamp::from_exe(&e)) {
+            Some(a) => {
+                app.insert_resource(a);
+            }
+            None => warn!("enemy: SLUS_210.05 not readable; the objects of kind-6 groups do not fade in"),
+        }
         app.insert_resource(Waves::default())
             .insert_resource(rigs)
             .init_resource::<AreaWaves>()
@@ -795,7 +811,7 @@ fn spawn_enemy(
     (spawn_kind, spawn_params, object_id, serial): SpawnRecord,
     data: &GameData,
     assets: (&mut Assets<Mesh>, &mut Assets<StandardMaterial>, &mut Assets<Image>, &mut Assets<SkinnedMeshInverseBindposes>),
-) {
+) -> Entity {
     let stats = data.enemy_stats(kind.enmp, 1);
     let root = commands.spawn((Transform::from_translation(at), Visibility::default())).id();
     let (meshes, materials, images, bindposes) = assets;
@@ -826,6 +842,44 @@ fn spawn_enemy(
         crate::area_jump::AreaActor,
         Fighter { team: Team::Enemy, attack_bodies: vec![body], hurt_body: body, landed: Default::default(), hittable: false },
     ));
+    root
+}
+
+/// Makes the objects host 1.0 asked for (`ObjTable::creates`, filled by `enemy_ai::ai_update`): the object of the
+/// `00objentry` id, with the script of its kind, at the origin the game's place record gives (FUN_0016e8c0 gets 0x1c883a0)
+/// or at the point the script's `set_position` (1.148) gave it in the same tick; facing 0 in the game's space. Its
+/// brain takes the handle the call returned (`CreatedHandle`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_created(
+    mut commands: Commands,
+    mut table: ResMut<crate::enemy_obj::ObjTable>,
+    rigs: Res<EnemyRigs>,
+    data: Res<GameData>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
+) {
+    use crate::enemy_obj::Remote;
+    for (handle, object) in std::mem::take(&mut table.creates) {
+        let Some(kind) = table.kinds.get(&object).copied() else { continue };
+        let Some(rig) = rigs.get(kind) else {
+            warn!("create_object: {} has no rig; {handle:#x} is not made", kind.name);
+            continue;
+        };
+        // The point the script gave it in this tick (the last `set_position`): the call is consumed here.
+        let mut at = Vec3::ZERO;
+        table.remote.retain(|(h, op, _)| match op {
+            Remote::Position(p) if *h == handle => {
+                at = *p * SCALE;
+                false
+            }
+            _ => true,
+        });
+        info!("create_object: {} (objentry {object:#x}) made as {handle:#x} at {at:?}", kind.name);
+        let ent = spawn_enemy(&mut commands, kind, rig, at, std::f32::consts::PI, (-1, None, object, None), &data, (&mut meshes, &mut materials, &mut images, &mut bindposes));
+        commands.entity(ent).insert(crate::enemy_obj::CreatedHandle(handle));
+    }
 }
 
 fn has(rig: &Rig, s: usize) -> Option<usize> {
@@ -849,9 +903,9 @@ fn spawn_member(
     rigs: &EnemyRigs,
     data: &GameData,
     assets: (&mut Assets<Mesh>, &mut Assets<StandardMaterial>, &mut Assets<Image>, &mut Assets<SkinnedMeshInverseBindposes>),
-) {
-    let Some(rig) = rigs.get(m.kind) else { return };
-    spawn_enemy(commands, m.kind, rig, at, m.yaw, (m.spawn_kind, Some(m.spawn_params), m.object_id, Some((part_id, m.serial))), data, assets);
+) -> Option<Entity> {
+    let rig = rigs.get(m.kind)?;
+    Some(spawn_enemy(commands, m.kind, rig, at, m.yaw, (m.spawn_kind, Some(m.spawn_params), m.object_id, Some((part_id, m.serial))), data, assets))
 }
 
 /// The area's enemies (module header). When an area run starts (`AreaRecord::run`: every area load, and a
@@ -1027,7 +1081,10 @@ pub fn spawn_waves(
             for i in kind_six_creates(&ep.group, ep.part, |v| v.contains(at), |s| enemies.iter().any(|e| e.serial == Some((pid, s)))) {
                 let m = &ep.group.members[i];
                 info!("area group {} kind-6 group {pid:#x}: {} (serial {:#x}) created at the record's point (FUN_00199e98)", ep.group.name, m.kind.name, m.serial);
-                spawn_member(&mut commands, m, pid, record_spot(m, &col), &rigs, &data, (&mut meshes, &mut materials, &mut images, &mut bindposes));
+                // The object fades in: FUN_00199e98 starts the ramp on +0x82c unless +0x7f8 bit 0x10 is set (a new object's is clear).
+                if let Some(ent) = spawn_member(&mut commands, m, pid, record_spot(m, &col), &rigs, &data, (&mut meshes, &mut materials, &mut images, &mut bindposes)) {
+                    commands.entity(ent).insert(crate::enemy_obj::Appearing);
+                }
             }
         }
         // Group events: an object of spawn kind 0, 1 or 3 removed (here: its HP reached 0) lowers its group record's

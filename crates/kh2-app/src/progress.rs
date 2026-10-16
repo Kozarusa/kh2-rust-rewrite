@@ -321,6 +321,10 @@ pub struct Progress {
     /// journal has marked seen (`menu_journal::marks::Cat` as a number). The original keeps bits at per-category offsets; the
     /// app keeps the pairs [inferred storage, same meaning]. Saved in the slot files (key `journal_seen`).
     journal_seen: std::collections::BTreeSet<(u8, u32)>,
+    /// The minigame records (`0x341620 + 8 * n`, `FUN_001d36e8`): byte 0 the state (0 never seen, 1 seen, 2 played, 4 a time
+    /// score) and the word at +4 the score. Only the records the app has set are kept; an absent one is state 0. Saved in the
+    /// slot files (key `minigames`). Nothing in the app plays a minigame yet, so only a state file fills it (gap).
+    minigames: std::collections::BTreeMap<u16, (u8, u32)>,
 }
 
 /// The synthesis record at save `+0x3728` (`FUN_002906c0` answers its address). Bit sets are kept as u64 (the
@@ -463,7 +467,7 @@ impl Progress {
         let mut block = vec![0u8; off::LEN];
         let n = bytes.len().min(off::LEN);
         block[..n].copy_from_slice(&bytes[..n]);
-        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT], story: StoryHandle::default(), new_seen: Vec::new(), record_bits: Vec::new(), moogle: Moogle::default(), shop_seen: [0; 4], shop_visits: 0, journal_seen: Default::default() }
+        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT], story: StoryHandle::default(), new_seen: Vec::new(), record_bits: Vec::new(), moogle: Moogle::default(), shop_seen: [0; 4], shop_visits: 0, journal_seen: Default::default(), minigames: Default::default() }
     }
 
     // --- story flags ------------------------------------------------------------------------
@@ -830,6 +834,20 @@ impl Progress {
     /// Every (category, entry) pair of the journal's seen set.
     pub fn journal_seen_all(&self) -> impl Iterator<Item = (u8, u32)> + '_ {
         self.journal_seen.iter().copied()
+    }
+
+    /// `FUN_001d36e8(n)`: the minigame record `n` as (state byte, score word); (0, 0) for one nothing has set.
+    pub fn minigame(&self, n: u16) -> (u8, u32) {
+        self.minigames.get(&n).copied().unwrap_or((0, 0))
+    }
+
+    /// Sets the minigame record `n` (state byte at +0, score word at +4). Only a state file calls this yet.
+    pub fn set_minigame(&mut self, n: u16, state: u8, score: u32) {
+        if state == 0 && score == 0 {
+            self.minigames.remove(&n);
+        } else {
+            self.minigames.insert(n, (state, score));
+        }
     }
 
     /// `FUN_00265498`: bit `n` (0 or 1) of the first-visit byte (save `+0x3724`).
@@ -1398,6 +1416,7 @@ impl Progress {
             shop_seen: [0; 4],
             shop_visits: 0,
             journal_seen: Default::default(),
+            minigames: Default::default(),
         };
         p.init_party();
         p.apply_plrp(plrp, 0);
@@ -1752,6 +1771,16 @@ impl Progress {
                         self.set_journal_seen(int(c, "journal_seen")?.clamp(0, 255) as u8, int(e, "journal_seen")?.max(0) as u32);
                     }
                 }
+                // The minigame records: `"minigames": [[index, state, score], ..]` (`0x341620 + 8 * index`).
+                "minigames" => {
+                    let Json::Arr(a) = v else { return Err("minigames: expected an array of [index, state, score]".into()) };
+                    for p in a {
+                        let Json::Arr(p) = p else { return Err("minigames: expected [index, state, score] triples".into()) };
+                        let (Some(i), Some(st)) = (p.first(), p.get(1)) else { return Err("minigames: expected [index, state, score] triples".into()) };
+                        let score = p.get(2).map_or(Ok(0), |x| int(x, "minigames"))?;
+                        self.set_minigame(int(i, "minigames")?.clamp(0, 0xffff) as u16, int(st, "minigames")?.clamp(0, 255) as u8, score.clamp(0, i64::from(u32::MAX)) as u32);
+                    }
+                }
                 "shop_visits" => {
                     for n in list(v, "shop_visits")? {
                         self.set_shop_visit(n as u8);
@@ -1830,6 +1859,7 @@ impl Progress {
                     self.shop_seen = [0; 4];
                     self.shop_visits = 0;
                     self.journal_seen.clear();
+                    self.minigames.clear();
                     self.record_bits.clear();
                 }
                 "new_seen" => {
@@ -2256,6 +2286,7 @@ impl Progress {
         let st = self.story();
         let words: Vec<u8> = st.words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let locks: Vec<u16> = st.locks.iter().flat_map(|l| [l[0], l[1]]).collect();
+        let games = format!("[{}]", self.minigames.iter().map(|(i, (s, v))| format!("[{i}, {s}, {v}]")).collect::<Vec<_>>().join(", "));
         let seen_pairs = format!("[{}]", self.journal_seen.iter().map(|(c, e)| format!("[{c}, {e}]")).collect::<Vec<_>>().join(", "));
         vec![
             (
@@ -2278,6 +2309,7 @@ impl Progress {
             ("shop_visits", nums(shop_visits)),
             ("record_bits", nums(self.record_bits.iter().copied())),
             ("journal_seen", seen_pairs),
+            ("minigames", games),
             ("story_raw", format!("{{\"words\": \"{}\", \"programs\": \"{}\", \"locks\": {}}}", hex(&words), hex(&st.programs), nums(locks))),
             ("world_points", nums(st.world_points())),
         ]
@@ -2750,6 +2782,26 @@ mod tests {
         r.apply_json("{\"chests\": [12, 300], \"journal_seen\": [[4, 2]]}").expect("the keys load");
         assert!(r.chest_opened(12) && r.chest_opened(300) && r.journal_seen(4, 2));
         assert!(r.apply_json("{\"journal_seen\": [3]}").is_err());
+    }
+
+    /// WP-MN14: the minigame records go through a slot file and the `minigames` key; a record nothing set reads as (0, 0).
+    #[test]
+    fn minigame_records_are_saved() {
+        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        assert_eq!(p.minigame(3), (0, 0));
+        p.set_minigame(3, 2, 1500);
+        p.set_minigame(9, 4, 7200);
+        p.set_minigame(9, 0, 0);
+        assert_eq!((p.minigame(3), p.minigame(9)), ((2, 1500), (0, 0)));
+        let text = p.slot_json(&SlotInfo { level: 1, munny: 0, play_seconds: 0, area: "tt04".into() });
+        let mut q = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        q.set_minigame(5, 1, 1);
+        q.apply_json(&text).expect("loads");
+        assert_eq!((q.minigame(3), q.minigame(5)), ((2, 1500), (0, 0)), "the block key reset the old record");
+        let mut r = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        r.apply_json("{\"minigames\": [[7, 4, 3661], [8, 2]]}").expect("the key loads");
+        assert_eq!((r.minigame(7), r.minigame(8)), ((4, 3661), (2, 0)));
+        assert!(r.apply_json("{\"minigames\": [3]}").is_err());
     }
 
     /// WP-PRG1: the moogle's record, the shops' bits, the record bits, the story arrays and the world points go through a

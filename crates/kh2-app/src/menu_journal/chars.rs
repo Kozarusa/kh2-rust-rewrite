@@ -27,6 +27,12 @@ pub struct CharRec {
     pub name: u16,
     /// +0x10: flags; 0x400 puts the world's name into the message (`FUN_00191a30`).
     pub flags: u16,
+    /// +8: the description's message (`FUN_002aadf0`: the page's scrolled text).
+    pub desc: u16,
+    /// +0xa: the sub-title's message (0 for none).
+    pub sub: u16,
+    /// +0xc: the 3D model of the character's page (`FUN_002abf60`); not drawn by the port.
+    pub model: u16,
 }
 
 /// Parses `jiminy.bar` entry 3 ("char").
@@ -35,7 +41,7 @@ pub fn parse_chars(d: &[u8]) -> Vec<CharRec> {
         .iter()
         .map(|r| {
             let u16_at = |o: usize| u16::from_le_bytes([r[o], r[o + 1]]);
-            CharRec { face: r[1], style: r[2], bit: u16_at(4), name: u16_at(6), flags: u16_at(0x10) }
+            CharRec { face: r[1], style: r[2], bit: u16_at(4), name: u16_at(6), flags: u16_at(0x10), desc: u16_at(8), sub: u16_at(0xa), model: u16_at(0xc) }
         })
         .collect()
 }
@@ -201,6 +207,50 @@ pub fn tag_group(tags: [usize; 4], links: bool, state: Option<super::marks::Tag>
     state.map(|t| tags[usize::from(links) * 2 + usize::from(t == super::marks::Tag::Seen)])
 }
 
+/// The visible lines of the character page's description (`FUN_002ab678`: a scissor of seven lines).
+pub const DESC_VIEW: usize = 7;
+
+/// The number of scroll positions of the description (`FUN_002aadf0`: the list count is the text's lines minus six when it
+/// has more than seven, else one).
+pub fn desc_positions(lines: usize) -> usize {
+    if lines > DESC_VIEW { lines - 6 } else { 1 }
+}
+
+/// The scroll arrows of the character page (`FUN_002ab578`): (up shown, down shown). Neither with one position; the up arrow
+/// is hidden on the first, the down arrow on the last.
+pub fn arrows(top: usize, count: usize) -> (bool, bool) {
+    if count < 2 {
+        return (false, false);
+    }
+    (top != 0, top + 1 < count)
+}
+
+/// The description's scroll (`FUN_002977a8` with the list flags of `FUN_002a98f0`: step 1, page 7 [inferred: clamped at the ends,
+/// as page 3's list]): `dy` is the direction of an Up / Down press, `page` -1 / 1 the L1 / R1 press.
+pub fn desc_scroll(top: usize, count: usize, dy: i32, page: i32) -> usize {
+    let last = count.saturating_sub(1) as i64;
+    let to = top as i64 + i64::from(dy.signum()) + i64::from(page.signum()) * DESC_VIEW as i64;
+    to.clamp(0, last) as usize
+}
+
+/// `FUN_002aa600`: the character the L2 / R2 pair moves to in the list the page was opened from. Next: the first one after
+/// `cur` that exists, else the first one before it, else `cur`; previous: the last one before `cur`, else the last one after
+/// it, else `cur`.
+pub fn neighbour(list: &[usize], cur: usize, exists: &dyn Fn(usize) -> bool, next: bool) -> usize {
+    let n = list.len();
+    if next {
+        if let Some(i) = (cur + 1..n).find(|&i| exists(list[i])) {
+            return i;
+        }
+        (0..cur.min(n)).find(|&i| exists(list[i])).unwrap_or(cur)
+    } else {
+        if let Some(i) = (0..cur.min(n)).rev().find(|&i| exists(list[i])) {
+            return i;
+        }
+        (cur + 1..n).rev().find(|&i| exists(list[i])).unwrap_or(cur)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,5 +368,42 @@ mod tests {
         assert_eq!(tag_group(t, true, Some(Tag::New)), Some(0x1b));
         assert_eq!(tag_group(t, true, Some(Tag::Seen)), Some(0x1c));
         assert_eq!(tag_group(t, true, None), None);
+    }
+
+    #[test]
+    fn the_description_scrolls_by_lines_and_pages() {
+        assert_eq!(desc_positions(3), 1);
+        assert_eq!(desc_positions(7), 1);
+        assert_eq!(desc_positions(8), 2);
+        assert_eq!(desc_positions(20), 14);
+        assert_eq!(arrows(0, 1), (false, false));
+        assert_eq!(arrows(0, 3), (false, true));
+        assert_eq!(arrows(1, 3), (true, true));
+        assert_eq!(arrows(2, 3), (true, false));
+        assert_eq!(desc_scroll(0, 14, 1, 0), 1);
+        assert_eq!(desc_scroll(0, 14, -1, 0), 0, "no wrap at the top");
+        assert_eq!(desc_scroll(13, 14, 1, 0), 13);
+        assert_eq!(desc_scroll(2, 14, 0, 1), 9);
+        assert_eq!(desc_scroll(9, 14, 0, 1), 13, "a page stops at the last position");
+        assert_eq!(desc_scroll(3, 14, 0, -1), 0);
+    }
+
+    #[test]
+    fn the_character_pair_skips_those_that_do_not_exist_and_wraps() {
+        let list = [10, 11, 12, 13];
+        let all = |_: usize| true;
+        assert_eq!(neighbour(&list, 1, &all, true), 2);
+        assert_eq!(neighbour(&list, 1, &all, false), 0);
+        assert_eq!(neighbour(&list, 3, &all, true), 0, "past the end it wraps to the first");
+        assert_eq!(neighbour(&list, 0, &all, false), 3, "before the start it wraps to the last");
+        let some = |c: usize| c == 10 || c == 12;
+        assert_eq!(neighbour(&list, 0, &some, true), 2);
+        assert_eq!(neighbour(&list, 2, &some, true), 0);
+        assert_eq!(neighbour(&list, 2, &some, false), 0);
+        assert_eq!(neighbour(&list, 0, &some, false), 2);
+        let lone = |c: usize| c == 11;
+        assert_eq!(neighbour(&list, 1, &lone, true), 1, "the only one stays");
+        assert_eq!(neighbour(&list, 1, &lone, false), 1);
+        assert_eq!(neighbour(&list, 0, &|_| false, true), 0);
     }
 }

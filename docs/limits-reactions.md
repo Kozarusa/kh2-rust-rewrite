@@ -654,3 +654,7 @@ none of which exist in the app.
 6. `drive.rs`: the `PlayerReactionCmd::Charge` of commands 455 and 457 (+1 drive gauge unit each time the timer runs
    out, see above).
 7. A shared `LimitParty` source once companions exist (it is a resource today).
+
+## Harness press timing (RX1)
+
+The Soldier's command 34 offer lasts about 0.13 s (8 ticks: the range trigger 20 covers those frames and the command manager clears slot 1 every tick, FUN_001bb368). A `KH2_REACTION_PRESS` list with one press per second almost never lands inside it; the `reaction-34` scenario needs presses every 0.1 s or denser (`100..400 / 10`). With that, the log has `reaction: accepted command 34` and `event 11` (the press is consumed on the next fixed tick whether or not an offer exists).

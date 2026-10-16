@@ -250,8 +250,15 @@ entrance, map, btl, evt; 0xff keeps the current one).
   `FUN_00149f38` (one: `FUN_0019d9d8`) and of `FUN_00149eb0` (only its task start), the fader kind 0xf callers (`FUN_0013f1a0` area-start
   fade-in, `FUN_0013f2e8`, `FUN_002233d8` event end, out: `FUN_00103fc0`, `FUN_0013f148`, `FUN_0013f290`, `FUN_002580b8`, `FUN_00259e88`): the task
   ends after the black, and the next fade-in is whichever area start or event end runs later. The app lifts the black when a jump starts or an
-  event plays [inferred]; the screen freeze (`FUN_0014dcb0`, `FUN_0014de00`: the flag `DAT_003584e0`, a screen copy) is not ported (the
-  simulation keeps running under the black). Tests `the_wait_is_clear_and_the_type_six_black_holds`, `the_rows_use_the_tables_of_the_executable`.
+  event plays [inferred]; the screen freeze is not ported, by decision (WP-AJ1): `FUN_0014dcb0` sets the flag `DAT_003584e0` (cleared by
+  `FUN_0014dcc0`; its only reference is in the capture routine `FUN_0014dbe8`, 0x14dc88) and `FUN_0014de00` calls `FUN_0014dbe8`, which
+  copies the GS frame into the 0x9c000-byte buffer at 0x484480 (`FUN_0014de40` clears it; `FUN_0014ddc0` / `FUN_0014db58` send it back to
+  the GS). The same pair opens every kind 1 fade-out (`FUN_0013eea8`) and the keyhole wipe, where `FUN_0014ddc0` redraws the copy
+  (callers `FUN_0013eea8`, `FUN_0013f368`, `FUN_0014a270`, `FUN_0015cf58`, `FUN_001612b0`, `FUN_00161570`); `FUN_00149eb0` has no such
+  call, so no read of the copy was found on the type 6 path [gap: the yield `FUN_00102438` was not read]. The copy is a PS2 VRAM
+  detail with no counterpart in this app's pipeline (the fade is a node over the live scene, as for every other fade-out), so the
+  current fade (simulation running under the black) is kept. Tests `the_type_six_black_lifts_when_an_event_plays` (the black advances,
+  holds at `FADE_TICKS` and is released when an event plays), `the_wait_is_clear_and_the_type_six_black_holds`, `the_rows_use_the_tables_of_the_executable`.
   `type_four_decides_by_story_flags`, `type_four_to_the_world_map_is_not_available`,
   `types_five_and_six_open_a_menu_or_freeze_without_a_jump`, `record_words_four_to_six_parse_with_defaults`,
   `a_type_four_record_always_fades_with_kind_one`. Harness `KH2_JUMP=4:2:0`, `5:0:0`, `6:0:0` (quoted lines: "jump: type 4

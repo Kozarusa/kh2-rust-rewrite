@@ -412,6 +412,7 @@ pub enum Outcome {
     /// Type 6 (`FUN_00149f38`): the task `FUN_00149eb0` freezes the screen (`FUN_0014dcb0`, `FUN_0014de00`), fades
     /// the screen fader to black (`FUN_0014a7c8(fader, 0xf, 0)`), waits until it is black and ends; no jump follows.
     /// Nothing that fades it back in was found [gap].
+    /// The freeze is a GS frame copy (`FUN_0014dbe8`) with no counterpart here: the fade runs over the live scene (docs/events.md).
     FreezeFade,
 }
 
@@ -497,6 +498,16 @@ pub enum JumpTask {
     /// executable fades it back in by itself (the area start's fade-in and the event end's, `FUN_0013f1a0`, `FUN_002233d8`,
     /// run when something else starts); here the black is lifted when a jump starts or an event plays [inferred].
     Black { t: f32 },
+}
+
+/// One tick of the type 6 black: lifted (`Idle`) when an event plays [inferred], else the fade advances until it
+/// reaches `FADE_TICKS` and the black holds.
+pub fn black_step(t: f32, event_playing: bool) -> JumpTask {
+    if event_playing {
+        JumpTask::Idle
+    } else {
+        JumpTask::Black { t: if t < FADE_TICKS { t + 1.0 } else { t } }
+    }
 }
 
 /// An actor that belongs to the loaded area: the area's unload removes it (the enemies of `enemy.rs`).
@@ -816,12 +827,11 @@ fn tick(
         }
         JumpTask::Black { t } => {
             // Held black until a jump starts (the code below replaces the task) or an event plays (see `JumpTask::Black`).
-            if player.as_ref().is_some_and(|p| p.playing()) {
+            let next = black_step(t, player.as_ref().is_some_and(|p| p.playing()));
+            if next == JumpTask::Idle {
                 info!("jump: the type 6 black is lifted (an event plays) [inferred]");
-                *task = JumpTask::Idle;
-            } else if t < FADE_TICKS {
-                *task = JumpTask::Black { t: t + 1.0 };
             }
+            *task = next;
         }
         JumpTask::FadeOut { dest, kind, t } => {
             let ended = wipe_ended(&scene, &key);
@@ -1167,6 +1177,16 @@ mod tests {
         assert_eq!(paint(&mut w, JumpTask::Black { t: 0.0 }), 0.0);
         assert!((paint(&mut w, JumpTask::Black { t: FADE_TICKS / 2.0 }) - 0.5).abs() < 1e-6);
         assert_eq!(paint(&mut w, JumpTask::Black { t: FADE_TICKS }), 1.0);
+    }
+
+    /// The type 6 black advances to `FADE_TICKS`, holds there, and is released (task back to `Idle`) when an event plays.
+    #[test]
+    fn the_type_six_black_lifts_when_an_event_plays() {
+        assert_eq!(black_step(0.0, false), JumpTask::Black { t: 1.0 });
+        assert_eq!(black_step(FADE_TICKS - 1.0, false), JumpTask::Black { t: FADE_TICKS });
+        assert_eq!(black_step(FADE_TICKS, false), JumpTask::Black { t: FADE_TICKS }, "the black holds");
+        assert_eq!(black_step(FADE_TICKS, true), JumpTask::Idle, "an event releases the held black");
+        assert_eq!(black_step(3.0, true), JumpTask::Idle, "and also mid-fade");
     }
 
     #[test]

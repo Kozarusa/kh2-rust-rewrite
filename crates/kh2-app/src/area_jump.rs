@@ -1026,7 +1026,8 @@ fn spawn_fader(mut commands: Commands) {
 
 /// The one fader node serves two owners: the area jump (always black) and a playing event
 /// (`EventPlayer::screen_fade`, black or white, `FUN_0014a7c8` / `FUN_0014a710`). The stronger alpha wins;
-/// on a tie the jump's black stays. Returns (alpha, white).
+/// on a tie the jump's black stays [inferred: the port's own merge of the original's two fader objects; no rule for both
+/// running at once was found]. Returns (alpha, white).
 fn combined_fade(jump_alpha: f32, event: Option<(f32, bool)>) -> (f32, bool) {
     match event {
         Some((a, white)) if a > jump_alpha => (a, white),
@@ -1049,7 +1050,8 @@ fn draw_fader(
         JumpTask::FadeIn { t, .. } => fade_alpha(false, t),
     };
     let (a, white) = combined_fade(a, player.and_then(|p| p.screen_fade()));
-    let c = if white { 1.0 } else { 0.0 };    for mut n in &mut nodes {
+    let c = if white { 1.0 } else { 0.0 };
+    for mut n in &mut nodes {
         n.0 = Color::srgba(c, c, c, a);
     }
 }
@@ -1065,6 +1067,27 @@ mod tests {
 
     fn group(gate: u8, area: u8, id: u16, volumes: Vec<Activator>) -> ExitGroup {
         ExitGroup { tag: "m_10".into(), id, exit: Exit { area, entrance: 1, gate }, volumes, fired: false, disabled: false, prompting: false, held: false }
+    }
+
+    /// `draw_fader` itself: the node's colour follows the jump task (black, alpha from `fade_alpha`) and is clear when idle.
+    #[test]
+    fn draw_fader_paints_the_node_from_the_jump_task() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut w = bevy::ecs::world::World::new();
+        w.init_resource::<Keyhole>();
+        let node = w.spawn((FadeNode, BackgroundColor(Color::NONE))).id();
+        let dest = Dest::new(crate::area::TWILIGHT_TOWN, 4, 0);
+        let mut paint = |w: &mut bevy::ecs::world::World, task: JumpTask| {
+            w.insert_resource(task);
+            w.run_system_once(draw_fader).unwrap();
+            w.get::<BackgroundColor>(node).unwrap().0.to_srgba()
+        };
+        let idle = paint(&mut w, JumpTask::Idle);
+        assert_eq!((idle.red, idle.green, idle.blue, idle.alpha), (0.0, 0.0, 0.0, 0.0));
+        let half = paint(&mut w, JumpTask::FadeOut { dest, kind: 1, t: FADE_TICKS / 2.0 });
+        assert_eq!((half.red, half.green, half.blue), (0.0, 0.0, 0.0));
+        assert!((half.alpha - 0.5).abs() < 1e-6, "{}", half.alpha);
+        assert_eq!(paint(&mut w, JumpTask::Loading { dest, kind: 1 }).alpha, 1.0);
     }
 
     #[test]

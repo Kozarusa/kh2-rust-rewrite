@@ -1043,11 +1043,15 @@ type PrizeOrItem = Or<(With<PrizeObj>, With<ItemObj>)>;
 /// `DAT_0035e7a0` (object 0x5c3, whose pool holds the orbs and munny) and the item objects (type 0x12) are in that
 /// list like the area's other objects; their own teardown was not read]. Here: the change of the task to `Loading`
 /// despawns every prize and item object once per jump and empties the pool count; what a prize had not paid out yet
-/// is lost, as it would be.
+/// is lost, as it would be. An item already taken and being drawn in is in the inventory (`FUN_001bd1d8` gave it at the
+/// pickup); only its message (`FUN_001a1f40(item, -1)`, sent when the draw-in ends) is still owed, so the unload sends
+/// it before the object goes [inferred: the message queue outlives the area; the unload's own order was not read].
 fn unload_prizes(
     task: Option<Res<crate::area_jump::JumpTask>>,
     mut done: Local<bool>,
-    objects: Query<Entity, PrizeOrItem>,
+    objects: Query<(Entity, Option<&ItemObj>), PrizeOrItem>,
+    lib: Option<Res<ItemLib>>,
+    mut obtained: MessageWriter<ItemObtained>,
     mut pool: ResMut<PrizePool>,
     mut commands: Commands,
 ) {
@@ -1061,7 +1065,12 @@ fn unload_prizes(
     }
     *done = true;
     let n = objects.iter().count();
-    for e in &objects {
+    for (e, item) in &objects {
+        if let Some(it) = item.filter(|it| it.o.absorb.is_some()) {
+            let (name, icon) = lib.as_ref().and_then(|l| l.names.get(&it.o.id).copied()).unwrap_or((0, 0));
+            obtained.write(ItemObtained { item: it.o.id, icon, name });
+            info!("prize: item {:#x} was being drawn in at the unload: its message is sent, not lost", it.o.id);
+        }
         commands.entity(e).despawn();
     }
     pool.live = 0;
@@ -2510,6 +2519,12 @@ mod tests {
         w.insert_resource(PrizePool { live: 3 });
         let prizes: Vec<Entity> = (0..3).map(|_| w.spawn(PrizeObj { p: launch(&consts(), 0, [0; 3], Vec3::ZERO), shown: None, kids: Vec::new() }).id()).collect();
         let other = w.spawn_empty().id();
+        w.init_resource::<Messages<ItemObtained>>();
+        let item = |id: u16, absorb: Option<ItemAbsorb>| {
+            ItemObj { o: Item { id, pos: Vec3::ZERO, vel: Vec3::ZERO, yaw: 0.0, scale: 1.0, base_scale: 1.0, pickable: true, rested: true, taken: absorb.is_some(), bounces: 0, absorb } }
+        };
+        let falling = w.spawn(item(0x11, None)).id();
+        let drawn = w.spawn(item(0x22, Some(ItemAbsorb { offset: Vec3::ZERO, left: 5.0, total: 20.0 }))).id();
         let dest = Dest::new(crate::area::TWILIGHT_TOWN, 4, 0);
         w.insert_resource(JumpTask::FadeOut { dest, kind: 0, t: 0.0 });
         w.run_system_once(unload_prizes).unwrap();
@@ -2518,6 +2533,10 @@ mod tests {
         w.insert_resource(JumpTask::Loading { dest, kind: 0 });
         w.run_system_once(unload_prizes).unwrap();
         assert!(prizes.iter().all(|&e| w.get_entity(e).is_err()), "the unload removes the prizes");
+        assert!(w.get_entity(falling).is_err() && w.get_entity(drawn).is_err(), "and the items");
+        // Only the item that was being drawn in (already given) owes its message; the one still on the floor was never taken.
+        let sent: Vec<ItemObtained> = w.resource_mut::<Messages<ItemObtained>>().drain().collect();
+        assert_eq!(sent, [ItemObtained { item: 0x22, icon: 0, name: 0 }]);
         assert!(w.get_entity(other).is_ok(), "other entities stay");
         assert_eq!(w.resource::<PrizePool>().live, 0);
     }

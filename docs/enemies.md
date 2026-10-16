@@ -166,7 +166,9 @@ the player (FUN_00199970) at Vec3(-2.98, -0.10, -6.12)`, and the same for 0x25 a
 - **The counter.** The group object's +0x18 counts the group's enemy-class entities (object types 4 and 0x15,
   `FUN_00198150`): `FUN_00198750` counts the spawn-kind-2 ones (`FUN_001994c8`, once per entity not in the table at
   0x35d278), and `FUN_00198920` the ones of kinds 0, 3 and 1 (current entrance) that it creates, in a group that is not
-  disabled [V]. `counted_at_load` is the port; b_44 counts 3 + 8 = 11.
+  disabled [V]. `counted_at_load` is the port, except the two filters of `FUN_00198750` it leaves out: the `DAT_0035e3a0` mode
+  (`FUN_001981a0` fails when `FUN_0016ece0(type) >= 2000`) and the type-0x10 test (`FUN_002d6d28 == 0`); neither occurs in the
+  Twilight Town data and no enemy-class entity is type 0x10; b_44 counts 3 + 8 = 11.
 - **Removal.** `FUN_001993f8` (an object of the group is removed) calls `FUN_00199518` only for spawn kinds 0, 1 and 3 whose
   +0x588 bit 0x800 is set; the enemy classes' constructor `FUN_001b0270` (also the type-0x15 one, `FUN_001c1ec8`) sets that
   bit, so it holds for every enemy [V]. A spawn-kind-2 member's removal never lowers the counter [V: `lVar1 == 2` skips it],

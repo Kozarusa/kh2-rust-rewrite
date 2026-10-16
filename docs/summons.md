@@ -872,9 +872,45 @@ host 1.8 on her context; Chicken Little's `surprise` thread (R1033 at 0x2171 of 
 it 60 units off its maker with 1.148. `summon.rs` (`SummonHost::own`, `act`'s `Act::Kid`, `objects`) builds them a tick later in no
 summon slot (handles `KID_BASE` + serial), at the origin (the game's place record is zero) until a 1.148 moves them, carries out
 the calls made on them (position, mode, hide, flags) once they exist, and removes them with the summon. Seen in `KH2_SUMMON=4`
-(Tinker Bell: `appear` then `Hide` about 5.5 s later) and `KH2_SUMMON=1` (nine P_EX360 over the run). Gaps: Tinker Bell stays at
-the origin (her `appear` links to the player with 1.18, which is a stub, so she is not placed near him); P_EX360's script reaches
-1.114, 10.53 and 6.49, which are not mapped; the revive's Tinker Bell (FUN_001adeb8) is not made.
+(Tinker Bell: `appear` then `Hide` about 5.5 s later) and `KH2_SUMMON=1` (nine P_EX360 over the run). The three gaps of that
+work package are closed by WP-EN4 below.
+
+**WP-EN4 (the leftovers).**
+
+- *Tinker Bell at the player (host 1.18).* Her `appear` routine (R0679 of P_EX340) calls `link_start(me, player, 0x4002, 0, 0, 0)`
+  (BDX trace line `Func { group: 1, index: 18, args: [Obj(<her>), Obj(<player>), Int(16386), Int(0), Raw(0), Raw(0)] }`), then plays motion 231 and,
+  once it is done, hides. FUN_001beb90 (0x170dd8) stores the player as her parent (+0x570), the halfwords +0x574 = 0x4002 and +0x576 = 0, clears the
+  offset vector +0x540 (0, 0, 0, 1) and, as bit 1 of +0x576 is clear, the facing +0x550; FUN_0016b698(.., 3) gives her the link mover and
+  FUN_0016b960 then reads her pose from +0x70 instead of +0x540. The link mover's own update was not read: [inferred] she stands at the parent's
+  origin with his facing. `ai::Link::pose` places her there each tick after the class's steering (`objects`). Run `KH2_SUMMON=4`
+  (state with item 160 and no option word, so the arrival event path makes Tinker Bell): `summon: P_EX340#kid class 0x11: 2338 units from the
+  player` (she was made at the origin) and then `summon: P_EX340#kid linked to the player (host 1.18, kind 0x4002, flags 0): placed at Vec3(-2015,
+  40, 1190)`, the player's point; she is gone with `hidden by its script` at the end of motion 231. The link's break (+0x576 bit 0 with the
+  parent's +0x160 bit 0x8000, FUN_00169ee8; the undo FUN_001becb8) and the routine arguments (a callback on the link record) are not run; Peter Pan's
+  own `appear` link of the player to him stays a stub (`enemy-ai.md`). The screenshot of that run (7 s) shows neither she nor Peter Pan
+  (she is invisible between her motions and Peter Pan stands off screen), so her position is the log's.
+- *Chicken Little's child (P_EX360).* 1.114 `bind_object(ctx, 1736)` finds the object whose id is 1736 (FUN_0016b078): the `sumn` row's Entity1,
+  Chicken Little's own object, the first of the summon's slots (`SummonEnv::main`, `main_object`; test
+  `host_1_114_finds_the_summons_own_object_by_the_rows_entity`). 10.53 / 10.54 are the writer and reader of the effect list at an object's
+  +0xb5c (FUN_0010c5b8 makes it, FUN_00136388 / FUN_001364d0 enter and find an (instance, generation) pair, FUN_00136430 drops one); the child
+  spawns its effect with 1.21 on itself, enters it in Chicken Little's list, asks 10.54 and ends it with 0.51 (test
+  `effect_list_registration_follows_fun_00136388`). The app keeps the list with the calling script [inferred: the list's readers, the
+  object's end, were not read]. 6.49 (FUN_0019b088) is asked of each enemy the child's 2.4 walk hands out: true when the object's actor stop bit (+0x518),
+  FUN_0019af28 (+0x588 bits 4 and 0x40 clear and the summon state 1), +0x108 bit 0x400 or the manager at 0x36f6a4 holds; the app answers true in
+  the arrival only (test `host_6_49_is_occupied_in_the_arrival_only`). Run `KH2_BDXLOG=1 KH2_WAVE_GROUP=b_44 KH2_STATE=<item 383, option word 11>
+  KH2_DRIVE_POINTS=5 KH2_SUMMON=1 KH2_SUMMON_AT=4 kh2-game tt04`: `bdx P_EX360#kid t369: first host call 1.114 FindObject [Impl]`, `... 10.53 effect_list_add
+  [Approx]`, `... 6.49 object_occupied [Approx]`, `Func { group: 10, index: 54, args: [Obj(41943040), Raw(2063597569)] } -> Bool(true)`, then
+  `first host call 0.51 effect_destroy [Impl]` and `1.28 Hide`: the child's script runs to its end. Still unmapped in that script (warnings in the
+  run): 1.100 (0x173178, FUN_00173178: `sqrt(2 x / DAT_0037a538)` of a float, a fall time from a height) and 1.128 (the mover's virtual call,
+  role unknown).
+- *The revive's Tinker Bell.* The knock-out path is FUN_001cec00 -> the revive sequence FUN_001ad9a0 / FUN_001ad8a8 -> FUN_001adeb8 (clears byte 7,
+  makes objentry 0x4f4 at the player with FUN_001c5e20, sets the mode `reraise`, 0x37b880). In the app the knock-out is `State::Down` of `sora.rs`
+  (no game-over screen); `objects` makes Tinker Bell the tick the player is down with Peter Pan out and byte 7 set (`revive_due`), clears byte 7, puts her at
+  the player in mode `reraise`, and her script's host 1.277 (0x172030 -> FUN_00178df0: FUN_00178d80 clears the dead bit and resets the mover,
+  FUN_001d4a50, then the HP method with the status word +4 as the amount) gives him full HP and the app's stand-up
+  (`sora.rs`'s own `State::Down` revival). The type-2 revive sequence (the fade of FUN_001ad378) is not run. Not seen in a run: Peter Pan's own
+  healing (1.155) kept Sora up in every 125 s harness run (waves of `b_44`), so the path is covered by `tinker_bells_revive_needs_ready_and_a_knocked_out_player`
+  (the condition) only; the 1.277 arm and the KidOp plumbing are the ones the other made objects use.
 
 **WP-FX12b follow-ups.** (1) 1.155's app side: `ai::SummonAi::heal_player` (the host arm) and `apply_heal` (`objects`, after the tick) are unit-tested
 (`host_1_155_heal_reaches_the_players_hp`: 10/100 + 5 -> 15 and the HP written, the maximum clamps, a KO'd player (HP 0) stays); the `SummonHost::call`

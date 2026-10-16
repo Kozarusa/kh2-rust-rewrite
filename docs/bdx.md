@@ -357,6 +357,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.265 | `set_word_ac8(Oi)` | 0x171f98 | 2 | store a word at object +0xac8 |
 | 1.270 | `motion_register(Oi)` | 0x171730 | 41 | enter a motion id into the 16-entry list at the motion controller +0x14c unless it is already there (FUN_0017fb28) |
 | 1.272 | `flag_7f8_4(O) -> b` | 0x171cb0 | 11 | flag 4 of the word at object +0x7f8 |
+| 1.277 | `obj_revive(O)` | 0x172030 | 1 | FUN_00178df0 on the object (Tinker Bell's `reraise` calls it on the player): FUN_00178d80 clears +0x7f8 bit 4 and gives the normal mover (FUN_0016b698(.., 0)), FUN_001d4a50 on the object at +0xb3c (its +0x9a4 and +0xa70 bit 0 set, +0x20 bit 0 cleared), then the object's virtual method +0x78 (FUN_00186238, the HP method) with the word +4 of the status block at +0x48c as the amount: full HP (WP-EN4) |
 | 1.286 | `gflags_set_1000()` | 0x173b10 | 1 | set bit 12 of the global flag word at 0x35d268 |
 | 1.287 | `gflags_clear_1000()` | 0x173b28 | 1 | clear bit 12 of the global flag word at 0x35d268 |
 | 1.288 | `gflags_set_2000()` | 0x173b40 | 0 | set bit 13 of the global flag word at 0x35d268 |
@@ -447,6 +448,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 6.9 | `target_distance(pv) -> f` | 0x2eeb30 | 55 | the distance from the point to the surface of a target record's shape (FUN_0018f308: FUN_0018eec0 builds the shape, FUN_00189628 measures; a sphere's is the centre distance minus the radius, a spheroid's is measured with the height scaled to the radius) |
 | 6.23 | `part_nearest(Ov) -> i` | 0x2ee858 | 0 | FUN_002ee858: the part id (byte +1 of the collision record of type 2) of the object whose part point lies nearest to the vector; -1 when it has none |
 | 6.24 | `obj_vec_8a0(O) -> v` | 0x2ee960 | 12 | the 16 bytes at object +0x8a0 copied to a static buffer |
+| 6.49 | `object_occupied(O) -> b` | 0x2ee7d8 | 1 | FUN_0019b088: true when the object's +0x518 bit 0 is set (the actor stop, FUN_0016bea0 / FUN_001d5b20), or FUN_0019af28 (its +0x588 bits 4 and 0x40 are clear and the summon state FUN_001c6918 is 1), or its +0x108 bit 0x400 (FUN_0019b100), or the manager at DAT_0036f6a4 holds an entry in its four slots +0x2c..+0x38 (FUN_002c56c0 / FUN_002c5680). Chicken Little's child asks it of each enemy its object walk gives (WP-EN4) |
 | 6.58 | `queue_mode_remote(ps)` | 0x2ef018 | 3 | queue the named mode and mark the entry for another object: when it comes up the host switches that object to the mode instead (FUN_00186f50; see runtime.rs) |
 | 7.19 | `ai_retarget(Oi) -> b` | 0x2ef760 | 4 | FUN_0010df08(object, flag != 0): the class's target refresh (the chooser of the class table at 0x352d28 / 0x352ce8, Peter Pan's FUN_00119d60) writes the object's target record +0x9f4; true when the target changed (+0xb7c bit 3) |
 | 7.24 | `ai_b7c_400_clear(O)` | 0x2ef848 | 4 | FUN_0010f6b8: object +0xb7c bit 0x400 cleared (Peter Pan's attack modes bracket the attack with 7.24 / 7.25) |
@@ -484,6 +486,8 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 10.44 | `objentry_flag_10(O) -> b` | 0x2f7390 | 0 | the object's mover (+0xc) has bit 0x10 in its flags word +8 |
 | 10.45 | `status_f_1b4(p) -> f` | 0x2f73b0 | 4 | the float at +0x1b4 of a status block (1.84): the drive / summon timer |
 | 10.51 | `ai_find_target(Opff)` | 0x2f7450 | 2 | FUN_0011a6d8(half width, half height, the AI object, record): the record names the valid enemy whose projected position lies in the screen box, the nearest to the centre (Chicken Little's FPS aim) |
+| 10.53 | `effect_list_add(Op)` | 0x2f74c0 | 2 | FUN_0010c5b8(object) (the list at +0xb5c, made on first use by FUN_00135ff8) and FUN_00136388(list, instance): an (instance, FUN_001d9cf8 generation) pair is entered at +0x10 + 8 x count; an older entry of the same instance is dropped first (FUN_00136430), the list holds 0x20 and loses its oldest when full; a zero instance is ignored (WP-EN4) |
+| 10.54 | `effect_list_has(Op) -> b` | 0x2f74f8 | 2 | FUN_001364d0 on the same list: the instance with its generation is in it (WP-EN4) |
 | 10.59 | `ai_set_aim_vec(Ov)` | 0x2f75c0 | 2 | FUN_0011a6b8: AI +0x40 = the vector |
 
 ### Not named

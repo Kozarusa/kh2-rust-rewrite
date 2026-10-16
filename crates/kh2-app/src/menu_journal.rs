@@ -2954,7 +2954,7 @@ fn tick(
         }
         // `KH2_JOURNAL_QUADS=1`: the box each journal node draws, once, a second after the open (harness aid).
         *logged += 1;
-        if (*logged == 60 || (*logged % 240 == 0 && std::env::var("KH2_JOURNAL_QUADS").as_deref() == Ok("late"))) && std::env::var_os("KH2_JOURNAL_QUADS").is_some() {
+        if (*logged == 60 || ((*logged).is_multiple_of(240) && std::env::var("KH2_JOURNAL_QUADS").as_deref() == Ok("late"))) && std::env::var_os("KH2_JOURNAL_QUADS").is_some() {
             scene.resolve();
             for id in j.nodes.all() {
                 let qs = scene.node_quads(id);

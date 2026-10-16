@@ -282,7 +282,7 @@ area spawns its party members while a summon is active (FUN_0017d1b0), the membe
 instead and the summon is created again (FUN_001c6710) in mode `"appear_area_start"` (only Peter Pan's
 script has it). [V; I that the other summons then simply keep their default mode]
 
-### Tinker Bell's revive (Peter Pan) [V decomp; the app's trigger condition (player Down with HP 0) is [inferred]; never run in a harness]
+### Tinker Bell's revive (Peter Pan) [V decomp; the app's trigger condition (player Down with HP 0) is [inferred]; run in a harness with `KH2_SUMMON_KO`, WP-SM1]
 
 While Peter Pan is out and byte 7 is set (FUN_001c69b0; a host-function wrapper FUN_0018eba8 returns it to scripts), a knock-out
 goes to FUN_001ad8a8 (revive sequence of type 2, FUN_001ad378) instead of ending the summon. At its end
@@ -885,8 +885,7 @@ work package are closed by WP-EN4 below.
   origin with his facing. `ai::Link::pose` places her there each tick after the class's steering (`objects`). Run `KH2_SUMMON=4`
   (state with item 160 and no option word, so the arrival event path makes Tinker Bell): `summon: P_EX340#kid class 0x11: 2338 units from the
   player` (she was made at the origin) and then `summon: P_EX340#kid linked to the player (host 1.18, kind 0x4002, flags 0): placed at Vec3(-2015,
-  40, 1190)`, the player's point; she is gone with `hidden by its script` at the end of motion 231. The link's break (+0x576 bit 0 with the
-  parent's +0x160 bit 0x8000, FUN_00169ee8; the undo FUN_001becb8) and the routine arguments (a callback on the link record) are not run; Peter Pan's
+  40, 1190)`, the player's point; she is gone with `hidden by its script` at the end of motion 231. Peter Pan's
   own `appear` link of the player to him stays a stub (`enemy-ai.md`). The screenshot of that run (7 s) shows neither she nor Peter Pan
   (she is invisible between her motions and Peter Pan stands off screen), so her position is the log's.
 - *Chicken Little's child (P_EX360).* 1.114 `bind_object(ctx, 1736)` finds the object whose id is 1736 (FUN_0016b078): the `sumn` row's Entity1,
@@ -908,9 +907,47 @@ work package are closed by WP-EN4 below.
   (no game-over screen); `objects` makes Tinker Bell the tick the player is down with Peter Pan out and byte 7 set (`revive_due`), clears byte 7, puts her at
   the player in mode `reraise`, and her script's host 1.277 (0x172030 -> FUN_00178df0: FUN_00178d80 clears the dead bit and resets the mover,
   FUN_001d4a50, then the HP method with the status word +4 as the amount) gives him full HP and the app's stand-up
-  (`sora.rs`'s own `State::Down` revival). The type-2 revive sequence (the fade of FUN_001ad378) is not run. Not seen in a run: Peter Pan's own
-  healing (1.155) kept Sora up in every 125 s harness run (waves of `b_44`), so the path is covered by `tinker_bells_revive_needs_ready_and_a_knocked_out_player`
-  (the condition) only; the 1.277 arm and the KidOp plumbing are the ones the other made objects use.
+  (`sora.rs`'s own `State::Down` revival). The type-2 revive sequence is not run (WP-SM1 below says what it does). Peter Pan's own
+  healing (1.155) kept Sora up in every 125 s harness run (waves of `b_44`); WP-SM1 knocks him out with `KH2_SUMMON_KO` instead.
+
+**WP-SM1 (summon gaps, part 1).**
+
+- *The link's break and routine (host 1.18, FUN_00169ee8, FUN_001becb8).* 0x170dd8 stores the 5th and 6th arguments on the link record (+0x10 the
+  routine, +0x14 its argument, +0xc a context) when the routine is not 0; `ai::Link` keeps them (`routine`, `arg`). The break FUN_001becb8 (called
+  by FUN_001beb90 over a link already there, by host 1.102 `link_end`, 0x170e38, and by FUN_00169ee8) takes the object out of the parent's list (+0x760 /
+  +0x764), clears the parent (+0x570), and, when the routine word +0x57c is set, runs it with the argument (FUN_0016c550 with one argument). The app
+  does the same through `SummonAi::link_start` / `link_end`: the link is dropped, the object stays where the link last put it (FUN_0016a618 at its
+  pose), and `objects` runs the routine after the tick with `Runtime::call_routine` (log `summon: <tag> link to the player broken (FUN_001becb8): routine
+  R<pc> runs with argument <n>`). Tests `a_link_break_hands_back_its_routine_and_argument`. Not carried out: the facing a break gives an
+  object whose flags bit 1 is clear (FUN_003003e8 of -(+0x60), -(+0x68), then FUN_0016a7f0) and the clearing of its +0x7f8 value 8 (set by the link start), because
+  the app's summon objects have neither field; neither shows without a moving linked object. The automatic break of FUN_00169ee8 (flags bit 0 set and the
+  parent either gone or without bit 0x8000 in its +0x160) is not applicable here: the only link a summon script makes in the app is Tinker Bell's, with flags 0,
+  and a link with bit 0 clear never takes that path; a parent's +0x160 is not modelled for the player. Whether Tinker Bell's `appear` or any other
+  summon script calls 1.102 or passes a routine was not found in the app's runs (her trace line shows routine 0, argument 0).
+- *Host 1.277 (FUN_00178df0).* FUN_00178d80 clears the dead bit (+0x7f8 value 4), FUN_00183fe0 puts the player on the floor point under him
+  (FUN_001a5c30, then FUN_0016a618), and FUN_0016b698(.., 0) gives back the normal mover; FUN_001d4a50 sets +0x9a4 bit 0 and +0xa70 bit 0 and clears
+  +0x20 bit 0 of the object at his +0xb3c (the bits FUN_001d49c8 changes at his death, FUN_00178c88 -> FUN_001d4a20), and the HP method (FUN_00186238) adds
+  the maximum. That method refuses while the dead bit (value 4) is set, which FUN_00178d80 has just cleared, so the heal fills a player with HP left the same
+  way (`SummonAi::revive_player`, test `host_1_277_fills_the_players_hp_and_stands_up_only_a_downed_player`). In the app the dead bit and the mover are
+  `State::Down` and the stand-up of `sora.rs`, and the +0xb3c object's bits are what `sora.rs` derives from the state (`hittable`): the stand-up is done only
+  for a player who is `State::Down` (log `raised the player (host 1.277, FUN_00178df0): HP 0 -> <max>, he was down and stands up`), a player not down only has his
+  HP filled (`he was not down`). The floor snap is `sora.rs`'s own ground contact.
+- *The revive sequence (FUN_001cec00 -> FUN_001ad8a8 -> FUN_001ad378 type 2 -> FUN_001ad9a0 -> FUN_001adeb8).* What the sequence does besides making Tinker Bell:
+  FUN_001ad378 sets 0x35d268 bit 1, stops the music (FUN_00137520: the BGM stream stop FUN_00136a68 with 0x1e0 and the channel ramps FUN_002c1a08 with
+  0x2d0 / 0x4b0, the music state kept in 0x354ebc / 0x354ebe), opens a message window object (0xb0 bytes, FUN_00195898 / FUN_00195a78 / FUN_00195ae0, which
+  becomes 0x35e3a4 and locks the pad and sets 0x36f598 through FUN_002c38b8 in step 1) and starts a thread (FUN_00102bc8 priority 1, 15000). The thread's step 2
+  waits while that window exists (FUN_00196418) and until the fade object at 0x356b30 has its +0xfc at 4 (idle), releases the pad (FUN_002c38c8), puts the player on
+  the floor (FUN_00183fe0), and FUN_001adeb8 makes Tinker Bell, clears 0x35d268 bit 1 and starts the music again (FUN_00137558: the saved music state back,
+  FUN_00136aa0 starts the area's music record). So the "fade" is the music's stop and restart and the window's wait, not a picture fade. The app does none of it:
+  its music API (`audio_bgm.rs`) is outside this work package's files and the text the window shows was not established (its argument is the player object
+  by the decompile of FUN_001ad8a8, which cannot be a text). With no window and no fade running (the app has neither) the waits are over at once, so
+  `objects` makes her the tick the player is down. [GAP: the window's text and what the 0x356b30 fade does in this sequence; the music stop / restart needs `audio_bgm.rs`.]
+- *The revive's Tinker Bell in a run.* `KH2_SUMMON_KO=<seconds>` (new, a harness aid) knocks the player out (HP 0, `State::Down`) once while a summon is out.
+  Run: `KH2_STATE=localcc1\state-sum.json KH2_WAVE_GROUP=b_44 KH2_DRIVE_POINTS=5 KH2_SUMMON=4 KH2_SUMMON_AT=5 KH2_SUMMON_PARTY=1 KH2_SUMMONLOG=1
+  KH2_SUMMON_KO=10 kh2-game tt04` logs `KH2_SUMMON_KO: the player is knocked out (HP 17 -> 0)`, `the player is knocked out with Tinker Bell ready (FUN_001c69b0): byte 7
+  cleared ... Tinker Bell (objentry 1268) made at him in mode "reraise"` and, 35 ms later, `P_EX340#kid raised the player (host 1.277, FUN_00178df0): HP 0 -> 20,
+  he was down and stands up`. A screenshot 8 s later shows Sora standing (HP 16/20 after a Dusk hit), Peter Pan beside him and no Tinker Bell (she is hidden by then); a
+  picture of her during `reraise` was not taken.
 
 **WP-FX12b follow-ups.** (1) 1.155's app side: `ai::SummonAi::heal_player` (the host arm) and `apply_heal` (`objects`, after the tick) are unit-tested
 (`host_1_155_heal_reaches_the_players_hp`: 10/100 + 5 -> 15 and the HP written, the maximum clamps, a KO'd player (HP 0) stays); the `SummonHost::call`

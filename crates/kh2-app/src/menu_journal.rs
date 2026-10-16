@@ -26,16 +26,22 @@
 //! cursor, the L1 / R1 hints and switches between pages 0 and 2, and page 3 (the story). WP-MN12 (20.9) added the scroll bar
 //! object, the NEW tags (`marks.rs`), the Characters and Character Links pages (6, 0xb: `chars.rs`), Treasures and Maps (7,
 //! 8: `lists.rs`, `treasure_page.rs`) and the Album (4, 5: `album_page.rs`). WP-MN14 (20.10) added a character's own page (0xf),
-//! the Quests and Minigames pages (9, 10: `games.rs`, `games_page.rs`) and page 0xc (`root_page.rs`). The pages behind page 0xc's
-//! other rows (the Ansem reports, the enemy lists, the limits, the moogle list) are not ported: a confirm on such a row is refused
-//! with a log line.
+//! the Quests and Minigames pages (9, 10: `games.rs`, `games_page.rs`) and page 0xc (`root_page.rs`). WP-MN15 (20.11) added the text
+//! lists behind page 0xc's rows (`name_list.rs`: the worlds and characters of the Character Files, the Heartless, the Nobodies, the Ansem
+//! reports, the limits), the enemy pages with their counter and reaction rows (`enemies.rs`, `kills.rs`), the report and limit text pages
+//! (`report_page.rs`) and the moogle summary (`moogle_page.rs`).
 
 mod album_page;
 mod chars;
+mod enemies;
 mod games;
 mod games_page;
+mod kills;
 mod lists;
 mod marks;
+mod moogle_page;
+mod name_list;
+mod report_page;
 mod root_page;
 mod treasure_page;
 
@@ -121,6 +127,21 @@ mod addr {
     pub const C_HELP: u32 = 0x0038_2d20;
     pub const C_TAG: u32 = 0x0038_2d00;
     pub const GAME_TAG: u32 = 0x0038_2fec;
+    /// The new / seen tag groups of the character, Heartless and Nobody lists (u32 x 2), of the Ansem reports (0x382edc) and of the limits.
+    pub const NAME_TAG: u32 = 0x0038_2e90;
+    pub const REPORT_TAG: u32 = 0x0038_2edc;
+    pub const LIMIT_TAG: u32 = 0x0038_2f98;
+    /// The format of a limit's count (`FUN_001918a0(buf, 0x382f68, n)`).
+    pub const LIMIT_FMT: u32 = 0x0038_2f68;
+    /// The moogle page's tables (`FUN_002b4170`): the two row groups (u32), the row messages (u16 x 4), the level names (u16 x 9) and the
+    /// two count formats.
+    pub const MOOGLE_GROUPS: u32 = 0x0038_2fb0;
+    pub const MOOGLE_MSGS: u32 = 0x0038_2fb8;
+    pub const MOOGLE_LEVELS: u32 = 0x0038_2fc0;
+    pub const MOOGLE_FMT: u32 = 0x0038_2fa0;
+    pub const MOOGLE_FMT_MAX: u32 = 0x0038_2fa8;
+    /// The format of a count (`FUN_001918a0(buf, 0x382de0, n)`).
+    pub const COUNT_FMT: u32 = 0x0038_2de0;
 }
 
 /// The literal messages of `FUN_002a3d08` (the labels beside the two story texts).
@@ -447,6 +468,10 @@ fn world_aggregate(j: &Journal, world: i8, test: &dyn Fn(u16) -> bool, items: &d
         j.marks.aggregate(treasure_page::map_keys(&j.tables_lists.rows, &wi, &is_map, if all { None } else { Some(world) })),
         j.marks.aggregate(games::quest_keys(&j.quests, if all { None } else { Some(world) })),
         j.marks.aggregate(games::game_keys(&j.minis, if all { None } else { Some(world) })),
+        // World 0xf also takes the Ansem reports (`FUN_002b7668(-1)`).
+        if all { j.marks.aggregate((0..j.report_recs.len()).map(|i| (Cat::Report, i))) } else { None },
+        if all { j.marks.aggregate((0..j.limit_recs.len()).map(|i| (Cat::Limit, i))) } else { None },
+        if all { j.marks.aggregate((0..moogle_page::ROWS).map(|i| (Cat::Moogle, i))) } else { None },
     ];
     parts.iter().any(Option::is_some).then(|| parts.iter().all(|p| p.unwrap_or(true)))
 }
@@ -454,6 +479,9 @@ fn world_aggregate(j: &Journal, world: i8, test: &dyn Fn(u16) -> bool, items: &d
 /// `FUN_002baf08` for a world below 0xf: every category of the world is complete (the album, the quests, the minigames, the
 /// treasures, the maps, the story, the characters and the character links).
 fn world_complete(j: &Journal, world: i8, test: &dyn Fn(u16) -> bool, items: &dyn Fn(u16) -> i32) -> bool {
+    if world as u8 == 0xf {
+        return journal_complete(j, test, items);
+    }
     if world as u8 > 0xe {
         return false;
     }
@@ -465,6 +493,24 @@ fn world_complete(j: &Journal, world: i8, test: &dyn Fn(u16) -> bool, items: &dy
         && treasure_page::maps_complete(&j.tables_lists.rows, &wi, &is_map, &|i| items(i) > 0, world)
         && story_complete(&j.stor, world, test)
         && chars::family_complete(&j.groups, world as u8, test, items)
+        && chars::family_complete(&j.groups, LINKS, test, items)
+}
+
+/// `FUN_002baf08(0xf)`: world 0xf's mark: every character record exists (`FUN_002b9d88(-1)`), every Ansem report is owned, every limit is
+/// used, every quest, minigame, treasure and map of every world is complete, the moogle's four rows are complete (`FUN_002bab48(-1)`) and
+/// the links are complete.
+fn journal_complete(j: &Journal, test: &dyn Fn(u16) -> bool, items: &dyn Fn(u16) -> i32) -> bool {
+    let wi = |w: u8| j.world_index.get(usize::from(w)).copied().unwrap_or(-1);
+    let is_map = |i: u16| j.tables_lists.items.get(&i).is_some_and(|r| r.kind == treasure_page::MAP_KIND);
+    let exists = name_list::exist_set(j, test, items);
+    (0..j.chars.len()).all(|i| exists.contains(&i))
+        && !j.report_recs.is_empty()
+        && j.report_recs.iter().all(|r| items(r.item) > 0)
+        && (0..j.limit_recs.len()).all(|i| j.limit_used(i))
+        && games_page::with_game(j, test, |g| games::quests_complete(&j.quests, None, g) && games::games_complete(&j.minis, None, g))
+        && (0..0xf).all(|w| treasure_page::treasures_complete(&j.tables_lists.rows, &wi, w, &|c| j.opened.contains(&c)))
+        && (0..0xf).all(|w| treasure_page::maps_complete(&j.tables_lists.rows, &wi, &is_map, &|i| items(i) > 0, w))
+        && (0..moogle_page::ROWS).all(|i| moogle_page::complete(&j.snap.moogle_data, i))
         && chars::family_complete(&j.groups, LINKS, test, items)
 }
 
@@ -785,6 +831,25 @@ pub struct PageTables {
     pub c_text: [u16; 11],
     pub c_help: [u16; 11],
     pub c_tag: [usize; 2],
+    /// The tag groups of the name lists (0x382e90), the report list (0x382edc) and the limit list (0x382f98).
+    pub name_tag: [usize; 2],
+    pub report_tag: [usize; 2],
+    pub limit_tag: [usize; 2],
+    /// The format of a defeated-enemy or reaction count (0x382de0), as the C string `printf` reads.
+    pub count_fmt: String,
+    /// The format of a limit's count (0x382f68).
+    pub limit_fmt: String,
+    pub moogle: MoogleTables,
+}
+
+/// The moogle page's tables of the executable.
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
+pub struct MoogleTables {
+    pub groups: [usize; 2],
+    pub msgs: [u16; 4],
+    pub levels: Vec<u16>,
+    pub fmt: String,
+    pub fmt_max: String,
 }
 
 /// The executable's tables of the Characters / Character Links pages.
@@ -850,6 +915,18 @@ pub fn read_page_tables(exe: &Exe) -> Option<PageTables> {
         c_text: std::array::from_fn(|k| exe.u16(addr::C_TEXT + 2 * k as u32).unwrap_or(0)),
         c_help: std::array::from_fn(|k| exe.u16(addr::C_HELP + 2 * k as u32).unwrap_or(0)),
         c_tag: [0, 1].map(|k| u32_at(exe, addr::C_TAG + 4 * k).map_or(0, |v| v as usize)),
+        name_tag: [0, 1].map(|k| u32_at(exe, addr::NAME_TAG + 4 * k).map_or(0, |v| v as usize)),
+        report_tag: [0, 1].map(|k| u32_at(exe, addr::REPORT_TAG + 4 * k).map_or(0, |v| v as usize)),
+        limit_tag: [0, 1].map(|k| u32_at(exe, addr::LIMIT_TAG + 4 * k).map_or(0, |v| v as usize)),
+        count_fmt: (0..16).map_while(|k| exe.u8(addr::COUNT_FMT + k).filter(|&b| b != 0)).map(|b| b as char).collect(),
+        limit_fmt: (0..16).map_while(|k| exe.u8(addr::LIMIT_FMT + k).filter(|&b| b != 0)).map(|b| b as char).collect(),
+        moogle: MoogleTables {
+            groups: [0, 1].map(|k| u32_at(exe, addr::MOOGLE_GROUPS + 4 * k).map_or(0, |v| v as usize)),
+            msgs: std::array::from_fn(|k| exe.u16(addr::MOOGLE_MSGS + 2 * k as u32).unwrap_or(0)),
+            levels: (0..9).map(|k| exe.u16(addr::MOOGLE_LEVELS + 2 * k).unwrap_or(0)).collect(),
+            fmt: (0..16).map_while(|k| exe.u8(addr::MOOGLE_FMT + k).filter(|&b| b != 0)).map(|b| b as char).collect(),
+            fmt_max: (0..16).map_while(|k| exe.u8(addr::MOOGLE_FMT_MAX + k).filter(|&b| b != 0)).map(|b| b as char).collect(),
+        },
         face: FaceTables {
             style: std::array::from_fn(|k| exe.u16(addr::FACE_STYLE + 2 * k as u32).map_or(0, usize::from)),
             pic: [0u32, 6].map(|o| [exe.u16(addr::FACE_PIC + o).map_or(0, usize::from), exe.u16(addr::FACE_PIC + 4 + o).map_or(0, usize::from)]),
@@ -885,6 +962,12 @@ struct Nodes {
     tab: usize,
     tab_follow: usize,
     backdrop: usize,
+    /// Page 0xe's second plate (the chosen world's name) and its follower.
+    tab2: usize,
+    tab2_follow: usize,
+    /// The report page's title text and, on the limit page, the count at its right.
+    report_title: usize,
+    report_value: usize,
     /// Page 3: the two layers, the text row and the ten line marks.
     story_lay: Vec<usize>,
     story_row: usize,
@@ -915,11 +998,17 @@ struct CharPageNodes {
     frame: usize,
     pic: usize,
     desc: usize,
+    /// The enemy pages' counter row (the label of group 0x4c and its count) and the five reaction rows (label, count).
+    counter: [usize; 2],
+    react: [[usize; 2]; 5],
 }
 
 impl CharPageNodes {
     fn all(&self) -> Vec<usize> {
-        vec![self.layer, self.name, self.sub, self.arrows[0], self.arrows[1], self.frame, self.pic, self.desc]
+        let mut v = vec![self.layer, self.name, self.sub, self.arrows[0], self.arrows[1], self.frame, self.pic, self.desc];
+        v.extend(self.counter);
+        v.extend(self.react.iter().flatten());
+        v
     }
 }
 
@@ -1001,7 +1090,7 @@ impl CharNodes {
 
 impl Nodes {
     fn page3(&self) -> Vec<usize> {
-        let mut v = vec![self.tab, self.tab_follow, self.backdrop, self.story_row];
+        let mut v = vec![self.tab, self.tab_follow, self.tab2, self.tab2_follow, self.report_title, self.report_value, self.backdrop, self.story_row];
         v.extend(&self.story_lay);
         v.extend(&self.story_marks);
         v.extend(&self.scroll);
@@ -1081,6 +1170,18 @@ pub struct Journal {
     minis: Vec<games::Minigame>,
     /// The item of each Ansem report (`jiminy.bar` entry 4, 8-byte records: +0 the item).
     reports: Vec<u16>,
+    /// The Ansem reports (entry 4: +0 the item, +2 the title message, +4 the text message).
+    report_recs: Vec<ReportRec>,
+    /// The limits (entry 6, the same record shape: +0 the limit's command, +2 the name, +4 the text) and the `limt` slot of each command.
+    limit_recs: Vec<ReportRec>,
+    limit_slot: std::collections::HashMap<u16, u8>,
+    /// The moogle page's totals: the collection rewards and the creations (`mixdata.bar`, `FUN_002b48c8`).
+    mix_totals: (u32, u32),
+    /// `NeoStatus` by `00objentry` id (the counter key of an enemy record), the `rcct` rows and the command rows' (name message,
+    /// use-counter slot) by command id.
+    neo: std::collections::HashMap<u32, u16>,
+    rcct: Vec<kh2_tables::player::Rcct>,
+    cmds: std::collections::HashMap<u16, enemies::CmdInfo>,
     snap: games_page::Snap,
     /// `jiminy.bar` entry 2 ("albu"), parsed, and the picture files already turned into textures by name.
     album: Vec<album_page::Rec>,
@@ -1091,6 +1192,14 @@ pub struct Journal {
     goto: Option<(u16, i8)>,
     /// The scene is up: page, cursor, the shown cells, the scene nodes it hid and their visibility.
     open: Option<Open>,
+}
+
+/// One Ansem report (`jiminy.bar` entry 4).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReportRec {
+    pub item: u16,
+    pub title: u16,
+    pub text: u16,
 }
 
 struct Open {
@@ -1139,6 +1248,29 @@ struct Open {
     from_c: bool,
     /// Pages 9 and 10: what each row of the list shows.
     gentries: Vec<games_page::Entry>,
+    /// The text lists (0xd, 0xe, 0x11, 0x14, 0x17): the rows, the widget's position, the world page 0xe lists, and the positions
+    /// the pages kept for the way back (`FUN_00277dc8`).
+    lrows: Vec<name_list::Row>,
+    lpos: enemies::Pos,
+    lworld: u8,
+    kept: Vec<(u16, enemies::Pos)>,
+    /// The reports of the list page 0x17 and the one page 0x18 shows (`FUN_002ac900` keeps the list for `FUN_002ad998`).
+    rlist: Vec<usize>,
+    rcur: usize,
+}
+
+impl Journal {
+    /// The best count of limit record `i` (`FUN_001d2518` + `FUN_001d2590`: the `limt` row of its command, its counter slot); 0 for one
+    /// never used.
+    fn limit_best(&self, i: usize) -> u16 {
+        let Some(rec) = self.limit_recs.get(i) else { return 0 };
+        self.limit_slot.get(&rec.item).and_then(|s| self.snap.limits.get(s)).copied().unwrap_or(0)
+    }
+
+    /// Whether limit record `i` has been used (`FUN_002a20e0`: a count above 0).
+    fn limit_used(&self, i: usize) -> bool {
+        self.limit_best(i) > 0
+    }
 }
 
 pub struct JournalPlugin;
@@ -1146,6 +1278,8 @@ pub struct JournalPlugin;
 impl Plugin for JournalPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Journal>()
+            .add_systems(Startup, kills::load_neo)
+            .add_systems(Update, kills::count_defeats)
             .add_systems(PreUpdate, input.before(crate::menu::input).after(bevy::input::InputSystems).after(crate::harness::Keys))
             .add_systems(Update, tick.before(crate::schedule::Frame::Popups));
     }
@@ -1172,7 +1306,13 @@ fn load(j: &mut Journal, disc: &Disc, scene: &mut MenuScene, images: &mut Assets
     j.album = album_page::parse(&entry(2));
     j.quests = games::parse_quests(&j.ques);
     j.minis = games::parse_games(&j.mini);
-    j.reports = records(&entry(4), 8).iter().map(|r| u16::from_le_bytes([r[0], r[1]])).collect();
+    j.report_recs = records(&entry(4), 8).iter().map(|r| ReportRec { item: u16::from_le_bytes([r[0], r[1]]), title: u16::from_le_bytes([r[2], r[3]]), text: u16::from_le_bytes([r[4], r[5]]) }).collect();
+    j.reports = j.report_recs.iter().map(|r| r.item).collect();
+    (j.neo, j.rcct, j.cmds, j.limit_slot) = (kills::read_neo(disc), kills::read_rcct(disc), kills::read_cmds(disc), kills::read_limit_slots(disc));
+    if let Some(mix) = disc.read("menu/us/mixdata.bar").and_then(|b| crate::menu_shop::synth::Mix::parse(&b)) {
+        j.mix_totals = (mix.conds.len() as u32, moogle_page::creations_total(&mix.recipes.iter().map(|r| (r.id, r.upgraded)).collect::<Vec<_>>()));
+    }
+    j.limit_recs = records(&entry(6), 8).iter().map(|r| ReportRec { item: u16::from_le_bytes([r[0], r[1]]), title: u16::from_le_bytes([r[2], r[3]]), text: u16::from_le_bytes([r[4], r[5]]) }).collect();
     j.msgs = disc.read("msg/us/jm.bar").and_then(|b| kh2_image::text::Messages::from_bar(&b));
     let Some(exe) = disc.read_root("SLUS_210.05").and_then(Exe::load) else { return };
     let (Some(index), Some(l0), Some(l1), Some(h), Some(tables)) =
@@ -1241,6 +1381,8 @@ fn load(j: &mut Journal, disc: &Disc, scene: &mut MenuScene, images: &mut Assets
     nodes.tab = add(scene, list, tex, None);
     nodes.tab_follow = add(scene, list, tex, Some(nodes.tab));
     nodes.backdrop = add(scene, list, tex, Some(header));
+    nodes.tab2 = add(scene, list, tex, None);
+    nodes.tab2_follow = add(scene, list, tex, Some(nodes.tab2));
     for _ in 0..2 {
         nodes.story_lay.push(add(scene, list, tex, Some(header)));
     }
@@ -1248,6 +1390,9 @@ fn load(j: &mut Journal, disc: &Disc, scene: &mut MenuScene, images: &mut Assets
     for _ in 0..STORY_LINES {
         nodes.story_marks.push(add(scene, list, tex, Some(nodes.story_lay[0])));
     }
+    // The report page's title (`FUN_002acfb8`): over the layers of the story page it shares.
+    nodes.report_title = add(scene, list, tex, Some(header));
+    nodes.report_value = add(scene, list, tex, Some(nodes.report_title));
     // The Treasures / Maps pages (`FUN_002b0e78`): before the cursor and the hints, which draw over them.
     {
         let layers = [add(scene, list, tex, Some(header)), add(scene, list, tex, Some(header))];
@@ -1319,7 +1464,13 @@ fn load(j: &mut Journal, disc: &Disc, scene: &mut MenuScene, images: &mut Assets
         let desc = add(scene, list, tex, Some(layer));
         let (name, sub) = (add(scene, list, tex, Some(header)), add(scene, list, tex, Some(header)));
         let arrows = [add(scene, list, tex, Some(header)), add(scene, list, tex, Some(header))];
-        nodes.cpage = CharPageNodes { layer, name, sub, arrows, frame, pic, desc };
+        let counter_label = add(scene, list, tex, Some(header));
+        let counter = [counter_label, add(scene, list, tex, Some(counter_label))];
+        let react = std::array::from_fn(|_| {
+            let label = add(scene, list, tex, Some(header));
+            [label, add(scene, list, tex, Some(label))]
+        });
+        nodes.cpage = CharPageNodes { layer, name, sub, arrows, frame, pic, desc, counter, react };
     }
     j.nodes = nodes;
     j.loaded = true;
@@ -1339,7 +1490,7 @@ fn bar_pictures(disc: &Disc, path: &str, scene: &mut MenuScene, images: &mut Ass
         .collect()
 }
 
-fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<ButtonInput<KeyCode>>, mut se: MessageWriter<PlaySe>, mut scene: ResMut<MenuScene>) {
+fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<ButtonInput<KeyCode>>, mut se: MessageWriter<PlaySe>, mut scene: ResMut<MenuScene>, progress: Option<Res<Progress>>) {
     let confirm = keys.just_pressed(KeyCode::KeyJ);
     let cancel = keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::Backspace) || keys.just_pressed(KeyCode::KeyK);
     let start = keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter);
@@ -1389,6 +1540,19 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
     let (Some(key), true, None) = (key, j.loaded, j.goto) else { return };
     let Some(o) = j.open.as_ref() else { return };
     let (page, world_byte) = (o.page, o.world);
+    if name_list::is_list(page) {
+        name_list::input(&mut j, &mut scene, &mut menu, &mut se, key);
+        return;
+    }
+    if page == 0x1f {
+        moogle_page::input(&mut j, &mut scene, &mut menu, &mut se, key);
+        return;
+    }
+    if matches!(page, 0x18 | 0x1e) {
+        let items = |id: u16| progress.as_ref().map_or(0, |p| i32::from(p.item_count(id)));
+        report_page::input(&mut j, &mut scene, &mut menu, &mut se, key, &items);
+        return;
+    }
     let act = match (page, key) {
         (0 | 2 | 0xc, Key::L1 | Key::R1) => switch(key, page, world_byte, &j.tables.hints),
         (0xc, _) => root_page::page_c(key, o.row, &o.cats),
@@ -1445,6 +1609,12 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
             let to = chars::neighbour(&o.cp.list, o.cp.cur, &|c| present.contains(&c), next);
             if to != o.cp.cur {
                 o.cp.cur = to;
+                if matches!(o.cp.back, 0xe | 0x11 | 0x14) {
+                    // `FUN_002aa600` stores the new character as the list page's cursor (`FUN_00277dc8(0xe, min(i, 9), i - 9)`).
+                    let back = o.cp.back;
+                    o.kept.retain(|k| k.0 != back);
+                    o.kept.push((back, enemies::Pos { cursor: to.min(9), scroll: to.saturating_sub(9) }));
+                }
                 menu_sound::play(&mut se, menu_sound::CURSOR);
                 info!("journal: page 0xf {} (FUN_002aa600) -> character {}", if next { "R2 (-10)" } else { "L2 (-11)" }, o.cp.list[to]);
                 j.goto = Some((0xf, world_byte));
@@ -1508,6 +1678,18 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
         // Page 0xc's rows open the same builders as page 2's categories, under their own page numbers (0x19 / 0x1a the treasures and
         // maps, 0x1b / 0x1c the quests and minigames, 0x20 the character links): the lists start at their top and a cancel returns to
         // page 0xc. The port runs them as pages 7, 8, 9, 10 and 0xb with `from_c` set.
+        Act::Category { cat: 0..=3 | 8 | 9, page: to @ (0x17 | 0xd | 0x11 | 0x14 | 0x1d | 0x1f) } => {
+            menu_sound::play(&mut se, crate::menu_status::CONFIRM);
+            info!("journal: page 0xc row -> page {to:#x} (FUN_002a7978 -> FUN_002a8958 / FUN_002ac900)");
+            let o = j.open.as_mut().unwrap();
+            o.back_row = o.row;
+            // Page 0xd starts on the first row from page 0xc (`FUN_002a8948`); the Heartless and Nobody lists start at the top
+            // (`FUN_00277dc8(0xe, 0, 0)`); the report list keeps its own position.
+            if !matches!(to, 0x17 | 0x1d | 0x1f) {
+                o.kept.retain(|k| k.0 != to && k.0 != 0xe);
+            }
+            j.goto = Some((to, 0xf));
+        }
         Act::Category { cat: 4..=7 | 10, page: to @ (0x19 | 0x1a | 0x1b | 0x1c | 0x20) } => {
             menu_sound::play(&mut se, crate::menu_status::CONFIRM);
             let run = match to {
@@ -1550,6 +1732,10 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
             let o = j.open.as_mut().unwrap();
             let (back, cur) = (o.cp.back, o.cp.cur);
             o.back_face = Some(cur);
+            if matches!(back, 0xe | 0x11 | 0x14) {
+                o.kept.retain(|k| k.0 != back);
+                o.kept.push((back, enemies::Pos { cursor: cur.min(9), scroll: cur.saturating_sub(9) }));
+            }
             info!("journal: page 0xf cancel -> page {back:#x} with face {cur} (FUN_002a9b80 case -2 -> FUN_002a9590 -> FUN_002ae3e8)");
             j.goto = Some((back, world_byte));
         }
@@ -1630,7 +1816,11 @@ fn show(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Assets
     }
     // `FUN_002b7100` (task 0x276338, once per scene open): the new bits of every category the app has data for.
     let mut present = story_present(&j.stor, test);
-    present.extend(chars::present(&j.diag, &j.groups, test, items).into_iter().map(|c| (Cat::Char, c)));
+    present.extend(name_list::exist_set(j, test, items).into_iter().map(|c| (Cat::Char, c)));
+    present.extend(j.report_recs.iter().enumerate().filter(|(_, r)| items(r.item) > 0).map(|(i, _)| (Cat::Report, i)));
+    present.extend((0..j.limit_recs.len()).filter(|&i| j.limit_used(i)).map(|i| (Cat::Limit, i)));
+    // `FUN_002b8f18`: a moogle row that is listed has a new bit.
+    present.extend((0..moogle_page::ROWS).filter(|&i| moogle_page::row_on(&j.snap.moogle_data.rec, i)).map(|i| (Cat::Moogle, i)));
     {
         let wi = |w: u8| j.world_index.get(usize::from(w)).copied().unwrap_or(-1);
         let open = |w: usize| j.worlds.iter().find(|r| usize::try_from(r.id).is_ok_and(|id| id == w)).is_some_and(|r| test(r.flag));
@@ -1681,6 +1871,12 @@ fn show(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Assets
         back_face: None,
         from_c: false,
         gentries: Vec::new(),
+        lrows: Vec::new(),
+        lpos: enemies::Pos::default(),
+        lworld: 0,
+        kept: Vec::new(),
+        rlist: Vec::new(),
+        rcur: 0,
     });
     build(j, scene, disc, images, page, world, test, items);
 }
@@ -1694,7 +1890,7 @@ fn build(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Asset
     let n = &j.nodes;
     let ids: Vec<usize> = n.page0().into_iter().chain(n.page12()).chain(n.page3()).chain([n.help, n.cursor, n.follow]).collect();
     for id in ids {
-        if !(matches!(page, 3..=11 | 0xf) && id == title) {
+        if !(matches!(page, 3..=11 | 0xf | 0xd | 0xe | 0x11 | 0x14 | 0x17 | 0x1d | 0x1f) && id == title) {
             scene.nodes[id].visible = false;
         }
     }
@@ -1706,6 +1902,9 @@ fn build(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Asset
         0xf => build_char_page(j, scene, disc, images, page, world, test, items),
         9 | 10 => games_page::build(j, scene, page, world, test),
         0xc => root_page::build(j, scene, disc, images, test, items),
+        0xd | 0xe | 0x11 | 0x14 | 0x17 | 0x1d => name_list::build(j, scene, page, test, items),
+        0x18 | 0x1e => report_page::build(j, scene, page, world),
+        0x1f => moogle_page::build(j, scene, world, test),
         7 | 8 => treasure_page::build(j, scene, page, world, &treasure_page::Game { flag: test, items, opened: &|c| opened.contains(&c) }),
         4 => album_page::build(j, scene, world, test),
         5 => album_page::build_photo(j, scene, disc, images, world, test),
@@ -1928,6 +2127,10 @@ fn chrome(j: &mut Journal, scene: &mut MenuScene, page: u16) {
         5 => Some(album_page::HELP_PHOTO),
         7 => Some(msg::HELP_TREASURE),
         8 => Some(msg::HELP_MAP),
+        p if name_list::is_list(p) => name_list::help(p),
+        0x18 => Some(report_page::HELP),
+        0x1e => Some(report_page::HELP_LIMIT),
+        0x1f => Some(moogle_page::HELP),
         _ => None,
     };
     scene.nodes[help].visible = help_id.is_some();
@@ -1991,6 +2194,7 @@ fn place_cursor(j: &Journal, scene: &mut MenuScene) {
         // The Treasures / Maps pages' hand sits on their cursor frame (`FUN_002b16e0`: `FUN_00277158(0, frame)`).
         7 | 8 => Some(n.lists.frame),
         4 => n.album.rows.get(o.row).copied().filter(|_| !o.album_rows.is_empty()),
+        0xd | 0xe | 0x11 | 0x14 | 0x17 | 0x1d => n.games.rows.get(o.lpos.cursor).copied().filter(|_| !o.lrows.is_empty()),
         _ => None,
     };
     let follow = j.tables.follow;
@@ -2207,6 +2411,12 @@ const CHAR_SUB: usize = 0x4b;
 const CHAR_ARROWS: [usize; 2] = [0x4f, 0x50];
 /// The name's font (`FUN_002ae3e8`: `+0x644 = 3`).
 const NAME_FONT: usize = 3;
+/// The face picture of a character's own page: group 1, then 2 (`FUN_002ab8f0`).
+const CHAR_PIC: [usize; 2] = [1, 2];
+/// The counter row of an enemy record's page (group 0x4c, the message 0x489b) and its reaction rows (group 0x4d).
+const COUNTER_GROUP: usize = 0x4c;
+const COUNTER_MSG: u16 = 0x489b;
+const REACT_GROUP: usize = 0x4d;
 
 /// The text of a world's name for a message that holds a variable (`FUN_002a3070(world, 1)`: record +6, or +0xc once the
 /// second flag is set).
@@ -2307,12 +2517,32 @@ fn build_faces(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut
 #[allow(clippy::too_many_arguments)]
 fn build_char_page(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Assets<Image>, page: u16, world: i8, test: &dyn Fn(u16) -> bool, items: &dyn Fn(u16) -> i32) {
     let Some(o) = j.open.as_ref() else { return };
-    let (back, cur) = (o.cp.back, o.cp.cur);
-    let links = back != 6;
-    let family: u8 = if links { LINKS } else { world as u8 };
-    category_frame(j, scene, if links { 7 } else { 0 });
+    let (back, cur, lworld) = (o.cp.back, o.cp.cur, o.lworld);
+    // The page's kind byte (`DAT_0036d484 + 4`, `FUN_002aa358`): the journal world for the face page 6, 0x10 for the links, the
+    // chosen world of page 0xe, 0x11 / 0x12 for the Heartless and Nobody lists. It names the face file and the world variable.
+    let family: u8 = match back {
+        6 => world as u8,
+        0xe => lworld,
+        0x11 => 0x11,
+        0x14 => 0x12,
+        _ => LINKS,
+    };
+    // The page's number in the original (`FUN_002a9590`): 0xf, 0x12 for the Heartless and 0x15 for the Nobodies.
+    let shown = match back {
+        0x11 => 0x12,
+        0x14 => 0x15,
+        _ => 0xf,
+    };
+    let enemy_page = shown != 0xf;
+    match back {
+        6 => category_frame(j, scene, 0),
+        0xb => category_frame(j, scene, 7),
+        0xe => category_tab(j, scene, j.tables.c_text[1]),
+        0x11 => category_tab(j, scene, j.tables.c_text[2]),
+        _ => category_tab(j, scene, j.tables.c_text[3]),
+    }
     let list = j.seq_base + SEQ_LIST;
-    let present: std::collections::HashSet<usize> = chars::present(&j.diag, &j.groups, test, items).into_iter().collect();
+    let present: std::collections::HashSet<usize> = name_list::exist_set(j, test, items);
     let ch = j.open.as_ref().and_then(|o| o.cp.list.get(cur).copied()).unwrap_or(0);
     let rec = j.chars.get(ch).copied().unwrap_or_default();
     // `FUN_002ac4c8`: a character that exists is marked seen when its page comes up.
@@ -2341,19 +2571,19 @@ fn build_char_page(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: 
         j.face_tex.insert(file.clone(), t);
     }
     let tex = j.face_tex.get(&file).and_then(|p| p.get(usize::from(rec.face)).copied().flatten());
-    let [first, then] = ft.pic[usize::from(links)];
+    // The picture: groups 1 then 2, whatever the family (`FUN_002ab8f0`: `FUN_00138948(.., 1, 0)`, `+0x17c = 2`).
     match tex {
         Some(t) => {
             scene.nodes[n.pic].tex = t;
             scene.nodes[n.pic].visible = true;
             scene.nodes[n.pic].off = [anchor[0] as f32, anchor[1] as f32];
-            scene.set_group_then(n.pic, first, then);
+            scene.set_group_then(n.pic, CHAR_PIC[0], CHAR_PIC[1]);
         }
         None => scene.nodes[n.pic].visible = false,
     }
     // The name and the sub-title: font 3, the ink colour the page gives them (+0x198 = 0x60000008), drawn from the group's anchor
     // (`FUN_00139888` clears the group-offset flag).
-    let world_tokens = world_name(j, scene, if links { LINKS as i8 } else { world }, test);
+    let world_tokens = world_name(j, scene, family as i8, test);
     let ink = [0x08, 0x00, 0x00, 0x60];
     let text_label = |msg: u16, group_size: i32, variable: Vec<Token>, scene: &MenuScene| -> Option<Label> {
         let t = tokens(j, scene, msg)?;
@@ -2390,11 +2620,10 @@ fn build_char_page(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: 
     scene.nodes[n.desc].visible = true;
     scene.nodes[n.desc].off = [0.0; 2];
     scene.set_group(n.desc, STORY_ROW);
-    if rec.flags & 0x800 != 0 {
-        info!("journal: page 0xf character {ch} has the counter row (flag 0x800, group 0x4c): not drawn, the app keeps no defeated-enemy counts");
-    }
+    // The counter row and the reaction rows of the enemy pages.
+    enemy_rows(j, scene, &rec, enemy_page, test);
     info!(
-        "journal: page 0xf (FUN_002a98f0): character {ch} of {} (face {}, style {}, name {:#x}, sub {:#x}, desc {:#x}, model {}), {} lines, {count} positions, file jmface_{file}.2ld picture {}, frame group {}, anchor {anchor:?}",
+        "journal: page {shown:#x} (FUN_002a98f0): character {ch} of {} (face {}, style {}, name {:#x}, sub {:#x}, desc {:#x}, model {}), {} lines, {count} positions, file jmface_{file}.2ld picture {}, frame group {}, anchor {anchor:?}",
         j.open.as_ref().map_or(0, |o| o.cp.list.len()),
         rec.face,
         rec.style,
@@ -2410,6 +2639,107 @@ fn build_char_page(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: 
     o.cp.present = present;
     (o.page, o.world, o.top, o.count, o.lines, o.gap, o.size) = (page, world, 0, count, lines, gap.min(255) as u8, size as f32);
     char_view(j, scene);
+}
+
+/// The counter row (group 0x4c: the label of message 0x489b and the defeated count, `FUN_002aadf0`'s `+0x800` branch) and the reaction
+/// rows (groups 0x4d with the use count in the value group, pages 0x12 / 0x15 only). Both draw their text from the object's anchor in
+/// the group's colour (flag 8 cleared) with the count right aligned in the label group's width at the group's x / y.
+fn enemy_rows(j: &Journal, scene: &mut MenuScene, rec: &chars::CharRec, enemy_page: bool, test: &dyn Fn(u16) -> bool) {
+    let n = j.nodes.cpage;
+    let list = j.seq_base + SEQ_LIST;
+    let g = |scene: &MenuScene, grp: usize| scene.seqs.get(list).and_then(|s| s.groups.get(grp)).copied().unwrap_or_default();
+    let value_group = j.tables.list_text[2];
+    let fmt = |n: u32| count_tokens(&j.tables.count_fmt, n);
+    let label = |scene: &MenuScene, grp: usize, toks: Vec<Token>, align: u8, offset: [f32; 2]| -> Option<Label> {
+        let gr = g(scene, grp);
+        let size = if gr.size > 0 { gr.size as f32 } else { TEXT_SIZE };
+        let world = scene.text.as_ref()?.world;
+        Some(Label { tokens: toks, style: Style { font: 1, size: Some(size), align, world, color: group_color(scene, list, grp), ..Style::default() }, offset })
+    };
+    for id in n.counter.into_iter().chain(n.react.iter().flatten().copied()) {
+        scene.nodes[id].visible = false;
+    }
+    if rec.flags & chars::ENEMY_FLAG != 0 {
+        let count = name_list::defeats(j, rec);
+        let gr = g(scene, COUNTER_GROUP);
+        let (lab, val) = (n.counter[0], n.counter[1]);
+        scene.nodes[lab].visible = true;
+        scene.nodes[lab].off = [0.0; 2];
+        scene.set_group(lab, COUNTER_GROUP);
+        let name: Vec<Token> = tokens(j, scene, COUNTER_MSG).map(|t| t.into_iter().filter(|t| *t != Token::End).collect()).unwrap_or_default();
+        scene.nodes[lab].label = label(scene, COUNTER_GROUP, name, 0, [0.0; 2]);
+        scene.nodes[lab].label_anchor = Some([0.0; 2]);
+        scene.nodes[val].visible = true;
+        scene.nodes[val].off = [gr.x as f32, gr.y as f32];
+        scene.set_group(val, value_group);
+        scene.nodes[val].label = label(scene, value_group, fmt(count), 1, [0.0; 2]);
+        scene.nodes[val].label_anchor = Some([0.0; 2]);
+        info!("journal: the counter row (group {COUNTER_GROUP:#x}, FUN_002a1f78): {count} defeated");
+    }
+    if enemy_page {
+        let neo = j.neo.get(&u32::from(rec.model)).copied().map_or(0, u32::from);
+        let uses = |slot: u16| j.snap.uses.get(&slot).copied().unwrap_or(0);
+        let rows = enemies::reaction_rows(&j.rcct, neo, &j.cmds, &uses, test(ALL_WORLDS_FLAG));
+        let gr = g(scene, REACT_GROUP);
+        for (k, r) in rows.iter().take(5).enumerate() {
+            let (lab, val) = (n.react[k][0], n.react[k][1]);
+            let name: Vec<Token> = tokens(j, scene, r.message as u16).map(|t| t.into_iter().filter(|t| *t != Token::End).collect()).unwrap_or_default();
+            scene.nodes[lab].visible = true;
+            scene.nodes[lab].off = [0.0, (k as i32 * gr.unk1c) as f32];
+            scene.set_group(lab, REACT_GROUP);
+            scene.nodes[lab].label = label(scene, REACT_GROUP, if r.count == 0 { treasure_page::masked(&name) } else { name }, 0, [0.0; 2]);
+            scene.nodes[lab].label_anchor = Some([0.0; 2]);
+            scene.nodes[val].visible = true;
+            scene.nodes[val].off = [gr.x as f32, gr.y as f32];
+            scene.set_group(val, value_group);
+            scene.nodes[val].label = label(scene, value_group, fmt(u32::from(r.count)), 1, [0.0; 2]);
+            scene.nodes[val].label_anchor = Some([0.0; 2]);
+        }
+        info!("journal: enemy page: NeoStatus {neo}, {} reaction rows {:?} (FUN_001d0258 rcct)", rows.len(), rows);
+    }
+}
+
+/// The tokens of a format written the way `FUN_001918a0` does (`sprintf`, then each character mapped to the font's glyph: the digits are
+/// glyphs 1 to 10, the capitals from 14, a few marks like the slash 43, a space the space token). `%d` takes the next of `args`.
+pub fn fmt_tokens(fmt: &str, args: &[i64]) -> Vec<Token> {
+    let mut out = Vec::new();
+    let mut args = args.iter();
+    let mut chars = fmt.chars().peekable();
+    let glyph = |c: char| -> Option<Token> {
+        Some(match c {
+            '0'..='9' => Token::Glyph(c as u16 - u16::from(b'0') + 1),
+            'A'..='Z' => Token::Glyph(c as u16 - u16::from(b'A') + 14),
+            ' ' => Token::Space,
+            '/' => Token::Glyph(43),
+            '\'' => Token::Glyph(55),
+            '"' => Token::Glyph(65),
+            '?' => Token::Glyph(41),
+            _ => return None,
+        })
+    };
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            let mut spec = String::new();
+            while chars.peek().is_some_and(|c| c.is_ascii_digit()) {
+                spec.extend(chars.next());
+            }
+            if chars.next() == Some('d') {
+                let width: usize = spec.trim_start_matches('0').parse().unwrap_or(0);
+                let n = args.next().copied().unwrap_or(0).to_string();
+                let pad = if spec.starts_with('0') { '0' } else { ' ' };
+                let text: String = std::iter::repeat_n(pad, width.saturating_sub(n.len())).chain(n.chars()).collect();
+                out.extend(text.chars().filter_map(glyph));
+            }
+        } else if let Some(g) = glyph(c) {
+            out.push(g);
+        }
+    }
+    out
+}
+
+/// The tokens of a single count in `fmt`.
+pub fn count_tokens(fmt: &str, n: u32) -> Vec<Token> {
+    fmt_tokens(fmt, &[i64::from(n)])
 }
 
 /// The description's seven lines from the scroll position and the two arrows (`FUN_002ab678`, `FUN_002ab578`).
@@ -2526,6 +2856,7 @@ fn tick(
     mut se: MessageWriter<PlaySe>,
     mut frames: Local<f32>,
     mut logged: Local<u32>,
+    uses: Option<Res<crate::reaction_cmd::ReactionUses>>,
 ) {
     // The entries the journal marked seen go into the save (key `journal_seen`).
     if let Some(pairs) = j.marks.take_dirty()
@@ -2563,6 +2894,12 @@ fn tick(
         }
         // The quest and minigame tests read the save once when the journal opens (nothing plays a minigame while it is up).
         j.snap = progress.as_ref().map(|p| games_page::Snap::read(p, &j.quests, &j.minis)).unwrap_or_default();
+        (j.snap.moogle_data.rewards_total, j.snap.moogle_data.creations_total) = j.mix_totals;
+        // The live counts of `reaction_cmd::ReactionUses` win over the saved ones when they are larger.
+        for (&slot, &n) in uses.iter().flat_map(|u| u.0.iter()) {
+            let e = j.snap.uses.entry(slot).or_insert(0);
+            *e = (*e).max(n);
+        }
         let world = area.name.get(..2).and_then(|w| crate::audio::WORLDS.iter().position(|&n| n == w));
         show(&mut j, &mut scene, &disc, &mut images, mode, world, &test, &items);
     }
@@ -3069,6 +3406,82 @@ mod tests {
     }
 
     /// The face, list, album and picture pages' button handling (WP-MN12).
+    /// `FUN_001918a0`'s character mapping: digits are glyphs 1 to 10, the slash 43, capitals from 14, the apostrophe and the quote 55 and 65.
+    #[test]
+    fn formats_are_written_with_the_fonts_glyphs() {
+        assert_eq!(fmt_tokens("%d", &[407]), vec![Token::Glyph(5), Token::Glyph(1), Token::Glyph(8)]);
+        assert_eq!(fmt_tokens("%d/%d", &[3, 50]), vec![Token::Glyph(4), Token::Glyph(43), Token::Glyph(6), Token::Glyph(1)]);
+        assert_eq!(fmt_tokens("%02d'%02d\"", &[7, 5]), vec![Token::Glyph(1), Token::Glyph(8), Token::Glyph(55), Token::Glyph(1), Token::Glyph(6), Token::Glyph(65)]);
+        assert_eq!(fmt_tokens("A B", &[]), vec![Token::Glyph(14), Token::Space, Token::Glyph(15)]);
+        assert_eq!(count_tokens("%d", 0), vec![Token::Glyph(1)]);
+    }
+
+    /// The enemy lists' data on the disc (skipped without `KH2_ISO`, WP-MN15): every record with the counter flag has an objentry whose
+    /// NeoStatus has a counter slot, the Heartless and Nobody families have their records, every reaction command of the `rcct` table
+    /// has a command row with a name, the executable's tag and format tables are readable and the list sequence has the groups the pages use.
+    #[test]
+    fn the_disc_enemy_list_data() {
+        use kh2_tables::tables as t;
+        let Ok(iso) = std::env::var("KH2_ISO") else { return };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok()).unwrap();
+        let tables = read_page_tables(&Exe::load(elf).unwrap()).expect("the page tables");
+        let two = layd::parse_2ld(&a.read("menu/us/jmemo.2ld").unwrap()).unwrap();
+        let s5 = &two.layd.seqs[SEQ_LIST];
+        for g in [name_list::LAYER, name_list::BAR_LAYER, COUNTER_GROUP, REACT_GROUP, tables.list_text[2]].into_iter().chain(tables.name_tag).chain(tables.report_tag).chain(tables.limit_tag) {
+            assert!(s5.groups.len() > g, "group {g:#x}");
+        }
+        assert!(tables.name_tag.iter().chain(&tables.report_tag).chain(&tables.limit_tag).all(|&g| g != 0), "the tag tables are in the executable");
+        eprintln!("count format {:?}, tags {:?} {:?} {:?}", tables.count_fmt, tables.name_tag, tables.report_tag, tables.limit_tag);
+        assert!(tables.count_fmt.contains("%d"), "the count format {:?}", tables.count_fmt);
+        let m = &tables.moogle;
+        assert_eq!((m.groups, m.fmt.as_str(), m.fmt_max.as_str(), tables.limit_fmt.as_str()), ([0x68, 0x69], "%d", "%d/%d", "%d"), "the moogle page's tables");
+        assert!(m.levels.len() == 9 && m.msgs.iter().chain(&m.levels).all(|&id| id != 0));
+        for g in m.groups {
+            assert!(s5.groups.len() > g, "moogle group {g:#x}");
+        }
+        for g in [moogle_page::LAYER, report_page::LIMIT_TITLE, name_list::LIMIT_LAYERS[0], name_list::LIMIT_LAYERS[1]] {
+            assert!(s5.groups.len() > g, "group {g:#x}");
+        }
+        let bar = a.read("menu/us/jiminy.bar").unwrap();
+        let e = kh2_bar::parse(&bar).unwrap();
+        let recs = chars::parse_chars(e[3].data);
+        assert_eq!((recs.iter().filter(|r| r.family == 0x11).count(), recs.iter().filter(|r| r.family == 0x12).count()), (57, 11), "the Heartless and Nobody records");
+        let msgs = kh2_image::text::Messages::from_bar(&a.read("msg/us/jm.bar").unwrap()).unwrap();
+        let sys = a.read("msg/us/sys.bar").ok().and_then(|b| kh2_image::text::Messages::from_bar(&b));
+        let has = |id: u32| msgs.tokens(id).is_some() || sys.as_ref().is_some_and(|s| s.tokens(id).is_some());
+        assert!(has(u32::from(name_list::NOTHING)) && has(u32::from(COUNTER_MSG)));
+        assert!(m.msgs.iter().chain(&m.levels).all(|&id| has(u32::from(id))) && has(u32::from(moogle_page::HIDDEN)) && has(u32::from(name_list::LIMIT_UNIT)));
+        // The totals the moogle page counts against: 50 collection rewards (`cond`) and the creations of the 23 recipes.
+        let mix = crate::menu_shop::synth::Mix::parse(&a.read("menu/us/mixdata.bar").unwrap()).expect("mixdata.bar");
+        assert_eq!((mix.conds.len(), moogle_page::creations_total(&mix.recipes.iter().map(|r| (r.id, r.upgraded)).collect::<Vec<_>>()) >= 23), (50, true));
+        let objs = kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).unwrap().rows;
+        let mut neos = std::collections::HashSet::new();
+        for (i, r) in recs.iter().enumerate().filter(|(_, r)| r.flags & chars::ENEMY_FLAG != 0) {
+            let neo = objs.iter().find(|o| o.object_id == u32::from(r.model)).map(|o| u32::from(o.neo_status));
+            assert!(neo.is_some_and(Progress::enemy_counter_id), "record {i}: the counter slot of {neo:?}");
+            assert!(neos.insert(neo.unwrap()), "record {i}: NeoStatus {neo:?} is shared");
+            assert!(matches!(r.family, 0x11 | 0x12) && has(u32::from(r.name)) && has(u32::from(r.desc)), "record {i}");
+        }
+        assert_eq!(neos.len(), 56, "the enemies with a counter row");
+        let cmds = kh2_tables::load::<t::Cmd>(&mut a, &t::CMD).unwrap().rows;
+        let (_, rcct) = kh2_tables::player::load_rcct(&mut a).unwrap();
+        for r in &rcct {
+            assert!(neos.contains(&u32::from(r.key)), "rcct key {}", r.key);
+            for &c in r.commands.iter().filter(|&&c| c != 0) {
+                let row = cmds.iter().find(|x| x.id == c).unwrap_or_else(|| panic!("rcct command {c} has no row"));
+                assert!(has(row.message_id as u32) && row.reaction_count != 0, "command {c}: message {} slot {}", row.message_id, row.reaction_count);
+            }
+        }
+        // The reports and the limits: records of 8 bytes behind a 0x10-byte header, with messages.
+        let reports = records(e[4].data, 8);
+        assert_eq!(reports.len(), 13);
+        for r in &reports {
+            let m = |o: usize| u32::from(u16::from_le_bytes([r[o], r[o + 1]]));
+            assert!(has(m(2)) && has(m(4)), "report {:#x}", m(0));
+        }
+    }
+
     #[test]
     fn the_new_pages_read_their_buttons() {
         // Faces: cancel back, start closes, confirm carries the face under the pointer; the arrows are the pointer's, not events.

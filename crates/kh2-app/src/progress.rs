@@ -325,6 +325,19 @@ pub struct Progress {
     /// score) and the word at +4 the score. Only the records the app has set are kept; an absent one is state 0. Saved in the
     /// slot files (key `minigames`). Nothing in the app plays a minigame yet, so only a state file fills it (gap).
     minigames: std::collections::BTreeMap<u16, (u8, u32)>,
+    /// The defeated-enemy counters (save `+0x1660`, words from `+0xff0` for the NeoStatus ids 1000 .. 1046 and from `+0x1170`
+    /// for 3000 .. 3011; `FUN_00187dc8` finds the slot, `FUN_00187e08` adds 1 up to 9999 once story flag 0x8d0 is set, `FUN_00187e68`
+    /// reads it for the journal's counter row). Only the counters the app has raised are kept. Saved in the slot files (key `enemy_kills`).
+    enemy_kills: std::collections::BTreeMap<u16, u32>,
+    /// The reaction commands' use counts (the u16 array at `0x3410b0`, indexed by the command row's `ReactionCount` slot, `FUN_001b7168`; the
+    /// journal's enemy page shows them, capped at 999). Only the slots the app has raised are kept. Saved in the slot files (key
+    /// `reaction_uses`). Nothing writes it in the app yet (`reaction_cmd::ReactionUses` keeps the live counts): a state file fills it.
+    reaction_uses: std::collections::BTreeMap<u16, u16>,
+    /// The limits' best counts (the u16 array at `0x3414b0`, indexed by the `limt` row's `Id`, `FUN_001d2590`; `FUN_001d25b0` raises a slot to
+    /// the value it is given, never lowers it). A limit is "used" (listed on the journal's limit page) once its slot is above 0. Only the
+    /// slots the app has raised are kept. Saved in the slot files (key `limit_best`). Nothing in the app calls the writer yet: a state file
+    /// fills it.
+    limit_best: std::collections::BTreeMap<u8, u16>,
 }
 
 /// The synthesis record at save `+0x3728` (`FUN_002906c0` answers its address). Bit sets are kept as u64 (the
@@ -467,7 +480,7 @@ impl Progress {
         let mut block = vec![0u8; off::LEN];
         let n = bytes.len().min(off::LEN);
         block[..n].copy_from_slice(&bytes[..n]);
-        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT], story: StoryHandle::default(), new_seen: Vec::new(), record_bits: Vec::new(), moogle: Moogle::default(), shop_seen: [0; 4], shop_visits: 0, journal_seen: Default::default(), minigames: Default::default() }
+        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT], story: StoryHandle::default(), new_seen: Vec::new(), record_bits: Vec::new(), moogle: Moogle::default(), shop_seen: [0; 4], shop_visits: 0, journal_seen: Default::default(), minigames: Default::default(), enemy_kills: Default::default(), reaction_uses: Default::default(), limit_best: Default::default() }
     }
 
     // --- story flags ------------------------------------------------------------------------
@@ -839,6 +852,82 @@ impl Progress {
     /// `FUN_001d36e8(n)`: the minigame record `n` as (state byte, score word); (0, 0) for one nothing has set.
     pub fn minigame(&self, n: u16) -> (u8, u32) {
         self.minigames.get(&n).copied().unwrap_or((0, 0))
+    }
+
+    /// `FUN_00187dc8`'s slot test: the counter ids are 1000 .. 1046 and 3000 .. 3011 (`NeoStatus` of the enemy objects).
+    pub fn enemy_counter_id(id: u32) -> bool {
+        id.wrapping_sub(1000) <= 0x2e || id.wrapping_sub(3000) < 0xc
+    }
+
+    /// `FUN_00187e68(save + 0x1660, id)`: how often the enemy with `NeoStatus` `id` has been defeated (0 for an id with no slot).
+    pub fn enemy_defeats(&self, id: u32) -> u32 {
+        self.enemy_kills.get(&(id as u16)).copied().filter(|_| Self::enemy_counter_id(id)).unwrap_or(0)
+    }
+
+    /// `FUN_00187e08(0x33fec0, id)`, called by the enemies' defeat method `FUN_00184a30`: adds 1 to the counter of a defeated
+    /// enemy when story flag 0x8d0 (`FUN_00180850`) is set and the id has a slot; the count stops at 9999. Returns whether it counted.
+    pub fn count_defeat(&mut self, id: u32) -> bool {
+        if !Self::enemy_counter_id(id) || !self.story().test(0x8d0) {
+            return false;
+        }
+        let n = self.enemy_kills.entry(id as u16).or_insert(0);
+        if *n >= 9999 {
+            return false;
+        }
+        *n += 1;
+        true
+    }
+
+    /// `FUN_001d2590`: the best count of the limit with `limt` slot `slot` (0 for one never used).
+    pub fn limit_best(&self, slot: u8) -> u16 {
+        self.limit_best.get(&slot).copied().unwrap_or(0)
+    }
+
+    /// `FUN_001d25b0`: raises the limit's best count to `n` when it is below (the slot never goes down).
+    pub fn raise_limit_best(&mut self, slot: u8, n: u16) {
+        if n > self.limit_best(slot) {
+            self.limit_best.insert(slot, n);
+        }
+    }
+
+    /// Every raised limit slot as (slot, best count).
+    pub fn limit_best_all(&self) -> impl Iterator<Item = (u8, u16)> + '_ {
+        self.limit_best.iter().map(|(&i, &c)| (i, c))
+    }
+
+    /// The use count of the reaction-command slot `slot` (`0x3410b0 + 2 * slot`).
+    pub fn reaction_use(&self, slot: u16) -> u16 {
+        self.reaction_uses.get(&slot).copied().unwrap_or(0)
+    }
+
+    /// Sets a reaction-command use count (capped at 999 as the journal shows it; 0 removes it).
+    pub fn set_reaction_use(&mut self, slot: u16, n: u16) {
+        if n == 0 {
+            self.reaction_uses.remove(&slot);
+        } else {
+            self.reaction_uses.insert(slot, n.min(999));
+        }
+    }
+
+    /// Every raised reaction-command use count as (slot, count).
+    pub fn reaction_uses_all(&self) -> impl Iterator<Item = (u16, u16)> + '_ {
+        self.reaction_uses.iter().map(|(&i, &c)| (i, c))
+    }
+
+    /// Every raised defeated-enemy counter as (NeoStatus id, count).
+    pub fn enemy_defeats_all(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+        self.enemy_kills.iter().map(|(&i, &c)| (u32::from(i), c))
+    }
+
+    /// Sets a defeated-enemy counter (the state file and the slot loader); ids without a slot are ignored.
+    pub fn set_enemy_defeats(&mut self, id: u32, n: u32) {
+        if Self::enemy_counter_id(id) {
+            if n == 0 {
+                self.enemy_kills.remove(&(id as u16));
+            } else {
+                self.enemy_kills.insert(id as u16, n.min(9999));
+            }
+        }
     }
 
     /// Sets the minigame record `n` (state byte at +0, score word at +4). Only a state file calls this yet.
@@ -1417,6 +1506,9 @@ impl Progress {
             shop_visits: 0,
             journal_seen: Default::default(),
             minigames: Default::default(),
+            enemy_kills: Default::default(),
+            reaction_uses: Default::default(),
+            limit_best: Default::default(),
         };
         p.init_party();
         p.apply_plrp(plrp, 0);
@@ -1781,6 +1873,33 @@ impl Progress {
                         self.set_minigame(int(i, "minigames")?.clamp(0, 0xffff) as u16, int(st, "minigames")?.clamp(0, 255) as u8, score.clamp(0, i64::from(u32::MAX)) as u32);
                     }
                 }
+                // The defeated-enemy counters: `"enemy_kills": [[NeoStatus, count], ..]` (save `+0x1660`, `FUN_00187dc8`).
+                "enemy_kills" => {
+                    let Json::Arr(a) = v else { return Err("enemy_kills: expected an array of [id, count] pairs".into()) };
+                    for p in a {
+                        let Json::Arr(p) = p else { return Err("enemy_kills: expected [id, count] pairs".into()) };
+                        let (Some(i), Some(c)) = (p.first(), p.get(1)) else { return Err("enemy_kills: expected [id, count] pairs".into()) };
+                        self.set_enemy_defeats(int(i, "enemy_kills")?.clamp(0, 0xffff) as u32, int(c, "enemy_kills")?.clamp(0, 9999) as u32);
+                    }
+                }
+                // The reaction commands' use counts: `"reaction_uses": [[slot, count], ..]` (`0x3410b0`, `FUN_001b7168`).
+                "reaction_uses" => {
+                    let Json::Arr(a) = v else { return Err("reaction_uses: expected an array of [slot, count] pairs".into()) };
+                    for p in a {
+                        let Json::Arr(p) = p else { return Err("reaction_uses: expected [slot, count] pairs".into()) };
+                        let (Some(i), Some(c)) = (p.first(), p.get(1)) else { return Err("reaction_uses: expected [slot, count] pairs".into()) };
+                        self.set_reaction_use(int(i, "reaction_uses")?.clamp(0, 0xffff) as u16, int(c, "reaction_uses")?.clamp(0, 999) as u16);
+                    }
+                }
+                // The limits' best counts: `"limit_best": [[slot, count], ..]` (`0x3414b0`, `FUN_001d25b0`).
+                "limit_best" => {
+                    let Json::Arr(a) = v else { return Err("limit_best: expected an array of [slot, count] pairs".into()) };
+                    for p in a {
+                        let Json::Arr(p) = p else { return Err("limit_best: expected [slot, count] pairs".into()) };
+                        let (Some(i), Some(c)) = (p.first(), p.get(1)) else { return Err("limit_best: expected [slot, count] pairs".into()) };
+                        self.raise_limit_best(int(i, "limit_best")?.clamp(0, 255) as u8, int(c, "limit_best")?.clamp(0, 0xffff) as u16);
+                    }
+                }
                 "shop_visits" => {
                     for n in list(v, "shop_visits")? {
                         self.set_shop_visit(n as u8);
@@ -1860,6 +1979,9 @@ impl Progress {
                     self.shop_visits = 0;
                     self.journal_seen.clear();
                     self.minigames.clear();
+                    self.enemy_kills.clear();
+                    self.reaction_uses.clear();
+                    self.limit_best.clear();
                     self.record_bits.clear();
                 }
                 "new_seen" => {
@@ -2287,6 +2409,9 @@ impl Progress {
         let words: Vec<u8> = st.words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let locks: Vec<u16> = st.locks.iter().flat_map(|l| [l[0], l[1]]).collect();
         let games = format!("[{}]", self.minigames.iter().map(|(i, (s, v))| format!("[{i}, {s}, {v}]")).collect::<Vec<_>>().join(", "));
+        let kills = format!("[{}]", self.enemy_kills.iter().map(|(i, c)| format!("[{i}, {c}]")).collect::<Vec<_>>().join(", "));
+        let react = format!("[{}]", self.reaction_uses.iter().map(|(i, c)| format!("[{i}, {c}]")).collect::<Vec<_>>().join(", "));
+        let limits = format!("[{}]", self.limit_best.iter().map(|(i, c)| format!("[{i}, {c}]")).collect::<Vec<_>>().join(", "));
         let seen_pairs = format!("[{}]", self.journal_seen.iter().map(|(c, e)| format!("[{c}, {e}]")).collect::<Vec<_>>().join(", "));
         vec![
             (
@@ -2310,6 +2435,9 @@ impl Progress {
             ("record_bits", nums(self.record_bits.iter().copied())),
             ("journal_seen", seen_pairs),
             ("minigames", games),
+            ("enemy_kills", kills),
+            ("reaction_uses", react),
+            ("limit_best", limits),
             ("story_raw", format!("{{\"words\": \"{}\", \"programs\": \"{}\", \"locks\": {}}}", hex(&words), hex(&st.programs), nums(locks))),
             ("world_points", nums(st.world_points())),
         ]
@@ -2804,6 +2932,66 @@ mod tests {
         assert!(r.apply_json("{\"minigames\": [3]}").is_err());
     }
 
+    /// WP-MN15: the defeated-enemy counters count only with story flag 0x8d0 and only for ids with a slot, stop at 9999, and go
+    /// through a slot file and the `enemy_kills` key; an older file loads them empty.
+    #[test]
+    fn enemy_defeat_counters_count_and_are_saved() {
+        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        assert!(!p.count_defeat(1000), "story flag 0x8d0 is clear");
+        p.story().set(0x8d0);
+        assert!(p.count_defeat(1000) && p.count_defeat(1000) && p.count_defeat(3011));
+        assert!(!p.count_defeat(1047) && !p.count_defeat(999) && !p.count_defeat(3012), "no slot");
+        assert_eq!((p.enemy_defeats(1000), p.enemy_defeats(3011), p.enemy_defeats(1001)), (2, 1, 0));
+        p.set_enemy_defeats(1046, 9998);
+        assert!(p.count_defeat(1046) && !p.count_defeat(1046), "the count stops at 9999");
+        assert_eq!(p.enemy_defeats(1046), 9999);
+        let text = p.slot_json(&SlotInfo { level: 1, munny: 0, play_seconds: 0, area: "tt04".into() });
+        let mut q = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        q.set_enemy_defeats(1010, 5);
+        q.apply_json(&text).expect("loads");
+        assert_eq!((q.enemy_defeats(1000), q.enemy_defeats(1046), q.enemy_defeats(1010)), (2, 9999, 0), "the block key reset the old counter");
+        let mut r = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        r.apply_json("{\"enemy_kills\": [[1002, 7], [5, 3]]}").expect("the key loads");
+        assert_eq!((r.enemy_defeats(1002), r.enemy_defeats(5)), (7, 0));
+        assert!(r.apply_json("{\"enemy_kills\": [3]}").is_err());
+    }
+
+    /// WP-MN15: the reaction commands' use counts go through a slot file and the `reaction_uses` key, capped at 999.
+    #[test]
+    fn reaction_use_counts_are_saved() {
+        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        assert_eq!(p.reaction_use(41), 0);
+        p.set_reaction_use(41, 5000);
+        p.set_reaction_use(2, 7);
+        p.set_reaction_use(3, 9);
+        p.set_reaction_use(3, 0);
+        assert_eq!((p.reaction_use(41), p.reaction_use(2), p.reaction_use(3)), (999, 7, 0));
+        let text = p.slot_json(&SlotInfo { level: 1, munny: 0, play_seconds: 0, area: "tt04".into() });
+        let mut q = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        q.set_reaction_use(9, 1);
+        q.apply_json(&text).expect("loads");
+        assert_eq!((q.reaction_use(41), q.reaction_use(2), q.reaction_use(9)), (999, 7, 0), "the block key reset the old count");
+        assert!(q.apply_json("{\"reaction_uses\": [1]}").is_err());
+    }
+
+    /// WP-MN15: the limits' best counts only go up, and go through a slot file and the `limit_best` key.
+    #[test]
+    fn limit_best_counts_only_go_up_and_are_saved() {
+        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        assert_eq!(p.limit_best(4), 0);
+        p.raise_limit_best(4, 9);
+        p.raise_limit_best(4, 3);
+        p.raise_limit_best(7, 0);
+        assert_eq!((p.limit_best(4), p.limit_best(7)), (9, 0));
+        let text = p.slot_json(&SlotInfo { level: 1, munny: 0, play_seconds: 0, area: "tt04".into() });
+        let mut q = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        q.raise_limit_best(1, 5);
+        q.apply_json(&text).expect("loads");
+        assert_eq!((q.limit_best(4), q.limit_best(1)), (9, 0), "the block key reset the old count");
+        assert!(q.apply_json("{\"limit_best\": [2]}").is_err());
+        assert_eq!(q.limit_best_all().collect::<Vec<_>>(), [(4, 9)]);
+    }
+
     /// WP-PRG1: the moogle's record, the shops' bits, the record bits, the story arrays and the world points go through a
     /// slot file; a file without the keys (an older one) loads the defaults; the party settings are range-checked.
     #[test]
@@ -2846,7 +3034,7 @@ mod tests {
         let before = fields.len();
         let persisted: Vec<&str> = p.persisted_fields().iter().map(|f| f.0).collect();
         fields.retain(|f| !persisted.contains(&f.0));
-        assert_eq!((persisted.len(), before - fields.len()), (8, 8), "every persisted key is in the slot file");
+        assert_eq!((persisted.len(), before - fields.len()), (11, 11), "every persisted key is in the slot file (WP-MN15 added enemy_kills, reaction_uses, limit_best)");
         let old = Progress::join_fields(&fields);
         assert!(!old.contains("moogle") && !old.contains("story_raw") && old.contains("\"block\""));
         let mut r = Progress::from_block(&[], Arc::new(ItemIndex::default()));

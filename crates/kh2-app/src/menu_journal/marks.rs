@@ -24,6 +24,12 @@ pub enum Cat {
     Map,
     Quest,
     Minigame,
+    /// The Ansem reports (entry 4, bits at `+0x120`).
+    Report,
+    /// The limits (entry 6, bits at `+0x74`).
+    Limit,
+    /// The four rows of the moogle page (bits at `+0x124`).
+    Moogle,
 }
 
 impl Cat {
@@ -37,6 +43,9 @@ impl Cat {
             Cat::Map => 4,
             Cat::Quest => 5,
             Cat::Minigame => 6,
+            Cat::Report => 7,
+            Cat::Limit => 8,
+            Cat::Moogle => 9,
         }
     }
 
@@ -50,6 +59,9 @@ impl Cat {
             4 => Cat::Map,
             5 => Cat::Quest,
             6 => Cat::Minigame,
+            7 => Cat::Report,
+            8 => Cat::Limit,
+            9 => Cat::Moogle,
             _ => return None,
         })
     }
@@ -205,12 +217,12 @@ mod tests {
     /// The numbers are the save format (`journal_seen` pairs): each category keeps its number and nothing else maps.
     #[test]
     fn every_category_keeps_its_saved_number() {
-        let all = [(Cat::Story, 0u8), (Cat::Char, 1), (Cat::Album, 2), (Cat::Treasure, 3), (Cat::Map, 4), (Cat::Quest, 5), (Cat::Minigame, 6)];
+        let all = [(Cat::Story, 0u8), (Cat::Char, 1), (Cat::Album, 2), (Cat::Treasure, 3), (Cat::Map, 4), (Cat::Quest, 5), (Cat::Minigame, 6), (Cat::Report, 7), (Cat::Limit, 8), (Cat::Moogle, 9)];
         for (cat, n) in all {
             assert_eq!(cat.code(), n, "{cat:?}");
             assert_eq!(Cat::from_code(n), Some(cat));
         }
-        assert_eq!(Cat::from_code(7), None);
+        assert_eq!(Cat::from_code(10), None);
         assert_eq!(Cat::from_code(255), None);
     }
 

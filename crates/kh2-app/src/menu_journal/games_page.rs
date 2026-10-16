@@ -52,14 +52,22 @@ impl Nodes {
 pub struct Snap {
     pub bits: std::collections::HashSet<u16>,
     pub minis: std::collections::HashMap<u16, (u8, u32)>,
-    /// The moogle's first record word has a bit set (`FUN_002b47c8`), which lists page 0xc's category 9.
+    /// The moogle row of page 0xc is listed (`FUN_002b4838`: available, or a material handed over).
     pub moogle: bool,
+    /// The defeated-enemy counters by NeoStatus id (`Progress::enemy_defeats_all`) and the reaction commands' use counts by
+    /// counter slot (`ReactionUses`), copied when the journal opens.
+    pub kills: std::collections::HashMap<u32, u32>,
+    pub uses: std::collections::HashMap<u16, u16>,
+    /// The limits' best counts by `limt` slot (`Progress::limit_best_all`).
+    pub limits: std::collections::HashMap<u8, u16>,
+    /// The synthesis record and the totals the moogle page counts against.
+    pub moogle_data: super::moogle_page::Data,
 }
 
 impl Snap {
     /// Reads the bits and records the lists name from `p`.
     pub fn read(p: &Progress, quests: &[games::Quest], minis: &[games::Minigame]) -> Snap {
-        let mut s = Snap { moogle: p.moogle.known != 0, ..Snap::default() };
+        let mut s = Snap { moogle: super::moogle_page::listed(&p.moogle, false), moogle_data: super::moogle_page::Data { rec: p.moogle.clone(), ..Default::default() }, kills: p.enemy_defeats_all().collect(), uses: p.reaction_uses_all().collect(), limits: p.limit_best_all().collect(), ..Snap::default() };
         for q in quests {
             for id in [q.id, q.done] {
                 if p.record_bit(id) {
@@ -83,7 +91,7 @@ pub fn with_game<R>(j: &Journal, test: &dyn Fn(u16) -> bool, f: impl FnOnce(&gam
 }
 
 /// A label of the rows' kind: font 3, ink, drawn from the object's anchor (`FUN_00139888` cleared the group offset).
-fn ink(scene: &MenuScene, node: usize, group: usize, tokens: Vec<Token>, align: u8) -> Option<Label> {
+pub(super) fn ink(scene: &MenuScene, node: usize, group: usize, tokens: Vec<Token>, align: u8) -> Option<Label> {
     let g = scene.nodes[node].seq.and_then(|s| scene.seqs.get(s)).and_then(|s| s.groups.get(group)).copied().unwrap_or_default();
     let size = if g.size > 0 { g.size as f32 } else { TEXT_SIZE };
     let world = scene.text.as_ref()?.world;

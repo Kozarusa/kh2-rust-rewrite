@@ -322,7 +322,7 @@ fn input(
     if !m.open {
         return;
     }
-    let close = [KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::Escape, KeyCode::Backspace, KeyCode::KeyJ, KeyCode::KeyK].iter().any(|k| keys.just_pressed(*k));
+    let close = closes(&keys);
     keys.reset_all();
     if close {
         hide(&m, &mut scene);
@@ -330,6 +330,11 @@ fn input(
         m.open = false;
         info!("menu: kind 0xe closed: back to the field (FUN_001038a0) [inferred: the original's task never reads the pad]");
     }
+}
+
+/// The keys that close the screen (confirm, cancel, Start: an app stand-in [inferred]).
+fn closes(keys: &ButtonInput<KeyCode>) -> bool {
+    [KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::Escape, KeyCode::Backspace, KeyCode::KeyJ, KeyCode::KeyK].iter().any(|k| keys.just_pressed(*k))
 }
 
 fn hold(m: Res<EndingMenu>, mut pause: ResMut<Pause>, mut keys: ResMut<ButtonInput<KeyCode>>) {
@@ -348,6 +353,23 @@ fn tick(m: Res<EndingMenu>, mut scene: ResMut<MenuScene>, real: Res<Time<Real>>)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Enter, NumpadEnter, Esc, Backspace, J and K each close the screen; other keys and a held (not just pressed) key do not.
+    #[test]
+    fn the_ending_screen_closes_on_its_keys() {
+        for k in [KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::Escape, KeyCode::Backspace, KeyCode::KeyJ, KeyCode::KeyK] {
+            let mut keys = ButtonInput::<KeyCode>::default();
+            assert!(!closes(&keys));
+            keys.press(k);
+            assert!(closes(&keys), "{k:?} closes");
+            keys.clear();
+            assert!(!closes(&keys), "{k:?} held is not a new press");
+        }
+        let mut keys = ButtonInput::<KeyCode>::default();
+        keys.press(KeyCode::KeyW);
+        keys.press(KeyCode::Space);
+        assert!(!closes(&keys));
+    }
 
     #[test]
     fn the_layout_follows_the_mode_and_completion() {

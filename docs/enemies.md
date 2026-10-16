@@ -217,13 +217,33 @@ no reader of either bit array was traced), 1.108 / 1.109 `link_method_3c/40` (st
 Run `KH2_BDXLOG=1 KH2_WAVE_GROUP=b_44 ... kh2-game tt04` (acceptance below): four M_EX940 appear (wave 1 and wave 2 of
 group 0x8a) and enter `appear`, `mode_battle`, `btl_long`, `btl_short`, `atk_jump`, `atk_brush`, `atk_fullpower`,
 `atk_throw`, `back_target`, `mode_revenge`, `rvg_short`, `idle`, `leave`, `dead`; the only unimplemented host call is 1.0.
-**Gap (visible).** The blow-class hits (hit reaction 7, 9 or 11, R016a at 0x01a7) make the script call `R0082`, which
-creates a second object with host 1.0 `create_object` (0x170190 -> `FUN_0016e8c0`) for the objentry id 0x6bf = the
-`SpawnObject1` of M_EX940 = `M_EX850` (type 4, its own 3101-word script with a mode "burserk start"), and hides itself
-(1.28) when that object is valid [V from the BDX listing; the transformation is [inferred] from the two]. The app has no
-`create_object`, so after that hit the M_EX940 keeps fighting (`atk_fullpower`) and, in the run, walked away from Sora in
-`atk_fullpower` with motion 204 for the rest of the run instead of changing form. Not ported: 1.0, the second enemy, its
-host calls on the created object (1.98 / 1.148 / 1.28 on another handle), `obj_valid` for objects other than self and the player.
+**Blow-class hits (WP-EN3).** A blow-class hit (hit reaction 7, 9 or 11, R016a at 0x01a7) makes the script call `R0082`, which
+creates a second object with host 1.0 `create_object` (0x170190 -> `FUN_0016e8c0(DAT_0037a484, id, 0x1c883a0)`)
+for the objentry id 0x6bf = the `SpawnObject1` of M_EX940 = `M_EX850` (type 4, 3101 words, a `00objentry` row with NeoStatus 0,
+Weight 0, flags 16) [V]. M_EX940 does **not** transform and does not hide itself: R0082 stores the handle at global +0x1084
+(R011d), calls 1.98 `ground_position(self)` and 1.148 `set_position(created, point)`, then R0126 (effect 10 on itself, 1.109,
+1.53 bits 7 and 5, global +0x1070 = 1). M_EX850 is a companion that appears at M_EX940's ground point and M_EX940 stays and keeps
+fighting. A later R0082 first hides the previous companion with 1.28 and 1.70 flag 6 when host 1.94 calls it valid and it is not in
+motion 241-243; R033b undoes it (1.108, bits cleared, global +0x1070 = 0). `FUN_0016e8c0` is given the place record 0x1c883a0, which
+is zero: the object starts at the origin and facing 0, and nothing hands over HP, facing or serial; the script moves it [V].
+M_EX850 has no `set_obj_param` (2.9), so no `enmp` row: the app gives it a stand-in status block ([inferred], HP 50 like M_EX940 in the
+run). Its script has the modes `idle`, `appear` and `leave` among others; the string "burserk start" is only a debug print in its
+event-11 handler for reaction command 481 (docs/limits-reactions.md). In the app (`KH2_WAVE_GROUP=b_44 KH2_BDX_HIT=M_EX940:7:25`)
+M_EX850 is made a tick after the call at M_EX940's ground point, runs `idle` and its `leave` (about 3 s later), with no `missing`
+host. What it does in the original beyond that (its attacks and what the `appear` mode is entered from) was not traced.
+
+Ported (`enemy_obj.rs`, `enemy_host.rs`, `enemy.rs::spawn_created`, `enemy_ai.rs::ai_remote`): 1.0 for the objentry ids of the
+app's enemy kinds (`ObjTable::kinds`), 1.148, and 1.28 / 1.70 / 1.71 / 1.15 / 1.94 / 1.98 on another object of the app, applied at the
+end of the tick (calls on an object not yet built wait up to 3 ticks). Not ported: 1.8 on an object an enemy made (only the
+summon scripts do that, summon.rs), objects of kinds the app does not have.
+
+**Overlapping bodies.** `enemy::separate` pushed two bodies on one point both along +X, so they drifted together for ever
+(M_EX850 made on M_EX940's point left the arena at 44 cm per tick and fell: the "moves 44 cm per tick against 15 in the script" of
+the first WP-EN3 run was this, not `set_move`: the script's `set_move(.., 15)` is in a loop of its own mode and the mover's delta was 0 in every traced tick). The pair now takes opposite directions by index (`pair_dir`, a test).
+
+**Kind-6 appear fade.** FUN_00199e98 calls `FUN_001abf40(0, DAT_0037b308, DAT_0037b30c, object + 0x82c)` on the object it makes and
+`FUN_001abf78` steps the ramp each frame up to `DAT_0037b76c` (alpha = +0x82c * +0x834, `FUN_00193270`); `enemy_obj::Ramp` and
+`AppearRamp` (read from the executable) do this for kind-6 group members. No tt04 group is of kind 6: tested by unit tests only.
 
 ### Acceptance runs (WP-EN2)
 

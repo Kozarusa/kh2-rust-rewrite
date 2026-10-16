@@ -1258,6 +1258,19 @@ pub fn think(
     }
 }
 
+/// The direction body `i` is pushed from body `j` at horizontal offset `d` (length `l`). Two bodies on the same point have no
+/// direction: each takes the opposite one by index, so they part (both taking +X moved them together for ever: M_EX850, made
+/// on M_EX940's point, left the arena with it).
+fn pair_dir(d: Vec3, l: f32, i: usize, j: usize) -> Vec3 {
+    if l > 1e-4 {
+        d / l
+    } else if i < j {
+        Vec3::X
+    } else {
+        -Vec3::X
+    }
+}
+
 /// Keeps bodies from overlapping: enemies push apart from each other and from Sora.
 pub fn separate(sora: Query<&Transform, (With<Sora>, Without<Enemy>)>, mut q: Query<(&mut Transform, &Enemy)>) {
     const ENEMY_R: f32 = 0.45;
@@ -1273,7 +1286,7 @@ pub fn separate(sora: Query<&Transform, (With<Sora>, Without<Enemy>)>, mut q: Qu
             let d = (t.translation - *o).with_y(0.0);
             let l = d.length();
             if i != j && l < 2.0 * ENEMY_R {
-                push += if l > 1e-4 { d / l } else { Vec3::X } * (2.0 * ENEMY_R - l) * 0.5;
+                push += pair_dir(d, l, i, j) * (2.0 * ENEMY_R - l) * 0.5;
             }
         }
         if let Some(sp) = sp {
@@ -1562,6 +1575,15 @@ pub fn receive_clashes(
 
 #[cfg(test)]
 mod tests {
+    /// Two enemies on the same point part: each is pushed the opposite way (by index), and the pushes of the pair cancel as
+    /// they separate. Apart, the direction is the plain one away from the other body.
+    #[test]
+    fn bodies_on_one_point_are_pushed_apart() {
+        assert_eq!(pair_dir(Vec3::ZERO, 0.0, 2, 5), Vec3::X);
+        assert_eq!(pair_dir(Vec3::ZERO, 0.0, 5, 2), -Vec3::X);
+        assert_eq!(pair_dir(Vec3::new(0.0, 0.0, -2.0), 2.0, 1, 0), Vec3::new(0.0, 0.0, -1.0));
+    }
+
     use super::*;
 
     fn stats(strength: i32, magic: i32) -> Stats {

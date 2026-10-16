@@ -716,6 +716,9 @@ fn ai_update(
         }
         obj.want_vel = asked;
         obj.moved = obj.motor.pos - before;
+        if trace.level >= 2 && obj.moved != Vec3::ZERO {
+            trace.line(tag, &format!("moved {:?} to {:?} (mover delta {delta:?}, grounded {})", obj.moved, obj.motor.pos, obj.motor.grounded));
+        }
         // Falling and landing motions of a jump started with the commit flag.
         let mut follow = None;
         if landed {

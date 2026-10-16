@@ -864,3 +864,16 @@ the open gap above.
   (`DAT_01d5e368 = 2`) is the summon state.
 - `docs/player-data.md`, "Summons": `Entity2` is only preloaded (FUN_001d4da8); Tinker Bell is created by
   Peter Pan's script and by FUN_001adeb8. The summon start sequence is in section 3 here.
+
+### Objects the summon scripts make (WP-EN3)
+
+Host 1.0 `create_object` (0x170190 -> FUN_0016e8c0) in a summon script makes the objects the summon's rows name: Peter Pan's
+`appear` routine (R16b9 of P_EX330) makes Tinker Bell (objentry 1268 = `Entity2` of his `sumn` row) and sets her mode `appear` with
+host 1.8 on her context; Chicken Little's `surprise` thread (R1033 at 0x2171 of P_EX350) makes objentry 2098 `P_EX360` (the
+`SpawnObject1` of his row; type 9, a script and effects but no model entry and no motion set), flags it (1.70 bit 1) and puts
+it 60 units off its maker with 1.148. `summon.rs` (`SummonHost::own`, `act`'s `Act::Kid`, `objects`) builds them a tick later in no
+summon slot (handles `KID_BASE` + serial), at the origin (the game's place record is zero) until a 1.148 moves them, carries out
+the calls made on them (position, mode, hide, flags) once they exist, and removes them with the summon. Seen in `KH2_SUMMON=4`
+(Tinker Bell: `appear` then `Hide` about 5.5 s later) and `KH2_SUMMON=1` (nine P_EX360 over the run). Gaps: Tinker Bell stays at
+the origin (her `appear` links to the player with 1.18, which is a stub, so she is not placed near him); P_EX360's script reaches
+1.114, 10.53 and 6.49, which are not mapped; the revive's Tinker Bell (FUN_001adeb8) is not made.

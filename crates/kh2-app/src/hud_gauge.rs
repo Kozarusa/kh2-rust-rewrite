@@ -364,7 +364,7 @@ pub fn update(
     update_drive(&mut scene, p, &drive, &drive_tables);
 }
 
-/// The drive gauge (objects 12 to 15 of the panel, see docs/hud.md): the bar slides in, then idles;
+/// The drive gauge (objects 12 to 15 of the panel, see docs/hud.md): the bar idles at once (no slide-in, by request);
 /// the orange fill follows the progress to the next point; the digit shows the whole points; MAX
 /// shows when the gauge is full; a burst plays when a point is gained.
 fn update_drive(scene: &mut HudScene, p: &mut SoraPanel, d: &DriveGauge, tables: &DriveTables) {
@@ -378,16 +378,14 @@ fn update_drive(scene: &mut HudScene, p: &mut SoraPanel, d: &DriveGauge, tables:
         p.drive_points = None;
         return;
     }
-    // A mode change restarts the bar from its intro group.
+    // A mode change starts the bar straight in its idle group: the original's intro group (0x155a30)
+    // slides the bar in, which the user asked to drop (DEVIATIONS.md).
     if p.drive_mode != Some(d.mode) {
         p.drive_mode = Some(d.mode);
         scene.nodes[bar].visible = true;
-        scene.set_group(bar, dg::intro(d.mode));
+        scene.set_group(bar, dg::idle(d.mode));
         scene.set_group(fill, dg::fill(d.mode));
         p.drive_points = None;
-    }
-    if scene.nodes[bar].player.group == Some(dg::intro(d.mode)) && scene.nodes[bar].player.finished() {
-        scene.set_group(bar, dg::idle(d.mode));
     }
     let set = match d.mode {
         DriveMode::FormA => 1,

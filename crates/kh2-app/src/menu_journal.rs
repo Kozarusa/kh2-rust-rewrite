@@ -961,7 +961,7 @@ pub struct Journal {
     nodes: Nodes,
     /// The journal's new / seen bits (`marks.rs`).
     marks: Marks,
-    /// The `OverallChestIndex` numbers of the chests the player has opened (`Progress::chest_opened`), refreshed every frame.
+    /// The `OverallChestIndex` numbers of the chests the player has opened (`Progress::chest_opened`), read when the journal opens.
     opened: std::collections::HashSet<i16>,
     /// `jiminy.bar` entries 5 ("diag", the face groups) and 3 ("char", the characters), parsed, and the face files already
     /// turned into textures by name.
@@ -2150,14 +2150,15 @@ fn tick(
     let story = progress.as_ref().map(|p| p.story());
     let test = |id: u16| story.as_ref().is_some_and(|s| s.test(id));
     let items = |id: u16| progress.as_ref().map_or(0, |p| i32::from(p.item_count(id)));
-    // The opened chests (`FUN_001a6a90`) and the saved seen set (save +0x38f0) the marks start from.
-    if let Some(p) = progress.as_ref() {
-        j.opened = j.tables_lists.rows.iter().map(|r| r.chest).filter(|&c| c > 0 && p.chest_opened(c as u16)).collect();
-        if j.open.is_none() {
-            j.marks.load_seen(p.journal_seen_all());
-        }
-    }
     if let Some(mode) = j.request.take() {
+        // The opened chests (`FUN_001a6a90`) and the saved seen set (save +0x38f0) the marks start from. Read once when
+        // the journal opens: no chest opens and no save loads while it is up.
+        if let Some(p) = progress.as_ref() {
+            j.opened = j.tables_lists.rows.iter().map(|r| r.chest).filter(|&c| c > 0 && p.chest_opened(c as u16)).collect();
+            if j.open.is_none() {
+                j.marks.load_seen(p.journal_seen_all());
+            }
+        }
         if !j.tried && scene.texs.len() >= 2 {
             load(&mut j, &disc, &mut scene, &mut images);
         }

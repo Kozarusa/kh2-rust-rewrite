@@ -27,12 +27,25 @@ pub enum Cat {
 impl Cat {
     /// The category's number in the save's seen set (`Progress::journal_seen`).
     pub fn code(self) -> u8 {
-        self as u8
+        match self {
+            Cat::Story => 0,
+            Cat::Char => 1,
+            Cat::Album => 2,
+            Cat::Treasure => 3,
+            Cat::Map => 4,
+        }
     }
 
-    /// The category of a saved number.
+    /// The category of a saved number. The numbers are part of the save format: never renumber.
     pub fn from_code(c: u8) -> Option<Cat> {
-        [Cat::Story, Cat::Char, Cat::Album, Cat::Treasure, Cat::Map].get(usize::from(c)).copied()
+        Some(match c {
+            0 => Cat::Story,
+            1 => Cat::Char,
+            2 => Cat::Album,
+            3 => Cat::Treasure,
+            4 => Cat::Map,
+            _ => return None,
+        })
     }
 }
 
@@ -182,6 +195,18 @@ impl Bar {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The numbers are the save format (`journal_seen` pairs): each category keeps its number and nothing else maps.
+    #[test]
+    fn every_category_keeps_its_saved_number() {
+        let all = [(Cat::Story, 0u8), (Cat::Char, 1), (Cat::Album, 2), (Cat::Treasure, 3), (Cat::Map, 4)];
+        for (cat, n) in all {
+            assert_eq!(cat.code(), n, "{cat:?}");
+            assert_eq!(Cat::from_code(n), Some(cat));
+        }
+        assert_eq!(Cat::from_code(5), None);
+        assert_eq!(Cat::from_code(255), None);
+    }
 
     #[test]
     fn the_seen_set_goes_to_and_from_the_save() {

@@ -2434,7 +2434,7 @@ bit 2 (`FUN_00138708`) and makes its task (`FUN_00102bc8(1, 15000, 0x1ad918)`, b
 stores the list's header word at `+0x30` (`FUN_00169958(player) | 0x20000000` or `FUN_001cf2c8(0)`; the second word `+0x34` is 0,
 so `FUN_0026f948` shows no information line). `FUN_001ad520` (type 0 with manager header bit 9 and no living ally, a random
 chance from `DAT_003716a0`) sets the alternate byte: its list is record 10 ("I won't give up!" code 9, "It's all over..."
-code 8), handled by `0x1adbb8`; not reached in the app (no mission here has header bit 9).
+code 8), handled by `0x1adbb8`; reached only in the 11 missions of section 26.5 (header bit 9), which the app keeps off (WP-MK1).
 
 The task `FUN_001ad9a0` (steps in `+8`): 1 sound gate `FUN_002c38b8`; 2 waits for `FUN_00196418` (an event / message), then for
 the scene object `FUN_0014a978()+0xfc == 4`, ends the gate (`FUN_002c38c8`), puts the player on the floor (`FUN_00183fe0`, not
@@ -2587,20 +2587,42 @@ targets Mickey. What the effect and the motion do to Sora's HP (the heal), how l
 are in his class table (`0x360360`: `FUN_001ce240` tick, `FUN_001ce458`, `FUN_001cde80` and others) and in Sora's motion 0xfc
 event data; none of it was traced **[GAP: the heal amount; the leave; effect 0x11's script; motion 0xfc]**.
 
+**What Mickey does once he is there (WP-MK1 follow-up, read from the class table 0x360360 [V], the heal itself not found).**
+The rescue is an interactive reaction-command exchange, not a heal call. His tick `FUN_001ce240` (every frame, after the base
+tick `FUN_00177788`) offers the player a command through `FUN_001bb3e0(.., 1, id, .., 1, 100)`: while his gauge byte
+(status `+0x1b1`) is below the maximum (`+0x1b2` = 3) the charge command 455 (Execute 0x1c7), once it is full command 456
+(0x1c8, "release"); the first full frame runs `FUN_001ce3f8` (turns on the object parts 10 to 0x15, `+0xb70` = 1) and starts the
+slots `0xbbc3` / `0xbbc4` of `FUN_001d04c0` / `FUN_001d0508`. His command handler `FUN_001ce518` takes 0x1c7 (motion 0xc1, the charge timer
+`+0xb68` from the float at `0x37c340`, end callback `LAB_001ce710`), 0x1c9 (the same timer from `0x37c344`), 0x1c4 (motion 0xc2,
+queues motion 4, `+0xaf4` = the command's cost byte) and 0x1c8 (motion 0xc0, then `FUN_001ce680`: `FUN_001d0588` ends the
+slot at `+0xb74`, `FUN_0019b580(+0xb40)`, `+0x10c |= 0x200000`). While charging, `+0xb6c` counts down with the frame unit
+and each time it runs out `FUN_001a0290(gauge, 1)` adds one fraction step and the timer is re-armed with `sstm[0xd4]`
+(docs/drive-forms.md "Mickey's charge"). `FUN_001ce458` (vtable +0x14) acts when the status word `+0` (HP) equals 1: it
+looks up the ability row 0x22a (`FUN_001b6f48(0x22a)`, `FUN_0019abb0`) and starts it (`FUN_00175e20`) with the id `DAT_00360400`.
+So what Mickey does for Sora is play his own motions 0xc0 to 0xc2 (their hit events and attack records live in his motion
+and `atkp` data) while the player charges his gauge to 3 and releases. **No function of this class writes Sora's HP, calls
+the item or magic heal (`FUN_001a11a0`) or names a Cure id**, so the amount Sora is healed to, how long Mickey stays and what
+ends the task are not in the code read [GAP]: they are in motion 0xfc's and 0xc0's event data. `FUN_001ad9a0` step 7 ends at
+once (step 8 returns 0), so the game-over object does not wait for Mickey.
+
+**Missions that can offer it [V, scan].** The header word `+4` (BAR entry type 2) of every `msn/us/*.bar` was read; **11
+missions have bit 9 (0x200)**: AL03_MS103, BB05_MS104A, BB05_MS104B, BB11_MS102, BB15_MS203, CA18_MS202, EH24_MS110,
+HE07_MS103, HE18_MS108, MU08_MS204, MU09_MS108 (test `mickey::tests::the_disc_has_eleven_missions_with_header_bit_9`, needs
+`KH2_ISO` and `local/kh2idx.txt`). In the original the offer exists there (when no friend is up and the roll passes).
+
 **What the port does.** `mickey.rs` is the pure rule (`Chance::from_sstm`, `Chance::after`, `next_seed`, `roll`, `offered`;
-tests in the module, `the_chance_reads_the_disc_when_there_is_one` reads `sstm[0xd8]` and `sstm[0xdc]` from the disc).
-`menu_gameover.rs`: `detect` asks `alternate_offer` for a type 0 game over (the header bit from the manager's
-`Header::flags & 0x200`, allies from `PartyMember::ko`, `saves` from `Progress::mickey_save_count`, the chance from the disc's
-`sstm`, a generator that starts at 1 as `FUN_002f5fc8` resets it); `Over::alternate` makes the Waiting phase open record 10
-(`mickey::RECORD`); code 8 returns to Waiting with the wait done so the normal record 1 opens; code 9 closes the list and
-`rescue` counts the rescue (`Progress::count_mickey_save`, so the BATTLE REPORT's row 4 moves), plays the music back and ends
-the game over with Sora standing where he fell at full HP **[port choice: the original's heal is not known]**. **No mission file
-of the disc has header bit 9** (docs/menus.md 26.2: "not reached in the app"; the existing readers see only bit 12 and the kind),
-so in normal play nothing changes; `KH2_MICKEY_OFFER=1` is the harness aid that forces the alternate list for a type 0 game over.
-Not ported: the Mickey object (a second player class with its own handler, command menu and gauge; `summon.rs` cannot carry
-it: the summon system makes party-side *summons* through `sumn` rows and BDX scripts, while this is a member-9 player-class
-object), Sora's motion 0xfc, system effect 0x11, the retargeting `FUN_0018f188`, the scene motion 7 / the skipped
-`FUN_001c7740`, and the `ally_up` exactness above.
+tests in the module, `the_chance_reads_the_disc_when_there_is_one` reads `sstm[0xd8]` = 0.8 and `sstm[0xdc]` = 0.5 from the disc).
+`menu_gameover.rs`: `detect` asks `alternate_offer` for a type 0 game over. **The offer is off in normal play**
+(`mickey::RESCUE_PORTED` = false): the app has no Mickey object (a second player class with handler `FUN_001ce518`, tick
+`FUN_001ce240`, command menu and gauge; `summon.rs` cannot carry it: it makes party-side *summons* from `sumn` rows and BDX
+scripts, while this is a member-9 player-class object), no motion 0xfc, no effect 0x11, no retargeting `FUN_0018f188`, and
+the heal is not known, so a rescue would invent Sora's HP. Missions with bit 9 therefore show the normal Continue / Load
+Game list (log: `Mickey offer: header bit 9 is set ... the rescue is not ported`). The rest is in place for the day the rescue
+exists: `Over::alternate` makes the Waiting phase open record 10, code 8 returns to the wait so the normal record 1 opens, code 9
+closes the list and `rescue` counts the rescue (`Progress::count_mickey_save`, report row 4), plays the music back and
+ends the game over with Sora up at full HP [harness placeholder, not the original's value]. `KH2_MICKEY_OFFER=1` bypasses the
+gate to show that path (a generator that starts at 1 as `FUN_002f5fc8` resets it; allies from `PartyMember::ko`).
+Not ported: everything listed above and `FUN_001c7740`'s effect on the friends.
 
 **Harness.** `KH2_MICKEY_OFFER=1 KH2_NO_ENEMIES=1 KH2_GAMEOVER_KO=7 kh2-game tt00` logs `game over: Mickey offer: KH2_MICKEY_OFFER
 forces the alternate list (record 10): true`, `type 0 opens record 0xa ... rows [(9, 8ab5), (8, 8ab6)]`; with `KH2_KEYS=10:J` the
@@ -2613,7 +2635,7 @@ as before. Tests: `mickey::tests::*`, `menu_gameover::tests::the_alternate_list_
 `001cec00`, `001ced58`, `001c7740`, `001c75d0`, `001c7c30`, `001ade58`, `001adcf8`, `0017d030`, `0019a3f8`, `0017cd08`, `001b7c88`,
 `0017f160`, `0017da30`, `0017db88`, `0017ef98`, `0018f188`, `001db868`, `00300448`, `00301790`, and the raw instructions of `0x1adbb8`
 (alternate callback) and `0x1ad520` (the roll). Tables: `sstm` `0xd8`, `0xdc`; words `0x3716a0`, `0x37b84c`, `0x3852a8`.
-**Gaps.** The heal; the effect and motion; Mickey's stay and leave; `FUN_0017d030`'s exact meaning for a downed friend;
+**Gaps.** The heal (not in `FUN_001ce240`, `FUN_001ce458`, `FUN_001ce518`, `FUN_001ce680`, `FUN_001cde80`: read, no HP write); the event data of motions 0xfc and 0xc0; effect 0x11's script; Mickey's stay and leave; `FUN_0017d030`'s exact meaning for a downed friend;
 `FUN_001c7740`'s `FUN_001c75d0(0)` effect on the friends; whether `0x35d268` bit 1 is cleared by Mickey's end.
 ## 22. Donald and Goofy on the Items and Equipment pages (WP-PM1)
 

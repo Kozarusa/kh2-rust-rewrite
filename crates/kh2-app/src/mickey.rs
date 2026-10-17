@@ -23,10 +23,23 @@
 //!
 //! The port takes the decision and the counter. The object (a second player class with its own command handler
 //! `FUN_001ce518`, tick `FUN_001ce240` and command menu), the amount Sora is healed to and what the effect does are not
-//! ported (see docs). No mission of the disc sets header bit 9, so the offer is only reachable through the harness aid
-//! `KH2_MICKEY_OFFER=1`.
+//! ported (see docs). Eleven missions of the disc set header bit 9 ([`BIT9_MISSIONS`], pinned by a test), so the original
+//! offers the rescue there; the app keeps the offer off while [`RESCUE_PORTED`] is false (the rescue would stand Sora up
+//! with a heal the original's code was not read for), and only the harness aid `KH2_MICKEY_OFFER=1` shows it.
 
 use kh2_tables::player::Sstm;
+
+/// Whether Mickey's rescue is ported in full (the Mickey object, Sora's heal, motion 0xfc, effect 0x11). While false the
+/// app never offers the alternate list in normal play: a rescue with an invented heal would break the original's fidelity
+/// (RULES A4). Only `KH2_MICKEY_OFFER` (the harness) bypasses it.
+pub const RESCUE_PORTED: bool = false;
+
+/// The missions of the disc (`msn/us/<name>.bar`, header word `+4`) whose bit 9 is set: the original can offer the rescue
+/// in these. Pinned by `the_disc_has_eleven_missions_with_header_bit_9`.
+pub const BIT9_MISSIONS: [&str; 11] = [
+    "AL03_MS103", "BB05_MS104A", "BB05_MS104B", "BB11_MS102", "BB15_MS203", "CA18_MS202", "EH24_MS110", "HE07_MS103", "HE18_MS108",
+    "MU08_MS204", "MU09_MS108",
+];
 
 /// `FUN_001b9aa0`: the mission manager's header word `+4` bit 9.
 pub const HEADER_BIT: u16 = 0x200;
@@ -165,6 +178,37 @@ mod tests {
         assert_eq!(next_seed(s), 0xc000_0000);
         assert!(!offered(low, s).0, "roll 0.75 is above the chance 0.25");
         assert!(offered(offer(|o| o.saves = 0), s).0, "the same roll passes while the chance is 1");
+    }
+
+    /// Reads every `msn/us/*.bar` header (BAR entry type 2, flags word at +4) and pins the set with bit 9.
+    #[test]
+    fn the_disc_has_eleven_missions_with_header_bit_9() {
+        let Ok(iso) = std::env::var("KH2_ISO") else { return };
+        let list = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../local/kh2idx.txt")).unwrap_or_default();
+        let names: Vec<&str> = list.lines().filter(|l| l.starts_with("msn/us/") && l.ends_with(".bar")).collect();
+        if names.is_empty() {
+            eprintln!("skipped: local/kh2idx.txt is missing");
+            return;
+        }
+        let disc = crate::assets::Disc::open(std::path::Path::new(&iso));
+        let mut found = Vec::new();
+        let mut read = 0;
+        for n in &names {
+            let Some(file) = disc.read(n) else { continue };
+            let Ok(entries) = kh2_bar::parse(&file) else { continue };
+            let Some(h) = entries.iter().find(|e| e.kind == 2) else { continue };
+            let Some(f) = h.data.get(4..6).map(|b| u16::from_le_bytes([b[0], b[1]])) else { continue };
+            read += 1;
+            if f & HEADER_BIT != 0 {
+                found.push(n.trim_start_matches("msn/us/").trim_end_matches(".bar").to_string());
+            }
+        }
+        found.sort();
+        let mut want: Vec<String> = BIT9_MISSIONS.iter().map(|s| s.to_string()).collect();
+        want.sort();
+        eprintln!("{read} mission headers read, bit 9 in {found:?}");
+        assert!(read > 250, "most mission files are read: {read}");
+        assert_eq!(found, want);
     }
 
     #[test]

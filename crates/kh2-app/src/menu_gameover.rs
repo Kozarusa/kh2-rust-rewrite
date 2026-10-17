@@ -402,6 +402,10 @@ fn alternate_offer(go: &mut GameOver, kind: u8, mission: Option<&Mission>, party
     if kind != 0 || !bit9 {
         return false;
     }
+    if !mickey::RESCUE_PORTED {
+        info!("game over: Mickey offer: header bit 9 is set (the original offers the rescue here) but the rescue is not ported (mickey::RESCUE_PORTED); the normal list shows");
+        return false;
+    }
     let Some(chance) = disc.and_then(|d| d.0.lock().ok().and_then(|mut a| kh2_tables::player::load_sstm(&mut a).ok())).map(|s| mickey::Chance::from_sstm(&s)) else {
         info!("game over: Mickey offer: sstm is not readable; no offer");
         return false;

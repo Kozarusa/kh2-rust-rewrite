@@ -779,20 +779,68 @@ have the same shape: the first loop on 2.60 and a tail on 2.63.
 
 ### Gaps
 
-- **2.54** (`0x18ea28` -> `FUN_001b3c10(routine, &arg, 1)` -> `FUN_0016c8d8(task + 0x34, 0, routine, args, 1)`): starts a child thread of the
-  limit's thread, the same call as host 1.82 (`FUN_00172df0`) with tag 0, no cleanup routine and the one argument. `kh2-bdx`'s
-  runtime handles 0.9 and 1.82 as `Request::Spawn` but not 2.54, so the child (Trinity's `0x241c`: the part that reads the gauge each
-  frame) never runs. Needs `runtime.rs`: `(2, 54) => Request::Spawn { root: main_handle, handle, tag: 0, pc: a[0], cleanup: 0, args: vec![a[1]] }`.
-- **Partner objects**: 2.49 answers 0 and 1.114 / 1.210 find nothing, so scripts that read a partner (1.147 position, 1.183, 1.220,
-  1.234) fault or take their absent branch. `limit.rs` knows the partners' rows only (`Partner`, WP-AL1); a handle scheme for them is a
-  later stage.
-- 2.47 (`0x18e988` -> `FUN_001b3438` -> `FUN_0017f0c0(0, task +8, task + 0x18, ...)`), 2.50 (`0x18e9f8` -> `FUN_001b3468`: starts a
-  PAX or object effect, `FUN_001971c0` or a kind 0x16 entry, on the participant), 2.59 (`0x18eb00` -> `FUN_001b3c48` ->
-  `FUN_001db868(task + 0x18, ..., 1, 30000, ...)`), 2.55 (task `+0x38`, the object `FUN_001afe78(0)` made at the end of
-  `FUN_001b2c10`), 1.0 create_object, 1.11 / 1.13 motions, 1.15, 1.18 link_start, 1.23 (global byte `0x33e830`), 1.34 (event word
-  `0x35e3a4`), 1.130, 7.3 / 7.11 / 7.21 (`FUN_002ef370` / `FUN_002ef480` / `FUN_002ef798`, not read): answered 0, logged. Their
-  effects (motions, effects, camera) are what makes the limit visible; none is ported.
+- **2.54**, the partner objects and the small task hosts were gaps of WP-LT1; WP-LT2 (next section) ported the first, stood in for
+  the partners and answered some of the hosts. What stays open is listed there.
 - The task's end (`FUN_001b3970`: gauges, the HUD animations, `FUN_001c7c30`) stays the countdown.
+
+## Limit script, part 2 (WP-LT2) [V unless marked]
+
+### Host 2.54, the child thread
+
+`0x18ea28` -> `FUN_001b3c10(routine, &arg, 1)` -> `FUN_0016c8d8(*(limit task + 0x34), 0, routine, args, 1)`: a child of the limit
+script's own thread, the call host 1.82 makes through `FUN_00172df0` (which also stores the cleanup routine at the new thread's `+0x24`;
+2.54 passes tag 0 and no cleanup). `kh2-bdx` `runtime.rs` answers it as `Request::Spawn { root: main_handle, tag: 0, cleanup: 0,
+args: [second argument] }`; the name row is in `names.rs` (`limit_spawn_thread`, no result). Test: `runtime::spawn_tests::host_2_54_spawns_a_child_that_runs`
+(the child calls host 0.14 once, the parent keeps yielding). Harness: Trinity (command 484) now reads the gauge from two threads,
+`2.60x361` for a 180 tick limit (the parent about 181, the child 180); the child makes no host call besides 2.60.
+
+### The participants
+
+`FUN_001b2c10(.., task, row, player)` walks the three participant bytes of the limit row (row `+1` to `+3`, `LimitRow::members`:
+`Character`, `Summon`, `Group`) and for each byte above 1 stores the party member object `FUN_0017d400(byte)` in the next of task
+`+0x10`, `+0x14`, `+0x18` (sets byte `+0xb4c` of the object to 1, bit `0x10000` of its `+0x10c`). So the participants are the real party
+member objects, found by character id: Donald and Goofy for Trinity, the limit's own character (Auron 5, Simba 11, ...) for the others.
+Host 2.49 reads those slots, 1.114 / 1.210 find an object by entity id / NeoStatus.
+
+The app has Sora only, so `limit_script.rs` hands out stand-in handles (`partner(id)` = `0x7a100000 + id`, no memory behind them):
+2.49 answers the i-th participant of `participants_of(members)`; 1.210 by NeoStatus finds a participant by its character id
+[inferred: the scripts bind 2 and 3 for Donald and Goofy], 1.114 by entity id finds the player (0x236) only. `LimitStarted` carries the
+row's `members` for this.
+
+Hosts answered for the stand-ins and the player (positions come from Sora, `Sora::motor`, game space): 1.147 position (the player's;
+a participant stands at the player [inferred]; any other handle at the origin), 1.83 bone to world (position plus the vector, no turn
+[inferred]), 1.98 ground position (the position [inferred]), 1.201 facing vector (`(sin yaw, 0, -cos yaw)` as the enemy host
+answers it, Sora's yaw), 2.55 (task `+0x38`: a stand-in object, non-null as in the original), 7.3 (`FUN_002efe30` resets the 30 slot
+pool at `DAT_01e356a0`: nothing to do, the app has none), 7.11 (`FUN_002effd8`: the pool's free count is 0x1e: true), 7.21
+(`FUN_002f3a08` copies five words to `DAT_00371400`; no reader in the decompiled code: nothing to do).
+
+Answering 2.55 non-null changed which branch some scripts take (they now test for the object and go on to 1.83 / 1.147 / 1.201 /
+1.98), which is the branch the original always takes.
+
+### Harness results after WP-LT2 (same set-up as above)
+
+| command (file) | result |
+|---|---|
+| 484 Trinity | runs 180 ticks (two threads), returns |
+| 82 Auron, 74 Beast, 139 Mulan, 255 Goofy, 338 Goofy 2, 344 Donald 2, 351 Aladdin, 357 Sparrow, 282 Donald, 405 Jack | run to the end and return (282 and 405 used to fault) |
+| 376 Simba, 415 Tron | fault in the first tick: `BadAddress(0x2000020)`, a direct read of the player object (`0x2000000`) at offset `+0x20` through a pointer, which no host serves |
+| 569 Riku, 620 Trinity (no group) | fault in the first tick: `BadAddress(0)` after host 2.56 (`ptr_b40_4_b`, a pointer into the participant's sub-object, answered 0) |
+
+A faulting script is logged once and dropped; the limit goes on (unchanged).
+
+### Gaps
+
+- Simba / Tron read the player object's `+0x20` directly (words `0xc4b` / `0x316`); the object has no memory in the limit host, and
+  `+0x20` of a player object has no documented meaning (for the thread objects it is a tag).
+- Riku / Trinity-zz take a pointer from 2.56 and read through it (words `0x481` / `0x172`).
+- 2.47 (`FUN_001b3438` -> `FUN_0017f0c0`: sets up a motion controller of the participant), 2.50 (`FUN_001b3468`: starts a PAX or
+  object effect) and 2.59 (`FUN_001b3c48` -> `FUN_001db868`: looks a row up in a table by halfword, then `FUN_001db5f0`) are visuals or
+  motions of the participants; the decompiled signatures of these wrappers do not match their call sites, and the app has nothing to
+  draw: left logged, answered 0.
+- 1.0 / 1.11 / 1.13 / 1.15 (the participant's motions), 1.18, 1.130 / 1.183 / 1.220 / 1.234 and 1.23 / 1.34: the enemy and summon runtimes
+  implement them against their own object state (`enemy_host.rs` reads `self.obj` and `self.env`), so they are not shared; the
+  limit host has neither (1.23 is the world number byte `0x33e830`, 1.34 the event word `0x35e3a4`). Answered 0, logged.
+- The Trinity child's own host calls are the same as the parent's (2.60), so nothing further is logged.
 
 ## Auto Limit (WP-AL1) [V unless marked]
 

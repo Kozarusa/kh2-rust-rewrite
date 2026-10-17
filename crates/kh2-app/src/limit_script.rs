@@ -20,6 +20,7 @@ use kh2_bdx::{Call, Host, HostTable, Program, Runtime, Value};
 use crate::assets::Disc;
 use crate::limit::{LimitArg, LimitReceiver, LimitScriptEvent, LimitStarted, LimitTask};
 use crate::schedule::Sim;
+use crate::sora::Sora;
 
 /// The stand-in for the limit task object that event 22 carries (word `+0xc` the player, `+0x10` the first participant). The same
 /// value summon.rs uses for its `LIMIT_ATTACK` handle, so a script that reads the task through hosts 2.48 / 2.49 sees one object.
@@ -53,13 +54,37 @@ pub struct TaskState {
     pub animations: i32,
     /// Bit 8 of `+0x40` (set with the count, cleared by host 2.89).
     pub animation_flag: bool,
+    /// The participants (task `+0x10`, `+0x14`, `+0x18`; host 2.49), as character ids: `FUN_001b2c10` walks the limit row's three
+    /// participant bytes (row `+1` to `+3`) and, for each byte above 1, stores the party member object `FUN_0017d400(byte)` in the
+    /// next slot. The app has no party member objects, so each is a stand-in handle ([`partner`]).
+    pub participants: Vec<u32>,
+    /// The player's position as the scripts read it (host 1.147, game space), set each tick from Sora's motor.
+    pub player: [f32; 4],
+    /// Sora's yaw (radians), set with `player`.
+    pub player_yaw: f32,
+}
+
+/// The stand-in handle of the party member object of character `id` (an object only this module and its host know; it has no memory).
+pub const PARTNER_BASE: u32 = 0x7a10_0000;
+
+/// The stand-in handle of the object in task `+0x38` (host 2.55).
+pub const EFFECT_SLOT: u32 = 0x7a20_0000;
+
+/// The stand-in handle for character `id`.
+pub fn partner(id: u32) -> u32 {
+    PARTNER_BASE + id
+}
+
+/// The participants a limit row's three bytes name, in slot order (`FUN_001b2c10`: bytes above 1 only, packed).
+pub fn participants_of(members: [u8; 3]) -> Vec<u32> {
+    members.iter().filter(|&&m| m > 1).map(|&m| u32::from(m)).collect()
 }
 
 impl TaskState {
     /// What the task creation leaves for the limit of `command` (`FUN_001b2e08`: `FUN_001b3a70(task, 3)` for command 0x1e4).
     pub fn new(command: u16, remaining: f32) -> TaskState {
         let trinity = command == 0x1e4;
-        TaskState { remaining, animations: i32::from(trinity), animation_flag: trinity }
+        TaskState { remaining, animations: i32::from(trinity), animation_flag: trinity, participants: Vec::new(), player: [0.0, 0.0, 0.0, 1.0], player_yaw: 0.0 }
     }
 
     /// Host 2.89 (`FUN_001b3b60`): when bit 8 is set, stop the animation (the call through the player's `+0xb44` object is a gap
@@ -105,14 +130,53 @@ fn first_arg(c: &Call) -> u32 {
     }
 }
 
+/// The position a script reads for an object handle (see host 1.147).
+fn position_of(who: u32, task: &TaskState) -> [f32; 4] {
+    if who == crate::enemy_obj::PLAYER || (PARTNER_BASE..EFFECT_SLOT).contains(&who) {
+        task.player
+    } else {
+        [0.0, 0.0, 0.0, 1.0]
+    }
+}
+
 /// The answers of the ported calls (addresses in docs/limits-reactions.md "Limit script"); every other call is answered 0.
 fn host_answer(c: &Call, task: &mut TaskState) -> Value {
     let on_task = first_arg(c) == TASK;
+    // 1.114 / 1.210 (bind_object, 0x171d10 / 0x171d70) reach the host as `FindObject` and write the answer into the script's context.
+    // 1.210 looks the object up by its NeoStatus value (`FUN_0016b138`), which for a party member is its character id [inferred from the
+    // scripts binding 2 and 3]; the lookup finds the participants only. 1.114 (entity ids) finds the player (0x236) and nothing else.
+    if let Call::FindObject { by, value } = c {
+        return match by {
+            kh2_bdx::host::ObjectKey::NeoStatus if u32::try_from(*value).is_ok_and(|v| task.participants.contains(&v)) => Value::Handle(partner(*value as u32)),
+            kh2_bdx::host::ObjectKey::Entity if *value == 0x236 => Value::Handle(crate::enemy_obj::PLAYER),
+            _ => Value::Handle(0),
+        };
+    }
     match crate::enemy_host::call_id(c) {
+        // 2.49 (0x18e9d8): the word at +0x10 + 4 * i, the i-th participant (0 when the limit has fewer).
+        (2, 49) if on_task => {
+            let i = match c {
+                Call::Func { args, .. } => args.get(1).map_or(0, |a| a.int()),
+                Call::Unknown { args, .. } => args.get(1).copied().unwrap_or(0) as i32,
+                _ => 0,
+            };
+            Value::Handle(usize::try_from(i).ok().and_then(|i| task.participants.get(i)).map_or(0, |&id| partner(id)))
+        }
         // Debug prints (empty in the retail build; the mission host treats them alike).
         (0, 0..=2) | (0, 8) | (0, 24..=26) => Value::None,
         // 2.48 (0x18e9c8): the word at +0xc of the object, the task's player (`FUN_001b2c10` stores its fourth argument there).
         (2, 48) if on_task => Value::Handle(crate::enemy_obj::PLAYER),
+        // 2.55 (0x18ea50): the word at +0x38, the object `FUN_001afe78(0)` made at the end of `FUN_001b2c10` (a slot of the pool at
+        // `DAT_01d58308`, never null once the task exists). Its slot is an effect object the app does not draw: a stand-in handle.
+        (2, 55) if on_task => Value::Handle(EFFECT_SLOT),
+        // 7.3 (0x2ef370 -> FUN_002efe30): resets the pool of 30 slots at `DAT_01e356a0` (every slot free, free count 0x1e). The app
+        // keeps no such pool, which is the state the reset leaves.
+        (7, 3) => Value::None,
+        // 7.11 (0x2ef480 -> FUN_002effd8): true when the pool's free count is 0x1e, i.e. every slot is free: always, in the app.
+        (7, 11) => Value::Bool(true),
+        // 7.21 (0x2ef798 -> FUN_002f3a08): copies the five words the argument points at to `DAT_00371400`; its readers are not in the
+        // decompiled code (gap), so nothing in the app reads the record.
+        (7, 21) => Value::None,
         // 2.60 (0x18eb40): the float at +0xd4, the time gauge value.
         (2, 60) if on_task => Value::Float(task.remaining),
         // 2.63 (0x18eb50): the word at +0x3c, the count of started HUD animations.
@@ -122,6 +186,26 @@ fn host_answer(c: &Call, task: &mut TaskState) -> Value {
             task.release_animation();
             Value::None
         }
+        // 1.147 (0x170610): the object's world position, answered as the vector the script copies from. The player's is Sora's; a
+        // participant has no object in the app, so its stand-in stands at the player's position [inferred: the party follows Sora; no
+        // offset is known]; any other handle is at the origin, where a new object starts (1.0, `FUN_0016e8c0`).
+        (1, 147) => Value::Vec(position_of(if let Call::Position { obj } = c { *obj } else { first_arg(c) }, task)),
+        // 1.83 (0x172e68, `bone_to_world(O, index, v)`): the vector `v` through the matrix of the object's bone. The app has no bones
+        // for a participant, so the bone is the object's own frame without a turn [inferred]: the position plus `v`.
+        (1, 83) => {
+            let at = position_of(first_arg(c), task);
+            let v = match c {
+                Call::Func { args, .. } => args.iter().find_map(|a| if let kh2_bdx::Arg::Vec(v) = a { Some(*v) } else { None }).unwrap_or([0.0; 4]),
+                _ => [0.0; 4],
+            };
+            Value::Vec([at[0] + v[0], at[1] + v[1], at[2] + v[2], 1.0])
+        }
+        // 1.98 (0x173088, `ground_position(O)`): the position with y at the ground height under the object. The stand-ins stand on the
+        // ground and the player is on it in the harness, so the position itself [inferred].
+        (1, 98) => Value::Vec(position_of(first_arg(c), task)),
+        // 1.201 (the facing vector, as the enemy host answers it): `(sin yaw, 0, -cos yaw)` of the object's yaw. Sora's yaw for the
+        // player; a participant has no object, so its stand-in faces as Sora does [inferred].
+        (1, 201) => Value::Vec([task.player_yaw.sin(), 0.0, -task.player_yaw.cos(), 0.0]),
         // 1.94 (0x170150): the object is in the object list; the app's only object a limit script can name is the player.
         (1, 94) => Value::Bool(first_arg(c) == crate::enemy_obj::PLAYER),
         // 1.132 (0x173728): returns a target record to the pool; the app keeps no pool (host 1.131 answers no record).
@@ -206,6 +290,8 @@ struct ScriptState {
     table_read: bool,
     /// The file of the limit that started last (`LimitStarted`).
     file: String,
+    /// The participant bytes of the limit that started last.
+    members: [u8; 3],
     /// The command of the limit that started last.
     command: u16,
     /// Events 22 and 23 that came for the script, count (for the tests of the wiring).
@@ -228,11 +314,13 @@ fn run_limit_script(
     task: Option<Res<LimitTask>>,
     mut started: MessageReader<LimitStarted>,
     mut events: MessageReader<LimitScriptEvent>,
+    sora: Query<&Sora>,
     mut st: ResMut<ScriptState>,
 ) {
     for s in started.read() {
         st.file = s.file.clone();
         st.command = s.command;
+        st.members = s.members;
     }
     let running = task.as_deref().is_some_and(|t| t.0.is_some());
     for e in events.read().filter(|e| e.to == LimitReceiver::LimitScript) {
@@ -248,7 +336,7 @@ fn run_limit_script(
                     continue;
                 };
                 let left = task.as_deref().and_then(|t| t.0).map_or(0, |(_, l)| l);
-                let (run, ok) = ScriptRun::start(prog, st.table.as_ref(), TaskState::new(st.command, left as f32));
+                let (run, ok) = ScriptRun::start(prog, st.table.as_ref(), TaskState { participants: participants_of(st.members), ..TaskState::new(st.command, left as f32) });
                 info!("limit script: start {} (event 22 with the task {TASK:#x}; the script has a handler for it: {ok})", st.file);
                 st.delivered += 1;
                 st.run = Some(run);
@@ -264,6 +352,10 @@ fn run_limit_script(
         }
     }
     let Some(run) = st.run.as_mut() else { return };
+    if let Ok(s) = sora.single() {
+        run.task.player = crate::enemy_obj::to_game(s.motor.pos);
+        run.task.player_yaw = s.motor.yaw;
+    }
     // The app's countdown ends the limit (FUN_001b3970 waits for HUD animations: a gap). The gauge then reads 0, which is what ends the
     // script's own wait (host 2.60), so the thread gets the ticks its tail needs (at most `TAIL_TICKS`) and is dropped after them.
     let left = task.as_deref().and_then(|t| t.0).map_or(0, |(_, l)| l);
@@ -395,6 +487,35 @@ mod tests {
         assert_eq!(TaskState::new(282, 1.0).animations, 0);
         assert_eq!(host_answer(&func(1, 94, &[crate::enemy_obj::PLAYER]), &mut t), Value::Bool(true));
         assert_eq!(host_answer(&func(1, 94, &[0]), &mut t), Value::Bool(false));
+    }
+
+    /// `FUN_001b2c10` packs the row's participant bytes above 1 into task `+0x10`...; host 2.49 reads them by index, 1.210 binds a
+    /// participant by its id, and neither finds a character that is not in the limit.
+    #[test]
+    fn participants_are_the_row_bytes_above_one_and_can_be_bound() {
+        assert_eq!(participants_of([2, 0, 3]), vec![2, 3]);
+        assert_eq!(participants_of([1, 5, 0]), vec![5]);
+        assert!(participants_of([0, 0, 0]).is_empty());
+        let mut t = TaskState { participants: participants_of([2, 0, 3]), ..TaskState::new(282, 10.0) };
+        assert_eq!(host_answer(&func(2, 49, &[TASK, 0]), &mut t), Value::Handle(partner(2)));
+        assert_eq!(host_answer(&func(2, 49, &[TASK, 1]), &mut t), Value::Handle(partner(3)));
+        assert_eq!(host_answer(&func(2, 49, &[TASK, 2]), &mut t), Value::Handle(0), "a third slot is empty");
+        let by = |by, value| Call::FindObject { by, value };
+        use kh2_bdx::host::ObjectKey;
+        assert_eq!(host_answer(&by(ObjectKey::NeoStatus, 3), &mut t), Value::Handle(partner(3)));
+        assert_eq!(host_answer(&by(ObjectKey::NeoStatus, 4), &mut t), Value::Handle(0));
+        assert_eq!(host_answer(&by(ObjectKey::Entity, 0x236), &mut t), Value::Handle(crate::enemy_obj::PLAYER));
+        assert_eq!(host_answer(&by(ObjectKey::Entity, 0x237), &mut t), Value::Handle(0));
+    }
+
+    /// The pool hosts: 7.11 says every slot is free (the app keeps no pool), 2.55 answers a non-null object for the task only.
+    #[test]
+    fn the_pool_and_slot_hosts_answer() {
+        let mut t = TaskState::new(1, 1.0);
+        assert_eq!(host_answer(&func(7, 11, &[0]), &mut t), Value::Bool(true));
+        assert_eq!(host_answer(&func(7, 3, &[]), &mut t), Value::None);
+        assert_eq!(host_answer(&func(2, 55, &[TASK]), &mut t), Value::Handle(EFFECT_SLOT));
+        assert_eq!(host_answer(&func(2, 55, &[5]), &mut t), Value::Int(0));
     }
 
     /// The gauge follows the countdown the system hands in: a script that waits on host 2.60 sees the ticks left.

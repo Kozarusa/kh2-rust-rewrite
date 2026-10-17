@@ -39,6 +39,7 @@ mod games_page;
 mod kills;
 mod lists;
 mod marks;
+mod model_view;
 mod moogle_page;
 mod name_list;
 mod report_page;
@@ -607,6 +608,9 @@ pub enum Key {
     /// table 0x380ab0; list results -11 / -10, `FUN_002a6578`) [inferred: the keyboard's `[` / `]` and Z / C].
     L2,
     R2,
+    /// The list result -6 (bit 0x1000, enabled by the list flag 0x200 of `FUN_002a98f0`): a character's page opens its model page
+    /// (`FUN_002a9b80`) [inferred: the keyboard's Y, as the Abilities page's -6].
+    View,
 }
 
 /// The outcome of a key on page 0.
@@ -635,6 +639,8 @@ pub enum Act {
     Browse(i32),
     /// L2 / R2 on a character's own page: the previous (false) or next (true) character (`FUN_002aa600`).
     Neighbour(bool),
+    /// -6 on a character's page: the model page (0x10 / 0x13 / 0x16, `FUN_002a9b80`).
+    View,
 }
 
 /// The L1 / R1 switch of pages 0 and 2.
@@ -659,7 +665,7 @@ pub fn page2(key: Key, row: usize, cats: &[usize]) -> Act {
         }
         Key::Confirm => cats.get(row).map_or(Act::None, |&cat| Act::Category { cat, page: category_page(cat) }),
         // L1 / R1: `switch` (it needs the hint table).
-        Key::L1 | Key::R1 | Key::L2 | Key::R2 => Act::None,
+        Key::L1 | Key::R1 | Key::L2 | Key::R2 | Key::View => Act::None,
     }
 }
 
@@ -676,12 +682,12 @@ pub fn page_faces(key: Key, sel: Option<usize>) -> Act {
 }
 
 /// A character's own page (`FUN_002a9b80`): Up / Down and L1 / R1 scroll the description, L2 / R2 (-11 / -10, enabled when more
-/// than one character of the list exists) change the character, -2 goes back to the face page, -4 closes. The triangle-side
-/// button -6 (page 0x10, the 3D model view) is not ported.
+/// than one character of the list exists) change the character, -2 goes back to the face page, -4 closes, -6 opens the model page.
 pub fn page_char(key: Key, top: usize, count: usize, many: bool) -> Act {
     match key {
         Key::Start => Act::Close,
         Key::Cancel => Act::Back,
+        Key::View => Act::View,
         Key::Move(_, dy) if dy != 0 => scroll_to(top, chars::desc_scroll(top, count, dy, 0)),
         Key::L1 => scroll_to(top, chars::desc_scroll(top, count, 0, -1)),
         Key::R1 => scroll_to(top, chars::desc_scroll(top, count, 0, 1)),
@@ -693,6 +699,16 @@ pub fn page_char(key: Key, top: usize, count: usize, many: bool) -> Act {
 
 fn scroll_to(top: usize, to: usize) -> Act {
     if to == top { Act::None } else { Act::Cursor(to) }
+}
+
+/// The model pages' state machine (`FUN_002aa0b0`): -2 returns to the character page, -4 closes; Left / Right (the held results -12 / -13)
+/// turn the model (`model_view`).
+pub fn page_view(key: Key) -> Act {
+    match key {
+        Key::Start => Act::Close,
+        Key::Cancel => Act::Back,
+        _ => Act::None,
+    }
 }
 
 /// The Album page's state machine (`FUN_002a6010`): the list widget's wrapping cursor, a confirm opens the picture (page 5),
@@ -755,7 +771,7 @@ pub fn page0(key: Key, cursor: usize, shown: &[(usize, u8)], worlds: &[World]) -
             Some(w) => Act::Open { page: if w.id > 0xe { 0xc } else { 2 }, world: w.id },
             None => Act::None,
         },
-        Key::L1 | Key::R1 | Key::L2 | Key::R2 => Act::None,
+        Key::L1 | Key::R1 | Key::L2 | Key::R2 | Key::View => Act::None,
     }
 }
 
@@ -998,6 +1014,8 @@ struct CharPageNodes {
     frame: usize,
     pic: usize,
     desc: usize,
+    /// The picture of the 3D model (`model_view.rs`): after the layer, before the frame and the texts that stand in front of it.
+    model: usize,
     /// The enemy pages' counter row (the label of group 0x4c and its count) and the five reaction rows (label, count).
     counter: [usize; 2],
     react: [[usize; 2]; 5],
@@ -1281,7 +1299,8 @@ impl Plugin for JournalPlugin {
             .add_systems(Startup, kills::load_neo)
             .add_systems(Update, kills::count_defeats)
             .add_systems(PreUpdate, input.before(crate::menu::input).after(bevy::input::InputSystems).after(crate::harness::Keys))
-            .add_systems(Update, tick.before(crate::schedule::Frame::Popups));
+            .add_systems(Update, tick.before(crate::schedule::Frame::Popups))
+            .add_plugins(model_view::ModelPlugin);
     }
 }
 
@@ -1459,6 +1478,8 @@ fn load(j: &mut Journal, disc: &Disc, scene: &mut MenuScene, images: &mut Assets
     // A character's own page (`FUN_002a98f0`): the layer, the frame and the picture under it, the texts and arrows under the header.
     {
         let layer = add(scene, list, tex, Some(header));
+        let model = scene.add(Node::new(None));
+        scene.nodes[model].visible = false;
         let frame = add(scene, list, tex, Some(layer));
         let pic = add(scene, seq_face, tex, Some(layer));
         let desc = add(scene, list, tex, Some(layer));
@@ -1470,7 +1491,7 @@ fn load(j: &mut Journal, disc: &Disc, scene: &mut MenuScene, images: &mut Assets
             let label = add(scene, list, tex, Some(header));
             [label, add(scene, list, tex, Some(label))]
         });
-        nodes.cpage = CharPageNodes { layer, name, sub, arrows, frame, pic, desc, counter, react };
+        nodes.cpage = CharPageNodes { layer, name, sub, arrows, frame, pic, desc, model, counter, react };
     }
     j.nodes = nodes;
     j.loaded = true;
@@ -1531,10 +1552,12 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
         Some(Key::L2)
     } else if keys.just_pressed(KeyCode::BracketRight) || keys.just_pressed(KeyCode::KeyC) {
         Some(Key::R2)
+    } else if keys.just_pressed(KeyCode::KeyY) {
+        Some(Key::View)
     } else {
         None
     };
-    for k in [KeyCode::KeyJ, KeyCode::Escape, KeyCode::Backspace, KeyCode::KeyK, KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::ArrowLeft, KeyCode::ArrowRight, KeyCode::ArrowUp, KeyCode::ArrowDown, KeyCode::KeyQ, KeyCode::KeyE, KeyCode::PageUp, KeyCode::PageDown, KeyCode::BracketLeft, KeyCode::BracketRight, KeyCode::KeyZ, KeyCode::KeyC] {
+    for k in [KeyCode::KeyJ, KeyCode::Escape, KeyCode::Backspace, KeyCode::KeyK, KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::ArrowLeft, KeyCode::ArrowRight, KeyCode::ArrowUp, KeyCode::ArrowDown, KeyCode::KeyQ, KeyCode::KeyE, KeyCode::PageUp, KeyCode::PageDown, KeyCode::BracketLeft, KeyCode::BracketRight, KeyCode::KeyZ, KeyCode::KeyC, KeyCode::KeyY] {
         keys.clear_just_pressed(k);
     }
     let (Some(key), true, None) = (key, j.loaded, j.goto) else { return };
@@ -1560,6 +1583,7 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
         (2, _) => page2(key, o.row, &o.cats),
         (3, _) => page3(key, o.top, o.count),
         (6 | 0xb, _) => page_faces(key, o.sel),
+        (0x10 | 0x13 | 0x16, _) => page_view(key),
         (0xf, _) => page_char(key, o.top, o.count, o.cp.list.iter().filter(|c| o.cp.present.contains(c)).count() > 1),
         (7 | 8, _) => page_lists(key),
         (9 | 10, _) => page3(key, o.top, o.count),
@@ -1727,6 +1751,20 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
             menu_sound::play(&mut se, menu_sound::REFUSED);
             info!("journal: page {page:#x} confirm with nothing under the pointer (sound 4, FUN_002ae790)");
         }
+        Act::View if page == 0xf => {
+            menu_sound::play(&mut se, crate::menu_status::CONFIRM);
+            let o = j.open.as_ref().unwrap();
+            let to = model_view::view_page(shown_page(o.cp.back));
+            info!("journal: page {page:#x} view button (-6) -> page {to:#x} (FUN_002a9b80)");
+            j.goto = Some((to, world_byte));
+        }
+        Act::View => {}
+        Act::Back if model_view::is_view(page) => {
+            menu_sound::play(&mut se, menu_sound::CANCEL);
+            let to = model_view::char_page(page);
+            info!("journal: page {page:#x} cancel -> the character page ({to:#x} in the original's numbering: FUN_002aa0b0 case -2)");
+            j.goto = Some((0xf, world_byte));
+        }
         Act::Back if page == 0xf => {
             menu_sound::play(&mut se, menu_sound::CANCEL);
             let o = j.open.as_mut().unwrap();
@@ -1890,7 +1928,7 @@ fn build(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Asset
     let n = &j.nodes;
     let ids: Vec<usize> = n.page0().into_iter().chain(n.page12()).chain(n.page3()).chain([n.help, n.cursor, n.follow]).collect();
     for id in ids {
-        if !(matches!(page, 3..=11 | 0xf | 0xd | 0xe | 0x11 | 0x14 | 0x17 | 0x1d | 0x1f) && id == title) {
+        if !(matches!(page, 3..=11 | 0xf | 0xd | 0xe | 0x11 | 0x14 | 0x17 | 0x1d | 0x1f | 0x10 | 0x13 | 0x16) && id == title) {
             scene.nodes[id].visible = false;
         }
     }
@@ -1900,6 +1938,7 @@ fn build(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Asset
         3 => build3(j, scene, world, test),
         6 | 0xb => build_faces(j, scene, disc, images, page, world, test, items),
         0xf => build_char_page(j, scene, disc, images, page, world, test, items),
+        0x10 | 0x13 | 0x16 => build_model_page(j, scene, page, world, test),
         9 | 10 => games_page::build(j, scene, page, world, test),
         0xc => root_page::build(j, scene, disc, images, test, items),
         0xd | 0xe | 0x11 | 0x14 | 0x17 | 0x1d => name_list::build(j, scene, page, test, items),
@@ -2138,7 +2177,7 @@ fn chrome(j: &mut Journal, scene: &mut MenuScene, page: u16) {
         1 => Some(msg::HELP_ROXAS),
         3 => Some(msg::HELP_STORY),
         6 | 0xb => Some(j.tables.face.help[usize::from(page != 6)]),
-        0xf => Some(msg::HELP_CHAR),
+        0xf | 0x10 | 0x13 | 0x16 => Some(msg::HELP_CHAR),
         9 => Some(games_page::HELP_QUEST),
         10 => Some(games_page::HELP_GAME),
         0xc => root_page::help(j),
@@ -2528,11 +2567,42 @@ fn build_faces(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut
     faces_update(j, scene, test, true);
 }
 
+/// The character page's number in the original by the page its list came from (`FUN_002a9590`): 0xf, 0x12 for the Heartless list
+/// (0x11) and 0x15 for the Nobodies' (0x14).
+fn shown_page(back: u16) -> u16 {
+    match back {
+        0x11 => 0x12,
+        0x14 => 0x15,
+        _ => 0xf,
+    }
+}
+
+/// The tab a character's page and its model page show: the category frame or the list tab of the page the record came from.
+fn char_tabs(j: &mut Journal, scene: &mut MenuScene, back: u16) {
+    match back {
+        6 => category_frame(j, scene, 0),
+        0xb => category_frame(j, scene, 7),
+        0xe => category_tab(j, scene, j.tables.c_text[1]),
+        0x11 => category_tab(j, scene, j.tables.c_text[2]),
+        _ => category_tab(j, scene, j.tables.c_text[3]),
+    }
+}
+
+/// A model page (0x10, 0x13, 0x16: `FUN_002aa0b0`): the tab stays as the character page had it and the large model stands where the
+/// record puts it (`model_view`). Nothing else of the character page remains: its layer, face, texts and arrows are hidden.
+fn build_model_page(j: &mut Journal, scene: &mut MenuScene, page: u16, world: i8, _test: &dyn Fn(u16) -> bool) {
+    let Some(o) = j.open.as_ref() else { return };
+    let back = o.cp.back;
+    char_tabs(j, scene, back);
+    let o = j.open.as_mut().unwrap();
+    (o.page, o.world) = (page, world);
+    info!("journal: page {page:#x} (FUN_002aa0b0): the model page of character {}", o.cp.list.get(o.cp.cur).copied().unwrap_or(0));
+}
+
 /// A character's own page (0xf: `FUN_002aa358` -> `FUN_002a98f0` -> `FUN_002aadf0`, and the picture `FUN_002ab8f0`): the layer
 /// (group 0x49) with the face frame (the table 0x382ea0 by the record's style) and the face picture under it, the name (0x4a)
 /// and sub-title (0x4b) texts, the description in a scrolled view of seven lines, and the two scroll arrows (0x4f, 0x50).
-/// The counter row (group 0x4c, records with flag 0x800: how many of an enemy were defeated), the four drop rows of pages 0x12 /
-/// 0x15 and the 3D model (`FUN_002abf60`) are not drawn.
+/// The 3D model (`FUN_002abf60`) is `model_view.rs`'s; the four drop rows of pages 0x12 / 0x15 are not drawn.
 #[allow(clippy::too_many_arguments)]
 fn build_char_page(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Assets<Image>, page: u16, world: i8, test: &dyn Fn(u16) -> bool, items: &dyn Fn(u16) -> i32) {
     let Some(o) = j.open.as_ref() else { return };
@@ -2547,19 +2617,9 @@ fn build_char_page(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: 
         _ => LINKS,
     };
     // The page's number in the original (`FUN_002a9590`): 0xf, 0x12 for the Heartless and 0x15 for the Nobodies.
-    let shown = match back {
-        0x11 => 0x12,
-        0x14 => 0x15,
-        _ => 0xf,
-    };
+    let shown = shown_page(back);
     let enemy_page = shown != 0xf;
-    match back {
-        6 => category_frame(j, scene, 0),
-        0xb => category_frame(j, scene, 7),
-        0xe => category_tab(j, scene, j.tables.c_text[1]),
-        0x11 => category_tab(j, scene, j.tables.c_text[2]),
-        _ => category_tab(j, scene, j.tables.c_text[3]),
-    }
+    char_tabs(j, scene, back);
     let list = j.seq_base + SEQ_LIST;
     let present: std::collections::HashSet<usize> = name_list::exist_set(j, test, items);
     let ch = j.open.as_ref().and_then(|o| o.cp.list.get(cur).copied()).unwrap_or(0);
@@ -3292,6 +3352,21 @@ mod tests {
         }
         assert!(most <= FACE_POOL, "the face pool holds {most}");
         eprintln!("most faces on a page: {most}");
+    }
+
+    /// -6 on a character's page opens its model page, whose numbers follow the character page (0xf / 0x12 / 0x15 -> 0x10 / 0x13 / 0x16);
+    /// the model page returns with a cancel, closes with Start and leaves Left / Right to the held rotation (`FUN_002a9b80`, `FUN_002aa0b0`).
+    #[test]
+    fn the_view_button_opens_the_model_page_and_the_model_page_returns() {
+        assert_eq!(page_char(Key::View, 0, 1, false), Act::View);
+        assert_eq!(page_char(Key::Cancel, 0, 1, false), Act::Back);
+        assert_eq!(page_view(Key::Cancel), Act::Back);
+        assert_eq!(page_view(Key::Start), Act::Close);
+        for k in [Key::View, Key::Confirm, Key::Move(-1, 0), Key::Move(1, 0), Key::L1, Key::R2] {
+            assert_eq!(page_view(k), Act::None, "{k:?}");
+        }
+        assert_eq!([0xe, 0x11, 0x14, 6, 0xb].map(shown_page), [0xf, 0x12, 0x15, 0xf, 0xf]);
+        assert_eq!([6, 0x11, 0x14].map(|b| model_view::view_page(shown_page(b))), [0x10, 0x13, 0x16]);
     }
 
     /// A character's own page on the disc (skipped without `KH2_ISO`): the frame table, the page's groups, and for every character

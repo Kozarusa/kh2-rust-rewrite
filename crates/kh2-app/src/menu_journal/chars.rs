@@ -15,7 +15,7 @@ pub struct Face {
 }
 
 /// The fields of a character record (entry 3, 0x24 bytes) the page reads.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct CharRec {
     /// +0: the family the record belongs to: a journal world 0..0xe, 0x10 the Character Links, 0x11 the Heartless, 0x12 the Nobodies
     /// (`FUN_002aa528` lists the records of the page's family; `FUN_002ab7d8` names the face file by it).
@@ -37,6 +37,23 @@ pub struct CharRec {
     /// +0xc: the 3D model of the character's page (`FUN_002abf60`); for a record with flag 0x800 it is also the `00objentry` id of the
     /// enemy whose NeoStatus keys the defeated-enemy counter (`FUN_002a1f78`: `FUN_0016e208(+0xc)` -> `+0x4c`).
     pub model: u16,
+    /// +0xe: the motion the model plays (`FUN_002abf60` passes it to the preview object's vtable +0x18 with the variant 2).
+    pub motion: u16,
+    /// The two placements of the model: [0] the small one on the character's own page (offset +0x12, +0x14, turn +0x16, scale +0x1c),
+    /// [1] the large one on the model page 0x10 / 0x13 / 0x16 (offset +0x18, +0x1a, scale +0x20, no turn).
+    pub place: [ModelPlace; 2],
+}
+
+/// Where and how large a record's model stands (`FUN_002abf60`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ModelPlace {
+    /// The slot offsets passed as the preview object's x / y (the small model's +0x12 / +0x14, the large one's +0x18 / +0x1a).
+    pub x: i16,
+    pub y: i16,
+    /// The turn about the vertical axis in degrees (`FUN_0023b3c8`): +0x16 for the small model, 0 for the large one.
+    pub turn: i16,
+    /// The float at +0x1c / +0x20: the model's scale (`FUN_0023b408`), or for the models of table 0x382e68 its extra depth.
+    pub scale: f32,
 }
 
 /// The flag of the enemy records: the page shows the counter row and the record exists once the enemy has been defeated.
@@ -48,7 +65,24 @@ pub fn parse_chars(d: &[u8]) -> Vec<CharRec> {
         .iter()
         .map(|r| {
             let u16_at = |o: usize| u16::from_le_bytes([r[o], r[o + 1]]);
-            CharRec { family: r[0], face: r[1], style: r[2], bit: u16_at(4), name: u16_at(6), flags: u16_at(0x10), desc: u16_at(8), sub: u16_at(0xa), model: u16_at(0xc) }
+            let i16_at = |o: usize| u16_at(o) as i16;
+            let f32_at = |o: usize| f32::from_le_bytes([r[o], r[o + 1], r[o + 2], r[o + 3]]);
+            CharRec {
+                family: r[0],
+                face: r[1],
+                style: r[2],
+                bit: u16_at(4),
+                name: u16_at(6),
+                flags: u16_at(0x10),
+                desc: u16_at(8),
+                sub: u16_at(0xa),
+                model: u16_at(0xc),
+                motion: u16_at(0xe),
+                place: [
+                    ModelPlace { x: i16_at(0x12), y: i16_at(0x14), turn: i16_at(0x16), scale: f32_at(0x1c) },
+                    ModelPlace { x: i16_at(0x18), y: i16_at(0x1a), turn: 0, scale: f32_at(0x20) },
+                ],
+            }
         })
         .collect()
 }
@@ -423,6 +457,29 @@ mod tests {
         assert_eq!(neighbour(&list, 1, &lone, true), 1, "the only one stays");
         assert_eq!(neighbour(&list, 1, &lone, false), 1);
         assert_eq!(neighbour(&list, 0, &|_| false, true), 0);
+    }
+
+    /// A record's bytes give the model fields (`FUN_002abf60`): the motion, the small model's x, y, turn and scale and the large one's x, y and scale.
+    #[test]
+    fn a_record_carries_its_model_placements() {
+        let mut d = vec![0u8; 0x10 + 0x24];
+        d[8] = 1;
+        let r = &mut d[0x10..];
+        r[0xc..0xe].copy_from_slice(&1309u16.to_le_bytes());
+        r[0xe..0x10].copy_from_slice(&133u16.to_le_bytes());
+        r[0x10..0x12].copy_from_slice(&0x802u16.to_le_bytes());
+        r[0x12..0x14].copy_from_slice(&183i16.to_le_bytes());
+        r[0x14..0x16].copy_from_slice(&(-20i16).to_le_bytes());
+        r[0x16..0x18].copy_from_slice(&40i16.to_le_bytes());
+        r[0x18..0x1a].copy_from_slice(&(-3i16).to_le_bytes());
+        r[0x1a..0x1c].copy_from_slice(&145i16.to_le_bytes());
+        r[0x1c..0x20].copy_from_slice(&1.36f32.to_le_bytes());
+        r[0x20..0x24].copy_from_slice(&1.52f32.to_le_bytes());
+        let c = parse_chars(&d);
+        assert_eq!(c.len(), 1);
+        assert_eq!((c[0].model, c[0].motion, c[0].flags), (1309, 133, 0x802));
+        assert_eq!(c[0].place[0], ModelPlace { x: 183, y: -20, turn: 40, scale: 1.36 });
+        assert_eq!(c[0].place[1], ModelPlace { x: -3, y: 145, turn: 0, scale: 1.52 });
     }
 
     fn rec(family: u8, flags: u16, model: u16) -> CharRec {

@@ -236,7 +236,7 @@ entrance, map, btl, evt; 0xff keeps the current one).
   freezes the screen (`FUN_0014dcb0`, `FUN_0014de00`), fades the screen fader to black (`FUN_0014a7c8(fader, 0xf, 0)`),
   waits for black and ends; no destination and no fade-in was found [gap], so `Outcome::FreezeFade` is logged only.
   Record words 4 to 6 come from the trigger sub-commands 4, 5, 7, 8 (`FUN_00180ff8`; defaults `FUN_00197780`): word 4
-  (sub 4, default 0) a party arrangement index (`FUN_001a7330(FUN_001a71c0(world), index)`, ported in WP-PT1: `party::jump_party`, docs/party.md section 21); word 5 (sub 5, default -1) the party reset code (the 5th argument of `FUN_00104e18`; when the record has no destination world and the word is non-zero `FUN_001abfe8()` is called with no argument, not ported; with a destination the reset runs in `party::jump_reset`, WP-PT1);
+  (sub 4, default -1, `FUN_0019d8d0`) a party arrangement index (`FUN_001a7330(FUN_001a71c0(world), index)`, ported in WP-PT1: `party::jump_party`, docs/party.md section 21); word 5 (sub 5, default 0) the party reset code (the 5th argument of `FUN_00104e18`; when the record has no destination world and the word is non-zero `FUN_001abfe8(word 5)` is called (ported); with a destination the reset runs in `party::jump_reset`, WP-PT1);
   word 6 (sub 7, default 0) "menu before": 1 or 2 opens menu kind 5 first (`FUN_0024f300`) and sets the jump's wait (the 3rd argument of
   `FUN_00104e18`, read as ticks [inferred]) to 2, logged only (the menu is missing); any other code leaves both at 0
   (`LAB_0019db28`); sub 8 is not read by `FUN_0019d9d8`. Tests:

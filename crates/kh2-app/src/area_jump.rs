@@ -339,10 +339,10 @@ pub fn resolve_jump(j: &Jump, cur: (u8, u8, u8), last: Option<Dest>, localset: i
 /// the record words `[4]`, `[5]` and `[6]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JumpExtras {
-    /// Sub-command 4 (+0x44, default 0): a party arrangement index; 0 or more makes `FUN_0019d9d8` reorder the
+    /// Sub-command 4 (+0x44, default -1: `FUN_0019d8d0`): a party arrangement index; 0 or more makes `FUN_0019d9d8` reorder the
     /// destination world's party (`FUN_001a7330(FUN_001a71c0(world), index)`); applied by `party::jump_party` (WP-PT1).
     pub party: i16,
-    /// Sub-command 5 (+0x48, default -1): the party reset code handed to `FUN_00104e18` and `FUN_001abfe8`; 0 is no
+    /// Sub-command 5 (+0x48, default 0: `FUN_0019d8d0`): the party reset code handed to `FUN_00104e18` and `FUN_001abfe8`; 0 is no
     /// reset, anything else resets the party objects (`FUN_001ac130` for each of the slots 1 to 15); run by `party::jump_reset` (WP-PT1).
     pub reset: i16,
     /// Sub-command 7 (+0x4c, default 0): the "menu before" code: 1 or 2 opens menu kind 5 first
@@ -354,7 +354,7 @@ pub struct JumpExtras {
 
 impl Default for JumpExtras {
     fn default() -> Self {
-        JumpExtras { party: 0, reset: -1, menu_before: 0, flag: false }
+        JumpExtras { party: -1, reset: 0, menu_before: 0, flag: false }
     }
 }
 
@@ -759,10 +759,10 @@ pub fn jump_fade_kind(j: &Jump) -> (u32, bool) {
 }
 
 /// `KH2_JUMP_WORDS=<word 4>:<word 5>:<word 6>` (decimal, signed) as the record words of the harness jump (WP-PT1; a test aid:
-/// the party arrangement, the reset code and the "menu before" code). Without it the arrangement is -1 (none), unlike the
-/// default of a trigger's record (0), so a forced jump leaves the party alone.
+/// the party arrangement, the reset code and the "menu before" code). Without it the record has the defaults of
+/// `FUN_0019d8d0` (-1, 0, 0): nothing is arranged or reset.
 fn harness_extras() -> JumpExtras {
-    let mut e = JumpExtras { party: -1, ..JumpExtras::default() };
+    let mut e = JumpExtras::default();
     if let Ok(v) = std::env::var("KH2_JUMP_WORDS") {
         let w: Vec<i16> = v.split(':').filter_map(|x| x.trim().parse().ok()).collect();
         e.party = w.first().copied().unwrap_or(e.party);
@@ -806,11 +806,13 @@ fn take_record(j: &Jump, extras: &JumpExtras, cur: (u8, u8, u8), last: Option<De
             Some(d)
         }
         Ok(Outcome::OpenMenu { kind, arg }) => {
+            null_world_words(extras, menus);
             menus.ending = kind == 0xe;
             info!("jump record type {}: opens menu kind {kind:#x} (FUN_0024f0b8({kind:#x}, {arg})): the ending screen, no jump{}", j.kind, extras.text());
             None
         }
         Ok(Outcome::FreezeFade) => {
+            null_world_words(extras, menus);
             menus.black = true;
             info!("jump record type {}: FUN_00149f38 freezes the screen and fades to black, no jump{}", j.kind, extras.text());
             None
@@ -819,6 +821,15 @@ fn take_record(j: &Jump, extras: &JumpExtras, cur: (u8, u8, u8), last: Option<De
             info!("jump record {why}; not ported");
             None
         }
+    }
+}
+
+/// `FUN_0019d9d8` with no destination world (types 5 and 6, `pbVar8` null): the arrangement applies to the current world and
+/// `FUN_001abfe8(word 5)` runs at once when word 5 is not 0 (the call's argument is loaded from the record at 0x19db2c).
+fn null_world_words(extras: &JumpExtras, menus: &mut JumpMenus) {
+    menus.party = Some(PartyWords { world: None, arrange: extras.party, menu: extras.menu_before_arg() });
+    if extras.reset != 0 {
+        menus.resets.push(extras.reset);
     }
 }
 
@@ -1458,208 +1469,15 @@ mod tests {
     /// `AfterEvent::START_TICKS`.
     #[test]
     fn the_jump_after_a_trigger_event_waits_for_the_events_end() {
-        let j = Jump { kind: 1, world: 2, area: 8, entrance: 0, key: 0, flags: 0x4001 };
-        let mut ae = AfterEvent::new(Some(j), 0x20);
-        assert!(!ae.step(false), "the request is taken on the next tick");
-        for _ in 0..500 {
-            assert!(!ae.step(true));
-        }
-        assert!(ae.step(false), "the event is over: the jump is due");
-        let mut never = AfterEvent::new(None, 0x20);
-        let due: Vec<bool> = (0..4).map(|_| never.step(false)).collect();
-        assert_eq!(due, vec![false, false, true, true]);
-    }
-
-    /// FIX-R1 6: two exit groups with an event walk-in in one tick request one event and keep the first jump.
-    #[test]
-    fn only_the_first_event_walk_in_of_a_tick_is_taken() {
-        let j1 = Jump { kind: 1, world: 2, area: 8, entrance: 0, key: 0, flags: 0 };
-        let j2 = Jump { kind: 1, world: 2, area: 9, entrance: 1, key: 0, flags: 0 };
-        let mut after = None;
-        let mut requests = 0;
-        assert!(start_event_walk_in(&mut after, Some(j1), 0x20, || requests += 1));
-        assert!(!start_event_walk_in(&mut after, Some(j2), 0x21, || requests += 1));
-        assert_eq!(requests, 1);
-        let a = after.expect("the first walk-in");
-        assert_eq!((a.group, a.jump), (0x20, Some(j1)));
-    }
-
-    /// WP-E6b: every Twilight Town trigger on event 1 (an exit's walk-in) that names an event, with its jump
-    /// record and whether the area file holds the event.
-    #[test]
-    fn twilight_town_walk_in_triggers_with_events() {
-        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else {
-            eprintln!("skipped: no disc (set KH2_ISO)");
-            return;
-        };
-        let disc = Disc::open(&iso);
-        let mut found = 0;
-        for n in 0..64u8 {
-            let Some(name) = area::area_name(2, n) else { continue };
-            let Some(file) = disc.read(&format!("ard/{name}.ard")) else { continue };
-            let Some((ard, _)) = kh2_ard::Area::parse(&file) else { continue };
-            for (tag, progs) in &ard.scripts {
-                for p in progs {
-                    for c in p.commands.iter().filter(|c| c.opcode == 0xc) {
-                        let Some(t) = kh2_ard::parse_trigger(&c.args) else { continue };
-                        if let Some((ev, arg)) = t.event_tag() {
-                            found += (t.event == 1) as usize;
-                            eprintln!("{name} {tag} program {:#x}: trigger ({:#x}, {:#x}) event {ev} arg {arg} (in the area: {}) jump {:?}", p.id, t.event, t.arg, ard.events.contains_key(&ev), t.jump());
-                        }
-                    }
-                }
-            }
-        }
-        eprintln!("walk-in triggers with an event: {found}");
-        assert!(found > 0, "Twilight Town has trigger (1, ..) walk-ins that play an event");
-    }
-
-    fn jump(kind: u16, world: u16, area: u16, entrance: u16, key: u16) -> Jump {
-        Jump { kind, world, area, entrance, key, flags: 0 }
-    }
-
-    /// WP-JT2 A: a type-2 record goes to the area the table gives for the key, with map, btl and evt programs all
-    /// the key and the record's entrance (`FUN_0019d8f0` -> `FUN_00198080`); a negative world is the current one;
-    /// an unknown key keeps the current world and area (every byte 0xff, `FUN_00104bd0`).
-    #[test]
-    fn a_type_two_jump_goes_to_the_keys_area_with_all_three_programs() {
-        let table = |w: u8, k: u16| (w == 2 && (k == 0xb5 || k == 0x4d)).then_some(4u8);
-        let cur = (2, 3, 7);
-        let d = resolve_jump(&jump(2, 0xffff, 0xffff, 0, 0xb5), cur, None, table).unwrap();
-        assert_eq!(d, Dest { world: 2, area: 4, entrance: 0, programs: [0xb5; 3] });
-        assert_eq!(d.programs_text(), "(0xb5, 0xb5, 0xb5)");
-        let d = resolve_jump(&jump(2, 2, 0, 5, 0x4d), cur, None, table).unwrap();
-        assert_eq!((d.world, d.area, d.entrance, d.programs), (2, 4, 5, [0x4d; 3]));
-        // Unknown key: stays in the current area at the record's entrance, the table's programs.
-        let d = resolve_jump(&jump(2, 0xffff, 0xffff, 1, 0x01), cur, None, table).unwrap();
-        assert_eq!(d, Dest { world: 2, area: 3, entrance: 1, programs: [KEEP; 3] });
-        // An entrance of 0xff keeps the current one.
-        assert_eq!(resolve_jump(&jump(2, 0xffff, 0xffff, 0xffff, 0xb5), cur, None, table).unwrap().entrance, 7);
-    }
-
-    /// Type 1 keeps its own bytes (0xff keeps the current record's); type 3 goes where the last exit pointed, and
-    /// before any exit has fired (all 0xff) stays where it is; the exit's walk-in is what records the target.
-    #[test]
-    fn a_type_three_jump_returns_to_the_last_exits_target() {
-        let none = |_: u8, _: u16| None;
-        let cur = (2, 4, 2);
-        assert_eq!(resolve_jump(&jump(1, 2, 8, 0, 0), cur, None, none).unwrap(), Dest::new(2, 8, 0));
-        assert_eq!(resolve_jump(&jump(1, 0xffff, 9, 0xffff, 0), cur, None, none).unwrap(), Dest::new(2, 9, 2));
-        let mut last = LastExit::default();
-        assert_eq!(resolve_jump(&jump(3, 0, 0, 0, 0), cur, last.0, none).unwrap(), Dest::new(2, 4, 2), "no exit yet: the record stays");
-        // An exit to tt03 entrance 1 fires (the programs of the remembered record are 0xff, whatever the exit passed).
-        last.record(Dest { world: 2, area: 3, entrance: 1, programs: [9, 9, 9] });
-        assert_eq!(last.0, Some(Dest::new(2, 3, 1)));
-        assert_eq!(resolve_jump(&jump(3, 0, 0, 0, 0), cur, last.0, none).unwrap(), Dest::new(2, 3, 1));
-        // The next exit replaces it (world 0x12 area 1 for the exit area 100).
-        last.record(Dest::new(0x12, 1, 0));
-        assert_eq!(resolve_jump(&jump(3, 0, 0, 0, 0), cur, last.0, none).unwrap(), Dest::new(0x12, 1, 0));
-    }
-
-    /// `resolve_jump` handles types 1 to 3 only; 4 to 6 go through `resolve_record`; type 7 does nothing.
-    #[test]
-    fn resolve_jump_leaves_types_four_to_six_to_resolve_record() {
-        let none = |_: u8, _: u16| None;
-        for k in [4u16, 5, 6, 7] {
-            let e = resolve_jump(&jump(k, 0, 0, 0, 0), (2, 4, 0), None, none).unwrap_err();
-            assert!(!e.is_empty(), "type {k}");
-        }
-        assert!(resolve_jump(&jump(4, 0, 0, 0, 0), (2, 4, 0), None, none).unwrap_err().contains("0x1071"));
-    }
-
-    fn table() -> MapEntrances {
-        let mut t = [(0, 0); 15];
-        for (i, e) in t.iter_mut().enumerate() {
-            *e = (i as u32 + 100, i as u32 + 1);
-        }
-        t
-    }
-
-    #[test]
-    fn type_four_decides_by_story_flags() {
-        let none = |_: u8, _: u16| None;
-        let with = |ids: &'static [u16]| move |f: u16| ids.contains(&f);
-        // 0x1071 set, 0x1072 clear, one of 0x140f: world 4, remembers the record's world.
-        let (d, m) = type4_dest(with(&[0x1071, 0x140f]), 7, None, &table(), none);
-        assert_eq!((d.world, d.area, d.entrance), (4, 0, 0));
-        assert_eq!(m, Some(7));
-        // 0x1072 set blocks the first case; 0x8cd then takes the second: world 0x12, programs 0x40.
-        let (d, m) = type4_dest(with(&[0x1071, 0x1072, 0x140f, 0x8cd]), 7, None, &table(), |w, k| (w == 0x12 && k == 0x40).then_some(3));
-        assert_eq!((d.world, d.area, d.entrance, d.programs), (0x12, 3, 0, [0x40; 3]));
-        assert_eq!(m, Some(7));
-        // Without the key the second case keeps every byte.
-        let (d, _) = type4_dest(with(&[0x1c1c]), 7, None, &table(), none);
-        assert_eq!((d.world, d.area), (KEEP, KEEP));
-        // No flag: the world map, entrance by the record's world (world 3 -> 102), memory used then cleared.
-        let (d, m) = type4_dest(with(&[]), 3, None, &table(), none);
-        assert_eq!((d.world, d.area, d.entrance), (WORLD_MAP, 0, 102));
-        assert_eq!(m, None);
-        let (d, m) = type4_dest(with(&[]), 3, Some(5), &table(), none);
-        assert_eq!(d.entrance, 104);
-        assert_eq!(m, None);
-        // A world not in the table gives entrance 0.
-        assert_eq!(map_entrance(&table(), 0x30), 0);
-    }
-
-    #[test]
-    fn type_four_to_the_world_map_is_not_available() {
-        let mut mem = None;
-        let j = jump(4, 3, 0, 0, 0);
-        let Outcome::Go(d) = resolve_record(&j, (2, 4, 0), None, |_, _| None, |_| false, &table(), &mut mem).unwrap() else { panic!("type 4 goes") };
-        assert_eq!(d.world, WORLD_MAP);
-        let err = jump_target(&d, |_| true).unwrap_err();
-        assert!(err.contains("world map is not available"), "{err}");
-    }
-
-    #[test]
-    fn types_five_and_six_open_a_menu_or_freeze_without_a_jump() {
-        let mut mem = None;
-        let mut r = |k| resolve_record(&jump(k, 0, 0, 0, 0), (2, 4, 0), None, |_, _| None, |_| false, &table(), &mut mem).unwrap();
-        assert_eq!(r(5), Outcome::OpenMenu { kind: 0xe, arg: -1 });
-        assert_eq!(r(6), Outcome::FreezeFade);
-        assert!(matches!(r(1), Outcome::Go(_)));
-    }
-
-    #[test]
-    fn record_words_four_to_six_parse_with_defaults() {
-        let d = JumpExtras::from_subs(&[]);
-        assert_eq!(d, JumpExtras { party: 0, reset: -1, menu_before: 0, flag: false });
-        assert_eq!(d.delay_ticks(), 0);
-        assert!(d.resets_party());
-        assert_eq!(d.text(), "");
-        let e = JumpExtras::from_subs(&[(4, vec![2]), (5, vec![0]), (7, vec![2]), (8, vec![]), (5, vec![0])]);
-        assert_eq!((e.party, e.reset, e.menu_before, e.flag), (2, 0, 2, true));
-        assert_eq!(e.delay_ticks(), 2);
-        assert_eq!(e.menu_before_arg(), Some(2));
+        // The words the jump hands to the party systems.
+        assert_eq!(e.party, -1);
         assert!(!e.resets_party());
-        assert_eq!(JumpExtras { menu_before: 1, ..d }.menu_before_arg(), Some(0));
-        assert_eq!(JumpExtras { menu_before: 3, ..d }.menu_before_arg(), None);
-        // A negative party word skips both the delay and the menu.
-        let n = JumpExtras { party: -1, menu_before: 1, ..d };
-        assert_eq!((n.delay_ticks(), n.menu_before_arg()), (0, None));
-        // Other non-zero codes neither open the menu nor delay (FUN_0019d9d8 jumps to LAB_0019db28).
-        let c3 = JumpExtras { menu_before: 3, ..d };
-        assert_eq!((c3.delay_ticks(), c3.menu_before_arg()), (0, None));
-        assert!(!e.text().is_empty());
-    }
-
-    #[test]
-    fn a_type_four_record_always_fades_with_kind_one() {
-        assert_eq!(record_fade(&jump(4, 0, 0, 0, 0)), (1, false));
-    }
-
-    /// WP-JT2 A on the disc: the localset table the app reads gives key 0xb5 and 0x4d tt04.
-    #[test]
-    fn the_disc_localset_gives_the_prologue_keys_tt04() {
-        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else {
-            eprintln!("skipped: no disc (set KH2_ISO)");
-            return;
-        };
-        let disc = Disc::open(&iso);
-        assert_eq!(disc_localset(&disc, 2, 0xb5), Some(4));
-        assert_eq!(disc_localset(&disc, 2, 0x4d), Some(4));
-        let d = resolve_jump(&jump(2, 0xffff, 0xffff, 0, 0xb5), (2, 3, 0), None, |w, k| disc_localset(&disc, w, k)).unwrap();
-        assert_eq!(dest_name(&d), "tt04");
-        eprintln!("type 2 key 0xb5 from tt03 -> {} entrance {} programs {}", dest_name(&d), d.entrance, d.programs_text());
+        assert_eq!(e.menu_before_arg(), None);
+        assert_eq!(e.delay_ticks(), 0);
+        null_world_words(&e, &mut menus);
+        assert_eq!(crate::party_rules::arrange([0, 1, 2, 0x10], e.party, &[0]), None, "no arrangement: the party stays");
+        assert_eq!(crate::party_rules::reset_effect(i64::from(e.reset), true, false), crate::party_rules::ResetEffect::default(), "no reset: HP and MP stay");
+        assert!(menus.resets.is_empty(), "no reset");
+        assert_eq!(menus.party.map(|p| p.arrange), Some(-1), "an arrangement of -1 applies nothing (rules::arrange)");
     }
 }

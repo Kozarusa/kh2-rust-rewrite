@@ -1225,15 +1225,16 @@ area-script command 0xf (section 1, `rules::apply_preset`, the preset being entr
 `FUN_0024f300(0, 0x1c8bda0)`; 2 first runs `FUN_001d73d0(previous, new)` and calls `FUN_0024f300(2, 0x1c8bda0)`; any other value
 opens nothing. `FUN_00104e18(dest, fade, wait, 0, word 5)` gets wait 2 when the camp was opened, else 0 (`LAB_0019db28`); with a wait it
 runs `FUN_001abfe8(word 5)` at once, without one the jump task runs it after the fade-out and before the area unloads
-(`FUN_00104d58`, `+0x10`). The defaults of a record are word 4 = 0, word 5 = -1, word 6 = 0 (`FUN_00197780`), so a record whose
-trigger has no sub-command 4 or 5 applies preset 0 and resets with code -1.
+(`FUN_00104d58`, `+0x10`). The defaults of a record are word 4 = -1, word 5 = 0, word 6 = 0 (`FUN_0019d8d0`, called by `FUN_00197780` on the trigger's
+record at trigger +0x34; the trigger's own +0x10 / +0x14 that `FUN_00197780` sets are other fields), so a trigger with no sub-command
+4, 5 or 7 arranges nothing, resets nothing and opens no page. With no destination world (types 5 and 6) the arrangement applies to the
+current world and `FUN_001abfe8(word 5)` runs at once (the argument register is loaded from the record at 0x19db2c; ported).
 
 **The arrangement.** The app applies word 4 in `party::jump_party`: `PartySlots::edit_world(world, fresh, ..)` rewrites the bytes of
 the destination world (the current bytes when it is the world standing, the saved record of another world, the default preset for a
 world the app has not entered), with `rules::arrange` = `apply_preset` over `memt` trailing entry `word 4`. When the members the bytes
 name differ from the ones standing, `spawn_party`'s rebuild (section 18) swaps them. Log: `party: jump record word 4 = 1: preset applied
-to world 2 (FUN_001a7330): slot bytes [..] -> [..]`. The jump record without a destination world (types 5 and 6) is not applied:
-those cases call `FUN_001abfe8()` with a register that was not set by the caller [gap: the argument is not defined in the decomp].
+to world 2 (FUN_001a7330): slot bytes [..] -> [..]`. 
 
 **The reset `FUN_001abfe8(code)` [V].** `rules::reset_effect`: 0 returns. 4, 5 and 6 end the form (`FUN_001c75c0`: `DAT_0035ff30 = 0`,
 the hidden-member count; `FUN_001ac170`: form bytes `DAT_00340c88` +4 and +5 cleared, the player's block reset) and return, 4 and 5

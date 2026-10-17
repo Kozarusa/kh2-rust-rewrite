@@ -3190,7 +3190,6 @@ impl Plugin for SummonPlugin {
             .init_resource::<crate::hud::hud_party::SummonFace>()
             .add_systems(Update, (keys.before(crate::magic::harness_keys), harness_requests, hud_feed.before(crate::hud::hud_gauge::update), face_feed.before(crate::hud::hud_party::update)))
             .add_systems(FixedUpdate, (track_player_hits, tick, act, objects, revive_effects, companions).chain().in_set(Sim::Sounds))
-            .add_systems(FixedUpdate, revive_pad.before(Sim::Sora))
             .add_systems(FixedUpdate, stops.after(Sim::Enemy).before(Sim::Detect).run_if(crate::schedule::sim_running));
     }
 }
@@ -3872,7 +3871,7 @@ fn kid_object_ids(rows: &[t::Sumn], objs: &[t::Objentry], index: u8) -> Vec<u32>
 }
 
 /// What Tinker Bell's revive sequence does, in the order the game does it (`FUN_001ad378` type 2, then the thread
-/// `FUN_001ad9a0`, then `FUN_001adeb8`). The acts are carried out by `revive_effects` and `revive_pad`; the state machine
+/// `FUN_001ad9a0`, then `FUN_001adeb8`). The acts are carried out by `revive_effects`; the state machine
 /// itself needs neither audio nor a world.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviveAct {
@@ -3888,10 +3887,11 @@ pub enum ReviveAct {
     WindowSkipped,
     /// `FUN_00138708(2)`: `DAT_00354f70` bit 2 set (cleared by `FUN_001ad790`, `FieldReleased`).
     FieldHeld,
-    /// Step 1 of the thread: `FUN_002c38b8` sets `DAT_0036f598`, which stops `FUN_002c3228` handing out pad events.
-    PadLock,
-    /// `FUN_002c38c8` clears it again.
-    PadRelease,
+    /// Step 1 of the thread: `FUN_002c38b8` sets `DAT_0036f598`. Its only reader is `FUN_002c3228`, the sound engine's request-slot
+    /// allocator (`FUN_002c36b8` / `FUN_002c37b8`): while it is set no new positional sound gets a slot. It is not a pad lock.
+    SoundGate,
+    /// `FUN_002c38c8` clears `DAT_0036f598` again.
+    SoundGateOff,
     /// `FUN_00183fe0`: the player is put on the floor point under him.
     PlayerToFloor,
     /// `FUN_001adeb8`: byte 7 cleared (`FUN_001c6a10`) and Tinker Bell made.
@@ -3907,7 +3907,7 @@ pub enum ReviveAct {
 /// The revive thread (`FUN_001ad9a0`, state word +8) with the object's fields it needs.
 #[derive(Debug, Clone, Default)]
 pub struct Revive {
-    /// `Some(step)` while the thread runs: 0 the first tick, 1 the pad lock, 2 the waits.
+    /// `Some(step)` while the thread runs: 0 the first tick, 1 the sound gate, 2 the waits.
     step: Option<u8>,
     /// `00objentry` id of Tinker Bell, made when the thread is done.
     tinker: u32,
@@ -3919,8 +3919,8 @@ impl Revive {
         self.step.is_some()
     }
 
-    /// The pad is locked (`DAT_0036f598` set in step 1, cleared when the waits are over).
-    pub fn pad_locked(&self) -> bool {
+    /// `DAT_0036f598` is set (step 1 on, until the waits are over).
+    pub fn sounds_held(&self) -> bool {
         self.step.is_some_and(|s| s >= 2)
     }
 
@@ -3932,16 +3932,16 @@ impl Revive {
         vec![ReviveAct::FlagsSet, ReviveAct::MusicStop, ReviveAct::Sound(0x13), ReviveAct::WindowSkipped, ReviveAct::FieldHeld]
     }
 
-    /// One tick of the thread (`FUN_001ad9a0`): case 0 moves on, case 1 locks the pad and falls into case 2, which waits
-    /// while the message window exists (`FUN_00196418`) or the fade object 0x356b30 is not idle (+0xfc != 4), then lets go
-    /// of the pad, puts the player on the floor and finishes with `FUN_001adeb8` (type 2).
+    /// One tick of the thread (`FUN_001ad9a0`): case 0 moves on, case 1 sets the sound gate and falls into case 2, which waits
+    /// while the message window exists (`FUN_00196418`) or the fade object 0x356b30 is not idle (+0xfc != 4), then clears
+    /// the gate, puts the player on the floor and finishes with `FUN_001adeb8` (type 2).
     pub fn tick(&mut self, window_open: bool, fade_idle: bool) -> Vec<ReviveAct> {
         let mut acts = Vec::new();
         match self.step {
             None => {}
             Some(0) => self.step = Some(1),
             Some(1) => {
-                acts.push(ReviveAct::PadLock);
+                acts.push(ReviveAct::SoundGate);
                 self.step = Some(2);
                 self.wait(window_open, fade_idle, &mut acts);
             }
@@ -3955,7 +3955,7 @@ impl Revive {
             return;
         }
         acts.extend([
-            ReviveAct::PadRelease,
+            ReviveAct::SoundGateOff,
             ReviveAct::PlayerToFloor,
             ReviveAct::TinkerMade,
             ReviveAct::FlagsClear,
@@ -4055,8 +4055,8 @@ fn revive_effects(
             }
             ReviveAct::WindowSkipped => info!("summon: revive: the message window (FUN_00195898 / FUN_00195a78 / FUN_00195ae0) is not opened: its text is not found"),
             ReviveAct::FieldHeld => info!("summon: revive: 0x354f70 bit 2 set (FUN_00138708)"),
-            ReviveAct::PadLock => info!("summon: revive: pad locked (FUN_002c38b8)"),
-            ReviveAct::PadRelease => info!("summon: revive: pad released (FUN_002c38c8)"),
+            ReviveAct::SoundGate => info!("summon: revive: sound request gate set (FUN_002c38b8, DAT_0036f598)"),
+            ReviveAct::SoundGateOff => info!("summon: revive: sound request gate cleared (FUN_002c38c8)"),
             ReviveAct::PlayerToFloor => info!("summon: revive: the player is put on the floor (FUN_00183fe0; sora.rs's ground contact)"),
             ReviveAct::TinkerMade => {}
             ReviveAct::FlagsClear => info!("summon: revive: flag 0x35d268 bit 1 cleared (FUN_001adeb8)"),
@@ -4068,15 +4068,6 @@ fn revive_effects(
             }
             ReviveAct::FieldReleased => info!("summon: revive: 0x354f70 bit 2 cleared (FUN_001ad790)"),
         }
-    }
-}
-
-/// While the revive thread holds the pad (`DAT_0036f598`, no pad events handed out) the pad reads as untouched.
-fn revive_pad(sm: Res<SummonState>, pad: Option<ResMut<crate::sora::Pad>>) {
-    if sm.revive.pad_locked()
-        && let Some(mut pad) = pad
-    {
-        pad.lock();
     }
 }
 
@@ -4112,7 +4103,7 @@ fn objects(
         s.enter(State::Down, None);
     }
     // Tinker Bell's revive (FUN_001cec00 -> FUN_001ad8a8 -> FUN_001ad378 type 2): Peter Pan is out with byte 7 set and the
-    // player is knocked out. `Revive` runs the sequence: the music stops and the pad locks, and when its waits are over
+    // player is knocked out. `Revive` runs the sequence: the music stops and new sounds are refused, and when its waits are over
     // FUN_001adeb8 clears byte 7 (FUN_001c6a10), makes Tinker Bell (objentry 0x4f4, the row's Entity2) at the player and
     // sets her mode `reraise` (the string at 0x37b880); her script raises the player (host 1.277). The message window's
     // text is not found, so no window is opened, and the app has no 0x356b30 fade to wait for (docs/summons.md).
@@ -5154,7 +5145,7 @@ mod tests {
     use super::*;
 
     /// WP-SM4: the revive sequence's order (`FUN_001ad378` type 2, thread `FUN_001ad9a0`, `FUN_001adeb8`): the music stops
-    /// first, the pad locks in step 1 and is released before Tinker Bell is made, the music restarts after she is made, and
+    /// first, the sound gate is set in step 1 and cleared before Tinker Bell is made, the music restarts after she is made, and
     /// the thread's end releases the field bit last.
     #[test]
     fn the_revive_sequence_runs_in_the_games_order() {
@@ -5163,35 +5154,62 @@ mod tests {
         assert!(!r.running());
         let start = r.begin(0x4f4);
         assert_eq!(start, [FlagsSet, MusicStop, Sound(0x13), WindowSkipped, FieldHeld]);
-        assert!(r.running() && !r.pad_locked());
+        assert!(r.running() && !r.sounds_held());
         // Case 0 only moves on.
         assert!(r.tick(false, true).is_empty());
-        assert!(!r.pad_locked());
+        assert!(!r.sounds_held());
         // Case 1 locks the pad and falls into the waits, which are over at once.
         let end = r.tick(false, true);
-        assert_eq!(end, [PadLock, PadRelease, PlayerToFloor, TinkerMade, FlagsClear, MusicRestart, FieldReleased]);
-        assert!(!r.running() && !r.pad_locked());
+        assert_eq!(end, [SoundGate, SoundGateOff, PlayerToFloor, TinkerMade, FlagsClear, MusicRestart, FieldReleased]);
+        assert!(!r.running() && !r.sounds_held());
         assert!(r.tick(false, true).is_empty());
     }
 
     /// WP-SM4: an open message window or a fade that is not idle (`FUN_00196418`, 0x356b30 +0xfc != 4) keeps the thread
     /// waiting with the pad locked; nothing is made and the music stays stopped until both are over.
     #[test]
-    fn the_revive_waits_for_the_window_and_the_fade_with_the_pad_locked() {
+    fn the_revive_waits_for_the_window_and_the_fade_with_the_sounds_held() {
         use ReviveAct::*;
         let mut r = Revive::default();
         r.begin(1);
         r.tick(true, true);
-        assert_eq!(r.tick(true, true), [PadLock]);
-        assert!(r.pad_locked());
+        assert_eq!(r.tick(true, true), [SoundGate]);
+        assert!(r.sounds_held());
         assert!(r.tick(true, true).is_empty());
         assert!(r.tick(false, false).is_empty());
-        assert!(r.running() && r.pad_locked());
+        assert!(r.running() && r.sounds_held());
         let end = r.tick(false, true);
-        assert_eq!(end.first(), Some(&PadRelease));
+        assert_eq!(end.first(), Some(&SoundGateOff));
         assert_eq!(end.iter().filter(|a| **a == TinkerMade).count(), 1);
         assert!(end.iter().position(|a| *a == TinkerMade) < end.iter().position(|a| *a == MusicRestart));
         assert!(!r.running());
+    }
+
+    /// WP-SM4b: the Bevy glue of the revive: `revive_effects` carries the music acts to `AreaMusic` (held on `MusicStop`, given
+    /// back on `MusicRestart`) and empties the act list.
+    #[test]
+    fn revive_effects_hold_and_release_the_area_music() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut app = App::new();
+        app.add_message::<crate::audio::PlaySe>();
+        let mut music = crate::audio_bgm::AreaMusic::default();
+        music.set_area(10, 20);
+        app.insert_resource(music);
+        let mut sm = SummonState::default();
+        sm.revive_acts = vec![ReviveAct::MusicStop, ReviveAct::Sound(0x13)];
+        app.insert_resource(sm);
+        app.world_mut().run_system_once(revive_effects).expect("system runs");
+        let m = app.world().resource::<crate::audio_bgm::AreaMusic>();
+        assert_eq!(m.held, Some(true));
+        assert!(!m.switching, "no battle switch while the music is held");
+        assert!(app.world().resource::<SummonState>().revive_acts.is_empty());
+        let sounds = app.world().resource::<Messages<crate::audio::PlaySe>>();
+        assert_eq!(sounds.len(), 1, "sound 0x13 is requested");
+        app.world_mut().resource_mut::<SummonState>().revive_acts = vec![ReviveAct::MusicRestart];
+        app.world_mut().run_system_once(revive_effects).expect("system runs");
+        let m = app.world().resource::<crate::audio_bgm::AreaMusic>();
+        assert_eq!(m.held, None);
+        assert!(m.switching);
     }
 
     /// WP-SM3: a summon call counts one use in the BATTLE REPORT word of its row index (`FUN_001c6168` -> `FUN_001d76f8`);

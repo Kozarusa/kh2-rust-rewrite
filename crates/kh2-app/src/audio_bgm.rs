@@ -139,8 +139,8 @@ pub mod timing {
     pub const BATTLE_OUT: i32 = 0x2d0;
     pub const FIELD_IN: i32 = 0x1e0;
     pub const FIELD_IN_DELAY: i32 = 0xf0;
-    /// `FUN_00136a68`: the BGM stream stop of the revive sequence.
-    pub const REVIVE_STOP: i32 = 0x1e0;
+    /// `FUN_002c1a08` (in `FUN_00137520`): IOP command 0x11 on slots 0 and 1, target 0, 0x4b0 frames.
+    pub const REVIVE_STOP: i32 = 0x4b0;
 }
 
 /// The two music numbers of the loaded area and the switch state (0x354ebc, 0x354ebd, 0x354eb8).
@@ -202,8 +202,9 @@ impl AreaMusic {
 }
 
 /// Tinker Bell's revive stops the music (`FUN_00137520`): the audible slot is held and both slots fade to 0 over the
-/// stream stop's 0x1e0 frames (`FUN_00136a68`), keeping the sequence for [`revive_restart`]. [inferred] the 0x1e0 is
-/// read as driver frames, as the other fades here.
+/// channel ramps of `FUN_002c1a08` (`FUN_002be2e8(slot, 0, 0x4b0)` = IOP command 0x11, 0x4b0 frames), keeping the sequence for
+/// [`revive_restart`]. The other calls of `FUN_002c1a08` (IOP commands 0x16 and 0x27, `FUN_002c1c18`) and the stream stop
+/// `FUN_00136a68` (0x1e0) are not ported: what they drive is not known.
 pub fn revive_stop(music: &mut AreaMusic, audio: Option<&Audio>) {
     music.hold();
     if let Some(audio) = audio

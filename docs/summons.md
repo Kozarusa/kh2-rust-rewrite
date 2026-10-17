@@ -938,10 +938,24 @@ work package are closed by WP-EN4 below.
   becomes 0x35e3a4 and locks the pad and sets 0x36f598 through FUN_002c38b8 in step 1) and starts a thread (FUN_00102bc8 priority 1, 15000). The thread's step 2
   waits while that window exists (FUN_00196418) and until the fade object at 0x356b30 has its +0xfc at 4 (idle), releases the pad (FUN_002c38c8), puts the player on
   the floor (FUN_00183fe0), and FUN_001adeb8 makes Tinker Bell, clears 0x35d268 bit 1 and starts the music again (FUN_00137558: the saved music state back,
-  FUN_00136aa0 starts the area's music record). So the "fade" is the music's stop and restart and the window's wait, not a picture fade. The app does none of it:
-  its music API (`audio_bgm.rs`) is outside this work package's files and the text the window shows was not established (its argument is the player object
-  by the decompile of FUN_001ad8a8, which cannot be a text). With no window and no fade running (the app has neither) the waits are over at once, so
-  `objects` makes her the tick the player is down. [GAP: the window's text and what the 0x356b30 fade does in this sequence; the music stop / restart needs `audio_bgm.rs`.]
+  FUN_00136aa0 starts the area's music record). The "fade" is therefore not a picture fade started here: the thread only waits for the fade object at
+  0x356b30 to be idle (+0xfc == 4; its writers are FUN_0014a6f8 / FUN_0014a7c8 / FUN_0014a7f0 / FUN_0014a818, the screen fades of other code), so a fade
+  already running (the player's death) finishes before Tinker Bell appears. What the player sees and hears, in order: system sound 0x13 (FUN_002c14a8), the
+  music ramping out, a message window if the argument is a text, the pad dead until the window is gone and the screen is not fading, then the player on the
+  floor, Tinker Bell made at him and the music back.
+  *Ported (WP-SM4, `summon.rs` `Revive` / `ReviveAct`, `audio_bgm.rs` `revive_stop` / `revive_restart`):* the thread as a state machine with the game's order
+  (begin: flag 0x35d268 bit 1, music stop, sound 0x13, window, 0x354f70 bit 2; thread: step 0 moves on, step 1 locks the pad and falls into step 2, which waits
+  on window and fade, then releases the pad, puts the player on the floor, makes Tinker Bell, clears the flag, restarts the music and, at the thread's end,
+  clears 0x354f70 bit 2). The music state is held in `AreaMusic::held` (0x354ebc kept in 0x354ebe, so the battle switch does nothing meanwhile) and both BGM
+  slots fade to 0 over 0x1e0 driver frames [inferred: frames, as the other fades], restarting the audible slot at full volume where it stopped. The pad lock is
+  `Pad::lock` every tick while the thread is in step 2 (0x36f598 stops FUN_002c3228 handing out pad events). Sound 0x13 plays as a system sound. Each act is
+  logged (`summon: revive: ...`), with `KH2_NO_MUSIC` / `KH2_NO_SOUND` too. Tests: `the_revive_sequence_runs_in_the_games_order`,
+  `the_revive_waits_for_the_window_and_the_fade_with_the_pad_locked`, `a_held_music_switches_nothing_until_released`.
+  *Not ported:* the message window (its text: FUN_001ad8a8 hands its own argument, which FUN_001cec00 uses as the player object, to FUN_00195a78 as the text;
+  FUN_001d1160 only stores it, so no message id was found: searched FUN_001ad378, FUN_001ad8a8, FUN_001ad8e0, FUN_001ad810, FUN_00195898, FUN_00195a78,
+  FUN_00195ae0; the instruction at 0x1ad8b4..0x1ad8d0 confirms a1 = a0), so no window opens and the window wait is always over; the 0x356b30 fade is not
+  modelled by the app (the wait is always over). Both waits are parameters of `Revive::tick`, tested. The thread's per-tick function (FUN_001ad918, created
+  by FUN_00102bc8) has no decompile; that it calls FUN_001ad9a0 each tick is [inferred] from FUN_001ad9a0's shape. [GAP: the window's text; the 0x356b30 fade.]
 - *The revive's Tinker Bell in a run.* `KH2_SUMMON_KO=<seconds>` (new, a harness aid) knocks the player out (HP 0, `State::Down`) once while a summon is out.
   Run: `KH2_STATE=localcc1\state-sum.json KH2_WAVE_GROUP=b_44 KH2_DRIVE_POINTS=5 KH2_SUMMON=4 KH2_SUMMON_AT=5 KH2_SUMMON_PARTY=1 KH2_SUMMONLOG=1
   KH2_SUMMON_KO=10 kh2-game tt04` logs `KH2_SUMMON_KO: the player is knocked out (HP 17 -> 0)`, `the player is knocked out with Tinker Bell ready (FUN_001c69b0): byte 7

@@ -139,6 +139,8 @@ pub mod timing {
     pub const BATTLE_OUT: i32 = 0x2d0;
     pub const FIELD_IN: i32 = 0x1e0;
     pub const FIELD_IN_DELAY: i32 = 0xf0;
+    /// `FUN_00136a68`: the BGM stream stop of the revive sequence.
+    pub const REVIVE_STOP: i32 = 0x1e0;
 }
 
 /// The two music numbers of the loaded area and the switch state (0x354ebc, 0x354ebd, 0x354eb8).
@@ -152,6 +154,8 @@ pub struct AreaMusic {
     pub state: bool,
     /// A battle fade is running (the battle slot is, or is being, the audible one).
     pub in_battle_music: bool,
+    /// The revive sequence holds the music (0x354ebe): the saved "battle music exists" flag.
+    pub held: Option<bool>,
 }
 
 impl AreaMusic {
@@ -173,6 +177,54 @@ impl AreaMusic {
         self.battle = Some(battle);
         self.switching = field != battle;
         false
+    }
+}
+
+impl AreaMusic {
+    /// `FUN_00137520`: the music state (0x354ebc, the "battle music exists" flag) is kept in 0x354ebe and cleared, and the
+    /// last-acted state 0x354ebd is cleared, so the per-frame task (`FUN_001373d0`) switches nothing until [`Self::release`].
+    /// Returns the slot that was audible (the battle slot while a battle fade runs).
+    pub fn hold(&mut self) -> usize {
+        self.held = Some(self.switching);
+        self.switching = false;
+        self.state = false;
+        usize::from(self.in_battle_music)
+    }
+
+    /// `FUN_00137558`: the kept state back (0x354ebe -> 0x354ebc), the last-acted state cleared. Returns the slot to start
+    /// again, or `None` when nothing was held.
+    pub fn release(&mut self) -> Option<usize> {
+        let kept = self.held.take()?;
+        self.switching = kept;
+        self.state = false;
+        Some(usize::from(self.in_battle_music))
+    }
+}
+
+/// Tinker Bell's revive stops the music (`FUN_00137520`): the audible slot is held and both slots fade to 0 over the
+/// stream stop's 0x1e0 frames (`FUN_00136a68`), keeping the sequence for [`revive_restart`]. [inferred] the 0x1e0 is
+/// read as driver frames, as the other fades here.
+pub fn revive_stop(music: &mut AreaMusic, audio: Option<&Audio>) {
+    music.hold();
+    if let Some(audio) = audio
+        && let Ok(mut s) = audio.0.lock()
+        && let Some(d) = s.driver.as_mut()
+    {
+        for slot in 0..2 {
+            d.bgm_fade(slot, 0, timing::REVIVE_STOP);
+        }
+    }
+}
+
+/// `FUN_00137558`: the held state back and the held slot started again at full volume (`FUN_002c13e0(0, 0x3000, 0x3000, ..)`),
+/// continuing where it stopped.
+pub fn revive_restart(music: &mut AreaMusic, audio: Option<&Audio>) {
+    let Some(slot) = music.release() else { return };
+    if let Some(audio) = audio
+        && let Ok(mut s) = audio.0.lock()
+        && let Some(d) = s.driver.as_mut()
+    {
+        d.bgm_start(slot, None, BGM_FULL, BGM_FULL, 0, true, 0);
     }
 }
 
@@ -495,5 +547,28 @@ mod tests {
         assert!(!m.in_battle_music && m.field == Some(119));
         // Number 0 is a change too (it silences the slot).
         assert!(m.load_pair(0, 0));
+    }
+
+    /// WP-SM4: the revive sequence holds the music (`FUN_00137520`): the per-frame task switches nothing while it is held, and
+    /// `FUN_00137558` gives the kept state back; releasing without a hold does nothing.
+    #[test]
+    fn a_held_music_switches_nothing_until_released() {
+        let mut m = AreaMusic::default();
+        m.set_area(10, 20);
+        assert_eq!(m.release(), None);
+        assert_eq!(m.hold(), 0, "the field slot is the audible one");
+        assert!(!m.switching);
+        assert_eq!(m.step(true), Switch::None);
+        assert_eq!(m.release(), Some(0));
+        assert!(m.switching && m.held.is_none());
+        assert_eq!(m.step(true), Switch::Enter);
+        // During a battle fade the battle slot is the one held and started again.
+        assert_eq!(m.hold(), 1);
+        assert_eq!(m.release(), Some(1));
+        // The hooks without a driver only move the state.
+        revive_stop(&mut m, None);
+        assert!(m.held.is_some());
+        revive_restart(&mut m, None);
+        assert!(m.held.is_none() && m.switching);
     }
 }

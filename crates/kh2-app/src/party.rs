@@ -800,21 +800,22 @@ fn jump_party(
     switch.request = Some(crate::party_switch::Request { notice, arg });
 }
 
-/// A jump's party reset (WP-PT1; `FUN_001abfe8`, run by `FUN_00104e18` / `FUN_00104d58`): ends a drive form where the
-/// code says so (the Revert request, the app's form end [inferred]) and restores HP and MP of Sora and the standing members
-/// (`FUN_001ac130` for the blocks 1 to 15: HP raised by its maximum and clamped, MP set to its maximum with a running MP
-/// charge ended; the same pair a form start runs, docs/drive-forms.md). A member at 0 HP is left as it is [inferred: the app
-/// has no revive path here].
 /// `FUN_001a0030`'s write-back of the field members' status blocks into their party records: current HP and MP
 /// (record `+4`, `+6`). The original does it when a block is released (the actor's destructor `FUN_00174998`, the
 /// last user `FUN_0019ffb8`); the app writes every tick a value changed, so the record is current at every release
 /// [inferred: the record of a member who stands is not read before the release].
 fn party_record_sync(progress: Option<ResMut<crate::progress::Progress>>, members: Query<&PartyMember>) {
     let Some(mut progress) = progress else { return };
-    for m in &members {
-        let want = (m.hp.clamp(0, 255) as u8, m.mp.clamp(0, 255) as u8);
-        if progress.member_vitals(m.neo).is_some_and(|have| have != want) {
-            progress.set_member_vitals(m.neo, m.hp, m.mp);
+    sync_records(&mut progress, members.iter().map(|m| (m.neo, m.hp, m.mp)));
+}
+
+/// `party_record_sync`'s write: each standing member's (NeoStatus, HP, MP) goes into his record when it differs
+/// (reading first, so an unchanged record does not mark `Progress` changed).
+fn sync_records(progress: &mut crate::progress::Progress, standing: impl Iterator<Item = (u16, i32, i32)>) {
+    for (neo, hp, mp) in standing {
+        let want = (hp.clamp(0, 255) as u8, mp.clamp(0, 255) as u8);
+        if progress.member_vitals(neo).is_some_and(|have| have != want) {
+            progress.set_member_vitals(neo, hp, mp);
         }
     }
 }
@@ -839,16 +840,32 @@ fn party_auto_healing(
     let merged = crate::drive::rules::memt_merge(memt, drive_world.map_or(2, |d| d.id), |_| false);
     let member_of = |o: u16| data.objs.iter().find(|r| r.object_id == u32::from(o)).map(|r| r.neo_status);
     let field: Vec<u16> = members.iter().map(|m| m.neo).collect();
-    for neo in rules::reserve_members(slots.bytes, &merged, member_of, &field) {
+    auto_heal_pass(&mut progress, slots.bytes, &merged, member_of, &field);
+}
+
+/// One pass of `FUN_0017d4b8` over the reserve members; returns the (NeoStatus, before, after) of every member whose HP
+/// changed (a full or empty-ability member logs nothing).
+fn auto_heal_pass(progress: &mut crate::progress::Progress, bytes: [u8; 4], merged: &[u16; 24], member_of: impl Fn(u16) -> Option<u16>, field: &[u16]) -> Vec<(u16, u8, u8)> {
+    let mut changed = Vec::new();
+    for neo in rules::reserve_members(bytes, merged, member_of, field) {
         if !progress.member(neo).is_some_and(|r| r.abilities.contains(&(ABILITY_AUTO_HEALING, true))) {
             continue;
         }
-        if let Some((before, after)) = progress.heal_reserve_member(neo, 1) {
+        if let Some((before, after)) = progress.heal_reserve_member(neo, 1)
+            && before != after
+        {
             info!("party: Auto Healing (FUN_0017d4b8): reserve member {neo} HP {before} -> {after}");
+            changed.push((neo, before, after));
         }
     }
+    changed
 }
 
+/// A jump's party reset (WP-PT1; `FUN_001abfe8`, run by `FUN_00104e18` / `FUN_00104d58`): ends a drive form where the
+/// code says so (the Revert request, the app's form end [inferred]) and restores HP and MP of Sora and the standing members
+/// (`FUN_001ac130` for the blocks 1 to 15: HP raised by its maximum and clamped, MP set to its maximum with a running MP
+/// charge ended; the same pair a form start runs, docs/drive-forms.md). A member at 0 HP is left as it is [inferred: the app
+/// has no revive path here].
 #[allow(clippy::too_many_arguments)]
 fn jump_reset(
     mut menus: ResMut<crate::area_jump::JumpMenus>,
@@ -2542,6 +2559,48 @@ fn party_fade(
 
 #[cfg(test)]
 mod tests {
+    /// WP-AH1b: Progress with Donald (2) and Goofy (3) records of maximum 30 HP / 50 MP.
+    fn two_records() -> crate::progress::Progress {
+        use crate::progress::Progress;
+        let mut p = Progress::from_block(&[], std::sync::Arc::new(crate::progress::ItemIndex::default()));
+        for m in [2, 3] {
+            p.set_member_maxima(m, 30, 50);
+            p.set_member_vitals(m, 30, 50);
+        }
+        p
+    }
+
+    /// `party_record_sync`'s write: a standing member's HP and MP land in his record, held to the maxima; a member
+    /// without a record is skipped.
+    #[test]
+    fn standing_members_write_their_vitals_into_the_record() {
+        let mut p = two_records();
+        sync_records(&mut p, [(2u16, 12, 7), (3, 99, -4), (99, 1, 1)].into_iter());
+        assert_eq!(p.member_vitals(2), Some((12, 7)));
+        assert_eq!(p.member_vitals(3), Some((30, 0)), "held between 0 and the maximum");
+    }
+
+    /// Auto Healing's pass: only a reserve member (slot 3, not standing) with ability 420 equipped gains an HP, a full
+    /// one logs nothing, and a member who stands is left alone.
+    #[test]
+    fn auto_healing_heals_only_an_equipped_reserve_member() {
+        let mut p = two_records();
+        p.give_ability(2, ABILITY_AUTO_HEALING, true);
+        p.give_ability(3, ABILITY_AUTO_HEALING, false);
+        p.set_member_vitals(2, 10, 50);
+        p.set_member_vitals(3, 10, 50);
+        let mut merged = [0u16; 24];
+        merged[8 + 1] = 101;
+        merged[8 + 2] = 102;
+        let member_of = |o: u16| Some(o - 99);
+        // Slot bytes are member indices: Goofy (2) in slot 1, Donald (1) in the reserve slot 3.
+        assert_eq!(auto_heal_pass(&mut p, [0, 2, rules::EMPTY, 1], &merged, member_of, &[3]), vec![(2, 10, 11)], "Donald (reserve, ability equipped) heals");
+        assert_eq!(p.member_vitals(3), Some((10, 50)), "Goofy lacks the equipped ability");
+        assert_eq!(auto_heal_pass(&mut p, [0, 2, rules::EMPTY, 1], &merged, member_of, &[2, 3]), vec![], "both standing: nobody heals");
+        p.set_member_vitals(2, 30, 50);
+        assert_eq!(auto_heal_pass(&mut p, [0, 2, rules::EMPTY, 1], &merged, member_of, &[3]), vec![], "a full member changes nothing");
+    }
+
     use super::*;
     use kh2_anim::PlayerState;
 

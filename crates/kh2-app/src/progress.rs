@@ -1491,6 +1491,23 @@ impl Progress {
         }
     }
 
+    /// Test aid: a record's maximum HP and MP.
+    #[cfg(test)]
+    pub(crate) fn set_member_maxima(&mut self, member: u16, hp_max: u8, mp_max: u8) {
+        if let Some(r) = Self::member_off(member) {
+            self.set_u8(r + rec::HP_MAX, hp_max);
+            self.set_u8(r + rec::MP_MAX, mp_max);
+        }
+    }
+
+    /// Test aid: an ability into the first empty slot of a member's list (`put_ability` by member id).
+    #[cfg(test)]
+    pub(crate) fn give_ability(&mut self, member: u16, id: u16, equipped: bool) {
+        if let Some(r) = Self::member_off(member) {
+            self.put_ability(r, id, equipped);
+        }
+    }
+
     /// The member's ability list with the raw slot index (0..64) of each non-empty slot: the menu's
     /// rows keep the slot (`FUN_0027a7e8` stores the loop index in the row) because the toggle
     /// writes that slot (`FUN_0027d8b8`).
@@ -2041,6 +2058,32 @@ impl Progress {
                         }
                         for (i, x) in bytes.into_iter().enumerate() {
                             self.set_member_setting(member, i, x);
+                        }
+                    }
+                }
+                // WP-AH1b harness keys: a member's current HP and MP (record `+4`, `+6`, held to the maxima) and equipped
+                // abilities (`FUN_00187868`, first empty slots).
+                "party_vitals" => {
+                    let Json::Obj(m) = v else { return Err("party_vitals: expected an object of member id: [hp, mp]".into()) };
+                    for (k, b) in m {
+                        let member = id_of(k, "party_vitals")?;
+                        let Json::Arr(a) = b else { return Err("party_vitals: expected [hp, mp]".into()) };
+                        let (Some(hp), Some(mp)) = (a.first(), a.get(1)) else { return Err("party_vitals: expected [hp, mp]".into()) };
+                        let (hp, mp) = (int(hp, "party_vitals")?, int(mp, "party_vitals")?);
+                        if !self.set_member_vitals(member, hp.clamp(0, 255) as i32, mp.clamp(0, 255) as i32) {
+                            return Err(format!("party_vitals: no member record {member}"));
+                        }
+                    }
+                }
+                "party_abilities" => {
+                    let Json::Obj(m) = v else { return Err("party_abilities: expected an object of member id: [ability ids]".into()) };
+                    for (k, b) in m {
+                        let member = id_of(k, "party_abilities")?;
+                        let Some(r) = Self::member_off(member) else { return Err(format!("party_abilities: no member record {member}")) };
+                        let Json::Arr(a) = b else { return Err("party_abilities: expected an array of ids".into()) };
+                        for x in a {
+                            let id = in_range(int(x, "party_abilities")?, 0x7fff, "party_abilities")?;
+                            self.put_ability(r, id as u16, true);
                         }
                     }
                 }
@@ -3142,6 +3185,18 @@ mod tests {
         q.apply_json(&text).expect("loads");
         assert_eq!(q.member_vitals(DONALD), Some((12, 34)), "the stored vitals come back");
         assert_eq!(q.member(DONALD).map(|m| (m.hp, m.hp_max, m.mp, m.mp_max)), Some((12, 30, 34, 50)));
+    }
+
+    /// WP-AH1b: the state file's `party_vitals` and `party_abilities` keys set a member's HP, MP and equipped abilities.
+    #[test]
+    fn state_file_sets_member_vitals_and_abilities() {
+        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        p.set_member_maxima(DONALD, 30, 50);
+        p.apply_json("{\"party_vitals\": {\"2\": [5, 9]}, \"party_abilities\": {\"2\": [420]}}").expect("loads");
+        assert_eq!(p.member_vitals(DONALD), Some((5, 9)));
+        assert_eq!(p.member(DONALD).map(|m| m.abilities), Some(vec![(420, true)]));
+        assert!(p.apply_json("{\"party_vitals\": {\"99\": [1, 1]}}").is_err());
+        assert!(p.apply_json("{\"party_abilities\": {\"2\": [40000]}}").is_err());
     }
 
     /// WP-MN15: the limits' best counts only go up, and go through a slot file and the `limit_best` key.

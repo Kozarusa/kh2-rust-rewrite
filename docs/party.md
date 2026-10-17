@@ -1417,7 +1417,7 @@ Files: `party_battle.rs` (`choose_class16`), `party_rules.rs` (`auto_change_swap
   each tick one of them changed; the original writes at the release, [inferred] equal because nobody reads the record of a
   standing member), `spawn_party` starts a member from the record (`rules::spawn_vitals`). Gap: a stored HP of 0 (the
   member left the field knocked out) starts at the maximum, the app's earlier start; what the original actor does with a
-  block of HP 0 was not traced (`FUN_0017d290`, `FUN_0017ca70` read; no HP-0 test found). Game over (WP-GO1) restores Sora's HP only;
+  block of HP 0 was not traced (`FUN_0017d290`, `FUN_0017ca70` read; no HP-0 test found). **Open question (WP-AH1b):** what the original does with a stored HP of 0 at area entry. The current rule spawns the member at his maximum HP; with Auto Healing a reserve member at 0 HP first gets 1 HP (`FUN_001a0100` allows 0 to 1) and then spawns at 1 HP, so the same member comes back at the maximum or at 1 depending on the ability. Game over (WP-GO1) restores Sora's HP only;
   the original restores the whole save body, so after Continue the members keep the HP they had.
 - **Auto Limit [V rule, not ported].** FUN_001d25e0 offers a partner's limit as a reaction command; the app has no party
   limit reaction command (`reaction_cmd.rs`, `limit.rs`: outside this WP's files).

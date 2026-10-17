@@ -2660,9 +2660,8 @@ impl SummonHost<'_, '_> {
                 _ => (Value::None, St::Stub, "no vector argument"),
             },
             // 10.51 (0x2f7450 -> FUN_0011a6d8): the enemy in the screen box about the aim point (see `fps::screen_target`). The
-            // game writes it to the script's record (the last argument); a host answer cannot write the script's memory
-            // (that is kh2-bdx's runtime, as for 6.5), so the record stays as the script left it and the answer is kept in
-            // `scripted.fps_found` for the app [outside this work package's files].
+            // answer is the enemy's handle (0 for none); kh2-bdx's runtime writes it into the script's record (the object, part 0,
+            // 0, -1; as for 6.5), and the search is also kept in `scripted.fps_found` for the app.
             (10, 51) => {
                 let halves: Vec<f32> = args.iter().filter_map(|x| if let Arg::Float(f) = x { Some(*f) } else { None }).collect();
                 match (self.env.view.as_ref(), halves.as_slice()) {
@@ -2678,7 +2677,8 @@ impl SummonHost<'_, '_> {
                         let found = fps::screen_target(view, aim * SCALE, [*w, *h], &cands.iter().map(|&(e, p)| (e, p * SCALE)).collect::<Vec<_>>());
                         self.ai.scripted.fps_found = found;
                         self.ai.scripted.fps_searches += 1;
-                        (Value::None, St::Approx, "the search is made (`scripted.fps_found`); writing the script's record needs kh2-bdx's runtime; the camera's focal length is [inferred] from the camera builder, and `in view` is the app's projection test")
+                        let handle = found.and_then(|f| self.env.enemies.iter().find(|e| e.entity == f)).map_or(0, |e| e.handle);
+                        (Value::Handle(handle), St::Approx, "the enemy found is answered and the runtime writes the record; the camera's focal length is [inferred] from the camera builder, and `in view` is the app's projection test")
                     }
                     _ => (Value::None, St::Stub, "no camera or box in this tick")
                 }
@@ -3262,6 +3262,14 @@ fn leave(sm: &mut SummonState, drive: &mut DriveState, acts: &mut Acts, why: &st
     );
 }
 
+/// The summon start (`FUN_001c6168`) ends with `FUN_001d76f8(FUN_001d4ca0(command))`: the BATTLE REPORT's use counter of the
+/// summon's 1-based row index (1 to 4; `Progress::count_summon_use`).
+fn count_summon_call(progress: Option<&mut Progress>, index: u8) {
+    if let Some(p) = progress {
+        p.count_summon_use(index as usize);
+    }
+}
+
 /// The experience (`FUN_001d4ec8`; the minigame flag of `FUN_001b9bd8` is never set in the app),
 /// written back to `Progress`.
 fn add_exp(sm: &mut SummonState, levels: &kh2_tables::player::FormLevels, progress: Option<&mut Progress>, segments: i32) {
@@ -3378,6 +3386,7 @@ fn tick(
                 sm.index = index;
                 sm.sequence = true;
                 sm.state = 2;
+                count_summon_call(progress.as_deref_mut(), index);
                 if c == cmd::GENIE {
                     // FUN_001c6a20: the forms 1..4 whose form item is owned, in order.
                     let forms: Vec<u8> = (1..=4).filter(|&f| progress.as_ref().is_some_and(|p| p.owns_form(f))).collect();
@@ -4978,6 +4987,19 @@ mod tests {
     use super::rules::*;
     use super::*;
 
+    /// WP-SM3: a summon call counts one use in the BATTLE REPORT word of its row index (`FUN_001c6168` -> `FUN_001d76f8`);
+    /// without a `Progress` nothing happens.
+    #[test]
+    fn a_summon_call_counts_one_use_of_its_row() {
+        let mut p = Progress::from_block(&[], std::sync::Arc::new(crate::progress::ItemIndex::default()));
+        count_summon_call(Some(&mut p), 2);
+        count_summon_call(Some(&mut p), 2);
+        count_summon_call(Some(&mut p), 4);
+        count_summon_call(None, 1);
+        assert_eq!(p.summon_uses(), [0, 2, 0, 1]);
+        assert_eq!(p.antiform_uses(), 0);
+    }
+
     fn archive() -> Option<kh2_archive::Archive> {
         let iso = crate::assets::iso_path().ok().filter(|p| p.exists());
         let Some(iso) = iso else {
@@ -5024,6 +5046,30 @@ mod tests {
         assert_eq!(keep.pose(Vec3::ONE, 1.5, 0.25), Some((Vec3::ONE, 0.25)));
         let other = ai::Link { parent: 0x1234, ..link };
         assert_eq!(other.pose(Vec3::ONE, 1.5, 0.25), None);
+    }
+
+    /// WP-SM3: Peter Pan's two calls of host 1.18 on the player (`P_EX330`): his `appear` makes (0x4002, 0, no routine) and his limit
+    /// (command 468) makes (0x4002, 1, routine 0x244, an argument). FUN_001beb90 breaks a link the object already has first
+    /// (FUN_001becb8), and only a link with a routine queues anything (FUN_00170dd8 stores it on the record); 1.102 breaks the link
+    /// made last and queues its routine with the argument.
+    #[test]
+    fn peter_pans_links_of_the_player_break_with_their_routine() {
+        let player = crate::enemy_obj::PLAYER;
+        let appear = ai::Link { parent: player, kind: 0x4002, flags: 0, routine: 0, arg: 0 };
+        let limit = ai::Link { parent: player, kind: 0x4002, flags: 1, routine: 0x244, arg: 0x2000_0000 };
+        let mut a = ai::SummonAi::default();
+        a.link_start(appear);
+        assert_eq!(a.link, Some(appear));
+        a.link_start(limit);
+        assert_eq!(a.link, Some(limit));
+        assert!(a.link_broken.is_empty(), "the appear link has no routine: nothing to run");
+        assert!(a.link_end(), "the limit link is broken");
+        assert!(a.link.is_none());
+        assert_eq!(a.link_broken, vec![limit], "its routine 0x244 runs with the argument");
+        assert!(!a.link_end(), "no link: nothing happens");
+        a.link_start(limit);
+        a.link_start(limit);
+        assert_eq!(a.link_broken, vec![limit, limit], "a second start breaks the first link and runs its routine");
     }
 
     /// Host 10.53: entering an instance twice leaves one entry (FUN_00136430 drops the old one), a zero handle is ignored,

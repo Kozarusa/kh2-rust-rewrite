@@ -1124,6 +1124,23 @@ impl CoreEnv<'_> {
             (6, 4) | (10, 55) if a.len() > (i == 55) as usize => return self.search_block(mem, g, i, a),
             (6, 3 | 5) if a.len() >= if i == 3 { 2 } else { 7 } && self.search_consts().is_some() => return self.search_block(mem, g, i, a),
 
+            // 10.51 (0x2f7450 -> FUN_0011a6d8(half width, half height, the AI object, record)): the host answers the object
+            // found (a handle; anything else is "none") and the record the second argument points at is written as the
+            // original does: FUN_0018ed40 empties it (object 0, words 1 and 2 zero, word 3 = -1) and the found enemy's
+            // record is copied over it (object, part 0, 0, -1; the search keeps no part).
+            (10, 51) if a.len() >= 2 => {
+                let call = Call::Func { group: g, index: i, args: self.decode_args(mem, "Opff", a)? };
+                let found = match self.host.call(&call) {
+                    Value::Handle(h) => h,
+                    Value::Int(h) if h > 0 => h as u32,
+                    _ => 0,
+                };
+                let rec: Vec<u8> = [found, 0, 0, u32::MAX].iter().flat_map(|x| x.to_le_bytes()).collect();
+                let mut hh = HeapHost { heap: &mut self.core.heap, host: &mut *self.host };
+                write_bytes(mem, &mut hh, a[1], &rec)?;
+                return Ok(None);
+            }
+
             // ---- group 6 ----
             // 6.54 (0x2ef110): the vector copied into the static buffer 0x1e35680, whose address is the
             // answer (the scratch vectors stand for it, as for the other vector answers).

@@ -283,6 +283,56 @@ fn probe_ground_down_writes_the_found_point_through_the_script_pointer() {
     assert_eq!(probes[0][2], Arg::Float(500.0));
 }
 
+/// Host 10.51 (FUN_0011a6d8) is answered by the runtime's own arm: the host names the object found and the script's
+/// record (the second argument) is written as object, 0, 0, -1; with nothing found it holds the emptied record
+/// (FUN_0018ed40: object 0, -1 in word 3). The record starts out filled with 0x55 words to show it is written.
+#[test]
+fn screen_target_writes_the_found_object_into_the_scripts_record() {
+    use kh2_bdx::host::Value;
+    struct Finder {
+        inner: MockHost,
+        found: Option<u32>,
+        asked: Vec<Vec<Arg>>,
+    }
+    impl kh2_bdx::Host for Finder {
+        fn call(&mut self, c: &Call) -> Value {
+            match c {
+                Call::Func { group: 10, index: 51, args } => {
+                    self.asked.push(args.clone());
+                    self.found.map_or(Value::None, Value::Handle)
+                }
+                _ => self.inner.call(c),
+            }
+        }
+    }
+    const REC: u16 = 0x20;
+    let mut a = Asm { w: vec![0; base(1)] };
+    let main = a.here();
+    for k in 0..5u16 {
+        a.push_i(0x5555).store_global(REC + 4 * k);
+    }
+    // The object argument is a context structure whose +4 holds the object (as the mode machine passes).
+    a.push_i(SELF_OBJ as i32).store_global(0x64);
+    a.lea_global(0x60).lea_global(REC).push_f(120.0).push_f(60.0).host(10, 51);
+    let spin = a.here();
+    a.yield_().jmp(spin);
+    let img = image(&[(1, main as u32)], &a.w[base(1)..], 0x80);
+    let record = |found: Option<u32>| {
+        let mut rt = Runtime::new(Program::parse(&img).expect("parse"));
+        let mut host = Finder { inner: MockHost::new(), found, asked: Vec::new() };
+        assert!(rt.spawn(&mut host, SELF_OBJ));
+        rt.update(&mut host);
+        assert!(rt.core.errors.is_empty(), "{:?}", rt.core.errors);
+        let asked = &host.asked;
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0][2], Arg::Float(120.0));
+        assert_eq!(asked[0][3], Arg::Float(60.0));
+        [word(&rt, REC), word(&rt, REC + 4), word(&rt, REC + 8), word(&rt, REC + 12), word(&rt, REC + 16)]
+    };
+    assert_eq!(record(Some(0x1234)), [0x1234, 0, 0, u32::MAX, 0x5555]);
+    assert_eq!(record(None), [0, 0, 0, u32::MAX, 0x5555]);
+}
+
 #[test]
 fn named_functions_arrive_with_decoded_arguments_and_lookups_fill_the_context() {
     let (mut rt, mut host) = start();

@@ -175,9 +175,13 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 0.57 | `bits_33fe20_set(i)` | 0x16df30 | 15 | set bit `n` of the bit array at 0x33fe20 (FUN_001a7750) |
 | 0.59 | `bits_33fe20_test(i) -> b` | 0x16df60 | 15 | test bit `n` of the bit array at 0x33fe20 (FUN_001a77b8) |
 | 0.60 | `nop_60(p)` | 0x16df90 | 102 | empty function |
+| 0.61 | `party_record(i) -> p` | 0x16d9a0 | 8 | FUN_00187d40(0x33fec0, member): the pointer to the party member's record (docs/progress.md "Party member record"), member 1 Sora, 2 Donald, 3 Goofy (WP-RV2; the table slot 0x35bb98 is 30 entries after 0.31's) |
 | 0.70 | `progress_flag_102b() -> b` | 0x16d5e8 | 8 | progress flag 0x102b (FUN_00180330) |
+| 0.75 | `set_member_weapons(iii)` | 0x16d9d8 | 16 | FUN_00187d88(0x33fec0, member, w0, w1) -> FUN_00187648: the two weapon words of the member's record (+0, +2; FUN_0016ee98 reads them) are set. Called by `00common.bdx` entry event 7 (routine R00c1, 13 calls: member 1 Sora 41, 2 Donald 75, 3 Goofy 49, 4 81, 5 54, 6 55 and 80, 7 72, 8 62, 9 59, 10 60, 11 61, 12 74, 13 73), which FUN_00194d78 runs once when the game object is constructed (FUN_00105638); and by `ard/tt04.ard` (`tt04_ms106`, three times, Sora, items 384, 502, 501 for its events 9, 10 and 11) (WP-RV2) |
+| 0.76 | `set_form_weapon(ii)` | 0x16da08 | 6 | FUN_00187f60(0x33fec0, form) then the halfword at +0 (the form's second keyblade) is set. `00common.bdx` R00c1 sets form 1 to 4 to 0, form 5 to 71 and form 9 to 42 (WP-RV2) |
 | 0.78 | `vec_lerp(vvf) -> v` | 0x16d180 | 29 | a * (1 - t) + b * t on all four lanes, result in a static buffer |
 | 0.79 | `release_effect(p)` | 0x16de50 | 395 | hand an effect handle back to the game (queued for deletion) |
+| 0.98 | `give_form_ability(ii)` | 0x16da40 | 2 | FUN_00187f18(form record, ability): an entry of the form's 16 ability slots (docs/progress.md "Form record"); the two calls are in `ard/lk02.ard` and `ard/lk03.ard` (WP-RV2; the form record pointer is FUN_00187f60) |
 | 0.85 | `effect_stop_mark(p)` | 0x16dbb8 | 87 | like effect_stop and also sets bit 0 of the handle's flags (+8) (FUN_001d9f48) |
 | 0.86 | `set_word_4(pp)` | 0x16de68 | 0 | store the second argument at +4 of the first |
 | 0.88 | `fader_88(f)` | 0x16d958 | 1 | screen fader at 0x3564d0 with flag 0 over `seconds * DAT_0037a25c` frames (FUN_0014a7f0); role inferred |
@@ -219,9 +223,9 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.42 | `bits_1d5d7b8_set(i)` | 0x170da8 | 17 | set bit n of the bit array at 0x1d5d7b8 (FUN_001b7ce8) |
 | 1.43 | `bits_1d5d7b8_clear(i)` | 0x170dc0 | 15 | clear bit n of the bit array at 0x1d5d7b8 (FUN_001b7d18) |
 | 1.48 | `task_done(p) -> b` | 0x1723d8 | 105 | the task's state word (+0x70) equals 3 |
-| 1.52 | `bits_47c_set(Oi)` | 0x1728c0 | 177 | set bit n of the bit array at object +0x47c (FUN_0019dd88) |
-| 1.53 | `bits_480_set(Oi)` | 0x1728e8 | 334 | set bit n of the bit array at object +0x480 (FUN_0019ddb0) |
-| 1.54 | `bits_47c_480_clear(Oi)` | 0x172910 | 293 | clear bit n in both bit arrays (FUN_0019dde0). The words at `o + 4*(n>>5)` and `o + 4 + 4*(n>>5)` are and-ed with `~(1 << (n&31))`; exact, Stub only because no reader of the arrays was traced |
+| 1.52 | `bits_47c_set(Oi)` | 0x1728c0 | 177 | set bit n of the bit array at object +0x47c (FUN_0019dd88). WP-RV2, the reader: FUN_0019a6a0(object, part id) is the one that tests the arrays; n is the byte +0 of a collision record of the object's set at +0x8d8 (FUN_0016b4e0 / FUN_0016b5d0 skip a record for which it answers false; FUN_0018ee20 and FUN_0019a760 use it too). The order: +0x47c bit n set: true; +0x480 bit n set: false (the two words are the two bit arrays FUN_0019de20 / FUN_0019de48 test); then the same pair at +0x474; then the default mask at the word +4 of the block +0x8d8 points to. So this call forces collision part n on |
+| 1.53 | `bits_480_set(Oi)` | 0x1728e8 | 334 | set bit n of the bit array at object +0x480 (FUN_0019ddb0): forces collision part n off (the reader is under 1.52) |
+| 1.54 | `bits_47c_480_clear(Oi)` | 0x172910 | 293 | clear bit n in both bit arrays (FUN_0019dde0). The words at `o + 4*(n>>5)` and `o + 4 + 4*(n>>5)` are and-ed with `~(1 << (n&31))`; exact. WP-RV2, the reader is FUN_0019a6a0 (under 1.52): the call takes the object's override away, so the part follows the pair at +0x474 and then the default mask again. The app has no per-part collision switch, so it stays a Stub that clears the object memory |
 | 1.55 | `start_move(Ovifi)` | 0x1712d0 | 257 | set the direction, start the motion and, with the last flag, record motion + 1 and + 2 as the following motions |
 | 1.56 | `on_screen(O) -> b` | 0x172938 | 409 | the object is inside the camera frustum |
 | 1.57 | `airborne(O) -> b` | 0x172968 | 342 | bit 0 of the mover's flag word; role inferred |
@@ -263,8 +267,8 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.101 | `flag_160_4000(O) -> b` | 0x1716d0 | 79 | object flag 0x4000 at +0x160 (after the object-valid check) |
 | 1.102 | `link_end(O)` | 0x170e38 | 56 | undo link_start (FUN_001becb8) |
 | 1.103 | `nop_103(ppp)` | 0x170e58 | 0 | empty function |
-| 1.104 | `set_flag_768(O)` | 0x1731a8 | 9 | set bit 6 of the word at +0x768 |
-| 1.105 | `clear_flag_768(O)` | 0x1731c0 | 9 | clear bit 6 of the word at +0x768 |
+| 1.104 | `set_flag_768(O)` | 0x1731a8 | 9 | set bit 6 of the word at +0x768. WP-RV2: none of the 30 load sites of +0x768 (`mips_scan --load-off 0x768`) is followed by a test of 0x40, and the only writers of bit 6 are 1.104 and 1.105, so the bit has no reader found; a Stub with no behaviour is exact for what the executable does with it |
+| 1.105 | `clear_flag_768(O)` | 0x1731c0 | 9 | clear bit 6 of the word at +0x768 (no reader of the bit found, see 1.104; WP-RV2) |
 | 1.107 | `set_f_234(Of)` | 0x173260 | 78 | store a float at object +0x234 (564) |
 | 1.108 | `link_method_3c(Op)` | 0x173278 | 173 | virtual method +0x3c of the object behind the link record (record at object +0x670, its +0x14) with the record's word +0x104 and the argument (FUN_0011c580) |
 | 1.109 | `link_method_40(Op)` | 0x173298 | 303 | the same with virtual method +0x40 (FUN_0011c5b0) |
@@ -282,7 +286,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.127 | `modes_reset(p)` | 0x170e80 | 23 | stop the running mode and clear the queue and priority |
 | 1.128 | `mover_method(Of)` | 0x171298 | 250 | virtual call on the object's mover (+0xc) with one float; role unknown (role now known, WP-SM2: the airborne launch, FUN_0017b1e0(speed) on the mover and then FUN_0016b698(object, 1); a negative speed is a downward start, docs/summons.md) |
 | 1.130 | `obj_diff(OO) -> i` | 0x170510 | 155 | difference of the two contexts' objects, 0 when either is 0 or they are the same |
-| 1.131 | `free_target(p) -> b` | 0x1736f8 | 279 | free a target record (FUN_0018f3f8); role inferred. The code pops a slot index from the stack `DAT_01c8a7d0 / DAT_01c8a5d0` and copies the 5-word record into the pool entry `DAT_01c89bd0 + 0x14 * index`, returning its address: it files the record into a pool; the app's records are not pooled (Stub) |
+| 1.131 | `free_target(p) -> b` | 0x1736f8 | 279 | free a target record (FUN_0018f3f8); role inferred (WP-RV2: the name is the wrong way round, it ALLOCATES. FUN_0018f3f8 takes a free index from the stack `DAT_01c8a5d0` (0x80 indexes, filled by FUN_0018ece8, count `DAT_01c8a7d0`), copies the 5-word record into the pool entry and returns its address; FUN_0018f458 gives an index back, FUN_0018f188(old, new) repoints every object whose target record +0x9f4 is `old` to `new`, and FUN_0018fff0 walks the pool). The code pops a slot index from the stack `DAT_01c8a7d0 / DAT_01c8a5d0` and copies the 5-word record into the pool entry `DAT_01c89bd0 + 0x14 * index`, returning its address: it files the record into a pool; the app's records are not pooled (Stub) |
 | 1.132 | `target_release(p)` | 0x173728 | 68 | return a target record to the pool at 0x1c89bd0 (20-byte entries; FUN_0018f458) |
 | 1.133 | `obj_method_44(O)` | 0x170540 | 97 | virtual method +0x44 of the object; role unknown |
 | 1.134 | `obj_method_48(O)` | 0x170570 | 68 | virtual method +0x48 of the object; role unknown |
@@ -364,7 +368,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.287 | `gflags_clear_1000()` | 0x173b28 | 1 | clear bit 12 of the global flag word at 0x35d268 |
 | 1.288 | `gflags_set_2000()` | 0x173b40 | 0 | set bit 13 of the global flag word at 0x35d268 |
 | 1.289 | `gflags_clear_2000()` | 0x173b58 | 0 | clear bit 13 of the global flag word at 0x35d268 |
-| 1.301 | `global_byte_301() -> i` | 0x1744f8 | 458 | the byte at 0x35ea48 + 0x1e (FUN_001abee8); role unknown |
+| 1.301 | `global_byte_301() -> i` | 0x1744f8 | 458 | the byte at 0x35ea48 + 0x1e (FUN_001abee8); role unknown (WP-RV2: 0x35ea48 is the string of message-window frame groups: the 30 characters from C up to the backtick (`CDEF..XYZ`, then `[`, backslash, `]`, `^`, `_`, backtick) followed by a NUL; index 0x1e is the NUL, so the call is a constant 0 (no store to that byte exists: `mips_scan --addr 0x35ea66` finds only FUN_001abee8; the frame kinds use indexes up to 29). Its other callers FUN_0015a780, FUN_00176a18 and FUN_00179220 treat a non-zero byte as a debug override (the player may act while the flag word 0x35d268 has bit 0x100000 clear), so the Stub's 0 is exact) |
 | 1.305 | `camera_position() -> p` | 0x173e80 | - | the camera's world position (FUN_001071c8 of the camera FUN_001068c0(1)), returned as a pointer to a vector; the table gives it no name |
 | 1.309 | `flag_309(o) -> b` | 0x170288 | 86 | status bit 0x80 at +0x588 after a validity check; role unknown |
 | 1.310 | `objentry_f_50(O) -> f` | 0x170b18 | 0 | float at +0x50 of the object's object-entry row |
@@ -499,9 +503,11 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 10.41 | `ai_flag_b7c_40000000(O)` | 0x2f7328 | 4 | FUN_001129f0: object +0xb7c |= 0x40000000 |
 | 10.44 | `objentry_flag_10(O) -> b` | 0x2f7390 | 0 | the object's mover (+0xc) has bit 0x10 in its flags word +8 |
 | 10.45 | `status_f_1b4(p) -> f` | 0x2f73b0 | 4 | the float at +0x1b4 of a status block (1.84): the drive / summon timer |
+| 10.50 | `status_word_180(p) -> i` | 0x2f7440 | - | the word at +0x180 of a status block (disassembled: lw a0[0]; lw 0x180; sw a0[0]): the member's current MP (docs/party.md section 5). No script on the disc calls it (`kh2 bdx --scan` and a scan of every BDX list no 10.50; the earlier note "10.50 x75" in docs/party.md has no source) (WP-RV2) |
 | 10.51 | `ai_find_target(Opff)` | 0x2f7450 | 2 | FUN_0011a6d8(half width, half height, the AI object, record): the record names the valid enemy whose projected position lies in the screen box, the nearest to the centre (Chicken Little's FPS aim) (runtime: the record, the second argument, is written as the object found, 0, 0, -1; an empty record is object 0 and -1 in word 3, FUN_0018ed40; WP-SM3). Word 4: on a hit FUN_0011a6d8 copies FIVE words (the iterator FUN_0018f348's object, then its entry byte into word 1, 0, -1, and a fifth from the iterator's stack copy), but FUN_0018ed40 clears only four and nothing in FUN_0018f348 / FUN_0018f490 writes the fifth, so the original copies an uninitialised stack word into word 4; the arm writes four words and leaves word 4 as the script had it, which is the only defined behaviour [inferred: nothing reads word 4 in the scripts checked]. Word 1 in the original is the first byte of the object entry the iterator found (an index), the arm writes 0 |
 | 10.53 | `effect_list_add(Op)` | 0x2f74c0 | 2 | FUN_00136388(the object's list at +0xb5c (FUN_0010c5b8, made on first use), effect instance): an (instance, generation) pair is entered, an older entry of the same instance dropped first, the oldest when 0x20 are held; a zero instance is ignored (Chicken Little's child registers its effect with the summon) |
 | 10.54 | `effect_list_has(Op) -> b` | 0x2f74f8 | 2 | FUN_001364d0 on the object's list at +0xb5c: the instance (with its generation) is in the list |
+| 10.58 | `attach_record(Opi)` | 0x2f7598 | 2 | FUN_001131e8(the friend object, record, value): the bit 2 of the word +0x1c of the object the record's first word points to is set, the friend object's +0xb50 = the record and +0xb54 = the value. The only reader in the friend range is the destructor FUN_0010c6e0, which unlinks and frees +0xb50 (FUN_001a4e00: the list at DAT_01c95518, chained at +0xc) and frees +0xb54 (FUN_00104fe0); nothing else reads the pair (`mips_scan --load-off 0xb50` / `0xb54`: the other hits are in the player and effect classes, which keep other fields there). A Stub is exact unless the +0x1c bit has a reader, not traced. The two calls on the disc are at 0x00de of `obj/P_EH000.mdlx` and `obj/P_EH000_LAST.mdlx` (Riku) (WP-RV2) |
 | 10.59 | `ai_set_aim_vec(Ov)` | 0x2f75c0 | 2 | FUN_0011a6b8: AI +0x40 = the vector |
 
 ### Not named

@@ -749,14 +749,15 @@ impl CustomizeTables {
     }
 
     /// `FUN_00114348`: the index of an item's or ability's use setting byte (the record's `+0xd5 + k`, so the settings
-    /// block's byte `1 + k`): the consumables 1..=7 are 0..=6, the abilities of `FUN_001144d0` follow from 7. `None`
-    /// for an id the table lacks (the original then adds 7 to its -1 and writes the byte of Megalixir, which the port
-    /// does not do).
-    pub fn setting_index(&self, id: u16) -> Option<usize> {
+    /// block's byte `1 + k`): the consumables 1..=7 are 0..=6, the abilities of `FUN_001144d0` follow from 7. An id
+    /// the table lacks makes `FUN_001144d0` return -1 and `FUN_00114348` add 7 to it: index 6, the byte of Megalixir
+    /// (id 7). Many kind 2 abilities of the item table are not among the 29 entries (for example 82, 137, 195, 220,
+    /// 246, 520 on the disc); they share that byte in the original.
+    pub fn setting_index(&self, id: u16) -> usize {
         if (1..=7).contains(&id) {
-            return Some(usize::from(id) - 1);
+            return usize::from(id) - 1;
         }
-        self.setting_ids.iter().find(|e| e.0 == u32::from(id)).map(|e| 7 + e.1 as usize)
+        self.setting_ids.iter().find(|e| e.0 == u32::from(id)).map_or(6, |e| 7 + e.1 as usize)
     }
 
     /// `FUN_00255368`: the icon of a row by item type and flag (0xb when the type is not listed).
@@ -877,7 +878,7 @@ fn friend_rows_of(p: &Progress, t: &CustomizeTables, member: u16) -> Vec<Row> {
             ((it.stat & 0xff) as u8 == ABILITY_KIND).then(|| (id, p.items().rows.iter().position(|r| r.id == id).unwrap_or(usize::MAX)))
         })
         .collect();
-    let setting_of = |id: u16| t.setting_index(id).and_then(|k| p.member_setting(member, 1 + k)).unwrap_or(0);
+    let setting_of = |id: u16| p.member_setting(member, 1 + t.setting_index(id)).unwrap_or(0);
     build_friend_rows(&FriendInputs { style: m.settings[0], abilities, slots: p.battle_items(member), setting_of: &setting_of })
 }
 
@@ -908,29 +909,25 @@ pub fn write_friend(p: &mut Progress, t: &CustomizeTables, member: u16, e: &Effe
             p.set_member_setting(member, 0, value);
             Some(format!("member {member} battle style {value} (setting byte 0 = {:?})", p.member_setting(member, 0)))
         }
-        Effect::Ability { id, value } => Some(match t.setting_index(id) {
-            Some(k) => {
-                if !p.set_member_setting(member, 1 + k, value) {
-                    warn!("menu: member {member} ability {id} use setting byte {} is not stored (past the settings block or unknown member)", 1 + k);
-                }
-                format!("member {member} ability {id} use setting {value} (setting byte {} = {:?})", 1 + k, p.member_setting(member, 1 + k))
+        Effect::Ability { id, value } => {
+            let k = t.setting_index(id);
+            if !p.set_member_setting(member, 1 + k, value) {
+                warn!("menu: member {member} ability {id} use setting byte {} is not stored (past the settings block or unknown member)", 1 + k);
             }
-            None => format!("member {member} ability {id} has no use setting byte; nothing written"),
-        }),
+            Some(format!("member {member} ability {id} use setting {value} (setting byte {} = {:?})", 1 + k, p.member_setting(member, 1 + k)))
+        }
         Effect::FriendItem { item, state } => {
             let (on, setting) = (state & 1 != 0, if state & 2 != 0 { 2 } else { 0 });
             p.set_auto_reload(member, item, on);
             let k = t.setting_index(item);
-            if let Some(k) = k
-                && !p.set_member_setting(member, 1 + k, setting)
-            {
+            if !p.set_member_setting(member, 1 + k, setting) {
                 warn!("menu: member {member} item {item} use setting byte {} is not stored (past the settings block or unknown member)", 1 + k);
             }
             Some(format!(
-                "member {member} item {item} auto-reload {} use setting {setting} (byte {:?} = {:?}, slots {:?})",
+                "member {member} item {item} auto-reload {} use setting {setting} (byte {} = {:?}, slots {:?})",
                 if on { "ON" } else { "OFF" },
-                k.map(|k| 1 + k),
-                k.and_then(|k| p.member_setting(member, 1 + k)),
+                1 + k,
+                p.member_setting(member, 1 + k),
                 p.battle_items(member)
             ))
         }
@@ -1208,6 +1205,42 @@ fn row_tokens(text: &crate::menu_text::MenuText, t: &CustomizeTables, items: &It
     v
 }
 
+/// The message `FUN_002743e8` appends to the description of a row of page 0x1b: the help message (`+2`) of the entry
+/// of the kind's choice table that holds the row's setting byte (`FUN_002748d8(kind, byte)`). The Battle Style row
+/// shows the style's message alone; a value no entry holds makes the original read a halfword at address 2, which the
+/// port leaves out.
+pub fn appended_help(t: &CustomizeTables, r: &Row) -> Option<u32> {
+    let table = match r.kind {
+        Kind::Ability => &t.uses,
+        Kind::Item => &t.item_uses,
+        _ => return None,
+    };
+    table.iter().find(|c| c.value == r.setting).map(|c| c.help)
+}
+
+/// The help of the character list (`FUN_002743e8`, page 0x19): message 0x381c6c (0x3b89) on the first row, 0x381c70
+/// (0x3b8a) on the others.
+pub fn characters_help(cursor: usize) -> u32 {
+    if cursor == 0 { 0x3b89 } else { 0x3b8a }
+}
+
+/// `FUN_002743e8` ends by copying the first message without its end byte and the second after it into one buffer.
+fn set_help_joined(scene: &mut MenuScene, text: &crate::menu_text::MenuText, help: usize, ids: (Option<u32>, Option<u32>)) {
+    let (first, second) = match ids {
+        (None, Some(b)) => (Some(b), None),
+        other => other,
+    };
+    let Some(first) = first else { return set_help(scene, text, help, None) };
+    let Some(second) = second else { return set_help(scene, text, help, Some(first)) };
+    set_help(scene, text, help, Some(first));
+    let mut tokens = tokens_of(text, first);
+    tokens.extend(tokens_of(text, second));
+    tokens.push(Token::End);
+    if let Some(l) = scene.nodes[help].label.as_mut() {
+        l.tokens = tokens;
+    }
+}
+
 /// The icon at the right end of a companion's ability or item row: the entry of the kind's table that holds the row's
 /// setting byte (`FUN_00272b20`: `FUN_002748d8(kind, setting)` and its `+4`).
 fn mark_of(t: &CustomizeTables, r: &Row) -> Option<u8> {
@@ -1286,7 +1319,7 @@ fn redraw(st: &mut CustomizeMenu, items: &ItemsMenu, scene: &mut MenuScene, p: &
         scene.nodes[glint].parent = Some(cur);
         scene.nodes[glint].off = at::GLINT;
         set(scene, glint, group::GLINT[0], Some(group::GLINT[2]), was_of(glint));
-        set_help(scene, &text, help, Some(0x3b89));
+        set_help(scene, &text, help, Some(characters_help(m.who)));
         scene.text = Some(text);
         return;
     }
@@ -1327,21 +1360,20 @@ fn redraw(st: &mut CustomizeMenu, items: &ItemsMenu, scene: &mut MenuScene, p: &
     }
     let row = m.rows.get(m.cursor).copied();
     // The help line (`FUN_002743e8`): the highlighted row's item description (the style's own for the Battle Style
-    // row), or the choice's. [Gap: a companion's page appends the choice's message to the description.]
+    // row), or the choice's; a companion's page appends the choice's message to the description.
     let help_id = match page {
-        CANDIDATES => m.cand.checked_sub(1).and_then(|i| m.candidates.get(i)).and_then(|s| items.rows.get(&s.id)).map(|r| u32::from(r.description)).or(Some(0x1df7)),
-        STYLE => t.styles.get(m.sub).map(|c| c.help),
-        ABILITY => t.uses.get(m.sub).map(|c| c.help),
-        SPELL => Some(t.spell_help[m.sub.min(1)]),
-        RELOAD => Some(t.item_help[m.sub % 2]),
-        pg if pg == home => row.and_then(|r| match r.kind {
-            Kind::Style => t.styles.iter().find(|c| c.value == r.setting).map(|c| c.help),
-            _ if r.id != 0 => items.rows.get(&r.id).map(|i| u32::from(i.description)),
-            _ => None,
+        CANDIDATES => (m.cand.checked_sub(1).and_then(|i| m.candidates.get(i)).and_then(|s| items.rows.get(&s.id)).map(|r| u32::from(r.description)).or(Some(0x1df7)), None),
+        STYLE => (t.styles.get(m.sub).map(|c| c.help), None),
+        ABILITY => (t.uses.get(m.sub).map(|c| c.help), None),
+        SPELL => (Some(t.spell_help[m.sub.min(1)]), None),
+        RELOAD => (Some(t.item_help[m.sub % 2]), friend.then(|| t.item_uses.get(m.sub / 2).map(|c| c.help)).flatten()),
+        pg if pg == home => row.map_or((None, None), |r| {
+            let description = (r.kind != Kind::Style && r.id != 0).then(|| items.rows.get(&r.id).map(|i| u32::from(i.description))).flatten();
+            (if r.kind == Kind::Style { t.styles.iter().find(|c| c.value == r.setting).map(|c| c.help) } else { description }, if pg == FRIEND { appended_help(&t, &r) } else { None })
         }),
-        _ => None,
+        _ => (None, None),
     };
-    set_help(scene, &text, help, help_id);
+    set_help_joined(scene, &text, help, help_id);
 
     // The question: the information window with the message and the No and Yes rows (`FUN_00271688`).
     if page == QUESTION {
@@ -1770,7 +1802,7 @@ mod tests {
     #[test]
     fn an_abilitys_use_setting_is_written_to_its_byte_past_the_consumables() {
         let t = friend_tables();
-        assert_eq!((t.setting_index(1), t.setting_index(7), t.setting_index(0xa5), t.setting_index(0xa6), t.setting_index(0x999)), (Some(0), Some(6), Some(7), Some(8), None));
+        assert_eq!((t.setting_index(1), t.setting_index(7), t.setting_index(0xa5), t.setting_index(0xa6), t.setting_index(0x999)), (0, 6, 7, 8, 6));
         let mut p = party_progress();
         let mut m = Machine::new(Vec::new(), vec![]);
         m.members = vec![1, 2, 3];
@@ -1884,14 +1916,15 @@ mod tests {
         assert_eq!(t.item_uses.iter().map(|c| c.value).collect::<Vec<_>>(), vec![0, 2]);
         assert_eq!(t.heading[3..], [0x483, 0x484]);
         assert_eq!(t.setting_ids.len(), 29);
-        let largest = t.setting_ids.iter().filter_map(|e| t.setting_index(e.0 as u16)).max().expect("entries");
+        let largest = t.setting_ids.iter().map(|e| t.setting_index(e.0 as u16)).max().expect("entries");
         println!("largest use setting index {largest}, setting byte {}", 1 + largest);
         let mut p = Progress::from_block(&[], std::sync::Arc::new(Default::default()));
         for e in &t.setting_ids {
-            let k = t.setting_index(e.0 as u16).expect("listed ids map");
+            let k = t.setting_index(e.0 as u16);
             assert!(p.set_member_setting(SORA, 1 + k, 1), "id {:#x} maps to setting byte {}, past the settings block", e.0, 1 + k);
         }
-        assert_eq!((t.setting_index(1), t.setting_index(7), t.setting_index(0xa5), t.setting_index(0xbe)), (Some(0), Some(6), Some(7), Some(7 + 2)));
+        assert_eq!((t.setting_index(1), t.setting_index(7), t.setting_index(0xa5), t.setting_index(0xbe)), (0, 6, 7, 7 + 2));
+        assert_eq!((t.setting_index(246), t.setting_index(0)), (6, 6), "an id the table lacks shares Megalixir's byte");
         let m = kh2_image::text::Messages::from_bar(&a.read("msg/us/sys.bar").expect("sys.bar")).expect("messages");
         for c in t.styles.iter().chain(&t.uses).chain(&t.item_uses) {
             assert!(m.text(c.msg).is_some_and(|s| !s.is_empty()), "message {:#x}", c.msg);
@@ -1899,6 +1932,35 @@ mod tests {
         }
         for id in [2usize, 3] {
             assert!(m.text(t.member_names[id]).is_some_and(|s| !s.is_empty()), "name {id}");
+        }
+    }
+
+    /// `FUN_002743e8`: on page 0x1b the help of a row is its description with the help message of the choice entry that
+    /// holds the row's setting appended; the Battle Style row, the leader's page and the character list differ.
+    #[test]
+    fn a_companions_help_appends_the_choice_message() {
+        let t = friend_tables();
+        let ability = Row { setting: 2, ..Row::new(Kind::Ability, 0xa5, true, 0) };
+        let item = Row { setting: 2, ..Row::new(Kind::Item, 3, false, 0) };
+        let unset = Row { setting: 1, ..Row::new(Kind::Item, 3, false, 0) };
+        assert_eq!(appended_help(&t, &ability), Some(0x1e5d), "uses entry with value 2");
+        assert_eq!(appended_help(&t, &item), Some(0x1e5f), "item uses entry with value 2");
+        assert_eq!(appended_help(&t, &unset), None, "no entry holds 1 in the item table");
+        assert_eq!(appended_help(&t, &Row { setting: 3, ..Row::new(Kind::Style, 0, false, 0) }), None, "the style row shows its own message only");
+        assert_eq!((characters_help(0), characters_help(1), characters_help(2)), (0x3b89, 0x3b8a, 0x3b8a));
+    }
+
+    #[test]
+    fn the_joined_help_runs_the_description_into_the_choice_message() {
+        let iso = std::env::var("KH2_ISO").ok().or_else(|| std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../local/iso.txt")).ok().map(|s| s.trim().to_string()));
+        let Some(iso) = iso else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let m = kh2_image::text::Messages::from_bar(&a.read("msg/us/sys.bar").expect("sys.bar")).expect("messages");
+        for id in [0x3b89u32, 0x3b8a, 0x1e5b, 0x1e5c, 0x1e5d, 0x1e5e, 0x1e5f] {
+            assert!(m.text(id).is_some_and(|s| !s.is_empty()), "message {id:#x} exists");
         }
     }
 

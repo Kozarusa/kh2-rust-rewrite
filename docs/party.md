@@ -496,14 +496,14 @@ outside the table) and `party_battle_distance_follows_the_style`.
 | 10.45 | 0x2f73b0 | 1 ret | status +0x1b4 (gauge timer) |
 | 10.46 | 0x2f73c0 | 1 | FUN_00113190 (Chicken Little setup) |
 | 10.47, 10.48, 10.49 | 0x2f73e0.. | 1 | +0xb7c clear 0x1000 / set 0x20000 / clear 0x20000 |
-| 10.50 | 0x2f7440 | 1 ret | status +0x180 (MP) |
+| 10.50 | 0x2f7440 | 1 ret | status +0x180 (MP); no script on the disc calls it (WP-RV2) |
 | 10.51 | 0x2f7450 | 4 | FUN_0011a6d8 |
 | 10.52 | 0x2f7490 | 1 ret | FUN_00185a38 |
 | 10.53, 10.54 | 0x2f74c0, 0x2f74f8 | 2 / 2 ret | FUN_00136388 / FUN_001364d0 on FUN_0010c5b8 ([I] HUD) |
 | 10.55 | 0x2f7540 | 2 | FUN_002f0758(a, b != 0) |
 | 10.56 | 0x2f7560 | 2 | FUN_00110dc8 |
 | 10.57 | 0x2f7580 | 1 ret | push a position to the player trail (45-unit spacing) |
-| 10.58 | 0x2f7598 | 3 | FUN_001131e8 |
+| 10.58 | 0x2f7598 | 3 | FUN_001131e8: friend object +0xb50 = a record, +0xb54 = a value, bit 2 of the record's object word +0x1c set; only the destructor FUN_0010c6e0 reads the pair; called by P_EH000 and P_EH000_LAST (WP-RV2, docs/bdx.md) |
 | 10.59 | 0x2f75c0 | 2 | FUN_0011a6b8(AI, a) |
 
 Use in the members' scripts (`kh2 bdx`): Donald 10.31 x2; Goofy 10.14, 10.31, 10.40, 10.55 (x2 each);
@@ -1025,7 +1025,7 @@ FUN_0016aa18 the matrices at 0 + 0x670 / 0x6b0, i.e. whatever low memory holds, 
 `friend_host::weapon_calls` answers a null handle with no hand object as `false` (1.161) and the zero vector (1.83),
 both Approx [inferred], so the script no longer faults with `BadAddress(0)` at 0x0e14.
 
-**Hosts of `P_EH000` beyond 10.35 (WP-PY3).** `KH2_JUMP_WORDS=4:0:0 KH2_JUMP=1:0:0 KH2_JUMP_AT=4 KH2_BDXLOG=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1 target\debug\kh2-game.exe tt02`: 1.131, 1.54 and (when called) 1.105 / 1.301 are not missing, the enemy host answers them as Stub (`enemy_host.rs`); 1.54 is exact (FUN_0019dde0 clears bit n in the words at +0x47c and +0x480 + 4 (n >> 5)), and no reader of the arrays was traced. 1.131 (FUN_0018f3f8) files a 5-word record into the pool `DAT_01c89bd0 + 0x14 * index` (index popped from `DAT_01c8a5d0[--DAT_01c8a7d0]`), which the app does not pool. 1.301 (FUN_001abee8) is the byte at 0x35ea48 + 0x1e, 0 in the executable's initial data (the Stub answers 0); its writer was not searched. 1.105 (FUN_001731c0) clears bit 6 of +0x768; readers of +0x768 exist (`mips_scan --load-off 0x768`: FUN_00168d30, FUN_00173178, FUN_00176e00, FUN_00176f88, FUN_0017c718, FUN_0017c840, FUN_00191c18), their use of bit 6 is not read. 1.244 `in_battle` (FUN_001903d8, word 0x1c8a7d8) is now Impl in the friend host (`FriendFields::in_battle` from `audio_bgm::BattleFlag::active`). Still unimplemented for `P_EH000`: 10.50 (x75) and 10.58, not read in this WP.
+**Hosts of `P_EH000` beyond 10.35 (WP-PY3).** `KH2_JUMP_WORDS=4:0:0 KH2_JUMP=1:0:0 KH2_JUMP_AT=4 KH2_BDXLOG=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1 target\debug\kh2-game.exe tt02`: 1.131, 1.54 and (when called) 1.105 / 1.301 are not missing, the enemy host answers them as Stub (`enemy_host.rs`); 1.54 is exact (FUN_0019dde0 clears bit n in the words at +0x47c and +0x480 + 4 (n >> 5)), and no reader of the arrays was traced. 1.131 (FUN_0018f3f8) files a 5-word record into the pool `DAT_01c89bd0 + 0x14 * index` (index popped from `DAT_01c8a5d0[--DAT_01c8a7d0]`), which the app does not pool. 1.301 (FUN_001abee8) is the byte at 0x35ea48 + 0x1e, 0 in the executable's initial data (the Stub answers 0); its writer was not searched. 1.105 (FUN_001731c0) clears bit 6 of +0x768; readers of +0x768 exist (`mips_scan --load-off 0x768`: FUN_00168d30, FUN_00173178, FUN_00176e00, FUN_00176f88, FUN_0017c718, FUN_0017c840, FUN_00191c18), their use of bit 6 is not read. 1.244 `in_battle` (FUN_001903d8, word 0x1c8a7d8) is now Impl in the friend host (`FriendFields::in_battle` from `audio_bgm::BattleFlag::active`). Still unimplemented for `P_EH000`: 10.58 (WP-RV2 read it: it stores a record and a value on the friend object, freed by the destructor, no other reader; 10.50 is called by no script, the "x75" here has no source).
 
 **Blizzard** (`P_EX020` R0a19 -> R0acf, request thread R0af8) [V for the script]. The cast (motion 191, the
 trigger, MP, element 3 on Donald) starts a request (2.20) of 288 bytes at R0af8 with the facing: element 4 of

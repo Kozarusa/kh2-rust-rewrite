@@ -62,7 +62,7 @@ with a default, nothing in the app reads it; Missing = fails visibly. Addresses 
 | 1.3 player, 2.88 last_attacker, 2.23 target | Impl | the player, the player, the player's target record |
 | 1.147 position, 1.201 facing_vector | Impl | position and facing of self or the player, in game space |
 | 1.120 target_position | Approx | the player's origin (the game uses the lock-on part's point, FUN_0018efa0) |
-| 1.121 set_target_mode, 1.131 free_target | Stub | the lock mode of a target record has no consumer |
+| 1.121 set_target_mode, 1.131 free_target | Stub | the lock mode of a target record has no consumer; 1.131 is really the allocation of a pooled copy of the record (FUN_0018f3f8, pool of 0x80 records, WP-RV2, docs/bdx.md) |
 | 1.11 play_motion, 1.61 play_motion_at | Approx | restart the slot on the `Animator` with the blend in ticks (at a start frame for 1.61); the motion controller's queue is not ported |
 | 1.12 play_motion_checked | Approx | as 1.11 unless the slot already plays (FUN_0017e2d8 / FUN_0017e278 compare the running motion with the requested one) |
 | 1.14 motion_done | Impl | the motion reached its end during the last tick; looping motions report it each time they wrap (FUN_0017e3b8 sets bit 1 of the controller flags at every end, loop or not) |
@@ -79,7 +79,7 @@ with a default, nothing in the app reads it; Missing = fails visibly. Addresses 
 | 1.124 flag_124 | Impl | bit 3 of the `objentry` flags halfword (FUN_0019aaf0); false for both objects |
 | 1.309 flag_309 | Approx | true for the player (status bit 0x80, the party class) |
 | 1.70 / 1.71 set_flag / clear_flag | Impl | bit n of the object's flag array. Bit 3 means "cannot be hit": FUN_0019a4f0, the victim test of the attack code, requires bit 3 clear, bit 2 of +0x7f8 clear and HP above 0, and `Fighter::hittable` follows it. Other bits are stored |
-| 1.65 set_flag_26, 1.104 / 1.105 flag 768 | Stub | no consumer in the app |
+| 1.65 set_flag_26, 1.104 / 1.105 flag 768 | Stub | no consumer in the app; none in the executable either for bit 6 of +0x768 (WP-RV2, docs/bdx.md) |
 | 1.19 fade_out, 1.20 fade_in, 1.28 hide | Impl | alpha tween 1 to 0 and 0 to 1 over the given frames (blended materials while it runs); hide sets alpha 0 and the invisible flag (FUN_00170f78) |
 | 1.87 spawn_attached | Approx | element `id` of the object's effect file, bound to it; id 2 goes through `GameEffect::Death` (the death effect, `fx::EFFECT_DEATH`); the flag and extra arguments are ignored |
 | 0.79 release_effect | Stub | effects run to their end |
@@ -103,7 +103,7 @@ with a default, nothing in the app reads it; Missing = fails visibly. Addresses 
 | 1.211 / 1.212, 2.76 | Stub | bits of +0xabc (readers FUN_00185be0 / FUN_0018c6d0 test 9, 10, 11, 13; N_EX570 uses 1 and 12) and a float at +0xaf4: no reader found |
 | 1.262 obj_method_54 | Stub | voice line request (FUN_001970b8 -> FUN_001ae798 priority slot at +0x9b8); no enemy voice in the app |
 | 2.9 set_obj_param (WP-6H) | Impl | a row other than the kind's rebuilds the stats with full HP (N_EX570_BTL: 135 or 155) || 1.23 global_byte_33e830 | Approx | 2, the world number of Twilight Town |
-| 1.171, 1.206, 1.34, 1.301 | Stub | global flags and a global byte set by other scripts or the game: false and 0 |
+| 1.171, 1.206, 1.34, 1.301 | Stub | global flags and a global byte set by other scripts or the game: false and 0; 1.301 is a constant 0 (the NUL after a string at 0x35ea48, WP-RV2, docs/bdx.md), so exact |
 | 2.8 hit_is_real | Impl | the effective reaction's class is 2 or more (FUN_0018b700 on the hit record's byte +0x26) |
 | mode manager hooks | Approx | `ModeInterrupted` and `ModeMayStart` follow FUN_00186b70 and FUN_001873d0 read as "a hit reaction plays" and "not in hit stun"; `ModeFrozen` (FUN_00186b38, object flag 0x40000) is false because hit stop is not implemented |
 | 1.29 play_motion_with, 1.238 obj_word_158, 1.13 queue_motion, 1.89 set_velocity, 1.70 / 1.71 on the player, 1.14 on the player | Approx | the calls of Soldier's reaction thread on the player: handed to the player side as `PlayerReactionCmd` (no consumer yet), the paired motion's length gives the player's `motion_done` |
@@ -126,7 +126,7 @@ with a default, nothing in the app reads it; Missing = fails visibly. Addresses 
 | 1.18 link_start on the player (WP-7D) | Stub | 0x170dd8 -> FUN_001beb90: parent +0x570, halfwords +0x574 / +0x576, facing +0x550 cleared and 8 or-ed into +0x7f8 (flags bit 1 clear), mover 3, the child entered in the parent's list (+0x760 / +0x764); FUN_00169ee8 ends it when +0x576 bit 0 is set and the parent's +0x160 loses 0x8000, FUN_001becb8 undoes it. The player side has no link mover: Sora is not attached (the Dancer's force dance, `docs/enemies.md`) |
 | 2.7 hit_reaction (WP-7D) | Impl | byte +0x26 of the hit record (0x18e0d0): the effective reaction of `reaction_rules::victim_outcome`, carried by `AiHit::reaction` with every hit (2.8 classifies the same byte) |
 | 1.95 (WP-7D) | Approx | 0x173038 -> FUN_00183470: mover 1 continuing the last real movement (+0x860): horizontal velocity kept, apex time vy / g and apex height from its vertical speed (g = DAT_0037a884, 0.5 = DAT_0037a888). The app starts a `Motor` jump to that apex or a fall already that fast; not in `kh2_bdx::names` (arrives undecoded, taken as the object's own) |
-| 1.54 bits_47c_480_clear (WP-7D, EN2) | Stub | 0x172910 -> FUN_0019dde0: bit n cleared in the bit arrays at +0x47c and +0x480 (object memory since WP-EN2); no reader was traced |
+| 1.54 bits_47c_480_clear (WP-7D, EN2) | Stub | 0x172910 -> FUN_0019dde0: bit n cleared in the bit arrays at +0x47c and +0x480 (object memory since WP-EN2); the reader is FUN_0019a6a0, the per-part collision enable test (WP-RV2, docs/bdx.md 1.52) |
 | 1.53 bits_480_set (WP-EN2) | Stub | 0x1728e8 -> FUN_0019ddb0 on +0x47c: bit n of the word at +0x480 + 4 * (n >> 5), set in the object memory (M_EX940 sets bits 5 and 7); no reader was traced |
 | 1.97 obj_part_110 (WP-EN2) | Impl | 0x173070: the address of the object's block at +0x110 (`Value::Handle(self + 0x110)`); M_EX940 stores a float at its +0xc |
 | 1.108 / 1.109 link_method_3c / 40 (WP-EN2) | Stub | 0x173278 / 0x173298 -> FUN_00192cd0 / FUN_00192ce8 -> FUN_0011c580 / FUN_0011c5b0: virtual method +0x3c / +0x40 of the object behind the link record at object +0x670 (record +0x14), with the record's word +0x104 and the argument; the app has no link records |

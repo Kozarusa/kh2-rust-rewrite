@@ -89,6 +89,18 @@ pub const OPEN_AFTER_TYPE_1: f32 = 1.5;
 pub fn open_after(kind: u8) -> f32 {
     if kind == 1 { OPEN_AFTER_TYPE_1 } else { OPEN_AFTER_TICKS / TICKS_PER_SECOND }
 }
+/// Alpha, 0 to 1, of the knock-out event's screen fade `secs` after the knock-out, for a game over type. The event (types 0, 2 and 3)
+/// runs `FUN_0014a7c8(0x356b30, 0x32, 1)` at its event frame 0xb (tick 22): the flag 1 makes `FUN_0014a710` colour it white
+/// (`FUN_0014af90(0xff, 0xff, 0xff, 0)`; flag 0 would be black), and `FUN_0014a818` raises the alpha byte linearly to 0x80 (full) over
+/// 100 ticks [the ramp's linearity is inferred], after which the state holds (docs/menus.md 26.8, gap A). Type 1 starts no event.
+pub fn knockout_fade(kind: u8, secs: f32) -> f32 {
+    if kind == 1 {
+        return 0.0;
+    }
+    let ticks = secs * TICKS_PER_SECOND;
+    ((ticks - crate::summon::REVIVE_FADE_START as f32) / crate::summon::REVIVE_FADE_TICKS as f32).clamp(0.0, 1.0)
+}
+
 /// The fade kind of the jump `FUN_00104e18(.., 0x80000001, ..)` (`FUN_0013ef68(0x80000001)`: kind 1).
 pub const CONTINUE_FADE_KIND: u32 = 1;
 
@@ -770,7 +782,10 @@ fn drive(
         info!("game over: the manager ended with the game-over path: type {} (FUN_001b9ce0)", r.kind);
         go.over = Some(Over::new(r.kind, Some(r.exits)));
     }
-    let Some(mut over) = go.over.take() else { return };
+    let Some(mut over) = go.over.take() else {
+        scene.fade = 0.0;
+        return;
+    };
     if over.fresh {
         over.fresh = false;
         start(over.kind, &mut se, music.as_deref_mut(), audio.as_deref());
@@ -891,6 +906,16 @@ fn drive(
             }
         }
     }
+    // The knock-out event's white fade: ramped while Sora lies down, then held under the list until it closes.
+    scene.fade = if !keep {
+        0.0
+    } else {
+        match over.phase {
+            Phase::Waiting => knockout_fade(over.kind, over.waited),
+            Phase::List | Phase::Closing => knockout_fade(over.kind, 1.0e6),
+            Phase::Loading | Phase::Jumping => 0.0,
+        }
+    };
     if keep {
         go.over = Some(over);
     }
@@ -1834,6 +1859,22 @@ mod tests {
         assert!((open_after(0) - 122.0 / 60.0).abs() < 1e-6 && open_after(0) == open_after(3));
         assert_eq!(open_after(1), OPEN_AFTER_TYPE_1);
         assert!(open_after(0) > open_after(1), "the fade is longer than the 1.5 s the port used before");
+    }
+
+    /// The knock-out event's fade is white, starts at tick 22, is half way at tick 72, full at 122 and is zero for type 1.
+    #[test]
+    fn the_knock_out_fade_ramps_from_tick_22_to_122() {
+        let at = |kind: u8, tick: f32| knockout_fade(kind, tick / TICKS_PER_SECOND);
+        assert_eq!(at(0, 0.0), 0.0);
+        assert_eq!(at(0, 22.0), 0.0);
+        assert!((at(0, 72.0) - 0.5).abs() < 1e-5, "{}", at(0, 72.0));
+        assert!((at(3, 122.0) - 1.0).abs() < 1e-5);
+        assert_eq!(at(0, 500.0), 1.0);
+        assert_eq!(at(1, 500.0), 0.0);
+        // The white wins over the black dim; the dim stays when the fade is weaker.
+        assert_eq!(crate::menu_gfx::dim_paint(true, 0.25, 0.5), (0.5, 1.0));
+        assert_eq!(crate::menu_gfx::dim_paint(false, 0.25, 0.0), (0.25, 0.0));
+        assert_eq!(crate::menu_gfx::dim_paint(false, 0.25, 1.0), (1.0, 1.0));
     }
 
     /// The member branch of the refresher (`PartyMember` cannot be built outside `party.rs`, so the per-member rule `refresh_party`

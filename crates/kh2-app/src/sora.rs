@@ -1268,13 +1268,14 @@ pub fn tick(
     globals: Query<&GlobalTransform>,
     mut bodies: Query<&mut Transform, Without<Sora>>,
     mut vis: Query<&mut Visibility>,
-    mission: Option<Res<crate::struggle::Mission>>,
-    game_flag: Option<Res<crate::audio_bgm::BattleFlag>>,
+    // Bevy takes 16 system parameters at most: the optional resources come as one tuple.
+    (mission, game_flag, summons): (Option<Res<crate::struggle::Mission>>, Option<Res<crate::audio_bgm::BattleFlag>>, Option<Res<crate::summon::SummonState>>),
 ) {
     let (Ok((mut tf, mut s, mut fighter)), Some(world)) = (sora_q.single_mut(), world) else { return };
     let s = &mut *s;
     // A playing mission layout or the fight's stop: no input reaches the controller (WP-F1 item 2).
-    let locked = mission.as_deref().is_some_and(|m| m.control_locked() || m.fight_stopped());
+    // Tinker Bell's revive event takes the pad from the players for its 42 ticks (`FUN_00196280`, docs/summons.md).
+    let locked = mission.as_deref().is_some_and(|m| m.control_locked() || m.fight_stopped()) || summons.as_deref().is_some_and(|m| m.revive_pad_locked());
     if locked {
         if pad.any_input() && move_log() {
             info!("move: input ignored: the mission's layout locks control or the fight stopped (FUN_001b7d50 / FUN_001b9940)");

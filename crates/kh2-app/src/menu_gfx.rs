@@ -214,6 +214,9 @@ pub struct MenuScene {
     pub text: Option<MenuText>,
     /// Alpha of the black the field is dimmed with (0 = none).
     pub dim: f32,
+    /// Alpha of a white fade over the field, drawn even while `hidden` (the knock-out event's screen fade, `FUN_0014a710` flag 1:
+    /// white, docs/menus.md 26.8). It replaces the black dim while it is above the dim's alpha.
+    pub fade: f32,
     /// Draw nothing at all (the menu is closed).
     pub hidden: bool,
     /// Frames the players advance per 60 Hz tick (the clip's pace, docs/menus.md 1.6).
@@ -422,10 +425,17 @@ fn setup_camera(mut commands: Commands) {
 #[derive(Component)]
 struct MenuDim;
 
+/// The colour and alpha of the dim sprite: the white fade when it is the stronger, else the black dim (none while hidden).
+pub fn dim_paint(hidden: bool, dim: f32, fade: f32) -> (f32, f32) {
+    let dim = if hidden { 0.0 } else { dim.clamp(0.0, 1.0) };
+    let fade = fade.clamp(0.0, 1.0);
+    if fade > dim { (fade, 1.0) } else { (dim, 0.0) }
+}
+
 fn draw_dim(scene: Res<MenuScene>, mut dim: Query<(&mut Sprite, &mut Visibility), With<MenuDim>>) {
-    let a = if scene.hidden { 0.0 } else { scene.dim.clamp(0.0, 1.0) };
+    let (a, c) = dim_paint(scene.hidden, scene.dim, scene.fade);
     for (mut s, mut v) in &mut dim {
-        s.color = Color::srgba(0.0, 0.0, 0.0, a);
+        s.color = Color::srgba(c, c, c, a);
         *v = if a > 0.0 { Visibility::Inherited } else { Visibility::Hidden };
     }
 }

@@ -3851,7 +3851,7 @@ type ScriptedRes<'w, 's> = (
 );
 
 /// The game state the summon objects read: the game data, the drive gauge, the limit task, the summon data and state.
-type SummonRes<'w> = (Res<'w, GameData>, Res<'w, DriveState>, Option<Res<'w, crate::limit::LimitTask>>, Res<'w, SummonData>, ResMut<'w, SummonState>, ResMut<'w, SharedBlocks>);
+type SummonRes<'w, 's> = (Res<'w, GameData>, Res<'w, DriveState>, Option<Res<'w, crate::limit::LimitTask>>, Res<'w, SummonData>, ResMut<'w, SummonState>, ResMut<'w, SharedBlocks>, MessageReader<'w, 's, crate::limit::LimitScriptEvent>);
 
 /// FUN_001c69b0: the summon state is not 0, byte 5 is the `sumn` row of Peter Pan's command (0x132,
 /// FUN_001d4ca0: 0 when absent) and byte 7 is set (1 from the start, FUN_001c6168; cleared by the revive
@@ -3997,6 +3997,18 @@ fn ko_due(summon_out: bool) -> bool {
 /// two as the limit's player and summon records (`ctx + 4`, `ctx + 0x14`) and link the second to the first.
 const LIMIT_ATTACK: u32 = 0x7a00_0000;
 
+/// The events the limit task sends to the participant `neo` (a summon, 200 to 204): `(event, argument)` in order. Event 22 carries
+/// the task (the stand-in `LIMIT_ATTACK` handle, [inferred] as `KH2_SUMMON_EVENT`'s `limit`), event 23 the command id. Events
+/// for the limit BAR's own script (`LimitReceiver::LimitScript`) or another participant are not this summon's.
+fn limit_deliveries(events: &[crate::limit::LimitScriptEvent], neo: u16) -> Vec<(u32, u32)> {
+    use crate::limit::{LimitArg, LimitReceiver};
+    events
+        .iter()
+        .filter(|e| u8::try_from(neo).is_ok_and(|n| e.to == LimitReceiver::Participant(n)))
+        .map(|e| (e.event as u32, match e.arg { LimitArg::Task => LIMIT_ATTACK, LimitArg::Command(c) => c as u32 }))
+        .collect()
+}
+
 /// `KH2_SUMMON_EVENT=<event>:<argument>[@<seconds>][,<event>:<argument>[@<seconds>]...]` (a harness aid; a missing time is
 /// the one before, 12 s for the first): each event is delivered once, while a summon is out, in order, to the summon's
 /// script, as the limit task's script would deliver events 22 (a limit starts, with its attack object: `22:limit`, whose
@@ -4086,7 +4098,7 @@ fn objects(
     children: Query<&Children>,
     handles: Query<&MeshMaterial3d<StandardMaterial>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    (game, drive, limit_task, data, mut sm, mut shared): SummonRes,
+    (game, drive, limit_task, data, mut sm, mut shared, mut limit_events): SummonRes,
     (cam, enemies, gts, mut hits, mut magic, battle): StitchWorld,
     (lib, mut memory, mut spell_hits, mut running, item_data): ScriptedRes,
 ) {
@@ -4096,6 +4108,9 @@ fn objects(
     let kid_ids = kid_object_ids(&data.rows, &data.objs, sm.index);
     // `KH2_SUMMON_EVENT` (a harness aid): one event for the summon's own script.
     let mut aid_event = event_due(sm.state != 0);
+    // The limit task's events (`limit::LimitScriptEvent`, events 22 and 23): read once per tick, delivered below to the summon
+    // object whose neo id is the `Participant` receiver.
+    let limit_in: Vec<crate::limit::LimitScriptEvent> = limit_events.read().copied().collect();
     // `KH2_SUMMON_KO=<seconds>` (a harness aid): once, that many seconds after the start, while a summon is out, the player is
     // knocked out (HP 0, `State::Down`) so Tinker Bell's revive can be seen without waiting for an enemy to do it.
     if ko_due(sm.state != 0) {
@@ -4370,6 +4385,13 @@ fn objects(
             let rec = host.f.inner.obj.new_record(crate::enemy_obj::PLAYER, 0);
             let handled = rt.event(&mut host, 11, &[crate::enemy_obj::PLAYER, cmd as u32, rec]);
             info!("summon: {tag} event 11 (Drive!: form command {cmd}): handler {}", if handled { "ran" } else { "absent" });
+        }
+        // FUN_001b3118 starts the thread only on a participant with a script (`+0x484`); an object without one `continue`d above.
+        if !is_kid {
+            for (event, arg) in limit_deliveries(&limit_in, neo) {
+                let handled = rt.event(&mut host, event, &[arg]);
+                info!("summon: {tag} limit task event {event} with {arg:#x}: handler {}", if handled { "ran" } else { "absent" });
+            }
         }
         if !is_kid && !aid_event.is_empty() {
             for (event, arg) in std::mem::take(&mut aid_event) {
@@ -5142,6 +5164,21 @@ fn hud_feed(drive: Option<Res<DriveState>>, mut gauge: ResMut<crate::hud::hud_ga
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn limit_events_go_to_the_named_participant_only() {
+        use crate::limit::{LimitArg, LimitReceiver, LimitScriptEvent};
+        let ev = [
+            LimitScriptEvent { event: 22, to: LimitReceiver::LimitScript, arg: LimitArg::Task },
+            LimitScriptEvent { event: 22, to: LimitReceiver::Participant(204), arg: LimitArg::Task },
+            LimitScriptEvent { event: 23, to: LimitReceiver::Participant(204), arg: LimitArg::Command(530) },
+            LimitScriptEvent { event: 23, to: LimitReceiver::Participant(200), arg: LimitArg::Command(525) },
+        ];
+        assert_eq!(super::limit_deliveries(&ev, 204), vec![(22, super::LIMIT_ATTACK), (23, 530)]);
+        assert_eq!(super::limit_deliveries(&ev, 200), vec![(23, 525)]);
+        assert!(super::limit_deliveries(&ev, 202).is_empty());
+        assert!(super::limit_deliveries(&ev, 460).is_empty());
+    }
+
     use super::rules::*;
     use super::*;
 

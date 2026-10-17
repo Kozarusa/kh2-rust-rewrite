@@ -62,9 +62,125 @@ pub struct TaskState {
     pub player: [f32; 4],
     /// Sora's yaw (radians), set with `player`.
     pub player_yaw: f32,
+    /// Sora's velocity as a game-space vector (object `+0x20`, read directly by the scripts; see [`ObjectMem`]), set each tick.
+    pub player_velocity: [f32; 4],
+    /// The memory the scripts read and write through object pointers.
+    pub mem: ObjectMem,
+    /// Hosts 2.47, 2.50 and 2.59 as the app took them (the participant's motion setup, effect start and motion table lookup).
+    pub requests: Vec<Request>,
 }
 
-/// The stand-in handle of the party member object of character `id` (an object only this module and its host know; it has no memory).
+/// One call of hosts 2.47 / 2.50 / 2.59: the app has nothing to play for a stand-in participant, so the call is kept as the request
+/// the original acted on.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Request {
+    /// Host 2.47 (`0x18e988` -> `FUN_001b3438` -> `FUN_0017f0c0`): the setup of a participant's motion controller; `args` are the
+    /// call's raw arguments (the participant handle, the motion record, the third argument, the task).
+    Motion { args: Vec<u32> },
+    /// Host 2.50 (`0x18e9f8` -> `FUN_001b3468`): an effect started on the participant (the object, the effect record, the scale and
+    /// the flag `!= 0`).
+    Effect { args: Vec<u32> },
+    /// Host 2.59 (`0x18eb00` -> `FUN_001b3c48` -> `FUN_001db868`): a lookup of a motion row by halfword id in the task's table.
+    MotionRow { args: Vec<u32> },
+}
+
+/// The stand-in for the pointer host 2.56 (`ptr_b40_4`, `0x1706f8`, "the pointer at object `+0xb40` plus 4") answers: the player's
+/// target controller object has its current target handle at `+4`, and the scripts read that word.
+pub const TARGET_SLOT: u32 = 0x7a30_0000;
+
+/// The stand-in for the record host 2.23 answers (the object's own target record, object `+0x9f4`): five words, the player as the
+/// object (as the enemy host's record `enemy_host::target_record`).
+pub const OWN_RECORD: u32 = 0x7a40_0000;
+
+/// Host 1.131 copies a record into the pool at `DAT_01c89bd0 + 0x14 * index` and answers its address; the stand-in pool starts here.
+pub const RECORD_POOL: u32 = 0x7a50_0000;
+/// Bytes of a target record (five words).
+const RECORD_BYTES: u32 = 0x14;
+/// Records the pool holds (the game's pool is indexed by a stack of free slots, `DAT_01c8a5d0`; the app never reuses one).
+const POOL_RECORDS: u32 = 0x100;
+
+/// The memory behind the object handles a limit script reads directly (Simba and Tron read 16 bytes at the player object's `+0x20`
+/// through the context, words `0xc4b` / `0x316`, the object's velocity vector as the scripts of the enemies use it: host 1.58 stores the
+/// dash direction there, the Quick Run start its velocity). The image is kept per handle; writes are stored and read back.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ObjectMem {
+    written: BTreeMap<u32, u8>,
+    /// Records filed by host 1.131 so far.
+    filed: u32,
+}
+
+/// Offset of the velocity vector in an object.
+pub const VELOCITY_OFFSET: u32 = 0x20;
+/// Bytes of an object image the scripts may read.
+const OBJECT_SPAN: u32 = 0x100;
+
+impl ObjectMem {
+    /// The handle an address belongs to and its offset: the player, a participant stand-in, or the target slot (offset 0 only).
+    fn locate(addr: u32) -> Option<(u32, u32)> {
+        if addr.wrapping_sub(OWN_RECORD) < RECORD_BYTES {
+            return Some((OWN_RECORD, addr - OWN_RECORD));
+        }
+        if addr.wrapping_sub(RECORD_POOL) < RECORD_BYTES * POOL_RECORDS {
+            return Some((RECORD_POOL, addr - RECORD_POOL));
+        }
+        let base = [crate::enemy_obj::PLAYER, TARGET_SLOT];
+        if let Some(b) = base.into_iter().find(|&b| addr >= b && addr - b < OBJECT_SPAN) {
+            return Some((b, addr - b));
+        }
+        (PARTNER_BASE..EFFECT_SLOT).contains(&addr).then(|| (addr - addr % OBJECT_SPAN, addr % OBJECT_SPAN))
+    }
+
+    /// Reads `out.len()` bytes at `addr`; false for an address that is no object of the limit.
+    pub fn read(&self, addr: u32, task_velocity: [f32; 4], out: &mut [u8]) -> bool {
+        let Some((_, off)) = Self::locate(addr) else { return false };
+        if addr.wrapping_sub(TARGET_SLOT) < OBJECT_SPAN {
+            // The target controller's word: no target (0) [inferred: the app's lock-on is not an object of this host].
+            out.fill(0);
+            return true;
+        }
+        let own = addr.wrapping_sub(OWN_RECORD) < RECORD_BYTES;
+        let is_object = addr.wrapping_sub(RECORD_POOL) >= RECORD_BYTES * POOL_RECORDS && !own;
+        for (i, b) in out.iter_mut().enumerate() {
+            let a = addr + i as u32;
+            let o = off + i as u32;
+            *b = self.written.get(&a).copied().unwrap_or_else(|| {
+                if own {
+                    return crate::enemy_host::target_record().get((a - OWN_RECORD) as usize).copied().unwrap_or(0);
+                }
+                let v = o.wrapping_sub(VELOCITY_OFFSET) as usize;
+                if is_object && v < 16 { task_velocity[v / 4].to_le_bytes()[v % 4] } else { 0 }
+            });
+        }
+        true
+    }
+
+    /// Host 1.131 (`FUN_0018f3f8`): files the record at `record` in the pool and answers the copy's address (0 when the pool is full or
+    /// the address holds no record).
+    pub fn file_record(&mut self, record: u32) -> u32 {
+        let mut bytes = [0u8; RECORD_BYTES as usize];
+        if self.filed >= POOL_RECORDS || !self.read(record, [0.0; 4], &mut bytes) {
+            return 0;
+        }
+        let at = RECORD_POOL + RECORD_BYTES * self.filed;
+        self.filed += 1;
+        self.write(at, &bytes);
+        at
+    }
+
+    /// Stores `data` at `addr`; false for an address that is no object of the limit.
+    pub fn write(&mut self, addr: u32, data: &[u8]) -> bool {
+        if Self::locate(addr).is_none() {
+            return false;
+        }
+        for (i, &b) in data.iter().enumerate() {
+            self.written.insert(addr + i as u32, b);
+        }
+        true
+    }
+}
+
+/// The stand-in handle of the party member object of character `id` (an object only this module and its host know; its memory is
+/// [`ObjectMem`], one [`OBJECT_SPAN`] bytes per character id).
 pub const PARTNER_BASE: u32 = 0x7a10_0000;
 
 /// The stand-in handle of the object in task `+0x38` (host 2.55).
@@ -72,7 +188,7 @@ pub const EFFECT_SLOT: u32 = 0x7a20_0000;
 
 /// The stand-in handle for character `id`.
 pub fn partner(id: u32) -> u32 {
-    PARTNER_BASE + id
+    PARTNER_BASE + id * OBJECT_SPAN
 }
 
 /// The participants a limit row's three bytes name, in slot order (`FUN_001b2c10`: bytes above 1 only, packed).
@@ -84,7 +200,7 @@ impl TaskState {
     /// What the task creation leaves for the limit of `command` (`FUN_001b2e08`: `FUN_001b3a70(task, 3)` for command 0x1e4).
     pub fn new(command: u16, remaining: f32) -> TaskState {
         let trinity = command == 0x1e4;
-        TaskState { remaining, animations: i32::from(trinity), animation_flag: trinity, participants: Vec::new(), player: [0.0, 0.0, 0.0, 1.0], player_yaw: 0.0 }
+        TaskState { remaining, animations: i32::from(trinity), animation_flag: trinity, participants: Vec::new(), player: [0.0, 0.0, 0.0, 1.0], player_yaw: 0.0, player_velocity: [0.0; 4], mem: ObjectMem::default(), requests: Vec::new() }
     }
 
     /// Host 2.89 (`FUN_001b3b60`): when bit 8 is set, stop the animation (the call through the player's `+0xb44` object is a gap
@@ -119,6 +235,23 @@ impl Host for LimitHost<'_> {
         }
         host_answer(c, self.task)
     }
+
+    fn read_mem(&mut self, addr: u32, out: &mut [u8]) -> bool {
+        self.task.mem.read(addr, self.task.player_velocity, out)
+    }
+
+    fn write_mem(&mut self, addr: u32, data: &[u8]) -> bool {
+        self.task.mem.write(addr, data)
+    }
+}
+
+/// The raw arguments of a call.
+fn args_of(c: &Call) -> Vec<u32> {
+    match c {
+        Call::Func { args, .. } => args.iter().map(|a| a.int() as u32).collect(),
+        Call::Unknown { args, .. } => args.clone(),
+        _ => Vec::new(),
+    }
 }
 
 /// The first argument of a call as an integer (a handle), 0 without one.
@@ -152,6 +285,10 @@ fn host_answer(c: &Call, task: &mut TaskState) -> Value {
             _ => Value::Handle(0),
         };
     }
+    if let Call::FreeTarget { handle } = c {
+        // 1.131 (0x1736f8): files the record in the pool and answers the copy's address.
+        return Value::Handle(task.mem.file_record(*handle));
+    }
     match crate::enemy_host::call_id(c) {
         // 2.49 (0x18e9d8): the word at +0x10 + 4 * i, the i-th participant (0 when the limit has fewer).
         (2, 49) if on_task => {
@@ -177,6 +314,27 @@ fn host_answer(c: &Call, task: &mut TaskState) -> Value {
         // 7.21 (0x2ef798 -> FUN_002f3a08): copies the five words the argument points at to `DAT_00371400`; its readers are not in the
         // decompiled code (gap), so nothing in the app reads the record.
         (7, 21) => Value::None,
+        // 2.56 (0x18de58, `ptr_b40_4_b`): the pointer at the object's +0xb40 plus 4, the word the target controller keeps its target in.
+        // 2.23 (0x18ddb0): the object's own target record (+0x9f4). 1.131 (0x1736f8): files a record in the pool, answers the copy.
+        (2, 23) => Value::Handle(OWN_RECORD),
+        (2, 56) => Value::Handle(TARGET_SLOT),
+        // 2.47 (0x18e988): the participant's motion controller setup (`FUN_001b3438` -> `FUN_0017f0c0`). A stand-in has no motion
+        // controller, so the request is kept and the call answers 0 [inferred: the result slot is not read by the scripts that log it].
+        (2, 47) => {
+            task.requests.push(Request::Motion { args: args_of(c) });
+            Value::Int(0)
+        }
+        // 2.50 (0x18e9f8 -> FUN_001b3468): an effect start on the participant; nothing is drawn, the request is kept.
+        (2, 50) => {
+            task.requests.push(Request::Effect { args: args_of(c) });
+            Value::None
+        }
+        // 2.59 (0x18eb00 -> FUN_001b3c48 -> FUN_001db868): a row lookup by halfword id in the task's motion table (task +0x18, rows of
+        // 0x50 bytes, count at the table's +8); with no table the walk finds nothing and answers 0.
+        (2, 59) => {
+            task.requests.push(Request::MotionRow { args: args_of(c) });
+            Value::Int(0)
+        }
         // 2.60 (0x18eb40): the float at +0xd4, the time gauge value.
         (2, 60) if on_task => Value::Float(task.remaining),
         // 2.63 (0x18eb50): the word at +0x3c, the count of started HUD animations.
@@ -355,6 +513,8 @@ fn run_limit_script(
     if let Ok(s) = sora.single() {
         run.task.player = crate::enemy_obj::to_game(s.motor.pos);
         run.task.player_yaw = s.motor.yaw;
+        let v = crate::enemy_obj::to_game(s.motor.vel);
+        run.task.player_velocity = [v[0], v[1], v[2], 0.0];
     }
     // The app's countdown ends the limit (FUN_001b3970 waits for HUD animations: a gap). The gauge then reads 0, which is what ends the
     // script's own wait (host 2.60), so the thread gets the ticks its tail needs (at most `TAIL_TICKS`) and is dropped after them.
@@ -549,5 +709,75 @@ mod tests {
             app.update();
         }
         assert!(app.world().resource::<ScriptState>().run.is_none(), "the limit's end drops the thread after the tail");
+    }
+
+    /// Host 1.147 answers the player's position for the player and the stand-ins, the origin for any other handle.
+    #[test]
+    fn host_1_147_gives_the_player_position() {
+        let mut t = TaskState::new(1, 1.0);
+        t.player = [10.0, -20.0, 30.0, 1.0];
+        let pos = |h| host_answer(&Call::Position { obj: h }, &mut TaskState { ..t.clone() });
+        assert_eq!(pos(crate::enemy_obj::PLAYER), Value::Vec([10.0, -20.0, 30.0, 1.0]));
+        assert_eq!(pos(partner(3)), Value::Vec([10.0, -20.0, 30.0, 1.0]));
+        assert_eq!(pos(0x1234), Value::Vec([0.0, 0.0, 0.0, 1.0]));
+    }
+
+    /// Host 1.83 adds the vector to the object's position; host 1.98 answers the position itself; host 1.201 the facing of the yaw.
+    #[test]
+    fn hosts_1_83_1_98_and_1_201_follow_the_player_state() {
+        let mut t = TaskState::new(1, 1.0);
+        t.player = [1.0, 2.0, 3.0, 1.0];
+        t.player_yaw = std::f32::consts::FRAC_PI_2;
+        let call = Call::Func { group: 1, index: 83, args: vec![kh2_bdx::Arg::Raw(crate::enemy_obj::PLAYER), kh2_bdx::Arg::Raw(0), kh2_bdx::Arg::Vec([10.0, 20.0, 30.0, 1.0])] };
+        assert_eq!(host_answer(&call, &mut t), Value::Vec([11.0, 22.0, 33.0, 1.0]));
+        assert_eq!(host_answer(&func(1, 98, &[partner(2)]), &mut t), Value::Vec([1.0, 2.0, 3.0, 1.0]));
+        let Value::Vec(f) = host_answer(&func(1, 201, &[crate::enemy_obj::PLAYER]), &mut t) else { panic!("1.201 answers a vector") };
+        assert!((f[0] - 1.0).abs() < 1e-6 && f[1] == 0.0 && f[2].abs() < 1e-6, "{f:?}");
+    }
+
+    /// Simba and Tron copy 16 bytes from the player object's +0x20; the memory answers them with the velocity and keeps writes. Hosts
+    /// 2.56 point at a target word that reads 0 (Riku, Trinity without a group).
+    #[test]
+    fn object_memory_serves_the_velocity_and_the_target_word() {
+        let mut m = ObjectMem::default();
+        let v = [1.5f32, -2.0, 4.0, 0.0];
+        let mut b = [0u8; 16];
+        assert!(m.read(crate::enemy_obj::PLAYER + VELOCITY_OFFSET, v, &mut b));
+        assert_eq!(f32::from_le_bytes(b[0..4].try_into().unwrap()), 1.5);
+        assert_eq!(f32::from_le_bytes(b[8..12].try_into().unwrap()), 4.0);
+        assert!(m.read(partner(5) + VELOCITY_OFFSET + 4, v, &mut b[..4]));
+        assert_eq!(f32::from_le_bytes(b[..4].try_into().unwrap()), -2.0);
+        assert!(m.write(crate::enemy_obj::PLAYER + 0x40, &[7]));
+        let mut one = [0u8; 1];
+        assert!(m.read(crate::enemy_obj::PLAYER + 0x40, v, &mut one));
+        assert_eq!(one, [7]);
+        assert!(!m.read(0x1000, v, &mut one), "an address outside the limit's objects is no memory");
+        // 2.23 answers the own record, 1.131 files a copy of it in the pool (the player as its object, -1 at word 3).
+        let mut t = TaskState::new(1, 1.0);
+        let Value::Handle(own) = host_answer(&func(2, 23, &[crate::enemy_obj::PLAYER]), &mut t) else { panic!("2.23 answers a record") };
+        let Value::Handle(copy) = host_answer(&Call::FreeTarget { handle: own }, &mut t) else { panic!("1.131 answers a record") };
+        assert_ne!(copy, 0);
+        assert_ne!(copy, own);
+        let mut rec = [0u8; 20];
+        assert!(t.mem.read(copy, [9.0; 4], &mut rec));
+        assert_eq!(rec, crate::enemy_host::target_record(), "the copy is the record, not the velocity");
+        assert!(t.mem.write(copy + 4, &[5, 0, 0, 0]), "the script stores into its record");
+        assert_eq!(host_answer(&Call::FreeTarget { handle: 0 }, &mut t), Value::Handle(0), "no record at 0");
+        let Value::Handle(slot) = host_answer(&func(2, 56, &[crate::enemy_obj::PLAYER]), &mut t) else { panic!("2.56 answers a pointer") };
+        let mut w = [9u8; 4];
+        assert!(m.read(slot, v, &mut w));
+        assert_eq!(w, [0; 4]);
+    }
+
+    /// Hosts 2.47, 2.50 and 2.59 keep the request they were given and answer what the original answers without a motion or table.
+    #[test]
+    fn participant_requests_are_kept() {
+        let mut t = TaskState::new(1, 1.0);
+        assert_eq!(host_answer(&func(2, 47, &[partner(2), 5, 6, TASK]), &mut t), Value::Int(0));
+        assert_eq!(host_answer(&func(2, 50, &[partner(2), 9, 0, 1]), &mut t), Value::None);
+        assert_eq!(host_answer(&func(2, 59, &[TASK, 12, 3, 4]), &mut t), Value::Int(0));
+        assert_eq!(t.requests.len(), 3);
+        assert_eq!(t.requests[0], Request::Motion { args: vec![partner(2), 5, 6, TASK] });
+        assert!(matches!(t.requests[2], Request::MotionRow { .. }));
     }
 }

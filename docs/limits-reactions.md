@@ -823,7 +823,7 @@ Answering 2.55 non-null changed which branch some scripts take (they now test fo
 |---|---|
 | 484 Trinity | runs 180 ticks (two threads), returns |
 | 82 Auron, 74 Beast, 139 Mulan, 255 Goofy, 338 Goofy 2, 344 Donald 2, 351 Aladdin, 357 Sparrow, 282 Donald, 405 Jack | run to the end and return (282 and 405 used to fault) |
-| 376 Simba, 415 Tron | fault in the first tick: `BadAddress(0x2000020)`, a direct read of the player object (`0x2000000`) at offset `+0x20` through a pointer, which no host serves |
+| 376 Simba, 415 Tron | (WP-LS2: run to the end) fault in the first tick: `BadAddress(0x2000020)`, a direct read of the player object (`0x2000000`) at offset `+0x20` through a pointer, which no host serves |
 | 569 Riku, 620 Trinity (no group) | fault in the first tick: `BadAddress(0)` after host 2.56 (`ptr_b40_4_b`, a pointer into the participant's sub-object, answered 0) |
 
 A faulting script is logged once and dropped; the limit goes on (unchanged).
@@ -841,6 +841,46 @@ A faulting script is logged once and dropped; the limit goes on (unchanged).
   implement them against their own object state (`enemy_host.rs` reads `self.obj` and `self.env`), so they are not shared; the
   limit host has neither (1.23 is the world number byte `0x33e830`, 1.34 the event word `0x35e3a4`). Answered 0, logged.
 - The Trinity child's own host calls are the same as the parent's (2.60), so nothing further is logged.
+
+## Limit script, part 3 (WP-LS2) [V unless marked]
+
+All 15 limit scripts run to the end now (harness: `KH2_LIMIT=<command>`, party 2,3,5-13, every ability bit, tt00, `KH2_NO_ENEMIES=1`):
+Simba 376 (330 ticks), Tron 415 (302), Riku 569 (303), Trinity-zz 620 (182) and the eleven of WP-LT2 (none faults).
+
+### The four faults
+
+- **Simba / Tron** (words `0xc4b` / `0x316`, routine `R0c3e` / its twin): the script copies 16 bytes from the object `+0x20` of the context's
+  object (`load [ctx]+4`, `+ 32`, `copy.ind 16`). That is the object's velocity vector: host 1.58 (`0x172988`) stores the dash direction at
+  object `+0x20` and the Quick Run start `FUN_00178108` its velocity there (docs/camera.md). The limit host now serves it: `ObjectMem`
+  in `limit_script.rs` answers reads at the player object (`0x2000000`) and the participant stand-ins (`partner(id)` = `0x7a100000 + id *
+  0x100`, `0x100` bytes each); `+0x20..+0x2f` is Sora's velocity as a game-space vector (`motor.vel`, set each tick), writes are stored and
+  read back. A participant's stand-in has Sora's velocity [inferred: the party follows Sora].
+- **Riku / Trinity-zz** (words `0x481` / `0x172`, routines `R0463` / `R0154`): host 2.56 (`0x18de58`, the pointer at object `+0xb40` plus 4,
+  the word the target controller keeps its target in) answered 0 and the script read through it. It now answers `TARGET_SLOT`, a word that reads 0
+  (no target) [inferred: the app's lock-on is not an object of this host]; the script prints "no lockon target" and goes on. The second
+  fault was a store through the target record the script files with `2.23` -> `1.131`: `1.131` (`0x1736f8`) copies the 5 word record
+  into a pool at `DAT_01c89bd0 + 0x14 * index` and answers the copy's address. Host 2.23 now answers `OWN_RECORD` (the player as the
+  object, word 3 = -1, as `enemy_host::target_record`) and 1.131 files a copy in `RECORD_POOL` (256 records, never reused; 1.132 stays a
+  no-op), so the script's later store into the record (the 6.57 result at record `+4`) lands. Host 6.57 and 1.160 (`FUN_0018f490`, the
+  record's object from the context) stay answered 0 / unported: host calls cannot read the script's context memory [GAP].
+
+### Hosts 2.47, 2.50, 2.59
+
+`TaskState::requests` keeps each call as a `Request` (`Motion`, `Effect`, `MotionRow` with the raw arguments). 2.47 (`FUN_001b3438` ->
+`FUN_0017f0c0`, a participant's motion controller) and 2.59 (`FUN_001b3c48` -> `FUN_001db868`: the walk over the rows of 0x50 bytes of the
+motion table at task `+0x18`, halfword `+2` = the id; 0 when nothing matches, and the app holds no such table) answer 0; 2.50
+(`FUN_001b3468`, an effect on the participant: the BAR's kind 0x16 entry or `FUN_001971c0`) answers nothing. Nothing is drawn or played:
+the stand-ins have no model [GAP, candidate WP LS2b].
+
+### Tests
+
+`host_1_147_gives_the_player_position`, `hosts_1_83_1_98_and_1_201_follow_the_player_state`, `object_memory_serves_the_velocity_and_the_target_word`
+(also 2.23, 1.131 and the record store) and `participant_requests_are_kept`, in `limit_script.rs`.
+
+### Not done (goal D)
+
+The limits' camera, effects, gauges and motions are not visible: they need models for the participants (the app has Sora only), the
+motion tables of the BARs (2.47, 2.59), the effect starts (2.50, 7.28) and the HUD animations (`FUN_001b3970`'s end test). Candidate WP LS2b.
 
 ## Auto Limit (WP-AL1) [V unless marked]
 

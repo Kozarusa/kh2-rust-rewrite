@@ -221,7 +221,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.48 | `task_done(p) -> b` | 0x1723d8 | 105 | the task's state word (+0x70) equals 3 |
 | 1.52 | `bits_47c_set(Oi)` | 0x1728c0 | 177 | set bit n of the bit array at object +0x47c (FUN_0019dd88) |
 | 1.53 | `bits_480_set(Oi)` | 0x1728e8 | 334 | set bit n of the bit array at object +0x480 (FUN_0019ddb0) |
-| 1.54 | `bits_47c_480_clear(Oi)` | 0x172910 | 293 | clear bit n in both bit arrays (FUN_0019dde0: `*(o + 4*(n>>5))` and `*(o + 4 + 4*(n>>5))` and-ed with `~(1 << (n&31))`; exact, Stub only because no reader of the arrays was traced) |
+| 1.54 | `bits_47c_480_clear(Oi)` | 0x172910 | 293 | clear bit n in both bit arrays (FUN_0019dde0). The words at `o + 4*(n>>5)` and `o + 4 + 4*(n>>5)` are and-ed with `~(1 << (n&31))`; exact, Stub only because no reader of the arrays was traced |
 | 1.55 | `start_move(Ovifi)` | 0x1712d0 | 257 | set the direction, start the motion and, with the last flag, record motion + 1 and + 2 as the following motions |
 | 1.56 | `on_screen(O) -> b` | 0x172938 | 409 | the object is inside the camera frustum |
 | 1.57 | `airborne(O) -> b` | 0x172968 | 342 | bit 0 of the mover's flag word; role inferred |

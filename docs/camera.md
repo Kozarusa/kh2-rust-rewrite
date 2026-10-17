@@ -235,7 +235,13 @@ The target point the app uses is the locked enemy's position raised 100; the gam
       `local/i3/compare1.png` (clip 4.10 / 4.20 / 4.30 s against event frames 122 / 126 / 128): strong ghosts of
       the earlier views stay over the new view and the INFORMATION bar is doubled, as in the clip. Harness:
       `KH2_INTRO_SHOTS=<prefix> KH2_INTRO_SHOTS_AT=116,118,...` with `KH2_WAVE_GROUP=b_45 ... kh2-game tt04`.
-    - **Still different** [measured, same images]: the clip's ghost is a smooth stretched blur, the app's shows
+    - **WP-FX13: the history has the display buffer's size.** `fx_lens.rs` `HISTORY_SIZE` = 512 x 448 (GS page 0,
+      `FUN_0014dcd0`), not the window's: each feedback pass (copy down, bilinear sample, copy down) blurs by a
+      console texel, so the ghost stretches into a smooth blur instead of separate copies [inferred from the
+      buffer sizes above; the clip's blur width was not measured]. Seen (looked at, event frame 126 harness shot):
+      Sora's legs and the right-hand fighters are smoothly smeared sideways. No before shot was taken in this
+      worktree. Test `the_history_is_the_display_buffer_size`. Addresses: 0x20a7e8, 0x14dcd0, 0x14dfe8 (read earlier).
+    - **Still different** [measured, same images]: the clip's ghost is a smooth stretched blur, the app's showed (before WP-FX13)
       separate copies a few pixels apart (the app's picture is 1280 x 720 against the console's 512 x 416, so
       the same shift in screen fractions leaves sharper steps; the console's bilinear sample of a half-size
       buffer smooths them) [inferred]; and the views ghosted differ because the fighters stand elsewhere in shots

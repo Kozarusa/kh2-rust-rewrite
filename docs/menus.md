@@ -1774,7 +1774,7 @@ Code: `menu_journal/model_view.rs`, `chars::{CharRec, ModelPlace}`, `menu_journa
 - **Which pages.** Pages 0xf / 0x12 / 0x15 (character, Heartless, Nobody; the port runs all three as 0xf) show the small model of the shown record
   (`FUN_002a9b80` calls `FUN_002abf60(0)` while it has none). The list result -6 (the triangle: help "Use triangle for the full picture!") opens
   0x10 / 0x13 / 0x16 (`FUN_002aa0b0`), which show the large model of the same record (`FUN_002abf60(1)`) over the tab; -2 returns, -4 closes. The Album's
-  picture page (5) shows a picture, not a model: not applicable. Port: key Y = -6.
+  picture page (5) shows a picture, not a model: not applicable. Port: key Y = -6 [inferred: the original uses the triangle button; Y is the app stand-in as on the other menus].
 - **Record fields** (`jiminy.bar` entry 3, 0x24 bytes): +0xc object id, +0xe motion (133 in all 309 records), +0x10 flags (low ten bits a mesh-group mask),
   small model: x +0x12, y +0x14 (offsets from the screen middle), turn +0x16 (degrees), scale float +0x1c; large model: x +0x18, y +0x1a, scale +0x20, no turn.
   Depth `DAT_00382df8` = -100. Object 996 (list 0x382e68, halfwords) stands at the float + -100 with scale `DAT_00382dfc` = 1 [V disc: Lumiere].

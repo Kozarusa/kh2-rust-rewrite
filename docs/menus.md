@@ -1795,10 +1795,36 @@ Code: `menu_journal/model_view.rs`, `chars::{CharRec, ModelPlace}`, `menu_journa
   plate (fade in / out not ported; the port draws full alpha, and the existing backdrop shows behind). Draw order against the page's 2D is [inferred]. -6's sound
   [inferred: confirm]. Held rotation is the held direction, 2 degrees a 60 Hz tick [inferred]. The second sub-model (`FUN_0016ed50`; group bits 0..4) is not drawn.
   `FUN_002aa0b0` -2 passes 0x15 from both 0x13 and 0x16 (0x2aa2ec compares only 0x10), so the original's Heartless view returns to page number 0x15 (whose -2 goes to the
-  Nobody list); the port returns to the page it came from. A wide model (Large Body) is cut at the 4:3 canvas edge, as the screen edge would. Lighting not read.
+  Nobody list): ported in WP-JR3 (20.13). A wide model (Large Body) is cut at the 4:3 canvas edge, as the screen edge would. Lighting not read.
 - **Decompile index (JR2).** `FUN_002aa0b0`, `FUN_002abf60`, `FUN_002abdc8`, `FUN_002abef0`, `FUN_002ac228`, `FUN_002ab540`, `FUN_002abc40`, `FUN_002aba90`, `FUN_002ac660`,
   `FUN_002ac6b8`, `FUN_0023a520`, `FUN_0023a920`, `FUN_0023aca8`, `FUN_0023b3c8`, `FUN_0023b408`, `FUN_0023b4b8`, `FUN_0023b4e0`, `FUN_0023b640`, `FUN_0011c5b0`,
   `FUN_00121278`, `FUN_001a78c8`, `FUN_001a7808`, `FUN_001a7a48`, `FUN_0016e208`, `FUN_0016eda8`, `FUN_0016ed08`; data 0x382df8 .. 0x382e14, 0x382e60, 0x382e68, 0x37a430 .. 0x37a468.
+
+### 20.13 Counter row, model page return, page-turn sounds (WP-JR3) [V unless marked]
+
+- **Counter row 0x4c.** Read again against `FUN_002aadf0` (label object +0x350 with message 0x489b, value object +0x4f8 in `FUN_00278418(2)`'s group, text
+  `FUN_001918a0(.., 0x382de0, FUN_002a1f78(rec))`, the value object moved by the label group's x / y `FUN_00237618` / `FUN_00237638` and right aligned `FUN_00237658` ->
+  +0x694, +0x69c = 1) and `FUN_002a1f78` (flag 0x800: `FUN_00187e68(save + 0x1660, objentry +0x4c)` = `FUN_00187dc8`, slot 1000 + id below 0x2f or 3000 + id below 12, the
+  writer `FUN_00187e08` adds 1 up to 9999 under story flag 0x8d0). The port already had every detail (`menu_journal::enemy_rows`, `name_list::defeats`,
+  `Progress::count_defeat` with the 9999 cap and the flag), so nothing was missing: no change. The row exists only in `FUN_002aadf0`, so the model pages 0x10 / 0x13 / 0x16 (`FUN_002aa0b0`) have none.
+- **Return from the Heartless model page.** `FUN_002aa0b0` case -2 (0x2aa2ec .. 0x2aa300: `li 0x10; beq page, 0x10 -> 0xf; xori; movz 0x15`) returns page 0xf from 0x10 and 0x15 from
+  0x13 and 0x16. Page 0x15 builds as the character page (`FUN_002a98f0`; the family, tab and face file come from the kind byte `DAT_0036d484 + 4`, which stays 0x11) but its cancel
+  (`FUN_002a9b80` case -2: 0xe from 0xf, 0x11 from 0x12, else 0x14) goes to the Nobodies' list `FUN_002ac370(0x12)`, the cursor being the shown character's index (`FUN_00277dc8(0xe, ..)`),
+  and its -6 opens 0x16 (case -6: 0x10 from 0xf, 0x13 from 0x12, else 0x16). Ported: `CharPage::nobody` (set by the model page's cancel when the original's number is 0x15,
+  `model_view::char_page`), `CharPage::list_page`. Log: `journal: page 0xf cancel -> page 0x14 with face 2 ...`. Test `menu_journal::tests::a_heartless_model_page_returns_as_the_nobody_page`.
+  Harness (state-e of 20.11, keys `7:Enter,8:Down,8.2:Down,8.4:Down,8.6:Down,9.2:J,10:Escape,11:Left,12:J,13:Down,14:J,15:Down,15.3:Down,16:J,18:Y,20:Escape,22:Escape`, shot at 24.5): the
+  "The Nobodies" list with Dusk and Dragoon, the hand on the second row (screenshot looked at). [inferred: the cursor index is taken as the Nobodies list's row, clamped as every list's kept position.]
+- **Close and reopen after a model page.** The journal loads once and keeps its nodes; `model_view::show` sees the closed menu, drops the camera and the model and hides the picture, and
+  builds both again when a character page is next shown. Harness (same keys to `18:Y`, then `20:Enter` closes, `24:J` the camp's Journal row, `26:J,27:Down,28:J,29:Down,29.3:Down,30:J,32:Y`, shot at 35):
+  the log shows `page 19 closed`, `open (FUN_002756f8)`, then `page 0x10 model (FUN_002abf60(1)): character 114 ...`; the screenshot shows Goofy's large model centred on the maroon page
+  (looked at). Nothing was broken: no change.
+- **Page-turn handlers' sound calls: none.** `FUN_002785a0` calls `FUN_0029b808(DAT_0036d100 + 0xe78, 0x7c)` = `FUN_0029b7b0`: when the object's group (+0x178) differs it stores 0x7c and restarts the
+  sequence (`FUN_00138e78` -> `FUN_002368e8`), an animation group of the page-turn object, not a sound. `FUN_00277338` sets the groups 0x36, 0x2d, 0x30, 0x33 on the hint objects, `FUN_002779f8` the page-turn
+  indicator's group (0x381fa8 / 0x381fb0 tables), `FUN_00277b70` tests group 0x82, `FUN_00277ad8` sets group 1 of `FUN_002779f8`. The only sound in these handlers is `FUN_00295bf0` -> `FUN_0023e738`
+  (the cursor, confirm, cancel and refused ids the port already plays) and the explicit `FUN_0023e738(3, 1)` cancel in `FUN_002aa0b0`. Nothing to port.
+- **Decompile index (JR3).** `FUN_002aadf0`, `FUN_002a1f78`, `FUN_00187e68`, `FUN_00187dc8`, `FUN_00187e08`, `FUN_002aa0b0` (+ instructions 0x2aa2b0 .. 0x2aa308), `FUN_002a9590`, `FUN_002a9b80`, `FUN_002a8958`,
+  `FUN_002aa358`, `FUN_002aa600`, `FUN_002ac450`, `FUN_002ac370`, `FUN_002ab7d8`, `FUN_002785a0`, `FUN_0029b808`, `FUN_0029b7b0`, `FUN_00277b70`, `FUN_00277338`, `FUN_002779f8`, `FUN_00277ad8`,
+  `FUN_002b6120`, `FUN_00295bf0`, `FUN_0023e738`, `FUN_0023e828`, `FUN_00138e78`.
 
 ### 21.1 The table [V]
 

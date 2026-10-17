@@ -331,7 +331,7 @@ pub fn input(j: &mut Journal, scene: &mut MenuScene, menu: &mut Menu, se: &mut M
                 }
                 _ => {
                     let list: Vec<usize> = o.lrows.iter().map(|r| r.id).collect();
-                    o.cp = CharPage { list, cur: pos.at(), back: page, present: Default::default() };
+                    o.cp = CharPage { list, cur: pos.at(), back: page, nobody: false, present: Default::default() };
                     info!("journal: page {page:#x} confirm on character {} -> page {:#x} (FUN_002a9590)", row.id, match page { 0xe => 0xf, 0x11 => 0x12, _ => 0x15 });
                     j.goto = Some((0xf, wb));
                 }

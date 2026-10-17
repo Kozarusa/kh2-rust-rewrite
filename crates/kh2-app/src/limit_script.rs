@@ -379,9 +379,34 @@ fn host_answer(c: &Call, task: &mut TaskState) -> Value {
     }
 }
 
+/// Host 2.50 started the type 0x16 event `name` of the limit file `file` (`FUN_001b3468`: `FUN_00168510(bar, 0x16, name, 0)`, an event
+/// object of kind 0xb). `limit_camera.rs` plays the camera track of that event.
+#[derive(Message, Clone, Debug, PartialEq, Eq)]
+pub struct LimitEvent {
+    pub file: String,
+    /// The entry name the script asked for (up to four characters, as the BAR header holds it).
+    pub name: String,
+}
+
+/// The string a script pointer names in the program image (host 2.50's second argument is a pointer to a four byte name; the scripts
+/// keep it as a literal in their code, so the address is `code_base + offset`). `None` for an address outside the image.
+pub fn name_at(code: &[u8], code_base: u32, ptr: u32) -> Option<String> {
+    let at = usize::try_from(ptr.checked_sub(code_base)?).ok()?;
+    let bytes = code.get(at..at + 4)?;
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(4);
+    Some(String::from_utf8_lossy(&bytes[..end]).into_owned())
+}
+
 /// A running limit script thread.
 pub struct ScriptRun {
     rt: Runtime,
+    /// The program image as the interpreter maps it (`Runtime::new`: the words as little endian bytes) and its base address.
+    code: Vec<u8>,
+    code_base: u32,
+    /// Requests of `task.requests` already looked at for event starts.
+    seen: usize,
+    /// Events host 2.50 started since the last [`ScriptRun::take_events`].
+    events: Vec<String>,
     pub task: TaskState,
     pub calls: BTreeMap<(u16, u16), CallStat>,
     pub ticks: u32,
@@ -397,12 +422,14 @@ const TAIL_TICKS: u32 = 30;
 impl ScriptRun {
     /// `FUN_001b2e08`: the thread on the type 3 entry, event 22 with the task. The caller logs a `false` (no event 22 in the script).
     pub fn start(prog: Program, table: Option<&HostTable>, task: TaskState) -> (ScriptRun, bool) {
+        let code: Vec<u8> = prog.words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let mut rt = Runtime::new(prog);
+        let code_base = rt.shared.layout.code;
         if let Some(t) = table {
             rt.set_host_table(t.clone());
         }
         let started = rt.start_thread(0, 22, &[TASK]);
-        (ScriptRun { rt, task, calls: BTreeMap::new(), ticks: 0, fresh: Vec::new(), ended_at: None }, started)
+        (ScriptRun { rt, code, code_base, seen: 0, events: Vec::new(), task, calls: BTreeMap::new(), ticks: 0, fresh: Vec::new(), ended_at: None }, started)
     }
 
     /// `FUN_001b28a0` first branch: event 23 with the command id, to the running thread (`FUN_0016c620`). [inferred] The thread
@@ -420,6 +447,7 @@ impl ScriptRun {
         if ran.is_err() {
             return Err(Stop::Fault("the interpreter panicked".into()));
         }
+        self.collect_events();
         if let Some((pc, e)) = self.rt.core.errors.first() {
             return Err(Stop::Fault(format!("{e:?} at word {pc:#x}")));
         }
@@ -427,6 +455,23 @@ impl ScriptRun {
             return Err(Stop::Returned);
         }
         Ok(())
+    }
+
+    /// Looks at the 2.50 calls since the last tick: each names an event of the limit file (the name is a literal in the script).
+    fn collect_events(&mut self) {
+        for r in &self.task.requests[self.seen..] {
+            let Request::Effect { args } = r else { continue };
+            match args.get(1).and_then(|&p| name_at(&self.code, self.code_base, p)) {
+                Some(n) if !n.is_empty() => self.events.push(n),
+                _ => self.fresh.push(format!("limit script: host 2.50 named no event in the program image: {args:x?}")),
+            }
+        }
+        self.seen = self.task.requests.len();
+    }
+
+    /// The events started since the last call, in order.
+    pub fn take_events(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.events)
     }
 
     /// The host calls as `group.index xN` words, in order.
@@ -463,6 +508,7 @@ impl Plugin for LimitScriptPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<LimitStarted>()
             .add_message::<LimitScriptEvent>()
+            .add_message::<LimitEvent>()
             .init_resource::<ScriptState>()
             .add_systems(FixedUpdate, run_limit_script.after(Sim::Sora));
     }
@@ -473,6 +519,7 @@ fn run_limit_script(
     task: Option<Res<LimitTask>>,
     mut started: MessageReader<LimitStarted>,
     mut events: MessageReader<LimitScriptEvent>,
+    mut started_events: MessageWriter<LimitEvent>,
     sora: Query<&Sora>,
     mut st: ResMut<ScriptState>,
 ) {
@@ -510,6 +557,7 @@ fn run_limit_script(
             _ => {}
         }
     }
+    let file = st.file.clone();
     let Some(run) = st.run.as_mut() else { return };
     if let Ok(s) = sora.single() {
         run.task.player = crate::enemy_obj::to_game(s.motor.pos);
@@ -530,6 +578,10 @@ fn run_limit_script(
     };
     for l in run.fresh.drain(..) {
         info!("{l}");
+    }
+    for name in run.take_events() {
+        info!("limit script: host 2.50 starts event {name:?} of {file} (FUN_001b3468)");
+        started_events.write(LimitEvent { file: file.clone(), name });
     }
     let Some(stop) = stop else { return };
     let run = st.run.take().expect("checked above");
@@ -695,7 +747,7 @@ mod tests {
     #[test]
     fn the_countdown_ends_the_thread() {
         let mut app = App::new();
-        app.add_message::<LimitStarted>().add_message::<LimitScriptEvent>().init_resource::<ScriptState>();
+        app.add_message::<LimitStarted>().add_message::<LimitScriptEvent>().add_message::<LimitEvent>().init_resource::<ScriptState>();
         app.insert_resource(LimitTask(Some((1, 10))));
         app.add_systems(Update, run_limit_script);
         let prog = program(&[(22, &[0x0009, 0x0007, 0xfffd])]);
@@ -780,5 +832,26 @@ mod tests {
         assert_eq!(t.requests.len(), 3);
         assert_eq!(t.requests[0], Request::Motion { args: vec![partner(2), 5, 6, TASK] });
         assert!(matches!(t.requests[2], Request::MotionRow { .. }));
+    }
+
+    /// Host 2.50's second argument points at a four byte name the script keeps in its code: the name is read from the program image and
+    /// becomes an event start (once); a pointer outside the image names nothing and is logged.
+    #[test]
+    fn host_2_50_names_an_event_from_the_program_image() {
+        // "00" and "01" (a name, then NULs) sit in the code as the words 0x3030 0x0000 and 0x3130 0x0000.
+        let prog = program(&[(22, &[RET, 0x3030, 0x0000, 0x3130, 0x0000])]);
+        let (mut run, _) = ScriptRun::start(prog, None, TaskState::default());
+        let find = |lit: &[u8]| run.code.windows(4).position(|w| w == lit).expect("the literal is in the image") as u32 + run.code_base;
+        let (zero, one) = (find(b"00\0\0"), find(b"01\0\0"));
+        assert_eq!(name_at(&run.code, run.code_base, zero).as_deref(), Some("00"));
+        assert_eq!(name_at(&run.code, run.code_base, run.code_base.wrapping_sub(1)), None);
+        for p in [zero, one, 0x7777_0000] {
+            assert_eq!(host_answer(&func(2, 50, &[TASK, p, 0, 0]), &mut run.task), Value::None);
+        }
+        run.collect_events();
+        assert_eq!(run.take_events(), vec!["00".to_string(), "01".to_string()]);
+        assert!(run.fresh.iter().any(|l| l.contains("named no event")), "{:?}", run.fresh);
+        run.collect_events();
+        assert!(run.take_events().is_empty(), "a request is looked at once");
     }
 }

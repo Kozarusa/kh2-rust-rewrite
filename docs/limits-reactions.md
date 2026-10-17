@@ -833,7 +833,7 @@ A faulting script is logged once and dropped; the limit goes on (unchanged).
 - Simba / Tron read the player object's `+0x20` directly (words `0xc4b` / `0x316`); the object has no memory in the limit host, and
   `+0x20` of a player object has no documented meaning (for the thread objects it is a tag).
 - Riku / Trinity-zz take a pointer from 2.56 and read through it (words `0x481` / `0x172`).
-- 2.47 (`FUN_001b3438` -> `FUN_0017f0c0`: sets up a motion controller of the participant), 2.50 (`FUN_001b3468`: starts a PAX or
+- 2.47 (`FUN_001b3438` -> `FUN_0017f0c0`: sets up a motion controller of the participant), 2.50 (`FUN_001b3468`: an event start, see "Limit camera" below; the old reading was: starts a PAX or
   object effect) and 2.59 (`FUN_001b3c48` -> `FUN_001db868`: looks a row up in a table by halfword, then `FUN_001db5f0`) are visuals or
   motions of the participants; the decompiled signatures of these wrappers do not match their call sites, and the app has nothing to
   draw: left logged, answered 0.
@@ -869,7 +869,7 @@ Simba 376 (330 ticks), Tron 415 (302), Riku 569 (303), Trinity-zz 620 (182) and 
 `TaskState::requests` keeps each call as a `Request` (`Motion`, `Effect`, `MotionRow` with the raw arguments). 2.47 (`FUN_001b3438` ->
 `FUN_0017f0c0`, a participant's motion controller) and 2.59 (`FUN_001b3c48` -> `FUN_001db868`: the walk over the rows of 0x50 bytes of the
 motion table at task `+0x18`, halfword `+2` = the id; 0 when nothing matches, and the app holds no such table) answer 0 [inferred]; 2.50
-(`FUN_001b3468`, an effect on the participant: the BAR's kind 0x16 entry or `FUN_001971c0`) answers nothing. Nothing is drawn or played:
+(`FUN_001b3468`, corrected in WP-LS2b: an event start, see "Limit camera") answers nothing and now also sends `LimitEvent`. Nothing is drawn or played:
 the stand-ins have no model [GAP, candidate WP LS2b].
 
 ### Tests
@@ -880,7 +880,81 @@ the stand-ins have no model [GAP, candidate WP LS2b].
 ### Not done (goal D)
 
 The limits' camera, effects, gauges and motions are not visible: they need models for the participants (the app has Sora only), the
-motion tables of the BARs (2.47, 2.59), the effect starts (2.50, 7.28) and the HUD animations (`FUN_001b3970`'s end test). Candidate WP LS2b.
+motion tables of the BARs (2.47, 2.59), the effect starts (2.50, 7.28) and the HUD animations (`FUN_001b3970`'s end test). Candidate WP LS2b (done in part: next section).
+
+## Limit camera (WP-LS2b) [V unless marked]
+
+### Host 2.50 is an event start, not an effect (corrects WP-LT1 / LT2 / LS2 above)
+
+`FUN_001b3468` (`0x18e9f8`) looks the entry up in the limit BAR: `FUN_001b3bc0(task)` is `task +8 == 0` (the "LIMI" party set pointer,
+false for every file that has one), then `FUN_00168510(bar, 0x16, name, 0)` (the first entry of kind 0x16 whose four byte name equals the
+script's string; the data pointer is the entry's `+8`). With no party set it takes `FUN_001971c0` instead (the player model's BAR at object `+0x7b0`).
+It then makes an event object: `FUN_00195898(obj, 0xb, data)` (kind 0xb, the `evtp` row), `FUN_00195a78(obj, player)` (stores the player
+at event `+0x44`, which `FUN_00195ae0` hands to `FUN_002232c8` as `DAT_0036bd50`; the scan `--addr 0x36bd50` finds only the reset and that
+store, so nothing reads it) and `FUN_00195ae0(obj)`, the call every area event goes through (docs/events.md section 6). Before that it
+runs `FUN_00183eb0` (a stepped collision move of an object; not read further) and `FUN_0016a890` / `FUN_0016a948` (stores the player's
+turn word `+0x66c`). The only caller of `FUN_00195898` in the limit code is this function; a scan for `jal 0x1b3468` finds none (it is
+reached through the host table).
+
+The limit BARs hold two events each (kind 0x16, names "00" and "10"; Aladdin also "01"), e.g. Trinity `re_p_ex100-00` (opcode 0 name),
+Auron `re_p_he000-00`. Their commands are `0x0` (name), `0xf`, `0x10`, `0x8` (end frame), `0x13` (camera keys), `0x6` (cut table), `0x46`
+(map pull-in) or `0x31` (mode 0): a camera track and nothing else (no actors, no messages, no effects). `intro::Track::parse` reads them.
+Examples (opcode 8 end frame, event frames; an event frame is half a game tick): Auron "00" 115, "10" 190; Trinity "00" 333; Beast "00"
+110; Mulan "00" 94; Aladdin "00" 80, "01" 67; Sparrow "00" 125 (three cuts); Simba "00" 90; Jack "00" 54; Tron "00" 151.
+
+The script gives the name as a pointer to a four byte literal in its code (host argument 1; Auron `268442262` = code base `0x10000000` +
+`0x396`). `limit_script::name_at` reads it from the program image (`Runtime::new` maps the words as bytes at `shared.layout.code`).
+Harness (`KH2_LIMIT=<command>`, party 2,3,5-13, abilities 62..70, tt00, `RUST_LOG=info`), 2.50 starts at tick 1 of the limit in every file
+that calls it: Auron `"00"`, Beast `"00"`, Mulan `"00"`, Aladdin `"00"` then `"01"` (two calls), Sparrow `"00"`, Simba `"00"`, Jack `"00"`,
+Tron `"00"`; Riku does not call it (the `_wi` and Trinity files were refused by the harness's world, not run). Log lines `limit script: host 2.50 starts event "00" of auron.bar`.
+
+### What the app does (`limit_camera.rs`, `LimitCameraPlugin` in `CombatPlugins`)
+
+`LimitEvent { file, name }` (written by `limit_script`) starts the track: each 60 Hz tick (`Sim::EffectTick`) the event frame is
+`ticks * 0.5` (`FUN_00222728`), `Track::at` picks the cut and evaluates the keys (`FUN_0022b0f8`, ported in WP-I1), the result goes to
+`CamEvent::track` (with the pull-in flag of opcode 0x46) and at the end frame the track stops, which hands the view to the field camera
+(`Rig::handover`, as the intro). A new event replaces a running one (`FUN_002232c8` ends it). Logs `limit camera: ...`. Tests:
+`the_limit_files_hold_camera_events` (disc: end frames 115 / 190 / 333, no event in Donald's file), `the_event_runs_to_its_end_frame_and_hands_the_camera_back`,
+`a_held_frame_does_not_advance`, `the_keys_are_in_the_players_frame`, `host_2_50_names_an_event_from_the_program_image` (script).
+
+**Off by default, `KH2_LIMIT_CAMERA=1` turns it on** (`KH2_LIMIT_CAMERA_HOLD=<event frame>` holds one frame for screenshots). Two reasons.
+1. **The space of the keys is a GAP, the app's choice is [inferred].** The original evaluates the keys in the event matrix `DAT_0036bce8`,
+the event object's `+0x50`, which `FUN_00195898` fills with `FUN_0011b460` from the constant at `0x354a60` (`FUN_0011bd58` writes it:
+the unit matrix scaled by `DAT_00378934`; no other writer: `mips_scan --addr 0x354a60` / `0x36bce8` find `FUN_0011b198`, `FUN_0011b460`,
+`FUN_0011bd58` and `FUN_00223170` / `FUN_002232c8` / `FUN_0022b0f8`; store offsets 0x50, 0x54, 0x60, 0x70 in the event methods find
+none), and the player-space branch of `FUN_0022b0f8` needs opcode 0x31 mode 1 (`DAT_0036bce0 == 1`), which no limit event has. Read
+literally the camera sits near the area's origin, while every key set frames a figure at the origin (look-at heights 56 to 130 cm, positions
+within a few metres: Trinity "00" goes from behind the shoulder, z = -125, to the front, z = +129). The app therefore puts the keys in the
+player's frame when the event starts (origin at his feet, key +z along `Motor::forward`) [inferred]. How the original places the
+frame (maybe the participants are moved to the origin by the limit's own calls; `FUN_00183eb0` was not read to the end) is open.
+2. **The participants have no models.** The shots of Sparrow, Mulan and others frame the participants (the harness screenshots at
+event frames 70 and 50 show empty sky and a dark wall); only the shots of Sora himself (Auron 0 / 25 / 60 / 100, Simba 45) show
+something.
+
+Harness PNGs looked at (not committed; `local/ls2b_*.png`, Auron 82, `KH2_LIMIT_CAMERA=1 KH2_LIMIT_CAMERA_HOLD=<f>`): frame 0 and 25, the lens
+inside Sora's black and orange clothing (a very close shot); frame 60, Sora's hip and hand in close-up against the sky; frame 100, Sora from
+behind at full length, centred, with the Twilight Town skyline behind him; after the end (231 ticks) the field camera behind Sora again.
+Simba frame 45: Sora's neck and shoulder in close-up. The log line `camera: intro camera off: the field camera takes over from ...`
+(`camera.rs`) closes every event.
+
+### Gaps (addresses searched)
+
+- **What the event kind 0xb holds back** (the player's control, the world stop `FUN_00184b40(1)` / `FUN_0016bf78(1)` that `FUN_001b35e8`
+  undoes when the event is over, the HUD hide): not ported; the limit task's bits 1 and 2 of `+0x40` (`FUN_001b35e8`) go with it.
+- **Host 7.28 / 7.30** (`FUN_002f3bd8` / `FUN_002f3c18`): an object of 0xa00 bytes built from `FUN_0016e208(0x5c3)` -> `FUN_001d1470`
+  by `FUN_002f3aa0` -> `FUN_001c01c0(obj, row, 0, 1, 0, 0x80, 0x100)`, stored in `DAT_00371518` with the vtable `0x371528`. Objentry row
+  1475 is "PRIZE" (type 22, sub type 5) [whether `FUN_001d1470` reads that table was not checked], which does not read as a screen effect; its class and
+  draw were not traced. Not drawn.
+- **The HUD animation** (`FUN_001b3a70`, `FUN_001b3b60`): only for command `0x1e4` at the task's creation (`FUN_001b2e08` line 87, the only
+  caller). It looks the BAR's kind 0x18 / 0x19 entries named `gage` / `comb` (name at `DAT_0037ba58`, four bytes not read) up and starts
+  group 3 on the command deck HUD object (player `+0xb44`, `FUN_001bbb18` -> `FUN_001d2848` / `FUN_001d2918` at that object's `+0x94c`,
+  `FUN_001bb558(.., 0xd, 0)`). The command deck's module is not in this package's ownership and the placement is not traced: not drawn.
+- **Hosts 2.47 / 2.59** (participant motions): unchanged, not drawn; there are no participant models, and the motion table at task `+0x18`
+  is not in the app.
+- **Hosts 1.160 / 6.57**: unchanged. The host calls cannot read the script's own memory (`Host::read_mem` is only asked for addresses
+  outside the script's code, globals and frames; `Runtime` hands it no handle on them), and `FUN_0018f490` reads the context record of the
+  calling thread (a frame address). A faithful port needs an accessor in `kh2-bdx` (not in this package's ownership): `Call::Func`
+  args carry the raw frame address, the host would read it through the runtime.
 
 ## Auto Limit (WP-AL1) [V unless marked]
 

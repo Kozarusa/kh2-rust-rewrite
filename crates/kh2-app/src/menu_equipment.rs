@@ -32,6 +32,7 @@ use crate::audio::PlaySe;
 use crate::menu_gfx::MenuScene;
 use crate::menu_pages::Exe;
 use crate::progress::{item_type, Progress, INVENTORY, SORA};
+use kh2_tables::tables as t;
 
 // --- pages --------------------------------------------------------------------------------------
 
@@ -181,6 +182,22 @@ pub fn candidates(cat: Cat, member: u16, order: &[ItemRow], exe: &ExeTables, cou
         list.sort_by_key(|s| place(s.id));
     }
     list
+}
+
+/// A member's AP maximum, status `+0x18e` as `FUN_0019f920` builds it: the AP of his `lvup` row (`FUN_001b50c0`: the
+/// table by member id, 14 -> 1 and 15 -> 6, the first table when the member's own is missing, the row of the level held
+/// at the table's length), plus the record's AP byte (`+8`), plus the AP of the equipped items (`FUN_001a0c08`,
+/// passed in as `gear`). A level of 0 counts as 1 [inferred, as `PartyData::member_status`].
+pub fn member_ap_max(lvup: &[Vec<t::Lvup>], member: u16, level: u8, record_ap: u8, gear: i32) -> i32 {
+    let k = match member {
+        14 => 1,
+        15 => 6,
+        n @ 1..=13 => n as usize,
+        _ => 1,
+    };
+    let table = lvup.get(k - 1).filter(|t| !t.is_empty()).or_else(|| lvup.first());
+    let base = table.and_then(|t| t.get((level.max(1) as usize).min(t.len()) - 1)).map_or(0, |r| i32::from(r.ap));
+    base + i32::from(record_ap) + gear
 }
 
 /// `FUN_0026ca28` (page 8 only): would swapping the accessory `current` for `new` leave the abilities more AP than
@@ -631,6 +648,8 @@ pub struct EquipmentMenu {
     machine: Option<Machine>,
     ui: Option<Ui>,
     held: (i8, f32),
+    /// `lvup` by character (`FUN_001b50c0`'s tables), for a member's AP maximum.
+    lvup: std::sync::Arc<Vec<Vec<t::Lvup>>>,
 }
 
 pub struct EquipmentPlugin;
@@ -649,6 +668,9 @@ fn load(disc: Res<Disc>, mut st: ResMut<EquipmentMenu>) {
         return;
     };
     st.tables = EquipTables::read(&exe);
+    if let Ok(mut a) = disc.0.lock() {
+        st.lvup = std::sync::Arc::new(kh2_tables::subfile(&mut a, &t::LVUP).ok().and_then(|b| kh2_tables::rt::decode_lvup::<t::Lvup>(&b)).unwrap_or_default());
+    }
     st.ready = st.tables.is_some();
     if !st.ready {
         warn!("menu: the executable's Equipment tables are not readable; the pages are off");
@@ -662,6 +684,7 @@ struct Snapshot<'a> {
     member: u16,
     /// The party's size.
     members: usize,
+    lvup: &'a [Vec<t::Lvup>],
     items: &'a ItemsMenu,
     ab: Option<&'a Abilities>,
 }
@@ -681,7 +704,12 @@ impl Snapshot<'_> {
     }
 
     fn ap_max(&self) -> i32 {
-        self.ab.map_or(0, |ab| i32::from(crate::menu_abilities::ap_max(ab, self.p)))
+        if self.member == SORA {
+            return self.ab.map_or(0, |ab| i32::from(crate::menu_abilities::ap_max(ab, self.p)));
+        }
+        let m = self.p.member(self.member).unwrap_or_default();
+        let gear: i32 = m.weapons.iter().chain(&m.armor).chain(&m.accessories).filter(|&&i| i != 0).map(|&i| self.item_ap(i)).sum();
+        member_ap_max(self.lvup, self.member, m.level, m.ap, gear)
     }
 }
 
@@ -694,11 +722,6 @@ impl Game for Snapshot<'_> {
         self.p.room(id, INVENTORY, 1) != 0
     }
     fn ap_short(&self, current: u16, new: u16) -> bool {
-        // [GAP: the AP maximum of Donald and Goofy (`FUN_0019f920` for a member) was not read, so their swaps are
-        // never refused; the Abilities pages' `ap_max` is Sora's.]
-        if self.member != SORA {
-            return false;
-        }
         ap_short(current, self.ap_max(), self.ap_used(), self.item_ap(current), self.item_ap(new))
     }
     fn reload_question(&self, id: u16) -> bool {
@@ -829,10 +852,11 @@ fn input(
     let pressed = keys_of(&keys, &mut held, real.delta_secs());
     st.held = held;
     let mut close = false;
+    let lvup = st.lvup.clone();
     for key in pressed {
         let Some(p) = progress.as_deref() else { break };
         let member = member_of(&items);
-        let game = Snapshot { p, member, members: items.party.len(), items: &items, ab: abilities.as_deref() };
+        let game = Snapshot { p, member, members: items.party.len(), lvup: &lvup, items: &items, ab: abilities.as_deref() };
         let fx = st.machine.as_mut().map(|m| m.press(key, &game)).unwrap_or_default();
         let mut rebuild = false;
         for e in fx {
@@ -1269,6 +1293,33 @@ mod tests {
         // on), carried without a reservation (off), empty with nothing reserved (the flag compares 0 with 0: set).
         let items: Vec<(u16, bool, bool)> = rows[7..].iter().map(|r| (r.id, r.carried, r.reload)).collect();
         assert_eq!(items, [(1, true, true), (2, false, true), (3, true, false), (0, false, true)]);
+    }
+
+    #[test]
+    fn the_real_pair_table_gives_each_member_a_weapon_type() {
+        // Table 0x3823d0 of the user's executable (skipped without KH2_ISO): Sora 2 (keyblade), Donald 3, Goofy 4.
+        let Ok(iso) = std::env::var("KH2_ISO") else { return };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let Some(elf) = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok()) else { return };
+        let exe = ExeTables::read(&Exe::load(elf).expect("an ELF")).expect("the Items tables");
+        let pair = |m: u16| exe.filter_bits.iter().find(|p| u16::from(p.0) == m).map(|p| p.1);
+        assert_eq!(pair(SORA), Some(2));
+        assert_eq!(pair(crate::progress::DONALD), Some(3));
+        assert_eq!(pair(crate::progress::GOOFY), Some(4));
+        // And the pick list takes the page's bit: a staff row (type 3) is Donald's, a shield row (type 4) Goofy's.
+        let table = vec![row(10, 2), row(40, 3), row(50, 4)];
+        let ids = |m| candidates(Cat::Weapon, m, &table, &exe, &|_| 1, &[]).iter().map(|s| s.id).collect::<Vec<_>>();
+        assert_eq!((ids(SORA), ids(crate::progress::DONALD), ids(crate::progress::GOOFY)), (vec![10], vec![40], vec![50]));
+    }
+
+    #[test]
+    fn a_members_ap_maximum_is_his_lvup_row_plus_the_record_byte_plus_the_gear() {
+        let row = |ap: u8| t::Lvup { exp: 0, strength: 0, magic: 0, defense: 0, ap, sword_ability: 0, shield_ability: 0, staff_ability: 0, padding: 0 };
+        let lvup = vec![vec![row(3), row(5)], vec![row(7), row(9), row(11)], Vec::new()];
+        assert_eq!(member_ap_max(&lvup, 2, 2, 1, 4), 9 + 1 + 4, "Donald: table 1, level 2");
+        assert_eq!(member_ap_max(&lvup, 2, 9, 0, 0), 11, "past the end: the last row");
+        assert_eq!(member_ap_max(&lvup, 3, 1, 0, 0), 3, "an empty table falls back to the first");
+        assert_eq!(member_ap_max(&lvup, 1, 0, 0, 0), 3, "level 0 counts as 1");
     }
 
     #[test]

@@ -2478,7 +2478,7 @@ snapshot (`FUN_001cafa0`: copies the same words and `DAT_01d69890 = DAT_0033e830
   `struggle.rs`; the revive stays in `summon.rs`; a form's end is not changed. `Sora::game_over` holds him down (`sora.rs`'s
   in-place stand-up does not run). Without disc data the old in-place stand-up runs.
 * The sound `0x13` (type 1 `0x33`) plays as `PlaySe::system` and the music stops (`audio_bgm::revive_stop`, the same `FUN_00137520`
-  the revive uses); the list opens `OPEN_AFTER` = 1.5 s after the fall [inferred: the waits of 26.2 were not read].
+  the revive uses); the list opens `open_after(kind)` after the fall: 122 ticks for types 0 and 3 (the knock-out event's fade, 26.8), 1.5 s for type 1 [inferred].
 * The list is `menu_struggle`'s pointer list over the disc's row (record 1, or 0x21 for type 3): J / Enter confirms, W / S / arrows
   move [inferred: wrapping, as the Save menu's port does; `FUN_002967b8` was not read further], no cancel. The field is frozen
   (`Pause::menu`) while it is up.
@@ -2746,11 +2746,7 @@ list. `KH2_NO_GAMEOVER_SCENE=1` turns it off. Type 3's list ("Quit" / "Retry") u
 (his own model, dark tint) with the list's rows at the upper left and the field dimmed. The harness knock-out leaves the field Sora standing (`KH2_GAMEOVER_KO` plays no fall motion), so
 two Soras are visible in that picture; in play the field one lies in his fall pose. `KH2_NO_GAMEOVER_SCENE=1` turns the model off.
 
-**Gaps.** The lengths of the waits before the list (`FUN_00196418`, the scene object's `+0xfc == 4`, the words `0x35feb8` / `0x35fec0`) were not
-read: the list still opens `OPEN_AFTER` after the fall. The window `FUN_0029b600(.., 0x10, 0x11)` and the list window's own alpha (the model's
-alpha source) were not decoded: the port fades the picture with the close only. The model is drawn over the dimmed field with the field's own fallen Sora
-still lying behind it; whether the original hides him is not known (nothing read hides the actor: `FUN_00183fe0` only lays him down).
-The model of another player (Roxas, a form) uses the entry named by its own `WeaponJoint` (`0140` for byte 14 ...), which the app does not need: the game over is Sora's.
+**Gaps.** Closed or narrowed by WP-GO2b, section 26.8: the wait before the list, the fallen Sora behind the model and the window's alpha. The model of another player (Roxas, a form) uses the entry named by its own `WeaponJoint` (`0140` for byte 14 ...), which the app does not need: the game over is Sora's.
 
 ### 26.7 The party refreshers (WP-GO2)
 
@@ -2778,6 +2774,56 @@ maximum (`GameData::sora_max_mp`) through `magic::refill_mp` (which ends a runni
 left: the jump builds the members again). **This replaces WP-GO1b's "Continue gives the area-start HP and MP"** (an [inferred] reading, 26.4): the refresher gives the maximum, so the snapshot's
 HP / MP are only logged. The Load Game path does not run `FUN_001cb208` (its jump has the restore flag 0) and keeps the record's HP and MP. Test: `the_party_refresher_fills_hp_and_mp_and_ends_the_charge`.
 `party.rs` was not touched: `PartyMember`'s `pub` fields and the `pub(crate)` charge are enough; nothing is needed there.
+### 26.8 Game over follow-ups (WP-GO2b: `menu_gameover.rs`)
+
+**B. The wait before the list [V, ticks inferred].** `FUN_001ad378` starts the knock-out event with `FUN_00195898(obj, 0xf, FUN_00193f08(0))`,
+`FUN_00195a78(obj, player)` and `FUN_00195ae0` (types 0, 2, 3: the argument is the player; type 1 passes 0 and starts none). `FUN_00195ae0` stores the
+event object in `DAT_0035e3a4`, which `FUN_00196418` tests. Step 1 of `FUN_001ad9a0` sets `DAT_0036f598 = 1` (`FUN_002c38b8`) and falls into step 2,
+which returns "again" while `FUN_00196418` is true and while the screen fade object (`FUN_0014a978` = `0x356b30`) has `+0xfc != 4`; when both are over it
+clears `DAT_0036f598` (`FUN_002c38c8`), lays the player on the floor (`FUN_00183fe0`: a ground probe `FUN_001a5c30` and the write-back `FUN_0016a618`, no motion
+of its own), for the field types runs `FUN_00196258` (below) and `FUN_001c67b0` and goes on. The numbers come from the event of kind 0xf that docs/summons.md
+"WP-RV2" read (`00battle.bin` type 0x16 entry 0, `re_gameover-0a`): end frame 0x15 (the event object dies at tick 42), command 0x12 at event frame 0xb
+(tick 22) with length 0x32 and mode 2 = `FUN_0014a7c8(0x356b30, 0x32, 1)`; `FUN_0014a710` doubles the length (counter 100), `FUN_0014a818` takes
+`DAT_00356f44` (1.0) off it per tick, state 3 -> 4 at zero. So `+0xfc == 4` at tick 122, after the event object is gone, and the wait is 122 ticks.
+Step 3 (no case) takes one tick. Step 4 waits for the words `0x35feb8` / `0x35fec0` to be zero and for the resource system (`FUN_0016ff50`: the stream queue
+`FUN_00168240`, `FUN_002c13c0`, the list `DAT_0035bd88`), then sets bit 0 of `0x35feb8` (`FUN_001c6bd0`) and loads the scene (`FUN_001ade58`). Step 5 waits for
+the resource again and opens the list. The two words are marks of the Mickey / revive objects: bit 4 of `0x35fec0` is set by their constructors (`FUN_001cda78`,
+`FUN_001cdb98`) and both words are cleared by their destructors (`FUN_001cdcb8`, `FUN_001cdd50`, `FUN_001cdde8` call `FUN_001c6be8(0x35feb8, 0)` and `(0x35fec0, 4)`) and by
+the reset `FUN_001c6c30`. With no such object alive both are 0, so the list opens at tick 122 plus one tick (step 3) plus the disc streaming time of
+`obj/GAMEOVER.mset` (about 108 KB, which the app reads at once) [inferred: 60 ticks per second, as docs/struggle.md]. Port: `open_after(kind)` = 122 / 60 s for types 0 and 3,
+counted from the knock-out edge (the event starts in the same call); it was 1.5 s. Type 1 (`FUN_001ad868`, a manager that ended by itself) starts no event, so step 2 waits
+only for a fade the mission's ending left in state 4; that was not traced, the old 1.5 s stays [inferred]. Test `the_wait_before_the_list_is_the_knock_out_events_fade`.
+Searched: `mips_scan --addr 0x35e3a4` (28 hits, all in the event object's methods `FUN_00195968` to `FUN_001968d8`), `--addr 0x35feb8`, `--addr 0x35fec0`.
+
+**A. Is the fallen field Sora hidden while the list shows? [V: no actor rule; the fade covers him]** Read: `FUN_001ad9a0` steps 1 to 8, `FUN_001ad378`, `FUN_00196258`
+(`FUN_001b7e70(2000)`, `FUN_00196760`, `FUN_001abfe8(0xb)`), `FUN_001a3f68`, `FUN_00183fe0`, `FUN_00186e20` / `FUN_00186db0`. `FUN_001b7e70(2000)` walks the object
+list `DAT_01d5d7a0` (next `+0x8b4`): an object whose method `+0x3c` (always `FUN_0016bc68`, the model resource tag, docs/events.md opcode 0x4d) answers 2000 or more gets its
+method `+0x28` (the destructor: enemies, summons); the others (the player and the party members, tags below 2000) get `FUN_00186e20` (a status reset) and `FUN_0016a750` (the stored
+placement `+0x890`). It does not hide the player: the hide bit `+0x10c & 0x80` is set only by the event opcode 0x4d (`mips_scan --jal 0x1b7fa8` finds no call). What covers him is the event's
+fade: command 0x12 mode 2 is `FUN_0014a7c8(.., 0x32, 1)` and the flag byte 1 makes `FUN_0014a710` pick white (`FUN_0014af90(0xff, 0xff, 0xff, 0)` and blend `0x48`; flag 0 would be black,
+`0, 0, 0` and `0x44`), alpha 0 to 0x80 (full) over 100 ticks, then held at state 4 while the list opens (nothing in steps 2 to 8 returns it to state 0; docs/summons.md "WP-RV2"
+found no clearing caller). So in the original the field, the fallen Sora included, is under a full white fade when the list shows, and the model panel Sora is the only one visible
+[inferred: that the fade quad is drawn over the 3D field and under the menu]. The port does not draw that fade: it dims the field (`MenuScene::dim`, a black sprite in `menu_gfx.rs`,
+not this package's), so the harness still shows the field Sora under the dim. Not ported, reason: drawing the white needs a coloured dim in `MenuScene` (outside ownership), and no
+recording of the original screen was available to confirm white against the dim (the colour is read from the code, not seen). Outside-ownership edit: `menu_gfx::MenuScene` a dim colour
+(white) and `menu_gameover::drive` to ramp it over ticks 22 to 122 and hold it while the list shows.
+
+**D. The list window and the model's alpha [partly read, gap].** `FUN_0026f948` builds the window `FUN_0029b600(DAT_0036d00c, parent, 0, 0, DAT_0036d004, 0x10, 0x11, 0)`:
+`FUN_00138948` -> `FUN_00138a60` -> `FUN_00138e78(window, 0x10)` starts the animation id 0x10 (`+0x178`), and `FUN_0029b600` then stores 0x11 at `+0x17c`; `FUN_00138aa8` plays `+0x17c`
+when the current animation ends and resets it to -1. The model's alpha is read every frame by `FUN_0023b4e0`: `FUN_0023b4b8(obj, 0, window)` stored the window in `+0x14c0`, and the alpha is the
+top byte of the window layout's current colour (`FUN_00237518(window + 0x18) >> 0x18`, handed to `FUN_0023b480`). If `DAT_0036d004` is `save.2ld` sequence 0 (the rows' layout, section 26.3; what
+`FUN_0029ada8(0x754a, -1)` in `FUN_0026f0d0` loads was not found), animation group 0x10 is one animation looping at the constant colour 128/128/128/128 (alpha 0x80, full) and group 0x11 one
+play of 8 frames with alpha 128 to 0 (dumped from the disc; groups 15 to 17 are the fade-in, hold and fade-out of the 28 by 28 additive sprite group 11, which the hand cursor also uses), so
+the model would be fully opaque while the list shows and fade out over 8 frames when the window switches to 0x11. Not ported: the trigger that switches the window to 0x11 was not found
+(the `+0x17c` branch of `FUN_00138aa8` fires when group 0x10's loop ends, which it never does; the page's close path was not traced), and that a 28 by 28 glow belongs to this window is doubtful.
+The port keeps the model's alpha equal to the list's close fade (14 frames) [inferred]. Searched: `mips_scan --load-off 0x14c0` and `--load-off 0x14b0` (`FUN_0023a920`, `FUN_0023aca8`,
+`FUN_0023b4e0`), `--load-off 0x17c` (`FUN_00138aa8` among others).
+
+**C. Tests.** `the_whole_continue_restores_the_body_refreshes_the_party_and_starts_the_jump` runs `drive` from the closed list on "Continue": the body (munny and EXP of the area start), Sora's
+maximum HP and ended MP charge, the jump to the snapshot's area with fade kind 1 and the phase `Jumping` (skipped without `KH2_ISO`). `an_allys_refresh_gives_full_hp_and_mp_and_ends_his_charge` tests
+the per-member rule (`refresh_vitals`, which `refresh_party` calls for each `PartyMember`); a `PartyMember` cannot be built outside `party.rs` (private fields, no test constructor), so the query
+loop itself is not exercised.
+
 ## 22. Donald and Goofy on the Items and Equipment pages (WP-PM1)
 
 **The party object.** Page 1, the target list of Use (page 0xc) and the equipment list read the party object `DAT_0036ce90`: `FUN_00282940` is its row count (the word at `+0`), `FUN_002829f0(row)` the member id of a row (the u16 at `row * 0x14 + 6`, 0 outside the count) and `FUN_00282980(row)` the row's name word (`+0xc`). `FUN_0025c2c8` builds one target row per party row (a group item shows the single row "All", message 0x3944; an item that goes to one member only shows one row). `FUN_0025e9e8(row)` asks `FUN_001a14c8(item, member of the row)`; for a group item `FUN_001a14c8` answers true when any of the four slots passes `FUN_001a15a0`. `FUN_0025ea40(row)` runs `FUN_001a11a0(item, member, 0, 100)` (a group item loops the four slots), then `FUN_001a1ba8(item, 100)` and `FUN_0013dac8`.

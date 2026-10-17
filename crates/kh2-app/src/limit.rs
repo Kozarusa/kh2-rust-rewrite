@@ -382,6 +382,8 @@ pub struct LimitStarted {
     pub file: String,
     /// The command's `Time`, in the units the game's limit task takes.
     pub time: u16,
+    /// The limit row's three participant bytes (`Character`, `Summon`, `Group`): `FUN_001b2c10` looks the party member objects up from them.
+    pub members: [u8; 3],
 }
 
 /// Entry kinds of a limit's resource BAR (`limit/us/<FileName>`) that the limit task looks up (`FUN_001684c0(bar, kind, 0)`).
@@ -743,7 +745,7 @@ fn try_limit(
             if let Some(n) = std::env::var("KH2_LIMIT_HITS").ok().and_then(|v| v.parse::<i32>().ok()) {
                 hits.add(n);
             }
-            out.write(LimitStarted { command, file: r.file.clone(), time: r.time });
+            out.write(LimitStarted { command, file: r.file.clone(), time: r.time, members: r.members });
         }
     }
 }

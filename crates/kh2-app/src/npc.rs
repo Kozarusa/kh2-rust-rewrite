@@ -514,6 +514,12 @@ pub(crate) fn npc_update(
             event_active: false,
         };
         let handle = obj.handle;
+        let head_rec = npc.parts.as_ref().and_then(|t| t.first(look::TYPE_HEAD)).copied();
+        fields.cone_part = head_rec.and_then(|rec| {
+            let off = Vec3::new(rec.off[0] as f32, rec.off[1] as f32, rec.off[2] as f32);
+            let m = anim.pose.get((rec.joint & 0x3fff) as usize)?;
+            Some((obj.motor.pos + Quat::from_rotation_y(npc.yaw) * m.transform_point3(off) + Vec3::Y * rec.lift as f32, rec.r[0]))
+        });
         let mut host = NpcHost { inner: BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() }, fields, peers: &peers, log };
         if !*started {
             *started = true;
@@ -573,7 +579,6 @@ pub(crate) fn npc_update(
 
         // ---- the head look-at controller's commands (hosts 1.174 / 1.176): only an object whose model
         // has the head record (type 0x14) can start one (FUN_001aece8 looks it up first).
-        let head_rec = npc.parts.as_ref().and_then(|t| t.first(look::TYPE_HEAD)).copied();
         if let Some(cmd) = fields.look_cmd.take() {
             match (cmd, head_rec.is_some()) {
                 (LookCmd::Start(n), true) => fields.look.start(n),
@@ -623,7 +628,8 @@ pub(crate) fn npc_update(
         tf.rotation = Quat::from_rotation_y(npc.yaw);
         // The head look-at controller's tick (FUN_001aea28 -> FUN_001aee90) after the move [inferred order].
         anim.turn = None;
-        if let Some(rec) = head_rec {
+        // Harness: `KH2_NO_HEADLOOK=1` leaves the head on the motion's pose (to compare shots).
+        if let Some(rec) = head_rec.filter(|_| std::env::var_os("KH2_NO_HEADLOOK").is_none()) {
             let joint = (rec.joint & 0x3fff) as usize;
             let off = Vec3::new(rec.off[0] as f32, rec.off[1] as f32, rec.off[2] as f32);
             let at_head = anim.pose.get(joint).map(|m| obj.motor.pos + Quat::from_rotation_y(npc.yaw) * m.transform_point3(off) + Vec3::Y * rec.lift as f32);
@@ -1210,6 +1216,9 @@ pub struct NpcFields {
     /// The head look-at controller (+0x4a0), and the host call that has not reached it yet.
     pub look: look::Look,
     pub look_cmd: Option<LookCmd>,
+    /// The object's type-0x14 part for hosts 1.172 / 1.173 (`FUN_001af650`): its point (the head
+    /// bone's pose of the last tick, `FUN_001894d0`) and its cone in degrees (record halfword +0x10).
+    pub cone_part: Option<(Vec3, i16)>,
     /// +0xa30: the region the object stood in when `FUN_0018a4b0` last looked.
     pub region: Option<usize>,
     /// This frame's `FUN_0018aa08(obj, 5)`: the object's first type-5 part meets the player's
@@ -1250,6 +1259,7 @@ impl NpcFields {
             queued: None,
             look: look::Look::default(),
             look_cmd: None,
+            cone_part: None,
         };
         // FUN_001899d0: bits 0..6 of the record's word +0x24; with bit 0 set the follower is put in
         // kind 2 (the walk path) at once, with mode 0.
@@ -2235,16 +2245,7 @@ impl NpcHost<'_, '_> {
     /// facing (+0x550) and the horizontal direction to the point is below `DAT_0037b950` (15
     /// degrees); with one, the part's own cone (its halfword +0x10 in degrees) and point are used.
     fn in_front(&self, point: Vec3) -> bool {
-        let pos = self.inner.obj.motor.pos;
-        let yaw = self.inner.obj.motor.yaw;
-        let d = (point - pos).with_y(0.0);
-        if d.length() < 1e-3 {
-            return true;
-        }
-        let d = d.normalize();
-        // FUN_0017bf10: acos of the dot product when it is inside (-1, 1), else 0 or pi.
-        let dot = (d.x * yaw.sin() + d.z * yaw.cos()).clamp(-1.0, 1.0);
-        dot.acos().abs() < f32::from_bits(0x3e86_0a91)
+        in_cone(self.inner.obj.motor.pos, self.inner.obj.motor.yaw, point, self.fields.cone_part)
     }
 
     fn group1(&mut self, index: u16, a: &[u32], c: &Call) -> Option<(Value, St, &'static str)> {
@@ -2268,9 +2269,9 @@ impl NpcHost<'_, '_> {
             18 => (Value::None, St::Stub, "object links are not in the app"),
             // 1.172 (0x1718d0 -> FUN_001af878): the player's lock-on point is inside the object's
             // talk cone; 1.173 (0x171908 -> FUN_001af650) the same for a given point.
-            172 => (Value::Bool(self.in_front(self.inner.env.player)), St::Approx, "the kind-0x14 part's cone and point are not read: a 15 degree cone about the facing (DAT_0037b950) toward the player's origin"),
+            172 => (Value::Bool(self.in_front(self.inner.env.player)), St::Approx, "the kind-0x14 part's point is the head bone of the last tick [inferred]; the player's lock-on point is his origin"),
             173 => match args_vec(c, 1) {
-                Some(v) => (Value::Bool(self.in_front(from_game(v))), St::Approx, "the kind-0x14 part's cone is not read: a 15 degree cone about the facing (DAT_0037b950)"),
+                Some(v) => (Value::Bool(self.in_front(from_game(v))), St::Approx, "the kind-0x14 part's point is the head bone of the last tick [inferred]"),
                 None => (Value::Bool(false), St::Missing, "1.173 without a point"),
             },
             // 1.13 queue_motion on this object (0x1702b8 -> the motion controller's queue, which
@@ -2352,6 +2353,32 @@ impl Host for NpcHost<'_, '_> {
 
     fn write_mem(&mut self, addr: u32, data: &[u8]) -> bool {
         self.inner.write_mem(addr, data)
+    }
+}
+
+/// `FUN_001af650`: is `point` inside the object's talk cone. The facing is +0x550 (the yaw's
+/// horizontal vector). Without a type-0x14 part the direction is `point - position` flattened to the
+/// ground and the test is `angle < DAT_0037b950` (15 degrees); with one it starts at the part's
+/// point, is not flattened, and the test is `angle <= halfword +0x10 * DAT_0037b954` (degrees to
+/// radians). The angle is `FUN_0017bf10`'s arc cosine (0 or pi outside (-1, 1)).
+pub fn in_cone(pos: Vec3, yaw: f32, point: Vec3, part: Option<(Vec3, i16)>) -> bool {
+    let (origin, flat) = match part {
+        Some((p, _)) => (p, false),
+        None => (pos, true),
+    };
+    let mut d = point - origin;
+    if flat {
+        d.y = 0.0;
+    }
+    if d.length() < 1e-3 {
+        return true;
+    }
+    let d = d.normalize();
+    let dot = d.x * yaw.sin() + d.z * yaw.cos();
+    let angle = if dot < 1.0 && dot > -1.0 { dot.acos() } else if dot >= 1.0 { 0.0 } else { std::f32::consts::PI };
+    match part {
+        Some((_, deg)) => angle <= f32::from(deg) * f32::from_bits(0x3c8e_fa35),
+        None => angle < f32::from_bits(0x3e86_0a91),
     }
 }
 
@@ -2644,6 +2671,28 @@ pub mod look {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `FUN_001af650`: no part -> 15 degrees flat (strict); a part -> its own point, not flattened,
+    /// at most halfword * 0.017453 (the townspeople's 50 degrees).
+    #[test]
+    fn cone_without_and_with_a_head_part() {
+        let pos = Vec3::ZERO;
+        let at = |deg: f32, r: f32, y: f32| Vec3::new(deg.to_radians().sin() * r, y, deg.to_radians().cos() * r);
+        // no part: 14 degrees in, 16 out; height is ignored
+        assert!(in_cone(pos, 0.0, at(14.0, 100.0, 500.0), None));
+        assert!(!in_cone(pos, 0.0, at(16.0, 100.0, 0.0), None));
+        // a part with 50 degrees: 40 degrees to the side is in, 55 out
+        let part = Some((Vec3::new(0.0, 160.0, 0.0), 50));
+        assert!(in_cone(pos, 0.0, at(40.0, 100.0, 160.0), part));
+        assert!(!in_cone(pos, 0.0, at(55.0, 100.0, 160.0), part));
+        // not flattened: a point straight above the head is 90 degrees from the facing
+        assert!(!in_cone(pos, 0.0, Vec3::new(0.0, 460.0, 0.0), part));
+        assert!(in_cone(pos, 0.0, Vec3::new(0.0, 460.0, 0.0), None));
+        // the facing follows the yaw
+        assert!(in_cone(pos, 1.0, at(57.0, 100.0, 160.0), part));
+        // dot near +-1 clamps (FUN_0017bf10): directly behind is pi
+        assert!(!in_cone(pos, 0.0, Vec3::new(0.0, 160.0, -100.0), part));
+    }
 
     /// The disc's townspeople: the head record (type 0x14) of `N_EX510_RTN` and `N_EX520_RTN` names
     /// a bone of the model and the limits 50 and 20 degrees; `N_EX500_RTN` has none, so host 1.174

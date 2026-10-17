@@ -583,6 +583,15 @@ pub struct TargetScene<'a> {
     pub player_hit: Option<usize>,
     /// The object walk, in order.
     pub cands: &'a [Cand],
+    /// Class 16 only (FUN_00119d60): the objects whose +0x10c has bit 0x20000 (set by FUN_00185460 when
+    /// FUN_0018b778 answers) and whose +0xae4 is the player. The app models neither field: empty.
+    pub held: &'a [usize],
+    /// Class 16 only: FUN_00119ce8's answer (the player has started an attack, `0x34e9d0` >= 0, and the
+    /// member's +0xb7c bit 0x200 is clear; the elapsed-time test compares a value with itself plus
+    /// `DAT_003788d8`). The app has no +0xb7c bit 0x200: false.
+    pub attack_gate: bool,
+    /// The member's record before FUN_0010dcf0 cleared it (class 16's fallback, its `param_2`).
+    pub previous: Option<Pick>,
 }
 
 fn surface(c: &Cand, p: bevy::math::Vec3) -> f32 {
@@ -706,6 +715,27 @@ pub fn choose_style3(p: &Params, s: &TargetScene) -> Option<Pick> {
     out
 }
 
+/// Class 16 (FUN_00119d60): among the shapes of the `held` objects that FUN_00112b28 accepts and that
+/// answer, the one with the nearest surface to the member (the first while the best is 0, then a smaller
+/// distance); else, when FUN_00119ce8's gate is open, the player's attack pick (FUN_0010d848, no enabled
+/// test); else the member's previous record. The shape flag test (shape record +8 bit 0x40, +0xc non-zero)
+/// is not modelled [inferred: satisfied].
+pub fn choose_class16(s: &TargetScene) -> Option<Pick> {
+    let mut best = 0.0f32;
+    let mut out = None;
+    for c in s.cands.iter().filter(|c| c.enabled && c.targetable && s.held.contains(&c.fighter)) {
+        let d = surface(c, s.member);
+        if best == 0.0 || d < best {
+            out = Some((c.fighter, c.shape));
+            best = d;
+        }
+    }
+    if out.is_none() && s.attack_gate {
+        out = player_hit_pick(s);
+    }
+    out.or(s.previous)
+}
+
 /// The choose function of the table at 0x352d28 (classes up to 0xd) or 0x352ce8 + 8 x class (classes
 /// above 0xd, FUN_001124b8), and the re-target test of 0x352cd0 / 0x352c90 + 8 x class, by name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -720,8 +750,8 @@ pub enum Chooser {
     FarFromPlayer,
     /// FUN_0010d700: an empty function, no target.
     None,
-    /// A routine not read (class 16's 0x119d60).
-    Unread(u32),
+    /// FUN_00119d60 (class 16, Peter Pan's).
+    Class16,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -734,11 +764,9 @@ pub enum Retest {
     NearPlayer,
     /// FUN_0010ce40.
     FarFromPlayer,
-    /// FUN_0010cf80 (1) and FUN_0010cf88 (0).
+    /// FUN_0010cf80 (1; class 16's FUN_00119d58 also returns 1) and FUN_0010cf88 (0).
     Always,
     Never,
-    /// A routine not read (class 16's 0x119d58).
-    Unread(u32),
 }
 
 /// FUN_0010dcf0's and FUN_0010cf90's dispatch (the tables as the executable holds them: printed by
@@ -748,7 +776,7 @@ pub fn dispatch(class: u8, style: u8) -> Option<(Chooser, Retest)> {
         return Some(match class {
             14 => (Chooser::None, Retest::Always),
             15 | 17 => (Chooser::Nearest, Retest::Never),
-            16 => (Chooser::Unread(0x119d60), Retest::Unread(0x119d58)),
+            16 => (Chooser::Class16, Retest::Always), // FUN_00119d58 returns 1
             18 => (Chooser::Nearest, Retest::Attacker),
             _ => return None,
         });
@@ -765,7 +793,6 @@ pub fn dispatch(class: u8, style: u8) -> Option<(Chooser, Retest)> {
 }
 
 /// Runs a choose function. `limit`: FUN_001b3c00 (a limit runs): 0x352d48's FUN_0010d700, no target.
-/// An unread routine keeps no target [the routine was not read].
 pub fn choose_target(c: Chooser, limit: bool, p: &Params, s: &TargetScene) -> Option<Pick> {
     if limit {
         return None;
@@ -775,14 +802,15 @@ pub fn choose_target(c: Chooser, limit: bool, p: &Params, s: &TargetScene) -> Op
         Chooser::PlayerTarget => choose_style1(p, s),
         Chooser::NearPlayer => choose_style2(p, s),
         Chooser::FarFromPlayer => choose_style3(p, s),
-        Chooser::None | Chooser::Unread(_) => None,
+        Chooser::Class16 => choose_class16(s),
+        Chooser::None => None,
     }
 }
 
 /// FUN_0010cf90: re-target when the target is not valid (FUN_0010ca88: none, bit 0x40, FUN_00112b28 or
 /// FUN_0018edd8 refuse), when a limit runs, else by the style's test. `target`: the current record
 /// when FUN_0010ca88 accepts it. `current_counted`: the running action record (+0xc60) exists and
-/// lacks flag 1 (FUN_0010ce40 then always re-targets). An unread test re-targets.
+/// lacks flag 1 (FUN_0010ce40 then always re-targets).
 pub fn needs_retarget(t: Retest, limit: bool, target: Option<(Pick, bevy::math::Vec3)>, current_counted: bool, p: &Params, s: &TargetScene) -> bool {
     let Some((pick, point)) = target else { return true };
     if limit {
@@ -799,7 +827,7 @@ pub fn needs_retarget(t: Retest, limit: bool, target: Option<(Pick, bevy::math::
         Retest::NearPlayer => d2 > sq(p.retarget) || (point - s.player).length_squared() > sq((p.player_range + p.player_near) * p.retarget_half),
         // A target closer to the player than +0x88 re-targets.
         Retest::FarFromPlayer => current_counted || d2 > sq(p.retarget) || (point - s.player).length_squared() < sq(p.player_near),
-        Retest::Always | Retest::Unread(_) => true,
+        Retest::Always => true,
         Retest::Never => false,
     }
 }
@@ -1380,7 +1408,29 @@ mod tests {
         assert_eq!(target_step(0, 5, false, &p, &s, None, false), Some(Some((1, 0))));
         assert_eq!(target_step(0, 0, true, &p, &s, cur, false), Some(None), "a limit: no target");
         assert_eq!(target_step(0, 9, false, &p, &s, cur, false), None);
-        assert_eq!(target_step(16, 0, false, &p, &s, cur, false), Some(None), "class 16's unread routines: no target");
+        assert_eq!(target_step(16, 0, false, &p, &s, cur, false), Some(None), "class 16 re-targets always; nothing held, gate shut, no previous: no target");
+    }
+
+    /// FUN_00119d60: held objects first (nearest surface), then the player's attack pick when the gate is
+    /// open, then the previous record.
+    #[test]
+    fn party_target_class16_held_then_attack_then_previous() {
+        let cands = [cand(1, 0, 600.0, 0.0, 10.0), cand(2, 0, 100.0, 0.0, 10.0), cand(3, 0, 300.0, 0.0, 10.0), Cand { enabled: false, ..cand(4, 0, 10.0, 0.0, 1.0) }];
+        let mut s = TargetScene { cands: &cands, ..TargetScene::default() };
+        assert_eq!(choose_class16(&s), None, "nothing held, gate shut, no previous");
+        s.previous = Some((3, 0));
+        assert_eq!(choose_class16(&s), Some((3, 0)), "the previous record is kept");
+        s.player_hit = Some(1);
+        assert_eq!(choose_class16(&s), Some((3, 0)), "a shut gate ignores the player's attack");
+        s.attack_gate = true;
+        assert_eq!(choose_class16(&s), Some((1, 0)), "an open gate takes the player's attack pick");
+        let held = [1usize, 3, 4];
+        s.held = &held;
+        assert_eq!(choose_class16(&s), Some((3, 0)), "held objects beat the gate: object 3 is nearer than 1; 4 is disabled");
+        let held2 = [2usize];
+        s.held = &held2;
+        assert_eq!(choose_class16(&s), Some((2, 0)));
+        assert_eq!(dispatch(16, 3), Some((Chooser::Class16, Retest::Always)));
     }
 
     /// FUN_0010cf90's dispatch through 0x352d28 / 0x352cd0, read from the executable: every row names
@@ -1394,28 +1444,28 @@ mod tests {
             Chooser::NearPlayer => vec![0x10d378],
             Chooser::FarFromPlayer => vec![0x10d538],
             Chooser::None => vec![0x10d700],
-            Chooser::Unread(a) => vec![a],
+            Chooser::Class16 => vec![0x119d60],
         };
-        let rt = |t: Retest| match t {
+        let rt = |t: Retest, class: u8| match t {
             Retest::Attacker => 0x10cbe0,
             Retest::PlayerTarget => 0x10cc80,
             Retest::NearPlayer => 0x10ccf8,
             Retest::FarFromPlayer => 0x10ce40,
+            Retest::Always if class == 16 => 0x119d58,
             Retest::Always => 0x10cf80,
             Retest::Never => 0x10cf88,
-            Retest::Unread(a) => a,
         };
         for style in 0..6u8 {
             let (c, t) = dispatch(0, style).expect("style");
             let (cv, tv) = (rw(&elf, 0x352d28 + 8 * style as u32).unwrap(), rw(&elf, 0x352cd0 + 8 * style as u32).unwrap());
             eprintln!("style {style}: choose {cv:#x} re-target {tv:#x}");
-            assert!(ch(c).contains(&cv) && rt(t) == tv, "style {style}");
+            assert!(ch(c).contains(&cv) && rt(t, 0) == tv, "style {style}");
         }
         for class in 14..=18u8 {
             let (c, t) = dispatch(class, 0).expect("class");
             let (cv, tv) = (rw(&elf, 0x352ce8 + 8 * class as u32).unwrap(), rw(&elf, 0x352c90 + 8 * class as u32).unwrap());
             eprintln!("class {class}: choose {cv:#x} re-target {tv:#x}");
-            assert!(ch(c).contains(&cv) && rt(t) == tv, "class {class}");
+            assert!(ch(c).contains(&cv) && rt(t, class) == tv, "class {class}");
         }
         assert_eq!(rw(&elf, 0x352d48), Some(0x10d700), "a limit chooses nothing");
         let p = ClassAi::from_exe(&elf, 0).expect("class 0").params;

@@ -3987,7 +3987,7 @@ impl Revive {
         self.clock >= REVIVE_FADE_START + REVIVE_FADE_TICKS
     }
 
-    /// The black fade's alpha, 0 to 0x80, while the revive runs (linear in the counter [inferred]). What lifts the black afterwards
+    /// The white fade's alpha, 0 to 0x80, while the revive runs (linear in the counter [inferred]). What lifts the black afterwards
     /// is a documented gap (docs/summons.md): once the thread ends this is 0 again.
     pub fn fade_alpha(&self) -> u32 {
         if !self.running() {
@@ -4202,7 +4202,7 @@ fn objects(
     if sm.revive.running() {
         acts = sm.revive.tick();
         if sm.revive.clock % 20 == 0 {
-            info!("summon: revive: tick {}, pad locked {}, black fade alpha {:#x} (docs/summons.md)", sm.revive.clock, sm.revive.pad_locked(), sm.revive.fade_alpha());
+            info!("summon: revive: tick {}, pad locked {}, white fade alpha {:#x} (docs/summons.md)", sm.revive.clock, sm.revive.pad_locked(), sm.revive.fade_alpha());
         }
     } else if revive_due(tinker_ready(&sm, &data), matches!(s.state, State::Down), s.hp)
         && let Some(id) = kid_ids.first().copied()

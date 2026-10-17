@@ -3904,6 +3904,16 @@ pub enum ReviveAct {
     FieldReleased,
 }
 
+/// Ticks the revive's camera event lasts: its end frame 0x15 is 21 event frames, an event frame being two game ticks
+/// (docs/summons.md, WP-RV2). The window wait (`FUN_00196418`) ends then and the pad is given back.
+pub const REVIVE_EVENT_TICKS: u32 = 42;
+/// Game tick of the event at which its screen fade to black starts (event frame 0xb, command 0x12 mode 2).
+pub const REVIVE_FADE_START: u32 = 22;
+/// Length of that fade in game ticks (the counter `FUN_0014a7c8` sets is twice the command's length 0x32).
+pub const REVIVE_FADE_TICKS: u32 = 100;
+/// The fade's alpha at its end (`FUN_0014a818` runs it from 0 to 0x80).
+pub const REVIVE_FADE_ALPHA: u32 = 0x80;
+
 /// The revive thread (`FUN_001ad9a0`, state word +8) with the object's fields it needs.
 #[derive(Debug, Clone, Default)]
 pub struct Revive {
@@ -3911,6 +3921,8 @@ pub struct Revive {
     step: Option<u8>,
     /// `00objentry` id of Tinker Bell, made when the thread is done.
     tinker: u32,
+    /// Game ticks since the revive began; the camera event and its fade run on this clock.
+    clock: u32,
 }
 
 impl Revive {
@@ -3925,34 +3937,62 @@ impl Revive {
         self.step.is_some_and(|s| s >= 2)
     }
 
+    /// The revive's camera event is alive (`FUN_00196418`: `DAT_0035e3a4 != 0`): the first 42 ticks.
+    pub fn window_open(&self) -> bool {
+        self.running() && self.clock < REVIVE_EVENT_TICKS
+    }
+
+    /// The event's `FUN_00196280` took the pad from the players; `FUN_00196170` gives it back when the event ends.
+    pub fn pad_locked(&self) -> bool {
+        self.window_open()
+    }
+
+    /// The fade object 0x356b30 has reached state 4 (black): 100 ticks after tick 22, tick 122.
+    pub fn fade_black(&self) -> bool {
+        self.clock >= REVIVE_FADE_START + REVIVE_FADE_TICKS
+    }
+
+    /// The black fade's alpha, 0 to 0x80, while the revive runs (linear in the counter [inferred]). What lifts the black afterwards
+    /// is a documented gap (docs/summons.md): once the thread ends this is 0 again.
+    pub fn fade_alpha(&self) -> u32 {
+        if !self.running() {
+            return 0;
+        }
+        self.clock.saturating_sub(REVIVE_FADE_START).min(REVIVE_FADE_TICKS) * REVIVE_FADE_ALPHA / REVIVE_FADE_TICKS
+    }
+
     /// `FUN_001ad378` with type 2, started by `FUN_001cec00` -> `FUN_001ad8a8` when Tinker Bell is ready and the player is
     /// down: everything it does before the thread's first tick.
     pub fn begin(&mut self, tinker: u32) -> Vec<ReviveAct> {
         self.step = Some(0);
         self.tinker = tinker;
+        self.clock = 0;
         vec![ReviveAct::FlagsSet, ReviveAct::MusicStop, ReviveAct::Sound(0x13), ReviveAct::WindowSkipped, ReviveAct::FieldHeld]
     }
 
     /// One tick of the thread (`FUN_001ad9a0`): case 0 moves on, case 1 sets the sound gate and falls into case 2, which waits
-    /// while the message window exists (`FUN_00196418`) or the fade object 0x356b30 is not idle (+0xfc != 4), then clears
-    /// the gate, puts the player on the floor and finishes with `FUN_001adeb8` (type 2).
-    pub fn tick(&mut self, window_open: bool, fade_idle: bool) -> Vec<ReviveAct> {
+    /// while the camera event exists (`FUN_00196418`, 42 ticks) or the fade object 0x356b30 is not black (+0xfc != 4, tick 122),
+    /// then clears the gate, puts the player on the floor and finishes with `FUN_001adeb8` (type 2).
+    pub fn tick(&mut self) -> Vec<ReviveAct> {
         let mut acts = Vec::new();
+        if self.step.is_some() {
+            self.clock += 1;
+        }
         match self.step {
             None => {}
             Some(0) => self.step = Some(1),
             Some(1) => {
                 acts.push(ReviveAct::SoundGate);
                 self.step = Some(2);
-                self.wait(window_open, fade_idle, &mut acts);
+                self.wait(&mut acts);
             }
-            Some(_) => self.wait(window_open, fade_idle, &mut acts),
+            Some(_) => self.wait(&mut acts),
         }
         acts
     }
 
-    fn wait(&mut self, window_open: bool, fade_idle: bool, acts: &mut Vec<ReviveAct>) {
-        if window_open || !fade_idle {
+    fn wait(&mut self, acts: &mut Vec<ReviveAct>) {
+        if self.window_open() || !self.fade_black() {
             return;
         }
         acts.extend([
@@ -4122,10 +4162,13 @@ fn objects(
     // player is knocked out. `Revive` runs the sequence: the music stops and new sounds are refused, and when its waits are over
     // FUN_001adeb8 clears byte 7 (FUN_001c6a10), makes Tinker Bell (objentry 0x4f4, the row's Entity2) at the player and
     // sets her mode `reraise` (the string at 0x37b880); her script raises the player (host 1.277). The message window's
-    // text is not found, so no window is opened, and the app has no 0x356b30 fade to wait for (docs/summons.md).
+    // text does not exist (a camera event, docs/summons.md); `Revive` times that event (42 ticks, pad locked) and the fade to black (tick 22 to 122).
     let mut acts = Vec::new();
     if sm.revive.running() {
-        acts = sm.revive.tick(false, true);
+        acts = sm.revive.tick();
+        if sm.revive.clock % 20 == 0 {
+            info!("summon: revive: tick {}, pad locked {}, black fade alpha {:#x} (docs/summons.md)", sm.revive.clock, sm.revive.pad_locked(), sm.revive.fade_alpha());
+        }
     } else if revive_due(tinker_ready(&sm, &data), matches!(s.state, State::Down), s.hp)
         && let Some(id) = kid_ids.first().copied()
     {
@@ -5182,9 +5225,9 @@ mod tests {
     use super::rules::*;
     use super::*;
 
-    /// WP-SM4: the revive sequence's order (`FUN_001ad378` type 2, thread `FUN_001ad9a0`, `FUN_001adeb8`): the music stops
+    /// WP-SM4 / WP-RV3: the revive sequence's order (`FUN_001ad378` type 2, thread `FUN_001ad9a0`, `FUN_001adeb8`): the music stops
     /// first, the sound gate is set in step 1 and cleared before Tinker Bell is made, the music restarts after she is made, and
-    /// the thread's end releases the field bit last.
+    /// the thread's end releases the field bit last. The end comes at tick 122, when the fade has gone black.
     #[test]
     fn the_revive_sequence_runs_in_the_games_order() {
         use ReviveAct::*;
@@ -5194,33 +5237,44 @@ mod tests {
         assert_eq!(start, [FlagsSet, MusicStop, Sound(0x13), WindowSkipped, FieldHeld]);
         assert!(r.running() && !r.sounds_held());
         // Case 0 only moves on.
-        assert!(r.tick(false, true).is_empty());
+        assert!(r.tick().is_empty());
         assert!(!r.sounds_held());
-        // Case 1 locks the pad and falls into the waits, which are over at once.
-        let end = r.tick(false, true);
-        assert_eq!(end, [SoundGate, SoundGateOff, PlayerToFloor, TinkerMade, FlagsClear, MusicRestart, FieldReleased]);
+        // Case 1 sets the gate and falls into the waits.
+        assert_eq!(r.tick(), [SoundGate]);
+        let mut end = Vec::new();
+        for _ in 3..=122 {
+            assert!(end.is_empty());
+            end = r.tick();
+        }
+        assert_eq!(end, [SoundGateOff, PlayerToFloor, TinkerMade, FlagsClear, MusicRestart, FieldReleased]);
         assert!(!r.running() && !r.sounds_held());
-        assert!(r.tick(false, true).is_empty());
+        assert!(r.tick().is_empty());
     }
 
-    /// WP-SM4: an open message window or a fade that is not idle (`FUN_00196418`, 0x356b30 +0xfc != 4) keeps the thread
-    /// waiting with the pad locked; nothing is made and the music stays stopped until both are over.
+    /// WP-RV3: the camera event (42 ticks) holds the window and the pad, the fade runs from tick 22 for 100 ticks to alpha
+    /// 0x80, and nothing is made before tick 122 with the sounds held; Tinker Bell comes exactly then.
     #[test]
     fn the_revive_waits_for_the_window_and_the_fade_with_the_sounds_held() {
         use ReviveAct::*;
         let mut r = Revive::default();
         r.begin(1);
-        r.tick(true, true);
-        assert_eq!(r.tick(true, true), [SoundGate]);
-        assert!(r.sounds_held());
-        assert!(r.tick(true, true).is_empty());
-        assert!(r.tick(false, false).is_empty());
-        assert!(r.running() && r.sounds_held());
-        let end = r.tick(false, true);
+        assert!(r.window_open() && r.pad_locked() && r.fade_alpha() == 0);
+        for t in 1..=121u32 {
+            let acts = r.tick();
+            assert!(!acts.contains(&TinkerMade), "tick {t}");
+            assert_eq!(r.window_open(), t < 42, "window at tick {t}");
+            assert_eq!(r.pad_locked(), t < 42, "pad at tick {t}");
+            assert_eq!(r.fade_alpha(), t.saturating_sub(22).min(100) * 0x80 / 100, "alpha at tick {t}");
+            if t >= 2 {
+                assert!(r.sounds_held());
+            }
+        }
+        assert!(r.running() && !r.fade_black());
+        let end = r.tick();
         assert_eq!(end.first(), Some(&SoundGateOff));
         assert_eq!(end.iter().filter(|a| **a == TinkerMade).count(), 1);
         assert!(end.iter().position(|a| *a == TinkerMade) < end.iter().position(|a| *a == MusicRestart));
-        assert!(!r.running());
+        assert!(!r.running() && r.fade_alpha() == 0 && !r.pad_locked());
     }
 
     /// WP-SM4b: the Bevy glue of the revive: `revive_effects` carries the music acts to `AreaMusic` (held on `MusicStop`, given

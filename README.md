@@ -38,7 +38,7 @@ Not done yet:
 - Magic beyond level 1 (Magnet, Reflect, drive-form casts).
 - Summons: the limit task (summon limits are reachable only through a harness aid), the camera's FPS mode, Genie's model parts, the revive's message window.
 - Party: the limit scene an accepted Auto Limit offer should start (the limit script runs, but its child thread, partner objects and motion, effect and camera hosts are missing), and the hidden-member list.
-- Game over: the GAMEOVER scene (Sora keeps his fall pose), restoring the save body on Continue, and the Load screen's header art. Mickey's rescue is ported only as far as the decision, the chance and the alternate list; it is switched off because Mickey and his heal are not found, so the 11 missions that could offer it show the normal list.
+- Game over: the GAMEOVER scene model (WP-GO2), restoring the save body on Continue, and the Load screen's header art. Mickey's rescue is ported only as far as the decision, the chance and the alternate list; it is switched off because Mickey and his heal are not found, so the 11 missions that could offer it show the normal list.
 - Other enemy types and some area-script group kinds.
 - Journal: the viewer plate's fade and lighting on the model pages, and the page-turn gap; the World Map row of the save point menu, and the world map itself.
 - BATTLE REPORT rows 1 and 2 (no source found), and the shop bits in the slot files.

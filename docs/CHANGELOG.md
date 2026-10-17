@@ -2,6 +2,20 @@
 
 One short section per work package. "Verified" says how; nothing here was checked by watching video, and audio was listened to only where stated.
 
+## Shift 15 (2026-10-17)
+
+**WP-PL2 (party follow-ups).** Continue no longer loses the allies' restored HP and MP to the live party sync; items heal a down member and revive him (FUN_001a15a0 has no KO test; vtable +0x78 FUN_00176c98 -> FUN_00186238 -> FUN_0017cee8). Drive Recovery and Dodge Roll findings recorded. Verified by four unit tests. Open: MP of an Elixir on a KO member (FUN_001a0210), the FUN_0017cee8 flag-8 branch.
+
+**WP-MK3 (Mickey rescue, docs).** Control swap not ported (Mickey needs his own player body and command deck); HP 1 writer not found; searched functions listed in docs/menus.md 26.5. `RESCUE_PORTED` stays false.
+
+**WP-RV2 (revive event, hosts, weapon words, docs).** Revive is event kind 0xf playing re_gameover-0a with a 100-tick fade (0x356b30); new host rows 0.75/0.76/0.61/0.98, 10.50/10.58, 1.52-1.54, 1.131, 1.301; Donald's and Goofy's weapon words are written by host 0.75 from 00common.bdx event 7 at boot. Open: what lifts the black after the revive.
+
+**WP-SH6 (shop).** Count-up, tab grid with sums, row origins (window record not added [inferred]), and the `seqd` fix (load emptied layd.seqs). Verified by four tests and the moogle/shop screenshots. Open: group 0x65 words, row plates, page 10's second column.
+
+**WP-GO2 (game over).** The scene model plays GAMEOVER.mset (FUN_001ade58/001add40); Continue runs the party refresher FUN_001abfe8(8): full HP and MP (replaces the area-start HP/MP reading); Load uses its own header layer set. Open: wait lengths, whether the field Sora is hidden.
+
+**WP-LS2 (limit scripts).** Object memory for limit scripts, hosts 2.23/2.56/1.131 and requests for 2.47/2.50/2.59: all 15 limit scripts run to the end. Open: visible camera, effects, gauges (LS2b), 1.160, 6.57.
+
 ## Shift 14 (2026-10-16/17)
 
 - **WP-ST1 (Struggle follow-up tests).** Tests that wave 200 does not wrap, that `ring_place_in` places on a floor and a wall, and that the result menu ticks as a system. Verified by those tests. Open: none.

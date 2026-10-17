@@ -29,8 +29,8 @@
 //! of kind 1; "Retry" and "Quit" take the manager's trigger jumps as the Struggle's result menu does; "Load Game" opens the
 //! Load screen of `menu_save` (menu kind 2, docs/menus.md 18.6): a read slot replaces the state and enters its area, a cancel
 //! brings the list back. The list shows the player's model lying in the scene's motion (`model`, `obj/GAMEOVER.mset`, docs 26.6) and
-//! "Continue" ends with the party refresher `FUN_001abfe8(8)` (full HP and MP, `refresh_party`, docs 26.7). The wait before the list and the
-//! header group are not ported (see docs).
+//! "Continue" ends with the party refresher `FUN_001abfe8(8)` (full HP and MP, `refresh_party`, docs 26.7). The wait before the list is the knock-out event's fade (`open_after`, docs 26.6); the
+//! header group is not ported (see docs).
 
 use bevy::prelude::*;
 use kh2_image::layd;
@@ -68,9 +68,27 @@ pub const SOUND_OVER: u32 = 0x13;
 pub const SOUND_OVER_TYPE_1: u32 = 0x33;
 /// The area map program below which `FUN_001cb358` allows the snapshot (`DAT_0033e830` byte 3).
 pub const SNAPSHOT_PROGRAM_LIMIT: u8 = 0x33;
-/// Seconds Sora lies down before the list opens [inferred: the steps of `FUN_001ad9a0` wait for the fade and the scene
-/// `GAMEOVER.mset`, whose lengths were not read].
-pub const OPEN_AFTER: f32 = 1.5;
+/// Game ticks from the knock-out to the list for the types that start the knock-out event (0 and 3; type 2 has no list).
+/// `FUN_001ad378` starts the event of kind 0xf (`00battle.bin` entry `re_gameover-0a`, docs/summons.md "WP-RV2") through
+/// `FUN_00195ae0`. Step 2 of `FUN_001ad9a0` waits while that event object lives (`FUN_00196418`: `DAT_0035e3a4` is set) and until the
+/// screen fade object `0x356b30` reaches state 4 (`+0xfc == 4`, the finished fade-out). The event's command 0x12 starts that fade
+/// at event frame 0xb (game tick 22, the event frame being half the tick counter) with length 0x32, which `FUN_0014a710` doubles
+/// to 100 ticks (`FUN_0014a818` takes `DAT_00356f44` = 1.0 off the counter each tick). The event itself ends at event frame 0x15
+/// (tick 42), earlier than the fade. Step 3 takes one tick, steps 4 and 5 wait for the resource system (`FUN_0016ff50`) and the
+/// words `0x35feb8` / `0x35fec0`, which are clear unless an older Mickey object or revive object still lives; the app reads
+/// the file at once, so none of those adds time. 22 + 100 = 122 ticks.
+pub const OPEN_AFTER_TICKS: f32 = 122.0;
+/// Game ticks per second [inferred: 60, the rate docs/struggle.md already uses for event frames].
+pub const TICKS_PER_SECOND: f32 = 60.0;
+/// Seconds Sora lies down before the list opens for type 1 (`FUN_001ad868`, a manager that ended by itself). That type starts
+/// no event (`FUN_001ad378` is called with the object 0), so step 2 waits for whatever fade the mission's ending left in state 4;
+/// that fade was not traced [inferred: the same as before this package].
+pub const OPEN_AFTER_TYPE_1: f32 = 1.5;
+
+/// Seconds from the knock-out to the list for a game over type.
+pub fn open_after(kind: u8) -> f32 {
+    if kind == 1 { OPEN_AFTER_TYPE_1 } else { OPEN_AFTER_TICKS / TICKS_PER_SECOND }
+}
 /// The fade kind of the jump `FUN_00104e18(.., 0x80000001, ..)` (`FUN_0013ef68(0x80000001)`: kind 1).
 pub const CONTINUE_FADE_KIND: u32 = 1;
 
@@ -137,7 +155,7 @@ pub enum Outcome {
 /// The stages of the game over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
-    /// The knock-out is down; the list opens after `OPEN_AFTER` seconds.
+    /// The knock-out is down; the list opens after `open_after(kind)` seconds.
     Waiting,
     List,
     /// "Load Game" (code 1): the Load screen (`FUN_00254a08(2)`, `menu_save`) is up; its end brings the list back or the loaded
@@ -201,7 +219,7 @@ impl Over {
                     mickey::CODE_GIVE_UP => {
                         self.alternate = false;
                         self.phase = Phase::Waiting;
-                        self.waited = OPEN_AFTER;
+                        self.waited = open_after(self.kind);
                         self.flow.chosen = None;
                     }
                     mickey::CODE_RESCUE => {
@@ -546,12 +564,18 @@ fn refresh_party(
         info!("game over: party refresher (FUN_001abfe8(8)): Sora HP {hp}, MP {mp}, MP charge ended {ended}");
     }
     for mut m in members.iter_mut() {
-        let (hp, mp) = refreshed(m.hp_max, m.mp_max);
-        m.hp = hp;
         let m = &mut *m;
-        crate::magic::refill_mp(Some(&mut m.charge), &mut m.mp, mp);
+        let (hp, mp) = refresh_vitals(&mut m.hp, m.hp_max, &mut m.mp, m.mp_max, &mut m.charge);
         info!("game over: party refresher (FUN_001abfe8(8)): member {} HP {hp}, MP {mp}", m.slot);
     }
+}
+
+/// One member's share of the refresher: HP and MP to their maxima (`refreshed`), the MP charge ended (`magic::refill_mp`).
+fn refresh_vitals(hp: &mut i32, hp_max: i32, mp: &mut i32, mp_max: i32, charge: &mut crate::magic_rules::Charge) -> (i32, i32) {
+    let (new_hp, new_mp) = refreshed(hp_max, mp_max);
+    *hp = new_hp;
+    crate::magic::refill_mp(Some(charge), mp, new_mp);
+    (new_hp, new_mp)
 }
 
 fn load(go: &mut GameOver, disc: &Disc, scene: &mut MenuScene, images: &mut Assets<Image>) {
@@ -755,7 +779,7 @@ fn drive(
     match over.phase {
         Phase::Waiting => {
             over.waited += real.delta_secs();
-            if over.waited >= OPEN_AFTER {
+            if over.waited >= open_after(over.kind) {
                 if !go.tried {
                     load(&mut go, &disc, &mut scene, &mut images);
                 }
@@ -1421,7 +1445,7 @@ mod tests {
         assert_eq!(o.press(Press::Down), Action::Cursor);
         assert_eq!(o.press(Press::Confirm), Action::Chosen(mickey::CODE_GIVE_UP));
         assert_eq!((o.phase, o.chosen, o.alternate), (Phase::Waiting, None, false));
-        assert!(o.waited >= OPEN_AFTER);
+        assert!(o.waited >= open_after(o.kind));
         // The normal list then behaves as before: Continue closes with its outcome.
         o.open(&block(1, &[(2, 0x8ab0), (1, 0x8aaf)]));
         assert_eq!(o.press(Press::Confirm), Action::Chosen(CODE_CONTINUE));
@@ -1568,7 +1592,7 @@ mod tests {
         assert!(sora(&mut w).1);
         assert_eq!(w.resource::<Messages<PlaySe>>().len(), 1, "FUN_001ad378's sound plays once");
         // The wait runs out; the scene has no menu text, so the list cannot open and Sora is released.
-        w.resource_mut::<Time<Real>>().advance_by(std::time::Duration::from_secs_f32(OPEN_AFTER + 0.1));
+        w.resource_mut::<Time<Real>>().advance_by(std::time::Duration::from_secs_f32(open_after(3) + 0.1));
         w.run_system_once(drive).unwrap();
         assert!(w.resource::<GameOver>().over.is_none());
         assert!(!sora(&mut w).1);
@@ -1800,6 +1824,83 @@ mod tests {
         assert_eq!((s.hp, s.mp), (s.stats.max_hp, 100));
         assert!(s.hp > 3, "HP was 3");
         assert!(!w.resource::<crate::magic::MagicState>().charge.active(), "the MP charge ended (FUN_001a05a8)");
+    }
+
+    /// The wait before the list: types 0 and 3 wait for the knock-out event's fade (22 + 100 ticks, `FUN_001ad9a0` step 2), type 1
+    /// starts no event and keeps the old length.
+    #[test]
+    fn the_wait_before_the_list_is_the_knock_out_events_fade() {
+        assert_eq!(OPEN_AFTER_TICKS, 22.0 + 2.0 * 50.0, "command 0x12 at event frame 0xb (tick 22), length 0x32 doubled by FUN_0014a710");
+        assert!((open_after(0) - 122.0 / 60.0).abs() < 1e-6 && open_after(0) == open_after(3));
+        assert_eq!(open_after(1), OPEN_AFTER_TYPE_1);
+        assert!(open_after(0) > open_after(1), "the fade is longer than the 1.5 s the port used before");
+    }
+
+    /// The member branch of the refresher (`PartyMember` cannot be built outside `party.rs`, so the per-member rule `refresh_party`
+    /// calls for each of them is tested on its numbers): a down ally (HP 0) with 2 MP and a running charge comes back with full
+    /// HP and MP and no charge; an ally above 0 HP gets the maxima too; a zero maximum floors HP at 1 (`refreshed`).
+    #[test]
+    fn an_allys_refresh_gives_full_hp_and_mp_and_ends_his_charge() {
+        use crate::magic_rules::Charge;
+        let (mut hp, mut mp) = (0, 2);
+        let mut charge = Charge { left: 10.0, total: 30.0 };
+        assert_eq!(refresh_vitals(&mut hp, 60, &mut mp, 25, &mut charge), (60, 25));
+        assert_eq!((hp, mp), (60, 25));
+        assert!(!charge.active(), "FUN_001a0240 ended the charge");
+        let (mut hp, mut mp) = (17, 25);
+        assert_eq!(refresh_vitals(&mut hp, 60, &mut mp, 25, &mut Charge::default()), (60, 25));
+        assert_eq!((hp, mp), (60, 25), "an ally who was hurt gets the maximum too");
+        let (mut hp, mut mp) = (0, 0);
+        refresh_vitals(&mut hp, 0, &mut mp, 0, &mut Charge::default());
+        assert_eq!((hp, mp), (1, 0), "no maximum: HP floors at 1");
+    }
+
+    /// The whole "Continue" after the list closed (skipped without `KH2_ISO`, `drive` needs the `Disc`): the save body comes
+    /// back (munny and EXP earned since the area start are gone), the party refresher fills Sora and ends his MP charge, and
+    /// the jump to the snapshot's area starts with fade kind 1 and the game over moves to its jump phase.
+    #[test]
+    fn the_whole_continue_restores_the_body_refreshes_the_party_and_starts_the_jump() {
+        use bevy::ecs::system::RunSystemOnce;
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let mut w = world_with_sora(0);
+        w.insert_resource(MenuScene::default());
+        w.insert_resource(JumpTask::default());
+        w.insert_resource(Disc::open(&iso));
+        w.insert_resource(Assets::<Image>::default());
+        w.init_resource::<SaveMenu>();
+        w.init_resource::<Pause>();
+        w.init_resource::<Messages<PlaySe>>();
+        w.insert_resource(AreaRecord { world: 2, area: 4, entrance: 0, programs: [0; 3], programs_override: None, dest_programs: [0xff; 3], place_on_load: false, run: None, placed: None });
+        let mut p = state();
+        p.apply_json(r#"{"munny": 100, "experience": 40}"#).unwrap();
+        let body = capture_body(&p, &[]);
+        p.apply_json(r#"{"munny": 900, "experience": 700}"#).unwrap();
+        w.insert_resource(p);
+        w.insert_resource(NewTags::default());
+        let mut magic = crate::magic::MagicState::default();
+        magic.charge = crate::magic_rules::Charge { left: 40.0, total: 90.0 };
+        w.insert_resource(magic);
+        w.query::<&mut Sora>().single_mut(&mut w).unwrap().mp = 7;
+        let dest = Dest::new(2, 3, 0);
+        let mut go = GameOver { body: Some(body), snapshot: Some(Snapshot { dest, hp: 12, mp: 5 }), ..Default::default() };
+        let mut o = Over::new(0, None);
+        o.fresh = false;
+        o.phase = Phase::Closing;
+        o.chosen = Some(Outcome::Continue);
+        o.frames = CLOSE_FRAMES;
+        go.over = Some(o);
+        w.insert_resource(go);
+        w.run_system_once(drive).unwrap();
+        let p = w.resource::<Progress>();
+        assert_eq!((p.wallet(), p.experience()), (100, 40), "the body from the area start is back");
+        let s = w.query::<&Sora>().single(&w).unwrap();
+        assert_eq!(s.hp, s.stats.max_hp, "the refresher gives Sora his maximum, not the snapshot's 12");
+        assert!(!w.resource::<crate::magic::MagicState>().charge.active(), "his MP charge ended");
+        assert!(matches!(*w.resource::<JumpTask>(), JumpTask::FadeOut { dest: d, kind: 1, .. } if d == dest), "the jump enters the snapshot's area");
+        assert_eq!(w.resource::<GameOver>().over.as_ref().map(|o| o.phase), Some(Phase::Jumping));
     }
 
     /// WP-PL2 B: an area start that `FUN_001cb358` allows (`track_area`) stores the snapshot and the save body (the slot

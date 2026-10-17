@@ -652,14 +652,19 @@ fn load_keyhole(disc: Res<Disc>, area: Res<CurrentArea>, scene: Option<ResMut<cr
         warn!("keyhole: slot {KEYHOLE_SLOT} layout of {name} not among the HUD's files; fade kind 0 uses the black fade");
         return;
     };
-    let mut node = crate::hud::HudNode::new(file, None);
-    node.visible = false;
-    // The wipe covers the whole frame, the HUD included (`hud_gfx::WIPE_LAYER`).
-    node.top = true;
-    key.node = Some(scene.add(node));
+    key.node = Some(scene.add(keyhole_node(file)));
     if area::arealog() {
         info!("keyhole: slot {KEYHOLE_SLOT} of {name} is HUD file {file}; node {:?}", key.node);
     }
+}
+
+/// The wipe's node: hidden until a fade starts, drawn on the wipe layer so it covers the whole frame, the HUD included
+/// (`hud_gfx::WIPE_LAYER`).
+fn keyhole_node(file: usize) -> crate::hud::HudNode {
+    let mut node = crate::hud::HudNode::new(file, None);
+    node.visible = false;
+    node.top = true;
+    node
 }
 
 /// Starts group `group` of the wipe on its node and shows it.
@@ -1147,12 +1152,13 @@ struct FadeNode;
 #[derive(Component)]
 struct WipeBar;
 
-/// The four bars: left, right, above and below the 512 x 448 screen (HUD units, y down: the screen is y 0 to -448).
+/// The four bars: left, right, above and below the 512 x 448 screen (HUD units, y down: the screen is y 0 to -448), each
+/// reaching 2 units onto the screen so no seam at the layout's edge leaks (WP-KH1b: ticks at the top and bottom edges).
 const WIPE_BARS: [([f32; 2], [f32; 2]); 4] = [
-    ([-2000.0, -224.0], [4000.0, 8000.0]),
-    ([2512.0, -224.0], [4000.0, 8000.0]),
-    ([256.0, 2000.0], [8000.0, 4000.0]),
-    ([256.0, -2448.0], [8000.0, 4000.0]),
+    ([-1998.0, -224.0], [4000.0, 8000.0]),
+    ([2510.0, -224.0], [4000.0, 8000.0]),
+    ([256.0, 1998.0], [8000.0, 4000.0]),
+    ([256.0, -2446.0], [8000.0, 4000.0]),
 ];
 
 fn draw_wipe_bars(scene: Option<Res<crate::hud::HudScene>>, key: Res<Keyhole>, mut bars: Query<&mut Visibility, With<WipeBar>>) {
@@ -1226,6 +1232,39 @@ mod tests {
 
     fn group(gate: u8, area: u8, id: u16, volumes: Vec<Activator>) -> ExitGroup {
         ExitGroup { tag: "m_10".into(), id, exit: Exit { area, entrance: 1, gate }, volumes, fired: false, disabled: false, prompting: false, held: false }
+    }
+
+    /// The wipe's node is hidden and on the wipe layer; the bars follow it: hidden while no wipe node exists or it is hidden,
+    /// shown once it is, and each bar reaches onto the 512 x 448 screen.
+    #[test]
+    fn the_keyhole_node_is_on_top_and_the_bars_follow_it() {
+        use bevy::ecs::system::RunSystemOnce;
+        let node = keyhole_node(3);
+        assert!(node.top && !node.visible && node.file == 3);
+        let mut w = bevy::ecs::world::World::new();
+        w.init_resource::<Keyhole>();
+        w.run_system_once(spawn_fader).unwrap();
+        let bars = |w: &mut bevy::ecs::world::World| -> Vec<Visibility> { w.query_filtered::<&Visibility, With<WipeBar>>().iter(w).copied().collect() };
+        assert_eq!(bars(&mut w).len(), 4);
+        // No HUD scene and no node: hidden.
+        w.run_system_once(draw_wipe_bars).unwrap();
+        assert!(bars(&mut w).iter().all(|v| *v == Visibility::Hidden));
+        // A scene with the node hidden: hidden; shown: the bars show.
+        let mut scene = crate::hud::HudScene::default();
+        let i = scene.add(keyhole_node(0));
+        w.insert_resource(scene);
+        w.resource_mut::<Keyhole>().node = Some(i);
+        w.run_system_once(draw_wipe_bars).unwrap();
+        assert!(bars(&mut w).iter().all(|v| *v == Visibility::Hidden));
+        w.resource_mut::<crate::hud::HudScene>().nodes[i].visible = true;
+        w.run_system_once(draw_wipe_bars).unwrap();
+        assert!(bars(&mut w).iter().all(|v| *v == Visibility::Inherited));
+        // Each bar overlaps the screen edge it borders by 2 units.
+        let [l, r, t, b] = WIPE_BARS;
+        assert_eq!(l.0[0] + l.1[0] / 2.0, 2.0);
+        assert_eq!(r.0[0] - r.1[0] / 2.0, 510.0);
+        assert_eq!(t.0[1] - t.1[1] / 2.0, -2.0);
+        assert_eq!(b.0[1] + b.1[1] / 2.0, -446.0);
     }
 
     /// `draw_fader` itself: the node's colour follows the jump task (black, alpha from `fade_alpha`) and is clear when idle.

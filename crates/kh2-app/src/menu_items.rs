@@ -899,6 +899,17 @@ fn target_of(s: &crate::sora::Sora, max_mp: i32, magic: &crate::magic::MagicStat
 /// The party as the target page tests it: one `Target` per member, Sora first.
 struct Snapshot {
     targets: Vec<Target>,
+    /// Per member: down (KO). `FUN_001a15a0` has no check for it and the heal is a virtual call on the member's
+    /// object (`FUN_001a0140` through `+0x24c`), whose revive rule was not read, so the port offers a down member only
+    /// the boosts (they write the record) and never spends an item on an effect it does not apply [inferred].
+    ko: Vec<bool>,
+}
+
+impl Snapshot {
+    fn usable_on(&self, id: u16, row: usize) -> bool {
+        let down = self.ko.get(row).copied().unwrap_or(false);
+        self.targets.get(row).is_some_and(|t| can_use(id, t) && (!down || (0x114..=0x117).contains(&id)))
+    }
 }
 
 impl Game for Snapshot {
@@ -909,9 +920,9 @@ impl Game for Snapshot {
     /// member can use it, else the row's member decides (`FUN_002829f0`: the party object's row -> member id).
     fn would_help(&self, id: u16, row: usize) -> bool {
         if group_item(id) {
-            self.targets.iter().any(|t| can_use(id, t))
+            (0..self.targets.len()).any(|k| self.usable_on(id, k))
         } else {
-            self.targets.get(row).is_some_and(|t| can_use(id, t))
+            self.usable_on(id, row)
         }
     }
 }
@@ -1109,7 +1120,9 @@ pub(super) fn input(
             None => Target::default(),
         }];
         targets.extend(field.iter().take(2).map(|m| member_target(m, p)));
-        let snap = Snapshot { targets };
+        let mut ko = vec![false];
+        ko.extend(field.iter().take(2).map(|m| m.ko));
+        let snap = Snapshot { targets, ko };
         let (rows, exe) = (st.rows.clone(), st.exe.clone().unwrap_or_default());
         let fx = st.machine.as_mut().map(|m| m.press(key, &rows, &exe, &snap)).unwrap_or_default();
         for e in fx {
@@ -1962,22 +1975,38 @@ mod tests {
     fn the_target_check_is_per_member_and_a_group_item_needs_any_member() {
         let hurt = Target { vitals: Vitals { hp: 10, hp_max: 50, mp: 5, mp_max: 5, ..Default::default() }, record: None };
         let well = Target { vitals: Vitals { hp: 50, hp_max: 50, mp: 5, mp_max: 5, ..Default::default() }, record: None };
-        let snap = Snapshot { targets: vec![well, hurt, well] };
+        let snap = Snapshot { targets: vec![well, hurt, well], ko: vec![false; 3] };
         assert_eq!(snap.members(), 3);
         assert!(!snap.would_help(1, 0) && snap.would_help(1, 1) && !snap.would_help(1, 2), "Potion: only Donald is hurt");
         // Elixir-like group items ("All", row 0) help when any member can use them.
         let group = (0..0x200).find(|&i| group_item(i) && can_use(i, &hurt)).expect("a group item the check knows");
         assert!(snap.would_help(group, 0));
-        assert!(!Snapshot { targets: vec![well, well] }.would_help(group, 0));
+        assert!(!Snapshot { targets: vec![well, well], ko: vec![false; 2] }.would_help(group, 0));
     }
 
     #[test]
-    fn a_ko_member_is_left_alone_and_a_standing_one_is_healed() {
+    fn a_down_member_is_never_offered_an_item_that_would_be_spent_for_nothing() {
+        let down = Target { vitals: Vitals { hp: 0, hp_max: 50, mp: 5, mp_max: 5, ..Default::default() }, record: Some([0, 1, 1, 1]) };
+        let hurt = Target { vitals: Vitals { hp: 10, hp_max: 50, mp: 5, mp_max: 5, ..Default::default() }, record: Some([0, 1, 1, 1]) };
+        let snap = Snapshot { targets: vec![down, hurt], ko: vec![true, false] };
+        assert!(!snap.would_help(1, 0), "a Potion on a down member would be refused");
+        assert!(snap.would_help(1, 1));
+        assert!(snap.would_help(0x115, 0), "a boost writes the record whether he is up or not");
+        let group = (0..0x200).find(|&i| group_item(i) && can_use(i, &hurt)).expect("a group item");
+        assert!(snap.would_help(group, 0), "All still helps: the standing member needs it");
+        assert!(!Snapshot { targets: vec![down], ko: vec![true] }.would_help(group, 0), "All with only a down member is refused");
+    }
+
+    #[test]
+    fn a_ko_member_is_left_alone_and_a_standing_one_is_healed_by_the_items_amount() {
+        // Potion (id 1) heals ceil(max HP * amount / 100): FUN_001a12a0's (max * amount * 100 + 9999) / 10000.
         let mut v = Vitals { hp: 10, hp_max: 50, ..Default::default() };
         assert!(!member_effect(true, 1, 40, 12.0, &mut v));
         assert_eq!(v.hp, 10);
         assert!(member_effect(false, 1, 40, 12.0, &mut v));
-        assert!(v.hp > 10 && v.hp <= 50, "Potion raised HP to {}", v.hp);
+        assert_eq!(v.hp, 30, "10 + 50 * 40 %");
+        member_effect(false, 1, 40, 12.0, &mut v);
+        assert_eq!(v.hp, 50, "capped at the maximum");
     }
 
     #[test]

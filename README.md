@@ -23,10 +23,11 @@ Sora (continued):
 - **Camera:** the game's field camera model, look-around (the model fades), area camera types and collision.
 - **Magic (phase 1):** a Magic page in the command menu (T/G move, B back, J casts) with Fire, Blizzard, Thunder and Cure at level 1, their MP cost, charge and damage rows.
 - **HUD:** gauges, the command menu with its reaction capsule, text with commands, the area-name card, banners and message windows.
-- **Party:** Donald and Goofy follow, fight with the friend AI's target styles (including the class 16 chooser), and their Battle Style and use settings are set on the Customize page. Slot 3 is a reserve member, Auto Change swaps it in when a companion is knocked out, a jump record can rearrange the party and show the "Party Members have been switched" notice, and Donald and Goofy are targets of the field command's items.
-- **Summons:** the gauge, the Summon and Dismiss commands, and the Stitch, Genie, Chicken Little and Peter Pan scripts with their hosts (link break and routine, the item command, Stitch's limit records and heal, Genie's follow motions, Tinker Bell's revive). The summon limits run only from a harness aid, not from play.
-- **Menus:** the camp menu with Status, Abilities, Items, Equipment, Customize, Config, Party, Help, Save, Jiminy's Journal (world grid, story, characters, Heartless and Nobody lists with defeated counts, Ansem reports, limits, moogle list, quests, minigames, treasures, maps, album, and 3D models on the character and model pages) and the moogle's shop with synthesis, collection rewards and their texts. The BATTLE REPORT ending screen reads its counters from the save state.
-- **Story and events:** story flags with their side effects, NPC talk, save points and an event player (actors, camera, subtitles, fades, hiding and showing the event's objects), jump types 4 to 6 and the jump record's party words.
+- **Party:** Donald and Goofy follow, fight with the friend AI's target styles (including the class 16 chooser), and their Battle Style and use settings are set on the Customize page. Slot 3 is a reserve member, Auto Change swaps it in when a companion is knocked out, a jump record can rearrange the party and show the "Party Members have been switched" notice, Donald and Goofy are targets of the field command's items and have rows on the pause menu's Items and Equipment pages. Reserve members keep HP and MP across areas, regain HP with Auto Healing, and a partner's limit is offered as a reaction command by Auto Limit (the limit itself does not play yet).
+- **Summons:** the gauge, the Summon and Dismiss commands, and the Stitch, Genie, Chicken Little and Peter Pan scripts with their hosts (link break and routine, the item command, Stitch's limit records and heal, Genie's follow motions, Tinker Bell's revive sequence). The summon limits run only from a harness aid, not from play.
+- **Menus:** the camp menu with Status, Abilities, Items, Equipment, Customize, Config, Party, Help, Save, Jiminy's Journal (world grid, story, characters, Heartless and Nobody lists with defeated counts, Ansem reports, limits, moogle list, quests, minigames, treasures, maps, album, and 3D models on the character and model pages) and the moogle's shop with synthesis, collection rewards and their texts. The BATTLE REPORT ending screen reads its counters from the save state. Sora's knock-out opens the game-over list (Continue, Load Game, Quit, Retry), and Load Game opens the Load screen on the slot files the Save menu wrote.
+- **Townspeople:** their heads turn toward the player (head look-at controller).
+- **Story and events:** story flags with their side effects, NPC talk, save points and an event player (actors, camera, subtitles, fades, hiding and showing the event's objects, the keyhole wipe above the HUD), jump types 4 to 6 and the jump record's party words.
 - **Audio:** the game's sound driver, area music with the battle switch, voices and footsteps, and positional volume and pan. Mostly unlistened.
 
 Enemies:
@@ -35,8 +36,9 @@ Enemies:
 
 Not done yet:
 - Magic beyond level 1 (Magnet, Reflect, drive-form casts).
-- Summons: the limit task and limit scripts (summon limits are reachable only through a harness aid), the camera's FPS mode, Genie's model parts, the revive's music stop and message window.
-- Party: Auto Healing and Auto Limit.
+- Summons: the limit task and limit scripts (summon limits are reachable only through a harness aid), the camera's FPS mode, Genie's model parts, the revive's message window.
+- Party: the limit scene an accepted Auto Limit offer should start (the limit task body), and the hidden-member list.
+- Game over: the GAMEOVER scene (Sora keeps his fall pose), restoring the save body on Continue, and the Load screen's header art and entrance.
 - Other enemy types and some area-script group kinds.
 - Journal: the viewer plate's fade and lighting on the model pages, and the page-turn gap; the World Map row of the save point menu, and the world map itself.
 - BATTLE REPORT rows 1 and 2 (no source found), and the shop bits in the slot files.

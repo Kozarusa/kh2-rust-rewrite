@@ -307,6 +307,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.168 | `start_move_alt(Ovifi)` | 0x171460 | 112 | as start_move through the alternate setter (FUN_001b4ee0) |
 | 1.170 | `spawn_record_id(O) -> i` | 0x171b30 | 335 | halfword at +2 of the record at ((object +0x818) +8); role inferred |
 | 1.171 | `global_flag_4() -> b` | 0x173a28 | 371 | bit 2 of the global flag word at 0x35d268 |
+| 1.174 | `look_at_object(?, ?, f)` | 0x171940 | 683 | start the head look-at controller at object +0x4a0 toward an object over `frames` (FUN_001aece8, mode 2; needs the object's type-0x14 record; docs/events.md section 3 "Head look-at") |
 | 1.176 | `tween_to_zero(Oi)` | 0x1719a8 | 456 | ramp the value at object +0x4b0 to 0 over `frames` (FUN_001aec50) |
 | 1.179 | `set_word_100(Oi)` | 0x1713a8 | 29 | store at object +0x100 |
 | 1.180 | `set_word_104(Oi)` | 0x1713c0 | 23 | store at object +0x104 |

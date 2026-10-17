@@ -850,16 +850,13 @@ fn mission_party(
     mut slots: ResMut<PartySlots>,
     mgr: Res<Manager>,
     mut pending: Local<Vec<crate::struggle::MissionStart>>,
+    mut owner: Local<Option<String>>,
 ) {
-    pending.extend(starts.read().cloned());
     // The preset edits the loaded world's bytes: until `spawn_party` has entered the world for this area (it
     // does so in the same chain, but a mission can start on the area's very first tick, before it has run) the
     // bytes are still the previous world's, and `enter_world` would start the area over from the default
     // preset (WP-REG1: the Struggle kept Donald and Goofy on the field).
-    if pending.is_empty() || !area_entered(area.loaded.as_deref(), mgr.area.as_deref()) {
-        return;
-    }
-    for s in std::mem::take(&mut *pending) {
+    for s in drain_ready(&mut pending, &mut owner, starts.read().cloned(), area.loaded.as_deref(), mgr.area.as_deref()) {
         let Some(name) = area.loaded.as_deref() else { continue };
         let Some((ard, _)) = disc.read(&format!("ard/{name}.ard")).and_then(|f| kh2_ard::Area::parse(&f)) else { continue };
         let btl = ard.scripts.get("btl").map(Vec::as_slice).unwrap_or_default();
@@ -870,6 +867,27 @@ fn mission_party(
             info!("party: mission {:#x} {}: its btl program applies preset {p} (opcode 0xf, FUN_001a7330): slot bytes {before:02x?} -> {:02x?}", s.id, s.name, slots.bytes);
         }
     }
+}
+
+/// The queued mission starts that may apply now, in order: none until the party pass of the loaded area has run, and
+/// the queue is dropped when the loaded area changes (a start of the old area must not meet the next area's `btl`
+/// program). `owner` is the area the queue belongs to.
+fn drain_ready(
+    pending: &mut Vec<crate::struggle::MissionStart>,
+    owner: &mut Option<String>,
+    new: impl IntoIterator<Item = crate::struggle::MissionStart>,
+    loaded: Option<&str>,
+    built_for: Option<&str>,
+) -> Vec<crate::struggle::MissionStart> {
+    if owner.as_deref() != loaded {
+        pending.clear();
+        *owner = loaded.map(str::to_string);
+    }
+    pending.extend(new);
+    if pending.is_empty() || !area_entered(loaded, built_for) {
+        return Vec::new();
+    }
+    std::mem::take(pending)
 }
 
 /// Whether `spawn_party` has entered the loaded area's world (its record of the area is the loaded one).
@@ -2650,6 +2668,26 @@ mod tests {
         assert!(!area_entered(Some("tt04"), Some("tt02")), "the previous area's party");
         assert!(!area_entered(None, None));
         assert!(area_entered(Some("tt04"), Some("tt04")));
+    }
+
+    fn start(id: u32) -> crate::struggle::MissionStart {
+        crate::struggle::MissionStart { id, name: String::new(), orb_pool: false, triggers: Vec::new() }
+    }
+
+    /// WP-REG1b: starts wait for the area's party pass, drain in order exactly once, and a change of area drops them.
+    #[test]
+    fn mission_starts_drain_once_and_die_with_their_area() {
+        let (mut q, mut owner) = (Vec::new(), None);
+        assert!(drain_ready(&mut q, &mut owner, [start(1), start(2)], Some("tt04"), Some("tt02")).is_empty(), "stale party pass");
+        assert_eq!(q.len(), 2);
+        let ids: Vec<u32> = drain_ready(&mut q, &mut owner, [], Some("tt04"), Some("tt04")).iter().map(|s| s.id).collect();
+        assert_eq!(ids, vec![1, 2]);
+        assert!(q.is_empty());
+        assert!(drain_ready(&mut q, &mut owner, [], Some("tt04"), Some("tt04")).is_empty(), "exactly once");
+        // A start queued in tt04 never applies in tt02; a start of the new area's first tick does.
+        drain_ready(&mut q, &mut owner, [start(3)], Some("tt04"), Some("tt02"));
+        let ids: Vec<u32> = drain_ready(&mut q, &mut owner, [start(4)], Some("tt02"), Some("tt02")).iter().map(|s| s.id).collect();
+        assert_eq!(ids, vec![4]);
     }
 
     /// WP-MN8 B: the members asked for follow the slot bytes. A different member in a slot changes the key (a

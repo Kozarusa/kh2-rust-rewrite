@@ -1180,7 +1180,9 @@ Files: `party_rules.rs` (`mission_presets`), `party.rs` (`mission_party`).
   so Donald and Goofy fought in the Struggle (b_50 was won with no input). `mission_party` now keeps the start until
   `spawn_party` has built for the loaded area (`area_entered`). [inferred] The original runs the program before the area's
   objects exist, so the preset is always the last write; waiting for the area pass gives the same result. Test
-  `mission_presets_wait_for_the_area_party_pass`.
+  `mission_presets_wait_for_the_area_party_pass`. The queue (`drain_ready`) is dropped when the loaded area changes.
+  Coverage is the pure helpers (`area_entered`, `drain_ready`, test `mission_starts_drain_once_and_die_with_their_area`)
+  plus the accept scenario `struggle-b50-lose`; the system itself has no unit test.
 - **Gaps.** [inferred] The app's rebuild removes the standing members at once (the original never created them,
   since the program runs before the area's objects). The app does not apply opcode 0xf at area load (the
   area-script run, `ScriptRun::world_records`, is collected but no system applies it), so after a Struggle the

@@ -255,9 +255,8 @@ pub(crate) struct FriendHost<'a, 'b> {
 /// FUN_001141d0: the address of the first 0x80-byte entry of `entries` (the list at `at`) whose first
 /// word is `id`, 0 when none does.
 pub(crate) fn entry_address(at: u32, entries: &[u8], id: u32) -> u32 {
-    entries
-        .chunks_exact(0x80)
-        .position(|e| u32::from_le_bytes([e[0], e[1], e[2], e[3]]) == id)
+    (0..entries.len() / 0x80)
+        .find(|&k| entries[k * 0x80..k * 0x80 + 4] == id.to_le_bytes())
         .map_or(0, |k| at + 0x80 * k as u32)
 }
 
@@ -1033,10 +1032,10 @@ mod tests {
         let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else { return };
         let Some(elf) = crate::assets::Disc::open(&iso).read_root("SLUS_210.05") else { return };
         let ai = crate::party_battle::ClassAi::from_exe(&elf, 11).expect("class 11");
-        assert!(!ai.entries.is_empty() && ai.entries.len() % 0x80 == 0);
+        assert!(!ai.entries.is_empty() && ai.entries.len().is_multiple_of(0x80));
         let at = entry_address(ai.entries_at, &ai.entries, 111);
         eprintln!("class 11 entry 111 at {at:#x}, list {:#x}, {} entries", ai.entries_at, ai.entries.len() / 0x80);
-        assert!(at >= ai.entries_at && (at - ai.entries_at) % 0x80 == 0 && at != 0, "{at:#x}");
+        assert!(at >= ai.entries_at && (at - ai.entries_at).is_multiple_of(0x80) && at != 0, "{at:#x}");
         assert_eq!(entry_address(ai.entries_at, &ai.entries, 0xdead_beef), 0);
     }
 }

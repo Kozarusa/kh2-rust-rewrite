@@ -181,7 +181,7 @@ the player (FUN_00199970) at Vec3(-2.98, -0.10, -6.12)`, and the same for 0x25 a
   Twilight Town data and no enemy-class entity is type 0x10; b_44 counts 3 + 8 = 11.
 - **Removal.** `FUN_001993f8` (an object of the group is removed) calls `FUN_00199518` only for spawn kinds 0, 1 and 3 whose
   +0x588 bit 0x800 is set; the enemy classes' constructor `FUN_001b0270` (also the type-0x15 one, `FUN_001c1ec8`) sets that
-  bit, so it holds for every enemy [V]. A spawn-kind-2 member's removal never lowers the counter [V: `lVar1 == 2` skips it],
+  bit, so it holds for every enemy [V]. A spawn-kind-2 member's removal never lowers the counter [V: the compare with 2 skips it],
   so a group whose enemies are all kind 2 (tt04's b_00, b_21, b_44) never empties.
 - **The events.** `FUN_00199518`: counter - 1; at 0 `FUN_00197b70(3, header +2)` (group emptied); then, when the counters of
   all live groups (`FUN_00199580`: the 0x38-byte records from 0x1c8af90) sum to 0, `FUN_00197b70(2, 0)` (all emptied) [V].

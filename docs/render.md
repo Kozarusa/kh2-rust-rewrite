@@ -165,7 +165,7 @@ Maps carry up to two skies. `FUN_00149348` counts the BAR entries tagged `SK0` (
 container pairs after the map's own. `FUN_0015e6c0` builds a sky object (0x2f0 bytes, `FUN_0015f3a0`, position 0,
 scale `DAT_003794d8`) for SK0 when its count is exactly 1, then for SK1 when its count is exactly 1; `FUN_00146d88`
 stores them at draw manager +0x5370 (SK0) / +0x5374 (SK1). Only the SK0 object gets the extra setup in `FUN_0015f3a0`
-(`param_7 == 0`: a flag bit and the colour bytes 0x80,0x80,0x80,0xff at +0x1d0..); what they do was not traced.
+(the seventh argument is 0: a flag bit and the colour bytes 0x80,0x80,0x80,0xff at +0x1d0..); what they do was not traced.
 `kh2_model::map_file` now also returns `sky1`; the app spawns both skies at the origin.
 Disc test `skies_per_area_sk0_and_sk1` prints the entry counts per area.
 

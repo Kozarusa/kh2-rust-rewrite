@@ -422,7 +422,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 2.49 | `attack_word_10(pi) -> i` | 0x18e9d8 | 28 | word at +0x10 + 4 * i |
 | 2.50 | `limit_task_50(pppp)` | 0x18e9f8 | - | FUN_001b3468(a2, a0, a1, a3 != 0): the limit task starts an effect (FUN_001971c0, or the BAR's kind 0x16 entry) on a participant (WP-LT1: logged) |
 | 2.52 | `attack_word_110(p) -> i` | 0x18e618 | 13 | word at +0x110 |
-| 2.54 | `limit_spawn_thread(pp)` | 0x18ea28 | - | FUN_001b3c10(routine, &arg, 1) -> FUN_0016c8d8(limit task +0x34, 0, routine, args, 1): a child thread of the limit script's thread, like host 1.82 with tag 0 and no cleanup (WP-LT1: not run; WP-LT2: `runtime.rs` spawns it as `Request::Spawn` of the main thread, tag 0, no cleanup, one argument) |
+| 2.54 | `limit_spawn_thread(pp)` | 0x18ea28 | - | FUN_001b3c10(routine, &arg, 1) -> FUN_0016c8d8(limit task +0x34, 0, routine, args, 1): a child thread of the limit script's thread, like host 1.82 with tag 0 and no cleanup (WP-LT1: not run; WP-LT2: `runtime.rs` spawns it as `Request::Spawn` of the main thread, tag 0, no cleanup, one argument) P_EX330, P_EX350, P_AL010 and N_HB040_BTL also call it: they now get a real child thread (WP-LT2 review). |
 | 2.55 | `attack_word_38(p) -> i` | 0x18ea50 | 36 | word at +0x38 |
 | 2.56 | `ptr_b40_4_b(O) -> p` | 0x18de58 | 8 | the same function as ptr_b40_4 under a second number |
 | 2.59 | `limit_task_59(pppp) -> i` | 0x18eb00 | - | FUN_001b3c48 -> FUN_001db868(task + 0x18, a1, a3, 1, 30000, *(a2 + 4)) (WP-LT1: logged) |

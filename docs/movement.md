@@ -294,7 +294,7 @@ Station Heights** (tt04 and tt05 are both Sandlot, tt08 Station Plaza).
      | 7..15 | 0x32e444 / 0x32e44c | everything |
 
 * Party members have kind 0: their constructors `FUN_001746e0` and `FUN_00174800` clear bits 3..6 of
-  +0x600 (`puVar4[0x180] & 0xffffff87`). Other classes set theirs: `FUN_001a5178`, `FUN_001a51e8` kind 1
+  +0x600 (word 0x180 of the object masked with 0xffffff87). Other classes set theirs: `FUN_001a5178`, `FUN_001a51e8` kind 1
   (objects), `FUN_00189858` kind 3 (townspeople), `FUN_001d5c70`, `FUN_001d5cf8` a computed kind.
 * The solver `FUN_001632b8` then SKIPS a polygon whose attribute has bit 0x100000 (it tests it first, in all
   three of its passes). It is one-sided: `FUN_001625e0` takes the signed plane distance of the sphere centre

@@ -732,6 +732,7 @@ Done:
   writer of Donald's or Goofy's words was found (FUN_00187648 is reached only through FUN_00187d88, whose callers are host 0.75 and FUN_001d5048; host 0.75 has 16 call sites in two scripts,
   `00common.bdx` and `tt04.ard`; the equipment menu's writers, docs/menus.md 2.2, were not re-read) [inferred: the words stay as the boot default until the menu changes them]. Ported by a later package: `Progress` should take the 13 member
   words and the form words from this table at the point FUN_00194d78 runs (a boot-time default) instead of the two constants.
+  **(WP-RV3) Ported.** `progress::BootWeapons::read` runs event 7 of `00common.bdx` on a recording host (hosts 0.75 / 0.76 only) and `Progress::apply_party_weapons` writes the 13 member words and the form words (forms 5 = 71, 9 = 42; 1 to 4 = 0 change nothing) where the first word is 0; `DONALD_STAFF` / `GOOFY_SHIELD` are gone. Sora 41, Donald 75, Goofy 49 are read, not coded. Tests `the_boot_script_sets_the_member_and_form_weapon_words`, `boot_weapons_fill_empty_words_only`. Members 4 to 13 now carry their words too.
 
 Not done or approximated in stage 2:
 

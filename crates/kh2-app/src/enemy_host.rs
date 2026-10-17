@@ -475,7 +475,7 @@ impl BevyHost<'_> {
             Call::ObjVec860 { .. } | Call::ObjVec850 { .. } => missing(Value::Vec([0.0; 4]), "movement vectors of an object other than self"),
             Call::TargetPosition { .. } => approx(Value::Vec(to_game(self.env.player)), "the player's origin, not the lock-on part's point"),
             Call::SetTargetMode { .. } => stub(Value::None, "lock mode of a target record: nothing in the app consumes it"),
-            Call::FreeTarget { .. } => stub(Value::Bool(true), "target records are not pooled"),
+            Call::FreeTarget { .. } => stub(Value::Bool(true), "1.131 allocates: FUN_0018f3f8 files the record into the target pool; the app's records are not pooled"),
             Call::MotionDone { obj } if *obj == PLAYER => {
                 // A paired motion this object started on the player in this tick is a new motion
                 // that has not ended (the game's bit is read live; the player side's is a tick old).
@@ -509,7 +509,8 @@ impl BevyHost<'_> {
             // 1.34 (0x173888): DAT_0035e3a4 non-zero. The app's only events are the mission's layouts (WP-7E2).
             Call::EventActive => approx(Value::Bool(self.env.event_active), "only the mission's layout events exist in the app"),
             Call::GlobalFlag4 | Call::GlobalFlag80 => stub(Value::Bool(false), "global state set by other scripts"),
-            Call::GlobalByte301 => stub(Value::Int(0), "global byte at 0x35ea48 + 0x1e, role unknown"),
+            // 1.301 (0x1744f8 -> FUN_001abee8): the byte at 0x35ea48 + 0x1e is the NUL ending the frame-group string and nothing stores to it, so the answer is 0.
+            Call::GlobalByte301 => imp(Value::Int(0)),
             Call::Flag124 { .. } => imp(Value::Bool(self.env.flags124)),
             Call::Flag309 { obj } => approx(Value::Bool(*obj == PLAYER), "status bit 0x80: set for the party class"),
             Call::ProbeGround { dir, a, b, .. } => imp(Value::Int(self.probe(*dir, *a, *b))),
@@ -613,11 +614,11 @@ impl BevyHost<'_> {
             }
             Call::SetFlag768 { .. } => {
                 self.obj.flags768 = true;
-                stub(Value::None, "bit 6 of +0x768: no consumer in the app")
+                stub(Value::None, "bit 6 of +0x768 has no reader in the executable (mips_scan --load-off 0x768), so no behaviour is exact")
             }
             Call::ClearFlag768 { .. } => {
                 self.obj.flags768 = false;
-                stub(Value::None, "bit 6 of +0x768: no consumer in the app")
+                stub(Value::None, "bit 6 of +0x768 has no reader in the executable (mips_scan --load-off 0x768), so no behaviour is exact")
             }
             Call::SpawnAttached { id, .. } => {
                 self.obj.effects.push((*id).max(0) as u16);
@@ -848,7 +849,7 @@ impl BevyHost<'_> {
                         w.copy_from_slice(&v.to_le_bytes());
                     }
                 }
-                stub(Value::None, "bit arrays +0x47c / +0x480: cleared in the object memory; no reader of either array was traced")
+                stub(Value::None, "bit arrays +0x47c / +0x480 cleared in the object memory; their reader FUN_0019a6a0 (per-part collision switch) has no counterpart in the app")
             }
             // 1.53 bits_480_set (0x1728e8 -> FUN_0019ddb0 on object +0x47c): bit n of the word at +0x480 + 4 * (n >> 5).
             // M_EX940 sets bits 5 and 7 in its init. No reader was traced (see 1.54).
@@ -859,7 +860,7 @@ impl BevyHost<'_> {
                     let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]) | 1 << (n & 31);
                     w.copy_from_slice(&v.to_le_bytes());
                 }
-                stub(Value::None, "bit array +0x480: set in the object memory; no reader was traced")
+                stub(Value::None, "bit array +0x480 set in the object memory; its reader FUN_0019a6a0 (per-part collision switch) has no counterpart in the app")
             }
             // 1.97 obj_part_110 (0x173070): the address of the object's block at +0x110 (M_EX940 stores a float at
             // its +0xc in the init).

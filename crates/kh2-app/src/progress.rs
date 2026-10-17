@@ -142,10 +142,62 @@ pub const SORA: u16 = 1;
 /// spawn rows' NeoStatus 2 and 3).
 pub const DONALD: u16 = 2;
 pub const GOOFY: u16 = 3;
-/// The start weapons the app baseline equips on them (`went` of their movesets: item 75 -> `W_EX020`,
-/// item 49 -> `W_EX030`, docs/party.md "Weapons"; the original's writer of the words was not found).
-pub const DONALD_STAFF: u16 = 75;
-pub const GOOFY_SHIELD: u16 = 49;
+
+/// The weapon words the game object's constructor leaves in the party records and form records at every boot:
+/// `00common.bdx` entry event 7 (routine R00c1) calls host 0.75 (`set_member_weapons`, `FUN_0016d9d8` -> `FUN_00187d88`)
+/// once per member and host 0.76 (`set_form_weapon`, `FUN_0016da08`) for the forms, and `FUN_00194d78` runs it from
+/// `FUN_00105638`. Read from the user's disc by running that event on a recording host; nothing is copied into the app.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BootWeapons {
+    /// `(member, word at record +0, word at +2)` in call order.
+    pub members: Vec<(u16, u16, u16)>,
+    /// `(form, word at the form record's +0)` in call order.
+    pub forms: Vec<(u8, u16)>,
+}
+
+/// A host for `00common.bdx` event 7 that records hosts 0.75 and 0.76 and answers 0 to everything else.
+struct BootHost(BootWeapons);
+
+impl kh2_bdx::Host for BootHost {
+    fn call(&mut self, c: &kh2_bdx::Call) -> kh2_bdx::Value {
+        let (id, args): ((u16, u16), Vec<i32>) = match c {
+            kh2_bdx::Call::Func { group, index, args } => ((*group, *index), args.iter().map(|a| a.int()).collect()),
+            kh2_bdx::Call::Unknown { group, index, args } => ((*group, *index), args.iter().map(|&a| a as i32).collect()),
+            _ => return kh2_bdx::Value::Int(0),
+        };
+        match (id, args.as_slice()) {
+            ((0, 75), &[member, w0, w1]) => self.0.members.push((member as u16, w0 as u16, w1 as u16)),
+            ((0, 76), &[form, w0]) => self.0.forms.push((form as u8, w0 as u16)),
+            _ => {}
+        }
+        kh2_bdx::Value::Int(0)
+    }
+}
+
+impl BootWeapons {
+    /// Runs event 7 (as a thread, to its end) of the disc's `00common.bdx` and keeps the weapon words it sets. `None` when the script is unreadable
+    /// or the event sets nothing.
+    pub fn read(disc: &Disc) -> Option<BootWeapons> {
+        let prog = kh2_bdx::Program::parse(&disc.read("00common.bdx")?).ok()?;
+        let mut rt = kh2_bdx::Runtime::new(prog);
+        if let Some(table) = disc.read_root("SLUS_210.05").and_then(|exe| kh2_bdx::HostTable::from_exe(&exe)) {
+            rt.set_host_table(table);
+        }
+        let mut host = BootHost(BootWeapons::default());
+        // Event 7 waits once (host 0.14) before its calls, so it runs as a thread until it ends (`FUN_00194d78`).
+        let ran = rt.start_thread(0, 7, &[]);
+        for _ in 0..64 {
+            if rt.thread_done() {
+                break;
+            }
+            rt.update(&mut host);
+        }
+        if !ran || host.0.members.is_empty() {
+            return None;
+        }
+        Some(host.0)
+    }
+}
 
 /// What the rules read of one item row (`item`, 0x18 bytes, found by `FUN_001a66e8`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -285,6 +337,8 @@ pub struct Progress {
     pub source: Source,
     /// What the app baseline added on top of the new game (empty with `KH2_STATE`).
     pub baseline: Vec<String>,
+    /// The boot weapon words read from `00common.bdx` (empty without a disc); `apply_party_weapons` writes them.
+    pub boot_weapons: Arc<BootWeapons>,
     /// Sora's Dodge Roll growth level (0 = not learned). The USA disc has no Dodge Roll ability item
     /// (docs/final-mix.md: the Final Mix game has it as growth slot 4), so the level is an app field
     /// beside the save block. 0 in the new game; the app baseline sets 1 (docs/progress.md).
@@ -488,7 +542,7 @@ impl Progress {
         let mut block = vec![0u8; off::LEN];
         let n = bytes.len().min(off::LEN);
         block[..n].copy_from_slice(&bytes[..n]);
-        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT], story: StoryHandle::default(), new_seen: Vec::new(), record_bits: Vec::new(), moogle: Moogle::default(), shop_seen: [0; 4], shop_visits: 0, journal_seen: Default::default(), minigames: Default::default(), enemy_kills: Default::default(), reaction_uses: Default::default(), limit_best: Default::default(), report: [0; REPORT_WORDS] }
+        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), boot_weapons: Arc::default(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT], story: StoryHandle::default(), new_seen: Vec::new(), record_bits: Vec::new(), moogle: Moogle::default(), shop_seen: [0; 4], shop_visits: 0, journal_seen: Default::default(), minigames: Default::default(), enemy_kills: Default::default(), reaction_uses: Default::default(), limit_best: Default::default(), report: [0; REPORT_WORDS] }
     }
 
     // --- story flags ------------------------------------------------------------------------
@@ -1611,7 +1665,7 @@ impl Progress {
             block: vec![0; off::LEN],
             items,
             source: Source::NewGame,
-            baseline: Vec::new(),
+            baseline: Vec::new(), boot_weapons: Arc::default(),
             dodge_roll: 0,
             wallet: 0,
             config: [OPTION_DEFAULT, GAME_MODE_DEFAULT],
@@ -1783,21 +1837,27 @@ impl Progress {
         self.baseline = added;
     }
 
-    /// WP-F1 item 6, WP-PG1: Donald's staff (item 75) and Goofy's shield (item 49) in their weapon words
-    /// (record +0, hand 0: `FUN_0016ee98` reads it for the hand object) when those are 0, so the members
-    /// fight with their weapons shown. The original's new game (`FUN_00187b38`, `FUN_001c0cb0(0)`) leaves
-    /// both words 0: no `plrp` row of either `Id` (0, 1) carries a weapon item and no writer of the words
-    /// was found (docs/party.md, docs/progress.md Gaps), so this is an app entry like the spare Kingdom
-    /// Keys. Returns what it added (also run for `KH2_STATE` files that carry no `block`, which cannot set
-    /// the words themselves).
+    /// WP-RV3: the boot weapon words of the party records and form records (`BootWeapons`: `00common.bdx` event 7, host 0.75 /
+    /// 0.76) where a record's first word is 0, so every member fights with the weapon the game object's constructor gives him.
+    /// A state with a `block` keeps its words. The new game itself leaves them 0 (no `plrp` row carries a weapon item, docs/party.md).
+    /// Returns what it set (also run for `KH2_STATE` files that carry no `block`).
     pub fn apply_party_weapons(&mut self) -> Vec<String> {
+        let table = self.boot_weapons.clone();
         let mut added = Vec::new();
-        for (member, item) in [(DONALD, DONALD_STAFF), (GOOFY, GOOFY_SHIELD)] {
+        for &(member, w0, w1) in &table.members {
             if let Some(r) = Self::member_off(member)
                 && self.u16_at(r + rec::WEAPONS) == 0
+                && w0 != 0
             {
-                self.set_u16(r + rec::WEAPONS, item);
-                added.push(format!("member {member} weapon item {item} equipped"));
+                self.set_u16(r + rec::WEAPONS, w0);
+                self.set_u16(r + rec::WEAPONS + 2, w1);
+                added.push(format!("member {member} weapon item {w0} equipped"));
+            }
+        }
+        for &(form, w) in &table.forms {
+            if w != 0 && self.form(form).weapon == 0 {
+                self.set_form_weapon(form, w);
+                added.push(format!("form {form} weapon item {w}"));
             }
         }
         added
@@ -2203,6 +2263,11 @@ impl Progress {
             warn!("progress: 00progress.bin not readable; story flags set without their side effects");
         }
         let mut p = Progress::new_game(index.clone(), &plrp);
+        let boot = Arc::new(BootWeapons::read(disc).unwrap_or_else(|| {
+            warn!("progress: 00common.bdx event 7 not readable; the party starts without weapons");
+            BootWeapons::default()
+        }));
+        p.boot_weapons = boot.clone();
         p.story().effects = effects.clone();
         match std::env::var("KH2_STATE") {
             Ok(path) if !path.is_empty() => match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|s| p.apply_json(&s)) {
@@ -2217,6 +2282,7 @@ impl Progress {
                     // A file that failed half way is dropped as a whole.
                     warn!("progress: KH2_STATE={path}: {e}; using the new game and the app baseline");
                     p = Progress::new_game(index, &plrp);
+                    p.boot_weapons = boot;
                     p.story().effects = effects;
                     p.apply_baseline(std::env::var("KH2_ABILITY_START").as_deref() != Ok("data"));
                 }
@@ -3950,17 +4016,60 @@ mod tests {
         }
         // The staff and the shield are a staff and a shield item of the table (types 3 and 4).
         let kind = |id: u16| tb.items.iter().find(|i| i.id == id).map(|i| i.r#type);
-        assert_eq!((kind(DONALD_STAFF), kind(GOOFY_SHIELD)), (Some(3), Some(4)));
+        let boot = disc_boot_weapons().expect("00common.bdx event 7");
+        p.boot_weapons = Arc::new(boot);
+        let (staff, shield) = (p.boot_weapons.members[1].1, p.boot_weapons.members[2].1);
+        assert_eq!((kind(staff), kind(shield)), (Some(3), Some(4)));
         let added = p.apply_party_weapons();
-        assert_eq!(added.len(), 2);
-        assert_eq!(p.member(DONALD).unwrap().weapons[0], DONALD_STAFF);
-        assert_eq!(p.member(GOOFY).unwrap().weapons[0], GOOFY_SHIELD);
+        assert!(added.len() >= 2);
+        assert_eq!(p.member(DONALD).unwrap().weapons[0], staff);
+        assert_eq!(p.member(GOOFY).unwrap().weapons[0], shield);
         assert!(p.apply_party_weapons().is_empty(), "a nonzero word is kept");
         // Sora's record is untouched by the party entry.
         let mut q = Progress::new_game(p.items.clone(), &tb.plrp);
-        let sora = q.sora();
+        q.boot_weapons = p.boot_weapons.clone();
+        let mut sora = q.sora();
         q.apply_party_weapons();
-        assert_eq!(q.sora(), sora);
+        sora.weapons = [41, 0];
+        assert_eq!(q.sora(), sora, "only Sora's weapon word (41 from the boot table) differs");
+    }
+
+    fn disc_boot_weapons() -> Option<BootWeapons> {
+        let iso = crate::assets::iso_path().ok().filter(|p| p.exists())?;
+        BootWeapons::read(&Disc::open(&iso))
+    }
+
+    /// WP-RV3: running `00common.bdx` event 7 on the disc gives the 13 member words (Sora 41, Donald 75, Goofy 49 ...) and the
+    /// form words (forms 1 to 4 = 0, 5 = 71, 9 = 42) of docs/bdx.md host 0.75 / 0.76.
+    #[test]
+    fn the_boot_script_sets_the_member_and_form_weapon_words() {
+        let Some(b) = disc_boot_weapons() else { return };
+        let ids: Vec<u16> = b.members.iter().map(|m| m.0).collect();
+        assert_eq!(ids, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+        let w0: Vec<u16> = b.members.iter().map(|m| m.1).collect();
+        assert_eq!(w0, [41, 75, 49, 81, 54, 55, 72, 62, 59, 60, 61, 74, 73]);
+        assert_eq!(b.members[5].2, 80, "member 6 has a second word");
+        for f in [1, 2, 3, 4] {
+            assert!(b.forms.contains(&(f, 0)), "form {f}");
+        }
+        assert!(b.forms.contains(&(5, 71)) && b.forms.contains(&(9, 42)), "{:?}", b.forms);
+    }
+
+    /// WP-RV3: `apply_party_weapons` writes both words of a member whose first word is 0, the form words where 0, and keeps a
+    /// word that is already set (a saved state).
+    #[test]
+    fn boot_weapons_fill_empty_words_only() {
+        let items = Arc::new(ItemIndex::new(&[], &[], &[]));
+        let mut p = Progress::from_block(&vec![0; off::LEN], items);
+        p.boot_weapons = Arc::new(BootWeapons { members: vec![(2, 75, 0), (3, 49, 0), (6, 55, 80)], forms: vec![(5, 71), (9, 42), (1, 0)] });
+        p.set_u16(Progress::member_off(3).unwrap() + rec::WEAPONS, 7);
+        let added = p.apply_party_weapons();
+        assert_eq!(added.len(), 4);
+        assert_eq!(p.member(DONALD).unwrap().weapons, [75, 0]);
+        assert_eq!(p.member(GOOFY).unwrap().weapons[0], 7, "a nonzero word is kept");
+        assert_eq!(p.member(6).unwrap().weapons, [55, 80]);
+        assert_eq!((p.form(5).weapon, p.form(9).weapon, p.form(1).weapon), (71, 42, 0));
+        assert!(p.apply_party_weapons().is_empty());
     }
 
     #[test]

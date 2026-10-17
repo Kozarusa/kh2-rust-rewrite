@@ -30,6 +30,7 @@ use kh2_image::text::Style;
 
 use super::item_pages::{fill, label, tokens_of};
 use super::{at, close_brightness, dim_alpha, menu_sound, Menu, Phase, CLOSE_FRAMES, DIM_BRIGHTNESS};
+use crate::area_jump::Dest;
 use crate::assets::{CurrentArea, Disc};
 use crate::audio::PlaySe;
 use crate::menu_gfx::{self, MenuScene, Node};
@@ -54,6 +55,15 @@ mod msg {
     pub const OVERWRITING: u32 = 0xa92;
     pub const LV: u32 = 0x39fc;
     pub const MUNNY: u32 = 0x37db;
+    /// Kind 2's own texts (docs/menus.md 18.6): the header "Load" (`FUN_00258e80`: `FUN_0029d1d0(0, 0x8a7f, 0)`), the file
+    /// list's help "Select file to load." (`FUN_0025a858`, page 0xb: `FUN_0025ed20(0x8aa2, 1)`), the loading box (page 0xb's
+    /// row choice: `FUN_002bc510(0x8a91, ..)`, page 0xf), the failure box (`FUN_00259e88`: `0x8a8d`, page 6) and an empty
+    /// row's "There is no data." (`0x8a9f` [inferred: the row's draw was not read]).
+    pub const LOAD: u32 = 0xa7f;
+    pub const HELP_LOAD: u32 = 0xaa2;
+    pub const LOADING: u32 = 0xa91;
+    pub const LOAD_FAILED: u32 = 0xa8d;
+    pub const NO_DATA: u32 = 0xa9f;
 }
 
 /// Animation groups of `save.2ld` sequence 0 (every layer of the three layouts and every object the pages build; the
@@ -164,6 +174,10 @@ pub enum Stage {
     Question,
     /// The information box while the file is written.
     Writing,
+    /// Load mode: the information box while the file is read (kind 2 page 0xf, states 0x32..0x34).
+    Reading,
+    /// Load mode: the failure box (kind 2 page 6); a confirm or cancel returns to the file list.
+    Failed,
     Closing,
 }
 
@@ -196,6 +210,14 @@ pub enum Action {
     /// Menu kind 1's second row (the world point's; `FUN_00257e70`: a Yes/No question, then `FUN_002580b8` and page 0x14,
     /// which leaves the area): not ported.
     SecondRow,
+    /// Load mode: read this slot now (page 0xb's row choice goes straight to the loading box, no question).
+    Read(usize),
+    /// Load mode: the row holds no file; nothing happens (`FUN_0023ddb0` is 0).
+    Empty,
+    /// Load mode: leave the file list without loading (the list's cancel, which the original sends to the slot page and out).
+    Leave,
+    /// Load mode: the failure box is acknowledged.
+    FailedOk,
 }
 
 /// The state machine apart from the scene (tested without a disc).
@@ -212,12 +234,17 @@ pub struct Flow {
     pub row: usize,
     /// Menu kind 1: after a write the file list shows again (`FUN_00257880` state 0x2b sets page 0xb).
     pub relist: bool,
+    /// Menu kind 2, the Load screen (docs/menus.md 18.6): no pointer list, no question, a row reads its file.
+    pub load: bool,
 }
 
 impl Flow {
     /// A press in the current stage. `occupied[i]`: slot `i` holds a file.
     pub fn press(&mut self, p: Press, occupied: &[bool; SLOTS]) -> Action {
         let rows = self.rows.max(1);
+        if self.load {
+            return self.press_load(p, occupied);
+        }
         match (self.stage, p) {
             // The top list moves only with more than one row; it wraps [inferred: the list widget `FUN_002967b8(list, 4, 1)`].
             (Stage::Top, Press::Up | Press::Down) if rows > 1 => {
@@ -257,6 +284,27 @@ impl Flow {
                     Action::Declined
                 }
             }
+            _ => Action::None,
+        }
+    }
+
+    /// A press in the Load screen: the file list (kind 2 page 0xb, `FUN_00259b78`) and the failure box (page 6, `FUN_00259288`).
+    fn press_load(&mut self, p: Press, occupied: &[bool; SLOTS]) -> Action {
+        match (self.stage, p) {
+            (Stage::Files, Press::Up) => {
+                self.file = (self.file + SLOTS - 1) % SLOTS;
+                Action::Cursor
+            }
+            (Stage::Files, Press::Down) => {
+                self.file = (self.file + 1) % SLOTS;
+                Action::Cursor
+            }
+            (Stage::Files, Press::Cancel) => Action::Leave,
+            (Stage::Files, Press::Confirm) => {
+                self.slot = self.file;
+                if occupied[self.file] { Action::Read(self.file) } else { Action::Empty }
+            }
+            (Stage::Failed, Press::Confirm | Press::Cancel) => Action::FailedOk,
             _ => Action::None,
         }
     }
@@ -340,9 +388,83 @@ pub struct SaveMenu {
     request: Option<i32>,
     /// The open menu is kind 1 with this mode.
     point: Option<i32>,
+    /// The Load screen (menu kind 2) is requested; opened by the next `input`.
+    load_request: bool,
+    /// What the file read produced; moved to `outcome` when the menu has closed.
+    pending: Option<Loaded>,
+    /// How the last Load screen ended; taken by whoever requested it (`take_outcome`).
+    outcome: Option<LoadOutcome>,
+}
+
+/// What a successful load gives the caller: the area the slot was written in and Sora's HP and MP from its party record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Loaded {
+    pub dest: Dest,
+    /// HP = the smaller of record `+4` and `+5`, MP = the smaller of `+6` and `+7` (the rule `FUN_0019f920` follows when it
+    /// rebuilds a status from the record, docs/menus.md 26.3); `None` when the record holds no maximum (an empty block).
+    pub hp_mp: Option<(i32, i32)>,
+}
+
+/// The end of a Load screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoadOutcome {
+    /// The state was replaced; enter the area (`FUN_00103b38`'s mode 2).
+    Loaded(Loaded),
+    /// The file list was cancelled; nothing changed.
+    Left,
+}
+
+/// The destination of a slot's area code: only Twilight Town exists in the app, and the entrance is 0 because the slot file
+/// does not record the entrance (the original's save header holds it at `0x33e86c..`; [inferred] entrance 0, gap in 18.6).
+pub fn dest_of(area_code: &str) -> Result<Dest, String> {
+    let world = area_code.get(..2).ok_or_else(|| format!("area code {area_code:?} is too short"))?;
+    if world != "tt" {
+        return Err(format!("area {area_code}: the app has Twilight Town only"));
+    }
+    let area = crate::area::area_number(area_code).ok_or_else(|| format!("area code {area_code:?} has no number"))?;
+    Ok(Dest::new(crate::area::TWILIGHT_TOWN, area, 0))
+}
+
+/// Reads slot `n` of `dir` and applies it to a copy of `live`. Nothing of `live` changes: the caller replaces its state only
+/// on `Ok`, so an empty, unreadable or malformed file can never corrupt the running game.
+pub fn load_slot(dir: &std::path::Path, n: usize, live: &Progress) -> Result<(Progress, Loaded), String> {
+    let text = std::fs::read_to_string(progress::slot_path(dir, n)).map_err(|e| format!("slot {} is not readable: {e}", n + 1))?;
+    let info = Progress::slot_info(&text).ok_or_else(|| format!("slot {} has no row data (not a slot file)", n + 1))?;
+    let dest = dest_of(&info.area)?;
+    let mut next = live.clone();
+    next.apply_json(&text).map_err(|e| format!("slot {}: {e}", n + 1))?;
+    let m = next.sora();
+    let hp_mp = (m.hp_max > 0).then(|| (i32::from(m.hp.min(m.hp_max)), i32::from(m.mp.min(m.mp_max))));
+    Ok((next, Loaded { dest, hp_mp }))
 }
 
 impl SaveMenu {
+    /// The Load screen (menu kind 2, docs/menus.md 18.6) from the game-over list's "Load Game" row (`FUN_00254a08(2)`).
+    /// False when the menu cannot open (no `save.2ld`, or a menu is up).
+    pub fn request_load(&mut self) -> bool {
+        if !self.loaded || self.is_open() || self.request.is_some() || self.load_request {
+            return false;
+        }
+        self.load_request = true;
+        true
+    }
+
+    /// How the Load screen ended, once (None while it is open or when none was requested).
+    pub fn take_outcome(&mut self) -> Option<LoadOutcome> {
+        self.outcome.take()
+    }
+
+    /// Test hook: the Load screen has ended with this outcome.
+    #[cfg(test)]
+    pub fn end_load_for_test(&mut self, o: LoadOutcome) {
+        self.outcome = Some(o);
+    }
+
+    /// A Load screen is requested or open (the caller waits for `take_outcome`).
+    pub fn load_busy(&self) -> bool {
+        self.load_request || self.flow.load && self.is_open()
+    }
+
     /// While the menu is up it owns the pad and the field is frozen.
     pub fn is_open(&self) -> bool {
         self.flow.stage != Stage::Closed
@@ -528,9 +650,22 @@ fn input(
         if menu.phase == Phase::Closed && !pause.band {
             let rows = if save.point_rows.is_empty() { vec![msg::SAVE] } else { rows_for_mode(&save.point_rows, mode) };
             let area_name = area.name.clone();
-            open(&mut save, &mut scene, &mut se, &area_name, rows, Some(mode));
+            open(&mut save, &mut scene, &mut se, &area_name, rows, Some(mode), false);
         } else {
             info!("menu: save point menu refused (menu {:?}, band {})", menu.phase, pause.band);
+        }
+        keys.reset_all();
+        return;
+    }
+    if save.flow.stage == Stage::Closed && save.load_request {
+        // The game-over list's "Load Game": menu kind 2. The caller froze the field itself; only a menu already up refuses.
+        save.load_request = false;
+        if menu.phase == Phase::Closed && !pause.band {
+            let area_name = area.name.clone();
+            open(&mut save, &mut scene, &mut se, &area_name, Vec::new(), None, true);
+        } else {
+            info!("menu: load refused (menu {:?}, band {})", menu.phase, pause.band);
+            save.outcome = Some(LoadOutcome::Left);
         }
         keys.reset_all();
         return;
@@ -545,7 +680,7 @@ fn input(
             );
             if menu.phase == Phase::Closed && !pause.band && free && !super::start_locked(mission.as_deref()) {
                 let area_name = area.name.clone();
-                open(&mut save, &mut scene, &mut se, &area_name, vec![msg::SAVE], None);
+                open(&mut save, &mut scene, &mut se, &area_name, vec![msg::SAVE], None, false);
             } else {
                 info!("menu: save refused (menu {:?}, band {}, free {free})", menu.phase, pause.band);
             }
@@ -564,7 +699,7 @@ fn input(
     keys.reset_all();
     mouse.reset_all();
     let occupied: [bool; SLOTS] = std::array::from_fn(|i| save.slots[i].is_some());
-    let ready = matches!(save.flow.stage, Stage::Top | Stage::Files | Stage::Question);
+    let ready = matches!(save.flow.stage, Stage::Top | Stage::Files | Stage::Question | Stage::Failed);
     if !ready {
         return;
     }
@@ -640,12 +775,38 @@ fn input(
             menu_sound::play(&mut se, menu_sound::CANCEL);
             close(&mut save, &mut scene);
         }
+        Action::Read(slot) => {
+            menu_sound::play(&mut se, crate::menu_status::CONFIRM);
+            save.flow.slot = slot;
+            start_reading(&mut save, &mut scene);
+        }
+        Action::Empty => {
+            // `FUN_00259b78`: `FUN_0023ddb0(slot)` is 0, so no message and no page change.
+            menu_sound::play(&mut se, menu_sound::REFUSED);
+            info!("menu: load slot {} holds no file: nothing happens (FUN_0023ddb0)", save.flow.file + 1);
+        }
+        Action::Leave => {
+            menu_sound::play(&mut se, menu_sound::CANCEL);
+            info!("menu: load cancelled on the file list (page 0xb result -2)");
+            save.pending = None;
+            close(&mut save, &mut scene);
+        }
+        Action::FailedOk => {
+            menu_sound::play(&mut se, menu_sound::CANCEL);
+            save.flow.stage = Stage::Files;
+            save.frames = 0;
+            let ids = [save.nodes.boxn, save.nodes.box_text];
+            hide(&mut scene, &ids);
+            show_files(&save, &mut scene);
+        }
     }
 }
 
 /// Opens the menu: the dim, the frame's enter animations, the pointer list.
-fn open(save: &mut SaveMenu, scene: &mut MenuScene, se: &mut MessageWriter<PlaySe>, area: &str, rows: Vec<u32>, point: Option<i32>) {
-    save.flow = Flow { stage: Stage::Opening, rows: rows.len(), relist: point.is_some(), ..Flow::default() };
+fn open(save: &mut SaveMenu, scene: &mut MenuScene, se: &mut MessageWriter<PlaySe>, area: &str, rows: Vec<u32>, point: Option<i32>, load: bool) {
+    save.flow = Flow { stage: Stage::Opening, rows: rows.len(), relist: point.is_some(), load, ..Flow::default() };
+    save.pending = None;
+    save.outcome = None;
     save.rows = rows;
     save.point = point;
     save.frames = 0;
@@ -681,8 +842,15 @@ fn open(save: &mut SaveMenu, scene: &mut MenuScene, se: &mut MessageWriter<PlayS
     scene.nodes[n.area].label = label;
     scene.nodes[n.area].visible = true;
     save.slots = read_slots(&save.dir);
-    show_top(save, scene);
+    if !load {
+        show_top(save, scene);
+    }
     menu_sound::play(se, menu_sound::OPEN);
+    if load {
+        // Kind 2 starts on page 1, the memory card slot list (`FUN_00258bf0`); the port has no card, so it goes on to the check.
+        info!("menu: load open (menu kind 2, dir {})", save.dir.display());
+        return;
+    }
     match point {
         Some(mode) => info!(
             "menu: save open (menu kind 1 mode {mode} from a save point, rows {:x?}, dir {})",
@@ -801,7 +969,7 @@ fn start_checking(save: &mut SaveMenu, scene: &mut MenuScene) {
     scene.nodes[n.tab].visible = true;
     scene.nodes[n.tab].pos = pos::TAB;
     scene.set_group(n.tab, g::TAB);
-    let l = text_label(scene, msg::SAVE, at::ROW_FONT, at::ROW_SIZE, at::ROW_SELECTED, 0, pos::TAB_LABEL);
+    let l = text_label(scene, if save.flow.load { msg::LOAD } else { msg::SAVE }, at::ROW_FONT, at::ROW_SIZE, at::ROW_SELECTED, 0, pos::TAB_LABEL);
     scene.nodes[n.tab_text].label = l;
     scene.nodes[n.tab_text].visible = true;
     let l = slot_message(scene, msg::CHECKING, pos::BOX_TEXT, 15.0);
@@ -882,7 +1050,8 @@ fn show_files(save: &SaveMenu, scene: &mut MenuScene) {
                 }
             }
             None => {
-                let new = label(&text, tokens_of(&text, msg::NEW_FILE), 1, 14.0, color, 2, [256.0, base_y + 22.0]);
+                let empty = if save.flow.load { msg::NO_DATA } else { msg::NEW_FILE };
+                let new = label(&text, tokens_of(&text, empty), 1, 14.0, color, 2, [256.0, base_y + 22.0]);
                 scene.nodes[fn_.area].label = Some(new);
                 scene.nodes[fn_.area].visible = true;
                 for id in [fn_.lv, fn_.munny, fn_.time, fn_.logo] {
@@ -900,7 +1069,24 @@ fn show_files(save: &SaveMenu, scene: &mut MenuScene) {
         scene.set_group(h, g::HAND);
     }
     scene.text = Some(text);
-    set_help(save, scene, msg::HELP_FILES);
+    set_help(save, scene, if save.flow.load { msg::HELP_LOAD } else { msg::HELP_FILES });
+}
+
+/// Load mode: the loading box (`0x8a91`) while the file is read.
+fn start_reading(save: &mut SaveMenu, scene: &mut MenuScene) {
+    save.flow.stage = Stage::Reading;
+    save.frames = 0;
+    let l = slot_message(scene, msg::LOADING, pos::BOX_TEXT, 15.0);
+    show_box(save, scene, l);
+    info!("menu: load slot {} reading (page 0xf, FUN_00259e88 states 0x32..0x34)", save.flow.slot + 1);
+}
+
+/// Load mode: the failure box (`0x8a8d`).
+fn start_failed(save: &mut SaveMenu, scene: &mut MenuScene) {
+    save.flow.stage = Stage::Failed;
+    save.frames = 0;
+    let l = slot_message(scene, msg::LOAD_FAILED, pos::BOX_TEXT, 15.0);
+    show_box(save, scene, l);
 }
 
 /// The overwrite question over the list.
@@ -954,7 +1140,7 @@ fn tick(
     mut save: ResMut<SaveMenu>,
     mut scene: ResMut<MenuScene>,
     real: Res<Time<Real>>,
-    (progress, tags): (Option<Res<Progress>>, Res<super::new_tags::NewTags>),
+    (mut progress, mut tags): (Option<ResMut<Progress>>, ResMut<super::new_tags::NewTags>),
     mut se: MessageWriter<PlaySe>,
 ) {
     if !save.loaded || save.flow.stage == Stage::Closed {
@@ -969,6 +1155,40 @@ fn tick(
                 info!("menu: save open animation done after {} ticks", save.frames);
                 save.flow.stage = Stage::Top;
                 set_layout(&save, &mut scene, 1);
+                if save.flow.load {
+                    // Kind 2: page 1 (the card slots) is skipped, page 2 checks the card.
+                    start_checking(&mut save, &mut scene);
+                }
+            }
+        }
+        Stage::Reading if save.frames >= WRITE_TICKS => {
+            let slot = save.flow.slot;
+            let result = match progress.as_deref() {
+                Some(live) => load_slot(&save.dir, slot, live),
+                None => Err("no game state to load into".to_string()),
+            };
+            match result {
+                Ok((next, loaded)) => {
+                    if let Some(p) = progress.as_deref_mut() {
+                        *p = next;
+                        tags.set_seen_words(p.new_seen());
+                    }
+                    info!(
+                        "menu: load slot {} read: world {} area {} entrance {}, HP/MP {:?} (FUN_00259e88 state 0x34: sound kind 0xd, FUN_001cb118, page 0x14)",
+                        slot + 1,
+                        loaded.dest.world,
+                        loaded.dest.area,
+                        loaded.dest.entrance,
+                        loaded.hp_mp
+                    );
+                    menu_sound::play(&mut se, WRITTEN);
+                    save.pending = Some(loaded);
+                    close(&mut save, &mut scene);
+                }
+                Err(why) => {
+                    warn!("menu: load slot {} failed: {why} (FUN_00259e88 shows 0x8a8d on page 6)", slot + 1);
+                    start_failed(&mut save, &mut scene);
+                }
             }
         }
         Stage::Checking if save.frames >= CHECK_TICKS => {
@@ -1011,6 +1231,13 @@ fn tick(
             scene.dim = dim_alpha(close_brightness(save.frames));
             if save.frames >= CLOSE_FRAMES {
                 save.flow.stage = Stage::Closed;
+                if save.flow.load {
+                    // The kind ends (`FUN_00258cf8`: `FUN_001038a0`); a read file leaves with mode 2 (`FUN_0025a158`:
+                    // `FUN_00103b18(2)`), a cancel leaves with nothing changed.
+                    save.outcome = Some(save.pending.take().map_or(LoadOutcome::Left, LoadOutcome::Loaded));
+                    save.flow.load = false;
+                    info!("menu: load closed ({:?})", save.outcome);
+                }
                 if let Some(mode) = save.point.take() {
                     // FUN_00255a10's end: FUN_00258838, then FUN_001038a0 returns to the field scene.
                     info!("menu: save point menu closed (menu kind 1 mode {mode}): back to the field (FUN_001038a0)");
@@ -1160,6 +1387,74 @@ mod tests {
         let slots = read_slots(&dir);
         assert_eq!(slots[1], Some(info));
         assert!(slots[0].is_none() && slots[2].is_none() && slots[3].is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn load_flow(stage: Stage) -> Flow {
+        Flow { stage, load: true, ..Flow::default() }
+    }
+
+    #[test]
+    fn the_load_screen_reads_an_occupied_row_at_once_and_ignores_an_empty_one() {
+        let mut occ = [false; SLOTS];
+        occ[2] = true;
+        let mut f = load_flow(Stage::Files);
+        f.file = 1;
+        assert_eq!(f.press(Press::Confirm, &occ), Action::Empty, "FUN_0023ddb0 is 0: nothing happens");
+        assert_eq!(f.press(Press::Down, &occ), Action::Cursor);
+        assert_eq!(f.file, 2);
+        // No question (page 0xb goes straight to the loading box, page 0xf has no Yes/No input).
+        assert_eq!(f.press(Press::Confirm, &occ), Action::Read(2));
+        assert_eq!(f.slot, 2);
+        assert_eq!(f.press(Press::Up, &occ), Action::Cursor);
+        assert_eq!(f.press(Press::Up, &occ), Action::Cursor);
+        assert_eq!(f.press(Press::Up, &occ), Action::Cursor);
+        assert_eq!(f.file, SLOTS - 1, "wraps");
+        assert_eq!(f.press(Press::Cancel, &occ), Action::Leave);
+        // The pointer list does not exist in load mode.
+        assert_eq!(load_flow(Stage::Top).press(Press::Confirm, &occ), Action::None);
+        // Reading ignores the pad; the failure box takes a confirm or a cancel.
+        assert_eq!(load_flow(Stage::Reading).press(Press::Confirm, &occ), Action::None);
+        assert_eq!(load_flow(Stage::Failed).press(Press::Confirm, &occ), Action::FailedOk);
+        assert_eq!(load_flow(Stage::Failed).press(Press::Cancel, &occ), Action::FailedOk);
+        assert_eq!(load_flow(Stage::Failed).press(Press::Down, &occ), Action::None);
+    }
+
+    /// Writes a slot with the Save menu's own code, loads it into a different state and compares.
+    #[test]
+    fn a_slot_written_by_the_save_menu_loads_back_and_a_bad_file_changes_nothing() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-saves-ld1");
+        let _ = std::fs::remove_dir_all(&dir);
+        let items = std::sync::Arc::new(crate::progress::ItemIndex::default());
+        let len = Progress::from_block(&[], items.clone()).block().len();
+        let bytes: Vec<u8> = (0..len).map(|i| (i * 7 + 3) as u8).collect();
+        let mut saved = Progress::from_block(&bytes, items.clone());
+        saved.apply_json("{\"munny\": 4321}").unwrap();
+        let info = SlotInfo { level: 9, munny: 4321, play_seconds: 99, area: "tt03".into() };
+        write_slot(&dir, 2, &saved, &info).expect("the folder is writable");
+
+        let mut live = Progress::from_block(&[], items);
+        live.apply_json("{\"munny\": 7}").unwrap();
+        let before = live.block().to_vec();
+        let (next, loaded) = load_slot(&dir, 2, &live).expect("the slot loads");
+        assert_eq!(next.block(), saved.block(), "the block comes back byte for byte");
+        assert_eq!(next.wallet(), 4321);
+        assert_eq!(loaded.dest, Dest::new(crate::area::TWILIGHT_TOWN, 3, 0), "tt03");
+        let m = saved.sora();
+        let want = (m.hp_max > 0).then(|| (i32::from(m.hp.min(m.hp_max)), i32::from(m.mp.min(m.mp_max))));
+        assert_eq!(loaded.hp_mp, want, "HP and MP follow the record's +4/+5 and +6/+7");
+        assert_eq!((live.wallet(), live.block()), (7, &before[..]), "the live state is untouched until the caller swaps");
+
+        // An empty slot, a file that is not a slot file, a bad block and an area outside Twilight Town all fail and leave
+        // the live state alone.
+        assert!(load_slot(&dir, 0, &live).is_err(), "an empty slot");
+        std::fs::write(progress::slot_path(&dir, 1), "not json").unwrap();
+        assert!(load_slot(&dir, 1, &live).is_err(), "text that is not a slot file");
+        let text = std::fs::read_to_string(progress::slot_path(&dir, 2)).unwrap();
+        std::fs::write(progress::slot_path(&dir, 3), text.replacen("\"block\": \"", "\"block\": \"00", 1)).unwrap();
+        assert!(load_slot(&dir, 3, &live).is_err(), "a block of the wrong length");
+        assert!(dest_of("he03").is_err() && dest_of("t").is_err() && dest_of("tt").is_err(), "unknown worlds and codes are refused");
+        assert_eq!((live.wallet(), live.block()), (7, &before[..]));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

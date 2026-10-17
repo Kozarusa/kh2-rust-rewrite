@@ -574,6 +574,36 @@ impl Progress {
         (index < rec::SETTINGS_LEN).then(|| self.u8_at(r + rec::SETTINGS + index))
     }
 
+    /// `FUN_001a0030`: what a status block writes back to its party record when it is released (the field actor's
+    /// destructor `FUN_00174998`, the last user of a block `FUN_0019ffb8`): the current HP (record `+4`) and MP (`+6`),
+    /// each held to the record's maximum (`+5`, `+7`; the block's current value is built the same way by
+    /// `FUN_0019f920`, `min(maximum, current)`). The maxima are left as the record has them. False when the member has no record.
+    pub fn set_member_vitals(&mut self, member: u16, hp: i32, mp: i32) -> bool {
+        let Some(r) = Self::member_off(member) else { return false };
+        let (hp_max, mp_max) = (self.u8_at(r + rec::HP_MAX), self.u8_at(r + rec::MP_MAX));
+        self.set_u8(r + rec::HP, hp.clamp(0, i32::from(hp_max)) as u8);
+        self.set_u8(r + rec::MP, mp.clamp(0, i32::from(mp_max)) as u8);
+        true
+    }
+
+    /// `FUN_0019f920`'s current HP and MP of a record: `min(maximum, current)` for each (`None`: no such record).
+    pub fn member_vitals(&self, member: u16) -> Option<(u8, u8)> {
+        let r = Self::member_off(member)?;
+        Some((self.u8_at(r + rec::HP).min(self.u8_at(r + rec::HP_MAX)), self.u8_at(r + rec::MP).min(self.u8_at(r + rec::MP_MAX))))
+    }
+
+    /// Auto Healing's heal of a member outside the field (`FUN_0017d4b8`): the block of the record is made
+    /// (`FUN_0019fe48`), `FUN_001a0140(block, 1, 0, 0)` adds one HP (a block without an owning actor takes
+    /// `FUN_001a0100`: the sum held between the minimum 0 and the maximum), then the block is released
+    /// (`FUN_0019ffb8`, `FUN_001a0030`) and the new HP is in the record. Returns (before, after).
+    pub fn heal_reserve_member(&mut self, member: u16, delta: i32) -> Option<(u8, u8)> {
+        let (hp, mp) = self.member_vitals(member)?;
+        let r = Self::member_off(member)?;
+        let after = crate::party_rules::clamped_add(i32::from(hp), delta, 0, i32::from(self.u8_at(r + rec::HP_MAX))) as u8;
+        self.set_member_vitals(member, i32::from(after), i32::from(mp));
+        Some((hp, after))
+    }
+
     /// Writes a member's setting byte (what the party menu's settings page stores). False when nothing was written.
     pub fn set_member_setting(&mut self, member: u16, index: usize, value: u8) -> bool {
         let Some(r) = Self::member_off(member) else { return false };
@@ -3086,6 +3116,32 @@ mod tests {
         q.apply_json(&text).expect("loads");
         assert_eq!((q.healed_count(), q.mickey_save_count(), q.form_uses(), q.summon_uses()), (999, 1, [2, 0, 0, 1, 2], [1, 0, 0, 1]), "the block key reset the old count");
         assert!(q.apply_json("{\"report_counters\": [1, 2]}").is_err());
+    }
+
+    /// WP-AH1: a member's HP and MP live in his party record (`+4`, `+6`, held to `+5`, `+7`; `FUN_001a0030` writes them
+    /// back, `FUN_0019f920` reads them), Auto Healing's heal adds one HP up to the maximum, and the record goes through a
+    /// slot file in the `block` key (an older file without the vitals changes nothing: they are bytes of the block).
+    #[test]
+    fn member_vitals_write_back_heal_and_round_trip() {
+        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        let r = Progress::member_off(DONALD).unwrap();
+        p.set_u8(r + rec::HP_MAX, 30);
+        p.set_u8(r + rec::MP_MAX, 50);
+        assert!(p.set_member_vitals(DONALD, 100, 7));
+        assert_eq!(p.member_vitals(DONALD), Some((30, 7)), "HP is held to the maximum");
+        assert!(p.set_member_vitals(DONALD, 28, 7));
+        assert_eq!(p.heal_reserve_member(DONALD, 1), Some((28, 29)));
+        assert_eq!(p.heal_reserve_member(DONALD, 1), Some((29, 30)));
+        assert_eq!(p.heal_reserve_member(DONALD, 1), Some((30, 30)), "the maximum stops the heal");
+        assert_eq!(p.member_vitals(GOOFY), Some((0, 0)), "Goofy's empty record");
+        assert_eq!(p.member_vitals(99), None);
+        assert!(!p.set_member_vitals(99, 1, 1));
+        p.set_member_vitals(DONALD, 12, 34);
+        let text = p.slot_json(&SlotInfo { level: 1, munny: 0, play_seconds: 0, area: "tt04".into() });
+        let mut q = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        q.apply_json(&text).expect("loads");
+        assert_eq!(q.member_vitals(DONALD), Some((12, 34)), "the stored vitals come back");
+        assert_eq!(q.member(DONALD).map(|m| (m.hp, m.hp_max, m.mp, m.mp_max)), Some((12, 30, 34, 50)));
     }
 
     /// WP-MN15: the limits' best counts only go up, and go through a slot file and the `limit_best` key.

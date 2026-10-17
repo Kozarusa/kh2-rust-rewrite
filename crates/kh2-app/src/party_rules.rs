@@ -197,6 +197,44 @@ pub fn auto_change_swap(bytes: [u8; 4], neo: u16) -> Option<[u8; 4]> {
     Some(out)
 }
 
+/// `FUN_001a0100(block, delta, 0)`: the HP method of a status block without an owning actor, `FUN_001a0140`'s
+/// fallback. The sum `current + delta` is held between the minimum (block word 2, 0 for a party member) and the
+/// maximum (word 1); a sum below the minimum gives the minimum.
+pub fn clamped_add(current: i32, delta: i32, min: i32, max: i32) -> i32 {
+    let sum = current + delta;
+    if min <= sum { sum.min(max) } else { min }
+}
+
+/// The HP and MP a member starts with when his block is made (`FUN_0019f920`): `min(maximum, current)` of the record
+/// for each. A stored HP of 0 starts at the maximum: the original builds the block with HP 0 and whatever the actor does
+/// with it was not traced [gap, conservative: the app's earlier start]. No record: the maxima.
+pub fn spawn_vitals(record: Option<(u8, u8)>, hp_max: i32, mp_max: i32) -> (i32, i32) {
+    match record {
+        Some((hp, mp)) => (if hp == 0 { hp_max } else { i32::from(hp).min(hp_max) }, i32::from(mp).min(mp_max)),
+        None => (hp_max, mp_max),
+    }
+}
+
+/// `FUN_0017d4b8`'s timer (`DAT_0035cc08`): the frame step comes off it; when it is at or below zero the pass runs and
+/// the timer takes the interval (`sstm` +0x168). The timer starts at 0 (the variable is cleared at boot), so the first
+/// pass runs on the first tick. Returns whether the pass runs.
+pub fn auto_heal_due(timer: &mut f32, step: f32, interval: f32) -> bool {
+    *timer -= step;
+    if *timer <= 0.0 {
+        *timer = interval;
+        return true;
+    }
+    false
+}
+
+/// The members `FUN_0017d4b8` visits: party slots 1 to 3 (`FUN_001a7200(record, 1..3)`: the member the slot byte names
+/// through the world's `memt`, `member_of` giving the NeoStatus of an object) whose member is not one of the field
+/// actors (`FUN_0017d400` answers 0 for each of the two companion entries `FUN_0017cd08(0, 1)`). `field` holds the
+/// NeoStatus of the members standing on the field.
+pub fn reserve_members(bytes: [u8; 4], merged: &[u16; 24], member_of: impl Fn(u16) -> Option<u16>, field: &[u16]) -> Vec<u16> {
+    (1..4).filter_map(|i| slot_object(merged, bytes[i]).and_then(&member_of)).filter(|m| !field.contains(m)).collect()
+}
+
 /// FUN_001a7330 (area-script command 0xf): the preset's player index; then the preset's members
 /// flagged 0x80/0x40; then the current members (slots 1..3 in order) the preset also lists; then the
 /// preset's remaining members; the rest empty. Stored bytes are masked with 0x9f.
@@ -697,6 +735,38 @@ pub fn free_point(
 
 #[cfg(test)]
 mod tests {
+    /// A member's block starts from his record (`FUN_0019f920`): `min(maximum, current)`; a stored 0 HP is a gap and
+    /// starts at the maximum.
+    #[test]
+    fn spawn_vitals_come_from_the_record() {
+        assert_eq!(spawn_vitals(Some((12, 34)), 30, 50), (12, 34), "a member entering the field with his stored HP and MP");
+        assert_eq!(spawn_vitals(Some((90, 90)), 30, 50), (30, 50), "held to the maxima");
+        assert_eq!(spawn_vitals(Some((0, 0)), 30, 50), (30, 0), "HP 0 starts at the maximum, MP is kept");
+        assert_eq!(spawn_vitals(None, 30, 50), (30, 50));
+    }
+
+    /// Auto Healing's pieces: the HP method clamps to [min, max], the timer runs from 0 and refills with the
+    /// interval, and only the slots 1..3 members outside the field are visited.
+    #[test]
+    fn auto_healing_timer_clamp_and_reserve_set() {
+        assert_eq!((clamped_add(10, 1, 0, 100), clamped_add(100, 1, 0, 100), clamped_add(0, 1, 0, 100), clamped_add(5, -9, 0, 100)), (11, 100, 1, 0));
+        let mut timer = 0.0;
+        let mut fired = 0;
+        for _ in 0..250 {
+            fired += auto_heal_due(&mut timer, 1.0, 100.0) as u32;
+        }
+        assert_eq!(fired, 3, "the first tick at once, then every 100 frames (ticks 1, 101, 201)");
+        // Slots: Sora 0, Donald in 1, the partner in 2, Goofy in the reserve slot 3; the memt words 8.. name the objects.
+        let mut merged = [0u16; 24];
+        merged[8 + 1] = 101;
+        merged[8 + 2] = 102;
+        merged[8 + 3] = 103;
+        let member_of = |o: u16| Some(o - 99);
+        assert_eq!(reserve_members([0, 1, 2, 3], &merged, member_of, &[2, 3]), vec![4], "Donald and the partner stand; the byte 3 member is reserve");
+        assert_eq!(reserve_members([0, 1, 2, 3], &merged, member_of, &[]), vec![2, 3, 4], "nobody standing: slots 1 to 3 all heal");
+        assert_eq!(reserve_members([0, 1, EMPTY, EMPTY], &merged, member_of, &[2]), Vec::<u16>::new(), "empty slots visit nobody");
+    }
+
     /// Auto Change's swap (FUN_001a7558): the KO'd member goes to the reserve slot and the reserve member
     /// takes its place; a flagged, player, absent or reserve-less case does not fire.
     #[test]

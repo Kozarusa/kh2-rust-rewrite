@@ -1393,10 +1393,31 @@ Files: `party_battle.rs` (`choose_class16`), `party_rules.rs` (`auto_change_swap
   [inferred] satisfied), the limit lock, the hidden list. Test `auto_change_swaps_the_reserve_in`.
 - **Host 10.35 for the members (WP-PY2, was the `P_EH000` `BadAddress(8) at 0x058e`).** FUN_002f71f0 turns the first word into the AI (FUN_0010c5f0: +0xb60 of the object) and calls FUN_001141d0(AI, id): the object at AI +8 is the class parameter block (FUN_001133e0 stores it; FUN_00113450 binds the action records to its entries the same way), and the answer is the address of the first 0x80-byte entry (+0xa4 list, +0xa0 count) whose first word is the id, else 0. Port: `ClassAi::entries_at` / `entries` hold the class's whole list as the executable has it; `friend_ai` hands the member's class list to `FriendFields`; `friend_host::group10` index 35 answers `entry_address`, and `read_mem` serves the bytes at the answered executable address (so `ldf +0x8` reads the entry's MP cost word). Tests `host_10_35_finds_the_entry_with_the_id`, `host_10_35_on_rikus_class_list` (class 11, id 111 found at 0x351c10, an unknown id gives 0). Harness: `KH2_JUMP_WORDS=4:0:0 KH2_JUMP=1:0:0 KH2_JUMP_AT=4 KH2_BDXLOG=1 target\debug\kh2-game.exe tt02`: no script error for `P_EH000`, `10.35 Impl x2`; its next missing hosts are 10.50 (x75), 10.58, 1.244 `in_battle`.
 - **Gap: Goofy `P_EX030#1 BadAddress(0) at 0x0e14` in the summon-chicken scenario is not 10.35.** The log shows 1.161 `has_link` and 1.83 `bone_to_world` called with `Obj(0)` (the script's weapon/shield object: `party: P_EX030: no weapon (item 0: no went entry for moveset 20)`), then the vector read at address 0. Cause: the member's weapon object does not exist in that state (saved record weapon item 0, no `went` entry); owner is the weapon spawn in `party.rs` / the summon scenario state, plus 1.83 and 1.161 which the friend host does not implement.
-- **Auto Healing [V rule, not ported].** FUN_0017d4b8 (caller 0x1b77e4, inside a function the decomp lacks) lowers
-  `DAT_0035cc08` by the frame unit; at 0, for slots 1..3 whose member is not a field companion, a member whose status
-  block has +0x1dc bit 0x10 (ability 420) gets FUN_001a0140(status, 1, 0, 0), then the timer takes `sstm` +0x168.
-  It heals reserve members, who exist only as saved records. The app keeps no HP for a member outside the field (every
-  spawn starts at full HP), so there is nothing to heal. Needs a persistent per-member HP in `progress.rs`.
+- **Auto Healing [V, ported by WP-AH1].** FUN_0017d4b8 (called at 0x1b77e4, inside the object tick `FUN_001b74e0`'s
+  neighbourhood in a function the decomp lacks; the exact caller and its gate were not read, so the app runs it every
+  party tick while a party stands, `party_auto_healing`) lowers `DAT_0035cc08` (cleared at boot, so the first tick
+  runs the pass) by the frame step `DAT_00356f40`; at or below 0 it visits slots 1..3 (`FUN_001a7200(record, i)`, the member
+  the slot byte names through the world's `memt`). A member who is not one of the two field actors (`FUN_0017d400` loops
+  `FUN_0017cd08(0..1)`, comparing `FUN_001699a8`) gets his status block (`FUN_0019fe48` -> `FUN_0019fd30`: find a live block
+  of the member `FUN_0019fbc8`, else make one and fill it from the record, `FUN_0019f920`); if `+0x1dc & 0x10` (ability 420)
+  it calls `FUN_001a0140(block, 1, 0, 0)`; then `FUN_0019ffb8` releases the block. Then the timer takes `sstm` +0x168.
+  `FUN_001a0140` calls the HP method through the vtable of the actor in block `+0x24c` or, with none (a reserve member has no actor),
+  `FUN_001a0100`: `current + 1` held between the minimum (word 2) and the maximum (word 1). The release writes the block back
+  into the record (`FUN_001a0030`: `+4` HP, `+5` max, `+6` MP, `+7` max MP, `+0xc` / `+0xd` drive bytes), so the heal is
+  persistent. Port: `rules::auto_heal_due` (timer), `rules::reserve_members` (slots 1..3 not standing), `rules::clamped_add`
+  (FUN_001a0100), `Progress::heal_reserve_member`; the ability is read from the saved record's list as for Auto Change.
+  Log line `party: Auto Healing (FUN_0017d4b8): reserve member <neo> HP <a> -> <b>`. Tests
+  `auto_healing_timer_clamp_and_reserve_set`, `member_vitals_write_back_heal_and_round_trip`.
+- **Member HP and MP outside the field [V, WP-AH1].** The original keeps them in the party record (`+4` HP, `+6` MP, held to
+  `+5`, `+7`); a status block is a pooled object (`DAT_01c8bdb0`, 600 bytes each, `+0x248` the use count) rebuilt from the record
+  by `FUN_0019f920` (HP and MP each `min(maximum, current)`) and written back by `FUN_001a0030` when it is released
+  (`FUN_0019ffb8` at count 0, the field actor's destructor `FUN_00174998`, `FUN_0019fb98`). `Progress` already holds the
+  record in its `block` key, so no new slot key exists: an old slot file carries the bytes as they were. Port:
+  `Progress::member_vitals` / `set_member_vitals`, `party_record_sync` (writes a standing member's HP and MP into the record
+  each tick one of them changed; the original writes at the release, [inferred] equal because nobody reads the record of a
+  standing member), `spawn_party` starts a member from the record (`rules::spawn_vitals`). Gap: a stored HP of 0 (the
+  member left the field knocked out) starts at the maximum, the app's earlier start; what the original actor does with a
+  block of HP 0 was not traced (`FUN_0017d290`, `FUN_0017ca70` read; no HP-0 test found). Game over (WP-GO1) restores Sora's HP only;
+  the original restores the whole save body, so after Continue the members keep the HP they had.
 - **Auto Limit [V rule, not ported].** FUN_001d25e0 offers a partner's limit as a reaction command; the app has no party
   limit reaction command (`reaction_cmd.rs`, `limit.rs`: outside this WP's files).

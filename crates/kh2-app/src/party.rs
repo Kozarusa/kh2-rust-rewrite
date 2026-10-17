@@ -846,8 +846,18 @@ fn mission_party(
     area: Res<CurrentArea>,
     data: Res<PartyData>,
     mut slots: ResMut<PartySlots>,
+    mgr: Res<Manager>,
+    mut pending: Local<Vec<crate::struggle::MissionStart>>,
 ) {
-    for s in starts.read() {
+    pending.extend(starts.read().cloned());
+    // The preset edits the loaded world's bytes: until `spawn_party` has entered the world for this area (it
+    // does so in the same chain, but a mission can start on the area's very first tick, before it has run) the
+    // bytes are still the previous world's, and `enter_world` would start the area over from the default
+    // preset (WP-REG1: the Struggle kept Donald and Goofy on the field).
+    if pending.is_empty() || !area_entered(area.loaded.as_deref(), mgr.area.as_deref()) {
+        return;
+    }
+    for s in std::mem::take(&mut *pending) {
         let Some(name) = area.loaded.as_deref() else { continue };
         let Some((ard, _)) = disc.read(&format!("ard/{name}.ard")).and_then(|f| kh2_ard::Area::parse(&f)) else { continue };
         let btl = ard.scripts.get("btl").map(Vec::as_slice).unwrap_or_default();
@@ -858,6 +868,11 @@ fn mission_party(
             info!("party: mission {:#x} {}: its btl program applies preset {p} (opcode 0xf, FUN_001a7330): slot bytes {before:02x?} -> {:02x?}", s.id, s.name, slots.bytes);
         }
     }
+}
+
+/// Whether `spawn_party` has entered the loaded area's world (its record of the area is the loaded one).
+fn area_entered(loaded: Option<&str>, built_for: Option<&str>) -> bool {
+    loaded.is_some() && loaded == built_for
 }
 
 /// Spawns the members of a newly loaded area (they are area parts: the next area load removes them).
@@ -2624,6 +2639,15 @@ mod tests {
     #[test]
     fn a_fresh_trail_has_no_head() {
         assert!(Trail::default().head < 0);
+    }
+
+    /// WP-REG1: a mission start waits for the party pass of its area.
+    #[test]
+    fn mission_presets_wait_for_the_area_party_pass() {
+        assert!(!area_entered(Some("tt04"), None), "no area entered yet");
+        assert!(!area_entered(Some("tt04"), Some("tt02")), "the previous area's party");
+        assert!(!area_entered(None, None));
+        assert!(area_entered(Some("tt04"), Some("tt04")));
     }
 
     /// WP-MN8 B: the members asked for follow the slot bytes. A different member in a slot changes the key (a

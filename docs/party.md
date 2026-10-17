@@ -1175,6 +1175,12 @@ Files: `party_rules.rs` (`mission_presets`), `party.rs` (`mission_party`).
   TT04_MS00: its btl program applies preset 0 (opcode 0xf, FUN_001a7330): slot bytes [00, 01, 02, 10] -> [00, 10,
   10, 10]`, then `party: the slot bytes ... name other members than the 2 standing: rebuilding`. Tests
   `a_struggle_program_leaves_sora_alone`, `party_the_struggle_programs_leave_sora_alone`.
+- **Order (WP-REG1).** The mission can start on the area's first tick, before `spawn_party` has entered the world for the
+  area; the preset would then edit the previous world's bytes and `enter_world` would start the area over from preset 1,
+  so Donald and Goofy fought in the Struggle (b_50 was won with no input). `mission_party` now keeps the start until
+  `spawn_party` has built for the loaded area (`area_entered`). [inferred] The original runs the program before the area's
+  objects exist, so the preset is always the last write; waiting for the area pass gives the same result. Test
+  `mission_presets_wait_for_the_area_party_pass`.
 - **Gaps.** [inferred] The app's rebuild removes the standing members at once (the original never created them,
   since the program runs before the area's objects). The app does not apply opcode 0xf at area load (the
   area-script run, `ScriptRun::world_records`, is collected but no system applies it), so after a Struggle the

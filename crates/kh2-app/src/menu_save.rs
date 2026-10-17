@@ -414,15 +414,15 @@ pub enum LoadOutcome {
     Left,
 }
 
-/// The destination of a slot's area code: only Twilight Town exists in the app, and the entrance is 0 because the slot file
-/// does not record the entrance (the original's save header holds it at `0x33e86c..`; [inferred] entrance 0, gap in 18.6).
-pub fn dest_of(area_code: &str) -> Result<Dest, String> {
+/// The destination of a slot's area code: only Twilight Town exists in the app. The entrance is the one the slot file records
+/// (the Save menu writes the area record's entrance; a file without it keeps entrance 0 [inferred]).
+pub fn dest_of(area_code: &str, entrance: u8) -> Result<Dest, String> {
     let world = area_code.get(..2).ok_or_else(|| format!("area code {area_code:?} is too short"))?;
     if world != "tt" {
         return Err(format!("area {area_code}: the app has Twilight Town only"));
     }
     let area = crate::area::area_number(area_code).ok_or_else(|| format!("area code {area_code:?} has no number"))?;
-    Ok(Dest::new(crate::area::TWILIGHT_TOWN, area, 0))
+    Ok(Dest::new(crate::area::TWILIGHT_TOWN, area, entrance))
 }
 
 /// Reads slot `n` of `dir` and applies it to a copy of `live`. Nothing of `live` changes: the caller replaces its state only
@@ -430,7 +430,7 @@ pub fn dest_of(area_code: &str) -> Result<Dest, String> {
 pub fn load_slot(dir: &std::path::Path, n: usize, live: &Progress) -> Result<(Progress, Loaded), String> {
     let text = std::fs::read_to_string(progress::slot_path(dir, n)).map_err(|e| format!("slot {} is not readable: {e}", n + 1))?;
     let info = Progress::slot_info(&text).ok_or_else(|| format!("slot {} has no row data (not a slot file)", n + 1))?;
-    let dest = dest_of(&info.area)?;
+    let dest = dest_of(&info.area, Progress::slot_entrance(&text).unwrap_or(0))?;
     let mut next = live.clone();
     next.apply_json(&text).map_err(|e| format!("slot {}: {e}", n + 1))?;
     let m = next.sora();
@@ -613,10 +613,10 @@ fn info_now(progress: &Progress, area: &str, play: f32) -> SlotInfo {
 }
 
 /// Writes slot `n` into `dir`. The folder is created on the first write; nothing outside it is touched.
-pub fn write_slot(dir: &std::path::Path, n: usize, progress: &Progress, info: &SlotInfo) -> std::io::Result<std::path::PathBuf> {
+pub fn write_slot(dir: &std::path::Path, n: usize, progress: &Progress, info: &SlotInfo, entrance: Option<u8>) -> std::io::Result<std::path::PathBuf> {
     std::fs::create_dir_all(dir)?;
     let path = progress::slot_path(dir, n);
-    std::fs::write(&path, progress.slot_json(info))?;
+    std::fs::write(&path, progress.slot_json_at(info, entrance))?;
     Ok(path)
 }
 
@@ -1137,6 +1137,7 @@ fn tick(
     real: Res<Time<Real>>,
     (mut progress, mut tags): (Option<ResMut<Progress>>, ResMut<super::new_tags::NewTags>),
     mut se: MessageWriter<PlaySe>,
+    rec: Option<Res<crate::area::AreaRecord>>,
 ) {
     if !save.loaded || save.flow.stage == Stage::Closed {
         return;
@@ -1199,7 +1200,7 @@ fn tick(
                 let info = info_now(p, &save.area, save.play);
                 let mut stored = p.clone();
                 stored.set_new_seen(&tags.seen_words());
-                match write_slot(&save.dir, slot, &stored, &info) {
+                match write_slot(&save.dir, slot, &stored, &info, rec.as_deref().map(|r| r.entrance)) {
                     Ok(path) => {
                         info!("menu: save slot {} written ({})", slot + 1, path.display());
                         menu_sound::play(&mut se, WRITTEN);
@@ -1377,7 +1378,7 @@ mod tests {
         assert!(read_slots(&dir).iter().all(Option::is_none), "no folder, no files");
         let p = Progress::from_block(&[], std::sync::Arc::new(crate::progress::ItemIndex::default()));
         let info = SlotInfo { level: 5, munny: 150, play_seconds: 1560, area: "tt03".into() };
-        let path = write_slot(&dir, 1, &p, &info).expect("the folder is writable");
+        let path = write_slot(&dir, 1, &p, &info, None).expect("the folder is writable");
         assert!(path.ends_with("slot02.json"));
         let slots = read_slots(&dir);
         assert_eq!(slots[1], Some(info));
@@ -1426,7 +1427,7 @@ mod tests {
         let mut saved = Progress::from_block(&bytes, items.clone());
         saved.apply_json("{\"munny\": 4321}").unwrap();
         let info = SlotInfo { level: 9, munny: 4321, play_seconds: 99, area: "tt03".into() };
-        write_slot(&dir, 2, &saved, &info).expect("the folder is writable");
+        write_slot(&dir, 2, &saved, &info, Some(5)).expect("the folder is writable");
 
         let mut live = Progress::from_block(&[], items);
         live.apply_json("{\"munny\": 7}").unwrap();
@@ -1434,7 +1435,7 @@ mod tests {
         let (next, loaded) = load_slot(&dir, 2, &live).expect("the slot loads");
         assert_eq!(next.block(), saved.block(), "the block comes back byte for byte");
         assert_eq!(next.wallet(), 4321);
-        assert_eq!(loaded.dest, Dest::new(crate::area::TWILIGHT_TOWN, 3, 0), "tt03");
+        assert_eq!(loaded.dest, Dest::new(crate::area::TWILIGHT_TOWN, 3, 5), "tt03, the entrance the slot recorded");
         let m = saved.sora();
         let want = (m.hp_max > 0).then(|| (i32::from(m.hp.min(m.hp_max)), i32::from(m.mp.min(m.mp_max))));
         assert_eq!(loaded.hp_mp, want, "HP and MP follow the record's +4/+5 and +6/+7");
@@ -1448,8 +1449,32 @@ mod tests {
         let text = std::fs::read_to_string(progress::slot_path(&dir, 2)).unwrap();
         std::fs::write(progress::slot_path(&dir, 3), text.replacen("\"block\": \"", "\"block\": \"00", 1)).unwrap();
         assert!(load_slot(&dir, 3, &live).is_err(), "a block of the wrong length");
-        assert!(dest_of("he03").is_err() && dest_of("t").is_err() && dest_of("tt").is_err(), "unknown worlds and codes are refused");
+        assert!(dest_of("he03", 0).is_err() && dest_of("t", 0).is_err() && dest_of("tt", 0).is_err(), "unknown worlds and codes are refused");
         assert_eq!((live.wallet(), live.block()), (7, &before[..]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An old-format slot (a `block`, no `story_raw`) resets the shared story before its other keys are parsed; a bad block
+    /// must restore it. A slot written without an entrance loads with entrance 0.
+    #[test]
+    fn a_failed_old_format_load_keeps_the_story_and_an_old_slot_enters_at_0() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-saves-ld1b");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let items = std::sync::Arc::new(crate::progress::ItemIndex::default());
+        let mut live = Progress::from_block(&[], items.clone());
+        live.apply_json("{\"story_flags\": [5, 70, 1030]}").unwrap();
+        let flags = live.set_flags();
+        assert!(!flags.is_empty(), "the story has flags to lose");
+        let bad = "{\"slot\": {\"level\": 1, \"munny\": 0, \"play_seconds\": 0, \"area\": \"tt03\"}, \"block\": \"zz\"}";
+        std::fs::write(progress::slot_path(&dir, 0), bad).unwrap();
+        assert!(load_slot(&dir, 0, &live).is_err());
+        assert_eq!(live.set_flags(), flags, "the shared story is as it was after the failed load");
+
+        let old = Progress::from_block(&[], items);
+        write_slot(&dir, 1, &old, &SlotInfo { level: 1, munny: 0, play_seconds: 0, area: "tt03".into() }, None).unwrap();
+        let (_, loaded) = load_slot(&dir, 1, &live).expect("a slot without an entrance loads");
+        assert_eq!(loaded.dest.entrance, 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -1797,6 +1797,16 @@ impl Progress {
 
     /// Applies a state file (schema in docs/progress.md) on top of this state.
     pub fn apply_json(&mut self, text: &str) -> Result<(), String> {
+        // The story is a shared handle: an old-format slot resets it before its other keys are parsed, so a failure restores it.
+        let story = self.story().clone();
+        let r = self.apply_json_keys(text);
+        if r.is_err() {
+            *self.story() = story;
+        }
+        r
+    }
+
+    fn apply_json_keys(&mut self, text: &str) -> Result<(), String> {
         let j = Json::parse(text)?;
         let Json::Obj(fields) = &j else { return Err("the state must be a JSON object".into()) };
         let int = |v: &Json, what: &str| v.int().ok_or_else(|| format!("{what}: expected an integer"));
@@ -2515,17 +2525,22 @@ impl Progress {
     /// of the state schema, and `slot` carries the row data. Rows are keys of the same schema, so a slot file is also a
     /// state file.
     pub fn slot_json(&self, info: &SlotInfo) -> String {
-        Self::join_fields(&self.slot_fields(info))
+        self.slot_json_at(info, None)
+    }
+
+    /// `slot_json` with the entrance the area was entered by (read back by `slot_entrance`; a file without it keeps entrance 0).
+    pub fn slot_json_at(&self, info: &SlotInfo, entrance: Option<u8>) -> String {
+        Self::join_fields(&self.slot_fields(info, entrance))
     }
 
     /// The keys of a slot file as (name, JSON value text) in file order: `block` comes first among the state keys so that
     /// `apply_json` sees it before the keys it resets.
-    fn slot_fields(&self, info: &SlotInfo) -> Vec<(&'static str, String)> {
+    fn slot_fields(&self, info: &SlotInfo, entrance: Option<u8>) -> Vec<(&'static str, String)> {
         let area: String = info.area.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
         let seen: Vec<String> = self.new_seen.iter().map(u32::to_string).collect();
         let mut f = vec![
             ("format", "1".to_string()),
-            ("slot", format!("{{\"level\": {}, \"munny\": {}, \"play_seconds\": {}, \"area\": \"{}\"}}", info.level, info.munny, info.play_seconds, area)),
+            ("slot", format!("{{\"level\": {}, \"munny\": {}, \"play_seconds\": {}, \"area\": \"{}\"{}}}", info.level, info.munny, info.play_seconds, area, entrance.map_or(String::new(), |e| format!(", \"entrance\": {e}")))),
             ("block", format!("\"{}\"", hex(&self.block))),
             ("munny", self.wallet.to_string()),
             ("option_word", self.config[0].to_string()),
@@ -2597,6 +2612,12 @@ impl Progress {
             ("story_raw", format!("{{\"words\": \"{}\", \"programs\": \"{}\", \"locks\": {}}}", hex(&words), hex(&st.programs), nums(locks))),
             ("world_points", nums(st.world_points())),
         ]
+    }
+
+    /// The entrance a slot file records (`None` for a file written without it).
+    pub fn slot_entrance(text: &str) -> Option<u8> {
+        let j = Json::parse(text).ok()?;
+        j.get("slot")?.get("entrance")?.int().and_then(|v| u8::try_from(v).ok())
     }
 
     /// The row data of a slot file (`None` for text that is not a slot file).
@@ -3255,7 +3276,7 @@ mod tests {
         }
         // An older slot file (no such keys) loads them as the defaults.
         let info = SlotInfo { level: 1, munny: 0, play_seconds: 0, area: "tt04".into() };
-        let mut fields = p.slot_fields(&info);
+        let mut fields = p.slot_fields(&info, None);
         let before = fields.len();
         let persisted: Vec<&str> = p.persisted_fields().iter().map(|f| f.0).collect();
         fields.retain(|f| !persisted.contains(&f.0));

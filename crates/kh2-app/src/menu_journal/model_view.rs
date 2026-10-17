@@ -78,12 +78,11 @@ pub fn view_page(shown: u16) -> u16 {
 }
 
 /// The character page a model page returns to. `FUN_002aa0b0` case -2 passes 0xf from 0x10 and 0x15 from both 0x13 and 0x16 (0x2aa2ec:
-/// one compare with 0x10), so the original's Heartless view lands on the Nobodies' page number; the port returns to the page the
-/// view was opened from [inferred: the intent; docs/menus.md 20.12 Gaps].
+/// one compare with 0x10), so the original's Heartless view lands on the Nobodies' page number (`CharPage::nobody`: its cancel then goes to the
+/// Nobodies' list).
 pub fn char_page(view: u16) -> u16 {
     match view {
         0x10 => 0xf,
-        0x13 => 0x12,
         _ => 0x15,
     }
 }
@@ -529,7 +528,7 @@ mod tests {
     #[test]
     fn the_view_pages_pair_with_the_character_pages() {
         assert_eq!([view_page(0xf), view_page(0x12), view_page(0x15)], [0x10, 0x13, 0x16]);
-        assert_eq!([char_page(0x10), char_page(0x13), char_page(0x16)], [0xf, 0x12, 0x15]);
+        assert_eq!([char_page(0x10), char_page(0x13), char_page(0x16)], [0xf, 0x15, 0x15]);
         assert!(is_view(0x13) && !is_view(0x12));
     }
 

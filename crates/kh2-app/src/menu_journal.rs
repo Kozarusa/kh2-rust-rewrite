@@ -1037,7 +1037,21 @@ struct CharPage {
     list: Vec<usize>,
     cur: usize,
     back: u16,
+    /// Set when the page was reached from a Heartless model page (0x13): the original then numbers it 0x15 (`FUN_002aa0b0` case -2,
+    /// 0x2aa2ec compares only 0x10), so its cancel goes to the Nobodies' list (`FUN_002a9b80` case -2) and -6 opens 0x16.
+    nobody: bool,
     present: std::collections::HashSet<usize>,
+}
+
+impl CharPage {
+    /// The list page the cancel returns to and the page number the original shows this page as (`FUN_002a9590`).
+    fn list_page(&self) -> u16 {
+        if self.nobody {
+            0x14
+        } else {
+            self.back
+        }
+    }
 }
 
 /// The objects of the Album page (`FUN_002a5a68`): the layer (group 0x58), eight rows and a new tag under each.
@@ -1633,9 +1647,9 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
             let to = chars::neighbour(&o.cp.list, o.cp.cur, &|c| present.contains(&c), next);
             if to != o.cp.cur {
                 o.cp.cur = to;
-                if matches!(o.cp.back, 0xe | 0x11 | 0x14) {
+                if matches!(o.cp.list_page(), 0xe | 0x11 | 0x14) {
                     // `FUN_002aa600` stores the new character as the list page's cursor (`FUN_00277dc8(0xe, min(i, 9), i - 9)`).
-                    let back = o.cp.back;
+                    let back = o.cp.list_page();
                     o.kept.retain(|k| k.0 != back);
                     o.kept.push((back, enemies::Pos { cursor: to.min(9), scroll: to.saturating_sub(9) }));
                 }
@@ -1742,7 +1756,7 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
             let list: Vec<usize> = o.faces.iter().map(|f| f.ch).collect();
             // `FUN_002ae790` marks the character seen (`FUN_002b73b8`) and `FUN_002aa358` keeps the face list for the new page.
             let ch = list[s];
-            o.cp = CharPage { list, cur: s, back: page, present: Default::default() };
+            o.cp = CharPage { list, cur: s, back: page, nobody: false, present: Default::default() };
             j.marks.see(Cat::Char, ch);
             info!("journal: page {page:#x} confirm on face {s} (character {ch}) -> page 0xf (FUN_002ae790 -> FUN_002aa358)");
             j.goto = Some((0xf, world_byte));
@@ -1754,7 +1768,7 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
         Act::View if page == 0xf => {
             menu_sound::play(&mut se, crate::menu_status::CONFIRM);
             let o = j.open.as_ref().unwrap();
-            let to = model_view::view_page(shown_page(o.cp.back));
+            let to = model_view::view_page(shown_page(o.cp.list_page()));
             info!("journal: page {page:#x} view button (-6) -> page {to:#x} (FUN_002a9b80)");
             j.goto = Some((to, world_byte));
         }
@@ -1762,13 +1776,15 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
         Act::Back if model_view::is_view(page) => {
             menu_sound::play(&mut se, menu_sound::CANCEL);
             let to = model_view::char_page(page);
+            // Case -2 numbers the page 0x15 from both 0x13 and 0x16: a Heartless record's page comes back as a Nobody page.
+            j.open.as_mut().unwrap().cp.nobody = to == 0x15;
             info!("journal: page {page:#x} cancel -> the character page ({to:#x} in the original's numbering: FUN_002aa0b0 case -2)");
             j.goto = Some((0xf, world_byte));
         }
         Act::Back if page == 0xf => {
             menu_sound::play(&mut se, menu_sound::CANCEL);
             let o = j.open.as_mut().unwrap();
-            let (back, cur) = (o.cp.back, o.cp.cur);
+            let (back, cur) = (o.cp.list_page(), o.cp.cur);
             o.back_face = Some(cur);
             if matches!(back, 0xe | 0x11 | 0x14) {
                 o.kept.retain(|k| k.0 != back);
@@ -3367,6 +3383,20 @@ mod tests {
         }
         assert_eq!([0xe, 0x11, 0x14, 6, 0xb].map(shown_page), [0xf, 0x12, 0x15, 0xf, 0xf]);
         assert_eq!([6, 0x11, 0x14].map(|b| model_view::view_page(shown_page(b))), [0x10, 0x13, 0x16]);
+    }
+
+    /// `FUN_002aa0b0` case -2 compares only 0x10 (0x2aa2ec): a Heartless view comes back as page 0x15, whose cancel is the Nobodies' list
+    /// (`FUN_002a9b80` case -2: 0xe from 0xf, 0x11 from 0x12, else 0x14) and whose -6 opens 0x16.
+    #[test]
+    fn a_heartless_model_page_returns_as_the_nobody_page() {
+        let mut cp = CharPage { back: 0x11, ..Default::default() };
+        assert_eq!((cp.list_page(), model_view::view_page(shown_page(cp.list_page()))), (0x11, 0x13));
+        cp.nobody = model_view::char_page(0x13) == 0x15;
+        assert_eq!((cp.list_page(), model_view::view_page(shown_page(cp.list_page()))), (0x14, 0x16), "back on the Nobody list, -6 opens 0x16");
+        cp.nobody = model_view::char_page(0x10) == 0x15;
+        assert_eq!(model_view::char_page(0x10), 0xf);
+        cp.back = 0xe;
+        assert_eq!(cp.list_page(), 0xe, "a character's view returns to the character page and its list");
     }
 
     /// A character's own page on the disc (skipped without `KH2_ISO`): the frame table, the page's groups, and for every character

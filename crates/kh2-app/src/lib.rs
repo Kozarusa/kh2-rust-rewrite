@@ -52,6 +52,7 @@ mod npc;
 mod party;
 mod party_battle;
 mod party_rules;
+mod party_switch;
 mod player_reaction;
 mod prize;
 mod progress;

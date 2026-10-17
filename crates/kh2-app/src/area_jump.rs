@@ -287,6 +287,24 @@ pub struct JumpMenus {
     pub ending: bool,
     /// Type 6: `FUN_00149f38` was called; the screen freezes and fades to black.
     pub black: bool,
+    /// The party words of the record a jump took (`FUN_0019d9d8`); `party::jump_party` applies them (WP-PT1).
+    pub party: Option<PartyWords>,
+    /// The reset code `FUN_00104d58` runs when the fade-out is over (`FUN_001abfe8`), waiting for the load.
+    pub reset_at_load: Option<i16>,
+    /// Reset codes to run now (`FUN_00104e18` runs it at once when the record's wait is not 0; the jump task runs it after
+    /// the fade-out); `party::jump_reset` takes them.
+    pub resets: Vec<i16>,
+}
+
+/// What `FUN_0019d9d8` does with a record's words 4 to 6 besides the jump itself (WP-PT1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PartyWords {
+    /// The destination world byte (`pbVar8`); `None` when the record keeps the current world (`FUN_001a71c0(-1)`).
+    pub world: Option<u8>,
+    /// Word 4: the party arrangement (a preset index, negative for none).
+    pub arrange: i16,
+    /// Word 6: 1 or 2 opens the camp's notice page 0x15 (`FUN_0024f300(arg, ..)`); the argument is 0 or 2.
+    pub menu: Option<u32>,
 }
 
 /// What a trigger's jump record (`FUN_0019d9d8`, parsed by `FUN_0019d8f0`) jumps to, with `cur` the record's
@@ -322,10 +340,10 @@ pub fn resolve_jump(j: &Jump, cur: (u8, u8, u8), last: Option<Dest>, localset: i
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JumpExtras {
     /// Sub-command 4 (+0x44, default 0): a party arrangement index; 0 or more makes `FUN_0019d9d8` reorder the
-    /// destination world's party (`FUN_001a7330(FUN_001a71c0(world), index)`). Not ported (no party order in the app).
+    /// destination world's party (`FUN_001a7330(FUN_001a71c0(world), index)`); applied by `party::jump_party` (WP-PT1).
     pub party: i16,
     /// Sub-command 5 (+0x48, default -1): the party reset code handed to `FUN_00104e18` and `FUN_001abfe8`; 0 is no
-    /// reset, anything else resets the party objects (`FUN_001ac130` for each of the slots 1 to 15). Not ported.
+    /// reset, anything else resets the party objects (`FUN_001ac130` for each of the slots 1 to 15); run by `party::jump_reset` (WP-PT1).
     pub reset: i16,
     /// Sub-command 7 (+0x4c, default 0): the "menu before" code: 1 or 2 opens menu kind 5 first
     /// (`FUN_0024f300(0 | 2)` -> `FUN_0024f0b8(5, ..)`), any other non-zero value only delays the jump.
@@ -359,8 +377,7 @@ impl JumpExtras {
     }
 
     /// Ticks the jump task waits before its fade-out (a local of `FUN_0019d9d8`): 2 when the "menu before" code
-    /// is 1 or 2 (and the party word is 0 or more); other codes leave it 0 (`LAB_0019db28`) [inferred: the wait is a parameter of `FUN_00104e18`, in ticks], else 0. The wait follows a menu the app cannot open, so it is
-    /// only logged.
+    /// is 1 or 2 (and the party word is 0 or more); other codes leave it 0 (`LAB_0019db28`) [inferred: the wait is a parameter of `FUN_00104e18`, in ticks], else 0.
     pub fn delay_ticks(&self) -> u32 {
         if self.party >= 0 && matches!(self.menu_before, 1 | 2) { 2 } else { 0 }
     }
@@ -741,6 +758,20 @@ pub fn jump_fade_kind(j: &Jump) -> (u32, bool) {
     ((j.flags & 0x3fff) as u32, j.flags & 0x4000 != 0)
 }
 
+/// `KH2_JUMP_WORDS=<word 4>:<word 5>:<word 6>` (decimal, signed) as the record words of the harness jump (WP-PT1; a test aid:
+/// the party arrangement, the reset code and the "menu before" code). Without it the arrangement is -1 (none), unlike the
+/// default of a trigger's record (0), so a forced jump leaves the party alone.
+fn harness_extras() -> JumpExtras {
+    let mut e = JumpExtras { party: -1, ..JumpExtras::default() };
+    if let Ok(v) = std::env::var("KH2_JUMP_WORDS") {
+        let w: Vec<i16> = v.split(':').filter_map(|x| x.trim().parse().ok()).collect();
+        e.party = w.first().copied().unwrap_or(e.party);
+        e.reset = w.get(1).copied().unwrap_or(e.reset);
+        e.menu_before = w.get(2).copied().unwrap_or(e.menu_before);
+    }
+    e
+}
+
 /// `KH2_JUMP=<type>:<key>:<entrance>` (hex) as a jump record: the world is the current one (-1), a type-1 key is
 /// the area, the fade kind 0.
 fn harness_jump() -> Option<Jump> {
@@ -764,7 +795,16 @@ pub fn record_fade(j: &Jump) -> (u32, bool) {
 fn take_record(j: &Jump, extras: &JumpExtras, cur: (u8, u8, u8), last: Option<Dest>, disc: &Disc, locks: &ExitLocks, consts: &ExitConsts, memory: &mut Type4Memory, menus: &mut JumpMenus) -> Option<Dest> {
     let flag = |id: u16| locks.story.as_ref().is_some_and(|s| s.lock().test(id));
     match resolve_record(j, cur, last, |w, k| disc_localset(disc, w, k), flag, &consts.map_entrances, &mut memory.0) {
-        Ok(Outcome::Go(d)) => Some(d),
+        Ok(Outcome::Go(d)) => {
+            // FUN_0019d9d8 after the destination is known: the party arrangement of word 4, the camp of word 6, and the
+            // reset of word 5 (FUN_00104e18: at once when the wait is not 0, else after the fade-out).
+            menus.party = Some(PartyWords { world: (d.world != KEEP).then_some(d.world), arrange: extras.party, menu: extras.menu_before_arg() });
+            menus.reset_at_load = None;
+            if extras.reset != 0 {
+                if extras.delay_ticks() > 0 { menus.resets.push(extras.reset) } else { menus.reset_at_load = Some(extras.reset) }
+            }
+            Some(d)
+        }
         Ok(Outcome::OpenMenu { kind, arg }) => {
             menus.ending = kind == 0xe;
             info!("jump record type {}: opens menu kind {kind:#x} (FUN_0024f0b8({kind:#x}, {arg})): the ending screen, no jump{}", j.kind, extras.text());
@@ -860,6 +900,10 @@ fn tick(
                     }
                 };
                 exits.jumping = None;
+                // FUN_00104d58: the party reset runs before the area unloads.
+                if let Some(code) = menus.reset_at_load.take() {
+                    menus.resets.push(code);
+                }
                 rec.world = dest.world;
                 rec.area = dest.area;
                 rec.entrance = dest.entrance;
@@ -958,8 +1002,10 @@ fn tick(
     // trigger jump record through `resolve_jump` and the real fade and load path at `KH2_JUMP_AT` seconds (default 3).
     if let Some(j) = harness_jump().filter(|_| *forced == (std::env::var("KH2_JUMP_AT").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(3.0) * 60.0) as u32) {
         info!("jump: forced by KH2_JUMP: record {j:?}");
-        if let Some(dest) = take_record(&j, &JumpExtras::default(), (rec.world, rec.area, rec.entrance), last.0, &disc, &locks, &consts, &mut memory, &mut menus) {
-            info!("jump: type {} key {:#x} -> {} entrance {} programs {}", j.kind, j.key, dest_name(&dest), dest.entrance, dest.programs_text());
+        let extras = harness_extras();
+        if let Some(dest) = take_record(&j, &extras, (rec.world, rec.area, rec.entrance), last.0, &disc, &locks, &consts, &mut memory, &mut menus) {
+            info!("jump: type {} key {:#x} -> {} entrance {} programs {}{}", j.kind, j.key, dest_name(&dest), dest.entrance, dest.programs_text(), extras.text());
+            wait = extras.delay_ticks();
             start = Some((dest, record_fade(&j).0, 0xffff));
         }
     }

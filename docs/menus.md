@@ -2496,9 +2496,32 @@ snapshot (`FUN_001cafa0`: copies the same words and `DAT_01d69890 = DAT_0033e830
   with the last name seen), while the original runs `FUN_001047a8` at every area start, so a re-entry of the same map in a
   new visit (a jump to itself) keeps the older snapshot in the port. Not changed: `menu_gameover.rs` only compares names.
   The port floors the HP at 1 and caps it at the maximum (`continue_values`) so a snapshot taken at 0 HP cannot loop; a snapshot
-  taken at 1 HP does return him at 1 HP, as the restored record would [inferred]. The save body is NOT restored: `Progress` shares its story state, so copying only part of it would be
-  inconsistent [GAP: items, munny, EXP and story flags earned since the area start stay]. The party reset `FUN_001abfe8(8)` and
+  taken at 1 HP does return him at 1 HP, as the restored record would [inferred]. The save body IS restored (WP-GS1, next bullet). The party reset `FUN_001abfe8(8)` and
   `FUN_001b81f8` are not ported.
+* The save body (WP-GS1, `capture_body` / `restore_body` / `restore_snapshot`). `FUN_001cafa0` (read in full) copies `0x33e860..0x349d40`
+  to `0x1d5e3b0`, `0x35d278..0x35daa0` to `0x1d69898` and `0x35daa0..0x35e2c8` to `0x1d6a0c0`, together with the area record
+  (`DAT_01d69890 = DAT_0033e830`, `+4`, `+5`), only when `FUN_001cb358` allows; `FUN_001cb118` does the same without the test
+  (and sets the record from the party record's bytes `+4..+6`, 0xff elsewhere) at the end of the Load screen. `FUN_001cb208` copies the three
+  ranges back and then runs `FUN_001abfe8(8)`, `FUN_001b81f8`, `FUN_0023ea18`, `FUN_00168928` (refreshes, not ported). The port
+  holds the body as the slot file text (`Progress::slot_json`, the keys of the Save menu) in `GameOver::body`: taken in
+  `track_area` with the snapshot (the NEW tags' live seen words go in as the Save menu stores them) and at the end of the
+  Load screen; "Continue" applies it to a copy of the state before the jump (`apply_json`, which puts the shared story back on a failure, LD1b) and
+  replaces `Progress` and the tags' seen words only on success; a body that does not apply (or none) leaves everything as it was.
+  Lost on Continue, as in the original: items, key items, EXP, munny, party block, option word, shops' seen bits, the moogle record, record
+  bits, journal seen set, kill/reaction/limit counters, BATTLE REPORT counters, the story flags, the area program table and
+  the lock halfwords (every `Progress` field lies inside those ranges, save offsets up to `+0x38f0`). Not restored
+  because outside the ranges: `DAT_0035d268` (the flag word with the KO and game-over bits), `DAT_0035e3a0`, `DAT_0033e830` (the area record,
+  set by the jump), the defeated tables and the Struggle / mission state (managers are not part of the body). `dodge_roll` (the
+  app's stand-in for a Final Mix growth ability) is restored with the body because the slot file carries it. Sora's HP and
+  MP come from the area-start values kept in the snapshot (the app's party block does not follow the live HP, so its byte is not used:
+  no double handling). Tests: `continue_restores_the_area_start_body_and_drops_later_gains`, `a_failed_restore_leaves_the_state_unchanged`.
+* The scene `obj/GAMEOVER.mset` (WP-GS1, read, not ported): `FUN_001ade58` loads it as resource 5000 (`FUN_0016fac8`) and calls `FUN_0016e638(list
+  header word, -1, 0x1e)`; the header word is `FUN_00169958(player) | 0x20000000`, a handle of the player actor, so the scene is the
+  player's own game-over motion (index `0xfc` type 0, `0xfd` types 1 and 3, `FUN_001add40` looks it up through `FUN_001684c0` /
+  `FUN_00168510` in the character's resource entry, format string at `0x37b878`) played on the actor with the existing model;
+  there is no separate model or camera object in it. Missing in the app: the resource-table lookup (`FUN_001684c0`, `FUN_00168510`,
+  `FUN_0016f9c0`) that maps motion index `0xfc` to a motion of the `.mset`, and the wait lengths of `FUN_001ad9a0` steps 2 to 5 (`FUN_00196418`,
+  scene `+0xfc == 4`, `0x35feb8`). Not traced further, so Sora keeps his fall pose and the list opens `OPEN_AFTER` seconds later.
 * "Retry" / "Quit" (type 3): `Mission::menu_exit` (with the manager) or the jump records the manager carried when it ended
   (`GameOverRequest::exits`); resolved as every trigger jump. HP is full.
 * "Load Game" (code 1): opens the Load screen of `menu_save.rs` (section 18.6, WP-LD1): the list waits (`Phase::Loading`, the

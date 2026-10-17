@@ -193,14 +193,44 @@ the player (FUN_00199970) at Vec3(-2.98, -0.10, -6.12)`, and the same for 0x25 a
   Kind 3, 4, 7, 8, 9 and 10 groups are not ported (kinds 3 and 4 hold no enemies in the data; 7 and 8 are other
   object kinds).
 
-**Gaps.** The `FUN_00190668` test that skips the group walk in `FUN_001989d8` was not read (the app always walks).
-Entities the app cannot create (other than those it has) are left out of the walk and of the `SpawnLimiter` sum [inferred
-stand-in: counting them would hold a wave back for ever]; since WP-EN2 `M_EX940` is no longer one of them (below). The table
-at 0x35d278 lives for one run of the area's scripts here, not four areas (`FUN_00194188`'s slots and ages are not
-ported). The effect of a trigger that matches group event 2 or 3 is not applied (no data needs it). Prize orbs and items are
+**Gaps.** Entities the app cannot create (other than those it has) are left out of the walk and of the `SpawnLimiter` sum [inferred
+stand-in: counting them would hold a wave back for ever]; since WP-EN2 `M_EX940` is no longer one of them (below). The effect of a trigger that matches group event 2 or 3 is not applied (no data needs it). Prize orbs and items are
 removed by the jump's unload since WP-EN2 (`docs/prizes.md` "Unload"). The Dusk's drop row reads story flags 2267, 2256,
 2122, 2091 through host 0.15, which answers from the story (all clear without a state file). Whether the game moves the
 player to a battle group's player entry when the battle starts was not read (only the harness does it).
+
+### Group gaps closed (WP-EN5)
+
+- **`FUN_00190668`** [V] returns 1 when `DAT_0035d268 & 0x100`, or `& 2`, or `DAT_0035e3a4 != 0` (`FUN_00196418`: an event plays), or the
+  word at 0x35fec8 is non-zero (`FUN_001c6c08(0x35fec8, 0)`: the latch of host 4.54), else 0. Readers: `FUN_001989d8` (the group walk
+  of every kind except 4: when it holds, the group timer does not run down and nothing is created) and `FUN_00189ae8` (a native NPC's
+  five-frame counter at +0xb0c, below). `FUN_00199e98` (kind 6) does not test it. Ported in `enemy::spawn_waves`: the kind-2 timer and
+  creation stand while a mission event plays (`Mission::event_active`) or the fight is stopped (`Mission::fight_stopped`, bit 2 of
+  `DAT_0035d268`, `FUN_001b9940`). Not modelled: the latch (private to `struggle::Active`; the stop sets it too in the missions of the
+  app) and bit 0x100, for which no writer was found in the decompiled functions (a text search for `DAT_0035d268 |` finds bits 2, 4, 0x10,
+  0x20, 0x10000 and 0x100000; the instruction scan of the undecompiled code was not done).
+- **Group events 2 and 3** [V that the senders are `FUN_00199518` only]: they go through `FUN_00197b70` like any event and run a matching
+  trigger (`FUN_00197670`: set a flag, play an event, jump; docs/events.md "Firing"). The app loads only Twilight Town, and none of
+  its 42 area scripts has a trigger on event 2 or 3 (`no_twilight_town_data_uses_group_events_or_kind_six_enemies`, 0 triggers), so there
+  is nothing to execute: not applicable. The log line "area trigger ... matches" stays for other data.
+- **The defeated table's lifetime** [V]: `FUN_00181148` calls `FUN_00194188(0x35d278, DAT_0035cd28)` at every area start (the area
+  byte 0x33e831 is the key; `DAT_0035cd28` is 3, set by the area script opcode 6, and 0 when the map program byte is above 0x32).
+  Four slots with ages and a counter: an area started again within `keep` area starts finds its slot with its entries; any other start
+  clears the least recent slot. `FUN_00194330` (from `FUN_00168960`, an object-system reset) clears all slots and the counter. Ported
+  as `enemy::DefeatedTables` (`BattleGroups::defeated`): a kind-2 group's `killed` list is seeded from the slot at set-up and written
+  back each tick; F3 (harness) clears the tables. The second table at 0x35daa0 (`DAT_0035cd2c`, default 4) is not used by enemies.
+  Gaps: the opcode 6 value is not read from the script (3 is assumed; `kh2_ard::run::ScriptRun` does not keep it); the callers of
+  `FUN_00168960` were not traced (the app has no reset); a serial of 0 is also the empty entry in the original and is not special-cased.
+- **Kind-6 appear ramp guard** [V]: bit 0x10 of object +0x7f8 is set only right after a ramp is started on +0x82c, by `FUN_00170f78`,
+  `FUN_001b3f78`, `FUN_001c7600` and `FUN_00189ae8` (other classes: each starts its own ramp, then sets the bit); the object
+  constructor `FUN_00168d30` zeroes the word, and no decompiled function clears bit 0x10 alone. So a new enemy of kind 6 always has it
+  clear and the ramp always starts, which is what `Appearing` does. Not applicable beyond that.
+- **M_EX850 `idle` and `set_move(.., 15)`** [V]: the `idle` mode (routine at 0xb0d) only counts a timer (+0x70) down with host 0.3 and
+  switches to `leave`; it does not move the object. The `set_move(.., 15)` is host 1.111 at 0x16f inside routine 0x121, which routine 0x118
+  wraps and `R0060` (reached from the event-11 handler for reaction command 481, mode `exec_rc`) starts with host 1.112 `start_action`
+  (code address 280) after 1.18 `link_start`. So it runs only for that reaction command, not in `idle`; the app has no object links, so
+  that path is not entered. On screen the two are different objects: M_EX940 stays and fights, M_EX850 is the companion made by 1.0
+  (above); the app's `KH2_WAVE_GROUP=b_44 KH2_BDX_HIT=M_EX940:7:25` run is the check, see the acceptance below.
 
 ### M_EX940 and the object type 0x15 (WP-EN2)
 

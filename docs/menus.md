@@ -2303,8 +2303,21 @@ Row 0 uses the app's game mode.
 - The ids 0x404 / 0x405 (1028 / 1029, both inside the counter range 1000 .. 1046): `FUN_001c46a8` is not a party member's defeat method. `FUN_001c3d38` (called by `FUN_001c4208` and itself) tests the player's distance to an object (`FUN_001c3a08`) and then runs `FUN_001c46a8`,
   which adds experience (`FUN_001b51e0`, popup `FUN_0015b198`) and calls `FUN_00187e08(0x33fec0, id)` with id 0x405 if the object's `+0x5c` record id (`FUN_001c3d20`) is 0x5bd, else 0x404. So they count a pickup-like object of two kinds [which kind is which not identified]. `Progress::count_defeat(0x404 / 0x405)` already does the counting (story flag 0x8d0 gate included); the app event is the player absorbing that object (`prize.rs`, not this work package's file).
 Port: `Progress::{count_healed, count_mickey_save, count_form_use, count_summon_use}` and the readers `healed_count`, `mickey_save_count`, `form_uses`, `antiform_uses`, `summon_uses`
-(slot key `report_counters`). Hooks still to call (other work packages' files): the Cure heal on Sora (`magic.rs`), Mickey's rescue (no such object in the app), the drive form change
-(`drive.rs`), the summon call (`summon.rs`), and `menu_ending.rs` must build its `Report` from the readers (it sets only `mode` today).
+(slot key `report_counters`).
+
+**24.4b Hooks (WP-CT2).** `menu_ending.rs` builds rows 3 to 7 from the readers (`Report::from_progress`; rows 1 and 2 still have no source). Hooks:
+- Form change, done: `drive.rs` (`drive_tick`, where the entered form is decided) calls `Progress::count_form_use(form)` with the form entered (1 Valor, 2 Wisdom, 3 Master, 4 Final, 5 Anti), the same value
+  `FUN_001d4180` answers to `FUN_001cf030` message 4. Anti is index 5, the word the Antiform row (row 6) reads, so a roll that gives Anti counts there and in the fifth entry of row 5.
+- Row 3 is NOT the Cure spell (correction of the earlier note). `FUN_001b8658` is the end of the item-use task (`FUN_001b84c8`, queued by `FUN_001b82b8`; items.md): its task fields are the item (`+4`), the user's member id (`+0xc`)
+  and the target (`+0x10`), and it calls `FUN_001a11a0(item, target, user, mult)`, which returns `target != user` (a group item, `FUN_001a1fe0`: any living slot other than the user). The counter is added when the user is member 1
+  (Sora) and that holds, so row 3 ("Healed Party Members") counts Sora using an item on another party member. The Cure spell never reaches `FUN_001b8658`. The app's item use (`items.rs`) heals Sora only and has no other
+  member to target, so there is no event yet; the call belongs where `items.rs` finishes a queued use once it can target Donald or Goofy (`Progress::count_healed()` when the user is Sora and the target is another member).
+  The pause menu's item use calls `FUN_001a11a0` directly (`FUN_0025ea40`), not `FUN_001b8658`, so it counts nothing.
+- Ids 0x404 / 0x405: `prize.rs` ports the prize pool (`FUN_001a3f98`, pickups through `FUN_001a39b0`, 9 kinds at 0x37b4b0); the object of `FUN_001c3d38` / `FUN_001c46a8` is a different class (its own absorb path
+  `FUN_001c45f8`, a limit of 1000 - `DAT_01d5e2b0` < 300, experience through `FUN_001b51e0`, then `FUN_001be6b8`) and neither it nor its record id 0x5bd is spawned by the app, so there is nothing to hook [object not identified]. `Progress::count_defeat(0x404 / 0x405)` stays ready.
+- Summon use, for a later work package (`summon.rs`): in the `SummonRequest::Summon(c)` arm of `summon.rs`'s request loop (inside `tick`), right after `sm.index = index;` (the 1-based `sumn` row, the original's `FUN_001d4ca0(command)`), call
+  `Progress::count_summon_use(index as usize)`; the app's `index` is 1 to 4, so row 7's four counters are filled and the 0 index is never used.
+- Mickey's rescue: no such object in the app, skipped.
 
 **Kind 5, the camp before a jump (`FUN_0024f300`).** `FUN_0024f300(a, b)` is `FUN_0026ef70(b)` (`DAT_0036cffc = b`) then
 `FUN_0024f0b8(5, a)`; `FUN_0019d9d8` passes b = 0x1c8bda0, an address, so `FUN_0026ef80()` is never 0 and kind 5's init

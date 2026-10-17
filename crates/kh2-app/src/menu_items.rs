@@ -899,16 +899,15 @@ fn target_of(s: &crate::sora::Sora, max_mp: i32, magic: &crate::magic::MagicStat
 /// The party as the target page tests it: one `Target` per member, Sora first.
 struct Snapshot {
     targets: Vec<Target>,
-    /// Per member: down (KO). `FUN_001a15a0` has no check for it and the heal is a virtual call on the member's
-    /// object (`FUN_001a0140` through `+0x24c`), whose revive rule was not read, so the port offers a down member only
-    /// the boosts (they write the record) and never spends an item on an effect it does not apply [inferred].
-    ko: Vec<bool>,
 }
 
 impl Snapshot {
+    /// `FUN_001a15a0` has no test for a down member: HP 0 is below the maximum, so a heal is offered and the member's HP
+    /// method revives him (`FUN_001a0140` -> vtable +0x78 of the party class at 0x35cc18 = `FUN_00176c98` ->
+    /// `FUN_00186238` -> `FUN_0017cee8`, WP-PL2). The Drive Recovery pair (0x112, 0x113) reaches `FUN_001a0290` on the gauge
+    /// bytes with no HP method and no KO test either; it has the single "Sora" row, who is never down in the menu.
     fn usable_on(&self, id: u16, row: usize) -> bool {
-        let down = self.ko.get(row).copied().unwrap_or(false);
-        self.targets.get(row).is_some_and(|t| can_use(id, t) && (!down || (0x114..=0x117).contains(&id)))
+        self.targets.get(row).is_some_and(|t| can_use(id, t))
     }
 }
 
@@ -946,33 +945,24 @@ fn member_target(m: &crate::party::PartyMember, p: &Progress) -> Target {
     }
 }
 
-/// The effect on a member's values: a KO'd member is left alone. Answers whether the effect ran.
-fn member_effect(ko: bool, item: u16, amount: u16, feed: f32, v: &mut Vitals) -> bool {
-    if ko {
-        return false;
-    }
-    item_effect(item, amount, 100, v, feed);
-    true
-}
-
 /// What using an item on a field member does (`FUN_001a11a0` -> `FUN_001a12a0` on the member's status block): the
 /// boosts raise his record byte, everything else is `items::item_effect` on his live HP, MP and MP charge. A KO'd
-/// member is left alone (the revive path is party.rs's; the field use leaves him alone too). Answers a log note.
-fn use_on_member(p: &mut Progress, m: &mut crate::party::PartyMember, item: u16, amount: u16, feed: f32) -> String {
+/// member's HP gain goes through the HP method (`FUN_00186238`, `battle::hp_change`), so a heal revives a KO'd member
+/// (`FUN_0017cee8`: the KO bit cleared, the amount scaled by `revive`, `sstm` +0x54); WP-PL2. Answers a log note.
+fn use_on_member(p: &mut Progress, m: &mut crate::party::PartyMember, item: u16, amount: u16, feed: f32, revive: f32) -> String {
     if (0x114..=0x117).contains(&item) {
         let added = p.apply_boost(m.neo, item, amount.min(255) as u8);
         return format!("boost +{added}");
     }
     let mut v = Vitals { hp: m.hp, hp_max: m.hp_max, hp_min: 0, mp: m.mp, mp_max: m.mp_max, charge_left: m.charge.left, charge_total: m.charge.total, ..Default::default() };
     let (hp0, mp0) = (v.hp, v.mp);
-    if !member_effect(m.ko, item, amount, feed, &mut v) {
-        return "KO'd, left alone".into();
-    }
-    m.hp = v.hp;
+    item_effect(item, amount, 100, &mut v, feed);
+    let revived = m.ko && v.hp > hp0;
+    crate::party_battle::hp_change(&mut m.hp, m.hp_max, 0, &mut m.ko, v.hp - hp0, revive);
     m.mp = v.mp;
     m.charge.left = v.charge_left;
     m.charge.total = v.charge_total;
-    format!("HP {hp0} -> {}, MP {mp0} -> {}", m.hp, m.mp)
+    format!("HP {hp0} -> {}, MP {mp0} -> {}{}", m.hp, m.mp, if revived { ", revived (FUN_0017cee8)" } else { "" })
 }
 
 /// What the keys of this frame mean to the open page.
@@ -1027,6 +1017,7 @@ type Vitality<'w> = (
     Option<ResMut<'w, crate::drive::DriveState>>,
     Option<Res<'w, crate::data::GameData>>,
     Option<Res<'w, crate::items::ItemsData>>,
+    Option<Res<'w, crate::party::PartyData>>,
 );
 
 #[allow(clippy::too_many_arguments)]
@@ -1039,7 +1030,7 @@ pub(super) fn input(
     mut progress: Option<ResMut<Progress>>,
     mut sora: Query<&mut crate::sora::Sora>,
     mut party: Query<&mut crate::party::PartyMember>,
-    (mut magic, mut drive, game, idata): Vitality,
+    (mut magic, mut drive, game, idata, pdata): Vitality,
     real: Res<Time<Real>>,
     mut tags: ResMut<NewTags>,
     mut pics: ResMut<Pictures>,
@@ -1120,9 +1111,7 @@ pub(super) fn input(
             None => Target::default(),
         }];
         targets.extend(field.iter().take(2).map(|m| member_target(m, p)));
-        let mut ko = vec![false];
-        ko.extend(field.iter().take(2).map(|m| m.ko));
-        let snap = Snapshot { targets, ko };
+        let snap = Snapshot { targets };
         let (rows, exe) = (st.rows.clone(), st.exe.clone().unwrap_or_default());
         let fx = st.machine.as_mut().map(|m| m.press(key, &rows, &exe, &snap)).unwrap_or_default();
         for e in fx {
@@ -1158,7 +1147,7 @@ pub(super) fn input(
                         let mut field: Vec<_> = party.iter_mut().collect();
                         field.sort_by_key(|m| m.slot);
                         field.truncate(2);
-                        use_item(&st, p, &mut s, m, drive.as_deref_mut(), d.sora_max_mp, feed, (item, &name), row, &mut field);
+                        use_item(&st, p, &mut s, m, drive.as_deref_mut(), d.sora_max_mp, (feed, pdata.as_deref().map_or(1.0, |d| d.revive_scale())), (item, &name), row, &mut field);
                         let stock = stock_of(&st, p, st.machine.as_ref().map_or(0, |m| m.filter));
                         if let Some(m) = st.machine.as_mut() {
                             m.reload(stock, false);
@@ -1240,7 +1229,7 @@ fn use_item(
     magic: &mut crate::magic::MagicState,
     mut drive: Option<&mut crate::drive::DriveState>,
     max_mp: i32,
-    feed: f32,
+    (feed, revive): (f32, f32),
     (item, name): (u16, &str),
     row: usize,
     members: &mut [Mut<crate::party::PartyMember>],
@@ -1280,7 +1269,7 @@ fn use_item(
             }
             sora_line = Some((hp0, mp0, note));
         } else if let Some(m) = members.get_mut(k - 1) {
-            let note = use_on_member(p, m, item, r.amount, feed);
+            let note = use_on_member(p, m, item, r.amount, feed, revive);
             info!("menu: item used: {name} (id {item}, row {k}) on member {} ({}): {note}", m.neo, m.model);
         }
     }
@@ -1975,37 +1964,44 @@ mod tests {
     fn the_target_check_is_per_member_and_a_group_item_needs_any_member() {
         let hurt = Target { vitals: Vitals { hp: 10, hp_max: 50, mp: 5, mp_max: 5, ..Default::default() }, record: None };
         let well = Target { vitals: Vitals { hp: 50, hp_max: 50, mp: 5, mp_max: 5, ..Default::default() }, record: None };
-        let snap = Snapshot { targets: vec![well, hurt, well], ko: vec![false; 3] };
+        let snap = Snapshot { targets: vec![well, hurt, well] };
         assert_eq!(snap.members(), 3);
         assert!(!snap.would_help(1, 0) && snap.would_help(1, 1) && !snap.would_help(1, 2), "Potion: only Donald is hurt");
         // Elixir-like group items ("All", row 0) help when any member can use them.
         let group = (0..0x200).find(|&i| group_item(i) && can_use(i, &hurt)).expect("a group item the check knows");
         assert!(snap.would_help(group, 0));
-        assert!(!Snapshot { targets: vec![well, well], ko: vec![false; 2] }.would_help(group, 0));
+        assert!(!Snapshot { targets: vec![well, well] }.would_help(group, 0));
     }
 
+    /// `FUN_001a15a0` has no KO test: a down member (HP 0, below the maximum) is offered the heal and the Elixir-like group
+    /// item counts him (WP-PL2; replaces WP-PM1b's refusal, which assumed a revive rule nobody had read).
     #[test]
-    fn a_down_member_is_never_offered_an_item_that_would_be_spent_for_nothing() {
+    fn a_down_member_is_offered_the_heals_as_the_use_check_has_no_ko_test() {
         let down = Target { vitals: Vitals { hp: 0, hp_max: 50, mp: 5, mp_max: 5, ..Default::default() }, record: Some([0, 1, 1, 1]) };
-        let hurt = Target { vitals: Vitals { hp: 10, hp_max: 50, mp: 5, mp_max: 5, ..Default::default() }, record: Some([0, 1, 1, 1]) };
-        let snap = Snapshot { targets: vec![down, hurt], ko: vec![true, false] };
-        assert!(!snap.would_help(1, 0), "a Potion on a down member would be refused");
-        assert!(snap.would_help(1, 1));
+        let well = Target { vitals: Vitals { hp: 50, hp_max: 50, mp: 5, mp_max: 5, ..Default::default() }, record: Some([0, 1, 1, 1]) };
+        let snap = Snapshot { targets: vec![down, well] };
+        assert!(snap.would_help(1, 0), "a Potion on a down member revives him");
+        assert!(!snap.would_help(1, 1));
         assert!(snap.would_help(0x115, 0), "a boost writes the record whether he is up or not");
-        let group = (0..0x200).find(|&i| group_item(i) && can_use(i, &hurt)).expect("a group item");
-        assert!(snap.would_help(group, 0), "All still helps: the standing member needs it");
-        assert!(!Snapshot { targets: vec![down], ko: vec![true] }.would_help(group, 0), "All with only a down member is refused");
+        let group = (0..0x200).find(|&i| group_item(i) && can_use(i, &down)).expect("a group item");
+        assert!(Snapshot { targets: vec![down] }.would_help(group, 0), "All with only a down member helps");
     }
 
+    /// The heal goes through the HP method: a KO'd member gets up with the scaled amount (`battle::hp_change`), a
+    /// standing one is healed by the item's amount, held at the maximum.
     #[test]
-    fn a_ko_member_is_left_alone_and_a_standing_one_is_healed_by_the_items_amount() {
-        // Potion (id 1) heals ceil(max HP * amount / 100): FUN_001a12a0's (max * amount * 100 + 9999) / 10000.
+    fn an_item_revives_a_ko_member_through_the_hp_method() {
+        let mut v = Vitals { hp: 0, hp_max: 50, ..Default::default() };
+        item_effect(1, 40, 100, &mut v, 12.0);
+        assert_eq!(v.hp, 20, "Potion: 50 * 40 %");
+        let (mut hp, mut ko) = (0, true);
+        let c = crate::party_battle::hp_change(&mut hp, 50, 0, &mut ko, v.hp, 0.5);
+        assert!(c.revived && !ko, "the KO bit is cleared");
+        assert_eq!(hp, 10, "the amount is scaled by sstm +0x54 (FUN_0017cee8)");
         let mut v = Vitals { hp: 10, hp_max: 50, ..Default::default() };
-        assert!(!member_effect(true, 1, 40, 12.0, &mut v));
-        assert_eq!(v.hp, 10);
-        assert!(member_effect(false, 1, 40, 12.0, &mut v));
+        item_effect(1, 40, 100, &mut v, 12.0);
         assert_eq!(v.hp, 30, "10 + 50 * 40 %");
-        member_effect(false, 1, 40, 12.0, &mut v);
+        item_effect(1, 40, 100, &mut v, 12.0);
         assert_eq!(v.hp, 50, "capped at the maximum");
     }
 

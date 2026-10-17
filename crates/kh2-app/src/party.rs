@@ -209,6 +209,11 @@ impl PartyData {
         battle::pref_row(&self.prty_offsets, moveset as usize, 1).and_then(|k| self.prty.get(k))
     }
 
+    /// The scale a heal on a KO'd member takes (`FUN_0017cee8` through `FUN_00186238`: `sstm` +0x54), 1.0 without the record.
+    pub(crate) fn revive_scale(&self) -> f32 {
+        if self.sstm.is_some() { self.sstm_f32(0x54) } else { 1.0 }
+    }
+
     /// A word of the `sstm` record as f32 (0.0 when the record is missing).
     fn sstm_f32(&self, off: usize) -> f32 {
         self.sstm.as_ref().filter(|s| s.words.len() > off / 4).map_or(0.0, |s| s.f32(off))
@@ -804,15 +809,21 @@ fn jump_party(
 /// (record `+4`, `+6`). The original does it when a block is released (the actor's destructor `FUN_00174998`, the
 /// last user `FUN_0019ffb8`); the app writes every tick a value changed, so the record is current at every release
 /// [inferred: the record of a member who stands is not read before the release].
-fn party_record_sync(progress: Option<ResMut<crate::progress::Progress>>, members: Query<&PartyMember>) {
+fn party_record_sync(progress: Option<ResMut<crate::progress::Progress>>, members: Query<&PartyMember>, mut last: Local<HashMap<u16, (i32, i32)>>) {
     let Some(mut progress) = progress else { return };
-    sync_records(&mut progress, members.iter().map(|m| (m.neo, m.hp, m.mp)));
+    sync_records(&mut progress, members.iter().map(|m| (m.neo, m.hp, m.mp)), &mut last);
 }
 
 /// `party_record_sync`'s write: each standing member's (NeoStatus, HP, MP) goes into his record when it differs
-/// (reading first, so an unchanged record does not mark `Progress` changed).
-fn sync_records(progress: &mut crate::progress::Progress, standing: impl Iterator<Item = (u16, i32, i32)>) {
+/// (reading first, so an unchanged record does not mark `Progress` changed). Only a value that changed since the last
+/// call is written: the original copies a block back when it is released, so a record replaced while the members stand
+/// (the game over's Continue puts the area-start save body back before the jump, WP-GS1) is not overwritten by the
+/// stale live values; the members are rebuilt from the replaced record at the jump (WP-PL2).
+fn sync_records(progress: &mut crate::progress::Progress, standing: impl Iterator<Item = (u16, i32, i32)>, last: &mut HashMap<u16, (i32, i32)>) {
     for (neo, hp, mp) in standing {
+        if last.insert(neo, (hp, mp)) == Some((hp, mp)) {
+            continue;
+        }
         let want = (hp.clamp(0, 255) as u8, mp.clamp(0, 255) as u8);
         if progress.member_vitals(neo).is_some_and(|have| have != want) {
             progress.set_member_vitals(neo, hp, mp);
@@ -2575,9 +2586,26 @@ mod tests {
     #[test]
     fn standing_members_write_their_vitals_into_the_record() {
         let mut p = two_records();
-        sync_records(&mut p, [(2u16, 12, 7), (3, 99, -4), (99, 1, 1)].into_iter());
+        sync_records(&mut p, [(2u16, 12, 7), (3, 99, -4), (99, 1, 1)].into_iter(), &mut HashMap::new());
         assert_eq!(p.member_vitals(2), Some((12, 7)));
         assert_eq!(p.member_vitals(3), Some((30, 0)), "held between 0 and the maximum");
+    }
+
+    /// WP-PL2 A: a record replaced while the members stand (Continue restores the area-start body, then the jump fades
+    /// out) keeps the restored vitals; the live values that did not change are not written over it. A value that
+    /// changes afterwards is written again.
+    #[test]
+    fn a_replaced_record_is_not_overwritten_by_unchanged_live_vitals() {
+        let mut p = two_records();
+        let mut last = HashMap::new();
+        sync_records(&mut p, [(2u16, 12, 7)].into_iter(), &mut last);
+        assert_eq!(p.member_vitals(2), Some((12, 7)));
+        // Continue: the restored record holds the area-start values (30, 50); the member still stands with (12, 7).
+        p.set_member_vitals(2, 30, 50);
+        sync_records(&mut p, [(2u16, 12, 7)].into_iter(), &mut last);
+        assert_eq!(p.member_vitals(2), Some((30, 50)), "the restored record survives the fade");
+        sync_records(&mut p, [(2u16, 11, 7)].into_iter(), &mut last);
+        assert_eq!(p.member_vitals(2), Some((11, 7)), "a later change is written");
     }
 
     /// Auto Healing's pass: only a reserve member (slot 3, not standing) with ability 420 equipped gains an HP, a full

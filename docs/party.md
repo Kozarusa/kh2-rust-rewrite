@@ -710,8 +710,8 @@ Done:
   Sora's 178; on screen the staff and the shield sit in the hand facing outward (the other wrist puts Goofy's shield
   edge-on into his leg). Shown only while the battle flag is set [inferred from the reference video
   `10_menu_open_close.mp4` at 0.0 s, where neither member holds anything out of battle]. **Gap**: the app's new
-  game leaves both members' weapon words 0 (the original's writer of those words was not found; searched: item-id
-  immediates 0x4b / 0x31 in the decompilation), so no weapon appears without `KH2_PARTY_WEAPONS=75,49` (harness
+  game leaves both members' weapon words 0 (the original's writer of those words was not found here; searched: item-id
+  immediates 0x4b / 0x31 in the decompilation; WP-RV2 found it: host 0.75 in `00common.bdx` event 7, below), so no weapon appears without `KH2_PARTY_WEAPONS=75,49` (harness
   aid) or a state that sets the words.
   (WP-PY3) The scenarios that load a state file (`KH2_STATE`, e.g. `local/acc1/state-sum.json`, which has no
   `members` entry) skip the app baseline, so the words stay 0 and `party: P_EX030: no weapon (item 0: no went entry
@@ -722,6 +722,16 @@ Done:
   Donald or Goofy lists a weapon or shield item, so the rows are not the source (docs/progress.md "App baseline");
   `Progress::start` now applies the staff / shield entry to a state file that carries no `block` too
   (`apply_party_weapons`). A file or slot with a `block` keeps its words; `KH2_PARTY_WEAPONS` still works.
+  **(WP-RV2) The real writer.** Host 0.75 (table slot 0x35bc08, native FUN_0016d9d8 -> FUN_00187d88(0x33fec0, member, w0, w1) -> FUN_00187648) stores the two weapon
+  halfwords at record +0 and +2. `00common.bdx` entry event 7 (routine R00c1) calls it 13 times: member 1 (Sora) 41, 2 (Donald) **75**, 3 (Goofy) **49**, 4 81, 5 54, 6 55 and 80,
+  7 72, 8 62, 9 59, 10 60, 11 61, 12 74, 13 73, then host 0.76 (FUN_0016da08, the form record's +0) for forms 1 to 4 = 0, 5 = 71, 9 = 42. FUN_00194d78 runs that event: it makes a
+  thread of `00common.bdx` (DAT_01c8a980, loaded by FUN_00194d50), starts event 7, runs it to its end and frees the thread. Its caller is the game object's constructor FUN_00105638 (the only
+  `jal 0x194d78`), in the same constructor right after FUN_00187d20(+0x598) (not read), so the words are the defaults of every boot and a loaded save replaces them. The constants 75 and 49 (and Sora's 41) are
+  exactly `DONALD_STAFF`, `GOOFY_SHIELD` and the Kingdom Key of the app baseline. The other writers of record +0: FUN_001878f8 (story events of FUN_001d5048 give Sora 0x29, 0x2b or 0x180; it keeps the
+  old word in DAT_00341854 and FUN_00187910 gives it back, 0x29 when none) and the second event script writer, `ard/tt04.ard` `tt04_ms106` (host 0.75 on Sora with 384, 502 and 501). No other
+  writer of Donald's or Goofy's words was found (FUN_00187648 is reached only through FUN_00187d88, whose callers are host 0.75 and FUN_001d5048; host 0.75 has 16 call sites in two scripts,
+  `00common.bdx` and `tt04.ard`; the equipment menu's writers, docs/menus.md 2.2, were not re-read) [inferred: the words stay as the boot default until the menu changes them]. Ported by a later package: `Progress` should take the 13 member
+  words and the form words from this table at the point FUN_00194d78 runs (a boot-time default) instead of the two constants.
 
 Not done or approximated in stage 2:
 

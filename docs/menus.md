@@ -2427,7 +2427,7 @@ The three constructors `FUN_001ad810`, `FUN_001ad8a8`, `FUN_001ad868` and `FUN_0
 record, +0x30 / +0x34 the list header words and the scene handle, +0x48 the callback of the list's code 2, +0x4c its task. It sets
 `DAT_0035ee00` (one game over at a time), flag 0x35d268 bit 1, `0x35fec8` bit 1 (not for type 2), the music stop `FUN_00137520`
 (`FUN_002c1a08`: both music slots fade, `FUN_00136a68` stream stop) and the system sound `FUN_002c14a8(0x13)` (type 1: `0x33`),
-queues the camera/message object when an actor was passed (`FUN_00195898` / `FUN_00195a78` / `FUN_00195ae0`), sets `0x354f70`
+queues the camera/message object when an actor was passed (`FUN_00195898` / `FUN_00195a78` / `FUN_00195ae0`; WP-RV2: it is the event object of kind 0xf playing the first type-0x16 entry of `00battle.bin`, `re_gameover-0a`, a camera cut plus a 100-tick fade to black from event frame 0xb, with the pad locked; the actor is only stored as an unread word, docs/summons.md "The revive's message window"), sets `0x354f70`
 bit 2 (`FUN_00138708`) and makes its task (`FUN_00102bc8(1, 15000, 0x1ad918)`, body `FUN_001ad960` -> `FUN_001ad9a0`).
 `FUN_001ad640` (types other than 2) clears the manager (`FUN_001b9518`) when the alternate byte is 0, picks the record
 (`FUN_001bef10(0x21)` for type 3, `FUN_001bef10(1)` for the others; the callback `+0x48` = `0x1adc70` for types other than 3) and

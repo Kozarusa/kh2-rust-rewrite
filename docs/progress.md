@@ -155,7 +155,7 @@ therefore adds, on top of the new game and only where missing:
   0x13); a staff or shield (type 3/4) takes neither path, only the inventory count. The other callers of
   `FUN_001a18d8` (`FUN_001a6910` chests, `FUN_001b53d0`/`FUN_001be500`/`FUN_001d3da8`/`FUN_001d4fa0` level-up and
   bonus rewards, `FUN_0026c420` battle-item equip, `FUN_001d7508`) were read (`FUN_0026c4d0`..`FUN_0026c698` and `FUN_001bd1d8` not); none writes record `+0` of
-  Donald or Goofy. So the words' writer is still unknown [GAP]. A `KH2_STATE` file without a `block` key cannot set
+  Donald or Goofy. So the words' writer is still unknown [GAP; closed by WP-RV2: host 0.75 in `00common.bdx` event 7 writes them at boot, with Donald 75 and Goofy 49, docs/party.md "Weapons"]. A `KH2_STATE` file without a `block` key cannot set
   the words either, so `Progress::start` applies this same entry to it (`Progress::apply_party_weapons`, logged in
   the `KH2_PROGRESSLOG` baseline list); a file or slot with a `block` keeps its records unchanged;
 - the Kingdom Key in Sora's hand 0;

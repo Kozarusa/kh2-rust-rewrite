@@ -938,7 +938,7 @@ work package are closed by WP-EN4 below.
   becomes 0x35e3a4; step 1 of the thread sets 0x36f598 through FUN_002c38b8) and starts a thread (FUN_00102bc8 priority 1, 15000). The thread's step 2
   waits while that window exists (FUN_00196418) and until the fade object at 0x356b30 has its +0xfc at 4 (idle), clears 0x36f598 (FUN_002c38c8), puts the player on
   the floor (FUN_00183fe0), and FUN_001adeb8 makes Tinker Bell, clears 0x35d268 bit 1 and starts the music again (FUN_00137558: the saved music state back,
-  FUN_00136aa0 starts the area's music record). The "fade" is therefore not a picture fade started here: the thread only waits for the fade object at
+  FUN_00136aa0 starts the area's music record). (Corrected by WP-RV2, below: state 4 is the finished fade to black, started by the event the "window" really is.) The "fade" is therefore not a picture fade started here: the thread only waits for the fade object at
   0x356b30 to be idle (+0xfc == 4; its writers are FUN_0014a6f8 / FUN_0014a7c8 / FUN_0014a7f0 / FUN_0014a818, the screen fades of other code), so a fade
   already running (the player's death) finishes before Tinker Bell appears. What the player sees and hears, in order: system sound 0x13 (FUN_002c14a8), the
   music ramping out, a message window if the argument is a text, (no pad lock comes from 0x36f598, see below) the wait until the window is gone and the screen is not fading, then the player on the
@@ -963,7 +963,37 @@ work package are closed by WP-EN4 below.
   FUN_001d1160 only stores it, so no message id was found: searched FUN_001ad378, FUN_001ad8a8, FUN_001ad8e0, FUN_001ad810, FUN_00195898, FUN_00195a78,
   FUN_00195ae0; the instruction at 0x1ad8b4..0x1ad8d0 confirms a1 = a0), so no window opens and the window wait is always over; the 0x356b30 fade is not
   modelled by the app (the wait is always over). Both waits are parameters of `Revive::tick`, tested. The thread's per-tick function (FUN_001ad918, created
-  by FUN_00102bc8) has no decompile; that it calls FUN_001ad9a0 each tick is [inferred] from FUN_001ad9a0's shape. [GAP: the window's text; the 0x356b30 fade.]
+  by FUN_00102bc8) has no decompile; that it calls FUN_001ad9a0 each tick is [inferred] from FUN_001ad9a0's shape. [Resolved by WP-RV2, next bullet: there is no text, and the fade is the event's own.]
+- *The revive's "message window" is a camera event, and the 0x356b30 fade is its fade (WP-RV2, research; nothing ported, the files are not this package's).*
+  FUN_001ad378 builds the "window" with FUN_00195898(object, 0xf, FUN_00193f08(0)), FUN_00195a78(object, a1) and FUN_00195ae0(object): this is the event
+  object of docs/events.md "Start and end" (the same constructor FUN_00196428 uses for a trigger's event), not a text window. Its three arguments:
+  0xf is the event kind (`evtp` row of kind 0xf in `03system.bin`, bytes `0f 00 64 00 ..`: no start fade (byte +1 is 0), flags 0x64 = bits 2, 5 and 6; bit 3 clear, so
+  FUN_00195ae0 calls FUN_00196280 and the two players lose control for the event, and FUN_00196170 gives it back; bit 2 set, so the field HUD stays; bit 4 clear, so no
+  fade-in at the end); FUN_00193f08(0) is the event record: `FUN_001684c0(DAT_01c8a97c, 0x16, 0)`, the first BAR entry of type 0x16 of `00battle.bin` (DAT_01c8a97c is
+  the second file FUN_00193610 loads), field +8 of its row; and the player object FUN_001cec00 passes is stored as the "text" word (FUN_00195a78 -> FUN_001d1160
+  stores a mode 2 or 3 and the word at +0x40 / +0x44) and handed on as the fourth parameter of FUN_002232c8 into DAT_0036bd50, whose only accesses are the clear in FUN_00223180
+  and that store (`mips_scan --addr 0x36bd50`: two hits, both writes): nothing reads it, so no message id exists to find [V]. On the disc `00battle.bin` has
+  three type 0x16 entries, all tagged `0a`: `re_gameover-0a` (612 bytes), `re_mscomp2-0a` (396) and `re_deadboss2-0a` (2760); entry 0 is the one used. Its commands
+  (size, opcode, operands): 0 the name, 0xf / 0x10 setup, **8 end frame = 0x15 (21 event frames, FUN_00226fb0 stores it at DAT_0036bcf8; FUN_00222668 ends the event
+  when the event frame reaches it)**, 0x14, one camera record (0x13, FUN_0022b4f8, eight channels) with one cut (6: cut 0, frames 0 to 0x1e), 0x17 / 0x18 (FUN_00226940 /
+  FUN_00226a98 at frames 0 and 0x15, not read further), 0x46 (the camera flags), 0x27 (FUN_00226b58 starts a thread, not read), two 0x20 (FUN_00226fc0, a colour change
+  FUN_0014cb50 at frames 4 and 0x14 [inferred]) and **0x12 at frame 0xb with length 0x32 and mode 2**. FUN_00226830 mode 2 is `FUN_0014a7c8(FUN_0014a978(), 0x32, 1)`: FUN_0014a978 returns
+  the object at **0x356b30**, so the "0x356b30 fade" is this event's screen fade to black. FUN_0014a7c8 (disassembled: it stores state 3 at +0xfc, the flag at +0xf4 and jumps
+  to FUN_0014a710 with the length untouched in a1) makes the counter 2 x length = 100 and FUN_0014a818 takes DAT_00356f44 (1.0, read from the executable) off it each
+  frame while the alpha goes from 0 to 0x80; at zero the state becomes 4 and stays (black). FUN_001ad9a0 step 2 waits `+0xfc != 4` with `return 1`, i.e. **until the
+  screen has faded to black** (the earlier reading "waits for the fade to be idle" had the sense reversed: state 4 is the finished fade-out, state 0 the idle one;
+  a run without the event's fade would wait forever). The window wait (FUN_00196418: DAT_0035e3a4 != 0) is the event object's life: it ends when the event does (end frame 21
+  event frames = 42 game ticks, the event frame being half the tick counter, FUN_00222728 and 0x37ec50 = 0.5) and the object's end states run (FUN_00195c08
+  states 5 to 9 -> FUN_00196170, which also stops the event's own sound gate by FUN_001959f0). Event frame 0xb is game tick 22, so the fade ends at about tick 122
+  (100 ticks after tick 22); at 60 ticks a second that is 2.0 s after the revive begins [inferred: that FUN_0014a818 runs once per game tick; the event frame to
+  tick ratio is the one docs/struggle.md already uses]. So **Tinker Bell appears after about 2 s on a black screen with the pad locked**, not two ticks later. What lifts the black
+  afterwards was not found: the callers of the fade-in FUN_0014a7f0 are FUN_001047a8 (every area start), FUN_00223a88 (the next event's start, which fades 0x356b30 and
+  0x3565e0 in at once, only while an event runs and FUN_002c17e0 is set), the event end FUN_00196170 / FUN_00195ff8 (other faders, 0x3564d0 and the two of FUN_0014a958 /
+  FUN_0014a968), the movie player FUN_00225860, FUN_00227280, FUN_001b65e0, FUN_0015d1a8 and FUN_002de1c8; Tinker Bell's script host 0.31 / 0.32 / 0.88 move 0x3564d0, not 0x356b30.
+  [GAP: which of these returns 0x356b30 to clear in the revive; searched `mips_scan --jal 0x14a7f0`, `--jal 0x14a978`, `--jal 0x14a6f8` (only FUN_0014ab80 resets it).]
+  For the port (code outside this package: `summon.rs` `Revive::tick`, `sora.rs`, `event_player.rs`, `audio_bgm.rs`): the window wait is the 42 ticks of the event, the fade wait ends at tick
+  122, the pad is locked from the start to the event's end, and the camera plays the first 30 event frames of `re_gameover-0a`'s cut; the screen goes black from tick 22 over 100 ticks.
+  Tests: none (nothing ported); the claim rests on the disc dump of the three events (a scratch BAR reader) and the addresses above.
 - *The revive's Tinker Bell in a run.* `KH2_SUMMON_KO=<seconds>` (new, a harness aid) knocks the player out (HP 0, `State::Down`) once while a summon is out.
   Run: `KH2_STATE=localcc1\state-sum.json KH2_WAVE_GROUP=b_44 KH2_DRIVE_POINTS=5 KH2_SUMMON=4 KH2_SUMMON_AT=5 KH2_SUMMON_PARTY=1 KH2_SUMMONLOG=1
   KH2_SUMMON_KO=10 kh2-game tt04` (WP-SM4, with `KH2_NO_SOUND=1 KH2_NO_MUSIC=1 KH2_SCREENSHOT=<png> KH2_SHOT_AT=14`) logs `KH2_SUMMON_KO: the player is knocked out (HP 20 -> 0)`,

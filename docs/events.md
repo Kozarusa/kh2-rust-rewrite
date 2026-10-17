@@ -795,7 +795,7 @@ direction: the yaw stays (the game divides by a zero length). Tests: `npc::look:
   `DAT_0035e3a4` (host 1.34 `event_active` reads it), hides HUD parts (`FUN_001bef48(0xc)`, `FUN_0014c748(4)`).
   `FUN_00195c08` steps the object's own states (0..9). When the event ends (`FUN_001964d0`) the chain event 0x4c
   fires for kinds with bit 0; the event's end (`FUN_00225028`) fires 0x12 or 99. Other starters: `FUN_001ad1c0`,
-  `FUN_001ad378` (revive), `FUN_001b3468`.
+  `FUN_001ad378` (the game over and the revive: kind 0xf, the event `re_gameover-0a`, the first type 0x16 entry of `00battle.bin` through `FUN_00193f08(0)`; WP-RV2, docs/summons.md), `FUN_001b3468`.
 - **What the start holds back, and what the end gives back** [V, WP-E6b]. `FUN_00195898` takes the kind row of
   `arg & 0x3f` (`FUN_001d1128`: `FUN_0030ff40` searches the `evtp` rows of `03system.bin`, 8 bytes, by their kind
   byte; +2 the flags; `struggle::event_kinds`). `FUN_00195ae0` then: flag bit 3 clear -> `FUN_00196280`

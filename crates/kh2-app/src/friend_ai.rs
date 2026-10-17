@@ -418,6 +418,10 @@ fn friend_update(
         let rig = anim.rig.clone();
         let FriendBrain { rt, obj, tag, flags124, started, errors_seen, mode, fields } = &mut *brain;
         fields.order = data.order(m.motion_row);
+        if let Some(ai) = data.ai.get(&m.class) {
+            fields.entries_at = ai.entries_at;
+            fields.entries = ai.entries.clone();
+        }
         fields.free = m.free;
         fields.target_valid = m.target_valid();
         fields.target_point = m.target_point;

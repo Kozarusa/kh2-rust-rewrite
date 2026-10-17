@@ -209,6 +209,10 @@ pub struct ClassAi {
     pub params: Params,
     pub records: Vec<Record>,
     pub followups: Vec<FollowUp>,
+    /// The game address of the class's entry list (block + the word at +0xa4); host 10.35 answers addresses in it.
+    pub entries_at: u32,
+    /// All of the list's 0x80-byte entries as the executable holds them (the count is the word at block +0xa0).
+    pub entries: std::sync::Arc<[u8]>,
 }
 
 /// FUN_0010c800's jump direction: the member's yaw plus the entry's angle, as (sin, 0, cos) in the
@@ -316,7 +320,8 @@ impl ClassAi {
                 Some(FollowUp { angle: rf(elf, e)?, height: rf(elf, e + 4)?, speed: rf(elf, e + 8)?, motion_speed: rf(elf, e + 0xc)?, frames: rf(elf, e + 0x10)? })
             })
             .collect();
-        Some(ClassAi { params, records, followups })
+        let entries = exe_bytes(elf, entries_at, entries_n * 0x80).map(|b| b.to_vec()).unwrap_or_default().into();
+        Some(ClassAi { params, records, followups, entries_at, entries })
     }
 }
 

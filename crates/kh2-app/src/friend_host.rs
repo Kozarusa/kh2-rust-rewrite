@@ -28,6 +28,10 @@ pub struct FriendFields {
     /// The member's target record (+0x9f4) is valid: an enemy target, or the one a special or Cure was
     /// chosen for (FUN_00113d48 copies phase 1's record there). Host 1.140 reads it.
     pub target_valid: bool,
+    /// The member's class entry list (the object at the AI's +8, record count +0xa0, list +0xa4): its game
+    /// address and the 0x80-byte entries. Host 10.35 searches it; `read_mem` serves the answered address.
+    pub entries_at: u32,
+    pub entries: std::sync::Arc<[u8]>,
     /// The member's attack objects (host 2.10 / 2.31), kept from tick to tick until they are released
     /// and destroyed (FUN_0018c2d8), and the hits the script delivered on its target record (host
     /// 2.17); `friend_ai` steps the objects and hands the 2.17 hits to `party`.
@@ -246,6 +250,15 @@ pub(crate) struct FriendHost<'a, 'b> {
     pub(crate) free: Option<&'b crate::party_rules::FreePointConsts>,
     /// The enemies' target parts host 6.5 walks (`friend_ai` lists them each tick).
     pub(crate) targets: &'b [SearchPart],
+}
+
+/// FUN_001141d0: the address of the first 0x80-byte entry of `entries` (the list at `at`) whose first
+/// word is `id`, 0 when none does.
+pub(crate) fn entry_address(at: u32, entries: &[u8], id: u32) -> u32 {
+    entries
+        .chunks_exact(0x80)
+        .position(|e| u32::from_le_bytes([e[0], e[1], e[2], e[3]]) == id)
+        .map_or(0, |k| at + 0x80 * k as u32)
 }
 
 fn words(c: &Call) -> Option<(u16, u16, Vec<u32>)> {
@@ -726,6 +739,13 @@ impl FriendHost<'_, '_> {
             // 10.31 (0x2f7118): +0x588 bit 0x400000, set only for summons (FUN_0010c5f8 path): a party
             // member is never one.
             31 => (Value::Bool(false), St::Impl, ""),
+            // 10.35 (0x2f71f0 -> FUN_001141d0): the address of the first 0x80-byte entry of the AI's class
+            // list whose first word is the id (second argument), 0 for none. The list is the class block's
+            // (party_battle::ClassAi); the entry is read through `read_mem` at its executable address.
+            35 => {
+                let at = entry_address(self.fields.entries_at, &self.fields.entries, arg(1));
+                (Value::Int(at as i32), St::Impl, "")
+            }
             // 10.36 (0x2f7230): free (+0x160 bits 4/8/0x10).
             36 => (Value::Bool(self.fields.free), St::Approx, "free = not in an attack motion (the controller's +0x160 bits are not modelled)"),
             // 10.40 (0x2f72e8 -> FUN_0017eb48): whether the second object's motion controller is linked
@@ -916,6 +936,11 @@ impl Host for FriendHost<'_, '_> {
             out.copy_from_slice(&r[t..t + out.len()]);
             return true;
         }
+        let off = addr.wrapping_sub(self.fields.entries_at) as usize;
+        if self.fields.entries_at != 0 && off.checked_add(out.len()).is_some_and(|end| end <= self.fields.entries.len()) {
+            out.copy_from_slice(&self.fields.entries[off..off + out.len()]);
+            return true;
+        }
         self.inner.read_mem(addr, out)
     }
 
@@ -986,5 +1011,32 @@ mod tests {
     fn member_advance_vec_follows_fun_0016d098() {
         assert_eq!(advance_vec([1.0, 2.0, 3.0, 1.0], [0.0, 0.0, 2.0, 0.0], 5.0), [1.0, 2.0, 8.0, 1.0]);
         assert_eq!(advance_vec([1.0, 2.0, 3.0, 1.0], [0.0, 0.0, 0.0, 0.0], 5.0), [1.0, 2.0, 3.0, 1.0]);
+    }
+
+    /// Host 10.35 (FUN_001141d0): the first entry whose first word is the id, its address; none gives 0.
+    #[test]
+    fn host_10_35_finds_the_entry_with_the_id() {
+        let mut list = vec![0u8; 0x80 * 3];
+        for (k, id) in [5u32, 111, 111].into_iter().enumerate() {
+            list[k * 0x80..k * 0x80 + 4].copy_from_slice(&id.to_le_bytes());
+        }
+        assert_eq!(entry_address(0x1000, &list, 111), 0x1080);
+        assert_eq!(entry_address(0x1000, &list, 5), 0x1000);
+        assert_eq!(entry_address(0x1000, &list, 7), 0);
+        assert_eq!(entry_address(0x1000, &[], 5), 0);
+    }
+
+    /// Riku's class (11, the one `P_EH000` runs with) in the executable: id 111 has an entry, an
+    /// unknown id has none. Needs `KH2_ISO`.
+    #[test]
+    fn host_10_35_on_rikus_class_list() {
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else { return };
+        let Some(elf) = crate::assets::Disc::open(&iso).read_root("SLUS_210.05") else { return };
+        let ai = crate::party_battle::ClassAi::from_exe(&elf, 11).expect("class 11");
+        assert!(!ai.entries.is_empty() && ai.entries.len() % 0x80 == 0);
+        let at = entry_address(ai.entries_at, &ai.entries, 111);
+        eprintln!("class 11 entry 111 at {at:#x}, list {:#x}, {} entries", ai.entries_at, ai.entries.len() / 0x80);
+        assert!(at >= ai.entries_at && (at - ai.entries_at) % 0x80 == 0 && at != 0, "{at:#x}");
+        assert_eq!(entry_address(ai.entries_at, &ai.entries, 0xdead_beef), 0);
     }
 }

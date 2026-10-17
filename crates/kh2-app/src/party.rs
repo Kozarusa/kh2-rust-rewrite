@@ -88,7 +88,7 @@ struct WeaponTables {
 pub struct PartyData {
     consts: Option<Consts>,
     /// Per AI class, its parameter block and action records (`party_battle::ClassAi`).
-    ai: HashMap<u8, ClassAi>,
+    pub(crate) ai: HashMap<u8, ClassAi>,
     /// FUN_0017da30's slot orders (0x37a5c8).
     orders: [[u8; 4]; 4],
     /// 0x3784ac: style 2 halves the battle distance (FUN_0010df08).

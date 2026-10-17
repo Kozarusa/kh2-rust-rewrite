@@ -42,7 +42,7 @@ Marks: **[V]** read in the code (or checked by the oracle), **[I]** inferred, **
 | offset | what |
 |---|---|
 | `+0`, `+2` | weapons of hand 0 and hand 1 (`FUN_0016ee98` reads `+2 * hand`; `FUN_0019f920` applies both) |
-| `+4`, `+5` | HP, max HP; `+6`, `+7` MP, max MP |
+| `+4`, `+5` | HP, max HP; `+6`, `+7` MP, max MP. Current HP and MP are the member's persistent vitals: `FUN_0019f920` builds a status block from them (`min(max, current)`), `FUN_001a0030` writes the block's values back when it is released (docs/party.md section 20); `Progress::member_vitals` / `set_member_vitals` |
 | `+8`..`+0xb` | AP, strength, magic, defense |
 | `+0xe` | weapon set (the `lvup` column, `FUN_001b52f8`); `+0xf` level |
 | `+0x10`, `+0x11`, `+0x12` | number of armor, accessory and battle item slots |

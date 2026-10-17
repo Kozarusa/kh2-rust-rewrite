@@ -61,6 +61,7 @@ impl Plugin for PartyPlugin {
             .init_resource::<PartySlots>()
             .insert_resource(Manager { log: std::env::var("KH2_PARTYLOG").is_ok_and(|v| !v.is_empty() && v != "0"), rng: 0x2545_f491, ..Default::default() })
             .add_systems(FixedUpdate, (jump_party, jump_reset, mission_party, spawn_party, party_tick, party_push_apart, party_fade, party_hits).chain().in_set(PartyTick).in_set(Sim::Enemy))
+            .add_systems(FixedUpdate, (party_record_sync, party_auto_healing).chain().after(PartyTick).in_set(Sim::Enemy))
             .add_systems(FixedUpdate, member_hands.in_set(Sim::Enemy).before(PartyTick))
             .add_systems(FixedUpdate, (party_receive_hits, party_item_uses, party_script_hits).chain().in_set(Sim::SoraHurt))
             .add_systems(FixedUpdate, party_hud.after(Sim::SoraHurt).run_if(crate::schedule::sim_running))
@@ -566,6 +567,8 @@ const EFFECT_DOWN: u16 = 0xe;
 const VOICE_KO: u16 = 2;
 /// The Auto Change ability's id (bit 130 of the ability block, `abilities::BIT_AUTO_CHANGE`).
 const ABILITY_AUTO_CHANGE: u16 = 418;
+/// The Auto Healing ability's id (bit 132, `abilities::BIT_AUTO_HEALING`).
+const ABILITY_AUTO_HEALING: u16 = 420;
 const VOICE_DANGER: u16 = 9;
 
 impl PartyMember {
@@ -802,6 +805,50 @@ fn jump_party(
 /// (`FUN_001ac130` for the blocks 1 to 15: HP raised by its maximum and clamped, MP set to its maximum with a running MP
 /// charge ended; the same pair a form start runs, docs/drive-forms.md). A member at 0 HP is left as it is [inferred: the app
 /// has no revive path here].
+/// `FUN_001a0030`'s write-back of the field members' status blocks into their party records: current HP and MP
+/// (record `+4`, `+6`). The original does it when a block is released (the actor's destructor `FUN_00174998`, the
+/// last user `FUN_0019ffb8`); the app writes every tick a value changed, so the record is current at every release
+/// [inferred: the record of a member who stands is not read before the release].
+fn party_record_sync(progress: Option<ResMut<crate::progress::Progress>>, members: Query<&PartyMember>) {
+    let Some(mut progress) = progress else { return };
+    for m in &members {
+        let want = (m.hp.clamp(0, 255) as u8, m.mp.clamp(0, 255) as u8);
+        if progress.member_vitals(m.neo).is_some_and(|have| have != want) {
+            progress.set_member_vitals(m.neo, m.hp, m.mp);
+        }
+    }
+}
+
+/// Auto Healing (`FUN_0017d4b8`, called from the object tick at 0x1b77e4 inside a function the decomp lacks): the
+/// timer `DAT_0035cc08` runs down by the frame step; at 0 every member of slots 1 to 3 who is not on the field and
+/// whose block holds ability 420 (`+0x1dc & 0x10`) gains one HP in his record (`Progress::heal_reserve_member`), and
+/// the timer takes `sstm` +0x168.
+fn party_auto_healing(
+    data: Res<PartyData>,
+    slots: Res<PartySlots>,
+    mgr: Res<Manager>,
+    drive_world: Option<Res<crate::drive::DriveWorld>>,
+    progress: Option<ResMut<crate::progress::Progress>>,
+    members: Query<&PartyMember>,
+    mut timer: Local<f32>,
+) {
+    let (Some(mut progress), Some(memt), Some(_), true) = (progress, data.memt.as_ref(), data.sstm.as_ref(), mgr.built.is_some()) else { return };
+    if !rules::auto_heal_due(&mut timer, FRAME, data.sstm_f32(0x168)) {
+        return;
+    }
+    let merged = crate::drive::rules::memt_merge(memt, drive_world.map_or(2, |d| d.id), |_| false);
+    let member_of = |o: u16| data.objs.iter().find(|r| r.object_id == u32::from(o)).map(|r| r.neo_status);
+    let field: Vec<u16> = members.iter().map(|m| m.neo).collect();
+    for neo in rules::reserve_members(slots.bytes, &merged, member_of, &field) {
+        if !progress.member(neo).is_some_and(|r| r.abilities.contains(&(ABILITY_AUTO_HEALING, true))) {
+            continue;
+        }
+        if let Some((before, after)) = progress.heal_reserve_member(neo, 1) {
+            info!("party: Auto Healing (FUN_0017d4b8): reserve member {neo} HP {before} -> {after}");
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn jump_reset(
     mut menus: ResMut<crate::area_jump::JumpMenus>,
@@ -1038,10 +1085,12 @@ fn spawn_party(
         let prty = data.prty_row(row.neo_moveset);
         let (walk, run, turn, jump) = prty.map_or((0.0, 0.0, 0.0, 0.0), |p| (p.walk_speed, p.run_speed, p.turn_speed, p.jump_height));
         let (stun, mp_drive) = prty.map_or((0.0, 0.0), |p| (p.stun_time, p.mp_drive));
-        // The status block (FUN_0019fd30): rebuilt from the saved party record; a new block gets its HP
-        // through FUN_001a0140 [inferred: the maximum], and MP at its maximum [inferred].
+        // The status block (FUN_0019fd30 -> FUN_0019f920): rebuilt from the saved party record, HP and MP each
+        // `min(maximum, current)` of the record, which `party_record_sync` keeps (FUN_001a0030's write-back); a stored
+        // HP of 0 starts at the maximum (`rules::spawn_vitals`, a gap).
         let rec = progress.as_ref().and_then(|p| p.member(row.neo_status));
         let (hp_max, mp_max) = rec.as_ref().map_or((0, 0), |r| (r.hp_max as i32, r.mp_max as i32));
+        let (hp_start, mp_start) = rules::spawn_vitals(rec.as_ref().map(|r| (r.hp, r.mp)), hp_max, mp_max);
         let ground = w.ground(at, at.y + 100.0, 400.0).map_or(at.y, |g| g.y);
         let mut motor = Motor { pos: at.with_y(ground), yaw, grounded: true, ..Motor::default() };
         motor.capsule.radius = radius;
@@ -1133,9 +1182,9 @@ fn spawn_party(
                 motion_row: battle::motion_state(false, false),
                 free: true,
                 // Harness: `KH2_PARTY_HP=<n>` starts the members with n HP (to see a KO soon).
-                hp: std::env::var("KH2_PARTY_HP").ok().and_then(|v| v.parse::<i32>().ok()).map_or(hp_max, |v| v.clamp(1, hp_max.max(1))),
+                hp: std::env::var("KH2_PARTY_HP").ok().and_then(|v| v.parse::<i32>().ok()).map_or(hp_start, |v| v.clamp(1, hp_max.max(1))),
                 hp_max,
-                mp: mp_max,
+                mp: mp_start,
                 mp_max,
                 charge: Default::default(),
                 ko: false,

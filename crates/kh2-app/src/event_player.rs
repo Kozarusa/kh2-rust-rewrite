@@ -426,6 +426,12 @@ pub const HIDE_TAG_LIMIT: i32 = 2000;
 /// The tag `FUN_0016e430` gives an object's model resource when its caller passes -1: -200 for an object the event
 /// made (`event_made`, id with 0x40000000; objentry types 7 and 0x16 excepted), else the word of the table at
 /// 0x37a278 for the objentry `ObjectType` (`words`, 24 of them).
+///
+/// Unported exceptions of the original, both on the object list walk of opcode 0x4d: `FUN_0016ef80` answers yes
+/// only when `FUN_0016e208` finds the objentry row, so an id with no row gets the table word [inferred: read from
+/// the row's type here, which the caller already has]; and `FUN_001b7fa8` / `FUN_001b8040` skip every object with
+/// object flag +0x588 bit 0x20 (not set by anything the app has: its event actors never carry it, so no actor is
+/// skipped). The app's event actors are all `EventActor`s, none of type 7 or 0x16.
 #[cfg(test)]
 pub fn resource_tag(words: &[i32], object_type: u8, event_made: bool) -> Option<i32> {
     if event_made && !matches!(object_type, 7 | 0x16) {
@@ -1465,6 +1471,9 @@ mod tests {
         let words = [2300, 2400, 2500, 2600, 2700, 1090, 1090, 2100];
         assert_eq!(resource_tag(&words, 1, true), Some(-200));
         assert_eq!(resource_tag(&words, 7, true), Some(2100));
+        let mut long = [0i32; 24];
+        long[0x16] = 2200;
+        assert_eq!(resource_tag(&long, 0x16, true), Some(2200), "type 0x16 keeps the table word like 7");
         assert_eq!(resource_tag(&words, 5, false), Some(1090));
         assert_eq!(resource_tag(&words, 1, false), Some(2400));
         assert_eq!(resource_tag(&words, 40, false), None);
@@ -1512,6 +1521,81 @@ mod tests {
         }
         eprintln!("area spawns of the touched types: {spawned:?}; op 0x4d: {cmds} commands, {hides} hide, {shows} show");
         assert!(cmds > 0);
+    }
+
+    /// Every `.ard` area file on the disc, scanned for opcode 0x4d in its events (docs/events.md section 6).
+    #[test]
+    fn opcode_0x4d_on_the_whole_disc() {
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let disc = Disc::open(&iso);
+        let list = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../local/kh2idx.txt")).unwrap_or_default();
+        let names: Vec<String> = list.lines().filter(|n| n.starts_with("ard/") && n.ends_with(".ard")).map(str::to_string).collect();
+        if names.is_empty() {
+            eprintln!("skipped: the disc's area names are not known (local/kh2idx.txt)");
+            return;
+        }
+        let (mut files, mut found) = (0, Vec::new());
+        for n in &names {
+            let Some(file) = disc.read(n) else { continue };
+            let Some((ard, _)) = kh2_ard::Area::parse(&file) else { continue };
+            files += 1;
+            for (tag, bytes) in &ard.events {
+                for c in kh2_ard::parse_event(bytes).unwrap_or_default().iter().filter(|c| c.opcode == 0x4d) {
+                    found.push(format!("{n} event {tag} frame {} +6 {}", le16(&c.data, 0), le16(&c.data, 2)));
+                }
+            }
+        }
+        eprintln!("{files} area files, op 0x4d: {found:?}");
+        assert!(files > 20, "{files}");
+        assert!(found.iter().any(|f| f.starts_with("ard/tt01.ard event 101 ")) && found.iter().any(|f| f.ends_with("+6 1")), "{found:?}");
+    }
+
+    /// The real `step` path: an event actor that opcode 0x4d (+6 = 0) hid stays hidden when opcode 2 places it,
+    /// and a later 0x4d with +6 = 1 shows it. Needs the disc (the actor's model).
+    #[test]
+    fn an_actor_hidden_by_opcode_0x4d_stays_hidden_after_its_placement() {
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let mut a = Vec::new();
+        a.extend(h(0x5a));
+        a.extend(h(0));
+        a.extend(b"p_ex110 ");
+        let mut m = vec![0u8; 14];
+        m.extend(b"anm_tt/ETT99901E  ");
+        let mut hide = vec![0u8; 4];
+        hide[0..2].copy_from_slice(&h(1));
+        let mut show = vec![0u8; 4];
+        show[0..2].copy_from_slice(&h(3));
+        show[2..4].copy_from_slice(&h(1));
+        let mut place = vec![0u8; 36];
+        place[0x22..0x24].copy_from_slice(&h(2));
+        let cmds = vec![cmd(0xf, &[0; 4]), cmd(1, &a), cmd(0x2c, &m), cmd(0x4d, &hide), cmd(2, &place), cmd(0x4d, &show), cmd(8, &h(1000))];
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()));
+        app.init_asset::<Mesh>().init_asset::<StandardMaterial>().init_asset::<Image>().init_asset::<SkinnedMeshInverseBindposes>();
+        app.insert_resource(Disc::open(&iso)).init_resource::<CamEvent>().init_resource::<EventPlayer>();
+        let ev = Event::parse(&cmds);
+        app.world_mut().resource_mut::<EventPlayer>().play = Some(Play { area: "tt02".into(), tag: "t".into(), cmds, ev, cursor: 0, ticks: 0, actors: HashMap::new(), lines: Vec::new(), motions: HashMap::new(), flags: 0xffff, windows: WindowSlots::default(), row: None, fade: None, c054: 0.0 });
+        app.add_systems(Update, step);
+        let vis = |app: &mut App| {
+            let mut q = app.world_mut().query_filtered::<&Visibility, With<EventActor>>();
+            q.iter(app.world()).copied().collect::<Vec<_>>()
+        };
+        let mut seen = Vec::new();
+        for _ in 0..8 {
+            app.update();
+            seen.push(vis(&mut app));
+        }
+        // ticks 1..8 are event frames 0.5..4: the actor appears at frame 0 (hidden), 0x4d hides at frame 1, the
+        // placement at frame 2 must not show it, the show at frame 3 does.
+        assert_eq!(seen[0], vec![Visibility::Hidden], "made, not placed");
+        assert_eq!(seen[3], vec![Visibility::Hidden], "placed after the hide: still hidden");
+        assert_eq!(seen[7], vec![Visibility::Inherited], "shown by the later 0x4d");
     }
 
     #[test]

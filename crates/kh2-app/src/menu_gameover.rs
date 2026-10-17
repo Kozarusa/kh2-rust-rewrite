@@ -536,13 +536,13 @@ fn restore_snapshot(go: &GameOver, progress: Option<&mut Progress>, tags: Option
 fn refresh_party(
     sora: &mut Query<&mut Sora>,
     sora_max_mp: Option<i32>,
-    mut charge: Option<&mut crate::magic_rules::Charge>,
+    charge: Option<&mut crate::magic_rules::Charge>,
     members: &mut Query<&mut PartyMember>,
 ) {
     if let Ok(mut s) = sora.single_mut() {
         let (hp, mp) = refreshed(s.stats.max_hp, sora_max_mp.unwrap_or(s.mp));
         s.hp = hp;
-        let ended = crate::magic::refill_mp(charge.as_deref_mut(), &mut s.mp, mp);
+        let ended = crate::magic::refill_mp(charge, &mut s.mp, mp);
         info!("game over: party refresher (FUN_001abfe8(8)): Sora HP {hp}, MP {mp}, MP charge ended {ended}");
     }
     for mut m in members.iter_mut() {
@@ -711,6 +711,15 @@ fn input(
     go.over = Some(over);
 }
 
+/// The state the Continue restore and the refreshers touch (one system parameter, see `drive`).
+type Restored<'w, 's> = (
+    Option<ResMut<'w, Progress>>,
+    Option<ResMut<'w, NewTags>>,
+    Option<Res<'w, crate::data::GameData>>,
+    Option<ResMut<'w, crate::magic::MagicState>>,
+    Query<'w, 's, &'static mut PartyMember>,
+);
+
 #[allow(clippy::too_many_arguments)]
 fn drive(
     mut go: ResMut<GameOver>,
@@ -728,13 +737,7 @@ fn drive(
     mut save: ResMut<SaveMenu>,
     mut pause: ResMut<Pause>,
     // Bevy takes 16 system parameters at most: the state the restore and the refreshers touch comes as one tuple.
-    (mut progress, mut tags, data, mut magic, mut members): (
-        Option<ResMut<Progress>>,
-        Option<ResMut<NewTags>>,
-        Option<Res<crate::data::GameData>>,
-        Option<ResMut<crate::magic::MagicState>>,
-        Query<&mut PartyMember>,
-    ),
+    (mut progress, mut tags, data, mut magic, mut members): Restored,
 ) {
     // A manager that ended by itself (`FUN_001b9ce0`).
     if let Some(r) = mission.game_over_request.take()

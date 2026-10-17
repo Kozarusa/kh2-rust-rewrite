@@ -386,7 +386,7 @@ again when the result does not answer, and sets +0xb7c bit 8 when the record cha
 | 5 | FUN_0010d708 = FUN_0010d0c0 | FUN_0010cf88: never |
 
 Classes above 0xd (printed by `party_target_tables_from_the_executable`): 14 nothing / always; 15 and 17
-FUN_0010d0c0 / never; 16 FUN_00119d60 / FUN_00119d58 (section 20); 18 FUN_0010d0c0 /
+FUN_0010d0c0 / never; 16 0x119d60 / 0x119d58 [GAP: not read; the app chooses nothing]; 18 FUN_0010d0c0 /
 FUN_0010cbe0.
 
 "Surface distance" = |shape centre - position| - shape radius (FUN_001894d0 gives centre and radius). The
@@ -1144,8 +1144,10 @@ Files: `party.rs` (`PartySlots::enter_world`, `wanted_members`, `member_key`, `s
   page) keeps the key, so nothing is rebuilt: the entities already trade `slot` (`menu_party::swap_members`). Test
   `slot_changes_change_the_member_set`. Nothing in the app changes the set yet (Party In / Out, page 0x15, is a gap),
   so the rebuild path is covered by the key test only; it was not run in the game.
-- **Slot 3.** [Superseded by WP-PY1, section 20: byte 3 is a reserve member and spawns nobody.] It spawned a third
-  member (`PARTNER`) beside Sora [inferred: no map script row places a third member].
+- **Slot 3.** A filled byte 3 spawns a third member (`PARTNER`) on an area load, beside Sora [inferred: no map script row
+  places a third member; FRIEND_1 / FRIEND_2 are the only stand-ins, FUN_0016e208]. It takes the next free party slot
+  (FUN_0017cd08, `slot` 2). `follow_points` (FUN_00111670) is built for two followers, so the third member's follow point
+  falls back to the player [inferred]. The preset 1 start has an empty byte 3, so nobody extra spawns in the default game.
 
 **Gaps** (not read): page 0x15 and its caller; the writers of the hidden-member list FUN_001c7be8 (so the "locked by the
 hidden list" rule of `menu_party::rows` stays byte-bit-0x80 only); the members' leave / enter animations; the model tweaks
@@ -1326,45 +1328,3 @@ Tests: `a_record_word_four_arranges_the_party`, `the_party_reset_codes_follow_th
   NeoStatus), not "both".
 - `docs/player-data.md`, ability block +0x58: it also scales the party member's revive time (FUN_0017ce60).
 - (WP-S4: `receive_hits` takes a member's strength / magic / defense from the rebuilt status too, `enemy::member_stats_rebuilt`; Donald's thunder no longer does 2.)
-
-## 20. Status: the class 16 chooser, the reserve slot, Auto Change, Auto Healing, Auto Limit (WP-PY1)
-
-Files: `party_battle.rs` (`choose_class16`), `party_rules.rs` (`auto_change_swap`, `member_index`), `party.rs`
-(`wanted_members`, `party_receive_hits`).
-
-- **Class 16 chooser [V, partly modelled].** FUN_00119d58 is `return 1`: the class always re-targets
-  (`Retest::Always`). FUN_00119d60 (Peter Pan's class, NeoStatus 202): (1) among the object walk's shapes that
-  FUN_00112b28 and FUN_0018edd8 accept, whose object has +0x10c bit 0x20000 (set by FUN_00185460 when FUN_0018b778
-  answers; cleared by FUN_001855a8) and +0xae4 equal to the player (`DAT_0034e908`), the nearest surface to the member
-  (first while the best is 0, then a smaller distance); (2) none and FUN_00119ce8 true (`0x34e9d0` >= 0, the member's
-  +0xb7c bit 0x200 clear, `0x34e9c8` + `DAT_003788d8` not below `0x34e9cc`; FUN_00112850(1) writes the two floats
-  equal, so the time test reads as "the constant is not negative" [inferred]): FUN_0010d848's pick (the player's
-  attack object, style 1's source); (3) the member's previous record (the second argument of FUN_00119d60 is the copy
-  FUN_0010dcf0 made before clearing). Port: `choose_class16`; the scene carries `held` (empty: the app models neither
-  +0x10c bit 0x20000 nor +0xae4), `attack_gate` (false: no +0xb7c bit 0x200) and `previous`. The shape record flag
-  test (+8 bit 0x40, +0xc non-zero) is not modelled. No member of the app has class 16 (the friend AI classes 14..18
-  are NeoStatus 200..204, run by the summon code), so the routine is covered by tests only. Test
-  `party_target_class16_held_then_attack_then_previous`; `party_target_tables_from_the_executable` checks both table
-  entries.
-- **Slot 3 is a reserve member [V].** The field holds two companions: FUN_0017cd08 reads two entries of `DAT_01c893a8`,
-  FUN_0017d400 loops over indices 0 and 1, the map script resolves only 0x237 / 0x238 (slot bytes 1 and 2,
-  FUN_0016e208), the byte-3 id 0x3ee is a menu stand-in the factory refuses (FUN_0016efd8), and the disc's presets 2 to 4
-  put the partner in slot 1 and Donald in slot 3. Corrected from WP-MN8: `wanted_members` names slots 1 and 2 only and
-  the `PARTNER` spawn is gone. A filled byte 3 spawns nobody; a Party-page swap with slot 3 changes the key and rebuilds.
-  Harness: `KH2_JUMP_WORDS` presets 2, 3 or 4 give a filled byte 3 [not run in the game by this WP].
-- **Auto Change [V rule, ported with the gaps below].** FUN_0017ce60 (KO method): ability 418 (bit 130) in the KO'd
-  member's block, FUN_001b42f0 (no limit, byte 3 filled, `0x35fec0` clear), FUN_0017d0f0 (FUN_0017d0a8 on the member
-  before its KO bit is set by FUN_00175f10; FUN_001a7698 answers no: the member's slot is not 0, lacks the 0x80
-  flag and the member is not hidden) start FUN_001b4170: after the fade FUN_001b4260 runs FUN_001a7558 (slot 1 or 2
-  holding the member index takes byte 3's index, byte 3 takes the member's index, bytes masked 0x9f) and the new member
-  is made (FUN_0017d290). Port: `rules::auto_change_swap` changes the slot bytes at the KO in `party_receive_hits`
-  (ability read from the saved record's list), `spawn_party`'s rebuild replaces the member (at Sora's place). Not
-  modelled: the 8-frame fade, `0x35fec0` bit 2, +0x108 bit 0x100, FUN_0017d030 (no object with +0x570 set to the member:
-  [inferred] satisfied), the limit lock, the hidden list. Test `auto_change_swaps_the_reserve_in`.
-- **Auto Healing [V rule, not ported].** FUN_0017d4b8 (caller 0x1b77e4, inside a function the decomp lacks) lowers
-  `DAT_0035cc08` by the frame unit; at 0, for slots 1..3 whose member is not a field companion, a member whose status
-  block has +0x1dc bit 0x10 (ability 420) gets FUN_001a0140(status, 1, 0, 0), then the timer takes `sstm` +0x168.
-  It heals reserve members, who exist only as saved records. The app keeps no HP for a member outside the field (every
-  spawn starts at full HP), so there is nothing to heal. Needs a persistent per-member HP in `progress.rs`.
-- **Auto Limit [V rule, not ported].** FUN_001d25e0 offers a partner's limit as a reaction command; the app has no party
-  limit reaction command (`reaction_cmd.rs`, `limit.rs`: outside this WP's files).

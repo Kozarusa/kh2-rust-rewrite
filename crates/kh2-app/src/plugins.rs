@@ -16,7 +16,7 @@ use bevy::app::{PluginGroup, PluginGroupBuilder};
 
 use crate::{
     abilities, area, area_jump, asset_viewer, assets, audio, camera, clash, combat, drive, enemy, enemy_ai, fx, harness, hud, intro, items,
-    limit, magic, menu, menu_abilities, menu_ending, menu_gameover, menu_journal, menu_shop, menu_struggle, npc, party, party_switch, player_reaction, prize, progress,
+    limit, limit_script, magic, menu, menu_abilities, menu_ending, menu_gameover, menu_journal, menu_shop, menu_struggle, npc, party, party_switch, player_reaction, prize, progress,
     reaction_cmd, schedule, skel, sora, sound_test, struggle, summon, texanim,
 };
 
@@ -65,6 +65,7 @@ impl PluginGroup for CombatPlugins {
             .add(abilities::AbilitiesPlugin)
             .add(drive::DrivePlugin)
             .add(limit::LimitPlugin)
+            .add(limit_script::LimitScriptPlugin)
             .add(reaction_cmd::ReactionPlugin)
             .add(clash::ClashPlugin)
             .add(player_reaction::PlayerReactionPlugin)

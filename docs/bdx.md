@@ -417,11 +417,15 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 2.44 | `attack_word_84(p) -> i` | 0x18e5d8 | 0 | word at +0x84 |
 | 2.45 | `hit_atkp_id(p) -> i` | 0x18e1c0 | 198 | Id of the hit's atkp row (halfword at +2) |
 | 2.46 | `hit_word_28(p) -> i` | 0x18e1d8 | 16 | word at +0x28: the damage of a hit record, the atkp row pointer of an attack object |
+| 2.47 | `limit_task_47(pppp) -> i` | 0x18e988 | - | FUN_001b3438(task, a0, *(a1 + 4), a2) -> FUN_0017f0c0(0, task +8, task + 0x18, ...); the limit script's setup of a participant's part (WP-LT1: logged, answered 0) |
 | 2.48 | `hit_owner(p) -> p` | 0x18e9c8 | 25 | the word at +0xc of an attack object (its owner) |
 | 2.49 | `attack_word_10(pi) -> i` | 0x18e9d8 | 28 | word at +0x10 + 4 * i |
+| 2.50 | `limit_task_50(pppp)` | 0x18e9f8 | - | FUN_001b3468(a2, a0, a1, a3 != 0): the limit task starts an effect (FUN_001971c0, or the BAR's kind 0x16 entry) on a participant (WP-LT1: logged) |
 | 2.52 | `attack_word_110(p) -> i` | 0x18e618 | 13 | word at +0x110 |
+| 2.54 | `limit_spawn_thread(pp)` | 0x18ea28 | - | FUN_001b3c10(routine, &arg, 1) -> FUN_0016c8d8(limit task +0x34, 0, routine, args, 1): a child thread of the limit script's thread, like host 1.82 with tag 0 and no cleanup (WP-LT1: not run, kh2-bdx lacks the arm) |
 | 2.55 | `attack_word_38(p) -> i` | 0x18ea50 | 36 | word at +0x38 |
 | 2.56 | `ptr_b40_4_b(O) -> p` | 0x18de58 | 8 | the same function as ptr_b40_4 under a second number |
+| 2.59 | `limit_task_59(pppp) -> i` | 0x18eb00 | - | FUN_001b3c48 -> FUN_001db868(task + 0x18, a1, a3, 1, 30000, *(a2 + 4)) (WP-LT1: logged) |
 | 2.60 | `attack_f_d4(p) -> f` | 0x18eb40 | 29 | float at +0xd4 |
 | 2.61 | `attack_set_c4(pp)` | 0x18e628 | 43 | store at attack +0xc4 (checked: attack object exists) (FUN_0018e628) |
 | 2.62 | `attack_set_shape2(pfff)` | 0x18e680 | 85 | second shape of the attack: +0xcc = a, +0xd0 = b (default +0x100 when not above 0), +0xd4 = c (default +0x104) (FUN_001a3480) |
@@ -445,12 +449,14 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 2.85 | `hit_atkp_element(p) -> i` | 0x18e218 | 43 | Element byte of the hit's atkp row (+9) |
 | 2.87 | `react_front_back(Opf)` | 0x18ded8 | 1 | reaction class 14: motion 0x17 (front) or 0x18 (back) plus push (FUN_001856a8) |
 | 2.88 | `last_attacker(O) -> o` | 0x18e080 | 46 | the last object that hit this one (+0xae4), the player when there is none |
+| 2.89 | `limit_release_animation(p)` | 0x18eb60 | - | FUN_001b3b60(task): when bit 8 of task +0x40 is set, a call through the player's +0xb44 object, task +0x3c -= 1, bit 8 cleared (WP-LT1: the count and the bit; the call is a gap) |
 | 2.91 | `hit_reaction_class(p) -> i` | 0x18e260 | 11 | reaction class of the hit (FUN_0018b700 on the byte at +0x26) |
 | 2.92 | `hit_kind(p) -> i` | 0x18e290 | 21 | FUN_0018b748 of the byte at hit +0x27 |
 | 6.2 | `player_word_b50() -> i` | 0x2ee668 | 8 | word at +0xb50 of the player object (pointer at 0x35c998) |
 | 6.9 | `target_distance(pv) -> f` | 0x2eeb30 | 55 | the distance from the point to the surface of a target record's shape (FUN_0018f308: FUN_0018eec0 builds the shape, FUN_00189628 measures; a sphere's is the centre distance minus the radius, a spheroid's is measured with the height scaled to the radius) |
 | 6.23 | `part_nearest(Ov) -> i` | 0x2ee858 | 0 | FUN_002ee858: the part id (byte +1 of the collision record of type 2) of the object whose part point lies nearest to the vector; -1 when it has none |
 | 6.24 | `obj_vec_8a0(O) -> v` | 0x2ee960 | 12 | the 16 bytes at object +0x8a0 copied to a static buffer |
+| 6.47 | `release_stop_id_all(i)` | 0x2eefe0 | - | FUN_0016bf78(id): for every object FUN_0016bed8 -> FUN_001d59a8(object + 0x518, id) removes the stop id from the three-slot table (WP-LT1: a no-op, the app holds no stop 17) |
 | 6.49 | `object_occupied(O) -> b` | 0x2ee7d8 | 1 | FUN_0019b088: the object's +0x518 bit 0 (actor stop, FUN_0016bea0), or FUN_0019af28 (its +0x588 bits 4 and 0x40 clear and the summon state, FUN_001c6918, is 1), or its +0x108 bit 0x400, or the manager at DAT_0036f6a4 holds an entry (FUN_002c5680) |
 | 6.58 | `queue_mode_remote(ps)` | 0x2ef018 | 3 | queue the named mode and mark the entry for another object: when it comes up the host switches that object to the mode instead (FUN_00186f50; see runtime.rs) |
 | 7.0 | `release_actor_stop(i)` | 0x2ef2f0 | - | FUN_00184b40(id): the actor stop id is released on every enemy (Stitch's limit passes 17); the app sets no stop id but 2, so it changes nothing there |
@@ -458,6 +464,8 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 7.24 | `ai_b7c_400_clear(O)` | 0x2ef848 | 4 | FUN_0010f6b8: object +0xb7c bit 0x400 cleared (Peter Pan's attack modes bracket the attack with 7.24 / 7.25) |
 | 7.25 | `ai_b7c_400_set(O)` | 0x2ef868 | 6 | FUN_0010f6d0: object +0xb7c bit 0x400 set |
 | 7.26 | `ai_run_callback(Oi)` | 0x2ef888 | - | FUN_00112518(object, command): the callback the class set at object +0xcfc (Stitch's FUN_00119488 for his limit sub-commands 525 to 527) runs with the command (docs/summons.md) |
+| 7.28 | `screen_effect_start()` | 0x2ef7b0 | - | FUN_002f3bd8: FUN_002f3aa0(FUN_00104fa8(0xa00), FUN_0016e208(0x5c3), 0x100), stores the object in DAT_00371518 (WP-LT1: not drawn) |
+| 7.30 | `screen_effect_end()` | 0x2ef820 | - | FUN_002f3c18: ends the object in DAT_00371518 (vtable +0x20) and clears the word (WP-LT1: not drawn) |
 | 10.1 | `ai_walk_to(Ov)` | 0x2f6a98 | 3 | the friend AI object (+0xb60, FUN_0010c5f0) is placed at the vector: FUN_001175a0 sets AI +0x630 bit 0, copies it to the position +0x640 (its w to the wanted yaw +0x65c, the depth +0x648 = DAT_00378840) and once builds the parent matrix (FUN_00117320, FUN_00193228); docs/summons.md, Status (WP-SUM4b) |
 | 10.3 | `ai_vcall_28(O)` | 0x2f6b28 | 3 | the friend AI object's virtual method +0x28 (Stitch FUN_001191a8: links the player and his hand objects to the summon for a limit) (by class, WP-SM2: Stitch FUN_001191a8; Chicken Little FUN_0011ae60, the FPS mode; Genie 0x354910, Peter Pan 0x354978 and Tinker Bell 0x3549b8 hold FUN_00114170, which clears the action (FUN_0010ecb0(object, 0, 0)) and breaks a link the object has (FUN_001becb8)) |
 | 10.4 | `ai_vcall_2c(O)` | 0x2f6b58 | 4 | the friend AI object's virtual method +0x2c (Stitch FUN_00119360: undoes FUN_001191a8) (by class, WP-SM2: Stitch FUN_00119360; Chicken Little FUN_0011b008, the FPS mode off; Genie, Peter Pan and Tinker Bell FUN_001141c0, which returns at once) |

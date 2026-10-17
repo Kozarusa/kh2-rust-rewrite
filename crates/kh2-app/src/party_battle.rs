@@ -590,7 +590,7 @@ pub struct TargetScene<'a> {
     /// member's +0xb7c bit 0x200 is clear; the elapsed-time test compares a value with itself plus
     /// `DAT_003788d8`). The app has no +0xb7c bit 0x200: false.
     pub attack_gate: bool,
-    /// The member's record before FUN_0010dcf0 cleared it (class 16's fallback, its `param_2`).
+    /// The member's record before FUN_0010dcf0 cleared it (class 16's fallback, its second argument).
     pub previous: Option<Pick>,
 }
 

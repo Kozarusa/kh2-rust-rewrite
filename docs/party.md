@@ -1339,7 +1339,7 @@ Files: `party_battle.rs` (`choose_class16`), `party_rules.rs` (`auto_change_swap
   (first while the best is 0, then a smaller distance); (2) none and FUN_00119ce8 true (`0x34e9d0` >= 0, the member's
   +0xb7c bit 0x200 clear, `0x34e9c8` + `DAT_003788d8` not below `0x34e9cc`; FUN_00112850(1) writes the two floats
   equal, so the time test reads as "the constant is not negative" [inferred]): FUN_0010d848's pick (the player's
-  attack object, style 1's source); (3) the member's previous record (`param_2` of FUN_00119d60 is the copy
+  attack object, style 1's source); (3) the member's previous record (the second argument of FUN_00119d60 is the copy
   FUN_0010dcf0 made before clearing). Port: `choose_class16`; the scene carries `held` (empty: the app models neither
   +0x10c bit 0x20000 nor +0xae4), `attack_gate` (false: no +0xb7c bit 0x200) and `previous`. The shape record flag
   test (+8 bit 0x40, +0xc non-zero) is not modelled. No member of the app has class 16 (the friend AI classes 14..18

@@ -793,9 +793,14 @@ tt37; tt40 -> tt19 and area 100. The full list is in the test output.
   `FUN_001b3f78` and `FUN_00174fb0`, -200 `FUN_002c4c58`) lie at 2000 or above except the -200 ones.
   +6 not 0 clears the bit on the same set. It is a one-time pass over the list, not a state: an object made
   afterwards (the event's actors appear at their first opcode 0x2c) is not hidden by an earlier hide. How it
-  ends: only a later opcode 0x4d with +6 not 0, or the object's end. Bit 0x80 is the hide flag (above). On the
-  disc only tt01 event 101 has one (frame 0, +6 = 0, a hide that runs before any actor exists; so it hides the
-  area's props, not Sora). Ported: `event_player::resource_tag`, `op_4d_touches`, `op_4d_hidden` and
+  ends: only a later opcode 0x4d with +6 not 0, or the object's end. Bit 0x80 is the hide flag (above). On the disc, over all 268 `.ard` files (test `opcode_0x4d_on_the_whole_disc`), there are 29 of them in 21
+  areas: bb12 (112, 113), ca01 (102), ca06 (206), ca07 (120), ca24 (214), eh16 (126), he00 (124, 141),
+  he03 (102: hide at frame 4, show at 379), nm06 (126: hide at 6181, show at 6843), nm10 (206), po04 (102),
+  tr01 (106), tt01 (101), tt06 (305), tt09 (209), tt12 (521: a show only), tt16 (515), tt32 (312), wi01 (102, 103),
+  wi02 (121), wi03 (119), wi04 (109, 129), wi07 (106). Most are a hide at frame 0 or 1, before the event's actors
+  exist, so they hide the area's props, not Sora. Only he03 102 and nm06 126 hide and later show. Not ported: an
+  id with no objentry row (`FUN_0016ef80` needs the row) and the objects with flag +0x588 bit 0x20 that the list
+  walk skips; the app's event actors have neither (comment on `resource_tag`). Ported: `event_player::resource_tag`, `op_4d_touches`, `op_4d_hidden` and
   `Spawned::hidden` (an event actor that exists at the pass is hidden or shown; a hidden one stays hidden when
   opcode 2 places it); tests `opcode_0x4d_hides_and_shows_the_objects_whose_tag_is_below_2000`,
   `opcode_0x4d_touches_the_object_types_the_table_puts_below_2000` (reads the table from the executable).

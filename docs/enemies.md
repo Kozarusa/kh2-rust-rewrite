@@ -83,6 +83,16 @@ New host functions the Dusk needs are in the table of `docs/enemy-ai.md` (0.15, 
   (+0x7f8 bit 4 clear) or if its wave byte is above 99 (`FUN_00199378`), and the group's timer becomes header
   +0x20. So a defeated member of a wave up to 99 does not come back; the table is kept per area for four areas
   (`FUN_00194188`). The emptied group fires event 3 with its id, all groups emptied event 2 (`FUN_00199518`).
+  WP-PL1 check of the classes: `FUN_00198150` reads the `ObjectType` byte (+4) of the objentry row `FUN_0016e208` resolves for the
+  entity and answers 1 for exactly 4, 0xd, 0x15 and 0x17. The enemies the app keeps in kind-2 groups are the Heartless and
+  Nobodies of type 4 and `M_EX940` of type 0x15 (the two enemy classes `FUN_001994c8` counts), both in that set, so the app's
+  table needs no extra filter; types 0xd and 0x17 are not made by any group of the Twilight Town data [inferred from the
+  objentry rows the groups name; no group record names a type 0xd or 0x17 entity].
+  `FUN_00199e10` (the table's slot clear: it copies word 3 over word 2 of each of the `DAT_0035e468` records at 0x1c8afa0, stride
+  0x38, then runs `FUN_00194300` on 0x35d278) is reached only through `FUN_001727d0`, a one-line wrapper. Neither has a `jal`
+  caller (`mips_scan.py --jal 0x1727d0` and `--jal 0x199e10`: 0 hits); `FUN_001727d0` is an entry of a table of (function, flag)
+  word pairs at 0x35bf00 (a callback table; its user was not found), so the clear is a hook the original registers, not
+  something the area start calls. Not ported [GAP: nothing in the app corresponds to the 0x1c8afa0 records].
 - **No refill timer.** Nothing in this path re-creates a group after its enemies are defeated: the app's former
   "a wave 4 s after the last enemy" in tt04 was the app's own and is gone there.
 - **Unload.** The jump task's unload `FUN_00104ce0` calls `FUN_00168ca0` -> `FUN_001b8800` (frees every object of

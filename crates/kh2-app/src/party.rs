@@ -311,8 +311,10 @@ impl PartySlots {
 /// through the world's merged `memt` (FUN_0017cd20, `rules::slot_object`); slots that name nobody are left out.
 /// Byte 3 never makes a field member: the field holds two companions (FUN_0017cd08 reads two entries of
 /// `DAT_01c893a8`, FUN_0017d400 loops over indices 0 and 1), the map script names only slot bytes 1 and 2
-/// (ids 0x237 / 0x238 -> FUN_0017cd20(1 / 2), FUN_0016e208) and the byte-3 id 0x3ee is a menu stand-in the object
-/// factory refuses (FUN_0016efd8). The byte-3 member is a reserve member (Auto Healing's loop, FUN_0017d4b8, heals
+/// (ids 0x237 / 0x238 -> FUN_0017cd20(1 / 2), FUN_0016e208); FUN_0016e208 maps the id 0x3ee to the slot-3 member
+/// (FUN_0017cd78(3)), but nothing on the field loop asks for it. FUN_0016efd8 is only an id flag (true for 0x319, 0x31a,
+/// 0x3ee and ids with bit 29 set; the weapon-child attach in FUN_0016e430 / FUN_0016f038 and the factory FUN_0016e8c0 test
+/// it), not a rule about slot 3. The byte-3 member is a reserve member (Auto Healing's loop, FUN_0017d4b8, heals
 /// slots 1..3 that are not on the field); presets 2 to 4 put the partner in slot 1 and Donald in slot 3.
 pub fn wanted_members(bytes: [u8; 4], merged: &[u16; 24]) -> Vec<(usize, u16)> {
     (1..3).filter_map(|i| rules::slot_object(merged, bytes[i]).map(|o| (i, o))).collect()

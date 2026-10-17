@@ -1348,10 +1348,19 @@ Files: `party_battle.rs` (`choose_class16`), `party_rules.rs` (`auto_change_swap
   entries.
 - **Slot 3 is a reserve member [V].** The field holds two companions: FUN_0017cd08 reads two entries of `DAT_01c893a8`,
   FUN_0017d400 loops over indices 0 and 1, the map script resolves only 0x237 / 0x238 (slot bytes 1 and 2,
-  FUN_0016e208), the byte-3 id 0x3ee is a menu stand-in the factory refuses (FUN_0016efd8), and the disc's presets 2 to 4
+  FUN_0016e208), the byte-3 id 0x3ee is not made on the field (FUN_0016efd8 is a flag test, see below), and the disc's presets 2 to 4
   put the partner in slot 1 and Donald in slot 3. Corrected from WP-MN8: `wanted_members` names slots 1 and 2 only and
   the `PARTNER` spawn is gone. A filled byte 3 spawns nobody; a Party-page swap with slot 3 changes the key and rebuilds.
   Harness: `KH2_JUMP_WORDS` presets 2, 3 or 4 give a filled byte 3 [not run in the game by this WP].
+  WP-PL1 correction of the reading of `FUN_0016efd8`: it is a plain id test, true for 0x319, 0x31a and 0x3ee and for an id
+  with bit 29 set (`FUN_0016f008` is the same test for bit 28), not a "menu stand-in" list. Its readers: `FUN_0016e430`
+  and `FUN_0016f038` (the weapon-child attach: the hand objects are looked up only when the id is not one of these),
+  `FUN_001a7808`, `FUN_0016eda8`, `FUN_0016e638`, and the factory `FUN_0016e8c0`, which returns 0 for such an id (after the
+  `FUN_0016ef80` branch) before it resolves anything. So the factory does refuse a raw 0x319/0x31a/0x3ee, but that refusal
+  is the flag's effect, and the label "menu stand-in" is [inferred]. The id-to-member mapping is `FUN_0016e208`: 0x319 ->
+  `FUN_0017cd78(1)`, 0x31a -> `FUN_0017cd78(2)`, **0x3ee -> `FUN_0017cd78(3)`**, the slot-3 member (the same as 0x237 /
+  0x238 -> `FUN_0016e208`'s `FUN_0017cd20(1 / 2)` for slots 1 and 2); the slot-3 member is therefore a real object id
+  elsewhere (the weapon-child paths), but nothing on the field loop asks for it (FUN_0017cd08 / FUN_0017d400 take two).
 - **Auto Change [V rule, ported with the gaps below].** FUN_0017ce60 (KO method): ability 418 (bit 130) in the KO'd
   member's block, FUN_001b42f0 (no limit, byte 3 filled, `0x35fec0` clear), FUN_0017d0f0 (FUN_0017d0a8 on the member
   before its KO bit is set by FUN_00175f10; FUN_001a7698 answers no: the member's slot is not 0, lacks the 0x80
@@ -1361,6 +1370,15 @@ Files: `party_battle.rs` (`choose_class16`), `party_rules.rs` (`auto_change_swap
   (ability read from the saved record's list), `spawn_party`'s rebuild replaces the member (at Sora's place). Not
   modelled: the 8-frame fade, `0x35fec0` bit 2, +0x108 bit 0x100, FUN_0017d030 (no object with +0x570 set to the member:
   [inferred] satisfied), the limit lock, the hidden list. Test `auto_change_swaps_the_reserve_in`.
+- **Gap: preset 4's partner `P_EH000` (Riku) logs `script error BadAddress(8) at 0x058e` (WP-PL1).** `kh2 bdx P_EH000`: at
+  0x0583 the script calls host 10.35 with (AI, 111) and stores the answer at local+8 (0x0588), loads it (0x058a) and reads
+  the field at +0x8 (`ldf +0x8`, 0x058c) into [local0]+0x1c (0x058e). Host 10.35 is FUN_001141d0(AI, id): it walks the
+  move records of the AI's table (the record count at +0xa0 and the list at +0xa4 of the object the AI holds at +8, 0x80
+  bytes each) and answers the record whose first word equals the id, or 0. The app has no arm for group 10 index 35 (the
+  friend host's `group10` in `friend_host.rs` handles 14, 19, 31, 36, 40; the summon host's `(10, 35)` does not exist), so the
+  call answers none, local+8 stays 0 and the read at address 0 + 8 raises `BadAddress(8)`. It is an app host gap, host
+  10.35 (the same host Tron's script calls four times; Riku's and Tron's scripts both read it). Fix: port FUN_001141d0 over
+  the member's move table, which `party.rs` would have to expose (not in this WP's files).
 - **Auto Healing [V rule, not ported].** FUN_0017d4b8 (caller 0x1b77e4, inside a function the decomp lacks) lowers
   `DAT_0035cc08` by the frame unit; at 0, for slots 1..3 whose member is not a field companion, a member whose status
   block has +0x1dc bit 0x10 (ability 420) gets FUN_001a0140(status, 1, 0, 0), then the timer takes `sstm` +0x168.

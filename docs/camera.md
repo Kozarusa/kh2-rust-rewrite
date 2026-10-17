@@ -248,6 +248,11 @@ The target point the app uses is the locked enemy's position raised 100; the gam
       1 and 2 (docs/struggle.md gap 1). Not modelled: the vertical offset between the 448-line display buffer
       and the 416-line draw buffer (taken as the same screen), GS alpha factors above 1.0 (clamped by the blend),
       and the depth test for display-buffer lenses with byte +0x17 clear (none is known).
+    - **Open after WP-FX13** (review follow-up, WP-PL1): the "smear" the user reported was never pinned to a scope. Whether it is
+      only the intro's lens ghost (the cut at 4.0 s, the effect above) or any other effect that reads the display buffer was
+      not confirmed by the user, so the fix covers the intro lens only. The residual stepping that remains comes from the
+      416-line draw buffer against the 448-line display buffer: the app takes both as the same screen and does not model the
+      vertical offset between them (listed under "Not modelled" above).
 - **Area events (WP-E6)**: `event_player.rs` drives the same `CamEvent::track` from an area event's camera
   records (opcode 0x13) and cut table (opcode 6), parsed by `intro::Track`, evaluated at the event frame
   (`FUN_0022b0f8`) every game tick while the event plays; the keys are taken in map space as for the intro

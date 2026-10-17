@@ -22,6 +22,8 @@ One short section per work package. "Verified" says how; nothing here was checke
 
 **WP-RV4 (revive fade wiring).** The pad is locked for the 42 ticks and a white full-screen fade runs over ticks 22..122 (flag-1 fade, FUN_00226830 case 2 -> FUN_0014a7c8 -> FUN_0014a710; corrects RV2's black); the game over list uses the same white ramp instead of the black dim. Open: what lifts the fade after tick 122, linear ramp and blend [inferred].
 
+**WP-LS2b (limit camera).** Host 2.50 plays the limit BAR's type 0x16 event (kind 0xb, camera track) through new `limit_camera.rs`; off by default (`KH2_LIMIT_CAMERA=1`) because participants have no models and the key frame is [inferred]. Verified by six tests. Open: 7.28 effect object, HUD gauge animation, hosts 1.160/6.57 (need a kh2-bdx accessor for script memory).
+
 ## Shift 14 (2026-10-16/17)
 
 - **WP-ST1 (Struggle follow-up tests).** Tests that wave 200 does not wrap, that `ring_place_in` places on a floor and a wall, and that the result menu ticks as a system. Verified by those tests. Open: none.

@@ -1420,6 +1420,7 @@ fn drive_tick(
     mut anims: Query<&mut Animator>,
     gfx: Gfx,
     mut magic: Option<ResMut<crate::magic::MagicState>>,
+    mut progress: Option<ResMut<Progress>>,
 ) {
     let Store { mut state, mut queue, mut change, mut cache, mut base, mut abilities, battle: battle_flag } = store;
     let Gfx { mut meshes, mut materials, mut images, mut bindposes } = gfx;
@@ -1494,6 +1495,7 @@ fn drive_tick(
                 let before = st.points;
                 st.points.spend(cost);
                 st.uses[entered as usize] = (st.uses[entered as usize] + 1).min(999);
+                count_form_entry(progress.as_deref_mut(), entered);
                 info!(
                     "drive: enter {} (chose {}, cost {cost}, points {} -> {}, level {}, anti counter {}, final counter {})",
                     form_name(entered),
@@ -1713,6 +1715,14 @@ fn do_revert(
     changed.write(FormChanged { from, to: 0 });
 }
 
+/// The BATTLE REPORT's form counter (`FUN_001d76c8`): `FUN_001cf030` message 4 adds 1 at the index `FUN_001d4180` answered, which is
+/// the form entered (1 Valor .. 4 Final, 5 Anti; Anti shares its word with the Antiform row).
+fn count_form_entry(progress: Option<&mut Progress>, entered: u8) {
+    if let Some(p) = progress {
+        p.count_form_use(entered as usize);
+    }
+}
+
 /// Logs form changes (other systems read `FormChanged` for their own effects, sounds and camera).
 fn log_changes(mut changes: MessageReader<FormChanged>) {
     for c in changes.read() {
@@ -1743,6 +1753,18 @@ mod tests {
 
     /// A Master Form level-up while in the form (`FUN_001d3da8` -> `FUN_0019fb98`) rebuilds the form list
     /// the ability system applies at the new level; out of the form, or in another form, nothing changes.
+    /// Entering a form adds 1 to the report word of the form that was entered (Final and Anti included), up to 999.
+    #[test]
+    fn entering_a_form_counts_it_for_the_battle_report() {
+        let mut p = Progress::from_block(&[], Arc::new(crate::progress::ItemIndex::new(&[], &[], &[])));
+        count_form_entry(None, form::VALOR);
+        for f in [form::VALOR, form::VALOR, form::FINAL, form::ANTI] {
+            count_form_entry(Some(&mut p), f);
+        }
+        assert_eq!(p.form_uses(), [2, 0, 0, 1, 1]);
+        assert_eq!(p.antiform_uses(), 1);
+    }
+
     #[test]
     fn a_form_level_up_in_the_form_rebuilds_its_list() {
         let Some(r) = rules_from_disc() else { return };

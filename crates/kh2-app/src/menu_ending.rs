@@ -7,9 +7,10 @@
 //! game mode (`FUN_001d77d0`), a title (message 0xcc24) and eight rows, each a heading (0xcc18..0xcc1f) and a value built
 //! with `%d` / `%d%%` formats and the suffix message 0xcc20 ("Times").
 //!
-//! What the port does: the layout, title and rows are drawn from the file; the values come from [`Report`]. The counters
-//! behind rows 1 to 7 (`FUN_002787b0`, `FUN_001de018`, save `+0x2fdc`, `+0x2dbe`, `+0x2fe2`, `+0x2fea`, `+0x2fec`) have no
-//! writer in the app, so they stay 0 (a gap, docs/menus.md 24.4). The screen holds the field frozen until a confirm,
+//! What the port does: the layout, title and rows are drawn from the file; the values come from [`Report`]. Rows 3 to 7
+//! (save `+0x2fdc`, `+0x2dbe`, `+0x2fe2`, `+0x2fea`, `+0x2fec`) are read from `Progress` ([`Report::from_progress`]); only
+//! the form change (`drive.rs`) writes one of them so far, the others have no event in the app (docs/menus.md 24.4a). Rows 1
+//! and 2 (`FUN_002787b0`, `FUN_001de018`) have no source and stay 0 (docs/menus.md 24.4). The screen holds the field frozen until a confirm,
 //! cancel or Start press closes it [inferred: the original's task never reads the pad and leaves with a scene change from
 //! an event, which the app does not have].
 
@@ -53,6 +54,22 @@ pub struct Report {
     pub antiform: u16,
     /// Row 7: uses per summon (save `+0x2fec`, indexed 0 to 3).
     pub summons: [u16; 4],
+}
+
+impl Report {
+    /// The page's numbers from the save: the game mode and the counters of rows 3 to 7 (`Progress::healed_count`,
+    /// `mickey_save_count`, `form_uses`, `antiform_uses`, `summon_uses`).
+    pub fn from_progress(p: &Progress) -> Report {
+        Report {
+            mode: p.game_mode(),
+            healed: p.healed_count(),
+            saved_by_mickey: p.mickey_save_count(),
+            forms: p.form_uses(),
+            antiform: p.antiform_uses(),
+            summons: p.summon_uses(),
+            ..Report::default()
+        }
+    }
 }
 
 /// One row's value as the page prints it.
@@ -308,7 +325,7 @@ fn input(
             info!("menu: kind 0xe refused (loaded {}, open {}, a menu is up {})", m.loaded, m.open, menu.phase != crate::menu::Phase::Closed);
             return;
         }
-        let report = Report { mode: progress.as_deref().map_or(crate::progress::GAME_MODE_DEFAULT, |p| p.game_mode()), ..Report::default() };
+        let report = progress.as_deref().map_or_else(|| Report { mode: crate::progress::GAME_MODE_DEFAULT, ..Report::default() }, Report::from_progress);
         show(&m, &mut scene, &report);
         m.open = true;
         info!(
@@ -397,6 +414,27 @@ mod tests {
         assert_eq!(v[5], Value::Named(0x81e7, 7), "Master Form, the first of the two 7s");
         assert_eq!(v[6], Value::Count(3));
         assert_eq!(v[7], Value::Named(0xc591, 4), "Stitch is summon index 2");
+    }
+
+    /// The page reads rows 3 to 7 from the counters in `Progress`, and a form change adds to the form row.
+    #[test]
+    fn the_report_reads_the_progress_counters() {
+        let mut p = Progress::from_block(&[], std::sync::Arc::new(crate::progress::ItemIndex::new(&[], &[], &[])));
+        let zero = Report::from_progress(&p);
+        assert_eq!((zero.healed, zero.saved_by_mickey, zero.forms, zero.antiform, zero.summons), (0, 0, [0; 5], 0, [0; 4]));
+        p.count_healed();
+        p.count_mickey_save();
+        p.count_form_use(2);
+        p.count_form_use(2);
+        p.count_form_use(5);
+        p.count_summon_use(3);
+        let r = Report::from_progress(&p);
+        assert_eq!((r.healed, r.saved_by_mickey, r.forms, r.antiform, r.summons), (1, 1, [0, 2, 0, 0, 1], 1, [0, 0, 1, 0]));
+        let v = rows(&r);
+        assert_eq!(v[3], Value::Count(1));
+        assert_eq!(v[5], Value::Named(0x81e6, 2), "Wisdom Form is the most used");
+        assert_eq!(v[6], Value::Count(1));
+        assert_eq!(v[7], Value::Named(0xc591, 1));
     }
 
     /// The disc's file has the four layouts of three layers, and the page's texts exist (needs `KH2_ISO`).

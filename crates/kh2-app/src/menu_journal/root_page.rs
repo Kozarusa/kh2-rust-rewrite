@@ -50,7 +50,7 @@ pub fn page_c(key: Key, row: usize, cats: &[usize]) -> Act {
             Act::Cursor((row as i32 + dy.signum()).rem_euclid(n) as usize)
         }
         Key::Confirm => cats.get(row).map_or(Act::None, |&cat| Act::Category { cat, page: PAGES[cat] }),
-        Key::L1 | Key::R1 | Key::L2 | Key::R2 => Act::None,
+        Key::L1 | Key::R1 | Key::L2 | Key::R2 | Key::View => Act::None,
     }
 }
 

@@ -1471,7 +1471,7 @@ data parts of `chars` / `album_page` are pure functions with tests; the rest is 
   the held-pad auto-repeat of the cursor moves (the port takes one step per press, wraps on every press).
   Text colour of page 2's rows (see the rule above) was left at the WP-MN10 reading.
 - **WP-MN14 status.** The character page 0xf, the Quests and Minigames pages, page 0xc and page 0's completion mark 0x9a are ported (20.10); what stays open is the 3D model, the enemy pages, the Ansem reports, limits and the moogle list.
-- **WP-MN15 status.** The text lists of page 0xc (the Character Files worlds and characters, the Heartless, the Nobodies, the Ansem reports, the limits) and the pages behind them, the enemy pages with the defeated-enemy count and the reaction rows, the moogle summary and world 0xf's mark 0x9a are ported (20.11); the defeated-enemy counters, the reaction use counts and the limit counts are saved in the slot (`docs/progress.md`). Open: the 3D model pages. WP-HK1 added the writers: see 20.11a.
+- **WP-MN15 status.** The text lists of page 0xc (the Character Files worlds and characters, the Heartless, the Nobodies, the Ansem reports, the limits) and the pages behind them, the enemy pages with the defeated-enemy count and the reaction rows, the moogle summary and world 0xf's mark 0x9a are ported (20.11); the defeated-enemy counters, the reaction use counts and the limit counts are saved in the slot (`docs/progress.md`). The 3D model pages were ported in WP-JR2 (20.12). WP-HK1 added the writers: see 20.11a.
 - **WP-MN13 status.** Nothing in the app opens chests yet (gap, WP-FX12c): the original sets a chest's bit in `FUN_001a6910` (reached by `FUN_001a6a58` from the chest-open sequence `FUN_001a6db8`, and by `FUN_001a6a78` from the reward list of an area trigger in `FUN_001978b0`, whose only callers are `FUN_00197670` and `FUN_00197a60`), and the app has no chest object and does not run a trigger's reward list, so a chest is "found" only through a state file. Done: persistence. `Progress` keeps the opened chests (`chest_opened`, record bits from 224 on) and the journal seen set (`journal_seen`, slot key `journal_seen`); `Marks` loads it when the journal opens (`load_seen`) and the tick writes new marks back (`take_dirty`); the Treasures page marks chests found from the chest bit and a world's treasure completion needs every chest of it opened (`treasures_complete`). Not started (no decompile work done beyond reading): the character page 0xf (`FUN_002aa358` builds layer group 0x49, name 0x4a, sub-title 0x4b from `char` +0xa, a counter row 0x4c when `char` +0x10 has 0x800, scroll arrows 0x4f / 0x50, the face frame by style from 0x382ea0, the description message `char` +8 in a 6-line scissored view (`FUN_002ab678`); pages 0x12 / 0x15 add the four drop rows, so those are the enemy pages; the face is loaded through the slot cache `FUN_002a07c8`), the Quests / Minigames pages (page 9 reads entry 8 via `FUN_002b6478` / `FUN_002b6650`, page 10 entry 7 via `FUN_002b5130` / `FUN_002b52c0`; ten rows of group 0x68 / 0x6a with a child 2, world header rows group 100, values from the minigame records at `0x341620 + 8 * n` (`FUN_001d36e8`: byte 0 state, +4 score) and `FUN_002b6d40` for quests; both lists are empty without the all-worlds flag since the app keeps neither record), page 0xc, Roxas's pages, page 0's mark 0x9a.
 
 - **Decompile index (MN12).** `FUN_00299878`, `FUN_00299bf0`, `FUN_0029bdd0`, `FUN_0029bfa0`, `FUN_0029be88`, `FUN_0029c0b0`,
@@ -1538,7 +1538,7 @@ Code: `menu_journal.rs` (`build_char_page`, `char_view`, `page_char`), `menu_jou
   `chars::tests::{the_description_scrolls_by_lines_and_pages, the_character_pair_skips_those_that_do_not_exist_and_wraps}`,
   `menu_journal::tests::the_disc_character_page_data` (every character of every family has its name, description and sub-title messages; the
   frame table is 10 .. 15).
-  Not ported: the 3D model (`FUN_002abf60` loads the model `char` +0xc with the placement fields +0x12 .. +0x20 into the object at
+  (WP-JR2 ported the 3D model and page 0x10: 20.12.) Formerly not ported: the 3D model (`FUN_002abf60` loads the model `char` +0xc with the placement fields +0x12 .. +0x20 into the object at
   `DAT_0036d494` / `FUN_00295bc0`) and the page 0x10 view (-6, rotate -13 / -12 `FUN_002ac228`), the counter row (group 0x4c, message
   0x489b, `FUN_002a1f78`: the defeated-enemy count of a record with flag 0x800, from `FUN_00187e68(save +0x1660, enemy +0x4c)`), and the
   four drop rows of the enemy pages 0x12 / 0x15 (the enemy lists 0xd .. 0x16 are not ported).
@@ -1678,7 +1678,7 @@ rules with tests; the rest is node glue), `chars.rs` (the record family, `enemie
   state's flags (docs 20.10) plus 2256 and `"enemy_kills": [[1000,12],[1001,3],[1002,7],[1034,1],[1013,2],[3000,4],[3003,9]]`,
   `"reaction_uses": [[2,5],[41,12]]`, `KH2_KEYS=7:Enter,8:Down,8.2:Down,8.4:Down,8.6:Down,9.2:J,10:Escape,11:Left,12:J,13:Down,14:J,15:Down,15.3:Down,16:J`
   (the Heartless list, Large Body's page: "Slain 7", "Guard 12", "Kickback 5"). Log lines `journal: page 0x11 (...)`, `journal: the counter row (group 0x4c,
-  FUN_002a1f78): 7 defeated`, `journal: enemy page: NeoStatus 1002, 2 reaction rows [...]`. The 3D model and page 0x10 / 0x13 / 0x16 stay out.
+  FUN_002a1f78): 7 defeated`, `journal: enemy page: NeoStatus 1002, 2 reaction rows [...]`. The 3D model and page 0x10 / 0x13 / 0x16 came in WP-JR2 (20.12).
 ### 20.11a The counter writers (WP-HK1)
 - **Limit best counts.** `FUN_001b32d8` (and its twin `FUN_001b3178`), the limit task's end (`FUN_001b2850`, `FUN_001b3798`, `FUN_001b35e8`), calls `FUN_001d25b0(*task, task[0x28])`: the
   `limt` `Id` byte (`*task`, the constructor `FUN_001b2c10` stores the record pointer) indexes the u16 array `0x3414b0`, which rises to the word at task `+0xa0`. That word is
@@ -1763,6 +1763,39 @@ rules with tests; the rest is node glue), `chars.rs` (the record family, `enemie
   `marks::tests::every_category_keeps_its_saved_number`, `menu_journal::tests::{the_disc_enemy_list_data, formats_are_written_with_the_fonts_glyphs}`,
   `progress::tests::{enemy_defeat_counters_count_and_are_saved, reaction_use_counts_are_saved, limit_best_counts_only_go_up_and_are_saved}`,
   `root_page::tests::*`.
+
+### 20.12 The model on a character's page and the model pages 0x10 / 0x13 / 0x16 (WP-JR2) [V unless marked]
+
+Code: `menu_journal/model_view.rs`, `chars::{CharRec, ModelPlace}`, `menu_journal::{build_model_page, shown_page, char_tabs}`.
+
+- **Which pages.** Pages 0xf / 0x12 / 0x15 (character, Heartless, Nobody; the port runs all three as 0xf) show the small model of the shown record
+  (`FUN_002a9b80` calls `FUN_002abf60(0)` while it has none). The list result -6 (the triangle: help "Use triangle for the full picture!") opens
+  0x10 / 0x13 / 0x16 (`FUN_002aa0b0`), which show the large model of the same record (`FUN_002abf60(1)`) over the tab; -2 returns, -4 closes. The Album's
+  picture page (5) shows a picture, not a model: not applicable. Port: key Y = -6.
+- **Record fields** (`jiminy.bar` entry 3, 0x24 bytes): +0xc object id, +0xe motion (133 in all 309 records), +0x10 flags (low ten bits a mesh-group mask),
+  small model: x +0x12, y +0x14 (offsets from the screen middle), turn +0x16 (degrees), scale float +0x1c; large model: x +0x18, y +0x1a, scale +0x20, no turn.
+  Depth `DAT_00382df8` = -100. Object 996 (list 0x382e68, halfwords) stands at the float + -100 with scale `DAT_00382dfc` = 1 [V disc: Lumiere].
+- **Files.** `FUN_0016e208` maps the id to its `00objentry` row (every record of the disc has an ordinary row). Model `obj/<ModelName>.mdlx` (0x37a430); motion
+  set `FUN_0016eda8` with the id's bit 0x10000000: `obj/<set stem>_MEMO.mset`, or `obj/<ModelName>_MEMO.mset` when the row names no set (0x37a468, 0x37a450 + 0x37a458).
+  Motion 133 is entry 133 of an ordinary set and entry 133 * 4 + 2 of a player (P_*) set (`FUN_001a7a48`) [V disc test: all 309 records resolve].
+- **Camera.** The preview object's slot camera of 16.8 (`FUN_0023a520`); the journal never calls `FUN_0023b448`, so no 0x60 tint (the camp's and Party's only).
+- **Part mask.** `FUN_0023b640` calls `FUN_0011c5b0(model, bit)` for each set bit of the mask (flags & 0x3ff, shifted by 10 or 20 with flags 0x1000 / 0x2000), which
+  clears the draw flag of the meshes whose group (bits 6..10 of the mesh header's flags) is that bit (`FUN_00121278`). Hayner's mask 2 hides his group-1 mesh.
+- **Turn.** Small model: +0x16 degrees. Large: Left / Right (-12 / -13, list flags 0x30000) +-2 degrees a frame (`FUN_002ac228`, `DAT_00382e08`); object 2300 (list
+  0x382e60) stops at +-16, others wrap at +-360. Positive turn faces the screen's left [inferred: with it the MEMO poses, which stand turned right, face the viewer].
+- **Port.** One camera (layer 10) renders into a canvas-sized picture, shown by a node made after the layer (texts and rows stand in front [inferred]).
+  Tests: `model_view::tests::*` (page to model, poses, mask, turn, projection, `the_disc_journal_models`), `chars::tests::a_record_carries_its_model_placements`,
+  `menu_journal::tests::the_view_button_opens_the_model_page_and_the_model_page_returns`. Run (state-c flags as 20.10; `KH2_JOURNAL_HOLD=16:Left:0.5` holds Left):
+  `KH2_KEYS=7:Enter,8:Down,8.2:Down,8.4:Down,8.6:Down,9.2:J,10.5:J,13:J,15:Y` -> log `journal: page 0x10 model (FUN_002abf60(1)): character 116, object 1309 ...`;
+  screenshots looked at: Hayner frontal at the right of his page, the large model on the maroon page and turned, Large Body (Heartless) on 0x12 and 0x13 at 1280x720, Hayner at 2560x1080.
+- **Gaps.** The viewer plate (`FUN_002aba90` groups 4 / 5, `FUN_002abc40` groups 7 / 8 on the layer) and its alpha: `FUN_0023b4e0` takes the model's alpha from the attached
+  plate (fade in / out not ported; the port draws full alpha, and the existing backdrop shows behind). Draw order against the page's 2D is [inferred]. -6's sound
+  [inferred: confirm]. Held rotation is the held direction, 2 degrees a 60 Hz tick [inferred]. The second sub-model (`FUN_0016ed50`; group bits 0..4) is not drawn.
+  `FUN_002aa0b0` -2 passes 0x15 from both 0x13 and 0x16 (0x2aa2ec compares only 0x10), so the original's Heartless view returns to page number 0x15 (whose -2 goes to the
+  Nobody list); the port returns to the page it came from. A wide model (Large Body) is cut at the 4:3 canvas edge, as the screen edge would. Lighting not read.
+- **Decompile index (JR2).** `FUN_002aa0b0`, `FUN_002abf60`, `FUN_002abdc8`, `FUN_002abef0`, `FUN_002ac228`, `FUN_002ab540`, `FUN_002abc40`, `FUN_002aba90`, `FUN_002ac660`,
+  `FUN_002ac6b8`, `FUN_0023a520`, `FUN_0023a920`, `FUN_0023aca8`, `FUN_0023b3c8`, `FUN_0023b408`, `FUN_0023b4b8`, `FUN_0023b4e0`, `FUN_0023b640`, `FUN_0011c5b0`,
+  `FUN_00121278`, `FUN_001a78c8`, `FUN_001a7808`, `FUN_001a7a48`, `FUN_0016e208`, `FUN_0016eda8`, `FUN_0016ed08`; data 0x382df8 .. 0x382e14, 0x382e60, 0x382e68, 0x37a430 .. 0x37a468.
 
 ### 21.1 The table [V]
 

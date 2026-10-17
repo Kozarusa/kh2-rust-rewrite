@@ -460,11 +460,6 @@ impl SaveMenu {
         self.outcome = Some(o);
     }
 
-    /// A Load screen is requested or open (the caller waits for `take_outcome`).
-    pub fn load_busy(&self) -> bool {
-        self.load_request || self.flow.load && self.is_open()
-    }
-
     /// While the menu is up it owns the pad and the field is frozen.
     pub fn is_open(&self) -> bool {
         self.flow.stage != Stage::Closed

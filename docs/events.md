@@ -513,12 +513,10 @@ tt37; tt40 -> tt19 and area 100. The full list is in the test output.
   [approx] the game's one global `rand()` is a per-object generator; the object list searched for partners and
   ids holds the townspeople and the player only; the class pass runs before the script's tick and not before
   the script's first tick [inferred order]; the parts' enable masks are not applied.
-- **Still not ported (GAP)**: 1.172 / 1.173 use the 15 degree cone without the part's own (`FUN_001af878`; the
-  tt models read have no type-0x14 part); 1.174..1.176, the head look-at controller at +0x4a0: the hosts only
-  set tweens (`FUN_001aece8` / `FUN_001aec78` / `FUN_001aec50` -> `FUN_001abf40`; `FUN_00189dc8` ends one), the
-  bone turn itself is `FUN_001aead0` (read by the motion code `FUN_0017e6c0` / `FUN_0017e928`) and the 452-line
-  VU routine `FUN_001aee90`, and the app's skeleton (`skel.rs`, outside this WP) has no per-bone override. Next
-  step: port `FUN_001aead0` / `FUN_001aee90` and give `Animator` a look-at bone input. 1.13 on the object starts
+- **Still not ported (GAP)**: 1.172 / 1.173 use the 15 degree cone without the part's own (`FUN_001af878`;
+  `N_EX500_RTN` has no type-0x14 part, but `N_EX510_RTN` and `N_EX520_RTN` do: the cone stays a gap); the
+  head look-at controller (hosts 1.174 / 1.176) is ported, see "Head look-at" below, with 1.175 (a point)
+  and the pose code's own joint turn left. 1.13 on the object starts
   the queued motion when the playing one ends; 5.34 answers the position (the tt models have no part 0x11; the
   lock-on fallback `FUN_0016b6e0` reads a type-3 part on a bone). The native `FUN_00189ae8` also raises +0x108
   bit 6 after five frames of spawn kind 2 without `FUN_00190668` (not read further); `FUN_00189ff0` (the
@@ -589,6 +587,82 @@ tt37; tt40 -> tt19 and area 100. The full list is in the test output.
     closing group (`FUN_001aa680`: group + 1), 5 waits for it and starts the frame's closing group, 6
     waits, 7 gone. The tail is drawn from state 1 on at (x + w x -0.5, y - h / 2) (`FUN_001ab370` ->
     `FUN_001aa6b8`, `DAT_0035ea68` = {-0.5, -0.15, 0.15, 0.5}).
+
+### Head look-at (WP-HL1)
+
+What turns the head: the controller at object +0x4a0 (0x60 bytes), updated every tick by `FUN_001aea28` and read
+by the motion code (`FUN_0017e6c0`, `FUN_0017e928`: `FUN_001aead0(obj + 0x4a0)` is the last argument of the
+pose call `FUN_0011c2a0` / `FUN_0011c460`). Fields: +4 mode (0 off, 1 toward a point, 2 toward an object, 3
+toward a direction), +8 low bit "needs the object's +0x160 bit 0x4000000" (set to 1 by the script hosts),
++0xc the joint, +0x10 / +0x14 the weight and its step per tick (`FUN_001abf40` sets, `FUN_001abf78`
+advances: clamps at 0 and 1), +0x20 the aim point (w = the eased weight), +0x30 the target object, +0x40
+the last look direction, +0x50 the head's yaw against the body.
+
+Who uses it: the objects whose model has a collision record of type 0x14 (the BAR entry 23 table). Of the
+disc's `obj/*.mdlx` listed in `local/kh2idx.txt`, 110 have one, all `*_RTN` townspeople; `N_EX510_RTN` and
+`N_EX520_RTN` of tt02 have it, `N_EX500_RTN` has not, Sora's table has none. The record's halfword +6 is the
+head bone (`N_EX510_RTN` 128, `N_EX520_RTN` 68, `N_EX680_TT_MAN_A_RTN` 62), its offset (+8..+0xc) a point in
+the bone's frame (7 or 9 along x), and its two radii (+0x10, +0x12; 50 and 20 for most) are the yaw and
+pitch limits in degrees (`DAT_0037b938` = pi / 180). `FUN_001aece8` (1.174) does nothing for an object
+without the record. In the townspeople's scripts (`rtn_default`, mode `encount_player`; 683 calls in the
+disc's scripts, `KH2_BDXLOG=1`) 1.174 is called with 20 frames when the kind-4 follower starts and 1.176
+with 20 frames when it ends; 1.175 is in none of them. `FUN_00189dc8` (a class-5 companion's mode 1) and
+`FUN_00228778` (mode 3 and the end, from the event player `FUN_00223a88`) are the other writers, not ported.
+
+The rule (host 1.174 = `FUN_001aece8`, mode 2): the weight goes from 0 to 1 over the frames (`DAT_0037b930`
+= 1; at once for frames of 0 or less) and the head's yaw against the body (+0x50) starts at 0. Every tick
+(`FUN_001aea28`): advance the weight; a weight of 0 ends the mode; if the target object is gone
+(`FUN_0019a3f8`) the mode ends; else `FUN_001aee90`:
+
+1. The head point is the record's centre (`FUN_001894d0`: the bone's matrix times the offset, y lifted by
+   +0xe); the target point is `FUN_0016bbe8(target)`: the target's type-0x11 record's centre, else its
+   lock-on point. The direction to it gives a target yaw (horizontal) and a target pitch.
+2. Yaw: the head's current yaw is the body's facing turned by +0x50. If the target yaw is more than 5
+   degrees away (`DAT_0037b93c`) the head turns 5 degrees toward it (sign from the cross product's y), else
+   it takes the target yaw whole. Then, if that is more than the record's yaw limit from the body's facing,
+   it is put at the limit on that side.
+3. Pitch: the last look direction's pitch (+0x40) against the target's: only when they differ by more than
+   3 degrees (`DAT_0037b944`) does the pitch move, by exactly 3 degrees toward it (else it stays); then it
+   is clamped to the pitch limit of the body's pitch (level for an upright object).
+4. The new look direction is stored at +0x40, +0x50 = the signed angle between the body's facing and the
+   new horizontal direction, and +0x20 = the head point plus the direction times the distance, w = 1
+   (`DAT_0037b94c`).
+
+The pose code gets +0x20 and the weight eased by `FUN_001aead0`: `(1 - cos(pi w)) / 2` (`DAT_0037b920` = pi,
+`DAT_0037b924` = 1, `DAT_0037b928` = 0.5; `FUN_003000d8` is read as the cosine, which is what a 0 to 1
+ease needs [inferred]). Host 1.176 (`FUN_001aec50`) tweens the weight from where it is to 0 over its frames;
+the mode ends when it arrives.
+
+In the app (`npc::look`, `skel::JointTurn`): `Look` holds mode, weight, step, +0x50 and the pitch;
+`Look::tick` is steps 2 and 3 above in the app's space (the game's space is the app's turned half a turn
+about x, which keeps the turning direction, so no sign mapping is needed); `npc_update` calls it after the
+townsperson's move with the head point from the last pose (`pose[joint].transform_point3(offset)` in the
+object's frame, as the talk camera reads bone records) and Sora's type-0x11 record (joint 0x8c, offset
+(3, 0, 0)) read the same way from his own last pose. The result is a rotation (yaw +0x50, then pitch) scaled
+from nothing by the eased weight, handed to the animator, which rotates the head bone and everything below
+it about the head bone's origin on top of the motion's pose (`skel::turned_pose`; the pose itself is not
+changed, so cross-fades start from the motion's pose). Log: `KH2_NPCLOG=1` prints `head look-at Start(..)` /
+`Release(..)` and once a second the yaw, pitch and weight.
+
+Harness: tt02 with `KH2_PROGRAMS=0,0,10 KH2_NPC_WATCH=2 KH2_NPC_WATCH_DIST=150 KH2_NO_ENEMIES=1`, shot at
+9 s: the townsperson stands behind Sora with only his head showing; before the port his head follows the
+idle motion (turned away, eyes shut), after it the head faces Sora's side (the 50 degree yaw limit and the
+20 degree pitch limit, the target being 20 cm from him).
+
+[inferred] and not done: (a) how the pose code behind `FUN_0011c2a0` (a virtual of the model class, vtable
++0xc of the pose object) turns the joint toward the aim point was not traced; the app applies the yaw and
+pitch as a rotation of the head bone about its own origin and assumes the animation's head looks along the
+body's facing. (b) The enable test of `FUN_001ae9e8` (bit 0 of +8 set by the hosts: then the object's +0x160
+bit 0x4000000 must be set; its writer was not found) is not read: the controller runs while the object
+exists. (c) The target of 1.174 is taken to be the player: its first argument arrives as 0x20001010 (not the
+object's own handle) and the block the second one points at is the object's own address plus 0x40; the
+scripts' `encount_player` passes the object `R03eb` returns for the player. (d) +0x40's initial value is
+the target's facing vector (`FUN_0016a890`); the app starts level. (e) Modes 1 and 3 (`FUN_001aec78`,
+`FUN_001aeda8`), 1.175, the class-5 companion writers and the party members' head turns of the talk
+(`FUN_001abf40` on +0x82c) are not ported. (f) A target straight above or below the head has no horizontal
+direction: the yaw stays (the game divides by a zero length). Tests: `npc::look::tests::*`,
+`npc::tests::the_head_record_names_the_head_bone_and_the_limits`,
+`skel::tests::a_joint_turn_rotates_the_subtree_about_the_joint`.
 
 ## 4. Save points and world points
 
@@ -961,7 +1035,7 @@ Each stage ends with `verify.ps1` passing and the named check.
   kind-5 pairs of townspeople, the region draw of `FUN_0018b308`) and hosts 5.0 / 5.4 / 5.6 / 5.11 after it;
   the walk path's Hermite curve with the game's projection and step (`FUN_002d2a98`) and the random start of
   `FUN_002d5398`. No group 5 host outside `rtn_default`'s set was reached in the tt02 runs (`KH2_BDXLOG=1`: no
-  `Missing` line for the townspeople). Not done: the head look-at controller (section 3, next step there), the
+  `Missing` line for the townspeople). The head look-at controller is ported (section 3, "Head look-at"); not done: the
   companion objects of four townspeople (pets), the talk (E3).
 - **E3 Talk and message windows in play.** First close the talk GAP (section 3), then offer 31 from the 0x83
   part, deliver event 0xb, open the window class the code opens; hosts 1.32 / 1.33. Accept: `KH2_REACTIONLOG`
@@ -1178,7 +1252,8 @@ Each stage ends with `verify.ps1` passing and the named check.
 
 - The talk wait's early end (`FUN_001a5b18`: `FUN_0019abb0` of the player with command row 10) and `FUN_00192c50`'s
   +0x670 list; whether the townsperson's script is held during a talk (section 3, E3 status).
-- The class-5 head look-at controller (+0x4a0; `FUN_001aead0`, `FUN_001aee90`) and `FUN_0018af10`'s kind-3
+- The head look-at controller's joint turn (the pose code behind `FUN_001aead0`'s output, section 3 "Head
+  look-at": how the joint is turned toward the aim point, and the +0x160 enable bit) and `FUN_0018af10`'s kind-3
   answer (+0xa80); the walk path's +0x87 mode and +0x8c stop index (no writer found in `FUN_002d3b40`). Host 5.8 / 5.9 / 5.10 / 5.12..5.15 / 5.18..5.25 / 5.28..5.32 (not called by `rtn_default`) are not read.
 - Menu kind 1's World Map row (`FUN_00257e70` question, `FUN_002580b8` -> `FUN_0014a7c8(.., 0xf, 0)`, page 0x14
   `FUN_002580e8` -> `FUN_00103b18(1)`: what the exit loads was not read) and its page-0 help (docs/menus.md 18.5);
@@ -1237,6 +1312,7 @@ Each stage ends with `verify.ps1` passing and the named check.
 | 0x1048e0, 0x1689c0, 0x180870, 0x181148, 0x180a68, 0x180ad8, 0x180b48 | area thread, load, script run, interpreter |
 | 0x180ff8, 0x1975e0, 0x197588, 0x197670, 0x1978b0, 0x1979f8, 0x197a60, 0x197b70, 0x197780, 0x1976d8 | triggers and event firing |
 | 0x196428, 0x195898, 0x195ae0, 0x1959f0, 0x1964d0, 0x195c08, 0x195d28, 0x196138, 0x196170, 0x19d9c8, 0x19d9d8, 0x196280, 0x1962a0, 0x196760, 0x196790, 0x196258, 0x1bef10, 0x1bef48 (disassembled), 0x1befc0, 0x14c748, 0x14c760, 0x14c780, 0x14c650, 0x138708, 0x138728, 0x1b7ce8, 0x1b7d18, 0x1d1128, 0x2275a8, 0x222528, 0x222538, 0x222588, 0x2225e0, 0x222728, 0x2c6a40 | event object start / end, kind flags, jump after the event, opcode 0x2d (WP-E6b) |
+| 0x1aece8, 0x1aec78, 0x1aec50, 0x1aeda8, 0x1aea28, 0x1ae9e8, 0x1aee90, 0x1aee38, 0x1aead0, 0x1abf40, 0x1abf78, 0x171940, 0x171978, 0x1719a8, 0x189dc8, 0x228778, 0x1894d0, 0x16bbe8, 0x16a890, 0x11c2a0 | head look-at controller (WP-HL1) |
 | 0x181728, 0x1817f0, 0x198430, 0x198750, 0x198920, 0x1981a0, 0x198220, 0x1982c8, 0x1989d8, 0x198b30 | spawn groups |
 | 0x198e10, 0x198fa0, 0x199058, 0x1991a0, 0x199518, 0x199930, 0x199b18, 0x199e68, 0x199e98, 0x199f70, 0x199c48, 0x199c70 | group kinds |
 | 0x1d8b48, 0x1d8600, 0x1d89a0, 0x1d8a70, 0x334388 | activator volumes |

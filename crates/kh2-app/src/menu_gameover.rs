@@ -1,0 +1,820 @@
+//! The game over (docs/menus.md "Game over", docs/struggle.md "The knock-out").
+//!
+//! What the original does (`SLUS_210.05`): when the player's HP part reaches 0 (`FUN_00186238` -> `FUN_00186530`) the
+//! player class's knock-out method `FUN_001cec00` decides, in this order:
+//! * `DAT_0035d268` bit 0x20000 (host 1.317, the Struggle script's event 3): global event 0x5a, no game over (`struggle.rs`);
+//! * Tinker Bell ready (`FUN_001c69b0`, Peter Pan out with byte 7 set): the revive sequence, game over type 2
+//!   (`FUN_001ad8a8`, `summon.rs`), unless the form field `+0xb50` is 0xb;
+//! * a manager of mission kind 2, 0x19 or 0x20 (`FUN_001b9c00`): game over type 3 (`FUN_001ad8e0`);
+//! * the form field `+0xb50` in 1..5 (`FUN_001793a8`) or 0xb: `FUN_001b4d78` (the form's own end), no game over;
+//! * otherwise game over type 0 (`FUN_001ad810`); with the summon state 2 `FUN_001cf298` ends the summon first.
+//!
+//! A manager that ends by itself (`FUN_001b9ce0`) starts type 3 for the mission kinds 2, 0x1e and 0x23, else type 1
+//! (`FUN_001ad868`, only while none runs). `FUN_001ad378` builds the object: the system sound `0x13` (type 1: `0x33`;
+//! `FUN_002c14a8`), the music stop `FUN_00137520`, flag 0x35d268 bit 1, and its task `FUN_001ad9a0` whose steps wait for the
+//! fade and the scene (`obj/GAMEOVER.mset`, `FUN_001adcf8`), then open the pause-menu record: `FUN_001bef10(1)` (types 0,
+//! 1: "Continue", "Load Game") or `FUN_001bef10(0x21)` (type 3: "Quit", "Retry"), through `FUN_0024f330` (menu kind 7, the
+//! pointer list of `menu_struggle`, no cancel). The page handler `FUN_0026fda0`:
+//! * code 3, 4 (type 3): `FUN_001b9c58` (events 0x8b / 0x8d to the area triggers, then their jump records);
+//! * code 1 "Load Game": `FUN_00254a08(2)` leaves the list for the file screens (kind 2);
+//! * code 2 "Continue": the type's callback `LAB_001adc70` (object +0x48, `FUN_0026fda0`'s default branch) starts the jump
+//!   task `FUN_00104e18(FUN_001cb3b8(), 0x80000001, 1, 1, 0)`: its fade-out step restores the snapshot of the save body
+//!   (`FUN_001cb208`) and enters the area record `DAT_01d69890`. `FUN_001047a8`, the start of every area, takes the snapshot
+//!   (`FUN_001cafa0`) when `FUN_001cb358` allows: a manager with header flag 0x1000, or no manager and the area's map
+//!   program below 0x33.
+//!
+//! The port: the KO decision is `route`; the snapshot is the area record and Sora's HP at each area start (the save body is
+//! not copied: `Progress` shares its story state, so a partial restore would be inconsistent [gap]); the list is
+//! `menu_struggle`'s pointer list over the rows of the disc's table; "Continue" jumps to the snapshot's area with the fade
+//! of kind 1; "Retry" and "Quit" take the manager's trigger jumps as the Struggle's result menu does; "Load Game" is not
+//! ported (the app has no file load screen): the list refuses it. The wait before the list, the scene `GAMEOVER.mset`, the
+//! header group and the information line are not ported (see docs).
+
+use bevy::prelude::*;
+use kh2_image::layd;
+use kh2_image::text::Style;
+
+use crate::area::AreaRecord;
+use crate::area_jump::{disc_localset, resolve_jump, Dest, JumpTask};
+use crate::assets::{CurrentArea, Disc};
+use crate::audio::{Audio, PlaySe};
+use crate::audio_bgm::AreaMusic;
+use crate::drive::DriveState;
+use crate::menu::{close_brightness, dim_alpha, menu_sound, CLOSE_FRAMES, DIM_BRIGHTNESS};
+use crate::menu_gfx::{self, MenuScene, Node};
+use crate::menu_struggle::{self as list, Action, Block, Flow, Press};
+use crate::schedule::{Pause, Sim};
+use crate::sora::{Sora, State};
+use crate::struggle::{GameOverExits, Mission};
+use crate::summon::{SummonData, SummonState};
+
+/// The pause-menu record of types 0 and 1 (`FUN_001ad640`: `FUN_001bef10(1)`) and of type 3 (`FUN_001bef10(0x21)`).
+pub const RECORD_FIELD: u16 = 1;
+pub const RECORD_MISSION: u16 = 0x21;
+/// The action codes of the rows: "Continue" (the callback), "Load Game" (`FUN_00254a08(2)`), "Retry" and "Quit" (`FUN_001b9c58`).
+pub const CODE_CONTINUE: u16 = 2;
+pub const CODE_LOAD: u16 = 1;
+pub const CODE_RETRY: u16 = 3;
+pub const CODE_QUIT: u16 = 4;
+/// The system sounds `FUN_001ad378` plays: type 1 `0x33`, the others `0x13`.
+pub const SOUND_OVER: u32 = 0x13;
+pub const SOUND_OVER_TYPE_1: u32 = 0x33;
+/// The area map program below which `FUN_001cb358` allows the snapshot (`DAT_0033e830` byte 3).
+pub const SNAPSHOT_PROGRAM_LIMIT: u8 = 0x33;
+/// Seconds Sora lies down before the list opens [inferred: the steps of `FUN_001ad9a0` wait for the fade and the scene
+/// `GAMEOVER.mset`, whose lengths were not read].
+pub const OPEN_AFTER: f32 = 1.5;
+/// The fade kind of the jump `FUN_00104e18(.., 0x80000001, ..)` (`FUN_0013ef68(0x80000001)`: kind 1).
+pub const CONTINUE_FADE_KIND: u32 = 1;
+
+/// What `FUN_001cec00` needs to know.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KoInput {
+    /// `DAT_0035d268` bit 0x20000.
+    pub ko_bit: bool,
+    /// `FUN_001c69b0`.
+    pub tinker_ready: bool,
+    /// `FUN_001b9c00`: a manager of mission kind 2, 0x19 or 0x20 runs.
+    pub menu_manager: bool,
+    /// `FUN_001793a8`: the form field is in 1..5 (a drive form).
+    pub in_form: bool,
+}
+
+/// What the knock-out does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Route {
+    /// Global event 0x5a to the area (`FUN_00197b70`); `struggle.rs`.
+    MissionEvent,
+    /// Game over type 2: Tinker Bell's revive (`FUN_001ad8a8`); `summon.rs`.
+    TinkerRevive,
+    /// `FUN_001b4d78`: the form ends; no game over.
+    FormEnds,
+    /// Game over type 0 or 3.
+    GameOver(u8),
+}
+
+/// `FUN_001cec00`'s decision.
+pub fn route(i: KoInput) -> Route {
+    if i.ko_bit {
+        return Route::MissionEvent;
+    }
+    if i.tinker_ready {
+        return Route::TinkerRevive;
+    }
+    if i.menu_manager {
+        return Route::GameOver(3);
+    }
+    if i.in_form {
+        return Route::FormEnds;
+    }
+    Route::GameOver(0)
+}
+
+/// The pause-menu record a game over type opens (`FUN_001ad640`).
+pub fn record_of(kind: u8) -> u16 {
+    if kind == 3 { RECORD_MISSION } else { RECORD_FIELD }
+}
+
+/// What a chosen row leads to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Continue,
+    Retry,
+    Quit,
+}
+
+/// The stages of the game over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    /// The knock-out is down; the list opens after `OPEN_AFTER` seconds.
+    Waiting,
+    List,
+    /// The dim returns, then the outcome runs.
+    Closing,
+    /// The outcome's jump runs; the game over ends when the jump task is idle again.
+    Jumping,
+}
+
+/// A game over in progress.
+#[derive(Clone, Debug)]
+pub struct Over {
+    pub kind: u8,
+    pub phase: Phase,
+    pub waited: f32,
+    pub flow: Flow,
+    pub chosen: Option<Outcome>,
+    /// The trigger jumps of a manager that is gone (`GameOverRequest`); with a manager the manager's are read.
+    pub exits: Option<GameOverExits>,
+    pub frames: u32,
+    /// `FUN_001ad378`'s sound and music stop are still to run.
+    pub fresh: bool,
+    /// The outcome's jump task has left `Idle`.
+    pub started: bool,
+}
+
+impl Over {
+    pub fn new(kind: u8, exits: Option<GameOverExits>) -> Over {
+        Over { kind, phase: Phase::Waiting, waited: 0.0, flow: Flow::default(), chosen: None, exits, frames: 0, fresh: true, started: false }
+    }
+
+    /// The wait is over: the list opens (`FUN_0024f330`).
+    pub fn open(&mut self, b: &Block) {
+        self.flow = Flow::open(b);
+        self.phase = Phase::List;
+        self.frames = 0;
+    }
+
+    /// A press on the list. The code 1 row ("Load Game") is refused and the list stays (no file screens in the app).
+    pub fn press(&mut self, p: Press) -> Action {
+        let a = self.flow.press(p);
+        if let Action::Chosen(code) = a {
+            match code {
+                CODE_CONTINUE => self.chosen = Some(Outcome::Continue),
+                CODE_RETRY if self.kind == 3 => self.chosen = Some(Outcome::Retry),
+                CODE_QUIT if self.kind == 3 => self.chosen = Some(Outcome::Quit),
+                // `FUN_00254a08(2)` leaves for the file screens (kind 2), which the app does not have; any other code is not on
+                // these rows. Undo the close the list started.
+                _ => {
+                    // Not ported.
+                    self.flow.stage = list::Stage::List;
+                    self.flow.chosen = None;
+                    return Action::None;
+                }
+            }
+            self.phase = Phase::Closing;
+        } else if a == Action::Cancelled {
+            self.phase = Phase::Closing;
+        }
+        a
+    }
+}
+
+/// `FUN_001cafa0` / `FUN_001cb3b8`: the area record and Sora's HP at the last area start that allowed the snapshot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Snapshot {
+    pub dest: Dest,
+    pub hp: i32,
+}
+
+/// `FUN_001cb358`: the snapshot is allowed at an area start without a manager when the map program is below 0x33.
+pub fn snapshot_allowed(map_program: u8, manager: bool) -> bool {
+    !manager && map_program < SNAPSHOT_PROGRAM_LIMIT
+}
+
+/// The destination of "Continue": the snapshot's area record, or (no snapshot yet: all bytes 0xff in `DAT_01d69890`) the
+/// current record, which `FUN_00104bd0` keeps for every 0xff byte.
+pub fn continue_dest(snap: Option<Snapshot>) -> Dest {
+    snap.map_or(Dest { world: crate::area_jump::KEEP, area: crate::area_jump::KEEP, entrance: crate::area_jump::KEEP, programs: [crate::area_jump::KEEP; 3] }, |s| s.dest)
+}
+
+/// The jump record of a "Retry" / "Quit" row.
+pub fn exit_jump(exits: &GameOverExits, o: Outcome) -> Option<[u16; 6]> {
+    match o {
+        Outcome::Retry => exits.retry,
+        Outcome::Quit => exits.quit,
+        Outcome::Continue => None,
+    }
+}
+
+/// `save.2ld` sequence 0 groups (the Save menu's pointer list, as `menu_struggle` draws it).
+mod g {
+    pub const ROW_SELECTED: usize = 77;
+    pub const ROW_IDLE: usize = 79;
+    pub const HAND: usize = 12;
+    pub const ROW_LABEL: [f32; 2] = [70.0, 80.0];
+    pub const ROW_PITCH: f32 = 26.0;
+    pub const HAND_AT: [f32; 2] = [62.0, 80.0];
+    pub const ROW_IDLE_COLOR: [u8; 4] = [0x9f, 0x9f, 0xaf, 0x80];
+    pub const ROW_SELECTED_COLOR: [u8; 4] = [0xe5, 0xe5, 0xe5, 0x80];
+}
+
+const ROWS: usize = 4;
+
+/// The game over's resource.
+#[derive(Resource, Default)]
+pub struct GameOver {
+    pub over: Option<Over>,
+    pub snapshot: Option<Snapshot>,
+    last_hp: Option<i32>,
+    seen_area: Option<String>,
+    table: Vec<Block>,
+    tried: bool,
+    loaded: bool,
+    tex: usize,
+    seq: usize,
+    rows: Vec<(usize, usize)>,
+    hand: usize,
+    /// `KH2_GAMEOVER_KO` has fired.
+    aid_done: bool,
+    /// The outcome's jump has started; the HP it restores.
+    restore_hp: Option<i32>,
+}
+
+impl GameOver {
+    pub fn is_open(&self) -> bool {
+        self.over.as_ref().is_some_and(|o| matches!(o.phase, Phase::List | Phase::Closing))
+    }
+}
+
+pub struct GameOverPlugin;
+
+impl Plugin for GameOverPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<GameOver>()
+            .add_systems(FixedUpdate, detect.after(Sim::SoraHurt).before(Sim::Sounds))
+            .add_systems(PreUpdate, input.after(crate::menu::input).after(bevy::input::InputSystems).after(crate::harness::Keys))
+            .add_systems(Update, (track_area, drive).chain().before(crate::schedule::Frame::Popups));
+    }
+}
+
+/// `KH2_GAMEOVER_KO=<seconds>` (a harness aid): once, that many seconds after the start, Sora is knocked out (HP 0,
+/// `State::Down`) so the game over can be seen without waiting for an enemy.
+fn ko_aid_secs() -> Option<f32> {
+    static SPEC: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *SPEC.get_or_init(|| std::env::var("KH2_GAMEOVER_KO").ok()?.trim().parse().ok())
+}
+
+fn tinker_ready(sm: Option<&SummonState>, data: Option<&SummonData>) -> bool {
+    // `summon::tinker_ready` (FUN_001c69b0): the summon state is not 0, byte 5 is Peter Pan's `sumn` row and byte 7 is set.
+    let (Some(sm), Some(data)) = (sm, data) else { return false };
+    sm.state != 0 && sm.index == data.index_of(crate::summon::cmd::PETER_PAN).unwrap_or(0) && sm.extra != 0
+}
+
+/// The player's knock-out (`FUN_001cec00`): the edge of Sora's HP to 0 decides the route once.
+#[allow(clippy::too_many_arguments)]
+fn detect(
+    mut go: ResMut<GameOver>,
+    mission: Option<Res<Mission>>,
+    sm: Option<Res<SummonState>>,
+    sdata: Option<Res<SummonData>>,
+    drive: Option<Res<DriveState>>,
+    real: Res<Time<Real>>,
+    mut sora: Query<&mut Sora>,
+) {
+    let Ok(mut s) = sora.single_mut() else { return };
+    if let Some(at) = ko_aid_secs()
+        && !go.aid_done
+        && real.elapsed_secs() >= at
+        && s.hp > 0
+    {
+        go.aid_done = true;
+        info!("game over: KH2_GAMEOVER_KO: Sora is knocked out (HP {} -> 0)", s.hp);
+        s.hp = 0;
+        s.enter(State::Down, None);
+    }
+    let was = go.last_hp.replace(s.hp);
+    if !ko_edge(was, s.hp) || go.over.is_some() {
+        return;
+    }
+    let view = mission.as_deref().and_then(Mission::ko_view);
+    let input = KoInput {
+        ko_bit: view.is_some_and(|v| v.loses),
+        tinker_ready: tinker_ready(sm.as_deref(), sdata.as_deref()),
+        menu_manager: view.is_some_and(|v| v.menu_kind),
+        in_form: drive.as_deref().is_some_and(|d| d.in_form && (1..=5).contains(&d.form)),
+    };
+    let r = route(input);
+    info!("game over: Sora knocked out (FUN_001cec00): {r:?} for {input:?}");
+    if let Route::GameOver(kind) = r {
+        let exits = (kind == 3).then(|| view.map(|v| v.exits)).flatten();
+        go.over = Some(Over::new(kind, exits));
+        s.game_over = true;
+    }
+}
+
+/// Sora's HP fell to 0 (`FUN_00186238` -> `FUN_00186530`): the knock-out method runs once per fall.
+pub fn ko_edge(was: Option<i32>, hp: i32) -> bool {
+    hp <= 0 && was.is_some_and(|h| h > 0)
+}
+
+/// `FUN_001047a8`: the area start takes the snapshot when `FUN_001cb358` allows.
+fn track_area(mut go: ResMut<GameOver>, area: Res<CurrentArea>, rec: Res<AreaRecord>, mission: Option<Res<Mission>>, sora: Query<&Sora>) {
+    if area.loaded == go.seen_area {
+        return;
+    }
+    go.seen_area = area.loaded.clone();
+    let Some(name) = area.loaded.as_deref() else { return };
+    let manager = mission.as_deref().is_some_and(|m| m.m.is_some());
+    if !snapshot_allowed(rec.programs[0], manager) {
+        info!("game over: area {name}: no snapshot (FUN_001cb358: map program {:#x}, manager {manager})", rec.programs[0]);
+        return;
+    }
+    let hp = sora.single().map_or(1, |s| s.hp.max(1));
+    let dest = Dest { world: rec.world, area: rec.area, entrance: rec.entrance, programs: rec.programs };
+    info!("game over: area {name}: snapshot (FUN_001cafa0): world {} area {} entrance {} programs {:x?}, HP {hp}", dest.world, dest.area, dest.entrance, dest.programs);
+    go.snapshot = Some(Snapshot { dest, hp });
+}
+
+fn load(go: &mut GameOver, disc: &Disc, scene: &mut MenuScene, images: &mut Assets<Image>) {
+    go.tried = true;
+    let Some(bar) = disc.read(list::FILE) else {
+        warn!("game over: {} is not readable; the game over menu is off", list::FILE);
+        return;
+    };
+    let Ok(entries) = kh2_bar::parse(&bar) else { return };
+    let Some(e) = entries.iter().find(|e| e.tag == list::TAG) else {
+        warn!("game over: {} has no {} entry; the game over menu is off", list::FILE, list::TAG);
+        return;
+    };
+    go.table = list::parse_table(e.data);
+    let Some(two) = disc.read("menu/us/save.2ld").and_then(|b| layd::parse_2ld(&b)) else {
+        warn!("game over: menu/us/save.2ld is not readable; the game over menu is off");
+        return;
+    };
+    let (Some(img), Some(seq)) = (two.images.first(), two.layd.seqs.first()) else { return };
+    if scene.text.is_none() {
+        warn!("game over: no menu text; the game over menu is off");
+        return;
+    }
+    go.tex = scene.texs.len();
+    scene.texs.push(menu_gfx::Tex::new(img, images));
+    go.seq = scene.seqs.len();
+    scene.seqs.push(seq.clone());
+    let new = |scene: &mut MenuScene, s: Option<usize>, t: usize| {
+        let mut node = Node::new(s);
+        node.tex = t;
+        node.visible = false;
+        scene.add(node)
+    };
+    go.rows = (0..ROWS).map(|_| (new(scene, Some(go.seq), go.tex), new(scene, None, go.tex))).collect();
+    go.hand = new(scene, Some(go.seq), go.tex);
+    go.loaded = true;
+    info!("game over: {} {}: {} rows", list::FILE, list::TAG, go.table.len());
+}
+
+fn hide_all(go: &GameOver, scene: &mut MenuScene) {
+    for &(p, t) in &go.rows {
+        for i in [p, t] {
+            scene.nodes[i].visible = false;
+            scene.nodes[i].label = None;
+        }
+    }
+    scene.nodes[go.hand].visible = false;
+}
+
+fn show(go: &GameOver, over: &Over, scene: &mut MenuScene) {
+    for (k, &(plate, text)) in go.rows.iter().enumerate() {
+        let Some(&(_, msg)) = over.flow.rows.get(k) else {
+            scene.nodes[plate].visible = false;
+            scene.nodes[text].visible = false;
+            continue;
+        };
+        let selected = k == over.flow.row;
+        let dy = g::ROW_PITCH * k as f32;
+        scene.nodes[plate].visible = true;
+        scene.nodes[plate].pos = [0.0, dy];
+        let want = if selected { g::ROW_SELECTED } else { g::ROW_IDLE };
+        if scene.nodes[plate].player.group != Some(want) {
+            scene.set_group(plate, want);
+        }
+        let color = if selected { g::ROW_SELECTED_COLOR } else { g::ROW_IDLE_COLOR };
+        // Bit 15 of a stored id is ignored by the text lookup (`FUN_00190c40`).
+        let label = scene.text.as_ref().and_then(|t| {
+            t.message(u32::from(msg & 0x7fff), Style { font: 1, size: Some(15.0), color, ..Style::default() }, [g::ROW_LABEL[0], g::ROW_LABEL[1] + dy])
+        });
+        scene.nodes[text].label = label;
+        scene.nodes[text].visible = true;
+    }
+    scene.nodes[go.hand].visible = true;
+    scene.nodes[go.hand].pos = [g::HAND_AT[0], g::HAND_AT[1] + g::ROW_PITCH * over.flow.row as f32];
+    if scene.nodes[go.hand].player.group != Some(g::HAND) {
+        scene.set_group(go.hand, g::HAND);
+    }
+}
+
+/// The keys of the list (the same as the Struggle's result menu).
+#[allow(clippy::too_many_arguments)]
+fn input(
+    mut go: ResMut<GameOver>,
+    mut scene: ResMut<MenuScene>,
+    mut keys: ResMut<ButtonInput<KeyCode>>,
+    mut se: MessageWriter<PlaySe>,
+    mut pause: ResMut<Pause>,
+) {
+    if !go.is_open() {
+        return;
+    }
+    // A menu is a scene of its own: the field stops while it is up (docs/menus.md 1.1).
+    pause.menu = true;
+    let pressed = |k: KeyCode| keys.just_pressed(k);
+    let press = if pressed(KeyCode::ArrowUp) || pressed(KeyCode::KeyW) {
+        Some(Press::Up)
+    } else if pressed(KeyCode::ArrowDown) || pressed(KeyCode::KeyS) {
+        Some(Press::Down)
+    } else if pressed(KeyCode::KeyJ) || pressed(KeyCode::Enter) || pressed(KeyCode::NumpadEnter) {
+        Some(Press::Confirm)
+    } else if pressed(KeyCode::KeyK) || pressed(KeyCode::Escape) || pressed(KeyCode::Backspace) {
+        Some(Press::Cancel)
+    } else {
+        None
+    };
+    keys.reset_all();
+    let Some(p) = press else { return };
+    let Some(mut over) = go.over.take() else { return };
+    let row_code = over.flow.rows.get(over.flow.row).map(|r| r.0);
+    match over.press(p) {
+        Action::None => {
+            if p == Press::Cancel {
+                info!("game over: cancel ignored (+0x25 bit 0: list flags 0x60 cleared)");
+            } else if p == Press::Confirm {
+                let why = if row_code == Some(CODE_LOAD) { "code 1 opens the file screens, kind 2" } else { "not a row of this record" };
+                info!("game over: row code {row_code:?} is not ported ({why}); the list stays");
+                menu_sound::play(&mut se, menu_sound::REFUSED);
+            }
+        }
+        Action::Cursor => {
+            menu_sound::play(&mut se, menu_sound::CURSOR);
+            show(&go, &over, &mut scene);
+        }
+        Action::Chosen(code) => {
+            menu_sound::play(&mut se, crate::menu_status::CONFIRM);
+            info!("game over: row chosen, code {code} (FUN_0026fda0)");
+            over.frames = 0;
+            hide_all(&go, &mut scene);
+        }
+        Action::Cancelled => {
+            menu_sound::play(&mut se, menu_sound::CANCEL);
+            over.frames = 0;
+            hide_all(&go, &mut scene);
+        }
+    }
+    go.over = Some(over);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn drive(
+    mut go: ResMut<GameOver>,
+    mut scene: ResMut<MenuScene>,
+    real: Res<Time<Real>>,
+    mut mission: ResMut<Mission>,
+    mut task: ResMut<JumpTask>,
+    rec: Res<AreaRecord>,
+    disc: Res<Disc>,
+    mut images: ResMut<Assets<Image>>,
+    mut se: MessageWriter<PlaySe>,
+    mut music: Option<ResMut<AreaMusic>>,
+    audio: Option<Res<Audio>>,
+    mut sora: Query<&mut Sora>,
+) {
+    // A manager that ended by itself (`FUN_001b9ce0`).
+    if let Some(r) = mission.game_over_request.take()
+        && go.over.is_none()
+    {
+        info!("game over: the manager ended with the game-over path: type {} (FUN_001b9ce0)", r.kind);
+        go.over = Some(Over::new(r.kind, Some(r.exits)));
+    }
+    let Some(mut over) = go.over.take() else { return };
+    if over.fresh {
+        over.fresh = false;
+        start(over.kind, &mut se, music.as_deref_mut(), audio.as_deref());
+    }
+    let mut keep = true;
+    match over.phase {
+        Phase::Waiting => {
+            over.waited += real.delta_secs();
+            if over.waited >= OPEN_AFTER {
+                if !go.tried {
+                    load(&mut go, &disc, &mut scene, &mut images);
+                }
+                let key = record_of(over.kind);
+                match list::find(&go.table, key).cloned() {
+                    Some(b) if go.loaded => {
+                        over.open(&b);
+                        scene.hidden = false;
+                        scene.dim = dim_alpha(DIM_BRIGHTNESS);
+                        hide_all(&go, &mut scene);
+                        show(&go, &over, &mut scene);
+                        menu_sound::play(&mut se, menu_sound::OPEN);
+                        info!("game over: type {} opens record {key:#x} (FUN_0024f330 -> menu kind 7): rows {:x?}, cursor {}", over.kind, over.flow.rows, over.flow.row);
+                    }
+                    _ => {
+                        // Without the disc's rows nothing can be shown: Sora stands up as before [port choice].
+                        warn!("game over: record {key:#x} cannot open (loaded {}); Sora stands up in place", go.loaded);
+                        keep = false;
+                        finish(&mut go, &mut sora, false);
+                    }
+                }
+            }
+        }
+        Phase::List => {
+            scene.advance(real.delta_secs());
+        }
+        Phase::Closing => {
+            over.frames += scene.advance(real.delta_secs());
+            scene.dim = dim_alpha(close_brightness(over.frames));
+            if over.frames >= CLOSE_FRAMES {
+                scene.hidden = true;
+                scene.dim = 0.0;
+                hide_all(&go, &mut scene);
+                info!("game over: closed: back to the field (FUN_001038a0)");
+                if run_outcome(&mut go, &over, &mut mission, &mut task, &rec, &disc, &mut sora, music.as_deref_mut(), audio.as_deref()) {
+                    over.phase = Phase::Jumping;
+                    over.started = false;
+                } else {
+                    keep = false;
+                }
+            }
+        }
+        Phase::Jumping => {
+            // The jump task leaves `Idle` on the tick after it was set; the game over ends when it comes back.
+            if *task != JumpTask::Idle {
+                over.started = true;
+            } else if over.started {
+                info!("game over: the jump is over: Sora is back (HP {:?})", go.restore_hp);
+                keep = false;
+                finish(&mut go, &mut sora, true);
+            }
+        }
+    }
+    if keep {
+        go.over = Some(over);
+    }
+    if let Ok(mut s) = sora.single_mut() {
+        s.game_over = go.over.is_some();
+    }
+}
+
+/// `FUN_001ad378`: the sound and the music stop.
+fn start(kind: u8, se: &mut MessageWriter<PlaySe>, music: Option<&mut AreaMusic>, audio: Option<&Audio>) {
+    let n = if kind == 1 { SOUND_OVER_TYPE_1 } else { SOUND_OVER };
+    info!("game over: type {kind}: system sound {n:#x} (FUN_002c14a8), music stops (FUN_00137520)");
+    se.write(PlaySe::system(n));
+    if let Some(m) = music {
+        crate::audio_bgm::revive_stop(m, audio);
+    }
+}
+
+/// The game over is over: Sora is not held any more.
+fn finish(go: &mut GameOver, sora: &mut Query<&mut Sora>, restored: bool) {
+    go.over = None;
+    go.restore_hp = None;
+    if let Ok(mut s) = sora.single_mut() {
+        s.game_over = false;
+        if restored && s.hp <= 0 {
+            s.hp = s.stats.max_hp;
+        }
+    }
+}
+
+/// The closed list's choice: "Continue" jumps to the snapshot's area, "Retry" / "Quit" take the trigger jumps.
+#[allow(clippy::too_many_arguments)]
+fn run_outcome(
+    go: &mut GameOver,
+    over: &Over,
+    mission: &mut Mission,
+    task: &mut JumpTask,
+    rec: &AreaRecord,
+    disc: &Disc,
+    sora: &mut Query<&mut Sora>,
+    music: Option<&mut AreaMusic>,
+    audio: Option<&Audio>,
+) -> bool {
+    let Some(outcome) = over.chosen else {
+        finish(go, sora, false);
+        return false;
+    };
+    let max_hp = sora.single().map_or(1, |s| s.stats.max_hp);
+    let (dest, kind) = match outcome {
+        Outcome::Continue => {
+            // The callback `LAB_001adc70`: `FUN_00104e18(FUN_001cb3b8(), 0x80000001, 1, 1, 0)`.
+            let hp = go.snapshot.map_or(max_hp, |s| s.hp);
+            go.restore_hp = Some(hp);
+            if let Ok(mut s) = sora.single_mut() {
+                s.hp = hp;
+            }
+            (continue_dest(go.snapshot), CONTINUE_FADE_KIND)
+        }
+        Outcome::Retry | Outcome::Quit => {
+            let code = if outcome == Outcome::Retry { CODE_RETRY } else { CODE_QUIT };
+            // With the manager (a knock-out): `Mission::menu_exit` ends it and reads its trigger; without it the jumps the
+            // request carried.
+            let jump = if mission.m.is_some() {
+                mission.menu_exit(code).and_then(|e| e.jump)
+            } else {
+                over.exits.and_then(|e| exit_jump(&e, outcome))
+            };
+            go.restore_hp = Some(max_hp);
+            if let Ok(mut s) = sora.single_mut() {
+                s.hp = max_hp;
+            }
+            let Some(j) = jump else {
+                info!("game over: {outcome:?}: no trigger jump; Sora stands up in place");
+                finish(go, sora, true);
+                return false;
+            };
+            match exit_dest(j, (rec.world, rec.area, rec.entrance), |w, k| disc_localset(disc, w, k)) {
+                Ok(d) => d,
+                Err(why) => {
+                    info!("game over: {outcome:?}: trigger jump {j:?}: {why}; not taken, Sora stands up in place");
+                    finish(go, sora, true);
+                    return false;
+                }
+            }
+        }
+    };
+    if let Some(m) = music {
+        // `FUN_00137558`: the held music state back, so the arrival's music runs.
+        crate::audio_bgm::revive_restart(m, audio);
+    }
+    info!("game over: {outcome:?}: jump to world {} area {} entrance {} programs {} (fade kind {kind})", dest.world, dest.area, dest.entrance, dest.programs_text());
+    *task = JumpTask::FadeOut { dest, kind, t: 0.0 };
+    true
+}
+
+/// A trigger jump record `[type, world, area, entrance, key, flags]` resolved as every other trigger jump
+/// (`area_jump::resolve_jump`), with the fade kind from the flags.
+fn exit_dest(j: [u16; 6], cur: (u8, u8, u8), localset: impl Fn(u8, u16) -> Option<u8>) -> Result<(Dest, u32), String> {
+    let jump = kh2_ard::run::Jump { kind: j[0], world: j[1], area: j[2], entrance: j[3], key: j[4], flags: j[5] };
+    resolve_jump(&jump, cur, None, localset).map(|d| (d, u32::from(j[5] & 0x3fff)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::menu_struggle::{parse_table, FILE, TAG};
+
+    fn input(f: impl FnOnce(&mut KoInput)) -> KoInput {
+        let mut i = KoInput { ko_bit: false, tinker_ready: false, menu_manager: false, in_form: false };
+        f(&mut i);
+        i
+    }
+
+    #[test]
+    fn the_knock_out_route_follows_fun_001cec00() {
+        assert_eq!(route(input(|_| {})), Route::GameOver(0));
+        assert_eq!(route(input(|i| i.menu_manager = true)), Route::GameOver(3));
+        // Host 1.317's bit wins over everything: event 0x5a, no game over.
+        assert_eq!(route(input(|i| {
+            i.ko_bit = true;
+            i.tinker_ready = true;
+            i.menu_manager = true;
+        })), Route::MissionEvent);
+        // Tinker Bell's revive wins over the game over (also with a menu manager).
+        assert_eq!(route(input(|i| i.tinker_ready = true)), Route::TinkerRevive);
+        assert_eq!(route(input(|i| {
+            i.tinker_ready = true;
+            i.menu_manager = true;
+        })), Route::TinkerRevive);
+        // A drive form ends by itself; a menu manager still takes the game over (FUN_001b9c00 is tested first).
+        assert_eq!(route(input(|i| i.in_form = true)), Route::FormEnds);
+        assert_eq!(route(input(|i| {
+            i.in_form = true;
+            i.menu_manager = true;
+        })), Route::GameOver(3));
+    }
+
+    #[test]
+    fn the_record_and_the_manager_end_follow_the_type() {
+        assert_eq!(record_of(0), 1);
+        assert_eq!(record_of(1), 1);
+        assert_eq!(record_of(3), 0x21);
+        // FUN_001b9ce0: mission kinds 2, 0x1e and 0x23 start type 3, every other kind type 1.
+        for k in [2u8, 0x1e, 0x23] {
+            assert_eq!(crate::struggle::game_over_kind(k), 3);
+        }
+        for k in [0u8, 1, 3, 0x19, 0x20] {
+            assert_eq!(crate::struggle::game_over_kind(k), 1);
+        }
+    }
+
+    fn block(key: u16, opts: &[(u16, u16)]) -> Block {
+        let mut r = vec![0u8; 0x40];
+        r[0..2].copy_from_slice(&key.to_le_bytes());
+        r[2] = opts.len() as u8;
+        for (i, (c, m)) in opts.iter().enumerate() {
+            r[4 + 4 * i..6 + 4 * i].copy_from_slice(&c.to_le_bytes());
+            r[6 + 4 * i..8 + 4 * i].copy_from_slice(&m.to_le_bytes());
+        }
+        r[0x25] = 1;
+        let mut d = vec![2, 0, 0, 0, 1, 0, 0, 0];
+        d.extend(r);
+        parse_table(&d).remove(0)
+    }
+
+    #[test]
+    fn death_to_list_to_choice_continue_closes_and_retry_needs_type_3() {
+        let b = block(1, &[(2, 0x8ab0), (1, 0x8aaf)]);
+        let mut o = Over::new(0, None);
+        assert_eq!(o.phase, Phase::Waiting);
+        o.open(&b);
+        assert_eq!(o.phase, Phase::List);
+        assert_eq!(o.flow.rows, vec![(2, 0x8ab0), (1, 0x8aaf)]);
+        // No cancel (+0x25 bit 0): the list cannot be left without a row.
+        assert_eq!(o.press(Press::Cancel), Action::None);
+        assert_eq!(o.phase, Phase::List);
+        // "Load Game" is refused and the list stays.
+        assert_eq!(o.press(Press::Down), Action::Cursor);
+        assert_eq!(o.press(Press::Confirm), Action::None);
+        assert_eq!((o.phase, o.chosen, o.flow.stage), (Phase::List, None, list::Stage::List));
+        // "Continue" closes.
+        assert_eq!(o.press(Press::Up), Action::Cursor);
+        assert_eq!(o.press(Press::Confirm), Action::Chosen(CODE_CONTINUE));
+        assert_eq!((o.phase, o.chosen), (Phase::Closing, Some(Outcome::Continue)));
+
+        // Type 3: Quit then Retry rows.
+        let b = block(0x21, &[(4, 0x8ab2), (3, 0x8ab1)]);
+        let mut o = Over::new(3, Some(GameOverExits { retry: Some([2, 2, 0, 0, 0xb6, 1]), quit: Some([1, 2, 4, 55, 0, 0]) }));
+        o.open(&b);
+        assert_eq!(o.press(Press::Confirm), Action::Chosen(CODE_QUIT));
+        assert_eq!(o.chosen, Some(Outcome::Quit));
+        let e = o.exits.unwrap();
+        assert_eq!(exit_jump(&e, Outcome::Quit), Some([1, 2, 4, 55, 0, 0]));
+        assert_eq!(exit_jump(&e, Outcome::Retry), Some([2, 2, 0, 0, 0xb6, 1]));
+        assert_eq!(exit_jump(&e, Outcome::Continue), None);
+
+        // A type 0 list does not take the mission codes.
+        let b = block(1, &[(3, 1)]);
+        let mut o = Over::new(0, None);
+        o.open(&b);
+        assert_eq!(o.press(Press::Confirm), Action::None);
+        assert_eq!(o.phase, Phase::List);
+    }
+
+    #[test]
+    fn the_snapshot_rule_and_the_continue_destination() {
+        assert!(snapshot_allowed(0x10, false));
+        assert!(!snapshot_allowed(0x33, false), "map program 0x33 and above");
+        assert!(!snapshot_allowed(0x10, true), "a manager runs");
+        let keep = continue_dest(None);
+        assert_eq!((keep.world, keep.area, keep.entrance, keep.programs), (0xff, 0xff, 0xff, [0xff; 3]));
+        let d = Dest { world: 2, area: 4, entrance: 7, programs: [1, 2, 3] };
+        assert_eq!(continue_dest(Some(Snapshot { dest: d, hp: 9 })), d);
+    }
+
+    #[test]
+    fn the_knock_out_edge_fires_once_per_fall() {
+        assert!(!ko_edge(None, 0), "no earlier HP seen");
+        assert!(!ko_edge(Some(10), 5));
+        assert!(ko_edge(Some(10), 0));
+        assert!(ko_edge(Some(1), -3));
+        assert!(!ko_edge(Some(0), 0), "already down");
+    }
+
+    /// The disc's rows: record 1 has "Continue" (code 2) and "Load Game" (code 1), record 0x21 has "Quit" (4) and "Retry"
+    /// (3), both without a cancel (skipped without `KH2_ISO`).
+    #[test]
+    fn the_disc_rows_of_the_game_over() {
+        let Ok(iso) = std::env::var("KH2_ISO") else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let bar = a.read(FILE).expect("14mission.bar");
+        let entries = kh2_bar::parse(&bar).unwrap();
+        let e = entries.iter().find(|e| e.tag == TAG).expect("the slct entry");
+        let t = parse_table(e.data);
+        let sys = kh2_image::text::Messages::from_bar(&a.read("msg/us/sys.bar").unwrap()).unwrap();
+        let text = |m: u16| sys.text(u32::from(m & 0x7fff)).unwrap_or_default();
+        let b = list::find(&t, RECORD_FIELD).expect("row 1");
+        let rows = b.rows();
+        assert_eq!(rows.iter().map(|r| r.0).collect::<Vec<_>>(), vec![CODE_CONTINUE, CODE_LOAD]);
+        assert_eq!((text(rows[0].1).as_str(), text(rows[1].1).as_str()), ("Continue", "Load Game"));
+        assert!(b.no_cancel);
+        let b = list::find(&t, RECORD_MISSION).expect("row 0x21");
+        let rows = b.rows();
+        assert_eq!(rows.iter().map(|r| r.0).collect::<Vec<_>>(), vec![CODE_QUIT, CODE_RETRY]);
+        assert_eq!((text(rows[0].1).as_str(), text(rows[1].1).as_str()), ("Quit", "Retry"));
+        assert!(b.no_cancel);
+        assert!(a.read("obj/GAMEOVER.mset").is_ok_and(|m| !m.is_empty()), "the scene file the task loads");
+    }
+}

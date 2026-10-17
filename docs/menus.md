@@ -2386,6 +2386,114 @@ the arrangement is applied (`party::jump_party`) and the notice opens over the f
 `FUN_0024f300`, `FUN_00250450`, `FUN_0026ef80`, `FUN_0026e618`, `FUN_0026e970`). The wait is JT4's (events.md).
 
 
+## 26. Game over (WP-GO1)
+
+### 26.1 The decision [V]
+
+When the player's HP part reaches 0 (`FUN_00186238` -> `FUN_00186530`, unless the dead bit `+0x7f8 & 4` is already set) the
+player class's method `+0x5c`, `FUN_001cec00` (the field player's class 0x360410), decides. In this order:
+
+| test | result |
+|---|---|
+| `DAT_0035d268` bit 0x20000 (host 1.317, the Struggle script's event 3) | global event 0x5a (`FUN_00197b70`), no game over |
+| `FUN_001c69b0`: summon state not 0, byte 5 = Peter Pan's row (`FUN_001d4ca0(0x132)`), byte 7 set (Tinker Bell ready) | game over type 2 (`FUN_001ad8a8`): Tinker Bell's revive (docs/summons.md), unless the form field `+0xb50` is 0xb |
+| `FUN_001b9c00`: a mission manager of kind 2, 0x19 or 0x20 | type 3 (`FUN_001ad8e0(player)`) |
+| `FUN_001793a8`: form field `+0xb50` in 1..5 (a drive form) or 0xb | `FUN_001b4d78` (`FUN_001b44c8`, the form's own end task), no game over |
+| otherwise | type 0 (`FUN_001ad810(player)`); with the summon state 2 `FUN_001cf298` ends the summon first |
+
+`FUN_001ced58` runs before every game-over call (`FUN_0017e220(0, 0, actor + 0x140, 0x36)`, `FUN_0016b698(actor, 0x29)`: the
+fall motion). A manager that ends by itself (`FUN_001b9ce0`, the Struggle's failure with no trigger for event 8) starts type 3
+for the mission kinds 2, 0x1e and 0x23 (`FUN_001ad8e0(0)`) and type 1 (`FUN_001ad868`, only while none runs) for the others.
+The three constructors `FUN_001ad810`, `FUN_001ad8a8`, `FUN_001ad868` and `FUN_001ad8e0` are called only from `FUN_001cec00` and
+`FUN_001b9ce0` (`mips_scan --jal`; the decomp text grep for the callers timed out, so this is the instruction scan's answer).
+
+### 26.2 The object [V]
+
+`FUN_001ad378(self, camera actor, type)` fills a 0x50-byte object: type at +0, step at +8, +0xc a byte ("alternate"), +0x10 the
+record, +0x30 / +0x34 the list header words and the scene handle, +0x48 the callback of the list's code 2, +0x4c its task. It sets
+`DAT_0035ee00` (one game over at a time), flag 0x35d268 bit 1, `0x35fec8` bit 1 (not for type 2), the music stop `FUN_00137520`
+(`FUN_002c1a08`: both music slots fade, `FUN_00136a68` stream stop) and the system sound `FUN_002c14a8(0x13)` (type 1: `0x33`),
+queues the camera/message object when an actor was passed (`FUN_00195898` / `FUN_00195a78` / `FUN_00195ae0`), sets `0x354f70`
+bit 2 (`FUN_00138708`) and makes its task (`FUN_00102bc8(1, 15000, 0x1ad918)`, body `FUN_001ad960` -> `FUN_001ad9a0`).
+`FUN_001ad640` (types other than 2) clears the manager (`FUN_001b9518`) when the alternate byte is 0, picks the record
+(`FUN_001bef10(0x21)` for type 3, `FUN_001bef10(1)` for the others; the callback `+0x48` = `0x1adc70` for types other than 3) and
+stores the list's header word at `+0x30` (`FUN_00169958(player) | 0x20000000` or `FUN_001cf2c8(0)`; the second word `+0x34` is 0,
+so `FUN_0026f948` shows no information line). `FUN_001ad520` (type 0 with manager header bit 9 and no living ally, a random
+chance from `DAT_003716a0`) sets the alternate byte: its list is record 10 ("I won't give up!" code 9, "It's all over..."
+code 8), handled by `0x1adbb8`; not reached in the app (no mission here has header bit 9).
+
+The task `FUN_001ad9a0` (steps in `+8`): 1 sound gate `FUN_002c38b8`; 2 waits for `FUN_00196418` (an event / message), then for
+the scene object `FUN_0014a978()+0xfc == 4`, ends the gate (`FUN_002c38c8`), puts the player on the floor (`FUN_00183fe0`, not
+type 1) and (type 2) runs `FUN_001adeb8` (Tinker Bell), else `FUN_00196258` + `FUN_001c67b0` (the summon leaves) or
+`FUN_001a3f68`; 4 waits for the word `0x35feb8` bit 0, `0x35fec0` bit 0 and the resource `FUN_0016ff50`, then `FUN_001ade58` loads
+the scene `obj/GAMEOVER.mset` (resource 5000; `FUN_0016fac8`; motion 0x1e of the character's entry chosen by `FUN_001add40`: 0xfc
+for type 0, 0xfd for types 1 and 3); 5 waits for the resource, `FUN_001adcf8` and opens the list: `FUN_0024f330(record,
+object + 0x30)`; 6 waits for the list; 7 `FUN_00137558` (the music back) and `FUN_001cdf48` (the revive effect object at the
+player, `FUN_001db868(.., 0x11, 1, 1, 0, player)`); 8 ends. The lengths of the waits and of the scene's motion were not read [GAP].
+
+### 26.3 The list and its rows [V]
+
+`14mission.bar` `slct` (section 21.1), read from the disc by `menu_gameover::tests::the_disc_rows_of_the_game_over`:
+
+| record | rows (code: message) | header group | cancel |
+|---|---|---|---|
+| 1 (types 0, 1) | 2: "Continue" (0x8ab0), 1: "Load Game" (0x8aaf) | 3 | none (+0x25 bit 0) |
+| 0x21 (type 3) | 4: "Quit" (0x8ab2), 3: "Retry" (0x8ab1) | -1 | none |
+| 10 (alternate) | 9: "I won't give up!" (0x8ab5), 8: "It's all over..." (0x8ab6) | 2 | none |
+
+`FUN_0026fda0` per code: 3 and 4 `FUN_001b9c58` (events 0x8b / 0x8d, the manager ends, the area trigger's jump, as the Struggle's
+result menu); 1 `FUN_00254a08(2)` (the file screens, kind 2: the Load screen); 2 the default branch: the callback `+0x48`; 10 and
+0x11 `FUN_00254a08(3)` / `(1)`; 5 `FUN_00222820` (`DAT_0036bcd8 = 1`, `FUN_001d3a48`; not on a game-over row); 6 closes.
+
+"Continue" (callback `0x1adc70`, code 2) calls `FUN_00104e18(FUN_001cb3b8(), 0x80000001, 1, 1, 0)`: the jump task of the area
+changes with the six bytes `DAT_01d69890` (world, area, entrance, three program bytes) and the byte `+8` = 1, so its fade-out step
+(`FUN_00104d58`) runs `FUN_001cb208`: the snapshot of the save body (`0x33e860..0x349d20`, the words `0x35d278..0x35da98` and
+`0x35daa0..0x35e2c0`) comes back from `0x1d5e3b0`, `0x1d69898`, `0x1d6a0c0`, then `FUN_001abfe8(8)` (party reset) and `FUN_001b81f8`
+run and the jump enters the stored area record. `FUN_001047a8` (the start of every area, called by `FUN_001048e0`) takes the
+snapshot (`FUN_001cafa0`: copies the same words and `DAT_01d69890 = DAT_0033e830`, the area record) when `FUN_001cb358` allows:
+`FUN_001b9fb0` (a manager whose header word +4 has bit 12), or no manager (`FUN_001b9550`), the byte `DAT_0033e830 + 3` (the map
+program) below 0x33 and `DAT_0035e3a0` 0. `FUN_001cb3e8(1, 0xffff)` clears the snapshot (all bytes 0xff = "keep the record's").
+
+### 26.4 What the port does (`crates/kh2-app/src/menu_gameover.rs`, WP-GO1)
+
+* `route` is the table of 26.1 (`KoInput` from `Mission::ko_view`, `SummonState` / `SummonData` for Tinker Bell, `DriveState` for the
+  form): decided once when Sora's HP falls to 0 (`detect`, `FixedUpdate` between `Sim::SoraHurt` and `Sim::Sounds`, so Tinker
+  Bell's byte 7 is still set the tick the revive begins). Only types 0 and 3 start the game over; event 0x5a stays in
+  `struggle.rs`; the revive stays in `summon.rs`; a form's end is not changed. `Sora::game_over` holds him down (`sora.rs`'s
+  in-place stand-up does not run). Without disc data the old in-place stand-up runs.
+* The sound `0x13` (type 1 `0x33`) plays as `PlaySe::system` and the music stops (`audio_bgm::revive_stop`, the same `FUN_00137520`
+  the revive uses); the list opens `OPEN_AFTER` = 1.5 s after the fall [inferred: the waits of 26.2 were not read].
+* The list is `menu_struggle`'s pointer list over the disc's row (record 1, or 0x21 for type 3): J / Enter confirms, W / S / arrows
+  move, no cancel. The field is frozen (`Pause::menu`) while it is up.
+* "Continue": the snapshot is the area record and Sora's HP at the last area start that `FUN_001cb358`'s rule allows (`track_area`;
+  a harness area start counts; a Struggle area, whose manager exists at the start, does not). The jump is `JumpTask::FadeOut` with
+  fade kind 1 (`0x80000001`); without a snapshot the record's own bytes stay (0xff) and the current area reloads. Sora's HP is the
+  snapshot's (full when none). The save body is NOT restored: `Progress` shares its story state, so copying only part of it would be
+  inconsistent [GAP: items, munny, EXP and story flags earned since the area start stay]. The party reset `FUN_001abfe8(8)` and
+  `FUN_001b81f8` are not ported.
+* "Retry" / "Quit" (type 3): `Mission::menu_exit` (with the manager) or the jump records the manager carried when it ended
+  (`GameOverRequest::exits`); resolved as every trigger jump. HP is full.
+* "Load Game" (code 1): the app has no file load screen; the row is shown (it is on the disc) and refused ("not ported" in the log,
+  the list stays). A cancel does not exist (+0x25 bit 0).
+* Not ported: the scene `GAMEOVER.mset` (107952 bytes on the disc; Sora keeps his own fall pose instead), kind 7's frame and the
+  header group `+0x14` (3), the camera object (`FUN_00195898`), the revive effect object (`FUN_001cdf48`), the alternate list
+  (record 10), type 1's difference (`FUN_00183fe0` skipped), Mickey's rescue (no object in the app), the drive form's end
+  (`FUN_001b4d78`).
+* Harness: `KH2_GAMEOVER_KO=<seconds>` knocks Sora out once (HP 0, `State::Down`). `KH2_NO_ENEMIES=1 KH2_GAMEOVER_KO=7 kh2-game
+  tt00` logs `game over: Sora knocked out (FUN_001cec00): GameOver(0)` and `type 0 opens record 0x1 ... rows [(2, 8ab0), (1,
+  8aaf)]`; with `KH2_KEYS=10:J` also `row chosen, code 2`, `Continue: jump to world 2 area 0 entrance 0` and `the jump is over:
+  Sora is back`. `KH2_WAVE_GROUP=b_50` with the aid logs `MissionEvent` (host 1.317's bit) and no list; the summon run of
+  docs/summons.md logs `TinkerRevive` and no list.
+* Decompile index: `FUN_001ad378`, `001ad640`, `001ad520`, `001ad790`, `001ad810`, `001ad868`, `001ad8a8`, `001ad8e0`, `001ad960`,
+  `001ad9a0`, `001adcf8`, `001add40`, `001ade58`, `001adeb8`, `001cec00`, `001ced58`, `001cf298`, `001b9ce0`, `001b9c00`,
+  `001b9c58`, `001b9fb0`, `001b9aa0`, `001c69b0`, `001793a8`, `001cafa0`, `001cb118`, `001cb208`, `001cb358`, `001cb3b8`,
+  `001cb3e8`, `001047a8`, `00104d58`, `00104e18`, `0026fda0`, `0026f480`, `0026f698`, `0026f948`, `00254a08`, `00254a18`,
+  `0024f330`, `002c14a8`, and the raw instructions of `0x1adbb8` (the alternate list's callback) and `0x1adc70` (Continue), for
+  which the decomp has no function.
+* Tests: `the_knock_out_route_follows_fun_001cec00`, `the_record_and_the_manager_end_follow_the_type`,
+  `death_to_list_to_choice_continue_closes_and_retry_needs_type_3`, `the_snapshot_rule_and_the_continue_destination`,
+  `the_knock_out_edge_fires_once_per_fall`, `the_disc_rows_of_the_game_over`, and in `struggle.rs`
+  `the_knock_out_view_carries_the_bit_the_kind_and_the_retry_and_quit_jumps`.
 ## 22. Donald and Goofy on the Items and Equipment pages (WP-PM1)
 
 **The party object.** Page 1, the target list of Use (page 0xc) and the equipment list read the party object `DAT_0036ce90`: `FUN_00282940` is its row count (the word at `+0`), `FUN_002829f0(row)` the member id of a row (the u16 at `row * 0x14 + 6`, 0 outside the count) and `FUN_00282980(row)` the row's name word (`+0xc`). `FUN_0025c2c8` builds one target row per party row (a group item shows the single row "All", message 0x3944; an item that goes to one member only shows one row). `FUN_0025e9e8(row)` asks `FUN_001a14c8(item, member of the row)`; for a group item `FUN_001a14c8` answers true when any of the four slots passes `FUN_001a15a0`. `FUN_0025ea40(row)` runs `FUN_001a11a0(item, member, 0, 100)` (a group item loops the four slots), then `FUN_001a1ba8(item, 100)` and `FUN_0013dac8`.

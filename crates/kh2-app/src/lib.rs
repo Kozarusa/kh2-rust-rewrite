@@ -45,6 +45,7 @@ mod menu_journal;
 mod menu_pages;
 mod menu_shop;
 mod menu_status;
+mod menu_gameover;
 mod menu_struggle;
 mod menu_text;
 mod motor;

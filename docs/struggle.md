@@ -265,8 +265,10 @@ instead of the game-over paths (`FUN_001ad8e0` / `FUN_001ad810` / `FUN_001ad8a8`
 (the player takes it divided, others multiplied); no writer of that word was found except the clear `FUN_001b81f8`,
 so the factor is 1. Port: `mission_tick` sends event 0x5a when Sora's HP falls to 0 with the bit set; test
 `a_knock_out_with_host_1_317_loses_the_struggle`; log `struggle: Sora knocked out: global event 0x5a`. The app still
-revives Sora after 3 s (`sora.rs`); in the original he stays down through the result [inferred from the absence of a
-revive in `FUN_001cec00`].
+revives Sora after 3 s (`sora.rs`) in this case; in the original he stays down through the result [inferred from the absence of a
+revive in `FUN_001cec00`]. Without the bit (WP-GO1) the knock-out is the game over of docs/menus.md section 26: type 3 while a
+manager of kind 2, 0x19 or 0x20 runs (list "Quit" / "Retry", the Struggle's own trigger jumps), type 0 for the other managers; a
+manager that ends by itself (`FUN_001b9ce0`, `Finish::GameOver`) hands `Mission::game_over_request` to `menu_gameover`.
 
 ## Sora fights alone (WP-S8, verified)
 

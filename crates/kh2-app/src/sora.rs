@@ -499,6 +499,9 @@ pub struct Sora {
     pub stats: Stats,
     pub hp: i32,
     pub mp: i32,
+    /// A game over holds him down (`menu_gameover`, `FUN_001cec00` -> `FUN_001ad810`): the in-place stand-up below does not
+    /// run, the game over's choice decides what happens to him.
+    pub game_over: bool,
     /// Invincible ticks left.
     pub invuln: f32,
     /// Leaf Bracer's untouchable ticks (actor +0xb00, written by Cure's script through host 1.91,
@@ -1050,6 +1053,7 @@ pub fn setup(
             mp: data.sora_max_mp,
             stats,
             invuln: 0.0,
+            game_over: false,
             leaf_bracer: 0.0,
             damage_motion: None,
             lock: None,
@@ -1919,9 +1923,10 @@ pub fn tick(
         State::Down => {
             s.motor.vel = Vec3::ZERO;
             // No revival while the mission holds the player: the original keeps Sora down through the
-            // result (docs/struggle.md), and the app's revival is its own stand-in for the game over.
-            if s.timer > 180.0 && !locked {
-                // KH2 shows the game-over screen here; kh2-rs revives in place.
+            // result (docs/struggle.md). The game over (`menu_gameover`, docs/menus.md section 26) owns the knock-out
+            // where the original has one; this stand-up is what is left where it does not (a mission with host
+            // 1.317's bit, a drive form's end, no disc rows for the list).
+            if s.timer > 180.0 && !locked && !s.game_over {
                 s.hp = s.stats.max_hp;
                 s.invuln = 120.0;
                 s.state = State::Hurt;

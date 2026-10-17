@@ -752,8 +752,8 @@ tt37; tt40 -> tt19 and area 100. The full list is in the test output.
 - **Motions, opcode 0x2c** [V, WP-E6]. `FUN_0022cd90`: at frame +4, actor +0xe: the actor's object is made
   here if it has none (`FUN_0016e8c0(DAT_0037f220, objentry | 0x40000000)`), the motion record of (model, name
   +0x12) is found (`FUN_002242a0`) and started through `FUN_0017e1c8(2 * +0x10, 2 * +8, object + 0x140, ..)`
-  = `FUN_0017dd38(blend, start frame, ..)` (the same start as every other motion). +6 is read by no handler
-  [GAP]; +0xa / +0xc are a loop (below, WP-E6d).
+  = `FUN_0017dd38(blend, start frame, ..)` (the same start as every other motion). +6 is read by nothing
+  [V, WP-EV1: searched, see Unknowns]; +0xa / +0xc are a loop (below, WP-E6d).
 - **Placements, opcode 2** [V, WP-E6]. `FUN_002293b8`: only when +4 is 0, at frame +0x26, actor +0x24:
   position +8..+0x14 (`FUN_0016a700`, the game's space) and rotation +0x14..+0x20 in degrees (`FUN_002292b0`,
   `DAT_0037f0c0` = pi / 180; yaw only when x and z are 0, `FUN_0016a7f0`).
@@ -773,16 +773,34 @@ tt37; tt40 -> tt19 and area 100. The full list is in the test output.
   (w = `DAT_0037a1b4`) and refreshes the object (`FUN_001921e8`) at every loop. Here `keep_place` / `put_back`
   on the last opcode-2 place (test `a_looping_motion_puts_its_actor_back_where_the_loop_began`); the rotation
   stays.
-- **Opcode 0x4d: hide or show objects** [V for the call, GAP for which objects, WP-E6e]. `FUN_00226e80`: at
+- **Opcode 0x4d: hide or show objects** [V, WP-EV1: the rule below; WP-E6e read the call]. `FUN_00226e80`: at
   frame +4, +6 = 0 -> `FUN_001b7fa8(2000)`, else `FUN_001b8040(2000)`: every object of the list at
   `DAT_01d5d7a0` (next at +0x8b4) without +0x588 bit 0x20 whose method +0x3c answers below 2000 gets object
   +0x10c bit 0x80 set (resp. cleared). Bit 0x80 is a hide: `FUN_0019af68` (true when +0x10c 0x80 or 0x100, ...)
   makes `FUN_00191c18` clear bit 4 of +0x768 [inferred: the draw bit] and the weapon test of docs/movement.md.
   Method +0x3c of the actor class (vtable 0x35b950) is `FUN_0016bc68`: the +0x28 tag of the object's
   `obj/%s.mdlx` resource (`FUN_0016ed08`, format 0x37a430; `FUN_0016f800` finds it in the list `DAT_0035bd88`;
-  `FUN_0016f8e0(2000)` at the event start (state 2) moves tags of 2000 and above to 10000+). The tag writers
-  (`FUN_0016f2f8`, `FUN_0016f358`, `FUN_0016f9c0`) were not traced, so whether the player and the party fall
-  below 2000 is unknown: logged, not ported. 6 commands in tt.
+  `FUN_0016f8e0(2000)` at the event start (state 2) moves tags of 2000 and above to 10000+). **WP-EV1, the rule.**
+  Every object class vtable read (0x35b950, 0x35ced8, 0x35eea8, 0x35f580, 0x35c9a8, 0x35c908, 0x35e300) has
+  `FUN_0016bc68` at +0x3c, and the compare in `FUN_001b7fa8` / `FUN_001b8040` is signed. The tag is the second
+  argument of `FUN_0016e430` (the model load): -1 means -200 for an object the event made (id or'ed with
+  0x40000000, `FUN_0016ef80`, objentry type not 7 or 0x16: the model load of load record 0x38 `FUN_00229198`;
+  that opcode 0x2c's `FUN_0016e8c0` object uses the same resource is [inferred]), else the word of 0x37a278 by ObjectType (E6f, above). Result: opcode 0x4d (+6 = 0) hides
+  every object that exists at that moment and is either made by the event (-200) or of ObjectType 5, 6, 8, 10,
+  11, 13, 18 or 23 (tags 1030..1110, the field's props: the tt areas spawn F_EX000, F_TT010 and F_TT010_SORA of
+  them, 217 entities); the player, friends, townspeople, enemies, save points and summons (2100..2700) are
+  never touched, and the explicit tags other callers pass (0x13ef `FUN_002a18a0`, 0x96a / 0x974 from
+  `FUN_001b3f78` and `FUN_00174fb0`, -200 `FUN_002c4c58`) lie at 2000 or above except the -200 ones.
+  +6 not 0 clears the bit on the same set. It is a one-time pass over the list, not a state: an object made
+  afterwards (the event's actors appear at their first opcode 0x2c) is not hidden by an earlier hide. How it
+  ends: only a later opcode 0x4d with +6 not 0, or the object's end. Bit 0x80 is the hide flag (above). On the
+  disc only tt01 event 101 has one (frame 0, +6 = 0, a hide that runs before any actor exists; so it hides the
+  area's props, not Sora). Ported: `event_player::resource_tag`, `op_4d_touches`, `op_4d_hidden` and
+  `Spawned::hidden` (an event actor that exists at the pass is hidden or shown; a hidden one stays hidden when
+  opcode 2 places it); tests `opcode_0x4d_hides_and_shows_the_objects_whose_tag_is_below_2000`,
+  `opcode_0x4d_touches_the_object_types_the_table_puts_below_2000` (reads the table from the executable).
+  The app draws none of the prop types (no F_* object is spawned by the app), so nothing else is hidden
+  [inferred: those objects are not in the app]. Log: `op 0x4d hides 0 event actor(s)` at tt01 101 frame 0.
 - **Opcode 2 +6** [GAP]: `FUN_002293b8` reads +4 (must be 0), +8..+0x20, +0x24, +0x26 only; values seen 0,
   1247, 2258, 30716. No other reader searched beyond the two switches.
 - **Opcode 3** [V for the readers]: in neither switch (`FUN_002245d0`, `FUN_00223a88`), so both readers pass it.
@@ -801,10 +819,17 @@ tt37; tt40 -> tt19 and area 100. The full list is in the test output.
   (model +0x1c the count, headers from +0x20), is `value & 0x7fff`; the same for the second model at model +0xc
   (`FUN_001205b8`, group = bits 0..4). The draw `FUN_00121a78` skips a mesh whose flag has no low bit set. So
   opcode 0xd says which mesh groups of the actor are drawn (the others are not) [what flag 2 changes in the
-  draw: GAP]. +0x3c / +0x40 show / hide one group (callers `FUN_00192cd0`, `FUN_00192ce8`, `FUN_001485a8`).
+  draw: WP-EV1, below]. +0x3c / +0x40 show / hide one group (callers `FUN_00192cd0`, `FUN_00192ce8`, `FUN_001485a8`).
   Ported: `mesh_groups`, `mesh_flags` hide the actor's mesh entities of unlisted groups (test
   `opcode_0xd_draws_only_the_listed_mesh_groups`: all 150 commands in tt02/03/04 reach a readable model; the
   tt lists name groups 0 and 2..0x1f, i.e. they hide group 1 (N_EX500_RTN: mesh 2 of 4) [inferred: an alternate part]); the second model is not drawn by the app.
+  **WP-EV1 (vtable +0x34 and flag 2).** The +0x34 call is exactly `FUN_00120fd0` above for the skeletal model
+  (vtable 0x354b98); the map-style model's (0x354b18) `FUN_0011f4a0` and the multi-model's (0x354c00) `FUN_00123f68`
+  are the same call for those classes, nothing else calls it. Flag value 2 (bit 15 of a list value): the draw
+  `FUN_00121a78` tests `flag & 0xf` (twice) and `flag & 4`, `FUN_0011ee30` (called by `FUN_0011c5e0` /
+  `FUN_0011c648`) tests `flag & 4`; nothing tests value 2 on its own (`FUN_0011c7d8`, `FUN_0011cba8`,
+  `FUN_0011d4f8` only pass the array on), so a mesh with flag 2 draws like one with flag 1 [V for the readers
+  found by `mips_scan --load-off 0x104` in 0x11c000..0x124000; a reader outside it is not excluded].
 - **Opcode 0xf** [V]. Setup reader, `FUN_00226f50`: waits while `FUN_001962c0` (the event object not yet in
   its play states), sets `DAT_0036bd10` = 1 (the timeline thread `FUN_00223a88` waits for it before anything)
   and makes the event's tables (`FUN_00222cc0`: the camera table `DAT_0036bbb4`, the motion slots, the actor
@@ -1134,9 +1159,12 @@ Each stage ends with `verify.ps1` passing and the named check.
   `EventPlayer::screen_fade` answers (alpha, white). Opcode 0xd hides the actor's mesh entities of unlisted groups
   (`mesh_groups`, `mesh_flags`); a looping motion puts its actor back at the place kept at the loop's first step
   (`keep_place`, `put_back`); opcode 0x4d is logged only (which objects fall below tag 2000 is unresolved, so
-  nothing is hidden). Tests `the_event_object_fades_out_then_in_by_its_kind_row`,
+  nothing is hidden; ported in WP-EV1, below). Tests `the_event_object_fades_out_then_in_by_its_kind_row`,
   `opcode_0xd_draws_only_the_listed_mesh_groups`, `a_looping_motion_puts_its_actor_back_where_the_loop_began`.
   Not ported: the keyhole layout of fade kind 3, the flag-bit-4 faders, the end-of-event faders.
+  **Status (WP-EV1):** opcode 0x4d ported (section 6: event actors that exist at the pass are hidden or shown), opcode 0xd's
+  +0x34 and flag 2 and opcode 0x2c +6 recorded (section 6, Unknowns). Accept scenarios `event-fade` and `tt04-m_ex850`
+  looked at after the change: unchanged (neither event nor script has an opcode 0x4d).
   **Status (WP-E6f):** `area_jump::draw_fader` draws the event fade: the one full-screen node takes the stronger
   alpha of the jump's black and the event's fade, white when the event's wins (`combined_fade`, test
   `the_event_fade_and_the_jump_fade_share_the_node`; `draw_fader` itself: `draw_fader_paints_the_node_from_the_jump_task`). The merge rule
@@ -1174,15 +1202,18 @@ Each stage ends with `verify.ps1` passing and the named check.
   path types 0..4 (the player and party types) get tags of 2300 or more and are NOT below 2000; types 5, 6, 8, 10,
   11, 13, 18 and 23 are [inferred: the objects opcode 0x4d hides]. Not proved: the callers of `FUN_0016e430`
   that pass an explicit tag (not enumerated) could override it for Sora. Result: no event flag or command found
-  that hides Sora and the party; nothing ported (opcode 0x4d stays logged, because mapping the app's entities to
+  that hides Sora and the party; nothing ported then [superseded by WP-EV1, section 6] (opcode 0x4d stayed logged, because mapping the app's entities to
   ObjectType and the explicit-tag callers is not done).
 - Opcode 0x2d: the event skip branch of action 2 (`FUN_002225e0`) is not ported; the window state used is the port's state 3 (the button closed it).
 - What pause-menu record 0xc (`FUN_001bef48(0xc)`, table `DAT_01d5df08`) allows or forbids; bit 4 of
   `DAT_00356f1c` stops the play clock (`FUN_0014c7b8`) and is tested by the pause menu `FUN_0014a080`.
-- Music commands of events, skip; opcode 0x2c +6 and opcode 2 +6 (not read by their handlers `FUN_0022cd90`,
-  `FUN_0022c9b0`, `FUN_002293b8`; no other reader searched); what mesh flag 2 of opcode 0xd changes in the draw
-  (`FUN_00121a78` tests `& 0xf` and bit 2 only; resolved in WP-E6e otherwise); which objects opcode 0x4d hides
-  (the resource tag +0x28 writers `FUN_0016f2f8`, `FUN_0016f358`, `FUN_0016f9c0` not traced); which command plays the event voices that sub-record 0x26
+- Music commands of events, skip; opcode 2 +6 (not read by `FUN_002293b8`; no other reader searched). Opcode 0x2c
+  +6 [WP-EV1]: `FUN_0022cd90` and `FUN_0022c9b0` (which copies +8, +0xa, +0xc, +0x10 into the motion row) never read it;
+  the timeline loop `FUN_00223a88` reads only +2 (opcode) and +0 (length) before the switch; the setup reader
+  `FUN_002245d0` and the pre-load reader `FUN_00222a88` have no case for 0x2c; `mips_scan --load-off 6` over
+  0x220000..0x23ffff finds 0x2c's handler and callees absent from its hits (the others are other opcodes'
+  handlers). So +6 is a field the original never reads [inferred: an editor value; the disc's values are not
+  used]. Opcode 0xd flag 2 and opcode 0x4d: resolved in WP-EV1 (section 6). Which command plays the event voices that sub-record 0x26
   loads; the users of sub-record 0x39's effects and 0x3e's layout handle `DAT_01dc0078`; how `anm/`
   paths reach the `anm/us/` copies on the USA disc (`FUN_00167e58` not read).
 - Where `arif` music pairs are read by the game (only opcode 0x10 writes the pair the area load reads).
@@ -1233,6 +1264,7 @@ Each stage ends with `verify.ps1` passing and the named check.
 | 0x195d28, 0x195e68, 0x195ef8, 0x195f68, 0x195fb8, 0x195ff8, 0x196138, 0x196170, 0x196320, 0x1963e0, 0x1966f8, 0x13f078, 0x14a710, 0x14a7c8, 0x14a7f0, 0x14a918..0x14a978, 0x2233d8, 0x2234e0, 0x2235c0, 0x2273d0, 0x223a88 | event object states and fades (E6e) |
 | 0x11c550, 0x11c580, 0x11c5b0, 0x11c088, 0x11c1f0, 0x11c268, 0x11f390, 0x11f4a0, 0x120b48, 0x120fd0, 0x121178, 0x121278, 0x11eda0, 0x1205b8, 0x123be0, 0x123f68, 0x121a78 (mesh flag test), 0x1485a8, 0x192cd0, 0x192ce8; vtables 0x354b18, 0x354b98, 0x354c00 | opcode 0xd mesh groups (E6e) |
 | 0x226e80, 0x1b7fa8, 0x1b8040, 0x19af68, 0x19af28, 0x19b100, 0x191c18, 0x16bc68, 0x16ed08, 0x170078, 0x16f8e0, 0x16f648; vtable 0x35b950 | opcode 0x4d (E6e) |
+| 0x16e430, 0x16e638, 0x16e818, 0x16ef80, 0x16efd8, 0x229198, 0x1986c8, 0x1b3f78, 0x174fb0, 0x2a18a0, 0x2c4c58, 0x222a88, 0x223a88, 0x22c9b0, 0x22cd90, 0x224a90, 0x121a78, 0x11ee30, 0x11c5e0, 0x11c648; vtables 0x35ced8, 0x35eea8, 0x35f580, 0x35c9a8, 0x35c908, 0x35e300 (+0x3c); table 0x37a278 | opcode 0x4d tags, opcode 0x2c +6, opcode 0xd flag 2 (EV1) |
 | 0x22ca18, 0x16a618, 0x16b960, 0x1beb00 | loop put-back (E6e) |
 
 ## Tutorial windows opened by mission scripts (WP-T1)

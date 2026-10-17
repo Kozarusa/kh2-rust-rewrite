@@ -231,7 +231,7 @@ pub fn reset_effect(code: i64, form_active: bool, anti: bool) -> ResetEffect {
     let mut e = ResetEffect::default();
     match code {
         0 => {}
-        4 | 5 | 6 => {
+        4..=6 => {
             e.lock_drive_command = code == 5;
             e.end_form = code == 6 || form_active;
         }

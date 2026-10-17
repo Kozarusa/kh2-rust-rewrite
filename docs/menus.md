@@ -2683,6 +2683,21 @@ forces the alternate list (record 10): true`, `type 0 opens record 0xa ... rows 
 as before. Tests: `mickey::tests::*`, `menu_gameover::tests::the_alternate_list_routes_code_9_to_mickey_and_code_8_to_the_normal_list`,
 `the_rescue_counts_once_and_releases_sora`, `the_plain_knock_out_has_no_alternate`.
 
+**WP-MK3: why the control swap is not ported, and what was checked [V code, gate stays off].** The swap itself is one global: Mickey's base
+constructor `FUN_00176e00` stores the object in `DAT_0035c998` (the current player), `FUN_001ce168` gives it back to the stashed Sora
+through `FUN_00178d28`. In the port the controlled player is the `Sora` component and its systems (`sora.rs`, camera, HUD, the command
+deck); a second player needs Mickey's own body (`P_EX200` model and motion set), his command deck and his tick, none of which exists,
+and the motions the swap starts (0xfc on Sora, 0xfe on leaving) are absent from the USA motion sets (see above). The brief's rule
+(E) applies: not ported faithfully, so `mickey::RESCUE_PORTED` stays false and normal play is unchanged. Checked and ruled out as the
+writer of Mickey's HP 1: the record builder `FUN_0019f920` (HP and maximum both come from the `plrp` row of `Character` 4, 60; the
+minimum `+8` is 0 and is raised to `DAT_01c954b4` only for a record with an owner block at `+0x250`, which `FUN_0019fdc0` creates
+for handle types 1 and 0xe only, `FUN_001a0030` stores it back), `FUN_001792f0` / `FUN_00176c98` (a negative amount only charges the
+drive gauge through `+0x1af`, no clamp) and `FUN_00186238` (clamps to the minimum, `FUN_00186530` on 0). The vtable at `0x360360`
+holds only 0x00 to 0x9c; the entries from `0xb0` (`FUN_001ce928`, `001ceb88`, `001ceba8`, `001ceda8`) are the next class table [inferred: the zero words at `0xa0` to `0xac` end Mickey's],
+Sora's (`FUN_001ce718`), not Mickey's. The `+0xb50` (class id) loads that were scanned all sit in player or Sora-class code, none
+clamps a Mickey-class HP. Open (unchanged): the HP 1 writer, what 456 does beyond motion 0xc0, effect 0x11, the model parts 10 to
+0x15, and which hit path ends a Mickey with exactly 1 HP [GAP: the enemy damage path against a class 10 target].
+
 **Decompile index.** `FUN_001cdf48`, `001cdb98`, `001cda78`, `001cdcb8`, `001cdd50`, `001cdde8`, `001cdf08`, `001ce080`, `001ce240`,
 `001ce458`, `001cde80`, `001ce0a0`, `001ce3f8`, `001cf330`, `001ad9a0`, `001ad520`, `001ad640`, `001ad378`, `001b9aa0`, `001b9550`,
 `001cec00`, `001ced58`, `001c7740`, `001c75d0`, `001c7c30`, `001ade58`, `001adcf8`, `0017d030`, `0019a3f8`, `0017cd08`, `001b7c88`,

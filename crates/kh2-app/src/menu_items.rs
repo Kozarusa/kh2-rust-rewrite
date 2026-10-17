@@ -801,12 +801,28 @@ pub struct ItemsMenu {
     pub(super) suspended: bool,
     /// Set by the confirm on a member's row, taken by the equipment module.
     equipment_requested: bool,
+    /// The party's member ids in row order (Sora, then the field members by party slot; `FUN_00282968`'s slots), set when
+    /// page 1 opens.
+    pub(super) party: Vec<u16>,
+    /// The row of page 1 whose equipment page is open (`FUN_00252fb8(1)`), an index into `party`.
+    pub(super) member: usize,
+    /// The member name messages (the u16 table at 0x37ba90, by member id; bit 15 ignored).
+    pub(super) member_names: Vec<u32>,
 }
 
 impl ItemsMenu {
     /// The name message of the Items entry of page 0 (the first header tab).
     pub(super) fn entry_name(&self) -> u32 {
         self.entry.as_ref().map_or(0, |e| e.name)
+    }
+
+    /// `FUN_0026cfc8`: the equipment pages stepped to another member; page 1's remembered cursor follows
+    /// (`FUN_00252f98(1, row, 0)`).
+    pub(super) fn set_member(&mut self, row: usize) {
+        self.member = row;
+        if let Some(m) = self.machine.as_mut() {
+            m.cursor1 = row.min(m.members);
+        }
     }
 
     /// Whether page 2 was just asked for (and clears the request).
@@ -847,6 +863,7 @@ pub(super) fn load(disc: Res<Disc>, mut st: ResMut<ItemsMenu>) {
     };
     st.exe = ExeTables::read(&exe);
     st.entry = Entry::read(&exe, ENTRY);
+    st.member_names = (0..16).filter_map(|i| exe.u16(0x0037_ba90 + 2 * i).map(|v| u32::from(v & 0x7fff))).collect();
     st.ready = st.exe.is_some() && st.entry.is_some();
     if !st.ready {
         warn!("menu: the executable's Items tables are not readable; the Items pages are off");
@@ -879,19 +896,72 @@ fn target_of(s: &crate::sora::Sora, max_mp: i32, magic: &crate::magic::MagicStat
     }
 }
 
+/// The party as the target page tests it: one `Target` per member, Sora first.
 struct Snapshot {
-    members: usize,
-    target: Target,
+    targets: Vec<Target>,
 }
 
 impl Game for Snapshot {
     fn members(&self) -> usize {
-        self.members
+        self.targets.len().max(1)
     }
-    fn would_help(&self, id: u16, _row: usize) -> bool {
-        // The party is Sora alone: "All" and Sora's row test the same member.
-        can_use(id, &self.target)
+    /// `FUN_0025e9e8(row)` -> `FUN_001a14c8(item, member of the row)`: a group item ("All", row 0) is usable when any
+    /// member can use it, else the row's member decides (`FUN_002829f0`: the party object's row -> member id).
+    fn would_help(&self, id: u16, row: usize) -> bool {
+        if group_item(id) {
+            self.targets.iter().any(|t| can_use(id, t))
+        } else {
+            self.targets.get(row).is_some_and(|t| can_use(id, t))
+        }
     }
+}
+
+/// A field member's status as the use check and the effect read it (`FUN_001a15a0`'s status block: HP and MP of the
+/// field object, the record bytes of the party record). Drive points do not exist for a member (`drive_max` 0).
+fn member_target(m: &crate::party::PartyMember, p: &Progress) -> Target {
+    let r = p.member(m.neo).unwrap_or_default();
+    Target {
+        vitals: Vitals {
+            hp: m.hp,
+            hp_max: m.hp_max,
+            hp_min: 0,
+            mp: m.mp,
+            mp_max: m.mp_max,
+            charge_left: m.charge.left,
+            charge_total: m.charge.total,
+            ..Default::default()
+        },
+        record: Some([r.ap, r.strength, r.magic, r.defense]),
+    }
+}
+
+/// The effect on a member's values: a KO'd member is left alone. Answers whether the effect ran.
+fn member_effect(ko: bool, item: u16, amount: u16, feed: f32, v: &mut Vitals) -> bool {
+    if ko {
+        return false;
+    }
+    item_effect(item, amount, 100, v, feed);
+    true
+}
+
+/// What using an item on a field member does (`FUN_001a11a0` -> `FUN_001a12a0` on the member's status block): the
+/// boosts raise his record byte, everything else is `items::item_effect` on his live HP, MP and MP charge. A KO'd
+/// member is left alone (the revive path is party.rs's; the field use leaves him alone too). Answers a log note.
+fn use_on_member(p: &mut Progress, m: &mut crate::party::PartyMember, item: u16, amount: u16, feed: f32) -> String {
+    if (0x114..=0x117).contains(&item) {
+        let added = p.apply_boost(m.neo, item, amount.min(255) as u8);
+        return format!("boost +{added}");
+    }
+    let mut v = Vitals { hp: m.hp, hp_max: m.hp_max, hp_min: 0, mp: m.mp, mp_max: m.mp_max, charge_left: m.charge.left, charge_total: m.charge.total, ..Default::default() };
+    let (hp0, mp0) = (v.hp, v.mp);
+    if !member_effect(m.ko, item, amount, feed, &mut v) {
+        return "KO'd, left alone".into();
+    }
+    m.hp = v.hp;
+    m.mp = v.mp;
+    m.charge.left = v.charge_left;
+    m.charge.total = v.charge_total;
+    format!("HP {hp0} -> {}, MP {mp0} -> {}", m.hp, m.mp)
 }
 
 /// What the keys of this frame mean to the open page.
@@ -957,6 +1027,7 @@ pub(super) fn input(
     mut se: MessageWriter<PlaySe>,
     mut progress: Option<ResMut<Progress>>,
     mut sora: Query<&mut crate::sora::Sora>,
+    mut party: Query<&mut crate::party::PartyMember>,
     (mut magic, mut drive, game, idata): Vitality,
     real: Res<Time<Real>>,
     mut tags: ResMut<NewTags>,
@@ -999,7 +1070,11 @@ pub(super) fn input(
             return;
         };
         let stock = stock_of(&st, p, 0);
-        st.machine = Some(Machine::new(1, stock));
+        // The party object's rows (`FUN_00282968`): Sora, then the field members by party slot.
+        let mut field: Vec<(u8, u16)> = party.iter().map(|m| (m.slot, m.neo)).collect();
+        field.sort();
+        st.party = std::iter::once(crate::progress::SORA).chain(field.into_iter().take(2).map(|f| f.1)).collect();
+        st.machine = Some(Machine::new(st.party.len(), stock));
         st.held = (0, 0.0);
         enter(&mut st, &mut menu, &mut scene);
         if asked.is_none() {
@@ -1027,10 +1102,14 @@ pub(super) fn input(
     for key in pressed {
         let (Some(p), Ok(s)) = (progress.as_deref(), sora.single()) else { break };
         let max_mp = game.as_ref().map_or(100, |g| g.sora_max_mp);
-        let snap = match magic.as_deref() {
-            Some(m) => Snapshot { members: 1, target: target_of(s, max_mp, m, drive.as_deref(), p) },
-            None => Snapshot { members: 1, target: Target::default() },
-        };
+        let mut field: Vec<&crate::party::PartyMember> = party.iter().collect();
+        field.sort_by_key(|m| m.slot);
+        let mut targets = vec![match magic.as_deref() {
+            Some(m) => target_of(s, max_mp, m, drive.as_deref(), p),
+            None => Target::default(),
+        }];
+        targets.extend(field.iter().take(2).map(|m| member_target(m, p)));
+        let snap = Snapshot { targets };
         let (rows, exe) = (st.rows.clone(), st.exe.clone().unwrap_or_default());
         let fx = st.machine.as_mut().map(|m| m.press(key, &rows, &exe, &snap)).unwrap_or_default();
         for e in fx {
@@ -1063,7 +1142,10 @@ pub(super) fn input(
                     {
                         let feed = idata.as_deref().map_or(0.0, |i| i.charge_feed);
                         let name = item_name(&st, &scene, item);
-                        use_item(&st, p, &mut s, m, drive.as_deref_mut(), d.sora_max_mp, feed, (item, &name), row);
+                        let mut field: Vec<_> = party.iter_mut().collect();
+                        field.sort_by_key(|m| m.slot);
+                        field.truncate(2);
+                        use_item(&st, p, &mut s, m, drive.as_deref_mut(), d.sora_max_mp, feed, (item, &name), row, &mut field);
                         let stock = stock_of(&st, p, st.machine.as_ref().map_or(0, |m| m.filter));
                         if let Some(m) = st.machine.as_mut() {
                             m.reload(stock, false);
@@ -1082,7 +1164,8 @@ pub(super) fn input(
                         }
                     }
                 }
-                Effect::Member(_) => {
+                Effect::Member(row) => {
+                    st.member = row;
                     // Page 2: the equipment module takes over this frame (it runs after this system); the
                     // screen of page 1 goes.
                     st.suspended = true;
@@ -1132,50 +1215,66 @@ fn item_name(st: &ItemsMenu, scene: &MenuScene, id: u16) -> String {
 
 /// `FUN_0025ea40`: the item's effect on the member (`FUN_001a11a0(item, member, 0, 100)`: no Item Boost in the
 /// menu), then one comes off the stock (`FUN_001a1ba8(item, 100)`). The boosts (0x114 .. 0x117) raise the
-/// record byte (`FUN_001a0ce0` .. `0dd0`) by the item's amount; everything else is `items::item_effect`.
+/// record byte (`FUN_001a0ce0` .. `0dd0`) by the item's amount; everything else is `items::item_effect`. A group
+/// item ("All") reaches every member (`FUN_001a11a0`'s loop over the four party slots); `members` are the field
+/// members after Sora in row order. The menu's use never counts "Healed Party Members": `FUN_0025ea40` drops
+/// `FUN_001a11a0`'s answer and `FUN_001d76a0` has no caller here (only `FUN_001b8658`, the field command's finish, calls it).
 #[allow(clippy::too_many_arguments)]
 fn use_item(
     st: &ItemsMenu,
     p: &mut Progress,
     s: &mut crate::sora::Sora,
     magic: &mut crate::magic::MagicState,
-    drive: Option<&mut crate::drive::DriveState>,
+    mut drive: Option<&mut crate::drive::DriveState>,
     max_mp: i32,
     feed: f32,
     (item, name): (u16, &str),
     row: usize,
+    members: &mut [Mut<crate::party::PartyMember>],
 ) {
     let Some(r) = st.rows.get(&item).copied() else { return };
     let before = p.item_count(item);
-    let mut v = target_of(s, max_mp, magic, drive.as_deref(), p).vitals;
-    let (hp0, mp0) = (v.hp, v.mp);
-    let mut note = String::new();
-    if (0x114..=0x117).contains(&item) {
-        let m0 = p.sora();
-        let was = [m0.ap, m0.strength, m0.magic, m0.defense];
-        let added = p.apply_boost(crate::progress::SORA, item, r.amount.min(255) as u8);
-        let m1 = p.sora();
-        let now = [m1.ap, m1.strength, m1.magic, m1.defense];
-        let k = match item {
-            0x114 => 1,
-            0x115 => 2,
-            0x116 => 3,
-            _ => 0,
-        };
-        note = format!(", boost +{added} (record byte {} -> {})", was[k], now[k]);
-    } else {
-        item_effect(item, r.amount, 100, &mut v, feed);
-        s.hp = v.hp;
-        s.mp = v.mp;
-        magic.charge.left = v.charge_left;
-        magic.charge.total = v.charge_total;
-        if let Some(d) = drive {
-            d.points.fraction = v.drive_fraction;
-            d.points.whole = v.drive_points;
+    let rows: Vec<usize> = if group_item(item) { (0..=members.len()).collect() } else { vec![row] };
+    let mut sora_line = None;
+    for &k in &rows {
+        if k == 0 {
+            let mut v = target_of(s, max_mp, magic, drive.as_deref(), p).vitals;
+            let (hp0, mp0) = (v.hp, v.mp);
+            let mut note = String::new();
+            if (0x114..=0x117).contains(&item) {
+                let m0 = p.sora();
+                let was = [m0.ap, m0.strength, m0.magic, m0.defense];
+                let added = p.apply_boost(crate::progress::SORA, item, r.amount.min(255) as u8);
+                let m1 = p.sora();
+                let now = [m1.ap, m1.strength, m1.magic, m1.defense];
+                let b = match item {
+                    0x114 => 1,
+                    0x115 => 2,
+                    0x116 => 3,
+                    _ => 0,
+                };
+                note = format!(", boost +{added} (record byte {} -> {})", was[b], now[b]);
+            } else {
+                item_effect(item, r.amount, 100, &mut v, feed);
+                s.hp = v.hp;
+                s.mp = v.mp;
+                magic.charge.left = v.charge_left;
+                magic.charge.total = v.charge_total;
+                if let Some(d) = drive.as_deref_mut() {
+                    d.points.fraction = v.drive_fraction;
+                    d.points.whole = v.drive_points;
+                }
+            }
+            sora_line = Some((hp0, mp0, note));
+        } else if let Some(m) = members.get_mut(k - 1) {
+            let note = use_on_member(p, m, item, r.amount, feed);
+            info!("menu: item used: {name} (id {item}, row {k}) on member {} ({}): {note}", m.neo, m.model);
         }
     }
     p.take_item(item, crate::progress::INVENTORY);
-    info!("menu: item used: {name} (id {item}, row {row}) on Sora: HP {hp0} -> {}, MP {mp0} -> {}{note}, stock {before} -> {}", s.hp, s.mp, p.item_count(item));
+    if let Some((hp0, mp0, note)) = sora_line {
+        info!("menu: item used: {name} (id {item}, row {row}) on Sora: HP {hp0} -> {}, MP {mp0} -> {}{note}, stock {before} -> {}", s.hp, s.mp, p.item_count(item));
+    }
 }
 
 // --- drawing -------------------------------------------------------------------------------
@@ -1198,7 +1297,7 @@ fn ensure_ui(st: &mut ItemsMenu, scene: &mut MenuScene) {
         id
     };
     let tabs = [mk(scene, S), mk(scene, S), mk(scene, S)];
-    let rows: Vec<usize> = (0..2).map(|_| mk(scene, S)).collect();
+    let rows: Vec<usize> = (0..4).map(|_| mk(scene, S)).collect();
     let window = mk(scene, S);
     let preview: Vec<usize> = (0..9).map(|_| mk(scene, None)).collect();
     let panel = mk(scene, S);
@@ -1316,6 +1415,25 @@ pub(super) fn tokens_of(text: &MenuText, id: u32) -> Vec<Token> {
     text.messages.as_ref().and_then(|m| m.tokens(id)).unwrap_or_default().into_iter().filter(|t| *t != Token::End).collect()
 }
 
+/// A party member's name as the pages print it: Sora's stays the literal the pages always used; Donald and Goofy take
+/// their message from the name table at 0x37ba90 (`names`, by member id) and a literal when the table has no text.
+pub(super) fn member_tokens(text: &MenuText, names: &[u32], id: u16) -> Vec<Token> {
+    if id != crate::progress::SORA
+        && let Some(&msg) = names.get(usize::from(id))
+    {
+        let t = tokens_of(text, msg);
+        if !t.is_empty() {
+            return t;
+        }
+    }
+    let literal = match id {
+        crate::progress::DONALD => "Donald",
+        crate::progress::GOOFY => "Goofy",
+        _ => "Sora",
+    };
+    text.literal(literal, Style::default(), [0.0; 2]).tokens
+}
+
 pub(super) fn label(text: &MenuText, tokens: Vec<Token>, font: usize, size: f32, color: [u8; 4], align: u8, offset: [f32; 2]) -> Label {
     Label { tokens, style: Style { font, size: Some(size), color, align, world: text.world, ..Style::default() }, offset }
 }
@@ -1399,6 +1517,8 @@ fn redraw(st: &mut ItemsMenu, scene: &mut MenuScene, progress: Option<&Progress>
     let all = ui_ref.all.clone();
     let entry = st.entry.clone().unwrap_or_else(|| Entry { idle: [0; 4], selected: [0; 4], name: 0, help: 0, need: vec![], deny: vec![] });
     let exe = st.exe.clone().unwrap_or_default();
+    let (party, names) = (st.party.clone(), st.member_names.clone());
+    let member_id = |k: usize| party.get(k).copied().unwrap_or(crate::progress::SORA);
     let Some(text) = scene.text.take() else { return };
     let page = m.page;
     let was: Vec<bool> = all.iter().map(|&i| scene.nodes[i].visible).collect();
@@ -1445,10 +1565,12 @@ fn redraw(st: &mut ItemsMenu, scene: &mut MenuScene, progress: Option<&Progress>
                 let g = if selected { entry.selected } else { entry.idle };
                 set(scene, r, usize::from(g[0]), Some(usize::from(g[2])), prev);
                 scene.nodes[r].label_anchor = Some([-7.0, 1.5]);
-                let tokens = if k == m.members { tokens_of(&text, STOCK_LABEL) } else { text.literal("Sora", Style::default(), [0.0; 2]).tokens };
+                let tokens = if k == m.members { tokens_of(&text, STOCK_LABEL) } else { member_tokens(&text, &names, member_id(k)) };
                 scene.nodes[r].label = Some(label(&text, tokens, 1, 15.0, if selected { at::SELECTED } else { [0x9f, 0x9f, 0xaf, 0x80] }, 0, [0.0, 0.0]));
             }
             let sel = rows[m.cursor1.min(rows.len() - 1)];
+            // The Stock row is the one after the members.
+            scene.nodes[stock_tag].parent = Some(rows[m.members.min(rows.len() - 1)]);
             scene.nodes[hand].parent = Some(sel);
             scene.nodes[hand].off = at::HAND;
             set(scene, hand, group::HAND, None, was_of(hand));
@@ -1463,7 +1585,7 @@ fn redraw(st: &mut ItemsMenu, scene: &mut MenuScene, progress: Option<&Progress>
                 // One line per slot with its category: the weapon (type 2), the armor slots (3), the accessory
                 // slots (4) and the battle item slots (0); an empty slot shows its category's icon and `---`
                 // (message 0x448), as clip 6 at 10.2 s does.
-                let s = p.sora();
+                let s = p.member(member_id(m.cursor1)).unwrap_or_default();
                 let mut lines: Vec<(Option<u8>, Option<u16>)> = vec![(Some(2), Some(s.weapons[0]).filter(|&w| w != 0))];
                 // The armor and accessory item types are not among the ones with an icon in the table at 0x3809d0
                 // (types 5 to 13 share the unlisted icon): their empty rows show no icon [GAP: the footage's
@@ -1583,12 +1705,12 @@ fn redraw(st: &mut ItemsMenu, scene: &mut MenuScene, progress: Option<&Progress>
                     set(scene, target_title, group::TITLE, None, was_of(target_title));
                     scene.nodes[target_title].label_anchor = Some(at::LABEL);
                     scene.nodes[target_title].label = Some(label(&text, tokens_of(&text, 0x3943), 1, 15.0, at::COLOR, 0, [0.0, 0.0]));
-                    let (n, all_row) = target_rows(id, m.single, 1);
+                    let (n, all_row) = target_rows(id, m.single, m.members);
                     for (k, &r) in target_nodes.iter().enumerate().take(n) {
                         scene.nodes[r].off = [0.0, pitch * k as f32];
                         set(scene, r, group::ROW, None, was_of(r));
                         scene.nodes[r].label_anchor = Some(at::LABEL);
-                        let tokens = if all_row { tokens_of(&text, 0x3944) } else { text.literal("Sora", Style::default(), [0.0; 2]).tokens };
+                        let tokens = if all_row { tokens_of(&text, 0x3944) } else { member_tokens(&text, &names, member_id(k)) };
                         scene.nodes[r].label = Some(label(&text, tokens, 1, 15.0, if k == m.target { at::SELECTED } else { at::COLOR }, 0, [0.0, 0.0]));
                     }
                     scene.nodes[hand].parent = Some(target_nodes[m.target.min(n.saturating_sub(1))]);
@@ -1808,6 +1930,54 @@ mod tests {
         assert_eq!(m.cursor1, 1, "page 1's cursor is on Stock again");
         assert_eq!(m.press(Key::Cancel, &r, &e, &g), vec![Effect::Sound(snd::CANCEL), Effect::Leave]);
         assert_eq!(m.press(Key::Close, &r, &e, &g), vec![Effect::Close]);
+    }
+
+    #[test]
+    fn three_members_get_three_rows_and_the_use_names_the_row_chosen() {
+        let (mut m, r, e) = start(stacks(&[(1, 3)]));
+        m.members = 3;
+        let g = G { members: 3, helps: true };
+        // Page 1: Sora, Donald, Goofy and Stock; the third member's row opens his equipment.
+        m.press(Key::Down { fresh: true }, &r, &e, &g);
+        m.press(Key::Down { fresh: true }, &r, &e, &g);
+        assert_eq!(m.cursor1, 2);
+        let fx = m.press(Key::Confirm, &r, &e, &g);
+        assert_eq!(fx, vec![Effect::Sound(snd::CONFIRM), Effect::Member(2)]);
+        // The Stock is the row after the members.
+        m.press(Key::Down { fresh: true }, &r, &e, &g);
+        assert_eq!(m.cursor1, 3);
+        m.press(Key::Confirm, &r, &e, &g);
+        m.press(Key::Confirm, &r, &e, &g);
+        assert_eq!(m.page, PROMPT);
+        m.press(Key::Confirm, &r, &e, &g);
+        assert_eq!(m.page, TARGET);
+        m.press(Key::Down { fresh: true }, &r, &e, &g);
+        m.press(Key::Down { fresh: true }, &r, &e, &g);
+        assert_eq!(m.target, 2, "three rows to choose from");
+        let fx = m.press(Key::Confirm, &r, &e, &g);
+        assert!(fx.contains(&Effect::Use { item: 1, row: 2 }));
+    }
+
+    #[test]
+    fn the_target_check_is_per_member_and_a_group_item_needs_any_member() {
+        let hurt = Target { vitals: Vitals { hp: 10, hp_max: 50, mp: 5, mp_max: 5, ..Default::default() }, record: None };
+        let well = Target { vitals: Vitals { hp: 50, hp_max: 50, mp: 5, mp_max: 5, ..Default::default() }, record: None };
+        let snap = Snapshot { targets: vec![well, hurt, well] };
+        assert_eq!(snap.members(), 3);
+        assert!(!snap.would_help(1, 0) && snap.would_help(1, 1) && !snap.would_help(1, 2), "Potion: only Donald is hurt");
+        // Elixir-like group items ("All", row 0) help when any member can use them.
+        let group = (0..0x200).find(|&i| group_item(i) && can_use(i, &hurt)).expect("a group item the check knows");
+        assert!(snap.would_help(group, 0));
+        assert!(!Snapshot { targets: vec![well, well] }.would_help(group, 0));
+    }
+
+    #[test]
+    fn a_ko_member_is_left_alone_and_a_standing_one_is_healed() {
+        let mut v = Vitals { hp: 10, hp_max: 50, ..Default::default() };
+        assert!(!member_effect(true, 1, 40, 12.0, &mut v));
+        assert_eq!(v.hp, 10);
+        assert!(member_effect(false, 1, 40, 12.0, &mut v));
+        assert!(v.hp > 10 && v.hp <= 50, "Potion raised HP to {}", v.hp);
     }
 
     #[test]

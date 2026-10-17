@@ -1706,8 +1706,11 @@ rules with tests; the rest is node glue), `chars.rs` (the record family, `enemie
   limit (`FUN_002a20e0`: above 0 = used) is `u16[0x3414b0 + 2 * slot]` where `slot` is byte 0 of the `limt` row whose `Command` is the record's id
   (`FUN_001d2518`, `FUN_001d2590`; the table has 21 slots, some commands twice). The writer is `FUN_001d25b0(row, value)` from the limit's end
   (`FUN_001b32d8`, `FUN_001b3178`): the slot is raised to `value = limit object +0xa0` when it is below. The meaning of that field is not traced
-  [GAP: the page prints it with the unit message 0x4b06 ("Hits"), so it is probably the hit count]. The app has no writer yet (outside this work
-  package's files, see the report): `Progress::{limit_best, raise_limit_best}` (slot key `limit_best`, pairs `[slot, count]`) is filled by a state file.
+  [the page prints it with the unit message 0x4b06 ("Hits")]. WP-CT1 traced the field: it is the record marker of the gauge object at the limit task's `+0x68`, raised by `FUN_001cffa8`, whose
+  direct caller `FUN_001b3dc8` adds 1 while a limit task exists; that is called from the enemies' receive function `FUN_001b21f0` (the enemy hit method
+  `FUN_001849d8`) when the hit record is effective (`FUN_0018ba88`). So the count is the effective hits on enemies during the limit; `limit.rs` `count_limit_hits`
+  counts the app's enemy hit messages and `LimitHits::finish` stores it with `Progress::raise_limit_best` (slot key `limit_best`, pairs `[slot, count]`).
+  The other `FUN_001cffa8` callers (`FUN_001d6f28`, from `FUN_0019edb0`, `FUN_0019ee48`, `FUN_002e3fe8`) feed the gauge of `FUN_001b9d60` (not the limit task) and are not ported.
   Page 0x1d (`FUN_002b2130`, rows `FUN_002b30d8`, handler `FUN_002b25a8`): layers 0x6c and 0x6d, the used limits (or all: question marks and a count
   of 0), each with a right-aligned child at the layer group's x / y that reads the count (`FUN_001918a0(buf, 0x382f68, n)`, format `%d`) and the
   unit message 0x4b06, tags 0x39 / 0x3a (the words at 0x382f98), help 0x48f8. Page 0x1e (`FUN_002b2878`, handler `FUN_002b2d78`) is the report page
@@ -2285,8 +2288,23 @@ black left side with the title, eight headings with their values on the line bel
 on the heading's line the two overlap) and the colour (white) are not read from the code; no original frame of this screen was available.
 Closing on a confirm, cancel or Start is the app's own (the task never reads the pad; the original leaves by a scene change from an
 event). Rows 1 to 7 are 0: no counter exists in the app (`FUN_002787b0` needs the journal's completion aggregate, 20.9; the counters
-at save `+0x2fdc`, `+0x2fe2`, `+0x2fea`, `+0x2fec` have no writer found by `mips_scan --store-off`, so they are written through a
-computed base). Row 0 uses the app's game mode.
+at save `+0x2fdc`, `+0x2fe2`, `+0x2fea`, `+0x2fec` are written through absolute addresses, not a computed base, which is why `--store-off` missed them: see 24.4a).
+Row 0 uses the app's game mode.
+
+**24.4a Report counter writers (WP-CT1) [V by reading the functions; no event exists in the app for any of them].** Save base `0x33e860`, so `+0x2fdc` = `0x34183c`,
+`+0x2dbe` = `0x34161e`, `+0x2fe2` = `0x341842`, `+0x2fea` = `0x34184a`, `+0x2fec` = `0x34184c`. Each counter is a u16 that stops at 999.
+- Row 3 (`0x34183c`): `FUN_001d76a0` (also `FUN_0016da78`, a bare wrapper). Caller: `FUN_001b8658`, the heal task's end: after `FUN_001a11a0(.., member, ..)` succeeds on member 1 (Sora). Other members count nothing.
+- Row 4 (`0x34161e`): `FUN_001cda78` and `FUN_001cdb98` (the init of the same object class, made by `FUN_001cdf48`) add 1 to `0x34161c` and `0x34161e`; `FUN_001ad520` reads `0x34161c`.
+- Row 5 (`0x341840 + 2 * i`): `FUN_001d76c8(i)` from `FUN_001cf030` message 4, `i` = the result of `FUN_001d4180` (the drive cost is taken there). The report reads i = 1 to 5.
+- Rows 6 and 7 (`0x34184a + 2 * i`): `FUN_001d76f8(i)` from `FUN_001c6168` (reached by `FUN_001cf210`, message 0x48), `i = FUN_001d4ca0(command)` = the command's 1-based slot in the object table at `DAT_01d6a9b8`
+  (0 if absent). i = 1 to 4 are the summon counters of row 7; i = 0 is the word `0x34184a`, the same word as form index 5 and as the Antiform row 6, so the Antiform count is not a separate
+  counter [the writer that makes it the Anti form is not separate: unresolved which index the Anti form call passes].
+- Chest opening: `FUN_001a6db8` (the chest-open sequence) calls `FUN_001a6a58` twice, which calls `FUN_001a6910` (sets the chest bit, `Progress::set_chest_opened`); `FUN_001a6db8` has no direct caller (a virtual method of the chest object), and the app has no chest object, so nothing calls the port.
+- The ids 0x404 / 0x405 (1028 / 1029, both inside the counter range 1000 .. 1046): `FUN_001c46a8` is not a party member's defeat method. `FUN_001c3d38` (called by `FUN_001c4208` and itself) tests the player's distance to an object (`FUN_001c3a08`) and then runs `FUN_001c46a8`,
+  which adds experience (`FUN_001b51e0`, popup `FUN_0015b198`) and calls `FUN_00187e08(0x33fec0, id)` with id 0x405 if the object's `+0x5c` record id (`FUN_001c3d20`) is 0x5bd, else 0x404. So they count a pickup-like object of two kinds [which kind is which not identified]. `Progress::count_defeat(0x404 / 0x405)` already does the counting (story flag 0x8d0 gate included); the app event is the player absorbing that object (`prize.rs`, not this work package's file).
+Port: `Progress::{count_healed, count_mickey_save, count_form_use, count_summon_use}` and the readers `healed_count`, `mickey_save_count`, `form_uses`, `antiform_uses`, `summon_uses`
+(slot key `report_counters`). Hooks still to call (other work packages' files): the Cure heal on Sora (`magic.rs`), Mickey's rescue (no such object in the app), the drive form change
+(`drive.rs`), the summon call (`summon.rs`), and `menu_ending.rs` must build its `Report` from the readers (it sets only `mode` today).
 
 **Kind 5, the camp before a jump (`FUN_0024f300`).** `FUN_0024f300(a, b)` is `FUN_0026ef70(b)` (`DAT_0036cffc = b`) then
 `FUN_0024f0b8(5, a)`; `FUN_0019d9d8` passes b = 0x1c8bda0, an address, so `FUN_0026ef80()` is never 0 and kind 5's init

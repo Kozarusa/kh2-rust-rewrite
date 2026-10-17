@@ -338,7 +338,15 @@ pub struct Progress {
     /// slots the app has raised are kept. Saved in the slot files (key `limit_best`). Nothing in the app calls the writer yet: a state file
     /// fills it.
     limit_best: std::collections::BTreeMap<u8, u16>,
+    /// The BATTLE REPORT counters (WP-CT1): `[healed, saved by Mickey, then the ten u16 words from 0x341840]`. Saved in the slot files
+    /// (key `report_counters`). See [`Progress::count_healed`], [`Progress::count_mickey_save`], [`Progress::count_form_use`] and
+    /// [`Progress::count_summon_use`].
+    report: [u16; REPORT_WORDS],
 }
+
+/// The number of report counters: the healed count, the Mickey count and the ten words from 0x341840 (index 0 to 9: the form uses
+/// at 1 to 5, then the summon uses behind them).
+const REPORT_WORDS: usize = 12;
 
 /// The synthesis record at save `+0x3728` (`FUN_002906c0` answers its address). Bit sets are kept as u64 (the
 /// original's two words); a bit past 63 is dropped.
@@ -480,7 +488,7 @@ impl Progress {
         let mut block = vec![0u8; off::LEN];
         let n = bytes.len().min(off::LEN);
         block[..n].copy_from_slice(&bytes[..n]);
-        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT], story: StoryHandle::default(), new_seen: Vec::new(), record_bits: Vec::new(), moogle: Moogle::default(), shop_seen: [0; 4], shop_visits: 0, journal_seen: Default::default(), minigames: Default::default(), enemy_kills: Default::default(), reaction_uses: Default::default(), limit_best: Default::default() }
+        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT], story: StoryHandle::default(), new_seen: Vec::new(), record_bits: Vec::new(), moogle: Moogle::default(), shop_seen: [0; 4], shop_visits: 0, journal_seen: Default::default(), minigames: Default::default(), enemy_kills: Default::default(), reaction_uses: Default::default(), limit_best: Default::default(), report: [0; REPORT_WORDS] }
     }
 
     // --- story flags ------------------------------------------------------------------------
@@ -876,6 +884,68 @@ impl Progress {
         }
         *n += 1;
         true
+    }
+
+    fn bump_report(&mut self, i: usize) {
+        if let Some(w) = self.report.get_mut(i)
+            && *w < 999
+        {
+            *w += 1;
+        }
+    }
+
+    /// `FUN_001d76a0` (save `+0x2fdc` = `0x34183c`, report row 3): adds 1, up to 999. The original calls it from the heal task's end
+    /// `FUN_001b8658` when the heal reached member 1 (Sora) (`FUN_001a11a0` with the member id at task `+0xc`).
+    pub fn count_healed(&mut self) {
+        self.bump_report(0);
+    }
+
+    /// Report row 3.
+    pub fn healed_count(&self) -> u16 {
+        self.report[0]
+    }
+
+    /// The word at save `+0x2dbe` (`0x34161e`, report row 4): `FUN_001cda78` / `FUN_001cdb98` (the init of the rescuing object, made by
+    /// `FUN_001cdf48`) add 1 to it, up to 999, together with the word before it (`0x34161c`, read by `FUN_001ad520`).
+    pub fn count_mickey_save(&mut self) {
+        self.bump_report(1);
+    }
+
+    /// Report row 4.
+    pub fn mickey_save_count(&self) -> u16 {
+        self.report[1]
+    }
+
+    /// `FUN_001d76c8(index)`: adds 1 to the u16 at `0x341840 + 2 * index`, up to 999 (`FUN_001cf030` message 4 calls it with the
+    /// index `FUN_001d4180` answers). The report reads the indexes 1 to 5 (row 5). An index above 9 counts nothing.
+    pub fn count_form_use(&mut self, index: usize) {
+        if index < 10 {
+            self.bump_report(2 + index);
+        }
+    }
+
+    /// `FUN_001d76f8(index)`: the same on the u16 at `0x34184a + 2 * index` (`FUN_001c6168` calls it with `FUN_001d4ca0` of the
+    /// command, 0 when the command is not in the object table). Index 0 is the word of form index 5 (and report row 6, the Antiform
+    /// count); the summon counters of row 7 are the indexes 1 to 4.
+    pub fn count_summon_use(&mut self, index: usize) {
+        if index < 5 {
+            self.bump_report(2 + 5 + index);
+        }
+    }
+
+    /// Report row 5: the form uses at the indexes 1 to 5 (`0x341842`, five u16).
+    pub fn form_uses(&self) -> [u16; 5] {
+        std::array::from_fn(|i| self.report[2 + 1 + i])
+    }
+
+    /// Report row 6: the word at save `+0x2fea` (`0x34184a`), which is also form index 5 and summon index 0.
+    pub fn antiform_uses(&self) -> u16 {
+        self.report[2 + 5]
+    }
+
+    /// Report row 7: the summon uses at the indexes 1 to 4 (`0x34184c`).
+    pub fn summon_uses(&self) -> [u16; 4] {
+        std::array::from_fn(|i| self.report[2 + 6 + i])
     }
 
     /// `FUN_001d2590`: the best count of the limit with `limt` slot `slot` (0 for one never used).
@@ -1509,6 +1579,7 @@ impl Progress {
             enemy_kills: Default::default(),
             reaction_uses: Default::default(),
             limit_best: Default::default(),
+            report: [0; REPORT_WORDS],
         };
         p.init_party();
         p.apply_plrp(plrp, 0);
@@ -1900,6 +1971,16 @@ impl Progress {
                         self.raise_limit_best(int(i, "limit_best")?.clamp(0, 255) as u8, int(c, "limit_best")?.clamp(0, 0xffff) as u16);
                     }
                 }
+                // The BATTLE REPORT counters: `"report_counters": [healed, saved by Mickey, ten words from 0x341840]`.
+                "report_counters" => {
+                    let Json::Arr(a) = v else { return Err("report_counters: expected an array of numbers".into()) };
+                    if a.len() != REPORT_WORDS {
+                        return Err(format!("report_counters: expected {REPORT_WORDS} numbers"));
+                    }
+                    for (i, x) in a.iter().enumerate() {
+                        self.report[i] = int(x, "report_counters")?.clamp(0, 999) as u16;
+                    }
+                }
                 "shop_visits" => {
                     for n in list(v, "shop_visits")? {
                         self.set_shop_visit(n as u8);
@@ -1982,6 +2063,7 @@ impl Progress {
                     self.enemy_kills.clear();
                     self.reaction_uses.clear();
                     self.limit_best.clear();
+                    self.report = [0; REPORT_WORDS];
                     self.record_bits.clear();
                 }
                 "new_seen" => {
@@ -2438,6 +2520,7 @@ impl Progress {
             ("enemy_kills", kills),
             ("reaction_uses", react),
             ("limit_best", limits),
+            ("report_counters", nums(self.report)),
             ("story_raw", format!("{{\"words\": \"{}\", \"programs\": \"{}\", \"locks\": {}}}", hex(&words), hex(&st.programs), nums(locks))),
             ("world_points", nums(st.world_points())),
         ]
@@ -2974,6 +3057,37 @@ mod tests {
         assert!(q.apply_json("{\"reaction_uses\": [1]}").is_err());
     }
 
+    /// WP-CT1: the BATTLE REPORT counters count like `FUN_001d76a0` / `FUN_001d76c8` / `FUN_001d76f8` (stop at 999, the form index 5 and the
+    /// summon index 0 are one word) and go through a slot file.
+    #[test]
+    fn report_counters_count_stop_at_999_and_are_saved() {
+        let mut p = Progress::from_block(&[], std::sync::Arc::new(ItemIndex::default()));
+        assert_eq!((p.healed_count(), p.mickey_save_count(), p.form_uses(), p.antiform_uses(), p.summon_uses()), (0, 0, [0; 5], 0, [0; 4]));
+        for _ in 0..1000 {
+            p.count_healed();
+        }
+        p.count_mickey_save();
+        p.count_form_use(1);
+        p.count_form_use(1);
+        p.count_form_use(4);
+        p.count_form_use(5);
+        p.count_summon_use(0);
+        p.count_summon_use(1);
+        p.count_summon_use(4);
+        p.count_form_use(10);
+        p.count_summon_use(5);
+        assert_eq!((p.healed_count(), p.mickey_save_count()), (999, 1));
+        assert_eq!(p.form_uses(), [2, 0, 0, 1, 2], "form index 5 is the word the Antiform row reads");
+        assert_eq!(p.antiform_uses(), 2, "summon index 0 and form index 5 share 0x34184a");
+        assert_eq!(p.summon_uses(), [1, 0, 0, 1]);
+        let text = p.slot_json(&SlotInfo { level: 1, munny: 0, play_seconds: 0, area: "tt04".into() });
+        let mut q = Progress::from_block(&[], std::sync::Arc::new(ItemIndex::default()));
+        q.count_healed();
+        q.apply_json(&text).expect("loads");
+        assert_eq!((q.healed_count(), q.mickey_save_count(), q.form_uses(), q.summon_uses()), (999, 1, [2, 0, 0, 1, 2], [1, 0, 0, 1]), "the block key reset the old count");
+        assert!(q.apply_json("{\"report_counters\": [1, 2]}").is_err());
+    }
+
     /// WP-MN15: the limits' best counts only go up, and go through a slot file and the `limit_best` key.
     #[test]
     fn limit_best_counts_only_go_up_and_are_saved() {
@@ -3034,7 +3148,7 @@ mod tests {
         let before = fields.len();
         let persisted: Vec<&str> = p.persisted_fields().iter().map(|f| f.0).collect();
         fields.retain(|f| !persisted.contains(&f.0));
-        assert_eq!((persisted.len(), before - fields.len()), (11, 11), "every persisted key is in the slot file (WP-MN15 added enemy_kills, reaction_uses, limit_best)");
+        assert_eq!((persisted.len(), before - fields.len()), (12, 12), "every persisted key is in the slot file (WP-MN15 added enemy_kills, reaction_uses, limit_best; WP-CT1 report_counters)");
         let old = Progress::join_fields(&fields);
         assert!(!old.contains("moogle") && !old.contains("story_raw") && old.contains("\"block\""));
         let mut r = Progress::from_block(&[], Arc::new(ItemIndex::default()));

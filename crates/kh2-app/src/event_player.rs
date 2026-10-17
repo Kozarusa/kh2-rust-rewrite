@@ -426,6 +426,7 @@ pub const HIDE_TAG_LIMIT: i32 = 2000;
 /// The tag `FUN_0016e430` gives an object's model resource when its caller passes -1: -200 for an object the event
 /// made (`event_made`, id with 0x40000000; objentry types 7 and 0x16 excepted), else the word of the table at
 /// 0x37a278 for the objentry `ObjectType` (`words`, 24 of them).
+#[cfg(test)]
 pub fn resource_tag(words: &[i32], object_type: u8, event_made: bool) -> Option<i32> {
     if event_made && !matches!(object_type, 7 | 0x16) {
         return Some(EVENT_ACTOR_TAG);

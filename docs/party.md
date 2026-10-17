@@ -1378,15 +1378,8 @@ Files: `party_battle.rs` (`choose_class16`), `party_rules.rs` (`auto_change_swap
   (ability read from the saved record's list), `spawn_party`'s rebuild replaces the member (at Sora's place). Not
   modelled: the 8-frame fade, `0x35fec0` bit 2, +0x108 bit 0x100, FUN_0017d030 (no object with +0x570 set to the member:
   [inferred] satisfied), the limit lock, the hidden list. Test `auto_change_swaps_the_reserve_in`.
-- **Gap: preset 4's partner `P_EH000` (Riku) logs `script error BadAddress(8) at 0x058e` (WP-PL1).** `kh2 bdx P_EH000`: at
-  0x0583 the script calls host 10.35 with (AI, 111) and stores the answer at local+8 (0x0588), loads it (0x058a) and reads
-  the field at +0x8 (`ldf +0x8`, 0x058c) into [local0]+0x1c (0x058e). Host 10.35 is FUN_001141d0(AI, id): it walks the
-  move records of the AI's table (the record count at +0xa0 and the list at +0xa4 of the object the AI holds at +8, 0x80
-  bytes each) and answers the record whose first word equals the id, or 0. The app has no arm for group 10 index 35 (the
-  friend host's `group10` in `friend_host.rs` handles 14, 19, 31, 36, 40; the summon host's `(10, 35)` does not exist), so the
-  call answers none, local+8 stays 0 and the read at address 0 + 8 raises `BadAddress(8)`. It is an app host gap, host
-  10.35 (the same host Tron's script calls four times; Riku's and Tron's scripts both read it). Fix: port FUN_001141d0 over
-  the member's move table, which `party.rs` would have to expose (not in this WP's files).
+- **Host 10.35 for the members (WP-PY2, was the `P_EH000` `BadAddress(8) at 0x058e`).** FUN_002f71f0 turns the first word into the AI (FUN_0010c5f0: +0xb60 of the object) and calls FUN_001141d0(AI, id): the object at AI +8 is the class parameter block (FUN_001133e0 stores it; FUN_00113450 binds the action records to its entries the same way), and the answer is the address of the first 0x80-byte entry (+0xa4 list, +0xa0 count) whose first word is the id, else 0. Port: `ClassAi::entries_at` / `entries` hold the class's whole list as the executable has it; `friend_ai` hands the member's class list to `FriendFields`; `friend_host::group10` index 35 answers `entry_address`, and `read_mem` serves the bytes at the answered executable address (so `ldf +0x8` reads the entry's MP cost word). Tests `host_10_35_finds_the_entry_with_the_id`, `host_10_35_on_rikus_class_list` (class 11, id 111 found at 0x351c10, an unknown id gives 0). Harness: `KH2_JUMP_WORDS=4:0:0 KH2_JUMP=1:0:0 KH2_JUMP_AT=4 KH2_BDXLOG=1 target\debug\kh2-game.exe tt02`: no script error for `P_EH000`, `10.35 Impl x2`; its next missing hosts are 10.50 (x75), 10.58, 1.244 `in_battle`.
+- **Gap: Goofy `P_EX030#1 BadAddress(0) at 0x0e14` in the summon-chicken scenario is not 10.35.** The log shows 1.161 `has_link` and 1.83 `bone_to_world` called with `Obj(0)` (the script's weapon/shield object: `party: P_EX030: no weapon (item 0: no went entry for moveset 20)`), then the vector read at address 0. Cause: the member's weapon object does not exist in that state (saved record weapon item 0, no `went` entry); owner is the weapon spawn in `party.rs` / the summon scenario state, plus 1.83 and 1.161 which the friend host does not implement.
 - **Auto Healing [V rule, not ported].** FUN_0017d4b8 (caller 0x1b77e4, inside a function the decomp lacks) lowers
   `DAT_0035cc08` by the frame unit; at 0, for slots 1..3 whose member is not a field companion, a member whose status
   block has +0x1dc bit 0x10 (ability 420) gets FUN_001a0140(status, 1, 0, 0), then the timer takes `sstm` +0x168.

@@ -484,6 +484,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 10.32 | `ai_stitch_32(Oi)` | 0x2f7138 | 1 | Stitch's FUN_00118aa8 on the friend AI object: a goal (FUN_00116780), motion 0xa1 and the move record (the one FUN_00114280 finds with handler FUN_00117ea0) made the current action (FUN_0010ecb0), +0xb7c |= 4 |
 | 10.33 | `recent_target(i) -> o` | 0x2f7170 | 2 | FUN_001127f0(-1): the most recent object of the player's lock-on list (8 entries at 0x34e988, FUN_00112770 appends); a non-zero argument then drops it and every older entry (FUN_00112668 with the flag set) |
 | 10.34 | `recent_target_set(oi)` | 0x2f71d0 | 1 | FUN_00112668(object, flag != 0): flag clear removes the object from the list; flag set drops it and every older entry (the entries after it stay) |
+| 10.35 | `ai_find_entry(Oi) -> addr` | 0x2f71f0 | 5 | FUN_001141d0 on the friend AI: the address of the first 0x80-byte entry of the AI's class list (object at AI +8, count +0xa0, list +0xa4) whose first word is the id, 0 for none; scripts then read the entry's fields. App: the class block's list in the executable (`ClassAi::entries`), served through the friend host's `read_mem` (WP-PY2) |
 | 10.36 | `flag_160_free(O) -> b` | 0x2f7230 | 2 | object +0x160 has bit 4, 8 or 0x10 |
 | 10.37 | `flag_160_40000000(O) -> b` | 0x2f7270 | 2 | object +0x160 bit 0x40000000 |
 | 10.39 | `ai_action_clear(O)` | 0x2f72c0 | 5 | FUN_0010ecb0(object, 0, 0): object +0xc60 and +0xc64 cleared |

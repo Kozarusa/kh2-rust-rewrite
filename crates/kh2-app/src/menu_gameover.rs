@@ -1371,4 +1371,39 @@ mod tests {
         assert_eq!(capture_body(&p, &[]), before);
         assert_eq!((p.wallet(), p.experience()), (321, 9));
     }
+
+    /// WP-PL2 B: an area start that `FUN_001cb358` allows (`track_area`) stores the snapshot and the save body (the slot
+    /// text of `capture_body`), and the same area name seen again stores nothing new.
+    #[test]
+    fn track_area_stores_the_snapshot_and_a_save_body() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut w = world_with_sora(20);
+        w.insert_resource(CurrentArea { name: "tt03".into(), loaded: Some("tt03".into()) });
+        w.insert_resource(AreaRecord {
+            world: 2,
+            area: 3,
+            entrance: 0,
+            programs: [0; 3],
+            programs_override: None,
+            dest_programs: [0xff; 3],
+            place_on_load: false,
+            run: None,
+            placed: None,
+        });
+        let mut p = state();
+        p.apply_json(r#"{"munny": 77, "experience": 12}"#).unwrap();
+        w.insert_resource(p);
+        w.insert_resource(NewTags::default());
+        w.run_system_once(track_area).unwrap();
+        let go = w.resource::<GameOver>();
+        let snap = go.snapshot.expect("the area start takes the snapshot");
+        assert_eq!((snap.dest.world, snap.dest.area, snap.hp), (2, 3, 20));
+        let body = go.body.clone().expect("and the save body");
+        let back = restore_body(&state(), &body).expect("the stored body applies");
+        assert_eq!((back.wallet(), back.experience()), (77, 12), "the body holds the state at the area start");
+        // Munny earned later is not in the stored body; the same area again takes no new one.
+        w.resource_mut::<Progress>().apply_json(r#"{"munny": 500}"#).unwrap();
+        w.run_system_once(track_area).unwrap();
+        assert_eq!(w.resource::<GameOver>().body.as_deref(), Some(body.as_str()));
+    }
 }

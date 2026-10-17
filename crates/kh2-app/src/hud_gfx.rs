@@ -27,6 +27,10 @@ pub const HUD_LAYER: usize = 7;
 /// Render layer of the ring panels (see [`HudScene::ring_panels`]): their camera (order 12) sits above the menu's dim
 /// (11) and under the menu frame (13), as in the pause menu's clip (WP-MN6).
 pub const RING_LAYER: usize = 6;
+/// Render layer of the area-change keyhole wipe (`area_jump::Keyhole`): its camera (order 14) sits above everything the HUD
+/// and the menus draw, as the wipe covers the whole frame in the original (reference video 8.mp4: the command deck and the
+/// HP ring are gone outside the hole). The fader (`area_jump::spawn_fader`, task priority 330000 `FUN_0014aa90`) comes after it.
+pub const WIPE_LAYER: usize = 5;
 /// The game's screen, in HUD units.
 pub const SCREEN: [f32; 2] = [512.0, 448.0];
 /// The HUD draw code places everything at GS y = 0x7300 + 16 * y while the screen origin is 0x7200
@@ -172,6 +176,8 @@ pub struct Node {
     pub off: [f32; 2],
     pub ext: Ext,
     pub visible: bool,
+    /// Draw on the wipe layer, above the HUD, the ring panels and the menus (the keyhole wipe).
+    pub top: bool,
     /// Clip to the wedge from `sweep_start` clockwise by this many radians (a ring gauge).
     pub sweep: Option<f32>,
     /// Where the wedge starts: radians clockwise from the west direction (0 for Sora's ring, south
@@ -210,6 +216,7 @@ impl Node {
             off: [0.0; 2],
             ext: Ext::default(),
             visible: true,
+            top: false,
             sweep: None,
             sweep_start: 0.0,
             reveal: None,
@@ -342,7 +349,7 @@ impl HudScene {
             if !n.visible {
                 continue;
             }
-            let ring = rings[ni];
+            let layer = node_layer(n.top, rings[ni]);
             if let (Some(g), Some(f)) = (n.player.group, self.files.get(n.file)) {
                 let mut ext = n.ext;
                 ext.time = n.player.uv_time;
@@ -361,12 +368,12 @@ impl HudScene {
                     lo + (hi - lo) * r.clamp(0.0, 1.0)
                 });
                 for (k, q) in qs.into_iter().enumerate() {
-                    out.push((n.file, q, n.origin, n.sweep.map(|s| (n.sweep_start, s)), max_x, regions.get(k).copied().flatten(), ring));
+                    out.push((n.file, q, n.origin, n.sweep.map(|s| (n.sweep_start, s)), max_x, regions.get(k).copied().flatten(), layer));
                 }
             }
             if let (Some(label), Some(text)) = (&n.label, &self.text) {
                 for (file, q) in text.quads(label, n.origin, n.label_fade, n.label_time) {
-                    out.push((file, q, n.origin, None, None, None, ring));
+                    out.push((file, q, n.origin, None, None, None, layer));
                 }
             }
         }
@@ -374,9 +381,20 @@ impl HudScene {
     }
 }
 
+/// The render layer of a node: the wipe layer above everything, else the ring panels' or the HUD's.
+pub fn node_layer(top: bool, ring: bool) -> usize {
+    if top {
+        WIPE_LAYER
+    } else if ring {
+        RING_LAYER
+    } else {
+        HUD_LAYER
+    }
+}
+
 /// One quad to draw: texture file, the quad, its node's origin, the ring wedge (start, sweep), the
-/// x limit, the texel rectangle a scrolling sprite repeats in, and whether it belongs to a ring panel.
-type Drawn = (usize, Quad, [f32; 2], Option<(f32, f32)>, Option<f32>, Option<[f32; 4]>, bool);
+/// x limit, the texel rectangle a scrolling sprite repeats in, and its render layer.
+type Drawn = (usize, Quad, [f32; 2], Option<(f32, f32)>, Option<f32>, Option<[f32; 4]>, usize);
 
 #[derive(Component)]
 pub struct HudCamera;
@@ -404,6 +422,17 @@ fn setup_camera(mut commands: Commands) {
         }),
         Transform::from_xyz(SCREEN[0] / 2.0, -SCREEN[1] / 2.0, 100.0),
         RenderLayers::layer(RING_LAYER),
+    ));
+    // The keyhole wipe's camera: above the menu frame (13), under the UI fader.
+    commands.spawn((
+        Camera2d,
+        Camera { order: 14, clear_color: ClearColorConfig::None, ..default() },
+        Projection::Orthographic(OrthographicProjection {
+            scaling_mode: ScalingMode::AutoMin { min_width: SCREEN[0], min_height: SCREEN[1] },
+            ..OrthographicProjection::default_2d()
+        }),
+        Transform::from_xyz(SCREEN[0] / 2.0, -SCREEN[1] / 2.0, 100.0),
+        RenderLayers::layer(WIPE_LAYER),
     ));
 }
 
@@ -686,6 +715,17 @@ mod tests {
         assert!(!flags[left_root] && !flags[lone_root]);
     }
 
+    /// The keyhole wipe's node draws on its own layer whatever its tree is, and the layers are all different, so the wipe's
+    /// camera (order 14) draws over the ring panels (12), the menu frame (13) and the HUD (10).
+    #[test]
+    fn the_wipe_node_draws_above_the_hud_and_the_rings() {
+        assert_eq!(node_layer(true, false), WIPE_LAYER);
+        assert_eq!(node_layer(true, true), WIPE_LAYER);
+        assert_eq!(node_layer(false, true), RING_LAYER);
+        assert_eq!(node_layer(false, false), HUD_LAYER);
+        assert!(WIPE_LAYER != RING_LAYER && WIPE_LAYER != HUD_LAYER);
+    }
+
     #[test]
     fn scrolled_sprite_repeats_inside_its_rectangle() {
         // The steam strip of the Twilight Town deck: texels u 256..287, v 0..63, scrolled 10 rows down.
@@ -770,15 +810,15 @@ fn draw(
     }
     // Consecutive quads with the same texture, blend and filter share a draw call.
     struct Batch {
-        key: (usize, u32, bool, bool),
+        key: (usize, u32, bool, usize),
         pos: Vec<[f32; 3]>,
         uv: Vec<[f32; 2]>,
         col: Vec<[f32; 4]>,
     }
     let mut out: Vec<Batch> = Vec::new();
-    for (file, q, origin, sweep, max_x, region, ring) in scene.quads() {
+    for (file, q, origin, sweep, max_x, region, layer) in scene.quads() {
         let Some(f) = scene.files.get(file) else { continue };
-        let key = (file, q.blend, q.nearest, ring);
+        let key = (file, q.blend, q.nearest, layer);
         // Quad corners are TL, TR, BL, BR; as a polygon: TL, TR, BR, BL.
         let poly: Vec<Vert> = [0usize, 1, 3, 2]
             .iter()
@@ -852,8 +892,8 @@ fn draw(
             *vis = Visibility::Hidden;
             continue;
         };
-        let (file, blend, nearest, ring) = b.key;
-        let want = RenderLayers::layer(if ring { RING_LAYER } else { HUD_LAYER });
+        let (file, blend, nearest, layer_id) = b.key;
+        let want = RenderLayers::layer(layer_id);
         if *layer != want {
             *layer = want;
         }

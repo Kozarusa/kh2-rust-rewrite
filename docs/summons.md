@@ -933,24 +933,32 @@ work package are closed by WP-EN4 below.
   for a player who is `State::Down` (log `raised the player (host 1.277, FUN_00178df0): HP 0 -> <max>, he was down and stands up`), a player not down only has his
   HP filled (`he was not down`). The floor snap is `sora.rs`'s own ground contact.
 - *The revive sequence (FUN_001cec00 -> FUN_001ad8a8 -> FUN_001ad378 type 2 -> FUN_001ad9a0 -> FUN_001adeb8).* What the sequence does besides making Tinker Bell:
-  FUN_001ad378 sets 0x35d268 bit 1, stops the music (FUN_00137520: the BGM stream stop FUN_00136a68 with 0x1e0 and the channel ramps FUN_002c1a08 with
-  0x2d0 / 0x4b0, the music state kept in 0x354ebc / 0x354ebe), opens a message window object (0xb0 bytes, FUN_00195898 / FUN_00195a78 / FUN_00195ae0, which
-  becomes 0x35e3a4 and locks the pad and sets 0x36f598 through FUN_002c38b8 in step 1) and starts a thread (FUN_00102bc8 priority 1, 15000). The thread's step 2
-  waits while that window exists (FUN_00196418) and until the fade object at 0x356b30 has its +0xfc at 4 (idle), releases the pad (FUN_002c38c8), puts the player on
+  FUN_001ad378 sets 0x35d268 bit 1, stops the music (FUN_00137520: the BGM stream stop FUN_00136a68 with 0x1e0 and the channel ramps FUN_002c1a08 (it takes no
+  argument; the 0x2d0 FUN_00137520 passes is ignored), the music state kept in 0x354ebc / 0x354ebe), opens a message window object (0xb0 bytes, FUN_00195898 / FUN_00195a78 / FUN_00195ae0, which
+  becomes 0x35e3a4; step 1 of the thread sets 0x36f598 through FUN_002c38b8) and starts a thread (FUN_00102bc8 priority 1, 15000). The thread's step 2
+  waits while that window exists (FUN_00196418) and until the fade object at 0x356b30 has its +0xfc at 4 (idle), clears 0x36f598 (FUN_002c38c8), puts the player on
   the floor (FUN_00183fe0), and FUN_001adeb8 makes Tinker Bell, clears 0x35d268 bit 1 and starts the music again (FUN_00137558: the saved music state back,
   FUN_00136aa0 starts the area's music record). The "fade" is therefore not a picture fade started here: the thread only waits for the fade object at
   0x356b30 to be idle (+0xfc == 4; its writers are FUN_0014a6f8 / FUN_0014a7c8 / FUN_0014a7f0 / FUN_0014a818, the screen fades of other code), so a fade
   already running (the player's death) finishes before Tinker Bell appears. What the player sees and hears, in order: system sound 0x13 (FUN_002c14a8), the
-  music ramping out, a message window if the argument is a text, the pad dead until the window is gone and the screen is not fading, then the player on the
+  music ramping out, a message window if the argument is a text, (no pad lock comes from 0x36f598, see below) the wait until the window is gone and the screen is not fading, then the player on the
   floor, Tinker Bell made at him and the music back.
   *Ported (WP-SM4, `summon.rs` `Revive` / `ReviveAct`, `audio_bgm.rs` `revive_stop` / `revive_restart`):* the thread as a state machine with the game's order
-  (begin: flag 0x35d268 bit 1, music stop, sound 0x13, window, 0x354f70 bit 2; thread: step 0 moves on, step 1 locks the pad and falls into step 2, which waits
-  on window and fade, then releases the pad, puts the player on the floor, makes Tinker Bell, clears the flag, restarts the music and, at the thread's end,
+  (begin: flag 0x35d268 bit 1, music stop, sound 0x13, window, 0x354f70 bit 2; thread: step 0 moves on, step 1 sets the sound gate 0x36f598 and falls into step 2, which waits
+  on window and fade, then clears it, puts the player on the floor, makes Tinker Bell, clears the flag, restarts the music and, at the thread's end,
   clears 0x354f70 bit 2). The music state is held in `AreaMusic::held` (0x354ebc kept in 0x354ebe, so the battle switch does nothing meanwhile) and both BGM
-  slots fade to 0 over 0x1e0 driver frames [inferred: frames, as the other fades], restarting the audible slot at full volume where it stopped. The pad lock is
-  `Pad::lock` every tick while the thread is in step 2 (0x36f598 stops FUN_002c3228 handing out pad events). Sound 0x13 plays as a system sound. Each act is
+  slots fade to 0 over 0x4b0 driver frames (WP-SM4b: FUN_002c1a08 calls FUN_002be2e8(slot, 0, 0x4b0) for slots 0 and 1, which is IOP command 0x11 as `Driver::bgm_fade`), restarting the audible slot at full volume where it stopped. Sound 0x13 plays as a system sound. Each act is
   logged (`summon: revive: ...`), with `KH2_NO_MUSIC` / `KH2_NO_SOUND` too. Tests: `the_revive_sequence_runs_in_the_games_order`,
-  `the_revive_waits_for_the_window_and_the_fade_with_the_pad_locked`, `a_held_music_switches_nothing_until_released`.
+  `the_revive_waits_for_the_window_and_the_fade_with_sounds_held`, `a_held_music_switches_nothing_until_released`, `revive_effects_hold_and_release_the_area_music` (the Bevy glue).
+  *0x36f598 is not a pad lock (WP-SM4b).* `mips_scan --addr 0x36f598` finds one reader, FUN_002c3228 (0x2c322c); no load with offset 0xf598 or a gp-relative form turned up. FUN_002c3228
+  returns a free 0x40-byte request slot of the sound engine (the pool of docs/audio.md) and returns 0 while 0x36f598 is set; its callers are FUN_002c36b8 and FUN_002c37b8, which start
+  positional sounds. So during step 2 no new positional sound is started; the player's pad is not touched by it, and the app's `Pad::lock` is not called for it (WP-SM4 did, wrongly; removed). The
+  pad lock of a message window is FUN_00196280 in FUN_00195ae0 (when the message's flag bit 3 is clear), which the app does not open here. The sound gate is logged only (the app's PlaySe
+  is outside this work package). Its other setters are FUN_00195d28, FUN_00196138 and FUN_001b9140 (clears: FUN_00195968, 001959f0, 00195e68, 00196348, 001b9140, 001b99a0, 002c1158, 002c11e0).
+  *The music fade through the wait (WP-SM4b).* The original's ramp is 0x4b0 frames (5 s at 240 Hz) and the wait ends when the window is gone and the screen fade is idle, neither of which the app has,
+  so the app's wait is 2 ticks and the music is back before the ramp has lowered it audibly (the restart path of `bgm_start` just sets full volume). No minimum hold is added: the code gives no number
+  for the wait except those two conditions. Not ported, unknown: IOP commands 0x16 (FUN_002be5dc, args -100, -1, 0, 0, 0x4b0) and 0x27 (FUN_002bf5e4), FUN_002c1c18 -> FUN_002c0b98, and the stream stop
+  FUN_00136a68 (handle 0x354e94, 0x1e0).
   *Not ported:* the message window (its text: FUN_001ad8a8 hands its own argument, which FUN_001cec00 uses as the player object, to FUN_00195a78 as the text;
   FUN_001d1160 only stores it, so no message id was found: searched FUN_001ad378, FUN_001ad8a8, FUN_001ad8e0, FUN_001ad810, FUN_00195898, FUN_00195a78,
   FUN_00195ae0; the instruction at 0x1ad8b4..0x1ad8d0 confirms a1 = a0), so no window opens and the window wait is always over; the 0x356b30 fade is not

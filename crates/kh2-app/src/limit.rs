@@ -173,6 +173,123 @@ pub fn row_for_command(rows: &[LimitRow], command: u16, p: &Party) -> Option<usi
     rows.iter().position(|r| r.command == command && usable(r, p).is_ok())
 }
 
+/// The ability item of Auto Limit (ability bit 129 of the member's own block, `abilities::BIT_AUTO_LIMIT`).
+pub const AUTO_LIMIT_ITEM: u16 = 417;
+
+/// `DAT_0037c414` (500.0 in the executable): how near, horizontally, a partner must stand to the player for `FUN_001d25e0`.
+pub const AUTO_LIMIT_RANGE: f32 = 500.0;
+
+/// One party member in the field as `FUN_001d25e0` sees him (`FUN_0017d400` of a row's `Character`).
+#[derive(Clone, Debug, Default)]
+pub struct Partner {
+    /// The party member id (`limt` `Character`: 2 Donald, 3 Goofy ...).
+    pub member: u8,
+    /// Position in game units (the app's axes; only x and z are read).
+    pub pos: Vec3,
+    /// The ability items he has equipped (his own ability block).
+    pub items: Vec<u16>,
+}
+
+impl Partner {
+    /// Bit 129 of his own block (`FUN_001768a8(member) + 0x10 & 2`).
+    pub fn has_auto_limit(&self) -> bool {
+        self.items.contains(&AUTO_LIMIT_ITEM)
+    }
+}
+
+/// What the rows' tests see for one partner: the base party with the ability bit of the row's limit item as that member holds it.
+pub fn party_for(base: &Party, partner: &Partner, row: &LimitRow) -> Party {
+    let mut p = base.clone();
+    p.abilities = match row.ability_bit {
+        Some(b) if b < 128 && partner.items.contains(&row.item) => 1u128 << b,
+        _ => 0,
+    };
+    p
+}
+
+/// A row `FUN_001d25e0` would offer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AutoCandidate {
+    /// Index into the limit table.
+    pub row: usize,
+    /// The row's command (`+0x30` of the `limt` row, `FUN_001b6f48`).
+    pub command: u16,
+    pub member: u8,
+    /// `FUN_001ba2c0` answered 2 (not enough MP): still a candidate (the test is `< 4`), but the offer cannot be accepted.
+    pub no_mp: bool,
+}
+
+/// The candidate walk of `FUN_001d25e0`, in table order: a row whose `Character` is not 1 and is usable (`FUN_001d1ce0`), whose
+/// partner has Auto Limit and stands within [`AUTO_LIMIT_RANGE`] (horizontal), and whose command's status for the player is below 4
+/// (`FUN_001ba2c0`: Execute 81 is `FUN_001b3e38`, 5 when no usable row exists for the command's gauge or MP is not what the rule
+/// wants; 2 for too little MP; then the command's Flags and DisableForm test, `flags_ok`, which makes it 5).
+/// `FUN_001d1ea0` (the limit's file is loaded, the party members idle) is not modelled [approx]: it is taken as true.
+pub fn auto_limit_candidates(rows: &[LimitRow], partners: &[Partner], player: Vec3, base: &Party, flags_ok: impl Fn(u16) -> bool) -> Vec<AutoCandidate> {
+    let mut out = Vec::new();
+    for (i, r) in rows.iter().enumerate() {
+        let member = r.members[0];
+        if member <= 1 {
+            continue;
+        }
+        let Some(partner) = partners.iter().find(|p| p.member == member) else { continue };
+        let party = party_for(base, partner, r);
+        if usable(r, &party).is_err() || !partner.has_auto_limit() {
+            continue;
+        }
+        let d = Vec3::new(partner.pos.x - player.x, 0.0, partner.pos.z - player.z).length();
+        if d > AUTO_LIMIT_RANGE {
+            continue;
+        }
+        // FUN_001b3e38 asks FUN_001d2040 for the command's first usable row; none answers 0 (available).
+        let status_row = row_for_command(rows, r.command, &party).map_or(r, |j| &rows[j]);
+        let no_mp = match available(status_row, &party) {
+            Ok(()) => false,
+            Err(Refusal::NotEnoughMp) => true,
+            Err(_) => continue,
+        };
+        if !flags_ok(r.command) {
+            continue;
+        }
+        out.push(AutoCandidate { row: i, command: r.command, member, no_mp });
+    }
+    out
+}
+
+/// The choice at the end of `FUN_001d25e0`: `wanted` (the command the offer already shows) wins at once, with no draw; none
+/// answers nothing; otherwise the generator steps once (`DAT_003716a0 *= 0x10dcd`) and the index is the new word divided by
+/// `(2^32 + n - 1) / n` (`FUN_00325b38` twice, unsigned: the call site zero-extends the word with `dsll32` / `dsrl32`).
+pub fn auto_limit_pick(commands: &[u16], wanted: u16, seed: &mut u32) -> Option<usize> {
+    if let Some(i) = commands.iter().position(|&c| c == wanted) {
+        return Some(i);
+    }
+    let n = commands.len() as u64;
+    if n == 0 {
+        return None;
+    }
+    *seed = seed.wrapping_mul(0x10dcd);
+    let step = ((1u64 << 32) + n - 1) / n;
+    Some((u64::from(*seed) / step) as usize)
+}
+
+/// The generator `FUN_001d25e0` draws from (`DAT_003716a0`); the app keeps its own copy for this pick. `KH2_AUTO_LIMIT_SEED=<n>` fixes it.
+#[derive(Resource, Debug)]
+pub struct LimitRng(pub u32);
+
+impl Default for LimitRng {
+    fn default() -> Self {
+        let clock = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.subsec_nanos() | 1);
+        LimitRng(std::env::var("KH2_AUTO_LIMIT_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(clock))
+    }
+}
+
+/// The player accepted a limit offer (Execute 81 through the player class, `FUN_001cf030` case 0x51 -> `FUN_001b28a0`). `party` is
+/// what the offer's tests saw, so the start sees the same members and abilities.
+#[derive(Message, Clone, Debug)]
+pub struct StartLimit {
+    pub command: u16,
+    pub party: Party,
+}
+
 #[derive(Resource)]
 pub struct LimitRules {
     pub rows: Vec<LimitRow>,
@@ -408,6 +525,8 @@ impl Plugin for LimitPlugin {
             .init_resource::<LimitThread>()
             .add_message::<LimitStarted>()
             .add_message::<LimitScriptEvent>()
+            .add_message::<StartLimit>()
+            .init_resource::<LimitRng>()
             .add_systems(Update, read_key)
             .add_systems(FixedUpdate, (try_limit.in_set(Sim::Sora), count_limit_hits));
     }
@@ -456,6 +575,7 @@ fn try_limit(
     mut script_events: MessageWriter<LimitScriptEvent>,
     mut progress: Option<ResMut<Progress>>,
     summon: SummonSide,
+    mut requests: MessageReader<StartLimit>,
 ) {
     let (sm, drive, summon_data, mut summon_queue) = summon;
     if let Some((cmd, left)) = active.0.as_mut() {
@@ -470,6 +590,7 @@ fn try_limit(
             }
         }
     }
+    let request = requests.read().last().cloned();
     let Ok(mut s) = sora.single_mut() else { return };
     if active.0.is_some() {
         sel.since += 1;
@@ -479,7 +600,11 @@ fn try_limit(
             send_sub_command(&rules, c, thread.0, &mut script_events);
         }
     }
-    let command = if let Some(c) = sel.scripted.filter(|_| !sel.armed && time.elapsed_secs() >= 4.0) {
+    let command = if let Some(r) = request.filter(|_| active.0.is_none()) {
+        // An accepted Auto Limit offer: the party the offer saw runs the rules (the original starts it through FUN_001b28a0).
+        party.0 = r.party;
+        Some(r.command)
+    } else if let Some(c) = sel.scripted.filter(|_| !sel.armed && time.elapsed_secs() >= 4.0) {
         sel.armed = true;
         Some(c)
     } else if std::mem::take(&mut sel.pressed) {
@@ -666,6 +791,119 @@ mod tests {
             assert!(subs.contains(&c), "{c} is an Execute 81 command without a limit row");
         }
         assert!(rows.iter().all(|r| !subs.contains(&r.command)));
+    }
+
+    fn partner(member: u8, x: f32, items: &[u16]) -> Partner {
+        Partner { member, pos: Vec3::new(x, 7.0, 0.0), items: items.to_vec() }
+    }
+
+    fn donald_row(command: u16, item: u16, bit: u16) -> LimitRow {
+        LimitRow { id: command as u8, members: [2, 0, 0], file: "x.bar".into(), command, item, world: 0, cost: 255, time: 10, message: 0, ability_bit: Some(bit) }
+    }
+
+    fn base(present: &[u8], mp: i32) -> Party {
+        Party { present: present.to_vec(), world: 2, mp, ..Default::default() }
+    }
+
+    /// `FUN_001d25e0`'s range test: the horizontal distance (y is zeroed) is compared with 500.0 (`DAT_0037c414`) with `<=`.
+    #[test]
+    fn auto_limit_needs_the_partner_within_500_horizontally() {
+        let rows = vec![donald_row(300, 40, 5)];
+        let items = [AUTO_LIMIT_ITEM, 40];
+        let ok = |x: f32, y: f32| {
+            let mut p = partner(2, x, &items);
+            p.pos.y = y;
+            !auto_limit_candidates(&rows, &[p], Vec3::ZERO, &base(&[2], 10), |_| true).is_empty()
+        };
+        assert!(ok(500.0, 0.0), "exactly 500.0 still qualifies");
+        assert!(!ok(500.5, 0.0));
+        assert!(ok(499.0, 9000.0), "the height is not part of the distance");
+        assert!(ok(-300.0, 0.0), "either side");
+    }
+
+    /// The gates of the candidate walk: Auto Limit in the partner's own block, the limit item in it, the partner present and living,
+    /// `Character` not 1, MP (status 2 stays a candidate), the command flags (status 5 is not).
+    #[test]
+    fn auto_limit_offer_gating() {
+        let rows = vec![donald_row(300, 40, 5), LimitRow { members: [1, 0, 0], ..donald_row(301, 40, 5) }];
+        let run = |items: &[u16], party: &Party, flags: bool| auto_limit_candidates(&rows, &[partner(2, 10.0, items)], Vec3::ZERO, party, |_| flags);
+        let full = [AUTO_LIMIT_ITEM, 40];
+        let got = run(&full, &base(&[2], 10), true);
+        assert_eq!(got, vec![AutoCandidate { row: 0, command: 300, member: 2, no_mp: false }], "row 1 names Sora: never offered");
+        assert!(run(&[40], &base(&[2], 10), true).is_empty(), "no Auto Limit");
+        assert!(run(&[AUTO_LIMIT_ITEM], &base(&[2], 10), true).is_empty(), "the limit ability itself is missing");
+        assert!(run(&full, &base(&[3], 10), true).is_empty(), "Donald is not in the party (or is down)");
+        assert!(run(&full, &base(&[2], 10), false).is_empty(), "the command's flags refuse it");
+        let poor = run(&full, &base(&[2], 0), true);
+        assert_eq!(poor.len(), 1);
+        assert!(poor[0].no_mp, "status 2 is below 4: still a candidate, but not acceptable");
+        let mut f6 = base(&[2], 10);
+        f6.form = 6;
+        assert!(run(&full, &f6, true).is_empty(), "member 2 is refused in form field 6");
+        assert!(auto_limit_candidates(&rows, &[], Vec3::ZERO, &base(&[2], 10), |_| true).is_empty(), "no partner object");
+    }
+
+    /// The pick: the wanted command wins without a draw; otherwise one step of the generator and `word / ceil(2^32 / n)`.
+    /// Literal values: 0x2545f491 * 0x10dcd = 0x5b01351d, which falls in bucket 1 of 3, 1 of 4 and 2 of 7.
+    #[test]
+    fn auto_limit_pick_rule_with_a_fixed_seed() {
+        let cmds = [10u16, 20, 30, 40];
+        let mut seed = 0x2545_f491u32;
+        assert_eq!(auto_limit_pick(&cmds, 30, &mut seed), Some(2), "the wanted command wins at once");
+        assert_eq!(seed, 0x2545_f491, "and does not step the generator");
+        assert_eq!(auto_limit_pick(&cmds, 0, &mut seed), Some(1));
+        assert_eq!(seed, 0x5b01_351d);
+        let mut seed = 0x2545_f491u32;
+        assert_eq!(auto_limit_pick(&cmds[..3], 0, &mut seed), Some(1));
+        let mut seed = 0x2545_f491u32;
+        assert_eq!(auto_limit_pick(&[1, 2, 3, 4, 5, 6, 7], 0, &mut seed), Some(2));
+        let mut seed = 0xdead_beefu32;
+        assert_eq!(auto_limit_pick(&cmds, 0, &mut seed), Some(3), "0xe2c30863 is in the top quarter");
+        let mut seed = 5;
+        assert_eq!(auto_limit_pick(&[], 0, &mut seed), None);
+        assert_eq!(seed, 5, "no candidate: no draw");
+        assert_eq!(auto_limit_pick(&[77], 0, &mut seed), Some(0));
+        assert_eq!(seed, 5u32.wrapping_mul(0x10dcd), "one candidate still draws once");
+        for s0 in [1u32, 0x7fff_ffff, 0x8000_0000, 0xffff_ffff] {
+            for n in 1..=9usize {
+                let mut s = s0;
+                let i = auto_limit_pick(&vec![0u16; n], 1, &mut s).unwrap();
+                assert!(i < n, "seed {s0:#x} n {n}: index {i}");
+            }
+        }
+    }
+
+    /// The pick against the game: the two calls of `FUN_001d25e0` (`FUN_00325b38((n - 1) + 2^32, n)`, then `FUN_00325b38(word, step)`)
+    /// run in kh2-ee for many generator states and candidate counts; the index, and the generator step, equal the port's.
+    #[test]
+    fn auto_limit_pick_matches_the_games_divide() {
+        let iso = crate::assets::iso_path().ok().filter(|p| p.exists());
+        let Some(iso) = iso else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok()).expect("executable");
+        let mut ee = kh2_ee::Ee::new();
+        ee.load_elf(&elf).expect("elf");
+        let stack = 0x01ff_0000;
+        let mut seeds: Vec<u32> = (0..200u32).map(|i| i.wrapping_mul(0x0083_1f27).wrapping_add(0x1234_5678)).collect();
+        seeds.extend([1, 0x7fff_ffff, 0x8000_0000, 0xffff_ffff, 0x2545_f491]);
+        let mut checked = 0;
+        for &s0 in &seeds {
+            for n in 1..=8u64 {
+                let word = s0.wrapping_mul(0x10dcd);
+                // The call site: `dsll32` / `dsrl32` zero-extend the word (0x1d27a0, 0x1d27a4); the step's operands are `(n - 1) | 1 << 32` and `n`.
+                let step = ee.call(0x325b38, &[(n - 1) + (1 << 32), n], &[], stack).expect("step");
+                let game = ee.call(0x325b38, &[u64::from(word), step], &[], stack).expect("index");
+                let mut seed = s0;
+                let port = auto_limit_pick(&vec![0u16; n as usize], 1, &mut seed).unwrap();
+                assert_eq!(seed, word);
+                assert_eq!(port as u64, game, "seed {s0:#x} n {n}");
+                checked += 1;
+            }
+        }
+        eprintln!("auto limit pick: {checked} cases equal the game's divide");
     }
 
     fn row(members: [u8; 3], world: u16, cost: u8, bit: Option<u16>) -> LimitRow {

@@ -78,6 +78,9 @@ pub fn scan_mset(m: &kh2_anim::Mset) -> Vec<(usize, String, Offer, i16, i16)> {
 /// ported in [`status`], and 0x7f (the Shop rows and the other event rows) too (WP-SH1).
 const EXECUTE_SWITCH: &[u16] = &[1, 2, 4, 5, 0x37, 0x48, 0x51, 0x67, 0x68, 0x13c, 0x14a];
 
+/// Execute 81 (0x51): a limit command. FUN_001ba2c0 hands it to FUN_001b3e38 and the player class to FUN_001b28a0 (`limit.rs`).
+pub const EXECUTE_LIMIT: u16 = 0x51;
+
 /// Execute 0x1c4 (command 452): the case of FUN_001ba2c0.
 const EXECUTE_MP_COMMAND: u16 = 0x1c4;
 
@@ -174,6 +177,15 @@ fn disable_mask(cmds: &[CmdRow], c: &CmdRow) -> u16 {
     c.disable_form
 }
 
+/// The tail every command goes through in FUN_001ba2c0: the command flags (FUN_001b70b8) and the `DisableForm` mask of the
+/// player's form (FUN_001b7290) make the status 5.
+pub fn flags_block(cmds: &[CmdRow], c: &CmdRow, ctx: &Ctx) -> bool {
+    let blocked = (c.flags >> 1 & 1 != 0 && ctx.player_blocked)
+        || (c.flags >> 16 & 1 != 0 && !ctx.battle)
+        || (c.flags >> 5 & 1 == 0 && ctx.commands_locked);
+    blocked || disable_mask(cmds, c) >> (ctx.form & 0x1f) & 1 != 0
+}
+
 pub fn status(cmds: &[CmdRow], c: &CmdRow, ctx: &Ctx) -> Status {
     if EXECUTE_SWITCH.contains(&c.execute) {
         return Status::NotPorted;
@@ -194,11 +206,7 @@ pub fn status(cmds: &[CmdRow], c: &CmdRow, ctx: &Ctx) -> Status {
             own = Status::NoMp;
         }
     }
-    // FUN_001b70b8
-    let blocked = (c.flags >> 1 & 1 != 0 && ctx.player_blocked)
-        || (c.flags >> 16 & 1 != 0 && !ctx.battle)
-        || (c.flags >> 5 & 1 == 0 && ctx.commands_locked);
-    if blocked || disable_mask(cmds, c) >> (ctx.form & 0x1f) & 1 != 0 {
+    if flags_block(cmds, c, ctx) {
         return Status::Blocked;
     }
     if own != Status::Available {
@@ -319,6 +327,17 @@ pub struct PlayerReaction {
     pub remaining: Option<f32>,
 }
 
+/// The Auto Limit offer (`FUN_001d25e0` through `FUN_0019d430`): the command shown now, the party the tests saw (handed to
+/// `limit.rs` when the offer is accepted) and the harness list `KH2_AUTO_LIMIT=<member ids>`, members treated as holding Auto Limit
+/// and their limit abilities (a test aid; the real source is the member's saved ability list).
+#[derive(Resource, Default)]
+pub struct AutoLimit {
+    /// The command offered last tick: the "wanted" id of `FUN_001d25e0` that wins without a draw.
+    pub shown: u16,
+    party: crate::limit::Party,
+    pretend: Vec<u8>,
+}
+
 /// The accept key was pressed (Triangle in the game).
 #[derive(Resource, Default)]
 struct AcceptPress(bool);
@@ -380,10 +399,16 @@ impl Plugin for ReactionPlugin {
             .init_resource::<ReactionUses>()
             .init_resource::<AcceptPress>()
             .init_resource::<PlayerReaction>()
+            .insert_resource(AutoLimit {
+                pretend: std::env::var("KH2_AUTO_LIMIT").map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect()).unwrap_or_default(),
+                ..Default::default()
+            })
+            .init_resource::<crate::limit::LimitRng>()
+            .add_message::<crate::limit::StartLimit>()
             .add_message::<ReactionAccepted>()
             .add_message::<PlayerReactionCmd>()
             .add_systems(Update, read_key)
-            .add_systems(FixedUpdate, (offer, accept).chain().in_set(Sim::Effects));
+            .add_systems(FixedUpdate, (offer, auto_limit_offer, accept).chain().in_set(Sim::Effects));
     }
 }
 
@@ -413,8 +438,10 @@ fn offer(
     anims: Query<&Animator>,
     drive: Option<Res<crate::drive::DriveState>>,
     battle: Res<crate::sora::Battle>,
+    auto: Res<AutoLimit>,
 ) {
-    let before = slot.0;
+    // The Auto Limit offer of last tick (`auto_limit_offer` runs after this system) is not this system's to log.
+    let before = slot.0.filter(|_| auto.shown == 0);
     // The player object's form field (+0xb50, read by FUN_001b7290 for DisableForm) and the
     // battle flag (FUN_001903d8, Flags bit 16).
     let form = drive.as_deref().map_or(0, |d| d.object_form());
@@ -556,6 +583,81 @@ fn native_offers(
     *slot = Some(Active { cmd: o.cmd, pos: o.part as i16, from: e, status: o.status, message });
 }
 
+/// The party-limit offer (FUN_0019c670 -> FUN_0019d430 -> FUN_001d25e0 -> FUN_0019c3c8): when nothing else is offered, no limit
+/// runs and the battle flag holds (FUN_001d2460), one of the partners' limits is offered as a reaction command. The choice is
+/// `limit::auto_limit_pick`; the command shown last tick is the "wanted" id, so the offer stays put instead of drawing again
+/// every tick [inferred: what the game keeps at `*controller + 0x26`, the wanted id's source, was not traced].
+/// Not modelled [GAP]: FUN_001d2460's `0x35feb8` / `DAT_01d5e368` / FUN_00140fe0 words and the MP charge timer (FUN_001a05d0),
+/// FUN_0019c670's player bits (+0x160 bit 0x4000, +0x588 bit 0x2000000), the two other offer sources FUN_0019d0b8 / FUN_0019d048
+/// that must answer 0, FUN_001baee0 (a mode word of the player's command table) and FUN_001d1ea0 (the limit's file loaded, the
+/// members idle).
+#[allow(clippy::too_many_arguments)]
+fn auto_limit_offer(
+    rules: Res<ReactionRules>,
+    limits: Option<Res<crate::limit::LimitRules>>,
+    task: Option<Res<crate::limit::LimitTask>>,
+    mut state: ResMut<AutoLimit>,
+    mut rng: ResMut<crate::limit::LimitRng>,
+    mut slot: ResMut<ReactionOffer>,
+    sora: Query<(&Sora, &Transform)>,
+    members: Query<(Entity, &crate::party::PartyMember)>,
+    progress: Option<Res<crate::progress::Progress>>,
+    drive: Option<Res<crate::drive::DriveState>>,
+    battle: Res<crate::sora::Battle>,
+    area: Option<Res<crate::area::AreaRecord>>,
+    talk: Option<Res<crate::npc::Talk>>,
+    log: Res<Log>,
+) {
+    let shown = std::mem::take(&mut state.shown);
+    // A townsperson's or save point's candidate is a native candidate too (FUN_001ba6c8 must find the slot empty).
+    if slot.0.is_some() || talk.as_deref().is_some_and(|t| t.offer.is_some() || t.running()) {
+        return;
+    }
+    let (Some(limits), Ok((s, st))) = (limits, sora.single()) else { return };
+    if task.is_some_and(|t| t.0.is_some()) || !(battle.active() || drive.as_deref().is_some_and(|d| d.force_battle)) {
+        return;
+    }
+    if s.hp <= 0 || matches!(s.state, State::Down | State::Viewer) {
+        return;
+    }
+    let form = drive.as_deref().map_or(0, |d| d.object_form());
+    let mut partners = Vec::new();
+    let mut by_member = Vec::new();
+    for (e, m) in &members {
+        if m.hp <= 0 || m.ko {
+            continue;
+        }
+        let id = m.neo as u8;
+        let mut items: Vec<u16> = progress.as_deref().and_then(|p| p.member(m.neo)).map_or_else(Vec::new, |r| r.abilities.iter().filter(|a| a.1).map(|a| a.0).collect());
+        if state.pretend.contains(&id) {
+            items.push(crate::limit::AUTO_LIMIT_ITEM);
+            items.extend(limits.rows.iter().filter(|r| r.members[0] == id).map(|r| r.item));
+        }
+        partners.push(crate::limit::Partner { member: id, pos: m.position(), items });
+        by_member.push((id, e));
+    }
+    let base = crate::limit::Party {
+        present: partners.iter().map(|p| p.member).collect(),
+        form,
+        world: area.as_deref().map_or(0, |a| u16::from(a.world)),
+        mp: s.mp,
+        ..Default::default()
+    };
+    let ctx = Ctx { form, battle: true, mp: s.mp, ..Default::default() };
+    let cands = crate::limit::auto_limit_candidates(&limits.rows, &partners, st.translation / SCALE, &base, |cmd| rules.cmd(cmd).is_some_and(|c| !flags_block(&rules.cmds, c, &ctx)));
+    let commands: Vec<u16> = cands.iter().map(|c| c.command).collect();
+    let Some(i) = crate::limit::auto_limit_pick(&commands, shown, &mut rng.0) else { return };
+    let (cand, Some(c)) = (cands[i], rules.cmd(cands[i].command)) else { return };
+    let Some(&(_, from)) = by_member.iter().find(|(id, _)| *id == cand.member) else { return };
+    let status = if cand.no_mp { Status::NoMp } else { Status::Available };
+    state.shown = cand.command;
+    state.party = crate::limit::party_for(&base, &partners[partners.iter().position(|p| p.member == cand.member).unwrap_or(0)], &limits.rows[cand.row]);
+    slot.0 = Some(Active { cmd: cand.command, pos: 0, from, status, message: c.message_id as u32 });
+    if log.0 && shown != cand.command {
+        info!("reaction: Auto Limit offers command {} of member {} (message {}, status {:?}), {} candidate(s)", cand.command, cand.member, c.message_id, status, cands.len());
+    }
+}
+
 /// The accept key: only an available offer runs (FUN_0019c670 pushes slot 1 when its status is 0).
 #[allow(clippy::too_many_arguments)]
 fn accept(
@@ -571,6 +673,8 @@ fn accept(
     mut talk: Option<ResMut<crate::npc::Talk>>,
     mut shop: Option<ResMut<crate::menu_shop::ShopRequest>>,
     mut progress: Option<ResMut<crate::progress::Progress>>,
+    mut limit_start: MessageWriter<crate::limit::StartLimit>,
+    auto: Res<AutoLimit>,
 ) {
     if !std::mem::take(&mut press.0) {
         return;
@@ -622,6 +726,14 @@ fn accept(
         return;
     }
     let Some(c) = rules.cmd(a.cmd) else { return };
+    // Execute 81 is Sora's own case (FUN_001cf030 case 0x51 -> FUN_001b28a0): no use counter, no event 0xb. `limit.rs` pays and starts it.
+    if c.execute == EXECUTE_LIMIT {
+        limit_start.write(crate::limit::StartLimit { command: a.cmd, party: auto.party.clone() });
+        if log.0 {
+            info!("reaction: accepted limit command {} (Execute 81, FUN_001cf030 case 0x51 -> FUN_001b28a0)", a.cmd);
+        }
+        return;
+    }
     // The player class's handler first: Mickey's FUN_001ce518 takes its own Execute values before the
     // generic path, so they send no event, bump no use counter and apply no CmdAction (all of that is
     // inside FUN_00177c20). Sora's FUN_001cf030 hands every reaction row to the generic path.

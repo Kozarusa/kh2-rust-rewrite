@@ -21,6 +21,10 @@
 //! motion 0xfc from the shared motion table, starts system effect 0x11 on Sora (`FUN_001db868` on `DAT_01c954d8`), and
 //! hands every object's target `+0x9f4` that was Sora to Mickey (`FUN_0018f188`).
 //!
+//! WP-MK2 found where Sora's HP comes back: Mickey is the controlled player, and when his own HP is 1 he uses item 4 as
+//! user 4, which `FUN_001ce168` turns into "Sora is the player again and gets `(int)(max HP * sstm[0x54])`" ([`heal_amount`]).
+//! What makes Mickey's HP 1 and what his release command does were not found, so the gate stays off.
+//!
 //! The port takes the decision and the counter. The object (a second player class with its own command handler
 //! `FUN_001ce518`, tick `FUN_001ce240` and command menu), the amount Sora is healed to and what the effect does are not
 //! ported (see docs). Eleven missions of the disc set header bit 9 ([`BIT9_MISSIONS`], pinned by a test), so the original
@@ -76,6 +80,18 @@ impl Chance {
         let p = self.base.powf(f32::from(saves));
         if self.floor < p { p } else { self.floor }
     }
+}
+
+/// `FUN_001ce168` (reached from the item use `FUN_001b8658` when the item's user is member 4, Mickey): the `sstm` float at
+/// `+0x54` is the share of Sora's maximum HP that Mickey gives back.
+pub const HEAL_SSTM_OFFSET: usize = 0x54;
+
+/// The HP `FUN_001ce168` adds to Sora through his class slot `+0x78` (`FUN_001792f0` -> `FUN_00186238` -> `FUN_001a0100`, which
+/// holds the sum between the record's minimum and maximum): the maximum HP times the share, cut to a whole number.
+/// The rule is the original's; the port does not call it while [`RESCUE_PORTED`] is false (the trigger that makes Mickey use
+/// the item is not traced, docs/menus.md 26.5).
+pub fn heal_amount(max_hp: i32, share: f32) -> i32 {
+    (max_hp as f32 * share) as i32
 }
 
 /// One step of the shared generator.
@@ -210,6 +226,25 @@ mod tests {
         eprintln!("{read} mission headers read, bit 9 in {found:?}");
         assert!(read > 250, "most mission files are read: {read}");
         assert_eq!(found, want);
+    }
+
+    #[test]
+    fn the_heal_is_the_whole_part_of_the_share_of_the_maximum() {
+        assert_eq!(heal_amount(100, 0.5), 50);
+        assert_eq!(heal_amount(7, 0.5), 3, "cut toward zero like the original's float to int");
+        assert_eq!(heal_amount(20, 0.0), 0);
+        assert_eq!(heal_amount(0, 1.0), 0);
+    }
+
+    #[test]
+    fn the_heal_share_reads_the_disc_when_there_is_one() {
+        let Ok(iso) = std::env::var("KH2_ISO") else { return };
+        let Ok(mut a) = kh2_archive::Archive::open(std::path::Path::new(&iso)) else { return };
+        let s = kh2_tables::player::load_sstm(&mut a).expect("sstm");
+        let share = s.f32(HEAL_SSTM_OFFSET);
+        eprintln!("sstm[0x54] = {share}");
+        assert!(share > 0.0 && share <= 1.0, "a share of the maximum: {share}");
+        assert!(heal_amount(100, share) > 0);
     }
 
     #[test]

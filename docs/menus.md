@@ -2605,6 +2605,36 @@ the item or magic heal (`FUN_001a11a0`) or names a Cure id**, so the amount Sora
 ends the task are not in the code read [GAP]: they are in motion 0xfc's and 0xc0's event data. `FUN_001ad9a0` step 7 ends at
 once (step 8 returns 0), so the game-over object does not wait for Mickey.
 
+**Where Sora's HP comes back (WP-MK2) [V code, trigger not found].** Three findings that change the picture above:
+* **Mickey is the controlled player.** `FUN_001cdf48` first calls `FUN_00178cb8`, which stashes the current player (Sora) in
+  `DAT_0035c99c` and clears `DAT_0035c998`; Mickey's base constructor `FUN_00176e00` then stores himself in `DAT_0035c998`.
+  So while he exists the player's input, the command menu (455 charge, 456 release) and the camera belong to Mickey, and Sora
+  (also kept in `DAT_00360400` by his own constructor `FUN_001ce718`) is the target of 456. His max HP is 60 and MP 100 (`plrp`
+  row with `Character` 4; `kh2 table plrp`), NeoStatus 4 (`objentry` 91, `P_EX200`).
+* **The heal is an item use with Mickey as the user.** `FUN_001ce458` (vtable `+0x14`, every frame, base `FUN_001778e8`) acts when
+  Mickey's own HP is exactly 1: it starts command row 0x22a (`FUN_001b6f48`; `cmd` row 554 = Execute 3 (item), Argument 4, the
+  Elixir of `item` row 4, message 33534) through `FUN_00175e20(.., take = 0)`, so `FUN_00175ec0` takes nothing from a stock.
+  The queued item use `FUN_001b82b8` stores the user's NeoStatus 4 (`FUN_001699a8`); when its time is out `FUN_001b8658` sees user
+  4 and calls **`FUN_001ce168(Mickey)`** instead of `FUN_001a11a0`. That function: Mickey's vtable `+0x20` (`FUN_001ce0a0`:
+  `FUN_001973f8`, then `FUN_001772b0`, which clears `DAT_0035c998`), `FUN_00178d28` (the stashed Sora becomes the player again,
+  `DAT_0035c998` = Sora, camera and input follow), `FUN_0018f188(Mickey, Sora)` (everything that targeted Mickey targets Sora),
+  Sora plays **motion 0xfe** from Mickey's motion table (`FUN_0017f160(0, Mickey + 0x140, Sora, 0xfe)`), `FUN_00197230(Mickey,
+  0x37c338, Sora)`, and finally Sora's vtable `+0x78` (`0x1792f0`, the same as the base class; `FUN_00186238` then `FUN_001a0100`)
+  with the amount **`(int)(Sora max HP * sstm[0x54])`**. This is the answer to "how much": the share `sstm[0x54]` of the
+  maximum, added to the current HP and clamped to the maximum (`mickey::heal_amount`, `mickey::HEAL_SSTM_OFFSET`, the disc's
+  value is read by `the_heal_share_reads_the_disc_when_there_is_one`). So Mickey's leaving and Sora's heal are one event, and the
+  control returns to Sora at that moment.
+* **Motion 0xfc is not in the files.** `obj/P_EX200.mset` has 29 motions (slots up to 776) and `P_EX200_MEMO.mset` one (slot 133); neither
+  has slot 1008 (0xfc * 4) or 1016 (0xfe * 4). `FUN_0017da30` / `FUN_0017db88` then return the null motion, so the two motion starts
+  by `FUN_0017f160` look up an absent entry in the USA data [GAP: the second table `param_1[1]` of `FUN_0017db88` was not identified].
+
+What is still not found, so the rescue stays off: (1) what makes Mickey's HP equal 1 (his max is 60; the status minimum is 0
+and `FUN_00186238` clamps to it; the damage path of an enemy hit on a Mickey-class target was not traced); (2) what 456 does
+besides motion 0xc0 (that motion holds range trigger 10 with the hit group 1197 and frame triggers 14 with the states 26 and 22,
+none of which writes HP; `atkp` 1197 has Power 0, Type 3); (3) system effect 0x11 and the messages 0xbbc2 to 0xbbc4; (4) Mickey's
+model state, the object parts 10 to 0x15 shown by `FUN_001ce3f8`, and the camera. Porting needs a second player class (control swap,
+command menu, gauge) in `sora.rs` and the command code, outside this package's files.
+
 **Missions that can offer it [V, scan].** The header word `+4` (BAR entry type 2) of every `msn/us/*.bar` was read; **11
 missions have bit 9 (0x200)**: AL03_MS103, BB05_MS104A, BB05_MS104B, BB11_MS102, BB15_MS203, CA18_MS202, EH24_MS110,
 HE07_MS103, HE18_MS108, MU08_MS204, MU09_MS108 (test `mickey::tests::the_disc_has_eleven_missions_with_header_bit_9`, needs
@@ -2635,7 +2665,7 @@ as before. Tests: `mickey::tests::*`, `menu_gameover::tests::the_alternate_list_
 `001cec00`, `001ced58`, `001c7740`, `001c75d0`, `001c7c30`, `001ade58`, `001adcf8`, `0017d030`, `0019a3f8`, `0017cd08`, `001b7c88`,
 `0017f160`, `0017da30`, `0017db88`, `0017ef98`, `0018f188`, `001db868`, `00300448`, `00301790`, and the raw instructions of `0x1adbb8`
 (alternate callback) and `0x1ad520` (the roll). Tables: `sstm` `0xd8`, `0xdc`; words `0x3716a0`, `0x37b84c`, `0x3852a8`.
-**Gaps.** The heal (not in `FUN_001ce240`, `FUN_001ce458`, `FUN_001ce518`, `FUN_001ce680`, `FUN_001cde80`: read, no HP write); the event data of motions 0xfc and 0xc0; effect 0x11's script; Mickey's stay and leave; `FUN_0017d030`'s exact meaning for a downed friend;
+**Gaps.** The heal amount is found (`FUN_001ce168`, see "Where Sora's HP comes back"); still open: what sets Mickey's HP to 1 (the leave trigger), what 456 does, the missing motions 0xfc / 0xfe, effect 0x11's script; WP-MK2 read also `FUN_001ce168`, `001b8658`, `001b82b8`, `001b84c8`, `001b8710`, `00175ec0`, `001a1ba8`, `001ce0a0`, `001772b0`, `00178cb8`, `00178d28`, `00176e00`, `00186238`, `001a0100`, `0019f920`, `00188030`, the frame-trigger jump table 0x37aa78 (raw), the class tables 0x360360 / 0x360410; `FUN_0017d030`'s exact meaning for a downed friend;
 `FUN_001c7740`'s `FUN_001c75d0(0)` effect on the friends; whether `0x35d268` bit 1 is cleared by Mickey's end.
 ## 22. Donald and Goofy on the Items and Equipment pages (WP-PM1)
 

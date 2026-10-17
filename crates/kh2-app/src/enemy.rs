@@ -386,6 +386,99 @@ pub struct KindTwo {
     pub killed: Vec<u16>,
 }
 
+/// The tables of the defeated that outlive an area (`FUN_00194188`, on `0x35d278`): four slots, each keyed by the
+/// area byte (`0x33e831`) with an age, a counter of area starts (+0x824) and the entered serials (256 halfwords).
+/// An area start (`FUN_00181148`) takes the slot of its own key whose age is at least `counter - keep` (the newest
+/// such slot) and keeps its entries; with none it clears the least recent slot (a free one, key -1, first) and tags
+/// it with the key. Either way the slot's age becomes the counter, which then counts up; after a hit the ages below
+/// the hit's age go up by one first. `keep` is `DAT_0035cd28` (3, area script opcode 6; 0 when the map program
+/// byte is above 0x32), so an area visited again within `keep` area starts finds its defeated members still down.
+/// `FUN_00194330` (through `FUN_00168960`, an object system reset) clears everything and the counter.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DefeatedTables {
+    slots: [DefeatedSlot; 4],
+    /// +0x824: how many area starts have stamped a slot.
+    counter: i32,
+    /// +0x820: the slot of the area now running.
+    chosen: usize,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct DefeatedSlot {
+    key: i32,
+    age: i32,
+    serials: Vec<u16>,
+}
+
+impl DefeatedSlot {
+    fn cleared() -> DefeatedSlot {
+        DefeatedSlot { key: -1, age: 0, serials: Vec::new() }
+    }
+}
+
+impl Default for DefeatedTables {
+    fn default() -> Self {
+        DefeatedTables { slots: std::array::from_fn(|_| DefeatedSlot::cleared()), counter: 0, chosen: 0 }
+    }
+}
+
+impl DefeatedTables {
+    /// `FUN_00194330`: every slot cleared and the counter back to 0.
+    pub fn clear(&mut self) {
+        *self = DefeatedTables::default();
+    }
+
+    /// `FUN_00194188(table, keep)` for the area byte `key`: selects the slot the area's defeated members are in.
+    pub fn enter(&mut self, key: u8, keep: i32) {
+        let key = i32::from(key);
+        let mut best: Option<usize> = None;
+        let mut victim = 0;
+        for i in 0..4 {
+            let s = &self.slots[i];
+            if s.key == key && self.counter - keep <= s.age && best.is_none_or(|b| s.age > self.slots[b].age) {
+                best = Some(i);
+            }
+            if s.key < 0 || (self.slots[victim].key >= 0 && s.age < self.slots[victim].age) {
+                victim = i;
+            }
+        }
+        let at = match best {
+            None => {
+                self.slots[victim] = DefeatedSlot::cleared();
+                self.slots[victim].key = key;
+                victim
+            }
+            Some(b) => {
+                let top = self.slots[b].age;
+                for s in self.slots.iter_mut().filter(|s| s.age < top) {
+                    s.age += 1;
+                }
+                b
+            }
+        };
+        self.slots[at].age = self.counter;
+        self.counter += 1;
+        self.chosen = at;
+    }
+
+    /// The serials entered for the area now running.
+    pub fn serials(&self) -> &[u16] {
+        &self.slots[self.chosen].serials
+    }
+
+    /// Makes the running area's entries among `members` equal `killed` (`FUN_00198220` enters a created enemy,
+    /// `FUN_001993f8` / `FUN_00199858` take one out; the table holds 256 entries, and a full table takes no more).
+    pub fn sync(&mut self, members: &[u16], killed: &[u16]) {
+        let t = &mut self.slots[self.chosen].serials;
+        t.retain(|s| !members.contains(s) || killed.contains(s));
+        for s in killed {
+            if !t.contains(s) && t.len() < 256 {
+                t.push(*s);
+            }
+        }
+    }
+}
+
 impl KindTwo {
     pub fn new(g: &AreaGroup, part: usize) -> KindTwo {
         KindTwo { part, timer: g.parts[part].start_delay() as f32, wave: 0, killed: Vec::new() }
@@ -686,6 +779,8 @@ pub struct BattleGroups {
     /// Every group record of the set-up groups (the events and kind-6 groups); `counts` is parallel to it.
     pub events: Vec<EventPart>,
     pub counts: Vec<PartCount>,
+    /// The tables of the defeated that outlive the area (`DefeatedTables`).
+    pub defeated: DefeatedTables,
     rng: PlaceRng,
 }
 
@@ -944,6 +1039,7 @@ pub fn spawn_waves(
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
     mut missions: MessageWriter<crate::struggle::MissionStart>,
     mut events: MessageWriter<crate::struggle::GlobalEvent>,
+    mission: Option<Res<crate::struggle::Mission>>,
 ) {
     let (Some(col), Ok((mut sora_tf, mut sora))) = (collider, sora.single_mut()) else { return };
     let p = *sora_tf;
@@ -981,6 +1077,14 @@ pub fn spawn_waves(
         let Some(run) = rec.run.clone().filter(|r| area.loaded.as_deref() == Some(r.name.as_str())) else { return };
         let id = Arc::as_ptr(&run) as usize;
         if battle.run != id || keys.just_pressed(KeyCode::F3) {
+            // F3 sets the groups up again from scratch (a harness key): the tables of the defeated start empty too.
+            if keys.just_pressed(KeyCode::F3) {
+                battle.defeated.clear();
+            }
+            // FUN_00181148 -> FUN_00194188(0x35d278, DAT_0035cd28): the area byte selects the table; the keep count is
+            // 3 (area script opcode 6 not read here), 0 when the map program byte is above 0x32.
+            let area_byte = area.loaded.as_deref().and_then(|n| n.get(2..)).and_then(|n| n.parse::<u8>().ok()).unwrap_or(0xff);
+            battle.defeated.enter(area_byte, if rec.programs[0] > 0x32 { 0 } else { 3 });
             battle.run = id;
             battle.live.clear();
             battle.events.clear();
@@ -1022,7 +1126,8 @@ pub fn spawn_waves(
                     twos.iter().map(|&k| g.parts[k].id).collect::<Vec<_>>()
                 );
                 for k in twos {
-                    let two = KindTwo::new(g, k);
+                    let mut two = KindTwo::new(g, k);
+                    two.killed = battle.defeated.serials().iter().copied().filter(|s| g.members.iter().any(|m| m.part == k && m.serial == *s)).collect();
                     info!("area group {} kind-2 group {:#x}: timer {} frames (header +0x1c), {} after a removal (+0x20), limit {} (+0x22)", g.name, g.parts[k].id, two.timer, g.parts[k].removal_delay(), g.parts[k].header[0x22]);
                     // The members created at load are there (FUN_00198750 enters them as it creates them).
                     let there = g.members.iter().filter(|m| m.part == k && created_at_load(m, &g.parts[k], rec.entrance)).map(|m| m.serial).collect();
@@ -1052,6 +1157,9 @@ pub fn spawn_waves(
         let at = [pos.x, -pos.y, -pos.z];
         let player = sora_tf.translation;
         let b = &mut *battle;
+        // FUN_00190668: no group creates while an event plays (0x35e3a4) or the fight is stopped (0x35d268 bit 2). Not
+        // modelled: the latch at 0x35fec8 (private to the mission) and bit 0x100 of 0x35d268 (no writer found).
+        let blocked = mission.as_deref().is_some_and(|m| m.event_active() || m.fight_stopped());
         for (g, two, prev) in b.live.iter_mut() {
             let part = &g.parts[two.part];
             let pid = part.id;
@@ -1063,11 +1171,13 @@ pub fn spawn_waves(
                 info!("area group {} kind-2 group {pid:#x}: {} (serial {:#x}, wave {}) gone; timer {} frames{}", g.name, m.kind.name, m.serial, m.wave, two.timer, if two.killed.contains(&m.serial) { ", defeated for good" } else { "" });
             }
             let part = &g.parts[two.part];
-            if two.timer > 0.0 {
+            let members: Vec<u16> = g.members.iter().filter(|m| m.part == tp).map(|m| m.serial).collect();
+            // FUN_001989d8: while FUN_00190668 holds, the timer stands and nothing is created.
+            if !blocked && two.timer > 0.0 {
                 two.timer -= frames;
             }
             let mut made = Vec::new();
-            if part.activators.iter().any(|v| v.contains(at)) {
+            if !blocked && part.activators.iter().any(|v| v.contains(at)) {
                 let alive = |i: usize| enemies.iter().any(|e| e.alive() && e.serial == Some((pid, g.members[i].serial)));
                 for i in two.run(g, alive) {
                     let m = &g.members[i];
@@ -1084,6 +1194,7 @@ pub fn spawn_waves(
                 }
             }
             *prev = live.into_iter().chain(made).collect();
+            b.defeated.sync(&members, &two.killed);
         }
         // Kind-6 groups (FUN_00199e98): see `kind_six_creates`. The object counts as present from its creation to its
         // removal, so a defeated enemy that is still lying there does not come back yet.
@@ -2074,5 +2185,62 @@ mod tests {
         eprintln!("{areas} tt areas, {kind6} kind-6 groups, {triggers} triggers on events 2 or 3");
         assert!(areas > 30 && kind6 > 100);
         assert_eq!(triggers, 0);
+    }
+
+    /// `FUN_00194188` on the table at 0x35d278: an area visited again within `keep` area starts finds its slot and
+    /// the serials entered in it; with keep 0, after the window or after four other areas it comes up cleared.
+    #[test]
+    fn the_table_of_the_defeated_outlives_the_area_for_a_few_area_starts() {
+        let mut t = DefeatedTables::default();
+        t.enter(4, 3);
+        t.sync(&[1, 2], &[1]);
+        assert_eq!(t.serials(), [1]);
+        t.enter(5, 3);
+        assert!(t.serials().is_empty(), "another area has its own slot");
+        t.enter(4, 3);
+        assert_eq!(t.serials(), [1], "area 4 again, one area start later: its slot is found with its entries");
+        t.sync(&[1, 2], &[2]);
+        assert_eq!(t.serials(), [2], "a member taken out of the killed list leaves the table");
+
+        let mut t = DefeatedTables::default();
+        t.enter(4, 0);
+        t.sync(&[1], &[1]);
+        t.enter(4, 0);
+        assert!(t.serials().is_empty(), "keep 0 (map program above 0x32): never found again");
+
+        let mut t = DefeatedTables::default();
+        t.enter(4, 3);
+        t.sync(&[1], &[1]);
+        for a in [5, 6, 7] {
+            t.enter(a, 3);
+        }
+        t.enter(4, 3);
+        assert!(t.serials().is_empty(), "three area starts later the age window is over (counter 4 - 3 > age 0)");
+
+        let mut t = DefeatedTables::default();
+        t.enter(4, 3);
+        t.sync(&[1], &[1]);
+        for a in [5, 6, 7, 8] {
+            t.enter(a, 3);
+        }
+        t.enter(4, 3);
+        assert!(t.serials().is_empty(), "the fifth area took the least recent of the four slots");
+
+        let mut t = DefeatedTables::default();
+        t.enter(4, 3);
+        t.sync(&[1], &[1]);
+        t.clear();
+        t.enter(4, 3);
+        assert!(t.serials().is_empty(), "FUN_00194330 cleared every slot");
+    }
+
+    /// The table holds 256 serials (`FUN_00194080` writes halfword indices 0..=255): a full table takes no more.
+    #[test]
+    fn the_table_of_the_defeated_holds_256_serials() {
+        let mut t = DefeatedTables::default();
+        t.enter(4, 3);
+        let all: Vec<u16> = (1..=300).collect();
+        t.sync(&all, &all);
+        assert_eq!(t.serials().len(), 256);
     }
 }

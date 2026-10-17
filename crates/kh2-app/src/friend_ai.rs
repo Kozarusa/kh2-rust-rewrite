@@ -374,8 +374,10 @@ fn friend_update(
     mut running: Query<&mut crate::fx::RunningEffect>,
     member_fighters: Query<&Fighter, With<PartyMember>>,
     (scripts, mut pulls): (Res<FriendScripts>, ResMut<MemberAttacks>),
+    flag: Option<Res<crate::audio_bgm::BattleFlag>>,
 ) {
     let (Some(mut trace), Ok(s)) = (trace, sora.single()) else { return };
+    let in_battle = flag.is_some_and(|f| f.active());
     let log = std::env::var("KH2_PARTYLOG").is_ok_and(|v| !v.is_empty() && v != "0");
     let paired = HashMap::new();
     // The enemies' hurt shapes (the victims of the members' attack objects), and the members' bodies.
@@ -423,6 +425,7 @@ fn friend_update(
             fields.entries = ai.entries.clone();
         }
         fields.free = m.free;
+        fields.in_battle = in_battle;
         fields.target_valid = m.target_valid();
         fields.target_point = m.target_point;
         fields.target_radius = m.target_radius;

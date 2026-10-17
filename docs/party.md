@@ -713,6 +713,13 @@ Done:
   game leaves both members' weapon words 0 (the original's writer of those words was not found; searched: item-id
   immediates 0x4b / 0x31 in the decompilation), so no weapon appears without `KH2_PARTY_WEAPONS=75,49` (harness
   aid) or a state that sets the words.
+  (WP-PY3) The scenarios that load a state file (`KH2_STATE`, e.g. `local/acc1/state-sum.json`, which has no
+  `members` entry) skip the app baseline, so the words stay 0 and `party: P_EX030: no weapon (item 0: no went entry
+  for moveset 20)` is the correct answer to a zero word, not a failed lookup: FUN_0016ee98 answers 0 for a word of
+  0 and FUN_0017c718 then builds no hand object. The original's own source of the words is the story (`plrp` rows
+  of another Id through FUN_001c0cb0 / FUN_001c0b80 -> FUN_001a18d8, bit 15 = equipped) [inferred; only
+  `FUN_001c0cb0(0)` has a caller, see docs/progress.md Gaps]. A state file that wants the weapons sets the member
+  record's words (or `KH2_PARTY_WEAPONS`).
 
 Not done or approximated in stage 2:
 
@@ -1010,7 +1017,13 @@ with a hand object; no script error). Log (tt04 b_44, `KH2_PARTY_ABILITIES=-423,
 `its routine R10f7 runs (2.38, FUN_0018cf50)`, `target record now names 2985v0 (1.160 ..)`, `hand object back on
 the hand (1.18)`, `script mode "blade" -> "-"`, then `P_EX030 chose record 5 Attack ..`: Goofy goes on choosing
 (before: BadAddress(0) at 0x0e14 and the mode waited forever). (The members held items 75 / 49 in these runs without
-`KH2_PARTY_WEAPONS` too.) A member without a hand object gets 0 from 1.234, and the script fails as before.
+`KH2_PARTY_WEAPONS` too.) A member without a hand object gets 0 from 1.234. (WP-PY3) The script then goes on to
+call 1.161 and 1.83 on the null handle; in the original FUN_001beb00 reads the word at address 0 + 0x570 and
+FUN_0016aa18 the matrices at 0 + 0x670 / 0x6b0, i.e. whatever low memory holds, which cannot be modelled.
+`friend_host::weapon_calls` answers a null handle with no hand object as `false` (1.161) and the zero vector (1.83),
+both Approx [inferred], so the script no longer faults with `BadAddress(0)` at 0x0e14.
+
+**Hosts of `P_EH000` beyond 10.35 (WP-PY3).** `KH2_JUMP_WORDS=4:0:0 KH2_JUMP=1:0:0 KH2_JUMP_AT=4 KH2_BDXLOG=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1 target\debug\kh2-game.exe tt02`: 1.131, 1.54 and (when called) 1.105 / 1.301 are not missing, the enemy host answers them as Stub (`enemy_host.rs`); 1.54 is exact (FUN_0019dde0 clears bit n in the words at +0x47c and +0x480 + 4 (n >> 5)), and no reader of the arrays was traced. 1.131 (FUN_0018f3f8) files a 5-word record into the pool `DAT_01c89bd0 + 0x14 * index` (index popped from `DAT_01c8a5d0[--DAT_01c8a7d0]`), which the app does not pool. 1.301 (FUN_001abee8) is the byte at 0x35ea48 + 0x1e, 0 in the executable's initial data (the Stub answers 0); its writer was not searched. 1.105 (FUN_001731c0) clears bit 6 of +0x768; readers of +0x768 exist (`mips_scan --load-off 0x768`: FUN_00168d30, FUN_00173178, FUN_00176e00, FUN_00176f88, FUN_0017c718, FUN_0017c840, FUN_00191c18), their use of bit 6 is not read. 1.244 `in_battle` (FUN_001903d8, word 0x1c8a7d8) is now Impl in the friend host (`FriendFields::in_battle` from `audio_bgm::BattleFlag::active`). Still unimplemented for `P_EH000`: 10.50 (x75) and 10.58, not read in this WP.
 
 **Blizzard** (`P_EX020` R0a19 -> R0acf, request thread R0af8) [V for the script]. The cast (motion 191, the
 trigger, MP, element 3 on Donald) starts a request (2.20) of 288 bytes at R0af8 with the facing: element 4 of

@@ -19,6 +19,9 @@ pub struct FriendFields {
     pub script_target: bool,
     /// +0x160 bits 4/8/0x10: the member is free (host 10.36).
     pub free: bool,
+    /// The game's battle flag (word 0x1c8a7d8, FUN_001903d8): host 1.244 reads it. `friend_ai` copies it
+    /// (`audio_bgm::BattleFlag::active`) each tick.
+    pub in_battle: bool,
     /// FUN_0017da30's slot order for the member's motion state now.
     pub order: [u8; 4],
     /// +0xaf4: the MP the special's mode costs (FUN_00113d48 writes it); host 1.276 pays it.
@@ -260,6 +263,21 @@ pub(crate) fn entry_address(at: u32, entries: &[u8], id: u32) -> u32 {
         .map_or(0, |k| at + 0x80 * k as u32)
 }
 
+/// The answer to host 1.161 (has_link) or 1.83 (bone_to_world) on a null object: not linked, the origin.
+fn null_object_answer(index: u16) -> Value {
+    if index == 161 { Value::Bool(false) } else { Value::Vec([0.0; 4]) }
+}
+
+/// Fills `out` from the class list `entries` (laid out at `at` in the executable) when `addr` lies inside it.
+fn read_entries(at: u32, entries: &[u8], addr: u32, out: &mut [u8]) -> bool {
+    let off = addr.wrapping_sub(at) as usize;
+    if at != 0 && off.checked_add(out.len()).is_some_and(|end| end <= entries.len()) {
+        out.copy_from_slice(&entries[off..off + out.len()]);
+        return true;
+    }
+    false
+}
+
 fn words(c: &Call) -> Option<(u16, u16, Vec<u32>)> {
     match c {
         Call::Unknown { group, index, args } => Some((*group, *index, args.clone())),
@@ -453,6 +471,13 @@ impl FriendHost<'_, '_> {
                 let p = m.transform_point3(crate::enemy_obj::from_game(*v)) / crate::SCALE;
                 (Value::Vec(crate::enemy_obj::to_game(p)), St::Approx, "the bone's world matrix of the last drawn pose (one tick old)")
             }
+            // A member without a hand object (a zero weapon word: FUN_0016ee98 answers 0, so FUN_0017c718
+            // builds none and 1.234 reads a null slot) still runs the script that asks about it. The game
+            // reads the null object's fields at low addresses (1.161: FUN_001beb00 tests the word at
+            // 0x570; 1.83: FUN_0016aa18 reads the matrices at 0x670 / 0x6b0), whose content is not
+            // modelled. [inferred] Answers that keep the script on its no-weapon path: not linked, the
+            // origin.
+            Call::Func { group: 1, index: i @ (161 | 83), args } if wh.is_none() && args.first().is_some_and(|a| raw(a) == 0) => (null_object_answer(*i), St::Approx, "null object (no hand object): the game reads address 0 + 0x570 / 0x670; answered not linked / the origin"),
             // 1.148 set_position (0x170658): the position (w 1).
             Call::Func { group: 1, index: 148, args } if args.first().is_some_and(|a| is_w(raw(a))) => {
                 let Some(Arg::Vec(v)) = args.get(1) else { return None };
@@ -901,6 +926,13 @@ impl Host for FriendHost<'_, '_> {
             self.trace().record(tag, c, &v, St::Approx, "the member's own target record (+0x9f4) whatever record is named");
             return v;
         }
+        // 1.244 in_battle (0x173ab8 -> FUN_001903d8): the battle flag word 0x1c8a7d8 is non-zero.
+        if let Some((1, 244, _)) = words(c) {
+            let v = Value::Bool(self.fields.in_battle);
+            let tag = self.inner.tag;
+            self.trace().record(tag, c, &v, St::Impl, "");
+            return v;
+        }
         if let Some((1, 276, _)) = words(c) {
             let cost = std::mem::take(&mut self.fields.pending_mp);
             self.fields.paid = Some(self.fields.paid.unwrap_or(0).saturating_add(cost));
@@ -935,9 +967,7 @@ impl Host for FriendHost<'_, '_> {
             out.copy_from_slice(&r[t..t + out.len()]);
             return true;
         }
-        let off = addr.wrapping_sub(self.fields.entries_at) as usize;
-        if self.fields.entries_at != 0 && off.checked_add(out.len()).is_some_and(|end| end <= self.fields.entries.len()) {
-            out.copy_from_slice(&self.fields.entries[off..off + out.len()]);
+        if read_entries(self.fields.entries_at, &self.fields.entries, addr, out) {
             return true;
         }
         self.inner.read_mem(addr, out)
@@ -1012,6 +1042,14 @@ mod tests {
         assert_eq!(advance_vec([1.0, 2.0, 3.0, 1.0], [0.0, 0.0, 0.0, 0.0], 5.0), [1.0, 2.0, 3.0, 1.0]);
     }
 
+    /// A member with no hand object asks 1.161 and 1.83 of the null handle: false and the origin, never a pointer
+    /// the script would read at address 0.
+    #[test]
+    fn null_hand_object_answers_not_linked_and_the_origin() {
+        assert!(matches!(null_object_answer(161), Value::Bool(false)));
+        assert!(matches!(null_object_answer(83), Value::Vec(v) if v == [0.0; 4]));
+    }
+
     /// Host 10.35 (FUN_001141d0): the first entry whose first word is the id, its address; none gives 0.
     #[test]
     fn host_10_35_finds_the_entry_with_the_id() {
@@ -1034,7 +1072,10 @@ mod tests {
         let ai = crate::party_battle::ClassAi::from_exe(&elf, 11).expect("class 11");
         assert!(!ai.entries.is_empty() && ai.entries.len().is_multiple_of(0x80));
         let at = entry_address(ai.entries_at, &ai.entries, 111);
-        eprintln!("class 11 entry 111 at {at:#x}, list {:#x}, {} entries", ai.entries_at, ai.entries.len() / 0x80);
+        assert_eq!(at, 0x351c10, "the entry of id 111 in Riku's class list");
+        let mut word = [0u8; 4];
+        assert!(read_entries(ai.entries_at, &ai.entries, at, &mut word), "read_mem serves the entry");
+        assert_eq!(u32::from_le_bytes(word), 111, "the entry's first word is its id");
         assert!(at >= ai.entries_at && (at - ai.entries_at).is_multiple_of(0x80) && at != 0, "{at:#x}");
         assert_eq!(entry_address(ai.entries_at, &ai.entries, 0xdead_beef), 0);
     }

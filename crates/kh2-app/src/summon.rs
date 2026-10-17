@@ -3920,6 +3920,7 @@ impl Revive {
     }
 
     /// `DAT_0036f598` is set (step 1 on, until the waits are over).
+    #[cfg(test)]
     pub fn sounds_held(&self) -> bool {
         self.step.is_some_and(|s| s >= 2)
     }
@@ -5195,8 +5196,7 @@ mod tests {
         let mut music = crate::audio_bgm::AreaMusic::default();
         music.set_area(10, 20);
         app.insert_resource(music);
-        let mut sm = SummonState::default();
-        sm.revive_acts = vec![ReviveAct::MusicStop, ReviveAct::Sound(0x13)];
+        let sm = SummonState { revive_acts: vec![ReviveAct::MusicStop, ReviveAct::Sound(0x13)], ..Default::default() };
         app.insert_resource(sm);
         app.world_mut().run_system_once(revive_effects).expect("system runs");
         let m = app.world().resource::<crate::audio_bgm::AreaMusic>();

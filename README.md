@@ -23,10 +23,10 @@ Sora (continued):
 - **Camera:** the game's field camera model, look-around (the model fades), area camera types and collision.
 - **Magic (phase 1):** a Magic page in the command menu (T/G move, B back, J casts) with Fire, Blizzard, Thunder and Cure at level 1, their MP cost, charge and damage rows.
 - **HUD:** gauges, the command menu with its reaction capsule, text with commands, the area-name card, banners and message windows.
-- **Party:** Donald and Goofy follow, fight with the friend AI's target styles, and their Battle Style and use settings are set on the Customize page.
-- **Summons:** the gauge, the Summon and Dismiss commands, and the Stitch, Genie, Chicken Little and Peter Pan scripts.
-- **Menus:** the camp menu with Status, Abilities, Items, Equipment, Customize, Config, Party, Help, Save, Jiminy's Journal (world grid and story page) and the moogle's shop with synthesis and collection rewards.
-- **Story and events:** story flags with their side effects, NPC talk, save points and an event player (actors, camera, subtitles, fades).
+- **Party:** Donald and Goofy follow, fight with the friend AI's target styles (including the class 16 chooser), and their Battle Style and use settings are set on the Customize page. Slot 3 is a reserve member, Auto Change swaps it in when a companion is knocked out, a jump record can rearrange the party and show the "Party Members have been switched" notice, and Donald and Goofy are targets of the field command's items.
+- **Summons:** the gauge, the Summon and Dismiss commands, and the Stitch, Genie, Chicken Little and Peter Pan scripts with their hosts (link break and routine, the item command, Stitch's limit records and heal, Genie's follow motions, Tinker Bell's revive). The summon limits run only from a harness aid, not from play.
+- **Menus:** the camp menu with Status, Abilities, Items, Equipment, Customize, Config, Party, Help, Save, Jiminy's Journal (world grid, story, characters, Heartless and Nobody lists with defeated counts, Ansem reports, limits, moogle list, quests, minigames, treasures, maps, album, and 3D models on the character and model pages) and the moogle's shop with synthesis, collection rewards and their texts. The BATTLE REPORT ending screen reads its counters from the save state.
+- **Story and events:** story flags with their side effects, NPC talk, save points and an event player (actors, camera, subtitles, fades, hiding and showing the event's objects), jump types 4 to 6 and the jump record's party words.
 - **Audio:** the game's sound driver, area music with the battle switch, voices and footsteps, and positional volume and pan. Mostly unlistened.
 
 Enemies:
@@ -35,11 +35,12 @@ Enemies:
 
 Not done yet:
 - Magic beyond level 1 (Magnet, Reflect, drive-form casts).
-- Summons: Genie's follow motions and model parts, Stitch strength, summon limits and the face panel, Tinker Bell.
-- Party: the class 16 chooser, Auto Healing, Auto Change and Auto Limit.
+- Summons: the limit task and limit scripts (summon limits are reachable only through a harness aid), the camera's FPS mode, Genie's model parts, the revive's music stop and message window.
+- Party: Auto Healing and Auto Limit.
 - Other enemy types and some area-script group kinds.
-- Journal pages beyond the world grid and story, the World Map row of the save point menu, and the world map itself.
-- Events: the movie player, hiding the player and party, voices and several opcodes.
+- Journal: the viewer plate's fade and lighting on the model pages, and the page-turn gap; the World Map row of the save point menu, and the world map itself.
+- BATTLE REPORT rows 1 and 2 (no source found), and the shop bits in the slot files.
+- Events: the movie player, voices and several opcodes (0x3, 0xf, 0x10).
 - Final Mix differences (only the USA release is supported).
 - Some audio gaps (the landing footstep) and some effects (munny payout).
 - COCT collision is used; some camera blockers and the Quick Run camera speed are open.
@@ -102,7 +103,7 @@ Only the USA release is supported. Other discs are refused, because table layout
 | `crates/kh2-ps2` | PS2 hardware behaviour needed for assets: VIF1 unpacking into VU1 memory, DMA chains, VPU packets, GS swizzling |
 | `crates/kh2-model` | Map and skeletal models, plus model textures, decoded into plain meshes and RGBA images |
 | `crates/kh2-anim` | Motion sets, ANB motions and triggers, pose evaluation |
-| `crates/kh2-app` | The game (`kh2-game`, Bevy 0.19): areas, skinned characters, Sora, Heartless, combat, camera, HUD |
+| `crates/kh2-app` | The game (`kh2-game`, Bevy 0.19) as a library plus a thin binary, with plugins in domain bundles: areas, skinned characters, Sora, Heartless, combat, camera, HUD |
 | `crates/kh2` | Command-line tool |
 | `docs/` | `METHOD.md` (how we work), `research.md` (sources) |
 | `local/` | Your machine only (git-ignored): ISO path, downloaded name list, extracted files |

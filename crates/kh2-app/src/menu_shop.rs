@@ -3687,6 +3687,10 @@ mod tests {
         }
         let plate = &q.groups[ROW_PLATE];
         assert_eq!((plate.x, plate.size, plate.unk1c), (270, 13, 23), "FUN_0028b470: the second text at x 270, size 13, rows 23 apart");
+        // The pitches the port applies to the material pages (`group_pitch`): page 10's group 0x60 and page 0x17's group 0x6e.
+        let menu = ShopMenu { layd: two.layd.clone(), mark_seq: Some(seq), ..ShopMenu::default() };
+        assert_eq!((group_pitch(&menu, 0x60), group_pitch(&menu, 0x6e)), (23.0, 26.0));
+        assert_eq!(group_pitch(&ShopMenu::default(), 0x60), at::PITCH, "no file: the port's pitch");
         let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok()).unwrap();
         let exe = Exe::load(elf).unwrap();
         let t = synth::Tables::read(&|v| exe.u16(v), &|v| exe.u8(v)).unwrap();

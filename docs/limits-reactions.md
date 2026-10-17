@@ -597,8 +597,12 @@ command row the MP cost byte and `Time`.
 - Ids 14 to 20: summon limits (Summon byte 200 to 204, `Limit` is the charm item): Peter Pan, Stitch, Chicken
   Little, and the four Genie rows (one per form, `Time` 24 or 60).
 - Every normal limit has Cost 255 and `Time` 120, 180, 300 or 600; summon limits cost 100 or 50 summon gauge.
-- `Time` is the duration passed to the limit task (`FUN_001b2c10`); its unit was not traced (the port counts
-  60 Hz ticks [I]).
+- `Time` is the duration passed to the limit task (`FUN_001b2c10`). Unit [V, WP-LM1]: the task's time gauge (task `+0xa8`) starts
+  at `Time`, and every tick of `FUN_001b35e8` (called each frame by `FUN_001b27b0`) sets it to its value minus the frame step
+  `DAT_00356f40` (1.0 in the executable) times the float at the player's status block `+0x1cc + 0x5c` (`FUN_001768a8`;
+  what writes that factor was not traced [GAP]), clamped at 0 by `FUN_001cfc28`. So `Time` counts 60 Hz ticks when the factor
+  is 1, as the port counts. The time only runs while none of the player and the participants has `+0x168` bit 0
+  (`FUN_001b3a08`; the meaning of the bit was not traced [GAP], the port does not stop the count).
 
 ### Rules ported [V from FUN_001d1ce0, FUN_001d2040, FUN_001b3e38, FUN_001b28a0]
 
@@ -634,6 +638,90 @@ list (`FUN_001d21e0`, `FUN_001d2320`), Auto Limit (the consumer of the ability b
 that gates the prompts (`FUN_001d2460`), and every companion: the app has none, so no limit with a partner can run
 as gameplay. The only row Sora alone satisfies among the normal limits is the partnerless Trinity variant, and
 the summon limits once the summon gauge exists.
+
+## The limit task (WP-LM1) [V unless marked]
+
+### The original's flow
+
+1. **Start** (`FUN_001cf030` case 0x51 -> `FUN_001b28a0(command id, player)`). The id is the halfword at `+6` of the command in
+   the player's command slot (`+0xb44`). `FUN_001b6f48` finds the command row, `FUN_001d2040` the first usable `limt` row of the id
+   (the port's `row_for_command`).
+   - **No row** (the id is a sub-command): `FUN_0016c620(thread at DAT_01d5d6b0 + 0x34, 0x17, [id], 1, 0)`: **event 23** with the
+     command id as the only argument, to the running limit's thread. Nothing else happens. (With no limit task the original reads
+     `0x34` of a null pointer; not followed [GAP].)
+   - **A row**: allocate the task (`FUN_00104fa8(0xdc)`, kept in `DAT_01d5d6b0`, which is what `FUN_001b3c00` tests), run
+     `FUN_001b2c10` (below), pay (a row whose `Summon` byte is 200 to 204, `FUN_001d1fe0`: `FUN_001788d8(-Cost)` on the summon
+     timer; otherwise `FUN_00186368(player, -FUN_001b3f00(cmd))`, MP), call `FUN_00175db0` when the second byte of the row is not 1
+     (not read [GAP]), call `FUN_001c75d0(0, member)` for the two party slots (`FUN_0017cd08(0..1)`) that are present, not flagged
+     `+0x588 & 0x400000` and have `+0xb4c` zero (the party member's limit-state hook: `FUN_001c7600` sets `+0x7f8` bit 0x10
+     and queues a handle in the list at `0x1d5e380`, `DAT_0035ff30` entries; not ported [GAP]), then `FUN_001b35e8(task, 1)`
+     (the first tick).
+2. **`FUN_001b2c10`** (task creation): stores the row at `+0`, the player at `+0xc`, sets the player's `+0x10c |= 0x10000` (the
+   in-limit bit host 10.19 reads), calls `FUN_0016b698(player, 0)` unless the command is 282, 344 or 484 (`FUN_001d1f98`), and for
+   each of the row's three bytes above 1 stores the party member or summon (`FUN_0017d400`) at `+0x10`, `+0x14`, sets its
+   `+0xb4c` to 1 and `+0x10c |= 0x10000`, with the same `FUN_0016b698` call. Then:
+   - `FUN_001b2e08` loads the BAR `limit/<region>/<FileName>` (`FUN_001d1ff8`, format `limit/%s`, `FUN_0016fd18`) and looks up
+     its entries by kind: **0x14** (stored at `+8`), **0x12** (`FUN_001db4d0` on `+0x18`: the limit's sound set), **3** (the limit
+     script: `FUN_0016c9b8` makes a thread, **`FUN_0016c500(thread, 0x16, [task], 1)` sends event 22** with the task as argument;
+     the thread is kept at `+0x34`), **0x22** (a mover object, `+0x44`). It reads the two gauge sprite sets (kinds 0x18 and 0x19
+     with the tags `comb` and `gage` at `0x37ba38` / `0x37ba40`): `comb` is the **hit counter** (task `+0x68`, range 0..999, its
+     marker raised to the saved best by `FUN_001d00c0`, shown by `FUN_001cff20` except for commands 484 and 620), `gage` the
+     **time gauge** (task `+0xa8`, range `Time`). For command 484 it also starts the `comd` command-set display (`FUN_001b3a70`).
+   - `FUN_001b3bc0(task)` is "no type 0x14 entry". **With** the entry the task sets bit 0 of the word `0x35feb8`
+     (`FUN_001c6bd0`; `FUN_001d2460` refuses new limit prompts while it is set, drive.rs holds Drive on it), and the limit brings
+     its own object set. **Without** it `FUN_001b3118` creates a thread on the first participant's script
+     (`*(participant + 0x484)`, entry of event 0x16 from `FUN_0016c4c0`) and **sends it event 22** with the task as argument;
+     that thread replaces the one at `+0x34`, so it is what event 23 reaches later. `FUN_001afe78(0)` then allocates a
+     screen-effect slot (`+0x38`, flag 2 set) that the end releases.
+3. **Per frame** (`FUN_001b27b0` -> `FUN_001b35e8(task, 0)`): ends the task when `FUN_001b3970` holds (below); otherwise it
+   follows the actor-stop flags (`DAT_0035d268 & 0x20` skips the tick), lets the sequencer `FUN_0016c680(thread, 0) == 1` end the
+   task through `FUN_001b3910` (flag 4), and decreases the time gauge as above. `FUN_001b3970` ends the task when the BAR's script
+   state (`FUN_0016f038(bar +0x24) & 8`) is not set and the hit counter and time gauge widgets have both finished
+   (`FUN_001cfb30`, `FUN_001cfd90`: the HUD animation, not just `Time` reaching 0), no party member is in the limit-state
+   (`FUN_001c7c30`) and `+0x24`, `+0x3c` are zero. So the task outlives the gauge by the length of its out animation [GAP: not measured].
+4. **End** (`FUN_001b37f8` then `FUN_001b32d8`): ends the script thread, clears `+0x10c` bit 0x10000 on the player and
+   participants and their `+0xb4c`, releases the sound set and the screen-effect slot, `FUN_001d25b0(row id, marker)` stores the
+   hit-count record (the port's `LimitHits::finish`), `DAT_01d5d6b0 = 0`, clears bit 0 of `0x35feb8` when it was set, and
+   destroys the objects of kind 5000 the limit spawned (type 0x14 entry present).
+
+The party-limit **offer** (not the Limit menu): the player controller (`FUN_0019c670`) calls `FUN_0019d430` only when no limit
+task exists (`FUN_001b3c00`), the player's `+0x588` has bit 0x80 and not 0x2000000, `+0x160` bit 0x4000 is clear and no native
+candidate was taken. `FUN_0019d430` asks `FUN_001d25e0(player, the controller's preferred command id at *controller +0x26)`:
+for every `limt` row whose `Character` is not 1, usable (`FUN_001d1ce0`) and set up (`FUN_001d1ea0`: world 2 rule, party members
+present and not busy), the partner object must be alive (`+0x10 & 2`) and within `500.0` (`0x37c414`) of the player; its command
+must have a status below 4 (`FUN_001ba2c0`). A row whose command is the preferred id wins at once; otherwise one of the
+candidates is chosen at random (the shared LCG `DAT_003716a0 = DAT_003716a0 * 0x10dcd`, then a 64-bit divide helper
+`FUN_00325b38`; the exact index formula was not decoded [GAP]). The winner becomes the reaction prompt's candidate
+(`FUN_0019c3c8`) like a native part, and is accepted through the same Execute 81 path.
+
+### The app's flow, and what changed here
+
+`limit.rs` follows steps 1 and 2 for the pieces that exist: `row_for_command` (`FUN_001d2040`), `available` (`FUN_001b3e38`), the
+cost (MP or the summon timer through summon.rs), `LimitTask` (`FUN_001b3c00`), `LimitHits` (step 2's counter and step 4's record),
+the 60 Hz duration count (step 3's `Time` unit). WP-LM1 adds the **script events**: at start the plugin reads the limit BAR's
+kinds (`LimitBar`), and sends event 22 as a `LimitScriptEvent` to the receivers `start_events` lists (the type 3 script and, for a
+BAR without the type 0x14 entry, the first participant: the summon); a command without a limit row that is an Execute 81
+sub-command (`sub_commands`: Stitch's 525 to 527, Never Land's 469 ...) becomes event 23 with the id for the receiver
+`event_receiver` names, while a limit runs. The old gap in docs/summons.md (who sends events 22 and 23) is answered by these
+functions. Disc facts, pinned by `real_limit_bars_and_sub_commands`: the 20 partner limit files (Auron to Riku, Trinity in all its variants) have both the type 3 script and the type 0x14 entry, so their event 22 goes to their own script and event 23 would too; the 7 summon limit files (Peter Pan, Stitch, Chicken Little, the four Genie forms) have neither, so the only receiver is the summon's script, for event 22 at the start and event 23 for the Execute 81 commands without a `limt` row. 98 such sub-commands exist on the disc (the partner limits' follow-ups too, for example 75 and 76 after Beast's 74) (the test pins 469, 525, 526, 527).
+
+Harness: `KH2_LIMIT=<command>` as before; `KH2_LIMIT_SUB=<command id>` sends that sub-command 120 ticks after the limit starts;
+the log lines are `limit: script event 22 (Task) to ... (FUN_001b2e08 / FUN_001b3118)` and
+`limit: sub-command N: script event 23 to ... (FUN_001b28a0 first branch)`.
+
+### What is still missing (gaps with their functions)
+
+- **The type 3 limit script** (event 22 for partner limits): it is a BDX program; the limit task object it receives (fields
+  `+0xc` player, `+0x10` participants, `+0xd4` of the time gauge) is not modelled, so no script runs it. summon.rs stands in
+  with `LIMIT_ATTACK` for the summon's thread. **Change needed in `summon.rs`** (outside this package): read
+  `MessageReader<limit::LimitScriptEvent>` and deliver event 22 / 23 to the summon script when `to` is `Participant(_)`, with
+  `LimitArg::Task` mapped to its `LIMIT_ATTACK` handle and `LimitArg::Command(c)` to the integer `c`, in place of
+  `KH2_SUMMON_EVENT`'s timed list.
+- The participants' limit state (`FUN_001c75d0` / `FUN_001c7600`), the object set of the type 0x14 entry (kind 5000 objects), the
+  camera hand-over (`FUN_0016b698(player, 0)` is the actor hook, its camera effect was not followed), the two HUD gauges
+  (`comb`, `gage`), the sound set (kind 0x12), the screen effect slot (`FUN_001afe78`) and the task's end condition
+  (`FUN_001b3970`) are not ported.
+- The party-limit offer and its random choice (`FUN_001d25e0`): no companions exist, so it cannot trigger.
 
 ## Summons
 

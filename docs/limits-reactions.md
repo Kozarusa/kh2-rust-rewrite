@@ -713,10 +713,10 @@ the log lines are `limit: script event 22 (Task) to ... (FUN_001b2e08 / FUN_001b
 
 - **The type 3 limit script** (event 22 for partner limits): it is a BDX program; the limit task object it receives (fields
   `+0xc` player, `+0x10` participants, `+0xd4` of the time gauge) is not modelled, so no script runs it. summon.rs stands in
-  with `LIMIT_ATTACK` for the summon's thread. **Change needed in `summon.rs`** (outside this package): read
-  `MessageReader<limit::LimitScriptEvent>` and deliver event 22 / 23 to the summon script when `to` is `Participant(_)`, with
-  `LimitArg::Task` mapped to its `LIMIT_ATTACK` handle and `LimitArg::Command(c)` to the integer `c`, in place of
-  `KH2_SUMMON_EVENT`'s timed list.
+  with `LIMIT_ATTACK` for the summon's thread. Receiver (WP-SM5): `summon::objects` reads `MessageReader<limit::LimitScriptEvent>` and
+  delivers every event whose `to` is `Participant(n)` to the summon object whose neo id is `n` (`limit_deliveries`), as `Runtime::event`
+  with `LimitArg::Task` mapped to `LIMIT_ATTACK` [inferred] and `LimitArg::Command(c)` to the integer `c`. `LimitScript` receivers (the BAR's own
+  type 3 script) are not delivered. `KH2_SUMMON_EVENT` stays as a harness aid.
 - The participants' limit state (`FUN_001c75d0` / `FUN_001c7600`), the object set of the type 0x14 entry (kind 5000 objects), the
   camera hand-over (`FUN_0016b698(player, 0)` is the actor hook, its camera effect was not followed), the two HUD gauges
   (`comb`, `gage`), the sound set (kind 0x12), the screen effect slot (`FUN_001afe78`) and the task's end condition

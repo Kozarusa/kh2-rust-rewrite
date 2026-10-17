@@ -990,7 +990,7 @@ work package are closed by WP-EN4 below.
   index: 100, args: [1119281056] } -> Float(21.16696)`, `MoverMethod { obj: 42012672, value: 91.43677 } -> None`.
 - *The limit task, and what stands in for it.* FUN_001b28a0 (Execute 81) makes the limit task (FUN_001b2c10) for a command with a `limt` row; the task loads
   `limit/us/<file>` (FUN_001b2e08) and that BAR's own script sends the participants their events: 22 (the limit starts, with the limit's attack object) and 23
-  (a sub-command). Neither the task body nor that script is ported, so no summon limit ran in the app before. The harness aid
+  (a sub-command). Neither the task body nor that script is ported, so no summon limit ran in the app before. Since WP-SM5 the sender is `limit.rs` (`LimitScriptEvent`: event 22 with the task at the start, event 23 with the command id for a sub-command, WP-LM1) and the receiver is `summon::objects`: an event with `Participant(n)` goes to the summon object with neo id `n` (200 Stitch .. 204 Chicken Little) by `Runtime::event`, 22 with `LIMIT_ATTACK` [inferred] and 23 with the command id. An object with no script (the `rt` none branch) never receives it, matching `FUN_001b3118` skipping a participant whose `+0x484` is zero. `LimitScript` receivers are the BAR's own script and are not delivered. The harness aid
   `KH2_SUMMON_EVENT=<event>:<argument>[@<seconds>],...` (a time carries on to the events after it) delivers events to the summon's own script by
   `Runtime::event`: `22:limit` starts the limit the command names (the handlers call their own start routine: Chicken Little's R1058 calls the FPS mode,
   Peter Pan's R09cb his command 468), `23:519`, `23:525` .. `23:527` are Stitch's. `limit` is the constant `LIMIT_ATTACK`: the scripts read two things of the

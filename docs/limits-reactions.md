@@ -634,7 +634,7 @@ limit: command 82 ended (duration over)
 
 Gaps: the limit task body (the `limi` type 3 script, the PAX effects, the `LIMI` motion/model set, the
 companion motions, the sound bank), the participants' limit state (`FUN_001c75d0`), the camera, the Limit menu
-list (`FUN_001d21e0`, `FUN_001d2320`), Auto Limit (the consumer of the ability bit was not found), the battle flag
+list (`FUN_001d21e0`, `FUN_001d2320`), Auto Limit (since WP-AL1 the offer is `FUN_001d25e0`, below), the battle flag
 that gates the prompts (`FUN_001d2460`), and every companion: the app has none, so no limit with a partner can run
 as gameplay. The only row Sora alone satisfies among the normal limits is the partnerless Trinity variant, and
 the summon limits once the summon gauge exists.
@@ -687,11 +687,12 @@ the summon limits once the summon gauge exists.
 The party-limit **offer** (not the Limit menu): the player controller (`FUN_0019c670`) calls `FUN_0019d430` only when no limit
 task exists (`FUN_001b3c00`), the player's `+0x588` has bit 0x80 and not 0x2000000, `+0x160` bit 0x4000 is clear and no native
 candidate was taken. `FUN_0019d430` asks `FUN_001d25e0(player, the controller's preferred command id at *controller +0x26)`:
-for every `limt` row whose `Character` is not 1, usable (`FUN_001d1ce0`) and set up (`FUN_001d1ea0`: world 2 rule, party members
-present and not busy), the partner object must be alive (`+0x10 & 2`) and within `500.0` (`0x37c414`) of the player; its command
-must have a status below 4 (`FUN_001ba2c0`). A row whose command is the preferred id wins at once; otherwise one of the
-candidates is chosen at random (the shared LCG `DAT_003716a0 = DAT_003716a0 * 0x10dcd`, then a 64-bit divide helper
-`FUN_00325b38`; the exact index formula was not decoded [GAP]). The winner becomes the reaction prompt's candidate
+for every `limt` row whose `Character` is not 1, usable (`FUN_001d1ce0`) and set up (`FUN_001d1ea0`: the limit's file loaded, the
+party members present and not busy), the partner object (`FUN_0017d400(Character)`) must carry Auto Limit (his own ability block
+`FUN_001768a8(member) + 0x10`, bit 1 = ability bit 129, item 417) and stand within `500.0` (`0x37c414`, read from the executable) of
+the player, horizontally; its command must have a status below 4 (`FUN_001ba2c0`). The earlier reading "alive (`+0x10 & 2`)" was
+wrong: that word is the ability block, not a life flag. A row whose command is the preferred id wins at once; otherwise one of the
+candidates is chosen at random: see "Auto Limit (WP-AL1)" for the formula. The winner becomes the reaction prompt's candidate
 (`FUN_0019c3c8`) like a native part, and is accepted through the same Execute 81 path.
 
 ### The app's flow, and what changed here
@@ -721,7 +722,69 @@ the log lines are `limit: script event 22 (Task) to ... (FUN_001b2e08 / FUN_001b
   camera hand-over (`FUN_0016b698(player, 0)` is the actor hook, its camera effect was not followed), the two HUD gauges
   (`comb`, `gage`), the sound set (kind 0x12), the screen effect slot (`FUN_001afe78`) and the task's end condition
   (`FUN_001b3970`) are not ported.
-- The party-limit offer and its random choice (`FUN_001d25e0`): no companions exist, so it cannot trigger.
+- The party-limit offer and its random choice (`FUN_001d25e0`): ported by WP-AL1 (next section), with the gaps listed there.
+
+## Auto Limit (WP-AL1) [V unless marked]
+
+The ability (item 417, bit 129 of the partner's own block) lets the partner's limit be offered to Sora as a reaction command.
+
+### The original's rule
+
+- **Caller.** The player controller `FUN_0019c670` (each frame) calls `FUN_0019d430(controller, player)` last, when: no native
+  candidate was taken (`FUN_001ba6c8`: the controller's candidate record `+4` has command 0), no limit task exists (`FUN_001b3c00`),
+  the player has `+0x588` bit 0x80 and not 0x2000000, `+0x160` bit 0x4000 is clear, `FUN_001baee0` holds (a mode word at
+  `*(*(player + 0xb44) + 0x974)` that is 0 or 6), and the two other offer sources `FUN_0019d0b8` (mode 6 with a member whose
+  `+0x7f8` bit 4 is set, offers through `FUN_0019d1a8` with the table at `0x37b3a8`) and `FUN_0019d048` (the status block's
+  `FUN_001a0be0`, table `0x37b3a0`) answered nothing. So Auto Limit is the last resort: any other offer wins.
+- **`FUN_0019d430`** asks `FUN_001d25e0(player, wanted)`, `wanted` being the halfword at `*controller + 0x26`; a non-null answer
+  (a command row) is stored with `FUN_0019c3c8` as the candidate, with the same `DistRange` test as any candidate (the target
+  record is the player himself, distance 0).
+- **`FUN_001d25e0`.** It answers null unless `FUN_001d2460` holds: the player exists with a status block, no limit task, not
+  (`DAT_01d5e368 != 2` and word `0x35feb8` non-zero), `FUN_00140fe0` false, **the battle flag** (`FUN_001903d8`) set, and the status
+  block's `+0x1c0` float not above 0 (`FUN_001a05d0`). Then it walks the `limt` table (`DAT_01d6a948`, `0x40` bytes a row, in table
+  order). A row qualifies when: its `Character` byte is not 1; `FUN_001d1ce0` (the port's `usable`) and `FUN_001d1ea0` hold; the
+  member object of `Character` has bit 129; the member stands within 500.0 of the player (the position difference with y zeroed,
+  `<=`); and `FUN_001ba2c0(command row, player)` is below 4 (Execute 81 is `FUN_001b3e38`: 0, or 2 for too little MP; then the
+  command's Flags and `DisableForm` tests, `FUN_001b70b8` / `FUN_001b7290`, make it 5). The first qualifying row whose command is
+  `wanted` is returned at once. Otherwise, with `n` qualifying rows (duplicates are kept), `n = 0` answers null and else the
+  generator steps once (`DAT_003716a0 = DAT_003716a0 * 0x10dcd`) and the answer is the row at index
+  `word / ((2^32 + n - 1) / n)`: `FUN_00325b38` is an unsigned 64-bit divide, called with `(n - 1) + 2^32` and `n` for the step
+  (0x1d27bc), then with the word and the step (0x1d27cc); the word is zero-extended by `dsll32` / `dsrl32` at 0x1d27a0 and 0x1d27a4,
+  so the index is below `n` for every word (the earlier worry of a sign-extended word is void).
+- **Accepting** is the Execute 81 path of any limit command: `FUN_0019c670` pushes the candidate as input action `0xcb`, the player
+  class handler `FUN_001cf030` case `0x51` runs `FUN_001b28a0`. No use counter and no event 0xb: the limit task starts as in "The limit
+  task (WP-LM1)".
+
+### What the app does
+
+- `limit.rs`: `auto_limit_candidates` is the row walk (`Partner`, `party_for`, range `AUTO_LIMIT_RANGE`), `auto_limit_pick` the choice,
+  `LimitRng` the generator (the app keeps its own copy of `DAT_003716a0`; `KH2_AUTO_LIMIT_SEED=<n>` fixes it), `StartLimit` the
+  message an accepted offer sends; `try_limit` takes it, runs the usual rules with the party the offer saw, spends the MP and starts the
+  limit exactly like `KH2_LIMIT`.
+- `reaction_cmd.rs`: `auto_limit_offer` (after `offer`, before `accept`) fills slot 1 when the slot and the townsperson/save point
+  candidates are empty, a battle is on (`sora::Battle` or `KH2_DRIVE_BATTLE`), no limit runs and Sora stands. The partners are the
+  living `PartyMember`s (`neo` is the party id), their abilities the equipped items of the saved record (`Progress::member`). The
+  command's Flags and `DisableForm` come from `reaction_cmd::flags_block` (the tail of `status`, now shared). A status 2 candidate
+  (too little MP) is offered with `Status::NoMp` and refused on accept. The HUD's reaction capsule shows it like any other offer
+  (`hud_menu::mirror_reaction`).
+- **The wanted id** is the command shown last tick, so the offer does not re-draw every frame [inferred: the source of
+  `*controller + 0x26` was not traced; the game calls `FUN_0019d430` every frame, and only a stable wanted id keeps its candidate].
+- Harness: `KH2_AUTO_LIMIT=2,3` treats Donald and Goofy as holding Auto Limit and every limit ability of their rows;
+  `KH2_REACTIONLOG=1` prints `reaction: Auto Limit offers command ...`, `reaction: accepted limit command ...`, then `limit: ... started`;
+  accept key R (`KH2_REACTION_PRESS=<s>,..`); `KH2_DRIVE_BATTLE=1` holds the battle flag without an enemy.
+- Tests: `auto_limit_needs_the_partner_within_500_horizontally`, `auto_limit_offer_gating`, `auto_limit_pick_rule_with_a_fixed_seed`,
+  `auto_limit_pick_matches_the_games_divide` (kh2-ee runs `FUN_00325b38` as the call site does; skipped without a disc) in `limit.rs`.
+
+### Gaps (addresses searched)
+
+- Not modelled: `FUN_001d2460`'s words `DAT_01d5e368`, `0x35feb8`, `FUN_00140fe0` and the MP-charge float `+0x1c0`; the controller's
+  player bits and `FUN_001baee0`; the other two offer sources `FUN_0019d0b8` and `FUN_0019d048` (they can only make the original
+  offer something else); `FUN_001d1ea0` (file loaded, members idle, `FUN_0017d030` / `FUN_0017d0a8`) is taken as true [approx].
+- The wanted id's writer: `mips_scan --store-off 0x26` lists 23 sites, none in the controller's code (`FUN_0019c3c8`, `FUN_0019c520`,
+  `FUN_0019cad0`, `FUN_0019cd60`); not found [GAP]. A row with `Character` 0 is skipped (the original would pass a null member
+  to `FUN_001768a8`) [inferred]; the disc has none.
+- The limit itself still has no task body (see "What is still missing"), so an accepted offer starts what `KH2_LIMIT` starts: MP spent,
+  BAR read, `LimitStarted`, script events, the count-down.
 
 ## Summons
 

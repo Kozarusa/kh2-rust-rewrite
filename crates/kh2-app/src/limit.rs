@@ -18,6 +18,9 @@
 //!   not played) and writes `LimitStarted`; the task body, the script, the effects and the
 //!   participants' motions are gaps.
 //!
+//! - Script events (FUN_001b2e08, FUN_001b3118, FUN_001b28a0): see [`LimitBar`] and [`start_events`]; the app sends them as
+//!   [`LimitScriptEvent`] messages and the receiving script (a summon's) is run by summon.rs.
+//!
 //! The app has no companions, so a normal limit is refused with "member absent" unless the harness
 //! names a party (`KH2_LIMIT_PARTY=2,3`). That path exists to exercise the rules, not as gameplay.
 
@@ -173,6 +176,13 @@ pub fn row_for_command(rows: &[LimitRow], command: u16, p: &Party) -> Option<usi
 #[derive(Resource)]
 pub struct LimitRules {
     pub rows: Vec<LimitRow>,
+    /// Commands with Execute 81 and no `limt` row: the sub-commands of a running limit (Stitch's 525 to 527 ...).
+    pub sub_commands: Vec<u16>,
+}
+
+/// The Execute 81 commands that no `limt` row names (`FUN_001d2040` finds no row, so `FUN_001b28a0` sends event 23).
+pub fn sub_commands(limt: &[t::Limt], cmds: &[t::Cmd]) -> Vec<u16> {
+    cmds.iter().filter(|c| c.execute == 81 && !limt.iter().any(|l| l.command == c.id)).map(|c| c.id).collect()
 }
 
 /// The party the rules see. The app has only Sora; `KH2_LIMIT_PARTY=2,3` (and `KH2_LIMIT_ABILITIES`,
@@ -189,6 +199,93 @@ pub struct LimitStarted {
     /// The command's `Time`, in the units the game's limit task takes.
     pub time: u16,
 }
+
+/// Entry kinds of a limit's resource BAR (`limit/us/<FileName>`) that the limit task looks up (`FUN_001684c0(bar, kind, 0)`).
+pub const KIND_SCRIPT: u16 = 3;
+/// `FUN_001b2e08` stores the entry's data pointer at task `+8`; non-zero means the limit has its own object set ("LIMI").
+pub const KIND_PARTY_SET: u16 = 0x14;
+
+/// What the limit task reads of the BAR's entry list: which of its optional parts exist.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LimitBar {
+    /// A type 3 entry: the limit's own script, started as a thread at task creation (`FUN_001b2e08`, `FUN_0016c9b8`).
+    pub script: bool,
+    /// A type 0x14 entry (task `+8` non-zero, `FUN_001b3bc0` false): the limit brings its own object set. The task then sets
+    /// bit 0 of the word `0x35feb8` (`FUN_001c6bd0`, cleared again by `FUN_001b32d8`) and the first participant's script is
+    /// not asked to run; without it `FUN_001b3118` starts a thread on that participant's script instead.
+    pub party_set: bool,
+}
+
+impl LimitBar {
+    pub fn from_kinds(kinds: &[u16]) -> Self {
+        LimitBar { script: kinds.contains(&KIND_SCRIPT), party_set: kinds.contains(&KIND_PARTY_SET) }
+    }
+}
+
+/// Who a limit script event goes to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LimitReceiver {
+    /// The thread of the limit BAR's own type 3 script (see [`event_receiver`] for when it is the one task `+0x34` names).
+    LimitScript,
+    /// A thread on the script of the first participant byte above 1 (task `+0x10`): a summon (200 to 204) for a summon limit.
+    Participant(u8),
+}
+
+/// The one argument of a limit script event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LimitArg {
+    /// Event 22 (0x16): the limit task object (word `+0xc` the player, `+0x10` the first participant).
+    Task,
+    /// Event 23 (0x17): the command id of a sub-command (`FUN_001b28a0` first branch).
+    Command(u16),
+}
+
+/// A script event of the limit task (event 22 at the start, event 23 for sub-commands). summon.rs delivers it to the summon.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LimitScriptEvent {
+    pub event: u8,
+    pub to: LimitReceiver,
+    pub arg: LimitArg,
+}
+
+/// The first participant byte above 1 (`FUN_001b2c10` stores `FUN_0017d400(byte)` of each such byte at task `+0x10..`).
+pub fn first_participant(r: &LimitRow) -> Option<u8> {
+    r.members.iter().copied().find(|&m| m > 1)
+}
+
+/// The events the task creation sends, in order (`FUN_001b2c10`): `FUN_001b2e08` starts the BAR's type 3 script with event 22
+/// and the task as argument; then, when the BAR has no type 0x14 entry, `FUN_001b3118` starts a thread on the first
+/// participant's script (`+0x484`) for event 22 with the same argument. [inferred] That a participant without a script
+/// (`+0x484` zero) is skipped is read from the guard in `FUN_001b3118`; the app checks it in summon.rs.
+pub fn start_events(bar: &LimitBar, r: &LimitRow) -> Vec<LimitScriptEvent> {
+    let mut ev = Vec::new();
+    if bar.script {
+        ev.push(LimitScriptEvent { event: 22, to: LimitReceiver::LimitScript, arg: LimitArg::Task });
+    }
+    if !bar.party_set
+        && let Some(m) = first_participant(r)
+    {
+        ev.push(LimitScriptEvent { event: 22, to: LimitReceiver::Participant(m), arg: LimitArg::Task });
+    }
+    ev
+}
+
+/// The thread task `+0x34` names after creation, which event 23 goes to: `FUN_001b2e08` stores the type 3 script's thread there,
+/// and `FUN_001b3118` (no type 0x14 entry) overwrites it with the participant's. None when neither exists.
+pub fn event_receiver(bar: &LimitBar, r: &LimitRow) -> Option<LimitReceiver> {
+    start_events(bar, r).last().map(|e| e.to)
+}
+
+/// `FUN_001b28a0` first branch: Execute 81 for a command without a usable `limt` row sends event 23 with the command id to
+/// the running limit's thread (`FUN_0016c620(task + 0x34, 0x17, [id], 1, 0)`). With no limit task the original reads
+/// `DAT_01d5d6b0 + 0x34` of a null pointer [GAP: what the interpreter does with that thread word was not read]; the app sends nothing.
+pub fn sub_command_event(thread: Option<LimitReceiver>, command: u16) -> Option<LimitScriptEvent> {
+    thread.map(|to| LimitScriptEvent { event: 23, to, arg: LimitArg::Command(command) })
+}
+
+/// The receiver of event 23 for the running limit.
+#[derive(Resource, Default, Debug)]
+pub struct LimitThread(pub Option<LimitReceiver>);
 
 /// The limit task (`DAT_01d5d6b0`, created by `FUN_001b2c10` in `FUN_001cf030` case 0x51): the command
 /// and the ticks left of its duration. `FUN_001b3c00` (Dismiss's test) reads whether it exists.
@@ -268,6 +365,10 @@ struct Selected {
     armed: bool,
     /// L was pressed since the last tick (latched in `Update`, consumed by the 60 Hz tick).
     pressed: bool,
+    /// `KH2_LIMIT_SUB=<command id>`: a sub-command sent as event 23 `SUB_DELAY` ticks after a limit starts (a harness aid).
+    sub: Option<u16>,
+    /// Ticks since the running limit started.
+    since: u32,
 }
 
 fn read_key(keys: Res<ButtonInput<KeyCode>>, mut sel: ResMut<Selected>) {
@@ -285,9 +386,9 @@ impl Plugin for LimitPlugin {
             let limt = kh2_tables::load::<t::Limt>(&mut a, &t::LIMT).ok()?.rows;
             let cmds = kh2_tables::load::<t::Cmd>(&mut a, &t::CMD).ok()?.rows;
             let items = kh2_tables::load::<t::Item>(&mut a, &t::ITEM).ok()?.rows;
-            Some(rows(&limt, &cmds, &items))
+            Some((rows(&limt, &cmds, &items), sub_commands(&limt, &cmds)))
         });
-        let Some(rows) = rows else {
+        let Some((rows, sub_commands)) = rows else {
             warn!("limit: tables not readable; limits are off");
             return;
         };
@@ -299,12 +400,14 @@ impl Plugin for LimitPlugin {
             world: 2,
             ..Default::default()
         };
-        app.insert_resource(LimitRules { rows })
+        app.insert_resource(LimitRules { rows, sub_commands })
             .insert_resource(LimitParty(party))
-            .insert_resource(Selected { scripted: env("KH2_LIMIT").and_then(|v| v.parse().ok()), ..Default::default() })
+            .insert_resource(Selected { scripted: env("KH2_LIMIT").and_then(|v| v.parse().ok()), sub: env("KH2_LIMIT_SUB").and_then(|v| v.parse().ok()), ..Default::default() })
             .init_resource::<LimitTask>()
             .init_resource::<LimitHits>()
+            .init_resource::<LimitThread>()
             .add_message::<LimitStarted>()
+            .add_message::<LimitScriptEvent>()
             .add_systems(Update, read_key)
             .add_systems(FixedUpdate, (try_limit.in_set(Sim::Sora), count_limit_hits));
     }
@@ -317,6 +420,24 @@ type SummonSide<'w> = (
     Option<Res<'w, crate::summon::SummonData>>,
     Option<ResMut<'w, crate::summon::SummonQueue>>,
 );
+
+/// Ticks after a limit's start at which `KH2_LIMIT_SUB` sends its sub-command.
+const SUB_DELAY: u32 = 120;
+
+/// `FUN_001b28a0` first branch for a command without a limit row.
+fn send_sub_command(rules: &LimitRules, command: u16, thread: Option<LimitReceiver>, out: &mut MessageWriter<LimitScriptEvent>) {
+    if !rules.sub_commands.contains(&command) {
+        info!("limit: command {command} has no limit row and is not an Execute 81 command");
+        return;
+    }
+    match sub_command_event(thread, command) {
+        Some(e) => {
+            info!("limit: sub-command {command}: script event 23 to {:?} (FUN_001b28a0 first branch)", e.to);
+            out.write(e);
+        }
+        None => info!("limit: sub-command {command} with no running limit: the original sends event 23 to a null thread, the app sends nothing"),
+    }
+}
 
 /// Key `L` tries the next limit command in table order; `KH2_LIMIT=<command id>` tries that one once
 /// at about 4 s. Both print the decision (every limit) and run an available limit.
@@ -331,6 +452,8 @@ fn try_limit(
     mut out: MessageWriter<LimitStarted>,
     mut active: ResMut<LimitTask>,
     mut hits: ResMut<LimitHits>,
+    mut thread: ResMut<LimitThread>,
+    mut script_events: MessageWriter<LimitScriptEvent>,
     mut progress: Option<ResMut<Progress>>,
     summon: SummonSide,
 ) {
@@ -340,6 +463,7 @@ fn try_limit(
         if *left == 0 {
             info!("limit: command {cmd} ended (duration over)");
             active.0 = None;
+            thread.0 = None;
             if let Some(p) = progress.as_deref_mut() {
                 hits.finish(p);
                 info!("limit: best count of slot {} is now {} (FUN_001b32d8 -> FUN_001d25b0)", hits.slot, p.limit_best(hits.slot));
@@ -347,6 +471,14 @@ fn try_limit(
         }
     }
     let Ok(mut s) = sora.single_mut() else { return };
+    if active.0.is_some() {
+        sel.since += 1;
+        if sel.since == SUB_DELAY
+            && let Some(c) = sel.sub
+        {
+            send_sub_command(&rules, c, thread.0, &mut script_events);
+        }
+    }
     let command = if let Some(c) = sel.scripted.filter(|_| !sel.armed && time.elapsed_secs() >= 4.0) {
         sel.armed = true;
         Some(c)
@@ -373,7 +505,7 @@ fn try_limit(
     };
     party.0.summons = sm.as_ref().map_or_else(Vec::new, |s| s.present.clone());
     let Some(i) = rules.rows.iter().position(|r| r.command == command) else {
-        info!("limit: command {command} has no limit row");
+        send_sub_command(&rules, command, thread.0, &mut script_events);
         return;
     };
     // The first usable row of the command wins (FUN_001d2040); otherwise report the first row's refusal.
@@ -400,6 +532,13 @@ fn try_limit(
                 .unwrap_or_else(|| "(resource not found)".into());
             info!("limit: {desc} started, MP now {}; resource BAR entries {entries}; the task body is not ported", s.mp);
             active.0 = Some((command, (r.time as u32).max(1)));
+            sel.since = 0;
+            let bar = disc.read(&format!("limit/us/{}", r.file)).and_then(|b| kh2_bar::parse(&b).ok().map(|es| LimitBar::from_kinds(&es.iter().map(|e| e.kind).collect::<Vec<_>>()))).unwrap_or_default();
+            thread.0 = event_receiver(&bar, r);
+            for e in start_events(&bar, r) {
+                info!("limit: script event {} ({:?}) to {:?} (FUN_001b2e08 / FUN_001b3118)", e.event, e.arg, e.to);
+                script_events.write(e);
+            }
             hits.start(r.id, progress.as_deref().map_or(0, |p| p.limit_best(r.id)));
             if let Some(n) = std::env::var("KH2_LIMIT_HITS").ok().and_then(|v| v.parse::<i32>().ok()) {
                 hits.add(n);
@@ -462,6 +601,71 @@ mod tests {
         let mut p = Progress::from_block(&[], std::sync::Arc::new(crate::progress::ItemIndex::default()));
         app.world().resource::<LimitHits>().finish(&mut p);
         assert_eq!(p.limit_best(4), 3);
+    }
+
+    /// `FUN_001b2c10` / `FUN_001b2e08` / `FUN_001b3118`: the type 3 script gets event 22 first; without a type 0x14 entry the first
+    /// participant above 1 gets it too and becomes the receiver of event 23.
+    #[test]
+    fn start_events_follow_the_bar_parts() {
+        let summon = row([1, 201, 0], 0, 50, None);
+        let partner = row([5, 1, 0], 0, 255, None);
+        let script_only = LimitBar { script: true, party_set: false };
+        let both = LimitBar { script: true, party_set: true };
+        let none = LimitBar::default();
+        let task = |to| LimitScriptEvent { event: 22, to, arg: LimitArg::Task };
+        assert_eq!(start_events(&script_only, &summon), vec![task(LimitReceiver::LimitScript), task(LimitReceiver::Participant(201))]);
+        assert_eq!(event_receiver(&script_only, &summon), Some(LimitReceiver::Participant(201)), "FUN_001b3118 overwrites task +0x34");
+        assert_eq!(start_events(&both, &partner), vec![task(LimitReceiver::LimitScript)]);
+        assert_eq!(event_receiver(&both, &partner), Some(LimitReceiver::LimitScript));
+        assert_eq!(start_events(&none, &partner), vec![task(LimitReceiver::Participant(5))]);
+        assert!(start_events(&none, &row([1, 0, 0], 0, 0, None)).is_empty(), "Sora alone: no participant above 1");
+        assert_eq!(event_receiver(&none, &row([1, 0, 0], 0, 0, None)), None);
+        assert_eq!(first_participant(&row([1, 3, 2], 0, 0, None)), Some(3));
+        assert_eq!(LimitBar::from_kinds(&[3, 20, 18]), both);
+        assert_eq!(LimitBar::from_kinds(&[18, 24]), none);
+    }
+
+    /// Event 23 goes to the running limit's thread with the command id as its only argument; no limit, no thread, no event.
+    #[test]
+    fn sub_commands_become_event_23_for_the_running_limit() {
+        assert_eq!(sub_command_event(None, 525), None);
+        assert_eq!(
+            sub_command_event(Some(LimitReceiver::Participant(201)), 525),
+            Some(LimitScriptEvent { event: 23, to: LimitReceiver::Participant(201), arg: LimitArg::Command(525) })
+        );
+    }
+
+    /// The real limit files: every non-summon limit has the type 0x14 entry and a type 3 script, so its event 22 goes to its own script;
+    /// the summon limits have no type 0x14 entry, so the summon's script gets event 22 and later event 23. The Execute 81 commands
+    /// without a `limt` row are the sub-commands (Stitch's 525 to 527, Never Land's 469).
+    #[test]
+    fn real_limit_bars_and_sub_commands() {
+        let iso = crate::assets::iso_path().ok().filter(|p| p.exists());
+        let Some(iso) = iso else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let d = Disc::open(&iso);
+        let (rows, subs) = {
+            let mut a = d.0.lock().unwrap();
+            let limt = kh2_tables::load::<t::Limt>(&mut a, &t::LIMT).unwrap().rows;
+            let cmds = kh2_tables::load::<t::Cmd>(&mut a, &t::CMD).unwrap().rows;
+            let items = kh2_tables::load::<t::Item>(&mut a, &t::ITEM).unwrap().rows;
+            (rows(&limt, &cmds, &items), sub_commands(&limt, &cmds))
+        };
+        for r in &rows {
+            let bytes = d.read(&format!("limit/us/{}", r.file)).unwrap_or_else(|| panic!("limit/us/{} missing", r.file));
+            let kinds: Vec<u16> = kh2_bar::parse(&bytes).unwrap().iter().map(|e| e.kind).collect();
+            let bar = LimitBar::from_kinds(&kinds);
+            eprintln!("LIMIT id {} cmd {} {} summon {} bar {:?} events {:?} receiver {:?}", r.id, r.command, r.file, r.is_summon(), bar, start_events(&bar, r), event_receiver(&bar, r));
+            assert_eq!(bar.script, !r.is_summon(), "{}: only the partner limits have the type 3 script", r.file);
+            assert_eq!(bar.party_set, !r.is_summon(), "{}: the type 0x14 entry marks the partner limits", r.file);
+        }
+        eprintln!("SUB-COMMANDS {subs:?}");
+        for c in [469u16, 525, 526, 527] {
+            assert!(subs.contains(&c), "{c} is an Execute 81 command without a limit row");
+        }
+        assert!(rows.iter().all(|r| !subs.contains(&r.command)));
     }
 
     fn row(members: [u8; 3], world: u16, cost: u8, bit: Option<u16>) -> LimitRow {

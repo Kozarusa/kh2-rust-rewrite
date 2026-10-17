@@ -23,8 +23,8 @@
 //!   (`FUN_001cafa0`) when `FUN_001cb358` allows: a manager with header flag 0x1000, or no manager and the area's map
 //!   program below 0x33.
 //!
-//! The port: the KO decision is `route`; the snapshot is the area record and Sora's HP at each area start (the save body is
-//! not copied: `Progress` shares its story state, so a partial restore would be inconsistent [gap]); the list is
+//! The port: the KO decision is `route`; the snapshot is the area record and Sora's HP at each area start plus the save body
+//! as a slot file (`capture_body`; "Continue" puts it back, `restore_snapshot`); the list is
 //! `menu_struggle`'s pointer list over the rows of the disc's table; "Continue" jumps to the snapshot's area with the fade
 //! of kind 1; "Retry" and "Quit" take the manager's trigger jumps as the Struggle's result menu does; "Load Game" opens the
 //! Load screen of `menu_save` (menu kind 2, docs/menus.md 18.6): a read slot replaces the state and enters its area, a cancel
@@ -47,7 +47,8 @@ use crate::menu_gfx::{self, MenuScene, Node};
 use crate::menu_struggle::{self as list, Action, Block, Flow, Press};
 use crate::mickey;
 use crate::party::PartyMember;
-use crate::progress::Progress;
+use crate::menu::new_tags::NewTags;
+use crate::progress::{Progress, SlotInfo};
 use crate::schedule::{Pause, Sim};
 use crate::sora::{Sora, State};
 use crate::struggle::{GameOverExits, Mission};
@@ -269,6 +270,25 @@ pub fn continue_dest(snap: Option<Snapshot>) -> Dest {
     snap.map_or(Dest { world: crate::area_jump::KEEP, area: crate::area_jump::KEEP, entrance: crate::area_jump::KEEP, programs: [crate::area_jump::KEEP; 3] }, |s| s.dest)
 }
 
+/// `FUN_001cafa0` / `FUN_001cb118`: the copy of the save body (`0x33e860..0x349d40`, the words `0x35d278..0x35daa0` and
+/// `0x35daa0..0x35e2c8`) as a slot file. Every `Progress` field except the app-only ones is one of those bytes (the party
+/// block, the wallet `+0x1600`, the option word `+0x31b0`, the NEW tags' seen words `+0x31b4`, the shops' bits, the moogle record,
+/// the journal's seen set, the counters, the story flags, the area program table and the lock halfwords), so the file the
+/// Save menu writes is the port's body. `seen` is the NEW tags' live words (the Save menu stores them the same way).
+pub fn capture_body(p: &Progress, seen: &[u32]) -> String {
+    let mut stored = p.clone();
+    stored.set_new_seen(seen);
+    stored.slot_json(&SlotInfo::default())
+}
+
+/// `FUN_001cb208`'s copy back: the body applied to a copy of the live state, so nothing of `live` changes unless the caller
+/// replaces it on `Ok` (`apply_json` puts the shared story back on a failure, LD1b).
+pub fn restore_body(live: &Progress, body: &str) -> Result<Progress, String> {
+    let mut next = live.clone();
+    next.apply_json(body)?;
+    Ok(next)
+}
+
 /// The jump record of a "Retry" / "Quit" row.
 pub fn exit_jump(exits: &GameOverExits, o: Outcome) -> Option<[u16; 6]> {
     match o {
@@ -297,6 +317,8 @@ const ROWS: usize = 4;
 pub struct GameOver {
     pub over: Option<Over>,
     pub snapshot: Option<Snapshot>,
+    /// The save body taken with the snapshot (`capture_body`); "Continue" puts it back.
+    pub body: Option<String>,
     last_hp: Option<i32>,
     seen_area: Option<String>,
     table: Vec<Block>,
@@ -308,6 +330,8 @@ pub struct GameOver {
     hand: usize,
     /// `KH2_GAMEOVER_KO` has fired.
     aid_done: bool,
+    /// `KH2_GAMEOVER_GAIN` has fired.
+    gain_done: bool,
     /// The outcome's jump has started; the HP it restores.
     restore_hp: Option<i32>,
     /// The shared generator's value for `FUN_001ad520`'s roll (`mickey::SEED_START` until the first roll).
@@ -338,6 +362,13 @@ fn ko_aid_secs() -> Option<f32> {
     *SPEC.get_or_init(|| std::env::var("KH2_GAMEOVER_KO").ok()?.trim().parse().ok())
 }
 
+/// `KH2_GAMEOVER_GAIN=<seconds>` (a harness aid): once, that many seconds after the start, the wallet gains 777 munny and the
+/// experience 100, so that a later "Continue" can be seen to take them back.
+fn gain_aid_secs() -> Option<f32> {
+    static SPEC: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *SPEC.get_or_init(|| std::env::var("KH2_GAMEOVER_GAIN").ok()?.trim().parse().ok())
+}
+
 fn tinker_ready(sm: Option<&SummonState>, data: Option<&SummonData>) -> bool {
     // `summon::tinker_ready` (FUN_001c69b0): the summon state is not 0, byte 5 is Peter Pan's `sumn` row and byte 7 is set.
     let (Some(sm), Some(data)) = (sm, data) else { return false };
@@ -355,9 +386,19 @@ fn detect(
     real: Res<Time<Real>>,
     mut sora: Query<&mut Sora>,
     party: Query<&PartyMember>,
-    progress: Option<Res<Progress>>,
+    mut progress: Option<ResMut<Progress>>,
     disc: Option<Res<Disc>>,
 ) {
+    if let Some(at) = gain_aid_secs()
+        && !go.gain_done
+        && real.elapsed_secs() >= at
+        && let Some(p) = progress.as_deref_mut()
+    {
+        go.gain_done = true;
+        let json = format!("{{\"munny\": {}, \"experience\": {}}}", p.wallet() + 777, p.experience() + 100);
+        let r = p.apply_json(&json);
+        info!("game over: KH2_GAMEOVER_GAIN: munny {}, experience {} ({r:?})", p.wallet(), p.experience());
+    }
     let Ok(mut s) = sora.single_mut() else { return };
     if let Some(at) = ko_aid_secs()
         && !go.aid_done
@@ -430,7 +471,15 @@ pub fn ko_edge(was: Option<i32>, hp: i32) -> bool {
 }
 
 /// `FUN_001047a8`: the area start takes the snapshot when `FUN_001cb358` allows.
-fn track_area(mut go: ResMut<GameOver>, area: Res<CurrentArea>, rec: Res<AreaRecord>, mission: Option<Res<Mission>>, sora: Query<&Sora>) {
+fn track_area(
+    mut go: ResMut<GameOver>,
+    area: Res<CurrentArea>,
+    rec: Res<AreaRecord>,
+    mission: Option<Res<Mission>>,
+    sora: Query<&Sora>,
+    progress: Option<Res<Progress>>,
+    tags: Option<Res<NewTags>>,
+) {
     if area.loaded == go.seen_area {
         return;
     }
@@ -445,6 +494,30 @@ fn track_area(mut go: ResMut<GameOver>, area: Res<CurrentArea>, rec: Res<AreaRec
     let dest = Dest { world: rec.world, area: rec.area, entrance: rec.entrance, programs: rec.programs };
     info!("game over: area {name}: snapshot (FUN_001cafa0): world {} area {} entrance {} programs {:x?}, HP {hp}", dest.world, dest.area, dest.entrance, dest.programs);
     go.snapshot = Some(Snapshot { dest, hp, mp });
+    if let Some(p) = progress.as_deref() {
+        let body = capture_body(p, &tags.as_deref().map(NewTags::seen_words).unwrap_or_default());
+        info!("game over: area {name}: save body copied (FUN_001cafa0): {} bytes of state", body.len());
+        go.body = Some(body);
+    }
+}
+
+/// "Continue" (`FUN_00104d58` -> `FUN_001cb208`): the snapshot's body replaces the state, so what was earned since the area
+/// start is gone. A body that does not apply changes nothing (the jump goes on with the live state).
+fn restore_snapshot(go: &GameOver, progress: Option<&mut Progress>, tags: Option<&mut NewTags>) {
+    let (Some(body), Some(p)) = (go.body.as_deref(), progress) else {
+        info!("game over: Continue: no save body was copied; the state stays");
+        return;
+    };
+    match restore_body(p, body) {
+        Ok(next) => {
+            *p = next;
+            if let Some(t) = tags {
+                t.set_seen_words(p.new_seen());
+            }
+            info!("game over: Continue: the save body is back (FUN_001cb208): munny {}, experience {}", p.wallet(), p.experience());
+        }
+        Err(why) => warn!("game over: Continue: the save body does not apply ({why}); the state stays"),
+    }
 }
 
 fn load(go: &mut GameOver, disc: &Disc, scene: &mut MenuScene, images: &mut Assets<Image>) {
@@ -617,6 +690,7 @@ fn drive(
     mut save: ResMut<SaveMenu>,
     mut pause: ResMut<Pause>,
     mut progress: Option<ResMut<Progress>>,
+    mut tags: Option<ResMut<NewTags>>,
 ) {
     // A manager that ended by itself (`FUN_001b9ce0`).
     if let Some(r) = mission.game_over_request.take()
@@ -687,6 +761,10 @@ fn drive(
                         // Continue returns to this state) and `FUN_0025a158` leaves with mode 2 (`FUN_00103b38`).
                         let (hp, mp) = l.hp_mp.unwrap_or((i32::MAX, sora.single().map_or(0, |s| s.mp)));
                         go.snapshot = Some(Snapshot { dest: l.dest, hp, mp });
+                        // The Load screen has put the loaded state in `Progress` and the NEW tags already.
+                        if let Some(p) = progress.as_deref() {
+                            go.body = Some(capture_body(p, &tags.as_deref().map(NewTags::seen_words).unwrap_or_default()));
+                        }
                         over.chosen = Some(Outcome::Load(l));
                         scene.hidden = true;
                         scene.dim = 0.0;
@@ -717,11 +795,16 @@ fn drive(
                 if over.chosen == Some(Outcome::Mickey) {
                     rescue(&mut go, &mut sora, progress.as_deref_mut(), music.as_deref_mut(), audio.as_deref());
                     keep = false;
-                } else if run_outcome(&mut go, &over, &mut mission, &mut task, &rec, &disc, &mut sora, music.as_deref_mut(), audio.as_deref()) {
-                    over.phase = Phase::Jumping;
-                    over.started = false;
                 } else {
-                    keep = false;
+                    if over.chosen == Some(Outcome::Continue) {
+                        restore_snapshot(&go, progress.as_deref_mut(), tags.as_deref_mut());
+                    }
+                    if run_outcome(&mut go, &over, &mut mission, &mut task, &rec, &disc, &mut sora, music.as_deref_mut(), audio.as_deref()) {
+                        over.phase = Phase::Jumping;
+                        over.started = false;
+                    } else {
+                        keep = false;
+                    }
                 }
             }
         }
@@ -1249,5 +1332,43 @@ mod tests {
         assert_eq!((text(rows[0].1).as_str(), text(rows[1].1).as_str()), ("Quit", "Retry"));
         assert!(b.no_cancel);
         assert!(a.read("obj/GAMEOVER.mset").is_ok_and(|m| !m.is_empty()), "the scene file the task loads");
+    }
+
+    fn state() -> Progress {
+        Progress::from_block(&[], std::sync::Arc::new(crate::progress::ItemIndex::default()))
+    }
+
+    /// Continue puts the area-start body back: munny, EXP, a story flag and the NEW tags' words earned or changed since are
+    /// gone, the shared story included.
+    #[test]
+    fn continue_restores_the_area_start_body_and_drops_later_gains() {
+        let mut p = state();
+        p.apply_json(r#"{"munny": 100, "experience": 40, "story_flags": [2179]}"#).unwrap();
+        let body = capture_body(&p, &[5, 6]);
+        p.apply_json(r#"{"munny": 900, "experience": 700, "story_flags": [2179, 2267]}"#).unwrap();
+        assert_eq!((p.wallet(), p.experience()), (900, 700));
+        let go = GameOver { body: Some(body), ..Default::default() };
+        let mut tags = NewTags::default();
+        tags.set_seen_words(&[9, 9]);
+        restore_snapshot(&go, Some(&mut p), Some(&mut tags));
+        assert_eq!((p.wallet(), p.experience()), (100, 40), "gains since the area start are lost");
+        assert!(p.story().set_flags().contains(&2179) && !p.story().set_flags().contains(&2267), "story flags: {:?}", p.story().set_flags());
+        assert_eq!(tags.seen_words()[..2], [5, 6], "the NEW tags words come back with the body");
+    }
+
+    /// A body that does not apply changes nothing, and neither does a missing one.
+    #[test]
+    fn a_failed_restore_leaves_the_state_unchanged() {
+        let mut p = state();
+        p.apply_json(r#"{"munny": 321, "experience": 9, "story_flags": [2179]}"#).unwrap();
+        let before = capture_body(&p, &[]);
+        // munny applies first, then the bad key fails: the live state must keep its own values.
+        let bad = r#"{"munny": 5, "experience": 6, "story_flags": [4096], "shop_seen": 3}"#;
+        assert!(restore_body(&p, bad).is_err());
+        let go = GameOver { body: Some(bad.into()), ..Default::default() };
+        restore_snapshot(&go, Some(&mut p), None);
+        restore_snapshot(&GameOver::default(), Some(&mut p), None);
+        assert_eq!(capture_body(&p, &[]), before);
+        assert_eq!((p.wallet(), p.experience()), (321, 9));
     }
 }

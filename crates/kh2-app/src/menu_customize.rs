@@ -1224,6 +1224,14 @@ pub fn characters_help(cursor: usize) -> u32 {
     if cursor == 0 { 0x3b89 } else { 0x3b8a }
 }
 
+/// The joined help buffer: the first message's tokens, the second's right after them, one end command.
+fn joined_tokens(mut first: Vec<Token>, second: Vec<Token>) -> Vec<Token> {
+    first.retain(|t| *t != Token::End);
+    first.extend(second.into_iter().filter(|t| *t != Token::End));
+    first.push(Token::End);
+    first
+}
+
 /// `FUN_002743e8` ends by copying the first message without its end byte and the second after it into one buffer.
 fn set_help_joined(scene: &mut MenuScene, text: &crate::menu_text::MenuText, help: usize, ids: (Option<u32>, Option<u32>)) {
     let (first, second) = match ids {
@@ -1233,9 +1241,7 @@ fn set_help_joined(scene: &mut MenuScene, text: &crate::menu_text::MenuText, hel
     let Some(first) = first else { return set_help(scene, text, help, None) };
     let Some(second) = second else { return set_help(scene, text, help, Some(first)) };
     set_help(scene, text, help, Some(first));
-    let mut tokens = tokens_of(text, first);
-    tokens.extend(tokens_of(text, second));
-    tokens.push(Token::End);
+    let tokens = joined_tokens(tokens_of(text, first), tokens_of(text, second));
     if let Some(l) = scene.nodes[help].label.as_mut() {
         l.tokens = tokens;
     }
@@ -1961,6 +1967,21 @@ mod tests {
         let m = kh2_image::text::Messages::from_bar(&a.read("msg/us/sys.bar").expect("sys.bar")).expect("messages");
         for id in [0x3b89u32, 0x3b8a, 0x1e5b, 0x1e5c, 0x1e5d, 0x1e5e, 0x1e5f] {
             assert!(m.text(id).is_some_and(|s| !s.is_empty()), "message {id:#x} exists");
+        }
+        // The buffer FUN_002743e8 builds: the description without its end byte, the choice message after it, one end.
+        for (first, second) in [(0x3b89u32, 0x1e5bu32), (0x3b8a, 0x1e5c), (0x3b8a, 0x1e5f)] {
+            let (a, b) = (m.tokens(first).expect("description"), m.tokens(second).expect("choice message"));
+            let body = |v: &[Token]| v.iter().filter(|t| **t != Token::End).cloned().collect::<Vec<_>>();
+            let (da, db) = (body(&a), body(&b));
+            assert!(!da.is_empty() && !db.is_empty());
+            let mut want = da.clone();
+            want.extend(db.iter().cloned());
+            want.push(Token::End);
+            let got = joined_tokens(a, b);
+            assert_eq!(got, want, "{first:#x} + {second:#x}");
+            assert_eq!(got.iter().filter(|t| **t == Token::End).count(), 1, "one end command, at the end");
+            assert_eq!(&got[..da.len()], &da[..], "the description comes first");
+            assert_eq!(&got[da.len()..got.len() - 1], &db[..], "the choice message follows it directly");
         }
     }
 

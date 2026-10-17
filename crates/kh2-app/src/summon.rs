@@ -2459,6 +2459,20 @@ struct EnemyView {
     blown: bool,
 }
 
+/// Host 10.51's search over the app's enemies: the candidates are those not out of view (FUN_0019ada8, `in_view`), each at
+/// its target part's point (or its own position); `aim` is the AI's aim point (+0x40) in game units. Answers the enemy found
+/// and its script handle (0 for none), the handle host 10.51 returns.
+fn screen_search(view: &fps::ScreenView, enemies: &[EnemyView], in_view: &[Entity], parts: &[crate::friend_host::SearchPart], aim: Vec3, half: [f32; 2]) -> (Option<Entity>, u32) {
+    let cands: Vec<(Entity, Vec3)> = enemies
+        .iter()
+        .filter(|e| in_view.contains(&e.entity))
+        .map(|e| (e.entity, parts.iter().find(|p| p.entity == e.entity).map_or(e.pos, |p| p.point) * SCALE))
+        .collect();
+    let found = fps::screen_target(view, aim * SCALE, half, &cands);
+    let handle = found.and_then(|f| enemies.iter().find(|e| e.entity == f)).map_or(0, |e| e.handle);
+    (found, handle)
+}
+
 /// The keyed buffers of host 2.21 (the list at 0x1c95528, FUN_001a5040), kept for the run.
 #[derive(Resource, Default)]
 pub struct SharedBlocks(pub kh2_bdx::shared::SharedBlocks);
@@ -2667,17 +2681,9 @@ impl SummonHost<'_, '_> {
                 match (self.env.view.as_ref(), halves.as_slice()) {
                     (Some(view), [w, h]) => {
                         let aim = crate::enemy_obj::from_game(self.ai.scripted.aim);
-                        let cands: Vec<(Entity, Vec3)> = self
-                            .env
-                            .enemies
-                            .iter()
-                            .filter(|e| self.env.in_view.contains(&e.entity))
-                            .map(|e| (e.entity, self.env.parts.iter().find(|p| p.entity == e.entity).map_or(e.pos, |p| p.point)))
-                            .collect();
-                        let found = fps::screen_target(view, aim * SCALE, [*w, *h], &cands.iter().map(|&(e, p)| (e, p * SCALE)).collect::<Vec<_>>());
+                        let (found, handle) = screen_search(view, &self.env.enemies, &self.env.in_view, &self.env.parts, aim, [*w, *h]);
                         self.ai.scripted.fps_found = found;
                         self.ai.scripted.fps_searches += 1;
-                        let handle = found.and_then(|f| self.env.enemies.iter().find(|e| e.entity == f)).map_or(0, |e| e.handle);
                         (Value::Handle(handle), St::Approx, "the enemy found is answered and the runtime writes the record; the camera's focal length is [inferred] from the camera builder, and `in view` is the app's projection test")
                     }
                     _ => (Value::None, St::Stub, "no camera or box in this tick")
@@ -5677,6 +5683,26 @@ mod tests {
         assert_eq!((a.stitch.pos[0], a.stitch.pos[1], a.stitch.pos[2]), (c.limit_a[0], c.limit_a[1], c.place_depth));
         a.stitch_limit_leave();
         assert!(!a.stitch.limit_link);
+    }
+
+    /// Host 10.51's answer (`screen_search`): the script handle of the enemy `fps::screen_target` finds, and 0 when the box
+    /// holds none, the enemy is out of view, or the camera is missing the point; the part's point wins over the position.
+    #[test]
+    fn host_10_51_answers_the_handle_of_the_enemy_in_the_box() {
+        let view = fps::ScreenView::new(&GlobalTransform::default(), Mat4::perspective_rh(1.0, 4.0 / 3.0, 0.01, 1000.0));
+        let mut w = bevy::ecs::world::World::new();
+        let [a, b, c] = std::array::from_fn(|_| w.spawn_empty().id());
+        let ev = |entity, handle, x: f32| EnemyView { entity, handle, pos: Vec3::new(x, 0.0, -10.0) / SCALE, reacting: false, blown: false };
+        let enemies = [ev(a, 0x7000_0001, 1.0), ev(b, 0x7000_0002, 0.4), ev(c, 0x7000_0003, 0.0)];
+        let aim = Vec3::new(0.0, 0.0, -10.0) / SCALE;
+        let all = [a, b, c];
+        assert_eq!(screen_search(&view, &enemies, &all, &[], aim, [120.0, 60.0]), (Some(c), 0x7000_0003), "c is the nearest to the aim");
+        // c is out of view: b is nearer than a.
+        assert_eq!(screen_search(&view, &enemies, &[a, b], &[], aim, [120.0, 60.0]), (Some(b), 0x7000_0002));
+        // b's target part sits far to the side, outside the box: a is taken.
+        let part = crate::friend_host::SearchPart { entity: b, shape: 0, part: 0, point: Vec3::new(5.0, 0.0, -10.0) / SCALE, radius: 1.0 };
+        assert_eq!(screen_search(&view, &enemies, &[a, b], &[part], aim, [120.0, 60.0]), (Some(a), 0x7000_0001));
+        assert_eq!(screen_search(&view, &enemies, &[], &[], aim, [120.0, 60.0]), (None, 0), "no enemy in view: the empty answer");
     }
 
     /// Host 10.51's search (FUN_0011a6d8): the first enemy in the box is taken, a nearer one replaces it, one outside the

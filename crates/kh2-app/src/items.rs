@@ -1116,6 +1116,32 @@ pub fn counts_as_healed(target: u16, others: &[u16]) -> bool {
     if target == 0 { !others.is_empty() } else { target != SORA && others.contains(&target) }
 }
 
+/// A field member as the item use sees it: the member id, whether it is down, and the values `item_effect` works on.
+#[derive(Clone, Copy, Debug)]
+struct FieldMember {
+    neo: u16,
+    ko: bool,
+    v: Vitals,
+}
+
+/// A queued use landing on the field members (FUN_001a11a0 -> FUN_001a12a0 on their status blocks, then FUN_001b8658's
+/// "Healed Party Members" count). Target 0 reaches every member, else the member with that id; Sora is handled by the
+/// caller and a KO'd member is left alone. Counts once per use when `counts_as_healed` holds. Returns the indices it acted on.
+fn use_on_members(item: u16, target: u16, amount: u16, mult: i32, feed: f32, field: &mut [FieldMember], progress: &mut Progress) -> Vec<usize> {
+    let mut hit = Vec::new();
+    let others: Vec<u16> = field.iter().map(|m| m.neo).filter(|&n| n != SORA).collect();
+    for (i, m) in field.iter_mut().enumerate().filter(|(_, m)| (target == 0 || target == m.neo) && m.neo != SORA && !m.ko) {
+        item_effect(item, amount, mult, &mut m.v, feed);
+        hit.push(i);
+    }
+    // FUN_001b8658: the user is Sora (member 1) and FUN_001a11a0 answered true.
+    if counts_as_healed(target, &others) {
+        progress.count_healed();
+        info!("items: Healed Party Members counts {}", progress.healed_count());
+    }
+    hit
+}
+
 /// The request the summon system gets for a chosen command (summon.rs): Summon and Dismiss by their `Execute`, one of Genie's
 /// "Drive!" forms (`Execute` 535..538) as `Form`.
 pub fn summon_request(c: &Cmd, cmd: u16) -> Option<crate::summon::SummonRequest> {
@@ -1251,21 +1277,23 @@ fn run(
         }
         // The other members (FUN_001a11a0 -> FUN_001a12a0 on their status blocks). A KO'd member is left alone: the
         // revive path (FUN_00186238) is party.rs's [GAP: FUN_001a12a0 would raise the block's HP without it].
-        let others: Vec<u16> = party.iter().map(|m| m.neo).filter(|&n| n != SORA).collect();
-        for mut m in party.iter_mut().filter(|m| (q.target == 0 || q.target == m.neo) && m.neo != SORA && !m.ko) {
-            let mut mv = Vitals { hp: m.hp, hp_max: m.hp_max, hp_min: 0, mp: m.mp, mp_max: m.mp_max, charge_left: m.charge.left, charge_total: m.charge.total, ..Default::default() };
-            let (h0, m0) = (mv.hp, mv.mp);
-            item_effect(q.item, amount, mult, &mut mv, data.charge_feed);
-            m.hp = mv.hp;
-            m.mp = mv.mp;
-            m.charge.left = mv.charge_left;
-            m.charge.total = mv.charge_total;
-            info!("items: used {} on {}: HP {h0} -> {}, MP {m0} -> {}", data.name(q.item), m.model, m.hp, m.mp);
-        }
-        // FUN_001b8658: the user is Sora (member 1) and FUN_001a11a0 answered true.
-        if counts_as_healed(q.target, &others) {
-            progress.count_healed();
-            info!("items: Healed Party Members counts {}", progress.healed_count());
+        let mut field: Vec<FieldMember> = party
+            .iter()
+            .map(|m| FieldMember {
+                neo: m.neo,
+                ko: m.ko,
+                v: Vitals { hp: m.hp, hp_max: m.hp_max, hp_min: 0, mp: m.mp, mp_max: m.mp_max, charge_left: m.charge.left, charge_total: m.charge.total, ..Default::default() },
+            })
+            .collect();
+        let hit = use_on_members(q.item, q.target, amount, mult, data.charge_feed, &mut field, &mut progress);
+        for (i, (mut m, f)) in party.iter_mut().zip(&field).enumerate() {
+            if hit.contains(&i) {
+                info!("items: used {} on {}: HP {} -> {}, MP {} -> {}", data.name(q.item), m.model, m.hp, f.v.hp, m.mp, f.v.mp);
+            }
+            m.hp = f.v.hp;
+            m.mp = f.v.mp;
+            m.charge.left = f.v.charge_left;
+            m.charge.total = f.v.charge_total;
         }
         info!(
             "items: used {}: HP {hp0} -> {}, MP {mp0} -> {}, count {} -> {} (amount {amount}, mult {mult}, effect {} on member {} (0 = all: Sora), tick {})",
@@ -1599,8 +1627,6 @@ mod tests {
         assert_eq!((l.cursor, l.remembered), (0, None), "past the end: reset");
     }
 
-    /// FUN_001a12a0's sums: a percent of the maximum rounded up, HP held at the maximum, MP fed into a
-    /// running charge, the drive gauge in hundredths.
     #[test]
     fn the_target_list_holds_sora_then_the_members_by_slot() {
         // The table at 0x37bab0 by member id: Sora 42; Donald and Goofy have their own target commands.
@@ -1640,6 +1666,35 @@ mod tests {
         assert_eq!(v.hp, 30, "held at the maximum");
     }
 
+    /// The member-heal path of `run`: a Potion thrown at Donald heals him from his own maximum, leaves Goofy and a
+    /// KO'd member alone, and counts "Healed Party Members" once.
+    #[test]
+    fn a_potion_on_donald_heals_him_and_counts_once() {
+        let mut p = Progress::from_block(&[], std::sync::Arc::new(crate::progress::ItemIndex::default()));
+        let m = |neo, hp, ko| FieldMember { neo, ko, v: Vitals { hp, hp_max: 30, ..Default::default() } };
+        let mut field = [m(2, 10, false), m(3, 10, false)];
+        let n = p.healed_count();
+        assert_eq!(use_on_members(1, 2, 40, 100, 12.0, &mut field, &mut p), vec![0]);
+        assert_eq!((field[0].v.hp, field[1].v.hp), (22, 10), "Donald healed by 12, Goofy untouched");
+        assert_eq!(p.healed_count(), n + 1, "counted once");
+        // A group item reaches both; one count for the use.
+        use_on_members(1, 0, 40, 100, 12.0, &mut field, &mut p);
+        assert_eq!((field[0].v.hp, field[1].v.hp), (30, 22));
+        assert_eq!(p.healed_count(), n + 2);
+        // A KO'd member is skipped, yet the use still counts (FUN_001a11a0 answered true).
+        let mut field = [m(2, 0, true)];
+        use_on_members(1, 2, 40, 100, 12.0, &mut field, &mut p);
+        assert_eq!(field[0].v.hp, 0);
+        assert_eq!(p.healed_count(), n + 3);
+        // Sora on himself changes no member and counts nothing.
+        let mut field = [m(2, 10, false)];
+        use_on_members(1, SORA, 40, 100, 12.0, &mut field, &mut p);
+        assert_eq!(field[0].v.hp, 10);
+        assert_eq!(p.healed_count(), n + 3);
+    }
+
+    /// FUN_001a12a0's sums: a percent of the maximum rounded up, HP held at the maximum, MP fed into a
+    /// running charge, the drive gauge in hundredths.
     #[test]
     fn item_effect_follows_fun_001a12a0() {
         let base = Vitals { hp: 50, hp_max: 120, hp_min: 0, mp: 10, mp_max: 100, drive_max: 3, ..default() };

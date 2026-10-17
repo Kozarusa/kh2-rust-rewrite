@@ -26,8 +26,9 @@
 //! The port: the KO decision is `route`; the snapshot is the area record and Sora's HP at each area start (the save body is
 //! not copied: `Progress` shares its story state, so a partial restore would be inconsistent [gap]); the list is
 //! `menu_struggle`'s pointer list over the rows of the disc's table; "Continue" jumps to the snapshot's area with the fade
-//! of kind 1; "Retry" and "Quit" take the manager's trigger jumps as the Struggle's result menu does; "Load Game" is not
-//! ported (the app has no file load screen): the list refuses it. The wait before the list, the scene `GAMEOVER.mset`, the
+//! of kind 1; "Retry" and "Quit" take the manager's trigger jumps as the Struggle's result menu does; "Load Game" opens the
+//! Load screen of `menu_save` (menu kind 2, docs/menus.md 18.6): a read slot replaces the state and enters its area, a cancel
+//! brings the list back. The wait before the list, the scene `GAMEOVER.mset`, the
 //! header group and the information line are not ported (see docs).
 
 use bevy::prelude::*;
@@ -41,6 +42,7 @@ use crate::audio::{Audio, PlaySe};
 use crate::audio_bgm::AreaMusic;
 use crate::drive::DriveState;
 use crate::menu::{close_brightness, dim_alpha, menu_sound, CLOSE_FRAMES, DIM_BRIGHTNESS};
+use crate::menu::save::{LoadOutcome, Loaded, SaveMenu};
 use crate::menu_gfx::{self, MenuScene, Node};
 use crate::menu_struggle::{self as list, Action, Block, Flow, Press};
 use crate::schedule::{Pause, Sim};
@@ -121,6 +123,8 @@ pub enum Outcome {
     Continue,
     Retry,
     Quit,
+    /// "Load Game" read a slot (`menu_save` kind 2): enter the area it holds (`FUN_00103b38`, mode 2).
+    Load(Loaded),
 }
 
 /// The stages of the game over.
@@ -129,6 +133,9 @@ pub enum Phase {
     /// The knock-out is down; the list opens after `OPEN_AFTER` seconds.
     Waiting,
     List,
+    /// "Load Game" (code 1): the Load screen (`FUN_00254a08(2)`, `menu_save`) is up; its end brings the list back or the loaded
+    /// state's jump.
+    Loading,
     /// The dim returns, then the outcome runs.
     Closing,
     /// The outcome's jump runs; the game over ends when the jump task is idle again.
@@ -150,11 +157,22 @@ pub struct Over {
     pub fresh: bool,
     /// The outcome's jump task has left `Idle`.
     pub started: bool,
+    /// The Load screen has been requested from `menu_save` (phase `Loading`).
+    pub load_asked: bool,
 }
 
 impl Over {
     pub fn new(kind: u8, exits: Option<GameOverExits>) -> Over {
-        Over { kind, phase: Phase::Waiting, waited: 0.0, flow: Flow::default(), chosen: None, exits, frames: 0, fresh: true, started: false }
+        Over { kind, phase: Phase::Waiting, waited: 0.0, flow: Flow::default(), chosen: None, exits, frames: 0, fresh: true, started: false, load_asked: false }
+    }
+
+    /// The Load screen ended without a load: the list is back (the original's kind 2 closes and the list's page shows again
+    /// [inferred: the wrapper `FUN_00254548` was not traced further]).
+    pub fn back_to_list(&mut self) {
+        self.phase = Phase::List;
+        self.load_asked = false;
+        self.flow.stage = list::Stage::List;
+        self.flow.chosen = None;
     }
 
     /// The wait is over: the list opens (`FUN_0024f330`).
@@ -164,7 +182,7 @@ impl Over {
         self.frames = 0;
     }
 
-    /// A press on the list. The code 1 row ("Load Game") is refused and the list stays (no file screens in the app).
+    /// A press on the list. The code 1 row ("Load Game") leaves for the Load screen (`FUN_00254a08(2)`), the list waiting.
     pub fn press(&mut self, p: Press) -> Action {
         let a = self.flow.press(p);
         if let Action::Chosen(code) = a {
@@ -172,10 +190,13 @@ impl Over {
                 CODE_CONTINUE => self.chosen = Some(Outcome::Continue),
                 CODE_RETRY if self.kind == 3 => self.chosen = Some(Outcome::Retry),
                 CODE_QUIT if self.kind == 3 => self.chosen = Some(Outcome::Quit),
-                // `FUN_00254a08(2)` leaves for the file screens (kind 2), which the app does not have; any other code is not on
-                // these rows. Undo the close the list started.
+                CODE_LOAD => {
+                    self.phase = Phase::Loading;
+                    self.load_asked = false;
+                    return a;
+                }
+                // Any other code is not on these rows. Undo the close the list started.
                 _ => {
-                    // Not ported.
                     self.flow.stage = list::Stage::List;
                     self.flow.chosen = None;
                     return Action::None;
@@ -191,7 +212,7 @@ impl Over {
 
 /// `FUN_001cafa0` / `FUN_001cb3b8`: the area record and Sora's HP / MP at the last area start that allowed the snapshot.
 /// The original copies the whole save body, whose party record holds the values `FUN_0019f920` rebuilds the status from
-/// (current HP = the record's byte +8 clamped by its maximum); the port keeps the two numbers [inferred: that the record's
+/// (current HP = the smaller of the record's bytes +4 and +5, MP the smaller of +6 and +7); the port keeps the two numbers [inferred: that the record's
 /// HP byte follows the live HP at every area start was not traced].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Snapshot {
@@ -225,7 +246,7 @@ pub fn exit_jump(exits: &GameOverExits, o: Outcome) -> Option<[u16; 6]> {
     match o {
         Outcome::Retry => exits.retry,
         Outcome::Quit => exits.quit,
-        Outcome::Continue => None,
+        Outcome::Continue | Outcome::Load(_) => None,
     }
 }
 
@@ -396,6 +417,9 @@ fn load(go: &mut GameOver, disc: &Disc, scene: &mut MenuScene, images: &mut Asse
 }
 
 fn hide_all(go: &GameOver, scene: &mut MenuScene) {
+    if !go.loaded {
+        return;
+    }
     for &(p, t) in &go.rows {
         for i in [p, t] {
             scene.nodes[i].visible = false;
@@ -435,6 +459,16 @@ fn show(go: &GameOver, over: &Over, scene: &mut MenuScene) {
     }
 }
 
+/// The list shows again after the Load screen was left.
+fn reshow(go: &GameOver, over: &Over, scene: &mut MenuScene) {
+    scene.hidden = false;
+    scene.dim = dim_alpha(DIM_BRIGHTNESS);
+    hide_all(go, scene);
+    if go.loaded {
+        show(go, over, scene);
+    }
+}
+
 /// The keys of the list (the same as the Struggle's result menu).
 #[allow(clippy::too_many_arguments)]
 fn input(
@@ -444,6 +478,11 @@ fn input(
     mut se: MessageWriter<PlaySe>,
     mut pause: ResMut<Pause>,
 ) {
+    if go.over.as_ref().is_some_and(|o| o.phase == Phase::Loading) {
+        // The Load screen owns the pad (`menu_save`); the field stays stopped.
+        pause.menu = true;
+        return;
+    }
     if !go.is_open() {
         return;
     }
@@ -470,8 +509,7 @@ fn input(
             if p == Press::Cancel {
                 info!("game over: cancel ignored (+0x25 bit 0: list flags 0x60 cleared)");
             } else if p == Press::Confirm {
-                let why = if row_code == Some(CODE_LOAD) { "code 1 opens the file screens, kind 2" } else { "not a row of this record" };
-                info!("game over: row code {row_code:?} is not ported ({why}); the list stays");
+                info!("game over: row code {row_code:?} is not a row of this record; the list stays");
                 menu_sound::play(&mut se, menu_sound::REFUSED);
             }
         }
@@ -508,6 +546,8 @@ fn drive(
     mut music: Option<ResMut<AreaMusic>>,
     audio: Option<Res<Audio>>,
     mut sora: Query<&mut Sora>,
+    mut save: ResMut<SaveMenu>,
+    mut pause: ResMut<Pause>,
 ) {
     // A manager that ended by itself (`FUN_001b9ce0`).
     if let Some(r) = mission.game_over_request.take()
@@ -551,6 +591,44 @@ fn drive(
         }
         Phase::List => {
             scene.advance(real.delta_secs());
+        }
+        Phase::Loading => {
+            pause.menu = true;
+            if !over.load_asked {
+                over.load_asked = true;
+                if save.request_load() {
+                    info!("game over: row code 1 (Load Game): the Load screen is requested (FUN_00254a08(2), menu kind 2)");
+                } else {
+                    info!("game over: the Load screen cannot open (no save.2ld or a menu is up); the list stays");
+                    menu_sound::play(&mut se, menu_sound::REFUSED);
+                    over.back_to_list();
+                    reshow(&go, &over, &mut scene);
+                }
+            } else if let Some(out) = save.take_outcome() {
+                match out {
+                    LoadOutcome::Loaded(l) => {
+                        // `FUN_00259e88` state 0x34 ends with `FUN_001cb118` (the snapshot of the loaded body, so a later
+                        // Continue returns to this state) and `FUN_0025a158` leaves with mode 2 (`FUN_00103b38`).
+                        let (hp, mp) = l.hp_mp.unwrap_or((i32::MAX, sora.single().map_or(0, |s| s.mp)));
+                        go.snapshot = Some(Snapshot { dest: l.dest, hp, mp });
+                        over.chosen = Some(Outcome::Load(l));
+                        scene.hidden = true;
+                        scene.dim = 0.0;
+                        hide_all(&go, &mut scene);
+                        if run_outcome(&mut go, &over, &mut mission, &mut task, &rec, &disc, &mut sora, music.as_deref_mut(), audio.as_deref()) {
+                            over.phase = Phase::Jumping;
+                            over.started = false;
+                        } else {
+                            keep = false;
+                        }
+                    }
+                    LoadOutcome::Left => {
+                        info!("game over: the Load screen was left; the list is back");
+                        over.back_to_list();
+                        reshow(&go, &over, &mut scene);
+                    }
+                }
+            }
         }
         Phase::Closing => {
             over.frames += scene.advance(real.delta_secs());
@@ -638,6 +716,17 @@ fn run_outcome(
                 s.mp = mp;
             }
             (continue_dest(go.snapshot), CONTINUE_FADE_KIND)
+        }
+        Outcome::Load(l) => {
+            // `FUN_00103b38`, mode 2: `FUN_00104e18(record, 1, 0, 1, 0)` enters the area record of the loaded body. Sora's HP and
+            // MP come from its party record (HP = min(+4, +5), MP = min(+6, +7)).
+            let (hp, mp) = l.hp_mp.map_or((max_hp, sora.single().map_or(0, |s| s.mp)), |(h, m)| (h.clamp(1, max_hp.max(1)), m.max(0)));
+            go.restore_hp = Some(hp);
+            if let Ok(mut s) = sora.single_mut() {
+                s.hp = hp;
+                s.mp = mp;
+            }
+            (l.dest, CONTINUE_FADE_KIND)
         }
         Outcome::Retry | Outcome::Quit => {
             let code = if outcome == Outcome::Retry { CODE_RETRY } else { CODE_QUIT };
@@ -757,10 +846,15 @@ mod tests {
         // No cancel (+0x25 bit 0): the list cannot be left without a row.
         assert_eq!(o.press(Press::Cancel), Action::None);
         assert_eq!(o.phase, Phase::List);
-        // "Load Game" is refused and the list stays.
+        // "Load Game" leaves for the Load screen; the list waits.
         assert_eq!(o.press(Press::Down), Action::Cursor);
-        assert_eq!(o.press(Press::Confirm), Action::None);
+        assert_eq!(o.press(Press::Confirm), Action::Chosen(CODE_LOAD));
+        assert_eq!((o.phase, o.chosen), (Phase::Loading, None));
+        // Leaving the Load screen brings the list back, ready for another choice.
+        o.back_to_list();
         assert_eq!((o.phase, o.chosen, o.flow.stage), (Phase::List, None, list::Stage::List));
+        assert_eq!(o.press(Press::Confirm), Action::Chosen(CODE_LOAD), "the Load row can be chosen again");
+        o.back_to_list();
         // "Continue" closes.
         assert_eq!(o.press(Press::Up), Action::Cursor);
         assert_eq!(o.press(Press::Confirm), Action::Chosen(CODE_CONTINUE));
@@ -860,6 +954,8 @@ mod tests {
         w.insert_resource(JumpTask::default());
         w.insert_resource(Disc::open(&iso));
         w.insert_resource(Assets::<Image>::default());
+        w.init_resource::<SaveMenu>();
+        w.init_resource::<Pause>();
         w.init_resource::<Messages<PlaySe>>();
         w.insert_resource(AreaRecord {
             world: 2,
@@ -900,6 +996,60 @@ mod tests {
         w.run_system_once(drive).unwrap();
         assert!(w.resource::<GameOver>().over.is_none());
         assert_eq!(sora(&mut w).0, 20, "released with full HP");
+    }
+
+    /// The "Load Game" phase through `drive` (skipped without `KH2_ISO`, `Disc` is a resource): with the Load screen unable to
+    /// open the list returns; a left screen returns it too; a read slot snapshots, hands HP and MP to Sora and starts the jump
+    /// to the slot's area with fade kind 1.
+    #[test]
+    fn drive_load_phase_returns_the_list_or_enters_the_slots_area() {
+        use bevy::ecs::system::RunSystemOnce;
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let mut w = world_with_sora(0);
+        w.insert_resource(MenuScene::default());
+        w.insert_resource(JumpTask::default());
+        w.insert_resource(Disc::open(&iso));
+        w.insert_resource(Assets::<Image>::default());
+        w.init_resource::<SaveMenu>();
+        w.init_resource::<Pause>();
+        w.init_resource::<Messages<PlaySe>>();
+        w.insert_resource(AreaRecord { world: 2, area: 4, entrance: 0, programs: [0; 3], programs_override: None, dest_programs: [0xff; 3], place_on_load: false, run: None, placed: None });
+        let loading = || {
+            let mut o = Over::new(0, None);
+            o.fresh = false;
+            o.phase = Phase::Loading;
+            o
+        };
+        // The Save menu has no `save.2ld` here, so the request is refused and the list is back.
+        w.resource_mut::<GameOver>().over = Some(loading());
+        w.run_system_once(drive).unwrap();
+        let o = w.resource::<GameOver>().over.clone().expect("the game over goes on");
+        assert_eq!((o.phase, o.flow.stage), (Phase::List, list::Stage::List));
+        assert!(w.resource::<Pause>().menu, "the field stays stopped");
+
+        // The Load screen ended on its cancel.
+        let mut o = loading();
+        o.load_asked = true;
+        w.resource_mut::<GameOver>().over = Some(o);
+        w.resource_mut::<SaveMenu>().end_load_for_test(LoadOutcome::Left);
+        w.run_system_once(drive).unwrap();
+        assert_eq!(w.resource::<GameOver>().over.as_ref().map(|o| o.phase), Some(Phase::List));
+
+        // The Load screen read a slot: tt03, HP 40, MP 25.
+        let mut o = loading();
+        o.load_asked = true;
+        w.resource_mut::<GameOver>().over = Some(o);
+        let dest = Dest::new(2, 3, 0);
+        w.resource_mut::<SaveMenu>().end_load_for_test(LoadOutcome::Loaded(Loaded { dest, hp_mp: Some((40, 25)) }));
+        w.run_system_once(drive).unwrap();
+        assert_eq!(w.resource::<GameOver>().over.as_ref().map(|o| o.phase), Some(Phase::Jumping));
+        assert!(matches!(*w.resource::<JumpTask>(), JumpTask::FadeOut { dest: d, kind: 1, .. } if d == dest), "the jump enters the slot's area");
+        assert_eq!(w.resource::<GameOver>().snapshot, Some(Snapshot { dest, hp: 40, mp: 25 }), "FUN_001cb118 snapshots the loaded body");
+        let (hp, mp) = w.query::<&Sora>().single(&w).map(|s| (s.hp, s.mp)).unwrap();
+        assert_eq!((hp, mp), (20.min(40), 25), "HP is clamped to the maximum (20 in this test), MP from the record");
     }
 
     /// The disc's rows: record 1 has "Continue" (code 2) and "Load Game" (code 1), record 0x21 has "Quit" (4) and "Retry"

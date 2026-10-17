@@ -2451,30 +2451,45 @@ changes with the six bytes `DAT_01d69890` (world, area, entrance, three program 
 `0x35daa0..0x35e2c0`) comes back from `0x1d5e3b0`, `0x1d69898`, `0x1d6a0c0`, then `FUN_001abfe8(8)` (party reset) and `FUN_001b81f8`
 run and the jump enters the stored area record. `FUN_001047a8` (the start of every area, called by `FUN_001048e0`) takes the
 snapshot (`FUN_001cafa0`: copies the same words and `DAT_01d69890 = DAT_0033e830`, the area record) when `FUN_001cb358` allows:
-`FUN_001b9fb0` (a manager whose header word +4 has bit 12), or no manager (`FUN_001b9550`), the byte `DAT_0033e830 + 3` (the map
-program) below 0x33 and `DAT_0035e3a0` 0. `FUN_001cb3e8(1, 0xffff)` clears the snapshot (all bytes 0xff = "keep the record's").
+`FUN_001b9fb0` (a manager whose header word +4 has bit 12: allowed whatever the map program), else, with the byte
+`DAT_0033e830 + 3` (the map program) below 0x33: refused when `DAT_0035e3a0` is not 0, allowed when no manager exists
+(`FUN_001b9550`), refused when one does; with the program at 0x33 or above: refused. `FUN_001cb3e8(1, 0xffff)` clears the snapshot (all bytes 0xff = "keep the record's").
 
 ### 26.4 What the port does (`crates/kh2-app/src/menu_gameover.rs`, WP-GO1)
 
 * `route` is the table of 26.1 (`KoInput` from `Mission::ko_view`, `SummonState` / `SummonData` for Tinker Bell, `DriveState` for the
-  form): decided once when Sora's HP falls to 0 (`detect`, `FixedUpdate` between `Sim::SoraHurt` and `Sim::Sounds`, so Tinker
+  form; "in a drive form no game over" is [inferred] from `FUN_001793a8`'s test on `+0xb50` in 1..5, the form field mapping
+  to `DriveState::form` was not traced): decided once when Sora's HP falls to 0 (`detect`, `FixedUpdate` between `Sim::SoraHurt` and `Sim::Sounds`, so Tinker
   Bell's byte 7 is still set the tick the revive begins). Only types 0 and 3 start the game over; event 0x5a stays in
   `struggle.rs`; the revive stays in `summon.rs`; a form's end is not changed. `Sora::game_over` holds him down (`sora.rs`'s
   in-place stand-up does not run). Without disc data the old in-place stand-up runs.
 * The sound `0x13` (type 1 `0x33`) plays as `PlaySe::system` and the music stops (`audio_bgm::revive_stop`, the same `FUN_00137520`
   the revive uses); the list opens `OPEN_AFTER` = 1.5 s after the fall [inferred: the waits of 26.2 were not read].
 * The list is `menu_struggle`'s pointer list over the disc's row (record 1, or 0x21 for type 3): J / Enter confirms, W / S / arrows
-  move, no cancel. The field is frozen (`Pause::menu`) while it is up.
-* "Continue": the snapshot is the area record and Sora's HP at the last area start that `FUN_001cb358`'s rule allows (`track_area`;
-  a harness area start counts; a Struggle area, whose manager exists at the start, does not). The jump is `JumpTask::FadeOut` with
-  fade kind 1 (`0x80000001`); without a snapshot the record's own bytes stay (0xff) and the current area reloads. Sora's HP is the
-  snapshot's (full when none). The save body is NOT restored: `Progress` shares its story state, so copying only part of it would be
+  move [inferred: wrapping, as the Save menu's port does; `FUN_002967b8` was not read further], no cancel. The field is frozen
+  (`Pause::menu`) while it is up.
+* "Continue": the snapshot is the area record and Sora's HP and MP at the last area start that `FUN_001cb358`'s rule allows
+  (`track_area`, `snapshot_allowed(map program, manager's header bit 12 or None)`: bit 12 allows it whatever the program, a
+  manager without the bit forbids it, no manager needs program < 0x33; a harness area start counts; the Struggle's managers
+  exist at the area start without bit 12 in the files read, so those areas take no snapshot). `DAT_0035e3a0` is taken as 0
+  [inferred: nothing in the app writes it]. The jump is `JumpTask::FadeOut` with
+  fade kind 1 (`0x80000001`); without a snapshot the record's own bytes stay (0xff) and the current area reloads. Sora's HP and MP are
+  the area-start values (`FUN_001cb208` restores the save body; the party record in it holds the HP byte +8 and maximum +5 that
+  `FUN_0019f920` rebuilds the status from, so the original gives back the area-start values, not full HP [inferred: that the
+  record's HP byte follows the live HP at an area start was not traced]); full HP and the current MP when no snapshot exists.
+  The port floors the HP at 1 and caps it at the maximum (`continue_values`) so a snapshot taken at 0 HP cannot loop; a snapshot
+  taken at 1 HP does return him at 1 HP, as the restored record would [inferred]. The save body is NOT restored: `Progress` shares its story state, so copying only part of it would be
   inconsistent [GAP: items, munny, EXP and story flags earned since the area start stay]. The party reset `FUN_001abfe8(8)` and
   `FUN_001b81f8` are not ported.
 * "Retry" / "Quit" (type 3): `Mission::menu_exit` (with the manager) or the jump records the manager carried when it ended
   (`GameOverRequest::exits`); resolved as every trigger jump. HP is full.
 * "Load Game" (code 1): the app has no file load screen; the row is shown (it is on the disc) and refused ("not ported" in the log,
   the list stays). A cancel does not exist (+0x25 bit 0).
+* `route`'s simplifications [GAP]: with bit 0x20000 the original first tests `FUN_001b98a8` (a manager with a trigger for event 8 or a
+  failure picture: then only the event 0x5a is sent) and otherwise sends a drive form or a form field of 0xb to `FUN_001b4d78`
+  before the event; `route` and `struggle.rs` send the event whatever the form, and bit 0x20000 with no manager (the bit is
+  set by a manager's script and the app clears nothing) also gives the event. The form field `+0xb50` = 0xb (a special non-drive
+  mode with no counterpart in the app) is not modelled, so Tinker Bell's `+0xb50 == 0xb` exception to the revive is not either.
 * Not ported: the scene `GAMEOVER.mset` (107952 bytes on the disc; Sora keeps his own fall pose instead), kind 7's frame and the
   header group `+0x14` (3), the camera object (`FUN_00195898`), the revive effect object (`FUN_001cdf48`), the alternate list
   (record 10), type 1's difference (`FUN_00183fe0` skipped), Mickey's rescue (no object in the app), the drive form's end
@@ -2490,7 +2505,8 @@ program) below 0x33 and `DAT_0035e3a0` 0. `FUN_001cb3e8(1, 0xffff)` clears the s
   `001cb3e8`, `001047a8`, `00104d58`, `00104e18`, `0026fda0`, `0026f480`, `0026f698`, `0026f948`, `00254a08`, `00254a18`,
   `0024f330`, `002c14a8`, and the raw instructions of `0x1adbb8` (the alternate list's callback) and `0x1adc70` (Continue), for
   which the decomp has no function.
-* Tests: `the_knock_out_route_follows_fun_001cec00`, `the_record_and_the_manager_end_follow_the_type`,
+* Tests: `detect_as_a_system_starts_type_0_once_and_holds_sora` and `drive_as_a_system_takes_the_manager_request_waits_and_ends_with_the_jump`
+  (the ECS wiring through `run_system_once`; the second needs `KH2_ISO`), `the_knock_out_route_follows_fun_001cec00`, `the_record_and_the_manager_end_follow_the_type`,
   `death_to_list_to_choice_continue_closes_and_retry_needs_type_3`, `the_snapshot_rule_and_the_continue_destination`,
   `the_knock_out_edge_fires_once_per_fall`, `the_disc_rows_of_the_game_over`, and in `struggle.rs`
   `the_knock_out_view_carries_the_bit_the_kind_and_the_retry_and_quit_jumps`.

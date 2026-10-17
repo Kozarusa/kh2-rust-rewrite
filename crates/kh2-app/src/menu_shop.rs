@@ -602,6 +602,8 @@ struct Nodes {
     question: [usize; 2],
     /// The NEW / VIEWED tag sprites, one per row.
     marks: Vec<usize>,
+    /// The tab grid's texts: a name and a number for each of the 17 tabs (4 ranks, 13 categories), `FUN_0028aaa8`.
+    tabs: Vec<usize>,
 }
 
 impl Nodes {
@@ -613,7 +615,7 @@ impl Nodes {
     }
 
     fn texts(&self) -> Vec<usize> {
-        let mut v: Vec<usize> = self.rows.iter().chain(&self.list).chain(&self.prices).chain(&self.owned).chain(&self.question).copied().collect();
+        let mut v: Vec<usize> = self.rows.iter().chain(&self.list).chain(&self.prices).chain(&self.owned).chain(&self.question).chain(&self.tabs).copied().collect();
         v.extend([self.title, self.hand, self.detail, self.munny]);
         v
     }
@@ -661,6 +663,10 @@ pub struct ShopMenu {
     first_msgs: [u32; 2],
     /// The sequence of `itemshop.2ld` that holds the tag groups.
     mark_seq: Option<usize>,
+    /// A copy of that sequence for the group records and anchors the pages read (the scene owns the drawn one).
+    seqd: Option<kh2_image::seqd::Seqd>,
+    /// Whether any pad button was held this frame (page 10's count-up jumps to the end while one is, `FUN_00299020`).
+    held: bool,
 }
 
 struct Open {
@@ -788,11 +794,15 @@ fn load(m: &mut ShopMenu, disc: &Disc, scene: &mut MenuScene, images: &mut Asset
     n.question = [add(scene, None, tex), add(scene, None, tex)];
     // The tag's rectangle (0, 128)-(40, 140) is the NEW! art of the file's second image [inferred: the port's sequences
     // draw from one image each; the loader's rule for which one a sequence uses was not read].
+    for _ in 0..2 * TABS {
+        n.tabs.push(add(scene, None, tex));
+    }
     let tag_tex = if scene.texs.len() > m.tex + 1 { m.tex + 1 } else { m.tex };
     for _ in 0..LIST_ROWS + 3 {
         n.marks.push(add(scene, mark_seq.map(|q| m.seq_base + q), tag_tex));
     }
     m.mark_seq = mark_seq;
+    m.seqd = mark_seq.and_then(|q| scene.seqs.get(m.seq_base + q)).cloned();
     m.nodes = n;
     m.shops = shops;
     m.wares = wares;
@@ -1101,18 +1111,70 @@ fn synth_key(m: &mut ShopMenu, scene: &mut MenuScene, se: &mut MessageWriter<Pla
 /// pitch (+0x1c), the text size (+0x18, 0xf when 0) and the second text's x (the group's x, also the NEW tag's origin).
 /// The port's own numbers when the file has no such group.
 fn reward_metrics(m: &ShopMenu) -> (f32, f32, f32) {
-    let g = m.mark_seq.and_then(|q| m.layd.seqs.get(q)).and_then(|q| q.groups.get(ROW_PLATE));
+    let g = m.seqd.as_ref().and_then(|q| q.groups.get(ROW_PLATE));
     g.map_or((at::PITCH, 15.0, at::PRICE_RIGHT + 20.0 - at::ROWS[0]), |g| (g.unk1c as f32, if g.size == 0 { 15.0 } else { g.size as f32 }, g.x as f32))
 }
 
 /// The row pitch of a list widget's plate group (+0x1c). Page 10 builds its rows from group 0x60 and page 0x17 from group
 /// 0x6e (`FUN_0028f9a8`, over the rows `FUN_0028b470` made for page 0xb); the disc has 23 and 26.
+fn group_x(m: &ShopMenu, group: usize) -> f32 {
+    m.seqd.as_ref().and_then(|q| q.groups.get(group)).map_or(at::PRICE_RIGHT - at::ROWS[0], |g| g.x as f32)
+}
+
 fn group_pitch(m: &ShopMenu, group: usize) -> f32 {
-    m.mark_seq.and_then(|q| m.layd.seqs.get(q)).and_then(|q| q.groups.get(group)).map_or(at::PITCH, |g| g.unk1c as f32)
+    m.seqd.as_ref().and_then(|q| q.groups.get(group)).map_or(at::PITCH, |g| g.unk1c as f32)
 }
 
 /// `FUN_0028b470`: the sprite group of a reward row's plate.
 const ROW_PLATE: usize = 0x62;
+
+/// The header window of pages 10 and 0xb (`FUN_0028aaa8`: `FUN_0029b600(window, .., 0x67, 0x68, 0)`), the rank tab group and
+/// the category tab group (`FUN_0029b6c0(.., 99 / 100, ..)`), and the number of tabs of each kind.
+const WINDOW_GROUP: usize = 0x67;
+const RANK_TAB: usize = 99;
+const CATEGORY_TAB: usize = 100;
+const TABS: usize = 17;
+
+/// The anchor of a group at its last frame: the translation of its first animation with flag bit 2, plus the pivot times
+/// the scale (`FUN_00236cf8` -> `FUN_002375c0`); `None` when the group has no such animation.
+fn anchor_of(q: &kh2_image::seqd::Seqd, group: usize) -> Option<[f32; 2]> {
+    q.anchor(group, q.last_frame(group), &kh2_image::seqd::Ext::default()).map(|a| [a[0] as f32, a[1] as f32])
+}
+
+/// Where a widget parented to the header window starts: the window's anchor (`FUN_0029b060`), then the widget's own group
+/// anchor. The window's group record (x 460, y 123) is NOT added: that would put the lists at x 484 and the empty-list
+/// texts (anchors 232 and 24 + 232 = 256 = half the 512 screen) show the origin is the anchor alone [inferred; the
+/// decompile's `FUN_00237618` addition for the parent was not matched to a record field].
+fn plate_origin(q: &kh2_image::seqd::Seqd, group: usize) -> Option<[f32; 2]> {
+    let w = anchor_of(q, WINDOW_GROUP)?;
+    let a = anchor_of(q, group)?;
+    Some([w[0] + a[0], w[1] + a[1]])
+}
+
+/// The place of each tab's name and number (`FUN_0028aaa8`): rank tab k at the group's anchor and k times its `+0x1c`
+/// below; category tab n at `(n % 4) * +0x20`, `(n / 4) * +0x1c`; the number is a child at the group record's x, y.
+/// Index 0..4 are the rank tabs, 4.. the categories.
+fn tab_places(q: &kh2_image::seqd::Seqd) -> Option<Vec<([f32; 2], [f32; 2])>> {
+    let w = anchor_of(q, WINDOW_GROUP)?;
+    let mut v = Vec::new();
+    for (group, count) in [(RANK_TAB, 4usize), (CATEGORY_TAB, 13)] {
+        let (a, g) = (anchor_of(q, group)?, q.groups.get(group)?);
+        for n in 0..count {
+            let (dx, dy) = if group == RANK_TAB { (0, g.unk1c * n as i32) } else { (g.unk20 * (n % 4) as i32, g.unk1c * (n / 4) as i32) };
+            let name = [w[0] + a[0] + dx as f32, w[1] + a[1] + dy as f32];
+            v.push((name, [name[0] + g.x as f32, name[1] + g.y as f32]));
+        }
+    }
+    Some(v)
+}
+
+impl ShopMenu {
+    /// The first row of a list page whose rows hang on plate group `group` of the header window; the port's own first row
+    /// when the file has no such group.
+    fn rows_origin(&self, group: usize) -> [f32; 2] {
+        self.seqd.as_ref().and_then(|q| plate_origin(q, group)).unwrap_or(at::ROWS)
+    }
+}
 
 /// `FUN_00191660`: how many characters a text shows before its end (glyphs and icons; a space is not counted).
 fn shown_chars(tokens: &[Token]) -> usize {
@@ -1183,23 +1245,38 @@ fn draw_synth(m: &ShopMenu, scene: &mut MenuScene, text: &MenuText, owned: &dyn 
         synth::Page::Materials { totals: false } => group_pitch(m, 0x6e),
         _ => at::PITCH,
     };
-    let row_y = |k: usize| at::ROWS[1] + pitch * k as f32;
+    // Pages 10, 0xb and 0x17 hang their rows on a plate group of the header window (`plate_origin`) and put the second text
+    // at the group record's x; the other pages keep the port's own first row [inferred].
+    let (base, second) = match s.page {
+        synth::Page::Rewards => (m.rows_origin(ROW_PLATE), Some(reward_metrics(m).2)),
+        synth::Page::Materials { totals: true } => (m.rows_origin(0x60), Some(group_x(m, 0x60))),
+        synth::Page::Materials { totals: false } => (m.rows_origin(0x6e), Some(group_x(m, 0x6e))),
+        _ => (at::ROWS, None),
+    };
+    let (price_x, price_align) = second.map_or((at::PRICE_RIGHT, 1), |x| (base[0] + x, 0));
+    let hand_x = base[0] - (at::ROWS[0] - at::HAND[0]);
+    let tag_x = base[0] - (at::ROWS[0] - at::TAG_X);
+    let row_y = |k: usize| base[1] + pitch * k as f32;
     let row = |scene: &mut MenuScene, k: usize, tokens: Vec<Token>, c: [u8; 4], right: Option<String>| {
         if k < n.list.len() {
-            set_label(scene, n.list[k], Some(text_label(text, tokens, c, 0, [at::ROWS[0], row_y(k)])));
+            set_label(scene, n.list[k], Some(text_label(text, tokens, c, 0, [base[0], row_y(k)])));
             if let Some(r) = right {
-                set_label(scene, n.prices[k], Some(text_label(text, literal(text, &r), c, 1, [at::PRICE_RIGHT, row_y(k)])));
+                set_label(scene, n.prices[k], Some(text_label(text, literal(text, &r), c, price_align, [price_x, row_y(k)])));
             }
         }
     };
     let hand = |scene: &mut MenuScene, k: usize| {
-        set_label(scene, n.hand, Some(text_label(text, literal(text, ">"), at::SELECTED, 0, [at::HAND[0], row_y(k)])));
+        set_label(scene, n.hand, Some(text_label(text, literal(text, ">"), at::SELECTED, 0, [hand_x, row_y(k)])));
     };
+    let tag_at = |y: f32| [tag_x, y];
     let pick = |k: usize, cur: usize, open: bool| if !open { at::GREY } else if k == cur { at::SELECTED } else { at::IDLE };
     set_label(scene, n.munny, Some(text_label(text, literal(text, &format!("{munny}")), at::SELECTED, 1, at::MUNNY)));
     let title = |scene: &mut MenuScene, tokens: Vec<Token>| set_label(scene, n.title, Some(text_label(text, tokens, at::SELECTED, 0, at::TITLE)));
     let window = |scene: &mut MenuScene, tokens: Vec<Token>| set_label(scene, n.detail, Some(text_label(text, tokens, at::SELECTED, 0, [at::ROWS[0], 200.0])));
     // A window page (0x12, 0x13, 0x14, 0x16) shows its text alone [inferred: the window covers the page under it].
+    if matches!(s.page, synth::Page::Materials { totals: true } | synth::Page::Rewards) {
+        draw_tabs(m, scene, text, &book, s, moogle);
+    }
     match s.page {
         synth::Page::Top => {
             title(scene, message(text, u32::from(o.stock.message)));
@@ -1276,7 +1353,7 @@ fn draw_synth(m: &ShopMenu, scene: &mut MenuScene, text: &MenuText, owned: &dyn 
             // The rows are the row plate group's (`FUN_0028b470`): row k at k times the group's +0x1c below the first, the
             // second text at the group's x to its right with the NEW tag ending there, both texts at the group's size.
             let (pitch, size, col2) = reward_metrics(m);
-            let ry = |r: usize| at::ROWS[1] + pitch * r as f32;
+            let ry = |r: usize| base[1] + pitch * r as f32;
             let sized = |l: Label| Label { style: Style { size: Some(size), ..l.style }, ..l };
             let first = s.rew.saturating_sub(LIST_ROWS - 1);
             for (k, &(ci, met)) in s.rewards.iter().enumerate().skip(first).take(LIST_ROWS) {
@@ -1284,26 +1361,27 @@ fn draw_synth(m: &ShopMenu, scene: &mut MenuScene, text: &MenuText, owned: &dyn 
                 let r = k - first;
                 let color = pick(k, s.rew, met);
                 if r < n.list.len() {
-                    set_label(scene, n.list[r], Some(sized(text_label(text, message(text, u32::from(c.text)), color, 0, [at::ROWS[0], ry(r)]))));
+                    set_label(scene, n.list[r], Some(sized(text_label(text, message(text, u32::from(c.text)), color, 0, [base[0], ry(r)]))));
                 }
                 let item = m.wares.iter().find(|w| w.id == c.reward).map(|w| (w.kind, w.flag1, w.name));
                 if let Some(given) = synth::reward_text(t, c, met, item) {
-                    set_label(scene, n.owned[r], Some(sized(text_label(text, reward_tokens(text, given), color, 0, [at::ROWS[0] + col2, ry(r)]))));
+                    set_label(scene, n.owned[r], Some(sized(text_label(text, reward_tokens(text, given), color, 0, [base[0] + col2, ry(r)]))));
                 }
                 let mark = Moogle::bit(s.marks.rewards, u32::from(ci)).then_some(s.marks.fresh);
-                put_tag(m, scene, r, tag_of(mark), [at::ROWS[0] + col2, ry(r)]);
+                put_tag(m, scene, r, tag_of(mark), [base[0] + col2, ry(r)]);
             }
             if !s.rewards.is_empty() {
-                set_label(scene, n.hand, Some(text_label(text, literal(text, ">"), at::SELECTED, 0, [at::HAND[0], ry(s.rew - first)])));
+                set_label(scene, n.hand, Some(text_label(text, literal(text, ">"), at::SELECTED, 0, [hand_x, ry(s.rew - first)])));
             }
         }
         synth::Page::Materials { totals } => {
             title(scene, message(text, if totals { synth::msg::COLLECTION } else { synth::msg::MATERIALS }));
             let first = s.mat.saturating_sub(LIST_ROWS - 1);
             for (k, &i) in s.slots.iter().enumerate().skip(first).take(LIST_ROWS) {
-                let v = if totals { moogle.total_at(i) } else { moogle.stock_at(i) };
+                // Page 10 shows the counting-up totals (`s.shown`), page 0x17 the stock.
+                let v = if totals { s.shown.get(i).copied().unwrap_or_else(|| moogle.total_at(i)) } else { moogle.stock_at(i) };
                 // A material never handed over (listed by story flag 0x4837, `FUN_0028f9a8`) shows its name as "?".
-                let label = if totals && v == 0 { masked(text, &name(mats[i])) } else { name(mats[i]) };
+                let label = if totals && moogle.total_at(i) == 0 { masked(text, &name(mats[i])) } else { name(mats[i]) };
                 row(scene, k - first, label, pick(k, s.mat, true), Some(format!("{v}")));
                 // The NEW / VIEWED tag of a material handed over for the first time at this opening (session `+8`).
                 put_tag(m, scene, k - first, tag_of(synth::material_mark(&s.marks, i)), tag_at(row_y(k - first)));
@@ -1336,6 +1414,32 @@ fn draw_synth(m: &ShopMenu, scene: &mut MenuScene, text: &MenuText, owned: &dyn 
             window(scene, v);
         }
         _ => {}
+    }
+}
+
+/// The tab grid of pages 10 and 0xb (`FUN_0028aaa8`, numbers `FUN_0028f850`, plates `FUN_0028fea0`): the four rank tabs and
+/// the thirteen category tabs, each a name and the sum of the displayed totals. A category tab shows only when the record's
+/// sum is above 0 or story flag 0x4837 is up. A tab the count-up marked is drawn bright [inferred: the original swaps its
+/// plate's sprite group for `FUN_0028f468(0)`].
+fn draw_tabs(m: &ShopMenu, scene: &mut MenuScene, text: &MenuText, b: &synth::Book, s: &synth::Session, moogle: &Moogle) {
+    let Some(places) = m.seqd.as_ref().and_then(tab_places) else { return };
+    let t = b.t;
+    let shown = synth::tab_sums(b, &|i| s.shown.get(i).copied().unwrap_or_else(|| moogle.total_at(i)));
+    let record = synth::tab_sums(b, &|i| moogle.total_at(i));
+    for (k, &(name_at, number_at)) in places.iter().enumerate() {
+        let (name, number, lit, show) = if k < 4 {
+            (t.rank_names[3 - k], shown.ranks[3 - k], s.marks.rank_tabs >> k & 1 != 0, true)
+        } else {
+            let c = k - 4;
+            (t.category_names[c], shown.cats[c], s.marks.cat_tabs >> c & 1 != 0, record.cats[c] > 0 || s.all)
+        };
+        let (a, z) = (m.nodes.tabs[2 * k], m.nodes.tabs[2 * k + 1]);
+        if !show {
+            continue;
+        }
+        let color = if lit { at::SELECTED } else { at::IDLE };
+        set_label(scene, a, Some(text_label(text, message(text, u32::from(name)), color, 0, name_at)));
+        set_label(scene, z, Some(text_label(text, literal(text, &format!("{number}")), color, 0, number_at)));
     }
 }
 
@@ -1404,6 +1508,7 @@ fn input(
         keys.reset_all();
         return;
     }
+    m.held = keys.get_pressed().next().is_some();
     let Some(o) = m.open.as_ref() else { return };
     if o.closing > 0 {
         keys.reset_all();
@@ -1565,10 +1670,35 @@ fn hold(m: Res<ShopMenu>, mut pause: ResMut<Pause>, mut keys: ResMut<ButtonInput
     }
 }
 
-fn tick(mut m: ResMut<ShopMenu>, mut scene: ResMut<MenuScene>, real: Res<Time<Real>>) {
+/// Page 10's task (`FUN_00285b30`): while `+0x112d` is set it runs the count-up (`FUN_0028f490`) once a frame, with
+/// "any button held" as its skip flag, and the page is redrawn when the totals moved.
+fn count_up(m: &mut ShopMenu, scene: &mut MenuScene, p: &Progress, ticks: u32) {
+    let held = m.held;
+    let ShopMenu { mix, wares, open, .. } = &mut *m;
+    let (Some((mix, t, mats)), Some(o)) = (mix.as_ref(), open.as_mut()) else { return };
+    let Some(s) = o.synth.as_mut().filter(|s| s.page == synth::Page::Materials { totals: true }) else { return };
+    let rank = |id: u16| wares.iter().find(|w| w.id == id).map_or(0, |w| w.rank);
+    let flag1 = |id: u16| wares.iter().find(|w| w.id == id).map_or(0, |w| w.flag1);
+    let book = synth::Book { mix, t, mats, rank: &rank, flag1: &flag1 };
+    let mut moved = false;
+    for _ in 0..ticks {
+        if !s.count_up(&book, &p.moogle, held) {
+            break;
+        }
+        moved = true;
+    }
+    if moved {
+        redraw(m, scene, &|id| p.item_count(id), p.wallet(), &p.moogle);
+    }
+}
+
+fn tick(mut m: ResMut<ShopMenu>, mut scene: ResMut<MenuScene>, real: Res<Time<Real>>, progress: Option<Res<Progress>>) {
     let Some(o) = m.open.as_ref() else { return };
     let ticks = scene.advance(real.delta_secs());
     if o.closing == 0 {
+        if let Some(p) = progress.as_deref() {
+            count_up(&mut m, &mut scene, p, ticks);
+        }
         return;
     }
     let c = o.closing + ticks;
@@ -1615,6 +1745,8 @@ pub mod synth {
         pub const CATEGORY_NAMES: u32 = 0x0038_2640;
         /// The icon of a material category (`FUN_0028a1b8`: the table at 0x382660, indexed by item +4).
         pub const CATEGORY_ICONS: u32 = 0x0038_2660;
+        /// The name of each rank tab (`FUN_0028aaa8`: tab k reads entry 3 - k).
+        pub const RANK_NAMES: u32 = 0x0038_2638;
         /// Pairs (item type, message) ended by a negative type: the name of an item type (`FUN_002553c0`).
         pub const TYPE_NAMES: u32 = 0x0038_0a60;
         /// Triples (item type, icon, icon) ended by a negative type (`FUN_00255368`; the first icon with a 0 flag).
@@ -1772,6 +1904,8 @@ pub mod synth {
         /// `FUN_0028a1b8`: the category names and icons of the materials (`addr::CATEGORY_NAMES`, `CATEGORY_ICONS`).
         pub category_names: [u16; 13],
         pub category_icons: [u16; 13],
+        /// `FUN_0028aaa8`: the names of the four rank tabs (`addr::RANK_NAMES`, tab k shows entry 3 - k).
+        pub rank_names: [u16; 4],
         /// `FUN_002553c0` / `FUN_00255368`: (type, message) and (type, icon) of the other items.
         pub type_names: Vec<(i16, u16)>,
         pub type_icons: Vec<(i16, u16)>,
@@ -1809,6 +1943,9 @@ pub mod synth {
             for k in 0..13 {
                 t.category_names[k] = u16_at(addr::CATEGORY_NAMES + 2 * k as u32)?;
                 t.category_icons[k] = u16_at(addr::CATEGORY_ICONS + 2 * k as u32)?;
+            }
+            for (k, v) in t.rank_names.iter_mut().enumerate() {
+                *v = u16_at(addr::RANK_NAMES + 2 * k as u32)?;
             }
             for k in 0..64u32 {
                 let ty = u16_at(addr::TYPE_NAMES + 4 * k)? as i16;
@@ -2289,6 +2426,51 @@ pub mod synth {
         pub rewards: u64,
         /// `+0x112d`: set at the opening, cleared when the first page is left: a mark is NEW while it is set, VIEWED after.
         pub fresh: bool,
+        /// `+0x10`: the material slots whose displayed total differed from the record's at a count-up step
+        /// (`FUN_0028f490`; `FUN_0028f9a8` lights the row plate).
+        pub rows: u64,
+        /// `+0x20`: the rank tabs (bit 3 - rank) of those slots (`FUN_0028fea0` lights the tab plate).
+        pub rank_tabs: u32,
+        /// `+0x24`: the category tabs (bit category) of those slots.
+        pub cat_tabs: u32,
+    }
+
+    /// The (rank, category) of material slot `i`: the item row's `+5` and `+4` (`FUN_001a66e8` of the slot's id).
+    pub fn slot_info(b: &Book, i: usize) -> (u8, u8) {
+        b.mats.get(i).map_or((0, 0), |&id| ((b.rank)(id), (b.flag1)(id)))
+    }
+
+    /// The numbers of the tab grid (`FUN_0028f698`).
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct Tabs {
+        /// `+0x10`: the sum per rank (item `+5`), at most 99,999.
+        pub ranks: [u32; 4],
+        /// `+0x20`: the sum per category (item `+4`), at most 9,999.
+        pub cats: [u32; 13],
+        /// `+0x54`: how many materials have a non-zero value.
+        pub kinds: u32,
+        /// `+0x58`: the sum of all values, at most 99,999.
+        pub total: u32,
+    }
+
+    /// `FUN_0028f698(0)` over the displayed totals (`values`, 50 slots), `FUN_0028f698(1)` over the record's.
+    pub fn tab_sums(b: &Book, values: &dyn Fn(usize) -> u32) -> Tabs {
+        let mut t = Tabs::default();
+        for i in 0..MOOGLE_MATERIALS {
+            let (rank, category) = slot_info(b, i);
+            let v = values(i);
+            let (r, c) = (usize::from(rank.min(3)), usize::from(category.min(12)));
+            t.ranks[r] = (t.ranks[r] + v).min(99_999);
+            t.cats[c] += v;
+            if t.cats[c] > 9_999 {
+                t.cats[c] = 9_999;
+            }
+            if v != 0 {
+                t.kinds += 1;
+            }
+            t.total = (t.total + v).min(99_999);
+        }
+        t
     }
 
     /// `FUN_002916d8`: the 45 entries (bits 0..0x2c) that are learned or made and not yet seen (record `+0x20`).
@@ -2339,6 +2521,8 @@ pub mod synth {
         pub rewards: Rewards,
         /// The materials handed over for the first time (the session's `+8` marks).
         pub known: u64,
+        /// The record's totals before the hand-over (`FUN_00284c10` copies them into the display state `+0x68` first).
+        pub before: Vec<u32>,
         /// The entries learned by the recipe items and the sets the rewards opened.
         pub learned: u64,
         /// The first page: 10 after a hand-over, else 0x10 after recipes, else 9.
@@ -2351,7 +2535,7 @@ pub mod synth {
     /// taken; an item of the other kinds is only taken). The collection rewards (`pay_rewards`, `FUN_00291140`) come
     /// between the two, after the totals changed.
     pub fn open(b: &Book, s: &mut dyn Store) -> Opening {
-        let mut o = Opening { page: Page::Top, ..Opening::default() };
+        let mut o = Opening { page: Page::Top, before: (0..MOOGLE_MATERIALS).map(|i| s.moogle().total_at(i)).collect(), ..Opening::default() };
         if s.story(b.mix.story_flag) {
             Moogle::with(&mut s.moogle_mut().unlocks, u32::from(b.mix.story_bit));
         }
@@ -2492,6 +2676,9 @@ pub mod synth {
         pub rew: usize,
         /// The NEW marks of this visit.
         pub marks: Marks,
+        /// The totals page 10 displays (state `+0x68`): they start at the record's values from before the hand-over and
+        /// count up to the record's (`count_up`).
+        pub shown: Vec<u32>,
     }
 
     /// What a key did.
@@ -2514,8 +2701,8 @@ pub mod synth {
         /// The third row is confirmed: the opening, then its notices and its first page.
         pub fn start(b: &Book, s: &mut dyn Store) -> (Session, Opening) {
             let o = open(b, s);
-            let marks = Marks { entries: unseen_entries(s.moogle()), known: o.known, rewards: o.rewards.fresh, fresh: true };
-            let mut x = Session { rows: top_rows(b, s.moogle()), rewards: o.rewards.list.clone(), marks, all: s.story(STORY_ALL_REWARDS), ..Session::default() };
+            let marks = Marks { entries: unseen_entries(s.moogle()), known: o.known, rewards: o.rewards.fresh, fresh: true, ..Marks::default() };
+            let mut x = Session { rows: top_rows(b, s.moogle()), rewards: o.rewards.list.clone(), marks, all: s.story(STORY_ALL_REWARDS), shown: o.before.clone(), ..Session::default() };
             // `FUN_002879e8`: notice 1 comes once for each reward item (state `+0x13c`, by reward), notice 4 once for each
             // material marked (`+0x134`, by place); the others once.
             for k in (0..6).filter(|k| o.notices >> k & 1 != 0) {
@@ -2543,6 +2730,35 @@ pub mod synth {
                 x.page = Page::Opening;
             }
             (x, o)
+        }
+
+        /// One step of `FUN_0028f490`, run every frame by page 10's task while `+0x112d` (`marks.fresh`) is set: every
+        /// displayed total below the record's goes up by one, or all of them jump to the record's at once when `skip`
+        /// (any pad button held). A slot whose displayed total differs from the record's first sets its marks (row
+        /// `+0x10`, rank tab `+0x20` bit 3 - rank, category tab `+0x24`). Returns whether anything was different.
+        pub fn count_up(&mut self, b: &Book, m: &Moogle, skip: bool) -> bool {
+            if !self.marks.fresh {
+                return false;
+            }
+            self.shown.resize(MOOGLE_MATERIALS, 0);
+            let mut changed = false;
+            for i in 0..MOOGLE_MATERIALS {
+                let record = m.total_at(i);
+                if self.shown[i] == record {
+                    continue;
+                }
+                changed = true;
+                let (rank, category) = slot_info(b, i);
+                self.marks.rows |= 1 << i;
+                self.marks.rank_tabs |= 1 << (3 - u32::from(rank.min(3)));
+                self.marks.cat_tabs |= 1 << u32::from(category.min(12));
+                if skip {
+                    self.shown[i] = record;
+                } else if self.shown[i] < record {
+                    self.shown[i] += 1;
+                }
+            }
+            changed
         }
 
         pub fn goto(&mut self, b: &Book, m: &Moogle, p: Page) {
@@ -3688,7 +3904,7 @@ mod tests {
         let plate = &q.groups[ROW_PLATE];
         assert_eq!((plate.x, plate.size, plate.unk1c), (270, 13, 23), "FUN_0028b470: the second text at x 270, size 13, rows 23 apart");
         // The pitches the port applies to the material pages (`group_pitch`): page 10's group 0x60 and page 0x17's group 0x6e.
-        let menu = ShopMenu { layd: two.layd.clone(), mark_seq: Some(seq), ..ShopMenu::default() };
+        let menu = ShopMenu { seqd: Some(q.clone()), mark_seq: Some(seq), ..ShopMenu::default() };
         assert_eq!((group_pitch(&menu, 0x60), group_pitch(&menu, 0x6e)), (23.0, 26.0));
         assert_eq!(group_pitch(&ShopMenu::default(), 0x60), at::PITCH, "no file: the port's pitch");
         let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok()).unwrap();
@@ -3729,6 +3945,89 @@ mod tests {
 
     /// The disc: `itemshop.2ld` has the tag groups 0x77 / 0x78 and the rows' plate groups, and `cond` rows read like
     /// the rules `cond_met` ports (skipped without `KH2_ISO`).
+    /// Page 10's count-up (`FUN_0028f490`): the displayed totals start at the record's values from before the hand-over
+    /// and rise by one a frame, or jump to the record's while a button is held; a differing slot marks its row, rank tab
+    /// and category tab; nothing moves once `+0x112d` (`marks.fresh`) has fallen, and a total above the record stays.
+    #[test]
+    fn the_count_up_steps_one_a_frame_or_jumps_and_marks_the_tabs() {
+        let (mix, t, mats) = mix();
+        let b = Book { mix: &mix, t: &t, mats: &mats, rank: &rk, flag1: &cat };
+        let mut s = Fake::default();
+        s.m.totals = vec![0; 0x32];
+        s.m.totals[0] = 5;
+        s.items.insert(0x200, 3);
+        s.items.insert(0x201, 2);
+        let (mut x, o) = Session::start(&b, &mut s);
+        assert_eq!((s.m.total_at(0), s.m.total_at(1)), (8, 2), "the hand-over raised the record");
+        assert_eq!((o.before[0], o.before[1], o.before.len()), (5, 0, 0x32), "the display starts at the totals from before");
+        assert_eq!((x.shown[0], x.shown[1]), (5, 0));
+        assert!(x.marks.fresh);
+        let mut seen = Vec::new();
+        while x.count_up(&b, &s.m, false) {
+            seen.push((x.shown[0], x.shown[1]));
+        }
+        assert_eq!(seen, vec![(6, 1), (7, 2), (8, 2)], "one step a frame, each total stopping at the record's");
+        assert_eq!(x.marks.rows, 0b11);
+        // Slot 0 is rank 0 (tab 3) of category 9, slot 1 rank 1 (tab 2) of category 1.
+        assert_eq!((x.marks.rank_tabs, x.marks.cat_tabs), (0b1100, 1 << 9 | 1 << 1));
+        // A held button jumps at once.
+        x.shown = o.before.clone();
+        assert!(x.count_up(&b, &s.m, true));
+        assert_eq!((x.shown[0], x.shown[1]), (8, 2));
+        assert!(!x.count_up(&b, &s.m, true), "equal: nothing to do");
+        // A displayed total above the record is not lowered.
+        x.shown[0] = 10;
+        assert!(x.count_up(&b, &s.m, false));
+        assert_eq!(x.shown[0], 10);
+        // Once the first page is left the display is no longer stepped.
+        x.shown = o.before.clone();
+        x.marks.fresh = false;
+        assert!(!x.count_up(&b, &s.m, false));
+        assert_eq!((x.shown[0], x.shown[1]), (5, 0));
+    }
+
+    /// `FUN_0028f698`: rank sums stop at 99,999, category sums at 9,999, the total at 99,999; the kinds count the non-zero values.
+    #[test]
+    fn the_tab_sums_are_capped_per_rank_category_and_total() {
+        let (mix, t, mats) = mix();
+        let b = Book { mix: &mix, t: &t, mats: &mats, rank: &rk, flag1: &cat };
+        let small = synth::tab_sums(&b, &|i| [3, 4][i.min(1)] * u32::from(i < 2));
+        assert_eq!((small.ranks, small.kinds, small.total), ([3, 4, 0, 0], 2, 7));
+        assert_eq!((small.cats[9], small.cats[1]), (3, 4));
+        let big = synth::tab_sums(&b, &|i| [60_000, 50_000][i.min(1)] * u32::from(i < 2));
+        assert_eq!((big.ranks, big.total), ([60_000, 50_000, 0, 0], 99_999));
+        assert_eq!((big.cats[9], big.cats[1]), (9_999, 9_999));
+        let huge = synth::tab_sums(&b, &|i| if i == 0 { 200_000 } else { 0 });
+        assert_eq!((huge.ranks[0], huge.total, huge.kinds), (99_999, 99_999, 1));
+    }
+
+    /// The header window of pages 10 and 0xb (`FUN_0028aaa8`) on the disc: group 0x67's anchor animation (flag bit 2) rests at
+    /// (24, 60); the empty-list texts' groups 0x66 and 0x6f have anchors 232 and the window's 24 put them at half the 512 screen,
+    /// which is why the group record's x 460 is not added; the rows hang on the plate groups' anchors, the tabs on groups 99
+    /// and 100 (skipped without `KH2_ISO`).
+    #[test]
+    fn the_disc_window_origin_row_origins_and_tab_places() {
+        let Ok(iso) = std::env::var("KH2_ISO") else { return };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let two = layd::parse_2ld(&a.read("menu/us/itemshop.2ld").unwrap()).unwrap();
+        let q = &two.layd.seqs[two.layd.seqs.iter().position(|q| q.groups.len() > TAG_NEW.max(TAG_VIEWED)).unwrap()];
+        assert_eq!(anchor_of(q, WINDOW_GROUP), Some([24.0, 60.0]));
+        assert_eq!((q.groups[WINDOW_GROUP].x, q.groups[WINDOW_GROUP].y), (460, 123), "the record that is not added");
+        assert_eq!(anchor_of(q, 0x66).map(|a| 24.0 + a[0]), Some(256.0));
+        assert_eq!(anchor_of(q, 0x6f).map(|a| 24.0 + a[0]), Some(256.0));
+        assert_eq!(plate_origin(q, 0x60), Some([62.0, 162.0]), "page 10");
+        assert_eq!(plate_origin(q, ROW_PLATE), Some([43.0, 162.0]), "page 0xb");
+        assert_eq!(plate_origin(q, 0x6e), Some([64.0, 67.0]), "page 0x17");
+        let tabs = tab_places(q).expect("the tab groups");
+        assert_eq!(tabs.len(), TABS);
+        assert_eq!(tabs[0], ([23.0, 62.0], [123.0, 62.0]), "rank tab 0: name at the anchor, number 100 to the right");
+        assert_eq!(tabs[3].0, [23.0, 131.0], "rank tab 3: three pitches (23) down");
+        assert_eq!(tabs[4], ([139.0, 62.0], [214.0, 62.0]), "category 0");
+        assert_eq!(tabs[4 + 5].0, [229.0, 85.0], "category 5: second column (pitch 90), second row");
+        assert_eq!(tabs[4 + 12].0, [139.0, 131.0], "category 12 starts the fourth row");
+        assert!(tabs[4 + 3].1[0] < 512.0, "the last column's number starts inside the screen");
+    }
+
     #[test]
     fn the_disc_shop_layout_has_the_tag_groups_and_the_rewards_read_as_conditions() {
         let Ok(iso) = std::env::var("KH2_ISO") else { return };

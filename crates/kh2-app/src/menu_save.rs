@@ -367,6 +367,10 @@ pub struct SaveMenu {
     flow: Flow,
     loaded: bool,
     layd: Layd,
+    /// The second layer set of `save.2ld` (the entry named `load`, which `FUN_00258bf0` picks with `FUN_0023c438(file, 1)`) and the
+    /// scene index of its own sequence 0: the Load screen's header word and panels.
+    load_layd: Option<Layd>,
+    load_seq: usize,
     nodes: Nodes,
     /// Index of the first of `save.2ld`'s three textures and sequences in `MenuScene`.
     tex_base: usize,
@@ -521,6 +525,14 @@ fn load(disc: Res<Disc>, mut images: ResMut<Assets<Image>>, mut scene: ResMut<Me
     let Layd { layers, layouts, seqs } = two.layd;
     scene.seqs.extend(seqs);
     save.layd = Layd { layers, layouts, seqs: Vec::new() };
+    if let Some(l) = disc.read("menu/us/save.2ld").and_then(|b| load_layd(&b)) {
+        save.load_seq = scene.seqs.len();
+        let Layd { layers, layouts, mut seqs } = l;
+        scene.seqs.push(seqs.swap_remove(0));
+        save.load_layd = Some(Layd { layers, layouts, seqs: Vec::new() });
+    } else {
+        warn!("menu: save.2ld has no second layer set (`load`); the Load screen uses the Save screen's header");
+    }
     save.dir = progress::save_dir();
     save.nodes = build_nodes(&mut scene, save.tex_base, save.seq_base);
     save.point_rows = disc.read_root("SLUS_210.05").map(|e| point_rows(&e)).unwrap_or_default();
@@ -528,6 +540,15 @@ fn load(disc: Res<Disc>, mut images: ResMut<Assets<Image>>, mut scene: ResMut<Me
         warn!("menu: menu kind 1's rows are not readable from SLUS_210.05; a save point opens the field menu's one row");
     }
     save.loaded = true;
+}
+
+/// The second layer set of `save.2ld`: the BAR entries of type 0x1c are `save` and `load` (`FUN_0023c438(file, n)` takes the n-th of
+/// them, `FUN_002557a8` builds with 0 and `FUN_00258bf0` with 1). `None` unless the entry parses and its sequence 0 exists.
+pub(crate) fn load_layd(file: &[u8]) -> Option<Layd> {
+    let entries = kh2_bar::parse(file).ok()?;
+    let e = entries.iter().filter(|e| e.kind == 28).nth(1)?;
+    let l = layd::parse_layd(e.data)?;
+    (!l.seqs.is_empty()).then_some(l)
 }
 
 fn build_nodes(scene: &mut MenuScene, tex: usize, seq: usize) -> Nodes {
@@ -835,7 +856,8 @@ fn open(save: &mut SaveMenu, scene: &mut MenuScene, se: &mut MessageWriter<PlayS
         })
     });
     scene.nodes[n.area].label = label;
-    scene.nodes[n.area].visible = true;
+    // Kind 2's build (`FUN_00258bf0`) makes no area-name text bars and its layer set has no rule under them (`FUN_002557a8` makes both).
+    scene.nodes[n.area].visible = !load;
     save.slots = read_slots(&save.dir);
     if !load {
         show_top(save, scene);
@@ -858,15 +880,18 @@ fn open(save: &mut SaveMenu, scene: &mut MenuScene, se: &mut MessageWriter<PlayS
 
 /// The layer groups of layout `n` (0 enter, 1 hold, 2 leave) on the four layer nodes.
 fn set_layout(save: &SaveMenu, scene: &mut MenuScene, n: usize) {
-    let layers = save.layd.layout(n).to_vec();
+    // The Load screen's layers come from the `load` set, whose sequence 0 is its own (the header word); its sequences 1 and 2 are the Save set's.
+    let own = save.flow.load.then_some(save.load_layd.as_ref()).flatten();
+    let layers = own.unwrap_or(&save.layd).layout(n).to_vec();
     for (i, &id) in save.nodes.layers.iter().enumerate() {
         let frame = if n == 0 { None } else { Some(0) };
         match layers.get(i) {
             Some(l) => {
-                let rest = super::rest_box(scene, save.seq_base + l.seq, l.group, [l.x as f32, l.y as f32], frame);
+                let seq = if own.is_some() && l.seq == 0 { save.load_seq } else { save.seq_base + l.seq };
+                let rest = super::rest_box(scene, seq, l.group, [l.x as f32, l.y as f32], frame);
                 scene.nodes[id].stretch = if std::env::var_os("KH2_MENU_NO_STRETCH").is_some() { None } else { rest };
                 scene.nodes[id].visible = true;
-                scene.nodes[id].seq = Some(save.seq_base + l.seq);
+                scene.nodes[id].seq = Some(seq);
                 scene.nodes[id].pos = [l.x as f32, l.y as f32];
                 scene.set_group(id, l.group);
             }
@@ -1505,5 +1530,28 @@ mod tests {
         assert!(two.layd.seqs[2].groups.len() > logo_group("tt"));
         assert_eq!(s0.groups[g::FILE_SELECTED].unk20, pos::FILE_PITCH as i32, "the file rows' pitch");
         assert_eq!(s0.groups[g::ROW_SELECTED].unk20, 26, "the pointer rows' pitch");
+    }
+
+    /// The Load screen's layer set is the second BAR entry of type 0x1c of `save.2ld` (`FUN_0023c438(file, 1)`, named `load`):
+    /// seven layers in the same three layouts but without the area rule's (groups 69 to 71), and a sequence 0 of its own whose
+    /// header groups differ from the Save set's (skipped without `KH2_ISO`).
+    #[test]
+    fn the_load_screen_has_its_own_layer_set() {
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let file = Disc::open(&iso).read("menu/us/save.2ld").expect("save.2ld");
+        let save = layd::parse_2ld(&file).expect("a .2ld").layd;
+        let load = load_layd(&file).expect("the second layer set");
+        assert_eq!(save.layers.len(), 10);
+        assert_eq!(load.layers.len(), 7);
+        assert_eq!(load.layouts, vec![(0, 2), (2, 3), (5, 2)], "enter, hold, leave");
+        let groups: Vec<usize> = load.layers.iter().map(|l| l.group).collect();
+        assert_eq!(groups, vec![7, 20, 8, 18, 21, 9, 22]);
+        assert!(!groups.iter().any(|g| (69..=71).contains(g)), "no area rule");
+        assert_ne!(format!("{:?}", save.seqs[0]), format!("{:?}", load.seqs[0]), "the header sequence is its own");
+        assert_eq!(format!("{:?}", save.seqs[1]), format!("{:?}", load.seqs[1]), "the other two are shared");
+        assert!(load_layd(b"not a bar").is_none());
     }
 }

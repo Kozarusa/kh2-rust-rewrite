@@ -28,8 +28,9 @@
 //! `menu_struggle`'s pointer list over the rows of the disc's table; "Continue" jumps to the snapshot's area with the fade
 //! of kind 1; "Retry" and "Quit" take the manager's trigger jumps as the Struggle's result menu does; "Load Game" opens the
 //! Load screen of `menu_save` (menu kind 2, docs/menus.md 18.6): a read slot replaces the state and enters its area, a cancel
-//! brings the list back. The wait before the list, the scene `GAMEOVER.mset`, the
-//! header group and the information line are not ported (see docs).
+//! brings the list back. The list shows the player's model lying in the scene's motion (`model`, `obj/GAMEOVER.mset`, docs 26.6) and
+//! "Continue" ends with the party refresher `FUN_001abfe8(8)` (full HP and MP, `refresh_party`, docs 26.7). The wait before the list and the
+//! header group are not ported (see docs).
 
 use bevy::prelude::*;
 use kh2_image::layd;
@@ -241,8 +242,9 @@ impl Over {
 
 /// `FUN_001cafa0` / `FUN_001cb3b8`: the area record and Sora's HP / MP at the last area start that allowed the snapshot.
 /// The original copies the whole save body, whose party record holds the values `FUN_0019f920` rebuilds the status from
-/// (current HP = the smaller of the record's bytes +4 and +5, MP the smaller of +6 and +7); the port keeps the two numbers [inferred: that the record's
-/// HP byte follows the live HP at every area start was not traced].
+/// (current HP = the smaller of the record's bytes +4 and +5, MP the smaller of +6 and +7). "Continue" does not give these back:
+/// the party refresher `FUN_001abfe8(8)` that ends `FUN_001cb208` sets the maximum (`refreshed`, WP-GO2); the two numbers are kept
+/// for the log line of the area start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub dest: Dest,
@@ -258,10 +260,15 @@ pub fn snapshot_allowed(map_program: u8, manager_bit12: Option<bool>) -> bool {
     manager_bit12.unwrap_or(map_program < SNAPSHOT_PROGRAM_LIMIT)
 }
 
-/// What Continue gives Sora back: the snapshot's HP and MP, at least 1 HP and at most the maximum [the floor is a port
-/// guard against a loop of game overs at 0 HP; the original's record would hold the area-start value itself].
-pub fn continue_values(snap: Option<Snapshot>, max_hp: i32, max_mp: i32) -> (i32, i32) {
-    snap.map_or((max_hp, max_mp), |s| (s.hp.clamp(1, max_hp.max(1)), s.mp.clamp(0, max_mp)))
+/// What the party refresher gives a member back: full HP and full MP. `FUN_001abfe8(8)` runs `FUN_001ac130` on each of the
+/// 15 members' status objects after `FUN_001cb208` has copied the save body back (and `FUN_0019fdc0` has rebuilt Sora's status
+/// from his record): `FUN_001a0240(status, 0)` ends a running MP charge (`FUN_001a05d0` tests the total +0x1c0, `FUN_001a05a8`
+/// clears both times) and adds the maximum to MP (`FUN_001a0210` -> `FUN_001a0180`: current + maximum, clamped to 0..maximum),
+/// then `FUN_001a0100(status, status +4, 0)` adds the maximum HP to the current HP the same way (clamped to the minimum +8 and the
+/// maximum +4). The result is the maximum of both, whatever the record held, and `FUN_0019ffb8` writes it back into the record
+/// (`FUN_001a0030`: bytes +4..+7). The port floors the HP at 1 [guard against a loop of game overs at 0 maximum].
+pub fn refreshed(max_hp: i32, max_mp: i32) -> (i32, i32) {
+    (max_hp.max(1), max_mp.max(0))
 }
 
 /// The destination of "Continue": the snapshot's area record, or (no snapshot yet: all bytes 0xff in `DAT_01d69890`) the
@@ -336,6 +343,8 @@ pub struct GameOver {
     restore_hp: Option<i32>,
     /// The shared generator's value for `FUN_001ad520`'s roll (`mickey::SEED_START` until the first roll).
     seed: Option<u32>,
+    /// The scene's model panel (`model`).
+    stage: model::Stage,
 }
 
 impl GameOver {
@@ -351,7 +360,7 @@ impl Plugin for GameOverPlugin {
         app.init_resource::<GameOver>()
             .add_systems(FixedUpdate, detect.after(Sim::SoraHurt).before(Sim::Sounds))
             .add_systems(PreUpdate, input.after(crate::menu::input).after(bevy::input::InputSystems).after(crate::harness::Keys))
-            .add_systems(Update, (track_area, drive).chain().before(crate::schedule::Frame::Popups));
+            .add_systems(Update, (track_area, drive, model::show, model::animate, model::layer_and_tint).chain().before(crate::schedule::Frame::Popups));
     }
 }
 
@@ -520,6 +529,31 @@ fn restore_snapshot(go: &GameOver, progress: Option<&mut Progress>, tags: Option
     }
 }
 
+/// `FUN_001abfe8(8)` (called by `FUN_001cb208` after the body is back): every member's MP charge ends, HP and MP go to their
+/// maximum (`refreshed`). Sora's maximum MP is the data's (`GameData::sora_max_mp`); a member's are his own. The members' KO flag
+/// (the actor's dead bit) is not touched: the jump that follows builds them again. `FUN_001b81f8`, the other refresher, clears
+/// the 0x1c bytes at `0x1d5d7c0` (`FUN_001b8218`), the Struggle's score block: the app has no such block to clear (docs/menus.md 26.7).
+fn refresh_party(
+    sora: &mut Query<&mut Sora>,
+    sora_max_mp: Option<i32>,
+    charge: Option<&mut crate::magic_rules::Charge>,
+    members: &mut Query<&mut PartyMember>,
+) {
+    if let Ok(mut s) = sora.single_mut() {
+        let (hp, mp) = refreshed(s.stats.max_hp, sora_max_mp.unwrap_or(s.mp));
+        s.hp = hp;
+        let ended = crate::magic::refill_mp(charge, &mut s.mp, mp);
+        info!("game over: party refresher (FUN_001abfe8(8)): Sora HP {hp}, MP {mp}, MP charge ended {ended}");
+    }
+    for mut m in members.iter_mut() {
+        let (hp, mp) = refreshed(m.hp_max, m.mp_max);
+        m.hp = hp;
+        let m = &mut *m;
+        crate::magic::refill_mp(Some(&mut m.charge), &mut m.mp, mp);
+        info!("game over: party refresher (FUN_001abfe8(8)): member {} HP {hp}, MP {mp}", m.slot);
+    }
+}
+
 fn load(go: &mut GameOver, disc: &Disc, scene: &mut MenuScene, images: &mut Assets<Image>) {
     go.tried = true;
     let Some(bar) = disc.read(list::FILE) else {
@@ -551,6 +585,10 @@ fn load(go: &mut GameOver, disc: &Disc, scene: &mut MenuScene, images: &mut Asse
         node.visible = false;
         scene.add(node)
     };
+    if !go.stage.tried {
+        go.stage.read(disc);
+        go.stage.setup(scene, images);
+    }
     go.rows = (0..ROWS).map(|_| (new(scene, Some(go.seq), go.tex), new(scene, None, go.tex))).collect();
     go.hand = new(scene, Some(go.seq), go.tex);
     go.loaded = true;
@@ -673,6 +711,15 @@ fn input(
     go.over = Some(over);
 }
 
+/// The state the Continue restore and the refreshers touch (one system parameter, see `drive`).
+type Restored<'w, 's> = (
+    Option<ResMut<'w, Progress>>,
+    Option<ResMut<'w, NewTags>>,
+    Option<Res<'w, crate::data::GameData>>,
+    Option<ResMut<'w, crate::magic::MagicState>>,
+    Query<'w, 's, &'static mut PartyMember>,
+);
+
 #[allow(clippy::too_many_arguments)]
 fn drive(
     mut go: ResMut<GameOver>,
@@ -689,8 +736,8 @@ fn drive(
     mut sora: Query<&mut Sora>,
     mut save: ResMut<SaveMenu>,
     mut pause: ResMut<Pause>,
-    mut progress: Option<ResMut<Progress>>,
-    mut tags: Option<ResMut<NewTags>>,
+    // Bevy takes 16 system parameters at most: the state the restore and the refreshers touch comes as one tuple.
+    (mut progress, mut tags, data, mut magic, mut members): Restored,
 ) {
     // A manager that ended by itself (`FUN_001b9ce0`).
     if let Some(r) = mission.game_over_request.take()
@@ -798,6 +845,7 @@ fn drive(
                 } else {
                     if over.chosen == Some(Outcome::Continue) {
                         restore_snapshot(&go, progress.as_deref_mut(), tags.as_deref_mut());
+                        refresh_party(&mut sora, data.as_deref().map(|d| d.sora_max_mp), magic.as_deref_mut().map(|m| &mut m.charge), &mut members);
                     }
                     if run_outcome(&mut go, &over, &mut mission, &mut task, &rec, &disc, &mut sora, music.as_deref_mut(), audio.as_deref()) {
                         over.phase = Phase::Jumping;
@@ -887,13 +935,8 @@ fn run_outcome(
     let (dest, kind) = match outcome {
         Outcome::Continue => {
             // The callback `LAB_001adc70`: `FUN_00104e18(FUN_001cb3b8(), 0x80000001, 1, 1, 0)`.
-            let (max_mp, cur_mp) = sora.single().map_or((0, 0), |s| (s.mp.max(go.snapshot.map_or(0, |n| n.mp)), s.mp));
-            let (hp, mp) = continue_values(go.snapshot, max_hp, max_mp.max(cur_mp));
-            go.restore_hp = Some(hp);
-            if let Ok(mut s) = sora.single_mut() {
-                s.hp = hp;
-                s.mp = mp;
-            }
+            // `FUN_001cb208` ended with the party refresher (`refresh_party`, run by `drive` when the list closed): Sora is at his maximum.
+            go.restore_hp = sora.single().ok().map(|s| s.hp);
             (continue_dest(go.snapshot), CONTINUE_FADE_KIND)
         }
         Outcome::Load(l) => {
@@ -954,6 +997,302 @@ fn run_outcome(
 fn exit_dest(j: [u16; 6], cur: (u8, u8, u8), localset: impl Fn(u8, u16) -> Option<u8>) -> Result<(Dest, u32), String> {
     let jump = kh2_ard::run::Jump { kind: j[0], world: j[1], area: j[2], entrance: j[3], key: j[4], flags: j[5] };
     resolve_jump(&jump, cur, None, localset).map(|d| (d, u32::from(j[5] & 0x3fff)))
+}
+
+/// The game over scene (docs/menus.md 26.6): the model panel that the list shows.
+///
+/// The original (`SLUS_210.05`): `FUN_001ade58` loads `obj/GAMEOVER.mset` as resource 5000 (`FUN_0016fac8`) and `FUN_001adcf8`
+/// (task step 5) stores the motion `FUN_001add40` picks in the object's word `+0x34`, the second list header word. The first
+/// header word is the player's object id (`FUN_00169958(player) | 0x20000000`). When the list builds (`FUN_0026f948`) it takes
+/// the camp's model object (`FUN_00295bc0`, the same object the Party page uses), puts the player's model in slot 0 at x 0, y 0
+/// (`vtable +0x18`, no motion of its own), gives it that motion (`FUN_0023b0f0`), the translation z `DAT_00381b28` (-100,
+/// the camp's), no rotation (`FUN_0023b3a8` / `FUN_0023b3c8`) and the list window as its alpha source (`FUN_0023b4b8`). The
+/// per-frame step `FUN_0023a920` loops the motion. The motion is the third entry named `%03d0` (format string `0x37b878`) of the
+/// BAR at index 0xfc (type 0) or 0xfd (types 1 and 3) of the file, with `%03d` the player's objentry byte `+7`
+/// (`WeaponJoint`; Sora's row is `P_EX100`, 1): `FUN_001684c0` finds the index, `FUN_00168510` the name and `FUN_001684c0(.., 9, 0)`
+/// the motion in the entry. Assets are read from the disc at run time; nothing is stored.
+mod model {
+    use std::sync::Arc;
+
+    use bevy::asset::RenderAssetUsages;
+    use bevy::camera::visibility::RenderLayers;
+    use bevy::camera::RenderTarget;
+    use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
+    use bevy::prelude::*;
+    use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
+
+    use super::{GameOver, Phase};
+    use crate::assets::Disc;
+    use crate::menu::preview::{focal, model_drop, origin_on_screen, PreviewCamera};
+    use crate::menu_gfx::{MenuScene, Pic, Tex};
+    use crate::skel::Animator;
+    use crate::sora::Sora;
+
+    /// The file of resource 5000.
+    pub const FILE: &str = "obj/GAMEOVER.mset";
+
+    /// The BAR index `FUN_001add40` asks for: 0xfc for type 0, 0xfd for types 1 and 3 (type 2 never opens the list).
+    pub fn set_index(kind: u8) -> Option<usize> {
+        match kind {
+            0 => Some(0xfc),
+            1 | 3 => Some(0xfd),
+            _ => None,
+        }
+    }
+
+    /// The entry name `FUN_00311c08(.., 0x37b878, objentry byte +7)` builds: `%03d0`.
+    pub fn entry_name(joint: u8) -> String {
+        format!("{joint:03}0")
+    }
+
+    /// `FUN_001add40`'s lookup: the bytes of the third entry named `%03d0` of the BAR at index `set` of the file
+    /// (`FUN_001684c0(file, -1, set)`, then `FUN_00168510(set data, -1, name, 2)`). `None` when the index or the entry is
+    /// missing or empty (the original returns 0 and shows no model).
+    pub fn entry_data(file: &[u8], set: usize, joint: u8) -> Option<Vec<u8>> {
+        let outer = kh2_bar::parse(file).ok()?;
+        let entry = outer.get(set).filter(|e| !e.data.is_empty())?;
+        let inner = kh2_bar::parse(entry.data).ok()?;
+        let name = entry_name(joint);
+        let found = inner.iter().filter(|e| e.tag == name).nth(2).filter(|e| !e.data.is_empty())?;
+        Some(found.data.to_vec())
+    }
+
+    /// `FUN_001add40`: the motion of player model `joint` in the set at BAR index `set` of the file: the entry of `entry_data`,
+    /// then its first type 9 entry (`FUN_001684c0(.., 9, 0)`), with its triggers (type 16).
+    pub fn scene_motion(file: &[u8], set: usize, joint: u8) -> Option<kh2_anim::Slot> {
+        let data = entry_data(file, set, joint)?;
+        let anb = kh2_bar::parse(&data).ok()?;
+        let motion = anb.iter().find(|x| x.kind == 9).and_then(|x| kh2_anim::Motion::parse(x.data))?;
+        let triggers = anb.iter().find(|x| x.kind == 16).map(|x| kh2_anim::Triggers::parse(x.data)).unwrap_or_default();
+        Some(kh2_anim::Slot { tag: entry_name(joint), motion: Some(motion), triggers })
+    }
+
+    /// The picture's size: the menu canvas (512 x 448 units) at twice the resolution, as the camp's preview.
+    const TARGET: [u32; 2] = [1024, 896];
+    /// Render layer of this scene's camera and model (the camp's preview uses 9).
+    const LAYER: usize = 11;
+    /// Where the private stage stands (Bevy units), far below any area.
+    const STAGE: Vec3 = Vec3::new(0.0, -20_000.0, 0.0);
+    /// The model colour 0x60 of 0x80 (`FUN_0023b448`), as the camp's preview.
+    const TINT: f32 = 0x60 as f32 / 128.0;
+
+    /// What the scene keeps between frames.
+    #[derive(Default)]
+    pub struct Stage {
+        /// The motion at index 0xfc and at 0xfd.
+        pub motions: [Option<Arc<kh2_anim::Slot>>; 2],
+        pub tried: bool,
+        target: Handle<Image>,
+        pub node: Option<usize>,
+        camera: Option<Entity>,
+        root: Option<Entity>,
+        /// The kind the model standing now was built for.
+        kind: Option<u8>,
+    }
+
+    impl Stage {
+        /// Reads the file and Sora's `WeaponJoint` (the objentry row of `P_EX100`) from the disc.
+        pub fn read(&mut self, disc: &Disc) {
+            self.tried = true;
+            let joint = disc
+                .0
+                .lock()
+                .ok()
+                .and_then(|mut a| kh2_tables::load::<kh2_tables::tables::Objentry>(&mut a, &kh2_tables::tables::OBJENTRY).ok())
+                .and_then(|d| d.rows.iter().find(|r| r.model_name == "P_EX100").map(|r| r.weapon_joint))
+                .unwrap_or(1);
+            let Some(file) = disc.read(FILE) else {
+                warn!("game over: {FILE} is not readable; the list shows no model");
+                return;
+            };
+            for (i, set) in [0xfc, 0xfd].into_iter().enumerate() {
+                self.motions[i] = scene_motion(&file, set, joint).map(Arc::new);
+                match &self.motions[i] {
+                    Some(s) => {
+                        let m = s.motion.as_ref();
+                        info!(
+                            "game over: {FILE} set {set:#x} entry {} holds a motion of frames {:?}..{:?} (FUN_001add40)",
+                            entry_name(joint),
+                            m.map(|m| m.frame_start),
+                            m.map(|m| m.frame_end)
+                        );
+                    }
+                    None => warn!("game over: {FILE} set {set:#x} has no motion for {} (FUN_001add40 returns 0)", entry_name(joint)),
+                }
+            }
+        }
+
+        /// The picture the camera draws into, as a texture of the menu, and the node that shows it.
+        pub fn setup(&mut self, scene: &mut MenuScene, images: &mut Assets<Image>) {
+            let size = Extent3d { width: TARGET[0], height: TARGET[1], depth_or_array_layers: 1 };
+            let mut image = Image::new_fill(size, TextureDimension::D2, &[0, 0, 0, 0], TextureFormat::Rgba8UnormSrgb, RenderAssetUsages::default());
+            image.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::RENDER_ATTACHMENT;
+            self.target = images.add(image);
+            scene.texs.push(Tex { width: TARGET[0], height: TARGET[1], linear: self.target.clone(), nearest: self.target.clone() });
+            let tex = scene.texs.len() - 1;
+            let y = crate::menu_gfx::Y_BIAS;
+            let mut node = crate::menu_gfx::Node::new(None);
+            node.visible = false;
+            node.pic = Some(Pic { tex, rect: [0.0, -y, 512.0, 448.0 - y], v_end: 1.0 });
+            self.node = Some(scene.add(node));
+        }
+    }
+
+    #[derive(Component)]
+    pub struct OverModel {
+        body: Entity,
+        motion: Arc<kh2_anim::Slot>,
+        state: kh2_anim::rig::RigState,
+        done: bool,
+    }
+
+    /// Stands the model up while the list is up and takes it away after.
+    #[allow(clippy::too_many_arguments)]
+    pub fn show(
+        mut commands: Commands,
+        mut go: ResMut<GameOver>,
+        mut scene: ResMut<MenuScene>,
+        sora: Query<&Sora>,
+        anims: Query<&Animator>,
+        mut meshes: ResMut<Assets<Mesh>>,
+        mut materials: ResMut<Assets<StandardMaterial>>,
+        mut images: ResMut<Assets<Image>>,
+        mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
+    ) {
+        // The alternate list (record 10) has no second header word (`FUN_001adcf8` runs for the normal list only): no model.
+        let over = go.over.as_ref().map(|o| (o.kind, o.phase, o.frames, o.alternate));
+        let kind = over.filter(|o| matches!(o.1, Phase::List | Phase::Closing) && !o.3).map(|o| o.0);
+        let motion = kind.and_then(set_index).and_then(|s| go.stage.motions[s - 0xfc].clone());
+        let want = motion.is_some() && go.stage.node.is_some() && std::env::var_os("KH2_NO_GAMEOVER_SCENE").is_none();
+        let st = &mut go.stage;
+        if (!want || st.kind != kind) && st.camera.is_some() {
+            for e in [st.camera.take(), st.root.take()].into_iter().flatten() {
+                commands.entity(e).despawn();
+            }
+            st.kind = None;
+            if let Some(n) = st.node {
+                scene.nodes[n].visible = false;
+            }
+            info!("game over: the model is removed");
+        }
+        if !want {
+            return;
+        }
+        if st.camera.is_some() {
+            // Fades with the close (the alpha of the list window, `FUN_0023b4b8`).
+            let f = match over {
+                Some((_, Phase::Closing, frames, _)) => 1.0 - (frames as f32 / crate::menu::CLOSE_FRAMES as f32).clamp(0.0, 1.0),
+                _ => 1.0,
+            };
+            if let Some(n) = st.node {
+                scene.nodes[n].label_fade = f;
+            }
+            return;
+        }
+        let (Some(motion), Some(rig), Some(node)) = (motion, sora.single().ok().and_then(|s| anims.get(s.body).ok()).map(|a| a.rig.clone()), st.node) else {
+            return;
+        };
+        let (fx, fy) = focal();
+        let fov = 2.0 * (224.0 / fy).atan();
+        let camera = commands
+            .spawn((
+                Camera3d::default(),
+                PreviewCamera,
+                Camera { order: -2, clear_color: ClearColorConfig::Custom(Color::NONE), ..default() },
+                RenderTarget::Image(st.target.clone().into()),
+                Projection::Perspective(PerspectiveProjection { fov, near: 0.01, far: 100.0, ..default() }),
+                Transform::from_translation(STAGE),
+                RenderLayers::layer(LAYER),
+            ))
+            .id();
+        // Slot 0 at x 0, y 0: the slot centre is the canvas middle (256, 208); the model's origin lands `model_drop` below it.
+        let (_, z, pitch) = origin_on_screen(0, 1, false);
+        let at = Vec2::new(256.0, 208.0 + model_drop());
+        let depth = z * crate::SCALE;
+        let local = Vec3::new((at.x - 256.0) * depth / fy, -(at.y - 208.0) * depth / fy, -depth);
+        let scale = Vec3::new(crate::SCALE * fx / fy, crate::SCALE, crate::SCALE);
+        let root = commands
+            .spawn((Transform { translation: STAGE + local, rotation: Quat::from_rotation_x(pitch), scale }, Visibility::default(), RenderLayers::layer(LAYER)))
+            .id();
+        let body = crate::skel::spawn_skinned(&mut commands, root, rig, &mut meshes, &mut materials, &mut images, &mut bindposes, 1.0);
+        let slot = motion.clone();
+        commands.entity(root).insert(OverModel { body, motion, state: Default::default(), done: false });
+        commands.queue(move |world: &mut World| {
+            if let Some(mut a) = world.get_mut::<Animator>(body) {
+                // `play_external` plays a motion that is not in the rig's own set; the preview loops (`FUN_0023a920`).
+                a.play_external(slot, 0.0);
+                a.looping = true;
+            }
+        });
+        scene.nodes[node].visible = true;
+        scene.nodes[node].label_fade = 1.0;
+        st.camera = Some(camera);
+        st.root = Some(root);
+        st.kind = kind;
+        info!("game over: the model stands in slot 0 at menu ({:.0}, {:.0}), depth {z:.0} (FUN_0026f948)", at.x, at.y);
+    }
+
+    /// One 60 Hz step of the motion while the simulation (and with it `skel::animate`) is stopped.
+    pub fn animate(mut q: Query<&mut OverModel>, mut anims: Query<&mut Animator>, mut joints: Query<&mut Transform>, real: Res<Time<Real>>, mut acc: Local<f32>) {
+        *acc = (*acc + real.delta_secs()).min(0.25);
+        let mut ticks = 0;
+        while *acc >= 1.0 / 60.0 {
+            *acc -= 1.0 / 60.0;
+            ticks += 1;
+        }
+        for mut m in &mut q {
+            let m = &mut *m;
+            let Ok(mut a) = anims.get_mut(m.body) else { continue };
+            let a = &mut *a;
+            for _ in 0..ticks {
+                a.tick();
+            }
+            let rig = a.rig.clone();
+            let motion = m.motion.clone();
+            let Some(motion) = motion.motion.as_ref() else { continue };
+            let mut pose = motion.pose_with(&rig.model.bones, a.frame, &mut m.state);
+            if a.root != Default::default() {
+                let undo = (Mat4::from_translation(a.root.translation) * Mat4::from_rotation_y(a.root.yaw)).inverse();
+                for p in &mut pose {
+                    *p = undo * *p;
+                }
+            }
+            for (j, p) in a.joints.iter().zip(&pose) {
+                if let Ok(mut t) = joints.get_mut(*j) {
+                    *t = Transform::from_matrix(*p);
+                }
+            }
+            a.pose = pose;
+        }
+    }
+
+    /// Once the model's meshes exist: put them on the scene's layer with the model colour.
+    pub fn layer_and_tint(
+        mut commands: Commands,
+        mut q: Query<&mut OverModel>,
+        children: Query<&Children>,
+        handles: Query<&MeshMaterial3d<StandardMaterial>>,
+        mut materials: ResMut<Assets<StandardMaterial>>,
+    ) {
+        for mut p in &mut q {
+            if p.done {
+                continue;
+            }
+            let Ok(kids) = children.get(p.body) else { continue };
+            let mut any = false;
+            for k in kids.iter() {
+                commands.entity(k).insert(RenderLayers::layer(LAYER));
+                let Ok(h) = handles.get(k) else { continue };
+                if let Some(mut m) = materials.get_mut(&h.0) {
+                    let c = m.base_color.to_srgba();
+                    m.base_color = Color::srgba(c.red * TINT, c.green * TINT, c.blue * TINT, c.alpha);
+                    any = true;
+                }
+            }
+            commands.entity(p.body).insert(RenderLayers::layer(LAYER));
+            p.done = any;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1143,11 +1482,9 @@ mod tests {
         assert_eq!((keep.world, keep.area, keep.entrance, keep.programs), (0xff, 0xff, 0xff, [0xff; 3]));
         let d = Dest { world: 2, area: 4, entrance: 7, programs: [1, 2, 3] };
         assert_eq!(continue_dest(Some(Snapshot { dest: d, hp: 9, mp: 4 })), d);
-        // Continue gives the area-start values back, never 0 HP, never above the maximum.
-        assert_eq!(continue_values(Some(Snapshot { dest: d, hp: 9, mp: 4 }), 20, 100), (9, 4));
-        assert_eq!(continue_values(Some(Snapshot { dest: d, hp: 0, mp: 4 }), 20, 100), (1, 4));
-        assert_eq!(continue_values(Some(Snapshot { dest: d, hp: 50, mp: 400 }), 20, 100), (20, 100));
-        assert_eq!(continue_values(None, 20, 100), (20, 100));
+        // FUN_001abfe8(8): whatever the snapshot held, the refresher gives the maximum (never below 1 HP).
+        assert_eq!(refreshed(20, 100), (20, 100));
+        assert_eq!(refreshed(0, 0), (1, 0));
     }
 
     #[test]
@@ -1370,6 +1707,99 @@ mod tests {
         restore_snapshot(&GameOver::default(), Some(&mut p), None);
         assert_eq!(capture_body(&p, &[]), before);
         assert_eq!((p.wallet(), p.experience()), (321, 9));
+    }
+
+    /// A BAR from (type, tag, data) entries: header, 16-byte entries with absolute offsets, then the data.
+    fn bar(entries: &[(u16, &str, Vec<u8>)]) -> Vec<u8> {
+        let mut out = vec![0u8; 16 + 16 * entries.len()];
+        out[..4].copy_from_slice(b"BAR");
+        out[4..8].copy_from_slice(&(entries.len() as u32).to_le_bytes());
+        for (i, (kind, tag, data)) in entries.iter().enumerate() {
+            let off = out.len();
+            out.extend_from_slice(data);
+            let e = 16 + 16 * i;
+            out[e..e + 2].copy_from_slice(&kind.to_le_bytes());
+            out[e + 4..e + 8].copy_from_slice(tag.as_bytes());
+            out[e + 8..e + 12].copy_from_slice(&(off as u32).to_le_bytes());
+            out[e + 12..e + 16].copy_from_slice(&(data.len() as u32).to_le_bytes());
+        }
+        out
+    }
+
+    /// `FUN_001add40`: type 0 asks the BAR at index 0xfc, types 1 and 3 the one at 0xfd, type 2 none; the entry is named
+    /// `%03d0` of the objentry byte (format string 0x37b878).
+    #[test]
+    fn the_scene_set_and_entry_name_follow_fun_001add40() {
+        use super::model::{entry_name, set_index};
+        assert_eq!((set_index(0), set_index(1), set_index(2), set_index(3)), (Some(0xfc), Some(0xfd), None, Some(0xfd)));
+        assert_eq!((entry_name(1), entry_name(14), entry_name(27)), ("0010".to_string(), "0140".to_string(), "0270".to_string()));
+    }
+
+    /// The lookup takes the THIRD entry of the name (`FUN_00168510(.., 2)` counts down from 2), in the BAR at the asked
+    /// index, and nothing when the index holds no data or the name is missing.
+    #[test]
+    fn the_scene_entry_is_the_third_of_its_name_in_the_asked_set() {
+        use super::model::entry_data;
+        let set = bar(&[
+            (17, "0010", b"a".to_vec()),
+            (17, "0010", b"b".to_vec()),
+            (17, "0010", b"third".to_vec()),
+            (17, "0010", b"d".to_vec()),
+            (17, "0140", b"x".to_vec()),
+            (17, "0140", b"y".to_vec()),
+        ]);
+        let other = bar(&[(17, "0010", b"p".to_vec()), (17, "0010", b"q".to_vec()), (17, "0010", b"other".to_vec())]);
+        let mut entries: Vec<(u16, &str, Vec<u8>)> = (0..4).map(|_| (17u16, "DUMM", Vec::new())).collect();
+        entries[2] = (20, "AK10", set);
+        entries[3] = (20, "AK12", other);
+        let file = bar(&entries);
+        assert_eq!(entry_data(&file, 2, 1).as_deref(), Some(&b"third"[..]), "the third entry named 0010");
+        assert_eq!(entry_data(&file, 3, 1).as_deref(), Some(&b"other"[..]), "the other set has its own");
+        assert_eq!(entry_data(&file, 2, 14), None, "only two entries named 0140: no third");
+        assert_eq!(entry_data(&file, 2, 5), None, "no entry named 0050");
+        assert_eq!(entry_data(&file, 0, 1), None, "an empty index holds nothing");
+        assert_eq!(entry_data(&file, 9, 1), None, "past the end");
+        assert_eq!(entry_data(b"not a bar", 0, 1), None);
+    }
+
+    /// The real file: both sets hold a motion for Sora's byte (1), the two sets differ, and a byte with no entry reads nothing
+    /// (skipped without `KH2_ISO`).
+    #[test]
+    fn the_disc_scene_has_sora_motions_in_both_sets() {
+        use super::model::{scene_motion, FILE};
+        let Ok(iso) = std::env::var("KH2_ISO") else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let file = a.read(FILE).expect("GAMEOVER.mset");
+        let a0 = scene_motion(&file, 0xfc, 1).expect("type 0, Sora");
+        let a1 = scene_motion(&file, 0xfd, 1).expect("types 1 and 3, Sora");
+        let (m0, m1) = (a0.motion.as_ref().unwrap(), a1.motion.as_ref().unwrap());
+        assert!(m0.frame_end > m0.frame_start && m1.frame_end > m1.frame_start, "{}..{} {}..{}", m0.frame_start, m0.frame_end, m1.frame_start, m1.frame_end);
+        assert_ne!((m0.frame_end, m0.fps), (m1.frame_end, m1.fps), "the two sets are different motions");
+        assert!(scene_motion(&file, 0xfc, 99).is_none(), "no entry for a model byte of 99");
+    }
+
+    /// `FUN_001abfe8(8)`: whatever the record held, HP and MP go to the maximum, a running MP charge ends, and nothing is
+    /// below 1 HP.
+    #[test]
+    fn the_party_refresher_fills_hp_and_mp_and_ends_the_charge() {
+        use bevy::ecs::system::RunSystemOnce;
+        assert_eq!(refreshed(20, 100), (20, 100));
+        assert_eq!(refreshed(0, -5), (1, 0));
+        let mut w = world_with_sora(3);
+        w.insert_resource(crate::magic::MagicState::default());
+        w.resource_mut::<crate::magic::MagicState>().charge = crate::magic_rules::Charge { left: 40.0, total: 90.0 };
+        w.query::<&mut Sora>().single_mut(&mut w).unwrap().mp = 7;
+        w.run_system_once(|mut q: Query<&mut Sora>, mut m: Query<&mut PartyMember>, mut mg: ResMut<crate::magic::MagicState>| {
+            refresh_party(&mut q, Some(100), Some(&mut mg.charge), &mut m);
+        })
+        .unwrap();
+        let s = w.query::<&Sora>().single(&w).unwrap();
+        assert_eq!((s.hp, s.mp), (s.stats.max_hp, 100));
+        assert!(s.hp > 3, "HP was 3");
+        assert!(!w.resource::<crate::magic::MagicState>().charge.active(), "the MP charge ended (FUN_001a05a8)");
     }
 
     /// WP-PL2 B: an area start that `FUN_001cb358` allows (`track_area`) stores the snapshot and the save body (the slot

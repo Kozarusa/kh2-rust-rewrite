@@ -16,7 +16,8 @@
 //!
 //! The writers are `Progress::equip_weapon` (`FUN_0026c420`), `equip_form_weapon` (`FUN_0026c4d0`), `equip_armor`
 //! (`FUN_0026c588`), `equip_accessory` (`FUN_0026c610`), `equip_battle_item` (`FUN_0026c698`), `set_auto_reload`
-//! (`FUN_0026c860`) and `settle_battle_items` (`FUN_0026c770` + `FUN_001877c8`). The party is Sora alone.
+//! (`FUN_0026c860`) and `settle_battle_items` (`FUN_0026c770` + `FUN_001877c8`). Every one takes the member whose row opened
+//! page 2 (`ItemsMenu::member`: Sora, Donald or Goofy); the forms' rows and the live `Abilities` refresh are Sora's.
 
 use bevy::prelude::*;
 use kh2_image::text::{Style, Token};
@@ -145,15 +146,16 @@ pub fn build_rows(i: &Inputs) -> Vec<Row> {
     rows
 }
 
-/// The rows from the game state: Sora's record and the forms he can use.
-pub fn rows_of(p: &Progress) -> Vec<Row> {
-    let m = p.sora();
+/// The rows from the game state: the member's record and, for Sora, the forms he can use (`FUN_00282bf8` and
+/// `FUN_00282c60` ask the drive forms, which only the leader has).
+pub fn rows_of(p: &Progress, member: u16) -> Vec<Row> {
+    let m = p.member(member).unwrap_or_default();
     build_rows(&Inputs {
         weapon: m.weapons[0],
-        forms: HAND_FORMS.iter().filter(|&&f| p.owns_form(f)).map(|&f| (f, p.form(f).weapon)).collect(),
+        forms: if member == SORA { HAND_FORMS.iter().filter(|&&f| p.owns_form(f)).map(|&f| (f, p.form(f).weapon)).collect() } else { Vec::new() },
         armor: m.armor,
         accessories: m.accessories,
-        items: p.battle_items(SORA),
+        items: p.battle_items(member),
     })
 }
 
@@ -161,11 +163,11 @@ pub fn rows_of(p: &Progress) -> Vec<Row> {
 /// the sort `FUN_002845a0`): every row of the item table, in table order, of the category's type that the player
 /// owns at least one of; the Items page also lists the received consumables (the 8 ids of the "recent" list) that
 /// the stock has run out of, with a count of 0.
-pub fn candidates(cat: Cat, order: &[ItemRow], exe: &ExeTables, count: &dyn Fn(u16) -> u8, received: &[u16]) -> Vec<Stack> {
+pub fn candidates(cat: Cat, member: u16, order: &[ItemRow], exe: &ExeTables, count: &dyn Fn(u16) -> u8, received: &[u16]) -> Vec<Stack> {
     // `FUN_00283810`: the weapon pages take the bit the character's pair names (table 0x3823d0: Sora is 2), the
     // others a fixed bit of the type.
     let word = match cat {
-        Cat::Weapon | Cat::Form => exe.filter_bits.iter().find(|p| p.0 == SORA as u8).map_or(1 << item_type::KEYBLADE, |p| 1u32 << (p.1 & 0x1f)),
+        Cat::Weapon | Cat::Form => exe.filter_bits.iter().find(|p| u16::from(p.0) == member).map_or(1 << item_type::KEYBLADE, |p| 1u32 << (p.1 & 0x1f)),
         other => 1 << other.item_type(),
     };
     let mut list = stock(order, word, exe, count, &|_| false);
@@ -224,6 +226,8 @@ pub enum Effect {
     Leave,
     /// -5: hand over to the Abilities pages (page 0x10).
     Switch,
+    /// -10 / -11: the page shows the next or previous party member; the caller rebuilds the rows.
+    Step { forward: bool },
     /// -7: open the Help overlay with a topic, to come back to the page.
     Help { topic: u8, ret: u16 },
     Close,
@@ -364,10 +368,17 @@ impl Machine {
                         fx.push(Sound(snd::CANCEL));
                         fx.push(Effect::Leave);
                     }
-                    // `FUN_0026d058`: with one character the switch has nowhere to go.
+                    // `FUN_00269580` cases -10 and -11 -> `FUN_0026cfc8`: step the character (-10 forward, -11 back, both
+                    // wrap) and rebuild the page from the first row [inferred: the cursor sound and the reset].
+                    // With one character the switch has nowhere to go.
                     Key::Prev | Key::Next => {
                         if game.members() < 2 {
                             fx.push(Sound(snd::REFUSED));
+                        } else {
+                            self.cursor = 0;
+                            self.scroll = 0;
+                            fx.push(Sound(snd::CURSOR));
+                            fx.push(Effect::Step { forward: key == Key::Prev });
                         }
                     }
                     // `FUN_00269580` case -7: topic 0 on an Items row, topic 3 on a form's row; nothing elsewhere.
@@ -647,6 +658,10 @@ fn load(disc: Res<Disc>, mut st: ResMut<EquipmentMenu>) {
 /// What the game gives the machine: the stock, the AP numbers and the record.
 struct Snapshot<'a> {
     p: &'a Progress,
+    /// The member whose page is open.
+    member: u16,
+    /// The party's size.
+    members: usize,
     items: &'a ItemsMenu,
     ab: Option<&'a Abilities>,
 }
@@ -662,7 +677,7 @@ impl Snapshot<'_> {
     /// The AP the equipped abilities use (the sum of the costs of the slots with bit 15 set, `FUN_0026ca28`).
     fn ap_used(&self) -> i32 {
         let Some(ab) = self.ab else { return 0 };
-        self.p.ability_slots(SORA).iter().filter(|s| s.2).filter_map(|s| ab.rules().abilities.get(&s.1)).map(|i| i32::from(i.ap)).sum()
+        self.p.ability_slots(self.member).iter().filter(|s| s.2).filter_map(|s| ab.rules().abilities.get(&s.1)).map(|i| i32::from(i.ap)).sum()
     }
 
     fn ap_max(&self) -> i32 {
@@ -673,17 +688,30 @@ impl Snapshot<'_> {
 impl Game for Snapshot<'_> {
     fn candidates(&self, cat: Cat) -> Vec<Stack> {
         let Some(exe) = self.items.exe.as_ref() else { return Vec::new() };
-        candidates(cat, &self.items.order, exe, &|id| self.p.item_count(id), &self.p.recent_items())
+        candidates(cat, self.member, &self.items.order, exe, &|id| self.p.item_count(id), &self.p.recent_items())
     }
     fn can_return(&self, id: u16) -> bool {
         self.p.room(id, INVENTORY, 1) != 0
     }
     fn ap_short(&self, current: u16, new: u16) -> bool {
+        // [GAP: the AP maximum of Donald and Goofy (`FUN_0019f920` for a member) was not read, so their swaps are
+        // never refused; the Abilities pages' `ap_max` is Sora's.]
+        if self.member != SORA {
+            return false;
+        }
         ap_short(current, self.ap_max(), self.ap_used(), self.item_ap(current), self.item_ap(new))
     }
     fn reload_question(&self, id: u16) -> bool {
-        self.p.reload_off_needs_question(SORA, id)
+        self.p.reload_off_needs_question(self.member, id)
     }
+    fn members(&self) -> usize {
+        self.members
+    }
+}
+
+/// The party member id of the row whose equipment page is open.
+fn member_of(items: &ItemsMenu) -> u16 {
+    items.party.get(items.member).copied().unwrap_or(SORA)
 }
 
 fn keys_of(keys: &ButtonInput<KeyCode>, held: &mut (i8, f32), dt: f32) -> Vec<Key> {
@@ -787,7 +815,7 @@ fn input(
         if !items.take_equipment_request() {
             return;
         }
-        let rows = rows_of(p);
+        let rows = rows_of(p, member_of(&items));
         st.machine = Some(Machine::new(rows));
         st.held = (0, 0.0);
         ensure_ui(&mut st, &mut scene);
@@ -803,7 +831,8 @@ fn input(
     let mut close = false;
     for key in pressed {
         let Some(p) = progress.as_deref() else { break };
-        let game = Snapshot { p, items: &items, ab: abilities.as_deref() };
+        let member = member_of(&items);
+        let game = Snapshot { p, member, members: items.party.len(), items: &items, ab: abilities.as_deref() };
         let fx = st.machine.as_mut().map(|m| m.press(key, &game)).unwrap_or_default();
         let mut rebuild = false;
         for e in fx {
@@ -818,7 +847,8 @@ fn input(
                 }
                 Effect::Equip { cat, slot, item } => {
                     if let Some(p) = progress.as_deref_mut() {
-                        let before = p.sora();
+                        let member = member_of(&items);
+                        let before = p.member(member).unwrap_or_default();
                         let old = match cat {
                             Cat::Weapon => before.weapons[0],
                             Cat::Form => p.form(slot as u8).weapon,
@@ -828,13 +858,13 @@ fn input(
                         };
                         let (old_n, new_n) = (p.item_count(old), p.item_count(item));
                         let changed = match cat {
-                            Cat::Weapon => p.equip_weapon(SORA, item),
+                            Cat::Weapon => p.equip_weapon(member, item),
                             Cat::Form => p.equip_form_weapon(slot as u8, item),
-                            Cat::Armor => p.equip_armor(SORA, slot, item),
-                            Cat::Accessory => p.equip_accessory(SORA, slot, item),
+                            Cat::Armor => p.equip_armor(member, slot, item),
+                            Cat::Accessory => p.equip_accessory(member, slot, item),
                             // The row's flag byte is the candidate's count (`FUN_0026c698`: carried when the stock
                             // has one).
-                            Cat::Item => p.equip_battle_item(SORA, slot, item, item == 0 || new_n > 0),
+                            Cat::Item => p.equip_battle_item(member, slot, item, item == 0 || new_n > 0),
                         };
                         info!(
                             "menu: equipped {} slot {slot}: {} (stock {old_n} -> {}) replaced by {} (stock {new_n} -> {}), changed {changed}",
@@ -844,21 +874,26 @@ fn input(
                             name_of(&items, &scene, item),
                             p.item_count(item),
                         );
-                        refresh(p, abilities.as_deref_mut());
+                        // The live Abilities block is Sora's.
+                        if member == SORA {
+                            refresh(p, abilities.as_deref_mut());
+                        }
                         rebuild = true;
                     }
                 }
                 Effect::Reload { item, on } => {
                     if let Some(p) = progress.as_deref_mut() {
-                        p.set_auto_reload(SORA, item, on);
-                        info!("menu: auto-reload item {item} {} (slots {:?})", if on { "ON" } else { "OFF" }, p.battle_items(SORA));
+                        let member = member_of(&items);
+                        p.set_auto_reload(member, item, on);
+                        info!("menu: auto-reload item {item} {} (slots {:?})", if on { "ON" } else { "OFF" }, p.battle_items(member));
                         rebuild = true;
                     }
                 }
                 Effect::Settle => {
                     if let Some(p) = progress.as_deref_mut() {
-                        p.settle_battle_items(SORA);
-                        info!("menu: battle item slots {:?}", p.battle_items(SORA));
+                        let member = member_of(&items);
+                        p.settle_battle_items(member);
+                        info!("menu: battle item slots {:?}", p.battle_items(member));
                         rebuild = true;
                     }
                 }
@@ -881,6 +916,13 @@ fn input(
                         info!("menu: switch to Abilities (page 0x10)");
                     }
                 }
+                Effect::Step { forward } => {
+                    let n = items.party.len().max(1);
+                    let row = if forward { (items.member + 1) % n } else { (items.member + n - 1) % n };
+                    items.set_member(row);
+                    info!("menu: equipment of member {}", member_of(&items));
+                    rebuild = true;
+                }
                 Effect::Help { topic, ret } => {
                     menu.help = Some(help::Request { topic, ret });
                 }
@@ -897,7 +939,7 @@ fn input(
         if rebuild
             && let (Some(p), Some(m)) = (progress.as_deref(), st.machine.as_mut())
         {
-            m.reload(rows_of(p));
+            m.reload(rows_of(p, member_of(&items)));
         }
         if st.machine.is_none() {
             break;
@@ -1043,7 +1085,7 @@ fn redraw(st: &mut EquipmentMenu, items: &ItemsMenu, scene: &mut MenuScene, p: &
         set(scene, tab, group::TAB[0], Some(group::TAB[2]), prev);
         let tokens = match k {
             0 => tokens_of(&text, entry_name),
-            1 => text.literal("Sora", Style::default(), [0.0; 2]).tokens,
+            1 => super::item_pages::member_tokens(&text, &items.member_names, member_of(items)),
             _ => {
                 let row = m.current();
                 let msg = match (pick_cat, row) {
@@ -1230,6 +1272,30 @@ mod tests {
     }
 
     #[test]
+    fn a_members_weapon_page_lists_the_type_the_pair_table_names() {
+        // Table 0x3823d0 pairs the character with a weapon type: Sora 2 (keyblades), Donald 3 (staffs), Goofy 4 (shields).
+        let table = vec![row(10, 2), row(40, 3), row(41, 3), row(50, 4)];
+        let own = |_: u16| 1;
+        let ids = |l: Vec<Stack>| l.iter().map(|s| s.id).collect::<Vec<_>>();
+        let e = exe();
+        assert_eq!(ids(candidates(Cat::Weapon, SORA, &table, &e, &own, &[])), [10]);
+        assert_eq!(ids(candidates(Cat::Weapon, crate::progress::DONALD, &table, &e, &own, &[])), [40, 41]);
+        assert_eq!(ids(candidates(Cat::Weapon, crate::progress::GOOFY, &table, &e, &own, &[])), [50]);
+    }
+
+    #[test]
+    fn the_character_keys_step_the_member_and_restart_the_list_when_there_are_several() {
+        let mut g = game(&[]);
+        g.members = 3;
+        let mut m = machine();
+        m.cursor = 4;
+        let fx = m.press(Key::Prev, &g);
+        assert_eq!(fx, vec![Effect::Sound(snd::CURSOR), Effect::Step { forward: true }], "-10 steps forward (FUN_0026cfc8(1))");
+        assert_eq!((m.cursor, m.scroll), (0, 0));
+        assert_eq!(m.press(Key::Next, &g), vec![Effect::Sound(snd::CURSOR), Effect::Step { forward: false }]);
+    }
+
+    #[test]
     fn the_pick_lists_hold_the_owned_items_of_the_type_with_the_received_ones_at_zero() {
         let own = |id: u16| match id {
             10 | 12 | 20 | 30 | 31 | 1 | 3 => 1,
@@ -1238,12 +1304,12 @@ mod tests {
         };
         let ids = |l: Vec<Stack>| l.iter().map(|s| (s.id, s.count)).collect::<Vec<_>>();
         let (t, e) = (table(), exe());
-        assert_eq!(ids(candidates(Cat::Weapon, &t, &e, &own, &[])), [(10, 1), (12, 1)]);
-        assert_eq!(ids(candidates(Cat::Form, &t, &e, &own, &[])), [(10, 1), (12, 1)]);
-        assert_eq!(ids(candidates(Cat::Armor, &t, &e, &own, &[])), [(20, 1), (21, 2)]);
-        assert_eq!(ids(candidates(Cat::Accessory, &t, &e, &own, &[])), [(30, 1), (31, 1)]);
+        assert_eq!(ids(candidates(Cat::Weapon, SORA, &t, &e, &own, &[])), [(10, 1), (12, 1)]);
+        assert_eq!(ids(candidates(Cat::Form, SORA, &t, &e, &own, &[])), [(10, 1), (12, 1)]);
+        assert_eq!(ids(candidates(Cat::Armor, SORA, &t, &e, &own, &[])), [(20, 1), (21, 2)]);
+        assert_eq!(ids(candidates(Cat::Accessory, SORA, &t, &e, &own, &[])), [(30, 1), (31, 1)]);
         // The consumables, then a received item the stock ran out of, in table order; a held one is not added twice.
-        assert_eq!(ids(candidates(Cat::Item, &t, &e, &own, &[2, 3, 0])), [(1, 1), (2, 0), (3, 1)]);
+        assert_eq!(ids(candidates(Cat::Item, SORA, &t, &e, &own, &[2, 3, 0])), [(1, 1), (2, 0), (3, 1)]);
     }
 
     #[test]

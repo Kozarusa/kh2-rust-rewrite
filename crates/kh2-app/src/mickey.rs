@@ -36,6 +36,7 @@ pub const RESCUE_PORTED: bool = false;
 
 /// The missions of the disc (`msn/us/<name>.bar`, header word `+4`) whose bit 9 is set: the original can offer the rescue
 /// in these. Pinned by `the_disc_has_eleven_missions_with_header_bit_9`.
+#[cfg(test)]
 pub const BIT9_MISSIONS: [&str; 11] = [
     "AL03_MS103", "BB05_MS104A", "BB05_MS104B", "BB11_MS102", "BB15_MS203", "CA18_MS202", "EH24_MS110", "HE07_MS103", "HE18_MS108",
     "MU08_MS204", "MU09_MS108",

@@ -189,16 +189,29 @@ impl Over {
     }
 }
 
-/// `FUN_001cafa0` / `FUN_001cb3b8`: the area record and Sora's HP at the last area start that allowed the snapshot.
+/// `FUN_001cafa0` / `FUN_001cb3b8`: the area record and Sora's HP / MP at the last area start that allowed the snapshot.
+/// The original copies the whole save body, whose party record holds the values `FUN_0019f920` rebuilds the status from
+/// (current HP = the record's byte +8 clamped by its maximum); the port keeps the two numbers [inferred: that the record's
+/// HP byte follows the live HP at every area start was not traced].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub dest: Dest,
     pub hp: i32,
+    pub mp: i32,
 }
 
-/// `FUN_001cb358`: the snapshot is allowed at an area start without a manager when the map program is below 0x33.
-pub fn snapshot_allowed(map_program: u8, manager: bool) -> bool {
-    !manager && map_program < SNAPSHOT_PROGRAM_LIMIT
+/// `FUN_001cb358`. `manager_bit12` is `None` without a manager, else the manager's header word +4 bit 12
+/// (`FUN_001b9fb0`, `Header::flags & 0x1000`): with the bit the snapshot is allowed whatever the map program; a manager
+/// without it forbids it; without a manager the map program (`DAT_0033e830 + 3`) must be below 0x33. The original also
+/// requires `DAT_0035e3a0` to be 0 on the program branch; nothing in the app writes it, so it is taken as 0 [inferred].
+pub fn snapshot_allowed(map_program: u8, manager_bit12: Option<bool>) -> bool {
+    manager_bit12.unwrap_or(map_program < SNAPSHOT_PROGRAM_LIMIT)
+}
+
+/// What Continue gives Sora back: the snapshot's HP and MP, at least 1 HP and at most the maximum [the floor is a port
+/// guard against a loop of game overs at 0 HP; the original's record would hold the area-start value itself].
+pub fn continue_values(snap: Option<Snapshot>, max_hp: i32, max_mp: i32) -> (i32, i32) {
+    snap.map_or((max_hp, max_mp), |s| (s.hp.clamp(1, max_hp.max(1)), s.mp.clamp(0, max_mp)))
 }
 
 /// The destination of "Continue": the snapshot's area record, or (no snapshot yet: all bytes 0xff in `DAT_01d69890`) the
@@ -334,15 +347,15 @@ fn track_area(mut go: ResMut<GameOver>, area: Res<CurrentArea>, rec: Res<AreaRec
     }
     go.seen_area = area.loaded.clone();
     let Some(name) = area.loaded.as_deref() else { return };
-    let manager = mission.as_deref().is_some_and(|m| m.m.is_some());
+    let manager = mission.as_deref().and_then(|m| m.m.as_deref()).map(|a| a.header.flags & 0x1000 != 0);
     if !snapshot_allowed(rec.programs[0], manager) {
-        info!("game over: area {name}: no snapshot (FUN_001cb358: map program {:#x}, manager {manager})", rec.programs[0]);
+        info!("game over: area {name}: no snapshot (FUN_001cb358: map program {:#x}, manager header bit 12 {manager:?})", rec.programs[0]);
         return;
     }
-    let hp = sora.single().map_or(1, |s| s.hp.max(1));
+    let (hp, mp) = sora.single().map_or((1, 0), |s| (s.hp.max(1), s.mp));
     let dest = Dest { world: rec.world, area: rec.area, entrance: rec.entrance, programs: rec.programs };
     info!("game over: area {name}: snapshot (FUN_001cafa0): world {} area {} entrance {} programs {:x?}, HP {hp}", dest.world, dest.area, dest.entrance, dest.programs);
-    go.snapshot = Some(Snapshot { dest, hp });
+    go.snapshot = Some(Snapshot { dest, hp, mp });
 }
 
 fn load(go: &mut GameOver, disc: &Disc, scene: &mut MenuScene, images: &mut Assets<Image>) {
@@ -617,10 +630,12 @@ fn run_outcome(
     let (dest, kind) = match outcome {
         Outcome::Continue => {
             // The callback `LAB_001adc70`: `FUN_00104e18(FUN_001cb3b8(), 0x80000001, 1, 1, 0)`.
-            let hp = go.snapshot.map_or(max_hp, |s| s.hp);
+            let (max_mp, cur_mp) = sora.single().map_or((0, 0), |s| (s.mp.max(go.snapshot.map_or(0, |n| n.mp)), s.mp));
+            let (hp, mp) = continue_values(go.snapshot, max_hp, max_mp.max(cur_mp));
             go.restore_hp = Some(hp);
             if let Ok(mut s) = sora.single_mut() {
                 s.hp = hp;
+                s.mp = mp;
             }
             (continue_dest(go.snapshot), CONTINUE_FADE_KIND)
         }
@@ -772,13 +787,19 @@ mod tests {
 
     #[test]
     fn the_snapshot_rule_and_the_continue_destination() {
-        assert!(snapshot_allowed(0x10, false));
-        assert!(!snapshot_allowed(0x33, false), "map program 0x33 and above");
-        assert!(!snapshot_allowed(0x10, true), "a manager runs");
+        assert!(snapshot_allowed(0x10, None));
+        assert!(!snapshot_allowed(0x33, None), "map program 0x33 and above");
+        assert!(!snapshot_allowed(0x10, Some(false)), "a manager without header bit 12");
+        assert!(snapshot_allowed(0x10, Some(true)) && snapshot_allowed(0x7f, Some(true)), "bit 12 allows it whatever the program");
         let keep = continue_dest(None);
         assert_eq!((keep.world, keep.area, keep.entrance, keep.programs), (0xff, 0xff, 0xff, [0xff; 3]));
         let d = Dest { world: 2, area: 4, entrance: 7, programs: [1, 2, 3] };
-        assert_eq!(continue_dest(Some(Snapshot { dest: d, hp: 9 })), d);
+        assert_eq!(continue_dest(Some(Snapshot { dest: d, hp: 9, mp: 4 })), d);
+        // Continue gives the area-start values back, never 0 HP, never above the maximum.
+        assert_eq!(continue_values(Some(Snapshot { dest: d, hp: 9, mp: 4 }), 20, 100), (9, 4));
+        assert_eq!(continue_values(Some(Snapshot { dest: d, hp: 0, mp: 4 }), 20, 100), (1, 4));
+        assert_eq!(continue_values(Some(Snapshot { dest: d, hp: 50, mp: 400 }), 20, 100), (20, 100));
+        assert_eq!(continue_values(None, 20, 100), (20, 100));
     }
 
     #[test]
@@ -788,6 +809,97 @@ mod tests {
         assert!(ko_edge(Some(10), 0));
         assert!(ko_edge(Some(1), -3));
         assert!(!ko_edge(Some(0), 0), "already down");
+    }
+
+    fn world_with_sora(hp: i32) -> bevy::ecs::world::World {
+        let mut w = bevy::ecs::world::World::new();
+        w.insert_resource(GameOver::default());
+        w.insert_resource(Time::<Real>::default());
+        w.insert_resource(Mission::default());
+        w.spawn(Sora::for_test(hp, 20));
+        w
+    }
+
+    /// Sora's HP and hold flag.
+    fn sora(w: &mut bevy::ecs::world::World) -> (i32, bool) {
+        let s = w.query::<&Sora>().single(w).unwrap();
+        (s.hp, s.game_over)
+    }
+
+    /// `detect` as a system: an HP fall to 0 with no manager, no summon and no form starts type 0 once and holds Sora; a
+    /// fall with Tinker Bell ready or under host 1.317's bit does not (those routes are `route`'s, tested above).
+    #[test]
+    fn detect_as_a_system_starts_type_0_once_and_holds_sora() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut w = world_with_sora(10);
+        w.run_system_once(detect).unwrap();
+        assert!(w.resource::<GameOver>().over.is_none(), "alive: nothing");
+        w.query::<&mut Sora>().single_mut(&mut w).unwrap().hp = 0;
+        w.run_system_once(detect).unwrap();
+        let o = w.resource::<GameOver>().over.clone().expect("the fall starts a game over");
+        assert_eq!((o.kind, o.phase, o.fresh), (0, Phase::Waiting, true));
+        assert!(sora(&mut w).1, "he is held down");
+        // A second tick at 0 HP is not another fall.
+        w.resource_mut::<GameOver>().over = None;
+        w.run_system_once(detect).unwrap();
+        assert!(w.resource::<GameOver>().over.is_none());
+    }
+
+    /// `drive` as a system (needs a `Disc` resource, so skipped without `KH2_ISO`): a request from an ended manager
+    /// starts type 3 with its exits and plays the start once; with no menu text the list cannot open, so after the wait
+    /// Sora is released unchanged; a game over whose jump has run ends when the task is idle again and restores HP.
+    #[test]
+    fn drive_as_a_system_takes_the_manager_request_waits_and_ends_with_the_jump() {
+        use bevy::ecs::system::RunSystemOnce;
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let mut w = world_with_sora(0);
+        w.insert_resource(MenuScene::default());
+        w.insert_resource(JumpTask::default());
+        w.insert_resource(Disc::open(&iso));
+        w.insert_resource(Assets::<Image>::default());
+        w.init_resource::<Messages<PlaySe>>();
+        w.insert_resource(AreaRecord {
+            world: 2,
+            area: 4,
+            entrance: 0,
+            programs: [0; 3],
+            programs_override: None,
+            dest_programs: [0xff; 3],
+            place_on_load: false,
+            run: None,
+            placed: None,
+        });
+        let exits = GameOverExits { retry: Some([2, 2, 0, 0, 0xb6, 1]), quit: None };
+        w.resource_mut::<Mission>().game_over_request = Some(crate::struggle::GameOverRequest { kind: 3, exits });
+        w.run_system_once(drive).unwrap();
+        let o = w.resource::<GameOver>().over.clone().expect("the request starts a game over");
+        assert_eq!((o.kind, o.phase, o.fresh, o.exits), (3, Phase::Waiting, false, Some(exits)));
+        assert!(w.resource::<Mission>().game_over_request.is_none(), "taken");
+        assert!(sora(&mut w).1);
+        assert_eq!(w.resource::<Messages<PlaySe>>().len(), 1, "FUN_001ad378's sound plays once");
+        // The wait runs out; the scene has no menu text, so the list cannot open and Sora is released.
+        w.resource_mut::<Time<Real>>().advance_by(std::time::Duration::from_secs_f32(OPEN_AFTER + 0.1));
+        w.run_system_once(drive).unwrap();
+        assert!(w.resource::<GameOver>().over.is_none());
+        assert!(!sora(&mut w).1);
+        assert_eq!(sora(&mut w).0, 0, "no list, no outcome: the stand-up of sora.rs is left to do it");
+        // A game over in its jump phase ends when the task is idle again, and gives HP back.
+        let mut o = Over::new(0, None);
+        o.fresh = false;
+        o.phase = Phase::Jumping;
+        w.resource_mut::<GameOver>().over = Some(o);
+        w.run_system_once(drive).unwrap();
+        assert!(w.resource::<GameOver>().over.is_some(), "the jump has not started");
+        *w.resource_mut::<JumpTask>() = JumpTask::FadeIn { kind: 1, t: 0.0 };
+        w.run_system_once(drive).unwrap();
+        assert!(w.resource::<GameOver>().over.as_ref().is_some_and(|o| o.started));
+        *w.resource_mut::<JumpTask>() = JumpTask::Idle;
+        w.run_system_once(drive).unwrap();
+        assert!(w.resource::<GameOver>().over.is_none());
+        assert_eq!(sora(&mut w).0, 20, "released with full HP");
     }
 
     /// The disc's rows: record 1 has "Continue" (code 2) and "Load Game" (code 1), record 0x21 has "Quit" (4) and "Retry"

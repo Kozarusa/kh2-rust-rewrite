@@ -609,6 +609,47 @@ impl WeaponRigs {
 }
 
 impl Sora {
+    /// A controller with the defaults and no scene, for the tests of systems that read his HP and flags.
+    #[cfg(test)]
+    pub fn for_test(hp: i32, max_hp: i32) -> Sora {
+        Sora {
+            state: State::Ground,
+            motor: Motor::default(),
+            hits: 0,
+            finishers: 0,
+            queued_attack: false,
+            connected: false,
+            deny_logged: false,
+            moves: Arc::new(Moveset::default()),
+            blown_back: false,
+            push: None,
+            blow: None,
+            hp,
+            mp: 0,
+            stats: Stats { level: 1, max_hp, strength: 0, magic: 0, defense: 0, max_taken: 0, min_taken: 0, max_dealt: 0, min_dealt: 0, weakness: [0; 7] },
+            invuln: 0.0,
+            game_over: false,
+            leaf_bracer: 0.0,
+            damage_motion: None,
+            lock: None,
+            target: None,
+            body: Entity::PLACEHOLDER,
+            weapons: Vec::new(),
+            timer: 0.0,
+            dash_time: 0.0,
+            dash_brake: 0.0,
+            dash: Dash::Pending,
+            hover: false,
+            last_move: Vec3::ZERO,
+            air_recoil: false,
+            swing: None,
+            aerial_dodge_ready: false,
+            lunge_left: 0.0,
+            lunge_speed: 0.0,
+            viewer_slot: 0,
+        }
+    }
+
     /// Leaf Bracer at a Cure cast's event 20 (`abilities::leaf_bracer_frames`): with the ability and
     /// the cast on Sora himself, he is untouchable for 60 ticks. Returns whether it started.
     /// The caller is Cure's cast in `magic.rs` (since commit 7ab807f) and the tests.

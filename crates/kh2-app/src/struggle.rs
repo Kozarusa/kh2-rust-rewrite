@@ -1288,7 +1288,7 @@ fn mission_tick(
                 info!("struggle: Sora knocked out: global event 0x5a (FUN_001cec00)");
                 a.events.push((EV_PLAYER_KO, 0));
             } else {
-                info!("struggle: Sora knocked out without host 1.317's bit: the game-over path (FUN_001cec00 -> FUN_001ad8e0; menu_gameover)");
+                info!("struggle: Sora knocked out without host 1.317's bit: no event 0x5a (menu_gameover decides: game over, or Tinker Bell's revive)");
             }
         }
         *last_hp = Some(s.hp);

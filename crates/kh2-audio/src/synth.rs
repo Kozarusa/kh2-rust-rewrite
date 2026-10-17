@@ -54,7 +54,7 @@ impl Envelope {
         let mut cycles = 1 << ((rate >> 2) - 11).max(0);
         if exp {
             if decrease {
-                step = step * self.level >> 15;
+                step = (step * self.level) >> 15;
             } else if self.level > 0x6000 {
                 cycles *= 4;
             }

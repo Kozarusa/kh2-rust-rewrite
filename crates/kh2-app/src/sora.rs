@@ -662,9 +662,12 @@ impl Sora {
         true
     }
 
+    // Accessors for the motor; no non-test caller yet.
+    #[allow(dead_code)]
     pub fn grounded(&self) -> bool {
         self.motor.grounded
     }
+    #[allow(dead_code)]
     pub fn yaw(&self) -> f32 {
         self.motor.yaw
     }
@@ -2155,12 +2158,10 @@ fn land(s: &mut Sora, body: &mut Animator, land_slot: Option<usize>, moving: boo
     s.hits = 0;
     s.finishers = 1;
     match s.state {
-        State::Air | State::Glide | State::Blown => {
-            if s.state != State::Blown {
-                s.state = State::Ground;
-                if !moving {
-                    body.restart(land_slot, false, 0.0);
-                }
+        State::Air | State::Glide => {
+            s.state = State::Ground;
+            if !moving {
+                body.restart(land_slot, false, 0.0);
             }
         }
         _ => {}

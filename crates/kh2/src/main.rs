@@ -315,8 +315,8 @@ fn run(args: &mut Vec<String>) -> Result<(), String> {
                 // An object's own sound bank: a `wave` WD and an `seNN` SeBlock inside its APDX.
                 let raw = a.read(&name).map_err(|e| e.to_string())?;
                 let bar = kh2_bar::parse(&raw).map_err(|e| format!("{e:?}"))?;
-                apdx_wd = bar.iter().find(|e| e.tag == "wave").and_then(|e| kh2_audio::Wd::parse(&e.data));
-                bar.iter().find(|e| e.tag.starts_with("se")).and_then(|e| kh2_audio::ssl::SeBlock::parse(&e.data)).ok_or("no SeBlock")?
+                apdx_wd = bar.iter().find(|e| e.tag == "wave").and_then(|e| kh2_audio::Wd::parse(e.data));
+                bar.iter().find(|e| e.tag.starts_with("se")).and_then(|e| kh2_audio::ssl::SeBlock::parse(e.data)).ok_or("no SeBlock")?
             } else {
                 kh2_audio::ssl::SeBlock::parse(&a.read(&name).map_err(|e| e.to_string())?).ok_or("not an SeBlock")?
             };

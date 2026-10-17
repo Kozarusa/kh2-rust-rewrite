@@ -620,16 +620,16 @@ impl Sequence {
                     _ => {}
                 }
             }
-            let mut vol = 0x3fff * 0x3fff >> 14;
-            vol = vol * (t.volume.value >> 9) >> 14;
-            vol = vol * (t.expression.value >> 9) >> 14;
-            vol = vol * v.velocity as i32 >> 7;
-            vol = vol * (r.volume_raw & 0x7f) as i32 >> 7;
-            vol = vol * self.slot_volume >> 14;
-            vol = vol * (0xff - t.tremolo.out) >> 8;
-            vol = vol * (0xff - trem) >> 8;
-            vol = (vol * t.vol_factor >> 14).clamp(0, 0x3fff);
-            vol = vol * self.volume >> 14;
+            let mut vol = (0x3fff * 0x3fff) >> 14;
+            vol = (vol * (t.volume.value >> 9)) >> 14;
+            vol = (vol * (t.expression.value >> 9)) >> 14;
+            vol = (vol * v.velocity as i32) >> 7;
+            vol = (vol * (r.volume_raw & 0x7f) as i32) >> 7;
+            vol = (vol * self.slot_volume) >> 14;
+            vol = (vol * (0xff - t.tremolo.out)) >> 8;
+            vol = (vol * (0xff - trem)) >> 8;
+            vol = ((vol * t.vol_factor) >> 14).clamp(0, 0x3fff);
+            vol = (vol * self.volume) >> 14;
             let region_pan = if r.pan_raw & 0x80 != 0 { (r.pan_raw & 0x7f) as i32 } else { 0x40 };
             let pan = ((((self.pan & 0x1ff) + region_pan + ((t.pan.value >> 16) as i16 as i32) - 0xc0) * 0x80
                 + t.autopan.out * 0x20
@@ -639,9 +639,9 @@ impl Sequence {
                 + 0x40;
             let pan = (pan & 0x1ff) as usize;
             let (l, rr) = if pan < 0x100 {
-                (vol * tables.pan_l[pan] as i32 >> 14, vol * tables.pan_r[pan] as i32 >> 14)
+                ((vol * tables.pan_l[pan] as i32) >> 14, (vol * tables.pan_r[pan] as i32) >> 14)
             } else {
-                (vol * -(tables.pan_l[pan & 0xff] as i32) >> 14, vol * -(tables.pan_r[pan & 0xff] as i32) >> 14)
+                ((vol * -(tables.pan_l[pan & 0xff] as i32)) >> 14, (vol * -(tables.pan_r[pan & 0xff] as i32)) >> 14)
             };
             // The SPU takes a 15-bit signed volume: a negative law value (a source behind the
             // listener) inverts the phase of that channel.
@@ -811,7 +811,7 @@ impl Sequence {
                 let (dl, f) = (t.byte() as i32, t.byte() as i32);
                 t.vibrato.set(true, -1, -1, -1, dl, f, -1);
             }
-            0x48..=0x4f | 0x50..=0x56 => {
+            0x48..=0x56 => {
                 let lfo = if cmd < 0x50 { &mut t.tremolo } else { &mut t.autopan };
                 match cmd & 7 {
                     0 => {

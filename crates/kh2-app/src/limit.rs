@@ -334,7 +334,7 @@ pub fn auto_limit_pick(commands: &[u16], wanted: u16, seed: &mut u32) -> Option<
         return None;
     }
     *seed = seed.wrapping_mul(0x10dcd);
-    let step = ((1u64 << 32) + n - 1) / n;
+    let step = (1u64 << 32).div_ceil(n);
     Some((u64::from(*seed) / step) as usize)
 }
 

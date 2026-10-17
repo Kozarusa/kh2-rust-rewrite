@@ -442,19 +442,17 @@ impl Machine {
                 fx.push(Effect::Sound(snd::CONFIRM));
                 fx.push(Effect::Help { topic: 2, ret: 0x10 });
             }
-            Key::Toggle if self.page == 0x10 => {
+            Key::Toggle if self.page == 0x10 && self.table.rows.get(self.cursor).is_some_and(|r| r.cost != 0) => {
                 // The shortcut is offered (mask 0x200) only for a row with a cost; `FUN_0027d708` then
                 // flips the flag when the callback allows it.
-                if self.table.rows.get(self.cursor).is_some_and(|r| r.cost != 0) {
-                    if self.table.can_toggle(self.cursor) {
-                        let on = !self.table.rows[self.cursor].equipped;
-                        self.table.set_equipped(self.cursor, on);
-                        fx.push(Effect::Sound(snd::CONFIRM));
-                        fx.push(Effect::Toggle { row: self.cursor, on });
-                        fx.push(Effect::Page(0x10));
-                    } else {
-                        fx.push(Effect::Sound(snd::REFUSED));
-                    }
+                if self.table.can_toggle(self.cursor) {
+                    let on = !self.table.rows[self.cursor].equipped;
+                    self.table.set_equipped(self.cursor, on);
+                    fx.push(Effect::Sound(snd::CONFIRM));
+                    fx.push(Effect::Toggle { row: self.cursor, on });
+                    fx.push(Effect::Page(0x10));
+                } else {
+                    fx.push(Effect::Sound(snd::REFUSED));
                 }
             }
             _ => {}

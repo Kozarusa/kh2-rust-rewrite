@@ -593,7 +593,7 @@ impl Push {
             power = -power;
             dir = -dir;
         }
-        (dir != Vec3::ZERO).then(|| Push { dir, speed: (power + actor_bonus) * c.push_scale })
+        (dir != Vec3::ZERO).then_some(Push { dir, speed: (power + actor_bonus) * c.push_scale })
     }
 
     /// One logic tick: the displacement to apply now.

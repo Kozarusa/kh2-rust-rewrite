@@ -36,6 +36,7 @@ pub struct World {
 pub struct Ground {
     pub y: f32,
     pub normal: Vec3,
+    #[allow(dead_code)] // ground flags word of the collision hit; no reader yet
     pub flags: u32,
     pub material: u8,
 }

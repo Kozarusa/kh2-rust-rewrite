@@ -411,6 +411,39 @@ struct Spawned {
     /// that first step is still to come.
     kept: Option<Vec3>,
     first: bool,
+    /// Object +0x10c bit 0x80, set by opcode 0x4d (`hide_by_tag`) while the object was in the list.
+    hidden: bool,
+}
+
+/// The model resource tag (resource +0x28, `FUN_0016e430` -> `FUN_0016f9c0`) the event's own actors carry:
+/// `FUN_00229198` (load record 0x38) and opcode 0x2c make them with the objentry id or'ed with 0x40000000, and
+/// `FUN_0016ef80` answers yes for such an id unless its objentry type is 7 or 0x16, which gives -200.
+pub const EVENT_ACTOR_TAG: i32 = -200;
+
+/// The limit opcode 0x4d passes (`FUN_00226e80`: `FUN_001b7fa8(2000)` / `FUN_001b8040(2000)`).
+pub const HIDE_TAG_LIMIT: i32 = 2000;
+
+/// The tag `FUN_0016e430` gives an object's model resource when its caller passes -1: -200 for an object the event
+/// made (`event_made`, id with 0x40000000; objentry types 7 and 0x16 excepted), else the word of the table at
+/// 0x37a278 for the objentry `ObjectType` (`words`, 24 of them).
+pub fn resource_tag(words: &[i32], object_type: u8, event_made: bool) -> Option<i32> {
+    if event_made && !matches!(object_type, 7 | 0x16) {
+        return Some(EVENT_ACTOR_TAG);
+    }
+    words.get(object_type as usize).copied()
+}
+
+/// `FUN_001b7fa8` / `FUN_001b8040`: whether opcode 0x4d touches an object with this resource tag (method +0x3c,
+/// `FUN_0016bc68`, is the same in every object class vtable; the compare is signed).
+pub fn op_4d_touches(tag: i32) -> bool {
+    tag < HIDE_TAG_LIMIT
+}
+
+/// Opcode 0x4d on the event's own actors: `FUN_001b7fa8` sets (+6 = 0), `FUN_001b8040` clears (+6 not 0) object
+/// +0x10c bit 0x80 on every object in the list at that moment whose tag it touches. Actors the event makes later
+/// are not changed. Returns the new hidden state of an object with this tag that already existed.
+pub fn op_4d_hidden(was: bool, tag: i32, show: bool) -> bool {
+    if op_4d_touches(tag) { !show } else { was }
 }
 
 struct Play {
@@ -789,7 +822,7 @@ fn step(
                             let root = commands.spawn((Transform::default(), Visibility::Hidden, AreaPart, EventActor)).id();
                             let body = spawn_skinned(&mut commands, root, rig, &mut meshes, &mut materials, &mut images, &mut bindposes, SCALE);
                             let groups = model.as_ref().and_then(|model| disc.read(&format!("obj/{model}.mdlx"))).and_then(|f| mesh_groups(&f));
-                            slot.insert(Spawned { root, body, motion: None, clock: None, groups, parts: None, place: None, kept: None, first: false });
+                            slot.insert(Spawned { root, body, motion: None, clock: None, groups, parts: None, place: None, kept: None, first: false, hidden: false });
                             info!("event: frame {fi}: actor {} {} (object {:#x}, model {}) made (op 0x2c, FUN_0016e8c0)", m.index, actor.name, actor.object, model.unwrap_or_default());
                         }
                         None => {
@@ -841,7 +874,7 @@ fn step(
                     Some(s) => {
                         let at_app = game_to_app(pl.pos);
                         let tf = Transform::from_translation(at_app * SCALE).with_rotation(Quat::from_rotation_y(app_yaw(pl.rot[1].to_radians())));
-                        commands.entity(s.root).insert((tf, Visibility::Inherited));
+                        commands.entity(s.root).insert((tf, if s.hidden { Visibility::Hidden } else { Visibility::Inherited }));
                         if let Some(s) = p.actors.get_mut(&pl.index) {
                             s.place = Some(tf);
                         }
@@ -924,10 +957,26 @@ fn step(
                     info!("event: frame {fi} (cmd frame {at}): op 0xd actor {index} draws the mesh groups {list:x?} (FUN_00228b48 -> FUN_00120fd0): {note}");
                 }
             }
-            0x4d => info!(
-                "event: frame {fi} (cmd frame {at}): op 0x4d {} the objects whose model resource tag (+0x28) is below 2000 (FUN_00226e80 -> FUN_001b7fa8 / FUN_001b8040: +0x10c bit 0x80): not ported [GAP: which objects carry such a tag]",
-                if le16(d, 2) == 0 { "hides" } else { "shows" }
-            ),
+            0x4d => {
+                // FUN_00226e80: +6 = 0 hides (FUN_001b7fa8(2000)), else shows (FUN_001b8040(2000)) every listed object
+                // whose model resource tag is below 2000. The event's actors carry -200; the field's Sora, party and
+                // townspeople 2300..2700 (not touched). Objects of ObjectType 5, 6, 8, 10, 11, 13, 18, 23 (tags 1030..1110)
+                // are touched too: the app draws none of them in an event [see docs/events.md].
+                let show = le16(d, 2) != 0;
+                let mut n = 0;
+                for s in p.actors.values_mut() {
+                    s.hidden = op_4d_hidden(s.hidden, EVENT_ACTOR_TAG, show);
+                    // An actor opcode 2 has not placed yet stays out of sight (the app's own rule: it has no place).
+                    if s.place.is_some() {
+                        commands.entity(s.root).insert(if s.hidden { Visibility::Hidden } else { Visibility::Inherited });
+                    }
+                    n += 1;
+                }
+                info!(
+                    "event: frame {fi} (cmd frame {at}): op 0x4d {} {n} event actor(s) (resource tag {EVENT_ACTOR_TAG} < {HIDE_TAG_LIMIT}; FUN_00226e80 -> FUN_001b7fa8 / FUN_001b8040: +0x10c bit 0x80)",
+                    if show { "shows" } else { "hides" }
+                );
+            }
             0x44 => info!("event: frame {fi} (cmd frame {at}): op 0x44 movie movie/{REGION}/{}.pss not played (no movie player) [GAP]", cstr(d, 2)),
             o => {
                 if log {
@@ -1395,6 +1444,73 @@ mod tests {
             assert!(ev.actors.is_empty() && ev.places.is_empty() && ev.motions.is_empty(), "{:?}", ev.actors);
         }
         assert!(events >= 1);
+    }
+
+    /// Opcode 0x4d (`FUN_00226e80`): +6 = 0 sets object bit 0x80 on every object whose model resource tag is below
+    /// 2000 (signed), else clears it. The tag of the event's own actors is -200 (`FUN_0016ef80`), the table of
+    /// `FUN_0016e430` (0x37a278) gives the rest by ObjectType.
+    #[test]
+    fn opcode_0x4d_hides_and_shows_the_objects_whose_tag_is_below_2000() {
+        assert!(op_4d_touches(-200) && op_4d_touches(1999) && !op_4d_touches(2000) && !op_4d_touches(2300));
+        // hide, hide again (stays), show
+        let h = op_4d_hidden(false, EVENT_ACTOR_TAG, false);
+        assert!(h);
+        assert!(op_4d_hidden(h, EVENT_ACTOR_TAG, false));
+        assert!(!op_4d_hidden(h, EVENT_ACTOR_TAG, true));
+        // an object with a tag of 2000 or more keeps its state either way
+        assert!(!op_4d_hidden(false, 2300, false));
+        assert!(op_4d_hidden(true, 2300, true));
+        // the event's own actors: -200 for every type but 7 and 0x16
+        let words = [2300, 2400, 2500, 2600, 2700, 1090, 1090, 2100];
+        assert_eq!(resource_tag(&words, 1, true), Some(-200));
+        assert_eq!(resource_tag(&words, 7, true), Some(2100));
+        assert_eq!(resource_tag(&words, 5, false), Some(1090));
+        assert_eq!(resource_tag(&words, 1, false), Some(2400));
+        assert_eq!(resource_tag(&words, 40, false), None);
+    }
+
+    /// On the disc: the table at 0x37a278 of the executable (read here, never copied) puts ObjectTypes 5, 6, 8, 10,
+    /// 11, 13, 18 and 23 below 2000 and the player, friends, townspeople, enemies and save points above. Lists what
+    /// the tt areas spawn of the hidden types and every opcode 0x4d of tt02..tt04 (docs/events.md).
+    #[test]
+    fn opcode_0x4d_touches_the_object_types_the_table_puts_below_2000() {
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let disc = Disc::open(&iso);
+        let exe = disc.read_root("SLUS_210.05").expect("executable");
+        let words: Vec<i32> = (0..24).map(|i| {
+            let o = 0x37a278 - EXE_BIAS + 4 * i;
+            i32::from_le_bytes([exe[o], exe[o + 1], exe[o + 2], exe[o + 3]])
+        }).collect();
+        let hit: Vec<u8> = (0..24u8).filter(|&t| op_4d_touches(resource_tag(&words, t, false).unwrap())).collect();
+        eprintln!("table {words:?}: touched object types {hit:?}");
+        assert_eq!(hit, vec![5, 6, 8, 10, 11, 13, 18, 23]);
+        for t in [0u8, 1, 4, 7, 15, 19] {
+            assert!(!hit.contains(&t), "type {t}");
+        }
+        let objs = disc.0.lock().ok().and_then(|mut a| kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).ok()).map(|d| d.rows).unwrap_or_default();
+        let mut spawned = std::collections::BTreeMap::new();
+        let (mut cmds, mut hides, mut shows) = (0, 0, 0);
+        for area in ["tt00", "tt01", "tt02", "tt03", "tt04"] {
+            let Some(file) = disc.read(&format!("ard/{area}.ard")) else { continue };
+            let (ard, _) = kh2_ard::Area::parse(&file).expect("area");
+            for (_, _, _, e) in ard.spawned() {
+                if let Some(o) = objs.iter().find(|o| o.object_id == e.object).filter(|o| hit.contains(&o.object_type)) {
+                    *spawned.entry((o.object_type, o.model_name.clone())).or_insert(0) += 1;
+                }
+            }
+            for (tag, bytes) in &ard.events {
+                for c in kh2_ard::parse_event(bytes).unwrap_or_default().iter().filter(|c| c.opcode == 0x4d) {
+                    cmds += 1;
+                    if le16(&c.data, 2) == 0 { hides += 1 } else { shows += 1 }
+                    eprintln!("{area} event {tag}: op 0x4d {:02x?}", c.data);
+                }
+            }
+        }
+        eprintln!("area spawns of the touched types: {spawned:?}; op 0x4d: {cmds} commands, {hides} hide, {shows} show");
+        assert!(cmds > 0);
     }
 
     #[test]

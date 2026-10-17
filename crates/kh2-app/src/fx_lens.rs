@@ -131,7 +131,6 @@ struct LensPipeline {
 #[derive(Resource, Default)]
 struct LensGpu {
     history: Option<[(Texture, TextureView); 2]>,
-    size: Extent3d,
     format: Option<TextureFormat>,
     /// Index of the texture holding the previous effect frame's picture (the lens reads it, the copy writes
     /// the other).
@@ -186,6 +185,12 @@ impl LensPipeline {
     }
 }
 
+/// The display buffer's size (GS page 0, 512 x 448; `FUN_0014dcd0`). The history texture has this size, not the
+/// window's: every pass of the feedback (copy down, bilinear sample, copy down again) blurs by a texel of the
+/// console's buffer, which is what makes the original's ghost a smooth stretched blur rather than separate copies
+/// (docs/camera.md "The intro camera", WP-FX13).
+const HISTORY_SIZE: Extent3d = Extent3d { width: 512, height: 448, depth_or_array_layers: 1 };
+
 /// Per vertex: clip position (4 floats), texture position (2), tint and weight (4).
 const VERTEX_FLOATS: usize = 10;
 
@@ -231,8 +236,8 @@ fn prepare(
         let format = target.main_texture_format();
         pipeline.ids(&cache, format);
         if history {
-            let size = target.main_texture().size();
-            if gpu.history.is_none() || gpu.size != size || gpu.format != Some(format) {
+            let size = HISTORY_SIZE;
+            if gpu.history.is_none() || gpu.format != Some(format) {
                 let make = || {
                     let t = device.create_texture(&TextureDescriptor {
                         label: Some("kh2_lens_history"),
@@ -248,7 +253,6 @@ fn prepare(
                     (t, v)
                 };
                 gpu.history = Some([make(), make()]);
-                gpu.size = size;
                 gpu.format = Some(format);
             }
         }
@@ -267,7 +271,7 @@ fn prepare(
 fn lens_scene(view: ViewQuery<(&ViewTarget, &LensScene)>, gpu: Res<LensGpu>, pipeline: Res<LensPipeline>, cache: Res<PipelineCache>, mut ctx: RenderContext) {
     let (target, _) = view.into_inner();
     let (Some((buffer, count)), Some(history)) = (&gpu.vertices, &gpu.history) else { return };
-    if gpu.format != Some(target.main_texture_format()) || gpu.size != target.main_texture().size() {
+    if gpu.format != Some(target.main_texture_format()) {
         return;
     }
     let Some(&(copy_id, lens_id)) = pipeline.ids.get(&target.main_texture_format()) else { return };
@@ -304,7 +308,7 @@ fn lens_scene(view: ViewQuery<(&ViewTarget, &LensScene)>, gpu: Res<LensGpu>, pip
 fn lens_history(view: ViewQuery<(&ViewTarget, &LensHistory)>, gpu: Res<LensGpu>, pipeline: Res<LensPipeline>, cache: Res<PipelineCache>, mut ctx: RenderContext) {
     let (target, _) = view.into_inner();
     let Some(history) = &gpu.history else { return };
-    if gpu.format != Some(target.main_texture_format()) || gpu.size != target.main_texture().size() {
+    if gpu.format != Some(target.main_texture_format()) {
         return;
     }
     let Some(&(copy_id, _)) = pipeline.ids.get(&target.main_texture_format()) else { return };
@@ -333,6 +337,12 @@ fn lens_history(view: ViewQuery<(&ViewTarget, &LensHistory)>, gpu: Res<LensGpu>,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The history is the console's display buffer, not the window.
+    #[test]
+    fn the_history_is_the_display_buffer_size() {
+        assert_eq!((HISTORY_SIZE.width, HISTORY_SIZE.height), (512, 448));
+    }
 
     /// A vertex in front of the camera lands at its projected screen position; its texture position is the
     /// screen position of the shifted point (y down), so a shift to the right moves the sample right.

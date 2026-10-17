@@ -1105,6 +1105,12 @@ fn reward_metrics(m: &ShopMenu) -> (f32, f32, f32) {
     g.map_or((at::PITCH, 15.0, at::PRICE_RIGHT + 20.0 - at::ROWS[0]), |g| (g.unk1c as f32, if g.size == 0 { 15.0 } else { g.size as f32 }, g.x as f32))
 }
 
+/// The row pitch of a list widget's plate group (+0x1c). Page 10 builds its rows from group 0x60 and page 0x17 from group
+/// 0x6e (`FUN_0028f9a8`, over the rows `FUN_0028b470` made for page 0xb); the disc has 23 and 26.
+fn group_pitch(m: &ShopMenu, group: usize) -> f32 {
+    m.mark_seq.and_then(|q| m.layd.seqs.get(q)).and_then(|q| q.groups.get(group)).map_or(at::PITCH, |g| g.unk1c as f32)
+}
+
 /// `FUN_0028b470`: the sprite group of a reward row's plate.
 const ROW_PLATE: usize = 0x62;
 
@@ -1171,7 +1177,13 @@ fn draw_synth(m: &ShopMenu, scene: &mut MenuScene, text: &MenuText, owned: &dyn 
     }
     let tag_of = |b: Option<bool>| b.map(|new| if new { Tag::New } else { Tag::Viewed });
     let name = |id: u16| -> Vec<Token> { m.wares.iter().find(|w| w.id == id).map(|w| message(text, u32::from(w.name))).unwrap_or_default().into_iter().filter(|t| *t != Token::End).collect() };
-    let row_y = |k: usize| at::ROWS[1] + at::PITCH * k as f32;
+    let pitch = match s.page {
+        synth::Page::Rewards => reward_metrics(m).0,
+        synth::Page::Materials { totals: true } => group_pitch(m, 0x60),
+        synth::Page::Materials { totals: false } => group_pitch(m, 0x6e),
+        _ => at::PITCH,
+    };
+    let row_y = |k: usize| at::ROWS[1] + pitch * k as f32;
     let row = |scene: &mut MenuScene, k: usize, tokens: Vec<Token>, c: [u8; 4], right: Option<String>| {
         if k < n.list.len() {
             set_label(scene, n.list[k], Some(text_label(text, tokens, c, 0, [at::ROWS[0], row_y(k)])));
@@ -3521,8 +3533,6 @@ mod tests {
     }
 
 
-    /// The disc: `itemshop.2ld` has the tag groups 0x77 / 0x78 and the rows' plate groups, and `cond` rows read like
-    /// the rules `cond_met` ports (skipped without `KH2_ISO`).
     /// Tables with a category name per material category (message 0x100 + category) and a name for item type 1.
     fn named() -> Tables {
         let mut t = mix().1;
@@ -3642,6 +3652,20 @@ mod tests {
         assert_eq!((synth::material_mark(&k, 0), synth::material_mark(&k, 1)), (None, Some(true)), "NEW while +0x112d is set");
         k.fresh = false;
         assert_eq!(synth::material_mark(&k, 1), Some(false), "VIEWED after");
+        // Only the slots whose bit is set (session +8) carry one, whatever `fresh` says; slot 63 is the last bit.
+        let k = synth::Marks { known: 1 << 63 | 1 << 5, fresh: false, ..synth::Marks::default() };
+        let marked: Vec<usize> = (0..64).filter(|&i| synth::material_mark(&k, i).is_some()).collect();
+        assert_eq!(marked, vec![5, 63]);
+        // The tag follows the opening: a material handed over once is marked, one handed over before (no `+8` bit) is not.
+        let (mix, t, mats) = mix();
+        let b = Book { mix: &mix, t: &t, mats: &mats, rank: &rank, flag1: &flag1 };
+        let mut s = Fake::default();
+        s.items.insert(0x201, 1);
+        let (x, _) = Session::start(&b, &mut s);
+        assert_eq!((synth::material_mark(&x.marks, 0), synth::material_mark(&x.marks, 1), x.marks.fresh), (None, Some(true), true), "0x201 is slot 1");
+        s.items.insert(0x201, 1);
+        let (x, _) = Session::start(&b, &mut s);
+        assert_eq!(synth::material_mark(&x.marks, 1), None, "handed over again: no longer first time");
     }
 
     /// The disc's reward rows: every reward has a second-column text, the notices of items and unlocks have two variables
@@ -3663,6 +3687,10 @@ mod tests {
         }
         let plate = &q.groups[ROW_PLATE];
         assert_eq!((plate.x, plate.size, plate.unk1c), (270, 13, 23), "FUN_0028b470: the second text at x 270, size 13, rows 23 apart");
+        // The pitches the port applies to the material pages (`group_pitch`): page 10's group 0x60 and page 0x17's group 0x6e.
+        let menu = ShopMenu { layd: two.layd.clone(), mark_seq: Some(seq), ..ShopMenu::default() };
+        assert_eq!((group_pitch(&menu, 0x60), group_pitch(&menu, 0x6e)), (23.0, 26.0));
+        assert_eq!(group_pitch(&ShopMenu::default(), 0x60), at::PITCH, "no file: the port's pitch");
         let elf = ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok()).unwrap();
         let exe = Exe::load(elf).unwrap();
         let t = synth::Tables::read(&|v| exe.u16(v), &|v| exe.u8(v)).unwrap();
@@ -3699,6 +3727,8 @@ mod tests {
         }
     }
 
+    /// The disc: `itemshop.2ld` has the tag groups 0x77 / 0x78 and the rows' plate groups, and `cond` rows read like
+    /// the rules `cond_met` ports (skipped without `KH2_ISO`).
     #[test]
     fn the_disc_shop_layout_has_the_tag_groups_and_the_rewards_read_as_conditions() {
         let Ok(iso) = std::env::var("KH2_ISO") else { return };

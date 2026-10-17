@@ -1741,10 +1741,7 @@ rules with tests; the rest is node glue), `chars.rs` (the record family, `enemie
   moved; `FUN_002b30d8` only switches its group to 0x39 / 0x3a) is centred on the value's origin, which is the right end of the right-aligned text,
   so it covered the last 23 units of "Hits" [V: the quads of group 0x39 span x -23 .. 23]. The original's right edge of the text is not recoverable from
   the code [GAP]; the port ends the text at the tag's left edge (`name_list::tag_left_reach`, test `a_limit_value_ends_where_its_tag_begins`) [inferred]:
-  the tag cannot sit right of the text because the scroll bar starts 12 units after its right edge. (2) The list layer's left sheet (page 0xd and the other
-  list pages, group 0x58, box -148 .. 501) is carried to the window's left edge by `stretch_quads` like the frame's rail (`name_list::carry_sheet`)
-  [inferred]; looked at 2560x1080, 1920x1080, 1600x900 and 1280x720 (page 0xd): the sheet reaches the window edge at the wide sizes and nothing moved at 1280x720.
-  The right page keeps its place. (3) The page-turn sound and wipe: `FUN_002779f8(dir, mode)` only switches the header object's group (table 0x381fa8 / 0x381fb0,
+  the tag cannot sit right of the text because the scroll bar starts 12 units after its right edge. (2) The left sheet of every journal page that has one (worlds 0xd, characters, story, album, treasures, quests, minigames, the character's own page 0xf; group 88 / 94 / 99 / 81 / 73 ..., box -148 .. 501, or .. 383 on page 0xf) is carried to the window's left edge by `stretch_quads` like the frame's rail (`menu_journal::sheet_stretch`, run for every journal node after each page build by `carry_sheets`, test `the_sheet_box_is_carried_whole`) [inferred]; the rule is a quad set starting left of x -100 and at least 400 wide (the book's base starts at -80 and stays). Looked at 2560x1080 and 1280x720: pages 0xd, 3 (story), 6 (characters), 4 (album), 7 (treasures), 9 / 10 (quests, minigames), 0xf at 2560x1080 reach the window edge, 1280x720 unchanged. Pages 0, 1 / 2 and 0xc have no left sheet (the dark book), so nothing is open. (3) The page-turn sound and wipe: `FUN_002779f8(dir, mode)` only switches the header object's group (table 0x381fa8 / 0x381fb0,
   `FUN_00138e78` or `FUN_0029b600` with a group, then writes +0x17c); it plays no sound. Nothing was ported: the sound the handlers play on a direction (if any) is
   not in that function [GAP: callers' sound calls not traced], and the header's second / third group animation is not in the port.
 - **Decompile index (MN15).** `FUN_00184a30`, `FUN_001acfe0`, `FUN_001b02f0`, `FUN_001c46a8`, `FUN_00187dc8`, `FUN_00187e08`, `FUN_00187e68`,
@@ -2226,14 +2223,15 @@ Not ported: the category tabs of `FUN_0028aaa8`, which also test the flag (the p
 (`KH2_STATE` with `"story_flags": [18487]`) shows nine rows, the unreached ones dim with an icon and question marks, and
 the screenshot of page 10 shows the materials never handed over as question marks with a 0.
 
-**List geometry [V in part]**. The row builder of pages 0xb and 10 (`FUN_0028b470`) places row k's plate widget (group 0x62)
+**List geometry [V in part]**. The row builder of page 0xb (`FUN_0028b470`; `FUN_0028aa40` calls it for the pages other than 10, and `FUN_0028b188` for page 10) places row k's plate widget (group 0x62)
 at `(0, k * +0x1c)` of the window widget, and its second text and the NEW tag at the group's x (`FUN_00138ed0(widget, +0x10,
 +0x14)`) from it, both texts at the size the group holds in +0x18 (0xf when 0). On the disc (read by
 `the_disc_reward_texts_notices_and_list_extents`, which asserts them) group 0x62 has x 270, y 0, size 13, +0x1c 23: so the
 rows are 23 apart (the port used 24), the second text starts 270 to the right of the first and the NEW tag ends there
 (quad x -39..1), and the text is 13 pixels tall. Port: `reward_metrics` reads them from the file and page 0xb uses them.
-The buy list's group 0x60 (x 177, size 15, +0x1c 23, +0x20 228) and group 0x6e (x 175, size 16, +0x1c 26, +0x20 28) hold the
-same kind of record for the other widgets. Not found: the window widget's own origin on the screen
+Page 10's rows are rebuilt by `FUN_0028f9a8` from group 0x60 and page 0x17's by the same function from group 0x6e; group 0x60 has (x 177, size 15, +0x1c 23, +0x20 228: two
+columns of nine, page 10) and group 0x6e (x 175, size 16, +0x1c 26, +0x20 28), so page 10 shares page 0xb's pitch 23 and
+page 0x17 has 26; the port applies these pitches (`group_pitch`) to its single column and not the grid's second column. Not found: the window widget's own origin on the screen
 (`FUN_0029b600(window, 0x7537, ..., 0x67, 0x68, 0)` with groups whose records hold x 460, y 123; `FUN_0029ba00` parents it;
 no layout layer carries a position, all are at 0,0; the widget classes `FUN_00296aa8`, `FUN_00299e38`, `FUN_00299878` set
 the rest at run time), so the port keeps its own first row (70, 120), the title and the hand. The shop pages 1 and 4 keep

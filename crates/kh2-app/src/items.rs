@@ -973,6 +973,7 @@ fn command_menu(
     sora: Query<&Sora>,
     (drive, progress, battle, abilities): MenuState,
     (summon, mut summon_queue): (Option<Res<crate::summon::SummonState>>, Option<ResMut<crate::summon::SummonQueue>>),
+    members: Query<&crate::party::PartyMember>,
 ) {
     let (Some(data), Some(md), Some(progress)) = (data, magic_data, progress) else { return };
     let Ok(s) = sora.single() else { return };
@@ -1020,7 +1021,7 @@ fn command_menu(
             // FUN_001c6a20: forms 1..=4 (the item at 0x37b420 + 2 i with a count above 0), each as the command at 0x37c036 + 2 i.
             (1..5).filter(|&i| progress.item_count(data.form_items[i]) > 0).map(|i| data.genie_forms[i]).collect()
         }),
-        party: vec![(SORA, data.member_cmds.get(SORA as usize).copied().unwrap_or(0))],
+        party: target_party(&data.member_cmds, members.iter().map(|m| (m.slot, m.neo))),
         world: md.world,
         charging_attack: block_bits & 0x800 != 0 && charging,
         is_sora: true,
@@ -1098,6 +1099,23 @@ fn command_menu(
     cm.pages = lists.stack.iter().map(|&l| MenuPage { kind: l as u8, entries: lists.lists[l].entries.iter().map(entry).collect(), cursor: lists.lists[l].cursor }).collect();
 }
 
+/// FUN_001bcb98: the target list's party, Sora first, then the field members by party slot (FUN_00175b68), each with
+/// its target command from the u16 table at 0x37bab0 (`cmds`, by member id); a member with no command there is left out.
+pub fn target_party(cmds: &[u16], members: impl Iterator<Item = (u8, u16)>) -> Vec<(u16, u16)> {
+    let cmd = |m: u16| cmds.get(m as usize).copied().unwrap_or(0);
+    let mut others: Vec<(u8, u16)> = members.filter(|&(_, m)| m != SORA && cmd(m) != 0).collect();
+    others.sort();
+    std::iter::once(SORA).chain(others.into_iter().map(|(_, m)| m)).map(|m| (m, cmd(m))).collect()
+}
+
+/// Whether a queued use finishing on `target` (0: the group items) counts for the "Healed Party Members" row:
+/// FUN_001a11a0 answers `target != user` for one target, and for a group item true when a party slot other than the
+/// user's holds a member; FUN_001b8658 then calls FUN_001d76a0 when the user is member 1 (Sora, who is always the user
+/// here). `others` are the member ids of the field party besides Sora.
+pub fn counts_as_healed(target: u16, others: &[u16]) -> bool {
+    if target == 0 { !others.is_empty() } else { target != SORA && others.contains(&target) }
+}
+
 /// The request the summon system gets for a chosen command (summon.rs): Summon and Dismiss by their `Execute`, one of Genie's
 /// "Drive!" forms (`Execute` 535..538) as `Form`.
 pub fn summon_request(c: &Cmd, cmd: u16) -> Option<crate::summon::SummonRequest> {
@@ -1122,6 +1140,7 @@ fn run(
     gts: Query<&GlobalTransform>,
     lib: Option<Res<crate::fx::EffectLib>>,
     (mut magic, game, battle, abilities, mut drive): UseState,
+    mut party: Query<&mut crate::party::PartyMember>,
 ) {
     let (Some(data), Some(mut progress)) = (data, progress) else { return };
     let Ok(mut s) = sora_q.single_mut() else { return };
@@ -1199,8 +1218,9 @@ fn run(
         }
         done.push(i);
         let Some(row) = data.item(q.item) else { continue };
-        // The target (0: every member, the app has Sora only): the item's effect on it.
-        if let Some(lib) = lib.as_ref() {
+        // The target (0: every member): the item's effect on it. Sora is hit by target 0 and by his own id.
+        let on_sora = q.target == 0 || q.target == SORA;
+        if on_sora && let Some(lib) = lib.as_ref() {
             fx::start(&mut commands, &lib.system, row.stat_entry, Bind::Owner(body_e));
         }
         let mult = 100 + abilities.as_ref().map_or(0, |a| a.block().item_boost as i32);
@@ -1218,14 +1238,34 @@ fn run(
             drive_max: drive.as_ref().map_or(0, |d| d.points.max),
         };
         let (hp0, mp0) = (v.hp, v.mp);
-        item_effect(q.item, amount, mult, &mut v, data.charge_feed);
-        s.hp = v.hp;
-        s.mp = v.mp;
-        magic.charge.left = v.charge_left;
-        magic.charge.total = v.charge_total;
-        if let Some(d) = drive.as_mut() {
-            d.points.fraction = v.drive_fraction;
-            d.points.whole = v.drive_points;
+        if on_sora {
+            item_effect(q.item, amount, mult, &mut v, data.charge_feed);
+            s.hp = v.hp;
+            s.mp = v.mp;
+            magic.charge.left = v.charge_left;
+            magic.charge.total = v.charge_total;
+            if let Some(d) = drive.as_mut() {
+                d.points.fraction = v.drive_fraction;
+                d.points.whole = v.drive_points;
+            }
+        }
+        // The other members (FUN_001a11a0 -> FUN_001a12a0 on their status blocks). A KO'd member is left alone: the
+        // revive path (FUN_00186238) is party.rs's [GAP: FUN_001a12a0 would raise the block's HP without it].
+        let others: Vec<u16> = party.iter().map(|m| m.neo).filter(|&n| n != SORA).collect();
+        for mut m in party.iter_mut().filter(|m| (q.target == 0 || q.target == m.neo) && m.neo != SORA && !m.ko) {
+            let mut mv = Vitals { hp: m.hp, hp_max: m.hp_max, hp_min: 0, mp: m.mp, mp_max: m.mp_max, charge_left: m.charge.left, charge_total: m.charge.total, ..Default::default() };
+            let (h0, m0) = (mv.hp, mv.mp);
+            item_effect(q.item, amount, mult, &mut mv, data.charge_feed);
+            m.hp = mv.hp;
+            m.mp = mv.mp;
+            m.charge.left = mv.charge_left;
+            m.charge.total = mv.charge_total;
+            info!("items: used {} on {}: HP {h0} -> {}, MP {m0} -> {}", data.name(q.item), m.model, m.hp, m.mp);
+        }
+        // FUN_001b8658: the user is Sora (member 1) and FUN_001a11a0 answered true.
+        if counts_as_healed(q.target, &others) {
+            progress.count_healed();
+            info!("items: Healed Party Members counts {}", progress.healed_count());
         }
         info!(
             "items: used {}: HP {hp0} -> {}, MP {mp0} -> {}, count {} -> {} (amount {amount}, mult {mult}, effect {} on member {} (0 = all: Sora), tick {})",
@@ -1561,6 +1601,45 @@ mod tests {
 
     /// FUN_001a12a0's sums: a percent of the maximum rounded up, HP held at the maximum, MP fed into a
     /// running charge, the drive gauge in hundredths.
+    #[test]
+    fn the_target_list_holds_sora_then_the_members_by_slot() {
+        // The table at 0x37bab0 by member id: Sora 42; Donald and Goofy have their own target commands.
+        let mut cmds = vec![0u16; 16];
+        cmds[1] = 42;
+        cmds[2] = 43;
+        cmds[3] = 44;
+        assert_eq!(target_party(&cmds, [(1u8, 3u16), (0, 2)].into_iter()), vec![(1, 42), (2, 43), (3, 44)]);
+        assert_eq!(target_party(&cmds, std::iter::empty()), vec![(1, 42)]);
+        // A member with no command in the table is not offered.
+        assert_eq!(target_party(&cmds, [(0u8, 9u16)].into_iter()), vec![(1, 42)]);
+    }
+
+    #[test]
+    fn healing_another_member_counts_once_for_the_report() {
+        // FUN_001a11a0 answers target != user; a group item counts when any other slot holds a member.
+        assert!(counts_as_healed(2, &[2, 3]));
+        assert!(counts_as_healed(3, &[2, 3]));
+        assert!(!counts_as_healed(1, &[2, 3]), "Sora on himself counts nothing");
+        assert!(!counts_as_healed(2, &[3]), "a member who left is not healed");
+        assert!(counts_as_healed(0, &[2]));
+        assert!(!counts_as_healed(0, &[]), "a group item with Sora alone counts nothing");
+        // The counter itself: Progress::count_healed adds one per call.
+        let mut p = Progress::from_block(&[], std::sync::Arc::new(crate::progress::ItemIndex::default()));
+        let n = p.healed_count();
+        p.count_healed();
+        assert_eq!(p.healed_count(), n + 1);
+    }
+
+    #[test]
+    fn a_potion_heals_donald_from_his_own_maximum() {
+        // Donald at 10 of 30 HP: Potion (item 1, amount 40) adds (30 * 40 * 100 + 9999) / 10000 = 12.
+        let mut v = Vitals { hp: 10, hp_max: 30, ..Default::default() };
+        assert!(item_effect(1, 40, 100, &mut v, 12.0));
+        assert_eq!(v.hp, 22);
+        assert!(item_effect(1, 40, 100, &mut v, 12.0));
+        assert_eq!(v.hp, 30, "held at the maximum");
+    }
+
     #[test]
     fn item_effect_follows_fun_001a12a0() {
         let base = Vitals { hp: 50, hp_max: 120, hp_min: 0, mp: 10, mp_max: 100, drive_max: 3, ..default() };

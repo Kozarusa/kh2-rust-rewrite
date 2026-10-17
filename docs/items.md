@@ -169,7 +169,19 @@ not call it yet.
   or the grounded / air / blend-to-idle range of an attack or cast motion [I: the window of `FUN_00174cf8`'s caller]),
   then motion request 9 (battle or field set by the battle flag) in `sora::State::Magic`; trigger 6 takes the item
   from Sora's slots and queues the use; the use starts effect 0, waits, starts the `StatEntry` effect on Sora and
-  applies `item_effect`. The app's party is Sora alone: target 0 and the target list hold Sora only [I].
+  applies `item_effect`. WP-IT1: the target list is Sora plus the field members (`items::target_party`: `party::PartyMember`
+  by slot, each with its command from the table at 0x37bab0, FUN_001bcb98), so Donald and Goofy are offered; the chosen
+  member id travels as the use's target. On landing the effect goes to Sora (target 0 or his id) and to the members that
+  match (target 0: all; else the member id), through `item_effect` on the member's `hp/hp_max/mp/mp_max/charge`; a KO'd member
+  is skipped [GAP: FUN_001a12a0 acts on the status block whether or not the member is down, and the revive goes through
+  FUN_00186238, which `party.rs` owns and does not export]; the `StatEntry` effect starts on Sora only [GAP: no
+  owner binding for a member entity is known]. FUN_001b8658 then calls `Progress::count_healed` once per use when
+  `items::counts_as_healed` holds: the user (Sora) is member 1 and FUN_001a11a0 answered true (`target != user`, or for a
+  group item any other slot holding a member; it counts even when the heal changed nothing). Log `items: Healed Party
+  Members counts <n>`.
+  The pause menu's Items pages stay Sora-only (`menu_items.rs`: member rows, the "Sora" literals and the equipment pages are
+  one member; its use calls FUN_001a11a0 directly, FUN_0025ea40, so it counts nothing) [GAP: Donald and Goofy as targets
+  there need the members page and its names reworked].
 - Inputs taken as constant in the app: no story flags (the tests `FUN_00180680`, `FUN_001806c8`, `FUN_001807a0`,
   `FUN_001807f8` read clear, so they pass), no command slots, no special battle, no map command mode, no command lock,
   `+0xaf0` set, the object flag `+0x588` 0x1000000 set, `FUN_001c7a38` true, `FUN_0019abb0` true (every issued command is

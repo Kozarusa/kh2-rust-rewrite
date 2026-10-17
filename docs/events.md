@@ -236,8 +236,7 @@ entrance, map, btl, evt; 0xff keeps the current one).
   freezes the screen (`FUN_0014dcb0`, `FUN_0014de00`), fades the screen fader to black (`FUN_0014a7c8(fader, 0xf, 0)`),
   waits for black and ends; no destination and no fade-in was found [gap], so `Outcome::FreezeFade` is logged only.
   Record words 4 to 6 come from the trigger sub-commands 4, 5, 7, 8 (`FUN_00180ff8`; defaults `FUN_00197780`): word 4
-  (sub 4, default 0) a party arrangement index (`FUN_001a7330(FUN_001a71c0(world), index)`, not ported: no party order in
-  the app); word 5 (sub 5, default -1) the party reset code (the 5th argument of `FUN_00104e18`; when the record has no destination world and the word is non-zero `FUN_001abfe8()` is called with no argument; not ported);
+  (sub 4, default -1, `FUN_0019d8d0`) a party arrangement index (`FUN_001a7330(FUN_001a71c0(world), index)`, ported in WP-PT1: `party::jump_party`, docs/party.md section 21); word 5 (sub 5, default 0) the party reset code (the 5th argument of `FUN_00104e18`; when the record has no destination world and the word is non-zero `FUN_001abfe8(word 5)` is called (ported); with a destination the reset runs in `party::jump_reset`, WP-PT1);
   word 6 (sub 7, default 0) "menu before": 1 or 2 opens menu kind 5 first (`FUN_0024f300`) and sets the jump's wait (the 3rd argument of
   `FUN_00104e18`, read as ticks [inferred]) to 2, logged only (the menu is missing); any other code leaves both at 0
   (`LAB_0019db28`); sub 8 is not read by `FUN_0019d9d8`. Tests:
@@ -245,7 +244,7 @@ entrance, map, btl, evt; 0xff keeps the current one).
   `ending.2ld`, title 0xcc24, eight statistic rows; `area_jump::JumpMenus.ending`), and no jump follows. The record's "menu before" code
   (word 6) is ported only as its wait: the jump task's `JumpTask::Wait` holds `JumpExtras::delay_ticks` (2) ticks before the fade-out
   (also after a trigger's event, where the fade-out is skipped); the camp it opens first (`FUN_0024f300`) is always page 0x15, the party
-  switch notice, which is not ported (menus.md section 25). Type 6 (`FUN_00149eb0`): `JumpTask::Black` fades to black over 30 ticks
+  switch notice, ported in WP-PT1 (menus.md section 25, docs/party.md section 21). Type 6 (`FUN_00149eb0`): `JumpTask::Black` fades to black over 30 ticks
   (`FUN_0014a7c8(fader, 0xf, 0)`, the black is full when the fader's state `+0xfc` is 4) and holds. Searched for a fade-in: the callers of
   `FUN_00149f38` (one: `FUN_0019d9d8`) and of `FUN_00149eb0` (only its task start), the fader kind 0xf callers (`FUN_0013f1a0` area-start
   fade-in, `FUN_0013f2e8`, `FUN_002233d8` event end, out: `FUN_00103fc0`, `FUN_0013f148`, `FUN_0013f290`, `FUN_002580b8`, `FUN_00259e88`): the task

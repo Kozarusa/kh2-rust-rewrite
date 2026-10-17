@@ -1216,6 +1216,57 @@ Files: `party_rules.rs` (`apply_world_records`), `party.rs` (`spawn_party`), `kh
   members after a Struggle until a jump or flag names a preset-1 program. The programs of other worlds are not in the
   app's area set. [inferred] A load that runs a mission `btl` program and `evt` program 1 together ends on preset 1
   (btl runs before evt, FUN_00181148).
+## 21. Status: the jump record's party words and the notice page 0x15 (WP-PT1)
+
+**The hook [V].** `FUN_0019d9d8` (a trigger's jump record, docs/events.md) reads word 4 (`record +0x10`), word 5 (`+0x14`) and word 6
+(`+0x18`). After the destination is known: when word 4 is 0 or more it copies the destination world's four slot bytes to `DAT_01c8bda0`
+(`FUN_001a71c0(world)`, the current world when the record has none) and runs `FUN_001a7330(record, word 4)`, the same rule as the
+area-script command 0xf (section 1, `rules::apply_preset`, the preset being entry `word 4` of the end of `memt`). Then word 6: 1 calls
+`FUN_0024f300(0, 0x1c8bda0)`; 2 first runs `FUN_001d73d0(previous, new)` and calls `FUN_0024f300(2, 0x1c8bda0)`; any other value
+opens nothing. `FUN_00104e18(dest, fade, wait, 0, word 5)` gets wait 2 when the camp was opened, else 0 (`LAB_0019db28`); with a wait it
+runs `FUN_001abfe8(word 5)` at once, without one the jump task runs it after the fade-out and before the area unloads
+(`FUN_00104d58`, `+0x10`). The defaults of a record are word 4 = -1, word 5 = 0, word 6 = 0 (`FUN_0019d8d0`, called by `FUN_00197780` on the trigger's
+record at trigger +0x34; the trigger's own +0x10 / +0x14 that `FUN_00197780` sets are other fields), so a trigger with no sub-command
+4, 5 or 7 arranges nothing, resets nothing and opens no page. With no destination world (types 5 and 6) the arrangement applies to the
+current world and `FUN_001abfe8(word 5)` runs at once (the argument register is loaded from the record at 0x19db2c; ported).
+
+**The arrangement.** The app applies word 4 in `party::jump_party`: `PartySlots::edit_world(world, fresh, ..)` rewrites the bytes of
+the destination world (the current bytes when it is the world standing, the saved record of another world, the default preset for a
+world the app has not entered), with `rules::arrange` = `apply_preset` over `memt` trailing entry `word 4`. When the members the bytes
+name differ from the ones standing, `spawn_party`'s rebuild (section 18) swaps them. Log: `party: jump record word 4 = 1: preset applied
+to world 2 (FUN_001a7330): slot bytes [..] -> [..]`. 
+
+**The reset `FUN_001abfe8(code)` [V].** `rules::reset_effect`: 0 returns. 4, 5 and 6 end the form (`FUN_001c75c0`: `DAT_0035ff30 = 0`,
+the hidden-member count; `FUN_001ac170`: form bytes `DAT_00340c88` +4 and +5 cleared, the player's block reset) and return, 4 and 5
+only when a form is active (the low half of `DAT_00340c88` +4), 5 also raising bit 0x40000 of `DAT_0035d268` (docs/hud.md, the
+drive command locked); 0xb does the same only for form byte 5; 6 always. Every other code ends the form for 2, 0xc and 10 (and 1
+when a form is active) and then runs the loop over the status blocks 1 to 15 (`FUN_0019fe48`): `FUN_001ac130` = `FUN_001a0240(block,
+0)` (a running MP charge ends, MP set to its maximum) and `FUN_001a0100(block, maximum, 0)` (HP raised by its maximum, clamped: full
+HP; the same pair `FUN_001a04b0` runs at a form start, docs/drive-forms.md). `party::jump_reset` applies the loop to Sora and the
+standing members (not at 0 HP [inferred]) and pushes `DriveRequest::Revert` for the form end [inferred: the app's form end is the
+Revert command, which refuses Anti by command]. Not ported: the lock bit 0x40000 (the app keeps no such flag, docs/hud.md), the
+hidden-member count (the app's drive module keeps its own absorbed flags), and blocks of members the app does not run.
+
+**Page 0x15 [V for the content, [inferred] for the frame].** `party_switch.rs`: `rules::switch_notice(previous, new)` is
+`FUN_0026e970`: for each slot 0 to 3 whose member (`FUN_001a7200`: the `objentry` member id of the slot's object) is not 0, the
+member is "in" when the stored record lacks it and "out" in the other direction; a slot is locked (icon code 10 before the name,
+`FUN_002554c0(10, ..)`) for slot 0, a byte with bit 0x80, or a hidden member (`FUN_001a7268`); names are `FUN_001b5868(member)`
+(table 0x37ba90) joined by the format at 0x381ad8; the last line (`FUN_0026e618`) is message 0xcc69 when `DAT_0036cd30` is 2, else the
+message of table 0x381b08 for the member of the last locked slot 1 to 3. The page is the window text 0x46d "Party Members have been
+switched." over "Party In" / "Party Out" (0x46e, 0x46f) and the two lists; a confirm or cancel closes it (`FUN_0026e8d0`,
+`FUN_0026e158`, which goes on to page 0x14). The app draws a translucent
+panel with the lines centred and holds the field (so the jump waits for the page, as the original's menu task does [inferred]).
+Not found: the frame objects (`FUN_0029b6c0` with the groups of the words at 0x381af8 and 0x381afe) and the window geometry, the
+meaning of `DAT_0036cd30` (the app passes false), the predicate `FUN_001d4e00` that swaps one member's line for 0xcc9f, and
+`FUN_001d73d0`'s effect on members that arrive with code 2 (their growth blocks are cleared; the app keeps no block per absent member).
+
+**Harness.** `KH2_JUMP=1:<area>:<entrance> KH2_JUMP_WORDS=<word 4>:<word 5>:<word 6>` (decimal, signed) gives the forced record its
+words; without `KH2_JUMP_WORDS` the arrangement is -1. Example: `KH2_JUMP=1:0:0 KH2_JUMP_WORDS=0:-1:1 KH2_JUMP_AT=4 KH2_SHOT_AT=7`
+(preset 0 empties the companions, word 6 = 1 opens the notice).
+Tests: `a_record_word_four_arranges_the_party`, `the_party_reset_codes_follow_the_switch`, `the_notice_lists_who_came_in_and_who_went_out`,
+`the_notice_slots_read_the_bytes` (party_rules), `the_last_line_follows_the_mode_and_the_locked_member`,
+`the_executable_has_the_tables_and_the_texts_exist` (party_switch), `a_record_arrangement_edits_the_destination_world` (party).
+
 ## Decompile index
 
 | address | what |
@@ -1230,6 +1281,7 @@ Files: `party_rules.rs` (`apply_world_records`), `party.rs` (`spawn_party`), `kh
 | 0x180b48 | area-script commands (0xf preset, 0x10) |
 | 0x181148, 0x180a68, 0x180ad8, 0x180b48, 0x1a7330 | WP-P3: the area load runs map / btl / evt, opcode 0xf applies the preset |
 | 0x1abfe8, 0x1ac130, 0x1ac170, 0x19fe48, 0x19ffb8 | opcode 0x1d party reset (WP-S8: removes nobody) |
+| 0x19d9d8, 0x104e18, 0x104d58, 0x1a7330, 0x1abfe8, 0x1ac130, 0x1a0100, 0x1a0240, 0x1a0140, 0x1c75c0, 0x1c7be8, 0x24f300, 0x250450, 0x26ef80, 0x26e618, 0x26e970, 0x26e130, 0x26e158, 0x26e8d0, 0x1d73d0, 0x1b5868 | WP-PT1: the jump record's party words, the reset, page 0x15 |
 | 0x17d1b0, 0x17d290, 0x10b780, 0x10be80, 0x17c718, 0x19fd30, 0x19fdc0 | spawn, re-create, friend class, friend base, status blocks |
 | 0x17c968, 0x17c9b8, 0x17ca48, 0x17ca70, 0x17cc20, 0x17cc70, 0x17cc98, 0x17cde0, 0x17ce60, 0x17cee8, 0x17cfc0, 0x17d030, 0x17d0a8, 0x17d0f0, 0x17d150 | friend base methods (panel, tick, KO, revive, in-party) |
 | 0x10c5f8, 0x10c630, 0x10c658, 0x10c6e0, 0x1106b8, 0x110790, 0x1112e8, 0x1115a0 | friend vtable overrides |

@@ -60,7 +60,7 @@ impl Plugin for PartyPlugin {
         app.insert_resource(data)
             .init_resource::<PartySlots>()
             .insert_resource(Manager { log: std::env::var("KH2_PARTYLOG").is_ok_and(|v| !v.is_empty() && v != "0"), rng: 0x2545_f491, ..Default::default() })
-            .add_systems(FixedUpdate, (mission_party, spawn_party, party_tick, party_push_apart, party_fade, party_hits).chain().in_set(PartyTick).in_set(Sim::Enemy))
+            .add_systems(FixedUpdate, (jump_party, jump_reset, mission_party, spawn_party, party_tick, party_push_apart, party_fade, party_hits).chain().in_set(PartyTick).in_set(Sim::Enemy))
             .add_systems(FixedUpdate, member_hands.in_set(Sim::Enemy).before(PartyTick))
             .add_systems(FixedUpdate, (party_receive_hits, party_item_uses, party_script_hits).chain().in_set(Sim::SoraHurt))
             .add_systems(FixedUpdate, party_hud.after(Sim::SoraHurt).run_if(crate::schedule::sim_running))
@@ -288,6 +288,22 @@ impl PartySlots {
         self.world = world;
         self.started = true;
         carried.is_some()
+    }
+}
+
+impl PartySlots {
+    /// `FUN_001a71c0(world)` as a record to edit: the bytes of `world` (the current ones, a saved world's, or `fresh()`
+    /// for a world the app has not entered), replaced by `f`'s answer when it gives one. Returns (before, after).
+    pub fn edit_world(&mut self, world: u16, fresh: impl FnOnce() -> [u8; 4], f: impl FnOnce([u8; 4]) -> Option<[u8; 4]>) -> Option<([u8; 4], [u8; 4])> {
+        let here = self.started && world == self.world;
+        let before = if here { self.bytes } else { self.saved.get(&world).copied().unwrap_or_else(fresh) };
+        let after = f(before)?;
+        if here {
+            self.bytes = after;
+        } else {
+            self.saved.insert(world, after);
+        }
+        Some((before, after))
     }
 }
 
@@ -733,6 +749,83 @@ fn body_shape(rig: &Rig) -> (f32, f32) {
 /// the constants are read. A rebuild checks this before it despawns the standing members.
 fn can_build(area_loaded: bool, no_party: bool, have_memt: bool, have_consts: bool) -> bool {
     area_loaded && !no_party && have_memt && have_consts
+}
+
+/// A jump record's party words (WP-PT1; `FUN_0019d9d8`): word 4 arranges the destination world's party with
+/// `FUN_001a7330` (the same rule as the area-script command 0xf, `rules::apply_preset`) after the record is kept for the
+/// notice; word 6 then asks for the camp's notice page 0x15 (`party_switch`), which lists who came in and went out.
+/// A world the app has not entered starts from the default preset, as `spawn_party` does.
+fn jump_party(
+    mut menus: ResMut<crate::area_jump::JumpMenus>,
+    data: Res<PartyData>,
+    mut slots: ResMut<PartySlots>,
+    mut switch: ResMut<crate::party_switch::PartySwitch>,
+) {
+    let Some(words) = menus.party.take() else { return };
+    let Some(memt) = data.memt.as_ref() else { return };
+    let world = words.world.map_or(slots.world, u16::from);
+    let fresh = || {
+        let preset = memt.trailing.get(rules::DEFAULT_PRESET).map_or([0, rules::EMPTY, rules::EMPTY, rules::EMPTY], |w| w.to_le_bytes());
+        rules::apply_preset([0, rules::EMPTY, rules::EMPTY, rules::EMPTY], preset)
+    };
+    let edited = slots.edit_world(world, fresh, |cur| rules::arrange(cur, words.arrange, &memt.trailing));
+    let (before, after) = match edited {
+        Some(b) => {
+            info!("party: jump record word 4 = {}: preset applied to world {world} (FUN_001a7330): slot bytes {:02x?} -> {:02x?}", words.arrange, b.0, b.1);
+            b
+        }
+        None => {
+            if words.arrange >= 0 {
+                info!("party: jump record word 4 = {}: the end of memt has no such preset; nothing applied", words.arrange);
+            }
+            return;
+        }
+    };
+    let Some(arg) = words.menu else { return };
+    let merged = crate::drive::rules::memt_merge(memt, world, |_| false);
+    let member_of = |o: u16| data.objs.iter().find(|r| r.object_id == u32::from(o)).map(|r| r.neo_status);
+    let notice = crate::party_rules::switch_notice(rules::notice_slots(before, &merged, member_of), rules::notice_slots(after, &merged, member_of));
+    switch.request = Some(crate::party_switch::Request { notice, arg });
+}
+
+/// A jump's party reset (WP-PT1; `FUN_001abfe8`, run by `FUN_00104e18` / `FUN_00104d58`): ends a drive form where the
+/// code says so (the Revert request, the app's form end [inferred]) and restores HP and MP of Sora and the standing members
+/// (`FUN_001ac130` for the blocks 1 to 15: HP raised by its maximum and clamped, MP set to its maximum with a running MP
+/// charge ended; the same pair a form start runs, docs/drive-forms.md). A member at 0 HP is left as it is [inferred: the app
+/// has no revive path here].
+#[allow(clippy::too_many_arguments)]
+fn jump_reset(
+    mut menus: ResMut<crate::area_jump::JumpMenus>,
+    game: Option<Res<crate::data::GameData>>,
+    drive: Option<Res<crate::drive::DriveState>>,
+    mut queue: Option<ResMut<crate::drive::DriveQueue>>,
+    mut magic: Option<ResMut<crate::magic::MagicState>>,
+    mut sora: Query<&mut Sora>,
+    mut members: Query<&mut PartyMember>,
+) {
+    for code in std::mem::take(&mut menus.resets) {
+        let (form, anti) = drive.as_deref().map_or((false, false), |d| (d.in_form, d.form == 5));
+        let e = rules::reset_effect(i64::from(code), form, anti);
+        info!("party: jump reset code {code} (FUN_001abfe8): {e:?}");
+        if e.end_form && let Some(q) = queue.as_deref_mut() {
+            q.0.push(crate::drive::DriveRequest::Revert);
+        }
+        if !e.restore {
+            continue;
+        }
+        if let (Ok(mut s), Some(g)) = (sora.single_mut(), game.as_deref())
+            && s.hp > 0
+        {
+            s.hp = s.stats.max_hp;
+            let mp = s.mp;
+            crate::magic::refill_mp(magic.as_deref_mut().map(|m| &mut m.charge), &mut s.mp, g.sora_max_mp);
+            info!("party: jump reset: Sora HP {}, MP {mp} -> {}", s.hp, s.mp);
+        }
+        for mut m in members.iter_mut().filter(|m| m.hp > 0) {
+            m.hp = m.hp_max;
+            m.mp = m.mp_max;
+        }
+    }
 }
 
 /// The `btl` program that starts a mission (the wave spawner's `MissionStart`) applies its party presets
@@ -2785,5 +2878,37 @@ mod tests {
         for t in &c.classes {
             assert!(t[rules::ROW_FIELD].iter().all(|(down, up)| down <= up), "{t:?}");
         }
+    }
+}
+
+/// WP-PT1: a jump record's arrangement edits the destination world's record.
+#[cfg(test)]
+mod jump_record_tests {
+    use super::*;
+
+    /// The standing world's bytes change in place and the result is the preset's party; another world's record is kept
+    /// aside (starting from `fresh` when it has none) and carried over when that world is entered.
+    #[test]
+    fn a_record_arrangement_edits_the_destination_world() {
+        let presets = [u32::from_le_bytes([0, rules::EMPTY, rules::EMPTY, rules::EMPTY]), u32::from_le_bytes([0, 1, 2, rules::EMPTY])];
+        let start = [0, 1, 2, rules::EMPTY];
+        let mut s = PartySlots::default();
+        s.enter_world(2, || start);
+        let none = s.edit_world(2, || unreachable!(), |c| rules::arrange(c, -1, &presets));
+        assert_eq!(none, None);
+        assert_eq!(s.bytes, start);
+        let done = s.edit_world(2, || unreachable!(), |c| rules::arrange(c, 0, &presets));
+        assert_eq!(done, Some((start, [0, rules::EMPTY, rules::EMPTY, rules::EMPTY])));
+        assert_eq!(s.bytes, [0, rules::EMPTY, rules::EMPTY, rules::EMPTY], "Donald and Goofy are out");
+        // Another world with no record starts from the default preset, and is carried over on entering it.
+        let other = s.edit_world(5, || start, |c| rules::arrange(c, 0, &presets));
+        assert_eq!(other, Some((start, [0, rules::EMPTY, rules::EMPTY, rules::EMPTY])));
+        assert_eq!(s.bytes, [0, rules::EMPTY, rules::EMPTY, rules::EMPTY], "the standing world is untouched");
+        let carried = s.enter_world(5, || unreachable!());
+        assert!(carried);
+        assert_eq!(s.bytes, [0, rules::EMPTY, rules::EMPTY, rules::EMPTY]);
+        // Applying preset 1 again brings the companions back.
+        s.edit_world(5, || unreachable!(), |c| rules::arrange(c, 1, &presets));
+        assert_eq!(s.bytes, start);
     }
 }

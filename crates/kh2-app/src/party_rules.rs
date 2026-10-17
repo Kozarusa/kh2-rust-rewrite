@@ -198,6 +198,93 @@ pub fn apply_preset(cur: [u8; 4], preset: [u8; 4]) -> [u8; 4] {
     out
 }
 
+/// A jump record's party arrangement (record word 4, `FUN_0019d9d8`): when the word is 0 or more, `FUN_001a7330` is
+/// applied to the destination world's record (`FUN_001a71c0(world)`, the current world when the record names none)
+/// with the preset of that index in the end of `memt`; a negative word applies nothing. Returns the new bytes.
+pub fn arrange(cur: [u8; 4], word: i16, presets: &[u32]) -> Option<[u8; 4]> {
+    if word < 0 {
+        return None;
+    }
+    let preset = presets.get(word as usize).map(|w| w.to_le_bytes())?;
+    Some(apply_preset(cur, preset))
+}
+
+/// What the party reset `FUN_001abfe8(code)` does, as far as the app has the state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ResetEffect {
+    /// A drive form ends: `FUN_001c75c0` gives the members the form took back and `FUN_001ac170` zeroes the form
+    /// bytes (`DAT_00340c88` +4, +5) and resets the player's status block.
+    pub end_form: bool,
+    /// The loop over the status blocks 1 to 15 (`FUN_001ac130`): HP raised by its maximum and clamped (`FUN_001a0100`)
+    /// and MP set to its maximum with a running MP charge ended (`FUN_001a0240`), the same pair a form start runs
+    /// (docs/drive-forms.md).
+    pub restore: bool,
+    /// Code 5 raises bit 0x40000 of `DAT_0035d268` (the HUD's locked drive command, docs/hud.md); the app does not model it.
+    pub lock_drive_command: bool,
+}
+
+/// `FUN_001abfe8(code)`. `form_active` is the low half of `DAT_00340c88` +4 (a form other than base), `anti` its byte 4 being 5.
+/// Code 0 returns at once. Codes 4, 5, 6 and 0xb return after ending the form (4 and 5 only when a form is active, 0xb only for
+/// byte 4 = 5); every other code (also negative ones, 3, 7, 8, 9 and above 0xc) ends the form for 1 (when active), 2, 0xc and 10 and
+/// then restores every block.
+pub fn reset_effect(code: i64, form_active: bool, anti: bool) -> ResetEffect {
+    let mut e = ResetEffect::default();
+    match code {
+        0 => {}
+        4..=6 => {
+            e.lock_drive_command = code == 5;
+            e.end_form = code == 6 || form_active;
+        }
+        0xb => e.end_form = anti,
+        1 => {
+            e.end_form = form_active;
+            e.restore = true;
+        }
+        2 | 0xc | 10 => {
+            e.end_form = true;
+            e.restore = true;
+        }
+        _ => e.restore = true,
+    }
+    e
+}
+
+/// A party slot as page 0x15 sees it: the member (`FUN_001a7200`: the `objentry` member id of the slot's object, 0 for an
+/// empty slot) and whether the slot is locked (`FUN_001a7268`: the leader's slot 0, a slot byte with bit 0x80, or a
+/// member in the hidden list the app does not keep).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NoticeSlot {
+    pub member: u16,
+    pub locked: bool,
+}
+
+/// `FUN_001a7200` and `FUN_001a7268` for the four bytes of a record; `member_of` gives the member id of an object.
+pub fn notice_slots(bytes: [u8; 4], merged: &[u16; 24], member_of: impl Fn(u16) -> Option<u16>) -> [NoticeSlot; 4] {
+    std::array::from_fn(|i| NoticeSlot {
+        member: slot_object(merged, bytes[i]).and_then(&member_of).unwrap_or(0),
+        locked: i == 0 || bytes[i] & 0x80 != 0,
+    })
+}
+
+/// The contents of page 0x15 (`FUN_0026e970`, `FUN_0026e618`): the members that came in and went out, each with the lock
+/// flag that puts icon code 10 before the name, and the member whose line closes the notice.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Notice {
+    pub came_in: Vec<NoticeSlot>,
+    pub went_out: Vec<NoticeSlot>,
+    /// The line under the lists: the member of the last locked slot 1 to 3 of the new party (`FUN_0026e618`; its message
+    /// is the entry of the table at 0x381b08).
+    pub reason: Option<u16>,
+}
+
+/// `FUN_0026e970` over the new party (`FUN_002a1848`) and the stored one (`DAT_0036cffc`, the record as it stood before the
+/// arrangement): a non-empty member of one that the other lacks, in slot order, locked by its own party's slot.
+pub fn switch_notice(prev: [NoticeSlot; 4], now: [NoticeSlot; 4]) -> Notice {
+    let diff = |a: &[NoticeSlot; 4], b: &[NoticeSlot; 4]| a.iter().filter(|s| s.member != 0 && !b.iter().any(|t| t.member == s.member)).copied().collect();
+    let reason = (1..4).rev().find(|&i| now[i].locked).map(|i| now[i].member);
+    Notice { came_in: diff(&now, &prev), went_out: diff(&prev, &now), reason }
+}
+
 /// The party presets the `btl` program that starts `mission` applies (WP-S8): the area-script interpreter
 /// FUN_00180b48 runs a program's commands in order; opcode 0x15 (FUN_001b9338) creates the mission manager with
 /// argument 0 the mission id, opcode 0xf (FUN_001a7330) applies preset argument 0 to the current world's slot
@@ -1080,5 +1167,83 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 7);
+    }
+}
+
+/// WP-PT1: the jump record's party words.
+#[cfg(test)]
+mod jump_tests {
+    use super::*;
+
+    /// Word 4 names a preset of the end of `memt`; a negative word applies nothing; the result is `apply_preset`'s.
+    #[test]
+    fn a_record_word_four_arranges_the_party() {
+        let presets = [u32::from_le_bytes([0, EMPTY, EMPTY, EMPTY]), u32::from_le_bytes([0, 1, 2, EMPTY]), u32::from_le_bytes([0, 2, 0x40 | 1, EMPTY])];
+        let cur = [0, 1, 2, EMPTY];
+        assert_eq!(arrange(cur, -1, &presets), None);
+        assert_eq!(arrange(cur, 0, &presets), Some([0, EMPTY, EMPTY, EMPTY]), "preset 0 empties the companions");
+        assert_eq!(arrange(cur, 1, &presets), Some([0, 1, 2, EMPTY]));
+        // Preset 2 flags member 1 (0x40): it goes first, then the standing member 2 the preset lists.
+        assert_eq!(arrange(cur, 2, &presets), Some([0, 1, 2, EMPTY]));
+        assert_eq!(arrange([0, EMPTY, EMPTY, EMPTY], 2, &presets), Some([0, 1, 2, EMPTY]), "an empty party takes the flagged member first");
+        assert_eq!(arrange(cur, 9, &presets), None, "no such preset");
+    }
+
+    /// `FUN_001abfe8`: code 0 does nothing; 4, 5 and 6 end the form and return; 1, 2, 0xc, 10 and the rest restore.
+    #[test]
+    fn the_party_reset_codes_follow_the_switch() {
+        let r = |c, f, a| reset_effect(c, f, a);
+        assert_eq!(r(0, true, true), ResetEffect::default());
+        assert_eq!(r(1, false, false), ResetEffect { end_form: false, restore: true, lock_drive_command: false });
+        assert_eq!(r(1, true, false), ResetEffect { end_form: true, restore: true, lock_drive_command: false });
+        for c in [2, 0xc, 10] {
+            assert_eq!(r(c, false, false), ResetEffect { end_form: true, restore: true, lock_drive_command: false }, "code {c}");
+        }
+        assert_eq!(r(4, false, false), ResetEffect::default(), "4 returns when no form is active");
+        assert_eq!(r(4, true, false), ResetEffect { end_form: true, restore: false, lock_drive_command: false });
+        assert_eq!(r(5, false, false), ResetEffect { end_form: false, restore: false, lock_drive_command: true }, "5 locks the command even with no form");
+        assert_eq!(r(6, false, false), ResetEffect { end_form: true, restore: false, lock_drive_command: false });
+        assert_eq!(r(0xb, true, false), ResetEffect::default());
+        assert_eq!(r(0xb, false, true), ResetEffect { end_form: true, restore: false, lock_drive_command: false });
+        for c in [-1, 3, 7, 8, 9, 0xd, 99] {
+            assert_eq!(r(c, true, false), ResetEffect { end_form: false, restore: true, lock_drive_command: false }, "code {c}");
+        }
+    }
+
+    /// Page 0x15: Donald and Goofy leave (Struggle preset), the leader stays; a member in both lists is not named.
+    #[test]
+    fn the_notice_lists_who_came_in_and_who_went_out() {
+        let slot = |member, locked| NoticeSlot { member, locked };
+        let sora = slot(1, true);
+        let prev = [sora, slot(2, false), slot(3, false), slot(0, false)];
+        let now = [sora, slot(0, false), slot(0, false), slot(0, false)];
+        let n = switch_notice(prev, now);
+        assert!(n.came_in.is_empty());
+        assert_eq!(n.went_out, vec![slot(2, false), slot(3, false)]);
+        assert_eq!(n.reason, None);
+        let back = switch_notice(now, prev);
+        assert_eq!(back.came_in, vec![slot(2, false), slot(3, false)]);
+        assert!(back.went_out.is_empty());
+        // A swap of two slots changes nobody; a locked new member closes the notice with its line.
+        let swapped = [sora, slot(3, false), slot(2, false), slot(0, false)];
+        assert_eq!(switch_notice(prev, swapped), Notice::default());
+        let locked = [sora, slot(2, false), slot(7, true), slot(0, false)];
+        let n = switch_notice(prev, locked);
+        assert_eq!((n.came_in, n.went_out, n.reason), (vec![slot(7, true)], vec![slot(3, false)], Some(7)));
+    }
+
+    /// Slots from bytes: the leader's slot is locked, bit 0x80 locks a companion, 0x10 is empty.
+    #[test]
+    fn the_notice_slots_read_the_bytes() {
+        let mut merged = [0u16; 24];
+        merged[8] = 100;
+        merged[9] = 101;
+        merged[10] = 102;
+        let member_of = |o: u16| Some(o - 98);
+        let s = notice_slots([0, 1, 0x80 | 2, EMPTY], &merged, member_of);
+        assert_eq!(s[0], NoticeSlot { member: 2, locked: true });
+        assert_eq!(s[1], NoticeSlot { member: 3, locked: false });
+        assert_eq!(s[2], NoticeSlot { member: 4, locked: true });
+        assert_eq!(s[3], NoticeSlot { member: 0, locked: false });
     }
 }

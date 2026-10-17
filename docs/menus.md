@@ -380,7 +380,7 @@ equipment has been put in stock." 0x470 (a removed member's equipment goes back 
 switched at this time." 0x473.., "Party Members cannot be switched and Summons cannot be used until the fight is settled." 0x476).
 The state it changes is the party arrangement: the four slot bytes of the world's record (docs/party.md, "Party presets and the slot
 bytes"; `FUN_001a75e8` swaps two of them). **Read and ported in WP-MN7: section 19** (pages 0x14 and 0x16, their lists, the columns, the
-3D models and the swap; page 0x15 and the equipment return remain gaps, 19.4).
+3D models and the swap; the equipment return remains a gap, 19.4; page 0x15 in WP-PT1).
 
 ### 2.5b Journal [V: section 20]
 
@@ -547,7 +547,7 @@ Sound/Vibration stored only. Acceptance: a test that every row's value survives 
 - **The dim and the transition curves** (1.6): taken from the footage; the game's helper task `0x2a14d0` and the sequence step were not read.
 - **The "NEW!" tags**, the cards' source fields and the Munny/Time plate code (page 0 layers): `FUN_00251100`, `FUN_002506b8` only skimmed.
 - **Pages 3, 4, 0x16** and the Items category list code (page 2, 5..9): purposes inferred from callers and message tables. (Pages 0xa..0xe were read in WP-M3, section 13; 0x19..0x1f in section 14.)
-- **Party (0x14, 0x16: read in WP-MN7, section 19; 0x15 not ported), the Help pages (0x25) and the tutorial `.bar` resources, Journal (page 0 read in WP-MN9, section 20), Save pages (kinds 7, 8):** not read beyond
+- **Party (0x14, 0x16: read in WP-MN7, section 19; 0x15 in WP-PT1), the Help pages (0x25) and the tutorial `.bar` resources, Journal (page 0 read in WP-MN9, section 20), Save pages (kinds 7, 8):** not read beyond
   structure. (Status 0x17, 0x18 was read in WP-M2: section 10; its open gaps are listed there: the forms', summons' and members' tabs are not ported, the layout origin is [I].)
 - **Menu kinds 1, 2, 4, 6, 9, 0xa..0xf:** named by inference only.
 - **Where flags 0x70..0x73 are set** (tutorial/story bits at 0x33fdb0): not searched.
@@ -1071,7 +1071,7 @@ Code: `menu_party.rs` (child module `menu::party_page`, `PartyPlugin` in `MenuPl
 
 ### 19.4 Gaps
 
-- **Page 0x15** (`FUN_0026e158`, the notice window "Party Members have been switched." / "Party In: .. Party Out: .." that `FUN_0026e130` and `FUN_0026e618` build for the camp opened through menu kind 5, `FUN_0024f300(a, b)` after `FUN_0026ef70(b)` with the previous party): not ported; nothing in the app opens the camp that way (the callers of `FUN_0024f300` are event scripts). Read for structure only (`FUN_0026e618`, `FUN_0026e970`): it builds two comma-separated text blocks (`+0x16c4`, `+0x1744` of the page object, `FUN_001b5868` names, an icon code 10 before a locked member) of the members that came in and those that went out, compared with the stored previous party, under the headers 0x846e / 0x846f (0x46e "Party In", 0x46f "Party Out"), over the window text 0x846d (0x46d "Party Members have been switched."); a last line is message 0xcc69 when `DAT_0036cd30 == 2` and otherwise a per-member message of the table 0x381b08. The page's handler leaves for page 0x14 on a confirm or cancel (`FUN_0026e8d0`, `FUN_00295a00(0x14)`).
+- **Page 0x15** (ported in WP-PT1, `party_switch.rs`, docs/party.md section 21; the frame is [inferred]) (`FUN_0026e158`, the notice window "Party Members have been switched." / "Party In: .. Party Out: .." that `FUN_0026e130` and `FUN_0026e618` build for the camp opened through menu kind 5, `FUN_0024f300(a, b)` after `FUN_0026ef70(b)` with the previous party): ported; a jump record with word 6 = 1 or 2 opens it (`party::jump_party`). Structure (`FUN_0026e618`, `FUN_0026e970`): it builds two comma-separated text blocks (`+0x16c4`, `+0x1744` of the page object, `FUN_001b5868` names, an icon code 10 before a locked member) of the members that came in and those that went out, compared with the stored previous party, under the headers 0x846e / 0x846f (0x46e "Party In", 0x46f "Party Out"), over the window text 0x846d (0x46d "Party Members have been switched."); a last line is message 0xcc69 when `DAT_0036cd30 == 2` and otherwise a per-member message of the table 0x381b08. The page's handler leaves for page 0x14 on a confirm or cancel (`FUN_0026e8d0`, `FUN_00295a00(0x14)`).
 - **The effect on the field.** The original's swap acts on the world's slot bytes; the app's members are spawned at the area's load from `PartySlots::bytes` and follow by `PartyMember::slot`, so the port swaps both at once (the members trade follow places when the camp closes). Since WP-MN8 (docs/party.md section 18) `PartySlots` keeps the bytes of each world across area loads, a changed member set rebuilds the members, and a filled byte 3 spawns the partner (the fourth column then shows it). Not run in the game: nothing in the app fills byte 3 or changes the set yet.
 - **Hidden-member list** (`FUN_001c7be8`, the words at 0x1d5e380 with the count at 0x35ff30): its writers were not searched, so no row is locked by it. Searched: `FUN_001a7268`, `FUN_001a7698`, `FUN_001a7608`.
 - **Leave animations and the page's object enter animations** (the list rows' `FUN_00296b48` groups with a follow-up; `FUN_0026d378`'s `FUN_00296fb8`): the rows' group sets are four copies of 0x13b/0x13c, so the highlight is the marker and the hand; the page's own leave (`0x13a` and the list leave) is not played.
@@ -2309,6 +2309,7 @@ Port: `Progress::{count_healed, count_mickey_save, count_form_use, count_summon_
 **Kind 5, the camp before a jump (`FUN_0024f300`).** `FUN_0024f300(a, b)` is `FUN_0026ef70(b)` (`DAT_0036cffc = b`) then
 `FUN_0024f0b8(5, a)`; `FUN_0019d9d8` passes b = 0x1c8bda0, an address, so `FUN_0026ef80()` is never 0 and kind 5's init
 `FUN_00250450` always opens page 0x15 (the "Party Members have been switched." notice, 19.4), not page 0x14. That page lists
-the members that came in and went out of the party (word 4's arrangement, not ported), so there is nothing to show: not ported
-(gap, addresses `FUN_0024f300`, `FUN_00250450`, `FUN_0026ef80`, `FUN_0026e618`). Only its wait is ported (events.md, WP-JT4).
+the members that came in and went out of the party (word 4's arrangement). Ported in WP-PT1 (`party_switch.rs`, docs/party.md section 21):
+the arrangement is applied (`party::jump_party`) and the notice opens over the frozen field; its frame geometry is [inferred] (addresses
+`FUN_0024f300`, `FUN_00250450`, `FUN_0026ef80`, `FUN_0026e618`, `FUN_0026e970`). The wait is JT4's (events.md).
 

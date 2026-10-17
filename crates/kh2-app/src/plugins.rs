@@ -16,7 +16,7 @@ use bevy::app::{PluginGroup, PluginGroupBuilder};
 
 use crate::{
     abilities, area, area_jump, asset_viewer, assets, audio, camera, clash, combat, drive, enemy, enemy_ai, fx, harness, hud, intro, items,
-    limit, magic, menu, menu_abilities, menu_ending, menu_journal, menu_shop, menu_struggle, npc, party, player_reaction, prize, progress,
+    limit, magic, menu, menu_abilities, menu_ending, menu_journal, menu_shop, menu_struggle, npc, party, party_switch, player_reaction, prize, progress,
     reaction_cmd, schedule, skel, sora, sound_test, struggle, summon, texanim,
 };
 
@@ -85,6 +85,7 @@ impl PluginGroup for MenuPlugins {
             .add(menu_abilities::MenuAbilitiesPlugin)
             .add(items::ItemsPlugin)
             .add(party::PartyPlugin)
+            .add(party_switch::PartySwitchPlugin)
             .add(struggle::StrugglePlugin)
             .add(summon::SummonPlugin)
             .add(sound_test::SoundTestPlugin)

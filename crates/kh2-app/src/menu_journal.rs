@@ -1910,7 +1910,26 @@ fn build(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Asset
         5 => album_page::build_photo(j, scene, disc, images, world, test),
         _ => build0(j, scene, world, test, items),
     }
+    carry_sheets(j, scene);
     chrome(j, scene, page);
+}
+
+/// The box a journal page's left sheet carries to the window's edge: a quad set that starts beyond the canvas's left edge and is at least 400 wide
+/// (the sheets run from -148 to 501, or to 383 on a character's own page; the frame's other parts start at -40 and -80) [inferred: the same rule as the layout's frame].
+fn sheet_stretch(qs: &[kh2_image::seqd::Quad]) -> Option<[f32; 4]> {
+    let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+    for p in qs.iter().flat_map(|q| q.pos) {
+        b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])];
+    }
+    (b[0] <= -100.0 && b[2] - b[0] >= 400.0).then_some(b)
+}
+
+/// Gives each page node that draws a left sheet the window-edge carry (`stretch_quads`, docs/menus.md 9.1), and takes it from the others (a node
+/// shows another group on another page).
+fn carry_sheets(j: &Journal, scene: &mut MenuScene) {
+    for id in j.nodes.layer + 1..scene.nodes.len() {
+        scene.nodes[id].stretch = sheet_stretch(&scene.node_quads(id));
+    }
 }
 
 fn build0(j: &mut Journal, scene: &mut MenuScene, world: i8, test: &dyn Fn(u16) -> bool, items: &dyn Fn(u16) -> i32) {
@@ -2977,6 +2996,20 @@ fn tick(
 
 #[cfg(test)]
 mod tests {
+    fn quad_of(b: [f32; 4]) -> kh2_image::seqd::Quad {
+        kh2_image::seqd::Quad { pos: [[b[0], b[1]], [b[2], b[1]], [b[0], b[3]], [b[2], b[3]]], uv: [[0.0; 2]; 4], color: [[0; 4]; 4], blend: 0, nearest: false }
+    }
+
+    #[test]
+    fn the_sheet_box_is_carried_whole() {
+        let sheet = [quad_of([-148.0, 73.0, 501.0, 381.0])];
+        assert_eq!(sheet_stretch(&sheet), Some([-148.0, 73.0, 501.0, 381.0]), "a sheet from -148 to 501 carries its whole box");
+        assert_eq!(sheet_stretch(&[quad_of([-80.0, 75.0, 505.0, 385.0])]), None, "the book's base starts at -80 and stays");
+        assert_eq!(sheet_stretch(&[quad_of([-148.0, 73.0, 383.0, 381.0])]), Some([-148.0, 73.0, 383.0, 381.0]), "a character page's sheet too");
+        assert_eq!(sheet_stretch(&[quad_of([-148.0, 73.0, 100.0, 381.0])]), None, "a narrow part stays");
+        assert_eq!(sheet_stretch(&[]), None, "a node with no quads carries nothing");
+    }
+
     use super::*;
 
     fn worlds() -> Vec<World> {

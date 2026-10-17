@@ -409,7 +409,7 @@ mod tests {
         assert_eq!(run.calls.get(&(2, 60)).map(|s| s.count), Some(1), "{:?}", run.calls);
     }
 
-    /// The system wiring: the countdown's end drops the thread; events for another receiver are not the script's.
+    /// The system wiring: the countdown's end drops the thread after its tail; events for another receiver are not the script's.
     #[test]
     fn the_countdown_ends_the_thread() {
         let mut app = App::new();
@@ -423,6 +423,10 @@ mod tests {
         assert!(app.world().resource::<ScriptState>().run.is_some(), "the thread runs while the limit does");
         app.world_mut().resource_mut::<LimitTask>().0 = None;
         app.update();
-        assert!(app.world().resource::<ScriptState>().run.is_none(), "the limit's end drops the thread");
+        assert!(app.world().resource::<ScriptState>().run.is_some(), "the thread keeps its tail ticks after the limit's end");
+        for _ in 0..TAIL_TICKS {
+            app.update();
+        }
+        assert!(app.world().resource::<ScriptState>().run.is_none(), "the limit's end drops the thread after the tail");
     }
 }

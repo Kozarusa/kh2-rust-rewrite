@@ -958,10 +958,12 @@ work package are closed by WP-EN4 below.
   by FUN_00102bc8) has no decompile; that it calls FUN_001ad9a0 each tick is [inferred] from FUN_001ad9a0's shape. [GAP: the window's text; the 0x356b30 fade.]
 - *The revive's Tinker Bell in a run.* `KH2_SUMMON_KO=<seconds>` (new, a harness aid) knocks the player out (HP 0, `State::Down`) once while a summon is out.
   Run: `KH2_STATE=localcc1\state-sum.json KH2_WAVE_GROUP=b_44 KH2_DRIVE_POINTS=5 KH2_SUMMON=4 KH2_SUMMON_AT=5 KH2_SUMMON_PARTY=1 KH2_SUMMONLOG=1
-  KH2_SUMMON_KO=10 kh2-game tt04` logs `KH2_SUMMON_KO: the player is knocked out (HP 17 -> 0)`, `the player is knocked out with Tinker Bell ready (FUN_001c69b0): byte 7
-  cleared ... Tinker Bell (objentry 1268) made at him in mode "reraise"` and, 35 ms later, `P_EX340#kid raised the player (host 1.277, FUN_00178df0): HP 0 -> 20,
-  he was down and stands up`. A screenshot 8 s later shows Sora standing (HP 16/20 after a Dusk hit), Peter Pan beside him and no Tinker Bell (she is hidden by then); a
-  picture of her during `reraise` was not taken.
+  KH2_SUMMON_KO=10 kh2-game tt04` (WP-SM4, with `KH2_NO_SOUND=1 KH2_NO_MUSIC=1 KH2_SCREENSHOT=<png> KH2_SHOT_AT=14`) logs `KH2_SUMMON_KO: the player is knocked out (HP 20 -> 0)`,
+  `the revive sequence starts (FUN_001ad378 type 2)`, then in this order `revive: flag 0x35d268 bit 1 set`, `music stops`, `system sound 0x13`, `the message window ... is
+  not opened: its text is not found`, `0x354f70 bit 2 set`, 38 ms later (two ticks) `Tinker Bell (objentry 1268) made at the player in mode "reraise" (FUN_001adeb8)` with
+  `pad locked`, `pad released`, `put on the floor`, `flag cleared`, `music restarts`, `bit 2 cleared`, and 21 ms after that `P_EX340#kid raised the player (host 1.277):
+  HP 0 -> 20, he was down and stands up`. The screenshot 4 s later (looked at) shows Sora standing with HP 20/20, Peter Pan beside him, Dusks around and no message
+  window; Tinker Bell is not in it. The music itself and the sound were not heard (nobody has listened; the run had audio off, the stop and restart are logged).
 
 **WP-SM2 (summon gaps, part 2).** Every item of the package is answered below; what was not carried out says why. Addresses are the executable's.
 

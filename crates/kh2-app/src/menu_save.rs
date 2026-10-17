@@ -1464,12 +1464,12 @@ mod tests {
         let items = std::sync::Arc::new(crate::progress::ItemIndex::default());
         let mut live = Progress::from_block(&[], items.clone());
         live.apply_json("{\"story_flags\": [5, 70, 1030]}").unwrap();
-        let flags = live.set_flags();
+        let flags = live.story().set_flags();
         assert!(!flags.is_empty(), "the story has flags to lose");
         let bad = "{\"slot\": {\"level\": 1, \"munny\": 0, \"play_seconds\": 0, \"area\": \"tt03\"}, \"block\": \"zz\"}";
         std::fs::write(progress::slot_path(&dir, 0), bad).unwrap();
         assert!(load_slot(&dir, 0, &live).is_err());
-        assert_eq!(live.set_flags(), flags, "the shared story is as it was after the failed load");
+        assert_eq!(live.story().set_flags(), flags, "the shared story is as it was after the failed load");
 
         let old = Progress::from_block(&[], items);
         write_slot(&dir, 1, &old, &SlotInfo { level: 1, munny: 0, play_seconds: 0, area: "tt03".into() }, None).unwrap();

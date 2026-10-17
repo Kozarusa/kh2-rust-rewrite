@@ -221,7 +221,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.48 | `task_done(p) -> b` | 0x1723d8 | 105 | the task's state word (+0x70) equals 3 |
 | 1.52 | `bits_47c_set(Oi)` | 0x1728c0 | 177 | set bit n of the bit array at object +0x47c (FUN_0019dd88) |
 | 1.53 | `bits_480_set(Oi)` | 0x1728e8 | 334 | set bit n of the bit array at object +0x480 (FUN_0019ddb0) |
-| 1.54 | `bits_47c_480_clear(Oi)` | 0x172910 | 293 | clear bit n in both bit arrays (FUN_0019dde0) |
+| 1.54 | `bits_47c_480_clear(Oi)` | 0x172910 | 293 | clear bit n in both bit arrays (FUN_0019dde0). The words at `o + 4*(n>>5)` and `o + 4 + 4*(n>>5)` are and-ed with `~(1 << (n&31))`; exact, Stub only because no reader of the arrays was traced |
 | 1.55 | `start_move(Ovifi)` | 0x1712d0 | 257 | set the direction, start the motion and, with the last flag, record motion + 1 and + 2 as the following motions |
 | 1.56 | `on_screen(O) -> b` | 0x172938 | 409 | the object is inside the camera frustum |
 | 1.57 | `airborne(O) -> b` | 0x172968 | 342 | bit 0 of the mover's flag word; role inferred |
@@ -247,7 +247,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.80 | `turn_toward(Ovf) -> b` | 0x172db8 | 2097 | turn toward a direction at most `speed` per frame (0 = the object's own rate); true while still turning |
 | 1.81 | `interrupt_mode(ps)` | 0x170ef0 | 0 | stop the running mode and put the named mode at the front of the queue so it starts on the next pass; priority drops to 0 (FUN_00186fa8) |
 | 1.82 | `spawn_child_thread(piiii) -> h` | 0x172df0 | 14 | start a child thread of the object's persistent thread: context, tag, routine, cleanup routine, argument (FUN_00172df0) |
-| 1.83 | `bone_to_world(Oiv) -> v` | 0x172e68 | 151 | transform a vector by the matrix of bone/joint `index` of the object (FUN_0016aa18); result in a static buffer |
+| 1.83 | `bone_to_world(Oiv) -> v` | 0x172e68 | 151 | transform a vector by the matrix of bone/joint `index` of the object (FUN_0016aa18); result in a static buffer. Party members' scripts (friend host): the hand object's drawn bone; a null handle (member with no hand object) answers the origin, Approx [inferred] |
 | 1.84 | `gauges(O) -> p` | 0x172ee8 | 839 | the pointer at object +0x48c; scripts pass it to the record readers 1.228 to 1.233 |
 | 1.87 | `spawn_attached(Oiii) -> h` | 0x171800 | 1541 | spawn an effect or child attached to the object; returns its handle |
 | 1.88 | `lockon_point(O) -> v` | 0x172f40 | 21 | the object's lock-on point through a temporary target record (FUN_0016b6e0); role inferred |
@@ -282,7 +282,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.127 | `modes_reset(p)` | 0x170e80 | 23 | stop the running mode and clear the queue and priority |
 | 1.128 | `mover_method(Of)` | 0x171298 | 250 | virtual call on the object's mover (+0xc) with one float; role unknown (role now known, WP-SM2: the airborne launch, FUN_0017b1e0(speed) on the mover and then FUN_0016b698(object, 1); a negative speed is a downward start, docs/summons.md) |
 | 1.130 | `obj_diff(OO) -> i` | 0x170510 | 155 | difference of the two contexts' objects, 0 when either is 0 or they are the same |
-| 1.131 | `free_target(p) -> b` | 0x1736f8 | 279 | free a target record (FUN_0018f3f8); role inferred |
+| 1.131 | `free_target(p) -> b` | 0x1736f8 | 279 | free a target record (FUN_0018f3f8); role inferred. The code pops a slot index from the stack `DAT_01c8a7d0 / DAT_01c8a5d0` and copies the 5-word record into the pool entry `DAT_01c89bd0 + 0x14 * index`, returning its address: it files the record into a pool; the app's records are not pooled (Stub) |
 | 1.132 | `target_release(p)` | 0x173728 | 68 | return a target record to the pool at 0x1c89bd0 (20-byte entries; FUN_0018f458) |
 | 1.133 | `obj_method_44(O)` | 0x170540 | 97 | virtual method +0x44 of the object; role unknown |
 | 1.134 | `obj_method_48(O)` | 0x170570 | 68 | virtual method +0x48 of the object; role unknown |
@@ -299,7 +299,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.154 | `gflags_set_2()` | 0x1739f8 | 1 | set bit 1 of the global flag word at 0x35d268 (tested by 1.171 for bit 2 and 1.206 for bit 7) |
 | 1.155 | `obj_method_78(Oiii) -> i` | 0x171c48 | 46 | virtual method +0x78 of the object with the arguments (the last as a boolean) |
 | 1.157 | `spawn_effect_on(OiO)` | 0x171f40 | 83 | spawn an effect (FUN_001971c0 for the id) anchored at the object's +0x80, optionally bound to a second object (FUN_00197230) |
-| 1.161 | `has_link(O) -> b` | 0x1706c8 | 321 | the object is linked to another (+0x570 non-zero and in the object list) |
+| 1.161 | `has_link(O) -> b` | 0x1706c8 | 321 | the object is linked to another (+0x570 non-zero and in the object list). Party members' scripts (friend host): the hand object's link state; a null handle answers false, Approx [inferred] |
 | 1.163 | `nop_163(pp)` | 0x1737d0 | 0 | empty function |
 | 1.165 | `offer_command(iiOi)` | 0x1734a8 | 41 | offer a reaction command: slot, command id, the object the target record is built for (position index 0), show flag; priority 100 through FUN_001bb3a8 on the player's command manager (not decompiled; read from the machine code) |
 | 1.166 | `ctx_word_8(p) -> i` | 0x1737e0 | 13 | the word at +8 of the argument |
@@ -348,7 +348,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.239 | `spawn_flag_8_or_none(O) -> b` | 0x171bc8 | 8 | the object has no spawn record (+0x818) or the record's flag 8 (+4) is set |
 | 1.240 | `nop_240(ppp)` | 0x1710d8 | 0 | empty function |
 | 1.241 | `broadcast_message(sf)` | 0x172098 | 0 | like send_message without a sender |
-| 1.244 | `in_battle() -> b` | 0x173ab8 | 3 | FUN_001903d8: a battle runs |
+| 1.244 | `in_battle() -> b` | 0x173ab8 | 3 | FUN_001903d8: a battle runs (word 0x1c8a7d8). Party members' scripts: Impl, `audio_bgm::BattleFlag::active` (WP-PY3) |
 | 1.246 | `nop_246()` | 0x1737d8 | 0 | empty function |
 | 1.247 | `random_free_point(vff) -> v` | 0x1726d8 | 68 | search around a position for a free point between two radii: samples a spiral with the game's second random generator and tests collisions (FUN_001a6068, FUN_001a6198); returns the point in a static buffer; role inferred |
 | 1.248 | `scatter_point(vffff) -> v` | 0x172730 | 36 | a free place around a position (FUN_001a5ee0 with mask 2): radius random between the first two values, start angle from a counter of eighths (0x35e9b0) and the game's generator, a height random between the last two; tries eighths of a turn with a line test, shrinking the radius; the point in a static buffer (Final Thunder) |

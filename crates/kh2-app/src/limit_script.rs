@@ -100,7 +100,7 @@ const RECORD_BYTES: u32 = 0x14;
 const POOL_RECORDS: u32 = 0x100;
 
 /// The memory behind the object handles a limit script reads directly (Simba and Tron read 16 bytes at the player object's `+0x20`
-/// through the context, words `0xc4b` / `0x316`, the object's velocity vector as the scripts of the enemies use it: host 1.58 stores the
+/// through the context, words `0xc4b` / `0x316`, the object's velocity vector [inferred from the enemy scripts' use of that offset, not from a reader in these scripts]: host 1.58 stores the
 /// dash direction there, the Quick Run start its velocity). The image is kept per handle; writes are stored and read back.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ObjectMem {
@@ -330,7 +330,8 @@ fn host_answer(c: &Call, task: &mut TaskState) -> Value {
             Value::None
         }
         // 2.59 (0x18eb00 -> FUN_001b3c48 -> FUN_001db868): a row lookup by halfword id in the task's motion table (task +0x18, rows of
-        // 0x50 bytes, count at the table's +8); with no table the walk finds nothing and answers 0.
+        // 0x50 bytes, count at the table's +8); with no table the walk finds nothing and answers 0 [inferred: the app holds no table; the return value of the found case is FUN_001db5f0's].
+        // Host 2.56 (0x18de58) has no decomp file; its address rests on names.rs.
         (2, 59) => {
             task.requests.push(Request::MotionRow { args: args_of(c) });
             Value::Int(0)

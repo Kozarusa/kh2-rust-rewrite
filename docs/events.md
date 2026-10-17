@@ -648,6 +648,21 @@ Harness: tt02 with `KH2_PROGRAMS=0,0,10 KH2_NPC_WATCH=2 KH2_NPC_WATCH_DIST=150 K
 idle motion (turned away, eyes shut), after it the head faces Sora's side (the 50 degree yaw limit and the
 20 degree pitch limit, the target being 20 cm from him).
 
+Front view [WP-NPC1]: tt02 `KH2_PROGRAMS=0,0,10 KH2_NPC_WATCH=2 KH2_NPC_WATCH_DIST=300 KH2_NPCLOG=1
+KH2_NO_ENEMIES=1 KH2_SHOT_AT=9` (the camera behind Sora, the townsperson `N_EX510_RTN#2` facing it), once plain and once
+with `KH2_NO_HEADLOOK=1` (a harness aid that leaves the head on the motion's pose). Both shots looked at, head
+cropped and enlarged: without the controller the head looks away to the left of the picture; with it the face turns
+to the camera (eyes and both cheeks toward it), the headband stays level and the neck stays joined to the collar. No
+flip or twist. (Sora's own head covers part of the face; the pitch limit was reached in the 120 cm talk run.)
+
+Why a tt06 run (`KH2_NPC_WATCH=2 KH2_NPC_WATCH_DIST=60`) logs no look-at lines [WP-NPC1]: townsperson 2 there is
+`N_EX650_TT_ITEM_RTN` (group `k01_`, spawn flags 0x1). Its script does contain hosts 1.174 / 1.176 / 1.172 (0x4b3, 0x51f,
+0x583, 0x5d6), but with spawn flag bit 0 set the class pass (`FUN_00189ae8`, which starts the kind-4 follower
+when the player meets the talk part) is skipped and the follower stays in kind 2 with no walk path, the script's
+mode stays `-`, so no code that calls 1.174 ever runs. The other five tt06 townspeople (spawn flags 0 with a walk path, or
+`N_EX690_TT_WOMAN_A_RTN#5` with flags 1) were far from Sora. Not a missing port. Whether the ITEM model has a type-0x14
+record was not checked (the 1.174 host never ran).
+
 [inferred] and not done: (a) how the pose code behind `FUN_0011c2a0` (a virtual of the model class, vtable
 +0xc of the pose object) turns the joint toward the aim point was not traced; the app applies the yaw and
 pitch as a rotation of the head bone about its own origin and assumes the animation's head looks along the

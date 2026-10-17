@@ -628,7 +628,8 @@ pub(crate) fn npc_update(
         tf.rotation = Quat::from_rotation_y(npc.yaw);
         // The head look-at controller's tick (FUN_001aea28 -> FUN_001aee90) after the move [inferred order].
         anim.turn = None;
-        if let Some(rec) = head_rec {
+        // Harness: `KH2_NO_HEADLOOK=1` leaves the head on the motion's pose (to compare shots).
+        if let Some(rec) = head_rec.filter(|_| std::env::var_os("KH2_NO_HEADLOOK").is_none()) {
             let joint = (rec.joint & 0x3fff) as usize;
             let off = Vec3::new(rec.off[0] as f32, rec.off[1] as f32, rec.off[2] as f32);
             let at_head = anim.pose.get(joint).map(|m| obj.motor.pos + Quat::from_rotation_y(npc.yaw) * m.transform_point3(off) + Vec3::Y * rec.lift as f32);

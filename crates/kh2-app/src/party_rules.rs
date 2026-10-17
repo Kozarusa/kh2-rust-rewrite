@@ -162,6 +162,41 @@ pub fn slot_object(merged: &[u16; 24], slot_byte: u8) -> Option<u16> {
     merged.get(8 + i).copied().filter(|&o| o != 0)
 }
 
+/// FUN_001a7500: the member index of a NeoStatus (1 and 14 the player 0, 2 Donald 1, 3 Goofy 2, others 3).
+pub fn member_index(neo: u16) -> u8 {
+    match neo {
+        1 | 14 => 0,
+        2 => 1,
+        3 => 2,
+        _ => 3,
+    }
+}
+
+/// Auto Change (FUN_0017ce60 -> FUN_001b42f0 / FUN_0017d0f0 -> FUN_001b4170, the swap FUN_001b4260 ->
+/// FUN_001a7558): the slot bytes after a KO'd member of `neo` that has the ability is swapped for the
+/// reserve member, or `None` when the rule does not fire. It needs a filled byte 3 (FUN_001b42f0), and the
+/// member's slot (FUN_001a7608 over the four slots) must not be slot 0 and must not carry the 0x80 flag
+/// (FUN_001a7268; the hidden-member list FUN_001c7be8 is not modelled). The swap: slot 1 or 2 holding the
+/// member's index takes byte 3's member index, and byte 3 takes the member's index (bytes masked with 0x9f,
+/// FUN_001a7250). Not modelled [inferred satisfied]: no limit running (FUN_001b3c00), no swap task running
+/// (`0x35fec0`), FUN_0017d030 (no object with +0x570 set to the member).
+pub fn auto_change_swap(bytes: [u8; 4], neo: u16) -> Option<[u8; 4]> {
+    if bytes[3] & 0x1f == EMPTY {
+        return None;
+    }
+    let index = member_index(neo);
+    let slot = (0..4).find(|&i| bytes[i] & 0x1f == index)?;
+    if slot == 0 || bytes[slot] & 0x80 != 0 {
+        return None;
+    }
+    let mut out = bytes;
+    if let Some(i) = (1..3).find(|&i| bytes[i] & 0x1f == index) {
+        out[i] = bytes[3] & 0x1f & 0x9f;
+    }
+    out[3] = index & 0x9f;
+    Some(out)
+}
+
 /// FUN_001a7330 (area-script command 0xf): the preset's player index; then the preset's members
 /// flagged 0x80/0x40; then the current members (slots 1..3 in order) the preset also lists; then the
 /// preset's remaining members; the rest empty. Stored bytes are masked with 0x9f.
@@ -662,6 +697,21 @@ pub fn free_point(
 
 #[cfg(test)]
 mod tests {
+    /// Auto Change's swap (FUN_001a7558): the KO'd member goes to the reserve slot and the reserve member
+    /// takes its place; a flagged, player, absent or reserve-less case does not fire.
+    #[test]
+    fn auto_change_swaps_the_reserve_in() {
+        // Preset 2: the partner (index 3) in slot 1, Goofy (2) in slot 2, Donald (1) in the reserve slot.
+        assert_eq!(auto_change_swap([0, 3, 2, 1], 7), Some([0, 1, 2, 3]), "a partner (NeoStatus 7) is index 3");
+        assert_eq!(auto_change_swap([0, 3, 2, 1], 3), Some([0, 3, 1, 2]), "NeoStatus 3 is Goofy, index 2");
+        assert_eq!(auto_change_swap([0, 1, 2, 3], 3), Some([0, 1, 3, 2]), "Goofy out, the partner in");
+        assert_eq!(auto_change_swap([0, 1, 2, EMPTY], 3), None, "no reserve member");
+        assert_eq!(auto_change_swap([0, 1, 0x82, 3], 3), None, "the 0x80 flag keeps the member");
+        assert_eq!(auto_change_swap([0, 1, 2, 3], 1), None, "NeoStatus 1 is the player's slot 0 member");
+        assert_eq!(auto_change_swap([0, 1, EMPTY, 3], 3), None, "Goofy is in no slot");
+        assert_eq!((member_index(1), member_index(14), member_index(2), member_index(3), member_index(5)), (0, 0, 1, 2, 3));
+    }
+
     use super::*;
 
     fn consts() -> Consts {

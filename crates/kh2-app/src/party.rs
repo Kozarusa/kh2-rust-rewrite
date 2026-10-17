@@ -307,10 +307,15 @@ impl PartySlots {
     }
 }
 
-/// The members the slot bytes ask for: (slot byte index 1..=3, object id), in slot order, resolved through the
-/// world's merged `memt` (FUN_0017cd20, `rules::slot_object`); slots that name nobody are left out.
+/// The members the slot bytes ask for on the field: (slot byte index 1..=2, object id), in slot order, resolved
+/// through the world's merged `memt` (FUN_0017cd20, `rules::slot_object`); slots that name nobody are left out.
+/// Byte 3 never makes a field member: the field holds two companions (FUN_0017cd08 reads two entries of
+/// `DAT_01c893a8`, FUN_0017d400 loops over indices 0 and 1), the map script names only slot bytes 1 and 2
+/// (ids 0x237 / 0x238 -> FUN_0017cd20(1 / 2), FUN_0016e208) and the byte-3 id 0x3ee is a menu stand-in the object
+/// factory refuses (FUN_0016efd8). The byte-3 member is a reserve member (Auto Healing's loop, FUN_0017d4b8, heals
+/// slots 1..3 that are not on the field); presets 2 to 4 put the partner in slot 1 and Donald in slot 3.
 pub fn wanted_members(bytes: [u8; 4], merged: &[u16; 24]) -> Vec<(usize, u16)> {
-    (1..4).filter_map(|i| rules::slot_object(merged, bytes[i]).map(|o| (i, o))).collect()
+    (1..3).filter_map(|i| rules::slot_object(merged, bytes[i]).map(|o| (i, o))).collect()
 }
 
 /// What decides whether the standing members still match the slots: the objects asked for, in sorted order (a swap
@@ -557,6 +562,8 @@ const EFFECT_DOWN: u16 = 0xe;
 /// Voice-table ids the member's voice method (+0x54, FUN_00175d18) is asked for: 2 on KO (FUN_00175f10),
 /// 9 when its HP enters danger (FUN_0017cde0).
 const VOICE_KO: u16 = 2;
+/// The Auto Change ability's id (bit 130 of the ability block, `abilities::BIT_AUTO_CHANGE`).
+const ABILITY_AUTO_CHANGE: u16 = 418;
 const VOICE_DANGER: u16 = 9;
 
 impl PartyMember {
@@ -949,8 +956,7 @@ fn spawn_party(
     let Some(consts) = data.consts.clone() else { return };
     let sora_at = sora.single().ok().map(|(_, s)| (s.motor.pos, s.motor.yaw));
     // What to spawn: (slot byte, label, group, place, entrance). On an area load FRIEND_1 / FRIEND_2 stand at their
-    // rows of the map script and the byte-3 partner beside the player [inferred: no map script row places a third
-    // member]; in a rebuild every named member keeps its place (or takes the player's).
+    // rows of the map script (byte 3 is a reserve member, `wanted_members`); in a rebuild every named member keeps its place (or takes the player's).
     let (player_rec, records): (Vec<_>, Vec<_>) = if rebuild { (Vec::new(), Vec::new()) } else { friend_records(&disc, &name, at).into_iter().partition(|r| r.0 == PLAYER_ENTITY) };
     if records.is_empty() && !rebuild {
         info!("party: {name}: the map script places no FRIEND_1 / FRIEND_2");
@@ -959,15 +965,12 @@ fn spawn_party(
     let mut requests: Vec<Request> = Vec::new();
     if rebuild {
         for (i, _) in wanted_members(slots.bytes, &merged) {
-            requests.push((slots.bytes[i], ["", "SLOT_1", "SLOT_2", "SLOT_3"][i], String::new(), None, 0));
+            requests.push((slots.bytes[i], ["", "SLOT_1", "SLOT_2"][i], String::new(), None, 0));
         }
     } else if !records.is_empty() {
         for (entity, group, at, yaw, entrance) in &records {
             let first = *entity == rules::FRIEND_1;
             requests.push((slots.bytes[if first { 1 } else { 2 }], if first { "FRIEND_1" } else { "FRIEND_2" }, group.clone(), Some((*at, *yaw)), *entrance));
-        }
-        if rules::slot_object(&merged, slots.bytes[3]).is_some() {
-            requests.push((slots.bytes[3], "PARTNER", String::new(), None, 0));
         }
     }
     // Harness: `KH2_PARTY_AT_RECORD=1` puts Sora at the player's row of the friends' group (the app
@@ -1263,6 +1266,10 @@ fn refresh_target(class: u8, style: u8, p: &battle::Params, pos: Vec3, current: 
         player_target: ctx.player_target.and_then(|t| index(t.entity).map(|f| (f, t.shape))),
         player_hit: ctx.player_hit.and_then(index),
         cands: &cands,
+        // Class 16 only: the +0x10c bit 0x20000 / +0xae4 fields and the +0xb7c bit 0x200 are not modelled.
+        held: &[],
+        attack_gate: false,
+        previous: current.and_then(|t| Some((index(t.entity)?, t.shape))),
     };
     let now = current.filter(|_| valid).and_then(|t| Some(((index(t.entity)?, t.shape), shape_of(t, ctx.enemies)?.0)));
     if !battle::needs_retarget(test, false, now, current_counted, p, &scene) {
@@ -2093,6 +2100,7 @@ fn party_receive_hits(
     data: Res<PartyData>,
     reaction: Option<Res<crate::combat::ReactionData>>,
     progress: Option<Res<crate::progress::Progress>>,
+    mut slots: Option<ResMut<PartySlots>>,
     enemies: Query<&crate::enemy::Enemy>,
     mut q: Query<(Entity, &mut PartyMember, &mut Fighter, &GlobalTransform)>,
     mut anims: Query<&mut Animator>,
@@ -2124,6 +2132,16 @@ fn party_receive_hits(
         let mut asked = Vec::new();
         if c.knocked_out {
             asked.push(VOICE_KO);
+            // FUN_0017ce60: a KO'd member with Auto Change (ability 418, bit 130) is swapped for the reserve member
+            // (slot byte 3); the slot bytes change and `spawn_party` rebuilds the field set.
+            let auto_change = progress.as_ref().and_then(|p| p.member(m.neo)).is_some_and(|r| r.abilities.contains(&(ABILITY_AUTO_CHANGE, true)));
+            if auto_change
+                && let Some(slots) = slots.as_mut()
+                && let Some(after) = rules::auto_change_swap(slots.bytes, m.neo)
+            {
+                info!("party: {} KO with Auto Change (FUN_0017ce60 -> FUN_001b4170): slot bytes {:02x?} -> {after:02x?}", m.model, slots.bytes);
+                slots.bytes = after;
+            }
         }
         if !danger_before && battle::in_danger(m.hp, m.hp_max) {
             asked.push(VOICE_DANGER);
@@ -2609,17 +2627,18 @@ mod tests {
     }
 
     /// WP-MN8 B: the members asked for follow the slot bytes. A different member in a slot changes the key (a
-    /// rebuild), a swap does not, and a filled slot 3 adds the partner.
+    /// rebuild), a swap does not, and a filled slot 3 (a reserve member) adds nobody.
     #[test]
     fn slot_changes_change_the_member_set() {
         let m = merged();
         let e = rules::EMPTY;
         assert_eq!(wanted_members([0, 1, 2, e], &m), vec![(1, 101), (2, 102)]);
-        assert_eq!(wanted_members([0, 1, 2, 5], &m), vec![(1, 101), (2, 102), (3, 105)], "slot 3 filled: the partner");
+        assert_eq!(wanted_members([0, 1, 2, 5], &m), vec![(1, 101), (2, 102)], "slot 3 is a reserve member: not on the field");
         assert_eq!(wanted_members([0, 3, e, e], &m), vec![(1, 103)]);
         let base = member_key([0, 1, 2, e], &m);
         assert_eq!(member_key([0, 2, 1, e], &m), base, "a swap keeps the set");
-        assert_ne!(member_key([0, 1, 2, 5], &m), base, "a partner joins");
+        assert_eq!(member_key([0, 1, 2, 5], &m), base, "a reserve member in slot 3 changes nothing on the field");
+        assert_ne!(member_key([0, 1, 5, 2], &m), base, "a swap of slot 2 with the reserve slot changes the field set");
         assert_ne!(member_key([0, 1, 5, e], &m), base, "another member in slot 2");
         assert_ne!(member_key([0, 1, e, e], &m), base, "a member leaves");
         // Flags (0x80 / 0x40) do not name another member.

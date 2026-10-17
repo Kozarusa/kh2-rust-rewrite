@@ -171,15 +171,20 @@ impl GameData {
         (level > 0).then(|| self.fmab.get(level as usize - 1)).flatten()
     }
 
+    // Mirrors the prty run speed; no caller yet (kept for the original's movement constants).
+    #[allow(dead_code)]
     pub fn run_speed(&self) -> f32 {
         self.prty.run_speed * LOGIC_HZ * crate::SCALE
     }
+    #[allow(dead_code)]
     pub fn walk_speed(&self) -> f32 {
         self.prty.walk_speed * LOGIC_HZ * crate::SCALE
     }
+    #[allow(dead_code)]
     pub fn jump_velocity(&self) -> f32 {
         (2.0 * GRAVITY * self.prty.jump_height * crate::SCALE).sqrt()
     }
+    #[allow(dead_code)]
     pub fn turn_rate(&self) -> f32 {
         self.prty.turn_speed * LOGIC_HZ
     }

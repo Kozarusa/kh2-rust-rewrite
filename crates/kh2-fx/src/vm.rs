@@ -408,10 +408,10 @@ impl Effect {
         for s in spawns {
             // group usize::MAX: one more initial value for the previous spawn.
             if s.group == usize::MAX {
-                if let (Some(id), SpawnInit::Vec3(off, v)) = (last, s.init) {
-                    if let Some(Some(o)) = self.objs.get_mut(id) {
-                        o.set_vec3(off + OBJ_WORK, v);
-                    }
+                if let (Some(id), SpawnInit::Vec3(off, v)) = (last, s.init)
+                    && let Some(Some(o)) = self.objs.get_mut(id)
+                {
+                    o.set_vec3(off + OBJ_WORK, v);
                 }
                 continue;
             }

@@ -148,7 +148,7 @@ pub struct Program {
 
 impl Program {
     pub fn entries(&self) -> usize {
-        if self.param_size == 0 { 0 } else { self.params.len().saturating_sub(4) / self.param_size }
+        self.params.len().saturating_sub(4).checked_div(self.param_size).unwrap_or(0)
     }
     /// Trigger frame of entry `i` (any value for the terminator).
     pub fn frame_at(&self, off: usize) -> i32 {

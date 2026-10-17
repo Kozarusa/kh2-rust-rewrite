@@ -221,6 +221,7 @@ pub struct RunningEffect {
     pub lib: Arc<LoadedPax>,
     pub element: Element,
     pub effect: kh2_fx::Effect,
+    #[allow(dead_code)] // index of the effect's data block; no reader yet
     pub dpd: usize,
     pub bind: Bind,
     pub game_id: u16,

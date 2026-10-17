@@ -586,7 +586,7 @@ pub enum Heap {
     Mega(Mega),
 }
 
-fn heap<'a>(obj: &'a mut Obj, pi: usize) -> Option<&'a mut Heap> {
+fn heap(obj: &mut Obj, pi: usize) -> Option<&mut Heap> {
     obj.heap.iter_mut().find(|(k, _)| *k == pi).map(|(_, h)| h)
 }
 
@@ -1093,7 +1093,7 @@ pub fn mega_draw(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
         if pt.angle != 0 {
             let (s, c) = (sin_turn(pt.angle as i32), crate::prog::cos_turn(pt.angle as i32));
             let r = Mat4::from_cols(Vec4::new(c, s, 0.0, 0.0), Vec4::new(-s, c, 0.0, 0.0), Vec4::Z, Vec4::W);
-            m = m * r;
+            m *= r;
         }
         m.w_axis = anchor(&pt);
         let col = |k: usize, max: i32| (base[k] + pt.color_off[k] as i32 + pt.color[k] as i32).clamp(0, max);

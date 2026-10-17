@@ -229,8 +229,8 @@ fn color(ctx: &mut Ctx, obj: &mut Obj, p: &Program, e: usize) {
         add_c4(obj, o, [ps(p, e, 0), ps(p, e, 1), ps(p, e, 2), ps(p, e, 3)]);
     }
     let t = ctx.env.tint.to_array();
-    for k in 0..4 {
-        let f = (obj.i16(o + 2 * k) as f32 * t[k]).min(32767.0);
+    for (k, &tk) in t.iter().enumerate().take(4) {
+        let f = (obj.i16(o + 2 * k) as f32 * tk).min(32767.0);
         obj.mem[o + 8 + k] = ((f as i32 as u32) >> 7) as u8;
     }
 }

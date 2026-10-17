@@ -1,7 +1,7 @@
 //! The defeated-enemy counters the journal's enemy pages show (docs/menus.md 20.11).
 //!
-//! The original raises a counter in the enemies' defeat method `FUN_00184a30` (and the party members' `FUN_001c46a8`, which counts the
-//! ids 0x404 / 0x405): `FUN_00187e08(0x33fec0, NeoStatus)` adds 1 to the word `FUN_00187dc8` finds (ids 1000 .. 1046 and 3000 .. 3011),
+//! The original raises a counter in the enemies' defeat method `FUN_00184a30` (and `FUN_001c46a8`, which counts the
+//! ids 0x404 / 0x405 when the player absorbs a pickup-like object, docs/menus.md 24.4a): `FUN_00187e08(0x33fec0, NeoStatus)` adds 1 to the word `FUN_00187dc8` finds (ids 1000 .. 1046 and 3000 .. 3011),
 //! up to 9999, while story flag 0x8d0 is set. The port has one defeat point it can see without touching the enemy module: an `Enemy`
 //! whose HP has reached 0. Each enemy is counted once (the `Counted` marker); an enemy of the harness's own waves has no object id and
 //! counts nothing.

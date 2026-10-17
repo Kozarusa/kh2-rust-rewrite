@@ -1632,8 +1632,8 @@ rules with tests; the rest is node glue), `chars.rs` (the record family, `enemie
 - **Defeated-enemy counts (the writer).** The enemies' defeat method `FUN_00184a30` (reached by `FUN_001acfe0` and `FUN_001b02f0`) calls
   `FUN_00187e08(0x33fec0, id)` with `id = FUN_001699a8(actor)` = the NeoStatus (`objentry` `+0x4c`) of the defeated object. The function does
   nothing unless story flag 0x8d0 is set (`FUN_00180850` -> `FUN_001802e0`), finds the word with `FUN_00187dc8` (`save + 0x1660 + 0xff0 + 4 *
-  (id - 1000)` for ids 1000 .. 1046, `+ 0x1170 + 4 * (id - 3000)` for 3000 .. 3011, nothing else) and adds 1 up to 9999. The party members' defeat
-  method `FUN_001c46a8` counts the ids 0x404 / 0x405 the same way [the journal pages do not read those slots; not traced further]. The reader is `FUN_002a1f78(record)`:
+  (id - 1000)` for ids 1000 .. 1046, `+ 0x1170 + 4 * (id - 3000)` for 3000 .. 3011, nothing else) and adds 1 up to 9999. The pickup method
+  `FUN_001c46a8` counts the ids 0x404 / 0x405 when the player absorbs a pickup-like object (24.4a) [the journal pages do not read those slots]. The reader is `FUN_002a1f78(record)`:
   for a `char` record with flag 0x800 it takes the objentry named by the record's `+0xc` (`FUN_0016e208`) and returns the counter of its NeoStatus
   (`FUN_00187e68`). Port: `Progress::{enemy_counter_id, enemy_defeats, count_defeat, set_enemy_defeats}` (slot key `enemy_kills`, pairs
   `[NeoStatus, count]`), `menu_journal::kills`: a system watches the `Enemy` components, counts each one whose HP has reached 0 once (the `Counted`
@@ -1735,8 +1735,8 @@ rules with tests; the rest is node glue), `chars.rs` (the record family, `enemie
   `FUN_002afe98`, `FUN_002ae3e8` / `FUN_002ae790`); the only places that read the page number are `FUN_002b1e18` (the scroll starts at 0 for 0x19 / 0x1a),
   `FUN_002b16a0` (the treasure test: page 7 or 0x19) and the cancel target (page 0xc for 0x19, 0x1a, 0x20, else page 2). The MN14 port already runs them as
   7, 8 and 0xb with `from_c` set, so nothing further is needed [V by reading the three handlers and builders].
-- **Gaps (WP-MN15).** The writer of the limit counters (the limit object's `+0xa0` and where the app ends a limit); the party members' defeat counters
-  (ids 0x404 / 0x405, `FUN_001c46a8`) have no reader here; the hook that calls `Progress::count_defeat` is a system in `kills.rs` reading the
+- **Gaps (WP-MN15).** The writer of the limit counters (the limit object's `+0xa0` and where the app ends a limit); the counters of ids 0x404 / 0x405
+  (`FUN_001c46a8`, a pickup-like object the player absorbs, not a defeat) have no reader here; the hook that calls `Progress::count_defeat` is a system in `kills.rs` reading the
   `Enemy` components, not the defeat method; the reaction use counts are not written by `reaction_cmd.rs`; the 3D model and the model pages (0x10,
   0x13, 0x16) of a character or an enemy; the page-turn sound and wipe (WP-JR1: `FUN_002779f8` has no sound, see above); the held-pad auto-repeat of the list cursors; the exact right edge of the
   right-aligned values (WP-JR1 moved the text off the limit row's tag).

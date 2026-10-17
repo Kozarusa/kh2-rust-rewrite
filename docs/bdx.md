@@ -259,6 +259,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.97 | `obj_part_110(O) -> p` | 0x173070 | 69 | address object +0x110 |
 | 1.98 | `ground_position(O) -> v` | 0x173088 | 552 | position of the object with y replaced by the ground height under it (FUN_00183808); static buffer |
 | 1.99 | `ground_depth(O) -> f` | 0x1730e8 | 108 | minus the depth of the object below the ground (0 when above it): -max(0, ground - y) |
+| 1.100 | `fall_time(f) -> f` | 0x173178 | - | FUN_0017bee0: sqrt(2 x / 20/49) for a height x, the time a body takes to fall it (the constant 20/49 is `DAT_0037a538`); the table gives it no name, so it reaches a host as raw words (`ai::fall_time`, docs/summons.md, WP-SM2) |
 | 1.101 | `flag_160_4000(O) -> b` | 0x1716d0 | 79 | object flag 0x4000 at +0x160 (after the object-valid check) |
 | 1.102 | `link_end(O)` | 0x170e38 | 56 | undo link_start (FUN_001becb8) |
 | 1.103 | `nop_103(ppp)` | 0x170e58 | 0 | empty function |
@@ -279,7 +280,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.124 | `flag_124(O) -> b` | 0x173828 | 939 | flag 8 of the object's collision word (FUN_0019aaf0); role unknown |
 | 1.125 | `tween_start(Offf)` | 0x173858 | 35 | start a linear ramp of the value pair at object +0x8c8 (value, step) from `from` to `to` over `frames` (FUN_001abf40) |
 | 1.127 | `modes_reset(p)` | 0x170e80 | 23 | stop the running mode and clear the queue and priority |
-| 1.128 | `mover_method(Of)` | 0x171298 | 250 | virtual call on the object's mover (+0xc) with one float; role unknown |
+| 1.128 | `mover_method(Of)` | 0x171298 | 250 | virtual call on the object's mover (+0xc) with one float; role unknown (role now known, WP-SM2: the airborne launch, FUN_0017b1e0(speed) on the mover and then FUN_0016b698(object, 1); a negative speed is a downward start, docs/summons.md) |
 | 1.130 | `obj_diff(OO) -> i` | 0x170510 | 155 | difference of the two contexts' objects, 0 when either is 0 or they are the same |
 | 1.131 | `free_target(p) -> b` | 0x1736f8 | 279 | free a target record (FUN_0018f3f8); role inferred |
 | 1.132 | `target_release(p)` | 0x173728 | 68 | return a target record to the pool at 0x1c89bd0 (20-byte entries; FUN_0018f458) |
@@ -363,6 +364,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.288 | `gflags_set_2000()` | 0x173b40 | 0 | set bit 13 of the global flag word at 0x35d268 |
 | 1.289 | `gflags_clear_2000()` | 0x173b58 | 0 | clear bit 13 of the global flag word at 0x35d268 |
 | 1.301 | `global_byte_301() -> i` | 0x1744f8 | 458 | the byte at 0x35ea48 + 0x1e (FUN_001abee8); role unknown |
+| 1.305 | `camera_position() -> p` | 0x173e80 | - | the camera's world position (FUN_001071c8 of the camera FUN_001068c0(1)), returned as a pointer to a vector; the table gives it no name |
 | 1.309 | `flag_309(o) -> b` | 0x170288 | 86 | status bit 0x80 at +0x588 after a validity check; role unknown |
 | 1.310 | `objentry_f_50(O) -> f` | 0x170b18 | 0 | float at +0x50 of the object's object-entry row |
 | 1.311 | `set_scaled_byte(pii)` | 0x174238 | 153 | byte at +0x1a8 + i of the first argument = (halfword i of the table at its +0x254 + 0x48) * percent + 99) / 100 (FUN_001a0ba0) |
@@ -450,12 +452,14 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 6.24 | `obj_vec_8a0(O) -> v` | 0x2ee960 | 12 | the 16 bytes at object +0x8a0 copied to a static buffer |
 | 6.49 | `object_occupied(O) -> b` | 0x2ee7d8 | 1 | FUN_0019b088: the object's +0x518 bit 0 (actor stop, FUN_0016bea0), or FUN_0019af28 (its +0x588 bits 4 and 0x40 clear and the summon state, FUN_001c6918, is 1), or its +0x108 bit 0x400, or the manager at DAT_0036f6a4 holds an entry (FUN_002c5680) |
 | 6.58 | `queue_mode_remote(ps)` | 0x2ef018 | 3 | queue the named mode and mark the entry for another object: when it comes up the host switches that object to the mode instead (FUN_00186f50; see runtime.rs) |
+| 7.0 | `release_actor_stop(i)` | 0x2ef2f0 | - | FUN_00184b40(id): the actor stop id is released on every enemy (Stitch's limit passes 17); the app sets no stop id but 2, so it changes nothing there |
 | 7.19 | `ai_retarget(Oi) -> b` | 0x2ef760 | 4 | FUN_0010df08(object, flag != 0): the class's target refresh (the chooser of the class table at 0x352d28 / 0x352ce8, Peter Pan's FUN_00119d60) writes the object's target record +0x9f4; true when the target changed (+0xb7c bit 3) |
 | 7.24 | `ai_b7c_400_clear(O)` | 0x2ef848 | 4 | FUN_0010f6b8: object +0xb7c bit 0x400 cleared (Peter Pan's attack modes bracket the attack with 7.24 / 7.25) |
 | 7.25 | `ai_b7c_400_set(O)` | 0x2ef868 | 6 | FUN_0010f6d0: object +0xb7c bit 0x400 set |
+| 7.26 | `ai_run_callback(Oi)` | 0x2ef888 | - | FUN_00112518(object, command): the callback the class set at object +0xcfc (Stitch's FUN_00119488 for his limit sub-commands 525 to 527) runs with the command (docs/summons.md) |
 | 10.1 | `ai_walk_to(Ov)` | 0x2f6a98 | 3 | the friend AI object (+0xb60, FUN_0010c5f0) is placed at the vector: FUN_001175a0 sets AI +0x630 bit 0, copies it to the position +0x640 (its w to the wanted yaw +0x65c, the depth +0x648 = DAT_00378840) and once builds the parent matrix (FUN_00117320, FUN_00193228); docs/summons.md, Status (WP-SUM4b) |
-| 10.3 | `ai_vcall_28(O)` | 0x2f6b28 | 3 | the friend AI object's virtual method +0x28 (Stitch FUN_001191a8: links the player and his hand objects to the summon for a limit) |
-| 10.4 | `ai_vcall_2c(O)` | 0x2f6b58 | 4 | the friend AI object's virtual method +0x2c (Stitch FUN_00119360: undoes FUN_001191a8) |
+| 10.3 | `ai_vcall_28(O)` | 0x2f6b28 | 3 | the friend AI object's virtual method +0x28 (Stitch FUN_001191a8: links the player and his hand objects to the summon for a limit) (by class, WP-SM2: Stitch FUN_001191a8; Chicken Little FUN_0011ae60, the FPS mode; Genie 0x354910, Peter Pan 0x354978 and Tinker Bell 0x3549b8 hold FUN_00114170, which clears the action (FUN_0010ecb0(object, 0, 0)) and breaks a link the object has (FUN_001becb8)) |
+| 10.4 | `ai_vcall_2c(O)` | 0x2f6b58 | 4 | the friend AI object's virtual method +0x2c (Stitch FUN_00119360: undoes FUN_001191a8) (by class, WP-SM2: Stitch FUN_00119360; Chicken Little FUN_0011b008, the FPS mode off; Genie, Peter Pan and Tinker Bell FUN_001141c0, which returns at once) |
 | 10.5 | `ai_aim_vec(O) -> v` | 0x2f6b88 | 1 | Chicken Little's AI +0x40 (FUN_0011a6a0): the aim point the class update keeps (the target record's position, else 200 units in front of the object, FUN_0011a2e8) |
 | 10.8 | `target_vec(O) -> v` | 0x2f6c20 | 1 | the 16 bytes at object +0xbe0 (FUN_00112538): the position the party manager copies from the object's target record (FUN_00111d18) |
 | 10.9 | `ai_genie_form(Oi)` | 0x2f6c68 | 1 | Genie's FUN_00119c18 on the friend AI object: AI +0x14 = the command; the object's parts 2..6 hidden (FUN_00192ce8) and the part of the command's row in the table at 0x3548f0 shown (row + 2, FUN_00192cd0); byte 7 of `DAT_00340c88` = row + 1, or 6 without a row (FUN_001c6b48); docs/summons.md, Status (WP-SUM5) |
@@ -485,7 +489,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 10.41 | `ai_flag_b7c_40000000(O)` | 0x2f7328 | 4 | FUN_001129f0: object +0xb7c |= 0x40000000 |
 | 10.44 | `objentry_flag_10(O) -> b` | 0x2f7390 | 0 | the object's mover (+0xc) has bit 0x10 in its flags word +8 |
 | 10.45 | `status_f_1b4(p) -> f` | 0x2f73b0 | 4 | the float at +0x1b4 of a status block (1.84): the drive / summon timer |
-| 10.51 | `ai_find_target(Opff)` | 0x2f7450 | 2 | FUN_0011a6d8(half width, half height, the AI object, record): the record names the valid enemy whose projected position lies in the screen box, the nearest to the centre (Chicken Little's FPS aim) |
+| 10.51 | `ai_find_target(Opff)` | 0x2f7450 | 2 | FUN_0011a6d8(half width, half height, the AI object, record): the record names the valid enemy whose projected position lies in the screen box, the nearest to the centre (Chicken Little's FPS aim) (runtime: the record, the second argument, is written as the object found, 0, 0, -1; an empty record is object 0 and -1 in word 3, FUN_0018ed40; WP-SM3) |
 | 10.53 | `effect_list_add(Op)` | 0x2f74c0 | 2 | FUN_00136388(the object's list at +0xb5c (FUN_0010c5b8, made on first use), effect instance): an (instance, generation) pair is entered, an older entry of the same instance dropped first, the oldest when 0x20 are held; a zero instance is ignored (Chicken Little's child registers its effect with the summon) |
 | 10.54 | `effect_list_has(Op) -> b` | 0x2f74f8 | 2 | FUN_001364d0 on the object's list at +0xb5c: the instance (with its generation) is in the list |
 | 10.59 | `ai_set_aim_vec(Ov)` | 0x2f75c0 | 2 | FUN_0011a6b8: AI +0x40 = the vector |

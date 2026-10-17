@@ -767,8 +767,12 @@ The ability (item 417, bit 129 of the partner's own block) lets the partner's li
   command's Flags and `DisableForm` come from `reaction_cmd::flags_block` (the tail of `status`, now shared). A status 2 candidate
   (too little MP) is offered with `Status::NoMp` and refused on accept. The HUD's reaction capsule shows it like any other offer
   (`hud_menu::mirror_reaction`).
-- **The wanted id** is the command shown last tick, so the offer does not re-draw every frame [inferred: the source of
-  `*controller + 0x26` was not traced; the game calls `FUN_0019d430` every frame, and only a stable wanted id keeps its candidate].
+- **The wanted id** is the command shown last tick [V, WP-AL1b]. `*controller` is the persistent command object; `FUN_0019c0f0`
+  (each frame) builds a temporary controller (`FUN_0019c380`), runs `FUN_0019c670` on it (which ends in `FUN_0019d430`) and, when the
+  temporary one found a candidate (`FUN_001ba6c8`), copies the record into the persistent object with `FUN_0019bf58` (`sw` at
+  `+0x24`, whose upper half is the command id at `+0x26`). So `+0x26` is last frame's shown command, and a still-qualifying shown limit
+  keeps winning without a draw. `FUN_0019c0f0` also forces the shown status byte (`+0x29`) to 5 while the player's form field
+  (`+0xb50`) is 5 (Anti), or `*(*(player + 0xc) + 8) & 0x8000`, or `player +0x168 & 0x80`: the port does the Anti case (`Status::Blocked`).
 - Harness: `KH2_AUTO_LIMIT=2,3` treats Donald and Goofy as holding Auto Limit and every limit ability of their rows;
   `KH2_REACTIONLOG=1` prints `reaction: Auto Limit offers command ...`, `reaction: accepted limit command ...`, then `limit: ... started`;
   accept key R (`KH2_REACTION_PRESS=<s>,..`); `KH2_DRIVE_BATTLE=1` holds the battle flag without an enemy.
@@ -777,11 +781,27 @@ The ability (item 417, bit 129 of the partner's own block) lets the partner's li
 
 ### Gaps (addresses searched)
 
-- Not modelled: `FUN_001d2460`'s words `DAT_01d5e368`, `0x35feb8`, `FUN_00140fe0` and the MP-charge float `+0x1c0`; the controller's
-  player bits and `FUN_001baee0`; the other two offer sources `FUN_0019d0b8` and `FUN_0019d048` (they can only make the original
-  offer something else); `FUN_001d1ea0` (file loaded, members idle, `FUN_0017d030` / `FUN_0017d0a8`) is taken as true [approx].
-- The wanted id's writer: `mips_scan --store-off 0x26` lists 23 sites, none in the controller's code (`FUN_0019c3c8`, `FUN_0019c520`,
-  `FUN_0019cad0`, `FUN_0019cd60`); not found [GAP]. A row with `Character` 0 is skipped (the original would pass a null member
+- **Gates ported (WP-AL1b), `limit::StartGates`, used by the offer and again when an accepted offer starts (`try_limit`):**
+  Sora KO or the Viewer (`FUN_0019ae90`: player `+0x7f8` bit 4); a summon's arrival or leave (`FUN_001d2460`: refused when the word
+  `0x35feb8` is non-zero and `DAT_01d5e368` is not 2, so an active summon, state 2, does not refuse; `FUN_001c6168` sets bit 0 of
+  `0x35feb8` and state 2 at the start, `FUN_001c6578` sets bit 3 of `0x35fec0`, `FUN_001c65b8` clears it; the app's `SummonState::sequence`
+  and `state`); the menu open or closing and an event playing, both through the global command lock (`DAT_0035d268` bit 2, which
+  `FUN_001ad378` sets at an event's start: `FUN_001b70b8` makes every command without Flags bit 5 status 5; `reaction_cmd::flags_block`
+  with `commands_locked`) [inferred: that the pause menu sets the same bit]. `FUN_001b3e38`'s `0x35fec0` / limit-task test is
+  `Party::busy` (`Refusal::Busy`). Tests `start_gates_refuse_down_menu_event_and_summon_sequence`, `a_busy_party_is_not_available`.
+  The coordinator's "summon out" gate is refused only for the arrival and the leave: with the summon active the original lets the offer
+  through (the party members are not on the field then, so no candidate exists anyway).
+- `FUN_001d2460`'s other words: `FUN_00140fe0` is `DAT_00355884 != 0 && DAT_00355880 == 7` (a mode pair; writers `FUN_00140cc8`,
+  no caller found that names 7 [GAP]); the MP-charge float `+0x1c0` (`FUN_001a05d0`) is the status block's MP timer the app does not
+  keep for Sora's offer. `FUN_0019c670`'s `DAT_0035d268 & 0x4000`, player `+0x160` bit 0x4000, `+0x588` bit 0x2000000, `FUN_0019ae90`'s
+  other bits (`+0x7f8` bit 0x400 clear, `+0x108` bit 0x40, `+0x160` bit 0x8000000, `FUN_0019b088`, `*(*(player + 0xc) + 8)` bit 0x2000), the
+  mode word of `FUN_001baee0`, the sources `FUN_0019d0b8` / `FUN_0019d048` (they can only make the original offer something else), and
+  the revive thread `FUN_001ad9a0` (sets `0x35feb8` / `0x35fec0`; `SummonState::revive` is private) are not modelled [GAP].
+- `FUN_001d1ea0`: its first part asks whether the limit's BAR is a loaded resource (`FUN_0016fd98(FUN_001d1ff8(row)) == 2`, then the
+  row's `+0x24` resource state `FUN_001a7d48`); the loader that asks for it was not found, the app takes it as loaded [approx]. Its second
+  part needs both field companions `FUN_0017d030` (alive object, `+0x160` bit 0x4000 clear, no object whose `+0x570` is the member) and every
+  participant that is a party member (`+0x588` bit 0x4000) `FUN_0017d0a8` (that plus `+0x7f8` bit 4 clear, not KO): the KO part is the
+  port's `present` list; the `+0x160` / `+0x570` conditions are not modelled [GAP]. A row with `Character` 0 is skipped (the original would pass a null member
   to `FUN_001768a8`) [inferred]; the disc has none.
 - The limit itself still has no task body (see "What is still missing"), so an accepted offer starts what `KH2_LIMIT` starts: MP spent,
   BAR read, `LimitStarted`, script events, the count-down.

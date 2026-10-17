@@ -100,6 +100,9 @@ pub struct Party {
     /// The NeoStatus of the summon objects present (`FUN_00175ba0` finds a summon row's member among
     /// the party slots by it; summon.rs).
     pub summons: Vec<u16>,
+    /// `FUN_001b3e38` answers 5 (unavailable) while a limit task exists (`FUN_001b3c00`) or the word `0x35fec0` is non-zero (a summon's
+    /// arrival or leave sequence holds bit 3, `FUN_001c6578` .. `FUN_001c65b8`). The harness paths leave it false.
+    pub busy: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -113,6 +116,8 @@ pub enum Refusal {
     /// Status 2 of FUN_001b3e38.
     NotEnoughMp,
     SummonGaugeEmpty,
+    /// Status 5 of `FUN_001b3e38` for a limit task or the word `0x35fec0` ([`Party::busy`]).
+    Busy,
 }
 
 /// FUN_001d1ce0: is the row usable now.
@@ -149,6 +154,9 @@ pub fn usable(r: &LimitRow, p: &Party) -> Result<(), Refusal> {
 /// FUN_001b3e38 for Execute 81: usable, then MP (normal) or the summon gauge (summon limit).
 pub fn available(r: &LimitRow, p: &Party) -> Result<(), Refusal> {
     usable(r, p)?;
+    if p.busy {
+        return Err(Refusal::Busy);
+    }
     if r.is_summon() {
         if !p.summon_gauge {
             return Err(Refusal::SummonGaugeEmpty);
@@ -171,6 +179,65 @@ pub fn mp_needed(r: &LimitRow) -> i32 {
 /// The first usable row of a command (FUN_001d2040 walks the table in order).
 pub fn row_for_command(rows: &[LimitRow], command: u16, p: &Party) -> Option<usize> {
     rows.iter().position(|r| r.command == command && usable(r, p).is_ok())
+}
+
+/// Why the party-limit offer, and the start of an accepted one, are refused in a state the app can model. `FUN_001d2460` and
+/// `FUN_0019c670` / `FUN_0019ae90` (the controller's own gate) read words the app does not have; these are the ones it does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StartGates {
+    /// Sora is KO or the Viewer (`FUN_0019ae90`: `+0x7f8` bit 4 is the KO bit; the Viewer stands for the states `FUN_0019a440` tests).
+    pub sora_down: bool,
+    /// The pause menu is open or closing: the game's menu holds the commands (`DAT_0035d268` bit 2, the global command lock, which
+    /// turns every command without Flags bit 5 into status 5, `FUN_001b70b8`) [inferred: that the menu sets it].
+    pub menu_open: bool,
+    /// An event plays (`FUN_001ad378` sets `DAT_0035d268` bit 2 at its start) [inferred: that this is the app's `event_active`].
+    pub event: bool,
+    /// A summon sequence runs: `FUN_001d2460` refuses when the word `0x35feb8` is non-zero and `DAT_01d5e368` is not 2, so the
+    /// arrival and the leave refuse and an active summon (state 2) does not.
+    pub summon_sequence: bool,
+}
+
+/// What a gate refused with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Gate {
+    SoraDown,
+    MenuOpen,
+    EventPlaying,
+    SummonSequence,
+}
+
+impl StartGates {
+    pub fn check(&self) -> Result<(), Gate> {
+        if self.sora_down {
+            Err(Gate::SoraDown)
+        } else if self.summon_sequence {
+            Err(Gate::SummonSequence)
+        } else if self.menu_open {
+            Err(Gate::MenuOpen)
+        } else if self.event {
+            Err(Gate::EventPlaying)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// What the gates read, as one system parameter.
+pub type GateParams<'w> = (Option<Res<'w, crate::menu::Menu>>, Option<Res<'w, crate::intro::event_player::EventPlayer>>, Option<Res<'w, crate::summon::SummonState>>);
+
+/// The gates from the app's state.
+pub fn gates_of(g: &GateParams, sora_down: bool) -> StartGates {
+    StartGates {
+        sora_down,
+        menu_open: g.0.as_deref().is_some_and(|m| m.phase != crate::menu::Phase::Closed),
+        event: g.1.as_deref().is_some_and(|e| e.playing()),
+        summon_sequence: g.2.as_deref().is_some_and(|s| s.sequence && s.state != 2),
+    }
+}
+
+/// Sora cannot take a command: KO (no HP), down, or the Viewer.
+pub fn sora_is_down(s: &Sora) -> bool {
+    s.hp <= 0 || matches!(s.state, crate::sora::State::Down | crate::sora::State::Viewer)
 }
 
 /// The ability item of Auto Limit (ability bit 129 of the member's own block, `abilities::BIT_AUTO_LIMIT`).
@@ -576,6 +643,7 @@ fn try_limit(
     mut progress: Option<ResMut<Progress>>,
     summon: SummonSide,
     mut requests: MessageReader<StartLimit>,
+    gate_params: GateParams,
 ) {
     let (sm, drive, summon_data, mut summon_queue) = summon;
     if let Some((cmd, left)) = active.0.as_mut() {
@@ -590,8 +658,15 @@ fn try_limit(
             }
         }
     }
-    let request = requests.read().last().cloned();
+    let mut request = requests.read().last().cloned();
     let Ok(mut s) = sora.single_mut() else { return };
+    // The start is refused in the states the offer is (the player may have been hit, opened the menu or entered an event since).
+    if request.is_some()
+        && let Err(g) = gates_of(&gate_params, sora_is_down(&s)).check()
+    {
+        info!("limit: start refused ({g:?}: FUN_001d2460 / FUN_0019ae90 gate)");
+        request = None;
+    }
     if active.0.is_some() {
         sel.since += 1;
         if sel.since == SUB_DELAY
@@ -904,6 +979,51 @@ mod tests {
             }
         }
         eprintln!("auto limit pick: {checked} cases equal the game's divide");
+    }
+
+    /// The gates of the offer and of the start: Sora down, a summon's arrival or leave (`0x35feb8` non-zero with `DAT_01d5e368`
+    /// not 2), the menu and an event. An active summon (state 2) is not a gate of `FUN_001d2460`.
+    #[test]
+    fn start_gates_refuse_down_menu_event_and_summon_sequence() {
+        use bevy::ecs::system::RunSystemOnce;
+        let read = |w: &mut World| w.run_system_once(|g: GateParams| gates_of(&g, false)).unwrap();
+        let mut w = World::new();
+        assert_eq!(read(&mut w).check(), Ok(()), "no resources: nothing gates");
+        w.init_resource::<crate::menu::Menu>();
+        w.init_resource::<crate::intro::event_player::EventPlayer>();
+        w.init_resource::<crate::summon::SummonState>();
+        assert_eq!(read(&mut w).check(), Ok(()), "closed menu, no event, no summon");
+        w.resource_mut::<crate::menu::Menu>().phase = crate::menu::Phase::Closing;
+        assert_eq!(read(&mut w).check(), Err(Gate::MenuOpen));
+        w.resource_mut::<crate::menu::Menu>().phase = crate::menu::Phase::Closed;
+        {
+            let mut sm = w.resource_mut::<crate::summon::SummonState>();
+            sm.sequence = true;
+            sm.state = 1;
+        }
+        assert_eq!(read(&mut w).check(), Err(Gate::SummonSequence), "the arrival");
+        w.resource_mut::<crate::summon::SummonState>().state = 3;
+        assert_eq!(read(&mut w).check(), Err(Gate::SummonSequence), "the leave");
+        w.resource_mut::<crate::summon::SummonState>().state = 2;
+        assert_eq!(read(&mut w).check(), Ok(()), "an active summon: FUN_001d2460 exempts state 2");
+        assert_eq!(StartGates { sora_down: true, ..Default::default() }.check(), Err(Gate::SoraDown));
+        assert_eq!(StartGates { event: true, ..Default::default() }.check(), Err(Gate::EventPlaying));
+        assert_eq!(StartGates { sora_down: true, menu_open: true, ..Default::default() }.check(), Err(Gate::SoraDown), "KO first");
+    }
+
+    /// `FUN_001b3e38` answers 5 while a limit task exists or `0x35fec0` is set: not a candidate, not startable.
+    #[test]
+    fn a_busy_party_is_not_available() {
+        let r = row([2, 1, 0], 0, 255, None);
+        let mut p = party(&[2], 0, 10);
+        assert_eq!(available(&r, &p), Ok(()));
+        p.busy = true;
+        assert_eq!(available(&r, &p), Err(Refusal::Busy));
+        let rows = vec![donald_row(300, 40, 5)];
+        let mut b = base(&[2], 10);
+        b.busy = true;
+        let items = [AUTO_LIMIT_ITEM, 40];
+        assert!(auto_limit_candidates(&rows, &[partner(2, 10.0, &items)], Vec3::ZERO, &b, |_| true).is_empty());
     }
 
     fn row(members: [u8; 3], world: u16, cost: u8, bit: Option<u16>) -> LimitRow {

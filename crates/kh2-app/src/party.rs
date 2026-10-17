@@ -849,14 +849,14 @@ fn mission_party(
     data: Res<PartyData>,
     mut slots: ResMut<PartySlots>,
     mgr: Res<Manager>,
-    mut pending: Local<Vec<crate::struggle::MissionStart>>,
-    mut owner: Local<Option<String>>,
+    mut queue: Local<(Vec<crate::struggle::MissionStart>, Option<String>)>,
 ) {
+    let (pending, owner) = &mut *queue;
     // The preset edits the loaded world's bytes: until `spawn_party` has entered the world for this area (it
     // does so in the same chain, but a mission can start on the area's very first tick, before it has run) the
     // bytes are still the previous world's, and `enter_world` would start the area over from the default
     // preset (WP-REG1: the Struggle kept Donald and Goofy on the field).
-    for s in drain_ready(&mut pending, &mut owner, starts.read().cloned(), area.loaded.as_deref(), mgr.area.as_deref()) {
+    for s in drain_ready(pending, owner, starts.read().cloned(), area.loaded.as_deref(), mgr.area.as_deref()) {
         let Some(name) = area.loaded.as_deref() else { continue };
         let Some((ard, _)) = disc.read(&format!("ard/{name}.ard")).and_then(|f| kh2_ard::Area::parse(&f)) else { continue };
         let btl = ard.scripts.get("btl").map(Vec::as_slice).unwrap_or_default();

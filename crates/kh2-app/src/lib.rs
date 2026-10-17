@@ -35,6 +35,7 @@ mod hud;
 mod intro;
 mod items;
 mod limit;
+mod limit_script;
 mod magic;
 mod magic_rules;
 mod menu;

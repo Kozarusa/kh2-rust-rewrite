@@ -712,17 +712,87 @@ the log lines are `limit: script event 22 (Task) to ... (FUN_001b2e08 / FUN_001b
 
 ### What is still missing (gaps with their functions)
 
-- **The type 3 limit script** (event 22 for partner limits): it is a BDX program; the limit task object it receives (fields
-  `+0xc` player, `+0x10` participants, `+0xd4` of the time gauge) is not modelled, so no script runs it. summon.rs stands in
-  with `LIMIT_ATTACK` for the summon's thread. Receiver (WP-SM5): `summon::objects` reads `MessageReader<limit::LimitScriptEvent>` and
-  delivers every event whose `to` is `Participant(n)` to the summon object whose neo id is `n` (`limit_deliveries`), as `Runtime::event`
-  with `LimitArg::Task` mapped to `LIMIT_ATTACK` [inferred] and `LimitArg::Command(c)` to the integer `c`. `LimitScript` receivers (the BAR's own
-  type 3 script) are not delivered. `KH2_SUMMON_EVENT` stays as a harness aid.
+- **The type 3 limit script** runs since WP-LT1 (next section). What stays open: the host calls listed there as gaps, and the
+  receivers: `LimitScript` events go to `limit_script.rs`, `Participant(n)` events to the summon (summon.rs, WP-SM5:
+  `summon::objects` reads `MessageReader<limit::LimitScriptEvent>` and delivers them to the summon object whose neo id is `n`,
+  `limit_deliveries`, with `LimitArg::Task` mapped to `LIMIT_ATTACK` [inferred] and `LimitArg::Command(c)` to the integer `c`).
+  `KH2_SUMMON_EVENT` stays as a harness aid.
 - The participants' limit state (`FUN_001c75d0` / `FUN_001c7600`), the object set of the type 0x14 entry (kind 5000 objects), the
   camera hand-over (`FUN_0016b698(player, 0)` is the actor hook, its camera effect was not followed), the two HUD gauges
   (`comb`, `gage`), the sound set (kind 0x12), the screen effect slot (`FUN_001afe78`) and the task's end condition
   (`FUN_001b3970`) are not ported.
 - The party-limit offer and its random choice (`FUN_001d25e0`): ported by WP-AL1 (next section), with the gaps listed there.
+
+## Limit script (WP-LT1) [V unless marked]
+
+`limit_script.rs` runs the limit BAR's type 3 entry (`limit/us/<file>`) as a BDX thread. 20 partner limit files have one (Auron to
+Riku, Trinity's three files); the summon limit files have none.
+
+### The original
+
+- `FUN_001b2e08` (limit task creation): `FUN_001684c0(bar, 3, 0)` finds the entry, `FUN_0016c9b8` makes a thread on it, task `+0x34`
+  (word index `0xd` of the task) holds it, `FUN_0016c500(thread, 0x16, [task], 1)` points it at event 22 with the task as the one
+  argument. The same function fills the time gauge (`+0xa8`, current value `+0xd4`) with the command's `Time`
+  (`FUN_001cf528`, `FUN_001cfc28(Time, gauge)`), and for command `0x1e4` (Trinity) calls `FUN_001b3a70(task, 3)` (the `comb` / `gage`
+  HUD animation: sets bit 8 of task `+0x40`, adds 1 to `+0x3c`).
+- The task's frame `FUN_001b35e8` runs the thread with `FUN_0016c680(thread, 0)`; when it returns 1 `FUN_001b3910` sets bit 4 of
+  `+0x40`, and the next frame's `FUN_001b3970` (the end test: gauges at 0, no animation, thread done) ends the task. Each frame, while
+  `FUN_001b3a08` holds (the player and the participants are not down, `+0x168` bit 0 clear), the gauge value falls by `DAT_00356f40 x`
+  the player status's `+0x5c` (`FUN_001cfc28(value + fVar5 * status[+0x5c], task + 0xa8)`).
+- Event 23 (a sub-command) goes to the same thread through `FUN_0016c620(task + 0x34, 0x17, [id], 1, 0)` (`limit::sub_command_event`).
+
+### The script, as the port runs it (Trinity, event 22: routines at words 0x22f6 to 0x2341)
+
+Setup (routine 0x2342): reads the task's owner (host 2.48) and participants (2.49 index 0 and 1: Donald, Goofy), binds them to the
+context (1.210 by NeoStatus 2 and 3), records the target records (2.23, 1.131), starts the child thread (2.54, routine `0x241c`) and the
+screen effect (7.28). The main loop then yields while host 2.60 (the gauge value, task `+0xd4`) is above 0 and the context's
+flag word `+0x2c` is set. At 0 the tail runs: 2.89 (releases the HUD animation, `FUN_001b3b60`), then a wait on 2.63 (the animation
+count, task `+0x3c`) and a yield, then the cleanup (6.47, 7.30, target release 1.132) and the thread returns. The other 13 files
+have the same shape: the first loop on 2.60 and a tail on 2.63.
+
+### What the app does
+
+- `LimitScriptPlugin` (in `CombatPlugins`, after `LimitPlugin`): on `LimitScriptEvent { event: 22, to: LimitScript }` it reads the
+  type 3 entry of the file `LimitStarted` named, builds a `kh2_bdx::Runtime` with the executable's host table and calls
+  `start_thread(0, 22, [TASK])` (`TASK` = `0x7a000000`, summon.rs's `LIMIT_ATTACK` value); event 23 is `restart_thread(23, [command])`
+  [inferred: that the thread takes it as the cast task takes event 21, `restart_thread`]. The thread runs one `update_script` slice per
+  60 Hz tick (`FixedUpdate`, after `Sim::Sora`).
+- The countdown stays the end condition. The gauge value (2.60) is the countdown's ticks left, so the script's own wait ends at 0 as
+  in the original; when `LimitTask` goes `None` the thread keeps ticking for at most 30 more ticks (its tail) and is dropped.
+- A fault (a VM error, a step limit or a panic) is logged once (`limit script: fault ...`), the thread is dropped, the limit goes on.
+- Logs (`RUST_LOG=info`): `limit script: start <file> ...`, `limit script: first call host g.i <name> at tick n: <call>` (once per
+  host function), `limit script: ended after N ticks (the limit is over); host calls: g.i xN ...`, `limit script: fault ...`.
+- Hosts ported: 2.48 (task `+0xc`, the player: `FUN_001b2c10` stores its fourth argument there), 2.60 (the countdown, [inferred] in
+  ticks: the unit the app's `LimitTask` already counts `Time` in), 2.63 and 2.89 (`TaskState`: one animation for command `0x1e4`,
+  released once), 1.94 (true for the player only), 1.132 (no pool), 6.47 (removes stop id 17 from every object: the app holds none),
+  0.0 to 0.2, 0.8, 0.24 to 0.26 (debug prints). 7.28 / 7.30 start and end a screen effect (`FUN_002f3bd8` makes the object
+  `DAT_00371518` from `FUN_00104fa8(0xa00)` and `FUN_0016e208(0x5c3)`; `FUN_002f3c18` ends it): answered with nothing, not drawn.
+  Everything else answers 0.
+
+### Harness results (`KH2_LIMIT=<command>`, all rows usable: `KH2_LIMIT_PARTY=2,3,5,...,13`, every ability bit)
+
+| command (file) | result |
+|---|---|
+| 484 Trinity | runs 180 ticks, tail 2 ticks, returns: `1.94 1.114 1.131 2.23 2.48 2.49 2.54 2.60 2.63 2.89 6.47 7.28 7.30` |
+| 82 Auron, 74 Beast, 139 Mulan, 255 Goofy, 338 Goofy 2, 344 Donald 2, 351 Aladdin, 357 Sparrow | run the whole countdown and return; they add some of 1.0 1.11 1.13 1.15 1.18 1.23 1.34 1.130 1.183 1.220 1.234 2.47 2.50 2.55 2.59 7.3 7.11 |
+| 282 Donald, 376 Simba, 405 Jack, 415 Tron, 569 Riku, 620 Trinity (no group) | fault in the first tick (`BadAddress`): the script reads a participant object (2.49 / 1.114 answer 0: the app has no partner objects) |
+
+### Gaps
+
+- **2.54** (`0x18ea28` -> `FUN_001b3c10(routine, &arg, 1)` -> `FUN_0016c8d8(task + 0x34, 0, routine, args, 1)`): starts a child thread of the
+  limit's thread, the same call as host 1.82 (`FUN_00172df0`) with tag 0, no cleanup routine and the one argument. `kh2-bdx`'s
+  runtime handles 0.9 and 1.82 as `Request::Spawn` but not 2.54, so the child (Trinity's `0x241c`: the part that reads the gauge each
+  frame) never runs. Needs `runtime.rs`: `(2, 54) => Request::Spawn { root: main_handle, handle, tag: 0, pc: a[0], cleanup: 0, args: vec![a[1]] }`.
+- **Partner objects**: 2.49 answers 0 and 1.114 / 1.210 find nothing, so scripts that read a partner (1.147 position, 1.183, 1.220,
+  1.234) fault or take their absent branch. `limit.rs` knows the partners' rows only (`Partner`, WP-AL1); a handle scheme for them is a
+  later stage.
+- 2.47 (`0x18e988` -> `FUN_001b3438` -> `FUN_0017f0c0(0, task +8, task + 0x18, ...)`), 2.50 (`0x18e9f8` -> `FUN_001b3468`: starts a
+  PAX or object effect, `FUN_001971c0` or a kind 0x16 entry, on the participant), 2.59 (`0x18eb00` -> `FUN_001b3c48` ->
+  `FUN_001db868(task + 0x18, ..., 1, 30000, ...)`), 2.55 (task `+0x38`, the object `FUN_001afe78(0)` made at the end of
+  `FUN_001b2c10`), 1.0 create_object, 1.11 / 1.13 motions, 1.15, 1.18 link_start, 1.23 (global byte `0x33e830`), 1.34 (event word
+  `0x35e3a4`), 1.130, 7.3 / 7.11 / 7.21 (`FUN_002ef370` / `FUN_002ef480` / `FUN_002ef798`, not read): answered 0, logged. Their
+  effects (motions, effects, camera) are what makes the limit visible; none is ported.
+- The task's end (`FUN_001b3970`: gauges, the HUD animations, `FUN_001c7c30`) stays the countdown.
 
 ## Auto Limit (WP-AL1) [V unless marked]
 

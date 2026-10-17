@@ -19,7 +19,7 @@
 //!   participants' motions are gaps.
 //!
 //! - Script events (FUN_001b2e08, FUN_001b3118, FUN_001b28a0): see [`LimitBar`] and [`start_events`]; the app sends them as
-//!   [`LimitScriptEvent`] messages and the receiving script (a summon's) is run by summon.rs.
+//!   [`LimitScriptEvent`] messages; the receiving script is run by summon.rs (a summon's) or limit_script.rs (the limit BAR's own).
 //!
 //! The app has no companions, so a normal limit is refused with "member absent" unless the harness
 //! names a party (`KH2_LIMIT_PARTY=2,3`). That path exists to exercise the rules, not as gameplay.

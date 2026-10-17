@@ -331,7 +331,7 @@ pub enum Finish {
     /// event 8 that no trigger takes ends it too, with the game-over path (`FUN_001b9ce0`).
     Event(u32, i32),
     /// `FUN_001b9ce0`: the manager ends and the game-over path runs (kind 2, 0x1e, 0x23: `FUN_001ad8e0(0)`, else
-    /// `FUN_001ad868`; neither is ported).
+    /// `FUN_001ad868`): `Mission::game_over_request` hands it to `menu_gameover`.
     GameOver,
     /// The manager ends (host 4.22, `FUN_001b9908`).
     Gone,
@@ -504,6 +504,54 @@ pub struct Mission {
     /// The end's last step asked for the menu of this pause-menu record (`FUN_001bef10(0x1a)` -> `FUN_0024f330`);
     /// `menu_struggle` takes it and opens the menu while the manager stays.
     pub menu_request: Option<u16>,
+    /// The manager ended with the game-over path (`FUN_001b9ce0`); `menu_gameover` takes it and opens the game over.
+    pub game_over_request: Option<GameOverRequest>,
+}
+
+/// The jump records of the area triggers that answer the game-over menu's rows of mission kind 3 (`FUN_001b9c58`: code 3
+/// -> event 0x8b, code 4 -> event 0x8d; `FUN_00197588(event, -1)`), read from the manager before it ends.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GameOverExits {
+    pub retry: Option<[u16; 6]>,
+    pub quit: Option<[u16; 6]>,
+}
+
+/// `FUN_001b9ce0` after the manager ended: game over of type 3 (mission kinds 2, 0x1e, 0x23: `FUN_001ad8e0(0)`) or type 1
+/// (`FUN_001ad868`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GameOverRequest {
+    pub kind: u8,
+    pub exits: GameOverExits,
+}
+
+/// What `FUN_001cec00` asks of the manager when the player is knocked out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KoView {
+    /// Host 1.317's bit 0x20000 of `DAT_0035d268`: the knock-out is global event 0x5a, not a game over.
+    pub loses: bool,
+    /// `FUN_001b9c00`: the manager's kind is 0x02, 0x19 or 0x20 (the game over is type 3).
+    pub menu_kind: bool,
+    pub exits: GameOverExits,
+}
+
+impl Active {
+    /// The jump records of the triggers for events 0x8b and 0x8d (`FUN_00197588(event, -1)`).
+    pub fn game_over_exits(&self) -> GameOverExits {
+        GameOverExits { retry: self.trigger(0x8b, -1).and_then(|t| t.jump), quit: self.trigger(0x8d, -1).and_then(|t| t.jump) }
+    }
+}
+
+impl Mission {
+    /// The manager's part of the player's knock-out decision (`FUN_001cec00`); `None` without a manager.
+    pub fn ko_view(&self) -> Option<KoView> {
+        let a = self.m.as_deref()?;
+        Some(KoView { loses: a.ko_loses, menu_kind: a.header.ends_in_menu(), exits: a.game_over_exits() })
+    }
+}
+
+/// `FUN_001b9ce0`: the game over after a manager ends by itself: type 3 for the mission kinds 2, 0x1e and 0x23, else type 1.
+pub fn game_over_kind(mission_kind: u8) -> u8 {
+    if matches!(mission_kind, 2 | 0x1e | 0x23) { 3 } else { 1 }
 }
 
 /// The pause-menu record the end's last step opens (`FUN_001b96e0`: `FUN_001bef10(0x1a)`).
@@ -1240,7 +1288,7 @@ fn mission_tick(
                 info!("struggle: Sora knocked out: global event 0x5a (FUN_001cec00)");
                 a.events.push((EV_PLAYER_KO, 0));
             } else {
-                info!("struggle: Sora knocked out without host 1.317's bit: the game-over path (not ported)");
+                info!("struggle: Sora knocked out without host 1.317's bit: the game-over path (FUN_001cec00 -> FUN_001ad8e0; menu_gameover)");
             }
         }
         *last_hp = Some(s.hp);
@@ -1271,6 +1319,7 @@ fn mission_tick(
     let Some(f) = a.pending.take() else { return };
     let (p, o) = (a.counter_value(0), a.counter_value(1));
     let mut menu = false;
+    let mut over = None;
     let gone = match f {
         Finish::Menu => {
             // FUN_001bef10(0x1a) -> FUN_0024f330: menu kind 7 with the `slct` row 0x1a of 14mission.bar
@@ -1287,7 +1336,8 @@ fn mission_tick(
                     true
                 }
                 None if ev == 8 => {
-                    info!("struggle: last step (FUN_001b96e0): event 8 with no trigger: the manager ends with the game-over path (FUN_001b9ce0, not ported)");
+                    info!("struggle: last step (FUN_001b96e0): event 8 with no trigger: the manager ends with the game-over path (FUN_001b9ce0)");
+                    over = Some(GameOverRequest { kind: game_over_kind(a.header.kind), exits: a.game_over_exits() });
                     true
                 }
                 None => {
@@ -1297,7 +1347,8 @@ fn mission_tick(
             }
         }
         Finish::GameOver => {
-            info!("struggle: the manager ends with the game-over path (FUN_001b9ce0, not ported)");
+            info!("struggle: the manager ends with the game-over path (FUN_001b9ce0)");
+            over = Some(GameOverRequest { kind: game_over_kind(a.header.kind), exits: a.game_over_exits() });
             true
         }
         Finish::Gone => true,
@@ -1307,6 +1358,9 @@ fn mission_tick(
     }
     if gone {
         mission.end();
+    }
+    if over.is_some() {
+        mission.game_over_request = over;
     }
 }
 /// The log lines of the events the Struggle cares about.
@@ -1896,6 +1950,25 @@ mod tests {
             assert_eq!(deliver(&mut a, EV_PLAYER_KO, 0), vec![(EV_PLAYER_LOST, 0)], "{name}");
             assert!(a.failed, "{name}: the loss takes the failure path");
         }
+    }
+
+    /// `FUN_001cec00`'s view of the manager: host 1.317's bit, the menu kinds and the retry / quit jump records of the
+    /// triggers for events 0x8b and 0x8d (`FUN_001b9c58`); `FUN_001b9ce0`'s type of the game over.
+    #[test]
+    fn the_knock_out_view_carries_the_bit_the_kind_and_the_retry_and_quit_jumps() {
+        assert!(Mission::default().ko_view().is_none(), "no manager, no view");
+        let Some(disc) = disc() else { return };
+        let mut a = struggle(&disc, "TT04_MS00");
+        let t = |event, jump| Trig { event, arg: 0xffff, story_flag: None, plays_event: false, jumps: true, jump: Some(jump) };
+        a.triggers = vec![t(0x8b, [2, 2, 0, 0, 0xb6, 1]), t(0x8d, [1, 2, 4, 55, 0, 0]), t(7, [1, 1, 1, 1, 1, 1])];
+        assert_eq!(a.game_over_exits(), GameOverExits { retry: Some([2, 2, 0, 0, 0xb6, 1]), quit: Some([1, 2, 4, 55, 0, 0]) });
+        let kind = a.header.kind;
+        let m = Mission { m: Some(Box::new(a)), ..Default::default() };
+        let v = m.ko_view().expect("a manager runs");
+        assert!(v.loses, "TT04_MS00's event 3 calls host 1.317");
+        assert_eq!(v.menu_kind, matches!(kind, 2 | 0x19 | 0x20));
+        assert_eq!(v.exits.quit, Some([1, 2, 4, 55, 0, 0]));
+        assert_eq!((game_over_kind(2), game_over_kind(0x1e), game_over_kind(0x23), game_over_kind(7)), (3, 3, 3, 1));
     }
 
     #[test]

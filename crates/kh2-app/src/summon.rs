@@ -5690,7 +5690,7 @@ mod tests {
     #[test]
     fn host_10_51_answers_the_handle_of_the_enemy_in_the_box() {
         let view = fps::ScreenView::new(&GlobalTransform::default(), Mat4::perspective_rh(1.0, 4.0 / 3.0, 0.01, 1000.0));
-        let mut w = World::new();
+        let mut w = bevy::ecs::world::World::new();
         let [a, b, c] = std::array::from_fn(|_| w.spawn_empty().id());
         let ev = |entity, handle, x: f32| EnemyView { entity, handle, pos: Vec3::new(x, 0.0, -10.0) / SCALE, reacting: false, blown: false };
         let enemies = [ev(a, 0x7000_0001, 1.0), ev(b, 0x7000_0002, 0.4), ev(c, 0x7000_0003, 0.0)];

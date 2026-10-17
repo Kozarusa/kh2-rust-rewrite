@@ -84,6 +84,9 @@ pub(crate) struct NpcAssets {
     /// The player's own body volume (record type 1 of `P_EX100`), which `FUN_0018aa08` tests
     /// against a townsperson's type-5 part.
     player_body: Option<parts::Rec>,
+    /// The player's record of type 0x11, the point `FUN_0016bbe8` gives for him (a bone of `P_EX100`):
+    /// what a townsperson's head looks at.
+    player_point: Option<parts::Rec>,
     loaded: bool,
 }
 
@@ -97,7 +100,9 @@ impl NpcAssets {
         if let Ok(mut a) = disc.0.lock() {
             self.objs = kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).map(|d| d.rows).unwrap_or_default();
         }
-        self.player_body = disc.read("obj/P_EX100.mdlx").and_then(|f| parts::Table::from_mdlx(&f)).and_then(|t| t.first(parts::TYPE_BODY).copied());
+        let player = disc.read("obj/P_EX100.mdlx").and_then(|f| parts::Table::from_mdlx(&f));
+        self.player_body = player.as_ref().and_then(|t| t.first(parts::TYPE_BODY).copied());
+        self.player_point = player.as_ref().and_then(|t| t.first(TYPE_POINT).copied());
     }
 
     fn parts(&mut self, disc: &Disc, model: &str) -> Option<Arc<parts::Table>> {
@@ -415,6 +420,17 @@ pub(crate) fn npc_update(
     // ---- the class's own logic first (FUN_00189ae8 -> FUN_0018a130 for objects whose bit 0 is
     // clear) [inferred order: the object's update before its script's tick].
     let player_body = assets.player_body.as_ref().and_then(|r| parts::shape_of(r, s.motor.pos, s.motor.yaw));
+    // `FUN_0016bbe8` for the player: his type-0x11 record, a point on a bone of his last pose [inferred
+    // as for the talk camera's bone points]; without it the object's position, raised to his head.
+    let player_point = {
+        let rot = Quat::from_rotation_y(s.motor.yaw);
+        let on_bone = |r: &parts::Rec| {
+            let off = Vec3::new(r.off[0] as f32, r.off[1] as f32, r.off[2] as f32);
+            let pose = anims.get(s.body).ok()?;
+            Some(s.motor.pos + rot * pose.pose.get((r.joint & 0x3fff) as usize)?.transform_point3(off) + Vec3::Y * r.lift as f32)
+        };
+        assets.player_point.as_ref().and_then(|r| if r.joint & parts::JOINT_OBJECT != 0 { parts::shape_of(r, s.motor.pos, s.motor.yaw).map(|sh| sh.center) } else { on_bone(r) })
+    };
     {
         let mut rows: Vec<_> = q.iter_mut().collect();
         let tags: Vec<String> = rows.iter().map(|r| r.3.tag.clone()).collect();
@@ -555,6 +571,20 @@ pub(crate) fn npc_update(
         }
         *errors_seen = rt.core.errors.len();
 
+        // ---- the head look-at controller's commands (hosts 1.174 / 1.176): only an object whose model
+        // has the head record (type 0x14) can start one (FUN_001aece8 looks it up first).
+        let head_rec = npc.parts.as_ref().and_then(|t| t.first(look::TYPE_HEAD)).copied();
+        if let Some(cmd) = fields.look_cmd.take() {
+            match (cmd, head_rec.is_some()) {
+                (LookCmd::Start(n), true) => fields.look.start(n),
+                (LookCmd::Release(n), _) => fields.look.release(n),
+                _ => {}
+            }
+            if log {
+                info!("npc: {tag} head look-at {cmd:?}: record {}", if head_rec.is_some() { "present" } else { "absent (nothing happens)" });
+            }
+        }
+
         // ---- carry out the requests (as `enemy_ai::ai_update` does for enemies)
         let looping_slot = |s: usize| rig.mset.get(s).and_then(|s| s.motion.as_ref()).is_some_and(|m| m.frame_return < m.frame_end);
         if let Some(req) = obj.motion_req.take() {
@@ -591,6 +621,22 @@ pub(crate) fn npc_update(
         npc.yaw = obj.motor.yaw;
         tf.translation = obj.motor.pos * SCALE;
         tf.rotation = Quat::from_rotation_y(npc.yaw);
+        // The head look-at controller's tick (FUN_001aea28 -> FUN_001aee90) after the move [inferred order].
+        anim.turn = None;
+        if let Some(rec) = head_rec {
+            let joint = (rec.joint & 0x3fff) as usize;
+            let off = Vec3::new(rec.off[0] as f32, rec.off[1] as f32, rec.off[2] as f32);
+            let at_head = anim.pose.get(joint).map(|m| obj.motor.pos + Quat::from_rotation_y(npc.yaw) * m.transform_point3(off) + Vec3::Y * rec.lift as f32);
+            if let Some(head) = at_head {
+                let input = look::Input { head, target: player_point.unwrap_or(s.motor.pos + Vec3::Y * 100.0), body_yaw: npc.yaw, limits: look::Limits::of(&rec) };
+                if let Some(w) = fields.look.tick(&input) {
+                    anim.turn = Some(crate::skel::JointTurn { joint, rot: fields.look.turn(w) });
+                    if log && status_tick {
+                        info!("npc: {tag} head look-at: yaw {:.1} deg pitch {:.1} deg weight {:.2}, head {head:.0} target {:.0} body yaw {:.2}", fields.look.yaw_off.to_degrees(), fields.look.pitch.to_degrees(), fields.look.weight, input.target, npc.yaw);
+                    }
+                }
+            }
+        }
         // Effects, messages and the player-side commands of these scripts are not carried out.
         obj.effects.clear();
         obj.outbox.clear();
@@ -655,6 +701,9 @@ pub const MOTION_TALK: usize = 0x32;
 pub const TALK_WINDOW_CLASS: usize = 3;
 /// `DAT_0037ab84`: added to +0xb18 when a talk ends (FUN_00189ff0).
 pub const TALK_END_TIMER: f32 = 60.0;
+
+/// The record type `FUN_0016bbe8` reads for an object's point (`FUN_0016b558(obj, 0x11, -1)`).
+pub const TYPE_POINT: u8 = 0x11;
 
 /// The collision record type the talk camera reads (`FUN_0018f108`: `FUN_0016b558(target, 0x13,
 /// part)`).
@@ -1158,6 +1207,9 @@ pub struct NpcFields {
     /// game's motion controller queue is not ported; the app starts it when the playing motion
     /// ends [approx].
     pub queued: Option<(usize, f32)>,
+    /// The head look-at controller (+0x4a0), and the host call that has not reached it yet.
+    pub look: look::Look,
+    pub look_cmd: Option<LookCmd>,
     /// +0xa30: the region the object stood in when `FUN_0018a4b0` last looked.
     pub region: Option<usize>,
     /// This frame's `FUN_0018aa08(obj, 5)`: the object's first type-5 part meets the player's
@@ -1165,6 +1217,13 @@ pub struct NpcFields {
     pub player_in_part: bool,
     /// The object's random numbers (the game's global `rand()`).
     pub rng: Rng,
+}
+
+/// What host 1.174 or 1.176 asked of the head look-at controller, with its frames.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LookCmd {
+    Start(f32),
+    Release(f32),
 }
 
 impl NpcFields {
@@ -1189,6 +1248,8 @@ impl NpcFields {
             record: e.clone(),
             params_ptr: None,
             queued: None,
+            look: look::Look::default(),
+            look_cmd: None,
         };
         // FUN_001899d0: bits 0..6 of the record's word +0x24; with bit 0 set the follower is put in
         // kind 2 (the walk path) at once, with mode 0.
@@ -2221,9 +2282,20 @@ impl NpcHost<'_, '_> {
             }
             // 1.174 / 1.175 / 1.176 (0x171940, 0x171978, 0x1719a8 -> FUN_001aece8, FUN_001aec78,
             // FUN_001aec50): the head look-at controller at object +0x4a0 is started toward an object
-            // or a point over n frames, or tweened back to zero. The app has no look-at controller:
-            // the head stays with the motion.
-            174 | 175 | 176 => (Value::None, St::Stub, "the look-at controller at +0x4a0 (FUN_001abf40 tweens, applied by FUN_00189dc8) is not ported: the head follows the motion"),
+            // or a point over n frames, or tweened back to zero (`look`). The townspeople's scripts use
+            // 1.174 toward the player and 1.176; 1.175 (a point) is in none of them.
+            174 => {
+                if self.log {
+                    info!("npc: {} host 1.174 {:x?}: the first argument is not the object itself ({me:#x}); the target is taken to be the player", self.inner.tag, a);
+                }
+                self.fields.look_cmd = Some(LookCmd::Start(f32::from_bits(arg(2))));
+                (Value::None, St::Approx, "mode 2 toward the player; the joint's turn is inferred (the pose code behind FUN_001aead0 was not traced), and the enable flag (object +0x160 bit 0x4000000) is not read")
+            }
+            176 if arg(0) == me => {
+                self.fields.look_cmd = Some(LookCmd::Release(f32::from_bits(arg(1))));
+                (Value::None, St::Approx, "the weight ramps to 0 (FUN_001aec50); the joint's turn is inferred")
+            }
+            175 => (Value::None, St::Stub, "the look-at controller's point mode (FUN_001aec78) is not ported: the head follows the motion"),
             // 1.177 (0x1719d0 -> FUN_00183c30): set the walk path by id.
             177 => {
                 let ok = self.set_path(arg(1));
@@ -2283,9 +2355,326 @@ impl Host for NpcHost<'_, '_> {
     }
 }
 
+/// The head look-at controller of a townsperson (docs/events.md section 3, "Head look-at").
+///
+/// The game keeps it at object +0x4a0 (0x60 bytes): +4 the mode (0 off, 1 toward a point, 2 toward an
+/// object, 3 toward a direction), +0xc the joint (the halfword +6 of the object's record of type
+/// 0x14), +0x10/+0x14 the weight and its per-tick step (`FUN_001abf40`, advanced by `FUN_001abf78`),
+/// +0x20 the aim point, +0x30 the target object, +0x40 the last look direction, +0x50 the head's
+/// yaw against the body. Hosts 1.174 / 1.176 (`FUN_001aece8`, `FUN_001aec50`) start and end it;
+/// `FUN_001aea28` runs it every tick and mode 2 is `FUN_001aee90`; `FUN_001aead0` hands the aim
+/// point and the eased weight to the pose code. Only objects whose model has a record of type 0x14
+/// (the `*_RTN` townspeople: joint = the head bone, radii = yaw and pitch limits in degrees) turn.
+pub mod look {
+    use bevy::prelude::*;
+
+    use crate::reaction_parts::Rec;
+
+    /// The collision record type of the head (`FUN_001aee90`: `FUN_0016b558(obj, 0x14, -1)`).
+    pub const TYPE_HEAD: u8 = 0x14;
+    /// `DAT_0037b938`: degrees to radians for the record's two radii.
+    const DEG: f32 = f32::from_bits(0x3c8e_fa35);
+    /// `DAT_0037b93c`: the most the head turns toward the target in one tick (5 degrees); a smaller
+    /// remaining angle is taken whole.
+    pub const YAW_STEP: f32 = f32::from_bits(0x3db2_b8c2);
+    /// `DAT_0037b944`: the pitch moves 3 degrees a tick, and only while it is more than 3 degrees
+    /// from the target's.
+    pub const PITCH_STEP: f32 = f32::from_bits(0x3d56_774f);
+
+    /// The record's limits: `+0x10` and `+0x12` (halfwords) times `DAT_0037b938`.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct Limits {
+        pub yaw: f32,
+        pub pitch: f32,
+    }
+
+    impl Limits {
+        pub fn of(rec: &Rec) -> Limits {
+            Limits { yaw: rec.r[0] as f32 * DEG, pitch: rec.r[1] as f32 * DEG }
+        }
+    }
+
+    /// One tick's inputs, in the app's space: the head part's point (`FUN_001894d0` of the record),
+    /// the target's point (`FUN_0016bbe8`), the body's facing and the record's limits.
+    #[derive(Clone, Copy, Debug)]
+    pub struct Input {
+        pub head: Vec3,
+        pub target: Vec3,
+        pub body_yaw: f32,
+        pub limits: Limits,
+    }
+
+    /// The controller state.
+    #[derive(Clone, Copy, Debug, Default, PartialEq)]
+    pub struct Look {
+        /// Mode 2 is running (+4 == 2).
+        pub active: bool,
+        /// +0x10: the weight, tweened between 0 and 1.
+        pub weight: f32,
+        /// +0x14: its change per tick.
+        delta: f32,
+        /// +0x50: the head's yaw against the body's facing.
+        pub yaw_off: f32,
+        /// The pitch of the last look direction (+0x40), up positive. Starts level: the game seeds +0x40
+        /// with the target's facing vector (`FUN_0016a890`), which for an upright object is level.
+        pub pitch: f32,
+        /// +0x20: the aim point of the last tick.
+        pub aim: Vec3,
+    }
+
+    fn wrap(a: f32) -> f32 {
+        let a = (a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+        if a == -std::f32::consts::PI { std::f32::consts::PI } else { a }
+    }
+
+    impl Look {
+        /// Host 1.174 (`FUN_001aece8`, with the record present): mode 2 toward the target, the weight
+        /// from 0 to 1 over `frames` (`FUN_001abf40`: at once when `frames` is not above 0), the
+        /// head's yaw against the body back to 0.
+        pub fn start(&mut self, frames: f32) {
+            self.active = true;
+            self.yaw_off = 0.0;
+            self.weight = 0.0;
+            self.delta = 0.0;
+            if frames <= 0.0 {
+                self.weight = 1.0;
+            } else {
+                self.delta = 1.0 / frames;
+            }
+        }
+
+        /// Host 1.176 (`FUN_001aec50`): the weight from where it is to 0 over `frames`.
+        pub fn release(&mut self, frames: f32) {
+            if frames <= 0.0 {
+                self.weight = 0.0;
+                self.delta = 0.0;
+            } else {
+                self.delta = -self.weight / frames;
+            }
+        }
+
+        /// `FUN_001abf78` on the weight, then `FUN_001aea28`'s test: a weight of 0 ends the mode.
+        fn tween(&mut self) {
+            if self.delta != 0.0 {
+                self.weight += self.delta;
+                if self.weight <= 0.0 {
+                    self.weight = 0.0;
+                    self.delta = 0.0;
+                } else if self.weight >= 1.0 {
+                    self.weight = 1.0;
+                    self.delta = 0.0;
+                }
+            }
+            if self.weight == 0.0 {
+                self.active = false;
+            }
+        }
+
+        /// `FUN_001aea28` for mode 2: the tween, then `FUN_001aee90`. The head's yaw turns toward the
+        /// target by at most 5 degrees a tick (a smaller angle is taken whole) and stays within the
+        /// record's yaw limit of the body's facing; the pitch moves by 3 degrees a tick while it is
+        /// more than 3 degrees off the target's and stays within the pitch limit of level. Returns the
+        /// eased weight to apply, or `None` while the mode is off.
+        pub fn tick(&mut self, i: &Input) -> Option<f32> {
+            self.tween();
+            if !self.active {
+                return None;
+            }
+            let d = i.target - i.head;
+            let hlen = d.x.hypot(d.z);
+            // A target straight above or below has no horizontal direction to turn toward.
+            if hlen > 1e-3 {
+                let toward = d.x.atan2(d.z);
+                let head_yaw = i.body_yaw + self.yaw_off;
+                let gap = wrap(toward - head_yaw);
+                let mut yaw = if gap.abs() > YAW_STEP { head_yaw + YAW_STEP.copysign(gap) } else { toward };
+                let rel = wrap(yaw - i.body_yaw);
+                if rel.abs() > i.limits.yaw {
+                    yaw = i.body_yaw + i.limits.yaw.copysign(rel);
+                }
+                self.yaw_off = wrap(yaw - i.body_yaw);
+            }
+            let want = d.y.atan2(hlen);
+            let gap = want - self.pitch;
+            if gap.abs() > PITCH_STEP {
+                self.pitch += PITCH_STEP.copysign(gap);
+            }
+            self.pitch = self.pitch.clamp(-i.limits.pitch, i.limits.pitch);
+            // +0x20: the head point plus the new look direction scaled by the distance.
+            let (sy, cy) = (i.body_yaw + self.yaw_off).sin_cos();
+            let dir = Vec3::new(self.pitch.cos() * sy, self.pitch.sin(), self.pitch.cos() * cy);
+            self.aim = i.head + dir * d.length();
+            Some(self.eased())
+        }
+
+        /// `FUN_001aead0`: the weight as `(1 - cos(pi w)) / 2`.
+        pub fn eased(&self) -> f32 {
+            (1.0 - (std::f32::consts::PI * self.weight).cos()) * 0.5
+        }
+
+        /// The turn of the head in the character's own frame (+z forward, y up) at the eased weight
+        /// [inferred: how the pose code turns the joint toward the aim point was not traced]: a yaw of
+        /// `yaw_off` and a pitch of `pitch`, scaled from nothing by the weight.
+        pub fn turn(&self, eased: f32) -> Quat {
+            Quat::IDENTITY.slerp(Quat::from_rotation_y(self.yaw_off) * Quat::from_rotation_x(-self.pitch), eased)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        const LIMITS: Limits = Limits { yaw: 50.0 * DEG, pitch: 20.0 * DEG };
+
+        fn input(target: Vec3, body_yaw: f32) -> Input {
+            Input { head: Vec3::new(0.0, 160.0, 0.0), target, body_yaw, limits: LIMITS }
+        }
+
+        /// The record's two radii (50 and 20, the townspeople's) are degrees, and the constants are
+        /// the executable's: 5 degrees, 3 degrees.
+        #[test]
+        fn limits_and_steps_are_the_executables_degrees() {
+            let rec = Rec { part: 0, id: 0, kind: TYPE_HEAD, shape: 0, joint: 0x3e, off: [7, 0, 0], lift: 0, r: [50, 20] };
+            let l = Limits::of(&rec);
+            assert!((l.yaw.to_degrees() - 50.0).abs() < 1e-3 && (l.pitch.to_degrees() - 20.0).abs() < 1e-3);
+            assert!((YAW_STEP.to_degrees() - 5.0).abs() < 1e-4 && (PITCH_STEP.to_degrees() - 3.0).abs() < 1e-4);
+        }
+
+        /// The head turns 5 degrees a tick toward a target 40 degrees to the side, takes the last
+        /// 3 degrees whole, and then holds.
+        #[test]
+        fn the_head_turns_five_degrees_a_tick_then_arrives() {
+            let mut l = Look::default();
+            l.start(0.0);
+            let target = Vec3::new(40f32.to_radians().sin(), 0.0, 40f32.to_radians().cos()) * 300.0 + Vec3::Y * 160.0;
+            let mut seen = Vec::new();
+            for _ in 0..10 {
+                l.tick(&input(target, 0.0)).unwrap();
+                seen.push(l.yaw_off.to_degrees());
+            }
+            for (k, v) in seen.iter().take(8).enumerate() {
+                assert!((v - 5.0 * (k + 1) as f32).abs() < 1e-3, "{seen:?}");
+            }
+            assert!((seen[8] - 40.0).abs() < 1e-3 && (seen[9] - 40.0).abs() < 1e-3, "{seen:?}");
+        }
+
+        /// A target behind the body or far to the side leaves the head at the yaw limit, either side.
+        #[test]
+        fn the_yaw_stops_at_the_records_limit() {
+            for side in [1.0f32, -1.0] {
+                let mut l = Look::default();
+                l.start(0.0);
+                let target = Vec3::new(side * 300.0, 160.0, -50.0);
+                for _ in 0..60 {
+                    l.tick(&input(target, 0.0)).unwrap();
+                }
+                assert!((l.yaw_off - side * LIMITS.yaw).abs() < 1e-4, "{}", l.yaw_off.to_degrees());
+            }
+            // The limit is against the body's facing, not the world's.
+            let mut l = Look::default();
+            l.start(0.0);
+            for _ in 0..60 {
+                l.tick(&input(Vec3::new(0.0, 160.0, 300.0), 1.0)).unwrap();
+            }
+            assert!((l.yaw_off + LIMITS.yaw).abs() < 1e-4, "{}", l.yaw_off.to_degrees());
+        }
+
+        /// The pitch moves 3 degrees at a time, ignores a target less than 3 degrees off level and
+        /// stops at the pitch limit.
+        #[test]
+        fn the_pitch_steps_by_three_degrees_inside_its_limit() {
+            let mut l = Look::default();
+            l.start(0.0);
+            let level = Vec3::new(0.0, 160.0 + 300.0 * 2f32.to_radians().tan(), 300.0);
+            l.tick(&input(level, 0.0)).unwrap();
+            assert_eq!(l.pitch, 0.0, "2 degrees off level is ignored");
+            let up = Vec3::new(0.0, 160.0 + 300.0 * 45f32.to_radians().tan(), 300.0);
+            l.tick(&input(up, 0.0)).unwrap();
+            assert!((l.pitch.to_degrees() - 3.0).abs() < 1e-3);
+            for _ in 0..30 {
+                l.tick(&input(up, 0.0)).unwrap();
+            }
+            assert!((l.pitch - LIMITS.pitch).abs() < 1e-4, "{}", l.pitch.to_degrees());
+            let down = Vec3::new(0.0, 160.0 - 300.0, 300.0);
+            for _ in 0..60 {
+                l.tick(&input(down, 0.0)).unwrap();
+            }
+            assert!((l.pitch + LIMITS.pitch).abs() < 1e-4);
+        }
+
+        /// The weight ramps over the host's frames, the eased weight follows `(1 - cos(pi w)) / 2`,
+        /// and the mode ends when the tween back to 0 arrives (`FUN_001aea28`).
+        #[test]
+        fn the_weight_ramps_in_and_out_and_ends_the_mode() {
+            let mut l = Look::default();
+            l.start(20.0);
+            let t = input(Vec3::new(0.0, 160.0, 300.0), 0.0);
+            for _ in 0..10 {
+                l.tick(&t).unwrap();
+            }
+            assert!((l.weight - 0.5).abs() < 1e-5 && (l.eased() - 0.5).abs() < 1e-5);
+            for _ in 0..10 {
+                l.tick(&t).unwrap();
+            }
+            assert!((l.weight - 1.0).abs() < 1e-5);
+            l.release(20.0);
+            let ticks = (1..30).find(|_| l.tick(&t).is_none()).expect("the mode ends");
+            // The twentieth tick brings the weight to 0 (the twenty-first if the sum falls short).
+            assert!((20..=21).contains(&ticks), "{ticks}");
+            assert!(!l.active && l.weight == 0.0);
+            // A turn of nothing is no turn.
+            assert!(l.turn(0.0).angle_between(Quat::IDENTITY) < 1e-6);
+        }
+
+        /// Frames of 0 or less switch it on at full weight at once; a release from 0 stays at 0.
+        #[test]
+        fn zero_frames_act_at_once() {
+            let mut l = Look::default();
+            l.start(0.0);
+            assert_eq!(l.weight, 1.0);
+            l.release(0.0);
+            assert_eq!(l.weight, 0.0);
+            let mut l = Look::default();
+            l.release(20.0);
+            assert_eq!(l.weight, 0.0);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The disc's townspeople: the head record (type 0x14) of `N_EX510_RTN` and `N_EX520_RTN` names
+    /// a bone of the model and the limits 50 and 20 degrees; `N_EX500_RTN` has none, so host 1.174
+    /// does nothing for it (`FUN_001aece8` looks the record up first). The head bone stands above
+    /// the root in the rest pose.
+    #[test]
+    fn the_head_record_names_the_head_bone_and_the_limits() {
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let d = Disc::open(&iso);
+        for (model, joint) in [("N_EX510_RTN", 128u16), ("N_EX520_RTN", 68)] {
+            let file = d.read(&format!("obj/{model}.mdlx")).expect(model);
+            let t = parts::Table::from_mdlx(&file).expect("parts");
+            let rec = t.first(look::TYPE_HEAD).unwrap_or_else(|| panic!("{model}: no head record"));
+            assert_eq!((rec.joint, rec.r), (joint, [50, 20]), "{model}");
+            let l = look::Limits::of(rec);
+            assert!((l.yaw.to_degrees() - 50.0).abs() < 1e-3 && (l.pitch.to_degrees() - 20.0).abs() < 1e-3);
+            let bones = kh2_model::mdlx(&file).expect("model").bones;
+            let rest = kh2_model::rest_pose(&bones);
+            let head = rest[joint as usize].w_axis.y;
+            assert!((100.0..220.0).contains(&head), "{model}: head bone at height {head}");
+        }
+        let none = d.read("obj/N_EX500_RTN.mdlx").and_then(|f| parts::Table::from_mdlx(&f)).expect("N_EX500_RTN");
+        assert!(none.first(look::TYPE_HEAD).is_none());
+        // The player's point (FUN_0016bbe8) is his type-0x11 record, on a bone.
+        let sora = d.read("obj/P_EX100.mdlx").and_then(|f| parts::Table::from_mdlx(&f)).expect("P_EX100");
+        let p = sora.first(TYPE_POINT).expect("type 0x11");
+        assert_eq!((p.joint, p.off), (0x8c, [3, 0, 0]));
+    }
 
     /// FIX-R1 5: an area load that drops a running talk with the camera started asks the rig to end it;
     /// a run without the camera, or no run, asks for nothing.

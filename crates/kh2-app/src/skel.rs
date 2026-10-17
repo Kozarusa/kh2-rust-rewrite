@@ -56,6 +56,36 @@ pub struct Animator {
     rig_state: kh2_anim::rig::RigState,
     /// A motion from outside the rig's own set (`play_external`), played instead of `slot`.
     extra: Option<Arc<kh2_anim::Slot>>,
+    /// A turn the head look-at controller puts on one joint (`npc::look`): drawn on top of the
+    /// pose, which stays the motion's (the pose seeds the next cross-fade).
+    pub turn: Option<JointTurn>,
+}
+
+/// A rotation of one joint and everything below it, about the joint's own origin, in the model's
+/// space. The game hands the look-at controller's state to the model's pose code with the motion
+/// (`FUN_0017e6c0` / `FUN_0017e928`: `FUN_001aead0` -> `FUN_0011c2a0`); how that code turns the
+/// joint was not traced, so the app applies the controller's yaw and pitch as this rotation
+/// [inferred].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct JointTurn {
+    pub joint: usize,
+    pub rot: Quat,
+}
+
+/// `pose` with `turn` applied: the joint's subtree rotates about the joint's origin.
+pub fn turned_pose(pose: &[Mat4], bones: &[Bone], turn: &JointTurn) -> Vec<Mat4> {
+    let mut out = pose.to_vec();
+    let Some(origin) = pose.get(turn.joint).map(|m| m.w_axis.truncate()) else { return out };
+    let about = Mat4::from_translation(origin) * Mat4::from_quat(turn.rot) * Mat4::from_translation(-origin);
+    let mut below = vec![false; pose.len()];
+    for i in 0..pose.len().min(bones.len()) {
+        let p = bones[i].parent;
+        below[i] = i == turn.joint || (p >= 0 && below.get(p as usize).copied().unwrap_or(false));
+        if below[i] {
+            out[i] = about * pose[i];
+        }
+    }
+    out
 }
 
 impl Animator {
@@ -252,6 +282,7 @@ pub fn spawn_skinned(
         root_delta: (Vec3::ZERO, 0.0),
         rig_state: Default::default(),
         extra: None,
+        turn: None,
         rig,
     });
     body
@@ -291,7 +322,8 @@ pub fn animate(mut q: Query<&mut Animator>, mut joints: Query<&mut Transform>) {
         if !step(a) {
             continue;
         }
-        for (j, m) in a.joints.iter().zip(&a.pose) {
+        let turned = a.turn.map(|t| turned_pose(&a.pose, &a.rig.model.bones, &t));
+        for (j, m) in a.joints.iter().zip(turned.as_deref().unwrap_or(&a.pose)) {
             if let Ok(mut t) = joints.get_mut(*j) {
                 *t = Transform::from_matrix(*m);
             }
@@ -398,8 +430,30 @@ mod tests {
             root_delta: (Vec3::ZERO, 0.0),
             rig_state: Default::default(),
             extra: None,
+            turn: None,
             rig,
         }
+    }
+
+    /// The look-at hook turns a joint and what hangs below it about the joint's own origin and
+    /// leaves every other bone where the motion put it.
+    #[test]
+    fn a_joint_turn_rotates_the_subtree_about_the_joint() {
+        let bone = |parent: i32| Bone { parent, scale: Vec3::ONE, rotation: Vec3::ZERO, translation: Vec3::ZERO, length: 0.0 };
+        // 0 root, 1 neck (child of 0), 2 head (child of 1), 3 arm (child of 0).
+        let bones = [bone(-1), bone(0), bone(1), bone(0)];
+        let at = |p: Vec3| Mat4::from_translation(p);
+        let pose = [at(Vec3::ZERO), at(Vec3::new(0.0, 100.0, 0.0)), at(Vec3::new(0.0, 120.0, 10.0)), at(Vec3::new(30.0, 90.0, 0.0))];
+        let turn = JointTurn { joint: 1, rot: Quat::from_rotation_y(std::f32::consts::FRAC_PI_2) };
+        let out = turned_pose(&pose, &bones, &turn);
+        // The root and the arm are untouched; the neck stays where it is (its own origin).
+        assert_eq!((out[0], out[3]), (pose[0], pose[3]));
+        assert!((out[1].w_axis.truncate() - Vec3::new(0.0, 100.0, 0.0)).length() < 1e-4);
+        // The head, 10 in front of the neck's axis (+z), swings a quarter turn about it to +x.
+        assert!((out[2].w_axis.truncate() - Vec3::new(10.0, 120.0, 0.0)).length() < 1e-3, "{:?}", out[2].w_axis);
+        // A joint that is not there changes nothing.
+        let none = turned_pose(&pose, &bones, &JointTurn { joint: 9, rot: turn.rot });
+        assert_eq!(none, pose.to_vec());
     }
 
     /// G6: the motion controller's cross-fade through the one `Animator` path every actor uses, on

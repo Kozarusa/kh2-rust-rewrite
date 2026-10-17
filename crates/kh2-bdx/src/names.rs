@@ -322,6 +322,7 @@ pub static HOST_FUNCS: &[HostFn] = &[
     f(2, 48, "hit_owner", "p", 'p', 0x18e9c8, "the word at +0xc of an attack object (its owner)"),
     f(2, 49, "attack_word_10", "pi", 'i', 0x18e9d8, "word at +0x10 + 4 * i"),
     f(2, 52, "attack_word_110", "p", 'i', 0x18e618, "word at +0x110"),
+    f(2, 54, "limit_spawn_thread", "pp", '-', 0x18ea28, "a child thread of the limit script's thread, like host 1.82 with tag 0 and no cleanup"),
     f(2, 55, "attack_word_38", "p", 'i', 0x18ea50, "word at +0x38"),
     f(2, 56, "ptr_b40_4_b", "O", 'p', 0x18de58, "the same function as ptr_b40_4 under a second number"),
     f(2, 60, "attack_f_d4", "p", 'f', 0x18eb40, "float at +0xd4"),

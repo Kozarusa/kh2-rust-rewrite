@@ -1010,6 +1010,15 @@ impl CoreEnv<'_> {
                 self.core.requests.push(Request::Spawn { root, handle, tag: a[1], pc: a[2], cleanup: a[3], args: vec![a[4]] });
                 return Ok(Some(handle));
             }
+            // 2.54 (0x18ea28 -> FUN_001b3c10(routine, &arg, 1) -> FUN_0016c8d8(*(limit task + 0x34), 0, routine, args, 1)): a child of
+            // the limit script's thread, the same call as 1.82 with tag 0 and no cleanup routine; the one argument is the second host
+            // argument.
+            (2, 54) if a.len() >= 2 => {
+                let handle = self.core.alloc_handle();
+                let root = self.core.main_handle;
+                self.core.requests.push(Request::Spawn { root, handle, tag: 0, pc: a[0], cleanup: 0, args: vec![a[1]] });
+                return Ok(Some(handle));
+            }
             // Messages to the modes of all objects (FUN_00187170 with the sender's context, FUN_00187190 without).
             (1, 90) => {
                 let name = self.cstr(mem, a[1])?;
@@ -1544,5 +1553,63 @@ impl VecAccess for HostVec<'_> {
             }
             Err(Outside::Fault(a)) => Err(VmError::BadAddress(a)),
         }
+    }
+}
+
+#[cfg(test)]
+mod spawn_tests {
+    use super::*;
+
+    struct Rec(Vec<Call>);
+    impl Host for Rec {
+        fn call(&mut self, c: &Call) -> Value {
+            self.0.push(c.clone());
+            Value::Int(0)
+        }
+    }
+
+    /// A program with the given entries (event id, code words) behind a BDX header (name, three sizes, the entry table).
+    fn program(entries: &[(u32, Vec<u16>)]) -> Program {
+        let table_words = 6 + 4 * entries.len() + 4;
+        let mut words = vec![0u16; table_words];
+        for at in [0usize, 2, 4] {
+            words[at] = 0x40;
+        }
+        let mut code: Vec<u16> = Vec::new();
+        for (k, (id, body)) in entries.iter().enumerate() {
+            let pc = (table_words + code.len()) as u32;
+            let at = 6 + 4 * k;
+            words[at] = *id as u16;
+            words[at + 2] = pc as u16;
+            words[at + 3] = (pc >> 16) as u16;
+            code.extend_from_slice(body);
+        }
+        words.extend(code);
+        let mut bytes = b"spawn_test      ".to_vec();
+        bytes.extend(words.iter().flat_map(|w| w.to_le_bytes()));
+        Program::parse(&bytes).expect("the test program parses")
+    }
+
+    /// Host 2.54 (`limit_spawn_thread`, 0x18ea28) starts a child of the running thread at the routine word index it is given with
+    /// the second argument as the child's one argument, and answers the thread handle: the child calls host 0.14 with 7 and then
+    /// 0.14 is seen exactly once; the parent keeps yielding meanwhile.
+    #[test]
+    fn host_2_54_spawns_a_child_that_runs() {
+        // Entry 22: push routine (word 29), push 7, host 2.54, then `yield; jmp -3` forever. The entry table has two entries, so
+        // the code starts at word 18; entry 22's body is 11 words, so the child routine starts at word 29.
+        let main = vec![0x0000, 29, 0, 0x0000, 7, 0, 0x008a, 54, 0x0009, 0x0007, 0xfffd];
+        // The child: push its argument's literal 9, call host 0.14, return.
+        let child = vec![0x0000, 9, 0, 0x000a, 14, 0x0089];
+        let prog = program(&[(22, main), (99, child)]);
+        let mut rt = Runtime::new(prog);
+        assert!(rt.start_thread(0, 22, &[]));
+        let mut host = Rec(Vec::new());
+        for _ in 0..4 {
+            rt.update_script(&mut host);
+        }
+        assert!(rt.core.errors.is_empty(), "{:?}", rt.core.errors);
+        let seen: Vec<_> = host.0.iter().filter(|c| matches!(c, Call::Func { group: 0, index: 14, .. })).collect();
+        assert_eq!(seen.len(), 1, "{:?}", host.0);
+        assert!(!rt.thread_done(), "the parent keeps running");
     }
 }

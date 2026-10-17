@@ -606,6 +606,7 @@ fn auto_limit_offer(
     battle: Res<crate::sora::Battle>,
     area: Option<Res<crate::area::AreaRecord>>,
     talk: Option<Res<crate::npc::Talk>>,
+    gate_params: crate::limit::GateParams,
     log: Res<Log>,
 ) {
     let shown = std::mem::take(&mut state.shown);
@@ -617,7 +618,9 @@ fn auto_limit_offer(
     if task.is_some_and(|t| t.0.is_some()) || !(battle.active() || drive.as_deref().is_some_and(|d| d.force_battle)) {
         return;
     }
-    if s.hp <= 0 || matches!(s.state, State::Down | State::Viewer) {
+    // FUN_001d2460 / FUN_0019ae90: Sora KO, a summon's arrival or leave, and (through the command lock) the menu and events.
+    let gates = crate::limit::gates_of(&gate_params, crate::limit::sora_is_down(s));
+    if gates.check().is_err() {
         return;
     }
     let form = drive.as_deref().map_or(0, |d| d.object_form());
@@ -643,13 +646,20 @@ fn auto_limit_offer(
         mp: s.mp,
         ..Default::default()
     };
-    let ctx = Ctx { form, battle: true, mp: s.mp, ..Default::default() };
+    let ctx = Ctx { form, battle: true, mp: s.mp, commands_locked: gates.menu_open || gates.event, ..Default::default() };
     let cands = crate::limit::auto_limit_candidates(&limits.rows, &partners, st.translation / SCALE, &base, |cmd| rules.cmd(cmd).is_some_and(|c| !flags_block(&rules.cmds, c, &ctx)));
     let commands: Vec<u16> = cands.iter().map(|c| c.command).collect();
     let Some(i) = crate::limit::auto_limit_pick(&commands, shown, &mut rng.0) else { return };
     let (cand, Some(c)) = (cands[i], rules.cmd(cands[i].command)) else { return };
     let Some(&(_, from)) = by_member.iter().find(|(id, _)| *id == cand.member) else { return };
-    let status = if cand.no_mp { Status::NoMp } else { Status::Available };
+    // FUN_0019c0f0: the shown candidate's status byte becomes 5 while the player's form field is 5 (Anti).
+    let status = if form == kh2_tables::player::form::ANTI {
+        Status::Blocked
+    } else if cand.no_mp {
+        Status::NoMp
+    } else {
+        Status::Available
+    };
     state.shown = cand.command;
     state.party = crate::limit::party_for(&base, &partners[partners.iter().position(|p| p.member == cand.member).unwrap_or(0)], &limits.rows[cand.row]);
     slot.0 = Some(Active { cmd: cand.command, pos: 0, from, status, message: c.message_id as u32 });

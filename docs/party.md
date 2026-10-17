@@ -1419,5 +1419,5 @@ Files: `party_battle.rs` (`choose_class16`), `party_rules.rs` (`auto_change_swap
   member left the field knocked out) starts at the maximum, the app's earlier start; what the original actor does with a
   block of HP 0 was not traced (`FUN_0017d290`, `FUN_0017ca70` read; no HP-0 test found). Game over (WP-GO1) restores Sora's HP only;
   the original restores the whole save body, so after Continue the members keep the HP they had.
-- **Auto Limit [V rule, not ported].** FUN_001d25e0 offers a partner's limit as a reaction command; the app has no party
-  limit reaction command (`reaction_cmd.rs`, `limit.rs`: outside this WP's files).
+- **Auto Limit [V rule, ported by WP-AL1].** FUN_001d25e0 offers a partner's limit as a reaction command; `reaction_cmd::auto_limit_offer`
+  and `limit.rs` port it (rule, gates and gaps: docs/limits-reactions.md "Auto Limit (WP-AL1)").

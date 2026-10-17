@@ -511,10 +511,11 @@ tt37; tt40 -> tt19 and area 100. The full list is in the test output.
   [approx] the game's one global `rand()` is a per-object generator; the object list searched for partners and
   ids holds the townspeople and the player only; the class pass runs before the script's tick and not before
   the script's first tick [inferred order]; the parts' enable masks are not applied.
-- **Still not ported (GAP)**: 1.172 / 1.173 use the 15 degree cone without the part's own (`FUN_001af878`;
-  `N_EX500_RTN` has no type-0x14 part, but `N_EX510_RTN` and `N_EX520_RTN` do: the cone stays a gap); the
-  head look-at controller (hosts 1.174 / 1.176) is ported, see "Head look-at" below, with 1.175 (a point)
-  and the pose code's own joint turn left. 1.13 on the object starts
+- **1.172 / 1.173 cone** [WP-NPC1]: `npc::in_cone` ports `FUN_001af650` (see docs/enemy-ai.md): without a
+  type-0x14 part the flat 15 degree test; with one (`N_EX510_RTN`, `N_EX520_RTN` and the other `*_RTN` models;
+  only `N_EX500_RTN` has none) the 3D direction from the part's point against its cone of 50 degrees. The part's
+  point is the head bone's pose of the previous tick [inferred]. The head look-at controller (hosts 1.174 / 1.176) is ported, see "Head look-at" below, with 1.175 (a point)
+  and the pose code's own joint turn left (**not ported, GAP**). 1.13 on the object starts
   the queued motion when the playing one ends; 5.34 answers the position (the tt models have no part 0x11; the
   lock-on fallback `FUN_0016b6e0` reads a type-3 part on a bone). The native `FUN_00189ae8` also raises +0x108
   bit 6 after five frames of spawn kind 2 without `FUN_00190668` (not read further); `FUN_00189ff0` (the

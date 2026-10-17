@@ -45,6 +45,9 @@ use crate::menu::{close_brightness, dim_alpha, menu_sound, CLOSE_FRAMES, DIM_BRI
 use crate::menu::save::{LoadOutcome, Loaded, SaveMenu};
 use crate::menu_gfx::{self, MenuScene, Node};
 use crate::menu_struggle::{self as list, Action, Block, Flow, Press};
+use crate::mickey;
+use crate::party::PartyMember;
+use crate::progress::Progress;
 use crate::schedule::{Pause, Sim};
 use crate::sora::{Sora, State};
 use crate::struggle::{GameOverExits, Mission};
@@ -125,6 +128,8 @@ pub enum Outcome {
     Quit,
     /// "Load Game" read a slot (`menu_save` kind 2): enter the area it holds (`FUN_00103b38`, mode 2).
     Load(Loaded),
+    /// "I won't give up!" of the alternate list (code 9): Mickey's rescue (`mickey.rs`).
+    Mickey,
 }
 
 /// The stages of the game over.
@@ -159,11 +164,13 @@ pub struct Over {
     pub started: bool,
     /// The Load screen has been requested from `menu_save` (phase `Loading`).
     pub load_asked: bool,
+    /// The alternate list (record 10, `mickey.rs`) is the one shown: `FUN_001ad520` set the byte `+0xc`.
+    pub alternate: bool,
 }
 
 impl Over {
     pub fn new(kind: u8, exits: Option<GameOverExits>) -> Over {
-        Over { kind, phase: Phase::Waiting, waited: 0.0, flow: Flow::default(), chosen: None, exits, frames: 0, fresh: true, started: false, load_asked: false }
+        Over { kind, phase: Phase::Waiting, waited: 0.0, flow: Flow::default(), chosen: None, exits, frames: 0, fresh: true, started: false, load_asked: false, alternate: false }
     }
 
     /// The Load screen ended without a load: the list is back (the original's kind 2 closes and the list's page shows again
@@ -186,6 +193,27 @@ impl Over {
     pub fn press(&mut self, p: Press) -> Action {
         let a = self.flow.press(p);
         if let Action::Chosen(code) = a {
+            if self.alternate {
+                // The callback `0x1adbb8`: code 8 opens the normal list, code 9 sets step 7 (Mickey).
+                match code {
+                    mickey::CODE_GIVE_UP => {
+                        self.alternate = false;
+                        self.phase = Phase::Waiting;
+                        self.waited = OPEN_AFTER;
+                        self.flow.chosen = None;
+                    }
+                    mickey::CODE_RESCUE => {
+                        self.chosen = Some(Outcome::Mickey);
+                        self.phase = Phase::Closing;
+                    }
+                    _ => {
+                        self.flow.stage = list::Stage::List;
+                        self.flow.chosen = None;
+                        return Action::None;
+                    }
+                }
+                return a;
+            }
             match code {
                 CODE_CONTINUE => self.chosen = Some(Outcome::Continue),
                 CODE_RETRY if self.kind == 3 => self.chosen = Some(Outcome::Retry),
@@ -246,7 +274,7 @@ pub fn exit_jump(exits: &GameOverExits, o: Outcome) -> Option<[u16; 6]> {
     match o {
         Outcome::Retry => exits.retry,
         Outcome::Quit => exits.quit,
-        Outcome::Continue | Outcome::Load(_) => None,
+        Outcome::Continue | Outcome::Load(_) | Outcome::Mickey => None,
     }
 }
 
@@ -282,6 +310,8 @@ pub struct GameOver {
     aid_done: bool,
     /// The outcome's jump has started; the HP it restores.
     restore_hp: Option<i32>,
+    /// The shared generator's value for `FUN_001ad520`'s roll (`mickey::SEED_START` until the first roll).
+    seed: Option<u32>,
 }
 
 impl GameOver {
@@ -324,6 +354,9 @@ fn detect(
     drive: Option<Res<DriveState>>,
     real: Res<Time<Real>>,
     mut sora: Query<&mut Sora>,
+    party: Query<&PartyMember>,
+    progress: Option<Res<Progress>>,
+    disc: Option<Res<Disc>>,
 ) {
     let Ok(mut s) = sora.single_mut() else { return };
     if let Some(at) = ko_aid_secs()
@@ -351,9 +384,44 @@ fn detect(
     info!("game over: Sora knocked out (FUN_001cec00): {r:?} for {input:?}");
     if let Route::GameOver(kind) = r {
         let exits = (kind == 3).then(|| view.map(|v| v.exits)).flatten();
-        go.over = Some(Over::new(kind, exits));
+        let mut over = Over::new(kind, exits);
+        over.alternate = alternate_offer(&mut go, kind, mission.as_deref(), &party, progress.as_deref(), disc.as_deref());
+        go.over = Some(over);
         s.game_over = true;
     }
+}
+
+/// `FUN_001ad378` -> `FUN_001ad520`: does this game over show the alternate list (Mickey's offer)? See `mickey.rs`.
+fn alternate_offer(go: &mut GameOver, kind: u8, mission: Option<&Mission>, party: &Query<&PartyMember>, progress: Option<&Progress>, disc: Option<&Disc>) -> bool {
+    let bit9 = mission.and_then(|m| m.m.as_deref()).is_some_and(|a| a.header.flags & mickey::HEADER_BIT != 0);
+    if mickey::forced() {
+        let yes = kind == 0;
+        info!("game over: Mickey offer: KH2_MICKEY_OFFER forces the alternate list (record {}): {yes}", mickey::RECORD);
+        return yes;
+    }
+    if kind != 0 || !bit9 {
+        return false;
+    }
+    if !mickey::RESCUE_PORTED {
+        info!("game over: Mickey offer: header bit 9 is set (the original offers the rescue here) but the rescue is not ported (mickey::RESCUE_PORTED); the normal list shows");
+        return false;
+    }
+    let Some(chance) = disc.and_then(|d| d.0.lock().ok().and_then(|mut a| kh2_tables::player::load_sstm(&mut a).ok())).map(|s| mickey::Chance::from_sstm(&s)) else {
+        info!("game over: Mickey offer: sstm is not readable; no offer");
+        return false;
+    };
+    let mut ally_up = [false; 2];
+    for m in party.iter() {
+        if let Some(up) = ally_up.get_mut(usize::from(m.slot)) {
+            *up = !m.ko;
+        }
+    }
+    let saves = progress.map_or(0, Progress::mickey_save_count);
+    let offer = mickey::Offer { kind, manager_bit9: bit9, ally_up, chance, saves };
+    let (yes, next) = mickey::offered(offer, go.seed.unwrap_or(mickey::SEED_START));
+    go.seed = Some(next);
+    info!("game over: Mickey offer (FUN_001ad520): {offer:?}, chance {:.3}, roll {:.3}: {yes}", chance.after(saves), mickey::roll(next));
+    yes
 }
 
 /// Sora's HP fell to 0 (`FUN_00186238` -> `FUN_00186530`): the knock-out method runs once per fall.
@@ -548,6 +616,7 @@ fn drive(
     mut sora: Query<&mut Sora>,
     mut save: ResMut<SaveMenu>,
     mut pause: ResMut<Pause>,
+    mut progress: Option<ResMut<Progress>>,
 ) {
     // A manager that ended by itself (`FUN_001b9ce0`).
     if let Some(r) = mission.game_over_request.take()
@@ -569,7 +638,14 @@ fn drive(
                 if !go.tried {
                     load(&mut go, &disc, &mut scene, &mut images);
                 }
-                let key = record_of(over.kind);
+                let key = if over.alternate { mickey::RECORD } else { record_of(over.kind) };
+                if over.alternate && go.loaded && list::find(&go.table, key).is_none() {
+                    // The disc has no record 10: the normal list shows [port choice].
+                    warn!("game over: the alternate record {key:#x} is not in the table; the normal list shows");
+                    over.alternate = false;
+                    go.over = Some(over);
+                    return;
+                }
                 match list::find(&go.table, key).cloned() {
                     Some(b) if go.loaded => {
                         over.open(&b);
@@ -638,7 +714,10 @@ fn drive(
                 scene.dim = 0.0;
                 hide_all(&go, &mut scene);
                 info!("game over: closed: back to the field (FUN_001038a0)");
-                if run_outcome(&mut go, &over, &mut mission, &mut task, &rec, &disc, &mut sora, music.as_deref_mut(), audio.as_deref()) {
+                if over.chosen == Some(Outcome::Mickey) {
+                    rescue(&mut go, &mut sora, progress.as_deref_mut(), music.as_deref_mut(), audio.as_deref());
+                    keep = false;
+                } else if run_outcome(&mut go, &over, &mut mission, &mut task, &rec, &disc, &mut sora, music.as_deref_mut(), audio.as_deref()) {
                     over.phase = Phase::Jumping;
                     over.started = false;
                 } else {
@@ -663,6 +742,23 @@ fn drive(
     if let Ok(mut s) = sora.single_mut() {
         s.game_over = go.over.is_some();
     }
+}
+
+/// "I won't give up!" (callback `0x1adbb8`, step 7 of `FUN_001ad9a0`): the music comes back (`FUN_00137558`) and
+/// `FUN_001cdf48` makes Mickey, whose constructor counts the rescue (`FUN_001cda78`). The Mickey object (a second player
+/// class), Sora's motion 0xfc, the system effect 0x11 and the retargeting `FUN_0018f188` are not ported, and what heals Sora
+/// was not traced [GAP]: he stands up with full HP so the fight can go on, the only value the app has for a revive. The
+/// original's value is unknown.
+fn rescue(go: &mut GameOver, sora: &mut Query<&mut Sora>, progress: Option<&mut Progress>, music: Option<&mut AreaMusic>, audio: Option<&Audio>) {
+    if let Some(p) = progress {
+        p.count_mickey_save();
+        info!("game over: Mickey's rescue: counted (report row 4 now {})", p.mickey_save_count());
+    }
+    if let Some(m) = music {
+        crate::audio_bgm::revive_restart(m, audio);
+    }
+    info!("game over: Mickey's rescue: Sora stands up where he fell; the Mickey object is not ported");
+    finish(go, sora, true);
 }
 
 /// `FUN_001ad378`: the sound and the music stop.
@@ -727,6 +823,11 @@ fn run_outcome(
                 s.mp = mp;
             }
             (l.dest, CONTINUE_FADE_KIND)
+        }
+        Outcome::Mickey => {
+            // Handled by `rescue` before this runs.
+            finish(go, sora, true);
+            return false;
         }
         Outcome::Retry | Outcome::Quit => {
             let code = if outcome == Outcome::Retry { CODE_RETRY } else { CODE_QUIT };
@@ -877,6 +978,76 @@ mod tests {
         o.open(&b);
         assert_eq!(o.press(Press::Confirm), Action::None);
         assert_eq!(o.phase, Phase::List);
+    }
+
+    /// The alternate list (record 10): code 9 chooses Mickey's rescue and closes, code 8 gives the normal list back, a plain
+    /// game over (no alternate) is not changed by either code.
+    #[test]
+    fn the_alternate_list_routes_code_9_to_mickey_and_code_8_to_the_normal_list() {
+        let alt = block(mickey::RECORD, &[(mickey::CODE_RESCUE, 0x8ab5), (mickey::CODE_GIVE_UP, 0x8ab6)]);
+        let mut o = Over::new(0, None);
+        o.alternate = true;
+        o.open(&alt);
+        assert_eq!(o.flow.rows, vec![(9, 0x8ab5), (8, 0x8ab6)]);
+        assert_eq!(o.press(Press::Confirm), Action::Chosen(mickey::CODE_RESCUE));
+        assert_eq!((o.phase, o.chosen), (Phase::Closing, Some(Outcome::Mickey)));
+
+        // "It's all over...": no outcome, the wait is over so the normal record opens at once.
+        let mut o = Over::new(0, None);
+        o.alternate = true;
+        o.open(&alt);
+        assert_eq!(o.press(Press::Down), Action::Cursor);
+        assert_eq!(o.press(Press::Confirm), Action::Chosen(mickey::CODE_GIVE_UP));
+        assert_eq!((o.phase, o.chosen, o.alternate), (Phase::Waiting, None, false));
+        assert!(o.waited >= OPEN_AFTER);
+        // The normal list then behaves as before: Continue closes with its outcome.
+        o.open(&block(1, &[(2, 0x8ab0), (1, 0x8aaf)]));
+        assert_eq!(o.press(Press::Confirm), Action::Chosen(CODE_CONTINUE));
+        assert_eq!(o.chosen, Some(Outcome::Continue));
+
+        // A row that is not 8 or 9 is not on the alternate record.
+        let mut o = Over::new(0, None);
+        o.alternate = true;
+        o.open(&block(mickey::RECORD, &[(2, 1)]));
+        assert_eq!(o.press(Press::Confirm), Action::None);
+        assert_eq!((o.phase, o.chosen), (Phase::List, None));
+
+        // Without the alternate, codes 8 and 9 are not game-over rows.
+        let mut o = Over::new(0, None);
+        o.open(&alt);
+        assert_eq!(o.press(Press::Confirm), Action::None);
+        assert_eq!((o.phase, o.chosen), (Phase::List, None));
+        assert!(!Over::new(0, None).alternate, "a game over starts as the plain one");
+    }
+
+    /// `rescue` counts the rescue once, ends the game over and stands Sora up.
+    #[test]
+    fn the_rescue_counts_once_and_releases_sora() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut w = world_with_sora(0);
+        w.insert_resource(Progress::from_block(&[], std::sync::Arc::new(crate::progress::ItemIndex::default())));
+        w.resource_mut::<GameOver>().over = Some(Over::new(0, None));
+        w.query::<&mut Sora>().single_mut(&mut w).unwrap().game_over = true;
+        w.run_system_once(|mut go: ResMut<GameOver>, mut sora: Query<&mut Sora>, mut p: ResMut<Progress>| {
+            rescue(&mut go, &mut sora, Some(&mut p), None, None);
+        })
+        .unwrap();
+        assert_eq!(w.resource::<Progress>().mickey_save_count(), 1, "report row 4 counts the rescue");
+        assert!(w.resource::<GameOver>().over.is_none());
+        assert_eq!(sora(&mut w), (20, false), "Sora is up with the app's revive HP and no longer held");
+    }
+
+    #[test]
+    fn the_plain_knock_out_has_no_alternate() {
+        use bevy::ecs::system::RunSystemOnce;
+        // No manager, so no header bit 9: `alternate_offer` answers no (and does not roll) whatever the chance would be.
+        let mut w = world_with_sora(10);
+        w.run_system_once(detect).unwrap();
+        w.query::<&mut Sora>().single_mut(&mut w).unwrap().hp = 0;
+        w.run_system_once(detect).unwrap();
+        let o = w.resource::<GameOver>().over.clone().expect("type 0 starts");
+        assert_eq!((o.kind, o.alternate), (0, false));
+        assert_eq!(w.resource::<GameOver>().seed, None, "no roll was made");
     }
 
     #[test]

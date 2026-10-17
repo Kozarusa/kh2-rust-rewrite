@@ -2434,7 +2434,7 @@ bit 2 (`FUN_00138708`) and makes its task (`FUN_00102bc8(1, 15000, 0x1ad918)`, b
 stores the list's header word at `+0x30` (`FUN_00169958(player) | 0x20000000` or `FUN_001cf2c8(0)`; the second word `+0x34` is 0,
 so `FUN_0026f948` shows no information line). `FUN_001ad520` (type 0 with manager header bit 9 and no living ally, a random
 chance from `DAT_003716a0`) sets the alternate byte: its list is record 10 ("I won't give up!" code 9, "It's all over..."
-code 8), handled by `0x1adbb8`; not reached in the app (no mission here has header bit 9).
+code 8), handled by `0x1adbb8`; reached only in the 11 missions of section 26.5 (header bit 9), which the app keeps off (WP-MK1).
 
 The task `FUN_001ad9a0` (steps in `+8`): 1 sound gate `FUN_002c38b8`; 2 waits for `FUN_00196418` (an event / message), then for
 the scene object `FUN_0014a978()+0xfc == 4`, ends the gate (`FUN_002c38c8`), puts the player on the floor (`FUN_00183fe0`, not
@@ -2510,9 +2510,8 @@ snapshot (`FUN_001cafa0`: copies the same words and `DAT_01d69890 = DAT_0033e830
   set by a manager's script and the app clears nothing) also gives the event. The form field `+0xb50` = 0xb (a special non-drive
   mode with no counterpart in the app) is not modelled, so Tinker Bell's `+0xb50 == 0xb` exception to the revive is not either.
 * Not ported: the scene `GAMEOVER.mset` (107952 bytes on the disc; Sora keeps his own fall pose instead), kind 7's frame and the
-  header group `+0x14` (3), the camera object (`FUN_00195898`), the revive effect object (`FUN_001cdf48`), the alternate list
-  (record 10), type 1's difference (`FUN_00183fe0` skipped), Mickey's rescue (no object in the app), the drive form's end
-  (`FUN_001b4d78`).
+  header group `+0x14` (3), the camera object (`FUN_00195898`), type 1's difference (`FUN_00183fe0` skipped), the drive form's
+  end (`FUN_001b4d78`). The alternate list (record 10) and Mickey's rescue (`FUN_001cdf48`) are section 26.5 (WP-MK1).
 * Harness: `KH2_GAMEOVER_KO=<seconds>` knocks Sora out once (HP 0, `State::Down`). `KH2_NO_ENEMIES=1 KH2_GAMEOVER_KO=7 kh2-game
   tt00` logs `game over: Sora knocked out (FUN_001cec00): GameOver(0)` and `type 0 opens record 0x1 ... rows [(2, 8ab0), (1,
   8aaf)]`; with `KH2_KEYS=10:J` also `row chosen, code 2`, `Continue: jump to world 2 area 0 entrance 0` and `the jump is over:
@@ -2529,6 +2528,115 @@ snapshot (`FUN_001cafa0`: copies the same words and `DAT_01d69890 = DAT_0033e830
   `death_to_list_to_choice_continue_closes_and_retry_needs_type_3`, `the_snapshot_rule_and_the_continue_destination`,
   `the_knock_out_edge_fires_once_per_fall`, `the_disc_rows_of_the_game_over`, and in `struggle.rs`
   `the_knock_out_view_carries_the_bit_the_kind_and_the_retry_and_quit_jumps`.
+### 26.5 Mickey's rescue (WP-MK1: `crates/kh2-app/src/mickey.rs`, `menu_gameover.rs`)
+
+**What Mickey is [V].** Not a summon and not a BDX script. `FUN_001cdb98` (and the identical copy `FUN_001cda78`) is the
+**constructor of a player-class object**: it calls the player base constructor `FUN_00176e00(self, .., 10, ..)`, stores the class
+table `0x360360` (`PTR_FUN_00360360`; the destructors `FUN_001cdcb8`, `FUN_001cdd50`, `FUN_001cdde8` store it back before
+unwinding), sets object word `+0x588` bit 0x2000000, the status block
+(`+0x48c`) bytes `+0x1b0 = 0`, `+0x1b1 = 0`, `+0x1b2 = 3` (a drive-gauge style value with maximum 3) and `+0x1af = 1`, hooks
+`FUN_001d04c0(DAT_0037c37c, obj + 0xb74, 0xbbc2)` (a sound/effect slot, 0xbbc2) and sets word `0x35fec0` bit 4. It adds **1 to
+the u16 at `0x34161c` and to the u16 at `0x34161e`**, each capped at 999 (save body `+0x2dbc` and `+0x2dbe`). An instruction
+scan of loads and stores with those two offsets (`mips_scan --store-off 0x2dbc / 0x2dbe`, `--load-off`) finds only these two
+constructors as writers, `FUN_001ad520` as the reader of `0x34161c` and the BATTLE REPORT `FUN_00293020` as the reader of
+`0x34161e`; so the two words are always equal and the port keeps one number (`Progress::mickey_save_count`, report row 4).
+The class table is the one docs/limits-reactions.md "Commands 452 to 457" describes (Mickey's `FUN_001ce240` tick offers the
+reaction commands 455 to 457, his handler `FUN_001ce518` takes the Execute values 0x1c4, 0x1c7, 0x1c8 and 0x1c9, the command
+menu table `0x37c450`, drive gauge maximum 3 here). The object entry is the **member 9** of the party object (`memt` u16 at
+`DAT_01c95608 + 0x22`, `FUN_001ce080`; docs/party.md section 1; `limt.Character` 4 = `P_EX200`), looked up with `FUN_0016e208`.
+
+**Who makes him [V].** `FUN_001cdf48` is called from exactly one place, step 7 of the game-over task `FUN_001ad9a0`
+(`mips_scan --jal 0x1cdf48`: `0x1adba8`; the decomp text grep for `FUN_001cdf48`, `FUN_001cda78`, `FUN_001cdb98` finds
+`001ad9a0.c` and the constructors only). It: allocates 0xba0 bytes (`FUN_00104fa8`), takes the player (`FUN_00178cb8`) and its position with the second component lowered by 200.0 (`DAT_0037c32c`) and passed through `FUN_001a5ea8`, builds Mickey with `FUN_001cdb98(obj, memt object, player
+model data, player +0xb38, position)`, then `FUN_0017f160(0, obj + 0x140, player, 0xfc)`: Sora's motion player takes **motion
+0xfc from Mickey's motion table** (`FUN_0017da30` finds the id `0xfc * 4 + variant` in the object's two tables, `FUN_0017ef98`
+starts it), `FUN_001db868(DAT_01c954d8 (FUN_001a21d0), 0x11, 1, 1, 0, player)`: system effect 0x11 on the player, and
+`FUN_0018f188(player, Mickey)`: every object whose target `+0x9f4` was the player, and every entry of the lists around
+`DAT_01c89bd0` / `DAT_01c8a5d0` that held the player's handle, now holds Mickey's.
+
+**The decision [V].** The step is reached only through the **alternate list**:
+* `FUN_001ad378` (type 0 only: `*self == 0`) asks `FUN_001b9aa0`: a mission manager exists (`DAT_01d5dd20 != 0`) and its header
+  word `+4` has bit 9 (`*(u16 *)(*(manager + 8) + 4) >> 9 & 1`, port `mickey::HEADER_BIT` = 0x200 of `Header::flags`); if so it
+  calls `FUN_001ad520(self)`.
+* `FUN_001ad520` loops the two party slots (`FUN_0017cd08(i)`, the array at `DAT_01c893a8`): if a slot holds an actor with
+  `FUN_0019a3f8` true **and** `FUN_0017d030 == 0` it returns at once (no offer). `FUN_0017d030(actor)` is 0 when `FUN_0019a3f8`
+  is false, when `actor +0x160` has bit 0x4000, or when some object found by walking the actor list (`FUN_001b7c88`) has
+  `+0x570 == actor` and `+0x588` bit 0x40 clear; it is 1 otherwise. Which of these a KO'd or absent friend produces was not
+  traced; the port reads "ally up" as the party member that exists and is not knocked out (`PartyMember::ko`) **[inferred]**.
+* Otherwise the chance is `max(sstm[0xdc], pow(sstm[0xd8], count))` (`DAT_00360130` is the `sstm` record, docs/player-data.md; `FUN_00300448`
+  is `powf` through `FUN_00301790`: it returns the constant 1.0 at `0x3852a8` for an exponent of 0) with `count` = the word
+  `0x34161c` (rescues so far, over the whole save), and the shared generator `DAT_003716a0 = DAT_003716a0 * 0x10dcd` (32 bits)
+  is rolled: `(float)(unsigned)seed * 2^-32` (the constant at `0x37b84c`; the negative branch at `0x1ad620` is the unsigned
+  convert) below the chance sets the alternate byte `self +0xc` (instruction scan of `FUN_001ad520`, `0x1ad5d4` is the 3-operand
+  `mult`). The seed is stepped only when the roll is made.
+* With the byte set, `FUN_001ad640` stores the callback `LAB_001adbb8` at `+0x2c` (instead of clearing the manager) and keeps
+  record 1 at `+0x10`; step 5 of `FUN_001ad9a0` waits for the player's scene (`FUN_001c7c30`) and opens **record 10** from
+  `+0x14` (`FUN_001bef10(10)`), and step 4 runs `FUN_001c7740(0)` (each party member's `FUN_001c75d0(0)`) and `FUN_001cdf08`
+  (`FUN_0016f8e0(5000)`, `FUN_0016e638(player model, 5000, 7)`: the GAMEOVER scene resource 5000 plays motion 7) instead of
+  loading the scene with `FUN_001ade58`.
+* The callback `0x1adbb8(code, ..)` (raw instructions): **code 8** ("It's all over...", message 0x8ab6): `FUN_0014a978`,
+  `FUN_0014a7c8`, `FUN_0014de40`, `FUN_001ade58` (the GAMEOVER scene), `FUN_001adcf8`, then `FUN_0024f3a0` opens record 1 (the
+  normal Continue / Load Game list) and the step is set to 8 (the task ends; the list belongs to the normal callback
+  `0x1adc70`). **Code 9** ("I won't give up!", message 0x8ab5): `FUN_0016fb20(arg)` and the task step is set to 7: step 7 runs
+  `FUN_00137558` (the music back) and `FUN_001cdf48` (Mickey), step 8 ends the task; `FUN_001ad378`'s flag `0x35d268` bit 1 is not
+  cleared by anything seen, so the field resumes through the object's end [GAP: not followed].
+
+**What the player sees.** The Sora lying down, the list "I won't give up! / It's all over...", on "I won't give up!" the music
+returns, Mickey appears next to Sora with system effect 0x11, Sora plays motion 0xfc and every enemy that targeted Sora now
+targets Mickey. What the effect and the motion do to Sora's HP (the heal), how long Mickey stays, what he does and how he leaves
+are in his class table (`0x360360`: `FUN_001ce240` tick, `FUN_001ce458`, `FUN_001cde80` and others) and in Sora's motion 0xfc
+event data; none of it was traced **[GAP: the heal amount; the leave; effect 0x11's script; motion 0xfc]**.
+
+**What Mickey does once he is there (WP-MK1 follow-up, read from the class table 0x360360 [V], the heal itself not found).**
+The rescue is an interactive reaction-command exchange, not a heal call. His tick `FUN_001ce240` (every frame, after the base
+tick `FUN_00177788`) offers the player a command through `FUN_001bb3e0(.., 1, id, .., 1, 100)`: while his gauge byte
+(status `+0x1b1`) is below the maximum (`+0x1b2` = 3) the charge command 455 (Execute 0x1c7), once it is full command 456
+(0x1c8, "release"); the first full frame runs `FUN_001ce3f8` (turns on the object parts 10 to 0x15, `+0xb70` = 1) and starts the
+slots `0xbbc3` / `0xbbc4` of `FUN_001d04c0` / `FUN_001d0508`. His command handler `FUN_001ce518` takes 0x1c7 (motion 0xc1, the charge timer
+`+0xb68` from the float at `0x37c340`, end callback `LAB_001ce710`), 0x1c9 (the same timer from `0x37c344`), 0x1c4 (motion 0xc2,
+queues motion 4, `+0xaf4` = the command's cost byte) and 0x1c8 (motion 0xc0, then `FUN_001ce680`: `FUN_001d0588` ends the
+slot at `+0xb74`, `FUN_0019b580(+0xb40)`, `+0x10c |= 0x200000`). While charging, `+0xb6c` counts down with the frame unit
+and each time it runs out `FUN_001a0290(gauge, 1)` adds one fraction step and the timer is re-armed with `sstm[0xd4]`
+(docs/drive-forms.md "Mickey's charge"). `FUN_001ce458` (vtable +0x14) acts when the status word `+0` (HP) equals 1: it
+looks up the ability row 0x22a (`FUN_001b6f48(0x22a)`, `FUN_0019abb0`) and starts it (`FUN_00175e20`) with the id `DAT_00360400`.
+So what Mickey does for Sora is play his own motions 0xc0 to 0xc2 (their hit events and attack records live in his motion
+and `atkp` data) while the player charges his gauge to 3 and releases. **No function of this class writes Sora's HP, calls
+the item or magic heal (`FUN_001a11a0`) or names a Cure id**, so the amount Sora is healed to, how long Mickey stays and what
+ends the task are not in the code read [GAP]: they are in motion 0xfc's and 0xc0's event data. `FUN_001ad9a0` step 7 ends at
+once (step 8 returns 0), so the game-over object does not wait for Mickey.
+
+**Missions that can offer it [V, scan].** The header word `+4` (BAR entry type 2) of every `msn/us/*.bar` was read; **11
+missions have bit 9 (0x200)**: AL03_MS103, BB05_MS104A, BB05_MS104B, BB11_MS102, BB15_MS203, CA18_MS202, EH24_MS110,
+HE07_MS103, HE18_MS108, MU08_MS204, MU09_MS108 (test `mickey::tests::the_disc_has_eleven_missions_with_header_bit_9`, needs
+`KH2_ISO` and `local/kh2idx.txt`). In the original the offer exists there (when no friend is up and the roll passes).
+
+**What the port does.** `mickey.rs` is the pure rule (`Chance::from_sstm`, `Chance::after`, `next_seed`, `roll`, `offered`;
+tests in the module, `the_chance_reads_the_disc_when_there_is_one` reads `sstm[0xd8]` = 0.8 and `sstm[0xdc]` = 0.5 from the disc).
+`menu_gameover.rs`: `detect` asks `alternate_offer` for a type 0 game over. **The offer is off in normal play**
+(`mickey::RESCUE_PORTED` = false): the app has no Mickey object (a second player class with handler `FUN_001ce518`, tick
+`FUN_001ce240`, command menu and gauge; `summon.rs` cannot carry it: it makes party-side *summons* from `sumn` rows and BDX
+scripts, while this is a member-9 player-class object), no motion 0xfc, no effect 0x11, no retargeting `FUN_0018f188`, and
+the heal is not known, so a rescue would invent Sora's HP. Missions with bit 9 therefore show the normal Continue / Load
+Game list (log: `Mickey offer: header bit 9 is set ... the rescue is not ported`). The rest is in place for the day the rescue
+exists: `Over::alternate` makes the Waiting phase open record 10, code 8 returns to the wait so the normal record 1 opens, code 9
+closes the list and `rescue` counts the rescue (`Progress::count_mickey_save`, report row 4), plays the music back and
+ends the game over with Sora up at full HP [harness placeholder, not the original's value]. `KH2_MICKEY_OFFER=1` bypasses the
+gate to show that path (a generator that starts at 1 as `FUN_002f5fc8` resets it; allies from `PartyMember::ko`).
+Not ported: everything listed above and `FUN_001c7740`'s effect on the friends.
+
+**Harness.** `KH2_MICKEY_OFFER=1 KH2_NO_ENEMIES=1 KH2_GAMEOVER_KO=7 kh2-game tt00` logs `game over: Mickey offer: KH2_MICKEY_OFFER
+forces the alternate list (record 10): true`, `type 0 opens record 0xa ... rows [(9, 8ab5), (8, 8ab6)]`; with `KH2_KEYS=10:J` the
+`rescue` lines (`Mickey's rescue: counted (report row 4 now 1)`). Without the variable the same run logs `rows [(2, 8ab0), (1, 8aaf)]`
+as before. Tests: `mickey::tests::*`, `menu_gameover::tests::the_alternate_list_routes_code_9_to_mickey_and_code_8_to_the_normal_list`,
+`the_rescue_counts_once_and_releases_sora`, `the_plain_knock_out_has_no_alternate`.
+
+**Decompile index.** `FUN_001cdf48`, `001cdb98`, `001cda78`, `001cdcb8`, `001cdd50`, `001cdde8`, `001cdf08`, `001ce080`, `001ce240`,
+`001ce458`, `001cde80`, `001ce0a0`, `001ce3f8`, `001cf330`, `001ad9a0`, `001ad520`, `001ad640`, `001ad378`, `001b9aa0`, `001b9550`,
+`001cec00`, `001ced58`, `001c7740`, `001c75d0`, `001c7c30`, `001ade58`, `001adcf8`, `0017d030`, `0019a3f8`, `0017cd08`, `001b7c88`,
+`0017f160`, `0017da30`, `0017db88`, `0017ef98`, `0018f188`, `001db868`, `00300448`, `00301790`, and the raw instructions of `0x1adbb8`
+(alternate callback) and `0x1ad520` (the roll). Tables: `sstm` `0xd8`, `0xdc`; words `0x3716a0`, `0x37b84c`, `0x3852a8`.
+**Gaps.** The heal (not in `FUN_001ce240`, `FUN_001ce458`, `FUN_001ce518`, `FUN_001ce680`, `FUN_001cde80`: read, no HP write); the event data of motions 0xfc and 0xc0; effect 0x11's script; Mickey's stay and leave; `FUN_0017d030`'s exact meaning for a downed friend;
+`FUN_001c7740`'s `FUN_001c75d0(0)` effect on the friends; whether `0x35d268` bit 1 is cleared by Mickey's end.
 ## 22. Donald and Goofy on the Items and Equipment pages (WP-PM1)
 
 **The party object.** Page 1, the target list of Use (page 0xc) and the equipment list read the party object `DAT_0036ce90`: `FUN_00282940` is its row count (the word at `+0`), `FUN_002829f0(row)` the member id of a row (the u16 at `row * 0x14 + 6`, 0 outside the count) and `FUN_00282980(row)` the row's name word (`+0xc`). `FUN_0025c2c8` builds one target row per party row (a group item shows the single row "All", message 0x3944; an item that goes to one member only shows one row). `FUN_0025e9e8(row)` asks `FUN_001a14c8(item, member of the row)`; for a group item `FUN_001a14c8` answers true when any of the four slots passes `FUN_001a15a0`. `FUN_0025ea40(row)` runs `FUN_001a11a0(item, member, 0, 100)` (a group item loops the four slots), then `FUN_001a1ba8(item, 100)` and `FUN_0013dac8`.

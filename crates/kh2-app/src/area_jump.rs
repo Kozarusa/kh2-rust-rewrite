@@ -51,7 +51,7 @@ impl Plugin for AreaJumpPlugin {
             .init_resource::<Keyhole>()
             .add_systems(Startup, (load_consts, spawn_fader))
             .add_systems(FixedUpdate, (tick, unload_area_actors).chain().after(Sim::Sora).before(Sim::Enemy).run_if(crate::schedule::sim_running))
-            .add_systems(Update, (load_keyhole, draw_fader).in_set(crate::schedule::Frame::Hud));
+            .add_systems(Update, (load_keyhole, draw_fader, draw_wipe_bars).in_set(crate::schedule::Frame::Hud));
     }
 }
 
@@ -654,6 +654,8 @@ fn load_keyhole(disc: Res<Disc>, area: Res<CurrentArea>, scene: Option<ResMut<cr
     };
     let mut node = crate::hud::HudNode::new(file, None);
     node.visible = false;
+    // The wipe covers the whole frame, the HUD included (`hud_gfx::WIPE_LAYER`).
+    node.top = true;
     key.node = Some(scene.add(node));
     if area::arealog() {
         info!("keyhole: slot {KEYHOLE_SLOT} of {name} is HUD file {file}; node {:?}", key.node);
@@ -1139,8 +1141,38 @@ fn begin_fade_out(key: &mut Keyhole, scene: &mut Option<ResMut<crate::hud::HudSc
 #[derive(Component)]
 struct FadeNode;
 
+/// Black fill around the keyhole layout's 512 x 448 screen on the wipe layer: a window wider or taller than the game's
+/// screen shows the world and the HUD beyond the layout, which the original's frame never had (its layout covers the
+/// whole frame). Shown while the wipe node is. [inferred: the port's own widescreen extension of the layout's black.]
+#[derive(Component)]
+struct WipeBar;
+
+/// The four bars: left, right, above and below the 512 x 448 screen (HUD units, y down: the screen is y 0 to -448).
+const WIPE_BARS: [([f32; 2], [f32; 2]); 4] = [
+    ([-2000.0, -224.0], [4000.0, 8000.0]),
+    ([2512.0, -224.0], [4000.0, 8000.0]),
+    ([256.0, 2000.0], [8000.0, 4000.0]),
+    ([256.0, -2448.0], [8000.0, 4000.0]),
+];
+
+fn draw_wipe_bars(scene: Option<Res<crate::hud::HudScene>>, key: Res<Keyhole>, mut bars: Query<&mut Visibility, With<WipeBar>>) {
+    let shown = scene.zip(key.node).is_some_and(|(s, n)| s.nodes.get(n).is_some_and(|n| n.visible));
+    for mut v in &mut bars {
+        *v = if shown { Visibility::Inherited } else { Visibility::Hidden };
+    }
+}
+
 /// The black full-screen node the fade draws with (over the HUD).
 fn spawn_fader(mut commands: Commands) {
+    for (at, size) in WIPE_BARS {
+        commands.spawn((
+            WipeBar,
+            Sprite::from_color(Color::BLACK, Vec2::from(size)),
+            Transform::from_xyz(at[0], at[1], 50.0),
+            Visibility::Hidden,
+            bevy::camera::visibility::RenderLayers::layer(crate::hud::WIPE_LAYER),
+        ));
+    }
     commands.spawn((
         FadeNode,
         Node { position_type: PositionType::Absolute, left: Val::Px(0.0), top: Val::Px(0.0), width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() },

@@ -718,8 +718,10 @@ Done:
   for moveset 20)` is the correct answer to a zero word, not a failed lookup: FUN_0016ee98 answers 0 for a word of
   0 and FUN_0017c718 then builds no hand object. The original's own source of the words is the story (`plrp` rows
   of another Id through FUN_001c0cb0 / FUN_001c0b80 -> FUN_001a18d8, bit 15 = equipped) [inferred; only
-  `FUN_001c0cb0(0)` has a caller, see docs/progress.md Gaps]. A state file that wants the weapons sets the member
-  record's words (or `KH2_PARTY_WEAPONS`).
+  `FUN_001c0cb0(0)` has a caller, see docs/progress.md Gaps]. (WP-PG1) Checked: no `plrp` row of `Id` 0 or 1 for
+  Donald or Goofy lists a weapon or shield item, so the rows are not the source (docs/progress.md "App baseline");
+  `Progress::start` now applies the staff / shield entry to a state file that carries no `block` too
+  (`apply_party_weapons`). A file or slot with a `block` keeps its words; `KH2_PARTY_WEAPONS` still works.
 
 Not done or approximated in stage 2:
 

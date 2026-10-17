@@ -1773,11 +1773,25 @@ impl Progress {
                 added.push(format!("Guard (item {guard_id}) equipped"));
             }
         }
-        // WP-F1 item 6: Donald's staff (item 75) and Goofy's shield (item 49) in their weapon words
-        // (record +0, hand 0: `FUN_0016ee98` reads it for the hand object), so the members fight with
-        // their weapons shown. The original's new game (`FUN_00187b38`, `FUN_001c0cb0(0)`: docs/progress.md)
-        // leaves both words 0 and the writer that fills them later was not found (docs/party.md: the item
-        // immediates 0x4b / 0x31 were searched): an app baseline entry, like the spare Kingdom Keys.
+        added.extend(self.apply_party_weapons());
+        // The user's wish (2026-10-06): Sora knows the Dodge Roll. It goes with the Guard switch:
+        // `KH2_ABILITY_START=data` (no Guard) starts without it too, so the original's rules are reachable.
+        if guard && self.dodge_roll == 0 {
+            self.dodge_roll = 1;
+            added.push("Dodge Roll growth level 1".to_string());
+        }
+        self.baseline = added;
+    }
+
+    /// WP-F1 item 6, WP-PG1: Donald's staff (item 75) and Goofy's shield (item 49) in their weapon words
+    /// (record +0, hand 0: `FUN_0016ee98` reads it for the hand object) when those are 0, so the members
+    /// fight with their weapons shown. The original's new game (`FUN_00187b38`, `FUN_001c0cb0(0)`) leaves
+    /// both words 0: no `plrp` row of either `Id` (0, 1) carries a weapon item and no writer of the words
+    /// was found (docs/party.md, docs/progress.md Gaps), so this is an app entry like the spare Kingdom
+    /// Keys. Returns what it added (also run for `KH2_STATE` files that carry no `block`, which cannot set
+    /// the words themselves).
+    pub fn apply_party_weapons(&mut self) -> Vec<String> {
+        let mut added = Vec::new();
         for (member, item) in [(DONALD, DONALD_STAFF), (GOOFY, GOOFY_SHIELD)] {
             if let Some(r) = Self::member_off(member)
                 && self.u16_at(r + rec::WEAPONS) == 0
@@ -1786,13 +1800,7 @@ impl Progress {
                 added.push(format!("member {member} weapon item {item} equipped"));
             }
         }
-        // The user's wish (2026-10-06): Sora knows the Dodge Roll. It goes with the Guard switch:
-        // `KH2_ABILITY_START=data` (no Guard) starts without it too, so the original's rules are reachable.
-        if guard && self.dodge_roll == 0 {
-            self.dodge_roll = 1;
-            added.push("Dodge Roll growth level 1".to_string());
-        }
-        self.baseline = added;
+        added
     }
 
     /// Applies a state file (schema in docs/progress.md) on top of this state.
@@ -2198,7 +2206,13 @@ impl Progress {
         p.story().effects = effects.clone();
         match std::env::var("KH2_STATE") {
             Ok(path) if !path.is_empty() => match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|s| p.apply_json(&s)) {
-                Ok(()) => p.source = Source::File(path),
+                Ok(()) => {
+                    // A file without a `block` cannot set the members' weapon words (WP-PG1): the same app entry as the baseline.
+                    if !std::fs::read_to_string(&path).is_ok_and(|s| s.contains("\"block\"")) {
+                        p.baseline = p.apply_party_weapons();
+                    }
+                    p.source = Source::File(path);
+                }
                 Err(e) => {
                     // A file that failed half way is dropped as a whole.
                     warn!("progress: KH2_STATE={path}: {e}; using the new game and the app baseline");
@@ -3905,6 +3919,48 @@ mod tests {
         assert_eq!(q.dodge_roll, 0, "KH2_ABILITY_START=data: no Dodge Roll either");
         q.apply_json(r#"{"dodge_roll": 3}"#).unwrap();
         assert_eq!(q.dodge_roll, 3);
+    }
+
+    /// WP-PG1: the new game fills Donald's and Goofy's records from the disc's `plrp` rows with `Id` 0
+    /// (`FUN_001c0cb0(0)`): vitals, slot counts, battle items and equipped ability items. No row of `Id` 0 or 1
+    /// carries a weapon item, so the weapon words stay 0 until the app baseline (or a state file) gives them.
+    #[test]
+    fn donald_and_goofy_start_from_their_plrp_rows() {
+        let Some(tb) = tables() else { return };
+        let mut p = Progress::new_game(index(&tb), &tb.plrp);
+        for (member, hp, abilities) in [(DONALD, 18u8, [167u16, 168]), (GOOFY, 25, [429, 411])] {
+            let row = tb.plrp.iter().find(|r| r.id == 0 && r.character as u16 == member).expect("an Id 0 row");
+            assert_eq!(row.hp, hp);
+            let m = p.member(member).unwrap();
+            assert_eq!((m.hp, m.hp_max, m.mp_max, m.level), (hp, hp, 100, 1));
+            assert_eq!(m.armor.len(), row.armor_slot_max as usize);
+            assert_eq!(m.accessories.len(), row.accessory_slot_max as usize);
+            assert_eq!(m.items.len(), row.item_slot_max as usize);
+            for a in abilities {
+                assert!(m.abilities.contains(&(a, true)), "member {member} ability {a} equipped by its plrp row");
+            }
+            assert_eq!(m.weapons, [0, 0], "no plrp row gives member {member} a weapon");
+        }
+        // No row of either Id carries a weapon or shield item for the members (the searched negative result).
+        for r in tb.plrp.iter().filter(|r| r.character == 2 || r.character == 3) {
+            for &v in r.items.iter().filter(|&&v| v != 0) {
+                let kind = tb.items.iter().find(|i| i.id == v & 0x7fff).map(|i| i.r#type);
+                assert!(!matches!(kind, Some(3 | 4)), "plrp Id {} character {}: item {} is a weapon", r.id, r.character, v & 0x7fff);
+            }
+        }
+        // The staff and the shield are a staff and a shield item of the table (types 3 and 4).
+        let kind = |id: u16| tb.items.iter().find(|i| i.id == id).map(|i| i.r#type);
+        assert_eq!((kind(DONALD_STAFF), kind(GOOFY_SHIELD)), (Some(3), Some(4)));
+        let added = p.apply_party_weapons();
+        assert_eq!(added.len(), 2);
+        assert_eq!(p.member(DONALD).unwrap().weapons[0], DONALD_STAFF);
+        assert_eq!(p.member(GOOFY).unwrap().weapons[0], GOOFY_SHIELD);
+        assert!(p.apply_party_weapons().is_empty(), "a nonzero word is kept");
+        // Sora's record is untouched by the party entry.
+        let mut q = Progress::new_game(p.items.clone(), &tb.plrp);
+        let sora = q.sora();
+        q.apply_party_weapons();
+        assert_eq!(q.sora(), sora);
     }
 
     #[test]

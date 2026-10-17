@@ -145,7 +145,19 @@ therefore adds, on top of the new game and only where missing:
 - (WP-F1 item 6) Donald's weapon word = item 75 and Goofy's = item 49 when they are 0 (`DONALD_STAFF`,
   `GOOFY_SHIELD`): the original's new game leaves them 0 and their later writer was not found (docs/party.md
   "Weapons"), so the members' hand objects (`FUN_0016ee98`) come from the baseline, logged as
-  `member 2 weapon item 75 equipped`;
+  `member 2 weapon item 75 equipped`. (WP-PG1) Searched and negative: the disc's `plrp` has 61 rows, `Id` 0 (the
+  new game) and `Id` 1 (a full preset, no caller found); for characters 2 (Donald) and 3 (Goofy) neither `Id` lists
+  an item of type 3 (staff) or 4 (shield); their rows give HP 18 / 25, MP 100, slot counts (armor 1/2, accessory
+  2/1, battle items 2/3), battle items 1 and 3 (Goofy 1 x3) and ability items 167, 168 (Donald), 429, 411 (Goofy),
+  all through `FUN_001c0b80` -> `FUN_001a18d8` and already applied by `Progress::new_game`
+  (`progress::tests::donald_and_goofy_start_from_their_plrp_rows`). `FUN_001a18d8` for a member puts the item into
+  the slot list at record `+0x34/+0x44` (`FUN_00187728`, plain items) or the ability list (`FUN_00187868`, type
+  0x13); a staff or shield (type 3/4) takes neither path, only the inventory count. The other callers of
+  `FUN_001a18d8` (`FUN_001a6910` chests, `FUN_001b53d0`/`FUN_001be500`/`FUN_001d3da8`/`FUN_001d4fa0` level-up and
+  bonus rewards, `FUN_0026c420` battle-item equip, `FUN_001d7508`) were read (`FUN_0026c4d0`..`FUN_0026c698` and `FUN_001bd1d8` not); none writes record `+0` of
+  Donald or Goofy. So the words' writer is still unknown [GAP]. A `KH2_STATE` file without a `block` key cannot set
+  the words either, so `Progress::start` applies this same entry to it (`Progress::apply_party_weapons`, logged in
+  the `KH2_PROGRESSLOG` baseline list); a file or slot with a `block` keeps its records unchanged;
 - the Kingdom Key in Sora's hand 0;
 - Guard equipped in Sora's ability list, unless `KH2_ABILITY_START=data`;
 - Dodge Roll growth level 1 (`Progress::dodge_roll`, the user's wish 2026-10-06). The USA disc has no Dodge

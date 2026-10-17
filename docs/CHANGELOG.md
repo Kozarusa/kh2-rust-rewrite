@@ -16,6 +16,12 @@ One short section per work package. "Verified" says how; nothing here was checke
 
 **WP-LS2 (limit scripts).** Object memory for limit scripts, hosts 2.23/2.56/1.131 and requests for 2.47/2.50/2.59: all 15 limit scripts run to the end. Open: visible camera, effects, gauges (LS2b), 1.160, 6.57.
 
+**WP-GO2b (game over follow-ups).** The list opens 122 ticks after the knock-out for types 0 and 3 (event kind 0xf fade, FUN_001ad9a0 step 2); a test for the whole Continue path and the ally refresh. Open: type 1's wait, window alpha (FUN_0026f948 group 0x11 trigger).
+
+**WP-RV3 (revive timeline, weapon words).** `Revive` keeps the 42-tick camera event and the fade 22..122, Tinker Bell at tick 122; the 13 member and form weapon words come from 00common.bdx event 7 at boot (host 0.75/0.76) instead of two constants; host 1.301 answers 0. Verified by five tests.
+
+**WP-RV4 (revive fade wiring).** The pad is locked for the 42 ticks and a white full-screen fade runs over ticks 22..122 (flag-1 fade, FUN_00226830 case 2 -> FUN_0014a7c8 -> FUN_0014a710; corrects RV2's black); the game over list uses the same white ramp instead of the black dim. Open: what lifts the fade after tick 122, linear ramp and blend [inferred].
+
 ## Shift 14 (2026-10-16/17)
 
 - **WP-ST1 (Struggle follow-up tests).** Tests that wave 200 does not wrap, that `ring_place_in` places on a floor and a wall, and that the result menu ticks as a system. Verified by those tests. Open: none.

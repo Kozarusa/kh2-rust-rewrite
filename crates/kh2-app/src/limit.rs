@@ -199,7 +199,11 @@ pub struct LimitTask(pub Option<(u16, u32)>);
 /// raises its record marker, `+0x38` of the gauge = task `+0xa0`, to the stored best with `FUN_001d00c0`). `FUN_001cffa8` adds to
 /// the count and raises the marker to it; when the task ends `FUN_001b32d8` stores the marker with `FUN_001d25b0` under the
 /// limit's `limt` `Id`. [inferred] That the count is the limit's hit count: the callers of `FUN_001cffa8` are virtual and the
-/// limit task body is not ported, so nothing in the app adds to it yet (`KH2_LIMIT_HITS=<n>` adds `n` at a limit's start, a debug aid).
+/// limit task body is not ported. WP-CT1 found the caller: the enemies' hit-receive method `FUN_001849d8` runs `FUN_001b21f0`, which
+/// calls `FUN_001b3dc8` while a limit task exists (`FUN_001b3c00`) and the hit record is not ineffective (`FUN_0018ba88`: flag 4 clear,
+/// and a reaction-5 hit needs damage), and that adds 1 (`FUN_001cffa8(0, task + 0x68, 1)`). So the count is the effective hits that
+/// enemies receive while the limit runs; [`count_limit_hits`] does that from the app's hit messages. (`KH2_LIMIT_HITS=<n>` also adds `n`
+/// at a limit's start, a debug aid.)
 #[derive(Resource, Default, Debug)]
 pub struct LimitHits {
     /// The `limt` `Id` of the running limit (the best-count slot).
@@ -224,6 +228,36 @@ impl LimitHits {
     /// `FUN_001b32d8` end: stores the marker as the limit's best count (`FUN_001d25b0` never lowers it).
     pub fn finish(&self, progress: &mut Progress) {
         progress.raise_limit_best(self.slot, self.marker as u16);
+    }
+}
+
+/// How many of the enemy hits of a frame the limit counts: every hit, less the ones the victim's receiver marked ineffective
+/// (`FUN_0018ba88`; each ineffective message cancels one hit on the same target). [inferred] A reaction-5 hit with no damage is not
+/// removed: the app's `AiHit` does not carry the damage.
+pub fn counted_hits(hits: &[Entity], ineffective: &[Entity]) -> i32 {
+    let mut left: Vec<Entity> = ineffective.to_vec();
+    let mut n = 0;
+    for h in hits {
+        if let Some(i) = left.iter().position(|e| e == h) {
+            left.swap_remove(i);
+        } else {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// `FUN_001b3dc8` through the enemies' receive method: while a limit runs, each effective hit on an enemy adds 1 to the limit's count.
+fn count_limit_hits(
+    task: Res<LimitTask>,
+    mut count: ResMut<LimitHits>,
+    mut hits: MessageReader<crate::enemy_ai::AiHit>,
+    mut ineffective: MessageReader<crate::combat::IneffectiveHit>,
+) {
+    let landed: Vec<Entity> = hits.read().map(|h| h.target).collect();
+    let useless: Vec<Entity> = ineffective.read().map(|h| h.target).collect();
+    if task.0.is_some() {
+        count.add(counted_hits(&landed, &useless));
     }
 }
 
@@ -272,7 +306,7 @@ impl Plugin for LimitPlugin {
             .init_resource::<LimitHits>()
             .add_message::<LimitStarted>()
             .add_systems(Update, read_key)
-            .add_systems(FixedUpdate, try_limit.in_set(Sim::Sora));
+            .add_systems(FixedUpdate, (try_limit.in_set(Sim::Sora), count_limit_hits));
     }
 }
 
@@ -399,6 +433,35 @@ mod tests {
         h.start(5, 0);
         h.add(5000);
         assert_eq!(h.marker, 999, "the gauge ends at 999");
+    }
+
+    /// `FUN_001b3dc8` counts a hit only while the limit task exists, and `FUN_0018ba88` leaves out an ineffective one.
+    #[test]
+    fn limit_hits_count_effective_enemy_hits_only() {
+        let (a, b) = (Entity::from_raw_u32(1).unwrap(), Entity::from_raw_u32(2).unwrap());
+        assert_eq!(counted_hits(&[a, a, b], &[]), 3);
+        assert_eq!(counted_hits(&[a, a, b], &[a]), 2, "one ineffective message cancels one hit on that target");
+        assert_eq!(counted_hits(&[b], &[a]), 1);
+        let mut app = App::new();
+        app.init_resource::<LimitTask>().init_resource::<LimitHits>().add_message::<crate::enemy_ai::AiHit>().add_message::<crate::combat::IneffectiveHit>().add_systems(Update, count_limit_hits);
+        let send = |app: &mut App, n: usize| {
+            for _ in 0..n {
+                app.world_mut().write_message(crate::enemy_ai::AiHit { target: a, real: true, reaction: 2 });
+            }
+            app.update();
+        };
+        send(&mut app, 2);
+        assert_eq!(app.world().resource::<LimitHits>().marker, 0, "no limit task: nothing counts");
+        app.world_mut().resource_mut::<LimitHits>().start(4, 1);
+        app.world_mut().resource_mut::<LimitTask>().0 = Some((100, 50));
+        send(&mut app, 3);
+        assert_eq!(app.world().resource::<LimitHits>().marker, 3);
+        app.world_mut().write_message(crate::combat::IneffectiveHit { attacker: b, target: a, atkp: 1, point: Vec3::ZERO });
+        send(&mut app, 1);
+        assert_eq!(app.world().resource::<LimitHits>().marker, 3, "an ineffective hit adds nothing");
+        let mut p = Progress::from_block(&[], std::sync::Arc::new(crate::progress::ItemIndex::default()));
+        app.world().resource::<LimitHits>().finish(&mut p);
+        assert_eq!(p.limit_best(4), 3);
     }
 
     fn row(members: [u8; 3], world: u16, cost: u8, bit: Option<u16>) -> LimitRow {

@@ -1049,7 +1049,7 @@ So kind 1 is kind 2's file screens with a top list of its own, and it differs fr
 
 **Run.** Make a slot, then knock Sora out and load it: `KH2_SAVE_DIR=<dir> KH2_NO_ENEMIES=1 KH2_KEYS=7:F2,9:J,13:J kh2-game tt02` (the Save menu, slot 1), then `KH2_SAVE_DIR=<dir> KH2_NO_ENEMIES=1 KH2_GAMEOVER_KO=6 KH2_KEYS=9:Down,10:J,15:J kh2-game tt00` logs `menu: load open (menu kind 2 ...)`, `menu: load slot 1 reading`, `menu: load slot 1 read: world 2 area 2 entrance 0, HP/MP Some((20, 100))`, `game over: Load(...): jump to world 2 area 2 entrance 0` and `the jump is over: Sora is back`, the HUD line then shows tt02. Tests: `menu::save::tests::the_load_screen_reads_an_occupied_row_at_once_and_ignores_an_empty_one`, `menu::save::tests::a_slot_written_by_the_save_menu_loads_back_and_a_bad_file_changes_nothing`, `menu_gameover::tests::drive_load_phase_returns_the_list_or_enters_the_slots_area`.
 
-**Gaps.** (1) The header art: the frame's header layer (groups 20, 21, 22 of `save.2ld`) draws the word SAVE in this port's Load screen too; re-checked in WP-LD1b: the LAYD has one header layer set (20/21/22) and the dump of sequence 0 shows no second word group, so none was found (kind 2's build uses the same header group 0x7532 as kind 1's, so the original may draw it too). (2) The entrance (WP-LD1b): the Save menu writes the area record's entrance as `slot.entrance` (`Progress::slot_json_at`, read by `slot_entrance`); a slot without it loads at entrance 0 [inferred]. (3) The load restores only what `Progress::slot_json` stores (the party block, wallet, option words, NEW tags, the moogle and shop state, record bits, story arrays and world points): the original copies the whole save body, so anything the app keeps outside `Progress` (the enemies and areas' own state) starts fresh. (4) The message `0xaa5` "Load this file?" and `0x8a9f` / `0x8a9a` ("There is no data.", "Save data is corrupt.") are on the disc but no page read here refers to them; a search over `0025*.c` for the ids found only `0xaa2` in `FUN_0025a858`; the whole-decomp search timed out. The memory card driver calls (`FUN_0023d538`, `FUN_002316f0`, `FUN_0023ea18`) were not read. (5) Page 1 and the end of kind 2 inside kind 7's wrapper (`FUN_00254548`, `FUN_00254a08`'s sub-kind word `DAT_0036ceee`) were not traced; whether a cancel returns to kind 8's list is the brief's expectation, not read. (6) The mode word `DAT_0033e784` and `DAT_0033e798` of `FUN_00103b38` (what selects the record) were not traced; mode 2 with 1 and 0 is the one `FUN_001cb118` prepares.
+**Gaps.** (1) The header art [closed in WP-GO2]: `save.2ld` holds TWO layer sets, the BAR entries of type 0x1c named `save` and `load` (`FUN_0023c438(file, n)` takes the n-th; kind 1's build `FUN_002557a8` passes 0, kind 2's `FUN_00258bf0` passes 1). The `load` set has seven layers (groups 7, 20 | 8, 18, 21 | 9, 22 in the enter, hold and leave layouts) and no area rule (kind 2 makes no area-name text bars either), and its sequence 0 differs from the Save set's (the header word group 20 draws LOAD); its sequences 1 and 2 are the same. `menu_save.rs` reads it with `load_layd` and uses it while `Flow::load`; the area-name text is hidden. Test `the_load_screen_has_its_own_layer_set`. (The earlier "the LAYD has one header layer set" came from `parse_2ld`, which takes the first LAYD only.) (2) The entrance (WP-LD1b): the Save menu writes the area record's entrance as `slot.entrance` (`Progress::slot_json_at`, read by `slot_entrance`); a slot without it loads at entrance 0 [inferred]. (3) The load restores only what `Progress::slot_json` stores (the party block, wallet, option words, NEW tags, the moogle and shop state, record bits, story arrays and world points): the original copies the whole save body, so anything the app keeps outside `Progress` (the enemies and areas' own state) starts fresh. (4) The message `0xaa5` "Load this file?" and `0x8a9f` / `0x8a9a` ("There is no data.", "Save data is corrupt.") are on the disc but no page read here refers to them; a search over `0025*.c` for the ids found only `0xaa2` in `FUN_0025a858`; the whole-decomp search timed out. The memory card driver calls (`FUN_0023d538`, `FUN_002316f0`, `FUN_0023ea18`) were not read. (5) Page 1 and the end of kind 2 inside kind 7's wrapper (`FUN_00254548`, `FUN_00254a08`'s sub-kind word `DAT_0036ceee`) were not traced; whether a cancel returns to kind 8's list is the brief's expectation, not read. (6) The mode word `DAT_0033e784` and `DAT_0033e798` of `FUN_00103b38` (what selects the record) were not traced; mode 2 with 1 and 0 is the one `FUN_001cb118` prepares.
 
 **Decompile index.** `FUN_002589f0`, `00258a68`, `00258a88`, `00258bf0`, `00258cf8`, `00258e80`, `00258eb0`, `002590c0`, `00259288`, `00259648`, `00259b78`, `00259e88`, `0025a158`, `0025a1b8`, `0025a820`, `0025a858`, `00254bf0`, `00254548`, `00254a08`, `0024f000`, `001cb118`, `00103b18`, `00103b38`, `0014a7c8`, `0014a710`, `0023d2f8`, `0023dad8`, `0023dc28`, `0023ddb0`, `00239e20`, `0023cc98`, `00257880` (compared).
 
@@ -2427,7 +2427,7 @@ The three constructors `FUN_001ad810`, `FUN_001ad8a8`, `FUN_001ad868` and `FUN_0
 record, +0x30 / +0x34 the list header words and the scene handle, +0x48 the callback of the list's code 2, +0x4c its task. It sets
 `DAT_0035ee00` (one game over at a time), flag 0x35d268 bit 1, `0x35fec8` bit 1 (not for type 2), the music stop `FUN_00137520`
 (`FUN_002c1a08`: both music slots fade, `FUN_00136a68` stream stop) and the system sound `FUN_002c14a8(0x13)` (type 1: `0x33`),
-queues the camera/message object when an actor was passed (`FUN_00195898` / `FUN_00195a78` / `FUN_00195ae0`), sets `0x354f70`
+queues the camera/message object when an actor was passed (`FUN_00195898` / `FUN_00195a78` / `FUN_00195ae0`; WP-RV2: it is the event object of kind 0xf playing the first type-0x16 entry of `00battle.bin`, `re_gameover-0a`, a camera cut plus a 100-tick fade to black from event frame 0xb, with the pad locked; the actor is only stored as an unread word, docs/summons.md "The revive's message window"), sets `0x354f70`
 bit 2 (`FUN_00138708`) and makes its task (`FUN_00102bc8(1, 15000, 0x1ad918)`, body `FUN_001ad960` -> `FUN_001ad9a0`).
 `FUN_001ad640` (types other than 2) clears the manager (`FUN_001b9518`) when the alternate byte is 0, picks the record
 (`FUN_001bef10(0x21)` for type 3, `FUN_001bef10(1)` for the others; the callback `+0x48` = `0x1adc70` for types other than 3) and
@@ -2488,21 +2488,19 @@ snapshot (`FUN_001cafa0`: copies the same words and `DAT_01d69890 = DAT_0033e830
   exist at the area start without bit 12 in the files read, so those areas take no snapshot). `DAT_0035e3a0` is taken as 0
   [inferred: nothing in the app writes it]. The jump is `JumpTask::FadeOut` with
   fade kind 1 (`0x80000001`); without a snapshot the record's own bytes stay (0xff) and the current area reloads. Sora's HP and MP are
-  the area-start values (`FUN_001cb208` restores the save body; the party record in it holds the HP bytes +4 (current) and +5
-  (maximum) and the MP bytes +6 and +7 that `FUN_0019f920` rebuilds the status from: HP = min(+4, +5), MP = min(+6, +7), the
-  offsets of docs/progress.md; so the original gives back the area-start values, not full HP [inferred: that the
-  record's HP byte follows the live HP at an area start was not traced]); full HP and the current MP when no snapshot exists.
+  the maximum (WP-GO2): `FUN_001cb208` ends with the party refresher `FUN_001abfe8(8)`, which sets every member's HP and MP to the
+  maximum after the body is back (section 26.7). This replaces WP-GO1b's reading that the area-start values come back, which was
+  [inferred] without that function; the snapshot's HP and MP are now only logged.
   Gap (WP-LD1): `track_area` takes no snapshot when an area start reloads the same map name (it compares `CurrentArea.loaded`
   with the last name seen), while the original runs `FUN_001047a8` at every area start, so a re-entry of the same map in a
   new visit (a jump to itself) keeps the older snapshot in the port. Not changed: `menu_gameover.rs` only compares names.
-  The port floors the HP at 1 and caps it at the maximum (`continue_values`) so a snapshot taken at 0 HP cannot loop; a snapshot
-  taken at 1 HP does return him at 1 HP, as the restored record would [inferred]. The save body IS restored (WP-GS1, next bullet). The party reset `FUN_001abfe8(8)` and
-  `FUN_001b81f8` are not ported.
+  The save body IS restored (WP-GS1, next bullet). The party refresher `FUN_001abfe8(8)` is ported
+  (WP-GO2, 26.7); `FUN_001b81f8` clears the Struggle's score block, which the app has no counterpart of (26.7).
 * The save body (WP-GS1, `capture_body` / `restore_body` / `restore_snapshot`). `FUN_001cafa0` (read in full) copies `0x33e860..0x349d40`
   to `0x1d5e3b0`, `0x35d278..0x35daa0` to `0x1d69898` and `0x35daa0..0x35e2c8` to `0x1d6a0c0`, together with the area record
   (`DAT_01d69890 = DAT_0033e830`, `+4`, `+5`), only when `FUN_001cb358` allows; `FUN_001cb118` does the same without the test
   (and sets the record from the party record's bytes `+4..+6`, 0xff elsewhere) at the end of the Load screen. `FUN_001cb208` copies the three
-  ranges back and then runs `FUN_001abfe8(8)`, `FUN_001b81f8`, `FUN_0023ea18`, `FUN_00168928` (refreshes, not ported). The port
+  ranges back and then runs `FUN_001abfe8(8)`, `FUN_001b81f8`, `FUN_0023ea18`, `FUN_00168928` (refreshes: the first two are section 26.7, WP-GO2). The port
   holds the body as the slot file text (`Progress::slot_json`, the keys of the Save menu) in `GameOver::body`: taken in
   `track_area` with the snapshot (the NEW tags' live seen words go in as the Save menu stores them) and at the end of the
   Load screen; "Continue" applies it to a copy of the state before the jump (`apply_json`, which puts the shared story back on a failure, LD1b) and
@@ -2515,13 +2513,9 @@ snapshot (`FUN_001cafa0`: copies the same words and `DAT_01d69890 = DAT_0033e830
   app's stand-in for a Final Mix growth ability) is restored with the body because the slot file carries it. Sora's HP and
   MP come from the area-start values kept in the snapshot (the app's party block does not follow the live HP, so its byte is not used:
   no double handling). Tests: `continue_restores_the_area_start_body_and_drops_later_gains`, `a_failed_restore_leaves_the_state_unchanged`.
-* The scene `obj/GAMEOVER.mset` (WP-GS1, read, not ported): `FUN_001ade58` loads it as resource 5000 (`FUN_0016fac8`) and calls `FUN_0016e638(list
-  header word, -1, 0x1e)`; the header word is `FUN_00169958(player) | 0x20000000`, a handle of the player actor, so the scene is the
-  player's own game-over motion (index `0xfc` type 0, `0xfd` types 1 and 3, `FUN_001add40` looks it up through `FUN_001684c0` /
-  `FUN_00168510` in the character's resource entry, format string at `0x37b878`) played on the actor with the existing model;
-  there is no separate model or camera object in it. Missing in the app: the resource-table lookup (`FUN_001684c0`, `FUN_00168510`,
-  `FUN_0016f9c0`) that maps motion index `0xfc` to a motion of the `.mset`, and the wait lengths of `FUN_001ad9a0` steps 2 to 5 (`FUN_00196418`,
-  scene `+0xfc == 4`, `0x35feb8`). Not traced further, so Sora keeps his fall pose and the list opens `OPEN_AFTER` seconds later.
+* The scene `obj/GAMEOVER.mset` (WP-GS1 read it, WP-GO2 ported it): it is not a camera scene or a motion of the field actor but the motion of the
+  model panel the list shows (the camp's 3D model object, slot 0 at the screen centre); `FUN_0016e638(.., -1, 0x1e)` only loads the
+  player's own motion sets. See section 26.6 (entry `%03d0` of the BAR at index 0xfc / 0xfd, `model` in `menu_gameover.rs`).
 * "Retry" / "Quit" (type 3): `Mission::menu_exit` (with the manager) or the jump records the manager carried when it ended
   (`GameOverRequest::exits`); resolved as every trigger jump. HP is full.
 * "Load Game" (code 1): opens the Load screen of `menu_save.rs` (section 18.6, WP-LD1): the list waits (`Phase::Loading`, the
@@ -2532,7 +2526,7 @@ snapshot (`FUN_001cafa0`: copies the same words and `DAT_01d69890 = DAT_0033e830
   before the event; `route` and `struggle.rs` send the event whatever the form, and bit 0x20000 with no manager (the bit is
   set by a manager's script and the app clears nothing) also gives the event. The form field `+0xb50` = 0xb (a special non-drive
   mode with no counterpart in the app) is not modelled, so Tinker Bell's `+0xb50 == 0xb` exception to the revive is not either.
-* Not ported: the scene `GAMEOVER.mset` (107952 bytes on the disc; Sora keeps his own fall pose instead), kind 7's frame and the
+* Not ported: kind 7's frame and the
   header group `+0x14` (3), the camera object (`FUN_00195898`), type 1's difference (`FUN_00183fe0` skipped), the drive form's
   end (`FUN_001b4d78`). The alternate list (record 10) and Mickey's rescue (`FUN_001cdf48`) are section 26.5 (WP-MK1).
 * Harness: `KH2_GAMEOVER_KO=<seconds>` knocks Sora out once (HP 0, `State::Down`). `KH2_NO_ENEMIES=1 KH2_GAMEOVER_KO=7 kh2-game
@@ -2683,6 +2677,21 @@ forces the alternate list (record 10): true`, `type 0 opens record 0xa ... rows 
 as before. Tests: `mickey::tests::*`, `menu_gameover::tests::the_alternate_list_routes_code_9_to_mickey_and_code_8_to_the_normal_list`,
 `the_rescue_counts_once_and_releases_sora`, `the_plain_knock_out_has_no_alternate`.
 
+**WP-MK3: why the control swap is not ported, and what was checked [V code, gate stays off].** The swap itself is one global: Mickey's base
+constructor `FUN_00176e00` stores the object in `DAT_0035c998` (the current player), `FUN_001ce168` gives it back to the stashed Sora
+through `FUN_00178d28`. In the port the controlled player is the `Sora` component and its systems (`sora.rs`, camera, HUD, the command
+deck); a second player needs Mickey's own body (`P_EX200` model and motion set), his command deck and his tick, none of which exists,
+and the motions the swap starts (0xfc on Sora, 0xfe on leaving) are absent from the USA motion sets (see above). The brief's rule
+(E) applies: not ported faithfully, so `mickey::RESCUE_PORTED` stays false and normal play is unchanged. Checked and ruled out as the
+writer of Mickey's HP 1: the record builder `FUN_0019f920` (HP and maximum both come from the `plrp` row of `Character` 4, 60; the
+minimum `+8` is 0 and is raised to `DAT_01c954b4` only for a record with an owner block at `+0x250`, which `FUN_0019fdc0` creates
+for handle types 1 and 0xe only, `FUN_001a0030` stores it back), `FUN_001792f0` / `FUN_00176c98` (a negative amount only charges the
+drive gauge through `+0x1af`, no clamp) and `FUN_00186238` (clamps to the minimum, `FUN_00186530` on 0). The vtable at `0x360360`
+holds only 0x00 to 0x9c; the entries from `0xb0` (`FUN_001ce928`, `001ceb88`, `001ceba8`, `001ceda8`) are the next class table [inferred: the zero words at `0xa0` to `0xac` end Mickey's],
+Sora's (`FUN_001ce718`), not Mickey's. The `+0xb50` (class id) loads that were scanned all sit in player or Sora-class code, none
+clamps a Mickey-class HP. Open (unchanged): the HP 1 writer, what 456 does beyond motion 0xc0, effect 0x11, the model parts 10 to
+0x15, and which hit path ends a Mickey with exactly 1 HP [GAP: the enemy damage path against a class 10 target].
+
 **Decompile index.** `FUN_001cdf48`, `001cdb98`, `001cda78`, `001cdcb8`, `001cdd50`, `001cdde8`, `001cdf08`, `001ce080`, `001ce240`,
 `001ce458`, `001cde80`, `001ce0a0`, `001ce3f8`, `001cf330`, `001ad9a0`, `001ad520`, `001ad640`, `001ad378`, `001b9aa0`, `001b9550`,
 `001cec00`, `001ced58`, `001c7740`, `001c75d0`, `001c7c30`, `001ade58`, `001adcf8`, `0017d030`, `0019a3f8`, `0017cd08`, `001b7c88`,
@@ -2690,6 +2699,85 @@ as before. Tests: `mickey::tests::*`, `menu_gameover::tests::the_alternate_list_
 (alternate callback) and `0x1ad520` (the roll). Tables: `sstm` `0xd8`, `0xdc`; words `0x3716a0`, `0x37b84c`, `0x3852a8`.
 **Gaps.** The heal amount is found (`FUN_001ce168`, see "Where Sora's HP comes back"); still open: what sets Mickey's HP to 1 (the leave trigger), what 456 does, the missing motions 0xfc / 0xfe, effect 0x11's script; WP-MK2 read also `FUN_001ce168`, `001b8658`, `001b82b8`, `001b84c8`, `001b8710`, `00175ec0`, `001a1ba8`, `001ce0a0`, `001772b0`, `00178cb8`, `00178d28`, `00176e00`, `00186238`, `001a0100`, `0019f920`, `00188030`, the frame-trigger jump table 0x37aa78 (raw), the class tables 0x360360 / 0x360410; `FUN_0017d030`'s exact meaning for a downed friend;
 `FUN_001c7740`'s `FUN_001c75d0(0)` effect on the friends; whether `0x35d268` bit 1 is cleared by Mickey's end.
+
+### 26.6 The scene `obj/GAMEOVER.mset` is the list's model panel (WP-GO2: `menu_gameover.rs`, `model`)
+
+**What the original does [V from code, data read].**
+* Resource and motion. `FUN_001ade58` (task step 4) frees resource slot 5000 (`FUN_0016f8e0`) and loads `obj/GAMEOVER.mset`
+  into it (`FUN_0016fac8` -> `FUN_0016f9c0`, string at `PTR_s_obj_GAMEOVER_mset_0035edfc`); the call `FUN_0016e638(list header word,
+  -1, 0x1e)` that follows only loads the player's own motion sets (it is the resource system's "load the sets of object X"
+  entry: `FUN_0016e430` loads the object's `.mset` through the entry type at `+4`), it starts no motion on the actor [read: `FUN_0016e430` only requests the sets and the resource entries; no call into the motion player]. `FUN_001adcf8` (step 5)
+  then stores two words in the game-over object: `+4` = the loaded file (`FUN_0016fd18`) and `+0x34` = `FUN_001add40(object, header word)`.
+  `FUN_001add40` takes the **BAR entry at index 0xfc (type 0) or 0xfd (types 1 and 3)** of the file (`FUN_001684c0(file, -1, n)`:
+  the n-th entry of any type; its data word `+8` must be non-zero), formats `%03d0` (string at `0x37b878`) with the **player
+  object's `objentry` byte `+7`** (`FUN_0016e208(header word)` is the row; the byte is the sheet's `WeaponJoint`, 1 for every Sora
+  row, `P_EX100` and its forms), takes the **third entry of that name** in the entry (`FUN_00168510(entry, -1, name, 2)`) and the **first type 9 entry**
+  inside it (`FUN_001684c0(.., 9, 0)`): a motion in the usual ANB layout (motion, type 16 triggers). This is the same
+  naming as the paired motions of the reaction commands (`enemy_ai`, `FUN_0017ef98`, string `%03d0`).
+* The file (107952 bytes on the disc): 254 BAR entries, all `DUMM` and empty but index 252 (`AK10`, type 20, 71264 bytes) and 253
+  (`AK12`, type 20, 32608 bytes). Each holds the motion-set layout of a player mset (four state variants per name, the
+  third non-empty): `AK10` has the names `0010`, `0011`, `0012`, `0140`, `0141`, `0142`, `0200`, `0201`, `0270`, `0271`, `AK12`
+  `0010`, `0011`, `0012`, `0200`, `0201`, ...; Sora's `0010` entry holds a 20912-byte motion in `AK10` and a 17728-byte one in `AK12`.
+* Who shows it. The list's page build (`FUN_0026f698`, task `FUN_0026f4a8`) reads the two header words from `FUN_0026f480`
+  (`DAT_0036d020`): the object id and the motion. When both are non-zero `FUN_0026f948` runs: a window `FUN_0029b600(DAT_0036d00c,
+  ..., 0x10, 0x11)`, then the **camp's model object** (`FUN_00295bc0` = `DAT_0036d1f8`, the 3D party models of section 16.6): its vtable `+0x18`
+  puts the object `id | 0x20000000` in **slot 0 at x 0, y 0** with no motion of its own (`motion -1`, variant 2), `FUN_0023b0f0(obj,
+  0, motion)` gives it the GAMEOVER motion (frame 0, play flag), `FUN_0023b348(DAT_00381b28)` the translation z (the word is -100.0,
+  the camp's value), `FUN_0023b3a8(0)` / `FUN_0023b3c8(0)` the rotation 0, and `FUN_0023b4b8(obj, 0, DAT_0036d00c)` makes the
+  list window the alpha source. The per-frame step `FUN_0023a920` advances the frame by the frame step (`FUN_0014cbe8`) and **wraps
+  it at the motion's end** (`vtable +8` = the frame count: frame minus count), so the motion loops; the idle-variant switch of the
+  camp (`+0x6d8` / `+0x6dc`, a random 10 to 29 times `DAT_0037f4a8`) needs a second motion in those slots; `FUN_0023b0f0` writes only `+0x6d4` [inferred: nothing else fills them for this slot, so the one motion loops]. The alternate list (record 10) has no second
+  header word (step 5 opens it before `FUN_001adcf8`; step 4 plays scene motion 7 through `FUN_001cdf08` instead), so it shows no model.
+* The model stands where the camp's slot camera puts a slot at the screen centre (section 16.6: eye (0,-50,-800), look-at (0,0,55),
+  horizontal field of view 40 degrees, model at (0,0,-100), colour 0x60 of 0x80).
+
+**What the port does.** `model::Stage` reads the file and Sora's row (`P_EX100`'s `WeaponJoint`) from the disc when the list loads
+(`Stage::read`), keeps the two motions as `Arc<kh2_anim::Slot>` (nothing is stored on disk or in the repo) and, while the list is
+up (`Phase::List` and `Closing`, not the alternate list), `model::show` builds a private camera and Sora's rig (the camp preview's
+recipe: `PreviewCamera`, an image of the menu canvas at twice the resolution, render layer 11, a node of the menu scene that shows the picture
+right before the rows) at slot 0, x 0, y 0 (`menu::preview::origin_on_screen`, `model_drop`), `Animator::play_external(motion)` looping,
+`model::animate` posing it on the real-time clock while the field is stopped and `model::layer_and_tint` giving the meshes the layer and the 0x60/0x80
+colour. The picture fades with the close like the list. The model goes away when the list closes or the Load screen opens, and comes back with the
+list. `KH2_NO_GAMEOVER_SCENE=1` turns it off. Type 3's list ("Quit" / "Retry") uses the 0xfd motion as types 1 and 3 do. Tests: `the_scene_set_and_entry_name_follow_fun_001add40`,
+`the_scene_entry_is_the_third_of_its_name_in_the_asked_set`, `the_disc_scene_has_sora_motions_in_both_sets`.
+
+**Harness.** `KH2_NO_SOUND=1 KH2_NO_MUSIC=1 KH2_NO_ENEMIES=1 KH2_GAMEOVER_KO=6 KH2_SCREENSHOT=<png> KH2_SHOT_AT=11 kh2-game tt00` logs `game over: obj/GAMEOVER.mset set 0xfc entry 0010 holds a motion of frames Some(0.0)..Some(150.0)`,
+`set 0xfd ... Some(0.0)..Some(45.0)` and, when the list opens, `game over: the model stands in slot 0 at menu (256, 218), depth 702`; the picture shows Sora lying on his back above the screen's middle
+(his own model, dark tint) with the list's rows at the upper left and the field dimmed. The harness knock-out leaves the field Sora standing (`KH2_GAMEOVER_KO` plays no fall motion), so
+two Soras are visible in that picture; in play the field one lies in his fall pose. `KH2_NO_GAMEOVER_SCENE=1` turns the model off.
+
+**Gaps.** The lengths of the waits before the list (`FUN_00196418`, the scene object's `+0xfc == 4`, the words `0x35feb8` / `0x35fec0`) were not
+read: the list still opens `OPEN_AFTER` after the fall. The window `FUN_0029b600(.., 0x10, 0x11)` and the list window's own alpha (the model's
+alpha source) were not decoded: the port fades the picture with the close only. The model is drawn over the dimmed field with the field's own fallen Sora
+still lying behind it; whether the original hides him is not known (nothing read hides the actor: `FUN_00183fe0` only lays him down).
+The model of another player (Roxas, a form) uses the entry named by its own `WeaponJoint` (`0140` for byte 14 ...), which the app does not need: the game over is Sora's.
+
+### 26.7 The party refreshers (WP-GO2)
+
+`FUN_001cb208` (the copy of the save body back, section 26.3) ends with `FUN_001abfe8(8)`, `FUN_001b81f8`, `FUN_0023ea18` and
+`FUN_00168928`. Read in full now:
+* **`FUN_001abfe8(8)`** (the switch has no case for 8; the default falls to the loop) runs for the member ids 1 to 15: `FUN_0019fe48(id)`
+  gives the member's status object (id 1 and 0xe: `FUN_0019fdc0`, which rebuilds Sora's status from his record with `FUN_0019f920`; the
+  others `FUN_0019fd30`, which finds or makes the status of that record), `FUN_001ac130(8, status)` and `FUN_0019ffb8(status)` (writes the status back into the record,
+  `FUN_001a0030`: bytes `+4`..`+7`, and drops the reference). `FUN_001ac130` is `FUN_001a0240(status, 0)` + `FUN_001a0100(status, status +4, 0)`:
+  `FUN_001a0240` ends a running MP charge (`FUN_001a05d0` tests the float `+0x1c0`, `FUN_001a05a8` zeroes `+0x1bc` / `+0x1c0`) and adds the MP maximum (`+0x184`)
+  to MP (`FUN_001a0210` -> `FUN_001a0180`, clamped to 0..maximum); `FUN_001a0100` adds the HP maximum (`+4`) to HP (clamped to the minimum `+8` and the
+  maximum). **Every member comes back with full HP and full MP, whatever the restored record held.** This is the same pair the form start uses
+  (`magic::refill_mp`, docs/drive-forms.md).
+* **`FUN_001b81f8`** zeroes 0x1c bytes at `0x1d5d7c0` (`FUN_001b8218`'s object). Its other readers and writers (`mips_scan`): `FUN_001a0968` (the damage scale of the
+  Struggle bit `0x20000`, the word `+8` plus 1; the only writer of that word is this clear), `FUN_001d30d8` / `FUN_001d31b8` / `FUN_001d3238` (`+0` from the byte tables at
+  `0x37c4f8` / `0x37c508`, global event 0xe1), `FUN_001d54d8` / `FUN_001d55d8` (`+4` is a sum of the values in the word table `0x37c5d0`, `+0x14` doubles a factor), `FUN_001d58e0` (clears `+0x18`, `+4`,
+  `+0xc`, `+0x14` and runs `FUN_001abfe8(0xc)`; called by `FUN_001b9c58` for mission kind 0x1e and `FUN_00242090`). It is the **Struggle mission's score block**. The app has
+  nothing that lives in it (the factor is 1, section 21 of docs/struggle.md; the score is `struggle.rs`'s), and a Continue never happens inside a Struggle (its areas take no snapshot),
+  so there is nothing to clear: not ported, no gap for this package.
+* `FUN_0023ea18` (the sound mode of the card: `FUN_0023eb10` / `FUN_0023eb78` pick mono/stereo from the option word, `FUN_002bddf4`) and `FUN_00168928` (resets the resource slot table `DAT_00522178`
+  and `FUN_0016fdf0(0)`, `FUN_00178a38`, `FUN_0019d8c0`, `FUN_001d3a30`) were not decoded further: they touch the resource system and the camera-side objects the app does not have.
+
+**What the port does** (`refresh_party`, `refreshed`, run by `drive` when the list has closed on "Continue", right after the body is back): Sora's HP is his maximum, MP the data's
+maximum (`GameData::sora_max_mp`) through `magic::refill_mp` (which ends a running MP charge), and each `PartyMember` gets HP / MP at his own maximum and his charge ended (a member's KO flag is
+left: the jump builds the members again). **This replaces WP-GO1b's "Continue gives the area-start HP and MP"** (an [inferred] reading, 26.4): the refresher gives the maximum, so the snapshot's
+HP / MP are only logged. The Load Game path does not run `FUN_001cb208` (its jump has the restore flag 0) and keeps the record's HP and MP. Test: `the_party_refresher_fills_hp_and_mp_and_ends_the_charge`.
+`party.rs` was not touched: `PartyMember`'s `pub` fields and the `pub(crate)` charge are enough; nothing is needed there.
 ## 22. Donald and Goofy on the Items and Equipment pages (WP-PM1)
 
 **The party object.** Page 1, the target list of Use (page 0xc) and the equipment list read the party object `DAT_0036ce90`: `FUN_00282940` is its row count (the word at `+0`), `FUN_002829f0(row)` the member id of a row (the u16 at `row * 0x14 + 6`, 0 outside the count) and `FUN_00282980(row)` the row's name word (`+0xc`). `FUN_0025c2c8` builds one target row per party row (a group item shows the single row "All", message 0x3944; an item that goes to one member only shows one row). `FUN_0025e9e8(row)` asks `FUN_001a14c8(item, member of the row)`; for a group item `FUN_001a14c8` answers true when any of the four slots passes `FUN_001a15a0`. `FUN_0025ea40(row)` runs `FUN_001a11a0(item, member, 0, 100)` (a group item loops the four slots), then `FUN_001a1ba8(item, 100)` and `FUN_0013dac8`.
@@ -2698,7 +2786,8 @@ as before. Tests: `mickey::tests::*`, `menu_gameover::tests::the_alternate_list_
 **Equipment.** Page 2 opens for the member of the row that was confirmed (`ItemsMenu::member`, an index into `party`). The rows are his record (`Progress::member`): the main weapon (`+0`), the armor, accessory and battle-item slots; the drive forms' rows are Sora's (`FUN_00282bf8` asks the drive forms). The weapon page lists the type the pair table 0x3823d0 names for the member (Sora 2, Donald and Goofy the pairs read from the table, `ExeTables::filter_bits`). Every writer takes the member (`equip_weapon`, `equip_armor`, `equip_accessory`, `equip_battle_item`, `set_auto_reload`, `settle_battle_items`); the live `Abilities` block is refreshed only for Sora. -10 and -11 (`FUN_00269580` -> `FUN_0026cfc8(param == -10)`) step the member forward (-10) or back (-11), wrapping at both ends, and write the new row to the remembered cursor of page 1 with scroll 0; the port restarts the list at its first row and plays the cursor sound [inferred].
 **AP of members.** `FUN_0019f920` builds status `+0x18e` as the AP of the member's `lvup` row (`FUN_001b50c0`: the table by member id, the first table when his own is missing) plus the record byte `+8` plus the equipped items' AP; `member_ap_max` ports it and the accessory swap check uses it for Donald and Goofy (test `a_members_ap_maximum_is_his_lvup_row_plus_the_record_byte_plus_the_gear`). Whether a member's row 7 of `lvup` is the table's `Ap` field is read from the field list of the table (`Exp Strength Magic Defense Ap ...`).
 **Status.** Donald's and Goofy's tabs and the L1/R1 tab step already exist (section 19.1, WP-MN7); nothing was added here.
-**Gaps.** The target page does not draw HP/MP bars per row (neither did Sora's single row). A KO'd member's revive by an item. The preview window's category icons for armor and accessory rows are as for Sora (section 13).
+**WP-PL2 (party follow-ups).** (1) Items on a down member. `FUN_001a15a0` has no KO test (HP below the maximum is true at HP 0), so a down member is offered the heals; WP-PM1b's refusal assumed a revive rule nobody had read. The effect `FUN_001a12a0` reaches the HP through `FUN_001a0140`, a call of vtable `+0x78` of the object stored at the status block's `+0x24c`. The writers of `+0x24c` are the constructors `FUN_00176e00` / `FUN_00176f88` (the player class, vtable `0x35c9a8`, `+0x78` = `FUN_001792f0`) and `FUN_0017c718` / `FUN_0017c840` (the friend class of Donald and Goofy, vtable `0x35cc18`, `+0x78` = `FUN_00176c98`, which calls `FUN_00186238`); the table slots were read from the executable. For a member (flag `+0x588` bit `0x4000`) `FUN_00186238` with a heal above 0 on an object whose `+0x7f8` bit 4 (KO) is set calls `FUN_0017cee8`: the bit is cleared, the motion 0x36 ends, the amount is scaled by `sstm` +0x54, and the HP is added; so an item revives a KO'd member with the scaled amount. The port: `use_on_member` runs `item_effect` on his vitals and gives the HP gain to `party_battle::hp_change` (the same function as the member's own heals), the party tick gets him up. Tests `a_down_member_is_offered_the_heals_as_the_use_check_has_no_ko_test`, `an_item_revives_a_ko_member_through_the_hp_method`. The MP part of Elixirs reaches `FUN_001a0210` (also through `+0x24c`); the port applies it on the live MP as before. (2) Drive Recovery (0x112, 0x113): `FUN_001a15a0` compares the gauge bytes `+0x1b1 < +0x1b2` and `FUN_001a12a0` calls `FUN_001a0290(block, amount * 100)` on those bytes directly, with no HP method and no KO test; the pair has the single Sora row (`FUN_0025c2c8`), who is never down in the menu, so no member can be its target and the port needs no change [the brief's wording "usable on a down member" has no case in the original]. (3) Dodge Roll: the USA executable has no such ability or save field (docs/abilities.md, docs/final-mix.md); in Final Mix it is an ability in the party record's ability list, which lies inside the range the save body copies (`0x33e860..0x349d40`), so the original brings it back with the body and the port's `dodge_roll` key in the slot file does the same: no change, recorded. (4) The party record sync (`party_record_sync`) no longer overwrites a record that was replaced while the members stand: it writes a member's values only when they changed since its last pass, so Continue's restored allies' HP and MP (the record is replaced at the screen's close, the jump follows a fade later) are the ones the members are rebuilt from. Test `a_replaced_record_is_not_overwritten_by_unchanged_live_vitals`. (5) `track_area` stores a snapshot and a body: test `track_area_stores_the_snapshot_and_a_save_body`.
+**Gaps.** The target page does not draw HP/MP bars per row (neither did Sora's single row). (A KO'd member's revive by an item: done in WP-PL2, below.) The preview window's category icons for armor and accessory rows are as for Sora (section 13).
 
 ### 24.10 Shop leftovers: findings of WP-SH5 (research only, nothing ported)
 
@@ -2709,3 +2798,19 @@ as before. Tests: `mickey::tests::*`, `menu_gameover::tests::the_alternate_list_
 **Tab grid [partly read, not ported]**: `FUN_0028aaa8` builds 4 rank tabs (group 99, column, pitch from group +0x1c) and 13 category tabs (group 100.., 4 per row, x pitch group +0x20, y pitch +0x1c), number labels (`+0x3d2 + 8k`), and the words 0xbbc7 / 0xbbc8 at group 0x65 with the kind and total counts. Positions come from those group records; drawing needs the sprite-group path of `put_tag`.
 
 **Not applicable**: `FUN_00296d10(list, a, b, c, d)` stores pad button masks (0x10, 0x20, 0x40, 0x80 = up, right, down, left) in the list's `+6..+0xc`, not a clip width: the "second text's clip width" gap does not exist. `FUN_00191a30` with more variables than texts reads the next stack argument slots (undefined values); the port leaves such variables empty.
+
+### 24.11 Shop leftovers: ported by WP-SH6 (window origin, count-up, tab grid)
+
+**Flag-2 animations (dumped to `local/sh6-anims.txt`, never the repo).** Sequence 2 of `itemshop.2ld`. Group 0x67 (the header window, records x 460, y 123): its first animation with flag bit 2 is group 28, frames 0..15, translate (24, 60), pivot x 200 to 0 (the slide-in), so the anchor is (224, 60) at frame 0 and (24, 60) at the last frame. The art animations of the same group sit at (484, 183) and (484, 153), (256, 212): those are art, not the anchor. Group 0x62 (the Material Log row plate) anchor (19, 102); group 0x60 (page 10's rows) (38, 102); group 0x6e (page 0x17's rows) (40, 7); group 99 (rank tabs) (-1, 2); group 100 (category tabs) (115, 2); group 0x65 (the kinds and total words) (215, 71); the empty-list texts' groups 0x66 and 0x6f (232, 188) and (232, 156). Group 0x24 has one animation at frames 999..1000 without the flag, so no anchor.
+
+**Origin rule as ported.** A widget parented to the header window starts at the window's anchor at its last frame plus its own group's anchor (`menu_shop::plate_origin`). The group record's x, y of the window (460, 123) is not added although the decompile of `FUN_0029b060` adds the parent group's `FUN_00237618`/`FUN_00237638`: with it the rows would start at x 484 on a 512 wide screen, while the empty-list texts (anchors 232) land on x 256, the middle of the screen, only without it. [inferred] The addition probably reads a different field for this root; not matched to a record offset. Resulting first rows: page 10 (62, 162), page 0xb (43, 162), page 0x17 (64, 67); the rows go down by the plate group's `+0x1c` (23, 23, 26) and the second text sits at the group's x (177, 270, 175). The port's hand, tag and number positions follow the same shift [inferred]. Other pages (buy and sell lists, synthesis pages 9, 0xc, 0xd) keep the port's own first row: their widgets were not followed.
+
+**Fixed on the way.** `ShopMenu` kept the shop sequence's group records in `layd.seqs`, which `load` empties after moving the sequences into the scene, so `reward_metrics` and `group_pitch` always fell back to the port's numbers. They now read a copy (`ShopMenu::seqd`); page 0xb's rows and the material pages use the file's pitch (23, 23, 26) and text size.
+
+**Count-up (`FUN_0028f490`, run by page 10's task `FUN_00285b30` once a frame while `+0x112d` is set).** `Opening::before` holds the record's totals from before the hand-over; `Session::shown` starts there and `Session::count_up` raises every slot below the record by one per frame, or sets all to the record's at once while any key is held (`ShopMenu::held`, the skip flag `FUN_00299020(-1)`); a slot that differs first sets the session marks `+0x10` (row), `+0x20` bit 3 - rank (rank tab) and `+0x24` bit category (category tab); a displayed value above the record is left as it is. The list membership and the "?" masking use the record's totals, the number shown the displayed ones. The tick system (`menu_shop::count_up`) runs it per 60 Hz tick on page 10 and redraws.
+
+**Tab grid (`FUN_0028aaa8`, numbers `FUN_0028f850`, sums `FUN_0028f698`, plates `FUN_0028fea0`).** Drawn on pages 10 and 0xb as text: four rank tabs (name `0x382638[3 - k]`, number the sum of rank 3 - k) at the window anchor plus the group's anchor, k times its `+0x1c` below, the number a child at the group record's x, y (100, 0); thirteen category tabs (name `0x382640[n]`) at `(n % 4)` times `+0x20` (90) and `(n / 4)` times `+0x1c` (23), the number at (75, 0). Sums (`synth::tab_sums`): rank sums at most 99,999, category sums at most 9,999, kinds, total at most 99,999. A category tab shows when the record's sum is above 0 or story flag 0x4837 is up. A marked tab is drawn bright [inferred: the original swaps the plate sprite group for `FUN_0028f468(0)`; the port draws no plates]. Harness screenshots (`local/sh6acc/moogle-rewards-all.png`, `p10-15.png`) show the S/A/B/C rows with their sums and the category numbers in the grid over the list.
+
+**Gaps (WP-SH6).** The kinds and total words of group 0x65 (`0xbbc7`, `0xbbc8`; anchor (215, 71), children at x 160 and 240) are not drawn: alignment and clip unknown, the second would start at x 479. The row plate highlight (session `+0x10`) is computed, not drawn (no plates). The rows' two-column grid of page 10 (group `+0x20` 228) is still one column. Numbers are left aligned at the second text's x [inferred; the widget class `0x7539` was not read]. The frame art of group 0x67 itself (the window) is not drawn by the port; the layouts carry no layer for it (the widget draws it). Searched: `FUN_0029b060`, `FUN_00236cf8`, `FUN_0029b600`, `FUN_0028aaa8`, `FUN_0028f490`, `FUN_0028f698`, `FUN_0028f850`, `FUN_0028fea0`, `FUN_0028f9a8`, `FUN_0028b470`, `FUN_00285b30`, `FUN_00285e10`.
+
+Tests: `the_count_up_steps_one_a_frame_or_jumps_and_marks_the_tabs`, `the_tab_sums_are_capped_per_rank_category_and_total`, `the_disc_window_origin_row_origins_and_tab_places` (disc), `the_disc_reward_texts_notices_and_list_extents` (now reads the copy).

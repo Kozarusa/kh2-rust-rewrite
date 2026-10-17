@@ -496,14 +496,14 @@ outside the table) and `party_battle_distance_follows_the_style`.
 | 10.45 | 0x2f73b0 | 1 ret | status +0x1b4 (gauge timer) |
 | 10.46 | 0x2f73c0 | 1 | FUN_00113190 (Chicken Little setup) |
 | 10.47, 10.48, 10.49 | 0x2f73e0.. | 1 | +0xb7c clear 0x1000 / set 0x20000 / clear 0x20000 |
-| 10.50 | 0x2f7440 | 1 ret | status +0x180 (MP) |
+| 10.50 | 0x2f7440 | 1 ret | status +0x180 (MP); no script on the disc calls it (WP-RV2) |
 | 10.51 | 0x2f7450 | 4 | FUN_0011a6d8 |
 | 10.52 | 0x2f7490 | 1 ret | FUN_00185a38 |
 | 10.53, 10.54 | 0x2f74c0, 0x2f74f8 | 2 / 2 ret | FUN_00136388 / FUN_001364d0 on FUN_0010c5b8 ([I] HUD) |
 | 10.55 | 0x2f7540 | 2 | FUN_002f0758(a, b != 0) |
 | 10.56 | 0x2f7560 | 2 | FUN_00110dc8 |
 | 10.57 | 0x2f7580 | 1 ret | push a position to the player trail (45-unit spacing) |
-| 10.58 | 0x2f7598 | 3 | FUN_001131e8 |
+| 10.58 | 0x2f7598 | 3 | FUN_001131e8: friend object +0xb50 = a record, +0xb54 = a value, bit 2 of the record's object word +0x1c set; only the destructor FUN_0010c6e0 reads the pair; called by P_EH000 and P_EH000_LAST (WP-RV2, docs/bdx.md) |
 | 10.59 | 0x2f75c0 | 2 | FUN_0011a6b8(AI, a) |
 
 Use in the members' scripts (`kh2 bdx`): Donald 10.31 x2; Goofy 10.14, 10.31, 10.40, 10.55 (x2 each);
@@ -710,8 +710,8 @@ Done:
   Sora's 178; on screen the staff and the shield sit in the hand facing outward (the other wrist puts Goofy's shield
   edge-on into his leg). Shown only while the battle flag is set [inferred from the reference video
   `10_menu_open_close.mp4` at 0.0 s, where neither member holds anything out of battle]. **Gap**: the app's new
-  game leaves both members' weapon words 0 (the original's writer of those words was not found; searched: item-id
-  immediates 0x4b / 0x31 in the decompilation), so no weapon appears without `KH2_PARTY_WEAPONS=75,49` (harness
+  game leaves both members' weapon words 0 (the original's writer of those words was not found here; searched: item-id
+  immediates 0x4b / 0x31 in the decompilation; WP-RV2 found it: host 0.75 in `00common.bdx` event 7, below), so no weapon appears without `KH2_PARTY_WEAPONS=75,49` (harness
   aid) or a state that sets the words.
   (WP-PY3) The scenarios that load a state file (`KH2_STATE`, e.g. `local/acc1/state-sum.json`, which has no
   `members` entry) skip the app baseline, so the words stay 0 and `party: P_EX030: no weapon (item 0: no went entry
@@ -722,6 +722,16 @@ Done:
   Donald or Goofy lists a weapon or shield item, so the rows are not the source (docs/progress.md "App baseline");
   `Progress::start` now applies the staff / shield entry to a state file that carries no `block` too
   (`apply_party_weapons`). A file or slot with a `block` keeps its words; `KH2_PARTY_WEAPONS` still works.
+  **(WP-RV2) The real writer.** Host 0.75 (table slot 0x35bc08, native FUN_0016d9d8 -> FUN_00187d88(0x33fec0, member, w0, w1) -> FUN_00187648) stores the two weapon
+  halfwords at record +0 and +2. `00common.bdx` entry event 7 (routine R00c1) calls it 13 times: member 1 (Sora) 41, 2 (Donald) **75**, 3 (Goofy) **49**, 4 81, 5 54, 6 55 and 80,
+  7 72, 8 62, 9 59, 10 60, 11 61, 12 74, 13 73, then host 0.76 (FUN_0016da08, the form record's +0) for forms 1 to 4 = 0, 5 = 71, 9 = 42. FUN_00194d78 runs that event: it makes a
+  thread of `00common.bdx` (DAT_01c8a980, loaded by FUN_00194d50), starts event 7, runs it to its end and frees the thread. Its caller is the game object's constructor FUN_00105638 (the only
+  `jal 0x194d78`), in the same constructor right after FUN_00187d20(+0x598) (not read), so the words are the defaults of every boot and a loaded save replaces them. The constants 75 and 49 (and Sora's 41) are
+  exactly `DONALD_STAFF`, `GOOFY_SHIELD` and the Kingdom Key of the app baseline. The other writers of record +0: FUN_001878f8 (story events of FUN_001d5048 give Sora 0x29, 0x2b or 0x180; it keeps the
+  old word in DAT_00341854 and FUN_00187910 gives it back, 0x29 when none) and the second event script writer, `ard/tt04.ard` `tt04_ms106` (host 0.75 on Sora with 384, 502 and 501). No other
+  writer of Donald's or Goofy's words was found (FUN_00187648 is reached only through FUN_00187d88, whose callers are host 0.75 and FUN_001d5048; host 0.75 has 16 call sites in two scripts,
+  `00common.bdx` and `tt04.ard`; the equipment menu's writers, docs/menus.md 2.2, were not re-read) [inferred: the words stay as the boot default until the menu changes them]. Ported by a later package: `Progress` should take the 13 member
+  words and the form words from this table at the point FUN_00194d78 runs (a boot-time default) instead of the two constants.
 
 Not done or approximated in stage 2:
 
@@ -1025,7 +1035,7 @@ FUN_0016aa18 the matrices at 0 + 0x670 / 0x6b0, i.e. whatever low memory holds, 
 `friend_host::weapon_calls` answers a null handle with no hand object as `false` (1.161) and the zero vector (1.83),
 both Approx [inferred], so the script no longer faults with `BadAddress(0)` at 0x0e14.
 
-**Hosts of `P_EH000` beyond 10.35 (WP-PY3).** `KH2_JUMP_WORDS=4:0:0 KH2_JUMP=1:0:0 KH2_JUMP_AT=4 KH2_BDXLOG=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1 target\debug\kh2-game.exe tt02`: 1.131, 1.54 and (when called) 1.105 / 1.301 are not missing, the enemy host answers them as Stub (`enemy_host.rs`); 1.54 is exact (FUN_0019dde0 clears bit n in the words at +0x47c and +0x480 + 4 (n >> 5)), and no reader of the arrays was traced. 1.131 (FUN_0018f3f8) files a 5-word record into the pool `DAT_01c89bd0 + 0x14 * index` (index popped from `DAT_01c8a5d0[--DAT_01c8a7d0]`), which the app does not pool. 1.301 (FUN_001abee8) is the byte at 0x35ea48 + 0x1e, 0 in the executable's initial data (the Stub answers 0); its writer was not searched. 1.105 (FUN_001731c0) clears bit 6 of +0x768; readers of +0x768 exist (`mips_scan --load-off 0x768`: FUN_00168d30, FUN_00173178, FUN_00176e00, FUN_00176f88, FUN_0017c718, FUN_0017c840, FUN_00191c18), their use of bit 6 is not read. 1.244 `in_battle` (FUN_001903d8, word 0x1c8a7d8) is now Impl in the friend host (`FriendFields::in_battle` from `audio_bgm::BattleFlag::active`). Still unimplemented for `P_EH000`: 10.50 (x75) and 10.58, not read in this WP.
+**Hosts of `P_EH000` beyond 10.35 (WP-PY3).** `KH2_JUMP_WORDS=4:0:0 KH2_JUMP=1:0:0 KH2_JUMP_AT=4 KH2_BDXLOG=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1 target\debug\kh2-game.exe tt02`: 1.131, 1.54 and (when called) 1.105 / 1.301 are not missing, the enemy host answers them as Stub (`enemy_host.rs`); 1.54 is exact (FUN_0019dde0 clears bit n in the words at +0x47c and +0x480 + 4 (n >> 5)), and no reader of the arrays was traced. 1.131 (FUN_0018f3f8) files a 5-word record into the pool `DAT_01c89bd0 + 0x14 * index` (index popped from `DAT_01c8a5d0[--DAT_01c8a7d0]`), which the app does not pool. 1.301 (FUN_001abee8) is the byte at 0x35ea48 + 0x1e, 0 in the executable's initial data (the Stub answers 0); its writer was not searched. 1.105 (FUN_001731c0) clears bit 6 of +0x768; readers of +0x768 exist (`mips_scan --load-off 0x768`: FUN_00168d30, FUN_00173178, FUN_00176e00, FUN_00176f88, FUN_0017c718, FUN_0017c840, FUN_00191c18), their use of bit 6 is not read. 1.244 `in_battle` (FUN_001903d8, word 0x1c8a7d8) is now Impl in the friend host (`FriendFields::in_battle` from `audio_bgm::BattleFlag::active`). Still unimplemented for `P_EH000`: 10.58 (WP-RV2 read it: it stores a record and a value on the friend object, freed by the destructor, no other reader; 10.50 is called by no script, the "x75" here has no source).
 
 **Blizzard** (`P_EX020` R0a19 -> R0acf, request thread R0af8) [V for the script]. The cast (motion 191, the
 trigger, MP, element 3 on Donald) starts a request (2.20) of 288 bytes at R0af8 with the facing: element 4 of

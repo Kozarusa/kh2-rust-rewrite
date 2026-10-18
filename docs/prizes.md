@@ -345,3 +345,21 @@ prizes and items come to rest in mid-air there (seen at y 150 to 188); use `tt02
   [inferred]; the popup registry `FUN_0014f8b0` was not followed.
 - The sprite's colour combination (sprite colour times the kind's colour, 0x80 = 1.0) and the camera-facing
   orientation are inferred; the VU1 draw was not read. Nobody compared the look with the original.
+
+## Global flag word in the pickup path (WP-FL2)
+
+`FUN_001a3848` reads the global flag word 0x35d268 before its party loop (`magic_rules::prize_dispatch`, wired in `prize.rs`
+`pickup_check`, called from the prize tick's pickup test). Bit 0x800 (`FUN_00190610`, Peter Pan's host 6.19) ors 8 into the
+record's +0x28 (`Prize::flag_8`, never cleared); bit 3 (`FUN_001905e8`, Final's host 1.187) gives the prize to the player through
+`FUN_001a3a88` (the app's draw-in and pickup table) whatever the reach test and the Anti-form kind rule say; flag 8 with +0x44 (the
+bounce count) at least 3 does the same and then falls into the party loop. Both need the player object (`DAT_0035c998`; the
+app uses "Sora alive", as the tick needs his centre). `FUN_001bd358` (items, `run_items`) takes an item when the reach test
+holds or either bit is set (`item_taken_by_player`; the object 0x883 branch is not in the app). With the word clear nothing
+changes. Test `global_flags_hand_the_prize_to_the_player`.
+Gaps: the original pays twice in one frame when flag 8 gives the prize and the loop's reach test also holds (the app pays once)
+[inferred from the decompile: no return after the first `FUN_001a3a88` on that path]. `update_gate_global` (bit 0x1000,
+`FUN_0019afe8`) stays unused: its callers FUN_00184498 and FUN_00191c18 are the weapon update, which `sora.rs` does not have as a
+function of its own. The second writer of bit 3, `FUN_001b9140` case 3 (the struggle manager's state 3, `FUN_00193f08` then
+`DAT_0035d268 |= 8`, only called from itself, `mips_scan --jal 0x1b9140`), belongs to `struggle.rs` (state 2 -> 3 near line 811): outside
+this package; exact change there: when the manager's state goes to 3 and the elapsed test (`FUN_00196668` not above `DAT_0037bbc8`)
+passes, `GlobalFlags.merge(GFLAG_COLLECT_AT_ONCE, GFLAG_COLLECT_AT_ONCE)`.

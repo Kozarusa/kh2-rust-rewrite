@@ -31,7 +31,7 @@ use crate::audio::PlaySe;
 use crate::menu::{Menu, Phase};
 use crate::menu_gfx::{MenuScene, Node};
 use crate::menu_pages::Exe;
-use crate::party::{PartyMember, PartySlots};
+use crate::party::{PartyHidden, PartyMember, PartySlots};
 use crate::progress::SORA;
 
 /// Camp page ids of the Party screen (`FUN_00251848` jump table, docs/menus.md 1.4).
@@ -139,11 +139,11 @@ pub struct Row {
 }
 
 /// The rows: the leader (slot 0, always locked) and the members in slot order. A companion is locked when its slot
-/// byte has bit 0x80 (`FUN_001a7268`; the hidden-member list `FUN_001c7be8` is not modelled [GAP: its writer was
-/// not searched]).
-pub fn rows(roster: &[Rostered], bytes: [u8; 4]) -> Vec<Row> {
+/// byte has bit 0x80, or when the byte's low five bits are in the hidden-member list (`FUN_001a7268`: slot 0, `b & 0x80`,
+/// then `FUN_001c7be8(b & 0x1f)`, which compares the number with the list's entries as it stands; WP-PY5).
+pub fn rows(roster: &[Rostered], bytes: [u8; 4], hidden: &PartyHidden) -> Vec<Row> {
     let mut v = vec![Row { id: SORA, slot: 0, locked: true }];
-    v.extend(roster.iter().map(|r| Row { id: r.id, slot: r.slot, locked: bytes.get(r.slot).is_some_and(|b| b & 0x80 != 0) }));
+    v.extend(roster.iter().map(|r| Row { id: r.id, slot: r.slot, locked: bytes.get(r.slot).is_some_and(|b| b & 0x80 != 0 || hidden.contains(u32::from(b & 0x1f))) }));
     v
 }
 
@@ -289,6 +289,7 @@ fn input(
     mut se: MessageWriter<PlaySe>,
     mut slots: ResMut<PartySlots>,
     mut members: Query<&mut PartyMember>,
+    hidden: Res<PartyHidden>,
 ) {
     // The page's own state follows the menu's one frame later (`tick`): the first frame of a page only syncs.
     if !matches!(menu.phase, Phase::Opening | Phase::Open) || !PAGES.contains(&menu.page) || ui.page != menu.page {
@@ -297,7 +298,7 @@ fn input(
     }
     ui.roster = roster(members.iter());
     ui.bytes = slots.bytes;
-    let rows = rows(&ui.roster, ui.bytes);
+    let rows = rows(&ui.roster, ui.bytes, &hidden);
     let confirm = keys.just_pressed(KeyCode::KeyJ);
     let cancel = keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::Backspace) || keys.just_pressed(KeyCode::KeyK);
     // The lists' previous and next masks are Left and Right (`FUN_00296d10(list, 0x40, 0x80, 0, 0)`).
@@ -436,6 +437,7 @@ fn tick(
     data: Option<Res<crate::data::GameData>>,
     progress: Option<Res<crate::progress::Progress>>,
     real: Res<Time<Real>>,
+    hidden: Res<PartyHidden>,
 ) {
     let want = if matches!(menu.phase, Phase::Opening | Phase::Open | Phase::Closing) && PAGES.contains(&menu.page) { menu.page } else { 0 };
     if menu.phase == Phase::Closed {
@@ -461,7 +463,7 @@ fn tick(
     }
     ui.roster = roster(members.iter());
     ui.bytes = slots.bytes;
-    let rows = rows(&ui.roster, ui.bytes);
+    let rows = rows(&ui.roster, ui.bytes, &hidden);
     if want != ui.page {
         let nodes = ui.nodes.take().expect("built");
         if ui.page == 0 {
@@ -595,6 +597,21 @@ mod tests {
 
     fn member(id: u16, slot: usize) -> Rostered {
         Rostered { id, slot, hp: 10, hp_max: 20, mp: 5, mp_max: 100 }
+    }
+
+    fn rows(r: &[Rostered], b: [u8; 4]) -> Vec<Row> {
+        super::rows(r, b, &PartyHidden::default())
+    }
+
+    #[test]
+    fn a_member_in_the_hidden_list_is_locked() {
+        // Slot bytes 1 and 2 name list entries 1 and 2 (`FUN_001c7be8(b & 0x1f)`); Donald's NeoStatus 2 is entry 1.
+        let mut h = PartyHidden::default();
+        h.push(2);
+        let r = super::rows(&[member(2, 1), member(3, 2)], [0, 1, 2, 0x10], &h);
+        assert_eq!(r.iter().map(|r| r.locked).collect::<Vec<_>>(), vec![true, true, false]);
+        let none = super::rows(&[member(2, 1), member(3, 2)], [0, 1, 2, 0x10], &PartyHidden::default());
+        assert_eq!(none.iter().map(|r| r.locked).collect::<Vec<_>>(), vec![true, false, false]);
     }
 
     fn party3() -> Vec<Row> {

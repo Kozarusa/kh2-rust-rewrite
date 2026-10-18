@@ -250,18 +250,32 @@ function at 0x2eec70 (FUN_00112260) sets it from scripts.
   ported here; the return point is a random angle with a distance between `DAT_0037c05c` and `DAT_0037c060` of
   the player, a floor looked up under it (8 tries, else the player's place), facing the player [inferred]. (2)
   The consumer of the +0x82c ramp was not read; the ramp is stepped once per tick and clamped at its end
-  [inferred]. (3) The limit hide (FUN_001c75d0 / FUN_001c7740 from FUN_001b28a0, the `limit.rs` stand-in) and the
-  member swap fade (FUN_001b3f78, 8 frames) are not wired: they need a hide / show call from `limit.rs` /
-  `party.rs` swaps; the app's `LimitParty` is not the real party yet. (4) `friend_ai.rs` still runs a hidden
-  member's script (it has no hidden test; outside this package's ownership). (5) The hidden-list test of the
-  menus (FUN_001c7be8 -> `menu_party::rows` lock) is not wired. (6) A drive form that starts while a summon is
+  [inferred]. (3) WP-PY5 wired the limit hide: FUN_001b28a0 (after the MP spend) loops FUN_0017cd08(0..1); for
+  each party object (FUN_0019a3f8) with +0x588 bit 0x400000 clear and the byte +0xb4c zero (the byte FUN_001b28a0
+  and FUN_001b2c10 store at 0x1b2b4c / 0x1b2d44, FUN_001b3178 / FUN_001b32d8 clear it at the end; the +0x588 bit has no
+  `li 0x400000` hit in mips_scan and is taken as clear [inferred]) it calls FUN_001c75d0 with 0 frames (alpha
+  to 0 at once, listed). The end (FUN_001b37f8, reached from FUN_001b2850 / FUN_001b35e8 / FUN_001b3798) calls
+  FUN_001c79c8 when the thread flag +0x40 bit 0x10 is clear (else FUN_001c75c0 clears the list; the app takes the bit as clear [inferred]). The app:
+  `limit.rs` `try_limit` sends `party::LimitMembers { away }` at the start and at the end of the stand-in's
+  duration; `party_hide` hides every member without `Away` (`hide(0, ..)`) and, on the end, runs `bring_back`
+  (the FUN_001c79c8 path, shared with the drive form's return). FUN_001c7740 (hide both, from FUN_001ad9a0 and
+  FUN_001c6168) was not traced further. The stand-in has no limit task, so nobody takes the members' place
+  while they are hidden. The member swap fade (FUN_001b3f78: fade 8 frames from `DAT_0037ba60`, then
+  FUN_0017d290 with `DAT_0037ba68..70`) is still a gap: its only callers are FUN_001b41e8 (Auto Change, via
+  FUN_001b4170) and FUN_002a15d0 (from FUN_002514d0), and the app's Auto Change swaps the slot bytes at the KO and
+  lets `spawn_party` rebuild at once; a fade needs the rebuild deferred by 8 frames and a fade-in on the new
+  member. (4) WP-PY5: `friend_ai::friend_update` skips a hidden member (`PartyMember::runs_script`, test
+  `a_hidden_member_does_not_run_its_script`). (5) WP-PY5: `menu_party::rows` locks a slot whose byte's low five
+  bits are in the hidden list: FUN_001a7268 returns locked for slot 0, byte bit 0x80, or FUN_001c7be8(byte & 0x1f)
+  (the byte is compared with the list's entries as it stands, `hidden_index` values 0..3; test
+  `a_member_in_the_hidden_list_is_locked`). (6) A drive form that starts while a summon is
   active, and the FUN_0017d1b0 summon branch (byte 5), are not modelled.
 - **Hyper Healing on a revive (WP-PY4).** `PartyMember::change_hp` takes the saved record (`Progress`) and asks
   `PartyData::revive_scale_of(abilities)` = `party_rules::revive_scale` (the word at `DAT_0037a560` when ability
   419 is equipped, else `sstm` +0x54); every field path (revive timer, hits, item uses, script heals) passes it.
-  The menu's use (`menu_items::use_item`) passes the scale of the member on the chosen row; a group item (Mega
-  potions) uses that row's scale for all members, because `use_on_member` takes one number [gap: it needs the
-  per-member call, one more edit in `menu_items.rs`]. The revive timer's own Hyper Healing multiplier (+0x58 of
+  The menu's use (`menu_items::use_item`) passes one scale per field member (`revive_scales`, from each member's
+  own saved abilities); a group item (Mega potions) revives member `k` with scale `k` (`revive_at`, WP-PY5, test
+  `group_items_revive_each_member_with_its_own_scale`). The revive timer's own Hyper Healing multiplier (+0x58 of
   the block, `sstm` +0x154) stays 1.0 as before.
 - **Auto swap** on KO [I: the Auto Change ability]: FUN_0017ce60 calls FUN_001b4170 when the KO'd member's
   ability block word +0x10 has bit 4, FUN_001b42f0 holds and FUN_0017d0f0 says the member is out of the
@@ -1214,8 +1228,7 @@ Files: `party.rs` (`PartySlots::enter_world`, `wanted_members`, `member_key`, `s
 - **Slot 3.** [Superseded by WP-PY1, section 20: byte 3 is a reserve member and spawns nobody.] It spawned a third
   member (`PARTNER`) beside Sora [inferred: no map script row places a third member].
 
-**Gaps** (not read): page 0x15 and its caller; the writers of the hidden-member list FUN_001c7be8 (so the "locked by the
-hidden list" rule of `menu_party::rows` stays byte-bit-0x80 only); the members' leave / enter animations; the model tweaks
+**Gaps** (not read): page 0x15 and its caller; the writers of the hidden-member list FUN_001c7be8 (the lock rule of `menu_party::rows` now reads the list, WP-PY5); the members' leave / enter animations; the model tweaks
 of FUN_0023b5d0 / FUN_0023b5b0; a third follow point in FUN_00111670.
 
 ## 19. Status: no members in the Struggle (WP-S8)

@@ -60,6 +60,7 @@ impl Plugin for PartyPlugin {
         app.insert_resource(data)
             .init_resource::<PartySlots>()
             .init_resource::<PartyHidden>()
+            .add_message::<LimitMembers>()
             .insert_resource(Manager { log: std::env::var("KH2_PARTYLOG").is_ok_and(|v| !v.is_empty() && v != "0"), rng: 0x2545_f491, ..Default::default() })
             .add_systems(FixedUpdate, (jump_party, jump_reset, mission_party, spawn_party, party_tick, party_push_apart, party_hide, party_fade, party_hits).chain().in_set(PartyTick).in_set(Sim::Enemy))
             .add_systems(FixedUpdate, (party_record_sync, party_auto_healing).chain().after(PartyTick).in_set(Sim::Enemy))
@@ -800,6 +801,11 @@ impl PartyMember {
     /// FUN_001c7600 on a member with an object: unless bit 0x10 is already set the alpha ramps from
     /// `DAT_0037c04c` to 0 over `frames` (FUN_001abf40), and the bit is set. The member stops whatever it was
     /// doing (a warp's fade, an attack, an item): it is not ticked while hidden. Returns whether it hid now.
+    /// Whether the member's script (`friend_ai`) runs this tick: a hidden member (+0x7f8 bit 0x10) is not ticked.
+    pub(crate) fn runs_script(&self) -> bool {
+        !self.hidden
+    }
+
     pub(crate) fn hide(&mut self, frames: f32, fades_from: f32) -> bool {
         if self.hidden {
             return false;
@@ -2763,6 +2769,46 @@ fn face_player(from: Vec3, player: Vec3) -> f32 {
     if d.length_squared() > 1e-6 { d.x.atan2(d.z) } else { 0.0 }
 }
 
+/// FUN_001c79c8: every listed member that is hidden comes back through FUN_001c7ab0 (a free spot near the player,
+/// a fade-in), then the list is emptied.
+fn bring_back(
+    player: Vec3,
+    f: &HideFades,
+    world: Option<&World>,
+    list: &mut PartyHidden,
+    mgr: &mut Manager,
+    q: &mut Query<(&mut PartyMember, &mut Visibility, &mut Fighter, Has<crate::summon::Away>)>,
+) {
+    for (mut m, mut vis, mut fighter, away) in q.iter_mut() {
+        if away || !m.hidden || !list.contains(hidden_index(m.neo)) {
+            continue;
+        }
+        let mut at = player;
+        for _ in 0..8 {
+            let angle = mgr.random(360) as f32 * std::f32::consts::TAU / 360.0;
+            let dist = f.near + mgr.roll() * (f.far - f.near);
+            let p = return_spot(player, angle, dist);
+            if let Some(g) = world.and_then(|w| w.ground(p, player.y + f.lift, 400.0)) {
+                at = p.with_y(g.y);
+                break;
+            }
+        }
+        let yaw = face_player(at, player);
+        m.show(at, yaw, f.in_to, f.in_frames);
+        *vis = Visibility::Inherited;
+        fighter.hittable = true;
+        info!("party: {} comes back at {at:?} ({:.0} units from the player), fading in over {} frames (FUN_001c79c8 -> FUN_001c7ab0)", m.model, (at - player).with_y(0.0).length(), f.in_frames);
+    }
+    list.clear();
+}
+
+/// The limit starts (`away`, FUN_001b28a0) or ends (FUN_001b37f8): hides the party members or brings them back.
+/// Sent by `limit.rs`; read by `party_hide`.
+#[derive(Message, Clone, Copy, Debug, PartialEq)]
+pub struct LimitMembers {
+    pub away: bool,
+}
+
 /// Hide and show (docs/party.md section 6, "Drive forms"): when a drive form starts (`DriveState::form`
 /// becomes non-zero: FUN_001b4c28 -> FUN_001c76b0) every member the form takes (`form_takes`,
 /// FUN_001c77a8) is hidden by FUN_001c7600 (a 15 frame fade-out, bit 0x10, the list entry); when it ends
@@ -2777,33 +2823,29 @@ fn party_hide(
     (mut list, mut mgr, mut last): (ResMut<PartyHidden>, ResMut<Manager>, Local<u8>),
     sora: Query<&Sora>,
     mut q: Query<(&mut PartyMember, &mut Visibility, &mut Fighter, Has<crate::summon::Away>)>,
+    mut limit: MessageReader<LimitMembers>,
 ) {
     let f = data.fades;
     let form = drive.as_deref().map_or(0, |d| d.form);
+    // The limit (docs/limits-reactions.md): FUN_001b28a0 hides both party objects with no fade (FUN_001c75d0 with 0
+    // frames); its end (FUN_001b37f8 -> FUN_001c79c8) brings the listed members back.
+    for e in limit.read() {
+        if e.away {
+            for (mut m, _, mut fighter, away) in &mut q {
+                if !away && m.hide(0.0, f.out_from) {
+                    fighter.hittable = false;
+                    list.push(m.neo);
+                    info!("party: {} hidden by the limit: no fade and listed (FUN_001b28a0 -> FUN_001c75d0)", m.model);
+                }
+            }
+        } else if let Ok(s) = sora.single() {
+            bring_back(s.motor.pos, &f, world.as_deref(), &mut list, &mut mgr, &mut q);
+        }
+    }
     if form != *last {
         if *last != 0 {
             if let Ok(s) = sora.single() {
-                let player = s.motor.pos;
-                for (mut m, mut vis, mut fighter, away) in &mut q {
-                    if away || !m.hidden || !list.contains(hidden_index(m.neo)) {
-                        continue;
-                    }
-                    let mut at = player;
-                    for _ in 0..8 {
-                        let angle = mgr.random(360) as f32 * std::f32::consts::TAU / 360.0;
-                        let dist = f.near + mgr.roll() * (f.far - f.near);
-                        let p = return_spot(player, angle, dist);
-                        if let Some(g) = world.as_deref().and_then(|w| w.ground(p, player.y + f.lift, 400.0)) {
-                            at = p.with_y(g.y);
-                            break;
-                        }
-                    }
-                    let yaw = face_player(at, player);
-                    m.show(at, yaw, f.in_to, f.in_frames);
-                    *vis = Visibility::Inherited;
-                    fighter.hittable = true;
-                    info!("party: {} comes back at {at:?} ({:.0} units from the player), fading in over {} frames (FUN_001c79c8 -> FUN_001c7ab0)", m.model, (at - player).with_y(0.0).length(), f.in_frames);
-                }
+                bring_back(s.motor.pos, &f, world.as_deref(), &mut list, &mut mgr, &mut q);
             }
             list.clear();
         }
@@ -3549,6 +3591,26 @@ mod jump_record_tests {
         assert_eq!((done_at, r.value()), (15, 0.0));
         let now = Ramp::new(1.0, 0.0, 0.0);
         assert!(now.done() && now.value() == 0.0, "no frames: at the target at once");
+    }
+
+    /// A hidden member's script is skipped by `friend_ai` (`runs_script`), a shown one runs.
+    #[test]
+    fn a_hidden_member_does_not_run_its_script() {
+        let mut m = blank(2, 30, 30);
+        assert!(m.runs_script());
+        m.hide(15.0, 1.0);
+        assert!(!m.runs_script());
+        m.show(Vec3::ZERO, 0.0, 1.0, 15.0);
+        assert!(m.runs_script());
+    }
+
+    /// The limit hides with no fade (FUN_001c75d0 passes 0 frames): the ramp is at its end at once.
+    #[test]
+    fn a_limit_hide_has_no_fade() {
+        let mut m = blank(3, 30, 30);
+        assert!(m.hide(0.0, 1.0));
+        assert_eq!(m.alpha, 0.0, "alpha 0 straight away");
+        assert!(m.hidden);
     }
 
     /// Hide (FUN_001c7600) then show (FUN_001c7ab0): the member is hidden once, its alpha follows the ramp, it

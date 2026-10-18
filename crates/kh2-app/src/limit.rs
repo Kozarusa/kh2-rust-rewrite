@@ -646,6 +646,7 @@ fn try_limit(
     summon: SummonSide,
     mut requests: MessageReader<StartLimit>,
     gate_params: GateParams,
+    mut members: MessageWriter<crate::party::LimitMembers>,
 ) {
     let (sm, drive, summon_data, mut summon_queue) = summon;
     if let Some((cmd, left)) = active.0.as_mut() {
@@ -654,6 +655,7 @@ fn try_limit(
             info!("limit: command {cmd} ended (duration over)");
             active.0 = None;
             thread.0 = None;
+            members.write(crate::party::LimitMembers { away: false });
             if let Some(p) = progress.as_deref_mut() {
                 hits.finish(p);
                 info!("limit: best count of slot {} is now {} (FUN_001b32d8 -> FUN_001d25b0)", hits.slot, p.limit_best(hits.slot));
@@ -745,6 +747,7 @@ fn try_limit(
             if let Some(n) = std::env::var("KH2_LIMIT_HITS").ok().and_then(|v| v.parse::<i32>().ok()) {
                 hits.add(n);
             }
+            members.write(crate::party::LimitMembers { away: true });
             out.write(LimitStarted { command, file: r.file.clone(), time: r.time, members: r.members });
         }
     }

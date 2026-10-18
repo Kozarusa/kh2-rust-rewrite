@@ -1147,8 +1147,9 @@ pub(super) fn input(
                         let mut field: Vec<_> = party.iter_mut().collect();
                         field.sort_by_key(|m| m.slot);
                         field.truncate(2);
-                        let revive = field.get(row.wrapping_sub(1)).map_or(1.0, |t| pdata.as_deref().map_or(1.0, |d| d.revive_scale_of(&p.member(t.neo).map(|r| r.abilities).unwrap_or_default())));
-                        use_item(&st, p, &mut s, m, drive.as_deref_mut(), d.sora_max_mp, (feed, revive), (item, &name), row, &mut field);
+                        let neos: Vec<u16> = field.iter().map(|t| t.neo).collect();
+                        let revives = revive_scales(&neos, |neo| pdata.as_deref().map_or(1.0, |d| d.revive_scale_of(&p.member(neo).map(|r| r.abilities).unwrap_or_default())));
+                        use_item(&st, p, &mut s, m, drive.as_deref_mut(), d.sora_max_mp, (feed, &revives), (item, &name), row, &mut field);
                         let stock = stock_of(&st, p, st.machine.as_ref().map_or(0, |m| m.filter));
                         if let Some(m) = st.machine.as_mut() {
                             m.reload(stock, false);
@@ -1216,6 +1217,17 @@ fn item_name(st: &ItemsMenu, scene: &MenuScene, id: u16) -> String {
     st.rows.get(&id).and_then(|r| scene.text.as_ref()?.messages.as_ref()?.text(u32::from(r.name))).unwrap_or_else(|| format!("item {id}"))
 }
 
+/// The Hyper Healing revive scale of each field member, in row order after Sora: a group item revives every
+/// member with that member's own abilities (`FUN_0017cee8` reads the scale per target, WP-PY5).
+fn revive_scales(neos: &[u16], scale_of: impl Fn(u16) -> f32) -> Vec<f32> {
+    neos.iter().map(|&n| scale_of(n)).collect()
+}
+
+/// The scale for item-target row `k` (row 0 is Sora, row `k` the member `k - 1`); 1.0 outside the list.
+fn revive_at(revives: &[f32], k: usize) -> f32 {
+    k.checked_sub(1).and_then(|i| revives.get(i)).copied().unwrap_or(1.0)
+}
+
 /// `FUN_0025ea40`: the item's effect on the member (`FUN_001a11a0(item, member, 0, 100)`: no Item Boost in the
 /// menu), then one comes off the stock (`FUN_001a1ba8(item, 100)`). The boosts (0x114 .. 0x117) raise the
 /// record byte (`FUN_001a0ce0` .. `0dd0`) by the item's amount; everything else is `items::item_effect`. A group
@@ -1230,7 +1242,7 @@ fn use_item(
     magic: &mut crate::magic::MagicState,
     mut drive: Option<&mut crate::drive::DriveState>,
     max_mp: i32,
-    (feed, revive): (f32, f32),
+    (feed, revives): (f32, &[f32]),
     (item, name): (u16, &str),
     row: usize,
     members: &mut [Mut<crate::party::PartyMember>],
@@ -1270,7 +1282,7 @@ fn use_item(
             }
             sora_line = Some((hp0, mp0, note));
         } else if let Some(m) = members.get_mut(k - 1) {
-            let note = use_on_member(p, m, item, r.amount, feed, revive);
+            let note = use_on_member(p, m, item, r.amount, feed, revive_at(revives, k));
             info!("menu: item used: {name} (id {item}, row {k}) on member {} ({}): {note}", m.neo, m.model);
         }
     }
@@ -1990,6 +2002,14 @@ mod tests {
 
     /// The heal goes through the HP method: a KO'd member gets up with the scaled amount (`battle::hp_change`), a
     /// standing one is healed by the item's amount, held at the maximum.
+    #[test]
+    fn group_items_revive_each_member_with_its_own_scale() {
+        let r = revive_scales(&[2, 3], |neo| if neo == 2 { 0.5 } else { 1.0 });
+        assert_eq!(r, vec![0.5, 1.0]);
+        assert_eq!((revive_at(&r, 1), revive_at(&r, 2)), (0.5, 1.0));
+        assert_eq!((revive_at(&r, 0), revive_at(&r, 3)), (1.0, 1.0), "Sora and a missing row use 1.0");
+    }
+
     #[test]
     fn an_item_revives_a_ko_member_through_the_hp_method() {
         let mut v = Vitals { hp: 0, hp_max: 50, ..Default::default() };

@@ -415,6 +415,19 @@ countdown numerals (clock groups 0x1f, 0x1e, 0x1d, 0x1c) were looked at in shots
 65 s (after): each shows alone for about a second and is gone (`FUN_00150d40` plays each once and its object ends);
 the app already removed them when their group finished.
 
+## Collect-at-once bit after the end (WP-FL3)
+
+`FUN_001b9140` case 3 (the manager's state 3, reached once the event playing has 4 frames or fewer left, `FUN_00196668` not above
+`DAT_0037bbc8`) runs `FUN_00193f08`, then `DAT_0035d268 |= 8` (bit 3, `GFLAG_COLLECT_AT_ONCE`), then `FUN_001ba140`: prizes and items go to
+the player at once for the rest of the area. `Active::collect_at_once` is set in `flow_tick`'s state 3 step; `mission_tick` publishes it
+through `collect_latch` into `magic_rules::GlobalFlags`. The manager itself never clears the bit. Clearers of the word found by
+`mips_scan --addr 0x35d268` and the decomp: host 1.188 (magic, already wired), and `FUN_00190370` / `FUN_00190af8` (store 0). `FUN_00190370`
+is called from `FUN_001689c0` (area setup, called from `FUN_001048e0`) [inferred: once per area load]. The app has no area-setup hook for
+the word, so the latch is dropped when a fresh manager (state below 3) appears, and kept after the manager is gone because the magic
+system republishes bit 3 from its own state every tick. Test `state_three_sets_the_collect_bit_and_it_outlives_the_manager`.
+Gaps: the 0x173a58 function (a bit-3 clear next to the setter 0x173a40; no `jal` caller, so reached by a table) was not traced; a latch
+survives a map change when no new manager is built.
+
 ## Decompile index
 
 | address | what |

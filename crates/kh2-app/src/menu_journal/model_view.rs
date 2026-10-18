@@ -204,6 +204,37 @@ fn want(j: &Journal) -> Option<Want> {
     choose(o.page, &o.cp.list, o.cp.cur, &j.chars)
 }
 
+/// Whether the page shows a model now, and whether it is the large one (the alpha object that leaves with a page turn).
+pub(super) fn shown_size(j: &Journal) -> Option<bool> {
+    want(j).map(|w| w.large)
+}
+
+/// The colour alpha (1 = 0x80) of a group's first animation at `frame`: the start colour when the animation steps its colour (flag 0x80), else
+/// the linear blend of start and end (`FUN_00236cf8`).
+pub fn group_alpha(s: &kh2_image::seqd::Seqd, group: usize, frame: i32) -> f32 {
+    use kh2_image::seqd::flag;
+    let Some(g) = s.groups.get(group) else { return 1.0 };
+    let Some(a) = s.anims.get(g.first) else { return 1.0 };
+    let (c0, c1) = (f32::from(a.color_start[3]), f32::from(a.color_end[3]));
+    let span = (a.frame_end - a.frame_start).max(1) as f32;
+    let t = ((frame - a.frame_start) as f32 / span).clamp(0.0, 1.0);
+    let v = if a.flags & flag::COLOR_STEP != 0 { c0 } else { c0 + (c1 - c0) * t };
+    (v / 128.0).clamp(0.0, 1.0)
+}
+
+/// The model takes its alpha from the alpha object of its size (`FUN_0023b4e0`: the object's colour alpha, `FUN_00237518(object + 0x18) >> 24`):
+/// group 7 raises it from 0 to 0x80 in 24 frames, group 8 holds 0x80, group 9 lowers it in 12 frames (docs/menus.md 20.14). The port draws the model
+/// into a picture, so the picture carries the alpha.
+fn fade(j: Res<Journal>, v: Res<ModelView>, mut scene: ResMut<MenuScene>) {
+    let (Some(node), Some((w, _))) = (v.node, v.key) else { return };
+    let n = &scene.nodes[j.nodes.cpage.alpha[usize::from(w.large)]];
+    let alpha = match (n.player.group, n.seq.and_then(|s| scene.seqs.get(s))) {
+        (Some(g), Some(s)) => group_alpha(s, g, n.player.frame()),
+        _ => 1.0,
+    };
+    scene.nodes[node].label_fade = alpha;
+}
+
 #[derive(Component)]
 struct ViewModel {
     body: Entity,
@@ -234,7 +265,7 @@ pub struct ModelPlugin;
 
 impl Plugin for ModelPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<ModelView>().add_systems(Update, (show, animate, layer).chain().after(super::tick).before(crate::schedule::Frame::Popups));
+        app.init_resource::<ModelView>().add_systems(Update, (show, fade, animate, layer).chain().after(super::tick).before(crate::schedule::Frame::Popups));
     }
 }
 
@@ -322,6 +353,9 @@ fn show(
     }
     v.key = key;
     let Some(w) = wanted else { return };
+    // A new model is a new alpha object (`FUN_002abc40` makes it with the model): it fades in.
+    let alpha = j.nodes.cpage.alpha[usize::from(w.large)];
+    scene.set_group_then(alpha, super::group::MODEL_ALPHA[0], super::group::MODEL_ALPHA[1]);
     let rec = j.chars[w.ch];
     let Some((rig, groups)) = rig_of(&mut v, &disc, u32::from(rec.model)) else {
         info!("journal: page {label:#x} model: object {} has no model files; nothing is drawn (FUN_002abf60)", rec.model);
@@ -605,5 +639,23 @@ mod tests {
         let (drop, depth, pitch) = projection(DEPTH);
         assert!((drop - crate::menu::preview::model_drop()).abs() < 0.01, "{drop}");
         assert!((depth - 702.0).abs() < 2.0 && pitch > 0.05 && pitch < 0.06, "{depth} {pitch}");
+    }
+
+    /// The model alpha objects of jmemo.2ld sequence 5 (skipped without `KH2_ISO`): group 7 fades 0 to 0x80 in 24 frames, group 8 holds
+    /// 0x80), group 9 fades 0x80 to 0 in 12 frames; the header leave (129) lasts 12 frames, the viewer plate's groups 4 / 5 / 6 exist.
+    #[test]
+    fn the_disc_model_alpha_and_turn_groups() {
+        let Ok(iso) = std::env::var("KH2_ISO") else { return };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let two = kh2_image::layd::parse_2ld(&a.read("menu/us/jmemo.2ld").unwrap()).unwrap();
+        let s = &two.layd.seqs[5];
+        assert_eq!((group_alpha(s, 7, 0), group_alpha(s, 7, 24), group_alpha(s, 8, 5)), (0.0, 1.0, 1.0));
+        assert!((group_alpha(s, 7, 12) - 0.5).abs() < 0.01);
+        assert_eq!((group_alpha(s, 9, 0), group_alpha(s, 9, 12)), (1.0, 0.0));
+        assert!((group_alpha(s, 9, 6) - 0.5).abs() < 0.01);
+        assert_eq!(s.anims[s.groups[129].first].frame_end, 12);
+        for g in [4, 5, 6] {
+            assert!(s.groups[g].count == 4, "viewer plate group {g}");
+        }
     }
 }

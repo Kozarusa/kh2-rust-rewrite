@@ -211,6 +211,10 @@ mod group {
     pub const START: usize = 1;
     /// The plate object 0x7558 (`FUN_002772d0`: enter 0x2c, hold 0x2d).
     pub const PLATE: [usize; 2] = [0x2c, 0x2d];
+    /// The viewer plate of the model pages (object 0x7567, `FUN_002aba90`: enter 4, hold 5; leave 6 by `FUN_002abb20`).
+    pub const VIEWER: [usize; 3] = [4, 5, 6];
+    /// The model alpha objects (`FUN_002abc40`: enter 7, hold 8; leave 9 by `FUN_002abd28`).
+    pub const MODEL_ALPHA: [usize; 3] = [7, 8, 9];
     /// The world picture (sequence 2): enter 1, hold 2 (`FUN_002a2bc0`).
     pub const ICON: [usize; 2] = [1, 2];
 }
@@ -1016,6 +1020,10 @@ struct CharPageNodes {
     desc: usize,
     /// The picture of the 3D model (`model_view.rs`): after the layer, before the frame and the texts that stand in front of it.
     model: usize,
+    /// The viewer plate of the model pages (object 0x7567, `FUN_002aba90`: groups 4 then 5, leave 6), drawn behind the model.
+    viewer: usize,
+    /// The alpha objects of the small and the large model (`FUN_002abc40`: groups 7 then 8, leave 9; never drawn here, they only give the model its alpha).
+    alpha: [usize; 2],
     /// The enemy pages' counter row (the label of group 0x4c and its count) and the five reaction rows (label, count).
     counter: [usize; 2],
     react: [[usize; 2]; 5],
@@ -1023,7 +1031,7 @@ struct CharPageNodes {
 
 impl CharPageNodes {
     fn all(&self) -> Vec<usize> {
-        let mut v = vec![self.layer, self.name, self.sub, self.arrows[0], self.arrows[1], self.frame, self.pic, self.desc];
+        let mut v = vec![self.layer, self.name, self.sub, self.arrows[0], self.arrows[1], self.frame, self.pic, self.desc, self.viewer];
         v.extend(self.counter);
         v.extend(self.react.iter().flatten());
         v
@@ -1222,8 +1230,18 @@ pub struct Journal {
     request: Option<i32>,
     /// A page switch asked for by `input` (page, world byte), built by `tick`.
     goto: Option<(u16, i8)>,
+    /// A page turn in progress: the old page leaves for a few frames before the next one is built.
+    turn: Option<Turn>,
     /// The scene is up: page, cursor, the shown cells, the scene nodes it hid and their visibility.
     open: Option<Open>,
+}
+
+/// A page turn (docs/menus.md 20.14): the page to build when the leaving objects have finished, the world byte, whether the header
+/// was sent away (it is re-entered with the next page) and the nodes whose leave group is waited for.
+struct Turn {
+    to: (u16, i8),
+    header: bool,
+    waits: Vec<usize>,
 }
 
 /// One Ansem report (`jiminy.bar` entry 4).
@@ -1492,6 +1510,8 @@ fn load(j: &mut Journal, disc: &Disc, scene: &mut MenuScene, images: &mut Assets
     // A character's own page (`FUN_002a98f0`): the layer, the frame and the picture under it, the texts and arrows under the header.
     {
         let layer = add(scene, list, tex, Some(header));
+        let viewer = add(scene, list, tex, Some(layer));
+        let alpha = [add(scene, list, tex, None), add(scene, list, tex, None)];
         let model = scene.add(Node::new(None));
         scene.nodes[model].visible = false;
         let frame = add(scene, list, tex, Some(layer));
@@ -1505,7 +1525,7 @@ fn load(j: &mut Journal, disc: &Disc, scene: &mut MenuScene, images: &mut Assets
             let label = add(scene, list, tex, Some(header));
             [label, add(scene, list, tex, Some(label))]
         });
-        nodes.cpage = CharPageNodes { layer, name, sub, arrows, frame, pic, desc, model, counter, react };
+        nodes.cpage = CharPageNodes { layer, name, sub, arrows, frame, pic, desc, model, viewer, alpha, counter, react };
     }
     j.nodes = nodes;
     j.loaded = true;
@@ -1573,6 +1593,10 @@ fn input(mut j: ResMut<Journal>, mut menu: ResMut<Menu>, mut keys: ResMut<Button
     };
     for k in [KeyCode::KeyJ, KeyCode::Escape, KeyCode::Backspace, KeyCode::KeyK, KeyCode::Enter, KeyCode::NumpadEnter, KeyCode::ArrowLeft, KeyCode::ArrowRight, KeyCode::ArrowUp, KeyCode::ArrowDown, KeyCode::KeyQ, KeyCode::KeyE, KeyCode::PageUp, KeyCode::PageDown, KeyCode::BracketLeft, KeyCode::BracketRight, KeyCode::KeyZ, KeyCode::KeyC, KeyCode::KeyY] {
         keys.clear_just_pressed(k);
+    }
+    if j.turn.is_some() {
+        // The original ignores the pad while a page leaves (`FUN_00295d90(0)` in the handlers' waiting branch).
+        return;
     }
     let (Some(key), true, None) = (key, j.loaded, j.goto) else { return };
     let Some(o) = j.open.as_ref() else { return };
@@ -2607,9 +2631,21 @@ fn char_tabs(j: &mut Journal, scene: &mut MenuScene, back: u16) {
 /// A model page (0x10, 0x13, 0x16: `FUN_002aa0b0`): the tab stays as the character page had it and the large model stands where the
 /// record puts it (`model_view`). Nothing else of the character page remains: its layer, face, texts and arrows are hidden.
 fn build_model_page(j: &mut Journal, scene: &mut MenuScene, page: u16, world: i8, _test: &dyn Fn(u16) -> bool) {
-    let Some(o) = j.open.as_ref() else { return };
-    let back = o.cp.back;
-    char_tabs(j, scene, back);
+    if j.open.is_none() {
+        return;
+    }
+    // The teardown of the character page (`FUN_002a8568` with the next page 0x10 / 0x13 / 0x16) ends both name plates (`FUN_0029d4e0`) and the
+    // backdrop (`FUN_00277ec0`), so only the viewer plate, the model and the header remain.
+    let n = &j.nodes;
+    for id in [n.tab, n.tab_follow, n.tab2, n.tab2_follow, n.backdrop] {
+        scene.nodes[id].visible = false;
+    }
+    // The plate hangs from the page's layer (`FUN_0029ba00(plate, layer)`), whose group 0x49 anchors its children at (76, 180).
+    let (layer, viewer) = (j.nodes.cpage.layer, j.nodes.cpage.viewer);
+    scene.nodes[layer].visible = false;
+    scene.set_group(layer, CHAR_LAYER);
+    scene.nodes[viewer].visible = true;
+    scene.set_group_then(viewer, group::VIEWER[0], group::VIEWER[1]);
     let o = j.open.as_mut().unwrap();
     (o.page, o.world) = (page, world);
     info!("journal: page {page:#x} (FUN_002aa0b0): the model page of character {}", o.cp.list.get(o.cp.cur).copied().unwrap_or(0));
@@ -2924,9 +2960,50 @@ fn move_pointer(j: &mut Journal, scene: &mut MenuScene, steps: u32, dir: (i32, i
     }
 }
 
+/// Starts the page turn to `to` (docs/menus.md 20.14). The original's handlers answer a page-changing key with the waiting state
+/// (`FUN_00295ac0(2)`): the header object plays its leave group (`FUN_002779f8(.., 1)`), the old page's objects are torn down on the
+/// first waiting frame (`FUN_002a21b8`, `FUN_002a8568`), and the next page is built only when the header and the viewer objects are gone
+/// (`FUN_00277b40`, `FUN_00278068`, `FUN_002abdc8`). The character page and its model page keep the header: they send away the model's
+/// alpha object (group 9) and the viewer plate (group 6) instead (`FUN_002abd28`, `FUN_002abb20`). Returns false when nothing leaves.
+fn begin_turn(j: &mut Journal, scene: &mut MenuScene, to: (u16, i8)) -> bool {
+    let Some(from) = j.open.as_ref().map(|o| o.page) else { return false };
+    let (a, b) = (model_view::is_view(from), model_view::is_view(to.0));
+    let pair = a != b && matches!(if a { to.0 } else { from }, 0xf | 0x12 | 0x15);
+    let mut waits = Vec::new();
+    if !pair {
+        let h = j.nodes.header;
+        scene.set_group(h, j.header[1]);
+        waits.push(h);
+        let n = &j.nodes;
+        let keep = [n.tab, n.tab_follow, n.tab2, n.tab2_follow, n.title, n.backdrop, n.cpage.model];
+        for id in n.page0().into_iter().chain(n.page12()).chain(n.page3()).chain([n.help, n.cursor, n.follow]) {
+            if !keep.contains(&id) {
+                scene.nodes[id].visible = false;
+            }
+        }
+    }
+    if let Some(large) = model_view::shown_size(j) {
+        let alpha = j.nodes.cpage.alpha[usize::from(large)];
+        scene.set_group(alpha, group::MODEL_ALPHA[2]);
+        waits.push(alpha);
+    }
+    let viewer = j.nodes.cpage.viewer;
+    if scene.nodes[viewer].visible {
+        scene.set_group(viewer, group::VIEWER[2]);
+        waits.push(viewer);
+    }
+    if waits.is_empty() {
+        return false;
+    }
+    info!("journal: page turn {from:#x} -> {:#x}: {} leaving objects (header {}), the next page is built when they have finished (FUN_00295ac0(2))", to.0, waits.len(), !pair);
+    j.turn = Some(Turn { to, header: !pair, waits });
+    true
+}
+
 fn close(j: &mut Journal, scene: &mut MenuScene, menu: &mut Menu) {
     let Some(o) = j.open.take() else { return };
     j.goto = None;
+    j.turn = None;
     for id in j.nodes.all() {
         scene.nodes[id].visible = false;
     }
@@ -3001,8 +3078,20 @@ fn tick(
     if let Some((page, world)) = j.goto.take()
         && j.open.is_some()
     {
-        build(&mut j, &mut scene, &disc, &mut images, page, world, &test, &items);
+        if !begin_turn(&mut j, &mut scene, (page, world)) {
+            build(&mut j, &mut scene, &disc, &mut images, page, world, &test, &items);
+        }
         *logged = 0;
+    }
+    if j.open.is_some()
+        && j.turn.as_ref().is_some_and(|t| t.waits.iter().all(|&i| scene.nodes[i].player.finished()))
+        && let Some(t) = j.turn.take()
+    {
+        build(&mut j, &mut scene, &disc, &mut images, t.to.0, t.to.1, &test, &items);
+        if t.header {
+            let (h, hg) = (j.nodes.header, j.header);
+            scene.set_group_then(h, hg[0], hg[2]);
+        }
     }
     // The Treasures / Maps pages' cursor presses (`FUN_002b1890`).
     if let Some(nav) = j.nav.take()
@@ -3792,4 +3881,5 @@ mod tests {
             assert!(w.iter().any(|r| r.id == i), "world {i}");
         }
     }
+
 }

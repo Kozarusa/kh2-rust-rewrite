@@ -238,10 +238,12 @@ impl PartyHidden {
         self.0.clear();
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -1150,6 +1152,7 @@ fn area_entered(loaded: Option<&str>, built_for: Option<&str>) -> bool {
 
 /// Spawns the members of a newly loaded area (they are area parts: the next area load removes them).
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
 fn spawn_party(
     mut commands: Commands,
     disc: Res<Disc>,

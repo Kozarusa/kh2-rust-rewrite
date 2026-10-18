@@ -287,3 +287,7 @@ assume "no story flag set").
   ported; they write outside the party block.
 - A spell's shortcut 0 command (`FUN_001a1f78` type 0x12 -> `FUN_001a4dd0`) needs the loaded magic resources;
   `Progress` answers 0 (they are empty at boot, the oracle agrees).
+
+## Level-ups reach Sora's combat stats (WP-LV1)
+
+`Progress` level byte -> `GameData::sora_status` -> `Sora.stats` (`sora::refresh_status`): the `lvup` row of the level plus the record bonus bytes plus the equipment, as FUN_0019f920 does; the rule and its gaps are in docs/player-data.md "Sora's runtime status block follows the record". The spawn still builds the level 1 block (`GameData::sora_stats(1)`); the first fixed tick replaces it, logging `sora: status rebuilt from the record: ...`.

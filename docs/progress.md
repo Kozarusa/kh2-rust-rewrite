@@ -80,6 +80,13 @@ set to 1 with the level (no reader traced); `+4` experience (for form 5 the Anti
 - **Take** (`FUN_001a1c30(id, n)`, `Progress::use_item`): count minus n, at least 0; a key item loses its
   bit. (The brief named `FUN_001a12a0`: that is the item's *effect* (heal HP/MP, drive), not the count.)
 - **Experience** (`FUN_001b51e0`, `Progress::add_experience`): sum, 9,999,999 when it reaches 10,000,000; no floor.
+- **Experience payout and level-up** (WP-EX1; FUN_001b51e0 whole, FUN_001b52f8, FUN_001b53d0, FUN_001b50c0, FUN_001878b0):
+  `Progress::pay_experience(amount, lvup, player)` adds, then checks the 13 party slots (slot 1 = the player's character);
+  `raise_level` raises the record level (`+0xf`) while it is below 99 and the `lvup` row of the level (`lvup_row`) has `Exp` at most
+  the total, and gives each new row's ability of the member's weapon set (`+0xe`) through `give`; the rises of Strength, Magic,
+  Defense and AP over the previous row are returned (the original queues messages), nothing else is written (the stats come
+  from the row at the status rebuild). `experience_to_next` is FUN_001878b0. Defeats feed it through `progress::pay_defeats`
+  (`defeat_payout`, docs/effects-damage.md "FUN_001b25d0 step by step"). Gaps there.
   The routine then refreshes every member's level state (`FUN_001b52f8`), not part of `Progress`.
 - An item drop (`FUN_001bd490`) spawns the prize object; adding to the inventory happens when it is picked
   up (prize code, WP-7B).

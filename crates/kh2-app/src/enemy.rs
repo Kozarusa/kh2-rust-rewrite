@@ -1494,6 +1494,7 @@ pub fn receive_hits(
     abilities: Option<Res<crate::abilities::Abilities>>,
     (pull_data, spells, mut rng, member_attacks): (Option<Res<PullData>>, Option<Res<crate::magic::SpellAttacks>>, Local<PullRng>, Option<Res<crate::friend_ai::MemberAttacks>>),
     (members, progress, mut form_exp, party): (Query<&crate::party::PartyMember>, Option<Res<crate::progress::Progress>>, MessageWriter<crate::prize::FormExpGain>, Option<Res<crate::party::PartyData>>),
+    mut defeated: MessageWriter<crate::progress::EnemyDefeated>,
 ) {
     let sora_from = sora.single().map(|s| (s.stats, s.hits)).ok();
     let Some(reaction) = reaction else { return };
@@ -1535,6 +1536,10 @@ pub fn receive_hits(
                 info!("{} hit by Sora in form {form}: form experience +{amount} (FUN_001d4078 / FUN_001d40e0, object {:#x})", e.name, e.object_id);
                 form_exp.write(crate::prize::FormExpGain { form, amount });
             }
+        }
+        // The victim's `dead` method FUN_001b25d0 pays the experience (progress::pay_defeats).
+        if was_alive && e.hp <= 0 {
+            defeated.write(crate::progress::EnemyDefeated { victim: h.target, enmp: e.kind.enmp, by_player: members.get(h.attacker).is_err() });
         }
         if e.hp == 0 && e.kind.death_effect {
             // The damage method starts the death at the moment HP reaches 0 (FUN_00186530 -> the

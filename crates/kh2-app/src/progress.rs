@@ -136,6 +136,184 @@ pub const MAX_COUNT: u8 = 99;
 pub const SHORTCUTS: usize = 4;
 /// Experience limit (`FUN_001b51e0`).
 pub const MAX_EXPERIENCE: i32 = 9_999_999;
+
+/// One level a member reached in `Progress::raise_level` (`FUN_001b53d0`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LevelReached {
+    pub member: u16,
+    /// The new level.
+    pub level: u8,
+    /// The rises of the new `lvup` row over the previous one (a message is queued for each above 0).
+    pub strength: i16,
+    pub magic: i16,
+    pub defense: i16,
+    pub ap: i16,
+    /// The row's ability for the member's weapon set (0 for none) and whether `give` took it.
+    pub ability: u16,
+    pub given: bool,
+}
+
+/// What `Progress::pay_experience` leaves: the levels reached in slot order and Sora's remaining experience.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct ExperiencePaid {
+    pub to_next: i32,
+    pub levels: Vec<LevelReached>,
+}
+
+/// `FUN_001b50c0(member, level)`: the `lvup` row of a member's level. The table is the member's own (ids 14 and
+/// 15 use 1 and 6), the first one when his is missing or empty, and the level is held at the table's length
+/// (row `level - 1`); level 0 counts as 1 [inferred, as `menu_equipment::member_ap_max`].
+pub fn lvup_row(tables: &[Vec<t::Lvup>], member: u16, level: u8) -> Option<&t::Lvup> {
+    let k = match member {
+        14 => 1,
+        15 => 6,
+        n @ 1..=13 => n as usize,
+        _ => 1,
+    };
+    let table = tables.get(k - 1).filter(|t| !t.is_empty()).or_else(|| tables.first())?;
+    table.get((level.max(1) as usize).min(table.len()).checked_sub(1)?)
+}
+
+/// The experience a defeated enemy pays (`FUN_001b25d0` step 2): `ceil(table * row / 100)` where `table` is the
+/// `lvpm` Experience of the world level (`FUN_001beaf0`, word `+10` of its 12-byte row) and `row` the enemy's
+/// `enmp` Experience (record `+0x56`). Nothing when that is 0 or less. When the killer is the player, has bit
+/// 0x80 of his word `+0x588` and his HP fraction is at or below the float at `sstm +0x144`, the amount is
+/// multiplied by the ability block's byte `+0x2b` (`exp_multiplier`: 1, plus 1 per Experience Boost).
+pub fn defeat_payout(table: u16, row: u16, low_hp_multiplier: Option<i32>) -> i32 {
+    let amount = (i32::from(table) * i32::from(row) + 99) / 100;
+    if amount <= 0 {
+        return 0;
+    }
+    amount * low_hp_multiplier.unwrap_or(1)
+}
+
+/// The experience popup request (`FUN_0015b198(position, amount, to_next)`): `hud_banner` projects `at` (the
+/// defeated enemy's point, `FUN_0016bbe8`: shape kind 0x11 of the model or else the object's position, in
+/// world units) to the screen, shows the amount (0xae0-byte digit popup) and the "NEXT LEVEL" strip with
+/// `to_next` (`FUN_0014f2b8`).
+#[derive(Message, Clone, Copy, Debug, PartialEq)]
+pub struct ExperienceGained {
+    pub amount: u32,
+    pub to_next: u32,
+    pub at: Vec3,
+}
+
+/// Shape kind of the popup's point (`FUN_0016bbe8` asks `FUN_0016b558(object, 0x11, -1)`).
+const POPUP_SHAPE: u8 = 0x11;
+
+/// `FUN_001b25d0` steps 2 for every `EnemyDefeated`: the payout of `defeat_payout` (the lvpm row of the world
+/// level 1 the app builds all enemies with, the enemy's `enmp` Experience), `Progress::pay_experience`, the
+/// obtained-log record of each ability a level gave (`FUN_001d0828(ability, member, 3)`), the level-up system
+/// effect 0xf on Sora (`FUN_001b54e8`, once, when he reached a level), and, when Sora still needs experience
+/// (`FUN_001b51e0` answered above 0), the popup request. Not ported: `FUN_001b5148`'s extra tests (a minigame
+/// manager, status flag 0x100000), the level-up window (`FUN_001b56a8`), the status rebuild of the actor
+/// (`FUN_0019fb98`), and the effect for members other than Sora.
+#[allow(clippy::too_many_arguments)]
+pub fn pay_defeats(
+    mut defeats: MessageReader<EnemyDefeated>,
+    data: Option<Res<crate::data::GameData>>,
+    tables: Option<Res<ExperienceTables>>,
+    mut progress: Option<ResMut<Progress>>,
+    abilities: Option<Res<crate::abilities::Abilities>>,
+    sora: Query<&crate::sora::Sora>,
+    enemies: Query<(&crate::enemy::Enemy, &GlobalTransform)>,
+    bodies: Query<(&crate::skel::Animator, &GlobalTransform)>,
+    (mut log, area, mut shown, mut fx): (
+        ResMut<crate::prize::ObtainedLog>,
+        Option<Res<crate::assets::CurrentArea>>,
+        MessageWriter<ExperienceGained>,
+        MessageWriter<crate::fx::StartBoundSystemEffect>,
+    ),
+) {
+    let (Some(data), Some(tables), Some(progress)) = (data, tables, progress.as_deref_mut()) else {
+        defeats.clear();
+        return;
+    };
+    let place = area.as_ref().map_or((0, 0), |a| crate::prize::place_bytes(&a.name));
+    for d in defeats.read() {
+        let Some(row) = data.enmp.iter().find(|e| e.id == d.enmp) else { continue };
+        let table = data.lvpm.first().map_or(0, |l| l.experience);
+        // The bonus: the killer is the player and his HP fraction is at or below the sstm float.
+        let low_hp = sora.single().ok().filter(|s| d.by_player && s.stats.max_hp > 0 && s.hp as f32 / s.stats.max_hp as f32 <= tables.low_hp_fraction);
+        let multiplier = low_hp.map(|_| abilities.as_ref().map_or(1, |a| i32::from(a.block().exp_multiplier)));
+        let amount = defeat_payout(table, row.experience, multiplier);
+        if amount <= 0 {
+            info!("experience: enmp {} pays nothing (table {table}, row {})", d.enmp, row.experience);
+            continue;
+        }
+        let before = progress.experience();
+        let paid = progress.pay_experience(amount, &tables.lvup, SORA);
+        info!(
+            "experience: enmp {} defeated: +{amount} (lvpm {table} x enmp {}{}); total {before} -> {}; Sora needs {} more",
+            d.enmp,
+            row.experience,
+            multiplier.map_or(String::new(), |m| format!(", low-HP x{m}")),
+            progress.experience(),
+            paid.to_next
+        );
+        for l in &paid.levels {
+            info!(
+                "experience: member {} reaches level {} (Strength +{}, Magic +{}, Defense +{}, AP +{}); ability {:#x}{}",
+                l.member,
+                l.level,
+                l.strength.max(0),
+                l.magic.max(0),
+                l.defense.max(0),
+                l.ap.max(0),
+                l.ability,
+                if l.ability == 0 { " (none)" } else if l.given { " given" } else { " refused" }
+            );
+            if l.ability != 0 {
+                let key = progress.items().get(l.ability).is_some_and(|i| i.is_key());
+                log.push(crate::prize::obtained_record(place, l.ability, key, l.given, l.member as u8, 3));
+            }
+        }
+        if let (Some(s), true) = (sora.single().ok(), paid.levels.iter().any(|l| l.member == SORA)) {
+            fx.write(crate::fx::StartBoundSystemEffect { id: LEVEL_UP_SYSTEM_EFFECT, owner: s.body, handle: crate::fx::FxHandle::new() });
+        }
+        if paid.to_next > 0 && popup_enabled() {
+            let at = enemies.get(d.victim).ok().map(|(e, gt)| {
+                bodies
+                    .get(e.body)
+                    .ok()
+                    .and_then(|(a, g)| crate::prize::shape_point(a, g, POPUP_SHAPE))
+                    .map_or(gt.translation(), |p| p * crate::SCALE)
+            });
+            if let Some(at) = at {
+                shown.write(ExperienceGained { amount: amount as u32, to_next: paid.to_next as u32, at });
+            }
+        }
+    }
+}
+
+/// The popup and the "NEXT LEVEL" strip are off unless `KH2_EXP_POPUP=1`: in the harness the digit and its
+/// prefix glyph came apart on screen and the strip position is a guess (docs/hud.md), so their placement is
+/// unverified. The payout, the levels, the obtained log and effect 0xf do not depend on it.
+fn popup_enabled() -> bool {
+    std::env::var("KH2_EXP_POPUP").is_ok_and(|v| v != "0")
+}
+
+/// The system effect `FUN_001b54e8` starts on the member's object when a level was reached
+/// (`FUN_001db868(.., 0xf, 1, 1, 0x2715, object)`); the form level-up uses 0x10 (`prize::LEVEL_UP_EFFECT`).
+pub const LEVEL_UP_SYSTEM_EFFECT: u16 = 0xf;
+
+/// The state-free tables the payout reads, from the disc: every character's `lvup` rows and the float at
+/// `sstm +0x144` (the HP fraction of the bonus). Read by `ProgressPlugin`.
+#[derive(Resource, Clone, Debug)]
+pub struct ExperienceTables {
+    pub lvup: Arc<Vec<Vec<t::Lvup>>>,
+    pub low_hp_fraction: f32,
+}
+
+/// An enemy defeat (`FUN_001b25d0`'s entry): sent by `enemy::receive_hits` the moment a hit takes the last HP.
+/// `enmp` is the row of the enemy's kind (a script's `set_obj_param` row is not followed, docs/progress.md);
+/// `by_player` is whether the hit's attacker was Sora.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct EnemyDefeated {
+    pub victim: Entity,
+    pub enmp: u16,
+    pub by_player: bool,
+}
 /// Sora's party member id.
 pub const SORA: u16 = 1;
 /// Donald's and Goofy's party member ids (`FUN_001b58d8`: ids 1..=13 are their own record index; the
@@ -859,6 +1037,75 @@ impl Progress {
     pub fn add_experience(&mut self, delta: i32) {
         let sum = self.experience().wrapping_add(delta);
         self.set_u32(off::EXPERIENCE, (if sum < 10_000_000 { sum } else { MAX_EXPERIENCE }) as u32);
+    }
+
+    /// `FUN_001b52f8` for one member: while his level is below 99 and the `lvup` threshold of his level (the
+    /// row `FUN_001b50c0(member, level)`, its `Exp`) is at most the experience total, the record's level byte
+    /// (`+0xf`) rises by one and `FUN_001b53d0` runs for the new row: the rises of Strength, Magic, Defense and
+    /// AP over the previous row are queued as messages (0x8ade to 0x8ae1, not drawn here), and the new row's
+    /// ability column for the member's weapon set (record `+0xe`: Sword, Shield, Staff) is given to him
+    /// (`FUN_001a18d8(ability, member, 0)` = `give`). A record whose level is 0 is skipped [inferred: the
+    /// original reads the bytes before the table then]. The stats themselves are not stored: the status
+    /// rebuild (`FUN_0019f920`) adds the row to the record when the actor is made.
+    pub fn raise_level(&mut self, member: u16, tables: &[Vec<t::Lvup>]) -> Vec<LevelReached> {
+        let Some(r) = Self::member_off(member) else { return Vec::new() };
+        let exp = self.experience();
+        let set = self.u8_at(r + rec::WEAPON_SET);
+        let mut reached = Vec::new();
+        loop {
+            let level = self.u8_at(r + rec::LEVEL);
+            if level == 0 || level >= 99 {
+                break;
+            }
+            let (Some(old), Some(new)) = (lvup_row(tables, member, level), lvup_row(tables, member, level + 1)) else { break };
+            if old.exp > exp {
+                break;
+            }
+            self.set_u8(r + rec::LEVEL, level + 1);
+            let rise = |a: u8, b: u8| i16::from(a) - i16::from(b);
+            let ability = match set {
+                0 => new.sword_ability,
+                1 => new.shield_ability,
+                2 => new.staff_ability,
+                _ => 0,
+            };
+            let given = ability != 0 && self.give(ability, member, false);
+            reached.push(LevelReached {
+                member,
+                level: level + 1,
+                strength: rise(new.strength, old.strength),
+                magic: rise(new.magic, old.magic),
+                defense: rise(new.defense, old.defense),
+                ap: rise(new.ap, old.ap),
+                ability,
+                given,
+            });
+        }
+        reached
+    }
+
+    /// `FUN_001878b0(record, 1)`: the experience a member still needs for his next level (the `lvup` threshold
+    /// of his level minus the total); 0 at level 99 or without a record.
+    pub fn experience_to_next(&self, member: u16, tables: &[Vec<t::Lvup>]) -> i32 {
+        let Some(m) = self.member(member) else { return 0 };
+        if m.level >= 99 {
+            return 0;
+        }
+        lvup_row(tables, member, m.level).map_or(0, |row| row.exp.wrapping_sub(self.experience()))
+    }
+
+    /// `FUN_001b51e0(amount)` whole: `add_experience`, then the level check of the 13 party slots (slot 1 is the
+    /// player's character `player`, the others their own ids; the original's slot 6 answers the id
+    /// `FUN_001a7158(3)` instead while the world byte `0x33e830` is 8, which is not ported), and the answer
+    /// `FUN_001878b0(Sora's record)`: what Sora still needs for his next level (the value the "NEXT LEVEL" strip shows).
+    pub fn pay_experience(&mut self, amount: i32, tables: &[Vec<t::Lvup>], player: u16) -> ExperiencePaid {
+        self.add_experience(amount);
+        let mut levels = Vec::new();
+        for slot in 1..=13u16 {
+            let id = if slot == 1 { player } else { slot };
+            levels.extend(self.raise_level(id, tables));
+        }
+        ExperiencePaid { to_next: self.experience_to_next(SORA, tables), levels }
     }
 
     fn set_experience(&mut self, v: i32) {
@@ -2764,6 +3011,21 @@ pub struct ProgressPlugin;
 impl Plugin for ProgressPlugin {
     fn build(&self, app: &mut App) {
         ensure(app);
+        app.add_message::<EnemyDefeated>()
+            .add_message::<ExperienceGained>()
+            .add_systems(FixedUpdate, pay_defeats.in_set(crate::schedule::Sim::Effects));
+        let tables = app.world().get_resource::<Disc>().and_then(|disc| {
+            let mut a = disc.0.lock().ok()?;
+            let lvup = kh2_tables::subfile(&mut a, &t::LVUP).ok().and_then(|b| kh2_tables::rt::decode_lvup::<t::Lvup>(&b))?;
+            let sstm = kh2_tables::player::load_sstm(&mut a).ok()?;
+            Some(ExperienceTables { lvup: Arc::new(lvup), low_hp_fraction: sstm.f32(0x144) })
+        });
+        match tables {
+            Some(t) => {
+                app.insert_resource(t);
+            }
+            None => warn!("progress: lvup or sstm not readable; enemy defeats pay no experience"),
+        }
     }
 }
 
@@ -4070,6 +4332,78 @@ mod tests {
         assert_eq!(p.member(6).unwrap().weapons, [55, 80]);
         assert_eq!((p.form(5).weapon, p.form(9).weapon, p.form(1).weapon), (71, 42, 0));
         assert!(p.apply_party_weapons().is_empty());
+    }
+
+    /// `FUN_001b25d0` step 2: `ceil(lvpm * enmp / 100)`, nothing for 0, times the byte `+0x2b` with the low-HP bonus.
+    #[test]
+    fn a_defeat_pays_the_rounded_up_percentage_and_the_bonus_multiplies_it() {
+        assert_eq!(defeat_payout(100, 7, None), 7);
+        assert_eq!(defeat_payout(50, 3, None), 2, "1.5 rounds up");
+        assert_eq!(defeat_payout(100, 0, None), 0);
+        assert_eq!(defeat_payout(0, 9, Some(3)), 0, "nothing to multiply");
+        assert_eq!(defeat_payout(100, 7, Some(1)), 7, "no Experience Boost: the byte is 1");
+        assert_eq!(defeat_payout(100, 7, Some(3)), 21);
+    }
+
+    /// `FUN_001b50c0`: the member's own table, the first one for a missing or empty table, the level held at the
+    /// table's length (row `level - 1`), ids 14 and 15 mapped to 1 and 6.
+    #[test]
+    fn lvup_rows_follow_the_member_table_and_hold_at_its_end() {
+        let row = |exp: i32| t::Lvup { exp, strength: 0, magic: 0, defense: 0, ap: 0, sword_ability: 0, shield_ability: 0, staff_ability: 0, padding: 0 };
+        let tables = vec![vec![row(10), row(20)], vec![row(5)], Vec::new()];
+        assert_eq!(lvup_row(&tables, 1, 1).map(|r| r.exp), Some(10));
+        assert_eq!(lvup_row(&tables, 1, 2).map(|r| r.exp), Some(20));
+        assert_eq!(lvup_row(&tables, 1, 9).map(|r| r.exp), Some(20), "held at the table's length");
+        assert_eq!(lvup_row(&tables, 1, 0).map(|r| r.exp), Some(10), "level 0 counts as 1");
+        assert_eq!(lvup_row(&tables, 2, 1).map(|r| r.exp), Some(5));
+        assert_eq!(lvup_row(&tables, 3, 2).map(|r| r.exp), Some(20), "an empty table falls back to the first");
+        assert_eq!(lvup_row(&tables, 14, 1).map(|r| r.exp), Some(10), "14 is Sora's table");
+        assert_eq!(lvup_row(&[], 1, 1), None);
+    }
+
+    /// `FUN_001b51e0` + `FUN_001b52f8` on the disc's `lvup` rows: a sum below Sora's threshold keeps his level and
+    /// leaves the difference; reaching it raises one level; a large sum raises him through every threshold it
+    /// covers, one `LevelReached` per level, each ability of the weapon-set column in his list, the answer
+    /// is what the next row still asks. Skips without a disc.
+    #[test]
+    fn experience_raises_sora_through_the_lvup_thresholds() {
+        let Some(mut tb) = tables() else { return };
+        let ix = index(&tb);
+        let lvup = kh2_tables::subfile(&mut tb.archive, &t::LVUP).ok().and_then(|b| kh2_tables::rt::decode_lvup::<t::Lvup>(&b)).expect("lvup");
+        let mut p = Progress::new_game(ix, &tb.plrp);
+        let start = p.member(SORA).expect("Sora").level;
+        let rows = &lvup[0];
+        assert!(start >= 1 && usize::from(start) < rows.len());
+        let need = p.experience_to_next(SORA, &lvup);
+        assert_eq!(need, rows[usize::from(start) - 1].exp, "nothing earned yet: the whole threshold");
+        let paid = p.pay_experience(need - 1, &lvup, SORA);
+        assert_eq!(p.member(SORA).unwrap().level, start, "one short of the threshold");
+        assert_eq!(paid.to_next, 1);
+        let paid = p.pay_experience(1, &lvup, SORA);
+        assert_eq!(p.member(SORA).unwrap().level, start + 1);
+        let sora: Vec<u8> = paid.levels.iter().filter(|l| l.member == SORA).map(|l| l.level).collect();
+        assert_eq!(sora, vec![start + 1]);
+        assert_eq!(paid.to_next, rows[usize::from(start)].exp - need);
+        // A large sum: the level is the first one whose threshold is above the total.
+        let total = rows[40].exp;
+        let paid = p.pay_experience(total - p.experience(), &lvup, SORA);
+        let mut expect = 1usize;
+        while expect < 99 && rows[expect - 1].exp <= total {
+            expect += 1;
+        }
+        assert_eq!(usize::from(p.member(SORA).unwrap().level), expect);
+        let levels: Vec<u8> = paid.levels.iter().filter(|l| l.member == SORA).map(|l| l.level).collect();
+        assert_eq!(levels, (start + 2..=expect as u8).collect::<Vec<_>>(), "one entry per level, in order");
+        let set = p.member(SORA).unwrap().weapon_set;
+        let column = |r: &t::Lvup| [r.sword_ability, r.shield_ability, r.staff_ability].get(usize::from(set)).copied().unwrap_or(0);
+        let abilities = p.member(SORA).unwrap().abilities;
+        for l in paid.levels.iter().filter(|l| l.member == SORA) {
+            assert_eq!(l.ability, column(&rows[usize::from(l.level) - 1]), "level {}", l.level);
+            if l.given {
+                assert!(abilities.iter().any(|(id, _)| *id == l.ability), "ability {:#x} of level {} is in the list", l.ability, l.level);
+            }
+        }
+        assert_eq!(paid.to_next, rows[expect - 1].exp - p.experience());
     }
 
     #[test]

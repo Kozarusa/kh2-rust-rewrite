@@ -25,6 +25,7 @@ use bevy::sprite_render::{AlphaMode2d, Material2d, Material2dKey, Material2dPlug
 pub const FULL: u32 = 0x80;
 
 /// `FUN_0014a710`'s blend word for the colour (`white` is the flag stored at +0xf4).
+#[cfg(test)]
 pub fn blend_word(white: bool) -> u64 {
     if white {
         0x48
@@ -34,6 +35,7 @@ pub fn blend_word(white: bool) -> u64 {
 }
 
 /// How an ALPHA_1 word blends: the two words the fader writes, `None` for any other.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Blend {
     /// `Cd + (Cs - Cd) * As` (A 0, B 1, C 0, D 1).
@@ -43,6 +45,7 @@ pub enum Blend {
 }
 
 /// Decodes the A, B, C, D fields of an ALPHA_1 word.
+#[cfg(test)]
 pub fn decode_blend(word: u64) -> Option<Blend> {
     let (a, b, c, d) = (word & 3, word >> 2 & 3, word >> 4 & 3, word >> 6 & 3);
     match (a, b, c, d) {

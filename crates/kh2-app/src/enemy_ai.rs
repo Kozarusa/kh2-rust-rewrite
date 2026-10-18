@@ -248,6 +248,14 @@ pub struct AiBrain {
     original_modes: HashMap<AssetId<StandardMaterial>, AlphaMode>,
 }
 
+impl AiBrain {
+    /// The `enmp` row the enemy's status block stands on: its kind's row, or the one the script's `set_obj_param`
+    /// (host 2.9) rebuilt it from. The defeat payout reads it.
+    pub fn enmp(&self) -> u16 {
+        self.enmp
+    }
+}
+
 pub struct EnemyAiPlugin;
 
 impl Plugin for EnemyAiPlugin {
@@ -431,7 +439,12 @@ fn ai_update(
         MessageWriter<crate::prize::ItemDrop>,
         MessageWriter<crate::prize::CollectAll>,
     ),
-    (summon, mut summon_stop_logged, mut forced_done): (Option<Res<crate::summon::SummonState>>, Local<bool>, Local<bool>),
+    (summon, mut summon_stop_logged, mut forced_done, mut defeated): (
+        Option<Res<crate::summon::SummonState>>,
+        Local<bool>,
+        Local<bool>,
+        MessageWriter<crate::progress::EnemyDefeated>,
+    ),
 ) {
     trace.tick += 1;
     // The summon arrival puts actor stop id 2 on every enemy (FUN_0016bef0(2, 0xfff7ffdc), `SummonState::stop`):
@@ -642,8 +655,14 @@ fn ai_update(
         }
         e.min_hp = obj.hp_min;
         if obj.hp_add != 0 {
+            let was_alive = e.hp > 0;
             e.hp = (e.hp + std::mem::take(&mut obj.hp_add)).max(e.min_hp).min(e.stats.max_hp);
             trace.line(tag, &format!("hp changed by the script: {}", e.hp));
+            // Host 1.155 runs the object's HP method FUN_00186238, whose death method runs when part 0 reaches 0
+            // (FUN_001b25d0 pays the experience); no player hit is behind it.
+            if was_alive && e.hp <= 0 {
+                defeated.write(crate::progress::EnemyDefeated { victim: ent, enmp: *enmp, by_player: false });
+            }
         }
         for c in obj.player_cmds.drain(..) {
             let c = match c {

@@ -693,6 +693,8 @@ pub struct Rig {
     talk_new: bool,
     /// The warp flag (`0x38`, `FUN_00140e28`) set for the next tick.
     warp_next: bool,
+    /// A dynamic blocker clipped one of this tick's collided positions (output, for the log).
+    pub blocked: bool,
     wanted_look: Vec3,
     prev_wanted_look: Vec3,
     wanted_pos: Vec3,
@@ -727,6 +729,7 @@ impl Rig {
             talk: None,
             talk_new: false,
             warp_next: false,
+            blocked: false,
             wanted_look: look,
             prev_wanted_look: look,
             wanted_pos: pos,
@@ -808,6 +811,7 @@ impl Rig {
             self.pos = self.wanted_pos;
             self.fov = self.wanted_fov;
         }
+        self.blocked |= blockers_clip(i.blockers, self.wanted_look, self.wanted_pos).is_some();
         if let Some(c) = collide(p, self.wanted_look, self.wanted_pos, i.cast, Some(i.blockers), false) {
             self.wanted_pos = c;
         }
@@ -937,6 +941,7 @@ impl Rig {
 
     /// One 60 Hz tick (`FUN_00140a80`).
     pub fn tick(&mut self, p: &Params, i: &TickIn) {
+        self.blocked = false;
         // The warp flag a talk's end set (`FUN_00140e48` after the mode update snaps the drawn
         // values to the wanted ones).
         let warped;
@@ -1042,6 +1047,7 @@ impl Rig {
             self.yaw = if snap_yaw || i.warp { self.target_yaw } else { approach_angle(self.yaw, self.target_yaw, p.yaw_step) };
             let mut wp = wanted_position(chest, self.radius, self.yaw, self.row.min_radius, self.row.height_k);
             // The wanted position is tested with the blockers (`FUN_0013fbc0` passes 1).
+            self.blocked |= blockers_clip(i.blockers, chest, wp).is_some();
             if let Some(c) = collide(p, chest, wp, i.cast, Some(i.blockers), false) {
                 wp = c;
             }
@@ -1079,6 +1085,7 @@ impl Rig {
             return;
         }
         let from = if lock { chest } else { self.look };
+        self.blocked |= blockers_clip(i.blockers, from, self.pos).is_some();
         if let Some(c) = collide(p, from, self.pos, i.cast, Some(i.blockers), false) {
             self.pos = c;
             self.wanted_pos = c;

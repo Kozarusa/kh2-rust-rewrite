@@ -39,8 +39,8 @@ pub struct OrbitCamera {
 
 /// Dynamic camera blockers for this tick: spheres objects register (the game rebuilds its list
 /// from every object's collision shapes of kind 0x12 each time the camera asks,
-/// `FUN_0015a3e8`). Push into it every tick; the camera clears it after use. No object fills it
-/// yet.
+/// `FUN_0015a3e8`). `camera_blockers.rs` fills it every tick before the camera runs; the camera
+/// takes it.
 #[derive(Resource, Default)]
 pub struct CamBlockers(pub Vec<Blocker>);
 
@@ -83,7 +83,7 @@ impl Plugin for CameraPlugin {
             .init_resource::<CamEvent>()
             .add_systems(Startup, (setup, load_params))
             .add_systems(Update, (refresh_area, gather_input.run_if(crate::schedule::sim_running)).chain().in_set(crate::schedule::Frame::Camera))
-            .add_systems(FixedUpdate, tick.after(Sim::EffectTick).run_if(crate::schedule::sim_running));
+            .add_systems(FixedUpdate, tick.after(Sim::EffectTick).after(crate::camera_blockers::fill).run_if(crate::schedule::sim_running));
     }
 }
 
@@ -142,6 +142,8 @@ struct CamState {
     /// `KH2_CAM_LOG=1`: log the camera twice a second.
     log: bool,
     ticks: u32,
+    /// The last tick a dynamic blocker clipped the camera (for the log line on change).
+    blocked: bool,
 }
 
 /// World codes in the game's world order (OpenKH `docs/kh2/worlds.md`).
@@ -458,6 +460,10 @@ fn tick(
                 blockers: &list,
             },
         );
+        if rig.blocked != st.blocked {
+            st.blocked = rig.blocked;
+            info!("camera: dynamic blocker clip {} ({} blockers, FUN_0015a418)", if rig.blocked { "on" } else { "off" }, list.len());
+        }
         View { look: rig.look, pos: rig.pos, fov: rig.fov, roll: rig.roll }
     };
     if matches!(talk_req, Some(TalkCam::Start(_))) && event.active.is_none() {

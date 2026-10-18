@@ -411,8 +411,6 @@ struct Spawned {
     /// that first step is still to come.
     kept: Option<Vec3>,
     first: bool,
-    /// Object +0x10c bit 0x80, set by opcode 0x4d (`hide_by_tag`) while the object was in the list.
-    hidden: bool,
 }
 
 /// The model resource tag (resource +0x28, `FUN_0016e430` -> `FUN_0016f9c0`) the event's own actors carry:
@@ -446,11 +444,19 @@ pub fn op_4d_touches(tag: i32) -> bool {
     tag < HIDE_TAG_LIMIT
 }
 
-/// Opcode 0x4d on the event's own actors: `FUN_001b7fa8` sets (+6 = 0), `FUN_001b8040` clears (+6 not 0) object
-/// +0x10c bit 0x80 on every object in the list at that moment whose tag it touches. Actors the event makes later
-/// are not changed. Returns the new hidden state of an object with this tag that already existed.
-pub fn op_4d_hidden(was: bool, tag: i32, show: bool) -> bool {
-    if op_4d_touches(tag) { !show } else { was }
+/// Object flag +0x588 bit 0x20: `FUN_00196a70` sets it on the object `FUN_0016e8c0` makes for an event-made id
+/// (opcode 0x2c, `FUN_0022cd90`: id or'ed with 0x40000000), and the object list walk of opcode 0x4d
+/// (`FUN_001b7fa8` / `FUN_001b8040`) skips every object that has it, whatever its resource tag.
+pub const OBJECT_SKIP_FLAG: u32 = 0x20;
+
+/// The flag word (+0x588) of an object that opcode 0x2c makes for the event's own actor.
+pub const EVENT_ACTOR_FLAGS: u32 = OBJECT_SKIP_FLAG;
+
+/// The whole test of one object in the opcode 0x4d walk (`FUN_001b7fa8` / `FUN_001b8040`): flag +0x588 bit 0x20 clear
+/// and method +0x3c (the resource tag) below the limit. The event's own actors fail the first half, so opcode 0x4d
+/// never changes them.
+pub fn op_4d_walk_touches(flags: u32, tag: i32) -> bool {
+    flags & OBJECT_SKIP_FLAG == 0 && op_4d_touches(tag)
 }
 
 struct Play {
@@ -829,7 +835,7 @@ fn step(
                             let root = commands.spawn((Transform::default(), Visibility::Hidden, AreaPart, EventActor)).id();
                             let body = spawn_skinned(&mut commands, root, rig, &mut meshes, &mut materials, &mut images, &mut bindposes, SCALE);
                             let groups = model.as_ref().and_then(|model| disc.read(&format!("obj/{model}.mdlx"))).and_then(|f| mesh_groups(&f));
-                            slot.insert(Spawned { root, body, motion: None, clock: None, groups, parts: None, place: None, kept: None, first: false, hidden: false });
+                            slot.insert(Spawned { root, body, motion: None, clock: None, groups, parts: None, place: None, kept: None, first: false });
                             info!("event: frame {fi}: actor {} {} (object {:#x}, model {}) made (op 0x2c, FUN_0016e8c0)", m.index, actor.name, actor.object, model.unwrap_or_default());
                         }
                         None => {
@@ -881,7 +887,7 @@ fn step(
                     Some(s) => {
                         let at_app = game_to_app(pl.pos);
                         let tf = Transform::from_translation(at_app * SCALE).with_rotation(Quat::from_rotation_y(app_yaw(pl.rot[1].to_radians())));
-                        commands.entity(s.root).insert((tf, if s.hidden { Visibility::Hidden } else { Visibility::Inherited }));
+                        commands.entity(s.root).insert((tf, Visibility::Inherited));
                         if let Some(s) = p.actors.get_mut(&pl.index) {
                             s.place = Some(tf);
                         }
@@ -966,21 +972,14 @@ fn step(
             }
             0x4d => {
                 // FUN_00226e80: +6 = 0 hides (FUN_001b7fa8(2000)), else shows (FUN_001b8040(2000)) every listed object
-                // whose model resource tag is below 2000. The event's actors carry -200; the field's Sora, party and
-                // townspeople 2300..2700 (not touched). Objects of ObjectType 5, 6, 8, 10, 11, 13, 18, 23 (tags 1030..1110)
-                // are touched too: the app draws none of them in an event [see docs/events.md].
+                // whose flag +0x588 bit 0x20 is clear and whose model resource tag is below 2000. The event's actors
+                // (opcode 0x2c, FUN_0016e8c0 -> FUN_00196a70) carry that bit, so they are skipped; the objects it does
+                // touch are the field's props (ObjectType 5, 6, 8, 10, 11, 13, 18, 23), which the app does not draw
+                // in an event [see docs/events.md].
                 let show = le16(d, 2) != 0;
-                let mut n = 0;
-                for s in p.actors.values_mut() {
-                    s.hidden = op_4d_hidden(s.hidden, EVENT_ACTOR_TAG, show);
-                    // An actor opcode 2 has not placed yet stays out of sight (the app's own rule: it has no place).
-                    if s.place.is_some() {
-                        commands.entity(s.root).insert(if s.hidden { Visibility::Hidden } else { Visibility::Inherited });
-                    }
-                    n += 1;
-                }
+                let n = p.actors.values().filter(|_| op_4d_walk_touches(EVENT_ACTOR_FLAGS, EVENT_ACTOR_TAG)).count();
                 info!(
-                    "event: frame {fi} (cmd frame {at}): op 0x4d {} {n} event actor(s) (resource tag {EVENT_ACTOR_TAG} < {HIDE_TAG_LIMIT}; FUN_00226e80 -> FUN_001b7fa8 / FUN_001b8040: +0x10c bit 0x80)",
+                    "event: frame {fi} (cmd frame {at}): op 0x4d {} {n} event actor(s) (flag +0x588 bit 0x20 skips them: FUN_00226e80 -> FUN_001b7fa8 / FUN_001b8040)",
                     if show { "shows" } else { "hides" }
                 );
             }
@@ -1459,14 +1458,12 @@ mod tests {
     #[test]
     fn opcode_0x4d_hides_and_shows_the_objects_whose_tag_is_below_2000() {
         assert!(op_4d_touches(-200) && op_4d_touches(1999) && !op_4d_touches(2000) && !op_4d_touches(2300));
-        // hide, hide again (stays), show
-        let h = op_4d_hidden(false, EVENT_ACTOR_TAG, false);
-        assert!(h);
-        assert!(op_4d_hidden(h, EVENT_ACTOR_TAG, false));
-        assert!(!op_4d_hidden(h, EVENT_ACTOR_TAG, true));
-        // an object with a tag of 2000 or more keeps its state either way
-        assert!(!op_4d_hidden(false, 2300, false));
-        assert!(op_4d_hidden(true, 2300, true));
+        // an object with a tag of 2000 or more is not touched; one below it is
+        assert!(op_4d_walk_touches(0, 1090) && !op_4d_walk_touches(0, 2300));
+        // flag +0x588 bit 0x20 skips an object whatever its tag: the event's own actors (tag -200) are never touched
+        assert!(op_4d_touches(EVENT_ACTOR_TAG));
+        assert!(!op_4d_walk_touches(EVENT_ACTOR_FLAGS, EVENT_ACTOR_TAG));
+        assert!(op_4d_walk_touches(0x1000, EVENT_ACTOR_TAG), "other flag bits do not skip");
         // the event's own actors: -200 for every type but 7 and 0x16
         let words = [2300, 2400, 2500, 2600, 2700, 1090, 1090, 2100];
         assert_eq!(resource_tag(&words, 1, true), Some(-200));
@@ -1553,10 +1550,11 @@ mod tests {
         assert!(found.iter().any(|f| f.starts_with("ard/tt01.ard event 101 ")) && found.iter().any(|f| f.ends_with("+6 1")), "{found:?}");
     }
 
-    /// The real `step` path: an event actor that opcode 0x4d (+6 = 0) hid stays hidden when opcode 2 places it,
-    /// and a later 0x4d with +6 = 1 shows it. Needs the disc (the actor's model).
+    /// The real `step` path: opcode 0x4d (+6 = 0) does not hide an event actor (flag +0x588 bit 0x20,
+    /// `FUN_00196a70`), before or after opcode 2 places it, and a later 0x4d with +6 = 1 changes nothing.
+    /// Needs the disc (the actor's model).
     #[test]
-    fn an_actor_hidden_by_opcode_0x4d_stays_hidden_after_its_placement() {
+    fn opcode_0x4d_never_hides_an_event_actor() {
         let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else {
             eprintln!("skipped: no disc (set KH2_ISO)");
             return;
@@ -1591,11 +1589,12 @@ mod tests {
             app.update();
             seen.push(vis(&mut app));
         }
-        // ticks 1..8 are event frames 0.5..4: the actor appears at frame 0 (hidden), 0x4d hides at frame 1, the
-        // placement at frame 2 must not show it, the show at frame 3 does.
+        // ticks 1..8 are event frames 0.5..4: the actor appears at frame 0 (not placed yet, so out of sight), 0x4d
+        // "hides" at frame 1 (no effect), the placement at frame 2 shows it, the 0x4d "show" at frame 3 changes nothing.
         assert_eq!(seen[0], vec![Visibility::Hidden], "made, not placed");
-        assert_eq!(seen[3], vec![Visibility::Hidden], "placed after the hide: still hidden");
-        assert_eq!(seen[7], vec![Visibility::Inherited], "shown by the later 0x4d");
+        assert_eq!(seen[1], vec![Visibility::Hidden], "0x4d does not place it");
+        assert_eq!(seen[3], vec![Visibility::Inherited], "placed after the hide: visible, the hide skipped it");
+        assert_eq!(seen[7], vec![Visibility::Inherited], "still visible after the later 0x4d");
     }
 
     #[test]

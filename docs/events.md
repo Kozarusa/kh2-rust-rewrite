@@ -889,12 +889,29 @@ direction: the yaw stays (the game divides by a zero length). Tests: `npc::look:
   id with no objentry row (`FUN_0016ef80` needs the row) and the objects with flag +0x588 bit 0x20 that the list
   walk skips; the app's event actors have neither (comment on `resource_tag`). Ported: `event_player::resource_tag`, `op_4d_touches`, `op_4d_hidden` and
   `Spawned::hidden` (an event actor that exists at the pass is hidden or shown; a hidden one stays hidden when
-  opcode 2 places it); tests `opcode_0x4d_hides_and_shows_the_objects_whose_tag_is_below_2000`,
+  opcode 2 places it) [SUPERSEDED by WP-EV2, below]; tests `opcode_0x4d_hides_and_shows_the_objects_whose_tag_is_below_2000`,
   `opcode_0x4d_touches_the_object_types_the_table_puts_below_2000` (reads the table from the executable).
   The app draws none of the prop types (no F_* object is spawned by the app), so nothing else is hidden
   [inferred: those objects are not in the app]. Log: `op 0x4d hides 0 event actor(s)` at tt01 101 frame 0.
-- **Opcode 2 +6** [GAP]: `FUN_002293b8` reads +4 (must be 0), +8..+0x20, +0x24, +0x26 only; values seen 0,
-  1247, 2258, 30716. No other reader searched beyond the two switches.
+  **WP-EV2 (the +0x588 bit 0x20 skip).** The walk's first test (`(object +0x588 & 0x20) == 0`, `FUN_001b7fa8` /
+  `FUN_001b8040`) was listed above as "not set by anything the app has". It is set exactly on the event's actors:
+  opcode 0x2c (`FUN_0022cd90`) calls `FUN_0016e8c0(.., actor id | 0x40000000, ..)`; its first branch (`FUN_0016ef80`
+  yes: the id has an objentry row whose type is not 7 or 0x16) allocates 0x9c0 bytes and runs `FUN_00196a70`, which
+  runs the object base constructor `FUN_00168d30`, sets the vtable 0x35e3b0 and ORs 0x20 into +0x588 (decomp
+  `puVar1[0x162] | 0x20`). `mips_scan --jal 0x196a70` finds that one caller; `--jal 0x16e8c0` lists 11 callers
+  (opcode 0x2c, `FUN_0022cd90`, among them). Other writers of bit 0x20 into +0x588: none (the other `[0x162]` ORs in
+  the decomp are 0x200, 0x20000, 0x200000, 0x2000000, 0x20000000). So opcode 0x4d never hides or shows an event
+  actor; it only reaches the props of ObjectType 5, 6, 8, 10, 11, 13, 18, 23, which the app does not spawn in events.
+  The load record 0x38 (`FUN_00229198` -> `FUN_0016e638`, tag -200) loads a model resource, not an object, so it is
+  no object in the list. Ported: `Spawned::hidden` and `op_4d_hidden` removed; `op_4d_walk_touches(flags, tag)`;
+  tests `opcode_0x4d_hides_and_shows_the_objects_whose_tag_is_below_2000` (the flag skips a -200 object),
+  `opcode_0x4d_never_hides_an_event_actor` (the real `step` path). Log: `op 0x4d hides 0 event actor(s) (flag +0x588
+  bit 0x20 skips them: ...)`.
+- **Opcode 2 +6** [V, WP-EV2]: `FUN_002293b8` reads +4 (must be 0), +8..+0x20, +0x24, +0x26 only; values seen 0,
+  1247, 2258, 30716. Its only call site is the timeline switch (`mips_scan --jal 0x2293b8`: `FUN_00223a88`), it is
+  not referenced as data (`--addr 0x2293b8`: none), and its callees (`FUN_00224418`, `FUN_0016a700`, `FUN_002292b0`)
+  get values, not the command pointer. `--load-off 6` over 0x220000..0x23ffff lists 94 loads; the ones near
+  the opcode handlers belong to other opcodes' handlers. So +6 is never read [inferred: an editor value, as for 0x2c].
 - **Opcode 3** [V for the readers]: in neither switch (`FUN_002245d0`, `FUN_00223a88`), so both readers pass it.
   Every tt02/03/04 event has one: `u16 area number, "tt"` (tt02: 2, tt03: 3, tt04: 4) [inferred: the area the
   event belongs to]. Not a show/hide.
@@ -921,7 +938,10 @@ direction: the yaw stays (the game divides by a zero length). Tests: `npc::look:
   `FUN_00121a78` tests `flag & 0xf` (twice) and `flag & 4`, `FUN_0011ee30` (called by `FUN_0011c5e0` /
   `FUN_0011c648`) tests `flag & 4`; nothing tests value 2 on its own (`FUN_0011c7d8`, `FUN_0011cba8`,
   `FUN_0011d4f8` only pass the array on), so a mesh with flag 2 draws like one with flag 1 [V for the readers
-  found by `mips_scan --load-off 0x104` in 0x11c000..0x124000; a reader outside it is not excluded].
+  found by `mips_scan --load-off 0x104` in 0x11c000..0x124000; WP-EV2: the scan over the whole executable gives 65
+  hits, the others outside 0x11c000..0x124000 read a different field (`FUN_0017b9e0` and `FUN_0017dd38` use +0x104 of
+  the motion block at object +0x140, `FUN_002f2970` of a particle object, the rest are float loads), so no reader of
+  the model instance's flag value 2 exists].
 - **Opcode 0xf** [V]. Setup reader, `FUN_00226f50`: waits while `FUN_001962c0` (the event object not yet in
   its play states), sets `DAT_0036bd10` = 1 (the timeline thread `FUN_00223a88` waits for it before anything)
   and makes the event's tables (`FUN_00222cc0`: the camera table `DAT_0036bbb4`, the motion slots, the actor

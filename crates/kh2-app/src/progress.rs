@@ -271,7 +271,7 @@ pub fn pay_defeats(
         if let (Some(s), true) = (sora.single().ok(), paid.levels.iter().any(|l| l.member == SORA)) {
             fx.write(crate::fx::StartBoundSystemEffect { id: LEVEL_UP_SYSTEM_EFFECT, owner: s.body, handle: crate::fx::FxHandle::new() });
         }
-        if paid.to_next > 0 {
+        if paid.to_next > 0 && popup_enabled() {
             let at = enemies.get(d.victim).ok().map(|(e, gt)| {
                 bodies
                     .get(e.body)
@@ -284,6 +284,13 @@ pub fn pay_defeats(
             }
         }
     }
+}
+
+/// The popup and the "NEXT LEVEL" strip are off unless `KH2_EXP_POPUP=1`: in the harness the digit and its
+/// prefix glyph came apart on screen and the strip position is a guess (docs/hud.md), so their placement is
+/// unverified. The payout, the levels, the obtained log and effect 0xf do not depend on it.
+fn popup_enabled() -> bool {
+    std::env::var("KH2_EXP_POPUP").is_ok_and(|v| v != "0")
 }
 
 /// The system effect `FUN_001b54e8` starts on the member's object when a level was reached

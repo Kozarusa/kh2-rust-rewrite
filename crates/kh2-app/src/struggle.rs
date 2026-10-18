@@ -1271,9 +1271,10 @@ fn mission_tick(
     mut last_hp: Local<Option<i32>>,
     mut unknown: Local<HashSet<(u16, u16)>>,
     mut seen: Local<(bool, bool)>,
-    (mut latched, mut gflags): (Local<bool>, ResMut<crate::magic_rules::GlobalFlags>),
+    (mut latched, mut seen_area, mut gflags): (Local<bool>, Local<Option<String>>, ResMut<crate::magic_rules::GlobalFlags>),
+    area: Option<Res<crate::assets::CurrentArea>>,
 ) {
-    collect_latch(&mut latched, mission.m.as_deref(), &mut gflags);
+    collect_latch(&mut latched, &mut seen_area, area.as_deref().and_then(|a| a.loaded.as_deref()), mission.m.as_deref(), &mut gflags);
     // The player lock of a layout and the stop, for the log (the app's player controller does not read them yet).
     let now = (mission.control_locked(), mission.fight_stopped());
     if *seen != now {
@@ -1375,8 +1376,15 @@ fn mission_tick(
 /// in `FUN_001b9140` case 3 and nothing in the manager clears it; it stays until host 1.188 clears it or the area is set up again
 /// (`FUN_00190370` zeroes the word, called from `FUN_001689c0`, itself called from `FUN_001048e0`) [inferred: that FUN_001689c0
 /// runs at each area load]. The magic system republishes bit 3 from its own script state every tick, so the latch (which outlives
-/// the manager) is or'ed in again after it. A new manager that has not reached state 3 releases the latch (a new area).
-fn collect_latch(latched: &mut bool, a: Option<&Active>, flags: &mut crate::magic_rules::GlobalFlags) {
+/// the manager) is or'ed in again after it. A new manager that has not reached state 3 also releases the latch.
+/// An area change (`loaded` differs from the one last seen) is the area setup: the latch is dropped and the bit cleared, as the
+/// word's store of 0 does (`FUN_00190370`).
+fn collect_latch(latched: &mut bool, seen: &mut Option<String>, area: Option<&str>, a: Option<&Active>, flags: &mut crate::magic_rules::GlobalFlags) {
+    if seen.as_deref() != area {
+        *seen = area.map(str::to_owned);
+        *latched = false;
+        flags.merge(crate::magic_rules::GFLAG_COLLECT_AT_ONCE, 0);
+    }
     if let Some(a) = a {
         if a.collect_at_once {
             *latched = true;
@@ -1915,24 +1923,34 @@ mod tests {
         use crate::magic_rules::{GFLAG_COLLECT_AT_ONCE as BIT, GlobalFlags};
         let Some(disc) = disc() else { return };
         let mut a = struggle(&disc, "TT04_MS00");
-        let (mut latched, mut f) = (false, GlobalFlags(0));
+        let (mut latched, mut f, mut seen) = (false, GlobalFlags(0), None);
         a.state = 2;
         a.flow_tick();
         assert_eq!(a.state, 3);
-        collect_latch(&mut latched, Some(&a), &mut f);
+        collect_latch(&mut latched, &mut seen, Some("tt04"), Some(&a), &mut f);
         assert_eq!(f.0, 0, "the bit comes with the state 3 step, not before");
         a.flow_tick();
         assert!(a.collect_at_once);
-        collect_latch(&mut latched, Some(&a), &mut f);
+        collect_latch(&mut latched, &mut seen, Some("tt04"), Some(&a), &mut f);
         assert_eq!(f.0 & BIT, BIT);
         // The magic system republishes its own bit; the latch puts it back after the manager is gone.
         f.merge(BIT, 0);
-        collect_latch(&mut latched, None, &mut f);
+        collect_latch(&mut latched, &mut seen, Some("tt04"), None, &mut f);
         assert_eq!(f.0 & BIT, BIT);
         // A fresh manager (new area) releases it.
         let fresh = struggle(&disc, "TT04_MS00");
         f.merge(BIT, 0);
-        collect_latch(&mut latched, Some(&fresh), &mut f);
+        collect_latch(&mut latched, &mut seen, Some("tt04"), Some(&fresh), &mut f);
+        assert_eq!(f.0, 0);
+        // An area change drops the latch and clears the bit even with the manager gone.
+        let mut a = struggle(&disc, "TT04_MS00");
+        a.state = 3;
+        a.flow_tick();
+        collect_latch(&mut latched, &mut seen, Some("tt04"), Some(&a), &mut f);
+        assert_eq!(f.0 & BIT, BIT);
+        collect_latch(&mut latched, &mut seen, Some("tt02"), None, &mut f);
+        assert_eq!((f.0, latched), (0, false), "a new area clears the word");
+        collect_latch(&mut latched, &mut seen, Some("tt02"), None, &mut f);
         assert_eq!(f.0, 0);
     }
 

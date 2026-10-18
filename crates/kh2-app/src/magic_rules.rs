@@ -372,21 +372,18 @@ impl GlobalFlags {
 /// (DAT_0035c998). Its callers are the prize pickup dispatch FUN_001a3848 (the prize goes to the player's pickup routine
 /// FUN_001a3a88 whatever the reach test says) and the item object's pickup check FUN_001bd358 (the item is given to the
 /// player without the reach test).
-#[allow(dead_code)] // the callers are in prize.rs and the weapon update (WP-FL1: not wired, outside ownership)
 pub fn global_flag_8_active(flags: u32, player_exists: bool) -> bool {
     flags & GFLAG_COLLECT_AT_ONCE != 0 && player_exists
 }
 
 /// FUN_00190610, the reader of bit 0x800: the bit with the player object present. Its callers are FUN_001a3848 (the
 /// prize's record gets +0x28 bit 8) and FUN_001bd358 (the item is taken as bit 3 would).
-#[allow(dead_code)] // the callers are in prize.rs and the weapon update (WP-FL1: not wired, outside ownership)
 pub fn global_flag_800_active(flags: u32, player_exists: bool) -> bool {
     flags & GFLAG_TARGET_PLAYER != 0 && player_exists
 }
 
 /// What FUN_001a3848 does with a prize before its member loop. `flag_8` is the prize record's +0x28 bit 8 as it stood,
 /// `age` its byte +0x44.
-#[allow(dead_code)] // the callers are in prize.rs and the weapon update (WP-FL1: not wired, outside ownership)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PrizeDispatch {
     /// The record's +0x28 bit 8 afterwards (bit 0x800 ors it in; it is never cleared here).
@@ -399,7 +396,6 @@ pub struct PrizeDispatch {
 
 /// FUN_001a3848 up to its member loop: bit 0x800 sets the record's flag 8; bit 3 gives the prize to the player and
 /// returns; else with the flag 8 set and the age (+0x44) at least 3 the prize is given to the player and the loop runs on.
-#[allow(dead_code)] // the callers are in prize.rs and the weapon update (WP-FL1: not wired, outside ownership)
 pub fn prize_dispatch(flags: u32, player_exists: bool, flag_8: bool, age: u8) -> PrizeDispatch {
     let flag_8 = flag_8 || global_flag_800_active(flags, player_exists);
     if global_flag_8_active(flags, player_exists) {
@@ -411,14 +407,13 @@ pub fn prize_dispatch(flags: u32, player_exists: bool, flag_8: bool, age: u8) ->
 /// FUN_001bd358 for an item object whose player gates passed (the player up, not state 0x2000000, the item not taken
 /// and pickable): the player is the collector when FUN_001a3700 says the item is in reach; else, unless the item is the
 /// object 0x883 (FUN_001bdb10 true: other members are asked in turn, not modelled), when either global bit holds.
-#[allow(dead_code)] // the callers are in prize.rs and the weapon update (WP-FL1: not wired, outside ownership)
 pub fn item_taken_by_player(flags: u32, player_exists: bool, in_reach: bool, is_member_object: bool) -> bool {
     in_reach || (!is_member_object && (global_flag_8_active(flags, player_exists) || global_flag_800_active(flags, player_exists)))
 }
 
 /// FUN_0019afe8 as far as the global word goes: the object update is held while bit 0x1000 is set. The other terms
 /// (the object's +0x10c bits 0x80 / 0x200, DAT_0035ee9c, FUN_0019af28, FUN_0019b100, FUN_002c56c0) are the object's own.
-#[allow(dead_code)] // the callers are in prize.rs and the weapon update (WP-FL1: not wired, outside ownership)
+#[allow(dead_code)] // the reader is the weapon update FUN_00184498 / FUN_00191c18, which the app does not have (WP-FL2: gap)
 pub fn update_gate_global(flags: u32) -> bool {
     flags & GFLAG_UPDATE_GATE != 0
 }

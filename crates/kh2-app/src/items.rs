@@ -722,6 +722,22 @@ impl Vitals {
         self.hp = if self.hp_min <= sum { if self.hp_max < sum { self.hp_max } else { sum } } else { self.hp_min };
     }
 
+    /// Whether the record belongs to a KO'd object: `FUN_00186368` tests the object's +0x7f8 bit 4, which the HP
+    /// method sets exactly when the HP reaches 0 (`FUN_00186530`, `party_battle::hp_change`), so a maximum above 0
+    /// with HP at its minimum 0 stands for it [inferred: the record holds no KO bit of its own].
+    fn is_ko(&self) -> bool {
+        self.hp_max > 0 && self.hp_min == 0 && self.hp == 0
+    }
+
+    /// FUN_001a0210 -> FUN_00186368 for an object that has one (every party member and Sora): while the object is KO'd
+    /// the MP is not changed (the method answers 0 before `FUN_001a0180`). The Elixir-like items change the HP first
+    /// (FUN_001a12a0 order), and a heal revives the object (`FUN_0017cee8`), so their MP lands in the same use.
+    fn add_mp_unless_ko(&mut self, delta: i32, feed: f32) {
+        if !self.is_ko() {
+            self.add_mp(delta, feed);
+        }
+    }
+
     /// FUN_001a0180: MP plus `delta` (0..max); while the MP charge runs (FUN_001a05d0: total above 0)
     /// a gain shortens the charge by `delta * feed` instead (FUN_001a0540, `sstm` +0x7c), and a charge
     /// brought to 0 ends and refills MP (FUN_001a05a8).
@@ -802,15 +818,15 @@ pub fn item_effect(id: u16, amount: u16, mult: i32, v: &mut Vitals, feed: f32) -
     let mp = (v.mp_max * amount as i32 * mult + 9999) / 10000;
     match id {
         1 | 2 | 5 => v.add_hp(hp),
-        3 | 6 => v.add_mp(mp, feed),
+        3 | 6 => v.add_mp_unless_ko(mp, feed),
         4 | 7 => {
             v.add_hp(hp);
-            v.add_mp(mp, feed);
+            v.add_mp_unless_ko(mp, feed);
         }
         0x83 => {
             let full = v.hp_max;
             v.add_hp(full);
-            v.add_mp(mp, feed);
+            v.add_mp_unless_ko(mp, feed);
         }
         item_id::DRIVE_RECOVERY | item_id::HIGH_DRIVE_RECOVERY => v.add_drive(amount as i32 * 100),
         _ => return false,
@@ -854,6 +870,9 @@ pub struct ItemsData {
     pub member_cmds: Vec<u16>,
     /// `sstm` +0x7c: MP gained during the MP charge shortens it by this much per point.
     pub charge_feed: f32,
+    /// `sstm` +0x54 and the word at 0x37a560: the scales `FUN_0017cee8` gives a heal on a KO'd member (the second for
+    /// a member with Hyper Healing equipped, `party_rules::revive_scale`).
+    pub revive_scale: (f32, f32),
     /// The queued use's wait (`DAT_0037bba4`) and the frame step (`DAT_00356f40`).
     pub use_wait: f32,
     pub messages: Option<kh2_image::text::Messages>,
@@ -943,10 +962,14 @@ fn setup(mut commands: Commands, disc: Res<Disc>) {
     }
     let member_cmds: Vec<u16> = (0..16).map(|i| exe_u16(&exe, 0x37bab0 + 2 * i).unwrap_or(0)).collect();
     let charge_feed = sstm.as_ref().filter(|s| s.words.len() > 0x7c / 4).map_or(0.0, |s| s.f32(0x7c));
+    let revive_scale = (
+        sstm.as_ref().filter(|s| s.words.len() > 0x54 / 4).map_or(1.0, |s| s.f32(0x54)),
+        crate::party_rules::revive_full_scale(&exe).unwrap_or(1.0),
+    );
     let use_wait = exe_f32(&exe, 0x37bba4).filter(|v| v.is_finite() && *v > 0.0).unwrap_or(USE_WAIT);
     let messages = disc.read("msg/us/sys.bar").and_then(|b| kh2_image::text::Messages::from_bar(&b));
     info!("items: form items {form_items:?}, Sora's target command {:?}, MP charge feed {charge_feed}, use wait {use_wait}", member_cmds.get(1));
-    commands.insert_resource(ItemsData { cmds, items, form_items, genie_forms, member_cmds, charge_feed, use_wait, messages });
+    commands.insert_resource(ItemsData { cmds, items, form_items, genie_forms, member_cmds, charge_feed, revive_scale, use_wait, messages });
 }
 
 /// The game state the menu reads besides Sora: the drive state, `Progress`, the battle flag, the
@@ -1126,12 +1149,25 @@ struct FieldMember {
 
 /// A queued use landing on the field members (FUN_001a11a0 -> FUN_001a12a0 on their status blocks, then FUN_001b8658's
 /// "Healed Party Members" count). Target 0 reaches every member, else the member with that id; Sora is handled by the
-/// caller and a KO'd member is left alone. Counts once per use when `counts_as_healed` holds. Returns the indices it acted on.
-fn use_on_members(item: u16, target: u16, amount: u16, mult: i32, feed: f32, field: &mut [FieldMember], progress: &mut Progress) -> Vec<usize> {
+/// caller. A KO'd member is not skipped (`FUN_001a15a0` has no KO test): his HP gain goes through the HP method
+/// (`FUN_00186238`, `party_battle::hp_change`), which gets him up with the gain scaled by `revive` (sstm +0x54, or the
+/// word at 0x37a560 with Hyper Healing equipped, `FUN_0017cee8`); his MP changes only when that revive happened
+/// (`FUN_00186368`). Counts once per use when `counts_as_healed` holds. Returns the indices it acted on.
+#[allow(clippy::too_many_arguments)]
+fn use_on_members(item: u16, target: u16, amount: u16, mult: i32, feed: f32, revive: (f32, f32), field: &mut [FieldMember], progress: &mut Progress) -> Vec<usize> {
     let mut hit = Vec::new();
     let others: Vec<u16> = field.iter().map(|m| m.neo).filter(|&n| n != SORA).collect();
-    for (i, m) in field.iter_mut().enumerate().filter(|(_, m)| (target == 0 || target == m.neo) && m.neo != SORA && !m.ko) {
+    for (i, m) in field.iter_mut().enumerate().filter(|(_, m)| (target == 0 || target == m.neo) && m.neo != SORA) {
+        let (hp0, max) = (m.v.hp, m.v.hp_max);
+        // A down member's record holds HP 0 (`Vitals::is_ko`); the effect sums on it, the HP method applies the gain.
         item_effect(item, amount, mult, &mut m.v, feed);
+        if m.ko {
+            let abilities = progress.member(m.neo).map(|r| r.abilities).unwrap_or_default();
+            let scale = crate::party_rules::revive_scale(&abilities, revive.1, revive.0);
+            let gain = m.v.hp - hp0;
+            m.v.hp = hp0;
+            crate::party_battle::hp_change(&mut m.v.hp, max, 0, &mut m.ko, gain, scale);
+        }
         hit.push(i);
     }
     // FUN_001b8658: the user is Sora (member 1) and FUN_001a11a0 answered true.
@@ -1275,8 +1311,8 @@ fn run(
                 d.points.whole = v.drive_points;
             }
         }
-        // The other members (FUN_001a11a0 -> FUN_001a12a0 on their status blocks). A KO'd member is left alone: the
-        // revive path (FUN_00186238) is party.rs's [GAP: FUN_001a12a0 would raise the block's HP without it].
+        // The other members (FUN_001a11a0 -> FUN_001a12a0 on their status blocks); a KO'd member gets up through the HP
+        // method (`use_on_members`).
         let mut field: Vec<FieldMember> = party
             .iter()
             .map(|m| FieldMember {
@@ -1285,12 +1321,13 @@ fn run(
                 v: Vitals { hp: m.hp, hp_max: m.hp_max, hp_min: 0, mp: m.mp, mp_max: m.mp_max, charge_left: m.charge.left, charge_total: m.charge.total, ..Default::default() },
             })
             .collect();
-        let hit = use_on_members(q.item, q.target, amount, mult, data.charge_feed, &mut field, &mut progress);
+        let hit = use_on_members(q.item, q.target, amount, mult, data.charge_feed, data.revive_scale, &mut field, &mut progress);
         for (i, (mut m, f)) in party.iter_mut().zip(&field).enumerate() {
             if hit.contains(&i) {
                 info!("items: used {} on {}: HP {} -> {}, MP {} -> {}", data.name(q.item), m.model, m.hp, f.v.hp, m.mp, f.v.mp);
             }
             m.hp = f.v.hp;
+            m.ko = f.ko;
             m.mp = f.v.mp;
             m.charge.left = f.v.charge_left;
             m.charge.total = f.v.charge_total;
@@ -1674,21 +1711,22 @@ mod tests {
         let m = |neo, hp, ko| FieldMember { neo, ko, v: Vitals { hp, hp_max: 30, ..Default::default() } };
         let mut field = [m(2, 10, false), m(3, 10, false)];
         let n = p.healed_count();
-        assert_eq!(use_on_members(1, 2, 40, 100, 12.0, &mut field, &mut p), vec![0]);
+        assert_eq!(use_on_members(1, 2, 40, 100, 12.0, (0.5, 1.0), &mut field, &mut p), vec![0]);
         assert_eq!((field[0].v.hp, field[1].v.hp), (22, 10), "Donald healed by 12, Goofy untouched");
         assert_eq!(p.healed_count(), n + 1, "counted once");
         // A group item reaches both; one count for the use.
-        use_on_members(1, 0, 40, 100, 12.0, &mut field, &mut p);
+        use_on_members(1, 0, 40, 100, 12.0, (0.5, 1.0), &mut field, &mut p);
         assert_eq!((field[0].v.hp, field[1].v.hp), (30, 22));
         assert_eq!(p.healed_count(), n + 2);
-        // A KO'd member is skipped, yet the use still counts (FUN_001a11a0 answered true).
+        // A KO'd member gets up through the HP method: the gain 12 is scaled by sstm +0x54 (0.5 here) and the
+        // use counts (FUN_001a11a0 answered true).
         let mut field = [m(2, 0, true)];
-        use_on_members(1, 2, 40, 100, 12.0, &mut field, &mut p);
-        assert_eq!(field[0].v.hp, 0);
+        use_on_members(1, 2, 40, 100, 12.0, (0.5, 1.0), &mut field, &mut p);
+        assert_eq!((field[0].v.hp, field[0].ko), (6, false));
         assert_eq!(p.healed_count(), n + 3);
         // Sora on himself changes no member and counts nothing.
         let mut field = [m(2, 10, false)];
-        use_on_members(1, SORA, 40, 100, 12.0, &mut field, &mut p);
+        use_on_members(1, SORA, 40, 100, 12.0, (0.5, 1.0), &mut field, &mut p);
         assert_eq!(field[0].v.hp, 10);
         assert_eq!(p.healed_count(), n + 3);
     }
@@ -1811,5 +1849,48 @@ mod tests {
         }
         assert!(checked > 100);
         eprintln!("oracle: FUN_001a12a0 equal for {checked} cases (items below 0x114, 4 states, 3 multipliers; sstm +0x7c = {feed})");
+    }
+
+    /// `FUN_001a0210` -> `FUN_00186368`: a KO'd object's MP does not change (an Ether does nothing), while the
+    /// Elixir-like items change the HP first, which revives, so their MP lands too.
+    #[test]
+    fn mp_items_leave_a_ko_member_alone_unless_the_hp_revives_him() {
+        let down = Vitals { hp: 0, hp_max: 30, mp: 5, mp_max: 40, ..Default::default() };
+        let mut v = down;
+        assert!(item_effect(3, 100, 100, &mut v, 12.0));
+        assert_eq!((v.hp, v.mp), (0, 5), "Ether on a KO'd member");
+        let mut v = down;
+        item_effect(6, 100, 100, &mut v, 12.0);
+        assert_eq!((v.hp, v.mp), (0, 5), "Mega-Ether on a KO'd member");
+        let mut v = down;
+        item_effect(4, 100, 100, &mut v, 12.0);
+        assert_eq!((v.hp, v.mp), (30, 40), "Elixir: HP first, then the MP of the same use, held at the maximum");
+        let mut v = down;
+        item_effect(0x83, 100, 100, &mut v, 12.0);
+        assert_eq!((v.hp, v.mp), (30, 40), "Hi-Elixir-like full restore");
+        let mut v = down;
+        item_effect(1, 40, 100, &mut v, 12.0);
+        assert_eq!((v.hp, v.mp), (12, 5), "a Potion revives and leaves the MP");
+        // A living member takes the Ether as before, and a charge running on a KO'd one is not fed.
+        let mut v = Vitals { hp: 7, ..down };
+        item_effect(3, 100, 100, &mut v, 12.0);
+        assert_eq!(v.mp, 40);
+        let mut v = Vitals { charge_left: 50.0, charge_total: 100.0, ..down };
+        item_effect(3, 100, 100, &mut v, 12.0);
+        assert_eq!(v.charge_left, 50.0);
+    }
+
+    /// `FUN_001a12a0` on a KO'd member in the field: an Ether does not change his MP, an Elixir revives him with the
+    /// HP gain scaled and then lands its MP (`FUN_00186368` tests the KO bit after the HP method cleared it).
+    #[test]
+    fn field_items_on_a_ko_member_follow_the_hp_method() {
+        let mut p = Progress::from_block(&[], std::sync::Arc::new(crate::progress::ItemIndex::default()));
+        let down = FieldMember { neo: 2, ko: true, v: Vitals { hp: 0, hp_max: 30, mp: 5, mp_max: 40, ..Default::default() } };
+        let mut field = [down];
+        use_on_members(3, 2, 100, 100, 12.0, (0.5, 1.0), &mut field, &mut p);
+        assert_eq!((field[0].v.hp, field[0].v.mp, field[0].ko), (0, 5, true), "Ether: still down, MP unchanged");
+        let mut field = [down];
+        use_on_members(4, 2, 100, 100, 12.0, (0.5, 1.0), &mut field, &mut p);
+        assert_eq!((field[0].v.hp, field[0].v.mp, field[0].ko), (15, 40, false), "Elixir: 30 * 0.5, then the MP");
     }
 }

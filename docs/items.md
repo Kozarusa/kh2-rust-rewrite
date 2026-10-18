@@ -173,8 +173,7 @@ not call it yet.
   by slot, each with its command from the table at 0x37bab0, FUN_001bcb98), so Donald and Goofy are offered; the chosen
   member id travels as the use's target. On landing the effect goes to Sora (target 0 or his id) and to the members that
   match (target 0: all; else the member id), through `item_effect` on the member's `hp/hp_max/mp/mp_max/charge`; a KO'd member
-  is skipped [GAP: FUN_001a12a0 acts on the status block whether or not the member is down, and the revive goes through
-  FUN_00186238, which `party.rs` owns and does not export]; the `StatEntry` effect starts on Sora only [GAP: no
+  is not skipped (WP-PL3, below): his HP gain goes through the HP method; the `StatEntry` effect starts on Sora only [GAP: no
   owner binding for a member entity is known]. FUN_001b8658 then calls `Progress::count_healed` once per use when
   `items::counts_as_healed` holds: the user (Sora) is member 1 and FUN_001a11a0 answered true (`target != user`, or for a
   group item any other slot holding a member; it counts even when the heal changed nothing). Log `items: Healed Party
@@ -252,3 +251,35 @@ NEW tag in the Buy list until the cursor has been on it (docs/menus.md 24.2).
 - The item counts on the HUD bars (groups 88..97) are not drawn (docs/hud.md).
 - The motion request 9's air variant and `FUN_0017e378(ctrl, 0, 0)` after it are not decoded.
 - When the battle item slots refill from the stock in the field (`FUN_001a1e68`'s caller).
+
+## WP-PL3: items on a down member
+
+- MP of an Elixir. `FUN_001a12a0` reaches the MP through `FUN_001a0210`, which for a block with an object at `+0x24c` (every
+  party member and Sora) calls `FUN_00186368(object, amount, flag)`; with no object it calls `FUN_001a0180` itself. `FUN_00186368`
+  answers 0 and changes nothing while the object's `+0x7f8` bit 4 (KO) is set; otherwise it calls `FUN_001a0180(block, amount)`:
+  `+0x180` plus the amount held between 0 and `+0x184`, or, while the MP charge runs (`FUN_001a05d0`: `+0x1c0` above 0), the charge
+  is shortened by `amount * sstm +0x7c` (`FUN_001a0540`). So an Ether (3, 6) does nothing to a KO'd member, while the items that
+  change the HP first (4, 7, 0x83: the `FUN_001a0140` call precedes `FUN_001a0210` in `FUN_001a12a0`) revive him through the HP
+  method and the MP lands in the same use. Port: `Vitals::is_ko` (HP 0 at a maximum above 0 stands for the KO bit, which the HP method
+  sets exactly then [inferred]) and `add_mp_unless_ko` in `item_effect`; both the pause menu (`menu_items::use_on_member`) and the
+  field use take it. Test `mp_items_leave_a_ko_member_alone_unless_the_hp_revives_him`.
+- The field use (`items::use_on_members`) no longer skips a KO'd member: the HP gain goes through `party_battle::hp_change` with the
+  revive scale and `ko` is written back to the member (the party tick then gets him up). Test
+  `field_items_on_a_ko_member_follow_the_hp_method`.
+- `FUN_0017cee8` flag-8 branch. After clearing the KO bit it takes the ability block (`FUN_001768a8` = status block `+0x1cc`) word
+  `+0x10` and tests mask 8 (ability bit 131): set, the scale is the float at `0x37a560` (1.0 in the executable); clear, `sstm +0x54`.
+  Bit 131 is ability 419 (test `hyper_healing_is_ability_419_bit_131`), the ability `FUN_001c0f40` handles as case 0x1a3 (it
+  multiplies the block's `+0x58` by `sstm +0x154`, the revive time `party_battle::revive_time` already takes), so the name is Hyper
+  Healing [inferred from the shared id; no text read]. The block is built from the equipped abilities of the member's record
+  (`FUN_0019f920` -> `FUN_001a0c08` / `FUN_001c0e50` -> `FUN_001c0f40`; `0x8000` marks equipped). Port:
+  `party_rules::revive_scale(abilities, full, sstm)` and `revive_full_scale`; the field use applies it (`ItemsData::revive_scale`).
+  Test `revive_scale_takes_the_full_word_with_hyper_healing`.
+- Drive Recovery (0x112, 0x113) on a down member: no case in the original (WP-PL2: `FUN_001a15a0` compares the gauge bytes
+  `+0x1b1 < +0x1b2`, the item has the single Sora row `FUN_0025c2c8`); unchanged.
+
+Gaps. (1) The pause menu (`menu_items.rs`) and the party's own item use (`party.rs` `party_item_uses` / `change_hp`) still pass
+`sstm +0x54` as the revive scale and do not look at the member's equipped Hyper Healing; they need `party_rules::revive_scale` with
+the member's record list (`Progress::member(neo).abilities`). Their `Progress` is in reach in the menu, not in `change_hp`.
+(2) `FUN_00186368` with the flag set, a positive amount and the object's `+0x160` bit 0x4000 clear calls the object's vtable `+0x54`
+with (0x14, 0) before the MP change (the voice method, `FUN_00175d18`, as the KO voices); not ported. Searched: `FUN_00186368`
+callers (`FUN_001a0210`, `FUN_00176c98`), `FUN_00176c98`'s own call of it for a damage (the MP Rage gain, party.rs).

@@ -733,6 +733,26 @@ pub fn free_point(
     cast(centre).unwrap_or(centre)
 }
 
+/// The ability item whose bit is 131 (word 4 mask 8 of a status block's ability block, `+0x1dc & 8`), the one flag
+/// `FUN_0017cee8` reads. Hyper Healing: `FUN_001c0f40` multiplies the block's `+0x58` by `sstm +0x154` for the same
+/// ability (id 0x1a3 = 419), which `revive_time` already takes; the bit comes from the disc's item row (test
+/// `hyper_healing_is_ability_419_bit_131`).
+pub const ABILITY_HYPER_HEALING: u16 = 419;
+/// `DAT_0037a560`: the revive scale of a member whose ability block has bit 131 (1.0 in the executable).
+pub const REVIVE_FULL_SCALE_VA: u32 = 0x37a560;
+
+/// `DAT_0037a560`, read from the executable.
+pub fn revive_full_scale(elf: &[u8]) -> Option<f32> {
+    exe_bytes(elf, REVIVE_FULL_SCALE_VA, 4).map(|b| f32::from_bits(u32::from_le_bytes([b[0], b[1], b[2], b[3]])))
+}
+
+/// The factor `FUN_0017cee8` scales a heal on a KO'd member by: `DAT_0037a560` when the member's ability block has
+/// bit 131 (`FUN_001768a8` = status block `+0x1cc`, word at `+0x10`, mask 8), else `sstm +0x54`. `abilities` is the
+/// member's record list (ability id, equipped); the block is built from the equipped ones (`FUN_0019f920`).
+pub fn revive_scale(abilities: &[(u16, bool)], full_scale: f32, sstm_scale: f32) -> f32 {
+    if abilities.contains(&(ABILITY_HYPER_HEALING, true)) { full_scale } else { sstm_scale }
+}
+
 #[cfg(test)]
 mod tests {
     /// A member's block starts from his record (`FUN_0019f920`): `min(maximum, current)`; a stored 0 HP is a gap and
@@ -1365,5 +1385,30 @@ mod jump_tests {
         assert_eq!(s[1], NoticeSlot { member: 3, locked: false });
         assert_eq!(s[2], NoticeSlot { member: 4, locked: true });
         assert_eq!(s[3], NoticeSlot { member: 0, locked: false });
+    }
+
+    /// `FUN_0017cee8`'s two scales: the executable's word at 0x37a560 is 1.0 and replaces `sstm +0x54` only for a
+    /// member whose block has bit 131, i.e. an equipped Hyper Healing.
+    #[test]
+    fn revive_scale_takes_the_full_word_with_hyper_healing() {
+        assert_eq!(revive_scale(&[], 1.0, 0.25), 0.25);
+        assert_eq!(revive_scale(&[(420, true)], 1.0, 0.25), 0.25, "another ability does not set bit 131");
+        assert_eq!(revive_scale(&[(ABILITY_HYPER_HEALING, false)], 1.0, 0.25), 0.25, "learned but not equipped");
+        assert_eq!(revive_scale(&[(ABILITY_HYPER_HEALING, true)], 1.0, 0.25), 1.0);
+    }
+
+    /// The word at 0x37a560 is 1.0 in the executable, and ability 419 (the one `FUN_001c0f40` handles as Hyper
+    /// Healing, id 0x1a3) is the item row with bit 131.
+    #[test]
+    fn hyper_healing_is_ability_419_bit_131() {
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else {
+            eprintln!("skipped: no disc image (set KH2_ISO)");
+            return;
+        };
+        let elf = crate::assets::Disc::open(&iso).read_root("SLUS_210.05").expect("exe");
+        assert_eq!(revive_full_scale(&elf), Some(1.0));
+        let mut a = kh2_archive::Archive::open(&iso).expect("disc");
+        let r = crate::abilities::AbilityRules::load(&mut a).expect("rules");
+        assert_eq!(r.abilities[&ABILITY_HYPER_HEALING].bit, 131);
     }
 }

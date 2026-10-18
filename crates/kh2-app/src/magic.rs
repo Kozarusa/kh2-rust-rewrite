@@ -101,6 +101,7 @@ pub struct MagicPlugin;
 impl Plugin for MagicPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MagicState>()
+            .init_resource::<rules::GlobalFlags>()
             .init_resource::<SpellAttacks>()
             .add_systems(Startup, setup.after(crate::sora::setup))
             .add_systems(Update, harness_keys.after(crate::sora::read_pad))
@@ -277,9 +278,6 @@ struct CastTurn {
     /// The controller is in mode 2 (FUN_0019b3f0 with 2, the lock button pressed in mode 1): the timer no longer
     /// runs and the record stays while it is targetable.
     lock_mode2: bool,
-    /// Sora's lock-on target one tick ago: a change from none to some stands for the newly pressed lock button
-    /// (logical bit 0x800, FUN_0019b7a8), which `Pad` does not expose [inferred].
-    prev_lock: Option<Entity>,
 }
 
 /// A Thunder strike: the request thread at word 0x2da of THUNDER_*.mag (block +0x20 the place, +0x48
@@ -562,13 +560,13 @@ fn run(
     gts: Query<&GlobalTransform>,
     mut running: Running,
     (mut hits, mut spell_hits, mut voices, mut clash_out): (MessageWriter<Hit>, MessageWriter<fx::SpellHit>, MessageWriter<crate::audio::SoraVoice>, MessageWriter<crate::enemy::EnemyClash>),
-    enemies: Query<&crate::enemy::Enemy>,
-    mut recharge: ResMut<crate::hud::hud_gauge::MpRecharge>,
+    (enemies, mut recharge, pad, mut gflags): (Query<&crate::enemy::Enemy>, ResMut<crate::hud::hud_gauge::MpRecharge>, Res<crate::sora::Pad>, ResMut<rules::GlobalFlags>),
 ) {
     published.hits.clear();
     let Some(data) = data else { return };
     let Ok((me, mut s)) = sora_q.single_mut() else { return };
     let st = &mut *st;
+    gflags.merge(rules::GFLAG_COLLECT_AT_ONCE, st.vm_world.gflags);
     st.tick += 1;
     if !st.hurt_done
         && let Some(hp) = hurt_due(st.tick)
@@ -663,7 +661,7 @@ fn run(
                     voices.write(crate::audio::SoraVoice { voice: voice as u16, why: format!("cast {}", row.file_name) });
                 }
                 let lock_timer = if lock_mode1.is_some() { rules::mode1_timer_start(game.plyr.auto_lock_on_time) } else { 0.0 };
-                st.turn = Some(CastTurn { motion: mslot, target, own, lock_mode1, lock_timer, lock_mode2: false, prev_lock: s.lock });
+                st.turn = Some(CastTurn { motion: mslot, target, own, lock_mode1, lock_timer, lock_mode2: false });
                 let magi = rules::magi_row(&data.magi, kind).cloned().unwrap_or_default();
                 let cost = data.cmd(cmd).map_or(0, |c| c.cost);
                 mlog!(
@@ -720,11 +718,23 @@ fn run(
     // (FUN_0019b5e8, the timer stays out, so it picks again each frame); no pick releases the controller (mode 0).
     // [inferred: this runs before the trigger below in a frame.]
     let sora_up = rules::player_up(false, fighters.get(me).is_ok_and(|f| !f.1.hittable), true, s.hp);
+    // The lock button is the input record's newly pressed bit 0x800 (`Pad::lock_newly_pressed`). In mode 2 a second press
+    // releases the controller (FUN_0019b7a8: FUN_002c14a8(8), then FUN_0019b580, mode 0 with the record cleared; the system
+    // sound 8 is not played).
+    if let Some(t) = st.turn.as_mut()
+        && t.lock_mode1.is_some()
+        && t.lock_mode2
+        && !rules::mode2_keeps(true, pad.lock_newly_pressed())
+    {
+        mlog!("magic: lock button pressed again in mode 2 (FUN_0019b7a8): the lock-on controller is released (mode 0)");
+        t.lock_mode1 = None;
+        t.lock_mode2 = false;
+    }
     if let Some(t) = st.turn.as_mut()
         && t.lock_mode1.is_some()
         && !t.lock_mode2
     {
-        let pressed = s.lock.is_some() && t.prev_lock.is_none();
+        let pressed = pad.lock_newly_pressed();
         match rules::mode1_frame(t.lock_timer, pressed, sora_up) {
             rules::Mode1Frame::Keep(left) => t.lock_timer = left,
             rules::Mode1Frame::ToMode2 => {
@@ -742,9 +752,6 @@ fn run(
                 t.lock_mode1 = pick;
             }
         }
-    }
-    if let Some(t) = st.turn.as_mut() {
-        t.prev_lock = s.lock;
     }
     match st.turn {
         Some(t) if s.state == State::Magic && body.slot == t.motion => {
@@ -1711,6 +1718,8 @@ impl VmFx {
 pub(crate) struct VmWorld {
     fx: Vec<VmFx>,
     shared: Vec<(u32, Vec<u8>)>,
+    /// The bits of the global flag word 0x35d268 the scripts hold (bit 3, hosts 1.187 / 1.188).
+    gflags: u32,
 }
 
 impl VmWorld {
@@ -1766,6 +1775,8 @@ enum VmReq {
     Size { h: usize, a: f32, b: f32 },
     Move { h: usize, at: Vec3 },
     Finish(usize),
+    /// Hosts 1.187 / 1.188: bit 3 of the global flag word 0x35d268 set or cleared.
+    GlobalFlag { on: bool },
 }
 
 /// The app's game space for the scripts: the game's axes (Y and Z negated) in its units.
@@ -1905,9 +1916,12 @@ impl kh2_bdx::host::Host for SpellHost<'_> {
                     }
                 }
             }
-            // 1.187 / 1.188: bit 3 of the global flag word 0x35d268, set around Final's extra Magnet
-            // attack; its readers were not traced [GAP], so nothing changes in the app.
-            Call::Unknown { group: 1, index: 187 | 188, .. } | Call::Func { group: 1, index: 187 | 188, .. } => Value::None,
+            // 1.187 / 1.188: bit 3 of the global flag word 0x35d268, set around Final's extra Magnet attack;
+            // `GlobalFlags` carries it to the readers (FUN_001905e8: prizes and items go to the player at once).
+            Call::Unknown { group: 1, index: idx @ (187 | 188), .. } | Call::Func { group: 1, index: idx @ (187 | 188), .. } => {
+                self.reqs.push(VmReq::GlobalFlag { on: *idx == 187 });
+                Value::None
+            }
             Call::Unknown { group: 2, index: 31, args } if args.len() >= 2 => match self.attack(args[0]) {
                 Some(src) => self.new_attack(args[1] as u16, Some(src)),
                 None => Value::Int(0),
@@ -2134,6 +2148,14 @@ fn vm_slice(c: &mut Cast, ctx: &mut VmCtx, airborne: bool, in_motion: bool) {
                 if let Some(i) = vm.attacks[h] {
                     move_attack(&mut ctx.attacks[i], at);
                 }
+            }
+            VmReq::GlobalFlag { on } => {
+                if on {
+                    ctx.world.gflags |= rules::GFLAG_COLLECT_AT_ONCE;
+                } else {
+                    ctx.world.gflags &= !rules::GFLAG_COLLECT_AT_ONCE;
+                }
+                mlog!("magic(vm): global flag word bit 3 {}", if on { "set (1.187)" } else { "cleared (1.188)" });
             }
             VmReq::Finish(h) => {
                 if let Some(i) = vm.attacks[h] {

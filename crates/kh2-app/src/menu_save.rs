@@ -1554,4 +1554,28 @@ mod tests {
         assert_eq!(format!("{:?}", save.seqs[1]), format!("{:?}", load.seqs[1]), "the other two are shared");
         assert!(load_layd(b"not a bar").is_none());
     }
+
+    /// The game-over list's window (`FUN_0029b600(.., 0x10, 0x11)`, docs/menus.md 26.8 D) plays animation group 0x10 of `save.2ld`
+    /// sequence 0 and would switch to group 0x11 only when group 0x10 ends (`FUN_00138aa8`: `FUN_002369e0` is true for a group whose
+    /// play count, group record `+4`, is 0). Group 0x10 is one 1500-frame animation at the constant colour 128 and has the count 0,
+    /// so it never ends and group 0x11 (8 frames, alpha 128 to 0) never plays (skipped without `KH2_ISO`).
+    #[test]
+    fn the_game_over_windows_first_animation_never_ends_so_group_0x11_never_plays() {
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let file = Disc::open(&iso).read("menu/us/save.2ld").expect("save.2ld");
+        let seq = &layd::parse_2ld(&file).expect("a .2ld").layd.seqs[0];
+        let (g10, g11) = (seq.groups[0x10], seq.groups[0x11]);
+        assert_eq!(g10.loops, 0, "play count 0: loops forever");
+        assert_eq!(g10.count, 1);
+        let a10 = &seq.anims[g10.first];
+        assert_eq!((a10.frame_start, a10.frame_end), (0, 1500));
+        assert_eq!((a10.color_start[3], a10.color_end[3]), (128, 128), "constant full alpha");
+        assert_eq!(g11.loops, 1);
+        let a11 = &seq.anims[g11.first];
+        assert_eq!((a11.frame_start, a11.frame_end), (0, 8));
+        assert_eq!((a11.color_start[3], a11.color_end[3]), (128, 0));
+    }
 }

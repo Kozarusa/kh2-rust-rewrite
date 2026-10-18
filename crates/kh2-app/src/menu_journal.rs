@@ -1236,12 +1236,17 @@ pub struct Journal {
     open: Option<Open>,
 }
 
+/// The most updates a page turn waits for its leave groups (they last 12 frames).
+const TURN_LIMIT: u32 = 300;
+
 /// A page turn (docs/menus.md 20.14): the page to build when the leaving objects have finished, the world byte, whether the header
 /// was sent away (it is re-entered with the next page) and the nodes whose leave group is waited for.
 struct Turn {
     to: (u16, i8),
     header: bool,
     waits: Vec<usize>,
+    /// Updates waited so far: a turn never waits forever.
+    age: u32,
 }
 
 /// One Ansem report (`jiminy.bar` entry 4).
@@ -1402,6 +1407,8 @@ fn load(j: &mut Journal, disc: &Disc, scene: &mut MenuScene, images: &mut Assets
     let layer = add(scene, list, tex, None);
     let header = add(scene, list, tex, None);
     let plate = add(scene, list, tex, None);
+    // The viewer plate comes early in the draw order so the tabs and the help line stand in front of it.
+    let viewer = add(scene, list, tex, None);
     let mut nodes = Nodes { layer, header, plate, ..Nodes::default() };
     for _ in 0..CELLS {
         let c = add(scene, list, tex, None);
@@ -1510,7 +1517,6 @@ fn load(j: &mut Journal, disc: &Disc, scene: &mut MenuScene, images: &mut Assets
     // A character's own page (`FUN_002a98f0`): the layer, the frame and the picture under it, the texts and arrows under the header.
     {
         let layer = add(scene, list, tex, Some(header));
-        let viewer = add(scene, list, tex, Some(layer));
         let alpha = [add(scene, list, tex, None), add(scene, list, tex, None)];
         let model = scene.add(Node::new(None));
         scene.nodes[model].visible = false;
@@ -2634,16 +2640,16 @@ fn build_model_page(j: &mut Journal, scene: &mut MenuScene, page: u16, world: i8
     if j.open.is_none() {
         return;
     }
-    // The teardown of the character page (`FUN_002a8568` with the next page 0x10 / 0x13 / 0x16) ends both name plates (`FUN_0029d4e0`) and the
-    // backdrop (`FUN_00277ec0`), so only the viewer plate, the model and the header remain.
-    let n = &j.nodes;
-    for id in [n.tab, n.tab_follow, n.tab2, n.tab2_follow, n.backdrop] {
-        scene.nodes[id].visible = false;
-    }
-    // The plate hangs from the page's layer (`FUN_0029ba00(plate, layer)`), whose group 0x49 anchors its children at (76, 180).
-    let (layer, viewer) = (j.nodes.cpage.layer, j.nodes.cpage.viewer);
-    scene.nodes[layer].visible = false;
-    scene.set_group(layer, CHAR_LAYER);
+    // The tab stays as the character page had it; the backdrop is replaced by the viewer plate (`FUN_00277ec0`).
+    let back = j.open.as_ref().map_or(0, |o| o.cp.back);
+    char_tabs(j, scene, back);
+    let backdrop = j.nodes.backdrop;
+    scene.nodes[backdrop].visible = false;
+    // The plate hangs from the page layer, whose group 0x49 anchors its children at (76, 180).
+    let viewer = j.nodes.cpage.viewer;
+    let list = j.seq_base + SEQ_LIST;
+    let anchor = scene.seqs.get(list).and_then(|s| s.anchor(CHAR_LAYER, 0, &kh2_image::seqd::Ext::default())).unwrap_or([0, 0]);
+    scene.nodes[viewer].pos = [anchor[0] as f32, anchor[1] as f32];
     scene.nodes[viewer].visible = true;
     scene.set_group_then(viewer, group::VIEWER[0], group::VIEWER[1]);
     let o = j.open.as_mut().unwrap();
@@ -2996,7 +3002,7 @@ fn begin_turn(j: &mut Journal, scene: &mut MenuScene, to: (u16, i8)) -> bool {
         return false;
     }
     info!("journal: page turn {from:#x} -> {:#x}: {} leaving objects (header {}), the next page is built when they have finished (FUN_00295ac0(2))", to.0, waits.len(), !pair);
-    j.turn = Some(Turn { to, header: !pair, waits });
+    j.turn = Some(Turn { to, header: !pair, waits, age: 0 });
     true
 }
 
@@ -3084,7 +3090,14 @@ fn tick(
         *logged = 0;
     }
     if j.open.is_some()
-        && j.turn.as_ref().is_some_and(|t| t.waits.iter().all(|&i| scene.nodes[i].player.finished()))
+        && j.turn.as_mut().is_some_and(|t| {
+            t.age += 1;
+            let late = t.age >= TURN_LIMIT;
+            if late {
+                warn!("journal: page turn to {:#x} did not finish in {TURN_LIMIT} updates; building the page now", t.to.0);
+            }
+            late || t.waits.iter().all(|&i| scene.nodes[i].player.finished())
+        })
         && let Some(t) = j.turn.take()
     {
         build(&mut j, &mut scene, &disc, &mut images, t.to.0, t.to.1, &test, &items);
@@ -3881,5 +3894,4 @@ mod tests {
             assert!(w.iter().any(|r| r.id == i), "world {i}");
         }
     }
-
 }

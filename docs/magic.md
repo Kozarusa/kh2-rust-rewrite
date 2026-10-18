@@ -224,8 +224,11 @@ caster's context, a copy of its target record (+0x30), the start position = elem
 Final send three to seven shots at other angles (not ported).
 
 The shot (R035b): element 2 unbound (host 1.138); `attack_create(ctx, 248, -1, kind)` sized `magi` +0x18 both ways (a
-sphere); the attack first moves to the caster's lock-on point (host 1.88) [GAP: the app starts it at the shot's position,
-so the first swept segment is missing]; life `magi` +0x10 - 12. Each frame while the effect lives (L039d): it ends when
+sphere); the attack first moves to the caster's lock-on point (host 1.88: FUN_00172f40 -> FUN_0016b6e0 builds a target record
+of shape 0 on the caster, FUN_0018eec0 gives its point: the centre of the caster's first target shape through
+FUN_0018ee20 / FUN_001894d0, else its position, FUN_0016b960) [V, WP-MG2: `caster_lock_point`; the attack is made there
+and the first loop pass moves it to the shot's place, so that pass sweeps the segment between them; test
+`shot_attack_first_segment_runs_from_the_caster`]; life `magi` +0x10 - 12. Each frame while the effect lives (L039d): it ends when
 the attack's flags 8 / 0x10 (host 2.29) or 0x200 (2.39) are set, or when host 2.14 (FUN_0018c890: flag 2, 8, 0x10 or
 0x200) holds and the block's flag (+0x64) is 0; otherwise the effect's second vector takes the direction (0.41), the effect and attack move to the position
 (R045b), yield; with a valid target and a rate above 0 the direction turns toward the target (host 0.46 -> FUN_0017c0f8:
@@ -275,7 +278,14 @@ Port: `magic::step_strike`; the probe is the app's floor test `World::ground_m`.
   facing . dir) * 0.5 * (1 - plyr+0x70) + plyr+0x70)`, the lowest wins. When one is found the lock-on controller
   (+0xb40) goes to mode 1 on it (FUN_0019b3f0: the target marker, FUN_0013e528 with 5 or 1) and FUN_0019bcb8 sets its
   timer from the player's +0x130 row +0x68. [V] Port: `magic_rules::lock_on_pick`, `magic_lock_on_applies`; the mode-1
-  target is kept for the cast motion. [GAP: the marker and the controller's mode-1 timer count-down are not ported.]
+  target is kept for the cast motion. Timer (WP-MG2): FUN_0019bcb8 sets +0x1c to the row's +0x68 (`plyr`
+  AutoLockOnTime) in mode 1 only (oracle test `lock_on_timer_and_global_flag_8_match_the_executable`); each frame of mode
+  1 (FUN_0019b7a8) the timer loses `DAT_00356f40` (1.0 in the executable) while it is above 0 and the player is up
+  (FUN_0019a4f0: +0x7f8 bit 4 and +0x108 bit 8 clear, the status's hp above 0), else the controller looks for a new
+  record (FUN_0018f538 case 6, a jump table entry, and mode 2 when the ability block's flag 0x800 is set: [GAP]); the
+  trigger 28 refills the timer before it turns (FUN_001861b8). Port: `magic_rules::mode1_step`, `mode1_timer_start`,
+  `CastTurn::lock_timer`; the cast keeps no mode-1 target after the timer ran out. [I: the controller's frame runs
+  before the trigger in a frame.] [GAP: the marker (FUN_0013e528 with 5 or 1) is not drawn.]
 - The turn itself is two range triggers of the cast motions (FUN_00188030, player objects only, +0x588 & 2): 22 turns
   toward the command's target record (FUN_00186118), 28 toward the lock-on controller's target (FUN_001861b8, which
   also refreshes the mode-1 timer). The parameter is the limit in degrees per frame (times `DAT_0037a988`, pi/180).
@@ -309,7 +319,7 @@ Compared in harness runs (tt00, the `magic-fire` keys with 0, 1, 2 or 3 `G` pres
 - Cure: stops at 2.23, 1.140, 1.343, 1.83.
 
 So the hand port stays the default; the interpreter path is a check for Fire. [GAP: the hosts above, then 2.20
-request threads (already run by the runtime), 1.88, 1.120, 1.138, 1.141, 1.146, 2.14, 2.17, 2.29, 2.39, 0.38, 0.41,
+request threads (already run by the runtime), 1.120, 1.138, 1.141, 1.146, 2.14, 2.17, 2.29, 2.39, 0.38, 0.41,
 0.46, 0.52, 1.93, 10.31, 0.100 for the other three.]
 
 ## Phase 2 (WP-7I)
@@ -332,7 +342,7 @@ The `magc` slot order is read from the data (`Id`): 0 Fire, 1 Blizzard, 2 Thunde
 ### Magnet (MAGNET_*.mag) [V, script]
 
 Runs in the interpreter (slots 4 and 5 always do, WP-7I). Event 20 starts element 0 on the caster. Event 21: stop
-it, element 1; Final sets bit 3 of the global flag word 0x35d268 (host 1.187) over a yield [GAP: its readers]. The
+it, element 1; Final sets bit 3 of the global flag word 0x35d268 (host 1.187) over a yield (WP-MG2: the only reader is FUN_001905e8, `magic_rules::global_flag_8_active`, called by FUN_001a3848, the attack-versus-object hit dispatch that sends the attack to the player's hit routine FUN_001a3a88, and FUN_001bd358, the enemy target pick; the other writer is FUN_001b9140 case 3; a scan of `--jal 0x1905e8` lists these two calls; the app has neither path, so the bit has no effect here [GAP: the effect on hits is not ported]). The
 place: the target record's position (2.23 / 1.140 / 1.120) or element 1's position; host 1.141 probes the ground
 from `magi` +0x3c above it down `2 * magi +0x3c` and, when found, puts the place `magi` +0x3c above the ground.
 Attack 658 of the kind at the place, a sphere of `magi` +0x4c; element 2 placed there (1.138 + 0.38). 16 frames
@@ -501,7 +511,7 @@ overlap: not changed.]
   the pull mover 15 (air) against 14; the pull mover's leave method 0x331388; the line-test mask 2
   of host 1.248 (every triangle blocks in the app); Sora as the victim of reaction class 5 (`sora.rs` still takes
   it as `NotDecoded`); a pull by an attack that is not a spell's (the app knows only spell attack objects).
-- The lock-on controller's mode-1 marker and timer (above). Which target record the menu code puts into a spell's
+- The lock-on controller's mode-1 marker, its re-pick when the timer ran out (FUN_0018f538 case 6) and mode 2 (above). Which target record the menu code puts into a spell's
   request (FUN_00174cf8 copies it; its writer was not traced) [I: Sora's target, Cure's the caster].
 - The HUD's MP charge bar: `hud_gauge::MpRecharge` gets +0x1bc (time left, which counts down) and +0x1c0 as its doc
   names them; whether the game's bar fills with the left time or with the elapsed time was not traced in the HUD code
@@ -521,6 +531,9 @@ turn; the interpreter entry point.
 | 0x1a4c78 | `magc` row of a slot |
 | 0x1a45c0, 0x1a4530, 0x1a4f00 | load / free the six magic resources (table 0x35e810) |
 | 0x1a4798, 0x179400, 0x174cf8 | cast start, its caller, the command executor |
+| 0x19b7a8, 0x19b3f0, 0x19bcb8, 0x1861b8, 0x19a4f0 | lock-on controller frame, mode change, mode-1 timer set, trigger 28, player-up test (WP-MG2) |
+| 0x172f40, 0x16b6e0, 0x18eec0, 0x18ee20, 0x1894d0 | host 1.88 and the target point (WP-MG2) |
+| 0x1905e8, 0x1a3848, 0x1bd358, 0x1b9140 | global flag 0x35d268 bit 3 reader, its two callers, its second writer (WP-MG2) |
 | 0x1a4a60, 0x188498 (case 0x11) | frame trigger 17: pay and event 21 |
 | 0x1a42b8, 0x1a43b8, 0x1a44a8 | magic thread list: link, destroy, clear |
 | 0x1bbee8, 0x1b6f48, 0x1a4dd0 | magic list, command lookup, slot command |

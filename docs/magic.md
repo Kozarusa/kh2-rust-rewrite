@@ -297,9 +297,9 @@ Port: `magic::step_strike`; the probe is the app's floor test `World::ground_m`.
   button pressed goes to mode 2 through FUN_0018f538(4) (FUN_0019be08 false), else to mode 1 through
   FUN_0018f538(6); mode 2 keeps its record while FUN_0019a5d0 holds and the button is not pressed again, else
   FUN_0019b580. Port: `magic_rules::mode1_frame` (test `mode1_frame_order_and_player_up`); in the cast the
-  button is read as Sora's lock-on target turning from none to some [I: `sora::Pad::lock` is private, a getter
-  would make it exact]; mode 2 keeps the cast's record while it is alive; a second press in mode 2 is not seen
-  [GAP: same reason].
+  button is `sora::Pad::lock_newly_pressed` (WP-FL1: the press `sora::tick` takes, kept until the next tick), which
+  replaces the earlier inference from Sora's lock-on target; mode 2 keeps the cast's record while it is alive and a
+  second press releases the controller (`magic_rules::mode2_keeps`; the system sound FUN_002c14a8(8) is not played).
   FUN_0019a4f0 (all four conditions, `magic_rules::player_up`): `+0x7f8 & 4` clear (the dead flag), `+0x108 & 8`
   clear (the cannot-be-hit bit, enemy host 1.70), `+0x510` (the status record) not null, and its first word (hp)
   above 0. Oracle: `player_up_and_mode1_keep_match_the_executable` runs FUN_0019a4f0 for all 32 combinations and
@@ -606,3 +606,5 @@ turn; the interpreter entry point.
 | 0x18d430, 0x18d808, 0x18e818 | clash handler counting byte +0xa4, the pair test, host 2.66 |
 | 0x1729f8, 0x18e928, 0x16dad0, 0x16cf08, 0x17c2e8, 0x11b4d8, 0x11be08 | hosts 1.60, 2.21, 0.39, 0.13 and the Y rotation |
 | 0x172730, 0x1a5ee0, 0x1a6068, 0x1a63c8 | host 1.248: Final Thunder's random places (WP-7M2) |
+
+**WP-FL1 (global flag word 0x35d268, readers).** `magic_rules::GlobalFlags` holds the word; each writer publishes its own bits (magic: bit 3 from hosts 1.187 / 1.188 through `VmReq::GlobalFlag`; summons: 0x800 and 0x1000, `summon::publish_gflags`). The brief's reading of FUN_001a3848 and FUN_001bd358 as the attack hit dispatch and the enemy target pick was wrong: read in full, FUN_001a3848 is the prize pickup dispatch (the prize manager's check, prize.rs) and FUN_001bd358 the item object's pickup check (already cited in prize.rs); neither touches an enemy or an attack. Rules ported as pure functions: `global_flag_8_active` (FUN_001905e8), `global_flag_800_active` (FUN_00190610), `prize_dispatch` (FUN_001a3848 up to its member loop: bit 0x800 ors 8 into the record's +0x28; bit 3 hands the prize to FUN_001a3a88 for the player and returns; the record's flag 8 with +0x44 at least 3 does the same and runs on into the member loop), `item_taken_by_player` (FUN_001bd358 after FUN_001a3700 fails and FUN_001bdb10 is false: either bit takes the item), and `update_gate_global` (bit 0x1000 of FUN_0019afe8). Test `global_flag_readers_follow_the_executable`. NOT wired: the callers are in prize.rs (outside this package); FUN_0019afe8's callers FUN_00184498 (the weapon object's update, skipped while the gate holds) and FUN_00191c18 (clears +0x768 bit 8 of the object while it holds; the bit's meaning was not found) need the objects' own +0x10c / +0x108 bits and DAT_0035ee9c, which the app has no model for [GAP].

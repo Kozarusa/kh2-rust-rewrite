@@ -345,14 +345,82 @@ pub fn magic_lock_on_applies(has_bit: bool, slot: u8) -> bool {
     has_bit && (slot < 3 || slot == 4)
 }
 
-/// FUN_001905e8, the only reader of bit 3 of the global flag word 0x35d268 (set by Final's script, host
-/// 1.187, and by FUN_001b9140 case 3; cleared by host 1.188): the bit with the player object present
-/// (DAT_0035c998). Its two callers are the attack-versus-object hit dispatch FUN_001a3848 (the attack goes
-/// to the player's hit routine FUN_001a3a88 whatever the hit test says) and the enemy target pick
-/// FUN_001bd358 (the player is the victim).
-#[cfg(test)]
+/// Bit 3 of the global flag word 0x35d268: set by Final's script (host 1.187) and by FUN_001b9140 case 3, cleared by host
+/// 1.188. Instant collection of prizes and items (read by FUN_001905e8).
+pub const GFLAG_COLLECT_AT_ONCE: u32 = 0x8;
+/// Bit 0x800: set by Peter Pan's host 6.19 (read by FUN_00190610).
+pub const GFLAG_TARGET_PLAYER: u32 = 0x800;
+/// Bit 0x1000: set by host 1.286 (read by FUN_0019afe8).
+pub const GFLAG_UPDATE_GATE: u32 = 0x1000;
+
+/// The global flag word `DAT_0035d268` as far as the app models it. Each writer owns its bits and publishes them every
+/// tick with `merge` (magic: bit 8, summons: 0x800 and 0x1000); the readers ask the rules below.
+#[derive(bevy::prelude::Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GlobalFlags(pub u32);
+
+impl GlobalFlags {
+    /// Replaces the bits of `mask` with the writer's own.
+    pub fn merge(&mut self, mask: u32, bits: u32) {
+        let next = (self.0 & !mask) | (bits & mask);
+        if next != self.0 {
+            self.0 = next;
+        }
+    }
+}
+
+/// FUN_001905e8, a reader of bit 3 of the global flag word 0x35d268: the bit with the player object present
+/// (DAT_0035c998). Its callers are the prize pickup dispatch FUN_001a3848 (the prize goes to the player's pickup routine
+/// FUN_001a3a88 whatever the reach test says) and the item object's pickup check FUN_001bd358 (the item is given to the
+/// player without the reach test).
+#[allow(dead_code)] // the callers are in prize.rs and the weapon update (WP-FL1: not wired, outside ownership)
 pub fn global_flag_8_active(flags: u32, player_exists: bool) -> bool {
-    flags & 8 != 0 && player_exists
+    flags & GFLAG_COLLECT_AT_ONCE != 0 && player_exists
+}
+
+/// FUN_00190610, the reader of bit 0x800: the bit with the player object present. Its callers are FUN_001a3848 (the
+/// prize's record gets +0x28 bit 8) and FUN_001bd358 (the item is taken as bit 3 would).
+#[allow(dead_code)] // the callers are in prize.rs and the weapon update (WP-FL1: not wired, outside ownership)
+pub fn global_flag_800_active(flags: u32, player_exists: bool) -> bool {
+    flags & GFLAG_TARGET_PLAYER != 0 && player_exists
+}
+
+/// What FUN_001a3848 does with a prize before its member loop. `flag_8` is the prize record's +0x28 bit 8 as it stood,
+/// `age` its byte +0x44.
+#[allow(dead_code)] // the callers are in prize.rs and the weapon update (WP-FL1: not wired, outside ownership)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PrizeDispatch {
+    /// The record's +0x28 bit 8 afterwards (bit 0x800 ors it in; it is never cleared here).
+    pub flag_8: bool,
+    /// The player gets the prize through FUN_001a3a88 (FUN_001c5808 mode 0, then the pickup table FUN_001a39b0).
+    pub give_to_player: bool,
+    /// The function ends after that call (the bit-3 branch returns; the +0x28 bit 8 branch falls into the member loop).
+    pub done: bool,
+}
+
+/// FUN_001a3848 up to its member loop: bit 0x800 sets the record's flag 8; bit 3 gives the prize to the player and
+/// returns; else with the flag 8 set and the age (+0x44) at least 3 the prize is given to the player and the loop runs on.
+#[allow(dead_code)] // the callers are in prize.rs and the weapon update (WP-FL1: not wired, outside ownership)
+pub fn prize_dispatch(flags: u32, player_exists: bool, flag_8: bool, age: u8) -> PrizeDispatch {
+    let flag_8 = flag_8 || global_flag_800_active(flags, player_exists);
+    if global_flag_8_active(flags, player_exists) {
+        return PrizeDispatch { flag_8, give_to_player: true, done: true };
+    }
+    PrizeDispatch { flag_8, give_to_player: flag_8 && age >= 3, done: false }
+}
+
+/// FUN_001bd358 for an item object whose player gates passed (the player up, not state 0x2000000, the item not taken
+/// and pickable): the player is the collector when FUN_001a3700 says the item is in reach; else, unless the item is the
+/// object 0x883 (FUN_001bdb10 true: other members are asked in turn, not modelled), when either global bit holds.
+#[allow(dead_code)] // the callers are in prize.rs and the weapon update (WP-FL1: not wired, outside ownership)
+pub fn item_taken_by_player(flags: u32, player_exists: bool, in_reach: bool, is_member_object: bool) -> bool {
+    in_reach || (!is_member_object && (global_flag_8_active(flags, player_exists) || global_flag_800_active(flags, player_exists)))
+}
+
+/// FUN_0019afe8 as far as the global word goes: the object update is held while bit 0x1000 is set. The other terms
+/// (the object's +0x10c bits 0x80 / 0x200, DAT_0035ee9c, FUN_0019af28, FUN_0019b100, FUN_002c56c0) are the object's own.
+#[allow(dead_code)] // the callers are in prize.rs and the weapon update (WP-FL1: not wired, outside ownership)
+pub fn update_gate_global(flags: u32) -> bool {
+    flags & GFLAG_UPDATE_GATE != 0
 }
 
 /// The frame step of the lock-on controller's timer (`DAT_00356f40`, 1.0 in the executable).
@@ -403,6 +471,12 @@ pub fn mode1_frame(timer: f32, lock_pressed: bool, player_up: bool) -> Mode1Fram
         Some(left) => Mode1Frame::Keep(left),
         None => Mode1Frame::Repick,
     }
+}
+
+/// FUN_0019b7a8 for mode 2: the record is kept while FUN_0019a5d0 holds (`record_ok`) and the lock button is not newly
+/// pressed; otherwise the controller is released (FUN_0019b580: mode 0, the record cleared).
+pub fn mode2_keeps(record_ok: bool, lock_pressed: bool) -> bool {
+    record_ok && !lock_pressed
 }
 
 /// The window FUN_0018fb98 applies when its range is above 0 (FUN_0018f538 case 6 passes the player row's
@@ -806,6 +880,39 @@ mod tests {
         assert_eq!(mode1_step(0.0, true), None, "a timer of 0 looks for a new record");
         assert_eq!(mode1_step(5.0, false), None, "FUN_0019a4f0 false: no keeping");
         assert_eq!(mode1_step(0.5, true), Some(-0.5), "the test is `0.0 < timer`, the step is not clamped");
+    }
+
+    /// The readers of the global flag word: FUN_001905e8 / FUN_00190610 need the player object, FUN_001a3848 and
+    /// FUN_001bd358 follow the decompilation's branches, FUN_0019afe8 reads bit 0x1000, and `merge` replaces only the
+    /// writer's own bits.
+    #[test]
+    fn global_flag_readers_follow_the_executable() {
+        assert!(global_flag_8_active(8, true) && !global_flag_8_active(8, false) && !global_flag_8_active(0x7ff0, true));
+        assert!(global_flag_800_active(0x800, true) && !global_flag_800_active(0x800, false) && !global_flag_800_active(8, true));
+        assert_eq!(prize_dispatch(8, true, false, 0), PrizeDispatch { flag_8: false, give_to_player: true, done: true });
+        assert_eq!(prize_dispatch(8, false, false, 9), PrizeDispatch { flag_8: false, give_to_player: false, done: false });
+        assert_eq!(prize_dispatch(0x800, true, false, 2), PrizeDispatch { flag_8: true, give_to_player: false, done: false });
+        assert_eq!(prize_dispatch(0x800, true, false, 3), PrizeDispatch { flag_8: true, give_to_player: true, done: false });
+        assert_eq!(prize_dispatch(0, true, true, 3), PrizeDispatch { flag_8: true, give_to_player: true, done: false });
+        assert_eq!(prize_dispatch(0, true, false, 200), PrizeDispatch { flag_8: false, give_to_player: false, done: false });
+        assert!(item_taken_by_player(0, true, true, false), "in reach: always");
+        assert!(!item_taken_by_player(0, true, false, false));
+        assert!(item_taken_by_player(8, true, false, false) && item_taken_by_player(0x800, true, false, false));
+        assert!(!item_taken_by_player(8, true, false, true), "the 0x883 branch asks the members, not the flags");
+        assert!(!item_taken_by_player(8, false, false, false), "no player object");
+        assert!(update_gate_global(0x1000) && !update_gate_global(0xefff));
+        let mut f = GlobalFlags(0x1004);
+        f.merge(GFLAG_COLLECT_AT_ONCE, 8);
+        f.merge(0x1800, 0x800);
+        assert_eq!(f.0, 0x80c, "bit 2 is nobody's here and stays; 0x1000 was cleared by its owner");
+    }
+
+    /// Mode 2 of FUN_0019b7a8 keeps the record only without a second press.
+    #[test]
+    fn mode2_second_press_releases() {
+        assert!(mode2_keeps(true, false));
+        assert!(!mode2_keeps(true, true), "the button pressed again");
+        assert!(!mode2_keeps(false, false), "the record no longer holds");
     }
 
     /// FUN_0019a4f0 needs all four conditions; FUN_0019b7a8 mode 1 takes the lock button before the timer.

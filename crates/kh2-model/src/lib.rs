@@ -80,7 +80,7 @@ pub fn map_model(block: &[u8]) -> Vec<Mesh> {
         return Vec::new();
     }
     let chains = u32_at(b, 0x10) as usize;
-    let mut meshes = Vec::with_capacity(chains);
+    let mut meshes = Vec::with_capacity(chains.min(10_000));
     for c in 0..chains.min(10_000) {
         let e = 0x20 + 16 * c;
         let (start, texture) = (u32_at(b, e) as usize, u32_at(b, e + 4) as usize);
@@ -264,4 +264,17 @@ pub fn map_file(file: &[u8]) -> Option<MapFile> {
         })
     };
     Some(MapFile { map: pair("MAP")?, sky: pair("SK0"), sky1: pair("SK1") })
+}
+
+#[cfg(test)]
+mod bound_tests {
+    use super::*;
+
+    #[test]
+    fn corrupt_chain_count_does_not_over_allocate() {
+        let mut block = vec![0u8; RESERVED + 0x40];
+        block[RESERVED..RESERVED + 4].copy_from_slice(&2u32.to_le_bytes());
+        block[RESERVED + 0x10..RESERVED + 0x14].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(map_model(&block).is_empty());
+    }
 }

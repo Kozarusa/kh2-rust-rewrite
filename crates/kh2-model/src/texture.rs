@@ -98,8 +98,13 @@ pub(crate) fn gs_info(b: &[u8], i: usize) -> Option<GsInfo> {
     let ti = *b.get(off_data + i).unwrap_or(&0) as usize;
     let tr = off_tr + TRANSFER * (1 + ti.min(n_tex.saturating_sub(1)));
     let g = off_gs + GSINFO * i;
+    // The entry must lie inside the container, and the GS limits a texture to 1024 x 1024 (TEX0 TW/TH <= 10).
+    b.get(g..g + GSINFO)?;
     let tex0 = u64_at(b, g + 0x70);
     let (tw, th) = (bits(tex0, 26, 4), bits(tex0, 30, 4));
+    if tw > 10 || th > 10 {
+        return None;
+    }
     Some(GsInfo {
         psm: bits(tex0, 20, 6),
         width: 1 << tw,
@@ -187,7 +192,7 @@ pub fn decode(b: &[u8]) -> Vec<Texture> {
         return Vec::new();
     }
     let n_gs = i32_at(b, 12);
-    let mut out = Vec::with_capacity(n_gs);
+    let mut out = Vec::with_capacity(n_gs.min(b.len() / GSINFO));
     for i in 0..n_gs {
         let Some(g) = gs_info(b, i) else { break };
         let (upload_psm, (rrw, rrh), data_off, clamp, psm) = (g.upload_psm, g.upload, g.data_off, g.clamp, g.psm);
@@ -263,4 +268,33 @@ pub fn decode(b: &[u8]) -> Vec<Texture> {
         });
     }
     out
+}
+
+#[cfg(test)]
+mod bound_tests {
+    use super::*;
+
+    fn container(n_gs: i32, tex0: u64) -> Vec<u8> {
+        let mut b = vec![0u8; 0x200];
+        b[12..16].copy_from_slice(&n_gs.to_le_bytes());
+        b[8..12].copy_from_slice(&1i32.to_le_bytes());
+        b[16..20].copy_from_slice(&0x40i32.to_le_bytes());
+        b[20..24].copy_from_slice(&0x60i32.to_le_bytes());
+        b[24..28].copy_from_slice(&0x100i32.to_le_bytes());
+        b[0x100 + 0x70..0x100 + 0x78].copy_from_slice(&tex0.to_le_bytes());
+        b
+    }
+
+    #[test]
+    fn huge_entry_count_stops_at_the_data() {
+        let b = container(i32::MAX, 0);
+        assert!(decode(&b).len() < 4);
+    }
+
+    #[test]
+    fn oversize_texture_dimensions_are_rejected() {
+        let b = container(1, (14u64 << 26) | (14u64 << 30));
+        assert!(gs_info(&b, 0).is_none());
+        assert!(decode(&b).is_empty());
+    }
 }

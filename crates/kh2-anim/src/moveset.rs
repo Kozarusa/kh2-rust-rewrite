@@ -81,6 +81,9 @@ impl Moveset {
             return None;
         }
         let n = u32_at(ptya, at)? as usize;
+        if n > ptya.len().saturating_sub(at + 4) / RECORD_SIZE {
+            return None;
+        }
         let mut actions = Vec::with_capacity(n);
         for i in 0..n {
             let r = ptya.get(at + 4 + RECORD_SIZE * i..at + 4 + RECORD_SIZE * (i + 1))?;
@@ -605,5 +608,19 @@ mod tests {
         assert_eq!(m.pick(|a| a.key == 5, 0).unwrap().key, 5);
         assert_eq!(m.pick(|a| a.key == 5, 151).unwrap().key, 6);
         assert!(m.pick(|a| a.key == 6, 153).is_none());
+    }
+}
+
+#[cfg(test)]
+mod bound_tests {
+    use super::*;
+
+    #[test]
+    fn huge_action_count_is_an_error_not_an_allocation() {
+        let mut p = vec![0u8; 0x40];
+        p[4..8].copy_from_slice(&1u32.to_le_bytes());
+        p[8..12].copy_from_slice(&0x10u32.to_le_bytes());
+        p[0x10..0x14].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(Moveset::parse(&p, 0).is_none());
     }
 }

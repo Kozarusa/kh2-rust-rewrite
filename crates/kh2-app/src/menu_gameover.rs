@@ -82,7 +82,8 @@ pub const OPEN_AFTER_TICKS: f32 = 122.0;
 pub const TICKS_PER_SECOND: f32 = 60.0;
 /// Seconds Sora lies down before the list opens for type 1 (`FUN_001ad868`, a manager that ended by itself). That type starts
 /// no event (`FUN_001ad378` is called with the object 0), so step 2 waits for whatever fade the mission's ending left in state 4;
-/// that fade was not traced [inferred: the same as before this package].
+/// that fade is the event player's (see docs/menus.md 26.8 E): nothing the app runs for a mission ending sets it, so the wait is
+/// kept as before [inferred].
 pub const OPEN_AFTER_TYPE_1: f32 = 1.5;
 
 /// Seconds from the knock-out to the list for a game over type.
@@ -1195,6 +1196,11 @@ mod model {
         done: bool,
     }
 
+    /// The model stands in the list's phase only (see `show`).
+    pub fn model_stands(phase: Phase) -> bool {
+        phase == Phase::List
+    }
+
     /// Stands the model up while the list is up and takes it away after.
     #[allow(clippy::too_many_arguments)]
     pub fn show(
@@ -1210,7 +1216,10 @@ mod model {
     ) {
         // The alternate list (record 10) has no second header word (`FUN_001adcf8` runs for the normal list only): no model.
         let over = go.over.as_ref().map(|o| (o.kind, o.phase, o.frames, o.alternate));
-        let kind = over.filter(|o| matches!(o.1, Phase::List | Phase::Closing) && !o.3).map(|o| o.0);
+        // Only while the list shows: the original frees the model slots the frame the list starts to close (`FUN_00270098` ->
+        // `FUN_00270318` -> `FUN_0026faa8` -> `FUN_0023a340`), and the window that is its alpha source stays at the constant full
+        // colour of animation group 0x10 until then (docs/menus.md 26.8 D), so there is no fade.
+        let kind = over.filter(|o| model_stands(o.1) && !o.3).map(|o| o.0);
         let motion = kind.and_then(set_index).and_then(|s| go.stage.motions[s - 0xfc].clone());
         let want = motion.is_some() && go.stage.node.is_some() && std::env::var_os("KH2_NO_GAMEOVER_SCENE").is_none();
         let st = &mut go.stage;
@@ -1228,13 +1237,9 @@ mod model {
             return;
         }
         if st.camera.is_some() {
-            // Fades with the close (the alpha of the list window, `FUN_0023b4b8`).
-            let f = match over {
-                Some((_, Phase::Closing, frames, _)) => 1.0 - (frames as f32 / crate::menu::CLOSE_FRAMES as f32).clamp(0.0, 1.0),
-                _ => 1.0,
-            };
+            // The alpha of the list window (`FUN_0023b4b8`) is the constant 0x80 of animation group 0x10: full.
             if let Some(n) = st.node {
-                scene.nodes[n].label_fade = f;
+                scene.nodes[n].label_fade = 1.0;
             }
             return;
         }
@@ -1859,6 +1864,14 @@ mod tests {
         assert!((open_after(0) - 122.0 / 60.0).abs() < 1e-6 && open_after(0) == open_after(3));
         assert_eq!(open_after(1), OPEN_AFTER_TYPE_1);
         assert!(open_after(0) > open_after(1), "the fade is longer than the 1.5 s the port used before");
+    }
+
+    /// The model stands while the list shows and goes the frame the list starts to close (`FUN_0023a340` through `FUN_00270318`).
+    #[test]
+    fn the_model_stands_only_while_the_list_shows() {
+        assert!(model::model_stands(Phase::List));
+        assert!(!model::model_stands(Phase::Closing));
+        assert!(!model::model_stands(Phase::Waiting));
     }
 
     /// The knock-out event's fade is white, starts at tick 22, is half way at tick 72, full at 122 and is zero for type 1.

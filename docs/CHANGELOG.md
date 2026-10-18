@@ -2,6 +2,15 @@
 
 One short section per work package. "Verified" says how; nothing here was checked by watching video, and audio was listened to only where stated.
 
+## Shift 16 (2026-10-18)
+
+- **WP-CZ2 (customize gaps).** The page 0x1b second help, the missing ids of table 0x352ec0 and FUN_00113888 were already ported or not applicable; added a test for the appended help per row kind and documented the unmatched-value read. Open: the halfword at address 2 read by FUN_002743e8 for a value no entry holds [inferred 0].
+- **WP-LS3 (limit hosts 1.160 and 6.57).** `ScriptMem` and `Host::call_with_mem` in kh2-bdx give a host call the script's own memory (additive, default forwards to `Host::call`); host 1.160 (FUN_0018f490) writes the record [object, 0, 0, -1] and host 6.57 (0x2eec10) answers the word at +4 of the block. Verified by two tests, the BDX oracle (1257 scripts, 0 failures) and limit scenarios. Open: 6.57 answering 0 for unknown addresses [inferred].
+- **WP-PL3 (party items).** MP items do nothing to a KO member unless the item's HP part revives him (FUN_001a0210, FUN_00186368); field item use revives a KO member through the HP method; Hyper Healing (ability 419, bit 131) scale rules added (FUN_0017cee8, float at 0x37a560). Verified by tests. Open: the scale is not yet used by menu_items.rs and party.rs; the voice call in FUN_00186368.
+- **WP-SH7 (shop gaps).** Kinds and total words (group 0x65) and page 10 in two columns with a pair cursor (FUN_0028b188, FUN_002858e8). Verified by disc tests and screenshots. Open: row plates, number/word order of the kinds line, right alignment [inferred].
+- **WP-GO3 (game over leftovers).** The model panel stays at full alpha until the list closes (group 0x11 never plays, FUN_00138aa8); the type 1 list wait is a documented gap (fade object 0x356b30 state 4). Verified by tests and gameover-* scenarios.
+- **WP-RV5 (revive leftovers).** The revive fade is an additive white quad (GS ALPHA 0x48) with the original's alpha counter (FUN_0014a818); no revive message window exists (DAT_0036bd50 has no readers). Verified by tests and screenshots. Open: what lifts the fade after state 4, layer order against the HUD [inferred].
+
 ## Shift 15 (2026-10-17)
 
 **WP-PL2 (party follow-ups).** Continue no longer loses the allies' restored HP and MP to the live party sync; items heal a down member and revive him (FUN_001a15a0 has no KO test; vtable +0x78 FUN_00176c98 -> FUN_00186238 -> FUN_0017cee8). Drive Recovery and Dodge Roll findings recorded. Verified by four unit tests. Open: MP of an Elixir on a KO member (FUN_001a0210), the FUN_0017cee8 flag-8 branch.

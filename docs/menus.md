@@ -2885,3 +2885,28 @@ Tests: `the_count_up_steps_one_a_frame_or_jumps_and_marks_the_tabs`, `the_tab_su
 **The 0x7539 children [V data].** `FUN_0028f468(k)` reads the u16 table at 0x382608: 0xbb, 0xb7, 0xbc, 0xba, 0xb9, 0xb8, 0xb6 for k = 0..6. The plates' 0x7539 child widgets use these groups (0xb6 by default, 0xbb for a tab the count-up marked, `FUN_0028fea0`). Groups 0xb6 to 0xbc hold only a 1 by 1 pixel marker quad with alpha 0, so they draw nothing; the choice among them can only matter through the colour id the widget keeps (`FUN_00138e78` sets `+0x178`, then `FUN_002368e8`). [gap] What that colour id changes in the plate's colours was not read (searched `FUN_00138e78`, `FUN_002368e8`, `FUN_00139048`, `FUN_00237518`); the port keeps the art's own colours and the text colour it already derives from the mark. The table at 0x382600 by rank is not a plate table: its first four entries (0x5e, 0x5d, 0x5c, 0x5f) and the words after are message ids of the tab names, already ported.
 
 Decompile index (WP-SH8): `FUN_0028aaa8`, `FUN_0028f850`, `FUN_0028fea0`, `FUN_0028f468`, `FUN_001918a0`, `FUN_00237618`, `FUN_00237698`, `FUN_00138fc8`, `FUN_00139430`, `FUN_00139048`, `FUN_001a7ed8`, `FUN_001a80d8`, `FUN_001a8018` (table 0x37b5e4).
+
+### 20.14 Viewer plate, model alpha and the page turn (WP-JN3) [V unless marked]
+
+- **Viewer plate.** `FUN_002aba90` (called when page 0x10 / 0x13 / 0x16 is built, `FUN_002a9b80`) makes object 0x7567 from `jmemo.2ld` sequence 5, groups 4 (12 frames, alpha 0 to 0x80) then 5 (hold), as a
+  child of the page layer (`FUN_0029ba00`); `FUN_002abb20` sends it away with group 6 (12 frames, alpha to 0). Its group is a full-width light green band (x -40 .. 556, y 67 .. 376, dark green
+  fades above and below), the "Jiminy's Journal" lettering (sprites 132 .. 135, alpha 0x40) and four corner brackets (sprite 70). Its animations translate by (-76, -180), cancelled by the layer
+  group 0x49's anchor animation (76, 180), so the port hangs it from `cpage.layer` with that group. The teardown `FUN_002a8568` (next page 0x10 / 0x13 / 0x16) calls `FUN_0029d4e0(0 / 1)` on the name plates and `FUN_00277ec0` on the backdrop 0x755a; the port ends only the backdrop (the plate replaces it) and keeps the tab and help line, drawn in front of the plate (the plate is an early node) [inferred: the reviewer asked to keep them; the decomp does not prove them hidden] (`menu_journal::build_model_page`). The help line is
+  sent away by -6 (`FUN_002785a0`, group 0x7c) and lies under the plate in the port's draw order [inferred: creation order, `FUN_001394e8` appends to the object list].
+- **Model alpha (the fade).** `FUN_0023b4e0` gives each model the colour alpha of its alpha object (`FUN_00237518(object + 0x18) >> 24`); `FUN_002abc40` makes that object with the model
+  (`+0x432c` small, `+0x44b8` large; sequence 5 groups 7 then 8, leave 9). Group 7: alpha 0 to 0x80 in 24 frames (linear); group 8: 0x80; group 9: 0x80 to 0 in 12 frames. Ported
+  (`model_view::group_alpha`, `fade`): the picture's alpha follows the node, restarted by every new model. When the object dies the model is destroyed (`FUN_0023a920`).
+- **Lighting.** `FUN_0023a520` sets the slot's light vectors `+0x660 / +0x670` to 0 and the light colour `+0x680` to `DAT_0037f478` on every slot, and the colour `+0x798` 0x80 per channel (`FUN_0023b448`
+  is never called by the journal): the same slot setup as the camp's preview with the neutral colour 0x80 instead of 0x60. The port already draws the model at the neutral colour; the light
+  vector numbers were not read from the executable [GAP: `DAT_0037f478`, the vectors' use in `FUN_0023aca8` through `FUN_001dbc70` / `FUN_001da2a0` not traced].
+- **Page-turn gap.** A page-changing key makes the handler set the waiting state (`FUN_00295ac0(2)`, e.g. `FUN_002a27d8`, `FUN_002a9b80`): the header object 0x7559 plays group `table[1]` of 0x381fa8 =
+  129 (12 frames, alpha 0x80 to 0; the table is 131 enter (24 frames), 129 leave, 130 hold), the help line group 0x7c, and each frame of waiting tears the old page down (`FUN_002a21b8`, `FUN_002a8568`);
+  the next page is built only when the header (`FUN_00277b40`), the layer objects (`FUN_00278068`) and the viewer objects (`FUN_002abdc8`) are gone, and the pad is ignored meanwhile
+  (`FUN_00295d90(0)`). The character page and its model page keep the header: they send the model alpha (group 9) and the plate (group 6) away instead. The header and alpha objects are one
+  pixel sprites: the gap is the 12 frames of waiting. Ported (`menu_journal::begin_turn`, `Turn`): header leave, old page content hidden (tabs, title, backdrop, hints stay [inferred]), input
+  ignored, next page built when the leave groups have finished, header re-entered. Not ported [GAP]: the rows' and list's own leave groups (`FUN_002989a8`, `FUN_00298808`), the help line's group 0x7c,
+  the header enter wait (24 frames) before input.
+- **Decompile index (JN3).** `FUN_002aba90`, `FUN_002aba68`, `FUN_002abb20`, `FUN_002abc40`, `FUN_002abd28`, `FUN_002abd68`, `FUN_002abdc8`, `FUN_002abef0`, `FUN_002abf60`, `FUN_0023b4e0`,
+  `FUN_0023a520`, `FUN_0023a920`, `FUN_0023aca8`, `FUN_0023c1e8`, `FUN_00236cf8`, `FUN_00237518`, `FUN_0029b600`, `FUN_0029b7b0`, `FUN_0029b808`, `FUN_0029ba00`, `FUN_00138ed0`, `FUN_00139430`,
+  `FUN_00139778`, `FUN_002779f8`, `FUN_00277b40`, `FUN_00277b70`, `FUN_00277ec0`, `FUN_00278068`, `FUN_00278608`, `FUN_00278658`, `FUN_002785a0`, `FUN_00276038`, `FUN_00276bb0`, `FUN_002a27d8`,
+  `FUN_002a9b80`, `FUN_002aa0b0`, `FUN_002a8568`, `FUN_002a84d8`, `FUN_002a8718`, `FUN_0029d4e0`, `FUN_00295d90`. Tests: `model_view::tests::the_disc_model_alpha_and_turn_groups`.

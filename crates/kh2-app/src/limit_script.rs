@@ -533,7 +533,6 @@ impl ScriptRun {
                     self.effects.push(crate::limit_visual::LimitEffect { who: *who, id: args.get(1).copied().unwrap_or(0) as u16 });
                     continue;
                 }
-                _ => continue,
             };
             match args.get(1).and_then(|&p| name_at(&self.code, self.code_base, p)) {
                 Some(n) if !n.is_empty() => self.events.push(n),
@@ -605,9 +604,7 @@ fn run_limit_script(
     task: Option<Res<LimitTask>>,
     mut started: MessageReader<LimitStarted>,
     mut events: MessageReader<LimitScriptEvent>,
-    mut started_events: MessageWriter<LimitEvent>,
-    mut motion_events: MessageWriter<crate::limit_visual::LimitMotion>,
-    mut effect_events: MessageWriter<crate::limit_visual::LimitEffect>,
+    (mut started_events, mut motion_events, mut effect_events): (MessageWriter<LimitEvent>, MessageWriter<crate::limit_visual::LimitMotion>, MessageWriter<crate::limit_visual::LimitEffect>),
     sora: Query<&Sora>,
     mut st: ResMut<ScriptState>,
 ) {

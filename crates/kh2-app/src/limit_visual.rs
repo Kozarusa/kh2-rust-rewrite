@@ -74,7 +74,7 @@ pub fn sets_of(bar: &[u8]) -> HashMap<usize, Vec<Paired>> {
 }
 
 /// The sub-motion of the set `id` for a character whose model byte is `model` (`FUN_0017ee40`: the first entry of that name).
-pub fn find<'a>(sets: &'a HashMap<usize, Vec<Paired>>, id: usize, model: u8) -> Option<&'a Paired> {
+pub fn find(sets: &HashMap<usize, Vec<Paired>>, id: usize, model: u8) -> Option<&Paired> {
     let name = sub_name(model);
     sets.get(&id)?.iter().find(|(n, _)| *n == name)
 }

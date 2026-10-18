@@ -42,6 +42,31 @@ mod g {
     pub const BUBBLE: usize = 20;
 }
 
+/// Magic lock-on marker groups (0x19bbc0 hands them to 0x13e528): mode 1 uses 5 when the target record's
+/// shape byte is 0 and 1 otherwise, mode 2 uses 0x1b and 0x17.
+pub fn marker_group(mode: u8, shape: u8) -> Option<usize> {
+    match (mode, shape != 0) {
+        (1, false) => Some(5),
+        (1, true) => Some(1),
+        (2, false) => Some(0x1b),
+        (2, true) => Some(0x17),
+        _ => None,
+    }
+}
+
+/// Game-state input of the magic lock-on marker: the lock-on controller (player +0xb40) is in `mode` 1 or 2 on a
+/// target record whose shape byte is `shape`, at world point `at` (the record's target point, FUN_0018efa0). The magic module inserts it
+/// while the controller holds a record and removes it when the controller is released (FUN_0019b580);
+/// `KH2_HUDMARKER=<mode>:<shape>` draws one at the free-aim point.
+#[derive(Resource, Clone, Copy)]
+pub struct MagicMarker {
+    pub mode: u8,
+    pub shape: u8,
+    pub at: Vec3,
+    /// The bubble flag of 0x19bbc0 (same rule as `TargetBubble`).
+    pub alert: bool,
+}
+
 /// Game-state input of the lock-on bubble: true while the locked target shows its alert bubble (the game
 /// shows it when the target's flag +0x588 bit 1 is set and one of its timers +0xac8 or +0xacc is positive,
 /// 0x19bbc0). The enemy module fills it in; `KH2_HUDBUBBLE=1` shows it.
@@ -57,6 +82,9 @@ pub struct TargetHud {
     pips: [[usize; 2]; PIPS],
     reticle: usize,
     bubble: usize,
+    /// The magic marker icon and its bubble member.
+    marker: usize,
+    marker_bubble: usize,
     /// The enemy hit last, and seconds its gauge stays up.
     shown: Option<Entity>,
     hold: f32,
@@ -77,6 +105,7 @@ pub fn update(
     mut hud: ResMut<TargetHud>,
     mut seen: Local<Seen>,
     bubble: Res<TargetBubble>,
+    marker: Option<Res<MagicMarker>>,
     sora: Query<&Sora>,
     enemies: Query<(Entity, &GlobalTransform, &Enemy)>,
     cam: Query<(&Camera, &GlobalTransform), crate::menu::preview::GameCamera>,
@@ -126,6 +155,34 @@ pub fn update(
     }
     let alert = bubble.0 || std::env::var("KH2_HUDBUBBLE").is_ok_and(|v| v != "0");
     scene.nodes[h.bubble].visible = shown_reticle && locked.is_some() && alert;
+
+    // Magic lock-on marker (0x19bbc0): its own icon from the pool, at the record's target point.
+    let forced = std::env::var("KH2_HUDMARKER").ok().and_then(|v| {
+        let mut it = v.split(':').filter_map(|x| x.parse::<u8>().ok());
+        let (mode, shape) = (it.next()?, it.next().unwrap_or(0));
+        let at = cam.single().ok().map(|(_, ct)| ct.translation() + *ct.forward() * FREE_DISTANCE)?;
+        Some(MagicMarker { mode, shape, at, alert: false })
+    });
+    let mk = marker.map(|m| *m).or(forced);
+    let mk_at = mk.and_then(|m| {
+        let (c, ct) = cam.single().ok()?;
+        let vp = c.world_to_viewport(ct, m.at).ok()?;
+        Some((m, viewport_to_hud(vp, c.logical_viewport_size()?)))
+    });
+    match mk_at.and_then(|(m, p)| Some((marker_group(m.mode, m.shape)?, m, p))) {
+        Some((group, m, p)) => {
+            if scene.nodes[h.marker].player.group != Some(group) {
+                scene.set_group(h.marker, group);
+            }
+            scene.nodes[h.marker].pos = [p.x, p.y];
+            scene.nodes[h.marker].visible = true;
+            scene.nodes[h.marker_bubble].visible = m.alert || alert;
+        }
+        None => {
+            scene.nodes[h.marker].visible = false;
+            scene.nodes[h.marker_bubble].visible = false;
+        }
+    }
 
     // `KH2_HUDTARGETTEST=<hp>:<max>` shows the gauge for those values without an enemy (display only).
     let test = std::env::var("KH2_HUDTARGETTEST").ok().and_then(|v| {
@@ -235,12 +292,24 @@ fn build(scene: &mut HudScene, h: &mut TargetHud) {
     }
     h.reticle = add(scene, FIEL, None, g::FREE);
     h.bubble = add(scene, FIEL, Some(h.reticle), g::BUBBLE);
+    h.marker = add(scene, FIEL, None, 5);
+    h.marker_bubble = add(scene, FIEL, Some(h.marker), g::BUBBLE);
     h.built = true;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn marker_groups_follow_mode_and_shape_byte() {
+        assert_eq!(marker_group(1, 0), Some(5));
+        assert_eq!(marker_group(1, 3), Some(1));
+        assert_eq!(marker_group(2, 0), Some(0x1b));
+        assert_eq!(marker_group(2, 1), Some(0x17));
+        assert_eq!(marker_group(0, 0), None);
+        assert_eq!(marker_group(3, 1), None);
+    }
 
     #[test]
     fn frame_shows_only_in_the_top_segment_of_a_multi_segment_gauge() {

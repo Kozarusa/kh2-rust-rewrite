@@ -38,6 +38,10 @@ pub struct ScriptRun {
     pub camera_type: u32,
     /// Opcode 4 (`DAT_01c893b8`, default 10000.0 at 0x37a868).
     pub capacity: f32,
+    /// Opcode 6 (`DAT_0035cd28`, default 3 set at the start of `FUN_00181148`): the keep count passed to
+    /// `FUN_00194188` on the defeated tables. The game forces it to 0 when the map program byte is above
+    /// 0x32; that rule needs the program byte and is applied by `keep_for_program`.
+    pub keep: i32,
     /// Opcode 0x19 arguments (story flags to set through FUN_0017ff60 when not yet set; the app's
     /// `area::run_area_script` applies them to its story).
     pub story_flags: Vec<u32>,
@@ -61,6 +65,7 @@ impl Default for ScriptRun {
             map_visibility: u64::MAX,
             camera_type: 0,
             capacity: 10000.0,
+            keep: 3,
             story_flags: Vec::new(),
             party_resets: Vec::new(),
             world_records: Vec::new(),
@@ -83,6 +88,12 @@ pub fn run_area(area: &Area, programs: [u8; 3], entrance: u8) -> ScriptRun {
     }
     st.map_visibility = (st.map_visibility | show) & !hide;
     st
+}
+
+/// The keep count `FUN_00181148` hands to `FUN_00194188` (0x35d278): `DAT_0035cd28` (opcode 6, `FUN_00180b48`
+/// case 6), or 0 when the map program byte is above 0x32.
+pub fn keep_for_program(run: &ScriptRun, map_program: u8) -> i32 {
+    if map_program > 0x32 { 0 } else { run.keep }
 }
 
 /// FUN_00180ad8: runs commands in order until one answers "stop" (returns false then).
@@ -115,6 +126,7 @@ fn run_command(c: &Command, script: &'static str, program: u16, entrance: u8, st
         // then continue) and records the opcode.
         2 | 3 | 0x1f | 0xa | 0x16 => st.unported.push(c.opcode),
         4 => st.capacity = arg(0) as f32,
+        6 => st.keep = arg(0) as i32,
         9 => {
             st.groups.push(GroupLoad { script, program, tag: tag(arg(0)), alt: true });
             return true;

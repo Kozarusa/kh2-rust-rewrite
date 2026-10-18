@@ -350,6 +350,7 @@ pub fn magic_lock_on_applies(has_bit: bool, slot: u8) -> bool {
 /// (DAT_0035c998). Its two callers are the attack-versus-object hit dispatch FUN_001a3848 (the attack goes
 /// to the player's hit routine FUN_001a3a88 whatever the hit test says) and the enemy target pick
 /// FUN_001bd358 (the player is the victim).
+#[cfg(test)]
 pub fn global_flag_8_active(flags: u32, player_exists: bool) -> bool {
     flags & 8 != 0 && player_exists
 }
@@ -368,7 +369,7 @@ pub fn mode1_timer_start(auto_lock_on_time: f32) -> f32 {
 /// the controller looks for a new record (FUN_0018f538 case 6 [GAP: a jump table entry]) and the old
 /// target is not kept (`None`).
 pub fn mode1_step(timer: f32, player_up: bool) -> Option<f32> {
-    (timer > 0.0 && player_up).then(|| timer - MODE1_TIMER_STEP)
+    (timer > 0.0 && player_up).then_some(timer - MODE1_TIMER_STEP)
 }
 
 /// FUN_0018fb98 as FUN_00179470 calls it (with a range of 0.0, which lets every target through: the

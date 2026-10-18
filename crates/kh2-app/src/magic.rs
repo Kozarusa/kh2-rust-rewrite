@@ -2741,8 +2741,7 @@ mod tests {
     /// place in the first loop pass, so that pass sweeps the segment between them.
     #[test]
     fn shot_attack_first_segment_runs_from_the_caster() {
-        let mut attacks = Vec::new();
-        attacks.push(SpellAttack { group: 1, base_row: 0, pos: None, prev: None, radius: 20.0, height: 20.0, live: true, hit_any: false, wall: false, clashes: 0, pax: None });
+        let mut attacks = vec![SpellAttack { group: 1, base_row: 0, pos: None, prev: None, radius: 20.0, height: 20.0, live: true, hit_any: false, wall: false, clashes: 0, pax: None }];
         let (origin, place) = (Vec3::ZERO, Vec3::new(0.0, 0.0, 200.0));
         move_attack(&mut attacks[0], origin);
         assert_eq!(sweep_points(&attacks[0], origin).len(), 1, "created: nothing to sweep yet");

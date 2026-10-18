@@ -1956,6 +1956,21 @@ mod tests {
         assert_eq!((characters_help(0), characters_help(1), characters_help(2)), (0x3b89, 0x3b8a, 0x3b8a));
     }
 
+    /// The choice lookup (`FUN_002748d8`) matches on the value byte, not the position: ability settings 0 and 1 give the
+    /// first two entries, item setting 0 the first item entry; the shortcut and spell rows append nothing.
+    #[test]
+    fn the_appended_help_follows_the_value_byte_of_each_kind() {
+        let t = friend_tables();
+        let row = |kind, setting| Row { setting, ..Row::new(kind, 3, false, 0) };
+        assert_eq!(appended_help(&t, &row(Kind::Ability, 0)), Some(0x1e5b));
+        assert_eq!(appended_help(&t, &row(Kind::Ability, 1)), Some(0x1e5c));
+        assert_eq!(appended_help(&t, &row(Kind::Ability, 3)), None, "a value no entry holds");
+        assert_eq!(appended_help(&t, &row(Kind::Item, 0)), Some(0x1e5e));
+        assert_eq!(appended_help(&t, &row(Kind::Shortcut, 0)), None);
+        assert_eq!(appended_help(&t, &row(Kind::Spell, 0)), None);
+        assert_eq!(mark_of(&t, &row(Kind::Item, 2)), Some(0x1c));
+    }
+
     #[test]
     fn the_joined_help_runs_the_description_into_the_choice_message() {
         let iso = std::env::var("KH2_ISO").ok().or_else(|| std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../local/iso.txt")).ok().map(|s| s.trim().to_string()));

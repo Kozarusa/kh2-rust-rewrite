@@ -1424,6 +1424,7 @@ fn party_tick(
     fighters: Query<(Entity, &Fighter), Without<PartyMember>>,
     mut q: Query<(&mut Transform, &mut PartyMember)>,
     mut anims: Query<(&mut Animator, &GlobalTransform)>,
+    held: Query<(), With<crate::limit_visual::LimitHold>>,
     mut fx: (MessageWriter<crate::fx::StartBoundSystemEffect>, MessageWriter<crate::fx::StopEffect>),
 ) {
     let (Some(c), Some(w), Ok(s)) = (data.consts.as_ref(), world, sora.single()) else { return };
@@ -1990,6 +1991,7 @@ fn party_tick(
             }
         }
         if m.free
+            && !held.contains(m.body)
             && let Ok((mut a, _)) = anims.get_mut(m.body)
         {
             let rig = a.rig.clone();

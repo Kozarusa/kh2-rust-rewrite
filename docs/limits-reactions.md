@@ -963,6 +963,88 @@ Simba frame 45: Sora's neck and shoulder in close-up. The log line `camera: intr
     script's nor the limit's object memory [inferred].
   A record that is in the limit's object memory (the pool of 1.131) takes the write there instead of the script's memory.
 
+## Limit visuals (WP-LS2c) [V unless marked]
+
+`limit_visual.rs` (`LimitVisualPlugin`, in `CombatPlugins`) plays what hosts 2.47 and 2.59 ask of the participants. It corrects two
+earlier readings: 2.59 is not a lookup of a motion row, and the motion data is the file's `LIMI` entry.
+
+### Host 2.47: a motion of a participant
+
+- **The data.** The limit BAR's kind 0x14 entry `LIMI` (`FUN_001b2e08` stores its data at task `+8`) is a BAR of 259 entries in the layout
+  of a motion set's paired entries (`player_reaction::paired_entries`). The entries 252 to 258 are kind 20 sets (`A910` to `A915`); the
+  count differs per file (Goofy 252 to 254, Donald 2 252 to 256, Auron 252 to 258, Trinity-zz 252 only). Each set is a BAR of sub-motions
+  named `%03d0` of a model byte (`0010` Sora, `0030` Goofy, `0050` Auron; `0011` and `0012` belong to the keyblade objects), each an
+  animation BAR (type 9 motion, type 16 triggers) made for that character's skeleton. Test `the_limit_files_hold_their_motion_sets`.
+- **The call.** `FUN_0018e988` (`0x18e988`) -> `FUN_001b3438` -> `FUN_0017f0c0` -> `FUN_0017ef98` -> `FUN_0017ee40`. The scripts call it with
+  (the task, a pointer to a context block, the motion id 252 to 258, the blend as a float). The participant is the word at `+4` of the
+  block (`FUN_0018e988` reads `*(arg1 + 4)`; the scripts' 2.48 / 2.49 / 1.210 leave their answer there). `FUN_0017ef98` formats `%03d0`
+  (string at `0x37a598`) with the object's model byte (`FUN_001699b8`: `*(*(obj + 8) + 7)`, the objentry `WeaponJoint`); `FUN_0017ee40` looks
+  the name up with `FUN_00168510(set, -1, name, k)` for k = 0 to 3 (the first non-empty entry) and starts it on the controller at
+  `obj + 0x140` (`FUN_0017dd38`; the blend lands at `+0xf0`). When `+0x588` has bit 4, `FUN_0017ef98` repeats this for the two objects at
+  `+0xaf8` / `+0xafc` with the name's last digit raised by one. [inferred] That the set is the entry whose index is the motion id
+  (`FUN_001a7da8` is `FUN_001684c0(bar, -1, index)`): the ids 252 to 258 and the entry counts of the files agree (Goofy's script uses 252
+  to 254 and its `LIMI` has entries 252 to 254), and the same lookup serves host 1.29 for the player's paired motions.
+- **The app.** `limit_script` reads the participant word through `call_with_mem` and sends `LimitMotion { who, id, blend }`;
+  `limit_visual::play_motions` finds the body (Sora, or the `PartyMember` whose NeoStatus is the stand-in's character id), looks the
+  sub-motion up (`find`) and plays it with `Animator::play_external`. Sora enters `State::Reaction` (no input, the state the paired
+  motions use) and keeps the last frame until the limit task ends. A party member's body gets the `LimitHold` marker, which
+  `party::party_tick` checks before it picks its own idle / walk motion. When the limit task is gone the marker is removed and Sora's
+  control returns (Ground or Air).
+- **Harness** (`KH2_LIMIT=255 KH2_LIMIT_PARTY=2,3 KH2_LIMIT_ABILITIES=57..70`, area tt04 so Donald and Goofy stand there, `RUST_LOG=info`):
+  `limit visual: goofy.bar holds 3 motion sets (entries [252, 253, 254])`, `motion set 252 sub-motion 0010 on handle 0x2000000`,
+  `sub-motion 0030 on handle 0x7a100300`, `the limit is over, Sora's control returns`. PNG at `KH2_SHOT_AT=4.6` looked at: Sora crouched
+  in a close stance facing the camera, Goofy leaning forward with an arm out, both mid-motion (the HUD line reads `Reaction 0010 f38`).
+  PNGs at `KH2_SHOT_AT=6.5` and `8` looked at: both frozen on the last frame (Sora with raised arms, Goofy in a jump pose; the line reads
+  `f65`). Control returns when the limit ends.
+- **Not ported.** A participant that is not in the field party: the files of Auron, Simba, Mulan, Beast, Aladdin, Sparrow, Jack, Tron
+  and Riku name a character the app does not spawn, so the call is logged (`no body in the field`) and skipped (Donald 2, Goofy 2 and the
+  Trinity files use Donald and Goofy, who are there). The keyblade sub-motions (`0011`, `0012`), the root motion, the placement of the
+  participants (the scripts move them with hosts the limit host does not serve) and the controller's queue (`+0xf0`, `+0xfc`). Each
+  script asks for one motion per 2.47 call; after the last one the app holds the final frame until the limit ends, where the original
+  plays on from the script's later calls (which the limit host answers only in part).
+
+### Host 2.59: a PAX element on a participant (corrects "a lookup of a motion row")
+
+`0x18eb00` -> `FUN_001b3c48` -> `FUN_001db868(task + 0x18, id, flag, 1, 30000, object)`: the function the clash spark starts a system effect
+with (`FUN_001db868(&DAT_01c954d8, id, 1, 1, 10000, 0)`). The table at task `+0x18` is filled by `FUN_001b2e08` from the limit BAR's kind 0x12
+entry (`FUN_001db4d0`: rows of `0x50` bytes, the halfword at `+2` the element id, the count at the header's `+8`), which is the file's own PAX
+(`limi`, type 18). `FUN_001db5f0` starts the element: its effect (`FUN_001da6f0` -> `FUN_001d9bf0` walks the DPX list by number), the position,
+rotation and scale vectors of the row, a start wait (plus `DAT_0037c778` when bit 0 of the row's flags is set), and for a bound element
+it hangs the effect on the owner's controller (`FUN_0017fbe0(owner + 0x140, effect)`). The scripts call it with (the task, the element id,
+a context block, 1); the owner is the word at `+4` of the block (the third argument here, the second for 2.47).
+
+The app (`limit_visual::start_effects`) loads the file's PAX with `fx::load` when the limit starts (`limit/us/<file>`, the kind 18 entry, the
+common textures as `fx::setup` does) and starts the element with `fx::start_placed(.., Bind::Owner(body), Placement::default())`, as the object
+effects of the other owners start. `kh2 pax limit/us/donald2.bar` lists six elements; element 4 is bound to bone 38 with flags 0x5, and it
+is the one Donald 2's script asks for. Harness (`KH2_LIMIT=344`, tt04): `limit visual: donald2.bar PAX holds 6 elements`, `effect element 4
+of donald2.bar on handle 0x7a100200: started`. The PNG at `KH2_SHOT_AT=5.5` looked at shows small yellow sparkles around Donald (bottom of
+the frame) that the shot at 4.0 does not have. The answer of 2.59 is 0 (the original's is the effect handle; no script is known to use
+it). [inferred] That the app's bound-effect placement equals the original's for this element. Host 2.50 stays the event start of "Limit camera".
+
+The requests are now `Request::Motion { args, who }` and `Request::PaxElement { args, who }` (`MotionRow` is gone). Test
+`hosts_2_47_and_2_59_name_their_participant_from_the_context`.
+
+### What is still open
+
+- **Host 7.28 / 7.30** (`FUN_002f3bd8`): `FUN_00104fa8(0xa00)` and `FUN_0016e208(0x5c3)`; the latter falls through to `FUN_001d1470(0x5c3)`, the
+  objentry row id 1475, which reads `PRIZE` (type 22, sub type 5, flags 1, no animation file). `FUN_002f3aa0` -> `FUN_001c01c0(obj, row, 0, 1, 0,
+  0x80, 0x100)` builds an object of 0xa00 bytes with the vtable at `0x371528` (`DAT_00371518`). The vtable's methods and `FUN_001c01c0` were not
+  read, so what it draws is unknown (a screen effect is only the old guess): not drawn, answered with nothing. Searches: `mips_scan --addr
+  0x371528`, `--addr 0x371518`, `--jal 0x2f3bd8` (reached through the host table only).
+- **The HUD gauge animation** (`FUN_001b3a70`, only Trinity's command 0x1e4): the name at `0x37ba58` reads `comd`, not `comb` / `gage` (the Trinity
+  BARs hold `comd` kind 24 and 25 entries besides `comb` / `gage`), and the call goes through the command deck object (`FUN_001bbb18` on the
+  player's `+0xb44`, then `FUN_001d2848` / `FUN_001d2918` at that object's `+0x94c`), which is `hud_menu.rs` / `menu_*.rs` territory, outside this
+  package. Not drawn. `TaskState::animations` stays the stand-in the script's wait on 2.63 needs.
+- **The task's end** (`FUN_001b3970`): not over while the thread's state word has bit 8 (`FUN_0016f038(thread, 0) & 8`), nor while either gauge
+  object (task `+0x68` and `+0xa8`) holds a running animation (`FUN_001cfb30` / `FUN_001cfd90`: the word at the object's `+0x30` through
+  `FUN_0014f658` / `FUN_0014f7b0`), nor while a party object has the state `FUN_0019a440` tests (`FUN_001c7c30`, objects 0 and 1), nor while
+  the animation count `+0x3c` or the word `+0x24` is non-zero; `FUN_001b3910` sets bit 4 of `+0x40` when the thread returned. The gauge
+  animations that would hold it open are not in the app, so the end stays the countdown plus the thread's tail.
+- **`KH2_LIMIT_CAMERA` default.** Not flipped. Participants render only for Sora, Donald and Goofy; the files with a camera event
+  (Auron, Beast, Mulan, Aladdin, Sparrow, Simba, Jack, Tron) name characters the app does not spawn, Goofy's and Donald's files have no event, and
+  the Trinity files were refused by the world in tt00 / tt04 (`WrongWorld` for `trinity_wi`, `AbilityMissing(57)` for `trinity_zz` until the ability
+  list holds 57, then no event). No PNG supports a default of on, and the frame the keys are placed in is still [inferred].
+
 ## Auto Limit (WP-AL1) [V unless marked]
 
 The ability (item 417, bit 129 of the partner's own block) lets the partner's limit be offered to Sora as a reaction command.

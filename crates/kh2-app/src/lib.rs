@@ -37,6 +37,7 @@ mod items;
 mod limit;
 mod limit_camera;
 mod limit_script;
+mod limit_visual;
 mod magic;
 mod magic_rules;
 mod menu;

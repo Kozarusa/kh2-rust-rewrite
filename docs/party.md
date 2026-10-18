@@ -222,6 +222,47 @@ function at 0x2eec70 (FUN_00112260) sets it from scripts.
   area spawn, `DAT_0037bff0` summons; the member swap FUN_001b3f78 fades over 8, `DAT_0037ba60`), sets +0x7f8
   bit 0x10 and appends its member index (FUN_001a7500: Sora/Roxas 0, Donald 1, Goofy 2, others 3) to the list
   at 0x1d5e380. They come back through FUN_001c79c8 -> FUN_001c7ab0 -> FUN_0017d290 with a fade-in.
+- **Hide and show in the app (WP-PY4, `party.rs` `party_hide`, `PartyHidden`, `PartyMember::hide` / `show`).**
+  Decompile index: FUN_001c76b0 (per party slot 0 and 1: object exists = FUN_0019a3f8, FUN_001c77a8 on the
+  NeoStatus FUN_001699a8, then FUN_001c75d0 with `DAT_0037c050`), FUN_001c75d0 (FUN_001c7600 with the object's
+  NeoStatus), FUN_001c7600 (looks the object up by NeoStatus, FUN_0017d400; with an object and bit 0x10 of
+  +0x7f8 clear: FUN_001abf40(`DAT_0037c04c` = 1.0, 0, frames, +0x82c); bit 0x10 set; ALWAYS appends
+  FUN_001a7500(NeoStatus) to the list, also with no object), FUN_001a7500 (1 and 14 -> 0, 2 -> 1, 3 -> 2, else
+  3), FUN_001c79c8 (FUN_001c7a38, FUN_001c7ab0 for every entry, count 0), FUN_001c7ab0 (finds the entry's slot
+  1 or 2 through FUN_001a71e8, creates the member with FUN_0017d290(`DAT_0037c058`, `DAT_0037c05c`,
+  `DAT_0037c060`, the slot byte at +0x10 of FUN_001a7118's record, 0), then FUN_001abf40(0, `DAT_0037c068`,
+  `DAT_0037c064`, +0x82c) when bit 0x10 is clear), FUN_001c7be8 (list test), FUN_001c75c0 (count 0),
+  FUN_001c7a38/FUN_001c7bc0, FUN_0017d1b0 (area spawn: `DAT_00340c88` byte 5 summon or FUN_001c77a8 of byte 4
+  -> FUN_001c7600 with `DAT_0037a564`, no object), FUN_0017d470. Callers (mips_scan --jal): FUN_001c76b0 only
+  from FUN_001b4c28 (the form start); FUN_001c7600 from FUN_001c75d0 and FUN_0017d1b0; FUN_001c79c8 from
+  FUN_001b37f8, FUN_001b4630, FUN_001b46b8, FUN_001cdcb8, FUN_001cdd50, FUN_001cdde8. Executable floats
+  (read at load): 0x37c04c 1.0, 0x37c050 15, 0x37a564 15, 0x37bff0 15, 0x37ba60 8, 0x37c058 100, 0x37c05c 200,
+  0x37c060 300, 0x37c064 15, 0x37c068 1.0.
+  What the app does: when `DriveState::form` leaves 0 every member the form takes (the oracle-checked
+  FUN_001c77a8 table, `form_takes`) is hidden (`hide`: alpha ramp 1 -> 0 over 15 ticks, not ticked, not hit, its
+  fighter not hittable, hidden once the ramp ends) and listed; when it returns to 0 the listed members come back
+  (`show`: placed, alpha ramp 0 -> 1 over 15 ticks, ticking again at once) and the list is emptied. An area load
+  empties the list (FUN_00168ba8 -> FUN_0017cc70); a member the running form takes is created hidden at an area
+  spawn (FUN_0017d1b0; the original makes no object and creates it on the return, the app keeps one hidden object
+  so the return is one rule). The summon keeps its own copy of this (`summon::Away`, `CompanionsOut` /
+  `CompanionsBack`); `party_hide` skips members that have `Away`.
+  Gaps and [inferred]: (1) FUN_0017d290's free-spot search (FUN_001a5ea8: sector search with collision) is not
+  ported here; the return point is a random angle with a distance between `DAT_0037c05c` and `DAT_0037c060` of
+  the player, a floor looked up under it (8 tries, else the player's place), facing the player [inferred]. (2)
+  The consumer of the +0x82c ramp was not read; the ramp is stepped once per tick and clamped at its end
+  [inferred]. (3) The limit hide (FUN_001c75d0 / FUN_001c7740 from FUN_001b28a0, the `limit.rs` stand-in) and the
+  member swap fade (FUN_001b3f78, 8 frames) are not wired: they need a hide / show call from `limit.rs` /
+  `party.rs` swaps; the app's `LimitParty` is not the real party yet. (4) `friend_ai.rs` still runs a hidden
+  member's script (it has no hidden test; outside this package's ownership). (5) The hidden-list test of the
+  menus (FUN_001c7be8 -> `menu_party::rows` lock) is not wired. (6) A drive form that starts while a summon is
+  active, and the FUN_0017d1b0 summon branch (byte 5), are not modelled.
+- **Hyper Healing on a revive (WP-PY4).** `PartyMember::change_hp` takes the saved record (`Progress`) and asks
+  `PartyData::revive_scale_of(abilities)` = `party_rules::revive_scale` (the word at `DAT_0037a560` when ability
+  419 is equipped, else `sstm` +0x54); every field path (revive timer, hits, item uses, script heals) passes it.
+  The menu's use (`menu_items::use_item`) passes the scale of the member on the chosen row; a group item (Mega
+  potions) uses that row's scale for all members, because `use_on_member` takes one number [gap: it needs the
+  per-member call, one more edit in `menu_items.rs`]. The revive timer's own Hyper Healing multiplier (+0x58 of
+  the block, `sstm` +0x154) stays 1.0 as before.
 - **Auto swap** on KO [I: the Auto Change ability]: FUN_0017ce60 calls FUN_001b4170 when the KO'd member's
   ability block word +0x10 has bit 4, FUN_001b42f0 holds and FUN_0017d0f0 says the member is out of the
   party; FUN_001b41e8 -> FUN_001b3f78 fades it out and creates the replacement with FUN_0017d290.

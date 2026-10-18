@@ -59,8 +59,9 @@ impl Plugin for PartyPlugin {
         let data = PartyData::load(app.world().resource::<Disc>());
         app.insert_resource(data)
             .init_resource::<PartySlots>()
+            .init_resource::<PartyHidden>()
             .insert_resource(Manager { log: std::env::var("KH2_PARTYLOG").is_ok_and(|v| !v.is_empty() && v != "0"), rng: 0x2545_f491, ..Default::default() })
-            .add_systems(FixedUpdate, (jump_party, jump_reset, mission_party, spawn_party, party_tick, party_push_apart, party_fade, party_hits).chain().in_set(PartyTick).in_set(Sim::Enemy))
+            .add_systems(FixedUpdate, (jump_party, jump_reset, mission_party, spawn_party, party_tick, party_push_apart, party_hide, party_fade, party_hits).chain().in_set(PartyTick).in_set(Sim::Enemy))
             .add_systems(FixedUpdate, (party_record_sync, party_auto_healing).chain().after(PartyTick).in_set(Sim::Enemy))
             .add_systems(FixedUpdate, member_hands.in_set(Sim::Enemy).before(PartyTick))
             .add_systems(FixedUpdate, (party_receive_hits, party_item_uses, party_script_hits).chain().in_set(Sim::SoraHurt))
@@ -115,8 +116,135 @@ pub struct PartyData {
     item_frac: (f32, f32),
     hp_items: (Vec<u16>, Vec<u16>),
     mp_items: (Vec<u16>, Vec<u16>),
+    /// `DAT_0037a560`: the revive scale of a member whose ability block has bit 131 (Hyper Healing), 1.0.
+    revive_full: f32,
+    /// The hide / show fade numbers (`HideFades`).
+    fades: HideFades,
     /// Loaded rigs by model name (`None`: not loadable).
     rigs: HashMap<String, Option<Arc<Rig>>>,
+}
+
+/// The numbers of FUN_001c7600 / FUN_001c7ab0, read from the executable: the fade-out start alpha
+/// (`DAT_0037c04c`) and its frame counts for a drive form (`DAT_0037c050`), the area spawn of a taken
+/// member (`DAT_0037a564`), the fade-in's end alpha (`DAT_0037c068`) and its frame count
+/// (`DAT_0037c064`). The fade-in starts at alpha 0 (the literal 0 of FUN_001c7ab0), the fade-out ends
+/// at 0 (the literal of FUN_001c7600).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HideFades {
+    out_from: f32,
+    form_frames: f32,
+    area_frames: f32,
+    in_to: f32,
+    in_frames: f32,
+    /// FUN_001c7ab0's arguments to FUN_0017d290: the search height (`DAT_0037c058`) and the nearest and
+    /// farthest distance from the player (`DAT_0037c05c`, `DAT_0037c060`).
+    lift: f32,
+    near: f32,
+    far: f32,
+}
+
+impl HideFades {
+    /// The values the executable holds (1.0, 15, 15, 1.0, 15, 100, 200, 300), used when it is unreadable.
+    const GAME: HideFades = HideFades { out_from: 1.0, form_frames: 15.0, area_frames: 15.0, in_to: 1.0, in_frames: 15.0, lift: 100.0, near: 200.0, far: 300.0 };
+
+    fn from_exe(elf: &[u8]) -> HideFades {
+        let f = |va: u32, or: f32| rules::exe_bytes(elf, va, 4).map_or(or, |b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+        let d = HideFades::GAME;
+        HideFades {
+            out_from: f(0x37c04c, d.out_from),
+            form_frames: f(0x37c050, d.form_frames),
+            area_frames: f(0x37a564, d.area_frames),
+            in_to: f(0x37c068, d.in_to),
+            in_frames: f(0x37c064, d.in_frames),
+            lift: f(0x37c058, d.lift),
+            near: f(0x37c05c, d.near),
+            far: f(0x37c060, d.far),
+        }
+    }
+}
+
+/// FUN_001abf40 (the member's +0x82c ramp): `from` to `to` over `frames` ticks, or `to` at once when
+/// `frames` is not above 0. The object steps it once per tick; a ramp that has arrived holds `to`
+/// [inferred: the consumer of +0x82c was not read, the end is taken as a clamp].
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Ramp {
+    from: f32,
+    to: f32,
+    frames: f32,
+    t: f32,
+}
+
+impl Ramp {
+    fn new(from: f32, to: f32, frames: f32) -> Ramp {
+        Ramp { from, to, frames, t: 0.0 }
+    }
+
+    fn value(&self) -> f32 {
+        if self.frames <= 0.0 { self.to } else { self.from + (self.to - self.from) * (self.t / self.frames).min(1.0) }
+    }
+
+    fn done(&self) -> bool {
+        self.frames <= 0.0 || self.t >= self.frames
+    }
+
+    /// One tick; true once the ramp has arrived.
+    fn step(&mut self) -> bool {
+        self.t += 1.0;
+        self.done()
+    }
+}
+
+/// FUN_001a7500: the index a NeoStatus has in the hidden-member list (Sora 1 and Roxas 14: 0, Donald 2: 1,
+/// Goofy 3: 2, anybody else 3).
+pub(crate) fn hidden_index(neo: u16) -> u32 {
+    match neo {
+        1 | 14 => 0,
+        2 => 1,
+        3 => 2,
+        _ => 3,
+    }
+}
+
+/// FUN_001c77a8: whether drive form `form` takes member `neo` away (Valor: Goofy, Wisdom: Donald, Limit,
+/// Master, Final and Anti: both; 0 and past 5 none). The drive module keeps its own copy of this table
+/// (`drive::rules::companions`, a party of both members is checked there).
+pub(crate) fn form_takes(form: u8, neo: u16) -> bool {
+    match form {
+        1 => neo == 3,
+        2 => neo == 2,
+        3..=5 => true,
+        _ => false,
+    }
+}
+
+/// The hidden-member list (`DAT_01d5e380`, count `DAT_0035ff30`): the indices (`hidden_index`) of the members
+/// a summon, a drive form or a limit took away. FUN_001c7600 appends (even when the member has no object),
+/// FUN_001c7be8 asks, FUN_001c75c0 and the area change (FUN_0017cc70) clear, FUN_001c79c8 empties it after
+/// bringing the members back.
+#[derive(Resource, Default, Debug, PartialEq)]
+pub struct PartyHidden(Vec<u32>);
+
+impl PartyHidden {
+    pub fn push(&mut self, neo: u16) {
+        self.0.push(hidden_index(neo));
+    }
+
+    /// FUN_001c7be8 (by member index).
+    pub fn contains(&self, index: u32) -> bool {
+        self.0.contains(&index)
+    }
+
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 }
 
 impl PartyData {
@@ -130,7 +258,10 @@ impl PartyData {
         let (mut orders, mut half, mut stop) = ([[2, 3, 1, 0]; 4], 0.5, (0.0, 0.0));
         let (mut mp_gate_w, mut deg_to_rad, mut item_frac) = ((0.0, 0.0), 0.0, (0.0, 0.0));
         let (mut hp_items, mut mp_items) = ((Vec::new(), Vec::new()), (Vec::new(), Vec::new()));
+        let (mut revive_full, mut fades) = (1.0, HideFades::GAME);
         if let Some(elf) = exe.as_deref() {
+            revive_full = rules::revive_full_scale(elf).unwrap_or(revive_full);
+            fades = HideFades::from_exe(elf);
             let g = |va: u32| rules::exe_bytes(elf, va, 4).map_or(0.0, |b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
             mp_gate_w = (g(battle::MP_GATE_SLOPE), g(battle::MP_GATE_BASE));
             deg_to_rad = g(battle::DEG_TO_RAD);
@@ -167,7 +298,13 @@ impl PartyData {
             ),
             Err(_) => (Vec::new(), None, Vec::new(), WeaponTables::default(), Vec::new(), None),
         };
-        PartyData { consts, ai, orders, half, stop, objs, memt, prty, prty_offsets, sstm, weapons, lvup, mp_gate_w, deg_to_rad, item_frac, hp_items, mp_items, rigs: HashMap::new() }
+        PartyData { consts, ai, orders, half, stop, objs, memt, prty, prty_offsets, sstm, weapons, lvup, mp_gate_w, deg_to_rad, item_frac, hp_items, mp_items, revive_full, fades, rigs: HashMap::new() }
+    }
+
+    /// The scale a heal on KO'd member `neo` takes (FUN_0017cee8): `DAT_0037a560` with Hyper Healing equipped
+    /// (WP-PL3 `party_rules::revive_scale`, read from the saved record's abilities), else `sstm` +0x54.
+    pub(crate) fn revive_scale_of(&self, abilities: &[(u16, bool)]) -> f32 {
+        rules::revive_scale(abilities, self.revive_full, self.revive_scale())
     }
 
     /// A member's status numbers +0x188 (strength), +0x18a (magic), +0x18c (defense) as FUN_0019f920
@@ -549,6 +686,11 @@ pub struct PartyMember {
     /// The hand object off the hand (Goofy's `blade`, `friend_ai`): its root (game units, the app's axes), its
     /// facing (app yaw) and the motion the script asked for; `member_hands` draws it there.
     pub(crate) thrown: Option<(Vec3, f32, Option<i32>)>,
+    /// +0x7f8 bit 0x10 (FUN_001c7600): the member is hidden (invulnerable, not ticked, not drawn once its
+    /// fade-out ends) until `show` (FUN_001c7ab0) brings it back.
+    pub(crate) hidden: bool,
+    /// The fade ramp (+0x82c) of a hide or a show; `alpha` follows it.
+    ramp: Option<Ramp>,
 }
 
 /// Whom a special's target record names, for the effects bound to its object (host 1.149).
@@ -653,12 +795,48 @@ impl PartyMember {
         self.want_yaw = None;
     }
 
+    /// FUN_001c7600 on a member with an object: unless bit 0x10 is already set the alpha ramps from
+    /// `DAT_0037c04c` to 0 over `frames` (FUN_001abf40), and the bit is set. The member stops whatever it was
+    /// doing (a warp's fade, an attack, an item): it is not ticked while hidden. Returns whether it hid now.
+    pub(crate) fn hide(&mut self, frames: f32, fades_from: f32) -> bool {
+        if self.hidden {
+            return false;
+        }
+        self.hidden = true;
+        let ramp = Ramp::new(fades_from, 0.0, frames);
+        self.alpha = ramp.value();
+        self.ramp = Some(ramp);
+        self.warping = false;
+        self.forced = false;
+        self.fade = None;
+        self.attack = None;
+        self.using = None;
+        self.held = None;
+        self.want_yaw = None;
+        true
+    }
+
+    /// FUN_001c7ab0: the member comes back through FUN_0017d290 at `at` facing `yaw`, bit 0x10 clear, with a
+    /// fade-in ramp from 0 to `DAT_0037c068` over `DAT_0037c064` frames.
+    pub(crate) fn show(&mut self, at: Vec3, yaw: f32, to: f32, frames: f32) {
+        self.hidden = false;
+        self.place(at, yaw);
+        let ramp = Ramp::new(0.0, to, frames);
+        self.alpha = ramp.value();
+        self.ramp = Some(ramp);
+    }
+
     /// The HP method (FUN_00176c98 -> FUN_00186238) on the member's status block; a KO by it sets the
     /// revive timer (FUN_0017ce60). The revive scale is `sstm` +0x54: the ability block's +0x10 bit 8 (1.0
     /// instead) is not built for the members [inferred: clear]. The MP Rage gain of FUN_00176c98 for a
     /// damage is not ported (the members' ability block +0x54 is not built).
-    fn change_hp(&mut self, delta: i32, data: &PartyData) -> battle::HpChange {
-        let c = battle::hp_change(&mut self.hp, self.hp_max, 0, &mut self.ko, delta, data.sstm_f32(0x54));
+    ///
+    /// WP-PY4: the revive scale is `DAT_0037a560` (1.0) when the member's saved record has Hyper Healing
+    /// equipped (ability block +0x10 bit 8, built from the equipped abilities by FUN_0019f920), else
+    /// `sstm` +0x54 (`PartyData::revive_scale_of`); without a record it is the `sstm` word.
+    fn change_hp(&mut self, delta: i32, data: &PartyData, progress: Option<&crate::progress::Progress>) -> battle::HpChange {
+        let abilities = progress.and_then(|p| p.member(self.neo)).map(|r| r.abilities).unwrap_or_default();
+        let c = battle::hp_change(&mut self.hp, self.hp_max, 0, &mut self.ko, delta, data.revive_scale_of(&abilities));
         if c.knocked_out {
             // FUN_0017ce60: StunTime of the +0x12c row x the ability block's Hyper Healing (+0x58; the
             // members' block is the default 1.0 [inferred: no Hyper Healing equipped]).
@@ -979,7 +1157,7 @@ fn spawn_party(
     world: Option<Res<World>>,
     drive_world: Option<Res<crate::drive::DriveWorld>>,
     progress: Option<Res<crate::progress::Progress>>,
-    (mut data, mut slots, mut mgr): (ResMut<PartyData>, ResMut<PartySlots>, ResMut<Manager>),
+    (mut data, mut slots, mut mgr, mut hidden, drive): (ResMut<PartyData>, ResMut<PartySlots>, ResMut<Manager>, ResMut<PartyHidden>, Option<Res<crate::drive::DriveState>>),
     mut sora: Query<(&mut Transform, &mut Sora), Without<PartyMember>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -1031,7 +1209,11 @@ fn spawn_party(
         mgr.area = area.loaded.clone();
         mgr.trail = Trail::default();
         mgr.built = None;
+        // FUN_00168ba8 -> FUN_0017cc70: the hidden list is emptied with the slots.
+        hidden.clear();
     }
+    // DAT_00340c88 byte 4: the drive form that lasts (0 none).
+    let form = drive.as_deref().map_or(0, |d| d.form);
     let Some(name) = area.loaded.clone() else { return };
     if std::env::var("KH2_NO_PARTY").is_ok_and(|v| v != "0") {
         return;
@@ -1124,7 +1306,8 @@ fn spawn_party(
         motor.capsule.radius = radius;
         let slot = next_slot;
         next_slot += 1;
-        let root = commands.spawn((AreaPart, Transform::from_translation(motor.pos * SCALE).with_rotation(Quat::from_rotation_y(yaw)), Visibility::default())).id();
+        let taken = form_takes(form, row.neo_status);
+        let root = commands.spawn((AreaPart,Transform::from_translation(motor.pos * SCALE).with_rotation(Quat::from_rotation_y(yaw)), Visibility::default())).id();
         let body = spawn_skinned(&mut commands, root, rig.clone(), &mut meshes, &mut materials, &mut images, &mut bindposes, SCALE);
         // The member's own effect file (the object's +0x80): its scripts' effects (hosts 1.22, 1.87,
         // 1.149) and its attack objects' hit sparks (2.22) come from it.
@@ -1186,7 +1369,7 @@ fn spawn_party(
                 warping: false,
                 forced: false,
                 fade: None,
-                alpha: 1.0,
+                alpha: if taken { 0.0 } else { 1.0 },
                 applied_alpha: 1.0,
                 original_modes: HashMap::new(),
                 blocked: false,
@@ -1234,11 +1417,20 @@ fn spawn_party(
                 target_point: None,
                 target_radius: 0.0,
                 thrown: None,
+                hidden: taken,
+                ramp: None,
             },
             // The members' attacks hit enemies (stage 2) and enemies' attacks hit them (stage 3,
             // `party_receive_hits`).
-            Fighter { team: Team::Player, attack_bodies, hurt_body: body, landed: Default::default(), hittable: true },
+            Fighter { team: Team::Player, attack_bodies, hurt_body: body, landed: Default::default(), hittable: !taken },
         ));
+        if taken {
+            // FUN_0017d1b0: the area spawn of a member the running form takes makes no object, only FUN_001c7600's
+            // list entry (the app keeps the object, hidden and not ticked, so that the return is one rule).
+            hidden.push(row.neo_status);
+            commands.entity(root).insert(Visibility::Hidden);
+            info!("party: {} is taken by drive form {}: listed as hidden (FUN_0017d1b0 -> FUN_001c7600), no fade", row.model_name, form);
+        }
         if next_slot >= 3 {
             break;
         }
@@ -1479,7 +1671,7 @@ fn party_tick(
         }
     }
     let mut inputs = [None; 2];
-    for (_, m) in q.iter() {
+    for (_, m) in q.iter().filter(|(_, m)| !m.hidden) {
         if let Some(i) = inputs.get_mut(m.slot as usize) {
             *i = Some((m.motor.pos, rules::follow_distance(&m.thresholds, m.radius, c)));
         }
@@ -1490,6 +1682,10 @@ fn party_tick(
     let vitals: Vec<(u8, battle::Vital)> = q.iter().map(|(_, m)| (m.slot, m.vital())).collect();
 
     for (mut tf, mut m) in &mut q {
+        // FUN_001c7600 (+0x7f8 bit 0x10): a hidden member is not ticked until it comes back.
+        if m.hidden {
+            continue;
+        }
         let m = &mut *m;
         let pos = m.motor.pos;
         let to_player = player - pos;
@@ -1527,7 +1723,7 @@ fn party_tick(
         // FUN_0017cc20 heals `maxHP x sstm +0x58` through the HP method, which revives (FUN_0017cee8).
         if m.ko && battle::revive_step(&mut m.revive, FRAME, in_battle, data.sstm_f32(0x5c)) {
             let heal = battle::revive_heal(m.hp_max, data.sstm_f32(0x58));
-            let c = m.change_hp(heal, &data);
+            let c = m.change_hp(heal, &data, progress.as_deref());
             info!("party: {} revive: timer out, heal {heal} (maxHP {} x sstm +0x58), HP now {} of {}", m.model, m.hp_max, m.hp, m.hp_max);
             if c.revived {
                 m.get_up(&mut anims, order);
@@ -2126,8 +2322,11 @@ fn party_push_apart(
             others.push((t.translation / SCALE, body_shape(&a.rig).0));
         }
     }
-    let members: Vec<(Vec3, f32)> = q.iter().map(|(_, m)| (m.motor.pos, m.radius)).collect();
+    let members: Vec<(Vec3, f32, bool)> = q.iter().map(|(_, m)| (m.motor.pos, m.radius, m.hidden)).collect();
     for (i, (mut tf, mut m)) in q.iter_mut().enumerate() {
+        if m.hidden {
+            continue;
+        }
         let mut push = Vec3::ZERO;
         let mut add = |p: Vec3, r: f32, share: f32| {
             let d = (m.motor.pos - p).with_y(0.0);
@@ -2140,8 +2339,8 @@ fn party_push_apart(
         for &(p, r) in &others {
             add(p, r, 1.0);
         }
-        for (j, &(p, r)) in members.iter().enumerate() {
-            if i != j {
+        for (j, &(p, r, away)) in members.iter().enumerate() {
+            if i != j && !away {
                 add(p, r, 0.5);
             }
         }
@@ -2222,7 +2421,8 @@ fn party_receive_hits(
     let Some(reaction) = reaction else { return };
     for h in hits.read() {
         let Ok((me, mut m, mut fighter, place)) = q.get_mut(h.target) else { continue };
-        if m.ko {
+        // +0x7f8 bit 0x10 (hidden) takes no hit.
+        if m.ko || m.hidden {
             continue;
         }
         // FUN_00175ad8: no hit while the invincibility timer +0xb00 runs (Goofy's `tornado`, host 1.91).
@@ -2240,7 +2440,7 @@ fn party_receive_hits(
         let useless = crate::combat::hit_is_ineffective(atk, &to);
         let dmg = if useless { game.damage(atk, &from, &to) } else { game.damage(atk, &from, &to).max(1) };
         let (before, danger_before) = (m.hp, battle::in_danger(m.hp, m.hp_max));
-        let c = m.change_hp(-dmg, &data);
+        let c = m.change_hp(-dmg, &data, progress.as_deref());
         let mut asked = Vec::new();
         if c.knocked_out {
             asked.push(VOICE_KO);
@@ -2400,7 +2600,7 @@ fn party_item_uses(
             let before = (m.hp, m.mp);
             crate::items::item_effect(item, amount, 100, &mut v, feed);
             let gain = v.hp - m.hp;
-            let c = m.change_hp(gain, &data);
+            let c = m.change_hp(gain, &data, progress.as_deref());
             m.mp = v.mp;
             m.charge.left = v.charge_left;
             m.charge.total = v.charge_total;
@@ -2475,7 +2675,7 @@ fn party_script_hits(
                         continue;
                     }
                     let (before, was_ko) = (m.hp, m.ko);
-                    let c = m.change_hp(amount, &data);
+                    let c = m.change_hp(amount, &data, progress.as_deref());
                     info!("party: {caster_model} heals {} with atkp {id} (type 6, FUN_00185a68): +{amount}, HP {before} -> {}{}", m.model, m.hp, if was_ko && c.revived { " (was KO'd: revived)" } else { "" });
                 }
             }
@@ -2542,6 +2742,92 @@ fn party_hud(q: Query<&PartyMember>, panels: Option<ResMut<crate::hud::hud_party
         panels.0 = want;
     }
     *filled = true;
+}
+
+/// Where FUN_0017d290 stands a returning member: `dist` units from the player along `angle`. The original
+/// searches a free spot between `DAT_0037c05c` and `DAT_0037c060` units from the player from `DAT_0037c058`
+/// above him (FUN_001a5ea8, the summon's spot search); that search is not ported here, the angle and the
+/// distance are drawn from the party manager's generator and the floor is looked up under the point
+/// [inferred].
+fn return_spot(player: Vec3, angle: f32, dist: f32) -> Vec3 {
+    player + Vec3::new(angle.sin(), 0.0, angle.cos()) * dist
+}
+
+/// The facing FUN_0017d290's caller gives a returning member: toward the player (FUN_003003e8 of the
+/// difference -> FUN_0010be80), in the app's yaw.
+fn face_player(from: Vec3, player: Vec3) -> f32 {
+    let d = (player - from).with_y(0.0);
+    if d.length_squared() > 1e-6 { d.x.atan2(d.z) } else { 0.0 }
+}
+
+/// Hide and show (docs/party.md section 6, "Drive forms"): when a drive form starts (`DriveState::form`
+/// becomes non-zero: FUN_001b4c28 -> FUN_001c76b0) every member the form takes (`form_takes`,
+/// FUN_001c77a8) is hidden by FUN_001c7600 (a 15 frame fade-out, bit 0x10, the list entry); when it ends
+/// (FUN_001b4630 / FUN_001b46b8 -> FUN_001c79c8) every listed member comes back through FUN_001c7ab0 with
+/// a fade-in, and the list is emptied. The fade ramps step here, one tick each. Members the summon took
+/// (`summon::Away`) are its own.
+#[allow(clippy::type_complexity)]
+fn party_hide(
+    drive: Option<Res<crate::drive::DriveState>>,
+    data: Res<PartyData>,
+    world: Option<Res<World>>,
+    (mut list, mut mgr, mut last): (ResMut<PartyHidden>, ResMut<Manager>, Local<u8>),
+    sora: Query<&Sora>,
+    mut q: Query<(&mut PartyMember, &mut Visibility, &mut Fighter, Has<crate::summon::Away>)>,
+) {
+    let f = data.fades;
+    let form = drive.as_deref().map_or(0, |d| d.form);
+    if form != *last {
+        if *last != 0 {
+            if let Ok(s) = sora.single() {
+                let player = s.motor.pos;
+                for (mut m, mut vis, mut fighter, away) in &mut q {
+                    if away || !m.hidden || !list.contains(hidden_index(m.neo)) {
+                        continue;
+                    }
+                    let mut at = player;
+                    for _ in 0..8 {
+                        let angle = mgr.random(360) as f32 * std::f32::consts::TAU / 360.0;
+                        let dist = f.near + mgr.roll() * (f.far - f.near);
+                        let p = return_spot(player, angle, dist);
+                        if let Some(g) = world.as_deref().and_then(|w| w.ground(p, player.y + f.lift, 400.0)) {
+                            at = p.with_y(g.y);
+                            break;
+                        }
+                    }
+                    let yaw = face_player(at, player);
+                    m.show(at, yaw, f.in_to, f.in_frames);
+                    *vis = Visibility::Inherited;
+                    fighter.hittable = true;
+                    info!("party: {} comes back at {at:?} ({:.0} units from the player), fading in over {} frames (FUN_001c79c8 -> FUN_001c7ab0)", m.model, (at - player).with_y(0.0).length(), f.in_frames);
+                }
+            }
+            list.clear();
+        }
+        if form != 0 {
+            for (mut m, _, mut fighter, away) in &mut q {
+                if !away && form_takes(form, m.neo) && m.hide(f.form_frames, f.out_from) {
+                    fighter.hittable = false;
+                    list.push(m.neo);
+                    info!("party: {} hidden by drive form {form}: fades out over {} frames and is listed (FUN_001c76b0 -> FUN_001c7600)", m.model, f.form_frames);
+                }
+            }
+        }
+        *last = form;
+    }
+    for (mut m, mut vis, _, _) in &mut q {
+        let Some(mut r) = m.ramp else { continue };
+        let done = r.step();
+        m.alpha = r.value();
+        if done {
+            m.ramp = None;
+            if m.hidden {
+                *vis = Visibility::Hidden;
+            }
+        } else {
+            m.ramp = Some(r);
+        }
+    }
 }
 
 /// The warp's fade-in on the member's materials (blended while it fades, as authored otherwise).
@@ -3129,5 +3415,208 @@ mod jump_record_tests {
         // Applying preset 1 again brings the companions back.
         s.edit_world(5, || unreachable!(), |c| rules::arrange(c, 1, &presets));
         assert_eq!(s.bytes, start);
+    }
+
+    /// A member with every field at rest, for the hide / show and HP rules.
+    fn blank(neo: u16, hp: i32, hp_max: i32) -> PartyMember {
+        PartyMember {
+            slot: 0,
+            neo,
+            class: 0,
+            model: "P_EX020".into(),
+            body: Entity::PLACEHOLDER,
+            motor: Motor::default(),
+            follow: Follow::default(),
+            thresholds: Default::default(),
+            walk: 0.0,
+            run: 0.0,
+            turn: 0.0,
+            jump: 0.0,
+            radius: 20.0,
+            height: 100.0,
+            far: 0,
+            cooldown: 0.0,
+            warps: 0,
+            warping: true,
+            forced: false,
+            fade: Some(3.0),
+            alpha: 1.0,
+            applied_alpha: 1.0,
+            original_modes: HashMap::new(),
+            blocked: false,
+            speed: 0.0,
+            choosing: Default::default(),
+            timer: 0.0,
+            target: None,
+            style: 0,
+            attacker: None,
+            target_changed: false,
+            held: None,
+            attack: None,
+            want_yaw: None,
+            chosen: Vec::new(),
+            script_slot: None,
+            script_restart: false,
+            script_queue: None,
+            script_move: None,
+            script_yaw: None,
+            invuln: 0.0,
+            motion_row: 2,
+            free: true,
+            hp,
+            hp_max,
+            mp: 0,
+            mp_max: 0,
+            charge: Default::default(),
+            ko: hp == 0,
+            revive: 0.0,
+            down_fx: None,
+            stun: 0.0,
+            mp_drive: 0.0,
+            hurt: None,
+            mp_gate: false,
+            danger: None,
+            using: None,
+            queued: Vec::new(),
+            mode_request: None,
+            pending_mp: 0,
+            script_mode: None,
+            special_target: false,
+            special_who: None,
+            script_hits: Vec::new(),
+            target_point: None,
+            target_radius: 0.0,
+            thrown: None,
+            hidden: false,
+            ramp: None,
+        }
+    }
+
+    /// The numbers FUN_001c7600 / FUN_001c7ab0 read, from the executable (skipped without `KH2_ISO`).
+    #[test]
+    fn hide_fade_numbers_come_from_the_executable() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let exe = disc.read_root("SLUS_210.05").expect("SLUS_210.05");
+        let f = HideFades::from_exe(&exe);
+        assert_eq!(f, HideFades::GAME, "1.0 -> 0 in 15 frames (form and area spawn), 0 -> 1.0 in 15 frames, spot 100 / 200 / 300");
+        assert_eq!(rules::revive_full_scale(&exe), Some(1.0));
+    }
+
+    /// FUN_001a7500 and FUN_001c77a8 as read in the decompilation, and the list (FUN_001c7600's append,
+    /// FUN_001c7be8's test, FUN_001c75c0's clear).
+    #[test]
+    fn hidden_index_form_takes_and_the_list() {
+        assert_eq!([1, 14, 2, 3, 0, 4, 9].map(hidden_index), [0, 0, 1, 2, 3, 3, 3]);
+        let taken = |form: u8| [2u16, 3].map(|n| form_takes(form, n));
+        assert_eq!(taken(0), [false, false]);
+        assert_eq!(taken(1), [false, true], "Valor takes Goofy");
+        assert_eq!(taken(2), [true, false], "Wisdom takes Donald");
+        for form in 3..=5 {
+            assert_eq!(taken(form), [true, true], "form {form} takes both");
+        }
+        assert_eq!(taken(6), [false, false]);
+        let mut l = PartyHidden::default();
+        assert!(l.is_empty());
+        l.push(2);
+        l.push(3);
+        assert_eq!((l.len(), l.contains(1), l.contains(2), l.contains(0)), (2, true, true, false));
+        l.clear();
+        assert!(l.is_empty() && !l.contains(1));
+    }
+
+    /// FUN_001abf40: `from` to `to` over `frames` ticks; a frame count of 0 or less is `to` at once.
+    #[test]
+    fn the_fade_ramp_runs_from_to_over_the_frames() {
+        let mut r = Ramp::new(1.0, 0.0, 15.0);
+        assert_eq!(r.value(), 1.0);
+        let mut done_at = 0;
+        for k in 1..=15 {
+            let done = r.step();
+            if k == 5 {
+                assert!((r.value() - 2.0 / 3.0).abs() < 1e-5);
+            }
+            if done && done_at == 0 {
+                done_at = k;
+            }
+        }
+        assert_eq!((done_at, r.value()), (15, 0.0));
+        let now = Ramp::new(1.0, 0.0, 0.0);
+        assert!(now.done() && now.value() == 0.0, "no frames: at the target at once");
+    }
+
+    /// Hide (FUN_001c7600) then show (FUN_001c7ab0): the member is hidden once, its alpha follows the ramp, it
+    /// comes back where it is put, facing the player, with bit 0x10 clear and a fade-in from 0.
+    #[test]
+    fn hide_then_show_follows_the_two_ramps() {
+        let mut m = blank(2, 30, 30);
+        assert!(m.hide(15.0, 1.0));
+        assert!(m.hidden && !m.warping && m.fade.is_none(), "a running warp is dropped");
+        assert!(!m.hide(15.0, 1.0), "bit 0x10 is already set: no second fade");
+        assert_eq!(m.alpha, 1.0);
+        let mut r = m.ramp.expect("fade-out");
+        for _ in 0..15 {
+            r.step();
+        }
+        assert_eq!(r.value(), 0.0);
+        let player = Vec3::new(100.0, 0.0, 0.0);
+        let at = return_spot(player, 0.0, 250.0);
+        assert_eq!(at, Vec3::new(100.0, 0.0, 250.0));
+        let yaw = face_player(at, player);
+        assert!((yaw - std::f32::consts::PI).abs() < 1e-5, "looking back along -z");
+        m.show(at, yaw, 1.0, 15.0);
+        assert!(!m.hidden);
+        assert_eq!((m.alpha, m.position()), (0.0, at));
+        assert_eq!(m.ramp, Some(Ramp::new(0.0, 1.0, 15.0)));
+    }
+
+    /// FUN_0017cee8 with WP-PL3's rule: a heal on a KO'd member takes the `sstm` +0x54 scale, or the word at
+    /// 0x37a560 with Hyper Healing (ability 419) equipped in the saved record.
+    #[test]
+    fn hyper_healing_scales_a_revive_through_change_hp() {
+        let mut words = vec![0u32; 0x60 / 4];
+        words[0x54 / 4] = 0.25f32.to_bits();
+        let data = PartyData {
+            consts: None,
+            ai: HashMap::new(),
+            orders: [[2, 3, 1, 0]; 4],
+            half: 0.5,
+            stop: (0.0, 0.0),
+            objs: Vec::new(),
+            memt: None,
+            prty: Vec::new(),
+            prty_offsets: Vec::new(),
+            sstm: Some(kh2_tables::player::Sstm { words }),
+            weapons: WeaponTables::default(),
+            lvup: Vec::new(),
+            mp_gate_w: (0.0, 0.0),
+            deg_to_rad: 0.0,
+            item_frac: (0.0, 0.0),
+            hp_items: (Vec::new(), Vec::new()),
+            mp_items: (Vec::new(), Vec::new()),
+            revive_full: 1.0,
+            fades: HideFades::GAME,
+            rigs: HashMap::new(),
+        };
+        let mut p = crate::progress::Progress::from_block(&[], std::sync::Arc::new(crate::progress::ItemIndex::default()));
+        for m in [2, 3] {
+            p.set_member_maxima(m, 30, 50);
+            p.set_member_vitals(m, 30, 50);
+        }
+        p.apply_json("{\"party_abilities\": {\"3\": [419]}}").expect("loads");
+        let mut donald = blank(2, 0, 30);
+        let mut goofy = blank(3, 0, 30);
+        let c = donald.change_hp(20, &data, Some(&p));
+        assert!(c.revived && !donald.ko);
+        assert_eq!(donald.hp, 5, "20 x sstm +0x54 (0.25)");
+        let c = goofy.change_hp(20, &data, Some(&p));
+        assert!(c.revived);
+        assert_eq!(goofy.hp, 20, "20 x 1.0 with Hyper Healing equipped");
+        let mut none = blank(2, 0, 30);
+        none.change_hp(20, &data, None);
+        assert_eq!(none.hp, 5, "no record: the sstm word");
     }
 }

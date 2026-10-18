@@ -1147,7 +1147,8 @@ pub(super) fn input(
                         let mut field: Vec<_> = party.iter_mut().collect();
                         field.sort_by_key(|m| m.slot);
                         field.truncate(2);
-                        use_item(&st, p, &mut s, m, drive.as_deref_mut(), d.sora_max_mp, (feed, pdata.as_deref().map_or(1.0, |d| d.revive_scale())), (item, &name), row, &mut field);
+                        let revive = field.get(row.wrapping_sub(1)).map_or(1.0, |t| pdata.as_deref().map_or(1.0, |d| d.revive_scale_of(&p.member(t.neo).map(|r| r.abilities).unwrap_or_default())));
+                        use_item(&st, p, &mut s, m, drive.as_deref_mut(), d.sora_max_mp, (feed, revive), (item, &name), row, &mut field);
                         let stock = stock_of(&st, p, st.machine.as_ref().map_or(0, |m| m.filter));
                         if let Some(m) = st.machine.as_mut() {
                             m.reload(stock, false);

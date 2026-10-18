@@ -401,6 +401,8 @@ pub struct DefeatedTables {
     counter: i32,
     /// +0x820: the slot of the area now running.
     chosen: usize,
+    /// The world byte (`0x33e830`) of the last area start (`DAT_00522178`); `None` before the first.
+    world: Option<[u8; 2]>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -418,11 +420,22 @@ impl DefeatedSlot {
 
 impl Default for DefeatedTables {
     fn default() -> Self {
-        DefeatedTables { slots: std::array::from_fn(|_| DefeatedSlot::cleared()), counter: 0, chosen: 0 }
+        DefeatedTables { slots: std::array::from_fn(|_| DefeatedSlot::cleared()), counter: 0, chosen: 0, world: None }
     }
 }
 
 impl DefeatedTables {
+    /// `FUN_001689c0`: when the world differs from the last area start's (`DAT_00522178`) the object system is reset
+    /// (`FUN_00168960` -> `FUN_00194318` -> `FUN_00194330`) before the area is built, so every slot is cleared. The
+    /// world is the two-letter prefix of the area name. Three area-retry handlers (`FUN_002d8b98`, `FUN_002df3d8`,
+    /// `FUN_002e3c78`) also call `FUN_00194330` before re-entering the same area; the app has no retry yet.
+    pub fn enter_world(&mut self, world: [u8; 2]) {
+        if self.world != Some(world) {
+            self.clear();
+            self.world = Some(world);
+        }
+    }
+
     /// `FUN_00194330`: every slot cleared and the counter back to 0.
     pub fn clear(&mut self) {
         *self = DefeatedTables::default();
@@ -1083,6 +1096,8 @@ pub fn spawn_waves(
             }
             // FUN_00181148 -> FUN_00194188(0x35d278, DAT_0035cd28): the area byte selects the table; the keep count is
             // 3 (area script opcode 6 not read here), 0 when the map program byte is above 0x32.
+            let world = area.loaded.as_deref().and_then(|n| n.as_bytes().get(..2)).map(|w| [w[0], w[1]]).unwrap_or([0, 0]);
+            battle.defeated.enter_world(world);
             let area_byte = area.loaded.as_deref().and_then(|n| n.get(2..)).and_then(|n| n.parse::<u8>().ok()).unwrap_or(0xff);
             battle.defeated.enter(area_byte, if rec.programs[0] > 0x32 { 0 } else { 3 });
             battle.run = id;
@@ -2189,6 +2204,21 @@ mod tests {
 
     /// `FUN_00194188` on the table at 0x35d278: an area visited again within `keep` area starts finds its slot and
     /// the serials entered in it; with keep 0, after the window or after four other areas it comes up cleared.
+    /// `FUN_001689c0`: a change of world resets the tables; a move inside the world does not.
+    #[test]
+    fn a_change_of_world_clears_the_tables_of_the_defeated() {
+        let mut t = DefeatedTables::default();
+        t.enter_world(*b"tt");
+        t.enter(4, 3);
+        t.sync(&[1, 2], &[1]);
+        t.enter_world(*b"tt");
+        t.enter(4, 3);
+        assert_eq!(t.serials(), [1], "same world: kept");
+        t.enter_world(*b"hb");
+        t.enter(4, 3);
+        assert!(t.serials().is_empty(), "other world: cleared");
+    }
+
     #[test]
     fn the_table_of_the_defeated_outlives_the_area_for_a_few_area_starts() {
         let mut t = DefeatedTables::default();

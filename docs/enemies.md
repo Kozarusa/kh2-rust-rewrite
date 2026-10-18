@@ -218,7 +218,10 @@ player to a battle group's player entry when the battle starts was not read (onl
   creation stand while a mission event plays (`Mission::event_active`) or the fight is stopped (`Mission::fight_stopped`, bit 2 of
   `DAT_0035d268`, `FUN_001b9940`). Not modelled: the latch (private to `struggle::Active`; the stop sets it too in the missions of the
   app) and bit 0x100, for which no writer was found in the decompiled functions (a text search for `DAT_0035d268 |` finds bits 2, 4, 0x10,
-  0x20, 0x10000 and 0x100000; the instruction scan of the undecompiled code was not done).
+  0x20, 0x10000 and 0x100000). WP-EN7: the instruction scan (`--addr 0x35d268`, 106 hits) lists only decompiled functions, and the
+  writers found set bits 2, 4, 8, 0x10, 0x20, 0x80, 0x200, 0x400, 0x2000, 0x8000, 0x10000, 0x20000, 0x40000 and 0x100000; none sets
+  0x100 (`FUN_001b8d80` tests bit 0x100 of a halfword of its input, not of the flag word). No writer exists in the code [V], so the bit
+  stays clear and nothing is left to port. The kind-6 guard and group events 2 and 3 are unchanged from above (not applicable to the data).
 - **Group events 2 and 3** [V that the senders are `FUN_00199518` only]: they go through `FUN_00197b70` like any event and run a matching
   trigger (`FUN_00197670`: set a flag, play an event, jump; docs/events.md "Firing"). The app loads only Twilight Town, and none of
   its 42 area scripts has a trigger on event 2 or 3 (`no_twilight_town_data_uses_group_events_or_kind_six_enemies`, 0 triggers), so there
@@ -230,7 +233,12 @@ player to a battle group's player entry when the battle starts was not read (onl
   as `enemy::DefeatedTables` (`BattleGroups::defeated`): a kind-2 group's `killed` list is seeded from the slot at set-up and written
   back each tick; F3 (harness) clears the tables. The second table at 0x35daa0 (`DAT_0035cd2c`, default 4) is not used by enemies.
   Gaps: the opcode 6 value is not read from the script (3 is assumed; `kh2_ard::run::ScriptRun` does not keep it); the callers of
-  `FUN_00168960` were not traced (the app has no reset); a serial of 0 is also the empty entry in the original and is not special-cased.
+  `FUN_00168960` were traced in WP-EN7 (below); a serial of 0 is also the empty entry in the original and is not special-cased.
+  WP-EN7: `FUN_00194330` has these callers [V, instruction scan `--jal 0x194330`, `0x194318`, `0x168960`]: `FUN_00168960` (through
+  `FUN_00194318`; its one caller `FUN_001689c0` runs it when the world byte `0x33e830` differs from `DAT_00522178`, before the area is
+  built) and three area-retry handlers `FUN_002d8b98`, `FUN_002df3d8`, `FUN_002e3c78` (they save the area key, clear, re-enter the same
+  area). Ported: `DefeatedTables::enter_world` clears on a change of the world prefix (test
+  `a_change_of_world_clears_the_tables_of_the_defeated`); the retry handlers have no counterpart (the app has no retry).
 - **Kind-6 appear ramp guard** [V]: bit 0x10 of object +0x7f8 is set only right after a ramp is started on +0x82c, by `FUN_00170f78`,
   `FUN_001b3f78`, `FUN_001c7600` and `FUN_00189ae8` (other classes: each starts its own ramp, then sets the bit); the object
   constructor `FUN_00168d30` zeroes the word, and no decompiled function clears bit 0x10 alone. So a new enemy of kind 6 always has it

@@ -2091,6 +2091,8 @@ pub struct SummonData {
     /// Genie's class (WP-SUM5) and the members' follow rules it runs (party_rules, the class 0xf thresholds).
     pub genie: Option<(genie::Consts, Vec<crate::party_battle::Record>)>,
     follow: Option<crate::party_rules::Consts>,
+    /// Host 1.247's numbers (FUN_001a6068 / FUN_001a6198), as the party members read them (`friend_ai`).
+    free_point: Option<crate::party_rules::FreePointConsts>,
     /// Chicken Little's, Peter Pan's and Tinker Bell's classes (WP-SUM8): the constants and each class's records.
     pub scripted: Option<(scripted::Consts, Vec<scripted::Data>)>,
     /// 03system.bin `pref` `prty` and its row offsets: walk, run and turn of a NeoMoveset (FUN_00194438, as
@@ -2116,6 +2118,7 @@ impl SummonData {
         let motion_orders = exe.as_deref().and_then(crate::party_battle::motion_orders);
         let genie = exe.as_deref().and_then(|e| Some((genie::Consts::from_exe(e)?, genie::records(e)?)));
         let follow = exe.as_deref().and_then(crate::party_rules::Consts::from_exe);
+        let free_point = exe.as_deref().and_then(crate::party_rules::FreePointConsts::from_exe);
         let scripted = exe.as_deref().and_then(|e| {
             let all = scripted::CLASSES.iter().map(|c| scripted::Data::from_exe(e, c)).collect::<Option<Vec<_>>>()?;
             Some((scripted::Consts::from_exe(e)?, all))
@@ -2154,6 +2157,7 @@ impl SummonData {
             motion_orders,
             genie,
             follow,
+            free_point,
             scripted,
             prty,
             prty_offsets,
@@ -3191,8 +3195,9 @@ impl kh2_bdx::Host for SummonHost<'_, '_> {
                 self.record(c, &kh2_bdx::Value::None, st, why);
                 return kh2_bdx::Value::None;
             }
-            // 6.19 (0x2eecb8): global flag word 0x35d268 |= 0x800. Its reader is FUN_00190610 (`& 0x800` with the player object at
-            // 0x35c998), called by FUN_001a3848 (a target decision) and FUN_001bd358; the app has neither.
+            // 6.19 (0x2eecb8): global flag word 0x35d268 |= 0x800. Its reader is FUN_00190610 (no argument: `& 0x800` and the player
+            // object 0x35c998 exists), called by FUN_001a3848 (an enemy's target decision: it sets the target record's +0x28 bit 8 and
+            // takes the player as the target through FUN_001a3a88) and FUN_001bd358; the app has neither.
             Call::Unknown { group: 6, index: 19, .. } => {
                 self.ai.set_gflag(0x800, true);
                 self.record(c, &kh2_bdx::Value::None, crate::enemy_host::St::Approx, "bit 0x800 of 0x35d268 is kept; its readers FUN_00190610 / FUN_001a3848 / FUN_001bd358 are not in the app");
@@ -4593,7 +4598,7 @@ fn objects(
         }
         fx_before(fields, pax.as_ref(), body, s.body, &anims.as_readonly(), &gts, &mut running);
         let inner = BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() };
-        let f = crate::friend_host::FriendHost { inner, fields, game: &game, free: None, targets: &parts };
+        let f = crate::friend_host::FriendHost { inner, fields, game: &game, free: data.free_point.as_ref(), targets: &parts };
         ai.player_hp = (s.hp, s.stats.max_hp);
         ai.player_heal = 0;
         ai.neo = neo;
@@ -5721,6 +5726,25 @@ mod tests {
         assert_eq!(a.gflags, 0x1800);
         a.set_gflag(0x800, false);
         assert_eq!(a.gflags, 0x1000, "6.19's counterpart clears only its own bit");
+    }
+
+    /// Host 1.247 for the summons (Peter Pan's limit routine R02fc asks it): the numbers are read from the executable, as for the
+    /// party members, so the call is answered instead of returning the centre. On a flat floor with a clear line the answer is that
+    /// floor between the two radii; a floor under the candidate only where the cast finds one.
+    #[test]
+    fn summon_free_point_numbers_come_from_the_executable() {
+        let Some(mut a) = archive() else { return };
+        let k = crate::party_rules::FreePointConsts::from_exe(&elf(&mut a)).expect("FUN_001a6198's numbers");
+        assert!(k.cast_down > 0.0 && k.cast_up > 0.0 && k.step > 0.0 && k.turn_angle > 0.0, "{k:?}");
+        let centre = Vec3::new(40.0, 10.0, -25.0);
+        let mut st = crate::magic_rules::ScatterState::default();
+        for _ in 0..20 {
+            let p = crate::party_rules::free_point(centre, 300.0, 500.0, &mut st, &k, |a, _| Some(a.with_y(0.0)), |_, _| true);
+            let flat = (p - centre).with_y(0.0).length();
+            assert!((299.9..=500.1).contains(&flat) && p.y == 0.0, "{p:?} {flat}");
+        }
+        let none = crate::party_rules::free_point(centre, 300.0, 500.0, &mut st, &k, |_, _| None, |_, _| true);
+        assert_eq!(none, centre, "no floor anywhere: FUN_001a6198 answers the centre");
     }
 
     /// Host 10.53: entering an instance twice leaves one entry (FUN_00136430 drops the old one), a zero handle is ignored,

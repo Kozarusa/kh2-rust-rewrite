@@ -84,6 +84,9 @@ use crate::sora::{Battle, Sora, State};
 use crate::world::World;
 use crate::SCALE;
 
+#[path = "revive_fade.rs"]
+mod revive_fade;
+
 /// Command ids (immediates of the code).
 pub mod cmd {
     /// Dismiss (`FUN_001ceda8` looks it up with `FUN_001b6f48(0x13c)`).
@@ -3188,6 +3191,7 @@ impl Plugin for SummonPlugin {
             .init_resource::<SharedBlocks>()
             .init_resource::<PlayerSide>()
             .init_resource::<crate::hud::hud_party::SummonFace>()
+            .add_plugins(revive_fade::ReviveFadePlugin)
             .add_systems(Startup, spawn_revive_fade)
             .add_systems(Update, paint_revive_fade)
             .add_systems(Update, (keys.before(crate::magic::harness_keys), harness_requests, hud_feed.before(crate::hud::hud_gauge::update), face_feed.before(crate::hud::hud_party::update)))
@@ -3884,8 +3888,9 @@ pub enum ReviveAct {
     MusicStop,
     /// `FUN_002c14a8(0x13, 0)`: system sound 0x13 (type 2).
     Sound(u32),
-    /// `FUN_00195898` / `FUN_00195a78` / `FUN_00195ae0` would open the message window; its text is not found (the argument is
-    /// the player object by the decompile), so none is opened.
+    /// `FUN_00195898` / `FUN_00195a78` / `FUN_00195ae0` build the revive's "window", which is a camera event (kind 0xf) and not a text
+    /// window: the word FUN_00195a78 stores is the player object and nothing reads it, so there is no message text. The event itself
+    /// is timed by `Revive` (`window_open`, `pad_locked`); the act only logs.
     WindowSkipped,
     /// `FUN_00138708(2)`: `DAT_00354f70` bit 2 set (cleared by `FUN_001ad790`, `FieldReleased`).
     FieldHeld,
@@ -3909,12 +3914,12 @@ pub enum ReviveAct {
 /// Ticks the revive's camera event lasts: its end frame 0x15 is 21 event frames, an event frame being two game ticks
 /// (docs/summons.md, WP-RV2). The window wait (`FUN_00196418`) ends then and the pad is given back.
 pub const REVIVE_EVENT_TICKS: u32 = 42;
-/// Game tick of the event at which its screen fade to black starts (event frame 0xb, command 0x12 mode 2).
+/// Game tick of the event at which its screen fade starts (event frame 0xb, command 0x12 mode 2).
 pub const REVIVE_FADE_START: u32 = 22;
-/// Length of that fade in game ticks (the counter `FUN_0014a7c8` sets is twice the command's length 0x32).
+/// Length of that fade in game ticks (the counter `FUN_0014a710` sets is twice the command's length 0x32).
 pub const REVIVE_FADE_TICKS: u32 = 100;
-/// The fade's alpha at its end (`FUN_0014a818` runs it from 0 to 0x80).
-pub const REVIVE_FADE_ALPHA: u32 = 0x80;
+/// The command's length (+6 of the command, 0x32).
+const REVIVE_FADE_LENGTH: u32 = 0x32;
 
 /// The revive thread (`FUN_001ad9a0`, state word +8) with the object's fields it needs.
 #[derive(Debug, Clone, Default)]
@@ -3927,29 +3932,25 @@ pub struct Revive {
     clock: u32,
 }
 
-/// The full-screen quad the revive's screen fade is drawn with (over the field and the HUD, under the area jump's fader).
-#[derive(Component)]
-struct ReviveFade;
-
-/// The fade's colour: the event's command 0x12 mode 2 is `FUN_0014a7c8(0x356b30, 0x32, 1)` and the flag 1 makes `FUN_0014a710`
-/// colour the fade white (`FUN_0014af90(0xff, 0xff, 0xff, 0)`; flag 0 is black). `alpha` runs 0 to 0x80 (`FUN_0014a818`), 0x80 being full.
-/// The blend mode word (0x48 for white, 0x44 for black) is not decoded: alpha blending is assumed [inferred].
-pub fn revive_fade_color(alpha: u32) -> Color {
-    Color::srgba(1.0, 1.0, 1.0, (alpha.min(REVIVE_FADE_ALPHA) as f32) / REVIVE_FADE_ALPHA as f32)
+/// The revive's screen fade is a white quad drawn with the additive blend of the fader's word 0x48 (`revive_fade`): the event's
+/// command 0x12 mode 2 is `FUN_0014a7c8(0x356b30, 0x32, 1)` and the flag 1 makes `FUN_0014a710` colour the fade white
+/// (`FUN_0014af90(0xff, 0xff, 0xff, 0)`; flag 0 is black, blend word 0x44, alpha blend). `alpha` runs 0 to 0x80 (`FUN_0014a818`), 0x80 being full.
+fn spawn_revive_fade(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<revive_fade::ReviveFadeMaterial>>,
+) {
+    revive_fade::spawn(&mut commands, &mut images, &mut meshes, &mut materials);
 }
 
-fn spawn_revive_fade(mut commands: Commands) {
-    commands.spawn((
-        ReviveFade,
-        Node { position_type: PositionType::Absolute, left: Val::Px(0.0), top: Val::Px(0.0), width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() },
-        BackgroundColor(Color::NONE),
-        GlobalZIndex(900),
-    ));
-}
-
-fn paint_revive_fade(sm: Res<SummonState>, mut nodes: Query<&mut BackgroundColor, With<ReviveFade>>) {
-    for mut n in &mut nodes {
-        n.0 = revive_fade_color(sm.revive.fade_alpha());
+fn paint_revive_fade(
+    sm: Res<SummonState>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut quads: Query<(&Mesh2d, &mut Visibility), With<revive_fade::ReviveFadeQuad>>,
+) {
+    for (mesh, mut vis) in &mut quads {
+        revive_fade::paint(sm.revive.fade_alpha(), mesh, &mut vis, &mut meshes);
     }
 }
 
@@ -3982,18 +3983,19 @@ impl Revive {
         self.window_open()
     }
 
-    /// The fade object 0x356b30 has reached state 4 (black): 100 ticks after tick 22, tick 122.
+    /// The fade object 0x356b30 has reached state 4 (the finished fade out, white): 100 ticks after tick 22, tick 122.
     pub fn fade_black(&self) -> bool {
         self.clock >= REVIVE_FADE_START + REVIVE_FADE_TICKS
     }
 
-    /// The white fade's alpha, 0 to 0x80, while the revive runs (linear in the counter [inferred]). What lifts the black afterwards
-    /// is a documented gap (docs/summons.md): once the thread ends this is 0 again.
+    /// The white fade's alpha byte, 0 to 0x80, while the revive runs (`revive_fade::alpha_after`, the game's counter). Nothing in the
+    /// revive lifts the fade afterwards (docs/summons.md, WP-RV5): the original leaves it at 0x80 until another fade-in call, which the
+    /// app does not model, so once the thread ends this is 0 again [conservative].
     pub fn fade_alpha(&self) -> u32 {
         if !self.running() {
             return 0;
         }
-        self.clock.saturating_sub(REVIVE_FADE_START).min(REVIVE_FADE_TICKS) * REVIVE_FADE_ALPHA / REVIVE_FADE_TICKS
+        revive_fade::alpha_after(self.clock.saturating_sub(REVIVE_FADE_START), REVIVE_FADE_LENGTH)
     }
 
     /// `FUN_001ad378` with type 2, started by `FUN_001cec00` -> `FUN_001ad8a8` when Tinker Bell is ready and the player is
@@ -4141,7 +4143,7 @@ fn revive_effects(
                 info!("summon: revive: system sound {n:#x} (FUN_002c14a8)");
                 se.write(crate::audio::PlaySe::system(n));
             }
-            ReviveAct::WindowSkipped => info!("summon: revive: the message window (FUN_00195898 / FUN_00195a78 / FUN_00195ae0) is not opened: its text is not found"),
+            ReviveAct::WindowSkipped => info!("summon: revive: the \"window\" (FUN_00195898 / FUN_00195a78 / FUN_00195ae0) is the kind 0xf camera event; it has no message text"),
             ReviveAct::FieldHeld => info!("summon: revive: 0x354f70 bit 2 set (FUN_00138708)"),
             ReviveAct::SoundGate => info!("summon: revive: sound request gate set (FUN_002c38b8, DAT_0036f598)"),
             ReviveAct::SoundGateOff => info!("summon: revive: sound request gate cleared (FUN_002c38c8)"),
@@ -4197,7 +4199,7 @@ fn objects(
     // player is knocked out. `Revive` runs the sequence: the music stops and new sounds are refused, and when its waits are over
     // FUN_001adeb8 clears byte 7 (FUN_001c6a10), makes Tinker Bell (objentry 0x4f4, the row's Entity2) at the player and
     // sets her mode `reraise` (the string at 0x37b880); her script raises the player (host 1.277). The message window's
-    // text does not exist (a camera event, docs/summons.md); `Revive` times that event (42 ticks, pad locked) and the fade to black (tick 22 to 122).
+    // text does not exist (a camera event, docs/summons.md); `Revive` times that event (42 ticks, pad locked) and the white fade (tick 22 to 122).
     let mut acts = Vec::new();
     if sm.revive.running() {
         acts = sm.revive.tick();
@@ -5299,7 +5301,7 @@ mod tests {
             assert!(!acts.contains(&TinkerMade), "tick {t}");
             assert_eq!(r.window_open(), t < 42, "window at tick {t}");
             assert_eq!(r.pad_locked(), t < 42, "pad at tick {t}");
-            assert_eq!(r.fade_alpha(), t.saturating_sub(22).min(100) * 0x80 / 100, "alpha at tick {t}");
+            assert_eq!(r.fade_alpha(), revive_fade::alpha_after(t.saturating_sub(22), 0x32), "alpha at tick {t}");
             if t >= 2 {
                 assert!(r.sounds_held());
             }
@@ -5312,38 +5314,47 @@ mod tests {
         assert!(!r.running() && r.fade_alpha() == 0 && !r.pad_locked());
     }
 
-    /// WP-RV4: the pad lock reaches `SummonState`, and the fade quad is clear before the fade, white and half-strong at alpha 0x40,
-    /// opaque at 0x80 and clear again when the thread is over.
+    /// WP-RV4 / WP-RV5: the pad lock reaches `SummonState`, and the fade quad is hidden before the fade, white and half-strong at the
+    /// middle of the ramp (alpha 0x40), full at tick 121 and hidden again when the thread is over.
     #[test]
     fn the_revive_lock_and_fade_reach_the_screen() {
         use bevy::ecs::system::RunSystemOnce;
+        use bevy::mesh::VertexAttributeValues;
         let mut w = bevy::ecs::world::World::new();
         w.insert_resource(SummonState::default());
-        let node = w.spawn((ReviveFade, BackgroundColor(Color::NONE))).id();
+        let mut meshes = Assets::<Mesh>::default();
+        let mesh = Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default())
+            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, VertexAttributeValues::Float32x3(vec![[0.0; 3]; 3]))
+            .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, VertexAttributeValues::Float32x4(vec![[1.0; 4]; 3]));
+        let handle = meshes.add(mesh);
+        w.insert_resource(meshes);
+        let quad = w.spawn((revive_fade::ReviveFadeQuad, Mesh2d(handle.clone()), Visibility::Hidden)).id();
         let paint = |w: &mut bevy::ecs::world::World| {
             w.run_system_once(paint_revive_fade).unwrap();
-            w.get::<BackgroundColor>(node).unwrap().0.to_srgba()
+            let shown = *w.get::<Visibility>(quad).unwrap() != Visibility::Hidden;
+            let meshes = w.resource::<Assets<Mesh>>();
+            let Some(VertexAttributeValues::Float32x4(c)) = meshes.get(&handle).unwrap().attribute(Mesh::ATTRIBUTE_COLOR) else { panic!("no colour") };
+            (shown, c[0])
         };
         assert!(!w.resource::<SummonState>().revive_pad_locked());
-        assert_eq!(paint(&mut w).alpha, 0.0);
+        assert!(!paint(&mut w).0);
         w.resource_mut::<SummonState>().revive.begin(1);
         assert!(w.resource::<SummonState>().revive_pad_locked());
         for _ in 0..72 {
             w.resource_mut::<SummonState>().revive.tick();
         }
-        // Tick 72: the fade is 50 ticks in, alpha 0x40; the pad is back since tick 42.
-        let half = paint(&mut w);
-        assert!(!w.resource::<SummonState>().revive_pad_locked());
-        assert_eq!((half.red, half.green, half.blue), (1.0, 1.0, 1.0));
-        assert!((half.alpha - 0.5).abs() < 1e-6, "{}", half.alpha);
+        // Tick 72: the fade is 50 runs in, alpha 0x40; the pad is back since tick 42.
+        let (shown, half) = paint(&mut w);
+        assert!(shown && !w.resource::<SummonState>().revive_pad_locked());
+        assert_eq!((half[0], half[1], half[2]), (1.0, 1.0, 1.0));
+        assert!((half[3] - 0.5).abs() < 1e-6, "{}", half[3]);
         for _ in 72..121 {
             w.resource_mut::<SummonState>().revive.tick();
         }
-        assert!(paint(&mut w).alpha > 0.98);
+        assert!(paint(&mut w).1[3] > 0.98);
         w.resource_mut::<SummonState>().revive.tick();
-        assert!(w.resource::<SummonState>().revive.fade_black() || !w.resource::<SummonState>().revive.running());
-        assert_eq!(paint(&mut w).alpha, 0.0, "the thread is over");
-        assert_eq!(revive_fade_color(0x80).to_srgba().alpha, 1.0);
+        assert!(!w.resource::<SummonState>().revive.running());
+        assert!(!paint(&mut w).0, "the thread is over");
     }
 
     /// WP-SM4b: the Bevy glue of the revive: `revive_effects` carries the music acts to `AreaMusic` (held on `MusicStop`, given

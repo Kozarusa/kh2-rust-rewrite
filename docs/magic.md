@@ -285,7 +285,7 @@ Port: `magic::step_strike`; the probe is the app's floor test `World::ground_m`.
   record (FUN_0018f538 case 6, a jump table entry, and mode 2 when the ability block's flag 0x800 is set: [GAP]); the
   trigger 28 refills the timer before it turns (FUN_001861b8). Port: `magic_rules::mode1_step`, `mode1_timer_start`,
   `CastTurn::lock_timer`; the cast keeps no mode-1 target after the timer ran out. [I: the controller's frame runs
-  before the trigger in a frame.] [GAP: the marker (FUN_0013e528 with 5 or 1) is not drawn.]
+  before the trigger in a frame.] [GAP: the marker (FUN_0013e528 with 5 or 1) is not drawn.] The port's `mode1_step` tests only hp above 0 of the FUN_0019a4f0 conditions and has no mode-2 branch (flag 0x800 of the ability block) [simplified].
 - The turn itself is two range triggers of the cast motions (FUN_00188030, player objects only, +0x588 & 2): 22 turns
   toward the command's target record (FUN_00186118), 28 toward the lock-on controller's target (FUN_001861b8, which
   also refreshes the mode-1 timer). The parameter is the limit in degrees per frame (times `DAT_0037a988`, pi/180).

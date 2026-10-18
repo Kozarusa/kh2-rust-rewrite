@@ -236,6 +236,21 @@ impl Host for LimitHost<'_> {
         host_answer(c, self.task)
     }
 
+    fn call_with_mem(&mut self, c: &Call, mem: &mut dyn kh2_bdx::host::ScriptMem) -> Value {
+        match crate::enemy_host::call_id(c) {
+            (1, 160) => {
+                self.call(c);
+                host_1_160(&args_of(c), mem, &mut self.task.mem);
+                Value::None
+            }
+            (6, 57) => {
+                self.call(c);
+                host_6_57(&args_of(c), mem, &self.task.mem, self.task.player_velocity)
+            }
+            _ => self.call(c),
+        }
+    }
+
     fn read_mem(&mut self, addr: u32, out: &mut [u8]) -> bool {
         self.task.mem.read(addr, self.task.player_velocity, out)
     }
@@ -243,6 +258,34 @@ impl Host for LimitHost<'_> {
     fn write_mem(&mut self, addr: u32, data: &[u8]) -> bool {
         self.task.mem.write(addr, data)
     }
+}
+
+/// The word at `addr` in the script's memory, else in the limit's object memory.
+fn word_at(addr: u32, script: &mut dyn kh2_bdx::host::ScriptMem, objects: &ObjectMem, velocity: [f32; 4]) -> Option<u32> {
+    script.read_u32(addr).or_else(|| {
+        let mut b = [0; 4];
+        objects.read(addr, velocity, &mut b).then(|| u32::from_le_bytes(b))
+    })
+}
+
+/// Host 1.160 (0x173770 -> `FUN_0018f490(record, word at context + 4, 0)`; arguments `record`, `context`): empties the target record
+/// at `record` (`FUN_0018ed40`: object 0, words 1 and 2 zero, word 3 = -1) and files the object the context holds at `+4` (where
+/// the object lookups 1.114 / 1.210 store their answer) as its object, part 0. The record is the script's own memory (a stack
+/// local) or a record of the limit's object memory.
+fn host_1_160(args: &[u32], script: &mut dyn kh2_bdx::host::ScriptMem, objects: &mut ObjectMem) {
+    let (Some(&record), Some(&context)) = (args.first(), args.get(1)) else { return };
+    let object = word_at(context.wrapping_add(4), script, objects, [0.0; 4]).unwrap_or(0);
+    let bytes: Vec<u8> = [object, 0, 0, u32::MAX].iter().flat_map(|w| w.to_le_bytes()).collect();
+    if !script.write(record, &bytes) {
+        objects.write(record, &bytes);
+    }
+}
+
+/// Host 6.57 (0x2eec10, no decomp file; read from the instructions: `lw t7,0(a0); lw t6,4(t7); sw t6,0(a0)`): answers the word at
+/// `+4` of the block the argument points at, a context or record. 0 when the address is in neither memory.
+fn host_6_57(args: &[u32], script: &mut dyn kh2_bdx::host::ScriptMem, objects: &ObjectMem, velocity: [f32; 4]) -> Value {
+    let Some(&block) = args.first() else { return Value::Int(0) };
+    Value::Int(word_at(block.wrapping_add(4), script, objects, velocity).unwrap_or(0) as i32)
 }
 
 /// The raw arguments of a call.
@@ -820,6 +863,53 @@ mod tests {
         let mut w = [9u8; 4];
         assert!(m.read(slot, v, &mut w));
         assert_eq!(w, [0; 4]);
+    }
+
+    /// A script's memory for the tests: a flat image at `BASE`.
+    struct Flat(Vec<u8>);
+    const BASE: u32 = 0x3000_0000;
+
+    impl kh2_bdx::host::ScriptMem for Flat {
+        fn read(&mut self, addr: u32, out: &mut [u8]) -> bool {
+            let Some(o) = addr.checked_sub(BASE).map(|o| o as usize).filter(|o| o + out.len() <= self.0.len()) else { return false };
+            out.copy_from_slice(&self.0[o..o + out.len()]);
+            true
+        }
+
+        fn write(&mut self, addr: u32, data: &[u8]) -> bool {
+            let Some(o) = addr.checked_sub(BASE).map(|o| o as usize).filter(|o| o + data.len() <= self.0.len()) else { return false };
+            self.0[o..o + data.len()].copy_from_slice(data);
+            true
+        }
+    }
+
+    /// Host 1.160 empties the record and files the context's object (word at +4) as its object; host 6.57 answers the word at +4 of
+    /// its argument, both through the script's memory.
+    #[test]
+    fn hosts_1_160_and_6_57_work_on_the_scripts_memory() {
+        use kh2_bdx::host::ScriptMem;
+        let mut mem = Flat(vec![0xee; 0x40]);
+        let (record, context) = (BASE, BASE + 0x20);
+        mem.write_u32(context + 4, partner(3));
+        let mut objects = ObjectMem::default();
+        host_1_160(&[record, context], &mut mem, &mut objects);
+        let words: Vec<u32> = (0..4).map(|i| mem.read_u32(record + 4 * i).unwrap()).collect();
+        assert_eq!(words, [partner(3), 0, 0, u32::MAX]);
+        assert_eq!(mem.read_u32(record + 16), Some(0xeeee_eeee), "only the four record words are written");
+        assert_eq!(host_6_57(&[context], &mut mem, &objects, [0.0; 4]), Value::Int(partner(3) as i32));
+        assert_eq!(host_6_57(&[0x1000], &mut mem, &objects, [0.0; 4]), Value::Int(0), "an unknown address answers 0");
+        // A record in the limit's object memory (the pool) takes the write instead.
+        let filed = objects.file_record(OWN_RECORD);
+        host_1_160(&[filed, context], &mut mem, &mut objects);
+        let mut w = [0u8; 4];
+        assert!(objects.read(filed, [0.0; 4], &mut w));
+        assert_eq!(u32::from_le_bytes(w), partner(3));
+        // Through the host: the call is logged like any other and answers as the ported call does.
+        let (mut calls, mut fresh, mut task) = (BTreeMap::new(), Vec::new(), TaskState::new(1, 1.0));
+        let mut host = LimitHost { calls: &mut calls, task: &mut task, tick: 0, fresh: &mut fresh };
+        let call = Call::Unknown { group: 6, index: 57, args: vec![context] };
+        assert_eq!(host.call_with_mem(&call, &mut mem), Value::Int(partner(3) as i32));
+        assert_eq!(calls[&(6, 57)].count, 1);
     }
 
     /// Hosts 2.47, 2.50 and 2.59 keep the request they were given and answer what the original answers without a motion or table.

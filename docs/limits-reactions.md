@@ -861,8 +861,7 @@ Simba 376 (330 ticks), Tron 415 (302), Riku 569 (303), Trinity-zz 620 (182) and 
   fault was a store through the target record the script files with `2.23` -> `1.131`: `1.131` (`0x1736f8`) copies the 5 word record
   into a pool at `DAT_01c89bd0 + 0x14 * index` and answers the copy's address. Host 2.23 now answers `OWN_RECORD` (the player as the
   object, word 3 = -1, as `enemy_host::target_record`) and 1.131 files a copy in `RECORD_POOL` (256 records, never reused; 1.132 stays a
-  no-op), so the script's later store into the record (the 6.57 result at record `+4`) lands. Host 6.57 and 1.160 (`FUN_0018f490`, the
-  record's object from the context) stay answered 0 / unported: host calls cannot read the script's context memory [GAP].
+  no-op), so the script's later store into the record (the 6.57 result at record `+4`) lands. Hosts 1.160 and 6.57 are ported (WP-LS3, see "Hosts 1.160 / 6.57").
 
 ### Hosts 2.47, 2.50, 2.59
 
@@ -951,10 +950,18 @@ Simba frame 45: Sora's neck and shoulder in close-up. The log line `camera: intr
   `FUN_001bb558(.., 0xd, 0)`). The command deck's module is not in this package's ownership and the placement is not traced: not drawn.
 - **Hosts 2.47 / 2.59** (participant motions): unchanged, not drawn; there are no participant models, and the motion table at task `+0x18`
   is not in the app.
-- **Hosts 1.160 / 6.57**: unchanged. The host calls cannot read the script's own memory (`Host::read_mem` is only asked for addresses
-  outside the script's code, globals and frames; `Runtime` hands it no handle on them), and `FUN_0018f490` reads the context record of the
-  calling thread (a frame address). A faithful port needs an accessor in `kh2-bdx` (not in this package's ownership): `Call::Func`
-  args carry the raw frame address, the host would read it through the runtime.
+- **Hosts 1.160 / 6.57** (WP-LS3): ported. `kh2-bdx` gained `Host::call_with_mem(&Call, &mut dyn ScriptMem)`, which the runtime calls for
+  every host call that reaches the host (the default forwards to `Host::call`, so no other host changes); `ScriptMem` reads and writes
+  the script's image, globals, frames and heap. Both functions are in the function table (`GROUP_TABLE` 0x35bce8; the names table has no
+  entry, so they arrive as `Call::Unknown` with raw arguments):
+  - 1.160 = 0x173770, 2 arguments, no result: `FUN_0018f490(*args[0], *(args[1] + 4), 0)`, i.e. record = `args[0]`, context = `args[1]`.
+    `FUN_0018f490` first runs `FUN_0018ed40` on the record (word 0 = 0, words 1 and 2 = 0, word 3 = -1), then stores word 1 = third
+    argument (0) and word 0 = the second (the context's word at `+4`, where 1.114 / 1.210 leave their answer). The port writes the
+    four words `[object, 0, 0, -1]` (the record's fifth word is not touched, as in the original).
+  - 6.57 = 0x2eec10, 1 argument, one result; no decomp file, read from the instructions (`lw t7,0(a0); lw t6,4(t7); jr ra; sw t6,0(a0)`):
+    the answer is the word at `+4` of the block the argument points at (the same context word). 0 when the address is in neither the
+    script's nor the limit's object memory [inferred].
+  A record that is in the limit's object memory (the pool of 1.131) takes the write there instead of the script's memory.
 
 ## Auto Limit (WP-AL1) [V unless marked]
 

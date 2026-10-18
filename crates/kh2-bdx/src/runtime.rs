@@ -232,6 +232,30 @@ impl Host for HeapHost<'_> {
     }
 }
 
+/// The script's memory (its image and the heap) for [`Host::call_with_mem`].
+struct ScriptAccess<'a, 'b> {
+    mem: &'a mut Mem<'b>,
+    heap: &'a mut Vec<u8>,
+}
+
+impl crate::host::ScriptMem for ScriptAccess<'_, '_> {
+    fn read(&mut self, addr: u32, out: &mut [u8]) -> bool {
+        if let Some(r) = heap_span(self.heap.len(), addr, out.len()) {
+            out.copy_from_slice(&self.heap[r]);
+            return true;
+        }
+        self.mem.read(addr, out).is_ok()
+    }
+
+    fn write(&mut self, addr: u32, data: &[u8]) -> bool {
+        if let Some(r) = heap_span(self.heap.len(), addr, data.len()) {
+            self.heap[r].copy_from_slice(data);
+            return true;
+        }
+        self.mem.write(addr, data).is_ok()
+    }
+}
+
 /// Reads `out.len()` bytes the script points at: its own memory, else the heap, else the host's.
 fn read_bytes(mem: &mut Mem<'_>, host: &mut dyn Host, addr: u32, out: &mut [u8]) -> Result<(), VmError> {
     match mem.read(addr, out) {
@@ -1195,7 +1219,10 @@ impl CoreEnv<'_> {
                 None => Call::Unknown { group: g, index: i, args: a.to_vec() },
             },
         };
-        let v = self.host.call(&call);
+        let v = {
+            let mut acc = ScriptAccess { mem: &mut *mem, heap: &mut self.core.heap };
+            self.host.call_with_mem(&call, &mut acc)
+        };
         Ok(Some(convert(v, mem)))
     }
 
@@ -1611,5 +1638,44 @@ mod spawn_tests {
         let seen: Vec<_> = host.0.iter().filter(|c| matches!(c, Call::Func { group: 0, index: 14, .. })).collect();
         assert_eq!(seen.len(), 1, "{:?}", host.0);
         assert!(!rt.thread_done(), "the parent keeps running");
+    }
+
+    /// A host that reads and writes the script's image through [`Host::call_with_mem`] for host 6.57 (one argument, an answer).
+    struct MemProbe {
+        read: Option<u32>,
+        wrote: bool,
+        plain_calls: usize,
+    }
+
+    impl Host for MemProbe {
+        fn call(&mut self, _c: &Call) -> Value {
+            self.plain_calls += 1;
+            Value::Int(0)
+        }
+
+        fn call_with_mem(&mut self, c: &Call, mem: &mut dyn crate::host::ScriptMem) -> Value {
+            let Call::Unknown { group: 6, index: 57, args } = c else { return self.call(c) };
+            self.read = mem.read_u32(args[0] + 4);
+            self.wrote = mem.write_u32(crate::vm::GLOBAL_ADDR + 8, 0x1234_5678) && mem.read_u32(crate::vm::GLOBAL_ADDR + 8) == Some(0x1234_5678);
+            Value::Int(self.read.unwrap_or(0) as i32)
+        }
+    }
+
+    /// A host call can read and write the script's own memory: host 6.57, given the code address, reads the image word at +4 and the
+    /// write at +8 lands and reads back; the call still reaches the host once, with its arguments.
+    #[test]
+    fn a_host_call_reaches_the_scripts_memory() {
+        // Entry 22: push CODE_ADDR (0x1000_0000: low word 0, high word 0x1000), host 6.57 (sub-operation 6), then yield forever.
+        let main = vec![0x0000, 0, 0x1000, 0x018a, 57, 0x0009, 0x0007, 0xfffd];
+        let mut rt = Runtime::new(program(&[(22, main)]));
+        rt.core.inferred.insert((6, 57), (1, true));
+        assert!(rt.start_thread(0, 22, &[]));
+        let mut host = MemProbe { read: None, wrote: false, plain_calls: 0 };
+        rt.update_script(&mut host);
+        assert!(rt.core.errors.is_empty(), "{:?}", rt.core.errors);
+        let image = rt.code.get(4..8).expect("the image has a word at +4");
+        assert_eq!(host.read, Some(u32::from_le_bytes(image.try_into().unwrap())), "the word at +4 of the code image");
+        assert!(host.wrote, "a write into the script's memory reads back");
+        assert_eq!(host.plain_calls, 0, "the call goes through call_with_mem");
     }
 }

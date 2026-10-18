@@ -274,6 +274,12 @@ struct CastTurn {
     /// The lock-on controller's mode-1 timer (+0x1c): `AutoLockOnTime` when the mode starts (FUN_0019bcb8),
     /// counted down each frame and refilled by trigger 28 (see `magic_rules::mode1_step`).
     lock_timer: f32,
+    /// The controller is in mode 2 (FUN_0019b3f0 with 2, the lock button pressed in mode 1): the timer no longer
+    /// runs and the record stays while it is targetable.
+    lock_mode2: bool,
+    /// Sora's lock-on target one tick ago: a change from none to some stands for the newly pressed lock button
+    /// (logical bit 0x800, FUN_0019b7a8), which `Pad` does not expose [inferred].
+    prev_lock: Option<Entity>,
 }
 
 /// A Thunder strike: the request thread at word 0x2da of THUNDER_*.mag (block +0x20 the place, +0x48
@@ -632,7 +638,7 @@ fn run(
                 let has_lock_on = block.as_ref().is_some_and(|b| b.has_bit(rules::BIT_MAGIC_LOCK_ON));
                 if rules::magic_lock_on_applies(has_lock_on, row.id) && target.is_none() {
                     let cands: Vec<(Entity, Vec3)> = targets.iter().filter(|(e, _)| alive(*e)).map(|(e, p)| (*e, *p / SCALE)).collect();
-                    target = rules::lock_on_pick(s.motor.pos, s.motor.forward(), game.plyr.auto_lock_on_h_adjust, game.plyr.auto_lock_on_inner_adjust, &cands);
+                    target = rules::lock_on_pick(s.motor.pos, s.motor.forward(), game.plyr.auto_lock_on_h_adjust, game.plyr.auto_lock_on_inner_adjust, None, &cands);
                     lock_mode1 = target;
                     mlog!("magic: Magic Lock-On (FUN_00179470): no target record, picked {target:?} of {} candidates; lock-on controller mode 1", cands.len());
                 }
@@ -657,7 +663,7 @@ fn run(
                     voices.write(crate::audio::SoraVoice { voice: voice as u16, why: format!("cast {}", row.file_name) });
                 }
                 let lock_timer = if lock_mode1.is_some() { rules::mode1_timer_start(game.plyr.auto_lock_on_time) } else { 0.0 };
-                st.turn = Some(CastTurn { motion: mslot, target, own, lock_mode1, lock_timer });
+                st.turn = Some(CastTurn { motion: mslot, target, own, lock_mode1, lock_timer, lock_mode2: false, prev_lock: s.lock });
                 let magi = rules::magi_row(&data.magi, kind).cloned().unwrap_or_default();
                 let cost = data.cmd(cmd).map_or(0, |c| c.cost);
                 mlog!(
@@ -708,19 +714,37 @@ fn run(
     // (Sora's lock-on, else the mode-1 target of Magic Lock-On), by at most the trigger's degrees per
     // frame. The target point is the target's target shape (FUN_0018efa0); the caster's is its
     // position [inferred: the offset +0x560 added to it has no horizontal part].
-    // The controller's frame (FUN_0019b7a8, mode 1): the timer counts down while the player is up; once it
-    // has run out the controller looks for a new record (FUN_0018f538 case 6 [GAP]) and the mode-1 target
-    // is gone for this cast. [inferred: this runs before the trigger below in a frame.]
+    // The controller's frame (FUN_0019b7a8, mode 1): the lock button moves it to mode 2, else the timer counts down
+    // while the player is up (FUN_0019a4f0); once it has run out the controller picks again with the player's
+    // AutoLockOnRange and height window (FUN_0018f538 case 6 -> FUN_0018fb98) and a valid pick replaces the record
+    // (FUN_0019b5e8, the timer stays out, so it picks again each frame); no pick releases the controller (mode 0).
+    // [inferred: this runs before the trigger below in a frame.]
+    let sora_up = rules::player_up(false, fighters.get(me).is_ok_and(|f| !f.1.hittable), true, s.hp);
     if let Some(t) = st.turn.as_mut()
         && t.lock_mode1.is_some()
+        && !t.lock_mode2
     {
-        match rules::mode1_step(t.lock_timer, s.hp > 0) {
-            Some(left) => t.lock_timer = left,
-            None => {
-                mlog!("magic: lock-on controller mode 1 timer ran out; the cast keeps no mode-1 target");
-                t.lock_mode1 = None;
+        let pressed = s.lock.is_some() && t.prev_lock.is_none();
+        match rules::mode1_frame(t.lock_timer, pressed, sora_up) {
+            rules::Mode1Frame::Keep(left) => t.lock_timer = left,
+            rules::Mode1Frame::ToMode2 => {
+                mlog!("magic: lock button in mode 1 (FUN_0019b7a8): the lock-on controller goes to mode 2 on {:?}", t.lock_mode1);
+                t.lock_mode2 = true;
+            }
+            rules::Mode1Frame::Repick => {
+                let p = &game.plyr;
+                let window = rules::LockWindow { range: p.auto_lock_on_range, min_h: p.auto_lock_on_min_h, max_h: p.auto_lock_on_max_h, h_scale: 0.0 };
+                let cands: Vec<(Entity, Vec3)> = targets.iter().filter(|(e, _)| alive(*e)).map(|(e, p)| (*e, *p / SCALE)).collect();
+                let pick = rules::lock_on_pick(s.motor.pos, s.motor.forward(), p.auto_lock_on_h_adjust, p.auto_lock_on_inner_adjust, Some(window), &cands);
+                if pick != t.lock_mode1 {
+                    mlog!("magic: lock-on controller mode 1 timer out (FUN_0018f538 case 6): {:?} -> {pick:?}", t.lock_mode1);
+                }
+                t.lock_mode1 = pick;
             }
         }
+    }
+    if let Some(t) = st.turn.as_mut() {
+        t.prev_lock = s.lock;
     }
     match st.turn {
         Some(t) if s.state == State::Magic && body.slot == t.motion => {
@@ -2789,5 +2813,63 @@ mod tests {
             let got = ee.call(0x0019_05e8, &[], &[], STACK).expect("FUN_001905e8") & 0xff != 0;
             assert_eq!(got, rules::global_flag_8_active(flags, player != 0), "flags {flags:#x} player {player}");
         }
+    }
+
+    /// FUN_0019a4f0 and the keep branch of FUN_0019b7a8 against the executable: every combination of the
+    /// dead bit (+0x7f8 & 4), the cannot-be-hit bit (+0x108 & 8), a null status (+0x510) and hp gives the
+    /// rule's answer, and a mode-1 controller with a timer above 0 and the lock button clear loses one step
+    /// exactly when the object passes. The other branches of FUN_0019b7a8 call into the target marker pool
+    /// and are not run.
+    #[test]
+    fn player_up_and_mode1_keep_match_the_executable() {
+        use kh2_ee::Ee;
+        const STACK: u32 = 0x01ff_0000;
+        const CTRL: u32 = 0x0180_0000;
+        const OBJ: u32 = 0x0181_0000;
+        const STATUS: u32 = 0x0182_0000;
+        const INPUT: u32 = 0x0183_0000;
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let elf = {
+            let mut a = disc.0.lock().unwrap();
+            ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok()).expect("executable")
+        };
+        let mut ee = Ee::new();
+        ee.load_elf(&elf).expect("elf");
+        let mut checked = 0;
+        for dead in [0u32, 4] {
+            for hit in [0u32, 8] {
+                for status in [0u32, 1] {
+                    for hp in [-5i32, 0, 1, 900] {
+                        ee.w32(OBJ + 0x7f8, dead | 0x10);
+                        ee.w32(OBJ + 0x108, hit | 0x1);
+                        ee.w32(OBJ + 0x510, if status != 0 { STATUS } else { 0 });
+                        ee.w32(STATUS, hp as u32);
+                        let want = rules::player_up(dead != 0, hit != 0, status != 0, hp);
+                        let got = ee.call(0x0019_a4f0, &[OBJ as u64], &[], STACK).expect("FUN_0019a4f0") & 0xff != 0;
+                        assert_eq!(got, want, "dead {dead} hit {hit} status {status} hp {hp}");
+                        if want {
+                            // The controller: mode 1, owner OBJ (word 1), timer 4.0 (word 7), player OBJ (word 10).
+                            ee.w32(OBJ + 0xb38, INPUT);
+                            ee.w32(INPUT + 8, 0);
+                            ee.w32(INPUT + 12, 0);
+                            ee.w32(CTRL, 1);
+                            ee.w32(CTRL + 4, OBJ);
+                            ee.w32(CTRL + 28, 4.0f32.to_bits());
+                            ee.w32(CTRL + 40, OBJ);
+                            ee.call(0x0019_b7a8, &[CTRL as u64], &[], STACK).expect("FUN_0019b7a8");
+                            let timer = f32::from_bits(ee.r32(CTRL + 28));
+                            assert_eq!(Some(timer), rules::mode1_step(4.0, true), "the keep branch");
+                            assert_eq!(rules::mode1_frame(4.0, false, true), rules::Mode1Frame::Keep(timer));
+                        }
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 32);
     }
 }

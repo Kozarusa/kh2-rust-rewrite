@@ -230,10 +230,34 @@ pub enum Call {
     Unknown { group: u16, index: u16, args: Vec<u32> },
 }
 
+/// The script's own memory (code image, globals, frames, the script heap) as a host call sees it, for the few host functions that read or
+/// write through a pointer the script passes (a context or a record on its stack). Addresses outside it are the host's own.
+pub trait ScriptMem {
+    /// Fills `out` from `addr`; false when the address is not in the script's memory.
+    fn read(&mut self, addr: u32, out: &mut [u8]) -> bool;
+    /// Stores `data` at `addr`; false when the address is not in the script's memory.
+    fn write(&mut self, addr: u32, data: &[u8]) -> bool;
+
+    fn read_u32(&mut self, addr: u32) -> Option<u32> {
+        let mut b = [0; 4];
+        self.read(addr, &mut b).then(|| u32::from_le_bytes(b))
+    }
+
+    fn write_u32(&mut self, addr: u32, v: u32) -> bool {
+        self.write(addr, &v.to_le_bytes())
+    }
+}
+
 /// The game world as seen by scripts.
 pub trait Host {
     /// Performs a call and returns its result (`Value::None` for calls without one).
     fn call(&mut self, c: &Call) -> Value;
+
+    /// A call whose host function touches the script's own memory. The runtime sends every call that reaches [`Host::call`] through here
+    /// with an accessor; the default ignores it, so hosts that do not need it are unchanged.
+    fn call_with_mem(&mut self, c: &Call, _mem: &mut dyn ScriptMem) -> Value {
+        self.call(c)
+    }
 
     /// Reads memory the script holds a pointer into (game objects, hit records). Return false if unknown.
     fn read_mem(&mut self, _addr: u32, _out: &mut [u8]) -> bool {

@@ -416,6 +416,9 @@ fn friend_update(
     pulls.places.clear();
     pulls.hits.clear();
     for (me, mut m, mut brain) in &mut q {
+        if !m.runs_script() {
+            continue;
+        }
         let Ok(anim) = anims.get(m.body) else { continue };
         let rig = anim.rig.clone();
         let FriendBrain { rt, obj, tag, flags124, started, errors_seen, mode, fields } = &mut *brain;

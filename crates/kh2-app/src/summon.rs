@@ -244,6 +244,15 @@ pub mod ai {
         /// it to the end of the script's update because the host cannot re-enter the runtime that is calling it [inferred
         /// deviation: a routine that reads state the rest of the tick changes sees it a few calls later].
         pub link_broken: Vec<Link>,
+        /// The object the context pointer of the raw-word call in flight names (the word at context +4, which is what the
+        /// interpreter's own 'O' decode reads); set by `SummonHost::call_with_mem` for the calls that take a context first.
+        pub ctx_object: u32,
+        /// Host 1.318 this tick (FUN_00170b30 -> FUN_00197008): (the object, the sound number), played after the script ran.
+        pub sounds: Vec<(u32, u32)>,
+        /// Host 1.52 (FUN_001728c0 -> FUN_0019dd88): the bit array at object +0x47c, bit n = collision part n forced on.
+        pub parts_47c: u32,
+        /// The global flag word 0x35d268 bits the script set (hosts 6.19: 0x800, 1.286: 0x1000) and cleared again.
+        pub gflags: u32,
     }
 
     /// A call a summon's script makes on an object it made with host 1.0 (the object exists a tick later: the calls wait
@@ -278,6 +287,31 @@ pub mod ai {
                 self.link_broken.push(link);
             }
             true
+        }
+
+        /// Host 1.318 (0x170b30 -> FUN_00197008(object, id) -> FUN_002c32b8(id, FUN_0016b960(object))): the sound `id` starts at the
+        /// object's position. The call is queued; `objects` writes the request after the script's tick. A `500xxx` id names
+        /// the object's private bank (FUN_00197008 swaps 500 for the bank number of the object's record +0x9b4, halfword +2):
+        /// the request carries the object's own `.apdx`, which is that bank.
+        pub fn play_sound(&mut self, object: u32, id: u32) {
+            self.sounds.push((object, id));
+        }
+
+        /// Host 1.52 (0x1728c0 -> FUN_0019dd88(object + 0x47c, n)): bit `n` of the array is set, so collision part `n` of the
+        /// object reads as on whatever the other arrays say (docs/bdx.md 1.52). Parts beyond the word's 32 bits are dropped.
+        pub fn set_part_bit(&mut self, n: u32) {
+            if n < 32 {
+                self.parts_47c |= 1 << n;
+            }
+        }
+
+        /// Hosts 6.19 / 1.286 (0x2eecb8 / 0x173b10) and their clears (0x2eecd0 / 0x173b28): bits of the global flag word 0x35d268.
+        pub fn set_gflag(&mut self, bit: u32, on: bool) {
+            if on {
+                self.gflags |= bit;
+            } else {
+                self.gflags &= !bit;
+            }
         }
 
         /// Host 1.277 on the player (FUN_00178d80, FUN_001d4a50, then his HP method with his status block's word +4, the
@@ -389,6 +423,10 @@ pub mod ai {
                 effect_list: Vec::new(),
                 revive: false,
                 link_broken: Vec::new(),
+                ctx_object: 0,
+                sounds: Vec::new(),
+                parts_47c: 0,
+                gflags: 0,
             }
         }
     }
@@ -733,8 +771,11 @@ pub mod stitch {
         pub timer: f32,
         /// FUN_0010fcd0's state (object +0xc60, +0xb7c bit 4, the last three).
         pub choosing: Choosing,
-        /// Object +0x10c bit 0x40 / +0x790: the parent matrix is set (FUN_00193228).
+        /// Object +0x630 bit 0 (FUN_001175a0 sets it; FUN_001155e0 places the object at the zero vector while it is clear).
         pub attached: bool,
+        /// Object +0x790 / +0x10c bit 0x40 / +0x768 bit 0x1000: the parent matrix is set (FUN_00193228 sets it, FUN_00193248,
+        /// host 6.36, clears it; `place` sets it).
+        pub parent: bool,
         /// The motion requested last (object +0x154) and whether a new request is pending.
         pub motion: Option<u16>,
         pub motion_new: bool,
@@ -942,6 +983,15 @@ pub mod stitch {
         ai.goal[3] = v[3];
         ai.pos[2] = c.place_depth;
         ai.attached = true;
+        ai.parent = true;
+    }
+
+    /// Host 6.36 (0x2eee10 -> FUN_00193248(object)): the parent matrix is released: +0x790 = 0, +0x10c loses 0x40 and +0x768
+    /// loses 0x1000 (the exact inverse of FUN_00193228). The object keeps +0x630 bit 0, so FUN_001155e0 does not place it
+    /// again; it stands where the last tick put it (or where the script's own placement and link put it) until
+    /// FUN_001175a0 builds a new matrix.
+    pub fn release_parent(ai: &mut StitchAi) {
+        ai.parent = false;
     }
 
     fn request(ai: &mut StitchAi, m: u16) {
@@ -1391,6 +1441,10 @@ pub mod genie {
         }
     }
 
+    /// Object +0xb7c bit 0x800, which Genie's constructor path of FUN_0010b780 sets (the same line sets it for Peter Pan): the
+    /// chooser FUN_0010fcd0 reads it (`party_battle::choose`'s `summon_any`).
+    pub const SUMMON_ANY: bool = true;
+
     /// FUN_00111070's decision while the object is free: out of battle the follow; in battle the emergency pass when
     /// the player is in danger (FUN_0010f830 for a summon class), else FUN_0010fcd0, and the chosen record's phase 0.
     pub fn decide(c: &Consts, recs: &[Record], ai: &mut GenieAi, now: &Now) -> Out {
@@ -1404,9 +1458,11 @@ pub mod genie {
         let danger = battle::danger_member(player, battle::Vital::default(), None, true);
         let mut st = std::mem::take(&mut ai.choosing);
         let urgent = if danger.is_some() { battle::emergency(recs, &mut st, false, false, |i| can(c, recs, now, i), |n| rng.borrow_mut().rand(n)) } else { None };
+        // FUN_0010b780 ors 0x800 into object +0xb7c for Genie (NeoStatus 0xc9, as for Peter Pan 0xca): FUN_0010fcd0 tests it
+        // (`(b7c & 0x800) != 0 || +0xce8 < 2`), so the choice never falls into the "chosen twice: move" branch (`SUMMON_ANY`).
         let choice = match urgent {
             Some(k) => Choice::Do(k),
-            None => battle::choose(recs, &mut st, &Params::default(), CLASS, &MemberNow::default(), false, false, |_| None, |i, _| can(c, recs, now, i), || rng.borrow_mut().roll(), |n| rng.borrow_mut().rand(n)),
+            None => battle::choose(recs, &mut st, &Params::default(), CLASS, &MemberNow::default(), SUMMON_ANY, false, |_| None, |i, _| can(c, recs, now, i), || rng.borrow_mut().roll(), |n| rng.borrow_mut().rand(n)),
         };
         ai.choosing = st;
         ai.rng = rng.into_inner();
@@ -2567,6 +2623,34 @@ impl SummonHost<'_, '_> {
                 let was = self.ai.link_end();
                 (Value::None, St::Approx, if was { "the link is broken and its routine runs after the tick; the facing set from the object's +0x60 / +0x68 (FUN_003003e8, FUN_0016a7f0) and the cleared +0x7f8 value 8 are not modelled" } else { "no link is made: FUN_001beb00 finds no parent and the call does nothing" })
             }
+            // 0.32 fader_out (0x16d880 -> FUN_0014a7f0(FUN_0014a918(), seconds x DAT_0037a250, 1)): the screen fader at 0x3564d0
+            // fades in over the length (state 1 = the fade-in of the revive notes, docs/summons.md). Stitch's Ohana start calls it
+            // with 0 at its end, so the fader ends clear; the app never fades that fader, so there is nothing to clear.
+            (0, 32) => (Value::None, St::Approx, "the fader 0x3564d0 is never faded in the app: a fade-in of length 0 leaves it clear"),
+            // 1.52 bits_47c_set (0x1728c0 -> FUN_0019dd88(object + 0x47c, n)): collision part n forced on (docs/bdx.md). Chicken
+            // Little's start sets part 1 of himself after his arrival event.
+            (1, 52) if a(0) == me => {
+                self.ai.set_part_bit(a(1));
+                (Value::None, St::Approx, "the bit is kept; the app's summon bodies have no collision part table to test it")
+            }
+            // 1.115 set_words_100_104 (0x171388): object +0x100 = v + 1, +0x104 = v + 2 (the mover's state words; the airborne
+            // launch sets +0x100 = -1 and +0x104 = 5, FUN_0017b1b0). Peter Pan's limit end hands the player v = 3.
+            (1, 115) => (Value::None, St::Stub, "the player's mover words +0x100 / +0x104 are sora.rs's (mover state), not modelled"),
+            // 1.227 mover_method_8 (0x171350): the object's mover (+0xc) at vtable +8 with the object and the argument; Peter Pan's
+            // limit end asks it of the player (after 1.74, the mover reset).
+            (1, 227) => (Value::None, St::Stub, "the player's mover method (vtable +8) is sora.rs's, not modelled"),
+            // 1.286 gflags_set_1000 (0x173b10): 0x35d268 |= 0x1000. FUN_0019afe8(object) tests it (with +0x10c bits 0x80 / 0x200,
+            // FUN_0019af28, FUN_0019b100, FUN_002c56c0): FUN_00184498, the object update, skips the object's virtual update (+0x48)
+            // while it holds; FUN_00191c18 shades the same way. The app has neither gate.
+            (1, 286) => {
+                self.ai.set_gflag(0x1000, true);
+                (Value::None, St::Approx, "bit 0x1000 of 0x35d268 is kept; the object update gate FUN_0019afe8 / FUN_00184498 is not in the app")
+            }
+            // 1.157 spawn_effect_on (0x171f40 -> FUN_00197230(object, name, second object)): the name is a 4-character entry name of
+            // type 0x16 in the object's BAR (FUN_001971c0); its data is an event (type 0xb, FUN_00195898) placed at the object's
+            // +0x80 and bound to the second object (FUN_00195a78), then started (FUN_00195ae0). Ohana's start plays entry "10" and
+            // waits for it (1.34); the app has no event player for object-owned events.
+            (1, 157) => (Value::None, St::Stub, "the object's type 0x16 event (FUN_00197230 -> FUN_00195898) is not played: the cutscene shows nothing"),
             // 10.53 (0x2f74c0 -> FUN_0010c5b8(object), FUN_00136388(list, effect)): the effect instance is entered in the effect
             // list at the object's +0xb5c (made on first use, FUN_00135ff8).
             (10, 53) => {
@@ -2869,8 +2953,9 @@ impl SummonHost<'_, '_> {
                 let hit = self.env.player_hit;
                 (Value::Bool(a(1) == crate::enemy_obj::PLAYER && self.env.enemy(a(0)).is_some_and(|e| Some(e.entity) == hit)), St::Approx, "the last attacker of an enemy is the player when his latest landed hit was on it")
             }
-            // 7.24 / 7.25 (0x2ef848 / 0x2ef868 -> FUN_0010f6b8 / FUN_0010f6d0): object +0xb7c bit 0x400 cleared / set. Nothing
-            // read in the class reads the bit [GAP: readers of +0xb7c bit 0x400 not searched].
+            // 7.24 / 7.25 (0x2ef848 / 0x2ef868 -> FUN_0010f6b8 / FUN_0010f6d0): object +0xb7c bit 0x400 cleared / set. The one
+            // decompiled reader is FUN_001115a0, the object virtual at vtable +0x30 (slot 12 of the tables at 0x352ddc / 0x35fe6c): it
+            // answers 0 while the bit is set, else the controller-ready test FUN_00174c28. The callers of that slot were not identified.
             (7, 24) => {
                 self.ai.b7c &= !0x400;
                 (Value::None, St::Impl, "")
@@ -3087,6 +3172,72 @@ impl kh2_bdx::Host for SummonHost<'_, '_> {
                 self.record(c, &kh2_bdx::Value::None, crate::enemy_host::St::Impl, "the app sets no actor stop id but 2");
                 return kh2_bdx::Value::None;
             }
+            // 1.318 (0x170b30 -> FUN_00197008(object, id)): the sound `id` at the object named by the context (word +4, resolved by
+            // `call_with_mem`). Stitch's Ohana start plays 598050 after its event, Peter Pan's limit 595042.
+            Call::Unknown { group: 1, index: 318, args } if args.len() >= 2 => {
+                self.ai.play_sound(self.ai.ctx_object, args[1]);
+                self.record(c, &kh2_bdx::Value::None, crate::enemy_host::St::Impl, "");
+                return kh2_bdx::Value::None;
+            }
+            // 6.36 (0x2eee10 -> FUN_00193248(object)): the object's parent matrix is released (the inverse of FUN_00193228). Stitch's
+            // Ohana start (R00a9) frees himself of the camera plane his class pinned him to before the script links and places him.
+            Call::Unknown { group: 6, index: 36, .. } => {
+                let (st, why) = if self.ai.ctx_object == self.f.inner.obj.handle {
+                    stitch::release_parent(&mut self.ai.stitch);
+                    (crate::enemy_host::St::Impl, "")
+                } else {
+                    (crate::enemy_host::St::Approx, "another object's parent matrix: only the summon's own plane pin is modelled")
+                };
+                self.record(c, &kh2_bdx::Value::None, st, why);
+                return kh2_bdx::Value::None;
+            }
+            // 6.19 (0x2eecb8): global flag word 0x35d268 |= 0x800. Its reader is FUN_00190610 (`& 0x800` with the player object at
+            // 0x35c998), called by FUN_001a3848 (a target decision) and FUN_001bd358; the app has neither.
+            Call::Unknown { group: 6, index: 19, .. } => {
+                self.ai.set_gflag(0x800, true);
+                self.record(c, &kh2_bdx::Value::None, crate::enemy_host::St::Approx, "bit 0x800 of 0x35d268 is kept; its readers FUN_00190610 / FUN_001a3848 / FUN_001bd358 are not in the app");
+                return kh2_bdx::Value::None;
+            }
+            // 6.40 (0x2eee70 -> FUN_0016b698(object, 0x34)): the object's mover becomes kind 0x34. Peter Pan's limit start gives it to
+            // the player (context [local0]+4); the mover kinds are the player's own (sora.rs), whose kind 0x34 update was not read.
+            Call::Unknown { group: 6, index: 40, .. } => {
+                self.record(c, &kh2_bdx::Value::None, crate::enemy_host::St::Stub, "the player's mover kind 0x34 (FUN_0016b698) is not in sora.rs: his movement stays the normal one");
+                return kh2_bdx::Value::None;
+            }
+            // 1.220 (0x170838 -> FUN_00183eb0(length, DAT_0037a490, DAT_0037a490, object, flag != 0)): the object is swept forward
+            // along its facing by `length` in steps (FUN_00143840 moves, FUN_0016a670 applies). Stitch's Ohana start asks it of
+            // the player with 700.0 and flag 0.
+            Call::Unknown { group: 1, index: 220, .. } => {
+                self.record(c, &kh2_bdx::Value::None, crate::enemy_host::St::Stub, "the stepped sweep FUN_00183eb0 (movement with FUN_00143840) is not ported: the object stays where it is");
+                return kh2_bdx::Value::None;
+            }
+            // 1.221 (0x170878 -> FUN_001b6fd0(FUN_001b6f48(command), object, a target record naming the third context's object)): is the
+            // command row usable by the object. By the row's byte +0x1f (0 none, 1 the target, 2 both) FUN_0019abb0 tests the
+            // object(s): the row's Flags bit 1 (FUN_0019aa28), the window the object's +0x50c names (+0x160 bit 0x20000 with the row's
+            // id, bit 0x200000 with the halfword +0x22) [roles inferred from the reads], Flags bit 4 (FUN_001903d8, no battle), bit 8 with +0x160 bit 0x80000, the float
+            // +0x9b0, the busy bits +0x160 4 / 8 / 0x10, +0x160 bit 0x400 and +0x168 bit 0x20 unless Flags bit 7, then Flags bit 2.
+            // Peter Pan's limit thread asks it of the player and the command (470, 471, 482) every frame and offers it with 1.165
+            // when it is usable. The app answers no: the player's +0x160 / +0x168 words are not modelled, and 1.165 (stage 5) would
+            // only log the offer.
+            Call::Unknown { group: 1, index: 221, .. } => {
+                let v = kh2_bdx::Value::Bool(false);
+                self.record(c, &v, crate::enemy_host::St::Stub, "FUN_0019abb0's reads of the player's +0x160 / +0x168 / +0x50c are not modelled: the command reads as not usable");
+                return v;
+            }
+            // 1.295 (0x173cf8 -> FUN_00140e38(FUN_00140d08())): byte +0x39 of the field camera object 0x355840, the reset-behind-the-
+            // player flag (docs/camera.md 0x38 / 0x39). FUN_00140288 clears it and runs FUN_0013fdd8; the app's camera takes that
+            // reset only from the C key / middle mouse (`camera::gather_input`), a private path.
+            Call::Unknown { group: 1, index: 295, .. } => {
+                self.record(c, &kh2_bdx::Value::None, crate::enemy_host::St::Stub, "the camera's reset flag (0x355840 + 0x39) has no request in camera.rs: the camera is not reset");
+                return kh2_bdx::Value::None;
+            }
+            // 1.285 (0x170a50 -> FUN_001972b0(object, n)): entry type 0x2e of the object's BAR, started as a 2D sequence player
+            // (FUN_001538f0 -> FUN_00153848, 0xa4 bytes, parameter 0x12c0); the host returns it. Peter Pan's limit routine R0311
+            // passes 0 and pops the result.
+            Call::Unknown { group: 1, index: 285, .. } => {
+                self.record(c, &kh2_bdx::Value::Int(0), crate::enemy_host::St::Stub, "the 2D sequence of the object's BAR entry 0x2e (FUN_001538f0) is not started");
+                return kh2_bdx::Value::Int(0);
+            }
             Call::MoverMethod { obj, value } if *obj == self.f.inner.obj.handle && gravity != 0.0 => {
                 self.ai.air = Some(ai::launch(*value, &self.env.air));
                 self.record(c, &kh2_bdx::Value::None, crate::enemy_host::St::Approx, "FUN_0017b1e0's fields (+0xd0..+0xdc) and the mover kind 1 are recorded; the mover's own update (FUN_0017b328 / FUN_0017b440: the flight) is not ported, so the object does not fly [GAP]");
@@ -3099,6 +3250,15 @@ impl kh2_bdx::Host for SummonHost<'_, '_> {
             return v;
         }
         self.f.call(c)
+    }
+
+    /// The raw-word calls that take a script context first (1.318, 6.19 .. 6.40): the object the context names is the word at
+    /// context +4, which the interpreter reads for its own 'O' decode and only this accessor can read here.
+    fn call_with_mem(&mut self, c: &kh2_bdx::Call, mem: &mut dyn kh2_bdx::host::ScriptMem) -> kh2_bdx::Value {
+        if let kh2_bdx::Call::Unknown { args, .. } = c {
+            self.ai.ctx_object = ctx_object(mem, args.first().copied());
+        }
+        self.call(c)
     }
 
     fn read_mem(&mut self, addr: u32, out: &mut [u8]) -> bool {
@@ -3208,6 +3368,19 @@ fn face_feed(drive: Res<DriveState>, objects: Query<&SummonObject>, mut face: Re
     if face.model != want {
         face.model = want;
     }
+}
+
+/// The object a script context names: the word at context +4 (what the interpreter reads for an 'O' argument), 0 for no context
+/// or memory the script does not own.
+fn ctx_object(mem: &mut dyn kh2_bdx::host::ScriptMem, ctx: Option<u32>) -> u32 {
+    ctx.and_then(|c| mem.read_u32(c.wrapping_add(4))).unwrap_or(0)
+}
+
+/// Host 1.318's request (FUN_00197008 -> FUN_002c32b8): the sound number `bank x 1000 + index` started at the object's position
+/// (metres). The object's private bank (`500xxx`, swapped by FUN_00197008 for the bank of the object's record) is the bank of
+/// the request's `.apdx`, the object's own file.
+fn sound_request(id: u32, apdx: Option<String>, at: Vec3) -> crate::audio::PlaySe {
+    crate::audio::PlaySe::number(id, apdx).at(at)
 }
 
 /// The enemy the player hit last (a stand-in for `DAT_0034e9c4`, written by FUN_00112850 at the start of his attack).
@@ -3854,6 +4027,7 @@ type ScriptedRes<'w, 's> = (
     MessageWriter<'w, crate::fx::SpellHit>,
     Query<'w, 's, &'static mut crate::fx::RunningEffect>,
     Option<Res<'w, crate::items::ItemsData>>,
+    MessageWriter<'w, crate::audio::PlaySe>,
 );
 
 /// The game state the summon objects read: the game data, the drive gauge, the limit task, the summon data and state.
@@ -4177,7 +4351,7 @@ fn objects(
     mut materials: ResMut<Assets<StandardMaterial>>,
     (game, drive, limit_task, data, mut sm, mut shared, mut limit_events): SummonRes,
     (cam, enemies, gts, mut hits, mut magic, battle): StitchWorld,
-    (lib, mut memory, mut spell_hits, mut running, item_data): ScriptedRes,
+    (lib, mut memory, mut spell_hits, mut running, item_data, mut se): ScriptedRes,
 ) {
     let (Some(mut trace), Ok(mut s)) = (trace, sora.single_mut()) else { return };
     let paired = HashMap::new();
@@ -4495,6 +4669,14 @@ fn objects(
         if let Some((before, after)) = ai.apply_heal(&mut s.hp) {
             info!("summon: {tag} healed the player (host 1.155): HP {before} -> {after}");
         }
+        // Host 1.318: the sounds the script started, at the position of the object each names (the player or the summon).
+        for (object, id) in std::mem::take(&mut ai.sounds) {
+            let at = if object == crate::enemy_obj::PLAYER { s.motor.pos } else { obj.motor.pos } * SCALE;
+            if h.log {
+                info!("summon: {tag} sound {id} at object {object:#x} (host 1.318, FUN_00197008)");
+            }
+            se.write(sound_request(id, rig.apdx.clone(), at));
+        }
         // Host 1.277 (Tinker Bell's `reraise`): the player's HP method adds his full HP (FUN_00178df0), after the dead bit is
         // cleared; a player who is down also stands up (the app's own stand-up after a knock-out, `sora.rs`, `State::Down`).
         if std::mem::take(&mut ai.revive) {
@@ -4640,7 +4822,7 @@ fn objects(
                     a.play(slot, looping, 0.0);
                 }
             }
-            if st.attached
+            if st.parent
                 && let Some((_, cg)) = camera
             {
                 // FUN_00117320: the matrix of the position in the parent's space; the camera's [inferred], game
@@ -4740,7 +4922,8 @@ fn objects(
                 let (d, sp) = pr::steer(&mut g.follow, dir, speed, mv.walk, mv.run, fc);
                 let sp = if out.potion { 0.0 } else { sp };
                 let delta = d.with_y(0.0).normalize_or_zero() * sp;
-                // [inferred] Genie flies (+0xb7c 0x800): no ground probe; he keeps the player's height.
+                // [inferred] Genie flies: no ground probe; he keeps the player's height. (+0xb7c bit 0x800 is not the reason: its reader
+                // is the chooser FUN_0010fcd0, `genie::SUMMON_ANY`; the flying motions come from FUN_002f6320's table by NeoStatus.)
                 obj.motor.pos = (pos + delta).with_y(player.y);
                 if delta != Vec3::ZERO {
                     obj.motor.turn_to(delta, mv.turn);
@@ -4834,7 +5017,8 @@ fn objects(
             // The script's own movement (1.111 set_move, one tick).
             let mut new = pos + delta + obj.move_vel;
             if cls.b7c & 0x800 != 0 {
-                // [inferred] Peter Pan and Tinker Bell fly (+0xb7c bit 0x800): they keep the player's height.
+                // [inferred] Peter Pan and Tinker Bell fly: they keep the player's height. The class table's bit 0x800 only singles them out
+                // here (its reader is the chooser FUN_0010fcd0, not a flight test), so this is the app's stand-in, not the game's rule.
                 new.y = player.y;
             } else if let Some(w) = world.as_deref()
                 && let Some(g) = w.ground(new, new.y + 60.0, 360.0)
@@ -5466,6 +5650,77 @@ mod tests {
         a.link_start(limit);
         a.link_start(limit);
         assert_eq!(a.link_broken, vec![limit, limit], "a second start breaks the first link and runs its routine");
+    }
+
+    /// A script memory of one block, for the context decode.
+    struct Block(u32, Vec<u8>);
+
+    impl kh2_bdx::host::ScriptMem for Block {
+        fn read(&mut self, addr: u32, out: &mut [u8]) -> bool {
+            let Some(o) = addr.checked_sub(self.0).map(|o| o as usize) else { return false };
+            let Some(b) = self.1.get(o..o + out.len()) else { return false };
+            out.copy_from_slice(b);
+            true
+        }
+
+        fn write(&mut self, _: u32, _: &[u8]) -> bool {
+            false
+        }
+    }
+
+    /// Host 1.318 (FUN_00170b30 -> FUN_00197008 -> FUN_002c32b8): the object is the word at context +4 (Stitch's Ohana start passes
+    /// the context at frame +0x50 and the id 598050), the sound is queued in call order, and the request is the bank / index split
+    /// of the number at the object's position with the object's own `.apdx`.
+    #[test]
+    fn host_1_318_queues_the_sound_for_the_object_the_context_names() {
+        let mut words = vec![0u8; 0x60];
+        words[0x54..0x58].copy_from_slice(&0x0280_0000u32.to_le_bytes());
+        let mut mem = Block(0x2000_0000, words);
+        assert_eq!(ctx_object(&mut mem, Some(0x2000_0050)), 0x0280_0000, "the word at context +4");
+        assert_eq!(ctx_object(&mut mem, Some(0x2000_1000)), 0, "outside the script's memory");
+        assert_eq!(ctx_object(&mut mem, None), 0, "no context");
+        let mut a = ai::SummonAi::default();
+        a.play_sound(0x0280_0000, 598050);
+        a.play_sound(crate::enemy_obj::PLAYER, 595042);
+        assert_eq!(a.sounds, vec![(0x0280_0000, 598050), (crate::enemy_obj::PLAYER, 595042)]);
+        let r = sound_request(598050, Some("obj/N_HB040_BTL.apdx".into()), Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!((r.bank, r.index, r.apdx.as_deref(), r.pos), (598, 50, Some("obj/N_HB040_BTL.apdx"), Some(Vec3::new(1.0, 2.0, 3.0))));
+        let own = sound_request(500_003, None, Vec3::ZERO);
+        assert_eq!((own.bank, own.index), (500, 3), "the private bank 500 keeps its number: the .apdx is its bank");
+    }
+
+    /// Host 6.36 (FUN_00193248) is the inverse of FUN_00193228 and leaves +0x630 bit 0 alone: after `place` the parent matrix is set,
+    /// after the release it is not, and `attached` (FUN_001155e0's test) still reads set so the class does not place him again.
+    #[test]
+    fn host_6_36_releases_the_parent_matrix_but_not_the_placed_bit() {
+        let c = stitch::Consts::default();
+        let mut st = stitch::StitchAi::default();
+        assert!(!st.parent && !st.attached);
+        stitch::place(&c, &mut st, [10.0, 20.0, 0.0, 1.0]);
+        assert!(st.parent && st.attached, "FUN_001175a0 sets +0x630 bit 0 and FUN_00193228 sets the parent");
+        stitch::release_parent(&mut st);
+        assert!(!st.parent, "+0x790 is 0 again");
+        assert!(st.attached, "+0x630 bit 0 is untouched: the update does not place him at the zero vector");
+        assert_eq!(st.pos[..2], [10.0, 20.0], "the position stays");
+        stitch::place(&c, &mut st, [0.0; 4]);
+        assert!(st.parent, "FUN_001175a0 builds the matrix again (the limit's host 10.3)");
+    }
+
+    /// Hosts 1.52, 6.19 and 1.286 keep their bit: part n of the array at +0x47c (n below 32), and the flag bits 0x800 / 0x1000 of
+    /// 0x35d268, each cleared again by its counterpart (0x2eecd0, 0x173b28).
+    #[test]
+    fn host_bits_of_1_52_6_19_and_1_286_are_kept() {
+        let mut a = ai::SummonAi::default();
+        a.set_part_bit(1);
+        a.set_part_bit(1);
+        a.set_part_bit(31);
+        a.set_part_bit(32);
+        assert_eq!(a.parts_47c, 0x8000_0002, "bits 1 and 31 set; 32 is beyond the word");
+        a.set_gflag(0x800, true);
+        a.set_gflag(0x1000, true);
+        assert_eq!(a.gflags, 0x1800);
+        a.set_gflag(0x800, false);
+        assert_eq!(a.gflags, 0x1000, "6.19's counterpart clears only its own bit");
     }
 
     /// Host 10.53: entering an instance twice leaves one entry (FUN_00136430 drops the old one), a zero handle is ignored,
@@ -6319,6 +6574,26 @@ mod tests {
         assert_eq!(genie::follow_speed(&k, 8.0, 4.0, 10.0), 10.0 + k.speed_add);
         assert_eq!(genie::follow_speed(&k, 3.0, 4.0, 10.0), 3.0, "at or below the walk speed the speed stays");
         assert_eq!(genie::follow_speed(&k, 12.0, 4.0, 10.0), 12.0);
+    }
+
+    /// FUN_0010fcd0's `(b7c & 0x800) != 0 || +0xce8 < 2`: Genie's constructor path sets 0x800, so a choice repeated twice (+0xce8 = 2)
+    /// still picks a record instead of falling into the move branch; with the bit clear the same state moves.
+    #[test]
+    fn genie_chooses_even_after_two_repeats_because_of_bit_0x800() {
+        let Some(mut a) = archive() else { return };
+        let exe = elf(&mut a);
+        let k = genie::Consts::from_exe(&exe).expect("constants");
+        let recs = genie::records(&exe).expect("records");
+        let fight = genie::Now { battle: true, hp: (100, 100) };
+        let mut ai = genie::GenieAi { rng: stitch::Rng(5), ..Default::default() };
+        ai.choosing.repeats = 2;
+        let out = genie::decide(&k, &recs, &mut ai, &fight);
+        assert!(genie::SUMMON_ANY);
+        assert_eq!(out.started, Some((0, false)), "the follow record is chosen with the repeat counter at 2");
+        // The same state without the bit is the move branch (nothing started).
+        let mut st = crate::party_battle::Choosing { repeats: 2, ..Default::default() };
+        let c = crate::party_battle::choose(&recs, &mut st, &Default::default(), 0xf, &Default::default(), false, false, |_| None, |_, _| true, || 0.5, |_| 0);
+        assert_eq!(c, crate::party_battle::Choice::Move);
     }
 
     /// Oracle: FUN_00119ca8 (host 10.10), FUN_00119c18 (host 10.9, with FUN_00192ce8 / FUN_00192cd0 replaced by

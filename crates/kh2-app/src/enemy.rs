@@ -1095,11 +1095,11 @@ pub fn spawn_waves(
                 battle.defeated.clear();
             }
             // FUN_00181148 -> FUN_00194188(0x35d278, DAT_0035cd28): the area byte selects the table; the keep count is
-            // 3 (area script opcode 6 not read here), 0 when the map program byte is above 0x32.
+            // opcode 6 of the area scripts (FUN_00180b48 case 6, default 3), 0 when the map program byte is above 0x32.
             let world = area.loaded.as_deref().and_then(|n| n.as_bytes().get(..2)).map(|w| [w[0], w[1]]).unwrap_or([0, 0]);
             battle.defeated.enter_world(world);
             let area_byte = area.loaded.as_deref().and_then(|n| n.get(2..)).and_then(|n| n.parse::<u8>().ok()).unwrap_or(0xff);
-            battle.defeated.enter(area_byte, if rec.programs[0] > 0x32 { 0 } else { 3 });
+            battle.defeated.enter(area_byte, kh2_ard::run::keep_for_program(&run.script, rec.programs[0]));
             battle.run = id;
             battle.live.clear();
             battle.events.clear();
@@ -2200,6 +2200,57 @@ mod tests {
         eprintln!("{areas} tt areas, {kind6} kind-6 groups, {triggers} triggers on events 2 or 3");
         assert!(areas > 30 && kind6 > 100);
         assert_eq!(triggers, 0);
+    }
+
+    /// Area script opcode 6 (`DAT_0035cd28`, `FUN_00180b48` case 6) on the real Twilight Town area scripts: which values the
+    /// programs write, and the keep count `FUN_00181148` ends with for every map program id (0 above 0x32). Needs `KH2_ISO`.
+    #[test]
+    fn twilight_town_area_scripts_keep_values() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let (mut areas, mut writers, mut non_default, mut with_writer) = (0, 0, 0, Vec::new());
+        for n in 0..=41 {
+            let name = format!("tt{n:02}");
+            let Some(ard) = disc.read(&format!("ard/{name}.ard")).and_then(|d| kh2_ard::Area::parse(&d)).map(|(a, _)| a) else { continue };
+            areas += 1;
+            let mut values = Vec::new();
+            for (script, progs) in &ard.scripts {
+                for p in progs {
+                    for c in p.commands.iter().filter(|c| c.opcode == 6) {
+                        writers += 1;
+                        values.push((script.clone(), p.id, c.args.first().copied().unwrap_or(0)));
+                    }
+                }
+            }
+            let mut keeps = std::collections::BTreeSet::new();
+            let map_ids: Vec<u16> = ard.scripts.get("map").map(|ps| ps.iter().map(|p| p.id).collect()).unwrap_or_default();
+            for id in map_ids.iter().copied().chain([0xffu16]).filter(|i| *i <= 0xff) {
+                let run = kh2_ard::run::run_area(&ard, [id as u8, 0, 0], 0);
+                keeps.insert(kh2_ard::run::keep_for_program(&run, id as u8));
+            }
+            {
+                let run = kh2_ard::run::run_area(&ard, [0, 0, 0], 0);
+                assert_eq!((run.keep, kh2_ard::run::keep_for_program(&run, 0x32), kh2_ard::run::keep_for_program(&run, 0x33)), (3, 3, 0), "{name}");
+            }
+            // Every (map, btl) pair that has an opcode 6 writer: the keep count the area ends with.
+            for (script, id, v) in &values {
+                let programs = if script == "btl" { [0, *id as u8, 0] } else { [*id as u8, 0, 0] };
+                let run = kh2_ard::run::run_area(&ard, programs, 0);
+                assert_eq!(run.keep, *v as i32, "{name} {script} program {id}");
+                with_writer.push(format!("{name} {script} {id} -> {}", run.keep));
+            }
+            non_default += (!values.is_empty()) as usize;
+            eprintln!("{name}: opcode 6 writes {values:?}; keep over map programs {keeps:?}");
+        }
+        eprintln!("{areas} tt areas, {writers} opcode 6 commands, {non_default} areas with one: {with_writer:?}");
+        assert!(areas > 30);
+        // Printed table: only tt07 (btl 21, 22) and tt33 (btl 1) write opcode 6, each with 0; every other program leaves the
+        // default 3, and a map program byte above 0x32 gives 0 whatever the script says.
+        assert_eq!((writers, non_default), (3, 2));
+        assert_eq!(with_writer, ["tt07 btl 21 -> 0", "tt07 btl 22 -> 0", "tt33 btl 1 -> 0"]);
     }
 
     /// `FUN_001689c0`: a change of world resets the tables; a move inside the world does not. The world is the area's

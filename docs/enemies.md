@@ -232,7 +232,8 @@ player to a battle group's player entry when the battle starts was not read (onl
   clears the least recent slot. `FUN_00194330` (from `FUN_00168960`, an object-system reset) clears all slots and the counter. Ported
   as `enemy::DefeatedTables` (`BattleGroups::defeated`): a kind-2 group's `killed` list is seeded from the slot at set-up and written
   back each tick; F3 (harness) clears the tables. The second table at 0x35daa0 (`DAT_0035cd2c`, default 4) is not used by enemies.
-  Gaps: the opcode 6 value is not read from the script (3 is assumed; `kh2_ard::run::ScriptRun` does not keep it); the callers of
+  WP-EN8: the keep count is now read: `ScriptRun::keep` holds the opcode 6 argument (`FUN_00180b48` case 6 writes `DAT_0035cd28`; `FUN_00181148` presets 3 at its start and forces 0 when the map program byte is above 0x32, then calls `FUN_00194188`); `kh2_ard::run::keep_for_program` applies that rule and `enemy.rs` passes it to `DefeatedTables::enter` [V]. On the disc (test `twilight_town_area_scripts_keep_values`, 42 area files) only three programs write opcode 6, all with 0: tt07 btl 21 and 22, tt33 btl 1; every other Twilight Town program leaves 3. So those two areas keep nothing when those battle programs run (their defeated members come back at every visit) and the rest keep three area starts. Opcode 7 (`DAT_0035cd2c`) is not used by enemies.
+  Gaps: the callers of
   `FUN_00168960` were traced in WP-EN7 (below); a serial of 0 is also the empty entry in the original and is not special-cased.
   WP-EN7: `FUN_00194330` has these callers [V, instruction scan `--jal 0x194330`, `0x194318`, `0x168960`]: `FUN_00168960` (through
   `FUN_00194318`; its one caller `FUN_001689c0` runs it when the world byte `0x33e830` differs from `DAT_00522178`, before the area is

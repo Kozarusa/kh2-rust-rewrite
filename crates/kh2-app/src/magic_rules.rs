@@ -345,6 +345,32 @@ pub fn magic_lock_on_applies(has_bit: bool, slot: u8) -> bool {
     has_bit && (slot < 3 || slot == 4)
 }
 
+/// FUN_001905e8, the only reader of bit 3 of the global flag word 0x35d268 (set by Final's script, host
+/// 1.187, and by FUN_001b9140 case 3; cleared by host 1.188): the bit with the player object present
+/// (DAT_0035c998). Its two callers are the attack-versus-object hit dispatch FUN_001a3848 (the attack goes
+/// to the player's hit routine FUN_001a3a88 whatever the hit test says) and the enemy target pick
+/// FUN_001bd358 (the player is the victim).
+pub fn global_flag_8_active(flags: u32, player_exists: bool) -> bool {
+    flags & 8 != 0 && player_exists
+}
+
+/// The frame step of the lock-on controller's timer (`DAT_00356f40`, 1.0 in the executable).
+pub const MODE1_TIMER_STEP: f32 = 1.0;
+
+/// The lock-on controller's mode-1 timer at the start (FUN_0019bcb8, also FUN_001861b8 every time a
+/// turn trigger 28 plays): the player row's +0x68, `plyr` AutoLockOnTime.
+pub fn mode1_timer_start(auto_lock_on_time: f32) -> f32 {
+    auto_lock_on_time
+}
+
+/// One frame of the controller in mode 1 (FUN_0019b7a8): while the timer is above 0 and the player is up
+/// (FUN_0019a4f0: hp above 0) it loses one step and the target is kept (`Some(new timer)`); otherwise
+/// the controller looks for a new record (FUN_0018f538 case 6 [GAP: a jump table entry]) and the old
+/// target is not kept (`None`).
+pub fn mode1_step(timer: f32, player_up: bool) -> Option<f32> {
+    (timer > 0.0 && player_up).then(|| timer - MODE1_TIMER_STEP)
+}
+
 /// FUN_0018fb98 as FUN_00179470 calls it (with a range of 0.0, which lets every target through: the
 /// first test `range <= 0.0` holds, so no distance or height window applies): among the candidate
 /// target points (each target shape of each targetable object, game units), the one with the lowest
@@ -692,6 +718,23 @@ mod tests {
         assert_eq!(rows[0].0, vec![1.0, 2.0]);
         assert_eq!(rows[1].f(4), 4.0);
         assert_eq!(magi_row(&rows, 9).map(|r| r.f(0)), Some(1.0), "past the count: row 0");
+    }
+
+    /// The mode-1 timer (FUN_0019bcb8, FUN_0019b7a8): a timer of n frames keeps the target through n
+    /// steps, one above 0 is spent on the last, and a downed player or a timer of 0 keeps nothing.
+    #[test]
+    fn mode1_timer_counts_down_and_expires() {
+        let mut timer = mode1_timer_start(3.0);
+        let mut kept = 0;
+        while let Some(left) = mode1_step(timer, true) {
+            timer = left;
+            kept += 1;
+        }
+        assert_eq!(kept, 3);
+        assert_eq!(timer, 0.0);
+        assert_eq!(mode1_step(0.0, true), None, "a timer of 0 looks for a new record");
+        assert_eq!(mode1_step(5.0, false), None, "FUN_0019a4f0 false: no keeping");
+        assert_eq!(mode1_step(0.5, true), Some(-0.5), "the test is `0.0 < timer`, the step is not clamped");
     }
 
     /// FUN_00179470's pick (FUN_0018fb98 with range 0): no distance limit, the facing weighs in by

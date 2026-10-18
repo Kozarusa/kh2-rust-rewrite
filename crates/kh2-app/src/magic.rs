@@ -271,6 +271,9 @@ struct CastTurn {
     target: Option<Entity>,
     own: bool,
     lock_mode1: Option<Entity>,
+    /// The lock-on controller's mode-1 timer (+0x1c): `AutoLockOnTime` when the mode starts (FUN_0019bcb8),
+    /// counted down each frame and refilled by trigger 28 (see `magic_rules::mode1_step`).
+    lock_timer: f32,
 }
 
 /// A Thunder strike: the request thread at word 0x2da of THUNDER_*.mag (block +0x20 the place, +0x48
@@ -298,6 +301,8 @@ struct Shot {
     kind: u32,
     magi: MagiRow,
     pos: Vec3,
+    /// The caster's lock-on point when the shot started (host 1.88): the attack's first place (R035b).
+    origin: Vec3,
     dir: Vec3,
     /// The caster's target when the shot started (the block's copy of the target record, +0x30).
     target: Option<Entity>,
@@ -651,7 +656,8 @@ fn run(
                 if voice >= 0 {
                     voices.write(crate::audio::SoraVoice { voice: voice as u16, why: format!("cast {}", row.file_name) });
                 }
-                st.turn = Some(CastTurn { motion: mslot, target, own, lock_mode1 });
+                let lock_timer = if lock_mode1.is_some() { rules::mode1_timer_start(game.plyr.auto_lock_on_time) } else { 0.0 };
+                st.turn = Some(CastTurn { motion: mslot, target, own, lock_mode1, lock_timer });
                 let magi = rules::magi_row(&data.magi, kind).cloned().unwrap_or_default();
                 let cost = data.cmd(cmd).map_or(0, |c| c.cost);
                 mlog!(
@@ -702,6 +708,20 @@ fn run(
     // (Sora's lock-on, else the mode-1 target of Magic Lock-On), by at most the trigger's degrees per
     // frame. The target point is the target's target shape (FUN_0018efa0); the caster's is its
     // position [inferred: the offset +0x560 added to it has no horizontal part].
+    // The controller's frame (FUN_0019b7a8, mode 1): the timer counts down while the player is up; once it
+    // has run out the controller looks for a new record (FUN_0018f538 case 6 [GAP]) and the mode-1 target
+    // is gone for this cast. [inferred: this runs before the trigger below in a frame.]
+    if let Some(t) = st.turn.as_mut()
+        && t.lock_mode1.is_some()
+    {
+        match rules::mode1_step(t.lock_timer, s.hp > 0) {
+            Some(left) => t.lock_timer = left,
+            None => {
+                mlog!("magic: lock-on controller mode 1 timer ran out; the cast keeps no mode-1 target");
+                t.lock_mode1 = None;
+            }
+        }
+    }
     match st.turn {
         Some(t) if s.state == State::Magic && body.slot == t.motion => {
             let g = body.gframe();
@@ -715,6 +735,13 @@ fn run(
                 })
                 .unwrap_or_default();
             for (id, deg) in turns {
+                if id == rules::TRIGGER_TURN_LOCK
+                    && let Some(t) = st.turn.as_mut()
+                    && t.lock_mode1.is_some()
+                {
+                    // FUN_001861b8 refills the mode-1 timer (FUN_0019bcb8) before it turns.
+                    t.lock_timer = rules::mode1_timer_start(game.plyr.auto_lock_on_time);
+                }
                 let (rec, own) = if id == rules::TRIGGER_TURN_TARGET { (t.target, t.own) } else { (s.lock.or(t.lock_mode1), false) };
                 let Some(at) = rec.filter(|e| alive(*e)).and_then(|e| targets.iter().find(|x| x.0 == e)).map(|x| x.1 / SCALE) else { continue };
                 let before = s.motor.yaw;
@@ -876,9 +903,10 @@ fn run(
                 let facing = s.motor.forward().with_y(0.0).normalize_or(Vec3::Z);
                 for sh in &plan.shots {
                     let pos = element_position(&pax, sh.elem, &frames);
+                    let origin = caster_lock_point(&body, gts.get(body_e).ok());
                     let dir = rotate_y_game(facing.with_y(-sh.y), sh.angle);
                     mlog!("magic: Blizzard shot from element {} at {pos:?} along {dir:?} (flag {}, turn scale {}): speed {} life {} size {} turn {}", sh.elem, sh.flag, sh.scale, c.magi.f(MAGI_SPEED), c.magi.f(MAGI_LIFE), c.magi.f(MAGI_SHOT_SIZE), c.magi.f(MAGI_TURN));
-                    st.shots.push(Shot { pax: pax.clone(), kind: c.kind, magi: c.magi.clone(), pos, dir, target: s.target, attack: None, effect: None, life: c.magi.f(MAGI_LIFE) - SHOT_FADE as f32, fade: None, done: false, turn_scale: sh.scale, flag: sh.flag });
+                    st.shots.push(Shot { pax: pax.clone(), kind: c.kind, magi: c.magi.clone(), pos, origin, dir, target: s.target, attack: None, effect: None, life: c.magi.f(MAGI_LIFE) - SHOT_FADE as f32, fade: None, done: false, turn_scale: sh.scale, flag: sh.flag });
                 }
             }
             let _ = elem;
@@ -1379,6 +1407,14 @@ fn event21(
     }
 }
 
+/// Host 1.88 on the caster (FUN_00172f40 -> FUN_0016b6e0 -> FUN_0018eec0 on a target record of shape
+/// 0): the centre of the object's first target shape (FUN_0018ee20 -> FUN_001894d0), else its position
+/// (FUN_0016b960). Bevy space; `None` for the transform gives the origin.
+fn caster_lock_point(body: &Animator, gt: Option<&GlobalTransform>) -> Vec3 {
+    let Some(gt) = gt else { return Vec3::ZERO };
+    body.rig.model.shapes.iter().find(|sh| sh.kind == shape_kind::TARGET).map_or(gt.translation(), |sh| combat::hurt_spheroid(sh, body, gt).center)
+}
+
 /// The target points the shots steer toward: each enemy's first target shape (FUN_001894d0's spheroid
 /// centre), by root entity [inferred: host 1.120 reads the target record's position].
 fn victim_targets(fighters: &Query<(Entity, &mut Fighter, &GlobalTransform)>, anims: &Query<&mut Animator>, gts: &Query<&GlobalTransform>) -> Vec<(Entity, Vec3)> {
@@ -1440,7 +1476,9 @@ fn step_shot(
             return;
         };
         mlog!("magic: Blizzard attack {} made: atkp {ATKP_BLIZZARD} kind {} size {size}", attacks[ai].group, shot.kind);
-        move_attack(&mut attacks[ai], shot.pos);
+        // R035b moves the attack to the caster's lock-on point first (host 1.88); the first loop pass moves
+        // it to the shot's place, so the first swept segment runs from the caster to the shot.
+        move_attack(&mut attacks[ai], shot.origin);
         return;
     };
     // The effect instance exists from the frame after its start request: the shot takes an unbound
@@ -2697,5 +2735,60 @@ mod tests {
         assert_eq!(rules::healed(6, 20, 28), 20);
         assert_eq!(rules::healed(6, 100, 28), 34);
         assert_eq!(rules::healed(0, 20, 28), 0, "a KO'd object takes no heal here");
+    }
+
+    /// A shot's attack starts at the caster's lock-on point (R035b, host 1.88) and moves to the shot's
+    /// place in the first loop pass, so that pass sweeps the segment between them.
+    #[test]
+    fn shot_attack_first_segment_runs_from_the_caster() {
+        let mut attacks = Vec::new();
+        attacks.push(SpellAttack { group: 1, base_row: 0, pos: None, prev: None, radius: 20.0, height: 20.0, live: true, hit_any: false, wall: false, clashes: 0, pax: None });
+        let (origin, place) = (Vec3::ZERO, Vec3::new(0.0, 0.0, 200.0));
+        move_attack(&mut attacks[0], origin);
+        assert_eq!(sweep_points(&attacks[0], origin).len(), 1, "created: nothing to sweep yet");
+        move_attack(&mut attacks[0], place);
+        assert_eq!(attacks[0].prev, Some(origin));
+        let pts = sweep_points(&attacks[0], place);
+        assert!(pts.len() > 2, "the segment from the caster to the shot is tested: {pts:?}");
+        assert!(pts.iter().all(|p| p.z <= place.z && p.z >= origin.z));
+    }
+
+    /// The disc's executable against the rules: FUN_0019bcb8 sets the mode-1 timer from the player row's
+    /// +0x68 only in mode 1, and FUN_001905e8 is bit 3 of 0x35d268 with the player object present.
+    #[test]
+    fn lock_on_timer_and_global_flag_8_match_the_executable() {
+        use kh2_ee::Ee;
+        const STACK: u32 = 0x01ff_0000;
+        const CTRL: u32 = 0x0180_0000;
+        const OBJ: u32 = 0x0181_0000;
+        const ROW: u32 = 0x0182_0000;
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let elf = {
+            let mut a = disc.0.lock().unwrap();
+            ["SLUS_210.05", "SLUS_210.05;1"].iter().find_map(|p| a.iso().read(p).ok()).expect("executable")
+        };
+        let mut ee = Ee::new();
+        ee.load_elf(&elf).expect("elf");
+        ee.w32(OBJ + 0x130, ROW);
+        ee.w32(ROW + 0x68, 7.5f32.to_bits());
+        ee.w32(CTRL + 40, OBJ);
+        for (mode, want) in [(1u32, 7.5f32), (0, 0.0), (2, 0.0)] {
+            ee.w32(CTRL, mode);
+            ee.w32(CTRL + 28, 0);
+            ee.call(0x0019_bcb8, &[CTRL as u64], &[], STACK).expect("FUN_0019bcb8");
+            let got = f32::from_bits(ee.r32(CTRL + 28));
+            let ported = if mode == 1 { rules::mode1_timer_start(7.5) } else { 0.0 };
+            assert_eq!((got, ported), (want, want), "mode {mode}");
+        }
+        for (flags, player) in [(8u32, 1u32), (8, 0), (0, 1), (0xffff_fff7, 1), (0x8, 1), (0xffff_ffff, 1)] {
+            ee.w32(0x0035_d268, flags);
+            ee.w32(0x0035_c998, if player != 0 { OBJ } else { 0 });
+            let got = ee.call(0x0019_05e8, &[], &[], STACK).expect("FUN_001905e8") & 0xff != 0;
+            assert_eq!(got, rules::global_flag_8_active(flags, player != 0), "flags {flags:#x} player {player}");
+        }
     }
 }

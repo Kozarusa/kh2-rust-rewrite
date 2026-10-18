@@ -364,12 +364,77 @@ pub fn mode1_timer_start(auto_lock_on_time: f32) -> f32 {
     auto_lock_on_time
 }
 
-/// One frame of the controller in mode 1 (FUN_0019b7a8): while the timer is above 0 and the player is up
-/// (FUN_0019a4f0: hp above 0) it loses one step and the target is kept (`Some(new timer)`); otherwise
-/// the controller looks for a new record (FUN_0018f538 case 6 [GAP: a jump table entry]) and the old
-/// target is not kept (`None`).
+/// One frame of the controller in mode 1 (FUN_0019b7a8), the part that keeps the target: while the timer is
+/// above 0 and the player is up (FUN_0019a4f0, see `player_up`) it loses one step and the target is kept
+/// (`Some(new timer)`); otherwise the controller looks for a new record (FUN_0018f538 case 6, see
+/// `lock_on_pick` with a window) and the old target is not kept (`None`).
 pub fn mode1_step(timer: f32, player_up: bool) -> Option<f32> {
     (timer > 0.0 && player_up).then_some(timer - MODE1_TIMER_STEP)
+}
+
+/// FUN_0019a4f0, the "can be targeted and hit" test of an object: bit 2 of its `+0x7f8` word (dead) clear,
+/// bit 3 of its `+0x108` flag word (cannot be hit; enemy host 1.70) clear, a status record at `+0x510`
+/// present, and that record's first word (hp) above 0. Also the victim test of the attack code and the
+/// candidate test of FUN_0018fb98.
+pub fn player_up(dead_flag: bool, cannot_be_hit: bool, has_status: bool, hp: i32) -> bool {
+    !dead_flag && !cannot_be_hit && has_status && hp > 0
+}
+
+/// What the lock-on controller does in one frame of mode 1 (FUN_0019b7a8 case `*ctrl == 1`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Mode1Frame {
+    /// The timer ran down one step and the target stays.
+    Keep(f32),
+    /// The lock button (logical bit 0x800 of the newly pressed word at the player's input record `+8`) was
+    /// pressed: FUN_0019b3f0 moves the controller to mode 2 on the same record, and the timer no longer runs.
+    ToMode2,
+    /// The timer is out or the player is down: FUN_0018f538 case 6 picks again with the player's
+    /// AutoLockOnRange; a valid pick replaces the record (FUN_0019b5e8), none releases the controller
+    /// (FUN_0019b580, mode 0).
+    Repick,
+}
+
+/// FUN_0019b7a8 for mode 1, in the game's order: the lock button first, then the timer.
+pub fn mode1_frame(timer: f32, lock_pressed: bool, player_up: bool) -> Mode1Frame {
+    if lock_pressed {
+        return Mode1Frame::ToMode2;
+    }
+    match mode1_step(timer, player_up) {
+        Some(left) => Mode1Frame::Keep(left),
+        None => Mode1Frame::Repick,
+    }
+}
+
+/// The window FUN_0018fb98 applies when its range is above 0 (FUN_0018f538 case 6 passes the player row's
+/// +0x5c, `plyr` AutoLockOnRange; FUN_00179470 passes 0.0, which lets everything through).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LockWindow {
+    /// `plyr` AutoLockOnRange (+0x5c): the horizontal distance limit.
+    pub range: f32,
+    /// `plyr` AutoLockOnMinH (+0x60) and AutoLockOnMaxH (+0x64): the height window, game-signed (the game's
+    /// Y points down, so a target above the player has a negative difference).
+    pub min_h: f32,
+    pub max_h: f32,
+    /// FUN_00190838 (`DAT_01c8a7e8`, written only by FUN_00190808 from FUN_002c5af0): multiplies both heights
+    /// when above 1.0. The app does not model its writer, so it passes 0.0.
+    pub h_scale: f32,
+}
+
+impl LockWindow {
+    /// The window test of FUN_0018fb98 for one target point: `dist` the horizontal distance, `dy` the height
+    /// difference (target minus caster) in the game's Y-down sign, `r_h` / `r_v` the target shape's two radii
+    /// (shape +0x10 / +0x12; zero when the shape has no flag 0x4000 and the object's `+0x7f8` bit 0x400 is clear).
+    pub fn admits(&self, dist: f32, dy: f32, r_h: f32, r_v: f32) -> bool {
+        if self.range <= 0.0 {
+            return true;
+        }
+        let (mut lo, mut hi) = (self.min_h, self.max_h);
+        if self.h_scale > 1.0 {
+            lo *= self.h_scale;
+            hi *= self.h_scale;
+        }
+        lo - r_v <= dy && dy <= hi + r_v && dist - r_h <= self.range
+    }
 }
 
 /// FUN_0018fb98 as FUN_00179470 calls it (with a range of 0.0, which lets every target through: the
@@ -379,14 +444,19 @@ pub fn mode1_step(timer: f32, player_up: bool) -> Option<f32> {
 /// distance from `pos` (the object's position, FUN_0016b960), `dir` the horizontal unit direction,
 /// `dy` the height difference (FUN_00300188 [inferred: an absolute value]), `h_adjust` and `inner`
 /// the player's row at +0x6c and +0x70 (`plyr` AutoLockOnHAdjust and AutoLockOnInnerAdjust). The
-/// first of equal scores wins (`score < best`).
-pub fn lock_on_pick<T: Copy>(pos: bevy::math::Vec3, facing: bevy::math::Vec3, h_adjust: f32, inner: f32, candidates: &[(T, bevy::math::Vec3)]) -> Option<T> {
+/// first of equal scores wins (`score < best`). `window` is `None` for FUN_00179470's range of 0.0 and the
+/// player's `LockWindow` for the controller's re-pick (FUN_0018f538 case 6).
+pub fn lock_on_pick<T: Copy>(pos: bevy::math::Vec3, facing: bevy::math::Vec3, h_adjust: f32, inner: f32, window: Option<LockWindow>, candidates: &[(T, bevy::math::Vec3)]) -> Option<T> {
     let mut best: Option<(T, f32)> = None;
     for &(t, at) in candidates {
         let d = at - pos;
         let flat = d.with_y(0.0);
         let dist = flat.length();
         let dir = if dist > 0.0 { flat / dist } else { flat };
+        // The app's Y points up, the game's down. The target shape radii are not modelled (zero).
+        if window.is_some_and(|w| !w.admits(dist, -d.y, 0.0, 0.0)) {
+            continue;
+        }
         let score = (dist + d.y.abs() * h_adjust) * ((1.0 - facing.dot(dir)) * 0.5 * (1.0 - inner) + inner);
         if best.is_none_or(|(_, s)| score < s) {
             best = Some((t, score));
@@ -738,6 +808,44 @@ mod tests {
         assert_eq!(mode1_step(0.5, true), Some(-0.5), "the test is `0.0 < timer`, the step is not clamped");
     }
 
+    /// FUN_0019a4f0 needs all four conditions; FUN_0019b7a8 mode 1 takes the lock button before the timer.
+    #[test]
+    fn mode1_frame_order_and_player_up() {
+        assert!(player_up(false, false, true, 1));
+        assert!(!player_up(true, false, true, 1), "+0x7f8 bit 2 (dead)");
+        assert!(!player_up(false, true, true, 1), "+0x108 bit 3 (cannot be hit)");
+        assert!(!player_up(false, false, false, 1), "null +0x510");
+        assert!(!player_up(false, false, true, 0), "hp 0");
+        assert_eq!(mode1_frame(5.0, false, true), Mode1Frame::Keep(4.0));
+        assert_eq!(mode1_frame(5.0, true, true), Mode1Frame::ToMode2, "the button wins over a running timer");
+        assert_eq!(mode1_frame(5.0, true, false), Mode1Frame::ToMode2, "and over a downed player");
+        assert_eq!(mode1_frame(0.0, false, true), Mode1Frame::Repick);
+        assert_eq!(mode1_frame(5.0, false, false), Mode1Frame::Repick);
+    }
+
+    /// The window of FUN_0018fb98 with a range: height between MinH and MaxH (game sign, shape radius added to
+    /// both ends), distance less the shape radius within the range; range 0 admits all; the scale only above 1.
+    #[test]
+    fn lock_window_follows_fun_0018fb98() {
+        use bevy::math::Vec3;
+        let w = LockWindow { range: 500.0, min_h: -100.0, max_h: 300.0, h_scale: 0.0 };
+        assert!(w.admits(500.0, 0.0, 0.0, 0.0), "the range test is <=");
+        assert!(!w.admits(501.0, 0.0, 0.0, 0.0));
+        assert!(w.admits(520.0, 0.0, 20.0, 0.0), "the shape radius is taken off the distance");
+        assert!(w.admits(10.0, -100.0, 0.0, 0.0) && !w.admits(10.0, -101.0, 0.0, 0.0));
+        assert!(w.admits(10.0, 300.0, 0.0, 0.0) && !w.admits(10.0, 301.0, 0.0, 0.0));
+        assert!(w.admits(10.0, 310.0, 0.0, 10.0), "the vertical radius widens both ends");
+        let scaled = LockWindow { h_scale: 2.0, ..w };
+        assert!(scaled.admits(10.0, 600.0, 0.0, 0.0) && scaled.admits(10.0, -200.0, 0.0, 0.0));
+        assert!(!LockWindow { h_scale: 1.0, ..w }.admits(10.0, 600.0, 0.0, 0.0), "1.0 is not above 1.0");
+        assert!(LockWindow { range: 0.0, ..w }.admits(1e9, 1e9, 0.0, 0.0));
+        // In the pick the app's Y-up difference is negated: a target 200 above (game dy -200) is outside.
+        let c = [(1, Vec3::new(0.0, 200.0, 100.0)), (2, Vec3::new(0.0, -50.0, 400.0)), (3, Vec3::new(0.0, 0.0, 900.0))];
+        assert_eq!(lock_on_pick(Vec3::ZERO, Vec3::Z, 1.0, 1.0, Some(w), &c), Some(2), "1 is too high, 3 too far");
+        assert_eq!(lock_on_pick(Vec3::ZERO, Vec3::Z, 1.0, 1.0, None, &c), Some(1));
+        assert_eq!(lock_on_pick(Vec3::ZERO, Vec3::Z, 1.0, 1.0, Some(w), &c[..1]), None);
+    }
+
     /// FUN_00179470's pick (FUN_0018fb98 with range 0): no distance limit, the facing weighs in by
     /// `inner`, the height by `h_adjust`.
     #[test]
@@ -747,17 +855,17 @@ mod tests {
         let facing = Vec3::Z;
         // Far ahead beats near behind when the facing weighs heavily (inner 0.1).
         let c = [(1, Vec3::new(0.0, 0.0, -300.0)), (2, Vec3::new(0.0, 0.0, 2000.0))];
-        assert_eq!(lock_on_pick(pos, facing, 1.0, 0.1, &c), Some(2));
+        assert_eq!(lock_on_pick(pos, facing, 1.0, 0.1, None, &c), Some(2));
         // Inner 1.0: distance alone.
-        assert_eq!(lock_on_pick(pos, facing, 1.0, 1.0, &c), Some(1));
+        assert_eq!(lock_on_pick(pos, facing, 1.0, 1.0, None, &c), Some(1));
         // The height difference adds |dy| * h_adjust to the distance.
         let h = [(1, Vec3::new(0.0, 500.0, 400.0)), (2, Vec3::new(0.0, 0.0, 600.0))];
-        assert_eq!(lock_on_pick(pos, facing, 1.0, 1.0, &h), Some(2));
-        assert_eq!(lock_on_pick(pos, facing, 0.0, 1.0, &h), Some(1));
+        assert_eq!(lock_on_pick(pos, facing, 1.0, 1.0, None, &h), Some(2));
+        assert_eq!(lock_on_pick(pos, facing, 0.0, 1.0, None, &h), Some(1));
         // Equal scores: the first.
         let e = [(1, Vec3::new(100.0, 0.0, 0.0)), (2, Vec3::new(-100.0, 0.0, 0.0))];
-        assert_eq!(lock_on_pick(pos, facing, 1.0, 0.5, &e), Some(1));
-        assert_eq!(lock_on_pick::<u8>(pos, facing, 1.0, 0.5, &[]), None);
+        assert_eq!(lock_on_pick(pos, facing, 1.0, 0.5, None, &e), Some(1));
+        assert_eq!(lock_on_pick::<u8>(pos, facing, 1.0, 0.5, None, &[]), None);
     }
 
     /// FUN_00186018 -> FUN_00183848: at most the trigger's degrees per frame, a snap within that, no

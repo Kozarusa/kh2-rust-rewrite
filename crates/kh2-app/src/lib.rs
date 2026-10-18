@@ -19,6 +19,7 @@ mod assets;
 mod audio;
 mod audio_bgm;
 mod camera;
+mod camera_blockers;
 mod clash;
 mod combat;
 mod data;

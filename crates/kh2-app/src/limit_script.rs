@@ -68,20 +68,25 @@ pub struct TaskState {
     pub mem: ObjectMem,
     /// Hosts 2.47, 2.50 and 2.59 as the app took them (the participant's motion setup, effect start and motion table lookup).
     pub requests: Vec<Request>,
+    /// The participant the next host 2.47 call acts on, read from the script's memory by `call_with_mem` before the call.
+    next_who: u32,
 }
 
 /// One call of hosts 2.47 / 2.50 / 2.59: the app has nothing to play for a stand-in participant, so the call is kept as the request
 /// the original acted on.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
-    /// Host 2.47 (`0x18e988` -> `FUN_001b3438` -> `FUN_0017f0c0`): the setup of a participant's motion controller; `args` are the
-    /// call's raw arguments (the participant handle, the motion record, the third argument, the task).
-    Motion { args: Vec<u32> },
+    /// Host 2.47 (`0x18e988` -> `FUN_001b3438` -> `FUN_0017f0c0`): a motion started on a participant's motion controller. `args` are the
+    /// call's raw arguments (the task, the pointer to the context that holds the participant, the motion id, the blend as float bits);
+    /// `who` is the participant handle the word at `context + 4` holds (`FUN_0018e988` reads `*(arg1 + 4)`), 0 when it could not be read.
+    Motion { args: Vec<u32>, who: u32 },
     /// Host 2.50 (`0x18e9f8` -> `FUN_001b3468`): an effect started on the participant (the object, the effect record, the scale and
     /// the flag `!= 0`).
     Effect { args: Vec<u32> },
-    /// Host 2.59 (`0x18eb00` -> `FUN_001b3c48` -> `FUN_001db868`): a lookup of a motion row by halfword id in the task's table.
-    MotionRow { args: Vec<u32> },
+    /// Host 2.59 (`0x18eb00` -> `FUN_001b3c48` -> `FUN_001db868`, the function the clash spark starts a system effect with): an element of
+    /// the limit file's own PAX (the type 0x12 entry, kept in the table at task `+0x18` by `FUN_001b2e08`'s `FUN_001db4d0`) started with
+    /// the participant `who` (the word at `context + 4`) as its owner. `args` are (the task, the element id, the context pointer, a flag).
+    PaxElement { args: Vec<u32>, who: u32 },
 }
 
 /// The stand-in for the pointer host 2.56 (`ptr_b40_4`, `0x1706f8`, "the pointer at object `+0xb40` plus 4") answers: the player's
@@ -200,7 +205,7 @@ impl TaskState {
     /// What the task creation leaves for the limit of `command` (`FUN_001b2e08`: `FUN_001b3a70(task, 3)` for command 0x1e4).
     pub fn new(command: u16, remaining: f32) -> TaskState {
         let trinity = command == 0x1e4;
-        TaskState { remaining, animations: i32::from(trinity), animation_flag: trinity, participants: Vec::new(), player: [0.0, 0.0, 0.0, 1.0], player_yaw: 0.0, player_velocity: [0.0; 4], mem: ObjectMem::default(), requests: Vec::new() }
+        TaskState { remaining, animations: i32::from(trinity), animation_flag: trinity, participants: Vec::new(), player: [0.0, 0.0, 0.0, 1.0], player_yaw: 0.0, player_velocity: [0.0; 4], mem: ObjectMem::default(), requests: Vec::new(), next_who: 0 }
     }
 
     /// Host 2.89 (`FUN_001b3b60`): when bit 8 is set, stop the animation (the call through the player's `+0xb44` object is a gap
@@ -242,6 +247,13 @@ impl Host for LimitHost<'_> {
                 self.call(c);
                 host_1_160(&args_of(c), mem, &mut self.task.mem);
                 Value::None
+            }
+            (2, 47) | (2, 59) => {
+                // `FUN_0018e988` / `FUN_0018eb00`: the participant is the word at +4 of the block the argument points at (the second
+                // argument of 2.47, the third of 2.59).
+                let at = if crate::enemy_host::call_id(c) == (2, 59) { 2 } else { 1 };
+                self.task.next_who = args_of(c).get(at).and_then(|&p| word_at(p.wrapping_add(4), mem, &self.task.mem, [0.0; 4])).unwrap_or(0);
+                self.call(c)
             }
             (6, 57) => {
                 self.call(c);
@@ -364,7 +376,7 @@ fn host_answer(c: &Call, task: &mut TaskState) -> Value {
         // 2.47 (0x18e988): the participant's motion controller setup (`FUN_001b3438` -> `FUN_0017f0c0`). A stand-in has no motion
         // controller, so the request is kept and the call answers 0 [inferred: the result slot is not read by the scripts that log it].
         (2, 47) => {
-            task.requests.push(Request::Motion { args: args_of(c) });
+            task.requests.push(Request::Motion { args: args_of(c), who: task.next_who });
             Value::Int(0)
         }
         // 2.50 (0x18e9f8 -> FUN_001b3468): an effect start on the participant; nothing is drawn, the request is kept.
@@ -372,11 +384,12 @@ fn host_answer(c: &Call, task: &mut TaskState) -> Value {
             task.requests.push(Request::Effect { args: args_of(c) });
             Value::None
         }
-        // 2.59 (0x18eb00 -> FUN_001b3c48 -> FUN_001db868): a row lookup by halfword id in the task's motion table (task +0x18, rows of
-        // 0x50 bytes, count at the table's +8); with no table the walk finds nothing and answers 0 [inferred: the app holds no table; the return value of the found case is FUN_001db5f0's].
+        // 2.59 (0x18eb00 -> FUN_001b3c48 -> FUN_001db868): the element of the limit file's PAX whose halfword id (row +2) is the
+        // argument starts as an effect (`FUN_001db5f0`); the app keeps the request and `limit_visual` starts it. The answer (the effect's
+        // handle in the original) is 0: no script of the 15 files is known to use it.
         // Host 2.56 (0x18de58) has no decomp file; its address rests on names.rs.
         (2, 59) => {
-            task.requests.push(Request::MotionRow { args: args_of(c) });
+            task.requests.push(Request::PaxElement { args: args_of(c), who: task.next_who });
             Value::Int(0)
         }
         // 2.60 (0x18eb40): the float at +0xd4, the time gauge value.
@@ -450,6 +463,10 @@ pub struct ScriptRun {
     seen: usize,
     /// Events host 2.50 started since the last [`ScriptRun::take_events`].
     events: Vec<String>,
+    /// Motions host 2.47 started since the last [`ScriptRun::take_motions`].
+    motions: Vec<crate::limit_visual::LimitMotion>,
+    /// Effects host 2.59 started since the last [`ScriptRun::take_effects`].
+    effects: Vec<crate::limit_visual::LimitEffect>,
     pub task: TaskState,
     pub calls: BTreeMap<(u16, u16), CallStat>,
     pub ticks: u32,
@@ -472,7 +489,7 @@ impl ScriptRun {
             rt.set_host_table(t.clone());
         }
         let started = rt.start_thread(0, 22, &[TASK]);
-        (ScriptRun { rt, code, code_base, seen: 0, events: Vec::new(), task, calls: BTreeMap::new(), ticks: 0, fresh: Vec::new(), ended_at: None }, started)
+        (ScriptRun { rt, code, code_base, seen: 0, events: Vec::new(), motions: Vec::new(), effects: Vec::new(), task, calls: BTreeMap::new(), ticks: 0, fresh: Vec::new(), ended_at: None }, started)
     }
 
     /// `FUN_001b28a0` first branch: event 23 with the command id, to the running thread (`FUN_0016c620`). [inferred] The thread
@@ -503,7 +520,20 @@ impl ScriptRun {
     /// Looks at the 2.50 calls since the last tick: each names an event of the limit file (the name is a literal in the script).
     fn collect_events(&mut self) {
         for r in &self.task.requests[self.seen..] {
-            let Request::Effect { args } = r else { continue };
+            let args = match r {
+                Request::Effect { args } => args,
+                // Host 2.47: (task, context pointer, motion id, blend as float bits); the participant was read from the context.
+                Request::Motion { args, who } => {
+                    let blend = args.get(3).map_or(0.0, |&b| f32::from_bits(b));
+                    self.motions.push(crate::limit_visual::LimitMotion { who: *who, id: args.get(2).copied().unwrap_or(0) as usize, blend });
+                    continue;
+                }
+                // Host 2.59: (task, element id, context pointer, flag); the participant was read from the context.
+                Request::PaxElement { args, who } => {
+                    self.effects.push(crate::limit_visual::LimitEffect { who: *who, id: args.get(1).copied().unwrap_or(0) as u16 });
+                    continue;
+                }
+            };
             match args.get(1).and_then(|&p| name_at(&self.code, self.code_base, p)) {
                 Some(n) if !n.is_empty() => self.events.push(n),
                 _ => self.fresh.push(format!("limit script: host 2.50 named no event in the program image: {args:x?}")),
@@ -515,6 +545,16 @@ impl ScriptRun {
     /// The events started since the last call, in order.
     pub fn take_events(&mut self) -> Vec<String> {
         std::mem::take(&mut self.events)
+    }
+
+    /// The motions started since the last call, in order.
+    pub fn take_motions(&mut self) -> Vec<crate::limit_visual::LimitMotion> {
+        std::mem::take(&mut self.motions)
+    }
+
+    /// The effects started since the last call, in order.
+    pub fn take_effects(&mut self) -> Vec<crate::limit_visual::LimitEffect> {
+        std::mem::take(&mut self.effects)
     }
 
     /// The host calls as `group.index xN` words, in order.
@@ -552,6 +592,8 @@ impl Plugin for LimitScriptPlugin {
         app.add_message::<LimitStarted>()
             .add_message::<LimitScriptEvent>()
             .add_message::<LimitEvent>()
+            .add_message::<crate::limit_visual::LimitMotion>()
+            .add_message::<crate::limit_visual::LimitEffect>()
             .init_resource::<ScriptState>()
             .add_systems(FixedUpdate, run_limit_script.after(Sim::Sora));
     }
@@ -562,7 +604,7 @@ fn run_limit_script(
     task: Option<Res<LimitTask>>,
     mut started: MessageReader<LimitStarted>,
     mut events: MessageReader<LimitScriptEvent>,
-    mut started_events: MessageWriter<LimitEvent>,
+    (mut started_events, mut motion_events, mut effect_events): (MessageWriter<LimitEvent>, MessageWriter<crate::limit_visual::LimitMotion>, MessageWriter<crate::limit_visual::LimitEffect>),
     sora: Query<&Sora>,
     mut st: ResMut<ScriptState>,
 ) {
@@ -625,6 +667,12 @@ fn run_limit_script(
     for name in run.take_events() {
         info!("limit script: host 2.50 starts event {name:?} of {file} (FUN_001b3468)");
         started_events.write(LimitEvent { file: file.clone(), name });
+    }
+    for m in run.take_motions() {
+        motion_events.write(m);
+    }
+    for e in run.take_effects() {
+        effect_events.write(e);
     }
     let Some(stop) = stop else { return };
     let run = st.run.take().expect("checked above");
@@ -790,7 +838,7 @@ mod tests {
     #[test]
     fn the_countdown_ends_the_thread() {
         let mut app = App::new();
-        app.add_message::<LimitStarted>().add_message::<LimitScriptEvent>().add_message::<LimitEvent>().init_resource::<ScriptState>();
+        app.add_message::<LimitStarted>().add_message::<LimitScriptEvent>().add_message::<LimitEvent>().add_message::<crate::limit_visual::LimitMotion>().add_message::<crate::limit_visual::LimitEffect>().init_resource::<ScriptState>();
         app.insert_resource(LimitTask(Some((1, 10))));
         app.add_systems(Update, run_limit_script);
         let prog = program(&[(22, &[0x0009, 0x0007, 0xfffd])]);
@@ -912,6 +960,30 @@ mod tests {
         assert_eq!(calls[&(6, 57)].count, 1);
     }
 
+    /// Hosts 2.47 and 2.59 read the participant from the word at `+4` of the context block (the second argument of 2.47, the third
+    /// of 2.59), and `collect_events` turns the requests into the motion and effect messages `limit_visual` plays (the id, the blend
+    /// as float bits, the element id).
+    #[test]
+    fn hosts_2_47_and_2_59_name_their_participant_from_the_context() {
+        use kh2_bdx::host::ScriptMem;
+        let mut mem = Flat(vec![0; 0x40]);
+        let context = BASE + 0x10;
+        mem.write_u32(context + 4, partner(3));
+        let (mut calls, mut fresh, mut task) = (BTreeMap::new(), Vec::new(), TaskState::new(1, 1.0));
+        {
+            let mut host = LimitHost { calls: &mut calls, task: &mut task, tick: 0, fresh: &mut fresh };
+            host.call_with_mem(&Call::Unknown { group: 2, index: 47, args: vec![TASK, context, 253, 4.0f32.to_bits()] }, &mut mem);
+            host.call_with_mem(&Call::Unknown { group: 2, index: 59, args: vec![TASK, 4, context, 1] }, &mut mem);
+        }
+        assert_eq!(task.requests[0], Request::Motion { args: vec![TASK, context, 253, 4.0f32.to_bits()], who: partner(3) });
+        assert_eq!(task.requests[1], Request::PaxElement { args: vec![TASK, 4, context, 1], who: partner(3) });
+        let (mut run, _) = ScriptRun::start(program(&[(22, &[RET])]), None, task);
+        run.collect_events();
+        assert_eq!(run.take_motions(), vec![crate::limit_visual::LimitMotion { who: partner(3), id: 253, blend: 4.0 }]);
+        assert_eq!(run.take_effects(), vec![crate::limit_visual::LimitEffect { who: partner(3), id: 4 }]);
+        assert!(run.take_motions().is_empty(), "taken once");
+    }
+
     /// Hosts 2.47, 2.50 and 2.59 keep the request they were given and answer what the original answers without a motion or table.
     #[test]
     fn participant_requests_are_kept() {
@@ -920,8 +992,8 @@ mod tests {
         assert_eq!(host_answer(&func(2, 50, &[partner(2), 9, 0, 1]), &mut t), Value::None);
         assert_eq!(host_answer(&func(2, 59, &[TASK, 12, 3, 4]), &mut t), Value::Int(0));
         assert_eq!(t.requests.len(), 3);
-        assert_eq!(t.requests[0], Request::Motion { args: vec![partner(2), 5, 6, TASK] });
-        assert!(matches!(t.requests[2], Request::MotionRow { .. }));
+        assert_eq!(t.requests[0], Request::Motion { args: vec![partner(2), 5, 6, TASK], who: 0 });
+        assert!(matches!(t.requests[2], Request::PaxElement { .. }));
     }
 
     /// Host 2.50's second argument points at a four byte name the script keeps in its code: the name is read from the program image and

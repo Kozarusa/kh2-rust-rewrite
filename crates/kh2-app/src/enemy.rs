@@ -2202,9 +2202,8 @@ mod tests {
         assert_eq!(triggers, 0);
     }
 
-    /// `FUN_00194188` on the table at 0x35d278: an area visited again within `keep` area starts finds its slot and
-    /// the serials entered in it; with keep 0, after the window or after four other areas it comes up cleared.
-    /// `FUN_001689c0`: a change of world resets the tables; a move inside the world does not.
+    /// `FUN_001689c0`: a change of world resets the tables; a move inside the world does not. The world is the area's
+    /// two-letter prefix [inferred].
     #[test]
     fn a_change_of_world_clears_the_tables_of_the_defeated() {
         let mut t = DefeatedTables::default();
@@ -2219,6 +2218,8 @@ mod tests {
         assert!(t.serials().is_empty(), "other world: cleared");
     }
 
+    /// `FUN_00194188` on the table at 0x35d278: an area visited again within `keep` area starts finds its slot and
+    /// the serials entered in it; with keep 0, after the window or after four other areas it comes up cleared.
     #[test]
     fn the_table_of_the_defeated_outlives_the_area_for_a_few_area_starts() {
         let mut t = DefeatedTables::default();

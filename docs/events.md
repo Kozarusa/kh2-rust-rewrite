@@ -897,8 +897,8 @@ direction: the yaw stays (the game divides by a zero length). Tests: `npc::look:
   `FUN_001b8040`) was listed above as "not set by anything the app has". It is set exactly on the event's actors:
   opcode 0x2c (`FUN_0022cd90`) calls `FUN_0016e8c0(.., actor id | 0x40000000, ..)`; its first branch (`FUN_0016ef80`
   yes: the id has an objentry row whose type is not 7 or 0x16) allocates 0x9c0 bytes and runs `FUN_00196a70`, which
-  runs the object base constructor `FUN_00168d30`, sets the vtable 0x35e3b0 and ORs 0x20 into +0x588 (decomp
-  `puVar1[0x162] | 0x20`). `mips_scan --jal 0x196a70` finds that one caller; `--jal 0x16e8c0` lists 11 callers
+  runs the object base constructor `FUN_00168d30`, sets the vtable 0x35e3b0 and ORs 0x20 into +0x588.
+  `mips_scan --jal 0x196a70` finds that one caller; `--jal 0x16e8c0` lists 11 callers
   (opcode 0x2c, `FUN_0022cd90`, among them). Other writers of bit 0x20 into +0x588: none (the other `[0x162]` ORs in
   the decomp are 0x200, 0x20000, 0x200000, 0x2000000, 0x20000000). So opcode 0x4d never hides or shows an event
   actor; it only reaches the props of ObjectType 5, 6, 8, 10, 11, 13, 18, 23, which the app does not spawn in events.

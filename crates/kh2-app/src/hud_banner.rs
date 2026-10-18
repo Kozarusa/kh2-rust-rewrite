@@ -76,6 +76,9 @@ pub struct HudBanner(pub Option<Banner>);
 pub struct ExperiencePopup {
     pub amount: u32,
     pub pos: [f32; 2],
+    /// Raised by a defeat (`progress::ExperienceGained`): goes when its group's animation has ended (the
+    /// game's object frees itself then [inferred]). The `KH2_HUDEXP` one stays.
+    pub timed: bool,
 }
 
 #[derive(Resource, Default, Clone, Debug)]
@@ -111,9 +114,40 @@ fn advance(scene: &HudScene, group: usize) -> f32 {
     scene.files.get(FIEL).and_then(|f| f.seq.groups.get(group)).map(|g| g.unk20 as f32).unwrap_or(0.0)
 }
 
-pub fn update(mut scene: ResMut<HudScene>, mut banner: ResMut<HudBanner>, mut popups: ResMut<ExperiencePopups>, mut nodes: ResMut<BannerNodes>, mut demo: Local<bool>) {
+pub fn update(
+    mut scene: ResMut<HudScene>,
+    mut banner: ResMut<HudBanner>,
+    mut popups: ResMut<ExperiencePopups>,
+    mut nodes: ResMut<BannerNodes>,
+    mut demo: Local<bool>,
+    (mut gained, cam): (MessageReader<crate::progress::ExperienceGained>, Query<(&Camera, &GlobalTransform), crate::menu::preview::GameCamera>),
+) {
     if scene.files.is_empty() {
+        gained.clear();
         return;
+    }
+    // A defeat's popup (0x15b198): at the projected point of the defeated enemy (0x16bbe8). The game's
+    // projection of that point to the popup's screen position was not followed: the plain camera projection.
+    for g in gained.read() {
+        let at = cam.single().ok().and_then(|(c, ct)| {
+            let vp = c.world_to_viewport(ct, g.at).ok()?;
+            Some(super::hud_gfx::viewport_to_hud(vp, c.logical_viewport_size()?))
+        });
+        if let Some(p) = at {
+            popups.0.push(ExperiencePopup { amount: g.amount, pos: [p.x, p.y], timed: true });
+        }
+    }
+    // A timed popup goes once its group has played out; the ones after it move up a slot.
+    if nodes.built {
+        let done: Vec<usize> = (0..POPUPS.min(popups.0.len()))
+            .filter(|&i| popups.0[i].timed && nodes.drawn[i].is_some() && scene.nodes[nodes.popups[i].0].player.finished())
+            .collect();
+        if !done.is_empty() {
+            for i in done.into_iter().rev() {
+                popups.0.remove(i);
+            }
+            nodes.drawn = [None; POPUPS];
+        }
     }
     if !*demo {
         *demo = true;
@@ -128,7 +162,7 @@ pub fn update(mut scene: ResMut<HudScene>, mut banner: ResMut<HudBanner>, mut po
             let p: Vec<&str> = v.split(':').collect();
             if let Some(amount) = p.first().and_then(|a| a.parse().ok()) {
                 let n = |i: usize, d: f32| p.get(i).and_then(|x| x.parse().ok()).unwrap_or(d);
-                popups.0.push(ExperiencePopup { amount, pos: [n(1, 256.0), n(2, 200.0)] });
+                popups.0.push(ExperiencePopup { amount, pos: [n(1, 256.0), n(2, 200.0)], timed: false });
             }
         }
     }
@@ -242,6 +276,8 @@ pub struct NumberStrip {
     /// Raised by a munny pickup (`crate::prize::MunnyGained`): later pickups add to it while it
     /// shows, and it goes when its group's animation has ended.
     pub pickup: bool,
+    /// Raised by a defeat (`progress::ExperienceGained`, `FUN_0014f2b8`): goes when its group has played out.
+    pub timed: bool,
 }
 
 /// Where a pickup's munny strip is put: the sequence's own placement [inferred: the game's position
@@ -272,6 +308,7 @@ pub fn update_strips(
     mut demo: Local<bool>,
     mut munny: MessageReader<crate::prize::MunnyGained>,
     (mut items, mut obtained): (Local<ItemMessages>, MessageReader<crate::prize::ItemObtained>),
+    mut gained: MessageReader<crate::progress::ExperienceGained>,
 ) {
     if scene.files.is_empty() {
         return;
@@ -283,7 +320,7 @@ pub fn update_strips(
             let p: Vec<&str> = v.split(':').collect();
             if let (Some(kind), Some(value)) = (p.first().and_then(|k| StripKind::parse(k)), p.get(1).and_then(|a| a.parse().ok())) {
                 let n = |i: usize, d: f32| p.get(i).and_then(|x| x.parse().ok()).unwrap_or(d);
-                strips.0.push(NumberStrip { kind, value, pos: [n(2, 256.0), n(3, 300.0)], pickup: false });
+                strips.0.push(NumberStrip { kind, value, pos: [n(2, 256.0), n(3, 300.0)], pickup: false, timed: false });
             }
         }
     }
@@ -298,14 +335,21 @@ pub fn update_strips(
                     nodes.drawn[i] = None;
                 }
             }
-            None => strips.0.push(NumberStrip { kind: StripKind::Munny, value: m.amount, pos: PICKUP_STRIP_POS, pickup: true }),
+            None => strips.0.push(NumberStrip { kind: StripKind::Munny, value: m.amount, pos: PICKUP_STRIP_POS, pickup: true, timed: false }),
         }
+    }
+    // The popup's "NEXT LEVEL" strip (0x15b198 -> 0x14f2b8 -> 0x151d48): what Sora still needs. A newer one
+    // replaces the one up.
+    for g in gained.read() {
+        strips.0.retain(|s| !(s.timed && s.kind == StripKind::PopupTotal));
+        strips.0.push(NumberStrip { kind: StripKind::PopupTotal, value: g.to_next, pos: [256.0, 300.0], pickup: false, timed: true });
+        nodes.drawn = [None; STRIPS];
     }
     // A pickup strip goes once its group has played out [inferred: when the game's popup registry
     // drops it was not followed].
     if nodes.built {
         let done: Vec<usize> = (0..STRIPS.min(strips.0.len()))
-            .filter(|&i| strips.0[i].pickup && nodes.drawn[i].is_some() && scene.nodes[nodes.strips[i].0].player.finished())
+            .filter(|&i| (strips.0[i].pickup || strips.0[i].timed) && nodes.drawn[i].is_some() && scene.nodes[nodes.strips[i].0].player.finished())
             .collect();
         if !done.is_empty() {
             for i in done.into_iter().rev() {

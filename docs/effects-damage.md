@@ -399,8 +399,43 @@ does not model either.
   (the same call as the script's `ground_marker`; the point is the object's position with y above the floor
   found by a probe FUN_001d1648, handed to FUN_001a3cb3), and when its short +0x5a is non-zero FUN_001be6b8 sets a
   progress flag (bit in the array at 0x340e6c, count at 0x340e68) and runs the flag's side effects
-  (FUN_00180450); (4) FUN_00186568 -> FUN_00186580 sets the dead flag. **Gap**: the experience payout and its popup, and the flag, are not ported (the orbs and munny are, docs/prizes.md); the
-  stat-block offsets are named by position only. The `enmp` Prize and Experience columns are the probable source.
+  (FUN_00180450); (4) FUN_00186568 -> FUN_00186580 sets the dead flag. **Status (WP-EX1)**: step (2) is ported, steps (3) and (4) are not (the orbs and munny are, docs/prizes.md).
+  What existed before: `Progress::add_experience` (the add and the 9,999,999 cap of FUN_001b51e0), the digit popup layout
+  (`hud_banner`, driven only by `KH2_HUDEXP`) and the "NEXT LEVEL" strip (driven only by `KH2_HUDSTRIP`); the form
+  experience of FUN_001d4078 / FUN_001d40e0; the `lvup` rows (read for AP and stats). What did not exist: the payout from a
+  defeat, the level-up check FUN_001b52f8, the popup raised by a defeat.
+  Reading the code again: `victim + 0x48c` is the victim's own record and `+0x254` of it is its `enmp` row (FUN_0019f770
+  stores the row there, `param_1[0x95]`, and builds the status from it), so the "stat block ushort `+0x56`" is the `enmp`
+  Experience column (Id 0, Level 2, Health 32 x 2 = 0x44, MaxDamage 0x44, MinDamage 0x46, seven weaknesses 0x48..0x54, Experience
+  0x56, Prize 0x58, BonusLevel 0x5a: sheets/tables.json). `table` (`DAT_0035f33c`, FUN_001beaf0) is the `lvpm` row of the world
+  level (FUN_001beaa8: base `DAT_01d5dd80` + level * 12 - 12; FUN_0019f770 uses it for an `enmp` Level of 0), and its word
+  `+10` is the `lvpm` Experience column. `FUN_001b5148` is true when no minigame manager is up (FUN_001b9bd8 is 0), the player
+  object is valid and is the first party character, and bit 0x100000 of its record `+0x1cc +0xc` is clear. The attacker object
+  is `victim +0xae4`; the bonus needs it to be the player (bit 0x80 of `+0x588`, FUN_0019a3f8), Sora's HP / maximum at most the float
+  at `sstm +0x144`, and multiplies by the ability block byte `+0x2b` (FUN_001c0d88 sets it to 1; `Experience Boost` adds 1:
+  `abilities::Block::exp_multiplier`). FUN_001b51e0 returns FUN_001878b0 of Sora's record: the next threshold minus the total, and
+  that value is the popup's third argument (FUN_0015b198 -> FUN_0014f2b8, the "NEXT LEVEL" strip number); the popup exists only
+  when it is above 0. FUN_001b52f8 per record: while level < 99 and the `lvup` row of the level has `Exp` <= the total, level +1
+  and FUN_001b53d0: for Strength, Magic, Defense and AP the rise over the previous row, when positive, is queued as a message
+  (0x8ade..0x8ae1); the row's ability for the weapon set (record `+0xe`, 0 sword, 1 shield, 2 staff; row `+8 + 2 * set`) is given
+  (FUN_001a18d8 = `Progress::give`), logged (FUN_001d0828, source 3), queued (FUN_001b55f8, message 0x8ae8) ; the level-up window
+  FUN_001b56a8 is built when the member has an object in the field; the first level of a payout starts system effect 0xf on the member's
+  object (FUN_001b54e8) and each level rebuilds the actor's status (FUN_0019fb98). HP and MP do not grow here (no `bons` read in
+  these functions; the HP/MP bonus rows are not tied to the level-up by anything traced).
+  Port: `progress::defeat_payout`, `Progress::pay_experience` / `raise_level` / `experience_to_next`, `lvup_row` (FUN_001b50c0),
+  `progress::pay_defeats` (system, `Sim::Effects`), fed by `EnemyDefeated` from `enemy::receive_hits` (the moment a hit takes the
+  last HP, for every attacker), and `ExperienceGained` to `hud_banner` (popup + strip). Tests: `a_defeat_pays_the_rounded_up_percentage_and_the_bonus_multiplies_it`,
+  `lvup_rows_follow_the_member_table_and_hold_at_its_end`, `experience_raises_sora_through_the_lvup_thresholds`. Log lines
+  `experience: ...`. **Gaps**: (a) FUN_001b5148's minigame and 0x100000 tests are taken as satisfied; (b) the slot-6 variant of
+  FUN_001b51e0 (world byte 0x33e830 == 8 asks FUN_001a7158(3)) uses id 6; (c) the `enmp` row is the enemy kind's (`Kind::enmp`), not the
+  row a script hands to `set_obj_param` (`AiBrain::enmp` is private to enemy_ai.rs; needs a pub accessor or a field on `Enemy`);
+  (d) a defeat by anything other than `receive_hits` (spells that damage through another path, script HP changes) does not send
+  `EnemyDefeated`; (e) the level-up window (FUN_001b56a8, messages 0x8ade..) and the status rebuild of Sora (FUN_0019fb98: Sora's
+  runtime stats are built at level 1, `sora.rs`) are not ported, so a level-up changes the record and the ability list but not
+  the strength Sora hits with; the system effect 0xf is started for Sora only; (f) the flag of step (3) (FUN_001be6b8, `enmp` +0x5a) and the
+  ground marker (+0x58) and the dead flag (FUN_00186580) are not ported; (g) the world level is 1 (the level the app
+  builds enemies with, `enemy_stats(.., 1)`), so `table` is the first `lvpm` row; (h) the popup position is the model's shape 0x11 point
+  (else the object's position) through the plain camera projection; the game's own projection was not followed.
 
 ## Hit point (FUN_0018ce18, for `combat.rs`; not edited here)
 

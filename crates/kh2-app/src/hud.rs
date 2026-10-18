@@ -17,7 +17,7 @@ pub(crate) mod hud_gauge;
 #[path = "hud_gfx.rs"]
 mod hud_gfx;
 #[path = "hud_target.rs"]
-mod hud_target;
+pub(crate) mod hud_target;
 #[path = "hud_banner.rs"]
 mod hud_banner;
 #[path = "hud_menu.rs"]

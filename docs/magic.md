@@ -281,11 +281,59 @@ Port: `magic::step_strike`; the probe is the app's floor test `World::ground_m`.
   target is kept for the cast motion. Timer (WP-MG2): FUN_0019bcb8 sets +0x1c to the row's +0x68 (`plyr`
   AutoLockOnTime) in mode 1 only (oracle test `lock_on_timer_and_global_flag_8_match_the_executable`); each frame of mode
   1 (FUN_0019b7a8) the timer loses `DAT_00356f40` (1.0 in the executable) while it is above 0 and the player is up
-  (FUN_0019a4f0: +0x7f8 bit 4 and +0x108 bit 8 clear, the status's hp above 0), else the controller looks for a new
-  record (FUN_0018f538 case 6, a jump table entry, and mode 2 when the ability block's flag 0x800 is set: [GAP]); the
-  trigger 28 refills the timer before it turns (FUN_001861b8). Port: `magic_rules::mode1_step`, `mode1_timer_start`,
-  `CastTurn::lock_timer`; the cast keeps no mode-1 target after the timer ran out. [I: the controller's frame runs
-  before the trigger in a frame.] [GAP: the marker (FUN_0013e528 with 5 or 1) is not drawn.] The port's `mode1_step` tests only hp above 0 of the FUN_0019a4f0 conditions and has no mode-2 branch (flag 0x800 of the ability block) [simplified].
+  (FUN_0019a4f0, see below), else the controller looks for a new record (FUN_0018f538 case 6, see below); the
+  trigger 28 refills the timer before it turns (FUN_001861b8). Port: `magic_rules::mode1_step`, `mode1_frame`,
+  `mode1_timer_start`, `CastTurn::lock_timer`. [I: the controller's frame runs before the trigger in a frame.]
+
+  Controller frame in mode 1 (WP-MG3, FUN_0019b7a8 read in full). The record `iVar1 = *(player + 0xb38)` is NOT the
+  ability block: it is the player's input record (words at +0 held, +8 newly pressed, as `FUN_001babf0` reads
+  `*(actor + 0x970) + 8`). Its bit 0x800 at +8 is logical bit 0x800, which the field button set 0x379768 builds from
+  physical R1 (pair 0x800 -> 0x800; FUN_001676a0 / FUN_00167660 with the shared table 0x379698 and the set at
+  0x35b8ac), the lock button. Order of a mode-1 frame: (1) lock button newly pressed: FUN_0019b3f0 with mode 2 on the
+  same record (the marker changes to 0x1b / 0x17 in FUN_0019bbc0, FUN_00197b70(0x9e, ..) was not traced,
+  the timer is not used again); (2) timer above 0 and FUN_0019a4f0 true: the timer loses `DAT_00356f40`; (3) else
+  FUN_0018f538(result, 6, player) and, when its record is valid (FUN_0018ed58), FUN_0019b5e8 sets it; (4) no valid
+  record: FUN_0019b580 releases the controller (mode 0, the record cleared, the marker released). Mode 0 with the
+  button pressed goes to mode 2 through FUN_0018f538(4) (FUN_0019be08 false), else to mode 1 through
+  FUN_0018f538(6); mode 2 keeps its record while FUN_0019a5d0 holds and the button is not pressed again, else
+  FUN_0019b580. Port: `magic_rules::mode1_frame` (test `mode1_frame_order_and_player_up`); in the cast the
+  button is `sora::Pad::lock_newly_pressed` (WP-FL1: the press `sora::tick` takes, kept until the next tick), which
+  replaces the earlier inference from Sora's lock-on target; mode 2 keeps the cast's record while it is alive and a
+  second press releases the controller (`magic_rules::mode2_keeps`; the system sound FUN_002c14a8(8) is not played).
+  FUN_0019a4f0 (all four conditions, `magic_rules::player_up`): `+0x7f8 & 4` clear (the dead flag), `+0x108 & 8`
+  clear (the cannot-be-hit bit, enemy host 1.70), `+0x510` (the status record) not null, and its first word (hp)
+  above 0. Oracle: `player_up_and_mode1_keep_match_the_executable` runs FUN_0019a4f0 for all 32 combinations and
+  the keep branch of FUN_0019b7a8. The app feeds it Sora's `hp`, `Fighter::hittable` (bit 3) and a status that is
+  always present.
+  The re-pick, FUN_0018f538 case 6 (the jump table at 0x37ace0, entry 6 = 0x18f60c; read from the executable, the
+  decompiler lost it): with the player's row (`+0x130`) null it only stores the kind; otherwise FUN_0018fb98 with the
+  range `plyr` +0x5c (AutoLockOnRange), unlike the first pick (FUN_00179470: range 0.0, no window). With a range
+  above 0 FUN_0018fb98 admits a target shape only when `MinH - r_v <= dy <= MaxH + r_v` (`plyr` +0x60 / +0x64,
+  `dy` target minus player height in the game's Y-down sign, both heights times FUN_00190838 when that is above
+  1.0) and `distance - r_h <= range`; `r_h` / `r_v` are the shape's halfwords +0x10 / +0x12 (FUN_001894d0, zero
+  unless the shape has flag 0x4000 or the object's `+0x7f8` bit 0x400 is set). The score is the one of the first
+  pick. The candidates also need FUN_0019a5d0 and FUN_0019a4f0. Port: `magic_rules::LockWindow`,
+  `lock_on_pick(.., Some(window), ..)` (test `lock_window_follows_fun_0018fb98`, the same window `sora::auto_target`
+  applies with the Y flipped); in the cast the pick runs every frame once the timer is out (FUN_0019b5e8 does not
+  refill it) and a missing pick drops the mode-1 target. [GAP: the shape radii are not modelled (zero), so the
+  window is slightly tighter than the game's; FUN_00190838's writer FUN_00190808 (called only from FUN_002c5af0)
+  was not traced, the scale is taken as not above 1.0; FUN_0018fb98 and FUN_0019b7a8's other branches were not run
+  in the oracle (they walk the object list and the marker pool).]
+  The marker, FUN_0019bbc0: FUN_0013e528(5) when the record's shape byte (`shape + 1`, from FUN_001894d0 via
+  FUN_0019b388 into `+0x24`) is 0, else FUN_0013e528(1), for mode 1 (mode 2: 0x1b / 0x17); FUN_0013e528 takes a slot
+  of the nine-slot field icon pool (`docs/hud.md`, 0x13e5a0) and FUN_0013e1f0 makes the icon group of that number
+  and a second member of group 20 (the speech bubble). FUN_0019bbc0 then places it on the record's target point
+  (FUN_0018efa0) and hands it a flag that is 1 for a player object (`+0x588` bit 2) with `+0xac8` or `+0xacc` above 0 (FUN_0013e438; the flag's use was not traced).
+  Marker feed (WP-MG4): `run` inserts the HUD's `MagicMarker { mode, shape, at, alert }` each frame while `CastTurn::lock_mode1` holds a living
+  record (mode 1, or 2 once `lock_mode2` is set) and removes it when the controller is released (FUN_0019b580: second press in
+  mode 2, no re-pick in mode 1) or the cast state ends (the port drops the controller with the cast, see above). The shape byte is
+  byte +1 of the picked target shape: FUN_001894d0 puts the shape pointer into word 3 of the 0x18eec0 result, FUN_0019b388 stores
+  `*(shape + 1)` into controller +0x24, FUN_0019bbc0 reads it as word 9; in the model's collision table that byte is
+  `Shape::parts` (record +1), taken from the enemy's first TARGET shape (the one `victim_targets` uses for the point). `at` is that
+  point. Log lines `magic: marker mode M shape byte S group G` and `magic: marker released`. Test
+  `marker_groups_follow_mode_and_shape_byte`. [GAP: the bubble flag (target +0x588 bit 1 with +0xac8 / +0xacc above 0) is a
+  player-object rule; enemy objects here carry neither field, so `alert` stays false. What a non-zero `parts` byte means for
+  gameplay (which enemies get the pink ring) was not traced beyond this writer chain; the port feeds the table value as it is.]
 - The turn itself is two range triggers of the cast motions (FUN_00188030, player objects only, +0x588 & 2): 22 turns
   toward the command's target record (FUN_00186118), 28 toward the lock-on controller's target (FUN_001861b8, which
   also refreshes the mode-1 timer). The parameter is the limit in degrees per frame (times `DAT_0037a988`, pi/180).
@@ -342,7 +390,7 @@ The `magc` slot order is read from the data (`Id`): 0 Fire, 1 Blizzard, 2 Thunde
 ### Magnet (MAGNET_*.mag) [V, script]
 
 Runs in the interpreter (slots 4 and 5 always do, WP-7I). Event 20 starts element 0 on the caster. Event 21: stop
-it, element 1; Final sets bit 3 of the global flag word 0x35d268 (host 1.187) over a yield (WP-MG2: the only reader is FUN_001905e8, `magic_rules::global_flag_8_active`, called by FUN_001a3848, the attack-versus-object hit dispatch that sends the attack to the player's hit routine FUN_001a3a88, and FUN_001bd358, the enemy target pick; the other writer is FUN_001b9140 case 3; a scan of `--jal 0x1905e8` lists these two calls; the app has neither path, so the bit has no effect here [GAP: the effect on hits is not ported]). The
+it, element 1; Final sets bit 3 of the global flag word 0x35d268 (host 1.187) over a yield (WP-MG2: the only reader is FUN_001905e8, `magic_rules::global_flag_8_active`, called by FUN_001a3848, the attack-versus-object hit dispatch that sends the attack to the player's hit routine FUN_001a3a88, and FUN_001bd358, the enemy target pick; the other writer is FUN_001b9140 case 3; a scan of `--jal 0x1905e8` lists these two calls; the app has neither path, so the bit has no effect here). WP-MG3 read both: FUN_001a3848(attack, object) sends the attack to FUN_001a3a88(attack, player, object) (FUN_001c5808 then FUN_001a39b0, the hit on the player) at once when the bit is set and the player exists, before its own loop over the three party objects (FUN_00175b68) and the hit test FUN_001c57b8 ; FUN_001bd358(enemy) skips its distance and target tests (FUN_001a3700, FUN_001bdb10) and calls FUN_001bd1d8(enemy, player), which makes the player the enemy's target (`+0x9e8`, flag 4 of `+0x9e0`, mover 0xd), when the enemy's own gates pass (player listed, his `+0x588` bit 0x2000000 clear, the enemy's `+0x9e0` bit 4 clear, FUN_0019a4b0). So with Final Magnet active every attack lands on the player and every enemy picks him. The next bit of the same word, 0x800 (FUN_00190610), also sets flag 8 of the attack's `+0x28` in FUN_001a3848. [GAP: not ported; the dispatch lives in `combat.rs` / `enemy_ai.rs` (the app's hit test and enemy target pick), outside this WP's ownership. Exact change: in the attack-versus-fighter dispatch, when `global_flag_8_active` and the player exists, deliver the attack to the player's fighter without the hit test; in the enemy target pick, choose the player without the distance and target tests.]) The
 place: the target record's position (2.23 / 1.140 / 1.120) or element 1's position; host 1.141 probes the ground
 from `magi` +0x3c above it down `2 * magi +0x3c` and, when found, puts the place `magi` +0x3c above the ground.
 Attack 658 of the kind at the place, a sphere of `magi` +0x4c; element 2 placed there (1.138 + 0.38). 16 frames
@@ -566,3 +614,7 @@ turn; the interpreter entry point.
 | 0x18d430, 0x18d808, 0x18e818 | clash handler counting byte +0xa4, the pair test, host 2.66 |
 | 0x1729f8, 0x18e928, 0x16dad0, 0x16cf08, 0x17c2e8, 0x11b4d8, 0x11be08 | hosts 1.60, 2.21, 0.39, 0.13 and the Y rotation |
 | 0x172730, 0x1a5ee0, 0x1a6068, 0x1a63c8 | host 1.248: Final Thunder's random places (WP-7M2) |
+
+**WP-FL1 (global flag word 0x35d268, readers).** `magic_rules::GlobalFlags` holds the word; each writer publishes its own bits (magic: bit 3 from hosts 1.187 / 1.188 through `VmReq::GlobalFlag`; summons: 0x800 and 0x1000, `summon::publish_gflags`). The brief's reading of FUN_001a3848 and FUN_001bd358 as the attack hit dispatch and the enemy target pick was wrong: read in full, FUN_001a3848 is the prize pickup dispatch (the prize manager's check, prize.rs) and FUN_001bd358 the item object's pickup check (already cited in prize.rs); neither touches an enemy or an attack. Rules ported as pure functions: `global_flag_8_active` (FUN_001905e8), `global_flag_800_active` (FUN_00190610), `prize_dispatch` (FUN_001a3848 up to its member loop: bit 0x800 ors 8 into the record's +0x28; bit 3 hands the prize to FUN_001a3a88 for the player and returns; the record's flag 8 with +0x44 at least 3 does the same and runs on into the member loop), `item_taken_by_player` (FUN_001bd358 after FUN_001a3700 fails and FUN_001bdb10 is false: either bit takes the item), and `update_gate_global` (bit 0x1000 of FUN_0019afe8). Test `global_flag_readers_follow_the_executable`. NOT wired: the callers are in prize.rs (outside this package); FUN_0019afe8's callers FUN_00184498 (the weapon object's update, skipped while the gate holds) and FUN_00191c18 (clears +0x768 bit 8 of the object while it holds; the bit's meaning was not found) need the objects' own +0x10c / +0x108 bits and DAT_0035ee9c, which the app has no model for [GAP].
+
+WP-FL2 correction: FUN_001a3848 and FUN_001bd358 are the prize pickup check and the item pickup check, not an attack hit dispatch or an enemy target pick (see WP-FL1 in `docs/summons.md`). Final Magnet's bit 3 is now read in `prize.rs`: prizes go to the player at once and items are taken without the reach test (`docs/prizes.md`, "Global flag word in the pickup path"). Enemies are not affected.

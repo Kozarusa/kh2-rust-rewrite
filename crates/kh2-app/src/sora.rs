@@ -436,6 +436,9 @@ pub struct Pad {
     jump: u8,
     square: u8,
     lock: u8,
+    /// The lock button was newly pressed in the controller's last tick (the field button set's logical bit 0x800 at
+    /// the input record's +8, which FUN_0019b7a8 reads); see `lock_newly_pressed`.
+    lock_new: bool,
     viewer: u8,
     next: u8,
     prev: u8,
@@ -467,6 +470,12 @@ impl Pad {
         self.jump = 0;
         self.square = 0;
         self.lock = 0;
+    }
+
+    /// The lock button was newly pressed in the last controller tick (`tick` takes the press and keeps it here until the
+    /// next tick). The lock-on controller of the magic casts reads it exactly (FUN_0019b7a8: the input record's +8 bit 0x800).
+    pub fn lock_newly_pressed(&self) -> bool {
+        self.lock_new
     }
 
     /// A press is pending or a button is held.
@@ -1274,6 +1283,7 @@ pub fn tick(
     // Bevy takes 16 system parameters at most: the optional resources come as one tuple.
     (mission, game_flag, summons): TickOptionals,
 ) {
+    pad.lock_new = false;
     let (Ok((mut tf, mut s, mut fighter)), Some(world)) = (sora_q.single_mut(), world) else { return };
     let s = &mut *s;
     // A playing mission layout or the fight's stop: no input reaches the controller (WP-F1 item 2).
@@ -1305,6 +1315,7 @@ pub fn tick(
     let jump = Pad::take(&mut pad.jump);
     let square = Pad::take(&mut pad.square);
     let lock_pressed = Pad::take(&mut pad.lock);
+    pad.lock_new = lock_pressed;
     s.invuln = (s.invuln - 1.0).max(0.0);
     // FUN_00175ab0: lowered by the frame step while above 0 (one tick here [inferred: the app's tick is
     // the game's frame step]).

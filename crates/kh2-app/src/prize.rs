@@ -248,6 +248,9 @@ pub struct Prize {
     pub phase: Phase,
     /// The draw-in's mode (`FUN_001c5808` third argument): 0 the pickup, 1 collect-all.
     pub mode: u8,
+    /// +0x28 bit 8: set by the pickup dispatch `FUN_001a3848` while global flag 0x800 is up (`magic_rules::prize_dispatch`),
+    /// never cleared; with it the prize goes to the player once +0x44 reaches 3.
+    pub flag_8: bool,
 }
 
 /// What the floor sweep found: where the point ended and whether it stands on a floor (the mover's
@@ -277,6 +280,7 @@ pub fn launch(c: &Consts, kind: u8, v: [u32; 3], at: Vec3) -> Prize {
         frame: 0xff,
         phase: Phase::Fall,
         mode: 0,
+        flag_8: false,
     }
 }
 
@@ -342,6 +346,14 @@ pub fn shrink_or_check(p: &mut Prize, c: &Consts, sweep: impl Fn(Vec3, Vec3) -> 
         }
     }
     true
+}
+
+/// `FUN_001a3848` as the tick asks it: true when the player takes the prize now. The global flag word decides first
+/// (`magic_rules::prize_dispatch`: bit 3, or flag 8 with +0x44 at least 3, gives the prize to the player at once); else the
+/// party loop's test, `party_reach`, answers. [inferred: when flag 8 gives the prize and the loop would too, the original
+/// pays in the same frame twice; the app pays once.]
+pub fn pickup_check(flags: u32, player_exists: bool, p: &Prize, party_reach: impl FnOnce() -> bool) -> bool {
+    crate::magic_rules::prize_dispatch(flags, player_exists, p.flag_8, p.bounces).give_to_player || party_reach()
 }
 
 /// `FUN_001c5020`: a frame off the life; false when it is over.
@@ -1374,6 +1386,7 @@ fn run_prizes(
     bodies: Query<(&Animator, &GlobalTransform)>,
     (mut magic, mut drive, mut abilities, rules): PlayerState<'_>,
     mut progress: Option<ResMut<crate::progress::Progress>>,
+    gflags: Option<Res<crate::magic_rules::GlobalFlags>>,
     (mut sounds, mut munny): (MessageWriter<crate::audio::PlaySe>, MessageWriter<MunnyGained>),
     (mut collect, mut glow): (MessageReader<CollectAll>, ResMut<PickupGlow>),
     (mut fx_start, mut fx_stop): (MessageWriter<crate::fx::StartBoundSystemEffect>, MessageWriter<crate::fx::StopEffect>),
@@ -1426,9 +1439,16 @@ fn run_prizes(
         let w = world.as_deref();
         // +0x588 bit 4 is taken as set for Sora, so Draw's ability-block +0x30 widens the reach
         // [inferred]; the status float +0x1c4 the reach also adds is taken as 0 (not traced).
+        // FUN_001a3848 (the pickup check): the global flag word first (bit 0x800 sets the record's flag 8; bit 3, or
+        // flag 8 with +0x44 at least 3, hands the prize to the player whatever the reach test says), else the party loop.
+        let (flags, checked) = (gflags.as_deref().map_or(0, |g| g.0), std::cell::Cell::new(false));
         let out = tick(&mut obj.p, c, |a, v| sweep(w, radius, a, v), alive_player.then_some(centre_g), |p| {
-            player_takes(p.kind, anti) && in_reach(c, p, feet_g, draw)
+            checked.set(true);
+            pickup_check(flags, alive_player, p, || player_takes(p.kind, anti) && in_reach(c, p, feet_g, draw))
         });
+        if checked.get() && crate::magic_rules::global_flag_800_active(flags, alive_player) {
+            obj.p.flag_8 = true;
+        }
         if let Some(se) = out.bounce {
             sounds.write(crate::audio::PlaySe::number(se, None).at(flip(obj.p.pos) * SCALE));
         }
@@ -1867,6 +1887,7 @@ fn run_items(
     bodies: Query<(&Animator, &GlobalTransform)>,
     abilities: Option<Res<crate::abilities::Abilities>>,
     mut progress: Option<ResMut<crate::progress::Progress>>,
+    gflags: Option<Res<crate::magic_rules::GlobalFlags>>,
     mut sounds: MessageWriter<crate::audio::PlaySe>,
     mut collect: MessageReader<CollectAll>,
     (mut log, area, mut obtained): (ResMut<ObtainedLog>, Option<Res<crate::assets::CurrentArea>>, MessageWriter<ItemObtained>),
@@ -1904,10 +1925,12 @@ fn run_items(
                 info!("prize: item {:#x} came to rest at {:.0?} after {} bounces", o.id, flip(o.pos), o.bounces);
             }
             // FUN_001bd358: the player alive, the item not taken and pickable (FUN_0019a4b0), within
-            // reach of the player's position (FUN_001a3700; Draw as for the prizes [inferred]). The
-            // instant-collection flags (FUN_001905e8 / FUN_00190610) are taken as clear; the item is
+            // reach of the player's position (FUN_001a3700; Draw as for the prizes [inferred]), or the
+            // instant-collection flags (FUN_001905e8 / FUN_00190610, `item_taken_by_player`); the item is
             // no object 0x883 (FUN_001bdb10), so only the player is asked.
-            if !(alive_player && !o.taken && o.pickable && reach_test(o.pos - feet_g, lib.reach, lib.height, draw)) {
+            let flags = gflags.as_deref().map_or(0, |g| g.0);
+            let reach = reach_test(o.pos - feet_g, lib.reach, lib.height, draw);
+            if !(alive_player && !o.taken && o.pickable && crate::magic_rules::item_taken_by_player(flags, alive_player, reach, false)) {
                 continue;
             }
         }
@@ -2109,6 +2132,21 @@ mod tests {
             assert_eq!(p.size, (p.life / 40.0 * 255.0) as u8);
         }
         assert_eq!(frames, 39);
+    }
+
+    #[test]
+    fn global_flags_hand_the_prize_to_the_player() {
+        let mut p = launch(&consts(), 0, [0; 3], Vec3::ZERO);
+        let never = || false;
+        assert!(!pickup_check(0, true, &p, never), "clear: out of reach stays unpicked");
+        assert!(pickup_check(0, true, &p, || true), "clear: the reach test decides");
+        assert!(pickup_check(crate::magic_rules::GFLAG_COLLECT_AT_ONCE, true, &p, never), "bit 3: at once");
+        assert!(!pickup_check(crate::magic_rules::GFLAG_COLLECT_AT_ONCE, false, &p, never), "bit 3 needs the player object");
+        assert!(!pickup_check(crate::magic_rules::GFLAG_TARGET_PLAYER, true, &p, never), "bit 0x800: only from +0x44 = 3");
+        p.bounces = 3;
+        assert!(pickup_check(crate::magic_rules::GFLAG_TARGET_PLAYER, true, &p, never));
+        p.flag_8 = true;
+        assert!(pickup_check(0, true, &p, never), "flag 8 stays after the bit is gone");
     }
 
     #[test]

@@ -2091,6 +2091,8 @@ pub struct SummonData {
     /// Genie's class (WP-SUM5) and the members' follow rules it runs (party_rules, the class 0xf thresholds).
     pub genie: Option<(genie::Consts, Vec<crate::party_battle::Record>)>,
     follow: Option<crate::party_rules::Consts>,
+    /// Host 1.247's numbers (FUN_001a6068 / FUN_001a6198), as the party members read them (`friend_ai`).
+    free_point: Option<crate::party_rules::FreePointConsts>,
     /// Chicken Little's, Peter Pan's and Tinker Bell's classes (WP-SUM8): the constants and each class's records.
     pub scripted: Option<(scripted::Consts, Vec<scripted::Data>)>,
     /// 03system.bin `pref` `prty` and its row offsets: walk, run and turn of a NeoMoveset (FUN_00194438, as
@@ -2116,6 +2118,7 @@ impl SummonData {
         let motion_orders = exe.as_deref().and_then(crate::party_battle::motion_orders);
         let genie = exe.as_deref().and_then(|e| Some((genie::Consts::from_exe(e)?, genie::records(e)?)));
         let follow = exe.as_deref().and_then(crate::party_rules::Consts::from_exe);
+        let free_point = exe.as_deref().and_then(crate::party_rules::FreePointConsts::from_exe);
         let scripted = exe.as_deref().and_then(|e| {
             let all = scripted::CLASSES.iter().map(|c| scripted::Data::from_exe(e, c)).collect::<Option<Vec<_>>>()?;
             Some((scripted::Consts::from_exe(e)?, all))
@@ -2154,6 +2157,7 @@ impl SummonData {
             motion_orders,
             genie,
             follow,
+            free_point,
             scripted,
             prty,
             prty_offsets,
@@ -2644,7 +2648,7 @@ impl SummonHost<'_, '_> {
             // while it holds; FUN_00191c18 shades the same way. The app has neither gate.
             (1, 286) => {
                 self.ai.set_gflag(0x1000, true);
-                (Value::None, St::Approx, "bit 0x1000 of 0x35d268 is kept; the object update gate FUN_0019afe8 / FUN_00184498 is not in the app")
+                (Value::None, St::Approx, "bit 0x1000 of 0x35d268 is kept in GlobalFlags; the object update gate FUN_0019afe8 / FUN_00184498 / FUN_00191c18 is not in the app (docs/summons.md, WP-FL1)")
             }
             // 1.157 spawn_effect_on (0x171f40 -> FUN_00197230(object, name, second object)): the name is a 4-character entry name of
             // type 0x16 in the object's BAR (FUN_001971c0); its data is an event (type 0xb, FUN_00195898) placed at the object's
@@ -3191,11 +3195,13 @@ impl kh2_bdx::Host for SummonHost<'_, '_> {
                 self.record(c, &kh2_bdx::Value::None, st, why);
                 return kh2_bdx::Value::None;
             }
-            // 6.19 (0x2eecb8): global flag word 0x35d268 |= 0x800. Its reader is FUN_00190610 (`& 0x800` with the player object at
-            // 0x35c998), called by FUN_001a3848 (a target decision) and FUN_001bd358; the app has neither.
+            // 6.19 (0x2eecb8): global flag word 0x35d268 |= 0x800. Its reader is FUN_00190610 (no argument: `& 0x800` and the player
+            // object 0x35c998 exists), called by FUN_001a3848 (the prize pickup dispatch: it sets the prize record's +0x28 bit 8 and
+            // gives the prize to the player through FUN_001a3a88) and FUN_001bd358 (the item object's pickup check); see
+            // `magic_rules::prize_dispatch` and `item_taken_by_player` (WP-FL1).
             Call::Unknown { group: 6, index: 19, .. } => {
                 self.ai.set_gflag(0x800, true);
-                self.record(c, &kh2_bdx::Value::None, crate::enemy_host::St::Approx, "bit 0x800 of 0x35d268 is kept; its readers FUN_00190610 / FUN_001a3848 / FUN_001bd358 are not in the app");
+                self.record(c, &kh2_bdx::Value::None, crate::enemy_host::St::Approx, "bit 0x800 of 0x35d268 is kept in GlobalFlags; its readers FUN_00190610 / FUN_001a3848 / FUN_001bd358 are the prize pickups (prize.rs is not wired to them yet)");
                 return kh2_bdx::Value::None;
             }
             // 6.40 (0x2eee70 -> FUN_0016b698(object, 0x34)): the object's mover becomes kind 0x34. Peter Pan's limit start gives it to
@@ -3350,14 +3356,25 @@ impl Plugin for SummonPlugin {
             .init_resource::<Originals>()
             .init_resource::<SharedBlocks>()
             .init_resource::<PlayerSide>()
+            .init_resource::<crate::magic_rules::GlobalFlags>()
             .init_resource::<crate::hud::hud_party::SummonFace>()
             .add_plugins(revive_fade::ReviveFadePlugin)
             .add_systems(Startup, spawn_revive_fade)
             .add_systems(Update, paint_revive_fade)
             .add_systems(Update, (keys.before(crate::magic::harness_keys), harness_requests, hud_feed.before(crate::hud::hud_gauge::update), face_feed.before(crate::hud::hud_party::update)))
             .add_systems(FixedUpdate, (track_player_hits, tick, act, objects, revive_effects, companions).chain().in_set(Sim::Sounds))
+            .add_systems(FixedUpdate, publish_gflags.after(objects).in_set(Sim::Sounds))
             .add_systems(FixedUpdate, stops.after(Sim::Enemy).before(Sim::Detect).run_if(crate::schedule::sim_running));
     }
+}
+
+/// The summon scripts' bits of the global flag word 0x35d268 (hosts 6.19: 0x800, 1.286: 0x1000) reach `GlobalFlags`, whose readers
+/// are `magic_rules::prize_dispatch`, `item_taken_by_player` and `update_gate_global`. A summon object that is gone takes its bits
+/// with it [inferred: the game's word keeps a bit until a clear call; the scripts end with their clears, and an object removed
+/// between a set and its clear would otherwise leave the app frozen for good].
+fn publish_gflags(objects: Query<&SummonObject>, mut flags: ResMut<crate::magic_rules::GlobalFlags>) {
+    let bits = objects.iter().fold(0, |w, o| w | o.ai.gflags);
+    flags.merge(crate::magic_rules::GFLAG_TARGET_PLAYER | crate::magic_rules::GFLAG_UPDATE_GATE, bits);
 }
 
 /// The summon face panel's request (`hud_party::SummonFace`): while the gauge is in mode 3 and a summon object holds party
@@ -4593,7 +4610,7 @@ fn objects(
         }
         fx_before(fields, pax.as_ref(), body, s.body, &anims.as_readonly(), &gts, &mut running);
         let inner = BevyHost { obj, env: &env, trace: &mut trace, tag: tag.as_str() };
-        let f = crate::friend_host::FriendHost { inner, fields, game: &game, free: None, targets: &parts };
+        let f = crate::friend_host::FriendHost { inner, fields, game: &game, free: data.free_point.as_ref(), targets: &parts };
         ai.player_hp = (s.hp, s.stats.max_hp);
         ai.player_heal = 0;
         ai.neo = neo;
@@ -5721,6 +5738,25 @@ mod tests {
         assert_eq!(a.gflags, 0x1800);
         a.set_gflag(0x800, false);
         assert_eq!(a.gflags, 0x1000, "6.19's counterpart clears only its own bit");
+    }
+
+    /// Host 1.247 for the summons (Peter Pan's limit routine R02fc asks it): the numbers are read from the executable, as for the
+    /// party members, so the call is answered instead of returning the centre. On a flat floor with a clear line the answer is that
+    /// floor between the two radii; a floor under the candidate only where the cast finds one.
+    #[test]
+    fn summon_free_point_numbers_come_from_the_executable() {
+        let Some(mut a) = archive() else { return };
+        let k = crate::party_rules::FreePointConsts::from_exe(&elf(&mut a)).expect("FUN_001a6198's numbers");
+        assert!(k.cast_down > 0.0 && k.cast_up > 0.0 && k.step > 0.0 && k.turn_angle > 0.0, "{k:?}");
+        let centre = Vec3::new(40.0, 10.0, -25.0);
+        let mut st = crate::magic_rules::ScatterState::default();
+        for _ in 0..20 {
+            let p = crate::party_rules::free_point(centre, 300.0, 500.0, &mut st, &k, |a, _| Some(a.with_y(0.0)), |_, _| true);
+            let flat = (p - centre).with_y(0.0).length();
+            assert!((299.9..=500.1).contains(&flat) && p.y == 0.0, "{p:?} {flat}");
+        }
+        let none = crate::party_rules::free_point(centre, 300.0, 500.0, &mut st, &k, |_, _| None, |_, _| true);
+        assert_eq!(none, centre, "no floor anywhere: FUN_001a6198 answers the centre");
     }
 
     /// Host 10.53: entering an instance twice leaves one entry (FUN_00136430 drops the old one), a zero handle is ignored,

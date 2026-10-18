@@ -53,7 +53,7 @@ pub struct StrugglePlugin;
 
 impl Plugin for StrugglePlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<MissionStart>().add_message::<GlobalEvent>().init_resource::<Mission>();
+        app.add_message::<MissionStart>().add_message::<GlobalEvent>().init_resource::<Mission>().init_resource::<crate::magic_rules::GlobalFlags>();
         let consts = app.world().get_resource::<Disc>().and_then(|d| d.read_root("SLUS_210.05")).and_then(|elf| orb_consts(&elf));
         if consts.is_none() {
             warn!("struggle: the orb constants are not readable from SLUS_210.05; no orb pool");
@@ -645,6 +645,9 @@ pub struct Active {
     pub triggers: Vec<Trig>,
     /// +0x2d8: the update state of `FUN_001b9140` (0 wait to show, 1 running, 2 / 3 / 4 the end).
     pub state: u8,
+    /// The state 3 step has run: `DAT_0035d268 |= 8` (bit 3 of the global flag word, prizes and items go to the player at
+    /// once). Written only by `FUN_001b9140` case 3; see `collect_latch` for who keeps it.
+    pub collect_at_once: bool,
     /// +0x2dc, +0x2e0: the end event and its argument.
     pub end_ev: u32,
     pub end_arg: i32,
@@ -814,6 +817,8 @@ impl Active {
                 if self.play.as_ref().is_some_and(|p| p.remaining() > 4) {
                     return;
                 }
+                // FUN_001b9140 case 3 sets the bit after FUN_00193f08, before it hands over to FUN_001ba140.
+                self.collect_at_once = true;
                 if self.end_ev == 0x9c {
                     info!("struggle: event 0x9c: sound 0x1b68 with the sound pause (FUN_002c38c8) is not ported");
                 }
@@ -950,6 +955,7 @@ pub fn build(id: u32, name: &str, file: Vec<u8>, orb_pool: bool, table: Option<&
         kinds: Vec::new(),
         triggers: Vec::new(),
         state: 0,
+        collect_at_once: false,
         end_ev: 0,
         end_arg: 0,
         play: None,
@@ -1265,7 +1271,10 @@ fn mission_tick(
     mut last_hp: Local<Option<i32>>,
     mut unknown: Local<HashSet<(u16, u16)>>,
     mut seen: Local<(bool, bool)>,
+    (mut latched, mut seen_area, mut gflags): (Local<bool>, Local<Option<String>>, ResMut<crate::magic_rules::GlobalFlags>),
+    area: Option<Res<crate::assets::CurrentArea>>,
 ) {
+    collect_latch(&mut latched, &mut seen_area, area.as_deref().and_then(|a| a.loaded.as_deref()), mission.m.as_deref(), &mut gflags);
     // The player lock of a layout and the stop, for the log (the app's player controller does not read them yet).
     let now = (mission.control_locked(), mission.fight_stopped());
     if *seen != now {
@@ -1363,6 +1372,31 @@ fn mission_tick(
         mission.game_over_request = over;
     }
 }
+/// Bit 3 of the global flag word 0x35d268 (`GFLAG_COLLECT_AT_ONCE`) as the struggle manager leaves it. The original sets it once
+/// in `FUN_001b9140` case 3 and nothing in the manager clears it; it stays until host 1.188 clears it or the area is set up again
+/// (`FUN_00190370` zeroes the word, called from `FUN_001689c0`, itself called from `FUN_001048e0`) [inferred: that FUN_001689c0
+/// runs at each area load]. The magic system republishes bit 3 from its own script state every tick, so the latch (which outlives
+/// the manager) is or'ed in again after it. A new manager that has not reached state 3 also releases the latch.
+/// An area change (`loaded` differs from the one last seen) is the area setup: the latch is dropped and the bit cleared, as the
+/// word's store of 0 does (`FUN_00190370`).
+fn collect_latch(latched: &mut bool, seen: &mut Option<String>, area: Option<&str>, a: Option<&Active>, flags: &mut crate::magic_rules::GlobalFlags) {
+    if seen.as_deref() != area {
+        *seen = area.map(str::to_owned);
+        *latched = false;
+        flags.merge(crate::magic_rules::GFLAG_COLLECT_AT_ONCE, 0);
+    }
+    if let Some(a) = a {
+        if a.collect_at_once {
+            *latched = true;
+        } else if a.state < 3 {
+            *latched = false;
+        }
+    }
+    if *latched {
+        flags.0 |= crate::magic_rules::GFLAG_COLLECT_AT_ONCE;
+    }
+}
+
 /// The log lines of the events the Struggle cares about.
 fn note_event(a: &mut Active, id: u32, arg: i32) {
     let (p, o) = (a.counter_value(0), a.counter_value(1));
@@ -1882,6 +1916,42 @@ mod tests {
         assert_eq!(shown_at, Some(112));
         assert!(a.play.is_none() && a.clock.pause & 4 == 0 && a.state == 1);
         assert!(a.counters[0].shown && a.clock.state == 1);
+    }
+
+    #[test]
+    fn state_three_sets_the_collect_bit_and_it_outlives_the_manager() {
+        use crate::magic_rules::{GFLAG_COLLECT_AT_ONCE as BIT, GlobalFlags};
+        let Some(disc) = disc() else { return };
+        let mut a = struggle(&disc, "TT04_MS00");
+        let (mut latched, mut f, mut seen) = (false, GlobalFlags(0), None);
+        a.state = 2;
+        a.flow_tick();
+        assert_eq!(a.state, 3);
+        collect_latch(&mut latched, &mut seen, Some("tt04"), Some(&a), &mut f);
+        assert_eq!(f.0, 0, "the bit comes with the state 3 step, not before");
+        a.flow_tick();
+        assert!(a.collect_at_once);
+        collect_latch(&mut latched, &mut seen, Some("tt04"), Some(&a), &mut f);
+        assert_eq!(f.0 & BIT, BIT);
+        // The magic system republishes its own bit; the latch puts it back after the manager is gone.
+        f.merge(BIT, 0);
+        collect_latch(&mut latched, &mut seen, Some("tt04"), None, &mut f);
+        assert_eq!(f.0 & BIT, BIT);
+        // A fresh manager (new area) releases it.
+        let fresh = struggle(&disc, "TT04_MS00");
+        f.merge(BIT, 0);
+        collect_latch(&mut latched, &mut seen, Some("tt04"), Some(&fresh), &mut f);
+        assert_eq!(f.0, 0);
+        // An area change drops the latch and clears the bit even with the manager gone.
+        let mut a = struggle(&disc, "TT04_MS00");
+        a.state = 3;
+        a.flow_tick();
+        collect_latch(&mut latched, &mut seen, Some("tt04"), Some(&a), &mut f);
+        assert_eq!(f.0 & BIT, BIT);
+        collect_latch(&mut latched, &mut seen, Some("tt02"), None, &mut f);
+        assert_eq!((f.0, latched), (0, false), "a new area clears the word");
+        collect_latch(&mut latched, &mut seen, Some("tt02"), None, &mut f);
+        assert_eq!(f.0, 0);
     }
 
     #[test]

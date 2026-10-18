@@ -602,6 +602,8 @@ struct Nodes {
     question: [usize; 2],
     /// The NEW / VIEWED tag sprites, one per row.
     marks: Vec<usize>,
+    /// The row plates' sprites (the list plate groups 0x62, 0x60, 0x6e of `FUN_0028b470`, `FUN_0028b188`), one per row.
+    plates: Vec<usize>,
     /// The tab grid's texts: a name and a number for each of the 17 tabs (4 ranks, 13 categories), `FUN_0028aaa8`.
     tabs: Vec<usize>,
 }
@@ -611,6 +613,7 @@ impl Nodes {
         let mut v = self.layers.clone();
         v.extend(self.texts());
         v.extend(&self.marks);
+        v.extend(&self.plates);
         v
     }
 
@@ -778,12 +781,17 @@ fn load(m: &mut ShopMenu, disc: &Disc, scene: &mut MenuScene, images: &mut Asset
     for _ in 0..most {
         n.layers.push(add(scene, Some(m.seq_base), tex));
     }
+    // The row plates come before the texts so that the texts draw over them.
+    let plate_seq = mark_seq.map(|q| m.seq_base + q);
+    for _ in 0..2 * LIST_ROWS {
+        n.plates.push(add(scene, plate_seq, tex));
+    }
     n.title = add(scene, None, tex);
     for _ in 0..4 {
         n.rows.push(add(scene, None, tex));
     }
     // Three more rows than the shop's list shows: the synthesis detail page lists its rows and the recipe's lines.
-    for _ in 0..LIST_ROWS + 3 {
+    for _ in 0..2 * LIST_ROWS {
         n.list.push(add(scene, None, tex));
         n.prices.push(add(scene, None, tex));
         n.owned.push(add(scene, None, tex));
@@ -794,11 +802,11 @@ fn load(m: &mut ShopMenu, disc: &Disc, scene: &mut MenuScene, images: &mut Asset
     n.question = [add(scene, None, tex), add(scene, None, tex)];
     // The tag's rectangle (0, 128)-(40, 140) is the NEW! art of the file's second image [inferred: the port's sequences
     // draw from one image each; the loader's rule for which one a sequence uses was not read].
-    for _ in 0..2 * TABS {
+    for _ in 0..2 * TABS + 3 {
         n.tabs.push(add(scene, None, tex));
     }
     let tag_tex = if scene.texs.len() > m.tex + 1 { m.tex + 1 } else { m.tex };
-    for _ in 0..LIST_ROWS + 3 {
+    for _ in 0..2 * LIST_ROWS {
         n.marks.push(add(scene, mark_seq.map(|q| m.seq_base + q), tag_tex));
     }
     m.mark_seq = mark_seq;
@@ -901,6 +909,23 @@ fn put_tag(m: &ShopMenu, scene: &mut MenuScene, k: usize, tag: Option<Tag>, at: 
     }
 }
 
+/// Shows row plate `k` (sprite group `group`) with its origin at `at`, the header window's anchor plus the cell's offset
+/// (the group's own anchor animation moves its art on from there [inferred]); nothing for `None`.
+fn put_plate(m: &ShopMenu, scene: &mut MenuScene, k: usize, group: Option<usize>, at: [f32; 2]) {
+    let Some(&id) = m.nodes.plates.get(k) else { return };
+    let (Some(group), Some(seq)) = (group, m.mark_seq) else {
+        scene.nodes[id].visible = false;
+        return;
+    };
+    let n = &mut scene.nodes[id];
+    n.visible = true;
+    n.seq = Some(m.seq_base + seq);
+    n.pos = at;
+    if n.player.group != Some(group) {
+        scene.set_group(id, group);
+    }
+}
+
 /// Where the tags sit: left of the row's hand (the tag sprite is 40 wide and ends at its origin) [inferred: the original
 /// parents the tag to the row widget at the extent of the row group (`FUN_00138ed0(tag, FUN_00237618(row + 0x18), ..)`,
 /// group 0x62's extent is 0x10e); the port's rows have no plate, so the tag takes the free space at the left].
@@ -928,6 +953,9 @@ fn draw_page(m: &ShopMenu, scene: &mut MenuScene, text: &MenuText, owned: &dyn F
     }
     for k in 0..n.marks.len() {
         put_tag(m, scene, k, None, [0.0; 2]);
+    }
+    for k in 0..n.plates.len() {
+        put_plate(m, scene, k, None, [0.0; 2]);
     }
     set_label(scene, n.title, Some(text_label(text, message(text, u32::from(o.stock.message)), at::SELECTED, 0, at::TITLE)));
     set_label(scene, n.munny, Some(text_label(text, literal(text, &format!("{munny}")), at::SELECTED, 1, at::MUNNY)));
@@ -1134,6 +1162,8 @@ const WINDOW_GROUP: usize = 0x67;
 const RANK_TAB: usize = 99;
 const CATEGORY_TAB: usize = 100;
 const TABS: usize = 17;
+/// The kinds and total words' group (`FUN_0028aaa8`).
+const WORDS: usize = 0x65;
 
 /// The anchor of a group at its last frame: the translation of its first animation with flag bit 2, plus the pivot times
 /// the scale (`FUN_00236cf8` -> `FUN_002375c0`); `None` when the group has no such animation.
@@ -1166,6 +1196,17 @@ fn tab_places(q: &kh2_image::seqd::Seqd) -> Option<Vec<([f32; 2], [f32; 2])>> {
         }
     }
     Some(v)
+}
+
+/// The header window's anchor at its last frame: where the plates of its children start (`FUN_0029b060`).
+fn window_origin(q: &kh2_image::seqd::Seqd) -> Option<[f32; 2]> {
+    anchor_of(q, WINDOW_GROUP)
+}
+
+/// The second column's offset of a plate group (`+0x20`): page 10 builds its 18 rows as two columns of nine
+/// (`FUN_0028b188`: row i at `(i % 2) * +0x20`, `(i / 2) * +0x1c`).
+fn group_col(m: &ShopMenu, group: usize) -> f32 {
+    m.seqd.as_ref().and_then(|q| q.groups.get(group)).map_or(0.0, |g| g.unk20 as f32)
 }
 
 impl ShopMenu {
@@ -1236,6 +1277,9 @@ fn draw_synth(m: &ShopMenu, scene: &mut MenuScene, text: &MenuText, owned: &dyn 
     }
     for k in 0..n.marks.len() {
         put_tag(m, scene, k, None, [0.0; 2]);
+    }
+    for k in 0..n.plates.len() {
+        put_plate(m, scene, k, None, [0.0; 2]);
     }
     let tag_of = |b: Option<bool>| b.map(|new| if new { Tag::New } else { Tag::Viewed });
     let name = |id: u16| -> Vec<Token> { m.wares.iter().find(|w| w.id == id).map(|w| message(text, u32::from(w.name))).unwrap_or_default().into_iter().filter(|t| *t != Token::End).collect() };
@@ -1369,22 +1413,50 @@ fn draw_synth(m: &ShopMenu, scene: &mut MenuScene, text: &MenuText, owned: &dyn 
                 }
                 let mark = Moogle::bit(s.marks.rewards, u32::from(ci)).then_some(s.marks.fresh);
                 put_tag(m, scene, r, tag_of(mark), [base[0] + col2, ry(r)]);
+                let wo = m.seqd.as_ref().and_then(window_origin).unwrap_or(base);
+                put_plate(m, scene, r, Some(ROW_PLATE), [wo[0], wo[1] + pitch * r as f32]);
             }
             if !s.rewards.is_empty() {
                 set_label(scene, n.hand, Some(text_label(text, literal(text, ">"), at::SELECTED, 0, [hand_x, ry(s.rew - first)])));
             }
         }
-        synth::Page::Materials { totals } => {
-            title(scene, message(text, if totals { synth::msg::COLLECTION } else { synth::msg::MATERIALS }));
+        // Page 10 (`FUN_0028b188`, `FUN_0028f9a8`): 18 rows of group 0x60 in two columns of nine, row i at `(i % 2) * +0x20`,
+        // `(i / 2) * +0x1c`. The list widget's rows are the pairs (`FUN_002858e8`: `(count + 1) / 2` rows, nine shown), so the
+        // cursor takes a pair; the number sits at the group's x, the NEW tag ends there, and a number the count-up moved is
+        // drawn bright (session `+0x10`, `FUN_0028f468(0)`).
+        synth::Page::Materials { totals: true } => {
+            title(scene, message(text, synth::msg::COLLECTION));
+            let (col, wo) = (group_col(m, 0x60), m.seqd.as_ref().and_then(window_origin).unwrap_or(base));
+            let first = s.mat.saturating_sub(LIST_ROWS - 1);
+            for r in first..(first + LIST_ROWS).min(s.slots.len().div_ceil(2)) {
+                for c in 0..2 {
+                    let Some(&i) = s.slots.get(r * 2 + c) else { continue };
+                    let node = (r - first) * 2 + c;
+                    let y = base[1] + pitch * (r - first) as f32;
+                    let x = base[0] + col * c as f32;
+                    let v = s.shown.get(i).copied().unwrap_or_else(|| moogle.total_at(i));
+                    let label = if moogle.total_at(i) == 0 { masked(text, &name(mats[i])) } else { name(mats[i]) };
+                    let lit = s.marks.rows >> i & 1 != 0;
+                    let color = if lit { at::SELECTED } else { pick(r, s.mat, true) };
+                    set_label(scene, n.list[node], Some(text_label(text, label, color, 0, [x, y])));
+                    set_label(scene, n.prices[node], Some(text_label(text, literal(text, &format!("{v}")), color, 0, [x + second.unwrap_or(0.0), y])));
+                    put_tag(m, scene, node, tag_of(synth::material_mark(&s.marks, i)), [x + second.unwrap_or(0.0), y]);
+                    put_plate(m, scene, node, Some(0x60), [wo[0] + col * c as f32, wo[1] + pitch * (r - first) as f32]);
+                }
+            }
+            if !s.slots.is_empty() {
+                hand(scene, s.mat - first);
+            }
+        }
+        synth::Page::Materials { totals: false } => {
+            title(scene, message(text, synth::msg::MATERIALS));
+            let wo = m.seqd.as_ref().and_then(window_origin).unwrap_or(base);
             let first = s.mat.saturating_sub(LIST_ROWS - 1);
             for (k, &i) in s.slots.iter().enumerate().skip(first).take(LIST_ROWS) {
-                // Page 10 shows the counting-up totals (`s.shown`), page 0x17 the stock.
-                let v = if totals { s.shown.get(i).copied().unwrap_or_else(|| moogle.total_at(i)) } else { moogle.stock_at(i) };
-                // A material never handed over (listed by story flag 0x4837, `FUN_0028f9a8`) shows its name as "?".
-                let label = if totals && moogle.total_at(i) == 0 { masked(text, &name(mats[i])) } else { name(mats[i]) };
-                row(scene, k - first, label, pick(k, s.mat, true), Some(format!("{v}")));
+                row(scene, k - first, name(mats[i]), pick(k, s.mat, true), Some(format!("{}", moogle.stock_at(i))));
                 // The NEW / VIEWED tag of a material handed over for the first time at this opening (session `+8`).
                 put_tag(m, scene, k - first, tag_of(synth::material_mark(&s.marks, i)), tag_at(row_y(k - first)));
+                put_plate(m, scene, k - first, Some(0x6e), [wo[0], wo[1] + pitch * (k - first) as f32]);
             }
             if !s.slots.is_empty() {
                 hand(scene, s.mat - first);
@@ -1441,6 +1513,21 @@ fn draw_tabs(m: &ShopMenu, scene: &mut MenuScene, text: &MenuText, b: &synth::Bo
         set_label(scene, a, Some(text_label(text, message(text, u32::from(name)), color, 0, name_at)));
         set_label(scene, z, Some(text_label(text, literal(text, &format!("{number}")), color, 0, number_at)));
     }
+    // Group 0x65 (`FUN_0028aaa8`, `FUN_0028f850`): the heading 0xbbc6 at the group's anchor, and two children on the same line,
+    // the number of kinds (`+0x54`) and the total (`+0x58`), each followed by its word (0xbbc7, 0xbbc8). They sit at the
+    // group's `+0x20` and x; the widget's alignment flag is 1, read as right aligned [inferred: left aligned the total would
+    // start at x 479 and run off the 512 wide screen].
+    let Some(q) = m.seqd.as_ref() else { return };
+    let (Some(at), Some(g)) = (plate_origin(q, WORDS), q.groups.get(WORDS)) else { return };
+    let base = 2 * TABS;
+    let with_word = |n: u32, word: u32| {
+        let mut v = literal(text, &format!("{n}"));
+        v.extend(message(text, word).into_iter().filter(|t| *t != Token::End));
+        v
+    };
+    set_label(scene, m.nodes.tabs[base], Some(text_label(text, message(text, 0xbbc6), at::IDLE, 0, at)));
+    set_label(scene, m.nodes.tabs[base + 1], Some(text_label(text, with_word(shown.kinds, 0xbbc7), at::IDLE, 1, [at[0] + g.unk20 as f32, at[1]])));
+    set_label(scene, m.nodes.tabs[base + 2], Some(text_label(text, with_word(shown.total, 0xbbc8), at::IDLE, 1, [at[0] + g.x as f32, at[1]])));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2972,8 +3059,9 @@ pub mod synth {
                     }
                     _ => Act::None,
                 },
-                Page::Materials { .. } => match k {
-                    _ if vertical => step(&mut self.mat, self.slots.len(), k),
+                Page::Materials { totals } => match k {
+                    // Page 10's list widget has a row per pair of materials (`FUN_002858e8`: `(count + 1) / 2` rows).
+                    _ if vertical => step(&mut self.mat, if totals { self.slots.len().div_ceil(2) } else { self.slots.len() }, k),
                     Key::Cancel => {
                         self.goto(b, s.moogle(), Page::Top);
                         Act::Page
@@ -4026,6 +4114,34 @@ mod tests {
         assert_eq!(tabs[4 + 5].0, [229.0, 85.0], "category 5: second column (pitch 90), second row");
         assert_eq!(tabs[4 + 12].0, [139.0, 131.0], "category 12 starts the fourth row");
         assert!(tabs[4 + 3].1[0] < 512.0, "the last column's number starts inside the screen");
+    }
+
+    #[test]
+    fn page_10_cursor_takes_a_pair_of_materials_and_the_stock_page_one() {
+        let (mix, t, mats) = mix();
+        let b = Book { mix: &mix, t: &t, mats: &mats, rank: &rk, flag1: &cat };
+        let mut s = Fake::default();
+        s.flags.push(0x4837);
+        let (mut x, _) = Session::start(&b, &mut s);
+        x.goto(&b, &s.m, synth::Page::Materials { totals: true });
+        assert_eq!(x.slots.len(), 5, "story flag 0x4837 lists every material");
+        let mut seen = vec![x.mat];
+        for _ in 0..3 {
+            x.key(Key::Down, &b, &mut s);
+            seen.push(x.mat);
+        }
+        assert_eq!(seen, vec![0, 1, 2, 0], "three rows of pairs (2, 2, 1), then the cursor wraps");
+    }
+
+    #[test]
+    fn the_disc_kinds_and_total_words_and_page_10_columns() {
+        let Ok(iso) = std::env::var("KH2_ISO") else { return };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let two = layd::parse_2ld(&a.read("menu/us/itemshop.2ld").unwrap()).unwrap();
+        let q = &two.layd.seqs[two.layd.seqs.iter().position(|q| q.groups.len() > TAG_NEW.max(TAG_VIEWED)).unwrap()];
+        assert_eq!(plate_origin(q, WORDS), Some([239.0, 131.0]), "window anchor (24, 60) plus the group's (215, 71)");
+        assert_eq!((q.groups[WORDS].unk20, q.groups[WORDS].x), (160, 240), "kinds at +0x20, total at x");
+        assert_eq!((q.groups[0x60].unk20, q.groups[0x60].unk1c), (228, 23), "page 10: second column 228 right, rows 23 apart");
     }
 
     #[test]

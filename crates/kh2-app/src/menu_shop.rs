@@ -783,7 +783,7 @@ fn load(m: &mut ShopMenu, disc: &Disc, scene: &mut MenuScene, images: &mut Asset
     }
     // The row plates come before the texts so that the texts draw over them.
     let plate_seq = mark_seq.map(|q| m.seq_base + q);
-    for _ in 0..2 * LIST_ROWS {
+    for _ in 0..2 * LIST_ROWS + TAB_PLATES {
         n.plates.push(add(scene, plate_seq, tex));
     }
     n.title = add(scene, None, tex);
@@ -1162,6 +1162,8 @@ const WINDOW_GROUP: usize = 0x67;
 const RANK_TAB: usize = 99;
 const CATEGORY_TAB: usize = 100;
 const TABS: usize = 17;
+/// The tab grid's plates (`FUN_0028aaa8`): one per tab and the line of group 0x65, after the rows' plates in `Nodes::plates`.
+const TAB_PLATES: usize = TABS + 1;
 /// The kinds and total words' group (`FUN_0028aaa8`).
 const WORDS: usize = 0x65;
 
@@ -1169,6 +1171,13 @@ const WORDS: usize = 0x65;
 /// the scale (`FUN_00236cf8` -> `FUN_002375c0`); `None` when the group has no such animation.
 fn anchor_of(q: &kh2_image::seqd::Seqd, group: usize) -> Option<[f32; 2]> {
     q.anchor(group, q.last_frame(group), &kh2_image::seqd::Ext::default()).map(|a| [a[0] as f32, a[1] as f32])
+}
+
+/// A child of a group-0x65 text: the number first, then the word appended after it (`FUN_001918a0` with the format `%d`,
+/// then `FUN_002554f0` of the word's message, `FUN_0028f850`).
+fn number_then_word(mut number: Vec<Token>, word: Vec<Token>) -> Vec<Token> {
+    number.extend(word.into_iter().filter(|t| *t != Token::End));
+    number
 }
 
 /// Where a widget parented to the header window starts: the window's anchor (`FUN_0029b060`), then the widget's own group
@@ -1181,6 +1190,16 @@ fn plate_origin(q: &kh2_image::seqd::Seqd, group: usize) -> Option<[f32; 2]> {
     Some([w[0] + a[0], w[1] + a[1]])
 }
 
+/// Where tab `n` of `group` sits from the window's anchor: rank tab k at k times the group's `+0x1c` below, category tab n at
+/// `(n % 4) * +0x20`, `(n / 4) * +0x1c` (`FUN_0028aaa8`).
+fn tab_cell(g: &kh2_image::seqd::AnimGroup, group: usize, n: usize) -> (f32, f32) {
+    if group == RANK_TAB {
+        (0.0, (g.unk1c * n as i32) as f32)
+    } else {
+        ((g.unk20 * (n % 4) as i32) as f32, (g.unk1c * (n / 4) as i32) as f32)
+    }
+}
+
 /// The place of each tab's name and number (`FUN_0028aaa8`): rank tab k at the group's anchor and k times its `+0x1c`
 /// below; category tab n at `(n % 4) * +0x20`, `(n / 4) * +0x1c`; the number is a child at the group record's x, y.
 /// Index 0..4 are the rank tabs, 4.. the categories.
@@ -1190,8 +1209,8 @@ fn tab_places(q: &kh2_image::seqd::Seqd) -> Option<Vec<([f32; 2], [f32; 2])>> {
     for (group, count) in [(RANK_TAB, 4usize), (CATEGORY_TAB, 13)] {
         let (a, g) = (anchor_of(q, group)?, q.groups.get(group)?);
         for n in 0..count {
-            let (dx, dy) = if group == RANK_TAB { (0, g.unk1c * n as i32) } else { (g.unk20 * (n % 4) as i32, g.unk1c * (n / 4) as i32) };
-            let name = [w[0] + a[0] + dx as f32, w[1] + a[1] + dy as f32];
+            let (dx, dy) = tab_cell(g, group, n);
+            let name = [w[0] + a[0] + dx, w[1] + a[1] + dy];
             v.push((name, [name[0] + g.x as f32, name[1] + g.y as f32]));
         }
     }
@@ -1518,13 +1537,22 @@ fn draw_tabs(m: &ShopMenu, scene: &mut MenuScene, text: &MenuText, b: &synth::Bo
     // group's `+0x20` and x; the widget's alignment flag is 1, read as right aligned [inferred: left aligned the total would
     // start at x 479 and run off the 512 wide screen].
     let Some(q) = m.seqd.as_ref() else { return };
+    // The tab plates (`FUN_0028aaa8`: rank plate k from group 0x63, category plate n from group 0x64, each a child of the
+    // window at the tab's cell) and the line of group 0x65 under the heading, drawn from the groups' own art. A category
+    // plate exists whether or not its tab shows a name [V code: the plate is built for all 13]. The effect of the colour
+    // id `FUN_00138e78(plate, 0x3825a0 / 0x3825a4)` sets on the widget was not read, so the plates keep the art's colours.
+    if let Some(w) = window_origin(q) {
+        for k in 0..TABS {
+            let group = if k < 4 { RANK_TAB } else { CATEGORY_TAB };
+            let Some(g) = q.groups.get(group) else { continue };
+            let (dx, dy) = tab_cell(g, group, if k < 4 { k } else { k - 4 });
+            put_plate(m, scene, 2 * LIST_ROWS + k, Some(group), [w[0] + dx, w[1] + dy]);
+        }
+        put_plate(m, scene, 2 * LIST_ROWS + TABS, Some(WORDS), w);
+    }
     let (Some(at), Some(g)) = (plate_origin(q, WORDS), q.groups.get(WORDS)) else { return };
     let base = 2 * TABS;
-    let with_word = |n: u32, word: u32| {
-        let mut v = literal(text, &format!("{n}"));
-        v.extend(message(text, word).into_iter().filter(|t| *t != Token::End));
-        v
-    };
+    let with_word = |n: u32, word: u32| number_then_word(literal(text, &format!("{n}")), message(text, word));
     set_label(scene, m.nodes.tabs[base], Some(text_label(text, message(text, 0xbbc6), at::IDLE, 0, at)));
     set_label(scene, m.nodes.tabs[base + 1], Some(text_label(text, with_word(shown.kinds, 0xbbc7), at::IDLE, 1, [at[0] + g.unk20 as f32, at[1]])));
     set_label(scene, m.nodes.tabs[base + 2], Some(text_label(text, with_word(shown.total, 0xbbc8), at::IDLE, 1, [at[0] + g.x as f32, at[1]])));
@@ -4142,6 +4170,46 @@ mod tests {
         assert_eq!(plate_origin(q, WORDS), Some([239.0, 131.0]), "window anchor (24, 60) plus the group's (215, 71)");
         assert_eq!((q.groups[WORDS].unk20, q.groups[WORDS].x), (160, 240), "kinds at +0x20, total at x");
         assert_eq!((q.groups[0x60].unk20, q.groups[0x60].unk1c), (228, 23), "page 10: second column 228 right, rows 23 apart");
+    }
+
+    #[test]
+    fn the_disc_kinds_and_total_words_text() {
+        let Ok(iso) = std::env::var("KH2_ISO") else { return };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let msgs = kh2_image::text::Messages::from_bar(&a.read("msg/us/sys.bar").unwrap()).unwrap();
+        let glyphs = |id: u32| -> Vec<usize> { msgs.tokens(id).unwrap().iter().filter_map(|t| if let Token::Glyph(g) = t { Some(*g as usize) } else { None }).collect() };
+        // 0xbbc6 is the heading "Types"; 0xbbc7 is a spacing glyph and "Total"; 0xbbc8 is empty. The kinds child is the number
+        // then 0xbbc7 and the total child the number then 0xbbc8, so the line reads "Types 5 Total 13".
+        assert_eq!(glyphs(0xbbc6).len(), 5, "Types");
+        assert_eq!(glyphs(0xbbc7).len(), 6, "a spacing glyph and Total");
+        assert!(glyphs(0xbbc8).is_empty(), "the total's word is empty");
+        let heading = msgs.text(0xbbc6).unwrap();
+        assert_eq!(heading, "Types");
+        assert!(msgs.text(0xbbc7).unwrap().ends_with("Total"));
+        let number = |n: u16| vec![Token::Glyph(n)];
+        let kinds = number_then_word(number(5), msgs.tokens(0xbbc7).unwrap());
+        assert_eq!((kinds[0].clone(), kinds.len()), (Token::Glyph(5), 7), "the number first, then the word's six glyphs, no End between");
+        assert_eq!(kinds.last(), msgs.tokens(0xbbc7).unwrap().get(5), "the word's last glyph ends the text");
+        assert_eq!(number_then_word(number(13), msgs.tokens(0xbbc8).unwrap()), vec![Token::Glyph(13)], "the total has no word after it");
+    }
+
+    #[test]
+    fn the_disc_plate_groups_hold_art() {
+        let Ok(iso) = std::env::var("KH2_ISO") else { return };
+        let Ok(mut a) = kh2_archive::Archive::open(&iso) else { return };
+        let two = layd::parse_2ld(&a.read("menu/us/itemshop.2ld").unwrap()).unwrap();
+        let q = &two.layd.seqs[two.layd.seqs.iter().position(|q| q.groups.len() > TAG_NEW.max(TAG_VIEWED)).unwrap()];
+        let ext = kh2_image::seqd::Ext::default();
+        let visible = |g: usize| -> usize {
+            let last = q.last_frame(g);
+            q.quads(g, last, [0.0, 0.0], &ext).iter().filter(|x| x.color.iter().any(|c| c[3] != 0) && (x.pos[1][0] - x.pos[0][0]) > 1.5).count()
+        };
+        for g in [0x60usize, 0x62, 0x63, 0x64, 0x65, 0x6e] {
+            assert!(visible(g) >= 2, "group {g:#x} has plate art");
+        }
+        for g in [0xb6usize, 0xb7, 0xb8, 0xb9, 0xba, 0xbb, 0xbc] {
+            assert_eq!(visible(g), 0, "group {g:#x} (the 0x7539 child of a plate) draws nothing");
+        }
     }
 
     #[test]

@@ -38,6 +38,7 @@ use kh2_tables::tables::{self as t, Cmd, Magc};
 use crate::assets::Disc;
 use crate::combat::{self, Fighter, Hit, HurtSpheroid, Team, Volume};
 use crate::data::GameData;
+use crate::hud::hud_target::MagicMarker;
 use crate::fx::{self, Bind, LoadedPax, Placement, RunningEffect};
 use crate::magic_rules::{self as rules, Charge, HitMemory, MagiRow, Paid, Status};
 use crate::schedule::Sim;
@@ -126,6 +127,13 @@ fn vm_on() -> bool {
     *ON.get_or_init(|| std::env::var("KH2_MAGIC_VM").is_ok_and(|v| v == "1"))
 }
 
+/// `KH2_MAGIC_NOREC=1` (harness aid): a cast starts as if Sora had no target record (nothing inside AutoLockOnRange), so
+/// Magic Lock-On picks one and the lock-on controller goes to mode 1.
+fn no_record() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("KH2_MAGIC_NOREC").is_ok_and(|v| v == "1"))
+}
+
 macro_rules! mlog {
     ($($t:tt)*) => {
         if log_on() {
@@ -209,6 +217,8 @@ pub struct MagicState {
     strikes: Vec<Strike>,
     /// The cast's target records for the turn triggers of its motion (see `CastTurn`).
     turn: Option<CastTurn>,
+    /// The (mode, shape byte) of the marker last handed to the HUD, for the log and the release.
+    marker_log: Option<(u8, u8)>,
     /// Ticks run, and the tick of the last cast (for the `KH2_MAGIC_LOG=2` attack timeline).
     tick: u64,
     cast_tick: u64,
@@ -595,6 +605,8 @@ fn run(
     let frames = object_frames(&anims, &locals, body_e, &s.weapons);
     // The enemies' target points (each one's target shape centre, Bevy space).
     let targets = victim_targets(&fighters, &anims, &gts);
+    // The shape byte of each enemy's target shape (byte +1 of the record, `parts`), for the lock-on marker.
+    let shape_bytes: Vec<(Entity, u8)> = fighters.iter().filter(|(_, f, _)| f.team == Team::Enemy).filter_map(|(e, f, _)| Some((e, anims.get(f.hurt_body).ok()?.rig.model.shapes.iter().find(|sh| sh.kind == shape_kind::TARGET)?.parts))).collect();
     let alive = |e: Entity| enemies.get(e).is_ok_and(|x| x.alive());
     // A cast's target record as a point for the interpreter (host 1.120), while the target lives.
     let target_point = |t: Option<Entity>| t.filter(|e| alive(*e)).and_then(|e| targets.iter().find(|x| x.0 == e)).map(|x| x.1);
@@ -628,7 +640,7 @@ fn run(
                 // names the caster (the app casts it on Sora), the others Sora's current target
                 // [inferred: the menu code that fills the request's target was not traced].
                 let own = row.id == 3;
-                let mut target = if own { None } else { s.target.filter(|t| alive(*t)) };
+                let mut target = if own || no_record() { None } else { s.target.filter(|t| alive(*t)) };
                 // FUN_00179470 (Magic Lock-On): without a valid record a target is picked (FUN_0018fb98
                 // with range 0: every target shape of every enemy) and the lock-on controller goes to
                 // mode 1 on it (FUN_0019b3f0: the target marker; FUN_0019bcb8 its timer).
@@ -784,6 +796,33 @@ fn run(
         }
         Some(_) if s.state != State::Magic => st.turn = None,
         _ => {}
+    }
+
+    // The controller's marker (FUN_0019bbc0, run by FUN_0019b3f0 on every mode change and by FUN_0019b5e8 on every new record):
+    // the icon exists while the controller is in mode 1 or 2 on a record and is released with it (FUN_0019b580). The mode, the
+    // record's shape byte (FUN_0019b388: byte +1 of the picked target shape, `parts`) and the record's target point are
+    // handed to the HUD each frame. The bubble flag is the target's +0x588 bit 1 with a positive +0xac8 / +0xacc, which an
+    // enemy object here does not carry [GAP], so it stays off.
+    let marker = st.turn.and_then(|t| {
+        let e = t.lock_mode1.filter(|e| alive(*e))?;
+        let at = targets.iter().find(|x| x.0 == e)?.1;
+        let shape = shape_bytes.iter().find(|x| x.0 == e).map_or(0, |x| x.1);
+        Some(MagicMarker { mode: rules::marker_mode(t.lock_mode2), shape, at, alert: false })
+    });
+    match marker {
+        Some(m) => {
+            if st.marker_log != Some((m.mode, m.shape)) {
+                mlog!("magic: marker mode {} shape byte {} group {:?} at {:?}", m.mode, m.shape, crate::hud::hud_target::marker_group(m.mode, m.shape), m.at);
+                st.marker_log = Some((m.mode, m.shape));
+            }
+            commands.insert_resource(m);
+        }
+        None => {
+            if st.marker_log.take().is_some() {
+                mlog!("magic: marker released");
+                commands.remove_resource::<MagicMarker>();
+            }
+        }
     }
 
     // Frame trigger 17 of the motion this tick (FUN_00188498 case 0x11): pay, then event 21. A trigger

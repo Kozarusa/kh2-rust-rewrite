@@ -323,9 +323,17 @@ Port: `magic::step_strike`; the probe is the app's floor test `World::ground_m`.
   FUN_0019b388 into `+0x24`) is 0, else FUN_0013e528(1), for mode 1 (mode 2: 0x1b / 0x17); FUN_0013e528 takes a slot
   of the nine-slot field icon pool (`docs/hud.md`, 0x13e5a0) and FUN_0013e1f0 makes the icon group of that number
   and a second member of group 20 (the speech bubble). FUN_0019bbc0 then places it on the record's target point
-  (FUN_0018efa0) and hands it a flag that is 1 for a player object (`+0x588` bit 2) with `+0xac8` or `+0xacc` above 0 (FUN_0013e438; the flag's use was not traced). [GAP: the HUD side
-  (`hud_target.rs`) is not in this WP's ownership; the icon groups 5, 1, 0x1b, 0x17 were not looked up in the field
-  `.2dd`.]
+  (FUN_0018efa0) and hands it a flag that is 1 for a player object (`+0x588` bit 2) with `+0xac8` or `+0xacc` above 0 (FUN_0013e438; the flag's use was not traced).
+  Marker feed (WP-MG4): `run` inserts the HUD's `MagicMarker { mode, shape, at, alert }` each frame while `CastTurn::lock_mode1` holds a living
+  record (mode 1, or 2 once `lock_mode2` is set) and removes it when the controller is released (FUN_0019b580: second press in
+  mode 2, no re-pick in mode 1) or the cast state ends (the port drops the controller with the cast, see above). The shape byte is
+  byte +1 of the picked target shape: FUN_001894d0 puts the shape pointer into word 3 of the 0x18eec0 result, FUN_0019b388 stores
+  `*(shape + 1)` into controller +0x24, FUN_0019bbc0 reads it as word 9; in the model's collision table that byte is
+  `Shape::parts` (record +1), taken from the enemy's first TARGET shape (the one `victim_targets` uses for the point). `at` is that
+  point. Log lines `magic: marker mode M shape byte S group G` and `magic: marker released`. Test
+  `marker_groups_follow_mode_and_shape_byte`. [GAP: the bubble flag (target +0x588 bit 1 with +0xac8 / +0xacc above 0) is a
+  player-object rule; enemy objects here carry neither field, so `alert` stays false. What a non-zero `parts` byte means for
+  gameplay (which enemies get the pink ring) was not traced beyond this writer chain; the port feeds the table value as it is.]
 - The turn itself is two range triggers of the cast motions (FUN_00188030, player objects only, +0x588 & 2): 22 turns
   toward the command's target record (FUN_00186118), 28 toward the lock-on controller's target (FUN_001861b8, which
   also refreshes the mode-1 timer). The parameter is the limit in degrees per frame (times `DAT_0037a988`, pi/180).

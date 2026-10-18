@@ -6,6 +6,11 @@
 
 use kh2_tables::tables::{Atkp, Magc};
 
+/// The lock-on controller's mode shown by the marker (FUN_0019bbc0): 2 once the lock button moved it to mode 2, else 1.
+pub fn marker_mode(mode2: bool) -> u8 {
+    if mode2 { 2 } else { 1 }
+}
+
 /// Magic slots the game loads (FUN_001a45c0: six, the `magc` ids 0 Fire, 1 Blizzard, 2 Thunder,
 /// 3 Cure, 4 Magnet, 5 Reflect).
 pub const SLOTS: u8 = 6;
@@ -908,6 +913,13 @@ mod tests {
         assert!(mode2_keeps(true, false));
         assert!(!mode2_keeps(true, true), "the button pressed again");
         assert!(!mode2_keeps(false, false), "the record no longer holds");
+    }
+
+    /// The marker follows the controller's mode and the picked shape's byte (FUN_0019bbc0 groups 5 / 1 in mode 1, 0x1b / 0x17 in mode 2).
+    #[test]
+    fn marker_groups_follow_mode_and_shape_byte() {
+        let g = |mode2, shape| crate::hud::hud_target::marker_group(marker_mode(mode2), shape);
+        assert_eq!((g(false, 0), g(false, 1), g(true, 0), g(true, 3)), (Some(5), Some(1), Some(0x1b), Some(0x17)));
     }
 
     /// FUN_0019a4f0 needs all four conditions; FUN_0019b7a8 mode 1 takes the lock button before the timer.

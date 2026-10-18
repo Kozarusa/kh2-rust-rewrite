@@ -1488,3 +1488,4 @@ Files: `party_battle.rs` (`choose_class16`), `party_rules.rs` (`auto_change_swap
   the original restores the whole save body, so after Continue the members keep the HP they had.
 - **Auto Limit [V rule, ported by WP-AL1].** FUN_001d25e0 offers a partner's limit as a reaction command; `reaction_cmd::auto_limit_offer`
   and `limit.rs` port it (rule, gates and gaps: docs/limits-reactions.md "Auto Limit (WP-AL1)").
+- **Limit hide gaps (WP-PY5 review).** FUN_001b28a0 hides only party objects 0 and 1 and only when +0x588 bit 0x400000 is clear and +0xb4c is zero; the port hides every member that is not away and ignores both conditions. FUN_001b37f8 brings the members back only when FUN_001b3bc0 returns 0; with +0x40 bit 0x10 set it calls FUN_001c75c0, which clears the hidden list without showing anyone. The port always shows them. A pause-menu scenario with a locked row was not run (unit test only).

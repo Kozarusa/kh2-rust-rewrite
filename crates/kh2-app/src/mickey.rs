@@ -84,12 +84,14 @@ impl Chance {
 
 /// `FUN_001ce168` (reached from the item use `FUN_001b8658` when the item's user is member 4, Mickey): the `sstm` float at
 /// `+0x54` is the share of Sora's maximum HP that Mickey gives back.
+#[allow(dead_code)] // kept for the untraced rescue trigger (RESCUE_PORTED is false)
 pub const HEAL_SSTM_OFFSET: usize = 0x54;
 
 /// The HP `FUN_001ce168` adds to Sora through his class slot `+0x78` (`FUN_001792f0` -> `FUN_00186238` -> `FUN_001a0100`, which
 /// holds the sum between the record's minimum and maximum): the maximum HP times the share, cut to a whole number.
 /// The rule is the original's; the port does not call it while [`RESCUE_PORTED`] is false (the trigger that makes Mickey use
 /// the item is not traced, docs/menus.md 26.5).
+#[allow(dead_code)] // kept for the untraced rescue trigger (RESCUE_PORTED is false)
 pub fn heal_amount(max_hp: i32, share: f32) -> i32 {
     (max_hp as f32 * share) as i32
 }

@@ -525,6 +525,33 @@ hp 18` .. `atkp 129 damage 6 hp 0`, `experience: enmp 52 defeated: +4 (lvpm 4 x 
 Gaps: the other 12 areas (eh12, eh25, hb08, hb18, he09, ..) were not run, only tt03; the group's `M_EX950` and Dusk-like members were
 not examined; the `atk_dragoon_jump` and `atk_brush_all` modes were not seen in the run; the drop row (29) was not traced further.
 
+## The enemy M_EX700 (WP-EN9f)
+
+`M_EX700` (object 18 = 0x12, `00objentry` row 18: ObjectType 4, `NeoStatus` 1024, flags 0, weight 10, `SpawnLimiter` 9; `enemy::M_EX700`,
+called by its model; row 1833 `M_EX700_NM` is another object with the same model) is a Nobody that the area survey found in 9 areas
+(he05, he07, he09, he11, tt13, tt25, ..). tt13's `btl` program 4 loads b_10 with eleven of them beside Soldiers and Shadows (test
+`tt13_btl_program_4_holds_eleven_m_ex700`, disc). Its BDX script (5322 words, `cargo run -p kh2 -- bdx M_EX700`) has the modes `appear`,
+`mode_battle`, `mode_battle_boss`, `mode_revenge`, `mode_revenge_boss`, `idle`, `idle_time`, `in_look`, `in_move_target`,
+`out_move_target`, `in_to_out`, `out_to_in`, `atk_drill`, `atk_upper`, `footwork`, `freeze`, `leave`, `dead`.
+
+- **Stats.** The set-up routine R12d5 (0x12d5) takes eight arguments from its one call (0x0415); the first, 68 (pushed at 0x03fd), goes to
+  `set_obj_param` (host 2.9, 0x12fc): `enmp` row 68 (the harness enemy has 14 HP; the log shows `experience: enmp 68 defeated: +2 (lvpm 4 x enmp 50)`).
+- **Death.** The `dead` mode (registered at 0x012d, routine R05f0) hands the object's +0x1c to host 1.92, starts element 2 of its effect
+  file (host 1.87 at 0x060e), releases it (0.79), sets bits 3 and 6 and fades out: `Kind::death_effect` true.
+- **Hosts.** No new host call: every one the script reaches is already in `enemy_host.rs`; the run shows no `Missing` line.
+
+Acceptance run (WP-EN9f), tt13: `KH2_PROGRAMS=0,4,0 KH2_WAVE_GROUP=b_10 KH2_WAVE_AT_GROUP=1 KH2_NO_PARTY=1 KH2_AREALOG=1 KH2_BDXLOG=1
+KH2_NO_SOUND=1 KH2_NO_MUSIC=1 kh2-game tt13` (b_10 holds only spawn-kind-2 members, so Sora is put among them). Log: `area group b_10
+kind-2 group 0x6b: M_EX700 (serial 0x2e, wave 0) created`, `SetObjParam { a: 68 }`, then the modes `appear` (about 90 script ticks),
+`out_move_target`, `atk_drill`, `mode_battle`, `out_to_in`, `in_move_target`, `mode_revenge`. With `KH2_KEYS` (Q at 4 s, J every 0.5 s
+from 5.5 s): `M_EX700 hit: atkp 127 damage 2 hp 12` .. `atkp 126 damage 3 hp 0`, `experience: enmp 68 defeated: +2`, `hp 0: switching to
+mode dead`, `drop (host 1.92) asked row 39` and `prize: drop of row 39 .. 3 objects`; the screenshot at 10.5 s shows the OBTAINED MUNNY strip
+and a prize orb. It is hittable, takes damage, dies and pays, so it is enabled (no invulnerable state was met).
+
+Gaps: only tt13 was run (not he05, he07, he09, he11, tt25); the modes `atk_upper`, `footwork`, `freeze`, `in_look`, `in_to_out` and the
+`_boss` modes were not seen; row 39 of the drop table was not traced further; the motion controller is Approx, so the drill and upper
+attacks show only what `PlayMotion` gives.
+
 ## M_EX900 (WP-EN9d)
 
 **Status: described, NOT spawned.** `enemy::M_EX900` exists but is not in `enemy::KINDS`: with it tt03's b_40 would have an

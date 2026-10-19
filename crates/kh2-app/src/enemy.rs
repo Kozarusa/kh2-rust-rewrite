@@ -113,6 +113,12 @@ pub const M_EX420: Kind = Kind { name: "M_EX420", enmp: 9, model: "M_EX420", dea
 /// call at 0x04ec); its `dead` mode (R06c3) starts element 2 of its effect file, fades out and hides, like the Dusk's.
 pub const M_EX880: Kind = Kind { name: "M_EX880", enmp: 52, model: "M_EX880", death_effect: true, status: true };
 
+/// `M_EX700` (object 18 = 0x12, `ObjectType` 4; `00objentry` row 18: `NeoStatus` 1024, flags 0, `SpawnLimiter` 9), a Nobody of 9
+/// areas (the area survey: he05, he07, he09, he11, tt13, tt25), called by its model. Its script hands `enmp` row 68 to
+/// `set_obj_param` (host 2.9: BDX `M_EX700` R12d5 at 0x12d5, the constant pushed at 0x03fd by the call at 0x0415); its `dead` mode
+/// (R05f0) starts element 2 of its effect file, releases it, fades out and hides, like the Dusk's.
+pub const M_EX700: Kind = Kind { name: "M_EX700", enmp: 68, model: "M_EX700", death_effect: true, status: true };
+
 /// `M_EX950` (object 314, `ObjectType` 4; `00objentry` row 314: `NeoStatus` 3009, flags 0, `SpawnLimiter` 17, `SpawnObject1` 1537
 /// `M_EX950_CARD`, `SpawnObject2` 1538 `M_EX950_DICE`), a dice-and-card Nobody of 14 areas (the area survey: ca09, ca10, ca12, ca13,
 /// ca14, ca15, tt03 ..), called by its model. Its script hands `enmp` row 50 to `set_obj_param` (host 2.9: BDX `M_EX950` R2971 at
@@ -127,7 +133,7 @@ pub const M_EX950: Kind = Kind { name: "M_EX950", enmp: 50, model: "M_EX950", de
 pub const M_EX900: Kind = Kind { name: "M_EX900", enmp: 45, model: "M_EX900", death_effect: true, status: true };
 
 /// Every enemy kind the app has.
-pub const KINDS: [&Kind; 13] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX950];
+pub const KINDS: [&Kind; 14] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700, &M_EX950];
 
 /// The rigs of the enemy kinds, by `Kind::name` (Shadow and Soldier share `sora::Rigs`' copies).
 #[derive(Resource, Default)]
@@ -1837,6 +1843,23 @@ mod tests {
         assert_eq!(b21.members.iter().filter(|m| m.kind.name == M_EX880.name).count(), 2);
         assert_eq!(b21.members.iter().filter(|m| m.kind.name == M_EX950.name).count(), 3);
         assert!(KINDS.iter().any(|k| k.model == "M_EX880" && k.enmp == 52));
+    }
+
+    /// tt13's `btl` program 4 loads b_10, which holds eleven `M_EX700` (object 18, a kind of `KINDS`) beside the Soldiers and
+    /// Shadows. Needs `KH2_ISO`.
+    #[test]
+    fn tt13_btl_program_4_holds_eleven_m_ex700() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let groups = area_groups(&disc, "tt13");
+        let ard = disc.read("ard/tt13.ard").and_then(|d| kh2_ard::Area::parse(&d)).map(|(a, _)| a).expect("tt13.ard");
+        let run = kh2_ard::run::run_area(&ard, [0, 4, 0], 0);
+        let b10 = btl_groups(&groups, &run).into_iter().find(|g| g.name == "b_10").expect("program 4 loads b_10");
+        assert_eq!(b10.members.iter().filter(|m| m.kind.name == M_EX700.name).count(), 11);
+        assert!(KINDS.iter().any(|k| k.model == "M_EX700" && k.enmp == 68));
     }
 
     /// tt04's `btl` programs pick their groups (disc): program 0 (a new game) is not in the script and loads none;

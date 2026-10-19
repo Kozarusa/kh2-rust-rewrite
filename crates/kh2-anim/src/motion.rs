@@ -234,10 +234,17 @@ impl Motion {
         let h = 0x10; // after the 16-byte motion header
         match kind {
             0 => {
-                let bone_count = i16_at(b, h) as usize;
-                let total_count = (i16_at(b, h + 2) as usize).max(bone_count);
+                let bone_count = i16_at(b, h) as u16 as usize;
+                let total_count = (i16_at(b, h + 2) as u16 as usize).max(bone_count);
                 let ik_off = u32_at(b, h + 8) as usize;
                 let joints_off = u32_at(b, h + 0x0C) as usize;
+                // The helper bones and the joint table must lie inside the file.
+                if total_count > bone_count && ik_off.saturating_add(64 * (total_count - bone_count)) > b.len() {
+                    return None;
+                }
+                if total_count > 0 && joints_off.saturating_add(4 * total_count) > b.len() {
+                    return None;
+                }
                 let (init_off, init_n) = (u32_at(b, h + 0x14) as usize, u32_at(b, h + 0x18) as usize);
                 let (fwd_off, fwd_n) = (u32_at(b, h + 0x20) as usize, u32_at(b, h + 0x24) as usize);
                 let (inv_off, inv_n) = (u32_at(b, h + 0x28) as usize, u32_at(b, h + 0x2C) as usize);
@@ -523,5 +530,18 @@ mod tests {
         let herm = FCurve { joint: 0, channel: 6, pre: 0, post: 0, keys: vec![key(2, 0.0, 0.0), key(2, 10.0, 10.0)] };
         assert!((herm.eval(5.0) - 5.0).abs() < 1e-5);
         assert!(herm.eval(2.5) < 2.5);
+    }
+}
+
+#[cfg(test)]
+mod bound_tests {
+    use super::*;
+
+    #[test]
+    fn negative_or_huge_joint_counts_are_rejected() {
+        let mut f = vec![0u8; RESERVED + 0x100];
+        f[RESERVED + 0x10..RESERVED + 0x12].copy_from_slice(&1i16.to_le_bytes());
+        f[RESERVED + 0x12..RESERVED + 0x14].copy_from_slice(&(-1i16).to_le_bytes());
+        assert!(Motion::parse(&f).is_none());
     }
 }

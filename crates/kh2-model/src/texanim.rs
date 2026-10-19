@@ -131,7 +131,11 @@ impl Texa {
         let bpp = u16_at(body, 6) as usize;
         let size = ((width * bpp) >> 3) * height;
         let base = u32_at(body, 0x20) as usize;
-        let sprites = (0..u16_at(body, 0xe) as usize)
+        if width > 1024 || height > 1024 {
+            return None;
+        }
+        let count = if size == 0 { 0 } else { (u16_at(body, 0xe) as usize).min(body.len().saturating_sub(base) / size) };
+        let sprites = (0..count)
             .map(|k| {
                 let src = body.get(base + k * size..).unwrap_or(&[]);
                 texture::pixels_to_rgba(container, &g, src, width, height)

@@ -646,7 +646,7 @@ that print the tables and the groups), hooks in `menu.rs` (the plugin, the Statu
 
 - **Tabs** (`FUN_002683c8` fills the u16 at `+0x18` of the page object): bit 0 the leader (when the party count `FUN_00282940` is not 0), bits 1..4
   the four forms (`FUN_00282b80`: the form's item is held and `FUN_00282b20` is false; that function tests the save byte at `+0xc` of
-  the save block against a -1-terminated list at 0x3823a8 [GAP: what the byte is]), bit 5 the summons (`FUN_00268338`: any of the four items at
+  the save block against a -1-terminated list at 0x3823a8 = {10, 11} (the byte is the world being entered, `FUN_00104bd0` stores it at 0x33e86c = save header +0xc; worlds 10 Pride Lands and 11 Atlantica report no forms, so those tabs vanish there; `menu_status::forms_blocked`, WP-ST2; the app takes the world from `AreaRecord::world` [inferred same value]), bit 5 the summons (`FUN_00268338`: any of the four items at
   0x381760 is held), bits 6.. the other party members. The list shows the set bits in ascending order (`FUN_00268828` list index -> tab, `FUN_00268880`
   the reverse).
 - **Page 0x17** (`FUN_00265c48`, handler `FUN_00266000`): the tab rows use the group sets at 0x380860 (leader and members: idle 0x85, 0x87, 0x86; selected
@@ -713,7 +713,7 @@ used AP and AP total as the `Abilities` resource computes (`equipment_stats`, `a
   original does with them was not read). Munny and Time stay.
 - **[I]** the exp-to-next number is held at 0 where the experience total passes the row (the original never shows that state: every gain runs the level-up check `FUN_001b52f8`;
   the app has no level-up yet).
-- **[I]** forms are "available" by `Progress::owns_form`; `FUN_00282b20`'s exclusion is not applied.
+- Forms are "available" by `Progress::owns_form` and not in worlds 10 and 11 (`FUN_00282b20`, WP-ST2; test `no_form_tabs_in_the_worlds_that_block_forms`). [GAP] The summons' extra rows (bit 10 + j) print nothing in `FUN_002673c0`'s case (16.5); still unread. WP-ST2 re-checked: forms (16.5), summons (16.5) and members (19.1) tabs, mask and L1/R1 cycling were already ported by WP-M7/MN7.
 
 ### 10.4 Harness
 

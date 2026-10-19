@@ -203,9 +203,7 @@ fn map_spawn(
                     }
                 };
                 let Some(rig) = rig else {
-                    if wmlog() {
-                        info!("worldmap: {model}: no model; not spawned");
-                    }
+                    warn!("worldmap: {model}: model or motion set not readable; not spawned");
                     continue;
                 };
                 let at = game_to_app(e.position);
@@ -271,11 +269,7 @@ fn load_rig(disc: &Disc, model: &str, anim: &str) -> Option<Arc<Rig>> {
     let file = disc.read(&format!("obj/{model}.mdlx"));
     let m = file.as_deref().and_then(kh2_model::mdlx);
     if m.is_none() {
-        let no_block = file.as_deref().and_then(|f| kh2_bar::parse(f).ok()).is_some_and(|e| !e.iter().any(|x| x.kind == 4));
-        warn!(
-            "worldmap: obj/{model}.mdlx: {}",
-            if no_block { "holds no model block (collision only; its look is the effect file, docs/worldmap.md section 10 W5), not drawn" } else if file.is_some() { "read, but the model reader returns nothing" } else { "not on the disc" }
-        );
+        warn!("worldmap: obj/{model}.mdlx: {}", if file.is_some() { "read, but the model reader returns nothing" } else { "not on the disc" });
     }
     let m = m?;
     // The route marker has no motion set on the disc: it is drawn in its rest pose.

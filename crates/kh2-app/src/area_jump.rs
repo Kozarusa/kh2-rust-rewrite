@@ -198,20 +198,12 @@ impl AfterEvent {
     pub const START_TICKS: u32 = 2;
 }
 
-/// `KH2_WORLDMAP=1`: the world map can be entered (the save point's World Map row and jumps to world 0xf). Off by default: the map has
-/// no landing or exit yet (docs/worldmap.md W6, W7), so the player would be trapped. A deliberate deviation from the original.
-pub fn worldmap_enabled() -> bool {
-    std::env::var("KH2_WORLDMAP").is_ok_and(|v| v == "1")
-}
-
 /// The area a jump to `dest` loads: `None` (with the reason) when the app has no such area or the
 /// disc lacks its `ard/<name>.ard` or `map/us/<name>.map` (`has` answers whether a disc file
 /// exists). The caller then stays: the fade is lifted and Sora keeps his place.
-///
-/// `map` is `worldmap_enabled()`: the world map is entered only with it (deliberate deviation: the map has no exit yet).
-pub fn jump_target(dest: &Dest, has: impl Fn(&str) -> bool, map: bool) -> Result<String, String> {
-    if dest.world == WORLD_MAP && !map {
-        return Err("the world map is not available (the app has only Twilight Town; set KH2_WORLDMAP=1 to enter it)".to_string());
+pub fn jump_target(dest: &Dest, has: impl Fn(&str) -> bool) -> Result<String, String> {
+    if dest.world == WORLD_MAP {
+        return Err("the world map is not available (the app has only Twilight Town)".to_string());
     }
     let Some(name) = area::area_name(dest.world, dest.area) else { return Err(format!("{} is not in the app", dest_name(dest))) };
     for f in [format!("ard/{name}.ard"), format!("map/us/{name}.map")] {
@@ -302,9 +294,6 @@ pub struct JumpMenus {
     /// Reset codes to run now (`FUN_00104e18` runs it at once when the record's wait is not 0; the jump task runs it after
     /// the fade-out); `party::jump_reset` takes them.
     pub resets: Vec<i16>,
-    /// The save point menu's World Map entry (`FUN_002580b8`): ticks of the screen fader going to black while the menu is still
-    /// up (the jump task cannot run, the field is frozen). `draw_fader` paints it; the menu clears it when it hands over.
-    pub map_fade: Option<u32>,
 }
 
 /// What `FUN_0019d9d8` does with a record's words 4 to 6 besides the jump itself (WP-PT1).
@@ -911,7 +900,7 @@ fn tick(
             } else {
                 // FUN_00104c68 -> FUN_00104bd0: the destination becomes the record; the area thread
                 // restarts with it (here: `CurrentArea.name`, which `assets::load_area` picks up).
-                let name = match jump_target(&dest, |f| disc.read(f).is_some(), worldmap_enabled()) {
+                let name = match jump_target(&dest, |f| disc.read(f).is_some()) {
                     Ok(name) => name,
                     Err(why) => {
                         // Staying: lift the fade, keep Sora where he is, and let the exit fire again
@@ -1211,7 +1200,6 @@ fn combined_fade(jump_alpha: f32, event: Option<(f32, bool)>) -> (f32, bool) {
 
 fn draw_fader(
     task: Res<JumpTask>,
-    menus: Option<Res<JumpMenus>>,
     key: Res<Keyhole>,
     player: Option<Res<crate::intro::event_player::EventPlayer>>,
     mut nodes: Query<&mut BackgroundColor, With<FadeNode>>,
@@ -1226,7 +1214,6 @@ fn draw_fader(
         JumpTask::FadeIn { t, .. } if key.wiping => wipe_alpha(false, t, None),
         JumpTask::FadeIn { t, .. } => fade_alpha(false, t),
     };
-    let a = a.max(menus.and_then(|m| m.map_fade).map_or(0.0, |t| fade_alpha(true, t as f32)));
     let (a, white) = combined_fade(a, player.and_then(|p| p.screen_fade()));
     let c = if white { 1.0 } else { 0.0 };
     for mut n in &mut nodes {
@@ -1299,25 +1286,6 @@ mod tests {
         assert_eq!((half.red, half.green, half.blue), (0.0, 0.0, 0.0));
         assert!((half.alpha - 0.5).abs() < 1e-6, "{}", half.alpha);
         assert_eq!(paint(&mut w, JumpTask::Loading { dest, kind: 1 }).alpha, 1.0);
-    }
-
-    /// The save point menu's World Map fade (`JumpMenus::map_fade`) darkens the screen while the jump task is idle.
-    #[test]
-    fn the_world_map_fade_paints_the_fader_while_the_task_is_idle() {
-        use bevy::ecs::system::RunSystemOnce;
-        let mut w = bevy::ecs::world::World::new();
-        w.init_resource::<Keyhole>();
-        w.init_resource::<JumpMenus>();
-        let node = w.spawn((FadeNode, BackgroundColor(Color::NONE))).id();
-        w.insert_resource(JumpTask::Idle);
-        let mut alpha = |w: &mut bevy::ecs::world::World, t: Option<u32>| {
-            w.resource_mut::<JumpMenus>().map_fade = t;
-            w.run_system_once(draw_fader).unwrap();
-            w.get::<BackgroundColor>(node).unwrap().0.to_srgba().alpha
-        };
-        assert_eq!(alpha(&mut w, None), 0.0);
-        assert!((alpha(&mut w, Some(15)) - 0.5).abs() < 1e-6);
-        assert_eq!(alpha(&mut w, Some(FADE_TICKS as u32)), 1.0);
     }
 
     /// The jump's wait leaves the screen clear, and a type 6 record fades to black over `FADE_TICKS` and holds it.
@@ -1409,16 +1377,16 @@ mod tests {
     fn a_jump_to_a_missing_area_stays() {
         let d = |area| Dest::new(2, area, 1);
         let all = |_: &str| true;
-        assert_eq!(jump_target(&d(3), all, false).as_deref(), Ok("tt03"));
+        assert_eq!(jump_target(&d(3), all).as_deref(), Ok("tt03"));
         // Not in the app (world 0x12, area 100's mapping): no area name.
-        assert!(jump_target(&Dest::new(0x12, 1, 0), all, false).is_err());
+        assert!(jump_target(&Dest::new(0x12, 1, 0), all).is_err());
         // A Twilight Town number whose files the disc lacks.
         let only_tt03 = |f: &str| f.contains("tt03");
-        assert_eq!(jump_target(&d(3), only_tt03, false).as_deref(), Ok("tt03"));
-        let e = jump_target(&d(99), only_tt03, false).unwrap_err();
+        assert_eq!(jump_target(&d(3), only_tt03).as_deref(), Ok("tt03"));
+        let e = jump_target(&d(99), only_tt03).unwrap_err();
         assert!(e.contains("ard/tt99.ard"), "{e}");
         let no_map = |f: &str| f.starts_with("ard/");
-        assert!(jump_target(&d(3), no_map, false).unwrap_err().contains("map/us/tt03.map"));
+        assert!(jump_target(&d(3), no_map).unwrap_err().contains("map/us/tt03.map"));
     }
 
     /// Fade kind 0's layout on the user's disc: slot 2 of `tt0field.2dd` is an image and a
@@ -1716,16 +1684,13 @@ mod tests {
     }
 
     #[test]
-    fn type_four_to_the_world_map_loads_wm00() {
+    fn type_four_to_the_world_map_is_not_available() {
         let mut mem = None;
         let j = jump(4, 3, 0, 0, 0);
         let Outcome::Go(d) = resolve_record(&j, (2, 4, 0), None, |_, _| None, |_| false, &table(), &mut mem).unwrap() else { panic!("type 4 goes") };
         assert_eq!(d.world, WORLD_MAP);
-        assert_eq!(jump_target(&d, |_| true, true).as_deref(), Ok("wm00"), "the map area exists since WP-WM2");
-        let off = jump_target(&d, |_| true, false).unwrap_err();
-        assert!(off.contains("world map is not available"), "{off}");
-        let err = jump_target(&d, |f| !f.ends_with(".map"), true).unwrap_err();
-        assert!(err.contains("wm00.map"), "{err}");
+        let err = jump_target(&d, |_| true).unwrap_err();
+        assert!(err.contains("world map is not available"), "{err}");
     }
 
     #[test]

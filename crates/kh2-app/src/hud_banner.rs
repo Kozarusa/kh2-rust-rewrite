@@ -103,7 +103,9 @@ fn build(scene: &mut HudScene, n: &mut BannerNodes) {
     n.banner = add(scene, None);
     for p in 0..POPUPS {
         let root = add(scene, None);
-        let digits = std::array::from_fn(|_| add(scene, Some(root)));
+        // The digits are not children of the prefix: each draws at the popup's own screen point plus its offset
+        // (0x15b0f0: object +0x164 plus the offset at +0xabc), the prefix at that point plus +0x16c (0x138bf0).
+        let digits = std::array::from_fn(|_| add(scene, None));
         n.popups[p] = (root, digits);
     }
     n.built = true;
@@ -227,6 +229,7 @@ pub fn update(
         for (k, d) in digits.iter().enumerate() {
             scene.nodes[*d].visible = k < widths.len();
             if k < widths.len() {
+                scene.nodes[*d].pos = p.pos;
                 scene.nodes[*d].off = [x - half, 0.0];
                 x += widths[k];
             }
@@ -342,7 +345,7 @@ pub fn update_strips(
     // replaces the one up.
     for g in gained.read() {
         strips.0.retain(|s| !(s.timed && s.kind == StripKind::PopupTotal));
-        strips.0.push(NumberStrip { kind: StripKind::PopupTotal, value: g.to_next, pos: [256.0, 300.0], pickup: false, timed: true });
+        strips.0.push(NumberStrip { kind: StripKind::PopupTotal, value: g.to_next, pos: PICKUP_STRIP_POS, pickup: false, timed: true });
         nodes.drawn = [None; STRIPS];
     }
     // A pickup strip goes once its group has played out [inferred: when the game's popup registry
@@ -370,6 +373,14 @@ pub fn update_strips(
             let digits = std::array::from_fn(|_| add(&mut scene, Some(root)));
             nodes.strips[s] = (root, digits);
         }
+        // `KH2_HUDFREEZE=<frame>` holds the strips too.
+        if let Some(f) = std::env::var("KH2_HUDFREEZE").ok().and_then(|v| v.parse::<f32>().ok()) {
+            for (r, d) in nodes.strips {
+                for id in std::iter::once(r).chain(d) {
+                    scene.nodes[id].freeze = Some(f);
+                }
+            }
+        }
         nodes.built = true;
     }
     for i in 0..STRIPS {
@@ -393,7 +404,17 @@ pub fn update_strips(
                 }
             }
         }
-        scene.nodes[root].pos = s.pos;
+        // The registry 0x14f8b0 puts a strip below the strips of lower kind that are up: its offset (+0x24, summed by
+        // 0x14f868) adds the `unk1c` of each such strip's group (stored at 0x358558). So the munny strip (kind 0x11)
+        // sits under the "NEXT LEVEL" strip (kind 0xe) while that one shows [inferred: the sum is taken each frame;
+        // the original takes it when the strip is made, and the clip 9 shows the munny strip back at the top once
+        // the other one is gone].
+        let below = if s.kind == StripKind::Munny && strips.0.iter().any(|o| o.kind == StripKind::PopupTotal) {
+            scene.files.get(FIEL).and_then(|f| f.seq.groups.get(StripKind::PopupTotal.groups().0)).map_or(0.0, |g| g.unk1c as f32)
+        } else {
+            0.0
+        };
+        scene.nodes[root].pos = [s.pos[0], s.pos[1] + below];
         scene.nodes[root].visible = true;
         let mut x = 0.0;
         for (k, d) in digits.iter().enumerate() {
@@ -536,6 +557,18 @@ mod tests {
         assert_eq!(StripKind::PopupTotal.groups(), (48, 38));
         assert_eq!(StripKind::parse("popup"), Some(StripKind::PopupTotal));
         assert_eq!(StripKind::parse("x"), None);
+    }
+
+    /// The popup's digits draw at the popup's own point, not as children of the prefix (0x15b0f0 / 0x138bf0).
+    #[test]
+    fn popup_digits_are_not_children_of_the_prefix() {
+        let mut scene = HudScene::default();
+        let mut n = BannerNodes::default();
+        build(&mut scene, &mut n);
+        for (root, digits) in n.popups {
+            assert_eq!(scene.nodes[root].parent, None);
+            assert!(digits.iter().all(|&d| scene.nodes[d].parent.is_none()));
+        }
     }
 
     #[test]

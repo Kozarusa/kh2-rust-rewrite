@@ -216,7 +216,7 @@ pub fn pay_defeats(
     mut progress: Option<ResMut<Progress>>,
     abilities: Option<Res<crate::abilities::Abilities>>,
     sora: Query<&crate::sora::Sora>,
-    enemies: Query<(&crate::enemy::Enemy, &GlobalTransform)>,
+    enemies: Query<(&crate::enemy::Enemy, &GlobalTransform, Option<&crate::enemy_ai::AiBrain>)>,
     bodies: Query<(&crate::skel::Animator, &GlobalTransform)>,
     (mut log, area, mut shown, mut fx): (
         ResMut<crate::prize::ObtainedLog>,
@@ -231,21 +231,23 @@ pub fn pay_defeats(
     };
     let place = area.as_ref().map_or((0, 0), |a| crate::prize::place_bytes(&a.name));
     for d in defeats.read() {
-        let Some(row) = data.enmp.iter().find(|e| e.id == d.enmp) else { continue };
+        // The row the script's `set_obj_param` left the status block on, else the kind's.
+        let enmp = enemies.get(d.victim).ok().and_then(|(_, _, b)| b.map(|b| b.enmp())).unwrap_or(d.enmp);
+        let Some(row) = data.enmp.iter().find(|e| e.id == enmp) else { continue };
         let table = data.lvpm.first().map_or(0, |l| l.experience);
         // The bonus: the killer is the player and his HP fraction is at or below the sstm float.
         let low_hp = sora.single().ok().filter(|s| d.by_player && s.stats.max_hp > 0 && s.hp as f32 / s.stats.max_hp as f32 <= tables.low_hp_fraction);
         let multiplier = low_hp.map(|_| abilities.as_ref().map_or(1, |a| i32::from(a.block().exp_multiplier)));
         let amount = defeat_payout(table, row.experience, multiplier);
         if amount <= 0 {
-            info!("experience: enmp {} pays nothing (table {table}, row {})", d.enmp, row.experience);
+            info!("experience: enmp {} pays nothing (table {table}, row {})", enmp, row.experience);
             continue;
         }
         let before = progress.experience();
         let paid = progress.pay_experience(amount, &tables.lvup, SORA);
         info!(
             "experience: enmp {} defeated: +{amount} (lvpm {table} x enmp {}{}); total {before} -> {}; Sora needs {} more",
-            d.enmp,
+            enmp,
             row.experience,
             multiplier.map_or(String::new(), |m| format!(", low-HP x{m}")),
             progress.experience(),
@@ -272,7 +274,7 @@ pub fn pay_defeats(
             fx.write(crate::fx::StartBoundSystemEffect { id: LEVEL_UP_SYSTEM_EFFECT, owner: s.body, handle: crate::fx::FxHandle::new() });
         }
         if paid.to_next > 0 && popup_enabled() {
-            let at = enemies.get(d.victim).ok().map(|(e, gt)| {
+            let at = enemies.get(d.victim).ok().map(|(e, gt, _)| {
                 bodies
                     .get(e.body)
                     .ok()
@@ -286,11 +288,14 @@ pub fn pay_defeats(
     }
 }
 
-/// The popup and the "NEXT LEVEL" strip are off unless `KH2_EXP_POPUP=1`: in the harness the digit and its
-/// prefix glyph came apart on screen and the strip position is a guess (docs/hud.md), so their placement is
-/// unverified. The payout, the levels, the obtained log and effect 0xf do not depend on it.
+/// The popup and the "NEXT LEVEL" strip are on; `KH2_EXP_POPUP=0` turns them off. The payout, the levels, the
+/// obtained log and effect 0xf do not depend on it.
 fn popup_enabled() -> bool {
-    std::env::var("KH2_EXP_POPUP").is_ok_and(|v| v != "0")
+    popup_flag(std::env::var("KH2_EXP_POPUP").ok().as_deref())
+}
+
+fn popup_flag(v: Option<&str>) -> bool {
+    v != Some("0")
 }
 
 /// The system effect `FUN_001b54e8` starts on the member's object when a level was reached
@@ -306,8 +311,9 @@ pub struct ExperienceTables {
 }
 
 /// An enemy defeat (`FUN_001b25d0`'s entry): sent by `enemy::receive_hits` the moment a hit takes the last HP.
-/// `enmp` is the row of the enemy's kind (a script's `set_obj_param` row is not followed, docs/progress.md);
-/// `by_player` is whether the hit's attacker was Sora.
+/// `enmp` is the row of the enemy's kind; `pay_defeats` prefers the row the script's `set_obj_param` left the
+/// status block on (`AiBrain::enmp`). `by_player` is whether the attacker was the player's side (false for a
+/// party member's hit and for a script's own HP change).
 #[derive(Message, Clone, Copy, Debug)]
 pub struct EnemyDefeated {
     pub victim: Entity,
@@ -3205,6 +3211,14 @@ impl JsonParser<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The popup is on unless `KH2_EXP_POPUP=0`.
+    #[test]
+    fn the_popup_is_on_by_default() {
+        assert!(popup_flag(None));
+        assert!(popup_flag(Some("1")));
+        assert!(!popup_flag(Some("0")));
+    }
 
     /// `FUN_0027d8b8`: the toggle writes bit 15 of exactly the named slot, keeps the id bits, and
     /// leaves the other slots (and the empty slots between them) alone.

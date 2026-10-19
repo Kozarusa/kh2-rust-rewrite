@@ -20,16 +20,25 @@
 //! walks Sora on the map's collision, the follow camera follows him, and his body and the party are hidden
 //! [I]. The route markers get no motion (their update was not read).
 //!
+//! The two forced events (WP-WM7, `FUN_002ccd88`): a confirm on the Twilight Town symbol (object 0x3a2) with world flag 1 set
+//! and 0x13 clear plays event 0x72d (1837), on the TWTNW symbol (0x456) with world flags 0x35 set and 0x37 clear event 0x72c
+//! (1836), and no prompt follows. The event is a program of the `wm` talk table (`libretto-wm.bar`, `FUN_001b6740`) run by the
+//! executor `FUN_002c4c58`, see [`Script`] and docs/worldmap.md section 10 "W7 events".
+//!
 //! `KH2_WMLOG=1` logs what is spawned.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
 use bevy::prelude::*;
+use kh2_ard::libretto::{Cut, Libretto};
 use kh2_tables::tables as t;
 
 use crate::area::{self, app_yaw, game_to_app, AreaRecord, WORLD_MAP};
 use crate::assets::{AreaPart, Disc};
+use crate::camera::rules::View;
+use crate::camera::CamEvent;
 use crate::progress::Progress;
 use crate::skel::{spawn_skinned, Animator, Rig};
 use crate::sora::Sora;
@@ -57,10 +66,17 @@ pub struct WorldMapPlugin;
 
 impl Plugin for WorldMapPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<MapSpawned>().add_systems(
-            Update,
-            (map_spawn.after(crate::area::run_area_script), map_start, map_cursor_follow, map_hide_party, map_restore_sora).chain(),
-        );
+        use crate::schedule::{sim_running, Frame, Sim};
+        app.init_resource::<MapSpawned>()
+            .init_resource::<WmEvent>()
+            .add_systems(
+                Update,
+                (map_spawn.after(crate::area::run_area_script), map_start, map_cursor_follow, map_hide_party, map_restore_sora).chain(),
+            )
+            .add_systems(Startup, spawn_event_fade)
+            .add_systems(FixedUpdate, (event_start, event_step, event_animate, event_camera).chain().in_set(Sim::EffectTick).run_if(sim_running))
+            .add_systems(Update, event_ui.after(Frame::Pad).before(Frame::Camera))
+            .add_systems(Update, event_hud.in_set(Frame::Hud).after(crate::intro::event_player::field_hud_hide));
     }
 }
 
@@ -367,9 +383,573 @@ fn map_restore_sora(rec: Res<AreaRecord>, sora: Query<&Sora>, mut vis: Query<&mu
     }
 }
 
+// ---- The forced events (WP-WM7) ------------------------------------------------------------------------------------------
+
+/// The events `FUN_002ccd88` starts through `FUN_002c6a40` (the numbers are the libretto's: 1837 and 1836).
+pub const EVENT_TWILIGHT_TOWN: u16 = 0x72d;
+pub const EVENT_TWTNW: u16 = 0x72c;
+/// The symbol objects the checks name (the Twilight Town symbol and the TWTNW symbol).
+const SYMBOL_TWILIGHT_TOWN: u32 = 0x3a2;
+const SYMBOL_TWTNW: u32 = 0x456;
+/// Frames the map ignores the confirm button after an event has ended: the press that closed its last message must not open a prompt.
+const QUIET_FRAMES: u8 = 12;
+/// The event actors' slots (`FUN_002c4c58` op 0x102 stores the object at `+0x2c + 4 * slot`; `FUN_002c5230` removes four).
+const SLOTS: usize = 4;
+/// The talk table of the `wm` world (`FUN_001b6740` finds the event's program in it).
+const TALK_TABLE: &str = "libretto-wm.bar";
+
+/// `FUN_002ccd88`: the event a confirm on the symbol `object` starts, if any. `flag` reads the world flags (`FUN_001b6a18`). The
+/// Twilight Town symbol starts 1837 while flag 1 is set and 0x13 clear, the TWTNW symbol 1836 while 0x35 is set and 0x37 clear; the
+/// original's answer 1 means "an event was started, no prompt follows".
+pub fn forced_event(object: u32, flag: impl Fn(u32) -> bool) -> Option<u16> {
+    if object == SYMBOL_TWILIGHT_TOWN && flag(1) && !flag(0x13) {
+        return Some(EVENT_TWILIGHT_TOWN);
+    }
+    if object == SYMBOL_TWTNW && flag(0x35) && !flag(0x37) {
+        return Some(EVENT_TWTNW);
+    }
+    None
+}
+
+/// The symbol object of a world (the reverse of [`symbol_world`] over the 12 pairs at 0x383338).
+pub fn symbol_object(exe: &[u8], world: u8) -> Option<u32> {
+    let word = |va: usize| exe.get(va.checked_sub(EXE_BIAS)?..va.checked_sub(EXE_BIAS)? + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    (0..SYMBOLS).find_map(|i| (word(SYMBOL_TABLE + 8 * i + 4)? as u8 == world).then(|| word(SYMBOL_TABLE + 8 * i))?)
+}
+
+/// The stage the event's actors stand on: a position and a rotation (radians) the program sets with ops 0x10b and 0x10c
+/// (`FUN_002c9160`, `FUN_002c91d0`: the matrix at `0x1e35400` is built from the rotation at `0x1e353f0` and the position at
+/// `0x1e353e0`, and each actor's world matrix is its own matrix times it, `FUN_002c8ff8`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Stage {
+    pub pos: [f32; 3],
+    pub rot: [f32; 3],
+}
+
+/// `FUN_0011b568`: the matrix of three angles is built by turning about x, then y, then z (`FUN_002fb580`, `FUN_002fb628`,
+/// `FUN_002fb4d8`; each multiplies the four rows by the axis matrix). Read as the usual right-handed turns [inferred: the sign of the
+/// axis matrices was not traced, and kh2-ee does not run their VU0 macro code (the broadcast multiplies return equal rows); the sign is
+/// the one under which Chip, at the left with a turn of -20 degrees, and Dale, at the right with +20, turn toward each other, and the
+/// stage's pitch of 10 degrees looks down on the consoles: the opposite sign shows the floor from below].
+fn game_rotation(rot: [f32; 3]) -> Quat {
+    Quat::from_rotation_z(rot[2]) * Quat::from_rotation_y(rot[1]) * Quat::from_rotation_x(rot[0])
+}
+
+/// Where an actor at `pos` with `rot` (the program's op 0x109 and 0x10a values) is on the stage, in the app's space (centimetres) and
+/// facing: the world matrix of `FUN_002c8ff8`, then the game-to-app axis flip (`game_to_app`, a half turn about x) and the model's
+/// half turn about y (an object at yaw 0 faces `PI` here, `app_yaw`).
+pub fn actor_place(stage: &Stage, pos: [f32; 3], rot: [f32; 3]) -> (Vec3, Quat) {
+    let g = game_rotation(stage.rot);
+    let at = g * Vec3::from(pos) + Vec3::from(stage.pos);
+    let flip = Quat::from_rotation_x(std::f32::consts::PI);
+    (game_to_app(at.to_array()), flip * (g * game_rotation(rot)) * flip.inverse() * Quat::from_rotation_y(std::f32::consts::PI))
+}
+
+/// Where the stage and its camera stand in the app's world, in centimetres: far above the map, clear of its symbols, one of which (Disney
+/// Castle) stands at the game's origin where the program's stage is [inferred: the stage matrix is read as relative to a camera of its own,
+/// as the 59000 cm wide cockpit model and the stage's small coordinates suggest; the original's camera for these events was not found].
+pub const STAGE_ORIGIN: Vec3 = Vec3::new(0.0, 200_000.0, 0.0);
+
+/// The program of an event as the executor `FUN_002c4c58` runs it: the commands in order, each one at once unless it waits. Waits
+/// are the talk reader's op 2 (`FUN_00102460`, frames), op 0x104's duration, and op 1, which holds until its message window has
+/// closed (`FUN_002c6010`: the window's state 7). Fades (ops 5 and 6) do not wait: the programs follow them with an op 2.
+#[derive(Clone, Debug, Default)]
+pub struct Script {
+    cmds: Vec<Cut>,
+    at: usize,
+    wait: f32,
+    window: bool,
+}
+
+impl Script {
+    pub fn new(cmds: Vec<Cut>) -> Script {
+        Script { cmds, ..Script::default() }
+    }
+
+    /// A message window is up and the program waits for it.
+    pub fn waiting_for_window(&self) -> bool {
+        self.window
+    }
+
+    /// Every command ran and nothing is being waited for.
+    pub fn done(&self) -> bool {
+        self.at >= self.cmds.len() && self.wait <= 0.0 && !self.window
+    }
+
+    /// Advances `frames` game frames (60 a second); `closed`: the message window the program waits for has closed. Returns the
+    /// commands that ran, the one that made the program wait last.
+    pub fn step(&mut self, frames: f32, closed: bool) -> Vec<Cut> {
+        if self.window {
+            if !closed {
+                return Vec::new();
+            }
+            self.window = false;
+        }
+        if self.wait > 0.0 {
+            self.wait -= frames;
+            if self.wait > 0.0 {
+                return Vec::new();
+            }
+            self.wait = 0.0;
+        }
+        let mut ran = Vec::new();
+        while let Some(cut) = self.cmds.get(self.at).cloned() {
+            self.at += 1;
+            let hold = match &cut {
+                Cut::Wait(f) => *f,
+                Cut::Fly { frames, .. } => *frames,
+                Cut::Message(_) => {
+                    self.window = true;
+                    0.0
+                }
+                _ => 0.0,
+            };
+            ran.push(cut);
+            if self.window {
+                break;
+            }
+            if hold > 0.0 {
+                self.wait = hold;
+                break;
+            }
+        }
+        ran
+    }
+}
+
+/// A screen fade (ops 5 and 6, `FUN_0014a7c8` out and `FUN_0014a7f0` in): alpha from `from` to `to` over `frames`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fade {
+    pub from: f32,
+    pub to: f32,
+    pub frames: f32,
+    pub t: f32,
+}
+
+impl Fade {
+    pub fn alpha(&self) -> f32 {
+        if self.frames <= 0.0 { self.to } else { self.from + (self.to - self.from) * (self.t / self.frames).clamp(0.0, 1.0) }
+    }
+}
+
+/// One event actor.
+struct Cast {
+    root: Entity,
+    body: Entity,
+    pos: [f32; 3],
+    rot: [f32; 3],
+    /// The motion to start once the body's animator exists, and the ones queued after it (ops 0x103 and 0x111).
+    pending: Option<Arc<kh2_anim::Slot>>,
+    queue: VecDeque<Arc<kh2_anim::Slot>>,
+}
+
+/// A playing event.
+struct Play {
+    id: u16,
+    script: Script,
+    /// The entries of the event's file (op 0x101): (type, bytes).
+    file: Vec<(u16, Vec<u8>)>,
+    notice: bool,
+    stage: Stage,
+    cast: [Option<Cast>; SLOTS],
+    /// The stage camera is on (from op 0x106).
+    camera: bool,
+}
+
+/// The world map's forced events: [`WmEvent::request`] starts one, `FUN_002c6a40`.
+#[derive(Resource, Default)]
+pub struct WmEvent {
+    play: Option<Play>,
+    request: Option<u16>,
+    quiet: u8,
+    fade: Option<Fade>,
+    table: Option<Option<Libretto>>,
+    objs: Option<Vec<t::Objentry>>,
+    rigs: Vec<(String, Option<Arc<Rig>>)>,
+    /// The HUD nodes that were visible when the event began: `FUN_00196760` (called by `FUN_002c6a40`) hides the field HUD until it ends.
+    hud: Option<Vec<usize>>,
+}
+
+impl WmEvent {
+    /// `FUN_002c6a40(event)`.
+    pub fn request(&mut self, id: u16) {
+        if !self.busy() {
+            self.request = Some(id);
+        }
+    }
+
+    /// An event is asked for, plays, or has just ended: the map's own buttons are not read.
+    pub fn busy(&self) -> bool {
+        self.play.is_some() || self.request.is_some() || self.quiet > 0
+    }
+
+    /// The screen fade the event drives, alpha 0..1.
+    pub fn fade_alpha(&self) -> f32 {
+        self.fade.map_or(0.0, |f| f.alpha())
+    }
+}
+
+/// The full-screen node the event's fades paint (under the area jump's own fader).
+#[derive(Component)]
+struct EventFade;
+
+fn spawn_event_fade(mut commands: Commands) {
+    commands.spawn((
+        EventFade,
+        Node { position_type: PositionType::Absolute, left: Val::Px(0.0), top: Val::Px(0.0), width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() },
+        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.0)),
+        GlobalZIndex(999),
+    ));
+}
+
+/// The motion of entry `entry` of the event's file: the entry is a BAR with the motion (type 9) and its triggers (type 16), as an
+/// `.anb` file is (`FUN_002f54d0` takes the entry's data).
+fn entry_motion(file: &[(u16, Vec<u8>)], entry: u32) -> Option<Arc<kh2_anim::Slot>> {
+    let (_, data) = file.get(entry as usize)?;
+    let bar = kh2_bar::parse(data).ok()?;
+    let motion = bar.iter().find(|x| x.kind == 9).and_then(|x| kh2_anim::Motion::parse(x.data))?;
+    let triggers = bar.iter().find(|x| x.kind == 16).map(|x| kh2_anim::Triggers::parse(x.data)).unwrap_or_default();
+    Some(Arc::new(kh2_anim::Slot { tag: format!("entry {entry}"), motion: Some(motion), triggers }))
+}
+
+/// The entries of `libretto/<region>/wm<event>.bar` (op 0x101, `FUN_002c5598`).
+fn event_file(disc: &Disc, id: u16) -> Vec<(u16, Vec<u8>)> {
+    let name = format!("libretto/{}/wm{id}.bar", crate::intro::event_player::REGION);
+    let Some(bytes) = disc.read(&name) else {
+        warn!("worldmap: event {id}: {name} is not on the disc");
+        return Vec::new();
+    };
+    kh2_bar::parse(&bytes).map(|es| es.iter().map(|e| (e.kind, e.data.to_vec())).collect()).unwrap_or_default()
+}
+
+/// `FUN_002c6a40` finds the event's program in the talk table and starts it.
+fn event_start(mut ev: ResMut<WmEvent>, disc: Res<Disc>, rec: Res<AreaRecord>, time: Res<Time<Real>>, mut env_done: Local<bool>) {
+    if ev.play.is_some() {
+        return;
+    }
+    // Harness aid: `KH2_WMEVENT=<event number>` plays that event on the map `KH2_WMEVENT_AT` seconds (default 6) after the start.
+    if !*env_done && rec.world == WORLD_MAP && rec.run.is_some() {
+        let at = std::env::var("KH2_WMEVENT_AT").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(6.0);
+        if let Some(id) = std::env::var("KH2_WMEVENT").ok().and_then(|v| v.parse::<u16>().ok())
+            && time.elapsed_secs() >= at
+        {
+            *env_done = true;
+            ev.request = Some(id);
+        }
+    }
+    let Some(id) = ev.request.take() else { return };
+    let table = ev.table.get_or_insert_with(|| disc.read(TALK_TABLE).and_then(|f| Libretto::from_bar(&f))).clone();
+    let Some(program) = table.and_then(|l| l.program(id)) else {
+        warn!("worldmap: event {id:#x}: no program in {TALK_TABLE}");
+        return;
+    };
+    let cmds: Vec<Cut> = program.iter().map(|c| c.cut()).collect();
+    info!("worldmap: event {id:#x} ({id}) starts (FUN_002c6a40): {} commands; control and the pause menu are held until it ends", cmds.len());
+    ev.play = Some(Play { id, script: Script::new(cmds), file: Vec::new(), notice: false, stage: Stage::default(), cast: [None, None, None, None], camera: false });
+}
+
+/// Queues entries after an actor's motion (`FUN_002c5340`); `start` first makes the first one the actor's motion (`FUN_002c5278`).
+fn queue_motions(c: &mut Cast, file: &[(u16, Vec<u8>)], entries: &[u32], start: bool) {
+    let mut slots = entries.iter().filter_map(|e| entry_motion(file, *e));
+    if start {
+        c.queue.clear();
+        c.pending = slots.next();
+    }
+    c.queue.extend(slots);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn event_step(
+    mut commands: Commands,
+    time: Res<Time<Fixed>>,
+    disc: Res<Disc>,
+    mut ev: ResMut<WmEvent>,
+    mut win: Option<ResMut<crate::hud::hud_msgwin::ScriptWindow>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
+) {
+    let ev = &mut *ev;
+    let frames = time.delta_secs() * 60.0;
+    if let Some(f) = ev.fade.as_mut() {
+        f.t += frames;
+        if f.t >= f.frames && f.to == 0.0 {
+            ev.fade = None;
+        }
+    }
+    let Some(play) = ev.play.as_mut() else {
+        ev.quiet = ev.quiet.saturating_sub(1);
+        return;
+    };
+    let closed = play.script.waiting_for_window() && win.as_mut().is_some_and(|w| std::mem::take(&mut w.closed));
+    for cut in play.script.step(frames, closed) {
+        match cut {
+            Cut::FadeOut(f) => ev.fade = Some(Fade { from: ev.fade.map_or(0.0, |x| x.alpha()), to: 1.0, frames: f, t: 0.0 }),
+            Cut::FadeIn(f) => ev.fade = Some(Fade { from: ev.fade.map_or(1.0, |x| x.alpha()), to: 0.0, frames: f, t: 0.0 }),
+            Cut::Message(id) => {
+                if let Some(w) = win.as_mut() {
+                    // `FUN_002c5db0`: the first class of the message windows, the second after op 0x107.
+                    w.open = Some((id, usize::from(play.notice)));
+                    w.closed = false;
+                }
+                info!("worldmap: event {:#x}: message {id:#x} (FUN_002c5db0)", play.id);
+            }
+            Cut::Notice => play.notice = true,
+            Cut::LoadFile => {
+                play.file = event_file(&disc, play.id);
+                info!("worldmap: event {:#x}: libretto file with {} entries (FUN_002c5598)", play.id, play.file.len());
+            }
+            Cut::Ready => play.camera = true,
+            Cut::Actor { slot, object } => {
+                let slot = slot as usize % SLOTS;
+                if let Some(old) = play.cast[slot].take() {
+                    commands.entity(old.root).despawn();
+                }
+                let objs = ev.objs.get_or_insert_with(|| disc.0.lock().ok().and_then(|mut a| kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).ok()).map(|d| d.rows).unwrap_or_default());
+                let row = objs.iter().find(|r| r.object_id == object);
+                let model = row.map(|r| r.model_name.clone());
+                let anim = row.map(|r| r.animation_name.clone()).unwrap_or_default();
+                let rig = model.as_ref().and_then(|m| match ev.rigs.iter().find(|(n, _)| n == m) {
+                    Some((_, r)) => r.clone(),
+                    None => {
+                        let r = load_rig(&disc, m, &anim);
+                        ev.rigs.push((m.clone(), r.clone()));
+                        r
+                    }
+                });
+                match rig {
+                    Some(rig) => {
+                        let root = commands.spawn((Transform::default(), Visibility::default(), AreaPart)).id();
+                        let body = spawn_skinned(&mut commands, root, rig, &mut meshes, &mut materials, &mut images, &mut bindposes, SCALE);
+                        play.cast[slot] = Some(Cast { root, body, pos: [0.0; 3], rot: [0.0; 3], pending: None, queue: VecDeque::new() });
+                        info!("worldmap: event {:#x}: slot {slot} is object {object:#x} ({}) (FUN_002c5108)", play.id, model.unwrap_or_default());
+                    }
+                    None => warn!("worldmap: event {:#x}: slot {slot} object {object:#x}: model {model:?} is not readable", play.id),
+                }
+            }
+            Cut::Play { slot, entries } => {
+                if let Some(c) = play.cast[slot as usize % SLOTS].as_mut() {
+                    queue_motions(c, &play.file, &entries, true);
+                }
+            }
+            Cut::Queue { slot, entries } => {
+                if let Some(c) = play.cast[slot as usize % SLOTS].as_mut() {
+                    queue_motions(c, &play.file, &entries, false);
+                }
+            }
+            Cut::Place { slot, pos } => {
+                if let Some(c) = play.cast[slot as usize % SLOTS].as_mut() {
+                    c.pos = pos;
+                }
+            }
+            Cut::Turn { slot, rot } => {
+                if let Some(c) = play.cast[slot as usize % SLOTS].as_mut() {
+                    c.rot = rot;
+                }
+            }
+            Cut::StagePos(p) => play.stage.pos = p,
+            Cut::StageRot(r) => play.stage.rot = r,
+            Cut::Remove(slot) => {
+                if let Some(c) = play.cast[slot as usize % SLOTS].take() {
+                    commands.entity(c.root).despawn();
+                }
+            }
+            Cut::RemoveAll => {
+                for c in play.cast.iter_mut().filter_map(Option::take) {
+                    commands.entity(c.root).despawn();
+                }
+            }
+            Cut::Voice(entry) => info!("worldmap: event {:#x}: voice entry {entry} (FUN_002c5630): the app has no voice path for it [GAP]", play.id),
+            Cut::LoadModel(_) | Cut::Wait(_) => {}
+            other => info!("worldmap: event {:#x}: {other:?} not ported", play.id),
+        }
+    }
+    for c in play.cast.iter().flatten() {
+        let (at, facing) = actor_place(&play.stage, c.pos, c.rot);
+        commands.entity(c.root).insert(Transform::from_translation((at + STAGE_ORIGIN) * SCALE).with_rotation(facing));
+    }
+    if play.script.done() {
+        for c in play.cast.iter_mut().filter_map(Option::take) {
+            commands.entity(c.root).despawn();
+        }
+        info!("worldmap: event {:#x} over (FUN_002c6b58): control and the pause menu back", play.id);
+        ev.play = None;
+        ev.quiet = QUIET_FRAMES;
+    }
+}
+
+/// Starts the queued motions once an actor's animator exists, and the next queued one when the last has played.
+fn event_animate(mut ev: ResMut<WmEvent>, mut anims: Query<&mut Animator>) {
+    let Some(play) = ev.play.as_mut() else { return };
+    for c in play.cast.iter_mut().flatten() {
+        let Ok(mut a) = anims.get_mut(c.body) else { continue };
+        if c.pending.is_none() && a.finished {
+            c.pending = c.queue.pop_front();
+        }
+        if let Some(m) = c.pending.take() {
+            a.play_external(m, 0.0);
+        }
+    }
+}
+
+/// The field HUD is hidden while the event plays (`FUN_002c6a40` -> `FUN_00196760` -> `FUN_0014ef48`, draw tags 3 to 6 [inferred: the HUD
+/// nodes that were visible when the event began, but the map panels' own, are the ones turned off, and shown again when it ends, as
+/// `event_player::field_hud_hide` does; the message window comes up later and is not among them]). Runs after the HUD modules each frame.
+fn event_hud(mut ev: ResMut<WmEvent>, mut scene: ResMut<crate::hud::HudScene>, ui: Res<crate::worldmap_ui::MapUi>) {
+    if ev.play.is_none() {
+        if let Some(hidden) = ev.hud.take() {
+            for i in hidden {
+                if let Some(n) = scene.nodes.get_mut(i) {
+                    n.visible = true;
+                }
+            }
+        }
+        return;
+    }
+    let panel = ui.panel_file();
+    let shown = ev.hud.get_or_insert_with(|| scene.nodes.iter().enumerate().filter(|(_, n)| n.visible && Some(n.file) != panel).map(|(i, _)| i).collect()).clone();
+    for i in shown {
+        if let Some(n) = scene.nodes.get_mut(i) {
+            n.visible = false;
+        }
+    }
+}
+
+/// The stage camera: the camera stands at the game's origin looking along its +z (the app's -z) while the program's stage is on [inferred:
+/// the program only moves the stage in front of it, op 0x10b and 0x10c, and no camera command exists]. Set every 60 Hz tick before the
+/// field camera runs, as the event player's track is.
+fn event_camera(ev: Res<WmEvent>, mut cam: ResMut<CamEvent>) {
+    if let Some(play) = ev.play.as_ref()
+        && play.camera
+    {
+        let fov = cam.behind.map_or(1.0, |b| b.fov);
+        cam.track = Some((View { pos: STAGE_ORIGIN, look: STAGE_ORIGIN + Vec3::new(0.0, 0.0, -100.0), fov, roll: 0.0 }, false));
+    }
+}
+
+/// The pad is the event's while it plays (`FUN_00196280`), and the fade node shows the event's fade.
+fn event_ui(ev: Res<WmEvent>, mut pad: ResMut<crate::sora::Pad>, mut fade: Query<&mut BackgroundColor, With<EventFade>>) {
+    if ev.play.is_some() {
+        pad.lock();
+    }
+    for mut n in &mut fade {
+        n.0 = Color::srgba(0.0, 0.0, 0.0, ev.fade_alpha());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_symbols_start_their_event_only_while_the_world_flags_say_so() {
+        let flags = |set: &'static [u32]| move |i: u32| set.contains(&i);
+        // The Twilight Town symbol: flag 1 set and 0x13 clear.
+        assert_eq!(forced_event(0x3a2, flags(&[1])), Some(EVENT_TWILIGHT_TOWN));
+        assert_eq!(forced_event(0x3a2, flags(&[1, 0x35])), Some(EVENT_TWILIGHT_TOWN), "the other symbol's flags do not matter");
+        assert_eq!(forced_event(0x3a2, flags(&[])), None);
+        assert_eq!(forced_event(0x3a2, flags(&[1, 0x13])), None, "the story went on: the prompt opens");
+        assert_eq!(forced_event(0x3a2, flags(&[0x13])), None);
+        // The TWTNW symbol: 0x35 set and 0x37 clear.
+        assert_eq!(forced_event(0x456, flags(&[0x35])), Some(EVENT_TWTNW));
+        assert_eq!(forced_event(0x456, flags(&[0x35, 1])), Some(EVENT_TWTNW));
+        assert_eq!(forced_event(0x456, flags(&[0x35, 0x37])), None);
+        assert_eq!(forced_event(0x456, flags(&[1])), None, "flag 1 belongs to the other symbol");
+        assert_eq!(forced_event(0x456, flags(&[])), None);
+        // No other symbol has an event, whatever is set.
+        assert_eq!(forced_event(0x3a3, flags(&[1, 0x35])), None);
+        assert_eq!((EVENT_TWILIGHT_TOWN, EVENT_TWTNW), (1837, 1836));
+    }
+
+    #[test]
+    fn a_program_waits_where_the_executor_waits() {
+        let mut s = Script::new(vec![Cut::FadeOut(12.0), Cut::Wait(12.0), Cut::LoadFile, Cut::FadeIn(12.0), Cut::Message(0x4bb6), Cut::Wait(5.0), Cut::RemoveAll]);
+        // The fade does not wait; the wait that follows it holds 12 frames.
+        assert_eq!(s.step(1.0, false), [Cut::FadeOut(12.0), Cut::Wait(12.0)]);
+        assert!(s.step(5.0, false).is_empty() && s.step(5.0, false).is_empty(), "10 of 12 frames");
+        assert_eq!(s.step(2.0, false), [Cut::LoadFile, Cut::FadeIn(12.0), Cut::Message(0x4bb6)], "the wait is over; the message holds the program");
+        assert!(s.waiting_for_window() && !s.done());
+        assert!(s.step(60.0, false).is_empty(), "a window that has not closed holds it however long");
+        assert_eq!(s.step(1.0, true), [Cut::Wait(5.0)]);
+        assert!(!s.done());
+        assert!(s.step(4.0, false).is_empty());
+        assert_eq!(s.step(1.0, false), [Cut::RemoveAll]);
+        assert!(s.done());
+        assert!(s.step(1.0, false).is_empty());
+    }
+
+    #[test]
+    fn a_fade_runs_from_one_alpha_to_the_other_over_its_frames() {
+        let f = Fade { from: 0.0, to: 1.0, frames: 12.0, t: 6.0 };
+        assert_eq!(f.alpha(), 0.5);
+        assert_eq!(Fade { t: 99.0, ..f }.alpha(), 1.0);
+        assert_eq!(Fade { from: 1.0, to: 0.0, frames: 0.0, t: 0.0 }.alpha(), 0.0, "no frames: at once");
+    }
+
+    #[test]
+    fn an_actor_stands_where_the_stage_puts_it() {
+        let flat = Stage { pos: [2.0, 38.0, 192.0], rot: [0.0; 3] };
+        let (at, facing) = actor_place(&flat, [-33.0, 0.0, -20.0], [0.0; 3]);
+        assert!((at - Vec3::new(-31.0, -38.0, -172.0)).length() < 1e-3, "the game's y and z flip into the app's: {at}");
+        // An actor at yaw 0 faces the app's +z, back at a camera that looks along -z (`app_yaw(0)` is `PI`).
+        assert!((facing * Vec3::NEG_Z - Vec3::Z).length() < 1e-4 || (facing * Vec3::Z - Vec3::Z).length() < 1e-4, "{:?}", facing * Vec3::Z);
+        // A stage turned about y turns the actor's place around the stage's origin: a point 100 along x ends 100 along z.
+        let turned = Stage { pos: [0.0, 0.0, 0.0], rot: [0.0, std::f32::consts::FRAC_PI_2, 0.0] };
+        let (at, _) = actor_place(&turned, [100.0, 0.0, 0.0], [0.0; 3]);
+        assert!(at.x.abs() < 1e-3 && (at.z.abs() - 100.0).abs() < 1e-3, "{at}");
+        // The stage's translation is not turned with it.
+        let (at, _) = actor_place(&Stage { pos: [50.0, 0.0, 0.0], rot: [0.0, 1.0, 0.0] }, [0.0; 3], [0.0; 3]);
+        assert!((at - Vec3::new(50.0, 0.0, 0.0)).length() < 1e-3);
+    }
+
+    /// The two programs on the disc (the `wm` talk table, `FUN_001b6740`): what the executor does in each, by the opcodes of
+    /// `FUN_002c4c58`, and that each event's file holds an animation entry for every `Play` and `Queue` and a voice entry for every `Voice`.
+    #[test]
+    fn the_programs_of_events_1836_and_1837_run_through_the_executors_ops_on_the_disc() {
+        let Ok(iso) = std::env::var("KH2_ISO") else { return };
+        let disc = Disc::open(std::path::Path::new(&iso));
+        let table = Libretto::from_bar(&disc.read(TALK_TABLE).expect("libretto-wm.bar")).expect("the talk table");
+        let exe = disc.read_root("SLUS_210.05").expect("executable");
+        assert_eq!((symbol_object(&exe, 2), symbol_object(&exe, TWTNW), symbol_object(&exe, 0x7f)), (Some(0x3a2), Some(0x456), None));
+        for (id, objects, messages, voices) in [(EVENT_TWTNW, vec![0x862u32, 0x54, 0x5c, 0x5d], vec![0x4bb6u32, 0x4bb7], 2usize), (EVENT_TWILIGHT_TOWN, vec![0x863, 0x895, 0x896], vec![0x4bb8, 0x4bb9], 2)] {
+            let cmds: Vec<Cut> = table.program(id).unwrap_or_else(|| panic!("event {id} has no program")).iter().map(|c| c.cut()).collect();
+            assert!(!cmds.iter().any(|c| matches!(c, Cut::Other(_))), "event {id} only uses ops the executor knows: {cmds:?}");
+            assert_eq!(cmds.first(), Some(&Cut::FadeOut(12.0)), "event {id} fades out first (op 5)");
+            assert_eq!(cmds.last(), Some(&Cut::FadeIn(12.0)), "and fades in last (op 6)");
+            assert_eq!(cmds.iter().filter(|c| matches!(c, Cut::RemoveAll)).count(), 1, "event {id} removes its actors once");
+            let made: Vec<u32> = cmds.iter().filter_map(|c| if let Cut::Actor { object, .. } = c { Some(*object) } else { None }).collect();
+            assert_eq!(made, objects, "event {id}'s actors");
+            let said: Vec<u32> = cmds.iter().filter_map(|c| if let Cut::Message(m) = c { Some(*m) } else { None }).collect();
+            assert_eq!(said, messages, "event {id}'s messages");
+            let file = event_file(&disc, id);
+            assert!(file.len() >= 8, "event {id}: libretto/us/wm{id}.bar has entries");
+            let voice = cmds.iter().filter(|c| matches!(c, Cut::Voice(_))).count();
+            assert_eq!(voice, voices);
+            for c in &cmds {
+                match c {
+                    Cut::Play { entries, .. } | Cut::Queue { entries, .. } => {
+                        for e in entries {
+                            assert!(entry_motion(&file, *e).is_some(), "event {id}: entry {e} is a motion");
+                        }
+                    }
+                    Cut::Voice(e) => assert_eq!(file.get(*e as usize).map(|f| f.1.starts_with(b"VAGp")), Some(true), "event {id}: entry {e} is a VAG voice"),
+                    _ => {}
+                }
+            }
+            // Played through, the script hands the executor every command once and ends.
+            let mut s = Script::new(cmds.clone());
+            let mut ran = 0;
+            for _ in 0..100_000 {
+                let closed = s.waiting_for_window();
+                ran += s.step(1.0, closed).len();
+                if s.done() {
+                    break;
+                }
+            }
+            assert!(s.done() && ran == cmds.len(), "event {id} ran {ran} of {} commands", cmds.len());
+        }
+    }
 
     #[test]
     fn a_symbol_takes_its_motion_and_colour_from_its_worlds_state() {

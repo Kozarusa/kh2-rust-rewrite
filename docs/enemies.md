@@ -525,6 +525,64 @@ hp 18` .. `atkp 129 damage 6 hp 0`, `experience: enmp 52 defeated: +4 (lvpm 4 x 
 Gaps: the other 12 areas (eh12, eh25, hb08, hb18, he09, ..) were not run, only tt03; the group's `M_EX950` and Dusk-like members were
 not examined; the `atk_dragoon_jump` and `atk_brush_all` modes were not seen in the run; the drop row (29) was not traced further.
 
+## M_EX900 (WP-EN9d)
+
+**Status: described, NOT spawned.** `enemy::M_EX900` exists but is not in `enemy::KINDS`: with it tt03's b_40 would have an
+enemy that can stay invulnerable for over a minute (gap 1), which could soft-lock a Twilight Town mission. The app logs
+`area groups: tt03 btl program 0x49 group b_40: Dusk, Dusk (not in the app: ["M_EX900"])` as before. Test
+`m_ex900_is_described_but_not_spawned` (disc) checks the objentry row (309, type 4, NeoStatus 3004) and that b_40 skips it.
+Everything below was built and run with the kind enabled (the host calls stay and serve any kind).
+
+Event 17 sender search (WP-EN9d, second pass), all negative: the script has no literal 17 (`kh2 bdx M_EX900`); `FUN_0016c620`
+(-> `FUN_0016c4c0`, `FUN_0016c550`) has 19 call sites (`mips_scan --jal 0x16c620`) with fixed ids 0, 6, 10, 0xb, 0xd, 0xe,
+0xf, 0x10, 0x13, 0x17, 0x18, 0x1a, 0x1b (FUN_00169a90, 0016b3e0, 0016b420, 0016bfd0, 001767a8, 00178748, 00182f68,
+00183080, 00185cf0, 001889f0, 001954f8, 001b21f0, 001b2478, 001b2588, 001b28a0, 001b3c70, 001b3d18) and one broadcast to
+the global scripts (FUN_00195690, list 0x35e364); `FUN_0016c500` (7 sites: ids 7, 0xc, 0x14, 0x16 and the broadcast) and
+`FUN_0016c550` (FUN_00187098, the mode machine's hooks, whose ids come from the mode record halfwords; FUN_001becb8, the link
+release, whose event fields +0x57c/+0x580/+0x584 are only ever cleared: `--store-off 0x57c` -> FUN_00168d30, FUN_001beb90).
+The only literal 0x11 handed to `FUN_0016c620` is at 0x188620 in the callback at 0x188498 (reached through `FUN_001889d0` ->
+`FUN_00188cc0`, no direct caller): a command-record interpreter that sends event 0x11 with (object, halfword +4, halfword +6) of
+a command record for one of its cases. That is the sender's shape (code 1 / 2 = halfword +4), but the producer of those command
+records (the object-command queue behind `FUN_00188cc0`) and the jump-table case were not traced, and it is the kind of record the
+event player / mission scripts queue, which the app does not have for enemies. No frame trigger or collision part was read in the
+`M_EX900.mset`. Next step for a later WP: trace the producers of the records `FUN_00188cc0` walks.
+
+`M_EX900` (object 309 = 0x135, `00objentry` row 309: ObjectType 4, `NeoStatus` 3004, weight 500, flags 0, `SpawnLimiter` 10;
+`enemy::M_EX900`, called by its model) appears in 12 areas (eh11, eh25, he09, tt03, tt06, tt07, ..). In tt03 the `btl`
+program 0x49 loads b_40 with it and two Dusks (test `tt03_btl_program_49_holds_an_m_ex900`, disc). Its BDX script
+(7439 words, `cargo run -p kh2 -- bdx M_EX900`) has the modes `appear`, `dive`, `mode_battle`, `btl_attack`, `atk_upper`,
+`mode_revenge`, `rvg_short`, `atk_dead`, `rc_crash`, `crash_dead`, `stun`, `freeze`, `leave`, `dead`.
+
+- **Stats.** Its set-up routine R1ab8 (0x1ab8, one call at 0x08c8) hands `enmp` row 45 (pushed at 0x08af) to `set_obj_param`
+  (host 2.9, 0x1adf): 32 HP in the harness, experience `+10` (`enmp 45 defeated: +10 (lvpm 4 x enmp 250)`).
+- **Death.** The `dead` mode (registered at 0x037d) drops through host 1.92 (row 23 in the run: 6 prize objects and item
+  343), then fades; `Kind::death_effect` true [inferred from the other kinds' dead modes, not traced].
+- **New host calls** (`enemy_host.rs`): 1.13 queue_motion on itself (Approx: the 4-entry queue is kept in `Obj::motion_queue`,
+  its first entry starts when the playing motion ends, a script `play_motion` drops the queue [inferred]; the consumer of the
+  game's ring at the motion controller +0x3c was not traced; it matters: rc_crash plays motion 205 and queues 0); 1.311
+  set_scaled_byte (FUN_001a0ba0: byte +0x1a8 + i of the status block = the enmp row's weakness i times the percent, rounded up;
+  FUN_001a0610 multiplies the damage by byte [attack element] and byte +0x1ae (i = 6), FUN_0018b618 makes a hit ineffective
+  when the product is 0; `enemy_ai` rescales `Stats::weakness`); 1.213 (0x1707d8 -> FUN_001699a8: halfword +0x4c of the
+  objentry row = `NeoStatus`, 1 for every P_EX100 row; the script asks "is the target Sora"; Approx: the context lives in the
+  script frame, its object is the target = the player, answer 1); 2.21 shared_block (FUN_001a5040, a process-wide
+  `SharedBlocks`, the game's list is global); 2.45 hit_atkp_id (the halfword +2 of the hit record; `AiHit::atkp` carries it).
+- **Run** (`KH2_AREALOG=1 KH2_BDXLOG=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1 KH2_NO_PARTY=1 KH2_WAVE_GROUP=b_40 kh2-game tt03`, Sora
+  hitting with J every 0.7 s from 5.5 s): the two Dusks die, `M_EX900 (serial 0x11, wave 1) created near the player`, modes
+  `appear`, `dive`, `mode_revenge`, .., the hits land (`M_EX900 hit: atkp 129 damage 6 hp 0`), `hp 0: switching to mode dead`,
+  `experience: enmp 45 defeated: +10`, item 0x157 picked up. No `unimplemented host call` and no script error.
+
+Gaps: (1) The script keeps a word at +0x18 of its context that is 1 while it flies (set by R0ddb at 0x0ddb, the dive) and makes the
+main loop (0x02d3) set damage scale 6 to 0, so every hit is ineffective. It is reset to 0 by a real hit (0x021a: never, hits are
+not real while it is 0), by clash event 19 (0x01ed), by event_end (0x0292) and by **event 17 code 2** (0x005c, which also
+puts scale 6 back to 100); event 17 code 1 enters `crash_dead`. Nothing in the app sends event 17 and no sender was found
+(callers of `FUN_0016c620` have no literal 0x11; `mips_scan --li 0x11` found `FUN_0016bbe8`, `FUN_001722c0`, `FUN_00178290`,
+`FUN_00179880`, `FUN_0018852c`, none read in detail) [inferred: a motion-embedded or collision event]. So after a dive it stays
+invulnerable for as long as it is not clashed (in a run it sat in `rc_crash` for over a minute, the fallback of the dive end when the
+target is not within 100 cm: R12d9 -> R130f). It dies only when hit before its first dive or after the clash resets the flag.
+(2) The dive's end distance (118 to 126 cm in the harness, the grab path needs under 100) depends on the app's approximate
+motion control (1.61 / 1.12 are Approx), so the paired grab (motion 252, thread 0x1373) was not reached. (3) The other 11 areas were
+not run; tt06 and tt07 are the other Twilight Town areas.
+
 ## The Struggle (WP-7E)
 
 The Struggle rules are in `docs/struggle.md`. For the opponents: b_50, b_51 and b_52 (missions `TT04_MS00`,

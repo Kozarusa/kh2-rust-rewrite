@@ -267,6 +267,12 @@ pub(crate) struct BevyHost<'a> {
     pub(crate) tag: &'a str,
 }
 
+/// The self-targeted motion queue (host 1.13) is enabled for M_EX900 only until it is verified for the other kinds whose
+/// scripts call it (M_EX930, M_EX940, M_EX850, M_EX760, M_EX420): for them the call stays unmapped as before.
+fn queues_motions(tag: &str) -> bool {
+    tag.starts_with("M_EX900#")
+}
+
 fn imp(v: Value) -> (Value, St, &'static str) {
     (v, St::Impl, "")
 }
@@ -315,6 +321,8 @@ impl BevyHost<'_> {
             return;
         }
         self.trace.line(self.tag, &format!("motion request slot {slot} blend {blend}{}", if checked { " (checked)" } else { "" }));
+        // [inferred] a motion started by the script replaces what was queued behind the old one (M_EX900 only).
+        o.motion_queue.clear();
         o.slot = Some(slot);
         o.done = false;
         o.frame = start.unwrap_or_else(|| self.env.rig.mset.get(slot).and_then(|s| s.motion.as_ref()).map_or(0.0, |m| m.frame_start));
@@ -911,6 +919,36 @@ impl BevyHost<'_> {
                 Value::None,
                 "the player-side link (FUN_001beb90: parent +0x570, mover 3) is not in the app: Sora is not attached to the Dancer during its force dance",
             ),
+            // 1.13 queue_motion on this object (0x1703d8 -> FUN_0017e170): appends (slot, blend) to the 4-entry ring
+            // at the motion controller +0x3c; the consumer of that ring was not traced.
+            Call::Func { group: 1, index: 13, args } if args[0].int() as u32 == me && queues_motions(self.tag) => {
+                if let Ok(slot) = usize::try_from(args[1].int()) {
+                    if self.obj.motion_queue.len() == 4 {
+                        self.obj.motion_queue.remove(0);
+                    }
+                    self.obj.motion_queue.push((slot, args[2].float()));
+                }
+                approx(Value::None, "the queue's consumer was not traced: the first entry starts when the playing motion ends, a new play_motion drops the queue [inferred]")
+            }
+            // 1.311 set_scaled_byte (0x174238 -> FUN_001a0ba0): byte +0x1a8 + i of the status block = (halfword i of the
+            // enmp row's table (+0x48) * percent + 99) / 100. FUN_001a0610 multiplies the damage by byte (attack
+            // element) and byte +0x1ae (i = 6) and FUN_0018b618 makes a hit ineffective when their product is 0:
+            // `Stats::weakness`, which `enemy_ai` rescales from the row.
+            Call::Func { group: 1, index: 311, args } if args[0].int() as u32 == GAUGES => match usize::try_from(args[1].int()) {
+                Ok(i) if i < 7 => {
+                    self.obj.weak_scale.push((i, args[2].int()));
+                    imp(Value::None)
+                }
+                _ => missing(Value::None, "set_scaled_byte with an index outside the seven damage scales"),
+            },
+            // 1.213 (0x1707d8): FUN_001699a8 of the object at +4 of the context the argument points at: the halfword at +0x4c
+            // of the object's `00objentry` row, which is `NeoStatus` (1 for every P_EX100 row, Sora's forms; the script
+            // compares it with 1 to ask "is the target Sora"). The pointer is into the script's own frame (the host cannot
+            // read it); the scripts build that context from host 2.23's target record, whose object is always the player
+            // in the app, so the answer is Sora's.
+            Call::Unknown { group: 1, index: 213, .. } => {
+                approx(Value::Int(1), "the context lives in the script's frame; its object is the target, which is always the player here [inferred]")
+            }
             _ => missing(Value::Int(0), "function not mapped"),
         }
     }
@@ -941,8 +979,13 @@ impl BevyHost<'_> {
             // 2.7 hit_reaction (0x18e0d0): byte +0x26 of the hit record, the effective reaction; the app's
             // is `reaction_rules::victim_outcome`'s, the same byte 2.8 classifies.
             Call::Func { group: 2, index: 7, args } => match self.obj.hits.get(&(args[0].int() as u32)) {
-                Some(&(_, r)) => imp(Value::Int(r as i32)),
+                Some(&(_, r, _)) => imp(Value::Int(r as i32)),
                 None => missing(Value::Int(0), "hit_reaction of a handle that is not one of this object's hit records"),
+            },
+            // 2.45 hit_atkp_id (0x18e1c0): the halfword at +2 of the hit record, the id of the attack row.
+            Call::Func { group: 2, index: 45, args } => match self.obj.hits.get(&(args[0].int() as u32)) {
+                Some(&(_, _, atkp)) => imp(Value::Int(atkp as i32)),
+                None => missing(Value::Int(0), "hit_atkp_id of a handle that is not one of this object's hit records"),
             },
             _ => missing(Value::Int(0), "function not mapped"),
         }
@@ -1065,6 +1108,15 @@ mod tests {
         assert!((game_wrap_angle(-3.0 * pi / 2.0) - pi / 2.0).abs() < 1e-5);
         assert!((game_wrap_angle(0.5) - 0.5).abs() < 1e-6);
         assert!((game_wrap_angle(-0.5) + 0.5).abs() < 1e-6);
+    }
+
+    /// Host 1.13 on the object itself queues motions for M_EX900 only; every other kind keeps the old unmapped answer.
+    #[test]
+    fn the_motion_queue_is_enabled_for_m_ex900_only() {
+        assert!(queues_motions("M_EX900#3"));
+        for t in ["M_EX930#1", "M_EX940#2", "M_EX850#1", "M_EX760#4", "M_EX420#5", "Dusk#1"] {
+            assert!(!queues_motions(t), "{t}");
+        }
     }
 
     /// The Dusk reads word 0 of its target record (BDX `M_EX990` 0x136d -> R0217 at 0x021b): the player.

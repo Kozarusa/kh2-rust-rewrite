@@ -113,6 +113,13 @@ pub const M_EX420: Kind = Kind { name: "M_EX420", enmp: 9, model: "M_EX420", dea
 /// call at 0x04ec); its `dead` mode (R06c3) starts element 2 of its effect file, fades out and hides, like the Dusk's.
 pub const M_EX880: Kind = Kind { name: "M_EX880", enmp: 52, model: "M_EX880", death_effect: true, status: true };
 
+/// `M_EX900` (spawned in 12 areas: eh11, eh25, he09, tt03, tt06, tt07, ..; tt03 b_40 holds one beside two Dusks), called by
+/// its model. Its set-up routine R1ab8 (0x1ab8, one call at 0x08c8) hands `enmp` row 45 to `set_obj_param` (host 2.9, 0x1adf;
+/// the 45 is pushed at 0x08af); its `dead` mode is registered at 0x037d [inferred: same death shape as the other kinds]. NOT in `KINDS`: after a dive it stays
+/// invulnerable (script word +0x18, reset only by event 17 code 2, whose sender the app does not have).
+#[allow(dead_code)] // not in `KINDS` on purpose, see docs/enemies.md "M_EX900"
+pub const M_EX900: Kind = Kind { name: "M_EX900", enmp: 45, model: "M_EX900", death_effect: true, status: true };
+
 /// Every enemy kind the app has.
 pub const KINDS: [&Kind; 12] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880];
 
@@ -1602,7 +1609,7 @@ pub fn receive_hits(
             hit_part_plain: true,
         };
         let out = rules::victim_outcome(&rules::HitRow::from_atkp(atk), useless, &ctx, &reaction.patn, &reaction.defaults, &reaction.consts);
-        ai_hits.write(crate::enemy_ai::AiHit { target: h.target, real: rules::reaction_class(out.effective) >= 2, reaction: out.effective });
+        ai_hits.write(crate::enemy_ai::AiHit { target: h.target, real: rules::reaction_class(out.effective) >= 2, reaction: out.effective, atkp: h.atkp });
         // Dying is not part of the reaction rules: the last hit always launches.
         let d = &reaction.defaults;
         let action = match out.action {
@@ -1781,6 +1788,32 @@ mod tests {
         let b20 = btl_groups(&groups, &run).into_iter().find(|g| g.name == "b_20").expect("program 0xa loads b_20");
         assert_eq!(b20.members.iter().filter(|m| m.kind.name == M_EX420.name).count(), 10);
         assert!(KINDS.iter().any(|k| k.model == "M_EX420" && k.enmp == 9));
+    }
+
+    /// `M_EX900` is described but NOT a kind of `KINDS` (it would be invulnerable after its first dive: docs/enemies.md
+    /// "M_EX900"), so tt03's b_40 skips it and keeps its two Dusks. Needs `KH2_ISO`.
+    #[test]
+    fn m_ex900_is_described_but_not_spawned() {
+        assert!(!KINDS.iter().any(|k| k.model == "M_EX900"));
+        assert_eq!((M_EX900.enmp, M_EX900.model), (45, "M_EX900"));
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let rows = {
+            let mut a = disc.0.lock().expect("archive lock");
+            kh2_tables::load::<kh2_tables::tables::Objentry>(&mut a, &kh2_tables::tables::OBJENTRY).expect("objentry").rows
+        };
+        let row = rows.iter().find(|r| r.model_name == "M_EX900").expect("objentry row of M_EX900");
+        assert_eq!((row.object_id, row.object_type, row.neo_status), (309, OBJECT_ENEMY, 3004));
+        let groups = area_groups(&disc, "tt03");
+        let ard = disc.read("ard/tt03.ard").and_then(|d| kh2_ard::Area::parse(&d)).map(|(a, _)| a).expect("tt03.ard");
+        let run = kh2_ard::run::run_area(&ard, [0, 0x49, 0], 0);
+        let b40 = btl_groups(&groups, &run).into_iter().find(|g| g.name == "b_40").expect("program 0x49 loads b_40");
+        assert!(b40.members.iter().all(|m| m.kind.name == DUSK.name), "no M_EX900 member");
+        assert_eq!(b40.skipped, vec!["M_EX900".to_string()]);
+        eprintln!("m_ex900_is_described_but_not_spawned: disc branch ran (row 309, b_40 skips M_EX900)");
     }
 
     /// tt03's `btl` program 7 loads b_21, which holds two `M_EX880` (object 317, a kind of `KINDS`; the group's three

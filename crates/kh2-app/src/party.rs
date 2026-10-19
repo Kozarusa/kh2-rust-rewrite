@@ -378,14 +378,7 @@ impl PartyData {
     /// is 0, and the row of the level held at the table's level count. A level of 0 is taken as 1
     /// [inferred: FUN_001b50c0 would read before the table].
     pub(crate) fn member_status(&self, neo: u16, rec: &crate::progress::Member) -> (i32, i32, i32) {
-        let k = match neo {
-            14 => 1,
-            15 => 6,
-            n @ 1..=13 => n as usize,
-            _ => 1,
-        };
-        let table = self.lvup.get(k - 1).filter(|t| !t.is_empty()).or_else(|| self.lvup.first());
-        let row = table.and_then(|t| t.get((rec.level.max(1) as usize).min(t.len()) - 1));
+        let row = self.lvup_row(neo, rec.level);
         let (mut s, mut m, mut d) = row.map_or((0, 0, 0), |r| (r.strength as i32, r.magic as i32, r.defense as i32));
         s += rec.strength as i32;
         m += rec.magic as i32;
@@ -398,6 +391,38 @@ impl PartyData {
             }
         }
         (s, m, d)
+    }
+
+    /// The `lvup` row `FUN_001b50c0` picks for a member (table by `FUN_001b58d8`, row of the level held at the table's end).
+    fn lvup_row(&self, neo: u16, level: u8) -> Option<&t::Lvup> {
+        let k = match neo {
+            14 => 1,
+            15 => 6,
+            n @ 1..=13 => n as usize,
+            _ => 1,
+        };
+        let table = self.lvup.get(k - 1).filter(|t| !t.is_empty()).or_else(|| self.lvup.first());
+        table.and_then(|t| t.get((level.max(1) as usize).min(t.len()) - 1))
+    }
+
+    /// The rest of a member's status block as `FUN_0019f920` / `FUN_001a0c08` build it from the saved record (the
+    /// strength, magic and defense are `member_status`): AP `+0x18e` = the `lvup` row's AP + the record's `+8` + the
+    /// `item_stat` AP byte (`+7`) of every equipped item, and the resistances `+0x1a8..+0x1ae`, 100 scaled by each
+    /// item's bytes `+8..+0xe` in the order weapons, armor, accessories (`crate::data::fold_resistances`; the order
+    /// is [inferred] from the call order). The ability passives `FUN_001a0c08` also applies are not read.
+    pub(crate) fn member_ap_resistances(&self, neo: u16, rec: &crate::progress::Member) -> (i32, [i32; 7]) {
+        let mut ap = self.lvup_row(neo, rec.level).map_or(0, |r| i32::from(r.ap)) + i32::from(rec.ap);
+        let rows: Vec<[i32; 8]> = rec
+            .weapons
+            .iter()
+            .chain(&rec.armor)
+            .chain(&rec.accessories)
+            .filter(|&&i| i != 0)
+            .filter_map(|item| self.weapons.items.iter().find(|i| i.id == *item).and_then(|i| self.weapons.stats.iter().find(|x| x.id == i.stat_entry)))
+            .map(|s| [s.ability_points, s.unknown08, s.fire_resistance, s.ice_resistance, s.lightning_resistance, s.dark_resistance, s.unknown0d, s.general_resistance].map(i32::from))
+            .collect();
+        ap += rows.iter().map(|r| r[0]).sum::<i32>();
+        (ap, crate::data::fold_resistances(rows.iter()))
     }
 
     /// The record at +0x12c (and the movement block at +0x110): the `prty` row of the object's
@@ -1421,6 +1446,11 @@ fn spawn_party(
             },
             (Some(files), None) => info!("party: {}: weapon {} not attached (no hand bone known for this model)", row.model_name, files.model),
             (None, _) => info!("party: {}: no weapon (item {item}: no went entry for moveset {})", row.model_name, row.neo_moveset),
+        }
+        if let Some(r) = rec.as_ref() {
+            let (s, m, d) = data.member_status(row.neo_status, r);
+            let (ap, res) = data.member_ap_resistances(row.neo_status, r);
+            info!("party: {} status (FUN_0019f920): level {} HP {hp_max} MP {mp_max} strength {s} magic {m} defense {d} AP {ap} resistances {res:?}", row.model_name, r.level);
         }
         info!(
             "party: spawn {} slot {slot} ({} at {group} entrance {entrance}, NeoStatus {}, AI class {class}, walk {walk} run {run}, radius {radius}) at {:?}",
@@ -2522,6 +2552,7 @@ fn party_receive_hits(
         // The victim's defense is the status +0x18c FUN_0019f920 rebuilt (WP-S3, `member_status`).
         if let Some(rec) = progress.as_ref().and_then(|p| p.member(m.neo)) {
             (to.strength, to.magic, to.defense) = data.member_status(m.neo, &rec);
+            (to.ap, to.weakness) = data.member_ap_resistances(m.neo, &rec);
         }
         let useless = crate::combat::hit_is_ineffective(atk, &to);
         let dmg = if useless { game.damage(atk, &from, &to) } else { game.damage(atk, &from, &to).max(1) };
@@ -3389,6 +3420,30 @@ mod tests {
         let heal = game.damage(cure, &caster, &caster);
         eprintln!("Cure (atkp 1525 type {} Power {}): heals {heal}", cure.r#type, cure.power);
         assert_eq!(heal, (m * cure.power as i32 + 99) / 100);
+    }
+
+    /// WP-ST4: a member's AP is the `lvup` AP of its table and level plus the record's byte plus the items' AP, and its
+    /// resistances stay 100 for the new game's gear. A raised record AP and a level change move the AP. Needs `KH2_ISO`.
+    #[test]
+    fn party_member_ap_and_resistances_follow_the_record() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let data = PartyData::load(&disc);
+        let p = crate::progress::Progress::start(&disc).expect("progress");
+        let mut rec = p.member(2).expect("Donald");
+        let row = &data.lvup[1][(rec.level.max(1) as usize).min(data.lvup[1].len()) - 1];
+        let (ap, res) = data.member_ap_resistances(2, &rec);
+        eprintln!("Donald: level {} lvup AP {} record AP {} weapons {:?} -> AP {ap}, resistances {res:?}", rec.level, row.ap, rec.ap, rec.weapons);
+        assert!(ap >= i32::from(row.ap) + i32::from(rec.ap));
+        assert_eq!(res, [100; 7]);
+        rec.ap += 5;
+        assert_eq!(data.member_ap_resistances(2, &rec).0, ap + 5);
+        rec.level = 99;
+        let top = data.lvup[1].last().expect("row");
+        assert_eq!(data.member_ap_resistances(2, &rec).0, ap + 5 - i32::from(row.ap) + i32::from(top.ap), "the level selects the lvup row, held at the table's end");
     }
 
     /// The members' hand objects: the new game's saved weapon word of Donald and Goofy, the `went`

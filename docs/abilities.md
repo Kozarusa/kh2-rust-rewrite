@@ -110,7 +110,8 @@ The game counts equipped copies, so `ground_combo()` and the others are exact; `
    (`FUN_00176c40`); the Reaction Boost bit (104) and `Kind` bit 2, `reaction_boost` percent. Each step
    rounds up (`(x * p + 99) / 100`). Ported as `attacker_bonuses`, called by `enemy::receive_hits`; the
    bits 102..104 are checked against the rows in the tests. Berserk Charge is read in the same routine as
-   an addition to the attack stat while MP-charging (`FUN_001a05d0`), not ported: the app has no MP charge.
+   an addition to the attack stat while MP-charging (`FUN_001a05d0`): ported as `berserk_attack`, hook pending in `enemy.rs`
+   ("Stat field consumers").
 5. Open: HUD or menu code: `ap_used()` / `ap_max()` for an ability menu.
 
 ## Ability readers (WP-A1)
@@ -141,6 +142,32 @@ KH2_ABILITIES=127 KH2_ABILITYLOG=1 KH2_MAGIC_HURT=8:3 KH2_WAVE_GROUP=b_44 kh2-ga
 not seen in a run: the app's own 36-tick invulnerability after every hit (`receive_hits`, not from the
 game) keeps a second hit from landing during most reactions.
 
+## Stat field consumers (WP-AB2)
+
+Block offsets (`FUN_001c0f40`, relative to `status + 0x1cc`): `+0x28` ground combo, `+0x29` air combo, `+0x2a`
+finishers, `+0x2b` experience multiplier, `+0x2c` Defender, `+0x30` Draw, `+0x34` MP regeneration, `+0x38`
+drive gain while charging, `+0x3c` form drain, `+0x4c` Item Boost, `+0x4e` Berserk Charge, `+0x50` Damage Drive,
+`+0x54` MP Rage, `+0x58` Hyper Healing, `+0x5c` Combination Boost, `+0x60` Jackpot, `+0x64` Lucky Lucky, `+0x68`
+summon drain. The readers were found through the callers of `FUN_001768a8` (`mips_scan.py --jal 0x1768a8`).
+
+| field | status | reader [V] |
+|---|---|---|
+| experience multiplier `+0x2b` | wired before this WP (`progress::pay_defeats`) | `FUN_001c46a8`: the payout times the byte while the HP fraction is at or below `sstm +0x144` |
+| Jackpot `+0x60`, Lucky Lucky `+0x64` | wired before (`enemy_ai`, `enemy_host::compute_drop`) | `FUN_00190788` (1.0 plus the three party slots' `+0x60`) scales the prize counts of `FUN_001a3cb0`; the same function adds the slots' `+0x64` to the item roll factor |
+| MP regeneration `+0x34`, drive gain while charging `+0x38`, Draw `+0x30` | wired before (`magic.rs`, `prize.rs`) | `FUN_00175f48`, `FUN_001788d8`, `FUN_001a3700` |
+| Item Boost `+0x4c`, Hyper Healing `+0x58`, summon drain `+0x68` | wired by other WPs (`items.rs`, `party_battle.rs`, `summon.rs`) | `FUN_001b8658` (100 + the ushort), the revive timer, `FUN_00177788` |
+| Defender `+0x2c` | ported, wired in `sora::receive_hits` | `FUN_001a0610`, generic branch: after `strength - defense` the victim's block byte is subtracted too, but only when `FUN_001a0be0(victim)` holds (HP at or below a quarter of the maximum). Port `abilities::defender_bonus` / `hp_is_low`; the hook adds it to the defense of the stats given to `GameData::damage`. The byte is read unsigned (`lbu`). The low-HP gate is the only rule: nothing else in the routine reads `+0x2c` |
+| Damage Drive `+0x50` | ported, wired (`SoraDamaged` message) | `FUN_001792f0` (the player's HP method, vtable `+0x78`): for a negative change `d`, when the status kind (`+0x1af`) is 1 (gauge mode, not in a form), `FUN_001788d8(-d / maximum HP * block +0x50)`; the gauge gain is `FUN_001788d8`'s (`prize::drive_gain`: times `sstm +0x78` and `+0x38` while charging, times `FUN_001ba040`). Port `abilities::damage_drive_units`, `PrizeLib::gauge_units` |
+| MP Rage `+0x54` | ported, wired | `FUN_00176c98` (the same HP method, after Damage Drive): not while the MP charge runs (`FUN_001a05d0`), for a negative change the amount `trunc(-d / maximum HP * block +0x54)` goes to `FUN_00186368` (MP plus the amount, held at the maximum) when it is above 0. Port `abilities::mp_rage_gain`. `FUN_00186368`'s refusal when the object's `+0x7f8` has bit 4 is not modelled |
+| Berserk Charge `+0x4e` | rule ported, hook outside this WP | `FUN_001a0610`, attack rows whose byte `+5` is 0: while the attacker's MP charge runs (`FUN_001a05d0`) and his object has `+0x588` bit 4 the block's ushort is added to the attacker's strength `+0x188` before the formula. Port `abilities::berserk_attack`. The caller is `enemy::receive_hits` (`enemy.rs`, not in this WP's ownership): the strength of the `Stats` given to `row_damage` needs `+ berserk_attack(block, magic.charge.active())` for rows with `critical_adjust != 1` |
+| Combination Boost `+0x5c` | gap | `FUN_001b35e8` (a limit command's per-frame update) multiplies the frame step added to the object's timer `+0xd4` by it; the app's `limit.rs` was not changed (outside this WP's ownership) |
+
+The HP method (`FUN_00185a68` -> vtable `+0x78` = `FUN_001792f0`, the base `FUN_00176c98`) receives the damage after Second Chance
+changed it, so `sora::receive_hits` sends `SoraDamaged` with the damage it applies. Harness: `KH2_ABILITYLOG=1` prints
+`abilities: Damage Drive: ...` and `abilities: MP Rage: ...` lines when the abilities are equipped (`KH2_ABILITY_IDS=396,412`).
+Tests: `defender_applies_only_at_low_hp`, `berserk_charge_adds_strength_only_while_charging`,
+`mp_rage_and_damage_drive_follow_the_hp_method`.
+
 ## Gaps
 
 - Where the real game gives Sora his early abilities (see above), and the selector of `plrp` `Id` 1.
@@ -149,9 +176,10 @@ game) keeps a second hit from landing during most reactions.
   Auto Change, ...): the bit is provided (`has`, `has_bit`); readers located for some of them are in
   "Ability readers" below, the others were not ported. Second Chance, Once More and Leaf Bracer are
   ported (WP-A1).
-- The consumers of the stat fields other than the form drain and the damage boosts (MP regeneration, drive
-  gain while charging, Damage Drive, MP Rage, drop bonuses, experience multiplier, Defender's low-HP rule,
-  Berserk Charge) were not traced or ported; the app computes the numbers exactly but nothing reads them yet.
+- Stat-field consumers not wired (see "Stat field consumers (WP-AB2)"): Berserk Charge needs a one-line hook in
+  `enemy.rs`; the Combination Boost multiplier (`+0x5c`, `FUN_001b35e8`) needs `limit.rs`; the readers of
+  `+0x58` (Hyper Healing) and `+0x4c` (Item Boost) were wired by other work packages (`party_battle::revive_time`,
+  `items.rs`).
 - Resistance multipliers of equipment (`item_stat` fields at `+8..+0xe`) are not exposed.
 - `ap_used()` as the sum of the ability AP costs is inferred (the menu code that checks it was not read);
   the level-up growth that adds abilities (`lvup` Sword/Shield/Staff) is not simulated: there is no

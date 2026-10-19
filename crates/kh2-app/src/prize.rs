@@ -463,6 +463,15 @@ pub fn drive_gain(units: f32, charging: bool, sstm_78: f32, block_38: f32, scale
     (u * scale) as i32
 }
 
+impl PrizeLib {
+    /// `drive_gain` with this table's `sstm[0x78]` and the drive scale of `FUN_001ba040`: the whole gauge
+    /// units `FUN_001788d8` hands to `FUN_001a0290` for `units` in gauge mode. The Damage Drive ability
+    /// (`abilities::damage_drive_units`) uses it.
+    pub fn gauge_units(&self, units: f32, charging: bool, block_38: f32) -> i32 {
+        drive_gain(units, charging, self.sstm[1], block_38, self.consts.drive_scale)
+    }
+}
+
 /// The pickup glow of the player (`FUN_00175c28` starts it, `FUN_00175cb0` counts it down): object
 /// +0xae4 (the running effect's handle) and +0xae8 (frames left).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

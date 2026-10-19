@@ -260,11 +260,22 @@ function at 0x2eec70 (FUN_00112260) sets it from scripts.
   duration; `party_hide` hides every member without `Away` (`hide(0, ..)`) and, on the end, runs `bring_back`
   (the FUN_001c79c8 path, shared with the drive form's return). FUN_001c7740 (hide both, from FUN_001ad9a0 and
   FUN_001c6168) was not traced further. The stand-in has no limit task, so nobody takes the members' place
-  while they are hidden. The member swap fade (FUN_001b3f78: fade 8 frames from `DAT_0037ba60`, then
-  FUN_0017d290 with `DAT_0037ba68..70`) is still a gap: its only callers are FUN_001b41e8 (Auto Change, via
-  FUN_001b4170) and FUN_002a15d0 (from FUN_002514d0), and the app's Auto Change swaps the slot bytes at the KO and
-  lets `spawn_party` rebuild at once; a fade needs the rebuild deferred by 8 frames and a fade-in on the new
-  member. (4) WP-PY5: `friend_ai::friend_update` skips a hidden member (`PartyMember::runs_script`, test
+  while they are hidden. **The member swap fade (WP-PY6).** FUN_001b3f78 (mode 0, from FUN_001b41e8 <- the task
+  FUN_001b4170 that FUN_0017ce60 starts): unless +0x7f8 bit 0x10 is set it runs FUN_001abf40(`DAT_0037ba64`, 0,
+  `DAT_0037ba60` = 8 frames, +0x82c) and sets the bit (it does NOT call FUN_001c7600, so the member is not put on the
+  hidden list), then yields while FUN_001b80e8 finds the object in the busy list (the fade running) and once more;
+  then FUN_0016f968 x3 (releases for the NeoStatus, +1, +2), FUN_001ae100 (party data: the reserve takes the leaving
+  member's place), FUN_0016e638, FUN_0016fb20, FUN_001c7c88 (waits for FUN_00196418 / FUN_00179538) and FUN_0017d290 with
+  `DAT_0037ba68..70` creating the reserve member. The new member gets no fade-in from this function. FUN_001b4260 ends the
+  task (FUN_001a7558 on the party, FUN_001ae060, clears 0x35fec0 bit 2, `DAT_0035f190` = 0). FUN_002a15d0 (called by
+  FUN_002514d0 on the menu path) does not call FUN_001b3f78: once per menu (`DAT_0036d3d0`) it rearranges the slot
+  bytes with FUN_001a75e8 or spawns a small task (FUN_00102808, 0x2a1790) for the member in slot 3; it was not ported
+  (no fade involved). The app: `party_receive_hits` hides the KO'd member (`PartyMember::hide`, 8 frames
+  from `HideFades::swap_from`, no list entry, not hittable) and starts `SwapFade`; `party_swap` waits the fade plus one
+  tick [inferred: the yield after FUN_001b80e8] and then writes the slot bytes, so `spawn_party` rebuilds the set; a second
+  KO's swap waits while one runs (`DAT_0035f190`). Not modelled: the bit 0x100 of the member's +0x108 and `0x35fec0` bit 2
+  (readers not traced), the position FUN_0017d290 picks (the rebuild keeps the app's placement), pad effects (none found in
+  these functions). Test: `the_auto_change_swap_waits_out_the_fade`. (4) WP-PY5: `friend_ai::friend_update` skips a hidden member (`PartyMember::runs_script`, test
   `a_hidden_member_does_not_run_its_script`). (5) WP-PY5: `menu_party::rows` locks a slot whose byte's low five
   bits are in the hidden list: FUN_001a7268 returns locked for slot 0, byte bit 0x80, or FUN_001c7be8(byte & 0x1f)
   (the byte is compared with the list's entries as it stands, `hidden_index` values 0..3; test

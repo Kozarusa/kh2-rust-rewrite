@@ -802,7 +802,7 @@ mod tests {
         app.init_resource::<LimitTask>().init_resource::<LimitHits>().add_message::<crate::enemy_ai::AiHit>().add_message::<crate::combat::IneffectiveHit>().add_systems(Update, count_limit_hits);
         let send = |app: &mut App, n: usize| {
             for _ in 0..n {
-                app.world_mut().write_message(crate::enemy_ai::AiHit { target: a, real: true, reaction: 2 });
+                app.world_mut().write_message(crate::enemy_ai::AiHit { target: a, real: true, reaction: 2, atkp: 0 });
             }
             app.update();
         };

@@ -28,7 +28,7 @@ use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
 use bevy::prelude::*;
 use kh2_tables::tables as t;
 
-use crate::area::{app_yaw, game_to_app, AreaRecord, WORLD_MAP};
+use crate::area::{self, app_yaw, game_to_app, AreaRecord, WORLD_MAP};
 use crate::assets::{AreaPart, Disc};
 use crate::progress::Progress;
 use crate::skel::{spawn_skinned, Animator, Rig};
@@ -59,7 +59,7 @@ impl Plugin for WorldMapPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MapSpawned>().add_systems(
             Update,
-            (map_spawn.after(crate::area::run_area_script), map_start, map_cursor_follow, map_hide_party).chain(),
+            (map_spawn.after(crate::area::run_area_script), map_start, map_cursor_follow, map_hide_party, map_restore_sora).chain(),
         );
     }
 }
@@ -106,6 +106,14 @@ pub fn symbol_look(record: [u8; 4], colour: u32) -> Look {
         effect5: state > 2,
         flag40: !(state > 1 && record[3] & 2 == 0),
     }
+}
+
+/// Worlds the map's record table covers (`FUN_001b4e80`: the 19 worlds).
+const WORLDS_ON_MAP: usize = 19;
+
+/// No world has been revealed (every record's state byte is 0): the app's baseline story, not a state a played game reaches.
+pub fn baseline_map(story: &crate::progress::Story) -> bool {
+    (0..WORLDS_ON_MAP).all(|w| story.world_record(w)[0] == 0)
 }
 
 /// The ring kind of the TWTNW symbol (`FUN_002f7cf8`): 6 with story flag 0x481c clear, 8 set; none in states 0 and 1.
@@ -214,7 +222,13 @@ fn map_spawn(
                 let (slot, tint, note) = match class {
                     Class::Symbol => {
                         let w = symbol_world(&exe, e.object);
-                        let record = w.map_or([0; 4], |w| progress.as_ref().map_or([0; 4], |p| p.story().world_record(w as usize)));
+                        let mut record = w.map_or([0; 4], |w| progress.as_ref().map_or([0; 4], |p| p.story().world_record(w as usize)));
+                        if w == Some(area::TWILIGHT_TOWN) && record[0] == 0 && progress.as_ref().is_some_and(|p| baseline_map(&p.story())) {
+                            // [inferred] The app's baseline story never reveals a world (its flag side effects are not run), which would
+                            // leave the map empty and the player with nothing to land on: Twilight Town, the one world the app has, shows
+                            // in its normal state. A story that has revealed any world is left as it is.
+                            record[0] = 2;
+                        }
                         let look = symbol_look(record, colour_word(&exe, record[0]));
                         let mut note = format!("world {w:?} record {record:02x?} -> motion slot {:#x}, tint {:.2?}", look.slot, look.tint);
                         if !look.visible() {
@@ -342,6 +356,23 @@ fn map_hide_party(rec: Res<AreaRecord>, mut members: Query<&mut Visibility, With
     }
 }
 
+/// Sora's body shows again once the map is left (a landing): the cursor follow hid it, and nothing else sets it back.
+/// His weapons are set by his own tick.
+fn map_restore_sora(rec: Res<AreaRecord>, sora: Query<&Sora>, mut vis: Query<&mut Visibility>, mut hid: Local<bool>) {
+    if rec.world == WORLD_MAP {
+        *hid = true;
+        return;
+    }
+    if !*hid {
+        return;
+    }
+    let Ok(s) = sora.single() else { return };
+    if let Ok(mut v) = vis.get_mut(s.body) {
+        *v = Visibility::Inherited;
+        *hid = false;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,6 +391,20 @@ mod tests {
         assert_eq!((top.effect3, top.effect5, top.flag40), (false, true, true));
         assert_eq!((ring_kind(1, true), ring_kind(2, false), ring_kind(2, true)), (None, Some(6), Some(8)));
         assert_eq!((class_of(0), class_of(1), class_of(2), class_of(3)), (Some(Class::Symbol), Some(Class::Marker), Some(Class::Cursor), None));
+    }
+
+    #[test]
+    fn the_baseline_story_has_no_revealed_world_and_a_revealing_one_is_left_alone() {
+        use crate::progress::{ItemIndex, Progress};
+        let mut p = Progress::from_block(&[], std::sync::Arc::new(ItemIndex::default()));
+        assert!(baseline_map(&p.story()), "a clear block reveals nothing");
+        // A state that has revealed Twilight Town (record state 2): the symbol follows its record, not the fallback.
+        let mut region = vec![0u8; crate::progress::world::LEN];
+        region[4 * usize::from(area::TWILIGHT_TOWN)] = 2;
+        let hex: String = region.iter().map(|b| format!("{b:02x}")).collect();
+        p.apply_json(&format!("{{\"world_state\": \"{hex}\"}}")).unwrap();
+        assert_eq!(p.story().world_record(usize::from(area::TWILIGHT_TOWN))[0], 2);
+        assert!(!baseline_map(&p.story()));
     }
 
     #[test]

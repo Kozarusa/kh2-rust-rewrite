@@ -198,20 +198,21 @@ impl AfterEvent {
     pub const START_TICKS: u32 = 2;
 }
 
-/// `KH2_WORLDMAP=1`: the world map can be entered (the save point's World Map row and jumps to world 0xf). Off by default: the map has
-/// no landing or exit yet (docs/worldmap.md W6, W7), so the player would be trapped. A deliberate deviation from the original.
+/// The world map can be entered (the save point's World Map row and jumps to world 0xf). On by default since WP-WM5 (the map has its
+/// panels and the landing, docs/worldmap.md W6, W7); `KH2_WORLDMAP=0` hides the row and refuses the jump (a harness switch, not the
+/// original's behaviour).
 pub fn worldmap_enabled() -> bool {
-    std::env::var("KH2_WORLDMAP").is_ok_and(|v| v == "1")
+    std::env::var("KH2_WORLDMAP").map_or(true, |v| v != "0")
 }
 
 /// The area a jump to `dest` loads: `None` (with the reason) when the app has no such area or the
 /// disc lacks its `ard/<name>.ard` or `map/us/<name>.map` (`has` answers whether a disc file
 /// exists). The caller then stays: the fade is lifted and Sora keeps his place.
 ///
-/// `map` is `worldmap_enabled()`: the world map is entered only with it (deliberate deviation: the map has no exit yet).
+/// `map` is `worldmap_enabled()`: the world map is entered only with it (`KH2_WORLDMAP=0` turns it off).
 pub fn jump_target(dest: &Dest, has: impl Fn(&str) -> bool, map: bool) -> Result<String, String> {
     if dest.world == WORLD_MAP && !map {
-        return Err("the world map is not available (the app has only Twilight Town; set KH2_WORLDMAP=1 to enter it)".to_string());
+        return Err("the world map is not available (KH2_WORLDMAP=0 turns the map off; the app has only Twilight Town to land in)".to_string());
     }
     let Some(name) = area::area_name(dest.world, dest.area) else { return Err(format!("{} is not in the app", dest_name(dest))) };
     for f in [format!("ard/{name}.ard"), format!("map/us/{name}.map")] {

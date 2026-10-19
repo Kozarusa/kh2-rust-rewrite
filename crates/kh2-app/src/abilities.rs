@@ -125,6 +125,11 @@ pub fn berserk_attack(block: &Block, charging: bool) -> i32 {
     if charging { i32::from(block.berserk_charge) } else { 0 }
 }
 
+/// Berserk Charge for an attack row: only rows whose byte `+5` (`critical_adjust`) is 0 read the strength.
+pub fn berserk_for_row(block: &Block, charging: bool, critical_adjust: u8) -> i32 {
+    if critical_adjust == 0 { berserk_attack(block, charging) } else { 0 }
+}
+
 /// MP Rage (`FUN_00176c98`, the HP method of the player): when HP drops (negative change) and the MP
 /// charge is not running, `FUN_00186368` adds `trunc(damage / maximum HP * mp_rage)` MP (block `+0x54`)
 /// when that is above 0. `FUN_00186368` first refuses when the object's `+0x7f8` has bit 4 [not modelled].
@@ -1158,6 +1163,8 @@ mod tests {
         b.berserk_charge = 7;
         assert_eq!(berserk_attack(&b, true), 7);
         assert_eq!(berserk_attack(&b, false), 0);
+        assert_eq!(berserk_for_row(&b, true, 0), 7);
+        assert_eq!(berserk_for_row(&b, true, 1), 0, "the magic stat rows read no strength");
         let Some(r) = rules() else { return };
         let a = with(&r, &[id::BERSERK_CHARGE]);
         assert!(a.block().berserk_charge > 0);

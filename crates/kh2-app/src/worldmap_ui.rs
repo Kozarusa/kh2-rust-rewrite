@@ -477,7 +477,7 @@ fn map_ui(
     // App-only escape (not in the original): Backspace with no window up returns to the area the map was entered from (Twilight Town
     // at its first area when that is not known), so the player is never stuck on the map.
     if ui.window.is_none() && keys.just_pressed(KeyCode::Backspace) {
-        let dest = ui.from.filter(|d| app_has(d)).unwrap_or(Dest::new(area::TWILIGHT_TOWN, 1, 0));
+        let dest = ui.from.filter(app_has).unwrap_or(Dest::new(area::TWILIGHT_TOWN, 1, 0));
         if let Some(t) = task.as_deref_mut().filter(|t| **t == JumpTask::Idle) {
             warn!("worldmap: escape key (app only): back to world {} area {} entrance {}", dest.world, dest.area, dest.entrance);
             *t = JumpTask::FadeOut { dest, kind: 1, t: 0.0 };

@@ -205,6 +205,93 @@ pub fn parse_land(entry: &[u8]) -> Vec<LandRow> {
     counted::<4>(entry).iter().map(|r| LandRow { world_point: r[0], world: r[1], row: r[2], picture: r[3] }).collect()
 }
 
+/// The BAR kind of the destination pictures in `70landing.bar` (type 24, an IMGD each): `FUN_002f7cc0` takes the `picture`
+/// field of a `land` record as the number among the entries of this kind (`FUN_001684c0(bar, 0x18, n)`).
+pub const PICTURE_KIND: u16 = 24;
+/// The BAR tag of the sequence that draws a destination picture (type 25 SEQD, `FUN_002f7c90`).
+pub const WS_I: &str = "ws_i";
+/// Most pictures read (the file holds 53).
+pub const MAX_PICTURES: usize = 64;
+
+/// The picture entries of `70landing.bar` in file order (`FUN_002f7cc0`'s numbering), at most `MAX_PICTURES`.
+pub fn pictures<'a>(entries: &[kh2_bar::Entry<'a>]) -> Vec<&'a [u8]> {
+    entries.iter().filter(|e| e.kind == PICTURE_KIND).take(MAX_PICTURES).map(|e| e.data).collect()
+}
+
+/// The BAR tag of the key box table in `00progress.bin` (`FUN_002c9310` keeps it at 0x1e35440).
+pub const WMKY: &str = "wmky";
+
+/// One record of `wmky` (16 bytes, sorted by the world, `FUN_002c9320`): a u32 world and three pairs of story flags (`u16` each). The
+/// info panel draws one box for each pair whose first flag is set (`FUN_002c9358`) and fills the first ones as many as there are pairs
+/// whose two flags are set (`FUN_002c93c0`, `FUN_002cf6d0`). A flag of 0 is no flag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyBoxes {
+    pub world: u32,
+    pub pairs: [(u16, u16); 3],
+}
+
+/// The `wmky` entry (11 records of 16 bytes).
+pub fn parse_wmky(entry: &[u8]) -> Vec<KeyBoxes> {
+    counted::<16>(entry)
+        .iter()
+        .map(|r| KeyBoxes { world: u32_le(r), pairs: [0, 1, 2].map(|k| (u16_le(&r[4 + 4 * k..]), u16_le(&r[6 + 4 * k..]))) })
+        .collect()
+}
+
+/// `FUN_002c9320`: the record of a world (the table is sorted by it).
+pub fn find_keys(records: &[KeyBoxes], world: u8) -> Option<&KeyBoxes> {
+    records.binary_search_by(|r| r.world.cmp(&u32::from(world))).ok().map(|i| &records[i])
+}
+
+impl KeyBoxes {
+    /// (boxes drawn, boxes filled): `FUN_002c9358` counts the pairs whose first flag is set, `FUN_002c93c0` those whose two flags are
+    /// set; `flag` is the story flag test (`FUN_001802e0`).
+    pub fn counts(&self, flag: impl Fn(u16) -> bool) -> (usize, usize) {
+        let shown = self.pairs.iter().filter(|(a, _)| *a != 0 && flag(*a)).count();
+        let filled = self.pairs.iter().filter(|(a, b)| *a != 0 && flag(*a) && *b != 0 && flag(*b)).count();
+        (shown, filled)
+    }
+}
+
+/// The BAR tag of the level table in `00battle.bin` (`FUN_001be818` keeps it at 0x1d5dd60).
+pub const BTLV: &str = "btlv";
+/// Worlds a `btlv` row has a level byte for (`FUN_001be8d8` adds 0x13 bytes).
+pub const LEVEL_WORLDS: usize = 19;
+
+/// One record of `btlv` (32 bytes): the bit it sets (`FUN_001be9c8` sets `0x340e8c` bit `bit` when story flag `flag` is set), and the
+/// bytes it adds to the per-world level sums (`FUN_001be908`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LevelRow {
+    pub bit: u32,
+    pub flag: u32,
+    pub levels: [u8; LEVEL_WORLDS],
+}
+
+/// The `btlv` entry (20 records of 32 bytes).
+pub fn parse_btlv(entry: &[u8]) -> Vec<LevelRow> {
+    counted::<32>(entry)
+        .iter()
+        .map(|r| {
+            let mut levels = [0u8; LEVEL_WORLDS];
+            levels.copy_from_slice(&r[8..8 + LEVEL_WORLDS]);
+            LevelRow { bit: u32_le(r), flag: u32_le(&r[4..]), levels }
+        })
+        .collect()
+}
+
+/// The level of every world (`FUN_001be908`: the sum of the rows whose bit is set; the bit is set when the row's story flag is set,
+/// `FUN_001be9c8`, which `flag` reads here [inferred: the app has no latch of those bits; the flags stay set]). Byte arithmetic wraps
+/// as the original's `char` additions do.
+pub fn level_sums(rows: &[LevelRow], flag: impl Fn(u32) -> bool) -> [u8; LEVEL_WORLDS] {
+    let mut sums = [0u8; LEVEL_WORLDS];
+    for r in rows.iter().filter(|r| flag(r.flag)) {
+        for (s, l) in sums.iter_mut().zip(r.levels) {
+            *s = s.wrapping_add(l);
+        }
+    }
+    sums
+}
+
 /// One record of `00worldpoint.bin` (`FUN_00194f68` / `FUN_00194f08`): a save point or landing place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WorldPoint {
@@ -264,6 +351,47 @@ mod tests {
     }
 
     #[test]
+    fn key_boxes_count_the_pairs_whose_flags_are_set() {
+        let rec = |world: u32, pairs: [(u16, u16); 3]| {
+            let mut r = world.to_le_bytes().to_vec();
+            for (a, b) in pairs {
+                r.extend_from_slice(&a.to_le_bytes());
+                r.extend_from_slice(&b.to_le_bytes());
+            }
+            r
+        };
+        let mut body = rec(2, [(10, 11), (0, 0), (0, 0)]);
+        body.extend(rec(4, [(20, 21), (22, 23), (24, 25)]));
+        let keys = parse_wmky(&table(2, &body));
+        assert_eq!(keys.len(), 2);
+        assert_eq!(find_keys(&keys, 4).map(|k| k.world), Some(4));
+        assert_eq!(find_keys(&keys, 3), None);
+        let four = find_keys(&keys, 4).unwrap();
+        assert_eq!(four.counts(|_| false), (0, 0));
+        assert_eq!(four.counts(|f| (20..=22).contains(&f)), (2, 1), "two boxes, one of them filled");
+        assert_eq!(four.counts(|f| f == 23), (0, 0), "a second flag alone shows nothing");
+        assert_eq!(find_keys(&keys, 2).unwrap().counts(|_| true), (1, 1), "a flag of 0 is no flag");
+    }
+
+    #[test]
+    fn level_sums_add_the_rows_whose_flag_is_set() {
+        let row = |flag: u32, w: usize, v: u8| {
+            let mut r = vec![0u8; 32];
+            r[4..8].copy_from_slice(&flag.to_le_bytes());
+            r[8 + w] = v;
+            r
+        };
+        let mut body = row(7, 4, 200);
+        body.extend(row(8, 4, 100));
+        body.extend(row(9, 2, 3));
+        let rows = parse_btlv(&table(3, &body));
+        assert_eq!(rows.len(), 3);
+        assert_eq!(level_sums(&rows, |f| f == 9)[2], 3);
+        assert_eq!(level_sums(&rows, |f| f == 7 || f == 8)[4], 44, "the bytes wrap like the original's char sums");
+        assert_eq!(level_sums(&rows, |_| false), [0; LEVEL_WORLDS]);
+    }
+
+    #[test]
     fn wldf_records_search_and_lists() {
         let w = Wldf::parse(&sample());
         assert_eq!(w.records.len(), 3);
@@ -308,6 +436,16 @@ mod tests {
         let pts = parse_worldpoints(&[2, 4, 1, 0, 3, 5, 9, 0]);
         assert_eq!(pts, vec![WorldPoint { world: 2, area: 4, entrance: 1 }, WorldPoint { world: 3, area: 5, entrance: 9 }]);
         assert_eq!(parse_worldpoints(&vec![0; 4 * 100]).len(), WORLD_POINT_RECORDS);
+    }
+
+    #[test]
+    fn pictures_are_the_type_24_entries_in_order() {
+        let e = |kind: u16, tag: &'static str, data: &'static [u8]| kh2_bar::Entry { kind, tag, data };
+        let entries = [e(2, "land", b"x"), e(25, "ws_i", b"s"), e(24, "AL02", b"a"), e(24, "TT27", b"t")];
+        assert_eq!(pictures(&entries), vec![&b"a"[..], &b"t"[..]]);
+        let many: Vec<_> = (0..100).map(|_| e(24, "P", b"p")).collect();
+        assert_eq!(pictures(&many).len(), MAX_PICTURES, "bounded");
+        assert!(pictures(&[]).is_empty());
     }
 
     #[test]
@@ -376,11 +514,29 @@ mod tests {
         assert_eq!(epsd.len(), 43, "epsd records");
         assert!(epsd.iter().all(|e| e.world < 19 && e.title != 0), "epsd worlds and titles");
 
+        let keys = parse_wmky(entry(WMKY));
+        assert_eq!(keys.len(), 11, "wmky records");
+        assert!(keys.windows(2).all(|w| w[0].world < w[1].world) && keys.iter().all(|k| k.world < 19), "wmky is sorted by world (the binary search needs it)");
+        assert_eq!(find_keys(&keys, 2).map(|k| k.pairs[0]), Some((2223, 2233)), "Twilight Town's one key pair (flags 0x8af and 0x8b9)");
+        assert!(find_keys(&keys, 3).is_none(), "world 3 has no key boxes");
+        let battle = a.read("00battle.bin").expect("00battle.bin");
+        let bbar = kh2_bar::parse(&battle).expect("00battle BAR");
+        let levels = parse_btlv(bbar.iter().find(|e| e.tag == BTLV).expect("btlv entry").data);
+        assert_eq!(levels.len(), 20, "btlv rows");
+        assert!(levels.iter().enumerate().all(|(i, r)| r.bit as usize <= i + 1), "btlv bits count up from 0");
+        assert_eq!(level_sums(&levels, |_| true).len(), LEVEL_WORLDS);
+        assert!(level_sums(&levels, |f| f == levels[0].flag).iter().any(|&l| l > 0), "the first row gives some world a level");
+
         let landing = a.read("70landing.bar").expect("70landing.bar");
         let lbar = kh2_bar::parse(&landing).expect("70landing BAR");
         eprintln!("70landing.bar entries: {:?}", lbar.iter().map(|e| (e.tag, e.kind, e.data.len())).collect::<Vec<_>>());
         let land = parse_land(lbar.iter().find(|e| e.tag == LAND).expect("land entry").data);
         assert_eq!(land.len(), 53, "land records");
+        let pics = pictures(&lbar);
+        assert_eq!(pics.len(), 53, "destination pictures");
+        assert!(pics.iter().all(|p| p.len() == 17472 && p.starts_with(b"IMGD")), "each picture is an IMGD of 17472 bytes");
+        assert!(lbar.iter().find(|e| e.tag == WS_I).is_some_and(|e| e.data.starts_with(b"SEQD")), "ws_i is a SEQD");
+        assert!(land.iter().all(|r| (r.picture as usize) < pics.len()), "every row names a picture");
         let points = parse_worldpoints(&a.read("00worldpoint.bin").expect("00worldpoint.bin"));
         assert_eq!(points.len(), 54, "world points");
         assert!(land.iter().all(|r| (r.world_point as usize) < points.len() && r.world < 19), "land rows name a world point and a world");

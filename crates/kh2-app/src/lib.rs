@@ -75,6 +75,7 @@ mod summon;
 mod texanim;
 mod world;
 mod worldmap;
+mod worldmap_ui;
 
 use std::sync::OnceLock;
 use std::time::Instant;

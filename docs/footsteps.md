@@ -142,9 +142,13 @@ Deviations and gaps:
   (`docs/audio.md`); the mix is recomputed every tick against the moving camera while the
   step plays (`audio::update_mixes`), the source position stays where the step started.
 - Only Sora's footsteps are produced. The stop step of FUN_0017af10 (kind 8) is ported
-  (`kh2_audio::footstep::stop_step`, played from `audio::footsteps`); its dust effects 8 and 9, the
-  start-to-move dust 10 and 11 of the same routine, and the footstep dust effect (trigger 19,
-  FUN_001b1c90) are not ported.
+  (`kh2_audio::footstep::stop_step`, played from `audio::footsteps`). Its dust effects 8 and 9, the
+  start-to-move dust 10 and 11 of the same routine, and the footstep dust of motion trigger 19
+  (FUN_001b1c90) are ported too (WP-7L and WP-AU3: `fx::foot_dust`, requests from `audio::footsteps`;
+  `docs/audio.md` "Footstep dust"). Whether a step shows dust depends only on the area's own effect
+  file: tt02, tt04 and tt05 have no dust element, so the original shows none there. Dust was seen
+  started (log lines in `docs/audio.md`) in tt25 (run steps) and, for the start dust, in al02, hb07, hb18, he01, mu00, po04 and wi00.
+  The foot point is Sora's position, not his foot bones (gap, same section).
 - The `NeoStatus` 0x12 material override and the soundinfo bytes before +0xe are not understood.
 - Nobody has listened to any of this. The rendered wav only shows that the entry has a sample and
   that it is not silent.

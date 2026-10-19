@@ -1485,7 +1485,7 @@ mod tests {
         let disc = Disc::open(&iso);
         let rules = DustRules::from_exe(&disc.read_root("SLUS_210.05").expect("exe")).expect("dust tables");
         let mut pick = None;
-        for area in ["tt02", "tt04", "tt05", "tt01", "tt10", "tt00"] {
+        for area in ["tt25", "tt02", "tt04", "tt05", "tt01", "tt10", "tt00"] {
             let Some(pax) = load(&disc, &format!("map/us/{area}.map"), AREA_FX_ID_BASE, None) else { continue };
             let cats: std::collections::BTreeSet<u64> = pax.pax.elements.iter().map(|e| e.category).collect();
             eprintln!("{area}: {} elements, categories {cats:x?}", pax.pax.elements.len());
@@ -1538,6 +1538,34 @@ mod tests {
         app.world_mut().write_message(request(Vec3::new(1.0, 0.3, 2.0), 0, kind));
         app.update();
         assert_eq!(running(&mut app), vec![id], "only the first request started an effect");
+    }
+
+    /// Which areas carry footstep dust: the map effect file of tt25 holds the class-2 dust elements
+    /// (ground material 3) for the kinds the walk, the run, the stop and the start-to-move dust ask
+    /// for, while the maps of tt02, tt04 and tt05 hold none, so the original starts no dust on their
+    /// floors either (`FUN_001db9e0` finds no element there). Skipped without the disc.
+    #[test]
+    fn dust_elements_exist_in_tt25_and_not_in_tt02() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let rules = DustRules::from_exe(&disc.read_root("SLUS_210.05").expect("exe")).expect("dust tables");
+        assert_eq!(rules.class(3), 2, "material 3 is dust class 2");
+        let ids = |area: &str, material: u8| {
+            let pax = load(&disc, &format!("map/us/{area}.map"), AREA_FX_ID_BASE, None).expect("map effect file");
+            (0..=0x13u16).map(|k| rules.mask(material, k).and_then(|m| element_by_category(&pax, m))).collect::<Vec<_>>()
+        };
+        let tt25 = ids("tt25", 3);
+        for kind in [0usize, 1, 2, 3, 8, 9, 10, 11] {
+            assert!(tt25[kind].is_some(), "tt25 material 3 kind {kind}");
+        }
+        for area in ["tt02", "tt04", "tt05"] {
+            for material in 0..32u8 {
+                assert!(ids(area, material).iter().all(Option::is_none), "{area} material {material}");
+            }
+        }
     }
 
     #[test]

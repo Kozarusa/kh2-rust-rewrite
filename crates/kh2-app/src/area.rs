@@ -101,9 +101,27 @@ pub fn area_number(name: &str) -> Option<u8> {
     name.get(2..)?.parse().ok()
 }
 
-/// The area name for (world, area) in the worlds this app has (Twilight Town only).
+/// Battle manager type of the map's `WORLDMAP` manager (opcode 0x15, argument 0).
+pub const WORLDMAP_MANAGER: u32 = 0xc;
+
+/// World byte of the world map (area `wm00`, docs/worldmap.md section 2).
+pub const WORLD_MAP: u8 = 0xf;
+
+/// The two-letter area-file prefix of each of the 19 worlds, in world-byte order (the game's
+/// prefix table; the same order as the `ftst` colour columns, docs/events.md).
+pub const WORLDS: [&str; 19] = [
+    "zz", "es", "tt", "di", "hb", "bb", "he", "al", "mu", "po", "lk", "lm", "dc", "wi", "nm", "wm", "ca", "tr", "eh",
+];
+
+/// The world byte of an area name such as `tt04` or `wm00`.
+pub fn world_of(name: &str) -> Option<u8> {
+    let prefix = name.get(..2)?;
+    WORLDS.iter().position(|w| *w == prefix).map(|i| i as u8)
+}
+
+/// The area name for (world, area) in the worlds this app has (Twilight Town and the world map).
 pub fn area_name(world: u8, area: u8) -> Option<String> {
-    (world == TWILIGHT_TOWN).then(|| format!("tt{area:02}"))
+    matches!(world, TWILIGHT_TOWN | WORLD_MAP).then(|| format!("{}{area:02}", WORLDS[world as usize]))
 }
 
 /// A point of the game's space (centimetres, Y down, Z mirrored) in the app's axes (still
@@ -136,6 +154,10 @@ pub fn run_area_script(
     let Some(loaded) = area.loaded.clone() else { return };
     if rec.run.as_ref().is_none_or(|r| r.name != loaded) {
         rec.area = area_number(&loaded).unwrap_or(0);
+        // The record's world follows the loaded file's prefix (`kh2-game wm00` starts in world 0xf).
+        if let Some(w) = world_of(&loaded) {
+            rec.world = w;
+        }
         // FUN_00104bd0: the program bytes of the table for (world, area). The app's jumps carry no
         // program bytes of their own (exits and type-1 trigger jumps; FUN_00104b90 would let them
         // override with anything but 0xff).
@@ -186,6 +208,16 @@ pub fn run_area_script(
                 None => info!("area {loaded}: no music command (the previous pair stays, FUN_00137150)"),
             }
             info!("area {loaded}: {} triggers, map visibility {:#x}, capacity {}", script.triggers.len(), script.map_visibility, script.capacity);
+            if let Some((kind, _)) = &script.battle_manager {
+                if *kind == WORLDMAP_MANAGER {
+                    // FUN_001d5048 type 0xc: party reset code 1 (FUN_001abfe8) and area camera type 4
+                    // (DAT_0035cd38). The camera has no type 4 behaviour decoded (docs/camera.md) and the
+                    // party reset has no hook yet; neither is applied (docs/worldmap.md W4).
+                    info!("area {loaded}: battle manager type {kind:#x} (WORLDMAP) wants camera type 4 and party reset 1; not applied (gap)");
+                } else {
+                    info!("area {loaded}: battle manager type {kind:#x} read but not created");
+                }
+            }
             for op in &script.unported {
                 info!("area {loaded}: opcode {op:#x} {} read but not ported", kh2_ard::opcode_name(*op));
             }
@@ -224,6 +256,10 @@ mod tests {
         assert_eq!(area_number("tt"), None);
         assert_eq!(area_name(TWILIGHT_TOWN, 3).as_deref(), Some("tt03"));
         assert_eq!(area_name(0x12, 1), None);
+        assert_eq!(area_name(WORLD_MAP, 0).as_deref(), Some("wm00"));
+        assert_eq!(world_of("wm00"), Some(WORLD_MAP));
+        assert_eq!(world_of("tt04"), Some(TWILIGHT_TOWN));
+        assert_eq!(world_of("xx00"), None);
         // tt04's entrance-1 player record (printed by the kh2-ard disc test): Y down and Z
         // mirrored become the app's Y up, Z forward; the yaw is PI - ry.
         let at = game_to_app([-1064.645, -0.0001, 1544.645]);

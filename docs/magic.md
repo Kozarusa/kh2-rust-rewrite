@@ -285,7 +285,7 @@ Port: `magic::step_strike`; the probe is the app's floor test `World::ground_m`.
   trigger 28 refills the timer before it turns (FUN_001861b8). Port: `magic_rules::mode1_step`, `mode1_frame`,
   `mode1_timer_start`, `CastTurn::lock_timer`. [I: the controller's frame runs before the trigger in a frame.]
 
-  Controller frame in mode 1 (WP-MG3, FUN_0019b7a8 read in full). The record `iVar1 = *(player + 0xb38)` is NOT the
+  Controller frame in mode 1 (WP-MG3, FUN_0019b7a8 read in full). The record the input record `*(player + 0xb38)` is NOT the
   ability block: it is the player's input record (words at +0 held, +8 newly pressed, as `FUN_001babf0` reads
   `*(actor + 0x970) + 8`). Its bit 0x800 at +8 is logical bit 0x800, which the field button set 0x379768 builds from
   physical R1 (pair 0x800 -> 0x800; FUN_001676a0 / FUN_00167660 with the shared table 0x379698 and the set at

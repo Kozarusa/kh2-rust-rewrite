@@ -405,7 +405,7 @@ does not model either.
   experience of FUN_001d4078 / FUN_001d40e0; the `lvup` rows (read for AP and stats). What did not exist: the payout from a
   defeat, the level-up check FUN_001b52f8, the popup raised by a defeat.
   Reading the code again: `victim + 0x48c` is the victim's own record and `+0x254` of it is its `enmp` row (FUN_0019f770
-  stores the row there, `param_1[0x95]`, and builds the status from it), so the "stat block ushort `+0x56`" is the `enmp`
+  stores the row there, the word at +0x254 of the object, and builds the status from it), so the "stat block ushort `+0x56`" is the `enmp`
   Experience column (Id 0, Level 2, Health 32 x 2 = 0x44, MaxDamage 0x44, MinDamage 0x46, seven weaknesses 0x48..0x54, Experience
   0x56, Prize 0x58, BonusLevel 0x5a: sheets/tables.json). `table` (`DAT_0035f33c`, FUN_001beaf0) is the `lvpm` row of the world
   level (FUN_001beaa8: base `DAT_01d5dd80` + level * 12 - 12; FUN_0019f770 uses it for an `enmp` Level of 0), and its word

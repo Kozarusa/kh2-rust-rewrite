@@ -242,13 +242,14 @@ All of this is the story-flag side-effect machinery of docs/progress.md / docs/e
   exercises it.
 - Area loading: `area.rs` knows only Twilight Town (`area_name(world, area)` is `tt<NN>` for world 2 and `None` otherwise); the loader `assets::load_area` and
   the area-script run (`kh2_ard::run`) are generic over the file name. `AreaRecord` holds world, area, entrance and the three program bytes.
-- Story state: `progress::Story` (flags 0x33f6b0, program table 0x33e86f, exit locks 0x33f918, side-effect ops 1..5, 7, 0xc); the world records at 0x341858,
-  world flags 0x3418a4 and episode bits are not modelled; ops 6, 8, 9, 0xd and the hooks after the list are not ported (`Story::unported`).
+- Story state: `progress::Story` (flags 0x33f6b0, program table 0x33e86f, exit locks 0x33f918, side-effect ops 1..5, 7, 0xc, 0xd); since WP-WM1 it also
+  keeps the world records at 0x341858, the world flags 0x3418a4, the queue 0x3418c4 and the episode bits (stage W2 below); ops 6, 8, 9 and the hooks after the list
+  except `FUN_001b6da0` are not ported (`Story::unported`).
 - Save point menu: `menu_save.rs` logs "not ported" for row 1; `savepoint.rs` builds the row (message 0x8a80). The menu kind 1 page machine for rows 0 and the
   card pages is ported (docs/menus.md 18.5).
 - Fader: the screen-fader fade-out of a jump (`MenuScene::fade`, docs/menus.md) and the event player's fade object.
 - Text and art readers: `kh2_image::text` (message tokens), `Seqd` (field-2d groups), the list widget family in `menu_*.rs`.
-- Nothing parses `wldf`, `wlds`, `epsd`, `70landing.bar` or `wm.bar`, nothing draws the symbols, cursor or markers, and no map area exists.
+- `kh2_ard::worldmap` parses `wldf`, `wlds`, `epsd`, `70landing.bar`'s `land`, `00worldpoint.bin` and the `wm.bar` ids (stage W1 below); nothing draws the symbols, cursor or markers, and no map area exists.
 
 ## 10. Porting plan
 
@@ -263,6 +264,34 @@ episode bits (0x3419e4 / 0x3419f4), the queue (0x3418c4), `FUN_001b6da0`/`FUN_00
 `story_flag_setter_matches_the_game` (kh2-ee oracle of `FUN_0017ff60`, which already runs the whole setter) to compare these regions for all 19 worlds' flags.
 Risk: medium; the setter's list runs `FUN_001803b0`.. and the `link` hook (`FUN_001d39d0`) whose effects are [GAP]; the oracle will show them. Also the save
 file (`Progress::story_json`) must carry the new regions.
+
+**W1 and W2 done (WP-WM1).** What was built and what the disc showed:
+
+- `crates/kh2-ard/src/worldmap.rs`: `Wldf` (147 records of 16 bytes; sorted by the index byte, so the game's binary search `FUN_001b68c0` / `FUN_0030ff40` is ported
+  as `Wldf::find` with the same probe order; action lists as `Action { op, data }`), `parse_wlds` (34) with `landing` (`FUN_001c1cf8`'s search, area below 0x33
+  or a story-program key), `parse_epsd` (43), `parse_land` (`land` entry of `70landing.bar`, 53 records, then `ws_i` type 25 of 1160 bytes and 53 pictures of 17472
+  bytes tagged by area, `AL02` .. `TT27`), `parse_worldpoints` (54 records of `00worldpoint.bin`, at most 0x36), `message_ids` (`wm.bar`, 207 ids; every id in
+  section 5 that was tested is there: 0x4871..0x4884, 0x4a4d..0x4a55, 0x4c0d, 0x4c16, and every `epsd` title). Every count is the smaller of the header count and
+  the records the bytes hold; a list command that runs past the entry ends the list. The disc test is `the_world_map_tables_have_the_documented_counts_and_layouts`.
+  On the disc: 131 of the 147 `wldf` records carry an action list, 235 commands in all, ops 1..10, 12, 13 and 15, all kinds are 0..2.
+- `progress.rs` (`Story`): the region 0x341858 ..= 0x341a05 as one byte array (`progress::world`), so a record index past the 19 worlds lands in the next
+  field as the game's pointer arithmetic does. Story op 0xd writes record bytes 1 and 2 of the flag's world. After every set, `world_flags_follow` is
+  `FUN_001b6da0`: each `wldf` record whose story flag matches runs `world_flag_set` (`FUN_001b68f8`: the four rival indexes 0x25/0x2a/0x2d/0x2e, the bit, the
+  queue at 0x3418c4 with its count byte 0x3419c3 as the last queue byte, no queue for a kind 1 record while story flag 0x102b is set). `world_run_list` is
+  `FUN_001b6a48` / `FUN_001b6a90` for ops 1..7, 0xc, 0xd, 0xf; nothing in the app calls it yet (the original runs it from `FUN_001b6e60`, which walks a
+  list of world flags, and from `FUN_002c6bf8`). The region is saved as the hex string `world_state` (slot files, `story_json` when not all zero); a
+  slot written before this has no such key and loads it clear.
+- Proof: `story_flag_setter_matches_the_game` now also runs the real `FUN_001b6da0` with the disc's `wldf` entry at `DAT_01d5d790` and compares the whole region
+  after every flag of every world, from a clear block and with story flag 0x102b set first (2830 flag runs; 1691 touch the region, 1572 queue a world flag).
+- The other calls after the list were run unstubbed one at a time in the oracle (a throwaway edit, not committed): `FUN_001803b0`, `FUN_00180450`, `FUN_001805d0`,
+  `FUN_001d39d0`, `FUN_001d3238`, `FUN_001be9c8`, `FUN_001d5718` and `FUN_00195130` ran without error and left the flag words, program table, exit locks and world
+  region equal to the port for all 2830 runs, so none of them writes those regions in a block that is otherwise clear [the runs had no menu or actor state, so
+  effects that need them are not excluded]. `FUN_00180558` is the exception: when story flags 0x102b and 0x1822 are set and 0x1807, 0x1809 are clear it sets story
+  flag 0x1809 (0x1865 set) or 0x1807 through the setter itself; that is a story-flag effect outside the world region and is still not ported.
+- Gaps kept: ops 8..0xb of the lists (`FUN_001b6d30` writes a byte of an entry `FUN_001c0950(id)` finds: whose table is unread), the episode list removal of op 0xd
+  (`FUN_003335d0` on `DAT_01d5df60`, unread), the `FUN_001c6d10` call of op 0xf, the compare function `0x332e08` of the `wldf` search (no decompilation; a plain
+  compare reproduces the oracle), the `link` hook `FUN_001d39d0` (no effect on the compared regions, effects elsewhere unread), the `wmky` and `ws_i` meanings,
+  and the value of address 1 that `FUN_001b68f8` would read for a key the table lacks (taken as 0 [inferred]; the story hook only passes indexes the table holds; the other callers `FUN_001b6ec0`, `FUN_001d3820`, `FUN_0016d788`, `FUN_001b6870` were not read).
 
 **W3. Entering from the save point and from type 4.** `crates/kh2-app/src/menu_save.rs` (page 0x10 question, page 0x14 fade wait, scene mode word) and
 `area_jump.rs` (the mode-1 entry `FUN_00103b38` -> `FUN_00149df0(-1, 0x80000000)`, `Outcome` for the map). Needs W5 for the arrival. Until then

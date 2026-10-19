@@ -15,10 +15,13 @@
 //! (world 0x12) adds a ring of kind 6 or 8 by story flag 0x481c (`FUN_002f7cf8`): the effects are not ported
 //! (logged, [GAP]).
 //!
-//! Cursor: the Gummi ship (`WM_CURSOR`). Its real states (`FUN_002cca58`, `FUN_002ccb70`, ...) were not read
-//! [GAP], so this first version stands Sora at the cursor's record and moves the cursor with him: the stick
-//! walks Sora on the map's collision, the follow camera follows him, and his body and the party are hidden
-//! [I]. The route markers get no motion (their update was not read).
+//! Cursor: the Gummi ship (`WM_CURSOR`). Its movement is the player class's (WP-WM8: its vtable keeps the player's walk
+//! slots), so the stick walks Sora on the map's collision and the ship is drawn at his place; his body and the party are
+//! hidden [I]. The original's area camera type 4 sets no follow target (docs/worldmap.md section 10 "W8"), so the follow
+//! camera is a stand-in [I].
+//!
+//! Route markers (`WM_GUMI_01`) have no model: their look is three of the map's `BOB` props each, shown or hidden by the route's
+//! state byte (`map_props`, WP-WM8).
 //!
 //! The two forced events (WP-WM7, `FUN_002ccd88`): a confirm on the Twilight Town symbol (object 0x3a2) with world flag 1 set
 //! and 0x13 clear plays event 0x72d (1837), on the TWTNW symbol (0x456) with world flags 0x35 set and 0x37 clear event 0x72c
@@ -71,7 +74,7 @@ impl Plugin for WorldMapPlugin {
             .init_resource::<WmEvent>()
             .add_systems(
                 Update,
-                (map_spawn.after(crate::area::run_area_script), map_start, map_cursor_follow, map_hide_party, map_restore_sora).chain(),
+                (map_spawn.after(crate::area::run_area_script), map_props, map_start, map_cursor_follow, map_hide_party, map_restore_sora).chain(),
             )
             .add_systems(Startup, spawn_event_fade)
             .add_systems(FixedUpdate, (event_start, event_step, event_animate, event_camera).chain().in_set(Sim::EffectTick).run_if(sim_running))
@@ -87,7 +90,7 @@ fn wmlog() -> bool {
 
 /// The map area the objects were spawned for.
 #[derive(Resource, Default)]
-struct MapSpawned(Option<String>);
+struct MapSpawned(Option<String>, Vec<u8>);
 
 /// What a symbol looks like for its world's record (`FUN_002c66b8`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -203,6 +206,7 @@ fn map_spawn(
     }
     let Some(world) = world else { return };
     spawned.0 = Some(run.name.clone());
+    spawned.1.clear();
     let objs = disc.0.lock().ok().and_then(|mut a| kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).ok()).map(|d| d.rows).unwrap_or_default();
     let exe = disc.read_root("SLUS_210.05").unwrap_or_default();
     let mut rigs: Vec<(String, Option<Arc<Rig>>)> = Vec::new();
@@ -216,6 +220,9 @@ fn map_spawn(
                 }
                 let Some(row) = objs.iter().find(|r| r.object_id == e.object).filter(|r| r.object_type == OBJECT_WORLDMAP) else { continue };
                 let Some(class) = class_of(row.sub_type) else { continue };
+                if class == Class::Marker {
+                    spawned.1.push(e.raw[0x20]);
+                }
                 let model = row.model_name.clone();
                 let rig = match rigs.iter().find(|(m, _)| *m == model) {
                     Some((_, r)) => r.clone(),
@@ -231,7 +238,7 @@ fn map_spawn(
                     }
                     continue;
                 };
-                let at = game_to_app(e.position);
+                let at = if class == Class::Cursor { cursor_override().unwrap_or_else(|| game_to_app(e.position)) } else { game_to_app(e.position) };
                 let on_floor = world.ground(at, at.y + 100.0, 400.0).map(|g| g.y);
                 let yaw = app_yaw(e.rotation[1]);
                 let (slot, tint, note) = match class {
@@ -287,6 +294,13 @@ fn map_spawn(
         }
     }
     info!("worldmap: {}: {} symbols, {} route markers, {} cursor spawned (entrance {})", run.name, counts[0], counts[1], counts[2], rec.entrance);
+}
+
+/// `KH2_WMAT=<x>,<z>`: the cursor starts at this game position (harness aid for looking at one place of the map).
+fn cursor_override() -> Option<Vec3> {
+    let v = std::env::var("KH2_WMAT").ok()?;
+    let (x, z) = v.split_once(',')?;
+    Some(game_to_app([x.trim().parse().ok()?, 0.0, z.trim().parse().ok()?]))
 }
 
 /// The model and motion set of an objentry row (as `npc.rs` loads a townsperson's).
@@ -381,6 +395,180 @@ fn map_restore_sora(rec: Res<AreaRecord>, sora: Query<&Sora>, mut vis: Query<&mu
         *v = Visibility::Inherited;
         *hid = false;
     }
+}
+
+// ---- The map's props and the route markers (WP-WM8) ----------------------------------------------------------------------
+
+/// The map's prop table: BAR entry type 0x15 (`FUN_00149348` keeps it at map +0x44, `FUN_001491e0`), a u32 offset to the records
+/// and a u32 byte size, then records of 0x68 bytes (`FUN_0015bd40` divides the size by 0x68).
+const PROP_TABLE_KIND: u16 = 0x15;
+const PROP_RECORD: usize = 0x68;
+/// The route table in the executable: three scene-entry numbers per route, indexed by the route number (`FUN_002c8b50` stores
+/// `route * 3 + 0x38342d` at +0xae4 of a marker).
+const ROUTE_TABLE: usize = 0x38342d;
+/// Route `r` has its state byte at `0x3419c3 + r` (`FUN_001c0950`): inside the world region of `progress::Story`.
+const ROUTE_STATE: u32 = 0x3419c3;
+/// The most routes a marker can name (`m_51` numbers them 1 to 9).
+const ROUTES: u8 = 9;
+
+/// One placed prop of the table (`FUN_0015bdb8` reads each record: position words 0..2, rotation 3..5, scale 6..8, the model number
+/// +0x24 counted from the first `BOB` model, the visibility group +0x28).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Prop {
+    pub pos: [f32; 3],
+    pub rot: [f32; 3],
+    pub scale: [f32; 3],
+    pub model: u32,
+    pub group: u32,
+}
+
+/// The records of a prop table entry; a table that runs past the entry keeps the records the bytes hold.
+pub fn parse_props(b: &[u8]) -> Vec<Prop> {
+    let word = |o: usize| b.get(o..o + 4).map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]));
+    let (Some(off), Some(size)) = (word(0), word(4)) else { return Vec::new() };
+    let off = off as usize;
+    let count = (size as usize / PROP_RECORD).min(b.len().saturating_sub(off) / PROP_RECORD);
+    (0..count)
+        .map(|k| {
+            let at = off + k * PROP_RECORD;
+            let f = |o: usize| f32::from_bits(word(at + o).unwrap_or(0));
+            Prop {
+                pos: [f(0), f(4), f(8)],
+                rot: [f(12), f(16), f(20)],
+                scale: [f(24), f(28), f(32)],
+                model: word(at + 36).unwrap_or(0),
+                group: word(at + 40).unwrap_or(0),
+            }
+        })
+        .collect()
+}
+
+/// Whether the map's visibility word shows a prop's group (`FUN_0015bdb8`: `(1 << group) & mask`; only those props are made).
+pub fn prop_made(group: u32, visibility: u64) -> bool {
+    1u64.checked_shl(group).is_some_and(|bit| bit & visibility != 0)
+}
+
+/// The three scene entries of a route (`FUN_002c8d18`'s argument): numbers in the order the props were made.
+pub fn route_entries(exe: &[u8], route: u8) -> Option<[usize; 3]> {
+    (route <= ROUTES).then_some(())?;
+    let at = (ROUTE_TABLE + 3 * route as usize).checked_sub(EXE_BIAS)?;
+    exe.get(at..at + 3).map(|b| [b[0] as usize, b[1] as usize, b[2] as usize])
+}
+
+/// `FUN_002c8d18(entries, state)`: state 1 shows only the first entry, state 2 only the other two, any other state none
+/// (`FUN_00160a98` clears the entry's hide bit 4 of +0x180, `FUN_00160ac8` sets it [inferred: bit 4 hides]).
+pub fn route_shows(state: u8, entry: usize) -> bool {
+    match state {
+        1 => entry == 0,
+        2 => entry != 0,
+        _ => false,
+    }
+}
+
+/// Whether each prop the map made is shown, in creation order. A marker's three entries follow its route's state; the markers
+/// are applied in order, so the last one naming an entry decides it.
+pub fn prop_visibility(made: usize, routes: &[(u8, [usize; 3])], state: impl Fn(u8) -> u8) -> Vec<bool> {
+    let mut shown = vec![true; made];
+    for (route, entries) in routes {
+        let st = state(*route);
+        for (k, n) in entries.iter().enumerate() {
+            if let Some(s) = shown.get_mut(*n) {
+                *s = route_shows(st, k);
+            }
+        }
+    }
+    shown
+}
+
+/// The `BOB` models of a map file in file order: the n-th type 4 block tagged `BOB` with the n-th type 7 texture block of that tag
+/// (`FUN_00149348` stores them behind the `MAP` and sky models, `FUN_00149220` hands out model `n`). The blocks are skeletal models
+/// (model type 3, as an MDLX's), so each pair is wrapped in a two-entry BAR for `kh2_model::mdlx`; the vertices come out in the rest pose.
+pub fn bob_models(file: &[u8]) -> Vec<kh2_model::Model> {
+    let Ok(e) = kh2_bar::parse(file) else { return Vec::new() };
+    let mut textures = e.iter().filter(|x| x.tag == "BOB" && x.kind == 7);
+    e.iter()
+        .filter(|x| x.tag == "BOB" && x.kind == 4)
+        .map(|m| {
+            let t = textures.next().map_or(&[][..], |t| t.data);
+            kh2_model::mdlx(&bar_of(&[(4, m.data), (7, t)])).unwrap_or_default()
+        })
+        .collect()
+}
+
+/// A BAR holding the given (type, data) entries, tags empty.
+fn bar_of(entries: &[(u16, &[u8])]) -> Vec<u8> {
+    let mut out = b"BAR".to_vec();
+    out.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+    out.extend_from_slice(&[0; 8]);
+    let mut at = 16 + 16 * entries.len();
+    for (kind, data) in entries {
+        out.extend_from_slice(&kind.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&[0; 4]);
+        out.extend_from_slice(&(at as u32).to_le_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        at += data.len();
+    }
+    for (_, data) in entries {
+        out.extend_from_slice(data);
+    }
+    out
+}
+
+/// A prop's place in the app: the record's position and angles are in the game's frame and the models are in the app's, which is the
+/// game's turned half a turn about x (`game_to_app`), so the angles about y and z change sign [inferred, as for the stage matrix].
+pub fn prop_transform(p: &Prop) -> Transform {
+    Transform {
+        translation: game_to_app(p.pos) * SCALE,
+        rotation: Quat::from_rotation_z(-p.rot[2]) * Quat::from_rotation_y(-p.rot[1]) * Quat::from_rotation_x(p.rot[0]),
+        scale: Vec3::from(p.scale) * SCALE,
+    }
+}
+
+/// Which map the props were made for.
+#[derive(Default)]
+struct PropsMade(Option<String>);
+
+/// A prop of the map (`FUN_0015f8e0`'s object).
+#[derive(Component)]
+pub struct PropPiece;
+
+/// Makes the map's props (`FUN_0015bdb8`) once the area loaded and hides the route entries a marker's state hides
+/// (`FUN_002c8b50` -> `FUN_002c8bc8` -> `FUN_002c8d18`, run every tick; the route state only changes with the story, so once at the start).
+#[allow(clippy::too_many_arguments)]
+fn map_props(
+    mut commands: Commands,
+    disc: Res<Disc>,
+    rec: Res<AreaRecord>,
+    spawned: Res<MapSpawned>,
+    mut made: Local<PropsMade>,
+    progress: Option<Res<Progress>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    let Some(run) = rec.run.as_ref() else { return };
+    if rec.world != WORLD_MAP || spawned.0.as_deref() != Some(run.name.as_str()) || made.0.as_deref() == Some(run.name.as_str()) {
+        return;
+    }
+    made.0 = Some(run.name.clone());
+    let Some(file) = disc.read(&format!("map/us/{}.map", run.name)) else { return };
+    let table = kh2_bar::parse(&file).ok().and_then(|e| e.iter().find(|x| x.kind == PROP_TABLE_KIND).map(|x| parse_props(x.data))).unwrap_or_default();
+    let models = bob_models(&file);
+    let exe = disc.read_root("SLUS_210.05").unwrap_or_default();
+    let list: Vec<&Prop> = table.iter().filter(|p| prop_made(p.group, run.script.map_visibility)).collect();
+    let routes: Vec<(u8, [usize; 3])> = spawned.1.iter().filter_map(|r| route_entries(&exe, *r).map(|e| (*r, e))).collect();
+    let state = |r: u8| progress.as_ref().map_or(0, |p| p.story().world_byte(ROUTE_STATE + r as u32));
+    let shown = prop_visibility(list.len(), &routes, state);
+    let mut drawn = 0;
+    for (n, p) in list.iter().enumerate() {
+        let Some(model) = models.get(p.model as usize).filter(|m| !m.meshes.is_empty()) else { continue };
+        let root = commands.spawn((prop_transform(p), if shown[n] { Visibility::default() } else { Visibility::Hidden }, AreaPart, PropPiece)).id();
+        crate::assets::spawn_model(&mut commands, root, model, &mut meshes, &mut materials, &mut images);
+        drawn += 1;
+    }
+    let by_route: Vec<String> = routes.iter().map(|(r, e)| format!("{r}: state {} entries {e:?}", state(*r))).collect();
+    info!("worldmap: {}: {} props in the table, {} made (visibility {:#x}), {} drawn; routes {{{}}}", run.name, table.len(), list.len(), run.script.map_visibility, drawn, by_route.join(", "));
 }
 
 // ---- The forced events (WP-WM7) ------------------------------------------------------------------------------------------
@@ -987,5 +1175,70 @@ mod tests {
         assert_eq!((worlds[0], worlds[11]), (2, TWTNW), "0x3a2 is Twilight Town, 0x456 The World That Never Was");
         assert_eq!(symbol_world(&exe, 0x3a1), None, "the cursor is not a symbol");
         assert_eq!((colour_word(&exe, 0), colour_word(&exe, 1), colour_word(&exe, 2)), (0, 0x8020_2020, 0x8080_8080));
+    }
+
+    #[test]
+    fn a_routes_state_shows_its_first_entry_or_its_other_two() {
+        // FUN_002c8d18: state 1 shows entry 0 only, state 2 entries 1 and 2 only, the others (0, 3 and up) none.
+        for (state, want) in [(0u8, [false, false, false]), (1, [true, false, false]), (2, [false, true, true]), (3, [false, false, false])] {
+            assert_eq!([0, 1, 2].map(|k| route_shows(state, k)), want, "state {state}");
+        }
+        // Two routes name entries 0..2 and 3..5; an entry no route names stays shown.
+        let routes = [(1u8, [0usize, 1, 2]), (2, [3, 4, 5])];
+        let shown = prop_visibility(7, &routes, |r| if r == 1 { 1 } else { 2 });
+        assert_eq!(shown, [true, false, false, false, true, true, true]);
+        assert_eq!(prop_visibility(3, &[(1, [0, 1, 9])], |_| 1), [true, false, true], "an entry past the made props is ignored, an unnamed one stays shown");
+    }
+
+    #[test]
+    fn a_prop_table_reads_its_records_and_the_visibility_groups_pick_the_made_ones() {
+        let mut b = vec![0u8; 8 + 2 * PROP_RECORD];
+        b[0..4].copy_from_slice(&8u32.to_le_bytes());
+        b[4..8].copy_from_slice(&((2 * PROP_RECORD) as u32).to_le_bytes());
+        let put = |b: &mut Vec<u8>, rec: usize, word: usize, v: u32| b[8 + rec * PROP_RECORD + word * 4..][..4].copy_from_slice(&v.to_le_bytes());
+        put(&mut b, 1, 0, 100f32.to_bits());
+        put(&mut b, 1, 4, 0.5f32.to_bits());
+        put(&mut b, 1, 6, 2f32.to_bits());
+        put(&mut b, 1, 9, 7);
+        put(&mut b, 1, 10, 3);
+        let props = parse_props(&b);
+        assert_eq!(props.len(), 2);
+        assert_eq!((props[1].pos[0], props[1].rot[1], props[1].scale[0], props[1].model, props[1].group), (100.0, 0.5, 2.0, 7, 3));
+        // A size that claims more records than the bytes hold keeps the ones that are there; a short entry has none.
+        b[4..8].copy_from_slice(&(10 * PROP_RECORD as u32).to_le_bytes());
+        assert_eq!(parse_props(&b).len(), 2);
+        assert!(parse_props(&b[..6]).is_empty());
+        assert!(prop_made(0, 0x3) && prop_made(1, 0x3) && !prop_made(2, 0x3) && !prop_made(64, u64::MAX));
+    }
+
+    #[test]
+    fn the_wm00_props_hold_the_route_entries_at_each_markers_site() {
+        let Ok(iso) = std::env::var("KH2_ISO") else { return };
+        let disc = Disc::open(std::path::Path::new(&iso));
+        let exe = disc.read_root("SLUS_210.05").expect("SLUS_210.05");
+        let file = disc.read("map/us/wm00.map").expect("wm00.map");
+        let table = kh2_bar::parse(&file).unwrap().iter().find(|x| x.kind == PROP_TABLE_KIND).map(|x| parse_props(x.data)).expect("prop table");
+        assert_eq!(table.len(), 77, "records of the table");
+        // Map program 0 shows 0x3: the props of groups 0 and 1 are made, in table order, and the route entries index that list.
+        let made: Vec<&Prop> = table.iter().filter(|p| prop_made(p.group, 0x3)).collect();
+        assert_eq!(made.len(), 57);
+        let mut seen = std::collections::BTreeSet::new();
+        for route in 1..=ROUTES {
+            let e = route_entries(&exe, route).expect("route row");
+            assert!(e.iter().all(|n| *n < made.len() && seen.insert(*n)), "route {route} entries {e:?} are made props and not shared");
+            // The two first entries are the same site (two models at one place); the third sits beside them or, for a model
+            // that carries its own world coordinates, at the origin.
+            let (a, b) = (made[e[0]], made[e[1]]);
+            assert_eq!((a.pos, a.rot), (b.pos, b.rot), "route {route}: entries {} and {} stand at one site", e[0], e[1]);
+            assert!(a.pos[0].abs() > 1000.0, "the site is away from the origin");
+        }
+        assert_eq!(route_entries(&exe, 1), Some([0, 9, 18]));
+        assert_eq!(route_entries(&exe, 0), Some([0, 0, 0]), "route 0 has no marker; its row is zero");
+        assert_eq!(route_entries(&exe, 10), None);
+        assert_eq!(seen.len(), 27, "nine routes of three entries each");
+        // The BOB models the records name exist.
+        let models = bob_models(&file);
+        assert!(made.iter().all(|p| (p.model as usize) < models.len()), "{} models", models.len());
+        assert!(models[made[0].model as usize].meshes.len() > 0 && models[made[9].model as usize].meshes.len() > 0, "the marker models have meshes");
     }
 }

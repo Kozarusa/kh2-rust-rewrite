@@ -25,13 +25,15 @@ Sora (continued):
 - **HUD:** gauges, the command menu with its reaction capsule, text with commands, the area-name card, banners and message windows.
 - **Party:** Donald and Goofy follow, fight with the friend AI's target styles (including the class 16 chooser), and their Battle Style and use settings are set on the Customize page. Slot 3 is a reserve member, Auto Change swaps it in when a companion is knocked out, a jump record can rearrange the party and show the "Party Members have been switched" notice, Donald and Goofy are targets of the field command's items and have rows on the pause menu's Items and Equipment pages. Reserve members keep HP and MP across areas, regain HP with Auto Healing, and a partner's limit is offered as a reaction command by Auto Limit. The limit's own script now runs as a thread, but nothing it would show is ported, so no limit scene plays.
 - **Summons:** the gauge, the Summon and Dismiss commands, and the Stitch, Genie, Chicken Little and Peter Pan scripts with their hosts (link break and routine, the item command, Stitch's limit records and heal, Genie's follow motions, Tinker Bell's revive sequence). The summon limits run only from a harness aid, not from play.
+- **World map:** the save point's World Map row opens the map (area `wm00`): the Gummi ship cursor flies over the world symbols, the info panel, the land prompt, the area list with its pictures and the episode list work, and landing in Twilight Town returns to the field. Other worlds are listed but only Twilight Town destinations exist.
+- **Experience:** defeats pay experience (lvpm x enmp), raise levels through the lvup rows (abilities are given) and Sora's stats follow his level and equipment; the popup and the NEXT LEVEL strip show on every defeat.
 - **Menus:** the camp menu with Status, Abilities, Items, Equipment, Customize, Config, Party, Help, Save, Jiminy's Journal (world grid, story, characters, Heartless and Nobody lists with defeated counts, Ansem reports, limits, moogle list, quests, minigames, treasures, maps, album, and 3D models on the character and model pages) and the moogle's shop with synthesis, collection rewards and their texts. The BATTLE REPORT ending screen reads its counters from the save state. Sora's knock-out opens the game-over list (Continue, Load Game, Quit, Retry), and Load Game opens the Load screen on the slot files the Save menu wrote.
 - **Townspeople:** their heads turn toward the player (head look-at controller).
 - **Story and events:** story flags with their side effects, NPC talk, save points and an event player (actors, camera, subtitles, fades, hiding and showing the event's objects, the keyhole wipe above the HUD), jump types 4 to 6 and the jump record's party words.
 - **Audio:** the game's sound driver, area music with the battle switch, voices and footsteps, and positional volume and pan. Mostly unlistened.
 
 Enemies:
-- **Shadows, Soldiers, Dusks and one more:** each has its own model, motions, hitboxes, and `enmp`/`lvpm` stats. In Twilight Town (tt04) the waves come from the area's own battle groups (Dusks and a Struggle opponent); other areas use stand-in Shadow/Soldier waves.
+- **Shadows, Soldiers, Dusks and more (Dancer, Seifer, N_EX500/600, M_EX940/850 and the new M_EX420, M_EX760, M_EX880, M_EX700, M_EX950):** each has its own model, motions, hitboxes, and `enmp`/`lvpm` stats. In Twilight Town (tt04) the waves come from the area's own battle groups (Dusks and a Struggle opponent); other areas use stand-in Shadow/Soldier waves.
 - **Behaviour:** they run the game's own AI scripts (BDX) in an interpreter that was checked against the game's code, so they chase, sink and resurface (Shadows), attack, flinch, get blown away and die as in the original.
 
 Not done yet:
@@ -39,8 +41,9 @@ Not done yet:
 - Summons: the limit task (summon limits are reachable only through a harness aid), the camera's FPS mode, Genie's model parts.
 - Party: the limit scene an accepted Auto Limit offer should start (the limit script runs and Sora, Donald and Goofy play its motions and effects, but other characters' participants, the camera event, the gauge animation and host 7.28 are missing), and the member-swap fade.
 - Game over: the GAMEOVER scene model (WP-GO2), restoring the save body on Continue, and the Load screen's header art. Mickey's rescue is ported only as far as the decision, the chance and the alternate list; it is switched off because Mickey and his heal are not found, so the 11 missions that could offer it show the normal list.
-- Other enemy types and some area-script group kinds.
-- Journal: the viewer plate's fade and lighting on the model pages, and the page-turn gap; the World Map row of the save point menu, and the world map itself.
+- Other enemy types (the area survey, docs/area-survey.md, ranks about 95 missing kinds; M_EX900's dive needs an event whose sender is unknown) and some area-script group kinds.
+- Journal: the viewer plate's lighting on the model pages.
+- World map: route markers, the cursor's real movement and camera type 4, the other libretto events, voices and the play time.
 - BATTLE REPORT rows 1 and 2 (no source found), and the shop bits in the slot files.
 - Events: the movie player and voices.
 - Final Mix differences (only the USA release is supported).

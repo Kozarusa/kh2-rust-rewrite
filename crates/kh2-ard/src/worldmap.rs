@@ -87,7 +87,7 @@ impl Wldf {
     /// `progress.rs` shows the result agrees for every record].
     pub fn find(&self, key: u8) -> Option<&WorldFlag> {
         let n = self.records.len();
-        // `span` is the game's `param_3`, `top` its `uVar3`, `lo` its `uVar5`.
+        // `span` is the search span of the game's compare loop, `top` its upper bound and `lo` its lower bound.
         let (mut lo, mut top, mut span) = (0usize, n, n);
         if n == 0 {
             return None;

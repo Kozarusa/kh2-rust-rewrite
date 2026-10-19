@@ -205,6 +205,19 @@ pub fn parse_land(entry: &[u8]) -> Vec<LandRow> {
     counted::<4>(entry).iter().map(|r| LandRow { world_point: r[0], world: r[1], row: r[2], picture: r[3] }).collect()
 }
 
+/// The BAR kind of the destination pictures in `70landing.bar` (type 24, an IMGD each): `FUN_002f7cc0` takes the `picture`
+/// field of a `land` record as the number among the entries of this kind (`FUN_001684c0(bar, 0x18, n)`).
+pub const PICTURE_KIND: u16 = 24;
+/// The BAR tag of the sequence that draws a destination picture (type 25 SEQD, `FUN_002f7c90`).
+pub const WS_I: &str = "ws_i";
+/// Most pictures read (the file holds 53).
+pub const MAX_PICTURES: usize = 64;
+
+/// The picture entries of `70landing.bar` in file order (`FUN_002f7cc0`'s numbering), at most `MAX_PICTURES`.
+pub fn pictures<'a>(entries: &[kh2_bar::Entry<'a>]) -> Vec<&'a [u8]> {
+    entries.iter().filter(|e| e.kind == PICTURE_KIND).take(MAX_PICTURES).map(|e| e.data).collect()
+}
+
 /// One record of `00worldpoint.bin` (`FUN_00194f68` / `FUN_00194f08`): a save point or landing place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WorldPoint {
@@ -311,6 +324,16 @@ mod tests {
     }
 
     #[test]
+    fn pictures_are_the_type_24_entries_in_order() {
+        let e = |kind: u16, tag: &'static str, data: &'static [u8]| kh2_bar::Entry { kind, tag, data };
+        let entries = [e(2, "land", b"x"), e(25, "ws_i", b"s"), e(24, "AL02", b"a"), e(24, "TT27", b"t")];
+        assert_eq!(pictures(&entries), vec![&b"a"[..], &b"t"[..]]);
+        let many: Vec<_> = (0..100).map(|_| e(24, "P", b"p")).collect();
+        assert_eq!(pictures(&many).len(), MAX_PICTURES, "bounded");
+        assert!(pictures(&[]).is_empty());
+    }
+
+    #[test]
     fn message_ids_come_from_the_first_type_two_entry() {
         let mut sys = vec![1, 0, 0, 0, 2, 0, 0, 0];
         for (id, off) in [(0x4871u32, 24u32), (0x4884, 30)] {
@@ -381,6 +404,11 @@ mod tests {
         eprintln!("70landing.bar entries: {:?}", lbar.iter().map(|e| (e.tag, e.kind, e.data.len())).collect::<Vec<_>>());
         let land = parse_land(lbar.iter().find(|e| e.tag == LAND).expect("land entry").data);
         assert_eq!(land.len(), 53, "land records");
+        let pics = pictures(&lbar);
+        assert_eq!(pics.len(), 53, "destination pictures");
+        assert!(pics.iter().all(|p| p.len() == 17472 && p.starts_with(b"IMGD")), "each picture is an IMGD of 17472 bytes");
+        assert!(lbar.iter().find(|e| e.tag == WS_I).is_some_and(|e| e.data.starts_with(b"SEQD")), "ws_i is a SEQD");
+        assert!(land.iter().all(|r| (r.picture as usize) < pics.len()), "every row names a picture");
         let points = parse_worldpoints(&a.read("00worldpoint.bin").expect("00worldpoint.bin"));
         assert_eq!(points.len(), 54, "world points");
         assert!(land.iter().all(|r| (r.world_point as usize) < points.len() && r.world < 19), "land rows name a world point and a world");

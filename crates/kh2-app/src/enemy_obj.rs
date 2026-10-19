@@ -220,7 +220,7 @@ pub(crate) struct Obj {
     pub(crate) effects: Vec<u16>,
     pub(crate) next_effect: u32,
     /// Hit records of event 6 by handle: hit is real (2.8) and the effective reaction, byte +0x26 (2.7).
-    pub(crate) hits: HashMap<u32, (bool, u8)>,
+    pub(crate) hits: HashMap<u32, (bool, u8, i16)>,
     pub(crate) next_hit: u32,
     /// Target records given to event 11, readable by the script (handle `RECORD + k * RECORD_SIZE`).
     pub(crate) records: Vec<[u8; 20]>,
@@ -246,6 +246,11 @@ pub(crate) struct Obj {
     /// the maximum and the lowest as the enemy has them, and the change the script asked for this tick.
     pub(crate) hp_max: i32,
     pub(crate) hp_min: i32,
+    /// Host 1.311 calls of this tick: damage-scale index and percent (applied to `Stats::weakness` by `enemy_ai`).
+    pub(crate) weak_scale: Vec<(usize, i32)>,
+    /// Host 1.13 on this object: motions (slot, blend) queued behind the playing one, at most 4 (the game's ring at the
+    /// motion controller +0x3c); `enemy_ai` starts the first when the playing motion ends.
+    pub(crate) motion_queue: Vec<(usize, f32)>,
     pub(crate) hp_add: i32,
     /// The word at object +0xabc (host 1.211 / 1.212).
     pub(crate) flags_abc: u32,
@@ -323,6 +328,8 @@ impl Obj {
             param_row: None,
             hp_max: 1,
             hp_min: 0,
+            weak_scale: Vec::new(),
+            motion_queue: Vec::new(),
             hp_add: 0,
             flags_abc: 0,
             trigger_bits: [0; 2],

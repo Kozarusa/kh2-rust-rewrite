@@ -1813,6 +1813,7 @@ mod tests {
         let b40 = btl_groups(&groups, &run).into_iter().find(|g| g.name == "b_40").expect("program 0x49 loads b_40");
         assert!(b40.members.iter().all(|m| m.kind.name == DUSK.name), "no M_EX900 member");
         assert_eq!(b40.skipped, vec!["M_EX900".to_string()]);
+        eprintln!("m_ex900_is_described_but_not_spawned: disc branch ran (row 309, b_40 skips M_EX900)");
     }
 
     /// tt03's `btl` program 7 loads b_21, which holds two `M_EX880` (object 317, a kind of `KINDS`; the group's three

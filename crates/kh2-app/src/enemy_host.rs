@@ -267,6 +267,12 @@ pub(crate) struct BevyHost<'a> {
     pub(crate) tag: &'a str,
 }
 
+/// The self-targeted motion queue (host 1.13) is enabled for M_EX900 only until it is verified for the other kinds whose
+/// scripts call it (M_EX930, M_EX940, M_EX850, M_EX760, M_EX420): for them the call stays unmapped as before.
+fn queues_motions(tag: &str) -> bool {
+    tag.starts_with("M_EX900#")
+}
+
 fn imp(v: Value) -> (Value, St, &'static str) {
     (v, St::Impl, "")
 }
@@ -315,7 +321,7 @@ impl BevyHost<'_> {
             return;
         }
         self.trace.line(self.tag, &format!("motion request slot {slot} blend {blend}{}", if checked { " (checked)" } else { "" }));
-        // [inferred] a motion started by the script replaces what was queued behind the old one.
+        // [inferred] a motion started by the script replaces what was queued behind the old one (M_EX900 only).
         o.motion_queue.clear();
         o.slot = Some(slot);
         o.done = false;
@@ -915,7 +921,7 @@ impl BevyHost<'_> {
             ),
             // 1.13 queue_motion on this object (0x1703d8 -> FUN_0017e170): appends (slot, blend) to the 4-entry ring
             // at the motion controller +0x3c; the consumer of that ring was not traced.
-            Call::Func { group: 1, index: 13, args } if args[0].int() as u32 == me => {
+            Call::Func { group: 1, index: 13, args } if args[0].int() as u32 == me && queues_motions(self.tag) => {
                 if let Ok(slot) = usize::try_from(args[1].int()) {
                     if self.obj.motion_queue.len() == 4 {
                         self.obj.motion_queue.remove(0);
@@ -1102,6 +1108,15 @@ mod tests {
         assert!((game_wrap_angle(-3.0 * pi / 2.0) - pi / 2.0).abs() < 1e-5);
         assert!((game_wrap_angle(0.5) - 0.5).abs() < 1e-6);
         assert!((game_wrap_angle(-0.5) + 0.5).abs() < 1e-6);
+    }
+
+    /// Host 1.13 on the object itself queues motions for M_EX900 only; every other kind keeps the old unmapped answer.
+    #[test]
+    fn the_motion_queue_is_enabled_for_m_ex900_only() {
+        assert!(queues_motions("M_EX900#3"));
+        for t in ["M_EX930#1", "M_EX940#2", "M_EX850#1", "M_EX760#4", "M_EX420#5", "Dusk#1"] {
+            assert!(!queues_motions(t), "{t}");
+        }
     }
 
     /// The Dusk reads word 0 of its target record (BDX `M_EX990` 0x136d -> R0217 at 0x021b): the player.

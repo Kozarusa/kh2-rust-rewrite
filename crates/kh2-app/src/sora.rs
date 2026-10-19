@@ -2347,13 +2347,12 @@ pub fn receive_wall_hits(
 /// attack row (`reaction_rules::victim_outcome`) after damage.
 pub fn receive_hits(
     mut hits: MessageReader<Hit>,
-    (data, abilities): (Res<GameData>, Res<Abilities>),
+    (data, abilities, block, mut damaged): (Res<GameData>, Res<Abilities>, Res<crate::abilities::Abilities>, MessageWriter<crate::abilities::SoraDamaged>),
     reaction: Option<Res<ReactionData>>,
     enemies: Query<&Enemy>,
     mut sora_q: Query<(Entity, &mut Sora, &mut Fighter, Option<&ReactionStatus>)>,
     mut anims: Query<&mut Animator>,
     mut ineffective: MessageWriter<IneffectiveHit>,
-    (mut damaged, block): (MessageWriter<crate::abilities::SoraDamaged>, Res<crate::abilities::Abilities>),
 ) {
     let Ok((me, mut s, mut fighter, status)) = sora_q.single_mut() else { return };
     let Some(reaction) = reaction else { return };

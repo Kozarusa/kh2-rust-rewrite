@@ -51,8 +51,8 @@ const TEMPLATE: u32 = 0xa7e;
 /// How near the cursor must be to a symbol for contact, in centimetres on the ground plane. The original's test is the
 /// actors' collision (`FUN_002cc9d0`, unread): [inferred] a distance.
 pub const CONTACT_RADIUS: f32 = 1500.0;
-/// The row the cursor is on is drawn in this colour (the original uses a pointer group of the unread layout) [inferred].
-const SELECTED: [u8; 4] = [0xff, 0xd8, 0x50, 0x80];
+/// The row the cursor is on is drawn in white (full brightness, 0xff) against the dark idle rows; the original uses a pointer group of the unread layout [inferred].
+const SELECTED: [u8; 4] = [0xff, 0xff, 0xff, 0x80];
 
 /// The info panel's and the window's frame classes (font and colour as the event windows use, class 0 of `kh2_image::window`;
 /// kind 3 and 0 frames, the positions are [inferred]).
@@ -330,6 +330,8 @@ pub struct MapUi {
     nodes: Option<Nodes>,
     /// The area the state belongs to; a new area starts clean.
     area: Option<String>,
+    /// Where the player stood before the map (app-only escape).
+    from: Option<Dest>,
 }
 
 fn uilog() -> bool {
@@ -442,6 +444,7 @@ fn map_ui(
         ui.notice = false;
         ui.area = name;
         if !on_map {
+            ui.from = Some(Dest::new(rec.world, rec.area, rec.entrance));
             return;
         }
     }
@@ -471,6 +474,17 @@ fn map_ui(
         Nodes { info: mk(), window: mk() }
     });
     let Some(sora) = cursor.single().ok() else { return };
+    // App-only escape (not in the original): Backspace with no window up returns to the area the map was entered from (Twilight Town
+    // at its first area when that is not known), so the player is never stuck on the map.
+    if ui.window.is_none() && keys.just_pressed(KeyCode::Backspace) {
+        let dest = ui.from.filter(|d| app_has(d)).unwrap_or(Dest::new(area::TWILIGHT_TOWN, 1, 0));
+        if let Some(t) = task.as_deref_mut().filter(|t| **t == JumpTask::Idle) {
+            warn!("worldmap: escape key (app only): back to world {} area {} entrance {}", dest.world, dest.area, dest.entrance);
+            *t = JumpTask::FadeOut { dest, kind: 1, t: 0.0 };
+            keys.reset_all();
+            return;
+        }
+    }
     let confirm = keys.just_pressed(KeyCode::KeyJ) || mouse.just_pressed(MouseButton::Left);
     let cancel = keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::Backspace) || keys.just_pressed(KeyCode::KeyK);
     let up = keys.just_pressed(KeyCode::ArrowUp) || keys.just_pressed(KeyCode::KeyW);

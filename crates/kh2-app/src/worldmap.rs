@@ -108,12 +108,11 @@ pub fn symbol_look(record: [u8; 4], colour: u32) -> Look {
     }
 }
 
-/// Worlds the map's record table covers (`FUN_001b4e80`: the 19 worlds).
-const WORLDS_ON_MAP: usize = 19;
-
-/// No world has been revealed (every record's state byte is 0): the app's baseline story, not a state a played game reaches.
-pub fn baseline_map(story: &crate::progress::Story) -> bool {
-    (0..WORLDS_ON_MAP).all(|w| story.world_record(w)[0] == 0)
+/// The state Twilight Town shows in when its own record is 0 (hidden). [inferred, app only] The app can land only in Twilight Town, so a
+/// hidden Twilight Town symbol would leave the map with nothing to touch and no way out; a story that has not revealed it (the app's
+/// baseline never reveals a world, or a state that reveals the other worlds only) shows it in its normal state anyway.
+pub fn symbol_state(world: Option<u8>, state: u8) -> u8 {
+    if world == Some(area::TWILIGHT_TOWN) && state == 0 { 2 } else { state }
 }
 
 /// The ring kind of the TWTNW symbol (`FUN_002f7cf8`): 6 with story flag 0x481c clear, 8 set; none in states 0 and 1.
@@ -223,12 +222,7 @@ fn map_spawn(
                     Class::Symbol => {
                         let w = symbol_world(&exe, e.object);
                         let mut record = w.map_or([0; 4], |w| progress.as_ref().map_or([0; 4], |p| p.story().world_record(w as usize)));
-                        if w == Some(area::TWILIGHT_TOWN) && record[0] == 0 && progress.as_ref().is_some_and(|p| baseline_map(&p.story())) {
-                            // [inferred] The app's baseline story never reveals a world (its flag side effects are not run), which would
-                            // leave the map empty and the player with nothing to land on: Twilight Town, the one world the app has, shows
-                            // in its normal state. A story that has revealed any world is left as it is.
-                            record[0] = 2;
-                        }
+                        record[0] = symbol_state(w, record[0]);
                         let look = symbol_look(record, colour_word(&exe, record[0]));
                         let mut note = format!("world {w:?} record {record:02x?} -> motion slot {:#x}, tint {:.2?}", look.slot, look.tint);
                         if !look.visible() {
@@ -394,17 +388,11 @@ mod tests {
     }
 
     #[test]
-    fn the_baseline_story_has_no_revealed_world_and_a_revealing_one_is_left_alone() {
-        use crate::progress::{ItemIndex, Progress};
-        let mut p = Progress::from_block(&[], std::sync::Arc::new(ItemIndex::default()));
-        assert!(baseline_map(&p.story()), "a clear block reveals nothing");
-        // A state that has revealed Twilight Town (record state 2): the symbol follows its record, not the fallback.
-        let mut region = vec![0u8; crate::progress::world::LEN];
-        region[4 * usize::from(area::TWILIGHT_TOWN)] = 2;
-        let hex: String = region.iter().map(|b| format!("{b:02x}")).collect();
-        p.apply_json(&format!("{{\"world_state\": \"{hex}\"}}")).unwrap();
-        assert_eq!(p.story().world_record(usize::from(area::TWILIGHT_TOWN))[0], 2);
-        assert!(!baseline_map(&p.story()));
+    fn a_hidden_twilight_town_shows_normally_and_other_worlds_follow_their_records() {
+        assert_eq!(symbol_state(Some(area::TWILIGHT_TOWN), 0), 2, "baseline, or only the other worlds revealed");
+        assert_eq!(symbol_state(Some(area::TWILIGHT_TOWN), 1), 1, "a dim state is the record's own");
+        assert_eq!(symbol_state(Some(4), 0), 0, "other worlds stay hidden");
+        assert_eq!(symbol_state(None, 0), 0);
     }
 
     #[test]

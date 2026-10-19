@@ -28,6 +28,9 @@ pub struct GameData {
     pub weapon_magic: i32,
     /// Item id -> (attack, magic, defense) of its `item_stat` row: what `FUN_001a0c08` adds to the status block for each equipped item.
     pub gear: std::collections::BTreeMap<u16, [i32; 3]>,
+    /// Item id -> (AP, then the seven resistance bytes physical, fire, blizzard, thunder, dark, light, general) of its
+    /// `item_stat` row: the rest of what `FUN_001a0c08` reads (`+7` is added to the AP, `+8..+0xe` scale the resistances).
+    pub gear_extra: std::collections::BTreeMap<u16, [i32; 8]>,
     pub prty: PrefPrty,
     pub plyr: PrefPlyr,
     pub sstm: PrefSstm,
@@ -42,6 +45,10 @@ pub struct Stats {
     pub strength: i32,
     pub magic: i32,
     pub defense: i32,
+    /// Ability points (status `+0x18e`; zero for enemies). Sora's is the `lvup` AP, the record's `+8` and the items' AP.
+    pub ap: i32,
+    /// Maximum MP (status `+0x184`; zero for enemies). Sora's is the record's `+7` (`FUN_0019f920`).
+    pub max_mp: i32,
     /// Damage this unit can take per hit (enemies: % of HP from `enmp`).
     pub max_taken: i32,
     pub min_taken: i32,
@@ -50,6 +57,12 @@ pub struct Stats {
     pub min_dealt: i32,
     /// Physical, fire, blizzard, thunder, dark, light, general — percent.
     pub weakness: [i32; 7],
+}
+
+/// The resistance fold of `FUN_001a0c08`: start at 100 and scale each element by every row's byte, rounding up.
+/// A row is `[ap, physical, fire, blizzard, thunder, dark, light, general]` (`GameData::gear_extra`).
+pub fn fold_resistances<'a>(rows: impl Iterator<Item = &'a [i32; 8]>) -> [i32; 7] {
+    rows.fold([100i32; 7], |w, e| std::array::from_fn(|k| (w[k] * e[1 + k] + 99) / 100))
 }
 
 fn pick<T>(v: Vec<T>, i: usize) -> T {
@@ -83,6 +96,15 @@ impl GameData {
             weapon_attack: kk.map_or(0, |s| s.attack as i32),
             weapon_magic: kk.map_or(0, |s| s.magic as i32),
             gear: items.iter().filter_map(|i| stats.iter().find(|s| s.id == i.stat_entry).map(|s| (i.id, [i32::from(s.attack), i32::from(s.magic), i32::from(s.defense)]))).collect(),
+            gear_extra: items
+                .iter()
+                .filter_map(|i| {
+                    stats.iter().find(|s| s.id == i.stat_entry).map(|s| {
+                        let r = [s.ability_points, s.unknown08, s.fire_resistance, s.ice_resistance, s.lightning_resistance, s.dark_resistance, s.unknown0d, s.general_resistance];
+                        (i.id, r.map(i32::from))
+                    })
+                })
+                .collect(),
             prty: pick(load(disc, &t::PREF_PRTY), SORA_PREF),
             plyr: pick(load(disc, &t::PREF_PLYR), SORA_PREF),
             sstm: pick(load(disc, &t::PREF_SSTM), 0),
@@ -114,6 +136,8 @@ impl GameData {
             strength: l.map_or(2, |l| l.strength as i32) + self.weapon_attack,
             magic: l.map_or(6, |l| l.magic as i32) + self.weapon_magic,
             defense: l.map_or(2, |l| l.defense as i32),
+            ap: l.map_or(0, |l| i32::from(l.ap)),
+            max_mp: self.sora_max_mp,
             max_taken: i32::MAX,
             min_taken: 1,
             max_dealt: i32::MAX,
@@ -122,11 +146,21 @@ impl GameData {
         }
     }
 
+    /// The resistance bytes of a status block (`+0x1a8..+0x1ae`, `FUN_0019f920` / `FUN_001a0c08`): 100 each, then
+    /// every item's `item_stat` row scales them in order, `ceil(res * row / 100)`.
+    pub fn resistances(&self, items: &[u16]) -> [i32; 7] {
+        fold_resistances(items.iter().filter_map(|i| self.gear_extra.get(i)))
+    }
+
     /// Sora's status block as `FUN_0019f920` builds it from his record: the level byte, the `lvup` row of that level
     /// (`FUN_001b50c0`, held at the table's end) plus the record's own bonus bytes (`+9`, `+0xa`, `+0xb`) plus the
     /// `item_stat` row of every equipped item (`FUN_001a0c08`: the weapon words, armor and accessory slots and, in a
-    /// drive form, the form's weapon). The maximum HP is the record's byte `+5`; a record without one (0) keeps the
-    /// `plrp` value. Ability effects that `FUN_001a0c08` also applies (resistances, the drive gauge) are not read here.
+    /// drive form, the form's weapon). The maximum HP and MP are the record's bytes `+5` and `+7` (a record without
+    /// one, 0, keeps the `plrp` value). The AP is the `lvup` AP plus the record's `+8` plus the items' `item_stat` AP
+    /// (`FUN_0019f920` writes status `+0x18e`, `FUN_001a0c08` adds `+7`). The resistances start at 100 and each
+    /// item's row scales them, `ceil(res * row / 100)` per element in the order weapons, form weapon, armor,
+    /// accessories (`FUN_001a0c08`, status `+0x1a8..+0x1ae`). Ability effects `FUN_001a0c08` also applies (the drive
+    /// gauge) are not read here.
     pub fn sora_status(&self, p: &crate::progress::Progress) -> Stats {
         let m = p.sora();
         let mut items = p.equipment();
@@ -134,10 +168,15 @@ impl GameData {
             items.push(p.form(p.current_form()).weapon);
         }
         let g = items.iter().filter_map(|i| self.gear.get(i)).fold([0; 3], |a, g| [a[0] + g[0], a[1] + g[1], a[2] + g[2]]);
+        let ap = items.iter().filter_map(|i| self.gear_extra.get(i)).map(|e| e[0]).sum::<i32>();
+        let weakness = self.resistances(&items);
         let level = i32::from(m.level).max(1);
         let l = self.sora_levels.get(((level - 1) as usize).min(self.sora_levels.len().saturating_sub(1)));
         Stats {
             level,
+            ap: l.map_or(0, |l| i32::from(l.ap)) + i32::from(m.ap) + ap,
+            max_mp: if m.mp_max > 0 { i32::from(m.mp_max) } else { self.sora_max_mp },
+            weakness,
             max_hp: if m.hp_max > 0 { i32::from(m.hp_max) } else { self.sora_max_hp },
             strength: l.map_or(2, |l| i32::from(l.strength)) + i32::from(m.strength) + g[0],
             magic: l.map_or(6, |l| i32::from(l.magic)) + i32::from(m.magic) + g[1],
@@ -159,6 +198,8 @@ impl GameData {
             strength: lv.strength as i32,
             magic: lv.strength as i32,
             defense: lv.defense as i32,
+            ap: 0,
+            max_mp: 0,
             max_taken: (hp * e.max_damage as i32 + 9999) / 10000,
             min_taken: (hp * e.min_damage as i32 + 9999) / 10000,
             max_dealt: lv.max_strength as i32,

@@ -635,7 +635,7 @@ impl Sora {
             blow: None,
             hp,
             mp: 0,
-            stats: Stats { level: 1, max_hp, strength: 0, magic: 0, defense: 0, max_taken: 0, min_taken: 0, max_dealt: 0, min_dealt: 0, weakness: [0; 7] },
+            stats: Stats { level: 1, max_hp, strength: 0, magic: 0, defense: 0, ap: 0, max_mp: 0, max_taken: 0, min_taken: 0, max_dealt: 0, min_dealt: 0, weakness: [0; 7] },
             invuln: 0.0,
             game_over: false,
             leaf_bracer: 0.0,
@@ -986,12 +986,18 @@ fn refresh_status(progress: Option<Res<crate::progress::Progress>>, data: Res<Ga
     let Ok(mut s) = sora.single_mut() else { return };
     let new = data.sora_status(&progress);
     let old = &s.stats;
-    if (old.level, old.max_hp, old.strength, old.magic, old.defense) == (new.level, new.max_hp, new.strength, new.magic, new.defense) {
+    if (old.level, old.max_hp, old.max_mp, old.strength, old.magic, old.defense, old.ap, old.weakness)
+        == (new.level, new.max_hp, new.max_mp, new.strength, new.magic, new.defense, new.ap, new.weakness)
+    {
         return;
     }
     let was_full = s.hp >= old.max_hp;
-    info!("sora: status rebuilt from the record: level {} HP max {} strength {} magic {} defense {}", new.level, new.max_hp, new.strength, new.magic, new.defense);
+    info!(
+        "sora: status rebuilt from the record: level {} HP max {} MP max {} strength {} magic {} defense {} AP {} resistances {:?}",
+        new.level, new.max_hp, new.max_mp, new.strength, new.magic, new.defense, new.ap, new.weakness
+    );
     s.hp = if was_full { new.max_hp } else { s.hp.min(new.max_hp) };
+    s.mp = s.mp.min(new.max_mp);
     s.stats = new;
 }
 
@@ -2560,6 +2566,7 @@ mod tests {
         };
         let gear = |p: &crate::progress::Progress| p.equipment().iter().filter_map(|i| data.gear.get(i)).fold([0; 3], |a, g| [a[0] + g[0], a[1] + g[1], a[2] + g[2]]);
         let first = data.sora_status(&p);
+        let p0 = p.clone();
         let (m, g) = (p.sora(), gear(&p));
         let row = &data.sora_levels[usize::from(m.level) - 1];
         assert_eq!(first.level, i32::from(m.level));
@@ -2576,6 +2583,40 @@ mod tests {
         assert_eq!(later.level, i32::from(m2.level));
         assert_eq!(later.strength, i32::from(row2.strength) + i32::from(m2.strength) + g2[0]);
         assert!(later.strength + later.magic + later.defense > first.strength + first.magic + first.defense, "a higher level has higher stats");
+        // AP: the lvup AP of the level, the record's `+8` and the items' AP; MP maximum: the record's `+7`.
+        let ap = |p: &crate::progress::Progress| p.equipment().iter().filter_map(|i| data.gear_extra.get(i)).map(|e| e[0]).sum::<i32>();
+        assert_eq!(first.ap, i32::from(row.ap) + i32::from(m.ap) + ap(&p0));
+        assert_eq!(later.ap, i32::from(row2.ap) + i32::from(m2.ap) + ap(&p));
+        assert!(later.ap >= first.ap, "AP does not fall with the level");
+        assert!(row2.ap >= row.ap);
+        assert_eq!(first.max_mp, i32::from(m.mp_max));
+        assert_eq!(later.max_mp, i32::from(m2.mp_max));
+        assert_eq!(first.max_mp, data.sora_max_mp, "the new game's record holds the plrp value");
+        assert_eq!(first.weakness, data.resistances(&p0.equipment()));
+    }
+
+    /// The resistance bytes follow `FUN_001a0c08`: 100 each, every row scales them with a ceiling, in order. The
+    /// disc check records a fact of the USA data: no item an actor can equip (`item` StatEntry 0..4 and 80..147)
+    /// has a resistance byte other than 100, so Sora's resistances stay 100 there.
+    #[test]
+    fn resistances_scale_per_item_with_a_ceiling() {
+        use crate::data::fold_resistances;
+        assert_eq!(fold_resistances([].iter()), [100; 7], "no item: 100 everywhere");
+        let fire80 = [0, 100, 80, 100, 100, 100, 100, 100];
+        let all75 = [0, 75, 75, 75, 75, 75, 75, 75];
+        assert_eq!(fold_resistances([fire80].iter()), [100, 80, 100, 100, 100, 100, 100]);
+        assert_eq!(fold_resistances([fire80, fire80].iter())[1], 64, "ceil(80 * 80 / 100)");
+        assert_eq!(fold_resistances([all75, all75].iter())[0], 57, "ceil(75 * 75 / 100) = 57");
+        assert_eq!(fold_resistances([all75, fire80].iter())[1], 60, "75 then 80: 100 -> 75 -> 60");
+        let iso = std::env::var("KH2_ISO").ok().or_else(|| std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../local/iso.txt")).ok().map(|s| s.trim().to_string()));
+        let Some(iso) = iso else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let data = GameData::load(&Disc::open(std::path::Path::new(&iso)));
+        assert!(!data.gear_extra.is_empty());
+        let all: Vec<u16> = data.gear_extra.keys().copied().collect();
+        assert_eq!(data.resistances(&all), [100; 7], "no USA item changes a resistance");
     }
 
     /// The variant rule of `FUN_0017da30` (pure part): weapon out with the game's battle flag clear is the

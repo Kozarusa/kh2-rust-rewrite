@@ -1497,6 +1497,8 @@ pub(crate) fn member_stats(progress: Option<&crate::progress::Progress>, neo: u1
         strength: m.strength as i32,
         magic: m.magic as i32,
         defense: m.defense as i32,
+        ap: 0,
+        max_mp: 0,
         max_taken: i32::MAX,
         min_taken: 1,
         max_dealt: i32::MAX,
@@ -1782,7 +1784,7 @@ mod tests {
     use super::*;
 
     fn stats(strength: i32, magic: i32) -> Stats {
-        Stats { level: 1, max_hp: 1000, strength, magic, defense: 0, max_taken: i32::MAX, min_taken: 1, max_dealt: i32::MAX, min_dealt: 0, weakness: [100; 7] }
+        Stats { level: 1, max_hp: 1000, strength, magic, defense: 0, ap: 0, max_mp: 0, max_taken: i32::MAX, min_taken: 1, max_dealt: i32::MAX, min_dealt: 0, weakness: [100; 7] }
     }
 
     /// al00's `btl` program 0xa loads b_20, which holds ten `M_EX420` (object 120, a kind of `KINDS`; the group's other

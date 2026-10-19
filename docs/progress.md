@@ -306,3 +306,7 @@ gaps: docs/worldmap.md section 10 (W2).
 ## Level-ups reach Sora's combat stats (WP-LV1)
 
 `Progress` level byte -> `GameData::sora_status` -> `Sora.stats` (`sora::refresh_status`): the `lvup` row of the level plus the record bonus bytes plus the equipment, as FUN_0019f920 does; the rule and its gaps are in docs/player-data.md "Sora's runtime status block follows the record". The spawn still builds the level 1 block (`GameData::sora_stats(1)`); the first fixed tick replaces it, logging `sora: status rebuilt from the record: ...`.
+
+## Stat growth at level-up (WP-ST3)
+
+The level-up path (`FUN_001b52f8` -> `FUN_001b53d0`) writes no HP or MP; the maxima are record bytes `+5` and `+7`, written only by `FUN_001875c8`, `FUN_001c0b80` (`plrp`) and the status write-back `FUN_001a0030`. The trace, the searches and the port of AP, resistances and the MP maximum are in docs/player-data.md "Stat growth at level-up (WP-ST3)". Gap: no writer of `+5` / `+7` that grows with the level was found (searched: `mips_scan --store-off 0x5` and `0x7`, `FUN_001c0f40`, `FUN_001a0c08`, `FUN_001b53d0`); a record built by `Progress::new_game` keeps 20 / 100 apart from state files.

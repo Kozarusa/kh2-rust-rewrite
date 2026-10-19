@@ -967,13 +967,32 @@ impl Plugin for SoraPlugin {
             .add_systems(
                 FixedUpdate,
                 (
-                    sync_weapon.in_set(Sim::Weapon),
+                    (refresh_status, sync_weapon).in_set(Sim::Weapon),
                     (follow_hand, tick).chain().in_set(Sim::Sora),
                     (track_connects, receive_hits, receive_wall_hits).chain().in_set(Sim::SoraHurt),
                     apply_player_fade.after(Sim::Pose),
                 ),
             );
     }
+}
+
+/// `FUN_0019fb98` for the player: the status block is rebuilt from the record, so a level-up (or an equipment
+/// change) reaches the strength, magic, defense and maximum HP Sora fights with. Runs every tick and writes only
+/// when the rebuilt block differs, which covers the area start (Sora spawns with the level 1 block) and the tick
+/// after `pay_defeats` raises the level. HP keeps its value, held under the new maximum; a full bar stays full
+/// when the maximum grows (the spawn). Without a `Progress` resource the block is left alone.
+fn refresh_status(progress: Option<Res<crate::progress::Progress>>, data: Res<GameData>, mut sora: Query<&mut Sora>) {
+    let Some(progress) = progress else { return };
+    let Ok(mut s) = sora.single_mut() else { return };
+    let new = data.sora_status(&progress);
+    let old = &s.stats;
+    if (old.level, old.max_hp, old.strength, old.magic, old.defense) == (new.level, new.max_hp, new.strength, new.magic, new.defense) {
+        return;
+    }
+    let was_full = s.hp >= old.max_hp;
+    info!("sora: status rebuilt from the record: level {} HP max {} strength {} magic {} defense {}", new.level, new.max_hp, new.strength, new.magic, new.defense);
+    s.hp = if was_full { new.max_hp } else { s.hp.min(new.max_hp) };
+    s.stats = new;
 }
 
 /// The material state a faded mesh goes back to.
@@ -2488,6 +2507,41 @@ mod tests {
         let mut a = kh2_archive::Archive::open(&iso).map_err(|e| eprintln!("skipped: {iso}: {e}")).ok()?;
         let index = kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).ok()?.rows.into_iter().find(|r| r.model_name == "P_EX100")?.neo_moveset as usize;
         Moveset::parse(&kh2_tables::subfile(&mut a, &t::PTYA).ok()?, index)
+    }
+
+    /// Sora's status block follows his record (`FUN_0019f920`): at level 1 it is the `lvup` row plus the record's bonus
+    /// bytes plus the equipped items' `item_stat` rows, and after experience raises the level it is the higher row.
+    #[test]
+    fn sora_status_follows_the_record_level() {
+        let iso = std::env::var("KH2_ISO").ok().or_else(|| std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../local/iso.txt")).ok().map(|s| s.trim().to_string()));
+        let Some(iso) = iso else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let disc = Disc::open(std::path::Path::new(&iso));        let data = GameData::load(&disc);
+        let Some(mut p) = crate::progress::Progress::start(&disc) else { return };
+        let lvup = {
+            let mut a = disc.0.lock().unwrap();
+            kh2_tables::subfile(&mut a, &t::LVUP).ok().and_then(|b| kh2_tables::rt::decode_lvup::<t::Lvup>(&b)).expect("lvup")
+        };
+        let gear = |p: &crate::progress::Progress| p.equipment().iter().filter_map(|i| data.gear.get(i)).fold([0; 3], |a, g| [a[0] + g[0], a[1] + g[1], a[2] + g[2]]);
+        let first = data.sora_status(&p);
+        let (m, g) = (p.sora(), gear(&p));
+        let row = &data.sora_levels[usize::from(m.level) - 1];
+        assert_eq!(first.level, i32::from(m.level));
+        assert_eq!(first.strength, i32::from(row.strength) + i32::from(m.strength) + g[0]);
+        assert_eq!(first.magic, i32::from(row.magic) + i32::from(m.magic) + g[1]);
+        assert_eq!(first.defense, i32::from(row.defense) + i32::from(m.defense) + g[2]);
+        assert_eq!(first.max_hp, i32::from(m.hp_max));
+        assert!(g[0] > 0, "the equipped keyblade adds attack");
+        p.pay_experience(lvup[0][49].exp, &lvup, 1);
+        let later = data.sora_status(&p);
+        let (m2, g2) = (p.sora(), gear(&p));
+        assert!(m2.level > m.level, "the payout raised the level");
+        let row2 = &data.sora_levels[usize::from(m2.level) - 1];
+        assert_eq!(later.level, i32::from(m2.level));
+        assert_eq!(later.strength, i32::from(row2.strength) + i32::from(m2.strength) + g2[0]);
+        assert!(later.strength + later.magic + later.defense > first.strength + first.magic + first.defense, "a higher level has higher stats");
     }
 
     /// The variant rule of `FUN_0017da30` (pure part): weapon out with the game's battle flag clear is the

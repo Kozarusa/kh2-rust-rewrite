@@ -26,6 +26,8 @@ pub struct GameData {
     pub sora_max_mp: i32,
     pub weapon_attack: i32,
     pub weapon_magic: i32,
+    /// Item id -> (attack, magic, defense) of its `item_stat` row: what `FUN_001a0c08` adds to the status block for each equipped item.
+    pub gear: std::collections::BTreeMap<u16, [i32; 3]>,
     pub prty: PrefPrty,
     pub plyr: PrefPlyr,
     pub sstm: PrefSstm,
@@ -80,6 +82,7 @@ impl GameData {
             sora_max_mp: sora.map_or(100, |p| p.mp as i32),
             weapon_attack: kk.map_or(0, |s| s.attack as i32),
             weapon_magic: kk.map_or(0, |s| s.magic as i32),
+            gear: items.iter().filter_map(|i| stats.iter().find(|s| s.id == i.stat_entry).map(|s| (i.id, [i32::from(s.attack), i32::from(s.magic), i32::from(s.defense)]))).collect(),
             prty: pick(load(disc, &t::PREF_PRTY), SORA_PREF),
             plyr: pick(load(disc, &t::PREF_PLYR), SORA_PREF),
             sstm: pick(load(disc, &t::PREF_SSTM), 0),
@@ -116,6 +119,30 @@ impl GameData {
             max_dealt: i32::MAX,
             min_dealt: 0,
             weakness: [100; 7],
+        }
+    }
+
+    /// Sora's status block as `FUN_0019f920` builds it from his record: the level byte, the `lvup` row of that level
+    /// (`FUN_001b50c0`, held at the table's end) plus the record's own bonus bytes (`+9`, `+0xa`, `+0xb`) plus the
+    /// `item_stat` row of every equipped item (`FUN_001a0c08`: the weapon words, armor and accessory slots and, in a
+    /// drive form, the form's weapon). The maximum HP is the record's byte `+5`; a record without one (0) keeps the
+    /// `plrp` value. Ability effects that `FUN_001a0c08` also applies (resistances, the drive gauge) are not read here.
+    pub fn sora_status(&self, p: &crate::progress::Progress) -> Stats {
+        let m = p.sora();
+        let mut items = p.equipment();
+        if p.current_form() != 0 {
+            items.push(p.form(p.current_form()).weapon);
+        }
+        let g = items.iter().filter_map(|i| self.gear.get(i)).fold([0; 3], |a, g| [a[0] + g[0], a[1] + g[1], a[2] + g[2]]);
+        let level = i32::from(m.level).max(1);
+        let l = self.sora_levels.get(((level - 1) as usize).min(self.sora_levels.len().saturating_sub(1)));
+        Stats {
+            level,
+            max_hp: if m.hp_max > 0 { i32::from(m.hp_max) } else { self.sora_max_hp },
+            strength: l.map_or(2, |l| i32::from(l.strength)) + i32::from(m.strength) + g[0],
+            magic: l.map_or(6, |l| i32::from(l.magic)) + i32::from(m.magic) + g[1],
+            defense: l.map_or(2, |l| i32::from(l.defense)) + i32::from(m.defense) + g[2],
+            ..self.sora_stats(1)
         }
     }
 

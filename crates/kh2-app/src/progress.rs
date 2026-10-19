@@ -2148,6 +2148,13 @@ impl Progress {
             match key.as_str() {
                 "experience" => self.set_experience(int(v, "experience")? as i32),
                 "munny" => self.set_wallet(int(v, "munny")?.max(0) as u32),
+                // Harness aid: the player record's level byte (`+0xf`) without the payout, so a run starts as a higher level.
+                "sora_level" => {
+                    let l = in_range(int(v, "sora_level")?, 99, "sora_level")?.max(1) as u8;
+                    if let Some(r) = Self::member_off(SORA) {
+                        self.set_u8(r + rec::LEVEL, l);
+                    }
+                }
                 "items" => {
                     let Json::Obj(m) = v else { return Err("items: expected an object of id: count".into()) };
                     for (k, n) in m {
@@ -3925,6 +3932,9 @@ mod tests {
         p.apply_json(&json).unwrap();
         assert_eq!(p.experience(), 1234);
         assert_eq!(p.wallet(), 4321, "the munny key sets the wallet, not the experience");
+        p.apply_json(r#"{"sora_level": 30}"#).unwrap();
+        assert_eq!(p.sora().level, 30, "sora_level sets the record's level byte");
+        assert!(p.apply_json(r#"{"sora_level": 100}"#).is_err());
         // "items" comes after "magic" in the file, so Fire ends at 2.
         assert_eq!(p.spell_levels()[..3], [2, 0, 2]);
         assert_eq!(p.item_count(1), 7);

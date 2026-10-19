@@ -205,6 +205,7 @@ an error (logged; the app then falls back to the new game + baseline). Example: 
 | `dodge_roll` | int 0..5 | Sora's Dodge Roll growth level (app field, not an original record; docs/movement.md section 2) |
 | `forms` | object `"<form 1..9>": { "owned": bool, "level": int, "exp": int, "weapon": int }` | `owned: true` gives the form item through the original's give (so the form takes a keyblade by `FUN_001a2010` if the inventory has one); the others set the record |
 | `summon` | `{ "level": int, "exp": int }` | summon level and experience |
+| `sora_level` | int 1..99 | Sora's record level byte (`+0xf`) with no payout and no experience change (harness aid, WP-LV1) |
 | `outfits` | object `"<world>": outfit` | low 5 bits of the world record's byte 0 |
 | `spell_switch` | int | the switch bit word |
 | `party_settings` | object `"<member id>": byte` or `"<member id>": [bytes]` | a member's AI settings block (record `+0xd4`, 32 bytes, zero at a new game by `FUN_001875c8`): a single number is byte 0, the battle style 0..5; an array sets bytes from 0 on (byte `1 + k` = use setting of item / ability `k`, docs/party.md). Member ids are the party ids (2 Donald, 3 Goofy). `Progress::member_setting` / `set_member_setting` read and write it; a slot file's `block` carries it (test `member_settings_default_to_zero_and_round_trip`). `party.rs` reads byte 0 every frame (`KH2_PARTY_STYLE` still overrides) and, since WP-PA4, the use-setting bytes; the Customize page 0x1b (docs/menus.md 14b) writes them (`menu::customize::write_friend`; test `the_pages_writes_survive_a_state_file_round_trip`) |
@@ -287,3 +288,7 @@ assume "no story flag set").
   ported; they write outside the party block.
 - A spell's shortcut 0 command (`FUN_001a1f78` type 0x12 -> `FUN_001a4dd0`) needs the loaded magic resources;
   `Progress` answers 0 (they are empty at boot, the oracle agrees).
+
+## Level-ups reach Sora's combat stats (WP-LV1)
+
+`Progress` level byte -> `GameData::sora_status` -> `Sora.stats` (`sora::refresh_status`): the `lvup` row of the level plus the record bonus bytes plus the equipment, as FUN_0019f920 does; the rule and its gaps are in docs/player-data.md "Sora's runtime status block follows the record". The spawn still builds the level 1 block (`GameData::sora_stats(1)`); the first fixed tick replaces it, logging `sora: status rebuilt from the record: ...`.

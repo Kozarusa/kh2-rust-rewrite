@@ -30,7 +30,7 @@ use kh2_image::text::Style;
 
 use super::item_pages::{fill, label, tokens_of};
 use super::{at, close_brightness, dim_alpha, menu_sound, Menu, Phase, CLOSE_FRAMES, DIM_BRIGHTNESS};
-use crate::area_jump::Dest;
+use crate::area_jump::{map_entrance, Dest, ExitConsts, JumpMenus, JumpTask, FADE_TICKS, WORLD_MAP};
 use crate::assets::{CurrentArea, Disc};
 use crate::audio::PlaySe;
 use crate::menu_gfx::{self, MenuScene, Node};
@@ -51,6 +51,8 @@ mod msg {
     pub const HELP_FILES: u32 = 0xaa1;
     pub const NEW_FILE: u32 = 0xa9d;
     pub const OVERWRITE_ASK: u32 = 0xaa4;
+    /// The World Map question (`FUN_00257ee8`, page 0x10): "Jump to World Map?" (`0x3859`; its Yes and No are the same `0xa7c`, `0xa7d`).
+    pub const MAP_ASK: u32 = 0x3859;
     pub const SAVING: u32 = 0xa90;
     pub const OVERWRITING: u32 = 0xa92;
     pub const LV: u32 = 0x39fc;
@@ -179,6 +181,9 @@ pub enum Stage {
     /// Load mode: the failure box (kind 2 page 6); a confirm or cancel returns to the file list.
     Failed,
     Closing,
+    /// The World Map question was answered Yes: the screen fader goes to black over the open menu (`FUN_002580b8`, then page 0x14
+    /// `FUN_002580e8` waits for the fader's state 4).
+    MapFade,
 }
 
 /// One key press, as the flow takes it.
@@ -207,9 +212,10 @@ pub enum Action {
     Declined,
     /// Close the whole menu.
     Close,
-    /// Menu kind 1's second row (the world point's; `FUN_00257e70`: a Yes/No question, then `FUN_002580b8` and page 0x14,
-    /// which leaves the area): not ported.
+    /// Menu kind 1's second row, "World Map" (`FUN_00255d38` row 1 -> `FUN_00257e70`): ask the question of page 0x10.
     SecondRow,
+    /// The World Map question's Yes (`FUN_00257ee8` result 1): `FUN_002580b8` fades to black, page 0x14 waits for it.
+    MapGo,
     /// Load mode: read this slot now (page 0xb's row choice goes straight to the loading box, no question).
     Read(usize),
     /// Load mode: the row holds no file; nothing happens (`FUN_0023ddb0` is 0).
@@ -236,6 +242,8 @@ pub struct Flow {
     pub relist: bool,
     /// Menu kind 2, the Load screen (docs/menus.md 18.6): no pointer list, no question, a row reads its file.
     pub load: bool,
+    /// The question up is the World Map one (page 0x10), not the overwrite question: its No and cancel return to the top list.
+    pub map: bool,
 }
 
 impl Flow {
@@ -278,7 +286,9 @@ impl Flow {
             }
             (Stage::Question, Press::Cancel) => Action::Declined,
             (Stage::Question, Press::Confirm) => {
-                if self.ask == 0 {
+                if self.map {
+                    if self.ask == 0 { Action::MapGo } else { Action::Declined }
+                } else if self.ask == 0 {
                     Action::Write(self.slot)
                 } else {
                     Action::Declined
@@ -493,8 +503,8 @@ pub fn point_rows(exe: &[u8]) -> Vec<u32> {
 
 /// The rows menu kind 1 shows for its mode: the second only while the mode is not 2 (`FUN_00255c10` stops at row 1 when
 /// `FUN_0024f498()`, the mode word, is 2).
-pub fn rows_for_mode(rows: &[u32], mode: i32) -> Vec<u32> {
-    rows.iter().take(if mode == 2 { 1 } else { 2 }).copied().collect()
+pub fn rows_for_mode(rows: &[u32], mode: i32, map: bool) -> Vec<u32> {
+    rows.iter().take(if mode == 2 || !map { 1 } else { 2 }).copied().collect()
 }
 
 pub struct SavePlugin;
@@ -664,7 +674,7 @@ fn input(
     {
         // A save point's accept: menu kind 1. The point's gate is its own (the offer); the menu opens when no other is up.
         if menu.phase == Phase::Closed && !pause.band {
-            let rows = if save.point_rows.is_empty() { vec![msg::SAVE] } else { rows_for_mode(&save.point_rows, mode) };
+            let rows = if save.point_rows.is_empty() { vec![msg::SAVE] } else { rows_for_mode(&save.point_rows, mode, crate::area_jump::worldmap_enabled()) };
             let area_name = area.name.clone();
             open(&mut save, &mut scene, &mut se, &area_name, rows, Some(mode), false);
         } else {
@@ -750,9 +760,21 @@ fn input(
             show_top(&mut save, &mut scene);
         }
         Action::SecondRow => {
-            // FUN_00257e70 asks (0x7549, messages 0x380cb0) and its Yes leaves the area (FUN_002580b8, page 0x14):
-            // not ported, the row does nothing.
-            info!("menu: save point row 1 ({:#x}): the world point's question and exit (FUN_00257e70, FUN_002580b8) are not ported", save.rows.get(1).copied().unwrap_or(0));
+            // `FUN_00255d38` row 1 -> `FUN_00257e70` (list 0x7549, rows 0x380cb0) and page 0x10 (`FUN_00257ee8`): the question.
+            // The cursor starts on No like the overwrite question's [inferred: the list widget's start row was not read].
+            menu_sound::play(&mut se, crate::menu_status::CONFIRM);
+            save.flow.map = true;
+            save.flow.ask = 1;
+            save.flow.stage = Stage::Question;
+            info!("menu: save point row 1 ({:#x}): the World Map question (page 0x10, FUN_00257e70)", save.rows.get(1).copied().unwrap_or(0));
+            show_question(&save, &mut scene);
+        }
+        Action::MapGo => {
+            // `FUN_00257ee8` result 1: `FUN_002580b8` = `FUN_0014a7c8(fader, 0xf, 0)`, page 0x14.
+            menu_sound::play(&mut se, crate::menu_status::CONFIRM);
+            save.flow.stage = Stage::MapFade;
+            save.frames = 0;
+            info!("menu: save point World Map: Yes, the screen fades to black (FUN_002580b8, page 0x14 waits for the fader)");
         }
         Action::Cursor => {
             menu_sound::play(&mut se, menu_sound::CURSOR);
@@ -775,12 +797,20 @@ fn input(
         }
         Action::Declined => {
             menu_sound::play(&mut se, menu_sound::CANCEL);
-            save.flow.stage = Stage::Files;
             save.frames = 0;
             let ids = [save.nodes.boxn, save.nodes.box_text, save.nodes.pills[0], save.nodes.pills[1], save.nodes.pill_text[0], save.nodes.pill_text[1], save.nodes.pill_hand];
             hide(&mut scene, &ids);
-            show_files(&save, &mut scene);
-            info!("menu: save question declined");
+            if save.flow.map {
+                // Page 0x10 result 0 or -2: `FUN_00295ac0(2)`, `FUN_00295a00(0)`: back to the top list.
+                save.flow.map = false;
+                save.flow.stage = Stage::Top;
+                show_top(&mut save, &mut scene);
+                info!("menu: save point World Map question declined: back to page 0");
+            } else {
+                save.flow.stage = Stage::Files;
+                show_files(&save, &mut scene);
+                info!("menu: save question declined");
+            }
         }
         Action::Write(slot) => {
             menu_sound::play(&mut se, crate::menu_status::CONFIRM);
@@ -1112,7 +1142,7 @@ fn start_failed(save: &mut SaveMenu, scene: &mut MenuScene) {
 /// The overwrite question over the list.
 fn show_question(save: &SaveMenu, scene: &mut MenuScene) {
     let n = &save.nodes;
-    let l = text_label(scene, msg::OVERWRITE_ASK, 0, 15.0, [0xe5, 0xe5, 0xe5, 0x80], 0, pos::BOX_TEXT);
+    let l = text_label(scene, if save.flow.map { msg::MAP_ASK } else { msg::OVERWRITE_ASK }, 0, 15.0, [0xe5, 0xe5, 0xe5, 0x80], 0, pos::BOX_TEXT);
     show_box(save, scene, l);
     for k in 0..2 {
         let selected = k == save.flow.ask;
@@ -1163,6 +1193,7 @@ fn tick(
     (mut progress, mut tags): (Option<ResMut<Progress>>, ResMut<super::new_tags::NewTags>),
     mut se: MessageWriter<PlaySe>,
     rec: Option<Res<crate::area::AreaRecord>>,
+    (task, jumps, consts): (Option<ResMut<JumpTask>>, Option<ResMut<JumpMenus>>, Option<Res<ExitConsts>>),
 ) {
     if !save.loaded || save.flow.stage == Stage::Closed {
         return;
@@ -1246,6 +1277,41 @@ fn tick(
                 show_files(&save, &mut scene);
             } else {
                 close(&mut save, &mut scene);
+            }
+        }
+        Stage::MapFade => {
+            let mut jumps = jumps;
+            if let Some(j) = jumps.as_mut() {
+                j.map_fade = Some(save.frames);
+            }
+            if save.frames >= FADE_TICKS as u32 {
+                // `FUN_002580e8`: the fader is black; `FUN_00103b18(1)` sets the scene mode word, the menu ends and the field
+                // scene's entry (`FUN_00103b38`, mode 1) calls `FUN_00149df0(-1, 0x80000000)` (docs/worldmap.md section 1).
+                let from = rec.as_deref().map_or(crate::area::TWILIGHT_TOWN, |r| r.world);
+                let table = consts.as_deref().map(|c| c.map_entrances);
+                let dest = Dest::new(WORLD_MAP, 0, table.map_or(0, |t| map_entrance(&t, from)));
+                if let Some(mut t) = task
+                    && *t == JumpTask::Idle
+                {
+                    // Bit 31 of the fade flags: the fader is already black, so the jump task goes straight to the load.
+                    info!(
+                        "menu: save point World Map: the fader is black; FUN_00103b18(1), FUN_00149df0(-1, 0x80000000): jump to world {} area {} entrance {} (the pair table 0x3790a8 for world {from})",
+                        dest.world, dest.area, dest.entrance
+                    );
+                    *t = JumpTask::FadeOut { dest, kind: 1, t: FADE_TICKS - 1.0 };
+                } else {
+                    warn!("menu: save point World Map: a jump is already running or the jump task is missing; no jump");
+                }
+                if let Some(j) = jumps.as_mut() {
+                    j.map_fade = None;
+                }
+                save.flow.stage = Stage::Closed;
+                save.flow.map = false;
+                save.point = None;
+                scene.hidden = true;
+                scene.dim = 0.0;
+                let ids = all_nodes(&save.nodes);
+                hide(&mut scene, &ids);
             }
         }
         Stage::Closing => {
@@ -1336,13 +1402,26 @@ mod tests {
     #[test]
     fn the_point_menu_lists_its_second_row_only_outside_mode_2() {
         let rows = [0x8a7e, 0x8a80];
-        assert_eq!(rows_for_mode(&rows, 2), vec![0x8a7e], "the save point (FUN_0024f0b8(1, 2))");
-        assert_eq!(rows_for_mode(&rows, 0), vec![0x8a7e, 0x8a80], "the world point (FUN_0024f0b8(1, 0))");
+        assert_eq!(rows_for_mode(&rows, 2, true), vec![0x8a7e], "the save point (FUN_0024f0b8(1, 2))");
+        assert_eq!(rows_for_mode(&rows, 0, true), vec![0x8a7e, 0x8a80], "the world point (FUN_0024f0b8(1, 0)) with KH2_WORLDMAP=1");
+        assert_eq!(rows_for_mode(&rows, 0, false), vec![0x8a7e], "without KH2_WORLDMAP the World Map row is not listed");
         let none = [false; SLOTS];
         let mut f = Flow { stage: Stage::Top, rows: 2, ..Flow::default() };
         assert_eq!(f.press(Press::Down, &none), Action::Cursor);
         assert_eq!(f.row, 1);
         assert_eq!(f.press(Press::Confirm, &none), Action::SecondRow);
+        // The World Map question: Yes goes, No and cancel return to the list.
+        f.stage = Stage::Question;
+        f.map = true;
+        f.ask = 1;
+        assert_eq!(f.press(Press::Confirm, &none), Action::Declined, "the cursor starts on No");
+        assert!(f.side(true));
+        assert_eq!(f.press(Press::Confirm, &none), Action::MapGo);
+        assert_eq!(f.press(Press::Cancel, &none), Action::Declined);
+        f.stage = Stage::MapFade;
+        assert_eq!(f.press(Press::Confirm, &none), Action::None, "the fade takes no input");
+        f.stage = Stage::Top;
+        f.map = false;
         assert_eq!(f.press(Press::Down, &none), Action::Cursor);
         assert_eq!(f.row, 0, "wraps");
         assert_eq!(f.press(Press::Confirm, &none), Action::OpenFiles);

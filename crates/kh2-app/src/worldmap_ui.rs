@@ -653,7 +653,10 @@ mod tests {
         assert_eq!(land_destination(&records, 2, 5, none), None, "no record for the state");
         assert_eq!(land_destination(&records, 3, 0, none), None, "no record for the world");
         // The app's baseline has landing key 0: the first record stands in; a nonzero key without a record still has none.
-        assert_eq!(land_destination_or_first(&records, 2, 0, none), Some((Dest::new(2, 1, 7), true)));
+        assert_eq!(land_destination_or_first(&records, 2, 0, none), Some((Dest::new(2, 1, 7), false)), "an exact record is not the fallback");
+        let no_zero = [wm::Landing { world: 2, state: 4, area: 6, entrance: 8 }];
+        assert_eq!(land_destination_or_first(&no_zero, 2, 0, none), Some((Dest::new(2, 6, 8), true)), "key 0 without a record takes the first");
+        assert_eq!(land_destination_or_first(&no_zero, 2, 3, none), None);
         assert_eq!(land_destination_or_first(&records, 2, 1, |_, _| Some(3)), Some((Dest { world: 2, area: 3, entrance: 0, programs: [0x40; 3] }, false)));
         assert_eq!(land_destination_or_first(&records, 2, 5, none), None);
         assert_eq!(land_destination_or_first(&records, 3, 0, none), None);

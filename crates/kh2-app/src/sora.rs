@@ -1242,10 +1242,31 @@ pub fn read_pad(
     }
 }
 
+/// FUN_00184498 (the weapon object's update) calls FUN_0019afe8 on the owner and skips the update when it returns 1. Of that
+/// function's terms only the global flag word is modelled (bit 0x1000, Peter Pan's summon limit); the owner's +0x10c bits
+/// 0x80 / 0x200, DAT_0035ee9c, FUN_0019af28, FUN_0019b100 and FUN_002c56c0 have no model here [GAP].
+pub fn weapon_update_held(flags: u32) -> bool {
+    crate::magic_rules::update_gate_global(flags)
+}
+
 /// The weapons' motion sets mirror Sora's slot for slot: lock every weapon to Sora's slot and
 /// frame (a weapon without the slot plays nothing).
-pub fn sync_weapon(sora: Query<&Sora>, mut anims: Query<&mut Animator>) {
+pub fn sync_weapon(sora: Query<&Sora>, mut anims: Query<&mut Animator>, gflags: Option<Res<crate::magic_rules::GlobalFlags>>, mut held: Local<bool>) {
     let Ok(s) = sora.single() else { return };
+    let gate = weapon_update_held(gflags.as_deref().map_or(0, |g| g.0));
+    if gate != *held {
+        *held = gate;
+        info!("weapon update gate (global flag 0x1000): {}", if gate { "held, the weapons' motion stops" } else { "released" });
+    }
+    if gate {
+        // FUN_00184498 skips the weapon object's update while FUN_0019afe8 holds: the motion stops where it is.
+        for w in &s.weapons {
+            if let Ok(mut weapon) = anims.get_mut(*w) {
+                weapon.speed = 0.0;
+            }
+        }
+        return;
+    }
     let Ok(body) = anims.get(s.body) else { return };
     let (slot, frame, prev_frame, looping, speed) = (body.slot, body.frame, body.prev_frame, body.looping, body.speed);
     for w in &s.weapons {
@@ -2496,6 +2517,14 @@ pub fn receive_hits(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn weapon_update_is_held_only_by_the_global_gate() {
+        assert!(weapon_update_held(0x1000));
+        assert!(weapon_update_held(0x1004));
+        assert!(!weapon_update_held(0));
+        assert!(!weapon_update_held(0xefff));
+    }
     use kh2_anim::moveset::Press;
     use kh2_tables::tables as t;
 

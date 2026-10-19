@@ -418,7 +418,6 @@ pub fn item_taken_by_player(flags: u32, player_exists: bool, in_reach: bool, is_
 
 /// FUN_0019afe8 as far as the global word goes: the object update is held while bit 0x1000 is set. The other terms
 /// (the object's +0x10c bits 0x80 / 0x200, DAT_0035ee9c, FUN_0019af28, FUN_0019b100, FUN_002c56c0) are the object's own.
-#[allow(dead_code)] // the reader is the weapon update FUN_00184498 / FUN_00191c18, which the app does not have (WP-FL2: gap)
 pub fn update_gate_global(flags: u32) -> bool {
     flags & GFLAG_UPDATE_GATE != 0
 }

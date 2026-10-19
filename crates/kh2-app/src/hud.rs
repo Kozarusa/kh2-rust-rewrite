@@ -36,7 +36,7 @@ mod hud_mission;
 use hud_gauge::{DriveGauge, DriveTables, FaceFile, MpRecharge, SoraPanel};
 use hud_gfx::HudGfxPlugin;
 #[allow(unused_imports)] // re-exported for the keyhole wipe in area_jump.rs
-pub(crate) use hud_gfx::{HudCamera, HudScene, Node as HudNode};
+pub(crate) use hud_gfx::{HudCamera, HudScene, Node as HudNode, SeqFile};
 /// The render layer of the keyhole wipe, above the HUD, the ring panels and the menus.
 pub(crate) use hud_gfx::WIPE_LAYER;
 /// A node's text, for the event player's subtitle lines (`event_player::subtitles`).

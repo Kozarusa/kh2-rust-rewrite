@@ -202,9 +202,6 @@ impl AfterEvent {
 /// disc lacks its `ard/<name>.ard` or `map/us/<name>.map` (`has` answers whether a disc file
 /// exists). The caller then stays: the fade is lifted and Sora keeps his place.
 pub fn jump_target(dest: &Dest, has: impl Fn(&str) -> bool) -> Result<String, String> {
-    if dest.world == WORLD_MAP {
-        return Err("the world map is not available (the app has only Twilight Town)".to_string());
-    }
     let Some(name) = area::area_name(dest.world, dest.area) else { return Err(format!("{} is not in the app", dest_name(dest))) };
     for f in [format!("ard/{name}.ard"), format!("map/us/{name}.map")] {
         if !has(&f) {
@@ -294,6 +291,9 @@ pub struct JumpMenus {
     /// Reset codes to run now (`FUN_00104e18` runs it at once when the record's wait is not 0; the jump task runs it after
     /// the fade-out); `party::jump_reset` takes them.
     pub resets: Vec<i16>,
+    /// The save point menu's World Map entry (`FUN_002580b8`): ticks of the screen fader going to black while the menu is still
+    /// up (the jump task cannot run, the field is frozen). `draw_fader` paints it; the menu clears it when it hands over.
+    pub map_fade: Option<u32>,
 }
 
 /// What `FUN_0019d9d8` does with a record's words 4 to 6 besides the jump itself (WP-PT1).
@@ -1200,6 +1200,7 @@ fn combined_fade(jump_alpha: f32, event: Option<(f32, bool)>) -> (f32, bool) {
 
 fn draw_fader(
     task: Res<JumpTask>,
+    menus: Option<Res<JumpMenus>>,
     key: Res<Keyhole>,
     player: Option<Res<crate::intro::event_player::EventPlayer>>,
     mut nodes: Query<&mut BackgroundColor, With<FadeNode>>,
@@ -1214,6 +1215,7 @@ fn draw_fader(
         JumpTask::FadeIn { t, .. } if key.wiping => wipe_alpha(false, t, None),
         JumpTask::FadeIn { t, .. } => fade_alpha(false, t),
     };
+    let a = a.max(menus.and_then(|m| m.map_fade).map_or(0.0, |t| fade_alpha(true, t as f32)));
     let (a, white) = combined_fade(a, player.and_then(|p| p.screen_fade()));
     let c = if white { 1.0 } else { 0.0 };
     for mut n in &mut nodes {
@@ -1286,6 +1288,25 @@ mod tests {
         assert_eq!((half.red, half.green, half.blue), (0.0, 0.0, 0.0));
         assert!((half.alpha - 0.5).abs() < 1e-6, "{}", half.alpha);
         assert_eq!(paint(&mut w, JumpTask::Loading { dest, kind: 1 }).alpha, 1.0);
+    }
+
+    /// The save point menu's World Map fade (`JumpMenus::map_fade`) darkens the screen while the jump task is idle.
+    #[test]
+    fn the_world_map_fade_paints_the_fader_while_the_task_is_idle() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut w = bevy::ecs::world::World::new();
+        w.init_resource::<Keyhole>();
+        w.init_resource::<JumpMenus>();
+        let node = w.spawn((FadeNode, BackgroundColor(Color::NONE))).id();
+        w.insert_resource(JumpTask::Idle);
+        let mut alpha = |w: &mut bevy::ecs::world::World, t: Option<u32>| {
+            w.resource_mut::<JumpMenus>().map_fade = t;
+            w.run_system_once(draw_fader).unwrap();
+            w.get::<BackgroundColor>(node).unwrap().0.to_srgba().alpha
+        };
+        assert_eq!(alpha(&mut w, None), 0.0);
+        assert!((alpha(&mut w, Some(15)) - 0.5).abs() < 1e-6);
+        assert_eq!(alpha(&mut w, Some(FADE_TICKS as u32)), 1.0);
     }
 
     /// The jump's wait leaves the screen clear, and a type 6 record fades to black over `FADE_TICKS` and holds it.
@@ -1684,13 +1705,14 @@ mod tests {
     }
 
     #[test]
-    fn type_four_to_the_world_map_is_not_available() {
+    fn type_four_to_the_world_map_loads_wm00() {
         let mut mem = None;
         let j = jump(4, 3, 0, 0, 0);
         let Outcome::Go(d) = resolve_record(&j, (2, 4, 0), None, |_, _| None, |_| false, &table(), &mut mem).unwrap() else { panic!("type 4 goes") };
         assert_eq!(d.world, WORLD_MAP);
-        let err = jump_target(&d, |_| true).unwrap_err();
-        assert!(err.contains("world map is not available"), "{err}");
+        assert_eq!(jump_target(&d, |_| true).as_deref(), Ok("wm00"), "the map area exists since WP-WM2");
+        let err = jump_target(&d, |f| !f.ends_with(".map")).unwrap_err();
+        assert!(err.contains("wm00.map"), "{err}");
     }
 
     #[test]

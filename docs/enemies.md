@@ -26,6 +26,7 @@ spawn group every program of every script loads (a group loaded by two programs 
 | 0x4d7 | `N_EX500_BTL` | 1 | tt04 `btl`: b_50 |
 | 0x82f | `N_EX600_BTL` | 1 | tt04 `btl`: b_52 |
 | 0x139 | `M_EX940` (type 0x15) | 4 | tt04 `btl`: b_44 (0x50: serial 0x26 wave 1; 0x102..0x104 wave 2) |
+| 0x131 | `M_EX760` | 15 areas | bb08 `btl`: b_20 (11 members), b_21 (7); also ca09, ca13, ca19, hb02, hb08 .. (survey, `docs/area-survey.md`) |
 
 tt00 spawns only the player; tt02 spawns the player, the two friends, save and world points, `F_EX000` and event
 actors (ObjectType 15). Neither Shadow nor Soldier is in any of the three scripts: the app's Shadow/Soldier waves
@@ -481,3 +482,35 @@ WP-7E2: `player_finish_struggle` is a mode that the Struggle-tournament opponent
 Struggle groups, so in tt04 the message finds no receiver (docs/struggle.md, "player_finish_struggle"). Host 1.34
 `event_active` now answers true while a mission layout event plays (the start, end and failure titles). An
 opponent standing in a reaction motion (10..39) or in 140..150 does not pick orbs up (`FUN_001cadd8`).
+
+### M_EX760 (WP-EN9b)
+
+Object 0x131 = 305 (`00objentry` row: `ObjectType` 4, `NeoStatus` 1028, `NeoMoveset` 0, Weight 10, `SpawnLimiter` 7, flags 0, `ObjectTargetType` 1); its
+BDX script is `m_ex760` (7982 words; modes `appear`, `btl_attack`, `atk_turn`, `atk_jump`, `atk_down`, `footwork`, `move_roll`, `move_back`,
+`move_target`, `mode_revenge`, `leave`, `dead`). The data gives no name; the model is a grey armoured knight with a spear
+(harness screenshot of bb08, idle: `M_EX760` standing in front of Sora); "Armored Knight" would be the community name [inferred]. Other rows
+with the same model family: object 1845 `M_EX760_NM` (the same `.mset` and `NeoStatus`), `M_EX760_RAW` (1468, flags 4, `SpawnLimiter` 3, a
+child of the `M_EX760_CROWD` group object 1366): not wired (their areas were not run).
+
+`enmp` row 36: the init calls R1cc5 at 0x0c02 with 36 as the eighth word it pushes, R1cc5 hands it to host 2.9 at 0x1cec
+(`set_obj_param(self, 36, 0)`); the run logs `SetObjParam { a: 36 }`. HP 10 at Sora level 1 in bb08, lvpm 4 x `enmp` Experience 20 = 1 point at level 1
+("experience: enmp 36 defeated: +1"). Its `dead` mode (R0dbf at 0x07b2) is the Dusk's: 1.92 (the drop), 1.87 (element 2 of its effect file),
+flags 3 and 6, fade and hide; `Kind::death_effect` is true.
+
+New host call 2.21 `shared_block` (BDX R1ddd at 0x1ddd: key 12, size 20; the script reads the first word of the buffer and sets the block up
+once): `enemy_host::shared_blocks` is one `kh2_bdx::shared::SharedBlocks` for all enemy scripts of the battle (the game's list at 0x1c95528),
+emptied when the area's groups are set up (`enemy::spawn_waves`, FUN_001a5030 from FUN_00168ba8); `read_mem` / `write_mem` answer the buffer's
+addresses. Before it, the call was `missing` and R1ddd's read of the answer died with `BadAddress(0)` at 0x1deb, then `BadAddress(16)` at 0x1209 and 0x1151
+(the same pointer read later). What the block is for (the strings "attacker add" / "attacker sub" in the script suggest a count of attackers
+shared among the knights) was not traced [inferred].
+
+Run (bb08, group b_21 is kind 2, created while Sora stands in one of its volumes; the harness put him in the first volume of the group with a
+temporary hunk, not committed): `KH2_BDXLOG=1 KH2_AREALOG=1 KH2_WAVE_GROUP=b_21` with `kh2-game bb08`: two knights appear (t2 `mode appear`), t92
+`mode_battle` -> `move_roll`, t182 `atk_down`, later `atk_jump`, `rvg_short`, `atk_turn`, `move_back`, `jump`; no `unimplemented host call` and no
+`script error`. Hit with `KH2_KEYS` J presses: `M_EX760 hit: atkp 127 damage 2 hp 8 reaction 3 ... FlinchPush`, a Blow (reaction 7) at hp 0, then
+`hp 0: switching to mode dead`, `drop (host 1.92) asked row 4 ... 1 prize objects` and `experience: enmp 36 defeated: +1`.
+Screenshots looked at (scratchpad, not committed): idle (two knights near Sora, labelled `M_EX760 Idle hp 10/10`), hit (damage numbers 3 and 2,
+hit stars, label `Hurt hp 8/10`), after the death (the first knight gone, a pink HP orb, a green orb and a "1p" strip fading where it stood).
+
+Gaps: 1.206 `GlobalFlag80` and 1.171 `GlobalFlag4` stay stubs (other scripts' state), 1.121 `SetTargetMode` is a stub (nothing in the app consumes the lock mode),
+1.80 `TurnToward` uses the placeholder turn rate; the objects 1845 / 1468 above are not spawned; the attackers' count behind 2.21 is not modelled.

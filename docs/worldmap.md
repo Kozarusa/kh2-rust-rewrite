@@ -302,6 +302,26 @@ map (two large parts, collision, sky, BOB props), the `map` programs (visibility
 and party reset 1, `FUN_001d5048`). Risks: the map reader on a file this size (run `kh2` tools only through `local/capped.ps1`), memory and draw cost,
 BOB prop formats (`BOB` pairs, type 30 empty entries), hiding the party (class of the three friends) while the manager exists [GAP].
 
+**W4 done (WP-WM2).** The map area loads through the ordinary field-area path; nothing else was needed in the map reader.
+
+- `area.rs`: `WORLDS` (the 19 two-letter prefixes in world-byte order, the `ftst` column order of docs/events.md; world 0xf is `wm`), `world_of(name)`,
+  `area_name(0xf, 0)` = `wm00` (still only Twilight Town and the map). `run_area_script` now sets `AreaRecord.world` from the loaded file's prefix, so the
+  program table row is world 0xf's (`kh2-game wm00` used to take world 2's). `jump_target` still refuses `WORLD_MAP` (W7 removes that).
+- `map/us/wm00.map` is a BAR whose part list is: one `MAP` pair (type 4 of 576912 bytes, textures 459128), `wm_0` (types 5, 14, 18), `ID_w` (type 6, the
+  collision), `CH_w`, `COL_`, `SK0` pair, `out` and 33 `BOB` triples (type 4, 7, 30; type 30 is empty). The 5.6 MB are the props; the reader takes the
+  first `MAP` pair, `SK0`, and the first type-6 entry, as for every area, and needed no change. The BOB props are not drawn (they are objects: W5, [GAP]).
+  Run: 1185 meshes, collision 1730 triangles (COCT), camera collision 480 triangles; the process stayed under the 3500 MB cap; about 250 frames per second
+  with `KH2_FPS=1` (debug build with optimisation, no enemies).
+- Programs: the table gives (0, 0, 0). Map program 0 shows visibility mask 0x3, loads `m_00`, `m_01`, `m_50`, `m_51` (13, 9, 12 and 9 entities, none created yet),
+  creates the manager and runs the `evt` program's command 0x16 (not ported).
+- Manager (opcode 0x15, type 0xc, `WORLDMAP`): the run keeps `battle_manager`; the app logs "wants camera type 4 and party reset 1; not applied (gap)". Camera
+  type 4 has no behaviour decoded (docs/camera.md lists types 0..3; `FUN_00177128` was not read for type 4) and the party reset code 1 (`FUN_001abfe8`) has no
+  hook in `party.rs`. Both are gaps; the screen uses camera type 0 (follow) and the party is still placed (the party slot bytes log says world 2: `party.rs`
+  does not read `AreaRecord.world`, outside this package). Sora and the HUD are visible on the map: hiding the party while the manager exists is [GAP].
+- Harness: `kh2-game wm00` (with `KH2_AREALOG=1`) logs `map/us/wm00.map: 1185 meshes, collision 1730 triangles (COCT)` and the manager line. A screenshot at 10 s shows
+  a dark blue sea with ripple rings and coloured ring shapes with the green and blue sky pieces left and right, Sora in front of the follow camera; the symbols,
+  the cursor and the clouds of the real screen are objects or not drawn here.
+
 **W5. Objects.** New `crates/kh2-app/src/worldmap.rs` plugin (add to a bundle in `plugins.rs`): spawn the 12 symbols with their state-driven look (section 3),
 the cursor at its entrance record, the nine route markers; the `FUN_001981a0` entrance filter is already in `area.rs`. The cursor needs the world-map input
 state (stick movement, near-object test `FUN_0019a3f8`/`FUN_002cca98`) which is [GAP]: stage a first version that moves the cursor like Sora's stick walk

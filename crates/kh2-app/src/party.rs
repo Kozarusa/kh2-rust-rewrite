@@ -60,9 +60,10 @@ impl Plugin for PartyPlugin {
         app.insert_resource(data)
             .init_resource::<PartySlots>()
             .init_resource::<PartyHidden>()
+            .init_resource::<SwapFade>()
             .add_message::<LimitMembers>()
             .insert_resource(Manager { log: std::env::var("KH2_PARTYLOG").is_ok_and(|v| !v.is_empty() && v != "0"), rng: 0x2545_f491, ..Default::default() })
-            .add_systems(FixedUpdate, (jump_party, jump_reset, mission_party, spawn_party, party_tick, party_push_apart, party_hide, party_fade, party_hits).chain().in_set(PartyTick).in_set(Sim::Enemy))
+            .add_systems(FixedUpdate, (jump_party, jump_reset, mission_party, spawn_party, party_tick, party_push_apart, party_hide, party_swap, party_fade, party_hits).chain().in_set(PartyTick).in_set(Sim::Enemy))
             .add_systems(FixedUpdate, (party_record_sync, party_auto_healing).chain().after(PartyTick).in_set(Sim::Enemy))
             .add_systems(FixedUpdate, member_hands.in_set(Sim::Enemy).before(PartyTick))
             .add_systems(FixedUpdate, (party_receive_hits, party_item_uses, party_script_hits).chain().in_set(Sim::SoraHurt))
@@ -142,11 +143,15 @@ struct HideFades {
     lift: f32,
     near: f32,
     far: f32,
+    /// The member swap's fade-out (FUN_001b3f78: FUN_001abf40 with `DAT_0037ba64` as the start alpha over
+    /// `DAT_0037ba60` frames).
+    swap_from: f32,
+    swap_frames: f32,
 }
 
 impl HideFades {
     /// The values the executable holds (1.0, 15, 15, 1.0, 15, 100, 200, 300), used when it is unreadable.
-    const GAME: HideFades = HideFades { out_from: 1.0, form_frames: 15.0, area_frames: 15.0, in_to: 1.0, in_frames: 15.0, lift: 100.0, near: 200.0, far: 300.0 };
+    const GAME: HideFades = HideFades { out_from: 1.0, form_frames: 15.0, area_frames: 15.0, in_to: 1.0, in_frames: 15.0, lift: 100.0, near: 200.0, far: 300.0, swap_from: 1.0, swap_frames: 8.0 };
 
     fn from_exe(elf: &[u8]) -> HideFades {
         let f = |va: u32, or: f32| rules::exe_bytes(elf, va, 4).map_or(or, |b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
@@ -160,6 +165,8 @@ impl HideFades {
             lift: f(0x37c058, d.lift),
             near: f(0x37c05c, d.near),
             far: f(0x37c060, d.far),
+            swap_from: f(0x37ba64, d.swap_from),
+            swap_frames: f(0x37ba60, d.swap_frames),
         }
     }
 }
@@ -224,6 +231,58 @@ pub(crate) fn form_takes(form: u8, neo: u16) -> bool {
 /// bringing the members back.
 #[derive(Resource, Default, Debug, PartialEq)]
 pub struct PartyHidden(Vec<u32>);
+
+/// The Auto Change swap in progress (FUN_001b41e8 -> FUN_001b3f78): the KO'd member fades out over
+/// `DAT_0037ba60` frames without being listed as hidden (the function sets bit 0x10 of +0x7f8 itself and never
+/// calls FUN_001c7600), the task waits until the object is gone (FUN_001b80e8, one more yield), then the party data
+/// is swapped (FUN_001ae100) and the reserve member created (FUN_0017d290). The app changes the slot bytes at that
+/// point and `spawn_party` rebuilds the set. The task also holds `0x35fec0` bit 2 and the member's +0x108 bit 0x100
+/// until FUN_001b4260; their readers were not traced, so they are not modelled.
+#[derive(Resource, Default, Debug, PartialEq)]
+pub struct SwapFade {
+    pending: Option<(u16, [u8; 4], u32)>,
+    /// Where the leaving member stood (FUN_001b3f78 passes its position, FUN_0016b960, to FUN_0017d290 as the spot
+    /// for the new member); `spawn_party` takes it for the member the rebuild makes new.
+    spot: Option<Vec3>,
+}
+
+impl SwapFade {
+    /// FUN_001b4170: starts a swap of member `neo` unless one runs (`DAT_0035f190` holds the task).
+    pub fn start(&mut self, neo: u16, after: [u8; 4], frames: f32, spot: Vec3) -> bool {
+        if self.pending.is_some() {
+            return false;
+        }
+        self.spot = Some(spot);
+        // The fade's frames, then the yield after the object is gone [inferred].
+        self.pending = Some((neo, after, frames.max(0.0) as u32 + 1));
+        true
+    }
+
+    /// One tick: the new slot bytes once the fade is over.
+    pub fn step(&mut self) -> Option<[u8; 4]> {
+        let (_, after, left) = self.pending.as_mut().map(|p| (p.0, p.1, &mut p.2))?;
+        *left -= 1;
+        if *left > 0 {
+            return None;
+        }
+        self.pending = None;
+        Some(after)
+    }
+
+    /// An area load drops a swap in progress and its spot (the task dies with the area's objects).
+    pub fn clear(&mut self) {
+        *self = SwapFade::default();
+    }
+}
+
+/// Runs the swap's wait and applies the bytes when the fade is over.
+fn party_swap(mut swap: ResMut<SwapFade>, slots: Option<ResMut<PartySlots>>) {
+    let Some(after) = swap.step() else { return };
+    if let Some(mut slots) = slots {
+        info!("party: the Auto Change fade is over: slot bytes {:02x?} -> {after:02x?} (FUN_001b3f78 -> FUN_001ae100, FUN_0017d290)", slots.bytes);
+        slots.bytes = after;
+    }
+}
 
 impl PartyHidden {
     pub fn push(&mut self, neo: u16) {
@@ -1166,7 +1225,7 @@ fn spawn_party(
     world: Option<Res<World>>,
     drive_world: Option<Res<crate::drive::DriveWorld>>,
     progress: Option<Res<crate::progress::Progress>>,
-    (mut data, mut slots, mut mgr, mut hidden, drive): (ResMut<PartyData>, ResMut<PartySlots>, ResMut<Manager>, ResMut<PartyHidden>, Option<Res<crate::drive::DriveState>>),
+    (mut data, mut slots, mut mgr, mut hidden, drive, mut swap): (ResMut<PartyData>, ResMut<PartySlots>, ResMut<Manager>, ResMut<PartyHidden>, Option<Res<crate::drive::DriveState>>, ResMut<SwapFade>),
     mut sora: Query<(&mut Transform, &mut Sora), Without<PartyMember>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -1220,6 +1279,7 @@ fn spawn_party(
         mgr.built = None;
         // FUN_00168ba8 -> FUN_0017cc70: the hidden list is emptied with the slots.
         hidden.clear();
+        swap.clear();
     }
     // DAT_00340c88 byte 4: the drive form that lasts (0 none).
     let form = drive.as_deref().map_or(0, |d| d.form);
@@ -1251,6 +1311,17 @@ fn spawn_party(
         let before = slots.bytes;
         slots.bytes = rules::apply_world_records(before, &run.script.world_records, &memt.trailing);
         info!("party: {name}: the area's programs apply presets {:?} (opcode 0xf, FUN_001a7330): slot bytes {before:02x?} -> {:02x?}", run.script.world_records, slots.bytes);
+    }
+    // Harness: `KH2_PARTY_BYTES=0,1,2,3` sets the four slot bytes after the presets (to put a reserve member in byte 3
+    // for the Auto Change swap). A test aid, not the game's rule.
+    if !rebuild
+        && let Ok(v) = std::env::var("KH2_PARTY_BYTES")
+    {
+        let parsed: Vec<u8> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        if let Ok(b) = <[u8; 4]>::try_from(parsed) {
+            slots.bytes = b;
+            info!("party: KH2_PARTY_BYTES sets the slot bytes {b:02x?}");
+        }
     }
     mgr.seen = slots.bytes;
     let merged = crate::drive::rules::memt_merge(&memt, world_id, |_| false);
@@ -1298,7 +1369,11 @@ fn spawn_party(
             warn!("party: {}: model or motion set {} not loadable", row.model_name, row.animation_name);
             continue;
         };
-        let Some((at, yaw)) = place.or_else(|| old_places.iter().find(|p| p.0 == row.neo_status).map(|p| (p.1, p.2))).or(sora_at) else { continue };
+        // The Auto Change swap's new member appears at the leaving member's spot, facing the player (FUN_001b3f78 ->
+        // FUN_0017d290: the spot is accepted when free, [inferred: it is]; the yaw is the player's direction).
+        let swapped_in = if rebuild && !old_places.iter().any(|p| p.0 == row.neo_status) { swap.spot.take() } else { None };
+        let swapped_in = swapped_in.map(|at| (at, sora_at.map_or(0.0, |(pl, _)| face_player(at, pl))));
+        let Some((at, yaw)) = place.or_else(|| old_places.iter().find(|p| p.0 == row.neo_status).map(|p| (p.1, p.2))).or(swapped_in).or(sora_at) else { continue };
         let (radius, height) = body_shape(&rig);
         // +0x110..+0x11c and the record at +0x12c: the `prty` row of the NeoMoveset (FUN_00194438).
         let prty = data.prty_row(row.neo_moveset);
@@ -2422,7 +2497,7 @@ fn party_receive_hits(
     data: Res<PartyData>,
     reaction: Option<Res<crate::combat::ReactionData>>,
     progress: Option<Res<crate::progress::Progress>>,
-    mut slots: Option<ResMut<PartySlots>>,
+    (mut slots, mut swap): (Option<ResMut<PartySlots>>, ResMut<SwapFade>),
     enemies: Query<&crate::enemy::Enemy>,
     mut q: Query<(Entity, &mut PartyMember, &mut Fighter, &GlobalTransform)>,
     mut anims: Query<&mut Animator>,
@@ -2456,14 +2531,19 @@ fn party_receive_hits(
         if c.knocked_out {
             asked.push(VOICE_KO);
             // FUN_0017ce60: a KO'd member with Auto Change (ability 418, bit 130) is swapped for the reserve member
-            // (slot byte 3); the slot bytes change and `spawn_party` rebuilds the field set.
+            // (slot byte 3): the member fades out over 8 frames (FUN_001b3f78), then the slot bytes change and
+            // `spawn_party` rebuilds the field set (`party_swap`).
             let auto_change = progress.as_ref().and_then(|p| p.member(m.neo)).is_some_and(|r| r.abilities.contains(&(ABILITY_AUTO_CHANGE, true)));
             if auto_change
                 && let Some(slots) = slots.as_mut()
                 && let Some(after) = rules::auto_change_swap(slots.bytes, m.neo)
             {
-                info!("party: {} KO with Auto Change (FUN_0017ce60 -> FUN_001b4170): slot bytes {:02x?} -> {after:02x?}", m.model, slots.bytes);
-                slots.bytes = after;
+                let fades = data.fades;
+                if swap.start(m.neo, after, fades.swap_frames, m.motor.pos) {
+                    m.hide(fades.swap_frames, fades.swap_from);
+                    fighter.hittable = false;
+                    info!("party: {} KO with Auto Change (FUN_0017ce60 -> FUN_001b4170): fades out over {} frames, then slot bytes {:02x?} -> {after:02x?} (FUN_001b3f78)", m.model, fades.swap_frames, slots.bytes);
+                }
             }
         }
         if !danger_before && battle::in_danger(m.hp, m.hp_max) {
@@ -3604,6 +3684,31 @@ mod jump_record_tests {
         assert!(!m.runs_script());
         m.show(Vec3::ZERO, 0.0, 1.0, 15.0);
         assert!(m.runs_script());
+    }
+
+    /// FUN_001b3f78: the swap waits out the 8-frame fade (and one yield), holds a second swap off, then gives the bytes.
+    #[test]
+    fn the_auto_change_swap_waits_out_the_fade() {
+        let mut s = SwapFade::default();
+        assert!(s.step().is_none(), "no swap, nothing to give");
+        assert!(s.start(3, [0, 1, 2, 3], 8.0, Vec3::X));
+        assert!(!s.start(2, [0, 3, 2, 1], 8.0, Vec3::Y), "DAT_0035f190 holds the running task");
+        assert_eq!(s.spot, Some(Vec3::X), "the refused swap keeps the first spot");
+        for _ in 0..8 {
+            assert_eq!(s.step(), None, "still fading");
+            assert!(s.pending.is_some());
+        }
+        assert_eq!(s.step(), Some([0, 1, 2, 3]));
+        assert!(s.pending.is_none());
+        assert_eq!(s.spot, Some(Vec3::X), "kept for the rebuild");
+        // An area load clears a swap in progress, so its bytes never reach the next area.
+        assert!(s.start(2, [0, 3, 2, 1], 8.0, Vec3::Z));
+        s.clear();
+        assert_eq!((s.step(), s.spot), (None, None));
+        let mut m = blank(3, 30, 30);
+        assert!(m.hide(8.0, 1.0));
+        assert_eq!(m.ramp, Some(Ramp::new(1.0, 0.0, 8.0)));
+        assert!(m.hidden);
     }
 
     /// The limit hides with no fade (FUN_001c75d0 passes 0 frames): the ramp is at its end at once.

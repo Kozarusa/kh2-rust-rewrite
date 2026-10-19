@@ -496,6 +496,35 @@ and the prize objects picked up. No `Missing` host call and no script error in t
 Gaps: the other 32 areas were not run (only al00's b_20); `M_EX060` and the rest of b_20 are absent kinds; the drop row
 the script asks (41) was not traced further.
 
+## The enemy M_EX880 (WP-EN9c)
+
+`M_EX880` (object 317 = 0x13d, `00objentry` row 317: ObjectType 4, `NeoStatus` 3011, flags 0, `SpawnLimiter` 9; `enemy::M_EX880`,
+called by its model: no name is in the data the app reads) is a Nobody that the area survey found in 13 areas (eh12, eh25, hb08,
+hb18, he09, tt03, ..). Its BDX script (5035 words, `cargo run -p kh2 -- bdx M_EX880`) has the modes `appear`, `mode_battle`,
+`btl_attack`, `btl_short`, `btl_long`, `atk_brush`, `atk_brush_all`, `atk_brush_revenge`, `atk_dragoon_jump`, `jump`, `move_target`,
+`idle_battle`, `idle_time`, `mode_revenge`, `rvg_short`, `rvg_long`, `dusk_surprise`, `dead`. The rows 1184 (`M_EX880_DANCER`) and 2294
+(`M_EX880_DANCER_EH`) are other objects with their own scripts and are not this kind.
+
+- **Stats.** The set-up routine R1191 (0x1191) takes eight arguments from its one call (0x04ec); the first, 52 (pushed at 0x04d3),
+  goes to `set_obj_param` (host 2.9, 0x11b8): `enmp` row 52 (HP 100 in the table; the harness enemy has 20 HP, as for the other kinds).
+  `KH2_BDXLOG` shows `SetObjParam { a: 52 }`.
+- **Death.** The `dead` mode (registered at 0x00eb, routine R06c3) hands the object's +0x1c to host 1.92, starts element 2 of its
+  effect file (host 1.87 at 0x06e8), releases it (0.79), sets bits 3 and 6, fades out and hides: `Kind::death_effect` true.
+- **Hosts.** No new host call: every one it calls is in `enemy_host.rs` already. The Stub ones it reaches are 0.79, 1.121, 1.171,
+  1.206 and the mode-frozen test; the Approx ones are 1.11, 1.111, 1.120, 1.23, 1.55, 1.56, 1.60, 1.62, 1.64, 1.80, 1.87, 1.92, 2.5 and
+  the mode-may-start test (each carries its reason in the table).
+
+Acceptance run (WP-EN9c), tt03 (the first listed area; `btl` program 7 loads b_21 with two `M_EX880`, one Dusk and three absent
+`M_EX950`; test `tt03_btl_program_7_holds_two_m_ex880`, disc): `KH2_PROGRAMS=0,7,0 KH2_WAVE_GROUP=b_21 KH2_NO_PARTY=1 KH2_AREALOG=1
+KH2_BDXLOG=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1 kh2-game tt03` gives `area group b_21 kind-2 group 0x10b: M_EX880 (serial 0x36, wave 0)`
+and the same for serial 0x67, then the modes `appear`, `mode_battle`, `btl_attack`, `atk_brush` (it hurt Sora, 20 to 16 HP),
+`idle_battle`, `move_target`, `atk_brush_revenge`. With `KH2_KEYS` (Q at 4 s, J every 0.4 s from 5.5 s): `M_EX880 hit: atkp 127 damage 2
+hp 18` .. `atkp 129 damage 6 hp 0`, `experience: enmp 52 defeated: +4 (lvpm 4 x enmp 100)`, `hp 0: switching to mode dead`, `drop (host
+1.92) asked row 29` and `prize: drop of row 29 .. 2 objects`. No `Missing` host call and no script error in the log.
+
+Gaps: the other 12 areas (eh12, eh25, hb08, hb18, he09, ..) were not run, only tt03; the group's `M_EX950` and Dusk-like members were
+not examined; the `atk_dragoon_jump` and `atk_brush_all` modes were not seen in the run; the drop row (29) was not traced further.
+
 ## The Struggle (WP-7E)
 
 The Struggle rules are in `docs/struggle.md`. For the opponents: b_50, b_51 and b_52 (missions `TT04_MS00`,

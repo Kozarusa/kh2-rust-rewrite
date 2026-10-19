@@ -119,6 +119,12 @@ pub const M_EX880: Kind = Kind { name: "M_EX880", enmp: 52, model: "M_EX880", de
 /// (R05f0) starts element 2 of its effect file, releases it, fades out and hides, like the Dusk's.
 pub const M_EX700: Kind = Kind { name: "M_EX700", enmp: 68, model: "M_EX700", death_effect: true, status: true };
 
+/// `M_EX950` (object 314, `ObjectType` 4; `00objentry` row 314: `NeoStatus` 3009, flags 0, `SpawnLimiter` 17, `SpawnObject1` 1537
+/// `M_EX950_CARD`, `SpawnObject2` 1538 `M_EX950_DICE`), a dice-and-card Nobody of 14 areas (the area survey: ca09, ca10, ca12, ca13,
+/// ca14, ca15, tt03 ..), called by its model. Its script hands `enmp` row 50 to `set_obj_param` (host 2.9: BDX `M_EX950` R2971 at
+/// 0x2998, its eighth word, 50, pushed at 0x196d by the call at 0x1985); its `dead` mode (registered at 0x1949) is the death mode.
+pub const M_EX950: Kind = Kind { name: "M_EX950", enmp: 50, model: "M_EX950", death_effect: true, status: true };
+
 /// `M_EX900` (spawned in 12 areas: eh11, eh25, he09, tt03, tt06, tt07, ..; tt03 b_40 holds one beside two Dusks), called by
 /// its model. Its set-up routine R1ab8 (0x1ab8, one call at 0x08c8) hands `enmp` row 45 to `set_obj_param` (host 2.9, 0x1adf;
 /// the 45 is pushed at 0x08af); its `dead` mode is registered at 0x037d [inferred: same death shape as the other kinds]. NOT in `KINDS`: after a dive it stays
@@ -127,7 +133,7 @@ pub const M_EX700: Kind = Kind { name: "M_EX700", enmp: 68, model: "M_EX700", de
 pub const M_EX900: Kind = Kind { name: "M_EX900", enmp: 45, model: "M_EX900", death_effect: true, status: true };
 
 /// Every enemy kind the app has.
-pub const KINDS: [&Kind; 13] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700];
+pub const KINDS: [&Kind; 14] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700, &M_EX950];
 
 /// The rigs of the enemy kinds, by `Kind::name` (Shadow and Soldier share `sora::Rigs`' copies).
 #[derive(Resource, Default)]
@@ -1822,8 +1828,7 @@ mod tests {
         eprintln!("m_ex900_is_described_but_not_spawned: disc branch ran (row 309, b_40 skips M_EX900)");
     }
 
-    /// tt03's `btl` program 7 loads b_21, which holds two `M_EX880` (object 317, a kind of `KINDS`; the group's three
-    /// `M_EX950` are a kind the app lacks). Needs `KH2_ISO`.
+    /// tt03's `btl` program 7 loads b_21, which holds two `M_EX880` (object 317) and three `M_EX950` (object 314), both kinds of `KINDS`. Needs `KH2_ISO`.
     #[test]
     fn tt03_btl_program_7_holds_two_m_ex880() {
         let Ok(iso) = crate::assets::iso_path() else { return };
@@ -1836,6 +1841,7 @@ mod tests {
         let run = kh2_ard::run::run_area(&ard, [0, 7, 0], 0);
         let b21 = btl_groups(&groups, &run).into_iter().find(|g| g.name == "b_21").expect("program 7 loads b_21");
         assert_eq!(b21.members.iter().filter(|m| m.kind.name == M_EX880.name).count(), 2);
+        assert_eq!(b21.members.iter().filter(|m| m.kind.name == M_EX950.name).count(), 3);
         assert!(KINDS.iter().any(|k| k.model == "M_EX880" && k.enmp == 52));
     }
 
@@ -1934,6 +1940,29 @@ mod tests {
             assert!(!g.members.is_empty() && g.members.iter().all(|m| m.kind.name == M_EX760.name), "{name} holds only M_EX760");
             assert!(g.skipped.is_empty(), "{name}: every enemy of the group is a kind of the app, not {:?}", g.skipped);
         }
+    }
+
+    /// `M_EX950` (object 314) is an enemy kind of the app: its `00objentry` row is type 4 with `NeoStatus` 3009 and the two
+    /// spawn objects 1537 (`M_EX950_CARD`) and 1538 (`M_EX950_DICE`), its script's `set_obj_param` row is `enmp` 50, and the
+    /// ca areas' groups hold it. Needs `KH2_ISO` for the table part.
+    #[test]
+    fn m_ex950_is_an_enemy_kind_with_its_objentry_row() {
+        assert!(KINDS.iter().any(|k| std::ptr::eq(*k, &M_EX950)));
+        assert_eq!((M_EX950.enmp, M_EX950.model, M_EX950.status, M_EX950.death_effect), (50, "M_EX950", true, true));
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let rows = {
+            let mut a = disc.0.lock().expect("archive lock");
+            kh2_tables::load::<kh2_tables::tables::Objentry>(&mut a, &kh2_tables::tables::OBJENTRY).expect("objentry").rows
+        };
+        let row = rows.iter().find(|r| r.model_name == "M_EX950").expect("objentry row of M_EX950");
+        assert_eq!((row.object_id, row.object_type, row.neo_status, row.spawn_object1, row.spawn_object2), (314, OBJECT_ENEMY, 3009, 1537, 1538));
+        let spawned = |id: i32| rows.iter().find(|r| r.object_id as i32 == id).map(|r| r.model_name.clone());
+        assert_eq!(spawned(1537).as_deref(), Some("M_EX950_CARD"));
+        assert_eq!(spawned(1538).as_deref(), Some("M_EX950_DICE"));
     }
 
     fn member(part: usize, spawn_kind: i32, serial: u16, delay: u16, wave: u8) -> Member {

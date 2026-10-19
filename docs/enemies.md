@@ -610,6 +610,48 @@ target is not within 100 cm: R12d9 -> R130f). It dies only when hit before its f
 motion control (1.61 / 1.12 are Approx), so the paired grab (motion 252, thread 0x1373) was not reached. (3) The other 11 areas were
 not run; tt06 and tt07 are the other Twilight Town areas.
 
+## The enemy M_EX950 (WP-EN9e)
+
+`M_EX950` (object 314, `00objentry` row 314: ObjectType 4, `NeoStatus` 3009, flags 0, `SpawnLimiter` 17, `SpawnObject1` 1537 =
+`M_EX950_CARD`, `SpawnObject2` 1538 = `M_EX950_DICE`, both ObjectType 0; `enemy::M_EX950`, called by its model: no name is in the data
+the app reads) is a dice-and-card Nobody of the 14 areas the area survey lists (ca09, ca10, ca12, ca13, ca14, ca15, tt03, ..). "Gambler"
+is inferred from its mode names. Its BDX script (11184 words, `cargo run -p kh2 -- bdx M_EX950`) has the modes `appear`, `mode_battle`,
+`mode_battle_boss`, `mode_revenge`, `mode_revenge_boss`, `btl_brush`, `btl_dice`, `btl_card`, `atk_brush`, `atk_dice`, `atk_card`, `move_run`,
+`move_step`, `move_fly`, `fly_fall`, `near`, `near_wait`, `footwork`, `leave`, `hide`, `revenge_shout`, `rc_gamestart`, `rc_dice_*`, `rc_card_*`,
+`dead`.
+
+- **Stats.** The set-up routine R2971 (0x2971, one call at 0x1985) takes eight arguments; the last one, 50 (pushed at 0x196d), goes to
+  `set_obj_param` (host 2.9, 0x2998): `enmp` row 50 (`experience: enmp 50 defeated: +10 (lvpm 4 x enmp 250)`). The harness enemy has 32 HP (20 for the Nobodies of other kinds).
+- **Death.** The `dead` mode (registered at 0x1949, routine R28dc -> R291a) hands the object's +0x1c to host 1.92 (drop: `drop (host 1.92) asked
+  row 27`, `prize: drop of row 27 .. 6 objects`), starts element 2 of its effect file (host 1.87 at 0x2938), releases it (0.79), sets bits 3 and 6, fades
+  out and hides, like the Dusk's: `Kind::death_effect` true.
+- **Variants.** The mode picked by R27db (rand_float 0.35 / 0.7) is stored in object +0x18 (0 brush, 1 dice, 2 card); `btl_brush`,
+  `btl_dice`, `btl_card` and the `atk_*` modes choose by it. The two spawn objects 1537 and 1538 are created through the objentry's
+  `SpawnObject` columns; the app has no objects for them (create_object gives `Missing` only if the script calls it: it did not in the run).
+- **Moving.** `move_run` (R200d) only faces the player rotated by 15..75 or 270..360 degrees and plays motion 2; the movement is the motion's
+  root motion. It keeps 2 to 6 m from Sora and walks past him. It leaves (`mode leave`, R2760 when the distance is over the +0x38 / +0x3c
+  limits, or a global flag) and hides itself when Sora is far (seen at 1779 units, `hidden: despawned`).
+- **Hosts.** New arms (appended to `enemy_host.rs`): 1.130 (Impl), 1.140 (Approx), 1.179, 1.75, 1.76 and 1.128 (Stub) and 1.13 on itself
+  (Stub), see `docs/enemy-ai.md` "Host call mapping". The rest were in the table already; the Stub ones it reaches are 1.121, 1.171, 1.206,
+  1.211 and the mode-frozen test.
+
+Acceptance run (WP-EN9e), tt03 (the first listed area; `btl` program 7 loads b_21 with three `M_EX950`, two `M_EX880` and one Dusk; test
+`tt03_btl_program_7_holds_two_m_ex880`, disc): `KH2_PROGRAMS=0,7,0 KH2_WAVE_GROUP=b_21 KH2_NO_PARTY=1 KH2_AREALOG=1 KH2_BDXLOG=1 KH2_NO_SOUND=1
+KH2_NO_MUSIC=1 kh2-game tt03` gives `area groups: tt03 btl program 0x7 group b_21: M_EX950, M_EX880, M_EX880, Dusk, M_EX950, M_EX950 (not in the
+app: [])`, `SetObjParam { a: 50 }` and the modes `appear`, `mode_battle`, `btl_brush`, `move_run`, `atk_brush`, `atk_card`, `atk_dice`, `leave`. With
+`KH2_KEYS` (W held from 4 s for 2.6 s to reach it, J every 0.4 s from 6.6 s): `M_EX950 hit: atkp 126 damage 3 hp 29` .. `atkp 130 damage 5 hp 0`,
+`experience: enmp 50 defeated: +10`, `hp 0: switching to mode dead`, `drop (host 1.92) asked row 27`, `prize: drop of row 27`; all three die in 55 s
+and the last log table has no `Missing` line of M_EX950 (the one `1.140` line of `M_EX880#3` is answered by the new arm). Harness PNGs looked at:
+idle (three pale pointed-hat figures with Sora and the Nobodies, HUD present), a hit (`M_EX950 Hurt hp 20/32`, one figure bent over at the right),
+and after the fight (no enemy text, Sora Lv2, prize sparkles). `idle-hud`, `combat-ground` and `tt04-dusk` of `accept.ps1` PASS and their PNGs show
+the HUD, four Shadows and a Dusk as before.
+
+Gaps: the `rc_*` modes (the reaction-command mini game: host 1.165 `offer_command` 313 after 1.221, host 1.237 `offer_four`) were not reached in
+any run (no event 11 of the 312/323 kind arrived), so whether the app answers them is not known; the two spawn objects (1537 `CARD`, 1538
+`DICE`, objentry type 0) were not seen to be created; `mode_battle_boss` / `mode_revenge_boss` were not seen; ca09 and the other 12 areas were not
+run, only tt03; the reader of +0x100 (1.179) and of the controller word +4 (1.75 / 1.76) was not traced (`mips_scan --load-off 0x100` was not
+run: the base is not a fixed object); drop row 27 was not traced further.
+
 ## The Struggle (WP-7E)
 
 The Struggle rules are in `docs/struggle.md`. For the opponents: b_50, b_51 and b_52 (missions `TT04_MS00`,

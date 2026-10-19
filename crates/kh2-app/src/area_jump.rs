@@ -198,10 +198,21 @@ impl AfterEvent {
     pub const START_TICKS: u32 = 2;
 }
 
+/// `KH2_WORLDMAP=1`: the world map can be entered (the save point's World Map row and jumps to world 0xf). Off by default: the map has
+/// no landing or exit yet (docs/worldmap.md W6, W7), so the player would be trapped. A deliberate deviation from the original.
+pub fn worldmap_enabled() -> bool {
+    std::env::var("KH2_WORLDMAP").is_ok_and(|v| v == "1")
+}
+
 /// The area a jump to `dest` loads: `None` (with the reason) when the app has no such area or the
 /// disc lacks its `ard/<name>.ard` or `map/us/<name>.map` (`has` answers whether a disc file
 /// exists). The caller then stays: the fade is lifted and Sora keeps his place.
-pub fn jump_target(dest: &Dest, has: impl Fn(&str) -> bool) -> Result<String, String> {
+///
+/// `map` is `worldmap_enabled()`: the world map is entered only with it (deliberate deviation: the map has no exit yet).
+pub fn jump_target(dest: &Dest, has: impl Fn(&str) -> bool, map: bool) -> Result<String, String> {
+    if dest.world == WORLD_MAP && !map {
+        return Err("the world map is not available (the app has only Twilight Town; set KH2_WORLDMAP=1 to enter it)".to_string());
+    }
     let Some(name) = area::area_name(dest.world, dest.area) else { return Err(format!("{} is not in the app", dest_name(dest))) };
     for f in [format!("ard/{name}.ard"), format!("map/us/{name}.map")] {
         if !has(&f) {
@@ -900,7 +911,7 @@ fn tick(
             } else {
                 // FUN_00104c68 -> FUN_00104bd0: the destination becomes the record; the area thread
                 // restarts with it (here: `CurrentArea.name`, which `assets::load_area` picks up).
-                let name = match jump_target(&dest, |f| disc.read(f).is_some()) {
+                let name = match jump_target(&dest, |f| disc.read(f).is_some(), worldmap_enabled()) {
                     Ok(name) => name,
                     Err(why) => {
                         // Staying: lift the fade, keep Sora where he is, and let the exit fire again
@@ -1398,16 +1409,16 @@ mod tests {
     fn a_jump_to_a_missing_area_stays() {
         let d = |area| Dest::new(2, area, 1);
         let all = |_: &str| true;
-        assert_eq!(jump_target(&d(3), all).as_deref(), Ok("tt03"));
+        assert_eq!(jump_target(&d(3), all, false).as_deref(), Ok("tt03"));
         // Not in the app (world 0x12, area 100's mapping): no area name.
-        assert!(jump_target(&Dest::new(0x12, 1, 0), all).is_err());
+        assert!(jump_target(&Dest::new(0x12, 1, 0), all, false).is_err());
         // A Twilight Town number whose files the disc lacks.
         let only_tt03 = |f: &str| f.contains("tt03");
-        assert_eq!(jump_target(&d(3), only_tt03).as_deref(), Ok("tt03"));
-        let e = jump_target(&d(99), only_tt03).unwrap_err();
+        assert_eq!(jump_target(&d(3), only_tt03, false).as_deref(), Ok("tt03"));
+        let e = jump_target(&d(99), only_tt03, false).unwrap_err();
         assert!(e.contains("ard/tt99.ard"), "{e}");
         let no_map = |f: &str| f.starts_with("ard/");
-        assert!(jump_target(&d(3), no_map).unwrap_err().contains("map/us/tt03.map"));
+        assert!(jump_target(&d(3), no_map, false).unwrap_err().contains("map/us/tt03.map"));
     }
 
     /// Fade kind 0's layout on the user's disc: slot 2 of `tt0field.2dd` is an image and a
@@ -1710,8 +1721,10 @@ mod tests {
         let j = jump(4, 3, 0, 0, 0);
         let Outcome::Go(d) = resolve_record(&j, (2, 4, 0), None, |_, _| None, |_| false, &table(), &mut mem).unwrap() else { panic!("type 4 goes") };
         assert_eq!(d.world, WORLD_MAP);
-        assert_eq!(jump_target(&d, |_| true).as_deref(), Ok("wm00"), "the map area exists since WP-WM2");
-        let err = jump_target(&d, |f| !f.ends_with(".map")).unwrap_err();
+        assert_eq!(jump_target(&d, |_| true, true).as_deref(), Ok("wm00"), "the map area exists since WP-WM2");
+        let off = jump_target(&d, |_| true, false).unwrap_err();
+        assert!(off.contains("world map is not available"), "{off}");
+        let err = jump_target(&d, |f| !f.ends_with(".map"), true).unwrap_err();
         assert!(err.contains("wm00.map"), "{err}");
     }
 

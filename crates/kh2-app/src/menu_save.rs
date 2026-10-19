@@ -503,8 +503,8 @@ pub fn point_rows(exe: &[u8]) -> Vec<u32> {
 
 /// The rows menu kind 1 shows for its mode: the second only while the mode is not 2 (`FUN_00255c10` stops at row 1 when
 /// `FUN_0024f498()`, the mode word, is 2).
-pub fn rows_for_mode(rows: &[u32], mode: i32) -> Vec<u32> {
-    rows.iter().take(if mode == 2 { 1 } else { 2 }).copied().collect()
+pub fn rows_for_mode(rows: &[u32], mode: i32, map: bool) -> Vec<u32> {
+    rows.iter().take(if mode == 2 || !map { 1 } else { 2 }).copied().collect()
 }
 
 pub struct SavePlugin;
@@ -674,7 +674,7 @@ fn input(
     {
         // A save point's accept: menu kind 1. The point's gate is its own (the offer); the menu opens when no other is up.
         if menu.phase == Phase::Closed && !pause.band {
-            let rows = if save.point_rows.is_empty() { vec![msg::SAVE] } else { rows_for_mode(&save.point_rows, mode) };
+            let rows = if save.point_rows.is_empty() { vec![msg::SAVE] } else { rows_for_mode(&save.point_rows, mode, crate::area_jump::worldmap_enabled()) };
             let area_name = area.name.clone();
             open(&mut save, &mut scene, &mut se, &area_name, rows, Some(mode), false);
         } else {
@@ -1402,8 +1402,9 @@ mod tests {
     #[test]
     fn the_point_menu_lists_its_second_row_only_outside_mode_2() {
         let rows = [0x8a7e, 0x8a80];
-        assert_eq!(rows_for_mode(&rows, 2), vec![0x8a7e], "the save point (FUN_0024f0b8(1, 2))");
-        assert_eq!(rows_for_mode(&rows, 0), vec![0x8a7e, 0x8a80], "the world point (FUN_0024f0b8(1, 0))");
+        assert_eq!(rows_for_mode(&rows, 2, true), vec![0x8a7e], "the save point (FUN_0024f0b8(1, 2))");
+        assert_eq!(rows_for_mode(&rows, 0, true), vec![0x8a7e, 0x8a80], "the world point (FUN_0024f0b8(1, 0)) with KH2_WORLDMAP=1");
+        assert_eq!(rows_for_mode(&rows, 0, false), vec![0x8a7e], "without KH2_WORLDMAP the World Map row is not listed");
         let none = [false; SLOTS];
         let mut f = Flow { stage: Stage::Top, rows: 2, ..Flow::default() };
         assert_eq!(f.press(Press::Down, &none), Action::Cursor);

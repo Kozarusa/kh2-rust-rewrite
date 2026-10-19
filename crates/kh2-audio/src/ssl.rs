@@ -161,6 +161,7 @@ struct Lfo {
 }
 
 impl Lfo {
+    #[allow(clippy::too_many_arguments)] // mirrors the seven LFO parameters of the sequence command
     fn set(&mut self, on: bool, depth: i32, rate: i32, wave: i32, delay: i32, fade: i32, target: i32) {
         let rate = if rate == 0 { 0x100 } else { rate };
         if !on {

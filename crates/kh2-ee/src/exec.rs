@@ -273,10 +273,10 @@ impl Ee {
             } else {
                 (x.wrapping_div(y) as u32, x.wrapping_rem(y) as u32)
             }
-        } else if b == 0 {
-            (u32::MAX, a)
+        } else if let Some(q) = a.checked_div(b) {
+            (q, a % b)
         } else {
-            (a / b, a % b)
+            (u32::MAX, a)
         };
         if pipe1 {
             self.lo = with_hi64(self.lo, sx32(q));
@@ -468,9 +468,9 @@ impl Ee {
             0x14..=0x17 => {
                 if ft != 0 {
                     let n = [0, 4, 12, 15][(op & 3) as usize];
-                    for k in 0..4 {
+                    for (k, sk) in s.iter().enumerate() {
                         if dest & (8 >> k) != 0 {
-                            self.vf[ft][k] = f32::from_bits((s[k] * scale(n)) as i32 as u32);
+                            self.vf[ft][k] = f32::from_bits((*sk * scale(n)) as i32 as u32);
                         }
                     }
                 }
@@ -482,11 +482,11 @@ impl Ee {
             0x1F => {
                 let wv = t[3].abs();
                 let mut flags = 0u32;
-                for k in 0..3 {
-                    if s[k] > wv {
+                for (k, sk) in s.iter().enumerate().take(3) {
+                    if *sk > wv {
                         flags |= 1 << (2 * k);
                     }
-                    if s[k] < -wv {
+                    if *sk < -wv {
                         flags |= 2 << (2 * k);
                     }
                 }

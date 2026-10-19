@@ -201,7 +201,7 @@ pub struct RootPose {
 
 #[derive(Debug, Clone)]
 pub enum Data {
-    Interpolated(Interpolated),
+    Interpolated(Box<Interpolated>),
     /// Per frame, per bone model-space matrices.
     Raw { bones: usize, frames: Vec<Vec<Mat4>> },
 }
@@ -368,7 +368,7 @@ impl Motion {
                     frame_end: f32_at(b, h + 0x84),
                     fps: f32_at(b, h + 0x88),
                     frame_return: f32_at(b, h + 0x8C),
-                    data: Data::Interpolated(Interpolated {
+                    data: Data::Interpolated(Box::new(Interpolated {
                         bone_count,
                         total_count,
                         initial,
@@ -385,7 +385,7 @@ impl Motion {
                         expressions,
                         nodes,
                         effectors,
-                    }),
+                    })),
                 })
             }
             1 => {

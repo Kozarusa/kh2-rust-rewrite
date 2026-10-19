@@ -119,9 +119,9 @@ fn draw_model(ctx: &mut Ctx, number: i32, m: Mat4, mat: Vec4, uv_off: [f32; 2]) 
         for pr in &b.prims {
             let n = if quad { 4 } else { 3 };
             let mut v = [Vertex { pos: Vec3::ZERO, color: Vec4::ZERO, uv: [0.0; 2] }; 4];
-            for k in 0..n {
+            for (k, vk) in v.iter_mut().enumerate().take(n) {
                 let c = pr.colors[k.min(3)];
-                v[k] = Vertex {
+                *vk = Vertex {
                     pos: pos(pr.indices[k]),
                     color: Vec4::new(c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32) / 128.0 * mat,
                     uv: [
@@ -849,27 +849,27 @@ fn birth(ctx: &mut Ctx, p: &Program, e: usize, mb: &mut Mega, emitter: Mat4, loc
         }
         6..=9 => {
             let vsf = ph(p, e, 0xd0);
-            if vsf >= 0 {
-                if let Some((verts, idx)) = vsf_vertices(ctx, vsf) {
-                    let (verts, idx) = (verts.to_vec(), idx.to_vec());
-                    let n = idx.len().max(1);
-                    let k = if pb(p, e, 0xc8) == 0 {
-                        let mut c = mb.vertex_cursor as usize;
-                        if c >= n {
-                            c = 0;
-                        }
-                        mb.vertex_cursor = (c + 1) as u16;
-                        c
-                    } else {
-                        let f = ctx.rand() * ctx.rand();
-                        mb.vertex_cursor = mb.vertex_cursor.min(n as u16);
-                        ((f * n as f32) as usize).min(n - 1)
-                    };
-                    let v = verts.get(idx.get(k).copied().unwrap_or(0) as usize).copied().unwrap_or([0; 3]);
-                    pt.pos = Vec3::new(v[0] as f32, v[1] as f32, v[2] as f32) * axis;
-                    if kind >= 8 {
-                        pt.dir = pt.pos.normalize_or_zero();
+            if vsf >= 0
+                && let Some((verts, idx)) = vsf_vertices(ctx, vsf)
+            {
+                let (verts, idx) = (verts.to_vec(), idx.to_vec());
+                let n = idx.len().max(1);
+                let k = if pb(p, e, 0xc8) == 0 {
+                    let mut c = mb.vertex_cursor as usize;
+                    if c >= n {
+                        c = 0;
                     }
+                    mb.vertex_cursor = (c + 1) as u16;
+                    c
+                } else {
+                    let f = ctx.rand() * ctx.rand();
+                    mb.vertex_cursor = mb.vertex_cursor.min(n as u16);
+                    ((f * n as f32) as usize).min(n - 1)
+                };
+                let v = verts.get(idx.get(k).copied().unwrap_or(0) as usize).copied().unwrap_or([0; 3]);
+                pt.pos = Vec3::new(v[0] as f32, v[1] as f32, v[2] as f32) * axis;
+                if kind >= 8 {
+                    pt.dir = pt.pos.normalize_or_zero();
                 }
             }
         }

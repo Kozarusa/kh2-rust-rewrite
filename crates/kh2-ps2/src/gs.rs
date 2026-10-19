@@ -174,6 +174,7 @@ impl Vram {
     }
 
     /// Host → local transfer of a linear PSMT8 rectangle.
+    #[allow(clippy::too_many_arguments)] // a GS transfer is the BITBLTBUF/TRXPOS/TRXREG fields; public API shared with other crates
     pub fn write8(&mut self, dbp: usize, dbw: usize, x0: usize, y0: usize, w: usize, h: usize, data: &[u8]) {
         for y in 0..h {
             for x in 0..w {
@@ -185,6 +186,7 @@ impl Vram {
     }
 
     /// Host → local transfer of a linear PSMCT32 rectangle (RGBA, alpha 0..0x80).
+    #[allow(clippy::too_many_arguments)] // same transfer fields as write8
     pub fn write32(&mut self, dbp: usize, dbw: usize, x0: usize, y0: usize, w: usize, h: usize, data: &[u8]) {
         for y in 0..h {
             for x in 0..w {

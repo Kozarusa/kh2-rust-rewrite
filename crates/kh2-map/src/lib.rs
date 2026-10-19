@@ -101,7 +101,7 @@ impl Coct {
             }
         }
         let mut polygons = Vec::with_capacity(l3 / 16);
-        for i in 0..l3 / 16 {
+        for (i, &mesh) in mesh_of.iter().enumerate() {
             let o = t3 + 16 * i;
             let idx = [i16_at(b, o + 2)?, i16_at(b, o + 4)?, i16_at(b, o + 6)?, i16_at(b, o + 8)?];
             let quad = idx[3] >= 0;
@@ -115,7 +115,7 @@ impl Coct {
             let d = f32_at(b, po + 12)?;
             let flags = u32_at(b, t7 + 4 * i16_at(b, o + 14)? as u16 as usize)?;
             let material = *b.get(o)?;
-            polygons.push(Polygon { verts, quad, normal, d, flags, material, mesh: mesh_of[i] });
+            polygons.push(Polygon { verts, quad, normal, d, flags, material, mesh });
         }
         Some(Coct { polygons })
     }

@@ -199,7 +199,7 @@ impl Mixer {
     /// Mixes `out.len() / 2` stereo frames.
     pub fn render(&mut self, out: &mut [f32]) {
         out.fill(0.0);
-        for f in out.chunks_exact_mut(2) {
+        for f in out.as_chunks_mut::<2>().0 {
             self.voices.retain_mut(|v| match v.next() {
                 Some((l, r)) => {
                     f[0] += l;

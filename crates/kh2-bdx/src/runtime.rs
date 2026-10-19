@@ -1194,7 +1194,8 @@ impl CoreEnv<'_> {
                     _ => ObjectKey::NeoStatus,
                 };
                 let found = self.host.call(&Call::FindObject { by, value: a[1] as i32 }).int() as u32;
-                mem.write_u32(a[0].wrapping_add(4), found).map_err(outside)?;
+                let mut hh = HeapHost { heap: &mut self.core.heap, host: &mut *self.host };
+                write_bytes(mem, &mut hh, a[0].wrapping_add(4), &found.to_le_bytes())?;
                 return Ok(None);
             }
 

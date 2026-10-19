@@ -467,6 +467,34 @@ reached twice, `first host call 1.95 ? [Approx]`); its blow 168 knocked Sora dow
 Not done for the three (WP-7D): the Struggle rules (WP-7E), enemy voice lines (1.262 stays a stub), event 13 and
 event 15. `docs/hit-reaction.md`: all three use the default reaction slots of their sets.
 
+## The sixth enemy: M_EX420 (WP-EN9a)
+
+`M_EX420` (object 120 = 0x78, `00objentry` row 120: ObjectType 4, `NeoStatus` 1003, flags 4, `SpawnLimiter` 10; `enemy::M_EX420`,
+called by its model: no name is in the data the app reads) is the enemy kind the area survey found most often missing
+(33 areas: al00, al01, bb00, bb06, bb13, ca02, ..). al00's `btl` program 0xa loads b_20 with ten of them (the group also
+holds `M_EX060`, still absent; test `al00_btl_program_a_holds_ten_m_ex420`, disc). Its BDX script (6501 words, `cargo run -p
+kh2 -- bdx M_EX420`) has the modes `appear_shadow`, `move_shadow_round`, `move_shadow_target`, `atk_claw`, `atk_a_charge`,
+`atk_s_out`, `atk_group_call`, `mode_battle`, `mode_revenge`, `mode_battle_boss`.
+
+- **Stats.** The script's set-up routine R174d (0x174d) takes eight arguments from its one call (0x0656) and hands the
+  first of them, 9 (pushed at 0x063e), to `set_obj_param` (host 2.9, 0x1774): `enmp` row 9. `KH2_BDXLOG` shows
+  `SetObjParam { a: 9 }`; the harness enemy has 20 HP.
+- **Death.** The `dead` mode (registered at 0x01e2, routine R082e at 0x082e) hands the object's +0x1c to host 1.92 (the
+  app's drop), starts element 2 of its effect file (host 1.87 at 0x0853), releases it (0.79), sets bits 3 and 6, fades out
+  and hides: `Kind::death_effect` true.
+- **Hosts.** No new host call: every one it calls is in `enemy_host.rs` already; the Stub and Approx ones it reaches
+  (stubs 1.105, 1.121, 0.79, 1.171, 1.206; approx 1.11, 1.23, 1.34, 1.56, 1.92) carry their own reasons in the table.
+
+Acceptance run (WP-EN9a), `KH2_AREALOG=1 KH2_BDXLOG=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1 KH2_WAVE_GROUP=b_20 KH2_NO_PARTY=1
+kh2-game al00` (Sora starts inside kind-2 group 0x30d, which creates serial 0x3fd): `area group b_20 kind-2 group 0x30d:
+M_EX420 (serial 0x3fd, wave 0)`, then modes `appear_shadow`, `mode_battle`, `move_zigzag`, `idle_time`, `atk_claw` (it hit
+Sora, 20 to 17 HP), `mode_revenge`. With `KH2_KEYS` (Q at 4 s, J every 0.5 s from 5.5 s): `M_EX420 hit: atkp 126 damage 3 hp 17`
+.. `atkp 129 damage 6 hp 0`, `experience: enmp 9 defeated: +4`, `hp 0: switching to mode dead`, `drop (host 1.92) asked row 41`
+and the prize objects picked up. No `Missing` host call and no script error in the log.
+
+Gaps: the other 32 areas were not run (only al00's b_20); `M_EX060` and the rest of b_20 are absent kinds; the drop row
+the script asks (41) was not traced further.
+
 ## The Struggle (WP-7E)
 
 The Struggle rules are in `docs/struggle.md`. For the opponents: b_50, b_51 and b_52 (missions `TT04_MS00`,

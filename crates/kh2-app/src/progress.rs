@@ -747,7 +747,9 @@ impl Progress {
         let ids: Vec<String> = self.story().set_flags().iter().map(|i| i.to_string()).collect();
         let points: Vec<String> = self.story().world_points().iter().map(|i| i.to_string()).collect();
         let points = if points.is_empty() { String::new() } else { format!(", \"world_points\": [{}]", points.join(", ")) };
-        format!("{{\"story_flags\": [{}]{points}}}", ids.join(", "))
+        let bytes = self.story().world_bytes();
+        let world = if bytes.iter().all(|&b| b == 0) { String::new() } else { format!(", \"world_state\": \"{}\"", hex(&bytes)) };
+        format!("{{\"story_flags\": [{}]{points}{world}}}", ids.join(", "))
     }
 
     // --- records ----------------------------------------------------------------------------
@@ -2144,6 +2146,10 @@ impl Progress {
         if j.get("block").is_some() && j.get("story_raw").is_none() {
             self.story().reset_state();
         }
+        // The same for the world map's bytes: a slot written before they were kept starts them clear.
+        if j.get("block").is_some() && j.get("world_state").is_none() {
+            self.story().world.clear();
+        }
         for (key, v) in fields {
             match key.as_str() {
                 "experience" => self.set_experience(int(v, "experience")? as i32),
@@ -2252,6 +2258,13 @@ impl Progress {
                     for id in list(v, "world_points")? {
                         s.set_world_point(id as usize);
                     }
+                }
+                // The world map's save-block bytes (`world::RECORDS` .. `world::MAP_BYTE`) as hex: the world records, the world
+                // flags, the queue and the episode bits. Replaces them.
+                "world_state" => {
+                    let Json::Str(h) = v else { return Err("world_state: expected a hex string".into()) };
+                    let bytes = unhex(h, world::LEN).ok_or_else(|| format!("world_state: expected {} hex bytes", world::LEN))?;
+                    self.story().world = bytes;
                 }
                 // The moogle's synthesis record (save +0x3728): `{"unlocks": [bits], "points": n, "level": n, "rewards": [bits]}`.
                 "moogle" => {
@@ -2529,6 +2542,12 @@ impl Progress {
         }));
         p.boot_weapons = boot.clone();
         p.story().effects = effects.clone();
+        // `FUN_0017fd10` -> `FUN_001b6860`: the `wldf` entry (world flags that follow story flags).
+        p.story().world_table = Arc::new(
+            disc.read("00progress.bin")
+                .and_then(|f| kh2_bar::parse(&f).ok()?.into_iter().find(|e| e.tag == kh2_ard::worldmap::WLDF).map(|e| kh2_ard::worldmap::Wldf::parse(e.data)))
+                .unwrap_or_default(),
+        );
         match std::env::var("KH2_STATE") {
             Ok(path) if !path.is_empty() => match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|s| p.apply_json(&s)) {
                 Ok(()) => {
@@ -2608,6 +2627,26 @@ pub mod story {
     pub const LOCKS: u32 = 0x0033_f918;
 }
 
+/// The world map's save-block region (docs/worldmap.md section 6): one byte array from the world
+/// records to the byte after `WORLD_MAP_BYTE`, kept as the game lays it out so a record index past the
+/// 19 worlds lands where the game's pointer arithmetic would put it.
+pub mod world {
+    /// `FUN_001b4e80(w)` = `RECORDS + 4 * w`: byte 0 the map state, 1 the landing key, 2 set by story op 0xd, 3 bit flags.
+    pub const RECORDS: u32 = 0x0034_1858;
+    /// The world-flag bits (`FUN_001b6a18` reads them, `FUN_001b68f8` sets them): 256 bits.
+    pub const FLAGS: u32 = 0x0034_18a4;
+    /// The queue of world flags just set (`FUN_001b68f8` appends); its count byte is the last byte, `QUEUE_COUNT`.
+    pub const QUEUE: u32 = 0x0034_18c4;
+    pub const QUEUE_COUNT: u32 = 0x0034_19c3;
+    /// Episode bits: the set added by flag-list op 0xc (`FUN_001c1410`, both arrays) and removed by op 0xd (`FUN_001c1488`, second array only).
+    pub const EPISODES_A: u32 = 0x0034_19e4;
+    pub const EPISODES_B: u32 = 0x0034_19f4;
+    /// The byte action-list op 0xf stores (`FUN_001b6a90`).
+    pub const MAP_BYTE: u32 = 0x0034_1a05;
+    /// The bytes kept: `RECORDS` up to and including `MAP_BYTE`.
+    pub const LEN: usize = (MAP_BYTE - RECORDS) as usize + 1;
+}
+
 /// What the save block keeps of the story: the flag bits, the area program table and the exit-lock
 /// halfwords, plus the side-effect lists of `00progress.bin` that setting a flag runs. The new game
 /// has every byte 0 (`FUN_00105638` clears the save block at boot) [inferred: no later new-game writer
@@ -2629,6 +2668,13 @@ pub struct Story {
     /// The world-point bits at `0x33f910` (`FUN_00194fa8` sets bit `i` for record `i` of
     /// `00worldpoint.bin`, at most 0x36 of them; `FUN_00194fd8` clears, not ported). Two words.
     world_bits: [u32; 2],
+    /// The `wldf` table of `00progress.bin` (`FUN_001b6860` keeps it at `DAT_01d5d790`). Empty: no world flag follows a story flag.
+    pub world_table: Arc<kh2_ard::worldmap::Wldf>,
+    /// The world map's save-block bytes (`world::LEN` of them from `world::RECORDS`); empty is all zero.
+    world: Vec<u8>,
+    /// World-flag list commands the app does not act on (ops 8..0xb, the episode list removal of op 0xd and the map
+    /// hook of op 0xf), with the world flag index and the op; for the logs.
+    pub world_unported: Vec<(u8, u16)>,
 }
 
 /// Records of `00worldpoint.bin` `FUN_00194f68` searches (it returns an index 0..=0x35, else -1).
@@ -2674,6 +2720,7 @@ impl Story {
         self.programs.clear();
         self.locks.clear();
         self.world_bits = [0; 2];
+        self.world.clear();
     }
 
     fn ensure(&mut self) {
@@ -2724,7 +2771,7 @@ impl Story {
         self.words[w] |= m;
         let world = id as usize >> 10;
         let effects = self.effects.clone();
-        let Some(list) = effects.get(world).and_then(|e| kh2_ard::progress::effects(e, id & 0x3ff)) else { return };
+        let list = effects.get(world).and_then(|e| kh2_ard::progress::effects(e, id & 0x3ff)).unwrap_or_default();
         for e in list {
             let h = e.flags();
             let h0 = h.first().copied().unwrap_or(0) as usize;
@@ -2758,7 +2805,182 @@ impl Story {
                         }
                     }
                 }
+                // The world record's bytes 1 and 2 (`FUN_001b4e80(world)`): the halfword's high and low byte.
+                0xd => {
+                    let o = 4 * world as u32 + 1;
+                    self.world_set(world::RECORDS + o, (h0 >> 8) as u8);
+                    self.world_set(world::RECORDS + o + 1, h0 as u8);
+                }
                 op => self.unported.push((id, op)),
+            }
+        }
+        // After the list the game calls `FUN_001b6da0(id)`, the first of the calls whose effects are ported.
+        self.world_flags_follow(id);
+    }
+
+    // --- the world map's state (docs/worldmap.md section 6) ----------------------------------------
+
+    fn world_ensure(&mut self) {
+        if self.world.is_empty() {
+            self.world = vec![0; world::LEN];
+        }
+    }
+
+    /// The byte at save-block address `addr` of the world region (0 outside it and while untouched).
+    pub fn world_byte(&self, addr: u32) -> u8 {
+        addr.checked_sub(world::RECORDS).and_then(|o| self.world.get(o as usize)).copied().unwrap_or(0)
+    }
+
+    fn world_set(&mut self, addr: u32, v: u8) {
+        self.world_ensure();
+        if let Some(b) = addr.checked_sub(world::RECORDS).and_then(|o| self.world.get_mut(o as usize)) {
+            *b = v;
+        }
+    }
+
+    fn world_word(&self, addr: u32) -> u32 {
+        u32::from_le_bytes([0, 1, 2, 3].map(|k| self.world_byte(addr + k)))
+    }
+
+    fn world_set_word(&mut self, addr: u32, v: u32) {
+        for (k, b) in v.to_le_bytes().into_iter().enumerate() {
+            self.world_set(addr + k as u32, b);
+        }
+    }
+
+    /// `FUN_001b4e80(w)`: the 4-byte record of world `w`.
+    pub fn world_record(&self, w: usize) -> [u8; 4] {
+        let a = world::RECORDS + 4 * w as u32;
+        [0, 1, 2, 3].map(|k| self.world_byte(a + k))
+    }
+
+    /// `FUN_001b6a18`: world flag `i` is set.
+    pub fn world_flag(&self, i: u32) -> bool {
+        self.world_word(world::FLAGS + 4 * (i >> 5)) >> (i & 31) & 1 != 0
+    }
+
+    /// The world flags just set that the game has queued (`FUN_001b68f8`, `world::QUEUE`), oldest first. The count byte is
+    /// the game's own, so a wrapped queue returns what the count says.
+    pub fn world_queue(&self) -> Vec<u8> {
+        (0..self.world_byte(world::QUEUE_COUNT) as u32).map(|k| self.world_byte(world::QUEUE + k)).collect()
+    }
+
+    /// Episode `id` is added (`FUN_001c1410` sets it in both arrays, `FUN_001c1488` clears the second): the bit of the second array.
+    pub fn episode_active(&self, id: u32) -> bool {
+        self.world_word(world::EPISODES_B + 4 * (id >> 5)) >> (id & 31) & 1 != 0
+    }
+
+    /// The bit of the first array (set by op 0xc, never cleared by the ops ported).
+    pub fn episode_seen(&self, id: u32) -> bool {
+        self.world_word(world::EPISODES_A + 4 * (id >> 5)) >> (id & 31) & 1 != 0
+    }
+
+    /// `FUN_001b4e98(record, v)`: the map-state write (value 3 on a state above 2 counts up instead; value 2 also clears bit 0 of byte 3).
+    fn world_record_write(&mut self, w: u32, v: u8) {
+        let a = world::RECORDS + 4 * w;
+        let cur = self.world_byte(a);
+        if v == 3 && cur > 2 {
+            self.world_set(a, cur.wrapping_add(1));
+            return;
+        }
+        self.world_set(a, v);
+        if v == 2 {
+            self.world_set(a + 3, self.world_byte(a + 3) & 0xfe);
+        }
+    }
+
+    /// `FUN_001b6da0(flag)`: every `wldf` record that follows story flag `flag` sets its world flag.
+    fn world_flags_follow(&mut self, flag: u16) {
+        let table = self.world_table.clone();
+        for r in table.following(u32::from(flag)) {
+            self.world_flag_set(r.index);
+        }
+    }
+
+    /// `FUN_001b68f8(i)`: sets world flag `i` (four indexes are skipped while their rival flag is set) and queues it unless the
+    /// record is kind 1 with story flag `0x102b` set. A flag already set changes nothing. A key the table lacks reads the
+    /// kind from address 1 in the game, which is taken as 0 [inferred], so it queues.
+    pub fn world_flag_set(&mut self, i: u8) {
+        let rival = match i {
+            0x25 => Some(0x73),
+            0x2a => Some(0x56),
+            0x2d => Some(0x54),
+            0x2e => Some(0x72),
+            _ => None,
+        };
+        if rival.is_some_and(|r| self.world_flag(r)) {
+            return;
+        }
+        let a = world::FLAGS + 4 * (u32::from(i) >> 5);
+        let bit = 1u32 << (i & 31);
+        let word = self.world_word(a);
+        if word & bit != 0 {
+            return;
+        }
+        self.world_set_word(a, word | bit);
+        let kind = self.world_table.find(i).map_or(0, |r| r.kind);
+        if kind != 1 || !self.test(0x102b) {
+            let n = self.world_byte(world::QUEUE_COUNT);
+            self.world_set(world::QUEUE_COUNT, n.wrapping_add(1));
+            self.world_set(world::QUEUE + u32::from(n), i);
+        }
+    }
+
+    /// `FUN_001b6a48(record, call_hook)` with `FUN_001b6a90` on each command: runs the action list of the `wldf` record with
+    /// index `key`. `call_hook` is `DAT_01d5d794` (the argument of `FUN_001b6a48`): with it op 0xf also calls `FUN_001c6d10`,
+    /// not ported. Ops 8..0xb (`FUN_001b6d30`, bytes of a table `FUN_001c0950` finds) and the list removal of op 0xd
+    /// (`FUN_003335d0`) are recorded in `world_unported`.
+    pub fn world_run_list(&mut self, key: u8, call_hook: bool) {
+        let table = self.world_table.clone();
+        let Some(rec) = table.find(key) else { return };
+        for act in table.actions(rec.list) {
+            let ids: Vec<u32> = act.ids().map(u32::from).collect();
+            match act.op {
+                1 | 2 | 3 | 7 => {
+                    let v = match act.op {
+                        1 => 0,
+                        2 => 1,
+                        3 => 2,
+                        _ => 3,
+                    };
+                    ids.iter().for_each(|&w| self.world_record_write(w, v));
+                }
+                4 => {
+                    for &w in &ids {
+                        self.world_record_write(w, 2);
+                        let a = world::RECORDS + 4 * w + 3;
+                        self.world_set(a, self.world_byte(a) & 0xfd);
+                    }
+                }
+                5 | 6 => {
+                    let bit = if act.op == 5 { 2 } else { 1 };
+                    for &w in &ids {
+                        let a = world::RECORDS + 4 * w + 3;
+                        self.world_set(a, self.world_byte(a) | bit);
+                    }
+                }
+                0xc => {
+                    for &id in &ids {
+                        for base in [world::EPISODES_A, world::EPISODES_B] {
+                            let a = base + 4 * (id >> 5);
+                            self.world_set_word(a, self.world_word(a) | 1 << (id & 31));
+                        }
+                    }
+                }
+                0xd => {
+                    for &id in &ids {
+                        let a = world::EPISODES_B + 4 * (id >> 5);
+                        self.world_set_word(a, self.world_word(a) & !(1 << (id & 31)));
+                    }
+                    self.world_unported.push((key, 0xd));
+                }
+                0xf => {
+                    if call_hook {
+                        self.world_unported.push((key, 0xf));
+                    }
+                    self.world_set(world::MAP_BYTE, act.data.first().map_or(0, |h| *h as u8));
+                }
+                op => self.world_unported.push((key, op)),
             }
         }
     }
@@ -2803,6 +3025,11 @@ impl Story {
     /// Whether world-point bit `i` is set (the reader of the bits `FUN_00194fd8` tests).
     pub fn world_point(&self, i: usize) -> bool {
         self.world_bits.get(i >> 5).is_some_and(|w| w >> (i & 31) & 1 != 0)
+    }
+
+    /// The world region as `world::LEN` bytes (zeros for a new game).
+    pub fn world_bytes(&self) -> Vec<u8> {
+        if self.world.len() == world::LEN { self.world.clone() } else { vec![0; world::LEN] }
     }
 
     /// Every set world-point bit, in order.
@@ -2951,6 +3178,7 @@ impl Progress {
             ("report_counters", nums(self.report)),
             ("story_raw", format!("{{\"words\": \"{}\", \"programs\": \"{}\", \"locks\": {}}}", hex(&words), hex(&st.programs), nums(locks))),
             ("world_points", nums(st.world_points())),
+            ("world_state", format!("\"{}\"", hex(&st.world_bytes()))),
         ]
     }
 
@@ -3643,7 +3871,7 @@ mod tests {
         let before = fields.len();
         let persisted: Vec<&str> = p.persisted_fields().iter().map(|f| f.0).collect();
         fields.retain(|f| !persisted.contains(&f.0));
-        assert_eq!((persisted.len(), before - fields.len()), (12, 12), "every persisted key is in the slot file (WP-MN15 added enemy_kills, reaction_uses, limit_best; WP-CT1 report_counters)");
+        assert_eq!((persisted.len(), before - fields.len()), (13, 13), "every persisted key is in the slot file (WP-MN15 added enemy_kills, reaction_uses, limit_best; WP-CT1 report_counters; WP-WM1 world_state)");
         let old = Progress::join_fields(&fields);
         assert!(!old.contains("moogle") && !old.contains("story_raw") && old.contains("\"block\""));
         let mut r = Progress::from_block(&[], Arc::new(ItemIndex::default()));
@@ -4047,6 +4275,102 @@ mod tests {
         assert_eq!(q.story().world_points(), vec![1, 33]);
     }
 
+    /// A `wldf` entry for the world-state tests: records (index, kind, story flag, list offset) and the lists after them.
+    fn wldf_entry(records: &[(u8, u8, u32, u32)], lists: &[u16]) -> Vec<u8> {
+        let mut e = vec![0, 0, 0, 0];
+        e.extend_from_slice(&(records.len() as i32).to_le_bytes());
+        for &(index, kind, flag, list) in records {
+            e.extend_from_slice(&[index, kind, 0, 0]);
+            for w in [flag, 0, list] {
+                e.extend_from_slice(&w.to_le_bytes());
+            }
+        }
+        for h in lists {
+            e.extend_from_slice(&h.to_le_bytes());
+        }
+        e
+    }
+
+    /// The world flag hook (`FUN_001b6da0` / `FUN_001b68f8`): a story flag sets the world flags that follow it and queues
+    /// them once, a kind 1 record is not queued while story flag 0x102b is set, a rival flag blocks four indexes.
+    #[test]
+    fn story_flags_set_and_queue_their_world_flags() {
+        let table = wldf_entry(&[(1, 0, 0x100, 0), (2, 1, 0x100, 0), (0x25, 0, 0x101, 0), (0x73, 2, 0x102, 0)], &[]);
+        let make = || Story { world_table: Arc::new(kh2_ard::worldmap::Wldf::parse(&table)), ..Story::default() };
+        let mut s = make();
+        assert!(!s.world_flag(1) && s.world_queue().is_empty());
+        s.set(0x100);
+        assert!(s.world_flag(1) && s.world_flag(2) && !s.world_flag(0x25));
+        assert_eq!(s.world_queue(), vec![1, 2]);
+        s.set(0x100);
+        assert_eq!(s.world_queue(), vec![1, 2], "a flag already set is not queued again");
+        // 0x25 is skipped while its rival 0x73 is set; 0x73 itself is set.
+        s.set(0x102);
+        assert!(s.world_flag(0x73));
+        s.set(0x101);
+        assert!(!s.world_flag(0x25));
+        assert_eq!(s.world_queue(), vec![1, 2, 0x73]);
+        // Without the rival, 0x25 is set.
+        let mut t = make();
+        t.set(0x101);
+        assert!(t.world_flag(0x25));
+        // With 0x102b set the kind 1 record (index 2) is set but not queued.
+        let mut u = make();
+        u.set(0x102b);
+        u.set(0x100);
+        assert!(u.world_flag(2));
+        assert_eq!(u.world_queue(), vec![1]);
+        // No table: nothing follows.
+        let mut v = Story::default();
+        v.set(0x100);
+        assert!(!v.world_flag(1));
+    }
+
+    /// The action lists (`FUN_001b6a90`): map states and bits of the world records, episode bits, the map byte; and the
+    /// ops the app records instead of acting on.
+    #[test]
+    fn world_action_lists_write_the_records_and_the_episode_bits() {
+        // The list starts after the one record (8 + 16 = 24): op 3 on worlds 2 and 3 (state 2), op 7 on world 2 (state 3),
+        // op 5 on world 3, op 0xc episodes 33 and 3, op 0xd episode 3, op 0xf byte 9, op 8 (recorded), end.
+        let lists: Vec<u16> = vec![
+            3, 2, 2, 0, 3, 0, //
+            7, 1, 2, 0, //
+            5, 1, 3, 0, //
+            0xc, 2, 33, 0, 3, 0, //
+            0xd, 1, 3, 0, //
+            0xf, 1, 9, 0, //
+            8, 1, 4, 0, //
+            0, 0,
+        ];
+        let table = wldf_entry(&[(7, 0, 0x100, 8 + 16)], &lists);
+        let mut s = Story { world_table: Arc::new(kh2_ard::worldmap::Wldf::parse(&table)), ..Story::default() };
+        s.world_run_list(7, false);
+        assert_eq!(s.world_record(2), [3, 0, 0, 0], "op 3 gives state 2, op 7 on a state of 2 sets 3");
+        assert_eq!(s.world_record(3), [2, 0, 0, 2], "state 2, then bit 1 of byte 3");
+        assert!(s.episode_seen(33) && s.episode_seen(3));
+        assert!(s.episode_active(33) && !s.episode_active(3), "op 0xd removes the second array's bit only");
+        assert_eq!(s.world_byte(world::MAP_BYTE), 9);
+        assert_eq!(s.world_unported, vec![(7, 0xd), (7, 8)]);
+        // Counting up: a state above 2 grows by one on op 7.
+        let t = wldf_entry(&[(1, 0, 0x100, 8 + 16)], &[7, 1, 2, 0, 7, 1, 2, 0, 0, 0]);
+        let mut u = Story { world_table: Arc::new(kh2_ard::worldmap::Wldf::parse(&t)), ..Story::default() };
+        u.world_run_list(1, false);
+        assert_eq!(u.world_record(2)[0], 4, "0 -> 3 -> 4");
+        // The world region is in the slot and state files and survives the round trip.
+        let ix = Arc::new(ItemIndex::default());
+        let p = Progress::from_block(&[], ix.clone());
+        *p.story() = s.clone();
+        let text = p.slot_json(&SlotInfo::default());
+        assert!(text.contains("\"world_state\""), "the slot carries the world region");
+        let mut q = Progress::from_block(&[], ix.clone());
+        q.apply_json(&text).unwrap();
+        assert_eq!(q.story().world_bytes(), s.world_bytes());
+        let mut r = Progress::from_block(&[], ix);
+        r.apply_json(&p.story_json()).unwrap();
+        assert_eq!(r.story().world_record(3), [2, 0, 0, 2]);
+        assert!(r.apply_json(r#"{"world_state": "00"}"#).is_err(), "a short region is rejected");
+    }
+
     /// The `story_flags` / `story_clear` keys of the state file, and `story_json` read back.
     #[test]
     fn story_flags_round_trip_through_the_state_file() {
@@ -4097,7 +4421,13 @@ mod tests {
         at = (at + dsa.len() as u32 + 0xf) & !0xf;
         ee.write(at, &[0u8; 0x100]);
         ee.w32(0x01c8_a984, at);
-        for stub in [0x001803b0u32, 0x00180450, 0x001805d0, 0x00180558, 0x001d39d0, 0x001d3238, 0x001b6da0, 0x001be9c8, 0x001d5718, 0x0019d890, 0x00195130] {
+        at = (at + 0x100 + 0xf) & !0xf;
+        // The `wldf` entry (`FUN_001b6860` keeps it at `DAT_01d5d790`): `FUN_001b6da0` and `FUN_001b68f8` run as the game has them.
+        let wldf = bar.iter().find(|e| e.tag == kh2_ard::worldmap::WLDF).expect("wldf").data.to_vec();
+        ee.write(at, &wldf);
+        ee.w32(0x01d5_d790, at);
+        let table = Arc::new(kh2_ard::worldmap::Wldf::parse(&wldf));
+        for stub in [0x001803b0u32, 0x00180450, 0x001805d0, 0x00180558, 0x001d39d0, 0x001d3238, 0x001be9c8, 0x001d5718, 0x0019d890, 0x00195130] {
             ee.w32(stub, 0x03e0_0008);
             ee.w32(stub + 4, 0);
         }
@@ -4106,29 +4436,45 @@ mod tests {
         let prog_len = story::WORLDS * story::PROGRAMS_PER_WORLD;
         let mut checked = 0;
         let mut with_effects = 0;
-        for (w, e) in entries.iter().enumerate() {
-            for f in 0..kh2_ard::progress::flag_count(e) as u16 {
-                let id = (w as u16) << 10 | f;
-                ee.write(story::FLAGS, &vec![0u8; flags_len]);
-                ee.write(story::PROGRAMS, &vec![0u8; prog_len]);
-                ee.write(story::LOCKS, &vec![0u8; 4 * locks]);
-                ee.call(0x0017_ff60, &[id as u64], &[], STACK).unwrap_or_else(|e| panic!("FUN_0017ff60({id:#x}): {e:?}"));
-                let mut s = Story { effects: effects.clone(), ..Story::default() };
-                s.set(id);
-                let words: Vec<u32> = (0..flags_len / 4).map(|k| ee.r32(story::FLAGS + 4 * k as u32)).collect();
-                assert_eq!(s.words, words, "flag {id:#x}: flag words");
-                let prog: Vec<u8> = (0..prog_len).map(|k| ee.r8(story::PROGRAMS + k as u32)).collect();
-                assert_eq!(s.programs, prog, "flag {id:#x}: program table");
-                for i in 0..locks {
-                    let game = (ee.r16(story::LOCKS + 4 * i as u32), ee.r16(story::LOCKS + 4 * i as u32 + 2));
-                    assert_eq!((s.lock_state(i), s.lock_message(i)), game, "flag {id:#x}: lock entry {i}");
+        let mut with_world = 0;
+        let mut queued = 0;
+        // Twice: from a clear save block, and with story flag 0x102b set first (kind 1 world flags are not queued then).
+        for pre in [false, true] {
+            for (w, e) in entries.iter().enumerate() {
+                for f in 0..kh2_ard::progress::flag_count(e) as u16 {
+                    let id = (w as u16) << 10 | f;
+                    ee.write(story::FLAGS, &vec![0u8; flags_len]);
+                    ee.write(story::PROGRAMS, &vec![0u8; prog_len]);
+                    ee.write(story::LOCKS, &vec![0u8; 4 * locks]);
+                    ee.write(world::RECORDS, &vec![0u8; world::LEN]);
+                    let mut s = Story { effects: effects.clone(), world_table: table.clone(), ..Story::default() };
+                    if pre {
+                        ee.call(0x0017_ff60, &[0x102b], &[], STACK).expect("FUN_0017ff60(0x102b)");
+                        s.set(0x102b);
+                    }
+                    ee.call(0x0017_ff60, &[id as u64], &[], STACK).unwrap_or_else(|e| panic!("FUN_0017ff60({id:#x}): {e:?}"));
+                    s.set(id);
+                    let words: Vec<u32> = (0..flags_len / 4).map(|k| ee.r32(story::FLAGS + 4 * k as u32)).collect();
+                    assert_eq!(s.words, words, "flag {id:#x}: flag words");
+                    let prog: Vec<u8> = (0..prog_len).map(|k| ee.r8(story::PROGRAMS + k as u32)).collect();
+                    assert_eq!(s.programs, prog, "flag {id:#x}: program table");
+                    for i in 0..locks {
+                        let game = (ee.r16(story::LOCKS + 4 * i as u32), ee.r16(story::LOCKS + 4 * i as u32 + 2));
+                        assert_eq!((s.lock_state(i), s.lock_message(i)), game, "flag {id:#x}: lock entry {i}");
+                    }
+                    // The world records, world flags, queue, episode bits and the map byte (0x341858 .. 0x341a05).
+                    let region: Vec<u8> = (0..world::LEN).map(|k| ee.r8(world::RECORDS + k as u32)).collect();
+                    assert_eq!(s.world_bytes(), region, "flag {id:#x} (0x102b first: {pre}): world region");
+                    checked += 1;
+                    with_effects += (s.set_flags().len() > 1 || s.programs != vec![0; prog_len] || s.locks.iter().any(|l| *l != [0, 0])) as usize;
+                    with_world += region.iter().any(|&b| b != 0) as usize;
+                    queued += (region[(world::QUEUE_COUNT - world::RECORDS) as usize] != 0) as usize;
                 }
-                checked += 1;
-                with_effects += (s.set_flags().len() > 1 || s.programs != vec![0; prog_len] || s.locks.iter().any(|l| *l != [0, 0])) as usize;
             }
         }
-        eprintln!("oracle: FUN_0017ff60 equal for {checked} flags of {} worlds ({with_effects} change more than their own bit)", entries.len());
-        assert!(checked > 1000 && with_effects > 100, "{checked} {with_effects}");
+        eprintln!("oracle: FUN_0017ff60 equal for {checked} flags of {} worlds ({with_effects} change more than their own bit, {with_world} touch the world region, {queued} queue a world flag)", entries.len());
+        assert!(checked > 2000 && with_effects > 200, "{checked} {with_effects}");
+        assert!(with_world > 100 && queued > 50, "{with_world} {queued}");
     }
 
     /// WP-E5 item 3 data: on the disc, setting flag 0x883 gives tt04 btl program 1 (docs/events.md

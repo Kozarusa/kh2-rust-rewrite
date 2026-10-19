@@ -558,6 +558,10 @@ fn map_props(
     let exe = disc.read_root("SLUS_210.05").unwrap_or_default();
     let list: Vec<&Prop> = table.iter().filter(|p| prop_made(p.group, run.script.map_visibility)).collect();
     let routes: Vec<(u8, [usize; 3])> = spawned.1.iter().filter_map(|r| route_entries(&exe, *r).map(|e| (*r, e))).collect();
+    // The map consumes the queued world flags and runs their lists (`FUN_002c6bf8`; the placement at map load is [inferred]).
+    if let Some(p) = progress.as_ref() {
+        p.story().world_consume_queue();
+    }
     let state = |r: u8| progress.as_ref().map_or(0, |p| p.story().world_byte(ROUTE_STATE + r as u32));
     let shown = prop_visibility(list.len(), &routes, state);
     let mut drawn = 0;

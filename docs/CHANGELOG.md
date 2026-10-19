@@ -6,6 +6,8 @@ One short section per work package. "Verified" says how; nothing here was checke
 
 **WP-ST3 (Sora stat block).** Sora's `Stats` now carry AP (lvup +7 plus record +8 plus item AP), the elemental resistances (item rows scale them, per the status rebuild) and the record's MP maximum (0 keeps plrp). Max HP/MP growth at level-up has no writer in the code read (FUN_001b53d0 only reads the lvup byte differences): recorded as a gap. Verified by sora::tests::sora_status_follows_the_record_level and resistances_scale_per_item_with_a_ceiling. Open: the Status page was not re-looked at; callers of `sora_max_mp` still read plrp; ability passives FUN_001c0d88/FUN_001c0e50.
 
+**WP-EN10a (enemy kind M_EX650).** objentry row 14, enmp row 65, joins `enemy::KINDS`; host 1.143 answers 0 (Stub [inferred]); fixed the BadAddress write of hosts 1.114/1.143/1.210 for shared-block contexts. Verified by m_ex650_is_an_enemy_kind_with_its_objentry_row, a 100 s soak and 117 s no-party soak in ca03 b_40 (no stuck state), BDX oracle. Open: its attack on Sora never exercised; reader of block +0x28 and host 1.162 not found.
+
 ## Shift 16 (2026-10-18)
 
 - **WP-CZ2 (customize gaps).** The page 0x1b second help, the missing ids of table 0x352ec0 and FUN_00113888 were already ported or not applicable; added a test for the appended help per row kind and documented the unmatched-value read. Open: the halfword at address 2 read by FUN_002743e8 for a value no entry holds [inferred 0].

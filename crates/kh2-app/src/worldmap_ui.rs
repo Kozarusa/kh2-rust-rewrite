@@ -1230,6 +1230,7 @@ fn map_ui(
     cursor: Query<&Transform, With<MapCursor>>,
     mut event: ResMut<WmEvent>,
     mut se: MessageWriter<PlaySe>,
+    (menu, mut open_journal): (Res<crate::menu::Menu>, MessageWriter<crate::menu_journal::OpenJournal>),
 ) {
     let on_map = rec.world == WORLD_MAP && rec.run.is_some();
     let name = rec.run.as_ref().map(|r| r.name.clone());
@@ -1275,6 +1276,10 @@ fn map_ui(
     }
     if task.as_deref().is_some_and(|t| *t != JumpTask::Idle) {
         // A jump is running: the window is gone (the original's teardown has started it).
+        return;
+    }
+    if menu.phase != crate::menu::Phase::Closed {
+        // The journal (opened by the window's triangle) holds the pad until it closes.
         return;
     }
     let Some(sora) = cursor.single().ok() else { return };
@@ -1370,9 +1375,10 @@ fn map_ui(
                     Outcome::Journal => {
                         let index = data.world_index.get(w.world as usize).copied();
                         info!(
-                            "worldmap: the journal button (FUN_002c9510): the original opens the journal at world {}'s topic, journal index {index:?} (FUN_0024f3c0(0, FUN_00277c88(world))); the app's journal opens only from the camp menu [GAP]",
+                            "worldmap: the journal button (FUN_002c9510): world {} journal index {index:?}, FUN_0024f3c0(0, FUN_00277c88(world)) opens the journal scene",
                             w.world
                         );
+                        open_journal.write(crate::menu_journal::OpenJournal { index: index.unwrap_or(-1) });
                     }
                     Outcome::Locked => {
                         info!("worldmap: row {} is locked (FUN_00195358): message {NOT_ACCESSIBLE:#x}", w.cursor);

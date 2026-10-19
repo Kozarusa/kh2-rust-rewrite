@@ -9,7 +9,7 @@ use bevy::prelude::*;
 
 use kh2_image::text::{Style, Token};
 
-use super::hud_gfx::{HudScene, Node};
+use super::hud_gfx::{Edge, HudScene, Node};
 use super::hud_text::Label;
 
 /// Scene file index of `fiel` (the first pair of the field file).
@@ -287,6 +287,18 @@ pub struct NumberStrip {
 /// was not followed, see `NumberStrip::pos`].
 const PICKUP_STRIP_POS: [f32; 2] = [0.0, 0.0];
 
+/// A strip object: the original gives it no screen point of its own (its object keeps the draw point 0, 0), so
+/// the sequence group's own position puts it at the top left of the 512 wide screen; on a wider window it keeps
+/// its distance from the left edge, like the command deck (clip 9 shows it at the left edge, about 3% of the
+/// frame width in). The digits (children) follow their strip.
+fn strip_node(parent: Option<usize>) -> Node {
+    let mut node = Node::new(FIEL, parent);
+    if parent.is_none() {
+        node.edge = Edge::Left;
+    }
+    node
+}
+
 /// Strips on screen. `KH2_HUDSTRIP=<munny|popup>:<value>[:x:y]` shows one.
 #[derive(Resource, Default, Clone, Debug)]
 pub struct NumberStrips(pub Vec<NumberStrip>);
@@ -364,7 +376,7 @@ pub fn update_strips(
     }
     if !nodes.built {
         let add = |scene: &mut HudScene, parent: Option<usize>| {
-            let mut node = Node::new(FIEL, parent);
+            let mut node = strip_node(parent);
             node.visible = false;
             scene.add(node)
         };
@@ -535,6 +547,13 @@ fn place_item_text(scene: &mut HudScene, q: &mut ItemMessages, node: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The strip roots keep their distance from the left screen edge; their digits follow them.
+    #[test]
+    fn the_strip_roots_hang_off_the_left_edge() {
+        assert_eq!(strip_node(None).edge, Edge::Left);
+        assert_eq!(strip_node(Some(0)).edge, Edge::Center);
+    }
 
     /// `FUN_00138498` takes 15 messages (the shown one included) and refuses the 16th; the message is
     /// the item's icon, then its name.

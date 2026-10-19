@@ -978,6 +978,7 @@ direction: the yaw stays (the game divides by a zero length). Tests: `npc::look:
 - **Movies, opcode 0x44** [V]. `FUN_00225860`: at frame +4, plays `movie/<region>/<+6>.pss` (format 0x37f010
   with `DAT_00349d40`, `us`; WP-E6d) and waits for it; the tt01 events `100`, `200`, `400`, `600` are the movies `opn`,
   `me2`, `me4`, `me6` with their subtitle lines (test `the_tt01_short_events_are_movies_with_subtitle_lines`).
+- **World map events are not area events** [V, WP-WM7]. The events of the `wm` world (1836 and 1837 started by a confirm on a symbol, `FUN_002ccd88` -> `FUN_002c6a40`) are programs of the talk table (`libretto-wm.bar`, the talk table of section 3) run by their own executor `FUN_002c4c58` (ops 0x100 to 0x113: actors, animations of the entries of `libretto/us/wm<event>.bar`, voices, a stage matrix, fades, message windows), not commands of a type-0x16 entry, and they do not use the event player above (no `evtp` kind row, no frame counter: the executor waits in frames). The port is in `worldmap.rs` (`Script`, `WmEvent`; `kh2_ard::libretto::Cut` reads the ops); docs/worldmap.md section 10 "W7 events" has the ops, the files and the gaps.
 
 ## 7. Area music
 

@@ -190,6 +190,7 @@ pub fn parse_commands(d: &[u8]) -> Option<Vec<Command>> {
 pub mod libretto;
 pub mod localset;
 pub mod run;
+pub mod worldmap;
 
 impl Entity {
     /// The halfword +0x28 of the spawn record: the object's talk id (`FUN_0016b870` copies it to

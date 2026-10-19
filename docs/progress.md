@@ -244,12 +244,26 @@ writer of them was found]:
 
 The setter runs the flag's list from `00progress.bin` (world entry `id >> 10`): ops 1, 2, 3, 4, 5, 7 (clear) and
 0xc (set those not yet set, recursive) are ported; ops 6 (`FUN_001a7730`: `0x33fe0c[world]`), 8 / 9 (record bits
-`0x33fdb0`), 0xd (`FUN_001b4e80`: `0x341858 + 4 * world`), the world-point bits of ops 4 / 5 and the calls after the
-list (`FUN_001803b0` .. `FUN_00195130`) are not (recorded in `Story::unported`, logged at start). The kh2-ee oracle
+`0x33fdb0`), the world-point bits of ops 4 / 5 and the calls after the
+list (`FUN_001803b0` .. `FUN_00195130`, except `FUN_001b6da0`, see "World map state" below) are not (recorded in
+`Story::unported`, logged at start); op 0xd (world record bytes 1 and 2) is ported. The kh2-ee oracle
 `story_flag_setter_matches_the_game` runs `FUN_0017ff60` for every flag of every world and compares the three regions.
 Users: hosts 0.14 / 0.15 / 0.70 (`enemy_host.rs`), area-script opcode 0x19 (`area.rs`), the Struggle mission's
 flag reads (`struggle.rs`). Not yet wired to it: the menus' and items' flag tests (`items.rs`, `menu_*.rs` still
 assume "no story flag set").
+
+## World map state (WP-WM1)
+
+`Story` also keeps the world map's save-block bytes `0x341858 ..= 0x341a05` as one array (`progress::world`): the
+4-byte world records (`FUN_001b4e80`), the 256 world-flag bits (`0x3418a4`), the queue of world flags just set
+(`0x3418c4`, count byte `0x3419c3`) and the two episode bit arrays (`0x3419e4`, `0x3419f4`). Setting a story flag now
+runs the game's story op 0xd (record bytes 1 and 2) and `FUN_001b6da0`: every `wldf` record (`kh2_ard::worldmap`) that
+follows the flag sets its world flag (`FUN_001b68f8`) and queues it. The `wldf` action lists (`FUN_001b6a48` /
+`FUN_001b6a90`, run when the map consumes the queue) are `Story::world_run_list`; ops 8..0xb, the episode list removal
+of 0xd and the map hook of 0xf are recorded in `Story::world_unported`. The region is in a slot file and in
+`story_json` as the hex string `world_state` (an older slot loads it clear); the oracle
+`story_flag_setter_matches_the_game` compares it for every flag, with and without story flag `0x102b`. Details and
+gaps: docs/worldmap.md section 10 (W2).
 
 ## Decompile index
 

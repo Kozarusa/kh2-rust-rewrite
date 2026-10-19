@@ -1517,7 +1517,11 @@ pub fn receive_hits(
             && members.get(h.attacker).is_err()
             && let Some(row) = data.hit_row(h)
         {
-            from.strength += crate::abilities::berserk_for_row(ab.block(), mg.charge.active(), row.critical_adjust as u8);
+            let extra = crate::abilities::berserk_for_row(ab.block(), mg.charge.active(), row.critical_adjust as u8);
+            if extra > 0 && std::env::var_os("KH2_ABILITYLOG").is_some() {
+                info!("abilities: Berserk Charge: strength {} + {extra} for atkp {}", from.strength, h.atkp);
+            }
+            from.strength += extra;
         }
         let Some((atk, mut dmg)) = row_damage(&data, h, &from, &e.stats) else { continue };
         let useless = hit_is_ineffective(atk, &e.stats);

@@ -139,8 +139,13 @@ pub const M_EX900: Kind = Kind { name: "M_EX900", enmp: 45, model: "M_EX900", de
 /// it, fades out and hides, like the Dusk's.
 pub const M_EX650: Kind = Kind { name: "M_EX650", enmp: 65, model: "M_EX650", death_effect: true, status: true };
 
+/// `M_EX660` (`ObjectType` 4, a Heartless of 11 areas: the area survey lists al14, ca14, ca15, ca20, he09, lk08), called by its model.
+/// Its script hands `enmp` row 38 to `set_obj_param` (host 2.9: BDX `M_EX660` R1a7e at 0x1a7e, called at 0x080d with 38 as its eighth
+/// word, pushed at 0x07f5; host 2.9 at 0x1aa5).
+pub const M_EX660: Kind = Kind { name: "M_EX660", enmp: 38, model: "M_EX660", death_effect: true, status: true };
+
 /// Every enemy kind the app has.
-pub const KINDS: [&Kind; 15] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700, &M_EX950, &M_EX650];
+pub const KINDS: [&Kind; 16] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700, &M_EX950, &M_EX650, &M_EX660];
 
 /// The rigs of the enemy kinds, by `Kind::name` (Shadow and Soldier share `sora::Rigs`' copies).
 #[derive(Resource, Default)]

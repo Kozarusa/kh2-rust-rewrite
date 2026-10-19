@@ -1120,7 +1120,7 @@ Code: `menu_party.rs` (child module `menu::party_page`, `PartyPlugin` in `MenuPl
   (Roxas's); `FUN_00296458(2, 0)` queues the menu scenes 2 (kind 3) and then 0 (the camp); `FUN_00296470(0x250ec8)` starts the
   wipe with the camp's teardown as its callback; `FUN_00295ba0` closes the camp. The scene runner `FUN_00296278` runs the
   queued scene's init, its task until it ends, its term, then shifts the queue (`DAT_0036d206` <- `0x208` <- `0x20a`): **the
-  journal returns to the camp**. (The other opener, `FUN_0024f3c0` from 0x2c9510, calls `FUN_0024f0b8(3, mode)` with mode 0.)
+  journal returns to the camp**. (The other opener, `FUN_0024f3c0` from 0x2c9510 (the world map's triangle), stores the world's journal index in 0x36d038 and calls `FUN_0024f0b8(3, 0)`: kind 3's record (0x380590) names the mode word 0x36cd34, so the mode is 0 and `FUN_002756f8` starts on page 0 with the world byte -1. Ported by WP-JN4: `menu_journal::OpenJournal` (a message) makes `tick` open the scene with `Journal::external` set and `Menu::phase` open on `PAGE`; `close` then ends the scene instead of returning to the camp, which was never up.)
 - **Init `FUN_002756f8`.** Loads menu file 3 (`jmemo.2ld`, `FUN_0024f738(3)`, `FUN_00255258(3)`), creates two list widgets
   (`FUN_002969b0(0x38)`, `FUN_002967b8(.., 0x12, 1 / 0)`), the data holder `DAT_0036d0dc` (bytes: +0 journal world, +1 page
   family, +2 Roxas flag), the file list `FUN_002a1a10` with `jiminy.bar` (`FUN_002a1bd0`: `FUN_002a19c8(0, 0)`, names at

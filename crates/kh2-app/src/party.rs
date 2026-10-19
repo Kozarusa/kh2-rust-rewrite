@@ -241,14 +241,18 @@ pub struct PartyHidden(Vec<u32>);
 #[derive(Resource, Default, Debug, PartialEq)]
 pub struct SwapFade {
     pending: Option<(u16, [u8; 4], u32)>,
+    /// Where the leaving member stood (FUN_001b3f78 passes its position, FUN_0016b960, to FUN_0017d290 as the spot
+    /// for the new member); `spawn_party` takes it for the member the rebuild makes new.
+    spot: Option<Vec3>,
 }
 
 impl SwapFade {
     /// FUN_001b4170: starts a swap of member `neo` unless one runs (`DAT_0035f190` holds the task).
-    pub fn start(&mut self, neo: u16, after: [u8; 4], frames: f32) -> bool {
+    pub fn start(&mut self, neo: u16, after: [u8; 4], frames: f32, spot: Vec3) -> bool {
         if self.pending.is_some() {
             return false;
         }
+        self.spot = Some(spot);
         // The fade's frames, then the yield after the object is gone [inferred].
         self.pending = Some((neo, after, frames.max(0.0) as u32 + 1));
         true
@@ -265,8 +269,9 @@ impl SwapFade {
         Some(after)
     }
 
-    pub fn active(&self) -> bool {
-        self.pending.is_some()
+    /// An area load drops a swap in progress and its spot (the task dies with the area's objects).
+    pub fn clear(&mut self) {
+        *self = SwapFade::default();
     }
 }
 
@@ -1220,7 +1225,7 @@ fn spawn_party(
     world: Option<Res<World>>,
     drive_world: Option<Res<crate::drive::DriveWorld>>,
     progress: Option<Res<crate::progress::Progress>>,
-    (mut data, mut slots, mut mgr, mut hidden, drive): (ResMut<PartyData>, ResMut<PartySlots>, ResMut<Manager>, ResMut<PartyHidden>, Option<Res<crate::drive::DriveState>>),
+    (mut data, mut slots, mut mgr, mut hidden, drive, mut swap): (ResMut<PartyData>, ResMut<PartySlots>, ResMut<Manager>, ResMut<PartyHidden>, Option<Res<crate::drive::DriveState>>, ResMut<SwapFade>),
     mut sora: Query<(&mut Transform, &mut Sora), Without<PartyMember>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -1274,6 +1279,7 @@ fn spawn_party(
         mgr.built = None;
         // FUN_00168ba8 -> FUN_0017cc70: the hidden list is emptied with the slots.
         hidden.clear();
+        swap.clear();
     }
     // DAT_00340c88 byte 4: the drive form that lasts (0 none).
     let form = drive.as_deref().map_or(0, |d| d.form);
@@ -1363,7 +1369,11 @@ fn spawn_party(
             warn!("party: {}: model or motion set {} not loadable", row.model_name, row.animation_name);
             continue;
         };
-        let Some((at, yaw)) = place.or_else(|| old_places.iter().find(|p| p.0 == row.neo_status).map(|p| (p.1, p.2))).or(sora_at) else { continue };
+        // The Auto Change swap's new member appears at the leaving member's spot, facing the player (FUN_001b3f78 ->
+        // FUN_0017d290: the spot is accepted when free, [inferred: it is]; the yaw is the player's direction).
+        let swapped_in = if rebuild && !old_places.iter().any(|p| p.0 == row.neo_status) { swap.spot.take() } else { None };
+        let swapped_in = swapped_in.map(|at| (at, sora_at.map_or(0.0, |(pl, _)| face_player(at, pl))));
+        let Some((at, yaw)) = place.or_else(|| old_places.iter().find(|p| p.0 == row.neo_status).map(|p| (p.1, p.2))).or(swapped_in).or(sora_at) else { continue };
         let (radius, height) = body_shape(&rig);
         // +0x110..+0x11c and the record at +0x12c: the `prty` row of the NeoMoveset (FUN_00194438).
         let prty = data.prty_row(row.neo_moveset);
@@ -2529,7 +2539,7 @@ fn party_receive_hits(
                 && let Some(after) = rules::auto_change_swap(slots.bytes, m.neo)
             {
                 let fades = data.fades;
-                if swap.start(m.neo, after, fades.swap_frames) {
+                if swap.start(m.neo, after, fades.swap_frames, m.motor.pos) {
                     m.hide(fades.swap_frames, fades.swap_from);
                     fighter.hittable = false;
                     info!("party: {} KO with Auto Change (FUN_0017ce60 -> FUN_001b4170): fades out over {} frames, then slot bytes {:02x?} -> {after:02x?} (FUN_001b3f78)", m.model, fades.swap_frames, slots.bytes);
@@ -3681,14 +3691,20 @@ mod jump_record_tests {
     fn the_auto_change_swap_waits_out_the_fade() {
         let mut s = SwapFade::default();
         assert!(s.step().is_none(), "no swap, nothing to give");
-        assert!(s.start(3, [0, 1, 2, 3], 8.0));
-        assert!(!s.start(2, [0, 3, 2, 1], 8.0), "DAT_0035f190 holds the running task");
+        assert!(s.start(3, [0, 1, 2, 3], 8.0, Vec3::X));
+        assert!(!s.start(2, [0, 3, 2, 1], 8.0, Vec3::Y), "DAT_0035f190 holds the running task");
+        assert_eq!(s.spot, Some(Vec3::X), "the refused swap keeps the first spot");
         for _ in 0..8 {
             assert_eq!(s.step(), None, "still fading");
-            assert!(s.active());
+            assert!(s.pending.is_some());
         }
         assert_eq!(s.step(), Some([0, 1, 2, 3]));
-        assert!(!s.active());
+        assert!(s.pending.is_none());
+        assert_eq!(s.spot, Some(Vec3::X), "kept for the rebuild");
+        // An area load clears a swap in progress, so its bytes never reach the next area.
+        assert!(s.start(2, [0, 3, 2, 1], 8.0, Vec3::Z));
+        s.clear();
+        assert_eq!((s.step(), s.spot), (None, None));
         let mut m = blank(3, 30, 30);
         assert!(m.hide(8.0, 1.0));
         assert_eq!(m.ramp, Some(Ramp::new(1.0, 0.0, 8.0)));

@@ -650,6 +650,11 @@ impl BevyHost<'_> {
             }
             Call::ObjMethod44 { .. } | Call::ObjMethod48 { .. } => missing(Value::None, "virtual method of the object, role unknown"),
             Call::MoverMethod { .. } => stub(Value::None, "virtual call (method +0xc, FUN_00171298) on the object's mover with one float: the role of the method was not traced, nothing in the app consumes it"),
+            // 1.143 (FUN_0016b0d8): the object whose spawn record byte +0x1e equals the argument. The app keeps no such
+            // byte per object, so nothing is found (M_EX650's shared-block set-up asks for 92 once and never reads the answer).
+            Call::FindObject { by: kh2_bdx::host::ObjectKey::SpawnGroup, .. } => {
+                stub(Value::Handle(0), "lookup by the spawn record's byte +0x1e: the app's objects do not carry it, so no object is found [inferred: the answer is 0]")
+            }
             Call::FindObject { value, .. } => {
                 if *value == 0x236 {
                     imp(Value::Handle(PLAYER))

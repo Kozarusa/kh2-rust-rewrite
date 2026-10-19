@@ -652,6 +652,45 @@ any run (no event 11 of the 312/323 kind arrived), so whether the app answers th
 run, only tt03; the reader of +0x100 (1.179) and of the controller word +4 (1.75 / 1.76) was not traced (`mips_scan --load-off 0x100` was not
 run: the base is not a fixed object); drop row 27 was not traced further.
 
+## The enemy M_EX650 (WP-EN10a)
+
+`M_EX650` (object 14, `00objentry` row 14: ObjectType 4, `NeoStatus` 1019, flags 0, Weight 100, `SpawnLimiter` 10, no spawn objects;
+`enemy::M_EX650`, called by its model: the data gives no name) is a blue, round cannon-like Heartless of the 13 areas the area survey lists
+(ca01, ca02, ca03, ca13, ca18, ca19, ..). Its BDX script (5895 words, `cargo run -p kh2 -- bdx M_EX650`) has the modes `appear`, `mode_battle`,
+`mode_battle_boss`, `mode_revenge`, `mode_revenge_boss`, `btl_short`, `btl_long`, `btl_attack`, `idle_time`, `footwork`, `move_random`,
+`move_target`, `atk_rakka`, `atk_handou`, `rvg_short`, `rvg_long`, `leave`, `dead`.
+
+- **Stats.** The set-up routine R14e1 (called at 0x0c7a) takes eight arguments; the last one, 65 (pushed at 0x0c62), goes to `set_obj_param`
+  (host 2.9 at 0x1508): `enmp` row 65 (`experience: enmp 65 defeated: +2 (lvpm 4 x enmp 50)`). The harness enemy has 14 HP.
+- **Death.** The `dead` mode (registered at 0x096e, routine R0e2d -> R0e34) hands the object's +0x1c to host 1.92 (`drop (host 1.92) asked row 35`),
+  starts element 2 of its effect file (1.87), releases it (0.79), sets bits 3 and 6, fades out and hides, like the Dusk's: `Kind::death_effect` true.
+- **Shared block.** R15f9 (0x15f9, called at 0x0c7c) asks host 2.21 for key 5, size 48 (the first call zeroes it); the word +0x24 it clears is
+  read by R1441 (0x1441), which `mode_battle` calls (0x13fc). The tail of R15f9 (bind the object with spawn byte 92 through host 1.143, set +0x28
+  to 1, host 1.162) has no reader in this script: the app answers 1.143 with 0 (Stub) and the interpreter's failed write ends the routine early,
+  see `docs/enemy-ai.md` "Host call mapping".
+- **Modes seen** in a 100 s run: `appear` (about 80 script ticks), `mode_battle` -> `btl_short` / `btl_long` -> `idle_time`, `move_random`,
+  `move_target`, `footwork`, `atk_rakka`, `atk_handou`, `btl_attack`, `mode_revenge`, `rvg_short`, `leave`, `dead`. New host arms: only 1.143.
+  The ones it reaches that were already answered: 2.21, 1.206 and 1.171 (Stub), 1.56, 1.120, 2.5, 1.55, 1.111, 1.309, 1.60 (Approx).
+
+Acceptance run (WP-EN10a), ca03 (the first listed area with a group of only this kind: `btl` program 0x38 loads b_40 with four `M_EX650` and
+four `M_EX210`, which the app does not have; test `m_ex650_is_an_enemy_kind_with_its_objentry_row`, disc): `KH2_PROGRAMS=0,56,0 KH2_WAVE_GROUP=b_40
+KH2_WAVE_AT_GROUP=1 KH2_NO_PARTY=1 KH2_AREALOG=1 KH2_BDXLOG=1 KH2_HITLOG=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1 kh2-game ca03` (Sora in the middle of the
+group; `KH2_KEYS` Q at 8 s, J every 0.45 s from 8 s; the shot time must be set: the harness quits right after the screenshot). Log:
+`area groups: ca03 btl program 0x38 group b_40: M_EX650, M_EX650, M_EX650, M_EX650 (not in the app: [M_EX210 x4])`, `SetObjParam { a: 65 }`,
+`M_EX650 hit: atkp 126 damage 3 hp 11` .. `atkp 128 damage 2 hp 0`, `experience: enmp 65 defeated: +2`, `hp 0: switching to mode dead`, `drop (host 1.92)
+asked row 35`, `prize: drop of row 35`. Soak (J from 30 s to 100 s, shot at 100 s): 4 defeats, Sora stayed at 20/20, the others kept cycling
+through the modes above, no `unimplemented host call` line, no `Missing` line in the final tables, one `script error BadAddress(2046820372) at
+0x162a` (the shared-block tail above). Harness PNGs looked at (`local\ex650_*.png`): idle (HUD present, four `M_EX650 Idle` entries, two blue
+cannon-like figures far up on the ledge), a hit (a blue cannon-shaped figure blown back beside Sora, damage number 3, `Blown hp 4/14`), after a
+defeat (three entries left, munny and prize orbs near Sora), the end of the soak (one `Hurt hp 2/14`, a blue round figure with a red fuse on the
+deck). `idle-hud`, `combat-ground` and `tt04-dusk` of `accept.ps1` PASS and their PNGs show the HUD, Shadows and a Dusk as before.
+
+Gaps: M_EX650 never hurt Sora in the runs (20/20 at 100 s), so its attack hit path (`atk_rakka`, `atk_handou`: host 2.5 HitStun and the ones
+that hand a hit record to the player) was not checked; the groups that mix it with Shadows or Soldiers (ca01 b_01, ca02 b_00 and b_40) were run for 25 s at most
+(ca01 b_01: two `M_EX650` appeared of the four counted) and not soaked; ca13/ca18/ca19 were not run at all, ca02 only loaded; the
+reader of block +0x28 and the role of host 1.162 were not traced (`bdx` shows no `ldf +0x28`; host 1.162 is unnamed in `names.rs`); the object
+with spawn byte 92 was not identified.
+
 ## The Struggle (WP-7E)
 
 The Struggle rules are in `docs/struggle.md`. For the opponents: b_50, b_51 and b_52 (missions `TT04_MS00`,

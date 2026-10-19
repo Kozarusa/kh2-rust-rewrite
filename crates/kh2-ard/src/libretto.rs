@@ -63,6 +63,112 @@ pub enum Op {
     Other(u16),
 }
 
+/// One command of a world map event program (WP-WM7): the executor `FUN_002c4c58` handles the ops 0x100..0x113 itself and
+/// hands every other op to the talk reader's own switch (`FUN_001b65e0`: 2 wait, 5 to 8 fades, 1 and the rest the caller's).
+/// The words are as the file has them (floats stay bit patterns until `Cut` turns them into numbers).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Cut {
+    /// Op 1: open the message window and wait until it has closed (`FUN_002c5db0`, `FUN_002c6010`).
+    Message(u32),
+    /// Op 2: wait this many frames (`FUN_00102460`).
+    Wait(f32),
+    /// Op 5: fade out over this many frames (`FUN_0014a7c8`).
+    FadeOut(f32),
+    /// Op 6: fade in over this many frames (`FUN_0014a7f0`).
+    FadeIn(f32),
+    /// Op 0x100: load the model of this objentry id with the event's bit (`FUN_0016e638`).
+    LoadModel(u32),
+    /// Op 0x101: load the event's file `libretto/<region>/wm<event>.bar` (`FUN_002c5598`).
+    LoadFile,
+    /// Op 0x102: make the event actor of objentry id `object` in slot `slot` (`FUN_002c5108`).
+    Actor { slot: u32, object: u32 },
+    /// Op 0x103: start the first of these entries of the loaded file's bar as the slot's animation, queue the rest
+    /// (`FUN_002c5278`: `FUN_002f54d0` then `FUN_002f54e8` for each further entry).
+    Play { slot: u32, entries: Vec<u32> },
+    /// Op 0x111: queue these entries after the slot's animation (`FUN_002c5340`).
+    Queue { slot: u32, entries: Vec<u32> },
+    /// Op 0x104: a move task (`FUN_002c7198` -> `FUN_002c7000`) given a position, a second vector and a length in frames; the
+    /// executor then waits that many frames (`FUN_00102460`).
+    Fly { pos: [f32; 3], aim: [f32; 3], frames: f32 },
+    /// Op 0x105: pause the event actors (`FUN_002c5a28`), wait (the float at 0x3832e0), resume them (`FUN_002c5a78`), play sound 0x3e88
+    /// (`FUN_002c3318`) and wait again (the float at 0x3832e4).
+    Pause,
+    /// Op 0x106: finish the file load (`FUN_002c55e8`).
+    Ready,
+    /// Op 0x107: the message windows of this event are the second class (`+0x3c = 1`).
+    Notice,
+    /// Op 0x108: play the voice in this entry of the loaded file's bar (`FUN_002c5630`).
+    Voice(u32),
+    /// Op 0x109: the slot's actor stands at this position of the stage (`FUN_002c53c0`, object `+0x220`).
+    Place { slot: u32, pos: [f32; 3] },
+    /// Op 0x10a: the slot's actor turns by these angles in radians (`FUN_002c5400`, object `+0x210`).
+    Turn { slot: u32, rot: [f32; 3] },
+    /// Op 0x10b: the stage's position (`FUN_002c9160`, `0x1e353e0`).
+    StagePos([f32; 3]),
+    /// Op 0x10c: the stage's rotation in radians (`FUN_002c91d0`, `0x1e353f0`).
+    StageRot([f32; 3]),
+    /// Op 0x10d: remove the slot's actor (`FUN_002c5198`).
+    Remove(u32),
+    /// Op 0x10e: go to this world and area, entrance 0 (`FUN_00104e18`).
+    Leave { world: u32, area: u32 },
+    /// Op 0x10f: go to the destination of this story key in this world (`FUN_00198080`, `FUN_00104e18`).
+    LeaveKey { key: u32, world: u32 },
+    /// Op 0x110: `FUN_002c56f8`.
+    Op110,
+    /// Op 0x112: remove all four actors (`FUN_002c5230`).
+    RemoveAll,
+    /// Op 0x113: `FUN_002c5a78`.
+    Resume,
+    /// Any other op.
+    Other(u16),
+}
+
+impl Command {
+    fn f(&self, k: usize) -> f32 {
+        f32::from_bits(self.args.get(k).copied().unwrap_or(0))
+    }
+
+    fn w(&self, k: usize) -> u32 {
+        self.args.get(k).copied().unwrap_or(0)
+    }
+
+    fn v3(&self, k: usize) -> [f32; 3] {
+        [self.f(k), self.f(k + 1), self.f(k + 2)]
+    }
+
+    /// The command as the world map event executor reads it (`FUN_002c4c58`).
+    pub fn cut(&self) -> Cut {
+        let rest = |from: usize| self.args.iter().skip(from).copied().collect::<Vec<_>>();
+        match self.op {
+            1 => Cut::Message(self.w(0)),
+            2 => Cut::Wait(self.f(0)),
+            5 => Cut::FadeOut(self.f(0)),
+            6 => Cut::FadeIn(self.f(0)),
+            0x100 => Cut::LoadModel(self.w(0)),
+            0x101 => Cut::LoadFile,
+            0x102 => Cut::Actor { slot: self.w(0), object: self.w(1) },
+            0x103 => Cut::Play { slot: self.w(0), entries: rest(1) },
+            0x104 => Cut::Fly { pos: self.v3(0), aim: self.v3(3), frames: self.f(6) },
+            0x105 => Cut::Pause,
+            0x106 => Cut::Ready,
+            0x107 => Cut::Notice,
+            0x108 => Cut::Voice(self.w(0)),
+            0x109 => Cut::Place { slot: self.w(0), pos: self.v3(1) },
+            0x10a => Cut::Turn { slot: self.w(0), rot: self.v3(1) },
+            0x10b => Cut::StagePos(self.v3(0)),
+            0x10c => Cut::StageRot(self.v3(0)),
+            0x10d => Cut::Remove(self.w(0)),
+            0x10e => Cut::Leave { world: self.w(0), area: self.w(1) },
+            0x10f => Cut::LeaveKey { key: self.w(1), world: self.w(0) },
+            0x110 => Cut::Op110,
+            0x111 => Cut::Queue { slot: self.w(0), entries: rest(1) },
+            0x112 => Cut::RemoveAll,
+            0x113 => Cut::Resume,
+            op => Cut::Other(op),
+        }
+    }
+}
+
 /// The talk table of one world.
 #[derive(Clone, Debug, Default)]
 pub struct Libretto {
@@ -178,6 +284,30 @@ mod tests {
             }
         }
         d
+    }
+
+    fn command(op: u16, args: &[u32]) -> Command {
+        Command { op, args: args.to_vec() }
+    }
+
+    #[test]
+    fn world_map_event_ops_read_as_the_executor_reads_them() {
+        let f = |v: f32| v.to_bits();
+        assert_eq!(command(1, &[0x4bb6]).cut(), Cut::Message(0x4bb6));
+        assert_eq!(command(5, &[f(12.0)]).cut(), Cut::FadeOut(12.0));
+        assert_eq!(command(6, &[f(12.0)]).cut(), Cut::FadeIn(12.0));
+        assert_eq!(command(0x102, &[2, 0x896]).cut(), Cut::Actor { slot: 2, object: 0x896 });
+        assert_eq!(command(0x103, &[1, 5, 6]).cut(), Cut::Play { slot: 1, entries: vec![5, 6] });
+        assert_eq!(command(0x111, &[2, 9]).cut(), Cut::Queue { slot: 2, entries: vec![9] });
+        assert_eq!(command(0x109, &[1, f(-33.0), f(0.0), f(-20.0)]).cut(), Cut::Place { slot: 1, pos: [-33.0, 0.0, -20.0] });
+        assert_eq!(command(0x10a, &[1, f(0.0), f(-0.5), f(0.0)]).cut(), Cut::Turn { slot: 1, rot: [0.0, -0.5, 0.0] });
+        assert_eq!(command(0x10b, &[f(2.0), f(38.0), f(192.0)]).cut(), Cut::StagePos([2.0, 38.0, 192.0]));
+        assert_eq!(command(0x10c, &[f(0.1), f(0.0), f(0.0)]).cut(), Cut::StageRot([0.1, 0.0, 0.0]));
+        assert_eq!(command(0x10f, &[4, 0x5c]).cut(), Cut::LeaveKey { key: 0x5c, world: 4 });
+        assert_eq!(command(0x112, &[]).cut(), Cut::RemoveAll);
+        assert_eq!(command(0x2a, &[]).cut(), Cut::Other(0x2a));
+        // A short list of words reads as zeros instead of failing.
+        assert_eq!(command(0x10b, &[]).cut(), Cut::StagePos([0.0; 3]));
     }
 
     #[test]

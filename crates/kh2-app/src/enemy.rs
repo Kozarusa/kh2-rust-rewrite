@@ -1491,7 +1491,7 @@ pub fn receive_hits(
     mut ai_hits: MessageWriter<crate::enemy_ai::AiHit>,
     mut game: MessageWriter<crate::fx::GameEffect>,
     drive: (Option<Res<crate::drive::DriveRules>>, Option<Res<crate::drive::DriveState>>),
-    abilities: Option<Res<crate::abilities::Abilities>>,
+    (abilities, magic): (Option<Res<crate::abilities::Abilities>>, Option<Res<crate::magic::MagicState>>),
     (pull_data, spells, mut rng, member_attacks): (Option<Res<PullData>>, Option<Res<crate::magic::SpellAttacks>>, Local<PullRng>, Option<Res<crate::friend_ai::MemberAttacks>>),
     (members, progress, mut form_exp, party): (Query<&crate::party::PartyMember>, Option<Res<crate::progress::Progress>>, MessageWriter<crate::prize::FormExpGain>, Option<Res<crate::party::PartyData>>),
     mut defeated: MessageWriter<crate::progress::EnemyDefeated>,
@@ -1509,6 +1509,19 @@ pub fn receive_hits(
         let (Ok((mut e, mut f, status)), Some((from, combo_hits))) = (q.get_mut(h.target), from) else { continue };
         if !e.alive() {
             continue;
+        }
+        // Berserk Charge (FUN_001a0610): for rows whose byte +5 is 0 (the strength stat) the attacker's
+        // strength gets the block's +0x4e while his MP charge runs; Sora only [inferred, as berserk_attack].
+        let mut from = from;
+        if let (Some(ab), Some(mg)) = (&abilities, &magic)
+            && members.get(h.attacker).is_err()
+            && let Some(row) = data.hit_row(h)
+        {
+            let extra = crate::abilities::berserk_for_row(ab.block(), mg.charge.active(), row.critical_adjust as u8);
+            if extra > 0 && std::env::var_os("KH2_ABILITYLOG").is_some() {
+                info!("abilities: Berserk Charge: strength {} + {extra} for atkp {}", from.strength, h.atkp);
+            }
+            from.strength += extra;
         }
         let Some((atk, mut dmg)) = row_damage(&data, h, &from, &e.stats) else { continue };
         let useless = hit_is_ineffective(atk, &e.stats);

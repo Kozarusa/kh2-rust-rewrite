@@ -627,11 +627,21 @@ fn send_sub_command(rules: &LimitRules, command: u16, thread: Option<LimitReceiv
     }
 }
 
+/// The whole timer ticks one frame removes when the frame step is multiplied by `mult` (the block's
+/// `+0x5c`, `limit_duration`): the game's timer is a float, this one counts whole ticks, so the
+/// remainder is carried in `frac`. With `mult` 1.0 it is always 1.
+pub fn timer_ticks(frac: &mut f32, mult: f32) -> u32 {
+    *frac += mult.max(0.0);
+    let whole = frac.floor();
+    *frac -= whole;
+    whole as u32
+}
+
 /// Key `L` tries the next limit command in table order; `KH2_LIMIT=<command id>` tries that one once
 /// at about 4 s. Both print the decision (every limit) and run an available limit.
 #[allow(clippy::too_many_arguments)]
 fn try_limit(
-    time: Res<Time>,
+    (time, abilities, mut frac): (Res<Time>, Option<Res<crate::abilities::Abilities>>, Local<f32>),
     rules: Res<LimitRules>,
     mut party: ResMut<LimitParty>,
     mut sel: ResMut<Selected>,
@@ -650,7 +660,9 @@ fn try_limit(
 ) {
     let (sm, drive, summon_data, mut summon_queue) = summon;
     if let Some((cmd, left)) = active.0.as_mut() {
-        *left = left.saturating_sub(1);
+        // FUN_001b35e8 takes the frame step times the ability block's +0x5c (Combination Boost) off the timer.
+        let mult = abilities.as_ref().map_or(1.0, |a| a.block().limit_duration);
+        *left = left.saturating_sub(timer_ticks(&mut frac, mult));
         if *left == 0 {
             info!("limit: command {cmd} ended (duration over)");
             active.0 = None;
@@ -806,6 +818,16 @@ mod tests {
         let mut p = Progress::from_block(&[], std::sync::Arc::new(crate::progress::ItemIndex::default()));
         app.world().resource::<LimitHits>().finish(&mut p);
         assert_eq!(p.limit_best(4), 3);
+    }
+
+    #[test]
+    fn combination_boost_scales_the_timer_step() {
+        let mut f = 0.0;
+        assert!((0..100).all(|_| timer_ticks(&mut f, 1.0) == 1), "no ability: one tick a frame");
+        let mut f = 0.0;
+        assert_eq!((0..100).map(|_| timer_ticks(&mut f, 1.5)).sum::<u32>(), 150);
+        let mut f = 0.0;
+        assert_eq!((0..100).map(|_| timer_ticks(&mut f, 0.5)).sum::<u32>(), 50);
     }
 
     /// `FUN_001b2c10` / `FUN_001b2e08` / `FUN_001b3118`: the type 3 script gets event 22 first; without a type 0x14 entry the first

@@ -110,7 +110,7 @@ The game counts equipped copies, so `ground_combo()` and the others are exact; `
    (`FUN_00176c40`); the Reaction Boost bit (104) and `Kind` bit 2, `reaction_boost` percent. Each step
    rounds up (`(x * p + 99) / 100`). Ported as `attacker_bonuses`, called by `enemy::receive_hits`; the
    bits 102..104 are checked against the rows in the tests. Berserk Charge is read in the same routine as
-   an addition to the attack stat while MP-charging (`FUN_001a05d0`): ported as `berserk_attack`, hook pending in `enemy.rs`
+   an addition to the attack stat while MP-charging (`FUN_001a05d0`): ported as `berserk_attack`, hooked in `enemy.rs` (WP-BC1)
    ("Stat field consumers").
 5. Open: HUD or menu code: `ap_used()` / `ap_max()` for an ability menu.
 
@@ -159,8 +159,8 @@ summon drain. The readers were found through the callers of `FUN_001768a8` (`mip
 | Defender `+0x2c` | ported, wired in `sora::receive_hits` | `FUN_001a0610`, generic branch: after `strength - defense` the victim's block byte is subtracted too, but only when `FUN_001a0be0(victim)` holds (HP at or below a quarter of the maximum). Port `abilities::defender_bonus` / `hp_is_low`; the hook adds it to the defense of the stats given to `GameData::damage`. The byte is read unsigned (`lbu`); the routine reads the actor status byte at +0x1f8, and that it is the block's +0x2c is [inferred] (no writer was found).  The low-HP gate is the only rule: nothing else in the routine reads `+0x2c` |
 | Damage Drive `+0x50` | ported, wired (`SoraDamaged` message) | `FUN_001792f0` (the player's HP method, vtable `+0x78`): for a negative change `d`, when the status kind (`+0x1af`) is 1 (gauge mode, not in a form), `FUN_001788d8(-d / maximum HP * block +0x50)`; the gauge gain is `FUN_001788d8`'s (`prize::drive_gain`: times `sstm +0x78` and `+0x38` while charging, times `FUN_001ba040`). Port `abilities::damage_drive_units`, `PrizeLib::gauge_units` |
 | MP Rage `+0x54` | ported, wired | `FUN_00176c98` (the same HP method, after Damage Drive): not while the MP charge runs (`FUN_001a05d0`), for a negative change the amount `trunc(-d / maximum HP * block +0x54)` goes to `FUN_00186368` (MP plus the amount, held at the maximum) when it is above 0. Port `abilities::mp_rage_gain`. `FUN_00186368`'s refusal when the object's `+0x7f8` has bit 4 is not modelled |
-| Berserk Charge `+0x4e` | rule ported, hook outside this WP | `FUN_001a0610`, attack rows whose byte `+5` is 0: while the attacker's MP charge runs (`FUN_001a05d0`) and his object has `+0x588` bit 4 the block's ushort is added to the attacker's strength `+0x188` before the formula. Port `abilities::berserk_attack`. The caller is `enemy::receive_hits` (`enemy.rs`, not in this WP's ownership): the strength of the `Stats` given to `row_damage` needs `+ berserk_attack(block, magic.charge.active())` for rows with `critical_adjust != 1` |
-| Combination Boost `+0x5c` | gap | `FUN_001b35e8` (a limit command's per-frame update) multiplies the frame step added to the object's timer `+0xd4` by it; the app's `limit.rs` was not changed (outside this WP's ownership) |
+| Berserk Charge `+0x4e` | wired (WP-BC1) | `FUN_001a0610`, attack rows whose byte `+5` (`critical_adjust`) is 0: while the attacker's MP charge runs (`FUN_001a05d0`) and his object has `+0x588` bit 4 the block's ushort is added to the attacker's strength `+0x188` before the formula. `enemy::receive_hits` adds `abilities::berserk_for_row(block, magic.charge.active(), critical_adjust)` to the `from` strength for Sora's hits only (party members: bit 4 of their objects not known [inferred], so no bonus). `KH2_ABILITYLOG=1` prints `abilities: Berserk Charge: strength 5 + 1 for atkp 127` (`KH2_ABILITY_IDS=395`, MP charge via Cure) |
+| Combination Boost `+0x5c` | wired (WP-BC1) | `FUN_001b35e8` (a limit command's per-frame update) takes the frame step times the block's `+0x5c` off the limit timer `+0xd4`. `limit::try_limit` counts its whole-tick timer down by `limit::timer_ticks(frac, limit_duration)` (the remainder is carried). Ability 400 gives 0.8: a 300-tick limit ran 377 ticks instead of 302 (`KH2_ABILITY_IDS=400 KH2_LIMIT=255`); test `combination_boost_scales_the_timer_step` |
 
 The HP method (`FUN_00185a68` -> vtable `+0x78` = `FUN_001792f0`, the base `FUN_00176c98`) receives the damage after Second Chance
 changed it, so `sora::receive_hits` sends `SoraDamaged` with the damage it applies. Harness: `KH2_ABILITYLOG=1` prints
@@ -176,8 +176,7 @@ Tests: `defender_applies_only_at_low_hp`, `berserk_charge_adds_strength_only_whi
   Auto Change, ...): the bit is provided (`has`, `has_bit`); readers located for some of them are in
   "Ability readers" below, the others were not ported. Second Chance, Once More and Leaf Bracer are
   ported (WP-A1).
-- Stat-field consumers not wired (see "Stat field consumers (WP-AB2)"): Berserk Charge needs a one-line hook in
-  `enemy.rs`; the Combination Boost multiplier (`+0x5c`, `FUN_001b35e8`) needs `limit.rs`; the readers of
+- Stat-field consumers not wired (see "Stat field consumers (WP-AB2)"): Berserk Charge and Combination Boost are wired (WP-BC1); the readers of
   `+0x58` (Hyper Healing) and `+0x4c` (Item Boost) were wired by other work packages (`party_battle::revive_time`,
   `items.rs`).
 - Resistance multipliers of equipment (`item_stat` fields at `+8..+0xe`) are not exposed.

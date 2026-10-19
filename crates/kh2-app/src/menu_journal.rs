@@ -1228,6 +1228,9 @@ pub struct Journal {
     photo_tex: std::collections::HashMap<String, Option<usize>>,
     /// The mode a camp row asked for (taken by `tick`).
     request: Option<i32>,
+    /// The journal was opened from outside the camp (`OpenJournal`): the pause menu was not up before, so closing the journal closes the
+    /// scene (the original returns to the scene that opened it, `FUN_00296278`).
+    external: bool,
     /// A page switch asked for by `input` (page, world byte), built by `tick`.
     goto: Option<(u16, i8)>,
     /// A page turn in progress: the old page leaves for a few frames before the next one is built.
@@ -1328,11 +1331,24 @@ impl Journal {
     }
 }
 
+/// A request to open the journal from outside the camp menu: `FUN_0024f3c0(0, index)` (`FUN_00276730(index)` stores the journal world
+/// in 0x36d038, then `FUN_0024f0b8(3, 0)` writes the mode word 0x36cd34 = 0 and changes to the journal scene). The scene returns to
+/// the caller when it closes. Read by `tick`.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OpenJournal {
+    /// The journal index of the world (`FUN_00277c88`), -1 for none; only used for the log (mode 0 does not read it).
+    pub index: i8,
+}
+
+/// Mode word written by `FUN_0024f3c0` for kind 3 (`FUN_0024f0b8(3, 0)`): `start` then gives page 0, the world grid.
+pub const EXTERNAL_MODE: i32 = 0;
+
 pub struct JournalPlugin;
 
 impl Plugin for JournalPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Journal>()
+            .add_message::<OpenJournal>()
             .add_systems(Startup, kills::load_neo)
             .add_systems(Update, kills::count_defeats)
             .add_systems(PreUpdate, input.before(crate::menu::input).after(bevy::input::InputSystems).after(crate::harness::Keys))
@@ -3017,6 +3033,13 @@ fn close(j: &mut Journal, scene: &mut MenuScene, menu: &mut Menu) {
         scene.nodes[i].visible = v;
     }
     menu.page = 0;
+    if j.external {
+        // Opened from outside the camp: the scene ends with the journal (`FUN_00296278` runs the scene that queued it).
+        j.external = false;
+        menu.phase = Phase::Closed;
+        scene.hidden = true;
+        scene.dim = 0.0;
+    }
     info!("journal: page {} closed (FUN_00295ba0, roxas {}): the scene stack runs the camp again (FUN_00296278: scene 0 next)", o.page, o.roxas);
 }
 
@@ -3035,7 +3058,22 @@ fn tick(
     mut frames: Local<f32>,
     mut logged: Local<u32>,
     uses: Option<Res<crate::reaction_cmd::ReactionUses>>,
+    mut opens: MessageReader<OpenJournal>,
 ) {
+    // A request from outside the camp (the world map's journal button): the scene opens as the camp's rows open it, with no camp under it.
+    if let Some(req) = opens.read().last().copied()
+        && menu.phase == Phase::Closed
+        && j.open.is_none()
+        && j.request.is_none()
+    {
+        info!("journal: opened from outside the camp (FUN_0024f3c0(0, {}): mode word {EXTERNAL_MODE})", req.index);
+        j.request = Some(EXTERNAL_MODE);
+        j.external = true;
+        menu.phase = Phase::Open;
+        menu.page = PAGE;
+        scene.hidden = false;
+        scene.dim = crate::menu::dim_alpha(crate::menu::DIM_BRIGHTNESS);
+    }
     // The entries the journal marked seen go into the save (key `journal_seen`).
     if let Some(pairs) = j.marks.take_dirty()
         && let Some(p) = progress.as_mut()
@@ -3068,6 +3106,12 @@ fn tick(
         }
         if !j.loaded {
             menu.page = 0;
+            if j.external {
+                j.external = false;
+                menu.phase = Phase::Closed;
+                scene.hidden = true;
+                scene.dim = 0.0;
+            }
             return;
         }
         // The quest and minigame tests read the save once when the journal opens (nothing plays a minigame while it is up).
@@ -3209,6 +3253,14 @@ mod tests {
         assert_eq!(start(3, 4), (10, 4));
         assert_eq!(start(0, 4), (0, -1));
         assert_eq!(start(-5, 4), (0, -1));
+    }
+
+    /// `FUN_0024f3c0(0, index)` writes mode 0 into kind 3's mode word, so the scene opens on the world grid whatever the world's index.
+    #[test]
+    fn the_map_button_opens_the_world_grid() {
+        assert_eq!(EXTERNAL_MODE, 0);
+        assert_eq!(start(EXTERNAL_MODE, 0), (0, -1));
+        assert_eq!(start(EXTERNAL_MODE, -1), (0, -1));
     }
 
     #[test]

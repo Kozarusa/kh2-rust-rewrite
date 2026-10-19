@@ -8,6 +8,9 @@ use bevy::prelude::*;
 use std::collections::HashMap;
 
 const CELL: f32 = 400.0;
+/// A triangle that spans more cells than this goes to `World::big` instead of the grid (map eh22 has a
+/// floor 2.9 million units wide, which as grid entries needed 2 GB).
+const MAX_GRID_CELLS: i64 = 1024;
 /// Surfaces at most this steep count as floor (cos of 60°).
 pub const FLOOR_NY: f32 = 0.5;
 
@@ -26,6 +29,9 @@ pub struct Tri {
 pub struct World {
     pub tris: Vec<Tri>,
     grid: HashMap<(i32, i32), Vec<u32>>,
+    /// Triangles that cover more than `MAX_GRID_CELLS` cells (a sky-sized floor): kept out of the grid,
+    /// which would need one entry per cell, and tested directly by every query.
+    big: Vec<u32>,
     pub min: Vec3,
     pub max: Vec3,
     /// True when built from COCT data.
@@ -57,6 +63,11 @@ impl World {
         self.tris.push(Tri { v, n: n.normalize(), flags, material, lo, hi });
         self.min = self.min.min(lo);
         self.max = self.max.max(hi);
+        let cells = (cell(hi.x) as i64 - cell(lo.x) as i64 + 1) * (cell(hi.z) as i64 - cell(lo.z) as i64 + 1);
+        if cells > MAX_GRID_CELLS {
+            self.big.push(id);
+            return;
+        }
         for x in cell(lo.x)..=cell(hi.x) {
             for z in cell(lo.z)..=cell(hi.z) {
                 self.grid.entry((x, z)).or_default().push(id);
@@ -110,6 +121,12 @@ impl World {
                         }
                     }
                 }
+            }
+        }
+        for &i in &self.big {
+            let t = &self.tris[i as usize];
+            if t.hi.x >= lo.x && t.lo.x <= hi.x && t.hi.y >= lo.y && t.lo.y <= hi.y && t.hi.z >= lo.z && t.lo.z <= hi.z {
+                out.push(i);
             }
         }
         out.sort_unstable();
@@ -375,6 +392,23 @@ pub struct CameraWorld(pub World);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A floor millions of units wide (map eh22) stays out of the cell grid, so building the world is
+    /// cheap, and ground queries still find it.
+    #[test]
+    fn a_floor_wider_than_the_grid_limit_is_found_without_grid_entries() {
+        let big = 1_440_000.0;
+        let mut w = World::empty();
+        w.push([Vec3::new(-big, 0.0, -big), Vec3::new(big, 0.0, -big), Vec3::new(0.0, 0.0, big)], 0, 0);
+        w.push([Vec3::new(-100.0, 50.0, -100.0), Vec3::new(100.0, 50.0, -100.0), Vec3::new(0.0, 50.0, 100.0)], 0, 0);
+        assert_eq!(w.big.len(), 1);
+        assert!(w.grid.len() < 64, "{} cells", w.grid.len());
+        let mut out = Vec::new();
+        w.near(Vec3::new(-10.0, -10.0, -50.0), Vec3::new(10.0, 60.0, -40.0), &mut out);
+        assert_eq!(out, vec![0, 1]);
+        w.near(Vec3::new(5000.0, -10.0, -50.0), Vec3::new(5010.0, 60.0, -40.0), &mut out);
+        assert_eq!(out, vec![0]);
+    }
 
     /// WP-F2 item A: tt00 is not a flat box. Its 16 collision polygons are the 20 m box plus a
     /// 150-unit step across z = 0: a riser (normal -z) and a raised floor (y = 150) for z > 0, all

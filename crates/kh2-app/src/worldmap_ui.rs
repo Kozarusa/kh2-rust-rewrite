@@ -41,10 +41,12 @@ use kh2_image::text::{Messages, Style, Token};
 
 use crate::area::{self, AreaRecord, WORLDS, WORLD_MAP};
 use crate::area_jump::{Dest, ExitLocks, JumpTask, KEEP};
+use crate::audio::PlaySe;
 use crate::assets::Disc;
 use crate::hud::{HudNode, HudScene, Label, SeqFile};
+use crate::menu::menu_sound;
 use crate::progress::Progress;
-use crate::worldmap::{symbol_world, MapCursor, MapPiece};
+use crate::worldmap::{forced_event, symbol_object, symbol_world, MapCursor, MapPiece, WmEvent};
 use crate::SCALE;
 
 /// Bytes between the executable's addresses and its file offsets.
@@ -96,11 +98,20 @@ const NOTICE_GROUPS: [usize; 3] = [0x5b, 0x5c, 0x5d];
 const CARD_CURSOR: usize = 54;
 /// The info panel's name plate groups (open, idle): `FUN_002ce808` makes the plate of group 0x97 (and 0x98 next).
 const NAME_PLATE: [usize; 2] = [0x97, 0x98];
+/// The info panel's level and time labels and digits, all local groups of sequence 1 (`FUN_002ce808`): the plates 0x41 (then 0x42) and
+/// 0x48 (then 0x49), the level digits 0x12 + d, the time digits 0x1c + d and the colon 0x26 as children of the plates.
+const LEVEL_LABEL: [usize; 2] = [0x41, 0x42];
+const TIME_LABEL: [usize; 2] = [0x48, 0x49];
+const LEVEL_DIGITS: usize = 0x12;
+const TIME_DIGITS: usize = 0x1c;
+const COLON: usize = 0x26;
+/// The key boxes (`FUN_002cf6d0`): an empty one (0x94) and a filled one (0x95), children of the name plate.
+const KEY_BOXES: [usize; 2] = [0x94, 0x95];
 /// Rows of the episode list shown at once (`FUN_002cb508`: three).
 const EPISODE_VISIBLE: usize = 3;
 /// Layer slots of a panel and node slots of its other parts.
 const LAYER_SLOTS: usize = 12;
-const INFO_SLOTS: usize = 12;
+const INFO_SLOTS: usize = 16;
 const WINDOW_SLOTS: usize = 80;
 /// Logic ticks a close animation plays (the groups are 17 frames long).
 const CLOSE_TICKS: f32 = 17.0 / 60.0;
@@ -128,6 +139,8 @@ pub enum Press {
     Cancel,
     /// The window's switch button (mask 0x100 of `FUN_002ca6a0`, and 0x208 from the episode list).
     Switch,
+    /// The journal button, the triangle (mask 0x400 of `FUN_002ca6a0`, area list only): `FUN_002c9510`.
+    Journal,
 }
 
 /// The window's modes (`FUN_002cbee8`'s mode word +0x1f68): 0 the land prompt, 1 and 3 the area list, 2 the episode list.
@@ -175,6 +188,8 @@ pub enum Outcome {
     Land(Dest),
     /// A locked row was confirmed: the "not accessible" box.
     Locked,
+    /// The journal button on the area list: `FUN_002c9510(world)` opens the journal at the world's topic (`FUN_0024f3c0(0, FUN_00277c88(world))`).
+    Journal,
 }
 
 /// The window's state, apart from the scene (tested without a disc).
@@ -263,6 +278,7 @@ impl Window {
                 self.mode = Mode::Episodes;
                 return Outcome::Switched;
             }
+            Press::Journal => return Outcome::Journal,
             _ => {}
         }
         if self.cursor == old { Outcome::None } else { Outcome::Moved }
@@ -373,10 +389,13 @@ struct Data {
     /// `jiminy.bar` entry 1 (the journal's story records), the journal index of each world (`FUN_00277c88`) and the journal's
     /// messages: the sources of the two plate texts (`FUN_002c9548` / `FUN_002c9580` -> `FUN_002a1e98`).
     stor: Vec<u8>,
-    /// The story flags those records name (+0xa), the ones `Snap` copies.
-    stor_flags: Vec<u16>,
     world_index: Vec<i8>,
     journal_messages: Option<Messages>,
+    /// `wmky` (the key boxes of the info panel) and `btlv` (the level sums), WP-WM7.
+    keys: Vec<wm::KeyBoxes>,
+    levels: Vec<wm::LevelRow>,
+    /// Every story flag `Snap` copies: the journal's, the key boxes' and the level rows'.
+    watch: Vec<u16>,
 }
 
 impl Data {
@@ -395,8 +414,15 @@ impl Data {
         let stor = disc.read("menu/us/jiminy.bar").and_then(|b| Some(kh2_bar::parse(&b).ok()?.get(1)?.data.to_vec())).unwrap_or_default();
         let world_index = crate::menu_pages::Exe::load(exe.clone()).and_then(|e| crate::menu_journal::read_world_index(&e)).unwrap_or_default();
         let journal_messages = disc.read("msg/us/jm.bar").and_then(|b| Messages::from_bar(&b));
-        let stor_flags = crate::menu_journal::records(&stor, 0xc).iter().map(|r| u16::from_le_bytes([r[10], r[11]])).collect();
-        let mut data = Data { messages, wlds, land, points, epsd, exe, art: None, stor, stor_flags, world_index, journal_messages };
+        let stor_flags: Vec<u16> = crate::menu_journal::records(&stor, 0xc).iter().map(|r| u16::from_le_bytes([r[10], r[11]])).collect();
+        let keys = entry(wm::WMKY).map(wm::parse_wmky).unwrap_or_default();
+        let levels = disc.read("00battle.bin").and_then(|b| Some(wm::parse_btlv(kh2_bar::parse(&b).ok()?.iter().find(|e| e.tag == wm::BTLV)?.data))).unwrap_or_default();
+        let mut watch = stor_flags;
+        watch.extend(keys.iter().flat_map(|k| k.pairs.iter().flat_map(|(a, b)| [*a, *b])).filter(|f| *f != 0));
+        watch.extend(levels.iter().filter_map(|r| u16::try_from(r.flag).ok()));
+        watch.sort_unstable();
+        watch.dedup();
+        let mut data = Data { messages, wlds, land, points, epsd, exe, art: None, stor, world_index, journal_messages, keys, levels, watch };
         data.art = Art::load(disc, &data, &lbar);
         Some(data)
     }
@@ -459,6 +485,38 @@ impl Data {
 fn unended(mut t: Vec<Token>) -> Vec<Token> {
     t.retain(|x| *x != Token::End);
     t
+}
+
+/// What the info panel shows of a world besides its name (`FUN_002ce808`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InfoFacts {
+    /// The world's level sum (`FUN_001bea40`'s table, `btlv`).
+    pub level: u8,
+    /// The time spent in the world (`FUN_0014c9b0`): hours and minutes. The app keeps no per-world clock, so both are 0 [gap].
+    pub hours: u32,
+    pub minutes: u32,
+    /// Key boxes drawn and filled (`FUN_002c9358`, `FUN_002c93c0`, `wmky`).
+    pub shown: usize,
+    pub filled: usize,
+}
+
+/// The facts of `world` for the story flags `set` (the info panel).
+fn info_facts(keys: &[wm::KeyBoxes], levels: &[wm::LevelRow], world: u8, set: impl Fn(u16) -> bool) -> InfoFacts {
+    let sums = wm::level_sums(levels, |f| u16::try_from(f).is_ok_and(&set));
+    let (shown, filled) = wm::find_keys(keys, world).map_or((0, 0), |k| k.counts(&set));
+    InfoFacts { level: sums.get(world as usize).copied().unwrap_or(0), hours: 0, minutes: 0, shown, filled }
+}
+
+/// `FUN_002cc288(value, count, out)`: the last `count` decimal digits of `value`, zeros in front.
+fn fixed_digits(value: u32, count: usize) -> Vec<usize> {
+    let s = format!("{value:0>count$}");
+    s.bytes().skip(s.len() - count).map(|b| usize::from(b - b'0')).collect()
+}
+
+/// The digits of `value` without leading zeros, at least one (the hours: the function answers how many digits the value has and the panel
+/// draws that many of the last).
+fn plain_digits(value: u32) -> Vec<usize> {
+    value.to_string().bytes().map(|b| usize::from(b - b'0')).collect()
 }
 
 /// One text object descriptor (`0x383548`): the group ids it follows in the modes 1, 2 and 3 (open, close, idle) and its message.
@@ -776,6 +834,43 @@ impl Art {
         self.layer_rect(&layd::Layer { kind: 1, seq: PANEL, group: g, x: 0, y: 0 })
     }
 
+    /// The info panel's level and time lines and key boxes (`FUN_002ce808`, `FUN_002cf6d0`), after the `base` items it already has (the
+    /// name plate is item 0): a label plate with the digits hung on it one `unk20` apart (`FUN_00237698` is the group's `unk20`), the level
+    /// as two digits, the hours without leading zeros, a colon and the minutes as two digits; then one box per key pair whose first flag is
+    /// set, the filled ones first, `x - size * i` from the name plate (`FUN_00237618` is the group's x, `FUN_00237658` its size), the
+    /// whole row moved by half its width [inferred: the sign and the parent of that shift (`+0x254`) were not traced].
+    fn info_extras(&self, panel: usize, base: usize, f: &InfoFacts) -> Vec<Item> {
+        let mut out: Vec<Item> = Vec::new();
+        let label = |out: &mut Vec<Item>, g: [usize; 2]| {
+            out.push(Item { file: panel, group: Some(g[0]), next: Some(g[1]), at: [0.0, 0.0], parent: Parent::Root, text: None });
+            base + out.len() - 1
+        };
+        let digit = |out: &mut Vec<Item>, parent: usize, x: &mut f32, g: usize| {
+            out.push(Item::plate(panel, g, [*x, 0.0], Parent::Item(parent)));
+            *x += self.group(g).unk20 as f32;
+        };
+        let l = label(&mut out, LEVEL_LABEL);
+        let mut x = 0.0;
+        for d in fixed_digits(u32::from(f.level), 2) {
+            digit(&mut out, l, &mut x, LEVEL_DIGITS + d);
+        }
+        let t = label(&mut out, TIME_LABEL);
+        let mut x = 0.0;
+        for d in plain_digits(f.hours.min(999)) {
+            digit(&mut out, t, &mut x, TIME_DIGITS + d);
+        }
+        digit(&mut out, t, &mut x, COLON);
+        for d in fixed_digits(f.minutes, 2) {
+            digit(&mut out, t, &mut x, TIME_DIGITS + d);
+        }
+        for i in 0..f.shown.min(3) {
+            let g = self.group(KEY_BOXES[usize::from(i < f.filled)]);
+            let (w, n) = (g.size as f32, f.shown.min(3) as f32);
+            out.push(Item::plate(panel, KEY_BOXES[usize::from(i < f.filled)], [g.x as f32 - w * i as f32 - w * n / 2.0, 0.0], Parent::Item(0)));
+        }
+        out
+    }
+
     /// The items of the window in its state; `phase` is `OPEN` while its open layout plays and `IDLE` after.
     fn items(&self, w: &Window, c: &Ctx, phase: usize) -> Vec<Item> {
         match w.mode {
@@ -1012,6 +1107,13 @@ pub struct MapUi {
     from: Option<Dest>,
 }
 
+impl MapUi {
+    /// The scene file of the panel art: the panel's own nodes use it (the forced events leave them alone when they hide the field HUD).
+    pub fn panel_file(&self) -> Option<usize> {
+        self.panel
+    }
+}
+
 fn uilog() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("KH2_WMLOG").is_ok_and(|v| !v.is_empty() && v != "0"))
@@ -1126,6 +1228,8 @@ fn map_ui(
     time: Res<Time>,
     pieces: Query<(&MapPiece, &Transform, &Visibility)>,
     cursor: Query<&Transform, With<MapCursor>>,
+    mut event: ResMut<WmEvent>,
+    mut se: MessageWriter<PlaySe>,
 ) {
     let on_map = rec.world == WORLD_MAP && rec.run.is_some();
     let name = rec.run.as_ref().map(|r| r.name.clone());
@@ -1193,6 +1297,8 @@ fn map_ui(
     let right = keys.just_pressed(KeyCode::ArrowRight) || keys.just_pressed(KeyCode::KeyD);
     // The switch button [inferred keys: E, or Tab].
     let switch = keys.just_pressed(KeyCode::KeyE) || keys.just_pressed(KeyCode::Tab);
+    // The journal button, the triangle: Y, the key the menu pages use for it.
+    let journal = keys.just_pressed(KeyCode::KeyY);
     let ui = &mut *ui;
     let dt = time.delta_secs();
     // The layouts' open timers: when the window's idle layout takes over its items are laid again for that phase.
@@ -1203,11 +1309,18 @@ fn map_ui(
     }
     let Some(data) = ui.data.as_ref() else { return };
     // The story's lock is taken only to copy what is read; `ExitLocks::locked` takes it again.
-    let snap = progress.as_ref().map(|p| Snap::of(&p.story(), &data.epsd, &data.stor_flags));
+    let snap = progress.as_ref().map(|p| Snap::of(&p.story(), &data.epsd, &data.watch));
     // Contact: the nearest visible symbol within the radius (docs/worldmap.md section 4).
     let at = |t: &Transform| Vec2::new(t.translation.x, t.translation.z);
     let symbols: Vec<(u8, Vec2)> = pieces.iter().filter(|(_, _, v)| **v != Visibility::Hidden).filter_map(|(p, t, _)| Some((symbol_world(&data.exe, p.object)?, at(t)))).collect();
     let near = touched(at(sora), &symbols, CONTACT_RADIUS * SCALE);
+    if event.busy() {
+        // A forced event plays (or has just ended): the map's buttons are not read (`FUN_002c6a40` takes the control and the pause menu).
+        if redraw {
+            draw_panels(ui, scene, &mut images, snap.as_ref());
+        }
+        return;
+    }
     if let Some(w) = ui.window.as_mut() {
         // The window holds the pad: its presses are its own.
         let press = if up {
@@ -1220,6 +1333,8 @@ fn map_ui(
             Some(Press::Right)
         } else if switch {
             Some(Press::Switch)
+        } else if journal {
+            Some(Press::Journal)
         } else if confirm {
             Some(Press::Confirm)
         } else if cancel {
@@ -1231,10 +1346,11 @@ fn map_ui(
         mouse.reset_all();
         if let Some(press) = press {
             if ui.notice {
-                // The box closes on any confirm or cancel (`FUN_002ca6a0`).
+                // The box closes on any confirm or cancel (`FUN_002ca6a0`, sound 4).
                 if matches!(press, Press::Confirm | Press::Cancel) {
                     ui.notice = false;
                     redraw = true;
+                    sound(&mut se, SOUND_CANCEL);
                 }
             } else {
                 match w.press(press) {
@@ -1244,18 +1360,30 @@ fn map_ui(
                             info!("worldmap: window {:?} cursor row {} episode row {} scroll {}", w.mode, w.cursor, w.episode_cursor, w.scroll);
                         }
                         redraw = true;
+                        sound(&mut se, SOUND_CURSOR);
                     }
                     Outcome::Switched => {
                         info!("worldmap: window mode {} ({:?}, FUN_002ca3d0 / FUN_002ca538)", w.mode_number(), w.mode);
                         redraw = true;
+                        sound(&mut se, SOUND_CONFIRM);
+                    }
+                    Outcome::Journal => {
+                        let index = data.world_index.get(w.world as usize).copied();
+                        info!(
+                            "worldmap: the journal button (FUN_002c9510): the original opens the journal at world {}'s topic, journal index {index:?} (FUN_0024f3c0(0, FUN_00277c88(world))); the app's journal opens only from the camp menu [GAP]",
+                            w.world
+                        );
                     }
                     Outcome::Locked => {
                         info!("worldmap: row {} is locked (FUN_00195358): message {NOT_ACCESSIBLE:#x}", w.cursor);
                         ui.notice = true;
                         redraw = true;
+                        sound(&mut se, SOUND_DENIED);
                     }
                     Outcome::Close => {
                         info!("worldmap: window closed without a landing (result 0)");
+                        // The cancel result plays 4, the "Maybe later" row 2 (`FUN_002cacd8`).
+                        sound(&mut se, if press == Press::Cancel { SOUND_CANCEL } else { SOUND_CONFIRM });
                         let mode = w.mode_number();
                         ui.window = None;
                         close_window(ui, scene, mode);
@@ -1270,6 +1398,7 @@ fn map_ui(
                                 dest.world, dest.area, dest.entrance
                             );
                             *t = JumpTask::FadeOut { dest, kind: 1, t: 0.0 };
+                            sound(&mut se, SOUND_CONFIRM);
                             ui.window = None;
                             hide_all(ui, scene);
                             return;
@@ -1292,6 +1421,15 @@ fn map_ui(
         if let (Some(world), true, Some(snap)) = (near, confirm, snap.as_ref()) {
             keys.reset_all();
             mouse.reset_all();
+            // `FUN_002ccd88` first: a forced event starts and no prompt follows.
+            let flag = |i: u32| progress.as_ref().is_some_and(|p| p.story().world_flag(i));
+            if let Some(id) = symbol_object(&data.exe, world).and_then(|o| forced_event(o, flag)) {
+                info!("worldmap: confirm on world {world}: forced event {id:#x} (FUN_002ccd88 -> FUN_002c6a40), no prompt; the info panel goes (FUN_002cf698)");
+                event.request(id);
+                ui.near = None;
+                draw_panels(ui, scene, &mut images, Some(snap));
+                return;
+            }
             let place = |w: u8, a: u8| sys_place(scene, w, a);
             let localset = |w: u8, k: u16| crate::area_jump::disc_localset(&disc, w, k);
             match open_window(data, world, snap, &locks, place, localset) {
@@ -1313,6 +1451,18 @@ fn map_ui(
     if redraw || ui.laid.is_none() {
         draw_panels(ui, scene, &mut images, snap.as_ref());
     }
+}
+
+/// The map's menu sounds (`FUN_002d1760(k)` -> `FUN_002c3318(k)`: bank `k / 1000` = 0, entry `k % 1000` = k, `FUN_002c2258`): entries 1 to 5
+/// of the system bank, the same sounds as the pause menu's cursor, confirm, open, cancel and refused (docs/menus.md 1.7). They go through the
+/// menu's own switch, `menu_sound::play`, which the user has muted (play-test report 2026-10-10): `KH2_SOUNDLOG=1` logs them as muted.
+const SOUND_CURSOR: u32 = 1;
+const SOUND_CONFIRM: u32 = 2;
+const SOUND_CANCEL: u32 = 4;
+const SOUND_DENIED: u32 = 5;
+
+fn sound(se: &mut MessageWriter<PlaySe>, k: u32) {
+    menu_sound::play(se, k);
 }
 
 /// Plays the window's close layout and clears its items.
@@ -1360,6 +1510,9 @@ fn draw_panels(ui: &mut MapUi, scene: &mut HudScene, images: &mut Assets<Image>,
             let mut items = vec![Item { file: panel, group: Some(NAME_PLATE[0]), next: Some(NAME_PLATE[1]), at: [0.0, 0.0], parent: Parent::Root, text: None }];
             let r = art.group_rect(NAME_PLATE[1]).unwrap_or([173.0, 11.0, 598.0, 72.0]);
             items.push(Item::text(panel, [r[0] + 40.0, r[1] + 22.0], Parent::Root, name, 0).sized(text_size(&art.group(NAME_PLATE[1]))));
+            let facts = info_facts(&data.keys, &data.levels, world, |f| snap.is_some_and(|s| s.set_flags.contains(&f)));
+            let extras = art.info_extras(panel, items.len(), &facts);
+            items.extend(extras);
             apply(scene, &pool.info_items, &pool.info.slots, &items);
         }
         None => {
@@ -1749,7 +1902,7 @@ mod tests {
         let data = Data::load(&disc).expect("the map's tables are on the disc");
         assert_eq!((data.wlds.len(), data.land.len(), data.points.len(), data.epsd.len()), (34, 53, 54, 43), "the documented counts");
         let story = crate::progress::Story::default();
-        let snap = Snap::of(&story, &data.epsd, &data.stor_flags);
+        let snap = Snap::of(&story, &data.epsd, &data.watch);
         let world = area::TWILIGHT_TOWN;
         let state = snap.state(world);
         // The independent read: the first record of the world with this state byte (`FUN_001c1cf8`), straight from the bytes.
@@ -1773,7 +1926,7 @@ mod tests {
         // destination row, so the confirm opens the area list (mode 1) with the point's own record as destination.
         let mut seen = story.clone();
         seen.set_world_point(47);
-        let snap = Snap::of(&seen, &data.epsd, &data.stor_flags);
+        let snap = Snap::of(&seen, &data.epsd, &data.watch);
         let point = data.points[47];
         assert_eq!((point.world, point.area), (2, 2), "point 47 is the Usual Spot");
         let list = open_window(&data, world, &snap, &locks, |_, _| Some(vec![Token::Glyph(7)]), |_, _| None).expect("the list opens");
@@ -1821,6 +1974,81 @@ mod tests {
         let last_x = first[0] + card.unk20 as f32 + 80.0;
         assert!(first[0] >= fr[0] && last_x <= fr[2], "the two card columns ({} to {last_x}) fit in the frame ({} to {})", first[0], fr[0], fr[2]);
         assert!(first[1] >= fr[1] && first[1] + 4.0 * card.unk1c as f32 <= fr[3], "four card rows fit in the frame");
+    }
+
+    /// `FUN_002ca6a0`: the triangle (mask 0x400) opens the journal only from the area list; the land prompt (`FUN_002cacd8`) and the episode
+    /// list do not read it.
+    #[test]
+    fn the_journal_button_answers_on_the_area_list_only() {
+        let mut areas = window(Mode::Areas, vec![row(Some(Dest::new(2, 1, 0)), false)]);
+        assert_eq!(areas.press(Press::Journal), Outcome::Journal);
+        assert_eq!(areas.press(Press::Journal), Outcome::Journal, "it does not close or move anything");
+        assert_eq!((areas.mode, areas.cursor), (Mode::Areas, 0));
+        let mut land = window(Mode::Land, vec![row(Some(Dest::new(2, 1, 0)), false), row(None, false)]);
+        assert_eq!(land.press(Press::Journal), Outcome::None);
+        let mut eps = window(Mode::Episodes, Vec::new());
+        assert_eq!(eps.press(Press::Journal), Outcome::None);
+        assert_eq!(eps.mode, Mode::Episodes);
+    }
+
+    /// The info panel's extras (WP-WM7): the level label with two digits, the time label with the hours, a colon and two minute digits
+    /// each one `unk20` apart on their label, and one box per key pair, the filled ones first.
+    #[test]
+    fn the_info_panel_hangs_digits_on_its_labels_and_draws_the_key_boxes() {
+        let mut a = art();
+        let seq = &mut a.layd.seqs[1];
+        for d in 0..10 {
+            seq.groups[LEVEL_DIGITS + d].unk20 = 16;
+            seq.groups[TIME_DIGITS + d].unk20 = 16;
+        }
+        seq.groups[COLON].unk20 = 8;
+        seq.groups[KEY_BOXES[0]] = AnimGroup { x: 140, size: 20, ..AnimGroup::default() };
+        seq.groups[KEY_BOXES[1]] = AnimGroup { x: 140, size: 20, ..AnimGroup::default() };
+        let facts = InfoFacts { level: 7, hours: 12, minutes: 5, shown: 3, filled: 1 };
+        let items = a.info_extras(7, 2, &facts);
+        let groups: Vec<Option<usize>> = items.iter().map(|i| i.group).collect();
+        let g = |v: &[usize]| v.iter().map(|x| Some(*x)).collect::<Vec<_>>();
+        assert_eq!(
+            groups,
+            [
+                g(&[LEVEL_LABEL[0], LEVEL_DIGITS, LEVEL_DIGITS + 7, TIME_LABEL[0], TIME_DIGITS + 1, TIME_DIGITS + 2, COLON, TIME_DIGITS, TIME_DIGITS + 5]),
+                g(&[KEY_BOXES[1], KEY_BOXES[0], KEY_BOXES[0]]),
+            ]
+            .concat(),
+            "level 07, time 12:05, three boxes with the first filled"
+        );
+        assert_eq!(items[1].parent, Parent::Item(2), "the digits hang on the label (item 2 after the two the panel already has)");
+        assert_eq!(items[2].at, [16.0, 0.0], "the next digit is one unk20 along");
+        assert_eq!(items[3].parent, Parent::Root, "the label itself is a plate of its own");
+        assert_eq!((items[5].at[0], items[6].at[0], items[7].at[0]), (16.0, 32.0, 40.0), "hours, colon after them, minutes after the colon's 8");
+        assert_eq!(items[9].parent, Parent::Item(0), "the boxes hang on the name plate");
+        assert_eq!((items[9].at[0], items[10].at[0], items[11].at[0]), (140.0 - 30.0, 140.0 - 20.0 - 30.0, 140.0 - 40.0 - 30.0), "x - size * i, the row shifted by half its width");
+        // No key pair set: no box. Nothing special about a single digit of hours.
+        let plain = a.info_extras(7, 2, &InfoFacts::default());
+        assert_eq!(plain.len(), 8, "labels, 00, 0:00 and no box");
+    }
+
+    #[test]
+    fn digits_are_the_last_places_with_zeros_in_front_and_the_hours_have_none() {
+        assert_eq!(fixed_digits(7, 2), [0, 7]);
+        assert_eq!(fixed_digits(255, 2), [5, 5], "only the last two places (FUN_002cc288 writes two)");
+        assert_eq!(plain_digits(0), [0]);
+        assert_eq!(plain_digits(105), [1, 0, 5]);
+    }
+
+    #[test]
+    fn the_facts_come_from_the_story_flags_the_tables_name() {
+        let keys = [wm::KeyBoxes { world: 2, pairs: [(10, 11), (12, 0), (0, 0)] }];
+        let mut levels = vec![wm::LevelRow { bit: 0, flag: 20, levels: [0; wm::LEVEL_WORLDS] }, wm::LevelRow { bit: 1, flag: 21, levels: [0; wm::LEVEL_WORLDS] }];
+        levels[0].levels[2] = 5;
+        levels[1].levels[2] = 3;
+        let f = info_facts(&keys, &levels, 2, |f| matches!(f, 10 | 11 | 12 | 20 | 21));
+        assert_eq!((f.level, f.shown, f.filled), (8, 2, 1), "5 + 3, two boxes, one filled");
+        let f = info_facts(&keys, &levels, 2, |f| f == 20);
+        assert_eq!((f.level, f.shown, f.filled), (5, 0, 0));
+        let f = info_facts(&keys, &levels, 4, |_| true);
+        assert_eq!((f.level, f.shown), (0, 0), "a world with no row has no box and no level");
+        assert_eq!((f.hours, f.minutes), (0, 0), "the app keeps no per-world clock");
     }
 
     /// The window copies the story out before the exit locks read it: both lock the same mutex, so holding the first while

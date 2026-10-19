@@ -641,7 +641,7 @@ impl BevyHost<'_> {
                 approx(Value::Handle(EFFECT + self.obj.next_effect), "element `id` of the object's effect file; the flag and extra arguments are ignored")
             }
             Call::ObjMethod44 { .. } | Call::ObjMethod48 { .. } => missing(Value::None, "virtual method of the object, role unknown"),
-            Call::MoverMethod { .. } => missing(Value::None, "virtual call on the object's mover, role unknown"),
+            Call::MoverMethod { .. } => stub(Value::None, "virtual call (method +0xc, FUN_00171298) on the object's mover with one float: the role of the method was not traced, nothing in the app consumes it"),
             Call::FindObject { value, .. } => {
                 if *value == 0x236 {
                     imp(Value::Handle(PLAYER))
@@ -911,6 +911,29 @@ impl BevyHost<'_> {
                 Value::None,
                 "the player-side link (FUN_001beb90: parent +0x570, mover 3) is not in the app: Sora is not attached to the Dancer during its force dance",
             ),
+            // 1.130 obj_diff (0x170510): the difference of the two contexts' objects, 0 when either is 0 or they are
+            // the same (M_EX950 R1fe7 asks it of the sender of an event and itself before taking `mode_revenge`).
+            Call::Func { group: 1, index: 130, args } if args.len() >= 2 => {
+                let (a, b) = (args[0].int() as u32, args[1].int() as u32);
+                imp(Value::Int(if a == 0 || b == 0 || a == b { 0 } else { a.wrapping_sub(b) as i32 }))
+            }
+            // 1.140 target_valid (0x173740 -> FUN_0018ed58): the target record names an object, or the lookup FUN_0018ee20
+            // finds one. The record (host 2.23) is always the player's, who always exists in the app, so any non-zero record
+            // is valid.
+            Call::Func { group: 1, index: 140, args } => approx(Value::Bool(args.first().is_some_and(|a| a.int() != 0)), "the record always names the player, who always exists; FUN_0018ee20's lookup is not ported"),
+            // 1.179 set_word_100 (0x1713a8): stores the word at object +0x100 (M_EX950 R2316 stores 154, M_EX880 too).
+            // No reader of +0x100 was traced for the enemy objects, so nothing in the app consumes it.
+            Call::Func { group: 1, index: 179, .. } => stub(Value::None, "word at object +0x100: reader not traced, nothing in the app consumes it"),
+            // 1.13 queue_motion (0x1703d8 -> FUN_0017e170) on the object itself: the motion follows the running one in the
+            // controller's queue. The app has no queue: M_EX950 queues motion 0 (idle) at the end of its attacks and its next
+            // mode starts its own motion.
+            Call::Func { group: 1, index: 13, args } if args[0].int() as u32 == me => {
+                stub(Value::None, "the motion controller's queue (+0x3c) is not in the app: the queued motion does not follow the running one")
+            }
+            // 1.75 (0x172d18 -> FUN_0017d9c8) and 1.76 (0x172d40 -> FUN_0017da18): the motion controller (+0x140) takes the
+            // entry that FUN_001a7da8 finds for the id (251 in M_EX950 R230c) into its +4, and 1.76 clears that word. Its reader
+            // was not traced, so nothing in the app consumes it.
+            Call::Func { group: 1, index: 75 | 76, .. } | Call::Unknown { group: 1, index: 75 | 76, .. } => stub(Value::None, "motion controller word +4 (set from a lookup, cleared by 1.76): reader not traced"),
             _ => missing(Value::Int(0), "function not mapped"),
         }
     }

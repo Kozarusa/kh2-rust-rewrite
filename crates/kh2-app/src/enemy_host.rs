@@ -6,6 +6,7 @@
 //! See docs/enemy-ai.md for the mapping and the gaps.
 
 use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex, MutexGuard};
 
 use bevy::prelude::*;
 use kh2_bdx::{Arg, Call, Host, Value, Vec4};
@@ -19,9 +20,6 @@ use crate::reaction_cmd::PlayerReactionCmd;
 use crate::skel::Rig;
 use crate::world::World;
 use crate::SCALE;
-
-/// The keyed buffers of host 2.21 (the game's list at 0x1c95528 is global to every object).
-static SHARED: std::sync::LazyLock<std::sync::Mutex<kh2_bdx::shared::SharedBlocks>> = std::sync::LazyLock::new(Default::default);
 
 /// Turn rate in radians per tick when a script passes speed 0 ("the object's own rate"). The game reads
 /// it from the object (+0x11c); where that value comes from was not found, this is the rate the
@@ -246,6 +244,20 @@ pub(crate) struct Env<'a> {
     pub(crate) mission_counters: Option<[i32; 3]>,
     /// A mission layout event is playing (`struggle::Mission::event_active`, host 1.34) (WP-7E2).
     pub(crate) event_active: bool,
+}
+
+/// The keyed persistent buffers of host 2.21 (`kh2_bdx::shared`), one list for every enemy script of the battle like the
+/// game's list at 0x1c95528. Emptied when the area's groups are set up (FUN_001a5030, called by the battle set-up
+/// FUN_00168ba8); nothing else clears it, the game also frees it at the battle tear-down (FUN_001a5108).
+static SHARED_BLOCKS: LazyLock<Mutex<kh2_bdx::shared::SharedBlocks>> = LazyLock::new(|| Mutex::new(kh2_bdx::shared::SharedBlocks::default()));
+
+fn shared_blocks() -> MutexGuard<'static, kh2_bdx::shared::SharedBlocks> {
+    SHARED_BLOCKS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// FUN_001a5030: the list of keyed buffers is emptied (the area's groups are set up again).
+pub(crate) fn clear_shared_blocks() {
+    shared_blocks().clear();
 }
 
 pub(crate) struct BevyHost<'a> {
@@ -954,6 +966,9 @@ impl BevyHost<'_> {
             // 2.76 (0x18e068): a float stored at object +0xaf4 (N_EX570_BTL: 50). The readers of +0xaf4
             // found (FUN_001769e0, FUN_0022e0a0, ...) read it as a byte or an int of other object
             // classes; no reader for this one was found.
+            // 2.21 shared_block (0x18e928 -> FUN_001a5040): the buffer registered under the key (M_EX760 asks for key 12, size 20
+            // in its R1ddd and tests the first word of it to set the block up once).
+            Call::Func { group: 2, index: 21, args } => imp(Value::Handle(shared_blocks().get(args[0].int(), args[1].int()))),
             Call::Func { group: 2, index: 76, .. } => stub(Value::None, "float at +0xaf4: no reader found"),
             // 2.7 hit_reaction (0x18e0d0): byte +0x26 of the hit record, the effective reaction; the app's
             // is `reaction_rules::victim_outcome`'s, the same byte 2.8 classifies.
@@ -961,10 +976,6 @@ impl BevyHost<'_> {
                 Some(&(_, r, _)) => imp(Value::Int(r as i32)),
                 None => missing(Value::Int(0), "hit_reaction of a handle that is not one of this object's hit records"),
             },
-            // 2.21 shared_block (0x18e928 -> FUN_001a5040): the game's list of keyed buffers is global, so is the app's.
-            Call::Func { group: 2, index: 21, args } => {
-                imp(Value::Handle(SHARED.lock().unwrap_or_else(|e| e.into_inner()).get(args[0].int(), args[1].int())))
-            }
             // 2.45 hit_atkp_id (0x18e1c0): the halfword at +2 of the hit record, the id of the attack row.
             Call::Func { group: 2, index: 45, args } => match self.obj.hits.get(&(args[0].int() as u32)) {
                 Some(&(_, _, atkp)) => imp(Value::Int(atkp as i32)),
@@ -1026,6 +1037,9 @@ impl Host for BevyHost<'_> {
             out.copy_from_slice(b);
             return true;
         }
+        if shared_blocks().read(addr, out) {
+            return true;
+        }
         // A target record of event 11.
         let r = addr.wrapping_sub(RECORD);
         if let Some(rec) = self.obj.records.get((r / RECORD_SIZE) as usize) {
@@ -1036,9 +1050,6 @@ impl Host for BevyHost<'_> {
             }
         }
         if self.obj.volume_word(addr, out) {
-            return true;
-        }
-        if SHARED.lock().unwrap_or_else(|e| e.into_inner()).read(addr, out) {
             return true;
         }
         // The object's own target record (host 2.23: object +0x9f4), laid out like the records of
@@ -1065,9 +1076,7 @@ impl Host for BevyHost<'_> {
 
     fn write_mem(&mut self, addr: u32, data: &[u8]) -> bool {
         let o = addr.wrapping_sub(self.obj.handle) as usize;
-        let Some(b) = self.obj.mem.get_mut(o..o + data.len()) else {
-            return SHARED.lock().unwrap_or_else(|e| e.into_inner()).write(addr, data);
-        };
+        let Some(b) = self.obj.mem.get_mut(o..o + data.len()) else { return shared_blocks().write(addr, data) };
         b.copy_from_slice(data);
         // A write that reaches the movement vector steers the object like `set_move` does.
         if o < MOVE_VECTOR + 16 && o + data.len() > MOVE_VECTOR {

@@ -94,6 +94,13 @@ pub const M_EX940: Kind = Kind { name: "M_EX940", enmp: 49, model: "M_EX940", de
 /// numbers `spawn_enemy` asks of the data (any row: HP only has to be above 0) [inferred].
 pub const M_EX850: Kind = Kind { name: "M_EX850", enmp: 49, model: "M_EX850", death_effect: false, status: false };
 
+/// `M_EX760` (object 0x131 = 305, `ObjectType` 4, `NeoStatus` 1028, Weight 10, `SpawnLimiter` 7), the enemy of 15 areas (bb08,
+/// ca09, ca13, ca19, hb02, hb08 ..), called by its model (the data gives no name). Its BDX script (7982 words; modes `appear`,
+/// `btl_attack`, `atk_turn`, `atk_jump`, `atk_down`, `footwork`, `mode_revenge`, `leave`, `dead`) hands `enmp` row 36 to
+/// `set_obj_param` (host 2.9 at 0x1cec, in the constructor routine R1cc5 that the init calls at 0x0c02 with 36 as its 8th
+/// word); its `dead` mode (R0dbf at 0x07b2) starts element 2 of its effect file (1.87), sets flags 3 and 6, fades out and hides.
+pub const M_EX760: Kind = Kind { name: "M_EX760", enmp: 36, model: "M_EX760", death_effect: true, status: true };
+
 /// `M_EX420` (object 120, `ObjectType` 4; `00objentry` row 120: `NeoStatus` 1003, flags 4), spawned in 33 areas of the other
 /// worlds (the area survey), called by its model. Its script hands `enmp` row 9 to `set_obj_param` (host 2.9: BDX `M_EX420`
 /// R174d at 0x1774, the constant pushed at 0x063e by the call at 0x0656); its `dead` mode (R082e) starts element 2 of its
@@ -102,11 +109,13 @@ pub const M_EX420: Kind = Kind { name: "M_EX420", enmp: 9, model: "M_EX420", dea
 
 /// `M_EX900` (spawned in 12 areas: eh11, eh25, he09, tt03, tt06, tt07, ..; tt03 b_40 holds one beside two Dusks), called by
 /// its model. Its set-up routine R1ab8 (0x1ab8, one call at 0x08c8) hands `enmp` row 45 to `set_obj_param` (host 2.9, 0x1adf;
-/// the 45 is pushed at 0x08af); its `dead` mode is registered at 0x037d [inferred: same death shape as the other kinds].
+/// the 45 is pushed at 0x08af); its `dead` mode is registered at 0x037d [inferred: same death shape as the other kinds]. NOT in `KINDS`: after a dive it stays
+/// invulnerable (script word +0x18, reset only by event 17 code 2, whose sender the app does not have).
+#[allow(dead_code)] // not in `KINDS` on purpose, see docs/enemies.md "M_EX900"
 pub const M_EX900: Kind = Kind { name: "M_EX900", enmp: 45, model: "M_EX900", death_effect: true, status: true };
 
 /// Every enemy kind the app has.
-pub const KINDS: [&Kind; 11] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX900];
+pub const KINDS: [&Kind; 11] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760];
 
 /// The rigs of the enemy kinds, by `Kind::name` (Shadow and Soldier share `sora::Rigs`' copies).
 #[derive(Resource, Default)]
@@ -1112,6 +1121,8 @@ pub fn spawn_waves(
             let area_byte = area.loaded.as_deref().and_then(|n| n.get(2..)).and_then(|n| n.parse::<u8>().ok()).unwrap_or(0xff);
             battle.defeated.enter(area_byte, kh2_ard::run::keep_for_program(&run.script, rec.programs[0]));
             battle.run = id;
+            // FUN_00168ba8 -> FUN_001a5030: the battle set-up empties the keyed buffers of host 2.21.
+            crate::enemy_host::clear_shared_blocks();
             battle.live.clear();
             battle.events.clear();
             battle.counts.clear();
@@ -1773,21 +1784,29 @@ mod tests {
         assert!(KINDS.iter().any(|k| k.model == "M_EX420" && k.enmp == 9));
     }
 
-    /// tt03's `btl` program 0x49 loads b_40, which holds an `M_EX900` (object 309, a kind of `KINDS`) and two Dusks.
-    /// Needs `KH2_ISO`.
+    /// `M_EX900` is described but NOT a kind of `KINDS` (it would be invulnerable after its first dive: docs/enemies.md
+    /// "M_EX900"), so tt03's b_40 skips it and keeps its two Dusks. Needs `KH2_ISO`.
     #[test]
-    fn tt03_btl_program_49_holds_an_m_ex900() {
+    fn m_ex900_is_described_but_not_spawned() {
+        assert!(!KINDS.iter().any(|k| k.model == "M_EX900"));
+        assert_eq!((M_EX900.enmp, M_EX900.model), (45, "M_EX900"));
         let Ok(iso) = crate::assets::iso_path() else { return };
         if !iso.exists() {
             return;
         }
         let disc = Disc::open(&iso);
+        let rows = {
+            let mut a = disc.0.lock().expect("archive lock");
+            kh2_tables::load::<kh2_tables::tables::Objentry>(&mut a, &kh2_tables::tables::OBJENTRY).expect("objentry").rows
+        };
+        let row = rows.iter().find(|r| r.model_name == "M_EX900").expect("objentry row of M_EX900");
+        assert_eq!((row.object_id, row.object_type, row.neo_status), (309, OBJECT_ENEMY, 3004));
         let groups = area_groups(&disc, "tt03");
         let ard = disc.read("ard/tt03.ard").and_then(|d| kh2_ard::Area::parse(&d)).map(|(a, _)| a).expect("tt03.ard");
         let run = kh2_ard::run::run_area(&ard, [0, 0x49, 0], 0);
         let b40 = btl_groups(&groups, &run).into_iter().find(|g| g.name == "b_40").expect("program 0x49 loads b_40");
-        assert_eq!(b40.members.iter().filter(|m| m.kind.name == M_EX900.name).count(), 1);
-        assert!(KINDS.iter().any(|k| k.model == "M_EX900" && k.enmp == 45));
+        assert!(b40.members.iter().all(|m| m.kind.name == DUSK.name), "no M_EX900 member");
+        assert_eq!(b40.skipped, vec!["M_EX900".to_string()]);
     }
 
     /// tt04's `btl` programs pick their groups (disc): program 0 (a new game) is not in the script and loads none;
@@ -1843,6 +1862,31 @@ mod tests {
         let counts: Vec<i32> = b44.parts.iter().map(|p| counted_at_load(p, 0, &[])).collect();
         eprintln!("b_44 counters at load: {counts:?}");
         assert_eq!(counts.iter().sum::<i32>(), 3 + 8);
+    }
+
+    /// `M_EX760` (object 0x131) is an enemy kind of the app: bb08's btl groups b_20 and b_21 hold it, its `00objentry` row
+    /// is type 4 with `NeoStatus` 1028 and its script's `set_obj_param` row is `enmp` 36 (checked in the disc's table).
+    #[test]
+    fn m_ex760_is_an_enemy_kind_that_bb08_spawns() {
+        assert!(KINDS.iter().any(|k| std::ptr::eq(*k, &M_EX760)));
+        assert_eq!((M_EX760.enmp, M_EX760.model, M_EX760.status, M_EX760.death_effect), (36, "M_EX760", true, true));
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let rows = {
+            let mut a = disc.0.lock().expect("archive lock");
+            kh2_tables::load::<kh2_tables::tables::Objentry>(&mut a, &kh2_tables::tables::OBJENTRY).expect("objentry").rows
+        };
+        let row = rows.iter().find(|r| r.model_name == "M_EX760").expect("objentry row of M_EX760");
+        assert_eq!((row.object_id, row.object_type, row.neo_status), (305, OBJECT_ENEMY, 1028));
+        let groups = area_groups(&disc, "bb08");
+        for name in ["b_20", "b_21"] {
+            let g = groups.iter().find(|g| g.name == name).unwrap_or_else(|| panic!("bb08 has {name}"));
+            assert!(!g.members.is_empty() && g.members.iter().all(|m| m.kind.name == M_EX760.name), "{name} holds only M_EX760");
+            assert!(g.skipped.is_empty(), "{name}: every enemy of the group is a kind of the app, not {:?}", g.skipped);
+        }
     }
 
     fn member(part: usize, spawn_kind: i32, serial: u16, delay: u16, wave: u8) -> Member {

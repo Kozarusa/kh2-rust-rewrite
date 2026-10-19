@@ -28,7 +28,7 @@ use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
 use bevy::prelude::*;
 use kh2_tables::tables as t;
 
-use crate::area::{app_yaw, game_to_app, AreaRecord, WORLD_MAP};
+use crate::area::{self, app_yaw, game_to_app, AreaRecord, WORLD_MAP};
 use crate::assets::{AreaPart, Disc};
 use crate::progress::Progress;
 use crate::skel::{spawn_skinned, Animator, Rig};
@@ -59,7 +59,7 @@ impl Plugin for WorldMapPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MapSpawned>().add_systems(
             Update,
-            (map_spawn.after(crate::area::run_area_script), map_start, map_cursor_follow, map_hide_party).chain(),
+            (map_spawn.after(crate::area::run_area_script), map_start, map_cursor_follow, map_hide_party, map_restore_sora).chain(),
         );
     }
 }
@@ -106,6 +106,13 @@ pub fn symbol_look(record: [u8; 4], colour: u32) -> Look {
         effect5: state > 2,
         flag40: !(state > 1 && record[3] & 2 == 0),
     }
+}
+
+/// The state Twilight Town shows in when its own record is 0 (hidden). [inferred, app only] The app can land only in Twilight Town, so a
+/// hidden Twilight Town symbol would leave the map with nothing to touch and no way out; a story that has not revealed it (the app's
+/// baseline never reveals a world, or a state that reveals the other worlds only) shows it in its normal state anyway.
+pub fn symbol_state(world: Option<u8>, state: u8) -> u8 {
+    if world == Some(area::TWILIGHT_TOWN) && state == 0 { 2 } else { state }
 }
 
 /// The ring kind of the TWTNW symbol (`FUN_002f7cf8`): 6 with story flag 0x481c clear, 8 set; none in states 0 and 1.
@@ -214,7 +221,8 @@ fn map_spawn(
                 let (slot, tint, note) = match class {
                     Class::Symbol => {
                         let w = symbol_world(&exe, e.object);
-                        let record = w.map_or([0; 4], |w| progress.as_ref().map_or([0; 4], |p| p.story().world_record(w as usize)));
+                        let mut record = w.map_or([0; 4], |w| progress.as_ref().map_or([0; 4], |p| p.story().world_record(w as usize)));
+                        record[0] = symbol_state(w, record[0]);
                         let look = symbol_look(record, colour_word(&exe, record[0]));
                         let mut note = format!("world {w:?} record {record:02x?} -> motion slot {:#x}, tint {:.2?}", look.slot, look.tint);
                         if !look.visible() {
@@ -342,6 +350,23 @@ fn map_hide_party(rec: Res<AreaRecord>, mut members: Query<&mut Visibility, With
     }
 }
 
+/// Sora's body shows again once the map is left (a landing): the cursor follow hid it, and nothing else sets it back.
+/// His weapons are set by his own tick.
+fn map_restore_sora(rec: Res<AreaRecord>, sora: Query<&Sora>, mut vis: Query<&mut Visibility>, mut hid: Local<bool>) {
+    if rec.world == WORLD_MAP {
+        *hid = true;
+        return;
+    }
+    if !*hid {
+        return;
+    }
+    let Ok(s) = sora.single() else { return };
+    if let Ok(mut v) = vis.get_mut(s.body) {
+        *v = Visibility::Inherited;
+        *hid = false;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,6 +385,14 @@ mod tests {
         assert_eq!((top.effect3, top.effect5, top.flag40), (false, true, true));
         assert_eq!((ring_kind(1, true), ring_kind(2, false), ring_kind(2, true)), (None, Some(6), Some(8)));
         assert_eq!((class_of(0), class_of(1), class_of(2), class_of(3)), (Some(Class::Symbol), Some(Class::Marker), Some(Class::Cursor), None));
+    }
+
+    #[test]
+    fn a_hidden_twilight_town_shows_normally_and_other_worlds_follow_their_records() {
+        assert_eq!(symbol_state(Some(area::TWILIGHT_TOWN), 0), 2, "baseline, or only the other worlds revealed");
+        assert_eq!(symbol_state(Some(area::TWILIGHT_TOWN), 1), 1, "a dim state is the record's own");
+        assert_eq!(symbol_state(Some(4), 0), 0, "other worlds stay hidden");
+        assert_eq!(symbol_state(None, 0), 0);
     }
 
     #[test]

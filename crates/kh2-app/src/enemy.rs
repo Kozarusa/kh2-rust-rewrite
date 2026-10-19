@@ -100,8 +100,14 @@ pub const M_EX850: Kind = Kind { name: "M_EX850", enmp: 49, model: "M_EX850", de
 /// effect file, fades out and hides, like the Dusk's.
 pub const M_EX420: Kind = Kind { name: "M_EX420", enmp: 9, model: "M_EX420", death_effect: true, status: true };
 
+/// `M_EX880` (object 317 = 0x13d, `ObjectType` 4; `00objentry` row 317: `NeoStatus` 3011, flags 0, `SpawnLimiter` 9), a Nobody
+/// of 13 areas of the other worlds (the area survey: eh12, eh25, hb08, hb18, he09, tt03), called by its model. Its script
+/// hands `enmp` row 52 to `set_obj_param` (host 2.9: BDX `M_EX880` R1191 at 0x1191, the constant pushed at 0x04d3 by the
+/// call at 0x04ec); its `dead` mode (R06c3) starts element 2 of its effect file, fades out and hides, like the Dusk's.
+pub const M_EX880: Kind = Kind { name: "M_EX880", enmp: 52, model: "M_EX880", death_effect: true, status: true };
+
 /// Every enemy kind the app has.
-pub const KINDS: [&Kind; 10] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420];
+pub const KINDS: [&Kind; 11] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX880];
 
 /// The rigs of the enemy kinds, by `Kind::name` (Shadow and Soldier share `sora::Rigs`' copies).
 #[derive(Resource, Default)]
@@ -1766,6 +1772,23 @@ mod tests {
         let b20 = btl_groups(&groups, &run).into_iter().find(|g| g.name == "b_20").expect("program 0xa loads b_20");
         assert_eq!(b20.members.iter().filter(|m| m.kind.name == M_EX420.name).count(), 10);
         assert!(KINDS.iter().any(|k| k.model == "M_EX420" && k.enmp == 9));
+    }
+
+    /// tt03's `btl` program 7 loads b_21, which holds two `M_EX880` (object 317, a kind of `KINDS`; the group's three
+    /// `M_EX950` are a kind the app lacks). Needs `KH2_ISO`.
+    #[test]
+    fn tt03_btl_program_7_holds_two_m_ex880() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let groups = area_groups(&disc, "tt03");
+        let ard = disc.read("ard/tt03.ard").and_then(|d| kh2_ard::Area::parse(&d)).map(|(a, _)| a).expect("tt03.ard");
+        let run = kh2_ard::run::run_area(&ard, [0, 7, 0], 0);
+        let b21 = btl_groups(&groups, &run).into_iter().find(|g| g.name == "b_21").expect("program 7 loads b_21");
+        assert_eq!(b21.members.iter().filter(|m| m.kind.name == M_EX880.name).count(), 2);
+        assert!(KINDS.iter().any(|k| k.model == "M_EX880" && k.enmp == 52));
     }
 
     /// tt04's `btl` programs pick their groups (disc): program 0 (a new game) is not in the script and loads none;

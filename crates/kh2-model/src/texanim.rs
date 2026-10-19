@@ -134,7 +134,7 @@ impl Texa {
         if width > 1024 || height > 1024 {
             return None;
         }
-        let count = if size == 0 { 0 } else { (u16_at(body, 0xe) as usize).min(body.len().saturating_sub(base) / size) };
+        let count = body.len().saturating_sub(base).checked_div(size).map_or(0, |fit| (u16_at(body, 0xe) as usize).min(fit));
         let sprites = (0..count)
             .map(|k| {
                 let src = body.get(base + k * size..).unwrap_or(&[]);

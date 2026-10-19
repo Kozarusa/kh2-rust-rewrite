@@ -340,7 +340,7 @@ Status words as above; nobody has listened to any of this.
   at actor +0x8b0 (`FUN_00168d30` stores `FUN_001a79d8`, entry type 4 of the object's file), method +0x18; that
   method was not found (the vtable word is patched in the model block at load, the decomp has no caller to
   trace). The bone table's own index field equals the bone's position (bones 40 and 41 are torso bones of Sora),
-  so the ids are not bone positions. Tests: `dust_elements_exist_in_tt25_and_not_in_tt02`,
+  so the ids are not bone positions. Tests: `dust_elements_follow_the_area_effect_files_on_the_disc`,
   `foot_dust_starts_the_area_effect_at_the_ground_under_the_foot` (now on tt25).
 
 ## Sound viewer: how to use (WP-SV1; the app's own developer tool, not in the original)

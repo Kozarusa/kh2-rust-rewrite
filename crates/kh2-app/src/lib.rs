@@ -74,6 +74,7 @@ mod struggle;
 mod summon;
 mod texanim;
 mod world;
+mod worldmap;
 
 use std::sync::OnceLock;
 use std::time::Instant;

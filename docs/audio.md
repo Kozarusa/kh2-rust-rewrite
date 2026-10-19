@@ -277,8 +277,8 @@ old line and start the new one every tick).
     (the app's controller has asked for idle before the sound system runs). Log line with
     `KH2_SOUNDLOG=1`: `footstep A000 stop (FUN_0017af10) kind 8 material 0 neo 1 -> None` (tt00,
     stick let go after running; tt00's floor has material 0, so the number is None there: the sound
-    itself was neither produced on a sounding floor in a run nor listened to). Not ported: the dust
-    effects 8 to 11 (effects are not this package's).
+    itself was neither produced on a sounding floor in a run nor listened to). The dust effects 8 to 11 are
+    ported in the section "Enemy voices, enemy footsteps and footstep dust" below (`fx::foot_dust`).
 - **Enemy footsteps.** Shadow and Soldier motions have no trigger 2, so nothing to play. Hook
   for another enemy: in `enemy.rs` where the enemy's motion triggers are walked, resolve
   `footstep_number(record, neo_status, actor_material(desc_flags, ground), kind, &mut counter)`
@@ -322,8 +322,26 @@ Status words as above; nobody has listened to any of this.
   not the bones 0x8028/0x8029/0x802c/0x802d (`FUN_0016aa18` maps them through `*(actor+0x8b0)` vtable +0x18,
   not decoded); (2) no map PAX of tt01, tt02, tt04, tt05, tt10 has an element whose category selects dust
   (tt02: all categories 0; tt04/05: 0 and 0x8000000000000001; tt10: 0x200 damage categories), so the
-  lookup never starts anything on these areas: either the effects live elsewhere or the manager is not the
-  map's PAX. Test `foot_dust_starts_the_area_effect_at_the_ground_under_the_foot` reports this and returns.
+  lookup never starts anything on these areas. WP-AU3 settled this: the manager is the map's PAX
+  (`FUN_0015e6c0` -> `FUN_001db4d0(0x35a7f0, FUN_001491f8(map))`, map +0x50 is the BAR entry of type 18
+  stored by `FUN_00149348`; `0x35a7f0` is installed nowhere else), and the dust elements exist, but in other
+  areas: the categories there are class bit | `1 << (kind + 0x20)` plus bit 63 (for example `0x8000000300000004`:
+  class 2, kinds 0 and 1). Of the 217 maps with an effect file, 34 hold kinds 8 to 11: start dust 10/11 for class 2
+  in al02, hb06, hb07, hb18, he01, mu00, po04, wi00 to wi04 and others; stop dust 8/9 for class 9 in al09,
+  ca10 to ca15, hb10, hb11, he03, lk09, mu02, mu03, po01, po03, tt10 and tt36. So in tt02, tt04 and tt05 the
+  original starts no dust. Disc runs (`KH2_FXLOG=1 KH2_WALK=1`, ground material 3 = class 2):
+  `tt25: foot dust kind 3 (Sora): material 3 class 2 -> element id 4`, run steps kinds 2 and 3 on material 11
+  (class 7) -> element id 9; `al02: foot dust kind 10 (Sora): material 3 class 2 -> element id 10` (and 11, same
+  element, `fx 10 objs 1 batches 1 verts 4`); the stop dust 8/9 found no element where Sora stopped (tt25 and al02
+  have none for the class there, `mask 0x10000000004: no element`). No harness area put Sora on a class 9
+  floor (material 13), so a started stop dust (8/9) was not seen. A screenshot of the al02 start
+  (`KH2_SHOT_AT=3.15`) shows a pale haze on the floor behind Sora; whether that is the dust was not confirmed.
+  Gap (3): the foot bone ids 0x28, 0x29, 0x2c, 0x2d (bone numbers with bit 0x8000) go through the type-4 object
+  at actor +0x8b0 (`FUN_00168d30` stores `FUN_001a79d8`, entry type 4 of the object's file), method +0x18; that
+  method was not found (the vtable word is patched in the model block at load, the decomp has no caller to
+  trace). The bone table's own index field equals the bone's position (bones 40 and 41 are torso bones of Sora),
+  so the ids are not bone positions. Tests: `dust_elements_follow_the_area_effect_files_on_the_disc`,
+  `foot_dust_starts_the_area_effect_at_the_ground_under_the_foot` (now on tt25).
 
 ## Sound viewer: how to use (WP-SV1; the app's own developer tool, not in the original)
 

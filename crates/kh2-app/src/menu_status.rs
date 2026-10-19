@@ -697,6 +697,8 @@ pub struct StatusUi {
     tabs: Vec<Tab>,
     /// The party members after the leader, in party-slot order (`FUN_00282738`'s entries 1..): the members' tabs.
     roster: Vec<crate::menu::party_page::Rostered>,
+    /// The world the party stands in (`AreaRecord::world`, the byte `FUN_00104bd0` copies to `0x33e86c`): `FUN_00282b20` reads it.
+    world: u8,
     pub tab: usize,
     /// The cursor of the numbers page: column and the row index in that column's shown rows.
     pub col: usize,
@@ -747,11 +749,23 @@ fn gather(p: &Progress, ui: &StatusUi, tab: Tab, sora: Option<&Sora>, data: Opti
         max_hp: sora.map_or(i32::from(p.sora().hp_max), |s| s.stats.max_hp),
         mp: sora.map_or(i32::from(p.sora().mp), |s| s.mp),
         max_mp: data.map_or(i32::from(p.sora().mp_max), |d| d.sora_max_mp),
-        forms: [1, 2, 3, 4].map(|f| p.owns_form(f)),
+        forms: forms_available(p, ui.world),
         summons: ui.tables.summon_items.iter().any(|&i| i != 0 && p.item_count(i) > 0),
         summons_held: ui.tables.summon_items.map(|i| i != 0 && p.item_count(i) > 0),
     };
     numbers(p, &ui.rules, &live)
+}
+
+/// `FUN_00282b20`: the worlds in which no form can be used (the list at 0x3823a8 is 10, 11, end; the byte tested is the
+/// header byte `+0xc` of the save block at 0x33e860, which `FUN_00104bd0` sets to the world being entered: Pride Lands,
+/// Atlantica). `FUN_00282b80` then reports a form only when the world is not in the list and the form is held.
+pub fn forms_blocked(world: u8) -> bool {
+    matches!(world, 10 | 11)
+}
+
+/// The forms `FUN_00282b80` reports for the tabs: held and not in a world that blocks forms.
+fn forms_available(p: &Progress, world: u8) -> [bool; 4] {
+    [1, 2, 3, 4].map(|f| !forms_blocked(world) && p.owns_form(f))
 }
 
 /// Reads the tables the screen needs, once.
@@ -791,7 +805,7 @@ fn load(ui: &mut StatusUi, disc: &Disc, data: Option<&GameData>) {
 
 /// The tabs of the list: the mask of the party (the leader and the members standing in the field), forms and summons.
 fn tab_list(p: &Progress, ui: &StatusUi) -> Vec<Tab> {
-    let forms = [1, 2, 3, 4].map(|f| p.owns_form(f));
+    let forms = forms_available(p, ui.world);
     let summons = ui.tables.summon_items.iter().any(|&i| i != 0 && p.item_count(i) > 0);
     tabs(tab_mask(1 + ui.roster.len() as u32, forms, summons))
 }
@@ -943,6 +957,7 @@ fn tick(
     data: Option<Res<GameData>>,
     sora: Query<&Sora>,
     members: Query<&crate::party::PartyMember>,
+    area: Option<Res<crate::area::AreaRecord>>,
     real: Res<Time<Real>>,
 ) {
     let want = if matches!(menu.phase, Phase::Opening | Phase::Open | Phase::Closing) && PAGES.contains(&menu.page) { menu.page } else { 0 };
@@ -958,6 +973,7 @@ fn tick(
         return;
     }
     let Some(p) = progress else { return };
+    ui.world = area.map_or(0, |a| a.world);
     if !ui.ready {
         load(&mut ui, &disc, data.as_deref());
     }
@@ -1363,6 +1379,17 @@ mod tests {
         assert_eq!(tabs(tab_mask(3, [false; 4], false)), vec![Tab::Sora, Tab::Member(1), Tab::Member(2)]);
         assert_eq!(tabs(tab_mask(2, [true, false, false, false], false)), vec![Tab::Sora, Tab::Form(1), Tab::Member(1)]);
         assert_eq!(Tab::Member(1).index(), 6);
+    }
+
+    /// `FUN_00282b20`: forms are reported in no world of the list 10, 11 (Pride Lands, Atlantica); the mask then has no form bits.
+    #[test]
+    fn no_form_tabs_in_the_worlds_that_block_forms() {
+        assert!(forms_blocked(10) && forms_blocked(11));
+        assert!(!forms_blocked(2) && !forms_blocked(9) && !forms_blocked(12) && !forms_blocked(0));
+        let held = [true; 4];
+        let shown = |world: u8| held.map(|h| h && !forms_blocked(world));
+        assert_eq!(tabs(tab_mask(1, shown(10), false)), vec![Tab::Sora]);
+        assert_eq!(tabs(tab_mask(1, shown(2), false)).len(), 5);
     }
 
     fn fmlv() -> FormLevels {

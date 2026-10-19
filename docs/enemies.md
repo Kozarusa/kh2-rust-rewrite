@@ -691,6 +691,48 @@ that hand a hit record to the player) was not checked; the groups that mix it wi
 reader of block +0x28 and the role of host 1.162 were not traced (`bdx` shows no `ldf +0x28`; host 1.162 is unnamed in `names.rs`); the object
 with spawn byte 92 was not identified.
 
+## The enemy M_EX110 (WP-EN10b)
+
+`M_EX110` (object 71, `00objentry` row 71: ObjectType 4, `NeoStatus` 1034, flags 8, Weight 100, `SpawnLimiter` 8, no spawn objects;
+`enemy::M_EX110`, called by its model: the data gives no name) is a striped black and white Heartless of the 12 areas the area survey lists
+(al00, al01, al03, al07, al10, al12, ..). Its BDX script (7155 words, `cargo run -p kh2 -- bdx M_EX110`) has the modes `appear`, `mode_battle`,
+`mode_revenge`, `move_idle`, `idle`, `atk_foot_stamp`, `atk_rocket_attack` and `dead` (the ones a run reached; the entries are event 11
+(0x001a, a handler for message 328), damage (0x079a), main (0x07c7) and init (0x08b7)).
+
+- **Stats.** The set-up routine R19da (called at 0x0bc0 with `0, 47, 300, 600, 8, 4, 0.7, 0.35` after the object) passes its first value, 0,
+  to `set_obj_param` (host 2.9 at 0x1a01): `enmp` row 0 (HP 50, Experience 50: `experience: enmp 0 defeated: +2 (lvpm 4 x enmp 50)`). The harness
+  enemy has 10 HP. The second value, 47, is stored at object +0x1c (0x1a05) and is the drop row host 1.92 is asked for in `dead`
+  (`drop (host 1.92) asked row 47`). Row 0 is the value the script pushes; no other `set_obj_param` call exists in the script.
+- **Death.** `dead` starts element 2 of its effect file (1.87), releases it (0.79) and asks 1.92 for the drop, like the Dusk's:
+  `Kind::death_effect` true.
+- **Fades.** `move_idle` sets flags 1, 3 and 5 (bit 3 is the unhittable bit) and fades out; the next `FadeIn` (1.20, 20 frames) clears them. The
+  figure is semi-transparent or gone for part of every cycle (screenshots below).
+- **New host calls.** 1.99 `ground_depth` (FUN_001730e8: minus the larger of 0 and the floor height less the object's own height, both in the
+  game's space) is Impl from the app's floor probe (`ground_position`, as 1.98); 2.6 `in_reaction` (FUN_0018dfa0 -> FUN_00185a08: motion state 10 to
+  39) is Approx on the app's motion slot; 2.67 `new_hit_group` (FUN_001bdf00: the counter at 0x1d5dd4c, 0x100 after 0x10000000) is Approx with the
+  host's own counter starting at 0 (`enemy_host.rs`; `friend_host.rs` keeps its own). The ones it reaches that were already answered: 2.21, 1.206,
+  1.171, 1.121, 1.53, 1.54 (Stub), 1.56, 1.120, 2.5, 1.111, 1.58, 1.62, 1.64, 1.140 (Approx).
+
+Acceptance runs (WP-EN10b), al03 (smallest listed area): `btl` program 2 loads b_01 with five `M_EX110`, four Shadows and no other kind the app lacks
+beside ten `M_EX630` (test `m_ex110_is_an_enemy_kind_with_its_objentry_row`, disc). The kind-2 group 0x1b creates three of them (serials 0xfe, 0xff,
+0x109, wave 3) at the record's points (all zero in this group: the harness Sora stands among them). `KH2_PROGRAMS=0,2,0 KH2_WAVE_GROUP=b_01
+KH2_WAVE_AT_GROUP=1 KH2_NO_PARTY=1 KH2_AREALOG=1 KH2_BDXLOG=1 KH2_HITLOG=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1 kh2-game al03` (`KH2_KEYS` Q at 8 s, J every
+0.45 s from 30 s to 95 s, shot at 100 s): `SetObjParam { a: 0 }`, `M_EX110 hit: atkp 126 damage 3 hp 7` .. `atkp 130 damage 5 hp 0`, `experience: enmp 0
+defeated: +2`, `hp 0: switching to mode dead`, `drop (host 1.92) asked row 47`, `prize: drop of row 47`. In 100 s Sora stayed at 20/20, the modes seen
+were the eight above, and the final table has no Missing line except 0.68 (below); `accept.ps1 -Only combat-ground,tt04-dusk,idle-hud` PASS (`local\accept\en10b`): idle-hud shows the HUD and Sora, combat-ground Sora hurt beside four Shadows, tt04-dusk Sora, Donald and Goofy with a `Dusk Hurt hp 4/32` entry. PNGs looked at (`local\ex110_*.png`):
+idle at 9 s (a striped Heartless behind Sora, three `M_EX110 Idle hp 10/10` entries), idle at 5 s (the same figure half transparent), a hit at 8 s
+(damage numbers 5, entries `Hurt hp 3/10` and `Hurt hp 0/10`, hit sparks, a dark figure blown beside Sora), after defeats at 11 s ("OBTAINED MUNNY", prize
+orbs, one entry left), a 100 s soak frame in the fade phase (the entry `Idle hp 10/10` listed, no figure drawn).
+
+Gaps: **host 0.68** (FUN_0016cf78 -> FUN_0017c398: a vector turned about the X axis by an angle, the matrix from FUN_0011b490 -> FUN_002fb580 beside
+0.13's Y turn FUN_0011b4d8 -> FUN_002fb628; the axis is read from the libvu0 order and is [inferred]) is not named in `kh2-bdx` `names.rs`, so
+the call reaches the host as an unknown one and fails: `unimplemented host call 0.68 (?)` then `script error BadAddress(0) at 0x177d` each time
+`atk_rocket_attack` starts (R1778, 60 degrees = 1.047198 turn of a facing vector). The script thread ends, the mode falls to `idle` and the
+enemy tries again, so it never soft-locks, but the rocket attack never fires. The fix is outside this WP's ownership (see the report). The attack
+hit paths (`atk_foot_stamp`, `atk_rocket_attack`: host 2.5 and the records handed to the player) were not seen hurting Sora; the other areas
+(al00 b_00 has 14 members of this kind with mixed Shadows and Soldiers but its kind-2 groups were not entered in 70 s) were not run; the role of
+event 11 (message 328, handler 0x001a: starts action 135 and sets mode `rc_address_shift`) was not traced.
+
 ## The Struggle (WP-7E)
 
 The Struggle rules are in `docs/struggle.md`. For the opponents: b_50, b_51 and b_52 (missions `TT04_MS00`,

@@ -744,6 +744,15 @@ impl BevyHost<'_> {
                     approx(Value::None, "carried out on the other object at the end of the tick (the object a script made this tick takes the point where it appears); the mover's sync (FUN_0016a618) is the position itself")
                 }
             }
+            // 1.99 ground_depth (FUN_001730e8): minus the larger of 0 and the floor height (FUN_00183808) less the object's own
+            // height (+4 of FUN_0016b960), both in the game's space (Y down: the app's height negated).
+            Call::Func { group: 1, index: 99, args } => {
+                let o = args.first().map_or(0, |a| a.int() as u32);
+                match (self.ground_position(o), self.pos_of(o)) {
+                    (Some(g), Some(p)) => imp(Value::Float(-(to_game(g)[1] - to_game(p)[1]).max(0.0))),
+                    _ => missing(Value::Float(0.0), "ground depth of an object this host does not know"),
+                }
+            }
             Call::Func { group: 1, index: 98, args } => match self.ground_position(args[0].int() as u32) {
                 Some(p) => imp(Value::Vec(to_game(p))),
                 None => missing(Value::Vec([0.0; 4]), "ground position of an object other than self and the player"),
@@ -986,6 +995,21 @@ impl BevyHost<'_> {
         match c {
             Call::Target { .. } => imp(Value::Handle(TARGET)),
             Call::LastAttacker { .. } => imp(Value::Handle(PLAYER)),
+            // 2.6 in_reaction (FUN_0018dfa0 -> FUN_00185a08): the object has a controller (+0x140) and its motion state (+0x154)
+            // is 10 to 39. The app's slot is that state (as host 1.15 answers it).
+            Call::Func { group: 2, index: 6, args } => {
+                let o = args.first().map_or(0, |a| a.int() as u32);
+                let slot = if self.names_other(o) { self.obj.others.get(&o).and_then(|x| x.slot) } else { self.obj.slot };
+                approx(Value::Bool(slot.is_some_and(|s| (10..40).contains(&s))), "the app's motion slot stands for the game's +0x154 [inferred, as host 1.15]")
+            }
+            // 2.67 new_hit_group (FUN_001bdf00): the next id of the counter at 0x1d5dd4c, 0x100 after 0x10000000.
+            Call::Func { group: 2, index: 67, .. } => {
+                static HIT_GROUP: Mutex<i32> = Mutex::new(0);
+                let mut counter = HIT_GROUP.lock().unwrap_or_else(|e| e.into_inner());
+                *counter = if *counter + 1 > 0x1000_0000 { 0x100 } else { *counter + 1 };
+                let next = *counter;
+                approx(Value::Int(next), "the counter starts at 0 here; the game's is shared with every other user of FUN_001bdf00")
+            }
             Call::HitStun { .. } => approx(Value::Bool(self.obj.reacting), "the game's flags (+0x160) are read as 'a hit reaction plays'"),
             Call::HitIsReal { hit } => imp(Value::Bool(self.obj.hits.get(hit).is_none_or(|h| h.0))),
             // FUN_001b2148 builds the status block from `enmp` row `a`; the app built it at spawn from

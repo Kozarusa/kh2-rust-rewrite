@@ -2353,6 +2353,7 @@ pub fn receive_hits(
     mut sora_q: Query<(Entity, &mut Sora, &mut Fighter, Option<&ReactionStatus>)>,
     mut anims: Query<&mut Animator>,
     mut ineffective: MessageWriter<IneffectiveHit>,
+    (mut damaged, block): (MessageWriter<crate::abilities::SoraDamaged>, Res<crate::abilities::Abilities>),
 ) {
     let Ok((me, mut s, mut fighter, status)) = sora_q.single_mut() else { return };
     let Some(reaction) = reaction else { return };
@@ -2389,7 +2390,10 @@ pub fn receive_hits(
         s.air_recoil = false;
         let from = enemies.get(h.attacker).map(|e| e.stats).unwrap_or(s.stats);
         let useless = crate::combat::hit_is_ineffective(atk, &s.stats);
-        let dmg = if useless { data.damage(atk, &from, &s.stats) } else { data.damage(atk, &from, &s.stats).max(1) };
+        // Defender (FUN_001a0610): at low HP the block's defense bonus lowers the damage too.
+        let mut to = s.stats;
+        to.defense += crate::abilities::defender_bonus(block.block(), s.hp, s.stats.max_hp);
+        let dmg = if useless { data.damage(atk, &from, &to) } else { data.damage(atk, &from, &to).max(1) };
         // FUN_00185a68: a hit that would bring HP to the minimum (0 for Sora) asks vtable +0x58
         // (FUN_00176d78: Second Chance, Once More) whether he survives it with 1 HP.
         let second_chance = abilities.has_bit(crate::abilities::BIT_SECOND_CHANCE);
@@ -2407,6 +2411,8 @@ pub fn receive_hits(
             );
         }
         s.hp = (s.hp - dmg).max(0);
+        // The HP method's ability effects (Damage Drive, MP Rage): abilities::apply_damage_rewards.
+        damaged.write(crate::abilities::SoraDamaged { amount: dmg });
         if useless {
             ineffective.write(IneffectiveHit { attacker: h.attacker, target: me, atkp: h.atkp, point: h.point });
         }

@@ -104,6 +104,97 @@ pub fn lethal_hit_damage(hp: i32, min: i32, dmg: i32, survives: bool) -> i32 {
     if hp - dmg <= min && survives { (hp - min - 1).max(0) } else { dmg }
 }
 
+/// `FUN_001a0be0(status)`: HP (status +0) at or below a quarter of the maximum (status +4, shifted
+/// right by 2 with the compiler's rounding toward zero for a negative value).
+pub fn hp_is_low(hp: i32, max_hp: i32) -> bool {
+    hp <= (if max_hp < 0 { max_hp + 3 } else { max_hp }) >> 2
+}
+
+/// Defender (`FUN_001a0610`, the generic branch): the victim's defense `status +0x18c` is lowered by
+/// the block byte `+0x2c` (`defense_bonus`) too, but only while the victim's HP is low
+/// (`FUN_001a0be0`). Returns the extra defense, 0 when HP is not low.
+pub fn defender_bonus(block: &Block, hp: i32, max_hp: i32) -> i32 {
+    if hp_is_low(hp, max_hp) { i32::from(block.defense_bonus as u8) } else { 0 }
+}
+
+/// Berserk Charge (`FUN_001a0610`, attack rows whose byte `+5` is 0, the strength stat): while the
+/// attacker's MP charge runs (`FUN_001a05d0`: status `+0x1c0` above 0) and his object has bit 4 of
+/// `+0x588` (taken as set for Sora [inferred, as in prize.rs for Draw]) the block's `+0x4e`
+/// (`berserk_charge`) is added to the strength. Returns the amount to add.
+pub fn berserk_attack(block: &Block, charging: bool) -> i32 {
+    if charging { i32::from(block.berserk_charge) } else { 0 }
+}
+
+/// MP Rage (`FUN_00176c98`, the HP method of the player): when HP drops (negative change) and the MP
+/// charge is not running, `FUN_00186368` adds `trunc(damage / maximum HP * mp_rage)` MP (block `+0x54`)
+/// when that is above 0. `FUN_00186368` first refuses when the object's `+0x7f8` has bit 4 [not modelled].
+pub fn mp_rage_gain(block: &Block, charging: bool, damage: i32, max_hp: i32) -> i32 {
+    if charging || damage <= 0 || max_hp <= 0 {
+        return 0;
+    }
+    ((damage as f32 / max_hp as f32) * block.mp_rage) as i32
+}
+
+/// Damage Drive (`FUN_001792f0`, the HP method of the player, run before `FUN_00176c98`): a drop of
+/// HP while the status kind (`+0x1af`) is 1 (gauge mode, not in a form) feeds `FUN_001788d8` with
+/// `damage / maximum HP * damage_drive` (block `+0x50`) drive units. Returns the units (0.0 for no loss).
+pub fn damage_drive_units(block: &Block, damage: i32, max_hp: i32) -> f32 {
+    if damage <= 0 || max_hp <= 0 {
+        return 0.0;
+    }
+    (damage as f32 / max_hp as f32) * block.damage_drive
+}
+
+/// Sora lost `amount` HP to a hit (`FUN_00185a68` calls the HP method with the negative amount, after
+/// Second Chance changed it). `sora::receive_hits` writes it; `apply_damage_rewards` runs the abilities.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SoraDamaged {
+    pub amount: i32,
+}
+
+/// The HP method's side effects for the player: Damage Drive (`FUN_001792f0`, gauge mode only) fills the
+/// drive gauge through `FUN_001788d8`, then MP Rage (`FUN_00176c98`) gives MP unless the MP charge runs.
+#[allow(clippy::too_many_arguments)]
+fn apply_damage_rewards(
+    mut hits: MessageReader<SoraDamaged>,
+    abilities: Res<Abilities>,
+    data: Res<crate::data::GameData>,
+    mut sora: Query<&mut sora::Sora>,
+    drive: Option<ResMut<crate::drive::DriveState>>,
+    magic: Option<Res<crate::magic::MagicState>>,
+    lib: Option<Res<crate::prize::PrizeLib>>,
+) {
+    let Ok(mut s) = sora.single_mut() else {
+        hits.clear();
+        return;
+    };
+    let mut drive = drive;
+    let charging = magic.as_ref().is_some_and(|m| m.charge.active());
+    let block = abilities.block();
+    for h in hits.read() {
+        if let (Some(d), Some(lib)) = (drive.as_deref_mut(), lib.as_ref())
+            && !d.in_form
+        {
+            let units = damage_drive_units(block, h.amount, s.stats.max_hp);
+            let gain = if units > 0.0 { lib.gauge_units(units, charging, block.drive_gain_charging) } else { 0 };
+            if gain > 0 {
+                d.points.gain(gain);
+                if std::env::var_os("KH2_ABILITYLOG").is_some() {
+                    info!("abilities: Damage Drive: {} damage gives {gain} drive units (gauge {}.{:02})", h.amount, d.points.whole, d.points.fraction);
+                }
+            }
+        }
+        let mp = mp_rage_gain(block, charging, h.amount, s.stats.max_hp);
+        if mp > 0 {
+            let before = s.mp;
+            s.mp = (s.mp + mp).min(data.sora_max_mp);
+            if std::env::var_os("KH2_ABILITYLOG").is_some() {
+                info!("abilities: MP Rage: {} damage gives {mp} MP ({before} -> {})", h.amount, s.mp);
+            }
+        }
+    }
+}
+
 /// Leaf Bracer (Cure's script, event 20 at word 0x1e8 of every `CURE_*.mag`): when the caster has
 /// bit 114 (host 1.343 = `FUN_00170c28`) and the cast's target is the caster itself (host 1.130
 /// answers 0), host 1.91 (`FUN_00172fe8` -> `FUN_00175aa8`) writes 60.0 into the caster's +0xb00.
@@ -780,6 +871,7 @@ pub struct AbilitiesPlugin;
 
 impl Plugin for AbilitiesPlugin {
     fn build(&self, app: &mut App) {
+        app.add_message::<SoraDamaged>();
         let rules = {
             let disc = app.world().resource::<Disc>();
             let mut a = disc.0.lock().unwrap();
@@ -803,7 +895,8 @@ impl Plugin for AbilitiesPlugin {
                     .chain()
                     .after(Sim::Weapon)
                     .before(Sim::Sora),
-            );
+            )
+            .add_systems(FixedUpdate, apply_damage_rewards.in_set(Sim::SoraHurt).after(sora::receive_hits));
     }
 }
 
@@ -1037,6 +1130,59 @@ mod tests {
         assert_eq!(r.growth_ability(0, 1), Some(94));
         assert_eq!(r.growth_ability(3, 4), Some(109));
         assert_eq!(r.growth_ability(0, 0), None);
+    }
+
+    #[test]
+    fn defender_applies_only_at_low_hp() {
+        // FUN_001a0be0: HP at or below a quarter of the maximum (integer shift).
+        assert!(hp_is_low(25, 100) && !hp_is_low(26, 100));
+        assert!(hp_is_low(0, 3) && !hp_is_low(1, 3), "3 >> 2 is 0");
+        assert!(hp_is_low(-1, -3), "a negative maximum adds 3 before the shift");
+        let mut b = Block::default();
+        assert_eq!(defender_bonus(&b, 10, 100), 0, "no Defender: the byte is 0");
+        b.defense_bonus = 4;
+        assert_eq!(defender_bonus(&b, 25, 100), 4);
+        assert_eq!(defender_bonus(&b, 80, 100), 0, "healthy: nothing");
+        b.defense_bonus = -1;
+        assert_eq!(defender_bonus(&b, 1, 100), 255, "the game reads the byte unsigned (lbu)");
+        let Some(r) = rules() else { return };
+        let d = with(&r, &[id::DEFENDER]);
+        assert!(d.block().defense_bonus > 0);
+        assert_eq!(defender_bonus(d.block(), 10, 100), i32::from(d.block().defense_bonus));
+    }
+
+    #[test]
+    fn berserk_charge_adds_strength_only_while_charging() {
+        let mut b = Block::default();
+        assert_eq!(berserk_attack(&b, true), 0);
+        b.berserk_charge = 7;
+        assert_eq!(berserk_attack(&b, true), 7);
+        assert_eq!(berserk_attack(&b, false), 0);
+        let Some(r) = rules() else { return };
+        let a = with(&r, &[id::BERSERK_CHARGE]);
+        assert!(a.block().berserk_charge > 0);
+        assert_eq!(berserk_attack(a.block(), true), i32::from(a.block().berserk_charge));
+    }
+
+    #[test]
+    fn mp_rage_and_damage_drive_follow_the_hp_method() {
+        let mut b = Block::default();
+        assert_eq!(mp_rage_gain(&b, false, 50, 100), 0, "no MP Rage: nothing");
+        assert_eq!(damage_drive_units(&b, 50, 100), 0.0);
+        b.mp_rage = 40.0;
+        b.damage_drive = 10.0;
+        assert_eq!(mp_rage_gain(&b, false, 50, 100), 20);
+        assert_eq!(mp_rage_gain(&b, false, 1, 100), 0, "0.4 truncates to 0");
+        assert_eq!(mp_rage_gain(&b, true, 50, 100), 0, "not while the MP charge runs");
+        assert_eq!(mp_rage_gain(&b, false, 0, 100), 0);
+        assert_eq!(damage_drive_units(&b, 25, 100), 2.5);
+        assert_eq!(damage_drive_units(&b, 0, 100), 0.0);
+        assert_eq!(damage_drive_units(&b, 5, 0), 0.0);
+        let Some(r) = rules() else { return };
+        let a = with(&r, &[id::MP_RAGE, id::DAMAGE_DRIVE]);
+        assert!(a.block().mp_rage > 0.0 && a.block().damage_drive > 0.0);
+        assert!(mp_rage_gain(a.block(), false, 100, 100) > 0);
+        assert!(damage_drive_units(a.block(), 100, 100) > 0.0);
     }
 
     #[test]

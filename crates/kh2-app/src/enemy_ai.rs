@@ -57,6 +57,8 @@ pub struct AiHit {
     pub real: bool,
     /// The effective reaction (the hit record's byte +0x26, host 2.7).
     pub reaction: u8,
+    /// The id of the attack row that hit (host 2.45 answers it).
+    pub atkp: i16,
 }
 
 struct Script {
@@ -457,14 +459,14 @@ fn ai_update(
     if trace.tick.is_multiple_of(SUMMARY_EVERY) {
         trace.summary();
     }
-    let mut hits: HashMap<Entity, Vec<(bool, u8)>> = HashMap::new();
+    let mut hits: HashMap<Entity, Vec<(bool, u8, i16)>> = HashMap::new();
     for h in hit_msgs.read() {
-        hits.entry(h.target).or_default().push((h.real, h.reaction));
+        hits.entry(h.target).or_default().push((h.real, h.reaction, h.atkp));
     }
     if let Some((name, reaction, at)) = forced_hit().filter(|(_, _, at)| !*forced_done && trace.tick >= *at)
         && let Some((ent, ..)) = q.iter().find(|(_, _, e, _, _)| e.alive() && e.name == name)
     {
-        hits.entry(ent).or_default().push((true, *reaction));
+        hits.entry(ent).or_default().push((true, *reaction, 0));
         *forced_done = true;
         info!("bdx: KH2_BDX_HIT: {name} gets a real hit with reaction {reaction} (tick {at})");
     }
@@ -514,6 +516,14 @@ fn ai_update(
         obj.done = anim.slot.is_some() && (anim.finished || wrapped);
         obj.slot = anim.slot;
         obj.frame = anim.frame;
+        // Host 1.13: the next queued motion starts when the playing one has ended.
+        if obj.done && obj.motion_req.is_none() && !obj.motion_queue.is_empty() {
+            let (slot, blend) = obj.motion_queue.remove(0);
+            obj.motion_req = Some(crate::enemy_obj::MotionReq { slot, blend, start: None });
+            obj.slot = Some(slot);
+            obj.done = false;
+            obj.blend_left = blend.max(0.0);
+        }
         obj.blend_left = (obj.blend_left - 1.0).max(0.0);
         obj.spawn_kind = e.spawn_kind;
         obj.spawn_params = e.spawn_params;
@@ -555,10 +565,10 @@ fn ai_update(
             host.trace.line(host.tag, "hp 0: switching to mode dead");
             rt.set_mode_named(&mut host, "dead");
         }
-        for (real, reaction) in hits.remove(&ent).unwrap_or_default() {
+        for (real, reaction, atkp) in hits.remove(&ent).unwrap_or_default() {
             host.obj.next_hit += 1;
             let h = HIT + host.obj.next_hit;
-            host.obj.hits.insert(h, (real, reaction));
+            host.obj.hits.insert(h, (real, reaction, atkp));
             host.trace.line(host.tag, &format!("event 6: hit, real {real}, reaction {reaction}"));
             rt.event(&mut host, 6, &[h]);
         }
@@ -652,6 +662,11 @@ fn ai_update(
             e.hp = e.stats.max_hp;
             *enmp = row;
             trace.line(tag, &format!("status block rebuilt from enmp row {row}: {} HP", e.hp));
+        }
+        // Host 1.311: byte i of the status block's damage scales = the row's weakness i times the percent, rounded up.
+        for (i, pct) in std::mem::take(&mut obj.weak_scale) {
+            let base = data.enemy_stats(*enmp, 1).weakness[i];
+            e.stats.weakness[i] = (base * pct + 99) / 100;
         }
         e.min_hp = obj.hp_min;
         if obj.hp_add != 0 {

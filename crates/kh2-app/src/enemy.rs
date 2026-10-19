@@ -100,8 +100,13 @@ pub const M_EX850: Kind = Kind { name: "M_EX850", enmp: 49, model: "M_EX850", de
 /// effect file, fades out and hides, like the Dusk's.
 pub const M_EX420: Kind = Kind { name: "M_EX420", enmp: 9, model: "M_EX420", death_effect: true, status: true };
 
+/// `M_EX900` (spawned in 12 areas: eh11, eh25, he09, tt03, tt06, tt07, ..; tt03 b_40 holds one beside two Dusks), called by
+/// its model. Its set-up routine R1ab8 (0x1ab8, one call at 0x08c8) hands `enmp` row 45 to `set_obj_param` (host 2.9, 0x1adf;
+/// the 45 is pushed at 0x08af); its `dead` mode is registered at 0x037d [inferred: same death shape as the other kinds].
+pub const M_EX900: Kind = Kind { name: "M_EX900", enmp: 45, model: "M_EX900", death_effect: true, status: true };
+
 /// Every enemy kind the app has.
-pub const KINDS: [&Kind; 10] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420];
+pub const KINDS: [&Kind; 11] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX900];
 
 /// The rigs of the enemy kinds, by `Kind::name` (Shadow and Soldier share `sora::Rigs`' copies).
 #[derive(Resource, Default)]
@@ -1587,7 +1592,7 @@ pub fn receive_hits(
             hit_part_plain: true,
         };
         let out = rules::victim_outcome(&rules::HitRow::from_atkp(atk), useless, &ctx, &reaction.patn, &reaction.defaults, &reaction.consts);
-        ai_hits.write(crate::enemy_ai::AiHit { target: h.target, real: rules::reaction_class(out.effective) >= 2, reaction: out.effective });
+        ai_hits.write(crate::enemy_ai::AiHit { target: h.target, real: rules::reaction_class(out.effective) >= 2, reaction: out.effective, atkp: h.atkp });
         // Dying is not part of the reaction rules: the last hit always launches.
         let d = &reaction.defaults;
         let action = match out.action {
@@ -1766,6 +1771,23 @@ mod tests {
         let b20 = btl_groups(&groups, &run).into_iter().find(|g| g.name == "b_20").expect("program 0xa loads b_20");
         assert_eq!(b20.members.iter().filter(|m| m.kind.name == M_EX420.name).count(), 10);
         assert!(KINDS.iter().any(|k| k.model == "M_EX420" && k.enmp == 9));
+    }
+
+    /// tt03's `btl` program 0x49 loads b_40, which holds an `M_EX900` (object 309, a kind of `KINDS`) and two Dusks.
+    /// Needs `KH2_ISO`.
+    #[test]
+    fn tt03_btl_program_49_holds_an_m_ex900() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let groups = area_groups(&disc, "tt03");
+        let ard = disc.read("ard/tt03.ard").and_then(|d| kh2_ard::Area::parse(&d)).map(|(a, _)| a).expect("tt03.ard");
+        let run = kh2_ard::run::run_area(&ard, [0, 0x49, 0], 0);
+        let b40 = btl_groups(&groups, &run).into_iter().find(|g| g.name == "b_40").expect("program 0x49 loads b_40");
+        assert_eq!(b40.members.iter().filter(|m| m.kind.name == M_EX900.name).count(), 1);
+        assert!(KINDS.iter().any(|k| k.model == "M_EX900" && k.enmp == 45));
     }
 
     /// tt04's `btl` programs pick their groups (disc): program 0 (a new game) is not in the script and loads none;

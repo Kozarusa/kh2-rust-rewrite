@@ -20,6 +20,9 @@ use crate::skel::Rig;
 use crate::world::World;
 use crate::SCALE;
 
+/// The keyed buffers of host 2.21 (the game's list at 0x1c95528 is global to every object).
+static SHARED: std::sync::LazyLock<std::sync::Mutex<kh2_bdx::shared::SharedBlocks>> = std::sync::LazyLock::new(Default::default);
+
 /// Turn rate in radians per tick when a script passes speed 0 ("the object's own rate"). The game reads
 /// it from the object (+0x11c); where that value comes from was not found, this is the rate the
 /// placeholder enemies used (5 rad/s).
@@ -300,6 +303,8 @@ impl BevyHost<'_> {
             return;
         }
         self.trace.line(self.tag, &format!("motion request slot {slot} blend {blend}{}", if checked { " (checked)" } else { "" }));
+        // [inferred] a motion started by the script replaces what was queued behind the old one.
+        o.motion_queue.clear();
         o.slot = Some(slot);
         o.done = false;
         o.frame = start.unwrap_or_else(|| self.env.rig.mset.get(slot).and_then(|s| s.motion.as_ref()).map_or(0.0, |m| m.frame_start));
@@ -896,6 +901,36 @@ impl BevyHost<'_> {
                 Value::None,
                 "the player-side link (FUN_001beb90: parent +0x570, mover 3) is not in the app: Sora is not attached to the Dancer during its force dance",
             ),
+            // 1.13 queue_motion on this object (0x1703d8 -> FUN_0017e170): appends (slot, blend) to the 4-entry ring
+            // at the motion controller +0x3c; the consumer of that ring was not traced.
+            Call::Func { group: 1, index: 13, args } if args[0].int() as u32 == me => {
+                if let Ok(slot) = usize::try_from(args[1].int()) {
+                    if self.obj.motion_queue.len() == 4 {
+                        self.obj.motion_queue.remove(0);
+                    }
+                    self.obj.motion_queue.push((slot, args[2].float()));
+                }
+                approx(Value::None, "the queue's consumer was not traced: the first entry starts when the playing motion ends, a new play_motion drops the queue [inferred]")
+            }
+            // 1.311 set_scaled_byte (0x174238 -> FUN_001a0ba0): byte +0x1a8 + i of the status block = (halfword i of the
+            // enmp row's table (+0x48) * percent + 99) / 100. FUN_001a0610 multiplies the damage by byte (attack
+            // element) and byte +0x1ae (i = 6) and FUN_0018b618 makes a hit ineffective when their product is 0:
+            // `Stats::weakness`, which `enemy_ai` rescales from the row.
+            Call::Func { group: 1, index: 311, args } if args[0].int() as u32 == GAUGES => match usize::try_from(args[1].int()) {
+                Ok(i) if i < 7 => {
+                    self.obj.weak_scale.push((i, args[2].int()));
+                    imp(Value::None)
+                }
+                _ => missing(Value::None, "set_scaled_byte with an index outside the seven damage scales"),
+            },
+            // 1.213 (0x1707d8): FUN_001699a8 of the object at +4 of the context the argument points at: the halfword at +0x4c
+            // of the object's `00objentry` row, which is `NeoStatus` (1 for every P_EX100 row, Sora's forms; the script
+            // compares it with 1 to ask "is the target Sora"). The pointer is into the script's own frame (the host cannot
+            // read it); the scripts build that context from host 2.23's target record, whose object is always the player
+            // in the app, so the answer is Sora's.
+            Call::Unknown { group: 1, index: 213, .. } => {
+                approx(Value::Int(1), "the context lives in the script's frame; its object is the target, which is always the player here [inferred]")
+            }
             _ => missing(Value::Int(0), "function not mapped"),
         }
     }
@@ -923,8 +958,17 @@ impl BevyHost<'_> {
             // 2.7 hit_reaction (0x18e0d0): byte +0x26 of the hit record, the effective reaction; the app's
             // is `reaction_rules::victim_outcome`'s, the same byte 2.8 classifies.
             Call::Func { group: 2, index: 7, args } => match self.obj.hits.get(&(args[0].int() as u32)) {
-                Some(&(_, r)) => imp(Value::Int(r as i32)),
+                Some(&(_, r, _)) => imp(Value::Int(r as i32)),
                 None => missing(Value::Int(0), "hit_reaction of a handle that is not one of this object's hit records"),
+            },
+            // 2.21 shared_block (0x18e928 -> FUN_001a5040): the game's list of keyed buffers is global, so is the app's.
+            Call::Func { group: 2, index: 21, args } => {
+                imp(Value::Handle(SHARED.lock().unwrap_or_else(|e| e.into_inner()).get(args[0].int(), args[1].int())))
+            }
+            // 2.45 hit_atkp_id (0x18e1c0): the halfword at +2 of the hit record, the id of the attack row.
+            Call::Func { group: 2, index: 45, args } => match self.obj.hits.get(&(args[0].int() as u32)) {
+                Some(&(_, _, atkp)) => imp(Value::Int(atkp as i32)),
+                None => missing(Value::Int(0), "hit_atkp_id of a handle that is not one of this object's hit records"),
             },
             _ => missing(Value::Int(0), "function not mapped"),
         }
@@ -994,6 +1038,9 @@ impl Host for BevyHost<'_> {
         if self.obj.volume_word(addr, out) {
             return true;
         }
+        if SHARED.lock().unwrap_or_else(|e| e.into_inner()).read(addr, out) {
+            return true;
+        }
         // The object's own target record (host 2.23: object +0x9f4), laid out like the records of
         // event 11 (FUN_0018ed40 + FUN_0018f490: object, position index, 0, -1, 0). Its object is the
         // player; the position index is taken as 0 [inferred: the app has no lock-on parts]. The
@@ -1018,7 +1065,9 @@ impl Host for BevyHost<'_> {
 
     fn write_mem(&mut self, addr: u32, data: &[u8]) -> bool {
         let o = addr.wrapping_sub(self.obj.handle) as usize;
-        let Some(b) = self.obj.mem.get_mut(o..o + data.len()) else { return false };
+        let Some(b) = self.obj.mem.get_mut(o..o + data.len()) else {
+            return SHARED.lock().unwrap_or_else(|e| e.into_inner()).write(addr, data);
+        };
         b.copy_from_slice(data);
         // A write that reaches the movement vector steers the object like `set_move` does.
         if o < MOVE_VECTOR + 16 && o + data.len() > MOVE_VECTOR {

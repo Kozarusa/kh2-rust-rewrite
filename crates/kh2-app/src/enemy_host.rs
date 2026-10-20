@@ -280,6 +280,18 @@ fn push_group_edit(queue: &mut Vec<(u8, bool)>, group: u32, on: bool) {
     }
 }
 
+/// The area mask `DAT_0035cd18` (area opcode 0xb) the parameterless hosts 1.46 / 1.47 walk; `area::run_area_script` stores the loaded area's.
+static AREA_MASK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) fn set_area_mask(word: u64) {
+    AREA_MASK.store(word, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Queues the switch of every set bit of `word`, lowest bit first (`FUN_0019d4c0` / `FUN_0019d520` loop 0 to 63).
+fn push_mask_edits(queue: &mut Vec<(u8, bool)>, word: u64, on: bool) {
+    (0..64u32).filter(|b| word >> b & 1 != 0).for_each(|b| push_group_edit(queue, b, on));
+}
+
 /// The queued switches, oldest first; the queue is empty afterwards.
 pub(crate) fn take_group_edits() -> Vec<(u8, bool)> {
     std::mem::take(&mut *GROUP_EDITS.lock().unwrap_or_else(|e| e.into_inner()))
@@ -1087,6 +1099,13 @@ impl BevyHost<'_> {
                 queue_group_edit(args[0].int() as u32, *idx == 37);
                 approx(Value::None, "collision group bit exact; the drawn mesh group and model animation hooks are not ported")
             }
+            // 1.46 (0x172800 -> FUN_0019d4c0) and 1.47 (0x172818 -> FUN_0019d520): no arguments; group on / off for each set bit of the area mask
+            // DAT_0035cd18 (area opcode 0xb), lowest bit first, through the same queue as 1.36 / 1.37.
+            Call::Func { group: 1, index: idx @ (46 | 47), .. } => {
+                let word = AREA_MASK.load(std::sync::atomic::Ordering::Relaxed);
+                push_mask_edits(&mut GROUP_EDITS.lock().unwrap_or_else(|e| e.into_inner()), word, *idx == 46);
+                approx(Value::None, "collision group bits exact; the drawn mesh group and model animation hooks are not ported")
+            }
             _ => missing(Value::Int(0), "function not mapped"),
         }
     }
@@ -1324,6 +1343,15 @@ mod tests {
         push_group_edit(&mut q, 5, false);
         push_group_edit(&mut q, 63, true);
         assert_eq!(q, vec![(5, true), (5, false), (63, true)]);
+    }
+
+    /// Hosts 1.46 / 1.47 queue one switch per set bit of the area mask, lowest bit first.
+    #[test]
+    fn the_area_mask_hosts_switch_each_set_bit() {
+        let mut q = Vec::new();
+        push_mask_edits(&mut q, 1 << 62 | 1 << 3 | 1, true);
+        push_mask_edits(&mut q, 1 << 5, false);
+        assert_eq!(q, vec![(0, true), (3, true), (62, true), (5, false)]);
     }
 
     /// The Dusk reads word 0 of its target record (BDX `M_EX990` 0x136d -> R0217 at 0x021b): the player.

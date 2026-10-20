@@ -24,6 +24,10 @@ Work package SV2, 2026-10-19. Written from run logs only; no game data (counts a
 
 The COCT meshes carry a group number and the game only walks meshes whose group bit is in the area script's map visibility word (docs/movement.md section 8). `kh2 coct-walls <area>` lists the walls per group and which are off: eh10 (program 0,1,0) has 108 party-wall polygons in groups 3 to 8 that are off under word 0x407, he05 (word 0x3) 10 polygons in groups 2, 3, 12, 22, 32 and 62, al01 (word 0xc1ffffffff) none. The app made them all solid, which stopped Sora at the arena walls of eh10.
 
+## Area opcode 0xb (WP-IW3)
+
+Survey of every `ard/*.ard` on the disc (269 files; all `map`, `btl` and `evt` programs, nested opcode 0x1c commands included), read with `kh2_ard::Area::parse`, no game run. 183 commands in 73 areas, all in `map` programs except 19 in `btl` programs (hb08, hb16, he09, mu07, nm07, eh25). The mask is 64-bit (argument 0 low, argument 1 high). Distinct masks: bit 62 (0x4000000000000000) 142 times, bit 61 15, bit 59 4, bits 61 and 62 3, 0x4000000100401000 (bits 12, 22, 32, 62; he05 programs 0x1a, 0x6f, 0x1b) 3, bit 58 3, bit 60 3, bit 31 2, bit 11 2, bit 41 2, bit 21 2, bits 58 to 62 once, bit 56 once. Most areas carry bit 62 in several programs. The areas the app starts in: tt04 programs 0x4f and 0x50 (bit 62), eh10 program 0x39 (bit 62), he05 programs 0, 1, 2, 0x1a, 0x1b, 0x1c, 0x6f. tt00 and tt02 have none. Areas: al00 al03 al05 al09 al13 al14 bb00 bb01 bb03 bb04 bb11 bb15 ca01 ca02 ca05 ca10 ca14 ca18 dc00 eh10 eh14 eh15 eh19 eh25 hb01 hb04 hb07 hb08 hb09 hb16 hb17 hb18 hb20 he02 he05 he06 he07 he09 he17 he18 he19 lk04 lk05 lk15 mu01 mu02 mu03 mu05 mu07 mu08 mu09 mu10 nm00 nm03 nm06 nm07 nm09 nm10 tr02 tr04 tr09 tt03 tt04 tt05 tt08 tt14 tt19 tt25 tt29 tt30 tt41 wi02 wi03. Effect in the app: the word is stored and the hosts 1.46 / 1.47 apply it (docs/movement.md 8.1).
+
 ## Ranked gaps
 
 ### 1. Enemy kinds missing from `enemy::KINDS`

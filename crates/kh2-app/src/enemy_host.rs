@@ -718,7 +718,7 @@ impl BevyHost<'_> {
             // 1.133 (0x170540 -> virtual method +0x44 of the object that object +4 points at): M_EX870's main thread calls it once at start. The vtable 0x35eea8 of an `ObjectType` 4 object has FUN_0032cb10 there
             // (it sets bits 8 and 9 of +0x10c); that this is the method reached is [inferred]. Nothing in the app reads +0x10c.
             Call::ObjMethod44 { .. } => stub(Value::None, "FUN_0032cb10 [inferred]: bits 8 and 9 of object +0x10c; no reader in the app"),
-            Call::ObjMethod48 { .. } => missing(Value::None, "virtual method of the object, role unknown"),
+            Call::ObjMethod48 { .. } => stub(Value::None, "FUN_0032cb20 [inferred]: clears bit 8 of object +0x10c, then FUN_00193048 sets or clears bit 9 of +0x10c and bits of +0x768 by the byte at +0x9ac; no reader in the app"),
             Call::MoverMethod { .. } => stub(Value::None, "virtual call (method +0xc, FUN_00171298) on the object's mover with one float: the role of the method was not traced, nothing in the app consumes it"),
             // 1.143 (FUN_0016b0d8): the object whose spawn record byte +0x1e equals the argument. The app keeps no such
             // byte per object, so nothing is found (M_EX650's shared-block set-up asks for 92 once and never reads the answer).

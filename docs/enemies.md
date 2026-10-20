@@ -773,6 +773,40 @@ Gaps: the attack hit paths were seen once (Sora 17/20 at 14 s), not traced addre
 kind with mixed Shadows and Soldiers but its kind-2 groups were not entered in 70 s) were not run; the role of event 11 (message 328, handler
 0x001a: starts action 135 and sets mode `rc_address_shift`) was not traced.
 
+## The enemy M_EX520 (WP-EN10d)
+
+`M_EX520` (object 4, `00objentry` row 4: ObjectType 4, `NeoStatus` 1006, flags 8, Weight 100, `SpawnLimiter` 8, no spawn objects; `enemy::M_EX520`,
+called by its model: the data gives no name) is a winged Heartless with a cannon beak that hovers around Sora, a member of the 11 areas the area
+survey lists (al14, bb00, bb04, bb06, bb09, bb11). Its BDX script (6551 words, `cargo run -p kh2 -- bdx M_EX520`) registers the modes `appear`,
+`approach_appear`, `mode_battle`, `mode_revenge`, `btl_short`, `btl_long`, `btl_attack`, `btl_normal`, `btl_hard`, `btl_super_hard`, `move_target`,
+`move_roll`, `move_hook`, `move_counter`, `atk_hook`, `atk_spin_b..e`, `idle_set`, `rvg_*`, `rst_*`, `rc_batbullet`, `leave` (names as the script's own strings).
+
+- **Stats.** The set-up routine R1781 (0x1781, called at 0x0669) takes eight arguments; the first one pushed, 56 (pushed at 0x0651; R1781 stores it to
+  local+0x20), goes to `set_obj_param` (host 2.9 at 0x17a8): `enmp` row 56 (`experience: enmp 56 defeated: +2 (lvpm 4 x enmp 50)`). The harness enemy has 14 HP.
+- **Death.** `hp 0: switching to mode dead`, then `drop (host 1.92) asked row 9` and `prize: drop of row 9`: 3 prize objects, one picked up; like the Dusk's,
+  so `Kind::death_effect` is true.
+- **Host calls.** One was new: 1.59 mover_bit1_or_busy (Stub, see `docs/enemy-ai.md`; the wait loop at 0x0ef6 and the target-height choice at 0x0f54 use it).
+  The rest were answered already by other kinds (2.21, 1.121, 1.171, 1.206, 1.56, 1.58, 1.309, 1.34, 1.23, 1.87, 1.92, 2.5, 1.111, 1.120, 1.99, 1.60).
+
+Acceptance run (WP-EN10d), al14 group b_20 (btl program 0x11, kind-2 group 0x198 creates four `M_EX520` and three `M_EX660` near Sora as he stands inside its
+volume; `b_61` of program 0x56 holds three `M_EX520` too but its kind-2 group 0x5f made nothing in 12 s: Sora's start was not inside its volume; test
+`m_ex520_is_an_enemy_kind_with_its_objentry_row`, disc): `KH2_PROGRAMS=0,17,0 KH2_WAVE_GROUP=b_20 KH2_NO_PARTY=1 KH2_AREALOG=1 KH2_BDXLOG=1 KH2_HITLOG=1
+KH2_NO_SOUND=1 KH2_NO_MUSIC=1 kh2-game al14` through `local/capped.ps1`. (1) Unattended soak, 95 s, no keys: 0 `unimplemented host call`, 0 `script error`; the four
+`M_EX520` ran `approach_appear` (4), `mode_battle` (164), `btl_short` (74), `btl_long` (1), `btl_attack` (89), `move_target` (75), `move_roll` (61), `idle_set` (27),
+`move_hook` (15), `atk_hook` (14) with ticks still advancing at t2220 (no script stuck), and hurt Sora (`sora hit: atkp 78` / `atkp 21`); he was knocked out once
+(game over, as for `M_EX660`). (2) Hitting run, `KH2_KEYS` Q at 8 s then J every 0.45 s from 12 s to 100 s: `M_EX520 hit: atkp 132 damage 3 hp 11 ..`, a `Blow`
+reaction at hp 3, `hp 0: switching to mode dead` for all four (`#7` t849, `#1` t1475, `#2` t1930, `#6` t1959; the three `M_EX660` died too), 0 `unimplemented host
+call`, 0 `script error`, no `Missing` line. PNGs looked at (`local\ex520_*.png`): idle at 7 s (`ex520_idle.png`, taken before the host 1.59 arm existed: four `M_EX520 Idle hp 14/14` and three `M_EX660 hp 10/10` entries around Sora, who stands in the middle with his keyblade out; orange and purple cannon-beaked winged figures hover or lie near him), a hit at 24 s (`ex520_hit.png`: Sora mid-swing, the keyblade through a blue winged figure and an orange one beside it, entries at hp 1/14, 4/14, 5/14, 5/10), a death at 14.8 s
+(`ex520_death.png`: heart, munny and orb prizes in the air, "3" and "2p" numbers, six entries left) and after the run (`ex520_dead.png`: no enemy text, Sora alone, HP 3/20).
+`idle-hud`, `combat-ground` and `tt04-dusk` were run by hand through `capped.ps1` (accept.ps1 stops `kh2-game` processes, rule A10): the HUD, the Shadows flinching
+and the Dusk fight look as before.
+
+Gaps: (1) Host 1.59: the movement step FUN_00181e00 (0x182000) and FUN_001729f8 test bit 1 of the mover word +8 (mover at +0xc of the object's +4 record) or bit 0x40
+of +0x160 of that record; the writers were not found (the decomp text has no store of 0x40 into +0x160; `mips_scan.py --store-off 0x160` lists 52 stores through computed bases,
+none checked). The app reads clear: the object is taken as pulled to the ground and the script's chase uses a horizontal direction. The real flyer may keep its height. (2) The
+kind-2 groups of bb00, bb04, bb06, bb09 and bb11 were not run; only al14 b_20. (3) `rvg_*`, `rst_*`, `atk_spin_*`, `move_counter`, `rc_batbullet`, `leave` and the `btl_normal`/`btl_hard`/`btl_super_hard`
+modes were not seen in the soak. (4) `M_EX620` (five of the group) is not an app kind. (5) The objentry flag 124 is true for `M_EX520` (log line `objentry flag 124 = true`), as for others; its meaning is the existing host 1.124's.
+
 ## The Struggle (WP-7E)
 
 The Struggle rules are in `docs/struggle.md`. For the opponents: b_50, b_51 and b_52 (missions `TT04_MS00`,

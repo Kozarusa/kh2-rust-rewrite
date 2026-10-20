@@ -755,6 +755,10 @@ impl BevyHost<'_> {
                 Some((g, p)) => imp(Value::Float(-(p.y - g.y).max(0.0))),
                 None => missing(Value::Float(0.0), "ground depth of an object other than self and the player"),
             },
+            // 1.59 mover_bit1_or_busy (0x1729c0): the test the movement step FUN_00181e00 makes before it adds the ground's pull
+            // (FUN_00183928) to a grounded object: bit 1 of the mover's word +8 (mover at +0xc of the object's +4 record) or bit 0x40 of
+            // its +0x160 is set, i.e. the object is exempt from the ground. Their writers were not found, so a grounded object is read.
+            Call::Func { group: 1, index: 59, .. } => stub(Value::Bool(false), "bit 1 of the mover's +8 / bit 0x40 of +0x160 (no gravity pull): writers not found, read clear"),
             // 1.94 obj_valid (0x170150): 0 is false, else FUN_0019a3f8: in the object list (FUN_001b80e8)
             // and FUN_0019a440 clear (+0x108 bits 0x80000 / 0x10000000, not traced: read clear).
             Call::Func { group: 1, index: 94, args } => {

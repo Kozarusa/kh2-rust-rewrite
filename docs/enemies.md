@@ -1248,3 +1248,25 @@ Gaps: (1) Only eh10 b_00 was run; mu10 b_60 (with Dusks), he09 b_9g, eh06, eh11 
 (2) Not seen: `rvg_long`, `btl_*` beyond short and long, the boss modes and `leave`; the limit offer of paired entry 252 (the app sends no event to Sora, no window opens). (3) The elements of the shot and brush attacks
 (host 1.87 `spawn_attached`, Approx) were not looked up and one run did not show them. (4) The 0.85 mark bit has no reader looked up (searched only the two functions named above). (5) The kill of all three instances in one run was
 not achieved (see above).
+
+## The enemy M_EX120 (WP-EN11a)
+
+`M_EX120` (object 72, `00objentry` row 72: ObjectType 4, `NeoStatus` 1035, flags 8, Weight 300, `SpawnLimiter` 9, no spawn objects; `enemy::M_EX120`, called by its model) is a Heartless of al01, al07, al12, al13, mu01 and mu03 (area survey).
+Its BDX script (4357 words, `cargo run -p kh2 -- bdx M_EX120`) registers modes `appear`, `mode_battle`, `mode_normal`, `mode_revenge`, `mode_hard`, `move_random`, `idle`, `idle_time`, `atk_aero_stop`, `atk_rush`, `atk_tornado`, `dead`. Stats: the constructor R0ef4 (0x0ef4, called at 0x03d8) takes eight values after the
+object (pushed 0x03c0..0x03d5: 1, 49, 300.0, 500.0, 8.0, 4, 0.5, 0.0) and hands the first, 1, to host 2.9 at 0x0f1b: `enmp` row 1 (20 HP at the app's level 1). The second, 49, is kept at +0x1c and is the drop row of host 1.92 (log `drop (host 1.92) asked row 49`).
+
+Host calls: every call the script made in play is already answered (no `unimplemented host call`, no `script error`); no new arm. Stubs in its run: 1.206, 1.171 (global flags 0x80 and 4), 1.121, 65535.0 (frozen); Approx: 1.56, 1.58, 1.111, 1.120, 1.12/1.11 (motion controller), 2.5. Host 1.13 (queue_motion) is
+Stub for this kind (not in `queues_motions`); it never waited on it in the soak (the longest gap between mode changes of an instance was 345 ticks, 5.8 s).
+
+Area and harness: mu01 `btl` program 0xa loads b_20 (nine members: four `M_EX120`, two `M_EX420`, two `M_EX210`, plus one more `M_EX420`; all kinds of the app), three kind-2 groups (0x52, 0x53, 0x54) whose boxes lie away from the player entry (-3.8, 1.8 m app), so nothing appears until Sora enters a box. The harness
+variable `KH2_WAVE_AT_GROUP=x,z` (app metres, with `KH2_WAVE_GROUP`) now puts Sora there even when the group has a player entry; group 0x53 holds two `M_EX120` and one `M_EX210`: `KH2_WAVE_AT_GROUP=-19,0` (box x -26..-13, z -4.9..4.1 m). Recipe:
+`KH2_PROGRAMS=0,a,0 KH2_WAVE_GROUP=b_20 KH2_WAVE_AT_GROUP=-19,0 KH2_YAW=1.57 KH2_AREALOG=1 KH2_BDXLOG=1 KH2_HITLOG=1 KH2_KEYS=8:Q,<J every 0.45 s from 10 s> kh2-game mu01`.
+
+Acceptance run (WP-EN11a): (1) Start: `M_EX120#2`, `#3` `mode appear` at tick 27 -> `mode_battle` / `mode_normal` / `move_random` (tick 107) -> `atk_aero_stop`, `atk_rush`, `atk_tornado`, `idle`, `mode_hard`; hits make them enter `mode_revenge` repeatedly. (2) Hit and death: `M_EX120 hit: atkp 126 damage 3 hp 17` .. `hp 0`,
+then `experience: enmp 1 defeated: +6 (lvpm 4 x enmp 150)`, `mode dead`, `drop (host 1.92) asked row 49, used row 49: prizes per kind [0, 0, 2, 0, 0, 0, 0, 4, 0]`, prize pickups (munny +10, drive +1). Both `M_EX120` of group 0x53 died in the 95 s run (party on, J every 0.45 s from 10 s). (3) Soak, 150 s of wall time, no party, J every 2.6 s from 12 s with
+Continue after each knock-out (the area reloads and the group respawns each time): about 6600 ticks (110 s) of enemy time, no stuck mode (the modes above, 345 ticks the longest quiet stretch) and the enemies died whenever hit enough; no invulnerable state. (4) Screenshots looked at: idle (`i1.png`, 9 s: a green and teal Heartless with a swirling
+antenna and pointed hat beside Sora, Goofy in the foreground, debug text `M_EX120 Idle hp 20/20` twice), hit (`h1.png`, 11.5 s: the Heartless filling the lower right, damage numbers "2", debug text `M_EX120 Hurt hp 5/20`), death (`d1.png`, 19.2 s: debug text `M_EX120 Hurt hp 0/20`, a prize orb and glow beside Sora, the green hat in the foreground). combat-ground, tt04-dusk and idle-hud still pass
+`accept.ps1` (PASS; the 2 ERROR lines are in all three).
+
+Gaps: (1) Only mu01 b_20 group 0x53 was run; al01, al07, al12, al13, mu03 (whose b_20 also holds five `M_EX580`, not an app kind) were not. (2) Group 0x54 (two more `M_EX120`) was not entered. (3) The names of the modes `atk_aero_stop`, `atk_rush`, `atk_tornado` are the script's; their attack volumes follow the motion triggers (no new code) and the damage Sora took was not compared with the original.
+(4) Host 1.13 was not mapped (see above): if a mode of another area waits on a motion change, add `M_EX120#` to `queues_motions` in `enemy_host.rs`.

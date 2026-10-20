@@ -965,3 +965,34 @@ ca09 (b_20, with `M_EX760`), ca15 b_21 (with `M_EX660`) and bb07 / bb11 were not
 `mode_battle` entry, `rvg_*`, `rst_*`, `atk_counter`, `rc_lancesnatch` (a reaction command: the app sends no event 11 message), `freeze`, `land`, `idle_time`, `event`, `revenge`. (3) `M_EX690` never
 hurt Sora in the log by a line naming it; Sora was knocked out once in the soak and the `sora hit: atkp 107` lines are not tied to the kind in the log [inferred: the `atk_pierce` / `atk_abare` hits].
 (4) What triggers `leave` was not traced (the soak shows it follows `mode_battle` directly, once, after about 83 s of enemy time). (5) The ObjectTargetType 2 of the objentry row was not looked up.
+
+## The enemy M_EX910 (WP-EN10g)
+
+`M_EX910` (object 310, `00objentry` row 310: ObjectType 4, `NeoStatus` 3005, `SpawnLimiter` 20, no spawn objects; `enemy::M_EX910`, called by its model: the data gives no name) is a
+dark cloaked Heartless with a blade of the 11 areas the area survey lists (eh08, eh12, eh16, hb08, hb09, he09). Its BDX script (7354 words, `cargo run -p kh2 -- bdx M_EX910`)
+registers the modes `appear`, `form`, `mode_battle`, `mode_battle_boss`, `mode_revenge`, `mode_revenge_boss`, `btl_short`, `btl_long`, `btl_attack`, `btl_normal`, `btl_hard`, `btl_super_hard`,
+`move_target`, `move_roll`, `atk_stab`, `atk_side`, `atk_vertical`, `atk_swordplay`, `warp_back`, `warp_target`, `footwork`, `rvg_*`, `idle`, `idle_time`, `freeze`, `leave`, `dead`,
+`change_target_door`, `change_target_leon`, `rc_duel_baut`, `rc_duel_idle`, `event`, `the_end`.
+
+- **Stats.** The set-up routine R1a85 (0x1a85, called at 0x0cca) takes eight values after the object; the first pushed, 46 (pushed at 0x0cb2; R1a85 stores it to local+0x20), goes to `set_obj_param`
+  (host 2.9 at 0x1aac): `enmp` row 46 (`experience: enmp 46 defeated: +10 (lvpm 4 x enmp 250)`). The harness enemy has 32 HP.
+- **Death.** `hp 0: switching to mode dead`, then `drop (host 1.92) asked row 15, used row 15: .. 6 prize objects` and `prize: drop of row 15 ..: 6 objects, kinds [6, 6, 6, 6, 6, 6]`; `Kind::death_effect` is true as for the other kinds.
+- **Host calls.** None were new: every call the script makes was answered already (no `unimplemented host call`, no `script error`). Not `Impl` at first use: 1.211 (Stub, `obj_flags_abc_set`) and 1.74 (Approx, `mover_reset`), both
+  existing arms. The self motion queue (host 1.13) is not enabled for the kind (`queues_motions`): the script plays its motions with 1.11/1.12 and the soak shows no mode waiting on it.
+
+Acceptance run (WP-EN10g), hb09 group b_40 (btl program 0x33: five `Dusk` at load and one `M_EX910` made on demand by kind-2 group record 0x56 once the Dusks are gone; test
+`m_ex910_is_an_enemy_kind_with_its_objentry_row`, disc): `KH2_PROGRAMS=0,33,0 KH2_WAVE_GROUP=b_40 KH2_AREALOG=1 KH2_BDXLOG=1 KH2_HITLOG=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1 KH2_SHOT_AT=900
+KH2_KEYS=8:Q,12:J,12.45:J,.. kh2-game hb09` through `local/capped.ps1 -CapMB 2500` (the harness exits 3 s after `KH2_SHOT_AT`, 40 s by default, so a soak needs a large value; with
+`KH2_NO_PARTY=1` Sora was knocked out by the Dusks before the kind appeared in most runs, without it the party kills them). (1) Hitting run (no party, Q at 8 s then J every 0.45 s from 12 s, 170 s): the
+kind appeared at t2248 (37 s), `M_EX910 hit: atkp 126 damage 3 hp 29 ..` with `FlinchPush` and `Blow` reactions, `hp 0: switching to mode dead` at t4089 (68 s), `experience: enmp 46 defeated: +10`, 0 `unimplemented host call`, 0 `script error`.
+(2) Soak, 200 s with J only until 36 s and then every 5 s only to press "Continue" after Sora's six knock-outs (enemy ticks stop at game over): one `M_EX910` from t2065 to t11499 (about 157 s of enemy time), never hit
+(2 hits when it was near Sora, `rvg_short`/`atk_swordplay` at the end), 0 `unimplemented host call`, 0 `script error`; modes run: `appear`, `form`, `mode_battle`, `btl_attack`, `btl_short`, `btl_long`, `move_target`, `idle_time`, `atk_stab`, `atk_side`,
+`atk_vertical`, `warp_back`, `mode_revenge`, `rvg_short`, `atk_swordplay`; the longest mode is `form` at about 340 ticks (5.7 s); every mode ended. One quirk: at t6345-6349 (just after a Continue) `mode_battle` to `move_target` repeated once
+per tick for five ticks, then settled. PNG looked at (`ex910_z3.png`, scratchpad, not committed; a party run, shot at 26 s): Sora HP 8/20 with Donald and Goofy in the hb09 alley, a debug list line `M_EX910 Idle hp 27/32 (d 4.0)` between two
+Dusk entries and a dark cloaked blade-armed figure left of Donald. No PNG of the death was caught (the fight differs from run to run: four shots at 21, 31, 44 and 48 s caught only Dusks); the death is shown by the log lines above only.
+`idle-hud`, `combat-ground` and `tt04-dusk` were not rerun: no shared file changed except the `KINDS` entry.
+
+Gaps: (1) eh08 group b_00 (three `M_EX910` alone, btl program 1) creates nothing in the app: the log says `0 enemies at load, 0 on demand` although group record 0x126 (kind 2) counts 3; why was not looked into
+(the kind-2 group's activator or condition). (2) hb08 b_40 (five `M_EX910` and Dusks, btl program 0x34) and eh12 b_01 and eh16 b_00 bring the kind in later waves; the 70 s and 200 s runs of eh16 never reached it, hb08's waves belong to the
+struggle mission layout (`struggle`), not the group, so only hb09's single one was seen. he09 was not run. (3) `mode_battle_boss`, `mode_revenge_boss`, `move_roll`, `atk_vertical` hits on Sora, `warp_target`, `change_target_*`, `rc_duel_*`,
+`leave`, `rvg_normal/hard/super_hard`, `btl_normal/hard/super_hard` were not seen. (4) The objentry `ObjectTargetType` was not looked up.

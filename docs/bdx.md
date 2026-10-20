@@ -223,6 +223,8 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.39 | `spawn_param(Oi) -> i` | 0x171b50 | 869 | word i of the array at object +0x81c (the spawn record); Shadow tests the value 99 |
 | 1.42 | `bits_1d5d7b8_set(i)` | 0x170da8 | 17 | set bit n of the bit array at 0x1d5d7b8 (FUN_001b7ce8) |
 | 1.43 | `bits_1d5d7b8_clear(i)` | 0x170dc0 | 15 | clear bit n of the bit array at 0x1d5d7b8 (FUN_001b7d18) |
+| 1.46 | `area_mask_groups_on()` | 0x172800 | not counted | switch the collision group on for each set bit of the area mask 0x35cd18 (area opcode 0xb), FUN_0019d4c0 -> FUN_0015e9a8 per bit |
+| 1.47 | `area_mask_groups_off()` | 0x172818 | not counted | switch the collision group off for each set bit of the area mask 0x35cd18, FUN_0019d520 -> FUN_0015e928 per bit |
 | 1.48 | `task_done(p) -> b` | 0x1723d8 | 105 | the task's state word (+0x70) equals 3 |
 | 1.52 | `bits_47c_set(Oi)` | 0x1728c0 | 177 | set bit n of the bit array at object +0x47c (FUN_0019dd88). WP-RV2, the reader: FUN_0019a6a0(object, part id) is the one that tests the arrays; n is the byte +0 of a collision record of the object's set at +0x8d8 (FUN_0016b4e0 / FUN_0016b5d0 skip a record for which it answers false; FUN_0018ee20 and FUN_0019a760 use it too). The order: +0x47c bit n set: true; +0x480 bit n set: false (the two words are the two bit arrays FUN_0019de20 / FUN_0019de48 test); then the same pair at +0x474; then the default mask at the word +4 of the block +0x8d8 points to. So this call forces collision part n on |
 | 1.53 | `bits_480_set(Oi)` | 0x1728e8 | 334 | set bit n of the bit array at object +0x480 (FUN_0019ddb0): forces collision part n off (the reader is under 1.52) |

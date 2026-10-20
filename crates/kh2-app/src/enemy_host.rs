@@ -634,7 +634,7 @@ impl BevyHost<'_> {
                 self.obj.player_cmds.push(PlayerReactionCmd::Velocity { dir: d, speed: *speed });
                 approx(Value::None, "handed to the player side as PlayerReactionCmd::Velocity (player_reaction.rs, applied one tick later)")
             }
-            Call::SetVelocity { .. } => missing(Value::None, "secondary velocity vector at +0x880: consumer not found"),
+            Call::SetVelocity { .. } => stub(Value::None, "FUN_00183418 stores the normalised vector (speed in w) at +0x880 [V]; the secondary velocity has no consumer in the app (none found in the executable either)"),
             Call::StartMove { dir, motion, blend, commit, .. } => {
                 self.start_move(*dir, *motion, *blend, *commit);
                 approx(Value::None, "jump height is |y| (positive y reads as a fall in FUN_0017b1e0, the scripts mean a jump); falling and landing motions follow FUN_0017b9e0 / FUN_0017b8f8, the apex trigger is inferred")
@@ -712,7 +712,10 @@ impl BevyHost<'_> {
                 self.obj.next_effect += 1;
                 approx(Value::Handle(EFFECT + self.obj.next_effect), "element `id` of the object's effect file; the flag and extra arguments are ignored")
             }
-            Call::ObjMethod44 { .. } | Call::ObjMethod48 { .. } => missing(Value::None, "virtual method of the object, role unknown"),
+            // 1.133 (0x170540 -> virtual method +0x44 of the object that object +4 points at): M_EX870's main thread calls it once at start. The vtable 0x35eea8 of an `ObjectType` 4 object has FUN_0032cb10 there
+            // (it sets bits 8 and 9 of +0x10c); that this is the method reached is [inferred]. Nothing in the app reads +0x10c.
+            Call::ObjMethod44 { .. } => stub(Value::None, "FUN_0032cb10 [inferred]: bits 8 and 9 of object +0x10c; no reader in the app"),
+            Call::ObjMethod48 { .. } => missing(Value::None, "virtual method of the object, role unknown"),
             Call::MoverMethod { .. } => stub(Value::None, "virtual call (method +0xc, FUN_00171298) on the object's mover with one float: the role of the method was not traced, nothing in the app consumes it"),
             // 1.143 (FUN_0016b0d8): the object whose spawn record byte +0x1e equals the argument. The app keeps no such
             // byte per object, so nothing is found (M_EX650's shared-block set-up asks for 92 once and never reads the answer).
@@ -1046,6 +1049,14 @@ impl BevyHost<'_> {
             // compares it with 1 to ask "is the target Sora"). The pointer is into the script's own frame (the host cannot
             // read it); the scripts build that context from host 2.23's target record, whose object is always the player
             // in the app, so the answer is Sora's.
+            // 1.328 (0x171cd0 -> FUN_001865a8(object)): when +0x7f8 has no bit 4 yet, leaves the kind-2 group the object belongs to (+0x818, FUN_00199398) and sets bit 4 (FUN_00186580), which
+            // retires the object. M_EX870's `dead` routine (0x0929) hides it and then calls this. The app removes a hidden object, as for host 1.28; the group's own bookkeeping is the app's.
+            Call::Unknown { group: 1, index: 328, .. } | Call::Func { group: 1, index: 328, .. } => {
+                self.obj.hidden = true;
+                self.obj.alpha = 0.0;
+                self.obj.fade = None;
+                approx(Value::None, "the object is retired (+0x7f8 bit 4): the app hides and removes it; the leave of the kind-2 group (FUN_00199398) is the app's own removal")
+            }
             Call::Unknown { group: 1, index: 213, .. } => {
                 approx(Value::Int(1), "the context lives in the script's frame; its object is the target, which is always the player here [inferred]")
             }
@@ -1244,6 +1255,44 @@ impl Host for BevyHost<'_> {
         v
     }
 
+    /// Hosts 1.160 and 6.57, which reach through a pointer the script passes (WP-EN11b; ported for the limit scripts in `limit_script.rs`, 0x173770 and 0x2eec10).
+    fn call_with_mem(&mut self, c: &Call, mem: &mut dyn kh2_bdx::host::ScriptMem) -> Value {
+        let word = |this: &mut Self, mem: &mut dyn kh2_bdx::host::ScriptMem, addr: u32| -> u32 {
+            mem.read_u32(addr).unwrap_or_else(|| {
+                let mut b = [0u8; 4];
+                if this.read_mem(addr, &mut b) {
+                    u32::from_le_bytes(b)
+                } else {
+                    0
+                }
+            })
+        };
+        let args: Vec<u32> = match c {
+            Call::Func { args, .. } => args.iter().map(|a| a.int() as u32).collect(),
+            Call::Unknown { args, .. } => args.clone(),
+            _ => return self.call(c),
+        };
+        match call_id(c) {
+            // 1.160 (0x173770 -> FUN_0018f490(record, word at context + 4, 0)): the record becomes [object, 0, 0, -1].
+            (1, 160) if args.len() >= 2 => {
+                let object = word(self, mem, args[1].wrapping_add(4));
+                let bytes: Vec<u8> = [object, 0, 0, u32::MAX].iter().flat_map(|w| w.to_le_bytes()).collect();
+                if !mem.write(args[0], &bytes) {
+                    self.write_mem(args[0], &bytes);
+                }
+                self.trace.record(self.tag, c, &Value::None, St::Approx, "record [object, 0, 0, -1] as FUN_0018f490 writes it (words 0..3; the fifth word is not touched); the target pool is not modelled");
+                Value::None
+            }
+            // 6.57 (0x2eec10, read from the instructions): the word at +4 of the block the argument points at.
+            (6, 57) if !args.is_empty() => {
+                let v = Value::Int(word(self, mem, args[0].wrapping_add(4)) as i32);
+                self.trace.record(self.tag, c, &v, St::Approx, "word at +4 of the block (lw t7,0(a0); lw t6,4(t7); sw t6,0(a0)); 0 when the address is in no memory the app has");
+                v
+            }
+            _ => self.call(c),
+        }
+    }
+
     fn read_mem(&mut self, addr: u32, out: &mut [u8]) -> bool {
         let o = addr.wrapping_sub(self.obj.handle) as usize;
         if let Some(b) = self.obj.mem.get(o..o + out.len()) {
@@ -1271,7 +1320,7 @@ impl Host for BevyHost<'_> {
         // Dusk's 0x136d reads word 0 when range trigger 16 is on (host 1.150 bit 1).
         let t = addr.wrapping_sub(TARGET) as usize;
         if t + out.len() <= 20 {
-            out.copy_from_slice(&target_record()[t..t + out.len()]);
+            out.copy_from_slice(&self.obj.target_rec[t..t + out.len()]);
             return true;
         }
         // The first 16 bytes of the player object: the Soldier's reaction thread copies them into its
@@ -1288,6 +1337,11 @@ impl Host for BevyHost<'_> {
     }
 
     fn write_mem(&mut self, addr: u32, data: &[u8]) -> bool {
+        let t = addr.wrapping_sub(TARGET) as usize;
+        if t + data.len() <= 20 {
+            self.obj.target_rec[t..t + data.len()].copy_from_slice(data);
+            return true;
+        }
         let o = addr.wrapping_sub(self.obj.handle) as usize;
         let Some(b) = self.obj.mem.get_mut(o..o + data.len()) else { return shared_blocks().write(addr, data) };
         b.copy_from_slice(data);

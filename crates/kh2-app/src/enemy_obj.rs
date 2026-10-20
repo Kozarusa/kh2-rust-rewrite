@@ -294,6 +294,9 @@ pub(crate) struct Obj {
     pub(crate) moved: Vec3,
     /// The ramp at +0x82c (`Ramp`): the draw alpha is `alpha` times its value.
     pub(crate) appear: Ramp,
+    /// The object's own target record (host 2.23, object +0x9f4: object, part index, 0, -1, 0). A script may store into it (BDX `M_EX870` R0a50 stores the word 6.57 answers at +4); reads
+    /// answer these bytes. Writer: `enemy_host::BevyHost::write_mem`; reader: `read_mem`.
+    pub(crate) target_rec: [u8; 20],
     /// The `00objentry` ids host 1.0 makes objects of (empty: host 1.0 is not served, `Missing`).
     pub(crate) creatable: Arc<HashSet<u32>>,
     /// The next object serial a created object takes (`ObjTable::serial`, lent for the tick).
@@ -358,6 +361,7 @@ impl Obj {
             want_vel: Vec3::ZERO,
             moved: Vec3::ZERO,
             appear: Ramp::STILL,
+            target_rec: crate::enemy_host::target_record(),
             creatable: Arc::default(),
             next_serial: 0,
             creates: Vec::new(),

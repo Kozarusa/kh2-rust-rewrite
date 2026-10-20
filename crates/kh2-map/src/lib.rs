@@ -57,9 +57,57 @@ impl Polygon {
     }
 }
 
+/// One entry of the mesh table (table 1 of the header, 20 bytes). Earlier versions of the parser
+/// dropped everything after the polygon range (WP-IW1). The game's walker `FUN_00141b50` skips a mesh
+/// whose byte +0x10 is 0; `FUN_00141768` (called by `FUN_00141500` with the map's visibility word)
+/// clears that byte in every mesh and then sets it in the meshes whose byte +0x11 is a set bit of the
+/// word (`FUN_00141840`). So a mesh is solid only while its group bit is in the visibility word
+/// (docs/movement.md section 8).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Mesh {
+    /// First polygon index (+12).
+    pub first: u16,
+    /// One past the last polygon index (+14).
+    pub last: u16,
+    /// Byte +0x10 as stored on the disc; the game overwrites it when the collision is built.
+    pub stored_enabled: u8,
+    /// Byte +0x11: the mesh group, a bit number of the 64-bit visibility word.
+    pub group: u8,
+    /// Halfword +0x12 (not read by the walker; meaning unknown).
+    pub unknown: u16,
+}
+
+impl Mesh {
+    /// Whether the game's walker visits this mesh when the map's visibility word is `word`
+    /// (`FUN_00141768`: bit `group` of the word; groups of 64 or more are never enabled).
+    pub fn enabled(&self, word: u64) -> bool {
+        self.group < 64 && word >> self.group & 1 != 0
+    }
+}
+
+/// One node of the bounding-volume tree (table 0 of the header, 0x20 bytes, `FUN_00141b50`): up to 8
+/// child node indices from +0 (ended by -1), the bounding box at +0x10, the range of meshes at
+/// +0x1c and +0x1e.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Node {
+    pub first_mesh: u16,
+    pub last_mesh: u16,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Coct {
     pub polygons: Vec<Polygon>,
+    /// The mesh table; `Polygon::mesh` indexes it.
+    pub meshes: Vec<Mesh>,
+    /// The tree nodes (table 0).
+    pub nodes: Vec<Node>,
+}
+
+impl Coct {
+    /// The mesh group of the mesh a polygon belongs to (0 when the mesh is unknown).
+    pub fn group_of(&self, p: &Polygon) -> u8 {
+        self.meshes.get(p.mesh as usize).map_or(0, |m| m.group)
+    }
 }
 
 fn rd<const N: usize>(b: &[u8], o: usize) -> Option<[u8; N]> {
@@ -81,7 +129,7 @@ impl Coct {
             return None;
         }
         let table = |k: usize| -> Option<(usize, usize)> { Some((u32_at(b, 24 + 8 * k)? as usize, u32_at(b, 28 + 8 * k)? as usize)) };
-        let (_, _) = table(0)?;
+        let (t1, l1) = table(0)?;
         let (t2, l2) = table(1)?;
         let (t3, l3) = table(2)?;
         let (t4, _) = table(3)?;
@@ -100,6 +148,18 @@ impl Coct {
                 mesh_of[p] = m as u16;
             }
         }
+        let meshes = (0..l2 / 20)
+            .map(|m| {
+                let o = t2 + 20 * m;
+                Some(Mesh { first: i16_at(b, o + 12)? as u16, last: i16_at(b, o + 14)? as u16, stored_enabled: *b.get(o + 16)?, group: *b.get(o + 17)?, unknown: i16_at(b, o + 18)? as u16 })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let nodes = (0..l1 / 32)
+            .map(|g| {
+                let o = t1 + 32 * g;
+                Some(Node { first_mesh: i16_at(b, o + 0x1c)? as u16, last_mesh: i16_at(b, o + 0x1e)? as u16 })
+            })
+            .collect::<Option<Vec<_>>>()?;
         let mut polygons = Vec::with_capacity(l3 / 16);
         for (i, &mesh) in mesh_of.iter().enumerate() {
             let o = t3 + 16 * i;
@@ -117,7 +177,7 @@ impl Coct {
             let material = *b.get(o)?;
             polygons.push(Polygon { verts, quad, normal, d, flags, material, mesh });
         }
-        Some(Coct { polygons })
+        Some(Coct { polygons, meshes, nodes })
     }
 
     /// The map's collision: the first BAR entry of type 6 (COCT) in a `.map` file.

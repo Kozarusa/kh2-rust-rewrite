@@ -578,3 +578,54 @@ and back a little bit before falling".
 * No hit stop on the attacker was found (`FUN_0018c6d0`, `FUN_0018b618`, `FUN_001864b8` = hit effect only).
 * The air chain against an enemy was not observed in a harness run: in tt00 the first air swing from the
   0.6 s jump starts 190 units above the Shadow and misses (`move: attack press refused ... hit landed false`).
+
+## 8. Invisible walls in the arenas (WP-IW1; user report 2026-10-20: Sora cannot walk into any enemy spawn region)
+
+Cause: the app treated every COCT mesh as solid. The game's collision walker visits a mesh only while the mesh's
+group is switched on by the map visibility word, and the area script leaves the arena walls of eh10 switched off.
+
+* The walker `FUN_00141b50` (mesh loop at its `*(char *)(mesh + 0x10) != 0` test) skips a mesh whose byte +0x10 is 0.
+  `FUN_00141500` (builds each collision object, called per slot from `FUN_00142ba8`, slot 0 = map entry type 6 at map
+  +0x30) ends with `FUN_00141768(coct, word)`: it clears byte +0x10 of every 0x14-byte mesh entry, then for every set
+  bit `g` of the 64-bit word calls `FUN_00141840(coct, g)`, which sets byte +0x10 = 1 in the meshes whose byte +0x11 is
+  `g`. (`FUN_00141800` is the clearing twin.) So mesh byte +0x11 is the mesh group, a bit number of the word; the
+  value stored in +0x10 on the disc is overwritten (it is 0 in the files read).
+* The word is the map visibility word: `FUN_00149b40(word)` -> `FUN_00142ba8(.., word)` / `FUN_0015e6c0(.., word)`
+  (the same word also selects drawn mesh groups, `FUN_0015bdb8`, and the model animations, `FUN_001db928`). It comes
+  from the area script: default -1, opcode 1 sets it, opcodes 0x1a and 0x1b add and remove bits at the end of the run
+  (`FUN_00181148`, docs/events.md). `kh2_ard::run::ScriptRun::map_visibility` already holds the value; nothing used it for
+  collision.
+* Data (`kh2 coct-walls <area>`, programs `KH2_PROGRAMS=0,1,0`): eh10 has one type-6 entry (tag `ID_e`, 819 polygons,
+  400 meshes, 390 tree nodes) and the word is 0x407 (groups 0, 1, 2 and 10). Its party walls (attribute 0x172, passing
+  `stops_party`) are 477, of which 369 are in enabled meshes. Groups 3 to 8 hold 108 wall polygons (boxes of walls around the arena
+  centre: 900 units across in group 6, about 1480 across in groups 4, 5 and 7, long walls in groups 3 and 8):
+  [inferred] they are the arena walls that close while a fight runs, and the area script has
+  them off in program 0,1,0 (the btl program with the b_00 group). he05: word 0x3, 10 party-wall polygons in groups
+  2, 3, 12, 22, 32, 62 are off (the group 12 wall, mesh 122, lies between entrance 1 and several volumes). al01:
+  word 0xc1ffffffff (bits 0 to 32, 38 and 39), no party wall is in an off group (the walls crossed on straight lines are
+  enabled building walls).
+* Walk test `eh10_arena_walls_of_hidden_groups_do_not_block_the_spawn_volume`: from the app's startup spawn point
+  (-503, 0, 260) the ungated slide ends at (-425, 0, -5), stopped at x = -425, 25 units short of the x = -450 wall of the 900-unit box (group 6 by its bounds [inferred]); from entrance 0 (0, 0, 1850) it
+  ends at z = 425; entrance 1 reaches the volume either way. With the word applied all three starts end within 60 units
+  of the b_00 volume centre. `he05_and_al01_entrances_walk_into_their_clear_spawn_volumes` keeps five straight
+  walks (entrance to volume) working with the word applied.
+* Fix in this tree: `kh2_map::Coct` keeps `meshes` (polygon range, byte +0x10, group byte +0x11, halfword +0x12) and
+  `nodes`; `Mesh::enabled(word)` is `FUN_00141768`'s rule. `World` keeps each triangle's mesh and group
+  (`mesh_of`, `group_of`) and `enabled_groups` (default all ones, so nothing changes until it is set);
+  `World::slide` skips triangles of groups outside it. Not wired: `area::run_area_script` must write
+  `script.map_visibility` into `World::enabled_groups` once the run is done (it holds the world as `Res`, so it
+  needs `ResMut`), and `motor::sweep_wall`, `World::touching_m` and `World::cast_m` should test `group_enabled`
+  (the game's attack and probe casts use the same walker). Both are WP-IW2.
+* Hypotheses checked: H1 confirmed (above). H2 (barrier bits 0x800 and 0x1000 always solid): the walls that block in eh10
+  carry 0x172, not those bits; not the cause. H4 (first type-6 entry): eh10, he05 and al01 each have exactly one
+  type-6 entry, and the game too takes the first (`FUN_00149348`: `FUN_001684c0(file, 6, 0)` into map +0x30);
+  not the cause. H3 (stand-in spawn point): the startup spawn (-503, 260) lies between the outer and the inner boxes, which is
+  how the play-test hit the wall at 450; the placement itself is not wrong, but it is only reachable once the walls
+  are gated. H5 (`World::ground` ignores attributes): not checked; the failing walks end at walls, not floors.
+* Gaps: the tool's wall test is a point ray at 40 units above the entrance (not `motor::sweep_wall`, because
+  the `kh2` crate does not link `kh2-app`); halfword +0x12 of a mesh is not read by the walker (searched
+  `FUN_00141b50`, `FUN_00141768`, `FUN_00141800`, `FUN_00141840`). What writes the groups' on/off state later in a
+  fight (opcodes 0x1a and 0x1b are run once at area entry only; a battle manager that closes the arena at run time
+  was not traced) is open: a closing arena would need another writer of the word, not found in this package.
+* Decompile index: `FUN_00141b50`, `FUN_00141500`, `FUN_00141768`, `FUN_00141800`, `FUN_00141840`, `FUN_00142ba8`,
+  `FUN_00149b40`, `FUN_00149348`, `FUN_0015e6c0`, `FUN_001491f8` (map +0x50), `FUN_001db4d0`, `FUN_001db928`.

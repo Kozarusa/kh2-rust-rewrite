@@ -36,7 +36,19 @@ pub struct World {
     pub max: Vec3,
     /// True when built from COCT data.
     pub coct: bool,
+    /// The COCT mesh each triangle came from, indexed like `tris` (empty or short for worlds that did not
+    /// come from `from_coct`; use `mesh_of`).
+    tri_mesh: Vec<u16>,
+    /// The mesh group (a bit number of the map visibility word) of each triangle, like `tri_mesh`.
+    tri_group: Vec<u8>,
+    /// The groups the game's walker visits: bit `g` set means meshes of group `g` are solid
+    /// (`FUN_00141768` sets a mesh's enabled byte from the map visibility word). All ones until
+    /// WP-IW2 gates the slide with it; `group_enabled` answers for one triangle.
+    pub enabled_groups: u64,
 }
+
+/// Group value of a triangle that has no COCT mesh.
+pub const NO_GROUP: u8 = 0xff;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Ground {
@@ -53,6 +65,10 @@ fn cell(v: f32) -> i32 {
 
 impl World {
     fn push(&mut self, v: [Vec3; 3], flags: u32, material: u8) {
+        self.push_in(v, flags, material, 0, NO_GROUP);
+    }
+
+    fn push_in(&mut self, v: [Vec3; 3], flags: u32, material: u8, mesh: u16, group: u8) {
         let n = (v[1] - v[0]).cross(v[2] - v[0]);
         if n.length_squared() < 1e-6 {
             return;
@@ -61,6 +77,10 @@ impl World {
         let hi = v[0].max(v[1]).max(v[2]);
         let id = self.tris.len() as u32;
         self.tris.push(Tri { v, n: n.normalize(), flags, material, lo, hi });
+        self.tri_mesh.resize(id as usize, 0);
+        self.tri_group.resize(id as usize, NO_GROUP);
+        self.tri_mesh.push(mesh);
+        self.tri_group.push(group);
         self.min = self.min.min(lo);
         self.max = self.max.max(hi);
         let cells = (cell(hi.x) as i64 - cell(lo.x) as i64 + 1) * (cell(hi.z) as i64 - cell(lo.z) as i64 + 1);
@@ -76,7 +96,7 @@ impl World {
     }
 
     fn empty() -> World {
-        World { min: Vec3::splat(f32::MAX), max: Vec3::splat(f32::MIN), ..default() }
+        World { min: Vec3::splat(f32::MAX), max: Vec3::splat(f32::MIN), enabled_groups: u64::MAX, ..default() }
     }
 
     pub fn from_coct(c: &kh2_map::Coct) -> World {
@@ -89,10 +109,31 @@ impl World {
                 let n = (v[1] - v[0]).cross(v[2] - v[0]);
                 let pn = Vec3::from(p.normal);
                 let v = if n.dot(pn) < 0.0 { [v[0], v[2], v[1]] } else { v };
-                w.push(v, p.flags, p.material);
+                w.push_in(v, p.flags, p.material, p.mesh, c.group_of(p));
             }
         }
         w
+    }
+
+    /// The COCT mesh index of triangle `i` (0 when it has none).
+    #[allow(dead_code)] // read by the eh10 test; the walker gates by group only
+    pub fn mesh_of(&self, i: usize) -> u16 {
+        self.tri_mesh.get(i).copied().unwrap_or(0)
+    }
+
+    /// The mesh group of triangle `i`, `NO_GROUP` when it has none.
+    pub fn group_of(&self, i: usize) -> u8 {
+        self.tri_group.get(i).copied().unwrap_or(NO_GROUP)
+    }
+
+    /// Whether the game's walker would visit triangle `i` under `enabled_groups`. Triangles without a
+    /// group always count.
+    pub fn group_enabled(&self, i: usize) -> bool {
+        match self.group_of(i) {
+            NO_GROUP => true,
+            g if g < 64 => self.enabled_groups >> g & 1 != 0,
+            _ => false,
+        }
     }
 
     pub fn from_meshes(meshes: &[kh2_model::Mesh]) -> World {
@@ -195,6 +236,10 @@ impl World {
                 for &i in &ids {
                     let t = &self.tris[i as usize];
                     if t.n.y.abs() >= FLOOR_NY || (party && self.coct && !kh2_map::stops_party(t.flags)) {
+                        continue;
+                    }
+                    // Meshes of a group outside the map visibility word are not visited by the game's walker.
+                    if self.coct && !self.group_enabled(i as usize) {
                         continue;
                     }
                     // Closest point between the capsule axis segment and the triangle.
@@ -463,6 +508,90 @@ mod tests {
     /// One scripted walk of the invisible-wall test: the world pair, start (x, z), floor search height,
     /// direction, the wall's plane coordinate on the walking axis, and whether the walk goes toward +axis.
     type WalkCase<'a> = (&'a World, &'a World, [f32; 2], f32, Vec3, f32, bool);
+
+    /// Walks a grounded Sora-sized motor from `start` straight at `target` (x, z) in runs of 8 units per tick
+    /// until it is within 60 units or 600 ticks passed; returns the end position.
+    fn walk_to(w: &World, start: Vec3, target: Vec3) -> Vec3 {
+        let g = w.ground(start, start.y + 60.0, 300.0).expect("floor under the start");
+        let mut m = crate::motor::Motor { pos: start.with_y(g.y), grounded: true, ..Default::default() };
+        for _ in 0..600 {
+            let d = (target - m.pos).with_y(0.0);
+            if d.length() < 60.0 {
+                break;
+            }
+            m.move_by(w, d.normalize() * 8.0, None);
+        }
+        m.pos
+    }
+
+    /// WP-IW1 (user report 2026-10-20: invisible walls keep Sora out of every enemy spawn region of eh10). The
+    /// map's COCT meshes carry a group number (byte +0x11) and the game's walker `FUN_00141b50` visits only
+    /// meshes whose group bit is in the map visibility word (`FUN_00141768`, built from the area script's
+    /// opcodes 1, 0x1a and 0x1b). eh10 has arena walls in groups 3 to 8 (attribute 0x172, solid for the party)
+    /// that the area script of program 0,1,0 leaves out of the word 0x407. Without the group filter Sora
+    /// starting at the app's stand-in spawn point cannot reach the group b_00 volume; with the word set he does.
+    #[test]
+    fn eh10_arena_walls_of_hidden_groups_do_not_block_the_spawn_volume() {
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else { return };
+        let disc = crate::assets::Disc::open(&iso);
+        let map = disc.read("map/us/eh10.map").unwrap();
+        let coct = kh2_map::Coct::from_map(&map).unwrap();
+        let (ard, _) = kh2_ard::Area::parse(&disc.read("ard/eh10.ard").unwrap()).unwrap();
+        let word = kh2_ard::run::run_area(&ard, [0, 1, 0], 0).map_visibility;
+        assert_eq!(word, 0x407, "visibility word of eh10 program 0,1,0");
+        let mut all = World::from_coct(&coct);
+        let mut gated = World::from_coct(&coct);
+        gated.enabled_groups = word;
+        // The walls of groups 3 to 8 exist in the mesh table and are party walls.
+        let hidden = |w: &World| (0..w.tris.len()).filter(|&i| !w.group_enabled(i) && w.tris[i].n.y.abs() < FLOOR_NY && kh2_map::stops_party(w.tris[i].flags)).count();
+        assert_eq!((hidden(&all), hidden(&gated) >= 100), (0, true));
+        // Every triangle carries its mesh and the mesh's group.
+        assert!((0..gated.tris.len()).all(|i| coct.meshes[gated.mesh_of(i) as usize].group == gated.group_of(i)));
+        // The kind-2 volume of group b_00 (the one the play-test spawns into).
+        let vol = ard.spawns.values().flatten().filter(|g| g.kind & 0xff == 2).flat_map(|g| g.activators.iter()).next().expect("a kind-2 volume");
+        let target = crate::area::game_to_app(vol.position);
+        let cam = World::from_meshes(&kh2_model::map_file(&map).unwrap().map.meshes);
+        let (_, spawn) = crate::assets::spawn_point(&all, &cam);
+        let entrances: Vec<Vec3> = (0..2u8)
+            .filter_map(|n| kh2_ard::run::player_start(&ard, &kh2_ard::run::run_area(&ard, [0, 1, 0], n), n).map(|(_, e)| crate::area::game_to_app(e.position)))
+            .collect();
+        assert_eq!(entrances.len(), 2);
+        let inside = |p: Vec3| vol.contains([p.x, -p.y, -p.z]) || (p - target).with_y(0.0).length() < 80.0;
+        for (name, start) in [("startup spawn", spawn), ("entrance 0", entrances[0]), ("entrance 1", entrances[1])] {
+            let end = walk_to(&gated, start, target);
+            assert!(inside(end), "{name}: with the group filter Sora reaches the volume ({start:?} -> {end:?}, target {target:?})");
+        }
+        // Without the filter (every group solid, as the app did) at least one of the three starts is walled in.
+        all.enabled_groups = u64::MAX;
+        for (name, s) in [("startup spawn", spawn), ("entrance 0", entrances[0]), ("entrance 1", entrances[1])] {
+            eprintln!("iw1 eh10 {name}: start {s:?}, ungated ends {:?}, gated ends {:?}, target {target:?}", walk_to(&all, s, target), walk_to(&gated, s, target));
+        }
+        let stuck = [spawn, entrances[0], entrances[1]].into_iter().filter(|&s| !inside(walk_to(&all, s, target))).count();
+        assert!(stuck >= 1, "the ungated world blocks at least one start");
+    }
+
+    /// WP-IW1: he05 and al01 (the other areas of the report). `kh2 coct-walls` finds no hidden-group wall between
+    /// these entrances and spawn volumes (straight lines at knee height cross no party wall), so Sora walks
+    /// from the entrance into the volume with the group filter set from the area script's word.
+    #[test]
+    fn he05_and_al01_entrances_walk_into_their_clear_spawn_volumes() {
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else { return };
+        let disc = crate::assets::Disc::open(&iso);
+        // (area, entrance, spawn group id of a kind-2 volume 'kh2 coct-walls' reports as clear).
+        for (area, entrance, group) in [("he05", 0u8, 56u16), ("he05", 1, 58), ("al01", 0, 39), ("al01", 1, 36), ("al01", 1, 48)] {
+            let coct = kh2_map::Coct::from_map(&disc.read(&format!("map/us/{area}.map")).unwrap()).unwrap();
+            let (ard, _) = kh2_ard::Area::parse(&disc.read(&format!("ard/{area}.ard")).unwrap()).unwrap();
+            let run = kh2_ard::run::run_area(&ard, [0, 1, 0], entrance);
+            let mut w = World::from_coct(&coct);
+            w.enabled_groups = run.map_visibility;
+            let (_, e) = kh2_ard::run::player_start(&ard, &run, entrance).expect("player entity");
+            let vol = ard.spawns.values().flatten().find(|g| g.kind & 0xff == 2 && g.id == group).and_then(|g| g.activators.first()).expect("volume");
+            let (start, target) = (crate::area::game_to_app(e.position), crate::area::game_to_app(vol.position));
+            let end = walk_to(&w, start, target);
+            let left = (end - target).with_y(0.0).length();
+            assert!(vol.contains([end.x, -end.y, -end.z]) || left < 80.0, "{area} entrance {entrance} -> group {group}: ended {end:?}, {left:.0} from {target:?}");
+        }
+    }
 
     /// WP-G3 (user report 2026-10-11: invisible walls in Tram Common and Station Heights). The player's
     /// slide stopped at every wall-like polygon; the game's walking collider keeps only polygons with

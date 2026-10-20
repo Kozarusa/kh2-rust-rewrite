@@ -930,3 +930,38 @@ hit stars, label `Hurt hp 8/10`), after the death (the first knight gone, a pink
 
 Gaps: 1.206 `GlobalFlag80` and 1.171 `GlobalFlag4` stay stubs (other scripts' state), 1.121 `SetTargetMode` is a stub (nothing in the app consumes the lock mode),
 1.80 `TurnToward` uses the placeholder turn rate; the objects 1845 / 1468 above are not spawned; the attackers' count behind 2.21 is not modelled.
+
+## The enemy M_EX690 (WP-EN10h)
+
+`M_EX690` (object 17, `00objentry` row 17: ObjectType 4, `NeoStatus` 1023, flags 0, Weight 500, `SpawnLimiter` 13, no spawn objects; `enemy::M_EX690`, called by its model: the data gives no
+name) is a Heartless of the 10 areas the area survey lists (bb00, bb07, bb11, ca02, ca09, ca15 ..). Its BDX script (4562 words, `cargo run -p kh2 -- bdx M_EX690`) registers the modes
+`appear`, `mode_battle`, `mode_normal`, `mode_hard`, `mode_revenge`, `mode_battle_boss`, `mode_revenge_boss`, `btl_*`, `rvg_*`, `rst_*`, `atk_pierce`, `atk_abare`, `atk_counter`,
+`move_away`, `idle`, `idle_prize`, `idle_time`, `footwork`, `freeze`, `land`, `leave`, `rc_lancesnatch`, `dead`, `event`, `revenge`.
+
+- **Stats.** The set-up routine R0fe9 (0x0fe9, called at 0x05dd) takes eight values after the object; the first pushed, 67 (pushed at 0x05c5; R0fe9 stores it to local+0x20), goes to
+  `set_obj_param` (host 2.9 at 0x1010): `enmp` row 67 (Health 160, MaxDamage 5000, Experience 150, Prize 0; log `experience: enmp 67 defeated: +6 (lvpm 4 x enmp 150)`). The harness enemy has 32 HP.
+- **Death.** `hp 0: switching to mode dead`, then `drop (host 1.92) asked row 38, used row 38` and `prize: drop of row 38: 6 objects`; the dead mode starts attached effect 2 (host 1.87), so
+  `Kind::death_effect` is true as for the Dusk and `M_EX210`.
+- **Host calls.** None was new: every call the app's runs made was answered already, no host arm was added and no motion queue was needed (host 1.13 never ran, so `queues_motions` is unchanged).
+  Calls seen with their status (`KH2_BDXLOG` first-call lines): 2.9, 1.23 (Approx), 1.206, 1.171, 0.79, 1.121 (Stubs), 1.56, 1.120, 2.5, 1.80, 1.11, 1.111, 1.55, 1.60, 1.87, 1.92 (Approx), 1.110,
+  1.119, 1.124, 1.14, 1.147, 1.15, 1.201, 1.230, 1.28, 1.3, 1.4, 1.57, 1.19, 1.20, 1.70, 1.79, 1.84, 2.23, 2.8 (Impl). In the script but not reached in the runs: 1.13 (three sites), 1.161 / 1.18
+  (link), 1.168, 1.179, 1.180, 1.224, 1.128, 1.65, 1.78, 1.10, 1.61, 1.29, 1.67 and the attack-object calls 2.10, 2.11, 2.22, 2.61, 2.62; they are the modes of the Gaps below.
+Acceptance run (WP-EN10h), ca15 group b_20 (btl program 0x15: three `M_EX690` and nothing else; kind-2 groups 0x10a (two) and 0x10b (one); test
+`m_ex690_is_an_enemy_kind_with_its_objentry_row`, disc). The group's activator volumes are far from Sora's start, so the run starts at entrance 1 and walks: `KH2_PROGRAMS=0,15,0 KH2_WAVE_GROUP=b_20
+KH2_ENTRANCE=1 KH2_NO_PARTY=1 KH2_AREALOG=1 KH2_BDXLOG=1 KH2_HITLOG=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1 KH2_KEYS=7:W:2,.. kh2-game ca15` through `local/capped.ps1 -CapMB 2500` (W held 2 s at 7 s walks Sora into
+volume 0x10a; the first two are created at the record's points, `created at the record's point at Vec3(22.98, 0.51, -4.23)`). (1) Soak, 103 s with J every 5 s from 15 s only to press "Continue" after Sora's
+knock-out (one knock-out): 0 `unimplemented host call`, 0 `script error`; `M_EX690#1` .. `#3` (the third made after a respawn) ran `appear`, `mode_battle`, `mode_normal`, `atk_pierce`, `idle_prize`,
+`move_away`, `mode_revenge`, `atk_abare`, `leave`, about 97 s of enemy time; the longest mode runs measured between the `mode` lines: `atk_abare` 360 ticks, `atk_pierce` 296, `move_away` 214,
+`idle_prize` 203, `appear` 90, `mode_revenge` 44; the script cycles `mode_battle` -> `mode_normal` -> `atk_pierce` -> `idle_prize` -> .., and `leave` fades the object out (host 1.19, 30 frames) and hides it
+(host 1.28, `hidden: despawned`), after which the group makes another. (2) Hitting run, `KH2_KEYS` `7:W:2,10:Q` then J every 0.45 s from 12 s: `M_EX690 hit: atkp 126 damage 3 hp 29 ..` .. `atkp 129 damage 6 hp 0`
+(12 hits, `Blown` and `Hurt` reactions), `hp 0: switching to mode dead` for `M_EX690#1` at t1280 (about 21.3 s), `experience: enmp 67 defeated: +6`, the drop above; 0 `unimplemented host call`, 0 `script error`.
+PNGs looked at (`local\ex690_*.png`, not committed): idle at 12 s (`ex690_idle.png`: Sora in a rocky ship-wreck passage; the two `M_EX690 Idle hp 32/32` entries of the debug text are 7 m away and off screen),
+a hit at 16.5 s (`ex690_s16.5.png`: Sora mid-combo under the lock-on bracket with a golden hit ring, stars and a damage number "6", entries `Idle hp 32/32` and `Blown hp 14/32`), a death at 21.6 s
+(`ex690_s21.6.png`: green and purple prize gems, munny rings and stars in the air, an entry `Hurt hp 0/32`). `idle-hud`, `combat-ground` and `tt04-dusk` were run by hand through `capped.ps1` (accept.ps1
+stops `kh2-game` processes, rule A10): see the report.
+
+Gaps: (1) Only ca15 b_20 was run. bb00 (b_01: 14 members mixing `M_EX520` and `M_EX690`; b_02: six `M_EX690` and four `M_EX050`, which the app lacks), ca02 (b_21, with `M_EX770` and `M_EX420`),
+ca09 (b_20, with `M_EX760`), ca15 b_21 (with `M_EX660`) and bb07 / bb11 were not run. (2) Not seen: the modes `mode_hard`, `mode_battle_boss`, `mode_revenge_boss`, `btl_*` beyond the
+`mode_battle` entry, `rvg_*`, `rst_*`, `atk_counter`, `rc_lancesnatch` (a reaction command: the app sends no event 11 message), `freeze`, `land`, `idle_time`, `event`, `revenge`. (3) `M_EX690` never
+hurt Sora in the log by a line naming it; Sora was knocked out once in the soak and the `sora hit: atkp 107` lines are not tied to the kind in the log [inferred: the `atk_pierce` / `atk_abare` hits].
+(4) What triggers `leave` was not traced (the soak shows it follows `mode_battle` directly, once, after about 83 s of enemy time). (5) The ObjectTargetType 2 of the objentry row was not looked up.

@@ -255,6 +255,26 @@ fn shared_blocks() -> MutexGuard<'static, kh2_bdx::shared::SharedBlocks> {
     SHARED_BLOCKS.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Collision group switches the scripts asked for (hosts 1.36 and 1.37), in call order: (group, on). `area::run_area_script` drains them
+/// into `World::enabled_groups`.
+static GROUP_EDITS: LazyLock<Mutex<Vec<(u8, bool)>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// Queues one switch of a collision mesh group (`FUN_0015e9a8` when `on`, `FUN_0015e928` otherwise). Bits above 63 are not in the 64-bit mask.
+pub(crate) fn queue_group_edit(group: u32, on: bool) {
+    push_group_edit(&mut GROUP_EDITS.lock().unwrap_or_else(|e| e.into_inner()), group, on);
+}
+
+fn push_group_edit(queue: &mut Vec<(u8, bool)>, group: u32, on: bool) {
+    if group < 64 {
+        queue.push((group as u8, on));
+    }
+}
+
+/// The queued switches, oldest first; the queue is empty afterwards.
+pub(crate) fn take_group_edits() -> Vec<(u8, bool)> {
+    std::mem::take(&mut *GROUP_EDITS.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
 /// FUN_001a5030: the list of keyed buffers is emptied (the area's groups are set up again).
 pub(crate) fn clear_shared_blocks() {
     shared_blocks().clear();
@@ -1041,6 +1061,15 @@ impl BevyHost<'_> {
                 let v = args.iter().find_map(|a| if let kh2_bdx::Arg::Vec(v) = a { Some(*v) } else { None }).unwrap_or([0.0; 4]);
                 approx(Value::Vec([at[0] + v[0], at[1] + v[1], at[2] + v[2], 1.0]), "the object's bone matrices are not kept: its position plus the vector, no turn [inferred]")
             }
+            // 1.36 mask_35a810_clear (0x172418 -> FUN_0015e928) and 1.37 mask_35a810_set (0x172430 -> FUN_0015e9a8): bit `i` of the live mask
+            // DAT_0035a810 cleared / set, then the enabled byte of every collision mesh of group `i` (FUN_00142f78 -> FUN_00141800 /
+            // FUN_00143028 -> FUN_00141840 on the slots DAT_00355930..44). `area::run_area_script` applies the queued edits to the world, in call
+            // order, so the walker skips (or visits) the group from the next frame. The draw-group and model-animation hooks of the same functions
+            // (FUN_00153458 / FUN_001534c8, FUN_0015bfb8 / FUN_0015bf68, FUN_001dbad8 / FUN_001db928) are not ported.
+            Call::Func { group: 1, index: idx @ (36 | 37), args } if !args.is_empty() => {
+                queue_group_edit(args[0].int() as u32, *idx == 37);
+                approx(Value::None, "collision group bit exact; the drawn mesh group and model animation hooks are not ported")
+            }
             _ => missing(Value::Int(0), "function not mapped"),
         }
     }
@@ -1259,6 +1288,17 @@ mod tests {
         for t in ["M_EX930#1", "M_EX940#2", "M_EX850#1", "M_EX760#4", "M_EX420#5", "Dusk#1"] {
             assert!(!queues_motions(t), "{t}");
         }
+    }
+
+    /// Hosts 1.36 / 1.37 queue their switches in call order; a bit number above 63 is not in the 64-bit mask and is dropped.
+    #[test]
+    fn group_switches_keep_call_order_and_drop_bits_above_63() {
+        let mut q = Vec::new();
+        push_group_edit(&mut q, 5, true);
+        push_group_edit(&mut q, 64, true);
+        push_group_edit(&mut q, 5, false);
+        push_group_edit(&mut q, 63, true);
+        assert_eq!(q, vec![(5, true), (5, false), (63, true)]);
     }
 
     /// The Dusk reads word 0 of its target record (BDX `M_EX990` 0x136d -> R0217 at 0x021b): the player.

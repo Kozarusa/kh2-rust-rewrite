@@ -124,6 +124,8 @@ pub static HOST_FUNCS: &[HostFn] = &[
     f(1, 39, "spawn_param", "Oi", 'i', 0x171b50, "word i of the array at object +0x81c (the spawn record); Shadow tests the value 99"),
     f(1, 42, "bits_1d5d7b8_set", "i", '-', 0x170da8, "set bit n of the bit array at 0x1d5d7b8 (FUN_001b7ce8)"),
     f(1, 43, "bits_1d5d7b8_clear", "i", '-', 0x170dc0, "clear bit n of the bit array at 0x1d5d7b8 (FUN_001b7d18)"),
+    f(1, 46, "area_mask_groups_on", "", '-', 0x172800, "switch the collision group on for each set bit of the area mask 0x35cd18 (area opcode 0xb), FUN_0019d4c0 -> FUN_0015e9a8 per bit"),
+    f(1, 47, "area_mask_groups_off", "", '-', 0x172818, "switch the collision group off for each set bit of the area mask 0x35cd18, FUN_0019d520 -> FUN_0015e928 per bit"),
     f(1, 48, "task_done", "p", 'b', 0x1723d8, "the task's state word (+0x70) equals 3"),
     f(1, 52, "bits_47c_set", "Oi", '-', 0x1728c0, "set bit n of the bit array at object +0x47c (FUN_0019dd88)"),
     f(1, 53, "bits_480_set", "Oi", '-', 0x1728e8, "set bit n of the bit array at object +0x480 (FUN_0019ddb0)"),

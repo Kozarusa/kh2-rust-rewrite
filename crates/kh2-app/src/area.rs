@@ -244,6 +244,7 @@ pub fn run_area_script(
     if let (Some(w), Some(r)) = (world.as_mut(), rec.run.as_ref())
         && r.name == loaded
     {
+        crate::enemy_host::set_area_mask(r.script.word_35cd18);
         sync_groups(w, r.script.map_visibility, &loaded, &crate::enemy_host::take_group_edits());
     }
     if !rec.place_on_load || rec.placed.as_deref() == Some(loaded.as_str()) {

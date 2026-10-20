@@ -34,6 +34,9 @@ pub struct ScriptRun {
     pub music: Option<[u16; 2]>,
     /// `DAT_0035cd10` after the end-of-run `(word | show) & !hide` (FUN_00181148).
     pub map_visibility: u64,
+    /// Opcode 0xb (`DAT_0035cd18`, FUN_00180b48 case 0xb: argument 0 low, argument 1 high; 0 at the start of FUN_00181148). The
+    /// parameterless hosts 1.46 / 1.47 switch the collision group of each set bit on / off.
+    pub word_35cd18: u64,
     /// Opcode 0x13 (`DAT_0035cd38`, default 0).
     pub camera_type: u32,
     /// Opcode 4 (`DAT_01c893b8`, default 10000.0 at 0x37a868).
@@ -63,6 +66,7 @@ impl Default for ScriptRun {
             triggers: Vec::new(),
             music: None,
             map_visibility: u64::MAX,
+            word_35cd18: 0,
             camera_type: 0,
             capacity: 10000.0,
             keep: 3,
@@ -125,6 +129,7 @@ fn run_command(c: &Command, script: &'static str, program: u16, entrance: u8, st
         // used by any Twilight Town area; this port takes the "not picked" branch (3 and 0x1f
         // then continue) and records the opcode.
         2 | 3 | 0x1f | 0xa | 0x16 => st.unported.push(c.opcode),
+        0xb => st.word_35cd18 = arg(0) as u64 | (arg(1) as u64) << 32,
         4 => st.capacity = arg(0) as f32,
         6 => st.keep = arg(0) as i32,
         9 => {
@@ -312,6 +317,18 @@ mod tests {
         let c = act(1, [0.0; 3], [100.0, 50.0, 50.0], 0.0);
         assert!(c.contains([90.0, 0.0, 0.0]) && !c.contains([90.0, 0.0, 40.0]) && !c.contains([0.0, 60.0, 0.0]));
         assert!(act(2, [0.0; 3], [0.0; 3], 0.0).contains([1e6, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn opcode_0xb_stores_the_64_bit_group_mask() {
+        let cmd = |opcode, args: &[u32]| Command { opcode, args: args.to_vec() };
+        let mut area = Area::default();
+        let prog = |commands| Program { id: 0, commands };
+        area.scripts.insert("map".into(), vec![prog(vec![cmd(0xb, &[0x10, 0x4000_0000]), cmd(0xb, &[0x3, 0x4000_0000])])]);
+        let run = run_area(&area, [0, 0, 0], 0);
+        assert_eq!(run.word_35cd18, 0x4000_0000_0000_0003);
+        // No command: the word is 0.
+        assert_eq!(run_area(&Area::default(), [0, 0, 0], 0).word_35cd18, 0);
     }
 
     #[test]

@@ -244,8 +244,13 @@ pub const M_EX870: Kind = Kind { name: "M_EX870", enmp: 49, model: "M_EX870", de
 /// takes eight values after the object (pushed 0x0521..0x0536: 51, 28, 300.0, 500.0, 8.0, 4, 0.7, 0.35) and hands the first, 51, to `set_obj_param` (host 2.9 at 0x0dec): `enmp` row 51. The second, 28, is kept at +0x1c (the drop row of host 1.92).
 pub const M_EX960: Kind = Kind { name: "M_EX960", enmp: 51, model: "M_EX960", death_effect: true, status: true };
 
+/// `M_AL020_FIRE` (object 76, `ObjectType` 4; `00objentry` row 76: `NeoStatus` 1030, `SpawnLimiter` 6, no spawn objects), called by its model; a Heartless of the Agrabah areas (al00 `btl` programs 2 and 0xa hold thirteen to a dozen per group, per the area survey).
+/// Its script hands `enmp` row 5 to `set_obj_param` (host 2.9: BDX `M_AL020_FIRE` R0e42 at 0x0e42, called at 0x046d with 5 as the first of its eight values after the
+/// object, pushed at 0x0455, which R0e42 stores to local+0x20; host 2.9 at 0x0e69).
+pub const M_AL020_FIRE: Kind = Kind { name: "M_AL020_FIRE", enmp: 5, model: "M_AL020_FIRE", death_effect: true, status: true };
+
 /// Every enemy kind the app has.
-pub const KINDS: [&Kind; 35] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700, &M_EX950, &M_EX650, &M_EX660, &M_EX110, &M_EX520, &M_EX770, &M_EX210, &M_EX690, &M_EX910, &M_EX050, &M_EX730, &M_EX750, &M_EX510, &M_EX560, &M_EX060, &M_EX620, &M_EX600, &M_EX920, &M_EX120, &M_EX870, &M_EX960, &M_EX630];
+pub const KINDS: [&Kind; 36] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700, &M_EX950, &M_EX650, &M_EX660, &M_EX110, &M_EX520, &M_EX770, &M_EX210, &M_EX690, &M_EX910, &M_EX050, &M_EX730, &M_EX750, &M_EX510, &M_EX560, &M_EX060, &M_EX620, &M_EX600, &M_EX920, &M_EX120, &M_EX870, &M_EX960, &M_EX630, &M_AL020_FIRE];
 
 /// The rigs of the enemy kinds, by `Kind::name` (Shadow and Soldier share `sora::Rigs`' copies).
 #[derive(Resource, Default)]
@@ -2505,6 +2510,30 @@ mod tests {
         let run = kh2_ard::run::run_area(&ard, [0, 2, 0], 0);
         let b01 = btl_groups(&groups, &run).into_iter().find(|g| g.name == "b_01").expect("program 2 loads b_01");
         assert_eq!(b01.members.iter().filter(|m| m.kind.name == M_EX630.name).count(), 10);
+    }
+
+    /// `M_AL020_FIRE` (object 76) is an enemy kind of the app: its `00objentry` row is type 4 with `NeoStatus` 1030 and `SpawnLimiter` 6, its script's `set_obj_param` row is `enmp` 5, and al00's
+    /// `btl` program 0xa loads b_20 with eighteen of it. Needs `KH2_ISO` for the table and group part.
+    #[test]
+    fn m_al020_fire_is_an_enemy_kind_with_its_objentry_row() {
+        assert!(KINDS.iter().any(|k| std::ptr::eq(*k, &M_AL020_FIRE)));
+        assert_eq!((M_AL020_FIRE.enmp, M_AL020_FIRE.model, M_AL020_FIRE.status, M_AL020_FIRE.death_effect), (5, "M_AL020_FIRE", true, true));
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let rows = {
+            let mut a = disc.0.lock().expect("archive lock");
+            kh2_tables::load::<kh2_tables::tables::Objentry>(&mut a, &kh2_tables::tables::OBJENTRY).expect("objentry").rows
+        };
+        let row = rows.iter().find(|r| r.model_name == "M_AL020_FIRE").expect("objentry row of M_AL020_FIRE");
+        assert_eq!((row.object_id, row.object_type, row.neo_status, row.spawn_object1, row.spawn_object2, row.spawn_limiter), (76, OBJECT_ENEMY, 1030, 0, 0, 6));
+        let groups = area_groups(&disc, "al00");
+        let ard = disc.read("ard/al00.ard").and_then(|d| kh2_ard::Area::parse(&d)).map(|(a, _)| a).expect("al00.ard");
+        let run = kh2_ard::run::run_area(&ard, [0, 0xa, 0], 0);
+        let b20 = btl_groups(&groups, &run).into_iter().find(|g| g.name == "b_20").expect("program 0xa loads b_20");
+        assert_eq!(b20.members.iter().filter(|m| m.kind.name == M_AL020_FIRE.name).count(), 18);
     }
 
     /// `M_EX920` (object 311) is an enemy kind of the app: its `00objentry` row is type 4 with `NeoStatus` 3006, `SpawnLimiter` 15 and no spawn objects, its script's `set_obj_param` row is `enmp` 47, and eh10's

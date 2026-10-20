@@ -583,6 +583,9 @@ impl BevyHost<'_> {
             }
             Call::OnScreen { .. } => approx(Value::Bool(self.obj.on_screen), "the origin lifted one metre against the camera's view"),
             Call::Airborne { .. } => imp(Value::Bool(!self.obj.motor.grounded)),
+            // M_AL020_FIRE's jump modes (R0c2d, 0x0c2d) call start_move, wait for take-off, then wait in R0731 (0x0731) while busy; with busy read as a hit reaction only,
+            // the wait ends at once and every tick starts another jump from the air until the object hits the ceiling. A jump in the air is read as busy [inferred].
+            Call::Busy { .. } if self.tag.starts_with("M_AL020_FIRE#") && !self.obj.motor.grounded => approx(Value::Bool(true), "M_AL020_FIRE: busy while it is airborne from a jump [inferred]; otherwise a hit reaction"),
             Call::Busy { .. } => approx(Value::Bool(self.obj.reacting), "the game's flags (+0x160) are read as 'a hit reaction plays'"),
             // FUN_0016b940: word `index` of the array at object +0x81c; words 1 and 2 are the record's
             // +0x20 and +0x24 (FUN_0016b870). Without a record (the app's own waves) 99 stays.

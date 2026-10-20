@@ -332,18 +332,17 @@ pub fn pay_defeats(
             }
         }
         // `FUN_001b25d0` last step: the row's BonusLevel (`enmp` `+0x5a`) is a `bons` reward id, given once.
-        if row.bonus_level != 0 {
-            if let Some(paid) = progress.give_bonus(&tables.bons, row.bonus_level) {
-                info!("bonus: reward {} given by enmp {} (Bonus LV {}): {:?}", paid.id, enmp, progress.bonus_level(), paid.parts);
-                for part in &paid.parts {
-                    for &(item, given) in &part.gifts {
-                        let key = progress.items().get(item).is_some_and(|i| i.is_key());
-                        log.push(crate::prize::obtained_record(place, item, key, given, part.member as u8, 4));
-                    }
-                    if let (SORA, Ok(mut s)) = (part.member, sora.single_mut()) {
-                        s.hp = (s.hp + i32::from(part.hp)).min(i32::from(progress.sora().hp_max));
-                        s.mp = (s.mp + i32::from(part.mp)).min(i32::from(progress.sora().mp_max));
-                    }
+        let paid = (row.bonus_level != 0).then(|| progress.give_bonus(&tables.bons, row.bonus_level)).flatten();
+        if let Some(paid) = paid {
+            info!("bonus: reward {} given by enmp {} (Bonus LV {}): {:?}", paid.id, enmp, progress.bonus_level(), paid.parts);
+            for part in &paid.parts {
+                for &(item, given) in &part.gifts {
+                    let key = progress.items().get(item).is_some_and(|i| i.is_key());
+                    log.push(crate::prize::obtained_record(place, item, key, given, part.member as u8, 4));
+                }
+                if let (SORA, Ok(mut s)) = (part.member, sora.single_mut()) {
+                    s.hp = (s.hp + i32::from(part.hp)).min(i32::from(progress.sora().hp_max));
+                    s.mp = (s.mp + i32::from(part.mp)).min(i32::from(progress.sora().mp_max));
                 }
             }
         }

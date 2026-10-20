@@ -430,3 +430,5 @@ Disc: `kh2 bar ard/wm00.ard`, `kh2 bar msn/us/WORLDMAP.bar`, `kh2 bar 70landing.
 `kh2 extract 00progress` entries (BAR of 26 entries: 19 worlds, `dsa`, `wlds`, `epsd`, `dark`, `wldf`, `link`, `wmky`) and `kh2 extract 07localset.bin`, all
 run through `local/capped.ps1 -CapMB 2500`; the decoding was done with throwaway scripts (not committed). Executable searches used `mips_scan.py --jal`,
 `--addr`, `--li`, `--load-off` as listed in section 8.
+
+**WP-DYN2 note (offline read of `KH2_World_Map`, docs/dynamic-tracing.md section 5).** The state is taken during the load: no cursor object and no prop list exist yet, and the camera object's values are leftovers of the previous scene (identical in the map and the Gummi states). The camera-view source and the +0xb70 record stay open; the Gummi flight is docs/gummi.md.

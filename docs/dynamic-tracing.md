@@ -51,12 +51,14 @@ messages 0x8ae2..0x8ae7 (`FUN_001b55c8`) and the level window (`FUN_001b5718`, t
 (`FUN_0019ffb8` -> `FUN_001a0030`). `FUN_00180450` then runs (the tutorial prompt check).
 
 Callers (`mips_scan --jal 0x1be6b8`): `FUN_001b25d0` after a defeat's experience, with the short at `+0x5a` of the defeated enemy's `enmp` row
-(`BonusLevel`) when it is not 0; `FUN_001c46a8` the same for the row of a table-selected object (a second `enmp` row at `+0x5a`, called
-from code with no direct caller; not traced further); `FUN_001b95a0` with the byte at `+0xd` of the record at `*(this + 8)` (a command
-or event record; its callers were not found). Port: `Progress::give_bonus`, `Progress::bonus_given`, `Progress::bonus_level` and the
-defeat path of `progress::pay_defeats` (step 3 of `FUN_001b25d0`). Tests: `progress::tests::a_bonus_reward_raises_maxima_and_current_values_once`
-(numbers of this run), `a_bonus_reward_raises_slots_and_the_drive_gauge`, `the_gauge_carry_matches_the_game`.
-Gaps: the other two callers; the level window and messages; the live HP of Donald and Goofy while they stand (the record is raised, the
+(`BonusLevel`) when it is not 0 (it is 0 in all 177 rows of the USA disc: `kh2 table enmp`, so no defeat gives a bonus); `FUN_001c46a8` the same
+for a second `enmp`-shaped row picked from a table (called through a pointer, not traced further); `FUN_001b95a0`, the end of a mission manager
+(host 4.3 and 4.16, docs/struggle.md "The end"), with the byte at `+0xd` of the mission header (`msn/us/*.bar`, `Header::unlock` in `struggle.rs`;
+0 in every Struggle file). So the rewards come from the missions and scenes the app does not run. Port: `Progress::give_bonus`, `Progress::bonus_given`,
+`Progress::bonus_level` and the defeat path of `progress::pay_defeats` (step 3 of `FUN_001b25d0`; harmless on this disc); the mission end is not wired
+(`struggle.rs` only logs a non-zero header byte). Tests: `progress::tests::a_bonus_reward_raises_maxima_and_current_values_once` (numbers of this
+run), `a_bonus_reward_raises_slots_and_the_drive_gauge`, `the_gauge_carry_matches_the_game`.
+Gaps: the second caller; wiring a mission end that has a reward; the level window and messages; the live HP of Donald and Goofy while they stand (the record is raised, the
 `PartyMember` keeps its old maximum until the next spawn); the drive gauge the app's `drive.rs` keeps (it does not read the record's
 `+0xdd2`); [inferred] Sora's live HP rises by the row's HP like the block's does.
 

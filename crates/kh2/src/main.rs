@@ -23,6 +23,7 @@ kh2 <command> [--iso PATH]
   pax NAME              dump a PAX effect (or every PAX in a BAR)
   bgm NAME [SECONDS]    render a BGM with its WD bank to local/<name>.wav
   table NAME [LIMIT]    print a decoded gameplay table
+  coct-walls AREA [GROUP]  walls that stop the party in an area, and the ones between entrances and spawn volumes
   bdx NAME [--run [N]]  disassemble a BDX script (M_EX020, obj/M_EX020.mdlx, 00common.bdx); --run: dry run on a mock world
   bdx --scan            parse every BDX on the disc, print opcode and host function statistics
   validate              decode every modelled table and write checkmarks into sheets/
@@ -149,6 +150,124 @@ fn open(args: &mut Vec<String>) -> Result<Archive, String> {
         a.apply_names(names.lines()).map_err(|e| e.to_string())?;
     }
     Ok(a)
+}
+
+/// Count, minimum and maximum corner of the wall polygons of one (attribute, mesh, group) class.
+type WallClass = (usize, [f32; 3], [f32; 3]);
+
+/// `kh2 coct-walls <area> [group]` (WP-IW1): which collision polygons stop the walking party in an
+/// area and which of them lie between each entrance and each kind-2 spawn volume. Programs come
+/// from `KH2_PROGRAMS=<map>,<btl>,<evt>` (hex, default 0,0,0), as in the game harness.
+fn coct_walls(a: &mut Archive, area: &str, only_group: Option<u8>) -> Result<(), String> {
+    let map = a.read(&format!("map/us/{area}.map")).map_err(|e| e.to_string())?;
+    let entries = kh2_bar::parse(&map).map_err(|e| format!("{area}.map: {e:?}"))?;
+    let mut cocts = Vec::new();
+    for (i, e) in entries.iter().enumerate().filter(|(_, e)| e.kind == 6) {
+        let c = kh2_map::Coct::parse(e.data);
+        println!("type-6 entry {i} tag {:?}: {} bytes, {}", e.tag, e.data.len(), c.as_ref().map_or("does not parse".to_string(), |c| format!("{} polygons, {} meshes, {} tree nodes", c.polygons.len(), c.meshes.len(), c.nodes.len())));
+        cocts.push(c);
+    }
+    let coct = kh2_map::Coct::from_map(&map).ok_or("no COCT")?;
+    println!("used by Coct::from_map: the first parsing type-6 entry");
+    let ard = a.read(&format!("ard/{area}.ard")).map_err(|e| e.to_string())?;
+    let (ardf, _) = kh2_ard::Area::parse(&ard).ok_or("ard does not parse")?;
+    let mut programs = [0u8; 3];
+    if let Ok(v) = std::env::var("KH2_PROGRAMS") {
+        for (k, s) in v.split(',').take(3).enumerate() {
+            programs[k] = u8::from_str_radix(s.trim().trim_start_matches("0x"), 16).unwrap_or(0);
+        }
+    }
+    let run = kh2_ard::run::run_area(&ardf, programs, 0);
+    let word = run.map_visibility;
+    println!("programs {programs:?}: map visibility word {word:#x}, groups loaded {:?}", run.groups.iter().map(|g| g.tag.as_str()).collect::<Vec<_>>());
+    let mesh_on = |p: &kh2_map::Polygon| coct.meshes.get(p.mesh as usize).is_some_and(|m| m.enabled(word));
+    // Every polygon that stops the party, by (attribute, mesh, group).
+    let wall = |p: &kh2_map::Polygon| p.normal[1].abs() < 0.5;
+    let mut rows: std::collections::BTreeMap<(u32, u16, u8), WallClass> = std::collections::BTreeMap::new();
+    for p in coct.polygons.iter().filter(|p| kh2_map::stops_party(p.flags) && wall(p)) {
+        let r = rows.entry((p.flags, p.mesh, coct.group_of(p))).or_insert((0, [f32::MAX; 3], [f32::MIN; 3]));
+        r.0 += 1;
+        for v in &p.verts[..if p.quad { 4 } else { 3 }] {
+            for (k, c) in v.iter().enumerate() {
+                r.1[k] = r.1[k].min(*c);
+                r.2[k] = r.2[k].max(*c);
+            }
+        }
+    }
+    let total: usize = rows.values().map(|r| r.0).sum();
+    let live: usize = coct.polygons.iter().filter(|p| kh2_map::stops_party(p.flags) && wall(p) && mesh_on(p)).count();
+    println!("of which in meshes the game's walker visits under the word: {live}");
+    println!("wall-like polygons that pass stops_party: {total} in {} (attribute, mesh, group) classes", rows.len());
+    for ((attr, mesh, g), (n, lo, hi)) in &rows {
+        if only_group.is_some_and(|x| x != *g) {
+            continue;
+        }
+        let m = coct.meshes.get(*mesh as usize).copied().unwrap_or_default();
+        println!("  attr {attr:#x} mesh {mesh} group {g} (stored byte {:#x}, {} under the word): {n} polygons, bounds {lo:.0?} .. {hi:.0?}", m.stored_enabled, if m.enabled(word) { "enabled" } else { "DISABLED" });
+    }
+    let mut by_group: std::collections::BTreeMap<u8, usize> = std::collections::BTreeMap::new();
+    for ((_, _, g), r) in &rows {
+        *by_group.entry(*g).or_default() += r.0;
+    }
+    println!("walls per mesh group: {by_group:?}");
+    // Entrances and kind-2 volumes from the area file.
+    let to_map = |p: [f32; 3]| [p[0], -p[1], -p[2]];
+    let mut entrances = Vec::new();
+    for n in 0..=16u8 {
+        let mut r = kh2_ard::run::run_area(&ardf, programs, n);
+        if n == 0 {
+            r = run.clone();
+        }
+        if let Some((tag, e)) = kh2_ard::run::player_start(&ardf, &r, n) {
+            println!("entrance {n}: group {tag} player at {:?}", e.position);
+            entrances.push((n, to_map(e.position)));
+        }
+    }
+    let mut volumes = Vec::new();
+    for (tag, groups) in &ardf.spawns {
+        for g in groups.iter().filter(|g| g.kind & 0xff == 2) {
+            for (k, v) in g.activators.iter().enumerate() {
+                volumes.push((tag.clone(), g.id, k, to_map(v.position)));
+            }
+        }
+    }
+    println!("kind-2 volumes: {}", volumes.len());
+    // A horizontal ray 40 units above the entrance floor to the volume centre against the one-sided
+    // party walls (a point test; the game sweeps a sphere, see motor::sweep_wall).
+    let hit = |a0: [f32; 3], b0: [f32; 3], p: &kh2_map::Polygon| -> bool {
+        let (a, b) = (glam::Vec3::from(a0), glam::Vec3::new(b0[0], a0[1], b0[2]));
+        let d = b - a;
+        if d.dot(glam::Vec3::from(p.normal)) >= 0.0 {
+            return false;
+        }
+        p.triangles().any(|t| {
+            let [v0, v1, v2] = t.map(glam::Vec3::from);
+            let (e1, e2) = (v1 - v0, v2 - v0);
+            let h = d.cross(e2);
+            let det = e1.dot(h);
+            if det.abs() < 1e-9 {
+                return false;
+            }
+            let s = a - v0;
+            let u = s.dot(h) / det;
+            let q = s.cross(e1);
+            let v = d.dot(q) / det;
+            let tt = e2.dot(q) / det;
+            u >= 0.0 && v >= 0.0 && u + v <= 1.0 && (0.0..=1.0).contains(&tt)
+        })
+    };
+    for (n, from) in &entrances {
+        let from = [from[0], from[1] + 40.0, from[2]];
+        for (tag, id, k, to) in &volumes {
+            let mut hits: std::collections::BTreeMap<(u32, u16, u8, bool), usize> = std::collections::BTreeMap::new();
+            for p in coct.polygons.iter().filter(|p| kh2_map::stops_party(p.flags) && wall(p) && hit(from, *to, p)) {
+                *hits.entry((p.flags, p.mesh, coct.group_of(p), mesh_on(p))).or_default() += 1;
+            }
+            let dist = ((to[0] - from[0]).powi(2) + (to[2] - from[2]).powi(2)).sqrt();
+            println!("entrance {n} -> {tag} group {id} volume {k} centre {to:.0?} ({dist:.0} away): {}", if hits.is_empty() { "clear".to_string() } else { format!("walls crossed (attr, mesh, group, enabled): {hits:?}") });
+        }
+    }
+    Ok(())
 }
 
 fn main() -> ExitCode {
@@ -631,6 +750,12 @@ fn run(args: &mut Vec<String>) -> Result<(), String> {
                 }
                 println!("{label:8}: {close}/{n} COCT floor samples within 20 units of a render surface");
             }
+        }
+        "coct-walls" => {
+            let mut a = open(args)?;
+            let area = args.first().ok_or("coct-walls needs an area name such as eh10")?.clone();
+            let group: Option<u8> = args.get(1).and_then(|g| g.parse().ok());
+            coct_walls(&mut a, &area, group)?;
         }
         "coct" => {
             let mut a = open(args)?;

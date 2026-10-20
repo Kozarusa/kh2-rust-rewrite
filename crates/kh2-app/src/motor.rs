@@ -289,7 +289,10 @@ pub fn sweep_wall(world: &World, a: Vec3, b: Vec3, r: f32, mask: u32) -> Option<
     let ab = b - a;
     let len2 = ab.length_squared();
     let mut best: Option<(f32, Vec3, Vec3)> = None;
-    for t in &world.tris {
+    for (i, t) in world.tris.iter().enumerate() {
+        if !world.group_enabled(i) {
+            continue;
+        }
         // Polygon filter of FUN_00141b50: the attribute nibble is not 4 and the handler of the
         // probe's mask index (0 for a party member, FUN_0032e3b8 table at 0x378f7c: index 0 and 6
         // test flag 0x10) accepts the word. Maps without COCT flags (flags 0) never match.

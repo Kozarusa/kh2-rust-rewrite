@@ -1063,3 +1063,28 @@ Gaps: (1) Only ca09 b_02 was run; ca01 b_00 (with Shadows), ca12 b_01 (with `M_E
 no event 11 message), `event`, `revenge`. (3) The elements of host 1.22 (12 at a bone, 9 at a position) and the `atk_charge` visuals are not drawn; which file holds them was not looked up. (4) Host 1.13
 and 1.12 were not traced further than the soak (no mode stuck). (5) The ObjectTargetType of the objentry row was not looked up. (6) What hits Sora (`atk_slap`, `atk_hit`, `atk_charge`) was not tied to the log
 lines naming the kind [inferred: Sora lost HP and was knocked out during the soak].
+
+## The enemy M_EX510 (WP-EN10k)
+`M_EX510` (object 3, `00objentry` row 3: ObjectType 4, `NeoStatus` 1005, flags 0, ObjectTargetType 1, Weight 100, `SpawnLimiter` 10, no spawn objects; `enemy::M_EX510`, called by its model: the data gives no
+name; in the PNGs it is a dark thin-limbed Heartless) is a Heartless of the areas ca01, ca10, ca13, ca14, ca18, ca19 (area survey, 9 areas). Its BDX script (4605 words, `cargo run -p kh2 -- bdx M_EX510`)
+registers, among others, the modes `appear`, `mode_battle`, `mode_revenge`, `btl_attack`, `btl_short`, `btl_long`, `atk_howl`, `atk_rush`, `move_target`, `move_step`, `move_counter`, `move_back`, `idle_time`,
+`down`, `down_recover`, `dead`.
+
+- **Stats.** The set-up routine R1016 (0x1016, called at 0x049a) takes eight values after the object; the first pushed, 55 (pushed at 0x0482; R1016 stores it to local+0x20), goes to `set_obj_param`
+  (host 2.9 at 0x103d): `enmp` row 55 (Experience 50; log `experience: enmp 55 defeated: +2 (lvpm 4 x enmp 50)`). The harness enemy has 14 HP.
+- **Death.** `hp 0: switching to mode dead`, then `drop (host 1.92) asked row 8, used row 8` and `prize: drop of row 8 at ..: 3 objects`; `Kind::death_effect` is true as for the Dusk.
+- **Host calls.** No arm was added: every call the runs made was already answered (Impl: 1.119, 1.14, 1.201, 1.28, 1.57, 2.88; Approx: 1.309, 1.55, 1.80, 1.92, 2.67; Stub: 0.79). The `queues_motions`
+  tag is not needed: no mode waited on a motion state.
+Acceptance run (WP-EN10k), ca10 group b_20 (btl program 0xa: three `M_EX510` and three `M_EX420`, all kind-2 group 0x10f, created at once; test `m_ex510_is_an_enemy_kind_with_its_objentry_row`, disc):
+`KH2_PROGRAMS=0,a,0 KH2_WAVE_GROUP=b_20 KH2_NO_PARTY=1 KH2_AREALOG=1 KH2_BDXLOG=1 KH2_HITLOG=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1 KH2_KEYS=<J every 0.45 s from 13 s> KH2_SCREENSHOT=<png> KH2_SHOT_AT=<s>
+kh2-game ca10` through `local/capped.ps1 -CapMB 2500`. (1) Soak, J every 4 s from 14 s, shot at 110 s: about 5530 enemy ticks (92 s); 0 `unimplemented host call` for `M_EX510` and 0 `script error`;
+the modes run: `appear`, `mode_battle` -> `btl_short` -> `idle_time`, `btl_long` -> `move_target`, `btl_attack` -> `atk_howl`, `move_step`, `mode_revenge` -> `rvg_short` -> `move_counter` -> `atk_rush` -> `down`
+-> `down_recover` -> `move_back`; the longest gap between mode lines was `down` with 300 ticks (5 s). Sora was knocked out once and came back through the game-over menu. (2) Hitting run, J every 0.45 s
+from 13 s to 140 s: `M_EX510 hit: atkp 128 damage 2 hp 12` .. `atkp 126 damage 3 hp 0` (6 hits per kill, `FlinchPush` and `Blow` reactions), all three died (`#5` at tick 1399, `#4` at 1666, `#6` at 1855),
+each with `experience: enmp 55 defeated: +2` and the drop above. The only `unimplemented host call` was `M_EX420#2` host 1.2, not this kind. PNGs looked at (`local\ex510_*.png`, not committed): idle at 12 s
+(`ex510_s12.png`: Sora mid-combo in a treasure cave, debug text `M_EX510 Idle hp 14/14` x3 and a blue `M_EX420` in the foreground), 17 s (`ex510_s17.png`: Sora with a magic arc, a dark Heartless in the
+foreground; the `M_EX510` entries read `Idle`, none hurt), 24 s (`ex510_s24.png`: hit rings with damage numbers "6", a prize gem, "2p" in the air, entry `M_EX510 Blown hp 8/14`). A close hurt pose of
+`M_EX510` was not captured (the hit shows in the log and in the entry state `Blown`). `idle-hud`, `combat-ground` and `tt04-dusk` were not rerun: no code outside the kind entry changed.
+
+Gaps: (1) Only ca10 b_20 was run; ca01, ca13, ca14 b_20 (with `M_EX660`), ca18, ca19 were not. (2) Not seen: `mode_battle_boss`-style modes, `rvg_*` beyond `rvg_short`, `rst_*`, `leave`, `event`. (3) Host 0.79
+is a Stub (nothing to release). (4) What hits Sora (`atk_howl`, `atk_rush`) was not tied to log lines naming the kind [inferred: Sora lost HP and was knocked out during the soak].

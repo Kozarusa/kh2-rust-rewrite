@@ -1088,3 +1088,29 @@ foreground; the `M_EX510` entries read `Idle`, none hurt), 24 s (`ex510_s24.png`
 
 Gaps: (1) Only ca10 b_20 was run; ca01, ca13, ca14 b_20 (with `M_EX660`), ca18, ca19 were not. (2) Not seen: `mode_battle_boss`-style modes, `rvg_*` beyond `rvg_short`, `rst_*`, `leave`, `event`. (3) Host 0.79
 is a Stub (nothing to release). (4) What hits Sora (`atk_howl`, `atk_rush`) was not tied to log lines naming the kind [inferred: Sora lost HP and was knocked out during the soak].
+## The enemy M_EX560 (WP-EN10l)
+
+`M_EX560` (object 8, `00objentry` row 8: ObjectType 4, `NeoStatus` 1010, flags 0, Weight 100, `SpawnLimiter` 12, no spawn objects; `enemy::M_EX560`, called by its model: the data gives no name; in the PNGs it is a
+red-robed, purple-skinned Heartless with a yellow hand and a curved tail) is a Heartless of ca09 (b_00 with `M_EX210`; b_02 with three `M_EX730`) and bb12 (area survey; bb12 not run). Its BDX script (4715 words,
+`cargo run -p kh2 -- bdx M_EX560`) registers the modes `appear`, `mode_battle`, `mode_normal`, `mode_hard`, `mode_revenge`, `mode_battle_boss`, `mode_revenge_boss`, `btl_normal`, `btl_hard`, `btl_super_hard`,
+`rvg_*`, `rst_*`, `atk_brest`, `atk_quake`, `atk_mine`, `move_back`, `move_run`, `move_step`, `move_target`, `footwork`, `footwork2`, `idle`, `idle_time`, `freeze`, `leave`, `dead`, `event`, `revenge`.
+
+- **Stats.** The set-up routine R1080 (0x1080, called at 0x049f) takes eight values after the object; the first pushed, 59 (pushed at 0x0487; R1080 stores it to local+0x20), goes to `set_obj_param`
+  (host 2.9 at 0x10a7): `enmp` row 59 (Experience 150; log `experience: enmp 59 defeated: +6 (lvpm 4 x enmp 150)`). The harness enemy has 32 HP.
+- **Death.** `hp 0: switching to mode dead`, then `drop (host 1.92) asked row 12, used row 12` and `prize: drop of row 12 at ..: 6 objects`; `Kind::death_effect` is true as for the Dusk.
+- **Host calls.** No arm was added: every call the script made was answered already (Impl, or the existing Approx / Stub arms: 1.121, 1.171 and 1.206 Stub; 1.11, 1.111, 1.120, 1.55, 1.56, 1.60, 1.80, 1.87, 2.5
+  Approx). Host 1.13 on itself is not used by this script; `queues_motions` is unchanged. Edit to the shared test of M_EX730: ca09 b_02 now has the three `M_EX560` as members, so its `skipped` list is empty.
+Acceptance run (WP-EN10l), ca09 group b_02 (btl program 3: three `M_EX730`, three `M_EX560`; kind-2 group 0x1ae spawns one `M_EX560` at game (1084, 25, 291); test `m_ex560_is_an_enemy_kind_with_its_objentry_row`, disc).
+Same start as the M_EX730 run: `KH2_PROGRAMS=0,3,0 KH2_WAVE_GROUP=b_02 KH2_ENTRANCE=1 KH2_NO_PARTY=1 KH2_AREALOG=1 KH2_BDXLOG=1 KH2_HITLOG=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1 KH2_KEYS=7:A:0.7,8:W:4,.. KH2_SCREENSHOT=<png>
+KH2_SHOT_AT=<s> kh2-game ca09` through `local/capped.ps1 -CapMB 2500`. (1) Soak, shot at 125 s with J every 5 s from 14 s: 0 `unimplemented host call`, 0 `script error`; up to tick 6676 (about 111 s of enemy time)
+the `M_EX560` instances (#1, #2 and a re-spawned #5) ran `appear`, `mode_battle` -> `mode_normal` -> `atk_brest` / `atk_quake` / `move_target` / `idle_time` / `move_back` / `move_run` / `footwork` / `footwork2`, and
+`mode_revenge`; the longest mode runs between `mode` lines: `atk_quake` 190 ticks, `move_run` 133, `footwork` 118, `footwork2` 97, `atk_brest` 88, `move_target` 68, `appear` 60; no mode was stuck. (2) Hitting run, `KH2_KEYS`
+`7:A:0.7,8:W:4,12:Q` then J every 0.45 s from 13 s: `M_EX560 hit: atkp 126 damage 3 hp 29` .. `atkp 126 damage 3 hp 0` (about 14 hits per kill, `FlinchPush` and `Blow` reactions), `hp 0: switching to mode dead`
+for `M_EX560#1` (tick 2096), `experience: enmp 59 defeated: +6`, the drop above. PNGs looked at (`local\ex560_*.png`, not committed; the run's own copies are in the session scratchpad): idle at 12 s (Sora on a rocky
+ledge, debug text `M_EX560 Idle hp 32/32` twice and `M_EX730 Idle hp 20/20`, the enemies off screen 13-15 m away), a hit at 28.7 s (Sora mid-swing, golden hit stars, damage number "3", a curved red-brown tail
+shape behind him, debug text `M_EX560 Hurt hp 23/32`), a death at 35.1 s (debug text `M_EX560 Blown hp 0/32`, a red-robed purple Heartless knocked down in a purple ring at lower left, green and yellow prize gems,
+gold orbs, "6p" and "30" in the air). `idle-hud`, `combat-ground` and `tt04-dusk` were not rerun: the change adds a kind and touches no shared code path [not verified].
+
+Gaps: (1) Only ca09 b_02 was run; ca09 b_00 (with `M_EX210`) and bb12 were not. (2) Not seen: the modes `mode_hard`, `mode_battle_boss`, `mode_revenge_boss`, `btl_*`, `rvg_*`, `rst_*`, `atk_mine`, `move_step`,
+`freeze`, `leave`, `idle`, `event`, `revenge` (the soak showed `mode_battle` -> `mode_normal` rather than the `btl_*` modes). (3) Visuals of `atk_brest`, `atk_quake`, `atk_mine` (host 1.87 `spawn_attached`, Approx)
+were not looked at. (4) The ObjectTargetType of the objentry row was not looked up. (5) What hits Sora was not tied to the log lines naming the kind [inferred: Sora lost HP in the soak].

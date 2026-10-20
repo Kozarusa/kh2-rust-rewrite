@@ -147,7 +147,7 @@ pub fn run_area_script(
     disc: Res<Disc>,
     area: Res<CurrentArea>,
     mut rec: ResMut<AreaRecord>,
-    world: Option<Res<World>>,
+    mut world: Option<ResMut<World>>,
     progress: Option<Res<crate::progress::Progress>>,
     mut sora: Query<(&mut Transform, &mut Sora)>,
 ) {
@@ -223,6 +223,14 @@ pub fn run_area_script(
             }
         }
         rec.run = Some(Arc::new(AreaRun { name: loaded.clone(), ard, script }));
+    }
+    // The collision walker visits only meshes whose group bit is in the map visibility word
+    // (FUN_00141768); `load_area` inserts a fresh world, so the word is applied whenever it differs.
+    if let (Some(w), Some(r)) = (world.as_mut(), rec.run.as_ref())
+        && r.name == loaded
+        && w.enabled_groups != r.script.map_visibility
+    {
+        w.enabled_groups = r.script.map_visibility;
     }
     if !rec.place_on_load || rec.placed.as_deref() == Some(loaded.as_str()) {
         return;

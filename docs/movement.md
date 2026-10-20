@@ -612,10 +612,9 @@ group is switched on by the map visibility word, and the area script leaves the 
 * Fix in this tree: `kh2_map::Coct` keeps `meshes` (polygon range, byte +0x10, group byte +0x11, halfword +0x12) and
   `nodes`; `Mesh::enabled(word)` is `FUN_00141768`'s rule. `World` keeps each triangle's mesh and group
   (`mesh_of`, `group_of`) and `enabled_groups` (default all ones, so nothing changes until it is set);
-  `World::slide` skips triangles of groups outside it. Not wired: `area::run_area_script` must write
-  `script.map_visibility` into `World::enabled_groups` once the run is done (it holds the world as `Res`, so it
-  needs `ResMut`), and `motor::sweep_wall`, `World::touching_m` and `World::cast_m` should test `group_enabled`
-  (the game's attack and probe casts use the same walker). Both are WP-IW2.
+  `World::slide` skips triangles of groups outside it. Wired (second pass): `area::run_area_script` writes `script.map_visibility` into
+  `World::enabled_groups` whenever the loaded area's run differs from the world's mask; `World::slide`, `touching_m`,
+  `cast_m` and `motor::sweep_wall` skip triangles of off groups.
 * Hypotheses checked: H1 confirmed (above). H2 (barrier bits 0x800 and 0x1000 always solid): the walls that block in eh10
   carry 0x172, not those bits; not the cause. H4 (first type-6 entry): eh10, he05 and al01 each have exactly one
   type-6 entry, and the game too takes the first (`FUN_00149348`: `FUN_001684c0(file, 6, 0)` into map +0x30);
@@ -624,8 +623,14 @@ group is switched on by the map visibility word, and the area script leaves the 
   are gated. H5 (`World::ground` ignores attributes): not checked; the failing walks end at walls, not floors.
 * Gaps: the tool's wall test is a point ray at 40 units above the entrance (not `motor::sweep_wall`, because
   the `kh2` crate does not link `kh2-app`); halfword +0x12 of a mesh is not read by the walker (searched
-  `FUN_00141b50`, `FUN_00141768`, `FUN_00141800`, `FUN_00141840`). What writes the groups' on/off state later in a
-  fight (opcodes 0x1a and 0x1b are run once at area entry only; a battle manager that closes the arena at run time
-  was not traced) is open: a closing arena would need another writer of the word, not found in this package.
+  `FUN_00141b50`, `FUN_00141768`, `FUN_00141800`, `FUN_00141840`). Run-time rewrites (traced second pass): the area word is
+  applied once (`FUN_001047a8` -> `FUN_00149b40(DAT_0035cd10)`; `FUN_0015e6c0` copies it to the live mask
+  `DAT_0035a810`). After that only three things change a group: `FUN_0015e9a8` (group on: sets the bit in
+  `DAT_0035a810`, then `FUN_00143028` -> `FUN_00141840` on every collision slot `DAT_00355930..44`) and
+  `FUN_0015e928` (off: `FUN_00142f78` -> `FUN_00141800`), reached from BDX host calls 1.37 and 1.36 and from area opcode 0xb
+  (`DAT_0035cd18` mask, docs/events.md). No battle manager writes the area word. So an arena that closes during a
+  fight is done by an enemy or event script calling host 1.37 / 1.36; the app does not implement those two host calls
+  yet (no `mask_35a810` arm in `enemy_host.rs`), so groups only change at area entry. A follow-up should add
+  `World::enabled_groups` bit writes for them.
 * Decompile index: `FUN_00141b50`, `FUN_00141500`, `FUN_00141768`, `FUN_00141800`, `FUN_00141840`, `FUN_00142ba8`,
   `FUN_00149b40`, `FUN_00149348`, `FUN_0015e6c0`, `FUN_001491f8` (map +0x50), `FUN_001db4d0`, `FUN_001db928`.

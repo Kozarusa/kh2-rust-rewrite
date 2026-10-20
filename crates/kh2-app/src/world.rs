@@ -317,6 +317,7 @@ impl World {
         let mut ids = Vec::new();
         self.near(a.min(b) - Vec3::splat(r), a.max(b) + Vec3::splat(r), &mut ids);
         ids.iter()
+            .filter(|&&i| self.group_enabled(i as usize))
             .map(|&i| &self.tris[i as usize])
             .filter(|t| t.flags & mask != 0 && t.n.y.abs() < FLOOR_NY)
             .filter_map(|t| {
@@ -346,6 +347,7 @@ impl World {
         let mut ids = Vec::new();
         self.near(p.min(q), p.max(q), &mut ids);
         ids.iter()
+            .filter(|&&i| self.group_enabled(i as usize))
             .map(|&i| &self.tris[i as usize])
             .filter(|t| t.flags & mask != 0 && t.n.dot(dir) < 0.0)
             .filter_map(|t| ray_tri(p, dir, &t.v).filter(|&x| x <= len).map(|x| (x, t.n)))
@@ -591,6 +593,26 @@ mod tests {
             let left = (end - target).with_y(0.0).length();
             assert!(vol.contains([end.x, -end.y, -end.z]) || left < 80.0, "{area} entrance {entrance} -> group {group}: ended {end:?}, {left:.0} from {target:?}");
         }
+    }
+
+    /// WP-IW1: a wall in mesh group 3 answers the slide, the capsule touch, the ray cast and the motor's sweep only
+    /// while bit 3 is in `enabled_groups` (FUN_00141768 gates the game's walker the same way for every query).
+    #[test]
+    fn hidden_group_walls_are_ignored_by_every_query() {
+        let flags = kh2_map::flags::PARTY_COLLIDE | kh2_map::flags::ATTACK_COLLIDE;
+        let wall = kh2_map::Polygon { verts: [[100.0, -500.0, -500.0], [100.0, 500.0, -500.0], [100.0, 500.0, 500.0], [100.0, -500.0, 500.0]], quad: true, normal: [-1.0, 0.0, 0.0], d: 100.0, flags, material: 0, mesh: 0 };
+        let coct = kh2_map::Coct { polygons: vec![wall], meshes: vec![kh2_map::Mesh { group: 3, ..Default::default() }], ..Default::default() };
+        let mut w = World::from_coct(&coct);
+        let (a, b) = (Vec3::new(0.0, 50.0, 0.0), Vec3::new(200.0, 50.0, 0.0));
+        let probe = |w: &World| {
+            let mut pos = Vec3::ZERO;
+            w.slide(&mut pos, Vec3::new(200.0, 0.0, 0.0), 30.0, 10.0, 100.0);
+            (pos.x < 100.0, w.touching_m(a / World::M, b / World::M, 0.3 / World::M, flags).is_some(), w.cast_m(a / World::M, b / World::M, flags).is_some(), crate::motor::sweep_wall(w, a, b, 10.0, 0x10).is_some())
+        };
+        w.enabled_groups = 1 << 3;
+        assert_eq!(probe(&w), (true, true, true, true), "group on: the wall answers every query");
+        w.enabled_groups = !(1 << 3);
+        assert_eq!(probe(&w), (false, false, false, false), "group off: no query sees the wall");
     }
 
     /// WP-G3 (user report 2026-10-11: invisible walls in Tram Common and Station Heights). The player's

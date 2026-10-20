@@ -1270,3 +1270,19 @@ antenna and pointed hat beside Sora, Goofy in the foreground, debug text `M_EX12
 
 Gaps: (1) Only mu01 b_20 group 0x53 was run; al01, al07, al12, al13, mu03 (whose b_20 also holds five `M_EX580`, not an app kind) were not. (2) Group 0x54 (two more `M_EX120`) was not entered. (3) The names of the modes `atk_aero_stop`, `atk_rush`, `atk_tornado` are the script's; their attack volumes follow the motion triggers (no new code) and the damage Sora took was not compared with the original.
 (4) Host 1.13 was not mapped (see above): if a mode of another area waits on a motion change, add `M_EX120#` to `queues_motions` in `enemy_host.rs`.
+
+## The enemy M_EX630 (WP-EN11c)
+
+`M_EX630` (object 12, `00objentry` row 12: ObjectType 4, `NeoStatus` 1017, `SpawnLimiter` 15, no spawn objects; `enemy::M_EX630`, called by its model) is a Heartless of the Agrabah areas (area survey; al03 `btl` program 2 loads b_01 with ten of it, test `m_ex630_is_an_enemy_kind_with_its_objentry_row`).
+Its BDX script (5509 words, `cargo run -p kh2 -- bdx M_EX630`) registers modes `appear`, `mode_battle`, `mode_revenge`, `mode_battle_boss`, `mode_revenge_boss`, `leave`, `dead`, `freeze`, `event`, `idle`, `idle_time`, `footwork`, `revenge`, `move_target`, `move_back`, `move_step`, `atk_kasume`, `atk_oi`, `atk_kiriage`, `atk_combo`, `atk_ring`, `atk_ring_end`, `atk_ring_ref` and the
+`btl_*` / `rvg_*` / `rst_*` pickers. Stats: the constructor R1396 (0x1396, called at 0x0595) takes eight values after the object (pushed 0x057d..0x0592: 63, 33, 260.0, 400.0, 10.0, 4, 0.7, 0.35) and hands the first, 63, to host 2.9 at 0x13bd: `enmp` row 63 (20 HP at the app's level 1).
+The second, 33, is kept at +0x1c and is the drop row of host 1.92 (log `drop (host 1.92) asked row 33`, host 1.92 at 0x077b).
+
+Host calls: every call the script made in play is already answered (no `unimplemented host call`, no `script error`); no new arm. Stubs in its run: 1.121, 65535.0 (frozen); host 1.13 is not in `queues_motions` and the script never waited on it (the longest gap between mode changes was 232 ticks, 3.9 s, over 5862 ticks).
+
+Harness recipe: `KH2_PROGRAMS=0,2,0 KH2_WAVE_GROUP=b_01 KH2_WAVE_AT_GROUP=1 KH2_NO_PARTY=1 KH2_AREALOG=1 KH2_BDXLOG=1 KH2_HITLOG=1 KH2_KEYS=8:Q,<J every 0.45 s> kh2-game al03`. Kind-2 group 0x1b creates one `M_EX630` (serial 0xf9, wave 1) at the record's point (0, 0, 0).
+
+Acceptance runs (WP-EN11c): (1) idle 98 s of enemy time, no keys after Q: `appear` -> `mode_battle` / `btl_attack` / `move_back` / `atk_oi`, `btl_short` / `move_step`, `atk_kasume`, `btl_long`, `move_target`; no stuck mode, Sora 20/20. (2) hits (J from 14 s): `M_EX630 hit: atkp 126 damage 3 hp 17` .. `atkp 129 damage 6 hp 0`, `experience: enmp 63 defeated: +4 (lvpm 4 x enmp 100)`, `hp 0: switching to mode dead`, `drop (host 1.92) asked row 33`, `prize: drop of row 33`; the instance enters `mode_revenge` 7 times while hit.
+(3) Screenshots looked at: idle at 9 s (a dark hooded Heartless with a red scythe beside Sora, lock-on brackets, debug text `M_EX630 Idle hp 20/20`), hit at 12.5 s (`Hurt hp 8/20`, damage number 6, the figure blown behind Sora), death at 17 s ("OBTAINED MUNNY 10", no figure left).
+
+Gaps: (1) Only the first wave member appeared: after the single wave-1 `M_EX630` was defeated for good the log shows no further creation from group 0x1b (limit +0x22 is 0 in this group; 19 members are on demand); the wave advance of this group was not traced. (2) The attack names (`atk_kasume`, `atk_oi`, `atk_kiriage`, `atk_combo`, `atk_ring*`) are the script's; `atk_kiriage`, `atk_combo` and `atk_ring*` did not occur in the soak, and the damage Sora took was not compared with the original.

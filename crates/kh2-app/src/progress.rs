@@ -160,6 +160,51 @@ pub struct ExperiencePaid {
     pub levels: Vec<LevelReached>,
 }
 
+/// One `bons` row applied by `Progress::give_bonus`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BonusPart {
+    pub member: u16,
+    /// Maximum HP and MP added (the current values rose by the same, held to the maximum).
+    pub hp: u8,
+    pub mp: u8,
+    /// Drive gauge maximum added (Sora only).
+    pub drive: u8,
+    /// Item, accessory and armor slots added.
+    pub slots: [u8; 3],
+    /// The bonus items (id, whether `give` took it).
+    pub gifts: Vec<(u16, bool)>,
+}
+
+/// What `Progress::give_bonus` did: the rows of one reward id.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BonusPaid {
+    pub id: u16,
+    pub parts: Vec<BonusPart>,
+}
+
+/// `FUN_001a0290(status, 0)`: the drive gauge's fraction (0..99, 100 = full) and points after adding nothing:
+/// a fraction of 100 or more carries into the points up to the maximum, and stays at 100 when they are full.
+pub fn gauge_carry(frac: u8, points: u8, max: u8) -> (u8, u8) {
+    let mut f = i32::from(frac);
+    let mut p = points;
+    if f > 99 {
+        loop {
+            if p < max {
+                p += 1;
+            }
+            if max <= p {
+                f = 100;
+                break;
+            }
+            f -= 100;
+            if f <= 99 {
+                break;
+            }
+        }
+    }
+    (f as u8, p)
+}
+
 /// `FUN_001b50c0(member, level)`: the `lvup` row of a member's level. The table is the member's own (ids 14 and
 /// 15 use 1 and 6), the first one when his is missing or empty, and the level is held at the table's length
 /// (row `level - 1`); level 0 counts as 1 [inferred, as `menu_equipment::member_ap_max`].
@@ -215,7 +260,7 @@ pub fn pay_defeats(
     tables: Option<Res<ExperienceTables>>,
     mut progress: Option<ResMut<Progress>>,
     abilities: Option<Res<crate::abilities::Abilities>>,
-    sora: Query<&crate::sora::Sora>,
+    mut sora: Query<&mut crate::sora::Sora>,
     enemies: Query<(&crate::enemy::Enemy, &GlobalTransform, Option<&crate::enemy_ai::AiBrain>)>,
     bodies: Query<(&crate::skel::Animator, &GlobalTransform)>,
     (mut log, area, mut shown, mut fx): (
@@ -241,48 +286,65 @@ pub fn pay_defeats(
         let amount = defeat_payout(table, row.experience, multiplier);
         if amount <= 0 {
             info!("experience: enmp {} pays nothing (table {table}, row {})", enmp, row.experience);
-            continue;
         }
-        let before = progress.experience();
-        let paid = progress.pay_experience(amount, &tables.lvup, SORA);
-        info!(
-            "experience: enmp {} defeated: +{amount} (lvpm {table} x enmp {}{}); total {before} -> {}; Sora needs {} more",
-            enmp,
-            row.experience,
-            multiplier.map_or(String::new(), |m| format!(", low-HP x{m}")),
-            progress.experience(),
-            paid.to_next
-        );
-        for l in &paid.levels {
+        if amount > 0 {
+            let before = progress.experience();
+            let paid = progress.pay_experience(amount, &tables.lvup, SORA);
             info!(
-                "experience: member {} reaches level {} (Strength +{}, Magic +{}, Defense +{}, AP +{}); ability {:#x}{}",
-                l.member,
-                l.level,
-                l.strength.max(0),
-                l.magic.max(0),
-                l.defense.max(0),
-                l.ap.max(0),
-                l.ability,
-                if l.ability == 0 { " (none)" } else if l.given { " given" } else { " refused" }
+                "experience: enmp {} defeated: +{amount} (lvpm {table} x enmp {}{}); total {before} -> {}; Sora needs {} more",
+                enmp,
+                row.experience,
+                multiplier.map_or(String::new(), |m| format!(", low-HP x{m}")),
+                progress.experience(),
+                paid.to_next
             );
-            if l.ability != 0 {
-                let key = progress.items().get(l.ability).is_some_and(|i| i.is_key());
-                log.push(crate::prize::obtained_record(place, l.ability, key, l.given, l.member as u8, 3));
+            for l in &paid.levels {
+                info!(
+                    "experience: member {} reaches level {} (Strength +{}, Magic +{}, Defense +{}, AP +{}); ability {:#x}{}",
+                    l.member,
+                    l.level,
+                    l.strength.max(0),
+                    l.magic.max(0),
+                    l.defense.max(0),
+                    l.ap.max(0),
+                    l.ability,
+                    if l.ability == 0 { " (none)" } else if l.given { " given" } else { " refused" }
+                );
+                if l.ability != 0 {
+                    let key = progress.items().get(l.ability).is_some_and(|i| i.is_key());
+                    log.push(crate::prize::obtained_record(place, l.ability, key, l.given, l.member as u8, 3));
+                }
+            }
+            if let (Some(s), true) = (sora.single().ok(), paid.levels.iter().any(|l| l.member == SORA)) {
+                fx.write(crate::fx::StartBoundSystemEffect { id: LEVEL_UP_SYSTEM_EFFECT, owner: s.body, handle: crate::fx::FxHandle::new() });
+            }
+            if paid.to_next > 0 && popup_enabled() {
+                let at = enemies.get(d.victim).ok().map(|(e, gt, _)| {
+                    bodies
+                        .get(e.body)
+                        .ok()
+                        .and_then(|(a, g)| crate::prize::shape_point(a, g, POPUP_SHAPE))
+                        .map_or(gt.translation(), |p| p * crate::SCALE)
+                });
+                if let Some(at) = at {
+                    shown.write(ExperienceGained { amount: amount as u32, to_next: paid.to_next as u32, at });
+                }
             }
         }
-        if let (Some(s), true) = (sora.single().ok(), paid.levels.iter().any(|l| l.member == SORA)) {
-            fx.write(crate::fx::StartBoundSystemEffect { id: LEVEL_UP_SYSTEM_EFFECT, owner: s.body, handle: crate::fx::FxHandle::new() });
-        }
-        if paid.to_next > 0 && popup_enabled() {
-            let at = enemies.get(d.victim).ok().map(|(e, gt, _)| {
-                bodies
-                    .get(e.body)
-                    .ok()
-                    .and_then(|(a, g)| crate::prize::shape_point(a, g, POPUP_SHAPE))
-                    .map_or(gt.translation(), |p| p * crate::SCALE)
-            });
-            if let Some(at) = at {
-                shown.write(ExperienceGained { amount: amount as u32, to_next: paid.to_next as u32, at });
+        // `FUN_001b25d0` last step: the row's BonusLevel (`enmp` `+0x5a`) is a `bons` reward id, given once.
+        if row.bonus_level != 0 {
+            if let Some(paid) = progress.give_bonus(&tables.bons, row.bonus_level) {
+                info!("bonus: reward {} given by enmp {} (Bonus LV {}): {:?}", paid.id, enmp, progress.bonus_level(), paid.parts);
+                for part in &paid.parts {
+                    for &(item, given) in &part.gifts {
+                        let key = progress.items().get(item).is_some_and(|i| i.is_key());
+                        log.push(crate::prize::obtained_record(place, item, key, given, part.member as u8, 4));
+                    }
+                    if let (SORA, Ok(mut s)) = (part.member, sora.single_mut()) {
+                        s.hp = (s.hp + i32::from(part.hp)).min(i32::from(progress.sora().hp_max));
+                        s.mp = (s.mp + i32::from(part.mp)).min(i32::from(progress.sora().mp_max));
+                    }
+                }
             }
         }
     }
@@ -307,6 +369,8 @@ pub const LEVEL_UP_SYSTEM_EFFECT: u16 = 0xf;
 #[derive(Resource, Clone, Debug)]
 pub struct ExperienceTables {
     pub lvup: Arc<Vec<Vec<t::Lvup>>>,
+    /// The `bons` rows (the bonus rewards `FUN_001be6b8` gives).
+    pub bons: Arc<Vec<t::Bons>>,
     pub low_hp_fraction: f32,
 }
 
@@ -1114,6 +1178,74 @@ impl Progress {
             levels.extend(self.raise_level(id, tables));
         }
         ExperiencePaid { to_next: self.experience_to_next(SORA, tables), levels }
+    }
+
+    /// The bonus level count (`0x340e68`, party `+0xfa8`; the Status page's "Bonus LV") and the reward flag bits
+    /// (`0x340e6c`, party `+0xfac`, 32 bytes).
+    const BONUS_COUNT: usize = 0xfa8;
+    const BONUS_FLAGS: usize = 0xfac;
+
+    /// `FUN_001be7e8(id)`: the bonus reward `id` was already given.
+    pub fn bonus_given(&self, id: u16) -> bool {
+        id < 256 && self.bit(Self::BONUS_FLAGS, 8, id)
+    }
+
+    /// The Status page's "Bonus LV": how many bonus rewards were given (`0x340e68`).
+    pub fn bonus_level(&self) -> u8 {
+        self.u8_at(Self::BONUS_COUNT)
+    }
+
+    /// `FUN_001be6b8(id)`: gives the bonus reward `id` once (dynamic trace WP-DYN1, docs/player-data.md "Bonus rewards").
+    /// Nothing happens when its flag is set or `id` is not below 256. Otherwise the count byte rises by one, the flag is
+    /// set and every `bons` row of that id (`FUN_001be4b8` finds the first, the loop of `FUN_001be6b8` follows while the
+    /// next row has the same id) is applied to its character (`FUN_001be500` on the status block, then the block's
+    /// copy back into the record, `FUN_001a0030`): maximum HP and MP rise by the row's values and the current values by
+    /// the same amount, held to the new maximum; the drive gauge maximum (Sora only: the copy back writes it only for
+    /// the block that has the party block linked) rises and `FUN_001a0290(.., 0)` carries a full fraction into the
+    /// points; the armor, accessory and item slot counts (record `+0x10`, `+0x11`, `+0x12`) rise by the row's
+    /// columns; the two bonus items are given (`FUN_001a18d8(item, member, 0)`). A character without a record is
+    /// skipped. Not ported: the MP-charge branch of `FUN_001a0180`, the level window `FUN_001b5718` and the
+    /// tutorial check `FUN_00180450`. The record's current HP is the block's current HP here (the original's block
+    /// holds it; the record only follows when the block is released).
+    pub fn give_bonus(&mut self, rows: &[t::Bons], id: u16) -> Option<BonusPaid> {
+        if id >= 256 || self.bonus_given(id) {
+            return None;
+        }
+        self.set_u8(Self::BONUS_COUNT, self.u8_at(Self::BONUS_COUNT).wrapping_add(1));
+        self.set_bit(Self::BONUS_FLAGS, 8, id, true);
+        let mut paid = BonusPaid { id, parts: Vec::new() };
+        let Some(first) = rows.iter().position(|b| u16::from(b.reward_id) == id) else { return Some(paid) };
+        for b in rows[first..].iter().take_while(|b| u16::from(b.reward_id) == id) {
+            let member = u16::from(b.character_id);
+            let Some(r) = Self::member_off(member) else { continue };
+            let (hp_max, mp_max) = (i32::from(self.u8_at(r + rec::HP_MAX)) + i32::from(b.hp_increase), i32::from(self.u8_at(r + rec::MP_MAX)) + i32::from(b.mp_increase));
+            let hp = (i32::from(self.u8_at(r + rec::HP).min(self.u8_at(r + rec::HP_MAX))) + i32::from(b.hp_increase)).clamp(0, hp_max);
+            let mp = (i32::from(self.u8_at(r + rec::MP).min(self.u8_at(r + rec::MP_MAX))) + i32::from(b.mp_increase)).clamp(0, mp_max);
+            self.set_u8(r + rec::HP_MAX, hp_max as u8);
+            self.set_u8(r + rec::MP_MAX, mp_max as u8);
+            self.set_u8(r + rec::HP, hp as u8);
+            self.set_u8(r + rec::MP, mp as u8);
+            if member == SORA {
+                let max = self.u8_at(off::DRIVE + 2).wrapping_add(b.drive_gauge_upgrade);
+                self.set_u8(off::DRIVE + 2, max);
+                let (frac, points) = gauge_carry(self.u8_at(off::DRIVE), self.u8_at(off::DRIVE + 1), max);
+                self.set_u8(off::DRIVE, frac);
+                self.set_u8(off::DRIVE + 1, points);
+            }
+            for (o, v) in [(rec::ITEM_SLOTS, b.item_slot_upgrade), (rec::ACCESSORY_SLOTS, b.accessory_slot_upgrade), (rec::ARMOR_SLOTS, b.armor_slot_upgrade)] {
+                self.set_u8(r + o, self.u8_at(r + o).wrapping_add(v));
+            }
+            let gifts = [b.bonus_item1, b.bonus_item2].into_iter().filter(|&i| i != 0).map(|i| (i, self.give(i, member, false))).collect();
+            paid.parts.push(BonusPart {
+                member,
+                hp: b.hp_increase,
+                mp: b.mp_increase,
+                drive: b.drive_gauge_upgrade,
+                slots: [b.item_slot_upgrade, b.accessory_slot_upgrade, b.armor_slot_upgrade],
+                gifts,
+            });
+        }
+        Some(paid)
     }
 
     fn set_experience(&mut self, v: i32) {
@@ -3306,7 +3438,8 @@ impl Plugin for ProgressPlugin {
             let mut a = disc.0.lock().ok()?;
             let lvup = kh2_tables::subfile(&mut a, &t::LVUP).ok().and_then(|b| kh2_tables::rt::decode_lvup::<t::Lvup>(&b))?;
             let sstm = kh2_tables::player::load_sstm(&mut a).ok()?;
-            Some(ExperienceTables { lvup: Arc::new(lvup), low_hp_fraction: sstm.f32(0x144) })
+            let bons = kh2_tables::load::<t::Bons>(&mut a, &t::BONS).map(|d| d.rows).unwrap_or_default();
+            Some(ExperienceTables { lvup: Arc::new(lvup), bons: Arc::new(bons), low_hp_fraction: sstm.f32(0x144) })
         });
         match tables {
             Some(t) => {
@@ -4849,6 +4982,78 @@ mod tests {
         assert_eq!(defeat_payout(0, 9, Some(3)), 0, "nothing to multiply");
         assert_eq!(defeat_payout(100, 7, Some(1)), 7, "no Experience Boost: the byte is 1");
         assert_eq!(defeat_payout(100, 7, Some(3)), 21);
+    }
+
+    fn bons(reward: u8, character: u8, hp: u8, mp: u8, drive: u8, slots: [u8; 3]) -> t::Bons {
+        t::Bons { reward_id: reward, character_id: character, hp_increase: hp, mp_increase: mp, drive_gauge_upgrade: drive, item_slot_upgrade: slots[0], accessory_slot_upgrade: slots[1], armor_slot_upgrade: slots[2], bonus_item1: 0, bonus_item2: 0, padding: 0 }
+    }
+
+    /// `FUN_001be6b8` as PCSX2 ran it (WP-DYN1, savestate 4, the function called by hand with the reward id, writes watched):
+    /// reward 3 (Sora +5 HP, Donald +4, Beast +35) moved the records 30/30 -> 35/35, 18/18 -> 22/22 and the absent member's
+    /// current HP by the same amount (7 -> 42, maximum 40 -> 75); the count byte rose from 3 to 4 and the flag bit was set; a
+    /// second call changed nothing. The rows here are built by hand (their columns are the layout of `bons`, no disc data).
+    #[test]
+    fn a_bonus_reward_raises_maxima_and_current_values_once() {
+        let mut b = vec![0u8; off::LEN];
+        let mut member = |m: usize, hp: u8, hp_max: u8, mp: u8, mp_max: u8| {
+            let r = m * off::MEMBER_SIZE;
+            b[r + rec::HP..r + rec::HP + 4].copy_from_slice(&[hp, hp_max, mp, mp_max]);
+            b[r + rec::LEVEL] = 4;
+        };
+        member(0, 30, 30, 100, 100);
+        member(1, 18, 18, 100, 100);
+        member(8, 7, 40, 100, 100);
+        b[Progress::BONUS_COUNT] = 3;
+        let mut p = Progress::from_block(&b, Arc::new(ItemIndex::default()));
+        let rows = [bons(2, 1, 0, 0, 0, [0; 3]), bons(3, 1, 5, 0, 0, [0; 3]), bons(3, 2, 4, 0, 0, [0; 3]), bons(3, 9, 35, 0, 0, [0; 3]), bons(4, 1, 5, 0, 0, [0; 3])];
+        assert!(!p.bonus_given(3));
+        let paid = p.give_bonus(&rows, 3).expect("first call pays");
+        assert_eq!(paid.parts.iter().map(|x| (x.member, x.hp)).collect::<Vec<_>>(), vec![(1, 5), (2, 4), (9, 35)], "only the rows of reward 3, in table order");
+        assert_eq!(p.member(1).map(|m| (m.hp, m.hp_max)), Some((35, 35)));
+        assert_eq!(p.member(2).map(|m| (m.hp, m.hp_max)), Some((22, 22)));
+        assert_eq!(p.member(9).map(|m| (m.hp, m.hp_max, m.mp, m.mp_max)), Some((42, 75, 100, 100)));
+        assert_eq!(p.bonus_level(), 4);
+        assert!(p.bonus_given(3) && !p.bonus_given(2) && !p.bonus_given(4));
+        let again = p.give_bonus(&rows, 3);
+        assert_eq!(again, None, "a reward is given once");
+        assert_eq!(p.member(1).map(|m| m.hp_max), Some(35));
+        assert_eq!(p.bonus_level(), 4);
+        // An id the table does not have still counts as given (the count and the flag come first in the original).
+        assert_eq!(p.give_bonus(&rows, 99).map(|x| x.parts.len()), Some(0));
+        assert_eq!((p.bonus_level(), p.bonus_given(99)), (5, true));
+        assert_eq!(p.give_bonus(&rows, 300), None, "the flag array holds 256 ids");
+    }
+
+    /// Reward 1 of the trace (Donald +10 HP and MP, Goofy one item and one accessory slot) and reward 21 (Sora's drive gauge):
+    /// the slot counts and the gauge (points 3 of 3 became 4 of 4, the fraction stays 100) as the game left them.
+    #[test]
+    fn a_bonus_reward_raises_slots_and_the_drive_gauge() {
+        let mut b = vec![0u8; off::LEN];
+        for (m, level, armor, acc, items) in [(0usize, 4u8, 1u8, 1u8, 3u8), (1, 4, 1, 2, 2), (2, 4, 2, 1, 3)] {
+            let r = m * off::MEMBER_SIZE;
+            b[r + rec::HP..r + rec::HP + 4].copy_from_slice(&[18, 18, 100, 100]);
+            b[r + rec::LEVEL] = level;
+            b[r + rec::ARMOR_SLOTS..r + rec::ARMOR_SLOTS + 3].copy_from_slice(&[armor, acc, items]);
+        }
+        b[off::DRIVE..off::DRIVE + 3].copy_from_slice(&[100, 3, 3]);
+        let mut p = Progress::from_block(&b, Arc::new(ItemIndex::default()));
+        let rows = [bons(1, 2, 10, 10, 0, [0; 3]), bons(1, 3, 0, 0, 0, [1, 1, 0]), bons(21, 1, 0, 0, 1, [0; 3])];
+        p.give_bonus(&rows, 1).unwrap();
+        assert_eq!(p.member(2).map(|m| (m.hp_max, m.mp_max)), Some((28, 110)));
+        let g = p.member(3).unwrap();
+        assert_eq!((g.armor.len(), g.accessories.len(), g.items.len()), (2, 2, 4), "Goofy: +1 accessory slot, +1 item slot");
+        p.give_bonus(&rows, 21).unwrap();
+        assert_eq!(p.block()[off::DRIVE..off::DRIVE + 3], [100, 4, 4]);
+    }
+
+    /// `FUN_001a0290(status, 0)`: a fraction under 100 is left alone; 100 carries one point up to the maximum and is
+    /// kept at 100 when the gauge is full (the trace: 100 / 3 / 3 became 100 / 4 / 4 with the maximum raised first).
+    #[test]
+    fn the_gauge_carry_matches_the_game() {
+        assert_eq!(gauge_carry(40, 2, 3), (40, 2));
+        assert_eq!(gauge_carry(100, 3, 4), (100, 4));
+        assert_eq!(gauge_carry(100, 2, 4), (0, 3), "below the maximum the 100 is spent on the point");
+        assert_eq!(gauge_carry(100, 4, 4), (100, 4));
     }
 
     /// `FUN_001b50c0`: the member's own table, the first one for a missing or empty table, the level held at the

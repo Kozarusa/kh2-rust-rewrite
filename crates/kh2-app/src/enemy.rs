@@ -181,6 +181,11 @@ pub const M_EX690: Kind = Kind { name: "M_EX690", enmp: 67, model: "M_EX690", de
 /// pushed at 0x0782, which R13cd stores to local+0x20; host 2.9 at 0x13f4).
 pub const M_EX050: Kind = Kind { name: "M_EX050", enmp: 35, model: "M_EX050", death_effect: true, status: true };
 
+/// `M_EX730` (`ObjectType` 4, object 123, `NeoStatus` 1027, `SpawnLimiter` 10, no spawn objects; a Heartless of the areas ca01, ca09, ca12, ca13, ca18, ca21 ..), called by its model.
+/// Its script hands `enmp` row 12 to `set_obj_param` (host 2.9: BDX `M_EX730` R1268 at 0x1268, called at 0x05ba with 12 as the first of its eight values after the object,
+/// pushed at 0x05a2, which R1268 stores to local+0x20; host 2.9 at 0x128f).
+pub const M_EX730: Kind = Kind { name: "M_EX730", enmp: 12, model: "M_EX730", death_effect: true, status: true };
+
 /// Every enemy kind the app has.
 pub const KINDS: [&Kind; 24] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700, &M_EX950, &M_EX650, &M_EX660, &M_EX110, &M_EX520, &M_EX770, &M_EX210, &M_EX690, &M_EX910, &M_EX050, &M_EX730];
 
@@ -2225,12 +2230,6 @@ mod tests {
     fn m_ex050_is_an_enemy_kind_with_its_objentry_row() {
         assert!(KINDS.iter().any(|k| std::ptr::eq(*k, &M_EX050)));
         assert_eq!((M_EX050.enmp, M_EX050.model, M_EX050.status, M_EX050.death_effect), (35, "M_EX050", true, true));
-    /// `M_EX730` (object 123) is an enemy kind of the app: its `00objentry` row is type 4 with `NeoStatus` 1027, `SpawnLimiter` 10 and no spawn objects, its script's `set_obj_param` row is `enmp` 12, and ca09's
-    /// `btl` program 3 loads b_02 with three of it (its three `M_EX560` are skipped: not in the app). Needs `KH2_ISO` for the table and group part.
-    #[test]
-    fn m_ex730_is_an_enemy_kind_with_its_objentry_row() {
-        assert!(KINDS.iter().any(|k| std::ptr::eq(*k, &M_EX730)));
-        assert_eq!((M_EX730.enmp, M_EX730.model, M_EX730.status, M_EX730.death_effect), (12, "M_EX730", true, true));
         let Ok(iso) = crate::assets::iso_path() else { return };
         if !iso.exists() {
             return;
@@ -2249,6 +2248,22 @@ mod tests {
         assert_eq!(b20.members.len(), 3);
         assert!(b20.members.iter().all(|m| m.kind.name == M_EX050.name));
     }
+
+    /// `M_EX730` (object 123) is an enemy kind of the app: its `00objentry` row is type 4 with `NeoStatus` 1027, `SpawnLimiter` 10 and no spawn objects, its script's `set_obj_param` row is `enmp` 12, and ca09's
+    /// `btl` program 3 loads b_02 with three of it (its three `M_EX560` are skipped: not in the app). Needs `KH2_ISO` for the table and group part.
+    #[test]
+    fn m_ex730_is_an_enemy_kind_with_its_objentry_row() {
+        assert!(KINDS.iter().any(|k| std::ptr::eq(*k, &M_EX730)));
+        assert_eq!((M_EX730.enmp, M_EX730.model, M_EX730.status, M_EX730.death_effect), (12, "M_EX730", true, true));
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let rows = {
+            let mut a = disc.0.lock().expect("archive lock");
+            kh2_tables::load::<kh2_tables::tables::Objentry>(&mut a, &kh2_tables::tables::OBJENTRY).expect("objentry").rows
+        };
         let row = rows.iter().find(|r| r.model_name == "M_EX730").expect("objentry row of M_EX730");
         assert_eq!((row.object_id, row.object_type, row.neo_status, row.spawn_object1, row.spawn_limiter), (123, OBJECT_ENEMY, 1027, 0, 10));
         let groups = area_groups(&disc, "ca09");

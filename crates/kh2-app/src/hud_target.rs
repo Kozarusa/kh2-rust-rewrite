@@ -37,9 +37,19 @@ mod g {
     pub const PIP_FULL: usize = 44;
     pub const PIP_LOST: usize = 46;
     /// Lock-on reticle on a target, the free-aim reticle, and the alert bubble above the reticle.
-    pub const RETICLE: usize = 25;
+    /// Lock-on icon on a locked target: the violet ring of the player's lock-on controller (mode 2, shape byte 0,
+    /// group 0x1b, 0x19bbc0). The camera controller's group 25 (brackets, 0x11a9b0) is not what the user's
+    /// reference of the original shows.
+    pub const RETICLE: usize = 0x1b;
+    /// The bracket icon the camera controller makes (0x11a9b0): kept for `KH2_HUDGROUP=25`.
+    pub const _BRACKETS: usize = 25;
     pub const FREE: usize = 3;
     pub const BUBBLE: usize = 20;
+}
+
+/// The group of the lock-on icon on a locked target (see `g::RETICLE`).
+pub fn lock_group() -> usize {
+    marker_group(2, 0).unwrap_or(g::RETICLE)
 }
 
 /// Magic lock-on marker groups (0x19bbc0 hands them to 0x13e528): mode 1 uses 5 when the target record's
@@ -133,7 +143,7 @@ pub fn update(
     // Reticle (0x11a9b0): on the locked enemy group 25, otherwise the free-aim point a fixed distance
     // ahead of the camera (0x11a5f8, group 3). Both are projected with the 3D camera.
     let locked = lock.filter(|&l| enemies.contains(l));
-    let want = if locked.is_some() { g::RETICLE } else { g::FREE };
+    let want = if locked.is_some() { lock_group() } else { g::FREE };
     let at = cam.single().ok().and_then(|(c, ct)| {
         let point = match locked.and_then(|e| enemies.get(e).ok()) {
             Some((_, gt, _)) => gt.translation() + Vec3::Y * 0.9,
@@ -145,7 +155,11 @@ pub fn update(
     // The original creates the group 3 icon at the free-aim point (0x11a9b0), but nothing is visible
     // there in play (user's observation of the original), and which picture group 3 is was only read
     // from a screenshot. Until that is traced, only a locked target shows the reticle.
-    let shown_reticle = at.is_some() && locked.is_some();
+    // `KH2_HUDGROUP=<n>` draws field group n at the free-aim point (to look through the groups).
+    let dbg: Option<usize> = std::env::var("KH2_HUDGROUP").ok().and_then(|v| v.parse().ok());
+    let want = dbg.unwrap_or(want);
+    // A magic marker on the same target draws the ring itself.
+    let shown_reticle = at.is_some() && ((locked.is_some() && marker.is_none()) || dbg.is_some());
     scene.nodes[h.reticle].visible = shown_reticle;
     if let Some(p) = at {
         if scene.nodes[h.reticle].player.group != Some(want) {
@@ -309,6 +323,13 @@ mod tests {
         assert_eq!(marker_group(2, 1), Some(0x17));
         assert_eq!(marker_group(0, 0), None);
         assert_eq!(marker_group(3, 1), None);
+    }
+
+    #[test]
+    fn locked_target_shows_the_violet_ring_not_the_brackets() {
+        // The user's reference of the original: ring with inner arcs = group 0x1b (mode 2, shape byte 0, 0x19bbc0).
+        assert_eq!(lock_group(), 0x1b);
+        assert_ne!(lock_group(), g::_BRACKETS);
     }
 
     #[test]

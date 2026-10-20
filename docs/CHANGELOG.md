@@ -2,6 +2,10 @@
 
 One short section per work package. "Verified" says how; nothing here was checked by watching video, and audio was listened to only where stated.
 
+## Shift 18 (2026-10-20)
+
+**WP-IW1 (invisible walls).** COCT mesh groups (mesh byte +0x11) are parsed and gate collision by the area script's map-visibility word, as the original walker does (FUN_00141768/FUN_00141840/FUN_00141b50); eh10 `0,1,0` hid 108 arena-wall polygons the app treated as solid. New `kh2 coct-walls <area>`. Verified by 3 tests (1321 total) and a harness walk. Open: host 1.36/1.37 group on/off, ground/ceiling/raycast/blocked_m not gated, user's hand play-test.
+
 ## Shift 17 (2026-10-19)
 
 **WP-ST3 (Sora stat block).** Sora's `Stats` now carry AP (lvup +7 plus record +8 plus item AP), the elemental resistances (item rows scale them, per the status rebuild) and the record's MP maximum (0 keeps plrp). Max HP/MP growth at level-up has no writer in the code read (FUN_001b53d0 only reads the lvup byte differences): recorded as a gap. Verified by sora::tests::sora_status_follows_the_record_level and resistances_scale_per_item_with_a_ceiling. Open: the Status page was not re-looked at; callers of `sora_max_mp` still read plrp; ability passives FUN_001c0d88/FUN_001c0e50.

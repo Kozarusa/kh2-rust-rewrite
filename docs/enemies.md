@@ -1114,3 +1114,30 @@ gold orbs, "6p" and "30" in the air). `idle-hud`, `combat-ground` and `tt04-dusk
 Gaps: (1) Only ca09 b_02 was run; ca09 b_00 (with `M_EX210`) and bb12 were not. (2) Not seen: the modes `mode_hard`, `mode_battle_boss`, `mode_revenge_boss`, `btl_*`, `rvg_*`, `rst_*`, `atk_mine`, `move_step`,
 `freeze`, `leave`, `idle`, `event`, `revenge` (the soak showed `mode_battle` -> `mode_normal` rather than the `btl_*` modes). (3) Visuals of `atk_brest`, `atk_quake`, `atk_mine` (host 1.87 `spawn_attached`, Approx)
 were not looked at. (4) The ObjectTargetType of the objentry row was not looked up. (5) What hits Sora was not tied to the log lines naming the kind [inferred: Sora lost HP in the soak].
+
+## The enemy M_EX620 (WP-EN10n)
+
+`M_EX620` (object 11, `00objentry` row 11: ObjectType 4, `NeoStatus` 1016, flags 8, Weight 100, `SpawnLimiter` 20, no spawn objects; `enemy::M_EX620`, called by its model: the data gives no name) is a Heartless of the
+Agrabah areas (area survey: al00, al01, al07, al10, al12, al13, al14). Its BDX script (9568 words, `cargo run -p kh2 -- bdx M_EX620`) registers modes including `appear`, `mode_battle`, `mode_revenge`, `btl_attack`,
+`btl_short`, `btl_long`, `rvg_short`, `atk_ice`, `atk_crystal`, `footwork`, `idle_move`, `move_target`.
+
+- **Stats.** The set-up routine R2331 (0x2331, called at 0x0f1a) takes eight values after the object; the first pushed, 62 (pushed at 0x0f02; R2331 stores it to local+0x20), goes to `set_obj_param` (host 2.9 at
+  0x2358): `enmp` row 62 (Experience 150; log `experience: enmp 62 defeated: +6 (lvpm 4 x enmp 150)`). The harness enemy has 20 HP.
+- **Death.** `hp 0: switching to mode dead`, then `drop (host 1.92) asked row 32, used row 32` and `prize: drop of row 32 ..: 6 objects`; `Kind::death_effect` is true as for the Dusk.
+- **Host calls.** No arm was added: every call was answered already (Stub: 1.121, 1.171, 1.206, 1.59 and the mode-frozen check; Approx: 1.11, 1.111, 1.120, 1.23, 1.309, 1.56, 1.58, 1.60, 2.5 and mode-may-start). Host
+  1.13 on itself was not used; `queues_motions` is unchanged.
+
+Acceptance run (WP-EN10n), al01 group b_01 (btl program 2: six `M_EX620`, two Soldiers, thirteen `M_AL020_ICEE` skipped as not in the app; four kind-2 groups spawn on demand when Sora stands in their volumes;
+test `m_ex620_is_an_enemy_kind_with_its_objentry_row`, disc). The harness placed Sora at the centre of the first kind-2 group's members (a temporary local patch, not committed: with the normal player entry no volume
+contains him and nothing spawns): `KH2_PROGRAMS=0,2,0 KH2_WAVE_GROUP=b_01 KH2_AREALOG=1 KH2_BDXLOG=1 KH2_HITLOG=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1 KH2_NO_PARTY=1 KH2_KEYS=15:J,20:J,.. KH2_SCREENSHOT=<png>
+KH2_SHOT_AT=125 kh2-game al01` through `local/capped.ps1 -CapMB 2500`. (1) Soak, 125 s with J every 5 s from 15 s only to press "Continue" after Sora's knock-outs: 0 `unimplemented host call`, 0 `script error`, 0 panics;
+the two `M_EX620` ran up to tick 7213 (about 120 s of enemy time): `appear` -> `mode_battle` -> `btl_attack` / `btl_short` / `btl_long` -> `atk_ice` / `atk_crystal` / `footwork` / `idle_move`, `move_target`, and
+`mode_revenge` -> `rvg_short` -> `atk_crystal`; longest mode run between `mode` lines: `move_target` 224 ticks, `atk_ice` 172, `footwork` 155, `atk_crystal` 139, `idle_move` 135, `appear` 68; no mode stuck, no invulnerable
+state (hp fell on every hit). (2) Hitting run (party on, `KH2_KEYS` 9:Q then J every 0.5 s from 10 s): `M_EX620 hit: atkp 132 damage 3 hp 17` .. `hp 0` for both enemies (6 and 5 hits, `FlinchPush` reactions, a blow at
+the last hit of the first), `hp 0: switching to mode dead` at ticks 830 and 1012, `experience: enmp 62 defeated: +6` twice, the drop above twice. PNGs looked at (`local\en10n\*.png`, not committed): idle (`p0.png`, 12 s:
+debug text `M_EX620 Idle hp 20/20` twice at 9 and 10 m, the enemies hidden behind market awnings, Sora lower middle), a hit (`hit.png`, 20 s: golden hit stars and the damage number "3", debug text `M_EX620 Hurt hp
+11/20` at 1.3 m, the enemy not visible on screen), death (`death.png`, 19 s: after both deaths, "OBTAINED MUNNY 10" and "OBTAINED Energy Gem" strips; the enemies themselves were off screen, so the model of the
+dying enemy was not seen). `idle-hud`, `combat-ground` and `tt04-dusk` were not rerun: the change adds a kind and touches no shared code path [not verified].
+
+Gaps: (1) Only al01 b_01 was run; al00, al07, al10, al12, al13, al14 were not. (2) No PNG shows the `M_EX620` model: it stayed off screen or hidden in every shot. (3) Not seen: `mode_battle_boss`-style modes, `rst_*`, `leave`, `event`. (4) Visuals of
+`atk_ice` and `atk_crystal` were not looked at. (5) The ObjectTargetType of the objentry row was not looked up. (6) What hits Sora was not tied to log lines naming the kind [inferred: Sora lost HP and was knocked out in the soak].

@@ -4757,7 +4757,7 @@ fn objects(
             // Host 7.26 (the limit sub-command dispatcher FUN_00119488) ran in the script this tick.
             let limit_cmd = ai.limit_cmd.take();
             let st = &mut ai.stitch;
-            let now = stitch::Now { battle: battle.active(), limit: senv.limit, hp: (s.hp, s.stats.max_hp), mp: (s.mp, game.sora_max_mp), in_view: targets.len(), motion_done };
+            let now = stitch::Now { battle: battle.active(), limit: senv.limit, hp: (s.hp, s.stats.max_hp), mp: (s.mp, s.stats.max_mp), in_view: targets.len(), motion_done };
             let mut out = stitch::tick(k, recs, st, &now);
             if let Some(cmd) = limit_cmd {
                 let lo = stitch::limit_tick(k, recs, st, &now, cmd);
@@ -4795,7 +4795,8 @@ fn objects(
                 info!("summon: {tag} AI slot kind {kind:#x} on {} (argument {a3:#x}): effect not drawn", if *own { "Stitch" } else { "nothing" });
             }
             if out.refill {
-                let ended = crate::magic::refill_mp(magic.as_deref_mut().map(|m| &mut m.charge), &mut s.mp, game.sora_max_mp);
+                let max_mp = s.stats.max_mp;
+                let ended = crate::magic::refill_mp(magic.as_deref_mut().map(|m| &mut m.charge), &mut s.mp, max_mp);
                 info!("summon: {tag} MP refill (FUN_00118730 -> FUN_001a0240): player MP {} (charge ended {ended}); effect {} on the player not drawn", s.mp, out.player_effect.unwrap_or(-1));
             }
             if st.attack.is_none() && !blast_hit.is_empty() {
@@ -5136,7 +5137,7 @@ fn objects(
                     if let Some(row) = row {
                         let amount = row.flag1 as u16 | (row.rank as u16) << 8;
                         let charge = magic.as_deref().map_or(Default::default(), |m| m.charge);
-                        let mut v = crate::items::Vitals { hp: s.hp, hp_max: s.stats.max_hp, hp_min: 0, mp: s.mp, mp_max: game.sora_max_mp, charge_left: charge.left, charge_total: charge.total, ..Default::default() };
+                        let mut v = crate::items::Vitals { hp: s.hp, hp_max: s.stats.max_hp, hp_min: 0, mp: s.mp, mp_max: s.stats.max_mp, charge_left: charge.left, charge_total: charge.total, ..Default::default() };
                         let (hp0, mp0) = (v.hp, v.mp);
                         crate::items::item_effect(u.item, amount, 100, &mut v, feed);
                         // The player's HP method refuses while his dead bit is set (docs/summons.md WP-SM1): a player who is down

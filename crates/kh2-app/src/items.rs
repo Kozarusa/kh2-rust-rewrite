@@ -1201,7 +1201,7 @@ fn run(
     mut anims: Query<&mut Animator>,
     gts: Query<&GlobalTransform>,
     lib: Option<Res<crate::fx::EffectLib>>,
-    (mut magic, game, battle, abilities, mut drive): UseState,
+    (mut magic, _, battle, abilities, mut drive): UseState,
     mut party: Query<&mut crate::party::PartyMember>,
 ) {
     let (Some(data), Some(mut progress)) = (data, progress) else { return };
@@ -1292,7 +1292,7 @@ fn run(
             hp_max: s.stats.max_hp,
             hp_min: 0,
             mp: s.mp,
-            mp_max: game.sora_max_mp,
+            mp_max: s.stats.max_mp,
             charge_left: magic.charge.left,
             charge_total: magic.charge.total,
             drive_fraction: drive.as_ref().map_or(0, |d| d.points.fraction),

@@ -163,7 +163,6 @@ pub struct SoraDamaged {
 fn apply_damage_rewards(
     mut hits: MessageReader<SoraDamaged>,
     abilities: Res<Abilities>,
-    data: Res<crate::data::GameData>,
     mut sora: Query<&mut sora::Sora>,
     drive: Option<ResMut<crate::drive::DriveState>>,
     magic: Option<Res<crate::magic::MagicState>>,
@@ -192,7 +191,7 @@ fn apply_damage_rewards(
         let mp = mp_rage_gain(block, charging, h.amount, s.stats.max_hp);
         if mp > 0 {
             let before = s.mp;
-            s.mp = (s.mp + mp).min(data.sora_max_mp);
+            s.mp = (s.mp + mp).min(s.stats.max_mp);
             if std::env::var_os("KH2_ABILITYLOG").is_some() {
                 info!("abilities: MP Rage: {} damage gives {mp} MP ({before} -> {})", h.amount, s.mp);
             }

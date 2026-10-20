@@ -434,7 +434,6 @@ fn tick(
     slots: Res<PartySlots>,
     members: Query<&PartyMember>,
     sora: Query<&crate::sora::Sora>,
-    data: Option<Res<crate::data::GameData>>,
     progress: Option<Res<crate::progress::Progress>>,
     real: Res<Time<Real>>,
     hidden: Res<PartyHidden>,
@@ -491,7 +490,7 @@ fn tick(
             // The cards of page 0 follow the order the members now stand in (`FUN_00250a00` builds them from the party object,
             // which `FUN_00282908` rebuilt after the swap).
             let field: Vec<(u16, i32, i32, i32, i32)> = ui.roster.iter().map(|r| (r.id, r.hp, r.hp_max, r.mp, r.mp_max)).collect();
-            let cards = crate::menu::party(sora.single().ok(), data.as_deref(), &field, progress.as_deref(), &ui.tables.member_names);
+            let cards = crate::menu::party(sora.single().ok(), &field, progress.as_deref(), &ui.tables.member_names);
             crate::menu::show_cards(&menu, &mut scene, &cards);
         }
         ui.page = want;

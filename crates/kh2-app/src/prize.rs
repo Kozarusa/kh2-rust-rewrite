@@ -1389,7 +1389,6 @@ fn run_prizes(
     lib: Res<PrizeLib>,
     mut pool: ResMut<PrizePool>,
     world: Option<Res<World>>,
-    data: Res<crate::data::GameData>,
     mut prizes: Query<(Entity, &mut PrizeObj, &mut Transform), Without<Sora>>,
     mut sora: Query<(&Transform, &mut Sora)>,
     bodies: Query<(&Animator, &GlobalTransform)>,
@@ -1515,7 +1514,7 @@ fn run_prizes(
                     m.charge.left = (m.charge.left - pick.mp as f32 * lib.sstm[2]).clamp(0.0, m.charge.total);
                     mp_note = format!(" (charge left {:.0})", m.charge.left);
                 }
-                None => s.mp = (s.mp + pick.mp as i32).min(data.sora_max_mp),
+                None => s.mp = (s.mp + pick.mp as i32).min(s.stats.max_mp),
             }
         }
         let mut drive_note = String::new();

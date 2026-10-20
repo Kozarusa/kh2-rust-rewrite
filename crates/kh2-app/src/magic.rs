@@ -593,7 +593,7 @@ fn run(
     if st.charge.active() {
         let regen = block.as_ref().map_or(1.0, |b| b.block().mp_regen);
         if st.charge.tick(regen) {
-            s.mp = game.sora_max_mp;
+            s.mp = s.stats.max_mp;
             mlog!("magic: MP charge over: MP {}", s.mp);
         }
     }
@@ -853,7 +853,7 @@ fn run(
         if fires(c) && in_motion(c) {
             // FUN_001a4a60 -> FUN_001769e0: the cost byte comes off MP (FUN_00186368).
             let before = s.mp;
-            match rules::pay(s.mp, game.sora_max_mp, c.cost, data.mp_drive) {
+            match rules::pay(s.mp, s.stats.max_mp, c.cost, data.mp_drive) {
                 Paid::Mp(v) => s.mp = v,
                 Paid::Charge { total } => {
                     s.mp = 0;

@@ -186,7 +186,7 @@ pub const M_EX050: Kind = Kind { name: "M_EX050", enmp: 35, model: "M_EX050", de
 /// pushed at 0x05a2, which R1268 stores to local+0x20; host 2.9 at 0x128f).
 pub const M_EX730: Kind = Kind { name: "M_EX730", enmp: 12, model: "M_EX730", death_effect: true, status: true };
 
-/// `M_EX560` (`ObjectType` 4, object 8, `NeoStatus` 1010, `SpawnLimiter` 13, no spawn objects; a Heartless of the areas ca09 and bb12 ..), called by its model.
+/// `M_EX560` (`ObjectType` 4, object 8, `NeoStatus` 1010, `SpawnLimiter` 12, no spawn objects; a Heartless of the areas ca09 and bb12 ..), called by its model.
 /// Its script hands `enmp` row 59 to `set_obj_param` (host 2.9: BDX `M_EX560` R1080 at 0x1080, called at 0x049f with 59 as the first of its eight
 /// values after the object, pushed at 0x0487, which R1080 stores to local+0x20; host 2.9 at 0x10a7).
 pub const M_EX560: Kind = Kind { name: "M_EX560", enmp: 59, model: "M_EX560", death_effect: true, status: true };
@@ -2280,7 +2280,7 @@ mod tests {
         assert!(b02.skipped.is_empty());
     }
 
-    /// `M_EX560` (object 8) is an enemy kind of the app: its `00objentry` row is type 4 with `NeoStatus` 1010, `SpawnLimiter` 13 and no spawn objects, its script's `set_obj_param` row is `enmp` 59, and ca09's
+    /// `M_EX560` (object 8) is an enemy kind of the app: its `00objentry` row is type 4 with `NeoStatus` 1010, `SpawnLimiter` 12 and no spawn objects, its script's `set_obj_param` row is `enmp` 59, and ca09's
     /// `btl` program 3 loads b_02 with three of it beside three `M_EX730`. Needs `KH2_ISO` for the table and group part.
     #[test]
     fn m_ex560_is_an_enemy_kind_with_its_objentry_row() {
@@ -2296,7 +2296,7 @@ mod tests {
             kh2_tables::load::<kh2_tables::tables::Objentry>(&mut a, &kh2_tables::tables::OBJENTRY).expect("objentry").rows
         };
         let row = rows.iter().find(|r| r.model_name == "M_EX560").expect("objentry row of M_EX560");
-        assert_eq!((row.object_id, row.object_type, row.neo_status, row.spawn_object1, row.spawn_limiter), (8, OBJECT_ENEMY, 1010, 0, 13));
+        assert_eq!((row.object_id, row.object_type, row.neo_status, row.spawn_object1, row.spawn_limiter), (8, OBJECT_ENEMY, 1010, 0, 12));
         let groups = area_groups(&disc, "ca09");
         let ard = disc.read("ard/ca09.ard").and_then(|d| kh2_ard::Area::parse(&d)).map(|(a, _)| a).expect("ca09.ard");
         let run = kh2_ard::run::run_area(&ard, [0, 3, 0], 0);

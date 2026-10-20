@@ -1066,7 +1066,7 @@ lines naming the kind [inferred: Sora lost HP and was knocked out during the soa
 
 ## The enemy M_EX560 (WP-EN10l)
 
-`M_EX560` (object 8, `00objentry` row 8: ObjectType 4, `NeoStatus` 1010, flags 0, Weight 100, `SpawnLimiter` 13, no spawn objects; `enemy::M_EX560`, called by its model: the data gives no name; in the PNGs it is a
+`M_EX560` (object 8, `00objentry` row 8: ObjectType 4, `NeoStatus` 1010, flags 0, Weight 100, `SpawnLimiter` 12, no spawn objects; `enemy::M_EX560`, called by its model: the data gives no name; in the PNGs it is a
 red-robed, purple-skinned Heartless with a yellow hand and a curved tail) is a Heartless of ca09 (b_00 with `M_EX210`; b_02 with three `M_EX730`) and bb12 (area survey; bb12 not run). Its BDX script (4715 words,
 `cargo run -p kh2 -- bdx M_EX560`) registers the modes `appear`, `mode_battle`, `mode_normal`, `mode_hard`, `mode_revenge`, `mode_battle_boss`, `mode_revenge_boss`, `btl_normal`, `btl_hard`, `btl_super_hard`,
 `rvg_*`, `rst_*`, `atk_brest`, `atk_quake`, `atk_mine`, `move_back`, `move_run`, `move_step`, `move_target`, `footwork`, `footwork2`, `idle`, `idle_time`, `freeze`, `leave`, `dead`, `event`, `revenge`.

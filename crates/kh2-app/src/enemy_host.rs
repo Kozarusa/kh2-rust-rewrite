@@ -1067,6 +1067,16 @@ impl BevyHost<'_> {
                 Some(&(_, _, atkp)) => imp(Value::Int(atkp as i32)),
                 None => missing(Value::Int(0), "hit_atkp_id of a handle that is not one of this object's hit records"),
             },
+            // 2.64 hit_reaction_original (0x18e0e0): byte +0x27 of the hit record, the attack row's own EnemyReaction (byte +10; FUN_0018b618 stores
+            // it at +0x26 and +0x27, only +0x26 is changed afterwards).
+            // 2.85 hit_atkp_element (0x18e218): the Element byte (+9) of the row [inferred from the name table: the function is not in the decomp].
+            Call::Func { group: 2, index: 64 | 85, args } => {
+                let atkp = self.obj.hits.get(&(args[0].int() as u32)).map(|h| h.2);
+                match atkp.and_then(crate::enemy_obj::hit_row_bytes) {
+                    Some((reaction, element)) => imp(Value::Int(if matches!(c, Call::Func { index: 64, .. }) { reaction as i32 } else { element as i32 })),
+                    None => missing(Value::Int(0), "attack row of a hit that is not one of this object's hit records"),
+                }
+            }
             _ => missing(Value::Int(0), "function not mapped"),
         }
     }

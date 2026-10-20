@@ -33,7 +33,7 @@ Sora (continued):
 - **Audio:** the game's sound driver, area music with the battle switch, voices and footsteps, and positional volume and pan. Mostly unlistened.
 
 Enemies:
-- **Shadows, Soldiers, Dusks and more (Dancer, Seifer, N_EX500/600, M_EX940/850 and the new M_EX420, M_EX760, M_EX880, M_EX700, M_EX950):** each has its own model, motions, hitboxes, and `enmp`/`lvpm` stats. In Twilight Town (tt04) the waves come from the area's own battle groups (Dusks and a Struggle opponent); other areas use stand-in Shadow/Soldier waves.
+- **Shadows, Soldiers, Dusks and more (Dancer, Seifer, N_EX500/600, M_EX940/850 and M_EX420, M_EX760, M_EX880, M_EX700, M_EX950, M_EX650, M_EX660, M_EX110, M_EX520, M_EX770, M_EX210, M_EX910, M_EX690, M_EX730, M_EX050, M_EX510, M_EX560, M_EX750, M_EX620, M_EX060, M_EX600, M_EX920):** each has its own model, motions, hitboxes, and `enmp`/`lvpm` stats. In Twilight Town (tt04) the waves come from the area's own battle groups (Dusks and a Struggle opponent); other areas use stand-in Shadow/Soldier waves.
 - **Behaviour:** they run the game's own AI scripts (BDX) in an interpreter that was checked against the game's code, so they chase, sink and resurface (Shadows), attack, flinch, get blown away and die as in the original.
 
 Not done yet:
@@ -41,7 +41,7 @@ Not done yet:
 - Summons: the limit task (summon limits are reachable only through a harness aid), the camera's FPS mode, Genie's model parts.
 - Party: the limit scene an accepted Auto Limit offer should start (the limit script runs and Sora, Donald and Goofy play its motions and effects, but other characters' participants, the camera event, the gauge animation and host 7.28 are missing), and the member-swap fade.
 - Game over: the GAMEOVER scene model (WP-GO2), restoring the save body on Continue, and the Load screen's header art. Mickey's rescue is ported only as far as the decision, the chance and the alternate list; it is switched off because Mickey and his heal are not found, so the 11 missions that could offer it show the normal list.
-- Other enemy types (the area survey, docs/area-survey.md, ranks about 95 missing kinds; M_EX900's dive needs an event whose sender is unknown) and some area-script group kinds.
+- Other enemy types (the area survey, docs/area-survey.md, ranks about 75 missing kinds after shift 17; M_EX900's dive needs an event whose sender is unknown) and some area-script group kinds.
 - Journal: the viewer plate's lighting on the model pages.
 - World map: route markers, the cursor's real movement and camera type 4, the other libretto events, voices and the play time.
 - BATTLE REPORT rows 1 and 2 (no source found), and the shop bits in the slot files.

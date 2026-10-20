@@ -267,10 +267,11 @@ pub(crate) struct BevyHost<'a> {
     pub(crate) tag: &'a str,
 }
 
-/// The self-targeted motion queue (host 1.13) is enabled for M_EX900 only until it is verified for the other kinds whose
-/// scripts call it (M_EX930, M_EX940, M_EX850, M_EX760, M_EX420): for them the call stays unmapped as before.
+/// The self-targeted motion queue (host 1.13) is enabled for M_EX900 and M_EX110 only until it is verified for the other kinds whose
+/// scripts call it (M_EX930, M_EX940, M_EX850, M_EX760, M_EX420): for them the call stays unmapped as before. M_EX110's
+/// `atk_foot_stamp` (R162c) queues motion 0 behind motion 202 and then waits (R0f0a) for the motion state to leave 202.
 fn queues_motions(tag: &str) -> bool {
-    tag.starts_with("M_EX900#")
+    tag.starts_with("M_EX900#") || tag.starts_with("M_EX110#")
 }
 
 fn imp(v: Value) -> (Value, St, &'static str) {
@@ -467,6 +468,17 @@ impl BevyHost<'_> {
             Call::Func { group: 0, index: 42, args } => match args.first() {
                 Some(kh2_bdx::Arg::Vec(v)) => approx(Value::Float(v[0].atan2(v[2])), "the platform's atan2, not the game's FUN_003003e8 (same function, last-bit differences possible)"),
                 _ => missing(Value::Float(0.0), "angle_of without a vector"),
+            },
+            // 0.45 / 0.46 (the runtime hands the two vectors and the scalar; the answer goes back into the first): the members'
+            // `advance_vec` (FUN_0016d098) and `turn_vec` (FUN_0016d138 -> FUN_0017c0f8). M_EX110 steers its rocket's direction
+            // with 0.46 (R05bc's caller, call at 0x05ac).
+            Call::Func { group: 0, index: i @ (45 | 46), args } if args.len() >= 3 => match (&args[0], &args[1]) {
+                (Arg::Vec(a), Arg::Vec(b)) => {
+                    let st = args[2].float();
+                    let v = if *i == 45 { crate::friend_host::advance_vec(*a, *b, st) } else { crate::friend_host::turn_vec(*a, *b, st) };
+                    approx(Value::Vec(v), "the platform's sqrt / acos / sin / cos, not the vector unit's and the game's kernels")
+                }
+                _ => missing(Value::None, "0.45 / 0.46 without two vectors"),
             },
             // 0.43 wrap_angle (FUN_0016de78 -> FUN_0017bbc0).
             Call::Func { group: 0, index: 43, args } => imp(Value::Float(game_wrap_angle(args.first().map_or(0.0, |a| a.float())))),
@@ -999,6 +1011,21 @@ impl BevyHost<'_> {
         match c {
             Call::Target { .. } => imp(Value::Handle(TARGET)),
             Call::LastAttacker { .. } => imp(Value::Handle(PLAYER)),
+            // 2.6 in_reaction (FUN_0018dfa0 -> FUN_00185a08): the object has a controller (+0x140) and its motion state (+0x154)
+            // is 10 to 39. The app's slot is that state (as host 1.15 answers it).
+            Call::Func { group: 2, index: 6, args } => {
+                let o = args.first().map_or(0, |a| a.int() as u32);
+                let slot = if self.names_other(o) { self.obj.others.get(&o).and_then(|x| x.slot) } else { self.obj.slot };
+                approx(Value::Bool(slot.is_some_and(|s| (10..40).contains(&s))), "the app's motion slot stands for the game's +0x154 [inferred, as host 1.15]")
+            }
+            // 2.67 new_hit_group (FUN_001bdf00): the next id of the counter at 0x1d5dd4c, 0x100 after 0x10000000.
+            Call::Func { group: 2, index: 67, .. } => {
+                static HIT_GROUP: Mutex<i32> = Mutex::new(0);
+                let mut counter = HIT_GROUP.lock().unwrap_or_else(|e| e.into_inner());
+                *counter = if *counter + 1 > 0x1000_0000 { 0x100 } else { *counter + 1 };
+                let next = *counter;
+                approx(Value::Int(next), "the counter starts at 0 here; the game's is shared with every other user of FUN_001bdf00")
+            }
             Call::HitStun { .. } => approx(Value::Bool(self.obj.reacting), "the game's flags (+0x160) are read as 'a hit reaction plays'"),
             Call::HitIsReal { hit } => imp(Value::Bool(self.obj.hits.get(hit).is_none_or(|h| h.0))),
             // FUN_001b2148 builds the status block from `enmp` row `a`; the app built it at spawn from
@@ -1062,6 +1089,13 @@ impl BevyHost<'_> {
             // 6.31 (wrapper FUN_002eece8, table entry 0x370f58, no arguments): FUN_001a40b8 draws every
             // pickable prize into the player (FUN_001a3ad8, mode 1) and FUN_001bda98 hands every item
             // object to the player (FUN_001bd1d8). No BDX script on the disc calls it (`kh2 bdx --scan`).
+            // 6.9 target_distance (0x2eeb30 -> FUN_0018f308): the distance from the point to the surface of the target record's
+            // shape. The app's record is always the player's (host 1.120); his shape is taken as the point at his origin, so
+            // the distance is to that point.
+            Call::Func { group: 6, index: 9, args } => match args.get(1) {
+                Some(Arg::Vec(p)) => approx(Value::Float(from_game(*p).distance(self.env.player)), "the player's hurt shape (a sphere or spheroid, FUN_00189628) is taken as a point at his origin: the radius is not subtracted"),
+                _ => missing(Value::Float(0.0), "target_distance without a point"),
+            },
             Call::Unknown { group: 6, index: 31, .. } | Call::Func { group: 6, index: 31, .. } => {
                 self.obj.collect_all = true;
                 imp(Value::None)

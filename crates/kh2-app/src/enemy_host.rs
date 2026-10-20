@@ -1024,6 +1024,9 @@ impl BevyHost<'_> {
                 self.obj.next_effect += 1;
                 stub(Value::Handle(EFFECT + self.obj.next_effect), "the element placed at the script's vector is not drawn: the app only starts effects on their owner")
             }
+            // 1.77 has_word_144 (0x172d60): the word at the actor's +0x144 is non-zero. Its writer (several functions store a word there, none traced as the
+            // one for an enemy actor) is unknown, so the word is taken as zero, the state before anything wrote it (M_EX750 tests it at 0x0561, 0x0e72, 0x13c3, 0x14c3).
+            Call::Func { group: 1, index: 77, .. } => stub(Value::Int(0), "the actor's word +0x144 has no traced writer for an enemy: taken as zero [inferred]"),
             _ => missing(Value::Int(0), "function not mapped"),
         }
     }

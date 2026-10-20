@@ -265,6 +265,7 @@ when the world map builds its props. The episode list removal of 0xd and the map
 `story_json` as the hex string `world_state` (an older slot loads it clear); the oracle
 `story_flag_setter_matches_the_game` compares it for every flag, with and without story flag `0x102b`. Details and
 gaps: docs/worldmap.md section 10 (W2).
+- WM10: the world boot is ported (`Story::world_boot`). `FUN_001b6870` clears the eight flag words at 0x3418a4 and the queue count byte 0x3419c3, sets world flag 0 (`FUN_001b68f8(0)`) and drains the queue with hook argument 0 (`FUN_001b6e60`, `FUN_001b68c0` finds the record, `FUN_001b6a48(record, 0)` runs the list). It has one caller chain: `FUN_00187d20` <- `FUN_00105638` (the game-state constructor) <- `FUN_00101d68`, after `FUN_001688a0` -> `FUN_0017fd10` has loaded the `wldf` table [V: `mips_scan --jal` finds no other caller of 0x1b6870, 0x1b6e60, 0x187d20 or 0x105638]. The save block's static initialiser `FUN_001057b8` clears the world region (`FUN_0032c550(0x341858)`) without calling it, and nothing else re-runs it, so the boot is the process start-up state: the app applies it to the new game (after the table is read) and a loaded save replaces the whole world region afterwards (`world_state`). On the disc flag 0's list writes route states 1 to 20 to 0 and route 21 to 2; every other state starts 0. A state file without `world_state` keeps the boot's region.
 
 ## Decompile index
 

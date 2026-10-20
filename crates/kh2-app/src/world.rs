@@ -42,9 +42,13 @@ pub struct World {
     /// The mesh group (a bit number of the map visibility word) of each triangle, like `tri_mesh`.
     tri_group: Vec<u8>,
     /// The groups the game's walker visits: bit `g` set means meshes of group `g` are solid
-    /// (`FUN_00141768` sets a mesh's enabled byte from the map visibility word). All ones until
-    /// WP-IW2 gates the slide with it; `group_enabled` answers for one triangle.
+    /// (`FUN_00141768` sets a mesh's enabled byte from the map visibility word). All ones until the
+    /// area script's word is applied (`area::run_area_script`); BDX host calls 1.36 / 1.37 change single bits
+    /// (`set_group`). Every query skips off groups (`near`); `group_enabled` answers for one triangle.
     pub enabled_groups: u64,
+    /// The area word has been written into `enabled_groups` (once per loaded world: after that only host
+    /// calls 1.36 / 1.37 change a bit, `FUN_0015e6c0` copies the word to the live mask a single time).
+    area_word_applied: bool,
 }
 
 /// Group value of a triangle that has no COCT mesh.
@@ -172,6 +176,30 @@ impl World {
         }
         out.sort_unstable();
         out.dedup();
+        // The game's walker FUN_00141b50 visits no mesh whose enabled byte is 0, and every collision query
+        // (the ground probe FUN_00142760, the capsule sweep FUN_00164138, the ray cast FUN_00141f08 and so
+        // the ceiling and wall tests) goes through it, so a triangle of an off group is in no query.
+        out.retain(|&i| self.group_enabled(i as usize));
+    }
+
+    /// Writes the area script's map visibility word into the live mask, once per world (`FUN_001047a8` ->
+    /// `FUN_00149b40` -> `FUN_0015e6c0`). Returns whether it was written by this call.
+    pub fn apply_area_word(&mut self, word: u64) -> bool {
+        if self.area_word_applied {
+            return false;
+        }
+        self.area_word_applied = true;
+        self.enabled_groups = word;
+        true
+    }
+
+    /// Switches mesh group `g` on or off (`FUN_0015e9a8` / `FUN_0015e928`: bit `g` of the live mask
+    /// `DAT_0035a810`, then the enabled byte of every mesh of the group by `FUN_00141840` / `FUN_00141800`).
+    /// Bits 64 and above do not exist in the word and are ignored.
+    pub fn set_group(&mut self, g: u32, on: bool) {
+        if g < 64 {
+            if on { self.enabled_groups |= 1 << g } else { self.enabled_groups &= !(1 << g) }
+        }
     }
 
     /// Highest floor under (x, z) between `from_y - down` and `from_y`.
@@ -280,9 +308,10 @@ impl World {
         let best = self
             .tris
             .iter()
-            .filter(|t| t.n.y > 0.95)
-            .max_by(|a, b| area(a).total_cmp(&area(b)))
-            .map(|t| (t.v[0] + t.v[1] + t.v[2]) / 3.0);
+            .enumerate()
+            .filter(|(i, t)| t.n.y > 0.95 && self.group_enabled(*i))
+            .max_by(|a, b| area(a.1).total_cmp(&area(b.1)))
+            .map(|(_, t)| (t.v[0] + t.v[1] + t.v[2]) / 3.0);
         match best {
             Some(p) => Vec3::new(p.x, self.ground(p, p.y + 50.0, 500.0).map_or(p.y, |g| g.y), p.z),
             None => self.spawn_point_band(),
@@ -293,7 +322,10 @@ impl World {
     pub fn spawn_point_band(&self) -> Vec3 {
         let mut bands: HashMap<i32, f32> = HashMap::new();
         let floor = |t: &Tri| (t.n.y > 0.8).then(|| ((t.v[1] - t.v[0]).cross(t.v[2] - t.v[0]).length() * 0.5, (t.v[0].y + t.v[1].y + t.v[2].y) / 3.0));
-        for t in &self.tris {
+        for (i, t) in self.tris.iter().enumerate() {
+            if !self.group_enabled(i) {
+                continue;
+            }
             if let Some((area, y)) = floor(t) {
                 *bands.entry((y / 100.0).round() as i32).or_default() += area;
             }
@@ -303,8 +335,9 @@ impl World {
         let best = self
             .tris
             .iter()
-            .filter(|t| floor(t).is_some_and(|(_, y)| (y / 100.0).round() as i32 == band))
-            .map(|t| (t.v[0] + t.v[1] + t.v[2]) / 3.0)
+            .enumerate()
+            .filter(|(i, t)| self.group_enabled(*i) && floor(t).is_some_and(|(_, y)| (y / 100.0).round() as i32 == band))
+            .map(|(_, t)| (t.v[0] + t.v[1] + t.v[2]) / 3.0)
             .min_by(|a, b| a.xz().distance_squared(mid.xz()).total_cmp(&b.xz().distance_squared(mid.xz())));
         let p = best.unwrap_or(mid);
         Vec3::new(p.x, self.ground(p, p.y + 50.0, 500.0).map_or(p.y, |g| g.y), p.z)
@@ -558,18 +591,27 @@ mod tests {
             .filter_map(|n| kh2_ard::run::player_start(&ard, &kh2_ard::run::run_area(&ard, [0, 1, 0], n), n).map(|(_, e)| crate::area::game_to_app(e.position)))
             .collect();
         assert_eq!(entrances.len(), 2);
-        let inside = |p: Vec3| vol.contains([p.x, -p.y, -p.z]) || (p - target).with_y(0.0).length() < 80.0;
-        for (name, start) in [("startup spawn", spawn), ("entrance 0", entrances[0]), ("entrance 1", entrances[1])] {
+        // `walk_to` stops within 60 units of the target; a walk that ends farther out was stopped by a wall.
+        let arrived = |p: Vec3| (p - target).with_y(0.0).length() < 60.0;
+        let starts = [("startup spawn", spawn), ("entrance 0", entrances[0]), ("entrance 1", entrances[1])];
+        for (name, start) in starts {
             let end = walk_to(&gated, start, target);
-            assert!(inside(end), "{name}: with the group filter Sora reaches the volume ({start:?} -> {end:?}, target {target:?})");
+            assert!(arrived(end), "{name}: with the group filter Sora arrives at the volume ({start:?} -> {end:?}, target {target:?})");
         }
-        // Without the filter (every group solid, as the app did) at least one of the three starts is walled in.
+        // Without the filter (every group solid, as the app did) the startup spawn and entrance 0 are walled in
+        // (entrance 1 is outside the arena walls and arrives either way), and each blocked walk ends far from
+        // where the gated walk ends.
         all.enabled_groups = u64::MAX;
-        for (name, s) in [("startup spawn", spawn), ("entrance 0", entrances[0]), ("entrance 1", entrances[1])] {
-            eprintln!("iw1 eh10 {name}: start {s:?}, ungated ends {:?}, gated ends {:?}, target {target:?}", walk_to(&all, s, target), walk_to(&gated, s, target));
+        let mut blocked = Vec::new();
+        for (name, s) in starts {
+            let (ungated, with_filter) = (walk_to(&all, s, target), walk_to(&gated, s, target));
+            eprintln!("iw1 eh10 {name}: start {s:?}, ungated ends {ungated:?}, gated ends {with_filter:?}, target {target:?}");
+            if !arrived(ungated) {
+                assert!((ungated - with_filter).length() > 100.0, "{name}: the blocked and the gated walk end apart ({ungated:?} vs {with_filter:?})");
+                blocked.push(name);
+            }
         }
-        let stuck = [spawn, entrances[0], entrances[1]].into_iter().filter(|&s| !inside(walk_to(&all, s, target))).count();
-        assert!(stuck >= 1, "the ungated world blocks at least one start");
+        assert_eq!(blocked, ["startup spawn", "entrance 0"], "the ungated world walls in exactly these starts");
     }
 
     /// WP-IW1: he05 and al01 (the other areas of the report). `kh2 coct-walls` finds no hidden-group wall between
@@ -613,6 +655,50 @@ mod tests {
         assert_eq!(probe(&w), (true, true, true, true), "group on: the wall answers every query");
         w.enabled_groups = !(1 << 3);
         assert_eq!(probe(&w), (false, false, false, false), "group off: no query sees the wall");
+    }
+
+    /// WP-IW2: the floor, ceiling, vertical wall test, ray cast and start-position searches also go through the
+    /// walker (`FUN_00142760` ground probe, `FUN_00141f08` ray, `FUN_00164138` sweep all call `FUN_00141b50`), so a
+    /// box of a switched-off group is no floor, ceiling or wall, and a group switched back on is solid again.
+    #[test]
+    fn hidden_groups_are_no_floor_ceiling_wall_or_spawn_point() {
+        let poly = |verts: [[f32; 3]; 4], normal: [f32; 3], mesh: u16| kh2_map::Polygon { verts, quad: true, normal, d: 0.0, flags: kh2_map::flags::PARTY_COLLIDE, material: 0, mesh };
+        // Mesh 0 (group 3): floor at y = 0 and ceiling at y = 300 over x, z in -500..500, and a wall at x = 100.
+        // Mesh 1 (group 9): a larger second floor at y = 80 over x, z in -600..600.
+        let polygons = vec![
+            poly([[-500.0, 0.0, -500.0], [500.0, 0.0, -500.0], [500.0, 0.0, 500.0], [-500.0, 0.0, 500.0]], [0.0, 1.0, 0.0], 0),
+            poly([[-500.0, 300.0, -500.0], [-500.0, 300.0, 500.0], [500.0, 300.0, 500.0], [500.0, 300.0, -500.0]], [0.0, -1.0, 0.0], 0),
+            poly([[100.0, -500.0, -500.0], [100.0, 500.0, -500.0], [100.0, 500.0, 500.0], [100.0, -500.0, 500.0]], [-1.0, 0.0, 0.0], 0),
+            poly([[-600.0, 80.0, -600.0], [600.0, 80.0, -600.0], [600.0, 80.0, 600.0], [-600.0, 80.0, 600.0]], [0.0, 1.0, 0.0], 1),
+        ];
+        let meshes = vec![kh2_map::Mesh { group: 3, ..Default::default() }, kh2_map::Mesh { group: 9, ..Default::default() }];
+        let mut w = World::from_coct(&kh2_map::Coct { polygons, meshes, ..Default::default() });
+        let (a, b) = (Vec3::new(0.0, 0.5, 0.0), Vec3::new(2.0, 0.5, 0.0));
+        let probe = |w: &World| {
+            let p = Vec3::new(37.0, 0.0, 11.0);
+            (
+                w.ground(p, 400.0, 1000.0).map(|g| g.y),
+                w.ceiling(p, 10.0, 400.0),
+                w.blocked_m(a, b),
+                w.raycast_m(Vec3::new(0.37, 2.0, 0.11), Vec3::new(0.37, -1.0, 0.11)).map(|d| (d * 100.0).round()),
+                w.spawn_point().y,
+            )
+        };
+        // Both groups on: the higher floor (group 9) wins the ground probe and the ray hits it first.
+        w.enabled_groups = u64::MAX;
+        assert_eq!(probe(&w), (Some(80.0), Some(300.0), true, Some(120.0), 80.0));
+        // Group 9 off: the group 3 floor answers.
+        w.set_group(9, false);
+        assert_eq!(probe(&w), (Some(0.0), Some(300.0), true, Some(200.0), 0.0));
+        // Group 3 off as well: no floor, ceiling, wall or ray hit; the start search falls back to the origin.
+        w.set_group(3, false);
+        assert_eq!(probe(&w), (None, None, false, None, 0.0));
+        assert_eq!(w.spawn_point_band(), Vec3::ZERO);
+        // Switching a group on again makes it solid, a bit above 63 is ignored.
+        w.set_group(9, true);
+        w.set_group(64, true);
+        assert_eq!(w.enabled_groups, !(1u64 << 3));
+        assert_eq!(probe(&w).0, Some(80.0));
     }
 
     /// WP-G3 (user report 2026-10-11: invisible walls in Tram Common and Station Heights). The player's

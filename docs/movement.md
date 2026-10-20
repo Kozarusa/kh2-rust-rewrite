@@ -629,8 +629,49 @@ group is switched on by the map visibility word, and the area script leaves the 
   `DAT_0035a810`, then `FUN_00143028` -> `FUN_00141840` on every collision slot `DAT_00355930..44`) and
   `FUN_0015e928` (off: `FUN_00142f78` -> `FUN_00141800`), reached from BDX host calls 1.37 and 1.36 and from area opcode 0xb
   (`DAT_0035cd18` mask, docs/events.md). No battle manager writes the area word. So an arena that closes during a
-  fight is done by an enemy or event script calling host 1.37 / 1.36; the app does not implement those two host calls
-  yet (no `mask_35a810` arm in `enemy_host.rs`), so groups only change at area entry. A follow-up should add
-  `World::enabled_groups` bit writes for them.
+  fight is done by an enemy or event script calling host 1.37 / 1.36 (implemented by WP-IW2, below).
+
+### 8.1 Run-time group switches and the other queries (WP-IW2)
+
+* Host 1.36 `mask_35a810_clear` (0x172418 -> `FUN_0015e928`) and 1.37 `mask_35a810_set` (0x172430 -> `FUN_0015e9a8`): clear
+  or set bit `i` of the live mask `DAT_0035a810`, then `FUN_00142f78` / `FUN_00143028` run `FUN_00141800` / `FUN_00141840` (the
+  enabled-byte writers of 8 above) on each of the five collision slots `DAT_00355930..44`; the same functions also run the drawn
+  mesh group hooks (`FUN_00153458` / `FUN_001534c8`, `FUN_0015bfb8` / `FUN_0015bf68`) and, while `DAT_0035a80c == 1`, the model
+  animation hooks (`FUN_001dbad8` / `FUN_001db928`). `enemy_host.rs` has one `approx` arm for both (collision bit exact; the draw
+  and animation hooks are not ported): it queues `(group, on)` (bits above 63 dropped), and `area::run_area_script` applies the
+  queue to `World::set_group` in call order every frame, through `area::sync_groups`.
+* The area word is written once per world (`World::apply_area_word`, `FUN_001047a8` -> `FUN_00149b40` -> `FUN_0015e6c0` copies it
+  to `DAT_0035a810` a single time). The IW1 wiring wrote it whenever it differed, which would have undone a run-time switch on the
+  next frame; a freshly loaded area builds a fresh `World`, so the word applies again there. `KH2_AREALOG=1` logs
+  `area <name>: world collision mask 0x.. applied (script word 0x..; FUN_00141768)` and one line per switch
+  (`collision group N on|off (host 1.37|1.36); world mask now 0x..`). Test:
+  `the_world_gets_the_area_word_once_and_then_the_script_switches`.
+* Which queries the group filter covers: all of them. Every collision query of the game ends in the mesh loop of
+  `FUN_00141b50` (callers `FUN_00142760` the vertical ground probe with mask 0xf, `FUN_00141f08` the ray cast under
+  `FUN_00143aa0` / `FUN_00143b80` / `FUN_00143c28` and others, `FUN_00164138` the capsule sweep, `FUN_00164ce8` via
+  `FUN_00143388`), and the loop skips a mesh whose enabled byte is 0 before it looks at a polygon. So the filter now lives in
+  `World::near`, the candidate lookup every query shares: `ground`, `ceiling`, `raycast` / `raycast_m`, `blocked_m`, `slide`,
+  `touching_m`, `cast_m` and (through its own loop) `motor::sweep_wall` skip triangles of off groups. `spawn_point` and
+  `spawn_point_band` are the app's stand-in start search (no game function), gated the same way so they never pick the floor of a
+  hidden mesh. The world is shared by the party and the enemies' simple mover (`step_m`, `ground_m`), so enemies also stop seeing a
+  hidden floor or wall. `CameraWorld` is built from render meshes without groups and is unaffected. Test:
+  `hidden_groups_are_no_floor_ceiling_wall_or_spawn_point` (synthetic floors, ceiling and wall of two groups).
+* Who calls the switches in eh10: of the six scripted objects the spawn groups of eh10 create (`M_EX920` in `b_00`, `B_EX140` in
+  `b_40`, `P_EX020_RTN` and `P_EX030_RTN` in `e03_`, `N_EX900_RTN` in `d00_`, `N_EX560_RTN` in `b00_`), only `B_EX140` calls 1.36
+  (3 call sites) and 1.37 (4 call sites), with group 2 and 8 as immediates and one global variable (`load global+0x314`).
+  `M_EX920`, the kind of the user's `b_00` group, calls neither, so the b_00 arena stays as the area word 0x407 leaves it
+  (walls of groups 3 to 8 off) for the whole fight [inferred from the scripts; the group-8 and group-2 switches of the boss in `b_40`
+  are applied when that script runs]. Across the disc 82 BDX scripts use 1.36 (321 call sites) and 1.37 in 48 scripts (228 call sites)
+  (`kh2 bdx --scan`); only eh10 was walked through for kinds. Test: `eh10_enemy_scripts_and_the_collision_group_switches`.
+* Area opcode 0xb (`DAT_0035cd18`, `FUN_00180b48` case 0xb) only stores a 64-bit mask; the groups change when a script calls the
+  parameterless host functions at 0x172800 (`FUN_0019d4c0`: group-on for each set bit) and 0x172818 (`FUN_0019d520`: group-off). The app
+  does not act on either: `kh2_ard::run::ScriptRun` drops opcode 0xb (`run_command`'s `_ => {}`), the two hosts have no entry in
+  `kh2_bdx::names`, and their (group, index) was not found (the descriptor addresses in the names table are not monotonic in the
+  index, so 0x172800 cannot be placed by position). eh10's map program 57 is the only 0xb command of that area (mask bit 62); the
+  program the app runs (0,1,0) has none. Left as a gap: the change needs `kh2-ard` (`ScriptRun::word_35cd18`) and the two names in `kh2-bdx`.
+* Walk test tightened: `eh10_arena_walls_of_hidden_groups_do_not_block_the_spawn_volume` now requires every gated walk to arrive
+  within `walk_to`'s own 60-unit stop radius (it was 80 or inside the volume), and requires the ungated world to wall in exactly
+  the startup spawn and entrance 0 with their ends more than 100 units from the gated ends (entrance 1 arrives either way).
+  Measured: gated ends 55.3, 54.7 and 59.3 units from the volume centre.
 * Decompile index: `FUN_00141b50`, `FUN_00141500`, `FUN_00141768`, `FUN_00141800`, `FUN_00141840`, `FUN_00142ba8`,
   `FUN_00149b40`, `FUN_00149348`, `FUN_0015e6c0`, `FUN_001491f8` (map +0x50), `FUN_001db4d0`, `FUN_001db928`.

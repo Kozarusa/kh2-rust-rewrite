@@ -141,6 +141,20 @@ pub fn arealog() -> bool {
     *ON.get_or_init(|| std::env::var("KH2_AREALOG").is_ok_and(|v| v != "0"))
 }
 
+/// Brings the world's collision groups in line with the game: the area word once per world, then the
+/// switches of hosts 1.36 / 1.37 in call order. `KH2_AREALOG` logs the mask the world ends up with.
+pub(crate) fn sync_groups(w: &mut World, word: u64, area: &str, edits: &[(u8, bool)]) {
+    if w.apply_area_word(word) && arealog() {
+        info!("area {area}: world collision mask {:#x} applied (script word {word:#x}; FUN_00141768)", w.enabled_groups);
+    }
+    for &(g, on) in edits {
+        w.set_group(g as u32, on);
+        if arealog() {
+            info!("area {area}: collision group {g} {} (host {}); world mask now {:#x}", if on { "on" } else { "off" }, if on { "1.37" } else { "1.36" }, w.enabled_groups);
+        }
+    }
+}
+
 /// Runs the area's scripts when a new area has loaded and, when asked, places Sora at the
 /// entrance's player entity (on the collision floor under the record's point).
 pub fn run_area_script(
@@ -225,12 +239,12 @@ pub fn run_area_script(
         rec.run = Some(Arc::new(AreaRun { name: loaded.clone(), ard, script }));
     }
     // The collision walker visits only meshes whose group bit is in the map visibility word
-    // (FUN_00141768); `load_area` inserts a fresh world, so the word is applied whenever it differs.
+    // (FUN_00141768); `load_area` inserts a fresh world, which gets the word once. Host calls 1.36 / 1.37 then
+    // switch single bits (queued by `enemy_host`, applied here in call order).
     if let (Some(w), Some(r)) = (world.as_mut(), rec.run.as_ref())
         && r.name == loaded
-        && w.enabled_groups != r.script.map_visibility
     {
-        w.enabled_groups = r.script.map_visibility;
+        sync_groups(w, r.script.map_visibility, &loaded, &crate::enemy_host::take_group_edits());
     }
     if !rec.place_on_load || rec.placed.as_deref() == Some(loaded.as_str()) {
         return;
@@ -257,6 +271,62 @@ pub fn run_area_script(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The world's collision mask is the area word once, then only the host calls' switches change it: a later
+    /// sync with the same word must not undo a group a script switched, and the switches apply in call order.
+    #[test]
+    fn the_world_gets_the_area_word_once_and_then_the_script_switches() {
+        let mut w = World::default();
+        sync_groups(&mut w, 0x407, "eh10", &[]);
+        assert_eq!(w.enabled_groups, 0x407, "the applied mask is the script's word");
+        // Host 1.37 on group 3, host 1.36 on group 0, then on again for 0 and off for 10 (order matters for 0).
+        sync_groups(&mut w, 0x407, "eh10", &[(3, true), (0, false), (0, true), (10, false)]);
+        assert_eq!(w.enabled_groups, 0xf, "bits 0 to 3 on, bit 10 off");
+        // The frame-by-frame sync does not re-apply the word.
+        sync_groups(&mut w, 0x407, "eh10", &[]);
+        assert_eq!(w.enabled_groups, 0xf, "unchanged by a repeated sync");
+        // A freshly loaded world is a new World: the word applies again.
+        let mut fresh = World::default();
+        assert!(fresh.apply_area_word(0x3) && !fresh.apply_area_word(0x7));
+        assert_eq!(fresh.enabled_groups, 0x3);
+    }
+
+    /// WP-IW2 item 5: which object scripts of an area's spawn groups call host 1.36 / 1.37 (the collision group
+    /// switches), as `(model, group clears, group sets, spawn group tags that create it)`.
+    fn group_switchers(disc: &Disc, area: &str) -> Vec<(String, usize, usize, Vec<String>)> {
+        use kh2_tables::tables as t;
+        let (ard, _) = kh2_ard::Area::parse(&disc.read(&format!("ard/{area}.ard")).unwrap()).unwrap();
+        let rows = {
+            let mut a = disc.0.lock().unwrap();
+            kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).unwrap().rows
+        };
+        let objects: std::collections::BTreeSet<u32> = ard.spawns.values().flatten().flat_map(|g| g.entities.iter().map(|e| e.object)).collect();
+        let mut out = Vec::new();
+        for o in objects {
+            let Some(row) = rows.iter().find(|r| r.object_id == o) else { continue };
+            let Some(bar) = disc.read(&format!("obj/{}.mdlx", row.model_name)) else { continue };
+            let Ok(entries) = kh2_bar::parse(&bar) else { continue };
+            let Some(prog) = entries.iter().find(|e| e.kind == 3).and_then(|e| kh2_bdx::Program::parse(e.data).ok()) else { continue };
+            let Ok(an) = kh2_bdx::analyze(&prog) else { continue };
+            let count = |idx: u16| an.code.values().filter(|(i, _)| matches!(i, kh2_bdx::Insn::Host { group: 1, index } if *index == idx)).count();
+            let tags = ard.spawns.iter().filter(|(_, gs)| gs.iter().any(|g| g.entities.iter().any(|e| e.object == o))).map(|(t, _)| t.clone()).collect();
+            out.push((row.model_name.clone(), count(36), count(37), tags));
+        }
+        out
+    }
+
+    #[test]
+    fn eh10_enemy_scripts_and_the_collision_group_switches() {
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else { return };
+        let disc = Disc::open(&iso);
+        let all = group_switchers(&disc, "eh10");
+        eprintln!("iw2 eh10 objects with scripts: {all:?}");
+        let (ard, _) = kh2_ard::Area::parse(&disc.read("ard/eh10.ard").unwrap()).unwrap();
+        let op_b: Vec<_> = ard.scripts.iter().flat_map(|(s, ps)| ps.iter().flat_map(move |p| p.commands.iter().filter(|c| c.opcode == 0xb).map(move |c| (s.clone(), p.id, c.args.clone())))).collect();
+        eprintln!("iw2 eh10 opcode 0xb commands: {op_b:?}");
+        let switching: Vec<_> = all.iter().filter(|s| s.1 + s.2 > 0).collect();
+        assert!(all.len() >= 3 && switching.len() == 1 && switching[0].0 == "B_EX140", "{switching:?}");
+    }
 
     #[test]
     fn the_area_record_names_areas_and_turns_record_points_into_app_space() {

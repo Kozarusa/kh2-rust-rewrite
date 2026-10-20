@@ -267,11 +267,12 @@ pub(crate) struct BevyHost<'a> {
     pub(crate) tag: &'a str,
 }
 
-/// The self-targeted motion queue (host 1.13) is enabled for M_EX900 and M_EX110 only until it is verified for the other kinds whose
+/// The self-targeted motion queue (host 1.13) is enabled for M_EX900, M_EX110 and M_EX210 only until it is verified for the other kinds whose
 /// scripts call it (M_EX930, M_EX940, M_EX850, M_EX760, M_EX420): for them the call stays unmapped as before. M_EX110's
-/// `atk_foot_stamp` (R162c) queues motion 0 behind motion 202 and then waits (R0f0a) for the motion state to leave 202.
+/// `atk_foot_stamp` (R162c) queues motion 0 behind motion 202 and then waits (R0f0a) for the motion state to leave 202. M_EX210's
+/// `move_target` run (0x11e6) plays motion 153, queues motion 0 and waits (0x1205) for the motion state to leave 153: without the queue it waited forever.
 fn queues_motions(tag: &str) -> bool {
-    tag.starts_with("M_EX900#") || tag.starts_with("M_EX110#")
+    tag.starts_with("M_EX900#") || tag.starts_with("M_EX110#") || tag.starts_with("M_EX210#")
 }
 
 fn imp(v: Value) -> (Value, St, &'static str) {

@@ -10,6 +10,12 @@ One short section per work package. "Verified" says how; nothing here was checke
 
 **WP-WM8 (world map props and route markers).** `worldmap::map_props` draws the map's BAR type 0x15 props (BOB type-3 models) and a route's state (byte 0x3419c3 + route) shows entry 0 (state 1) or entries 1 and 2 (state 2). Camera type 4 (FUN_00177128 has cases 0..3 only) and the cursor's movement (same vtable as the player but four slots) recorded as gaps with addresses. Verified by three worldmap tests, wm00-loads, wm-land, wm-areas, savepoint-menu, idle-hud, route-state screenshots. Open: `Story::world_run_list` ops 8..0xb (route states stay 0 in play), effects of WM_GUMI_01.apdx, prop rotation signs [inferred], the map's own camera source.
 
+**WP-ST4 (party member AP and resistances).** `PartyData::member_ap_resistances`: AP = lvup +7 + record +8 + item AP, resistances folded per item (FUN_0019f920, FUN_001a0c08); enemy hits on a member use them; spawn logs the status. Verified by party_member_ap_and_resistances_follow_the_record, party-follow, combat-ground, idle-hud. Open: `enemy::member_stats_rebuilt` still returns ap 0; item-AP sum not exercised by the test; ability passives; no member HP/MP growth writer found.
+
+**WP-EN10c (enemy kind M_EX660).** objentry row 304, enmp row 38, joins `enemy::KINDS` (al14 b_61, six members); host 1.99 `ground_depth` (FUN_001730e8) is Impl. Verified by m_ex660_is_an_enemy_kind_with_its_objentry_row, soaks of about 100 s (all six die, none stuck), combat-ground, tt04-dusk, idle-hud. Open: kind-2 groups (ca14, ca15, lk08) create no enemy, boss and `_raw` modes unseen, only al14 soaked.
+
+**WP-WM9 (route ops).** `Story::world_run_list` ops 8..0xb write op-8 to the route state bytes (FUN_001b6a90, FUN_001b6d30); `Story::world_consume_queue` (FUN_001b6e20, FUN_002c6bf8 consuming half) runs when the map's props are built. Verified by three tests reading the disc's lists. Open: boot FUN_001b6870 (world flag 0 never set at new game, so nothing queues a route list in play), no screenshot of route markers from real progression, queue placement [inferred].
+
 ## Shift 16 (2026-10-18)
 
 - **WP-CZ2 (customize gaps).** The page 0x1b second help, the missing ids of table 0x352ec0 and FUN_00113888 were already ported or not applicable; added a test for the appended help per row kind and documented the unmatched-value read. Open: the halfword at address 2 read by FUN_002743e8 for a value no entry holds [inferred 0].

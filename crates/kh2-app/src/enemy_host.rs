@@ -489,6 +489,9 @@ impl BevyHost<'_> {
             // 0.44 effect_stop (0x16dba0): stop the effect instance of a handle (FUN_001e0298). The handles of 1.22 name no drawn effect and a started effect
             // (1.87) lives its own length in the app, so nothing is stopped (M_EX060 calls it at the end of its charge mode).
             Call::Func { group: 0, index: 44, .. } => stub(Value::None, "the app's effects are not stopped from a script handle"),
+            // 0.85 effect_stop_mark (0x16dbb8 -> FUN_001d9f48): stops the effect instance of a handle and sets bit 0 of its flags (+8). The handles name effects that
+            // run to their end in the app (see 0.79 and 1.87), and no reader of the mark bit was looked up (WP-EN10p, M_EX920).
+            Call::Func { group: 0, index: 85, .. } => stub(Value::None, "effects run to their end; the mark bit of the handle has no reader here"),
             _ => missing(Value::Int(0), "function not mapped"),
         }
     }

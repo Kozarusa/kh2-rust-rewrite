@@ -89,6 +89,7 @@ with a default, nothing in the app reads it; Missing = fails visibly. Addresses 
 | 2.10 attack_create, 2.11, 2.12, 2.13, 2.62 | Stub | free attack objects are not simulated: a handle only, never hits (WP-EN10q, M_EX060) |
 | 0.44 effect_stop | Stub | nothing stopped from a script handle (WP-EN10q) |
 | 0.52 effect_fade | Stub | nothing to fade: the effects of 1.22 are not drawn (WP-EN10i) |
+| 0.85 effect_stop_mark | Stub | effects run to their end; the handle's mark bit (+8 bit 0, FUN_001d9f48 via 0x16dbb8) has no reader looked up (WP-EN10p, M_EX920) |
 | 2.9 set_obj_param | Impl | the game builds the object's status block from the `enmp` row (FUN_001b2148 -> FUN_0019f8a8); the app built it at spawn, the call checks the row number (Shadow 34, Soldier 33) |
 | 1.110 spawn_kind | Impl | byte +0x1c of the spawn record (FUN_0016b858): the area group's value for enemies spawned from an area script (`docs/enemies.md`), -1 for the app's own waves |
 | 0.14 progress_flag_set | Impl | FUN_0016d5a0 -> FUN_0017ff60 on the app's story (`progress::Story::set`: the bit at 0x33f6b0 and its `00progress.bin` side effects, docs/events.md section 5); Stub (not kept) when no story is installed (unit tests) |

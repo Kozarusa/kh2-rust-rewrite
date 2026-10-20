@@ -1844,7 +1844,10 @@ mod tests {
         let mut w = world_with_sora(3);
         w.insert_resource(crate::magic::MagicState::default());
         w.resource_mut::<crate::magic::MagicState>().charge = crate::magic_rules::Charge { left: 40.0, total: 90.0 };
-        w.query::<&mut Sora>().single_mut(&mut w).unwrap().mp = 7;
+        {
+            let mut s = w.query::<&mut Sora>().single_mut(&mut w).unwrap();
+            (s.mp, s.stats.max_mp) = (7, 100);
+        }
         w.run_system_once(|mut q: Query<&mut Sora>, mut m: Query<&mut PartyMember>, mut mg: ResMut<crate::magic::MagicState>| {
             refresh_party(&mut q, Some(&mut mg.charge), &mut m);
         })

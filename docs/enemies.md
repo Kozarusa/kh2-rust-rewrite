@@ -1141,3 +1141,33 @@ gold orbs, "6p" and "30" in the air). `idle-hud`, `combat-ground` and `tt04-dusk
 Gaps: (1) Only ca09 b_02 was run; ca09 b_00 (with `M_EX210`) and bb12 were not. (2) Not seen: the modes `mode_hard`, `mode_battle_boss`, `mode_revenge_boss`, `btl_*`, `rvg_*`, `rst_*`, `atk_mine`, `move_step`,
 `freeze`, `leave`, `idle`, `event`, `revenge` (the soak showed `mode_battle` -> `mode_normal` rather than the `btl_*` modes). (3) Visuals of `atk_brest`, `atk_quake`, `atk_mine` (host 1.87 `spawn_attached`, Approx)
 were not looked at. (4) The ObjectTargetType of the objentry row was not looked up. (5) What hits Sora was not tied to the log lines naming the kind [inferred: Sora lost HP in the soak].
+
+## The enemy M_EX920 (WP-EN10p)
+
+`M_EX920` (object 311, `00objentry` row 311: ObjectType 4, `NeoStatus` 3006, flags 8, ObjectTargetType 2, Weight 100, `SpawnLimiter` 15, no spawn objects; `enemy::M_EX920`, called by its model: the data gives no
+name; in the PNGs it is a purple Heartless with a long blade-like limb that warps beside Sora) is a Heartless of the areas eh06, eh10, eh11, eh17, he09 and mu10 (area survey, 8 areas; he09 b_9g, mu10 b_60 and eh10 b_00 hold it as
+listed by the `area groups:` log line). Its BDX script (10411 words, `cargo run -p kh2 -- bdx M_EX920`) registers, among others, the modes `appear`, `mode_battle`, `mode_revenge`, `btl_short`, `btl_long`, `rvg_short`, `rvg_long`, `atk_shot_s`,
+`atk_shot_b`, `atk_brush`, `atk_brush_rush`, `atk_brush_warp`, `move_round`, `move_target`, `move_warp`, `footwork`, `footwork_warp`, `idle` and `dead`. Its motion set has two paired player motion entries (the limit windows of
+`docs/limits-reactions.md`, entry 252 opens 286); the app offers none for it.
+
+- **Stats.** The set-up routine R2683 (0x2683, called at 0x1ab4) takes eight values after the object; the first pushed, 47 (pushed at 0x1a9c; R2683 stores it to local+0x20), goes to `set_obj_param` (host 2.9 at 0x26aa):
+  `enmp` row 47 (Experience 250; log `experience: enmp 47 defeated: +10 (lvpm 4 x enmp 250)`). The harness enemy has 32 HP.
+- **Death.** `hp 0: switching to mode dead`, then `drop (host 1.92) asked row 24, used row 24: prizes per kind [0, 0, 0, 0, 0, 0, 6, 0, 0], items [] (6 prize objects, 0 item objects)`; `Kind::death_effect` is true as for the Dusk.
+- **Host calls.** One arm was appended to `enemy_host.rs`: 0.85 `effect_stop_mark` (0x16dbb8 -> FUN_001d9f48), a Stub (effects run to their end; the first run logged `unimplemented host call 0.85`, none after the arm). Every other call the
+  runs made was answered already (Impl, Approx or the existing Stubs 1.121, 1.171, 1.206, 1.211, 65535.0); host 1.13 never left a mode waiting (`queues_motions` is unchanged).
+
+Acceptance run (WP-EN10p), eh10 group b_00 (btl program 1: three `M_EX920` made by kind-2 groups (the first record is volume 0x125); test `m_ex920_is_an_enemy_kind_with_its_objentry_row`, disc): `KH2_PROGRAMS=0,1,0 KH2_WAVE_GROUP=b_00 KH2_NO_PARTY=1
+KH2_AREALOG=1 KH2_BDXLOG=1 KH2_HITLOG=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1 KH2_SCREENSHOT=<png> KH2_SHOT_AT=<s> KH2_KEYS=11:Q,12:J,12.45:J,.. (J every 0.45 s) kh2-game eh10` through `local/capped.ps1 -CapMB 2500`. Three `M_EX920` were
+created at the record's points (about 6, 9 and 10 m from Sora). (1) Soak, 330 s of wall time (enemy tick about 18700 over three Continue reloads of the area): 0 `unimplemented host call`, 0 `script error`; modes run: `appear`,
+`atk_shot_s`, `atk_shot_b`, `atk_brush`, `atk_brush_rush`, `atk_brush_warp`, `move_warp`, `move_round`, `move_target`, `footwork`, `footwork_warp`, `idle`, `mode_battle` -> `btl_short` / `btl_long`, `mode_revenge` -> `rvg_short`, `dead`;
+the longest single mode run was `footwork` at 330 ticks (5.5 s), `move_round` 180, `move_target` 118; no mode stuck. Sora was knocked out three times (the game-over Continue worked, the area and the group were set up again). (2) 25 hits
+(`M_EX920 hit: atkp 126 damage 3 hp 29 .. FlinchPush` and `Blow` reactions), two kills (`#3` at t2632 after 44 s, `#1` at t18734), each followed by `experience: enmp 47 defeated: +10` and the six-orb drop. The third instance was
+not killed in that run (Sora hits rarely: the Heartless keep 3 to 6 m away or warp). PNGs looked at (`local\ex920_*.png`, not committed): idle at 12 s (`ex920_idle.png`: Sora on a metal floor in a white and blue hall, debug text
+`M_EX920 Idle hp 32/32` three times at d 6.0, 9.1 and 10.5; the Heartless are not visible in the picture), a hit at 13.6 s (`ex920_hit.png`: two purple hooded blade Heartless beside Sora, golden hit stars and a damage number "3",
+lock-on reticle, an HP bar; entry `Hurt hp 29/32`), a death at 44.4 s (`ex920_dead.png`: a burst of sparks and prize bubbles at the target, only two enemies listed, damage number "2"). `idle-hud`, `combat-ground` and `tt04-dusk`
+(`local\accept.ps1 -Only ..`) ran PASS and their PNGs show the HUD, Shadows hit in tt00 and a Dusk hit in tt04.
+
+Gaps: (1) Only eh10 b_00 was run; mu10 b_60 (with Dusks), he09 b_9g, eh06, eh11 and eh17 (beside `M_EX870` / `M_EX900`, kinds the app lacks) were not; the survey run of mu10, eh06, eh10, eh11, eh17 and he09 only listed the groups.
+(2) Not seen: `rvg_long`, `btl_*` beyond short and long, the boss modes and `leave`; the limit offer of paired entry 252 (the app sends no event to Sora, no window opens). (3) The elements of the shot and brush attacks
+(host 1.87 `spawn_attached`, Approx) were not looked up and one run did not show them. (4) The 0.85 mark bit has no reader looked up (searched only the two functions named above). (5) The kill of all three instances in one run was
+not achieved (see above).

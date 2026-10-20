@@ -201,8 +201,13 @@ pub const M_EX510: Kind = Kind { name: "M_EX510", enmp: 55, model: "M_EX510", de
 /// values after the object, pushed at 0x0487, which R1080 stores to local+0x20; host 2.9 at 0x10a7).
 pub const M_EX560: Kind = Kind { name: "M_EX560", enmp: 59, model: "M_EX560", death_effect: true, status: true };
 
+/// `M_EX920` (`ObjectType` 4, object 311, `NeoStatus` 3006, `SpawnLimiter` 15, no spawn objects; a Heartless of the areas eh06, eh10, eh11, eh17, he09, mu10), called by its model.
+/// Its script hands `enmp` row 47 to `set_obj_param` (host 2.9: BDX `M_EX920` R2683 at 0x2683, called at 0x1ab4 with 47 as the first of its eight values after the object,
+/// pushed at 0x1a9c, which R2683 stores to local+0x20; host 2.9 at 0x26aa).
+pub const M_EX920: Kind = Kind { name: "M_EX920", enmp: 47, model: "M_EX920", death_effect: true, status: true };
+
 /// Every enemy kind the app has.
-pub const KINDS: [&Kind; 27] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700, &M_EX950, &M_EX650, &M_EX660, &M_EX110, &M_EX520, &M_EX770, &M_EX210, &M_EX690, &M_EX910, &M_EX050, &M_EX730, &M_EX750, &M_EX510, &M_EX560];
+pub const KINDS: [&Kind; 28] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700, &M_EX950, &M_EX650, &M_EX660, &M_EX110, &M_EX520, &M_EX770, &M_EX210, &M_EX690, &M_EX910, &M_EX050, &M_EX730, &M_EX750, &M_EX510, &M_EX560, &M_EX920];
 
 /// The rigs of the enemy kinds, by `Kind::name` (Shadow and Soldier share `sora::Rigs`' copies).
 #[derive(Resource, Default)]
@@ -2338,6 +2343,31 @@ mod tests {
         assert_eq!(b01.members.iter().filter(|m| m.kind.name == M_EX750.name).count(), 4);
         assert_eq!(b01.members.iter().filter(|m| m.kind.name == M_EX050.name).count(), 3);
         assert!(b01.skipped.is_empty());
+    }
+
+    /// `M_EX920` (object 311) is an enemy kind of the app: its `00objentry` row is type 4 with `NeoStatus` 3006, `SpawnLimiter` 15 and no spawn objects, its script's `set_obj_param` row is `enmp` 47, and eh10's
+    /// `btl` program 1 loads b_00 with three of it. Needs `KH2_ISO` for the table and group part.
+    #[test]
+    fn m_ex920_is_an_enemy_kind_with_its_objentry_row() {
+        assert!(KINDS.iter().any(|k| std::ptr::eq(*k, &M_EX920)));
+        assert_eq!((M_EX920.enmp, M_EX920.model, M_EX920.status, M_EX920.death_effect), (47, "M_EX920", true, true));
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let rows = {
+            let mut a = disc.0.lock().expect("archive lock");
+            kh2_tables::load::<kh2_tables::tables::Objentry>(&mut a, &kh2_tables::tables::OBJENTRY).expect("objentry").rows
+        };
+        let row = rows.iter().find(|r| r.model_name == "M_EX920").expect("objentry row of M_EX920");
+        assert_eq!((row.object_id, row.object_type, row.neo_status, row.spawn_object1, row.spawn_limiter), (311, OBJECT_ENEMY, 3006, 0, 15));
+        let groups = area_groups(&disc, "eh10");
+        let ard = disc.read("ard/eh10.ard").and_then(|d| kh2_ard::Area::parse(&d)).map(|(a, _)| a).expect("eh10.ard");
+        let run = kh2_ard::run::run_area(&ard, [0, 1, 0], 0);
+        let b00 = btl_groups(&groups, &run).into_iter().find(|g| g.name == "b_00").expect("program 1 loads b_00");
+        assert_eq!(b00.members.iter().filter(|m| m.kind.name == M_EX920.name).count(), 3);
+        assert!(b00.skipped.is_empty());
     }
 
     /// `M_EX510` (object 3) is an enemy kind of the app: its `00objentry` row is type 4 with `NeoStatus` 1005, `SpawnLimiter` 10 and no spawn objects, its script's `set_obj_param` row is `enmp` 55, and ca10's

@@ -486,6 +486,9 @@ impl BevyHost<'_> {
             // 0.52 effect_fade (0x16dc48): fade the effect of a handle out over `frames`, destroying it at the end when the last argument is non-zero. The
             // handles of 1.22 name no drawn effect in the app (see there), so there is nothing to fade.
             Call::Func { group: 0, index: 52, .. } => stub(Value::None, "the effect of 1.22 is not drawn, so nothing fades"),
+            // 0.85 effect_stop_mark (0x16dbb8 -> FUN_001d9f48): stops the effect instance of a handle and sets bit 0 of its flags (+8). The handles name effects that
+            // run to their end in the app (see 0.79 and 1.87), and no reader of the mark bit was looked up (WP-EN10p, M_EX920).
+            Call::Func { group: 0, index: 85, .. } => stub(Value::None, "effects run to their end; the mark bit of the handle has no reader here"),
             _ => missing(Value::Int(0), "function not mapped"),
         }
     }

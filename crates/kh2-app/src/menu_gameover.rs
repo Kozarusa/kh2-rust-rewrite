@@ -561,17 +561,16 @@ fn restore_snapshot(go: &GameOver, progress: Option<&mut Progress>, tags: Option
 }
 
 /// `FUN_001abfe8(8)` (called by `FUN_001cb208` after the body is back): every member's MP charge ends, HP and MP go to their
-/// maximum (`refreshed`). Sora's maximum MP is the data's (`GameData::sora_max_mp`); a member's are his own. The members' KO flag
+/// maximum (`refreshed`). Sora's maximum MP is his live stats' (`Stats::max_mp`); a member's are his own. The members' KO flag
 /// (the actor's dead bit) is not touched: the jump that follows builds them again. `FUN_001b81f8`, the other refresher, clears
 /// the 0x1c bytes at `0x1d5d7c0` (`FUN_001b8218`), the Struggle's score block: the app has no such block to clear (docs/menus.md 26.7).
 fn refresh_party(
     sora: &mut Query<&mut Sora>,
-    sora_max_mp: Option<i32>,
     charge: Option<&mut crate::magic_rules::Charge>,
     members: &mut Query<&mut PartyMember>,
 ) {
     if let Ok(mut s) = sora.single_mut() {
-        let (hp, mp) = refreshed(s.stats.max_hp, sora_max_mp.unwrap_or(s.mp));
+        let (hp, mp) = refreshed(s.stats.max_hp, s.stats.max_mp);
         s.hp = hp;
         let ended = crate::magic::refill_mp(charge, &mut s.mp, mp);
         info!("game over: party refresher (FUN_001abfe8(8)): Sora HP {hp}, MP {mp}, MP charge ended {ended}");
@@ -774,7 +773,7 @@ fn drive(
     mut save: ResMut<SaveMenu>,
     mut pause: ResMut<Pause>,
     // Bevy takes 16 system parameters at most: the state the restore and the refreshers touch comes as one tuple.
-    (mut progress, mut tags, data, mut magic, mut members): Restored,
+    (mut progress, mut tags, _, mut magic, mut members): Restored,
 ) {
     // A manager that ended by itself (`FUN_001b9ce0`).
     if let Some(r) = mission.game_over_request.take()
@@ -885,7 +884,7 @@ fn drive(
                 } else {
                     if over.chosen == Some(Outcome::Continue) {
                         restore_snapshot(&go, progress.as_deref_mut(), tags.as_deref_mut());
-                        refresh_party(&mut sora, data.as_deref().map(|d| d.sora_max_mp), magic.as_deref_mut().map(|m| &mut m.charge), &mut members);
+                        refresh_party(&mut sora, magic.as_deref_mut().map(|m| &mut m.charge), &mut members);
                     }
                     if run_outcome(&mut go, &over, &mut mission, &mut task, &rec, &disc, &mut sora, music.as_deref_mut(), audio.as_deref()) {
                         over.phase = Phase::Jumping;
@@ -1847,7 +1846,7 @@ mod tests {
         w.resource_mut::<crate::magic::MagicState>().charge = crate::magic_rules::Charge { left: 40.0, total: 90.0 };
         w.query::<&mut Sora>().single_mut(&mut w).unwrap().mp = 7;
         w.run_system_once(|mut q: Query<&mut Sora>, mut m: Query<&mut PartyMember>, mut mg: ResMut<crate::magic::MagicState>| {
-            refresh_party(&mut q, Some(100), Some(&mut mg.charge), &mut m);
+            refresh_party(&mut q, Some(&mut mg.charge), &mut m);
         })
         .unwrap();
         let s = w.query::<&Sora>().single(&w).unwrap();

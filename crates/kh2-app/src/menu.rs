@@ -20,7 +20,6 @@ use kh2_image::text::Style;
 
 use crate::assets::{CurrentArea, Disc};
 use crate::audio::PlaySe;
-use crate::data::GameData;
 use crate::menu_gfx::{self, MenuGfxPlugin, MenuScene, Node};
 use crate::menu_pages::{self, Entry, Exe, Flags};
 use crate::progress::Progress;
@@ -434,7 +433,6 @@ const MEMBER_NAMES: u32 = 0x0037_ba90;
 /// (`Progress::member(id).level`, record `+0xf`).
 fn party(
     sora: Option<&Sora>,
-    data: Option<&GameData>,
     members: &[(u16, i32, i32, i32, i32)],
     progress: Option<&Progress>,
     names: &[u32],
@@ -447,7 +445,7 @@ fn party(
         hp: s.hp,
         max_hp: s.stats.max_hp,
         mp: s.mp,
-        max_mp: data.map_or(100, |d| d.sora_max_mp),
+        max_mp: s.stats.max_mp,
     }];
     for &(id, hp, max_hp, mp, max_mp) in members.iter().take(2) {
         let level = progress.and_then(|p| p.member(id)).map_or(1, |m| i32::from(m.level));
@@ -486,7 +484,6 @@ pub(crate) fn input(
     mut se: MessageWriter<PlaySe>,
     sora: Query<&Sora>,
     progress: Option<Res<Progress>>,
-    data: Option<Res<GameData>>,
     area: Res<CurrentArea>,
     real: Res<Time<Real>>,
     mut tags: ResMut<new_tags::NewTags>,
@@ -544,7 +541,7 @@ pub(crate) fn input(
                     let mut field: Vec<&crate::party::PartyMember> = members.iter().collect();
                     field.sort_by_key(|m| m.slot);
                     let field: Vec<(u16, i32, i32, i32, i32)> = field.iter().map(|m| (m.neo, m.hp, m.hp_max, m.mp, m.mp_max)).collect();
-                    let cards = party(sora.single().ok(), data.as_deref(), &field, progress.as_deref(), &menu.member_names);
+                    let cards = party(sora.single().ok(), &field, progress.as_deref(), &menu.member_names);
                     open(&mut menu, &mut scene, &mut se, &cards, &area, has_ability);
                 } else {
                     info!("menu: start refused ({state:?})");

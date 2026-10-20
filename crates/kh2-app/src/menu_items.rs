@@ -1103,7 +1103,7 @@ pub(super) fn input(
     let mut close = false;
     for key in pressed {
         let (Some(p), Ok(s)) = (progress.as_deref(), sora.single()) else { break };
-        let max_mp = game.as_ref().map_or(100, |g| g.sora_max_mp);
+        let max_mp = s.stats.max_mp;
         let mut field: Vec<&crate::party::PartyMember> = party.iter().collect();
         field.sort_by_key(|m| m.slot);
         let mut targets = vec![match magic.as_deref() {
@@ -1140,16 +1140,17 @@ pub(super) fn input(
                 }
                 Effect::Use { item, row } => {
                     if let (Some(p), Ok(mut s)) = (progress.as_deref_mut(), sora.single_mut())
-                        && let (Some(m), Some(d)) = (magic.as_deref_mut(), game.as_deref())
+                        && let (Some(m), Some(_)) = (magic.as_deref_mut(), game.as_deref())
                     {
                         let feed = idata.as_deref().map_or(0.0, |i| i.charge_feed);
+                        let s_max_mp = s.stats.max_mp;
                         let name = item_name(&st, &scene, item);
                         let mut field: Vec<_> = party.iter_mut().collect();
                         field.sort_by_key(|m| m.slot);
                         field.truncate(2);
                         let neos: Vec<u16> = field.iter().map(|t| t.neo).collect();
                         let revives = revive_scales(&neos, |neo| pdata.as_deref().map_or(1.0, |d| d.revive_scale_of(&p.member(neo).map(|r| r.abilities).unwrap_or_default())));
-                        use_item(&st, p, &mut s, m, drive.as_deref_mut(), d.sora_max_mp, (feed, &revives), (item, &name), row, &mut field);
+                        use_item(&st, p, &mut s, m, drive.as_deref_mut(), s_max_mp, (feed, &revives), (item, &name), row, &mut field);
                         let stock = stock_of(&st, p, st.machine.as_ref().map_or(0, |m| m.filter));
                         if let Some(m) = st.machine.as_mut() {
                             m.reload(stock, false);

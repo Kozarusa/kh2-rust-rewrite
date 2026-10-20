@@ -1597,7 +1597,7 @@ fn drive_tick(
             // FUN_001a0100) and MP set to its maximum (FUN_001a0240: a running MP charge ends first).
             let (hp_before, mp_before) = (s.hp, s.mp);
             s.hp = s.stats.max_hp;
-            crate::magic::refill_mp(magic.as_deref_mut().map(|m| &mut m.charge), &mut s.mp, data.sora_max_mp);
+            crate::magic::refill_mp(magic.as_deref_mut().map(|m| &mut m.charge), &mut s.mp, s.stats.max_mp);
             let fd = form_drain(&abilities);
             info!(
                 "drive: {} active, level {level}, timer {}/{} ({} points, drain {:.2}/tick in battle, {:.2} out of battle), form list {list:?}, stat block {block}, HP {hp_before} -> {}, MP {mp_before} -> {}",

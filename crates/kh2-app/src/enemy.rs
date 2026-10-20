@@ -1532,6 +1532,8 @@ pub(crate) fn member_stats_rebuilt(progress: Option<&crate::progress::Progress>,
     let mut s = member_stats(progress, neo)?;
     if let (Some(party), Some(rec)) = (party, progress.and_then(|p| p.member(neo))) {
         (s.strength, s.magic, s.defense) = party.member_status(neo, &rec);
+        (s.ap, s.weakness) = party.member_ap_resistances(neo, &rec);
+        s.max_mp = i32::from(rec.mp_max);
     }
     Some(s)
 }

@@ -139,8 +139,13 @@ pub const M_EX900: Kind = Kind { name: "M_EX900", enmp: 45, model: "M_EX900", de
 /// it, fades out and hides, like the Dusk's.
 pub const M_EX650: Kind = Kind { name: "M_EX650", enmp: 65, model: "M_EX650", death_effect: true, status: true };
 
+/// `M_EX660` (`ObjectType` 4, a Heartless of 11 areas: the area survey lists al14, ca14, ca15, ca20, he09, lk08), called by its model.
+/// Its script hands `enmp` row 38 to `set_obj_param` (host 2.9: BDX `M_EX660` R1a7e at 0x1a7e, called at 0x080d with 38 as its eighth
+/// word, pushed at 0x07f5; host 2.9 at 0x1aa5).
+pub const M_EX660: Kind = Kind { name: "M_EX660", enmp: 38, model: "M_EX660", death_effect: true, status: true };
+
 /// Every enemy kind the app has.
-pub const KINDS: [&Kind; 15] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700, &M_EX950, &M_EX650];
+pub const KINDS: [&Kind; 16] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700, &M_EX950, &M_EX650, &M_EX660];
 
 /// The rigs of the enemy kinds, by `Kind::name` (Shadow and Soldier share `sora::Rigs`' copies).
 #[derive(Resource, Default)]
@@ -1997,6 +2002,31 @@ mod tests {
         let run = kh2_ard::run::run_area(&ard, [0, 0x38, 0], 0);
         let b40 = btl_groups(&groups, &run).into_iter().find(|g| g.name == "b_40").expect("program 0x38 loads b_40");
         assert_eq!(b40.members.iter().filter(|m| m.kind.name == M_EX650.name).count(), 4);
+    }
+
+    /// `M_EX660` (object 304) is an enemy kind of the app: its `00objentry` row is type 4 with `NeoStatus` 1020, Weight 10 and no spawn
+    /// objects, its script's `set_obj_param` row is `enmp` 38, and al14's `btl` program 0x56 loads b_61 with six of it (beside five
+    /// kinds the app lacks). Needs `KH2_ISO` for the table and group part.
+    #[test]
+    fn m_ex660_is_an_enemy_kind_with_its_objentry_row() {
+        assert!(KINDS.iter().any(|k| std::ptr::eq(*k, &M_EX660)));
+        assert_eq!((M_EX660.enmp, M_EX660.model, M_EX660.status, M_EX660.death_effect), (38, "M_EX660", true, true));
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let rows = {
+            let mut a = disc.0.lock().expect("archive lock");
+            kh2_tables::load::<kh2_tables::tables::Objentry>(&mut a, &kh2_tables::tables::OBJENTRY).expect("objentry").rows
+        };
+        let row = rows.iter().find(|r| r.model_name == "M_EX660").expect("objentry row of M_EX660");
+        assert_eq!((row.object_id, row.object_type, row.neo_status, row.spawn_object1, row.spawn_limiter), (304, OBJECT_ENEMY, 1020, 0, 7));
+        let groups = area_groups(&disc, "al14");
+        let ard = disc.read("ard/al14.ard").and_then(|d| kh2_ard::Area::parse(&d)).map(|(a, _)| a).expect("al14.ard");
+        let run = kh2_ard::run::run_area(&ard, [0, 0x56, 0], 0);
+        let b61 = btl_groups(&groups, &run).into_iter().find(|g| g.name == "b_61").expect("program 0x56 loads b_61");
+        assert_eq!(b61.members.iter().filter(|m| m.kind.name == M_EX660.name).count(), 6);
     }
 
     fn member(part: usize, spawn_kind: i32, serial: u16, delay: u16, wave: u8) -> Member {

@@ -748,6 +748,13 @@ impl BevyHost<'_> {
                 Some(p) => imp(Value::Vec(to_game(p))),
                 None => missing(Value::Vec([0.0; 4]), "ground position of an object other than self and the player"),
             },
+            // 1.99 ground_depth (0x1730e8, FUN_001730e8): the floor height of FUN_00183808 (the one host 1.98 answers) minus the
+            // object's own height, in the game's space where Y points down; only when it is positive, and the answer is its negative. In
+            // the app's space that is minus the height above the floor, 0 on or below it (or with no floor, which keeps the height).
+            Call::Func { group: 1, index: 99, args } => match self.ground_position(args[0].int() as u32).zip(self.pos_of(args[0].int() as u32)) {
+                Some((g, p)) => imp(Value::Float(-(p.y - g.y).max(0.0))),
+                None => missing(Value::Float(0.0), "ground depth of an object other than self and the player"),
+            },
             // 1.94 obj_valid (0x170150): 0 is false, else FUN_0019a3f8: in the object list (FUN_001b80e8)
             // and FUN_0019a440 clear (+0x108 bits 0x80000 / 0x10000000, not traced: read clear).
             Call::Func { group: 1, index: 94, args } => {

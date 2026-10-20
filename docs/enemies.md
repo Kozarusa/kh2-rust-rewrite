@@ -691,6 +691,41 @@ that hand a hit record to the player) was not checked; the groups that mix it wi
 reader of block +0x28 and the role of host 1.162 were not traced (`bdx` shows no `ldf +0x28`; host 1.162 is unnamed in `names.rs`); the object
 with spawn byte 92 was not identified.
 
+## The enemy M_EX660 (WP-EN10c)
+
+`M_EX660` (object 304, `00objentry` row 304: ObjectType 4, `NeoStatus` 1020, flags 8, Weight 10, `SpawnLimiter` 7, no spawn objects;
+`enemy::M_EX660`, called by its model: the data gives no name) is a small winged Heartless that flies at Sora, in the 11 areas the area
+survey lists (al14, ca14, ca15, ca20, he09, lk08, ..). Its BDX script (7449 words, `cargo run -p kh2 -- bdx M_EX660`) has the modes `appear`,
+`approach_appear`, `mode_battle`, `mode_battle_boss`, `mode_revenge`, `mode_revenge_boss`, `btl_short`, `btl_long`, `btl_attack`, `btl_normal`,
+`btl_hard`, `btl_super_hard`, `idle`, `idle_time`, `footwork`, `fly_over`, `fly_target`, `atk_s_dush`, `atk_b_dush`, `comeon`, `rvg_*`, `rst_*`,
+`ref_blow`, `leave`, `freeze`, `dead` (plus `_raw` variants of some).
+
+- **Stats.** The set-up routine R1a7e (0x1a7e, called at 0x080d) takes eight arguments; the eighth, 38 (pushed at 0x07f5), goes to
+  `set_obj_param` (host 2.9 at 0x1aa5): `enmp` row 38 (`experience: enmp 38 defeated: +1 (lvpm 4 x enmp 20)`). The harness enemy has 10 HP.
+- **Death.** The `dead` mode (registered at 0x0525, routine at 0x0fbc -> R0fca) hands the object's +0x1c to host 1.92 (`drop (host 1.92) asked row 17`),
+  starts element 2 of its effect file (1.87 at 0x0fe8), releases it (0.79), fades out and hides, like the Dusk's: `Kind::death_effect` true.
+- **Host calls.** Only one was new: 1.99 ground_depth (Impl, see `docs/enemy-ai.md`; asked 175 times in 100 s by the script's flight checks at
+  0x13e5 and 0x13f7). Stub or Approx ones it reaches that other kinds already use: 2.21, 1.121, 1.171, 1.206, 1.56, 1.58, 1.309, 1.34, 1.23, 1.87, 1.92, 2.5, 1.111, 1.120.
+
+Acceptance run (WP-EN10c), al14 (the first listed area whose group loads at once; ca14, ca15 and lk08 hold the kind only in kind-2 groups whose
+header limit +0x22 is 0, so the app creates nothing there, see Gaps; test `m_ex660_is_an_enemy_kind_with_its_objentry_row`, disc): `KH2_PROGRAMS=0,86,0
+KH2_WAVE_GROUP=b_61 KH2_WAVE_AT_GROUP=1 KH2_NO_PARTY=1 KH2_AREALOG=1 KH2_BDXLOG=1 KH2_HITLOG=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1 kh2-game al14` (btl program 0x56
+loads b_61 with six `M_EX660` and five kinds the app lacks: three `M_EX520`, two `M_EX620`; Sora in the middle of the group; `KH2_KEYS` Q at 8 s, J every
+0.45 s from 70 s to 108 s, shot at 110 s). Log: `SetObjParam { a: 38 }`, `M_EX660 hit: atkp 127 damage 2 hp 8` .. `atkp 130 damage 5 hp 0`, `experience: enmp 38
+defeated: +1`, `hp 0: switching to mode dead`, `drop (host 1.92) asked row 17`, `prize: drop of row 17`; six defeats, 0 `unimplemented host call`, 0 `script error`,
+no `Missing` line in the final table. Modes seen: `appear`, `approach_appear`, `mode_battle`, `btl_short`, `btl_long`, `btl_attack`, `fly_over`, `fly_target`, `atk_s_dush`,
+`atk_b_dush`, `footwork`, `idle`, `mode_revenge`, `rvg_short`, `dead`. The kind hurts Sora: with no input from 8 s to 70 s he was knocked out once (game over, then
+the jump back to a full party, HP 20) and the six kept cycling the modes above until the hits started; none was stuck. Harness PNGs looked at (`local\ex660_*.png`): idle
+(HUD present, six `M_EX660 Idle hp 10/10` entries, orange and purple winged cannon-beaked figures hovering around Sora over the sand), a hit run at 14 s (`Hurt`,
+Sora HP 12/20 with a pained face, two of them large in front of the camera, entries at hp 8/10), and after the soak (no enemy text, Sora HP 16/20, no enemies in view).
+`idle-hud`, `combat-ground` and `tt04-dusk` of `accept.ps1` were run, see the report.
+
+Gaps: (1) Five of about 60 hits (`atkp 124`, hp 10 and a few at hp 3 to 8) did 0 damage with reaction 0 and effective 0 although the enemies had HP left and all six
+died later; which state of the script scales the damage to 0 (the damage-scale writers FUN_001a0ba0 and the flight modes) was not traced. (2) The kind-2 groups of ca14 (b_20, b_71),
+ca15 (b_21), al14 (b_93 and others) and lk08 (b_20) report `limit 0 (+0x22)` and create no enemy in the app (an app spawn limit, not this kind's script); only al14 b_61 was run.
+(3) The reaction motions `ref_blow` and the `rst_*`/`rvg_*` families were not seen except `rvg_short`; the boss variants (`mode_battle_boss`, `mode_revenge_boss`) were not
+reached. (4) The `_raw` variants were not traced. (5) Hosts 1.99's flag branch (object +0xe0) is not read. (6) The areas ca14, ca15, ca20, he09 and lk08 were not soaked.
+
 ## The Struggle (WP-7E)
 
 The Struggle rules are in `docs/struggle.md`. For the opponents: b_50, b_51 and b_52 (missions `TT04_MS00`,

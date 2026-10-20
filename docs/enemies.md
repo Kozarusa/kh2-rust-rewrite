@@ -1064,6 +1064,33 @@ no event 11 message), `event`, `revenge`. (3) The elements of host 1.22 (12 at a
 and 1.12 were not traced further than the soak (no mode stuck). (5) The ObjectTargetType of the objentry row was not looked up. (6) What hits Sora (`atk_slap`, `atk_hit`, `atk_charge`) was not tied to the log
 lines naming the kind [inferred: Sora lost HP and was knocked out during the soak].
 
+## The enemy M_EX750 (WP-EN10m)
+
+`M_EX750` (object 125, `00objentry` row 125: ObjectType 4, `NeoStatus` 1045, flags 0, Weight 100, `SpawnLimiter` 13, no spawn objects; `enemy::M_EX750`, called by its model: the data gives no
+name; in the PNGs it is a small orange four-petal flower with a teal centre, a stationary seed shooter) is a Heartless of the areas he05 and he07 (area survey and the he05 group log). Its BDX script (5899 words,
+`cargo run -p kh2 -- bdx M_EX750`) registers the modes `appear`, `mode_battle`, `mode_revenge`, `btl_short`, `btl_long`, `btl_down`, `rvg_short`, `rvg_long`, `atk_seed_shot`, `atk_needle`, `footwork`, `idle_time`,
+`route_panic`, `leave`, `dead` and more (see the dump).
+
+- **Stats.** The set-up routine R14f0 (0x14f0, called at 0x09b9) takes eight values after the object; the first pushed, 14 (pushed at 0x09a1; R14f0 stores it to local+0x20), goes to `set_obj_param`
+  (host 2.9 at 0x1517): `enmp` row 14 (Experience 100; log `experience: enmp 14 defeated: +4 (lvpm 4 x enmp 100)`). The harness enemy has 20 HP.
+- **Death.** `hp 0: switching to mode dead`, then `drop (host 1.92) asked row 123, used row 123: .. 10 prize objects` and a second drop of row 52 (4 objects, kinds [3, 3, 5, 5]) in some kills; `Kind::death_effect` is true as for the Dusk.
+- **Host calls.** One arm was appended to `enemy_host.rs`: 1.77 `has_word_144` (0x172d60, `*(*(*obj)+4)+0x144 != 0`), Stub answering 0. Its sites: 0x0561 (the damage handler after hit reaction 7, 11 or 5: with 0 the script prints `motion_hook?` and calls R057f / R059e), 0x0e72 (with 0 it enters `route_panic` near a distance test of 4000), 0x13c3 and 0x14c3 (a non-zero word selects `btl_down`). The scan of word stores
+  (`mips_scan.py --store-off 0x144`) gave 43 stores in functions of several classes; which one writes an enemy actor was not traced. Every other call the runs made was answered already; host 1.13 never left a mode waiting
+  (`queues_motions` is unchanged).
+Acceptance run (WP-EN10m), he05 group b_00 / b_01 (kind-2 groups: b_00 0x38 three, 0x39 four, 0x3a four, 0x3d two `M_EX750` beside `M_EX520` and `M_EX690`; btl program 2 b_01: four `M_EX750` and three `M_EX050`; test
+`m_ex750_is_an_enemy_kind_with_its_objentry_row`, disc). The kind-2 volumes are far from the group's player entry, so the run used a throw-away local patch that put Sora at the first volume of group 0x38 (game (-2613.88,
+-125, 3316.37), not committed; `KH2_PROGRAMS=0,1,0 KH2_WAVE_GROUP=b_00 KH2_NO_PARTY=1 KH2_AREALOG=1 KH2_BDXLOG=1 KH2_HITLOG=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1 KH2_SCREENSHOT=<png> KH2_SHOT_AT=<s> KH2_KEYS=..
+kh2-game he05` through `local/capped.ps1 -CapMB 2500`). Three `M_EX750` were created at the record's points (about 4 m from Sora). (1) Soak, 172 s of wall time (tick 6060, about 101 s of enemy time) with J every
+second from 14 s: 0 `unimplemented host call` after the 1.77 arm, 0 `script error`; modes run: `appear`, `mode_battle`, `btl_short` / `btl_long`, `atk_seed_shot`, `idle_time`, `footwork`, `mode_revenge` -> `rvg_short` ->
+`atk_needle`, `dead`; the longest mode runs: `footwork` 197 ticks, `atk_seed_shot` 108, `idle_time` about 107; no mode stuck. (2) Hitting run, Q at 11 s, J every 0.45 s from 12 s and S held 0.5 s every 1.2 s from 13 s
+(130 s): 24 hits (`M_EX750 hit: atkp 126 damage 3 hp 17 ..` with `FlinchPush` and `Blow` reactions), `hp 0: switching to mode dead` for `#2` (t987), `#3` (t1739) and `#1` (t3121), each followed by
+`experience: enmp 14 defeated: +4` and the drops. PNGs looked at (`local\ex750_*.png`, not committed): idle at 10 s (`ex750_idle.png`: Sora in a green rocky valley with two orange four-petal flowers with teal centres near
+him; debug text `M_EX750 Idle hp 20/20` three times, d 3.8 to 4.5), a hit at 16 s (`ex750_hit.png`: golden hit sparks and a damage number "1" at Sora, lock-on reticle, green prize orbs; entries `Hurt hp 5/20`,
+`Idle hp 20/20` twice), a death at 17.6 s (`ex750_d1.png`: only two enemies listed, a green prize orb at the right edge, Sora with the keyblade, sparks). `idle-hud`, `combat-ground` and `tt04-dusk` were run
+by hand (see the report).
+
+Gaps: (1) Only he05 was run; he07 was not. The kind-2 spawn volumes of he05 are far from the group's player entry (a gap of the harness, not of the kind): a harness has to walk Sora to a volume (no committed aid; the acceptance run used a throw-away local patch). (2) Not seen: `btl_down`, `route_panic`, `leave`, `rvg_long`,
+the boss modes and the paths where host 1.77 would answer non-zero (the writer of +0x144 is untraced: searched `mips_scan.py --store-off 0x144`, 43 stores, none read as the enemy actor's). (3) The seed shot's own effects were not looked up.
 ## The enemy M_EX510 (WP-EN10k)
 `M_EX510` (object 3, `00objentry` row 3: ObjectType 4, `NeoStatus` 1005, flags 0, ObjectTargetType 1, Weight 100, `SpawnLimiter` 10, no spawn objects; `enemy::M_EX510`, called by its model: the data gives no
 name; in the PNGs it is a dark thin-limbed Heartless) is a Heartless of the areas ca01, ca10, ca13, ca14, ca18, ca19 (area survey, 9 areas). Its BDX script (4605 words, `cargo run -p kh2 -- bdx M_EX510`)

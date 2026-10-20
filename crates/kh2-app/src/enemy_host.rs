@@ -483,6 +483,9 @@ impl BevyHost<'_> {
             },
             // 0.43 wrap_angle (FUN_0016de78 -> FUN_0017bbc0).
             Call::Func { group: 0, index: 43, args } => imp(Value::Float(game_wrap_angle(args.first().map_or(0.0, |a| a.float())))),
+            // 0.52 effect_fade (0x16dc48): fade the effect of a handle out over `frames`, destroying it at the end when the last argument is non-zero. The
+            // handles of 1.22 name no drawn effect in the app (see there), so there is nothing to fade.
+            Call::Func { group: 0, index: 52, .. } => stub(Value::None, "the effect of 1.22 is not drawn, so nothing fades"),
             _ => missing(Value::Int(0), "function not mapped"),
         }
     }
@@ -1014,6 +1017,13 @@ impl BevyHost<'_> {
             // entry that FUN_001a7da8 finds for the id (251 in M_EX950 R230c) into its +4, and 1.76 clears that word. Its reader
             // was not traced, so nothing in the app consumes it.
             Call::Func { group: 1, index: 75 | 76, .. } | Call::Unknown { group: 1, index: 75 | 76, .. } => stub(Value::None, "motion controller word +4 (set from a lookup, cleared by 1.76): reader not traced"),
+            // 1.22 spawn_effect_at (0x1717c0 -> FUN_0016a5b8): element `id` of the object's effect file started with no owner and moved to the vector
+            // (FUN_001d9d00); the answer is the effect's handle. The app has no placed, ownerless effect for an enemy (`Obj::effects` start on the
+            // owner), so no effect is drawn and the handle only stands for the effect (M_EX730 calls it at 0x00e9 with element 12 at a bone and at 0x0c8c with element 9; R0d4f fades a held handle with 0.52 at 0x0d63).
+            Call::Func { group: 1, index: 22, .. } => {
+                self.obj.next_effect += 1;
+                stub(Value::Handle(EFFECT + self.obj.next_effect), "the element placed at the script's vector is not drawn: the app only starts effects on their owner")
+            }
             _ => missing(Value::Int(0), "function not mapped"),
         }
     }

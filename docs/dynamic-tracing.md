@@ -118,3 +118,28 @@ M_EX900 itself stays out of `KINDS`: the gate was the missing sender, but a 75 s
   event handler `FUN_002ccb70` and `FUN_002cdf08` never ran (only the per-tick contact test `FUN_002cc9d0` did, 30 stops). The contact needs the ship to move
   into a symbol; without key injection the savestate stays still. The words at `+0xb70` in the loaded scene are `0x30000004, ptr, 0x1000101, tag`, repeating every 16 bytes:
   a list of 16-byte records, not a camera record. Needs a play session (or key injection) on the map.
+
+## 5. Round 2 (WP-DYN2): the three new savestates, read offline
+
+No emulator was run: the only PCSX2 on the machine was the user's own session (live game, PINE answered with the running game at another place), and RULES A10
+and the shared data folder rule out starting the patched build next to it or touching the user's process. What was done instead: the savestates are zips whose
+`eeMemory.bin` is the main RAM (same addresses as the decompilation), so the three states were read as memory images (Method: no breakpoints, no watchpoints,
+so nothing here says "who writes"). Each result below is one read, not reproduced in a second run.
+
+- **`KH2_World_Map`** (looked at: the screenshot is black): world byte 0x0f, camera type `0x35cd38` 4, visibility word `0x35cd10` 3. It is a state taken during the map's load:
+  the prop list head `0x520a38` is 0, no object has the cursor's vtable 0x36fb00 (nor the player class's 0x35c9a8 or the marker's 0x36f920) anywhere in RAM, the program record
+  0x33e6e0 (id 0x46) is still filled, and the map's files are named in memory (`map/us/wm00.map`, the `WM_*` models, `ovl_gumibattle.x` and `ovl_gumimenu.x` in the name table).
+  So the cursor does not exist yet in this state: the +0xb70 record cannot be read from it, and a watch must start from this state and run on (about 10 s of load, as in
+  round 1, then the cursor's constructor). The previous-place record 0x33e848 reads world 5, area 3, entrance 0x63 (where the user came from).
+- **Camera object `0x355840`** in all three states: mode `0x355880` = 0, follow target `0x355884` = 0, wanted position (460.0, -202.1, -959.6) and look-at (285.3, -170.0, -660.5)
+  (`+0x60..+0x6c` and `+0x80..`, the same twice: wanted and smoothed). Round 1 on the map loaded from the battle read (0, -251.2, 605) and (0, -170, 185). The values differ per
+  run and are the same in the map state and both flight states: they are leftovers of the last field scene before the map, never rewritten by the map or the flight.
+  This supports round 1 (the map's view does not come from the camera object) with a second observation; the view source is still not found. Next step for it: the VU1 data
+  memory holds the transform used for drawing (`vu1Memory.bin` in the state) and a write watch on it from a running map would name the function that sets it.
+- **Cursor contact record +0xb70**: not reachable (see above). Round 1's list-of-16-byte-records reading of the words at 0x1af38b0+0xb70 stands; in this state the address holds
+  `0x30000004` at its very start, i.e. that heap area is the same list pattern with no cursor object on it, which makes the round-1 reading "a list of 16-byte records, not a camera
+  record" more likely and the record's +0xb70 name for it doubtful [inferred]. The contact event path (`FUN_002ccb70`, `FUN_002cdf08`) stays unproven in a run.
+- **Gummi flight**: docs/gummi.md (overlay at 0x1f18000, loader `FUN_00103e20`, program records, previous-place bytes).
+- **+0x570 link and M_EX950**: not reachable: all three states have battle flag 0x1c8a7d8 = 0 and no enemy actor (a map and a flight); the M_EX names in RAM are only the executable's name
+  table. They need the Dancer's force dance and the M_EX950 fight, i.e. a savestate in those fights.
+- Needs a run (patched emulator with the three states, one at a time): the map camera/view writer, the cursor contact record and the program switch caller of 0x103e20.

@@ -80,6 +80,7 @@ pub static HOST_FUNCS: &[HostFn] = &[
     f(0, 57, "bits_33fe20_set", "i", '-', 0x16df30, "set bit `n` of the bit array at 0x33fe20 (FUN_001a7750)"),
     f(0, 59, "bits_33fe20_test", "i", 'b', 0x16df60, "test bit `n` of the bit array at 0x33fe20 (FUN_001a77b8)"),
     f(0, 60, "nop_60", "p", '-', 0x16df90, "empty function"),
+    f(0, 68, "vec_rotate_x", "vf", 'v', 0x16cf78, "rotate around the x axis by an angle in radians (FUN_0017c398, the matrix of FUN_0011b490 -> FUN_002fb580), result in a static buffer"),
     f(0, 70, "progress_flag_102b", "", 'b', 0x16d5e8, "progress flag 0x102b (FUN_00180330)"),
     f(0, 78, "vec_lerp", "vvf", 'v', 0x16d180, "a * (1 - t) + b * t on all four lanes, result in a static buffer"),
     f(0, 79, "release_effect", "p", '-', 0x16de50, "hand an effect handle back to the game (queued for deletion)"),

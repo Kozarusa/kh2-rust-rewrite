@@ -2638,6 +2638,8 @@ pub mod world {
     /// The queue of world flags just set (`FUN_001b68f8` appends); its count byte is the last byte, `QUEUE_COUNT`.
     pub const QUEUE: u32 = 0x0034_18c4;
     pub const QUEUE_COUNT: u32 = 0x0034_19c3;
+    /// Route `r`'s state byte is `ROUTE_STATE + r` (`FUN_001c0950`); list ops 8..0xb write 0..3 there (`FUN_001b6d30`).
+    pub const ROUTE_STATE: u32 = 0x0034_19c3;
     /// Episode bits: the set added by flag-list op 0xc (`FUN_001c1410`, both arrays) and removed by op 0xd (`FUN_001c1488`, second array only).
     pub const EPISODES_A: u32 = 0x0034_19e4;
     pub const EPISODES_B: u32 = 0x0034_19f4;
@@ -2928,7 +2930,7 @@ impl Story {
 
     /// `FUN_001b6a48(record, call_hook)` with `FUN_001b6a90` on each command: runs the action list of the `wldf` record with
     /// index `key`. `call_hook` is `DAT_01d5d794` (the argument of `FUN_001b6a48`): with it op 0xf also calls `FUN_001c6d10`,
-    /// not ported. Ops 8..0xb (`FUN_001b6d30`, bytes of a table `FUN_001c0950` finds) and the list removal of op 0xd
+    /// not ported. Ops 8..0xb (`FUN_001b6d30`) write the route state bytes at `world::ROUTE_STATE + id` (`FUN_001c0950`); the list removal of op 0xd
     /// (`FUN_003335d0`) are recorded in `world_unported`.
     pub fn world_run_list(&mut self, key: u8, call_hook: bool) {
         let table = self.world_table.clone();
@@ -2959,6 +2961,11 @@ impl Story {
                         self.world_set(a, self.world_byte(a) | bit);
                     }
                 }
+                8..=0xb => {
+                    for &id in &ids {
+                        self.world_set(world::ROUTE_STATE + id, act.op as u8 - 8);
+                    }
+                }
                 0xc => {
                     for &id in &ids {
                         for base in [world::EPISODES_A, world::EPISODES_B] {
@@ -2983,6 +2990,20 @@ impl Story {
                 op => self.world_unported.push((key, op)),
             }
         }
+    }
+
+    /// The consuming half of `FUN_002c6bf8`: `FUN_001b6e20` copies the queue out and zeroes its count byte, then each queued world
+    /// flag's list runs with the hook argument 1 (`FUN_001b6a48(record, 1)`). The later menu-side work of that function (sorting the
+    /// flags, `FUN_002c6db0`) is not ported. Returns the flags consumed, oldest first.
+    pub fn world_consume_queue(&mut self) -> Vec<u8> {
+        let queue = self.world_queue();
+        if !queue.is_empty() {
+            self.world_set(world::QUEUE_COUNT, 0);
+        }
+        for &key in &queue {
+            self.world_run_list(key, true);
+        }
+        queue
     }
 
     fn lock_entry(&mut self, i: usize) -> &mut [u16; 2] {
@@ -4331,7 +4352,7 @@ mod tests {
     #[test]
     fn world_action_lists_write_the_records_and_the_episode_bits() {
         // The list starts after the one record (8 + 16 = 24): op 3 on worlds 2 and 3 (state 2), op 7 on world 2 (state 3),
-        // op 5 on world 3, op 0xc episodes 33 and 3, op 0xd episode 3, op 0xf byte 9, op 8 (recorded), end.
+        // op 5 on world 3, op 0xc episodes 33 and 3, op 0xd episode 3, op 0xf byte 9, op 0xa on route 4, op 9 on routes 1 and 2, op 0xe (recorded), end.
         let lists: Vec<u16> = vec![
             3, 2, 2, 0, 3, 0, //
             7, 1, 2, 0, //
@@ -4339,7 +4360,9 @@ mod tests {
             0xc, 2, 33, 0, 3, 0, //
             0xd, 1, 3, 0, //
             0xf, 1, 9, 0, //
-            8, 1, 4, 0, //
+            0xa, 1, 4, 0, //
+            9, 2, 1, 0, 2, 0, //
+            0xe, 1, 0, 0, //
             0, 0,
         ];
         let table = wldf_entry(&[(7, 0, 0x100, 8 + 16)], &lists);
@@ -4350,7 +4373,8 @@ mod tests {
         assert!(s.episode_seen(33) && s.episode_seen(3));
         assert!(s.episode_active(33) && !s.episode_active(3), "op 0xd removes the second array's bit only");
         assert_eq!(s.world_byte(world::MAP_BYTE), 9);
-        assert_eq!(s.world_unported, vec![(7, 0xd), (7, 8)]);
+        assert_eq!([1, 2, 3, 4].map(|r| s.world_byte(world::ROUTE_STATE + r)), [1, 1, 0, 2], "ops 8..0xb write state op - 8 at ROUTE_STATE + id");
+        assert_eq!(s.world_unported, vec![(7, 0xd), (7, 0xe)]);
         // Counting up: a state above 2 grows by one on op 7.
         let t = wldf_entry(&[(1, 0, 0x100, 8 + 16)], &[7, 1, 2, 0, 7, 1, 2, 0, 0, 0]);
         let mut u = Story { world_table: Arc::new(kh2_ard::worldmap::Wldf::parse(&t)), ..Story::default() };
@@ -4369,6 +4393,49 @@ mod tests {
         r.apply_json(&p.story_json()).unwrap();
         assert_eq!(r.story().world_record(3), [2, 0, 0, 2]);
         assert!(r.apply_json(r#"{"world_state": "00"}"#).is_err(), "a short region is rejected");
+    }
+
+    /// The map consumes the queue (`FUN_001b6e20` then `FUN_001b6a48(record, 1)` per flag): the list of a queued flag writes its route state.
+    #[test]
+    fn consuming_the_world_queue_runs_the_lists_and_clears_the_count() {
+        let lists: Vec<u16> = vec![0xb, 2, 3, 0, 5, 0, 0, 0];
+        let table = wldf_entry(&[(7, 0, 0x100, 8 + 16)], &lists);
+        let mut s = Story { world_table: Arc::new(kh2_ard::worldmap::Wldf::parse(&table)), ..Story::default() };
+        s.world_flag_set(7);
+        assert_eq!(s.world_queue(), vec![7]);
+        assert_eq!(s.world_consume_queue(), vec![7]);
+        assert_eq!(s.world_byte(world::QUEUE_COUNT), 0, "the count byte is zeroed");
+        assert_eq!(s.world_byte(world::ROUTE_STATE + 3), 3);
+        assert_eq!(s.world_byte(world::ROUTE_STATE + 5), 3);
+        assert!(s.world_consume_queue().is_empty());
+    }
+
+    /// The disc's own lists: which world flags run ops 8..0xb, and that setting such a flag then consuming the queue leaves
+    /// that route's state nonzero.
+    #[test]
+    fn the_discs_route_ops_set_route_states() {
+        let Some(mut tb) = tables() else { return };
+        let file = tb.archive.read("00progress.bin").expect("00progress.bin");
+        let bar = kh2_bar::parse(&file).expect("BAR");
+        let wldf = bar.iter().find(|e| e.tag == kh2_ard::worldmap::WLDF).expect("wldf").data.to_vec();
+        let table = Arc::new(kh2_ard::worldmap::Wldf::parse(&wldf));
+        let mut seen = Vec::new();
+        for r in table.records.iter() {
+            for a in table.actions(r.list) {
+                if (8..=0xb).contains(&a.op) {
+                    seen.push((r.index, a.op, a.ids().collect::<Vec<_>>()));
+                }
+            }
+        }
+        eprintln!("route ops on the disc (flag, op, ids): {seen:?}");
+        assert!(!seen.is_empty(), "the disc has lists with ops 8..0xb");
+        let (flag, op, ids) = seen.iter().find(|(_, op, _)| *op != 8).unwrap_or(&seen[0]).clone();
+        let mut s = Story { world_table: table, ..Story::default() };
+        s.world_flag_set(flag);
+        s.world_consume_queue();
+        for id in ids {
+            assert_eq!(s.world_byte(world::ROUTE_STATE + u32::from(id)), op as u8 - 8, "flag {flag} op {op:#x} route {id}");
+        }
     }
 
     /// The `story_flags` / `story_clear` keys of the state file, and `story_json` read back.

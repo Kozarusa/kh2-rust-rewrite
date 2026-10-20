@@ -259,8 +259,9 @@ assume "no story flag set").
 (`0x3418c4`, count byte `0x3419c3`) and the two episode bit arrays (`0x3419e4`, `0x3419f4`). Setting a story flag now
 runs the game's story op 0xd (record bytes 1 and 2) and `FUN_001b6da0`: every `wldf` record (`kh2_ard::worldmap`) that
 follows the flag sets its world flag (`FUN_001b68f8`) and queues it. The `wldf` action lists (`FUN_001b6a48` /
-`FUN_001b6a90`, run when the map consumes the queue) are `Story::world_run_list`; ops 8..0xb, the episode list removal
-of 0xd and the map hook of 0xf are recorded in `Story::world_unported`. The region is in a slot file and in
+`FUN_001b6a90`, run when the map consumes the queue) are `Story::world_run_list`; ops 8..0xb write the route state byte `0x3419c3 + id`
+(`FUN_001b6d30`, `FUN_001c0950`); `Story::world_consume_queue` (`FUN_001b6e20` plus the list runs of `FUN_002c6bf8`) is called
+when the world map builds its props. The episode list removal of 0xd and the map hook of 0xf are recorded in `Story::world_unported`. The region is in a slot file and in
 `story_json` as the hex string `world_state` (an older slot loads it clear); the oracle
 `story_flag_setter_matches_the_game` compares it for every flag, with and without story flag `0x102b`. Details and
 gaps: docs/worldmap.md section 10 (W2).

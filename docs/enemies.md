@@ -807,6 +807,42 @@ none checked). The app reads clear: the object is taken as pulled to the ground 
 kind-2 groups of bb00, bb04, bb06, bb09 and bb11 were not run; only al14 b_20. (3) `rvg_*`, `rst_*`, `atk_spin_*`, `move_counter`, `rc_batbullet`, `leave` and the `btl_normal`/`btl_hard`/`btl_super_hard`
 modes were not seen in the soak. (4) `M_EX620` (five of the group) is not an app kind. (5) The objentry flag 124 is true for `M_EX520` (log line `objentry flag 124 = true`), as for others; its meaning is the existing host 1.124's.
 
+## The enemy M_EX210 (WP-EN10f)
+
+`M_EX210` (object 74, `00objentry` row 74: ObjectType 4, `NeoStatus` 1043, `SpawnLimiter` 13, no spawn objects; `enemy::M_EX210`, called by its model: the data gives
+no name) is a Heartless of the 11 areas the area survey lists (ca02, ca03, ca09, ca12, ca13, ca19 ..): a blue figure with purple blades on its arms that
+chases Sora and kicks and uppercuts. Its BDX script (7008 words, `cargo run -p kh2 -- bdx M_EX210`) registers the modes `appear`, `mode_battle`, `mode_revenge`,
+`btl_short`, `btl_long`, `btl_attack`, `btl_normal`, `btl_hard`, `btl_super_hard`, `move_idle`, `move_target`, `atk_kick`, `atk_strong_kick`, `atk_upper_cut`,
+`atk_charge_punch`, `footwork`, `rvg_*`, `rst_*`, `idle*`, `freeze`, `leave`, `rc_meteor_giro`, `test_rc_meteor`, `btl_mission_gunpowder`, `event`.
+
+- **Stats.** The set-up routine R18d6 (0x18d6, called at 0x08fa) takes eight values after the object; the first pushed, 3 (pushed at 0x08e2; R18d6 stores it to
+  local+0x20), goes to `set_obj_param` (host 2.9 at 0x18fd): `enmp` row 3 (`experience: enmp 3 defeated: +4 (lvpm 4 x enmp 100)`). The harness enemy has 20 HP.
+- **Death.** `hp 0: switching to mode dead`, then `drop (host 1.92) asked row 63` and `prize: drop of row 63`: 4 prize objects (munny seen picked up); like the Dusk's,
+  so `Kind::death_effect` is true.
+- **Host calls.** Two were new: 1.162 (Stub) and 6.24 obj_vec_8a0 (Approx), see `docs/enemy-ai.md`. 6.24 is read by the loop at 0x105f that ends a chase; before it
+  existed the call failed with `BadAddress(0) at 0x1064` every pass and the chase never ended. The rest were answered already (2.9, 1.23, 1.58, 2.21, 1.114, 1.110, 1.67,
+  1.111, 1.120, 1.147, 1.15, 1.14, 1.4, 1.3, 1.34, 1.150, 1.201, 1.171, 1.206, 1.124, 1.12, 1.11, 1.55, 1.56, 1.301, 1.64, 1.20).
+
+Acceptance run (WP-EN10f), ca03 group b_40 (btl program 0x38: four `M_EX210` and four `M_EX650`; kind-2 groups create them near Sora; test
+`m_ex210_is_an_enemy_kind_with_its_objentry_row`, disc): `KH2_PROGRAMS=0,38,0 KH2_WAVE_GROUP=b_40 KH2_NO_PARTY=1 KH2_AREALOG=1 KH2_BDXLOG=1 KH2_HITLOG=1 KH2_NO_SOUND=1
+KH2_NO_MUSIC=1 kh2-game ca03` through `local/capped.ps1 -CapMB 2500`. (1) Unattended soak, 95 s (`KH2_SCREENSHOT` at `KH2_SHOT_AT=95`), no keys: 0 `unimplemented host call`, 0
+`script error`; three `M_EX210` ran `appear`, `mode_battle`, `btl_attack`, `btl_long`, `move_idle`, `move_target`, `atk_upper_cut` with ticks still advancing at t3031 (no script
+stuck), and hit Sora (`sora hit: atkp 326 ... Blow` every 4 s). (2) Hitting runs, `KH2_KEYS` Q at 8 s then J every 0.45 s from 12 s: `M_EX210 hit: atkp 126 damage 3 hp 17 ..`,
+`FlinchPush` and `Blow` reactions, `hp 0: switching to mode dead` for `M_EX210#3` at t1093 (17.7 s), 0 `unimplemented host call`, 0 `script error`; modes seen in the runs:
+`appear`, `mode_battle`, `mode_revenge`, `rvg_short`, `rvg_long`, `btl_short`, `btl_long`, `btl_attack`, `move_idle`, `move_target`, `atk_kick`, `atk_strong_kick`, `atk_upper_cut`, `dead`. PNGs
+looked at (`local\ex210_*.png`, not committed): idle at 7 s (`ex210_idle.png`: Sora on the Pirate ship deck, three `M_EX210 Idle hp 20/20` and four `M_EX650 Idle hp 14/14` entries, a purple-winged blue
+figure in the foreground and two blue ones on the upper deck), a hit at 24 s (`ex210_hit.png`: Sora HP 9/20 behind a blue Heartless with a red heart emblem, entries at
+hp 20/20, 14/20, 8/20), a death at 18.4 s (`ex210_death.png`: heart-shaped orbs and a green orb in the air, damage numbers "2", "5" and "4p", an entry `Blown hp 0/20`) and at 100 s
+(`ex210_long.png`: no dead entry left, Sora HP 20/20, three Heartless at the far end of the deck). `idle-hud` (`base_idle.png`), `combat-ground` (`base_combat.png`: Sora
+mid-swing, a Shadow hurt) and `tt04-dusk` (`base_dusk.png`: Sora with Donald and Goofy in the Sandlot, a hurt Dusk entry) were run by hand through `capped.ps1` (accept.ps1 stops `kh2-game`
+processes, rule A10): HUD, Shadows and the Dusk fight look as before.
+
+Gaps: (1) Host 1.162: what reads the table at 0x1c89b90 was not searched (the call changes nothing in the app as 1.143 finds no object). (2) Host 6.24: the offset +0x5a0 that
+FUN_00182690 subtracts (not searched; taken as zero), and the other writers of +0x8a0 (`mips_scan.py --store-off 0x8a0` finds only stack stores and the clears in FUN_00168d30; FUN_00182690 (decomp) writes it through a computed base). (3) Only the
+three `M_EX210` of the first wave and one death in the long run were followed; ca02, ca09, ca12, ca13 and ca19 were not run (ca02's b_01 mixes six `M_EX210` with Soldiers). (4) `atk_charge_punch`,
+`footwork`, `rc_meteor_giro` (the reaction command meteor giro: event 11 messages 308 and 321 of `event_0b` at 0x001e; the app sends none), `btl_normal`/`btl_hard`/`btl_super_hard`,
+`rst_*` and `leave` were not seen. (5) Every run logs `game over: area ca03: no snapshot` at the area start, before any enemy hit; its cause was not looked into [inferred: not from the kind].
+
 ## The Struggle (WP-7E)
 
 The Struggle rules are in `docs/struggle.md`. For the opponents: b_50, b_51 and b_52 (missions `TT04_MS00`,

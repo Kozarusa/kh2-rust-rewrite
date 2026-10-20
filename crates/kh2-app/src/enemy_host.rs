@@ -939,6 +939,13 @@ impl BevyHost<'_> {
             Call::Func { group: 1, index: 161, args } if args[0].int() as u32 == PLAYER => {
                 approx(Value::Bool(false), "the app has no object links (1.18 is not carried out): the player is never linked")
             }
+            // 1.162 (0x173798 -> FUN_0018ffb0 -> FUN_001cb530(table 0x1c89b90, arg1, word +4 of arg0)): enters the object that 1.143 stored at
+            // +4 of the block into the 8-slot table at 0x1c89b90 (halfword tag arg1), but only when FUN_0019a3f8 finds it in the object list.
+            // 1.143 answers no object in the app, so the word is 0 and the call changes nothing. M_EX210 makes it once from its
+            // shared-block set-up (R1a25 at 0x1a69). Who reads the table was not traced.
+            Call::Unknown { group: 1, index: 162, .. } | Call::Func { group: 1, index: 162, .. } => {
+                stub(Value::None, "enters the object bound by 1.143 into the table at 0x1c89b90; 1.143 finds none, so nothing is entered")
+            }
             // 1.18 link_start (0x170dd8 -> FUN_001beb90): the first object (the player) gets the second as
             // its parent (+0x570), the two halfwords (+0x574: 0x4002, +0x576: 1), its facing (+0x550) cleared
             // and 8 or-ed into +0x7f8 (when bit 1 of the flags is clear), mover 3; FUN_00169ee8 breaks the link when bit 0 of
@@ -1098,6 +1105,15 @@ impl BevyHost<'_> {
                 self.obj.collect_all = true;
                 imp(Value::None)
             }
+            // 6.24 (0x2ee960, `kh2_bdx::names` obj_vec_8a0): the 16 bytes at +0x8a0 of the object's +4 record, copied to the static buffer
+            // at 0x1e25680. FUN_00182690 writes them each tick as (position +0x5c0 - previous position +0x540 - the offset +0x5a0) times
+            // DAT_00356f48: the displacement the object really made, the same quantity as +0x860 (1.62) up to the +0x5a0 offset (zero unless
+            // the object rides something; its writers were not traced). M_EX210's wait loop (0x105f) compares its length with half of 1.64's.
+            Call::Func { group: 6, index: 24, args } if args.first().map(|a| a.int() as u32) == Some(self.obj.handle) => {
+                let v = self.obj.moved;
+                approx(Value::Vec([v.x, -v.y, -v.z, 0.0]), "the displacement made this tick as for 1.62; the +0x5a0 offset FUN_00182690 subtracts is taken as zero [inferred]")
+            }
+            Call::Func { group: 6, index: 24, .. } => missing(Value::Vec([0.0; 4]), "obj_vec_8a0 of an object other than self"),
             _ => missing(Value::Int(0), "function not mapped"),
         }
     }

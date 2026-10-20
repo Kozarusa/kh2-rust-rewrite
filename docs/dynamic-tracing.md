@@ -143,3 +143,4 @@ so nothing here says "who writes"). Each result below is one read, not reproduce
 - **+0x570 link and M_EX950**: not reachable: all three states have battle flag 0x1c8a7d8 = 0 and no enemy actor (a map and a flight); the M_EX names in RAM are only the executable's name
   table. They need the Dancer's force dance and the M_EX950 fight, i.e. a savestate in those fights.
 - Needs a run (patched emulator with the three states, one at a time): the map camera/view writer, the cursor contact record and the program switch caller of 0x103e20.
+- Input: `local/tools/dbg.py` and the patched build have no pad or input command (searched the script and the executable's strings). The user's PCSX2 controls are gamepad-bound, so keyboard injection is out. For a map or flight run, input would have to be written into the game's pad buffer in EE memory or the game's pad read called by hand (not tried: no emulator was run); the user's bindings and settings stay untouched.

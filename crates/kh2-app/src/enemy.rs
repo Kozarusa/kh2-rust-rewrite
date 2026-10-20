@@ -2357,12 +2357,6 @@ mod tests {
     fn m_ex060_is_an_enemy_kind_with_its_objentry_row() {
         assert!(KINDS.iter().any(|k| std::ptr::eq(*k, &M_EX060)));
         assert_eq!((M_EX060.enmp, M_EX060.model, M_EX060.status, M_EX060.death_effect), (53, "M_EX060", true, true));
-    /// `M_EX620` (object 11) is an enemy kind of the app: its `00objentry` row is type 4 with `NeoStatus` 1016, `SpawnLimiter` 20 and no spawn objects, its script's `set_obj_param` row is `enmp` 62, and al01's
-    /// `btl` program 2 loads b_01 with six of it beside two Soldiers (its `M_AL020_ICEE` are skipped: not in the app). Needs `KH2_ISO` for the table and group part.
-    #[test]
-    fn m_ex620_is_an_enemy_kind_with_its_objentry_row() {
-        assert!(KINDS.iter().any(|k| std::ptr::eq(*k, &M_EX620)));
-        assert_eq!((M_EX620.enmp, M_EX620.model, M_EX620.status, M_EX620.death_effect), (62, "M_EX620", true, true));
         let Ok(iso) = crate::assets::iso_path() else { return };
         if !iso.exists() {
             return;
@@ -2379,6 +2373,23 @@ mod tests {
         let run = kh2_ard::run::run_area(&ard, [0, 0xa, 0], 0);
         let b20 = btl_groups(&groups, &run).into_iter().find(|g| g.name == "b_20").expect("program 0xa loads b_20");
         assert!(b20.members.iter().any(|m| m.kind.name == M_EX060.name));
+    }
+
+    /// `M_EX620` (object 11) is an enemy kind of the app: its `00objentry` row is type 4 with `NeoStatus` 1016, `SpawnLimiter` 20 and no spawn objects, its script's `set_obj_param` row is `enmp` 62, and al01's
+    /// `btl` program 2 loads b_01 with six of it beside two Soldiers (its `M_AL020_ICEE` are skipped: not in the app). Needs `KH2_ISO` for the table and group part.
+    #[test]
+    fn m_ex620_is_an_enemy_kind_with_its_objentry_row() {
+        assert!(KINDS.iter().any(|k| std::ptr::eq(*k, &M_EX620)));
+        assert_eq!((M_EX620.enmp, M_EX620.model, M_EX620.status, M_EX620.death_effect), (62, "M_EX620", true, true));
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let rows = {
+            let mut a = disc.0.lock().expect("archive lock");
+            kh2_tables::load::<kh2_tables::tables::Objentry>(&mut a, &kh2_tables::tables::OBJENTRY).expect("objentry").rows
+        };
         let row = rows.iter().find(|r| r.model_name == "M_EX620").expect("objentry row of M_EX620");
         assert_eq!((row.object_id, row.object_type, row.neo_status, row.spawn_object1, row.spawn_limiter), (11, OBJECT_ENEMY, 1016, 0, 20));
         let groups = area_groups(&disc, "al01");

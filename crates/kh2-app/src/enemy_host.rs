@@ -486,6 +486,9 @@ impl BevyHost<'_> {
             // 0.52 effect_fade (0x16dc48): fade the effect of a handle out over `frames`, destroying it at the end when the last argument is non-zero. The
             // handles of 1.22 name no drawn effect in the app (see there), so there is nothing to fade.
             Call::Func { group: 0, index: 52, .. } => stub(Value::None, "the effect of 1.22 is not drawn, so nothing fades"),
+            // 0.44 effect_stop (0x16dba0): stop the effect instance of a handle (FUN_001e0298). The handles of 1.22 name no drawn effect and a started effect
+            // (1.87) lives its own length in the app, so nothing is stopped (M_EX060 calls it at the end of its charge mode).
+            Call::Func { group: 0, index: 44, .. } => stub(Value::None, "the app's effects are not stopped from a script handle"),
             _ => missing(Value::Int(0), "function not mapped"),
         }
     }
@@ -1027,6 +1030,14 @@ impl BevyHost<'_> {
             // 1.77 has_word_144 (0x172d60): the word at the actor's +0x144 is non-zero. Its writer (several functions store a word there, none traced as the
             // one for an enemy actor) is unknown, so the word is taken as zero, the state before anything wrote it (M_EX750 tests it at 0x0561, 0x0e72, 0x13c3, 0x14c3).
             Call::Func { group: 1, index: 77, .. } => stub(Value::Int(0), "the actor's word +0x144 has no traced writer for an enemy: taken as zero [inferred]"),
+            // 1.83 bone_to_world (0x172e68 -> FUN_0016aa18): the vector through the matrix of bone `index` of the object. The app keeps no bone
+            // matrices for an enemy, so the answer is the object's position plus the vector, without a turn [inferred] (M_EX060 calls it at 0x100f
+            // inside the callback at 0x0fae that its R0fa0 hands to R05ee).
+            Call::Func { group: 1, index: 83, args } => {
+                let at = self.pos_of(args.first().map_or(0, |a| a.int() as u32)).map_or([0.0; 4], to_game);
+                let v = args.iter().find_map(|a| if let kh2_bdx::Arg::Vec(v) = a { Some(*v) } else { None }).unwrap_or([0.0; 4]);
+                approx(Value::Vec([at[0] + v[0], at[1] + v[1], at[2] + v[2], 1.0]), "the object's bone matrices are not kept: its position plus the vector, no turn [inferred]")
+            }
             _ => missing(Value::Int(0), "function not mapped"),
         }
     }
@@ -1090,6 +1101,15 @@ impl BevyHost<'_> {
                     None => missing(Value::Int(0), "attack row of a hit that is not one of this object's hit records"),
                 }
             }
+            // 2.10 attack_create (0x18e2f0 -> FUN_001a2ba0): a free attack object owned by this object, built from the attack row; the answer is its handle.
+            // 2.11 attack_set_size, 2.62 attack_set_shape2, 2.12 attack_move_to and 2.13 attack_arm (0x18e348 / 0x18e680 / 0x18e3a0 / 0x18e3c0) set its radii,
+            // place it and arm it. The app has no free attack objects (its enemy hits are the object's own hit records), so the handle only stands for the
+            // object and the four setters change nothing: an attack made this way (M_EX060's) never hits Sora [gap].
+            Call::Func { group: 2, index: 10, .. } => {
+                self.obj.next_effect += 1;
+                stub(Value::Handle(EFFECT + self.obj.next_effect), "free attack objects are not simulated: the handle only stands for the object, it never hits")
+            }
+            Call::Func { group: 2, index: 11 | 12 | 13 | 62, .. } => stub(Value::None, "free attack objects are not simulated (see 2.10)"),
             _ => missing(Value::Int(0), "function not mapped"),
         }
     }

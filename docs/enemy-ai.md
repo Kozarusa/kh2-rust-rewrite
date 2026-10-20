@@ -85,6 +85,9 @@ with a default, nothing in the app reads it; Missing = fails visibly. Addresses 
 | 0.79 release_effect | Stub | effects run to their end |
 | 1.22 spawn_effect_at | Stub | returns a handle; the element placed at the script's vector (FUN_0016a5b8, no owner) is not drawn: the app only starts effects on their owner (WP-EN10i, M_EX730) |
 | 1.77 has_word_144 | Stub | answers 0: the actor word +0x144 (FUN_00172d60 reads the word at +0x144 of the object's actor) has stores in many functions, none traced as an enemy actor's, so it is taken as zero [inferred] (WP-EN10m, M_EX750) |
+| 1.83 bone_to_world | Approx | object position plus the vector, no bone matrix [inferred] (WP-EN10q, M_EX060) |
+| 2.10 attack_create, 2.11, 2.12, 2.13, 2.62 | Stub | free attack objects are not simulated: a handle only, never hits (WP-EN10q, M_EX060) |
+| 0.44 effect_stop | Stub | nothing stopped from a script handle (WP-EN10q) |
 | 0.52 effect_fade | Stub | nothing to fade: the effects of 1.22 are not drawn (WP-EN10i) |
 | 2.9 set_obj_param | Impl | the game builds the object's status block from the `enmp` row (FUN_001b2148 -> FUN_0019f8a8); the app built it at spawn, the call checks the row number (Shadow 34, Soldier 33) |
 | 1.110 spawn_kind | Impl | byte +0x1c of the spawn record (FUN_0016b858): the area group's value for enemies spawned from an area script (`docs/enemies.md`), -1 for the app's own waves |

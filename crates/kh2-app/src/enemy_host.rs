@@ -923,6 +923,12 @@ impl BevyHost<'_> {
             Call::Func { group: 1, index: 161, args } if args[0].int() as u32 == PLAYER => {
                 approx(Value::Bool(false), "the app has no object links (1.18 is not carried out): the player is never linked")
             }
+            // 1.161 on the script's own object (M_EX770: BDX R145b at 0x1479 and R1659 at 0x165f ask it of local+0). Same function: the
+            // object's +0x570 is the link parent that link_start (1.18) writes; the app writes none, so the enemy is never linked and
+            // its wait loop ends at once.
+            Call::Func { group: 1, index: 161, args } if args[0].int() as u32 == me => {
+                approx(Value::Bool(false), "the app has no object links (1.18 is not carried out): the enemy is never linked")
+            }
             // 1.18 link_start (0x170dd8 -> FUN_001beb90): the first object (the player) gets the second as
             // its parent (+0x570), the two halfwords (+0x574: 0x4002, +0x576: 1), its facing (+0x550) cleared
             // and 8 or-ed into +0x7f8 (when bit 1 of the flags is clear), mover 3; FUN_00169ee8 breaks the link when bit 0 of

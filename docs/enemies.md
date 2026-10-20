@@ -726,6 +726,48 @@ ca15 (b_21), al14 (b_93 and others) and lk08 (b_20) report `limit 0 (+0x22)` and
 (3) The reaction motions `ref_blow` and the `rst_*`/`rvg_*` families were not seen except `rvg_short`; the boss variants (`mode_battle_boss`, `mode_revenge_boss`) were not
 reached. (4) The `_raw` variants were not traced. (5) Hosts 1.99's flag branch (object +0xe0) is not read. (6) The areas ca14, ca15, ca20, he09 and lk08 were not soaked.
 
+## The enemy M_EX770 (WP-EN10e)
+
+`M_EX770` (object 306, `00objentry` row 306: ObjectType 4, `NeoStatus` 1029, flags 8, Weight 10, `SpawnLimiter` 10, no spawn objects;
+`enemy::M_EX770`, called by its model: the data gives no name; rows 221 `M_EX770_NPC`, 1469 `M_EX770_RAW` and 1847 `M_EX770_TR` are other
+objects) is a spiked, top-like Heartless of the 11 areas the area survey lists (ca01, ca02, hb01, hb02, hb04, hb11, ..). Its BDX script
+(7953 words, `cargo run -p kh2 -- bdx M_EX770`) has the modes `appear`, `mode_battle`, `mode_battle_boss`, `mode_revenge`, `mode_revenge_boss`,
+`btl_normal`, `btl_hard`, `btl_super_hard`, `btl_short`, `btl_long`, `btl_attack`, `idle`, `idle_time`, `interval_time`, `footwork`, `fly_target`,
+`atk_s_shot`, `atk_s_shot_all`, `atk_b_shot`, `atk_brush`, `rc_catch`, `roll`, `stun`, `rvg_*`, `rst_*`, `leave`, `leave_raw`, `freeze`, `dead`.
+
+- **Stats.** The set-up routine R1d23 (0x1d23, called at 0x0db1) takes eight arguments; the eighth, 37 (pushed at 0x0d99), goes to
+  `set_obj_param` (host 2.9 at 0x1d4a): `enmp` row 37 (`experience: enmp 37 defeated: +2 (lvpm 4 x enmp 50)`). The harness enemy has 14 HP.
+- **Death.** The `dead` mode hands the object's +0x1c to host 1.92 (`drop (host 1.92) asked row 5`) like the other kinds, fades out and hides:
+  `Kind::death_effect` true.
+- **Host calls.** One new arm: 1.161 `has_link` on the enemy itself (Approx false, see `docs/enemy-ai.md`; asked at 0x1479 by R145b, which waits
+  for the link to end after the `rc_catch` grab, and at 0x165f by R1659). Others it reaches that other kinds already answer: 1.23, 1.58, 1.11, 1.12,
+  1.206, 1.171, 1.56, 1.121, 1.111, 1.120, 1.90, 65535.0 / .1 / .2.
+- **Grab.** R086f (0x086f: motion 241, mode `rc_catch`, `link_start` 1.18 on the player with 0x4002 / 1, then motion 253) is the catch: 1.18 on the
+  player is a Stub, so Sora is not attached; R145b's wait ends at once and the enemy returns to `idle`.
+
+Acceptance run (WP-EN10e), hb01 (one `M_EX770` in a group of only this kind; test `m_ex770_is_an_enemy_kind_with_its_objentry_row`, disc):
+`KH2_PROGRAMS=0,1,0 KH2_WAVE_GROUP=b_00 KH2_WAVE_AT_GROUP=1 KH2_NO_PARTY=1 KH2_AREALOG=1 KH2_BDXLOG=1 KH2_HITLOG=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1
+kh2-game hb01` (`KH2_PROGRAMS` is in hex; `KH2_KEYS` Q at 8 s then J every 0.45 s from 10 s). Log: `area group b_00 kind-2 group 0xe4: M_EX770 (serial
+0x18, wave 0) created at the record's point`, `SetObjParam { obj: 16781312, a: 37, b: 0 }`, `M_EX770 hit: atkp 126 damage 3 hp 11` .. `atkp 128 damage
+2 hp 0`, `experience: enmp 37 defeated: +2`, `hp 0: switching to mode dead`, `drop (host 1.92) asked row 5`, `prize: drop of row 5`. Soak with no
+input for 95 s (shot at 95 s): one `M_EX770`, Sora stayed at 20/20, modes `appear`, `mode_battle` -> `btl_normal` -> `fly_target` (every 120 to 240
+ticks), `idle`, `atk_s_shot`, no stuck state, no `script error`; its one `Missing` host call (1.161 on the object itself) is now answered. Second
+real area, ca02 (`KH2_PROGRAMS=0,a,0 KH2_WAVE_GROUP=b_20`, nine `M_EX770` and eight `M_EX420` in the group, three created at once: two `M_EX770` and one
+`M_EX420`): 95 s unattended soak (Sora knocked out by `atkp 336` / `338` hits, which are not `M_EX770`'s [inferred: the `M_EX420` claws]; both `M_EX770` kept cycling `mode_battle`,
+`btl_normal`, `fly_target`, `idle`, `footwork`, `atk_s_shot`, `has_link` Approx x4, no `unimplemented host call`), and a 70 s hitting run (J from 10 s):
+`M_EX420 defeated: +4`, one `M_EX770` defeated (`switching to mode dead`, +2), 8 `M_EX770 hit` lines. Harness PNGs looked at (`local\ex770_*.png`):
+idle (hb01: a brown, spiked top-shaped figure on the ice beside Sora, `M_EX770 Idle hp 14/14`), a hit (hb01 at 11.6 s: the figure in front of
+the camera under the lock-on bracket, Sora mid-attack with stars and a damage number, `M_EX770 Hurt hp 8/14`), after the defeat (damage number, NEXT
+LEVEL strip), ca02 (two `M_EX770 Hurt hp 12/14` and `11/14` entries, Sora HP 13/20, the figure beside a wall). `idle-hud`, `combat-ground` and
+`tt04-dusk` of `accept.ps1` were run, see the report.
+
+Gaps: (1) `M_EX770` never hurt Sora in the runs: its `atk_s_shot` / `atk_s_shot_all` / `atk_b_shot` / `atk_brush` hit paths (the shot objects and the
+host calls that hand a hit record to the player) were not checked; the `rc_catch` grab is not carried (1.18 on the player is a Stub). (2) Only
+hb01 b_00 and ca02 b_20 create `M_EX770` in the app; ca01 b_21, hb02 b_21, hb04 b_20 / b_21 / b_00 and hb11 b_00 / b_01 / b_02 are kind-2 groups
+that create nothing with the harness (`limit 0 (+0x22)`, Sora not in their volumes), so they were not run; hb02's mixed groups were not run at all.
+(3) The boss variants (`mode_battle_boss`, `mode_revenge_boss`), `roll`, `stun`, `rc_catch`, `leave`, `rvg_*` and `rst_*` modes were not seen. (4) The `_RAW` and
+`_TR` objects were not traced. (5) The reader of +0x570 for an enemy (`FUN_001beb00`) and the writer of an enemy's link (host 1.18 only
+writes the first object's, the player's) were not searched with `mips_scan --store-off 0x570`.
 ## The Struggle (WP-7E)
 
 The Struggle rules are in `docs/struggle.md`. For the opponents: b_50, b_51 and b_52 (missions `TT04_MS00`,

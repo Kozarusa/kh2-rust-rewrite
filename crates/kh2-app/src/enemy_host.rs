@@ -267,10 +267,11 @@ pub(crate) struct BevyHost<'a> {
     pub(crate) tag: &'a str,
 }
 
-/// The self-targeted motion queue (host 1.13) is enabled for M_EX900 only until it is verified for the other kinds whose
-/// scripts call it (M_EX930, M_EX940, M_EX850, M_EX760, M_EX420): for them the call stays unmapped as before.
+/// The self-targeted motion queue (host 1.13) is enabled for M_EX900 and M_EX110 only until it is verified for the other kinds whose
+/// scripts call it (M_EX930, M_EX940, M_EX850, M_EX760, M_EX420): for them the call stays unmapped as before. M_EX110's
+/// `atk_foot_stamp` (R162c) queues motion 0 behind motion 202 and then waits (R0f0a) for the motion state to leave 202.
 fn queues_motions(tag: &str) -> bool {
-    tag.starts_with("M_EX900#")
+    tag.starts_with("M_EX900#") || tag.starts_with("M_EX110#")
 }
 
 fn imp(v: Value) -> (Value, St, &'static str) {
@@ -467,6 +468,17 @@ impl BevyHost<'_> {
             Call::Func { group: 0, index: 42, args } => match args.first() {
                 Some(kh2_bdx::Arg::Vec(v)) => approx(Value::Float(v[0].atan2(v[2])), "the platform's atan2, not the game's FUN_003003e8 (same function, last-bit differences possible)"),
                 _ => missing(Value::Float(0.0), "angle_of without a vector"),
+            },
+            // 0.45 / 0.46 (the runtime hands the two vectors and the scalar; the answer goes back into the first): the members'
+            // `advance_vec` (FUN_0016d098) and `turn_vec` (FUN_0016d138 -> FUN_0017c0f8). M_EX110 steers its rocket's direction
+            // with 0.46 (R05bc's caller, call at 0x05ac).
+            Call::Func { group: 0, index: i @ (45 | 46), args } if args.len() >= 3 => match (&args[0], &args[1]) {
+                (Arg::Vec(a), Arg::Vec(b)) => {
+                    let st = args[2].float();
+                    let v = if *i == 45 { crate::friend_host::advance_vec(*a, *b, st) } else { crate::friend_host::turn_vec(*a, *b, st) };
+                    approx(Value::Vec(v), "the platform's sqrt / acos / sin / cos, not the vector unit's and the game's kernels")
+                }
+                _ => missing(Value::None, "0.45 / 0.46 without two vectors"),
             },
             // 0.43 wrap_angle (FUN_0016de78 -> FUN_0017bbc0).
             Call::Func { group: 0, index: 43, args } => imp(Value::Float(game_wrap_angle(args.first().map_or(0.0, |a| a.float())))),
@@ -744,18 +756,16 @@ impl BevyHost<'_> {
                     approx(Value::None, "carried out on the other object at the end of the tick (the object a script made this tick takes the point where it appears); the mover's sync (FUN_0016a618) is the position itself")
                 }
             }
-            // 1.99 ground_depth (FUN_001730e8): minus the larger of 0 and the floor height (FUN_00183808) less the object's own
-            // height (+4 of FUN_0016b960), both in the game's space (Y down: the app's height negated).
-            Call::Func { group: 1, index: 99, args } => {
-                let o = args.first().map_or(0, |a| a.int() as u32);
-                match (self.ground_position(o), self.pos_of(o)) {
-                    (Some(g), Some(p)) => imp(Value::Float(-(to_game(g)[1] - to_game(p)[1]).max(0.0))),
-                    _ => missing(Value::Float(0.0), "ground depth of an object this host does not know"),
-                }
-            }
             Call::Func { group: 1, index: 98, args } => match self.ground_position(args[0].int() as u32) {
                 Some(p) => imp(Value::Vec(to_game(p))),
                 None => missing(Value::Vec([0.0; 4]), "ground position of an object other than self and the player"),
+            },
+            // 1.99 ground_depth (0x1730e8, FUN_001730e8): the floor height of FUN_00183808 (the one host 1.98 answers) minus the
+            // object's own height, in the game's space where Y points down; only when it is positive, and the answer is its negative. In
+            // the app's space that is minus the height above the floor, 0 on or below it (or with no floor, which keeps the height).
+            Call::Func { group: 1, index: 99, args } => match self.ground_position(args[0].int() as u32).zip(self.pos_of(args[0].int() as u32)) {
+                Some((g, p)) => imp(Value::Float(-(p.y - g.y).max(0.0))),
+                None => missing(Value::Float(0.0), "ground depth of an object other than self and the player"),
             },
             // 1.94 obj_valid (0x170150): 0 is false, else FUN_0019a3f8: in the object list (FUN_001b80e8)
             // and FUN_0019a440 clear (+0x108 bits 0x80000 / 0x10000000, not traced: read clear).
@@ -1073,6 +1083,13 @@ impl BevyHost<'_> {
             // 6.31 (wrapper FUN_002eece8, table entry 0x370f58, no arguments): FUN_001a40b8 draws every
             // pickable prize into the player (FUN_001a3ad8, mode 1) and FUN_001bda98 hands every item
             // object to the player (FUN_001bd1d8). No BDX script on the disc calls it (`kh2 bdx --scan`).
+            // 6.9 target_distance (0x2eeb30 -> FUN_0018f308): the distance from the point to the surface of the target record's
+            // shape. The app's record is always the player's (host 1.120); his shape is taken as the point at his origin, so
+            // the distance is to that point.
+            Call::Func { group: 6, index: 9, args } => match args.get(1) {
+                Some(Arg::Vec(p)) => approx(Value::Float(from_game(*p).distance(self.env.player)), "the player's hurt shape (a sphere or spheroid, FUN_00189628) is taken as a point at his origin: the radius is not subtracted"),
+                _ => missing(Value::Float(0.0), "target_distance without a point"),
+            },
             Call::Unknown { group: 6, index: 31, .. } | Call::Func { group: 6, index: 31, .. } => {
                 self.obj.collect_all = true;
                 imp(Value::None)

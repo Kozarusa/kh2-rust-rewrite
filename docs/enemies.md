@@ -691,6 +691,40 @@ that hand a hit record to the player) was not checked; the groups that mix it wi
 reader of block +0x28 and the role of host 1.162 were not traced (`bdx` shows no `ldf +0x28`; host 1.162 is unnamed in `names.rs`); the object
 with spawn byte 92 was not identified.
 
+## The enemy M_EX660 (WP-EN10c)
+
+`M_EX660` (object 304, `00objentry` row 304: ObjectType 4, `NeoStatus` 1020, flags 8, Weight 10, `SpawnLimiter` 7, no spawn objects;
+`enemy::M_EX660`, called by its model: the data gives no name) is a small winged Heartless that flies at Sora, in the 11 areas the area
+survey lists (al14, ca14, ca15, ca20, he09, lk08, ..). Its BDX script (7449 words, `cargo run -p kh2 -- bdx M_EX660`) has the modes `appear`,
+`approach_appear`, `mode_battle`, `mode_battle_boss`, `mode_revenge`, `mode_revenge_boss`, `btl_short`, `btl_long`, `btl_attack`, `btl_normal`,
+`btl_hard`, `btl_super_hard`, `idle`, `idle_time`, `footwork`, `fly_over`, `fly_target`, `atk_s_dush`, `atk_b_dush`, `comeon`, `rvg_*`, `rst_*`,
+`ref_blow`, `leave`, `freeze`, `dead` (plus `_raw` variants of some).
+
+- **Stats.** The set-up routine R1a7e (0x1a7e, called at 0x080d) takes eight arguments; the eighth, 38 (pushed at 0x07f5), goes to
+  `set_obj_param` (host 2.9 at 0x1aa5): `enmp` row 38 (`experience: enmp 38 defeated: +1 (lvpm 4 x enmp 20)`). The harness enemy has 10 HP.
+- **Death.** The `dead` mode (registered at 0x0525, routine at 0x0fbc -> R0fca) hands the object's +0x1c to host 1.92 (`drop (host 1.92) asked row 17`),
+  starts element 2 of its effect file (1.87 at 0x0fe8), releases it (0.79), fades out and hides, like the Dusk's: `Kind::death_effect` true.
+- **Host calls.** Only one was new: 1.99 ground_depth (Impl, see `docs/enemy-ai.md`; asked 175 times in 100 s by the script's flight checks at
+  0x13e5 and 0x13f7). Stub or Approx ones it reaches that other kinds already use: 2.21, 1.121, 1.171, 1.206, 1.56, 1.58, 1.309, 1.34, 1.23, 1.87, 1.92, 2.5, 1.111, 1.120.
+
+Acceptance run (WP-EN10c), al14 (the first listed area whose group loads at once; ca14, ca15 and lk08 hold the kind only in kind-2 groups whose
+header limit +0x22 is 0, so the app creates nothing there, see Gaps; test `m_ex660_is_an_enemy_kind_with_its_objentry_row`, disc): `KH2_PROGRAMS=0,86,0
+KH2_WAVE_GROUP=b_61 KH2_WAVE_AT_GROUP=1 KH2_NO_PARTY=1 KH2_AREALOG=1 KH2_BDXLOG=1 KH2_HITLOG=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1 kh2-game al14` (btl program 0x56
+loads b_61 with six `M_EX660` and five kinds the app lacks: three `M_EX520`, two `M_EX620`; Sora in the middle of the group; `KH2_KEYS` Q at 8 s, J every
+0.45 s from 70 s to 108 s, shot at 110 s). Log: `SetObjParam { a: 38 }`, `M_EX660 hit: atkp 127 damage 2 hp 8` .. `atkp 130 damage 5 hp 0`, `experience: enmp 38
+defeated: +1`, `hp 0: switching to mode dead`, `drop (host 1.92) asked row 17`, `prize: drop of row 17`; six defeats, 0 `unimplemented host call`, 0 `script error`,
+no `Missing` line in the final table. Modes seen: `appear`, `approach_appear`, `mode_battle`, `btl_short`, `btl_long`, `btl_attack`, `fly_over`, `fly_target`, `atk_s_dush`,
+`atk_b_dush`, `footwork`, `idle`, `mode_revenge`, `rvg_short`, `dead`. The kind hurts Sora: with no input from 8 s to 70 s he was knocked out once (game over, then
+the jump back to a full party, HP 20) and the six kept cycling the modes above until the hits started; none was stuck. Harness PNGs looked at (`local\ex660_*.png`): idle
+(HUD present, six `M_EX660 Idle hp 10/10` entries, orange and purple winged cannon-beaked figures hovering around Sora over the sand), a hit run at 14 s (`Hurt`,
+Sora HP 12/20 with a pained face, two of them large in front of the camera, entries at hp 8/10), and after the soak (no enemy text, Sora HP 16/20, no enemies in view).
+`idle-hud`, `combat-ground` and `tt04-dusk` of `accept.ps1` were run, see the report.
+
+Gaps: (1) Five of about 60 hits (`atkp 124`, hp 10 and a few at hp 3 to 8) did 0 damage with reaction 0 and effective 0 although the enemies had HP left and all six
+died later; which state of the script scales the damage to 0 (the damage-scale writers FUN_001a0ba0 and the flight modes) was not traced. (2) The kind-2 groups of ca14 (b_20, b_71),
+ca15 (b_21), al14 (b_93 and others) and lk08 (b_20) report `limit 0 (+0x22)` and create no enemy in the app (an app spawn limit, not this kind's script); only al14 b_61 was run.
+(3) The reaction motions `ref_blow` and the `rst_*`/`rvg_*` families were not seen except `rvg_short`; the boss variants (`mode_battle_boss`, `mode_revenge_boss`) were not
+reached. (4) The `_raw` variants were not traced. (5) Hosts 1.99's flag branch (object +0xe0) is not read. (6) The areas ca14, ca15, ca20, he09 and lk08 were not soaked.
 ## The enemy M_EX110 (WP-EN10b)
 
 `M_EX110` (object 71, `00objentry` row 71: ObjectType 4, `NeoStatus` 1034, flags 8, Weight 100, `SpawnLimiter` 8, no spawn objects;
@@ -707,8 +741,7 @@ with spawn byte 92 was not identified.
   `Kind::death_effect` true.
 - **Fades.** `move_idle` sets flags 1, 3 and 5 (bit 3 is the unhittable bit) and fades out; the next `FadeIn` (1.20, 20 frames) clears them. The
   figure is semi-transparent or gone for part of every cycle (screenshots below).
-- **New host calls.** 1.99 `ground_depth` (FUN_001730e8: minus the larger of 0 and the floor height less the object's own height, both in the
-  game's space) is Impl from the app's floor probe (`ground_position`, as 1.98); 2.6 `in_reaction` (FUN_0018dfa0 -> FUN_00185a08: motion state 10 to
+- **New host calls.** 1.99 `ground_depth` is EN10c's (Impl); 2.6 `in_reaction` (FUN_0018dfa0 -> FUN_00185a08: motion state 10 to
   39) is Approx on the app's motion slot; 2.67 `new_hit_group` (FUN_001bdf00: the counter at 0x1d5dd4c, 0x100 after 0x10000000) is Approx with the
   host's own counter starting at 0 (`enemy_host.rs`; `friend_host.rs` keeps its own). The ones it reaches that were already answered: 2.21, 1.206,
   1.171, 1.121, 1.53, 1.54 (Stub), 1.56, 1.120, 2.5, 1.111, 1.58, 1.62, 1.64, 1.140 (Approx).
@@ -719,19 +752,26 @@ beside ten `M_EX630` (test `m_ex110_is_an_enemy_kind_with_its_objentry_row`, dis
 KH2_WAVE_AT_GROUP=1 KH2_NO_PARTY=1 KH2_AREALOG=1 KH2_BDXLOG=1 KH2_HITLOG=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1 kh2-game al03` (`KH2_KEYS` Q at 8 s, J every
 0.45 s from 30 s to 95 s, shot at 100 s): `SetObjParam { a: 0 }`, `M_EX110 hit: atkp 126 damage 3 hp 7` .. `atkp 130 damage 5 hp 0`, `experience: enmp 0
 defeated: +2`, `hp 0: switching to mode dead`, `drop (host 1.92) asked row 47`, `prize: drop of row 47`. In 100 s Sora stayed at 20/20, the modes seen
-were the eight above, and the final table has no Missing line except 0.68 (below); `accept.ps1 -Only combat-ground,tt04-dusk,idle-hud` PASS (`local\accept\en10b`): idle-hud shows the HUD and Sora, combat-ground Sora hurt beside four Shadows, tt04-dusk Sora, Donald and Goofy with a `Dusk Hurt hp 4/32` entry. PNGs looked at (`local\ex110_*.png`):
+were the eight above, and the final table had no Missing line but 0.68 (answered since, below); `accept.ps1 -Only combat-ground,tt04-dusk,idle-hud` PASS (`local\accept\en10b`): idle-hud shows the HUD and Sora, combat-ground Sora hurt beside four Shadows, tt04-dusk Sora, Donald and Goofy with a `Dusk Hurt hp 4/32` entry. PNGs looked at (`local\ex110_*.png`):
 idle at 9 s (a striped Heartless behind Sora, three `M_EX110 Idle hp 10/10` entries), idle at 5 s (the same figure half transparent), a hit at 8 s
 (damage numbers 5, entries `Hurt hp 3/10` and `Hurt hp 0/10`, hit sparks, a dark figure blown beside Sora), after defeats at 11 s ("OBTAINED MUNNY", prize
 orbs, one entry left), a 100 s soak frame in the fade phase (the entry `Idle hp 10/10` listed, no figure drawn).
 
-Gaps: **host 0.68** (FUN_0016cf78 -> FUN_0017c398: a vector turned about the X axis by an angle, the matrix from FUN_0011b490 -> FUN_002fb580 beside
-0.13's Y turn FUN_0011b4d8 -> FUN_002fb628; the axis is read from the libvu0 order and is [inferred]) is not named in `kh2-bdx` `names.rs`, so
-the call reaches the host as an unknown one and fails: `unimplemented host call 0.68 (?)` then `script error BadAddress(0) at 0x177d` each time
-`atk_rocket_attack` starts (R1778, 60 degrees = 1.047198 turn of a facing vector). The script thread ends, the mode falls to `idle` and the
-enemy tries again, so it never soft-locks, but the rocket attack never fires. The fix is outside this WP's ownership (see the report). The attack
-hit paths (`atk_foot_stamp`, `atk_rocket_attack`: host 2.5 and the records handed to the player) were not seen hurting Sora; the other areas
-(al00 b_00 has 14 members of this kind with mixed Shadows and Soldiers but its kind-2 groups were not entered in 70 s) were not run; the role of
-event 11 (message 328, handler 0x001a: starts action 135 and sets mode `rc_address_shift`) was not traced.
+**Follow-up (reviewer's stuck state).** In an 88 s idle run all three sat in `atk_foot_stamp` from about 57 s on. Cause: R162c queues motion 0
+behind motion 202 (host 1.13) and then loops in R16f2 until R0f0a sees the motion state (1.15) differ from 202; the app stubbed 1.13 for every kind
+but M_EX900, so the queued motion never started and the state stayed 202 for good. Fix: `queues_motions` in `enemy_host.rs` now includes `M_EX110#`
+(the same queue M_EX900 uses, Approx). Re-soak, 90 s, no keys, al03 b_01 (`ex110_s90e.png`): no `unimplemented host call`, no `script error`, no Missing line;
+every object cycles `move_idle` / `idle` / `mode_battle` / `atk_foot_stamp` / `atk_rocket_attack`, the longest stay in one mode is 424 ticks
+(`move_idle`), `atk_foot_stamp` ends after about 90 ticks. In the 14 s shot (`ex110_t14.png`, Q at 4 s) Sora is at 17/20: the kind hurts him.
+Further host calls the attacks reached: 0.46 (and 0.45) through the members' `turn_vec` / `advance_vec` (Approx, the platform's trigonometry), 6.9
+`target_distance` (Approx: the distance to the player's origin, his shape's radius is not subtracted), and **0.68** (FUN_0016cf78 ->
+FUN_0017c398, a vector turned about the X axis by an angle, `kh2_bdx::math::rotate_x`, named in `names.rs`, in `is_math`): proved against the
+game by `cargo test -p kh2-bdx --test rotate_x_oracle` (FUN_0016cf78 run in kh2-ee, 5 vectors x 9 angles, tolerance 1e-3: the sign is
+`y' = y cos - z sin, z' = y sin + z cos`). `obj/M_EX110.mdlx` is in the script oracle's list (`cargo test -p kh2-bdx --test oracle`).
+
+Gaps: the attack hit paths were seen once (Sora 17/20 at 14 s), not traced address by address; the other areas (al00 b_00 has 14 members of this
+kind with mixed Shadows and Soldiers but its kind-2 groups were not entered in 70 s) were not run; the role of event 11 (message 328, handler
+0x001a: starts action 135 and sets mode `rc_address_shift`) was not traced.
 
 ## The Struggle (WP-7E)
 

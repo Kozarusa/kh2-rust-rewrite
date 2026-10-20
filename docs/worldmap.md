@@ -182,7 +182,7 @@ All of this is the story-flag side-effect machinery of docs/progress.md / docs/e
    | 1, 2, 3, 7 | world record byte 0 of each listed world = 0, 1, 2, 3 (`FUN_001b6cb8` -> `FUN_001b4e98`: 3 on a value above 2 increments instead; 2 also clears bit 0 of byte 3) |
    | 4 | byte 0 = 2 and clear bit 1 of byte 3 |
    | 5 / 6 | set bit 1 / bit 0 of byte 3 |
-   | 8..0xb | `FUN_001b6d30`: sets a byte of an entry found by `FUN_001c0950(id)` to 0..3 [GAP: whose table] |
+   | 8..0xb | `FUN_001b6d30`: for each id writes `op - 8` to `0x3419c3 + id` (`FUN_001c0950(id)` is that address): the route state byte read by section W8 (WM9) |
    | 0xc / 0xd | add / remove episode `id` (`FUN_001c1410` sets its bit in 0x3419e4 and 0x3419f4; `FUN_001c1488` clears the second) |
    | 0xf | store a byte at 0x341a05 and, when the `dark` entry is loaded, run `FUN_001c6d10` (sets map-flag bits of the first 64, the area script's `map_show`/`hide` bits) |
 
@@ -289,7 +289,8 @@ file (`Progress::story_json`) must carry the new regions.
   region equal to the port for all 2830 runs, so none of them writes those regions in a block that is otherwise clear [the runs had no menu or actor state, so
   effects that need them are not excluded]. `FUN_00180558` is the exception: when story flags 0x102b and 0x1822 are set and 0x1807, 0x1809 are clear it sets story
   flag 0x1809 (0x1865 set) or 0x1807 through the setter itself; that is a story-flag effect outside the world region and is still not ported.
-- Gaps kept: ops 8..0xb of the lists (`FUN_001b6d30` writes a byte of an entry `FUN_001c0950(id)` finds: whose table is unread), the episode list removal of op 0xd
+- WM9: ops 8..0xb are ported (`world::ROUTE_STATE`; `FUN_001b6d30` loops the pairs, `FUN_001c0950` is `0x3419c3 + id`, `FUN_001b6a90` cases 8..0xb pass 0..3). `Story::world_consume_queue` copies the queue out, zeroes the count byte and runs each list with the hook argument 1 (`FUN_001b6e20`, `FUN_002c6bf8`); `worldmap.rs` calls it when the props are built; that placement is [inferred] (the original runs it from the map menu update, whose `param_1[1] == 0` condition and the later flag sort `FUN_002c6db0` are unread). `FUN_001b6e60` (run from `FUN_001b6870`, called by `00187d20`) is the same drain with hook argument 0 and is not called by the app. Route id 0 shares its byte with the queue count. Ids past the saved region (`0x341a05`) are dropped; the game would write past it [GAP, no disc list does].
+- Gaps kept: the episode list removal of op 0xd
   (`FUN_003335d0` on `DAT_01d5df60`, unread), the `FUN_001c6d10` call of op 0xf, the compare function `0x332e08` of the `wldf` search (no decompilation; a plain
   compare reproduces the oracle), the `link` hook `FUN_001d39d0` (no effect on the compared regions, effects elsewhere unread), the `wmky` and `ws_i` meanings,
   and the value of address 1 that `FUN_001b68f8` would read for a key the table lacks (taken as 0 [inferred]; the story hook only passes indexes the table holds; the other callers `FUN_001b6ec0`, `FUN_001d3820`, `FUN_0016d788`, `FUN_001b6870` were not read).

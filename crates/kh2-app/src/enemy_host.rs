@@ -29,6 +29,16 @@ const TURN_DEFAULT: f32 = 5.0 / 60.0;
 /// of the object times 0.4; the record was not decoded, this is the step height of `Motor`).
 const PROBE_TOLERANCE: f32 = 40.0;
 
+/// The mover state ids whose descriptor flag word (`+8` of the 16-byte entries at 0x1c88eb0, `FUN_00179880`) has bit 1: the movers
+/// the ground's pull skips (host 1.59). Read live in PCSX2 (WP-DYN1); a rule constant, not a table copy.
+pub const MOVER_NO_GROUND: [u8; 14] = [5, 8, 10, 11, 13, 15, 19, 20, 21, 24, 25, 27, 28, 30];
+
+/// Host 1.59's mover half: the object's mover state id (5 while the dash of 1.58 runs, else 0, the constructor's) has the
+/// no-ground bit.
+fn no_ground_pull(dash_running: bool) -> bool {
+    MOVER_NO_GROUND.contains(&(if dash_running { 5 } else { 0 }))
+}
+
 // ---------------------------------------------------------------------------------------------------
 // Drops (host 1.92)
 
@@ -799,8 +809,15 @@ impl BevyHost<'_> {
             },
             // 1.59 mover_bit1_or_busy (0x1729c0): the test the movement step FUN_00181e00 makes before it adds the ground's pull
             // (FUN_00183928) to a grounded object: bit 1 of the mover's word +8 (mover at +0xc of the object's +4 record) or bit 0x40 of
-            // its +0x160 is set, i.e. the object is exempt from the ground. Their writers were not found, so a grounded object is read.
-            Call::Func { group: 1, index: 59, .. } => stub(Value::Bool(false), "bit 1 of the mover's +8 / bit 0x40 of +0x160 (no gravity pull): writers not found, read clear"),
+            // its +0x160 is set, i.e. the object is exempt from the ground. WP-DYN1 (PCSX2, savestate 3, 0x1c88eb0 read live): the
+            // "mover" is the descriptor of the mover state id (FUN_0016b698(obj, id) -> FUN_00179868(id), entries of 16 bytes from
+            // 0x1c88eb0, written by FUN_00179880 from constants), and its flag word +8 has bit 1 for the ids in `MOVER_NO_GROUND`
+            // (mover 5, the dash of 1.58, among them; mover 0, the constructor's, and mover 1, the jump, are not). The app tracks only
+            // the dash, so the mover id is 5 while a dash runs and 0 otherwise; bit 0x40 of +0x160 (no store of it was seen in 8 s of four battles) reads clear.
+            Call::Func { group: 1, index: 59, args } if args[0].int() as u32 == me => {
+                approx(Value::Bool(no_ground_pull(self.obj.dash.is_some())), "mover 5 (the dash) has the no-ground bit; the other movers with it are not modelled; bit 0x40 of +0x160 reads clear")
+            }
+            Call::Func { group: 1, index: 59, .. } => stub(Value::Bool(false), "another object's mover: not read"),
             // 1.94 obj_valid (0x170150): 0 is false, else FUN_0019a3f8: in the object list (FUN_001b80e8)
             // and FUN_0019a440 clear (+0x108 bits 0x80000 / 0x10000000, not traced: read clear).
             Call::Func { group: 1, index: 94, args } => {
@@ -1279,6 +1296,14 @@ mod tests {
         assert!((game_wrap_angle(-3.0 * pi / 2.0) - pi / 2.0).abs() < 1e-5);
         assert!((game_wrap_angle(0.5) - 0.5).abs() < 1e-6);
         assert!((game_wrap_angle(-0.5) + 0.5).abs() < 1e-6);
+    }
+
+    /// Host 1.59 (WP-DYN1): the dash's mover (5) is exempt from the ground's pull, the constructor's mover (0) and the jump's (1) are not.
+    #[test]
+    fn only_the_dash_mover_skips_the_ground() {
+        assert!(no_ground_pull(true));
+        assert!(!no_ground_pull(false));
+        assert!(!MOVER_NO_GROUND.contains(&0) && !MOVER_NO_GROUND.contains(&1) && MOVER_NO_GROUND.contains(&5));
     }
 
     /// Host 1.13 on the object itself queues motions for M_EX900 only; every other kind keeps the old unmapped answer.

@@ -141,7 +141,9 @@ pub struct Header {
     /// record 0x1a (`FUN_001b96e0`) instead of sending the end event to the area; the start applies the
     /// pause-menu record of this number (`FUN_001b8ee8` -> `FUN_001bef48`).
     pub kind: u8,
-    /// +0xd: when not 0, the end passes it to `FUN_001be6b8` (not ported, 0 in the Struggle).
+    /// +0xd: when not 0, the end passes it to `FUN_001be6b8` (the bonus reward id: `Progress::give_bonus` is the port, not wired to
+    /// the end here because the header is 0 in every Struggle mission file; WP-DYN1 found that this is the way `bons` rewards reach
+    /// the game besides an `enmp` BonusLevel, which is 0 in all 177 rows of the USA disc).
     pub unlock: u8,
     /// +0x10, +0x14, +0x18: interface sounds (`FUN_001b9ec8` -> `FUN_002c3318`) of the start
     /// (`FUN_001b8ee8`), the end (`FUN_001b95a0`) and the failure (`FUN_001b9818`); 0 plays nothing.
@@ -732,7 +734,7 @@ impl Active {
     /// last step runs at once.
     fn end_through(&mut self, ev: u32, arg: i32) {
         if self.header.unlock != 0 {
-            info!("struggle: header +0xd {} (FUN_001be6b8) is not ported", self.header.unlock);
+            info!("struggle: header +0xd {} (bonus reward, FUN_001be6b8) is not given by the manager", self.header.unlock);
         }
         if self.header.se_end != 0 {
             self.sounds.push(self.header.se_end);

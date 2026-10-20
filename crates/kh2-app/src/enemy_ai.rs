@@ -528,6 +528,7 @@ fn ai_update(
         obj.spawn_kind = e.spawn_kind;
         obj.spawn_params = e.spawn_params;
         obj.trigger_bits = trigger_bits(&anim);
+        let motion_events = motion_events(&anim);
         obj.hp_max = e.stats.max_hp;
         obj.hp_min = e.min_hp;
         obj.others = others.clone();
@@ -598,6 +599,12 @@ fn ai_update(
             if handled && matches!(g.id, crate::struggle::EV_PLAYER_WON | crate::struggle::EV_PLAYER_LOST) {
                 info!("bdx {}: event 10 (global event {}) delivered", host.tag, g.id);
             }
+        }
+        // Frame trigger 7 of the motion (dispatcher 0x188498, case 7 at 0x188604): event 0x11 with (the object, the record's
+        // halfwords +4 and +6) to the object's script (`FUN_0016c620`, thread at +0x484), the moment the motion's frame is crossed.
+        for (code, arg) in motion_events {
+            let handled = rt.event(&mut host, 17, &[handle, u32::from(code), u32::from(arg)]);
+            host.trace.line(host.tag, &format!("event 17: motion frame trigger 7 (code {code}, argument {arg}); handler {}", if handled { "ran" } else { "absent" }));
         }
         // Messages (host 1.90 of any object, this one included): the mode of that name gets them.
         for (sender, name, delay) in mail.remove(&ent).unwrap_or_default() {
@@ -841,6 +848,18 @@ fn ai_remote(mut table: ResMut<ObjTable>, mut q: Query<(&mut Transform, &mut AiB
     }
 }
 
+/// The frame triggers of type 7 the last tick crossed, as (code, argument) = the record's halfwords `+4` and `+6` (dispatcher
+/// `0x188498` case 7: event 0x11 with them). The motions of an enemy carry one at their first frame (code 2, or 3 on a
+/// motion that should leave the object in the other state), docs/enemies.md "Event 17".
+fn motion_events(anim: &Animator) -> Vec<(u16, u16)> {
+    let (Some(t), Some(m)) = (anim.triggers(), anim.motion()) else { return Vec::new() };
+    if anim.frame == anim.prev_frame {
+        return Vec::new();
+    }
+    let g = |f: f32| f * crate::data::LOGIC_HZ / m.fps.max(1.0);
+    t.crossed(g(anim.prev_frame), g(anim.frame)).filter(|f| f.id == 7).map(|f| (f.params.first().copied().unwrap_or(0) as u16, f.params.get(1).copied().unwrap_or(0) as u16)).collect()
+}
+
 /// The motion controller's trigger bytes after the last advance (Obj::trigger_bits): range triggers
 /// 16..19 active at the current frame, frame triggers 9..12 crossed by the last tick.
 fn trigger_bits(anim: &Animator) -> [u8; 2] {
@@ -911,4 +930,51 @@ mod tests {
         assert_eq!(m.seed, seed);
     }
 
+
+    /// The sender of event 17 (WP-DYN1): the motion's frame trigger 7 (dispatcher 0x188498, jump-table entry 7 at 0x188604
+    /// sends event 0x11 with the object and the record's halfwords +4 and +6; PCSX2 read the table at 0x37aa78 live). M_EX900's
+    /// motions carry them (`kh2 mset obj/M_EX900.mset` prints `7@0[2, 0]` on most slots and `7@0[3, 0]` on the dive motions) and its
+    /// script has the entry for event 17 (code 2 clears +0x18 and puts the weakness byte back to 100, code 3 sets +0x18 and
+    /// the byte to 0). Also lists which kinds of `KINDS` have an event 17 entry. Needs `KH2_ISO`.
+    #[test]
+    fn m_ex900_motions_send_event_17_to_its_script() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let program = |model: &str| {
+            let file = disc.read(&format!("obj/{model}.mdlx"))?;
+            let entry = kh2_bar::parse(&file).ok()?.into_iter().find(|e| e.kind == 3).map(|e| e.data.to_vec())?;
+            Program::parse(&entry).ok()
+        };
+        let prog = program("M_EX900").expect("M_EX900 script");
+        assert!(prog.entries.iter().any(|e| e.id == 17), "the script has an entry for event 17");
+        let mset = kh2_anim::Mset::parse(&disc.read("obj/M_EX900.mset").expect("M_EX900.mset")).expect("mset parses");
+        let mut codes = std::collections::BTreeMap::<i16, usize>::new();
+        for slot in mset.slots.iter().flatten() {
+            for f in slot.triggers.frames.iter().filter(|f| f.id == 7) {
+                *codes.entry(f.params.first().copied().unwrap_or(0)).or_default() += 1;
+            }
+        }
+        assert!(codes.get(&2).is_some_and(|n| *n > 10), "code 2 on most motions: {codes:?}");
+        assert!(codes.get(&3).is_some_and(|n| *n > 3), "code 3 on the dive motions: {codes:?}");
+        let with: Vec<&str> = crate::enemy::KINDS.iter().filter(|k| program(k.model).is_some_and(|p| p.entries.iter().any(|e| e.id == 17))).map(|k| k.name).collect();
+        eprintln!("m_ex900_motions_send_event_17_to_its_script: codes {codes:?}; kinds with an event 17 entry: {with:?}");
+    }
+
+    /// `motion_events` reads the records the way the dispatcher does: type 7, code = first halfword, argument = second, and only
+    /// when the frame moved over them.
+    #[test]
+    fn motion_events_report_crossed_type_7_records() {
+        let t = kh2_anim::Triggers { ranges: Vec::new(), frames: vec![
+            kh2_anim::FrameTrigger { frame: 0, id: 7, params: vec![2, 0] },
+            kh2_anim::FrameTrigger { frame: 10, id: 7, params: vec![3, 9] },
+            kh2_anim::FrameTrigger { frame: 10, id: 9, params: vec![] },
+        ] };
+        let crossed = |a: f32, b: f32| t.crossed(a, b).filter(|f| f.id == 7).map(|f| (f.params[0], f.params[1])).collect::<Vec<_>>();
+        assert_eq!(crossed(-1.0, 1.0), vec![(2, 0)], "the first tick covers frame 0");
+        assert_eq!(crossed(1.0, 12.0), vec![(3, 9)], "type 9 is not an event");
+        assert!(crossed(10.0, 12.0).is_empty(), "a trigger is crossed once");
+    }
 }

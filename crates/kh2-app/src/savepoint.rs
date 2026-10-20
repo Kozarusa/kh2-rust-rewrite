@@ -324,7 +324,6 @@ fn point_heal(
     mut state: ResMut<SavePoints>,
     mut points: Query<(Entity, &mut SavePoint)>,
     mut sora: Query<&mut Sora>,
-    data: Res<crate::data::GameData>,
     magic: Option<Res<crate::magic::MagicState>>,
     mut stop: MessageWriter<StopEffect>,
 ) {
@@ -336,7 +335,7 @@ fn point_heal(
         {
             // FUN_00194c08 for the player's slot (the friends' slots: GAP, party.rs).
             let charging = magic.as_deref().is_some_and(|m| m.charge.active());
-            let (max_hp, max_mp) = (s.stats.max_hp, data.sora_max_mp);
+            let (max_hp, max_mp) = (s.stats.max_hp, s.stats.max_mp);
             if let Some((hp, mp)) = heal_step(s.hp, max_hp, s.mp, max_mp, charging) {
                 if !state.healing {
                     info!("save point heal: HP {}/{max_hp} MP {}/{max_mp} (FUN_00194c08: 1 HP and 1 MP a frame while command 55 is offered)", s.hp, s.mp);
@@ -370,7 +369,7 @@ fn point_heal(
     if state.healing && !any {
         state.healing = false;
         if let Ok(s) = sora.single() {
-            info!("save point heal: done, HP {}/{} MP {}/{}", s.hp, s.stats.max_hp, s.mp, data.sora_max_mp);
+            info!("save point heal: done, HP {}/{} MP {}/{}", s.hp, s.stats.max_hp, s.mp, s.stats.max_mp);
         }
     }
 }

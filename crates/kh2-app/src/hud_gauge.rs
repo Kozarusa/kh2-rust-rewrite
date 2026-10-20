@@ -12,7 +12,6 @@ use std::f32::consts::{FRAC_PI_2, PI};
 
 use bevy::prelude::*;
 
-use crate::data::GameData;
 use super::hud_gfx::{Edge, HudScene, Node};
 use crate::sora::Sora;
 
@@ -266,7 +265,6 @@ pub fn update(
     mut scene: ResMut<HudScene>,
     mut panel: ResMut<SoraPanel>,
     face: Res<FaceFile>,
-    data: Res<GameData>,
     mut drive: ResMut<DriveGauge>,
     mut recharge: ResMut<MpRecharge>,
     drive_tables: Res<DriveTables>,
@@ -290,7 +288,7 @@ pub fn update(
         return;
     }
     let (mut hp, mut max) = (s.hp.max(0), s.stats.max_hp.max(1));
-    let (mut mp, mut mp_max) = (s.mp.clamp(0, data.sora_max_mp), data.sora_max_mp.max(1));
+    let (mut mp, mut mp_max) = (s.mp.clamp(0, s.stats.max_mp), s.stats.max_mp.max(1));
     // `KH2_HUDTEST=hp,max,mp,mpmax`: draw other values than the game state holds (screenshots of
     // states the first levels never reach, such as the HP bar past 60). Display only.
     if let Some([a, b, c, d]) = test_values() {

@@ -1167,12 +1167,13 @@ fn jump_reset(
         if !e.restore {
             continue;
         }
-        if let (Ok(mut s), Some(g)) = (sora.single_mut(), game.as_deref())
+        if let (Ok(mut s), Some(_)) = (sora.single_mut(), game.as_deref())
             && s.hp > 0
         {
             s.hp = s.stats.max_hp;
             let mp = s.mp;
-            crate::magic::refill_mp(magic.as_deref_mut().map(|m| &mut m.charge), &mut s.mp, g.sora_max_mp);
+            let max_mp = s.stats.max_mp;
+            crate::magic::refill_mp(magic.as_deref_mut().map(|m| &mut m.charge), &mut s.mp, max_mp);
             info!("party: jump reset: Sora HP {}, MP {mp} -> {}", s.hp, s.mp);
         }
         for mut m in members.iter_mut().filter(|m| m.hp > 0) {
@@ -1793,7 +1794,7 @@ fn party_tick(
     }
     let points = rules::follow_points(player, player_yaw, inputs, c);
     // The status blocks the danger test and the item handlers read: the player's and each member's.
-    let player_vital = battle::Vital { hp: s.hp, hp_max: s.stats.max_hp, mp: s.mp, mp_max: game.sora_max_mp };
+    let player_vital = battle::Vital { hp: s.hp, hp_max: s.stats.max_hp, mp: s.mp, mp_max: s.stats.max_mp };
     let vitals: Vec<(u8, battle::Vital)> = q.iter().map(|(_, m)| (m.slot, m.vital())).collect();
 
     for (mut tf, mut m) in &mut q {
@@ -2645,7 +2646,6 @@ fn party_receive_hits(
 #[allow(clippy::too_many_arguments)]
 fn party_item_uses(
     data: Res<PartyData>,
-    game: Res<GameData>,
     mut progress: Option<ResMut<crate::progress::Progress>>,
     mut q: Query<(Entity, &mut PartyMember)>,
     anims: Query<(&Animator, &GlobalTransform)>,
@@ -2705,7 +2705,7 @@ fn party_item_uses(
         let members: Vec<Entity> = q.iter().filter(|(e, m)| group || (who == battle::Who::Me && *e == user) || (who == battle::Who::Other && *e != user && m.slot != user_slot)).map(|(e, _)| e).collect();
         if to_sora && let Ok(mut s) = sora.single_mut() {
             let charge = magic.as_ref().map_or(Default::default(), |m| m.charge);
-            let mut v = crate::items::Vitals { hp: s.hp, hp_max: s.stats.max_hp, hp_min: 0, mp: s.mp, mp_max: game.sora_max_mp, charge_left: charge.left, charge_total: charge.total, ..Default::default() };
+            let mut v = crate::items::Vitals { hp: s.hp, hp_max: s.stats.max_hp, hp_min: 0, mp: s.mp, mp_max: s.stats.max_mp, charge_left: charge.left, charge_total: charge.total, ..Default::default() };
             let before = (s.hp, s.mp);
             crate::items::item_effect(item, amount, 100, &mut v, feed);
             s.hp = v.hp;
@@ -3444,6 +3444,38 @@ mod tests {
         rec.level = 99;
         let top = data.lvup[1].last().expect("row");
         assert_eq!(data.member_ap_resistances(2, &rec).0, ap + 5 - i32::from(row.ap) + i32::from(top.ap), "the level selects the lvup row, held at the table's end");
+    }
+
+    /// WP-ST5: a synthetic `item_stat` row (AP 7, fire 50) on an accessory slot reaches the member's AP and resistances
+    /// and the rebuilt stats the damage formula reads (`enemy::member_stats_rebuilt`), which also carry the record's MP
+    /// maximum. Needs `KH2_ISO`.
+    #[test]
+    fn synthetic_item_row_reaches_member_stats() {
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let mut data = PartyData::load(&disc);
+        let p = crate::progress::Progress::start(&disc).expect("progress");
+        let mut rec = p.member(2).expect("Donald");
+        let (ap0, res0) = data.member_ap_resistances(2, &rec);
+        let mut item = data.weapons.items.first().cloned().expect("an item row");
+        let mut stat = data.weapons.stats.first().cloned().expect("an item_stat row");
+        (item.id, item.stat_entry, stat.id) = (0x7fff, 0x7ffe, 0x7ffe);
+        (stat.ability_points, stat.fire_resistance) = (7, 50);
+        data.weapons.items.push(item);
+        data.weapons.stats.push(stat);
+        rec.accessories[0] = 0x7fff;
+        let (ap, res) = data.member_ap_resistances(2, &rec);
+        assert_eq!(ap, ap0 + 7, "the item's AP byte is summed");
+        assert_eq!(res[0], res0[0]);
+        assert_eq!(res[1], (res0[1] * 50 + 99) / 100, "fire is scaled by ceil(res * 50 / 100)");
+        assert_ne!(res[1], 100);
+        let built = crate::enemy::member_stats_rebuilt(Some(&p), Some(&data), 2).expect("rebuilt");
+        assert_eq!(built.ap, data.member_ap_resistances(2, &p.member(2).expect("Donald")).0, "the record's AP reaches the stats");
+        assert_eq!(built.max_mp, i32::from(rec.mp_max));
+        assert_eq!(built.weakness, res0);
     }
 
     /// The members' hand objects: the new game's saved weapon word of Donald and Goofy, the `went`

@@ -663,12 +663,20 @@ group is switched on by the map visibility word, and the area script leaves the 
   (walls of groups 3 to 8 off) for the whole fight [inferred from the scripts; the group-8 and group-2 switches of the boss in `b_40`
   are applied when that script runs]. Across the disc 82 BDX scripts use 1.36 (321 call sites) and 1.37 in 48 scripts (228 call sites)
   (`kh2 bdx --scan`); only eh10 was walked through for kinds. Test: `eh10_enemy_scripts_and_the_collision_group_switches`.
-* Area opcode 0xb (`DAT_0035cd18`, `FUN_00180b48` case 0xb) only stores a 64-bit mask; the groups change when a script calls the
-  parameterless host functions at 0x172800 (`FUN_0019d4c0`: group-on for each set bit) and 0x172818 (`FUN_0019d520`: group-off). The app
-  does not act on either: `kh2_ard::run::ScriptRun` drops opcode 0xb (`run_command`'s `_ => {}`), the two hosts have no entry in
-  `kh2_bdx::names`, and their (group, index) was not found (the descriptor addresses in the names table are not monotonic in the
-  index, so 0x172800 cannot be placed by position). eh10's map program 57 is the only 0xb command of that area (mask bit 62); the
-  program the app runs (0,1,0) has none. Left as a gap: the change needs `kh2-ard` (`ScriptRun::word_35cd18`) and the two names in `kh2-bdx`.
+* Area opcode 0xb (`DAT_0035cd18`, `FUN_00180b48` case 0xb) only stores a 64-bit mask (argument 0 low word, argument 1 high word;
+  `FUN_00181148` zeroes it at the start of a run); the groups change when a script calls the parameterless host functions
+  0x172800 (`FUN_0019d4c0`: for bit 0 to 63, `FUN_0015e9a8` group-on per set bit) and 0x172818 (`FUN_0019d520`: `FUN_0015e928`
+  group-off per set bit). WP-IW3 found them in the executable's group 1 table (group pointer table 0x35bce8, entries `{function,
+  flags}` of 8 bytes; the entry of 1.36 is at file offset 0x25cec8): 1.46 `area_mask_groups_on` (0x172800, flags 0, no arguments, no
+  result) and 1.47 `area_mask_groups_off` (0x172818, the same). The table is not monotonic in the index (1.38 0x170950, 1.41 0x1727b0,
+  1.44 0x1727d0, 1.45 0x1727e8, 1.46 0x172800, 1.47 0x172818, 1.48 0x1723d8), so the place came from the entry whose function field equals
+  the address, not from position. Port: `kh2_ard::run::ScriptRun::word_35cd18` (test `opcode_0xb_stores_the_64_bit_group_mask`; the
+  last 0xb command wins as in the game); `area::run_area_script` hands the loaded area's word to `enemy_host::set_area_mask` every
+  frame; `enemy_host.rs` arms 1.46 / 1.47 (`approx`, same note as 1.36/1.37) push one `(group, on)` edit per set bit, lowest first,
+  into the queue of 8.1 (test `the_area_mask_hosts_switch_each_set_bit`). Limits: the word is the loaded area's value as the last
+  area-script run left it [inferred: the game's global is also read by nothing else that was traced; `FUN_0019d4c0`/`FUN_0019d520` are
+  the only readers found in the decomp folder]; later area runs inside one world do not happen in the app. Which areas have a 0xb
+  command: docs/area-survey.md "Area opcode 0xb". No script call site of 1.46/1.47 was counted (`kh2 bdx --scan` was not run for them).
 * Walk test tightened: `eh10_arena_walls_of_hidden_groups_do_not_block_the_spawn_volume` now requires every gated walk to arrive
   within `walk_to`'s own 60-unit stop radius (it was 80 or inside the volume), and requires the ungated world to wall in exactly
   the startup spawn and entrance 0 with their ends more than 100 units from the gated ends (entrance 1 arrives either way).

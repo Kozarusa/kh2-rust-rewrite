@@ -51,6 +51,18 @@ pub fn rotate_y(v: [f32; 4], ang: f32) -> [f32; 4] {
     [vm::ee_clamp(v[0] * c + v[2] * s), v[1], vm::ee_clamp(-v[0] * s + v[2] * c), v[3]]
 }
 
+/// Rotation about the X axis (host 0.68, FUN_0016cf78 -> FUN_0017c398 with the matrix of FUN_0011b490 -> FUN_002fb580): y' = y cos - z sin,
+/// z' = y sin + z cos, the angle wrapped like `rotate_y`'s. The sign is the one the oracle test `vec_rotate_x_matches_the_game` finds in the game.
+pub fn rotate_x(v: [f32; 4], ang: f32) -> [f32; 4] {
+    let pi = std::f32::consts::PI;
+    let wrapped = if ang > 0.0 { ((ang + pi) % std::f32::consts::TAU) - pi } else { pi - ((pi - ang) % std::f32::consts::TAU) };
+    if wrapped == 0.0 {
+        return v;
+    }
+    let (s, c) = game_sin_cos(wrapped);
+    [v[0], vm::ee_clamp(v[1] * c - v[2] * s), vm::ee_clamp(v[1] * s + v[2] * c), v[3]]
+}
+
 /// Length of the xyz part, with the vector unit's saturating arithmetic.
 fn length(v: [f32; 4]) -> f32 {
     let sq = |a: f32| vm::ee_clamp(a * a);
@@ -59,7 +71,7 @@ fn length(v: [f32; 4]) -> f32 {
 
 /// True for the indexes of group 0 that this module implements.
 pub fn is_math(index: u16) -> bool {
-    matches!(index, 3 | 4 | 5 | 6 | 7 | 13 | 16 | 17 | 18 | 23 | 35 | 36 | 37)
+    matches!(index, 3 | 4 | 5 | 6 | 7 | 13 | 16 | 17 | 18 | 23 | 35 | 36 | 37 | 68)
 }
 
 /// Runs math function `index` of group 0. Vector results come back as a pointer into the scratch buffers.
@@ -89,6 +101,10 @@ pub fn call(mem: &mut Mem<'_>, index: u16, a: &[u32], io: &mut dyn VecAccess) ->
         13 => {
             let v = io.read_vec(mem, a[0])?;
             Ok(Some(mem.sh.put_vec(rotate_y(v, fl(a[1])))))
+        }
+        68 => {
+            let v = io.read_vec(mem, a[0])?;
+            Ok(Some(mem.sh.put_vec(rotate_x(v, fl(a[1])))))
         }
         16 => {
             let n = a[0];

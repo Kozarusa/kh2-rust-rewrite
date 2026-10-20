@@ -267,11 +267,12 @@ pub(crate) struct BevyHost<'a> {
     pub(crate) tag: &'a str,
 }
 
-/// The self-targeted motion queue (host 1.13) is enabled for M_EX900 and M_EX110 only until it is verified for the other kinds whose
+/// The self-targeted motion queue (host 1.13) is enabled for M_EX900, M_EX110 and M_EX210 only until it is verified for the other kinds whose
 /// scripts call it (M_EX930, M_EX940, M_EX850, M_EX760, M_EX420): for them the call stays unmapped as before. M_EX110's
-/// `atk_foot_stamp` (R162c) queues motion 0 behind motion 202 and then waits (R0f0a) for the motion state to leave 202.
+/// `atk_foot_stamp` (R162c) queues motion 0 behind motion 202 and then waits (R0f0a) for the motion state to leave 202. M_EX210's
+/// `move_target` run (0x11e6) plays motion 153, queues motion 0 and waits (0x1205) for the motion state to leave 153: without the queue it waited forever.
 fn queues_motions(tag: &str) -> bool {
-    tag.starts_with("M_EX900#") || tag.starts_with("M_EX110#")
+    tag.starts_with("M_EX900#") || tag.starts_with("M_EX110#") || tag.starts_with("M_EX210#")
 }
 
 fn imp(v: Value) -> (Value, St, &'static str) {
@@ -939,6 +940,13 @@ impl BevyHost<'_> {
             Call::Func { group: 1, index: 161, args } if args[0].int() as u32 == PLAYER => {
                 approx(Value::Bool(false), "the app has no object links (1.18 is not carried out): the player is never linked")
             }
+            // 1.162 (0x173798 -> FUN_0018ffb0 -> FUN_001cb530(table 0x1c89b90, arg1, word +4 of arg0)): enters the object that 1.143 stored at
+            // +4 of the block into the 8-slot table at 0x1c89b90 (halfword tag arg1), but only when FUN_0019a3f8 finds it in the object list.
+            // 1.143 answers no object in the app, so the word is 0 and the call changes nothing. M_EX210 makes it once from its
+            // shared-block set-up (R1a25 at 0x1a69). Who reads the table was not traced.
+            Call::Unknown { group: 1, index: 162, .. } | Call::Func { group: 1, index: 162, .. } => {
+                stub(Value::None, "enters the object bound by 1.143 into the table at 0x1c89b90; 1.143 finds none, so nothing is entered")
+            }
             // 1.161 on the script's own object (M_EX770: BDX R145b at 0x1479 and R1659 at 0x165f ask it of local+0). Same function: the
             // object's +0x570 is the link parent that link_start (1.18) writes; the app writes none, so the enemy is never linked and
             // its wait loop ends at once.
@@ -1104,6 +1112,15 @@ impl BevyHost<'_> {
                 self.obj.collect_all = true;
                 imp(Value::None)
             }
+            // 6.24 (0x2ee960, `kh2_bdx::names` obj_vec_8a0): the 16 bytes at +0x8a0 of the object's +4 record, copied to the static buffer
+            // at 0x1e25680. FUN_00182690 writes them each tick as (position +0x5c0 - previous position +0x540 - the offset +0x5a0) times
+            // DAT_00356f48: the displacement the object really made, the same quantity as +0x860 (1.62) up to the +0x5a0 offset (zero unless
+            // the object rides something; its writers were not traced). M_EX210's wait loop (0x105f) compares its length with half of 1.64's.
+            Call::Func { group: 6, index: 24, args } if args.first().map(|a| a.int() as u32) == Some(self.obj.handle) => {
+                let v = self.obj.moved;
+                approx(Value::Vec([v.x, -v.y, -v.z, 0.0]), "the displacement made this tick as for 1.62; the +0x5a0 offset FUN_00182690 subtracts is taken as zero [inferred]")
+            }
+            Call::Func { group: 6, index: 24, .. } => missing(Value::Vec([0.0; 4]), "obj_vec_8a0 of an object other than self"),
             _ => missing(Value::Int(0), "function not mapped"),
         }
     }

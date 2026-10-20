@@ -1114,3 +1114,35 @@ gold orbs, "6p" and "30" in the air). `idle-hud`, `combat-ground` and `tt04-dusk
 Gaps: (1) Only ca09 b_02 was run; ca09 b_00 (with `M_EX210`) and bb12 were not. (2) Not seen: the modes `mode_hard`, `mode_battle_boss`, `mode_revenge_boss`, `btl_*`, `rvg_*`, `rst_*`, `atk_mine`, `move_step`,
 `freeze`, `leave`, `idle`, `event`, `revenge` (the soak showed `mode_battle` -> `mode_normal` rather than the `btl_*` modes). (3) Visuals of `atk_brest`, `atk_quake`, `atk_mine` (host 1.87 `spawn_attached`, Approx)
 were not looked at. (4) The ObjectTargetType of the objentry row was not looked up. (5) What hits Sora was not tied to the log lines naming the kind [inferred: Sora lost HP in the soak].
+
+## The enemy M_EX600 (WP-EN10o)
+
+`M_EX600` (object 121, `00objentry` row 121: ObjectType 4, `NeoStatus` 1014, flags 0, Weight 200, `SpawnLimiter` 10, no spawn objects; `enemy::M_EX600`, called by its model: the data gives no name; in the PNGs it is a black and
+red Light Cycle bike with a red spike on its back) is a Heartless of Space Paranoids and Hollow Bastion (area survey: hb02, hb11, hb19, he09, tr02, tr03). Its BDX script (5535 words, `cargo run -p kh2 -- bdx M_EX600`)
+registers the modes `appear`, `mode_battle`, `mode_battle_boss`, `mode_revenge`, `mode_revenge_boss`, `btl_attack`, `btl_hard`, `btl_long`, `btl_normal`, `btl_short`, `btl_super_hard`, `rvg_*`, `rst_*`, `atk_charge`,
+`atk_somersault`, `atk_spin`, `move_back`, `move_slide`, `move_slide_back`, `move_target`, `footwork`, `idle`, `idle_time`, `freeze`, `leave`, `dead`, `event`, `revenge`. The other objentry rows with the name
+(`M_EX600_LC`, `_LC_ATK`, `_LC_CHG`, `_LC_GRD`, objects 1675 and 1717-1719, `NeoStatus` 0) are separate objects and not part of this kind; `N_EX600` is a different kind of the app.
+
+- **Stats.** The set-up routine R13af (0x13af, called at 0x066a) takes eight values after the object; the first pushed, 10 (pushed at 0x0652; R13af stores it to local+0x20), goes to `set_obj_param` (host 2.9 at 0x13d6): `enmp`
+  row 10 (Experience 100; log `experience: enmp 10 defeated: +4 (lvpm 4 x enmp 100)`). The harness enemy has 20 HP.
+- **Death.** `hp 0: switching to mode dead`, then `drop (host 1.92) asked row 42, used row 42` and `prize: drop of row 42 at ..: 4 objects`; `Kind::death_effect` is true as for the Dusk.
+- **Host calls.** No arm was added: every call the script made was answered already (43 distinct calls in the 146 s soak; Impl, or the existing Approx / Stub arms: 1.121, 1.171, 1.206 and the mode calls 65535.0 Stub; 1.111, 1.12,
+  1.120, 1.23, 1.34, 1.56, 1.60, 1.61, 1.80, 1.87, 1.92, 2.5, 65535.1, 65535.2 Approx). Host 1.13 is in the script once (0x009b, the handler of event 11) and was never called in the runs; `queues_motions` is unchanged.
+  No edit to `enemy_host.rs` and `enemy-ai.md`.
+Acceptance run (WP-EN10o), tr02 group b_60 (btl program 0x35: two `M_EX600` created at load (spawn kind 3) and four more (spawn kind 2, wave 1) by kind-2 group 0x38, volume shape 2 at game (1020, -100, -129); test
+`m_ex600_is_an_enemy_kind_with_its_objentry_row`, disc). Start: `KH2_PROGRAMS=0,35,0 KH2_WAVE_GROUP=b_60 KH2_ENTRANCE=1 KH2_NO_PARTY=1 KH2_AREALOG=1 KH2_BDXLOG=1 KH2_HITLOG=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1
+KH2_SCREENSHOT=<png> KH2_SHOT_AT=<s> kh2-game tr02` through `local/capped.ps1 -CapMB 2500` (Sora is put at the group's player entry). (1) Soak, shot at 150 s with J every 5 s from 15 s (only to press "Continue" after Sora's
+2 knock-outs; enemy ticks stop at game over): 0 `unimplemented host call`, 0 `script error`; up to tick 8760 (about 146 s of enemy time) the instances ran `appear`, `mode_battle` -> `btl_short` / `btl_attack` / `btl_long` ->
+`move_slide` / `move_target` / `move_back`, `footwork`, `atk_charge`, `atk_spin`, `atk_somersault`, `mode_revenge` -> `rvg_short`, `idle_time`, `dead` and `leave`; longest runs between `mode` lines: `appear` 271 ticks,
+`move_slide` 180, `footwork` 177, `atk_charge` 171, `atk_spin` 146, `move_target` 94; no mode was stuck (nothing above 4.6 s apart from `appear` at 4.5 s). `leave` (motion 45, `spawn_attached` 1, `set_flag` bit 3) ran for
+one instance (#4, 29 s after its creation, still alive) and was not looked at in a PNG. (2) Hitting run, `KH2_KEYS` `12:Q` then J every 0.45 s from 13 s: `M_EX600 hit: atkp 126 damage 3 hp 17` .. `atkp 129 damage 6 hp 0`
+(about 5 to 8 hits per kill, reactions 3 and 7), `hp 0: switching to mode dead` for `M_EX600#1` (tick 1030), `experience: enmp 10 defeated: +4`, the drop above; in a 100 s hitting run five of the six died (#1 t1030, #2 t1468,
+#3 t1875, #5 t2039, #6 t2559) and #4 entered `leave` at t3208. PNGs looked at (`local\ex600_*.png`, not committed): idle (Sora on the dark grid floor, a black and red Light Cycle at lower left and another further right, debug
+text `M_EX600 Idle hp 20/20` twice), a hit at 13.7 s (Sora mid-swing, golden hit stars, damage number "3", a blue lock-on reticle, debug text `M_EX600 Hurt hp 17/20`), a death at 17.6 s (debug text `M_EX600 Hurt hp 0/20`, a red
+burst, prize gems, a green orb and an "OBTAINED MUNNY!" strip at upper left, damage number "6"). `idle-hud`, `combat-ground` and `tt04-dusk` were not rerun: the change adds a kind and touches no shared code path [not verified].
+
+Gaps: (1) Only tr02 b_60 was run; hb02 b_20 (also `M_EX760`), hb11 b_20 (six `M_EX600` in kind-2 groups 0xfb, 0xfe, 0xff), hb19 b_20, tr03 b_00/b_20 and he09 b_98 were not (he09 b_98 has `Shadow` members).
+(2) Not seen: the modes `mode_battle_boss`, `mode_revenge_boss`, `btl_hard`, `btl_normal`, `btl_super_hard`, `rvg_hard` / `rvg_long` / `rvg_normal` / `rvg_super_hard`, `rst_*`, `move_slide_back`, `idle`, `freeze`, `event`,
+`revenge`. (3) Why the one instance chose `leave` (the script's condition for entering it was not traced) and what it does after motion 45 (the instance stopped ticking) were not looked into. (4) The visuals of `atk_charge`,
+`atk_spin`, `atk_somersault` (host 1.87 `spawn_attached`, Approx) were not looked at. (5) What hurts Sora was not tied to log lines naming the kind [inferred: Sora lost HP and was knocked out twice in the soak]. (6) The
+`ObjectTargetType` of the objentry row is 0 (not looked up further).

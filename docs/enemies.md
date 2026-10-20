@@ -574,6 +574,13 @@ records (the object-command queue behind `FUN_00188cc0`) and the jump-table case
 event player / mission scripts queue, which the app does not have for enemies. No frame trigger or collision part was read in the
 `M_EX900.mset`. Next step for a later WP: trace the producers of the records `FUN_00188cc0` walks.
 
+**Event 17 sender found (WP-DYN1, docs/dynamic-tracing.md section 3).** The records `FUN_00188cc0` walks are the motion's frame triggers
+(the trigger table of each `.mset` slot), and the dispatcher's jump-table entry 7 (`0x188604`, table 0x37aa78 read live) is the event 17 sender: a
+frame trigger of type 7 with halfwords (code, argument). `kh2 mset obj/M_EX900.mset` shows them: `7@0[2, 0]` on 26 slots (code 2 clears script word
++0x18 and restores the weakness byte to 100), `7@0[3, 0]` / `7@175[3, 0]` on the dive slots (code 3 sets +0x18 and the byte to 0), one code 1. The
+app now delivers it (`enemy_ai::motion_events`), so the two kinds of `KINDS` with an entry for event 17 (M_EX690, M_EX940) get it too. M_EX900 is
+still not in `KINDS` (no soak of it was run in WP-DYN1); its gate in the paragraph above is lifted.
+
 `M_EX900` (object 309 = 0x135, `00objentry` row 309: ObjectType 4, `NeoStatus` 3004, weight 500, flags 0, `SpawnLimiter` 10;
 `enemy::M_EX900`, called by its model) appears in 12 areas (eh11, eh25, he09, tt03, tt06, tt07, ..). In tt03 the `btl`
 program 0x49 loads b_40 with it and two Dusks (test `tt03_btl_program_49_holds_an_m_ex900`, disc). Its BDX script

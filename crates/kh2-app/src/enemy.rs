@@ -182,7 +182,7 @@ pub const M_EX690: Kind = Kind { name: "M_EX690", enmp: 67, model: "M_EX690", de
 pub const M_EX050: Kind = Kind { name: "M_EX050", enmp: 35, model: "M_EX050", death_effect: true, status: true };
 
 /// Every enemy kind the app has.
-pub const KINDS: [&Kind; 23] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700, &M_EX950, &M_EX650, &M_EX660, &M_EX110, &M_EX520, &M_EX770, &M_EX210, &M_EX690, &M_EX910, &M_EX050];
+pub const KINDS: [&Kind; 24] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700, &M_EX950, &M_EX650, &M_EX660, &M_EX110, &M_EX520, &M_EX770, &M_EX210, &M_EX690, &M_EX910, &M_EX050, &M_EX730];
 
 /// The rigs of the enemy kinds, by `Kind::name` (Shadow and Soldier share `sora::Rigs`' copies).
 #[derive(Resource, Default)]
@@ -2225,6 +2225,12 @@ mod tests {
     fn m_ex050_is_an_enemy_kind_with_its_objentry_row() {
         assert!(KINDS.iter().any(|k| std::ptr::eq(*k, &M_EX050)));
         assert_eq!((M_EX050.enmp, M_EX050.model, M_EX050.status, M_EX050.death_effect), (35, "M_EX050", true, true));
+    /// `M_EX730` (object 123) is an enemy kind of the app: its `00objentry` row is type 4 with `NeoStatus` 1027, `SpawnLimiter` 10 and no spawn objects, its script's `set_obj_param` row is `enmp` 12, and ca09's
+    /// `btl` program 3 loads b_02 with three of it (its three `M_EX560` are skipped: not in the app). Needs `KH2_ISO` for the table and group part.
+    #[test]
+    fn m_ex730_is_an_enemy_kind_with_its_objentry_row() {
+        assert!(KINDS.iter().any(|k| std::ptr::eq(*k, &M_EX730)));
+        assert_eq!((M_EX730.enmp, M_EX730.model, M_EX730.status, M_EX730.death_effect), (12, "M_EX730", true, true));
         let Ok(iso) = crate::assets::iso_path() else { return };
         if !iso.exists() {
             return;
@@ -2243,6 +2249,17 @@ mod tests {
         assert_eq!(b20.members.len(), 3);
         assert!(b20.members.iter().all(|m| m.kind.name == M_EX050.name));
     }
+        let row = rows.iter().find(|r| r.model_name == "M_EX730").expect("objentry row of M_EX730");
+        assert_eq!((row.object_id, row.object_type, row.neo_status, row.spawn_object1, row.spawn_limiter), (123, OBJECT_ENEMY, 1027, 0, 10));
+        let groups = area_groups(&disc, "ca09");
+        let ard = disc.read("ard/ca09.ard").and_then(|d| kh2_ard::Area::parse(&d)).map(|(a, _)| a).expect("ca09.ard");
+        let run = kh2_ard::run::run_area(&ard, [0, 3, 0], 0);
+        let b02 = btl_groups(&groups, &run).into_iter().find(|g| g.name == "b_02").expect("program 3 loads b_02");
+        assert_eq!(b02.members.len(), 3);
+        assert!(b02.members.iter().all(|m| m.kind.name == M_EX730.name));
+        assert_eq!(b02.skipped.len(), 3);
+    }
+
     fn member(part: usize, spawn_kind: i32, serial: u16, delay: u16, wave: u8) -> Member {
         Member { kind: &DUSK, at: Vec3::ZERO, yaw: 0.0, spawn_kind, spawn_params: [0; 2], object_id: 0x13e, part, spawn_arg: 0, serial, delay, wave, limiter: 1, radius: 0, flies: false }
     }

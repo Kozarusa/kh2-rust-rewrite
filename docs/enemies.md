@@ -1029,3 +1029,37 @@ Gaps: (1) Only bb04 b_20 (and bb00 b_02 before the arms) were run; bb04 b_00 / b
 app lacks) were not. (2) Not seen: `mode_battle_boss`, `mode_revenge_boss`, `btl_super_hard`, `rvg_*`, `rst_*`, `fight`, `idle`, `idle_time`, `freeze`, `atk_dush_ref` (a reflect state), `event`, `revenge`.
 (3) The attack id 148 branch of R0231 (which skips both new calls) was not hit; which attack that is was not looked up. (4) Host 1.13, three sites, was not reached. (5) The +0x11c object write after
 host 1.97 (R about 0x079e) was not traced to a reader. (6) 2.85's role is the name table's, the function has no decomp file.
+## The enemy M_EX730 (WP-EN10i)
+
+`M_EX730` (object 123, `00objentry` row 123: ObjectType 4, `NeoStatus` 1027, flags 0, Weight 100, `SpawnLimiter` 10, no spawn objects; `enemy::M_EX730`, called by its model: the data gives no
+name; in the PNGs it is a teal Heartless with a pointed hat) is a Heartless of the areas ca01, ca09, ca12, ca13, ca18, ca21 (area survey, 10 areas). Its BDX script (5215 words,
+`cargo run -p kh2 -- bdx M_EX730`) registers the modes `appear`, `mode_battle`, `mode_revenge`, `mode_battle_boss`, `mode_revenge_boss`, `btl_attack`, `btl_short`, `btl_long`, `btl_normal`,
+`btl_hard`, `btl_super_hard`, `rvg_*`, `rst_*`, `atk_slap`, `atk_hit`, `atk_charge`, `move_back`, `move_back_jump`, `move_roll_jump`, `move_target`, `footwork`, `idle`, `idle_time`, `freeze`,
+`leave`, `rc_tornado`, `test_rc_tornado`, `dead`, `event`, `revenge`.
+
+- **Stats.** The set-up routine R1268 (0x1268, called at 0x05ba) takes eight values after the object; the first pushed, 12 (pushed at 0x05a2; R1268 stores it to local+0x20), goes to `set_obj_param`
+  (host 2.9 at 0x128f): `enmp` row 12 (Health 100, MaxDamage 10000, Experience 100, Prize 0; log `experience: enmp 12 defeated: +4 (lvpm 4 x enmp 100)`). The harness enemy has 20 HP.
+- **Death.** `hp 0: switching to mode dead`, then `drop (host 1.92) asked row 44, used row 44` and `prize: drop of row 44 at ..: 4 objects, kinds [0, 0, 3, 3]`; `Kind::death_effect` is true as for the Dusk.
+- **Host calls.** Two arms were appended to `enemy_host.rs`: 1.22 `spawn_effect_at` (0x1717c0, called at 0x00e9 with element 12 at a bone and at 0x0c8c with element 9; Stub: a handle is returned,
+  the element at the script's vector is not drawn because the app only starts effects on their owner) and 0.52 `effect_fade` (R0d4f at 0x0d63 fades a held handle; Stub, nothing to fade). Every other call
+  the runs made was answered already. Host 1.13 on itself (Stub unless the kind is tagged in `queues_motions`) never left a mode waiting: the longest mode run in the soaks was `atk_charge`
+  with 333 ticks (about 5.5 s); `queues_motions` is unchanged. Host 1.12 `play_motion_checked` answered None and was repeated every tick by `M_EX730#1` in the first soak run for about 10 ticks at least (motion 2, blend 8); no stuck mode followed.
+Acceptance run (WP-EN10i), ca09 group b_02 (btl program 3: three `M_EX730`, plus three `M_EX560` the app lacks; kind-2 groups 0x1ad (two, volume at game (-657, 25, -649)) and 0x1ae (one, volume at
+(1084, 25, 291)); test `m_ex730_is_an_enemy_kind_with_its_objentry_row`, disc). The run starts at entrance 1 (game (1641, -39, -555)) and walks: `KH2_PROGRAMS=0,3,0 KH2_WAVE_GROUP=b_02 KH2_ENTRANCE=1
+KH2_NO_PARTY=1 KH2_AREALOG=1 KH2_BDXLOG=1 KH2_HITLOG=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1 KH2_KEYS=7:A:0.7,8:W:4,.. KH2_SCREENSHOT=<png> KH2_SHOT_AT=<s> kh2-game ca09` through `local/capped.ps1 -CapMB 2500`
+(KH2_KEYS only works with KH2_SCREENSHOT set; A held 0.7 s at 7 s then W held 4 s at 8 s walks Sora into volume 0x1ae). (1) Soak, 125 s with J every 5 s from 14 s (Sora was knocked out
+at least once and came back through the game-over menu on its own), run twice, the second with the final code: 0 `unimplemented host call`, 0 `script error`; the three enemies ran `appear`, `mode_battle` (-> `btl_attack`
+-> `move_back_jump` / `atk_slap`, `btl_short` -> `atk_hit` / `idle_time`, `btl_long` -> `move_target`), `footwork`, `idle`, `mode_revenge` -> `rvg_short` -> `atk_charge`, about 110 s of enemy time (tick
+6731); the longest mode runs between `mode` lines: `atk_charge` 333 ticks, `footwork` 200, `move_target` 166, `idle` 88, `appear` 81, `atk_slap` 74. (2) Hitting run, `KH2_KEYS` `7:A:0.7,8:W:4,12:Q` then
+J every 0.45 s from 13 s: `M_EX730 hit: atkp 128 damage 2 hp 18` .. `atkp 129 damage 6 hp 0` (8 hits per kill, `FlinchPush` and `Blow` reactions), `hp 0: switching to mode dead` for `M_EX730#3` (about 21 s) and
+`#2` (about 37 s), `experience: enmp 12 defeated: +4` twice, the drop above; 0 `unimplemented host call`. The third (`#1`, volume 0x1ae) was not hit in that run. PNGs looked at (`local\ex730_*.png`, not
+committed): idle at 12 s (`ex730_s12.png`: Sora on a rocky ledge under a night sky; debug text `M_EX730 Idle hp 20/20`; the enemy itself is 13 m away and off screen), a hit at 16.5 s (`ex730_s16.5.png`:
+Sora under the lock-on with golden hit stars and damage numbers "1" and "2", a large teal-hatted Heartless in a hurt pose, entry `Hurt hp 17/20`), a death at 21.6 s (`ex730_s21.6.png`: a pink heart,
+green and yellow prize gems, a "Obtained munny" strip and "4p" in the air). `idle-hud`, `combat-ground` and `tt04-dusk` were run by hand through `capped.ps1` (accept.ps1 stops `kh2-game`, rule A10):
+log expectations met (`hud: edge layout`, `move:   chosen key`, `Dusk` / `mode_battle`) and the PNGs looked at (idle HUD without enemies and reticle; Sora mid-combo with Shadows flinching; Dusk hurt in the Sandlot).
+
+Gaps: (1) Only ca09 b_02 was run; ca01 b_00 (with Shadows), ca12 b_01 (with `M_EX210`), ca13 b_01 (with `M_EX650`, `Soldier`, `M_EX210`), ca18 b_03, ca21 b_00 (with `M_EX650`) were not. (2) Not seen: the modes
+`mode_battle_boss`, `mode_revenge_boss`, `btl_normal`, `btl_hard`, `btl_super_hard`, `rvg_*` beyond `rvg_short`, `rst_*`, `move_back`, `move_roll_jump`, `freeze`, `leave`, `rc_tornado` (a reaction command: the app sends
+no event 11 message), `event`, `revenge`. (3) The elements of host 1.22 (12 at a bone, 9 at a position) and the `atk_charge` visuals are not drawn; which file holds them was not looked up. (4) Host 1.13
+and 1.12 were not traced further than the soak (no mode stuck). (5) The ObjectTargetType of the objentry row was not looked up. (6) What hits Sora (`atk_slap`, `atk_hit`, `atk_charge`) was not tied to the log
+lines naming the kind [inferred: Sora lost HP and was knocked out during the soak].

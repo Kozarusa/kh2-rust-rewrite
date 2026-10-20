@@ -1078,7 +1078,7 @@ name; in the PNGs it is a small orange four-petal flower with a teal centre, a s
   (`mips_scan.py --store-off 0x144`) gave 43 stores in functions of several classes; which one writes an enemy actor was not traced. Every other call the runs made was answered already; host 1.13 never left a mode waiting
   (`queues_motions` is unchanged).
 Acceptance run (WP-EN10m), he05 group b_00 / b_01 (kind-2 groups: b_00 0x38 three, 0x39 four, 0x3a four, 0x3d two `M_EX750` beside `M_EX520` and `M_EX690`; btl program 2 b_01: four `M_EX750` and three `M_EX050`; test
-`m_ex750_is_an_enemy_kind_with_its_objentry_row`, disc). The kind-2 volumes are far from the group's player entry, so the run used a throw-away local patch that put Sora at the first volume of group 0x38 (game (-2613.88,
+`m_ex750_is_an_enemy_kind_with_its_objentry_row`, disc). The kind-2 volumes are far from the group's player entry, so the first run used a throw-away local patch that put Sora at the first volume of group 0x38 (a later run reached it without a patch: `KH2_ENTRANCE=0 KH2_YAW=3.14 KH2_KEYS=2:W:8,...` walks Sora from entrance 0 into the volume) (game (-2613.88,
 -125, 3316.37), not committed; `KH2_PROGRAMS=0,1,0 KH2_WAVE_GROUP=b_00 KH2_NO_PARTY=1 KH2_AREALOG=1 KH2_BDXLOG=1 KH2_HITLOG=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1 KH2_SCREENSHOT=<png> KH2_SHOT_AT=<s> KH2_KEYS=..
 kh2-game he05` through `local/capped.ps1 -CapMB 2500`). Three `M_EX750` were created at the record's points (about 4 m from Sora). (1) Soak, 172 s of wall time (tick 6060, about 101 s of enemy time) with J every
 second from 14 s: 0 `unimplemented host call` after the 1.77 arm, 0 `script error`; modes run: `appear`, `mode_battle`, `btl_short` / `btl_long`, `atk_seed_shot`, `idle_time`, `footwork`, `mode_revenge` -> `rvg_short` ->
@@ -1089,7 +1089,7 @@ him; debug text `M_EX750 Idle hp 20/20` three times, d 3.8 to 4.5), a hit at 16 
 `Idle hp 20/20` twice), a death at 17.6 s (`ex750_d1.png`: only two enemies listed, a green prize orb at the right edge, Sora with the keyblade, sparks). `idle-hud`, `combat-ground` and `tt04-dusk` were run
 by hand (see the report).
 
-Gaps: (1) Only he05 was run; he07 was not. The kind-2 spawn volumes of he05 are far from the group's player entry (a gap of the harness, not of the kind): a harness has to walk Sora to a volume (no committed aid; the acceptance run used a throw-away local patch). (2) Not seen: `btl_down`, `route_panic`, `leave`, `rvg_long`,
+Gaps: (1) Only he05 was run; he07 was not. The kind-2 spawn volumes of he05 are far from the group's player entry (a gap of the harness, not of the kind): a harness has to walk Sora to a volume (no committed aid; use `KH2_ENTRANCE=0 KH2_YAW=3.14 KH2_KEYS=2:W:8,...`). (2) Not seen: `btl_down`, `route_panic`, `leave`, `rvg_long`,
 the boss modes and the paths where host 1.77 would answer non-zero (the writer of +0x144 is untraced: searched `mips_scan.py --store-off 0x144`, 43 stores, none read as the enemy actor's). (3) The seed shot's own effects were not looked up.
 ## The enemy M_EX510 (WP-EN10k)
 `M_EX510` (object 3, `00objentry` row 3: ObjectType 4, `NeoStatus` 1005, flags 0, ObjectTargetType 1, Weight 100, `SpawnLimiter` 10, no spawn objects; `enemy::M_EX510`, called by its model: the data gives no

@@ -2543,11 +2543,15 @@ impl Progress {
         p.boot_weapons = boot.clone();
         p.story().effects = effects.clone();
         // `FUN_0017fd10` -> `FUN_001b6860`: the `wldf` entry (world flags that follow story flags).
-        p.story().world_table = Arc::new(
+        let wtable = Arc::new(
             disc.read("00progress.bin")
                 .and_then(|f| kh2_bar::parse(&f).ok()?.into_iter().find(|e| e.tag == kh2_ard::worldmap::WLDF).map(|e| kh2_ard::worldmap::Wldf::parse(e.data)))
                 .unwrap_or_default(),
         );
+        p.story().world_table = wtable.clone();
+        // `FUN_00187d20` -> `FUN_001b6870`: the process boot sets world flag 0 and runs its list (route states, records).
+        let ran = p.story().world_boot();
+        info!("progress: world boot ran flags {ran:?}; route states 1..=21 {:?}", (1..=21u32).map(|r| p.story().world_byte(world::ROUTE_STATE + r)).collect::<Vec<_>>());
         match std::env::var("KH2_STATE") {
             Ok(path) if !path.is_empty() => match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|s| p.apply_json(&s)) {
                 Ok(()) => {
@@ -2563,6 +2567,8 @@ impl Progress {
                     p = Progress::new_game(index, &plrp);
                     p.boot_weapons = boot;
                     p.story().effects = effects;
+                    p.story().world_table = wtable;
+                    p.story().world_boot();
                     p.apply_baseline(std::env::var("KH2_ABILITY_START").as_deref() != Ok("data"));
                 }
             },
@@ -2996,14 +3002,34 @@ impl Story {
     /// flag's list runs with the hook argument 1 (`FUN_001b6a48(record, 1)`). The later menu-side work of that function (sorting the
     /// flags, `FUN_002c6db0`) is not ported. Returns the flags consumed, oldest first.
     pub fn world_consume_queue(&mut self) -> Vec<u8> {
+        self.world_drain(true)
+    }
+
+    /// `FUN_001b6e20` then each flag's list with the hook argument `call_hook` (`FUN_001b6e60` is the same loop with 0).
+    fn world_drain(&mut self, call_hook: bool) -> Vec<u8> {
         let queue = self.world_queue();
         if !queue.is_empty() {
             self.world_set(world::QUEUE_COUNT, 0);
         }
         for &key in &queue {
-            self.world_run_list(key, true);
+            self.world_run_list(key, call_hook);
         }
         queue
+    }
+
+    /// `FUN_001b6870`, the boot of the world flags (run once by `FUN_00187d20` from the game-state constructor `FUN_00105638`,
+    /// itself called only from `FUN_00101d68` after `FUN_001688a0` has loaded the `wldf` table): clears the eight flag words and the
+    /// queue count, sets world flag 0 (`FUN_001b68f8(0)`) and drains the queue with hook argument 0 (`FUN_001b6e60`). It is the
+    /// start-up state of the process, so it is the new game's world state; a loaded save replaces the whole region afterwards.
+    /// No other caller exists (scan of `jal` to 0x1b6870 and 0x1b6e60: none; the save block's static initialiser `FUN_001057b8`
+    /// clears the region without calling it). Returns the flags the drain ran.
+    pub fn world_boot(&mut self) -> Vec<u8> {
+        for k in 0..8 {
+            self.world_set_word(world::FLAGS + 4 * k, 0);
+        }
+        self.world_set(world::QUEUE_COUNT, 0);
+        self.world_flag_set(0);
+        self.world_drain(false)
     }
 
     fn lock_entry(&mut self, i: usize) -> &mut [u16; 2] {
@@ -4436,6 +4462,49 @@ mod tests {
         for id in ids {
             assert_eq!(s.world_byte(world::ROUTE_STATE + u32::from(id)), op as u8 - 8, "flag {flag} op {op:#x} route {id}");
         }
+    }
+
+    /// The boot (`FUN_001b6870`) on the disc's own table: flag 0 is set and its list leaves each route state as the list says
+    /// (the lists are read from the table, the states from the story), the queue is drained, and a loaded save's world region replaces it.
+    #[test]
+    fn the_world_boot_runs_flag_0s_list_on_the_disc_table() {
+        let Some(mut tb) = tables() else { return };
+        let file = tb.archive.read("00progress.bin").expect("00progress.bin");
+        let bar = kh2_bar::parse(&file).expect("BAR");
+        let wldf = bar.iter().find(|e| e.tag == kh2_ard::worldmap::WLDF).expect("wldf").data.to_vec();
+        let table = Arc::new(kh2_ard::worldmap::Wldf::parse(&wldf));
+        let rec = table.find(0).expect("the table has a record for world flag 0");
+        let mut expect: BTreeMap<u32, u8> = BTreeMap::new();
+        for a in table.actions(rec.list) {
+            if (8..=0xb).contains(&a.op) {
+                a.ids().for_each(|id| {
+                    expect.insert(u32::from(id), a.op as u8 - 8);
+                });
+            }
+        }
+        eprintln!("flag 0 route writes (route, state): {expect:?}");
+        assert!(!expect.is_empty(), "flag 0's list writes route states");
+        let mut s = Story { world_table: table.clone(), ..Story::default() };
+        let ran = s.world_boot();
+        assert!(s.world_flag(0), "world flag 0 is set");
+        assert_eq!(ran.first(), Some(&0), "flag 0 was queued first and drained");
+        assert_eq!(s.world_byte(world::QUEUE_COUNT), 0, "the queue is drained");
+        for (&id, &state) in &expect {
+            if id != 0 {
+                assert_eq!(s.world_byte(world::ROUTE_STATE + id), state, "route {id}");
+            }
+        }
+        assert_eq!(expect.iter().find(|&(&id, _)| id == 21).map(|(_, &v)| v), Some(2), "route 21 starts at 2");
+        let before = s.world_bytes();
+        // A loaded save carries its own region, whatever the boot wrote.
+        let mut saved = Story { world_table: table, ..Story::default() };
+        saved.world_set(world::ROUTE_STATE + 3, 3);
+        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        *p.story() = s;
+        p.apply_json(&format!("{{\"world_state\": \"{}\"}}", hex(&saved.world_bytes()))).unwrap();
+        assert_eq!(p.story().world_bytes(), saved.world_bytes());
+        assert_ne!(p.story().world_bytes(), before);
+        assert_eq!(p.story().world_byte(world::ROUTE_STATE + 3), 3, "the saved route state, not the boot's");
     }
 
     /// The `story_flags` / `story_clear` keys of the state file, and `story_json` read back.

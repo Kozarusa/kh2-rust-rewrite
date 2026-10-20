@@ -4,6 +4,8 @@ One short section per work package. "Verified" says how; nothing here was checke
 
 ## Shift 18 (2026-10-20)
 
+**WP-IW2 (collision groups, follow-up).** BDX hosts 1.36/1.37 switch collision groups at run time (FUN_0015e928/FUN_0015e9a8); every World query is gated by the group mask (the original's walker FUN_00141b50 ends all of them); the area word is applied once per world so switches persist. Only B_EX140 switches groups in eh10. Verified by 4 tests (1325 total) and harness runs of eh10 and tt04. Open: area opcode 0xb and its two parameterless hosts (0x172800, 0x172818) not ported; drawn-mesh-group hooks not ported.
+
 **WP-IW1 (invisible walls).** COCT mesh groups (mesh byte +0x11) are parsed and gate collision by the area script's map-visibility word, as the original walker does (FUN_00141768/FUN_00141840/FUN_00141b50); eh10 `0,1,0` hid 108 arena-wall polygons the app treated as solid. New `kh2 coct-walls <area>`. Verified by 3 tests (1321 total) and a harness walk. Open: host 1.36/1.37 group on/off, ground/ceiling/raycast/blocked_m not gated, user's hand play-test.
 
 ## Shift 17 (2026-10-19)

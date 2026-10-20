@@ -965,3 +965,37 @@ ca09 (b_20, with `M_EX760`), ca15 b_21 (with `M_EX660`) and bb07 / bb11 were not
 `mode_battle` entry, `rvg_*`, `rst_*`, `atk_counter`, `rc_lancesnatch` (a reaction command: the app sends no event 11 message), `freeze`, `land`, `idle_time`, `event`, `revenge`. (3) `M_EX690` never
 hurt Sora in the log by a line naming it; Sora was knocked out once in the soak and the `sora hit: atkp 107` lines are not tied to the kind in the log [inferred: the `atk_pierce` / `atk_abare` hits].
 (4) What triggers `leave` was not traced (the soak shows it follows `mode_battle` directly, once, after about 83 s of enemy time). (5) The ObjectTargetType 2 of the objentry row was not looked up.
+
+## The enemy M_EX050 (WP-EN10j)
+
+`M_EX050` (object 303, `00objentry` row 303: ObjectType 4, flags 0, ObjectTargetType 2, `NeoStatus` 1002, Weight 500, `SpawnLimiter` 15, ObjectShadowSize 2, no spawn objects; `enemy::M_EX050`, called by
+its model: the data gives no name) is a Heartless of bb00, bb04, bb07, bb12, he05 and he07 (`docs/area-survey.md`). In the app it is a large round blue-and-purple body with long chained arms. Its BDX script (5580 words, `cargo run -p kh2 -- bdx M_EX050`) registers the modes `appear`, `mode_battle`, `mode_battle_boss`,
+`mode_revenge`, `mode_revenge_boss`, `btl_normal`, `btl_hard`, `btl_super_hard`, `rvg_*`, `rst_*`, `think`, `fight`, `angry`, `move_walk`, `footwork`, `idle`, `idle_time`, `freeze`, `atk_brush`,
+`atk_dush`, `atk_dush_hit`, `atk_dush_ref`, `atk_jump`, `atk_curling`, `atk_curling_hit`, `leave`, `dead`, `event`, `revenge`.
+
+- **Stats.** The set-up routine R13cd (0x13cd, called at 0x079a) takes eight values after the object; the first pushed, 35 (pushed at 0x0782; R13cd stores it to local+0x20), goes to `set_obj_param`
+  (host 2.9 at 0x13f4): `enmp` row 35 (50 HP in the harness, Experience 250; log `experience: enmp 35 defeated: +10 (lvpm 4 x enmp 250, low-HP x1)`).
+- **Death.** `hp 0: switching to mode dead`, `drop (host 1.92) asked row 3, used row 3`, `prize: drop of row 3: 6 objects`; `Kind::death_effect` is true as for the other Heartless.
+- **Host calls.** Two arms were added (group 2): 2.64 `hit_reaction_original` and 2.85 `hit_atkp_element` (Impl, see `docs/enemy-ai.md`): the damage entry R0231 (0x0231) reads both on every hit whose
+  attack id is not 148, and before the arms the first hit logged two `unimplemented host call` lines (the script then saw 0 for both). `Obj::hits` carries the attack id only, so `enemy::receive_hits`
+  notes the row's two bytes per id in `enemy_obj` (`note_hit_row`). All other calls were mapped already; the table of a run: 1.12, 1.11, 1.120, 1.15, 1.60, 1.80, 2.5, 1.56, 1.23 (Approx), 1.121, 1.171,
+  1.206 (Stubs), 1.147, 1.14, 1.124, 1.4, 2.23, 2.8, 2.45, 2.9, 2.7 (Impl). Host 1.13 (three sites) never ran and no mode waited for a motion state, so `queues_motions` is unchanged. The script writes object
+  memory at +0x11c after host 1.97 (log `script wrote object memory at +0x11c`: stored, nothing reads it); not traced.
+
+Acceptance runs (WP-EN10j), through `local/capped.ps1 -CapMB 2500`, one at a time; test `m_ex050_is_an_enemy_kind_with_its_objentry_row` (disc), `hit_rows_are_kept_by_attack_id`. Group b_20 of bb04
+(btl program 0xa: three `M_EX050` and nothing else): `KH2_PROGRAMS=0,a,0 KH2_WAVE_GROUP=b_20 KH2_WAVE_AT_GROUP=1 KH2_NO_PARTY=1 KH2_AREALOG=1 KH2_BDXLOG=1 KH2_HITLOG=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1
+KH2_KEYS=7:W:2,10:Q,.. kh2-game bb04`. (1) Soak, 128 s of harness time with J every 5 s from 15 s only to press "Continue" (Sora knocked out 5 times; enemy ticks reached t6835, about 114 s of enemy
+time): 0 `unimplemented host call`, 0 `script error`; two `M_EX050` ran `appear`, `mode_battle`, `btl_normal`, `btl_hard`, `think`, `move_walk`, `footwork`, `atk_brush`, `atk_dush`, `atk_jump`, `angry`,
+`atk_curling`, `atk_curling_hit`; the longest time between two `mode` lines of one enemy was 372 ticks (`atk_brush`), so no mode hangs. A 125 s soak of bb00 (btl program 3, b_02: six `M_EX690` and four
+`M_EX050`, `KH2_PROGRAMS=0,3,0 KH2_WAVE_GROUP=b_02`) was run before the two arms existed: the same modes plus `leave`, and only the two `unimplemented` lines above. (2) Hitting run, J every 0.45 s from 12 s:
+`M_EX050 hit: atkp 126 damage 3 hp 44 ..` down to `atkp 126 damage 3 hp 0 ..` (hp 50 to 0 in 17 hits, `FlinchPush` and `Blow` reactions), `hp 0: switching to mode dead` for `M_EX050#1` at t1522 (about 25.4 s),
+`experience: enmp 35 defeated: +10`, the drop above, 0 `unimplemented host call`; a second one died the same way and the group made a third (wave 1). PNGs looked at (`ex050_s11.png`, `ex050_s15.png`,
+`ex050_s25.6.png` in the scratchpad, not committed): idle at 11 s (Sora with the keyblade raised in a ballroom with a tiled floor, two large blue-and-purple round bodies with chained arms behind him, a lock-on
+bracket on the nearer; debug text `M_EX050 Idle hp 50/50` twice); a hit at 15 s (Sora flung through the air, one body in front with a sparkle ring and a glowing chain, entries `Hurt hp 38/50` and
+`Idle hp 50/50`); a death at 25.6 s (the body flung with open arms, stars, a damage number 3, glowing yellow and green prize orbs around it, entry `Blown hp 0/50`). `combat-ground`, `tt04-dusk` and
+`idle-hud` were run by hand through `capped.ps1` (accept.ps1 stops `kh2-game`, rule A10): see the report.
+
+Gaps: (1) Only bb04 b_20 (and bb00 b_02 before the arms) were run; bb04 b_00 / b_01 (mixed with Shadows and `M_EX520`), bb07, bb12 (also `M_EX560`), he05 and he07 (also `M_EX750`, `M_EX510`, which the
+app lacks) were not. (2) Not seen: `mode_battle_boss`, `mode_revenge_boss`, `btl_super_hard`, `rvg_*`, `rst_*`, `fight`, `idle`, `idle_time`, `freeze`, `atk_dush_ref` (a reflect state), `event`, `revenge`.
+(3) The attack id 148 branch of R0231 (which skips both new calls) was not hit; which attack that is was not looked up. (4) Host 1.13, three sites, was not reached. (5) The +0x11c object write after
+host 1.97 (R about 0x079e) was not traced to a reader. (6) 2.85's role is the name table's, the function has no decomp file.

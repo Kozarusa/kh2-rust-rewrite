@@ -171,8 +171,13 @@ pub const M_EX210: Kind = Kind { name: "M_EX210", enmp: 3, model: "M_EX210", dea
 /// pushed at 0x05c5, which R0fe9 stores to local+0x20; host 2.9 at 0x1010).
 pub const M_EX690: Kind = Kind { name: "M_EX690", enmp: 67, model: "M_EX690", death_effect: true, status: true };
 
+/// `M_EX050` (`ObjectType` 4, object 303, `NeoStatus` 1002, `SpawnLimiter` 15, no spawn objects; a Heartless of the areas bb00, bb04, bb07, bb12, he05, he07), called by its model.
+/// Its script hands `enmp` row 35 to `set_obj_param` (host 2.9: BDX `M_EX050` R13cd at 0x13cd, called at 0x079a with 35 as the first of its eight values after the object,
+/// pushed at 0x0782, which R13cd stores to local+0x20; host 2.9 at 0x13f4).
+pub const M_EX050: Kind = Kind { name: "M_EX050", enmp: 35, model: "M_EX050", death_effect: true, status: true };
+
 /// Every enemy kind the app has.
-pub const KINDS: [&Kind; 21] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700, &M_EX950, &M_EX650, &M_EX660, &M_EX110, &M_EX520, &M_EX770, &M_EX210, &M_EX690];
+pub const KINDS: [&Kind; 22] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700, &M_EX950, &M_EX650, &M_EX660, &M_EX110, &M_EX520, &M_EX770, &M_EX210, &M_EX690, &M_EX050];
 
 /// The rigs of the enemy kinds, by `Kind::name` (Shadow and Soldier share `sora::Rigs`' copies).
 #[derive(Resource, Default)]
@@ -1608,6 +1613,7 @@ pub fn receive_hits(
         }
         let Some((atk, mut dmg)) = row_damage(&data, h, &from, &e.stats) else { continue };
         let useless = hit_is_ineffective(atk, &e.stats);
+        crate::enemy_obj::note_hit_row(h.atkp, atk.enemy_reaction, atk.element);
         // Anti form multiplies the damage Sora deals (FUN_001a0610), then the attacker's ability
         // block adds its element and combo/reaction boosts (FUN_001a0a18, FUN_001a0aa8).
         if let (Some(rules), Some(state)) = (&drive.0, &drive.1) {
@@ -2181,6 +2187,30 @@ mod tests {
         let b20 = btl_groups(&groups, &run).into_iter().find(|g| g.name == "b_20").expect("program 0x15 loads b_20");
         assert_eq!(b20.members.len(), 3);
         assert!(b20.members.iter().all(|m| m.kind.name == M_EX690.name));
+    }
+    /// `M_EX050` (object 303) is an enemy kind of the app: its `00objentry` row is type 4 with `NeoStatus` 1002, `SpawnLimiter` 15 and no spawn objects, its script's `set_obj_param` row is `enmp` 35, and bb04's
+    /// `btl` program 0xa loads b_20 with three of it and nothing else. Needs `KH2_ISO` for the table and group part.
+    #[test]
+    fn m_ex050_is_an_enemy_kind_with_its_objentry_row() {
+        assert!(KINDS.iter().any(|k| std::ptr::eq(*k, &M_EX050)));
+        assert_eq!((M_EX050.enmp, M_EX050.model, M_EX050.status, M_EX050.death_effect), (35, "M_EX050", true, true));
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let rows = {
+            let mut a = disc.0.lock().expect("archive lock");
+            kh2_tables::load::<kh2_tables::tables::Objentry>(&mut a, &kh2_tables::tables::OBJENTRY).expect("objentry").rows
+        };
+        let row = rows.iter().find(|r| r.model_name == "M_EX050").expect("objentry row of M_EX050");
+        assert_eq!((row.object_id, row.object_type, row.neo_status, row.spawn_object1, row.spawn_limiter), (303, OBJECT_ENEMY, 1002, 0, 15));
+        let groups = area_groups(&disc, "bb04");
+        let ard = disc.read("ard/bb04.ard").and_then(|d| kh2_ard::Area::parse(&d)).map(|(a, _)| a).expect("bb04.ard");
+        let run = kh2_ard::run::run_area(&ard, [0, 0xa, 0], 0);
+        let b20 = btl_groups(&groups, &run).into_iter().find(|g| g.name == "b_20").expect("program 0xa loads b_20");
+        assert_eq!(b20.members.len(), 3);
+        assert!(b20.members.iter().all(|m| m.kind.name == M_EX050.name));
     }
     fn member(part: usize, spawn_kind: i32, serial: u16, delay: u16, wave: u8) -> Member {
         Member { kind: &DUSK, at: Vec3::ZERO, yaw: 0.0, spawn_kind, spawn_params: [0; 2], object_id: 0x13e, part, spawn_arg: 0, serial, delay, wave, limiter: 1, radius: 0, flies: false }

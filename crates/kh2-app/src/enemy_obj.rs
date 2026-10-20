@@ -12,6 +12,25 @@ use kh2_bdx::Vec4;
 use crate::motor::Motor;
 use crate::reaction_cmd::PlayerReactionCmd;
 
+/// The attack rows `enemy::receive_hits` has seen, by `atkp` id: (original `EnemyReaction`, `Element`). The hit record's byte +0x27 is
+/// the row's byte +10 (FUN_0018b618 stores it next to the effective reaction at +0x26; host 2.64 reads it, 0x18e0e0) and host 2.85
+/// reads the row's byte +9 (0x18e218). The host answers from here because the hit record of `Obj::hits` carries the id only.
+static HIT_ROWS: std::sync::Mutex<Vec<(i16, u8, u8)>> = std::sync::Mutex::new(Vec::new());
+
+/// Notes the row a hit named (called for every hit on an enemy).
+pub(crate) fn note_hit_row(atkp: i16, reaction: u8, element: u8) {
+    let mut rows = HIT_ROWS.lock().unwrap_or_else(|e| e.into_inner());
+    if !rows.iter().any(|r| r.0 == atkp) {
+        rows.push((atkp, reaction, element));
+    }
+}
+
+/// `(original reaction, element)` of the attack row a hit named, if `note_hit_row` has seen it.
+pub(crate) fn hit_row_bytes(atkp: i16) -> Option<(u8, u8)> {
+    let rows = HIT_ROWS.lock().unwrap_or_else(|e| e.into_inner());
+    rows.iter().find(|r| r.0 == atkp).map(|r| (r.1, r.2))
+}
+
 /// Object handles the script sees. The scripted object's memory is `[handle, handle + OBJ_SIZE)`.
 pub(crate) const SELF_BASE: u32 = 0x0100_0000;
 pub(crate) const PLAYER: u32 = 0x0200_0000;
@@ -577,5 +596,14 @@ mod tests {
         o.set_move([3.0, 0.0, -3.0, 0.0], 8.0);
         let want = Vec3::new(1.0, 0.0, 1.0).normalize() * 8.0;
         assert!((o.move_vel - want).length() < 1e-4, "{:?}", o.move_vel);
+    }
+
+    /// Host 2.64 / 2.85 answer from the rows `note_hit_row` was given: the first note of an id stays, an unseen id has no answer.
+    #[test]
+    fn hit_rows_are_kept_by_attack_id() {
+        note_hit_row(0x7ff0, 7, 5);
+        note_hit_row(0x7ff0, 3, 1);
+        assert_eq!(hit_row_bytes(0x7ff0), Some((7, 5)));
+        assert_eq!(hit_row_bytes(0x7ff1), None);
     }
 }

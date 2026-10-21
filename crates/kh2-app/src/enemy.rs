@@ -2112,7 +2112,7 @@ mod tests {
         let groups = area_groups(&disc, "bb08");
         for name in ["b_20", "b_21"] {
             let g = groups.iter().find(|g| g.name == name).unwrap_or_else(|| panic!("bb08 has {name}"));
-            assert!(!g.members.is_empty() && g.members.iter().all(|m| m.kind.name == M_EX760.name || m.kind.name == M_EX130.name), "{name} holds only M_EX760 and M_EX130");
+            assert!(!g.members.is_empty() && g.members.iter().all(|m| m.kind.name == M_EX760.name || m.kind.name == M_EX130.name || m.kind.name == M_EX710.name), "{name} holds only M_EX760, M_EX130 and M_EX710");
             assert!(g.skipped.is_empty(), "{name}: every enemy of the group is a kind of the app, not {:?}", g.skipped);
         }
     }
@@ -2362,7 +2362,7 @@ mod tests {
         let run = kh2_ard::run::run_area(&ard, [0, 0xa, 0], 0);
         let b20 = btl_groups(&groups, &run).into_iter().find(|g| g.name == "b_20").expect("program 0xa loads b_20");
         assert_eq!(b20.members.iter().filter(|m| m.kind.name == M_EX050.name).count(), 3);
-        assert!(b20.members.iter().all(|m| m.kind.name == M_EX050.name || m.kind.name == M_EX130.name), "the rest of b_20 is M_EX130");
+        assert!(b20.members.iter().all(|m| m.kind.name == M_EX050.name || m.kind.name == M_EX130.name || m.kind.name == M_EX710.name), "the rest of b_20 is M_EX130 and M_EX710");
     }
 
     /// `M_EX730` (object 123) is an enemy kind of the app: its `00objentry` row is type 4 with `NeoStatus` 1027, `SpawnLimiter` 10 and no spawn objects, its script's `set_obj_param` row is `enmp` 12, and ca09's

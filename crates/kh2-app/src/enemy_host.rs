@@ -536,6 +536,20 @@ impl BevyHost<'_> {
             // 0.44 effect_stop (0x16dba0): stop the effect instance of a handle (FUN_001e0298). The handles of 1.22 name no drawn effect and a started effect
             // (1.87) lives its own length in the app, so nothing is stopped (M_EX060 calls it at the end of its charge mode).
             Call::Func { group: 0, index: 44, .. } => stub(Value::None, "the app's effects are not stopped from a script handle"),
+            // 0.38 effect_set_position (0x16da90, the 16 bytes behind FUN_001d9d00(handle)) and 0.41 effect_set_vec2 (0x16db50, the angles of a direction through
+            // FUN_0017be00 into FUN_001d9d50(handle)) place and turn the effect of a handle. The effect of 1.21 starts on its owner in the app (`Obj::effects`) and
+            // follows it, so the position and the angles the script gives are not applied (M_EX770's atk_b_shot calls both at 0x0378..0x0481 and 0x1908..0x191a).
+            Call::Func { group: 0, index: 38 | 41, .. } => stub(Value::None, "the effect stays on its owner; the script's position / angles are not applied"),
+            // 0.49 effect_alive (0x16dbd0 -> FUN_001da0d8) and 0.50 effect_valid (0x16dc00 -> FUN_001da0e8: handle +0x1c != 0): a handle of this object's is live until
+            // 0.51 destroys it. An effect that ran to its end still reads live (the app keeps no instance), so a loop that waits for the end is left by its other
+            // exit (M_EX770's loop at 0x047e tests `motion_done` too) [inferred].
+            Call::Func { group: 0, index: 49 | 50, args } => approx(Value::Bool(self.obj.effect_live(args.first().map_or(0, |a| a.int() as u32))), "live until the script destroys the handle; an effect that ended on its own still reads live"),
+            // 0.51 effect_destroy (0x16dc30 -> FUN_001da028): the handle's flags |= 0x10001 and its instance is dropped. The app lets the drawn effect run to its
+            // end (as 0.44 / 0.85); only the handle's liveness is kept.
+            Call::Func { group: 0, index: 51, args } => {
+                self.obj.destroy_effect(args.first().map_or(0, |a| a.int() as u32));
+                approx(Value::None, "the handle reads dead afterwards; the drawn effect runs to its end")
+            }
             // 0.85 effect_stop_mark (0x16dbb8 -> FUN_001d9f48): stops the effect instance of a handle and sets bit 0 of its flags (+8). The handles name effects that
             // run to their end in the app (see 0.79 and 1.87), and no reader of the mark bit was looked up (WP-EN10p, M_EX920).
             Call::Func { group: 0, index: 85, .. } => stub(Value::None, "effects run to their end; the mark bit of the handle has no reader here"),
@@ -772,6 +786,16 @@ impl BevyHost<'_> {
             // 1.238: the player's +0x158, the serial of his last paired motion.
             Call::Func { group: 1, index: 238, args } if args[0].int() as u32 == PLAYER => {
                 imp(Value::Int(self.obj.player_serial.unwrap_or(self.env.player_serial)))
+            }
+            // 1.238 on any other object (M_EX770's R06f9 asks it of its own handle at 0x0708): the word +0x158, written only by a paired motion started on the
+            // object (host 1.29). The app starts none on an enemy or a made object, so the word stays at its initial 0 [inferred: no other writer was traced].
+            Call::Func { group: 1, index: 238, .. } => approx(Value::Int(0), "+0x158 of an object other than the player: no paired motion is started on it, so 0"),
+            // 1.21 spawn_effect (0x171780 -> FUN_0016a530): element `id` of the object's effect file with the object as owner; the answer is the effect's handle.
+            // Started on the owner like 1.87 (the extra arguments are not modelled); the script then places it with 0.38 / 0.41, which the app ignores (see there).
+            Call::Func { group: 1, index: 21, args } if args.first().is_some_and(|a| a.int() as u32 == me) => {
+                self.obj.effects.push(args.get(1).map_or(0, |a| a.int()).max(0) as u16);
+                self.obj.next_effect += 1;
+                approx(Value::Handle(EFFECT + self.obj.next_effect), "element `id` of the object's effect file started on it; the two last arguments are not modelled")
             }
             Call::Func { group: 1, index: 13, args } if args[0].int() as u32 == PLAYER => {
                 self.obj.player_cmds.push(PlayerReactionCmd::QueueMotion { slot: args[1].int().max(0) as usize, blend: args[2].float() });
@@ -1213,6 +1237,11 @@ impl BevyHost<'_> {
                 self.obj.next_effect += 1;
                 stub(Value::Handle(EFFECT + self.obj.next_effect), "free attack objects are not simulated: the handle only stands for the object, it never hits")
             }
+            // 2.14 attack_hit_anything (0x18e3d8 -> FUN_0018c890: flags +4 has 2, 8, 0x10 or 0x200) and 2.39 attack_flag_200 (0x18e518: bit 9 of the flags at +4 of an
+            // attack object; FUN_0018d430, an attack hitting a victim, is the writer found, so the bit reads "this attack has hit"). The app has no free attack
+            // objects (see 2.10), so none has hit: false (M_EX770's atk_b_shot asks 2.14 at 0x0484 / 0x1aae and 2.39 at 0x03b1 / 0x1a17; the wait loop around 0.50
+            // also ends on its own timer: 60.0 stored at 0x0478 and counted down at 0x0538, then a call at 0x054a with 8.0).
+            Call::Func { group: 2, index: 14 | 39, .. } => stub(Value::Bool(false), "free attack objects are not simulated (see 2.10): none has hit"),
             Call::Func { group: 2, index: 11 | 12 | 13 | 62, .. } => stub(Value::None, "free attack objects are not simulated (see 2.10)"),
             // 2.22 attack_anchor (0x18e7c8): sets the attack's anchor (+0x24) to the other object's +0x80; with no free attack objects (see 2.10) there is nothing to anchor (M_EX130's atk_leak, call at 0x0074).
             Call::Func { group: 2, index: 22, .. } => stub(Value::None, "free attack objects are not simulated (see 2.10)"),

@@ -35,6 +35,10 @@ are its own (see "Waves"). `M_EX940` (object 0x139, four in b_44) has ObjectType
 The most common enemy is the Dusk. Its model, motion set (`obj/M_EX990.mset`, 46 motions), effect file
 (`obj/M_EX990.apdx`) and BDX script (BAR type 3 of the model file, 6378 words) are on the disc; the test asserts that.
 
+## Next kinds (WP-SV3, 2026-10-20)
+
+`enemy::KINDS` has 38 kinds. `docs/area-survey.md` "Ranked gaps" lists the absent ones from the disc (areas, groups, `enmp` row, missing host calls, boss or not) and a recipe for the next twelve: `M_EX900` (code exists; needs a soak, the event 17 sender was found by WP-DYN1), `M_EX130`, `M_EX710`, `M_EX890`, `M_EX680`, `M_EX570`, `M_EX580`, `M_EX780`, `M_EX740`, `M_EX550`, `M_EX500`, `M_EX590`. `M_EX950` is already in `KINDS` (its reaction-command modes are a gap of the kind); the cheapest boss is `B_LK110_PHANTOM`.
+
 ## The Dusk
 
 - **Stats.** The script calls `set_obj_param` (host 2.9) with the constant 41 (BDX `M_EX990` at 0x073c), the

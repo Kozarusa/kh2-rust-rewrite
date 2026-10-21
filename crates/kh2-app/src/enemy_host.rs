@@ -817,6 +817,11 @@ impl BevyHost<'_> {
                 self.obj.dash = None;
                 approx(Value::None, "the mover's own state is not modelled: the movement and jump speeds are cleared")
             }
+            // 1.0 create_object of id 0: the `00objentry` table has no object 0 (FUN_0016e8c0 is given the fallback of 7.33), so nothing is made
+            // and the script's validity test (1.94) on the null handle fails [inferred].
+            Call::Func { group: 1, index: 0, args } if args.first().is_some_and(|a| a.int() == 0) => {
+                approx(Value::Handle(0), "objentry id 0 names no object: nothing is made [inferred]")
+            }
             // 1.0 create_object (0x170190 -> FUN_0016e8c0(DAT_0037a484, id, place 0x1c883a0)): the object of `00objentry`
             // id `id`, built by its `ObjectType` constructor with the place at the origin (the place record is zero
             // but its last word) and no facing. The app makes the objects of its enemy kinds (`Obj::creatable`).
@@ -1275,6 +1280,16 @@ impl BevyHost<'_> {
                 };
                 let v = self.env.mission_counters.and_then(|cs| usize::try_from(i).ok().and_then(|i| cs.get(i).copied())).unwrap_or(0);
                 imp(Value::Int(v))
+            }
+            // 7.33 (wrapper FUN_002ef8f8, one argument, returns a value; FUN_002f4080): picks the objentry id of a Heartless to make.
+            // It walks the eight ids at DAT_00371580 (M_EX710, M_EX130, M_EX730, M_EX750, M_EX700, M_EX550, M_EX770 and M_EX760 on the
+            // disc), keeps those whose object flags (FUN_0016f038) allow it and whose `SpawnLimiter` byte (row +0x54) fits the budget
+            // DAT_01c893b8 - DAT_01c893bc (FUN_00181408), and returns a random one of them; with none it returns the first word of the
+            // record at +8 of the argument's own record (FUN_00169958). M_EX740's event 17 (motion frame trigger 7, BDX R0782) asks it
+            // and then makes that object next to itself (1.0), so the original's M_EX740 calls other Heartless in. The budget words'
+            // writers were not traced, so no id is picked: it returns 0, the fallback [inferred: the row's SpawnObject1 is 0 for M_EX740].
+            Call::Unknown { group: 7, index: 33, .. } | Call::Func { group: 7, index: 33, .. } => {
+                approx(Value::Int(0), "the candidate list at DAT_00371580 and the budget DAT_01c893b8 - DAT_01c893bc (writers not traced) are not read: no Heartless is called in, the fallback 0 is returned")
             }
             // 6.31 (wrapper FUN_002eece8, table entry 0x370f58, no arguments): FUN_001a40b8 draws every
             // pickable prize into the player (FUN_001a3ad8, mode 1) and FUN_001bda98 hands every item

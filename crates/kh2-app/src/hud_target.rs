@@ -3,11 +3,15 @@
 //! Gauge: one 200 pixel bar per 200 HP, drawn right to left from the "HP" tag; a back bar for the
 //! top segment, a trail (the HP before the last hit, flashing then fading) and the current
 //! segment (from the game's gauge class that the party panel's neighbour in `0x3b1c` bytes).
-//! Reticle: sequence group 25 of the field file, placed at the target's projected position.
+//! Reticle: sequence group 0x1b of the field file, placed at the projected target point (`lock_point`).
 
 use bevy::prelude::*;
 
+use kh2_model::collision::kind as shape_kind;
+
+use crate::combat::{self, Fighter};
 use crate::enemy::Enemy;
+use crate::skel::Animator;
 use super::hud_gfx::{viewport_to_hud, HudScene, Node};
 use super::hud_gauge::GAUG;
 use crate::sora::Sora;
@@ -50,6 +54,14 @@ mod g {
 /// The group of the lock-on icon on a locked target (see `g::RETICLE`).
 pub fn lock_group() -> usize {
     marker_group(2, 0).unwrap_or(g::RETICLE)
+}
+
+/// The world point the lock-on icon is placed on (0x11a9b0 and 0x19bbc0 both call 0x18efa0, which is 0x18eec0): the centre
+/// of the target's first target-kind collision shape (0x18ee20 picks it, 0x1894d0 puts its bone-local offset through the
+/// bone matrix and lifts it by the shape's +0xe), else the object's own position (0x16b960, object +0x70 / +0x540).
+/// The icon is then projected by 0x13e968. `centre` is the shape centre when the body has one (Bevy metres).
+pub fn lock_point(position: Vec3, centre: Option<Vec3>) -> Vec3 {
+    centre.unwrap_or(position)
 }
 
 /// Magic lock-on marker groups (0x19bbc0 hands them to 0x13e528): mode 1 uses 5 when the target record's
@@ -118,6 +130,8 @@ pub fn update(
     marker: Option<Res<MagicMarker>>,
     sora: Query<&Sora>,
     enemies: Query<(Entity, &GlobalTransform, &Enemy)>,
+    fighters: Query<&Fighter>,
+    bodies: Query<(&Animator, &GlobalTransform)>,
     cam: Query<(&Camera, &GlobalTransform), crate::menu::preview::GameCamera>,
 ) {
     if scene.files.len() <= GAUG {
@@ -146,7 +160,12 @@ pub fn update(
     let want = if locked.is_some() { lock_group() } else { g::FREE };
     let at = cam.single().ok().and_then(|(c, ct)| {
         let point = match locked.and_then(|e| enemies.get(e).ok()) {
-            Some((_, gt, _)) => gt.translation() + Vec3::Y * 0.9,
+            Some((e, gt, _)) => {
+                let centre = fighters.get(e).ok().and_then(|f| bodies.get(f.hurt_body).ok()).and_then(|(a, bg)| {
+                    a.rig.model.shapes.iter().find(|sh| sh.kind == shape_kind::TARGET).map(|sh| combat::hurt_spheroid(sh, a, bg).center)
+                });
+                lock_point(gt.translation(), centre)
+            }
             None => ct.translation() + *ct.forward() * FREE_DISTANCE,
         };
         let vp = c.world_to_viewport(ct, point).ok()?;
@@ -161,6 +180,8 @@ pub fn update(
     // A magic marker on the same target draws the ring itself.
     let shown_reticle = at.is_some() && ((locked.is_some() && marker.is_none()) || dbg.is_some());
     scene.nodes[h.reticle].visible = shown_reticle;
+    // `KH2_HUDFREEZE=<frame>` holds the reticle's group at that frame (a harness aid for looking at one pose of the ring).
+    scene.nodes[h.reticle].freeze = std::env::var("KH2_HUDFREEZE").ok().and_then(|v| v.parse().ok());
     if let Some(p) = at {
         if scene.nodes[h.reticle].player.group != Some(want) {
             scene.set_group(h.reticle, want);
@@ -323,6 +344,79 @@ mod tests {
         assert_eq!(marker_group(2, 1), Some(0x17));
         assert_eq!(marker_group(0, 0), None);
         assert_eq!(marker_group(3, 1), None);
+    }
+
+    /// The field file's sequence (second entry of `tt0field.2dd`), or `None` without a disc.
+    fn field_seq() -> Option<kh2_image::seqd::Seqd> {
+        let iso = crate::assets::iso_path().ok().filter(|p| p.exists())?;
+        let disc = crate::assets::Disc::open(&iso);
+        let file = disc.read("field2d/us/tt0field.2dd")?;
+        let entries = kh2_bar::parse(&file).ok()?;
+        kh2_image::seqd::parse(entries[1].data)
+    }
+
+    /// Group 0x1b (SEQD anims 183..202 of the field file): the three inner arcs are anims 11 to 13 of the group,
+    /// frames 10 to 69, linear, rotation z from 0 to 2*pi/3 about the origin; the group loops forever from frame 12.
+    #[test]
+    fn ring_group_inner_arcs_turn_a_third_of_a_circle_per_pass() {
+        let Some(seq) = field_seq() else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let g = seq.groups[0x1b];
+        assert_eq!((g.loops, g.loop_start, seq.last_frame(0x1b)), (0, 12, 69));
+        for k in 11..14 {
+            let a = &seq.anims[g.first + k];
+            assert_eq!((a.frame_start, a.frame_end), (10, 69));
+            assert_eq!(a.flags & kh2_image::seqd::flag::LINEAR, 1);
+            assert_eq!(a.flags & kh2_image::seqd::flag::NO_ROTATION, 0);
+            assert_eq!((a.rot_x, a.rot_y, a.rot_z), ([0.0; 2], [0.0; 2], [0.0, 2.0 * std::f32::consts::PI / 3.0]));
+            assert_eq!((a.pivot_x, a.pivot_y, a.translate_x, a.translate_y), ([0; 2], [0; 2], [0; 2], [0; 2]));
+        }
+        // Only the three arc animations: measure the turn of a quad corner between frames.
+        let mut arcs = seq.clone();
+        arcs.groups[0x1b].first = g.first + 11;
+        arcs.groups[0x1b].count = 3;
+        let ext = kh2_image::seqd::Ext::default();
+        let corner = |f: i32| arcs.quads(0x1b, f, [0.0; 2], &ext)[0].pos[0];
+        let angle = |p: [f32; 2]| p[1].atan2(p[0]);
+        let base = angle(corner(10));
+        for f in [10, 20, 30, 40, 50, 60, 69] {
+            // Screen y is down, so an increasing atan2 is clockwise on screen; the sequence turns the arcs the other way.
+            let turned = (base - angle(corner(f))).rem_euclid(std::f32::consts::TAU);
+            let want = 2.0 * std::f32::consts::PI / 3.0 * (f - 10) as f32 / 59.0;
+            assert!((turned - want).abs() < 0.02, "frame {f}: turned {turned} want {want}");
+        }
+    }
+
+    /// The group player at the game's 60 Hz: frames 0 to 69, then the loop restarts at frame 12 (not 0 or 10).
+    #[test]
+    fn ring_group_player_loops_from_frame_12() {
+        let Some(seq) = field_seq() else {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+            return;
+        };
+        let mut p = kh2_image::seqd::Player::default();
+        p.set_group(&seq, 0x1b);
+        let frames: Vec<i32> = (0..200)
+            .map(|_| {
+                p.tick(1.0);
+                p.frame()
+            })
+            .collect();
+        assert_eq!(&frames[..3], &[0, 1, 2]);
+        assert_eq!(&frames[68..72], &[68, 69, 12, 13]);
+        // One pass of the loop is frames 12..=69: 58 ticks.
+        assert_eq!(&frames[127..130], &[69, 12, 13]);
+    }
+
+    #[test]
+    fn lock_point_is_the_target_shape_centre_else_the_position() {
+        // 0x18eec0: the target shape's centre (0x1894d0), else the object's position (0x16b960); no fixed raise.
+        let pos = Vec3::new(1.0, 0.0, 2.0);
+        let centre = Vec3::new(1.1, 0.8, 2.2);
+        assert_eq!(lock_point(pos, Some(centre)), centre);
+        assert_eq!(lock_point(pos, None), pos);
     }
 
     #[test]

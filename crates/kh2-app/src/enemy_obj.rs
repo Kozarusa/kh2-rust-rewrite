@@ -238,6 +238,8 @@ pub(crate) struct Obj {
     pub(crate) fall_pending: bool,
     pub(crate) effects: Vec<u16>,
     pub(crate) next_effect: u32,
+    /// Effect handles the script destroyed with host 0.51 (`FUN_001da028`: the handle's instance pointer +0x1c is cleared); host 0.49 / 0.50 read them as gone.
+    pub(crate) effects_gone: Vec<u32>,
     /// Hit records of event 6 by handle: hit is real (2.8) and the effective reaction, byte +0x26 (2.7).
     pub(crate) hits: HashMap<u32, (bool, u8, i16)>,
     pub(crate) next_hit: u32,
@@ -336,6 +338,7 @@ impl Obj {
             fall_pending: false,
             effects: Vec::new(),
             next_effect: 0,
+            effects_gone: Vec::new(),
             hits: HashMap::new(),
             next_hit: 0,
             records: Vec::new(),
@@ -378,6 +381,19 @@ impl Obj {
 
     /// Whether `handle` names an object this one can call: one that existed at the start of the tick or that this tick
     /// made (FUN_0019a3f8 finds it in the object list; the game's object exists from the call on).
+    /// Hosts 0.49 effect_alive (`FUN_001da0d8`) and 0.50 effect_valid (`FUN_001da0e8`, handle +0x1c != 0): an effect handle this object made
+    /// is live until the script destroys it with 0.51 [Approx: an effect that ran to its end is still read as live].
+    pub(crate) fn effect_live(&self, handle: u32) -> bool {
+        handle > EFFECT && handle <= EFFECT + self.next_effect && !self.effects_gone.contains(&handle)
+    }
+
+    /// Host 0.51 effect_destroy (`FUN_001da028`): the handle's instance is dropped.
+    pub(crate) fn destroy_effect(&mut self, handle: u32) {
+        if !self.effects_gone.contains(&handle) {
+            self.effects_gone.push(handle);
+        }
+    }
+
     pub(crate) fn knows(&self, handle: u32) -> bool {
         self.others.contains_key(&handle) || self.creates.iter().any(|c| c.0 == handle)
     }
@@ -609,5 +625,20 @@ mod tests {
         note_hit_row(0x7ff0, 3, 1);
         assert_eq!(hit_row_bytes(0x7ff0), Some((7, 5)));
         assert_eq!(hit_row_bytes(0x7ff1), None);
+    }
+
+    /// Hosts 0.49 / 0.50 / 0.51: a handle the object made reads live until the script destroys it; a handle it never made (0, another range) never does.
+    #[test]
+    fn an_effect_handle_is_live_until_destroyed() {
+        let mut o = Obj::new(SELF_BASE);
+        o.next_effect = 2;
+        let (a, b) = (EFFECT + 1, EFFECT + 2);
+        assert!(o.effect_live(a) && o.effect_live(b));
+        o.destroy_effect(a);
+        o.destroy_effect(a);
+        assert!(!o.effect_live(a), "destroyed");
+        assert!(o.effect_live(b), "the other handle is untouched");
+        assert_eq!(o.effects_gone, vec![a], "destroying twice keeps one record");
+        assert!(!o.effect_live(0) && !o.effect_live(EFFECT) && !o.effect_live(EFFECT + 3), "handles the object never made");
     }
 }

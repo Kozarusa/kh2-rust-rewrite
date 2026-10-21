@@ -895,6 +895,16 @@ that create nothing with the harness (`limit 0 (+0x22)`, Sora not in their volum
 (3) The boss variants (`mode_battle_boss`, `mode_revenge_boss`), `roll`, `stun`, `rc_catch`, `leave`, `rvg_*` and `rst_*` modes were not seen. (4) The `_RAW` and
 `_TR` objects were not traced. (5) The reader of +0x570 for an enemy (`FUN_001beb00`) and the writer of an enemy's link (host 1.18 only
 writes the first object's, the player's) were not searched with `mips_scan --store-off 0x570`.
+
+WP-FIX4 (M_EX770's `atk_b_shot` in hb04 b_20, group 0x7d): with the party present (no `KH2_NO_PARTY`; `KH2_PROGRAMS=0,a,0 KH2_WAVE_GROUP=b_20
+KH2_WAVE_AT_GROUP=1,-1,6`, Sora at the centre of kind-2 group 0x7d) an `M_EX770` in `atk_b_shot` logged `unimplemented host call` 1.238, 1.21, 0.38,
+0.41, 0.51 and also 0.50, 2.39, 2.14. The mode (its effect block at script words 0x0370..0x0580 and 0x1908..0x1b40, both reached only through the
+mode table, so `kh2 bdx` shows them as `.data`) starts effect element 7 on the object (1.21), places and turns it (0.38, 0.41), waits for it
+(0.50, the attack's 2.14 / 2.39, a 60.0 countdown at 0x0538) and destroys it (0.51); R06f9 asks 1.238 of its own handle at 0x0708. Now: 1.238 on any
+object other than the player answers 0 (Approx), 1.21 on the object itself starts the element on the owner (Approx, `Obj::effects`), 0.38 / 0.41 are
+Stubs (the effect stays on its owner), 0.49 / 0.50 answer live until 0.51 destroys the handle (`Obj::effect_live`, `Obj::destroy_effect`), and 2.14 / 2.39
+answer false (Stub: the app has no free attack objects, so none has hit). Soaks (130 s, with Continue, one with the party, one without): no
+`unimplemented host call`, `atk_b_shot` entered and left, no mode longer than 24 s (`fly_target`). The shot's damage is still not simulated (gap 1).
 ## The Struggle (WP-7E)
 
 The Struggle rules are in `docs/struggle.md`. For the opponents: b_50, b_51 and b_52 (missions `TT04_MS00`,
@@ -1391,3 +1401,11 @@ Run: `KH2_PROGRAMS=1 KH2_WAVE_GROUP=b_00 KH2_WAVE_AT_GROUP=12,21 KH2_PARTY_WARP=
 Acceptance run (WP-EN12f): 0 `unimplemented`, 0 `script error`; modes seen: appear, mode_battle, btl_attack, btl_short, btl_long, move_target, atk_jab, atk_charge, atk_fook, mode_revenge, rvg_short, dead. About 6300 enemy ticks (105 s of enemy time at 60 Hz) in one run: both M_EX780 reach `hp 0: switching to mode dead` (ticks 3540 and 4915), pay `experience: enmp 81 defeated: +4`, `M_EX780 (serial 0xd) gone ... defeated for good`, and group 0x22 clears (two M_EX780, three Shadows, one M_EX110); Sora was not knocked out, so no Continue was needed. Test `m_ex780_is_an_enemy_kind_with_its_objentry_row` (disc).
 Screenshot looked at: lk03 at 20 s: Sora in melee with sparks, debug text `M_EX780 Idle hp 16/20` beside three Shadows and an M_EX110 (idle and hit). No death screenshot of M_EX780 was taken (a later shot at 30 s shows only a Shadow at 1/10 left); death is shown by the log lines above.
 Gaps: (1) Only lk03 b_00 was run; lk04, lk05, lk07, lk08 were not. (2) Attack objects are stubs (2.10 family): the damage seen is small (Sora 20/20 to 17/20 at 59 s). (3) `M_EX670` and `M_EX720`, which share its groups, are not kinds.
+
+## The enemy M_EX580 (WP-EN12e)
+`M_EX580` (object 10, `00objentry` row 10: `NeoStatus` 1012; `enemy::M_EX580`) is a small purple Heartless that attacks with a claw (mode `atk_clow`); it is the survey's "next kinds" row 7 (7 areas, 24 groups; mu01 `KH2_PROGRAMS=0,1,0` group b_00 has kind-2 groups 0x3a (3), 0x3b (one M_EX580 and three M_EX020, as Shadow rows) and 0x3c (3)).
+Its BDX script (4331 words, `cargo run -p kh2 -- bdx M_EX580`) hands `enmp` row 61 to `set_obj_param` (host 2.9; the log shows `SetObjParam { a: 61 }` in its first tick), so the experience row is enmp 61 (`experience: enmp 61 defeated: +6`). No new host arm: every call it makes already exists (Impl, Approx or Stub; none `unimplemented`). Its drop is przt row 30 (host 1.92: six prize objects). The self motion queue (1.13) stays a Stub; no mode stayed longer than about 120 ticks.
+Harness: `KH2_PROGRAMS=0,1,0 KH2_WAVE_GROUP=b_00 KH2_WAVE_AT_GROUP=-20,0 KH2_NO_PARTY=1 KH2_AREALOG=1 KH2_BDXLOG=1 KH2_HITLOG=1 kh2-game mu01` through `local/capped.ps1 -CapMB 2500` (the plain `KH2_WAVE_AT_GROUP=1` puts Sora in group 0x3a, whose members are not this kind; (-20, 0) is the centre of group 0x3b).
+Acceptance run (WP-EN12e): 0 `unimplemented`, 0 `script error`. Modes seen: appear, atk_clow (re-entered about every 80 ticks while it chases and claws Sora: `sora hit: atkp 10`, 9, 92), dead. Killed by J presses: `experience: enmp 61 defeated: +6`, `M_EX580 (serial 0x41, wave 0) gone ... defeated for good`, the drop of row 30, and the three Shadows follow; the group clears. Soak: J every 2 s from 20 s for 110 s with Sora knocked out and Continue chosen five times, the wave re-created each time (instances M_EX580#1, #6, #7), enemy ticks up to 6423 (about 107 s), no mode stuck. Test `m_ex580_is_an_enemy_kind_with_its_objentry_row` (disc).
+Screenshots looked at: idle (`M_EX580 Idle hp 20/20` beside three Shadows, a purple Heartless in a lock-on ring), hit (`M_EX580 Hurt hp 9/20`, damage number 6), death (the M_EX580 gone, purple smoke, prize orbs, "OBTAINED MUNNY").
+Gaps: (1) Only mu01 b_00 was run; the other six areas were not. (2) Its attack objects are stubs (2.10 family); the damage Sora took came through the enemy-hit path and was not compared with the original. (3) The BDX address of the enmp push was not read (the host log shows the value).

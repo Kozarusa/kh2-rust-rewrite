@@ -253,7 +253,7 @@ pub const M_AL020_FIRE: Kind = Kind { name: "M_AL020_FIRE", enmp: 5, model: "M_A
 /// Its script hands `enmp` row 6 to `set_obj_param` (host 2.9: BDX `M_AL020_ICEE` R1224 at 0x1224, called at 0x046d with 6 as the first of its eight values after the object, pushed at 0x0455; host 2.9 at 0x124b).
 pub const M_AL020_ICEE: Kind = Kind { name: "M_AL020_ICEE", enmp: 6, model: "M_AL020_ICEE", death_effect: true, status: true };
 
-/// `M_EX130` (object 73, `ObjectType` 21; `00objentry` row 73: `NeoStatus` 1036, `SpawnLimiter` 2, no spawn objects), called by its model; the next kind of docs/area-survey.md (21 areas, bb13 group b_20 holds four beside three `M_EX420`).
+/// `M_EX130` (object 73, `ObjectType` 21; `00objentry` row 73: `NeoStatus` 1036, `SpawnLimiter` 17, no spawn objects), called by its model; the next kind of docs/area-survey.md (21 areas, bb13 group b_20 holds four beside three `M_EX420`).
 /// Its script (7663 words) hands `enmp` row 2 to `set_obj_param` (host 2.9: BDX `M_EX130` R1b90 at 0x1b90, called at 0x0e9c with 2 as the first of its eight values after the object, pushed at 0x0e87, which R1b90 stores to local+0x20; host 2.9 at 0x1bb7).
 pub const M_EX130: Kind = Kind { name: "M_EX130", enmp: 2, model: "M_EX130", death_effect: true, status: true };
 
@@ -2078,7 +2078,7 @@ mod tests {
         let groups = area_groups(&disc, "bb08");
         for name in ["b_20", "b_21"] {
             let g = groups.iter().find(|g| g.name == name).unwrap_or_else(|| panic!("bb08 has {name}"));
-            assert!(!g.members.is_empty() && g.members.iter().all(|m| m.kind.name == M_EX760.name), "{name} holds only M_EX760");
+            assert!(!g.members.is_empty() && g.members.iter().all(|m| m.kind.name == M_EX760.name || m.kind.name == M_EX130.name), "{name} holds only M_EX760 and M_EX130");
             assert!(g.skipped.is_empty(), "{name}: every enemy of the group is a kind of the app, not {:?}", g.skipped);
         }
     }
@@ -2327,8 +2327,8 @@ mod tests {
         let ard = disc.read("ard/bb04.ard").and_then(|d| kh2_ard::Area::parse(&d)).map(|(a, _)| a).expect("bb04.ard");
         let run = kh2_ard::run::run_area(&ard, [0, 0xa, 0], 0);
         let b20 = btl_groups(&groups, &run).into_iter().find(|g| g.name == "b_20").expect("program 0xa loads b_20");
-        assert_eq!(b20.members.len(), 3);
-        assert!(b20.members.iter().all(|m| m.kind.name == M_EX050.name));
+        assert_eq!(b20.members.iter().filter(|m| m.kind.name == M_EX050.name).count(), 3);
+        assert!(b20.members.iter().all(|m| m.kind.name == M_EX050.name || m.kind.name == M_EX130.name), "the rest of b_20 is M_EX130");
     }
 
     /// `M_EX730` (object 123) is an enemy kind of the app: its `00objentry` row is type 4 with `NeoStatus` 1027, `SpawnLimiter` 10 and no spawn objects, its script's `set_obj_param` row is `enmp` 12, and ca09's
@@ -2571,7 +2571,7 @@ mod tests {
         assert_eq!(b01.members.iter().filter(|m| m.kind.name == M_AL020_ICEE.name).count(), 13);
     }
 
-    /// `M_EX130` (object 73) is an enemy kind of the app: its `00objentry` row is type 21 with `NeoStatus` 1036 and `SpawnLimiter` 2, its script's `set_obj_param` row is `enmp` 2. Needs `KH2_ISO` for the table part.
+    /// `M_EX130` (object 73) is an enemy kind of the app: its `00objentry` row is type 21 with `NeoStatus` 1036 and `SpawnLimiter` 17, its script's `set_obj_param` row is `enmp` 2. Needs `KH2_ISO` for the table part.
     #[test]
     fn m_ex130_is_an_enemy_kind_with_its_objentry_row() {
         assert!(KINDS.iter().any(|k| std::ptr::eq(*k, &M_EX130)));
@@ -2586,7 +2586,7 @@ mod tests {
             kh2_tables::load::<kh2_tables::tables::Objentry>(&mut a, &kh2_tables::tables::OBJENTRY).expect("objentry").rows
         };
         let row = rows.iter().find(|r| r.model_name == "M_EX130").expect("objentry row of M_EX130");
-        assert_eq!((row.object_id, row.object_type, row.neo_status, row.spawn_object1, row.spawn_object2, row.spawn_limiter), (73, 21, 1036, 0, 0, 2));
+        assert_eq!((row.object_id, row.object_type, row.neo_status, row.spawn_object1, row.spawn_object2, row.spawn_limiter), (73, 21, 1036, 0, 0, 17));
     }
 
     /// `M_EX920` (object 311) is an enemy kind of the app: its `00objentry` row is type 4 with `NeoStatus` 3006, `SpawnLimiter` 15 and no spawn objects, its script's `set_obj_param` row is `enmp` 47, and eh10's

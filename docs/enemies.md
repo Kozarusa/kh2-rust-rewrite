@@ -895,6 +895,16 @@ that create nothing with the harness (`limit 0 (+0x22)`, Sora not in their volum
 (3) The boss variants (`mode_battle_boss`, `mode_revenge_boss`), `roll`, `stun`, `rc_catch`, `leave`, `rvg_*` and `rst_*` modes were not seen. (4) The `_RAW` and
 `_TR` objects were not traced. (5) The reader of +0x570 for an enemy (`FUN_001beb00`) and the writer of an enemy's link (host 1.18 only
 writes the first object's, the player's) were not searched with `mips_scan --store-off 0x570`.
+
+WP-FIX4 (M_EX770's `atk_b_shot` in hb04 b_20, group 0x7d): with the party present (no `KH2_NO_PARTY`; `KH2_PROGRAMS=0,a,0 KH2_WAVE_GROUP=b_20
+KH2_WAVE_AT_GROUP=1,-1,6`, Sora at the centre of kind-2 group 0x7d) an `M_EX770` in `atk_b_shot` logged `unimplemented host call` 1.238, 1.21, 0.38,
+0.41, 0.51 and also 0.50, 2.39, 2.14. The mode (its effect block at script words 0x0370..0x0580 and 0x1908..0x1b40, both reached only through the
+mode table, so `kh2 bdx` shows them as `.data`) starts effect element 7 on the object (1.21), places and turns it (0.38, 0.41), waits for it
+(0.50, the attack's 2.14 / 2.39, a 60.0 countdown at 0x0538) and destroys it (0.51); R06f9 asks 1.238 of its own handle at 0x0708. Now: 1.238 on any
+object other than the player answers 0 (Approx), 1.21 on the object itself starts the element on the owner (Approx, `Obj::effects`), 0.38 / 0.41 are
+Stubs (the effect stays on its owner), 0.49 / 0.50 answer live until 0.51 destroys the handle (`Obj::effect_live`, `Obj::destroy_effect`), and 2.14 / 2.39
+answer false (Stub: the app has no free attack objects, so none has hit). Soaks (130 s, with Continue, one with the party, one without): no
+`unimplemented host call`, `atk_b_shot` entered and left, no mode longer than 24 s (`fly_target`). The shot's damage is still not simulated (gap 1).
 ## The Struggle (WP-7E)
 
 The Struggle rules are in `docs/struggle.md`. For the opponents: b_50, b_51 and b_52 (missions `TT04_MS00`,

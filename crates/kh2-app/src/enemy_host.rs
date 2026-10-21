@@ -821,7 +821,7 @@ impl BevyHost<'_> {
             }
             // 1.2 move_toward (0x170228 -> FUN_00182538): the vector from the object's position (+0x540) to the point, y forced to 0,
             // normalised and stored at +0x10 with the speed in w: host 1.111 aimed at a point. The result is the VU status word
-            // (cfc2), a leftover of the routine [inferred: not a meaningful result].
+            // (cfc2), a leftover of the routine; M_EX420's call site (0x0e20: self, the point at local+0x20, speed 20.0) pops it.
             Call::Func { group: 1, index: 2, args } if args.len() >= 3 => {
                 if let (Arg::Vec(t), Arg::Float(speed)) = (&args[1], &args[2]) {
                     self.obj.set_move(move_toward_dir(self.obj.motor.pos, *t), *speed);

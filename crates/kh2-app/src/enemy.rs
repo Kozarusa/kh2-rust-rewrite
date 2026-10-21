@@ -3181,12 +3181,7 @@ mod tests {
         assert!(t.serials().is_empty(), "FUN_00194330 cleared every slot");
     }
 
-    /// The table holds 256 serials (`FUN_00194080` writes halfword indices 0..=255): a full table takes no more.
-    /// `M_AL020_ICEE` (object 77, `ObjectType` 4; `00objentry` row 77: `NeoStatus` 1031, `SpawnLimiter` 7, no spawn objects), the ice twin of `M_AL020_FIRE` in the Agrabah areas (al01 `btl` program 2 b_01 holds thirteen, per EN10n).
-/// Its script hands `enmp` row 6 to `set_obj_param` (host 2.9: BDX `M_AL020_ICEE` R1224 at 0x1224, called at 0x046d with 6 as the first of its eight values after the object, pushed at 0x0455; host 2.9 at 0x124b).
-pub const M_AL020_ICEE: Kind = Kind { name: "M_AL020_ICEE", enmp: 6, model: "M_AL020_ICEE", death_effect: true, status: true };
-
-/// `M_EX020_RAW` (object 1365) is an enemy kind of the app with the Shadow's `NeoStatus` 1001 and script (so `enmp` 34) and a motion set of its own; bb01's `btl` program 0x44 loads b_40 with sixteen of it and nothing else.
+    /// `M_EX020_RAW` (object 1365) is an enemy kind of the app with the Shadow's `NeoStatus` 1001 and script (so `enmp` 34) and a motion set of its own; bb01's `btl` program 0x44 loads b_40 with sixteen of it and nothing else.
     /// Needs `KH2_ISO` for the table and group part.
     #[test]
     fn m_ex020_raw_is_an_enemy_kind_with_the_shadows_script() {
@@ -3212,6 +3207,7 @@ pub const M_AL020_ICEE: Kind = Kind { name: "M_AL020_ICEE", enmp: 6, model: "M_A
         assert_eq!(b40.members.iter().filter(|m| m.kind.name == M_EX020_RAW.name).count(), 16);
         assert!(b40.skipped.is_empty());
     }
+    /// The table holds 256 serials (`FUN_00194080` writes halfword indices 0..=255): a full table takes no more.
     #[test]
     fn the_table_of_the_defeated_holds_256_serials() {
         let mut t = DefeatedTables::default();

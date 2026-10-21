@@ -77,7 +77,7 @@ with a default, nothing in the app reads it; Missing = fails visibly. Addresses 
 | 1.57 airborne | Impl | the mover is not on the ground |
 | 1.60 busy, 2.5 hit_stun | Approx | a hit reaction plays (`Hurt` or `Blown`) |
 | 1.100 fall_time (raw words) | Impl | sqrt(2 x / (20/49)), as the summons' arm (WP-EN11f, `M_AL020_ICEE`) |
-| 1.60 busy (tags `M_AL020_FIRE#`, `M_AL020_ICEE#`) | Approx [inferred] | also true while the object is airborne, so the wait after a jump (R0731) lasts until it lands (WP-EN11e, WP-EN11f) |
+| 1.60 busy (tags `M_AL020_FIRE#`, `M_AL020_ICEE#`) | Approx [inferred] | also true while the object is airborne, so the wait after a jump (R0731) lasts until it lands; without it the wait ends in the same tick and the script's motion 202 plus 1.74 mover_reset cancel the jump (WP-EN11e, WP-EN11f) |
 | 1.56 on_screen | Approx | the origin one metre up is inside the camera's view |
 | 1.124 flag_124 | Impl | bit 3 of the `objentry` flags halfword (FUN_0019aaf0); false for both objects |
 | 1.309 flag_309 | Approx | true for the player (status bit 0x80, the party class) |

@@ -89,7 +89,7 @@ with a default, nothing in the app reads it; Missing = fails visibly. Addresses 
 | 1.22 spawn_effect_at | Stub | returns a handle; the element placed at the script's vector (FUN_0016a5b8, no owner) is not drawn: the app only starts effects on their owner (WP-EN10i, M_EX730) |
 | 1.77 has_word_144 | Stub | answers 0: the word `+0x144` of the object's motion-state block (`+0x140`, a store `sw r, 4(base)` seen by no scan) read 0 in all 29 objects of four battle savestates and a write watch on each saw no store in 8 s (WP-DYN1, docs/dynamic-tracing.md section 2); no state with an enemy that sets it was reachable [inferred 0] (WP-EN10m, M_EX750) |
 | 1.83 bone_to_world | Approx | object position plus the vector, no bone matrix [inferred] (WP-EN10q, M_EX060) |
-| 2.10 attack_create, 2.11, 2.12, 2.13, 2.62 | Stub | free attack objects are not simulated: a handle only, never hits (WP-EN10q, M_EX060) |
+| 2.10 attack_create, 2.11, 2.12, 2.13, 2.22, 2.62 | Stub | free attack objects are not simulated: a handle only, never hits (WP-EN10q, M_EX060) |
 | 0.44 effect_stop | Stub | nothing stopped from a script handle (WP-EN10q) |
 | 0.52 effect_fade | Stub | nothing to fade: the effects of 1.22 are not drawn (WP-EN10i) |
 | 0.85 effect_stop_mark | Stub | effects run to their end; the handle's mark bit (+8 bit 0, FUN_001d9f48 via 0x16dbb8) has no reader looked up (WP-EN10p, M_EX920) |

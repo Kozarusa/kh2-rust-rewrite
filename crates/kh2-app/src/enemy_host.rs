@@ -1214,6 +1214,8 @@ impl BevyHost<'_> {
                 stub(Value::Handle(EFFECT + self.obj.next_effect), "free attack objects are not simulated: the handle only stands for the object, it never hits")
             }
             Call::Func { group: 2, index: 11 | 12 | 13 | 62, .. } => stub(Value::None, "free attack objects are not simulated (see 2.10)"),
+            // 2.22 attack_anchor (0x18e7c8): sets the attack's anchor (+0x24) to the other object's +0x80; with no free attack objects (see 2.10) there is nothing to anchor (M_EX130's atk_leak, call at 0x0074).
+            Call::Func { group: 2, index: 22, .. } => stub(Value::None, "free attack objects are not simulated (see 2.10)"),
             _ => missing(Value::Int(0), "function not mapped"),
         }
     }

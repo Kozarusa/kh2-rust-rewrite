@@ -1097,6 +1097,12 @@ impl BevyHost<'_> {
             // compares it with 1 to ask "is the target Sora"). The pointer is into the script's own frame (the host cannot
             // read it); the scripts build that context from host 2.23's target record, whose object is always the player
             // in the app, so the answer is Sora's.
+            // 1.320 (0x1740b8 -> FUN_00199580()): the sum of word +0x18 over the 0x38-byte entries of the table at 0x1c8af90 (count at
+            // 0x35e468; the table of 1.202). M_EX590's R0ee1 scales a speed by 1/1800 when the sum is positive, 1/600 when it is 0. The
+            // app has no such table, so the sum is 0.
+            Call::Unknown { group: 1, index: 320, .. } | Call::Func { group: 1, index: 320, .. } => {
+                approx(Value::Int(0), "the sum over the table at 0x1c8af90 (FUN_00199580) is taken as 0: the app does not keep that table")
+            }
             // 1.328 (0x171cd0 -> FUN_001865a8(object)): when +0x7f8 has no bit 4 yet, leaves the kind-2 group the object belongs to (+0x818, FUN_00199398) and sets bit 4 (FUN_00186580), which
             // retires the object. M_EX870's `dead` routine (0x0929) hides it and then calls this. The app removes a hidden object, as for host 1.28; the group's own bookkeeping is the app's.
             Call::Unknown { group: 1, index: 328, .. } | Call::Func { group: 1, index: 328, .. } => {
@@ -1290,6 +1296,12 @@ impl BevyHost<'_> {
             // writers were not traced, so no id is picked: it returns 0, the fallback [inferred: the row's SpawnObject1 is 0 for M_EX740].
             Call::Unknown { group: 7, index: 33, .. } | Call::Func { group: 7, index: 33, .. } => {
                 approx(Value::Int(0), "the candidate list at DAT_00371580 and the budget DAT_01c893b8 - DAT_01c893bc (writers not traced) are not read: no Heartless is called in, the fallback 0 is returned")
+            }
+            // 4.4 (0x19e8b0 -> FUN_001b9a08(id)): with a non-zero id (0 means the manager's own entry) hands FUN_00190c40 and
+            // FUN_0014f1e8 a mission/event slot; M_EX590 calls it with 52174 when `spawn_param(1)` is 1, no return value used.
+            // What it starts is not traced; it is left out.
+            Call::Unknown { group: 4, index: 4, .. } | Call::Func { group: 4, index: 4, .. } => {
+                stub(Value::None, "FUN_001b9a08 (FUN_00190c40 / FUN_0014f1e8) starts a mission-side slot: not traced, left out")
             }
             // 6.31 (wrapper FUN_002eece8, table entry 0x370f58, no arguments): FUN_001a40b8 draws every
             // pickable prize into the player (FUN_001a3ad8, mode 1) and FUN_001bda98 hands every item

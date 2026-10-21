@@ -127,9 +127,8 @@ pub const M_EX950: Kind = Kind { name: "M_EX950", enmp: 50, model: "M_EX950", de
 
 /// `M_EX900` (spawned in 12 areas: eh11, eh25, he09, tt03, tt06, tt07, ..; tt03 b_40 holds one beside two Dusks), called by
 /// its model. Its set-up routine R1ab8 (0x1ab8, one call at 0x08c8) hands `enmp` row 45 to `set_obj_param` (host 2.9, 0x1adf;
-/// the 45 is pushed at 0x08af); its `dead` mode is registered at 0x037d [inferred: same death shape as the other kinds]. NOT in `KINDS`: after a dive it stays
-/// invulnerable (script word +0x18, reset only by event 17 code 2, whose sender the app does not have).
-#[allow(dead_code)] // not in `KINDS` on purpose, see docs/enemies.md "M_EX900"
+/// the 45 is pushed at 0x08af); its `dead` mode is registered at 0x037d [inferred: same death shape as the other kinds]. In `KINDS` since WP-EN12a: the dive's
+/// invulnerability (script word +0x18) is cleared by event 17 code 2, delivered from the motion frame triggers (docs/enemies.md "M_EX900").
 pub const M_EX900: Kind = Kind { name: "M_EX900", enmp: 45, model: "M_EX900", death_effect: true, status: true };
 
 /// `M_EX650` (object 14, `ObjectType` 4; `00objentry` row 14: `NeoStatus` 1019, flags 0, Weight 100, `SpawnLimiter` 10, no spawn objects),
@@ -258,7 +257,7 @@ pub const M_AL020_ICEE: Kind = Kind { name: "M_AL020_ICEE", enmp: 6, model: "M_A
 pub const M_EX020_RAW: Kind = Kind { name: "M_EX020_RAW", enmp: 34, model: "M_EX020_RAW", death_effect: true, status: true };
 
 /// Every enemy kind the app has.
-pub const KINDS: [&Kind; 38] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700, &M_EX950, &M_EX650, &M_EX660, &M_EX110, &M_EX520, &M_EX770, &M_EX210, &M_EX690, &M_EX910, &M_EX050, &M_EX730, &M_EX750, &M_EX510, &M_EX560, &M_EX060, &M_EX620, &M_EX600, &M_EX920, &M_EX120, &M_EX870, &M_EX960, &M_EX630, &M_EX020_RAW, &M_AL020_FIRE, &M_AL020_ICEE];
+pub const KINDS: [&Kind; 39] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700, &M_EX950, &M_EX650, &M_EX660, &M_EX110, &M_EX520, &M_EX770, &M_EX210, &M_EX690, &M_EX910, &M_EX050, &M_EX730, &M_EX750, &M_EX510, &M_EX560, &M_EX060, &M_EX620, &M_EX600, &M_EX920, &M_EX120, &M_EX870, &M_EX960, &M_EX630, &M_EX020_RAW, &M_AL020_FIRE, &M_AL020_ICEE, &M_EX900];
 /// The rigs of the enemy kinds, by `Kind::name` (Shadow and Soldier share `sora::Rigs`' copies).
 #[derive(Resource, Default)]
 pub struct EnemyRigs(pub HashMap<&'static str, Arc<Rig>>);
@@ -1939,11 +1938,10 @@ mod tests {
         assert!(KINDS.iter().any(|k| k.model == "M_EX420" && k.enmp == 9));
     }
 
-    /// `M_EX900` is described but NOT a kind of `KINDS` (it would be invulnerable after its first dive: docs/enemies.md
-    /// "M_EX900"), so tt03's b_40 skips it and keeps its two Dusks. Needs `KH2_ISO`.
+    /// `M_EX900` is a kind of `KINDS` (WP-EN12a), so tt03's b_40 holds it beside its two Dusks. Needs `KH2_ISO`.
     #[test]
-    fn m_ex900_is_described_but_not_spawned() {
-        assert!(!KINDS.iter().any(|k| k.model == "M_EX900"));
+    fn m_ex900_is_a_spawned_kind() {
+        assert!(KINDS.iter().any(|k| k.model == "M_EX900" && k.enmp == 45));
         assert_eq!((M_EX900.enmp, M_EX900.model), (45, "M_EX900"));
         let Ok(iso) = crate::assets::iso_path() else { return };
         if !iso.exists() {
@@ -1960,9 +1958,9 @@ mod tests {
         let ard = disc.read("ard/tt03.ard").and_then(|d| kh2_ard::Area::parse(&d)).map(|(a, _)| a).expect("tt03.ard");
         let run = kh2_ard::run::run_area(&ard, [0, 0x49, 0], 0);
         let b40 = btl_groups(&groups, &run).into_iter().find(|g| g.name == "b_40").expect("program 0x49 loads b_40");
-        assert!(b40.members.iter().all(|m| m.kind.name == DUSK.name), "no M_EX900 member");
-        assert_eq!(b40.skipped, vec!["M_EX900".to_string()]);
-        eprintln!("m_ex900_is_described_but_not_spawned: disc branch ran (row 309, b_40 skips M_EX900)");
+        assert_eq!(b40.members.iter().filter(|m| m.kind.name == M_EX900.name).count(), 1);
+        assert_eq!(b40.members.iter().filter(|m| m.kind.name == DUSK.name).count(), 2);
+        assert!(b40.skipped.is_empty());
     }
 
     /// tt03's `btl` program 7 loads b_21, which holds two `M_EX880` (object 317) and three `M_EX950` (object 314), both kinds of `KINDS`. Needs `KH2_ISO`.

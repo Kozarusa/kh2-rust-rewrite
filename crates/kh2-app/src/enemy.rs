@@ -249,12 +249,16 @@ pub const M_EX960: Kind = Kind { name: "M_EX960", enmp: 51, model: "M_EX960", de
 /// object, pushed at 0x0455, which R0e42 stores to local+0x20; host 2.9 at 0x0e69).
 pub const M_AL020_FIRE: Kind = Kind { name: "M_AL020_FIRE", enmp: 5, model: "M_AL020_FIRE", death_effect: true, status: true };
 
+/// `M_AL020_ICEE` (object 77, `ObjectType` 4; `00objentry` row 77: `NeoStatus` 1031, `SpawnLimiter` 7, no spawn objects), the ice twin of `M_AL020_FIRE` in the Agrabah areas (al01 `btl` program 2 b_01 holds thirteen, per EN10n).
+/// Its script hands `enmp` row 6 to `set_obj_param` (host 2.9: BDX `M_AL020_ICEE` R1224 at 0x1224, called at 0x046d with 6 as the first of its eight values after the object, pushed at 0x0455; host 2.9 at 0x124b).
+pub const M_AL020_ICEE: Kind = Kind { name: "M_AL020_ICEE", enmp: 6, model: "M_AL020_ICEE", death_effect: true, status: true };
+
 /// `M_EX020_RAW` (object 1365 = 0x555, `ObjectType` 4; `00objentry` row 1365: flags 4, `NeoStatus` 1001, Weight 100, `SpawnLimiter` 4, `AnimationName` `M_EX020_RAW.mset`), the Shadow of the areas the area survey lists (bb01, dc02, eh02, hb16, lk03, mu05) with a motion set of its own.
 /// `obj/M_EX020_RAW.mdlx` is the same size as `obj/M_EX020.mdlx` and `kh2 bdx` lists the same 5333-word script for both, so its `set_obj_param` row is the Shadow's `enmp` 34 (and its row has the Shadow's `NeoStatus` 1001). Only the motion set (4.1 MB, against the Shadow's 365 KB) differs.
 pub const M_EX020_RAW: Kind = Kind { name: "M_EX020_RAW", enmp: 34, model: "M_EX020_RAW", death_effect: true, status: true };
 
 /// Every enemy kind the app has.
-pub const KINDS: [&Kind; 37] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700, &M_EX950, &M_EX650, &M_EX660, &M_EX110, &M_EX520, &M_EX770, &M_EX210, &M_EX690, &M_EX910, &M_EX050, &M_EX730, &M_EX750, &M_EX510, &M_EX560, &M_EX060, &M_EX620, &M_EX600, &M_EX920, &M_EX120, &M_EX870, &M_EX960, &M_EX630, &M_EX020_RAW, &M_AL020_FIRE];
+pub const KINDS: [&Kind; 38] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700, &M_EX950, &M_EX650, &M_EX660, &M_EX110, &M_EX520, &M_EX770, &M_EX210, &M_EX690, &M_EX910, &M_EX050, &M_EX730, &M_EX750, &M_EX510, &M_EX560, &M_EX060, &M_EX620, &M_EX600, &M_EX920, &M_EX120, &M_EX870, &M_EX960, &M_EX630, &M_EX020_RAW, &M_AL020_FIRE, &M_AL020_ICEE];
 /// The rigs of the enemy kinds, by `Kind::name` (Shadow and Soldier share `sora::Rigs`' copies).
 #[derive(Resource, Default)]
 pub struct EnemyRigs(pub HashMap<&'static str, Arc<Rig>>);
@@ -2539,6 +2543,30 @@ mod tests {
         assert_eq!(b20.members.iter().filter(|m| m.kind.name == M_AL020_FIRE.name).count(), 18);
     }
 
+    /// `M_AL020_ICEE` (object 77) is an enemy kind of the app: its `00objentry` row is type 4 with `NeoStatus` 1031 and `SpawnLimiter` 7, its script's `set_obj_param` row is `enmp` 6, and al01's
+    /// `btl` program 2 loads b_01 with thirteen of it. Needs `KH2_ISO` for the table and group part.
+    #[test]
+    fn m_al020_icee_is_an_enemy_kind_with_its_objentry_row() {
+        assert!(KINDS.iter().any(|k| std::ptr::eq(*k, &M_AL020_ICEE)));
+        assert_eq!((M_AL020_ICEE.enmp, M_AL020_ICEE.model, M_AL020_ICEE.status, M_AL020_ICEE.death_effect), (6, "M_AL020_ICEE", true, true));
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let rows = {
+            let mut a = disc.0.lock().expect("archive lock");
+            kh2_tables::load::<kh2_tables::tables::Objentry>(&mut a, &kh2_tables::tables::OBJENTRY).expect("objentry").rows
+        };
+        let row = rows.iter().find(|r| r.model_name == "M_AL020_ICEE").expect("objentry row of M_AL020_ICEE");
+        assert_eq!((row.object_id, row.object_type, row.neo_status, row.spawn_object1, row.spawn_object2, row.spawn_limiter), (77, OBJECT_ENEMY, 1031, 0, 0, 7));
+        let groups = area_groups(&disc, "al01");
+        let ard = disc.read("ard/al01.ard").and_then(|d| kh2_ard::Area::parse(&d)).map(|(a, _)| a).expect("al01.ard");
+        let run = kh2_ard::run::run_area(&ard, [0, 2, 0], 0);
+        let b01 = btl_groups(&groups, &run).into_iter().find(|g| g.name == "b_01").expect("program 2 loads b_01");
+        assert_eq!(b01.members.iter().filter(|m| m.kind.name == M_AL020_ICEE.name).count(), 13);
+    }
+
     /// `M_EX920` (object 311) is an enemy kind of the app: its `00objentry` row is type 4 with `NeoStatus` 3006, `SpawnLimiter` 15 and no spawn objects, its script's `set_obj_param` row is `enmp` 47, and eh10's
     /// `btl` program 1 loads b_00 with three of it. Needs `KH2_ISO` for the table and group part.
     #[test]
@@ -3153,7 +3181,6 @@ mod tests {
         assert!(t.serials().is_empty(), "FUN_00194330 cleared every slot");
     }
 
-    /// The table holds 256 serials (`FUN_00194080` writes halfword indices 0..=255): a full table takes no more.
     /// `M_EX020_RAW` (object 1365) is an enemy kind of the app with the Shadow's `NeoStatus` 1001 and script (so `enmp` 34) and a motion set of its own; bb01's `btl` program 0x44 loads b_40 with sixteen of it and nothing else.
     /// Needs `KH2_ISO` for the table and group part.
     #[test]
@@ -3180,6 +3207,7 @@ mod tests {
         assert_eq!(b40.members.iter().filter(|m| m.kind.name == M_EX020_RAW.name).count(), 16);
         assert!(b40.skipped.is_empty());
     }
+    /// The table holds 256 serials (`FUN_00194080` writes halfword indices 0..=255): a full table takes no more.
     #[test]
     fn the_table_of_the_defeated_holds_256_serials() {
         let mut t = DefeatedTables::default();

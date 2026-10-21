@@ -302,6 +302,11 @@ pub(crate) fn clear_shared_blocks() {
     shared_blocks().clear();
 }
 
+/// Host 1.2 (FUN_00182538): the game-space direction from the object (`pos`, app space) to the point `t`, y forced to 0.
+pub(crate) fn move_toward_dir(pos: Vec3, t: Vec4) -> Vec4 {
+    [t[0] - pos.x, 0.0, t[2] + pos.z, 0.0]
+}
+
 pub(crate) struct BevyHost<'a> {
     pub(crate) obj: &'a mut Obj,
     pub(crate) env: &'a Env<'a>,
@@ -812,6 +817,17 @@ impl BevyHost<'_> {
                 } else {
                     self.obj.remote.push((o, Remote::Position(p)));
                     approx(Value::None, "carried out on the other object at the end of the tick (the object a script made this tick takes the point where it appears); the mover's sync (FUN_0016a618) is the position itself")
+                }
+            }
+            // 1.2 move_toward (0x170228 -> FUN_00182538): the vector from the object's position (+0x540) to the point, y forced to 0,
+            // normalised and stored at +0x10 with the speed in w: host 1.111 aimed at a point. The result is the VU status word
+            // (cfc2), a leftover of the routine; M_EX420's call site (0x0e20: self, the point at local+0x20, speed 20.0) pops it.
+            Call::Func { group: 1, index: 2, args } if args.len() >= 3 => {
+                if let (Arg::Vec(t), Arg::Float(speed)) = (&args[1], &args[2]) {
+                    self.obj.set_move(move_toward_dir(self.obj.motor.pos, *t), *speed);
+                    approx(Value::Int(0), "applied for one tick like host 1.111; the returned VU status word is not modelled")
+                } else {
+                    missing(Value::Int(0), "move_toward without a point and a speed")
                 }
             }
             Call::Func { group: 1, index: 98, args } => match self.ground_position(args[0].int() as u32) {
@@ -1367,6 +1383,14 @@ impl Host for BevyHost<'_> {
 
 #[cfg(test)]
 mod tests {
+    /// Host 1.2 (FUN_00182538): the direction runs from the object to the point in the game's space (Z mirrored), y dropped.
+    #[test]
+    fn move_toward_points_from_the_object_to_the_point() {
+        // The object at app (10, 5, 20) is at game (10, -5, -20); the point is game (14, -9, -50).
+        let d = move_toward_dir(Vec3::new(10.0, 5.0, 20.0), [14.0, -9.0, -50.0, 1.0]);
+        assert_eq!(d, [4.0, 0.0, -30.0, 0.0]);
+    }
+
     use super::*;
     use crate::assets::Disc;
 

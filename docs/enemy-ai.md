@@ -63,6 +63,7 @@ with a default, nothing in the app reads it; Missing = fails visibly. Addresses 
 | 1.147 position, 1.201 facing_vector | Impl | position and facing of self or the player, in game space |
 | 1.120 target_position | Approx | the player's origin (the game uses the lock-on part's point, FUN_0018efa0) |
 | 1.121 set_target_mode, 1.131 free_target | Stub | the lock mode of a target record has no consumer; 1.131 is really the allocation of a pooled copy of the record (FUN_0018f3f8, pool of 0x80 records, WP-RV2, docs/bdx.md) |
+| 1.2 move_toward | Approx | (WP-FIX2) FUN_00170228 -> FUN_00182538: movement vector +0x10 = normalised (point - position, y 0), speed in w, like 1.111 aimed at a point; applied for one tick through `Obj::set_move`; the result (a VU status word) is 0 here and M_EX420 pops it (call site 0x0e20, speed 20.0) |
 | 1.11 play_motion, 1.61 play_motion_at | Approx | restart the slot on the `Animator` with the blend in ticks (at a start frame for 1.61); the motion controller's queue is not ported |
 | 1.12 play_motion_checked | Approx | as 1.11 unless the slot already plays (FUN_0017e2d8 / FUN_0017e278 compare the running motion with the requested one) |
 | 1.14 motion_done | Impl | the motion reached its end during the last tick; looping motions report it each time they wrap (FUN_0017e3b8 sets bit 1 of the controller flags at every end, loop or not) |

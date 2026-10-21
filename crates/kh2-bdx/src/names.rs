@@ -89,6 +89,7 @@ pub static HOST_FUNCS: &[HostFn] = &[
     f(0, 88, "fader_88", "f", '-', 0x16d958, "screen fader at 0x3564d0 with flag 0 over `seconds * DAT_0037a25c` frames (FUN_0014a7f0); role inferred"),
     f(1, 0, "create_object", "i", 'h', 0x170190, "construct a new object (0x9c0 bytes) for entity id `id` at the origin (FUN_0016e8c0); returns it"),
     f(1, 1, "set_yaw", "Of", '-', 0x170ac8, "rebuild the facing vector at +0x550 from an angle (FUN_0016a790), set the yaw at +0x66c, clear flag 8 of +0x7f8; role inferred"),
+    f(1, 2, "move_toward", "Ovf", 'i', 0x170228, "as set_move toward a point: the direction from the object's position (+0x540) to the point, y zeroed and normalised, stored at +0x10 with the speed in w (FUN_00182538); the result is a leftover VU status word"),
     f(1, 3, "player", "", 'o', 0x170260, "the player's object (Sora)"),
     f(1, 4, "face_direction", "Ov", '-', 0x170ae8, "face along the direction at once (yaw = atan2(x, z) at +0x66c)"),
     f(1, 5, "modes_clear", "p", '-', 0x172050, "clear the mode record table"),

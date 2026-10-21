@@ -258,7 +258,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.84 | `gauges(O) -> p` | 0x172ee8 | 839 | the pointer at object +0x48c; scripts pass it to the record readers 1.228 to 1.233 |
 | 1.87 | `spawn_attached(Oiii) -> h` | 0x171800 | 1541 | spawn an effect or child attached to the object; returns its handle |
 | 1.88 | `lockon_point(O) -> v` | 0x172f40 | 21 | the object's lock-on point through a temporary target record (FUN_0016b6e0); role inferred |
-| 1.2 | `move_toward(Ovf) -> i` | 0x170228 | ? | FUN_00182538(object, point, speed): the vector from the object (+0x540) to the point, y forced to 0, normalised, stored at +0x10 with the speed in w (host 1.111 aimed at a point); the result is a leftover VU status word (WP-FIX2; call sites on the disc not counted) |
+| 1.2 | `move_toward(Ovf) -> i` | 0x170228 | ? | as set_move toward a point: the direction from the object's position (+0x540) to the point, y zeroed and normalised, stored at +0x10 with the speed in w (FUN_00182538); the result is a leftover VU status word (WP-FIX2; call sites on the disc not counted) |
 | 1.89 | `set_velocity(Ovf)` | 0x172f90 | 78 | set the secondary velocity vector at +0x880 (direction normalised, speed in w) |
 | 1.90 | `send_message(Osf)` | 0x172fb8 | 366 | send the name of a mode to the mode machines of all objects after a delay (see runtime.rs) |
 | 1.92 | `ground_marker(Oi)` | 0x171078 | 466 | place a marker effect on the ground under the object |

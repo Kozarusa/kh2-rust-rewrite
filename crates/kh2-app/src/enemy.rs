@@ -268,8 +268,12 @@ pub const M_EX020_RAW: Kind = Kind { name: "M_EX020_RAW", enmp: 34, model: "M_EX
 /// Its script (12124 words) hands `enmp` row 66 to `set_obj_param` (host 2.9: BDX `M_EX680` R2d91 at 0x2d91, called at 0x19f4 with 66 as the first of its eight values after the object, pushed at 0x19dc, which R2d91 stores to local+0x20; host 2.9 at 0x2db8).
 pub const M_EX680: Kind = Kind { name: "M_EX680", enmp: 66, model: "M_EX680", death_effect: true, status: true };
 
+/// `M_EX580` (object 10; `00objentry` row 10: `NeoStatus` 1012), called by its model; the next kind of docs/area-survey.md (7 areas, 24 groups; mu01 `KH2_PROGRAMS=1` group b_00 holds one beside three `M_EX020`).
+/// Its script (4331 words) hands `enmp` row 61 to `set_obj_param` (host 2.9; BDX addresses in docs/enemies.md, WP-EN12e).
+pub const M_EX580: Kind = Kind { name: "M_EX580", enmp: 61, model: "M_EX580", death_effect: true, status: true };
+
 /// Every enemy kind the app has.
-pub const KINDS: [&Kind; 42] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700, &M_EX950, &M_EX650, &M_EX660, &M_EX110, &M_EX520, &M_EX770, &M_EX210, &M_EX690, &M_EX910, &M_EX050, &M_EX730, &M_EX750, &M_EX510, &M_EX560, &M_EX060, &M_EX620, &M_EX600, &M_EX920, &M_EX120, &M_EX870, &M_EX960, &M_EX630, &M_EX020_RAW, &M_AL020_FIRE, &M_AL020_ICEE, &M_EX900, &M_EX130, &M_EX890, &M_EX680];
+pub const KINDS: [&Kind; 43] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700, &M_EX950, &M_EX650, &M_EX660, &M_EX110, &M_EX520, &M_EX770, &M_EX210, &M_EX690, &M_EX910, &M_EX050, &M_EX730, &M_EX750, &M_EX510, &M_EX560, &M_EX060, &M_EX620, &M_EX600, &M_EX920, &M_EX120, &M_EX870, &M_EX960, &M_EX630, &M_EX020_RAW, &M_AL020_FIRE, &M_AL020_ICEE, &M_EX900, &M_EX130, &M_EX890, &M_EX680, &M_EX580];
 /// The rigs of the enemy kinds, by `Kind::name` (Shadow and Soldier share `sora::Rigs`' copies).
 #[derive(Resource, Default)]
 pub struct EnemyRigs(pub HashMap<&'static str, Arc<Rig>>);
@@ -2630,6 +2634,24 @@ mod tests {
         };
         let row = rows.iter().find(|r| r.model_name == "M_EX680").expect("objentry row of M_EX680");
         assert_eq!((row.object_id, row.object_type, row.neo_status, row.spawn_object1, row.spawn_object2, row.spawn_limiter), (16, 21, 1022, 0, 0, 17));
+    }
+
+    /// `M_EX580` (object 10) is an enemy kind of the app: its `00objentry` row has `NeoStatus` 1012, its script's `set_obj_param` row is `enmp` 61. Needs `KH2_ISO` for the table part.
+    #[test]
+    fn m_ex580_is_an_enemy_kind_with_its_objentry_row() {
+        assert!(KINDS.iter().any(|k| std::ptr::eq(*k, &M_EX580)));
+        assert_eq!((M_EX580.enmp, M_EX580.model, M_EX580.status, M_EX580.death_effect), (61, "M_EX580", true, true));
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let rows = {
+            let mut a = disc.0.lock().expect("archive lock");
+            kh2_tables::load::<kh2_tables::tables::Objentry>(&mut a, &kh2_tables::tables::OBJENTRY).expect("objentry").rows
+        };
+        let row = rows.iter().find(|r| r.model_name == "M_EX580").expect("objentry row of M_EX580");
+        assert_eq!((row.object_id, row.neo_status), (10, 1012));
     }
 
     /// `M_EX920` (object 311) is an enemy kind of the app: its `00objentry` row is type 4 with `NeoStatus` 3006, `SpawnLimiter` 15 and no spawn objects, its script's `set_obj_param` row is `enmp` 47, and eh10's

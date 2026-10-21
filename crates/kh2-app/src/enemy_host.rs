@@ -620,6 +620,13 @@ impl BevyHost<'_> {
             Call::GlobalFlag4 | Call::GlobalFlag80 => stub(Value::Bool(false), "global state set by other scripts"),
             // 1.301 (0x1744f8 -> FUN_001abee8): the byte at 0x35ea48 + 0x1e is the NUL ending the frame-group string and nothing stores to it, so the answer is 0.
             Call::GlobalByte301 => imp(Value::Int(0)),
+            // 1.125 tween_start (0x173858 -> FUN_001abf40(from, to, frames, object + 0x8c8)): starts the ramp at +0x8c8; FUN_00192bf0 steps it
+            // each frame and FUN_00192d00 stores it as a byte at +0x6a0 (and, for two model ids, as part weights). M_EX500 (and M_EX500_NM) start it.
+            Call::Func { group: 1, index: 125, args } if args.len() >= 4 && args[0].int() as u32 == me => {
+                self.obj.tween = crate::enemy_obj::Ramp::start(args[1].float(), args[2].float(), args[3].float());
+                approx(Value::None, "the ramp runs, but its consumer FUN_00192d00 (byte at +0x6a0, part weights of two model ids) is not ported: nothing is drawn from it")
+            }
+            Call::Func { group: 1, index: 125, .. } => missing(Value::None, "tween_start on an object other than self"),
             Call::Flag124 { .. } => imp(Value::Bool(self.env.flags124)),
             Call::Flag309 { obj } => approx(Value::Bool(*obj == PLAYER), "status bit 0x80: set for the party class"),
             Call::ProbeGround { dir, a, b, .. } => imp(Value::Int(self.probe(*dir, *a, *b))),

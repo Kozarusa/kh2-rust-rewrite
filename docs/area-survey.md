@@ -39,7 +39,7 @@ Refreshed by WP-SV3 (2026-10-20) after EN9 to EN11f: `enemy::KINDS` has 38 kinds
 **Totals.** 88 absent objects of ObjectType 4 or 21 appear in spawn groups: 23 base enemy kinds, 41 world variants and twins (suffixes `_WI` Timeless River, `_NM` Halloween and Christmas Town, `_TR` Space Paranoids, `_AL` Agrabah, `_RAW`, `_LC`, `_DC`, `_EH`), 8 bosses (`B_*`), 4 Struggle or event opponents (`N_EX610_BTL`, `N_EX610_BTL2`, `N_AL070_BTL`, `P_EX130`; the first two have NeoStatus 5058 and stand in groups with FRIEND and PLAYER entries, [inferred] Struggle matches) and 12 world objects that are not enemies. The old count of 100 included models that are not ObjectType 4 or 21.
 
 **Blocked or special.**
-- `M_EX900` (12 areas): `enemy::M_EX900` exists and is not in `KINDS`. The gate in docs/enemies.md (no sender of event 17) was lifted by WP-DYN1 (the sender is a motion frame trigger, delivered by `enemy_ai::motion_events`), but no soak of it was run, so it stays out. First in the list below.
+- `M_EX900` (12 areas): in `KINDS` since WP-EN12a (soaked in tt19 b_00 and tt03 b_40: every dive ends through the event 17 frame trigger, docs/enemies.md "M_EX900").
 - `M_EX950` is in `KINDS` (EN9e). Its reaction-command modes (`rc_*`, hosts 1.165 and 1.237, event 11 with 312 or 323) and its two spawn objects were never reached; that is a gap of the kind, not an absent kind.
 - Bosses: `B_CA020`, `B_CA030`, `B_CA040` (14 areas together, each needs 1.222 and 2.29), `B_CA000` (ca10, eh02, eh03; needs 0.32 and 1.250), `B_LK110_PHANTOM` (lk03, lk04, lk05, lk07, group b_35 in each, no missing host call: the cheapest boss), `B_EX210_EH`, `B_EX350` and `B_MU130` (the last two have no usable BDX entry: `kh2 bdx` reports an empty or missing script, so their AI lives elsewhere).
 - Not enemies: `F_*` and `EH_G_*` objects (Timeless River props, the Hollow Bastion map objects F_BB050 and F_BB060, the 100 Acre Wood game F_PO090 family, the Gummi enemies of eh22 and eh26). They need their own handling, not an enemy kind.
@@ -143,7 +143,7 @@ Order = areas unlocked per unit of work: no missing host call first, then one ch
 
 | # | kind | area / btl program / tag | kind-2 group (id: members; centre x,z) | enmp | missing host calls | note |
 |---|---|---|---|---|---|---|
-| 1 | `M_EX900` | tt19 / 1 / b_00 | 299: 3 `M_EX900`; (-2, 0) clear | 45 | none | code exists (`enemy::M_EX900`); add it to `KINDS` and soak 90 s for the dive state (script word +0x18, event 17 code 2) and the `rc_crash` fallback; 12 areas, mostly Twilight Town (tt03 b_40 pairs it with two Dusks) |
+| 1 | `M_EX900` | tt19 / 1 / b_00 | 299: 3 `M_EX900`; (-2, 0) clear | 45 | none | done in WP-EN12a: in `KINDS`, 117 s soak and a kill in tt03 b_40 (docs/enemies.md) |
 | 2 | `M_EX130` | bb13 / a / b_20 | 13: 4 `M_EX130`, 3 `M_EX420`; (0, 4) clear | 2 | none | ObjectType 21; 21 areas; 26 sole groups |
 | 3 | `M_EX710` | tt39 / 4 / b_10 | 156: 2 `M_EX710`; (0, -6) clear (the volume centre has y 4013: the room lies far above the entrances) | 11 | 1.247 `random_free_point` (an Approx port exists for party members: `party_rules::free_point`), 2.36 (empty function) | ObjectType 21; the widest kind (28 areas, 37 sole groups); shares 11 groups with `M_EX130` |
 | 4 | `M_EX890` | tt29 / 7 / b_21 | 145: 4 `M_EX890`; (1, 0) clear | 44 | none | ObjectType 21; Twilight Town (tt08, tt17, tt29, tt36), Beast's Castle, eh07; 9 groups, all sole |

@@ -585,7 +585,7 @@ impl BevyHost<'_> {
             Call::Airborne { .. } => imp(Value::Bool(!self.obj.motor.grounded)),
             // M_AL020_FIRE's jump modes (R0c2d, 0x0c2d) call start_move, wait for take-off, then wait in R0731 (0x0731) while busy; with busy read as a hit reaction only,
             // the wait ends at once and every tick starts another jump from the air until the object hits the ceiling. A jump in the air is read as busy [inferred].
-            Call::Busy { .. } if self.tag.starts_with("M_AL020_FIRE#") && !self.obj.motor.grounded => approx(Value::Bool(true), "M_AL020_FIRE: busy while it is airborne from a jump [inferred]; otherwise a hit reaction"),
+            Call::Busy { .. } if (self.tag.starts_with("M_AL020_FIRE#") || self.tag.starts_with("M_AL020_ICEE#")) && !self.obj.motor.grounded => approx(Value::Bool(true), "M_AL020_FIRE / M_AL020_ICEE: busy while it is airborne from a jump [inferred]; otherwise a hit reaction"),
             Call::Busy { .. } => approx(Value::Bool(self.obj.reacting), "the game's flags (+0x160) are read as 'a hit reaction plays'"),
             // FUN_0016b940: word `index` of the array at object +0x81c; words 1 and 2 are the record's
             // +0x20 and +0x24 (FUN_0016b870). Without a record (the app's own waves) 99 stays.
@@ -1086,6 +1086,12 @@ impl BevyHost<'_> {
             // entry that FUN_001a7da8 finds for the id (251 in M_EX950 R230c) into its +4, and 1.76 clears that word. Its reader
             // was not traced, so nothing in the app consumes it.
             Call::Func { group: 1, index: 75 | 76, .. } | Call::Unknown { group: 1, index: 75 | 76, .. } => stub(Value::None, "motion controller word +4 (set from a lookup, cleared by 1.76): reader not traced"),
+            // 1.100 (0x173178 -> FUN_0017bee0): sqrt(2 x / g) of the float word, the time a body takes to fall x; g = 20/49 is DAT_0037a538 (docs/movement.md; the table names no signature,
+            // so the word arrives raw). M_AL020_ICEE's jump modes ask it (BDX M_AL020_ICEE). The EE's sqrt.s takes the root of the absolute value of a negative operand.
+            Call::Unknown { group: 1, index: 100, args } => {
+                let x = f32::from_bits(args.first().copied().unwrap_or(0));
+                imp(Value::Float(((x + x) / (20.0 / 49.0)).abs().sqrt()))
+            }
             // 1.22 spawn_effect_at (0x1717c0 -> FUN_0016a5b8): element `id` of the object's effect file started with no owner and moved to the vector
             // (FUN_001d9d00); the answer is the effect's handle. The app has no placed, ownerless effect for an enemy (`Obj::effects` start on the
             // owner), so no effect is drawn and the handle only stands for the effect (M_EX730 calls it at 0x00e9 with element 12 at a bone and at 0x0c8c with element 9; R0d4f fades a held handle with 0.52 at 0x0d63).

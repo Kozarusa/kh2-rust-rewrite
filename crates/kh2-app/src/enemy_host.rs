@@ -307,6 +307,30 @@ pub(crate) fn move_toward_dir(pos: Vec3, t: Vec4) -> Vec4 {
     [t[0] - pos.x, 0.0, t[2] + pos.z, 0.0]
 }
 
+/// The numbers and the generator state of host 1.247 (`random_free_point`, FUN_001726d8 -> FUN_001a5ea8): the numbers are read from the executable once
+/// (`set_free_point_consts`, `enemy::EnemyPlugin`), the generator state is the game's second generator and its bucket counter, shared by every caller
+/// (`party_rules::free_point`).
+static FREE_POINT: LazyLock<Mutex<(Option<crate::party_rules::FreePointConsts>, crate::magic_rules::ScatterState)>> =
+    LazyLock::new(|| Mutex::new((None, crate::magic_rules::ScatterState::default())));
+
+/// Hands host 1.247 the executable's numbers (`FreePointConsts::from_exe`).
+pub(crate) fn set_free_point_consts(k: crate::party_rules::FreePointConsts) {
+    FREE_POINT.lock().unwrap_or_else(|e| e.into_inner()).0 = Some(k);
+}
+
+/// Host 1.247's answer: `party_rules::free_point` with the shared generator state and the area's floor and line tests; None without the executable's numbers.
+fn random_free_point(centre: Vec3, lo: f32, hi: f32, world: Option<&World>) -> Option<Vec3> {
+    let (consts, mut scatter) = {
+        let g = FREE_POINT.lock().unwrap_or_else(|e| e.into_inner());
+        (g.0?, g.1)
+    };
+    let ground = |a: Vec3, b: Vec3| world.and_then(|w| w.ground(a, a.y, a.y - b.y)).map(|g| a.with_y(g.y));
+    let clear = |a: Vec3, b: Vec3| world.is_none_or(|w| w.raycast(a, b).is_none());
+    let p = crate::party_rules::free_point(centre, lo, hi, &mut scatter, &consts, ground, clear);
+    FREE_POINT.lock().unwrap_or_else(|e| e.into_inner()).1 = scatter;
+    Some(p)
+}
+
 pub(crate) struct BevyHost<'a> {
     pub(crate) obj: &'a mut Obj,
     pub(crate) env: &'a Env<'a>,
@@ -1104,6 +1128,18 @@ impl BevyHost<'_> {
             // compares it with 1 to ask "is the target Sora"). The pointer is into the script's own frame (the host cannot
             // read it); the scripts build that context from host 2.23's target record, whose object is always the player
             // in the app, so the answer is Sora's.
+            // 1.247 random_free_point (0x1726d8 -> FUN_001a5ea8(centre, radii, out, mask 1), the answer is the static buffer 0x1c88380): a free floor
+            // point between the two radii around the vector, as the party members' `turbo` dash asks it (`party_rules::free_point`, shared with
+            // friend_host). M_EX710's `move_random` asks it with 150 and 300 around its own place (BDX R14f9 at 0x14f9).
+            Call::Func { group: 1, index: 247, args } if args.len() >= 3 => {
+                let Arg::Vec(at) = args[0] else { return missing(Value::None, "random_free_point without a vector") };
+                let (lo, hi) = (args[1].float(), args[2].float());
+                let centre = from_game(at);
+                let Some(p) = random_free_point(centre, lo, hi, self.env.world) else {
+                    return missing(Value::Vec(at), "the executable's numbers for 1.247 are not readable: the centre is answered");
+                };
+                approx(Value::Vec(to_game(p)), "the floor cast (FUN_001d1648, mask 1) is the area's highest floor polygon in the span and the line test any polygon (World::raycast): the collision masks are not told apart")
+            }
             // 1.320 (0x1740b8 -> FUN_00199580()): the sum of word +0x18 over the 0x38-byte entries of the table at 0x1c8af90 (count at
             // 0x35e468; the table of 1.202). M_EX590's R0ee1 scales a speed by 1/1800 when the sum is positive, 1/600 when it is 0. The
             // app has no such table, so the sum is 0.
@@ -1199,6 +1235,14 @@ impl BevyHost<'_> {
                 let o = args.first().map_or(0, |a| a.int() as u32);
                 let slot = if self.names_other(o) { self.obj.others.get(&o).and_then(|x| x.slot) } else { self.obj.slot };
                 approx(Value::Bool(slot.is_some_and(|s| (10..40).contains(&s))), "the app's motion slot stands for the game's +0x154 [inferred, as host 1.15]")
+            }
+            // 2.36 nop_2_36 (0x18dfd0): an empty function; the damage and reaction routines of M_EX710 call it with the object and its target.
+            Call::Func { group: 2, index: 36, .. } | Call::Unknown { group: 2, index: 36, .. } => imp(Value::None),
+            // 2.24 hit_attacker_block (0x18e7e0 -> FUN_0018e7e0): the word at +0xc of the hit record, a pointer to a 16-byte block whose +4 holds the
+            // attacker's object; M_EX710's damage routine (BDX R11d8) copies the block into a context and compares its object with the player (1.130).
+            // The app's only attacker is the player: the answer is the block `read_mem` lays at PLAYER (word +4 = the player object), as for the Soldier's reaction thread.
+            Call::Func { group: 2, index: 24, .. } | Call::Unknown { group: 2, index: 24, .. } => {
+                approx(Value::Handle(PLAYER), "the hit record is not modelled: the attacker block is the player's, as host 2.88 answers [inferred: the app's only attacker]")
             }
             // 2.67 new_hit_group (FUN_001bdf00): the next id of the counter at 0x1d5dd4c, 0x100 after 0x10000000.
             Call::Func { group: 2, index: 67, .. } => {
@@ -1495,6 +1539,19 @@ mod tests {
         push_group_edit(&mut q, 5, false);
         push_group_edit(&mut q, 63, true);
         assert_eq!(q, vec![(5, true), (5, false), (63, true)]);
+    }
+
+    /// Host 1.247 (M_EX710's `seek_target` asks it for 150 to 300) draws from the shared generator: without a floor it answers the centre, and each call
+    /// moves the bucket counter on by one (`party_rules::free_point`, which the oracle test `party_free_point_matches_fun_001a5ea8` checks against the executable).
+    #[test]
+    fn random_free_point_walks_the_shared_generator_and_answers_the_centre_without_a_floor() {
+        set_free_point_consts(crate::party_rules::FreePointConsts { bucket_angle: 0.785_398, turn_angle: 0.785_398, rand_scale: 2.328_306_4e-10, step: 20.0, reach: 20.0, cast_down: 230.0, cast_up: 50.0 });
+        let before = FREE_POINT.lock().unwrap().1;
+        let centre = Vec3::new(100.0, 400.0, -50.0);
+        assert_eq!(random_free_point(centre, 150.0, 300.0, None), Some(centre));
+        let after = FREE_POINT.lock().unwrap().1;
+        assert_eq!(after.turn, (before.turn + 1).rem_euclid(8));
+        assert_ne!(after.seed, before.seed);
     }
 
     /// Hosts 1.46 / 1.47 queue one switch per set bit of the area mask, lowest bit first.

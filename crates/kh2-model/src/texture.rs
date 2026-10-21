@@ -194,7 +194,7 @@ pub fn split_sets(b: &[u8]) -> Vec<&[u8]> {
     if b.len() >= 8 && b[..4] == [0xff; 4] {
         let n = i32_at(b, 4);
         let offs: Vec<usize> = (0..n.min(64)).map(|k| i32_at(b, 8 + 4 * k)).collect();
-        if n >= 1 && n <= 64 && offs.iter().all(|&o| o >= 8 + 4 * n && o < b.len()) {
+        if (1..=64).contains(&n) && offs.iter().all(|&o| o >= 8 + 4 * n && o < b.len()) {
             return offs
                 .iter()
                 .enumerate()

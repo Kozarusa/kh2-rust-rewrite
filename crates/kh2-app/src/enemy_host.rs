@@ -739,6 +739,13 @@ impl BevyHost<'_> {
             Call::ObjMethod44 { .. } => stub(Value::None, "FUN_0032cb10 [inferred]: bits 8 and 9 of object +0x10c; no reader in the app"),
             Call::ObjMethod48 { .. } => stub(Value::None, "FUN_0032cb20 [inferred]: clears bit 8 of object +0x10c, then FUN_00193048 sets or clears bit 9 of +0x10c and bits of +0x768 by the byte at +0x9ac; no reader in the app"),
             Call::MoverMethod { .. } => stub(Value::None, "virtual call (method +0xc, FUN_00171298) on the object's mover with one float: the role of the method was not traced, nothing in the app consumes it"),
+            // 1.227 mover_method_8 (0x171350 -> virtual method +8 of the object's mover at +0xc, called with the object and the argument).
+            // M_EX550's `super_dive` (BDX 0x1703) hands it the vector it also gave 1.4 (facing; w 20 or the mode's value) and then waits
+            // for 1.57 to report the landing. The movers are objects built at run time, so the method body cannot be read from the
+            // executable (docs/summons.md "Peter Pan's 6.40 / 1.115 / 1.227"); the app's own mover (`Obj::motor`) is not driven by it.
+            Call::Func { group: 1, index: 227, args } if args.first().is_some_and(|a| a.int() as u32 == me) => {
+                stub(Value::None, "the mover's virtual method +8 (runtime-built object) was not read: the dive's launch is not applied, the wait on 1.57 ends at once")
+            }
             // 1.143 (FUN_0016b0d8): the object whose spawn record byte +0x1e equals the argument. The app keeps no such
             // byte per object, so nothing is found (M_EX650's shared-block set-up asks for 92 once and never reads the answer).
             Call::FindObject { by: kh2_bdx::host::ObjectKey::SpawnGroup, .. } => {
@@ -1011,6 +1018,18 @@ impl BevyHost<'_> {
                     }
                 }
                 stub(Value::None, "bit arrays +0x47c / +0x480 cleared in the object memory; their reader FUN_0019a6a0 (per-part collision switch) has no counterpart in the app")
+            }
+            // 1.52 bits_47c_set (0x1728c0 -> FUN_0019dd88(object + 0x47c, n)): bit n of the word at +0x47c + 4 * (n >> 5) set (the
+            // collision part n forced on, docs/bdx.md; `summon.rs` keeps the same bit). M_EX550 and about ten other kinds call it in their
+            // init. The reader FUN_0019a6a0 (per-part collision switch) has no counterpart in the app, so the bit is only kept.
+            Call::Func { group: 1, index: 52, args } if args[0].int() as u32 == me => {
+                let n = args[1].int() as u32;
+                let o = 0x47c + (n >> 5) as usize * 4;
+                if let Some(w) = self.obj.mem.get_mut(o..o + 4) {
+                    let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]) | 1 << (n & 31);
+                    w.copy_from_slice(&v.to_le_bytes());
+                }
+                stub(Value::None, "bit array +0x47c set in the object memory; its reader FUN_0019a6a0 (per-part collision switch) has no counterpart in the app")
             }
             // 1.53 bits_480_set (0x1728e8 -> FUN_0019ddb0 on object +0x47c): bit n of the word at +0x480 + 4 * (n >> 5).
             // M_EX940 sets bits 5 and 7 in its init. No reader was traced (see 1.54).

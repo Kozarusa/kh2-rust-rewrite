@@ -197,3 +197,63 @@ fn skies_per_area_sk0_and_sk1() {
         assert!(s0 == 1 && s1 == 0);
     }
 }
+/// Every `.mdlx` on the disc: classify the texture entry's header, check wrapped entries decode to
+/// real textures, and check plain models are unchanged by the wrapper handling (docs/models.md).
+#[test]
+fn every_mdlx_texture_entry_decodes_and_wrapped_ones_split() {
+    let Some(mut a) = open() else { return };
+    let list = std::fs::read_to_string("../../local/kh2idx.txt").unwrap_or_default();
+    let names: Vec<String> = list.lines().map(str::trim).filter(|n| n.ends_with(".mdlx")).map(String::from).collect();
+    if names.is_empty() {
+        return;
+    }
+    let (mut plain, mut wrapped, mut other, mut no_tex) = (0, Vec::new(), Vec::new(), 0);
+    for n in &names {
+        let Ok(file) = a.read(n) else { continue };
+        let Ok(entries) = kh2_bar::parse(&file) else { continue };
+        let Some(t) = entries.iter().find(|e| e.kind == 7) else {
+            no_tex += 1;
+            continue;
+        };
+        let head: Vec<u8> = t.data.iter().copied().take(4).collect();
+        if head.is_empty() {
+            // F_TT840 and G_OA300: a zero-length texture entry (nothing to decode).
+            no_tex += 1;
+        } else if head == [0, 0, 0, 0] {
+            plain += 1;
+            let sets = kh2_model::texture::decode_sets(t.data);
+            assert_eq!(sets.len(), 1, "{n}");
+            assert_eq!(sets[0].len(), kh2_model::texture::decode(t.data).len(), "{n}");
+        } else if head == [0xff; 4] {
+            let sets = kh2_model::texture::decode_sets(t.data);
+            let sizes: Vec<Vec<(u32, u32)>> = sets.iter().map(|s| s.iter().map(|x| (x.width, x.height)).collect()).collect();
+            eprintln!("wrapped {n}: {} sets, sizes {sizes:?}, sets equal {}", sets.len(), sets.windows(2).all(|w| w[0].iter().zip(&w[1]).all(|(x, y)| x.rgba == y.rgba)));
+            assert!(!sets.is_empty() && sets.iter().all(|s| !s.is_empty() && s.iter().all(|x| x.width > 1 && x.height > 1)), "{n}");
+            wrapped.push(n.clone());
+        } else {
+            eprintln!("other header {n}: {head:02x?}");
+            other.push(n.clone());
+        }
+    }
+    eprintln!("mdlx files {}: plain {plain}, wrapped {}, other {}, without texture entry {no_tex}", names.len(), wrapped.len(), other.len());
+    assert!(other.is_empty(), "unknown texture headers: {other:?}");
+    assert!(wrapped.iter().any(|n| n.ends_with("M_EX500.mdlx")));
+}
+
+#[test]
+fn m_ex500_draws_with_its_first_set_and_other_models_keep_one_set() {
+    let Some(mut a) = open() else { return };
+    let file = a.read("obj/M_EX500.mdlx").expect("M_EX500");
+    let m = kh2_model::mdlx(&file).expect("mdlx");
+    assert_eq!(m.texture_sets.len(), 2);
+    assert_eq!(m.textures.len(), 3, "set 1 has 3 textures");
+    assert!(m.textures.iter().all(|t| t.width > 1 && t.height > 1));
+    eprintln!("M_EX500 set sizes {:?}", m.texture_sets.iter().map(|s| s.iter().map(|t| (t.width, t.height)).collect::<Vec<_>>()).collect::<Vec<_>>());
+    assert_eq!(m.texture_sets[1].len(), 3);
+    for n in ["M_EX020", "M_EX570", "M_EX740", "M_EX600", "P_EX100"] {
+        let m = kh2_model::mdlx(&a.read(&format!("obj/{n}.mdlx")).expect(n)).expect(n);
+        assert_eq!(m.texture_sets.len(), 1, "{n}");
+        assert_eq!(m.texture_sets[0].len(), m.textures.len(), "{n}");
+        assert!(m.textures.iter().all(|t| t.width > 1 && t.height > 1), "{n}");
+    }
+}

@@ -186,8 +186,45 @@ mod tests {
     }
 }
 
-/// Decodes every GS-info entry of a texture container into an RGBA image.
+/// Splits a model's texture entry into its texture containers. A plain entry is one container.
+/// Some models (M_EX500) wrap several: dword 0 is -1, dword 1 the container count, then one
+/// offset per container (each container starts with the usual 0 magic). Offsets are relative to
+/// the entry start. [inferred from the file layout; the game code that walks the wrapper is not traced]
+pub fn split_sets(b: &[u8]) -> Vec<&[u8]> {
+    if b.len() >= 8 && b[..4] == [0xff; 4] {
+        let n = i32_at(b, 4);
+        let offs: Vec<usize> = (0..n.min(64)).map(|k| i32_at(b, 8 + 4 * k)).collect();
+        if n >= 1 && n <= 64 && offs.iter().all(|&o| o >= 8 + 4 * n && o < b.len()) {
+            return offs
+                .iter()
+                .enumerate()
+                .map(|(k, &o)| {
+                    let end = offs.get(k + 1).copied().filter(|&e| e > o).unwrap_or(b.len());
+                    &b[o..end]
+                })
+                .collect();
+        }
+        return Vec::new();
+    }
+    vec![b]
+}
+
+/// Decodes every texture set of an entry (see [`split_sets`]); a plain entry gives one set.
+pub fn decode_sets(b: &[u8]) -> Vec<Vec<Texture>> {
+    split_sets(b).into_iter().map(decode).collect()
+}
+
+/// The container the model draws with (set 1, the first one).
+pub fn first_set(b: &[u8]) -> &[u8] {
+    split_sets(b).into_iter().next().unwrap_or(&[])
+}
+
+/// Decodes every GS-info entry of a texture container into an RGBA image. A wrapped entry
+/// ([`split_sets`]) decodes its first set.
 pub fn decode(b: &[u8]) -> Vec<Texture> {
+    if b.len() >= 8 && b[..4] == [0xff; 4] {
+        return split_sets(b).first().map(|c| decode(c)).unwrap_or_default();
+    }
     if b.len() < 36 || i32_at(b, 0) != 0 {
         return Vec::new();
     }
@@ -283,6 +320,39 @@ mod bound_tests {
         b[24..28].copy_from_slice(&0x100i32.to_le_bytes());
         b[0x100 + 0x70..0x100 + 0x78].copy_from_slice(&tex0.to_le_bytes());
         b
+    }
+
+    #[test]
+    fn wrapper_splits_into_containers() {
+        let mut w = vec![0xffu8; 4];
+        w.extend_from_slice(&2i32.to_le_bytes());
+        w.extend_from_slice(&0x10i32.to_le_bytes());
+        w.extend_from_slice(&0x20i32.to_le_bytes());
+        w.resize(0x10, 0);
+        w.extend_from_slice(&[1u8; 0x10]);
+        w.extend_from_slice(&[2u8; 0x8]);
+        let sets = split_sets(&w);
+        assert_eq!(sets.len(), 2);
+        assert_eq!((sets[0].len(), sets[0][0]), (0x10, 1));
+        assert_eq!((sets[1].len(), sets[1][0]), (0x8, 2));
+        assert_eq!(first_set(&w), sets[0]);
+        // A plain entry is one set; a wrapper with an offset outside the entry is rejected.
+        assert_eq!(split_sets(&[0, 0, 0, 0, 1]).len(), 1);
+        assert!(split_sets(&[0xff, 0xff, 0xff, 0xff, 1, 0, 0, 0, 0x99, 0, 0, 0]).is_empty());
+    }
+
+    #[test]
+    fn wrapped_container_decodes_like_the_plain_one() {
+        let c = container(1, (3u64 << 26) | (3u64 << 30) | (0x13u64 << 20));
+        let mut w = vec![0xffu8; 4];
+        w.extend_from_slice(&1i32.to_le_bytes());
+        w.extend_from_slice(&0xcci32.to_le_bytes());
+        w.resize(0xcc, 0);
+        w.extend_from_slice(&c);
+        let (a, b) = (decode(&c), decode(&w));
+        assert_eq!(a.len(), 1);
+        assert_eq!((a[0].width, &a[0].rgba), (b[0].width, &b[0].rgba));
+        assert_eq!(decode_sets(&w).len(), 1);
     }
 
     #[test]

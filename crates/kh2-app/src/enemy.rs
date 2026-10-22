@@ -301,8 +301,11 @@ pub const M_EX550: Kind = Kind { name: "M_EX550", enmp: 58, model: "M_EX550", de
 /// Its script (7410 words) hands `enmp` row 101 to `set_obj_param` (host 2.9: BDX `M_EX610` R1b10 at 0x1b10, called at 0x1024 with 101 as the first of its eight values after the object, pushed at 0x100c, which R1b10 stores to local+0x20; host 2.9 at 0x1b37). It calls no host that the app lacks (survey).
 pub const M_EX610: Kind = Kind { name: "M_EX610", enmp: 101, model: "M_EX610", death_effect: true, status: true };
 
+/// `M_EX590` (object 75, `ObjectType` 4; `00objentry` row 75: `NeoStatus` 1013, `SpawnLimiter` 9, no spawn objects), called by its model; the pot Heartless of al01, bb08, he09, mu02, nm02 and nm06. Its script (6556 words) hands `enmp` row 4 to `set_obj_param` (host 2.9 at 0x07b6, the 4 pushed at 0x07b0). Its fighting members sit in kind-2 groups that start disabled and are enabled by event 0x9b (docs/enemies.md "The enemy M_EX590").
+pub const M_EX590: Kind = Kind { name: "M_EX590", enmp: 4, model: "M_EX590", death_effect: true, status: true };
+
 /// Every enemy kind the app has.
-pub const KINDS: [&Kind; 50] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700, &M_EX950, &M_EX650, &M_EX660, &M_EX110, &M_EX520, &M_EX770, &M_EX210, &M_EX690, &M_EX910, &M_EX050, &M_EX730, &M_EX750, &M_EX510, &M_EX560, &M_EX060, &M_EX620, &M_EX600, &M_EX920, &M_EX120, &M_EX870, &M_EX960, &M_EX630, &M_EX020_RAW, &M_AL020_FIRE, &M_AL020_ICEE, &M_EX900, &M_EX130, &M_EX890, &M_EX680, &M_EX580, &M_EX780, &M_EX570, &M_EX740, &M_EX500, &M_EX710, &M_EX550, &M_EX610];
+pub const KINDS: [&Kind; 51] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700, &M_EX950, &M_EX650, &M_EX660, &M_EX110, &M_EX520, &M_EX770, &M_EX210, &M_EX690, &M_EX910, &M_EX050, &M_EX730, &M_EX750, &M_EX510, &M_EX560, &M_EX060, &M_EX620, &M_EX600, &M_EX920, &M_EX120, &M_EX870, &M_EX960, &M_EX630, &M_EX020_RAW, &M_AL020_FIRE, &M_AL020_ICEE, &M_EX900, &M_EX130, &M_EX890, &M_EX680, &M_EX580, &M_EX780, &M_EX570, &M_EX740, &M_EX500, &M_EX710, &M_EX550, &M_EX610, &M_EX590];
 
 /// The rigs of the enemy kinds, by `Kind::name` (Shadow and Soldier share `sora::Rigs`' copies).
 #[derive(Resource, Default)]
@@ -449,6 +452,87 @@ pub struct AreaGroup {
 pub struct AreaWaves {
     area: Option<String>,
     pub groups: Vec<AreaGroup>,
+    /// The signals of the area's group records (see `GroupSignal`), in file order.
+    pub signals: Vec<GroupSignal>,
+}
+
+/// One signal of a spawn group record (8 bytes after the walk paths): `FUN_00198430` registers the group with the trigger
+/// `(event, arg)` when it is set up (`FUN_001975e0`), and the trigger enables the group (action 0, `FUN_00199c70`) or
+/// disables it (action 1, `FUN_00199c48`) when the event is raised (`FUN_001978b0`). The event is `FUN_00197b70`'s first
+/// argument, the argument its second (event 0x4a ignores it). docs/events.md section 2, "Signals".
+#[derive(Clone, Debug, PartialEq)]
+pub struct GroupSignal {
+    /// The spawn tag the record is in.
+    pub tag: String,
+    /// The record's id (header +2): the group the signal switches.
+    pub id: u16,
+    pub event: u16,
+    pub arg: u16,
+    pub action: u8,
+}
+
+/// The signals of every group record of the area file (`area_groups` keeps only the groups that hold enemies of `KINDS`).
+pub fn area_signals(disc: &Disc, area: &str) -> Vec<GroupSignal> {
+    let Some(file) = disc.read(&format!("ard/{area}.ard")) else { return Vec::new() };
+    let Some((ard, _)) = kh2_ard::Area::parse(&file) else { return Vec::new() };
+    ard.spawns
+        .iter()
+        .flat_map(|(tag, recs)| recs.iter().flat_map(move |r| r.signals.iter().map(move |s| GroupSignal { tag: tag.clone(), id: r.id, event: s.event, arg: s.arg, action: s.action })))
+        .collect()
+}
+
+/// One record of the game's trigger table (`DAT_01c8a9c8`, 0x54 bytes each; `FUN_001975e0` finds or makes it): the key
+/// `(event, arg)` and the groups it switches, each with its action (0 enable, 1 disable).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrigRec {
+    pub event: i32,
+    pub arg: i32,
+    pub groups: Vec<(u16, u8)>,
+}
+
+/// The records in the order they were made. `FUN_001975e0` takes the highest free slot of the table, so the first record
+/// made has the highest slot [inferred from the scan: it keeps the last free slot it passes]; `FUN_00197588` scans the slots
+/// upward.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TriggerTable {
+    recs: Vec<TrigRec>,
+}
+
+impl TriggerTable {
+    /// `FUN_001975e0` + `FUN_00197838` / `FUN_00197870`: the group joins the record of `(event, arg)` (made when absent). The
+    /// argument is the signal's halfword as it is, except event 0x4a, which registers with -1.
+    pub fn register(&mut self, event: u16, arg: u16, group: u16, action: u8) {
+        let arg = if event == 0x4a { -1 } else { i32::from(arg) };
+        let event = i32::from(event);
+        let i = match self.recs.iter().position(|r| r.event == event && r.arg == arg) {
+            Some(i) => i,
+            None => {
+                self.recs.push(TrigRec { event, arg, groups: Vec::new() });
+                self.recs.len() - 1
+            }
+        };
+        self.recs[i].groups.push((group, action));
+    }
+
+    /// `FUN_00197588` then `FUN_001978b0`: the record with this exact key; else, when either argument is negative, the
+    /// matching event's record with the highest slot (the first one made). The record is spent (`*record = -1`) and its
+    /// groups are returned.
+    pub fn fire(&mut self, event: i32, arg: i32) -> Vec<(u16, u8)> {
+        let mut found = None;
+        for (i, r) in self.recs.iter().enumerate().rev() {
+            if r.event != event {
+                continue;
+            }
+            if r.arg == arg {
+                found = Some(i);
+                break;
+            }
+            if arg < 0 || r.arg < 0 {
+                found = Some(i);
+            }
+        }
+        found.map(|i| self.recs.remove(i).groups).unwrap_or_default()
+    }
 }
 
 /// `ObjectType` of enemies in `00objentry`.
@@ -1002,6 +1086,13 @@ pub struct BattleGroups {
     /// The tables of the defeated that outlive the area (`DefeatedTables`).
     pub defeated: DefeatedTables,
     rng: PlaceRng,
+    /// The trigger table the groups' signals fill when they are set up (`FUN_00198430`).
+    pub triggers: TriggerTable,
+    /// Ids of the group records that are disabled now (group object +4 bit 0): a kind-2 group in this list creates nothing
+    /// and its timer stands (`FUN_001989d8`). Filled at set-up from the records' kind 5 / flag bit 0, changed by signals.
+    pub off: Vec<u16>,
+    /// Harness `KH2_FIRE_EVENT` was applied for this set-up.
+    fired: bool,
 }
 
 /// What the reaction code tracks: a hit reaction in progress, or nothing (the script is in charge).
@@ -1118,7 +1209,7 @@ impl Plugin for EnemyPlugin {
             .add_systems(
                 FixedUpdate,
                 (
-                    (spawn_waves, think, separate).chain().in_set(Sim::Enemy),
+                    (spawn_waves, fire_group_triggers, think, separate).chain().in_set(Sim::Enemy),
                     (receive_clashes, receive_hits).chain().in_set(Sim::EnemyHurt),
                 ),
             );
@@ -1275,6 +1366,7 @@ pub fn spawn_waves(
     if area_waves.area != area.loaded {
         area_waves.area = area.loaded.clone();
         area_waves.groups = area.loaded.as_deref().map(|a| area_groups(&disc, a)).unwrap_or_default();
+        area_waves.signals = area.loaded.as_deref().map(|a| area_signals(&disc, a)).unwrap_or_default();
         for g in &area_waves.groups {
             info!(
                 "area groups: {} btl program {:#x} group {}: {} (not in the app: {:?})",
@@ -1318,6 +1410,9 @@ pub fn spawn_waves(
             battle.live.clear();
             battle.events.clear();
             battle.counts.clear();
+            battle.triggers = TriggerTable::default();
+            battle.off.clear();
+            battle.fired = false;
             // Harness: `KH2_WAVE_GROUP=<tag>` sets up that group instead of the program's and, when the group holds
             // the player's entity, puts Sora there first (the record's place for the player; that the game moves
             // the player there when such a battle starts is [inferred]).
@@ -1353,7 +1448,8 @@ pub fn spawn_waves(
                     spawn_member(&mut commands, m, g.parts[m.part].id, record_spot(m, &col), &rigs, &data, (&mut meshes, &mut materials, &mut images, &mut bindposes));
                     now += 1;
                 }
-                let twos: Vec<usize> = (0..g.parts.len()).filter(|&k| g.parts[k].kind == 2 && !g.parts[k].disabled && g.members.iter().any(|m| m.part == k && m.spawn_kind == 2)).collect();
+                // A disabled kind-2 group is kept too: a signal (event 0x9b for M_EX590's) may enable it later; `battle.off` holds it until then.
+                let twos: Vec<usize> = (0..g.parts.len()).filter(|&k| g.parts[k].kind == 2 && g.members.iter().any(|m| m.part == k && m.spawn_kind == 2)).collect();
                 info!(
                     "area {}: btl program {:#x} group {}{}: {now} enemies at load (FUN_00198750), {} on demand by kind-2 group {:x?}",
                     run.name,
@@ -1363,6 +1459,13 @@ pub fn spawn_waves(
                     g.members.iter().filter(|m| m.spawn_kind == 2 && twos.contains(&m.part)).count(),
                     twos.iter().map(|&k| g.parts[k].id).collect::<Vec<_>>()
                 );
+                for part in g.parts.iter().filter(|p| p.disabled) {
+                    battle.off.push(part.id);
+                }
+                // FUN_00198430: every record registers its signals with the trigger table.
+                for sig in area_waves.signals.iter().filter(|s| s.tag == g.name) {
+                    battle.triggers.register(sig.event, sig.arg, sig.id, sig.action);
+                }
                 for k in twos {
                     let mut two = KindTwo::new(g, k);
                     two.killed = battle.defeated.serials().iter().copied().filter(|s| g.members.iter().any(|m| m.part == k && m.serial == *s)).collect();
@@ -1401,6 +1504,10 @@ pub fn spawn_waves(
         for (g, two, prev) in b.live.iter_mut() {
             let part = &g.parts[two.part];
             let pid = part.id;
+            // FUN_001989d8: a disabled group (object +4 bit 0) does nothing, its timer included.
+            if b.off.contains(&pid) {
+                continue;
+            }
             let live: Vec<u16> = enemies.iter().filter(|e| e.alive()).filter_map(|e| e.serial.filter(|s| s.0 == pid).map(|s| s.1)).collect();
             // FUN_001993f8: a member that was there and is gone.
             let tp = two.part;
@@ -1504,6 +1611,48 @@ pub fn spawn_waves(
         let Some(rig) = rigs.get(kind) else { continue };
         let yaw = { let d = p.translation - Vec3::new(x, y, z); f32::atan2(d.x, d.z) };
         spawn_enemy(&mut commands, kind, rig, Vec3::new(x, y, z), yaw, (-1, None, 0, None), &data, (&mut meshes, &mut materials, &mut images, &mut bindposes));
+    }
+}
+
+/// Raises the global events on the trigger table (`FUN_00197b70` -> `FUN_00197670`): the record `FUN_00197588` finds
+/// switches its groups (`FUN_001978b0`: action 0 `FUN_00199c70` enables, 1 `FUN_00199c48` disables). M_EX590's fighting
+/// groups wait for event 0x9b: the field objects `F_AL050`, `F_BB070`, `F_HE000`, `F_MU060`, `F_NM070` (and `F_BB040`,
+/// `F_MU040`, `F_MU050`) raise it with argument -1 (host 1.41 pushes 155 and -1 in `R0061`, the handler of their damage event
+/// 6, after a break reaction and progress flag 0x102b) [docs/enemies.md]. The app has no field objects, so the event comes
+/// only from the harness: `KH2_FIRE_EVENT=<hex event>[,<argument>]` raises it once after the groups are set up (the argument
+/// defaults to -1) and applies it to the trigger table alone (the objects' event 10 is not sent).
+pub fn fire_group_triggers(mut events: MessageReader<crate::struggle::GlobalEvent>, mut battle: ResMut<BattleGroups>) {
+    let mut raised: Vec<(i32, i32)> = events.read().map(|e| (e.id as i32, e.arg)).collect();
+    if !battle.fired && battle.run != 0 {
+        battle.fired = true;
+        if let Ok(v) = std::env::var("KH2_FIRE_EVENT") {
+            let mut it = v.split(',');
+            if let Some(ev) = it.next().and_then(|t| i32::from_str_radix(t.trim().trim_start_matches("0x"), 16).ok()) {
+                let arg = it.next().and_then(|t| t.trim().parse::<i32>().ok()).unwrap_or(-1);
+                info!("harness: global event {ev:#x} ({arg}) raised (KH2_FIRE_EVENT)");
+                raised.push((ev, arg));
+            }
+        }
+    }
+    let b = &mut *battle;
+    // Host 1.320 (FUN_00199580) reads the sum of the groups' enemy counters.
+    crate::enemy_host::set_group_enemy_sum(b.counts.iter().map(|c| c.count).sum());
+    for (event, arg) in raised {
+        for (id, action) in b.triggers.fire(event, arg) {
+            // FUN_00199bf8 looks the group up among the groups set up; an absent id is left alone.
+            if !b.counts.iter().any(|c| c.id == id) {
+                continue;
+            }
+            match action {
+                0 => b.off.retain(|i| *i != id),
+                1 if !b.off.contains(&id) => b.off.push(id),
+                _ => continue,
+            }
+            for c in b.counts.iter_mut().filter(|c| c.id == id) {
+                c.disabled = action == 1;
+            }
+            info!("global event {event:#x} ({arg}): group {id:#x} {} (FUN_001978b0)", if action == 0 { "enabled (FUN_00199c70)" } else { "disabled (FUN_00199c48)" });
+        }
     }
 }
 
@@ -2705,6 +2854,59 @@ mod tests {
         };
         let row = rows.iter().find(|r| r.model_name == "M_EX500").expect("objentry row of M_EX500");
         assert_eq!((row.object_id, row.object_type, row.neo_status), (2, 4, 1004));
+    }
+
+    /// `M_EX590` (object 75) is an enemy kind of the app: its `00objentry` row is type 4 with `NeoStatus` 1013, its script's `set_obj_param` row is `enmp` 4; bb08's b_70 holds its fighting group 0x565 (kind 2, flag bit 0: disabled) with the signal
+    /// (event 0x9b, argument 0x565, enable), beside the kind-1 group 0x545. Needs `KH2_ISO` for the table part.
+    #[test]
+    fn m_ex590_is_an_enemy_kind_whose_fighting_group_waits_for_event_0x9b() {
+        assert!(KINDS.iter().any(|k| std::ptr::eq(*k, &M_EX590)));
+        assert_eq!((M_EX590.enmp, M_EX590.model, M_EX590.status, M_EX590.death_effect), (4, "M_EX590", true, true));
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let rows = {
+            let mut a = disc.0.lock().expect("archive lock");
+            kh2_tables::load::<kh2_tables::tables::Objentry>(&mut a, &kh2_tables::tables::OBJENTRY).expect("objentry").rows
+        };
+        let row = rows.iter().find(|r| r.model_name == "M_EX590").expect("objentry row of M_EX590");
+        assert_eq!((row.object_id, row.object_type, row.neo_status), (75, 4, 1013));
+        let groups = area_groups(&disc, "bb08");
+        let b70 = groups.iter().find(|g| g.name == "b_70").expect("bb08 b_70");
+        let fighting = b70.parts.iter().find(|p| p.id == 0x565).expect("group record 0x565");
+        assert_eq!((fighting.kind, fighting.disabled), (2, true));
+        assert!(b70.members.iter().any(|m| m.kind.name == "M_EX590" && m.spawn_kind == 2 && b70.parts[m.part].id == 0x565));
+        assert!(b70.members.iter().any(|m| m.kind.name == "M_EX590" && m.spawn_kind == 1 && b70.parts[m.part].id == 0x545), "the decoys are in the kind-1 group 0x545");
+        let sig = area_signals(&disc, "bb08");
+        assert!(sig.iter().any(|g| g.tag == "b_70" && g.id == 0x565 && (g.event, g.arg, g.action) == (0x9b, 0x565, 0)));
+        // The same shape in the other four areas: a disabled kind-2 record that registers for event 0x9b.
+        for (area, id) in [("mu02", 0x2c5u16), ("al01", 0x1d9), ("nm06", 0x41e)] {
+            assert!(area_signals(&disc, area).iter().any(|g| g.id == id && g.event == 0x9b && g.action == 0), "{area} {id:#x}");
+        }
+    }
+
+    /// The trigger table (`FUN_001975e0`, `FUN_00197588`, `FUN_001978b0`): a record is made per `(event, arg)` and holds its groups;
+    /// a raised event takes the exact record, else (a negative argument on either side) the first one made for the event, and
+    /// spends it; event 0x4a registers with -1.
+    #[test]
+    fn the_trigger_table_matches_exactly_then_by_a_negative_argument() {
+        let mut t = TriggerTable::default();
+        t.register(0x9b, 0x565, 0x565, 0);
+        t.register(0x9b, 0x586, 0x586, 0);
+        t.register(0x9b, 0x565, 0x700, 1);
+        t.register(0x4a, 7, 0x10, 0);
+        assert_eq!(t.fire(0x9c, -1), Vec::<(u16, u8)>::new(), "another event matches nothing");
+        assert_eq!(t.fire(0x9b, 0x586), vec![(0x586, 0)], "the exact record");
+        assert_eq!(t.fire(0x9b, 0x586), Vec::<(u16, u8)>::new(), "a fired record is spent");
+        assert_eq!(t.fire(0x9b, 5), Vec::<(u16, u8)>::new(), "a different positive argument matches nothing");
+        assert_eq!(t.fire(0x9b, -1), vec![(0x565, 0), (0x700, 1)], "-1 takes the record made first, with every group it holds");
+        assert_eq!(t.fire(0x4a, 99), vec![(0x10, 0)], "event 0x4a registered with -1, which any argument matches");
+        let mut t = TriggerTable::default();
+        t.register(0x9b, 0x586, 0x586, 0);
+        t.register(0x9b, 0x565, 0x565, 0);
+        assert_eq!(t.fire(0x9b, -1), vec![(0x586, 0)], "the first made wins, not the lowest argument");
     }
 
     /// `M_EX710` (object 122) is an enemy kind of the app: its `00objentry` row is type 21 with `NeoStatus` 1025, its script's `set_obj_param` row is `enmp` 11. Needs `KH2_ISO` for the table part.

@@ -1286,7 +1286,9 @@ mod tests {
 
     /// The triggers of every slot of an object's motion set: (slot, tag, frame trigger id, params).
     fn frame_triggers(d: &Disc, model: &str) -> Vec<(usize, String, u8, Vec<i16>)> {
-        let m = kh2_anim::Mset::parse(&d.read(&format!("obj/{model}.mset")).expect("mset")).expect("mset parses");
+        // `M_EX610_RAW` names `M_EX610.mset` in its objentry row and has no motion set of its own.
+        let file = Some(format!("obj/{model}.mset")).filter(|f| d.read(f).is_some()).unwrap_or_else(|| format!("obj/{}.mset", model.trim_end_matches("_RAW")));
+        let m = kh2_anim::Mset::parse(&d.read(&file).expect("mset")).expect("mset parses");
         let mut out = Vec::new();
         for slot in 0..m.slots.len() {
             let Some(s) = m.get(slot) else { continue };

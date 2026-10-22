@@ -37,6 +37,23 @@ pub struct StreamDecoder {
 
 const CHUNK: usize = 256;
 
+/// Harness: `KH2_AUDIO_DUMP=<file>` appends every rendered chunk to the file as raw little-endian f32
+/// stereo at 48 kHz (what the stream hands to the output device, before the device), so a live run can
+/// be measured without loopback recording.
+fn dump_chunk(buf: &[f32]) {
+    use std::io::Write;
+    static FILE: Mutex<Option<std::fs::File>> = Mutex::new(None);
+    let Some(path) = std::env::var_os("KH2_AUDIO_DUMP") else { return };
+    let Ok(mut g) = FILE.lock() else { return };
+    if g.is_none() {
+        *g = std::fs::File::create(&path).ok();
+    }
+    let Some(f) = g.as_mut() else { return };
+    let bytes: Vec<u8> = buf.iter().flat_map(|x| x.to_le_bytes()).collect();
+    let _ = f.write_all(&bytes);
+}
+
+
 impl Iterator for StreamDecoder {
     type Item = f32;
     fn next(&mut self) -> Option<f32> {
@@ -50,6 +67,7 @@ impl Iterator for StreamDecoder {
                 Err(_) => self.buf.fill(0.0),
             }
             self.pos = 0;
+            dump_chunk(&self.buf);
         }
         let v = self.buf[self.pos];
         self.pos += 1;
@@ -1094,6 +1112,70 @@ mod tests {
             assert!(!e.tracks.is_empty(), "se000 entry {sound} is empty");
         }
         assert!(load_wd(&d, &cache, bank.block.entries[9].wd).is_some(), "the alarm's wave bank loads");
+    }
+
+    /// Metrics of a stereo render: peak, samples at the clamp, DC offset, rms and the share of
+    /// energy in the first difference (a high-frequency measure: 4 is white noise, near 0 is bass).
+    fn metrics(out: &[f32]) -> (f32, usize, f32, f32, f32) {
+        let peak = out.iter().fold(0f32, |m, &x| m.max(x.abs()));
+        let clipped = out.iter().filter(|x| x.abs() >= 0.9999).count();
+        let dc = out.iter().sum::<f32>() / out.len().max(1) as f32;
+        let e: f32 = out.iter().map(|x| x * x).sum();
+        let d: f32 = out.chunks_exact(2).collect::<Vec<_>>().windows(2).map(|w| (w[1][0] - w[0][0]).powi(2)).sum::<f32>() * 2.0;
+        (peak, clipped, dc, (e / out.len().max(1) as f32).sqrt(), if e > 0.0 { d / e } else { 0.0 })
+    }
+
+    /// Offline render of system sounds and the save point candidates (WP-AU4). Needs the disc.
+    /// `KH2_AU4_OUT=<dir>` also writes each render as a 48 kHz stereo 16-bit WAV there.
+    #[test]
+    fn render_system_sounds_metrics() {
+        let Some(d) = disc() else { return };
+        let Some(irx) = d.read_root("LIBSSL.IRX") else { return };
+        let tables = Arc::new(Tables::from_irx(&irx).expect("tables"));
+        let cache = SeCache::default();
+        let mut worst = 0f32;
+        let n = load_bank(&d, &cache, 0, None).expect("se000").block.entries.len() as u16;
+        for (bank, index) in (0..n).map(|i| (0u16, i)) {
+            let req = PlaySe { bank, index, apdx: None, pos: None };
+            let b = load_bank(&d, &cache, bank, None).expect("bank");
+            if b.block.entries[index as usize].tracks.is_empty() {
+                continue;
+            }
+            let entry = &b.block.entries[index as usize];
+            let Some(wd) = load_wd(&d, &cache, entry.wd) else { continue };
+            let mut dr = Driver::new(tables.clone());
+            dr.mixer.master = 0.6;
+            assert!(dr.play_se_handle(&b.block, req.index as usize, wd.clone(), 0x3fff, 0x40).is_some());
+            let mut out = vec![0f32; 2 * 48_000 * 3];
+            dr.render(&mut out);
+            let (peak, clipped, dc, rms, hf) = metrics(&out);
+            let last = out.chunks_exact(2).rposition(|f| f[0].abs() > 0.001 || f[1].abs() > 0.001).map_or(0.0, |i| i as f32 / 48_000.0);
+            eprintln!(
+                "AU4 se {bank}:{index} wd {} flags {:#x} tracks {} peak {peak:.3} clipped {clipped} dc {dc:.5} rms {rms:.4} hf {hf:.3} audible {last:.2}s",
+                entry.wd, entry.flags, entry.tracks.len()
+            );
+            assert_eq!(clipped, 0, "se 0:{index} clips");
+            if (1..=5).contains(&index) {
+                assert!(peak < 0.95 && dc.abs() < 0.01, "menu sound {index}: peak {peak}, dc {dc}");
+            }
+            worst = worst.max(peak);
+            if let Some(dir) = std::env::var_os("KH2_AU4_OUT") {
+                let mut w = Vec::new();
+                let data: Vec<u8> = out.iter().flat_map(|x| ((x * 32767.0) as i16).to_le_bytes()).collect();
+                w.extend_from_slice(b"RIFF");
+                w.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
+                w.extend_from_slice(b"WAVEfmt ");
+                for v in [16u32, 0x0002_0001, 48_000, 192_000] {
+                    w.extend_from_slice(&v.to_le_bytes());
+                }
+                w.extend_from_slice(&0x0010_0004u32.to_le_bytes());
+                w.extend_from_slice(b"data");
+                w.extend_from_slice(&(data.len() as u32).to_le_bytes());
+                w.extend_from_slice(&data);
+                std::fs::write(std::path::Path::new(&dir).join(format!("se_{bank}_{index}.wav")), w).unwrap();
+            }
+        }
+        assert!(worst > 0.0, "at least one system sound produced output");
     }
 
     fn disc() -> Option<Disc> {

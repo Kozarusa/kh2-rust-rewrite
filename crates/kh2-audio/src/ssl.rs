@@ -939,8 +939,8 @@ impl Sequence {
 /// the driver's handlers consume them; varlen-taking ones are all handled explicitly).
 fn arg_len(cmd: u8) -> usize {
     match cmd {
-        0x09 | 0x0b | 0x0c | 0x62 => 2,
-        0x0a | 0x0d | 0x0e | 0x14 | 0x15 | 0x16 | 0x31..=0x39 | 0x3e | 0x58..=0x5d | 0x66 | 0x67 | 0x6a | 0x6b | 0x6c | 0x71 => 1,
+        0x09 | 0x0b | 0x0c | 0x39 | 0x62 => 2,
+        0x0a | 0x0d | 0x0e | 0x14 | 0x15 | 0x16 | 0x31..=0x38 | 0x3e | 0x58..=0x5d | 0x66 | 0x67 | 0x6a | 0x6b | 0x6c | 0x71 => 1,
         _ => 0,
     }
 }
@@ -1360,5 +1360,17 @@ mod tests {
         assert!(seq.tracks[0].done);
         assert_eq!(seq.tracks[0].rand_vol, 0);
         assert_eq!(seq.tracks[0].vol_factor, 0x3fff);
+    }
+
+    /// Command 0x39 takes two argument bytes (found in the boot bank's entries 14 and 17: read with one
+    /// argument the track ends before its notes and the sound, such as the prize bounce, was silent).
+    #[test]
+    fn command_39_consumes_two_arguments() {
+        assert_eq!(arg_len(0x39), 2);
+        let track: Arc<[u8]> = Arc::from(vec![0x00, 0x39, 0x07, 0x00, 0x00, 0x12, 0x3d, 0x05, 0x00]);
+        let mut seq = Sequence::new(vec![track], one_note_wd(), 0x3fff, 0x40, 64);
+        let (mut mixer, mut rng) = (Mixer::new(), 1u32);
+        seq.track_tick(0, &mut mixer, &mut rng);
+        assert_eq!(mixer.voices.len(), 1, "the note after the command sounds");
     }
 }

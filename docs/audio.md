@@ -460,3 +460,26 @@ ends the danger. Other stops: `FUN_001573c8`, `FUN_002c0d00`, `FUN_002c10b0`, `F
 stops`): the app's mixer has no stop or fade for a sound effect, so a looping sample would run once through.
 Test `the_danger_alarm_starts_once_and_stops_when_danger_ends`. Harness: `KH2_SOUNDLOG=1 KH2_HUDHP=7:2`
 (the panel's displayed HP drops into danger at 7 s): `se 0:9 (-) volume 0x3fff pan 0x40 playing` (before WP-SE2: `se 2:9 (-) ... not found`).
+
+## WP-AU4: sound-effect render checks (nobody has listened)
+
+- Offline render of the boot bank (`audio::tests::render_system_sounds_metrics`, needs the disc; `KH2_AU4_OUT=<dir>` writes WAVs):
+  no entry clips; the menu sounds 1..5 peak at 0.11 to 0.54 at master 0.6, DC within 0.0001. The user's recordings of the original
+  (pause menu, save point) peak at 0.37 to 0.56 including music, so the menu sounds are not louder than the original offline.
+  The live path was not recorded; the menu sounds stay muted.
+- ADPCM block shift 13..15 acts as 9 (`adpcm::block_shift`; SPU documentation, PCSX2 decoder as cross-check). No boot bank sample uses it.
+- Sequence command 0x39 takes two argument bytes (`ssl::arg_len`). With one, entries 12, 14 (the prize bounce), 17, 25, 26, 41 to 43,
+  47, 53, 101, 173, 175, 179 and 300 to 306 of `se000.seb` ended before their notes and were silent; 19 of 22 silent entries now sound
+  (12, 46 and 174 still do not: 174 is empty, 46 uses commands 0x5a/0x5b the driver port does not know, 12 not examined).
+- The save point's effect element 2 requests sound 29 with `WORLD_POINT.apdx`, which has no sound block, so it plays `se000.seb` entry 29
+  (2.4 s, peak 0.49). Enemy hits `65535:0/1` come from the enemy's own bank (`M_EX990.apdx`, bank 214).
+- Live path (WP-AU4, `KH2_AUDIO_DUMP=<file>` appends the stream's rendered f32 stereo chunks; `KH2_SOUNDLOG=1`): tt02 with
+  `KH2_SAVEPOINT_WATCH=5` gives peak 0.490, DC -0.001, no clipping, equal to the offline render of `se 0:29` (so the offline numbers hold
+  for the live path); the original's save point walk recording peaks at 0.365 including music. A tt04 `b_44` fight without music gave peak 1.0
+  with 546 clipped samples in seconds 8 and 34 of 43. Of the 215 sound requests that played, all but 18 were unplaced (volume 0x3fff, pan
+  centre): the enemy hit sounds (`65535:0/1`, 99), Sora's `0:128` (38) and `999:132..139` (35), `0:111/113` and the effect sounds. The
+  unplaced requests are the hook described above (`combat.rs`, `enemy.rs`, `fx.rs`, motion sounds of the player): they need `.at(..)`.
+  `se 0:13` (43 requests in 43 s, no apdx) is the footstep.
+- Command 0x39 (two arguments): the old one-argument reading desynchronised 131 of the 463 sound entries across banks 0 to 399 (the track
+  then ran garbage as commands or ended early). These are likely the "sharp, static-y, corrupted" effects the user reported. The BGM
+  sequences are unaffected (0 of 100 contain command 0x39).

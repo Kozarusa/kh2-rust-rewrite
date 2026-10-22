@@ -301,20 +301,15 @@ pub const M_EX550: Kind = Kind { name: "M_EX550", enmp: 58, model: "M_EX550", de
 /// Its script (7410 words) hands `enmp` row 101 to `set_obj_param` (host 2.9: BDX `M_EX610` R1b10 at 0x1b10, called at 0x1024 with 101 as the first of its eight values after the object, pushed at 0x100c, which R1b10 stores to local+0x20; host 2.9 at 0x1b37). It calls no host that the app lacks (survey).
 pub const M_EX610: Kind = Kind { name: "M_EX610", enmp: 101, model: "M_EX610", death_effect: true, status: true };
 
-<<<<<<< HEAD
+/// `M_EX590` (object 75, `ObjectType` 4; `00objentry` row 75: `NeoStatus` 1013, `SpawnLimiter` 9, no spawn objects), called by its model; the pot Heartless of al01, bb08, he09, mu02, nm02 and nm06. Its script (6556 words) hands `enmp` row 4 to `set_obj_param` (host 2.9 at 0x07b6, the 4 pushed at 0x07b0). Its fighting members sit in kind-2 groups that start disabled and are enabled by event 0x9b (docs/enemies.md "The enemy M_EX590").
+pub const M_EX590: Kind = Kind { name: "M_EX590", enmp: 4, model: "M_EX590", death_effect: true, status: true };
+
 /// `M_EX610_RAW` (object 1875, tr03 b_40, 24 members; `00objentry` row 1875: `AnimationName` `M_EX610.mset`), the `M_EX610` body with the base kind's motion set: the rig loader takes the motion-set name from the row (`mset_name`).
 /// Its script is the `M_EX610` one (`enmp` row 101, see there).
 pub const M_EX610_RAW: Kind = Kind { name: "M_EX610_RAW", enmp: 101, model: "M_EX610_RAW", death_effect: true, status: true };
 
 /// Every enemy kind the app has.
-pub const KINDS: [&Kind; 51] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700, &M_EX950, &M_EX650, &M_EX660, &M_EX110, &M_EX520, &M_EX770, &M_EX210, &M_EX690, &M_EX910, &M_EX050, &M_EX730, &M_EX750, &M_EX510, &M_EX560, &M_EX060, &M_EX620, &M_EX600, &M_EX920, &M_EX120, &M_EX870, &M_EX960, &M_EX630, &M_EX020_RAW, &M_AL020_FIRE, &M_AL020_ICEE, &M_EX900, &M_EX130, &M_EX890, &M_EX680, &M_EX580, &M_EX780, &M_EX570, &M_EX740, &M_EX500, &M_EX710, &M_EX550, &M_EX610, &M_EX610_RAW];
-=======
-/// `M_EX590` (object 75, `ObjectType` 4; `00objentry` row 75: `NeoStatus` 1013, `SpawnLimiter` 9, no spawn objects), called by its model; the pot Heartless of al01, bb08, he09, mu02, nm02 and nm06. Its script (6556 words) hands `enmp` row 4 to `set_obj_param` (host 2.9 at 0x07b6, the 4 pushed at 0x07b0). Its fighting members sit in kind-2 groups that start disabled and are enabled by event 0x9b (docs/enemies.md "The enemy M_EX590").
-pub const M_EX590: Kind = Kind { name: "M_EX590", enmp: 4, model: "M_EX590", death_effect: true, status: true };
-
-/// Every enemy kind the app has.
-pub const KINDS: [&Kind; 51] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700, &M_EX950, &M_EX650, &M_EX660, &M_EX110, &M_EX520, &M_EX770, &M_EX210, &M_EX690, &M_EX910, &M_EX050, &M_EX730, &M_EX750, &M_EX510, &M_EX560, &M_EX060, &M_EX620, &M_EX600, &M_EX920, &M_EX120, &M_EX870, &M_EX960, &M_EX630, &M_EX020_RAW, &M_AL020_FIRE, &M_AL020_ICEE, &M_EX900, &M_EX130, &M_EX890, &M_EX680, &M_EX580, &M_EX780, &M_EX570, &M_EX740, &M_EX500, &M_EX710, &M_EX550, &M_EX610, &M_EX590];
->>>>>>> integration
+pub const KINDS: [&Kind; 52] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700, &M_EX950, &M_EX650, &M_EX660, &M_EX110, &M_EX520, &M_EX770, &M_EX210, &M_EX690, &M_EX910, &M_EX050, &M_EX730, &M_EX750, &M_EX510, &M_EX560, &M_EX060, &M_EX620, &M_EX600, &M_EX920, &M_EX120, &M_EX870, &M_EX960, &M_EX630, &M_EX020_RAW, &M_AL020_FIRE, &M_AL020_ICEE, &M_EX900, &M_EX130, &M_EX890, &M_EX680, &M_EX580, &M_EX780, &M_EX570, &M_EX740, &M_EX500, &M_EX710, &M_EX550, &M_EX610, &M_EX590, &M_EX610_RAW];
 
 /// The rigs of the enemy kinds, by `Kind::name` (Shadow and Soldier share `sora::Rigs`' copies).
 #[derive(Resource, Default)]

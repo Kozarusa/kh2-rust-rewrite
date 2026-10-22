@@ -138,7 +138,9 @@ impl Plugin for PlayerReactionPlugin {
             // The player's objentry byte +7 (`WeaponJoint`) names the sub-motion; Sora's row is P_EX100.
             lib.model = rows.iter().find(|r| r.model_name == "P_EX100").map_or(1, |r| r.weapon_joint);
             for (kind, model) in paired_kinds() {
-                let paired = d.read(&format!("obj/{model}.mset")).map(|m| paired_entries(&m)).unwrap_or_default();
+                // The motion set the objentry row names (`M_EX610_RAW` names `M_EX610.mset`).
+                let mset = crate::enemy::mset_name(rows.iter().find(|r| r.model_name == model).map(|r| r.animation_name.as_str()), model);
+                let paired = d.read(&format!("obj/{mset}.mset")).map(|m| paired_entries(&m)).unwrap_or_default();
                 if !paired.is_empty() {
                     lib.by_kind.insert(kind, paired);
                 }

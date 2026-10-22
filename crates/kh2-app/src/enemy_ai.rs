@@ -317,7 +317,9 @@ fn load_programs(disc: Res<Disc>, mut programs: ResMut<AiPrograms>, mut table: R
         warn!("bdx: the host table of SLUS_210.05 is not readable; calls to functions kh2_bdx does not name stop their script");
     }
     for (kind, model) in entries {
-        let paired = disc.read(&format!("obj/{model}.mset")).map(|m| paired_motions(&m)).unwrap_or_default();
+        // The motion set is the one the objentry row names (`M_EX610_RAW` names `M_EX610.mset` and has no file of its own).
+        let mset = crate::enemy::mset_name(rows.iter().find(|r| r.model_name == model).map(|r| r.animation_name.as_str()), model);
+        let paired = disc.read(&format!("obj/{mset}.mset")).map(|m| paired_motions(&m)).unwrap_or_default();
         let Some(file) = disc.read(&format!("obj/{model}.mdlx")) else { continue };
         let Some(entry) = kh2_bar::parse(&file).ok().and_then(|b| b.into_iter().find(|e| e.kind == 3).map(|e| e.data.to_vec())) else { continue };
         match Program::parse(&entry) {

@@ -287,6 +287,9 @@ impl Plugin for EnemyAiPlugin {
     }
 }
 
+/// Depth below the player (game units, 30 m) at which an airborne enemy counts as fallen out of the map.
+const FALL_OUT_UNITS: f32 = 3000.0;
+
 /// Reads the BDX entry (BAR type 3) of each scripted enemy's object file and its `objentry` flags.
 fn load_programs(disc: Res<Disc>, mut programs: ResMut<AiPrograms>, mut table: ResMut<ObjTable>) {
     let entries: Vec<(&'static str, &str)> = crate::enemy::KINDS.iter().map(|k| (k.name, k.model)).collect();
@@ -789,6 +792,12 @@ fn ai_update(
             }
         }
         *in_air = !obj.motor.grounded;
+        // An object that jumped out of the map has no floor to land on and would stay "busy" for ever (EN16a: an `M_AL020_FIRE_RAW` of al10 b_40 was still falling 330 m from Sora 78 s later,
+        // its script waiting in R0731 for the jump to end). The app removes it like a leaver once it is more than 30 m below Sora [inferred: the rule of the original was not found].
+        if !obj.motor.grounded && obj.motor.pos.y < sp.translation.y / SCALE - FALL_OUT_UNITS && !obj.hidden {
+            trace.line(tag, "fell out of the world: removed");
+            obj.hidden = true;
+        }
         *last_frame = anim.frame;
         e.grounded = obj.motor.grounded;
         e.yaw = obj.motor.yaw;

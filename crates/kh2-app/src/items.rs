@@ -997,6 +997,7 @@ fn command_menu(
     (drive, progress, battle, abilities): MenuState,
     (summon, mut summon_queue): (Option<Res<crate::summon::SummonState>>, Option<ResMut<crate::summon::SummonQueue>>),
     members: Query<&crate::party::PartyMember>,
+    mut drive_queue: Option<ResMut<crate::drive::DriveQueue>>,
 ) {
     let (Some(data), Some(md), Some(progress)) = (data, magic_data, progress) else { return };
     let Ok(s) = sora.single() else { return };
@@ -1090,6 +1091,13 @@ fn command_menu(
                 summon_queue.as_deref_mut().into_iter().for_each(|q| q.0.push(req));
                 true
             }
+            // A form command (Valor 26 ...) or Revert: Sora's command handler takes Execute 4 and 5 (FUN_001cf030), drive.rs runs them.
+            _ if drive_request(c).is_some() && drive_queue.is_some() => {
+                let req = drive_request(c).unwrap_or(crate::drive::DriveRequest::Revert);
+                info!("items: {} chosen ({req:?})", data.cmd_name(cmd));
+                drive_queue.as_deref_mut().into_iter().for_each(|q| q.0.push(req));
+                true
+            }
             _ => {
                 info!("items: command {cmd} ({}) is not run from the menu in the app", data.cmd_name(cmd));
                 false
@@ -1176,6 +1184,17 @@ fn use_on_members(item: u16, target: u16, amount: u16, mult: i32, feed: f32, rev
         info!("items: Healed Party Members counts {}", progress.healed_count());
     }
     hit
+}
+
+/// The request the drive system gets for a chosen command: a form's command (`Execute` 4 with no sub-menu, its `Argument`
+/// the form id; the generic Drive entry opens the forms list instead) as `Enter`, Revert (`Execute` 5) as `Revert`.
+pub fn drive_request(c: &Cmd) -> Option<crate::drive::DriveRequest> {
+    use crate::drive::DriveRequest;
+    match c.execute {
+        cmd_id::DRIVE if c.sub_menu == -1 => Some(DriveRequest::Enter(c.argument as u8)),
+        cmd_id::REVERT => Some(DriveRequest::Revert),
+        _ => None,
+    }
 }
 
 /// The request the summon system gets for a chosen command (summon.rs): Summon and Dismiss by their `Execute`, one of Genie's
@@ -1552,6 +1571,42 @@ mod tests {
         build(&cmds, &Setup::default(), &mut l);
         assert_eq!(l.lists[list::ROOT2].entries[2].cmd, cmd_id::PARTY);
         assert_eq!(ids(&l.lists[list::FORMS]), vec![(26, 1, 0)]);
+    }
+
+    /// Choosing a form in the Drive list issues its command, which becomes `DriveRequest::Enter(form)`; Revert becomes `Revert`;
+    /// the Drive entry itself opens the list and issues nothing.
+    #[test]
+    fn drive_menu_selection_becomes_a_drive_request() {
+        use crate::drive::DriveRequest;
+        let cmds = table();
+        let mut l = CommandLists::default();
+        build(&cmds, &Setup::default(), &mut l);
+        l.select_root();
+        let mut issued = Vec::new();
+        let mut step = |l: &mut CommandLists, m: MenuInput| {
+            build(&cmds, &Setup::default(), l);
+            l.select_root();
+            l.input(&cmds, m, &mut |c, t| {
+                issued.push((c, t));
+                true
+            })
+        };
+        let inp = |f: &dyn Fn(&mut MenuInput)| {
+            let mut m = MenuInput::default();
+            f(&mut m);
+            m
+        };
+        step(&mut l, inp(&|m| m.down = true));
+        step(&mut l, inp(&|m| m.down = true));
+        step(&mut l, inp(&|m| m.down = true));
+        let out = step(&mut l, inp(&|m| m.confirm = true));
+        assert_eq!((out.opened, out.issue), (Some(list::FORMS), None), "Drive opens the forms list");
+        let out = step(&mut l, inp(&|m| m.confirm = true));
+        assert_eq!(out.issue, Some((26, None)));
+        assert_eq!(drive_request(find(&cmds, 26).unwrap()), Some(DriveRequest::Enter(1)));
+        assert_eq!(drive_request(find(&cmds, cmd_id::DRIVE).unwrap()), None);
+        assert_eq!(drive_request(find(&cmds, cmd_id::REVERT).unwrap()), Some(DriveRequest::Revert));
+        assert_eq!(drive_request(find(&cmds, 23).unwrap()), None);
     }
 
     /// The disc rows behind the "Drive!" list: the table at 0x37c036 names commands 535..538 for forms 1..=4, each an

@@ -460,3 +460,16 @@ ends the danger. Other stops: `FUN_001573c8`, `FUN_002c0d00`, `FUN_002c10b0`, `F
 stops`): the app's mixer has no stop or fade for a sound effect, so a looping sample would run once through.
 Test `the_danger_alarm_starts_once_and_stops_when_danger_ends`. Harness: `KH2_SOUNDLOG=1 KH2_HUDHP=7:2`
 (the panel's displayed HP drops into danger at 7 s): `se 0:9 (-) volume 0x3fff pan 0x40 playing` (before WP-SE2: `se 2:9 (-) ... not found`).
+
+## WP-AU4: sound-effect render checks (nobody has listened)
+
+- Offline render of the boot bank (`audio::tests::render_system_sounds_metrics`, needs the disc; `KH2_AU4_OUT=<dir>` writes WAVs):
+  no entry clips; the menu sounds 1..5 peak at 0.11 to 0.54 at master 0.6, DC within 0.0001. The user's recordings of the original
+  (pause menu, save point) peak at 0.37 to 0.56 including music, so the menu sounds are not louder than the original offline.
+  The live path was not recorded; the menu sounds stay muted.
+- ADPCM block shift 13..15 acts as 9 (`adpcm::block_shift`; SPU documentation, PCSX2 decoder as cross-check). No boot bank sample uses it.
+- Sequence command 0x39 takes two argument bytes (`ssl::arg_len`). With one, entries 12, 14 (the prize bounce), 17, 25, 26, 41 to 43,
+  47, 53, 101, 173, 175, 179 and 300 to 306 of `se000.seb` ended before their notes and were silent; 19 of 22 silent entries now sound
+  (12, 46 and 174 still do not: 174 is empty, 46 uses commands 0x5a/0x5b the driver port does not know, 12 not examined).
+- The save point's effect element 2 requests sound 29 with `WORLD_POINT.apdx`, which has no sound block, so it plays `se000.seb` entry 29
+  (2.4 s, peak 0.49). Enemy hits `65535:0/1` come from the enemy's own bank (`M_EX990.apdx`, bank 214).

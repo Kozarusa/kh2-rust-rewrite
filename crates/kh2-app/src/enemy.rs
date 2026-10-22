@@ -304,8 +304,12 @@ pub const M_EX610: Kind = Kind { name: "M_EX610", enmp: 101, model: "M_EX610", d
 /// `M_EX590` (object 75, `ObjectType` 4; `00objentry` row 75: `NeoStatus` 1013, `SpawnLimiter` 9, no spawn objects), called by its model; the pot Heartless of al01, bb08, he09, mu02, nm02 and nm06. Its script (6556 words) hands `enmp` row 4 to `set_obj_param` (host 2.9 at 0x07b6, the 4 pushed at 0x07b0). Its fighting members sit in kind-2 groups that start disabled and are enabled by event 0x9b (docs/enemies.md "The enemy M_EX590").
 pub const M_EX590: Kind = Kind { name: "M_EX590", enmp: 4, model: "M_EX590", death_effect: true, status: true };
 
+/// `M_EX610_RAW` (object 1875, tr03 b_40, 24 members; `00objentry` row 1875: `AnimationName` `M_EX610.mset`), the `M_EX610` body with the base kind's motion set: the rig loader takes the motion-set name from the row (`mset_name`).
+/// Its script is the `M_EX610` one (`enmp` row 101, see there).
+pub const M_EX610_RAW: Kind = Kind { name: "M_EX610_RAW", enmp: 101, model: "M_EX610_RAW", death_effect: true, status: true };
+
 /// Every enemy kind the app has.
-pub const KINDS: [&Kind; 51] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700, &M_EX950, &M_EX650, &M_EX660, &M_EX110, &M_EX520, &M_EX770, &M_EX210, &M_EX690, &M_EX910, &M_EX050, &M_EX730, &M_EX750, &M_EX510, &M_EX560, &M_EX060, &M_EX620, &M_EX600, &M_EX920, &M_EX120, &M_EX870, &M_EX960, &M_EX630, &M_EX020_RAW, &M_AL020_FIRE, &M_AL020_ICEE, &M_EX900, &M_EX130, &M_EX890, &M_EX680, &M_EX580, &M_EX780, &M_EX570, &M_EX740, &M_EX500, &M_EX710, &M_EX550, &M_EX610, &M_EX590];
+pub const KINDS: [&Kind; 52] = [&SHADOW, &SOLDIER, &DUSK, &SEIFER, &DANCER, &N_EX500, &N_EX600, &M_EX940, &M_EX850, &M_EX420, &M_EX760, &M_EX880, &M_EX700, &M_EX950, &M_EX650, &M_EX660, &M_EX110, &M_EX520, &M_EX770, &M_EX210, &M_EX690, &M_EX910, &M_EX050, &M_EX730, &M_EX750, &M_EX510, &M_EX560, &M_EX060, &M_EX620, &M_EX600, &M_EX920, &M_EX120, &M_EX870, &M_EX960, &M_EX630, &M_EX020_RAW, &M_AL020_FIRE, &M_AL020_ICEE, &M_EX900, &M_EX130, &M_EX890, &M_EX680, &M_EX580, &M_EX780, &M_EX570, &M_EX740, &M_EX500, &M_EX710, &M_EX550, &M_EX610, &M_EX590, &M_EX610_RAW];
 
 /// The rigs of the enemy kinds, by `Kind::name` (Shadow and Soldier share `sora::Rigs`' copies).
 #[derive(Resource, Default)]
@@ -317,10 +321,16 @@ impl EnemyRigs {
     }
 }
 
-fn load_rig(disc: &Disc, model: &str) -> Option<Arc<Rig>> {
+/// The motion set a model's `00objentry` row names (`AnimationName`, without ".mset"); the model's own name when the
+/// row is missing or names nothing. `M_EX610_RAW` names `M_EX610.mset` and has no `obj/M_EX610_RAW.mset`.
+fn mset_name(animation_name: Option<&str>, model: &str) -> String {
+    animation_name.map(|n| n.trim_end_matches(".mset")).filter(|n| !n.is_empty()).unwrap_or(model).to_string()
+}
+
+fn load_rig(disc: &Disc, model: &str, mset: &str) -> Option<Arc<Rig>> {
     let m = disc.read(&format!("obj/{model}.mdlx")).and_then(|d| kh2_model::mdlx(&d))?;
-    let s = disc.read(&format!("obj/{model}.mset")).and_then(|d| kh2_anim::Mset::parse(&d))?;
-    let apdx = Some(format!("obj/{model}.apdx")).filter(|a| disc.read(a).is_some());
+    let s = disc.read(&format!("obj/{mset}.mset")).and_then(|d| kh2_anim::Mset::parse(&d))?;
+    let apdx = [model, mset].iter().map(|n| format!("obj/{n}.apdx")).find(|a| disc.read(a).is_some());
     Some(Arc::new(Rig { model: m, mset: s, apdx }))
 }
 
@@ -1171,8 +1181,10 @@ impl Plugin for EnemyPlugin {
             let mut map = HashMap::new();
             map.insert(SHADOW.name, shared.shadow.clone());
             map.insert(SOLDIER.name, shared.soldier.clone());
+            let rows = disc.0.lock().ok().and_then(|mut a| kh2_tables::load::<kh2_tables::tables::Objentry>(&mut a, &kh2_tables::tables::OBJENTRY).ok()).map(|d| d.rows).unwrap_or_default();
             for kind in KINDS.iter().filter(|k| ![SHADOW.name, SOLDIER.name].contains(&k.name)) {
-                match load_rig(disc, kind.model) {
+                let anim = rows.iter().find(|r| r.model_name == kind.model).map(|r| r.animation_name.as_str());
+                match load_rig(disc, kind.model, &mset_name(anim, kind.model)) {
                     Some(r) => {
                         map.insert(kind.name, r);
                     }
@@ -2946,6 +2958,35 @@ mod tests {
     }
 
     /// `M_EX610` (object 1114) is an enemy kind of the app: its `00objentry` row is type 4 with `NeoStatus` 1015, its script's `set_obj_param` row is `enmp` 101. Needs `KH2_ISO` for the table part.
+    #[test]
+    fn mset_name_follows_the_objentry_animation_name() {
+        assert_eq!(mset_name(Some("M_EX610.mset"), "M_EX610_RAW"), "M_EX610");
+        assert_eq!(mset_name(Some("M_EX020_RAW.mset"), "M_EX020_RAW"), "M_EX020_RAW");
+        assert_eq!(mset_name(None, "M_EX500"), "M_EX500");
+        assert_eq!(mset_name(Some(""), "M_EX500"), "M_EX500");
+    }
+
+    /// `M_EX610_RAW` (object 1875): its row names `M_EX610.mset`, `obj/M_EX610_RAW.mset` does not exist, and the kind loads its rig. Needs `KH2_ISO`.
+    #[test]
+    fn m_ex610_raw_loads_with_the_base_motion_set() {
+        assert!(KINDS.iter().any(|k| std::ptr::eq(*k, &M_EX610_RAW)));
+        assert_eq!((M_EX610_RAW.enmp, M_EX610_RAW.model), (101, "M_EX610_RAW"));
+        let Ok(iso) = crate::assets::iso_path() else { return };
+        if !iso.exists() {
+            return;
+        }
+        let disc = Disc::open(&iso);
+        let rows = {
+            let mut a = disc.0.lock().expect("archive lock");
+            kh2_tables::load::<kh2_tables::tables::Objentry>(&mut a, &kh2_tables::tables::OBJENTRY).expect("objentry").rows
+        };
+        let row = rows.iter().find(|r| r.model_name == "M_EX610_RAW").expect("objentry row of M_EX610_RAW");
+        assert_eq!((row.object_id, row.object_type, row.animation_name.as_str()), (1875, OBJECT_ENEMY, "M_EX610.mset"));
+        assert!(disc.read("obj/M_EX610_RAW.mset").is_none());
+        let name = mset_name(Some(row.animation_name.as_str()), "M_EX610_RAW");
+        assert!(load_rig(&disc, "M_EX610_RAW", &name).is_some());
+    }
+
     #[test]
     fn m_ex610_is_an_enemy_kind_with_its_objentry_row() {
         assert!(KINDS.iter().any(|k| std::ptr::eq(*k, &M_EX610)));

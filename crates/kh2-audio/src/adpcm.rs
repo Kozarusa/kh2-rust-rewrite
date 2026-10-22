@@ -13,15 +13,23 @@ pub mod flag {
     pub const LOOP_START: u8 = 4;
 }
 
+/// The effective shift of a block header byte: the hardware treats a shift of 13..15 as 9 (SPU
+/// documentation; cross-checked against PCSX2's decoder, RULES A17). Clamping to 12 instead scales such
+/// a block about eight times too loud.
+pub fn block_shift(header: u8) -> i32 {
+    let s = (header & 0xf) as i32;
+    if s > 12 { 9 } else { s }
+}
+
 /// Decodes one block. `hist` carries the two previous samples between blocks.
 pub fn decode_block(b: &[u8], hist: &mut [i32; 2], out: &mut [i16; SAMPLES_PER_BLOCK]) {
-    let shift = (b[0] & 0xf) as i32;
+    let shift = block_shift(b[0]);
     let filter = ((b[0] >> 4) as usize).min(4);
     let [f0, f1] = FILTERS[filter];
     for i in 0..SAMPLES_PER_BLOCK {
         let byte = b[2 + i / 2];
         let nib = if i & 1 == 0 { byte & 0xf } else { byte >> 4 };
-        let s = (((nib as i32) << 28) >> 16) >> shift.min(12);
+        let s = (((nib as i32) << 28) >> 16) >> shift;
         let s = s + ((hist[0] * f0 + hist[1] * f1 + 32) >> 6);
         let s = s.clamp(-32768, 32767);
         hist[1] = hist[0];
@@ -70,6 +78,21 @@ pub fn decode(data: &[u8], offset: usize) -> Sample {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shift_above_12_acts_as_9() {
+        assert_eq!([block_shift(0x0c), block_shift(0x0d), block_shift(0x0f), block_shift(0x03)], [12, 9, 9, 3]);
+        let mut a = [0u8; 16];
+        a[2] = 0x07;
+        let mut b = a;
+        a[0] = 0x0f;
+        b[0] = 0x09;
+        let (mut out_a, mut out_b) = ([0i16; 28], [0i16; 28]);
+        decode_block(&a, &mut [0; 2], &mut out_a);
+        decode_block(&b, &mut [0; 2], &mut out_b);
+        assert_eq!(out_a, out_b);
+        assert_eq!(out_a[0], 0x7000 >> 9);
+    }
 
     #[test]
     fn silent_block_and_end_flag() {

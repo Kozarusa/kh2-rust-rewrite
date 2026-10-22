@@ -177,8 +177,9 @@ The target point the app uses is the locked enemy's position raised 100; the gam
     head height, its last key looks at the origin from 5.6 m behind. `DAT_0036bce8` stays the unit matrix in the code
     (no writer found, `FUN_0022b0f8` multiplies by it); how the original gets the player's space for the other tracks
     is not found [gap]. `TT04_MS500`'s wide shot had matched the unit matrix with the b_45 places: with the player's
-    space it needs his entry facing (-90 degrees), which the app's harness placement does not set (`enemy.rs` calls
-    `sora::respawn` without a yaw: outside FIX5's ownership), so that clip's shots stay unverified. Test
+    space it needs his entry facing (-90 degrees); the harness placement in `enemy.rs` now sets it (`AreaGroup::player_yaw`,
+    app yaw `PI - r`). Looked at (tt04 b_42, b_43, b_44, b_45, tr03 b_40): every start orbit circles Sora at chest height with the
+    ground below him and the enemies and friends around; the direction of turn against the PCSX2 frames is not measured. Test
     `the_keys_are_in_the_players_space`.
   - *The fly-back* (opcode 0x31 +6 = 1, `FUN_0022bc40` -> `FUN_0022b590`, at its frame +4): two keys of type 2 with
     zero tangents per channel (the work track at `DAT_0036bd60`), at `(frame << 9) / 30` the view drawn then

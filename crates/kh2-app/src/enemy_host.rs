@@ -643,7 +643,7 @@ impl BevyHost<'_> {
             Call::Airborne { .. } => imp(Value::Bool(!self.obj.motor.grounded)),
             // M_AL020_FIRE's jump modes (R0c2d, 0x0c2d) call start_move, wait for take-off, then wait in R0731 (0x0731) while busy; with busy read as a hit reaction only,
             // the wait ends in the same tick, the script plays motion 202 and calls 1.74 mover_reset, which cancels the jump (slots 3 and 4 never play). A jump in the air is read as busy [inferred].
-            Call::Busy { .. } if (self.tag.starts_with("M_AL020_FIRE#") || self.tag.starts_with("M_AL020_ICEE#")) && !self.obj.motor.grounded => approx(Value::Bool(true), "M_AL020_FIRE / M_AL020_ICEE: busy while it is airborne from a jump [inferred]; otherwise a hit reaction"),
+            Call::Busy { .. } if ["M_AL020_FIRE#", "M_AL020_ICEE#", "M_AL020_FIRE_RAW#", "M_AL020_ICEE_RAW#"].iter().any(|t| self.tag.starts_with(t)) && !self.obj.motor.grounded => approx(Value::Bool(true), "M_AL020_FIRE / M_AL020_ICEE: busy while it is airborne from a jump [inferred]; otherwise a hit reaction"),
             Call::Busy { .. } => approx(Value::Bool(self.obj.reacting), "the game's flags (+0x160) are read as 'a hit reaction plays'"),
             // FUN_0016b940: word `index` of the array at object +0x81c; words 1 and 2 are the record's
             // +0x20 and +0x24 (FUN_0016b870). Without a record (the app's own waves) 99 stays.

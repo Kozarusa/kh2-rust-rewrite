@@ -221,6 +221,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.37 | `mask_35a810_set(i)` | 0x172430 | 222 | set bit n of the 64-bit mask at 0x35a810 and run the slot-on hooks (FUN_0015e9a8) |
 | 1.38 | `set_team(Oi)` | 0x170950 | 12 | store the word at object +0x3b0 (the attack object constructor reads it as the owner's team, FUN_0018bd08) |
 | 1.39 | `spawn_param(Oi) -> i` | 0x171b50 | 869 | word i of the array at object +0x81c (the spawn record); Shadow tests the value 99 |
+| 1.41 | `raise_event(ii)` | 0x1727b0 | 108 | raise the global event (event, argument): FUN_00197b70 runs the event handlers FUN_00195718, FUN_0016b470 and FUN_00197670 (a few events go to FUN_0024f0b8 or FUN_0023f108 instead); Struggle events 159 and 160 use it |
 | 1.42 | `bits_1d5d7b8_set(i)` | 0x170da8 | 17 | set bit n of the bit array at 0x1d5d7b8 (FUN_001b7ce8) |
 | 1.43 | `bits_1d5d7b8_clear(i)` | 0x170dc0 | 15 | clear bit n of the bit array at 0x1d5d7b8 (FUN_001b7d18) |
 | 1.46 | `area_mask_groups_on()` | 0x172800 | not counted | switch the collision group on for each set bit of the area mask 0x35cd18 (area opcode 0xb), FUN_0019d4c0 -> FUN_0015e9a8 per bit |

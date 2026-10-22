@@ -6,6 +6,7 @@
 //! See docs/enemy-ai.md for the mapping and the gaps.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
 use bevy::prelude::*;
@@ -295,6 +296,20 @@ fn push_mask_edits(queue: &mut Vec<(u8, bool)>, word: u64, on: bool) {
 /// The queued switches, oldest first; the queue is empty afterwards.
 pub(crate) fn take_group_edits() -> Vec<(u8, bool)> {
     std::mem::take(&mut *GROUP_EDITS.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// Host 1.320's answer (`FUN_00199580`): the sum of the enemy counters of the groups that are set up (the group object's +0x18, which
+/// `FUN_00198750` fills and `FUN_00199518` lowers). `enemy::fire_group_triggers` stores the sum of `PartCount::count` every tick.
+static GROUP_ENEMY_SUM: AtomicI32 = AtomicI32::new(0);
+
+/// Hands host 1.320 the sum of the groups' enemy counters.
+pub(crate) fn set_group_enemy_sum(n: i32) {
+    GROUP_ENEMY_SUM.store(n, Ordering::Relaxed);
+}
+
+/// What host 1.320 answers: the sum last handed over.
+fn group_enemy_sum() -> i32 {
+    GROUP_ENEMY_SUM.load(Ordering::Relaxed)
 }
 
 /// FUN_001a5030: the list of keyed buffers is emptied (the area's groups are set up again).
@@ -1142,9 +1157,9 @@ impl BevyHost<'_> {
             }
             // 1.320 (0x1740b8 -> FUN_00199580()): the sum of word +0x18 over the 0x38-byte entries of the table at 0x1c8af90 (count at
             // 0x35e468; the table of 1.202). M_EX590's R0ee1 scales a speed by 1/1800 when the sum is positive, 1/600 when it is 0. The
-            // app has no such table, so the sum is 0.
+            // app keeps the counters as `enemy::PartCount` (the groups the btl program set up) and hands the sum over (`set_group_enemy_sum`).
             Call::Unknown { group: 1, index: 320, .. } | Call::Func { group: 1, index: 320, .. } => {
-                approx(Value::Int(0), "the sum over the table at 0x1c8af90 (FUN_00199580) is taken as 0: the app does not keep that table")
+                approx(Value::Int(group_enemy_sum()), "the sum of the app's group counters (enemy::PartCount) stands for the table at 0x1c8af90 (FUN_00199580); 0 outside an area group")
             }
             // 1.328 (0x171cd0 -> FUN_001865a8(object)): when +0x7f8 has no bit 4 yet, leaves the kind-2 group the object belongs to (+0x818, FUN_00199398) and sets bit 4 (FUN_00186580), which
             // retires the object. M_EX870's `dead` routine (0x0929) hides it and then calls this. The app removes a hidden object, as for host 1.28; the group's own bookkeeping is the app's.
@@ -1511,6 +1526,16 @@ mod tests {
         assert!((game_wrap_angle(-3.0 * pi / 2.0) - pi / 2.0).abs() < 1e-5);
         assert!((game_wrap_angle(0.5) - 0.5).abs() < 1e-6);
         assert!((game_wrap_angle(-0.5) + 0.5).abs() < 1e-6);
+    }
+
+    /// Host 1.320 (WP-EN15b, M_EX590's speed scaling R0ee1: 1/1800 when the sum is positive, 1/600 at 0) answers the sum of the groups' enemy counters that
+    /// `enemy::fire_group_triggers` hands over each tick.
+    #[test]
+    fn the_group_enemy_sum_is_what_host_1_320_answers() {
+        set_group_enemy_sum(9);
+        assert_eq!(group_enemy_sum(), 9);
+        set_group_enemy_sum(0);
+        assert_eq!(group_enemy_sum(), 0);
     }
 
     /// Host 1.59 (WP-DYN1): the dash's mover (5) is exempt from the ground's pull, the constructor's mover (0) and the jump's (1) are not.

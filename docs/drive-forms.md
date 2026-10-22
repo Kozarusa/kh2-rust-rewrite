@@ -252,7 +252,16 @@ The nine hooks of WP-2B as they stand after WP-I1 and WP-2B2:
    which keeps the form.
 
 Messages other systems can use: `FormChanged { from, to }` (written when the body is swapped),
-`DriveRequest` through the `DriveQueue` resource (a command menu would push `Enter` and `Revert`).
+`DriveRequest` through the `DriveQueue` resource (the field command menu pushes them, WP-DRV1).
+
+Command menu (WP-DRV1, `items.rs` `drive_request`): choosing a form in the Drive list (list 3, `FUN_001bca70`: the forms whose item is
+owned; a missing companion greys the entry, `FUN_001c77f0`) issues that form's command (`Execute` 4, no sub-menu, `Argument` the form id) and
+the menu pushes `DriveRequest::Enter(form)`; Revert (`Execute` 5) pushes `Revert`. The original: Sora's command handler `FUN_001cf030`
+(read from the instructions, no decompilation) takes `Execute` 4 and 5 itself, the other ids go to `FUN_00177b18` -> `FUN_00177c20`.
+The entry's availability is `FUN_001ba568` (cost against whole points, no form running, companions), unchanged. Test
+`drive_menu_selection_becomes_a_drive_request`. Harness (tt00, `KH2_DRIVE_POINTS=9`, keys `3:G,3.3:G,3.6:G,4:J,4.5:J`): log
+`items: Valor Form chosen (Enter(1))`, `drive: enter Valor`, then Revert from the deck gives `items: Revert chosen (Revert)`, `drive: revert from Valor (command)`.
+Gap: the body of `FUN_001cf030` was not decompiled here; whether it adds anything to the form start beyond the request is not checked [inferred equal].
 
 ## Gaps
 

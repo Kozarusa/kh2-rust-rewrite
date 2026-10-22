@@ -1278,6 +1278,23 @@ mod tests {
         assert!(played >= 4, "every spell asks for a voice");
     }
 
+    /// WP-AU5: a hit sound placed at the victim is quieter and panned when the victim is away from the
+    /// camera; unplaced it would play at 0x3fff centre. Hit, effect and enemy requests carry a position.
+    #[test]
+    fn placed_hit_sounds_fall_with_distance() {
+        let cam = Transform::IDENTITY;
+        let hit = PlaySe::hit(4, 0, None).expect("a heavy reaction has a hit sound");
+        assert_eq!(hit.pos, None, "unplaced until the caller places it");
+        let near = hit.clone().at(Vec3::new(0.0, 0.0, -3.0));
+        let far = hit.clone().at(Vec3::new(14.0, 0.0, -8.0));
+        assert_eq!(far.pos, Some(Vec3::new(14.0, 0.0, -8.0)));
+        let (vn, _) = placement(near.pos, Some(&cam));
+        let (vf, pf) = placement(far.pos, Some(&cam));
+        assert!(vf < vn && vn < 0x3fff, "near {vn:#x} far {vf:#x}");
+        assert!(pf > 0x40, "a source to the right pans right: {pf:#x}");
+        assert_eq!(placement(hit.pos, Some(&cam)), (0x3fff, 0x40));
+    }
+
     #[test]
     fn placement_uses_the_camera_axes() {
         // Camera at the origin looking down -Z (Bevy's default), a source 6 m to its right and a

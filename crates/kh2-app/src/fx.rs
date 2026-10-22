@@ -985,12 +985,9 @@ pub fn tick(
             r.time += EFFECT_TIME_STEP;
             continue;
         }
-        if !r.se_played {
-            r.se_played = true;
-            if el.se >= 0 {
-                se.write(crate::audio::PlaySe::number(el.se as u32, r.lib.apdx.clone()));
-            }
-        }
+        // The element's sound plays once, from where the effect is on its first tick (below, once the bind is known).
+        let play_se = !r.se_played && el.se >= 0;
+        r.se_played = true;
         r.time += EFFECT_TIME_STEP;
         // One program frame per field frame (`TICKS_PER_PROGRAM_FRAME` ticks): between them the last frame's
         // draws stay and only the fade steps (FUN_001da1e8 moves it by the frame step every update).
@@ -1091,6 +1088,10 @@ pub fn tick(
             env.tint.w = level;
         }
         env.bind_scale = Vec3::new(env.bind.x_axis.truncate().length(), env.bind.y_axis.truncate().length(), env.bind.z_axis.truncate().length());
+        if play_se {
+            let req = crate::audio::PlaySe::number(el.se as u32, r.lib.apdx.clone());
+            se.write(if el.flags & ELEMENT_IN_CAMERA_SPACE != 0 { req } else { req.at(effect_sound_position(&env.bind)) });
+        }
         let draws = r.effect.tick(&env);
         if r.effect.done {
             gone.push(e);
@@ -1336,6 +1337,13 @@ fn fx_space(m: Mat4) -> Mat4 {
     FLIP * Mat4::from_scale(Vec3::splat(1.0 / SCALE)) * m
 }
 
+/// Where an effect's sound is placed: the bind's translation (fx space, the flipped game frame in
+/// centimetres) in world metres. The request copies the position once (FUN_002c2760), so it is the
+/// place at the effect's first tick.
+pub fn effect_sound_position(bind: &Mat4) -> Vec3 {
+    FLIP.transform_point3(bind.w_axis.truncate()) * SCALE
+}
+
 /// Game camera (X right, Y down, Z forward, centimetres) → fx world, from the Bevy camera.
 fn game_camera(cam: Mat4) -> Mat4 {
     let (_, r, t) = cam.to_scale_rotation_translation();
@@ -1450,6 +1458,16 @@ pub fn fx_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// WP-AU5: the sound of a fixed-placed effect plays where the effect is, in world metres.
+    #[test]
+    fn effect_sound_is_placed_at_the_bind() {
+        let at = Vec3::new(3.0, 1.5, -2.0);
+        let (sc, rot, t) = Mat4::from_translation(at).to_scale_rotation_translation();
+        let bind = FLIP * Mat4::from_scale_rotation_translation(sc, rot, t / SCALE) * FLIP;
+        let p = effect_sound_position(&bind);
+        assert!((p - at).length() < 1e-3, "{p:?}");
+    }
 
     /// Which effect files carry clash-spark elements (category bit 0x10 plus a target-bit): the lookup
     /// of `FUN_0018d6b0`, which runs before the party handler's system spark. Skips without a disc.

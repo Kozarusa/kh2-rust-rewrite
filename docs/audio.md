@@ -77,10 +77,15 @@ Deviations and gaps:
   Not verified: whether the IOP applies a command 0x15 to a sound already in flight in exactly
   the way `Driver::set_se_mix` does (it changes the volume and pan the sequence uses for its next
   notes and the running voices at the next 240 Hz frame).
-- Hit sounds (`combat.rs`), enemy hit sounds (`enemy.rs`) and effect sounds (`fx.rs`) are not
-  placed yet: those files belong to another package. Hook: where they write `PlaySe`, add
-  `.at(position_in_metres)` (`PlaySe::number(..).at(translation)`; for `PlaySe::hit` set `.pos`).
-  Without it they stay at full volume and centre pan, as before.
+- Placement of the app's object sounds (WP-AU5): the volume and pan rule above was already ported; what was missing was the
+  position in the requests. Now placed: the attacker's `ReflectHitSound` (`combat::landed_hit_sounds`, at `Hit::point`), the
+  victim's hit sound (`enemy.rs`, `PlaySe::hit(..).at(h.point)`, FUN_001b2378 plays it from the victim; the hit point on its
+  hurt shape stands for the object position [inferred]), the effect element sound (`fx::tick`: where the bind is on the first
+  tick, `fx::effect_sound_position`, the request copies the position once, FUN_002c2760; elements in camera space stay
+  unplaced), wall hits and motion-trigger sounds (already placed), footsteps, prize and struggle sounds (already placed).
+  Unplaced by design: menu and system sounds, the HUD alarm (FUN_002c3318 path), the sound viewer. Still unplaced, not owned by
+  AU5: `struggle.rs` mission sounds (line 1328). Tests: `audio::tests::placed_hit_sounds_fall_with_distance`,
+  `fx::tests::effect_sound_is_placed_at_the_bind`.
 - Kind 4 (map sound emitters, `FUN_0014eb50`, a sound that follows an actor or area shape) and
   kinds 2 and 3 (`FUN_002c33b8`, `FUN_002c3368`, used by the menu and the field BGM layer) are not
   ported.
@@ -483,3 +488,25 @@ Test `the_danger_alarm_starts_once_and_stops_when_danger_ends`. Harness: `KH2_SO
 - Command 0x39 (two arguments): the old one-argument reading desynchronised 131 of the 463 sound entries across banks 0 to 399 (the track
   then ran garbage as commands or ended early). These are likely the "sharp, static-y, corrupted" effects the user reported. The BGM
   sequences are unaffected (0 of 100 contain command 0x39).
+
+## WP-AU5: placed object sounds, re-measured (nobody has listened)
+
+- Live dump, tt04 `b_44` fight (`KH2_NO_MUSIC=1 KH2_WAVE_GROUP=b_44 KH2_SOUNDLOG=1 KH2_AUDIO_DUMP`, 43 s shot time): the requests now
+  carry volumes from 0x181b to 0x3f80 and pans spread over the circle (before: 197 of 215 at 0x3fff centre). Peak still reaches 1.0
+  once (second 9) with 156 clipped samples (before: 546 in two seconds); the other seconds peak 0.1 to 0.9. One entry alone
+  peaks 0.1 to 0.5 (offline, master 0.6), so the clipped samples are several near sounds starting together; the SPU adds and clamps
+  the same way, and no limiter exists in the original path, so none was added. `se 500:*` (weapon sounds, 61 + 8 requests) log
+  `not found`: the bank lookup finds no entry for bank 500 in the object's `.apdx` (gap, not searched further).
+- Save point (tt02, `KH2_SAVEPOINT_WATCH=5`): the effect sound `se 0:29` now starts at volume 0x3011, pan 0x4a (Sora next to it). The
+  entry peaks 0.49 at full volume, so 0x3011/0x3fff gives about 0.37, the level of the original's whole mix (0.365,
+  `local/reports/pcsx2-ref/savepoint-walk.wav`) [volume taken as linear in the mixer, inferred]. The earlier excess was the missing position.
+- Pause menu (`KH2_NO_ENEMIES=1 KH2_KEYS=8:Enter:0.2,10:Down:0.2,11.5:Down:0.2,13:Up:0.2,14.5:Escape:0.2`, tt02, with
+  `MENU_SOUND_ENABLED` set to true in a throwaway build): the menu opened and played `se 0:3`, `0:1` x3 and `0:4` at 0x3fff centre
+  (the system path); the dump peaks at 0.228 without music, no clipping, DC -0.00002. The original's pause-menu recording peaks
+  about 0.38 with music, so the live sounds are not louder; the flag in `menu.rs` (not owned by AU5) is left false: change it
+  to true to enable.
+- Enemy-originated sounds in the Dusk fight (offline peak at master 0.6 and audible length): `65535:0/1` hit sounds 0.26/0.27, 0.4 s;
+  `214:19` 0.35, 0.65 s (flags 0x5); `214:22..25` 0.04 to 0.15, 0.1 to 1.0 s; `0:111` 0.17, 0.9 s; `0:113` 0.41, 1.0 s; `0:0` is a silent
+  entry; Sora's own `0:128` 0.17 and `999:132/136/137` 0.15 to 0.23. The ones that could read as guard or cure sounds are the long
+  tonal `0:113` and `0:111` (played from the enemy motion triggers of M_EX990 and M_EX940) and
+  `214:19`. Which one the user means is not established [inferred]; the guard/cure complaint stays deferred.

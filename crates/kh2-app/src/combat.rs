@@ -396,7 +396,7 @@ fn landed_hit_sounds(
         }
         let Some(sound) = data.atkp(h.atkp).and_then(|a| ReflectFields::from_atkp(a).hit_sound()) else { continue };
         let apdx = fighters.get(h.attacker).ok().and_then(|f| f.attack_bodies.first().copied()).and_then(|b| anims.get(b).ok()).and_then(|a| a.rig.apdx.clone());
-        out.write(PlaySe::number(sound, apdx));
+        out.write(PlaySe::number(sound, apdx).at(h.point));
     }
 }
 

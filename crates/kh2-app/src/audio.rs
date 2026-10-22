@@ -37,6 +37,20 @@ pub struct StreamDecoder {
 
 const CHUNK: usize = 256;
 
+/// Harness: `KH2_AUDIO_DUMP=<file>` appends every rendered chunk to the file as raw little-endian f32
+/// stereo at 48 kHz (what the stream hands to the output device, before the device), so a live run can
+/// be measured without loopback recording.
+fn dump_chunk(buf: &[f32]) {
+    use std::io::Write;
+    static FILE: Mutex<Option<std::fs::File>> = Mutex::new(None);
+    let Some(path) = std::env::var_os("KH2_AUDIO_DUMP") else { return };
+    let Ok(mut g) = FILE.lock() else { return };
+    let f = g.get_or_insert_with(|| std::fs::File::create(&path).expect("KH2_AUDIO_DUMP file"));
+    let bytes: Vec<u8> = buf.iter().flat_map(|x| x.to_le_bytes()).collect();
+    let _ = f.write_all(&bytes);
+}
+
+
 impl Iterator for StreamDecoder {
     type Item = f32;
     fn next(&mut self) -> Option<f32> {
@@ -50,6 +64,7 @@ impl Iterator for StreamDecoder {
                 Err(_) => self.buf.fill(0.0),
             }
             self.pos = 0;
+            dump_chunk(&self.buf);
         }
         let v = self.buf[self.pos];
         self.pos += 1;

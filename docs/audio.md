@@ -473,3 +473,10 @@ Test `the_danger_alarm_starts_once_and_stops_when_danger_ends`. Harness: `KH2_SO
   (12, 46 and 174 still do not: 174 is empty, 46 uses commands 0x5a/0x5b the driver port does not know, 12 not examined).
 - The save point's effect element 2 requests sound 29 with `WORLD_POINT.apdx`, which has no sound block, so it plays `se000.seb` entry 29
   (2.4 s, peak 0.49). Enemy hits `65535:0/1` come from the enemy's own bank (`M_EX990.apdx`, bank 214).
+- Live path (WP-AU4, `KH2_AUDIO_DUMP=<file>` appends the stream's rendered f32 stereo chunks; `KH2_SOUNDLOG=1`): tt02 with
+  `KH2_SAVEPOINT_WATCH=5` gives peak 0.490, DC -0.001, no clipping, equal to the offline render of `se 0:29` (so the offline numbers hold
+  for the live path); the original's save point walk recording peaks at 0.365 including music. A tt04 `b_44` fight without music gave peak 1.0
+  with 546 clipped samples in seconds 8 and 34 of 43. Of the 215 sound requests that played, all but 18 were unplaced (volume 0x3fff, pan
+  centre): the enemy hit sounds (`65535:0/1`, 99), Sora's `0:128` (38) and `999:132..139` (35), `0:111/113` and the effect sounds. The
+  unplaced requests are the hook described above (`combat.rs`, `enemy.rs`, `fx.rs`, motion sounds of the player): they need `.at(..)`.
+  `se 0:13` (43 requests in 43 s, no apdx) is the footstep.

@@ -183,7 +183,19 @@ pub struct MenuNodes {
     built: bool,
     header: [usize; PAGES],
     rows: [[RowNodes; ROWS]; PAGES],
+    /// The selected bar with its medallion, icon and arrow: the game draws the other bars first and the selected
+    /// one last (0x13c4b0 loops the rows then calls 0x13c288), so these nodes come after every plain bar.
+    selected: [RowNodes; PAGES],
     capsule: usize,
+}
+
+/// Only the first page draws the selected bar's medallion, icon and arrow (0x13bd38 returns `page == 0`).
+fn shows_icons(page: usize) -> bool {
+    page == 0
+}
+
+fn selected_nodes(r: RowNodes) -> [usize; 4] {
+    [r.bar, r.plate, r.icon, r.arrow]
 }
 
 fn command_rows(disc: &Disc) -> Option<Vec<kh2_tables::tables::Cmd>> {
@@ -315,9 +327,12 @@ fn build(scene: &mut HudScene, nodes: &mut MenuNodes, file: usize) {
     };
     for p in 0..PAGES {
         nodes.header[p] = add(scene);
+        // Draw order inside a page (0x13c4b0): the plain bars, then the selected bar, then its medallion, icon and
+        // arrow (0x13c288, 0x13bd48), so the icon lies over the neighbouring bars and not under them.
         for r in 0..ROWS {
-            nodes.rows[p][r] = RowNodes { bar: add(scene), plate: add(scene), icon: add(scene), arrow: add(scene) };
+            nodes.rows[p][r] = RowNodes { bar: add(scene), ..default() };
         }
+        nodes.selected[p] = RowNodes { bar: add(scene), plate: add(scene), icon: add(scene), arrow: add(scene) };
     }
     nodes.capsule = add(scene);
     nodes.built = true;
@@ -364,10 +379,12 @@ pub fn update(
             scene.nodes[nodes.header[p]].visible = false;
             for r in 0..ROWS {
                 let rn = nodes.rows[p][r];
-                for n in [rn.bar, rn.plate, rn.icon, rn.arrow] {
-                    scene.nodes[n].visible = false;
-                    scene.nodes[n].label = None;
-                }
+                scene.nodes[rn.bar].visible = false;
+                scene.nodes[rn.bar].label = None;
+            }
+            for n in selected_nodes(nodes.selected[p]) {
+                scene.nodes[n].visible = false;
+                scene.nodes[n].label = None;
             }
             continue;
         };
@@ -394,16 +411,18 @@ pub fn update(
         scene.nodes[h].pos = [x, header_y(n)];
         scene.nodes[h].visible = true;
         for r in 0..ROWS {
-            let rn = nodes.rows[p][r];
             if r >= n {
-                for id in [rn.bar, rn.plate, rn.icon, rn.arrow] {
-                    scene.nodes[id].visible = false;
-                    scene.nodes[id].label = None;
-                }
+                scene.nodes[nodes.rows[p][r].bar].visible = false;
+                scene.nodes[nodes.rows[p][r].bar].label = None;
                 continue;
             }
             let e = &page.entries[r];
             let sel = r == page.cursor;
+            let rn = if sel { nodes.selected[p] } else { nodes.rows[p][r] };
+            if sel {
+                scene.nodes[nodes.rows[p][r].bar].visible = false;
+                scene.nodes[nodes.rows[p][r].bar].label = None;
+            }
             let y = row_y(n, r);
             let g = bar_group(row, p, r, n, sel);
             let bx = if sel { x + 8.0 } else { x };
@@ -412,13 +431,22 @@ pub fn update(
             let color = if sel { tb.selected } else { tb.normal }[(e.style as usize).min(8)];
             let label = scene.text.as_ref().and_then(|t| name_label(t, e.message, color));
             scene.nodes[rn.bar].label = label;
-            // The medallion, icon and arrow belong to the selected bar only.
-            let icon = icon_group(e.icon).filter(|_| sel);
-            set(&mut scene, rn.plate, sel.then_some(tb.plate[p] as usize));
-            set(&mut scene, rn.icon, icon);
-            set(&mut scene, rn.arrow, sel.then_some(ARROW[(page.kind != 0) as usize]));
-            for id in [rn.plate, rn.icon, rn.arrow] {
-                scene.nodes[id].pos = [bx, y];
+            // The medallion, icon and arrow belong to the selected bar of the first page only (0x13bd38 is
+            // `page == 0` and 0x13bd48 returns without drawing them otherwise).
+            if sel {
+                let first = shows_icons(p);
+                set(&mut scene, rn.plate, first.then_some(tb.plate[p] as usize));
+                set(&mut scene, rn.icon, icon_group(e.icon).filter(|_| first));
+                set(&mut scene, rn.arrow, first.then_some(ARROW[(page.kind != 0) as usize]));
+                for id in [rn.plate, rn.icon, rn.arrow] {
+                    scene.nodes[id].pos = [bx, y];
+                }
+            }
+        }
+        if page.cursor >= n {
+            for id in [nodes.selected[p].bar, nodes.selected[p].plate, nodes.selected[p].icon, nodes.selected[p].arrow] {
+                scene.nodes[id].visible = false;
+                scene.nodes[id].label = None;
             }
         }
     }
@@ -452,6 +480,21 @@ mod tests {
         assert_eq!(row_y(4, 0) - header_y(4), 22.0);
         assert_eq!(row_y(4, 0) - capsule_y(4), 33.0);
         assert_eq!(page_x(2) - page_x(0), 32.0);
+    }
+
+    /// Node order is draw order: the selected bar, its medallion, icon and arrow come after every plain bar of
+    /// the page, and only the first page shows the medallion, icon and arrow.
+    #[test]
+    fn selected_bar_and_icon_draw_over_the_plain_bars() {
+        let mut scene = HudScene::default();
+        let mut nodes = MenuNodes::default();
+        build(&mut scene, &mut nodes, 0);
+        for p in 0..PAGES {
+            let last_bar = nodes.rows[p].iter().map(|r| r.bar).max().unwrap();
+            let s = nodes.selected[p];
+            assert!(s.bar > last_bar && s.plate > s.bar && s.icon > s.plate && s.arrow > s.icon);
+        }
+        assert!(shows_icons(0) && !shows_icons(1) && !shows_icons(2));
     }
 
     #[test]

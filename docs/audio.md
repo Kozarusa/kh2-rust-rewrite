@@ -510,3 +510,57 @@ Test `the_danger_alarm_starts_once_and_stops_when_danger_ends`. Harness: `KH2_SO
   entry; Sora's own `0:128` 0.17 and `999:132/136/137` 0.15 to 0.23. The ones that could read as guard or cure sounds are the long
   tonal `0:113` and `0:111` (played from the enemy motion triggers of M_EX990 and M_EX940) and
   `214:19`. Which one the user means is not established [inferred]; the guard/cure complaint stays deferred.
+
+## WP-AU6: weapon sounds, loudness against the original (nobody has listened)
+
+- Sound numbers of 500000 and up (`se 500:*`). `FUN_00197008` (the object method behind motion trigger 8, the hit sound
+  `FUN_0018c6d0`, the wall sound `FUN_0018ca78`, `FUN_0017f8f8` and `FUN_001b2378`) replaces `500xxx` by
+  `bank * 1000 + xxx`, where `bank` is the short at +2 of the record at object `+0x9b4`; for the keyblade object (owner flag
+  `+0x588 & 0x40`) that is its own record, otherwise the owner's (`+0xaf8`, flag 4). The record is `node + 0x38` of the object's
+  resource node (`FUN_0016ffe0`, written by the object constructors `FUN_00196b58` and `FUN_00196d18`), and its +2 short is the id
+  `FUN_0016f568` gets back from the sound driver (`FUN_002c1578`) after registering the object's `se` (type 0x1f) and `wave`
+  (type 0x20) blocks of the `.apdx`. So 500 means "my own bank". The USA disc has no global `se/se500.seb`
+  (`load_bank(500, None)` is `None`); the keyblades' banks live only in their `.apdx`: `W_EX010` (block bank 500, 61 entries),
+  `W_EX020` (535, 36), `W_EX030` (560, 40) (`audio::tests::weapon_sounds_resolve_in_every_keyblades_own_bank`).
+  The app matched the request's bank against the block's number, so only the weapon numbered 500 played; the other two logged
+  `not found` (13 requests in a 43 s Dusk fight: `500:34` and `500:35` of `W_EX020`/`W_EX030`). Now `PlaySe::object_sound` turns
+  bank 500 into `OWN_BANK` when the object has an `.apdx`, used by the motion triggers (`motion_sound_request`), the hit sound
+  (`combat::hit_sound_request`) and the wall sound. Fight run `KH2_NO_MUSIC=1 KH2_WAVE_GROUP=b_44 KH2_SOUNDLOG=1`, tt04, J pressed
+  from 8 s: 0 `not found` for any `500` request (before: 13); the remaining `not found` are `0:0` of `M_EX990` (an empty entry) and
+  one `270:24` of `M_EX850`. The sound is the entry's own volume (`PlaySe` carries no volume; the mixer uses the placed volume
+  and the entry's flags as for every sound). Element sounds of effects (`FUN_001dd0d0` -> `FUN_002c32b8`) do not go through
+  `FUN_00197008` and are left as they were. Not matched against the recordings: the user's recordings hold no isolated keyblade
+  swing, so onsets and levels of the weapon sounds are not compared [gap].
+- Struggle (`struggle.rs`, the mission start/end/fail sounds): the original calls `FUN_002c3318`, which runs the request
+  without `FUN_002c2760` (the position copy) and with the "no position" mode argument (`FUN_002c22b8(slot, 1, 1)` against
+  `FUN_002c22b8(slot, 1, 0)` of `FUN_002c2380`). So the sound is unplaced, volume 0x3fff and pan centre, like the HUD's; the
+  call at `struggle.rs:1328` stays as it is.
+- Effect sounds: the element's sound is requested in `FUN_001dd0d0` after the bind update and BEFORE the destroy test, so an
+  effect that ends on its first tick still sounds (the app does too: the request is written before `effect.done`). Only an
+  effect whose owner is gone before it ever had a bind is dropped by the app with its sound; the original's record would hold
+  its creation matrix, which the app does not keep [gap, no test]. `fx::effect_sound_request` holds the placement rule
+  (world element placed at its bind, camera-space element unplaced, `fx::tests::effect_sound_requests_are_placed_unless_the_element_is_camera_space`).
+  Callers: `combat::hit_sound_request` (`landed_hit_requests_carry_the_bank_and_the_hit_point`) and `audio::motion_sound_request`
+  (`motion_sound_requests_are_placed_and_remap_bank_500`) are the parts of `landed_hit_sounds` and `motion_sounds` that build
+  the request; the surrounding lookups need an animator and a `GameData`, which the unit tests do not construct.
+- Loudness against the original. The original's fight recordings (`local/reports/pcsx2-ref/enemy-attack.wav`, `pickups.wav`,
+  `audio-combat1-bgm-and-sfx.wav`, float stereo, music included) saturate: their samples stop at exactly 0.985047 (31 to 35
+  samples at that value per recording, 0.7 to 1.6 per second), so the original's path clamps like the app's mixer (`Mixer::render`,
+  clamp at 1.0) and the SPU2 has the same 48 voices (`Mixer::play` drops the quietest at 48). Samples above 0.9 per second:
+  original 9.4 to 19.7, app 15 to 16. Level over 100 ms windows (RMS): original median 0.17, p90 0.25, p99 0.32; app with music
+  median 0.105, p90 0.17, p99 0.32 (max 0.37 against 0.34); without music median 0.046. Samples at or above 0.985 per second:
+  original 0.7 to 1.6, app 6.5 to 7.6 (clipped samples at 1.0 in 46 s: 298 without, 336 with music; AU5 had 156 in a shorter
+  window). So the app is not louder on the whole (lower median and p90) but its peaks reach the ceiling about five times as
+  often. The peaks are bursts: in second 8 the log shows `0:13` footsteps four times within 50 ms (several Dusks in step), 
+  `697:*` and `0:17` together; the footstep volumes are 0x23fb to 0x36f1 each. The recordings give no per-sound
+  breakdown, so no gain was changed; the ceiling 0.985047 of the recordings (against the app's 1.0) is probably the recorder's
+  output stage [inferred] and nothing is scaled to it.
+- Enemy-originated tonal sounds in the Dusk fight (`KH2_SOUNDLOG=1`, the new `motion sound` log line names the motion):
+  `0:113` (peak 0.41, 1.0 s) is the element sound of the defeat effect of a Dusk (it fires once per kill, together with the
+  death effect, game effect ids 7 to 10); `0:111` (0.17, 0.9 s) is an effect element sound at the enemy's arrival or the wave's
+  start (several at once when a wave appears); `214:19` (0.35, 0.65 s) is the `ReflectHitSound` of the Dusk's attack row 17
+  played when it hits Sora (`sora hit: atkp 17` precedes it in the log). None comes from a motion trigger. If the user means a
+  guard-like or cure-like chime, `0:113` (once per kill, long and tonal) is the candidate [inferred]. Nothing changed:
+  no evidence that they are wrong, and the original's own levels are not known per sound.
+- Harness: `KH2_SOUNDLOG=1` now also prints `motion sound <bank>:<index> of <apdx> motion <tag> frame <f>` for motion
+  trigger 8. Reading the dump: `KH2_AUDIO_DUMP=<file>` f32 stereo at 48 kHz, no header.

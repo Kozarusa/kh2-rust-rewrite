@@ -206,6 +206,9 @@ fn load_voice_table(disc: Res<Disc>, mut table: ResMut<VoiceTable>) {
 /// `PlaySe::bank` value meaning "the requesting object's own bank".
 pub const OWN_BANK: u16 = 0xffff;
 
+/// The bank of sound numbers 500000 and up, which FUN_00197008 replaces by the object's own bank.
+pub const OBJECT_SOUND_BANK: u16 = 500;
+
 impl PlaySe {
     /// The sound an object plays when it is hit: entry 0/1 (light) or 2/3 (heavy) of its own bank,
     /// by the attack's `EnemyReaction`, alternating per hit. The game's class table: 1 and 12 are
@@ -229,6 +232,20 @@ impl PlaySe {
 
     pub fn number(n: u32, apdx: Option<String>) -> PlaySe {
         PlaySe { bank: (n / 1000) as u16, index: (n % 1000) as u16, apdx, pos: None }
+    }
+
+    /// A sound number played through an object's method (FUN_00197008): numbers of 500000 and up name
+    /// the sound bank the object registered when its resources loaded (the short at +2 of the record
+    /// at object +0x9b4, written by FUN_0016f568 from the object's `se` and `wave` blocks), and the
+    /// index counts in that bank. The app's equivalent is the object's own `.apdx` block
+    /// ([`OWN_BANK`]). An object without an `.apdx` (no registered bank, FUN_00197008 keeps the
+    /// number) plays the global bank 500.
+    pub fn object_sound(n: u32, apdx: Option<String>) -> PlaySe {
+        let mut se = PlaySe::number(n, apdx);
+        if se.bank == OBJECT_SOUND_BANK && se.apdx.is_some() {
+            se.bank = OWN_BANK;
+        }
+        se
     }
 
     /// The same sound placed at a world position (metres).
@@ -579,10 +596,16 @@ pub fn wall_sounds(
     mut out: MessageWriter<PlaySe>,
 ) {
     for w in walls.read().filter(|w| w.weapon_volume) {
-        let mut se = PlaySe::number(crate::combat::WALL_HIT_SOUND, anims.get(w.body).ok().and_then(|a| a.rig.apdx.clone()));
+        let mut se = PlaySe::object_sound(crate::combat::WALL_HIT_SOUND, anims.get(w.body).ok().and_then(|a| a.rig.apdx.clone()));
         se.pos = places.get(w.body).ok().map(|g| g.translation());
         out.write(se);
     }
+}
+
+/// The request of a motion trigger 8: the sound goes through the object's method (FUN_00197008), so a
+/// bank number of 500 names the object's own bank ([`PlaySe::object_sound`]), placed at the object.
+pub fn motion_sound_request(bank: u16, index: u16, apdx: Option<String>, at: Vec3) -> PlaySe {
+    PlaySe::object_sound(bank as u32 * 1000 + index as u32, apdx).at(at)
 }
 
 /// Motion frame trigger 8 ("sound effect"): params are [bank, index, ...]. Triggers 13 and 14
@@ -618,7 +641,10 @@ pub fn motion_sounds(
         for ft in t.crossed(from, to) {
             match (ft.id, &ft.params[..]) {
                 (frame::SOUND_EFFECT, [bank, index, ..]) => {
-                    out.write(PlaySe { bank: *bank as u16, index: *index as u16, apdx: a.rig.apdx.clone(), pos: Some(place.translation()) });
+                    if std::env::var_os("KH2_SOUNDLOG").is_some() {
+                        info!("motion sound {bank}:{index} of {} motion {} frame {:.1}", a.rig.apdx.as_deref().unwrap_or("-"), a.tag(), a.frame);
+                    }
+                    out.write(motion_sound_request(*bank as u16, *index as u16, a.rig.apdx.clone(), place.translation()));
                 }
                 // Voice lines: the speaker's bank for the current world.
                 (frame::VOICE | frame::VOICE2, [voice, ..]) if is_sora => {
@@ -1276,6 +1302,50 @@ mod tests {
             }
         }
         assert!(played >= 4, "every spell asks for a voice");
+    }
+
+    /// WP-AU6: weapon sounds (500xxx). The keyblade objects' motion triggers and hit rows name bank 500;
+    /// FUN_00197008 swaps it for the bank the object registered, which in the app is the object's own
+    /// `.apdx` block. Before, only the weapon whose block happens to be numbered 500 played them
+    /// (`W_EX010`); the others logged "not found" and fell to the global `se500.seb`.
+    #[test]
+    fn weapon_sounds_resolve_in_every_keyblades_own_bank() {
+        let Some(d) = disc() else { return };
+        let cache = SeCache::default();
+        let mut resolved = 0;
+        for name in ["W_EX010", "W_EX020", "W_EX030", "W_EX040", "W_EX050"] {
+            let apdx = format!("obj/{name}.apdx");
+            let Some(block) = load_bank(&d, &cache, OWN_BANK, Some(&apdx)).map(|b| b.block.clone()) else {
+                eprintln!("AU6 {name}: no own bank");
+                continue;
+            };
+            let live: Vec<usize> = block.entries.iter().enumerate().filter(|(_, e)| !e.tracks.is_empty()).map(|(i, _)| i).collect();
+            eprintln!("AU6 {name}: block bank {} entries {} with tracks {live:?}", block.bank, block.entries.len());
+            for &i in &live {
+                let se = motion_sound_request(OBJECT_SOUND_BANK, i as u16, Some(apdx.clone()), Vec3::ZERO);
+                assert_eq!(se.bank, OWN_BANK);
+                let b = load_bank(&d, &cache, se.bank, se.apdx.as_deref()).expect("own bank");
+                assert!(b.block.entries.get(se.index as usize).is_some_and(|e| !e.tracks.is_empty()));
+                resolved += 1;
+            }
+        }
+        assert!(resolved > 0, "at least one keyblade sound resolves");
+        // The USA disc has no global `se/se500.seb`: the weapons' banks live only in their `.apdx`.
+        eprintln!("AU6 global se500 present: {}", load_bank(&d, &cache, 500, None).is_some());
+    }
+
+    /// WP-AU6: motion trigger 8 is placed at the object; bank 500 becomes the object's own bank only
+    /// when the object has an `.apdx`.
+    #[test]
+    fn motion_sound_requests_are_placed_and_remap_bank_500() {
+        let at = Vec3::new(1.0, 2.0, 3.0);
+        let own = motion_sound_request(500, 35, Some("obj/W_EX030.apdx".into()), at);
+        assert_eq!((own.bank, own.index, own.pos), (OWN_BANK, 35, Some(at)));
+        let global = motion_sound_request(500, 35, None, at);
+        assert_eq!((global.bank, global.index), (500, 35));
+        let other = motion_sound_request(214, 22, Some("obj/M_EX990.apdx".into()), at);
+        assert_eq!((other.bank, other.index), (214, 22));
+        assert_eq!(placement(own.pos, Some(&Transform::from_translation(at + Vec3::Z * 30.0))).0 < 0x3fff, true);
     }
 
     /// WP-AU5: a hit sound placed at the victim is quieter and panned when the victim is away from the

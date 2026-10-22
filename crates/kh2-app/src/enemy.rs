@@ -1962,7 +1962,7 @@ pub fn receive_hits(
         // The victim's hit sound (FUN_001b2378): not for ineffective hits; the sound alternates
         // between two entries per victim (the actor byte at +0x7fc).
         if !useless && let Some(se) = crate::audio::PlaySe::hit(atk.enemy_reaction, e.hit_sounds, rig.apdx.clone()) {
-            sounds.write(se);
+            sounds.write(se.at(h.point));
             e.hit_sounds = e.hit_sounds.wrapping_add(1);
         }
         let facing = Vec3::new(e.yaw.sin(), 0.0, e.yaw.cos());

@@ -2244,7 +2244,7 @@ mod tests {
         header[0x23] = 200;
         header[0x24] = 5;
         let part = GroupPart { id: 0x8a, kind: 2, disabled: false, header, activators: Vec::new(), entities: vec![(2, 5, 1)], counted: Vec::new() };
-        let g = AreaGroup { program: 0x50, name: "b_t".into(), parts: vec![part], members: Vec::new(), skipped: Vec::new(), player: None, mission: None, orb_pool: false, triggers: Vec::new() };
+        let g = AreaGroup { program: 0x50, name: "b_t".into(), parts: vec![part], members: Vec::new(), skipped: Vec::new(), player: None, player_yaw: 0.0, mission: None, orb_pool: false, triggers: Vec::new() };
         let mut two = KindTwo { part: 0, timer: 0.0, wave: 200, killed: vec![7] };
         for _ in 0..3 {
             assert!(two.run(&g, |_| false).is_empty());

@@ -1089,8 +1089,7 @@ pub fn tick(
         }
         env.bind_scale = Vec3::new(env.bind.x_axis.truncate().length(), env.bind.y_axis.truncate().length(), env.bind.z_axis.truncate().length());
         if play_se {
-            let req = crate::audio::PlaySe::number(el.se as u32, r.lib.apdx.clone());
-            se.write(if el.flags & ELEMENT_IN_CAMERA_SPACE != 0 { req } else { req.at(effect_sound_position(&env.bind)) });
+            se.write(effect_sound_request(el.se as u32, r.lib.apdx.clone(), el.flags, &env.bind));
         }
         let draws = r.effect.tick(&env);
         if r.effect.done {
@@ -1344,6 +1343,15 @@ pub fn effect_sound_position(bind: &Mat4) -> Vec3 {
     FLIP.transform_point3(bind.w_axis.truncate()) * SCALE
 }
 
+/// The request of an element's sound (FUN_001dd0d0 -> FUN_002c32b8, after the bind update and before the
+/// destroy test, so an effect that ends on its first tick still sounds). A camera-space element
+/// (flag 0x20000) keeps the unplaced request [inferred: its record holds view-space coordinates, which
+/// the request's camera transform FUN_002c27b0 would apply a second time].
+pub fn effect_sound_request(se: u32, apdx: Option<String>, flags: u32, bind: &Mat4) -> crate::audio::PlaySe {
+    let req = crate::audio::PlaySe::number(se, apdx);
+    if flags & ELEMENT_IN_CAMERA_SPACE != 0 { req } else { req.at(effect_sound_position(bind)) }
+}
+
 /// Game camera (X right, Y down, Z forward, centimetres) → fx world, from the Bevy camera.
 fn game_camera(cam: Mat4) -> Mat4 {
     let (_, r, t) = cam.to_scale_rotation_translation();
@@ -1458,6 +1466,23 @@ pub fn fx_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// WP-AU6: the element sound request the effect tick writes. A world element is placed at its bind
+    /// (so it falls with the camera distance), a camera-space element stays unplaced.
+    #[test]
+    fn effect_sound_requests_are_placed_unless_the_element_is_camera_space() {
+        let bind = Mat4::from_translation(Vec3::new(300.0, -100.0, 50.0));
+        let world = effect_sound_request(29, Some("obj/X.apdx".into()), 0, &bind);
+        assert_eq!((world.bank, world.index), (0, 29));
+        assert_eq!(world.apdx.as_deref(), Some("obj/X.apdx"));
+        let pos = world.pos.expect("a world element is placed");
+        assert!((pos - effect_sound_position(&bind)).length() < 1e-4);
+        let cam = effect_sound_request(29, None, ELEMENT_IN_CAMERA_SPACE, &bind);
+        assert_eq!(cam.pos, None);
+        let far = crate::audio::placement(world.pos, Some(&Transform::IDENTITY));
+        assert!(far.0 < 0x3fff, "a placed effect sound is not at full volume: {:#x}", far.0);
+        assert_eq!(crate::audio::placement(cam.pos, Some(&Transform::IDENTITY)).0, 0x3fff);
+    }
 
     /// WP-AU5: the sound of a fixed-placed effect plays where the effect is, in world metres.
     #[test]

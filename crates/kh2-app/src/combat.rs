@@ -394,15 +394,37 @@ fn landed_hit_sounds(
         if cancelled.contains(&(h.attacker, h.target, h.atkp)) {
             continue;
         }
-        let Some(sound) = data.atkp(h.atkp).and_then(|a| ReflectFields::from_atkp(a).hit_sound()) else { continue };
         let apdx = fighters.get(h.attacker).ok().and_then(|f| f.attack_bodies.first().copied()).and_then(|b| anims.get(b).ok()).and_then(|a| a.rig.apdx.clone());
-        out.write(PlaySe::number(sound, apdx).at(h.point));
+        if let Some(se) = hit_sound_request(data.atkp(h.atkp).and_then(|a| ReflectFields::from_atkp(a).hit_sound()), apdx, h.point) {
+            out.write(se);
+        }
     }
+}
+
+/// The request of a landed hit: the attack row's `ReflectHitSound` played through the attacking
+/// object (so numbers of 500000 and up resolve to its own bank), placed at the hit point.
+pub fn hit_sound_request(sound: Option<u32>, apdx: Option<String>, point: Vec3) -> Option<PlaySe> {
+    Some(PlaySe::object_sound(sound?, apdx).at(point))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// WP-AU6: the request a landed hit writes (the part of `landed_hit_sounds` after the lookups): the
+    /// row's sound number through the attacking object, placed at the hit point. 500000 and up
+    /// resolves to the object's own bank, other numbers stay in their bank; no sound, no request.
+    #[test]
+    fn landed_hit_requests_carry_the_bank_and_the_hit_point() {
+        let at = Vec3::new(2.0, 1.0, -4.0);
+        let own = hit_sound_request(Some(500_009), Some("obj/W.apdx".into()), at).expect("a sound");
+        assert_eq!((own.bank, own.index, own.pos), (crate::audio::OWN_BANK, 9, Some(at)));
+        let none = hit_sound_request(Some(500_009), None, at).expect("a sound");
+        assert_eq!((none.bank, none.index), (500, 9));
+        let other = hit_sound_request(Some(4_011), Some("obj/W.apdx".into()), at).expect("a sound");
+        assert_eq!((other.bank, other.index), (4, 11));
+        assert!(hit_sound_request(None, None, at).is_none());
+    }
 
     #[test]
     fn victim_point_lies_on_the_spheroid_toward_the_attack() {

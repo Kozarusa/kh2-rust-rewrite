@@ -631,7 +631,7 @@ pub mod menu_sound {
     /// mapping was corrected in WP-SE2: the sounds are `se 0:<id>`, entries of `se000.seb`; the user
     /// has not asked for them back yet): with `false` no menu request reaches the mixer
     /// (`KH2_SOUNDLOG=1` logs `menu se 0:<id> muted` instead). Set it to `true` to hear them again.
-    pub const MENU_SOUND_ENABLED: bool = false;
+    pub const MENU_SOUND_ENABLED: bool = true;
 
     /// Every menu sound request goes through here (`FUN_0023e738(kind, play)` -> `FUN_002be49c(2, id, ...)`).
     pub fn play(se: &mut MessageWriter<PlaySe>, n: u32) {

@@ -218,7 +218,7 @@ struct Run {
     key: (u32, u8),
     name: String,
     track: Track,
-    /// The player's place when the event started: the space the track's keys are in (see `Frame`).
+    /// The player's place: the space the track's keys are in (`player_space`), refreshed every tick.
     origin: Mat4,
     /// The fly-back's two ends (opcode 0x31), fixed at its first frame.
     follow: Option<(Shot, Shot)>,
@@ -234,12 +234,23 @@ pub struct Intro {
     sent: bool,
 }
 
-/// The space of an event's camera keys (`FUN_0022b0f8`'s else branch): the event's matrix `DAT_0036bce8`, the
-/// event object's +0x50 that `FUN_00195898` fills with `FUN_0011b460` from 0x354a60 (zero in the file, filled at
-/// run time) [inferred: the unit matrix, so the keys are map coordinates; the reference clip's backgrounds agree,
-/// docs/camera.md "The intro camera"]. Only the fly-back of opcode 0x31 works in the player's space
-/// (`FUN_0016aa08`, `DAT_0035c998`).
-const KEY_SPACE: Mat4 = Mat4::IDENTITY;
+/// The space of an event's camera keys. `FUN_0022b0f8` multiplies the evaluated position and look-at by the matrix
+/// `DAT_0036bce8`, the event object's +0x50 (`FUN_00195ae0` -> `FUN_002232c8`), which `FUN_00195898` fills from the
+/// unit matrix at 0x354a60. [inferred] The keys are nevertheless the player's own space, as the data shows: the
+/// last key of `TT04_MS500`'s record looks at the origin from 5.6 m behind it (z negative), its first looks 3.55 m
+/// ahead (z) at head height (y 107), which is where Seifer stands from Roxas at the entry (3.46 m), and
+/// `TR03_MS103`'s record circles (5, 92, 0) at 3.6 m, a head height above the origin. Read as map coordinates the
+/// first shot looks at a wall and the second circles the arena's origin, 10 m from Sora, and under the floor
+/// wherever the ground is above the key's height (the user's report, docs/camera.md "The intro camera"). The
+/// fly-back of opcode 0x31 mode 1 names the player's matrix too (`FUN_0016aa08`, `DAT_0035c998`). The matrix is the
+/// player's place: origin at his feet, z along his facing, y up, x to his left (the handedness of the app's
+/// space, a proper turn of the game's).
+pub fn player_space(pos: Vec3, forward: Vec3) -> Mat4 {
+    let f = Vec3::new(forward.x, 0.0, forward.z).try_normalize().unwrap_or(Vec3::Z);
+    let x = Vec3::Y.cross(f);
+    Mat4::from_cols(x.extend(0.0), Vec3::Y.extend(0.0), f.extend(0.0), pos.extend(1.0))
+}
+
 fn place(m: &Mat4, s: Shot) -> Shot {
     Shot { pos: m.transform_point3(s.pos), look: m.transform_point3(s.look), ..s }
 }
@@ -256,7 +267,7 @@ fn shot_of(v: View) -> Shot {
 /// (`CamEvent::track`), its opcode-0x3c effects start from the mission's effect file (BAR type 0x12, the
 /// manager's +0xc group, `FUN_001db4d0` in `FUN_001b8ee8`) at their frames. The event's frame is the game frame
 /// count times 0.5 (`FUN_00222728`).
-fn tick(mut commands: Commands, disc: Res<Disc>, mission: Res<Mission>, mut intro: ResMut<Intro>, mut cam: ResMut<CamEvent>) {
+fn tick(mut commands: Commands, disc: Res<Disc>, mission: Res<Mission>, mut intro: ResMut<Intro>, mut cam: ResMut<CamEvent>, sora: Query<&crate::sora::Sora>) {
     let play = mission.m.as_deref().and_then(|a| a.play.as_ref().filter(|p| p.what == "start").map(|p| (a, p)));
     let Some((a, p)) = play else {
         if let Some(r) = intro.run.take() {
@@ -279,9 +290,13 @@ fn tick(mut commands: Commands, disc: Res<Disc>, mission: Res<Mission>, mut intr
             track.effects
         );
         let started = vec![false; track.effects.len()];
-        intro.run = Some(Run { key, name: a.name.clone(), track, origin: KEY_SPACE, follow: None, last: None, started, pax: None });
+        intro.run = Some(Run { key, name: a.name.clone(), track, origin: Mat4::IDENTITY, follow: None, last: None, started, pax: None });
     }
     let Some(r) = intro.run.as_mut() else { return };
+    // The keys' space is the player's place, held while the event plays (the start layout locks the control).
+    if let Ok(s) = sora.single() {
+        r.origin = player_space(s.motor.pos, s.motor.forward());
+    }
     // `KH2_INTRO_HOLD=<event frame>` holds the camera at that frame (a harness aid for screenshots).
     let hold = std::env::var("KH2_INTRO_HOLD").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(f32::MAX);
     let f_real = p.ticks as f32 * 0.5;
@@ -468,5 +483,23 @@ mod tests {
         let mid = (1757.0 + 2218.0) / 2.0 / 512.0 * 30.0;
         assert!((follow(a, b, 103, 130, mid).pos.x - 50.0).abs() < 1e-2);
         assert!((follow(a, b, 103, 130, mid).fov - 1.5).abs() < 1e-4);
+    }
+
+
+    #[test]
+    fn the_keys_are_in_the_players_space() {
+        // Sora at (1000, -60, 0) facing +x: a key 355 ahead lands 355 along +x, a key at head height is above his feet,
+        // and the key's +x is his left (the app's Y-up space: up cross forward).
+        let m = player_space(Vec3::new(1000.0, -60.0, 0.0), Vec3::X);
+        let near = |a: Vec3, b: Vec3| (a - b).length() < 1e-3;
+        assert!(near(m.transform_point3(Vec3::new(0.0, 107.0, 355.0)), Vec3::new(1355.0, 47.0, 0.0)));
+        assert!(near(m.transform_point3(Vec3::new(10.0, 0.0, 0.0)), Vec3::new(1000.0, -60.0, -10.0)));
+        // An orbit of radius 360 round (5, 92, 0) stays 360 from his head wherever he stands and turns.
+        let m = player_space(Vec3::new(-20.0, 300.0, 40.0), Vec3::new(1.0, 0.0, 1.0));
+        let c = m.transform_point3(Vec3::new(5.0, 92.0, 0.0));
+        let p = m.transform_point3(Vec3::new(5.0 + 360.0 * 0.6, 92.0, 360.0 * 0.8));
+        assert!(((p - c).length() - 360.0).abs() < 1e-2 && (c.y - 392.0).abs() < 1e-3);
+        // No facing: straight along +z.
+        assert!(near(player_space(Vec3::ZERO, Vec3::ZERO).transform_point3(Vec3::Z), Vec3::Z));
     }
 }

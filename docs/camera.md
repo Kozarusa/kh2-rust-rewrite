@@ -167,6 +167,19 @@ The target point the app uses is the locked enemy's position raised 100; the gam
     event object's +0x50 (`FUN_00195ae0` -> `FUN_002232c8` param 2), which `FUN_00195898` fills by `FUN_0011b460`
     from 0x354a60 (zero in the file: filled at run time) [inferred: the unit matrix, so the keys are map
     coordinates; the app uses the unit matrix, and the clip's wide shot and Seifer shot backgrounds agree].
+  - *Space of the keys (FIX5, 2026-10-22, user report: the orbit spawned under Sora).* The unit-matrix reading above
+    (map coordinates) put the orbit of a field battle's start event at the map origin: under the floor where the ground
+    is above the key heights, and 10 m from Sora in `TR03_MS103` (orbit of radius 3.6 m round (5, 92, 0), no fly-back).
+    The original's own frames (`local/reports/pcsx2-ref/combat-intro-orbit-1..6.jpg`, a Twilight Town battle start,
+    PCSX2) swing round Sora at chest height with the ground below him, so the keys are in the player's space. The app
+    now maps them with `intro::player_space` (origin his feet, +z his facing, +y up, +x his left [inferred handedness]),
+    refreshed each tick. Evidence for the space: `TT04_MS500`'s first look-at (0, 107, 355) is the 3.46 m to Seifer at
+    head height, its last key looks at the origin from 5.6 m behind. `DAT_0036bce8` stays the unit matrix in the code
+    (no writer found, `FUN_0022b0f8` multiplies by it); how the original gets the player's space for the other tracks
+    is not found [gap]. `TT04_MS500`'s wide shot had matched the unit matrix with the b_45 places: with the player's
+    space it needs his entry facing (-90 degrees), which the app's harness placement does not set (`enemy.rs` calls
+    `sora::respawn` without a yaw: outside FIX5's ownership), so that clip's shots stay unverified. Test
+    `the_keys_are_in_the_players_space`.
   - *The fly-back* (opcode 0x31 +6 = 1, `FUN_0022bc40` -> `FUN_0022b590`, at its frame +4): two keys of type 2 with
     zero tangents per channel (the work track at `DAT_0036bd60`), at `(frame << 9) / 30` the view drawn then
     (`FUN_001071c8`, `FUN_001072d8`, `FUN_00107318`) and at the end frame `DAT_0036bcf8` the field camera placed

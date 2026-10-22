@@ -101,11 +101,13 @@ pub fn run() {
     });
     let start = std::env::args().nth(1).unwrap_or_else(|| "tt04".into());
     CLOCK.get_or_init(Instant::now);
-    // Harness runs (scripted keys) and KH2_NO_FOCUS=1 open the window without taking the keyboard focus.
-    let focused = std::env::var_os("KH2_NO_FOCUS").is_none() && std::env::var_os("KH2_KEYS").is_none();
+    // The window opens unfocused and below every other window, so background runs never cover the
+    // user's screen. KH2_FRONT=1 (set by local/playtest.bat) restores a normal window.
+    let front = std::env::var_os("KH2_FRONT").is_some();
+    let level = if front { bevy::window::WindowLevel::Normal } else { bevy::window::WindowLevel::AlwaysOnBottom };
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window { title: "kh2-rs".into(), focused, ..default() }),
+            primary_window: Some(Window { title: "kh2-rs".into(), focused: front, window_level: level, ..default() }),
             ..default()
         }))
         .add_plugins(plugins::GamePlugins { iso, start })

@@ -447,6 +447,8 @@ pub struct AreaGroup {
     pub skipped: Vec<String>,
     /// Where the group puts the player (its entity 0x236, the player's id, FUN_0016b078), metres.
     pub player: Option<Vec3>,
+    /// The player entry's facing as the app's yaw (`PI - r`, as `Member::yaw`).
+    pub player_yaw: f32,
     /// The mission the group's btl program starts (opcode 0x15, `FUN_001b9338`): id and file name (WP-7E).
     pub mission: Option<(u32, String)>,
     /// The program also loads a group with the Struggle orb pool object (`00objentry` type 22 subtype 8,
@@ -582,7 +584,7 @@ pub fn area_groups(disc: &Disc, area: &str) -> Vec<AreaGroup> {
                 .flat_map(|q| q.commands.iter().filter(|c| c.opcode == 0xc).filter_map(|c| kh2_ard::parse_trigger(&c.args)))
                 .map(|t| crate::struggle::Trig::from_ard(&t))
                 .collect();
-            let mut g = AreaGroup { program: p.id, name: name.clone(), parts: Vec::new(), members: Vec::new(), skipped: Vec::new(), player: None, mission: mission.clone(), orb_pool, triggers };
+            let mut g = AreaGroup { program: p.id, name: name.clone(), parts: Vec::new(), members: Vec::new(), skipped: Vec::new(), player: None, player_yaw: 0.0, mission: mission.clone(), orb_pool, triggers };
             for rec in ard.spawns.get(&name).into_iter().flatten() {
                 let kind = (rec.kind & 0xff) as u8;
                 let limiter = |o: u32| rows.iter().find(|r| r.object_id == o).map_or(0, |r| r.spawn_limiter);
@@ -608,7 +610,7 @@ pub fn area_groups(disc: &Disc, area: &str) -> Vec<AreaGroup> {
             for (part, e) in ard.spawns.get(&name).into_iter().flatten().enumerate().flat_map(|(i, g)| g.entities.iter().map(move |e| (i, e))) {
                 if e.object == PLAYER_ENTITY && g.player.is_none() {
                     let [x, y, z] = e.position;
-                    g.player = Some(Vec3::new(x, -y, -z) * SCALE);
+                    g.player = Some(Vec3::new(x, -y, -z) * SCALE); g.player_yaw = std::f32::consts::PI - e.rotation[1];
                 }
                 let Some(row) = rows.iter().find(|r| r.object_id == e.object) else { continue };
                 match KINDS.iter().find(|k| k.model == row.model_name) {
@@ -1452,6 +1454,9 @@ pub fn spawn_waves(
                 if let (Some(_), Some(at)) = (&forced, centre.or(g.player)) {
                     let y = col.ground_m(at.x, at.z, at.y + 1.0).unwrap_or(at.y);
                     crate::sora::respawn(&mut sora, at.with_y(y) / SCALE);
+                    if centre.is_none() && g.player.is_some() {
+                        sora.motor.yaw = g.player_yaw;
+                    }
                     sora_tf.translation = at.with_y(y);
                     info!("area group {}: Sora placed at the group's player entry {:?}", g.name, sora_tf.translation);
                 }
@@ -3159,7 +3164,7 @@ mod tests {
             parts: vec![part],
             members: vec![member(0, 3, 1, 0, 0), member(0, 2, 2, 10, 0), member(0, 2, 3, 20, 0), member(0, 2, 4, 5, 1)],
             skipped: Vec::new(),
-            player: None,
+            player: None, player_yaw: 0.0,
             mission: None,
             orb_pool: false,
             triggers: Vec::new(),
@@ -3214,7 +3219,7 @@ mod tests {
             parts: vec![part],
             members: vec![member(0, 2, 1, 10, 0), member(0, 2, 2, 10, 1)],
             skipped: Vec::new(),
-            player: None,
+            player: None, player_yaw: 0.0,
             mission: None,
             orb_pool: false,
             triggers: Vec::new(),
@@ -3337,7 +3342,7 @@ mod tests {
             header[0x24] = back_to;
             GroupPart { id: 0x8a, kind: 2, disabled: false, header, activators: Vec::new(), entities, counted: Vec::new() }
         };
-        let group = |p: GroupPart, members: Vec<Member>| AreaGroup { program: 0x50, name: "b_t".into(), parts: vec![p], members, skipped: Vec::new(), player: None, mission: None, orb_pool: false, triggers: Vec::new() };
+        let group = |p: GroupPart, members: Vec<Member>| AreaGroup { program: 0x50, name: "b_t".into(), parts: vec![p], members, skipped: Vec::new(), player: None, player_yaw: 0.0, mission: None, orb_pool: false, triggers: Vec::new() };
         // No wave to move to: the walk ends at 200 and returns nothing; a second run does not move it.
         let g = group(part(0, 0, vec![]), vec![]);
         let mut two = KindTwo { part: 0, timer: 0.0, wave: 198, killed: Vec::new() };
@@ -3496,7 +3501,7 @@ mod tests {
             parts: vec![part],
             members: vec![member(0, 2, 1, 0, 0), member(0, 2, 2, 30, 5), member(0, 3, 3, 0, 0), member(0, 2, 4, 0, 0)],
             skipped: Vec::new(),
-            player: None,
+            player: None, player_yaw: 0.0,
             mission: None,
             orb_pool: false,
             triggers: Vec::new(),

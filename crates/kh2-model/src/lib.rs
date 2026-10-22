@@ -59,6 +59,9 @@ pub struct Model {
     pub meshes: Vec<Mesh>,
     pub bones: Vec<Bone>,
     pub textures: Vec<Texture>,
+    /// Every texture set of the entry (`texture::split_sets`); `textures` is set 1. Plain models
+    /// have one set. Which set the original selects is not traced.
+    pub texture_sets: Vec<Vec<Texture>>,
     /// Object collision shapes (MDLX only).
     pub shapes: Vec<collision::Shape>,
     /// Texture animations (sprite regions and UV scrolls) from the texture container's footer.
@@ -115,8 +118,9 @@ pub fn mdlx(file: &[u8]) -> Option<Model> {
     let entries = kh2_bar::parse(file).ok()?;
     let block = entries.iter().find(|e| e.kind == 4)?.data;
     let tex = entries.iter().find(|e| e.kind == 7);
-    let textures = tex.map(|e| texture::decode(e.data)).unwrap_or_default();
-    let anims = tex.map(|e| texanim::parse(e.data)).unwrap_or_default();
+    let texture_sets = tex.map(|e| texture::decode_sets(e.data)).unwrap_or_default();
+    let textures = texture_sets.first().cloned().unwrap_or_default();
+    let anims = tex.map(|e| texanim::parse(texture::first_set(e.data))).unwrap_or_default();
     let b = block.get(RESERVED..)?;
     if u32_at(b, 0) != 3 {
         return None;
@@ -173,7 +177,7 @@ pub fn mdlx(file: &[u8]) -> Option<Model> {
         }
     }
     let shapes = entries.iter().find(|e| e.kind == 23).map(|e| collision::parse(e.data)).unwrap_or_default();
-    Some(Model { meshes, bones, textures, shapes, anims })
+    Some(Model { meshes, bones, textures, texture_sets, shapes, anims })
 }
 
 /// Absolute rest-pose matrices (rotation then translation; scale is not applied by the game here).

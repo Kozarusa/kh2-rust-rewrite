@@ -296,6 +296,8 @@ pub(crate) struct Obj {
     pub(crate) moved: Vec3,
     /// The ramp at +0x82c (`Ramp`): the draw alpha is `alpha` times its value.
     pub(crate) appear: Ramp,
+    /// The ramp at +0x8c8 (value, step) that host 1.125 starts (FUN_00173858 -> FUN_001abf40) and FUN_00192bf0 steps once per frame (FUN_001abf78); a change calls FUN_00192d00, which stores the value (held 0 to a limit, times DAT_0037ae90) as a byte at object +0x6a0. The byte's reader was not traced and the app draws nothing from it; the limit is taken as 1.0 [inferred]. Starts at 0 [inferred].
+    pub(crate) tween: Ramp,
     /// The object's own target record (host 2.23, object +0x9f4: object, part index, 0, -1, 0). A script may store into it (BDX `M_EX870` R0a50 stores the word 6.57 answers at +4); reads
     /// answer these bytes. Writer: `enemy_host::BevyHost::write_mem`; reader: `read_mem`.
     pub(crate) target_rec: [u8; 20],
@@ -364,6 +366,7 @@ impl Obj {
             want_vel: Vec3::ZERO,
             moved: Vec3::ZERO,
             appear: Ramp::STILL,
+            tween: Ramp { value: 0.0, step: 0.0 },
             target_rec: crate::enemy_host::target_record(),
             creatable: Arc::default(),
             next_serial: 0,
@@ -478,6 +481,7 @@ impl Obj {
     }
 
     pub(crate) fn advance_fade(&mut self) {
+        self.tween.tick(1.0);
         if let Some(f) = &mut self.fade {
             f.t += 1.0;
             let k = if f.frames <= 0.0 { 1.0 } else { (f.t / f.frames).min(1.0) };
@@ -546,6 +550,22 @@ mod tests {
         assert_eq!(w(&o, own + VOLUME_OWNER), Some(SELF_BASE));
         assert_eq!(w(&o, other + VOLUME_OWNER), Some(PLAYER));
         assert_eq!(w(&o, own), None, "other fields are not served");
+    }
+
+    /// Host 1.125 (FUN_00173858 -> FUN_001abf40) starts the ramp at +0x8c8 that FUN_00192bf0 steps once per frame.
+    #[test]
+    fn the_tween_started_by_host_1_125_runs_to_its_target_and_stops() {
+        // FUN_001abf40(0, 1, 4): from 0 to 1 over four frames, stepped once per frame by advance_fade.
+        let mut o = Obj::new(SELF_BASE);
+        o.tween = Ramp::start(0.0, 1.0, 4.0);
+        for _ in 0..2 {
+            o.advance_fade();
+        }
+        assert!((o.tween.value - 0.5).abs() < 1e-6);
+        for _ in 0..10 {
+            o.advance_fade();
+        }
+        assert_eq!(o.tween, Ramp { value: 1.0, step: 0.0 });
     }
 
     /// FUN_001abf40 / FUN_001abf78 with the executable's appear numbers (0 to 1.0 over 10 frames, the limit 1.0): the

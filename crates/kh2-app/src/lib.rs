@@ -101,9 +101,11 @@ pub fn run() {
     });
     let start = std::env::args().nth(1).unwrap_or_else(|| "tt04".into());
     CLOCK.get_or_init(Instant::now);
+    // Harness runs (scripted keys) and KH2_NO_FOCUS=1 open the window without taking the keyboard focus.
+    let focused = std::env::var_os("KH2_NO_FOCUS").is_none() && std::env::var_os("KH2_KEYS").is_none();
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window { title: "kh2-rs".into(), ..default() }),
+            primary_window: Some(Window { title: "kh2-rs".into(), focused, ..default() }),
             ..default()
         }))
         .add_plugins(plugins::GamePlugins { iso, start })

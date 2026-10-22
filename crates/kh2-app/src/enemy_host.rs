@@ -1176,6 +1176,10 @@ impl BevyHost<'_> {
             Call::Unknown { group: 1, index: 213, .. } => {
                 approx(Value::Int(1), "the context lives in the script's frame; its object is the target, which is always the player here [inferred]")
             }
+            // 1.278 (0x1710e0 -> FUN_001710e0(args)): builds a record from the first argument (FUN_0016b6e0) and starts the second argument's count of
+            // particles with it (FUN_001d0998: FUN_001a3b28 on the manager at 0x360668, each with a random velocity from the generator at 0x3716a0). `M_EX610_RAW`'s death
+            // (hp 0, after 1.39) calls it with (0x20000000, 10). Pure effect with no state a script reads; the app draws none of these particles.
+            Call::Unknown { group: 1, index: 278, .. } | Call::Func { group: 1, index: 278, .. } => stub(Value::None, "a burst of random-velocity particles (FUN_001d0998): cosmetic, not drawn"),
             // 1.130 obj_diff (0x170510): the difference of the two contexts' objects, 0 when either is 0 or they are
             // the same (M_EX950 R1fe7 asks it of the sender of an event and itself before taking `mode_revenge`).
             Call::Func { group: 1, index: 130, args } if args.len() >= 2 => {

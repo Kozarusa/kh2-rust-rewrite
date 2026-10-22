@@ -45,7 +45,10 @@ fn dump_chunk(buf: &[f32]) {
     static FILE: Mutex<Option<std::fs::File>> = Mutex::new(None);
     let Some(path) = std::env::var_os("KH2_AUDIO_DUMP") else { return };
     let Ok(mut g) = FILE.lock() else { return };
-    let f = g.get_or_insert_with(|| std::fs::File::create(&path).expect("KH2_AUDIO_DUMP file"));
+    if g.is_none() {
+        *g = std::fs::File::create(&path).ok();
+    }
+    let Some(f) = g.as_mut() else { return };
     let bytes: Vec<u8> = buf.iter().flat_map(|x| x.to_le_bytes()).collect();
     let _ = f.write_all(&bytes);
 }
@@ -1143,18 +1146,10 @@ mod tests {
             let mut dr = Driver::new(tables.clone());
             dr.mixer.master = 0.6;
             assert!(dr.play_se_handle(&b.block, req.index as usize, wd.clone(), 0x3fff, 0x40).is_some());
-            {
-                let mut probe = vec![0f32; 2 * 600];
-                dr.render(&mut probe);
-                let st: Vec<String> = dr.mixer.voices.iter().map(|v| format!("step {:.3} pcm {} loop {:?} l {:.2} r {:.2}", v.step, v.sample.pcm.len(), v.sample.loop_start, v.left, v.right)).collect();
-                eprintln!("AU4v se {bank}:{index} {}", st.join(" | "));
-            }
             let mut out = vec![0f32; 2 * 48_000 * 3];
             dr.render(&mut out);
             let (peak, clipped, dc, rms, hf) = metrics(&out);
             let last = out.chunks_exact(2).rposition(|f| f[0].abs() > 0.001 || f[1].abs() > 0.001).map_or(0.0, |i| i as f32 / 48_000.0);
-            let regions: Vec<_> = wd.instruments.iter().take(0).collect();
-            let _ = regions;
             eprintln!(
                 "AU4 se {bank}:{index} wd {} flags {:#x} tracks {} peak {peak:.3} clipped {clipped} dc {dc:.5} rms {rms:.4} hf {hf:.3} audible {last:.2}s",
                 entry.wd, entry.flags, entry.tracks.len()

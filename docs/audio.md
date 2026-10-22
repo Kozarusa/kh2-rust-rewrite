@@ -480,3 +480,6 @@ Test `the_danger_alarm_starts_once_and_stops_when_danger_ends`. Harness: `KH2_SO
   centre): the enemy hit sounds (`65535:0/1`, 99), Sora's `0:128` (38) and `999:132..139` (35), `0:111/113` and the effect sounds. The
   unplaced requests are the hook described above (`combat.rs`, `enemy.rs`, `fx.rs`, motion sounds of the player): they need `.at(..)`.
   `se 0:13` (43 requests in 43 s, no apdx) is the footstep.
+- Command 0x39 (two arguments): the old one-argument reading desynchronised 131 of the 463 sound entries across banks 0 to 399 (the track
+  then ran garbage as commands or ended early). These are likely the "sharp, static-y, corrupted" effects the user reported. The BGM
+  sequences are unaffected (0 of 100 contain command 0x39).

@@ -69,18 +69,17 @@ impl Ee {
 
     /// Records an exception in the COP0 registers as the hardware does.
     fn enter_exception(&mut self, exc: Exception) {
-        // A taken branch leaves the program counter on its delay slot with the target pending.
-        let in_delay = self.npc != self.pc.wrapping_add(4);
-        let epc = if in_delay { self.pc.wrapping_sub(4) } else { self.pc };
-        let mut cause = self.cop0[CAUSE] & !(0x1F << 2) & !(1 << 31);
+        // In a delay slot (of a taken or untaken branch) EPC is the branch and BD is set.
+        let in_delay = self.slot_of.is_some();
+        let epc = self.slot_of.unwrap_or(self.pc);
+        let mut cause = self.cop0[CAUSE] & !(0x1F << 2);
         cause |= exc.code() << 2;
-        if in_delay {
-            cause |= 1 << 31;
-        }
-        self.cop0[CAUSE] = cause;
+        // With EXL already set the hardware leaves EPC and BD alone.
         if self.cop0[STATUS] & 2 == 0 {
+            cause = (cause & !(1 << 31)) | (in_delay as u32) << 31;
             self.cop0[EPC] = epc;
         }
+        self.cop0[CAUSE] = cause;
         self.cop0[STATUS] |= 2;
         if let Exception::AddressError { addr, .. } = exc {
             self.cop0[8] = addr;
@@ -94,6 +93,7 @@ impl Ee {
             // The handler runs as the kernel would, then execution continues after the syscall.
             self.pc = self.npc;
             self.npc = self.npc.wrapping_add(4);
+            self.slot_of = None;
             self.redirected = false;
             self.invoke(&h)?;
             self.sync_special();
@@ -365,6 +365,88 @@ mod tests {
         assert_ne!(cause & (1 << 31), 0, "BD");
         assert_eq!(cause >> 2 & 0x1F, 9, "ExcCode Bp");
         assert_ne!(e.cop0[12] & 2, 0, "EXL");
+    }
+
+    /// Runs `code` from BASE with a recording exception handler; returns (exception, EPC, Cause,
+    /// BadVAddr, Status).
+    fn first_exception(code: &[u32], t0: u32) -> (Exception, u32, u32, u32, u32) {
+        let mut e = Ee::new();
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let s2 = seen.clone();
+        e.set_exception_handler(move |ee: &mut Ee, exc| {
+            *s2.borrow_mut() = Some((exc, ee.cop0[14], ee.cop0[13], ee.cop0[8], ee.cop0[12]));
+            ee.request_stop();
+        });
+        load(&mut e, BASE, code);
+        e.gpr[8] = t0 as u128;
+        e.pc = BASE;
+        e.npc = BASE + 4;
+        assert_eq!(e.run(20).unwrap(), Stop::Requested);
+        let r = seen.borrow().unwrap();
+        r
+    }
+
+    const BREAK5: u32 = (5 << 6) | 0x0D;
+
+    #[test]
+    fn exception_in_the_slot_of_an_untaken_branch_records_the_branch_and_bd() {
+        // bne zero, zero, +2 is not taken; its delay slot is still a delay slot (R5900 manual).
+        let (exc, epc, cause, _, _) = first_exception(&[0x1400_0002, BREAK5, NOP, NOP], 0);
+        assert_eq!(exc, Exception::Break(5));
+        assert_eq!(epc, BASE, "EPC is the branch");
+        assert_ne!(cause & (1 << 31), 0, "BD");
+    }
+
+    #[test]
+    fn exception_in_the_slot_of_a_branch_to_the_next_instruction_records_the_branch_and_bd() {
+        // beq zero, zero, +1 (taken) lands right after its slot, where a fall-through would too.
+        let (_, epc, cause, _, _) = first_exception(&[0x1000_0001, BREAK5, NOP, NOP], 0);
+        assert_eq!(epc, BASE);
+        assert_ne!(cause & (1 << 31), 0, "BD");
+    }
+
+    #[test]
+    fn exception_in_a_jump_slot_and_outside_slots() {
+        // j BASE+16 with a break in the slot; then a break that is not in a slot clears BD again.
+        let (_, epc, cause, _, _) = first_exception(&[0x0800_0000 | ((BASE + 16) >> 2), BREAK5, NOP, NOP, NOP], 0);
+        assert_eq!((epc, cause >> 31), (BASE, 1));
+        let (_, epc, cause, _, _) = first_exception(&[NOP, BREAK5, NOP], 0);
+        assert_eq!((epc, cause >> 31), (BASE + 4, 0), "a plain instruction: EPC is itself, BD clear");
+    }
+
+    #[test]
+    fn a_branch_likely_that_falls_through_nullifies_its_slot() {
+        // bnel zero, zero, +2: not taken, so the break in the slot never executes.
+        let mut e = Ee::new();
+        load(&mut e, BASE, &[0x5400_0002, BREAK5, 0x2508_0001, JR_RA, NOP]);
+        e.call(BASE, &[], &[], 0x01F0_0000).expect("no exception");
+        assert_eq!(e.gpr[8] as u32, 1);
+    }
+
+    #[test]
+    fn a_bad_jr_target_faults_on_the_fetch_with_bd_clear() {
+        // jr t0 with t0 misaligned: the jump and its slot execute, the fetch at the target fails.
+        let (exc, epc, cause, bad, _) = first_exception(&[0x0100_0008, NOP, NOP], BASE + 2);
+        assert_eq!(exc, Exception::AddressError { addr: BASE + 2, store: false });
+        assert_eq!(epc, BASE + 2, "EPC is the address that could not be fetched");
+        assert_eq!(cause >> 31, 0, "BD clear: the fault belongs to the target, not to a slot");
+        assert_eq!(cause >> 2 & 0x1F, 4, "ExcCode AdEL");
+        assert_eq!(bad, BASE + 2, "BadVAddr");
+    }
+
+    #[test]
+    fn with_exl_set_epc_and_bd_are_left_alone() {
+        let mut e = Ee::new();
+        e.cop0[12] |= 2;
+        e.cop0[14] = 0x1234;
+        e.set_exception_handler(|ee: &mut Ee, _| ee.request_stop());
+        load(&mut e, BASE, &[0x1000_0002, BREAK5, NOP, NOP]);
+        e.pc = BASE;
+        e.npc = BASE + 4;
+        e.run(10).unwrap();
+        assert_eq!(e.cop0[14], 0x1234);
+        assert_eq!(e.cop0[13] >> 31, 0);
+        assert_eq!(e.cop0[13] >> 2 & 0x1F, 9);
     }
 
     #[test]

@@ -53,9 +53,11 @@
 //! `ei`, `di` and `mfc0`/`mtc0` work on the registers in `ee.cop0`. Count advances by one per
 //! executed instruction ([inferred] model; the hardware counts bus cycles).
 //!
-//! A branch whose target is the instruction right after its delay slot cannot be told from a
-//! fall-through, so an exception in such a delay slot records EPC at the slot with BD clear
-//! (re-running the slot gives the same result).
+//! An exception or interrupt in the delay slot of a branch or jump, taken or not, records EPC at
+//! the branch and sets Cause.BD, as the hardware does; the handler's `eret` re-runs the branch. A
+//! branch-likely that is not taken nullifies its slot, so nothing can happen there. A fetch address
+//! error after a bad `jr` target is raised on the fetch itself: EPC and BadVAddr are the bad
+//! address and BD is clear.
 //!
 //! # Instruction set
 //!
@@ -212,6 +214,10 @@ pub struct Ee {
     fault: Option<Fault>,
     npc_next: Option<u32>,
     skip_delay: bool,
+    /// The executing instruction is a branch or jump (taken or not).
+    branched: bool,
+    /// Address of the branch whose delay slot is the instruction at `pc`, if it is one.
+    slot_of: Option<u32>,
     /// Debug: log writes into [lo, hi).
     pub watch: Option<(u32, u32)>,
     special: hooks::Special,
@@ -289,6 +295,8 @@ impl Ee {
             fault: None,
             npc_next: None,
             skip_delay: false,
+            branched: false,
+            slot_of: None,
             watch: None,
             special: hooks::Special::new(),
             seen: (u64::MAX, u64::MAX),
@@ -484,6 +492,7 @@ impl Ee {
     pub fn jump(&mut self, pc: u32) {
         self.pc = pc;
         self.npc = pc.wrapping_add(4);
+        self.slot_of = None;
         self.redirected = true;
     }
 
@@ -521,6 +530,7 @@ impl Ee {
         self.vi = c.vi;
         self.vacc = c.vacc;
         self.q = c.q;
+        self.slot_of = None;
         self.redirected = true;
     }
 
@@ -544,7 +554,10 @@ impl Ee {
     /// Calls `addr` with integer args (a0..), float args (f12..), and a stack at `sp`.
     /// Returns v0; f0 holds a float result.
     pub fn call(&mut self, addr: u32, args: &[u64], fargs: &[f32], sp: u32) -> Result<u64, Fault> {
-        let saved = (self.depth > 0).then(|| (self.pc, self.npc, self.gpr[reg::RA], self.gpr[reg::SP]));
+        let saved = (self.depth > 0).then(|| (self.pc, self.npc, self.gpr[reg::RA], self.gpr[reg::SP], self.slot_of));
+        // A handler that runs inside this call may move the program counter; that must not leak
+        // into the hook that made the call.
+        let redirected = self.redirected;
         for (i, &a) in args.iter().enumerate() {
             self.arg(i, a);
         }
@@ -556,13 +569,16 @@ impl Ee {
         self.pc = addr;
         self.npc = addr.wrapping_add(4);
         self.npc_next = None;
+        self.slot_of = None;
         let end = self.steps.saturating_add(self.limit).saturating_add(1);
         self.depth += 1;
         let r = self.run_loop(end, true);
         self.depth -= 1;
-        if let Some((pc, npc, ra, sp)) = saved {
+        self.redirected = redirected;
+        if let Some((pc, npc, ra, sp, slot)) = saved {
             self.pc = pc;
             self.npc = npc;
+            self.slot_of = slot;
             self.gpr[reg::RA] = ra;
             self.gpr[reg::SP] = sp;
         }
@@ -573,9 +589,11 @@ impl Ee {
     /// Runs from the current program counter for at most `max_steps` instructions.
     pub fn run(&mut self, max_steps: u64) -> Result<Stop, Fault> {
         let end = self.steps.saturating_add(max_steps);
+        let redirected = self.redirected;
         self.depth += 1;
         let r = self.run_loop(end, false);
         self.depth -= 1;
+        self.redirected = redirected;
         r
     }
 
@@ -644,6 +662,7 @@ impl Ee {
                 let ra = self.g32(reg::RA);
                 self.pc = ra;
                 self.npc = ra.wrapping_add(4);
+                self.slot_of = None;
             }
             return Ok(true);
         }
@@ -686,6 +705,7 @@ impl Ee {
     pub fn execute(&mut self, word: u32) -> Result<(), Fault> {
         self.npc_next = None;
         self.skip_delay = false;
+        self.branched = false;
         self.exec(word);
         match self.fault.take() {
             Some(Fault::Reschedule) | None => Ok(()),
@@ -706,7 +726,14 @@ impl Ee {
         }
     }
 
+    /// An unconditional jump (`j`, `jal`, `jr`, `jalr`): always taken, with a delay slot.
+    pub(crate) fn jump_to(&mut self, target: u32) {
+        self.npc_next = Some(target);
+        self.branched = true;
+    }
+
     fn branch(&mut self, cond: bool, target: u32, likely: bool) {
+        self.branched = true;
         if cond {
             self.npc_next = Some(target);
         } else if likely {
@@ -739,13 +766,16 @@ impl Ee {
     #[inline(always)]
     fn step_inner(&mut self) -> bool {
         self.steps += 1;
-        let (pc, old_npc) = (self.pc, self.npc);
+        let (pc, old_npc, old_slot) = (self.pc, self.npc, self.slot_of);
         // A failed fetch leaves a fault and the word 0 (a nop); the check after `exec` catches it.
         let w = self.fetch(pc);
         self.npc_next = None;
         self.skip_delay = false;
+        self.branched = false;
         self.exec(w);
         let npc = self.npc;
+        // A branch-likely that falls through nullifies its slot, so no exception can occur there.
+        self.slot_of = (self.branched && !self.skip_delay).then_some(pc);
         if self.skip_delay {
             self.pc = npc.wrapping_add(4);
             self.npc = self.pc.wrapping_add(4);
@@ -755,18 +785,19 @@ impl Ee {
             self.npc = next;
         }
         if self.fault.is_some() {
-            return self.after_fault(pc, old_npc);
+            return self.after_fault(pc, old_npc, old_slot);
         }
         false
     }
 
     #[cold]
-    fn after_fault(&mut self, pc: u32, npc: u32) -> bool {
+    fn after_fault(&mut self, pc: u32, npc: u32, slot: Option<u32>) -> bool {
         // eret and other completed instructions keep the new program counter; a real fault leaves
         // the program counter on the instruction.
         if !matches!(self.fault, Some(Fault::Reschedule)) {
             self.pc = pc;
             self.npc = npc;
+            self.slot_of = slot;
         }
         true
     }

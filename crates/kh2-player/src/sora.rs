@@ -807,6 +807,8 @@ pub fn read_pad(
     cam: Query<&OrbitCamera>,
     mut pad: ResMut<Pad>,
     mut growth: ResMut<Growth>,
+    mut pad_state: ResMut<crate::rig::PadState>,
+    scale: Res<crate::rig::StickScale>,
 ) {
     let mut v = Vec2::ZERO;
     for (k, d) in [(KeyCode::KeyW, Vec2::Y), (KeyCode::KeyS, -Vec2::Y), (KeyCode::KeyA, -Vec2::X), (KeyCode::KeyD, Vec2::X)] {
@@ -819,6 +821,16 @@ pub fn read_pad(
     let right = Vec3::new(-fwd.z, 0.0, fwd.x);
     pad.dir = (fwd * v.y + right * v.x).normalize_or_zero();
     pad.stick = if pad.dir == Vec3::ZERO { 0.0 } else if keys.pressed(KeyCode::ControlLeft) { 0.5 } else { 1.0 };
+    if pad_state.scripted {
+        // A rig pad script is running: the left stick drives Sora through the original's dead zone and scale (`FUN_00167198`). The
+        // buttons already arrived as the keys the script mirrors (`rig::BUTTON_KEYS`).
+        let (d, m) = crate::rig::stick_vector(pad_state.lx, pad_state.ly, &scale);
+        pad.dir = (fwd * d.y + right * d.x).normalize_or_zero();
+        pad.stick = if pad.dir == Vec3::ZERO { 0.0 } else { m };
+    } else {
+        // The keyboard as one pad view.
+        *pad_state = crate::rig::PadState::from_keyboard(&keys);
+    }
     pad.jump_held = keys.pressed(KeyCode::Space);
     pad.square_held = keys.pressed(KeyCode::KeyK) || keys.pressed(KeyCode::KeyE);
     let bump = |n: &mut u8, p: bool| {

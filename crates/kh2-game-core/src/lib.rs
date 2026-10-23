@@ -19,6 +19,8 @@ pub mod party_rules;
 pub mod progress;
 pub mod reaction_parts;
 pub mod reaction_rules;
+pub mod rig;
+pub mod rig_values;
 pub mod schedule;
 pub mod shared;
 pub mod skel;

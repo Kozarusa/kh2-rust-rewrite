@@ -579,6 +579,8 @@ pub enum Source {
 /// The game state. See the module doc.
 #[derive(Resource, Clone)]
 pub struct Progress {
+    /// The rig keys of a `KH2_STATE` file (`place`, `sora`, `rig`): where the original stood when the state was taken.
+    pub rig: RigStart,
     block: Vec<u8>,
     items: Arc<ItemIndex>,
     pub source: Source,
@@ -789,7 +791,7 @@ impl Progress {
         let mut block = vec![0u8; off::LEN];
         let n = bytes.len().min(off::LEN);
         block[..n].copy_from_slice(&bytes[..n]);
-        Progress { block, items, source: Source::NewGame, baseline: Vec::new(), boot_weapons: Arc::default(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT], story: StoryHandle::default(), new_seen: Vec::new(), record_bits: Vec::new(), moogle: Moogle::default(), shop_seen: [0; 4], shop_visits: 0, journal_seen: Default::default(), minigames: Default::default(), enemy_kills: Default::default(), reaction_uses: Default::default(), limit_best: Default::default(), report: [0; REPORT_WORDS] }
+        Progress { rig: RigStart::default(), block, items, source: Source::NewGame, baseline: Vec::new(), boot_weapons: Arc::default(), dodge_roll: 0, wallet: 0, config: [OPTION_DEFAULT, GAME_MODE_DEFAULT], story: StoryHandle::default(), new_seen: Vec::new(), record_bits: Vec::new(), moogle: Moogle::default(), shop_seen: [0; 4], shop_visits: 0, journal_seen: Default::default(), minigames: Default::default(), enemy_kills: Default::default(), reaction_uses: Default::default(), limit_best: Default::default(), report: [0; REPORT_WORDS] }
     }
 
     // --- story flags ------------------------------------------------------------------------
@@ -2046,6 +2048,7 @@ impl Progress {
     /// `plrp` rows with `Id` 0 (`FUN_001c0cb0(0)`).
     pub fn new_game(items: Arc<ItemIndex>, plrp: &[Plrp]) -> Progress {
         let mut p = Progress {
+            rig: RigStart::default(),
             block: vec![0; off::LEN],
             items,
             source: Source::NewGame,
@@ -2245,6 +2248,42 @@ impl Progress {
             }
         }
         added
+    }
+
+    /// Splits a save block image (`save_block::LEN` bytes from `save_block::BASE`) over the fields the app keeps apart, by the same
+    /// addresses the named keys use (`block`, `munny`, `game_mode`, `record_bits`, `story_raw`, `world_points`, `world_state`).
+    fn apply_save_block(&mut self, b: &[u8]) {
+        use save_block as sb;
+        let at = |addr: u32, len: usize| &b[(addr - sb::BASE) as usize..][..len];
+        let word = |addr: u32| u32::from_le_bytes(at(addr, 4).try_into().unwrap_or_default());
+        // What `block` resets: a save block is a whole state.
+        self.moogle = Moogle::default();
+        self.shop_seen = [0; 4];
+        self.shop_visits = 0;
+        self.journal_seen.clear();
+        self.minigames.clear();
+        self.enemy_kills.clear();
+        self.reaction_uses.clear();
+        self.limit_best.clear();
+        self.report = [0; REPORT_WORDS];
+        self.block = at(sb::PARTY, off::LEN).to_vec();
+        self.set_wallet(word(sb::WALLET));
+        self.config[1] = word(sb::GAME_MODE).min(2);
+        let mut bits: Vec<u32> = (0..sb::RECORD_WORDS as u32).map(|i| word(sb::RECORD_BITS + 4 * i)).collect();
+        while bits.last() == Some(&0) {
+            bits.pop();
+        }
+        self.record_bits = bits;
+        let mut locks: Vec<[u16; 2]> = at(story::LOCKS, (sb::RECORD_BITS - story::LOCKS) as usize).as_chunks::<4>().0.iter().map(|c| [u16::from_le_bytes([c[0], c[1]]), u16::from_le_bytes([c[2], c[3]])]).collect();
+        while locks.last() == Some(&[0, 0]) {
+            locks.pop();
+        }
+        let mut st = self.story();
+        st.words = at(story::FLAGS, story::WORLDS * story::PAGE).as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
+        st.programs = at(story::PROGRAMS, story::WORLDS * story::PROGRAMS_PER_WORLD).to_vec();
+        st.locks = locks;
+        st.world_bits = [word(sb::WORLD_POINTS), word(sb::WORLD_POINTS + 4)];
+        st.world = at(world::RECORDS, world::LEN).to_vec();
     }
 
     /// Applies a state file (schema in docs/systems/core-runtime/progress.md) on top of this state.
@@ -2601,6 +2640,40 @@ impl Progress {
                     st.locks = locks.as_chunks::<2>().0.to_vec();
                 }
                 "comment" | "_comment" => {}
+                // The diff rig's keys (`kh2 state from-p2s`, crates/kh2-rig): the whole save block from 0x33e860, split by the
+                // address table below; the place; Sora's position and facing; the rig clock.
+                "save_block" => {
+                    let Json::Str(h) = v else { return Err("save_block: expected a hex string".into()) };
+                    let bytes = unhex(h, save_block::LEN).ok_or_else(|| format!("save_block: expected {} hex bytes", save_block::LEN))?;
+                    self.apply_save_block(&bytes);
+                }
+                "place" => {
+                    let byte = |k: &str| v.get(k).ok_or_else(|| format!("place: missing {k}")).and_then(|x| in_range(int(x, "place")?, 255, "place")).map(|n| n as u8);
+                    self.rig.place = Some([byte("world")?, byte("area")?, byte("entrance")?]);
+                }
+                "sora" => {
+                    if *v != Json::Null {
+                        let triple = |k: &str| -> Result<[f32; 3], String> {
+                            let Some(Json::Arr(a)) = v.get(k) else { return Err(format!("sora: {k} must be an array of numbers")) };
+                            let n: Vec<f32> = a.iter().map(|x| if let Json::Num(n) = x { Ok(*n as f32) } else { Err(format!("sora: {k} must hold numbers")) }).collect::<Result<_, _>>()?;
+                            match n.as_slice() {
+                                [x, y, z] => Ok([*x, *y, *z]),
+                                // The facing may come as [x, z] (the y of a unit facing is 0).
+                                [x, z] if k == "facing" => Ok([*x, 0.0, *z]),
+                                _ => Err(format!("sora: {k} must have 3 numbers")),
+                            }
+                        };
+                        self.rig.sora = Some(RigSora { pos: triple("pos")?, facing: triple("facing")? });
+                    }
+                }
+                "rig" => {
+                    if let Some(x) = v.get("vsync") {
+                        self.rig.vsync = Some(in_range(int(x, "rig.vsync")?, u32::MAX.into(), "rig.vsync")? as u32);
+                    }
+                    if let Some(Json::Str(name)) = v.get("source") {
+                        self.rig.source = name.clone();
+                    }
+                }
                 // The save slot keys (WP-M8, `slot_json`): the whole party block, the app fields beside it and the
                 // row data the Save menu shows (ignored here).
                 "format" | "slot" => {}
@@ -2765,6 +2838,36 @@ pub mod story {
 /// The world map's save-block region (docs/systems/worldmap-gummi/worldmap.md section 6): one byte array from the world
 /// records to the byte after `WORLD_MAP_BYTE`, kept as the game lays it out so a record index past the
 /// 19 worlds lands where the game's pointer arithmetic would put it.
+/// Where the pieces of a save block image lie in EE memory (`KH2_STATE` key `save_block`, hex of `BASE .. BASE + LEN`; the keys
+/// the diff rig's `kh2 state from-p2s` writes). Every address is one the named keys above already use.
+pub mod save_block {
+    pub const BASE: u32 = 0x0033_e860;
+    pub const LEN: usize = 0xb4e0;
+    pub const PARTY: u32 = 0x0033_fec0;
+    pub const WALLET: u32 = 0x0033_fe60;
+    pub const GAME_MODE: u32 = 0x0033_feb8;
+    pub const RECORD_BITS: u32 = 0x0033_fdb0;
+    pub const RECORD_WORDS: usize = 23;
+    pub const WORLD_POINTS: u32 = 0x0033_f910;
+}
+
+/// What the rig keys of a state file say about the original's moment: the place bytes (world, area, entrance), Sora's position and
+/// facing (game units and axes), the vsync counter of the state. The app takes the place over the command line (`rig::start_area`)
+/// and puts Sora there once the area has spawned (`rig::place_sora`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RigStart {
+    pub place: Option<[u8; 3]>,
+    pub sora: Option<RigSora>,
+    pub vsync: Option<u32>,
+    pub source: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RigSora {
+    pub pos: [f32; 3],
+    pub facing: [f32; 3],
+}
+
 pub mod world {
     /// `FUN_001b4e80(w)` = `RECORDS + 4 * w`: byte 0 the map state, 1 the landing key, 2 set by story op 0xd, 3 bit flags.
     pub const RECORDS: u32 = 0x0034_1858;
@@ -5285,5 +5388,86 @@ mod tests {
             tb.plrp.iter().filter(|r| r.id == 0).count(),
             ix.rows.len(),
         );
+    }
+
+    // --- the diff rig's state keys (RIG-3) ---------------------------------------------------
+
+    fn slot_of(p: &Progress) -> String {
+        p.slot_json(&SlotInfo { level: 1, munny: 0, play_seconds: 0, area: "tt21".into() })
+    }
+
+    /// The memory image of a state with distinctive bytes in every piece `save_block` splits (no game data).
+    fn rig_image() -> Vec<u8> {
+        let mut ee = vec![0u8; kh2_rig::p2s::EE_SIZE];
+        let put = |ee: &mut Vec<u8>, a: u32, v: u32| ee[a as usize..a as usize + 4].copy_from_slice(&v.to_le_bytes());
+        ee[save_block::BASE as usize..save_block::BASE as usize + 5].copy_from_slice(b"KH2U-");
+        ee[0x33_e830..0x33_e833].copy_from_slice(&[2, 0x15, 99]);
+        put(&mut ee, 0x33_fe64, 495_135);
+        put(&mut ee, 0x35_6f40, 2.0f32.to_bits());
+        put(&mut ee, save_block::WALLET, 4321);
+        put(&mut ee, save_block::GAME_MODE, 1);
+        for i in 0..off::LEN {
+            ee[save_block::PARTY as usize + i] = (i * 5 + 1) as u8;
+        }
+        put(&mut ee, save_block::RECORD_BITS + 8, 0x10);
+        put(&mut ee, story::FLAGS + 4, 0x2000_0001);
+        ee[story::PROGRAMS as usize + 9] = 7;
+        put(&mut ee, story::LOCKS + 8, 0x0003_0002);
+        put(&mut ee, save_block::WORLD_POINTS, 0x8000_0005);
+        ee[world::RECORDS as usize + 3] = 9;
+        let obj = 0x0180_0000u32;
+        put(&mut ee, 0x35_c998, obj);
+        for (i, v) in [650.0f32, 0.0, 250.0, 1.0].into_iter().enumerate() {
+            put(&mut ee, obj + 0x70 + 4 * i as u32, v.to_bits());
+        }
+        for (i, v) in [0.0f32, 0.0, -1.0].into_iter().enumerate() {
+            put(&mut ee, obj + 0x10 + 4 * i as u32, v.to_bits());
+        }
+        ee
+    }
+
+    /// `save_block` alone fills the same fields the older keys do: the slot file of a state loaded through `save_block` equals the
+    /// one loaded through `kh2 state from-p2s`'s `block`, `munny`, `story_raw` and the other keys; `place`, `sora` and `rig` land in `RigStart`.
+    #[test]
+    fn the_rig_keys_load_a_state_image() {
+        let ee = rig_image();
+        let load = |text: &str| {
+            let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+            p.apply_json(text).expect("loads");
+            p
+        };
+        let old = load(&kh2_rig::save::state_json(&ee, "state.06.p2s").unwrap());
+        let new = load(&kh2_rig::save::rig_json(&ee, "state.06.p2s", Some("abc")).unwrap());
+        assert_eq!(slot_of(&old), slot_of(&new));
+        assert_eq!(new.block(), &(0..off::LEN).map(|i| (i * 5 + 1) as u8).collect::<Vec<_>>()[..]);
+        assert_eq!((new.wallet(), new.option_word() == old.option_word(), new.record_bit(68)), (4321, true, true), "record word 2 bit 4");
+        assert_eq!(new.story().programs(0, 3), [7, 0, 0], "program table byte 9 of world 0");
+        assert!(new.story().world_point(0) && new.story().world_point(2) && !new.story().world_point(1));
+        assert_eq!(new.rig.place, Some([2, 0x15, 99]));
+        assert_eq!(new.rig.sora, Some(RigSora { pos: [650.0, 0.0, 250.0], facing: [0.0, 0.0, -1.0] }));
+        assert_eq!((new.rig.vsync, new.rig.source.as_str()), (Some(495_135), "state.06.p2s"));
+        // A short facing, a null sora and a bad place are handled; a short save block is refused.
+        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        p.apply_json(r#"{"sora": {"pos": [1, 2, 3], "facing": [0.5, -0.5]}}"#).unwrap();
+        assert_eq!(p.rig.sora.unwrap().facing, [0.5, 0.0, -0.5]);
+        p.apply_json(r#"{"sora": null}"#).unwrap();
+        assert!(p.apply_json(r#"{"place": {"world": 2}}"#).is_err());
+        assert!(p.apply_json(r#"{"save_block": "00"}"#).unwrap_err().contains("save_block"));
+    }
+
+    /// The same against a real PCSX2 state of the user (skipped without them): the rig keys load, and the party block of the
+    /// state is the party block of the app.
+    #[test]
+    fn the_rig_keys_load_the_users_state() {
+        let dir = std::env::var_os("KH2_SSTATES").map(std::path::PathBuf::from).or_else(|| std::env::var_os("USERPROFILE").map(|u| std::path::PathBuf::from(u).join("Documents/PCSX2/sstates")));
+        let Some(path) = dir.map(|d| d.join("SLUS-21005 (DA0535FD).06.p2s")).filter(|p| p.exists()) else { return };
+        let state = kh2_rig::p2s::P2s::open(&path).expect("reads the state");
+        let mut p = Progress::from_block(&[], Arc::new(ItemIndex::default()));
+        p.apply_json(&kh2_rig::save::rig_json(&state.ee, "state.06.p2s", None).unwrap()).expect("the rig file loads");
+        assert_eq!(p.block(), &state.ee[save_block::PARTY as usize..][..off::LEN]);
+        assert!(p.rig.place.is_some() && p.rig.sora.is_some() && p.rig.vsync.is_some());
+        let u32_at = |a: u32| u32::from_le_bytes(state.ee[a as usize..a as usize + 4].try_into().unwrap());
+        assert_eq!(p.wallet(), u32_at(save_block::WALLET).min(MAX_WALLET));
+        assert_eq!(p.rig.vsync, Some(u32_at(0x33_fe64)));
     }
 }

@@ -34,6 +34,8 @@ pub fn run() {
         std::process::exit(1);
     });
     let start = std::env::args().nth(1).unwrap_or_else(|| "tt04".into());
+    // A rig state file (`place` key) names the start area and the entrance.
+    let start = kh2_game_core::rig::start_area(start);
     kh2_game_core::start_clock();
     // The window opens unfocused and below every other window, so background runs never cover the
     // user's screen. KH2_FRONT=1 (set by tools/playtest.bat) restores a normal window.

@@ -17,7 +17,7 @@ use bevy::app::{PluginGroup, PluginGroupBuilder};
 use crate::{
     abilities, area, area_jump, asset_viewer, assets, audio, camera, camera_blockers, clash, combat, drive, enemy, enemy_ai, fx, harness, hud, intro, items,
     limit, limit_camera, limit_script, limit_visual, magic, menu, menu_abilities, menu_ending, menu_gameover, menu_journal, menu_shop, menu_struggle, npc, party, party_switch, player_reaction, prize, progress,
-    reaction_cmd, schedule, skel, sora, sound_test, struggle, summon, texanim, worldmap, worldmap_ui,
+    reaction_cmd, rig, schedule, skel, sora, sound_test, struggle, summon, texanim, worldmap, worldmap_ui,
 };
 
 /// Core: the schedule and the disc.
@@ -53,7 +53,7 @@ pub struct PresentationPlugins;
 
 impl PluginGroup for PresentationPlugins {
     fn build(self) -> PluginGroupBuilder {
-        PluginGroupBuilder::start::<Self>().add(hud::HudPlugin).add(fx::FxPlugin).add(harness::HarnessPlugin).add(audio::AudioPlugin)
+        PluginGroupBuilder::start::<Self>().add(hud::HudPlugin).add(fx::FxPlugin).add(harness::HarnessPlugin).add(rig::RigPlugin).add(audio::AudioPlugin)
     }
 }
 

@@ -5,7 +5,7 @@ Ladder step L1 (PLAN section 5). Ledger system name `core-runtime`. Crates: `kh2
 Sheet ids: `world.collision`, `world.event`, `game.progress`, `game.story`, `game.jump`. Scenarios: `scenarios/core-runtime/` (none yet).
 
 Status: the saved-state, story-flag, area-script, area-load and walking-collision parts are documented and mostly ported. The task
-system, frame step and RNG are documented in [runtime.md](runtime.md) (WP-L1-S1). Still without a doc: the memory-card format, COCT
+system, frame step and RNG are documented in [runtime.md](runtime.md) (WP-L1-S1), the memory-card unit in [memcard.md](memcard.md) (WP-L1-S2). Still without a doc: COCT
 ceiling and raycasts (the geometry unit), the file unit.
 
 ## Clusters (ledger notes `L1:<cluster>`, WP-L1-S1)
@@ -105,5 +105,6 @@ Section numbers in references ("section 5", "20.14") are the old chapter numbers
 | [progress.md](progress.md) | 32 | Where the state lives; Inventory rules; The new game; Start state in the app; `KH2_STATE` file schema; Story flags; +5 more |
 | [story-flags.md](story-flags.md) | 3 | section 5 |
 | [runtime.md](runtime.md) | 7 | boot, task system, frame step, RNG |
+| [memcard.md](memcard.md) | 16 | card driver, save file layer, CRC, .ps2 image, oracle plan |
 
 Index of all systems: [../../README.md](../../README.md).

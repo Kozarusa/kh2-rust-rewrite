@@ -25,7 +25,7 @@ kh2-image = { path = "crates/kh2-image" }
 kh2-bdx = { path = "crates/kh2-bdx" }
 kh2-rig = { path = "crates/kh2-rig" }
 kh2-factory = { path = "crates/kh2-factory" }
-<<<<<<< HEAD
+kh2-hle = { path = "crates/kh2-hle" }
 kh2-game-core = { path = "crates/kh2-game-core" }
 kh2-sound = { path = "crates/kh2-sound" }
 kh2-enemy = { path = "crates/kh2-enemy" }
@@ -35,10 +35,6 @@ kh2-event = { path = "crates/kh2-event" }
 kh2-hud = { path = "crates/kh2-hud" }
 kh2-menu = { path = "crates/kh2-menu" }
 kh2-worldmap = { path = "crates/kh2-worldmap" }
-=======
-kh2-hle = { path = "crates/kh2-hle" }
-kh2-game-core = { path = "crates/kh2-game-core" }
->>>>>>> integration
 serde_json = { version = "1", features = ["preserve_order"] }
 
 [profile.dev]

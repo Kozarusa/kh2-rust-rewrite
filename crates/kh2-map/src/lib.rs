@@ -6,6 +6,10 @@
 //! game applies to motion roots and object matrices); [`Coct::parse`] returns map-model space.
 //! Checked with `kh2 coct-check`: COCT floors coincide with the render mesh only this way.
 
+pub mod build;
+pub mod geom;
+pub mod oct;
+
 pub mod flags {
     pub const PARTY_STAND: u32 = 1 << 0;
     pub const ENTITY_FALL_OVERRIDE: u32 = 1 << 1;
@@ -101,6 +105,9 @@ pub struct Coct {
     pub meshes: Vec<Mesh>,
     /// The tree nodes (table 0).
     pub nodes: Vec<Node>,
+    /// The file image the polygons were read from: `oct::Oct` runs the game's own queries over it in place
+    /// (empty for a `Coct` built by hand).
+    pub raw: Vec<u8>,
 }
 
 impl Coct {
@@ -177,7 +184,7 @@ impl Coct {
             let material = *b.get(o)?;
             polygons.push(Polygon { verts, quad, normal, d, flags, material, mesh });
         }
-        Some(Coct { polygons, meshes, nodes })
+        Some(Coct { polygons, meshes, nodes, raw: b.to_vec() })
     }
 
     /// The map's collision: the first BAR entry of type 6 (COCT) in a `.map` file.

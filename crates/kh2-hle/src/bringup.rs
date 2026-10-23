@@ -120,7 +120,7 @@ impl Hle {
         let ee = &mut self.hw.machine.ee;
         let (world, area, entrance) = (ee.r8(PLACE), ee.r8(PLACE + 1), ee.r8(PLACE + 2));
         let p = ee.r32(PLAYER_PTR);
-        let player = (p >= 0x10_0000 && p < 0x200_0000).then(|| [0, 4, 8].map(|o| ee.f32_at(p + PLAYER_POS + o)));
+        let player = (0x10_0000..0x200_0000).contains(&p).then(|| [0, 4, 8].map(|o| ee.f32_at(p + PLAYER_POS + o)));
         Place { world, area, entrance, player }
     }
 

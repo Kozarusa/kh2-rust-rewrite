@@ -67,6 +67,9 @@ impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((MenuGfxPlugin, crate::menu_status::StatusPlugin, config::ConfigPlugin, item_pages::ItemPagesPlugin, customize::CustomizePlugin, equipment::EquipmentPlugin, new_tags::NewTagsPlugin, pictures::PicturesPlugin, help::HelpPlugin, pause_band::PausePlugin, preview::PreviewPlugin, save::SavePlugin, party_page::PartyPlugin))
             .init_resource::<Menu>()
+            .init_resource::<crate::shared::ui::MenuPhase>()
+            .configure_sets(Update, crate::shared::ui::WhileMenuClosed.run_if(is_closed))
+            .add_systems(RunFixedMainLoop, mirror_phase.in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop))
             .add_systems(Startup, load)
             // The game's own readers run in `Update`; the menu takes its keys first, in `PreUpdate`
             // after the keyboard is read and after the harness has pressed its scripted keys.
@@ -103,6 +106,11 @@ fn pause_log(
 /// Run condition: the menu is closed, so the field runs.
 pub fn is_closed(menu: Res<Menu>) -> bool {
     menu.phase == Phase::Closed
+}
+
+/// Copies the phase for the fixed-step gates of the lower crates (`shared::ui::MenuPhase`).
+fn mirror_phase(menu: Res<Menu>, mut phase: ResMut<crate::shared::ui::MenuPhase>) {
+    phase.0 = menu.phase;
 }
 
 /// Frames the field takes to come back to full brightness on close (clip 10: frames 56..69).

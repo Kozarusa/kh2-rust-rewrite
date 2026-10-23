@@ -53,7 +53,7 @@ pub struct NpcPlugin;
 
 impl Plugin for NpcPlugin {
     fn build(&self, app: &mut App) {
-        use crate::hud::hud_menu::mirror_reaction;
+        use crate::shared::hud::MirrorReaction;
         use crate::schedule::{sim_running, Frame};
         app.init_resource::<NpcAssets>()
             .init_resource::<NpcSpawned>()
@@ -64,7 +64,7 @@ impl Plugin for NpcPlugin {
             // After the reaction manager's own offer and accept (`reaction_cmd`, `Sim::Effects`).
             .add_systems(FixedUpdate, (talk_offer, talk_step).chain().after(Sim::Effects).before(Sim::Sounds).run_if(sim_running))
             .add_systems(Update, talk_lock_pad.after(Frame::Pad).before(Frame::Hud))
-            .add_systems(Update, (talk_show_offer.before(mirror_reaction), talk_hide_offer.after(mirror_reaction)).in_set(Frame::Hud));
+            .add_systems(Update, (talk_show_offer.before(MirrorReaction), talk_hide_offer.after(MirrorReaction)).in_set(Frame::Hud));
     }
 }
 

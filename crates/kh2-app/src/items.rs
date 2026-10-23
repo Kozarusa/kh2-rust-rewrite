@@ -938,7 +938,7 @@ impl Plugin for ItemsPlugin {
         app.init_resource::<CommandLists>()
             .init_resource::<ItemUse>()
             .add_systems(Startup, setup)
-            .add_systems(Update, command_menu.after(crate::magic::harness_keys).run_if(crate::menu::is_closed))
+            .add_systems(Update, command_menu.after(crate::magic::harness_keys).in_set(crate::shared::ui::WhileMenuClosed))
             .add_systems(FixedUpdate, run.in_set(Sim::Sora).after(crate::sora::tick));
     }
 }

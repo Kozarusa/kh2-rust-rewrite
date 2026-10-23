@@ -87,7 +87,7 @@ impl Plugin for HudPlugin {
                         hud_gauge::update.in_set(Frame::HudGauges),
                         hud_party::update.in_set(Frame::HudGauges),
                         hud_target::update,
-                        hud_menu::mirror_reaction,
+                        hud_menu::mirror_reaction.in_set(crate::shared::hud::MirrorReaction),
                         hud_menu::update,
                         hud_banner::update,
                         hud_banner::update_strips,

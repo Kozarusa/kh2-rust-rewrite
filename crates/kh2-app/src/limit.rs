@@ -223,14 +223,14 @@ impl StartGates {
 }
 
 /// What the gates read, as one system parameter.
-pub type GateParams<'w> = (Option<Res<'w, crate::menu::Menu>>, Option<Res<'w, crate::intro::event_player::EventPlayer>>, Option<Res<'w, crate::summon::SummonState>>);
+pub type GateParams<'w> = (Option<Res<'w, crate::shared::ui::MenuPhase>>, Option<Res<'w, crate::shared::event::EventRunning>>, Option<Res<'w, crate::summon::SummonState>>);
 
 /// The gates from the app's state.
 pub fn gates_of(g: &GateParams, sora_down: bool) -> StartGates {
     StartGates {
         sora_down,
-        menu_open: g.0.as_deref().is_some_and(|m| m.phase != crate::shared::ui::Phase::Closed),
-        event: g.1.as_deref().is_some_and(|e| e.playing()),
+        menu_open: g.0.as_deref().is_some_and(|m| m.0 != crate::shared::ui::Phase::Closed),
+        event: g.1.as_deref().is_some_and(|e| e.0),
         summon_sequence: g.2.as_deref().is_some_and(|s| s.sequence && s.state != 2),
     }
 }
@@ -1016,13 +1016,13 @@ mod tests {
         let read = |w: &mut World| w.run_system_once(|g: GateParams| gates_of(&g, false)).unwrap();
         let mut w = World::new();
         assert_eq!(read(&mut w).check(), Ok(()), "no resources: nothing gates");
-        w.init_resource::<crate::menu::Menu>();
-        w.init_resource::<crate::intro::event_player::EventPlayer>();
+        w.init_resource::<crate::shared::ui::MenuPhase>();
+        w.init_resource::<crate::shared::event::EventRunning>();
         w.init_resource::<crate::summon::SummonState>();
         assert_eq!(read(&mut w).check(), Ok(()), "closed menu, no event, no summon");
-        w.resource_mut::<crate::menu::Menu>().phase = crate::shared::ui::Phase::Closing;
+        w.resource_mut::<crate::shared::ui::MenuPhase>().0 = crate::shared::ui::Phase::Closing;
         assert_eq!(read(&mut w).check(), Err(Gate::MenuOpen));
-        w.resource_mut::<crate::menu::Menu>().phase = crate::shared::ui::Phase::Closed;
+        w.resource_mut::<crate::shared::ui::MenuPhase>().0 = crate::shared::ui::Phase::Closed;
         {
             let mut sm = w.resource_mut::<crate::summon::SummonState>();
             sm.sequence = true;

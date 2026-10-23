@@ -507,11 +507,25 @@ pub fn rows_for_mode(rows: &[u32], mode: i32, map: bool) -> Vec<u32> {
     rows.iter().take(if mode == 2 || !map { 1 } else { 2 }).copied().collect()
 }
 
+/// Before the fixed steps: whether `request_point` would take a save point's request now (`SavePointRequest::open`).
+fn point_gate(save: Res<SaveMenu>, mut req: ResMut<crate::shared::ui::SavePointRequest>) {
+    req.open = save.loaded && !save.is_open() && save.request.is_none();
+}
+
+/// After the fixed steps: the request a save point's accept made (`savepoint::point_use`) becomes the menu's own.
+fn point_take(mut save: ResMut<SaveMenu>, mut req: ResMut<crate::shared::ui::SavePointRequest>) {
+    if let Some(mode) = req.mode.take() {
+        save.request_point(mode);
+    }
+}
+
 pub struct SavePlugin;
 
 impl Plugin for SavePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SaveMenu>()
+            .init_resource::<crate::shared::ui::SavePointRequest>()
+            .add_systems(RunFixedMainLoop, (point_gate.in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop), point_take.in_set(RunFixedMainLoopSystems::AfterFixedMainLoop)))
             .add_systems(Startup, load.after(super::load))
             .add_systems(PreUpdate, input.before(super::input).after(bevy::input::InputSystems).after(crate::harness::Keys))
             .add_systems(Update, tick.before(crate::schedule::Frame::Popups));
@@ -1656,5 +1670,34 @@ mod tests {
         let a11 = &seq.anims[g11.first];
         assert_eq!((a11.frame_start, a11.frame_end), (0, 8));
         assert_eq!((a11.color_start[3], a11.color_end[3]), (128, 0));
+    }
+
+    /// Menu kind 1 in the executable: its record (scene 3, init `FUN_00255598`, mode word 0x36cd28,
+    /// the word `FUN_0024f498` returns) and the two rows of its top page (`FUN_00255c10`: message at
+    /// 0x380d02 + 0x24 * row; row 1 only while the mode is not 2), printed with their texts.
+    #[test]
+    fn menu_kind_one_is_the_points_save_list() {
+        let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else { return eprintln!("skipped: no disc (set KH2_ISO)") };
+        let disc = Disc::open(&iso);
+        let exe = disc.read_root("SLUS_210.05").expect("exe");
+        let w = |va: u32| crate::struggle::exe_word(&exe, va).expect("in the executable");
+        // The mode word (record +0xc; `FUN_0024f498` reads it).
+        const MENU_KIND1_MODE: u32 = 0x0036_cd28;
+        let rec = 0x0038_0560 + 0x10;
+        assert_eq!(w(rec) & 0xffff, 1, "kind");
+        assert_eq!(w(rec) >> 16, 3, "scene");
+        assert_eq!((w(rec + 4), w(rec + 8), w(rec + 12)), (0x0025_5598, 0x0025_5608, MENU_KIND1_MODE));
+        let msgs = kh2_image::text::Messages::from_bar(&disc.read("msg/us/sys.bar").expect("sys.bar")).expect("messages");
+        let rows = point_rows(&exe);
+        for (i, id) in rows.iter().enumerate() {
+            eprintln!("kind 1 row {i}: message {id:#x} {:?}", msgs.text(id & 0x7fff));
+        }
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0] & 0x7fff, 0xa7e, "row 0 is the Save row of the field menu");
+        assert_eq!(rows[1] & 0x7fff, 0xa80, "row 1 is the world point's World Map row (message 0x8a80)");
+        assert!(msgs.text(rows[1] & 0x7fff).is_some(), "the message exists in sys.bar");
+        for id in [0x8a7b_u32, 0x8a7c, 0x8a7d] {
+            eprintln!("row 1 question (0x380cb0): message {id:#x} {:?}", msgs.text(id & 0x7fff));
+        }
     }
 }

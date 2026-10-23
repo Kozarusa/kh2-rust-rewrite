@@ -2026,4 +2026,55 @@ mod tests {
         r.apply_json("{\"party_settings\": {\"2\": 4}}").unwrap();
         assert_eq!(r.member_setting(2, 0), Some(4));
     }
+
+    /// WP-PA4: the Customize page 0x1b writes what `party.rs` reads. Donald's Style row, driven through the page's machine
+    /// (confirm, two rows down, confirm), stores style 2 in his record and `refresh_target` then picks the far enemy
+    /// (PA3's scene); the ability row's use setting lands in the byte the AI record reads (`record_setting`), and Goofy's
+    /// record is not touched.
+    #[test]
+    fn party_follows_what_the_customize_page_writes() {
+        use crate::menu::customize::{write_friend, Choice, CustomizeTables, Effect, Key, Kind, Machine, Row, FRIEND};
+        use crate::party::{record_setting, refresh_target, resolve_style, Target, TargetCtx};
+        use crate::party_battle as battle;
+        let mut p = crate::progress::Progress::from_block(&[], std::sync::Arc::new(Default::default()));
+        let t = CustomizeTables { setting_ids: vec![(0xa5, 0), (0xa6, 1)], uses: vec![Choice::default(); 3], ..Default::default() };
+        let mut m = Machine::new(vec![Row::new(Kind::Style, 0, false, 0)], vec![]);
+        m.members = vec![1, 2, 3];
+        m.who = 1;
+        m.page = FRIEND;
+        let no = |_: u16| false;
+        for key in [Key::Confirm, Key::Down { fresh: true }, Key::Down { fresh: true }, Key::Confirm] {
+            for e in m.press(key, &no) {
+                write_friend(&mut p, &t, 2, &e);
+            }
+        }
+        assert_eq!((p.member_setting(2, 0), p.member_setting(3, 0)), (Some(2), Some(0)));
+        let mut w = bevy::ecs::world::World::new();
+        let (a, b) = (w.spawn_empty().id(), w.spawn_empty().id());
+        let enemies = vec![(a, vec![(Vec3::new(300.0, 0.0, 0.0), 0.0)]), (b, vec![(Vec3::new(-150.0, 0.0, 0.0), 0.0)])];
+        let params = battle::Params { range: 400.0, retarget: 500.0, player_range: 220.0, player_near: 50.0, retarget_half: 0.5, farthest_start: -1.0, ..Default::default() };
+        let ctx = TargetCtx { enemies: &enemies, player: Vec3::new(100.0, 0.0, 0.0), attacker: None, player_target: None, player_hit: None };
+        let pick = |p: &crate::progress::Progress| {
+            let style = resolve_style(None, p.member_setting(2, 0));
+            refresh_target(2, style, &params, Vec3::ZERO, None, false, false, &ctx).expect("style in the table")
+        };
+        assert_eq!(pick(&p), Some(Target { entity: a, shape: 0 }), "style 2 picks the far enemy");
+        // The default style 0 (a record that was never written) picks the other one in the same scene.
+        let fresh = crate::progress::Progress::from_block(&[], std::sync::Arc::new(Default::default()));
+        assert_eq!(pick(&fresh), Some(Target { entity: b, shape: 0 }), "style 0 picks the near enemy");
+        // The quick key moves it on to 3 (the page rebuilds its rows from the record after a write).
+        m.reload(vec![Row { setting: 2, ..Row::new(Kind::Style, 0, false, 0) }]);
+        for e in m.press(Key::Toggle, &no) {
+            write_friend(&mut p, &t, 2, &e);
+        }
+        assert_eq!(p.member_setting(2, 0), Some(3));
+        // An ability row: id 0xa6 is entry 1 of the use-setting table, so its byte is 1 + (7 + 1) = 9.
+        let fx = Effect::Ability { id: 0xa6, value: 3 };
+        write_friend(&mut p, &t, 2, &fx);
+        let member = p.member(2);
+        assert_eq!(record_setting(member.as_ref(), 8), Some(3), "the record's setting index 8 reads byte 9");
+        assert_eq!(record_setting(member.as_ref(), -1), Some(0));
+        assert_eq!(record_setting(None, 8), Some(0));
+        assert_eq!(p.member(3).unwrap().settings[9], 0);
+    }
 }

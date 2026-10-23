@@ -3,6 +3,9 @@
 use std::collections::HashMap;
 
 use bevy::prelude::*;
+use kh2_tables::tables as t;
+
+use crate::assets::Disc;
 
 /// The members' live attack objects as the class-5 pull (FUN_00185668 -> FUN_001bf920, Goofy's `tornado`
 /// atkp 1188) needs them, like `magic::SpellAttacks` for the spells: the victim keeps the attack object
@@ -69,4 +72,85 @@ pub fn hp_change(hp: &mut i32, max: i32, min: i32, ko: &mut bool, delta: i32, re
         out.knocked_out = true;
     }
     out
+}
+
+/// The party member's NeoStatus (`PartyMember::neo`) on the member's root entity, for the crates below the party
+/// crate (the enemy's hit on a member's attack reads whose hit it was). Inserted with the `PartyMember` component
+/// by `party::spawn_party` and never changed.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MemberNeo(pub u16);
+
+/// The tables a member's status is rebuilt from (`lvup` of 00battle.bin, `item` and `item_stat`), loaded once with
+/// the party data (`PartyData` holds the same value) and inserted as a resource for the crates below the party crate.
+#[derive(Resource, Clone, Default)]
+pub struct MemberStatus {
+    /// `lvup` (00battle.bin): the level tables by character (FUN_001b50c0), the first Sora's.
+    pub lvup: Vec<Vec<t::Lvup>>,
+    pub items: Vec<t::Item>,
+    /// `item_stat` rows (a weapon's attack and magic, `Item::stat_entry`).
+    pub stats: Vec<t::ItemStat>,
+}
+
+impl MemberStatus {
+    /// Reads `lvup`, `item` and `item_stat` from the disc (empty tables when unreadable).
+    pub fn load(disc: &Disc) -> MemberStatus {
+        let lvup = match disc.0.lock() {
+            Ok(mut a) => kh2_tables::subfile(&mut a, &t::LVUP).ok().and_then(|b| kh2_tables::rt::decode_lvup::<t::Lvup>(&b)).unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
+        let (items, stats) = match disc.0.lock() {
+            Ok(mut a) => (
+                kh2_tables::load::<t::Item>(&mut a, &t::ITEM).map(|d| d.rows).unwrap_or_default(),
+                kh2_tables::load::<t::ItemStat>(&mut a, &t::ITEM_STAT).map(|d| d.rows).unwrap_or_default(),
+            ),
+            Err(_) => (Vec::new(), Vec::new()),
+        };
+        MemberStatus { lvup, items, stats }
+    }
+
+    /// A member's status numbers +0x188 (strength), +0x18a (magic), +0x18c (defense) as FUN_0019f920
+    /// rebuilds them from the saved record (`PartyData::member_status` names the rule).
+    pub fn member_status(&self, neo: u16, rec: &crate::progress::Member) -> (i32, i32, i32) {
+        let row = self.lvup_row(neo, rec.level);
+        let (mut s, mut m, mut d) = row.map_or((0, 0, 0), |r| (r.strength as i32, r.magic as i32, r.defense as i32));
+        s += rec.strength as i32;
+        m += rec.magic as i32;
+        d += rec.defense as i32;
+        for item in rec.weapons.iter().chain(&rec.armor).chain(&rec.accessories).filter(|&&i| i != 0) {
+            if let Some(st) = self.items.iter().find(|i| i.id == *item).and_then(|i| self.stats.iter().find(|x| x.id == i.stat_entry)) {
+                s += st.attack as i32;
+                m += st.magic as i32;
+                d += st.defense as i32;
+            }
+        }
+        (s, m, d)
+    }
+
+    /// The `lvup` row `FUN_001b50c0` picks for a member (table by `FUN_001b58d8`, row of the level held at the table's end).
+    pub fn lvup_row(&self, neo: u16, level: u8) -> Option<&t::Lvup> {
+        let k = match neo {
+            14 => 1,
+            15 => 6,
+            n @ 1..=13 => n as usize,
+            _ => 1,
+        };
+        let table = self.lvup.get(k - 1).filter(|t| !t.is_empty()).or_else(|| self.lvup.first());
+        table.and_then(|t| t.get((level.max(1) as usize).min(t.len()) - 1))
+    }
+
+    /// The AP and resistances of a member's status block (`PartyData::member_ap_resistances` names the rule).
+    pub fn member_ap_resistances(&self, neo: u16, rec: &crate::progress::Member) -> (i32, [i32; 7]) {
+        let mut ap = self.lvup_row(neo, rec.level).map_or(0, |r| i32::from(r.ap)) + i32::from(rec.ap);
+        let rows: Vec<[i32; 8]> = rec
+            .weapons
+            .iter()
+            .chain(&rec.armor)
+            .chain(&rec.accessories)
+            .filter(|&&i| i != 0)
+            .filter_map(|item| self.items.iter().find(|i| i.id == *item).and_then(|i| self.stats.iter().find(|x| x.id == i.stat_entry)))
+            .map(|s| [s.ability_points, s.unknown08, s.fire_resistance, s.ice_resistance, s.lightning_resistance, s.dark_resistance, s.unknown0d, s.general_resistance].map(i32::from))
+            .collect();
+        ap += rows.iter().map(|r| r[0]).sum::<i32>();
+        (ap, crate::data::fold_resistances(rows.iter()))
+    }
 }

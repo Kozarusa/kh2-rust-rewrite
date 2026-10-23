@@ -62,17 +62,11 @@ impl Tables {
 }
 
 /// A request for the page: the notice and the camp's argument (`FUN_0024f300` 's first parameter, 0 or 2).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Request {
-    pub notice: Notice,
-    pub arg: u32,
-}
+pub use crate::shared::ui::SwitchRequest as Request;
 
 /// The party switch the last jump record made.
 #[derive(Resource, Default, Debug)]
 pub struct PartySwitch {
-    /// Set by `party::jump_party`; the page takes it when no menu is up.
-    pub request: Option<Request>,
     open: bool,
     nodes: Vec<usize>,
     tables: Option<Tables>,
@@ -84,6 +78,7 @@ pub struct PartySwitchPlugin;
 impl Plugin for PartySwitchPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PartySwitch>()
+            .init_resource::<crate::shared::ui::PartySwitchRequest>()
             .add_systems(PreUpdate, (input.before(crate::menu::input), hold.after(crate::menu::input)).after(bevy::input::InputSystems).after(crate::harness::Keys))
             .add_systems(Update, tick.before(crate::schedule::Frame::Popups));
     }
@@ -178,9 +173,10 @@ fn input(
     disc: Res<Disc>,
     mut keys: ResMut<ButtonInput<KeyCode>>,
     menu: Res<crate::menu::Menu>,
+    mut request: ResMut<crate::shared::ui::PartySwitchRequest>,
 ) {
     if !ps.open {
-        if ps.request.is_none() || menu.phase != crate::menu::Phase::Closed || scene.text.is_none() {
+        if request.0.is_none() || menu.phase != crate::menu::Phase::Closed || scene.text.is_none() {
             return;
         }
         if !ps.tried {
@@ -190,7 +186,7 @@ fn input(
                 warn!("menu: kind 5 page 0x15: the executable's tables are not readable; the notice is off");
             }
         }
-        let req = ps.request.take().unwrap();
+        let req = request.0.take().unwrap();
         if ps.tables.is_none() {
             return;
         }

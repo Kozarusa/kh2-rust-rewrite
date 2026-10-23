@@ -389,9 +389,16 @@ impl Plugin for EventPlayerPlugin {
     fn build(&self, app: &mut App) {
         use crate::schedule::{sim_running, Frame, Sim};
         app.init_resource::<EventPlayer>()
-            .add_systems(FixedUpdate, (start, step).chain().in_set(Sim::EffectTick).run_if(sim_running))
+            .init_resource::<crate::shared::event::EventRunning>()
+            .add_systems(FixedUpdate, (start, step, mirror_running).chain().in_set(Sim::EffectTick).run_if(sim_running))
             .add_systems(Update, (lock_pad.after(Frame::Pad).before(Frame::Hud), subtitles.in_set(Frame::Hud)));
     }
+}
+
+/// Copies `EventPlayer::playing` for the lower crates' gates (`shared::event::EventRunning`), right after the only
+/// systems that change it.
+fn mirror_running(player: Res<EventPlayer>, mut running: ResMut<crate::shared::event::EventRunning>) {
+    running.0 = player.playing();
 }
 
 struct Spawned {

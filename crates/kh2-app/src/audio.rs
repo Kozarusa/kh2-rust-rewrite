@@ -55,7 +55,6 @@ fn dump_chunk(buf: &[f32]) {
     let _ = f.write_all(&bytes);
 }
 
-
 impl Iterator for StreamDecoder {
     type Item = f32;
     fn next(&mut self) -> Option<f32> {
@@ -393,7 +392,7 @@ fn update_mixes(
 
 /// The voice bank of a request: a `.vsb` file, or the entry of type [`VOICE_BAR_ENTRY`] of the
 /// BAR file the request names (cached by file).
-fn voice_bank(disc: &Disc, cache: &SeCache, v: &PlayVoice) -> Option<Arc<Vsb>> {
+pub fn voice_bank(disc: &Disc, cache: &SeCache, v: &PlayVoice) -> Option<Arc<Vsb>> {
     voice_bank_file(disc, cache, &v.file, v.in_bar)
 }
 
@@ -742,7 +741,7 @@ pub fn area_soundinfo(disc: &Disc, area: &str) -> Option<kh2_audio::footstep::So
 }
 
 /// `NeoStatus` of an object's `00objentry` row (picks the footstep bank).
-fn neo_status(disc: &Disc, model: &str) -> Option<u16> {
+pub fn neo_status(disc: &Disc, model: &str) -> Option<u16> {
     use kh2_tables::tables as t;
     let mut a = disc.0.lock().ok()?;
     kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).ok()?.rows.into_iter().find(|r| r.model_name == model).map(|r| r.neo_status)
@@ -1368,58 +1367,6 @@ mod tests {
         assert!(pcm.iter().any(|s| s.abs() > 0.01));
     }
 
-    /// The triggers of every slot of an object's motion set: (slot, tag, frame trigger id, params).
-    fn frame_triggers(d: &Disc, model: &str) -> Vec<(usize, String, u8, Vec<i16>)> {
-        // `M_EX610_RAW` names `M_EX610.mset` in its objentry row and has no motion set of its own.
-        let file = Some(format!("obj/{model}.mset")).filter(|f| d.read(f).is_some()).unwrap_or_else(|| format!("obj/{}.mset", model.trim_end_matches("_RAW")));
-        let m = kh2_anim::Mset::parse(&d.read(&file).expect("mset")).expect("mset parses");
-        let mut out = Vec::new();
-        for slot in 0..m.slots.len() {
-            let Some(s) = m.get(slot) else { continue };
-            out.extend(s.triggers.frames.iter().map(|f| (slot, s.tag.to_string(), f.id, f.params.clone())));
-        }
-        out
-    }
-
-    /// An enemy's voice bank is the type 0x22 entry of its own `.apdx` (the constructors
-    /// `FUN_00196b58` / `FUN_00196d18` build the voice slot only when it exists): N_EX570_BTL (Seifer),
-    /// N_EX500_BTL and N_EX600_BTL carry one, the Heartless, the Dusk and the Dancer do not. Every
-    /// line a script (host 1.262: N_EX570_BTL asks for lines 17, 26, 37) or a motion's voice trigger
-    /// (13, 14: the first parameter is the line) of those three asks for exists in the bank and
-    /// decodes.
-    #[test]
-    fn enemy_voice_banks_are_the_object_files_own_entry() {
-        let Some(d) = disc() else { return };
-        let cache = SeCache::default();
-        let bank_of = |model: &str| {
-            let v = PlayVoice { file: format!("obj/{model}.apdx"), in_bar: true, line: 0, priority: 0, pos: None, speaker: 1, follow: None };
-            voice_bank(&d, &cache, &v)
-        };
-        for kind in crate::enemy::KINDS {
-            let bank = bank_of(kind.model);
-            eprintln!("{} ({}): voice bank {}", kind.name, kind.model, bank.as_ref().map_or("none".to_string(), |b| format!("{} lines", b.len())));
-            let expected = ["N_EX570_BTL", "N_EX500_BTL", "N_EX600_BTL"].contains(&kind.model);
-            assert_eq!(bank.is_some(), expected, "{}", kind.model);
-            let Some(bank) = bank else { continue };
-            let mut asked: Vec<usize> = frame_triggers(&d, kind.model)
-                .into_iter()
-                .filter(|t| t.2 == kh2_anim::triggers::frame::VOICE || t.2 == kh2_anim::triggers::frame::VOICE2)
-                .filter_map(|t| t.3.first().map(|&l| l as usize))
-                .collect();
-            if kind.model == "N_EX570_BTL" {
-                asked.extend([17, 26, 37]);
-            }
-            asked.sort_unstable();
-            asked.dedup();
-            assert!(!asked.is_empty(), "{} asks for lines", kind.model);
-            for line in &asked {
-                let (sample, rate) = bank.line(*line).unwrap_or_else(|| panic!("{} line {line} missing from its bank", kind.model));
-                assert!(!sample.pcm.is_empty() && rate > 0, "{} line {line}", kind.model);
-            }
-            eprintln!("  lines asked for: {asked:?} (all decode)");
-        }
-    }
-
     /// A request is one line of the speaker's own bank with its priority; the slot is per speaker.
     #[test]
     fn enemy_voice_requests_carry_their_slot() {
@@ -1443,49 +1390,6 @@ mod tests {
         assert_eq!(slot.pending, Some((17, 2)));
         slot.request(37, 2);
         assert_eq!(slot.pending, Some((37, 2)));
-    }
-
-    /// The enemy kinds the app has and the motion triggers the footstep hooks serve: Shadow, Soldier,
-    /// Dusk, N_EX570_BTL, the Dancer, N_EX500_BTL and N_EX600_BTL have no trigger 2 (footstep sound)
-    /// and no trigger 19 (footstep dust) in any motion, so `enemy_footsteps` has nothing to play for
-    /// them today. The check lists the counts; a kind that gains a trigger fails it, as a reminder to
-    /// look at that kind's sound bank (`enemy_footstep_numbers_resolve_per_kind`).
-    #[test]
-    fn enemy_motion_sets_carry_no_footstep_triggers() {
-        let Some(d) = disc() else { return };
-        for kind in crate::enemy::KINDS {
-            let t = frame_triggers(&d, kind.model);
-            let steps = t.iter().filter(|t| t.2 == kh2_anim::triggers::frame::FOOTSTEP_SOUND).count();
-            let dust = t.iter().filter(|t| t.2 == kh2_anim::triggers::frame::FOOTSTEP_EFFECT).count();
-            eprintln!("{} ({}): {} frame triggers, trigger 2 x{steps}, trigger 19 x{dust}", kind.name, kind.model, t.len());
-            assert_eq!((steps, dust), (0, 0), "{}", kind.model);
-        }
-    }
-
-    /// What an enemy footstep would resolve to: each kind's NeoStatus (its `objentry` row) picks its
-    /// bank in the area's soundinfo record, and a walk step on material 1 numbers like the game's
-    /// `FUN_0016baa0`; the per-actor counter cycles the variants. Kinds whose NeoStatus has no bank
-    /// in the area are silent.
-    #[test]
-    fn enemy_footstep_numbers_resolve_per_kind() {
-        let Some(d) = disc() else { return };
-        let record = area_soundinfo(&d, "tt04").expect("tt04 record");
-        let mut with_bank = 0;
-        for kind in crate::enemy::KINDS {
-            let neo = neo_status(&d, kind.model).unwrap_or_else(|| panic!("{} has an objentry row", kind.model));
-            let mut counter = 0u8;
-            let first = kh2_audio::footstep::footstep_number(Some(&record), neo, 1, 4, &mut counter);
-            let second = kh2_audio::footstep::footstep_number(Some(&record), neo, 1, 4, &mut counter);
-            eprintln!("{} neo {neo}: bank {:?}, walk steps on material 1: {first:?} then {second:?}", kind.name, record.bank(neo));
-            match record.bank(neo) {
-                Some(bank) => {
-                    with_bank += 1;
-                    assert_eq!((first, second), (Some(bank as u32 * 1000 + 16 + 4), Some(bank as u32 * 1000 + 16 + 5)));
-                }
-                None => assert_eq!((first, second), (None, None)),
-            }
-        }
-        assert!(with_bank > 0, "at least one enemy kind has a footstep bank in tt04");
     }
 
     #[test]

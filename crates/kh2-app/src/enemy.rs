@@ -1798,7 +1798,7 @@ pub(crate) fn member_stats(progress: Option<&crate::progress::Progress>, neo: u1
 
 /// `member_stats` with the strength, magic and defense of the rebuilt status (`PartyData::member_status`:
 /// the lvup row, the record and the equipment) when the party data is loaded.
-pub(crate) fn member_stats_rebuilt(progress: Option<&crate::progress::Progress>, party: Option<&crate::party::PartyData>, neo: u16) -> Option<Stats> {
+pub(crate) fn member_stats_rebuilt(progress: Option<&crate::progress::Progress>, party: Option<&crate::shared::party::MemberStatus>, neo: u16) -> Option<Stats> {
     let mut s = member_stats(progress, neo)?;
     if let (Some(party), Some(rec)) = (party, progress.and_then(|p| p.member(neo))) {
         (s.strength, s.magic, s.defense) = party.member_status(neo, &rec);
@@ -1826,7 +1826,7 @@ pub fn receive_hits(
     drive: (Option<Res<crate::shared::drive::DriveRules>>, Option<Res<crate::shared::drive::DriveState>>),
     (abilities, magic): (Option<Res<crate::shared::abilities::Abilities>>, Option<Res<crate::shared::magic::MagicState>>),
     (pull_data, spells, mut rng, member_attacks): (Option<Res<PullData>>, Option<Res<crate::shared::magic::SpellAttacks>>, Local<PullRng>, Option<Res<crate::shared::party::MemberAttacks>>),
-    (members, progress, mut form_exp, party): (Query<&crate::party::PartyMember>, Option<Res<crate::progress::Progress>>, MessageWriter<crate::shared::prize::FormExpGain>, Option<Res<crate::party::PartyData>>),
+    (members, progress, mut form_exp, party): (Query<&crate::shared::party::MemberNeo>, Option<Res<crate::progress::Progress>>, MessageWriter<crate::shared::prize::FormExpGain>, Option<Res<crate::shared::party::MemberStatus>>),
     mut defeated: MessageWriter<crate::progress::EnemyDefeated>,
 ) {
     let sora_from = sora.single().map(|s| (s.stats, s.hits)).ok();
@@ -1836,7 +1836,7 @@ pub fn receive_hits(
         // formula FUN_001a0610 reads the attacker's status block +0x188 / +0x18a, rebuilt from the saved
         // record by FUN_0019fd30 -> FUN_0019f920). A member's hit carries no combo count.
         let from = match members.get(h.attacker) {
-            Ok(m) => member_stats_rebuilt(progress.as_deref(), party.as_deref(), m.neo).map(|s| (s, 0)),
+            Ok(m) => member_stats_rebuilt(progress.as_deref(), party.as_deref(), m.0).map(|s| (s, 0)),
             Err(_) => sora_from,
         };
         let (Ok((mut e, mut f, status)), Some((from, combo_hits))) = (q.get_mut(h.target), from) else { continue };
@@ -3168,7 +3168,7 @@ mod tests {
             return;
         }
         let disc = Disc::open(&iso);
-        let party = crate::party::PartyData::load(&disc);
+        let party = crate::shared::party::MemberStatus::load(&disc);
         let p = crate::progress::Progress::start(&disc).expect("progress");
         let bare = member_stats(Some(&p), 2).expect("bare");
         let built = member_stats_rebuilt(Some(&p), Some(&party), 2).expect("rebuilt");
@@ -3703,5 +3703,109 @@ mod tests {
         let all: Vec<u16> = (1..=300).collect();
         t.sync(&all, &all);
         assert_eq!(t.serials().len(), 256);
+    }
+
+    /// An enemy's voice bank is the type 0x22 entry of its own `.apdx` (the constructors
+    /// `FUN_00196b58` / `FUN_00196d18` build the voice slot only when it exists): N_EX570_BTL (Seifer),
+    /// N_EX500_BTL and N_EX600_BTL carry one, the Heartless, the Dusk and the Dancer do not. Every
+    /// line a script (host 1.262: N_EX570_BTL asks for lines 17, 26, 37) or a motion's voice trigger
+    /// (13, 14: the first parameter is the line) of those three asks for exists in the bank and
+    /// decodes.
+    #[test]
+    fn enemy_voice_banks_are_the_object_files_own_entry() {
+        let Some(d) = audio_disc() else { return };
+        let cache = crate::audio::SeCache::default();
+        let bank_of = |model: &str| {
+            let v = crate::audio::PlayVoice { file: format!("obj/{model}.apdx"), in_bar: true, line: 0, priority: 0, pos: None, speaker: 1, follow: None };
+            crate::audio::voice_bank(&d, &cache, &v)
+        };
+        for kind in KINDS {
+            let bank = bank_of(kind.model);
+            eprintln!("{} ({}): voice bank {}", kind.name, kind.model, bank.as_ref().map_or("none".to_string(), |b| format!("{} lines", b.len())));
+            let expected = ["N_EX570_BTL", "N_EX500_BTL", "N_EX600_BTL"].contains(&kind.model);
+            assert_eq!(bank.is_some(), expected, "{}", kind.model);
+            let Some(bank) = bank else { continue };
+            let mut asked: Vec<usize> = frame_triggers(&d, kind.model)
+                .into_iter()
+                .filter(|t| t.2 == kh2_anim::triggers::frame::VOICE || t.2 == kh2_anim::triggers::frame::VOICE2)
+                .filter_map(|t| t.3.first().map(|&l| l as usize))
+                .collect();
+            if kind.model == "N_EX570_BTL" {
+                asked.extend([17, 26, 37]);
+            }
+            asked.sort_unstable();
+            asked.dedup();
+            assert!(!asked.is_empty(), "{} asks for lines", kind.model);
+            for line in &asked {
+                let (sample, rate) = bank.line(*line).unwrap_or_else(|| panic!("{} line {line} missing from its bank", kind.model));
+                assert!(!sample.pcm.is_empty() && rate > 0, "{} line {line}", kind.model);
+            }
+            eprintln!("  lines asked for: {asked:?} (all decode)");
+        }
+    }
+
+    /// The enemy kinds the app has and the motion triggers the footstep hooks serve: Shadow, Soldier,
+    /// Dusk, N_EX570_BTL, the Dancer, N_EX500_BTL and N_EX600_BTL have no trigger 2 (footstep sound)
+    /// and no trigger 19 (footstep dust) in any motion, so `enemy_footsteps` has nothing to play for
+    /// them today. The check lists the counts; a kind that gains a trigger fails it, as a reminder to
+    /// look at that kind's sound bank (`enemy_footstep_numbers_resolve_per_kind`).
+    #[test]
+    fn enemy_motion_sets_carry_no_footstep_triggers() {
+        let Some(d) = audio_disc() else { return };
+        for kind in KINDS {
+            let t = frame_triggers(&d, kind.model);
+            let steps = t.iter().filter(|t| t.2 == kh2_anim::triggers::frame::FOOTSTEP_SOUND).count();
+            let dust = t.iter().filter(|t| t.2 == kh2_anim::triggers::frame::FOOTSTEP_EFFECT).count();
+            eprintln!("{} ({}): {} frame triggers, trigger 2 x{steps}, trigger 19 x{dust}", kind.name, kind.model, t.len());
+            assert_eq!((steps, dust), (0, 0), "{}", kind.model);
+        }
+    }
+
+    /// What an enemy footstep would resolve to: each kind's NeoStatus (its `objentry` row) picks its
+    /// bank in the area's soundinfo record, and a walk step on material 1 numbers like the game's
+    /// `FUN_0016baa0`; the per-actor counter cycles the variants. Kinds whose NeoStatus has no bank
+    /// in the area are silent.
+    #[test]
+    fn enemy_footstep_numbers_resolve_per_kind() {
+        let Some(d) = audio_disc() else { return };
+        let record = crate::audio::area_soundinfo(&d, "tt04").expect("tt04 record");
+        let mut with_bank = 0;
+        for kind in KINDS {
+            let neo = crate::audio::neo_status(&d, kind.model).unwrap_or_else(|| panic!("{} has an objentry row", kind.model));
+            let mut counter = 0u8;
+            let first = kh2_audio::footstep::footstep_number(Some(&record), neo, 1, 4, &mut counter);
+            let second = kh2_audio::footstep::footstep_number(Some(&record), neo, 1, 4, &mut counter);
+            eprintln!("{} neo {neo}: bank {:?}, walk steps on material 1: {first:?} then {second:?}", kind.name, record.bank(neo));
+            match record.bank(neo) {
+                Some(bank) => {
+                    with_bank += 1;
+                    assert_eq!((first, second), (Some(bank as u32 * 1000 + 16 + 4), Some(bank as u32 * 1000 + 16 + 5)));
+                }
+                None => assert_eq!((first, second), (None, None)),
+            }
+        }
+        assert!(with_bank > 0, "at least one enemy kind has a footstep bank in tt04");
+    }
+
+    /// The disc for the voice and footstep checks (moved here from `audio.rs` with them), or None with a note.
+    fn audio_disc() -> Option<Disc> {
+        let iso = crate::assets::iso_path().ok().filter(|p| p.exists());
+        if iso.is_none() {
+            eprintln!("skipped: no disc (set KH2_ISO)");
+        }
+        iso.map(|p| Disc::open(&p))
+    }
+
+    /// The triggers of every slot of an object's motion set: (slot, tag, frame trigger id, params).
+    fn frame_triggers(d: &Disc, model: &str) -> Vec<(usize, String, u8, Vec<i16>)> {
+        // `M_EX610_RAW` names `M_EX610.mset` in its objentry row and has no motion set of its own.
+        let file = Some(format!("obj/{model}.mset")).filter(|f| d.read(f).is_some()).unwrap_or_else(|| format!("obj/{}.mset", model.trim_end_matches("_RAW")));
+        let m = kh2_anim::Mset::parse(&d.read(&file).expect("mset")).expect("mset parses");
+        let mut out = Vec::new();
+        for slot in 0..m.slots.len() {
+            let Some(s) = m.get(slot) else { continue };
+            out.extend(s.triggers.frames.iter().map(|f| (slot, s.tag.to_string(), f.id, f.params.clone())));
+        }
+        out
     }
 }

@@ -57,7 +57,7 @@ pub struct PartyPlugin;
 impl Plugin for PartyPlugin {
     fn build(&self, app: &mut App) {
         let data = PartyData::load(app.world().resource::<Disc>());
-        app.insert_resource(data)
+        app.insert_resource(data.status.clone()).insert_resource(data)
             .init_resource::<PartySlots>()
             .init_resource::<PartyHidden>()
             .init_resource::<SwapFade>()
@@ -80,9 +80,6 @@ pub(crate) struct PartyTick;
 /// The tables the weapon lookup reads (FUN_0016ef28 -> FUN_001845b0 `went`, FUN_00184640 `wmst`).
 #[derive(Default)]
 struct WeaponTables {
-    items: Vec<t::Item>,
-    /// `item_stat` rows (a weapon's attack and magic, `Item::stat_entry`).
-    stats: Vec<t::ItemStat>,
     went: Vec<u8>,
     wmst: Vec<[String; 2]>,
 }
@@ -108,8 +105,9 @@ pub struct PartyData {
     /// out-of-battle revive count-down scale, +0x7c the MP-charge feed of an MP gain.
     sstm: Option<kh2_tables::player::Sstm>,
     weapons: WeaponTables,
-    /// `lvup` (00battle.bin): the level tables by character (FUN_001b50c0), the first Sora's.
-    lvup: Vec<Vec<t::Lvup>>,
+    /// `lvup`, `item` and `item_stat`: the tables a member's status is rebuilt from (also inserted as the
+    /// `MemberStatus` resource for the enemy crate).
+    pub(crate) status: crate::shared::party::MemberStatus,
     /// Stage 4's executable values: FUN_00110f90's MP-gate weights (0x378598, 0x37859c), FUN_0010c800's
     /// degrees to radians (0x3784a0), the item handlers' fractions (0x3785c8 HP, 0x3785d4 MP) and choice
     /// orders (0x352e28 / 0x352e3c HP, 0x352e50 / 0x352e60 MP).
@@ -340,18 +338,13 @@ impl PartyData {
             half = f(0x3784ac).unwrap_or(half);
             stop = (f(0x378564).unwrap_or(0.0), f(0x378568).unwrap_or(0.0));
         }
-        let lvup = match disc.0.lock() {
-            Ok(mut a) => kh2_tables::subfile(&mut a, &t::LVUP).ok().and_then(|b| kh2_tables::rt::decode_lvup::<t::Lvup>(&b)).unwrap_or_default(),
-            Err(_) => Vec::new(),
-        };
+        let status = crate::shared::party::MemberStatus::load(disc);
         let (objs, memt, prty, weapons, prty_offsets, sstm) = match disc.0.lock() {
             Ok(mut a) => (
                 kh2_tables::load::<t::Objentry>(&mut a, &t::OBJENTRY).map(|d| d.rows).unwrap_or_default(),
                 kh2_tables::player::load_memt(&mut a).ok(),
                 kh2_tables::load::<t::PrefPrty>(&mut a, &t::PREF_PRTY).map(|d| d.rows).unwrap_or_default(),
                 WeaponTables {
-                    items: kh2_tables::load::<t::Item>(&mut a, &t::ITEM).map(|d| d.rows).unwrap_or_default(),
-                    stats: kh2_tables::load::<t::ItemStat>(&mut a, &t::ITEM_STAT).map(|d| d.rows).unwrap_or_default(),
                     went: kh2_tables::subfile(&mut a, &t::WENT).unwrap_or_default(),
                     wmst: kh2_tables::subfile(&mut a, &t::WMST).map(|b| crate::drive::rules::parse_wmst(&b)).unwrap_or_default(),
                 },
@@ -360,7 +353,7 @@ impl PartyData {
             ),
             Err(_) => (Vec::new(), None, Vec::new(), WeaponTables::default(), Vec::new(), None),
         };
-        PartyData { consts, ai, orders, half, stop, objs, memt, prty, prty_offsets, sstm, weapons, lvup, mp_gate_w, deg_to_rad, item_frac, hp_items, mp_items, revive_full, fades, rigs: HashMap::new() }
+        PartyData { consts, ai, orders, half, stop, objs, memt, prty, prty_offsets, sstm, weapons, status, mp_gate_w, deg_to_rad, item_frac, hp_items, mp_items, revive_full, fades, rigs: HashMap::new() }
     }
 
     /// The scale a heal on KO'd member `neo` takes (FUN_0017cee8): `DAT_0037a560` with Hyper Healing equipped
@@ -378,31 +371,7 @@ impl PartyData {
     /// is 0, and the row of the level held at the table's level count. A level of 0 is taken as 1
     /// [inferred: FUN_001b50c0 would read before the table].
     pub(crate) fn member_status(&self, neo: u16, rec: &crate::progress::Member) -> (i32, i32, i32) {
-        let row = self.lvup_row(neo, rec.level);
-        let (mut s, mut m, mut d) = row.map_or((0, 0, 0), |r| (r.strength as i32, r.magic as i32, r.defense as i32));
-        s += rec.strength as i32;
-        m += rec.magic as i32;
-        d += rec.defense as i32;
-        for item in rec.weapons.iter().chain(&rec.armor).chain(&rec.accessories).filter(|&&i| i != 0) {
-            if let Some(st) = self.weapons.items.iter().find(|i| i.id == *item).and_then(|i| self.weapons.stats.iter().find(|x| x.id == i.stat_entry)) {
-                s += st.attack as i32;
-                m += st.magic as i32;
-                d += st.defense as i32;
-            }
-        }
-        (s, m, d)
-    }
-
-    /// The `lvup` row `FUN_001b50c0` picks for a member (table by `FUN_001b58d8`, row of the level held at the table's end).
-    fn lvup_row(&self, neo: u16, level: u8) -> Option<&t::Lvup> {
-        let k = match neo {
-            14 => 1,
-            15 => 6,
-            n @ 1..=13 => n as usize,
-            _ => 1,
-        };
-        let table = self.lvup.get(k - 1).filter(|t| !t.is_empty()).or_else(|| self.lvup.first());
-        table.and_then(|t| t.get((level.max(1) as usize).min(t.len()) - 1))
+        self.status.member_status(neo, rec)
     }
 
     /// The rest of a member's status block as `FUN_0019f920` / `FUN_001a0c08` build it from the saved record (the
@@ -411,18 +380,7 @@ impl PartyData {
     /// item's bytes `+8..+0xe` in the order weapons, armor, accessories (`crate::data::fold_resistances`; the order
     /// is [inferred] from the call order). The ability passives `FUN_001a0c08` also applies are not read.
     pub(crate) fn member_ap_resistances(&self, neo: u16, rec: &crate::progress::Member) -> (i32, [i32; 7]) {
-        let mut ap = self.lvup_row(neo, rec.level).map_or(0, |r| i32::from(r.ap)) + i32::from(rec.ap);
-        let rows: Vec<[i32; 8]> = rec
-            .weapons
-            .iter()
-            .chain(&rec.armor)
-            .chain(&rec.accessories)
-            .filter(|&&i| i != 0)
-            .filter_map(|item| self.weapons.items.iter().find(|i| i.id == *item).and_then(|i| self.weapons.stats.iter().find(|x| x.id == i.stat_entry)))
-            .map(|s| [s.ability_points, s.unknown08, s.fire_resistance, s.ice_resistance, s.lightning_resistance, s.dark_resistance, s.unknown0d, s.general_resistance].map(i32::from))
-            .collect();
-        ap += rows.iter().map(|r| r[0]).sum::<i32>();
-        (ap, crate::data::fold_resistances(rows.iter()))
+        self.status.member_ap_resistances(neo, rec)
     }
 
     /// The record at +0x12c (and the movement block at +0x110): the `prty` row of the object's
@@ -468,7 +426,7 @@ impl PartyData {
     /// `Flag1 | Rank << 8` slot (`went`), FUN_00184640 the hand's motion set name (`wmst`). `None` when
     /// any step names nothing.
     fn weapon_files(&self, row: &t::Objentry, item: u16, hand: usize) -> Option<crate::drive::WeaponFiles> {
-        let it = self.weapons.items.iter().find(|i| i.id == item)?;
+        let it = self.status.items.iter().find(|i| i.id == item)?;
         let slot = it.flag1 as u16 | (it.rank as u16) << 8;
         let ms = row.neo_moveset as usize;
         let id = crate::drive::rules::weapon_object(&self.weapons.went, ms, slot)?;
@@ -602,9 +560,9 @@ impl Manager {
 /// The member's target (+0x9f4): an enemy fighter and one of its hurt shapes (by index among its
 /// BATTLE / TARGET shapes).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Target {
-    entity: Entity,
-    shape: usize,
+pub struct Target {
+    pub entity: Entity,
+    pub shape: usize,
 }
 
 /// An attack, follow-up jump or item motion that runs (the member is not free: +0x160 bits clear).
@@ -1046,7 +1004,7 @@ fn jump_party(
     mut menus: ResMut<crate::shared::area_jump::JumpMenus>,
     data: Res<PartyData>,
     mut slots: ResMut<PartySlots>,
-    mut switch: ResMut<crate::party_switch::PartySwitch>,
+    mut switch: ResMut<crate::shared::ui::PartySwitchRequest>,
 ) {
     let Some(words) = menus.party.take() else { return };
     let Some(memt) = data.memt.as_ref() else { return };
@@ -1072,7 +1030,7 @@ fn jump_party(
     let merged = crate::drive::rules::memt_merge(memt, world, |_| false);
     let member_of = |o: u16| data.objs.iter().find(|r| r.object_id == u32::from(o)).map(|r| r.neo_status);
     let notice = crate::party_rules::switch_notice(rules::notice_slots(before, &merged, member_of), rules::notice_slots(after, &merged, member_of));
-    switch.request = Some(crate::party_switch::Request { notice, arg });
+    switch.0 = Some(crate::shared::ui::SwitchRequest { notice, arg });
 }
 
 /// `FUN_001a0030`'s write-back of the field members' status blocks into their party records: current HP and MP
@@ -1538,6 +1496,7 @@ fn spawn_party(
             // The members' attacks hit enemies (stage 2) and enemies' attacks hit them (stage 3,
             // `party_receive_hits`).
             Fighter { team: Team::Player, attack_bodies, hurt_body: body, landed: Default::default(), hittable: !taken },
+            crate::shared::party::MemberNeo(row.neo_status),
         ));
         if taken {
             // FUN_0017d1b0: the area spawn of a member the running form takes makes no object, only FUN_001c7600's
@@ -1631,12 +1590,12 @@ fn shape_of(t: Target, fighters: &[(Entity, Vec<(Vec3, f32)>)]) -> Option<(Vec3,
 /// What FUN_0010dcf0 / FUN_0010cf90 read besides the member: the enemies' shapes (the object walk,
 /// in the fighters' order), the member's remembered attacker (+0xcec), the player's target record
 /// (`0x34e9b0`) and the object of the player's latest attack (`0x34e9c4`).
-struct TargetCtx<'a> {
-    enemies: &'a [(Entity, Vec<(Vec3, f32)>)],
-    player: Vec3,
-    attacker: Option<Entity>,
-    player_target: Option<Target>,
-    player_hit: Option<Entity>,
+pub struct TargetCtx<'a> {
+    pub enemies: &'a [(Entity, Vec<(Vec3, f32)>)],
+    pub player: Vec3,
+    pub attacker: Option<Entity>,
+    pub player_target: Option<Target>,
+    pub player_hit: Option<Entity>,
 }
 
 /// The member's battle style: setting byte 0 of its record (`Progress::member_setting`, party record +0xd4; 0 at a
@@ -1649,7 +1608,7 @@ fn style_of(progress: Option<&crate::progress::Progress>, neo: u16) -> u8 {
 
 /// The setting byte of an AI record whose setting index is `index` (`FUN_0010f220`: record `+0xd4`, byte `1 + index`); a
 /// record without an index (negative) or a member without a record reads 0, as a new game's block does.
-fn record_setting(member: Option<&crate::progress::Member>, index: i32) -> Option<u8> {
+pub fn record_setting(member: Option<&crate::progress::Member>, index: i32) -> Option<u8> {
     match member {
         Some(m) if index >= 0 => m.settings.get(1 + index as usize).copied(),
         _ => Some(0),
@@ -1658,7 +1617,7 @@ fn record_setting(member: Option<&crate::progress::Member>, index: i32) -> Optio
 
 /// The style table has six rows (0..=5); a larger byte (a hand-edited slot file) would read past it in the original, so the
 /// port takes style 0, the new game's value [inferred].
-fn resolve_style(env: Option<u8>, saved: Option<u8>) -> u8 {
+pub fn resolve_style(env: Option<u8>, saved: Option<u8>) -> u8 {
     let style = env.or(saved).unwrap_or(0);
     if style > 5 { 0 } else { style }
 }
@@ -1669,7 +1628,7 @@ fn resolve_style(env: Option<u8>, saved: Option<u8>) -> u8 {
 /// `current_counted` the running record exists and lacks flag 1. `limit` is false until limits exist.
 /// Returns the new target (`current` kept when no choice ran). `None` for a style outside the table.
 #[allow(clippy::too_many_arguments)]
-fn refresh_target(class: u8, style: u8, p: &battle::Params, pos: Vec3, current: Option<Target>, valid: bool, current_counted: bool, ctx: &TargetCtx) -> Option<Option<Target>> {
+pub fn refresh_target(class: u8, style: u8, p: &battle::Params, pos: Vec3, current: Option<Target>, valid: bool, current_counted: bool, ctx: &TargetCtx) -> Option<Option<Target>> {
     let (chooser, test) = battle::dispatch(class, style)?;
     let index = |e: Entity| ctx.enemies.iter().position(|f| f.0 == e);
     let cands: Vec<battle::Cand> = ctx
@@ -2696,7 +2655,7 @@ fn party_item_uses(
         m.queued = keep;
     }
     for (user, item, who) in landed {
-        let Some(row) = data.weapons.items.iter().find(|i| i.id == item) else { continue };
+        let Some(row) = data.status.items.iter().find(|i| i.id == item) else { continue };
         let amount = row.flag1 as u16 | (row.rank as u16) << 8;
         let user_slot = q.get(user).map_or(0, |(_, m)| m.slot);
         let group = crate::items::item_id::group(item);
@@ -3141,55 +3100,6 @@ mod tests {
         assert_eq!((pick(&mut p, 0), pick(&mut p, 2), pick(&mut p, 4)), (at(b), at(a), None));
     }
 
-    /// WP-PA4: the Customize page 0x1b writes what `party.rs` reads. Donald's Style row, driven through the page's machine
-    /// (confirm, two rows down, confirm), stores style 2 in his record and `refresh_target` then picks the far enemy
-    /// (PA3's scene); the ability row's use setting lands in the byte the AI record reads (`record_setting`), and Goofy's
-    /// record is not touched.
-    #[test]
-    fn party_follows_what_the_customize_page_writes() {
-        use crate::menu::customize::{write_friend, Choice, CustomizeTables, Effect, Key, Kind, Machine, Row, FRIEND};
-        let mut p = crate::progress::Progress::from_block(&[], std::sync::Arc::new(Default::default()));
-        let t = CustomizeTables { setting_ids: vec![(0xa5, 0), (0xa6, 1)], uses: vec![Choice::default(); 3], ..Default::default() };
-        let mut m = Machine::new(vec![Row::new(Kind::Style, 0, false, 0)], vec![]);
-        m.members = vec![1, 2, 3];
-        m.who = 1;
-        m.page = FRIEND;
-        let no = |_: u16| false;
-        for key in [Key::Confirm, Key::Down { fresh: true }, Key::Down { fresh: true }, Key::Confirm] {
-            for e in m.press(key, &no) {
-                write_friend(&mut p, &t, 2, &e);
-            }
-        }
-        assert_eq!((p.member_setting(2, 0), p.member_setting(3, 0)), (Some(2), Some(0)));
-        let mut w = bevy::ecs::world::World::new();
-        let (a, b) = (w.spawn_empty().id(), w.spawn_empty().id());
-        let enemies = vec![(a, vec![(Vec3::new(300.0, 0.0, 0.0), 0.0)]), (b, vec![(Vec3::new(-150.0, 0.0, 0.0), 0.0)])];
-        let params = battle::Params { range: 400.0, retarget: 500.0, player_range: 220.0, player_near: 50.0, retarget_half: 0.5, farthest_start: -1.0, ..Default::default() };
-        let ctx = TargetCtx { enemies: &enemies, player: Vec3::new(100.0, 0.0, 0.0), attacker: None, player_target: None, player_hit: None };
-        let pick = |p: &crate::progress::Progress| {
-            let style = resolve_style(None, p.member_setting(2, 0));
-            refresh_target(2, style, &params, Vec3::ZERO, None, false, false, &ctx).expect("style in the table")
-        };
-        assert_eq!(pick(&p), Some(Target { entity: a, shape: 0 }), "style 2 picks the far enemy");
-        // The default style 0 (a record that was never written) picks the other one in the same scene.
-        let fresh = crate::progress::Progress::from_block(&[], std::sync::Arc::new(Default::default()));
-        assert_eq!(pick(&fresh), Some(Target { entity: b, shape: 0 }), "style 0 picks the near enemy");
-        // The quick key moves it on to 3 (the page rebuilds its rows from the record after a write).
-        m.reload(vec![Row { setting: 2, ..Row::new(Kind::Style, 0, false, 0) }]);
-        for e in m.press(Key::Toggle, &no) {
-            write_friend(&mut p, &t, 2, &e);
-        }
-        assert_eq!(p.member_setting(2, 0), Some(3));
-        // An ability row: id 0xa6 is entry 1 of the use-setting table, so its byte is 1 + (7 + 1) = 9.
-        let fx = Effect::Ability { id: 0xa6, value: 3 };
-        write_friend(&mut p, &t, 2, &fx);
-        let member = p.member(2);
-        assert_eq!(record_setting(member.as_ref(), 8), Some(3), "the record's setting index 8 reads byte 9");
-        assert_eq!(record_setting(member.as_ref(), -1), Some(0));
-        assert_eq!(record_setting(None, 8), Some(0));
-        assert_eq!(p.member(3).unwrap().settings[9], 0);
-    }
-
     /// WP-PA2: the battle distance follows the member's style (double for 3 and 5, halved for 2).
     #[test]
     fn party_battle_distance_follows_the_style() {
@@ -3410,8 +3320,8 @@ mod tests {
         assert_eq!(data.member_status(1, &p.member(1).expect("Sora")), (5, 7, 2), "Sora: the leader's status numbers");
         let rec = p.member(2).expect("Donald");
         let (s, m, d) = data.member_status(2, &rec);
-        let row = &data.lvup[1][(rec.level.max(1) as usize).min(data.lvup[1].len()) - 1];
-        let staff = data.weapons.items.iter().find(|i| i.id == rec.weapons[0]).and_then(|i| data.weapons.stats.iter().find(|x| x.id == i.stat_entry)).map_or(0, |x| x.magic as i32);
+        let row = &data.status.lvup[1][(rec.level.max(1) as usize).min(data.status.lvup[1].len()) - 1];
+        let staff = data.status.items.iter().find(|i| i.id == rec.weapons[0]).and_then(|i| data.status.stats.iter().find(|x| x.id == i.stat_entry)).map_or(0, |x| x.magic as i32);
         eprintln!("Donald: level {} lvup {}/{}/{} record {}/{}/{} weapons {:?} (staff magic {staff}) -> {s}/{m}/{d}", rec.level, row.strength, row.magic, row.defense, rec.strength, rec.magic, rec.defense, rec.weapons);
         assert_eq!(m, row.magic as i32 + rec.magic as i32 + staff);
         let game = GameData::load(&disc);
@@ -3434,7 +3344,7 @@ mod tests {
         let data = PartyData::load(&disc);
         let p = crate::progress::Progress::start(&disc).expect("progress");
         let mut rec = p.member(2).expect("Donald");
-        let row = &data.lvup[1][(rec.level.max(1) as usize).min(data.lvup[1].len()) - 1];
+        let row = &data.status.lvup[1][(rec.level.max(1) as usize).min(data.status.lvup[1].len()) - 1];
         let (ap, res) = data.member_ap_resistances(2, &rec);
         eprintln!("Donald: level {} lvup AP {} record AP {} weapons {:?} -> AP {ap}, resistances {res:?}", rec.level, row.ap, rec.ap, rec.weapons);
         assert!(ap >= i32::from(row.ap) + i32::from(rec.ap));
@@ -3442,7 +3352,7 @@ mod tests {
         rec.ap += 5;
         assert_eq!(data.member_ap_resistances(2, &rec).0, ap + 5);
         rec.level = 99;
-        let top = data.lvup[1].last().expect("row");
+        let top = data.status.lvup[1].last().expect("row");
         assert_eq!(data.member_ap_resistances(2, &rec).0, ap + 5 - i32::from(row.ap) + i32::from(top.ap), "the level selects the lvup row, held at the table's end");
     }
 
@@ -3460,19 +3370,19 @@ mod tests {
         let p = crate::progress::Progress::start(&disc).expect("progress");
         let mut rec = p.member(2).expect("Donald");
         let (ap0, res0) = data.member_ap_resistances(2, &rec);
-        let mut item = data.weapons.items.first().cloned().expect("an item row");
-        let mut stat = data.weapons.stats.first().cloned().expect("an item_stat row");
+        let mut item = data.status.items.first().cloned().expect("an item row");
+        let mut stat = data.status.stats.first().cloned().expect("an item_stat row");
         (item.id, item.stat_entry, stat.id) = (0x7fff, 0x7ffe, 0x7ffe);
         (stat.ability_points, stat.fire_resistance) = (7, 50);
-        data.weapons.items.push(item);
-        data.weapons.stats.push(stat);
+        data.status.items.push(item);
+        data.status.stats.push(stat);
         rec.accessories[0] = 0x7fff;
         let (ap, res) = data.member_ap_resistances(2, &rec);
         assert_eq!(ap, ap0 + 7, "the item's AP byte is summed");
         assert_eq!(res[0], res0[0]);
         assert_eq!(res[1], (res0[1] * 50 + 99) / 100, "fire is scaled by ceil(res * 50 / 100)");
         assert_ne!(res[1], 100);
-        let built = crate::enemy::member_stats_rebuilt(Some(&p), Some(&data), 2).expect("rebuilt");
+        let built = crate::enemy::member_stats_rebuilt(Some(&p), Some(&data.status), 2).expect("rebuilt");
         assert_eq!(built.ap, data.member_ap_resistances(2, &p.member(2).expect("Donald")).0, "the record's AP reaches the stats");
         assert_eq!(built.max_mp, i32::from(rec.mp_max));
         assert_eq!(built.weakness, res0);
@@ -3512,7 +3422,7 @@ mod tests {
                 let id = if off == 0 { 0 } else { w(off + k) };
                 if id != 0 {
                     let o = data.objs.iter().find(|o| o.object_id == id).map(|o| o.model_name.clone());
-                    let items: Vec<u16> = data.weapons.items.iter().filter(|i| (i.flag1 as usize | (i.rank as usize) << 8) == k).map(|i| i.id).collect();
+                    let items: Vec<u16> = data.status.items.iter().filter(|i| (i.flag1 as usize | (i.rank as usize) << 8) == k).map(|i| i.id).collect();
                     eprintln!("  went slot {k}: object {id} {o:?} items {items:?}");
                 }
             }
@@ -3850,7 +3760,7 @@ mod jump_record_tests {
             prty_offsets: Vec::new(),
             sstm: Some(kh2_tables::player::Sstm { words }),
             weapons: WeaponTables::default(),
-            lvup: Vec::new(),
+            status: Default::default(),
             mp_gate_w: (0.0, 0.0),
             deg_to_rad: 0.0,
             item_frac: (0.0, 0.0),

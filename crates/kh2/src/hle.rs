@@ -169,7 +169,7 @@ pub fn run(args: &mut Vec<String>, arc: Archive) -> Result<(), String> {
             let now = h.hw.machine.kernel.borrow().counts.clone();
             let n = (done - last_frames).max(1) as f64;
             let per: Vec<String> =
-                now.iter().filter_map(|(k, v)| (v - last_counts.get(k).copied().unwrap_or(0) > 0).then(|| format!("{k:#x}:{:.2}", (v - last_counts.get(k).copied().unwrap_or(0)) as f64 / n))).collect();
+                now.iter().map(|(k, v)| (k, v - last_counts.get(k).copied().unwrap_or(0))).filter(|e| e.1 > 0).map(|(k, d)| format!("{k:#x}:{:.2}", d as f64 / n)).collect();
             println!("  syscalls per frame {}", per.join(" "));
             last_counts = now;
             last_frames = done;

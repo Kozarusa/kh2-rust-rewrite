@@ -3251,6 +3251,7 @@ dependencies = [
  "kh2-ee",
  "kh2-factory",
  "kh2-fx",
+ "kh2-hle",
  "kh2-map",
  "kh2-model",
  "kh2-rig",

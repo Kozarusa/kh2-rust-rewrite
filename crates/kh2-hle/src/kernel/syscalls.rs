@@ -96,6 +96,7 @@ pub(super) fn install(ee: &mut Ee, kernel: &Shared) {
         (0x64, |_, _| ok(0)), // FlushCache
         (0x68, |_, _| ok(0)), // iFlushCache
         (0x6b, |_, _| ok(0)), // sceSifStopDma
+        (0x70, gs_get_imr),
         (0x71, gs_put_imr),
         (0x74, set_syscall),
         (0x76, |_, _| ok(-1)), // sceSifDmaStat: transfers are complete
@@ -406,6 +407,11 @@ fn get_osd(k: &mut Kernel, ee: &mut Ee) -> (i32, Post) {
     let p = arg(ee, 0);
     ee.w32(p, k.osd_config);
     ok(0)
+}
+
+/// GsGetIMR: the GS interrupt mask last set [SDK; reached on the way from the title to the field, 0x3186c0].
+fn gs_get_imr(k: &mut Kernel, _: &mut Ee) -> (i32, Post) {
+    ok(k.gs_imr as i32)
 }
 
 fn gs_put_imr(k: &mut Kernel, ee: &mut Ee) -> (i32, Post) {

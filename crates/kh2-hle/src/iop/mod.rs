@@ -155,6 +155,8 @@ pub struct Iop {
     pub vsync_flag: Option<vsync::VsyncFlag>,
     /// Times `InitRpc` ran.
     pub inits: u32,
+    /// Binds and module loads with the step count they happened at (for the boot order).
+    pub timeline: Vec<(u64, crate::bringup::BootEvent)>,
 }
 
 /// The IOP state shared by the hooks.
@@ -215,6 +217,7 @@ impl Machine {
             reboots: 0,
             vsync_flag: None,
             inits: 0,
+            timeline: Vec::new(),
         }));
         {
             // The IOP drives these registers; HYB-3's defaults for a finished boot are gone.

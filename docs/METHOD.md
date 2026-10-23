@@ -4,7 +4,7 @@
 
 kh2-rs does what the PS2 USA release (`SLUS_210.05`) does. Every format and behaviour comes from evidence:
 - the bytes on the user's disc;
-- community documentation (see `research.md`);
+- community documentation (see `docs/systems/foundations/research.md`);
 - decompiled behaviour, studied locally and **never committed**.
 
 A deviation from the original is written down where it lives.

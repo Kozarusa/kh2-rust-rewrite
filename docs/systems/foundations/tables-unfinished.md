@@ -57,7 +57,7 @@ byte (`FUN_001d5ec0`: first record whose byte 0 equals the key).
 | +0x20, +0x24 | f32 x2 | horizontal distance window | `FUN_001cbf48` |
 | +0x28, +0x2c | f32 x2 | height window | `FUN_001cbf48` |
 | +0x30, +0x34 | f32 x2 | window on the facing/direction dot product | `FUN_001cbf48` |
-| +0x38 | f32 | blend of the queued motion (+0xa) | `FUN_00176050` passes it as the first argument of `FUN_0017e378`, which is `FUN_0017e170`, the motion queue whose first argument host 1.13 names "blend" (docs/bdx.md) [V that it is passed; I that it is the blend of the +0xa motion] |
+| +0x38 | f32 | blend of the queued motion (+0xa) | `FUN_00176050` passes it as the first argument of `FUN_0017e378`, which is `FUN_0017e170`, the motion queue whose first argument host 1.13 names "blend" (docs/systems/script-host/contract.md) [V that it is passed; I that it is the blend of the +0xa motion] |
 | +0x3c | f32 | leap gap added to the horizontal distance | `FUN_00176050` |
 | +0x40 | u16 | ability bit that must be set (0 none) | `FUN_0019f1b0` |
 | +0x42 | u16 | not read [I: padding] | no load at +0x42 in the 0x174000..0x178fff, 0x19f000, 0x1cb000..0x1cc000 ranges (`mips_scan.py --load-off 0x42`) |
@@ -67,7 +67,7 @@ byte (`FUN_001d5ec0`: first record whose byte 0 equals the key).
 table), `menu_abilities.rs`. The app does not read +0x38 (the queued motion's blend) or +0x42. **Unknown:** the meaning of flag bits
 above 4; whether anything reads +0x42 through a computed base [GAP: the scan covers direct offsets only].
 
-Docs: docs/moveset-selection.md, docs/movement.md "ptya leap fields".
+Docs: docs/systems/player-camera/moveset-selection.md, docs/systems/player-camera/contract.md "ptya leap fields".
 
 ## 2. `patn`: reaction conversion by victim state (`00battle.bin`)
 
@@ -105,8 +105,8 @@ motors of the pad (small and large) is [I].
 jump table is at 0x37aa78, index 31 is 0x1889c0): `jal 0x1d3088` with the trigger's first parameter (u16 at trigger +4) as the key.
 OpenKH's "frame trigger 31 is vibration" is confirmed. The Config menu's Vibration row (`menu_config.rs`) holds an option bit; that it gates this player was not traced [GAP].
 
-**App.** None: nothing in `crates/` reads `vbrt` and the app has no pad rumble (docs/hit-reaction.md "Hit-stop": "vbrt is not modelled
-yet"; docs/party.md: nothing party-specific reads it). It has no visible or audible effect, so leaving it out is consistent with
+**App.** None: nothing in `crates/` reads `vbrt` and the app has no pad rumble (docs/systems/combat-effects/hit-reaction.md "Hit-stop": "vbrt is not modelled
+yet"; docs/systems/party/contract.md: nothing party-specific reads it). It has no visible or audible effect, so leaving it out is consistent with
 rule A1. **Unknown:** what the two lists drive on the pad (motors, units of the frame).
 
 ## 4. `memt`: party member objects per world (`03system.bin`)
@@ -136,13 +136,13 @@ current ones, 0x33e830 byte 1 and byte 0). The disc holds 318 records in total.
 | +0 | u32 | flag bits | `FUN_00193410(world, area, bit)` |
 | +4..+0xf | 12 bytes | not read [GAP] | no reader in the five callers of `FUN_001933a0` |
 | +0x10..+0x2f | 8 x (u16 field music, u16 battle music) | music sets; set `n` is a packed u32 at +0x10 + 4n, stored by `FUN_00193510` into 0x1c95638 (`FUN_001a7700`) with `n` = the world's saved byte at 0x33fe0c + world | `FUN_00193510`; the app reads set 0 only (`audio.rs`, `crates/kh2-ard/tests/disc.rs`) |
-| +0x30 | u16 | the battle voice bank number in `voice/<lang>/battle/<world><n>_<speaker>.vsb` (docs/audio.md); `FUN_001ae180` also matches it against the three loaded banks at 0x1cb8290 | `FUN_001ae180` |
+| +0x30 | u16 | the battle voice bank number in `voice/<lang>/battle/<world><n>_<speaker>.vsb` (docs/systems/audio/audio.md); `FUN_001ae180` also matches it against the three loaded banks at 0x1cb8290 | `FUN_001ae180` |
 | +0x32 | u16 | an item id: `FUN_00193560` sets the flag at 0x1c8a974 when the player owns it (`FUN_001a1cc8`); also run at the end of an event (`FUN_00196170`) | `FUN_00193560` |
 | +0x34 | u8 | digit of the command-menu layout file `field2d/<world>/<world><digit>command.2dd` (format at 0x378d58; `FUN_0013a6d0` via `FUN_001935e8`; the file is reloaded when world or digit changes) | `FUN_001935e8` |
 | +0x35..+0x3f | 11 bytes | not read [GAP] | none found |
 
 Flag bits [V for the callers, I for meaning]: bit 0 (`FUN_00193458`, caller `FUN_0019d818`), bit 1 indoor camera (`FUN_00193478`,
-`FUN_00177128`; docs/camera.md), bit 2 (`FUN_001934a0`, caller `FUN_0013ab08`), bit 3 (`FUN_001934c0`, caller `FUN_00168d30`), bit 4
+`FUN_00177128`; docs/systems/player-camera/contract.md), bit 2 (`FUN_001934a0`, caller `FUN_0013ab08`), bit 3 (`FUN_001934c0`, caller `FUN_00168d30`), bit 4
 (`FUN_001934e8`, caller `FUN_0015da80`). The meanings of bits 0, 2, 3 and 4 were not traced [GAP].
 
 **App.** `audio.rs` `area_arif` (voice bank +0x30, music set 0 as a stand-in for the area script's music), `camera.rs` `area_flags`
@@ -158,7 +158,7 @@ offsets are not all distinct: several movesets share a list (the disc has 24 dis
 not stored; they run to the next offset or the end.
 
 Callers: `FUN_00174fb0` (the weapon attach in the player constructor) and `FUN_0016ef28` (tail call at 0x16ef50, via `FUN_0016ee98`,
-which picks the item for the hand; docs/drive-forms.md).
+which picks the item for the hand; docs/systems/drive-limits-summons/drive-forms.md).
 
 **App.** `drive.rs` `DriveRules::from_archive` / `rules::weapon_object`, `party.rs` (`went` blob). Fully used. **Unknown:** list lengths
 (the game relies on the item slot staying inside the list).
@@ -168,14 +168,14 @@ which picks the item for the hand; docs/drive-forms.md).
 **Layout [V].** No header, 66 records of 0x40 bytes, indexed by `NeoMoveset`: two NUL padded 32-byte names, +0 the right hand
 (hand 0) and +0x20 the left hand (hand 1). `FUN_00184640(moveset, hand, buffer)` formats the name with `obj/%s.mset` (0x37a8c0) and returns
 0 when the name is empty. Callers: `FUN_0016e818` (preload), `FUN_00184058` and `FUN_00184190` (weapon attach). An empty name means the
-weapon gets no motion set and is not drawn [V for the return, I for "not drawn"; docs/drive-forms.md].
+weapon gets no motion set and is not drawn [V for the return, I for "not drawn"; docs/systems/drive-limits-summons/drive-forms.md].
 
 **App.** `drive.rs` `rules::parse_wmst`, `party.rs`. Fully used. Nothing unknown.
 
 ## 8. `ftst`: text colours (`03system.bin`)
 
 **Layout [V].** u32 version (1), u32 count (9), then 0x50-byte records: u32 id (1..8 and 10) and 19 RGBA words, one per world index (the
-order of `text::WORLDS`, docs/hud.md "Colours"). `FUN_001a7df8` is the lookup; callers `FUN_001a8210` and `FUN_001aa928` (text command 4,
+order of `text::WORLDS`, docs/systems/ui/hud-panels.md "Colours"). `FUN_001a7df8` is the lookup; callers `FUN_001a8210` and `FUN_001aa928` (text command 4,
 the colour command of the text engine).
 
 **App.** `kh2_image::text::ColorTable::parse`, loaded by `hud_text.rs` and `menu_text.rs`. Fully used. Nothing unknown.
@@ -187,7 +187,7 @@ the colour command of the text engine).
 the Jiminy journal's enemy page lists (0 = empty). The only reader is `FUN_002aadf0`.
 
 **App.** `kh2_tables::player::parse_rcct`, `menu_journal/enemies.rs` `reaction_rows`, `kills.rs` `read_rcct`. Fully used.
-docs/player-data.md "Reaction commands", docs/menus.md. Nothing unknown.
+docs/systems/combat-effects/player-data.md "Reaction commands", docs/systems/ui/contract.md. Nothing unknown.
 
 ## 10. `evtp`: event kinds (`03system.bin`)
 
@@ -218,38 +218,38 @@ sequence data here]. This is a possible small visual difference in the item wind
 
 **Layout [V].** Not a flat table. Magic `TZSH`, u16 version 7 at +4, i16 record count at +6 (21), u32 offset of the "new" item list at +0xc, u32 offset of
 the records at +0x10 (0x18 bytes each: +0 event, +2 record bit, +4 header message, +6..+0xc four words, +0xe flags, +0x10 group count, +0x14
-group offset); groups of 8 bytes (i16 record bit, u16 count, u32 offset of item ids). Full account in docs/menus.md 22.2. Readers:
+group offset); groups of 8 bytes (i16 record bit, u16 count, u32 offset of item ids). Full account in docs/systems/ui/menus-shop.md 22.2. Readers:
 `FUN_00265660` (header check), `FUN_00265688` (the stock for an event), `FUN_00265ad0` (the item's place in the new list),
 `FUN_00265970`, `FUN_00265a50`.
 
 **App.** `menu_shop.rs` (`Shops`, `stock`; test asserts the tag). Fully used except: **Unknown** the four words at record +6..+0xc
-(`docs/menus.md`: "their readers" are a gap).
+(`docs/systems/ui/menus-shop.md`: "their readers" are a gap).
 
 ## 13. The three tables with placeholder field names
 
 **`atkp` `Unknown` (s16 at record +0x10) [V].** The swirl of a Magnet-style pull. Only the class 5 reaction handler reads it
 (`FUN_001bf920`, via `FUN_00185668` from `FUN_00184e80`): it keeps the value at the victim's +0xab4, and each frame `FUN_001bfc10`
 adds the pull direction turned a right angle (`FUN_0017c2e8`) times this value to the victim's velocity. The two knockback fields
-before it give the hold distance range. The app uses it (`enemy.rs` `rules::Pull::new(.., atk.unknown, ..)`; docs/magic.md "Magnet",
-docs/hit-reaction.md class 5). Proposed name `PullSwirl`. The 277 bytes after the records (`tables.json` note) were not examined.
+before it give the hold distance range. The app uses it (`enemy.rs` `rules::Pull::new(.., atk.unknown, ..)`; docs/systems/magic/magic-turn.md "Magnet",
+docs/systems/combat-effects/hit-reaction.md class 5). Proposed name `PullSwirl`. The 277 bytes after the records (`tables.json` note) were not examined.
 
 **`fmlv` `Unk0` and `Unk1` [V].** `Unk0` is the key byte `form << 4 | level` the table is searched by (`FUN_001d3b90` through
 `FUN_0030ff40`, element size 8, first byte compared; form 0 is the summon level curve, forms 1..4 the drive forms, form 5 the Anti roll
 table). `Unk1` is the level shown to the player (1..4), whose rise upgrades the form's growth ability (`FUN_001d3da8`); for form 5 it is the
 Anti-form chance in percent (`FUN_001d4278`). The app already splits them (`kh2_tables::player::FormLevels::from_rows`). Proposed names
-`Key` (or `FormLevelKey`) and `DisplayLevel`. docs/player-data.md "fmlv".
+`Key` (or `FormLevelKey`) and `DisplayLevel`. docs/systems/combat-effects/player-data.md "fmlv".
 
 **`item_stat` `Unknown08`, `Unknown0d`, `Unknown` [V for 08/0d, I for the last].** The seven bytes at +8..+0xe are resistance
 multipliers in percent, one per element number: +8 physical, +9 fire, +0xa ice, +0xb thunder, +0xc dark, +0xd light, +0xe general.
 `FUN_001a0c08` (called for every equipped item) multiplies the status bytes at +0x1a8..+0x1ae by them, rounded up
 (`(a * b + 99) / 100`). The damage code reads status `+0x1a8 + element` (physical, element 0 of the hit row) and `+0x1ae` (general)
-(`FUN_0018b618`, `FUN_001a0610`); the menus show fire, ice, thunder and dark as `100 - value` (docs/menus.md section 10). So
+(`FUN_0018b618`, `FUN_001a0610`); the menus show fire, ice, thunder and dark as `100 - value` (docs/systems/ui/menus-status.md section 10). So
 `Unknown08` = `PhysicalResistance` and `Unknown0d` = `LightResistance` [V for the position in the element order from the loop and the
 damage read; the name "light" is I from the order of the `enmp` weakness fields: physical, fire, ice, thunder, dark, light, general].
 The final byte (+0xf) is read by nothing found: `FUN_001a67b0` is the only accessor (10 callers: `FUN_001a0c08`, `FUN_0026a2a0`,
 `FUN_0026bd08`, `FUN_0026ca28`, `FUN_0027adc0`, `FUN_002a01b8` read +2, +7 or the item row; none loads +0xf) [I: padding]. The app
 exposes fire, ice, thunder and dark resistance to the status page (`menu_status.rs`); the physical, light and general multipliers
-are not applied to the player's damage (docs/abilities.md "Resistance multipliers of equipment ... are not exposed").
+are not applied to the player's damage (docs/systems/combat-effects/abilities.md "Resistance multipliers of equipment ... are not exposed").
 
 ## 14. Proposed sheet edits
 

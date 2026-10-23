@@ -2,7 +2,7 @@
 
 **WP-PL2 (party follow-ups).** Continue no longer loses the allies' restored HP and MP to the live party sync; items heal a down member and revive him (FUN_001a15a0 has no KO test; vtable +0x78 FUN_00176c98 -> FUN_00186238 -> FUN_0017cee8). Drive Recovery and Dodge Roll findings recorded. Verified by four unit tests. Open: MP of an Elixir on a KO member (FUN_001a0210), the FUN_0017cee8 flag-8 branch.
 
-**WP-MK3 (Mickey rescue, docs).** Control swap not ported (Mickey needs his own player body and command deck); HP 1 writer not found; searched functions listed in docs/menus.md 26.5. `RESCUE_PORTED` stays false.
+**WP-MK3 (Mickey rescue, docs).** Control swap not ported (Mickey needs his own player body and command deck); HP 1 writer not found; searched functions listed in docs/systems/ui/menus-gameover.md 26.5. `RESCUE_PORTED` stays false.
 
 **WP-RV2 (revive event, hosts, weapon words, docs).** Revive is event kind 0xf playing re_gameover-0a with a 100-tick fade (0x356b30); new host rows 0.75/0.76/0.61/0.98, 10.50/10.58, 1.52-1.54, 1.131, 1.301; Donald's and Goofy's weapon words are written by host 0.75 from 00common.bdx event 7 at boot. Open: what lifts the black after the revive.
 

@@ -103,8 +103,8 @@ Done:
   for moveset 20)` is the correct answer to a zero word, not a failed lookup: FUN_0016ee98 answers 0 for a word of
   0 and FUN_0017c718 then builds no hand object. The original's own source of the words is the story (`plrp` rows
   of another Id through FUN_001c0cb0 / FUN_001c0b80 -> FUN_001a18d8, bit 15 = equipped) [inferred; only
-  `FUN_001c0cb0(0)` has a caller, see docs/progress.md Gaps]. (WP-PG1) Checked: no `plrp` row of `Id` 0 or 1 for
-  Donald or Goofy lists a weapon or shield item, so the rows are not the source (docs/progress.md "App baseline");
+  `FUN_001c0cb0(0)` has a caller, see docs/systems/core-runtime/progress.md Gaps]. (WP-PG1) Checked: no `plrp` row of `Id` 0 or 1 for
+  Donald or Goofy lists a weapon or shield item, so the rows are not the source (docs/systems/core-runtime/progress.md "App baseline");
   `Progress::start` now applies the staff / shield entry to a state file that carries no `block` too
   (`apply_party_weapons`). A file or slot with a `block` keeps its words; `KH2_PARTY_WEAPONS` still works.
   **(WP-RV2) The real writer.** Host 0.75 (table slot 0x35bc08, native FUN_0016d9d8 -> FUN_00187d88(0x33fec0, member, w0, w1) -> FUN_00187648) stores the two weapon
@@ -115,7 +115,7 @@ Done:
   exactly `DONALD_STAFF`, `GOOFY_SHIELD` and the Kingdom Key of the app baseline. The other writers of record +0: FUN_001878f8 (story events of FUN_001d5048 give Sora 0x29, 0x2b or 0x180; it keeps the
   old word in DAT_00341854 and FUN_00187910 gives it back, 0x29 when none) and the second event script writer, `ard/tt04.ard` `tt04_ms106` (host 0.75 on Sora with 384, 502 and 501). No other
   writer of Donald's or Goofy's words was found (FUN_00187648 is reached only through FUN_00187d88, whose callers are host 0.75 and FUN_001d5048; host 0.75 has 16 call sites in two scripts,
-  `00common.bdx` and `tt04.ard`; the equipment menu's writers, docs/menus.md 2.2, were not re-read) [inferred: the words stay as the boot default until the menu changes them]. Ported by a later package: `Progress` should take the 13 member
+  `00common.bdx` and `tt04.ard`; the equipment menu's writers, docs/systems/ui/menus-pause.md 2.2, were not re-read) [inferred: the words stay as the boot default until the menu changes them]. Ported by a later package: `Progress` should take the 13 member
   words and the form words from this table at the point FUN_00194d78 runs (a boot-time default) instead of the two constants.
   **(WP-RV3) Ported.** `progress::BootWeapons::read` runs event 7 of `00common.bdx` on a recording host (hosts 0.75 / 0.76 only) and `Progress::apply_party_weapons` writes the 13 member words and the form words (forms 5 = 71, 9 = 42; 1 to 4 = 0 change nothing) where the first word is 0; `DONALD_STAFF` / `GOOFY_SHIELD` are gone. Sora 41, Donald 75, Goofy 49 are read, not coded. Tests `the_boot_script_sets_the_member_and_form_weapon_words`, `boot_weapons_fill_empty_words_only`. Members 4 to 13 now carry their words too.
 
@@ -307,18 +307,18 @@ Files: `party_rules.rs` (`apply_world_records`), `party.rs` (`spawn_party`), `kh
   wanted again. Unit test `party_return_after_the_mission_program`.
 - **In the app.** The programs of a load come from the program table (`progress::Story::programs`, zero in a new game:
   no program, no 0xf) or from a jump that names them (a type-2 jump to a story program sets map, btl and evt to it,
-  docs/events.md section 4). The members therefore return when the next load's programs apply preset 1: a jump to
+  docs/systems/events-movies/npc-savepoints.md section 4). The members therefore return when the next load's programs apply preset 1: a jump to
   tt04 program 0x50 (btl, mission 0xc2) or a table entry selecting `evt` 1. A load whose programs apply preset 0
   (the cut-scene programs) now empties the party, as in the original. A Struggle entered by a type-2 jump to 0xb6..0xb8
   applies preset 0 at the load already; the wave spawner's `mission_party` (section 19) then finds the same bytes.
 - **Gaps.** Which program the story flags put into tt04's table after a Struggle ends (the table writers, op 1 of
-  FUN_0017ff60, docs/events.md section 4) was not traced here, so in a new game with a zero table nothing restores the
+  FUN_0017ff60, docs/systems/events-movies/npc-savepoints.md section 4) was not traced here, so in a new game with a zero table nothing restores the
   members after a Struggle until a jump or flag names a preset-1 program. The programs of other worlds are not in the
   app's area set. [inferred] A load that runs a mission `btl` program and `evt` program 1 together ends on preset 1
   (btl runs before evt, FUN_00181148).
 ## 21. Status: the jump record's party words and the notice page 0x15 (WP-PT1)
 
-**The hook [V].** `FUN_0019d9d8` (a trigger's jump record, docs/events.md) reads word 4 (`record +0x10`), word 5 (`+0x14`) and word 6
+**The hook [V].** `FUN_0019d9d8` (a trigger's jump record, docs/systems/core-runtime/contract.md) reads word 4 (`record +0x10`), word 5 (`+0x14`) and word 6
 (`+0x18`). After the destination is known: when word 4 is 0 or more it copies the destination world's four slot bytes to `DAT_01c8bda0`
 (`FUN_001a71c0(world)`, the current world when the record has none) and runs `FUN_001a7330(record, word 4)`, the same rule as the
 area-script command 0xf (section 1, `rules::apply_preset`, the preset being entry `word 4` of the end of `memt`). Then word 6: 1 calls
@@ -338,13 +338,13 @@ to world 2 (FUN_001a7330): slot bytes [..] -> [..]`.
 
 **The reset `FUN_001abfe8(code)` [V].** `rules::reset_effect`: 0 returns. 4, 5 and 6 end the form (`FUN_001c75c0`: `DAT_0035ff30 = 0`,
 the hidden-member count; `FUN_001ac170`: form bytes `DAT_00340c88` +4 and +5 cleared, the player's block reset) and return, 4 and 5
-only when a form is active (the low half of `DAT_00340c88` +4), 5 also raising bit 0x40000 of `DAT_0035d268` (docs/hud.md, the
+only when a form is active (the low half of `DAT_00340c88` +4), 5 also raising bit 0x40000 of `DAT_0035d268` (docs/systems/ui/contract.md, the
 drive command locked); 0xb does the same only for form byte 5; 6 always. Every other code ends the form for 2, 0xc and 10 (and 1
 when a form is active) and then runs the loop over the status blocks 1 to 15 (`FUN_0019fe48`): `FUN_001ac130` = `FUN_001a0240(block,
 0)` (a running MP charge ends, MP set to its maximum) and `FUN_001a0100(block, maximum, 0)` (HP raised by its maximum, clamped: full
-HP; the same pair `FUN_001a04b0` runs at a form start, docs/drive-forms.md). `party::jump_reset` applies the loop to Sora and the
+HP; the same pair `FUN_001a04b0` runs at a form start, docs/systems/drive-limits-summons/drive-forms.md). `party::jump_reset` applies the loop to Sora and the
 standing members (not at 0 HP [inferred]) and pushes `DriveRequest::Revert` for the form end [inferred: the app's form end is the
-Revert command, which refuses Anti by command]. Not ported: the lock bit 0x40000 (the app keeps no such flag, docs/hud.md), the
+Revert command, which refuses Anti by command]. Not ported: the lock bit 0x40000 (the app keeps no such flag, docs/systems/ui/contract.md), the
 hidden-member count (the app's drive module keeps its own absorbed flags), and blocks of members the app does not run.
 
 **Page 0x15 [V for the content, [inferred] for the frame].** `party_switch.rs`: `rules::switch_notice(previous, new)` is
@@ -439,5 +439,5 @@ Files: `party_battle.rs` (`choose_class16`), `party_rules.rs` (`auto_change_swap
   block of HP 0 was not traced (`FUN_0017d290`, `FUN_0017ca70` read; no HP-0 test found). **Open question (WP-AH1b):** what the original does with a stored HP of 0 at area entry. The current rule spawns the member at his maximum HP; with Auto Healing a reserve member at 0 HP first gets 1 HP (`FUN_001a0100` allows 0 to 1) and then spawns at 1 HP, so the same member comes back at the maximum or at 1 depending on the ability. Game over (WP-GO1) restores Sora's HP only;
   the original restores the whole save body, so after Continue the members keep the HP they had.
 - **Auto Limit [V rule, ported by WP-AL1].** FUN_001d25e0 offers a partner's limit as a reaction command; `reaction_cmd::auto_limit_offer`
-  and `limit.rs` port it (rule, gates and gaps: docs/limits-reactions.md "Auto Limit (WP-AL1)").
+  and `limit.rs` port it (rule, gates and gaps: docs/systems/drive-limits-summons/limits.md "Auto Limit (WP-AL1)").
 - **Limit hide gaps (WP-PY5 review).** FUN_001b28a0 hides only party objects 0 and 1 and only when +0x588 bit 0x400000 is clear and +0xb4c is zero; the port hides every member that is not away and ignores both conditions. FUN_001b37f8 brings the members back only when FUN_001b3bc0 returns 0; with +0x40 bit 0x10 set it calls FUN_001c75c0, which clears the hidden list without showing anyone. The port always shows them. A pause-menu scenario with a locked row was not run (unit test only).

@@ -79,7 +79,7 @@ count steps before the tick reads it, both once per frame.
   reaction (+0x26) through `FUN_0018b700` gives 3 orbs for classes 0, 2, 3 and 15 for 4, 5, 14 (none for class 1),
   never more than the side's counter (4.29); the counter loses them (`FUN_001d6620(-n, side)`) and `FUN_001cad50`
   launches n orbs of kind 0 (player) or 2 (opponent) at the victim's centre (`FUN_0016b7d0`), each with flag bit 4
-  (its life does not run down). The launch is the prize launch `FUN_001a3b28` (docs/prizes.md). Port:
+  (its life does not run down). The launch is the prize launch `FUN_001a3b28` (docs/systems/combat-effects/prizes.md). Port:
   `struggle::orbs_knocked_out`, `side_of`, `orb_kind`; test `reactions_knock_out_3_or_15_orbs`. Sora's reaction is
   worked out as `sora::receive_hits` does (`victim_outcome`), the opponents' comes with `AiHit`.
 - **Kinds** (table 0x37c238, 16 bytes each as the prize kinds): kind number, radius 27.9, bounce sound 0x29,
@@ -201,8 +201,8 @@ down at the end: it stays until the menu ends the manager.
 **The result menu (WP-STRM)** [V unless marked]. `FUN_001b96e0` calls `FUN_0024f330(FUN_001bef10(0x1a), 0)`.
 `FUN_001bef10` is a binary search (`FUN_0030ff40`, rows of 0x40 bytes sorted by the u16 key at +0) of the table
 `DAT_01d5df08`, which `FUN_001d3408` (`FUN_001beed0`) points at entry `slct` (tag at 0x37c558) of `14mission.bar`
-(+4 the row count, 23 rows, from +8). `FUN_0024f330` is the field Save command's opener (docs/menus.md 18.1 and
-section 21): menu kind 7, whose kind 8 shows the row as a pointer list. Row 0x1a: two options, code 4 with message
+(+4 the row count, 23 rows, from +8). `FUN_0024f330` is the field Save command's opener (docs/systems/ui/menus-save.md 18.1 and
+docs/systems/ui/menus-struggle-result.md section 21): menu kind 7, whose kind 8 shows the row as a pointer list. Row 0x1a: two options, code 4 with message
 0x8ab2 ("Quit") and code 3 with 0x8ab1 ("Retry"), cursor on the first (+3 = 0), +0x14 = -1, +0x16 = 0xd, no
 information message, +0x25 = 1: the list's cancel and -4 are off (`FUN_0026f508` clears flags 0x60), so a row must
 be picked. A row runs `FUN_001b9c58(code)` (`FUN_0026fda0`): code 3 -> event 0x8b (`FUN_001d58e0` too for mission
@@ -266,7 +266,7 @@ instead of the game-over paths (`FUN_001ad8e0` / `FUN_001ad810` / `FUN_001ad8a8`
 so the factor is 1. Port: `mission_tick` sends event 0x5a when Sora's HP falls to 0 with the bit set; test
 `a_knock_out_with_host_1_317_loses_the_struggle`; log `struggle: Sora knocked out: global event 0x5a`. The app still
 revives Sora after 3 s (`sora.rs`) in this case; in the original he stays down through the result [inferred from the absence of a
-revive in `FUN_001cec00`]. Without the bit (WP-GO1) the knock-out is the game over of docs/menus.md section 26: type 3 while a
+revive in `FUN_001cec00`]. Without the bit (WP-GO1) the knock-out is the game over of docs/systems/ui/menus-gameover.md section 26: type 3 while a
 manager of kind 2, 0x19 or 0x20 runs (list "Quit" / "Retry", the Struggle's own trigger jumps), type 0 for the other managers; a
 manager that ends by itself (`FUN_001b9ce0`, `Finish::GameOver`) hands `Mission::game_over_request` to `menu_gameover`.
 
@@ -275,7 +275,7 @@ manager that ends by itself (`FUN_001b9ce0`, `Finish::GameOver`) hands `Mission:
 The Struggle `btl` programs (0xb6..0xb8) run opcode 0xf with preset 0 (`FUN_001a7330`) before they spawn the
 group, so the slot bytes name no companion and the group's FRIEND_1 / FRIEND_2 rows create nothing
 (`FUN_0016e208` -> `FUN_0017cd20`). The app applies the program's presets when the mission starts
-(`party::mission_party`) and the party rebuild removes Donald and Goofy. Details and gaps: docs/party.md section 19.
+(`party::mission_party`) and the party rebuild removes Donald and Goofy. Details and gaps: docs/systems/party/party-built.md section 19.
 
 ## The pickup skips (verified)
 
@@ -340,14 +340,14 @@ object 0x236 the player) plays event `re_msstart-1a` (kind 0xc, `evtp` flags 0x7
 hidden). Its commands: opcode 8 end frame 130 (4.33 s), opcode 0x13 one camera record (eight channels, 191 keys),
 opcode 6 cut camera 0 from frame 0 to 130, opcode 0x46 (+6 = 0: pulled in against the map, no blockers), opcode
 0x31 at frame 103 with mode 1 (the fly-back to the field camera), opcode 0x3c at frame 120 (effect 0 of the
-mission's effect file, mode 0 = start). How each is read and run: docs/camera.md "The intro camera".
+mission's effect file, mode 0 = start). How each is read and run: docs/systems/player-camera/camera-event.md "The intro camera".
 
 **In the app** (`intro.rs`): `intro::tick` follows the mission's start layout (`Mission.m.play`, `what ==
 "start"`), parses its event (`Track::parse`), and every tick hands the camera the track's view at the event frame
 (game ticks times 0.5, `FUN_00222728`), then the fly-back from frame 103, through `CamEvent::track`; opcode 0x3c
 starts the effect (`fx::load` of the mission file's BAR type 0x12 entry, the manager's +0xc group that
 `FUN_001b8ee8` loads with `FUN_001db4d0`). The control lock and the field-HUD hide are the start layout's, as
-before. The INFORMATION bar is `hud_info.rs` (docs/hud.md "The INFORMATION bar"). Logs: `intro: TT04_MS500 start
+before. The INFORMATION bar is `hud_info.rs` (docs/systems/ui/hud-banners-windows.md "The INFORMATION bar"). Logs: `intro: TT04_MS500 start
 event (entry 2): 1 camera record(s), cuts [(0, 0, 130)], end frame 130, fly-back from frame Some(103), ...`,
 `camera: intro camera on`, `intro: frame 103: the camera flies to the field camera behind the player`, `intro:
 frame 120: effect 0 of TT04_MS500's effect file started`, `camera: intro camera off: the field camera takes over`.
@@ -383,7 +383,7 @@ ruled out [measured]: (a) the `evt` groups `e55_` and `f55_` (kind 6) hold one o
 -1254.2) and 0x524 at (-106.0, 0, -1257.1): nothing near the fighters or the camera's +z view; (b) the story
 flag: the `btl` program 0xb5 sets flag 0x8db (opcode 0x19) and its other commands are the world record (0xf), the
 battle manager with `TT04_MS500` (0x15), party reset 3 (0x1d) and the spawn of `b_45`; `KH2_STATE` has no
-story-flag key (docs/progress.md schema), so a story-state run is not available in the app, and nothing in the
+story-flag key (docs/systems/core-runtime/progress.md schema), so a story-state run is not available in the app, and nothing in the
 three 0xb5 programs reads the flag to choose other groups; (c) Seifer's script `N_EX570_BTL` (`cargo run -p kh2 --
 bdx N_EX570_BTL`, 3369 lines) has no position setter: its movement hosts are 1.111 `set_move` (3), 1.58
 `set_dash` (2), 1.1 `set_yaw` (2), 1.4 `face_direction` (4); 1.147 `position` and 1.120 `target_position` only
@@ -391,7 +391,7 @@ read; (d) the camera record (opcode 0x13) holds its index and the eight channel 
 accounted for: no target actor. Remaining hypothesis [inferred, not checked]: the actors keep the places the
 story event before the mission left them (the prologue scene at the notice board) until the battle layout takes
 over; that event and its hand-over to the mission are not decoded. (2) The smear: drawn since WP-I3 as the
-display-buffer feedback lens, docs/camera.md "The intro camera".
+display-buffer feedback lens, docs/systems/player-camera/camera-event.md "The intro camera".
 
 ## Harness
 

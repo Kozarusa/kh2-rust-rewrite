@@ -44,7 +44,7 @@ Ghidra program holds the executable only), so the per-frame functions were not n
 
 ## What the app lacks for a Gummi mission (gap list, not a port)
 
-The app has no Gummi flight at all (docs/worldmap.md "Route markers"). It needs, at least: the overlay's code and data model as a Rust port (the overlay is a separate
+The app has no Gummi flight at all (docs/systems/worldmap-gummi/worldmap-plan.md "Route markers"). It needs, at least: the overlay's code and data model as a Rust port (the overlay is a separate
 program of about 0x6a000 bytes of code and data with its own object classes), the `gumi.bar` text (`msg/us/gumi.bar`) and the gummi file set loaded in the state (`gumi_sys`,
 `gumi_deco`, `wm_ws.2ld`), its own camera, controls and HUD, the mission table and the rewards, and the hand-over (the route marker contact on the map starts it, the
 end returns to the map). None of this was read; each is a gap.
@@ -53,4 +53,4 @@ end returns to the map). None of this was read; each is a gap.
 
 - A break on 0x103e20 (who selects the Gummi program and with which route), the per-frame functions of the overlay (a breakpoint on any object's vtable function), the mission
   record and the Gummi controls: need the patched emulator (`local/tools/pcsx2-mcp`) with the two states loaded.
-- The states hold no enemy object (battle flag 0 and the actor pool is the map's), so they cannot show the +0x570 link or M_EX950 (docs/dynamic-tracing.md section 5).
+- The states hold no enemy object (battle flag 0 and the actor pool is the map's), so they cannot show the +0x570 link or M_EX950 (docs/systems/foundations/dynamic-tracing.md section 5).

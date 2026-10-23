@@ -25,7 +25,7 @@
   `DAT_0036bcf0` reaches it, and the command is dropped when the event left the play state or is being skipped
   (`FUN_00222630`).
 - **Per frame** [V]. `FUN_002233d8`: when the event has a camera, `FUN_0015c8f8(DAT_0036bcdc)` (the override of
-  docs/camera.md); pad/fade handling; `FUN_00224fa8` (frame step); `FUN_001963e0`. The camera per frame is
+  docs/systems/player-camera/contract.md); pad/fade handling; `FUN_00224fa8` (frame step); `FUN_001963e0`. The camera per frame is
   `FUN_0022b0f8` (called from the setup reader's frame path at `0x22481c`): it counts the entries of the
   128-entry table `DAT_0036bbb4` (`id, u16 start, u16 end`) active at the current frame and feeds the track to
   `FUN_0015ce00`. Opcode 6 commands in tt events are `u16 index, u16 start frame, u16 end frame, u16 0`, which
@@ -37,7 +37,7 @@
   `.anb` name; the rest not read.
 - **Message lines** [V]. Opcode 0x2d (`FUN_002275a8`): +4 frame, +6 key, +8 message id, +0xa action (0 open,
   1 close, 2 wait until the window reaches state 3), +0xc window kind (0: class 0x1ab6a8, 1: class 0x1ab8e0;
-  docs/hud.md). [V, WP-E6b] Action 1 finds the slot of (key +6, message +8) among the 32, calls the window's
+  docs/systems/ui/contract.md). [V, WP-E6b] Action 1 finds the slot of (key +6, message +8) among the 32, calls the window's
   close method (vtable +0x20) and clears the slot, so the wait that follows finds nothing and returns at once
   (close without waiting). Action 2 finds the slot and, unless the event is skipped (`FUN_002225e0`), sets
   `DAT_0036b9c9` (`FUN_00222528`) and yields until the window's state (+0x70) is 3, then clears it
@@ -51,15 +51,15 @@
   `DAT_0035e3a4` (host 1.34 `event_active` reads it), hides HUD parts (`FUN_001bef48(0xc)`, `FUN_0014c748(4)`).
   `FUN_00195c08` steps the object's own states (0..9). When the event ends (`FUN_001964d0`) the chain event 0x4c
   fires for kinds with bit 0; the event's end (`FUN_00225028`) fires 0x12 or 99. Other starters: `FUN_001ad1c0`,
-  `FUN_001ad378` (the game over and the revive: kind 0xf, the event `re_gameover-0a`, the first type 0x16 entry of `00battle.bin` through `FUN_00193f08(0)`; WP-RV2, docs/summons.md), `FUN_001b3468`.
+  `FUN_001ad378` (the game over and the revive: kind 0xf, the event `re_gameover-0a`, the first type 0x16 entry of `00battle.bin` through `FUN_00193f08(0)`; WP-RV2, docs/systems/drive-limits-summons/contract.md), `FUN_001b3468`.
 - **What the start holds back, and what the end gives back** [V, WP-E6b]. `FUN_00195898` takes the kind row of
   `arg & 0x3f` (`FUN_001d1128`: `FUN_0030ff40` searches the `evtp` rows of `03system.bin`, 8 bytes, by their kind
   byte; +2 the flags; `struggle::event_kinds`). `FUN_00195ae0` then: flag bit 3 clear -> `FUN_00196280`
   (`FUN_001b7ce8(0)`, `(1)`: the players' control bits of 0x1d5d7b8); bit 2 clear -> `FUN_00196760` (`FUN_0014ef48`
-  -> `FUN_0013da78`: the field HUD's draw tags 3 to 6, docs/struggle.md). The two calls the brief named are not HUD
+  -> `FUN_0013da78`: the field HUD's draw tags 3 to 6, docs/systems/world-minigames/struggle.md). The two calls the brief named are not HUD
   hides: `FUN_001bef48(0xc)` (disassembled: `a0` passes to `FUN_001bef10`, a search of the 0x40-byte rows of
   `DAT_01d5df08`, whose row is copied into slot `row +0x24` of 0x1d5dd88; `FUN_001befc0(0xc)` clears the slot)
-  is pause-menu record 0xc (docs/struggle.md: the pause-menu record table), and `FUN_0014c748(4)` sets bit 4 of
+  is pause-menu record 0xc (docs/systems/world-minigames/struggle.md: the pause-menu record table), and `FUN_0014c748(4)` sets bit 4 of
   `DAT_00356f1c`, which only `FUN_0014c780` reads (callers `FUN_0014a080` pause menu, `FUN_0014c4a8`, `FUN_0014c7b8`
   the play clock): both are undone by `FUN_001959f0` (`FUN_0014c760(4)`, `FUN_001befc0(0xc)`) when the object is
   destroyed. **Nothing hides the player or the party models**: `FUN_00195ae0`, `FUN_00195d28` (state 0: the fade by
@@ -120,7 +120,7 @@
   frame +4, +6 = 0 -> `FUN_001b7fa8(2000)`, else `FUN_001b8040(2000)`: every object of the list at
   `DAT_01d5d7a0` (next at +0x8b4) without +0x588 bit 0x20 whose method +0x3c answers below 2000 gets object
   +0x10c bit 0x80 set (resp. cleared). Bit 0x80 is a hide: `FUN_0019af68` (true when +0x10c 0x80 or 0x100, ...)
-  makes `FUN_00191c18` clear bit 4 of +0x768 [inferred: the draw bit] and the weapon test of docs/movement.md.
+  makes `FUN_00191c18` clear bit 4 of +0x768 [inferred: the draw bit] and the weapon test of docs/systems/player-camera/contract.md.
   Method +0x3c of the actor class (vtable 0x35b950) is `FUN_0016bc68`: the +0x28 tag of the object's
   `obj/%s.mdlx` resource (`FUN_0016ed08`, format 0x37a430; `FUN_0016f800` finds it in the list `DAT_0035bd88`;
   `FUN_0016f8e0(2000)` at the event start (state 2) moves tags of 2000 and above to 10000+). **WP-EV1, the rule.**
@@ -234,5 +234,5 @@
 - **Movies, opcode 0x44** [V]. `FUN_00225860`: at frame +4, plays `movie/<region>/<+6>.pss` (format 0x37f010
   with `DAT_00349d40`, `us`; WP-E6d) and waits for it; the tt01 events `100`, `200`, `400`, `600` are the movies `opn`,
   `me2`, `me4`, `me6` with their subtitle lines (test `the_tt01_short_events_are_movies_with_subtitle_lines`).
-- **World map events are not area events** [V, WP-WM7]. The events of the `wm` world (1836 and 1837 started by a confirm on a symbol, `FUN_002ccd88` -> `FUN_002c6a40`) are programs of the talk table (`libretto-wm.bar`, the talk table of section 3) run by their own executor `FUN_002c4c58` (ops 0x100 to 0x113: actors, animations of the entries of `libretto/us/wm<event>.bar`, voices, a stage matrix, fades, message windows), not commands of a type-0x16 entry, and they do not use the event player above (no `evtp` kind row, no frame counter: the executor waits in frames). The port is in `worldmap.rs` (`Script`, `WmEvent`; `kh2_ard::libretto::Cut` reads the ops); docs/worldmap.md section 10 "W7 events" has the ops, the files and the gaps.
+- **World map events are not area events** [V, WP-WM7]. The events of the `wm` world (1836 and 1837 started by a confirm on a symbol, `FUN_002ccd88` -> `FUN_002c6a40`) are programs of the talk table (`libretto-wm.bar`, the talk table of section 3) run by their own executor `FUN_002c4c58` (ops 0x100 to 0x113: actors, animations of the entries of `libretto/us/wm<event>.bar`, voices, a stage matrix, fades, message windows), not commands of a type-0x16 entry, and they do not use the event player above (no `evtp` kind row, no frame counter: the executor waits in frames). The port is in `worldmap.rs` (`Script`, `WmEvent`; `kh2_ard::libretto::Cut` reads the ops); docs/systems/worldmap-gummi/worldmap-plan.md section 10 "W7 events" has the ops, the files and the gaps.
 

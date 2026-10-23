@@ -54,10 +54,10 @@ Port: `Progress::{count_healed, count_mickey_save, count_form_use, count_summon_
 **24.4b Hooks (WP-CT2).** `menu_ending.rs` builds rows 3 to 7 from the readers (`Report::from_progress`; rows 1 and 2 still have no source). Hooks:
 - Form change, done: `drive.rs` (`drive_tick`, where the entered form is decided) calls `Progress::count_form_use(form)` with the form entered (1 Valor, 2 Wisdom, 3 Master, 4 Final, 5 Anti), the same value
   `FUN_001d4180` answers to `FUN_001cf030` message 4. Anti is index 5, the word the Antiform row (row 6) reads, so a roll that gives Anti counts there and in the fifth entry of row 5.
-- Row 3 is NOT the Cure spell (correction of the earlier note). `FUN_001b8658` is the end of the item-use task (`FUN_001b84c8`, queued by `FUN_001b82b8`; items.md): its task fields are the item (`+4`), the user's member id (`+0xc`)
+- Row 3 is NOT the Cure spell (correction of the earlier note). `FUN_001b8658` is the end of the item-use task (`FUN_001b84c8`, queued by `FUN_001b82b8`; docs/systems/ui/items.md): its task fields are the item (`+4`), the user's member id (`+0xc`)
   and the target (`+0x10`), and it calls `FUN_001a11a0(item, target, user, mult)`, which returns `target != user` (a group item, `FUN_001a1fe0`: any living slot other than the user). The counter is added when the user is member 1
   (Sora) and that holds, so row 3 ("Healed Party Members") counts Sora using an item on another party member. The Cure spell never reaches `FUN_001b8658`. Done (WP-IT1): `items.rs` `run` calls `Progress::count_healed()` once when a queued use finishes with Sora as the user and
-  another field member as the target (`items::counts_as_healed`), the field command's target list offering Donald and Goofy (docs/items.md section 6).
+  another field member as the target (`items::counts_as_healed`), the field command's target list offering Donald and Goofy (docs/systems/ui/items.md section 6).
   The pause menu's item use calls `FUN_001a11a0` directly (`FUN_0025ea40`), not `FUN_001b8658`, so it counts nothing.
 - Ids 0x404 / 0x405: `prize.rs` ports the prize pool (`FUN_001a3f98`, pickups through `FUN_001a39b0`, 9 kinds at 0x37b4b0); the object of `FUN_001c3d38` / `FUN_001c46a8` is a different class (its own absorb path
   `FUN_001c45f8`, a limit of 1000 - `DAT_01d5e2b0` < 300, experience through `FUN_001b51e0`, then `FUN_001be6b8`) and neither it nor its record id 0x5bd is spawned by the app, so there is nothing to hook [object not identified]. `Progress::count_defeat(0x404 / 0x405)` stays ready.
@@ -68,8 +68,8 @@ Port: `Progress::{count_healed, count_mickey_save, count_form_use, count_summon_
 **Kind 5, the camp before a jump (`FUN_0024f300`).** `FUN_0024f300(a, b)` is `FUN_0026ef70(b)` (`DAT_0036cffc = b`) then
 `FUN_0024f0b8(5, a)`; `FUN_0019d9d8` passes b = 0x1c8bda0, an address, so `FUN_0026ef80()` is never 0 and kind 5's init
 `FUN_00250450` always opens page 0x15 (the "Party Members have been switched." notice, 19.4), not page 0x14. That page lists
-the members that came in and went out of the party (word 4's arrangement). Ported in WP-PT1 (`party_switch.rs`, docs/party.md section 21):
+the members that came in and went out of the party (word 4's arrangement). Ported in WP-PT1 (`party_switch.rs`, docs/systems/party/party-built.md section 21):
 the arrangement is applied (`party::jump_party`) and the notice opens over the frozen field; its frame geometry is [inferred] (addresses
-`FUN_0024f300`, `FUN_00250450`, `FUN_0026ef80`, `FUN_0026e618`, `FUN_0026e970`). The wait is JT4's (events.md).
+`FUN_0024f300`, `FUN_00250450`, `FUN_0026ef80`, `FUN_0026e618`, `FUN_0026e970`). The wait is JT4's (docs/systems/core-runtime/contract.md).
 
 

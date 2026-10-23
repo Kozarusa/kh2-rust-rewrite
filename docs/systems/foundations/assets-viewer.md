@@ -5,7 +5,7 @@ step through the models, motions, textures, effects and sounds the app can read 
 shows each one with the identifiers you can paste into a report. It draws with the game's own paths
 (skinned models through `skel::spawn_skinned`, maps through `assets::spawn_model`, motions through the
 `Animator`, effects through `fx::start_placed`, sounds through the sound driver); there is no second
-renderer. The sound viewer (F10, `docs/audio.md` "Sound viewer") stays a separate tool.
+renderer. The sound viewer (F10, `docs/systems/audio/audio.md` "Sound viewer") stays a separate tool.
 
 ## Start
 

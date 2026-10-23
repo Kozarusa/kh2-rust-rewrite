@@ -42,7 +42,7 @@ objects) is a spiked, top-like Heartless of the 11 areas the area survey lists (
   `set_obj_param` (host 2.9 at 0x1d4a): `enmp` row 37 (`experience: enmp 37 defeated: +2 (lvpm 4 x enmp 50)`). The harness enemy has 14 HP.
 - **Death.** The `dead` mode hands the object's +0x1c to host 1.92 (`drop (host 1.92) asked row 5`) like the other kinds, fades out and hides:
   `Kind::death_effect` true.
-- **Host calls.** One new arm: 1.161 `has_link` on the enemy itself (Approx false, see `docs/enemy-ai.md`; asked at 0x1479 by R145b, which waits
+- **Host calls.** One new arm: 1.161 `has_link` on the enemy itself (Approx false, see `docs/systems/script-host/contract.md`; asked at 0x1479 by R145b, which waits
   for the link to end after the `rc_catch` grab, and at 0x165f by R1659). Others it reaches that other kinds already answer: 1.23, 1.58, 1.11, 1.12,
   1.206, 1.171, 1.56, 1.121, 1.111, 1.120, 1.90, 65535.0 / .1 / .2.
 - **Grab.** R086f (0x086f: motion 241, mode `rc_catch`, `link_start` 1.18 on the player with 0x4002 / 1, then motion 253) is the catch: 1.18 on the

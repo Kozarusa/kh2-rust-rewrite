@@ -22,11 +22,11 @@ Work package SV2, 2026-10-19. Written from run logs only; no game data (counts a
 
 ## Collision groups (WP-IW1)
 
-The COCT meshes carry a group number and the game only walks meshes whose group bit is in the area script's map visibility word (docs/movement.md section 8). `kh2 coct-walls <area>` lists the walls per group and which are off: eh10 (program 0,1,0) has 108 party-wall polygons in groups 3 to 8 that are off under word 0x407, he05 (word 0x3) 10 polygons in groups 2, 3, 12, 22, 32 and 62, al01 (word 0xc1ffffffff) none. The app made them all solid, which stopped Sora at the arena walls of eh10.
+The COCT meshes carry a group number and the game only walks meshes whose group bit is in the area script's map visibility word (docs/systems/core-runtime/collision.md section 8). `kh2 coct-walls <area>` lists the walls per group and which are off: eh10 (program 0,1,0) has 108 party-wall polygons in groups 3 to 8 that are off under word 0x407, he05 (word 0x3) 10 polygons in groups 2, 3, 12, 22, 32 and 62, al01 (word 0xc1ffffffff) none. The app made them all solid, which stopped Sora at the arena walls of eh10.
 
 ## Area opcode 0xb (WP-IW3)
 
-Survey of every `ard/*.ard` on the disc (269 files; all `map`, `btl` and `evt` programs, nested opcode 0x1c commands included), read with `kh2_ard::Area::parse`, no game run. 183 commands in 73 areas, all in `map` programs except 19 in `btl` programs (hb08, hb16, he09, mu07, nm07, eh25). The mask is 64-bit (argument 0 low, argument 1 high). Distinct masks: bit 62 (0x4000000000000000) 142 times, bit 61 15, bit 59 4, bits 61 and 62 3, 0x4000000100401000 (bits 12, 22, 32, 62; he05 programs 0x1a, 0x6f, 0x1b) 3, bit 58 3, bit 60 3, bit 31 2, bit 11 2, bit 41 2, bit 21 2, bits 58 to 62 once, bit 56 once. Most areas carry bit 62 in several programs. The areas the app starts in: tt04 programs 0x4f and 0x50 (bit 62), eh10 program 0x39 (bit 62), he05 programs 0, 1, 2, 0x1a, 0x1b, 0x1c, 0x6f. tt00 and tt02 have none. Areas: al00 al03 al05 al09 al13 al14 bb00 bb01 bb03 bb04 bb11 bb15 ca01 ca02 ca05 ca10 ca14 ca18 dc00 eh10 eh14 eh15 eh19 eh25 hb01 hb04 hb07 hb08 hb09 hb16 hb17 hb18 hb20 he02 he05 he06 he07 he09 he17 he18 he19 lk04 lk05 lk15 mu01 mu02 mu03 mu05 mu07 mu08 mu09 mu10 nm00 nm03 nm06 nm07 nm09 nm10 tr02 tr04 tr09 tt03 tt04 tt05 tt08 tt14 tt19 tt25 tt29 tt30 tt41 wi02 wi03. Effect in the app: the word is stored and the hosts 1.46 / 1.47 apply it (docs/movement.md 8.1).
+Survey of every `ard/*.ard` on the disc (269 files; all `map`, `btl` and `evt` programs, nested opcode 0x1c commands included), read with `kh2_ard::Area::parse`, no game run. 183 commands in 73 areas, all in `map` programs except 19 in `btl` programs (hb08, hb16, he09, mu07, nm07, eh25). The mask is 64-bit (argument 0 low, argument 1 high). Distinct masks: bit 62 (0x4000000000000000) 142 times, bit 61 15, bit 59 4, bits 61 and 62 3, 0x4000000100401000 (bits 12, 22, 32, 62; he05 programs 0x1a, 0x6f, 0x1b) 3, bit 58 3, bit 60 3, bit 31 2, bit 11 2, bit 41 2, bit 21 2, bits 58 to 62 once, bit 56 once. Most areas carry bit 62 in several programs. The areas the app starts in: tt04 programs 0x4f and 0x50 (bit 62), eh10 program 0x39 (bit 62), he05 programs 0, 1, 2, 0x1a, 0x1b, 0x1c, 0x6f. tt00 and tt02 have none. Areas: al00 al03 al05 al09 al13 al14 bb00 bb01 bb03 bb04 bb11 bb15 ca01 ca02 ca05 ca10 ca14 ca18 dc00 eh10 eh14 eh15 eh19 eh25 hb01 hb04 hb07 hb08 hb09 hb16 hb17 hb18 hb20 he02 he05 he06 he07 he09 he17 he18 he19 lk04 lk05 lk15 mu01 mu02 mu03 mu05 mu07 mu08 mu09 mu10 nm00 nm03 nm06 nm07 nm09 nm10 tr02 tr04 tr09 tt03 tt04 tt05 tt08 tt14 tt19 tt25 tt29 tt30 tt41 wi02 wi03. Effect in the app: the word is stored and the hosts 1.46 / 1.47 apply it (docs/systems/core-runtime/collision.md 8.1).
 
 ## Ranked gaps
 
@@ -39,7 +39,7 @@ Refreshed by WP-SV3 (2026-10-20) after EN9 to EN11f: `enemy::KINDS` has 38 kinds
 **Totals.** 88 absent objects of ObjectType 4 or 21 appear in spawn groups: 23 base enemy kinds, 41 world variants and twins (suffixes `_WI` Timeless River, `_NM` Halloween and Christmas Town, `_TR` Space Paranoids, `_AL` Agrabah, `_RAW`, `_LC`, `_DC`, `_EH`), 8 bosses (`B_*`), 4 Struggle or event opponents (`N_EX610_BTL`, `N_EX610_BTL2`, `N_AL070_BTL`, `P_EX130`; the first two have NeoStatus 5058 and stand in groups with FRIEND and PLAYER entries, [inferred] Struggle matches) and 12 world objects that are not enemies. The old count of 100 included models that are not ObjectType 4 or 21.
 
 **Blocked or special.**
-- `M_EX900` (12 areas): in `KINDS` since WP-EN12a (soaked in tt19 b_00 and tt03 b_40: every dive ends through the event 17 frame trigger, docs/enemies.md "M_EX900").
+- `M_EX900` (12 areas): in `KINDS` since WP-EN12a (soaked in tt19 b_00 and tt03 b_40: every dive ends through the event 17 frame trigger, docs/systems/script-host/enemies-m-ex8-9.md "M_EX900").
 - `M_EX950` is in `KINDS` (EN9e). Its reaction-command modes (`rc_*`, hosts 1.165 and 1.237, event 11 with 312 or 323) and its two spawn objects were never reached; that is a gap of the kind, not an absent kind.
 - Bosses: `B_CA020`, `B_CA030`, `B_CA040` (14 areas together, each needs 1.222 and 2.29), `B_CA000` (ca10, eh02, eh03; needs 0.32 and 1.250), `B_LK110_PHANTOM` (lk03, lk04, lk05, lk07, group b_35 in each, no missing host call: the cheapest boss), `B_EX210_EH`, `B_EX350` and `B_MU130` (the last two have no usable BDX entry: `kh2 bdx` reports an empty or missing script, so their AI lives elsewhere).
 - Not enemies: `F_*` and `EH_G_*` objects (Timeless River props, the Hollow Bastion map objects F_BB050 and F_BB060, the 100 Acre Wood game F_PO090 family, the Gummi enemies of eh22 and eh26). They need their own handling, not an enemy kind.
@@ -74,7 +74,7 @@ Refreshed by WP-SV3 (2026-10-20) after EN9 to EN11f: `enemy::KINDS` has 38 kinds
 
 #### World variants and twins
 
-Rows whose script column says "= X" run the same listing as `X`, so the work is a `Kind` constant with the variant's model and `enmp` row plus a check of its model and motion set (the `M_EX020_RAW` precedent, docs/enemies.md). The others have their own script.
+Rows whose script column says "= X" run the same listing as `X`, so the work is a `Kind` constant with the variant's model and `enmp` row plus a check of its model and motion set (the `M_EX020_RAW` precedent, docs/systems/script-host/contract.md). The others have their own script.
 
 | kind | areas | groups (members) | objentry id / type / NeoStatus | enmp row | script | host calls the enemy host lacks | groups with no other absent kind | first areas |
 |---|---|---|---|---|---|---|---|---|
@@ -143,7 +143,7 @@ Order = areas unlocked per unit of work: no missing host call first, then one ch
 
 | # | kind | area / btl program / tag | kind-2 group (id: members; centre x,z) | enmp | missing host calls | note |
 |---|---|---|---|---|---|---|
-| 1 | `M_EX900` | tt19 / 1 / b_00 | 299: 3 `M_EX900`; (-2, 0) clear | 45 | none | done in WP-EN12a: in `KINDS`, 117 s soak and a kill in tt03 b_40 (docs/enemies.md) |
+| 1 | `M_EX900` | tt19 / 1 / b_00 | 299: 3 `M_EX900`; (-2, 0) clear | 45 | none | done in WP-EN12a: in `KINDS`, 117 s soak and a kill in tt03 b_40 (docs/systems/script-host/contract.md) |
 | 2 | `M_EX130` | bb13 / a / b_20 | 13: 4 `M_EX130`, 3 `M_EX420`; (0, 4) clear | 2 | none | ObjectType 21; 21 areas; 26 sole groups |
 | 3 | `M_EX710` | tt39 / 4 / b_10 | 156: 2 `M_EX710`; (0, -6) clear (the volume centre has y 4013: the room lies far above the entrances) | 11 | 1.247 `random_free_point` (an Approx port exists for party members: `party_rules::free_point`), 2.36 (empty function) | ObjectType 21; the widest kind (28 areas, 37 sole groups); shares 11 groups with `M_EX130` |
 | 4 | `M_EX890` | tt29 / 7 / b_21 | 145: 4 `M_EX890`; (1, 0) clear | 44 | none | ObjectType 21; Twilight Town (tt08, tt17, tt29, tt36), Beast's Castle, eh07; 9 groups, all sole |

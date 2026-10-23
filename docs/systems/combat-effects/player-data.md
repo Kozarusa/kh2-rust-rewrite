@@ -9,7 +9,7 @@ decompiled code is a local study aid and is not in the repository. No game value
 the numbers below are structure (which field, which unit); the values come from the disc at run time.
 
 The saved state these systems read (inventory, party and form records, munny, summon level, outfits) and its
-new-game values are in `docs/progress.md` (WP-7S, `progress::Progress`, save block `0x33e860`, party block
+new-game values are in `docs/systems/core-runtime/progress.md` (WP-7S, `progress::Progress`, save block `0x33e860`, party block
 `0x33fec0`).
 
 ## How to look at the data
@@ -63,7 +63,7 @@ fields that matter for the player systems:
 | `Priority`, `Mark`, `Range`, `Dir`, `DirRange`, `DistRange`, `Score`, `Group`, `CmdIcon`, `SubMenu` | command-menu layout and reaction-command targeting. Not traced. [GAP] |
 
 Magic commands (`Execute` 2, `Argument` = the `magc` slot, `Cost` = MP, 255 = all MP) and the `magc`, `magi` and
-MP-charge rules are in `docs/magic.md` (WP-6B): a spell with too little MP can still be cast (FUN_001ba2c0 status 2),
+MP-charge rules are in `docs/systems/magic/contract.md` (WP-6B): a spell with too little MP can still be cast (FUN_001ba2c0 status 2),
 paying more than the MP left starts the charge (FUN_00186368 -> FUN_00186440, `prty` MpDrive).
 
 `item` records of type 20 (summon charms) and 21 (drive form items) carry the command id in `Command`
@@ -211,7 +211,7 @@ change sign is inverted (above).
   Wisdom, Valor (list at 0x37c350). If the ability bit is set and the item's command is available
   (FUN_001ba2c0 < 4) the command is offered as a reaction-style prompt (FUN_001bb3a8, slot 1).
 - Stat changes by form [V negative]: no per-form Strength/Magic/Defense table exists in the paths read (see
-  docs/drive-forms.md, "Stats and abilities in a form"). What a form changes is the ability list (above), the
+  docs/systems/drive-limits-summons/drive-forms.md, "Stats and abilities in a form"). What a form changes is the ability list (above), the
   object and its attack table, the Anti damage multiplier, and, at the timer start, HP and MP restored to
   their maximum (`FUN_001a04b0`, WP-2B2). The form keyblades (`H_EX500_<F>`) are visual objects (objentry type
   2) with no stat fields.
@@ -232,7 +232,7 @@ objentry + the file list]:
   variant object is not in `memt` for forms (memt gives one object per form) [GAP].
 - The weapons: the equipped keyblade's object through the moveset's `went` row (hand 0) and the form
   record's keyblade (hand 1, dual-wielding forms), with the motion sets named by `wmst` for the form's
-  moveset (`W_EX010_BTLF_R` / `_L` when the Kingdom Key is held) [V, docs/drive-forms.md; corrects the
+  moveset (`W_EX010_BTLF_R` / `_L` when the Kingdom Key is held) [V, docs/systems/drive-limits-summons/drive-forms.md; corrects the
   earlier guess at `H_EX500_F` and `SORA_WEAPON_BTLF`].
 - The change effect resource loaded by FUN_0016e7e8 is keyed by the form's player object [V]; its file was not
   identified [GAP].
@@ -411,7 +411,7 @@ All other abilities only set their bit and are read where they act: for example 
 aerial moves, Scan, Aerial Recovery, Leaf Bracer, Magic Lock-On, No Experience, Second Chance, Once More, Auto Limit,
 Auto Change, Auto Healing, the Auto-form abilities (offer commands, see forms), Donald/Goofy/other member
 abilities (readers of Second Chance, Once More, Leaf Bracer, Auto Healing, Auto Limit, Auto Change, Scan and Aerial
-Recovery: docs/abilities.md "Ability readers"). To implement one of them, find its bit consumers by the pattern
+Recovery: docs/systems/combat-effects/abilities.md "Ability readers"). To implement one of them, find its bit consumers by the pattern
 `bit(FUN_001768a8(object))` (FUN_001768a8 returns the status +0x1cc block). The many readers of that function are
 listed in the decompile index (callers of FUN_001768a8).
 
@@ -485,7 +485,7 @@ form 0, with experience `DAT_00340e4c` and level `DAT_00340c88` byte 6 (FUN_001d
   recoverable from the executable at run time if a later work package needs them as data.
 - `ptya`, `patn`, `vbrt` (party and voice tables) were not decoded here.
 
-Correction from WP-7H (see docs/party.md section 1): the memt words at +0x10 are 16 member objects by member index, merged per world (0 player, 1 Donald, 2 Goofy, 3 partner, 4..8 forms, 9 Mickey, 10..15 keyblades); indices 0..3 are not world outfits. FUN_001c77a8 takes every member, whatever its NeoStatus, in forms 3..5, not only Sora's two friends. The ability block at +0x58 also scales a party member's revive time (FUN_0017ce60).
+Correction from WP-7H (see docs/systems/party/party-data.md section 1): the memt words at +0x10 are 16 member objects by member index, merged per world (0 player, 1 Donald, 2 Goofy, 3 partner, 4..8 forms, 9 Mickey, 10..15 keyblades); indices 0..3 are not world outfits. FUN_001c77a8 takes every member, whatever its NeoStatus, in forms 3..5, not only Sora's two friends. The ability block at +0x58 also scales a party member's revive time (FUN_0017ce60).
 
 ## Sora's runtime status block follows the record (WP-LV1)
 
@@ -500,13 +500,13 @@ Question: how does the original grow maximum HP and MP when the level rises? Ans
 - The `lvup` row has no HP or MP column (`kh2 table lvup`: Exp, Strength, Magic, Defense, Ap, three ability words, padding).
 - `FUN_0019f920` takes the maxima straight from the record (`+5` -> status `+4`, `+7` -> status `+0x184`), and `FUN_001a0030` copies status `+4` and `+0x184` back into `+5` and `+7`, so the rebuild is a fixed point.
 - Searched for other writers with `mips_scan --store-off 0x5` and `--store-off 0x7`: in the party code the only hits are `FUN_001875c8` (the 13 records, 100/100 at start), `FUN_001a0030` (above) and `FUN_001c0b80` (a `plrp` row: HP and max HP both from `+3`, MP and max MP both from `+4`; reached with `Id` 0 from `FUN_00187d20`). The other hits belong to other structures (`FUN_001ba670`, `FUN_001d0688`, `FUN_001d2320`, `FUN_001cd678`, `FUN_0019d8f0`, the save screen `FUN_0023ce40`). The ability effect switch `FUN_001c0f40` has no HP or MP case, and `FUN_001a0c08` adds only the four stat bytes, the resistances and the item's ability.
-**Closed by WP-DYN1 (PCSX2 write watch, docs/dynamic-tracing.md section 1).** The maxima do not grow at a level-up, as read above (a forced `FUN_001b51e0(200)` took the level from 1 to 4 and no record byte `+4..+7` was written). They grow by the **bonus rewards**: `FUN_001be6b8(rewardId)` adds the `bons` rows of that id once (flag bits `0x340e6c`, count `0x340e68` = the Status page's "Bonus LV") through `FUN_001be500`, which raises the character's maximum and current HP and MP, the drive gauge maximum (Sora), the armor, accessory and item slot counts (record `+0x10`, `+0x11`, `+0x12`) and gives the two bonus items; `mips_scan` missed it because the stores are in the status block (`+4`, `+0x184`) and reach the record through `FUN_001a0030`'s copy back. Callers: `FUN_001b25d0` (a defeat, the `enmp` row's `BonusLevel`, 0 in all rows of the USA disc), `FUN_001c46a8` and `FUN_001b95a0` (a mission manager's end, mission header byte `+0xd`). Port: `Progress::give_bonus`, wired into `progress::pay_defeats` (no effect on the USA data) but not yet into a mission end: the app does not run a mission that has a reward, so it raises no HP or MP at all yet [V, run: reward 3 moved Sora 30/30 -> 35/35, Donald 18/18 -> 22/22, the absent Beast 7/40 -> 42/75].
+**Closed by WP-DYN1 (PCSX2 write watch, docs/systems/foundations/dynamic-tracing.md section 1).** The maxima do not grow at a level-up, as read above (a forced `FUN_001b51e0(200)` took the level from 1 to 4 and no record byte `+4..+7` was written). They grow by the **bonus rewards**: `FUN_001be6b8(rewardId)` adds the `bons` rows of that id once (flag bits `0x340e6c`, count `0x340e68` = the Status page's "Bonus LV") through `FUN_001be500`, which raises the character's maximum and current HP and MP, the drive gauge maximum (Sora), the armor, accessory and item slot counts (record `+0x10`, `+0x11`, `+0x12`) and gives the two bonus items; `mips_scan` missed it because the stores are in the status block (`+4`, `+0x184`) and reach the record through `FUN_001a0030`'s copy back. Callers: `FUN_001b25d0` (a defeat, the `enmp` row's `BonusLevel`, 0 in all rows of the USA disc), `FUN_001c46a8` and `FUN_001b95a0` (a mission manager's end, mission header byte `+0xd`). Port: `Progress::give_bonus`, wired into `progress::pay_defeats` (no effect on the USA data) but not yet into a mission end: the app does not run a mission that has a reward, so it raises no HP or MP at all yet [V, run: reward 3 moved Sora 30/30 -> 35/35, Donald 18/18 -> 22/22, the absent Beast 7/40 -> 42/75].
 
 Port of the rest of the rebuild (`GameData::sora_status`, data.rs): AP `status +0x18e` = `lvup +7` + record `+8` + the sum of the items' `item_stat` AP byte (`+7`); resistances `status +0x1a8..+0x1ae` start at 100 and each item's `+8..+0xe` scales them, `ceil(res * row / 100)` (`GameData::resistances`; the order is the item list order, weapons, form weapon, armor, accessories [inferred from `FUN_0019f920`'s call order]); MP maximum = record `+7` (0 keeps the `plrp` value). They live in `Stats.ap`, `Stats.weakness` (the same seven-element array enemies carry, so `GameData::damage` scales hits on Sora by it; on the USA disc no item an actor can equip has a resistance byte other than 100 (`item` StatEntry 0..4 and 80..147; the rows 5..39 that resist are not referenced by any item), so the values stay 100 and play is unchanged) and `Stats.max_mp`. Tests: `sora::tests::sora_status_follows_the_record_level` (level 1 vs a higher level: AP and MP maximum), `sora::tests::resistances_scale_per_item_with_a_ceiling`.
 Remaining: the callers of `GameData::sora_max_mp` (hud_gauge, abilities, drive, magic, party, savepoint, items, summon, menu*, prize) still read the plrp value instead of `Stats.max_mp`; they are outside this package and the two agree until a record MP maximum is changed (state file). The ability-passive block (`FUN_001c0d88` / `FUN_001c0e50`) is still not applied.
 
 ## Party members' status block (WP-ST4)
 
-The same rebuild, `FUN_0019f920(actor, 0)` with the actor's record at `actor +0x238`, runs for Donald, Goofy and the other members; only the `lvup` table differs (`FUN_001b50c0` through `FUN_001b58d8(NeoStatus)`, see docs/party.md). Already ported before this package: strength, magic and defense (`PartyData::member_status`, WP-S3) and HP and MP maxima, which the spawn takes straight from the record bytes `+5` and `+7` (`party::spawn_party`, `rules::spawn_vitals`).
+The same rebuild, `FUN_0019f920(actor, 0)` with the actor's record at `actor +0x238`, runs for Donald, Goofy and the other members; only the `lvup` table differs (`FUN_001b50c0` through `FUN_001b58d8(NeoStatus)`, see docs/systems/party/contract.md). Already ported before this package: strength, magic and defense (`PartyData::member_status`, WP-S3) and HP and MP maxima, which the spawn takes straight from the record bytes `+5` and `+7` (`party::spawn_party`, `rules::spawn_vitals`).
 Added by WP-ST4 (`PartyData::member_ap_resistances`, party.rs, sharing `data::fold_resistances` and the table choice `lvup_row` with `member_status`): AP `status +0x18e` = `lvup +7` of the member's table and level + record `+8` + the `item_stat` AP byte (`+7`) of each equipped item (`FUN_001a0c08`), and the resistances `+0x1a8..+0x1ae` = 100 scaled by each item's `+8..+0xe`, `ceil(res * row / 100)`, in the order weapon words, armor, accessories [inferred from the call order, as for Sora]. Enemy hits on a member now use them (`party_receive_hits`: `to.ap`, `to.weakness`; on the USA disc no equippable item has a resistance byte other than 100, so play is unchanged). The spawn logs the whole block: `party: P_EX020 status (FUN_0019f920): level .. HP .. MP .. strength .. magic .. defense .. AP .. resistances [..]`. Test `party::tests::party_member_ap_and_resistances_follow_the_record`.
 Gaps: (a) `enemy::member_stats` / `member_stats_rebuilt` (enemy.rs, not owned here) still return `ap: 0`, `max_mp: 0`, `weakness: [100; 7]` for other readers; change needed there: call `PartyData::member_ap_resistances` and set `ap`, `weakness`, and `max_mp = rec.mp_max`. (b) The ability passives of `FUN_001a0c08`'s callee chain (`FUN_001c0d88` / `FUN_001c0e50`) are not applied, as for Sora. (c) Current HP and MP stay on `PartyMember`, kept in step with the record by `party_record_sync`. (d) Members' HP/MP growth: the bonus rewards of `bons` (see "Stat growth at level-up (WP-ST3)", closed by WP-DYN1); the live `PartyMember` of a member who stands keeps his old maximum until the next spawn.

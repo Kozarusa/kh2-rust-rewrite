@@ -3,7 +3,7 @@
 [Contract](contract.md) | [Index](../../README.md)
 
 What the game does for reaction commands and limits, what `crates/kh2-app/src/reaction_cmd.rs` and
-`limit.rs` implement, and what is open. It builds on `docs/player-data.md`. **[V]** verified (read in the
+`limit.rs` implement, and what is open. It builds on `docs/systems/combat-effects/player-data.md`. **[V]** verified (read in the
 game's code or checked against the disc), **[I]** inferred, **[GAP]** not found or not ported. Function names
 are addresses in `SLUS_210.05`. No game values are stored in the repository; the rows below are read from the
 disc by the tests and the app, and `kh2 table limits_ex` / `kh2 table cmd` print them.
@@ -322,7 +322,7 @@ the Shadow's rows 9 to 12 have it) with the default recoil push backwards along 
 window is marked as landed so `combat::detect_hits` skips it. The player's side is the party handler
 `FUN_001754a0` (`reaction_rules::party_clash`): the `Clash` message carries both rows and the ground result;
 `player_reaction::receive_clashes` applies it to Sora with his own airborne state (WP-5C, rules in
-docs/hit-reaction.md: latch `connected`, spark only / recoil 0x29 or 0x2b with combo step refund / guard bounce 0x2a
+docs/systems/combat-effects/hit-reaction.md: latch `connected`, spark only / recoil 0x29 or 0x2b with combo step refund / guard bounce 0x2a
 with push 200, facing the other attack and 80 invincible ticks). The spark (`FUN_0018d560` ->
 `FUN_001db868(&DAT_01c954d8, id, ...)`) is element 0xd (spark only, recoil) or 0xb (guard bounce of a party actor,
 +0x588 bit 0x80; 0xc otherwise) of the **system file** `00effect.bar`, placed at the own volume's centre moved toward
@@ -346,11 +346,11 @@ moment is not reproducible).
 WP-6E ported the cone test of `FUN_0018d308` for the 70 rows with `ReflectRange` (`reaction_rules::reflect_cone`,
 both ways in `clash::detect_clashes`; a pair outside the cone is logged with `KH2_HITLOG=1`), the owner flags of
 `FUN_001754a0` (`ClashActor`: Sora's range triggers 3, 30 and 24) and blend 0 for the recoil and guard-bounce
-motions; details in docs/hit-reaction.md. Not ported: `ReflectAction` (an offset from the atkp row to an action
+motions; details in docs/systems/combat-effects/hit-reaction.md. Not ported: `ReflectAction` (an offset from the atkp row to an action
 record for the action system at +0x300, `FUN_0019e870` / `FUN_00186db0`; the record format was not decoded), the hit-registry tests of `FUN_001be108` (a pair that already hit each other
 does not clash again), `ReflectRC`, the air push `FUN_00185978` (decoded up to the mover's method +8 and a run-time
-table, docs/hit-reaction.md; the ground push stands in). WP-6G added the enemy handler's script part (the running
-mode's slot 8 hook and event 0x13, on every clash, docs/enemy-ai.md); none of the app's three scripts handles it.
+table, docs/systems/combat-effects/hit-reaction.md; the ground push stands in). WP-6G added the enemy handler's script part (the running
+mode's slot 8 hook and event 0x13, on every clash, docs/systems/script-host/contract.md); none of the app's three scripts handles it.
 
 Guard-bounce spark (effect 0xb): no real clash in the app's fights has produced a guard bounce (the rows met had
 `RefactSelf` 2 or both 0). `KH2_CLASH_FORCE_GUARD=<s>` (harness, `player_reaction::receive_clashes`) runs

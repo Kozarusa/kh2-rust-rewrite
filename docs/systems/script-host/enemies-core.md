@@ -3,8 +3,8 @@
 [Contract](contract.md) | [Index](../../README.md)
 
 Work package 6C. The app's enemies are Shadow (`M_EX020`), Soldier (`M_EX010`) and, since 6C, the Dusk (`M_EX990`).
-All three run under their own BDX scripts (`docs/enemy-ai.md`) and take hits through the reaction code
-(`docs/hit-reaction.md`). Nothing from the disc is stored in the repository: area files, models, motions,
+All three run under their own BDX scripts (`docs/systems/script-host/contract.md`) and take hits through the reaction code
+(`docs/systems/combat-effects/hit-reaction.md`). Nothing from the disc is stored in the repository: area files, models, motions,
 scripts and tables are read at start-up or when an area loads.
 
 ## Choosing the next enemy from the data
@@ -28,7 +28,7 @@ spawn group every program of every script loads (a group loaded by two programs 
 | 0x4d7 | `N_EX500_BTL` | 1 | tt04 `btl`: b_50 |
 | 0x82f | `N_EX600_BTL` | 1 | tt04 `btl`: b_52 |
 | 0x139 | `M_EX940` (type 0x15) | 4 | tt04 `btl`: b_44 (0x50: serial 0x26 wave 1; 0x102..0x104 wave 2) |
-| 0x131 | `M_EX760` | 15 areas | bb08 `btl`: b_20 (11 members), b_21 (7); also ca09, ca13, ca19, hb02, hb08 .. (survey, `docs/area-survey.md`) |
+| 0x131 | `M_EX760` | 15 areas | bb08 `btl`: b_20 (11 members), b_21 (7); also ca09, ca13, ca19, hb02, hb08 .. (survey, `docs/systems/script-host/area-survey.md`) |
 
 tt00 spawns only the player; tt02 spawns the player, the two friends, save and world points, `F_EX000` and event
 actors (ObjectType 15). Neither Shadow nor Soldier is in any of the three scripts: the app's Shadow/Soldier waves
@@ -39,7 +39,7 @@ The most common enemy is the Dusk. Its model, motion set (`obj/M_EX990.mset`, 46
 
 ## Next kinds (WP-SV3, 2026-10-20)
 
-`enemy::KINDS` has 38 kinds. `docs/area-survey.md` "Ranked gaps" lists the absent ones from the disc (areas, groups, `enmp` row, missing host calls, boss or not) and a recipe for the next twelve: `M_EX900` (code exists; needs a soak, the event 17 sender was found by WP-DYN1), `M_EX130`, `M_EX710`, `M_EX890`, `M_EX680`, `M_EX570`, `M_EX580`, `M_EX780`, `M_EX740`, `M_EX550`, `M_EX500`, `M_EX590`. `M_EX950` is already in `KINDS` (its reaction-command modes are a gap of the kind); the cheapest boss is `B_LK110_PHANTOM`.
+`enemy::KINDS` has 38 kinds. `docs/systems/script-host/area-survey.md` "Ranked gaps" lists the absent ones from the disc (areas, groups, `enmp` row, missing host calls, boss or not) and a recipe for the next twelve: `M_EX900` (code exists; needs a soak, the event 17 sender was found by WP-DYN1), `M_EX130`, `M_EX710`, `M_EX890`, `M_EX680`, `M_EX570`, `M_EX580`, `M_EX780`, `M_EX740`, `M_EX550`, `M_EX500`, `M_EX590`. `M_EX950` is already in `KINDS` (its reaction-command modes are a gap of the kind); the cheapest boss is `B_LK110_PHANTOM`.
 
 ## The Dusk
 
@@ -56,14 +56,14 @@ The most common enemy is the Dusk. Its model, motion set (`obj/M_EX990.mset`, 46
   have 2, those of b_43 and part of b_44 have 3; the app passes the record's value (the app's own waves pass -1,
   no record). 2 and -1 take the same appear path in the script.
 
-New host functions the Dusk needs are in the table of `docs/enemy-ai.md` (0.15, 1.62/1.64, 1.63, 1.66, 1.69, 1.74,
+New host functions the Dusk needs are in the table of `docs/systems/script-host/contract.md` (0.15, 1.62/1.64, 1.63, 1.66, 1.69, 1.74,
 1.98, 1.150).
 
 ## Waves
 
 **What the game does (WP-EN1)** [V unless marked]. An area's enemies come from its scripts, not from a timer:
 
-- `FUN_00181148` runs the `map`, `btl` and `evt` programs named by the area record (docs/events.md section 1);
+- `FUN_00181148` runs the `map`, `btl` and `evt` programs named by the area record (docs/systems/core-runtime/areas.md section 1);
   opcode 0 (`spawn`) loads every named type-12 group (`FUN_00181728`: one live group per record of the tag,
   `FUN_00198430`). Setting a group up (`FUN_00198750`) creates its entities by spawn kind (record +0x1c):
   0 and 3 at once (`FUN_00198920` -> `FUN_001982c8` -> `FUN_00198220`), 1 only for the current entrance
@@ -192,7 +192,7 @@ the player (FUN_00199970) at Vec3(-2.98, -0.10, -6.12)`, and the same for 0x25 a
   so a group whose enemies are all kind 2 (tt04's b_00, b_21, b_44) never empties.
 - **The events.** `FUN_00199518`: counter - 1; at 0 `FUN_00197b70(3, header +2)` (group emptied); then, when the counters of
   all live groups (`FUN_00199580`: the 0x38-byte records from 0x1c8af90) sum to 0, `FUN_00197b70(2, 0)` (all emptied) [V].
-  `FUN_00197b70` broadcasts to every object (their method +0x34) and matches the area triggers (docs/events.md "Firing").
+  `FUN_00197b70` broadcasts to every object (their method +0x34) and matches the area triggers (docs/systems/core-runtime/areas.md "Firing").
   The app (`removal_events`, test `emptied_groups_raise_events_3_and_2`) writes `struggle::GlobalEvent` (enemy scripts get
   it as event 10) and logs a matching trigger of the btl program: `area group b_42 group record 0x5d: member serial 0x14
   removed: global event 3 (93) (FUN_00199518)`. Removal is "its HP reached 0" [inferred, as for the kind-2 walk]. The
@@ -212,7 +212,7 @@ the player (FUN_00199970) at Vec3(-2.98, -0.10, -6.12)`, and the same for 0x25 a
 
 **Gaps.** Entities the app cannot create (other than those it has) are left out of the walk and of the `SpawnLimiter` sum [inferred
 stand-in: counting them would hold a wave back for ever]; since WP-EN2 `M_EX940` is no longer one of them (below). The effect of a trigger that matches group event 2 or 3 is not applied (no data needs it). Prize orbs and items are
-removed by the jump's unload since WP-EN2 (`docs/prizes.md` "Unload"). The Dusk's drop row reads story flags 2267, 2256,
+removed by the jump's unload since WP-EN2 (`docs/systems/combat-effects/prizes.md` "Unload"). The Dusk's drop row reads story flags 2267, 2256,
 2122, 2091 through host 0.15, which answers from the story (all clear without a state file). Whether the game moves the
 player to a battle group's player entry when the battle starts was not read (only the harness does it).
 
@@ -230,7 +230,7 @@ player to a battle group's player entry when the battle starts was not read (onl
   0x100 (`FUN_001b8d80` tests bit 0x100 of a halfword of its input, not of the flag word). No writer exists in the code [V], so the bit
   stays clear and nothing is left to port. The kind-6 guard and group events 2 and 3 are unchanged from above (not applicable to the data).
 - **Group events 2 and 3** [V that the senders are `FUN_00199518` only]: they go through `FUN_00197b70` like any event and run a matching
-  trigger (`FUN_00197670`: set a flag, play an event, jump; docs/events.md "Firing"). The app loads only Twilight Town, and none of
+  trigger (`FUN_00197670`: set a flag, play an event, jump; docs/systems/core-runtime/areas.md "Firing"). The app loads only Twilight Town, and none of
   its 42 area scripts has a trigger on event 2 or 3 (`no_twilight_town_data_uses_group_events_or_kind_six_enemies`, 0 triggers), so there
   is nothing to execute: not applicable. The log line "area trigger ... matches" stays for other data.
 - **The defeated table's lifetime** [V]: `FUN_00181148` calls `FUN_00194188(0x35d278, DAT_0035cd28)` at every area start (the area
@@ -286,7 +286,7 @@ motion 241-243; R033b undoes it (1.108, bits cleared, global +0x1070 = 0). `FUN_
 is zero: the object starts at the origin and facing 0, and nothing hands over HP, facing or serial; the script moves it [V].
 M_EX850 has no `set_obj_param` (2.9), so no `enmp` row: the app gives it a stand-in status block ([inferred], HP 50 like M_EX940 in the
 run). Its script has the modes `idle`, `appear` and `leave` among others; the string "burserk start" is only a debug print in its
-event-11 handler for reaction command 481 (docs/limits-reactions.md). In the app (`KH2_WAVE_GROUP=b_44 KH2_BDX_HIT=M_EX940:7:25`)
+event-11 handler for reaction command 481 (docs/systems/drive-limits-summons/contract.md). In the app (`KH2_WAVE_GROUP=b_44 KH2_BDX_HIT=M_EX940:7:25`)
 M_EX850 is made a tick after the call at M_EX940's ground point, runs `idle` and its `leave` (about 3 s later), with no `missing`
 host. What it does in the original beyond that (its attacks and what the `appear` mode is entered from) was not traced.
 
@@ -331,7 +331,7 @@ locked on with its HP bar. Nobody listened to the sounds.
 
 ## Follow-ups (6G)
 
-The Dusk's remaining host calls are wired (details in docs/enemy-ai.md): its reaction commands 24 and 69 send
+The Dusk's remaining host calls are wired (details in docs/systems/script-host/contract.md): its reaction commands 24 and 69 send
 `dusk_surprise` (host 1.90) and start a request thread that plays its paired motion 241 / 242 on Sora (now read: the
 paired-motion and collision-table lists iterate `enemy::KINDS`), which also reaches 0.42, 0.43 and 1.94; its death's
 drop (1.92) is computed from `przt` (row 6: four prizes of kind 5, no item in the runs) and logged. Runs (`KH2_BDXLOG=1
@@ -343,7 +343,7 @@ logs were read: no screenshot was looked at for these runs.
 
 ## The Struggle (WP-7E)
 
-The Struggle rules are in `docs/struggle.md`. For the opponents: b_50, b_51 and b_52 (missions `TT04_MS00`,
+The Struggle rules are in `docs/systems/world-minigames/struggle.md`. For the opponents: b_50, b_51 and b_52 (missions `TT04_MS00`,
 `TT04_MS02`, `TT04_MS01`) are the Struggle matches; b_42 (`TT04_MS108`) is not. Host 4.29 now answers the
 manager's counters (slot 0 the player's orbs, slot 1 the opponent's); every reaction an opponent takes knocks 3 or
 15 orbs out of slot 1 (`FUN_001caeb0`); the opponents pick orbs up for slot 1; their prize drops make nothing
@@ -352,7 +352,7 @@ under the mission's header flag 0x40; global events reach their scripts as event
 
 WP-7E2: `player_finish_struggle` is a mode that the Struggle-tournament opponents `N_EX650_BTL10`, `N_EX670_BTL10`,
 `N_EX680_BTL10` and `N_EX690_BTL10` register (host 1.6, next to `enemy_finish_struggle`); none of them is in tt04's
-Struggle groups, so in tt04 the message finds no receiver (docs/struggle.md, "player_finish_struggle"). Host 1.34
+Struggle groups, so in tt04 the message finds no receiver (docs/systems/world-minigames/struggle.md, "player_finish_struggle"). Host 1.34
 `event_active` now answers true while a mission layout event plays (the start, end and failure titles). An
 opponent standing in a reaction motion (10..39) or in 140..150 does not pick orbs up (`FUN_001cadd8`).
 

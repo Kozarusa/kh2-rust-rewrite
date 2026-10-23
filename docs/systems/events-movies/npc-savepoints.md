@@ -139,7 +139,7 @@
   [approx] the game's one global `rand()` is a per-object generator; the object list searched for partners and
   ids holds the townspeople and the player only; the class pass runs before the script's tick and not before
   the script's first tick [inferred order]; the parts' enable masks are not applied.
-- **1.172 / 1.173 cone** [WP-NPC1]: `npc::in_cone` ports `FUN_001af650` (see docs/enemy-ai.md): without a
+- **1.172 / 1.173 cone** [WP-NPC1]: `npc::in_cone` ports `FUN_001af650` (see docs/systems/script-host/contract.md): without a
   type-0x14 part the flat 15 degree test; with one (`N_EX510_RTN`, `N_EX520_RTN` and the other `*_RTN` models;
   only `N_EX500_RTN` has none) the 3D direction from the part's point against its cone of 50 degrees. The part's
   point is the head bone's pose of the previous tick [inferred]. The head look-at controller (hosts 1.174 / 1.176) is ported, see "Head look-at" below, with 1.175 (a point)
@@ -150,7 +150,7 @@
   class's reaction to a talk: it ends the look-at, sets the previous follower to kind 4 and +0xb00 to +0xb18 +
   `DAT_0037ab84`) is for E3.
 - **Talk** [V; closed by WP-E3]. A type-5 reaction part with id 0x83 offers the command in the
-  halfword +0x2c of the object's spawn record (docs/limits-reactions.md: 31 "talk" for most townspeople;
+  halfword +0x2c of the object's spawn record (docs/systems/drive-limits-summons/contract.md: 31 "talk" for most townspeople;
   `twilight_town_talk_programs` counts 206 townspeople with 31, one with 30, others 209..213, 293,
   555..559, 633). Command 31 has `Execute` 31 (0x1f). Earlier notes said every reaction command reaches
   the target's script as event 0xb; **that is not so for the talk**: Sora's class handler
@@ -188,7 +188,7 @@
     target's +0x108 bit 2 (its only reader found is `FUN_0019a530`); the player faces the target
     (`FUN_0016a948` with `FUN_0018efa0` of the target record minus his position); the talk camera
     (`FUN_00159688`: camera kind 4 with the record, `FUN_00140d08` +0x40 = 4; second argument 1, or 0
-    for a class-5 target whose array has bit 0x10 or 0x40, `FUN_00189e90`) [ported in WP-E8: docs/camera.md
+    for a class-5 target whose array has bit 0x10 or 0x40, `FUN_00189e90`) [ported in WP-E8: docs/systems/player-camera/camera-event.md
     "Talk camera"];
     the three party members turn their heads (`FUN_001abf40` on +0x82c) [not ported]; the target faces
     the player (`FUN_0016a828`, or for class-5 objects `FUN_00189f40`: unless array bit 4, and its
@@ -204,8 +204,8 @@
     (the player faces the target; no talk camera, no motion 0x32) and callback `FUN_001a5608` (window class
     `FUN_001ab7d8`, wait `FUN_001a5b18(0xe)`) around the script's "before_check" mode (`FUN_00189eb8`, string
     0x37ab68) [ported in WP-SH1: `npc::talk_step`, window class 2]. The shops are the "Shop" rows (Execute 0x7f,
-    `FUN_00177b18` case 0x7f -> `FUN_00197b70`): docs/menus.md section 21.
-  - **The window** (docs/hud.md "Message windows"). The base update `FUN_001ab170`: state 1 waits
+    `FUN_00177b18` case 0x7f -> `FUN_00197b70`): docs/systems/ui/menus-struggle-result.md section 21.
+  - **The window** (docs/systems/ui/hud-banners-windows.md "Message windows"). The base update `FUN_001ab170`: state 1 waits
     for the page (`FUN_001a8b48`) and starts the prompt (`FUN_001aa3a0`), state 2 reads the pad
     (`FUN_001aa430`: logical bits 0x40c, sound 0x18 `FUN_002c14a8`, then `FUN_001aacd8`: the next page
     when `FUN_001a8c78` -> `FUN_00190fa8` finds text after a command 0x10 (back to state 1), else the
@@ -340,7 +340,7 @@ direction: the yaw stays (the game divides by a zero length). Tests: `npc::look:
   `FUN_0024f0b8(1, 0)` for the world point (objentry 0x239) or `FUN_0024f0b8(1, 2)` for the save point: **menu kind
   1** (scene 3, init `FUN_00255598`, which sets the three message ids 0x9fcf..0x9fd1 or a list from 0x380cd0 via
   `FUN_00254bf0`, and starts the task 0x2556f0), not the field save menu kind 7. **Kind 1 is the points' save
-  screen** [V, WP-E7, read from the instructions of 0x2556f0 and the decompiled callees; docs/menus.md 18.5]: the
+  screen** [V, WP-E7, read from the instructions of 0x2556f0 and the decompiled callees; docs/systems/ui/menus-save.md 18.5]: the
   same memory card driver and `save.2ld` groups as the file screens of kind 2, with a top list of "Save" (0x8a7e)
   and "World Map" (0x8a80); the mode word (0x36cd28, `FUN_0024f498`) 2 drops the World Map row, so the save point
   shows only "Save" and the world point both. `menu_save.rs` serves it (`SaveMenu::request_point`).

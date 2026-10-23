@@ -42,7 +42,7 @@ Marks: **[V]** read in the code (or checked by the oracle), **[I]** inferred, **
 | offset | what |
 |---|---|
 | `+0`, `+2` | weapons of hand 0 and hand 1 (`FUN_0016ee98` reads `+2 * hand`; `FUN_0019f920` applies both) |
-| `+4`, `+5` | HP, max HP; `+6`, `+7` MP, max MP. Current HP and MP are the member's persistent vitals: `FUN_0019f920` builds a status block from them (`min(max, current)`), `FUN_001a0030` writes the block's values back when it is released (docs/party.md section 20); `Progress::member_vitals` / `set_member_vitals` |
+| `+4`, `+5` | HP, max HP; `+6`, `+7` MP, max MP. Current HP and MP are the member's persistent vitals: `FUN_0019f920` builds a status block from them (`min(max, current)`), `FUN_001a0030` writes the block's values back when it is released (docs/systems/party/party-built.md section 20); `Progress::member_vitals` / `set_member_vitals` |
 | `+8`..`+0xb` | AP, strength, magic, defense |
 | `+0xe` | weapon set (the `lvup` column, `FUN_001b52f8`); `+0xf` level |
 | `+0x10`, `+0x11`, `+0x12` | number of armor, accessory and battle item slots |
@@ -86,7 +86,7 @@ set to 1 with the level (no reader traced); `+4` experience (for form 5 the Anti
   the total, and gives each new row's ability of the member's weapon set (`+0xe`) through `give`; the rises of Strength, Magic,
   Defense and AP over the previous row are returned (the original queues messages), nothing else is written (the stats come
   from the row at the status rebuild). `experience_to_next` is FUN_001878b0. Defeats feed it through `progress::pay_defeats`
-  (`defeat_payout`, docs/effects-damage.md "FUN_001b25d0 step by step"). Gaps there.
+  (`defeat_payout`, docs/systems/combat-effects/effects-damage.md "FUN_001b25d0 step by step"). Gaps there.
   The routine then refreshes every member's level state (`FUN_001b52f8`), not part of `Progress`.
 - An item drop (`FUN_001bd490`) spawns the prize object; adding to the inventory happens when it is picked
   up (prize code, WP-7B).
@@ -137,7 +137,7 @@ while they build) does, in order:
 
 `KH2_PROGRESSLOG=1` logs `progress: state from <new game + app baseline | file path>: experience ..; munny ..; spells
 [...]; forms owned [...] levels [...] keyblades [...]; weapon ...; abilities [...]; ...; inventory [...]` and,
-with the baseline, `progress: app baseline (not the original's new game, docs/progress.md): ...`.
+with the baseline, `progress: app baseline (not the original's new game, docs/systems/core-runtime/progress.md): ...`.
 
 ### App baseline (a deviation, to remove when the story gives these)
 
@@ -150,7 +150,7 @@ therefore adds, on top of the new game and only where missing:
   through the original's give, so `FUN_001a2010` hands each of those forms a Kingdom Key as before;
 - the items of magic slots 0..3 (Fire, Blizzard, Thunder, Cure) at count 1 (level 1);
 - (WP-F1 item 6) Donald's weapon word = item 75 and Goofy's = item 49 when they are 0 (`DONALD_STAFF`,
-  `GOOFY_SHIELD`): the original's new game leaves them 0 and their later writer was not found (docs/party.md
+  `GOOFY_SHIELD`): the original's new game leaves them 0 and their later writer was not found (docs/systems/party/party-built.md
   "Weapons"), so the members' hand objects (`FUN_0016ee98`) come from the baseline, logged as
   `member 2 weapon item 75 equipped`. (WP-PG1) Searched and negative: the disc's `plrp` has 61 rows, `Id` 0 (the
   new game) and `Id` 1 (a full preset, no caller found); for characters 2 (Donald) and 3 (Goofy) neither `Id` lists
@@ -162,16 +162,16 @@ therefore adds, on top of the new game and only where missing:
   0x13); a staff or shield (type 3/4) takes neither path, only the inventory count. The other callers of
   `FUN_001a18d8` (`FUN_001a6910` chests, `FUN_001b53d0`/`FUN_001be500`/`FUN_001d3da8`/`FUN_001d4fa0` level-up and
   bonus rewards, `FUN_0026c420` battle-item equip, `FUN_001d7508`) were read (`FUN_0026c4d0`..`FUN_0026c698` and `FUN_001bd1d8` not); none writes record `+0` of
-  Donald or Goofy. So the words' writer is still unknown [GAP; closed by WP-RV2: host 0.75 in `00common.bdx` event 7 writes them at boot, with Donald 75 and Goofy 49, docs/party.md "Weapons"]. A `KH2_STATE` file without a `block` key cannot set
+  Donald or Goofy. So the words' writer is still unknown [GAP; closed by WP-RV2: host 0.75 in `00common.bdx` event 7 writes them at boot, with Donald 75 and Goofy 49, docs/systems/party/party-built.md "Weapons"]. A `KH2_STATE` file without a `block` key cannot set
   the words either, so `Progress::start` applies this same entry to it (`Progress::apply_party_weapons`, logged in
   the `KH2_PROGRESSLOG` baseline list); a file or slot with a `block` keeps its records unchanged;
 - the Kingdom Key in Sora's hand 0;
 - Guard equipped in Sora's ability list, unless `KH2_ABILITY_START=data`;
 - Dodge Roll growth level 1 (`Progress::dodge_roll`, the user's wish 2026-10-06). The USA disc has no Dodge
-  Roll ability item (Final Mix has it as growth slot 4, docs/final-mix.md), so the level is an app field
+  Roll ability item (Final Mix has it as growth slot 4, docs/systems/foundations/final-mix.md), so the level is an app field
   beside the save block, not part of the original's records. `KH2_ABILITY_START=data` drops it with the
   Guard, and a `KH2_STATE` file sets it with `"dodge_roll": <0..5>` (without the key it is 0). The
-  harness `KH2_GROWTH=a,b,c,d,e` fifth value overrides it (docs/movement.md section 2).
+  harness `KH2_GROWTH=a,b,c,d,e` fifth value overrides it (docs/systems/player-camera/movement.md section 2).
   A `KH2_STATE` key `sora_items` (array of item ids) gives each item to Sora through FUN_001a18d8(id, 1, 0): free battle item slots first, then the stock; it fills the received list. The helpers `battle_items`, `take_item` (FUN_001a1ba8), `refill_battle_items` (FUN_001877c8), `equip_battle_item` (FUN_0026c698) and `recent_items` are read by items.rs.
 
 This reproduces the previous defaults exactly (`progress::tests::baseline_gives_the_old_app_defaults`).
@@ -182,7 +182,7 @@ This reproduces the previous defaults exactly (`progress::tests::baseline_gives_
 |---|---|---|
 | magic (`magic.rs` setup) | `spell_levels()`: the six slots' item counts | `KH2_MAGIC=f,b,t,c[,m,r]` |
 | drive (`drive.rs` `DriveState::from_env`) | owned forms (`owns_form`: the form items), form levels (records `+2`), second keyblades (records `+0`), spare keyblades (`keyblades()`), outfit (`outfit(world)`) | `KH2_DRIVE_OWNED`, `KH2_DRIVE_LEVEL`, `KH2_DRIVE_INVENTORY` (either of the first or third switches the keyblades back to the old harness rule), `KH2_DRIVE_OUTFIT` |
-| abilities (`abilities.rs` `with_defaults`, then `follow_progress` whenever `Progress` changes: WP-G8) | `equipment()` (Sora's weapons, armor, accessories), Sora's ability list (the growth levels are the highest equipped growth ability of each group, docs/menus.md section 17) and `dodge_roll` | `KH2_ABILITY_IDS`, `KH2_ABILITIES` (added on top, kept across the copies); `KH2_ABILITY_START=data` drops the baseline Guard; `KH2_GROWTH` overrides the growth levels outside a form |
+| abilities (`abilities.rs` `with_defaults`, then `follow_progress` whenever `Progress` changes: WP-G8) | `equipment()` (Sora's weapons, armor, accessories), Sora's ability list (the growth levels are the highest equipped growth ability of each group, docs/systems/ui/menus-abilities.md section 17) and `dodge_roll` | `KH2_ABILITY_IDS`, `KH2_ABILITIES` (added on top, kept across the copies); `KH2_ABILITY_START=data` drops the baseline Guard; `KH2_GROWTH` overrides the growth levels outside a form |
 
 Not wired: HP/MP/stats of the member record (the app takes them from `lvup`/`plrp` in `data.rs`), the saved
 drive gauge bytes (the drive system keeps its own start points), the summon state (no summon system yet).
@@ -202,16 +202,16 @@ an error (logged; the app then falls back to the new game + baseline). Example: 
 | `weapon` | int | Sora's hand 0 item |
 | `armor`, `accessories` | array of item ids | Sora's slots (the slot count grows to fit, max 8) |
 | `abilities`, `abilities_off` | arrays of ability item ids | replaces Sora's ability list: equipped ones, then unequipped ones (growth abilities too: 94..97 High Jump, 98..101 Quick Run, 102..105 Aerial Dodge, 106..109 Glide, LV1..MAX; `local/g8/state-swap.json`) |
-| `dodge_roll` | int 0..5 | Sora's Dodge Roll growth level (app field, not an original record; docs/movement.md section 2) |
+| `dodge_roll` | int 0..5 | Sora's Dodge Roll growth level (app field, not an original record; docs/systems/player-camera/movement.md section 2) |
 | `forms` | object `"<form 1..9>": { "owned": bool, "level": int, "exp": int, "weapon": int }` | `owned: true` gives the form item through the original's give (so the form takes a keyblade by `FUN_001a2010` if the inventory has one); the others set the record |
 | `summon` | `{ "level": int, "exp": int }` | summon level and experience |
 | `sora_level` | int 1..99 | Sora's record level byte (`+0xf`) with no payout and no experience change (harness aid, WP-LV1) |
 | `outfits` | object `"<world>": outfit` | low 5 bits of the world record's byte 0 |
 | `spell_switch` | int | the switch bit word |
-| `party_settings` | object `"<member id>": byte` or `"<member id>": [bytes]` | a member's AI settings block (record `+0xd4`, 32 bytes, zero at a new game by `FUN_001875c8`): a single number is byte 0, the battle style 0..5; an array sets bytes from 0 on (byte `1 + k` = use setting of item / ability `k`, docs/party.md). Member ids are the party ids (2 Donald, 3 Goofy). `Progress::member_setting` / `set_member_setting` read and write it; a slot file's `block` carries it (test `member_settings_default_to_zero_and_round_trip`). `party.rs` reads byte 0 every frame (`KH2_PARTY_STYLE` still overrides) and, since WP-PA4, the use-setting bytes; the Customize page 0x1b (docs/menus.md 14b) writes them (`menu::customize::write_friend`; test `the_pages_writes_survive_a_state_file_round_trip`) |
-| `party_vitals`, `party_abilities` | objects `"<member id>": [hp, mp]` / `[ability ids]` | harness aids (WP-AH1b): a member's current HP and MP (record `+4`, `+6`, held to the maxima) and equipped abilities put into the first empty slots; for Auto Healing and the member HP tests (docs/party.md section 20) |
-| `shop_seen` | array of places 0..127 | shop items seen (save `+0x3714`, one bit per place in the shop file's item list; `Progress::shop_seen` / `set_shop_seen`; WP-SH3, docs/menus.md 24.2). A slot file carries it |
-| `shop_visits` | array of bits 0 / 1 | the shops' first-visit bits (save `+0x3724`; `Progress::shop_visit` / `set_shop_visit`; docs/menus.md 24.1). A slot file carries it |
+| `party_settings` | object `"<member id>": byte` or `"<member id>": [bytes]` | a member's AI settings block (record `+0xd4`, 32 bytes, zero at a new game by `FUN_001875c8`): a single number is byte 0, the battle style 0..5; an array sets bytes from 0 on (byte `1 + k` = use setting of item / ability `k`, docs/systems/party/contract.md). Member ids are the party ids (2 Donald, 3 Goofy). `Progress::member_setting` / `set_member_setting` read and write it; a slot file's `block` carries it (test `member_settings_default_to_zero_and_round_trip`). `party.rs` reads byte 0 every frame (`KH2_PARTY_STYLE` still overrides) and, since WP-PA4, the use-setting bytes; the Customize page 0x1b (docs/systems/ui/menus-customize.md 14b) writes them (`menu::customize::write_friend`; test `the_pages_writes_survive_a_state_file_round_trip`) |
+| `party_vitals`, `party_abilities` | objects `"<member id>": [hp, mp]` / `[ability ids]` | harness aids (WP-AH1b): a member's current HP and MP (record `+4`, `+6`, held to the maxima) and equipped abilities put into the first empty slots; for Auto Healing and the member HP tests (docs/systems/party/party-built.md section 20) |
+| `shop_seen` | array of places 0..127 | shop items seen (save `+0x3714`, one bit per place in the shop file's item list; `Progress::shop_seen` / `set_shop_seen`; WP-SH3, docs/systems/ui/menus-shop.md 24.2). A slot file carries it |
+| `shop_visits` | array of bits 0 / 1 | the shops' first-visit bits (save `+0x3724`; `Progress::shop_visit` / `set_shop_visit`; docs/systems/ui/menus-shop.md 24.1). A slot file carries it |
 | `record_bits` | array of ints | the record bit words (save `+0x1550`, `FUN_001a52b0`); a slot file carries them |
 | `story_raw` | `{"words": hex, "programs": hex, "locks": [state, message, ...]}` | the story flag words, the area program table and the exit locks as `slot_json` writes them (replaces them whole; the new game's effect lists stay) |
 | `chests` | array of `OverallChestIndex` numbers | opened chests (`Progress::chest_opened` / `set_chest_opened`; bits of the record array from bit 224 on, because `FUN_001a6a90` reads `0x33fdcc` and `FUN_001a5328` `0x33fdb0`; a slot file carries them inside `record_bits`; WP-MN13). The Treasures page and a world's treasure completion mark read them |
@@ -219,9 +219,9 @@ an error (logged; the app then falls back to the new game + baseline). Example: 
 | `minigames` | array of `[index, state, score]` triples | the minigame records (`0x341620 + 8 * index`, `FUN_001d36e8`: byte 0 the state, 0 never seen / 1 seen / 2 played / 4 a time score, word +4 the score; `Progress::minigame` / `set_minigame`; WP-MN14). The Minigames page and the quest tests read them; nothing in the app plays a minigame yet, so only a state file fills them; an older slot file loads them empty |
 | `enemy_kills` | array of `[NeoStatus, count]` pairs | the defeated-enemy counters (save `+0x1660`, words from `+0xff0` for the ids 1000 .. 1046 and `+0x1170` for 3000 .. 3011, `FUN_00187dc8`; `Progress::enemy_defeats` / `count_defeat` / `set_enemy_defeats`; capped at 9999, counted only with story flag 0x8d0, `FUN_00187e08`). The app counts each defeated enemy once (`menu_journal::kills`); the journal's enemy lists exist for an enemy with a count above 0 (WP-MN15). An older slot file loads them empty |
 | `reaction_uses` | array of `[slot, count]` pairs | the reaction commands' use counts (`0x3410b0`, indexed by the command row's `ReactionCount`, `FUN_001b7168`; `Progress::reaction_use` / `set_reaction_use`; capped at 999). `reaction_cmd::ReactionUses` keeps the live counts and the journal shows the larger of the two; `reaction_cmd::bump_use` writes the saved copy on every accepted reaction (WP-HK1) |
-| `report_counters` | array of 12 numbers | the BATTLE REPORT counters: healed, saved by Mickey, then the ten u16 words from `0x341840` (docs/menus.md 24.4a; `Progress::count_*`), each capped at 999 |
-| `limit_best` | array of `[slot, count]` pairs | the limits' best counts (`0x3414b0`, indexed by the `limt` row's `Id`, `FUN_001d2590`; `Progress::limit_best` / `raise_limit_best` never lowers a slot, `FUN_001d25b0`). A limit with a count above 0 is listed on the journal's limit page; `limit::LimitHits::finish` writes it when a limit's duration ends (WP-HK1; nothing adds hits yet, docs/menus.md 20.11a) |
-| `moogle` | `{ "known", "learned", "made", "seen", "unlocks", "rewards": [bits], "points": n, "level": n, "stock": [50 ints], "totals": [50 ints] }` | the moogle's synthesis record (save `+0x3728`; `Progress::moogle`; `rewards` is the reward word at `+8`, docs/menus.md 24.3); every key optional. A slot file carries all of them, and a `block` key resets the record (and the shop and record bits) first, so a file without them loads the defaults; tests `a_slot_file_carries_the_moogle_the_shop_bits_and_the_story`, `rewards_are_not_paid_again_after_a_reload` |
+| `report_counters` | array of 12 numbers | the BATTLE REPORT counters: healed, saved by Mickey, then the ten u16 words from `0x341840` (docs/systems/ui/menus-shop.md 24.4a; `Progress::count_*`), each capped at 999 |
+| `limit_best` | array of `[slot, count]` pairs | the limits' best counts (`0x3414b0`, indexed by the `limt` row's `Id`, `FUN_001d2590`; `Progress::limit_best` / `raise_limit_best` never lowers a slot, `FUN_001d25b0`). A limit with a count above 0 is listed on the journal's limit page; `limit::LimitHits::finish` writes it when a limit's duration ends (WP-HK1; nothing adds hits yet, docs/systems/ui/menus-journal-pages.md 20.11a) |
+| `moogle` | `{ "known", "learned", "made", "seen", "unlocks", "rewards": [bits], "points": n, "level": n, "stock": [50 ints], "totals": [50 ints] }` | the moogle's synthesis record (save `+0x3728`; `Progress::moogle`; `rewards` is the reward word at `+8`, docs/systems/ui/menus-shop.md 24.3); every key optional. A slot file carries all of them, and a `block` key resets the record (and the shop and record bits) first, so a file without them loads the defaults; tests `a_slot_file_carries_the_moogle_the_shop_bits_and_the_story`, `rewards_are_not_paid_again_after_a_reload` |
 | `story_flags` | array of flag ids | each set through the game's setter `FUN_0017ff60` in file order, side effects included (area program table, exit locks, other flags; section "Story flags" below) |
 | `story_clear` | array of flag ids | each cleared through `FUN_00180298` (only the bit) |
 | `comment` | any | ignored |
@@ -264,7 +264,7 @@ follows the flag sets its world flag (`FUN_001b68f8`) and queues it. The `wldf` 
 when the world map builds its props. The episode list removal of 0xd and the map hook of 0xf are recorded in `Story::world_unported`. The region is in a slot file and in
 `story_json` as the hex string `world_state` (an older slot loads it clear); the oracle
 `story_flag_setter_matches_the_game` compares it for every flag, with and without story flag `0x102b`. Details and
-gaps: docs/worldmap.md section 10 (W2).
+gaps: docs/systems/worldmap-gummi/worldmap-plan.md section 10 (W2).
 - WM10: the world boot is ported (`Story::world_boot`). `FUN_001b6870` clears the eight flag words at 0x3418a4 and the queue count byte 0x3419c3, sets world flag 0 (`FUN_001b68f8(0)`) and drains the queue with hook argument 0 (`FUN_001b6e60`, `FUN_001b68c0` finds the record, `FUN_001b6a48(record, 0)` runs the list). It has one caller chain: `FUN_00187d20` <- `FUN_00105638` (the game-state constructor) <- `FUN_00101d68`, after `FUN_001688a0` -> `FUN_0017fd10` has loaded the `wldf` table [V: `mips_scan --jal` finds no other caller of 0x1b6870, 0x1b6e60, 0x187d20 or 0x105638]. The save block's static initialiser `FUN_001057b8` clears the world region (`FUN_0032c550(0x341858)`) without calling it, and nothing else re-runs it, so the boot is the process start-up state: the app applies it to the new game (after the table is read) and a loaded save replaces the whole world region afterwards (`world_state`). On the disc flag 0's list writes route states 1 to 20 to 0 and route 21 to 2; every other state starts 0. A state file without `world_state` keeps the boot's region.
 
 ## Decompile index
@@ -297,7 +297,7 @@ gaps: docs/worldmap.md section 10 (W2).
 - Where the story gives Sora his keyblade, spells, forms and Guard (the app baseline stands in for them); the
   title menu's New Game path (searched: callers of `FUN_00105638`, `FUN_00187d20`, `FUN_001c0cb0`, `FUN_00187b38`
   with `mips_scan --jal`; only the boot path and the two static initialisers were found).
-- The selector of the `plrp` rows with `Id` 1 (only `FUN_001c0cb0(0)` was found, as in docs/abilities.md).
+- The selector of the `plrp` rows with `Id` 1 (only `FUN_001c0cb0(0)` was found, as in docs/systems/combat-effects/abilities.md).
 - The meaning of form record byte `+3`, of the saved drive bytes (`+0xdd0` = 100 does not fit the 0..99
   fraction of status `+0x1b0`) and of world record bytes 1..3 (`0x10` each).
 - `FUN_001803b0` (item 0x20) and `FUN_00180450` (first spell: tutorial prompts by story flags) are not
@@ -307,8 +307,8 @@ gaps: docs/worldmap.md section 10 (W2).
 
 ## Level-ups reach Sora's combat stats (WP-LV1)
 
-`Progress` level byte -> `GameData::sora_status` -> `Sora.stats` (`sora::refresh_status`): the `lvup` row of the level plus the record bonus bytes plus the equipment, as FUN_0019f920 does; the rule and its gaps are in docs/player-data.md "Sora's runtime status block follows the record". The spawn still builds the level 1 block (`GameData::sora_stats(1)`); the first fixed tick replaces it, logging `sora: status rebuilt from the record: ...`.
+`Progress` level byte -> `GameData::sora_status` -> `Sora.stats` (`sora::refresh_status`): the `lvup` row of the level plus the record bonus bytes plus the equipment, as FUN_0019f920 does; the rule and its gaps are in docs/systems/combat-effects/player-data.md "Sora's runtime status block follows the record". The spawn still builds the level 1 block (`GameData::sora_stats(1)`); the first fixed tick replaces it, logging `sora: status rebuilt from the record: ...`.
 
 ## Stat growth at level-up (WP-ST3)
 
-The level-up path (`FUN_001b52f8` -> `FUN_001b53d0`) writes no HP or MP; the maxima are record bytes `+5` and `+7`, written only by `FUN_001875c8`, `FUN_001c0b80` (`plrp`) and the status write-back `FUN_001a0030`. The trace, the searches and the port of AP, resistances and the MP maximum are in docs/player-data.md "Stat growth at level-up (WP-ST3)". Gap: no writer of `+5` / `+7` that grows with the level was found (searched: `mips_scan --store-off 0x5` and `0x7`, `FUN_001c0f40`, `FUN_001a0c08`, `FUN_001b53d0`); a record built by `Progress::new_game` keeps 20 / 100 apart from state files.
+The level-up path (`FUN_001b52f8` -> `FUN_001b53d0`) writes no HP or MP; the maxima are record bytes `+5` and `+7`, written only by `FUN_001875c8`, `FUN_001c0b80` (`plrp`) and the status write-back `FUN_001a0030`. The trace, the searches and the port of AP, resistances and the MP maximum are in docs/systems/combat-effects/player-data.md "Stat growth at level-up (WP-ST3)". Gap: no writer of `+5` / `+7` that grows with the level was found (searched: `mips_scan --store-off 0x5` and `0x7`, `FUN_001c0f40`, `FUN_001a0c08`, `FUN_001b53d0`); a record built by `Progress::new_game` keeps 20 / 100 apart from state files.

@@ -25,27 +25,27 @@ Addresses are EE addresses; `FUN_xxxxxxxx` names are the decompilation's. Disc f
 
 Three ways reach world 0xf, all ending in `FUN_00149df0(world, flags)` [V]:
 
-1. **Save point row "World Map"** (docs/menus.md section 18.5). Menu kind 1, page 0x10 `FUN_00257ee8` asks the yes/no question (text id 0x3859,
+1. **Save point row "World Map"** (docs/systems/ui/menus-save.md section 18.5). Menu kind 1, page 0x10 `FUN_00257ee8` asks the yes/no question (text id 0x3859,
    row messages 0x8a7b/0x8a7c/0x8a7d, the question list `0x380cb0`). In the page, row index 1 runs `FUN_002580b8` (`FUN_0014a7c8(fader 0x3564d0,
    0xf, 0)`: a fade out to black of 15 units, then `FUN_00295ac0(0)`) and goes to page 0x14; row 0 and the cancel results (-2) return to page 0
-   [V code; which printed row is row 1 is menus.md's reading, [I]]. Page 0x14 `FUN_002580e8` waits for the fader's state word `+0xfc` to be 4
+   [V code; which printed row is row 1 is docs/systems/ui/contract.md's reading, [I]]. Page 0x14 `FUN_002580e8` waits for the fader's state word `+0xfc` to be 4
    (black), then `FUN_00103b18(1)` (the scene mode word `0x33e78c` = 1) and closes the menu. The field scene's entry `FUN_00103b38` reads that
    word: mode 1 calls `FUN_00149df0(-1, 0xffffffff80000000)` (mode 2 is the load path, mode 3 a fade in) [V]. `FUN_00103b08` clears the word first and
    `FUN_00103d30` clears 8 bytes at 0x33e798 afterwards.
-2. **A trigger's jump record of type 4** (`FUN_0019d9d8` case 4, docs/events.md "WP-JT3"): story flags decide between world 4, world 0x12 and the
+2. **A trigger's jump record of type 4** (`FUN_0019d9d8` case 4, docs/systems/core-runtime/areas.md "WP-JT3"): story flags decide between world 4, world 0x12 and the
    map; the map case calls `FUN_00149df0(record world byte, 0)` after replacing the byte with the remembered one at `DAT_01c8bd90` [V].
 3. **Event commands 0x10e and 0x10f of `FUN_002c4c58`** (the event-command executor, which also handles 0x100..0x113): 0x10f resolves
    (key, world) through `FUN_00198080` and 0x10e takes a literal destination; both call `FUN_00104e18(dest, 0xffffffff80000001, 0, 0, 0)`.
    The effect of the two commands is [V]; who sends them is [GAP] (no call site and no data pointer to `FUN_002c4c58` exists in the executable, so
    it is reached through a table built another way or by the event player) and that they are the exits of scripted scenes is [I].
 
-**What `FUN_00149df0` does** [V]: it raises the global event signal 0x21 (`FUN_00197b70(0x21, 0)`, "leaving for the world map", docs/events.md
+**What `FUN_00149df0` does** [V]: it raises the global event signal 0x21 (`FUN_00197b70(0x21, 0)`, "leaving for the world map", docs/systems/core-runtime/areas.md
 section 1 signals), builds a destination of (world 0xf, area 0, entrance, 0xff, 0xff, 0xff), and writes the same world, area and entrance into the
 current-place bytes at 0x33e830..0x33e832 (so the saved "last world" is now 0xf). The entrance is `FUN_00149db8(world)`: the first of 15 `(entrance,
 world)` pairs at 0x3790a8 whose world equals the argument, else 0. For argument -1 the argument becomes the world byte at 0x33e830 before it is
 overwritten. The three program bytes stay 0xff, which keeps whatever `FUN_00104bd0` took from the program table `0x33e86f + 0xf * 0xc0` (section 3).
 The second argument carries bit 31 (0x80000000) from the save point and the scripted exits, OR-ed with 1; the type-4 path passes 0.
-`FUN_00104e18` stores the six destination bytes at 0x33e838, starts the jump task `FUN_00104d58` and the fade kind (docs/events.md section 2); when a
+`FUN_00104e18` stores the six destination bytes at 0x33e838, starts the jump task `FUN_00104d58` and the fade kind (docs/systems/core-runtime/areas.md section 2); when a
 jump is already running (`DAT_003b2180` non-zero) it only overwrites the pending destination and ORs the fade argument with 0x80000000. What bit 31
 changes in `FUN_0013ef68` is [GAP].
 
@@ -86,7 +86,7 @@ world 15, and the jump records that lead here keep the program bytes (0xff) [V].
 (`evt`) run, unless a scripted exit passes explicit bytes in its destination [I]. The other 14 programs are reachable only by an explicit destination;
 who passes them is [GAP] (the callers of `FUN_00104e18` in the 0x2d0000..0x2e8000 minigame code were not read).
 
-**Spawn files.** All entries use the 0x40-byte entity records of docs/events.md section 3; the kind byte +0x1c is 1 for the cursor and 0 for the rest
+**Spawn files.** All entries use the 0x40-byte entity records of docs/systems/events-movies/npc-savepoints.md section 3; the kind byte +0x1c is 1 for the cursor and 0 for the rest
 [V]:
 
 | file | contents |
@@ -96,7 +96,7 @@ who passes them is [GAP] (the callers of `FUN_00104e18` in the 0x2d0000..0x2e800
 | `m_50` | one group of 12 `WM_SYMBOL_xx` entities (kind 0) at the world positions: TT, HB, MU, BB, HE, DC, LM, CA, NM, AL, LK, EH |
 | `m_51` | one group of 9 `WM_GUMI_01` entities (kind 0), +0x20 holds a route number 1..9 |
 
-Entity kind 1 is created only when its +0x1d equals the entrance byte (`FUN_001981a0`, docs/events.md section 3). So exactly one cursor exists, standing
+Entity kind 1 is created only when its +0x1d equals the entrance byte (`FUN_001981a0`, docs/systems/events-movies/npc-savepoints.md section 3). So exactly one cursor exists, standing
 at the spawn record of the entrance of section 1. The 22 cursor positions are the places where the Gummi ship appears after leaving a world (entrances
 1..12 are the symbol worlds' own, 13..15 the three extra worlds of the pair table, 16..21 are not in the table [I: Gummi route returns]).
 
@@ -167,10 +167,10 @@ command and have almost no text). Cutscene lines are in the 13 libretto files. [
 
 ## 6. State: what unlocks what
 
-All of this is the story-flag side-effect machinery of docs/progress.md / docs/events.md section 5, extended by the `wldf` list:
+All of this is the story-flag side-effect machinery of docs/systems/core-runtime/progress.md / docs/systems/core-runtime/story-flags.md section 5, extended by the `wldf` list:
 
-1. **Story flags** (0x33f6b0, `FUN_0017ff60`, docs/events.md "Side effects"). After a flag's own op list the setter calls `FUN_001b6da0(flag)` (the
-   `wldf` hook) [V]. The app's `progress::Story` does not call it: "the calls after the list" are in `Story::unported` (docs/progress.md).
+1. **Story flags** (0x33f6b0, `FUN_0017ff60`, docs/systems/core-runtime/story-flags.md "Side effects"). After a flag's own op list the setter calls `FUN_001b6da0(flag)` (the
+   `wldf` hook) [V]. The app's `progress::Story` does not call it: "the calls after the list" are in `Story::unported` (docs/systems/core-runtime/progress.md).
 2. **`wldf`** (`00progress.bin`, one entry, 147 records of 16 bytes, `FUN_001b68c0` binary search on the key, `FUN_001b6a48` runs a list) [V layout]:
    byte +0 the world-flag index, +1 a kind (0, 1, 2), +4 u32 the story flag it follows, +8 u32 an event number (0 for none; 13 of them
    are the `wm` libretto files), +12 u32 offset of an action list inside the entry. `FUN_001b6da0(flag)` finds the records whose +4 equals the
@@ -191,11 +191,11 @@ All of this is the story-flag side-effect machinery of docs/progress.md / docs/e
    147 records: 131 carry action lists with 235 ops in all; the ops used are 1..10, 12, 13 and 15. [V]
 4. **World record bytes** (`FUN_001b4e80(w)` = 0x341858 + 4 * w): byte 0 the map state used by the symbol (section 3); byte 1 and 2 are written by flag op
    0xd (`FUN_0017ff60`: the halfword's high byte to +1, low byte to +2); byte 1 is the key the landing table uses (section 7); byte 3 bit flags (above)
-   [V]. Initial values are zero if the save block clearing at boot (docs/progress.md) covers 0x341858 [I]; the "not yet visited" meaning of 0 is [I].
+   [V]. Initial values are zero if the save block clearing at boot (docs/systems/core-runtime/progress.md) covers 0x341858 [I]; the "not yet visited" meaning of 0 is [I].
 5. **Episodes** (`epsd`, 43 records of 8 bytes): u16 id, byte +2 the world, +3 order inside the world, u16 +4 the title text id, u16 +6 the hint text id
    [V layout from `FUN_001c14e8`, `FUN_002c9600`]. `FUN_001c14e8(world, previous)` yields the next record of the world whose id bit is set in
    0x3419f4 (`FUN_001c15f0`, `FUN_001c1628`). The "Episode list" (mode 3) and the info panel read these.
-6. **Destinations and locks** (docs/events.md section 5 "exit locks"). A row of the destination list shows only world points seen before: bit of the world
+6. **Destinations and locks** (docs/systems/core-runtime/story-flags.md section 5 "exit locks"). A row of the destination list shows only world points seen before: bit of the world
    point index in the array at 0x33f910 (`FUN_00195010`), which the exit and area code sets when the player enters the area (`FUN_00194fd8`); the row is locked when the
    area is locked by an exit-lock entry of `dsa` (`FUN_00195358(world, area)` non-zero): result 2 in `FUN_00195010`, flag bit 0 in `FUN_002d1d20`.
 7. **Forced events** (section 4) test world flags 1, 0x13, 0x35, 0x37 (and the symbol effect tests story flag 0x481c).
@@ -207,20 +207,20 @@ All of this is the story-flag side-effect machinery of docs/progress.md / docs/e
 
 - **Land prompt** [V]: `FUN_001c1cf8(world)` searches the `wlds` entry (34 records of 4 bytes, count at +4, records from +8; stored by `FUN_001c1ce8`
   in `DAT_01d5df68`) for the first record whose byte 0 equals the world and byte 1 equals byte 1 of that world's record (`FUN_001b4e80`, section 6.4).
-  Byte 2 is the destination area when below 0x33, else a story-program key resolved with `FUN_00198080(key, world)` (docs/events.md `07localset`),
+  Byte 2 is the destination area when below 0x33, else a story-program key resolved with `FUN_00198080(key, world)` (docs/systems/core-runtime/contract.md `07localset`),
   byte 3 the entrance; the result is (world, area, entrance, 0xff, 0xff, 0xff). A world with no matching record returns the previous contents of the
   static result buffer (0x1d5df70) [V by reading; [I] that every reachable (world, state) pair has a record].
 - **Destination list** [V]: `FUN_002d1d20(window, world)` reads the `land` table of `70landing.bar` (header word 1, count 53, records of 4 bytes: world
   point index, world, row in the list, picture index); for each record of the chosen world whose world point was seen it fills a 0x1c0-byte row:
   the label is the area's name from `msg/us/place.bin` (`FUN_0019e178`), the picture is the type-0x18 entry of `70landing.bar` number `picture index`
   (`FUN_002f7cc0`, 53 pictures named by area, 17472 bytes each), the destination is `FUN_00194f08(world point)` = the 3-byte record in `00worldpoint.bin`
-  (docs/events.md "world points", 54 records of 4 bytes) [V]. The same file's `ws_i` entry (type 0x19, 1160 bytes, `FUN_002f7c90`) is the world select
+  (docs/systems/events-movies/npc-savepoints.md "world points", 54 records of 4 bytes) [V]. The same file's `ws_i` entry (type 0x19, 1160 bytes, `FUN_002f7c90`) is the world select
   indexes [GAP].
 - **Fade and flags**: `FUN_00104e18(dest, 1, 0, 0, 0)`, i.e. the normal black fade (fade kind 1), wait 0, no extra flag, party reset 0, so the destination area
   starts with the program bytes of its own program table [V].
 - **Leaving without a landing**: the cancel results do nothing but close the window (`FUN_002cadf0`); the map itself is left only by a landing, a scripted event or
   the pause menu's own exits [GAP: the map's menu (captions 0x4c10..0x4c14) is opened from the cursor's input state, not found].
-- **Gummi route markers**: choosing one starts a Gummi flight (the `ovl_gumibattle.x` overlay, docs/final-mix.md does not cover it); not in scope [GAP].
+- **Gummi route markers**: choosing one starts a Gummi flight (the `ovl_gumibattle.x` overlay, docs/systems/foundations/final-mix.md does not cover it); not in scope [GAP].
 
 ## 8. Recorded gaps
 
@@ -249,8 +249,8 @@ All of this is the story-flag side-effect machinery of docs/progress.md / docs/e
   except `FUN_001b6da0` are not ported (`Story::unported`).
 - Panels, prompts and the landing: `worldmap_ui.rs` (W6, W7 and the art done below); the map is entered and left by default (`KH2_WORLDMAP=0` hides the save point row).
 - Save point menu: `menu_save.rs` opens the World Map question on row 1 and enters the map (W3 done below); `savepoint.rs` builds the row (message 0x8a80). The menu kind 1 page machine
-  and the card pages are ported (docs/menus.md 18.5).
-- Fader: the screen-fader fade-out of a jump (`MenuScene::fade`, docs/menus.md) and the event player's fade object.
+  and the card pages are ported (docs/systems/ui/menus-save.md 18.5).
+- Fader: the screen-fader fade-out of a jump (`MenuScene::fade`, docs/systems/ui/contract.md) and the event player's fade object.
 - Text and art readers: `kh2_image::text` (message tokens), `Seqd` (field-2d groups), `kh2_image::layd` (`.2ld`), the HUD scene (`hud_gfx`: sequence players, parents and anchors) for the panels.
 - `kh2_ard::worldmap` parses `wldf`, `wlds`, `epsd`, `70landing.bar`'s `land`, `00worldpoint.bin` and the `wm.bar` ids (stage W1 below); nothing draws the symbols, cursor or markers, and no map area exists.
 

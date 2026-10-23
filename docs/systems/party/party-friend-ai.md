@@ -11,7 +11,7 @@
 | 2 Donald (moveset 0x12 `P_LK020` -> 12) | 0 / 12 | FUN_00114550 | 0x353368 | 0x353090, 20 |
 | 3 Goofy (moveset 0x15 `P_LK030` -> 13) | 1 / 13 | FUN_00114668 | 0x353630 | 0x3533a0, 18 |
 | 5 Auron, 15 Ping, 6 Mulan, 7 Aladdin, 8 Sparrow, 9 Beast, 10 Jack, 11 Simba, 12 Tron, 13 Riku | 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 | FUN_00114890, FUN_001149c8, FUN_00114ae0, FUN_00114c38, FUN_00114d90, FUN_00114f90, FUN_001150e8, FUN_00115260, FUN_001153b8, FUN_001154d0 | per class | per class |
-| 200..204 summons | 14..18 | docs/summons.md | | |
+| 200..204 summons | 14..18 | docs/systems/drive-limits-summons/contract.md | | |
 | 1, 4, 14 | none | | | |
 | anything else | class with the table's first block | FUN_001133e0 (no actions) | 0x352e78 | none |
 
@@ -181,13 +181,13 @@ refresh: re-target test, then the choice) runs `dispatch(class, style)` for ever
 `battle_distance` takes the member's style. Inputs:
 
 - `style` = `PartyMember::style`, the setting byte 0 (WP-PA3: `Progress::member_setting(neo, 0)`, re-read every
-  frame in `party_tick`; 0 at a new game; a `KH2_STATE` key `party_settings` sets it, docs/progress.md; the
+  frame in `party_tick`; 0 at a new game; a `KH2_STATE` key `party_settings` sets it, docs/systems/core-runtime/progress.md; the
   harness `KH2_PARTY_STYLE=<n>` still overrides both members; read once per run, not per frame). A style byte above 5 (the
   table has six rows) reads as 0 [inferred; the original would read past the table]; `party_settings` in a state file rejects
   a style above 5 and any value above 255 instead of truncating. [GAP: no page writes it yet: the page that does is
-  Customize page 0x1b for Donald / Goofy (`FUN_00271078` with another character, docs/menus.md 2.4), which is not
+  Customize page 0x1b for Donald / Goofy (`FUN_00271078` with another character, docs/systems/ui/menus-pause.md 2.4), which is not
   ported (`menu_customize.rs`, outside WP-PA3's ownership; the Party page 0x14/0x16 only swaps slots, WP-MN7/MN8).
-  Searched: docs/menus.md and docs/party.md, `menu_party.rs`, `menu_config.rs` (the Config rows are the option
+  Searched: docs/systems/ui/contract.md and docs/systems/party/contract.md, `menu_party.rs`, `menu_config.rs` (the Config rows are the option
   word, not per-member). The Customize page's row builder for the others' table (0x381d48: kinds 3, 4, 2) was
   not read.] A style outside 0..5 makes no choice (the table has six rows).
 - +0xcec, the remembered attacker: `PartyMember::attacker`, set in `party_receive_hits` for every enemy hit the
@@ -261,7 +261,7 @@ outside the table) and `party_battle_distance_follows_the_style`.
 | 10.55 | 0x2f7540 | 2 | FUN_002f0758(a, b != 0) |
 | 10.56 | 0x2f7560 | 2 | FUN_00110dc8 |
 | 10.57 | 0x2f7580 | 1 ret | push a position to the player trail (45-unit spacing) |
-| 10.58 | 0x2f7598 | 3 | FUN_001131e8: friend object +0xb50 = a record, +0xb54 = a value, bit 2 of the record's object word +0x1c set; only the destructor FUN_0010c6e0 reads the pair; called by P_EH000 and P_EH000_LAST (WP-RV2, docs/bdx.md) |
+| 10.58 | 0x2f7598 | 3 | FUN_001131e8: friend object +0xb50 = a record, +0xb54 = a value, bit 2 of the record's object word +0x1c set; only the destructor FUN_0010c6e0 reads the pair; called by P_EH000 and P_EH000_LAST (WP-RV2, docs/systems/script-host/contract.md) |
 | 10.59 | 0x2f75c0 | 2 | FUN_0011a6b8(AI, a) |
 
 Use in the members' scripts (`kh2 bdx`): Donald 10.31 x2; Goofy 10.14, 10.31, 10.40, 10.55 (x2 each);
@@ -272,7 +272,7 @@ Auron 10.29, 10.31 x2, 10.55; Riku 10.14 x4, 10.17, 10.18, 10.29, 10.31, 10.35, 
 ## 6. Combat
 
 - **Class methods** [V]: the friend vtable 0x352d88 keeps the party class's combat methods (shared with
-  Sora's vtable 0x35c9a8): +0x6c clash FUN_001754a0 (docs/hit-reaction.md, ported as
+  Sora's vtable 0x35c9a8): +0x6c clash FUN_001754a0 (docs/systems/combat-effects/hit-reaction.md, ported as
   `reaction_rules::party_clash`), +0x70 FUN_00175668, HP change +0x78 FUN_00176c98 -> FUN_00186238. Overrides:
   +0x64 receive FUN_001106b8 (AI hook, FUN_0017cde0 = FUN_00175340 the `patn` receive path as for Sora, voice 9
   when HP enters danger, attacker remembered), +0x74 attacker callback FUN_00110728, +0x7c attack motion
@@ -280,23 +280,23 @@ Auron 10.29, 10.31 x2, 10.55; Riku 10.14 x4, 10.17, 10.18, 10.29, 10.31, 10.35, 
 - **Attacks**: the member's motion set's attack volumes with `atkp` rows, as for any object (combat.rs);
   the attacker's stats from its status block. (FUN_00110728, read in WP-PA1: the AI vtable +0x10 then
   FUN_001767a8, no statistics; section 4 "Targets".)
-- **Invulnerability**: +0x7f8 bit 0x10 (hidden), the party tick FUN_00174b68 timers (docs/hit-reaction.md
+- **Invulnerability**: +0x7f8 bit 0x10 (hidden), the party tick FUN_00174b68 timers (docs/systems/combat-effects/hit-reaction.md
   +0xb00) apply. [I] events: not traced.
-- **Reaction commands**: the party code offers limits through FUN_0019d430 -> FUN_001d25e0 (docs/player-data.md
+- **Reaction commands**: the party code offers limits through FUN_0019d430 -> FUN_001d25e0 (docs/systems/combat-effects/player-data.md
   "Triggering"); members within `DAT_0037c414` with flag 2 qualify.
 - **Limits**: FUN_001b28a0 marks participants (+0xb4c, +0x10c 0x10000) and puts both companions in the limit
   state (FUN_001c75d0) -> hidden list; target choice switches to FUN_0010d700 during a limit.
 - **Drive forms**: FUN_001b4c28 -> FUN_001c76b0: each member the form takes (FUN_001c77a8: Valor Goofy,
   Wisdom Donald, Master/Final/Anti everybody, oracle-checked) is faded out and listed (15 frames,
   `DAT_0037c050`); the area spawn skips them while the form lasts (FUN_0017d1b0).
-- **Summons**: docs/summons.md (fade 15 frames out and back, FUN_001c7740 / FUN_001c79c8).
+- **Summons**: docs/systems/drive-limits-summons/contract.md (fade 15 frames out and back, FUN_001c7740 / FUN_001c79c8).
 
 ## 7. HUD and audio
 
 - HP / MP panel per member: registered at creation (FUN_0013dcd8(slot + 1, obj) on the table 0x355768); the
-  panel reads the member's status block (HP +0, max +4, MP +0x180, max +0x184; the rules in docs/hud.md
+  panel reads the member's status block (HP +0, max +4, MP +0x180, max +0x184; the rules in docs/systems/ui/hud-notes.md
   "Party panels", 0x154818 / 0x154930). Summons get none.
-- Voices: friend vtable +0x54 (line ids 2 KO, 9 danger); the bank by NeoStatus (docs/audio.md). Positional
+- Voices: friend vtable +0x54 (line ids 2 KO, 9 danger); the bank by NeoStatus (docs/systems/audio/audio.md). Positional
   sound effects of the members' motions use their `.apdx` banks.
 
 ## 8. Where it goes in the app
@@ -370,7 +370,7 @@ Each stage ends with `verify.ps1` passing and the named check.
 - Attacker callback FUN_00110728, the combo follow-up FUN_001b0758, item use FUN_001a1fc0 fields.
 - The meaning of the settings' values 0..3 (WP-PA4: the menu offers 0 Free / Often, 1 Well-Balanced, 2 Rare / Last hope!, never 3; the page's
   messages say how it reads) and the styles 0..5 (Technic, Target, Huddle, Party, Sora, Relentless Attack: messages
-  0x486..0x48b, docs/menus.md 14b; what each does is the target table of section 4).
+  0x486..0x48b, docs/systems/ui/menus-customize.md 14b; what each does is the target table of section 4).
 - Who writes the save slot bytes at new game; `lvup` table order beyond Sora.
 - Per-class constructors of the world partners (FUN_00114890..FUN_001154d0) and their action records were not
   dumped; the oracle test prints only their thresholds.
@@ -427,13 +427,13 @@ Each stage ends with `verify.ps1` passing and the named check.
 - (WP-PA1, done in WP-PA2) `party.rs` now calls `battle::dispatch` / `needs_retarget` / `choose_target` with the
   remembered attacker, the player's target and attacked object. (WP-PA3 done: `Member::settings`, the
   `party_settings` state key, `party.rs` reads byte 0.) (WP-PA4 done: the Customize page 0x1b writes
-  byte 0 and the use-setting bytes, `menu_customize.rs`, docs/menus.md 14b.)
+  byte 0 and the use-setting bytes, `menu_customize.rs`, docs/systems/ui/menus-customize.md 14b.)
 
-- `docs/player-data.md`, `memt`: the 16 words at +0x10 are member objects by member index (0 player, 1 Donald,
+- `docs/systems/combat-effects/player-data.md`, `memt`: the 16 words at +0x10 are member objects by member index (0 player, 1 Donald,
   2 Goofy, 3 partner, 4..8 forms, 9 Mickey, 10..15 keyblades), merged per world; index 0..3 are not "world
   outfits". Sora's per-world object comes from the merge (world 14 `P_EX100_NM`, 17 `_TR`, 13 `_WI`).
-- `docs/player-data.md` / `docs/drive-forms.md`: FUN_001c77a8 takes **every** member in forms 3..5 (any
+- `docs/systems/combat-effects/player-data.md` / `docs/systems/drive-limits-summons/drive-forms.md`: FUN_001c77a8 takes **every** member in forms 3..5 (any
   NeoStatus), not "both".
-- `docs/player-data.md`, ability block +0x58: it also scales the party member's revive time (FUN_0017ce60).
+- `docs/systems/combat-effects/player-data.md`, ability block +0x58: it also scales the party member's revive time (FUN_0017ce60).
 - (WP-S4: `receive_hits` takes a member's strength / magic / defense from the rebuilt status too, `enemy::member_stats_rebuilt`; Donald's thunder no longer does 2.)
 

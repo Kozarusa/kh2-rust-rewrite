@@ -4,7 +4,7 @@
 
 Work package 7H (research); stage 1 of section 9 is in the app since WP-7P1 (section 11). The note is meant to let later
 work packages build the party stage by stage without reading the game code again. Structure and standard
-follow `docs/summons.md`.
+follow `docs/systems/drive-limits-summons/contract.md`.
 
 Marks: **[V]** read in the game's code (address given) or checked against the disc or a kh2-ee run;
 **[I]** inferred (fits the code but no line states it); **[GAP]** not found, with the addresses searched.
@@ -25,10 +25,10 @@ Evidence that runs:
 - `kh2 bdx P_EX020` (Donald), `P_EX030` (Goofy), `P_HE000`, `P_EH000`, `P_TR000` ... disassemble the members'
   scripts.
 
-Earlier notes: `docs/summons.md` (summons share the friend class; the fade-out of the companions),
-`docs/drive-forms.md` and `docs/player-data.md` (forms take companions), `docs/limits-reactions.md`
-(limits need partners), `docs/hud.md` ("Party panels"), `docs/hit-reaction.md` (the party class's clash and
-receive handlers), `docs/audio.md` (voices by NeoStatus).
+Earlier notes: `docs/systems/drive-limits-summons/contract.md` (summons share the friend class; the fade-out of the companions),
+`docs/systems/drive-limits-summons/drive-forms.md` and `docs/systems/combat-effects/player-data.md` (forms take companions), `docs/systems/drive-limits-summons/contract.md`
+(limits need partners), `docs/systems/ui/hud-notes.md` ("Party panels"), `docs/systems/combat-effects/hit-reaction.md` (the party class's clash and
+receive handlers), `docs/systems/audio/audio.md` (voices by NeoStatus).
 
 ## 1. The data
 
@@ -37,7 +37,7 @@ receive handlers), `docs/audio.md` (voices by NeoStatus).
 - **Party member id = NeoStatus** (`objentry` +0x4c, FUN_001699a8), the byte `plrp.Character` and
   `limt.Character` use: 1 Sora, 2 Donald, 3 Goofy, 4 Mickey (`P_EX200`, object type 0, a player class),
   5 Auron, 6 Mulan, 7 Aladdin, 8 Jack Sparrow, 9 Beast, 10 Jack Skellington, 11 Simba, 12 Tron, 13 Riku,
-  14 Roxas (`P_EX110`, type 0), 15 Ping (`P_MU010`). 200..204 are the summons (docs/summons.md).
+  14 Roxas (`P_EX110`, type 0), 15 Ping (`P_MU010`). 200..204 are the summons (docs/systems/drive-limits-summons/contract.md).
 - **Party-member objects** are `objentry` type 1: `P_EX020` Donald, `P_EX030` Goofy and their world
   variants (`_NM`, `_TR`, `P_WI020`/`P_WI030`, `P_LK020`/`P_LK030`, `N_LM010_PLY`/`N_LM020_PLY`), `P_HE000`,
   `P_MU000`, `P_MU010`, `P_AL000`, `P_CA000` (+`_HUMAN`, `_LOW` variants), `P_BB000`, `P_NM000` (+`_SANTA`),
@@ -98,7 +98,7 @@ its slot byte has 0x80, or its index is in the hidden list (below). FUN_0017d150
   and Fantasia, Flare Force, Donald Fire, Donald Blizzard, Auto Limit, ... (set 1). Goofy: HP 25, Goofy Bash,
   Goofy Tornado, Goofy Turbo, Tornado Fusion, Teamwork, Auto Change, ... The rows feed the saved party
   records (`0x33fec0` + the per-member record, FUN_00187d40); the battle state is rebuilt from the saved
-  record (FUN_0019fd30 -> FUN_0019f920, docs/player-data.md "How abilities apply").
+  record (FUN_0019fd30 -> FUN_0019f920, docs/systems/combat-effects/player-data.md "How abilities apply").
 - `lvup`: 13 character tables of 99 levels (table 0 Sora, then [I] 1 Donald, 2 Goofy, ... in party-member
   order); printed by the disc test.
 - `prty` (03system.bin pref): rows by character index (row 1 is Sora's, as kh2-app reads it). Rows 2..8 and
@@ -116,10 +116,10 @@ its slot byte has 0x80, or its index is in the hidden list (below). FUN_0017d150
   used by the code: 1 = only while MP >= the action's cost, 2 = only as a fallback (second pass), 3 = never
   (FUN_0010fcd0, FUN_0010f220). [V, WP-PA4] these are the Customize page 0x1b settings: the Battle Style row
   writes byte 0 (`FUN_00275398`), an ability row byte `1 + FUN_00114348(id)` with the values 0, 1, 2 (`FUN_00275410`),
-  an item row Auto-Reload and the byte 0 or 2 (`FUN_00274f70`); docs/menus.md 14b. Value 3 ("never") has no menu row.
-- `ptya`: the moveset table (docs/moveset-selection.md); party members have their own `NeoMoveset`
-  (Donald 17, Goofy 20, ... printed). `patn` is the hit-state conversion (docs/hit-reaction.md), shared.
-  `vbrt`: [I] the controller vibration table (frame trigger 31, docs/hit-reaction.md); nothing party-specific
+  an item row Auto-Reload and the byte 0 or 2 (`FUN_00274f70`); docs/systems/ui/menus-customize.md 14b. Value 3 ("never") has no menu row.
+- `ptya`: the moveset table (docs/systems/player-camera/moveset-selection.md); party members have their own `NeoMoveset`
+  (Donald 17, Goofy 20, ... printed). `patn` is the hit-state conversion (docs/systems/combat-effects/hit-reaction.md), shared.
+  `vbrt`: [I] the controller vibration table (frame trigger 31, docs/systems/combat-effects/hit-reaction.md); nothing party-specific
   reads it in the paths read.
 
 ### ELF-embedded friend tables (not on the disc) [V]
@@ -136,7 +136,7 @@ its slot byte has 0x80, or its index is in the hidden list (below). FUN_0017d150
 
 ## 2. Who the friends are
 
-1. Area scripts spawn `FRIEND_1` / `FRIEND_2` (tt02 does; docs/enemies.md). The object factory FUN_0016e8c0
+1. Area scripts spawn `FRIEND_1` / `FRIEND_2` (tt02 does; docs/systems/script-host/contract.md). The object factory FUN_0016e8c0
    resolves the objentry id through FUN_0016e208: 0x236 = the player object, **0x237 = FUN_0017cd20(1),
    0x238 = FUN_0017cd20(2)**, 0x319/0x31a/0x3ee = FUN_0017cd78(1/2/3) (the same, plus Jack Sparrow (NeoStatus 8)
    becomes 0x81d when FUN_0016f038 < 2 [I: a memory-light variant]). FUN_0017cd20(slot) = the merged member
@@ -150,7 +150,7 @@ its slot byte has 0x80, or its index is in the hidden list (below). FUN_0017d150
    test. The base constructor attaches up to two hand objects (FUN_0017c718: FUN_0016ef28(objentry, 0/1) ->
    FUN_001751b0) [I: the weapons; objentry has `DONALD_WEAPON` 575, `GOOFY_WEAPON` 576, `AURON_WEAPON` 704,
    type 6; FUN_0016ef28 was not read].
-5. Voices: by NeoStatus through the voice table (docs/audio.md "other party"); the friend's voice method is
+5. Voices: by NeoStatus through the voice table (docs/systems/audio/audio.md "other party"); the friend's voice method is
    vtable slot +0x54, the party class's FUN_00175d18 (summons override it with FUN_001c6998). Lines asked
    for: 2 on KO (FUN_00175f10), 9 when its HP falls into danger (FUN_0017cde0).
 
@@ -161,7 +161,7 @@ its slot byte has 0x80, or its index is in the hidden list (below). FUN_0017d150
 FUN_0017d1b0(rotation, objentry, spawn record):
 
 - a summon is active (`DAT_00340c88` byte 5): the member is listed as hidden (FUN_001c7600) and the summon is
-  created again instead (docs/summons.md);
+  created again instead (docs/systems/drive-limits-summons/contract.md);
 - the current drive form takes this member (FUN_001c77a8(form byte 4 of `DAT_00340c88`, NeoStatus)): listed
   as hidden, no object;
 - else a 0xd00-byte object, FUN_0010be80 (= FUN_0010b780, the friend class).

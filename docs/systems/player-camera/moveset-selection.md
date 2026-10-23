@@ -326,7 +326,7 @@ own leap (FUN_00176050 for record +0xc > 0) is not ported (the app's lunge uses 
 ### Hit.point (FUN_0018ce18): ported
 `combat::victim_point`: the point of the victim's spheroid (centre = bone matrix x offset raised by
 the shape's lift; radius; the shape's height field as half height, FUN_001894d0) toward the attacker's
-volume point, height clamped (rule in docs/effects-damage.md). The first overlapped hurt shape is used
+volume point, height clamped (rule in docs/systems/combat-effects/effects-damage.md). The first overlapped hurt shape is used
 (FUN_001b5a58 returns the first matching entry).
 
 The attacker point (WP-5A, verified layout): FUN_0018d988 walks the attack entries (header 0x10,
@@ -338,7 +338,7 @@ matrix x shape offset, raised by the lift). [inferred] The attack records are fi
 (their writer was not traced). App: `combat::live_attack_shapes` gives the attack shape's centre
 raised by its lift, and `detect_hits` places `Hit.point` with `victim_point(hurt, centre)`. Tests:
 `victim_point_matches_fun_0018ce18_worked_by_hand` (C (0,1,0), r 0.3, h 0.6, A (0.8,1.3,-0.6) ->
-(0.2078461, 1.3, -0.1558846); clamped pole; equator). docs/effects-damage.md "Hit point" still says
+(0.2078461, 1.3, -0.1558846); clamped pole; equator). docs/systems/combat-effects/effects-damage.md "Hit point" still says
 `Hit.point` is `vol.a` and suggests `(vol.a + vol.b) / 2` for the attacker; both are superseded here.
 
 ### A343 keyblade at frame ~18 (WP-5A): reproduced, not culling; cause found in WP-6A (occlusion, see above)

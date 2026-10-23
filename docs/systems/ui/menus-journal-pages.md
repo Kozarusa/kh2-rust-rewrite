@@ -5,7 +5,7 @@
 ### 20.10 A character's own page, Quests, Minigames, page 0xc (WP-MN14) [V unless marked]
 
 Code: `menu_journal.rs` (`build_char_page`, `char_view`, `page_char`), `menu_journal/{games,games_page,root_page}.rs`; the minigame records in
-`progress.rs` (slot key `minigames`, docs/progress.md).
+`progress.rs` (slot key `minigames`, docs/systems/core-runtime/progress.md).
 
 - **A character's own page 0xf** (confirm on a face of page 6 / 0xb; `FUN_002ae790` first marks the character seen, `FUN_002b73b8(char)`,
   then `FUN_002aa358(list, page)` keeps the page's face list (the u16 character ids at +0x50, 8-byte stride) and the page to return to
@@ -64,7 +64,7 @@ Code: `menu_journal.rs` (`build_char_page`, `char_view`, `page_char`), `menu_jou
     0x1000 the game's state not 0, 0x2000 state 2 or more, else with a state of 2 or more the score (state 4 is a time, whole seconds
     rounded up: `FUN_0014c7f0` splits the word, 0x34bc0 frames an hour and 0xe10 a minute) compared with +0xc: 0x100 done at or below,
     0x200 done at or above; otherwise 1 (open). The disc's quests use the flags 0x11, 0x21, 0x145, 0x245, 0x246, 0x1041 and 0x2042.
-  - *The minigame value* (`FUN_002b5698`, the branch for `FUN_00105cd8() != 1`, which is the USA disc's [inferred: docs/hud.md takes
+  - *The minigame value* (`FUN_002b5698`, the branch for `FUN_00105cd8() != 1`, which is the USA disc's [inferred: docs/systems/ui/contract.md takes
     value 1 for Japanese]): state 0 / 1 the message 0x4b71; state 2 the message 0x4b80 ("Round") then the score `%d`; state 4 the unit
     message and the time `%02d'%02d"%02d` (minutes, seconds, hundredths = `frames % 60 * 1.6667`); other states the score and then the unit
     message. `FUN_001918a0` maps the apostrophe and the quote to glyphs 55 and 65.

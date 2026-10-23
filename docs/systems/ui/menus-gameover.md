@@ -12,7 +12,7 @@ player class's method `+0x5c`, `FUN_001cec00` (the field player's class 0x360410
 | test | result |
 |---|---|
 | `DAT_0035d268` bit 0x20000 (host 1.317, the Struggle script's event 3) | global event 0x5a (`FUN_00197b70`), no game over |
-| `FUN_001c69b0`: summon state not 0, byte 5 = Peter Pan's row (`FUN_001d4ca0(0x132)`), byte 7 set (Tinker Bell ready) | game over type 2 (`FUN_001ad8a8`): Tinker Bell's revive (docs/summons.md), unless the form field `+0xb50` is 0xb |
+| `FUN_001c69b0`: summon state not 0, byte 5 = Peter Pan's row (`FUN_001d4ca0(0x132)`), byte 7 set (Tinker Bell ready) | game over type 2 (`FUN_001ad8a8`): Tinker Bell's revive (docs/systems/drive-limits-summons/contract.md), unless the form field `+0xb50` is 0xb |
 | `FUN_001b9c00`: a mission manager of kind 2, 0x19 or 0x20 | type 3 (`FUN_001ad8e0(player)`) |
 | `FUN_001793a8`: form field `+0xb50` in 1..5 (a drive form) or 0xb | `FUN_001b4d78` (`FUN_001b44c8`, the form's own end task), no game over |
 | otherwise | type 0 (`FUN_001ad810(player)`); with the summon state 2 `FUN_001cf298` ends the summon first |
@@ -29,7 +29,7 @@ The three constructors `FUN_001ad810`, `FUN_001ad8a8`, `FUN_001ad868` and `FUN_0
 record, +0x30 / +0x34 the list header words and the scene handle, +0x48 the callback of the list's code 2, +0x4c its task. It sets
 `DAT_0035ee00` (one game over at a time), flag 0x35d268 bit 1, `0x35fec8` bit 1 (not for type 2), the music stop `FUN_00137520`
 (`FUN_002c1a08`: both music slots fade, `FUN_00136a68` stream stop) and the system sound `FUN_002c14a8(0x13)` (type 1: `0x33`),
-queues the camera/message object when an actor was passed (`FUN_00195898` / `FUN_00195a78` / `FUN_00195ae0`; WP-RV2: it is the event object of kind 0xf playing the first type-0x16 entry of `00battle.bin`, `re_gameover-0a`, a camera cut plus a 100-tick fade to black from event frame 0xb, with the pad locked; the actor is only stored as an unread word, docs/summons.md "The revive's message window"), sets `0x354f70`
+queues the camera/message object when an actor was passed (`FUN_00195898` / `FUN_00195a78` / `FUN_00195ae0`; WP-RV2: it is the event object of kind 0xf playing the first type-0x16 entry of `00battle.bin`, `re_gameover-0a`, a camera cut plus a 100-tick fade to black from event frame 0xb, with the pad locked; the actor is only stored as an unread word, docs/systems/drive-limits-summons/contract.md "The revive's message window"), sets `0x354f70`
 bit 2 (`FUN_00138708`) and makes its task (`FUN_00102bc8(1, 15000, 0x1ad918)`, body `FUN_001ad960` -> `FUN_001ad9a0`).
 `FUN_001ad640` (types other than 2) clears the manager (`FUN_001b9518`) when the alternate byte is 0, picks the record
 (`FUN_001bef10(0x21)` for type 3, `FUN_001bef10(1)` for the others; the callback `+0x48` = `0x1adc70` for types other than 3) and
@@ -135,7 +135,7 @@ snapshot (`FUN_001cafa0`: copies the same words and `DAT_01d69890 = DAT_0033e830
   tt00` logs `game over: Sora knocked out (FUN_001cec00): GameOver(0)` and `type 0 opens record 0x1 ... rows [(2, 8ab0), (1,
   8aaf)]`; with `KH2_KEYS=10:J` also `row chosen, code 2`, `Continue: jump to world 2 area 0 entrance 0` and `the jump is over:
   Sora is back`. `KH2_WAVE_GROUP=b_50` with the aid logs `MissionEvent` (host 1.317's bit) and no list; the summon run of
-  docs/summons.md logs `TinkerRevive` and no list.
+  docs/systems/drive-limits-summons/contract.md logs `TinkerRevive` and no list.
 * Decompile index: `FUN_001ad378`, `001ad640`, `001ad520`, `001ad790`, `001ad810`, `001ad868`, `001ad8a8`, `001ad8e0`, `001ad960`,
   `001ad9a0`, `001adcf8`, `001add40`, `001ade58`, `001adeb8`, `001cec00`, `001ced58`, `001cf298`, `001b9ce0`, `001b9c00`,
   `001b9c58`, `001b9fb0`, `001b9aa0`, `001c69b0`, `001793a8`, `001cafa0`, `001cb118`, `001cb208`, `001cb358`, `001cb3b8`,
@@ -159,10 +159,10 @@ the u16 at `0x34161c` and to the u16 at `0x34161e`**, each capped at 999 (save b
 scan of loads and stores with those two offsets (`mips_scan --store-off 0x2dbc / 0x2dbe`, `--load-off`) finds only these two
 constructors as writers, `FUN_001ad520` as the reader of `0x34161c` and the BATTLE REPORT `FUN_00293020` as the reader of
 `0x34161e`; so the two words are always equal and the port keeps one number (`Progress::mickey_save_count`, report row 4).
-The class table is the one docs/limits-reactions.md "Commands 452 to 457" describes (Mickey's `FUN_001ce240` tick offers the
+The class table is the one docs/systems/drive-limits-summons/reaction-commands.md "Commands 452 to 457" describes (Mickey's `FUN_001ce240` tick offers the
 reaction commands 455 to 457, his handler `FUN_001ce518` takes the Execute values 0x1c4, 0x1c7, 0x1c8 and 0x1c9, the command
 menu table `0x37c450`, drive gauge maximum 3 here). The object entry is the **member 9** of the party object (`memt` u16 at
-`DAT_01c95608 + 0x22`, `FUN_001ce080`; docs/party.md section 1; `limt.Character` 4 = `P_EX200`), looked up with `FUN_0016e208`.
+`DAT_01c95608 + 0x22`, `FUN_001ce080`; docs/systems/party/party-data.md section 1; `limt.Character` 4 = `P_EX200`), looked up with `FUN_0016e208`.
 
 **Who makes him [V].** `FUN_001cdf48` is called from exactly one place, step 7 of the game-over task `FUN_001ad9a0`
 (`mips_scan --jal 0x1cdf48`: `0x1adba8`; the decomp text grep for `FUN_001cdf48`, `FUN_001cda78`, `FUN_001cdb98` finds
@@ -182,7 +182,7 @@ starts it), `FUN_001db868(DAT_01c954d8 (FUN_001a21d0), 0x11, 1, 1, 0, player)`: 
   is false, when `actor +0x160` has bit 0x4000, or when some object found by walking the actor list (`FUN_001b7c88`) has
   `+0x570 == actor` and `+0x588` bit 0x40 clear; it is 1 otherwise. Which of these a KO'd or absent friend produces was not
   traced; the port reads "ally up" as the party member that exists and is not knocked out (`PartyMember::ko`) **[inferred]**.
-* Otherwise the chance is `max(sstm[0xdc], pow(sstm[0xd8], count))` (`DAT_00360130` is the `sstm` record, docs/player-data.md; `FUN_00300448`
+* Otherwise the chance is `max(sstm[0xdc], pow(sstm[0xd8], count))` (`DAT_00360130` is the `sstm` record, docs/systems/combat-effects/player-data.md; `FUN_00300448`
   is `powf` through `FUN_00301790`: it returns the constant 1.0 at `0x3852a8` for an exponent of 0) with `count` = the word
   `0x34161c` (rescues so far, over the whole save), and the shared generator `DAT_003716a0 = DAT_003716a0 * 0x10dcd` (32 bits)
   is rolled: `(float)(unsigned)seed * 2^-32` (the constant at `0x37b84c`; the negative branch at `0x1ad620` is the unsigned
@@ -216,7 +216,7 @@ slots `0xbbc3` / `0xbbc4` of `FUN_001d04c0` / `FUN_001d0508`. His command handle
 queues motion 4, `+0xaf4` = the command's cost byte) and 0x1c8 (motion 0xc0, then `FUN_001ce680`: `FUN_001d0588` ends the
 slot at `+0xb74`, `FUN_0019b580(+0xb40)`, `+0x10c |= 0x200000`). While charging, `+0xb6c` counts down with the frame unit
 and each time it runs out `FUN_001a0290(gauge, 1)` adds one fraction step and the timer is re-armed with `sstm[0xd4]`
-(docs/drive-forms.md "Mickey's charge"). `FUN_001ce458` (vtable +0x14) acts when the status word `+0` (HP) equals 1: it
+(docs/systems/drive-limits-summons/drive-forms.md "Mickey's charge"). `FUN_001ce458` (vtable +0x14) acts when the status word `+0` (HP) equals 1: it
 looks up the ability row 0x22a (`FUN_001b6f48(0x22a)`, `FUN_0019abb0`) and starts it (`FUN_00175e20`) with the id `DAT_00360400`.
 So what Mickey does for Sora is play his own motions 0xc0 to 0xc2 (their hit events and attack records live in his motion
 and `atkp` data) while the player charges his gauge to 3 and releases. **No function of this class writes Sora's HP, calls
@@ -361,12 +361,12 @@ two Soras are visible in that picture; in play the field one lies in his fall po
   `FUN_001a0240` ends a running MP charge (`FUN_001a05d0` tests the float `+0x1c0`, `FUN_001a05a8` zeroes `+0x1bc` / `+0x1c0`) and adds the MP maximum (`+0x184`)
   to MP (`FUN_001a0210` -> `FUN_001a0180`, clamped to 0..maximum); `FUN_001a0100` adds the HP maximum (`+4`) to HP (clamped to the minimum `+8` and the
   maximum). **Every member comes back with full HP and full MP, whatever the restored record held.** This is the same pair the form start uses
-  (`magic::refill_mp`, docs/drive-forms.md).
+  (`magic::refill_mp`, docs/systems/drive-limits-summons/drive-forms.md).
 * **`FUN_001b81f8`** zeroes 0x1c bytes at `0x1d5d7c0` (`FUN_001b8218`'s object). Its other readers and writers (`mips_scan`): `FUN_001a0968` (the damage scale of the
   Struggle bit `0x20000`, the word `+8` plus 1; the only writer of that word is this clear), `FUN_001d30d8` / `FUN_001d31b8` / `FUN_001d3238` (`+0` from the byte tables at
   `0x37c4f8` / `0x37c508`, global event 0xe1), `FUN_001d54d8` / `FUN_001d55d8` (`+4` is a sum of the values in the word table `0x37c5d0`, `+0x14` doubles a factor), `FUN_001d58e0` (clears `+0x18`, `+4`,
   `+0xc`, `+0x14` and runs `FUN_001abfe8(0xc)`; called by `FUN_001b9c58` for mission kind 0x1e and `FUN_00242090`). It is the **Struggle mission's score block**. The app has
-  nothing that lives in it (the factor is 1, section 21 of docs/struggle.md; the score is `struggle.rs`'s), and a Continue never happens inside a Struggle (its areas take no snapshot),
+  nothing that lives in it (the factor is 1, section 21 of docs/systems/world-minigames/struggle.md; the score is `struggle.rs`'s), and a Continue never happens inside a Struggle (its areas take no snapshot),
   so there is nothing to clear: not ported, no gap for this package.
 * `FUN_0023ea18` (the sound mode of the card: `FUN_0023eb10` / `FUN_0023eb78` pick mono/stereo from the option word, `FUN_002bddf4`) and `FUN_00168928` (resets the resource slot table `DAT_00522178`
   and `FUN_0016fdf0(0)`, `FUN_00178a38`, `FUN_0019d8c0`, `FUN_001d3a30`) were not decoded further: they touch the resource system and the camera-side objects the app does not have.
@@ -383,7 +383,7 @@ HP / MP are only logged. The Load Game path does not run `FUN_001cb208` (its jum
 event object in `DAT_0035e3a4`, which `FUN_00196418` tests. Step 1 of `FUN_001ad9a0` sets `DAT_0036f598 = 1` (`FUN_002c38b8`) and falls into step 2,
 which returns "again" while `FUN_00196418` is true and while the screen fade object (`FUN_0014a978` = `0x356b30`) has `+0xfc != 4`; when both are over it
 clears `DAT_0036f598` (`FUN_002c38c8`), lays the player on the floor (`FUN_00183fe0`: a ground probe `FUN_001a5c30` and the write-back `FUN_0016a618`, no motion
-of its own), for the field types runs `FUN_00196258` (below) and `FUN_001c67b0` and goes on. The numbers come from the event of kind 0xf that docs/summons.md
+of its own), for the field types runs `FUN_00196258` (below) and `FUN_001c67b0` and goes on. The numbers come from the event of kind 0xf that docs/systems/drive-limits-summons/summons-objects-1.md
 "WP-RV2" read (`00battle.bin` type 0x16 entry 0, `re_gameover-0a`): end frame 0x15 (the event object dies at tick 42), command 0x12 at event frame 0xb
 (tick 22) with length 0x32 and mode 2 = `FUN_0014a7c8(0x356b30, 0x32, 1)`; `FUN_0014a710` doubles the length (counter 100), `FUN_0014a818` takes
 `DAT_00356f44` (1.0) off it per tick, state 3 -> 4 at zero. So `+0xfc == 4` at tick 122, after the event object is gone, and the wait is 122 ticks.
@@ -392,18 +392,18 @@ Step 3 (no case) takes one tick. Step 4 waits for the words `0x35feb8` / `0x35fe
 the resource again and opens the list. The two words are marks of the Mickey / revive objects: bit 4 of `0x35fec0` is set by their constructors (`FUN_001cda78`,
 `FUN_001cdb98`) and both words are cleared by their destructors (`FUN_001cdcb8`, `FUN_001cdd50`, `FUN_001cdde8` call `FUN_001c6be8(0x35feb8, 0)` and `(0x35fec0, 4)`) and by
 the reset `FUN_001c6c30`. With no such object alive both are 0, so the list opens at tick 122 plus one tick (step 3) plus the disc streaming time of
-`obj/GAMEOVER.mset` (about 108 KB, which the app reads at once) [inferred: 60 ticks per second, as docs/struggle.md]. Port: `open_after(kind)` = 122 / 60 s for types 0 and 3,
+`obj/GAMEOVER.mset` (about 108 KB, which the app reads at once) [inferred: 60 ticks per second, as docs/systems/world-minigames/struggle.md]. Port: `open_after(kind)` = 122 / 60 s for types 0 and 3,
 counted from the knock-out edge (the event starts in the same call); it was 1.5 s. Type 1 (`FUN_001ad868`, a manager that ended by itself) starts no event, so step 2 waits
 only for a fade the mission's ending left in state 4; that was not traced, the old 1.5 s stays [inferred]. Test `the_wait_before_the_list_is_the_knock_out_events_fade`.
 Searched: `mips_scan --addr 0x35e3a4` (28 hits, all in the event object's methods `FUN_00195968` to `FUN_001968d8`), `--addr 0x35feb8`, `--addr 0x35fec0`.
 
 **A. Is the fallen field Sora hidden while the list shows? [V: no actor rule; the fade covers him]** Read: `FUN_001ad9a0` steps 1 to 8, `FUN_001ad378`, `FUN_00196258`
 (`FUN_001b7e70(2000)`, `FUN_00196760`, `FUN_001abfe8(0xb)`), `FUN_001a3f68`, `FUN_00183fe0`, `FUN_00186e20` / `FUN_00186db0`. `FUN_001b7e70(2000)` walks the object
-list `DAT_01d5d7a0` (next `+0x8b4`): an object whose method `+0x3c` (always `FUN_0016bc68`, the model resource tag, docs/events.md opcode 0x4d) answers 2000 or more gets its
+list `DAT_01d5d7a0` (next `+0x8b4`): an object whose method `+0x3c` (always `FUN_0016bc68`, the model resource tag, docs/systems/core-runtime/contract.md opcode 0x4d) answers 2000 or more gets its
 method `+0x28` (the destructor: enemies, summons); the others (the player and the party members, tags below 2000) get `FUN_00186e20` (a status reset) and `FUN_0016a750` (the stored
 placement `+0x890`). It does not hide the player: the hide bit `+0x10c & 0x80` is set only by the event opcode 0x4d (`mips_scan --jal 0x1b7fa8` finds no call). What covers him is the event's
 fade: command 0x12 mode 2 is `FUN_0014a7c8(.., 0x32, 1)` and the flag byte 1 makes `FUN_0014a710` pick white (`FUN_0014af90(0xff, 0xff, 0xff, 0)` and blend `0x48`; flag 0 would be black,
-`0, 0, 0` and `0x44`), alpha 0 to 0x80 (full) over 100 ticks, then held at state 4 while the list opens (nothing in steps 2 to 8 returns it to state 0; docs/summons.md "WP-RV2"
+`0, 0, 0` and `0x44`), alpha 0 to 0x80 (full) over 100 ticks, then held at state 4 while the list opens (nothing in steps 2 to 8 returns it to state 0; docs/systems/drive-limits-summons/summons-objects-1.md "WP-RV2"
 found no clearing caller). So in the original the field, the fallen Sora included, is under a full white fade when the list shows, and the model panel Sora is the only one visible
 [inferred: that the fade quad is drawn over the 3D field and under the menu]. The port does not draw that fade: it dims the field (`MenuScene::dim`, a black sprite in `menu_gfx.rs`,
 not this package's), so the harness still shows the field Sora under the dim. Not ported, reason: drawing the white needs a coloured dim in `MenuScene` (outside ownership), and no

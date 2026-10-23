@@ -1,7 +1,7 @@
 # Drive forms (work package 2B)
 
 What the drive-form system does in the game, what `crates/kh2-app/src/drive.rs` implements of it, and
-what is still open. It builds on `docs/player-data.md` (read that first for the table layouts). Each
+what is still open. It builds on `docs/systems/combat-effects/player-data.md` (read that first for the table layouts). Each
 statement is marked **[V]** verified (read in the game's own code or checked against the disc data),
 **[I]** inferred (fits code and data, no line states it) or **[GAP]** not found. Function names are
 addresses in `SLUS_210.05`. No game values are in the repository: the numbers quoted here are examples
@@ -31,13 +31,13 @@ of what the code reads from the disc at run time.
 - The weapon list (WP-2B2): `Sora::weapons` holds the weapons in hand order, the body swap spawns them on
   their hand sockets (`sora::spawn_weapons`), and every controller system plays, syncs, shows and trails
   all of them; Anti has none, so nothing has to be hidden.
-- The HUD hook: `DriveGauge` (`hud_drive.rs`), rewritten every tick, plus a one-line debug readout. The drawn gauge reads the state through `hud_gauge::feed_drive` (docs/hud.md, WP-G9): the readout's resource is not what the HUD draws. (F9 or
+- The HUD hook: `DriveGauge` (`hud_drive.rs`), rewritten every tick, plus a one-line debug readout. The drawn gauge reads the state through `hud_gauge::feed_drive` (docs/systems/ui/contract.md, WP-G9): the readout's resource is not what the HUD draws. (F9 or
   `KH2_DRIVE`).
 - Hits Sora lands add `DriveDrain` of the attack row to the gauge, or take it off the form timer.
 - The form's ability list (WP-2B2): on the swap the drive code gives the ability system the form record's
   list (the `fmlv` grants up to the level plus the growth ability of the form's chain at the display
   level, `Abilities::set_form`) and clears it on revert; the ability system derives the stat block, the
-  controller's bits and combo lengths and the `Growth` resource from it (docs/abilities.md). The timer
+  controller's bits and combo lengths and the `Growth` resource from it (docs/systems/combat-effects/abilities.md). The timer
   drain reads the block's form multiplier. The attack table (`Sora::moves`) is swapped with the body.
 - HP and MP (WP-2B2): the timer start restores HP and MP to their maximum (below).
 
@@ -138,7 +138,7 @@ Anti through it.
 - `FUN_0016e7e8`, which the task calls with the form, is **not** a transformation effect: it is a resource
   preload (`FUN_0016e430` queues the object's `.mdlx`, `.mset` and `.apdx` through the format strings at
   0x37a430 and 0x37a8c0, and the weapon files of the object's moveset, and the objects named by
-  `SpawnObject1..4`). This closes the "change effect resource" gap of `player-data.md`: there is no separate
+  `SpawnObject1..4`). This closes the "change effect resource" gap of `docs/systems/combat-effects/player-data.md`: there is no separate
   per-form transformation effect resource; anything visible during the change comes from the triggers of
   motions A120 and A121 (effects and sounds through the objects' `.apdx` files).
 
@@ -152,7 +152,7 @@ Anti through it.
   ...); the other records keyed 2 (Twilight Town) apply only after story flags, for the Roxas outfit. That the
   world ids 13, 14, 17 are Timeless River, Nightmare/Halloween Town and Space Paranoids is **[I]** from the model
   name suffixes; the app takes the world from `KH2_DRIVE_WORLD` (default 2, which merges no variant).
-  This closes the "outfit variant" gap of `player-data.md`. Checked: worlds 17, 13 and 14 load
+  This closes the "outfit variant" gap of `docs/systems/combat-effects/player-data.md`. Checked: worlds 17, 13 and 14 load
   `P_EX100_TR_BTLF`, `P_EX100_WI_ULTF` and `P_EX100_NM_MAGF` and the screenshots show the different outfits.
 - Motion set and attack table [V]: the object's `AnimationName` (the `_TR`/`_NM`/`_WI` objects share the base
   form's `.mset`) and its `NeoMoveset` (an index into `ptya`; the variants have their own rows).
@@ -196,7 +196,7 @@ Anti through it.
   bone the weapon follows was not reached on this path. The app keeps bone 178 (right, checked on screen)
   and 86 (left, the mirror, inferred). `objentry.WeaponJoint` (byte +7 of the row) is a candidate the
   attach path does not read directly.
-- **Correction to `player-data.md`**: the `memt` "weapon" words 18..23 (`H_EX500_*`) are not form keyblades.
+- **Correction to `docs/systems/combat-effects/player-data.md`**: the `memt` "weapon" words 18..23 (`H_EX500_*`) are not form keyblades.
   They are 284-bone, 16-mesh models of Sora's own size, only read through the virtual object id 0x23c
   (`FUN_0016e208` case 0x23c, `FUN_00196ad0`): most likely the cutscene model of the current form [I]. The
   in-field keyblade is `W_EX010` (the equipped keyblade's object) with the form's own motion sets.
@@ -225,7 +225,7 @@ Anti through it.
   system, which recomputes the block at once. Out of the form nothing changes; the next entry builds the list from the
   saved level as before. Caller: `prize::apply_form_exp` (Master Form from the drive orbs, and the `FormExpGain`
   message for Valor, Wisdom and Final). Test `drive::tests::a_form_level_up_in_the_form_rebuilds_its_list`. The rules
-  of the experience itself are in docs/prizes.md ("Master Form experience").
+  of the experience itself are in docs/systems/combat-effects/prizes.md ("Master Form experience").
 
 ## Hook points in sora.rs (for the orchestrator)
 

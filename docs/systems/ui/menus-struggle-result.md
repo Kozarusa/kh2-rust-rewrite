@@ -19,7 +19,7 @@ block of menu kind 7 (section 18.1): +2 option count, +3 the first cursor row (`
 
 ### 21.2 Row 0x1a: the Struggle's result menu [V]
 
-Opened by the mission end's last step (`FUN_001b96e0`, docs/struggle.md "The end"). Two rows: code 4 "Quit" (0x8ab2),
+Opened by the mission end's last step (`FUN_001b96e0`, docs/systems/world-minigames/struggle.md "The end"). Two rows: code 4 "Quit" (0x8ab2),
 code 3 "Retry" (0x8ab1); `FUN_0026fda0` sends both to `FUN_001b9c58` (events 0x8d and 0x8b, the manager ends, the
 trigger's jump). No help line is set by kind 8 for it [GAP: where the Save menu's help 0x3858 comes from was not read].
 

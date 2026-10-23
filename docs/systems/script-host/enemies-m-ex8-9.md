@@ -93,7 +93,7 @@ records (the object-command queue behind `FUN_00188cc0`) and the jump-table case
 event player / mission scripts queue, which the app does not have for enemies. No frame trigger or collision part was read in the
 `M_EX900.mset`. Next step for a later WP: trace the producers of the records `FUN_00188cc0` walks.
 
-**Event 17 sender found (WP-DYN1, docs/dynamic-tracing.md section 3).** The records `FUN_00188cc0` walks are the motion's frame triggers
+**Event 17 sender found (WP-DYN1, docs/systems/foundations/dynamic-tracing.md section 3).** The records `FUN_00188cc0` walks are the motion's frame triggers
 (the trigger table of each `.mset` slot), and the dispatcher's jump-table entry 7 (`0x188604`, table 0x37aa78 read live) is the event 17 sender: a
 frame trigger of type 7 with halfwords (code, argument). `kh2 mset obj/M_EX900.mset` shows them: `7@0[2, 0]` on 26 slots (code 2 clears script word
 +0x18 and restores the weakness byte to 100), `7@0[3, 0]` / `7@175[3, 0]` on the dive slots (code 3 sets +0x18 and the byte to 0), one code 1. The
@@ -160,7 +160,7 @@ is inferred from its mode names. Its BDX script (11184 words, `cargo run -p kh2 
   root motion. It keeps 2 to 6 m from Sora and walks past him. It leaves (`mode leave`, R2760 when the distance is over the +0x38 / +0x3c
   limits, or a global flag) and hides itself when Sora is far (seen at 1779 units, `hidden: despawned`).
 - **Hosts.** New arms (appended to `enemy_host.rs`): 1.130 (Impl), 1.140 (Approx), 1.179, 1.75, 1.76 and 1.128 (Stub) and 1.13 on itself
-  (Stub), see `docs/enemy-ai.md` "Host call mapping". The rest were in the table already; the Stub ones it reaches are 1.121, 1.171, 1.206,
+  (Stub), see `docs/systems/script-host/enemy-ai-host-calls.md` "Host call mapping". The rest were in the table already; the Stub ones it reaches are 1.121, 1.171, 1.206,
   1.211 and the mode-frozen test.
 
 Acceptance run (WP-EN9e), tt03 (the first listed area; `btl` program 7 loads b_21 with three `M_EX950`, two `M_EX880` and one Dusk; test
@@ -216,7 +216,7 @@ struggle mission layout (`struggle`), not the group, so only hb09's single one w
 name; in the PNGs it is a purple Heartless with a long blade-like limb that warps beside Sora) is a Heartless of the areas eh06, eh10, eh11, eh17, he09 and mu10 (area survey, 8 areas; he09 b_9g, mu10 b_60 and eh10 b_00 hold it as
 listed by the `area groups:` log line). Its BDX script (10411 words, `cargo run -p kh2 -- bdx M_EX920`) registers, among others, the modes `appear`, `mode_battle`, `mode_revenge`, `btl_short`, `btl_long`, `rvg_short`, `rvg_long`, `atk_shot_s`,
 `atk_shot_b`, `atk_brush`, `atk_brush_rush`, `atk_brush_warp`, `move_round`, `move_target`, `move_warp`, `footwork`, `footwork_warp`, `idle` and `dead`. Its motion set has two paired player motion entries (the limit windows of
-`docs/limits-reactions.md`, entry 252 opens 286); the app offers none for it.
+`docs/systems/drive-limits-summons/contract.md`, entry 252 opens 286); the app offers none for it.
 
 - **Stats.** The set-up routine R2683 (0x2683, called at 0x1ab4) takes eight values after the object; the first pushed, 47 (pushed at 0x1a9c; R2683 stores it to local+0x20), goes to `set_obj_param` (host 2.9 at 0x26aa):
   `enmp` row 47 (Experience 250; log `experience: enmp 47 defeated: +10 (lvpm 4 x enmp 250)`). The harness enemy has 32 HP.
@@ -252,7 +252,7 @@ not achieved (see above).
   values after the object (pushed 0x0521..0x0536: 51, 28, 300.0, 500.0, 8.0, 4, 0.7, 0.35); 51 goes to host 2.9 (0x0dec): `enmp` row 51 (Experience 250; 32 HP at the harness level), 28 is kept at +0x1c as the drop row of host 1.92.
 - **Lifecycle.** The `M_EX870` main thread (R0105 at 0x0105, every tick) asks host 1.94 `obj_valid` for its `M_EX960` (handle at +0x6c) and switches to `leave` when it is gone; `leave` runs to its `dead`-style routine R0929 (hide, then host 1.328). The app removes a hidden object, so
   the pair disappears one tick apart after the `M_EX960` dies (`M_EX960#4 t4078: hidden: despawned`, `M_EX870#2 t4079: hidden: despawned`, mode `leave` at t4079). The group stays clearable: only the `M_EX960` has to die.
-- **Host calls.** Appended or changed in `enemy_host.rs`: 1.160 and 6.57 (`call_with_mem`, Approx), 1.328 (Approx), 1.133 (Stub, was Missing), 1.89 on the enemy itself (Stub, was Missing); see docs/enemy-ai.md. `Obj::target_rec` makes the object's own target record writable
+- **Host calls.** Appended or changed in `enemy_host.rs`: 1.160 and 6.57 (`call_with_mem`, Approx), 1.328 (Approx), 1.133 (Stub, was Missing), 1.89 on the enemy itself (Stub, was Missing); see docs/systems/script-host/contract.md. `Obj::target_rec` makes the object's own target record writable
   (R0a50 at 0x0a50 stores the word 6.57 answers into its +4: the same value, so no change). The first run logged `unimplemented host call` for 1.160, 6.57, 1.133, 1.89 and 1.328 and a `script error BadAddress(0x3000004)` at 0x0a67 (the write into the target record); none after the arms.
 
 Acceptance runs (WP-EN11b), eh17 b_00 (`KH2_PROGRAMS=0,1,0 KH2_WAVE_GROUP=b_00 KH2_WAVE_AT_GROUP=45,-61 KH2_AREALOG=1 KH2_BDXLOG=1 KH2_HITLOG=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1 KH2_KEYS=9:Q,12:J,13:J,..` (J every second) through `local/capped.ps1 -CapMB 3500`; the group made by this
@@ -264,7 +264,7 @@ Sora (Lv 1, 20 HP) was knocked out when he fought the group alone (game over, Co
 
 Gaps: (1) Only group 0x61 (two of the eight `M_EX870`) was run; 0x60 and 0x63 (two and four) were not entered on purpose. (2) No death PNG: the dying `M_EX960` is visible for 0.5 s and several attempts to time the shot missed it; the death is shown by the log lines only. (3) The `M_EX870` motion slots (44 `appear`,
 201 / 202 attacks) and the elements of `spawn_attached` 10..17 (eight, started at once in the `appear` set-up) were not looked up; what the eight elements draw was not seen. (4) That `M_EX870` is unhittable in the original is read from `NeoStatus` 0 and the missing `set_obj_param`, not seen in play [inferred]. (5) Host 1.133's method is an
-inference (see docs/enemy-ai.md). (6) `mode_revenge_boss`, `mode_battle_boss`, `freeze`, `event` and the `rst_*` modes never ran in the app. (7) The kind-2 group's own bookkeeping on 1.328 (FUN_00199398) is the app's removal.
+inference (see docs/systems/script-host/contract.md). (6) `mode_revenge_boss`, `mode_battle_boss`, `freeze`, `event` and the `rst_*` modes never ran in the app. (7) The kind-2 group's own bookkeeping on 1.328 (FUN_00199398) is the app's removal.
 ## The enemy M_EX890 (WP-EN12c)
 `M_EX890` (object 308, `00objentry` row 308: ObjectType 21, `NeoStatus` 3003; `enemy::M_EX890`) is a tall spiky white and purple Heartless; the survey's "next kinds" row 4 (tt29 `KH2_PROGRAMS=7` group b_21 holds four, 9 groups in all, all sole).
 Its BDX script (6901 words, `cargo run -p kh2 -- bdx M_EX890`) hands `enmp` row 44 to `set_obj_param` (R18e1 at 0x18e1, called at 0x0b91 with 44 as the first of eight values pushed 0x0b79..0x0b8e; host 2.9 at 0x1908), so the experience row is enmp 44 (`experience: enmp 44 defeated: +10 (lvpm 4 x enmp 250)`).

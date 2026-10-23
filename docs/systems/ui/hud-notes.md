@@ -6,7 +6,7 @@
 
 | Resource (module) | Fields | Source in the game |
 |---|---|---|
-| `CommandMenu` (hud_menu) | `visible`, pages with `kind`, `entries { message, icon, style }`, `cursor`, `reaction { message, alt, kind7 }` | the command manager's open lists (stack at manager +0x974, read by 0x13ca30; `items.rs`, docs/items.md), `cmd` records (`MessageId`, `CmdIcon`) |
+| `CommandMenu` (hud_menu) | `visible`, pages with `kind`, `entries { message, icon, style }`, `cursor`, `reaction { message, alt, kind7 }` | the command manager's open lists (stack at manager +0x974, read by 0x13ca30; `items.rs`, docs/systems/ui/items.md), `cmd` records (`MessageId`, `CmdIcon`) |
 | `DriveGauge` (hud_gauge) | `enabled`, `mode`, `points`, `max`, `fraction` | player +0x1af, +0x1b1, +0x1b2, +0x1b0 |
 | `MpRecharge` (hud_gauge) | `progress`, `total` | player +0x1bc, +0x1c0 |
 | `TargetBubble` (hud_target) | bool | owner +0x588 bit 1 and timers +0xac8 / +0xacc |
@@ -41,7 +41,7 @@ A second camera (order 10, render layer 7, same MSAA setting as the 3D camera; a
 
 ## Phase 3 (WP-4B3)
 
-**Reaction capsule hook** (docs/limits-reactions.md hook 1). `hud_menu` is `pub(crate)` and `hud_menu::mirror_reaction` copies `ReactionOffer` into `CommandMenu.reaction` every frame while the offer's status is Available (`alt` from the command's Flags bit 3; the entry-type-7 variant has no source). The menu is now visible in play with the four basic commands (Execute 1 to 4) and the cursor on the first, since the player's command lists (+0x974, 0x13ca30) have no source in the port; this is a stand-in list. Run with `KH2_REACTION_FAKE=457`: the capsule shows message 48047 ("D-Charge") above the list.
+**Reaction capsule hook** (docs/systems/drive-limits-summons/contract.md hook 1). `hud_menu` is `pub(crate)` and `hud_menu::mirror_reaction` copies `ReactionOffer` into `CommandMenu.reaction` every frame while the offer's status is Available (`alt` from the command's Flags bit 3; the entry-type-7 variant has no source). The menu is now visible in play with the four basic commands (Execute 1 to 4) and the cursor on the first, since the player's command lists (+0x974, 0x13ca30) have no source in the port; this is a stand-in list. Run with `KH2_REACTION_FAKE=457`: the capsule shows message 48047 ("D-Charge") above the list.
 
 **Text commands** (`kh2_image::text`, from 0x1a8210, 0x1a8978, 0x1a8b48, 0x191108). Verified in code:
 - 0x11 sets the pen to (x, y) from the message origin as two i16; the new baseline is `y - line height` and no line gap is added (case 0x11 stores `origin + y*16 - lineheight*16`). Layout keeps what was drawn before it and continues on the new baseline.

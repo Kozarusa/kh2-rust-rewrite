@@ -17,7 +17,7 @@
 - **Shared block.** R15f9 (0x15f9, called at 0x0c7c) asks host 2.21 for key 5, size 48 (the first call zeroes it); the word +0x24 it clears is
   read by R1441 (0x1441), which `mode_battle` calls (0x13fc). The tail of R15f9 (bind the object with spawn byte 92 through host 1.143, set +0x28
   to 1, host 1.162) has no reader in this script: the app answers 1.143 with 0 (Stub) and the interpreter's failed write ends the routine early,
-  see `docs/enemy-ai.md` "Host call mapping".
+  see `docs/systems/script-host/enemy-ai-host-calls.md` "Host call mapping".
 - **Modes seen** in a 100 s run: `appear` (about 80 script ticks), `mode_battle` -> `btl_short` / `btl_long` -> `idle_time`, `move_random`,
   `move_target`, `footwork`, `atk_rakka`, `atk_handou`, `btl_attack`, `mode_revenge`, `rvg_short`, `leave`, `dead`. New host arms: only 1.143.
   The ones it reaches that were already answered: 2.21, 1.206 and 1.171 (Stub), 1.56, 1.120, 2.5, 1.55, 1.111, 1.309, 1.60 (Approx).
@@ -54,7 +54,7 @@ survey lists (al14, ca14, ca15, ca20, he09, lk08, ..). Its BDX script (7449 word
   `set_obj_param` (host 2.9 at 0x1aa5): `enmp` row 38 (`experience: enmp 38 defeated: +1 (lvpm 4 x enmp 20)`). The harness enemy has 10 HP.
 - **Death.** The `dead` mode (registered at 0x0525, routine at 0x0fbc -> R0fca) hands the object's +0x1c to host 1.92 (`drop (host 1.92) asked row 17`),
   starts element 2 of its effect file (1.87 at 0x0fe8), releases it (0.79), fades out and hides, like the Dusk's: `Kind::death_effect` true.
-- **Host calls.** Only one was new: 1.99 ground_depth (Impl, see `docs/enemy-ai.md`; asked 175 times in 100 s by the script's flight checks at
+- **Host calls.** Only one was new: 1.99 ground_depth (Impl, see `docs/systems/script-host/contract.md`; asked 175 times in 100 s by the script's flight checks at
   0x13e5 and 0x13f7). Stub or Approx ones it reaches that other kinds already use: 2.21, 1.121, 1.171, 1.206, 1.56, 1.58, 1.309, 1.34, 1.23, 1.87, 1.92, 2.5, 1.111, 1.120.
 
 Acceptance run (WP-EN10c), al14 (the first listed area whose group loads at once; ca14, ca15 and lk08 hold the kind only in kind-2 groups whose
@@ -123,7 +123,7 @@ registers the modes `appear`, `mode_battle`, `mode_battle_boss`, `mode_revenge`,
 - **Death.** `hp 0: switching to mode dead`, then `drop (host 1.92) asked row 42, used row 42` and `prize: drop of row 42 at ..: 4 objects`; `Kind::death_effect` is true as for the Dusk.
 - **Host calls.** No arm was added: every call the script made was answered already (43 distinct calls in the 146 s soak; Impl, or the existing Approx / Stub arms: 1.121, 1.171, 1.206 and the mode calls 65535.0 Stub; 1.111, 1.12,
   1.120, 1.23, 1.34, 1.56, 1.60, 1.61, 1.80, 1.87, 1.92, 2.5, 65535.1, 65535.2 Approx). Host 1.13 is in the script once (0x009b, the handler of event 11) and was never called in the runs; `queues_motions` is unchanged.
-  No edit to `enemy_host.rs` and `enemy-ai.md`.
+  No edit to `enemy_host.rs` and `docs/systems/script-host/contract.md`.
 Acceptance run (WP-EN10o), tr02 group b_60 (btl program 0x35: two `M_EX600` created at load (spawn kind 3) and four more (spawn kind 2, wave 1) by kind-2 group 0x38, volume shape 2 at game (1020, -100, -129); test
 `m_ex600_is_an_enemy_kind_with_its_objentry_row`, disc). Start: `KH2_PROGRAMS=0,35,0 KH2_WAVE_GROUP=b_60 KH2_ENTRANCE=1 KH2_NO_PARTY=1 KH2_AREALOG=1 KH2_BDXLOG=1 KH2_HITLOG=1 KH2_NO_SOUND=1 KH2_NO_MUSIC=1
 KH2_SCREENSHOT=<png> KH2_SHOT_AT=<s> kh2-game tr02` through `local/capped.ps1 -CapMB 2500` (Sora is put at the group's player entry). (1) Soak, shot at 150 s with J every 5 s from 15 s (only to press "Continue" after Sora's

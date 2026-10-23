@@ -132,16 +132,16 @@ guesses "freeze?") sets motion flag 0x1000000, which the game reads as part of i
 (`FUN_0019aa28`, flags 0x20 and 0x1000000); it does not freeze anything.
 
 The camera. `FUN_00140a80` (modes 0 to 10) and the helpers it calls read camera data and the
-player's position only; no hit input. See `docs/camera.md`.
+player's position only; no hit input. See `docs/systems/player-camera/contract.md`.
 
 The attack volume. `FUN_00197498` and the volume constructor path (`FUN_0019e350`,
 `FUN_001a2640`) pass the trigger's fourth parameter as a hit-group id, not a duration. The
-`atkp` fields and their readers were already listed in `docs/hit-reaction.md`; nothing there has
+`atkp` fields and their readers were already listed in `docs/systems/combat-effects/hit-reaction.md`; nothing there has
 a duration that is applied to the actors. The only hit-time callbacks are the volume's script
 event 3 (`FUN_0018dbd8`, started with `FUN_0016c550`; used for clashes and hits) and the party
 event 0xf; no script that handles them calls any stop, time-scale or rate function (see above).
 
-The `sstm` record (92 words, `docs/player-data.md`): the integer-valued fields at 0x08c, 0x090,
+The `sstm` record (92 words, `docs/systems/combat-effects/player-data.md`): the integer-valued fields at 0x08c, 0x090,
 0x0a4, 0x11c, 0x130, 0x134, 0x148, 0x14c and 0x164 were traced to their readers (drive and stat
 growth, `FUN_001a04b0`, `FUN_001c0f40`, `FUN_001d4180`); none is a frame count for a freeze.
 
@@ -160,7 +160,7 @@ overlay 3 at 0x1f68658, 0x1f68820 and 0x1f806a0; the remaining few, such as the 
 override virtual methods, but every call from them into main-executable freeze functions would
 show up as a `jal`, and there are none.
 
-Script data. Every BDX script on the disc (1,244 that parse; `docs/bdx.md`) was scanned for the
+Script data. Every BDX script on the disc (1,244 that parse; `docs/systems/script-host/contract.md`) was scanned for the
 host functions above: 0.27 (time scale) 0 scripts, 6.6 three, 6.46 two, 6.7, 6.50, 7.1, 10.11 none,
 1.107 (motion rate) 55 boss/enemy scripts and no player script.
 
@@ -171,7 +171,7 @@ host functions above: 0.27 (time scale) 0 scripts, 6.6 three, 6.46 two, 6.7, 6.5
    the original's behaviour. If the user wants a hit-lag feel anyway, it is a **deviation**: write it
    down as such where it lives.
 2. The feel of weight in the original is therefore expected to come from the data that was
-   already found: the victim's flinch or blow motion and push (`docs/hit-reaction.md`), the hit
+   already found: the victim's flinch or blow motion and push (`docs/systems/combat-effects/hit-reaction.md`), the hit
    spark and hit sound, the attacker's own motion data, and the camera. None of these was
    measured visually here (no emulator run was done).
 3. If someone does implement the real stop mechanism (for the command cut-in, or for scripted
@@ -192,7 +192,7 @@ host functions above: 0.27 (time scale) 0 scripts, 6.6 three, 6.46 two, 6.7, 6.5
 * Function pointers called indirectly with computed addresses would not appear as `jal`. Both the
   party vtable and the hit path were read for virtual calls, but the enemy-style classes' vtables
   (outside Sora's party class) were only checked through their wall and clash methods in
-  `docs/hit-reaction.md`.
+  `docs/systems/combat-effects/hit-reaction.md`.
 * The ARD/mission scripts other than the three that use 6.6 were scanned with the BDX analyser
   only; other script formats (if any drive actors) were not.
 * The scan for scripts that call `set_flag` with bit 54 (which would skip an actor's motion step

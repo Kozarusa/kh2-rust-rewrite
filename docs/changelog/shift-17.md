@@ -18,7 +18,7 @@
 
 **WP-EN10f (enemy kind M_EX210).** objentry row 74, enmp row 3, joins `enemy::KINDS` (ca03 b_40); hosts 6.24 `obj_vec_8a0` (Approx, displacement this tick) and 1.162 (Stub); the self motion queue of host 1.13 now also serves M_EX210 (without it `move_target` waited for ever). Verified by m_ex210_is_an_enemy_kind_with_its_objentry_row, BDX oracle, 170 s unattended and hitting soaks (all originals die, exp +4 and drop row 63). Open: an M_EX210 seen far below the deck (y -699) in one frame, ca02/ca09/ca12/ca13/ca19 not run, rc_meteor_giro (event 11) unseen.
 
-**WP-CAM1 (camera at Sora's head).** The frame a reviewer saw after the last kill was not reproduced in five harness runs or in normal tt00/tt04 play (camera stays in Follow; only Select enters the look-around eye height). Documented in docs/camera.md; no code change. Open: a real V keypress is the likely cause [inferred].
+**WP-CAM1 (camera at Sora's head).** The frame a reviewer saw after the last kill was not reproduced in five harness runs or in normal tt00/tt04 play (camera stays in Follow; only Select enters the look-around eye height). Documented in docs/systems/player-camera/contract.md; no code change. Open: a real V keypress is the likely cause [inferred].
 
 **WP-EN10h (enemy kind M_EX690).** objentry row 17, enmp row 67, joins `enemy::KINDS` (ca15 b_20, needs `KH2_ENTRANCE=1` and a walk to spawn in the harness); no new host arm. Verified by m_ex690_is_an_enemy_kind_with_its_objentry_row, 116 s of enemy time unattended and hitting (two die: exp +6, drop row 38), BDX oracle. Open: only ca15 b_20 run, leave trigger untraced, hard and boss modes unseen.
 

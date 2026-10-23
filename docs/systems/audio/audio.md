@@ -141,7 +141,7 @@ not look at the player's actions at all.
      (`FUN_0016b960`: +0x70, or +0x540) is zeroed before the length; the threshold is the float at
      0x37ad20 (1200.0 on the user's disc, read at run time).
   3. `FUN_001a4e70`: a detached script thread (the list at 0x1c95518 that host 2.20 and the spell
-     start `FUN_001a4798` fill, docs/bdx.md) is running (its +0x1c lacks bit 4) for an owner that
+     start `FUN_001a4798` fill, docs/systems/script-host/contract.md) is running (its +0x1c lacks bit 4) for an owner that
      is a valid friend (+0x588 bit 0x4000, set by the friend constructor `FUN_0017c718`) and not a
      summon (bit 0x400000).
 - Who has those flags: object type 4 of `00objentry` (normal enemy) is built by `FUN_001b02b0` ->
@@ -432,7 +432,7 @@ Earlier docs read `FUN_002be49c(2, id, ...)` as "bank 2, index id" and the app p
   callers were not traced; the slot contents come from `FUN_002c0eb0` either way).
 - So: **system sound `id` = entry `id` of `se/se000.seb` = request number `id` (bank 0)**; the log form is `se 0:<id>`.
   Cursor 1, confirm 2, open 3, cancel 4, refused 5, the HUD danger alarm 9, an item used 37 are entries of `se000.seb` (the
-  ids themselves come from the tables in docs/menus.md section 9 and `FUN_002c1528`). The prize and item sounds of the field
+  ids themselves come from the tables in docs/systems/ui/menus-pause-m1.md section 9 and `FUN_002c1528`). The prize and item sounds of the field
   (`number(0xe)`, `number(0x12)`) were always bank 0 and are the same bank.
 - Other banks are area banks: the area's sound record names the banks it needs, `FUN_001365d0` loads them (`FUN_002c1270` /
   `FUN_002c12b8` build the `se<nnn>.seb` / `wave<nnnn>.wd` names at 0x383278 / 0x383288 from the area's bank numbers) into

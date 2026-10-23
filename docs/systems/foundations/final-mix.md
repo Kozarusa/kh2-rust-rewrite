@@ -27,7 +27,7 @@ $env:KH2_ISO=<FM image>; cargo run -p kh2 -- mset obj/P_EX100.mset`). Without it
 
 ## Player controls
 
-The user's reports describe a dodge roll that the USA executable does not have (docs/movement.md
+The user's reports describe a dodge roll that the USA executable does not have (docs/systems/player-camera/movement.md
 section 2). The Final Mix executable has it. Addresses below are FM unless marked USA; the FM
 function that corresponds to a USA function was found by matching instruction bodies (relocations
 masked) and is given as `USA 0x... = FM 0x...`.
@@ -66,16 +66,16 @@ Consequences, read from that order (not run in an emulator):
 * Invincibility (FM 0x176a60 = USA 0x175aa8) for `fmab` field +0x40 of the Dodge Roll level's row.
 * It installs **no mover** and sets **no velocity** (no call to FM 0x16bd60 = USA 0x16b698). The
   roll's travel is therefore the motion's root motion [inferred: root motion is the only remaining
-  displacement term of the per-tick mover, docs/movement.md "Who moves the actor"].
+  displacement term of the per-tick mover, docs/systems/player-camera/movement.md "Who moves the actor"].
 * Motion 209 is `A180` in FM `obj/P_EX100.mset` (slot 838): 0..26 at 30 fps. Its triggers
   (`cargo run -p kh2 -- mset obj/P_EX100.mset` on the FM disc with the opt-in): frame triggers
   **34 at tick 10** and **35 at tick 34**, range triggers 2 from tick 36 (idle range: Sora may act
   again), 49 over ticks 0..34, 14 from tick 8, plus sound/effect triggers. USA `P_EX100.mset` has no
-  motion 209 and no `A180` (docs/movement.md): **(b) FM-only content**.
+  motion 209 and no `A180` (docs/systems/player-camera/contract.md): **(b) FM-only content**.
 * `fmab` rows: USA rows are 16 floats; FM rows have a real 17th column (+0x40, the roll's
   invincibility per level; `cargo run -p kh2 -- table pref_fmab` with the opt-in prints 5 rows with
   that column). **(b) FM-only data.** On the USA disc the sheet's `DodgeRollStarTime` column reads
-  the next row's first field (docs/movement.md).
+  the next row's first field (docs/systems/player-camera/contract.md).
 
 ### Tap and hold: the threshold is a motion trigger (a) RULE, test `fm_frame_triggers_34_and_35_are_new`
 The motion frame-trigger handler switches over 32 types in USA (0x188498, table 0x37aa78) and over 36
@@ -89,8 +89,8 @@ in FM (0x189740, table 0x36caac). Types 32 and 33 do nothing in FM. Two are new:
 
 So the user's rule is the FM rule with a precise threshold: tap Square while moving = the roll; still
 holding Square when the roll reaches **tick 10** (its type-34 trigger; trigger frames are 60 Hz ticks,
-docs/research.md) = Quick Run in the direction the roll faces. Released before tick 10: the roll plays
-on and Sora can act again from tick 36. The app's current 12-tick threshold (docs/movement.md, "the
+docs/systems/foundations/research.md) = Quick Run in the direction the roll faces. Released before tick 10: the roll plays
+on and Sora can act again from tick 36. The app's current 12-tick threshold (docs/systems/player-camera/contract.md, "the
 brief's default") is not the original's number; tick 10 is. Porting needs the FM motion `A180`, so a
 USA-only build cannot show the roll's own animation (b).
 

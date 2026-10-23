@@ -106,7 +106,7 @@ computes within 3e-5, which is about 0.03 pixel):
   displacement with it). Entry byte +0x15 (taper): the displacement's x and y are multiplied by the
   unit direction's view-space z. Byte +0x14 picks the texture: set, the display buffer (GS page 0, 512 x 448: last
   frame's finished picture, HUD included); clear, the draw buffer the scene is being drawn into (page 0xd8,
-  512 x 416) (WP-I3, docs/camera.md "The intro camera"; `kh2_fx::Batch::display_buffer`, drawn by `fx_lens.rs`);
+  512 x 416) (WP-I3, docs/systems/player-camera/camera-event.md "The intro camera"; `kh2_fx::Batch::display_buffer`, drawn by `fx_lens.rs`);
   byte +0x17 is copied into the draw's setup, its use was not found.
 * The texture coordinate of each vertex is the projected screen position of (view-space position +
   displacement), in pixels, minus the frame buffer offset, divided by 1024; the triangle is drawn where
@@ -268,7 +268,7 @@ ended by its caller). Port: `fx::StartBoundSystemEffect { id, owner, handle }` (
 `Animator`; the handle `fx::FxHandle::new()` is chosen by the caller and put on the running effect) and
 `fx::StopEffect { handle, kill }`. `KH2_FXLOG=1` logs `system effect 0x6 bound to .. (handle N): started` and
 `effect 0x6 (handle N) told to end`. Test `fx::tests::a_bound_system_effect_carries_its_handle_and_stops_on_request`.
-The middle arguments of `FUN_001db868` are not modelled. The summon arrival effect 0x13 (docs/summons.md) can use the
+The middle arguments of `FUN_001db868` are not modelled. The summon arrival effect 0x13 (docs/systems/drive-limits-summons/contract.md) can use the
 same pair (end = `kill: false`, `FUN_001da028` = `kill: true`).
 
 ## An element's DPX entry is found by number (WP-7Bc, verified; a correction)
@@ -282,7 +282,7 @@ looping 60-frame summon arrival effect of element 0x13), and the elements 0xe..0
 effect 0x12 included. With the game's lookup (`fx::dpx_effect`) 0xb, 0xc, 0xd are short sparks that end by themselves
 (19, 15 and 24 frames). Tests `fx::tests::system_elements_resolve_by_dpx_number`, `lone_clash_spark_ends_by_itself`
 (they replace `clash_spark_0xd_has_no_end_of_its_own` and `lone_clash_spark_is_gone_after_life_plus_fade`, which were
-written against the place lookup). Consequence for docs/hit-reaction.md "Lifetime of the clash spark": the clash spark
+written against the place lookup). Consequence for docs/systems/combat-effects/hit-reaction.md "Lifetime of the clash spark": the clash spark
 is not a looping effect; the "rainbow bubble sphere with a bright white core" the user saw stay was most probably the
 summon arrival effect run in its place [inferred: not compared with the original]. The spark ring stays as read; its
 [inferred] lone-loop end no longer applies to 0xd.
@@ -392,14 +392,14 @@ does not model either.
   `DAT_0035f33c`; when the player is valid and has bit 0x80 of his word +0x588 and his HP fraction is at or
   below the float at `DAT_00360130 + 0x144`, the amount is multiplied by the byte at player stats +0x2b
   (inference: a low-HP bonus ability); FUN_001b51e0 adds it to the experience total at `DAT_00340e48` (capped at 9,999,999; it is the
-  experience, not the munny, see docs/prizes.md) and loops over the 13 party slots (FUN_001b52f8, the level-up check against
+  experience, not the munny, see docs/systems/combat-effects/prizes.md) and loops over the 13 party slots (FUN_001b52f8, the level-up check against
   the level table), and when it returns positive a popup is created (FUN_0016bbe8 builds the position,
-  FUN_0015b198 spawns the 0xae0-byte experience digit popup, docs/hud.md; the orbs and munny come from the drop
-  call, docs/prizes.md); (3) when the stat block's short +0x58 is non-zero FUN_0016b738 drops the ground marker
+  FUN_0015b198 spawns the 0xae0-byte experience digit popup, docs/systems/ui/contract.md; the orbs and munny come from the drop
+  call, docs/systems/combat-effects/prizes.md); (3) when the stat block's short +0x58 is non-zero FUN_0016b738 drops the ground marker
   (the same call as the script's `ground_marker`; the point is the object's position with y above the floor
   found by a probe FUN_001d1648, handed to FUN_001a3cb3), and when its short +0x5a is non-zero FUN_001be6b8 sets a
   progress flag (bit in the array at 0x340e6c, count at 0x340e68) and runs the flag's side effects
-  (FUN_00180450); (4) FUN_00186568 -> FUN_00186580 sets the dead flag. **Status (WP-EX1)**: step (2) is ported, steps (3) and (4) are not (the orbs and munny are, docs/prizes.md).
+  (FUN_00180450); (4) FUN_00186568 -> FUN_00186580 sets the dead flag. **Status (WP-EX1)**: step (2) is ported, steps (3) and (4) are not (the orbs and munny are, docs/systems/combat-effects/prizes.md).
   What existed before: `Progress::add_experience` (the add and the 9,999,999 cap of FUN_001b51e0), the digit popup layout
   (`hud_banner`, driven only by `KH2_HUDEXP`) and the "NEXT LEVEL" strip (driven only by `KH2_HUDSTRIP`); the form
   experience of FUN_001d4078 / FUN_001d40e0; the `lvup` rows (read for AP and stats). What did not exist: the payout from a
@@ -570,7 +570,7 @@ reading (vertex color / 128 times material). The GS SPRITE screen alignment abov
 User report (2026-10-11): the original shows a particle effect when Sora's keyblade appears. The weapon object
 (`FUN_00184190`, made by `FUN_001751b0` per hand and stored in the owner's list at +0xaf8) starts hidden (its
 +0x10c gets 0x700). Its update `FUN_001843b0` calls `FUN_00184498` when the owner's motion variant (owner +0x15c,
-the `FUN_0017f5e8` value = slot mod 4; docs/movement.md) is 0 or 3 and the weapon is hidden (`FUN_0019af68`).
+the `FUN_0017f5e8` value = slot mod 4; docs/systems/player-camera/contract.md) is 0 or 3 and the weapon is hidden (`FUN_0019af68`).
 `FUN_00184498` runs `FUN_0016a570(weapon, 0, 1, 0, 0)` = `FUN_001db868(weapon + 0x80, 0, 1, 1, 0, weapon)`, which
 starts the first element with id 0 of the weapon object's own effect file (`obj/W_EX010.apdx`) bound to the
 weapon; then two colour fades (`FUN_00192c98`, from 0.0 to 1.0 and 16 frames from `DAT_0037a8b4` / `DAT_0037a8b8`
@@ -597,7 +597,7 @@ with the script's vector (thunder's bolt, element 8 on the ground or 9 in the ai
 spells' placed elements). `party::spawn_party` registers the member's file with `drive::register_effects`, so the
 member's motion-triggered effects (`fx::motion_effects`) now find it too. The members' attack objects are anchored
 to the member's +0x80 (host 2.22, 0x18e7c8), so their hit sparks come from that file: `friend_ai` sends an
-`fx::SpellHit` with it and the hit names its row (`Hit::row`), which `hit_sparks` pairs (docs/party.md section 15).
+`fx::SpellHit` with it and the hit names its row (`Hit::row`), which `hit_sparks` pairs (docs/systems/party/party-specials.md section 15).
 Screenshots (looked at, `local/S3/`): `thunder_hits_dusks.png` (the bolt from the sky and its burst among the
 Dusks, damage 2 over several), `fire_hits_dusk.png` (flames at the lower left, damage 1, 1, 3, a Dusk blown),
 `cure_on_sora.png` (green leaves around Sora, HP 16/20).

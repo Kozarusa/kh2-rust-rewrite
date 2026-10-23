@@ -190,4 +190,4 @@ Which set the original uses (FUN_00121a78, the skeletal draw): when the entry's 
 
 ## Visual audit of the enemy models (WP-VIS1)
 
-All 58 enemy / party model files were drawn through the asset viewer and looked at: no flat, untextured or mis-coloured model remains after the wrapped-entry fix. `crates/kh2-model/tests/enemy_models.rs` keeps that checked on the user's disc (every drawn texture is not flat, every mesh names an existing texture, indices and positions are valid). Details and the list of things that only look like defects: `docs/enemies.md` "Visual gaps".
+All 58 enemy / party model files were drawn through the asset viewer and looked at: no flat, untextured or mis-coloured model remains after the wrapped-entry fix. `crates/kh2-model/tests/enemy_models.rs` keeps that checked on the user's disc (every drawn texture is not flat, every mesh names an existing texture, indices and positions are valid). Details and the list of things that only look like defects: `docs/systems/script-host/enemies-core.md` "Visual gaps".

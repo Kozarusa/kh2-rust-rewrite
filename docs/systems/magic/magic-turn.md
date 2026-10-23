@@ -54,7 +54,7 @@
   in the oracle (they walk the object list and the marker pool).]
   The marker, FUN_0019bbc0: FUN_0013e528(5) when the record's shape byte (`shape + 1`, from FUN_001894d0 via
   FUN_0019b388 into `+0x24`) is 0, else FUN_0013e528(1), for mode 1 (mode 2: 0x1b / 0x17); FUN_0013e528 takes a slot
-  of the nine-slot field icon pool (`docs/hud.md`, 0x13e5a0) and FUN_0013e1f0 makes the icon group of that number
+  of the nine-slot field icon pool (`docs/systems/ui/contract.md`, 0x13e5a0) and FUN_0013e1f0 makes the icon group of that number
   and a second member of group 20 (the speech bubble). FUN_0019bbc0 then places it on the record's target point
   (FUN_0018efa0) and hands it a flag that is 1 for a player object (`+0x588` bit 2) with `+0xac8` or `+0xacc` above 0 (FUN_0013e438; the flag's use was not traced).
   Marker feed (WP-MG4): `run` inserts the HUD's `MagicMarker { mode, shape, at, alert }` each frame while `CastTurn::lock_mode1` holds a living
@@ -82,7 +82,7 @@
 
 ## Running the scripts in the interpreter (WP-7A)
 
-`kh2_bdx::Runtime::start_thread` / `restart_thread` give the spell thread of FUN_001a4798 (docs/bdx.md "A thread
+`kh2_bdx::Runtime::start_thread` / `restart_thread` give the spell thread of FUN_001a4798 (docs/systems/script-host/bdx-format.md "A thread
 whose code is an event", tested against the game's interpreter). With `KH2_MAGIC_VM=1` a cast runs its slot's own
 script (the first BDX of the `.mag`) instead of the hand port: event 20 at the cast with (caster, resource record,
 kind, `magi` row), event 21 from the cast trigger, one slice per tick. `magic::SpellHost` answers the host calls of
@@ -261,7 +261,7 @@ cast to cast.
 
 WP-7M2 named 0.39 (`effect_set_vector2`, `pv`), 1.141 (`probe_ground_down`, `vpf -> i`), 1.146 (`push_object`,
 `Ovf`), 1.248 (`scatter_point`, `vffff -> v`) and 2.14 (`attack_hit_anything`, `p -> b`) in `kh2_bdx::names` (rows in
-docs/bdx.md). 0.39 is now read: Magnet's sphere grows from 0 to 1 and shrinks back (test
+docs/systems/script-host/contract.md). 0.39 is now read: Magnet's sphere grows from 0 to 1 and shrinks back (test
 `magnet_script_runs_in_the_interpreter` samples element 3's scale: first 0.0, maximum 1, last 0.0096).
 1.141 (WP-F1 item 1, closed): its second argument is where FUN_001a5c30 writes the found point (or copies the start
 point), and MAGNET_*.mag passes `lea local+0x20`, an address in the script's own stack, which a host cannot write.
@@ -300,7 +300,7 @@ overlap: not changed.]
 - `enemy::receive_hits` looks the row up with `GameData::atkp` (the first row of the id): until it uses
   `GameData::hit_row`, every Fire hit uses `SubId` 0 for damage (the hit spark already uses the hit's row, WP-7A).
 
-Done in WP-7A: element bones 0x4001..0x4009 (docs/effects-damage.md "Object bones"), so the cast effects start at
+Done in WP-7A: element bones 0x4001..0x4009 (docs/systems/combat-effects/effects-damage.md "Object bones"), so the cast effects start at
 the keyblade's tip; the spell's own hit spark (`fx::SpellHit`); the cast voices; the form-start refill; the magic
 turn; the interpreter entry point.
 
@@ -350,6 +350,6 @@ turn; the interpreter entry point.
 
 **WP-FL1 (global flag word 0x35d268, readers).** `magic_rules::GlobalFlags` holds the word; each writer publishes its own bits (magic: bit 3 from hosts 1.187 / 1.188 through `VmReq::GlobalFlag`; summons: 0x800 and 0x1000, `summon::publish_gflags`). The brief's reading of FUN_001a3848 and FUN_001bd358 as the attack hit dispatch and the enemy target pick was wrong: read in full, FUN_001a3848 is the prize pickup dispatch (the prize manager's check, prize.rs) and FUN_001bd358 the item object's pickup check (already cited in prize.rs); neither touches an enemy or an attack. Rules ported as pure functions: `global_flag_8_active` (FUN_001905e8), `global_flag_800_active` (FUN_00190610), `prize_dispatch` (FUN_001a3848 up to its member loop: bit 0x800 ors 8 into the record's +0x28; bit 3 hands the prize to FUN_001a3a88 for the player and returns; the record's flag 8 with +0x44 at least 3 does the same and runs on into the member loop), `item_taken_by_player` (FUN_001bd358 after FUN_001a3700 fails and FUN_001bdb10 is false: either bit takes the item), and `update_gate_global` (bit 0x1000 of FUN_0019afe8). Test `global_flag_readers_follow_the_executable`. NOT wired: the callers are in prize.rs (outside this package); FUN_0019afe8's callers FUN_00184498 (the weapon object's update, skipped while the gate holds) and FUN_00191c18 (clears +0x768 bit 8 of the object while it holds; the bit's meaning was not found) need the objects' own +0x10c / +0x108 bits and DAT_0035ee9c, which the app has no model for [GAP].
 
-WP-FL2 correction: FUN_001a3848 and FUN_001bd358 are the prize pickup check and the item pickup check, not an attack hit dispatch or an enemy target pick (see WP-FL1 in `docs/summons.md`). Final Magnet's bit 3 is now read in `prize.rs`: prizes go to the player at once and items are taken without the reach test (`docs/prizes.md`, "Global flag word in the pickup path"). Enemies are not affected.
+WP-FL2 correction: FUN_001a3848 and FUN_001bd358 are the prize pickup check and the item pickup check, not an attack hit dispatch or an enemy target pick (see WP-FL1 in `docs/systems/drive-limits-summons/contract.md`). Final Magnet's bit 3 is now read in `prize.rs`: prizes go to the player at once and items are taken without the reach test (`docs/systems/combat-effects/prizes.md`, "Global flag word in the pickup path"). Enemies are not affected.
 
 **WP-WU1 (update gate applied).** `sora::sync_weapon` now asks `sora::weapon_update_held` (`magic_rules::update_gate_global`, bit 0x1000 of 0x35d268). FUN_00184498 calls FUN_0019afe8 on the owner (`this+0x9f4`); when it returns 1 the weapon's virtual update (vtable +0x48) is skipped and its +0x10c bit 8 is cleared, so the weapon motion stops (the app sets the weapon animators' speed to 0 and logs "weapon update gate" on each change). FUN_00191c18 uses the same gate for the owner's +0x768 bit 8 (cleared while it holds, set otherwise); that bit has no reader found, so it is not modelled [GAP]. The other terms of FUN_0019afe8 (owner +0x10c bits 0x80 / 0x200, DAT_0035ee9c, FUN_0019af28, FUN_0019b100, FUN_002c56c0) and the +0x10c bit 8 clear are not modelled [GAP]. Party members' weapons (party.rs) are outside this package and not gated.

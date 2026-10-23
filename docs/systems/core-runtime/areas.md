@@ -25,10 +25,10 @@ Evidence that runs (all in `crates/kh2-ard/tests/disc.rs`, `cargo test -p kh2-ar
 - Unit tests (`cargo test -p kh2-ard --lib`): `a_trigger_decodes_its_sub_commands`,
   `an_event_splits_into_sized_commands`, `story_flag_effects_follow_the_offset_table`.
 
-Earlier notes used: `docs/enemies.md` (the spawn groups of tt04), `docs/camera.md` ("Event camera", "Area
-camera types"), `docs/hud.md` ("Message windows (WP-6D)", area card), `docs/audio.md` ("Battle music"),
-`docs/limits-reactions.md` (reaction commands, the 0x83 spawn part), `docs/bdx.md` (hosts 0.14, 0.15, 1.202,
-1.203), `docs/progress.md` (the save block).
+Earlier notes used: `docs/systems/script-host/contract.md` (the spawn groups of tt04), `docs/systems/player-camera/camera-event.md` ("Event camera", "Area
+camera types"), `docs/systems/ui/hud-banners-windows.md` ("Message windows (WP-6D)", area card), `docs/systems/audio/audio.md` ("Battle music"),
+`docs/systems/drive-limits-summons/contract.md` (reaction commands, the 0x83 spawn part), `docs/systems/script-host/contract.md` (hosts 0.14, 0.15, 1.202,
+1.203), `docs/systems/core-runtime/progress.md` (the save block).
 
 ## 0. The area record
 
@@ -79,13 +79,13 @@ nothing). Names are the project's (`kh2_ard::opcode_name`). Arguments are the u3
 | 0xb | `word_35cd18` | 64-bit mask `DAT_0035cd18`; `FUN_0019d4c0` / `FUN_0019d520` call `FUN_0015e9a8` / `FUN_0015e928` for each set bit (the same routines as hosts 1.37 / 1.36) | V; meaning GAP |
 | 0xc | `trigger` | defines a trigger (below, `FUN_00180ff8`) | V |
 | 0xe | `word_35cd30` | read by `FUN_0015bc10`: unless 99, `FUN_00149200(.., value)` -> `FUN_0015b6e0` | V; meaning GAP |
-| 0xf | `world_record` | `FUN_001a7330(current world record, argument)` (the world records of docs/progress.md) | V |
+| 0xf | `world_record` | `FUN_001a7330(current world record, argument)` (the world records of docs/systems/core-runtime/progress.md) | V |
 | 0x10 | `music` | the music pair word `DAT_01c95638` (u16 field music, u16 battle music); `FUN_00137150` reads it at area load | V |
 | 0x11 | `word_35cd34` | `DAT_0035cd34` (default -1), read by `FUN_00179140` (a test of the object's +0x5f4) | V; meaning GAP |
 | 0x12 | `heap_base` | `DAT_0035cd24` (default 0x100000); `FUN_001048e0` calls `FUN_00105250(cd20 + cd24, cd24)` | V |
-| 0x13 | `camera_type` | `DAT_0035cd38`, the area camera type of docs/camera.md (default 0) | V |
+| 0x13 | `camera_type` | `DAT_0035cd38`, the area camera type of docs/systems/player-camera/contract.md (default 0) | V |
 | 0x14, 0x17 | `flag_35d268_4`, `_10` | set bit 2 / bit 4 of the global flag word `DAT_0035d268` | V |
-| 0x15 | `battle_manager` | `FUN_001b9338(argument 0, rest)`: creates the battle/minigame manager at `DAT_01d5dd20` (docs/enemies.md, Struggle) | V |
+| 0x15 | `battle_manager` | `FUN_001b9338(argument 0, rest)`: creates the battle/minigame manager at `DAT_01d5dd20` (docs/systems/script-host/contract.md, Struggle) | V |
 | 0x16 | `load_file` | formats the arguments as a string with the language code (`DAT_00349d40`) into `0x1c893d8` and loads it (`FUN_0016fac8(.., 0x38e, 0)`) | V; which files GAP |
 | 0x18 | `effect_heap` | `DAT_0035cd3c`, `DAT_0035cd40` (defaults 0x80000, 0x20000), passed to `FUN_001dbe90` | V |
 | 0x19 | `set_story_flags` | every argument not yet set is set through `FUN_0017ff60` (section 5) | V |
@@ -238,15 +238,15 @@ entrance, map, btl, evt; 0xff keeps the current one).
   freezes the screen (`FUN_0014dcb0`, `FUN_0014de00`), fades the screen fader to black (`FUN_0014a7c8(fader, 0xf, 0)`),
   waits for black and ends; no destination and no fade-in was found [gap], so `Outcome::FreezeFade` is logged only.
   Record words 4 to 6 come from the trigger sub-commands 4, 5, 7, 8 (`FUN_00180ff8`; defaults `FUN_00197780`): word 4
-  (sub 4, default -1, `FUN_0019d8d0`) a party arrangement index (`FUN_001a7330(FUN_001a71c0(world), index)`, ported in WP-PT1: `party::jump_party`, docs/party.md section 21); word 5 (sub 5, default 0) the party reset code (the 5th argument of `FUN_00104e18`; when the record has no destination world and the word is non-zero `FUN_001abfe8(word 5)` is called (ported); with a destination the reset runs in `party::jump_reset`, WP-PT1);
+  (sub 4, default -1, `FUN_0019d8d0`) a party arrangement index (`FUN_001a7330(FUN_001a71c0(world), index)`, ported in WP-PT1: `party::jump_party`, docs/systems/party/party-built.md section 21); word 5 (sub 5, default 0) the party reset code (the 5th argument of `FUN_00104e18`; when the record has no destination world and the word is non-zero `FUN_001abfe8(word 5)` is called (ported); with a destination the reset runs in `party::jump_reset`, WP-PT1);
   word 6 (sub 7, default 0) "menu before": 1 or 2 opens menu kind 5 first (`FUN_0024f300`) and sets the jump's wait (the 3rd argument of
   `FUN_00104e18`, read as ticks [inferred]) to 2, logged only (the menu is missing); any other code leaves both at 0
   (`LAB_0019db28`); sub 8 is not read by `FUN_0019d9d8`. Tests:
-  **WP-JT4** (types 5 and 6, "menu before"): type 5 opens menu kind 0xe, the battle report (`menu_ending.rs`, docs/menus.md section 25:
+  **WP-JT4** (types 5 and 6, "menu before"): type 5 opens menu kind 0xe, the battle report (`menu_ending.rs`, docs/systems/ui/menus-battle-report.md section 25:
   `ending.2ld`, title 0xcc24, eight statistic rows; `area_jump::JumpMenus.ending`), and no jump follows. The record's "menu before" code
   (word 6) is ported only as its wait: the jump task's `JumpTask::Wait` holds `JumpExtras::delay_ticks` (2) ticks before the fade-out
   (also after a trigger's event, where the fade-out is skipped); the camp it opens first (`FUN_0024f300`) is always page 0x15, the party
-  switch notice, ported in WP-PT1 (menus.md section 25, docs/party.md section 21). Type 6 (`FUN_00149eb0`): `JumpTask::Black` fades to black over 30 ticks
+  switch notice, ported in WP-PT1 (docs/systems/ui/menus-battle-report.md section 25, docs/systems/party/party-built.md section 21). Type 6 (`FUN_00149eb0`): `JumpTask::Black` fades to black over 30 ticks
   (`FUN_0014a7c8(fader, 0xf, 0)`, the black is full when the fader's state `+0xfc` is 4) and holds. Searched for a fade-in: the callers of
   `FUN_00149f38` (one: `FUN_0019d9d8`) and of `FUN_00149eb0` (only its task start), the fader kind 0xf callers (`FUN_0013f1a0` area-start
   fade-in, `FUN_0013f2e8`, `FUN_002233d8` event end, out: `FUN_00103fc0`, `FUN_0013f148`, `FUN_0013f290`, `FUN_002580b8`, `FUN_00259e88`): the task
@@ -362,13 +362,13 @@ stores world, area, entrance at `0x33e86c..e`) and restarts the area thread `FUN
 **Player placement and facing** [V]. There is no separate entrance table: an entity whose spawn kind (+0x1c) is 1
 is created only when its +0x1d equals the entrance byte (`FUN_001981a0`). The player (0x236) and the two friends
 (FRIEND_1/2) stand in the `map` program's groups once per entrance (tt02 `m_00` has two such groups, `e_50` six
-entities [I: two entrances, one of them 0x32 = 50, the entrance tt02's triggers jump to]). The object faces `DAT_0037b270 - rotation y` (`FUN_00198220`; docs/enemies.md uses
+entities [I: two entrances, one of them 0x32 = 50, the entrance tt02's triggers jump to]). The object faces `DAT_0037b270 - rotation y` (`FUN_00198220`; docs/systems/script-host/contract.md uses
 the same rule: app yaw `PI - r`).
 
 **What is kept** [V for the calls; I for the rest]: the save block (party, HP, items) is not touched by the area
-change; the summon is cleared and reloaded (`FUN_00168ba8`, docs/summons.md); the drive form may end
+change; the summon is cleared and reloaded (`FUN_00168ba8`, docs/systems/drive-limits-summons/contract.md); the drive form may end
 (party reset kinds); the music is restarted only if the pair changes (`FUN_001371d8`). The world's message file
-is bound when an area loads (`FUN_00168ba8` -> `FUN_00190e70`, docs/hud.md).
+is bound when an area loads (`FUN_00168ba8` -> `FUN_00190e70`, docs/systems/ui/contract.md).
 
 **Twilight Town links** [V, `twilight_town_groups_exits_and_events` prints them per area as `exits:`]. Each exit
 group has a walk-in volume (option 0) and a prompt volume (option 1 or 2). Examples: tt02 (the Usual Spot by the
@@ -379,7 +379,7 @@ tt37; tt40 -> tt19 and area 100. The full list is in the test output.
 ## 7. Area music
 
 - [V] `FUN_00137150` (area load) takes the pair (field, battle) from `DAT_01c95638` (`FUN_001a7720`) and starts or
-  keeps the BGM (`FUN_001371d8` equal numbers, `FUN_00137300` different: the battle switch of docs/audio.md). The
+  keeps the BGM (`FUN_001371d8` equal numbers, `FUN_00137300` different: the battle switch of docs/systems/audio/audio.md). The
   only writer found (`mips_scan --addr 0x1c95638 --jal 0x1a7700`) is area-script opcode 0x10 (`FUN_001a7700`); the
   area-script reset does not clear it [I: a program without opcode 0x10 keeps the previous music].
 - [V, `twilight_town_story_flags_and_music`] In Twilight Town the music is set by `evt` programs: e.g. tt04 0x4c

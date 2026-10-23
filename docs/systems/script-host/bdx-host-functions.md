@@ -7,7 +7,7 @@
 273 of the 812 distinct host functions called by scripts on the disc are named (73 before work package 1E2); the table has 299 entries counting 26 that no script on the disc calls. The named ones account for 86 percent of all host calls in scripts on the disc and
 98.7 percent of the calls in the enemy and boss scripts (`obj/M_*`, `B_*`, `H_*`). Argument counts and return flags of every row are checked against the executable's table by a test (`signatures_match_the_executable`). Rows marked "role inferred" have their effect on the object read from the game code but
 their game-level meaning guessed from how scripts use them; rows without that mark that only describe a field ("word at +0xaa8") say what the wrapper does, not what the field is for. "Native" is the address of the host function's wrapper in the executable, "uses" the number of call sites in reachable script code on the disc. Object fields are offsets in the game object.
-Group 0 is the library (math, effect handles, flags), group 1 the scripted object, group 2 attacks and hit records (the layout of the hit record is in `docs/hit-reaction.md`), group 6 bosses and NPCs.
+Group 0 is the library (math, effect handles, flags), group 1 the scripted object, group 2 attacks and hit records (the layout of the hit record is in `docs/systems/combat-effects/hit-reaction.md`), group 6 bosses and NPCs.
 
 | id | signature | native | uses | what it does |
 | --- | --- | --- | --- | --- |
@@ -54,14 +54,14 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 0.57 | `bits_33fe20_set(i)` | 0x16df30 | 15 | set bit `n` of the bit array at 0x33fe20 (FUN_001a7750) |
 | 0.59 | `bits_33fe20_test(i) -> b` | 0x16df60 | 15 | test bit `n` of the bit array at 0x33fe20 (FUN_001a77b8) |
 | 0.60 | `nop_60(p)` | 0x16df90 | 102 | empty function |
-| 0.61 | `party_record(i) -> p` | 0x16d9a0 | 8 | FUN_00187d40(0x33fec0, member): the pointer to the party member's record (docs/progress.md "Party member record"), member 1 Sora, 2 Donald, 3 Goofy (WP-RV2; the table slot 0x35bb98 is 30 entries after 0.31's) |
+| 0.61 | `party_record(i) -> p` | 0x16d9a0 | 8 | FUN_00187d40(0x33fec0, member): the pointer to the party member's record (docs/systems/core-runtime/progress.md "Party member record"), member 1 Sora, 2 Donald, 3 Goofy (WP-RV2; the table slot 0x35bb98 is 30 entries after 0.31's) |
 | 0.68 | `vec_rotate_x(vf) -> v` | 0x16cf78 | 4 | rotate around the x axis by an angle in radians (FUN_0017c398, the matrix of FUN_0011b490 -> FUN_002fb580), result in a static buffer |
 | 0.70 | `progress_flag_102b() -> b` | 0x16d5e8 | 8 | progress flag 0x102b (FUN_00180330) |
 | 0.75 | `set_member_weapons(iii)` | 0x16d9d8 | 16 | FUN_00187d88(0x33fec0, member, w0, w1) -> FUN_00187648: the two weapon words of the member's record (+0, +2; FUN_0016ee98 reads them) are set. Called by `00common.bdx` entry event 7 (routine R00c1, 13 calls: member 1 Sora 41, 2 Donald 75, 3 Goofy 49, 4 81, 5 54, 6 55 and 80, 7 72, 8 62, 9 59, 10 60, 11 61, 12 74, 13 73), which FUN_00194d78 runs once when the game object is constructed (FUN_00105638); and by `ard/tt04.ard` (`tt04_ms106`, three times, Sora, items 384, 502, 501 for its events 9, 10 and 11) (WP-RV2) |
 | 0.76 | `set_form_weapon(ii)` | 0x16da08 | 6 | FUN_00187f60(0x33fec0, form) then the halfword at +0 (the form's second keyblade) is set. `00common.bdx` R00c1 sets form 1 to 4 to 0, form 5 to 71 and form 9 to 42 (WP-RV2) |
 | 0.78 | `vec_lerp(vvf) -> v` | 0x16d180 | 29 | a * (1 - t) + b * t on all four lanes, result in a static buffer |
 | 0.79 | `release_effect(p)` | 0x16de50 | 395 | hand an effect handle back to the game (queued for deletion) |
-| 0.98 | `give_form_ability(ii)` | 0x16da40 | 2 | FUN_00187f18(form record, ability): an entry of the form's 16 ability slots (docs/progress.md "Form record"); the two calls are in `ard/lk02.ard` and `ard/lk03.ard` (WP-RV2; the form record pointer is FUN_00187f60) |
+| 0.98 | `give_form_ability(ii)` | 0x16da40 | 2 | FUN_00187f18(form record, ability): an entry of the form's 16 ability slots (docs/systems/core-runtime/progress.md "Form record"); the two calls are in `ard/lk02.ard` and `ard/lk03.ard` (WP-RV2; the form record pointer is FUN_00187f60) |
 | 0.85 | `effect_stop_mark(p)` | 0x16dbb8 | 87 | like effect_stop and also sets bit 0 of the handle's flags (+8) (FUN_001d9f48) |
 | 0.86 | `set_word_4(pp)` | 0x16de68 | 0 | store the second argument at +4 of the first |
 | 0.88 | `fader_88(f)` | 0x16d958 | 1 | screen fader at 0x3564d0 with flag 0 over `seconds * DAT_0037a25c` frames (FUN_0014a7f0); role inferred |
@@ -147,7 +147,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.97 | `obj_part_110(O) -> p` | 0x173070 | 69 | address object +0x110 |
 | 1.98 | `ground_position(O) -> v` | 0x173088 | 552 | position of the object with y replaced by the ground height under it (FUN_00183808); static buffer |
 | 1.99 | `ground_depth(O) -> f` | 0x1730e8 | 108 | minus the depth of the object below the ground (0 when above it): -max(0, ground - y) |
-| 1.100 | `fall_time(f) -> f` | 0x173178 | - | FUN_0017bee0: sqrt(2 x / 20/49) for a height x, the time a body takes to fall it (the constant 20/49 is `DAT_0037a538`); the table gives it no name, so it reaches a host as raw words (`ai::fall_time`, docs/summons.md, WP-SM2) |
+| 1.100 | `fall_time(f) -> f` | 0x173178 | - | FUN_0017bee0: sqrt(2 x / 20/49) for a height x, the time a body takes to fall it (the constant 20/49 is `DAT_0037a538`); the table gives it no name, so it reaches a host as raw words (`ai::fall_time`, docs/systems/drive-limits-summons/contract.md, WP-SM2) |
 | 1.101 | `flag_160_4000(O) -> b` | 0x1716d0 | 79 | object flag 0x4000 at +0x160 (after the object-valid check) |
 | 1.102 | `link_end(O)` | 0x170e38 | 56 | undo link_start (FUN_001becb8) |
 | 1.103 | `nop_103(ppp)` | 0x170e58 | 0 | empty function |
@@ -168,7 +168,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.124 | `flag_124(O) -> b` | 0x173828 | 939 | flag 8 of the object's collision word (FUN_0019aaf0); role unknown |
 | 1.125 | `tween_start(Offf)` | 0x173858 | 35 | start a linear ramp of the value pair at object +0x8c8 (value, step) from `from` to `to` over `frames` (FUN_001abf40) |
 | 1.127 | `modes_reset(p)` | 0x170e80 | 23 | stop the running mode and clear the queue and priority |
-| 1.128 | `mover_method(Of)` | 0x171298 | 250 | virtual call on the object's mover (+0xc) with one float; role unknown (role now known, WP-SM2: the airborne launch, FUN_0017b1e0(speed) on the mover and then FUN_0016b698(object, 1); a negative speed is a downward start, docs/summons.md) |
+| 1.128 | `mover_method(Of)` | 0x171298 | 250 | virtual call on the object's mover (+0xc) with one float; role unknown (role now known, WP-SM2: the airborne launch, FUN_0017b1e0(speed) on the mover and then FUN_0016b698(object, 1); a negative speed is a downward start, docs/systems/drive-limits-summons/contract.md) |
 | 1.130 | `obj_diff(OO) -> i` | 0x170510 | 155 | difference of the two contexts' objects, 0 when either is 0 or they are the same |
 | 1.131 | `free_target(p) -> b` | 0x1736f8 | 279 | free a target record (FUN_0018f3f8); role inferred (WP-RV2: the name is the wrong way round, it ALLOCATES. FUN_0018f3f8 takes a free index from the stack `DAT_01c8a5d0` (0x80 indexes, filled by FUN_0018ece8, count `DAT_01c8a7d0`), copies the 5-word record into the pool entry and returns its address; FUN_0018f458 gives an index back, FUN_0018f188(old, new) repoints every object whose target record +0x9f4 is `old` to `new`, and FUN_0018fff0 walks the pool). The code pops a slot index from the stack `DAT_01c8a7d0 / DAT_01c8a5d0` and copies the 5-word record into the pool entry `DAT_01c89bd0 + 0x14 * index`, returning its address: it files the record into a pool; the app's records are not pooled (Stub) |
 | 1.132 | `target_release(p)` | 0x173728 | 68 | return a target record to the pool at 0x1c89bd0 (20-byte entries; FUN_0018f458) |
@@ -195,7 +195,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.168 | `start_move_alt(Ovifi)` | 0x171460 | 112 | as start_move through the alternate setter (FUN_001b4ee0) |
 | 1.170 | `spawn_record_id(O) -> i` | 0x171b30 | 335 | halfword at +2 of the record at ((object +0x818) +8); role inferred |
 | 1.171 | `global_flag_4() -> b` | 0x173a28 | 371 | bit 2 of the global flag word at 0x35d268 |
-| 1.174 | `look_at_object(?, ?, f)` | 0x171940 | 683 | start the head look-at controller at object +0x4a0 toward an object over `frames` (FUN_001aece8, mode 2; needs the object's type-0x14 record; docs/events.md section 3 "Head look-at") |
+| 1.174 | `look_at_object(?, ?, f)` | 0x171940 | 683 | start the head look-at controller at object +0x4a0 toward an object over `frames` (FUN_001aece8, mode 2; needs the object's type-0x14 record; docs/systems/events-movies/npc-savepoints.md section 3 "Head look-at") |
 | 1.176 | `tween_to_zero(Oi)` | 0x1719a8 | 456 | ramp the value at object +0x4b0 to 0 over `frames` (FUN_001aec50) |
 | 1.179 | `set_word_100(Oi)` | 0x1713a8 | 29 | store at object +0x100 |
 | 1.180 | `set_word_104(Oi)` | 0x1713c0 | 23 | store at object +0x104 |
@@ -266,7 +266,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 1.345 | `offer_command_ret(iiOi) -> h` | 0x1735c8 | 0 | as offer_command, returning the slot entry (0 when refused); no script on the disc calls it |
 | 1.350 | `gflags_set_100000()` | 0x173b88 | 1 | set bit 20 of the global flag word at 0x35d268 |
 | 1.351 | `gflags_clear_100000()` | 0x173ba0 | 1 | clear bit 20 of the global flag word at 0x35d268 |
-| 2.2 | `react_flinch_push(Opf)` | 0x18df00 | 11 | reaction class 3: flinch plus push on the object (FUN_001850c8; see hit-reaction.md) |
+| 2.2 | `react_flinch_push(Opf)` | 0x18df00 | 11 | reaction class 3: flinch plus push on the object (FUN_001850c8; see docs/systems/combat-effects/hit-reaction.md) |
 | 2.3 | `react_push(Opf)` | 0x18df28 | 24 | reaction class 1: push only (FUN_00185098, sets flag 1 at +0x18) |
 | 2.4 | `next_enemy(p) -> o` | 0x18df50 | 10 | FUN_00184ac8: the next object of the global object list (linked through +0x8b4, FUN_001b7c88) that has +0x588 bit 0x10 (the enemies), after the one given; 0 starts the walk and ends it |
 | 2.5 | `hit_stun(O) -> b` | 0x18df80 | 1243 | bit 9 of the object's status word (+0x160) |
@@ -351,15 +351,15 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 7.19 | `ai_retarget(Oi) -> b` | 0x2ef760 | 4 | FUN_0010df08(object, flag != 0): the class's target refresh (the chooser of the class table at 0x352d28 / 0x352ce8, Peter Pan's FUN_00119d60) writes the object's target record +0x9f4; true when the target changed (+0xb7c bit 3) |
 | 7.24 | `ai_b7c_400_clear(O)` | 0x2ef848 | 4 | FUN_0010f6b8: object +0xb7c bit 0x400 cleared (Peter Pan's attack modes bracket the attack with 7.24 / 7.25) |
 | 7.25 | `ai_b7c_400_set(O)` | 0x2ef868 | 6 | FUN_0010f6d0: object +0xb7c bit 0x400 set |
-| 7.26 | `ai_run_callback(Oi)` | 0x2ef888 | - | FUN_00112518(object, command): the callback the class set at object +0xcfc (Stitch's FUN_00119488 for his limit sub-commands 525 to 527) runs with the command (docs/summons.md) |
+| 7.26 | `ai_run_callback(Oi)` | 0x2ef888 | - | FUN_00112518(object, command): the callback the class set at object +0xcfc (Stitch's FUN_00119488 for his limit sub-commands 525 to 527) runs with the command (docs/systems/drive-limits-summons/contract.md) |
 | 7.28 | `screen_effect_start()` | 0x2ef7b0 | - | FUN_002f3bd8: FUN_002f3aa0(FUN_00104fa8(0xa00), FUN_0016e208(0x5c3), 0x100), stores the object in DAT_00371518 (WP-LT1: not drawn) |
 | 7.30 | `screen_effect_end()` | 0x2ef820 | - | FUN_002f3c18: ends the object in DAT_00371518 (vtable +0x20) and clears the word (WP-LT1: not drawn) |
-| 10.1 | `ai_walk_to(Ov)` | 0x2f6a98 | 3 | the friend AI object (+0xb60, FUN_0010c5f0) is placed at the vector: FUN_001175a0 sets AI +0x630 bit 0, copies it to the position +0x640 (its w to the wanted yaw +0x65c, the depth +0x648 = DAT_00378840) and once builds the parent matrix (FUN_00117320, FUN_00193228); docs/summons.md, Status (WP-SUM4b) |
+| 10.1 | `ai_walk_to(Ov)` | 0x2f6a98 | 3 | the friend AI object (+0xb60, FUN_0010c5f0) is placed at the vector: FUN_001175a0 sets AI +0x630 bit 0, copies it to the position +0x640 (its w to the wanted yaw +0x65c, the depth +0x648 = DAT_00378840) and once builds the parent matrix (FUN_00117320, FUN_00193228); docs/systems/drive-limits-summons/contract.md, Status (WP-SUM4b) |
 | 10.3 | `ai_vcall_28(O)` | 0x2f6b28 | 3 | the friend AI object's virtual method +0x28 (Stitch FUN_001191a8: links the player and his hand objects to the summon for a limit) (by class, WP-SM2: Stitch FUN_001191a8; Chicken Little FUN_0011ae60, the FPS mode; Genie 0x354910, Peter Pan 0x354978 and Tinker Bell 0x3549b8 hold FUN_00114170, which clears the action (FUN_0010ecb0(object, 0, 0)) and breaks a link the object has (FUN_001becb8)) |
 | 10.4 | `ai_vcall_2c(O)` | 0x2f6b58 | 4 | the friend AI object's virtual method +0x2c (Stitch FUN_00119360: undoes FUN_001191a8) (by class, WP-SM2: Stitch FUN_00119360; Chicken Little FUN_0011b008, the FPS mode off; Genie, Peter Pan and Tinker Bell FUN_001141c0, which returns at once) |
 | 10.5 | `ai_aim_vec(O) -> v` | 0x2f6b88 | 1 | Chicken Little's AI +0x40 (FUN_0011a6a0): the aim point the class update keeps (the target record's position, else 200 units in front of the object, FUN_0011a2e8) |
 | 10.8 | `target_vec(O) -> v` | 0x2f6c20 | 1 | the 16 bytes at object +0xbe0 (FUN_00112538): the position the party manager copies from the object's target record (FUN_00111d18) |
-| 10.9 | `ai_genie_form(Oi)` | 0x2f6c68 | 1 | Genie's FUN_00119c18 on the friend AI object: AI +0x14 = the command; the object's parts 2..6 hidden (FUN_00192ce8) and the part of the command's row in the table at 0x3548f0 shown (row + 2, FUN_00192cd0); byte 7 of `DAT_00340c88` = row + 1, or 6 without a row (FUN_001c6b48); docs/summons.md, Status (WP-SUM5) |
+| 10.9 | `ai_genie_form(Oi)` | 0x2f6c68 | 1 | Genie's FUN_00119c18 on the friend AI object: AI +0x14 = the command; the object's parts 2..6 hidden (FUN_00192ce8) and the part of the command's row in the table at 0x3548f0 shown (row + 2, FUN_00192cd0); byte 7 of `DAT_00340c88` = row + 1, or 6 without a row (FUN_001c6b48); docs/systems/drive-limits-summons/contract.md, Status (WP-SUM5) |
 | 10.10 | `ai_genie_limit(O) -> i` | 0x2f6ca0 | 2 | Genie's FUN_00119ca8: the limit command paired with AI +0x14 in the table at 0x3548f0 (five pairs), 0 without |
 | 10.12 | `ai_slot_start(OiOiiiii) -> i` | 0x2f6d00 | 5 | FUN_00117708 on the friend AI object: a slot of its 0x18-slot list at +0x20 with the kind, the object of the third argument's context (0 without), four words and a flag; returns the slot index |
 | 10.13 | `ai_stitch_13(Oi)` | 0x2f6d68 | 1 | Stitch's FUN_001195e8 on the friend AI object: AI slots of kind 1 and, with a target, attack objects of atkp 0x373 around it (FUN_001130d0) |
@@ -387,7 +387,7 @@ Group 0 is the library (math, effect handles, flags), group 1 the scripted objec
 | 10.41 | `ai_flag_b7c_40000000(O)` | 0x2f7328 | 4 | FUN_001129f0: object +0xb7c |= 0x40000000 |
 | 10.44 | `objentry_flag_10(O) -> b` | 0x2f7390 | 0 | the object's mover (+0xc) has bit 0x10 in its flags word +8 |
 | 10.45 | `status_f_1b4(p) -> f` | 0x2f73b0 | 4 | the float at +0x1b4 of a status block (1.84): the drive / summon timer |
-| 10.50 | `status_word_180(p) -> i` | 0x2f7440 | - | the word at +0x180 of a status block (disassembled: lw a0[0]; lw 0x180; sw a0[0]): the member's current MP (docs/party.md section 5). No script on the disc calls it (`kh2 bdx --scan` and a scan of every BDX list no 10.50; the earlier note "10.50 x75" in docs/party.md has no source) (WP-RV2) |
+| 10.50 | `status_word_180(p) -> i` | 0x2f7440 | - | the word at +0x180 of a status block (disassembled: lw a0[0]; lw 0x180; sw a0[0]): the member's current MP (docs/systems/party/party-friend-ai.md section 5). No script on the disc calls it (`kh2 bdx --scan` and a scan of every BDX list no 10.50; the earlier note "10.50 x75" in docs/systems/party/contract.md has no source) (WP-RV2) |
 | 10.51 | `ai_find_target(Opff)` | 0x2f7450 | 2 | FUN_0011a6d8(half width, half height, the AI object, record): the record names the valid enemy whose projected position lies in the screen box, the nearest to the centre (Chicken Little's FPS aim) (runtime: the record, the second argument, is written as the object found, 0, 0, -1; an empty record is object 0 and -1 in word 3, FUN_0018ed40; WP-SM3). Word 4: on a hit FUN_0011a6d8 copies FIVE words (the iterator FUN_0018f348's object, then its entry byte into word 1, 0, -1, and a fifth from the iterator's stack copy), but FUN_0018ed40 clears only four and nothing in FUN_0018f348 / FUN_0018f490 writes the fifth, so the original copies an uninitialised stack word into word 4; the arm writes four words and leaves word 4 as the script had it, which is the only defined behaviour [inferred: nothing reads word 4 in the scripts checked]. Word 1 in the original is the first byte of the object entry the iterator found (an index), the arm writes 0 |
 | 10.53 | `effect_list_add(Op)` | 0x2f74c0 | 2 | FUN_00136388(the object's list at +0xb5c (FUN_0010c5b8, made on first use), effect instance): an (instance, generation) pair is entered, an older entry of the same instance dropped first, the oldest when 0x20 are held; a zero instance is ignored (Chicken Little's child registers its effect with the summon) |
 | 10.54 | `effect_list_has(Op) -> b` | 0x2f74f8 | 2 | FUN_001364d0 on the object's list at +0xb5c: the instance (with its generation) is in the list |

@@ -93,7 +93,7 @@ group is switched on by the map visibility word, and the area script leaves the 
 * The word is the map visibility word: `FUN_00149b40(word)` -> `FUN_00142ba8(.., word)` / `FUN_0015e6c0(.., word)`
   (the same word also selects drawn mesh groups, `FUN_0015bdb8`, and the model animations, `FUN_001db928`). It comes
   from the area script: default -1, opcode 1 sets it, opcodes 0x1a and 0x1b add and remove bits at the end of the run
-  (`FUN_00181148`, docs/events.md). `kh2_ard::run::ScriptRun::map_visibility` already holds the value; nothing used it for
+  (`FUN_00181148`, docs/systems/core-runtime/contract.md). `kh2_ard::run::ScriptRun::map_visibility` already holds the value; nothing used it for
   collision.
 * Data (`kh2 coct-walls <area>`, programs `KH2_PROGRAMS=0,1,0`): eh10 has one type-6 entry (tag `ID_e`, 819 polygons,
   400 meshes, 390 tree nodes) and the word is 0x407 (groups 0, 1, 2 and 10). Its party walls (attribute 0x172, passing
@@ -128,7 +128,7 @@ group is switched on by the map visibility word, and the area script leaves the 
   `DAT_0035a810`). After that only three things change a group: `FUN_0015e9a8` (group on: sets the bit in
   `DAT_0035a810`, then `FUN_00143028` -> `FUN_00141840` on every collision slot `DAT_00355930..44`) and
   `FUN_0015e928` (off: `FUN_00142f78` -> `FUN_00141800`), reached from BDX host calls 1.37 and 1.36 and from area opcode 0xb
-  (`DAT_0035cd18` mask, docs/events.md). No battle manager writes the area word. So an arena that closes during a
+  (`DAT_0035cd18` mask, docs/systems/core-runtime/contract.md). No battle manager writes the area word. So an arena that closes during a
   fight is done by an enemy or event script calling host 1.37 / 1.36 (implemented by WP-IW2, below).
 
 ### 8.1 Run-time group switches and the other queries (WP-IW2)
@@ -176,7 +176,7 @@ group is switched on by the map visibility word, and the area script leaves the 
   into the queue of 8.1 (test `the_area_mask_hosts_switch_each_set_bit`). Limits: the word is the loaded area's value as the last
   area-script run left it [inferred: the game's global is also read by nothing else that was traced; `FUN_0019d4c0`/`FUN_0019d520` are
   the only readers found in the decomp folder]; later area runs inside one world do not happen in the app. Which areas have a 0xb
-  command: docs/area-survey.md "Area opcode 0xb". No script call site of 1.46/1.47 was counted (`kh2 bdx --scan` was not run for them).
+  command: docs/systems/script-host/area-survey.md "Area opcode 0xb". No script call site of 1.46/1.47 was counted (`kh2 bdx --scan` was not run for them).
 * Walk test tightened: `eh10_arena_walls_of_hidden_groups_do_not_block_the_spawn_volume` now requires every gated walk to arrive
   within `walk_to`'s own 60-unit stop radius (it was 80 or inside the volume), and requires the ungated world to wall in exactly
   the startup spawn and entrance 0 with their ends more than 100 units from the gated ends (entrance 1 arrives either way).

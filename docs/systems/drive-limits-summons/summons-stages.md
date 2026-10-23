@@ -138,7 +138,7 @@ Not done, and why:
 - System effect 0x13 is element 19 of `00effect.bar` (`kh2 pax 00effect.bar`: effect 18, bone 67, flags 0x805,
   sound 180). WP-FX13 status: it starts and draws (`KH2_FXLOG=1`: `summon: system effect 0x13 (00effect.bar) bound
   to the player: started`, then `fx 19 objs 9 batches 7 verts 1176` per frame); the earlier "Effect::new refuses
-  its particle program" was the app's DPX place lookup, fixed by WP-7Bc (docs/effects-damage.md "The summon
+  its particle program" was the app's DPX place lookup, fixed by WP-7Bc (docs/systems/combat-effects/effects-damage.md "The summon
   arrival effect 0x13"). The `why` string in `summon.rs` that names `Effect::new` is stale.
 - The free spot's direction is (sin, 0, cos) of the angle and the LCG word is read unsigned (both oracle-checked).
 
@@ -153,7 +153,7 @@ task true)`). Without `option_word` the default Auto plays the event path on the
 
 Stitch's script (`N_HB040_BTL`, `kh2 bdx N_HB040_BTL`) calls 88 distinct host functions; its group 10 entries are
 10.1, 10.3, 10.4, 10.12, 10.13, 10.16, 10.19, 10.32, 10.39, 10.41 and 10.45. All eleven now have a name and a
-signature in `kh2-bdx` `names.rs` and docs/bdx.md (checked against the executable's table at 0x371810 by
+signature in `kh2-bdx` `names.rs` and docs/systems/script-host/contract.md (checked against the executable's table at 0x371810 by
 `signatures_match_the_executable`), so the runtime decodes their arguments (the AI calls take the script's
 context, whose word +4 is the object; 10.1 a vector). Every wrapper that names the AI reads object +0xb60
 (FUN_0010c5f0), the AI object FUN_0010b780 made.
@@ -403,7 +403,7 @@ among the `unimplemented host call` / `script error` warnings (the end-of-run ta
 - **Peter Pan** (`P_EX330#summon0`, `appear_skip`): the two hosts left were **1.155** and **0.40**.
   - 1.155 (`obj_method_78`, wrapper 0x171c48: the receiver's virtual method +0x78 with (amount, part, flag != 0), result into word 0). The
     receiver here is the player (Obj 0x2000000), the arguments (5, 0, 0) follow the effect Tinker Bell's script starts on him (1.149). The
-    method of the player is FUN_00186238 (docs/magic.md): with the +0x7f8 bit 4 clear it adds the amount to part 0's HP and holds it between
+    method of the player is FUN_00186238 (docs/systems/magic/contract.md): with the +0x7f8 bit 4 clear it adds the amount to part 0's HP and holds it between
     the lowest and the maximum (FUN_001a0100), posts the panel's heal event (FUN_0013de10) and runs the death method only at 0 HP. App:
     `SummonHost::own` adds the amount with `magic_rules::healed` to `SummonAi::player_hp`, `objects` writes Sora's HP back after the
     script ran (log `summon: P_EX330#summon0 healed the player (host 1.155): HP 17 -> 20`, Sora HP 20/20 in the screenshot) and the call returns the new HP. Approx: the
@@ -438,7 +438,7 @@ only while the script is idle (FUN_0010fcd0 returns at once while object +0x390,
 default {1, 2, -1, -1, -1} for 0x12 and 0x11, Peter Pan's {0xa5, 0xa1, 0xa2, 0xa3, 0xa4}) for the walk and run motions while motion 0 or
 one of the table's plays.
 
-**Hosts** (docs/bdx.md, rows added): 10.5, 10.8, 10.17, 10.18, 10.20, 10.22, 10.23, 10.25, 10.26, 10.27, 10.28, 10.29, 10.30, 10.31,
+**Hosts** (docs/systems/script-host/contract.md, rows added): 10.5, 10.8, 10.17, 10.18, 10.20, 10.22, 10.23, 10.25, 10.26, 10.27, 10.28, 10.29, 10.30, 10.31,
 10.33, 10.34, 10.36, 10.37, 10.44, 10.51, 10.59, 7.19, 7.24, 7.25, 6.23, 2.4, 1.244, 0.37 (`kh2-bdx` `math.rs`). The summons' object
 walk (2.4: the alive hittable enemies, handles `friend_host::enemy_handle`) answers the enemies' position, reaction and boss flags; the
 object's own target record is `SummonAi::scripted.target` (the script names it with 1.160, clears it with 6.16; the runtime's dispatch hands

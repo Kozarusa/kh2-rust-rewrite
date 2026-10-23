@@ -20,9 +20,9 @@ Evidence that runs:
   whole segments, HUD digit and fill, the arrival event choice).
 - `kh2 bdx N_HB040_BTL` (and `P_EX350`, `P_AL010`, `P_EX330`, `P_EX340`) disassembles the summons' scripts.
 
-Earlier notes: `docs/player-data.md` ("Summons", the drive gauge and form timer), `docs/limits-reactions.md`
-(limits), `docs/drive-forms.md` (the form timer as ported), `docs/hud.md` (drive gauge modes),
-`docs/hit-stop.md` (actor stop ids), `docs/bdx.md` (script runtime and modes).
+Earlier notes: `docs/systems/combat-effects/player-data.md` ("Summons", the drive gauge and form timer), `docs/systems/drive-limits-summons/contract.md`
+(limits), `docs/systems/drive-limits-summons/drive-forms.md` (the form timer as ported), `docs/systems/ui/contract.md` (drive gauge modes),
+`docs/systems/combat-effects/hit-stop.md` (actor stop ids), `docs/systems/script-host/contract.md` (script runtime and modes).
 
 ## 1. The data
 
@@ -111,7 +111,7 @@ form timer: +0x1b3 segment count, +0x1b4 timer, +0x1b8 its maximum. The drive po
 
 ### The HUD for mode 3 [V]
 
-The drive gauge panel already switches groups by mode (docs/hud.md: mode 3 uses bar intro 140, idle 141,
+The drive gauge panel already switches groups by mode (docs/systems/ui/contract.md: mode 3 uses bar intro 140, idle 141,
 fill 139 and the digit table at 0x358998, groups 144..153). For modes 2 and 3 the digit and fill come from
 FUN_00155bf0: segment size = int(max / count); digit = int(timer) / size, and when that equals the count it
 shows count - 1 with a full fill; otherwise the fill is int(timer) mod size. Checked by the oracle test.
@@ -180,7 +180,7 @@ Dismiss (316) is available only while the summon state is 2 and no limit task ex
    +0x7f8, member id stored in the list at 0x1d5e380).
 9. FUN_001c6578: `0x35fec0` bit 3 set; `DAT_00356f1c` |= 0x10 [GAP: meaning]; the battle record's +0x528 |= 1;
    actor stop id 2 is put on every actor except object classes 0, 1, 5 and 19 (FUN_0016bef0(2, 0xfff7ffdc);
-   docs/hit-stop.md lists this caller as a "command cut-in": it is the summon start). Undone by
+   docs/systems/combat-effects/hit-stop.md lists this caller as a "command cut-in": it is the summon start). Undone by
    FUN_001c65b8 when the thread ends.
 10. The summon command's use counter (+0x34184a + 2 x index, capped at 999) goes up.
 
@@ -351,7 +351,7 @@ sets her mode `"reraise"` (string at 0x37b880).
 | `sora.rs` | the command availability used by the menu (Drive's `check_enter` path) | Summon availability (section 2), Dismiss availability; refuse Drive and normal limits while a summon is active |
 | `sora.rs` | motion requests | play 0x8a on Summon, 0x82 on an appear without event; the unhittable flag during the arrival (+0x108 0x100) |
 | `hud_menu.rs` | `default_menu` / `base_entries` | Summon / Dismiss / blank in the list of FUN_001bc6e0, the SUMMONS sub-list (kind 7) from the owned charms, Genie's "Drive!" list |
-| `hud_gauge.rs` | `DriveGauge`, `update_drive` | mode 3 is `DriveMode::FormB`; feed `points` = digit and the fill from the FUN_00155bf0 rule; the form-time fill (hud.md "Not ported") applies to modes 2 and 3 alike |
+| `hud_gauge.rs` | `DriveGauge`, `update_drive` | mode 3 is `DriveMode::FormB`; feed `points` = digit and the fill from the FUN_00155bf0 rule; the form-time fill (docs/systems/ui/hud-panels.md "Not ported") applies to modes 2 and 3 alike |
 | `hud_gauge.rs` or `hud_party.rs` | new | the summon face panel (groups 0x9a, 0x9b, 0x9c at panel +0x69c, face at +0x1300) on mode changes into and out of 3 |
 | `fx.rs` | new message like `StartSystemEffect` but bound to an owner | system effect 0x13 bound to the player, with "end" (FUN_001d9f48) and "kill" (FUN_001da028) |
 | `hit-stop` code (`combat.rs`) | actor stops | stop id 2 on all actors except classes 0, 1, 5, 19 during the arrival |
@@ -379,9 +379,9 @@ sets her mode `"reraise"` (string at 0x37b880).
 
 ## Corrections to other docs (for the orchestrator)
 
-- `docs/hit-stop.md`, the list of stop callers: `FUN_001c6168` is the summon start (command 89 Genie and
+- `docs/systems/combat-effects/hit-stop.md`, the list of stop callers: `FUN_001c6168` is the summon start (command 89 Genie and
   306 Peter Pan are its special cases), not a general "command cut-in", and the state it sets
   (`DAT_01d5e368 = 2`) is the summon state.
-- `docs/player-data.md`, "Summons": `Entity2` is only preloaded (FUN_001d4da8); Tinker Bell is created by
+- `docs/systems/combat-effects/player-data.md`, "Summons": `Entity2` is only preloaded (FUN_001d4da8); Tinker Bell is created by
   Peter Pan's script and by FUN_001adeb8. The summon start sequence is in section 3 here.
 

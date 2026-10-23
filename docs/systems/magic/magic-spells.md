@@ -38,7 +38,7 @@ in the code; they come from the user's disc.
 - Menu art and layout are `hud_menu.rs` (WP-4): the sub-menu is page kind `cmd(2).SubMenu`; an unusable entry is drawn
   in style 1 [I: the style byte +0x11 of a list entry is set by FUN_001ba748 from other conditions; the mapping of
   status 5 to style 1 is the app's].
-- The menu's input is FUN_001ba9b0 / FUN_001bb930 (docs/items.md section 4): the cursor wraps both ways; an issued spell closes the menu to the deck with the cursor on Attack; Cure (SubMenu 4) first opens the target list. Port: items.rs.
+- The menu's input is FUN_001ba9b0 / FUN_001bb930 (docs/systems/ui/items.md section 4): the cursor wraps both ways; an issued spell closes the menu to the deck with the cursor on Attack; Cure (SubMenu 4) first opens the target list. Port: items.rs.
 
 ## Casting
 
@@ -183,7 +183,7 @@ The user reported "cure does not heal". What the code of the original says, and 
 - **Apply.** FUN_00175340 (the receive handler) passes types 5 and 6 through even when the object is KO'd or untouchable
   for other hits, FUN_00185a68 hands the signed amount to the object's HP method (vtable +0x78 = FUN_00186238), which
   adds it with FUN_001a0100 (clamp to the maximum, slot 0 = HP), posts HUD event 4 (FUN_0013de10; the panel's heal
-  handler FUN_00157108 is in docs/hud.md) and revives a KO'd member instead of healing it. Port: `magic_rules::healed`.
+  handler FUN_00157108 is in docs/systems/ui/contract.md) and revives a KO'd member instead of healing it. Port: `magic_rules::healed`.
 - **MP.** FUN_001769e0 pays the cost byte at the trigger through FUN_00186368: Cure's cost is 255, always more than the
   MP held, so MP becomes 0 and the MP charge starts (`prty` MpDrive times 1.0 = 3000 frames; MP Haste shortens it).
   While it runs every spell is unavailable (FUN_001ba2c0, status 5). Verified by log: `menu: command 52 not usable
@@ -198,7 +198,7 @@ HP (`HP 20 -> 20`). The cases where a player sees no heal and the original behav
 2. A hit that flinches Sora between the button and the trigger ends the cast: event 20 stops when the caster's motion
    changes (host 1.15), so no MP is paid and nothing heals. None of the four spells' cast motions carries a range trigger
    that arms the caster (36 / 37 set bits of the status mask the reaction table `patn` reads, see
-   docs/hit-reaction.md; the test `magic_turn_data_from_the_disc` checks it), and the app sets no status bit, so a Dusk
+   docs/systems/combat-effects/hit-reaction.md; the test `magic_turn_data_from_the_disc` checks it), and the app sets no status bit, so a Dusk
    or Shadow hit during the 0.3 s wind-up cancels it. What else sets the status bits (abilities such as a cast that cannot
    be interrupted) was not found [GAP: addresses searched: 0x188030 cases 0x24 / 0x25, writers of +0xabc by the host
    calls 1.211 / 1.212].
@@ -219,7 +219,7 @@ reach on its own (`cargo run -p kh2-bdx --example listing` with root 319 after p
 
 Event 21, kind / 10 = 0 (level casts without a form): stop [g]+0x1c, start element 1 (bound to bone 0x4003, the weapon of
 hand 0: FUN_0016aa18 -> FUN_0016ae50), yield; host 1.146 with the facing turned by pi and `magi` +0x1c (FUN_001705e8 ->
-FUN_001857b0: the caster is pushed backward with the decaying ground push of the wall recoil, docs/hit-reaction.md; every
+FUN_001857b0: the caster is pushed backward with the decaying ground push of the wall recoil, docs/systems/combat-effects/hit-reaction.md; every
 kind reaches it, L00ab; ported in WP-7M2, below); then R02b9 -> R02d7 -> R04d6 start the shot with a 112-byte block: the
 caster's context, a copy of its target record (+0x30), the start position = element 1's position (+0x20), the direction
 = the facing (+0x50), the turn rate `magi` +0xc times the scale 1.0 (+0x60) and a flag 1 (+0x64). Wisdom, Master and
@@ -238,7 +238,7 @@ by the angle between them clamped to the rate, about their cross product); the p
 unit direction (host 0.45 -> FUN_0016d098); at the end of the life the effect fades over 12 frames and is destroyed
 (host 0.52). Cleanup (R0487): destroy the effect, finish the attack, release the target record, free the block.
 
-Port: `magic::step_shot`, `turn_toward`, `shot_ends`. The flags (WP-7M2, from docs/hit-reaction.md): 8 / 0x10 are set
+Port: `magic::step_shot`, `turn_toward`, `shot_ends`. The flags (WP-7M2, from docs/systems/combat-effects/hit-reaction.md): 8 / 0x10 are set
 by the wall handler FUN_0018ca78 (FUN_0018c8e0, from FUN_001a2cc0 for an attack that moved more than two units, casts
 the segment from the last position against terrain with mask 4 for rows with BG Hit), 0x200 by the clash handler
 FUN_0018d430, and 2 marks an attack that hit a target (FUN_0018c8e0 skips the wall test for it). So a shot with flag 1

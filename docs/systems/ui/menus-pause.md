@@ -2,7 +2,7 @@
 
 [Contract](contract.md) | [Index](../../README.md)
 
-Work package 7N. Research only: nothing here is implemented in the app yet. Like `docs/summons.md`, this note is
+Work package 7N. Research only: nothing here is implemented in the app yet. Like `docs/systems/drive-limits-summons/contract.md`, this note is
 meant to let a later work package build the menu without reading the game code again. Function names are
 addresses in the main executable (`SLUS_210.05`, USA, PS2). No game values are copied into the repository: every
 table below is read from the user's disc at run time by the tests listed in section 0.
@@ -269,7 +269,7 @@ loader) and `FUN_002a04f8` (the list widget, called by the camp, the shop and th
 `FUN_002761e8`); `0x1dc0e00` and `0x36cdc8` are used only by the loader family (`FUN_0024f558`, `FUN_0024f688`, `FUN_0024f7a8`,
 `FUN_0024f898`, `FUN_0024fa20`, `FUN_0024fa38`); the scene records 0x380560 (kinds 0 to 0xf) were read for a pause scene (kind 0xf, scene
 0x384, init `FUN_002f7b38`, is the landing-screen family, not it). So nothing that plays `pause.2ld` was found in the decompilation of this
-US executable. [inferred] "in combat" = the game's battle flag (`audio_bgm::BattleFlag`, word 0x1c8a7d8, `FUN_001903d8`, docs/audio.md):
+US executable. [inferred] "in combat" = the game's battle flag (`audio_bgm::BattleFlag`, word 0x1c8a7d8, `FUN_001903d8`, docs/systems/audio/audio.md):
 with it set, the open input shows the band (`menu_pause.rs`) and freezes the world like the menu; the same button or a cancel closes it
 (no fade: the close groups 4, 5, 18 were not tried); the music keeps playing. Layout [inferred]: the dim is the scene dim at brightness 0.5,
 the band's middle is the picture's middle line (menu y 208), the letters are centred in the band. Not played [GAP]: groups 2 to 13 and 16 to 18.
@@ -313,7 +313,7 @@ sprite; the code that decides it was not read [GAP].
 
 Layers around the list [F + V]: the **MENU** banner and the area name (`msg/us/place.bin` through the world/area record,
 `FUN_002506b8`), the character card(s), the Munny and Time plate (bottom left; the digits 0..9 and ":" are in the image; Munny from
-the save block munny, `docs/progress.md`; Time is the play time), the help bar (bottom: the entry's help message while a row is
+the save block munny, `docs/systems/core-runtime/progress.md`; Time is the play time), the help bar (bottom: the entry's help message while a row is
 highlighted), the Mickey-head watermark (bottom right). Card text: `LV`, `HP`, `MP` rows per party member shown standing in front.
 
 ### 2.2 Items and equipment (pages 1, 2, 5..9, 0xa..0xe) [V for the writers; I for the flow]
@@ -326,7 +326,7 @@ for category c is page 5 + c (table 0x381970). Each page shows the character's s
 Key, Armor: --, Accessories: --, Items: Potion"), the candidate list on the right with an item preview (picture and help line; the
 footage's pot icon and "Restores 40% of the target's HP. An equippable item.").
 
-**The writers** (the equipment is the party record of `docs/progress.md`; "give(id, 100, 0)" = `Progress::give(id, 100, false)` back to
+**The writers** (the equipment is the party record of `docs/systems/core-runtime/progress.md`; "give(id, 100, 0)" = `Progress::give(id, 100, false)` back to
 the inventory, "take" = `FUN_001a1ba8(id, 100)` = `Progress::use_item(id, 1)`):
 
 | function | change | effect |
@@ -339,7 +339,7 @@ the inventory, "take" = `FUN_001a1ba8(id, 100)` = `Progress::use_item(id, 1)`):
 | `FUN_001a1ba8(id, to)` | take | `to == 100`: stock count - 1; else clear the member's matching battle item slot |
 
 Which character is edited is page 1's cursor (`FUN_00252fb8(1)`). The **stock** can hold at most 99 of an item (`FUN_001a1768`:
-the check in 4.3 of `docs/progress.md`). Using an item from the menu (the footage's "Use" and "Use on who?" prompts, messages
+the check in 4.3 of `docs/systems/core-runtime/progress.md`). Using an item from the menu (the footage's "Use" and "Use on who?" prompts, messages
 0x456, 0x3941, 0x3943, "All" 0x3944, "The item will be used on {}." 0x394e, "Throw away" 0x3942/0x394f) runs the item effect
 `FUN_001a12a0` and takes one (`FUN_001a1c30`); the Stock page lists the stock with counts; some items are "Usable only from the Main
 Menu" (the drive recovery and the stat boosts, messages 0x39d9..0x39e4: Power/Magic/Defense Boost +1, AP Boost +1 maximum AP) [V text;
@@ -352,22 +352,22 @@ Weapons** (labels 0x32ee, 0x32ef, 0x32f0, 0x32ed, table 0x382070). Rows are buil
 then 8 bytes per ability: the item id at `+0xc` of the row address, an equipped flag at `+0xe`, the slot index in the member's ability
 list at `+0xf`, a "locked" byte at `+0x10`, a cost byte at `+0x11` printed through the format string at 0x382028 [I: the AP cost;
 the AP value is shown as "AP" in the footage]). The **equip toggle** `FUN_0027d8b8(row, on)` writes the member's ability list
-(`record + 0x54 + 2*slot`, `docs/progress.md`) as `(old & 0x7fff) | on << 15`: **bit 15 is the equipped flag**, exactly as
-`docs/abilities.md` has it. Confirm opens page 0x11..0x13 with two options (messages 0x3627 "Equip" and 0x3629 "Don't Equip", helps
+(`record + 0x54 + 2*slot`, `docs/systems/core-runtime/progress.md`) as `(old & 0x7fff) | on << 15`: **bit 15 is the equipped flag**, exactly as
+`docs/systems/combat-effects/abilities.md` has it. Confirm opens page 0x11..0x13 with two options (messages 0x3627 "Equip" and 0x3629 "Don't Equip", helps
 0x3628 and 0x362a, `FUN_0027a068`); the row's group (`FUN_0027c6f8`) selects the page.
 
 The footage's AP bar ("AP 0/2", then 2/2 after equipping; "AP 4/5" with a bar) and the rule that an ability needs AP free are
 [F]; where the menu compares the cost with the character's maximum AP (record `+8`; `lvup` AP) was not found in the handlers read
 [GAP: searched `FUN_0027d960`, `FUN_0027d708`, `FUN_0027c780`, `FUN_0027c240`, `FUN_0027dc08`]. Port the rule from the footage and
-`docs/abilities.md` (`ap_used()` = sum of the equipped abilities' costs <= maximum AP) and mark it [I]. A message 0x3372 "There are
+`docs/systems/combat-effects/abilities.md` (`ap_used()` = sum of the equipped abilities' costs <= maximum AP) and mark it [I]. A message 0x3372 "There are
 no Abilities." is shown for an empty list. Sora's list in the footage shows "Aerial Recovery" with an equipped marker.
 
 ### 2.4 Customize (pages 0x19, 0x1a..0x21) [V for the writers; I for the flow]
 
 Page 0x19 lists the characters; the character pages let the player (a) choose which command each of the four **shortcut slots** holds
 and (b) set per-item and per-spell options. **Shortcuts**: `FUN_00274dd0` writes the chosen row's command into the u16 at
-**save block `+0x2600 + 2*slot` (0x340e60 + 2*slot, the "4 command shortcuts" of `docs/progress.md`)**; the command of an item comes
-from `FUN_001a1f78` (`docs/progress.md`); the slot being edited is the page's remembered index `FUN_00252fe8(0x1a)`. **Spell
+**save block `+0x2600 + 2*slot` (0x340e60 + 2*slot, the "4 command shortcuts" of `docs/systems/core-runtime/progress.md`)**; the command of an item comes
+from `FUN_001a1f78` (`docs/systems/core-runtime/progress.md`); the slot being edited is the page's remembered index `FUN_00252fe8(0x1a)`. **Spell
 switches**: `FUN_00274e50` toggles bit `item.+4` of the per-spell switch word at **save `+0x264c` (0x340eac)** with `FUN_001a4b68`
 (set) or `FUN_001a4b30` (clear) after reading it with `FUN_001a4bb8`, then updates the row's on/off marker; the labels "Use" (0x456) and
 "Not Used" (0x458 / 0x485 / 0x3616) are the two states. Other messages of the page: "Auto-Reload" 0x482, "MP Charge" 0x481, "Select
@@ -380,7 +380,7 @@ Lists the party and the members that can join; the footage's Party entry is pres
 Member." 0x46b, "Switch Party Member." 0x46c, "Party Members have been switched." 0x46d, "Party In" 0x46e, "Party Out" 0x46f, "Goofy's
 equipment has been put in stock." 0x470 (a removed member's equipment goes back to the stock), per-world refusals ("Auron cannot be
 switched at this time." 0x473.., "Party Members cannot be switched and Summons cannot be used until the fight is settled." 0x476).
-The state it changes is the party arrangement: the four slot bytes of the world's record (docs/party.md, "Party presets and the slot
+The state it changes is the party arrangement: the four slot bytes of the world's record (docs/systems/party/contract.md, "Party presets and the slot
 bytes"; `FUN_001a75e8` swaps two of them). **Read and ported in WP-MN7: section 19** (pages 0x14 and 0x16, their lists, the columns, the
 3D models and the swap; the equipment return remains a gap, 19.4; page 0x15 in WP-PT1).
 
@@ -395,8 +395,8 @@ and closes the camp. The scene itself: section 20 (WP-MN9).
 Page 0x17 (`FUN_00265c48` builds it): one row per tab (the bit mask at `DAT_0036cfe8 + 0x18`, up to nine tabs) with the numbers of
 the highlighted tab previewed beside it; page 0x18 (`FUN_00266328`) shows the chosen tab's rows across the screen, two columns of
 ten, with a help text per row. The numbers come from the status block `FUN_0019f920` builds out of the member record
-(`docs/progress.md`: HP `+4`/`+5`, MP `+6`/`+7`, AP `+8`, strength, magic, defense `+9..+0xb`, level `+0xf`), the `lvup` row and the
-equipment's `item_stat` additions (`docs/abilities.md`). The rows, their labels, helps and number sources are in section 10.
+(`docs/systems/core-runtime/progress.md`: HP `+4`/`+5`, MP `+6`/`+7`, AP `+8`, strength, magic, defense `+9..+0xb`, level `+0xf`), the `lvup` row and the
+equipment's `item_stat` additions (`docs/systems/combat-effects/abilities.md`). The rows, their labels, helps and number sources are in section 10.
 
 ### 2.7 Help overlay (page 0x25) [V structure; text F]
 
@@ -420,7 +420,7 @@ Rows (table at **0x382158**, 16 bytes per row: value count, label, three value l
 | 1 | Right Analog Stick | Camera, Command Menu | bit 5 (`0023ece0`, reads the inverse); UI index = bit 5; the same exclusion |
 | 2 | Camera Up/Down | Original, Reverse | bit 8 (`0023ee68`); UI index = bit 8 |
 | 3 | Camera Left/Right | Original, Reverse | bit 7 (`0023edf8`); UI index = bit 7 |
-| 4 | **Summon Effects** | Auto, Full, None | **bits 9..10** (`0023eed8`): raw 0 = None (UI 2), 1 = Full (UI 1), 2 = Auto (UI 0), 3 reads as Full; written back raw = 0 for UI 2, 2 for UI 0, 1 for UI 1 (the arrival option `FUN_001c65f0` reads, `docs/summons.md`) |
+| 4 | **Summon Effects** | Auto, Full, None | **bits 9..10** (`0023eed8`): raw 0 = None (UI 2), 1 = Full (UI 1), 2 = Auto (UI 0), 3 reads as Full; written back raw = 0 for UI 2, 2 for UI 0, 1 for UI 1 (the arrival option `FUN_001c65f0` reads, `docs/systems/drive-limits-summons/contract.md`) |
 | 5 | Navigational Map | ON, OFF | bit 3 (`0023ebf8`); UI index = NOT bit 3 (bit set = ON) |
 | 6 | Vibration | ON, OFF | bit 0 (`0023eb10`); UI index = NOT bit 0 (bit set = ON); changing it calls `FUN_00239d28` (to ON) or `FUN_00239d38` (to OFF) at once |
 | 7 | Sound | Stereo, Pro Logic II, Mono | bits 1..2 (`0023eb78`): raw 0 Mono (UI 2), 2 Pro Logic II (UI 1), 1 Stereo (UI 0); changing it calls `FUN_002bddf4(raw)` at once |
@@ -435,7 +435,7 @@ has other rows).
 
 ### 2.9 Save (menu kinds 7 and 8, `save.2ld`) [partly V]
 
-Opened by the Save command (field reaction "Save", `docs/events.md`, `FUN_0024f330`) or Start while a save prompt is pending (1.1). Kind
+Opened by the Save command (field reaction "Save", `docs/systems/core-runtime/contract.md`, `FUN_0024f330`) or Start while a save prompt is pending (1.1). Kind
 7 sets up a page machine in kind 8 (`FUN_0026f480`); the pages use `save.2ld` (images 256x256, 512x256, 256x256; layouts for the SAVE
 header, the file rows, the information box; the "load" LAYD) and the type 37 entry. Footage (clip 7, remaster) [F]: green theme, a pointer
 list ("Save", "Title Screen"), an information box ("INFORMATION: Checking ... Do not turn off the power"), a file list with four rows
@@ -470,7 +470,7 @@ remaster's rows differ; the PS2 save text is memory-card text.
 
 The app's HUD stack is `hud.rs` with `hud_gfx.rs` (the 512x448 canvas, `SeqFile::from_bar` for `.2dd` files, `HudScene`/`Node`),
 `hud_text.rs`, `hud_msgwin.rs` (message window), `hud_menu.rs` (the field command deck, not this menu); the state is
-`progress::Progress` (`docs/progress.md`); plugins go in the third `add_plugins` tuple of `main.rs` (PLAYBOOK R9). The menu stays out of
+`progress::Progress` (`docs/systems/core-runtime/progress.md`); plugins go in the third `add_plugins` tuple of `main.rs` (PLAYBOOK R9). The menu stays out of
 those files (the HUD and fx fixes edit them): new files only, one small hook each in `main.rs`, `harness.rs`, `progress.rs`.
 
 | file (new unless noted) | contents |
@@ -486,14 +486,14 @@ those files (the HUD and fx fixes edit them): new files only, one small hook eac
 | `crates/kh2-app/src/sora.rs` or the pad reader | the pause: while `Menu.open`, no `Pad` input reaches Sora and the `Sim` sets stop (done as a run condition on the `Sim` sets, `schedule::Pause`, 1.8) |
 
 Keys (proposal, [I]): Enter = Start, J = confirm (the app's attack key), K or Backspace = cancel, `[` and `]` = the shoulder switch (already
-`pad.prev/next`), V = Select/Help (already Select in `camera.md`), arrow keys = the list, arrows left/right = Config values; the harness takes the
+`pad.prev/next`), V = Select/Help (already Select in `docs/systems/player-camera/contract.md`), arrow keys = the list, arrows left/right = Config values; the harness takes the
 same names. The in-game fixed 60 Hz tick is `data::LOGIC_HZ`; menu animation runs in `Update` on real frames (the field is stopped).
 
 ## 5. Staged plan
 
 Each stage is file-disjoint from the HUD and fx fixes (only new `menu*.rs`, `layd.rs` and one-line hooks). Acceptance for a stage is run
 with the harness (`KH2_KEYS`, `KH2_SCREENSHOT`, PLAYBOOK R5); a harness key opens the menu without the pad. `Progress` for the checks is
-`KH2_STATE` (docs/progress.md).
+`KH2_STATE` (docs/systems/core-runtime/progress.md).
 
 **M1: open, close, the top page (2.1) and the transition (1.6).** Files: `layd.rs`, `menu.rs`, `menu_gfx.rs`, `menu_pages.rs` (page 0 only),
 `menu_text.rs`, the hooks (`main.rs`, `harness.rs`, the pause hook). Port: the `.2ld` reader; the Start gate of 1.1 (the conditions the app has:

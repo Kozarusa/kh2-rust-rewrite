@@ -10,7 +10,7 @@
 | new `area.rs` (kh2-app) | `AreaRecord` resource (world, area, entrance, programs) and `AreaPrograms` (the 0xc0-byte table per world from the save block) | E1, E5 |
 | new `area_script.rs` | port of `FUN_00181148` / `FUN_00180b48`: run `map`, `btl`, `evt` programs, spawn groups, record triggers, music, map visibility | E1 |
 | `assets.rs` | `load_area`: take the player placement from spawn kind 1 entities of the entrance; load by the area record | E1 |
-| `enemy.rs` | `area_groups` / waves: read the btl program from the area record instead of taking turns | E5; done in EN1 (docs/enemies.md "Waves") |
+| `enemy.rs` | `area_groups` / waves: read the btl program from the area record instead of taking turns | E5; done in EN1 (docs/systems/script-host/enemies-core.md "Waves") |
 | new `area_jump.rs` | exit volumes (`Activator` shape tests), the jump task with fade kinds, triggers and `FUN_00197b70` events | E1 |
 | new `npc.rs` (done) | class-5 objects with their BDX and the group 5 hosts (paths); `KH2_PROGRAMS`, `KH2_NPC_WATCH`, `KH2_NPCLOG`, `KH2_NO_NPC` | E2 |
 | `enemy_host.rs` | hosts 0.14 / 0.15 on `Progress` story flags; 1.30 / 1.31 jumps; 1.32 / 1.33 message windows; 1.202 / 1.203 | E2, E3, E5 |
@@ -84,9 +84,9 @@ Each stage ends with `verify.ps1` passing and the named check.
   kind-4 follower's timer (360..720 frames) ran out 1.8 s into the talk and `rtn_default` left
   `encount_player` for `path_move`, so the townsperson walked on while talking [to compare with footage].
   Not ported: the talk camera (`FUN_00159688` / `FUN_00159768`, camera.rs), the party's head turns, the
-  wait's early end (`FUN_001a5b18`), op 3 events (0x65 goes to `FUN_0023f108`; the shop events 0x13, 0x66.. are menu kind 4, docs/menus.md 21),
+  wait's early end (`FUN_001a5b18`), op 3 events (0x65 goes to `FUN_0023f108`; the shop events 0x13, 0x66.. are menu kind 4, docs/systems/ui/menus-struggle-result.md 21),
   HUD record 0xc.
-  **Status (WP-E8):** the talk camera is ported (docs/camera.md "Talk camera (mode 4)"): `npc::talk_step`
+  **Status (WP-E8):** the talk camera is ported (docs/systems/player-camera/contract.md "Talk camera (mode 4)"): `npc::talk_step`
   builds the shot from the townsperson's collision record of type 0x13 with the talk part's index
   (`npc::talk_shot`, `FUN_0018f108`) and hands `camera::TalkCam::Start` / `End` to the camera, which cuts
   to the view on its next tick and warps back to the follow camera at the end. The townsperson's hold was
@@ -125,7 +125,7 @@ Each stage ends with `verify.ps1` passing and the named check.
   heal: HP 5/20 MP 100/100`, `effect element 2 started`, `effect element 2 ended`, `save point heal: done, HP
   20/20`, `save point: accepted command 55 (Execute 0x37): ... menu kind 1 (scene 3) with mode 0`. Not ported:
   the friends' slots of the heal (party.rs), the MP charge shortening (`DAT_00360130` +0x7c), bits 2 and 3 of
-  0x35fec0. **WP-E7:** the accept now opens menu kind 1 through `menu_save.rs` (docs/menus.md 18.5). Run
+  0x35fec0. **WP-E7:** the accept now opens menu kind 1 through `menu_save.rs` (docs/systems/ui/menus-save.md 18.5). Run
   `KH2_REACTION_PRESS=8 KH2_SAVEPOINT_WATCH=5 KH2_REACTIONLOG=1 KH2_NO_ENEMIES=1 KH2_KEYS=11:Down,12:J,13:K
   kh2-game tt02`: `... with mode 0 (FUN_0024f0b8(1, 0)): requested from menu_save`, `menu: save open (menu kind 1
   mode 0 from a save point, rows [8a7e, 8a80], ...)`, `menu: save point row 1 (0x8a80): ... not ported`, `menu:
@@ -134,11 +134,11 @@ Each stage ends with `verify.ps1` passing and the named check.
 - **E5 Story flags selecting battle programs.** Story flags in `Progress` (bits, side effects op 1, 7, 0xc),
   hosts 0.14/0.15 real, the btl program from the area record, triggers with events 2/3 and the battle manager
   results (jump records type 1/2). Accept: with a state file setting flag 0x883, tt04 logs `btl program 1`; the
-  Dusk drop rows of docs/enemies.md now follow real flags.
+  Dusk drop rows of docs/systems/script-host/contract.md now follow real flags.
   **Status (WP-E5):** `progress::Story` holds the flag array (0x33f6b0, 19 pages of 0x20 bytes), the program
   table (0x33e86f) and the lock halfwords (0x33f918); `Story::set` is `FUN_0017ff60` with ops 1, 2, 3, 4, 5, 7
   and 0xc (oracle `story_flag_setter_matches_the_game`: 1415 flags of 19 worlds equal in kh2-ee, 870 of
-  them change more than their own bit); `KH2_STATE` keys `story_flags` / `story_clear` (docs/progress.md).
+  them change more than their own bit); `KH2_STATE` keys `story_flags` / `story_clear` (docs/systems/core-runtime/progress.md).
   Hosts 0.14 / 0.15 / 0.70 use it (`progress::shared_story`). `area.rs` takes the record's program bytes
   from the table on every area load (`KH2_PROGRAMS` still overrides) and applies opcode 0x19. Exits read
   the lock halfwords (test `story_flag_ops_lock_and_unlock_exits`). Run (`KH2_AREALOG=1`, state file
@@ -146,7 +146,7 @@ Each stage ends with `verify.ps1` passing and the named check.
   table 0x33e86f (story flags, FUN_00104bd0)` and `btl program 0x1 loads group b_00`; flag 0x883 also
   writes tt03 (3, 1, 0), tt06..tt08 btl 1, tt13 btl 2, tt14 evt 3. Without a state file the log reads
   `programs (0, 0, 0)` as before and tt04's program-0 scripts have no opcode 0x19 (no `opcode 0x19` line). Not done (done since WP-EN1: `enemy.rs` sets up the btl
-  program's groups at load, docs/enemies.md "Waves"): the waves of `enemy.rs` still took turns; trigger sub 2 (flag on fire), events
+  program's groups at load, docs/systems/script-host/enemies-core.md "Waves"): the waves of `enemy.rs` still took turns; trigger sub 2 (flag on fire), events
   2 / 3 and the battle manager's result jumps. (Jump types 2 and 3 are ported since WP-JT2: section 4,
   "Jump types, status".)
   **The prologue Seifer fight (TT04_MS500) with its story state** [measured]: flag 0x8db (the one `btl`
@@ -174,7 +174,7 @@ Each stage ends with `verify.ps1` passing and the named check.
   `anm/us/<world>/<model>/` [inferred: the USA disc keeps the talking motions there; the loader's remap was
   not read], started with `Animator::play_external` (blend and start in game frames); opcode 2 places them
   (`game_to_app`, `app_yaw` of the yaw). Subtitle lines draw as a HUD text node: font 4, colour 3, at
-  (256, 365), alignment 4 (docs/hud.md, class 0x1aae60 [inferred there]), the open lines' messages in open
+  (256, 365), alignment 4 (docs/systems/ui/contract.md, class 0x1aae60 [inferred there]), the open lines' messages in open
   order. 0x2d opens `hud_msgwin::ScriptWindow` (kind 0 / 1 = class 0 / 1); its close and wait are not ported.
   The camera runs `CamEvent::track` while the event has records and cuts. The pad is locked while the event
   plays [inferred]; at the end frame the actors are removed and control returns. The short tt01 events are
@@ -277,7 +277,7 @@ Each stage ends with `verify.ps1` passing and the named check.
   look-at": how the joint is turned toward the aim point, and the +0x160 enable bit) and `FUN_0018af10`'s kind-3
   answer (+0xa80); the walk path's +0x87 mode and +0x8c stop index (no writer found in `FUN_002d3b40`). Host 5.8 / 5.9 / 5.10 / 5.12..5.15 / 5.18..5.25 / 5.28..5.32 (not called by `rtn_default`) are not read.
 - Menu kind 1's World Map row (`FUN_00257e70` question, `FUN_002580b8` -> `FUN_0014a7c8(.., 0xf, 0)`, page 0x14
-  `FUN_002580e8` -> `FUN_00103b18(1)`: what the exit loads was not read) and its page-0 help (docs/menus.md 18.5);
+  `FUN_002580e8` -> `FUN_00103b18(1)`: what the exit loads was not read) and its page-0 help (docs/systems/ui/menus-save.md 18.5);
   `FUN_0024f300` meaning (trigger sub 7).
 - Opcodes 0xa, 0xb, 0xe, 0x11, 0x16 meanings (readers named in the table); trigger subs 3, 6, 8; flag ops 2..5.
 - Group kinds 7 and 9 (`FUN_001ccb10`, `FUN_0019a000` not read); activator +0x28..+0x3f beyond +0x2c/+0x2e/+0x2f.
@@ -370,4 +370,4 @@ Each stage ends with `verify.ps1` passing and the named check.
 
 ## Tutorial windows opened by mission scripts (WP-T1)
 
-Host 1.296 (`FUN_001744a0`) opens a message window of class `FUN_001abba0` (class 1 of the window table: top centre, dark frame kind 4) with the message id on the stack; `msn/us/TT04_MS107.bar` event 3 calls it with 0x3ef7 at its first instruction. Details, the pointer command (0x0f) and the ids: docs/hud.md "Tutorial windows (WP-T1)". The port opens it on `struggle::MissionStart` of `TT04_MS107`. Host 1.284 (`FUN_00174430`) is the page-sequence object (0x2f46xx family) the same script uses for 0x3ef9: not ported.
+Host 1.296 (`FUN_001744a0`) opens a message window of class `FUN_001abba0` (class 1 of the window table: top centre, dark frame kind 4) with the message id on the stack; `msn/us/TT04_MS107.bar` event 3 calls it with 0x3ef7 at its first instruction. Details, the pointer command (0x0f) and the ids: docs/systems/ui/hud-banners-windows.md "Tutorial windows (WP-T1)". The port opens it on `struggle::MissionStart` of `TT04_MS107`. Host 1.284 (`FUN_00174430`) is the page-sequence object (0x2f46xx family) the same script uses for 0x3ef9: not ported.

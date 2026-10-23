@@ -3,7 +3,7 @@
 What the static scan (`local/tools/mips_scan.py`) cannot see, the running original shows: a write watchpoint on the field names the writing
 function at once. This note is the method, then one section per target with the address, the run that showed it and what the app does with it.
 No game data is in this file: only structure, addresses and the small rule constants the code needs. Everything is [V] (read in a run, run
-described) unless marked [inferred]. "Run" means the user's USA disc in the patched PCSX2 of `local/tools/pcsx2-mcp` (docs/pcsx2.md).
+described) unless marked [inferred]. "Run" means the user's USA disc in the patched PCSX2 of `local/tools/pcsx2-mcp` (docs/systems/foundations/pcsx2.md).
 
 ## Method
 
@@ -53,7 +53,7 @@ messages 0x8ae2..0x8ae7 (`FUN_001b55c8`) and the level window (`FUN_001b5718`, t
 Callers (`mips_scan --jal 0x1be6b8`): `FUN_001b25d0` after a defeat's experience, with the short at `+0x5a` of the defeated enemy's `enmp` row
 (`BonusLevel`) when it is not 0 (it is 0 in all 177 rows of the USA disc: `kh2 table enmp`, so no defeat gives a bonus); `FUN_001c46a8` the same
 for a second `enmp`-shaped row picked from a table (called through a pointer, not traced further); `FUN_001b95a0`, the end of a mission manager
-(host 4.3 and 4.16, docs/struggle.md "The end"), with the byte at `+0xd` of the mission header (`msn/us/*.bar`, `Header::unlock` in `struggle.rs`;
+(host 4.3 and 4.16, docs/systems/world-minigames/struggle.md "The end"), with the byte at `+0xd` of the mission header (`msn/us/*.bar`, `Header::unlock` in `struggle.rs`;
 0 in every Struggle file). So the rewards come from the missions and scenes the app does not run. Port: `Progress::give_bonus`, `Progress::bonus_given`,
 `Progress::bonus_level` and the defeat path of `progress::pay_defeats` (step 3 of `FUN_001b25d0`; harmless on this disc); the mission end is not wired
 (`struggle.rs` only logs a non-zero header byte). Tests: `progress::tests::a_bonus_reward_raises_maxima_and_current_values_once` (numbers of this
@@ -92,7 +92,7 @@ script thread (`+0x484`) exists, calls `FUN_0016c620(thread, 0x11, args, 3, 0)`:
 in the `.mset` (`kh2 mset obj/M_EX900.mset` prints `7@0[2, 0]` on 26 slots, `7@0[3, 0]` and `7@175[3, 0]` on 11 and one slot with code 1).
 Other types of the same table, read the same way: 0 sets a mover state from the object's byte `+0x514` (a 10-way table), 1 `FUN_001889f0`,
 2 `FUN_0016baa0(obj, +4)`, 3 mover 7, 4 `FUN_00192c50(obj, +4)`, 5 `FUN_00192c68`, 6 `FUN_001b8710`; the later cases were not read here, except 9..12 (they set the
-bits the app already reads as `trigger_bits`) and 13 and 14 (docs/audio.md).
+bits the app already reads as `trigger_bits`) and 13 and 14 (docs/systems/audio/audio.md).
 What the script does with it: M_EX900's entry for event 17 (`kh2 bdx M_EX900` at 0x002a) takes (object, code, argument): code 1 sets the mode
 named by the argument (`crash_dead`), code 2 clears the script word `+0x18` and puts the weakness byte 6 back to 100, code 3 sets `+0x18` and the
 byte to 0. So the invulnerable dive state ends at the next motion that carries a code-2 record: this was the "only event 17 clears +0x18" of the
@@ -139,7 +139,7 @@ so nothing here says "who writes"). Each result below is one read, not reproduce
 - **Cursor contact record +0xb70**: not reachable (see above). Round 1's list-of-16-byte-records reading of the words at 0x1af38b0+0xb70 stands; in this state the address holds
   `0x30000004` at its very start, i.e. that heap area is the same list pattern with no cursor object on it, which makes the round-1 reading "a list of 16-byte records, not a camera
   record" more likely and the record's +0xb70 name for it doubtful [inferred]. The contact event path (`FUN_002ccb70`, `FUN_002cdf08`) stays unproven in a run.
-- **Gummi flight**: docs/gummi.md (overlay at 0x1f18000, loader `FUN_00103e20`, program records, previous-place bytes).
+- **Gummi flight**: docs/systems/worldmap-gummi/gummi.md (overlay at 0x1f18000, loader `FUN_00103e20`, program records, previous-place bytes).
 - **+0x570 link and M_EX950**: not reachable: all three states have battle flag 0x1c8a7d8 = 0 and no enemy actor (a map and a flight); the M_EX names in RAM are only the executable's name
   table. They need the Dancer's force dance and the M_EX950 fight, i.e. a savestate in those fights.
 - Needs a run (patched emulator with the three states, one at a time): the map camera/view writer, the cursor contact record and the program switch caller of 0x103e20.

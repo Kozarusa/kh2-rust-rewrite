@@ -36,7 +36,7 @@ gauge), `row_for_command()` is `FUN_001d2040` (first usable row of the command).
 
 **MP cost [I]**: all normal limits have Cost 255. Read literally (`FUN_001b3e38` compares the byte with the MP block
 at status +0x180; `FUN_001b9ff0` replaces it only in a special battle) no MP value reaches 255, so the notes call it
-"all MP" (player-data.md). The port treats it as "needs some MP, spends all". Whether the game's MP unit makes 255
+"all MP" (docs/systems/combat-effects/player-data.md). The port treats it as "needs some MP, spends all". Whether the game's MP unit makes 255
 reachable was not checked [GAP].
 
 Activation in the port, with the party absent: `KH2_LIMIT=<command id>` tries that command once at 4 s, key L steps
@@ -126,7 +126,7 @@ the 60 Hz duration count (step 3's `Time` unit). WP-LM1 adds the **script events
 kinds (`LimitBar`), and sends event 22 as a `LimitScriptEvent` to the receivers `start_events` lists (the type 3 script and, for a
 BAR without the type 0x14 entry, the first participant: the summon); a command without a limit row that is an Execute 81
 sub-command (`sub_commands`: Stitch's 525 to 527, Never Land's 469 ...) becomes event 23 with the id for the receiver
-`event_receiver` names, while a limit runs. The old gap in docs/summons.md (who sends events 22 and 23) is answered by these
+`event_receiver` names, while a limit runs. The old gap in docs/systems/drive-limits-summons/contract.md (who sends events 22 and 23) is answered by these
 functions. Disc facts, pinned by `real_limit_bars_and_sub_commands`: the 20 partner limit files (Auron to Riku, Trinity in all its variants) have both the type 3 script and the type 0x14 entry, so their event 22 goes to their own script and event 23 would too; the 7 summon limit files (Peter Pan, Stitch, Chicken Little, the four Genie forms) have neither, so the only receiver is the summon's script, for event 22 at the start and event 23 for the Execute 81 commands without a `limt` row. 98 such sub-commands exist on the disc (the partner limits' follow-ups too, for example 75 and 76 after Beast's 74) (the test pins 469, 525, 526, 527).
 
 Harness: `KH2_LIMIT=<command>` as before; `KH2_LIMIT_SUB=<command id>` sends that sub-command 120 ticks after the limit starts;
@@ -274,7 +274,7 @@ Simba 376 (330 ticks), Tron 415 (302), Riku 569 (303), Trinity-zz 620 (182) and 
 
 - **Simba / Tron** (words `0xc4b` / `0x316`, routine `R0c3e` / its twin): the script copies 16 bytes from the object `+0x20` of the context's
   object (`load [ctx]+4`, `+ 32`, `copy.ind 16`). That is the object's velocity vector [inferred from the enemy scripts' use of that offset]: host 1.58 (`0x172988`) stores the dash direction at
-  object `+0x20` and the Quick Run start `FUN_00178108` its velocity there (docs/camera.md). The limit host now serves it: `ObjectMem`
+  object `+0x20` and the Quick Run start `FUN_00178108` its velocity there (docs/systems/player-camera/contract.md). The limit host now serves it: `ObjectMem`
   in `limit_script.rs` answers reads at the player object (`0x2000000`) and the participant stand-ins (`partner(id)` = `0x7a100000 + id *
   0x100`, `0x100` bytes each); `+0x20..+0x2f` is Sora's velocity as a game-space vector (`motor.vel`, set each tick), writes are stored and
   read back. A participant's stand-in has Sora's velocity [inferred: the party follows Sora].
@@ -313,7 +313,7 @@ false for every file that has one), then `FUN_00168510(bar, 0x16, name, 0)` (the
 script's string; the data pointer is the entry's `+8`). With no party set it takes `FUN_001971c0` instead (the player model's BAR at object `+0x7b0`).
 It then makes an event object: `FUN_00195898(obj, 0xb, data)` (kind 0xb, the `evtp` row), `FUN_00195a78(obj, player)` (stores the player
 at event `+0x44`, which `FUN_00195ae0` hands to `FUN_002232c8` as `DAT_0036bd50`; the scan `--addr 0x36bd50` finds only the reset and that
-store, so nothing reads it) and `FUN_00195ae0(obj)`, the call every area event goes through (docs/events.md section 6). Before that it
+store, so nothing reads it) and `FUN_00195ae0(obj)`, the call every area event goes through (docs/systems/events-movies/event-player.md section 6). Before that it
 runs `FUN_00183eb0` (a stepped collision move of an object; not read further) and `FUN_0016a890` / `FUN_0016a948` (stores the player's
 turn word `+0x66c`). The only caller of `FUN_00195898` in the limit code is this function; a scan for `jal 0x1b3468` finds none (it is
 reached through the host table).
@@ -553,6 +553,6 @@ The ability (item 417, bit 129 of the partner's own block) lets the partner's li
 ## Summons
 
 Not implemented ("only if cheap": it is not). `sumn` rows and the Execute 72 path (`FUN_001cf210`) are in
-`docs/player-data.md`. Needs a summon gauge (gauge mode 3 of the drive code), the summon objects and their scripts,
+`docs/systems/combat-effects/player-data.md`. Needs a summon gauge (gauge mode 3 of the drive code), the summon objects and their scripts,
 none of which exist in the app.
 

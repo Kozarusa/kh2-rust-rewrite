@@ -107,7 +107,7 @@ calls the owner's virtual method +0x6c with both volumes.
   The port: motion via the state fallback in the battle state, blend 0 (FUN_00185d30 and FUN_001756c8
   clear `$f20` and pass it in `$f12` and `$f13` to FUN_0017e220: `reaction_rules::RECOIL_BLEND`),
   `State::Hurt` (back to idle when the motion ends, which is what the queued motion 0 gives; the air
-  recoil queues motion 4 instead, not modelled). The spark is started (see docs/limits-reactions.md).
+  recoil queues motion 4 instead, not modelled). The spark is started (see docs/systems/drive-limits-summons/contract.md).
 * The actor flags the party handler reads (WP-6E, `reaction_rules::ClashActor`, test
   `clash_actor_flags`): +0x160 is the controller's flag word (+0x140 + 0x20). FUN_00187fb0 ->
   FUN_0017f3d0 keeps only the bits 0x7183 of it at the start of the trigger pass, and FUN_00188030 sets
@@ -130,7 +130,7 @@ calls the owner's virtual method +0x6c with both volumes.
   into the table's data), and FUN_00186db0 starts that record on the action system at +0x300. Then
   volume flag 0x40 is set. Not ported: the action records (the format behind the offset and the
   action system at +0x300 were not decoded). The script part (slot 8 hook, event 0x13) is ported
-  since WP-6G (`Runtime::clash`, enemy_ai.rs; docs/enemy-ai.md).
+  since WP-6G (`Runtime::clash`, enemy_ai.rs; docs/systems/script-host/contract.md).
 * USA data: `RefactSelf` is 2 in 1803 rows, 0 in 521, 1 in 2; `RefactOther` is 1 in 1487, 0 in 583,
   2 in 256; `ReflectedMotion` is 0 except 10 (one row) and 140..143 (187 rows); `ReflectHitBack`
   is only 0 or -1; `ReflectRC` is always 0; `ReflectRange` is set in 70 rows, `ReflectAngle` in 7.
@@ -235,7 +235,7 @@ halved. Class 4: the launch is `KnockbackStrength1` upward and `KnockbackStrengt
 both are 0. The victim faces the attacker when hit from the front (victim facing . hit direction
 < 0) and plays motion 16, from behind motion 18; in both cases it is pushed along the hit
 direction. The push uses the same decaying mechanism as the wall recoil.
-Class 5 (WP-7M2, verified; the full rule with the constants' addresses is in docs/magic.md
+Class 5 (WP-7M2, verified; the full rule with the constants' addresses is in docs/systems/magic/magic-turn.md
 "Magnet"): FUN_001bf920 keeps the attack object at victim +0xaac, draws the hold distance at random
 between `KnockbackStrength1` and `KnockbackStrength2` (+0xab0), keeps the row's `Unknown` (s16 at
 +0x10) as a swirl (+0xab4), plays motion 0x14 when hit from the front, else 0x15 (+0xab8), faces the
@@ -333,7 +333,7 @@ Done:
   hit 128 with 75 (motion 10, hit from the front); row 124 (reaction 0) does nothing; row 129 blows
   with up 3 and horizontal 45; the Shadow rows 9 and 11 (reaction 3, KnockbackStrength1 0x7fff)
   push Sora by the `sstm` default 200.
-* The Dusk (WP-6C, `docs/enemies.md`) goes through the same code with no change: its set has the
+* The Dusk (WP-6C, `docs/systems/script-host/contract.md`) goes through the same code with no change: its set has the
   default reaction slots (10..13 flinch, 16..19 blow and landing). Seen in the 6C run: Sora's hit 127
   flinches a Dusk (reaction 3, push 125, motion 10); last hits blow it and it lands
   (`Dusk lands from a blow`); its kick (atkp 17, reaction 3) flinches Sora with a push of 350; Sora's

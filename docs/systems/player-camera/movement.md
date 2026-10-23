@@ -113,7 +113,7 @@ motions 0xc9..0xcc and turns 0x97 / 0x98: a special non-drive mode, not a roll),
   floats: the 17th column the sheet calls `DodgeRollStarTime` shows the next row's HighJumpHeight
   (310, 385, 585, 585). Dodge Roll is a Final Mix addition.
 
-### The Final Mix rules (WP-FIX-10b; `docs/final-mix.md` "Player controls")
+### The Final Mix rules (WP-FIX-10b; `docs/systems/foundations/final-mix.md` "Player controls")
 The user's rule (guard only when still, tap while moving = roll, hold while moving = Quick Run) is the
 Final Mix behaviour. Its numbers were read from the Final Mix executable; only the small rule constants
 are in code (`sora::square_ground`, `sora::TAP_TICKS`), no Final Mix data or assets.
@@ -123,7 +123,7 @@ are in code (`sora::square_ground`, `sora::TAP_TICKS`), no Final Mix data or ass
 * Dodge Roll is the **fifth growth kind** (growth slot 4 in FM; the USA table at 0x37bda0 has four).
   The app's `sora::Growth.dodge_roll` is read from `Progress::dodge_roll` (`abilities::Abilities::growth(4)`),
   `KH2_GROWTH=a,b,c,d,e` (fifth value) or F6; hidden in a drive form [inferred: a form's growth is its
-  own ability]. The baseline gives Sora Dodge Roll level 1 (the user's wish, docs/progress.md);
+  own ability]. The baseline gives Sora Dodge Roll level 1 (the user's wish, docs/systems/core-runtime/progress.md);
   `KH2_ABILITY_START=data` drops it with the Guard so the USA rules stay reachable.
 * **Where the levels come from (WP-G8).** High Jump, Quick Run, Aerial Dodge and Glide are the growth
   ability items 94..109 in Sora's ability list; the level `FUN_001c13b8` returns is the highest *equipped*
@@ -135,9 +135,9 @@ are in code (`sora::square_ground`, `sora::TAP_TICKS`), no Final Mix data or ass
   still wins outside a form; F6 still cycles the controller's levels directly until the next ability
   change. Jump height (`jump_height`: `fmab` row of the High Jump level), Quick Run, Aerial Dodge and
   Glide all read `sora::Growth`, so taking an ability off in the menu changes the movement at once (log
-  example docs/menus.md section 17: `sora quick run: Square held 10 ticks, Quick Run level 1` with Quick Run
+  example docs/systems/ui/menus-abilities.md section 17: `sora quick run: Square held 10 ticks, Quick Run level 1` with Quick Run
   LV1 equipped, `... but Quick Run is not learned (level 0)` with it learned and taken off). The new game
-  owns none of the four (docs/progress.md); the drive forms' level-ups give them (`FUN_001d3f18`).
+  owns none of the four (docs/systems/core-runtime/progress.md); the drive forms' level-ups give them (`FUN_001d3f18`).
 * Decision table (`sora::square_ground`, test `square_decision_table`), after the explicit keys:
 
   | stick | Dodge Roll | Quick Run | Square does |
@@ -198,7 +198,7 @@ every harness swing logged `wall recoil: atkp 131 (BG Hit, keyblade volume) -> m
   `attribute & 0x80`, the COCT ATTACK_COLLIDE bit, any orientation: floors and ceilings count), each is cut
   by `FUN_001623a0` only when the segment runs AGAINST its normal (`n . dir < 0`: one-sided) with the
   parameter in 0..=1, and `FUN_00141d90` keeps the hit nearest the start. The hit goes to `FUN_0018ca78`
-  (flags, spark, sound 500010 for a weapon-owned volume, the owner's recoil method +0x70; docs/hit-reaction.md).
+  (flags, spark, sound 500010 for a weapon-owned volume, the owner's recoil method +0x70; docs/systems/combat-effects/hit-reaction.md).
 * The other shapes of the group (W_EX010 group 1: offsets -40, 0, -34, -68 on bone 2, radius 40) are only
   swept against targets (`FUN_0018d768` in steps of the radius); a swing that already hit a target skips
   the wall cast.
@@ -236,7 +236,7 @@ every harness swing logged `wall recoil: atkp 131 (BG Hit, keyblade volume) -> m
   a wall without the flag, no movement, from behind, ending on the plane),
   `combat::tests::wall_cast_floor_check_probes_down_only_when_set`.
 * Not ported / gaps: the hit point the game stores (entry +0xb0, the cast's point) is what the app uses;
-  the spark variant by the polygon's type nibble and flag 0x100 (docs/hit-reaction.md) are unchanged. The
+  the spark variant by the polygon's type nibble and flag 0x100 (docs/systems/combat-effects/hit-reaction.md) are unchanged. The
   sign of the FloorCheck step is inferred from the COCT convention (the game's y is the app's -y). Whether
   `FUN_001657d8`'s object pass (the first half of FUN_00143aa0: other objects' collision) can stop a swing
   was not read; the app casts against the map only.
@@ -249,7 +249,7 @@ every harness swing logged `wall recoil: atkp 131 (BG Hit, keyblade volume) -> m
   hand_bone_poses_never_mirror_the_weapon`): no bone of P_EX100, W_EX010, P_EX020 or P_EX030 has a negative
   bind scale, every rest-pose matrix has a positive determinant, and bones 178 and 86 keep determinant
   1.000 through every frame of A000, A300, A330 and A343. The game's weapon attach (FUN_00184190 path,
-  docs/drive-forms.md) was not re-read: with no mirror in the data there is nothing to counter.
+  docs/systems/drive-limits-summons/drive-forms.md) was not re-read: with no mirror in the data there is nothing to counter.
 * The render path cannot invert a face either: `assets::material_for` is unlit, `cull_mode: None`,
   `double_sided: true`, so winding changes nothing visible.
 * Screenshots looked at (tt00, `KH2_DIST=2.5`, A300 at frame 7): from the side (`KH2_YAW=1.57`) the blade is
@@ -369,7 +369,7 @@ prints `pose: obj/P_EX100.apdx <tag> frame <f>[ (held at start)] blend <w> max b
 ## Gaps (searched without result)
 * A dodge roll and a tap/hold threshold in the USA executable: the Square chain above, the mover table
   at 0x1c88eb0, the `fmab` reader `FUN_001cc1a0` users (`FUN_00178108`, `FUN_00178290`,
-  `FUN_0017bad0`, `FUN_0016bd98`). They exist only in Final Mix (docs/final-mix.md); the app's rule is
+  `FUN_0017bad0`, `FUN_0016bd98`). They exist only in Final Mix (docs/systems/foundations/final-mix.md); the app's rule is
   ported from there.
 * The roll's length and travel (A180 is 27 frames at 30 fps with the idle range from tick 36 and root
   motion carrying Sora): not reproduced, the USA disc has no A180.
@@ -409,7 +409,7 @@ The rule, `FUN_0017da30(controller, motion id)` (callers `FUN_0017e000`, `FUN_00
   set; `FUN_0019a820` clears it when the actor is a party member, the bit is set and the flag is clear (called by
   the motion controller `FUN_0017e3b8` when the next queued motion starts). So the bit follows the flag at
   motion boundaries [inferred: the call order inside `FUN_0017e3b8` was read, not traced per frame].
-* the global flag is the one the music uses (docs/audio.md "The battle flag"): it rises 45 ticks after an enemy
+* the global flag is the one the music uses (docs/systems/audio/audio.md "The battle flag"): it rises 45 ticks after an enemy
   is within 12 m and falls 120 ticks after the last one left. That is the original's timeout: for those 120
   ticks the keyblade stays out with the battle run, then the flag falls and the armed field run starts.
 * a change between the battle variants (0, 1) and the field ones (2, 3) first plays motion 6 (A010) when it

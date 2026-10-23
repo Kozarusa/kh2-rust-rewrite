@@ -11,11 +11,11 @@ match wins), plus the pure helpers the arms use (`game_wrap_angle`, the prize ta
 the plugin and the systems (`load_programs`, `ai_attach`, `ai_update`, `ai_fade`), `AiBrain`, the `Mailbox` and the `AiTrace` log.
 Where this document says "`enemy_ai.rs`" for a host call or the object, read the file named here.
 
-(WP-6C added the Dusk, `obj/M_EX990.mdlx`, WP-6H `N_EX570_BTL`, WP-7D `M_EX930`, `N_EX500_BTL` and `N_EX600_BTL`; why, their stats and where they spawn are in `docs/enemies.md`.
+(WP-6C added the Dusk, `obj/M_EX990.mdlx`, WP-6H `N_EX570_BTL`, WP-7D `M_EX930`, `N_EX500_BTL` and `N_EX600_BTL`; why, their stats and where they spawn are in `docs/systems/script-host/contract.md`.
 The kinds are `enemy::KINDS`; `load_programs` reads every kind's script.)
 
 Work package 2E. The Heartless of `enemy.rs` used to run a small state machine written for the app. Shadow (`obj/M_EX020.mdlx`) and
-Soldier (`obj/M_EX010.mdlx`) now run the game's own scripts (the BDX entry of each object file, see `docs/bdx.md`) through
+Soldier (`obj/M_EX010.mdlx`) now run the game's own scripts (the BDX entry of each object file, see `docs/systems/script-host/contract.md`) through
 `kh2_bdx::Runtime`. The code is `crates/kh2-app/src/enemy_ai.rs`; `enemy.rs` keeps only the hit reactions (WP-I1 removed the placeholder state machine and `KH2_NO_BDX`; an enemy whose script did not load only stands and reacts to hits).
 
 Nothing from the disc is stored in the repository: the scripts, the motion sets and the `objentry` row are read at start-up.
@@ -45,7 +45,7 @@ The object's own 0x1000 bytes of memory are readable and writable by the script 
 a write anywhere else is stored and logged once.
 
 Coordinates. Scripts see the game's space: centimetres, Y down, Z mirrored against the app's (the app is the game rotated half a
-turn about X, as `docs/camera.md` and `fx.rs` say). `to_game` / `from_game` convert; a facing of yaw `a` in the app is
+turn about X, as `docs/systems/player-camera/contract.md` and `fx.rs` say). `to_game` / `from_game` convert; a facing of yaw `a` in the app is
 `(sin a, 0, -cos a)` to the script, and `yaw_of` turns a script direction into the app's yaw (unit tests in the module).
 
 Motions. The script's motion number is the slot of the object's motion set (`kh2 mset obj/M_EX010.mset` lists them: Soldier's
@@ -56,7 +56,7 @@ is below its end frame (`frame_return < frame_end`: Shadow's idle 47 and walk 2 
 
 ## Event 11: reaction commands (WP-2C2)
 
-`reaction_cmd::accept` writes `ReactionAccepted { cmd, pos, target }`; `ai_update` delivers it to the target's runtime as event 11 with (the player, the command id, a 16-byte target record {the enemy, the part index, 0, -1}) (`FUN_0016b420` -> `FUN_0016c620`). Soldier answers command 34 (`docs/limits-reactions.md`): the thread it starts (host 2.20, run by `Runtime::update_requests` each tick) makes calls on the **player**, which the host turns into `reaction_cmd::PlayerReactionCmd` messages: `set_flag` / `clear_flag` of bit 3 (`Unhittable`), `play_motion_with` (host 1.29: entry 252 and 253 of the *Soldier's* motion set, a BAR of per-player-model sub-motions named `%03d0` of Sora's objentry byte +7; `PairedMotion`, with the sub-motion's length so that `motion_done` of the player comes true when it would have ended), `set_velocity` (`Velocity`, 30 per tick), `queue_motion` (`QueueMotion`). The player's `+0x158` serial returned by `play_motion_with` is the counter of `FUN_0017ef98` (started at 0 here, inferred). **Nothing on the player side consumes the messages yet** (a hook for `sora.rs`); the log shows them with `KH2_BDXLOG=1`. `read_mem` answers the controller (the word at +4 is the player) and the target records.
+`reaction_cmd::accept` writes `ReactionAccepted { cmd, pos, target }`; `ai_update` delivers it to the target's runtime as event 11 with (the player, the command id, a 16-byte target record {the enemy, the part index, 0, -1}) (`FUN_0016b420` -> `FUN_0016c620`). Soldier answers command 34 (`docs/systems/drive-limits-summons/contract.md`): the thread it starts (host 2.20, run by `Runtime::update_requests` each tick) makes calls on the **player**, which the host turns into `reaction_cmd::PlayerReactionCmd` messages: `set_flag` / `clear_flag` of bit 3 (`Unhittable`), `play_motion_with` (host 1.29: entry 252 and 253 of the *Soldier's* motion set, a BAR of per-player-model sub-motions named `%03d0` of Sora's objentry byte +7; `PairedMotion`, with the sub-motion's length so that `motion_done` of the player comes true when it would have ended), `set_velocity` (`Velocity`, 30 per tick), `queue_motion` (`QueueMotion`). The player's `+0x158` serial returned by `play_motion_with` is the counter of `FUN_0017ef98` (started at 0 here, inferred). **Nothing on the player side consumes the messages yet** (a hook for `sora.rs`); the log shows them with `KH2_BDXLOG=1`. `read_mem` answers the controller (the word at +4 is the player) and the target records.
 
 ## Events, death, leaving
 
@@ -102,7 +102,7 @@ the removal of hidden objects, Flag309 as "is the player".
 - The object's own turn rate (+0x11c, set by the mover's initialisation from a parameter block) and the probe tolerance record are not decoded.
 - The motion controller (blend queue, motion state variants for airborne objects) is not ported; requests restart the `Animator`.
 - Spawn records (spawn kind, spawn parameters) come from the areas' event data, which the app does not read; defaults are used.
-- Drops: orbs and munny are prize objects since WP-7B (docs/prizes.md); dropped items have no object yet.
+- Drops: orbs and munny are prize objects since WP-7B (docs/systems/combat-effects/prizes.md); dropped items have no object yet.
 - Hit stop is not implemented, so `ModeFrozen` is always false.
 - Target records are the player's origin, not the lock-on part.
 - Event 13 (event begin) is not delivered. Event 11 (a reaction command accepted by the player) **is** delivered since WP-2C2; event 0x13 (clash) and messages between objects since WP-6G, see below.
@@ -182,14 +182,14 @@ items [..] (n prize objects, m item objects)`; tests `a_drop_follows_fun_001a3cb
 WP-7B: a prize takes its three generator steps only when the pool (0x100 entries) has a free entry, and a
 dropping item takes one more step (FUN_001bd490 -> FUN_001bd0d0); `compute_drop` now returns each prize's kind
 and launch values, and `ai_update` hands them to `prize.rs` (message `PrizeDrop`), which runs the prize objects:
-flight, rest, pickup and the pickup table (docs/prizes.md). The three calls at the end serve the mini-game prize
-pools (PRIZE_MU, PRIZE_HE, PRIZE_COLOSSEUM), absent in Twilight Town (docs/prizes.md). Gaps: the flags and the
+flight, rest, pickup and the pickup table (docs/systems/combat-effects/prizes.md). The three calls at the end serve the mini-game prize
+pools (PRIZE_MU, PRIZE_HE, PRIZE_COLOSSEUM), absent in Twilight Town (docs/systems/combat-effects/prizes.md). Gaps: the flags and the
 generator's real state.
 
 WP-7Bb: a dropping item takes four steps, not one: FUN_001bd0d0 takes one for the object's yaw and then enters state
 12 (`FUN_0016b698(obj, 0xc)` -> FUN_0016b648 -> the state object 0x1c88f70 with vtable 0x35f2b8, set by FUN_00179880),
 whose enter FUN_001bd580 takes three for the launch, all before the next item's roll. `compute_drop` returns them
-(`item_launches`) and `ai_update` sends `prize::ItemDrop`; the item objects are in docs/prizes.md.
+(`item_launches`) and `ai_update` sends `prize::ItemDrop`; the item objects are in docs/systems/combat-effects/prizes.md.
 
 ## Acceptance run
 

@@ -8,7 +8,7 @@ uses is read from the executable at start (`prize::Consts::from_exe`); the code'
 
 ## From the drop to the pool (verified)
 
-- Host 1.92 -> `FUN_0016b738` -> `FUN_001a3cb0(point, row)` (docs/enemy-ai.md "Drops"). For each of the nine
+- Host 1.92 -> `FUN_0016b738` -> `FUN_001a3cb0(point, row)` (docs/systems/script-host/enemy-ai.md "Drops"). For each of the nine
   kinds `FUN_001a3ef0` calls `FUN_001a3b28(manager, 0x37b4b0 + 16 * kind, point)` once per prize.
 - The manager `DAT_0035e7a0` is an object of `PRIZE` (object 0x5c3 in `00objentry`, made by `FUN_001a3f98`:
   `FUN_001a34f8(.., 0x100, 0x60)`, vtable 0x35e7b0 over the pool class 0x35fd38). Its pool (`+0x9f4`,

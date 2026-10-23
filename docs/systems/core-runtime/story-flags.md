@@ -25,9 +25,9 @@
   jump record or host 1.30 with explicit bytes. tt04's `btl` script has programs 0x4c, 0x4d, 0x4e, 0x1, 0x50, 0xb6,
   0x4, 0xb7, 0x5, 0xb8, 0x4f, 0x7, 0x1b, 0xb5, 0x1c. Example chain from the triggers of tt04's `evt` script:
   program 0x4c on event 0x4c (the next event of a chain) plays event "110" and jumps (type 2) to program 0x4d;
-  program 0x4d on 0x26 plays "111" then goes to 0x4e; 0xb6/0xb7/0xb8 (the Struggle bouts, docs/enemies.md) on 0x8b
+  program 0x4d on 0x26 plays "111" then goes to 0x4e; 0xb6/0xb7/0xb8 (the Struggle bouts, docs/systems/script-host/contract.md) on 0x8b
   repeat themselves, on 0x8d go (type 1) to tt04 entrance 0x37 with world record value 1. (The event tag is the
   u32 of sub 0 read as four characters: halfwords 0x3131, 0x30 are "110".)
 - **Scripts read/write** them through hosts 0.14, 0.15, 0.70 (flag 0x102b), and the party, menu and drop code
-  reads them (docs/party.md, `memt`).
+  reads them (docs/systems/party/contract.md, `memt`).
 

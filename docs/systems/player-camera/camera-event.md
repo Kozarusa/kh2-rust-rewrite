@@ -8,7 +8,7 @@
 - **Per event frame** (`FUN_0015ce00`, called from `FUN_0022b0f8` once per camera track entry with the track's position, look-at, fov and roll): the previous wanted values are saved (`FUN_0015cb08`); optionally (the sixth argument) the position is pulled in with `FUN_0013f8f8` (blockers per the seventh argument); optionally (the eighth argument) the three springs run (`FUN_0015cb70`, `FUN_0015cd20`): look-at with (t 0.1, k 2.5, c 0.5, rest 1), position (t 0.07, same k, c, rest), and (fov, roll) (t 0.07, k 2.5, c 0.5, rest 0.001); the result goes to the projection. Constants are `0x379470..0x379490`, read at run time (`EventParams`).
 - **Hand-over**: `FUN_0015c8f8(1)` (the event camera starts) pauses the field camera task (`FUN_00106818(0)`), and calls `FUN_00140e90`, which places the field camera behind the player (`FUN_0013fc90`, `FUN_0013f470`), runs one forced tick (`FUN_00140a80(.., 1)`: no collision, warp-style) and returns its position/look-at pair; then the event's drawn values are read from the projection (`FUN_001071c8`, `FUN_001072d8`, `FUN_00106d90`, `FUN_00107318`). At the end `FUN_0015c8c8` clears the override, resumes the task and reseeds the event springs (`FUN_0015ca08`). Which values the field camera continues from after an event is **inferred**: the app's `Rig::handover` resets the rig behind the subject and installs the event's final view so the spring runs on from there. The one-forced-tick details beyond this are **not ported**.
 - **App**: `EventCamera` (`start`, `frame`, `view`) is the pure rule; the `CamEvent` resource holds an active event camera (the field camera idles while it is set, like `FUN_00106818(1)`) and a pending hand-over view. A mission's start event drives it since WP-I1 (below); no map script does yet.
-- **The intro camera (WP-I1, `intro.rs`, `CamEvent::track`).** A mission's start event (docs/struggle.md "The
+- **The intro camera (WP-I1, `intro.rs`, `CamEvent::track`).** A mission's start event (docs/systems/world-minigames/struggle.md "The
   battle intro") carries a camera track, and the app now plays it:
   - *Records* (event opcode 0x13, setup `FUN_0022b4f8` stores the command by its index +4 in `DAT_0036bbb0`):
     eight channels, each a pair (u16 first key, i16 key count) at +6..+0x24, keys of 16 bytes from +0x28: word 0 the
@@ -123,7 +123,7 @@
       separate copies a few pixels apart (the app's picture is 1280 x 720 against the console's 512 x 416, so
       the same shift in screen fractions leaves sharper steps; the console's bilinear sample of a half-size
       buffer smooths them) [inferred]; and the views ghosted differ because the fighters stand elsewhere in shots
-      1 and 2 (docs/struggle.md gap 1). Not modelled: the vertical offset between the 448-line display buffer
+      1 and 2 (docs/systems/world-minigames/struggle.md gap 1). Not modelled: the vertical offset between the 448-line display buffer
       and the 416-line draw buffer (taken as the same screen), GS alpha factors above 1.0 (clamped by the blend),
       and the depth test for display-buffer lenses with byte +0x17 clear (none is known).
     - **Open after WP-FX13** (review follow-up, WP-PL1): the "smear" the user reported was never pinned to a scope. Whether it is
@@ -142,7 +142,7 @@
 
 ## Talk camera (mode 4, WP-E8) -- verified unless marked
 
-Started by the talk task (`FUN_001a5728`, docs/events.md section 3 "Talk") and ended by it; nothing else calls the start or the end (`mips_scan --jal 0x159688 / 0x159768`: one call each, at 0x1a5810 and 0x1a5928).
+Started by the talk task (`FUN_001a5728`, docs/systems/events-movies/npc-savepoints.md section 3 "Talk") and ended by it; nothing else calls the start or the end (`mips_scan --jal 0x159688 / 0x159768`: one call each, at 0x1a5810 and 0x1a5928).
 
 - **Start** `FUN_00159688(record, a1)`: `FUN_00140f28(DAT_003793d8)` ends a running look-around (player fade-in over that many ticks, mode 0), then the mode is 4; the 5-word target record (the player's reaction record, controller +0xb44 +0xc, copied by `FUN_001a53f8` to `0x1c95574`: target object, part index, ...) is copied to `0x358b18..0x358b28`, `a1` to `DAT_00358b11`, and `DAT_00358b10` = 1 (place the view on the next tick). It also calls `FUN_00161b20(DAT_003793dc)` (below). The caller passes `a1` = 1 unless the target is a class-5 object (+0x588 bit 3) for which `FUN_00189e90` answers 0, i.e. its bit array +0xb04 has bit 0x10 or 0x40 (read at 0x1a57e0..0x1a5804).
 - **Each tick** `FUN_00159648`: when `DAT_00358b10` is set it is cleared and `FUN_001592d8` places the view; then, every tick, `FUN_0013fbc0` collides the wanted position (look-at point to wanted position, blockers on). `FUN_001407b8` smooths as usual; mode 4 is not in its collision cases (0, 3, 6, 8 / 1, 7, 9, 10 / 2), and the mode does not reset the fov (`FUN_0013f508` is not called), so the talk fov stays the wanted one.
@@ -198,4 +198,4 @@ A reviewer once saw a close-up of Sora's hair, with no enemy text, after the las
 The only way to put the camera at Sora's eye (`eye_height` 150 above his feet, the look-around, mode 1) is Select: `V` or `KH2_KEYS` `t:V` (`Rig::tick`, test `look_around_starts_only_from_select`, which also toggles a lock-on every 13th tick and asserts the mode never becomes `Look`). A lock-on ending because its target died only returns the rig to `Follow`. A real `V` press reaching the window (another process typing into it) would give exactly the reported frame. Conclusion: no camera bug found, no code change; not proven to be harness-only either, since the reviewer's frame could not be reproduced.
 
 ## World map camera, second observation (WP-DYN2)
-In three user savestates (the map during its load and two Gummi flights) the camera object keeps the same position, look-at, mode 0 and no follow target: the map and the flight do not write it (docs/dynamic-tracing.md section 5). The map's view source is still unknown.
+In three user savestates (the map during its load and two Gummi flights) the camera object keeps the same position, look-at, mode 0 and no follow target: the map and the flight do not write it (docs/systems/foundations/dynamic-tracing.md section 5). The map's view source is still unknown.

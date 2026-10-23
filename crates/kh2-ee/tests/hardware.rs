@@ -238,7 +238,7 @@ fn vif0_reset_clears_mark_and_err_and_pushes_two_quadwords() {
     assert_eq!(w.iter().filter(|x| x.0 == 0x1000_4000 && x.1 == 16).count(), 2);
 }
 
-/// FUN_002fa368 programs D_CTRL, D_PCR, D_SQWC, D_RBOR and D_RBSR from a block; a channel index
+/// FUN_002fa368 programs D_CTRL, D_PCR, D_SQWC, D_RBOR (0x1000E050) and D_RBSR (0x1000E040) from a block; a channel index
 /// above 9 in the first byte returns -1 without touching the hardware.
 #[test]
 fn dmac_setup_validates_then_programs_the_controller() {
@@ -254,7 +254,7 @@ fn dmac_setup_validates_then_programs_the_controller() {
     };
     assert_eq!(v0, 0);
     let w = writes(&ee);
-    assert_eq!(w.iter().map(|x| x.0).collect::<Vec<_>>(), vec![0x1000_E000, 0x1000_E020, 0x1000_E030, 0x1000_E040, 0x1000_E050]);
+    assert_eq!(w.iter().map(|x| x.0).collect::<Vec<_>>(), vec![0x1000_E000, 0x1000_E020, 0x1000_E030, 0x1000_E050, 0x1000_E040]);
     assert_eq!((w[2].2, w[3].2, w[4].2), (0x1111, 0x2222, 0x3333));
 }
 

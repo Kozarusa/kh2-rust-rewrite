@@ -15,12 +15,11 @@ pub use kh2_sound::*;
 pub use kh2_enemy::*;
 pub use kh2_player::*;
 pub use kh2_party::*;
+pub use kh2_event::*;
 
 mod plugins;
-mod area_jump;
 mod asset_viewer;
 mod hud;
-mod intro;
 mod menu;
 mod menu_abilities;
 mod menu_ending;
@@ -32,11 +31,8 @@ mod menu_status;
 mod menu_gameover;
 mod menu_struggle;
 mod menu_text;
-mod npc;
 mod party_switch;
-mod savepoint;
 mod sound_test;
-mod struggle;
 mod worldmap;
 mod worldmap_ui;
 

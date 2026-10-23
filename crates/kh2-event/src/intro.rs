@@ -12,7 +12,7 @@ pub use crate::shared::event::{follow, Shot, Track};
 
 /// The event player (WP-E6): a submodule so `main.rs` stays untouched; `IntroPlugin` adds its plugin.
 #[path = "event_player.rs"]
-pub(crate) mod event_player;
+pub mod event_player;
 
 use crate::assets::Disc;
 use crate::camera::CamEvent;

@@ -1070,7 +1070,7 @@ pub struct EventActor;
 /// here are shown again after [inferred: which of the app's HUD modules are the tags 3 to 5 was not traced, as
 /// in `hud_mission::field_hud_hide`]. Runs at the end of the HUD chain (`hud.rs`), so it sees what the HUD
 /// modules showed this frame.
-pub(crate) fn field_hud_hide(mut player: ResMut<EventPlayer>, mut scene: ResMut<HudScene>) {
+pub fn field_hud_hide(mut player: ResMut<EventPlayer>, mut scene: ResMut<HudScene>) {
     let player = &mut *player;
     if player.hides_hud() {
         for (i, n) in scene.nodes.iter_mut().enumerate() {

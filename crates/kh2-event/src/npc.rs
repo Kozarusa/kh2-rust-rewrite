@@ -76,7 +76,7 @@ fn npclog() -> bool {
 /// The townspeople's models and scripts by model name (loaded once each), the `objentry` rows and
 /// the executable's host table.
 #[derive(Resource, Default)]
-pub(crate) struct NpcAssets {
+pub struct NpcAssets {
     rigs: HashMap<String, Option<Arc<Rig>>>,
     scripts: HashMap<String, Option<Arc<Program>>>,
     objs: Vec<t::Objentry>,
@@ -401,7 +401,7 @@ fn npc_spawn(
 
 /// One tick of every townsperson's script: run it, carry out its motion and movement requests.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn npc_update(
+pub fn npc_update(
     mut commands: Commands,
     world: Option<Res<World>>,
     trace: Option<ResMut<AiTrace>>,
@@ -752,7 +752,7 @@ fn reaction_log() -> bool {
 /// enemies): the best part offer of every townsperson; an enemy offer of a higher or equal
 /// priority keeps the slot [approx: FUN_0019c520 also compares the distance].
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn talk_offer(
+pub fn talk_offer(
     mut talk: ResMut<Talk>,
     rules: Option<Res<crate::reaction_cmd::ReactionRules>>,
     slot: Option<Res<crate::reaction_cmd::ReactionOffer>>,
@@ -848,7 +848,7 @@ fn talk_hide_offer(talk: Res<Talk>, mut slot: Option<ResMut<crate::reaction_cmd:
 /// The talk task (FUN_001a5728) step by step. The accept itself (FUN_0019c670 -> FUN_001cf030 ->
 /// FUN_00177b18 case 0x1f) is `reaction_cmd::accept`, which leaves the offer in `Talk::accepted`.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn talk_step(
+pub fn talk_step(
     mut talk: ResMut<Talk>,
     rules: Option<Res<crate::reaction_cmd::ReactionRules>>,
     mut win: ResMut<crate::shared::hud::ScriptWindow>,
@@ -1859,12 +1859,12 @@ impl PathRun {
 
 /// The townsperson's script host: the group 5 library and the group 1 path hosts, the rest the
 /// enemy host's.
-pub(crate) struct NpcHost<'a, 'b> {
-    pub(crate) inner: BevyHost<'a>,
-    pub(crate) fields: &'b mut NpcFields,
+pub struct NpcHost<'a, 'b> {
+    pub inner: BevyHost<'a>,
+    pub fields: &'b mut NpcFields,
     /// The townspeople by script handle as the class pass left them this frame.
-    pub(crate) peers: &'b HashMap<u32, Peer>,
-    pub(crate) log: bool,
+    pub peers: &'b HashMap<u32, Peer>,
+    pub log: bool,
 }
 
 fn words(c: &Call) -> Option<(u16, u16, Vec<u32>)> {

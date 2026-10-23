@@ -3,9 +3,10 @@
 //! spawn-group runtime that area transitions need: which entities of a group are created for an
 //! entrance (FUN_001981a0), exit groups (FUN_00198e10) and the activator volume tests
 //! (FUN_001d8600 builds the volume, FUN_001d89a0 box, FUN_001d8a70 cylinder, FUN_00334388 shape 2).
-//! docs/systems/core-runtime/areas.md sections 1 and 2.
+//! docs/systems/core-runtime/areas.md sections 1 and 2. The command interpreter itself is `crate::script`.
 
-use crate::{parse_trigger, Area, Command, Entity, Group, Trigger, OP_SPAWN};
+use crate::script::{self, Lottery, ScriptHost, ScriptVars};
+use crate::{parse_trigger, Area, Entity, Group, Trigger};
 
 /// The three BAR tags of the area scripts, in the order FUN_00181148 runs them (strings at
 /// 0x37a850, 0x37a858, 0x37a860).
@@ -54,8 +55,14 @@ pub struct ScriptRun {
     pub world_records: Vec<u32>,
     /// Opcode 0x15 (FUN_001b9338): the battle manager kind and its other arguments.
     pub battle_manager: Option<(u32, Vec<u32>)>,
-    /// Opcodes this port reads but does not act on (random group picks 2, 3, 0x1f; 0xa; 0x16): the
-    /// app logs them.
+    /// Opcode 0xa arguments: area-file entry indices handed to FUN_001817f0 (a group record of the other kind).
+    pub entries: Vec<u32>,
+    /// Opcode 0x16: the format words of each file request (`FUN_00311c08` formats them with the language code).
+    pub file_loads: Vec<Vec<u32>>,
+    /// Every script variable after the run, with the end-of-run defaults of FUN_00181148 applied
+    /// (`ScriptVars::finish`); the fields above are the older, narrower view of the same state.
+    pub vars: ScriptVars,
+    /// Opcodes this port reads but does not act on. Empty since WP-L1-P5: every opcode of FUN_00180b48 is ported.
     pub unported: Vec<u16>,
 }
 
@@ -74,8 +81,83 @@ impl Default for ScriptRun {
             party_resets: Vec::new(),
             world_records: Vec::new(),
             battle_manager: None,
+            entries: Vec::new(),
+            file_loads: Vec::new(),
+            vars: ScriptVars::default(),
             unported: Vec::new(),
         }
+    }
+}
+
+/// What the scripts read from the rest of the game: the random word, the area lottery and the `(world, area)`
+/// bytes it matches. `run_area` uses the default (a zero random word, no lottery table).
+#[derive(Debug, Clone)]
+pub struct ScriptContext {
+    /// `DAT_003716a0`.
+    pub lcg: u32,
+    /// The five lottery bytes at `0x1d6a9c0`.
+    pub lottery: Lottery,
+    /// The five `(world, area)` pairs at `0x37c5f8`, read from the executable.
+    pub lottery_table: [[u8; 2]; 5],
+    /// The first two bytes of `0x33e830` (current world and area).
+    pub area: [u8; 2],
+}
+
+impl Default for ScriptContext {
+    /// A random word whose next roll is 99: the chance opcodes (3) take their "not picked" branch for any chance below 100, as the earlier port did.
+    fn default() -> Self {
+        ScriptContext { lcg: 0xffff_ffff, lottery: Lottery::default(), lottery_table: [[0xff; 2]; 5], area: [0; 2] }
+    }
+}
+
+/// The host `run_area` runs the commands against: it records what they ask for.
+struct Collector<'a> {
+    run: ScriptRun,
+    script: &'static str,
+    program: u16,
+    ctx: &'a mut ScriptContext,
+}
+
+fn tag(w: u32) -> String {
+    w.to_le_bytes().iter().take_while(|&&b| b != 0).map(|&b| b as char).collect()
+}
+
+impl ScriptHost for Collector<'_> {
+    fn load_group(&mut self, t: u32, alt: bool) {
+        self.run.groups.push(GroupLoad { script: self.script, program: self.program, tag: tag(t), alt });
+    }
+    fn entry_by_index(&mut self, index: u32) {
+        self.run.entries.push(index);
+    }
+    fn define_trigger(&mut self, arguments: &[u32]) {
+        if let Some(t) = parse_trigger(arguments) {
+            self.run.triggers.push(t);
+        }
+    }
+    fn world_record(&mut self, argument: u32) {
+        self.run.world_records.push(argument);
+    }
+    fn music(&mut self, word: u32) {
+        self.run.music = Some([word as u16, (word >> 16) as u16]);
+    }
+    fn battle_manager(&mut self, kind: u32, rest: &[u32]) {
+        self.run.battle_manager = Some((kind, rest.to_vec()));
+    }
+    fn load_file(&mut self, format: &[u32]) {
+        self.run.file_loads.push(format.to_vec());
+    }
+    fn flag_is_set(&mut self, _flag: u32) -> bool {
+        // The story lives in the app; it applies `story_flags` and skips the flags that are already set.
+        false
+    }
+    fn set_flag(&mut self, flag: u32) {
+        self.run.story_flags.push(flag);
+    }
+    fn party_reset(&mut self, kind: u32) {
+        self.run.party_resets.push(kind);
+    }
+    fn lottery(&mut self, vars: &mut ScriptVars) -> bool {
+        self.ctx.lottery.roll(&self.ctx.lottery_table, self.ctx.area, &mut vars.lcg)
     }
 }
 
@@ -83,14 +165,32 @@ impl Default for ScriptRun {
 /// the area record, 0x33e833) for `entrance` (byte 2, read by opcode 0x1c), as FUN_00181148 does.
 /// A script without a program of that id does nothing (FUN_00180a68 stops at id 0xffff).
 pub fn run_area(area: &Area, programs: [u8; 3], entrance: u8) -> ScriptRun {
-    let mut st = ScriptRun::default();
-    let (mut show, mut hide) = (0u64, 0u64);
+    run_area_with(area, programs, entrance, &mut ScriptContext::default())
+}
+
+/// [`run_area`] with the random word and the lottery of the running game (`ctx` is updated).
+/// orig 0x181148
+pub fn run_area_with(area: &Area, programs: [u8; 3], entrance: u8, ctx: &mut ScriptContext) -> ScriptRun {
+    let mut vars = ScriptVars { lcg: ctx.lcg, ..ScriptVars::default() };
+    let mut c = Collector { run: ScriptRun::default(), script: "map", program: 0, ctx };
     for (k, script) in SCRIPTS.iter().enumerate() {
         // FUN_00180a68 compares the program's signed halfword id with the record byte.
         let Some(p) = area.scripts.get(*script).and_then(|ps| ps.iter().find(|p| p.id == programs[k] as u16)) else { continue };
-        run_commands(&p.commands, script, p.id, entrance, &mut st, &mut show, &mut hide);
+        c.script = script;
+        c.program = p.id;
+        let words = script::words_of(&p.commands);
+        script::run_program(&mut c, &mut vars, &words, words.len(), entrance);
     }
-    st.map_visibility = (st.map_visibility | show) & !hide;
+    let raw_keep = vars.cache_a;
+    vars.finish(programs[0]);
+    let mut st = c.run;
+    c.ctx.lcg = vars.lcg;
+    st.map_visibility = vars.map_visibility;
+    st.word_35cd18 = vars.word_35cd18;
+    st.camera_type = vars.camera_type;
+    st.capacity = vars.capacity;
+    st.keep = raw_keep as i32;
+    st.vars = vars;
     st
 }
 
@@ -98,71 +198,6 @@ pub fn run_area(area: &Area, programs: [u8; 3], entrance: u8) -> ScriptRun {
 /// case 6), or 0 when the map program byte is above 0x32.
 pub fn keep_for_program(run: &ScriptRun, map_program: u8) -> i32 {
     if map_program > 0x32 { 0 } else { run.keep }
-}
-
-/// FUN_00180ad8: runs commands in order until one answers "stop" (returns false then).
-fn run_commands(cmds: &[Command], script: &'static str, program: u16, entrance: u8, st: &mut ScriptRun, show: &mut u64, hide: &mut u64) -> bool {
-    for c in cmds {
-        if !run_command(c, script, program, entrance, st, show, hide) {
-            return false;
-        }
-    }
-    true
-}
-
-fn tag(w: u32) -> String {
-    w.to_le_bytes().iter().take_while(|&&b| b != 0).map(|&b| b as char).collect()
-}
-
-/// One command (FUN_00180b48). Returns false where the game returns 0 (the program stops).
-fn run_command(c: &Command, script: &'static str, program: u16, entrance: u8, st: &mut ScriptRun, show: &mut u64, hide: &mut u64) -> bool {
-    let a = &c.args;
-    let arg = |k: usize| a.get(k).copied().unwrap_or(0);
-    match c.opcode {
-        OP_SPAWN => {
-            for w in a {
-                st.groups.push(GroupLoad { script, program, tag: tag(*w), alt: false });
-            }
-        }
-        1 => st.map_visibility = arg(0) as u64 | (arg(1) as u64) << 32,
-        // 2 (random pick), 3 (chance, may stop), 0x1f (lottery, may stop): random group loads. Not
-        // used by any Twilight Town area; this port takes the "not picked" branch (3 and 0x1f
-        // then continue) and records the opcode.
-        2 | 3 | 0x1f | 0xa | 0x16 => st.unported.push(c.opcode),
-        0xb => st.word_35cd18 = arg(0) as u64 | (arg(1) as u64) << 32,
-        4 => st.capacity = arg(0) as f32,
-        6 => st.keep = arg(0) as i32,
-        9 => {
-            st.groups.push(GroupLoad { script, program, tag: tag(arg(0)), alt: true });
-            return true;
-        }
-        0xc => {
-            if let Some(t) = parse_trigger(a) {
-                st.triggers.push(t);
-            }
-        }
-        0xf => st.world_records.push(arg(0)),
-        0x10 => st.music = Some([arg(0) as u16, (arg(0) >> 16) as u16]),
-        0x13 => st.camera_type = arg(0),
-        0x15 => st.battle_manager = Some((arg(0), a.get(1..).unwrap_or_default().to_vec())),
-        // [inferred] every argument (the decompiled loop's count read is ambiguous; docs/systems/core-runtime/contract.md).
-        0x19 => st.story_flags.extend_from_slice(a),
-        0x1a => a.iter().for_each(|b| *show |= 1u64.checked_shl(*b).unwrap_or(0)),
-        0x1b => a.iter().for_each(|b| *hide |= 1u64.checked_shl(*b).unwrap_or(0)),
-        0x1c => {
-            // The rest of the arguments are commands run only for this entrance; their "stop" is
-            // not passed on (case 0x1c returns 1).
-            if arg(0) == entrance as u32 {
-                let bytes: Vec<u8> = a.iter().skip(1).flat_map(|w| w.to_le_bytes()).collect();
-                if let Some(nested) = crate::parse_commands(&bytes) {
-                    run_commands(&nested, script, program, entrance, st, show, hide);
-                }
-            }
-        }
-        0x1d => st.party_resets.extend_from_slice(a),
-        _ => {}
-    }
-    true
 }
 
 /// FUN_001981a0: whether an entity of a spawn group is created for `entrance`. Spawn kind 1 means
@@ -299,7 +334,7 @@ pub struct Jump {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Activator, Program};
+    use crate::{Activator, Command, Program};
 
     fn act(shape: u16, position: [f32; 3], scale: [f32; 3], ry: f32) -> Activator {
         Activator { shape, option: 0, position, scale, rotation: [0.0, ry, 0.0], raw: [0; 0x40] }

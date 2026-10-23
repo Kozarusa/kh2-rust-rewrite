@@ -464,3 +464,102 @@ fn localset_gives_the_story_programs_their_areas() {
     assert_eq!(kh2_ard::localset::area_for(&tt, 0x01), None);
     eprintln!("localset tt: 144 pairs, key 0xb5 -> tt04, key 0x4d -> tt04");
 }
+
+/// WP-L1-P5: the area survey. Every program of every `ard/*.ard` on the disc (all areas, all three scripts) runs through
+/// `kh2_ard::script::run_program` with every entrance a program can name. No command carries an opcode outside the 32-entry
+/// table of FUN_00180b48, every trigger and every nested block decodes, and the summary line counts what the scripts do.
+#[test]
+fn area_survey_runs_every_script_of_every_area() {
+    use kh2_ard::script::{run_program, ScriptHost, ScriptVars};
+
+    #[derive(Default)]
+    struct Count {
+        groups: u32,
+        triggers: u32,
+        files: BTreeMap<String, u32>,
+        other: u32,
+    }
+    impl ScriptHost for Count {
+        fn load_group(&mut self, _: u32, _: bool) {
+            self.groups += 1;
+        }
+        fn entry_by_index(&mut self, _: u32) {
+            self.other += 1;
+        }
+        fn define_trigger(&mut self, a: &[u32]) {
+            assert!(kh2_ard::parse_trigger(a).is_some(), "trigger {a:x?}");
+            self.triggers += 1;
+        }
+        fn world_record(&mut self, _: u32) {
+            self.other += 1;
+        }
+        fn music(&mut self, _: u32) {
+            self.other += 1;
+        }
+        fn battle_manager(&mut self, _: u32, _: &[u32]) {
+            self.other += 1;
+        }
+        fn load_file(&mut self, f: &[u32]) {
+            let bytes: Vec<u8> = f.iter().flat_map(|w| w.to_le_bytes()).take_while(|&b| b != 0).collect();
+            *self.files.entry(String::from_utf8_lossy(&bytes).into_owned()).or_default() += 1;
+        }
+        fn flag_is_set(&mut self, _: u32) -> bool {
+            false
+        }
+        fn set_flag(&mut self, _: u32) {
+            self.other += 1;
+        }
+        fn party_reset(&mut self, _: u32) {
+            self.other += 1;
+        }
+        fn lottery(&mut self, _: &mut ScriptVars) -> bool {
+            false
+        }
+    }
+
+    let Some(mut a) = open() else { return };
+    let names: Vec<String> = a.entries().iter().filter_map(|l| l.name.clone()).filter(|n| n.starts_with("ard/") && n.ends_with(".ard")).collect();
+    let (mut areas, mut programs, mut commands, mut runs) = (0, 0, 0, 0);
+    let mut ops: BTreeMap<u16, u32> = BTreeMap::new();
+    let mut host = Count::default();
+    let mut skipped: Vec<String> = Vec::new();
+    let mut multi: Vec<String> = Vec::new();
+    for n in &names {
+        let file = a.read(n).expect("area file");
+        let Some((ard, _)) = kh2_ard::Area::parse(&file) else {
+            skipped.push(n.clone());
+            continue;
+        };
+        areas += 1;
+        for (tag, progs) in &ard.scripts {
+            for p in progs {
+                programs += 1;
+                for c in &p.commands {
+                    assert!(c.opcode < kh2_ard::OPCODES, "{n} {tag} {:#x}: unknown opcode {:#x}", p.id, c.opcode);
+                    *ops.entry(c.opcode).or_default() += 1;
+                    if matches!(c.opcode, 0x19 | 0x1a | 0x1b) && c.args.len() > 1 {
+                        multi.push(format!("{n} {tag} {:#x}: op {:#x} {:x?}", p.id, c.opcode, c.args));
+                    }
+                    commands += 1;
+                }
+                let words = kh2_ard::script::words_of(&p.commands);
+                for entrance in [0u8, 1, 2, 3, 0x32] {
+                    let mut v = ScriptVars::default();
+                    run_program(&mut host, &mut v, &words, words.len(), entrance);
+                    runs += 1;
+                }
+            }
+        }
+    }
+    eprintln!("{} commands of opcodes 0x19, 0x1a, 0x1b carry more than one argument (the loop quirk reads only the first unless a high half says otherwise): {:?}", multi.len(), multi.iter().take(8).collect::<Vec<_>>());
+    eprintln!("load_file formats: {:?}", host.files);
+    eprintln!(
+        "AREA SURVEY: {areas} areas, {programs} programs, {commands} commands, {runs} runs, {} distinct opcodes (all < 0x20), {} group loads, {} triggers, {} other calls",
+        ops.len(),
+        host.groups,
+        host.triggers,
+        host.other
+    );
+    eprintln!("{} ard files, {} not BAR area files: {skipped:?}", names.len(), skipped.len());
+    assert_eq!(areas + skipped.len(), names.len());
+}

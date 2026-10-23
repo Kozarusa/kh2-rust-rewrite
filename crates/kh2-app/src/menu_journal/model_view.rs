@@ -1,11 +1,11 @@
 //! The 3D model of a character's own page (0xf, 0x12, 0x15) and of the model page behind it (0x10, 0x13, 0x16)
-//! (docs/menus.md 20.12; WP-JR2).
+//! (docs/systems/ui/menus-journal-pages.md 20.12; WP-JR2).
 //!
 //! The original (`SLUS_210.05`): `FUN_002abf60(p)` builds the model of the shown record (p = 0 the small one on the character page,
 //! p = 1 the large one on the model page). It stands in a preview object of the class `FUN_0023a018` made for the scene (p = 0 uses the
 //! object `DAT_0036d1f8` that the camp's preview uses, p = 1 an object of its own, `DAT_0036d494`) through the vtable's +0x18:
 //! `FUN_0023a520(slot 0, object id | 0x30000000, motion = record +0xe, variant 2, x, y)`, so the same slot camera as the camp's
-//! preview (eye (0, -50, -800), look-at (0, 0, 55), the projection centred x, y from the screen's middle; docs/menus.md 16.8) and
+//! preview (eye (0, -50, -800), look-at (0, 0, 55), the projection centred x, y from the screen's middle; docs/systems/ui/menus-new-help.md 16.8) and
 //! the motion pick of `FUN_001a7a48(set, motion, 2)`. The record (`jiminy.bar` entry 3, 0x24 bytes) gives the rest:
 //!
 //! | | small model (p = 0) | large model (p = 1) |
@@ -223,7 +223,7 @@ pub fn group_alpha(s: &kh2_image::seqd::Seqd, group: usize, frame: i32) -> f32 {
 }
 
 /// The model takes its alpha from the alpha object of its size (`FUN_0023b4e0`: the object's colour alpha, `FUN_00237518(object + 0x18) >> 24`):
-/// group 7 raises it from 0 to 0x80 in 24 frames, group 8 holds 0x80, group 9 lowers it in 12 frames (docs/menus.md 20.14). The port draws the model
+/// group 7 raises it from 0 to 0x80 in 24 frames, group 8 holds 0x80, group 9 lowers it in 12 frames (docs/systems/ui/menus-journal-pages.md 20.14). The port draws the model
 /// into a picture, so the picture carries the alpha.
 fn fade(j: Res<Journal>, v: Res<ModelView>, mut scene: ResMut<MenuScene>) {
     let (Some(node), Some((w, _))) = (v.node, v.key) else { return };

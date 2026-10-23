@@ -1,4 +1,4 @@
-//! Oracle checks behind `docs/summons.md`: the summon gauge rules as the doc states them, compared
+//! Oracle checks behind `docs/systems/drive-limits-summons/contract.md`: the summon gauge rules as the doc states them, compared
 //! with the game's own leaf routines run in kh2-ee on the user's executable. Read-only; skips with a
 //! note when no disc image is configured (KH2_ISO or local/iso.txt).
 //!

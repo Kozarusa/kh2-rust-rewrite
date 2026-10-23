@@ -1,7 +1,7 @@
 //! The rules of Sora's magic, without Bevy: which `magc` row a spell uses, the command list, the
 //! availability test, the MP cost and MP charge, the cast's "kind", the hit memory of a spell's
 //! attack and the atkp row variants. Every rule names the function of the game's executable
-//! (`SLUS_210.05`) it follows; `docs/magic.md` explains them. No game values are here: the rows
+//! (`SLUS_210.05`) it follows; `docs/systems/magic/contract.md` explains them. No game values are here: the rows
 //! come from the user's disc.
 
 use kh2_tables::tables::{Atkp, Magc};

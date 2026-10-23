@@ -15,7 +15,7 @@
 //! Thunder's strike, with their drive-form branches (`fire_plan`, `blizzard_plan`, `thunder_plan`).
 //! Magnet and Reflect always run their own scripts in the BDX interpreter (`VmCast`, `SpellHost`);
 //! `KH2_MAGIC_VM=1` runs the other four there too: Fire's matches the hand port; the other three stop
-//! at host calls the app does not answer yet (docs/magic.md "Running the scripts in the interpreter").
+//! at host calls the app does not answer yet (docs/systems/magic/magic-turn.md "Running the scripts in the interpreter").
 //!
 //! Keys: the command menu (`items.rs`, WP-7C: the original's lists and input) answers T (cursor
 //! up), G (cursor down), B (back); J / left mouse executes the selected command (the game's X
@@ -660,7 +660,7 @@ fn run(
                 body.restart(mslot, false, blend);
                 s.enter(State::Magic, None);
                 if own {
-                    // Cure's script starts Leaf Bracer on the caster (host 1.343 bit 114, then 1.91; docs/abilities.md).
+                    // Cure's script starts Leaf Bracer on the caster (host 1.343 bit 114, then 1.91; docs/systems/combat-effects/abilities.md).
                     s.start_leaf_bracer(&abilities, true);
                 }
                 if airborne {

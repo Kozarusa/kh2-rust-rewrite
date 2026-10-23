@@ -1,6 +1,6 @@
-//! The PAUSE band: what the pause button shows in combat instead of the camp menu (docs/menus.md 1.8).
+//! The PAUSE band: what the pause button shows in combat instead of the camp menu (docs/systems/ui/menus-pause.md 1.8).
 //!
-//! The picture is `menu/us/pause.2ld` (the file the menu boot `FUN_0024f558` preloads as list index 0, docs/menus.md
+//! The picture is `menu/us/pause.2ld` (the file the menu boot `FUN_0024f558` preloads as list index 0, docs/systems/ui/menus-pause.md
 //! 1.3): one 64x64 image that holds the letters P A U S E and a few sparkles, and one sequence of 19 animation
 //! groups. Read from the file: group 0 is a full-screen black at half alpha (the dim), group 15 is the whole
 //! band: the dark gradient body (rows -15 to 15), the thin violet rule at its top and bottom edge (rows -17/-15 and

@@ -1,4 +1,4 @@
-//! The Treasures (page 7) and Maps (page 8) pages of Jiminy's Journal (docs/menus.md 20.9, WP-MN12): the layout and the cursor.
+//! The Treasures (page 7) and Maps (page 8) pages of Jiminy's Journal (docs/systems/ui/menus-journal.md 20.9, WP-MN12): the layout and the cursor.
 //!
 //! Both pages list the rows of the treasure table (`trsr`, `DAT_01c95590`, 0xc-byte rows) in a grid of eight cells a row,
 //! grouped by journal world (`FUN_002b00e0` for treasures, `FUN_002b0228` for maps): a section of ceil(count / 8) rows per

@@ -15,7 +15,7 @@ use kh2_iso::{Iso, SECTOR};
 pub const SUPPORTED_BOOT: &str = "SLUS_210.05";
 
 /// Set to `1` to let [`Archive::open`] accept a disc whose boot executable is not [`SUPPORTED_BOOT`]
-/// (for research on another edition, e.g. Final Mix `SLPM_666.75`; see `docs/final-mix.md`).
+/// (for research on another edition, e.g. Final Mix `SLPM_666.75`; see `docs/systems/foundations/final-mix.md`).
 /// Without it other discs are refused, because table layouts and executable addresses differ.
 pub const ALLOW_OTHER_DISC_ENV: &str = "KH2_ALLOW_OTHER_DISC";
 

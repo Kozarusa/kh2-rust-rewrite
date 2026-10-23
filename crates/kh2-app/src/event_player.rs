@@ -1,5 +1,5 @@
 //! The event player (WP-E6): an area's event (BAR type 0x16 of `ard/<area>.ard`) played on its frame counter.
-//! See docs/events.md section 6 ("The event player") and its E6 status.
+//! See docs/systems/events-movies/event-player.md section 6 ("The event player") and its E6 status.
 //!
 //! What the game does (`SLUS_210.05`): the setup reader `FUN_002245d0` walks the command list once (actors of
 //! opcode 1 into the 0x60-entry table `DAT_0036bbcc` through `FUN_00229120` / `FUN_00224548`, the end frame of
@@ -975,7 +975,7 @@ fn step(
                 // whose flag +0x588 bit 0x20 is clear and whose model resource tag is below 2000. The event's actors
                 // (opcode 0x2c, FUN_0016e8c0 -> FUN_00196a70) carry that bit, so they are skipped; the objects it does
                 // touch are the field's props (ObjectType 5, 6, 8, 10, 11, 13, 18, 23), which the app does not draw
-                // in an event [see docs/events.md].
+                // in an event [see docs/systems/core-runtime/contract.md].
                 let show = le16(d, 2) != 0;
                 let n = p.actors.values().filter(|_| op_4d_walk_touches(EVENT_ACTOR_FLAGS, EVENT_ACTOR_TAG)).count();
                 info!(
@@ -1126,7 +1126,7 @@ fn lock_pad(
     }
 }
 
-/// The subtitle lines (class 0x1aae60, docs/hud.md: font 4, colour 3, at (256, 365), alignment 4 [inferred
+/// The subtitle lines (class 0x1aae60, docs/systems/ui/contract.md: font 4, colour 3, at (256, 365), alignment 4 [inferred
 /// there]): the open lines' messages, the latest at the bottom.
 fn subtitles(mut player: ResMut<EventPlayer>, mut scene: ResMut<HudScene>) {
     let lines: Vec<u16> = player.play.as_ref().map(|p| p.lines.iter().map(|l| l.1).collect()).unwrap_or_default();
@@ -1478,7 +1478,7 @@ mod tests {
 
     /// On the disc: the table at 0x37a278 of the executable (read here, never copied) puts ObjectTypes 5, 6, 8, 10,
     /// 11, 13, 18 and 23 below 2000 and the player, friends, townspeople, enemies and save points above. Lists what
-    /// the tt areas spawn of the hidden types and every opcode 0x4d of tt02..tt04 (docs/events.md).
+    /// the tt areas spawn of the hidden types and every opcode 0x4d of tt02..tt04 (docs/systems/core-runtime/contract.md).
     #[test]
     fn opcode_0x4d_touches_the_object_types_the_table_puts_below_2000() {
         let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else {
@@ -1520,7 +1520,7 @@ mod tests {
         assert!(cmds > 0);
     }
 
-    /// Every `.ard` area file on the disc, scanned for opcode 0x4d in its events (docs/events.md section 6).
+    /// Every `.ard` area file on the disc, scanned for opcode 0x4d in its events (docs/systems/events-movies/event-player.md section 6).
     #[test]
     fn opcode_0x4d_on_the_whole_disc() {
         let Some(iso) = crate::assets::iso_path().ok().filter(|p| p.exists()) else {

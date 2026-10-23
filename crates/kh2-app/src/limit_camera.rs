@@ -1,5 +1,5 @@
 //! The camera of a limit (WP-LS2b): the type 0x16 events of the limit BAR (`limit/us/<file>`, entries "00" and "10"), started by the
-//! limit script's host 2.50. See docs/limits-reactions.md "Limit camera (WP-LS2b)".
+//! limit script's host 2.50. See docs/systems/drive-limits-summons/limits.md "Limit camera (WP-LS2b)".
 //!
 //! Host 2.50 (`0x18e9f8` -> `FUN_001b3468`) is not an effect start. It looks the event up in the limit file
 //! (`FUN_00168510(bar, 0x16, name, 0)`, name = the script's four byte literal) and plays it as an event object of kind 0xb

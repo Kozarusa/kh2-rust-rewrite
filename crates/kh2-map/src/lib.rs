@@ -62,7 +62,7 @@ impl Polygon {
 /// whose byte +0x10 is 0; `FUN_00141768` (called by `FUN_00141500` with the map's visibility word)
 /// clears that byte in every mesh and then sets it in the meshes whose byte +0x11 is a set bit of the
 /// word (`FUN_00141840`). So a mesh is solid only while its group bit is in the visibility word
-/// (docs/movement.md section 8).
+/// (docs/systems/core-runtime/collision.md section 8).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Mesh {
     /// First polygon index (+12).

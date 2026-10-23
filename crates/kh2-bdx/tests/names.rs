@@ -1,16 +1,16 @@
-//! The table of named host functions in `names.rs` and the one in docs/bdx.md must agree: every named
+//! The table of named host functions in `names.rs` and the one in docs/systems/script-host/bdx-host-functions.md must agree: every named
 //! function has a row with its signature and native address, and the kinds describe the arguments.
 
 use kh2_bdx::names::{HOST_FUNCS, lookup};
 
 #[test]
 fn every_named_function_is_documented_with_signature_and_address() {
-    let doc = std::fs::read_to_string("../../docs/bdx.md").expect("docs/bdx.md");
+    let doc = std::fs::read_to_string("../../docs/systems/script-host/bdx-host-functions.md").expect("docs/systems/script-host/bdx-host-functions.md");
     for f in HOST_FUNCS {
         let ret = if f.ret_kind == '-' { String::new() } else { format!(" -> {}", f.ret_kind) };
         let row_start = format!("| {}.{} | `{}({}){}` | {:#x} |", f.group, f.index, f.name, f.kinds, ret, f.native);
-        assert!(doc.contains(&row_start), "docs/bdx.md has no row starting `{row_start}`");
-        assert!(doc.contains(f.about), "docs/bdx.md does not carry the note of {}.{} {}", f.group, f.index, f.name);
+        assert!(doc.contains(&row_start), "docs/systems/script-host/bdx-host-functions.md has no row starting `{row_start}`");
+        assert!(doc.contains(f.about), "docs/systems/script-host/bdx-host-functions.md does not carry the note of {}.{} {}", f.group, f.index, f.name);
     }
 }
 

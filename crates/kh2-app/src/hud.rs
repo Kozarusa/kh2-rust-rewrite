@@ -1,6 +1,6 @@
 //! HUD: the game's own 2D elements (Sora's HP/MP gauges, the target gauge, the lock-on reticle),
 //! drawn from the field sequence file on the disc; see `hud_gfx`, `hud_gauge`, `hud_target` and
-//! docs/hud.md. The developer text overlay and the floating damage numbers are not part of the
+//! docs/systems/ui/contract.md. The developer text overlay and the floating damage numbers are not part of the
 //! original; they show only with `KH2_DEBUGHUD=1` or after F9.
 
 use bevy::prelude::*;
@@ -216,7 +216,7 @@ fn debug_text(
 }
 
 /// Developer damage numbers. The original game draws none: its only floating number is the
-/// munny popup (docs/hud.md), so these are off unless the debug overlay is on.
+/// munny popup (docs/systems/ui/contract.md), so these are off unless the debug overlay is on.
 pub fn popups(
     mut commands: Commands,
     time: Res<Time>,

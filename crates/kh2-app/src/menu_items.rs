@@ -1,4 +1,4 @@
-//! The pause menu's Items pages, stage M3 (docs/menus.md 2.2 and section 13): page 1 (the members and
+//! The pause menu's Items pages, stage M3 (docs/systems/ui/menus-pause.md 2.2 and docs/systems/ui/menus-items.md section 13): page 1 (the members and
 //! Stock, `FUN_0025ae18`), page 0xa (the Stock grid, `FUN_0025b6e0`, built by `FUN_0025b2a0`), page 0xb (the
 //! Use / Throw away prompt of one stock item, `FUN_0025bfa8`, built by `FUN_0025bad0`), page 0xc (the target
 //! list of Use, `FUN_0025c590`, built by `FUN_0025c2c8`), page 0xd (the "no effect" notice, `FUN_0025c930`) and
@@ -12,7 +12,7 @@
 //! * `prompt_choice` is `FUN_0025eab0` and the Use rows' availability (`FUN_0025e8a0`, `FUN_0025e928`),
 //! * `Machine::press` is the page handlers' result switches.
 //!
-//! The party is Sora alone (docs/party.md): page 1 lists Sora and Stock, and Sora's row opens page 2
+//! The party is Sora alone (docs/systems/party/contract.md): page 1 lists Sora and Stock, and Sora's row opens page 2
 //! (equipment, stage M4), which is not ported: the row refuses with the refused sound.
 
 use std::collections::BTreeMap;
@@ -49,7 +49,7 @@ pub const ROWS: usize = 9;
 /// The Stock page cycles five filters (`FUN_0025e838`: -10 adds one, -11 subtracts, wrapping at 5).
 pub const FILTERS: u8 = 5;
 
-/// Sounds of the system bank (`PlaySe::number(2000 + id)`, docs/menus.md 9): cursor 1, confirm 2, cancel 4,
+/// Sounds of the system bank (`PlaySe::number(2000 + id)`, docs/systems/ui/menus-pause-m1.md 9): cursor 1, confirm 2, cancel 4,
 /// refused 5; the two kinds this module adds are `FUN_0023e738(8, 1)` (an item that would do nothing: kind 8 is
 /// not below 6, so its id is the u16 at 0x37f654 + 2 * 8 = 2, the confirm sound) and `FUN_0023e738(0x11, 1)` (an
 /// item used: the u16 at 0x37f654 + 2 * 0x11 = 37).
@@ -353,7 +353,7 @@ pub trait Game {
     fn would_help(&self, id: u16, row: usize) -> bool;
 }
 
-/// The list results of docs/menus.md 1.7 that the Items pages use.
+/// The list results of docs/systems/ui/menus-pause.md 1.7 that the Items pages use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
     Up { fresh: bool },
@@ -719,7 +719,7 @@ mod group {
 }
 
 /// Layout in menu units (before the 16 line offset). The positions come from the groups' own anchors; what
-/// the code does not give is placed by eye and marked in docs/menus.md section 13.
+/// the code does not give is placed by eye and marked in docs/systems/ui/menus-items.md section 13.
 mod at {
     pub const ROW_PITCH: f32 = 26.0;
     pub const HAND: [f32; 2] = [-13.0, 0.0];
@@ -2167,7 +2167,7 @@ mod tests {
     /// The oracle for the Use row's target check: the game's own `FUN_001a15a0` in kh2-ee, for every item row,
     /// over HP, MP, MP charge and drive states and record bytes, against `can_use`. `FUN_0019fe48` (a member's
     /// status record) is a stub that returns a record laid out in free memory, whose `+0x238` points at a
-    /// character record holding the four boost bytes (as `docs/items.md`'s item oracle does for `FUN_001a12a0`).
+    /// character record holding the four boost bytes (as `docs/systems/ui/items.md`'s item oracle does for `FUN_001a12a0`).
     #[test]
     fn can_use_matches_the_game() {
         let Some(mut o) = oracle() else { return };

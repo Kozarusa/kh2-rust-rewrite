@@ -1,4 +1,4 @@
-//! The Struggle's result menu (docs/struggle.md "The end", docs/menus.md section 21).
+//! The Struggle's result menu (docs/systems/world-minigames/struggle.md "The end", docs/systems/ui/menus-struggle-result.md section 21).
 //!
 //! What the original does (`SLUS_210.05`): the mission end's last step `FUN_001b96e0` (mission kinds 2, 0x19, 0x20, or
 //! event 0x9c) calls `FUN_0024f330(FUN_001bef10(0x1a), 0)`. `FUN_001bef10` finds row 0x1a of the pause-menu record
@@ -171,7 +171,7 @@ impl Flow {
     }
 }
 
-/// `save.2ld` sequence 0 groups (the Save menu's pointer list, docs/menus.md 18.2): the selected row (red pill, loops),
+/// `save.2ld` sequence 0 groups (the Save menu's pointer list, docs/systems/ui/menus-save.md 18.2): the selected row (red pill, loops),
 /// an idle row (hold), the hand; and the placements the Save menu's port uses [inferred there from the footage].
 mod g {
     pub const ROW_SELECTED: usize = 77;
@@ -334,7 +334,7 @@ fn input(
     if !m.is_open() {
         return;
     }
-    // A menu is a scene of its own: the field stops while it is up (docs/menus.md 1.1).
+    // A menu is a scene of its own: the field stops while it is up (docs/systems/ui/menus-pause.md 1.1).
     pause.menu = true;
     let pressed = |k: KeyCode| keys.just_pressed(k);
     let press = if pressed(KeyCode::ArrowUp) || pressed(KeyCode::KeyW) {

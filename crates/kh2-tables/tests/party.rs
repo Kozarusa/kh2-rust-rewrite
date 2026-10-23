@@ -1,4 +1,4 @@
-//! Read-only checks behind `docs/party.md`: the party member table `memt` merged per world the way
+//! Read-only checks behind `docs/systems/party/contract.md`: the party member table `memt` merged per world the way
 //! FUN_001a6ff0 merges it, the party presets after its records, the objects `FRIEND_1`/`FRIEND_2`
 //! stand for, the party members' own objects (objentry type 1) with the friend-AI class FUN_0010b780
 //! picks for them, and their `plrp`, `prty` and `lvup` rows. Everything is read from the user's own

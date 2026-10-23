@@ -1,5 +1,5 @@
 //! Sora's HP ring / bar and MP bar, assembled and driven the way the game's party panel does
-//! (the panel class with the `0x3b90`-byte object; see docs/hud.md for the addresses).
+//! (the panel class with the `0x3b90`-byte object; see docs/systems/ui/contract.md for the addresses).
 //!
 //! HP: the first 60 points fill a 270 degree ring (pi/40 per point) that starts at the west end
 //! and runs clockwise; points beyond 60 extend a bar to the left at 3 pixels each. Three layers
@@ -362,7 +362,7 @@ pub fn update(
     update_drive(&mut scene, p, &drive, &drive_tables);
 }
 
-/// The drive gauge (objects 12 to 15 of the panel, see docs/hud.md): the bar idles at once (no slide-in, by request);
+/// The drive gauge (objects 12 to 15 of the panel, see docs/systems/ui/contract.md): the bar idles at once (no slide-in, by request);
 /// the orange fill follows the progress to the next point; the digit shows the whole points; MAX
 /// shows when the gauge is full; a burst plays when a point is gained.
 fn update_drive(scene: &mut HudScene, p: &mut SoraPanel, d: &DriveGauge, tables: &DriveTables) {

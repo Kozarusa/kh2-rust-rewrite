@@ -3,7 +3,7 @@
 //! the item messages of picked-up items (`gaug` group 0x4c, the queue of `FUN_00138498`).
 //! The game state that raises them is not read here: `HudBanner` and `ExperiencePopups` are plain
 //! resources for the owning module to fill. Which group belongs to which word was read from the
-//! sprite rectangles each group draws (docs/hud.md); the position of a banner is not known.
+//! sprite rectangles each group draws (docs/systems/ui/contract.md); the position of a banner is not known.
 
 use bevy::prelude::*;
 
@@ -244,7 +244,7 @@ pub fn update(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StripKind {
     /// Group 17 with digit groups 28 to 37 (table 0x3586e8), raised through 0x14f2d8 (kind 0x11 in
-    /// the popup registry 0x14f8b0) by 0x1a39b0, which is the prize pickup (WP-7B, docs/prizes.md):
+    /// the popup registry 0x14f8b0) by 0x1a39b0, which is the prize pickup (WP-7B, docs/systems/combat-effects/prizes.md):
     /// this is the "OBTAINED MUNNY!" strip with the munny picked up.
     Munny,
     /// Group 48 with digit groups 38 to 47 (table 0x358730), raised when the number popup is

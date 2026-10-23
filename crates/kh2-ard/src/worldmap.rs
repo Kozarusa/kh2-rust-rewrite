@@ -1,4 +1,4 @@
-//! The world map's data tables (docs/worldmap.md sections 3, 6 and 7).
+//! The world map's data tables (docs/systems/worldmap-gummi/worldmap.md sections 3, 6 and 7).
 //!
 //! Layouts only: the values stay on the disc. `00progress.bin` holds three counted tables next to
 //! the story lists (`wldf`, `wlds`, `epsd`); each entry starts with a word, then an `i32` record count
@@ -481,7 +481,7 @@ mod tests {
         Some(a)
     }
 
-    /// WP-WM1 (docs/worldmap.md sections 6 and 7): the world map's tables read from the disc, with their counts and layouts.
+    /// WP-WM1 (docs/systems/worldmap-gummi/worldmap.md sections 6 and 7): the world map's tables read from the disc, with their counts and layouts.
     #[test]
     fn the_world_map_tables_have_the_documented_counts_and_layouts() {
         let Some(mut a) = open() else { return };

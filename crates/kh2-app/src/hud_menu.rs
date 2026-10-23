@@ -2,10 +2,10 @@
 //! the selected bar with its medallion and icon, and the reaction-command capsule above the list.
 //! Art is `field2d/us/<world>0command.2dd` (one `comw` image/sequence pair); layout and group
 //! numbers come from the menu code at 0x13b000..0x13d900 and the group tables it reads in the
-//! executable (read at run time here). See docs/hud.md.
+//! executable (read at run time here). See docs/systems/ui/contract.md.
 //!
 //! The game state is not read here: `CommandMenu` is a plain resource that `items.rs` fills in (the
-//! stacked command lists with their statuses and cursors, docs/items.md) and `mirror_reaction` adds
+//! stacked command lists with their statuses and cursors, docs/systems/ui/items.md) and `mirror_reaction` adds
 //! the offered reaction command to.
 
 use bevy::prelude::*;
@@ -32,7 +32,7 @@ pub struct MenuEntry {
     pub icon: u8,
     /// Text colour style, 0 to 8: the entry's status byte (entry +5, list +0x11 for the first entry):
     /// 0 usable, 1 a sub-menu with nothing usable, 2 a spell short of MP (orange), 5 unavailable,
-    /// 6 an item only reserved (docs/items.md).
+    /// 6 an item only reserved (docs/systems/ui/items.md).
     pub style: u8,
 }
 
@@ -40,7 +40,7 @@ pub struct MenuEntry {
 #[derive(Clone, Debug, Default)]
 pub struct MenuPage {
     /// Which menu: the command list's index (0 and 6 the decks, 1 magic, 2 items, 3 forms, 4 the targets,
-    /// 5 shortcuts, 7 summons, 8 friends, 9 limits; the art of each is listed in docs/hud.md).
+    /// 5 shortcuts, 7 summons, 8 friends, 9 limits; the art of each is listed in docs/systems/ui/contract.md).
     pub kind: u8,
     pub entries: Vec<MenuEntry>,
     pub cursor: usize,
@@ -226,7 +226,7 @@ pub fn default_menu(disc: &Disc) -> Option<CommandMenu> {
     Some(CommandMenu { visible: true, pages: vec![MenuPage { kind: 0, entries: base_entries(&cmds), cursor: 0 }], reaction: None })
 }
 
-/// Hook 1 of docs/limits-reactions.md: the offered reaction command (slot 1 of the command manager)
+/// Hook 1 of docs/systems/drive-limits-summons/contract.md: the offered reaction command (slot 1 of the command manager)
 /// becomes the capsule above the list while it is available; `alt` is the command's Flags bit 3.
 /// The entry-type-7 variant has no source in the port.
 pub fn mirror_reaction(offer: Option<Res<ReactionOffer>>, rules: Option<Res<ReactionRules>>, mut menu: ResMut<CommandMenu>) {
@@ -278,7 +278,7 @@ pub fn demo_menu(spec: &str, disc: &Disc) -> Option<CommandMenu> {
 /// then the world's, then message 0x8adc) at the bar's text offset, font and size (0x13abf0), in the
 /// colour the status picks (0x13ba80). The colour goes to the text engine as the table has it: the
 /// game's product is `texel (0x80) * colour >> 7`, which the exact atlas of `hud_text` reproduces
-/// (docs/hud.md "Text colour"), so no per-bar compensation is needed.
+/// (docs/systems/ui/hud-panels.md "Text colour"), so no per-bar compensation is needed.
 fn name_label(text: &super::hud_text::TextSys, message: u32, color: [u8; 4]) -> Option<Label> {
     let tokens = text.lookup(message)?;
     Some(Label { tokens, style: Style { world: text.world, font: TEXT_FONT, size: Some(TEXT_SIZE), color, ..Style::default() }, offset: TEXT_OFFSET })
@@ -533,7 +533,7 @@ mod tests {
 
     /// The "?" of the deck is the real name of the empty bar 0x68 (`Execute` 0, message 0x8503 in
     /// `sys.bar`, the clip 4.mp4 shows it in the same places); no other command row is named "?", and
-    /// every command the lists can offer has a real name (docs/hud.md, WP-G2).
+    /// every command the lists can offer has a real name (docs/systems/ui/contract.md, WP-G2).
     #[test]
     fn question_mark_is_only_the_empty_bar() {
         let Some((cmds, sys, _)) = disc() else { return eprintln!("skipped: no disc (set KH2_ISO)") };

@@ -4,7 +4,7 @@
 //! version word, then offset/count pairs for sprites, sprite parts, sprite groups, animations,
 //! animation groups, and a UV-enable word) followed by the five tables. The evaluation rules
 //! (frame stepping, interpolation, transform order, colour modulation, blend selection) were read
-//! from the game's own sequence player in a local decompilation; see docs/hud.md for addresses.
+//! from the game's own sequence player in a local decompilation; see docs/systems/ui/contract.md for addresses.
 
 use crate::{rd16, rd32};
 

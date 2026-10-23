@@ -1,5 +1,5 @@
 //! System messages and text layout: `msg/<lang>/sys.bar` (the `sys` entry), the message byte
-//! code, and the line layout the game's text drawing performs (addresses in docs/hud.md).
+//! code, and the line layout the game's text drawing performs (addresses in docs/systems/ui/contract.md).
 //!
 //! A message is a run of bytes: a byte of 0x20 or more is one glyph (glyph index = byte - 0x20);
 //! 0x19 to 0x1f followed by a byte pick a glyph past 0xdf; every other byte below 0x20 is a

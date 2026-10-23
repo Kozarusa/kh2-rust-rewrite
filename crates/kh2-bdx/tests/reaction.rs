@@ -39,7 +39,7 @@ fn soldier_answers_command_34_and_shadow_none() {
 }
 
 /// Every script on the disc: the command ids handled and offered. The numbers are printed for
-/// docs/limits-reactions.md; the asserts pin the ones the document quotes.
+/// docs/systems/drive-limits-summons/contract.md; the asserts pin the ones the document quotes.
 #[test]
 fn disc_wide_reaction_map() {
     let Some(mut a) = open_disc() else {

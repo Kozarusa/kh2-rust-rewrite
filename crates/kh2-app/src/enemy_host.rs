@@ -3,7 +3,7 @@
 //! `imp`, `approx`, `stub` and `missing`; `AiTrace` (`enemy_ai.rs`) records the classes. The dispatch splits by
 //! the call's group: `group0`, `group1`, `group2`, `other` (the order of the arms inside a group is the order
 //! they are tried in). The drop computation of host 1.92 (prize table rows, `compute_drop`) lives here too.
-//! See docs/enemy-ai.md for the mapping and the gaps.
+//! See docs/systems/script-host/contract.md for the mapping and the gaps.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -788,7 +788,7 @@ impl BevyHost<'_> {
             // 1.227 mover_method_8 (0x171350 -> virtual method +8 of the object's mover at +0xc, called with the object and the argument).
             // M_EX550's `super_dive` (BDX 0x1703) hands it the vector it also gave 1.4 (facing; w 20 or the mode's value) and then waits
             // for 1.57 to report the landing. The movers are objects built at run time, so the method body cannot be read from the
-            // executable (docs/summons.md "Peter Pan's 6.40 / 1.115 / 1.227"); the app's own mover (`Obj::motor`) is not driven by it.
+            // executable (docs/systems/drive-limits-summons/summons-objects-3.md "Peter Pan's 6.40 / 1.115 / 1.227"); the app's own mover (`Obj::motor`) is not driven by it.
             Call::Func { group: 1, index: 227, args } if args.first().is_some_and(|a| a.int() as u32 == me) => {
                 stub(Value::None, "the mover's virtual method +8 (runtime-built object) was not read: the dive's launch is not applied, the wait on 1.57 ends at once")
             }
@@ -1066,7 +1066,7 @@ impl BevyHost<'_> {
                 stub(Value::None, "bit arrays +0x47c / +0x480 cleared in the object memory; their reader FUN_0019a6a0 (per-part collision switch) has no counterpart in the app")
             }
             // 1.52 bits_47c_set (0x1728c0 -> FUN_0019dd88(object + 0x47c, n)): bit n of the word at +0x47c + 4 * (n >> 5) set (the
-            // collision part n forced on, docs/bdx.md; `summon.rs` keeps the same bit). M_EX550 and about ten other kinds call it in their
+            // collision part n forced on, docs/systems/script-host/contract.md; `summon.rs` keeps the same bit). M_EX550 and about ten other kinds call it in their
             // init. The reader FUN_0019a6a0 (per-part collision switch) has no counterpart in the app, so the bit is only kept.
             Call::Func { group: 1, index: 52, args } if args[0].int() as u32 == me => {
                 let n = args[1].int() as u32;
@@ -1218,7 +1218,7 @@ impl BevyHost<'_> {
             // entry that FUN_001a7da8 finds for the id (251 in M_EX950 R230c) into its +4, and 1.76 clears that word. Its reader
             // was not traced, so nothing in the app consumes it.
             Call::Func { group: 1, index: 75 | 76, .. } | Call::Unknown { group: 1, index: 75 | 76, .. } => stub(Value::None, "motion controller word +4 (set from a lookup, cleared by 1.76): reader not traced"),
-            // 1.100 (0x173178 -> FUN_0017bee0): sqrt(2 x / g) of the float word, the time a body takes to fall x; g = 20/49 is DAT_0037a538 (docs/movement.md; the table names no signature,
+            // 1.100 (0x173178 -> FUN_0017bee0): sqrt(2 x / g) of the float word, the time a body takes to fall x; g = 20/49 is DAT_0037a538 (docs/systems/player-camera/contract.md; the table names no signature,
             // so the word arrives raw). M_AL020_ICEE's jump modes ask it (BDX M_AL020_ICEE). The EE's sqrt.s takes the root of the absolute value of a negative operand.
             Call::Unknown { group: 1, index: 100, args } => {
                 let x = f32::from_bits(args.first().copied().unwrap_or(0));

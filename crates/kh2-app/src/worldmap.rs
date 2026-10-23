@@ -1,4 +1,4 @@
-//! The world map's objects (WP-WM3, stage W5 of docs/worldmap.md).
+//! The world map's objects (WP-WM3, stage W5 of docs/systems/worldmap-gummi/contract.md).
 //!
 //! The map is an ordinary field area (`wm00`); its screen is made of objects of `00objentry` type 0x11
 //! (`FUN_0016e8c0` -> `FUN_002c58c8`), told apart by the row's second byte: 0 a world symbol
@@ -17,7 +17,7 @@
 //!
 //! Cursor: the Gummi ship (`WM_CURSOR`). Its movement is the player class's (WP-WM8: its vtable keeps the player's walk
 //! slots), so the stick walks Sora on the map's collision and the ship is drawn at his place; his body and the party are
-//! hidden [I]. The original's area camera type 4 sets no follow target (docs/worldmap.md section 10 "W8"), so the follow
+//! hidden [I]. The original's area camera type 4 sets no follow target (docs/systems/worldmap-gummi/worldmap-plan.md section 10 "W8"), so the follow
 //! camera is a stand-in [I].
 //!
 //! Route markers (`WM_GUMI_01`) have no model: their look is three of the map's `BOB` props each, shown or hidden by the route's
@@ -26,7 +26,7 @@
 //! The two forced events (WP-WM7, `FUN_002ccd88`): a confirm on the Twilight Town symbol (object 0x3a2) with world flag 1 set
 //! and 0x13 clear plays event 0x72d (1837), on the TWTNW symbol (0x456) with world flags 0x35 set and 0x37 clear event 0x72c
 //! (1836), and no prompt follows. The event is a program of the `wm` talk table (`libretto-wm.bar`, `FUN_001b6740`) run by the
-//! executor `FUN_002c4c58`, see [`Script`] and docs/worldmap.md section 10 "W7 events".
+//! executor `FUN_002c4c58`, see [`Script`] and docs/systems/worldmap-gummi/worldmap-plan.md section 10 "W7 events".
 //!
 //! `KH2_WMLOG=1` logs what is spawned.
 
@@ -312,7 +312,7 @@ fn load_rig(disc: &Disc, model: &str, anim: &str) -> Option<Arc<Rig>> {
         let no_block = file.as_deref().and_then(|f| kh2_bar::parse(f).ok()).is_some_and(|e| !e.iter().any(|x| x.kind == 4));
         warn!(
             "worldmap: obj/{model}.mdlx: {}",
-            if no_block { "holds no model block (collision only; its look is the effect file, docs/worldmap.md section 10 W5), not drawn" } else if file.is_some() { "read, but the model reader returns nothing" } else { "not on the disc" }
+            if no_block { "holds no model block (collision only; its look is the effect file, docs/systems/worldmap-gummi/worldmap-plan.md section 10 W5), not drawn" } else if file.is_some() { "read, but the model reader returns nothing" } else { "not on the disc" }
         );
     }
     let m = m?;

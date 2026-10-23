@@ -1,7 +1,7 @@
 //! Texture footers and GS regions on the user's disc (skipped without KH2_ISO or local/iso.txt).
 //! `cargo test -p kh2-model --test disc -- --nocapture` prints every TEXA / UVSC entry of the
 //! tt04 map, its sky and Sora (`P_EX100`), and the tt04 textures whose meshes sample outside the
-//! GS region (docs/render.md "tt04 roofs").
+//! GS region (docs/systems/foundations/render.md "tt04 roofs").
 
 use kh2_model::texanim::{self, TexaPlayer, UvscPlayer};
 use kh2_model::{Model, Wrap};
@@ -173,7 +173,7 @@ fn keyblade_meshes_report_their_blend_flags_and_winding() {
 
 /// WP-SK1: which maps carry which sky. The game counts the entries tagged `SK0` / `SK1` (map object
 /// +0x6c / +0x70, FUN_00149348) and builds a sky object for a tag only when its count is exactly 1
-/// (FUN_0015e6c0). tt00 has only SK1; tt03 and tt24..28 have both (docs/render.md "Sky placement").
+/// (FUN_0015e6c0). tt00 has only SK1; tt03 and tt24..28 have both (docs/systems/foundations/render.md "Sky placement").
 #[test]
 fn skies_per_area_sk0_and_sk1() {
     let Some(mut a) = open() else { return };
@@ -198,7 +198,7 @@ fn skies_per_area_sk0_and_sk1() {
     }
 }
 /// Every `.mdlx` on the disc: classify the texture entry's header, check wrapped entries decode to
-/// real textures, and check plain models are unchanged by the wrapper handling (docs/models.md).
+/// real textures, and check plain models are unchanged by the wrapper handling (docs/systems/foundations/render.md "Wrapped texture entries").
 #[test]
 fn every_mdlx_texture_entry_decodes_and_wrapped_ones_split() {
     let Some(mut a) = open() else { return };

@@ -2,7 +2,7 @@
 //! `Progress`, holds the inventory (spells, form items, summon charms and keyblades are items), the
 //! party records (equipment, abilities, stats), the drive form records (level, experience, second
 //! keyblade), the summon level and experience, munny, the per-world outfit bytes and the per-spell
-//! switch bits. `docs/progress.md` has the layout with the addresses.
+//! switch bits. `docs/systems/core-runtime/progress.md` has the layout with the addresses.
 //!
 //! `Progress` is the original's party block itself (`0x33fec0`, 0x1998 bytes; the save block is
 //! `0x33e860`), with typed accessors. Keeping the bytes means every rule here is a port of the
@@ -13,7 +13,7 @@
 //! 1. The new game: the save block is cleared at boot (`FUN_00105638(0x33e860)`), the party block
 //!    is set up (`FUN_00187b38`) and every `plrp` row with `Id` 0 is applied (`FUN_00187d20` ->
 //!    `FUN_001c0cb0(0)`). Ported here and read from the user's disc (`plrp`, `item`, `cmd`).
-//! 2. `KH2_STATE=<path>`: a JSON file applied on top of the new game (schema in docs/progress.md).
+//! 2. `KH2_STATE=<path>`: a JSON file applied on top of the new game (schema in docs/systems/core-runtime/progress.md).
 //!    Nothing else is added then.
 //! 3. Without `KH2_STATE`: the app baseline, which is NOT the original's new game: the spells
 //!    Fire, Blizzard, Thunder and Cure at level 1, the four form items (with the spare Kingdom Keys
@@ -550,7 +550,7 @@ pub struct Member {
     /// The ability list (64 slots, bit 15 = equipped), non-empty slots only.
     pub abilities: Vec<(u16, bool)>,
     /// The AI settings block (record `+0xd4`, 32 bytes; FUN_00112308 reads it, `Progress::init_member` zeroes it).
-    /// Byte 0 is the battle style 0..5, byte `1 + k` the use setting of item or ability `k` (docs/party.md).
+    /// Byte 0 is the battle style 0..5, byte `1 + k` the use setting of item or ability `k` (docs/systems/party/contract.md).
     pub settings: [u8; rec::SETTINGS_LEN],
 }
 
@@ -587,29 +587,29 @@ pub struct Progress {
     /// The boot weapon words read from `00common.bdx` (empty without a disc); `apply_party_weapons` writes them.
     pub boot_weapons: Arc<BootWeapons>,
     /// Sora's Dodge Roll growth level (0 = not learned). The USA disc has no Dodge Roll ability item
-    /// (docs/final-mix.md: the Final Mix game has it as growth slot 4), so the level is an app field
-    /// beside the save block. 0 in the new game; the app baseline sets 1 (docs/progress.md).
+    /// (docs/systems/foundations/final-mix.md: the Final Mix game has it as growth slot 4), so the level is an app field
+    /// beside the save block. 0 in the new game; the app baseline sets 1 (docs/systems/core-runtime/progress.md).
     pub dodge_roll: u8,
     /// The munny the prizes pay: save block `+0x1600` (`0x33fe60`, before the party block, so it is
     /// kept apart from `block`). `FUN_0023e620` adds to it and `FUN_0023e5e0` lets a sum through only
     /// below 1,000,000 (else 999,999). The word at `0x340e48` that `experience()` reads is raised by
     /// `FUN_001b51e0`, which then runs the level-up check of every party member (`FUN_001b52f8`
-    /// compares it with the level table), so that word is the experience total (docs/prizes.md).
+    /// compares it with the level table), so that word is the experience total (docs/systems/combat-effects/prizes.md).
     wallet: u32,
-    /// The option word (save `+0x31b0`, `0x33fa10`: the ten Config rows of docs/menus.md 2.8) and the game
+    /// The option word (save `+0x31b0`, `0x33fa10`: the ten Config rows of docs/systems/ui/menus-pause.md 2.8) and the game
     /// mode (save `+0x1658`, read-only on that page). Outside the party block, so kept apart like `wallet`.
     config: [u32; 2],
     /// The story flags, the area program table and the exit-lock halfwords (`Story`, save block
     /// `0x33f6b0`, `0x33e86f`, `0x33f918`). Shared with the script hosts (`shared_story`): a clone of
     /// `Progress` shares it too.
     story: StoryHandle,
-    /// The "seen" words of the NEW tags (save `+0x31b4`, docs/menus.md 16.1) as a save slot carries them: empty until a slot
+    /// The "seen" words of the NEW tags (save `+0x31b4`, docs/systems/ui/menus-new-help.md 16.1) as a save slot carries them: empty until a slot
     /// that holds them is loaded or the menu stores them (`set_new_seen`).
     new_seen: Vec<u32>,
     /// The record bits (the word array at `0x33fdb0`, save `+0x1550`, outside the party block): `FUN_001a5328` tests
     /// bit n, `FUN_001a52b0` sets it. The shops read and set them (`menu_shop::stock`); nothing else in the app does yet.
     record_bits: Vec<u32>,
-    /// The moogle's synthesis record (save `+0x3728`, `FUN_002906c0`; docs/menus.md 23), read and written by the shop's
+    /// The moogle's synthesis record (save `+0x3728`, `FUN_002906c0`; docs/systems/ui/menus-shop.md 23), read and written by the shop's
     /// third row (`menu_shop::synth`). Outside the party block, so kept apart like `wallet`. Saved in the slot files (key `moogle`).
     pub moogle: Moogle,
     /// The shops' "seen" bits (save `+0x3714`, 0x80 bits over the shop file's item list, `FUN_00265ad0`): an item whose
@@ -618,7 +618,7 @@ pub struct Progress {
     /// The shops' first-visit byte (save `+0x3724`): bit 0 / bit 1 once the opening text of a shop with the state's
     /// `+0xd` clear / set was dismissed (`FUN_002621a0`, `FUN_00265498`). Saved in the slot files (key `shop_visits`).
     shop_visits: u8,
-    /// The journal's seen set (save `+0x38f0`, `FUN_002b70e0`, docs/menus.md 20.9): one (category, entry) pair per entry the
+    /// The journal's seen set (save `+0x38f0`, `FUN_002b70e0`, docs/systems/ui/menus-journal.md 20.9): one (category, entry) pair per entry the
     /// journal has marked seen (`menu_journal::marks::Cat` as a number). The original keeps bits at per-category offsets; the
     /// app keeps the pairs [inferred storage, same meaning]. Saved in the slot files (key `journal_seen`).
     journal_seen: std::collections::BTreeSet<(u8, u32)>,
@@ -997,7 +997,7 @@ impl Progress {
     }
 
     /// The saved drive gauge bytes (`+0xdd0..+0xdd3`, status `+0x1b0..+0x1b3`). Not wired: the
-    /// drive system keeps its own start values (docs/progress.md, Gaps).
+    /// drive system keeps its own start values (docs/systems/core-runtime/progress.md, Gaps).
     pub fn drive_bytes(&self) -> [u8; 4] {
         [self.u8_at(off::DRIVE), self.u8_at(off::DRIVE + 1), self.u8_at(off::DRIVE + 2), self.u8_at(off::DRIVE + 3)]
     }
@@ -1044,7 +1044,7 @@ impl Progress {
     /// `FUN_00274e50`, the Customize page's switch: flips the bit and answers whether the spell is now
     /// usable ("Use", the bit clear). The original reads the state with `FUN_001a4bb8` and writes the
     /// opposite (clear when it read 0, set otherwise), which is a plain flip for every spell whose command
-    /// `Cost` is not 255 (`docs/magic.md`).
+    /// `Cost` is not 255 (`docs/systems/magic/contract.md`).
     pub fn toggle_spell_switch(&mut self, bit: u8) -> bool {
         let now = self.spell_switch(bit);
         self.set_spell_switch(bit, !now);
@@ -1194,7 +1194,7 @@ impl Progress {
         self.u8_at(Self::BONUS_COUNT)
     }
 
-    /// `FUN_001be6b8(id)`: gives the bonus reward `id` once (dynamic trace WP-DYN1, docs/player-data.md "Bonus rewards").
+    /// `FUN_001be6b8(id)`: gives the bonus reward `id` once (dynamic trace WP-DYN1, docs/systems/combat-effects/player-data.md "Bonus rewards").
     /// Nothing happens when its flag is set or `id` is not below 256. Otherwise the count byte rises by one, the flag is
     /// set and every `bons` row of that id (`FUN_001be4b8` finds the first, the loop of `FUN_001be6b8` follows while the
     /// next row has the same id) is applied to its character (`FUN_001be500` on the status block, then the block's
@@ -1305,7 +1305,7 @@ impl Progress {
     /// Marks the chest `n` opened. The original sets the bit in `FUN_001a6910` (after the reward is given; `FUN_001a6a58`
     /// mode 1 from the chest-open sequence `FUN_001a6db8`, `FUN_001a6a78` mode 2 from the reward list of an area trigger,
     /// `FUN_001978b0`). The app has no chest object and does not run a trigger's reward list, so nothing calls this
-    /// outside a state file yet (gap, docs/menus.md "WP-MN13 status").
+    /// outside a state file yet (gap, docs/systems/ui/menus-journal.md "WP-MN13 status").
     pub fn set_chest_opened(&mut self, n: u16) {
         if n != 0 {
             self.set_record_bit(CHEST_BITS + n);
@@ -2225,7 +2225,7 @@ impl Progress {
 
     /// WP-RV3: the boot weapon words of the party records and form records (`BootWeapons`: `00common.bdx` event 7, host 0.75 /
     /// 0.76) where a record's first word is 0, so every member fights with the weapon the game object's constructor gives him.
-    /// A state with a `block` keeps its words. The new game itself leaves them 0 (no `plrp` row carries a weapon item, docs/party.md).
+    /// A state with a `block` keeps its words. The new game itself leaves them 0 (no `plrp` row carries a weapon item, docs/systems/party/contract.md).
     /// Returns what it set (also run for `KH2_STATE` files that carry no `block`).
     pub fn apply_party_weapons(&mut self) -> Vec<String> {
         let table = self.boot_weapons.clone();
@@ -2249,7 +2249,7 @@ impl Progress {
         added
     }
 
-    /// Applies a state file (schema in docs/progress.md) on top of this state.
+    /// Applies a state file (schema in docs/systems/core-runtime/progress.md) on top of this state.
     pub fn apply_json(&mut self, text: &str) -> Result<(), String> {
         // The story is a shared handle: an old-format slot resets it before its other keys are parsed, so a failure restores it.
         let story = self.story().clone();
@@ -2516,7 +2516,7 @@ impl Progress {
                     }
                 }
                 // The members' AI settings (record +0xd4): `{"2": 2, "3": [3, 1]}` = member id -> the style byte, or the
-                // bytes from byte 0 on (docs/progress.md).
+                // bytes from byte 0 on (docs/systems/core-runtime/progress.md).
                 "party_settings" => {
                     let Json::Obj(m) = v else { return Err("party_settings: expected an object of member id: byte or bytes".into()) };
                     for (k, b) in m {
@@ -2525,7 +2525,7 @@ impl Progress {
                             return Err(format!("party_settings: no member record {member}"));
                         }
                         // Rejected, not truncated: a value past 255 is no byte and byte 0 (the battle style) is 0..5
-                        // (the six rows of the style table, docs/party.md).
+                        // (the six rows of the style table, docs/systems/party/contract.md).
                         let items: Vec<&Json> = match b {
                             Json::Arr(a) => a.iter().collect(),
                             one => vec![one],
@@ -2748,7 +2748,7 @@ impl Progress {
 
 // --- story flags, area programs, exit locks (save block) ------------------------------------------
 
-/// EE addresses of the story state (docs/events.md sections 0, 2 and 5).
+/// EE addresses of the story state (docs/systems/core-runtime/areas.md sections 0, 2 and docs/systems/core-runtime/story-flags.md 5).
 pub mod story {
     /// The flag array: 19 pages of 0x20 bytes, one per world (`FUN_001802e0`, `FUN_00180298`,
     /// `FUN_0017ff60`). It ends at 0x33f910, where the world-point bits of `FUN_00194fd8` start.
@@ -2764,7 +2764,7 @@ pub mod story {
     pub const LOCKS: u32 = 0x0033_f918;
 }
 
-/// The world map's save-block region (docs/worldmap.md section 6): one byte array from the world
+/// The world map's save-block region (docs/systems/worldmap-gummi/worldmap.md section 6): one byte array from the world
 /// records to the byte after `WORLD_MAP_BYTE`, kept as the game lays it out so a record index past the
 /// 19 worlds lands where the game's pointer arithmetic would put it.
 pub mod world {
@@ -2789,7 +2789,7 @@ pub mod world {
 /// What the save block keeps of the story: the flag bits, the area program table and the exit-lock
 /// halfwords, plus the side-effect lists of `00progress.bin` that setting a flag runs. The new game
 /// has every byte 0 (`FUN_00105638` clears the save block at boot) [inferred: no later new-game writer
-/// of these three regions was found; docs/events.md section 10].
+/// of these three regions was found; docs/systems/events-movies/events-plan.md section 10].
 #[derive(Clone, Debug, Default)]
 pub struct Story {
     /// The flag words (`story::FLAGS`), `WORLDS * PAGE / 4` of them.
@@ -2957,7 +2957,7 @@ impl Story {
         self.world_flags_follow(id);
     }
 
-    // --- the world map's state (docs/worldmap.md section 6) ----------------------------------------
+    // --- the world map's state (docs/systems/worldmap-gummi/worldmap.md section 6) ----------------------------------------
 
     fn world_ensure(&mut self) {
         if self.world.is_empty() {
@@ -3189,7 +3189,7 @@ impl Story {
     }
 
     /// `FUN_00194fa8`: sets world-point bit `i`. The bit is the record index `FUN_00194f68` finds in
-    /// `00worldpoint.bin`, which stops after 0x36 records (docs/events.md section 4), so an index from
+    /// `00worldpoint.bin`, which stops after 0x36 records (docs/systems/events-movies/npc-savepoints.md section 4), so an index from
     /// `WORLD_POINT_RECORDS` up is ignored (it cannot come from the lookup; the two words end at 64).
     pub fn set_world_point(&mut self, i: usize) {
         if i >= WORLD_POINT_RECORDS {
@@ -3230,7 +3230,7 @@ impl Story {
     }
 }
 
-// --- save slots (WP-M8, docs/menus.md 18) ------------------------------------------------------
+// --- save slots (WP-M8, docs/systems/ui/menus-save.md 18) ------------------------------------------------------
 
 /// What a slot's row on the Save menu shows besides the state itself: the leader's level, the munny, the play time and the
 /// area the file was written in (the area's code, `tt03`).
@@ -3409,7 +3409,7 @@ pub fn ensure(app: &mut App) -> bool {
     if log_on() {
         info!("{}", p.report());
         if !p.baseline.is_empty() {
-            info!("progress: app baseline (not the original's new game, docs/progress.md): {}", p.baseline.join("; "));
+            info!("progress: app baseline (not the original's new game, docs/systems/core-runtime/progress.md): {}", p.baseline.join("; "));
         }
     }
     {
@@ -3809,7 +3809,7 @@ mod tests {
         assert!(p.apply_json(r#"{"shop_seen": 3}"#).is_err());
     }
 
-    /// The Save menu's slot file (docs/menus.md 18): written from one state, read back through `apply_json` (the path
+    /// The Save menu's slot file (docs/systems/ui/menus-save.md 18): written from one state, read back through `apply_json` (the path
     /// `KH2_STATE` takes) into another, it reproduces the party block byte for byte and the app fields beside it.
     #[test]
     fn a_slot_file_restores_the_block_byte_for_byte() {
@@ -4663,7 +4663,7 @@ mod tests {
     /// words (0x33f6b0, 0x260 bytes), program table (0x33e86f, 19 * 0xc0 bytes) and lock halfwords
     /// (0x33f918, 4 per `dsa` entry). The calls after the list (`FUN_001803b0` .. `FUN_00195130`, which
     /// reach menus, tutorials and the world map) are `jr ra` stubs: they do not write these regions
-    /// [inferred from their names in docs/events.md section 5; not read]. The world-point table
+    /// [inferred from their names in docs/systems/core-runtime/story-flags.md section 5; not read]. The world-point table
     /// `DAT_01c8a984` points at zeros, so ops 4 and 5 find no point (as the port, which leaves the bits).
     #[test]
     fn story_flag_setter_matches_the_game() {
@@ -4745,7 +4745,7 @@ mod tests {
         assert!(with_world > 100 && queued > 50, "{with_world} {queued}");
     }
 
-    /// WP-E5 item 3 data: on the disc, setting flag 0x883 gives tt04 btl program 1 (docs/events.md
+    /// WP-E5 item 3 data: on the disc, setting flag 0x883 gives tt04 btl program 1 (docs/systems/core-runtime/story-flags.md
     /// section 5), and 0x814 sets tt04 back to (0, 0, 0).
     #[test]
     fn flag_0x883_selects_tt04_btl_program_one() {
@@ -4940,7 +4940,7 @@ mod tests {
     }
 
     /// WP-RV3: running `00common.bdx` event 7 on the disc gives the 13 member words (Sora 41, Donald 75, Goofy 49 ...) and the
-    /// form words (forms 1 to 4 = 0, 5 = 71, 9 = 42) of docs/bdx.md host 0.75 / 0.76.
+    /// form words (forms 1 to 4 = 0, 5 = 71, 9 = 42) of docs/systems/script-host/contract.md host 0.75 / 0.76.
     #[test]
     fn the_boot_script_sets_the_member_and_form_weapon_words() {
         let Some(b) = disc_boot_weapons() else { return };

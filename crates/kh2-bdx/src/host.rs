@@ -5,7 +5,7 @@
 //! the interpreter resolves the script's context pointer to it. Objects, targets and hit records are
 //! opaque 32-bit handles owned by the host. Vectors are `[x, y, z, w]`.
 //!
-//! Which fields of the original object each call touches is listed in docs/bdx.md. Calls marked
+//! Which fields of the original object each call touches is listed in docs/systems/script-host/contract.md. Calls marked
 //! "role inferred" have their effect on the object read from the game code but their game-level
 //! meaning guessed from how scripts use them.
 

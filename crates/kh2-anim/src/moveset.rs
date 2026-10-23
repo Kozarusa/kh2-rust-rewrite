@@ -130,7 +130,7 @@ impl Moveset {
 // Selection rules. The game's attack request (FUN_00174cf8, command type 1) runs the explicit-key
 // checks (FUN_00177ea0), the combo counter update (FUN_00176b00) and then the table selection
 // (FUN_00177d58 -> FUN_001cbcf8 builds a bit per record, FUN_001cbf48 picks). See
-// docs/moveset-selection.md for the evaluation order and the gaps.
+// docs/systems/player-camera/moveset-selection.md for the evaluation order and the gaps.
 // ---------------------------------------------------------------------------------------------
 
 /// Action keys that the game's code asks for by name.

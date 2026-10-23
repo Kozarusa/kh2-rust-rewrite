@@ -1,4 +1,4 @@
-//! Summons, stages 2 and 3 of docs/summons.md section 6: the gauge, the command, and the summon object
+//! Summons, stages 2 and 3 of docs/systems/drive-limits-summons/summons-stages.md section 6: the gauge, the command, and the summon object
 //! with the arrival that skips the event. The rules are pure functions in `drive::rules` (the summon
 //! uses the drive gauge under mode byte 3) and in `rules` below; this module keeps the summon's own
 //! state and runs the sequence:
@@ -40,7 +40,7 @@
 //! Genie's class (module `genie`, WP-SUM5) runs the members' follow and his two records, and answers his hosts
 //! 10.9 / 10.10.
 //!
-//! What the app does not have (docs/summons.md "Status"): the friend AI of Chicken Little and Peter Pan (they stand where
+//! What the app does not have (docs/systems/drive-limits-summons/summons-stages.md "Status"): the friend AI of Chicken Little and Peter Pan (they stand where
 //! they were put; their script's motion requests are logged, not played), the event itself (nothing in the app starts it: the wait for it ends at
 //! once), the HUD layers the event hides, the screen fade list (`FUN_0016ff50`), the free-spot
 //! collision tests (`FUN_001a5c30` / `FUN_001a5bf8`: a floor under the point stands in), the
@@ -120,7 +120,7 @@ const KID_BASE: u32 = 0x1810;
 const KID_PATIENCE: u8 = 3;
 
 /// The summon's friend AI object as far as the group 10 hosts of the summon scripts read and write it
-/// (stage 4 of docs/summons.md: Stitch first). FUN_0010b780 picks the AI object by NeoStatus and stores it
+/// (stage 4 of docs/systems/drive-limits-summons/contract.md: Stitch first). FUN_0010b780 picks the AI object by NeoStatus and stores it
 /// at object +0xb60 (FUN_0010c5f0 reads it back for every group 10 wrapper that names the AI); Stitch's is
 /// FUN_001179c0 (0x790 bytes, vtable 0x354870, 7 action records at 0x354708). Offsets are the AI
 /// object's unless they say "object".
@@ -298,7 +298,7 @@ pub mod ai {
         }
 
         /// Host 1.52 (0x1728c0 -> FUN_0019dd88(object + 0x47c, n)): bit `n` of the array is set, so collision part `n` of the
-        /// object reads as on whatever the other arrays say (docs/bdx.md 1.52). Parts beyond the word's 32 bits are dropped.
+        /// object reads as on whatever the other arrays say (docs/systems/script-host/contract.md 1.52). Parts beyond the word's 32 bits are dropped.
         pub fn set_part_bit(&mut self, n: u32) {
             if n < 32 {
                 self.parts_47c |= 1 << n;
@@ -1933,7 +1933,7 @@ pub mod fps {
 
     /// The game camera as FUN_0011a6d8 projects with it: the world to view transform and the focal length it multiplies
     /// by (`FUN_00106f00` of the camera's projection block, +0x40). [inferred] That word is the focal length
-    /// `(512 / 0.8) x 0.5 / tan(hfov / 2)` of the camera builder (docs/camera.md "Field of view"); the app's vertical
+    /// `(512 / 0.8) x 0.5 / tan(hfov / 2)` of the camera builder (docs/systems/player-camera/camera.md "Field of view"); the app's vertical
     /// field of view is `2 atan(0.75 tan(hfov / 2))`, so the focal length is `240 x` the projection's `y_axis.y`.
     #[derive(Clone, Copy, Debug)]
     pub struct ScreenView {
@@ -2547,7 +2547,7 @@ pub struct SharedBlocks(pub kh2_bdx::shared::SharedBlocks);
 /// The summon object's script host: the party members' host (`FriendHost`: attack objects, effects,
 /// target record) with the summon's own group 10 entries and the calls the summon's script makes of the
 /// player; motion requests go straight to the enemy host (the summon's motions are not remapped yet: the
-/// object's motions are logged, not played, docs/summons.md).
+/// object's motions are logged, not played, docs/systems/drive-limits-summons/contract.md).
 struct SummonHost<'a, 'b> {
     f: crate::friend_host::FriendHost<'a, 'b>,
     ai: &'b mut ai::SummonAi,
@@ -2628,10 +2628,10 @@ impl SummonHost<'_, '_> {
                 (Value::None, St::Approx, if was { "the link is broken and its routine runs after the tick; the facing set from the object's +0x60 / +0x68 (FUN_003003e8, FUN_0016a7f0) and the cleared +0x7f8 value 8 are not modelled" } else { "no link is made: FUN_001beb00 finds no parent and the call does nothing" })
             }
             // 0.32 fader_out (0x16d880 -> FUN_0014a7f0(FUN_0014a918(), seconds x DAT_0037a250, 1)): the screen fader at 0x3564d0
-            // fades in over the length (state 1 = the fade-in of the revive notes, docs/summons.md). Stitch's Ohana start calls it
+            // fades in over the length (state 1 = the fade-in of the revive notes, docs/systems/drive-limits-summons/contract.md). Stitch's Ohana start calls it
             // with 0 at its end, so the fader ends clear; the app never fades that fader, so there is nothing to clear.
             (0, 32) => (Value::None, St::Approx, "the fader 0x3564d0 is never faded in the app: a fade-in of length 0 leaves it clear"),
-            // 1.52 bits_47c_set (0x1728c0 -> FUN_0019dd88(object + 0x47c, n)): collision part n forced on (docs/bdx.md). Chicken
+            // 1.52 bits_47c_set (0x1728c0 -> FUN_0019dd88(object + 0x47c, n)): collision part n forced on (docs/systems/script-host/contract.md). Chicken
             // Little's start sets part 1 of himself after his arrival event.
             (1, 52) if a(0) == me => {
                 self.ai.set_part_bit(a(1));
@@ -2648,7 +2648,7 @@ impl SummonHost<'_, '_> {
             // while it holds; FUN_00191c18 shades the same way. The app has neither gate.
             (1, 286) => {
                 self.ai.set_gflag(0x1000, true);
-                (Value::None, St::Approx, "bit 0x1000 of 0x35d268 is kept in GlobalFlags; the object update gate FUN_0019afe8 / FUN_00184498 / FUN_00191c18 is not in the app (docs/summons.md, WP-FL1)")
+                (Value::None, St::Approx, "bit 0x1000 of 0x35d268 is kept in GlobalFlags; the object update gate FUN_0019afe8 / FUN_00184498 / FUN_00191c18 is not in the app (docs/systems/drive-limits-summons/contract.md, WP-FL1)")
             }
             // 1.157 spawn_effect_on (0x171f40 -> FUN_00197230(object, name, second object)): the name is a 4-character entry name of
             // type 0x16 in the object's BAR (FUN_001971c0); its data is an event (type 0xb, FUN_00195898) placed at the object's
@@ -2673,9 +2673,9 @@ impl SummonHost<'_, '_> {
             // 1.94 obj_valid of an object the script made.
             (1, 94) if self.ai.kids.contains(&a(0)) => (Value::Bool(true), St::Approx, "an object made by host 1.0 is in the object list"),
             // 1.165 offer_command (0x1734a8): Stitch's main thread offers Ohana (519) in slot 2 while the
-            // timer is above 0 (docs/summons.md section 4). Summon limits are stage 5.
+            // timer is above 0 (docs/systems/drive-limits-summons/summons-spec.md section 4). Summon limits are stage 5.
             (1, 165) => (Value::None, St::Stub, "summon limit offers are stage 5: the offer is logged, the command menu does not show it"),
-            // 1.155 obj_method_78 (0x171c48): the player's virtual method +0x78 = FUN_00186238 (docs/magic.md; the same
+            // 1.155 obj_method_78 (0x171c48): the player's virtual method +0x78 = FUN_00186238 (docs/systems/magic/contract.md; the same
             // slot as the enemies') with (amount, part, flag). Peter Pan's script passes (5, 0, 0) next to the effect it
             // starts on the player. A positive amount is added to the HP of part 0 and the result held between its lowest
             // (0) and its maximum (FUN_001a0100); the method returns that HP. The app adds it after the tick.
@@ -2950,7 +2950,7 @@ impl SummonHost<'_, '_> {
                 (Value::None, St::Impl, "the follow step runs after the script's slice, with the steer (FUN_00110468)")
             }
             // 10.22 / 10.30 (0x2f6f60 / 0x2f70e0): the object's mover (+0xc) has flag 0x40 in +8, a blow mover (the object
-            // is knocked away: docs/hit-reaction.md); 10.30 also tests +0x10c bit 0x20000 [role unknown: read set].
+            // is knocked away: docs/systems/combat-effects/hit-reaction.md); 10.30 also tests +0x10c bit 0x20000 [role unknown: read set].
             (10, 22) | (10, 30) => (Value::Bool(self.env.enemy(a(0)).is_some_and(|e| e.blown)), St::Approx, "an enemy in `EState::Blown` has the blow mover; +0x10c bit 0x20000 (10.30) is read as set"),
             // 10.23 (0x2f6f88): object +0xae4 (the last attacker) is the second object: the player's latest landed hit.
             (10, 23) => {
@@ -3231,7 +3231,7 @@ impl kh2_bdx::Host for SummonHost<'_, '_> {
                 return v;
             }
             // 1.295 (0x173cf8 -> FUN_00140e38(FUN_00140d08())): byte +0x39 of the field camera object 0x355840, the reset-behind-the-
-            // player flag (docs/camera.md 0x38 / 0x39). FUN_00140288 clears it and runs FUN_0013fdd8; the app's camera takes that
+            // player flag (docs/systems/player-camera/contract.md 0x38 / 0x39). FUN_00140288 clears it and runs FUN_0013fdd8; the app's camera takes that
             // reset only from the C key / middle mouse (`camera::gather_input`), a private path.
             Call::Unknown { group: 1, index: 295, .. } => {
                 self.record(c, &kh2_bdx::Value::None, crate::enemy_host::St::Stub, "the camera's reset flag (0x355840 + 0x39) has no request in camera.rs: the camera is not reset");
@@ -3670,7 +3670,7 @@ fn tick(
             info!("summon: gauge mode 3: timer {:.0}/{:.0}, {segments} segments (summon level {})", timer.left, timer.total, sm.exp.level);
             if sm.event {
                 // The effect is killed, the script plays `appear`, state 1 while an event runs. Nothing
-                // in the app starts the event (docs/summons.md section 7), so the wait for it ends at
+                // in the app starts the event (docs/systems/drive-limits-summons/summons-spec.md section 7), so the wait for it ends at
                 // once and the HUD layers it hides (FUN_0014eec0) are not touched [inferred].
                 acts.0.push(Act::EffectEnd { kill: true });
                 acts.0.push(Act::Spawn { index: sm.index, mode: "appear", skip: false });
@@ -4103,7 +4103,7 @@ pub enum ReviveAct {
 }
 
 /// Ticks the revive's camera event lasts: its end frame 0x15 is 21 event frames, an event frame being two game ticks
-/// (docs/summons.md, WP-RV2). The window wait (`FUN_00196418`) ends then and the pad is given back.
+/// (docs/systems/drive-limits-summons/contract.md, WP-RV2). The window wait (`FUN_00196418`) ends then and the pad is given back.
 pub const REVIVE_EVENT_TICKS: u32 = 42;
 /// Game tick of the event at which its screen fade starts (event frame 0xb, command 0x12 mode 2).
 pub const REVIVE_FADE_START: u32 = 22;
@@ -4180,7 +4180,7 @@ impl Revive {
     }
 
     /// The white fade's alpha byte, 0 to 0x80, while the revive runs (`revive_fade::alpha_after`, the game's counter). Nothing in the
-    /// revive lifts the fade afterwards (docs/summons.md, WP-RV5): the original leaves it at 0x80 until another fade-in call, which the
+    /// revive lifts the fade afterwards (docs/systems/drive-limits-summons/contract.md, WP-RV5): the original leaves it at 0x80 until another fade-in call, which the
     /// app does not model, so once the thread ends this is 0 again [conservative].
     pub fn fade_alpha(&self) -> u32 {
         if !self.running() {
@@ -4280,7 +4280,7 @@ fn limit_deliveries(events: &[crate::limit::LimitScriptEvent], neo: u16) -> Vec<
 /// `KH2_SUMMON_EVENT=<event>:<argument>[@<seconds>][,<event>:<argument>[@<seconds>]...]` (a harness aid; a missing time is
 /// the one before, 12 s for the first): each event is delivered once, while a summon is out, in order, to the summon's
 /// script, as the limit task's script would deliver events 22 (a limit starts, with its attack object: `22:limit`, whose
-/// handler starts the limit's own command) and 23 (a sub-command, FUN_001b28a0's first branch, docs/summons.md): `22:limit`
+/// handler starts the limit's own command) and 23 (a sub-command, FUN_001b28a0's first branch, docs/systems/drive-limits-summons/contract.md): `22:limit`
 /// starts Chicken Little's FPS mode, Peter Pan's Never Land or Stitch's Ohana; `23:525` .. `23:527` are Stitch's follow-ups. The
 /// limit task body is not ported, so nothing else delivers them. [inferred] The receiver is the summon's script.
 fn event_due(summon_out: bool) -> Vec<(u32, u32)> {
@@ -4390,12 +4390,12 @@ fn objects(
     // player is knocked out. `Revive` runs the sequence: the music stops and new sounds are refused, and when its waits are over
     // FUN_001adeb8 clears byte 7 (FUN_001c6a10), makes Tinker Bell (objentry 0x4f4, the row's Entity2) at the player and
     // sets her mode `reraise` (the string at 0x37b880); her script raises the player (host 1.277). The message window's
-    // text does not exist (a camera event, docs/summons.md); `Revive` times that event (42 ticks, pad locked) and the white fade (tick 22 to 122).
+    // text does not exist (a camera event, docs/systems/drive-limits-summons/contract.md); `Revive` times that event (42 ticks, pad locked) and the white fade (tick 22 to 122).
     let mut acts = Vec::new();
     if sm.revive.running() {
         acts = sm.revive.tick();
         if sm.revive.clock % 20 == 0 {
-            info!("summon: revive: tick {}, pad locked {}, white fade alpha {:#x} (docs/summons.md)", sm.revive.clock, sm.revive.pad_locked(), sm.revive.fade_alpha());
+            info!("summon: revive: tick {}, pad locked {}, white fade alpha {:#x} (docs/systems/drive-limits-summons/contract.md)", sm.revive.clock, sm.revive.pad_locked(), sm.revive.fade_alpha());
         }
     } else if revive_due(tinker_ready(&sm, &data), matches!(s.state, State::Down), s.hp)
         && let Some(id) = kid_ids.first().copied()
@@ -5140,7 +5140,7 @@ fn objects(
                         let mut v = crate::items::Vitals { hp: s.hp, hp_max: s.stats.max_hp, hp_min: 0, mp: s.mp, mp_max: s.stats.max_mp, charge_left: charge.left, charge_total: charge.total, ..Default::default() };
                         let (hp0, mp0) = (v.hp, v.mp);
                         crate::items::item_effect(u.item, amount, 100, &mut v, feed);
-                        // The player's HP method refuses while his dead bit is set (docs/summons.md WP-SM1): a player who is down
+                        // The player's HP method refuses while his dead bit is set (docs/systems/drive-limits-summons/contract.md WP-SM1): a player who is down
                         // (HP 0) keeps his HP; the other parts of the effect still apply.
                         if hp0 <= 0 {
                             v.hp = hp0;
@@ -5190,7 +5190,7 @@ fn objects(
             }
             fx_after(&mut commands, fields, pax.as_ref(), body, s.body, &mut running, h.log, tag);
         }
-        // Nothing else the script asks for is carried out before stage 4 (docs/summons.md).
+        // Nothing else the script asks for is carried out before stage 4 (docs/systems/drive-limits-summons/contract.md).
         obj.move_vel = Vec3::ZERO;
         obj.effects.clear();
         obj.outbox.clear();

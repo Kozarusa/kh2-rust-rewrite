@@ -3,7 +3,7 @@
 //! Typed views over tables that `sheets/tables.json` already generates (`fmlv`, `item`, `cmd`,
 //! `limt`, `sumn`) plus decoders for tables the sheet does not model yet (`rcct`, `memt` and the
 //! full `sstm` record). No game values live here: everything is read from the disc at run time.
-//! How each rule was found is written up in `docs/player-data.md`.
+//! How each rule was found is written up in `docs/systems/combat-effects/player-data.md`.
 
 use std::collections::BTreeMap;
 

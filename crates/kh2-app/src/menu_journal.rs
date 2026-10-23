@@ -1,4 +1,4 @@
-//! Jiminy's Journal, menu kind 3 (docs/menus.md section 20): the camp's Journal rows leave the camp for this scene.
+//! Jiminy's Journal, menu kind 3 (docs/systems/ui/menus-journal.md section 20): the camp's Journal rows leave the camp for this scene.
 //!
 //! What the original does (`SLUS_210.05`, read in WP-MN9):
 //! - The camp's page-0 handler (`FUN_00251848`, jump table 0x380794 entries 5 and 6 at 0x251c38) writes the scene's
@@ -22,7 +22,7 @@
 //!   `jm_top_<world>.2ld` pictures, the story texts and the title; page 1 (`FUN_002a4188` / `FUN_002a44a8`) is
 //!   Roxas's one-row page with the same layer objects in other groups.
 //!
-//! What the port draws: pages 0, 1 and 2 (docs/menus.md 20.7), and since WP-MN11 (20.8) the help line, the list
+//! What the port draws: pages 0, 1 and 2 (docs/systems/ui/menus-journal.md 20.7), and since WP-MN11 (20.8) the help line, the list
 //! cursor, the L1 / R1 hints and switches between pages 0 and 2, and page 3 (the story). WP-MN12 (20.9) added the scroll bar
 //! object, the NEW tags (`marks.rs`), the Characters and Character Links pages (6, 0xb: `chars.rs`), Treasures and Maps (7,
 //! 8: `lists.rs`, `treasure_page.rs`) and the Album (4, 5: `album_page.rs`). WP-MN14 (20.10) added a character's own page (0xf),
@@ -1242,7 +1242,7 @@ pub struct Journal {
 /// The most updates a page turn waits for its leave groups (they last 12 frames).
 const TURN_LIMIT: u32 = 300;
 
-/// A page turn (docs/menus.md 20.14): the page to build when the leaving objects have finished, the world byte, whether the header
+/// A page turn (docs/systems/ui/menus-journal-pages.md 20.14): the page to build when the leaving objects have finished, the world byte, whether the header
 /// was sent away (it is re-entered with the next page) and the nodes whose leave group is waited for.
 struct Turn {
     to: (u16, i8),
@@ -1905,7 +1905,7 @@ fn show(j: &mut Journal, scene: &mut MenuScene, disc: &Disc, images: &mut Assets
         scene.nodes[id].visible = true;
         let hold = j.layd.layout(t[2]).first().map_or(l.group, |h| h.group);
         scene.set_group_then(id, l.group, hold);
-        // The frame reaches the 4:3 canvas edges: carried out to the window's as the camp's frame is (docs/menus.md
+        // The frame reaches the 4:3 canvas edges: carried out to the window's as the camp's frame is (docs/systems/ui/menus-pause-m1.md
         // 9.1) [inferred: the same rule for this scene's layout]. Its box at rest: the hold group's first frame.
         let qs = scene.seqs.get(j.seq_base + l.seq).map(|s| s.quads(hold, 0, [l.x as f32, l.y as f32], &scene.nodes[id].ext)).unwrap_or_default();
         let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
@@ -2025,7 +2025,7 @@ fn sheet_stretch(qs: &[kh2_image::seqd::Quad]) -> Option<[f32; 4]> {
     (b[0] <= -100.0 && b[2] - b[0] >= 400.0).then_some(b)
 }
 
-/// Gives each page node that draws a left sheet the window-edge carry (`stretch_quads`, docs/menus.md 9.1), and takes it from the others (a node
+/// Gives each page node that draws a left sheet the window-edge carry (`stretch_quads`, docs/systems/ui/menus-pause-m1.md 9.1), and takes it from the others (a node
 /// shows another group on another page).
 fn carry_sheets(j: &Journal, scene: &mut MenuScene) {
     for id in j.nodes.layer + 1..scene.nodes.len() {
@@ -2982,7 +2982,7 @@ fn move_pointer(j: &mut Journal, scene: &mut MenuScene, steps: u32, dir: (i32, i
     }
 }
 
-/// Starts the page turn to `to` (docs/menus.md 20.14). The original's handlers answer a page-changing key with the waiting state
+/// Starts the page turn to `to` (docs/systems/ui/menus-journal-pages.md 20.14). The original's handlers answer a page-changing key with the waiting state
 /// (`FUN_00295ac0(2)`): the header object plays its leave group (`FUN_002779f8(.., 1)`), the old page's objects are torn down on the
 /// first waiting frame (`FUN_002a21b8`, `FUN_002a8568`), and the next page is built only when the header and the viewer objects are gone
 /// (`FUN_00277b40`, `FUN_00278068`, `FUN_002abdc8`). The character page and its model page keep the header: they send away the model's

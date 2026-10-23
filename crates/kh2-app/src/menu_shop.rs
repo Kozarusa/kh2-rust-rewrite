@@ -1,4 +1,4 @@
-//! The shops: menu kind 4 (`itemshop.2ld`; docs/menus.md section 21) and the reaction commands that open it.
+//! The shops: menu kind 4 (`itemshop.2ld`; docs/systems/ui/menus-struggle-result.md section 21) and the reaction commands that open it.
 //!
 //! What the original does (`SLUS_210.05`, read in WP-SH1):
 //! - A shopkeeper's reaction part offers one of the "Shop" commands (cmd rows 195..213, 453 and 622; 195..212 have message 0x84c7, Execute 0x7f;
@@ -17,7 +17,7 @@
 //! - The stock (`FUN_00265688(mode word, shop state)`): the shop file is `03system.bin`'s type-0x29 entry ("shop",
 //!   magic `TZSH`, version 7, `FUN_00265660`), kept by `FUN_00193610` -> `FUN_00265ac0`. See `Shops` and `stock`.
 //!
-//! What the port does: docs/menus.md section 21 ("What the port does").
+//! What the port does: docs/systems/ui/menus-struggle-result.md section 21 ("What the port does").
 
 use bevy::prelude::*;
 use kh2_image::layd::{self, Layd};
@@ -42,7 +42,7 @@ pub mod msg {
 
 /// Addresses in the executable.
 pub mod addr {
-    /// The four top rows (`FUN_0025fef0`): 0x24 bytes each, the camp entry layout (docs/menus.md 2.1): name +0x12,
+    /// The four top rows (`FUN_0025fef0`): 0x24 bytes each, the camp entry layout (docs/systems/ui/menus-pause.md 2.1): name +0x12,
     /// help +0x14, up to four record bits that must be set at +0x1c (0xff ends).
     pub const ROWS: u32 = 0x0038_1300;
     pub const ROW_SIZE: u32 = 0x24;
@@ -1830,7 +1830,7 @@ fn tick(mut m: ResMut<ShopMenu>, mut scene: ResMut<MenuScene>, real: Res<Time<Re
     }
 }
 
-/// The third row: the moogle's synthesis (pages 8..0x17 of `FUN_00260540`; docs/menus.md section 23).
+/// The third row: the moogle's synthesis (pages 8..0x17 of `FUN_00260540`; docs/systems/ui/menus-shop.md section 23).
 ///
 /// The data is `menu/us/mixdata.bar` (`FUN_00291ae0` loads it into `DAT_0036d19c`; entry k is `FUN_0029e630(.., k)`):
 /// 0 `reci` the recipes, 1 `cond` the collection rewards, 2 `leve` the moogle's levels, 3 `exp` the points per

@@ -1,5 +1,5 @@
 //! The INFORMATION bar (WP-I1): the strip at the top left that shows a mission's objective ("Defeat Seifer!")
-//! and then scrolls it away. See docs/hud.md "The INFORMATION bar".
+//! and then scrolls it away. See docs/systems/ui/hud-banners-windows.md "The INFORMATION bar".
 //!
 //! What the game does (`SLUS_210.05`):
 //! - The mission start (`FUN_001b8ee8`) ends with `FUN_001b9a08(0)`: the header's +6 message id, when not 0, is
@@ -110,7 +110,7 @@ fn forced() -> Option<u32> {
 }
 
 /// The INFORMATION bar's clock is the field's: it stands still while the camp menu or the PAUSE band is up (the original
-/// stops the field's tasks by the scene change, docs/menus.md 1.1; the app's `schedule::Pause`).
+/// stops the field's tasks by the scene change, docs/systems/ui/menus-pause.md 1.1; the app's `schedule::Pause`).
 pub fn step_dt(frozen: bool, dt: f32) -> f32 {
     if frozen {
         0.0

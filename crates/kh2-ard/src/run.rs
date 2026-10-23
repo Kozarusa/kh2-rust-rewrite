@@ -3,7 +3,7 @@
 //! spawn-group runtime that area transitions need: which entities of a group are created for an
 //! entrance (FUN_001981a0), exit groups (FUN_00198e10) and the activator volume tests
 //! (FUN_001d8600 builds the volume, FUN_001d89a0 box, FUN_001d8a70 cylinder, FUN_00334388 shape 2).
-//! docs/events.md sections 1 and 2.
+//! docs/systems/core-runtime/areas.md sections 1 and 2.
 
 use crate::{parse_trigger, Area, Command, Entity, Group, Trigger, OP_SPAWN};
 
@@ -145,7 +145,7 @@ fn run_command(c: &Command, script: &'static str, program: u16, entrance: u8, st
         0x10 => st.music = Some([arg(0) as u16, (arg(0) >> 16) as u16]),
         0x13 => st.camera_type = arg(0),
         0x15 => st.battle_manager = Some((arg(0), a.get(1..).unwrap_or_default().to_vec())),
-        // [inferred] every argument (the decompiled loop's count read is ambiguous; docs/events.md).
+        // [inferred] every argument (the decompiled loop's count read is ambiguous; docs/systems/core-runtime/contract.md).
         0x19 => st.story_flags.extend_from_slice(a),
         0x1a => a.iter().for_each(|b| *show |= 1u64.checked_shl(*b).unwrap_or(0)),
         0x1b => a.iter().for_each(|b| *hide |= 1u64.checked_shl(*b).unwrap_or(0)),

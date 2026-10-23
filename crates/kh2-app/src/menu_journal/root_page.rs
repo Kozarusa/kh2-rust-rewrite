@@ -1,4 +1,4 @@
-//! Page 0xc of Jiminy's Journal (docs/menus.md 20.10, WP-MN14): the category list of the journal's own world (id 0xf, the cell
+//! Page 0xc of Jiminy's Journal (docs/systems/ui/menus-journal-pages.md 20.10, WP-MN14): the category list of the journal's own world (id 0xf, the cell
 //! page 0 gives an id above 0xe). `FUN_002a7220` builds it, `FUN_002a7978` is its handler, `FUN_002a7558` fills the rows
 //! (their texts are the words at 0x382d08, the help lines the words at 0x382d20, the new tags the words at 0x382d00) and
 //! `FUN_002a80c0` maps a visible row to its category.

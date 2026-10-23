@@ -3,7 +3,7 @@
 //! The game keeps a table of group pointers; each group is an array of `{function address, flags}`
 //! where the low 16 bits of the flags are the argument count and bit 30 says the function returns a
 //! value. The scripts do not carry argument counts, so the interpreter needs them to pop the right
-//! number of words. Nothing from the table is stored in this repository beyond what docs/bdx.md
+//! number of words. Nothing from the table is stored in this repository beyond what docs/systems/script-host/contract.md
 //! describes for the functions that were analysed.
 
 use std::collections::HashMap;

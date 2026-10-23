@@ -1,4 +1,4 @@
-//! Oracle checks behind docs/abilities.md "Ability readers" (WP-A1): Second Chance and Once More as
+//! Oracle checks behind docs/systems/combat-effects/abilities.md "Ability readers" (WP-A1): Second Chance and Once More as
 //! the game's own code applies them, run in kh2-ee on the user's executable and compared with the
 //! rule the app ports (`kh2_app::abilities::survives_lethal_hit`, `kh2_app::abilities::lethal_hit_damage`,
 //! called directly). Read-only; skips without a disc.

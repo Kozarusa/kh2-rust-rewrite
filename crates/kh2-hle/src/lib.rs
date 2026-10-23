@@ -30,6 +30,7 @@
 //! overflow period (8.79 Hz from a 16-bit counter at bus clock / 256) and CPI 1 for the virtual
 //! clock. Each is labelled where it is written.
 
+pub mod iop;
 pub mod kernel;
 
 pub use kernel::{Kernel, Machine, RunStop};

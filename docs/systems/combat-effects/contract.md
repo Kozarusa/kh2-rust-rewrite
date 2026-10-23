@@ -41,6 +41,18 @@ and the hit, death and system effects run; the PAX runtime is far from complete 
 | `FUN_001c0f40`, `FUN_001c0d88` | ability block apply, defaults |
 | `FUN_001b51e0`, `FUN_001b52f8` | experience add, level-up check |
 
+## Layouts (C7, WP-FAC-8)
+- Status block, 0x258 bytes, a pool of 64 at 0x1c8bdb0 with a free-index stack at 0x1c953b0 (count `DAT_01c954b0`): `FUN_0019f708`
+  takes one and clears it with `FUN_0019f5d8`, `FUN_0019ffb8` returns it when the use count (+0x248, starts at 1) falls below 1. Fields:
+  +0/+4 HP and maximum, +0x180/+0x184 MP, +0x188.. stats, +0x198 and +0x1a0 start at 99999 with +0x19c/+0x1a4 at 1 (meaning not read),
+  +0x1a8 six element resists at 100, +0x1af..+0x1b3 drive bytes, +0x1cc ability bits, +0x238 party record, +0x244 member (-1), +0x24c
+  owner object (`FUN_001b2148`). The actor points to it at +0x48c.
+- Effect handle, 0x38 bytes from the heap at `DAT_01d6aa40` (`FUN_001da6f0`, `FUN_001d9980`: vtable 0x360a68, +0xc owner, +0x1c the
+  instance, +0x28 next on the list `DAT_00360a00`/`DAT_00360a04`, count `DAT_00360a08`); `FUN_001d9c60` attaches the instance.
+- Effect instance, 0x150 bytes from the allocator at `DAT_01db0e24` (`FUN_001e41a8`), freed with a 0xab fill (`FUN_001e4218`); its
+  constructor is not read yet.
+- Bind record, 0x70 bytes from the heap at `DAT_01db0a80` (`FUN_001db5f0`), +0x60 next on the owner's list at owner +0xc/+0x10.
+
 ## Open gaps
 - Hit-stop: none found in the executable or the four overlays (`hit-stop.md` "What is not ruled out").
 - Enemy wall recoil and clash rules for overlay classes; the meaning of hit record `+0x24`, stat block `+0x1c8` (`hit-reaction.md`).

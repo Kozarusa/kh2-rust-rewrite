@@ -39,6 +39,18 @@ the event and talk cameras are partly ported. The Roxas player class, camera typ
 | `FUN_00181e00`, `FUN_00182370` | per-tick displacement and root motion, real displacement at `+0x860` |
 | `FUN_0017e220` .. `FUN_0017e6c0` | motion request, blend set-up, cut test, blend step |
 
+## Layouts (C7, WP-FAC-8)
+- Actor header (first 0x9c0 bytes, `FUN_00168d30`): +0 vtable, +4 self, +8 objentry, +0xc current mover, +0x10 direction, +0x20
+  velocity, +0x108/+0x10c flags, +0x140 motion controller, +0x3b0 team, +0x48c status block, +0x540 position, +0x550 rotation, +0x588
+  class flags, +0x670 model instance, +0x81c spawn vector, +0x82c fade ramp, +0x8b4 object list link, +0x9ad list priority. Player
+  classes add +0xaf0..+0xb28 (`FUN_001746e0`), +0xb38..+0xb60 (`FUN_00176e00`) and Sora +0xb68..+0xb70 (`FUN_001ce820`, size 0xb80).
+- Motion controller at actor +0x140, 0x1c8 bytes (`FUN_0017d768`; end inferred from the next field at +0x308): +8 owner, +0x14 motion
+  id, +0x18 serial, +0x1c mode (all -1 at start), +0x20..+0x28 flags, +0x30 time, +0xf0 the owner's effect list, +0xf4 rate,
+  +0xf8/+0xf9 range bytes, +0x14c sixteen words of -1.
+- Movers are shared descriptors, not per-actor blocks: `FUN_00179868(id)` reads the pointer table at 0x35ca48 (ids 0 to 0x3f) built by
+  `FUN_00179880` at 0x1c88eb0; `FUN_0016b648` calls the descriptor's enter slot and stores it at actor +0xc. All mover state is in the
+  actor block (+0x10, +0x20, +0xf0, +0x880). The port stores the descriptor's static address and keeps the table as constants.
+
 ## Open gaps
 - No dodge roll and no Quick Run tap/hold threshold exist in the USA executable (A180 and slot 838 are Final Mix only); the app's Square rule is
   ported from Final Mix (`movement.md` "Gaps", `foundations/final-mix.md`).

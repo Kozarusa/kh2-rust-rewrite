@@ -43,6 +43,21 @@ those are the first spec packages of the step.
 | `FUN_0017fd10` | loads the 19 world entries of `00progress.bin` |
 | `FUN_00143840` -> `FUN_00164138`, `FUN_00141b50` | walking collider sweep and the polygon filter |
 
+## Layouts (C7, WP-FAC-8)
+- Objects are allocated one by one from the general heap (`FUN_00104fa8(size)`, slot 0 of the allocator at `DAT_0033e850`); the factory
+  `FUN_0016e8c0` picks the class and its size from objentry byte +4: base object 0x9c0, standard objects 0xa00, character classes 0xaf0,
+  enemy classes 0xb00, party members and summons 0xd00, player classes 0xb70 to 0xd20 by objentry id (`FUN_00178e40`; Sora 0xb80,
+  `FUN_001ce820`). There is no single actor size.
+- Class scheme: each constructor calls its base and then stores its own vtable at +0: base `FUN_00168d30` (0x35b950), standard
+  `FUN_00196b58` (0x35e408), battle `FUN_00184bf8` (0x35ce50), then character `FUN_001b20b8` (0x35f110), enemy `FUN_00184820`
+  (0x35cdc0), playable `FUN_001746e0` (0x35c908), player `FUN_00176e00` (0x35c9a8), friend `FUN_0017c718` (0x35cc18). The port keeps
+  the real vtable address in the block's first word and dispatches on it.
+- Handles: +4 holds the object itself (`FUN_00168d30`). Object list: head `DAT_01d5d7a0`, tail `DAT_01d5d7a4`, link +0x8b4, sorted by
+  the priority byte +0x9ad (`FUN_001b7440`, called by the base constructor). Port handles stay `SELF_BASE + slot * 0x1000` (every class
+  fits), 0 for null; oracle tests translate handles to kh2-ee addresses.
+- Blocks are `layout!` byte blocks of the allocation size with typed accessors; migration order and the field tables are in the
+  FAC-8 spec (step L1: save block, object list, status pool).
+
 ## Open gaps
 - L1 parts with no doc: object and task system, frame order, RNG, memory-card format, COCT ceiling and ray casts.
 - Story: where the story gives Sora his keyblade, spells, forms and Guard (the app baseline stands in for them, `progress.md` "App baseline");

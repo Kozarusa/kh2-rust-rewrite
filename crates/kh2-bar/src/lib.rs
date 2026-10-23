@@ -1,6 +1,9 @@
 //! BAR: KH2's generic container. Header `"BAR\x01"`, u32 count, 8 bytes padding, then
 //! `count` x {u16 type, u16 duplicate, char tag[4], u32 offset, u32 size}. Per OpenKH `docs/kh2/file/type/bar.md`.
 
+pub mod request;
+pub mod resident;
+
 #[derive(Debug, Clone, Copy)]
 pub struct Entry<'a> {
     pub kind: u16,

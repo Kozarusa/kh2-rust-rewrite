@@ -1,0 +1,85 @@
+# Named values of the original's memory, read by the rig client at each checkpoint (crates/kh2-rig, docs in scenario.rs).
+# A table that has `path` is a value; its name is the dotted table name. `path`: the first number is an absolute EE address, each
+# further one is added to the pointer read at the one before. Addresses were read in the user's save states (local/specs/RIG.md 1.1);
+# [inferred] marks what the values suggest but nothing proved. This file holds addresses and units only, no game data.
+
+# The rig clock: the vsync counter (60 per second, also in menus). The client subtracts its value in the state to get k.
+[clock.vsync]
+path = [0x33fe64]
+type = "u32"
+unit = "vsync"
+note = "saved in the state; the rig's k = this minus its value in the state"
+
+# The field time step: 2.0 in the field (30 game frames per second), 1.0 in menus (60 per second); RIG.md 1.2.
+[frame.step]
+path = [0x356f40]
+type = "f32"
+unit = "frames"
+
+# The current place: world, area, entrance, one byte each at 0x33e830..2.
+[place.world]
+path = [0x33e830]
+type = "u8"
+
+[place.area]
+path = [0x33e831]
+type = "u8"
+
+[place.entrance]
+path = [0x33e832]
+type = "u8"
+
+# 0 outside, 2 in the battle states of the user's set (RIG.md 1.1 table); meaning beyond that is not established.
+[place.battle]
+path = [0x1c8a7d8]
+type = "u32"
+note = "0 or 2 in the user's states; [inferred] the battle mode"
+
+# Sora, through the player object pointer 0x35c998 (zero when no player object exists: the value is then empty).
+[sora.object]
+path = [0x35c998]
+type = "u32"
+note = "the pointer itself"
+
+[sora.pos]
+path = [0x35c998, 0x70]
+type = "f32"
+count = 3
+unit = "cm"
+note = "vec4 xyz(w=1) in the game's axes (y is up and negative)"
+
+[sora.facing]
+path = [0x35c998, 0x10]
+type = "f32"
+count = 3
+unit = "unit vector"
+note = "[inferred] equals minus the +0x60 row of the rotation; the facing"
+
+# Sora's save-block record (the party block 0x33fec0, record size 0xf4): current and maximum HP bytes.
+[save.sora_hp]
+path = [0x33fec4]
+type = "u8"
+note = "member record +4; the save copy, not necessarily the live fight value"
+
+[save.sora_hp_max]
+path = [0x33fec5]
+type = "u8"
+
+# The camera object 0x355840 (docs/dynamic-tracing.md 5): wanted position +0x60, look-at +0x80.
+[cam.pos]
+path = [0x3558a0]
+type = "f32"
+count = 3
+unit = "cm"
+
+[cam.look]
+path = [0x3558c0]
+type = "f32"
+count = 3
+unit = "cm"
+
+# Read by the first pause-menu run of RIG.md 1.2 next to the frame step; what it means is not known. RIG-4 names the real menu values.
+[menu.word_354f70]
+path = [0x354f70]
+type = "u32"
+note = "unverified: read in the RIG prototype (menu.py); 0 in every user state"

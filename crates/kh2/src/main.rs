@@ -26,6 +26,7 @@ kh2 <command> [--iso PATH]
   coct-walls AREA [GROUP]  walls that stop the party in an area, and the ones between entrances and spawn volumes
   bdx NAME [--run [N]]  disassemble a BDX script (M_EX020, obj/M_EX020.mdlx, 00common.bdx); --run: dry run on a mock world
   bdx --scan            parse every BDX on the disc, print opcode and host function statistics
+  state from-p2s F [OUT]  turn a PCSX2 save state into a KH2_STATE file (docs: crates/kh2-rig)
   validate              decode every modelled table and write checkmarks into sheets/
   preflight [--strict]  overlap all sheets and print the checklist
 
@@ -284,6 +285,7 @@ fn main() -> ExitCode {
 fn run(args: &mut Vec<String>) -> Result<(), String> {
     let cmd = if args.is_empty() { "help".to_string() } else { args.remove(0) };
     match cmd.as_str() {
+        "state" => kh2_rig::cli::state(args)?,
         "set-iso" => {
             let p = PathBuf::from(args.first().ok_or("set-iso needs a path")?);
             Archive::open(&p).map_err(|e| format!("{}: {e}", p.display()))?;

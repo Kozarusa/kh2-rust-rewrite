@@ -3433,6 +3433,7 @@ dependencies = [
  "kh2-map",
  "kh2-model",
  "kh2-ps2",
+ "kh2-rig",
  "kh2-tables",
 ]
 
